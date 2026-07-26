@@ -103,14 +103,15 @@ Nix を使わない場合は Node.js 22 以上と pnpm 9.15.0 を用意する（
 
 | コマンド | 内容 |
 | --- | --- |
-| `pnpm typecheck` | `tsconfig.build.json` と `tsconfig.test.json` の両方を型検査 |
+| `pnpm typecheck` | `tsconfig.build.json`（出荷ソース）/ `tsconfig.test.json`（テスト + スクリプト）/ `tsconfig.preview.json`（`apps/`）の 3 プロジェクトを型検査 |
 | `pnpm lint` | oxlint（このリポジトリ唯一の lint / format 設定。prettier も biome も .editorconfig も置かない）。**`--deny-warnings` 付きで走る**ため、`warn` のルールもビルドを落とす（`oxlint.json` は 5 カテゴリすべてと個別 67 ルールが `warn`、`error` は 4 つだけ。このフラグが無かった頃は実質その 4 つしかゲートになっていなかった） |
 | `pnpm lint:fix` | oxlint の自動修正 |
+| `pnpm preview` | 内蔵プレビュー（採掘場 / 時間スライダー / Mob アリーナ）。**`pnpm verify` には入らない**。[apps/preview-mining-site/README.md](./apps/preview-mining-site/README.md) |
 | `pnpm test` | vitest（`@effect/vitest` の `it.effect` が主 API） |
 | `pnpm test:watch` | vitest watch |
 | `pnpm test:coverage` | カバレッジ計測（閾値は未設定。[docs/testing.md](./docs/testing.md) §4） |
 | `pnpm check:deps` | 依存ホワイトリスト + 循環検査 + 推移閉包検査 + 壁時計直読み禁止 |
-| `pnpm verify` | `typecheck && lint && check:deps && test`。CI と同じ内容 |
+| `pnpm verify` | `typecheck && lint && check:deps && api:check && test`。CI と同じ内容。**`pnpm preview` は含まない** |
 
 ## 現状
 
@@ -146,14 +147,23 @@ Nix を使わない場合は Node.js 22 以上と pnpm 9.15.0 を用意する（
   前者は mc-worldgen の `ChunkStore` の**全面**ミラー（狭いミラーはタグキーが同じまま
   メソッドが `undefined` になる静かな実行時ハザードで、`test/chunk-store-mirror.test.ts` が両方向で固定する）、
   後者は kernel の座標語彙との接続点である。どちらもバレルから re-export していない。
-- **プレビューはまだ 1 本もない。** 完成条件は 3 本（採掘場 / Mob アリーナ / 時間スライダー、plan.md §3.11）。
-  `apps/preview-*/` に置き、`mc-playground-kit` を devDependency として使う。
+- **プレビューは 1 アプリ 3 画面で動く。** `pnpm preview`（[apps/preview-mining-site/](./apps/preview-mining-site/README.md)）。
+  plan.md §3.11 が挙げる 3 本に 1 対 1 で対応する `site` / `time` / `arena` を `g` で巡回する。
+  ターミナルレンダラであり、`mc-playground-kit` も THREE.js も新規依存も**使っていない**
+  （理由は当該 README と `main.ts` 冒頭）。
+  **`arena` は「Mob は存在しない」と画面の 1 行目に書く。** 欠けているものを行き先つきで列挙したうえで、
+  実在する `domain/death-cause.ts` だけを実際に叩く。スプライトを 2 つ置いて「✅」と書くのは
+  穴を進捗に見せることであり、それはしない。
+  `pnpm preview --stats` は初回実行（2026-07-27）で **6 件**の finding を出し、
+  うち確認できた 4 件は `test/preview-findings.test.ts` に assertion として固定してある。
+  3 件（F3 / F5 / F6）は既存 112 本のテストが 1 つも捕まえていなかった。
 - **ビルド / publish はまだない。** `tsconfig.base.json` は `noEmit: true`、`package.json#exports` は
   TypeScript ソースを直接指している。`dist` は存在しない（[docs/versioning.md](./docs/versioning.md)）。
 - **カバレッジ閾値は未設定。** 計測とレポートは常に動かしており、99% ゲートは完成条件到達時に有効化する
   （`vitest.config.ts` に有効化する行がコメントで置いてある）。
-- `pnpm verify` は green。tsc clean、oxlint 25 ファイル 0 warnings / 0 errors、
-  `check:deps` 25 ファイル走査、`api:check` 61 エントリ一致、vitest 8 ファイル 112 テスト pass。
+- `pnpm verify` は green。tsc clean（3 プロジェクト）、oxlint 36 ファイル 0 warnings / 0 errors、
+  `check:deps` 36 ファイル走査、`api:check` 61 エントリ一致、vitest 9 ファイル 122 テスト pass。
+  `apps/` を足しても公開 API は 61 エントリのまま — プレビューは `index.ts` から export されない。
 
 ## License
 

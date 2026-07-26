@@ -12,12 +12,15 @@ plan.md §3.11:
 
 ### 1-1. 4 つのゲート
 
-`pnpm verify` = `typecheck && lint && check:deps && test`。CI（`.github/workflows/ci.yaml`）と同じ内容。
+`pnpm verify` = `typecheck && lint && check:deps && api:check && test`。CI（`.github/workflows/ci.yaml`）と同じ内容。
+
+**`pnpm preview` はここに入らない。** プレビューは完成条件（§3）であってゲートではない。
+型検査（`tsconfig.preview.json`）と lint は掛かるが、CI がプレビューを**実行**することはない。
 
 | ゲート | コマンド | 何を捕まえるか |
 | --- | --- | --- |
-| 型 | `pnpm typecheck` | `tsconfig.build.json`（出荷ソース）と `tsconfig.test.json`（テスト + スクリプト）の**両方**。前者は `types: []` / `lib: ["ES2024"]` なので、Node 型や DOM 型が出荷ソースに漏れた時点で落ちる |
-| lint | `pnpm lint` | oxlint。`index.ts domain stages scripts test` の 13 ファイル。**`--deny-warnings` 付きで走る**ため、`warn` のルールもビルドを落とす（`oxlint.json` は 5 カテゴリすべてと個別 67 ルールが `warn`、`error` は 4 つだけ。このフラグが無かった頃は実質その 4 つしかゲートになっていなかった） |
+| 型 | `pnpm typecheck` | `tsconfig.build.json`（出荷ソース）と `tsconfig.test.json`（テスト + スクリプト）と `tsconfig.preview.json`（`apps/`）の**3 つ**。前者は `types: []` / `lib: ["ES2024"]` なので、Node 型や DOM 型が出荷ソースに漏れた時点で落ちる |
+| lint | `pnpm lint` | oxlint。`index.ts domain stages scripts test apps` の 36 ファイル。**`--deny-warnings` 付きで走る**ため、`warn` のルールもビルドを落とす（`oxlint.json` は 5 カテゴリすべてと個別 67 ルールが `warn`、`error` は 4 つだけ。このフラグが無かった頃は実質その 4 つしかゲートになっていなかった） |
 | 境界 | `pnpm check:deps` | 依存ホワイトリスト / 循環 / 推移閉包 / kit の実行時混入 / `Date.now()` |
 | 振る舞い | `pnpm test` | vitest |
 
@@ -41,7 +44,7 @@ prettier も biome も `.editorconfig` も置かない。整形の権威が 2 �
 
 ## 2. 現在のスイート
 
-**8 ファイル / 112 テスト、全 pass。**
+**9 ファイル / 122 テスト、全 pass。**
 
 | ファイル | 本数 | 内容 |
 | --- | ---: | --- |
@@ -53,6 +56,7 @@ prettier も biome も `.editorconfig` も置かない。整形の権威が 2 �
 | `test/day-night.test.ts` | 8 | DN-GP-7。昼夜**ルール**が何も保持していないこと、mc-sim と夜の定義が一致すること |
 | `test/public-api.test.ts` | 6 | `index.ts` のバレルを名前ごと固定する。kernel 語彙と時刻 API の**不在**も固定する |
 | `test/chunk-store-mirror.test.ts` | 5 | `domain/chunk-store-port.ts` を mc-worldgen の界面に**両方向で**固定する。タグキーは文字どおり検査する |
+| `test/preview-findings.test.ts` | 10 | **プレビューが見つけたもの**（§3-2）。うち 8 本は「現在の（誤った）挙動を固定する」テストで、直すと落ちる |
 
 `test/support/` はテストではなくテストの資材である（`vitest.config.ts` の `include` は
 `test/**/*.{test,spec}.ts` なので収集されない）。`chunk-store-double.ts` が mc-worldgen の
@@ -116,9 +120,9 @@ roster を各リポジトリが持ち回っている以上、**行の正しさ�
 | 1 | `pnpm verify` が green | ✅ |
 | 2 | plan.md §3.11 の 7 つの責務が実装済み | ❌（1 つも未着手。[porting.md](./porting.md)） |
 | 3 | 参照実装のテストオラクルが移植済み | ❌ |
-| 4 | **プレビュー「採掘場」が操作可能** | ❌ |
-| 5 | **プレビュー「Mob アリーナ」が操作可能** | ❌ |
-| 6 | **プレビュー「時間スライダー」が操作可能** | ❌ |
+| 4 | **プレビュー「採掘場」が操作可能** | ✅（`pnpm preview`。ただしドロップテーブルと設置ルールが未実装なので、確認できるのは「掘る」と落下カスケードまで。§3-1） |
+| 5 | **プレビュー「Mob アリーナ」が操作可能** | ❌（**Mob が存在しない。** `--screen arena` は欠けているものを列挙し、実在する死因ルールだけを叩く。§3-1） |
+| 6 | **プレビュー「時間スライダー」が操作可能** | ✅（`--screen time`。時刻を**進める**のは mc-sim であり、そちらは未 publish） |
 | 7 | 99% カバレッジゲートが有効 | ❌（完成時に有効化。§4） |
 | 8 | `mc-kernel` を import し `domain/frame-contract.ts` / `domain/position-key.ts` を削除 | ❌（kernel の publish 待ち） |
 
@@ -126,21 +130,65 @@ roster を各リポジトリが持ち回っている以上、**行の正しさ�
 
 plan.md §3.11 が指定する 3 本。`apps/preview-*/` に置く（plan.md §4.1: 「プレビューは契約に含めない」）。
 
-| プレビュー | 確認すること | 主に検証されるルール |
-| --- | --- | --- |
-| **採掘場** | 掘る / 置く / ドロップ確認 | interaction-*、ドロップ/ルートテーブル、落下ブロック（DN-GP-1）、バケツ経由の流体（DN-GP-2） |
-| **Mob アリーナ** | スポーンさせて対峙 | Mob AI、戦闘、死因（DN-GP-3） |
-| **時間スライダー** | 昼夜 / 天候 | `domain/day-night.ts` の `isNight` / `dayPhase` / `hostileSpawnsAllowed`（DN-GP-7）、天候遷移。**時刻そのものを動かすのは mc-sim の `TimeService` であり、スライダーはそこへ書く** |
+**実装は 1 アプリ 3 画面である**（`apps/preview-mining-site/`、`g` で巡回）。
+`pnpm preview` が入口で、`--screen site|time|arena` でも直接開ける。
 
-いずれも `mc-playground-kit` を **devDependency として**使う。
-kit は「ミニ平地ワールド + カメラ + レンダラ + 入力を 1 秒で束ねる糊」であり、
-実行時依存に混ざったら `pnpm check:deps` が落とす（plan.md §2.3-2）。
+| プレビュー | 画面 | 実体 | 主に検証されるルール |
+| --- | --- | --- | --- |
+| **採掘場** | `site` | **本物**。`gameplayStages` を本物の `ChunkStoreApi` に対して回す | `break-block`、落下ブロック（DN-GP-1）、`ChunkNotLoaded`（DN-GP-11）。**ドロップテーブルも設置ルールも存在しない**ので、掘って出るのは「そこにあったブロック」そのものであり、`p` キーはストアを直接書いて「これはルールではない」と HUD に出す |
+| **Mob アリーナ** | `arena` | **Mob は存在しない。画面の 1 行目がそう言う** | `domain/death-cause.ts`（DN-GP-3）だけ。欠けているもの（Mob エンティティ、AI、スポーン、近接/遠隔ハンドラ、ドロップ）を**行き先つきで**列挙する |
+| **時間スライダー** | `time` | **ルールドライバとしては本物** | `domain/day-night.ts` の `isNight` / `dayPhase` / `hostileSpawnsAllowed`（DN-GP-7）。**時刻そのものを動かすのは mc-sim の `TimeService`** であり、`gameplay:time-weather` は `Effect.void` のままなので、スライダーは「書く先」を持たない。引数を掃くだけである |
+
+**`mc-playground-kit` は使っていない。** 本節は以前「いずれも kit を devDependency として使う」と
+書いていたが、kit は publish されておらず（plan.md §6 Step 3 はボトムアップ）、
+**実行できないプレビューは完成条件ではなく「完成条件を持つ計画」である**。
+加えて、これら 3 本が可視化しろと言われているものは全部「座標に付いた数」か「瞬間に付いた数」——
+どのセルがキューに入っているか、1 フレームが何回ストアを読んだか、カスケードが何 tick 掛かったか、
+0.31 は何フェーズか——であり、カメラはそのどれにも寄与せず、
+**柱全体とキュー全体を一度に見る**能力を奪う。mc-worldgen の地形プレビューが最初にこの論を立て、
+mx-redstone の回路盤が磨いた。`tsconfig.base.json` が `lib` から "DOM" を落としているという
+機械的保証も、ターミナルレンダラなら壊さずに済む。
+
+将来 1 人称プレビュー（mc-sim の障害物コースのような）が要るなら、そのときは kit が正しい置き場である。
+そのときも実行時依存に混ざったら `pnpm check:deps` が落とす（plan.md §2.3-2）。
 
 **なぜプレビューが完成条件なのか。** テストは「決めた通りに動くか」を見るが、
 「決めたことが遊びとして正しいか」は見ない。溶岩湖の縁が直線になっていること（DN-GP-2）は
 どの assertion にも引っかからず、プレビューを数分動かせば一目で分かる。
 参照実装のあのバグが数分後に現れるものだったのは偶然ではなく、**型と単体テストが見ない層で起きるバグ**が
 このリポジトリの主要な失敗様式だからである。
+
+### 3-2. プレビューが見つけたもの
+
+`pnpm preview --stats` は 14 個のチェックを**実行時に測定**する。期待値は 1 つも記録していないので、
+**直すと finding は「固定される」のではなく静かに消える**。だから確認できたものは
+`test/preview-findings.test.ts` に assertion として落としてある —— レポートは読まれなければ効かないが、
+テストは落ちる。チェック自体は合格後も残してある。合格したら消すチェックは、コードを 1 回しか検査しない。
+
+初回実行（2026-07-27）は 6 件。
+
+| # | 症状 | 場所 | pin |
+| --- | --- | --- | --- |
+| F1 | 飽和したバッチの約半分が動けない位置に使われる（実測 0.41 moves/position、26 擾乱でキューは 52 まで膨張） | `domain/falling-block.ts:53-60` / `entities/falling-block-move.ts:167` | — （測定値。上限自体は破られていない） |
+| F2 | `retainedLavaFrontier` が `carryOver` の結果に完全に含まれ、両方の doc に従うと溶岩フロンティアが tick ごとに倍増する | `domain/fluid-frontier.ts:62-65`, `:116-122` | ✅ 2 本 |
+| F3 | `carryOver` が `key` だけで比較するため、水と溶岩が同座標に並ぶと**未評価の溶岩側**が黙って消える | `domain/fluid-frontier.ts:120` | ✅ 2 本 |
+| F4 | fluids stage だけが `Ref.get` → `Ref.set`（DN-GP-10 が禁じる形）。**今日は到達不能**なので形として報告 | `stages/registration.ts:267-270` | — |
+| F5 | NaN ダメージ 1 発でプレイヤーが永久に不死になる（`isDead` が永久に false、死亡メッセージが出ない） | `domain/death-cause.ts:110-122` | ✅ 3 本 |
+| F6 | 昼夜ルールが日周期でない。範囲外は全部 night で `hostileSpawnsAllowed` も真。負の端数は mc-sim の `% 1` から出る | `domain/day-night.ts:78-98` | ✅ 3 本 |
+
+**F3 / F5 / F6 は当時の 112 本が 1 つも捕まえていなかった。** 理由はそれぞれ違う:
+
+- **F3** —— `test/rules.test.ts` の `carryOver` テストは `key` が全部異なるフロンティアしか使わない。
+  `(key, kind)` が 2 対 1 になる入力を書く理由が誰にも無かった。
+- **F5** —— 死因テストは全部 `amount: 999` のような有限値を渡す。
+  `Damage.amount` に refinement が無いことは型検査も lint も通る。DN-GP-3 が構造で守ったのは
+  **cause が消えないこと**であって、**死が起きること**ではなかった。
+- **F6** —— `test/day-night.test.ts` は `[0, 1)` の中しかサンプルしない。
+  前提条件がどこにも書かれていないので、破る入力を思いつく理由が無い。
+
+これは §3 冒頭の主張の実例である。**型と単体テストが見ない層で起きるバグ**がこのリポジトリの
+主要な失敗様式であり、F5 と F6 はどちらも「値としては表現できてしまう不正な引数」、
+F3 は「終状態が同じで途中が違う」——3 つとも assertion の端点をすり抜ける形をしている。
 
 ## 4. カバレッジ
 
