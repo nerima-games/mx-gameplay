@@ -1,6 +1,6 @@
 # 移植
 
-参照実装 `/Users/take/ghq/github.com/takeokunn/ts-minecraft`（以下 `packages/…` はそのルート相対）から
+参照実装 `<reference-impl>`（以下 `packages/…` はそのルート相対）から
 何を持ってくるか。
 
 ## 1. 数値の出所
@@ -42,11 +42,37 @@ plan.md §3.11 の数字は見積であり、実測と一致しない箇所が�
 
 ## 3. plan.md との差分
 
-### 3-1. Mob: 見積 4,918 に対し実測 4,722
+### 3-1. Mob: 4,918 と 4,722 の差は 1 ファイル（**両方とも実測値。どちらも誤りではない**）
 
-plan.md §3.11 は `packages/entity` の `mob/` を 4,918 LOC としている。実測は **4,722**（91 ファイル）。
-差は 196 行。見積が古いか、計数条件（テスト除外の有無、`application/mob` を含むか）が違う。
-どちらが誤りとも判断しない — **移植の見積には実測を使う**。
+plan.md §3.11 は `packages/entity` の `mob/` を 4,918 LOC としている。本書の実測は **4,722**（91 ファイル）。
+**差の 196 行は `packages/entity/test/mob/test-utils.ts` ちょうど 1 ファイルである。**
+
+```console
+$ cd <reference-impl>
+$ find packages/entity/application/mob packages/entity/domain/mob \
+    -name '*.ts' -not -name '*.test.ts' -not -name '*.spec.ts' | xargs cat | wc -l
+4722
+$ wc -l packages/entity/test/mob/test-utils.ts
+196
+# 4722 + 196 = 4918
+```
+
+なぜ拾われ方が変わるのか。参照実装は**テストヘルパを `*.test.ts` という名前にしない**
+（`test/` ディレクトリに `test-utils.ts` として置く）。したがって
+「`*.test.ts` を除く」というフィルタだけでは落ちず、**どのディレクトリを走査したかで結果が変わる**。
+
+| 数え方 | 走査対象 | LOC |
+| --- | --- | ---: |
+| 実装コードのみ（本書） | `application/mob/` + `domain/mob/` | **4,722**（91 ファイル） |
+| `mob` と名の付くもの全部（plan.md §3.11 / mc-sim の porting.md） | 上記 + `test/mob/` | **4,918** |
+
+**移植量として使う値は 4,722 である。** `test-utils.ts` は移植先のテストへ持っていく資産であって
+実装コードではなく、本書 §5 で別枠に数えている（流体の `fluid-test-utils.ts` と同じ扱い）。
+
+mc-sim の [porting.md](https://github.com/nerima-games/mc-sim/blob/main/docs/porting.md) §1.1 は
+`packages/entity` 全体を 10,865（`test/` ヘルパ 481 行を含む）で数えているため、
+そちらでは 4,918 を引くのが正しい。**同じ計数規則の中で首尾一貫していれば、どちらの数字も使える。**
+規則をまたいで引き算しないこと。
 
 ### 3-2. 「計 ~8.5k」は成立するが、それは流体と落下ブロックを除いた数字である
 
@@ -154,7 +180,7 @@ plan.md §8 のリスク表も同じことを言っている。
 
 | 順 | 対象 | LOC | 閉じるプレビュー | 備考 |
 | ---: | --- | ---: | --- | --- |
-| 1 | 昼夜（`packages/game` の 3 ファイル） | 271 | 時間スライダー | 依存が最も少ない。`advanceTimeOfDay` が既にある（DN-GP-7） |
+| 1 | 昼夜（`packages/game` の 3 ファイル） | 271 | 時間スライダー | 依存が最も少ない。**ここに移植するのはルールだけ**——`domain/day-night.ts` の `isNight` / `dayPhase` / `hostileSpawnsAllowed` が既にある（DN-GP-7）。時刻の**状態**（tick カウンタ・日長・`advance`・順序ハザード）は `mc-sim/domain/time-of-day.ts` の担当であり、ここには移植しない |
 | 2 | 落下ブロック | 167 | 採掘場 | `domain/falling-block.ts` の骨組みが既にある（DN-GP-1） |
 | 3 | 流体 | 889 (+143 要判断) | 採掘場（バケツ） | `fluid-test-utils.ts` を先に。境界移動の調整が要る（§3-3） |
 | 4 | interaction-* | 3,317 | 採掘場 | 40 ファイル。1 ルール 1 ファイルを維持（DN-GP-9） |

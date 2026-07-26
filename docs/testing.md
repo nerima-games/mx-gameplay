@@ -17,7 +17,7 @@ plan.md §3.11:
 | ゲート | コマンド | 何を捕まえるか |
 | --- | --- | --- |
 | 型 | `pnpm typecheck` | `tsconfig.build.json`（出荷ソース）と `tsconfig.test.json`（テスト + スクリプト）の**両方**。前者は `types: []` / `lib: ["ES2024"]` なので、Node 型や DOM 型が出荷ソースに漏れた時点で落ちる |
-| lint | `pnpm lint` | oxlint。`index.ts domain stages scripts test` の 13 ファイル |
+| lint | `pnpm lint` | oxlint。`index.ts domain stages scripts test` の 13 ファイル。**`--deny-warnings` 付きで走る**ため、`warn` のルールもビルドを落とす（`oxlint.json` は 5 カテゴリすべてと個別 67 ルールが `warn`、`error` は 4 つだけ。このフラグが無かった頃は実質その 4 つしかゲートになっていなかった） |
 | 境界 | `pnpm check:deps` | 依存ホワイトリスト / 循環 / 推移閉包 / kit の実行時混入 / `Date.now()` |
 | 振る舞い | `pnpm test` | vitest |
 
@@ -41,14 +41,15 @@ prettier も biome も `.editorconfig` も置かない。整形の権威が 2 �
 
 ## 2. 現在のスイート
 
-**4 ファイル / 54 テスト、全 pass。**
+**5 ファイル / 65 テスト、全 pass。**
 
 | ファイル | 本数 | 内容 |
 | --- | ---: | --- |
 | `test/rules.test.ts` | 19 | DN-GP-1 / DN-GP-2 / DN-GP-3 のドメイン単体 |
 | `test/check-dependency-whitelist.test.ts` | 17 | 依存ポリシーそのもの。うち 3 本は**他リポジトリの席から**読んだ roster 検査（§2-3） |
-| `test/stage-registration.test.ts` | 14 | フレーム契約（§2.3-1 / §2.3-3）と stage の振る舞い |
-| `test/public-api.test.ts` | 4 | `index.ts` のバレルを名前ごと固定する |
+| `test/stage-registration.test.ts` | 15 | フレーム契約（§2.3-1 / §2.3-3）と stage の振る舞い。時刻の `Ref` が無いことを含む |
+| `test/day-night.test.ts` | 8 | DN-GP-7。昼夜**ルール**が何も保持していないこと、mc-sim と夜の定義が一致すること |
+| `test/public-api.test.ts` | 6 | `index.ts` のバレルを名前ごと固定する。kernel 語彙と時刻 API の**不在**も固定する |
 
 主 API は `@effect/vitest` の `it.effect`。`vitest.config.ts` は `environment: 'node'`。
 DOM は使わない — `tsconfig.base.json` が `lib: ["ES2024"]` なので、そもそも型が無い。
@@ -120,7 +121,7 @@ plan.md §3.11 が指定する 3 本。`apps/preview-*/` に置く（plan.md §4
 | --- | --- | --- |
 | **採掘場** | 掘る / 置く / ドロップ確認 | interaction-*、ドロップ/ルートテーブル、落下ブロック（DN-GP-1）、バケツ経由の流体（DN-GP-2） |
 | **Mob アリーナ** | スポーンさせて対峙 | Mob AI、戦闘、死因（DN-GP-3） |
-| **時間スライダー** | 昼夜 / 天候 | `advanceTimeOfDay`（DN-GP-7）、天候遷移 |
+| **時間スライダー** | 昼夜 / 天候 | `domain/day-night.ts` の `isNight` / `dayPhase` / `hostileSpawnsAllowed`（DN-GP-7）、天候遷移。**時刻そのものを動かすのは mc-sim の `TimeService` であり、スライダーはそこへ書く** |
 
 いずれも `mc-playground-kit` を **devDependency として**使う。
 kit は「ミニ平地ワールド + カメラ + レンダラ + 入力を 1 秒で束ねる糊」であり、
@@ -181,7 +182,7 @@ plan.md §5.1-3:
 | 壁時計の直読み禁止 | `scripts/check-dependency-whitelist.ts`（DN-GP-8） | 時刻は注入された Clock Port からしか来ない |
 | `dt` は引数 | `StageRegistration.run(dt)` | フレームを好きな速さで進められる。1 ゲーム日を数 ms で回せる |
 | 挿入順を保つ `Set` | `domain/falling-block.ts` | 同じイベント列は同じバッチ列を生む |
-| 純関数の時刻進行 | `advanceTimeOfDay`（DN-GP-7） | 保持している派生値が無いので状態依存が無い |
+| 昼夜ルールが全域関数 | `domain/day-night.ts`（DN-GP-7） | 引数以外に依存する値が無い。時刻の**状態**は mc-sim にあり、ここには複製が無い |
 
 `test/stage-registration.test.ts` の
 `takeBatch preserves disturbance order, which is what makes a scenario test an oracle` が

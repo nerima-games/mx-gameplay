@@ -2,7 +2,7 @@
 
 本書は設計方針ではなく**事故報告**である。
 10 項目のうち想像で書かれたものは 1 つもなく、すべて参照実装
-（`/Users/take/ghq/github.com/takeokunn/ts-minecraft`。以下 `packages/…` はそのルート相対）の production で実際に起きたことか、
+（`<reference-impl>`。以下 `packages/…` はそのルート相対）の production で実際に起きたことか、
 plan.md が実測知見として確定させたものである。
 
 各項目は次の 3 つを必ず持つ。
@@ -425,43 +425,104 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
 
 ---
 
-## DN-GP-7 `TimeService` の順序ハザード
+## DN-GP-7 時刻は mc-sim のもの。ここに残るのは「時刻に対するルール」だけ
 
-**規則**: 昼夜の進行を `advanceTimeOfDay(now, dt, length)` という**純関数**で表す。
-派生値を保持しない。
+**規則**: このリポジトリは時刻を**持たない**。
+`domain/day-night.ts` は 1 日の位置（`[0, 1)` の分数）を引数に取る**全域関数だけ**を持ち、
+`Ref` も既定の日長も順序制約も持たない。
 
 ### 根拠
+
+plan.md §2.3-1（基盤 = 名詞、体験 = 動詞）と、`stages/registration.ts` のヘッダが名指ししている判定手順:
+
+> `Ref` がここに属するかの判定: **セーブファイルがそれを要るか。** 要るなら mc-sim 経由で mc-save のものである。
 
 plan.md §3.8:
 
 > `TimeService`: `setDayLength()` が tick 分母を変えるため、必ず `setDayLength → setTimeOfDay` の順
 
-参照実装は「日の長さ」から導出した分母を保持していたので、
-`setTimeOfDay` を先に呼ぶと**古い分母で計算された時刻**が残った。
-呼び出し順が仕様の一部になっている状態で、これは呼び出し側全員が覚えていなければならない規則である。
+**この順序ハザードは mc-sim のものである。** 絶対 tick カウンタと分母という表現も、
+`setDayLength → setTimeOfDay` の順序規則も、`configureDay` というその封じ込めも、
+`mc-sim/domain/time-of-day.ts` にある。**ここには何も無い。**
 
-### 純関数にすると規則ごと消える
+### この規則は一度破られていた（実測）
 
-`advanceTimeOfDay(currentSecs, dt, dayLengthSecs)` は 3 つの引数だけから答えを作る。
-**保持している派生値が無いので、stale になり得る値が存在しない。**
-順序ハザードは「回避される」のではなく、**存在しなくなる**。
+`stages/registration.ts` は `timeOfDaySecs` と `dayLengthSecs` の `Ref` を持ち、
+`gameplay:time-weather` stage で進めていた。既定の日長は `DEFAULT_DAY_LENGTH_SECS = 1200` で、
+**mc-sim の 400 と食い違っていた**。
 
-これは規則を守る代わりに規則が不要な形を選ぶ、という DN-GP-1 / DN-GP-3 と同じ手口である。
+- セーブファイルは時刻を要る。したがって判定手順により、これは最初から名詞だった。
+- mc-sim は既にそれを所有していた。**2 人目の所有者が現れただけ**である。
+- 「今何時か」に 2 つの答えがあり、セーブされるのは mc-sim の答えだけなので、
+  食い違いはワールドロードで空が飛ぶ形で出る。
+- `stages/registration.ts` のヘッダも `docs/architecture.md` §3 も、当時から
+  「mc-sim が所有する」と書いていた。**コードだけが違っていた。**
 
-`dayLengthSecs <= 0` はゼロ除算ではなく呼び出し側のエラーとして扱い、時刻を据え置く。
+これは DN-GP-1 / DN-GP-3 と同じ手口の裏返しである。あちらは「規則を守るより規則が不要な形を選ぶ」、
+こちらは「所有者を 2 人にするより 1 人にする」。
+
+### 残ったもの: `domain/day-night.ts`
+
+```typescript
+export const DAWN_FRACTION = 0.25
+export const NOON_FRACTION = 0.5
+export const DUSK_FRACTION = 0.75
+export const TWILIGHT_BAND = 0.05
+
+export type DayPhase = 'night' | 'dawn' | 'day' | 'dusk'
+
+export const isNight = (timeOfDay: number): boolean =>
+  timeOfDay < DAWN_FRACTION || timeOfDay > DUSK_FRACTION
+export const dayPhase = (timeOfDay: number): DayPhase
+export const hostileSpawnsAllowed = (timeOfDay: number): boolean   // isNight の名前付き別名
+```
+
+**保持する派生値が無いので、stale になり得る値が存在しない。**
+どのリポジトリとも同期する必要が無く、永続化するものも無く、呼び出し順の制約も無い。
+
+`timeOfDay` の規約は mc-sim のものである: **0 が真夜中**、0.25 が夜明け、0.5 が正午、0.75 が日没。
+`isNight` はその規約のもとで「0/1 境界を中心とする半日」になる。
+
+`TWILIGHT_BAND` は **`isNight` が参照しない**。薄明は空の色とフォグの演出上の区別であって、
+スポーンの区別ではない。両者を分けてあることが、
+「空のグラデーションを調整したら Mob の出現時刻が変わった」を止めている。
+
+`hostileSpawnsAllowed` が `isNight` の別名で、独立した 2 本目の述語ではないのも意図的である。
+参照実装のデスループ（新規ワールドが真夜中スポーンし、昼に消えない敵対 Mob がリスポーン地点に居座る）は、
+呼び出し側が自前の比較をインライン展開した結果である。
 
 ### 回帰テスト
+
+`test/day-night.test.ts`:
+
+| it |
+| --- |
+| `exports only functions and plain numbers — no Ref, no factory, no mutable cell` |
+| `REGRESSION: every function is a pure function of its argument — repeat calls agree` |
+| `REGRESSION: the answer at an hour does not depend on which hours were asked first` |
+| `REGRESSION: takes a fraction of the day, so no day length is duplicated here` |
+| `is the half of the day centred on the 0/1 boundary, exactly as mc-sim computes it` |
+| `gates hostile spawning on exactly the same predicate, never on a re-derived one` |
+| `names dawn, day, dusk and night at the hours they belong to` |
+| `never disagrees with isNight, so widening twilight cannot move the spawn gate` |
 
 `test/stage-registration.test.ts`、describe `stage behaviour`:
 
 | it |
 | --- |
-| `advanceTimeOfDay is pure, so changing the day length cannot leave a stale derived value` |
-| `time/weather advances by dt and wraps at the day length` |
+| `REGRESSION: the frame state holds no time of day and no day length` |
+| `REGRESSION: every Ref in the frame state is frame-local scratch, not saved state` |
 | `a stage tolerates dt = 0, because a frame may be scheduled twice inside one clock tick` |
 
-1 本目は `advanceTimeOfDay(95, 10, 100) === 5` と `advanceTimeOfDay(95, 10, 50) === 5` を並べて、
-**日の長さを変えても即座に正しい答えが出る**ことを示している。
+`test/public-api.test.ts`:
+
+| it |
+| --- |
+| `REGRESSION: exports no day-length default and no way to advance the clock` |
+
+最後の 1 本は `DEFAULT_DAY_LENGTH_SECS` / `advanceTimeOfDay` / `setDayLength` / `setTimeOfDay` /
+`timeOfDay` がバレルに**現れない**ことを assert する。
+2 人目の所有者は、公開面に名前が生えるところから始まる。
 
 ---
 

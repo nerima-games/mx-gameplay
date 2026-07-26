@@ -13,15 +13,26 @@
  * ---------------------------------------------------------------------------
  *
  * The `Ref`s in `GameplayFrameState` are frame-local scratch: a work queue and a
- * couple of counters. They are NOT game state. The blocks that fall, the fluid
- * that flows and the time of day are all mc-sim's and mc-worldgen's to hold; a
- * frontier is a note about what to look at next, and it is legitimately
- * private to the stage that consumes it.
+ * counter. They are NOT game state. The blocks that fall, the fluid that flows
+ * and the time of day are all mc-sim's and mc-worldgen's to hold; a frontier is
+ * a note about what to look at next, and it is legitimately private to the
+ * stage that consumes it.
  *
  * The distinction is worth policing, because "just one more Ref" is how the
  * reference implementation ended up with 13k LOC of rules in its composition
  * layer (plan.md §3.15). The test for whether a Ref belongs here: would a save
  * file need it? If yes, it belongs to mc-save via mc-sim.
+ *
+ * That test had already been failed once, and the failure is instructive. This
+ * file used to hold `timeOfDaySecs` and `dayLengthSecs` `Ref`s and advance them
+ * in the `gameplay:time-weather` stage, with a `DEFAULT_DAY_LENGTH_SECS` of
+ * 1200 against mc-sim's 400. A save file certainly needs the time of day, so by
+ * the rule stated two paragraphs above it was never this repository's — and
+ * mc-sim already owned it, in `domain/time-of-day.ts` behind
+ * `application/time-service.ts`, ordering hazard and all. Two owners of one
+ * noun is two answers to "what time is it", and only one of them gets saved.
+ * The rule that remains here — what the world DOES about the hour — is
+ * `domain/day-night.ts`, and it holds nothing.
  *
  * ---------------------------------------------------------------------------
  * Why a factory rather than a constant
@@ -44,7 +55,7 @@ import {
   splitBudget,
   type FluidWorkItem,
 } from '../domain/fluid-frontier'
-import type { DeltaTimeSecs, StageRegistration } from '../domain/frame-contract'
+import type { StageRegistration } from '../domain/frame-contract'
 import { GAMEPLAY_STAGE_IDS, UPSTREAM_STAGE_IDS } from './stage-ids'
 
 /**
@@ -55,43 +66,27 @@ import { GAMEPLAY_STAGE_IDS, UPSTREAM_STAGE_IDS } from './stage-ids'
  */
 export const LAVA_TICK_INTERVAL = 4
 
-/** Seconds of wall time in one in-game day, at the default day length. */
-export const DEFAULT_DAY_LENGTH_SECS = 1_200
-
+/**
+ * Frame-local scratch, and nothing else.
+ *
+ * Every `Ref` here fails the save-file test in the module header: a work queue
+ * of disturbed columns, a frontier of cells still to evaluate, and the tick
+ * counter that paces lava. Losing all three on a reload costs nothing but a
+ * frame of catch-up. Anything that would NOT be free to lose belongs to mc-sim.
+ */
 export type GameplayFrameState = {
   readonly fallingBlocks: Ref.Ref<FallingBlockQueue>
   readonly fluidFrontier: Ref.Ref<ReadonlyArray<FluidWorkItem>>
   readonly tickCount: Ref.Ref<number>
-  readonly timeOfDaySecs: Ref.Ref<number>
-  readonly dayLengthSecs: Ref.Ref<number>
 }
 
 export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.gen(function* () {
   const fallingBlocks = yield* Ref.make<FallingBlockQueue>(emptyFallingBlockQueue)
   const fluidFrontier = yield* Ref.make<ReadonlyArray<FluidWorkItem>>([])
   const tickCount = yield* Ref.make(0)
-  const timeOfDaySecs = yield* Ref.make(0)
-  const dayLengthSecs = yield* Ref.make(DEFAULT_DAY_LENGTH_SECS)
 
-  return { fallingBlocks, fluidFrontier, tickCount, timeOfDaySecs, dayLengthSecs }
+  return { fallingBlocks, fluidFrontier, tickCount }
 })
-
-/**
- * Advance the clock, wrapping at the day length.
- *
- * Pure, and exported so the day/night preview's time slider can drive it
- * directly. plan.md §3.8 warns that `setDayLength` changes the tick denominator
- * and must therefore be applied BEFORE `setTimeOfDay`; expressing the advance as
- * a pure function of (now, dt, length) removes the ordering hazard entirely,
- * because there is no stored derived value to be stale.
- */
-export const advanceTimeOfDay = (currentSecs: number, dt: number, dayLengthSecs: number): number => {
-  if (dayLengthSecs <= 0) {
-    return currentSecs
-  }
-  const advanced = (currentSecs + dt) % dayLengthSecs
-  return advanced < 0 ? advanced + dayLengthSecs : advanced
-}
 
 /**
  * The four stages mx-gameplay registers.
@@ -152,13 +147,24 @@ export const gameplayStages = (state: GameplayFrameState): ReadonlyArray<StageRe
   {
     id: GAMEPLAY_STAGE_IDS.timeWeather,
     after: [GAMEPLAY_STAGE_IDS.fluids],
-    run: (dt: DeltaTimeSecs) =>
-      Effect.gen(function* () {
-        const dayLengthSecs = yield* Ref.get(state.dayLengthSecs)
-        yield* Ref.update(state.timeOfDaySecs, (current) =>
-          advanceTimeOfDay(current, dt, dayLengthSecs),
-        )
-      }),
+    // FIRST CUT, and deliberately empty rather than "advance the clock".
+    //
+    // ADVANCING the clock is mc-sim's: `TimeService.advance(dt)` over
+    // `mc-sim/domain/time-of-day.ts`, which owns the absolute tick counter, the
+    // day-length denominator, the `setDayLength -> setTimeOfDay` ordering rule
+    // and the value that reaches the save file. This stage held a second copy
+    // of that state until it was deleted; see the module header.
+    //
+    // What this stage grows into is the CONSEQUENCES of the hour — weather
+    // transitions, and gating hostile spawns on `domain/day-night.ts`'s
+    // `hostileSpawnsAllowed` — each applied as a write through mc-sim, in the
+    // same shape as `interactions` above. It stays empty until mc-sim is
+    // published and there is a service to read the hour from and write the
+    // consequences to: plan.md §6 Step 3 is bottom-up publish-then-pin, and an
+    // invented local port would be a third answer to "who owns the time of
+    // day". The registration is here now because the frame POSITION is what
+    // mc-compose needs, and that is settled.
+    run: () => Effect.void,
   },
 ]
 

@@ -96,6 +96,15 @@ import type { StageRegistration } from '@nerima-games/mc-kernel'
 stage 作者にとっては非破壊 — `Effect<void, never, never>` は
 `Effect<void, never, ClockPort>` が要る位置に代入できる）。
 
+**MINOR で済むのは、この 2 ファイルをバレルから re-export していないからである。**
+`index.ts` が `export * from './domain/frame-contract'` を持っていた時期があり、その形のままだと
+`StageId` / `DeltaTimeSecs` / `StageRegistration` が「所有していないパッケージの公開 API」になり、
+約束済みの削除が**すべての消費者にとっての MAJOR**に化けていた。
+今は `index.ts` の末尾コメントが 2 ファイルの存在と削除予定だけを記し、名前は 1 つも出していない
+（`test/public-api.test.ts` の
+`REGRESSION: does not republish mc-kernel’s vocabulary as its own` が固定している）。
+mc-sim / mc-render / mc-playground-kit のバレル、および mx-redstone / mx-ui も同じ形である。
+
 **ただし、この瞬間から `mc-kernel` へのバージョンピンが意味を持ち始める。**
 今日この repo は kernel の変更に一切影響されない（依存していないので当然である）。
 削除の後は、kernel の major bump がこの repo の major bump を要求する。
@@ -104,10 +113,27 @@ stage 作者にとっては非破壊 — `Effect<void, never, never>` は
 
 ## 6. このリポジトリにとっての破壊的変更
 
+> **`0.x` の間の読み替え（全 16 リポジトリ共通の方針）**
+>
+> 本リポジトリは `0.1.0` であり、下流が契約を実際に消費して確認するまで `0.x` から出ない。
+> **semver では `0.x` の破壊的変更は major bump ではなく minor bump である**（`0.1.0` → `0.2.0`）。
+> したがって以下の MAJOR / MINOR / PATCH は **`1.0.0` 到達後の分類**であり、
+> `0.x` の間は次のように読み替える。
+>
+> | 分類 | `1.0.0` 到達後 | `0.x` の間（現在） |
+> | --- | --- | --- |
+> | MAJOR | major bump | **minor bump**（`0.1.0` → `0.2.0`） |
+> | MINOR | minor bump | patch bump |
+> | PATCH | patch bump | patch bump |
+>
+> 分類そのものは `0.x` でも意味を持つ。MAJOR に分類される変更は、
+> bump の大きさに関わらず**下流に必ず影響するもの**であり、告知と協調リリースの対象である。
+> `0.x` の間に major bump を切ることはない。
+
 **公開しているのが stage 登録だけなので、破壊的になりうる変更は極めて少ない。**
 これは `mc-kernel` や `mc-sim` と決定的に違う点である（あちらは 14 / 全下流に波及する）。
 
-| 変更 | bump | なぜ |
+| 変更 | 分類（`1.0.0` 到達後の bump。`0.x` では上記の読み替え） | なぜ |
 | --- | --- | --- |
 | **ルールを 1 本足す**（新しい `interaction-*`、新しい Mob） | **PATCH / MINOR** | 界面に何も現れない。`gameplay:interactions` の中で起きる |
 | ルールの挙動を変える（ドロップ数、ダメージ量） | MINOR | ゲームの挙動は変わるが、契約は変わらない |

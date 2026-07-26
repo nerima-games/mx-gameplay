@@ -118,9 +118,40 @@ kit は実行時エッジではないため、載せてしまうと `kit → ren
 | `SoundCuePort` — どの音をどう鳴らすか | `mc-audio` | 「ブロックを壊したら音を鳴らす」 |
 
 判定手順は 1 つで足りる。**「セーブファイルに要るか」を問う。** 要るなら名詞であり、ここには置かない。
-`stages/registration.ts` の `GameplayFrameState` が `Ref` を 5 本持っているのはこの規則の例外ではなく、
+`stages/registration.ts` の `GameplayFrameState` が `Ref` を 3 本持っているのはこの規則の例外ではなく、
 規則を通過した結果である — 落下ブロックのキュー、流体のフロンティア、tick カウンタは
 「次に何を見るか」というメモであって、ワールドの事実ではない。セーブファイルには要らない。
+
+### 3-1. 昼夜——この規則が実際に適用された 1 例
+
+**この規則は一度破られていた。** `stages/registration.ts` は `timeOfDaySecs` と `dayLengthSecs` の
+`Ref` を持ち、`gameplay:time-weather` stage でそれを進めていた。既定の日長は 1200 秒で、
+**mc-sim の 400 秒と食い違っていた**。
+
+セーブファイルは確実に時刻を要る。だから上の判定手順に従えば、これは最初から名詞であり、
+`mc-sim/domain/time-of-day.ts`（`application/time-service.ts` の背後、順序ハザードごと）が既に所有していた。
+**1 つの名詞に 2 人の所有者がいる状態は「今何時か」に 2 つの答えがある状態**であり、
+セーブされるのは mc-sim の答えだけなので、食い違いはワールドロード時に空が飛ぶ形で表面化する。
+このファイルのヘッダも本書の当節も、当時から「mc-sim が所有する」と書いていた。**コードだけが違っていた。**
+
+削除されたのは状態であって、ルールではない。残ったのが `domain/day-night.ts` である。
+
+| | 置き場 | 実体 |
+| --- | --- | --- |
+| **名詞** — 今何時か | `mc-sim` | `TimeState`（絶対 tick + 分母）、`timeOfDay`、`advance`、`setDayLength`、`configureDay` |
+| **動詞** — その時刻に世界が何をするか | **`mx-gameplay`** | `isNight` / `dayPhase` / `hostileSpawnsAllowed` + 分数定数 |
+
+`domain/day-night.ts` の関数は**すべて「1 日の位置」という 1 引数の全域関数**である。
+`Ref` も、既定の日長も、順序制約も無い。同期すべきものが無いので、
+mc-sim と mx-gameplay が別リポジトリであることが問題にならない。
+唯一二重に書かれているのは `isNight` の境界（0.25 / 0.75）で、
+**両方のリポジトリがそれを書き、両方がテストで固定している** —
+スポーン規則と、その規則が適用される状態とが、夜の定義について合意していなければならないからである。
+
+回帰テスト:
+`REGRESSION: the frame state holds no time of day and no day length`（`test/stage-registration.test.ts`）、
+`REGRESSION: exports no day-length default and no way to advance the clock`（`test/public-api.test.ts`）、
+`is the half of the day centred on the 0/1 boundary, exactly as mc-sim computes it`（`test/day-night.test.ts`）。
 
 この線引きを緩めるとどうなるかは参照実装が実演済みで、
 合成層に 13k LOC のルールが堆積して E2E でしか検証できなくなった（plan.md §3.15）。
@@ -200,7 +231,15 @@ after: [StageId('ui:hud-sync')]
 ### 4-4. mc-playground-kit は devDependency 専用（plan.md §2.3-2）
 
 kit は「ミニ平地ワールド + カメラ + レンダラ + 入力を 1 秒で束ねる糊」であり、プレビュー起動専用の開発ツールである。
-このリポジトリのプレビュー 3 本はすべて kit の上に載る。
+このリポジトリが作る**予定の**プレビュー 3 本（採掘場 / Mob アリーナ / 時間スライダー、plan.md §3.11）は
+すべて kit の上に載ることになる。
+
+**現状、プレビューは 1 本も存在せず、kit への依存も宣言されていない。**
+`apps/` ディレクトリ自体がまだ無く、`package.json` の `dependencies` は `effect` のみである
+（kit を含めどの `@nerima-games/*` もまだ publish されていない。plan.md §6 Step 3）。
+プレビュー 3 本の完成条件と現況は [testing.md](./testing.md) §3-1 の表にある（3 本とも ❌）。
+**それでも以下のゲートは今日から効く。** 「まだ書いていないから守れない」ではなく、
+「書く前に守らせる」ためのものだからである。
 
 **実行時入力サービスは `mc-render` が所有する。** kit に入力を置くと、kit は出荷されないので
 **本番ゲームから入力処理が消える**。これが「kit を `dependencies` に入れてはならない」ルールの実質的な理由で、

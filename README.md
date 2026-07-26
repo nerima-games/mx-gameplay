@@ -88,22 +88,23 @@ oxlint が該当ルールを実装したら `oxlint.json` 側へ移す。
 ### セットアップ
 
 ```console
-$ direnv allow          # devenv 経由で nodejs_22 + pnpm が入る
+$ direnv allow          # flake.nix の devShell で nodejs_22 + corepack が入る
 $ pnpm install
 ```
 
-devenv を使わない場合は Node.js 22 以上と pnpm 9.15.0 を用意する（`corepack enable && corepack prepare pnpm@9.15.0 --activate`）。
+Nix を使わない場合は Node.js 22 以上と pnpm 9.15.0 を用意する（`corepack enable && corepack prepare pnpm@9.15.0 --activate`）。
 バージョンは `package.json` の `packageManager` でピン留めしてある。
 
-> **注意**: `devenv.lock` はコミットされていない。生成には `devenv` の実行が必要なため、
-> 初回に devenv を動かした人がコミットすること。
+> **注意**: ツールチェーンは `devenv.nix` から `flake.nix` + `flake.lock` に移行済みである。
+> `flake.lock` はコミットされているので、`nix develop`（`.envrc` は `use flake`）は
+> 誰の手元でも同じ nixpkgs に解決される。`devenv.nix` / `devenv.lock` はもう存在しない。
 
 ### コマンド
 
 | コマンド | 内容 |
 | --- | --- |
 | `pnpm typecheck` | `tsconfig.build.json` と `tsconfig.test.json` の両方を型検査 |
-| `pnpm lint` | oxlint（このリポジトリ唯一の lint / format 設定。prettier も biome も .editorconfig も置かない） |
+| `pnpm lint` | oxlint（このリポジトリ唯一の lint / format 設定。prettier も biome も .editorconfig も置かない）。**`--deny-warnings` 付きで走る**ため、`warn` のルールもビルドを落とす（`oxlint.json` は 5 カテゴリすべてと個別 67 ルールが `warn`、`error` は 4 つだけ。このフラグが無かった頃は実質その 4 つしかゲートになっていなかった） |
 | `pnpm lint:fix` | oxlint の自動修正 |
 | `pnpm test` | vitest（`@effect/vitest` の `it.effect` が主 API） |
 | `pnpm test:watch` | vitest watch |
@@ -123,6 +124,15 @@ devenv を使わない場合は Node.js 22 以上と pnpm 9.15.0 を用意する
   mc-kernel が publish された時点で `import type { StageRegistration } from '@nerima-games/mc-kernel'` に置き換えて消す。
   `FrameServices` を `never` にしてあるのが唯一の意図的な乖離で、理由は当該ファイルのコメントにある
   （kernel の `ClockPort` を再掲すると、同じ文字列 ID を持つ**別の** `Context.Tag` が 2 つできる）。
+  **この 2 ファイルは `index.ts` から re-export していない。** 所有していない語彙（`StageId` /
+  `DeltaTimeSecs` / `StageRegistration`）を公開 API に載せると、約束済みの削除が
+  すべての消費者にとっての破壊的変更になるためである。
+- **時刻の状態は 1 つも持たない。** `timeOfDaySecs` / `dayLengthSecs` の `Ref` と
+  `DEFAULT_DAY_LENGTH_SECS`（1200。mc-sim の 400 と食い違っていた）と `advanceTimeOfDay` は削除した。
+  時刻はセーブファイルに要る = 名詞であり、`mc-sim` が所有する（plan.md §2.3-1）。
+  ここに残るのはルールのほう —— `domain/day-night.ts` の `isNight` / `dayPhase` /
+  `hostileSpawnsAllowed`、すなわち「1 日の位置」だけを引数に取る全域関数である
+  （[docs/design-notes.md](./docs/design-notes.md) DN-GP-7）。
 - **stage の `run` は 4 本とも中身が空か、キューの出し入れだけ。** ~40 の `interaction-*` ハンドラも Mob AI も未移植。
   何を、どの順で移植するかは [docs/porting.md](./docs/porting.md)。
 - **プレビューはまだ 1 本もない。** 完成条件は 3 本（採掘場 / Mob アリーナ / 時間スライダー、plan.md §3.11）。
@@ -131,8 +141,8 @@ devenv を使わない場合は Node.js 22 以上と pnpm 9.15.0 を用意する
   TypeScript ソースを直接指している。`dist` は存在しない（[docs/versioning.md](./docs/versioning.md)）。
 - **カバレッジ閾値は未設定。** 計測とレポートは常に動かしており、99% ゲートは完成条件到達時に有効化する
   （`vitest.config.ts` に有効化する行がコメントで置いてある）。
-- `pnpm verify` は green。tsc clean、oxlint 13 ファイル 0 warnings / 0 errors、
-  `check:deps` 13 ファイル走査、vitest 4 ファイル 54 テスト pass。
+- `pnpm verify` は green。tsc clean、oxlint 15 ファイル 0 warnings / 0 errors、
+  `check:deps` 15 ファイル走査、vitest 5 ファイル 65 テスト pass。
 
 ## License
 

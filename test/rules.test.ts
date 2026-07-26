@@ -3,8 +3,8 @@
  *
  * Every `describe` below is titled with the bug it prevents, and every one of
  * them was found in production in the reference implementation rather than
- * imagined here. The file:line references are to
- * `/Users/take/ghq/github.com/takeokunn/ts-minecraft`.
+ * imagined here. The file:line references are relative to `<reference-impl>`,
+ * a checkout of the frozen `takeokunn/ts-minecraft` — see docs/README.md.
  */
 import { describe, expect, it } from '@effect/vitest'
 import { Effect } from 'effect'

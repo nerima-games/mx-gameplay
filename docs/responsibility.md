@@ -65,6 +65,14 @@ plan.md §7 は「Minecraft クローンの全機能が 16 リポジトリで表
 | `mc-kernel` | 共有語彙（全リポジトリ共通。許可リストに書かずに import 可） |
 | `mc-playground-kit` | **devDependency のみ。** プレビュー 3 本の起動ハーネス |
 
+> **現状**: この表は**意図された最終形**であって、現在の `package.json` の内容ではない。
+> `dependencies` は `effect` のみで、`@nerima-games/*` は 1 つも宣言されていない
+> （どれもまだ publish されていないため。plan.md §6 Step 3 の bottom-up publish-then-pin）。
+> `mc-playground-kit` を `devDependencies` に書くのは、kit が publish され、
+> かつこのリポジトリに `apps/preview-*/` を作るときである（現在プレビューは 1 本も存在しない）。
+> 依存グラフの権威は `package.json` ではなく
+> `scripts/check-dependency-whitelist.ts` の roster であり、そちらは今日から実在する。
+
 ### 4-1. kit が devDependency **だけ**である理由（plan.md §2.3-2）
 
 kit は出荷されない。**実行時入力サービスは `mc-render` が所有する。**

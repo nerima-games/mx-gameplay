@@ -27,12 +27,26 @@ describe('public API surface', () => {
         'makeGameplayFrameState',
         'GAMEPLAY_STAGE_IDS',
         'UPSTREAM_STAGE_IDS',
-        'StageId',
-        'DeltaTimeSecs',
       ]
 
       for (const name of contract) {
         expect(Object.keys(gameplay)).toContain(name)
+      }
+    }),
+  )
+
+  // REGRESSION: `domain/frame-contract.ts` and `domain/position-key.ts` are
+  // stand-ins for @nerima-games/mc-kernel with a deletion date written into
+  // their headers. The barrel used to `export *` from both, which published
+  // `StageId` and `DeltaTimeSecs` as API of a package that does not own them —
+  // and therefore turned the promised deletion into a breaking change for every
+  // consumer. mc-sim, mc-render and mc-playground-kit mention their mirrors in
+  // an `index.ts` comment and re-export nothing; this repository now matches.
+  it.effect('REGRESSION: does not republish mc-kernel’s vocabulary as its own', () =>
+    Effect.sync(() => {
+      const kernelsToOwn = ['StageId', 'DeltaTimeSecs']
+      for (const name of kernelsToOwn) {
+        expect(Object.keys(gameplay)).not.toContain(name)
       }
     }),
   )
@@ -58,16 +72,45 @@ describe('public API surface', () => {
         'isDead',
         'applyDamage',
         'deathMessage',
+        // day/night — a rule over the hour mc-sim owns, holding nothing
+        'DAWN_FRACTION',
+        'NOON_FRACTION',
+        'DUSK_FRACTION',
+        'TWILIGHT_BAND',
+        'isNight',
+        'dayPhase',
+        'hostileSpawnsAllowed',
         // stage helpers
         'LAVA_TICK_INTERVAL',
-        'DEFAULT_DAY_LENGTH_SECS',
-        'advanceTimeOfDay',
         'EXPERIENCE_MODULE_STAGE_PREFIXES',
         'OWN_STAGE_PREFIX',
       ]
 
       for (const name of internal) {
         expect(Object.keys(gameplay)).toContain(name)
+      }
+    }),
+  )
+
+  // REGRESSION: the time of day is mc-sim's — it survives save/load, so it is a
+  // noun (plan.md §2.3-1). This repository used to export a second
+  // `DEFAULT_DAY_LENGTH_SECS` (1200, against mc-sim's 400) and an
+  // `advanceTimeOfDay` that moved a local `Ref`. Re-adding either would put a
+  // second answer to "what time is it" on the public surface of a package that
+  // does not own the question.
+  it.effect('REGRESSION: exports no day-length default and no way to advance the clock', () =>
+    Effect.sync(() => {
+      const forbidden = [
+        'DEFAULT_DAY_LENGTH_SECS',
+        'MAX_DAY_LENGTH_SECS',
+        'MIN_DAY_LENGTH_SECS',
+        'advanceTimeOfDay',
+        'setDayLength',
+        'setTimeOfDay',
+        'timeOfDay',
+      ]
+      for (const name of forbidden) {
+        expect(Object.keys(gameplay)).not.toContain(name)
       }
     }),
   )

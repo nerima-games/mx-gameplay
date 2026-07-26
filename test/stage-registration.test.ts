@@ -11,8 +11,6 @@ import { Effect, Ref } from 'effect'
 import { DeltaTimeSecs, StageId, type StageRegistration } from '../domain/frame-contract'
 import { disturb, takeBatch } from '../domain/falling-block'
 import {
-  advanceTimeOfDay,
-  DEFAULT_DAY_LENGTH_SECS,
   gameplayStages,
   LAVA_TICK_INTERVAL,
   makeGameplayFrameState,
@@ -200,45 +198,49 @@ describe('stage behaviour', () => {
     }),
   )
 
-  it.effect('time/weather advances by dt and wraps at the day length', () =>
+  // REGRESSION: the time of day is mc-sim's. It survives save/load, which is
+  // the very test the module header names for whether a Ref belongs here, so it
+  // is a noun and lives in `mc-sim/domain/time-of-day.ts` behind
+  // `application/time-service.ts` (plan.md §2.3-1). This file used to hold
+  // `timeOfDaySecs` and `dayLengthSecs` Refs and advance them, with a
+  // `DEFAULT_DAY_LENGTH_SECS` of 1200 against mc-sim's 400 — two owners of one
+  // noun, disagreeing, with only mc-sim's copy reaching the save file.
+  it.effect('REGRESSION: the frame state holds no time of day and no day length', () =>
     Effect.gen(function* () {
       const state = yield* makeGameplayFrameState
-      const stages = gameplayStages(state)
-      const timeWeather = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.timeWeather)
 
-      yield* Ref.set(state.timeOfDaySecs, DEFAULT_DAY_LENGTH_SECS - 1)
-      yield* timeWeather?.run(DeltaTimeSecs(2)) ?? Effect.void
-
-      expect(yield* Ref.get(state.timeOfDaySecs)).toBeCloseTo(1, 10)
+      expect(Object.keys(state).sort()).toStrictEqual([
+        'fallingBlocks',
+        'fluidFrontier',
+        'tickCount',
+      ])
     }),
   )
 
-  it.effect('advanceTimeOfDay is pure, so changing the day length cannot leave a stale derived value', () =>
-    Effect.sync(() => {
-      // plan.md §3.8 records the reference's ordering hazard: `setDayLength()`
-      // changes the tick denominator, so it had to be called before
-      // `setTimeOfDay()`. A pure function of (now, dt, length) has no stored
-      // denominator to be stale, so the hazard does not exist here.
-      expect(advanceTimeOfDay(0, 10, 100)).toBe(10)
-      expect(advanceTimeOfDay(95, 10, 100)).toBe(5)
-      expect(advanceTimeOfDay(95, 10, 50)).toBe(5)
-      expect(advanceTimeOfDay(5, 0, 100)).toBe(5)
-      // A zero-length day is a caller error, not a division by zero.
-      expect(advanceTimeOfDay(5, 10, 0)).toBe(5)
-      // Rewinding is what the preview's time slider does. `%` in JavaScript is
-      // remainder rather than modulo, so it yields -5 here; wrapping forward is
-      // the difference between "dusk" and a negative time of day that every
-      // downstream consumer has to special-case.
-      expect(advanceTimeOfDay(5, -10, 100)).toBe(95)
+  // REGRESSION: every Ref here must be free to lose on a reload. That is the
+  // save-file test from the module header, applied to the whole state rather
+  // than to the one field that failed it.
+  it.effect('REGRESSION: every Ref in the frame state is frame-local scratch, not saved state', () =>
+    Effect.gen(function* () {
+      const state = yield* makeGameplayFrameState
+
+      // A work queue of disturbed columns, a frontier of cells still to look
+      // at, and the counter that paces lava. Reconstructed within a frame of a
+      // reload; none of them is a fact about the world.
+      expect(yield* Ref.get(state.fallingBlocks)).toStrictEqual({ pending: new Set<string>() })
+      expect(yield* Ref.get(state.fluidFrontier)).toStrictEqual([])
+      expect(yield* Ref.get(state.tickCount)).toBe(0)
     }),
   )
 
   it.effect('a stage tolerates dt = 0, because a frame may be scheduled twice inside one clock tick', () =>
     Effect.gen(function* () {
       const state = yield* makeGameplayFrameState
-      const before = yield* Ref.get(state.timeOfDaySecs)
+      const before = yield* Ref.get(state.tickCount)
       yield* Effect.forEach(gameplayStages(state), (stage) => stage.run(DeltaTimeSecs(0)))
-      expect(yield* Ref.get(state.timeOfDaySecs)).toBe(before)
+      // The fluid stage counts ticks rather than seconds, so a zero delta still
+      // advances it by one — what must not happen is a crash or a divide by dt.
+      expect(yield* Ref.get(state.tickCount)).toBe(before + 1)
     }),
   )
 
@@ -263,6 +265,40 @@ describe('stage behaviour', () => {
       const { batch, rest } = takeBatch(queue, 2)
       expect(batch).toStrictEqual(['c', 'a'])
       expect([...rest.pending]).toStrictEqual(['b'])
+    }),
+  )
+})
+
+describe('the mirrored DeltaTimeSecs brand is kernel’s', () => {
+  /*
+   * REGRESSION. `domain/frame-contract.ts` restates kernel's `DeltaTimeSecs`
+   * (`mc-kernel/domain/quantities.ts:37-42`), and a brand is keyed by its
+   * STRING: `Brand.Brand<'DeltaTimeSecs'>` here and in kernel are ONE TYPE to
+   * TypeScript, however differently the two constructors validate. So a mirror
+   * that refined differently would be a false guarantee the compiler could
+   * never contradict — which is exactly what mc-physics had, refining to the
+   * frame-loop clamp [0.001, 0.05] while kernel refines to "finite and
+   * non-negative". A kernel-built `DeltaTimeSecs(30)` satisfied its parameter
+   * types while breaking the invariant its comments claimed.
+   *
+   * Kernel's is the agreed refinement and it is deliberately LOOSE: a zero
+   * delta is legal, because a frame may be scheduled twice inside one clock
+   * tick, and the clamp of plan.md §3.4 is a frame-loop concern applied at the
+   * boundary by whoever PRODUCES the delta — mc-sim's `frame-timing.ts`,
+   * mc-physics' `clampDeltaTime` — never a property of the quantity itself.
+   * A stage receives whatever the loop produced and must cope.
+   */
+  it.effect('accepts zero and any finite non-negative delta, and rejects nothing else', () =>
+    Effect.sync(() => {
+      expect(DeltaTimeSecs(0)).toBe(0)
+      expect(DeltaTimeSecs(0.0001)).toBe(0.0001)
+      // Out of the integrator's safe range, and still a valid quantity: this is
+      // what a tab that was backgrounded for thirty seconds produces.
+      expect(DeltaTimeSecs(30)).toBe(30)
+
+      expect(() => DeltaTimeSecs(-0.000_001)).toThrow()
+      expect(() => DeltaTimeSecs(Number.NaN)).toThrow()
+      expect(() => DeltaTimeSecs(Number.POSITIVE_INFINITY)).toThrow()
     }),
   )
 })
