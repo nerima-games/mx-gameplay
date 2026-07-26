@@ -52,7 +52,7 @@ check-dependency-whitelist: OK — 13 file(s) scanned, allowed direct dependenci
 | [docs/architecture.md](./docs/architecture.md) | 4 階層、全 16 リポジトリの依存グラフ、**名詞/動詞ルール**、体験モジュール間エッジがゼロである理由 |
 | [docs/responsibility.md](./docs/responsibility.md) | 責務と、**明示的な非スコープ**（どこに行くのかを全部書いてある） |
 | [docs/public-api.md](./docs/public-api.md) | 契約は stage 登録だけ。`index.ts` の全 export を 契約 / 内部(可視) に分類 |
-| [docs/design-notes.md](./docs/design-notes.md) | **DN-GP-1〜10。** 参照実装で実測された失敗と、それを固定している回帰テストの名前 |
+| [docs/design-notes.md](./docs/design-notes.md) | **DN-GP-1〜11。** 参照実装で実測された失敗と、それを固定している回帰テストの名前 |
 | [docs/porting.md](./docs/porting.md) | 移植元の**実測 LOC**（`wc -l`、2026-07-26 計測）と plan.md 見積との差分 |
 | [docs/testing.md](./docs/testing.md) | 検証要件、プレビュー 3 本、99% カバレッジゲートの投入時期 |
 | [docs/versioning.md](./docs/versioning.md) | 0.x → 1.0.0 方針、GitHub Packages、このリポジトリにとっての破壊的変更の定義 |
@@ -114,8 +114,9 @@ Nix を使わない場合は Node.js 22 以上と pnpm 9.15.0 を用意する（
 
 ## 現状
 
-**実装前の叩き台（pre-implementation first cut）である。** ルールはまだ 1 本も移植されていない。
-現在あるのは、参照実装で実測された失敗を構造として固定した骨組みと、その回帰テストである。
+**実装前の叩き台（pre-implementation first cut）である。** 移植済みのルールは 2 本だけで、
+現在あるものの大半は、参照実装で実測された失敗を構造として固定した骨組みと、その回帰テストである。
+ただし**縦切り 1 本は通っている** — 掘る → 砂が落ちる → アイテムが渡る、が stage 登録経由で動く。
 
 - **実行時依存は `effect` のみ。** `mc-sim` / `mc-worldgen` / `mc-audio` / `mc-kernel` は
   まだ GitHub Packages に 1 つも publish されていないため、`package.json` に書けない。
@@ -133,16 +134,26 @@ Nix を使わない場合は Node.js 22 以上と pnpm 9.15.0 を用意する（
   ここに残るのはルールのほう —— `domain/day-night.ts` の `isNight` / `dayPhase` /
   `hostileSpawnsAllowed`、すなわち「1 日の位置」だけを引数に取る全域関数である
   （[docs/design-notes.md](./docs/design-notes.md) DN-GP-7）。
-- **stage の `run` は 4 本とも中身が空か、キューの出し入れだけ。** ~40 の `interaction-*` ハンドラも Mob AI も未移植。
+- **ブロックの読み書きは配線済み。** `gameplay:interactions` が破壊を、`gameplay:entities` が落下を、
+  mc-worldgen の `ChunkStore`（`domain/chunk-store-port.ts` のミラー越し）に対して実際に行う。
+  「掘る → 砂が落ちる → アイテムが渡る」の縦切りは `test/vertical-slice.test.ts` が
+  **stage 登録経由で**回している。`gameplay:fluids` はキューの出し入れだけ、
+  `gameplay:time-weather` は空のままである（mc-sim 待ち）。
+  移植済みのルールは 2 本（`domain/interactions/break-block.ts` /
+  `domain/entities/falling-block-move.ts`）で、~40 の `interaction-*` ハンドラも Mob AI も残っている。
   何を、どの順で移植するかは [docs/porting.md](./docs/porting.md)。
+- **`domain/chunk-store-port.ts` と `domain/block-position-key.ts` も削除日が決まっている。**
+  前者は mc-worldgen の `ChunkStore` の**全面**ミラー（狭いミラーはタグキーが同じまま
+  メソッドが `undefined` になる静かな実行時ハザードで、`test/chunk-store-mirror.test.ts` が両方向で固定する）、
+  後者は kernel の座標語彙との接続点である。どちらもバレルから re-export していない。
 - **プレビューはまだ 1 本もない。** 完成条件は 3 本（採掘場 / Mob アリーナ / 時間スライダー、plan.md §3.11）。
   `apps/preview-*/` に置き、`mc-playground-kit` を devDependency として使う。
 - **ビルド / publish はまだない。** `tsconfig.base.json` は `noEmit: true`、`package.json#exports` は
   TypeScript ソースを直接指している。`dist` は存在しない（[docs/versioning.md](./docs/versioning.md)）。
 - **カバレッジ閾値は未設定。** 計測とレポートは常に動かしており、99% ゲートは完成条件到達時に有効化する
   （`vitest.config.ts` に有効化する行がコメントで置いてある）。
-- `pnpm verify` は green。tsc clean、oxlint 15 ファイル 0 warnings / 0 errors、
-  `check:deps` 15 ファイル走査、vitest 5 ファイル 65 テスト pass。
+- `pnpm verify` は green。tsc clean、oxlint 25 ファイル 0 warnings / 0 errors、
+  `check:deps` 25 ファイル走査、`api:check` 61 エントリ一致、vitest 8 ファイル 112 テスト pass。
 
 ## License
 

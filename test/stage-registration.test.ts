@@ -8,6 +8,7 @@
  */
 import { describe, expect, it } from '@effect/vitest'
 import { Effect, Ref } from 'effect'
+import type { ChunkStore } from '../domain/chunk-store-port'
 import { DeltaTimeSecs, StageId, type GameModule, type StageRegistration } from '../domain/frame-contract'
 import { disturb, takeBatch } from '../domain/falling-block'
 import {
@@ -23,9 +24,26 @@ import {
   OWN_STAGE_PREFIX,
   UPSTREAM_STAGE_IDS,
 } from '../stages/stage-ids'
+import { emptyWorldStoreLayer, makeChunkStoreDouble, world } from './support/chunk-store-double'
 
 const stageIds = (stages: ReadonlyArray<StageRegistration>): ReadonlyArray<string> =>
   stages.map((stage) => stage.id)
+
+/**
+ * The stages now read and write blocks, so building them takes mc-worldgen's
+ * `ChunkStore` (in `frameStages` — see `domain/frame-contract.ts` on
+ * `RRegister`). Tests about the SHAPE of the registration provide an empty
+ * resident world: these assertions are about ordering and contract, and the
+ * behaviour over a real world is `test/vertical-slice.test.ts`.
+ */
+const registeredStages = Effect.provide(makeGameplayStages, emptyWorldStoreLayer)
+
+/** The same, for the tests that need to reach into the frame state. */
+const builtStages = Effect.gen(function* () {
+  const state = yield* makeGameplayFrameState
+  const store = yield* makeChunkStoreDouble(world([]), ['0,0'])
+  return { state, store, stages: gameplayStages(state, store.api) }
+})
 
 const allAfterEdges = (stages: ReadonlyArray<StageRegistration>): ReadonlyArray<string> =>
   stages.flatMap((stage) => [...(stage.after ?? [])])
@@ -35,7 +53,7 @@ describe('§2.3-1 zero edges between experience modules', () => {
     'REGRESSION: no `after` edge names another experience module, so mx-gameplay cannot be ordered against mx-redstone/mx-ui/mx-multiplayer',
     () =>
       Effect.gen(function* () {
-        const stages = yield* makeGameplayStages
+        const stages = yield* registeredStages
         const foreign = allAfterEdges(stages).filter((edge) =>
           EXPERIENCE_MODULE_STAGE_PREFIXES.some(
             (prefix) => prefix !== OWN_STAGE_PREFIX && edge.startsWith(prefix),
@@ -66,7 +84,7 @@ describe('§2.3-1 zero edges between experience modules', () => {
 describe('§2.3-3 the total order belongs to mc-compose', () => {
   it.effect('REGRESSION: this repository exposes no way to resolve a total order — only `after` constraints', () =>
     Effect.gen(function* () {
-      const stages = yield* makeGameplayStages
+      const stages = yield* registeredStages
 
       // Every stage declares constraints and nothing else. If a future commit
       // adds a `priority`, an `index`, or a `sortStages()` export, this
@@ -80,7 +98,7 @@ describe('§2.3-3 the total order belongs to mc-compose', () => {
 
   it.effect('the declared constraints form the §4.2 skeleton fragment gameplay is responsible for', () =>
     Effect.gen(function* () {
-      const stages = yield* makeGameplayStages
+      const stages = yield* registeredStages
       const byId = new Map(stages.map((stage) => [stage.id, stage]))
 
       expect(stageIds(stages)).toStrictEqual([
@@ -105,7 +123,7 @@ describe('§2.3-3 the total order belongs to mc-compose', () => {
 
   it.effect('a consumer that ignores the array order and honours only `after` still gets a legal schedule', () =>
     Effect.gen(function* () {
-      const stages = yield* makeGameplayStages
+      const stages = yield* registeredStages
       // Reversed on purpose: mc-compose merges four modules' arrays, so the
       // order mx-gameplay happened to write them in is never what it sees.
       const shuffled = [...stages].reverse()
@@ -138,8 +156,7 @@ describe('§2.3-3 the total order belongs to mc-compose', () => {
 describe('stage behaviour', () => {
   it.effect('REGRESSION: an idle tick does no falling-block work at all (the O(chunks × blocks) scan is gone)', () =>
     Effect.gen(function* () {
-      const state = yield* makeGameplayFrameState
-      const stages = gameplayStages(state)
+      const { state, store, stages } = yield* builtStages
       const entities = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.entities)
       expect(entities).toBeDefined()
 
@@ -147,7 +164,10 @@ describe('stage behaviour', () => {
 
       // Nothing was disturbed, so nothing was looked at. The reference's
       // pre-fix behaviour read ~7M blocks here regardless
-      // (falling-block-maintenance.ts:9-15).
+      // (falling-block-maintenance.ts:9-15). Now that the stage really holds a
+      // store, "did no work" is checkable directly: zero calls, not merely zero
+      // changes.
+      expect(yield* store.calls).toStrictEqual({ reads: 0, writes: 0 })
       const queue = yield* Ref.get(state.fallingBlocks)
       expect(queue.pending.size).toBe(0)
     }),
@@ -155,10 +175,12 @@ describe('stage behaviour', () => {
 
   it.effect('REGRESSION: a burst of disturbances is spread across ticks by the per-tick move budget', () =>
     Effect.gen(function* () {
-      const state = yield* makeGameplayFrameState
-      const stages = gameplayStages(state)
+      const { state, stages } = yield* builtStages
       const entities = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.entities)
 
+      // A TNT blast under a desert. The world is empty, so none of these
+      // positions produces a move — the assertion is about the BUDGET, which
+      // bounds how many positions are examined rather than how many move.
       const blast = Array.from({ length: 100 }, (_, index) => `0,${String(index)},0`)
       yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, blast))
 
@@ -172,8 +194,7 @@ describe('stage behaviour', () => {
 
   it.effect('REGRESSION: lava keys survive the ticks on which lava is not scheduled', () =>
     Effect.gen(function* () {
-      const state = yield* makeGameplayFrameState
-      const stages = gameplayStages(state)
+      const { state, stages } = yield* builtStages
       const fluids = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids)
 
       yield* Ref.set(state.fluidFrontier, [
@@ -210,9 +231,18 @@ describe('stage behaviour', () => {
     Effect.gen(function* () {
       const state = yield* makeGameplayFrameState
 
+      // The list is exact on purpose: a fifth answer to "what does mx-gameplay
+      // remember between frames" has to be argued for in a diff. Two of these
+      // arrived with the block-write wiring and both pass the save-file test —
+      // `pendingBreaks` is this frame's input requests (a save file records
+      // that a block is gone, never that a button was down) and `minedItems` is
+      // the outbox that becomes `InventoryService.add` the moment mc-sim is
+      // published.
       expect(Object.keys(state).sort()).toStrictEqual([
         'fallingBlocks',
         'fluidFrontier',
+        'minedItems',
+        'pendingBreaks',
         'tickCount',
       ])
     }),
@@ -226,19 +256,24 @@ describe('stage behaviour', () => {
       const state = yield* makeGameplayFrameState
 
       // A work queue of disturbed columns, a frontier of cells still to look
-      // at, and the counter that paces lava. Reconstructed within a frame of a
-      // reload; none of them is a fact about the world.
+      // at, the counter that paces lava, an inbox of this frame's requests and
+      // an outbox of items on their way to mc-sim. Reconstructed within a frame
+      // of a reload; none of them is a fact about the world. In particular the
+      // outbox is not an inventory — it answers no question about what anyone
+      // is carrying, and it is emptied by whoever drains it.
       expect(yield* Ref.get(state.fallingBlocks)).toStrictEqual({ pending: new Set<string>() })
       expect(yield* Ref.get(state.fluidFrontier)).toStrictEqual([])
       expect(yield* Ref.get(state.tickCount)).toBe(0)
+      expect(yield* Ref.get(state.pendingBreaks)).toStrictEqual([])
+      expect(yield* Ref.get(state.minedItems)).toStrictEqual([])
     }),
   )
 
   it.effect('a stage tolerates dt = 0, because a frame may be scheduled twice inside one clock tick', () =>
     Effect.gen(function* () {
-      const state = yield* makeGameplayFrameState
+      const { state, stages } = yield* builtStages
       const before = yield* Ref.get(state.tickCount)
-      yield* Effect.forEach(gameplayStages(state), (stage) => stage.run(DeltaTimeSecs(0)))
+      yield* Effect.forEach(stages, (stage) => stage.run(DeltaTimeSecs(0)))
       // The fluid stage counts ticks rather than seconds, so a zero delta still
       // advances it by one — what must not happen is a crash or a divide by dt.
       expect(yield* Ref.get(state.tickCount)).toBe(before + 1)
@@ -327,8 +362,8 @@ describe('the module contract has caught up with this file’s shape', () => {
    */
   it.effect('REGRESSION: exports a real GameModule, not "stages alone, the Layer comes later"', () =>
     Effect.gen(function* () {
-      const module: GameModule<never, never, never> = gameplayModule
-      const stages = yield* module.frameStages
+      const module: GameModule<never, never, never, ChunkStore> = gameplayModule
+      const stages = yield* Effect.provide(module.frameStages, emptyWorldStoreLayer)
 
       expect(stageIds(stages)).toStrictEqual(Object.values(GAMEPLAY_STAGE_IDS))
     }),
@@ -340,21 +375,52 @@ describe('the module contract has caught up with this file’s shape', () => {
 
       // ...and it is re-entrant: two builds share no state, which is why it was
       // an Effect in the first place (plan.md §3.8 on app-scope singletons).
-      const first = yield* gameplayModule.frameStages
-      const second = yield* gameplayModule.frameStages
+      const first = yield* registeredStages
+      const second = yield* registeredStages
       expect(first).not.toBe(second)
     }),
   )
 
-  // `RRegister` defaults to `never`, which is what lets this repository keep
-  // writing three parameters. When these stages start acquiring mc-sim's
-  // services they acquire them HERE — in `frameStages` — and the fourth
-  // parameter appears; `RIn` stays `never`, because this repository builds
-  // nothing mc-sim has to supply.
-  it.effect('needs nothing to register today, and says so in the type', () =>
+  // This used to read "needs nothing to register today, and says so in the
+  // type", with a note predicting that a service would arrive in `frameStages`
+  // — the `RRegister` parameter — rather than in the Layer. It has: the stages
+  // write blocks, so registering them takes mc-worldgen's `ChunkStore`.
+  //
+  // `RIn` is still `never` and that is the distinction `RRegister` exists for.
+  // This repository BUILDS nothing another repository has to supply; it CALLS
+  // what mc-worldgen supplies. A `ChunkStore` that had leaked into `RIn` would
+  // be mx-gameplay claiming to construct part of mc-worldgen.
+  it.effect('acquires exactly one service to register — mc-worldgen’s store, in frameStages', () =>
     Effect.gen(function* () {
-      const noRequirement: Effect.Effect<unknown, never, never> = gameplayModule.frameStages
-      expect(yield* noRequirement).toBeDefined()
+      const registration: Effect.Effect<
+        ReadonlyArray<StageRegistration>,
+        never,
+        ChunkStore
+      > = gameplayModule.frameStages
+
+      // Providing the store — and nothing else — discharges the whole context.
+      // If a stage started demanding a second service at REGISTRATION time,
+      // this assignment would stop compiling, which is the point.
+      const satisfied: Effect.Effect<ReadonlyArray<StageRegistration>, never, never> =
+        Effect.provide(registration, emptyWorldStoreLayer)
+
+      expect(yield* satisfied).toHaveLength(4)
+    }),
+  )
+
+  // The `run` side must stay free of it. `StageRegistration.run` is typed by
+  // kernel's `FrameServices`, and a stage that demanded `ChunkStore` there
+  // would be asking kernel to name mc-worldgen's services — which the tier
+  // model (plan.md §2.2) forbids, and which no amount of local testing would
+  // reveal until mc-compose tried to build a frame.
+  it.effect('REGRESSION: the store is acquired at registration, never demanded by `run`', () =>
+    Effect.gen(function* () {
+      const stages = yield* registeredStages
+
+      for (const stage of stages) {
+        const runnable: Effect.Effect<void, never, never> = stage.run(DeltaTimeSecs(0.016))
+        yield* runnable
+      }
     }),
   )
 })

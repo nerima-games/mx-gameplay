@@ -27,13 +27,23 @@ export * from './stages/registration'
 export * from './stages/stage-ids'
 
 // --- Provisional ---------------------------------------------------------------
-// `domain/frame-contract.ts` and `domain/position-key.ts` are temporary local
-// stand-ins for @nerima-games/mc-kernel and are NOT re-exported. Both carry a
-// deletion date — see the "WHY THIS FILE EXISTS AND WHEN IT DIES" header on the
-// first — and re-exporting them would make `StageId`, `DeltaTimeSecs` and
-// `StageRegistration` published API of a package that does not own them, so
-// deleting the stand-in would become a breaking change for every consumer.
-// Consumers take that vocabulary from kernel; the types are structurally
-// identical, so a consumer importing them from kernel typechecks against the
-// signatures above. Same call, and the same reason, as mc-sim's and
-// mc-render's barrels.
+// Four modules are temporary local stand-ins for packages that are not
+// published yet, and NONE of them is re-exported:
+//
+//   domain/frame-contract.ts   -> @nerima-games/mc-kernel
+//   domain/position-key.ts     -> @nerima-games/mc-kernel
+//   domain/chunk-store-port.ts -> @nerima-games/mc-worldgen
+//   domain/block-position-key.ts — the join between the two vocabularies above
+//
+// All four carry a deletion date — see the "WHY THIS FILE EXISTS AND WHEN IT
+// DIES" header on the first — and re-exporting them would make `StageId`,
+// `DeltaTimeSecs`, `StageRegistration` and `ChunkStore` published API of a
+// package that does not own them, so deleting the stand-in would become a
+// breaking change for every consumer. Consumers take that vocabulary from
+// kernel and mc-worldgen; the types are structurally identical, so a consumer
+// importing them from there typechecks against the signatures above. Same
+// call, and the same reason, as mc-sim's and mc-render's barrels.
+//
+// `ChunkStore` is nonetheless VISIBLE to a consumer, because it appears in the
+// type of `makeGameplayStages`. That is why it is in the "Supporting
+// declarations" section of `api-lock.md`: not exported, but named by an export.

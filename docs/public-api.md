@@ -62,18 +62,42 @@ Layer は障害ではなかった。mx-gameplay は他リポジトリが呼ぶ�
 mc-sim が publish されても解決しない。縦切りスパイクが `frameStages` を Effect にしたことで解決した。
 
 ```typescript
-export const makeGameplayStages: Effect.Effect<ReadonlyArray<StageRegistration>>
+export const makeGameplayStages: Effect.Effect<ReadonlyArray<StageRegistration>, never, ChunkStore>
 
-export const gameplayModule: GameModule<never, never, never> = {
+export const gameplayModule: GameModule<never, never, never, ChunkStore> = {
   layers: Layer.empty,
   frameStages: makeGameplayStages,
 }
 ```
 
-`RIn` は `never` のままである。mx-gameplay が mc-sim のサービス越しに書き込みを始めるとき、
-それらは `frameStages` の中で — つまり `RRegister` パラメータで — 取得される。
-本リポジトリは mc-sim が供給しなければならないものを**構築**するのではなく、
-mc-sim が供給するものを**呼ぶ**だけだからである。
+### 2-2. `RRegister` は `ChunkStore` になった。`RIn` は `never` のままである
+
+ここには「mx-gameplay が他リポジトリのサービス越しに書き込みを始めるとき、それらは `frameStages` の中で
+— つまり `RRegister` パラメータで — 取得される」と**予告**が書いてあった。そのとおりになった。
+stage がブロックを読み書きするようになったので、**登録**するのに mc-worldgen の `ChunkStore` が要る。
+
+2 つのパラメータの違いがここで初めて観測できる。
+
+| | 値 | 意味 |
+| --- | --- | --- |
+| `RIn` | `never` | 本リポジトリが**構築**するのに要るもの。`layers` が空なので何も要らない |
+| `RRegister` | `ChunkStore` | 本リポジトリが stage を**登録**するのに要るもの |
+
+本リポジトリは mc-worldgen が供給しなければならないものを構築するのではなく、
+mc-worldgen が供給するものを**呼ぶ**だけである。だから `RIn` は増えない。
+
+**`run` の側は増えてはならない。** `StageRegistration.run` の文脈は kernel の `FrameServices` であり、
+そこに `ChunkStore` を要求することは kernel に mc-worldgen のサービスを名指しさせることになる
+（階層モデル、plan.md §2.2 が禁じている）。だから store は登録時に 1 度だけ取得し、4 stage が共有する。
+固定しているテスト: `` REGRESSION: the store is acquired at registration, never demanded by `run` ``、
+`acquires exactly one service to register — mc-worldgen’s store, in frameStages`
+（`test/stage-registration.test.ts`）。
+
+`ChunkStore` は mc-worldgen が publish されるまで `domain/chunk-store-port.ts` のミラーから来る。
+ミラーは `index.ts` から re-export していないが、`makeGameplayStages` の型に現れる以上、
+消費者には見える —— `api-lock.md` の "Supporting declarations" に
+`ChunkStore` / `ChunkStoreApi` / `BlockReading` / `BlockWriteOutcome` などが載っているのはそのためである。
+タグキーの文字列リテラルまで載るので、キーが動けば API ロックの diff に出る。
 
 ## 3. 標準 stage 順序と、このリポジトリが埋めるスロット
 
@@ -182,11 +206,29 @@ plan.md §4.2 を素直に読むと `input` の後ろでもあり、`redstone` �
 
 | export | 種別 | 備考 |
 | --- | --- | --- |
-| `makeGameplayStages` | **契約** | `mc-compose` が消費する唯一の入口 |
-| `gameplayStages(state)` | 内部(可視) | state を外から渡す版。プレビューとテストが state を覗くために使う |
+| `makeGameplayStages` | **契約** | `mc-compose` が消費する唯一の入口。`ChunkStore` を要求する（§2-2） |
+| `gameplayStages(state, store)` | 内部(可視) | state と store を外から渡す版。プレビューとテストが state を覗くために使う |
 | `makeGameplayFrameState` | 内部(可視) | 再入可能な初期化。テストが 2 つ作って独立性を検査する（DN-GP-6） |
-| `GameplayFrameState` | 内部(可視) | フレームローカルの作業メモ（`Ref` 3 本）。ゲーム状態ではない |
+| `GameplayFrameState` | 内部(可視) | フレームローカルの作業メモ（`Ref` 5 本）。ゲーム状態ではない |
 | `LAVA_TICK_INTERVAL` | 内部(可視) | 暫定値。プレビューで測って決める |
+
+`Ref` 5 本の内訳は「作業キュー 3 + 受信箱 1 + 送信箱 1」である。
+
+| `Ref` | 何のためか | 判定（セーブファイルに要るか） |
+| --- | --- | --- |
+| `fallingBlocks` | 落下ブロックのキュー | 要らない。1 フレームで再構成される |
+| `fluidFrontier` | 流体のフロンティア | 同上 |
+| `tickCount` | 溶岩の tick を刻む | 同上 |
+| `pendingBreaks` | **受信箱**。今フレームの破壊要求 | 要らない。セーブが記録するのは「ブロックが無い」ことであって「ボタンが押されていた」ことではない |
+| `minedItems` | **送信箱**。掘れたブロックが mc-sim の `InventoryService` に渡るまでの置き場 | 要らない。1 フレーム幅で drain される |
+
+後ろの 2 本は publish されていないサービスの仮置きであり、どちらも消える —
+受信箱は mc-render の入力イベントに、送信箱は interactions stage 内の `InventoryService.add` 呼び出しになる。
+**送信箱は所有ではない**（何も問い合わせられず、drain されるだけ）ことが、
+「1 つの名詞に 2 人の所有者」（DN-GP-7）にならない理由である。
+固定しているテスト: `REGRESSION: the frame state holds no time of day and no day length`
+（キーの集合をちょうどで検査するので、6 本目は diff で議論になる）、
+`REGRESSION: every Ref in the frame state is frame-local scratch, not saved state`。
 
 > **時刻に関する export はここに 1 つも無い。**
 > `timeOfDaySecs` / `dayLengthSecs` の `Ref`、`DEFAULT_DAY_LENGTH_SECS`、`advanceTimeOfDay` は
@@ -270,6 +312,38 @@ kernel の `StageRegistration` に対してそのまま代入できる。
 | `splitBudget` / `carryOver` | 内部(可視) | 2 つに分けてあるのが要点（DN-GP-2） |
 | `FluidKind` / `FluidWorkItem` / `FluidBudgetSplit` | 内部(可視) | |
 | `DEFAULT_FLUID_FRONTIER_BUDGET` | 内部(可視) | 64。暫定値 |
+
+### domain/interactions/break-block.ts（**バレルから re-export しない**）
+
+| export | 種別 | 備考 |
+| --- | --- | --- |
+| `breakBlock` / `BreakOutcome` | 非公開 | 1 ルール 1 ファイル（DN-GP-9）の 1 本目。`setBlock` を 1 回呼ぶだけで、**read-then-write をしない** — 掘れたブロックは書き込みの戻り値 `previous` から来る |
+
+`BreakOutcome` は `BlockWriteOutcome` と同じく全域である。`NothingThere`（= `Unchanged`）は
+アイテムを生まず、チャンクを汚さず、落下ブロックの仕事も作らない。
+固定しているテスト: `` REGRESSION: breaking air is `Unchanged` — no item, no dirty chunk, no falling-block work ``。
+
+### domain/entities/falling-block-move.ts（**バレルから re-export しない**）
+
+| export | 種別 | 備考 |
+| --- | --- | --- |
+| `applyFallingBlocks` / `FallingBlockMoves` | 非公開 | `domain/falling-block.ts` が**予定**、こちらが**移動**。走査もダーティチャンネルの購読もしない（DN-GP-1 / DN-GP-11） |
+
+### domain/block-position-key.ts（**バレルから re-export しない**）
+
+| export | 種別 | 備考 |
+| --- | --- | --- |
+| `positionKeyOf` / `positionOfKey` / `above` / `below` | 非公開 | **プレースホルダ。** `PositionKey`（予定の語彙）と `BlockPosition`（世界の語彙）の唯一の接続点。エンコードを 1 箇所に閉じてあるのは、参照実装のように呼び出しごとに `${x},${y},${z}` と書くと、所有者のいないワイヤフォーマットができるからである |
+
+### domain/chunk-store-port.ts（**バレルから re-export しない**）
+
+| export | 種別 | 備考 |
+| --- | --- | --- |
+| `ChunkStore` / `ChunkStoreApi` / `BlockReading` / `BlockWriteOutcome` / … | 非公開（所有者は mc-worldgen） | mc-worldgen のサービスのミラー。**狭いミラーは静かな実行時ハザード**なので API 全体を写してある。`test/chunk-store-mirror.test.ts` がタグキーと形の両方を固定する |
+| `fallsWhenUnsupported` / `isReplaceable` / `AIR_BLOCK_ID` | 非公開（所有者は kernel） | 能力表の再掲。ルールは**ブロックを名指ししない** — バイトを読んで表に尋ねる |
+
+`makeGameplayStages` の型に `ChunkStore` が現れるため、このファイルは re-export していなくても
+`api-lock.md` の "Supporting declarations" には載る（§2-2）。
 
 ### domain/position-key.ts（**バレルから re-export しない**）
 

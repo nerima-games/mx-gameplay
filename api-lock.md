@@ -14,7 +14,7 @@
 
 format: 1
 exported declarations: 41
-supporting declarations: 8
+supporting declarations: 20
 
 ## Exported
 
@@ -131,6 +131,8 @@ const GAMEPLAY_STAGE_IDS: {
 
 ```ts
 type GameplayFrameState = {
+    readonly pendingBreaks: Ref.Ref<ReadonlyArray<PositionKey>>;
+    readonly minedItems: Ref.Ref<ReadonlyArray<BlockId>>;
     readonly fallingBlocks: Ref.Ref<FallingBlockQueue>;
     readonly fluidFrontier: Ref.Ref<ReadonlyArray<FluidWorkItem>>;
     readonly tickCount: Ref.Ref<number>;
@@ -235,13 +237,13 @@ const fullHealth: Vitals;
 ### gameplayModule  `const`
 
 ```ts
-const gameplayModule: GameModule<never, never, never>;
+const gameplayModule: GameModule<never, never, never, ChunkStore>;
 ```
 
 ### gameplayStages  `const`
 
 ```ts
-const gameplayStages: (state: GameplayFrameState) => ReadonlyArray<StageRegistration>;
+const gameplayStages: (state: GameplayFrameState, store: ChunkStoreApi) => ReadonlyArray<StageRegistration>;
 ```
 
 ### hostileSpawnsAllowed  `const`
@@ -271,7 +273,7 @@ const makeGameplayFrameState: Effect.Effect<GameplayFrameState>;
 ### makeGameplayStages  `const`
 
 ```ts
-const makeGameplayStages: Effect.Effect<ReadonlyArray<StageRegistration>>;
+const makeGameplayStages: Effect.Effect<ReadonlyArray<StageRegistration>, never, ChunkStore>;
 ```
 
 ### settled  `const`
@@ -300,6 +302,123 @@ const takeBatch: (queue: FallingBlockQueue, budget?: number) => FallingBlockBatc
 Not exported from the barrel, but named by the signatures above, so a
 consumer is exposed to them. `Context.Tag` service classes emit their real
 type onto one of these.
+
+### BlockId  `type`
+
+```ts
+type BlockId = number;
+```
+
+### BlockPosition  `type`
+
+```ts
+type BlockPosition = {
+    readonly x: number;
+    readonly y: number;
+    readonly z: number;
+};
+```
+
+### BlockReading  `type`
+
+```ts
+type BlockReading = {
+    readonly _tag: 'Block';
+    readonly block: BlockId;
+} | {
+    readonly _tag: 'ChunkNotLoaded';
+} | {
+    readonly _tag: 'OutOfWorld';
+};
+```
+
+### BlockWriteOutcome  `type`
+
+```ts
+type BlockWriteOutcome = {
+    readonly _tag: 'Written';
+    readonly previous: BlockId;
+    readonly chunk: ChunkCoord;
+} | {
+    readonly _tag: 'Unchanged';
+    readonly previous: BlockId;
+} | {
+    readonly _tag: 'ChunkNotLoaded';
+} | {
+    readonly _tag: 'OutOfWorld';
+};
+```
+
+### ChunkCoord  `type`
+
+```ts
+type ChunkCoord = {
+    readonly cx: number;
+    readonly cz: number;
+};
+```
+
+### ChunkDirtyBatch  `type`
+
+```ts
+type ChunkDirtyBatch = {
+    readonly changed: ReadonlyArray<ChunkCoord>;
+    readonly removed: ReadonlyArray<ChunkCoord>;
+};
+```
+
+### ChunkDirtySubscription  `type`
+
+```ts
+type ChunkDirtySubscription = {
+    readonly id: number;
+    readonly drain: Effect.Effect<ChunkDirtyBatch>;
+    readonly unsubscribe: Effect.Effect<void>;
+};
+```
+
+### ChunkNeighbours  `type`
+
+```ts
+type ChunkNeighbours = {
+    readonly xPos?: WorldgenChunk;
+    readonly xNeg?: WorldgenChunk;
+    readonly zPos?: WorldgenChunk;
+    readonly zNeg?: WorldgenChunk;
+};
+```
+
+### ChunkStore  `class`
+
+```ts
+class ChunkStore extends ChunkStore_base {
+}
+```
+
+### ChunkStoreApi  `type`
+
+```ts
+type ChunkStoreApi = {
+    readonly load: (coord: ChunkCoord) => Effect.Effect<WorldgenChunk>;
+    readonly peek: (coord: ChunkCoord) => Effect.Effect<WorldgenChunk | undefined>;
+    readonly snapshot: (coord: ChunkCoord) => Effect.Effect<WorldgenChunk | undefined>;
+    readonly isLoaded: (coord: ChunkCoord) => Effect.Effect<boolean>;
+    readonly loadedCoords: Effect.Effect<ReadonlyArray<ChunkCoord>>;
+    readonly neighbours: (coord: ChunkCoord) => Effect.Effect<ChunkNeighbours>;
+    readonly unload: (coord: ChunkCoord) => Effect.Effect<boolean>;
+    readonly getBlock: (position: BlockPosition) => Effect.Effect<BlockReading>;
+    readonly setBlock: (position: BlockPosition, block: BlockId) => Effect.Effect<BlockWriteOutcome>;
+    readonly subscribeDirty: Effect.Effect<ChunkDirtySubscription>;
+    readonly subscribeDirtyScoped: Effect.Effect<ChunkDirtySubscription, never, Scope.Scope>;
+    readonly reset: Effect.Effect<void>;
+};
+```
+
+### ChunkStore_base  `const`
+
+```ts
+const ChunkStore_base: Context.TagClass<ChunkStore, "@nerima-games/mc-worldgen/ChunkStore", ChunkStoreApi>;
+```
 
 ### DeltaTimeSecs  `const`
 
@@ -354,4 +473,14 @@ interface StageRegistration {
     readonly after?: ReadonlyArray<StageId>;
     readonly run: (dt: DeltaTimeSecs) => Effect.Effect<void, never, FrameServices>;
 }
+```
+
+### WorldgenChunk  `type`
+
+```ts
+type WorldgenChunk = {
+    readonly coord: ChunkCoord;
+    readonly blocks: Uint8Array;
+    readonly biomes: ReadonlyArray<string>;
+};
 ```

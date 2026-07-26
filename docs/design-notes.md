@@ -1,7 +1,7 @@
-# 設計注意（DN-GP-1 〜 DN-GP-10）
+# 設計注意（DN-GP-1 〜 DN-GP-11）
 
 本書は設計方針ではなく**事故報告**である。
-10 項目のうち想像で書かれたものは 1 つもなく、すべて参照実装
+11 項目のうち想像で書かれたものは 1 つもなく、すべて参照実装
 （`<reference-impl>`。以下 `packages/…` はそのルート相対）の production で実際に起きたことか、
 plan.md が実測知見として確定させたものである。
 
@@ -27,6 +27,7 @@ plan.md が実測知見として確定させたものである。
 | DN-GP-8 | `Date.now()` 禁止 | plan.md §4.3 / §5.1-3 | `test/check-dependency-whitelist.test.ts` |
 | DN-GP-9 | 1 ルール 1 ファイル、しかし 1 stage | plan.md §3.11 | `test/stage-registration.test.ts` |
 | DN-GP-10 | `Ref.modify` で TOCTOU 回避 | plan.md §3.8 | （現状はコードレビュー規範。§DN-GP-10 参照） |
+| DN-GP-11 | ブロックの読み書きは全域。`ChunkNotLoaded` は air ではない | mc-worldgen `docs/public-api.md` §6-3 | `test/vertical-slice.test.ts` |
 
 ---
 
@@ -66,6 +67,21 @@ per-tick 上限は `packages/world/domain/falling-block.ts:7` の `FALLING_BLOCK
 つまり参照実装の間違いは「うっかり」では再現できない — 存在しない関数を呼ぶ必要がある。
 
 これがこのリポジトリでの防御の基本形である。規律ではなく形で防ぐ。
+
+**ストアを配線しても形は変わっていない。** `gameplay:entities` は `ChunkStore` を持つが、
+`loadedCoords` も `load` も呼ばず、**ダーティチャンネルを購読もしない**。
+購読は一見すると正しく見える（参照実装のコメント自身が dirty-chunk map を出発点と呼んでいる）が、
+チャンク座標は「そのチャンクのどのセルが動いたか」を答えないので、
+購読から仕事を作るには結局チャンクの中を全部見ることになる — それが O(chunks × blocks) の再来である。
+mc-worldgen 側もこの分担を記録している（`docs/public-api.md` §6-5:
+「位置粒度の追跡は mx-gameplay の `FallingBlockQueue` が既に private に持っており、2 つは合成する」）。
+チャンク粒度のチャンネルは**再メッシュする側**（mc-render の chunk-sync）のものである。
+
+`test/vertical-slice.test.ts` の
+`REGRESSION: an idle frame does not touch the store at all (the O(chunks × blocks) scan is gone)` が
+これをストア呼び出し回数（reads 0 / writes 0）で固定している。
+「何も変わらなかった」ではなく「**1 回も見なかった**」を assert しているのが要点で、
+全走査して何も見つけないコードは前者を満たしてしまう。
 
 ### 回帰テスト
 
@@ -641,15 +657,34 @@ get してから set するまでの間に別の fiber が同じ `Ref` を書け
 
 ```typescript
 run: () =>
-  Ref.modify(state.fallingBlocks, (queue) => {
-    const { batch, rest } = takeBatch(queue)
-    return [batch, rest] as const
-  }).pipe(Effect.asVoid),
+  Effect.gen(function* () {
+    const batch = yield* Ref.modify(state.fallingBlocks, (queue) => {
+      const { batch: taken, rest } = takeBatch(queue)
+      return [taken, rest] as const
+    })
+    if (batch.length === 0) {
+      return
+    }
+
+    const { destinations } = yield* applyFallingBlocks(store, batch)
+
+    if (destinations.length > 0) {
+      yield* Ref.update(state.fallingBlocks, (queue) => settled(queue, destinations))
+    }
+  }),
 ```
 
 `takeBatch` が「取り出したバッチ」と「残りのキュー」の両方を返す形になっているのは、
 `Ref.modify` の `(a) => [b, a]` シグネチャにそのまま乗せるためである。
 API の形が正しい書き方を誘導している。
+
+**ブロック書き込みが入っても 2 段にはならなかった。** 取り出しは `Ref.modify` の 1 手、
+書き戻しは `Ref.set` ではなく **`Ref.update`** である。ストアを触っている間に別のルールが
+`disturb` した位置は、`set` なら消えるが `update` なら残る。
+「read してから write するまでに間が空く」形は、ここでは**間に I/O が入った分だけ危険度が上がっている**。
+
+`gameplay:interactions` の受信箱も同型で、`Ref.get` → `Ref.set` ではなく `Ref.getAndSet` で drain する。
+入力を書くのはこの fiber ではないので、2 段に割れば「フレーム中に届いた要求」が痕跡なく消える。
 
 `gameplay:fluids` の tick カウンタも `Ref.updateAndGet` を使う。
 
@@ -667,3 +702,69 @@ TOCTOU は単一 fiber のテストでは再現しない — 落ちるのは並�
 実装が進んで stage が本当に並行に走るようになった時点で、
 `Effect.all` で `disturb` を並行発行して総数を assert するテストを足すこと。
 そこで初めて `Ref.modify` かどうかが観測可能になる。
+
+---
+
+## DN-GP-11 ブロックの読み書きは全域。`ChunkNotLoaded` は air ではない
+
+**規則**: `ChunkStore` の読み書きは**エラーチャネルを持たない**。したがって
+`BlockReading` の 3 値と `BlockWriteOutcome` の 4 値は**すべてルールが決着させる**。
+特に `ChunkNotLoaded` を air として扱わない。`Unchanged` をダーティ扱いしない。
+
+### 根拠
+
+`mc-worldgen/docs/public-api.md` §6-3（本リポジトリのミラー `domain/chunk-store-port.ts` に逐語）:
+
+> `ChunkNotLoaded` を air と区別するのは必須である。ロード端の砂が「下は air」と教えられると、
+> 未生成空間に落ちる。mc-meshing は逆に**意図的に混同する**（未ロード隣接は黒い壁ではなく
+> 空として meshing されるべき）。描画には正しく、シミュレーションには誤りなので、
+> 2 つの read は別リポジトリの別関数である。
+
+> `Unchanged` がダーティにしないのは、同じブロックの置き直し（流体の水位再表明、
+> レッドストーンの同値再計算）が正当な操作だからである。変更扱いにすると永久に毎 tick 再メッシュする。
+
+全域である理由は本リポジトリ側の事情である。`StageRegistration.run` のエラーチャネルが `never` なので
+（kernel 凍結チェックリスト問い 3、`domain/frame-contract.ts`）、
+**ブロックを書くルールには失敗の置き場が無い**。エラーチャネルがあれば、握り潰す `catchAll` が生えるだけである。
+
+### このバグの形
+
+DN-GP-3 と同じ形をしている。クラッシュせず、型に違反せず、テストも落ちない。
+`reading._tag === 'Block' ? reading.block : AIR` と 1 行書くだけで、
+**ロード端の砂が世界から消える**。消えたことは誰も報告しない。
+
+書き込み側にもう 1 つ穴がある。移動は「元を消す」「先に置く」の 2 回の書き込みで、
+先の書き込みが拒否されうる以上、**素直に書くと元だけが消えてブロックが消滅する**。
+`domain/entities/falling-block-move.ts` は元 → 先の順に書き、
+先が拒否されたら元に**戻す**。逆順（先 → 元）にすると、失敗時の症状が「消滅」ではなく「複製」に変わる。
+どちらも許容できないので、戻す分岐を書いてある。
+
+### 構造的な防御
+
+`BlockReading` / `BlockWriteOutcome` はタグ付きユニオンで、
+判定は `switch` の**網羅**として書かれている（`fallingMaterial` / `canReceive` / `vacated`）。
+mc-worldgen が 4 つ目の読み値を足せば、`tsc` がここで止まる。
+`if (_tag === 'Block')` の 1 行では止まらない。
+
+### 回帰テスト
+
+`test/vertical-slice.test.ts`:
+
+| it |
+| --- |
+| `` REGRESSION: `ChunkNotLoaded` is not air — sand does not fall out of the world `` |
+| `` REGRESSION: a cell that reads `ChunkNotLoaded` does not receive a falling block `` |
+| `REGRESSION: a refused destination write puts the block back rather than losing it` |
+| `` REGRESSION: breaking air is `Unchanged` — no item, no dirty chunk, no falling-block work `` |
+| `` REGRESSION: a break below the world is `OutOfWorld`, and the frame carries on `` |
+
+後半 3 本は**変異テストで確かめてある**。`canReceive` の `ChunkNotLoaded` を `true` に、
+戻す分岐を削除に、`NothingThere` を「仕事を積む」に書き換えると、それぞれ対応する 1 本だけが落ちる。
+
+**2 本目と 3 本目の状況は、今日のチャンク形式では起こらない。** mc-worldgen のチャンクは柱なので、
+あるセルと真下のセルは常に同じチャンクにあり、常に同じ residency を答える。
+それでも固定してあるのは、**Port がその一致を約束していない**からである
+（`getBlock` / `setBlock` は位置ごとに宣言されている）。
+セクション化されたチャンク形式、メモリ圧による退避、並行アンロードのどれが来ても、
+インターフェースは 1 行も変わらずにこの状況が到達可能になる。
+そのため 2 本はストアの 1 メソッドだけを包んで書いてある（ダブルのロード集合では作れない）。

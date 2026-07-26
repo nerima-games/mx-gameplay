@@ -1,428 +1,423 @@
 /**
- * THE SLICE, from the rule's side: break a block, the sand above it falls, and
- * the item goes somewhere.
+ * THE SLICE, end to end: the player breaks a block in `gameplay:interactions`,
+ * the sand above it falls in `gameplay:entities` on a later tick, and the mined
+ * block goes to the inventory.
  *
  * ---------------------------------------------------------------------------
  * What is real here and what is a stand-in
  * ---------------------------------------------------------------------------
  *
- * REAL: `domain/falling-block.ts` — `disturb`, `takeBatch`, `settled` and
- * `FALLING_BLOCK_MOVES_PER_TICK`. This file drives the shipped queue, not a
- * simplification of it, which is the point: the question the vertical-slice
- * spike left open was whether mx-gameplay's event-driven queue and a chunk
- * store in another repository actually compose, and the only way to answer it
- * is to run them against each other.
+ * REAL: everything on this repository's side of the line. The scenarios below
+ * run the SHIPPED stage registrations — `gameplayStages` / `makeGameplayStages`
+ * — over the shipped rules (`domain/interactions/break-block.ts`,
+ * `domain/entities/falling-block-move.ts`) and the shipped queue
+ * (`domain/falling-block.ts`). Nothing here re-implements a rule in order to
+ * test it. That distinction is the point of this file: the port and the loop
+ * were each proven separately before, and separately proven halves do not
+ * compose by themselves.
  *
- * A STAND-IN: the store itself. `makeTestChunkStore` below is a test double for
- * mc-worldgen's `ChunkStore`, built against this repository's mirror of that
- * service (`domain/chunk-store-port.ts`). It has to be: nothing is published
- * (plan.md §6 Step 3), so mx-gameplay cannot import the real implementation
- * today. The mirror is what makes the double meaningful — it is typed by the
- * interface mc-worldgen actually publishes, and `test/chunk-store-mirror.test.ts`
- * pins the mirror against that interface. The same scenario against the REAL
- * store is `mc-worldgen/test/vertical-slice.test.ts`; between the two files the
- * whole path is covered, and when mc-worldgen is published this double is
- * deleted and the real Layer takes its place.
+ * A STAND-IN: the store, `test/support/chunk-store-double.ts`, and the frame
+ * loop, `test/support/frame-runner.ts`. The first is typed by this
+ * repository's mirror of mc-worldgen's `ChunkStore` and the mirror is pinned
+ * against the real interface by `test/chunk-store-mirror.test.ts`; the second
+ * resolves the `after` edges the way mc-compose will, rather than trusting the
+ * array order. The same scenario against the REAL store is
+ * `mc-worldgen/test/vertical-slice.test.ts`.
  *
  * ---------------------------------------------------------------------------
- * The two properties this file exists to protect
+ * The properties this file exists to protect
  * ---------------------------------------------------------------------------
  *
- *  1. **Work enters only through the dirty channel.** There is no "scan the
- *     world" call anywhere. The reference implementation rescanned every loaded
- *     chunk every maintenance tick — ~7M block reads, ~40% of the main thread
- *     while exploring (`falling-block-maintenance.ts:9-15`) — and the API here
- *     is shaped so that mistake cannot be re-made by accident.
+ *  1. **Work enters only through the rules that write blocks.** There is no
+ *     "scan the world" call and no subscription to the dirty channel in any
+ *     stage. The reference implementation rescanned every loaded chunk every
+ *     maintenance tick — ~7M block reads, ~40% of the main thread while
+ *     exploring (`falling-block-maintenance.ts:9-15`) — so an idle frame here
+ *     is asserted to touch the store ZERO times, not merely to change nothing.
  *
- *  2. **The rule never names a block.** It reads a byte out of the store and
- *     asks the capability table. Running the identical rule over gravel, with
- *     no code change, is asserted below.
+ *  2. **`ChunkNotLoaded` is not air.** A two-valued read, which is what
+ *     mc-meshing correctly uses for DRAWING, drops sand out of the world at the
+ *     edge of the resident area.
+ *
+ *  3. **`Unchanged` does not dirty.** Breaking air must not enqueue work, must
+ *     not put an item in the inventory and must not re-mesh a chunk.
+ *
+ *  4. **The rule never names a block.** It reads a byte out of the store and
+ *     asks kernel's capability table. The identical stages are run over gravel
+ *     below, with no code change anywhere.
  */
 import { describe, expect, it } from '@effect/vitest'
-import { Effect, Layer, Ref } from 'effect'
+import { Effect, Ref } from 'effect'
+import { positionKeyOf } from '../domain/block-position-key'
 import {
   AIR_BLOCK_ID,
-  ChunkStore,
-  fallsWhenUnsupported,
-  isReplaceable,
-  type BlockId,
   type BlockPosition,
   type BlockWriteOutcome,
-  type ChunkDirtyBatch,
-  type ChunkDirtySubscription,
   type ChunkStoreApi,
 } from '../domain/chunk-store-port'
+import { disturb } from '../domain/falling-block'
+import { gameplayStages, makeGameplayFrameState } from '../stages/registration'
 import {
-  disturb,
-  emptyFallingBlockQueue,
-  settled,
-  takeBatch,
-  type FallingBlockQueue,
-} from '../domain/falling-block'
-import type { PositionKey } from '../domain/position-key'
+  GRAVEL,
+  makeChunkStoreDouble,
+  SAND,
+  STONE,
+  world,
+} from './support/chunk-store-double'
+import { runFrame, runFrames } from './support/frame-runner'
 
 // ---------------------------------------------------------------------------
-// The test double
+// The column under test. Chunk (0, 0), which is the only resident one unless a
+// scenario says otherwise.
 // ---------------------------------------------------------------------------
 
-const SAND: BlockId = 5
-const GRAVEL: BlockId = 8
-const STONE: BlockId = 2
+const support: BlockPosition = { x: 2, y: 64, z: 3 }
+const floor: BlockPosition = { x: 2, y: 63, z: 3 }
+const sandAt: BlockPosition = { x: 2, y: 65, z: 3 }
+const aboveSand: BlockPosition = { x: 2, y: 66, z: 3 }
+const topOfColumn: BlockPosition = { x: 2, y: 67, z: 3 }
 
-const key = (position: BlockPosition): string => `${position.x},${position.y},${position.z}`
-
-const chunkKey = (position: BlockPosition): string =>
-  `${Math.floor(position.x / 16)},${Math.floor(position.z / 16)}`
-
-const chunkCoordOf = (position: BlockPosition) => ({
-  cx: Math.floor(position.x / 16),
-  cz: Math.floor(position.z / 16),
-})
-
-type Doubles = {
-  readonly blocks: Map<string, BlockId>
-  readonly loadedChunks: Set<string>
-  readonly subscribers: Map<number, Set<string>>
-  nextSubscriber: number
-}
-
-/**
- * A sparse stand-in with mc-worldgen's semantics, and in particular its three
- * that a rule can get wrong:
- *
- *   - an unloaded chunk reads `ChunkNotLoaded`, never air;
- *   - writing the same block back is `Unchanged` and does not dirty;
- *   - each subscriber accumulates a SET, so N writes to one chunk drain once.
- */
-const makeTestChunkStore = (
-  initial: ReadonlyMap<string, BlockId>,
-  loaded: ReadonlyArray<string>,
-): Effect.Effect<ChunkStoreApi> =>
-  Effect.map(
-    Ref.make<Doubles>({
-      blocks: new Map(initial),
-      loadedChunks: new Set(loaded),
-      subscribers: new Map(),
-      nextSubscriber: 0,
-    }),
-    (state) => {
-      const notImplemented = Effect.dieMessage('not exercised by this test')
-
-      const markDirty = (doubles: Doubles, position: BlockPosition): void => {
-        for (const pending of doubles.subscribers.values()) {
-          pending.add(chunkKey(position))
-        }
-      }
-
-      const subscribe: Effect.Effect<ChunkDirtySubscription> = Ref.modify(state, (doubles) => {
-        const id = doubles.nextSubscriber
-        doubles.subscribers.set(id, new Set())
-
-        const subscription: ChunkDirtySubscription = {
-          id,
-          drain: Ref.modify(state, (current) => {
-            const pending = current.subscribers.get(id) ?? new Set<string>()
-            const batch: ChunkDirtyBatch = {
-              changed: [...pending].map((entry) => {
-                const [cx, cz] = entry.split(',')
-                return { cx: Number(cx), cz: Number(cz) }
-              }),
-              removed: [],
-            }
-            current.subscribers.set(id, new Set())
-            return [batch, current] as const
-          }),
-          unsubscribe: Ref.update(state, (current) => {
-            current.subscribers.delete(id)
-            return current
-          }),
-        }
-
-        return [subscription, { ...doubles, nextSubscriber: id + 1 }] as const
-      })
-
-      return {
-        load: () => notImplemented,
-        peek: () => notImplemented,
-        snapshot: () => notImplemented,
-        isLoaded: (coord) =>
-          Effect.map(Ref.get(state), (doubles) => doubles.loadedChunks.has(`${coord.cx},${coord.cz}`)),
-        loadedCoords: notImplemented,
-        neighbours: () => notImplemented,
-        unload: () => notImplemented,
-
-        getBlock: (position) =>
-          Effect.map(Ref.get(state), (doubles) => {
-            if (position.y < 0 || position.y >= 256) {
-              return { _tag: 'OutOfWorld' } as const
-            }
-            if (!doubles.loadedChunks.has(chunkKey(position))) {
-              return { _tag: 'ChunkNotLoaded' } as const
-            }
-            return { _tag: 'Block', block: doubles.blocks.get(key(position)) ?? AIR_BLOCK_ID } as const
-          }),
-
-        setBlock: (position, block) =>
-          Ref.modify(state, (doubles): readonly [BlockWriteOutcome, Doubles] => {
-            if (position.y < 0 || position.y >= 256) {
-              return [{ _tag: 'OutOfWorld' } as const, doubles] as const
-            }
-            if (!doubles.loadedChunks.has(chunkKey(position))) {
-              return [{ _tag: 'ChunkNotLoaded' } as const, doubles] as const
-            }
-
-            const previous = doubles.blocks.get(key(position)) ?? AIR_BLOCK_ID
-            if (previous === block) {
-              return [{ _tag: 'Unchanged', previous } as const, doubles] as const
-            }
-
-            doubles.blocks.set(key(position), block)
-            markDirty(doubles, position)
-
-            return [
-              { _tag: 'Written', previous, chunk: chunkCoordOf(position) } as const,
-              doubles,
-            ] as const
-          }),
-
-        subscribeDirty: subscribe,
-        subscribeDirtyScoped: Effect.acquireRelease(subscribe, (s) => s.unsubscribe),
-        reset: Ref.update(state, (doubles) => {
-          doubles.blocks.clear()
-          return doubles
-        }),
-      }
-    },
-  )
-
-const testStoreLayer = (
-  initial: ReadonlyMap<string, BlockId>,
-  loaded: ReadonlyArray<string>,
-): Layer.Layer<ChunkStore> => Layer.effect(ChunkStore, makeTestChunkStore(initial, loaded))
-
-// ---------------------------------------------------------------------------
-// The rule, written the way `gameplay:entities` will be written
-// ---------------------------------------------------------------------------
-
-const positionOfKey = (positionKey: PositionKey): BlockPosition => {
-  const [x, y, z] = positionKey.split(',')
-  return { x: Number(x), y: Number(y), z: Number(z) }
-}
-
-const positionKeyOf = (position: BlockPosition): PositionKey => key(position)
-
-/**
- * One tick of the falling-block stage.
- *
- * Reads `takeBatch` off the shipped queue, evaluates only those positions, and
- * feeds destinations back with `settled` so the cascade continues next tick.
- * Cost is O(taken), never O(world) — an empty queue produces an empty batch and
- * this function then touches the store zero times.
- */
-const fallingBlockStage = (
-  store: ChunkStoreApi,
-  queue: FallingBlockQueue,
-): Effect.Effect<{ readonly queue: FallingBlockQueue; readonly moved: number }> =>
+const slice = (
+  initial: ReadonlyMap<string, number>,
+  loaded: ReadonlyArray<string> = ['0,0'],
+) =>
   Effect.gen(function* () {
-    const { batch, rest } = takeBatch(queue)
-    const destinations: Array<PositionKey> = []
-    let moved = 0
-
-    for (const positionKey of batch) {
-      // Each disturbed position may have unsupported material ABOVE it — that
-      // is what "disturbed" means: something under this column changed.
-      const here = positionOfKey(positionKey)
-      const above: BlockPosition = { x: here.x, y: here.y + 1, z: here.z }
-
-      const reading = yield* store.getBlock(above)
-      if (reading._tag !== 'Block' || !fallsWhenUnsupported(reading.block)) {
-        continue
-      }
-
-      const under = yield* store.getBlock(here)
-      // Not `_tag === 'Block' && block === AIR`: `ChunkNotLoaded` must not read
-      // as air, or sand at the edge of the loaded area falls out of the world.
-      if (under._tag !== 'Block' || !isReplaceable(under.block)) {
-        continue
-      }
-
-      yield* store.setBlock(above, AIR_BLOCK_ID)
-      yield* store.setBlock(here, reading.block)
-      moved += 1
-
-      // The cell it moved INTO must be re-examined next tick even though
-      // nothing external re-dirties it, and so must the cell it came from,
-      // because whatever was above THAT is now unsupported too.
-      destinations.push(positionKeyOf({ x: here.x, y: here.y - 1, z: here.z }))
-      destinations.push(positionKeyOf(above))
-    }
-
-    return { queue: settled(rest, destinations), moved }
+    const store = yield* makeChunkStoreDouble(initial, loaded)
+    const state = yield* makeGameplayFrameState
+    return { store, state, stages: gameplayStages(state, store.api) }
   })
 
-// ---------------------------------------------------------------------------
+const samePosition = (left: BlockPosition, right: BlockPosition): boolean =>
+  left.x === right.x && left.y === right.y && left.z === right.z
 
-const world = (entries: ReadonlyArray<readonly [BlockPosition, BlockId]>): ReadonlyMap<string, BlockId> =>
-  new Map(entries.map(([position, block]) => [key(position), block] as const))
+/** What mc-render's input stage will do, once mc-render is published. */
+const requestBreak = (
+  state: { readonly pendingBreaks: Ref.Ref<ReadonlyArray<string>> },
+  position: BlockPosition,
+): Effect.Effect<void> =>
+  Ref.update(state.pendingBreaks, (pending) => [...pending, positionKeyOf(position)])
 
-describe('the slice: break a block, the sand above it falls', () => {
-  const support: BlockPosition = { x: 2, y: 64, z: 3 }
-  const sandAt: BlockPosition = { x: 2, y: 65, z: 3 }
-
-  it.effect('runs end to end through the real FallingBlockQueue', () =>
+describe('the slice, through the stage registration', () => {
+  it.effect('breaks a block in interactions and moves the sand in entities', () =>
     Effect.gen(function* () {
-      const store = yield* ChunkStore
-      const subscription = yield* store.subscribeDirty
+      const { store, state, stages } = yield* slice(
+        world([
+          [floor, STONE],
+          [support, STONE],
+          [sandAt, SAND],
+        ]),
+      )
+      // mc-render's chunk-sync stage will hold one of these. Nothing in
+      // mx-gameplay subscribes: a chunk coordinate cannot tell a rule WHICH
+      // cell moved, so a stage that worked from it would have to scan.
+      const renderer = yield* store.api.subscribeDirty
 
-      // ---- 1. the player breaks the support ---------------------------------
-      const broken = yield* store.setBlock(support, AIR_BLOCK_ID)
+      yield* requestBreak(state, support)
+      yield* runFrame(stages)
 
-      expect(broken).toStrictEqual({ _tag: 'Written', previous: STONE, chunk: { cx: 0, cz: 0 } })
+      // ---- the block was mined, and the item went to the inventory ---------
+      // `previous` came back from the write itself, so there was no
+      // read-then-write race for it (mc-worldgen §6-3).
+      expect(yield* Ref.get(state.minedItems)).toStrictEqual([STONE])
 
-      // The mined block travels to mc-sim's InventoryService from here. That is
-      // plan.md §2.3-1's worked example — "掘ったらドロップする" is this
-      // repository, the place the item ends up is mc-sim's — and it is
-      // unaffected by the store living in mc-worldgen.
-      const mined = broken._tag === 'Written' ? broken.previous : AIR_BLOCK_ID
-      expect(mined).toBe(STONE)
+      // ---- and the sand above it moved down, in the same frame -------------
+      expect(yield* store.blockAt(support)).toBe(SAND)
+      expect(yield* store.blockAt(sandAt)).toBe(AIR_BLOCK_ID)
 
-      // ---- 2. the block is gone from the store ------------------------------
-      expect(yield* store.getBlock(support)).toStrictEqual({ _tag: 'Block', block: AIR_BLOCK_ID })
+      // ---- the renderer is told about the chunk once -----------------------
+      // Three writes (the break, the clear, the place), one coordinate.
+      expect(yield* renderer.drain).toStrictEqual({ changed: [{ cx: 0, cz: 0 }], removed: [] })
 
-      // ---- 3. the chunk is reported dirty -----------------------------------
-      const batch = yield* subscription.drain
-      expect(batch.changed).toStrictEqual([{ cx: 0, cz: 0 }])
-
-      // ---- 4. the rule observes it ------------------------------------------
-      // The interactions stage disturbs the position it wrote. This is the ONLY
-      // entry point for work; there is no scan.
-      const queued = disturb(emptyFallingBlockQueue, [positionKeyOf(support)])
-      expect(queued.pending.size).toBe(1)
-
-      const first = yield* fallingBlockStage(store, queued)
-      expect(first.moved).toBe(1)
-
-      expect(yield* store.getBlock(sandAt)).toStrictEqual({ _tag: 'Block', block: AIR_BLOCK_ID })
-      expect(yield* store.getBlock(support)).toStrictEqual({ _tag: 'Block', block: SAND })
-
-      // ---- 5. and the cascade terminates by itself --------------------------
-      const second = yield* fallingBlockStage(store, first.queue)
-      expect(second.moved).toBe(0)
-
-      const third = yield* fallingBlockStage(store, second.queue)
-      expect(third.moved).toBe(0)
-      expect(third.queue.pending.size).toBe(0)
-    }).pipe(
-      Effect.provide(
-        testStoreLayer(
-          world([
-            [support, STONE],
-            [sandAt, SAND],
-            [{ x: 2, y: 63, z: 3 }, STONE],
-          ]),
-          ['0,0'],
-        ),
-      ),
-    ),
+      // ---- the inbox was consumed, not merely read -------------------------
+      expect(yield* Ref.get(state.pendingBreaks)).toStrictEqual([])
+    }),
   )
 
-  it.effect('REGRESSION: an untouched world does no work, because work only enters through disturb', () =>
+  it.effect('a multi-block cascade dirties the chunk once and then stops on its own', () =>
     Effect.gen(function* () {
-      const store = yield* ChunkStore
-      const subscription = yield* store.subscribeDirty
+      const { store, state, stages } = yield* slice(
+        world([
+          [floor, STONE],
+          [support, STONE],
+          [sandAt, SAND],
+          [aboveSand, SAND],
+          [topOfColumn, SAND],
+        ]),
+      )
+      const renderer = yield* store.api.subscribeDirty
 
-      // Nothing has happened. The queue is empty, so the stage never reaches
-      // the store at all — not "scans and finds nothing".
-      const outcome = yield* fallingBlockStage(store, emptyFallingBlockQueue)
+      yield* requestBreak(state, support)
+      // A column sinks one cell per tick (DN-GP-1), so three sand blocks need
+      // three ticks plus one to discover there is nothing left to do.
+      yield* runFrames(stages, 6)
 
-      expect(outcome.moved).toBe(0)
-      expect(outcome.queue.pending.size).toBe(0)
-      expect(yield* subscription.drain).toStrictEqual({ changed: [], removed: [] })
-    }).pipe(
-      Effect.provide(
-        testStoreLayer(
-          world([
-            [support, STONE],
-            [sandAt, SAND],
-          ]),
-          ['0,0'],
-        ),
-      ),
-    ),
+      // ---- the whole column moved down exactly one cell --------------------
+      expect(yield* store.blockAt(support)).toBe(SAND)
+      expect(yield* store.blockAt(sandAt)).toBe(SAND)
+      expect(yield* store.blockAt(aboveSand)).toBe(SAND)
+      expect(yield* store.blockAt(topOfColumn)).toBe(AIR_BLOCK_ID)
+
+      // ---- seven writes, ONE dirty coordinate ------------------------------
+      // The break plus three moves of two writes each. A stream or a PubSub
+      // would have delivered seven messages and re-meshed seven times; the
+      // per-subscriber SET is what makes this one entry
+      // (mc-worldgen §6-4, and the reason the channel is not a Stream).
+      expect(yield* renderer.drain).toStrictEqual({ changed: [{ cx: 0, cz: 0 }], removed: [] })
+
+      // ---- and the cascade terminated by itself ----------------------------
+      // Nothing external stopped it: the queue drained because the last move
+      // fed back destinations that turned out to be supported.
+      expect((yield* Ref.get(state.fallingBlocks)).pending.size).toBe(0)
+
+      const before = yield* store.calls
+      yield* runFrames(stages, 3)
+      expect(yield* store.calls).toStrictEqual(before)
+    }),
   )
 
-  it.effect('adding a falling block is a kernel table row, not a change here', () =>
+  it.effect('REGRESSION: an idle frame does not touch the store at all (the O(chunks × blocks) scan is gone)', () =>
     Effect.gen(function* () {
-      const store = yield* ChunkStore
+      const { store, stages } = yield* slice(
+        world([
+          [floor, STONE],
+          [support, STONE],
+          [sandAt, SAND],
+        ]),
+      )
+      const renderer = yield* store.api.subscribeDirty
 
-      yield* store.setBlock(support, AIR_BLOCK_ID)
-      const outcome = yield* fallingBlockStage(store, disturb(emptyFallingBlockQueue, [positionKeyOf(support)]))
+      // Nobody broke anything. Every stage runs; none of them looks at a block.
+      yield* runFrames(stages, 10)
 
-      // Identical rule, identical call, different block. The rule was never
-      // told that gravel exists.
-      expect(outcome.moved).toBe(1)
-      expect(yield* store.getBlock(support)).toStrictEqual({ _tag: 'Block', block: GRAVEL })
-    }).pipe(
-      Effect.provide(
-        testStoreLayer(
-          world([
-            [support, STONE],
-            [sandAt, GRAVEL],
-            [{ x: 2, y: 63, z: 3 }, STONE],
-          ]),
-          ['0,0'],
-        ),
-      ),
-    ),
+      expect(yield* store.calls).toStrictEqual({ reads: 0, writes: 0 })
+      expect(yield* renderer.drain).toStrictEqual({ changed: [], removed: [] })
+    }),
   )
 
-  it.effect('REGRESSION: sand does not fall into an unloaded chunk', () =>
+  it.effect('adding a falling block is a row in kernel’s table, not a change here', () =>
     Effect.gen(function* () {
-      const store = yield* ChunkStore
+      const { store, state, stages } = yield* slice(
+        world([
+          [floor, STONE],
+          [support, STONE],
+          [sandAt, GRAVEL],
+        ]),
+      )
 
-      // The support is in a chunk that is not resident. A two-valued read that
-      // answered AIR — which is what mc-meshing correctly answers for DRAWING —
-      // would drop the sand out of the world here.
+      yield* requestBreak(state, support)
+      yield* runFrame(stages)
+
+      // Identical stages, identical rules, different block. Neither file was
+      // told that gravel exists — the reference implementation asked
+      // `blockTypeToIndex('SAND')` in 229 places across 51 files (plan.md §3.1).
+      expect(yield* store.blockAt(support)).toBe(GRAVEL)
+      expect(yield* Ref.get(state.minedItems)).toStrictEqual([STONE])
+    }),
+  )
+
+  it.effect('REGRESSION: `ChunkNotLoaded` is not air — sand does not fall out of the world', () =>
+    Effect.gen(function* () {
+      // Chunk (-1, 0) is not resident. Whatever is in it is UNKNOWN, and a rule
+      // that read "air" there would clear a cell it cannot see and drop the
+      // block into ungenerated space.
       const edge: BlockPosition = { x: -1, y: 64, z: 3 }
-      expect(yield* store.getBlock(edge)).toStrictEqual({ _tag: 'ChunkNotLoaded' })
+      const { store, state, stages } = yield* slice(world([[floor, STONE]]), ['0,0'])
 
-      const outcome = yield* fallingBlockStage(store, disturb(emptyFallingBlockQueue, [positionKeyOf(edge)]))
-      expect(outcome.moved).toBe(0)
-    }).pipe(Effect.provide(testStoreLayer(world([]), ['0,0']))),
+      // Both entry points are exercised: a break request at the edge...
+      yield* requestBreak(state, edge)
+      // ...and a position that reached the queue some other way (an explosion
+      // in a chunk that has since been unloaded, say).
+      yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, [positionKeyOf(edge)]))
+      yield* runFrames(stages, 3)
+
+      const calls = yield* store.calls
+      // The reads happened — that is how the rule LEARNED it must not act.
+      expect(calls.reads).toBeGreaterThan(0)
+      // The write is the break request, which the store refused; the rule added
+      // nothing to it.
+      expect(calls.writes).toBe(1)
+      expect(yield* Ref.get(state.minedItems)).toStrictEqual([])
+      expect(yield* store.blockAt(edge)).toBeUndefined()
+    }),
   )
 
-  it.effect('a moving column re-dirties one chunk once, however many blocks moved', () =>
+  it.effect('REGRESSION: breaking air is `Unchanged` — no item, no dirty chunk, no falling-block work', () =>
     Effect.gen(function* () {
-      const store = yield* ChunkStore
-      const renderer = yield* store.subscribeDirty
+      const { store, state, stages } = yield* slice(
+        world([
+          [floor, STONE],
+          [support, STONE],
+        ]),
+      )
+      const renderer = yield* store.api.subscribeDirty
 
-      yield* store.setBlock(support, AIR_BLOCK_ID)
-      yield* renderer.drain
+      // The player is holding the mine button over empty sky. The store answers
+      // `Unchanged` and does not dirty; treating that as a break would put air
+      // in the inventory and re-mesh the chunk on every frame of the hold.
+      yield* requestBreak(state, sandAt)
+      yield* requestBreak(state, aboveSand)
+      yield* runFrames(stages, 3)
 
-      // Three sand blocks, so the tick performs six writes.
-      let queue = disturb(emptyFallingBlockQueue, [positionKeyOf(support)])
-      const outcome = yield* fallingBlockStage(store, queue)
-      queue = outcome.queue
+      expect(yield* Ref.get(state.minedItems)).toStrictEqual([])
+      expect((yield* Ref.get(state.fallingBlocks)).pending.size).toBe(0)
+      expect(yield* renderer.drain).toStrictEqual({ changed: [], removed: [] })
+      expect(yield* store.blockAt(support)).toBe(STONE)
 
-      expect(outcome.moved).toBeGreaterThan(0)
+      // Two write attempts, both `Unchanged`, and NOT ONE READ. The reads are
+      // the load-bearing number: they are zero only if the interactions stage
+      // declined to enqueue falling-block work for a write that changed
+      // nothing. Enqueueing it would cost a pair of reads per held frame
+      // forever, which is the shape of the workload this design exists to
+      // avoid.
+      expect(yield* store.calls).toStrictEqual({ reads: 0, writes: 2 })
+    }),
+  )
 
-      // The renderer meshes the chunk once. A stream would have delivered one
-      // message per write.
-      const batch = yield* renderer.drain
-      expect(batch.changed).toStrictEqual([{ cx: 0, cz: 0 }])
-    }).pipe(
-      Effect.provide(
-        testStoreLayer(
-          world([
-            [support, STONE],
-            [{ x: 2, y: 63, z: 3 }, STONE],
-            [sandAt, SAND],
-            [{ x: 2, y: 66, z: 3 }, SAND],
-            [{ x: 2, y: 67, z: 3 }, SAND],
-          ]),
-          ['0,0'],
-        ),
-      ),
+  /*
+   * The two below drive the rule through a store that answers `ChunkNotLoaded`
+   * for ONE cell.
+   *
+   * mc-worldgen's chunks are columns, so today a cell and the cell beneath it
+   * are always in the same chunk and always agree about residency — which means
+   * the scenarios here cannot be built out of the double's loaded-chunk set.
+   * They are built by wrapping one method instead, because the PORT does not
+   * promise the agreement: `getBlock` and `setBlock` are declared per position
+   * (`mc-worldgen/docs/public-api.md` §6-3), and a sectioned chunk format, a
+   * store that evicts under memory pressure, or a concurrent unload would each
+   * make this reachable without changing a line of the interface.
+   *
+   * Both are pinned because the cost of being wrong is asymmetric: the failure
+   * is not a crash but a block that ceases to exist, which no test that only
+   * looks at the happy path can see.
+   */
+  it.effect('REGRESSION: a cell that reads `ChunkNotLoaded` does not receive a falling block', () =>
+    Effect.gen(function* () {
+      // The support is AIR, so without the wrapper below the sand falls into
+      // it. The control is the very first test in this file.
+      const { store, state } = yield* slice(world([[sandAt, SAND]]))
+
+      const hidesTheDestination: ChunkStoreApi = {
+        ...store.api,
+        getBlock: (position) =>
+          samePosition(position, support)
+            ? Effect.succeed({ _tag: 'ChunkNotLoaded' } as const)
+            : store.api.getBlock(position),
+      }
+
+      const stages = gameplayStages(state, hidesTheDestination)
+      yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, [positionKeyOf(support)]))
+      yield* runFrames(stages, 3)
+
+      // Unknown is not empty: the sand stays where it is rather than being
+      // written into a chunk nobody can see.
+      expect(yield* store.blockAt(sandAt)).toBe(SAND)
+      expect((yield* store.calls).writes).toBe(0)
+    }),
+  )
+
+  it.effect('REGRESSION: a refused destination write puts the block back rather than losing it', () =>
+    Effect.gen(function* () {
+      const { store, state } = yield* slice(world([[sandAt, SAND]]))
+
+      // Reads say the move is legal; the destination write is refused anyway —
+      // the window the source-first write order opens.
+      const refusesTheDestination: ChunkStoreApi = {
+        ...store.api,
+        setBlock: (position, block) =>
+          samePosition(position, support)
+            ? Effect.succeed({ _tag: 'ChunkNotLoaded' } as const)
+            : store.api.setBlock(position, block),
+      }
+
+      const stages = gameplayStages(state, refusesTheDestination)
+      yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, [positionKeyOf(support)]))
+      yield* runFrame(stages)
+
+      // The sand is still sand. A rule that trusted its own read would have
+      // cleared the source, had the write refused, and deleted the block.
+      expect(yield* store.blockAt(sandAt)).toBe(SAND)
+      expect(yield* store.blockAt(support)).toBeUndefined()
+    }),
+  )
+
+  it.effect('REGRESSION: a source write that did not vacate never places a second block below', () =>
+    // The mirror image of the test above: this time the FIRST write is refused.
+    // Placing the block below anyway would duplicate matter, which is the
+    // failure mode the source-first order trades against losing it.
+    Effect.forEach(
+      [
+        { _tag: 'Unchanged', previous: SAND },
+        { _tag: 'ChunkNotLoaded' },
+        { _tag: 'OutOfWorld' },
+      ] as ReadonlyArray<BlockWriteOutcome>,
+      (refusal) =>
+        Effect.gen(function* () {
+          const { store, state } = yield* slice(world([[sandAt, SAND]]))
+
+          const refusesTheSource: ChunkStoreApi = {
+            ...store.api,
+            setBlock: (position, block) =>
+              samePosition(position, sandAt)
+                ? Effect.succeed(refusal)
+                : store.api.setBlock(position, block),
+          }
+
+          const stages = gameplayStages(state, refusesTheSource)
+          yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, [positionKeyOf(support)]))
+          yield* runFrame(stages)
+
+          expect(yield* store.blockAt(support)).toBeUndefined()
+        }),
+      { discard: true },
     ),
+  )
+
+  it.effect('REGRESSION: the floor of the world holds a block up — `OutOfWorld` is not a free cell', () =>
+    Effect.gen(function* () {
+      const bottom: BlockPosition = { x: 2, y: 0, z: 3 }
+      const belowTheWorld: BlockPosition = { x: 2, y: -1, z: 3 }
+      const { store, state, stages } = yield* slice(world([[bottom, SAND]]))
+
+      yield* Ref.update(state.fallingBlocks, (queue) =>
+        disturb(queue, [positionKeyOf(belowTheWorld)]),
+      )
+      yield* runFrames(stages, 2)
+
+      expect(yield* store.blockAt(bottom)).toBe(SAND)
+      expect((yield* store.calls).writes).toBe(0)
+    }),
+  )
+
+  it.effect('nothing falls from above the build limit', () =>
+    Effect.gen(function* () {
+      const ceiling: BlockPosition = { x: 2, y: 255, z: 3 }
+      const { store, state, stages } = yield* slice(world([]))
+
+      // The cell examined is the one ABOVE the disturbance, and at y = 256 that
+      // is outside the world rather than empty. Reading it as air would be
+      // harmless; asking for it and then acting on the answer would not.
+      yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, [positionKeyOf(ceiling)]))
+      yield* runFrames(stages, 2)
+
+      expect((yield* store.calls).writes).toBe(0)
+    }),
+  )
+
+  it.effect('REGRESSION: a break below the world is `OutOfWorld`, and the frame carries on', () =>
+    Effect.gen(function* () {
+      const { store, state, stages } = yield* slice(world([[floor, STONE]]))
+
+      // `run` has no error channel, so "the player aimed at nothing" has to be
+      // an ordinary outcome rather than a failure. The frame must complete and
+      // the next request must still be serviced.
+      yield* requestBreak(state, { x: 2, y: -1, z: 3 })
+      yield* runFrame(stages)
+      expect(yield* Ref.get(state.minedItems)).toStrictEqual([])
+
+      yield* requestBreak(state, floor)
+      yield* runFrame(stages)
+      expect(yield* Ref.get(state.minedItems)).toStrictEqual([STONE])
+      expect(yield* store.blockAt(floor)).toBe(AIR_BLOCK_ID)
+    }),
   )
 })

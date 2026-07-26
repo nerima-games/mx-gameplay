@@ -9,14 +9,32 @@
  * (plan.md §2.3-1). See docs/public-api.md.
  *
  * ---------------------------------------------------------------------------
+ * The stages read and write the world through mc-worldgen's `ChunkStore`
+ * ---------------------------------------------------------------------------
+ *
+ * The store is acquired ONCE, in `makeGameplayStages` — that is, in
+ * `GameModule.frameStages`, whose `RRegister` parameter exists for exactly this
+ * (`domain/frame-contract.ts`). It is not acquired in `run`, because
+ * `StageRegistration.run` has `FrameServices` as its context and `FrameServices`
+ * is kernel's, not this repository's: a stage that demanded `ChunkStore` there
+ * would be asking kernel to name mc-worldgen's services, which the tier model
+ * (plan.md §2.2) forbids. `RIn` stays `never`; this repository BUILDS nothing
+ * that another has to supply, it CALLS what mc-worldgen supplies.
+ *
+ * Until mc-worldgen is published the tag comes from `domain/chunk-store-port.ts`,
+ * a mirror with a deletion date; `test/chunk-store-mirror.test.ts` is what keeps
+ * the mirror honest, and the repoint is three lines in that file's header.
+ *
+ * ---------------------------------------------------------------------------
  * State ownership in this file
  * ---------------------------------------------------------------------------
  *
- * The `Ref`s in `GameplayFrameState` are frame-local scratch: a work queue and a
- * counter. They are NOT game state. The blocks that fall, the fluid that flows
- * and the time of day are all mc-sim's and mc-worldgen's to hold; a frontier is
- * a note about what to look at next, and it is legitimately private to the
- * stage that consumes it.
+ * The `Ref`s in `GameplayFrameState` are frame-local scratch: work queues, an
+ * inbox, an outbox and a counter. They are NOT game state. The blocks that
+ * fall, the fluid that flows, the items in the inventory and the time of day
+ * are all mc-sim's and mc-worldgen's to hold; a frontier is a note about what
+ * to look at next, and it is legitimately private to the stage that consumes
+ * it.
  *
  * The distinction is worth policing, because "just one more Ref" is how the
  * reference implementation ended up with 13k LOC of rules in its composition
@@ -34,6 +52,10 @@
  * The rule that remains here — what the world DOES about the hour — is
  * `domain/day-night.ts`, and it holds nothing.
  *
+ * Note what the block writes did NOT add: a copy of the world. The stages below
+ * hold no blocks. Every read and every write goes to the store, and the only
+ * thing kept between ticks is which POSITIONS are worth looking at again.
+ *
  * ---------------------------------------------------------------------------
  * Why a factory rather than a constant
  * ---------------------------------------------------------------------------
@@ -45,8 +67,13 @@
  * from the start is cheaper than retrofitting it.
  */
 import { Effect, Layer, Ref } from 'effect'
+import { positionOfKey } from '../domain/block-position-key'
+import { ChunkStore, type BlockId, type ChunkStoreApi } from '../domain/chunk-store-port'
+import { applyFallingBlocks } from '../domain/entities/falling-block-move'
 import {
+  disturb,
   emptyFallingBlockQueue,
+  settled,
   takeBatch,
   type FallingBlockQueue,
 } from '../domain/falling-block'
@@ -56,6 +83,8 @@ import {
   type FluidWorkItem,
 } from '../domain/fluid-frontier'
 import type { GameModule, StageRegistration } from '../domain/frame-contract'
+import { breakBlock } from '../domain/interactions/break-block'
+import type { PositionKey } from '../domain/position-key'
 import { GAMEPLAY_STAGE_IDS, UPSTREAM_STAGE_IDS } from './stage-ids'
 
 /**
@@ -69,23 +98,48 @@ export const LAVA_TICK_INTERVAL = 4
 /**
  * Frame-local scratch, and nothing else.
  *
- * Every `Ref` here fails the save-file test in the module header: a work queue
- * of disturbed columns, a frontier of cells still to evaluate, and the tick
- * counter that paces lava. Losing all three on a reload costs nothing but a
- * frame of catch-up. Anything that would NOT be free to lose belongs to mc-sim.
+ * Every `Ref` here fails the save-file test in the module header. Two of them
+ * are QUEUES of work (disturbed columns, fluid cells still to evaluate) and one
+ * is the tick counter that paces lava; losing all three on a reload costs
+ * nothing but a frame of catch-up.
+ *
+ * The remaining two are a stand-in for services that are not published yet, and
+ * they are the ones to watch:
+ *
+ *   - `pendingBreaks` is an INBOX. Input belongs to mc-render (plan.md §4.2's
+ *     `input` slot) and reaches the rules as a request to act on a position.
+ *     Nothing needs it after the frame that services it, so it is scratch by
+ *     the save-file test — a save file records that a block is gone, never that
+ *     a mouse button was down.
+ *   - `minedItems` is an OUTBOX. What a broken block yields belongs to mc-sim's
+ *     `InventoryService`, which is plan.md §2.3-1's worked example and is NOT
+ *     this repository's to hold. Until mc-sim is published there is no
+ *     `InventoryService.add` to call, and inventing a local port would make
+ *     this repository a second owner of the inventory — the exact mistake the
+ *     day-length paragraph above records. A list the host drains is not an
+ *     owner: it holds items for the width of one frame and answers no
+ *     questions about them.
+ *
+ * Both disappear when their service exists: the inbox becomes mc-render's input
+ * events and the outbox becomes a call inside the interactions stage. Neither
+ * grows a query, a lookup or a second reader in the meantime.
  */
 export type GameplayFrameState = {
+  readonly pendingBreaks: Ref.Ref<ReadonlyArray<PositionKey>>
+  readonly minedItems: Ref.Ref<ReadonlyArray<BlockId>>
   readonly fallingBlocks: Ref.Ref<FallingBlockQueue>
   readonly fluidFrontier: Ref.Ref<ReadonlyArray<FluidWorkItem>>
   readonly tickCount: Ref.Ref<number>
 }
 
 export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.gen(function* () {
+  const pendingBreaks = yield* Ref.make<ReadonlyArray<PositionKey>>([])
+  const minedItems = yield* Ref.make<ReadonlyArray<BlockId>>([])
   const fallingBlocks = yield* Ref.make<FallingBlockQueue>(emptyFallingBlockQueue)
   const fluidFrontier = yield* Ref.make<ReadonlyArray<FluidWorkItem>>([])
   const tickCount = yield* Ref.make(0)
 
-  return { fallingBlocks, fluidFrontier, tickCount }
+  return { pendingBreaks, minedItems, fallingBlocks, fluidFrontier, tickCount }
 })
 
 /**
@@ -97,18 +151,73 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
  * order below is for human reading only — a consumer that relied on it would be
  * relying on a coincidence, and `test/stage-registration.test.ts` asserts that
  * the declared constraints, not the array order, are what carry the meaning.
+ *
+ * `store` is passed in rather than acquired per stage so that all four share
+ * one service instance and so that `run` keeps kernel's signature exactly; see
+ * the module header.
  */
-export const gameplayStages = (state: GameplayFrameState): ReadonlyArray<StageRegistration> => [
+export const gameplayStages = (
+  state: GameplayFrameState,
+  store: ChunkStoreApi,
+): ReadonlyArray<StageRegistration> => [
   {
     id: GAMEPLAY_STAGE_IDS.interactions,
     after: [UPSTREAM_STAGE_IDS.simPhysics],
-    // FIRST CUT: the ~40 one-rule-per-file handlers of plan.md §3.11 (break,
-    // place, bucket, flint & steel, bow, farming, shears, ender pearl, feed,
-    // shear, melee, …) are ported into `domain/interactions/` and dispatched
-    // from here. They are deliberately many small files and ONE stage: the
-    // granularity that matters for review is the rule, the granularity that
-    // matters for composition is the stage.
-    run: () => Effect.void,
+    // FIRST CUT: `domain/interactions/break-block.ts` is one of the ~40
+    // one-rule-per-file handlers of plan.md §3.11 (break, place, bucket, flint
+    // & steel, bow, farming, shears, ender pearl, feed, shear, melee, …). They
+    // are deliberately many small files and ONE stage: the granularity that
+    // matters for review is the rule, the granularity that matters for
+    // composition is the stage (DN-GP-9).
+    run: () =>
+      Effect.gen(function* () {
+        // `getAndSet` rather than get-then-set: whoever fills the inbox is not
+        // this fiber, and a request that arrived between the two steps would be
+        // dropped without a trace (DN-GP-10).
+        const requests = yield* Ref.getAndSet<ReadonlyArray<PositionKey>>(state.pendingBreaks, [])
+        if (requests.length === 0) {
+          return
+        }
+
+        const mined: Array<BlockId> = []
+        const disturbed: Array<PositionKey> = []
+
+        for (const positionKey of requests) {
+          const outcome = yield* breakBlock(store, positionOfKey(positionKey))
+          switch (outcome._tag) {
+            case 'Broken': {
+              // The write already told us what was there, so there is no
+              // read-then-write race for the drop (mc-worldgen §6-3).
+              mined.push(outcome.yielded)
+              // The ONLY entry point for falling-block work. Whatever rested on
+              // the block just removed may now be unsupported.
+              disturbed.push(positionKey)
+              break
+            }
+
+            // Air was already there: `Unchanged` did not dirty the chunk, so
+            // nothing here may either. Queueing a disturbance for a write that
+            // changed nothing is how a held mouse button becomes a permanent
+            // per-tick workload.
+            case 'NothingThere':
+            // The cell is not this session's to touch. Not an error — the
+            // player aimed at the edge of the world, or at a chunk that has
+            // not finished loading — and `run` has no error channel to put one
+            // in anyway.
+            case 'ChunkNotLoaded':
+            case 'OutOfWorld': {
+              break
+            }
+          }
+        }
+
+        if (mined.length > 0) {
+          yield* Ref.update(state.minedItems, (items) => [...items, ...mined])
+        }
+        if (disturbed.length > 0) {
+          yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, disturbed))
+        }
+      }),
   },
   {
     id: GAMEPLAY_STAGE_IDS.entities,
@@ -116,34 +225,35 @@ export const gameplayStages = (state: GameplayFrameState): ReadonlyArray<StageRe
     // Entities run after interactions because a mob's reaction is to the world
     // as the player just left it — reversing the two makes a creeper respond to
     // last frame's block placement, which reads as lag rather than as a bug.
-    //
-    // `Ref.modify` rather than get-then-set: plan.md §3.8 lists TOCTOU on a Ref
-    // among the reference's recurring Effect-level mistakes. Read-modify-write
-    // as two steps is a race the moment anything else forks.
+    // It is also what lets a block broken this frame start falling this frame.
     run: () =>
-      Ref.modify(state.fallingBlocks, (queue) => {
-        const { batch, rest } = takeBatch(queue)
-        // FIRST CUT: `batch` is where each position's column is evaluated and
-        // the move applied through mc-worldgen's `ChunkStore`, then the
-        // destinations fed back with `settled` to continue the cascade.
-        //
-        // This comment used to say "mc-sim's block service". There is no such
-        // service and there is not going to be one: plan.md left the owner of
-        // the block write path unassigned between §3.7 and §3.8, and it has
-        // been settled in mc-worldgen — see `domain/chunk-store-port.ts` for
-        // the consequences a rule author actually feels, and that repository's
-        // `application/chunk-store.ts` for the argument. What is unchanged is
-        // where the broken block GOES: mc-sim's `InventoryService`, which is
-        // plan.md §2.3-1's worked example.
-        //
-        // The body stays a queue drain until mc-worldgen is published and there
-        // is a `ChunkStore` to acquire (plan.md §6 Step 3 is bottom-up
-        // publish-then-pin). The whole loop, driven against this exact queue
-        // and against the mirrored port, is `test/vertical-slice.test.ts`; the
-        // same scenario against the real store is
-        // `mc-worldgen/test/vertical-slice.test.ts`.
-        return [batch, rest] as const
-      }).pipe(Effect.asVoid),
+      Effect.gen(function* () {
+        // `Ref.modify` rather than get-then-set: plan.md §3.8 lists TOCTOU on a
+        // Ref among the reference's recurring Effect-level mistakes.
+        // Read-modify-write as two steps is a race the moment anything else
+        // forks — and something else always does, because `disturb` is called
+        // by every rule that writes a block.
+        const batch = yield* Ref.modify(state.fallingBlocks, (queue) => {
+          const { batch: taken, rest } = takeBatch(queue)
+          return [taken, rest] as const
+        })
+
+        // An idle tick stops HERE, without touching the store. This is the
+        // whole of DN-GP-1: the reference implementation read ~7M blocks at
+        // this point whether or not anything had moved.
+        if (batch.length === 0) {
+          return
+        }
+
+        const { destinations } = yield* applyFallingBlocks(store, batch)
+
+        // `update`, not `set`: the store writes above may have caused other
+        // rules to disturb positions while this tick was running, and a `set`
+        // would erase them.
+        if (destinations.length > 0) {
+          yield* Ref.update(state.fallingBlocks, (queue) => settled(queue, destinations))
+        }
+      }),
   },
   {
     id: GAMEPLAY_STAGE_IDS.fluids,
@@ -187,13 +297,21 @@ export const gameplayStages = (state: GameplayFrameState): ReadonlyArray<StageRe
 /**
  * Build the module's state and its stages together.
  *
- * This is exactly `GameModule.frameStages` — see `gameplayModule` below, and
- * the note there on why that sentence is new.
+ * This is exactly `GameModule.frameStages` — see `gameplayModule` below. The
+ * `ChunkStore` in the context is the whole reason that field is an Effect: this
+ * is the one moment at which a module may acquire a service in order to BUILD a
+ * stage, rather than in order to run one.
  */
-export const makeGameplayStages: Effect.Effect<ReadonlyArray<StageRegistration>> = Effect.map(
-  makeGameplayFrameState,
-  gameplayStages,
-)
+export const makeGameplayStages: Effect.Effect<
+  ReadonlyArray<StageRegistration>,
+  never,
+  ChunkStore
+> = Effect.gen(function* () {
+  const store = yield* ChunkStore
+  const state = yield* makeGameplayFrameState
+
+  return gameplayStages(state, store)
+})
 
 /**
  * mx-gameplay as a `GameModule` (plan.md §4.1).
@@ -218,12 +336,12 @@ export const makeGameplayStages: Effect.Effect<ReadonlyArray<StageRegistration>>
  * The vertical-slice spike changed `frameStages` to an Effect, and the shape
  * this repository had already been forced into became the contract.
  *
- * `RIn` is `never` and stays `never`. When mx-gameplay starts writing through
- * mc-sim's services, those are acquired in `frameStages` — the `RRegister`
- * parameter — not in the Layer: this repository builds nothing that mc-sim has
- * to supply, it CALLS things mc-sim supplies.
+ * `RRegister` is now `ChunkStore` and `RIn` is still `never`, which is the
+ * distinction that parameter was added for: this repository needs mc-worldgen's
+ * store in order to REGISTER stages that write blocks, and needs nothing at all
+ * in order to build a Layer it does not have.
  */
-export const gameplayModule: GameModule<never, never, never> = {
+export const gameplayModule: GameModule<never, never, never, ChunkStore> = {
   layers: Layer.empty,
   frameStages: makeGameplayStages,
 }
