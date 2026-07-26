@@ -20,7 +20,7 @@ plan.md §3.11:
 | ゲート | コマンド | 何を捕まえるか |
 | --- | --- | --- |
 | 型 | `pnpm typecheck` | `tsconfig.build.json`（出荷ソース）と `tsconfig.test.json`（テスト + スクリプト）と `tsconfig.preview.json`（`apps/`）の**3 つ**。前者は `types: []` / `lib: ["ES2024"]` なので、Node 型や DOM 型が出荷ソースに漏れた時点で落ちる |
-| lint | `pnpm lint` | oxlint。`index.ts domain stages scripts test apps` の 36 ファイル。**`--deny-warnings` 付きで走る**ため、`warn` のルールもビルドを落とす（`oxlint.json` は 5 カテゴリすべてと個別 67 ルールが `warn`、`error` は 4 つだけ。このフラグが無かった頃は実質その 4 つしかゲートになっていなかった） |
+| lint | `pnpm lint` | oxlint。`index.ts domain stages scripts test apps` の 46 ファイル。**`--deny-warnings` 付きで走る**ため、`warn` のルールもビルドを落とす（`oxlint.json` は 5 カテゴリすべてと個別 67 ルールが `warn`、`error` は 4 つだけ。このフラグが無かった頃は実質その 4 つしかゲートになっていなかった） |
 | 境界 | `pnpm check:deps` | 依存ホワイトリスト / 循環 / 推移閉包 / kit の実行時混入 / `Date.now()` |
 | 振る舞い | `pnpm test` | vitest |
 
@@ -44,13 +44,13 @@ prettier も biome も `.editorconfig` も置かない。整形の権威が 2 �
 
 ## 2. 現在のスイート
 
-**10 ファイル / 160 テスト、全 pass。**
+**10 ファイル / 199 テスト、全 pass。**
 
 | ファイル | 本数 | 内容 |
 | --- | ---: | --- |
 | `test/api-lock.test.ts` | 26 | API ロック生成器そのもの（`scripts/api-lock.ts`） |
 | `test/rules.test.ts` | 19 | DN-GP-1 / DN-GP-2 / DN-GP-3 のドメイン単体 |
-| `test/mob.test.ts` | 36 | **クリーパー。** 導火線の状態機械を**列挙**し、爆風の減衰表・スポーン判定・ドロップを参照実装のオラクルから移植する（§2-2）。乱数がドメインに無いことをソース走査で固定する 1 本を含む |
+| `test/mob.test.ts` | 75 | **クリーパー / エンダーマン / シュルカー / 掃除。** 導火線と殻の状態機械を**列挙**し（両方とも全遷移を通す）、爆風の減衰表・スポーン判定・ドロップ・テレポート帯・デスポーン距離を参照実装のオラクルから移植する（§2-2）。乱数がドメインに無いことをソース走査で固定する 1 本と、シナリオ再現を 2 本含む |
 | `test/stage-registration.test.ts` | 19 | フレーム契約（§2.3-1 / §2.3-3）と stage の振る舞い。時刻の `Ref` が無いこと、store を**登録時に**取ること |
 | `test/check-dependency-whitelist.test.ts` | 17 | 依存ポリシーそのもの。うち 3 本は**他リポジトリの席から**読んだ roster 検査（§2-3） |
 | `test/vertical-slice.test.ts` | 12 | 縦切り。**stage 登録経由で**「掘る → 砂が落ちる → アイテムが渡る」を回す（DN-GP-1 / DN-GP-11） |
@@ -122,7 +122,7 @@ roster を各リポジトリが持ち回っている以上、**行の正しさ�
 | 2 | plan.md §3.11 の 7 つの責務が実装済み | ❌（1 つも未着手。[porting.md](./porting.md)） |
 | 3 | 参照実装のテストオラクルが移植済み | ❌ |
 | 4 | **プレビュー「採掘場」が操作可能** | ✅（`pnpm preview`。ただしドロップテーブルと設置ルールが未実装なので、確認できるのは「掘る」と落下カスケードまで。§3-1） |
-| 5 | **プレビュー「Mob アリーナ」が操作可能** | ✅（`--screen arena`。**Mob は 1 体 = クリーパー。** スポーン → 導火線 → 爆風 → 死因 → ドロップが本物。エンダーマン / シュルカー / ドラゴンは未着手で、画面がそう書く。§3-1） |
+| 5 | **プレビュー「Mob アリーナ」が操作可能** | ✅（`--screen arena`。**plan.md §3.11 の 4 挙動のうち 3 つ。** スポーン → 導火線 → 爆風 → 死因 → ドロップ、エンダーマンのテレポート判断と変位、シュルカーの殻、そして掃除が本物。4 つ目のドラゴンは**理由つきの拒否**として画面に載る。§3-1） |
 | 6 | **プレビュー「時間スライダー」が操作可能** | ✅（`--screen time`。時刻を**進める**のは mc-sim であり、そちらは未 publish） |
 | 7 | 99% カバレッジゲートが有効 | ❌（完成時に有効化。§4） |
 | 8 | `mc-kernel` を import し `domain/frame-contract.ts` / `domain/position-key.ts` を削除 | ❌（kernel の publish 待ち） |
@@ -137,7 +137,7 @@ plan.md §3.11 が指定する 3 本。`apps/preview-*/` に置く（plan.md §4
 | プレビュー | 画面 | 実体 | 主に検証されるルール |
 | --- | --- | --- | --- |
 | **採掘場** | `site` | **本物**。`gameplayStages` を本物の `ChunkStoreApi` に対して回す | `break-block`、落下ブロック（DN-GP-1）、`ChunkNotLoaded`（DN-GP-11）。**ドロップテーブルも設置ルールも存在しない**ので、掘って出るのは「そこにあったブロック」そのものであり、`p` キーはストアを直接書いて「これはルールではない」と HUD に出す |
-| **Mob アリーナ** | `arena` | **本物。Mob は 1 体（クリーパー）** | `domain/mob/` の 4 本 —— `hostile-spawn`（夜・光度・`validSpawnSurface`・距離帯）、`creeper-fuse`（着火 / 退避で消える / 1 回だけ爆発）、`explosion`（減衰と死因）、`mob-drop`（火薬。自爆なら何も出ない）と、それらが到達する `domain/death-cause.ts`（DN-GP-3）。**状態はプレビューが持つ** —— mc-sim の役をこの画面が務めており、持っているのは距離 1 つと `CreeperFuse` 値 1 つだけである。欠けているもの（他 3 種の Mob、名簿、経路探索、近接/遠隔ハンドラ、クレーター、デスポーン、これを回す stage）は**行き先つきで**列挙し続ける |
+| **Mob アリーナ** | `arena` | **本物。plan.md §3.11 の 4 挙動のうち 3 つ** | `domain/mob/` の 7 本 —— `hostile-spawn`（夜・光度・`validSpawnSurface`・距離帯）、`creeper-fuse`（着火 / 退避で消える / 1 回だけ爆発）、`explosion`（減衰と死因）、`mob-drop`（クリーパー / ガスト / ブレイズ。自爆なら何も出ない）、`enderman-teleport`（3 つの引き金と 8..32 ブロックの変位）、`shulker-shell`（開くのに 20 フレーム、閉じるのに 1）、`hostile-despawn`（3D で 128 ブロック）と、それらが到達する `domain/death-cause.ts`（DN-GP-3）。**状態はプレビューが持つ** —— mc-sim の役をこの画面が務めており、`ArenaCreeper` 4 欄 + `ArenaShulker` 6 欄 + `ArenaEnderman` 4 欄のどれ 1 つも位置でも id でも乱数生成器でもない。欠けているものは**行き先つきで**列挙し続ける（4 つ目の挙動＝ドラゴンは、**理由つきの拒否**として一覧の先頭に載る） |
 | **時間スライダー** | `time` | **ルールドライバとしては本物** | `domain/day-night.ts` の `isNight` / `dayPhase` / `hostileSpawnsAllowed`（DN-GP-7）。**時刻そのものを動かすのは mc-sim の `TimeService`** であり、`gameplay:time-weather` は `Effect.void` のままなので、スライダーは「書く先」を持たない。引数を掃くだけである |
 
 **`mc-playground-kit` は使っていない。** 本節は以前「いずれも kit を devDependency として使う」と

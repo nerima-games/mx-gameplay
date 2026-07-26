@@ -26,15 +26,25 @@
  * the mirror honest, and the repoint is three lines in that file's header.
  *
  * ---------------------------------------------------------------------------
+ * ...and the mobs through mc-sim's `EntityManager`
+ * ---------------------------------------------------------------------------
+ *
+ * The second service, acquired at the same moment and for the same reason. It is
+ * the roster this file spent a headed paragraph explaining why it could not
+ * invent, and mc-sim has now built it; `domain/entity-manager-port.ts` is the
+ * mirror, `test/entity-manager-mirror.test.ts` keeps it honest, and
+ * `domain/entities/mob-frame.ts` is the loop.
+ *
+ * ---------------------------------------------------------------------------
  * State ownership in this file
  * ---------------------------------------------------------------------------
  *
- * The `Ref`s in `GameplayFrameState` are frame-local scratch: work queues, an
- * inbox, an outbox and a counter. They are NOT game state. The blocks that
- * fall, the fluid that flows, the items in the inventory and the time of day
- * are all mc-sim's and mc-worldgen's to hold; a frontier is a note about what
- * to look at next, and it is legitimately private to the stage that consumes
- * it.
+ * The `Ref`s in `GameplayFrameState` are frame-local scratch: work queues,
+ * inboxes, outboxes, a counter and a seed. They are NOT game state. The blocks
+ * that fall, the fluid that flows, the items in the inventory, the mobs that
+ * exist and the time of day are all mc-sim's and mc-worldgen's to hold; a
+ * frontier is a note about what to look at next, and it is legitimately private
+ * to the stage that consumes it.
  *
  * The distinction is worth policing, because "just one more Ref" is how the
  * reference implementation ended up with 13k LOC of rules in its composition
@@ -71,6 +81,21 @@ import { positionOfKey } from '../domain/block-position-key'
 import { ChunkStore, type BlockId, type ChunkStoreApi } from '../domain/chunk-store-port'
 import { applyFallingBlocks } from '../domain/entities/falling-block-move'
 import {
+  applySpawnAttempts,
+  resolveBlasts,
+  rollCasualtyDrops,
+  rollSelfDestructDrops,
+  sweepMobs,
+  type MobBehaviour,
+  type MobSpawnAttempt,
+} from '../domain/entities/mob-frame'
+import {
+  entityManagerTag,
+  type EntityManager,
+  type EntityManagerApi,
+  type Position,
+} from '../domain/entity-manager-port'
+import {
   disturb,
   emptyFallingBlockQueue,
   settled,
@@ -83,7 +108,9 @@ import {
   type FluidWorkItem,
 } from '../domain/fluid-frontier'
 import type { GameModule, StageRegistration } from '../domain/frame-contract'
+import { DEFAULT_ROLL_SEED } from '../domain/frame-rolls'
 import { breakBlock } from '../domain/interactions/break-block'
+import type { MobDrop } from '../domain/mob/mob-drop'
 import type { PositionKey } from '../domain/position-key'
 import { GAMEPLAY_STAGE_IDS, UPSTREAM_STAGE_IDS } from './stage-ids'
 
@@ -123,10 +150,52 @@ export const LAVA_TICK_INTERVAL = 4
  * Both disappear when their service exists: the inbox becomes mc-render's input
  * events and the outbox becomes a call inside the interactions stage. Neither
  * grows a query, a lookup or a second reader in the meantime.
+ *
+ * FOUR MORE ARRIVED WITH THE MOB WIRING, and each is one of the same two shapes.
+ *
+ *   - `targetPosition` is an INBOX and the one that most looks like a mistake, so
+ *     it is argued rather than asserted. The player's pose is saved state and it
+ *     is mc-sim's `PlayerService`; a second owner of it here would be exactly the
+ *     `timeOfDaySecs` failure this file records. It is not one, for the reason
+ *     `minedItems` is not an inventory: the frame WRITES it and the stage READS
+ *     it within the same frame, it answers no question about where anybody is,
+ *     nothing reads it after the frame that filled it, and it is overwritten
+ *     rather than accumulated. What it stands in for is `(yield* player.pose)
+ *     .feetPosition`, which mc-sim's §7-5 spells out as the host's second line —
+ *     and which cannot be written yet, because `PlayerService.cameraPose`
+ *     requires `ClockPort` and `domain/frame-contract.ts` names restating
+ *     `ClockPort` locally as 「a far worse failure than a narrower type」. So the
+ *     port that would carry it cannot be mirrored whole, and a narrow mirror of a
+ *     `Context.Tag` is the hazard `domain/chunk-store-port.ts` exists to refuse.
+ *
+ *   - `spawnAttempts` is an INBOX of candidate cells. The SEARCH that produces
+ *     them is not here and cannot be; see `MobSpawnAttempt` in
+ *     `domain/entities/mob-frame.ts`, which names the two measurements it is
+ *     missing and where each comes from.
+ *
+ *   - `mobDrops` is an OUTBOX, `minedItems`'s twin, and separate from it because
+ *     the two carry different things: a broken block yields a `BlockId` and a dead
+ *     mob yields an `ItemType` and a count. Both become `InventoryService.add`
+ *     calls together. mc-sim IS now mirrored — `domain/entity-manager-port.ts` —
+ *     so the obvious question is why the inventory is not mirrored beside it, and
+ *     the answer is the whole-api rule: `InventoryServiceApi` names `Inventory`,
+ *     `RecipeTable`, `CraftGrid`, `RecipeMatch` and `CraftResult`, so mirroring it
+ *     honestly means restating mc-sim's crafting vocabulary in a repository that
+ *     has no crafting rule to justify it. The roster was worth that price because
+ *     the stage cannot iterate mobs without it; the outbox works today.
+ *
+ *   - `rollSeed` is neither. It is the frame's source of randomness, and
+ *     `domain/frame-rolls.ts` is a whole file about why it is a seed here rather
+ *     than a `Math.random()` in the rules, an `Effect.Random` in `run`'s context,
+ *     or a generator on mc-sim's entity.
  */
 export type GameplayFrameState = {
   readonly pendingBreaks: Ref.Ref<ReadonlyArray<PositionKey>>
   readonly minedItems: Ref.Ref<ReadonlyArray<BlockId>>
+  readonly mobDrops: Ref.Ref<ReadonlyArray<MobDrop>>
+  readonly spawnAttempts: Ref.Ref<ReadonlyArray<MobSpawnAttempt>>
+  readonly targetPosition: Ref.Ref<Position | undefined>
+  readonly rollSeed: Ref.Ref<number>
   readonly fallingBlocks: Ref.Ref<FallingBlockQueue>
   readonly fluidFrontier: Ref.Ref<ReadonlyArray<FluidWorkItem>>
   readonly tickCount: Ref.Ref<number>
@@ -135,11 +204,28 @@ export type GameplayFrameState = {
 export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.gen(function* () {
   const pendingBreaks = yield* Ref.make<ReadonlyArray<PositionKey>>([])
   const minedItems = yield* Ref.make<ReadonlyArray<BlockId>>([])
+  const mobDrops = yield* Ref.make<ReadonlyArray<MobDrop>>([])
+  const spawnAttempts = yield* Ref.make<ReadonlyArray<MobSpawnAttempt>>([])
+  const targetPosition = yield* Ref.make<Position | undefined>(undefined)
+  // A LITERAL, not a clock reading: two runs of one scenario must draw the same
+  // numbers (plan.md §5.1-3). A world seed is mc-worldgen's noun and this is
+  // where it lands when that repository publishes one.
+  const rollSeed = yield* Ref.make(DEFAULT_ROLL_SEED)
   const fallingBlocks = yield* Ref.make<FallingBlockQueue>(emptyFallingBlockQueue)
   const fluidFrontier = yield* Ref.make<ReadonlyArray<FluidWorkItem>>([])
   const tickCount = yield* Ref.make(0)
 
-  return { pendingBreaks, minedItems, fallingBlocks, fluidFrontier, tickCount }
+  return {
+    pendingBreaks,
+    minedItems,
+    mobDrops,
+    spawnAttempts,
+    targetPosition,
+    rollSeed,
+    fallingBlocks,
+    fluidFrontier,
+    tickCount,
+  }
 })
 
 /**
@@ -159,6 +245,7 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
 export const gameplayStages = (
   state: GameplayFrameState,
   store: ChunkStoreApi,
+  roster: EntityManagerApi<MobBehaviour>,
 ): ReadonlyArray<StageRegistration> => [
   {
     id: GAMEPLAY_STAGE_IDS.interactions,
@@ -227,30 +314,94 @@ export const gameplayStages = (
     // last frame's block placement, which reads as lag rather than as a bug.
     // It is also what lets a block broken this frame start falling this frame.
     //
-    // THE CREEPER IS NOT RUN HERE, AND THE REASON IS THE POINT. `domain/mob/`
-    // now holds four rules — the fuse, the blast, the spawn condition and the
-    // drop — and this stage calls none of them. Running them would need
-    // something to iterate over: a roster of mobs with positions and health,
-    // and a way to ask how far each one is from the player. That is state, it
-    // has to survive a save/load round trip, and by the test in this file's
-    // header it therefore belongs to mc-sim (plan.md §7: 「状態管理は sim、
-    // AI/スポーン/ドロップのルールは gameplay」).
+    // THE CREEPER IS RUN HERE NOW, AND THE REASON IS STILL THE POINT. This
+    // comment used to say the opposite, at length: `domain/mob/` held finished
+    // rules that this stage called none of, because running them needs 「a roster
+    // of mobs with positions and health」, a roster is state, state survives a
+    // save/load round trip, and by the test in this file's header it is therefore
+    // mc-sim's. The alternative on offer — a local `Ref<Map<MobId, CreeperFuse>>`
+    // — would have run that day and would have been the same mistake as the
+    // `timeOfDaySecs` Ref this file used to hold: a second owner of a noun,
+    // diverging from the one that gets saved.
     //
-    // A local `Ref<Map<MobId, CreeperFuse>>` here would run today and would be
-    // the same mistake as the `timeOfDaySecs` Ref this file used to hold: a
-    // second owner of a noun, diverging from the one that gets saved. So the
-    // rules stay callable and uncalled until `EntityManager` exists, and their
-    // host in the meantime is `apps/preview-mining-site`'s arena screen, which
-    // holds exactly what mc-sim will hold — a distance and a `CreeperFuse`.
-    // When the service lands, this stage grows a loop and nothing in
-    // `domain/mob/` changes.
-    run: () =>
+    // mc-sim built it (`domain/entity.ts`, `application/entity-manager.ts`, and
+    // §7 of that repository's `docs/public-api.md`, which quotes the paragraph
+    // back). The prediction that came with the refusal was that 「this stage
+    // grows a loop and nothing in `domain/mob/` changes」. The loop is
+    // `domain/entities/mob-frame.ts` and NOT ONE FILE IN `domain/mob/` CHANGED.
+    //
+    // The order below is the frame's, and the two halves are not independent: a
+    // creeper's crater writes blocks, which `disturb`s them, which the
+    // falling-block pass then picks up IN THE SAME FRAME. That is the
+    // event-driven discipline `domain/falling-block.ts` is about, reached from a
+    // new direction — the blast never scans, it reports the cells it actually
+    // emptied.
+    run: (dt) =>
       Effect.gen(function* () {
+        // ---- mobs ----------------------------------------------------------
+        //
+        // One sweep: despawn what is out of range, burn every creeper's fuse,
+        // collect the blasts. A mob this repository has no rule for costs one
+        // closure call and a shared object; see `mob-frame.ts` on why the step
+        // record is the allocation only this side can remove.
+        const targetPosition = yield* Ref.get(state.targetPosition)
+        const blasts = yield* sweepMobs(roster, { target: targetPosition, dt })
+
+        if (blasts.length > 0) {
+          const { casualties, disturbed } = yield* resolveBlasts(roster, store, blasts)
+
+          // What the creeper itself leaves: nothing, and the RULE says so rather
+          // than this stage assuming it (`domain/mob/mob-drop.ts` on why the
+          // reference gets the same answer by accident of statement order).
+          const selfDestruct = blasts.flatMap((blast) => rollSelfDestructDrops(blast.kind))
+
+          // `Ref.modify`, so the seed is read, advanced and written in one step.
+          // A split read/write here would let two frames draw the same rolls,
+          // which is worse than a non-deterministic generator: it is a
+          // deterministic wrong one.
+          const drops = yield* Ref.modify(state.rollSeed, (seed) => {
+            const rolled = rollCasualtyDrops(casualties, seed)
+            return [rolled.drops, rolled.seed] as const
+          })
+
+          if (selfDestruct.length > 0 || drops.length > 0) {
+            yield* Ref.update(state.mobDrops, (items) => [...items, ...selfDestruct, ...drops])
+          }
+
+          // THE ONLY WAY BLOCK WORK ENTERS FROM A BLAST. `disturbed` holds the
+          // cells whose write came back `Written` and nothing else, so a blast
+          // in open sky enqueues nothing — the same rule the interactions stage
+          // applies to a break that changed nothing.
+          if (disturbed.length > 0) {
+            yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, disturbed))
+          }
+        }
+
+        // `getAndSet` rather than get-then-set, for `pendingBreaks`' reason: a
+        // candidate offered between the two steps would be dropped silently.
+        const attempts = yield* Ref.getAndSet<ReadonlyArray<MobSpawnAttempt>>(
+          state.spawnAttempts,
+          [],
+        )
+        if (attempts.length > 0) {
+          // The outcomes — a `Refused` reason per cell, or `AtCapacity` — are
+          // returned by `applySpawnAttempts` and dropped HERE, because `run`
+          // returns void and there is nowhere in the frame to report a
+          // diagnostic to. They are not dropped by the rule: whoever offers
+          // candidates is who wants to know why they were refused, and when the
+          // search that offers them lands in this repository it will call this
+          // function directly and read them. `apps/preview-mining-site`'s arena
+          // screen already prints the word.
+          yield* applySpawnAttempts(roster, attempts)
+        }
+
+        // ---- falling blocks ------------------------------------------------
+        //
         // `Ref.modify` rather than get-then-set: plan.md §3.8 lists TOCTOU on a
         // Ref among the reference's recurring Effect-level mistakes.
         // Read-modify-write as two steps is a race the moment anything else
         // forks — and something else always does, because `disturb` is called
-        // by every rule that writes a block.
+        // by every rule that writes a block, including the crater above.
         const batch = yield* Ref.modify(state.fallingBlocks, (queue) => {
           const { batch: taken, rest } = takeBatch(queue)
           return [taken, rest] as const
@@ -258,7 +409,10 @@ export const gameplayStages = (
 
         // An idle tick stops HERE, without touching the store. This is the
         // whole of DN-GP-1: the reference implementation read ~7M blocks at
-        // this point whether or not anything had moved.
+        // this point whether or not anything had moved. The mob half above is
+        // held to the same standard by the same test — an idle frame's sweep
+        // returns the roster it was given, hands every mob the SAME step object,
+        // and makes no store call at all.
         if (batch.length === 0) {
           return
         }
@@ -315,20 +469,47 @@ export const gameplayStages = (
 /**
  * Build the module's state and its stages together.
  *
- * This is exactly `GameModule.frameStages` — see `gameplayModule` below. The
- * `ChunkStore` in the context is the whole reason that field is an Effect: this
- * is the one moment at which a module may acquire a service in order to BUILD a
+ * This is exactly `GameModule.frameStages` — see `gameplayModule` below. The two
+ * services in the context are the whole reason that field is an Effect: this is
+ * the one moment at which a module may acquire a service in order to BUILD a
  * stage, rather than in order to run one.
+ *
+ * ---------------------------------------------------------------------------
+ * `MobBehaviour` IS NAMED HERE, AND THAT IS THE POINT OF FAILURE TO KNOW ABOUT
+ * ---------------------------------------------------------------------------
+ *
+ * `entityManagerTag<MobBehaviour>()` and `EntityManagerLayer<MobBehaviour>()`
+ * must agree, and NO COMPILER CAN CHECK THAT THEY DO: mc-sim's Layer has result
+ * type `Layer.Layer<EntityManager>` with the behaviour parameter appearing
+ * nowhere in it, because the context identity is unparameterised while the
+ * service value type is not (`docs/public-api.md` §7-1 of that repository). A
+ * host that instantiates the roster at some other `S` gets a Layer that
+ * satisfies this requirement and a `behaviour` field that is not what the line
+ * below says it is.
+ *
+ * The mitigation is that exactly one repository names the type and the host
+ * imports that name: `MobBehaviour` and `repairMobBehaviour` are both exported
+ * from `index.ts` for this reason. The host's two lines are
+ *
+ *     const world = Layer.merge(
+ *       simModule.layers,
+ *       EntityManagerLayer<MobBehaviour>(undefined, repairMobBehaviour),
+ *     )
+ *
+ * and taking `gameplayModule.frameStages` from inside that same `Effect.provide`.
+ * See `docs/public-api.md` for why `simModule` should not grow a type parameter
+ * to try to do this for the host.
  */
 export const makeGameplayStages: Effect.Effect<
   ReadonlyArray<StageRegistration>,
   never,
-  ChunkStore
+  ChunkStore | EntityManager
 > = Effect.gen(function* () {
   const store = yield* ChunkStore
+  const roster = yield* entityManagerTag<MobBehaviour>()
   const state = yield* makeGameplayFrameState
 
-  return gameplayStages(state, store)
+  return gameplayStages(state, store, roster)
 })
 
 /**
@@ -354,12 +535,20 @@ export const makeGameplayStages: Effect.Effect<
  * The vertical-slice spike changed `frameStages` to an Effect, and the shape
  * this repository had already been forced into became the contract.
  *
- * `RRegister` is now `ChunkStore` and `RIn` is still `never`, which is the
- * distinction that parameter was added for: this repository needs mc-worldgen's
- * store in order to REGISTER stages that write blocks, and needs nothing at all
- * in order to build a Layer it does not have.
+ * `RRegister` is now `ChunkStore | EntityManager` and `RIn` is still `never`,
+ * which is the distinction that parameter was added for: this repository needs
+ * mc-worldgen's store in order to REGISTER stages that write blocks and mc-sim's
+ * roster in order to register the stage that iterates mobs, and needs nothing at
+ * all in order to build a Layer it does not have.
+ *
+ * The union growing from one service to two is the shape `RRegister` predicted
+ * and is not a widening of anything a consumer relies on: `RIn` is untouched, so
+ * mx-gameplay still BUILDS nothing another repository has to supply. What it
+ * does mean is that a host which was providing only the store now fails to
+ * compile, which is the correct failure — the alternative is a stage that
+ * iterates a roster nobody built.
  */
-export const gameplayModule: GameModule<never, never, never, ChunkStore> = {
+export const gameplayModule: GameModule<never, never, never, ChunkStore | EntityManager> = {
   layers: Layer.empty,
   frameStages: makeGameplayStages,
 }

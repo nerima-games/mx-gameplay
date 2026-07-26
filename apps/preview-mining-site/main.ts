@@ -22,14 +22,20 @@
  *          total functions and the slider sweeps their argument. It does NOT
  *          advance time — mc-sim owns the hour (DN-GP-7) and
  *          `gameplay:time-weather` is `Effect.void`.
- *   arena  the mob arena. THERE IS NO MOB, and the screen says so as its first
- *          line. It lists what is missing and where it would go, then drives the
- *          part of the arena that does exist: `domain/death-cause.ts`.
+ *   arena  the mob arena. REAL, and for three of plan.md §3.11's four mob
+ *          behaviours: `domain/mob/`'s seven rule files drive a creeper end to
+ *          end, an enderman's teleport decision and offset, a shulker's shell,
+ *          and the sweep that removes any of them. It still lists what is
+ *          missing and where each piece would go, and that list is LONGER than
+ *          it was when the screen had nothing — writing a rule is what lets its
+ *          edges be named.
  *
  * The alternative was to draw an arena with two sprites in it. mx-ui's preview
  * refused the same offer for its inventory screen, and for the same reason: a
  * drawn arena would make a gap look like progress, and the completion table in
- * docs/testing.md §3 would acquire a tick nobody could cash.
+ * docs/testing.md §3 would acquire a tick nobody could cash. That is still why
+ * the fourth behaviour — the dragon — appears on the missing list as a refusal
+ * with its reason rather than as half a phase machine.
  *
  * ---------------------------------------------------------------------------
  * Why this renders in a terminal
@@ -101,9 +107,13 @@ import {
   ARENA_SETTLE_CAP,
   ARENA_SPAWN_DISTANCE,
   attemptSpawn,
+  cycleEndermanRoll,
+  cycleEndermanStuck,
   cycleGround,
   cycleLight,
   cycleLooting,
+  cycleTeleportRolls,
+  hitShulker,
   initialArenaState,
   initialTimeState,
   nudgeSpawnDistance,
@@ -111,9 +121,12 @@ import {
   respawn,
   slayCreeper,
   stepArena,
+  stepShulker,
   strike,
   TIME_STEP,
   TIME_STEP_COARSE,
+  toggleEndermanDamage,
+  toggleShulkerTarget,
   type ArenaState,
   type TimeState,
 } from './screens'
@@ -330,12 +343,18 @@ const handleKey = (state: State, key: string, options: PreviewOptions): Effect.E
         case 'l':
           approach(state.arena, 1)
           break
+        // One preview frame advances EVERY mob, because a frame is a frame.
+        // The enderman is absent from this list on purpose: its rule holds no
+        // state, so there is nothing for a frame to advance — it re-decides
+        // from the three facts on every redraw.
         case '.':
           stepArena(state.arena)
+          stepShulker(state.arena)
           break
         case 'n':
           for (let step = 0; step < options.runFrames; step += 1) {
             stepArena(state.arena)
+            stepShulker(state.arena)
           }
           break
         case 'k':
@@ -343,6 +362,28 @@ const handleKey = (state: State, key: string, options: PreviewOptions): Effect.E
           break
         case 'f':
           cycleLooting(state.arena)
+          break
+
+        // --- the enderman ------------------------------------------------
+        case 'd':
+          toggleEndermanDamage(state.arena)
+          break
+        case 'e':
+          cycleEndermanRoll(state.arena)
+          break
+        case 'w':
+          cycleEndermanStuck(state.arena)
+          break
+        case 'y':
+          cycleTeleportRolls(state.arena)
+          break
+
+        // --- the shulker ---------------------------------------------------
+        case 'm':
+          toggleShulkerTarget(state.arena)
+          break
+        case ';':
+          hitShulker(state.arena)
           break
 
         // --- the death-cause driver (unchanged; finding F5 lives here) ----

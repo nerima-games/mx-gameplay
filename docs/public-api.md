@@ -70,34 +70,94 @@ export const gameplayModule: GameModule<never, never, never, ChunkStore> = {
 }
 ```
 
-### 2-2. `RRegister` は `ChunkStore` になった。`RIn` は `never` のままである
+### 2-2. `RRegister` は `ChunkStore | EntityManager` になった。`RIn` は `never` のままである
 
 ここには「mx-gameplay が他リポジトリのサービス越しに書き込みを始めるとき、それらは `frameStages` の中で
 — つまり `RRegister` パラメータで — 取得される」と**予告**が書いてあった。そのとおりになった。
 stage がブロックを読み書きするようになったので、**登録**するのに mc-worldgen の `ChunkStore` が要る。
+そして stage が Mob を反復するようになったので、mc-sim の `EntityManager` も要る。
 
 2 つのパラメータの違いがここで初めて観測できる。
 
 | | 値 | 意味 |
 | --- | --- | --- |
 | `RIn` | `never` | 本リポジトリが**構築**するのに要るもの。`layers` が空なので何も要らない |
-| `RRegister` | `ChunkStore` | 本リポジトリが stage を**登録**するのに要るもの |
+| `RRegister` | `ChunkStore \| EntityManager` | 本リポジトリが stage を**登録**するのに要るもの |
 
-本リポジトリは mc-worldgen が供給しなければならないものを構築するのではなく、
-mc-worldgen が供給するものを**呼ぶ**だけである。だから `RIn` は増えない。
+本リポジトリは他リポジトリが供給しなければならないものを構築するのではなく、
+他リポジトリが供給するものを**呼ぶ**だけである。だから `RIn` は増えない。
 
 **`run` の側は増えてはならない。** `StageRegistration.run` の文脈は kernel の `FrameServices` であり、
 そこに `ChunkStore` を要求することは kernel に mc-worldgen のサービスを名指しさせることになる
-（階層モデル、plan.md §2.2 が禁じている）。だから store は登録時に 1 度だけ取得し、4 stage が共有する。
+（階層モデル、plan.md §2.2 が禁じている）。だから store と roster は登録時に 1 度だけ取得し、4 stage が共有する。
 固定しているテスト: `` REGRESSION: the store is acquired at registration, never demanded by `run` ``、
-`acquires exactly one service to register — mc-worldgen’s store, in frameStages`
+`acquires exactly two services to register — the store and the roster, in frameStages`
 （`test/stage-registration.test.ts`）。
 
-`ChunkStore` は mc-worldgen が publish されるまで `domain/chunk-store-port.ts` のミラーから来る。
-ミラーは `index.ts` から re-export していないが、`makeGameplayStages` の型に現れる以上、
+`ChunkStore` は mc-worldgen が publish されるまで `domain/chunk-store-port.ts` のミラーから、
+`EntityManager` は mc-sim が publish されるまで `domain/entity-manager-port.ts` のミラーから来る。
+どちらも `index.ts` から re-export していないが、`makeGameplayStages` の型に現れる以上、
 消費者には見える —— `api-lock.md` の "Supporting declarations" に
-`ChunkStore` / `ChunkStoreApi` / `BlockReading` / `BlockWriteOutcome` などが載っているのはそのためである。
+`ChunkStore` / `ChunkStoreApi` / `EntityManager` / `EntityManagerApi` などが載っているのはそのためである。
 タグキーの文字列リテラルまで載るので、キーが動けば API ロックの diff に出る。
+
+### 2-3. `simModule` に型引数を生やすべきか —— **生やすべきでない**
+
+mc-sim は `EntityManagerLayer` を `simModule` に**入れずに**出荷し、判断をホストの配線段に預けた
+（`mc-sim/docs/public-api.md` §7-5）。理由は正しい: `simModule` は `const` で、`S` はホストの選択であり、
+既定値を出荷することは `BehaviourRepair` の無い `EntityManagerApi<unknown>` を出荷することになる。
+そして「どのホストにとっても誤っている既定値は、既定値が無いより悪い」。
+
+本リポジトリはそのホストの隣人であり、実際に配線した結果として**反対側の結論**に達した。
+`simModule<S>()` にしても問題は解けず、隠れるだけである。
+
+**1. 型引数がファントムになる。** これが決定的である。
+
+```typescript
+const EntityManagerLayer: <S>(initial?, repairBehaviour?) => Layer.Layer<EntityManager>
+```
+
+`S` は**戻り値の型のどこにも現れない**。コンテキスト同一性 `EntityManager` は引数を持たないからで、
+それ自体は §7-1 の狙いどおりの性質である。しかしその結果、`simModule<S>()` の `S` も戻り値に現れず、
+注釈を書かなかった呼び出し側では `unknown` に推論され、**型検査を通ったまま**
+`EntityManagerApi<unknown>` のロスタが建つ。§7-5 が「既定値を出荷したときに起きる」と書いた欠陥が、
+モジュール契約の形をして戻ってくる。今の形なら、誤った `S` は少なくとも
+`EntityManagerLayer<Foo>()` と 1 か所に書き下されている。
+
+**2. `simModule` の型は今のままでも変わらない。** `layers` の型は `Layer.Layer<...>` であり、
+`EntityManagerLayer` を merge しても `EntityManager` が 1 つ増えるだけで `S` は入らない。
+つまり型引数は**契約を何も強くしない**。破壊的変更（`const` → 関数）を払って得るものが無い。
+
+**3. §4.3 が測ったのは「provide が 2 か所」ではなく「インスタンスが 2 つ」である。**
+必要なのは `EntityManagerLayer` の呼び出しが合成ルートに 1 回しか無いことで、それは
+`Layer.merge(simModule.layers, EntityManagerLayer<MobBehaviour>(...))` で同じように満たされる。
+
+**では何が防御になるのか。** 型ではなく**名前**である。`S` を名指しできるのは
+ルール層のリポジトリだけなので、mx-gameplay が唯一の名前を輸出する:
+
+```typescript
+import { gameplayModule, repairMobBehaviour, type MobBehaviour } from '@nerima-games/mx-gameplay'
+
+const world = Layer.merge(
+  simModule.layers,
+  EntityManagerLayer<MobBehaviour>(undefined, repairMobBehaviour),
+)
+```
+
+`MobBehaviour` は `CreeperFuse | undefined` の別名であり、Mob が増えれば `|` が 1 本増える
+（`domain/entities/mob-frame.ts`）。`repairMobBehaviour` は mc-sim のロード経路が委譲してくる
+`BehaviourRepair` で、mc-sim が「知らないと決めた型」を検査できる唯一の場所である。
+**この 2 つを `index.ts` から export しているのは、他のすべての export とは違う理由による**
+——「テストとプレビューが直接叩くから」ではなく、**ホストが名前で import しなければ正しく配線できないから**である。
+
+残るハザードは正直に書いておく: ホストが `EntityManagerLayer<number>()` と書いても
+**どちらのリポジトリのコンパイラも止められない**。`Context.GenericTag` を選んだ以上これは避けられず、
+`domain/entity-manager-port.ts` のヘッダに同じ文言で記録してある。
+
+**mx-gameplay 側で `simModule` の型引数が要らなかった証拠**は `RRegister` にある:
+`ChunkStore | EntityManager` に `S` は現れない。ホストがどう具体化しても、
+本リポジトリが宣言する要求は 1 つのままである（テスト
+`the roster requirement carries no behaviour parameter`）。
 
 ## 3. 標準 stage 順序と、このリポジトリが埋めるスロット
 
@@ -352,10 +412,76 @@ kernel 監査 §4.9 が `solid` への統合を禁じている理由がその行
 | `mobXpReward` | 内部(可視) | XP の**量**はルール、XP の**残高**は mc-sim（plan.md §7） |
 | `MobDropRule` / `MobDrop` / `MobKill` / `DropRolls` / `LOWEST_ROLLS` | 内部(可視) | `MobKill` は `Slain{lootingLevel}` か `SelfDestruct` |
 | `CREEPER_DROPS` / `CREEPER_XP_REWARD` | 内部(可視) | 火薬 1 個 / 5。`item` の型は **kernel の `ItemType`**（`domain/item-vocabulary.ts` 経由） |
+| `GHAST_DROPS` / `GHAST_XP_REWARD` | 内部(可視) | 火薬 1 個 / 5。参照実装 `mobs/ghast.ts:16-17`。**同じ名前を 2 体が共有する**のが語彙の効いている証拠 |
+| `BLAZE_DROPS` / `BLAZE_XP_REWARD` | 内部(可視) | `blaze_powder` 1 個・**確率 0.5** / 10。参照実装 `mobs/blaze.ts:17-18`。実在の表で `chance` を使う最初の 1 本 |
 
 **自爆したクリーパーは何も落とさない。** 参照実装ではこれはどこにも書かれておらず、
 2 つのファイルの実行順から落ちてくる（`entity-manager-combat.ts:56-64` が
 ドロップ経路より先にエンティティを削除する）。挙動は正しく、機構は偶然なので、ここでは引数の場合分けにしてある。
+
+**ブレイズだけ品目が参照実装と違う。** 参照実装は `BLAZE_ROD` を落とすが `blaze_rod` は kernel の
+`ItemType` に無く、`blaze_powder` は**「mob drops」という注記つきで kernel が追加したもの**である
+（`domain/item-vocabulary.ts` 冒頭が引用している）。**ルール（1 個・0.5）はそのまま、名詞だけが動いた**。
+逆に**エンダーマンとシュルカーのドロップ表はここに無い** —— `ender_pearl` / `shulker_shell` は
+`ItemType` に無く、綴れる名前で代用するのは別のルールを書くことだからである。kernel の表に 1 行増えれば
+このリポジトリの編集は 0 行で済む（`domain/mob/hostile-spawn.ts` がブロック名について言っているのと同じ話）。
+
+### domain/mob/enderman-teleport.ts（**位置を持たないテレポート**）
+
+| export | 種別 | 備考 |
+| --- | --- | --- |
+| `endermanTeleportUrge` | 内部(可視) | `Stay` か `Teleport{reason, anchor}`。**被弾分岐は短絡する**（被弾してロールに失敗したら、40 フレーム動けていなくても動かない） |
+| `endermanTeleportOffset` | 内部(可視) | 16 回まで試して**最初に 8..32 ブロックに入った変位**を返す。ロールが尽きたら探索終了 |
+| `TeleportOffset` | 内部(可視) | `{xBlocks, zBlocks}`。**`y` が無い** |
+| `TeleportAnchor` / `TeleportReason` / `EndermanTeleportUrge` / `EndermanSenses` | 内部(可視) | `anchor` は `'self'`（逃走）か `'target'`（接近） |
+| `ENDERMAN_TELEPORT_MIN_BLOCKS` / `..._MAX_BLOCKS` / `..._ATTEMPTS` | 内部(可視) | 8 / 32 / 16。両端とも含む |
+| `ENDERMAN_DAMAGE_TELEPORT_CHANCE` / `..._CHASE_...` / `..._STUCK_TELEPORT_TICKS` | 内部(可視) | 0.3 / 0.05 / 40。最後だけ**秒でなくフレーム**で、それは参照実装のものである |
+
+**座標が消えるのは発見であって妥協ではない。** 参照実装の `computeEndermanTeleportTarget` は
+第 1 引数（エンダーマン自身の位置）を使っておらず（`enderman-teleport.ts:28` の `_position`）、
+候補を `targetPosition + offset` で作って**その `targetPosition` に対して**距離を検査している（:37-43）ので、
+検査している距離は生成した変位の大きさそのものである。位置は約分される。残るのが**変位**であり、
+それがこのファイルである。参照実装のオラクルの期待値 `{x:116, y:64, z:-20}` は、
+アンカー `{x:100,…}` にこのファイルの `{xBlocks:16, zBlocks:0}` を足した値に桁まで一致する。
+
+**アンカーが答えの一部なのは、参照実装がそこで静かに間違えるからである。** 呼び出しは 2 箇所あり、
+被弾側は自分の位置（`entity-manager-damage-enderman.ts:16-18`＝逃走）、追跡側は**プレイヤーの位置**
+（`entity-manager-ai-enderman-teleport.ts:30-34`＝どれだけ離れていても 8..32 まで詰める接近）を渡す。
+両者が別物であることはどこにも記録されていない —— それを決めている引数が、関数が無視している引数だからである。
+
+### domain/mob/shulker-shell.ts
+
+| export | 種別 | 備考 |
+| --- | --- | --- |
+| `stepShulkerShell` | 内部(可視) | `(shell, senses) => { shell, canFire }`。全域・純粋 |
+| `ShulkerShell` | 内部(可視) | `Closed` / `Opening{openedTicks}` / `Open`。**カウンタは `Opening` の中にある**（参照実装は入力で受けて返さないので、ホストがリセットを忘れられる） |
+| `shulkerShellArmorPoints` | 内部(可視) | 閉 20 / それ以外 0。**軽減後のダメージではなく点数**を返す |
+| `shulkerWantsToTeleport` | 内部(可視) | 「殻を閉じる」条件と**同一の関数**。参照実装は同じ式を 2 度書いていて、一致する保証が無い |
+| `SHULKER_OPENING_TICKS` / `SHULKER_CLOSED_ARMOR_POINTS` / `CLOSED_SHELL` / `ShulkerSenses` / `ShulkerStep` | 内部(可視) | 20 / 20 |
+
+**参照実装のこの一群は、テスト以外のどこからも呼ばれていない。** スポーン輪番にシュルカーは居らず
+（`mob-categories.ts:16-25`）、殻を進めるレーンも無い。だから矛盾が 2 つ生き残っている:
+(1) `tickShulkerShell` は閉殻を `isInvulnerable: true` と言い、同じファイルの `computeShulkerShellDamage` は
+20% を通す（20 点＝80% 減、`combat.config.ts:15-16`）。**移植したのは点数のほうで、フラグは捨てた** ——
+先に読んだ呼び出し側が勝つ設計で、片方は Mob を不死にする。
+(2) `SHULKER_FORCED_CLOSED_TICKS = 100` はどこからも参照されておらず、それが門番をする
+`closeTicksRemaining` には生産者も減算もない。**移植しない**（両端とも発明することになる）。
+
+### domain/mob/hostile-despawn.ts
+
+| export | 種別 | 備考 |
+| --- | --- | --- |
+| `despawnVerdict` | 内部(可視) | `Keep` か `Despawn{reason}`。**判定順は参照実装のもの**で、有限性検査が persistent 免除より**先**に走る |
+| `DespawnCandidate` / `DespawnVerdict` / `DespawnReason` | 内部(可視) | `persistent` は**旗**であって Mob 名ではない（参照実装は `type === 'Villager'` と書いている） |
+| `DESPAWN_DISTANCE_BLOCKS` | 内部(可視) | 128。**3D**で測る（スポーン帯は XZ のみ）。比較は厳密に大なりで、128 ちょうどは残る |
+
+**スポーン規則と掃除規則は逆向きに倒れ、それが 1 つの設計である。** 測れない候補を `hostile-spawn` は
+`Refused` と答え、測れない Mob をこちらは `Despawn` と答える。**どちらも Mob を減らす**ので、
+壊れた測定値が個体数を増やす理由になることは無い。
+
+**時間による despawn は無い。** vanilla は距離と時間の両方で消すが、参照実装は距離だけで、
+エンティティに年齢が無い。docs/porting.md §4 に従って**足していない** —— 年齢は mc-sim の名簿の欄であり、
+ランダム despawn のロールは引数で渡してもらうものだからである（アリーナの missing 一覧に行き先つきで載っている）。
 
 ### domain/falling-block.ts
 
@@ -422,6 +548,60 @@ kernel が literal を**足す**分にはこちらが stale になるだけで�
 | export | 種別 | 備考 |
 | --- | --- | --- |
 | `PositionKey` | 非公開 | **プレースホルダ。** 座標語彙は kernel の所有物なので、意図的に brand していない。`frame-contract.ts` と同じ理由でバレルには載せない |
+
+### domain/entities/mob-frame.ts（**接合部。`domain/mob/` は 1 行も変わっていない**）
+
+| export | 種別 | 備考 |
+| --- | --- | --- |
+| `MobBehaviour` | **契約に近い** | mc-sim の `S` の具体化。`CreeperFuse \| undefined`。**ホストが名前で import する必要がある**（§2-3） |
+| `repairMobBehaviour` | **契約に近い** | mc-sim の `BehaviourRepair`。ロード経路が委譲してくる、全域かつ不動点の修復（§2-3） |
+| `CREEPER_KIND` | 内部(可視) | 本リポジトリが `EntityKind` を名指しする**唯一の場所**。mc-sim は kind で分岐しない（DN-11）ので綴りを誰も検査しない |
+| `CREEPER_MAX_HEALTH` / `MAX_HOSTILE_COUNT` | 内部(可視) | kind ごとの定数はルール層のもの（mc-sim §7-6）。`MAX_HOSTILE_COUNT` は `hostile-spawn.ts` が「mc-sim と一緒に到着する」と書いていた数 |
+| `sweepMobs` / `resolveBlasts` / `applySpawnAttempts` | 内部(可視) | 1 フレーム＝ 2 sweep（導火線と爆風）＋ 候補ごとの spawn。非クリーパーは**共有された 1 個の `EntityStep`** を受け取る |
+| `rollCasualtyDrops` / `rollSelfDestructDrops` / `rollDropsOfKind` / `dropRulesOfKind` / `dropRollsNeeded` | 内部(可視) | ドロップ表は kind → ルールの表。自爆が何も落とさないのは**ルールに訊いた結果**であって stage の仮定ではない |
+| `distanceBetween` / `cellOf` | 内部(可視) | 測定。`Position`（連続）から `BlockPosition`（セル）へは `Math.floor` であって `Math.round` ではない |
+| `Blast` / `MobCasualty` / `MobFrameSenses` / `BlastResolution` / `CasualtyDrops` / `MobSpawnAttempt` / `MobSpawnOutcome` | 内部(可視) | |
+
+`Blast` が位置を持つのは、`domain/mob/explosion.ts` の `Explosion` が**意図的に持たない**からである
+——「座標はホストの事実」であり、ここがそのホストである。
+
+### domain/frame-rolls.ts（**フレームに乱数が入る唯一の場所**）
+
+| export | 種別 | 備考 |
+| --- | --- | --- |
+| `nextRoll` / `drawRolls` / `normaliseSeed` | 内部(可視) | Lehmer/Park-Miller MINSTD。すべての中間値が double で厳密なのでエンジンに依らず同じ列になる |
+| `DEFAULT_ROLL_SEED` / `RollDraw` / `RollBatch` | 内部(可視) | **literal であって時刻ではない**。同じシナリオの 2 回の実行が同じ数を引く（plan.md §5.1-3） |
+
+`Math.random()` でも `Effect.Random` でも mc-sim のエンティティ上の生成器でもない理由は
+ファイルヘッダに 4 行の表で書いてある。要点は `run` の文脈が kernel の `FrameServices`（今は `never`）であり、
+そこに乱数サービスを要求することは kernel に 1.0.0 で凍結したい別名を広げさせることになる、というものである。
+固定しているテスト: `` REGRESSION-PROOF BY SHAPE: nothing on the frame path reads a random number or a clock ``。
+
+### domain/interactions/explosion-crater.ts
+
+| export | 種別 | 備考 |
+| --- | --- | --- |
+| `craterRadius` / `craterCells` / `carveExplosionCrater` | 内部(可視) | **爆発の「もう一方の半径」**。ダメージは `power * 2` = 6、破壊は `floor(power)` = 3 |
+
+`explosion.ts` が「クレーターはここではない。`ChunkStoreApi` を持つ `interactions/` の隣であり、
+`disturb` に食わせなければ砂漠の下の爆発は砂を宙に残す」と書いた行き先そのものである。
+`Written` になったセルだけを返すので、**空中の爆発はキューに何も入れない**。
+
+### domain/entity-manager-port.ts（**バレルから re-export しない**）
+
+| export | 種別 | 備考 |
+| --- | --- | --- |
+| `EntityManagerApi` / `EntityManager` / `entityManagerTag` / `ENTITY_MANAGER_TAG_KEY` | 非公開（所有者は mc-sim） | mc-sim `application/entity-manager.ts` のミラー。**全 11 メンバを写す**（狭いミラーは実行時ハザード） |
+| `Entity` / `EntityState` / `EntityRoster` / `EntityTransition` / `EntityStep` / `SpawnRequest` / `RosterRepair` / `BehaviourRepair` | 非公開（所有者は mc-sim） | |
+| `EntityId` / `EntityKind` | 非公開（所有者は mc-sim） | brand の refinement は**文字単位で転記**。brand は文字列で同一視されるので、緩い/厳しいミラーは mc-physics の `DeltaTimeSecs` 欠陥そのものになる |
+| `Position` | 非公開（所有者は kernel、2 ホップ） | `chunk-store-port.ts` の `BlockPosition` とは**別型**。連続点とセルは違う概念で、どちらの所有者も等価だと宣言していない |
+| `UNCHANGED` / `DESPAWNED` / `changed` | 非公開（所有者は mc-sim） | 共有定数。無風フレームが transition を 1 つも作らないための仕掛け |
+
+`ChunkStore` と違い `EntityManager` は `Context.Tag` クラスではなく**構造的な型**なので、
+公称の食い違いは起こり得ない（構造が同じなら同じ型である）。残るのは**キー**と**欠けたメンバ**で、
+`test/entity-manager-mirror.test.ts` が両方を固定している。
+mc-sim の**純粋関数**（`spawnEntity` / `sweepRoster` / `normaliseRoster` …）は写していない
+——タグを持たないので、欠けていれば呼び出し側でコンパイルエラーになるだけで、`undefined` にはならない。
 
 ## 6. 契約を足すときの基準
 

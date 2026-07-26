@@ -115,7 +115,7 @@ Nix を使わない場合は Node.js 22 以上と pnpm 9.15.0 を用意する（
 
 ## 現状
 
-**実装前の叩き台（pre-implementation first cut）である。** 移植済みのルールは 6 本で、
+**実装前の叩き台（pre-implementation first cut）である。** 移植済みのルールは 9 本で、
 現在あるものの大半は、参照実装で実測された失敗を構造として固定した骨組みと、その回帰テストである。
 ただし**縦切りは 2 本通っている** — 掘る → 砂が落ちる → アイテムが渡る、が stage 登録経由で動き、
 スポーン → 導火線 → 爆発 → 死因 → ドロップ、が Mob アリーナで動く。
@@ -144,33 +144,69 @@ Nix を使わない場合は Node.js 22 以上と pnpm 9.15.0 を用意する（
   ブロックに触るルールは 2 本（`domain/interactions/break-block.ts` /
   `domain/entities/falling-block-move.ts`）で、~40 の `interaction-*` ハンドラが残っている。
   何を、どの順で移植するかは [docs/porting.md](./docs/porting.md)。
-- **Mob が 1 体いる。クリーパーである。** `domain/mob/` の 4 ファイル —— 導火線
+- **plan.md §3.11 の Mob 挙動 4 つのうち 3 つが書けた。** `domain/mob/` の 7 ファイル —— 導火線
   （`creeper-fuse.ts`: 3 ブロックで着火、1.5 秒、**退避で消える**、爆発は**ちょうど 1 回**）、
   爆風（`explosion.ts`: 参照実装の減衰式を逐語移植。中心 43 ダメージ、半径 6）、
   スポーン条件（`hostile-spawn.ts`: 夜 + 光度 7 以下 + kernel の `validSpawnSurface` + 16〜40 ブロック）、
-  ドロップ（`mob-drop.ts`: 火薬 1 個。ただし**自爆したクリーパーは何も落とさない**）。
+  ドロップ（`mob-drop.ts`: クリーパー / ガスト / ブレイズ。**自爆した個体は何も落とさない**）、
+  エンダーマンのテレポート（`enderman-teleport.ts`: 被弾 / スタック / 徘徊の 3 引き金と、8〜32 ブロックの**変位**）、
+  シュルカーの殻（`shulker-shell.ts`: 開くのに 20 フレーム、閉じるのに 1、閉殻で装甲 20 点）、
+  デスポーン（`hostile-despawn.ts`: 3D で 128 ブロック、常駐 Mob は免除）。
   **状態は 1 つも持たない。** Mob の位置も体力も mc-sim の名詞であり（plan.md §7:
   「状態管理は sim、AI/スポーン/ドロップのルールは gameplay」）、ここにあるのは
   `stepCreeperFuse(fuse, senses, dt)` のように**値から値への全域関数**だけである。
-  だから `gameplay:entities` はまだ落下カスケードしか回していない —— 反復すべき Mob の名簿が無い。
-  ホスト役はプレビューが務める（`--screen arena`）。
+  テレポート先すら例外ではない —— 参照実装が**自分の位置を使っていない**ので位置が約分され、
+  返るのは `{xBlocks, zBlocks}` という変位だけになる（docs/porting.md §5-2）。
   **乱数はドメインに 1 つも無い。** ロールは引数で渡す（mc-worldgen が seed を通すのと同じ形）。
-  エンダーマン / シュルカー / ドラゴンは未着手であり、アリーナ画面がそう書く。
-- **`domain/chunk-store-port.ts` と `domain/block-position-key.ts` も削除日が決まっている。**
-  前者は mc-worldgen の `ChunkStore` の**全面**ミラー（狭いミラーはタグキーが同じまま
-  メソッドが `undefined` になる静かな実行時ハザードで、`test/chunk-store-mirror.test.ts` が両方向で固定する）、
-  後者は kernel の座標語彙との接続点である。どちらもバレルから re-export していない。
+  **4 つ目のドラゴンは「未着手」ではなく「拒否」である。** 位相機械が絶対ワールド Y
+  （`dragon-phase.ts:51-52`）で切り替わり速度を返す以上、それは mc-worldgen の構造と
+  mc-physics の移動であって、ここに書けるルールではない。アリーナ画面が理由つきでそう書く。
+- **`gameplay:entities` はもう Mob を回している。** mc-sim が `EntityManager` を公開したので
+  （`domain/entity-manager-port.ts` の全面ミラー越し）、この stage は毎フレーム 1 回の sweep で
+  デスポーン判定 → 導火線 → 爆風の収集を行い、爆風をダメージと**クレーター**に解決し、
+  ドロップを outbox に積み、渡されたスポーン候補に判定と個体数上限（`countOfKind` に対する 16）を適用する。
+  接合部は `domain/entities/mob-frame.ts` の 1 ファイルで、**`domain/mob/` は 1 行も変わっていない**
+  ——「service が来たら stage にループが生えるだけで `domain/mob/` は変わらない」という
+  `stages/registration.ts` の予告がそのまま成立した。
+  **無風フレームのコストがこの設計の全部である。** mc-sim の sweep は何も変わらなければ引数の名簿を返し
+  配列を 1 本も作らないので、stage 側も `{ transition, emit }` を**共有した 1 個**で返す
+  —— クリーパー以外の Mob 1 体あたりのコストはクロージャ呼び出し 1 回と距離 1 つだけである。
+  `test/vertical-slice.test.ts` はそれを内容ではなく**参照同一性**で固定する。
+  爆風がブロックを崩す経路も 1 本しかない: クレーター（`domain/interactions/explosion-crater.ts`、
+  破壊半径は `floor(power)` = 3 で、ダメージ半径 6 とは**別の数**）が実際に空にしたセルだけを
+  `disturb` に渡し、そこから先は落下ブロックのキューが 1 tick 32 手の予算で捌く。
+  **乱数はシードから入る。** `domain/frame-rolls.ts` が唯一の入口で、`Math.random()` でも
+  `Effect.Random` でもない理由はそのヘッダにある（`run` の文脈は kernel の `FrameServices`）。
+  まだ来ていないのは**測定**のほう —— スポーン候補を探す輪はブロック光度を要求し
+  `ChunkStoreApi` に光度クエリが無い、プレイヤー位置は `PlayerService` にあるが
+  `cameraPose` が `ClockPort` を要求するのでミラーできない。両方ともアリーナの missing 一覧に行き先つきで載っている。
+- **`domain/chunk-store-port.ts` と `domain/entity-manager-port.ts` と `domain/block-position-key.ts` も削除日が決まっている。**
+  前 2 者は mc-worldgen の `ChunkStore` と mc-sim の `EntityManager` の**全面**ミラー
+  （狭いミラーはタグキーが同じままメソッドが `undefined` になる静かな実行時ハザードで、
+  `test/chunk-store-mirror.test.ts` と `test/entity-manager-mirror.test.ts` が両方向で固定する）、
+  最後は kernel の座標語彙との接続点である。どれもバレルから re-export していない。
+  **例外が 2 つあり、理由が逆である。** `MobBehaviour` と `repairMobBehaviour` は
+  `index.ts` に載せている —— mc-sim の型引数 `S` を具体化できるのはルール層だけで、
+  `EntityManagerLayer<S>()` の戻り値に `S` が現れない以上、
+  ホストが**名前で import する**こと以外に配線を守る手段が無いためである（docs/public-api.md §2-3）。
 - **プレビューは 1 アプリ 3 画面で動く。** `pnpm preview`（[apps/preview-mining-site/](./apps/preview-mining-site/README.md)）。
   plan.md §3.11 が挙げる 3 本に 1 対 1 で対応する `site` / `time` / `arena` を `g` で巡回する。
   ターミナルレンダラであり、`mc-playground-kit` も THREE.js も新規依存も**使っていない**
   （理由は当該 README と `main.ts` 冒頭）。
-  **`arena` は「Mob が 1 体いる: クリーパー」と画面の 1 行目に書く。** スポーン判定 →
-  導火線 → 爆風 → 死因 → ドロップを実際に叩き、画面上の数字は全部 `domain/mob/` の戻り値である
+  **`arena` は「Mob が 3 体いる」と画面の 1 行目に書く。** スポーン判定 → 導火線 → 爆風 →
+  死因 → ドロップ、エンダーマンの意思と変位、シュルカーの殻、そして掃除を実際に叩き、
+  画面上の数字は全部 `domain/mob/` の戻り値である
   （`pnpm preview --once --ascii --screen arena --time 0.9 --spawn --settle` で 1 フレーム出せる）。
-  **欠けているものを行き先つきで列挙する習慣は変えていない** —— エンダーマン / シュルカー /
-  ドラゴン、Mob 名簿、経路探索、近接/遠隔ハンドラ、爆発のクレーター、デスポーン、
-  そして「これを回す stage」が missing 一覧に並ぶ。実装済みの節より missing の節のほうが長く、
-  それが正直な比率である。
+  **欠けているものを行き先つきで列挙する習慣は変えていない。一覧は 2 度長くなった** ——
+  1 度目はルールを書いたときで、「エンダーマン / シュルカー / ドラゴン」という 1 行が
+  ドラゴンの拒否・テレポートの着地点・シュルカーの弾・装甲式などの 8 行に分かれた。
+  2 度目は**それを stage に配線したとき**で、4 行（stage 自体・個体数上限・クレーター・
+  Mob の位置と体力）が消えた代わりに 7 行増えた。増えた 7 行はどれも
+  「まだ誰も書いていないルール」ではなく**フレームが取れない測定**である ——
+  スポーン探索が要る**ブロック光度**、時刻、プレイヤー位置、エンダーマンの被弾、
+  Mob の死因の置き場所、経験値、爆破耐性。
+  ルールを書くとそのルールの縁に名前が付き、ルールを**動かす**とその入力が数えられるようになる。
+  実装済みの節より missing の節のほうが長く、それが正直な比率である。
   `pnpm preview --stats` は初回実行（2026-07-27）で **6 件**の finding を出し、
   うち確認できた 4 件は `test/preview-findings.test.ts` に assertion として固定してある。
   3 件（F3 / F5 / F6）は既存 112 本のテストが 1 つも捕まえていなかった。
@@ -181,10 +217,15 @@ Nix を使わない場合は Node.js 22 以上と pnpm 9.15.0 を用意する（
   TypeScript ソースを直接指している。`dist` は存在しない（[docs/versioning.md](./docs/versioning.md)）。
 - **カバレッジ閾値は未設定。** 計測とレポートは常に動かしており、99% ゲートは完成条件到達時に有効化する
   （`vitest.config.ts` に有効化する行がコメントで置いてある）。
-- `pnpm verify` は green。tsc clean（3 プロジェクト）、oxlint 43 ファイル 0 warnings / 0 errors、
-  `check:deps` 43 ファイル走査、`api:check` 94 エントリ一致、vitest 10 ファイル 160 テスト pass。
-  公開 API が 61 → 94 に増えたのはクリーパーの 4 ファイルを `index.ts` に載せたためで、
+- `pnpm verify` は green。tsc clean（3 プロジェクト）、oxlint 53 ファイル 0 warnings / 0 errors、
+  `check:deps` 53 ファイル走査、`api:check` 170 エントリ一致、vitest 11 ファイル 225 テスト pass。
+  公開 API が 125 → 170 に増えたのは Mob の配線 —— 接合部（`domain/entities/mob-frame.ts`）、
+  ロール源（`domain/frame-rolls.ts`）、クレーター（`domain/interactions/explosion-crater.ts`）を
+  `index.ts` に載せたためで（61 → 94 はクリーパーの 4 本、94 → 125 はエンダーマン / シュルカー / デスポーン）、
   プレビューは相変わらず 1 つも export されない。
+  ミラー 2 本（`ChunkStore` / `EntityManager`）は re-export していないのに
+  `api-lock.md` の "Supporting declarations" には出る —— `makeGameplayStages` の型に現れるためで、
+  タグキーの文字列リテラルまで載るので、キーが動けば API ロックの diff になる。
   `domain/item-vocabulary.ts`（kernel の `ItemType` のミラー）も**バレルに載せていない** ——
   他の 3 つのミラーと同じ理由で、`test/public-api.test.ts` がその不在を固定している。
 

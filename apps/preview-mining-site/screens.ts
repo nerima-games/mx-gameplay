@@ -21,37 +21,50 @@
  * yet.
  *
  * ---------------------------------------------------------------------------
- * The mob arena has ONE mob, and the screen says which
+ * The mob arena has THREE mobs, and the screen says which
  * ---------------------------------------------------------------------------
  *
  * This screen used to open with the line "THERE IS NO MOB" and list what was
- * missing, because `domain/` held nine files and none of them named a mob. Four
- * of them now do — `domain/mob/creeper-fuse.ts`, `explosion.ts`,
- * `hostile-spawn.ts` and `mob-drop.ts` — so the arena drives a real creeper:
- * spawn condition, fuse, blast, death cause and drop, every number produced by
- * a rule in this repository rather than by this file.
+ * missing, because `domain/` held nine files and none of them named a mob. Seven
+ * of them now do — `domain/mob/creeper-fuse.ts`, `enderman-teleport.ts`,
+ * `explosion.ts`, `hostile-despawn.ts`, `hostile-spawn.ts`, `mob-drop.ts` and
+ * `shulker-shell.ts` — so the arena drives a creeper, an enderman's teleport
+ * decision and a shulker's shell, with every number produced by a rule in this
+ * repository rather than by this file.
  *
- * The habit does not change. What still has no mob is still listed, by name and
- * with a destination, and the list is longer than the implemented part —
- * enderman, shulker and dragon are three of plan.md §3.11's four, and pathing,
- * melee and the mob roster are not here either. A preview that stopped naming
- * its gaps the moment it had something to show would be worth less than the one
- * that admitted it had nothing.
+ * The habit does not change, and it is worth being precise about what has NOT
+ * happened to the missing list: it got LONGER, TWICE, and for two different
+ * reasons. Writing three of plan.md §3.11's four behaviours turned one vague
+ * line ("enderman / shulker / dragon") into eight specific ones. Then WIRING
+ * them into `gameplay:entities` retired four rows outright — the stage that runs
+ * them, the population cap, the blast crater, and mob health and position as
+ * state — and added seven more, every one of which is a MEASUREMENT the frame
+ * cannot take rather than a rule nobody has written: the block light a spawn
+ * search needs, the hour, the player's position, whether an enderman was hit,
+ * where a mob's death cause could land. A rule that is written is a rule whose
+ * edges can be named; a rule that is RUNNING is a rule whose inputs can be
+ * counted. The fourth behaviour, the dragon, is on that list as a REFUSAL with
+ * its reason, not as a to-do. See `ARENA_MISSING`.
  *
  * ---------------------------------------------------------------------------
- * The preview is the HOST, and that is the interesting part
+ * The preview is STILL the host, and that is now a smaller claim
  * ---------------------------------------------------------------------------
  *
- * `domain/mob/` holds no creeper. It holds the rules a creeper obeys, and every
- * one of them is a total function from a value to a value: mc-sim owns where the
- * mob is, how far away the player is, and what its fuse currently reads
- * (plan.md §7 — 「状態管理は sim、AI/スポーン/ドロップのルールは gameplay」).
+ * `domain/mob/` holds no creeper, no enderman and no shulker. It holds the rules
+ * they obey, and every one of them is a total function from a value to a value:
+ * mc-sim owns where the mob is, how far away the player is, what its fuse reads
+ * and how much health it has left (plan.md §7 — 「状態管理は sim、AI/スポーン/
+ * ドロップのルールは gameplay」).
  *
- * mc-sim is not published, so THIS FILE plays that part, and the shape of what
- * it has to hold is exactly the shape mc-sim will: a `CreeperFuse` value, a
- * distance, and nothing else. `ArenaCreeper` below is four fields long, and that
- * is the whole bill the mob rules present to a host. Reading it is the fastest
- * way to see what this repository does and does not claim to own.
+ * mc-sim has now BUILT that — `EntityManager`, mirrored in
+ * `domain/entity-manager-port.ts` and driven by `domain/entities/mob-frame.ts` —
+ * and this screen still plays the part, because a preview cannot ship an
+ * implementation of another repository's service and mc-sim is not published.
+ * What changed is the status of the shape: `ArenaCreeper` being four fields long
+ * with no position, no entity id and no random number generator used to be a
+ * PREDICTION about what mc-sim would hold, and it is now a description of what
+ * mc-sim does hold. The screen is the same; the claim it makes is weaker and
+ * true.
  */
 import { dayPhase, hostileSpawnsAllowed, isNight, type DayPhase } from '../../domain/day-night'
 import {
@@ -80,13 +93,39 @@ import {
   type SpawnVerdict,
 } from '../../domain/mob/hostile-spawn'
 import {
+  BLAZE_DROPS,
+  BLAZE_XP_REWARD,
   CREEPER_DROPS,
   CREEPER_XP_REWARD,
+  GHAST_DROPS,
+  GHAST_XP_REWARD,
   LOWEST_ROLLS,
   mobXpReward,
   rollMobDrops,
   type MobDrop,
+  type MobDropRule,
 } from '../../domain/mob/mob-drop'
+import {
+  ENDERMAN_TELEPORT_MAX_BLOCKS,
+  ENDERMAN_TELEPORT_MIN_BLOCKS,
+  endermanTeleportOffset,
+  endermanTeleportUrge,
+  type EndermanTeleportUrge,
+  type TeleportOffset,
+} from '../../domain/mob/enderman-teleport'
+import {
+  CLOSED_SHELL,
+  SHULKER_OPENING_TICKS,
+  shulkerShellArmorPoints,
+  shulkerWantsToTeleport,
+  stepShulkerShell,
+  type ShulkerShell,
+} from '../../domain/mob/shulker-shell'
+import {
+  DESPAWN_DISTANCE_BLOCKS,
+  despawnVerdict,
+  type DespawnVerdict,
+} from '../../domain/mob/hostile-despawn'
 
 // ---------------------------------------------------------------------------
 // Time slider
@@ -238,6 +277,52 @@ export type ArenaSpawnSite = {
   distanceBlocks: number
 }
 
+/**
+ * The enderman, as its host has to hold it.
+ *
+ * FOUR INDICES AND A BOOLEAN, and not one of them is a position. That is the
+ * whole point of this type: `domain/mob/enderman-teleport.ts` decides WHETHER
+ * and BY HOW MUCH, and the only thing a host has to keep is the facts it feeds
+ * in. There is no enderman here either — mc-sim owns where it stands, and this
+ * screen owns four cursors into tables of interesting numbers.
+ *
+ * The rolls are indices into a fixed table rather than a generator, because the
+ * `Math.random()` ban applies to this app as much as to `domain/` and because a
+ * preview that rolled its own dice could not be pointed at a boundary.
+ */
+export type ArenaEnderman = {
+  /** Did a blow land this frame? mc-sim's combat lane would answer. */
+  damaged: boolean
+  /** Into `ARENA_ENDERMAN_ROLLS`. */
+  rollIndex: number
+  /** Into `ARENA_STUCK_TICKS` — mc-sim already keeps this counter. */
+  stuckIndex: number
+  /** Into `ARENA_TELEPORT_ROLLS`. */
+  sequenceIndex: number
+}
+
+/**
+ * The shulker, as its host has to hold it.
+ *
+ * `maxHealthPoints` is NOT here and is not this repository's: 30 is a stat on
+ * mc-sim's roster entry (`mobs/shulker.ts:9`), so it is `SHULKER_MAX_HEALTH`
+ * below, in the preview, where the rest of mc-sim's job is being done.
+ *
+ * `hitThisFrame` is the honest shape of `damageTakenThisTick`: a blow belongs to
+ * ONE frame and is gone on the next, which is why the shell reopens a frame
+ * after it slams shut. Holding it as a lasting field would have hidden that.
+ */
+export type ArenaShulker = {
+  shell: ShulkerShell
+  healthPoints: number
+  hasTarget: boolean
+  /** Damage that lands on the NEXT step, then clears. */
+  hitThisFrame: number
+  frames: number
+  /** Frames on which the rule said it could fire. */
+  shots: number
+}
+
 export type ArenaState = {
   vitals: Vitals
   causeIndex: number
@@ -245,6 +330,8 @@ export type ArenaState = {
   log: ReadonlyArray<ArenaBlow>
   site: ArenaSpawnSite
   creeper: ArenaCreeper | undefined
+  enderman: ArenaEnderman
+  shulker: ArenaShulker
   /** The last answer `canHostileSpawnAt` gave, verbatim. */
   verdict: SpawnVerdict | undefined
   lootingLevel: number
@@ -273,6 +360,30 @@ export const ARENA_SETTLE_CAP = 64
  */
 export const ARENA_STEP_SECS = 0.25
 
+/** A shulker's maximum health. mc-sim's stat — see `ArenaShulker`. */
+export const SHULKER_MAX_HEALTH = 30
+
+/** What one press of `;` hits the shulker for. Enough to cross half. */
+export const ARENA_SHULKER_BLOW = 16
+
+export const initialShulker = (): ArenaShulker => ({
+  shell: CLOSED_SHELL,
+  healthPoints: SHULKER_MAX_HEALTH,
+  hasTarget: false,
+  hitThisFrame: 0,
+  frames: 0,
+  shots: 0,
+})
+
+export const initialEnderman = (): ArenaEnderman => ({
+  damaged: false,
+  // 0.99 — above every threshold, so the screen opens on `Stay` and `e` walks
+  // down through the two gates rather than starting past both of them.
+  rollIndex: ARENA_ENDERMAN_ROLLS.indexOf(0.99),
+  stuckIndex: 0,
+  sequenceIndex: 0,
+})
+
 export const initialArenaState = (): ArenaState => ({
   vitals: fullHealth,
   causeIndex: 0,
@@ -280,6 +391,8 @@ export const initialArenaState = (): ArenaState => ({
   log: [],
   site: { groundBlock: 2, blockLight: 0, distanceBlocks: 20 },
   creeper: undefined,
+  enderman: initialEnderman(),
+  shulker: initialShulker(),
   verdict: undefined,
   lootingLevel: 0,
   loot: [],
@@ -307,6 +420,8 @@ export const respawn = (state: ArenaState): void => {
   state.vitals = fullHealth
   state.log = []
   state.creeper = undefined
+  state.enderman = initialEnderman()
+  state.shulker = initialShulker()
   state.verdict = undefined
   state.loot = []
   state.xp = 0
@@ -477,6 +592,218 @@ export const slayCreeper = (state: ArenaState): void => {
   state.note = `slain with looting ${String(state.lootingLevel)}`
 }
 
+// ---------------------------------------------------------------------------
+// Arena — the enderman
+// ---------------------------------------------------------------------------
+
+/**
+ * Rolls either side of every threshold the teleport rule has, plus a `NaN`.
+ *
+ * 0.049/0.05 is the chase gate and 0.29/0.3 the damage gate, so cycling this
+ * list walks straight across both boundaries. The `NaN` is here for the reason
+ * the damage amounts list has one: a rule's behaviour on a value that is not a
+ * measurement is the thing a preview can show that a unit test only asserts.
+ */
+export const ARENA_ENDERMAN_ROLLS: ReadonlyArray<number> = [
+  0, 0.049, 0.05, 0.29, 0.3, 0.5, 0.99, Number.NaN,
+]
+
+/** Stuck counts either side of the 40-frame threshold. */
+export const ARENA_STUCK_TICKS: ReadonlyArray<number> = [0, 39, 40, 41, 100]
+
+/**
+ * Roll sequences worth watching the offset search run against.
+ *
+ * Named rather than random, and every one of them is a case `test/mob.test.ts`
+ * also pins — the near edge, the far edge, the corner of the square that is
+ * outside the circle, a first attempt that misses and a second that lands, and
+ * the infinite roll that the reference would have turned into a maximum-range
+ * jump.
+ */
+export const ARENA_TELEPORT_ROLLS: ReadonlyArray<readonly [string, ReadonlyArray<number>]> = [
+  ['0.75 0.50', [0.75, 0.5]],
+  ['0.50 0.50 | 0.75 0.50', [0.5, 0.5, 0.75, 0.5]],
+  ['0.625 0.50  (the near edge)', [0.625, 0.5]],
+  ['1.00 0.50   (the far edge)', [1, 0.5]],
+  ['1.00 1.00   (the corner)', [1, 1]],
+  ['0.60 0.50   (too near)', [0.6, 0.5]],
+  ['thirty-two x 0.50', Array.from({ length: 32 }, () => 0.5)],
+  ['Infinity 0.50', [Number.POSITIVE_INFINITY, 0.5]],
+]
+
+const pick = <A>(values: ReadonlyArray<A>, index: number, fallback: A): A =>
+  values[((index % values.length) + values.length) % values.length] ?? fallback
+
+export const endermanRoll = (state: ArenaState): number =>
+  pick(ARENA_ENDERMAN_ROLLS, state.enderman.rollIndex, 0)
+
+export const endermanStuckTicks = (state: ArenaState): number =>
+  pick(ARENA_STUCK_TICKS, state.enderman.stuckIndex, 0)
+
+export const endermanSequence = (state: ArenaState): readonly [string, ReadonlyArray<number>] =>
+  pick(ARENA_TELEPORT_ROLLS, state.enderman.sequenceIndex, ['none', []])
+
+/** The whole of the enderman's decision, asked afresh every redraw. */
+export const endermanUrge = (state: ArenaState): EndermanTeleportUrge =>
+  endermanTeleportUrge({
+    damagedThisStep: state.enderman.damaged,
+    stuckTicks: endermanStuckTicks(state),
+    roll: endermanRoll(state),
+  })
+
+export const endermanOffset = (state: ArenaState): TeleportOffset | undefined =>
+  endermanTeleportOffset(endermanSequence(state)[1])
+
+/** How far that offset actually moved it — the number the band is about. */
+export const offsetDistance = (offset: TeleportOffset | undefined): number | undefined =>
+  offset === undefined ? undefined : Math.hypot(offset.xBlocks, offset.zBlocks)
+
+export const TELEPORT_BAND = [ENDERMAN_TELEPORT_MIN_BLOCKS, ENDERMAN_TELEPORT_MAX_BLOCKS] as const
+
+export const toggleEndermanDamage = (state: ArenaState): void => {
+  state.enderman.damaged = !state.enderman.damaged
+  state.note = state.enderman.damaged
+    ? 'the enderman was hit this frame — the damage branch short-circuits the other two'
+    : 'the enderman was not hit this frame'
+}
+
+export const cycleEndermanRoll = (state: ArenaState): void => {
+  state.enderman.rollIndex += 1
+}
+
+export const cycleEndermanStuck = (state: ArenaState): void => {
+  state.enderman.stuckIndex += 1
+}
+
+export const cycleTeleportRolls = (state: ArenaState): void => {
+  state.enderman.sequenceIndex += 1
+}
+
+// ---------------------------------------------------------------------------
+// Arena — the shulker
+// ---------------------------------------------------------------------------
+
+/**
+ * One frame of the shell.
+ *
+ * Note what this function is NOT allowed to decide, which is the same list as
+ * `stepArena`'s: whether the shell opens, how long that takes, whether the hit
+ * shuts it and whether it may fire are all answers from
+ * `domain/mob/shulker-shell.ts`. The host supplies four facts and stores the
+ * value it is handed back.
+ */
+export const stepShulker = (state: ArenaState): void => {
+  const shulker = state.shulker
+  const step = stepShulkerShell(shulker.shell, {
+    hasTarget: shulker.hasTarget,
+    damageTakenThisTick: shulker.hitThisFrame,
+    healthPoints: shulker.healthPoints,
+    maxHealthPoints: SHULKER_MAX_HEALTH,
+  })
+
+  shulker.shell = step.shell
+  shulker.frames += 1
+  // A blow belongs to one frame. See `ArenaShulker`.
+  shulker.hitThisFrame = 0
+  if (step.canFire) {
+    shulker.shots += 1
+  }
+}
+
+export const toggleShulkerTarget = (state: ArenaState): void => {
+  state.shulker.hasTarget = !state.shulker.hasTarget
+  state.note = state.shulker.hasTarget
+    ? `the shulker has a target — ${String(SHULKER_OPENING_TICKS)} frames of . before it can fire`
+    : 'the shulker has no target — it shuts on the next frame, unless it is still opening'
+}
+
+export const hitShulker = (state: ArenaState): void => {
+  state.shulker.hitThisFrame = ARENA_SHULKER_BLOW
+  state.shulker.healthPoints = Math.max(0, state.shulker.healthPoints - ARENA_SHULKER_BLOW)
+  state.note = `hit the shulker for ${String(ARENA_SHULKER_BLOW)} — it lands on the next . step`
+}
+
+export const shulkerArmor = (state: ArenaState): number => shulkerShellArmorPoints(state.shulker.shell)
+
+export const shulkerFlees = (state: ArenaState): boolean =>
+  shulkerWantsToTeleport({
+    hasTarget: state.shulker.hasTarget,
+    damageTakenThisTick: state.shulker.hitThisFrame,
+    healthPoints: state.shulker.healthPoints,
+    maxHealthPoints: SHULKER_MAX_HEALTH,
+  })
+
+export const shellLabel = (shell: ShulkerShell): string => {
+  switch (shell._tag) {
+    case 'Closed':
+      return 'Closed'
+    case 'Opening':
+      return `Opening ${String(shell.openedTicks)} / ${String(SHULKER_OPENING_TICKS)}`
+    case 'Open':
+      return 'Open'
+  }
+}
+
+export const shellFraction = (shell: ShulkerShell): number =>
+  shell._tag === 'Opening'
+    ? Math.min(1, Math.max(0, shell.openedTicks) / SHULKER_OPENING_TICKS)
+    : shell._tag === 'Open'
+      ? 1
+      : 0
+
+// ---------------------------------------------------------------------------
+// Arena — the sweep
+// ---------------------------------------------------------------------------
+
+/**
+ * Distances worth asking the sweep about, and every answer is the rule's.
+ *
+ * The first two are the ends of the spawn band, so the table shows the two rules
+ * agreeing: nothing this repository can spawn is swept on the frame it spawns.
+ */
+export const DESPAWN_PROBES: ReadonlyArray<number> = [
+  MIN_SPAWN_DISTANCE_BLOCKS,
+  40,
+  127,
+  DESPAWN_DISTANCE_BLOCKS,
+  129,
+  Number.NaN,
+]
+
+export const sweepAt = (distanceBlocks: number, persistent: boolean): DespawnVerdict =>
+  despawnVerdict({ distanceToPlayerBlocks: distanceBlocks, persistent })
+
+export const sweepLabel = (verdict: DespawnVerdict): string =>
+  verdict._tag === 'Keep' ? 'Keep' : `Despawn: ${verdict.reason}`
+
+export const DESPAWN_RADIUS = DESPAWN_DISTANCE_BLOCKS
+
+// ---------------------------------------------------------------------------
+// Arena — the other drop tables
+// ---------------------------------------------------------------------------
+
+/**
+ * Every drop table this repository can spell, driven by the rule.
+ *
+ * Three, and the list stops where kernel's vocabulary does: an enderman drops
+ * `ENDER_PEARL` and a shulker `SHULKER_SHELL`, neither of which is an
+ * `ItemType`, so neither has a table here. The arena's missing list says so with
+ * the kernel row that would unblock them.
+ */
+export const ARENA_DROP_TABLES: ReadonlyArray<
+  readonly [string, ReadonlyArray<MobDropRule>, number]
+> = [
+  ['creeper', CREEPER_DROPS, CREEPER_XP_REWARD],
+  ['ghast', GHAST_DROPS, GHAST_XP_REWARD],
+  ['blaze', BLAZE_DROPS, BLAZE_XP_REWARD],
+]
+
+/** What a table yields at a given chance roll. Every number is `rollMobDrops`'. */
+export const dropsAtRoll = (rules: ReadonlyArray<MobDropRule>, chance: number): string => {
+  const drops = rollMobDrops(rules, { _tag: 'Slain', lootingLevel: 0 }, () => ({ chance, count: 0 }))
+  return drops.length === 0 ? '(nothing)' : drops.map((drop) => `${drop.item} x${String(drop.count)}`).join(', ')
+}
+
 export const fuseLabel = (fuse: CreeperFuse): string => {
   switch (fuse._tag) {
     case 'Dormant':
@@ -537,32 +864,81 @@ export const arenaIsDead = (vitals: Vitals): boolean => isDead(vitals)
  * What the arena HAS, with the file each part came out of.
  *
  * Checked against the tree rather than remembered: `domain/mob/` holds
- * `creeper-fuse.ts`, `explosion.ts`, `hostile-spawn.ts` and `mob-drop.ts`, and
- * there is no fifth file.
+ * `creeper-fuse.ts`, `enderman-teleport.ts`, `explosion.ts`,
+ * `hostile-despawn.ts`, `hostile-spawn.ts`, `mob-drop.ts` and
+ * `shulker-shell.ts`, and there is no eighth file.
  */
 export const ARENA_IMPLEMENTED: ReadonlyArray<readonly [string, string]> = [
   ['spawn condition', 'domain/mob/hostile-spawn.ts — night, light <= 7, kernel’s validSpawnSurface, 16-40 blocks'],
   ['creeper fuse', 'domain/mob/creeper-fuse.ts — 3-block ignition, 1.5s, cancels on retreat, detonates once'],
   ['blast + death cause', 'domain/mob/explosion.ts — the reference’s curve, and the cause reaches the message'],
-  ['drop + experience', 'domain/mob/mob-drop.ts — one gunpowder, and nothing at all if it blew itself up'],
+  ['enderman teleport', 'domain/mob/enderman-teleport.ts — three triggers, and an 8..32 block offset with no y'],
+  ['shulker shell', 'domain/mob/shulker-shell.ts — 20 frames to open, one frame to shut, 20 armour when closed'],
+  ['the sweep', 'domain/mob/hostile-despawn.ts — 128 blocks in 3D, and a persistent mob is exempt'],
+  ['drop + experience', 'domain/mob/mob-drop.ts — creeper, ghast and blaze; nothing at all if it blew itself up'],
+]
+
+/**
+ * What runs the seven rules above, now that mc-sim has published a roster.
+ *
+ * Separate from `ARENA_IMPLEMENTED` because none of it is a `domain/mob/` rule
+ * and that list's own doc comment counts those files. These are the JOIN — the
+ * loop `stages/registration.ts` spent a headed paragraph explaining why it could
+ * not yet write, plus the two pieces that could only be written once something
+ * was calling the rules for real.
+ */
+export const ARENA_WIRED: ReadonlyArray<readonly [string, string]> = [
+  ['the stage runs them', 'domain/entities/mob-frame.ts — one sweep over mc-sim’s roster; an idle frame allocates nothing per mob'],
+  ['the population cap', 'MAX_HOSTILE_COUNT = 16 against countOfKind, re-read per candidate. The census hostile-spawn.ts was waiting for'],
+  ['the blast crater', 'domain/interactions/explosion-crater.ts — floor(power) = 3, and every emptied cell feeds `disturb`'],
+  ['rolls without an RNG', 'domain/frame-rolls.ts — a seed in the frame state, so a whole scenario replays'],
 ]
 
 /**
  * What still has no mob, and where each piece would go.
  *
- * The list this screen has always printed, minus the four lines that came true
- * and plus the ones the creeper made specific. It is longer than the section
- * above, which is the honest ratio: plan.md §3.11 names four mob behaviours and
- * this repository has one, and docs/porting.md §4 counts 61 portable mob test
- * files against the six this repository has ported.
+ * ---------------------------------------------------------------------------
+ * The ratio, stated rather than drawn
+ * ---------------------------------------------------------------------------
+ *
+ * plan.md §3.11 names four mob behaviours and three of them are now written; the
+ * fourth is the dragon and it is NOT here on purpose, which is the first line
+ * below. The list is still longer than the section above and that is still the
+ * honest shape of this repository: seven rule files against eleven things that
+ * are not rules yet, and docs/porting.md §4's 61 portable mob test files against
+ * the nine that have been ported.
+ *
+ * ---------------------------------------------------------------------------
+ * Why the dragon is a refusal and not a to-do
+ * ---------------------------------------------------------------------------
+ *
+ * The other three behaviours reduced to numbers somebody else measured. The
+ * dragon does not, and the reason is in two constants:
+ * `<reference-impl>/packages/entity/domain/mob/ender-dragon/dragon-phase.ts:51-52`
+ * turns on `TAKEOFF_COMPLETE_Y = 80` and `LOW_ALTITUDE_Y = 70` — ABSOLUTE world
+ * altitudes, not distances — and every branch of its phase machine also produces
+ * a VELOCITY (`:89-109`). Absolute altitudes are a fact about the End island's
+ * obsidian pillars, which is mc-worldgen's structure; velocities are movement,
+ * which is mc-physics'. A "rule" written here would be neither, and it would be
+ * the boundary violation `domain/mob/creeper-fuse.ts` was careful to avoid.
  */
 export const ARENA_MISSING: ReadonlyArray<readonly [string, string]> = [
-  ['enderman / shulker / dragon', 'three of plan.md §3.11’s four behaviours; only the creeper is written'],
-  ['the mob roster', 'the reference rotates 8 hostiles; CREEPER_DROPS is the only definition here'],
-  ['AI / pathfinding', 'the creeper’s distance is an arrow key on this screen. Movement needs mc-sim’s positions'],
-  ['melee + projectile handlers', 'two of the ~40 one-rule-per-file handlers (DN-GP-9); domain/interactions/ holds one'],
-  ['the blast crater', 'explosions destroy blocks out to floor(power)=3 — a ChunkStore write that must also `disturb`'],
-  ['despawn + population caps', 'DESPAWN_DISTANCE, MAX_HOSTILE_COUNT: every one of them reads mc-sim’s roster'],
-  ['mob HEALTH and POSITION as state', 'mc-sim owns both. The fuse here is a value a rule transforms, never a Ref'],
-  ['a stage that runs any of it', 'gameplay:entities still runs only the cascade — there is no mob to iterate over'],
+  ['the ender dragon', 'REFUSED, not deferred: its phases turn on absolute world Y (dragon-phase.ts:51-52) and emit velocities'],
+  ['enderman / shulker DROPS', 'ender_pearl and shulker_shell are not ItemTypes. One row in mc-kernel’s roster, no edit here'],
+  ['where a teleport LANDS', 'the offset has no y and no ground check — a ChunkStore query, next to domain/interactions/'],
+  ['whether an enderman was HIT', 'endermanTeleportUrge needs damagedThisStep and stuckTicks; mc-sim’s entity has neither field'],
+  ['water / daylight teleports', 'vanilla’s other two triggers. Needs a "submerged" capability from kernel and mc-worldgen’s sky light'],
+  ['the shulker’s bullet', 'computeShulkerBulletDirection is a normalised vector — aiming is mc-physics’, canFire is here'],
+  ['a shulker on the roster', 'ShulkerShell fits MobBehaviour unchanged. Nothing spawns one and nothing consumes canFire, so it is not a member'],
+  ['projectile + melee cadence', 'canFire is a permission with no cooldown; attackCooldownRemaining is mc-sim’s combat state'],
+  ['the armour formula', '4% per point, capped at 80% — every defender shares it, so it belongs in a domain/combat/, not here'],
+  ['age-based despawn', 'vanilla sweeps on time as well as distance; the reference has no age on an entity and neither has this'],
+  ['the mob roster', 'the reference rotates 8 hostiles; which mob spawns is a table this repository has no second row for'],
+  ['AI / pathfinding', 'the creeper’s distance is an arrow key on this screen. Movement is a write to feetPosition nothing makes'],
+  ['THE SPAWN SEARCH', 'the stage applies the verdict to candidates it is handed. The ring that offers them needs mc-worldgen’s block LIGHT (ChunkStoreApi has no light query) and mc-sim’s hour'],
+  ['the player’s position', 'targetPosition is an inbox. PlayerService.cameraPose requires ClockPort, and a local ClockPort is worse than a narrow mirror'],
+  ['mob drops reaching the inventory', 'mobDrops is an outbox. InventoryServiceApi names Inventory/RecipeTable/CraftGrid, so mirroring it whole means restating mc-sim’s crafting vocabulary'],
+  ['a mob’s death CAUSE', 'explosionDamageAt carries one and applyDamage records it; mc-sim’s EntityState has no field for it, so it is dropped'],
+  ['experience from a kill', 'mobXpReward is written and uncalled. XP is a number on the player, and the player is PlayerService’s'],
+  ['blast resistance', 'the crater sets every cell to AIR — obsidian and bedrock included. One flag in kernel’s capability table, no edit here'],
 ]

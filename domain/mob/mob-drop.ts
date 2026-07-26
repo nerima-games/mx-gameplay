@@ -128,6 +128,57 @@ export const CREEPER_DROPS: ReadonlyArray<MobDropRule> = [{ item: 'gunpowder', c
 export const CREEPER_XP_REWARD = 5
 
 /**
+ * What a ghast drops. `packages/entity/domain/mob/mobs/ghast.ts:16-17`:
+ * `drops: [{ blockType: 'GUNPOWDER', count: 1 }]`, `xpReward: 5`.
+ *
+ * The second table in this file, and the cheapest possible demonstration that
+ * the first one is not a creeper-shaped special case: same item, same count,
+ * different mob, no new mechanism. It is here because gunpowder is a NAME and a
+ * name is kernel's — two mobs sharing one is the vocabulary working, and would
+ * have been two spellings of `'GUNPOWDER'` under the scatter plan.md §3.1
+ * measured.
+ */
+export const GHAST_DROPS: ReadonlyArray<MobDropRule> = [{ item: 'gunpowder', count: 1 }]
+
+/** `mobs/ghast.ts:17`. */
+export const GHAST_XP_REWARD = 5
+
+/**
+ * What a blaze drops, and THE ONE PLACE THIS FILE DOES NOT SPELL THE REFERENCE'S
+ * ITEM.
+ *
+ * The rule is ported exactly — `packages/entity/domain/mob/mobs/blaze.ts:17-18`
+ * gives `count: 1, chance: 0.5` and `xpReward: 10`, and the half is the first
+ * `chance` any real mob in this repository has, so `rollMobDrop`'s gate finally
+ * runs against a table rather than against one written for the test.
+ *
+ * The ITEM is not. The reference drops `BLAZE_ROD`; `../item-vocabulary` has no
+ * `blaze_rod`, and it does have `blaze_powder`, which kernel added with the note
+ * quoted in that file's header —
+ *
+ *     `gunpowder` / `blaze_powder`   mob drops (plan.md §3.11 gives the rules
+ *                                    to mx-gameplay; the vocabulary is kernel's)
+ *
+ * — so kernel has already decided that the thing a blaze leaves behind is called
+ * `blaze_powder` here. This file follows that decision rather than making a
+ * second one, and states it because a silent rename inside a drop table is
+ * exactly the kind of edit that is impossible to find later.
+ *
+ * The substitution is not free and the cost is worth writing down: in vanilla a
+ * rod is the item and powder is what you craft it into (one rod, two powder), so
+ * collapsing them halves a recipe step and makes the drop count mean something
+ * slightly different. If kernel ever adds `blaze_rod` this line changes to it and
+ * the `0.5` does not — the rule is the reference's either way, and only the noun
+ * was ever in question.
+ */
+export const BLAZE_DROPS: ReadonlyArray<MobDropRule> = [
+  { item: 'blaze_powder', count: 1, chance: 0.5 },
+]
+
+/** `mobs/blaze.ts:18`. Double a creeper's, for a mob half as common. */
+export const BLAZE_XP_REWARD = 10
+
+/**
  * Clamp a roll into `[0, 1)`.
  *
  * A roll outside the interval is a caller bug, and this rule answers it with the

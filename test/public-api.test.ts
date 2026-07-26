@@ -61,6 +61,36 @@ describe('public API surface', () => {
     }),
   )
 
+  // The same rule for mc-sim's, which arrived with the mob wiring.
+  // `domain/entity-manager-port.ts` is a mirror with a deletion date, exactly as
+  // `domain/chunk-store-port.ts` is, so publishing the roster's vocabulary here
+  // would make that deletion a breaking change AND would give the organisation a
+  // second place to look up what an entity id is.
+  it.effect('REGRESSION: does not republish mc-sim’s roster vocabulary as its own', () =>
+    Effect.sync(() => {
+      const simsToOwn = [
+        'EntityId',
+        'EntityKind',
+        'entityManagerTag',
+        'ENTITY_MANAGER_TAG_KEY',
+        'UNCHANGED',
+        'DESPAWNED',
+        'changed',
+      ]
+      for (const name of simsToOwn) {
+        expect(Object.keys(gameplay)).not.toContain(name)
+      }
+
+      // `MobBehaviour` and `repairMobBehaviour` ARE published, and that is the
+      // opposite call for the opposite reason: they are this repository's own
+      // answer to mc-sim's type parameter, and a host has to import them by name
+      // because `EntityManagerLayer<S>()` returns a Layer in which `S` appears
+      // nowhere for a compiler to check.
+      expect(Object.keys(gameplay)).toContain('repairMobBehaviour')
+      expect(Object.keys(gameplay)).toContain('CREEPER_KIND')
+    }),
+  )
+
   it.effect('re-exports the rule domain, which the previews and scenario tests drive directly', () =>
     Effect.sync(() => {
       const internal = [
@@ -105,10 +135,57 @@ describe('public API surface', () => {
         'canHostileSpawnAt',
         'CREEPER_DROPS',
         'CREEPER_XP_REWARD',
+        'GHAST_DROPS',
+        'GHAST_XP_REWARD',
+        'BLAZE_DROPS',
+        'BLAZE_XP_REWARD',
         'dropPasses',
         'rollMobDrop',
         'rollMobDrops',
         'mobXpReward',
+        // the enderman — a decision and an offset, and no position anywhere
+        'ENDERMAN_TELEPORT_MIN_BLOCKS',
+        'ENDERMAN_TELEPORT_MAX_BLOCKS',
+        'ENDERMAN_TELEPORT_ATTEMPTS',
+        'ENDERMAN_DAMAGE_TELEPORT_CHANCE',
+        'ENDERMAN_CHASE_TELEPORT_CHANCE',
+        'ENDERMAN_STUCK_TELEPORT_TICKS',
+        'endermanTeleportUrge',
+        'endermanTeleportOffset',
+        // the shulker — the fuse's shape, with an armour report rather than a flag
+        'SHULKER_OPENING_TICKS',
+        'SHULKER_CLOSED_ARMOR_POINTS',
+        'CLOSED_SHELL',
+        'stepShulkerShell',
+        'shulkerShellArmorPoints',
+        'shulkerWantsToTeleport',
+        // the sweep — the other end of the spawn rule's budget
+        'DESPAWN_DISTANCE_BLOCKS',
+        'despawnVerdict',
+        // the join — the rules above, run over mc-sim's roster
+        'CREEPER_KIND',
+        'CREEPER_MAX_HEALTH',
+        'MAX_HOSTILE_COUNT',
+        'repairMobBehaviour',
+        'dropRulesOfKind',
+        'dropRollsNeeded',
+        'rollDropsOfKind',
+        'rollCasualtyDrops',
+        'rollSelfDestructDrops',
+        'distanceBetween',
+        'cellOf',
+        'sweepMobs',
+        'resolveBlasts',
+        'applySpawnAttempts',
+        // the crater — the OTHER explosion radius, and a ChunkStore write
+        'craterRadius',
+        'craterCells',
+        'carveExplosionCrater',
+        // where randomness enters a frame
+        'DEFAULT_ROLL_SEED',
+        'normaliseSeed',
+        'nextRoll',
+        'drawRolls',
         // stage helpers
         'LAVA_TICK_INTERVAL',
         'EXPERIENCE_MODULE_STAGE_PREFIXES',

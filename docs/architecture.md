@@ -170,12 +170,19 @@ mc-sim と mx-gameplay が別リポジトリであることが問題にならな
 
 §3 の表は `EntityManager`（名詞、mc-sim）に対して
 「クリーパーはプレイヤーに近づくと起爆する」（動詞、ここ）を並べている。
-その動詞が `domain/mob/` の 4 ファイルとして実在するようになったので、線の引かれ方を実物で確認できる。
+その動詞が `domain/mob/` の 7 ファイルとして実在するようになったので、線の引かれ方を実物で確認できる。
 
 | | 置き場 | 実体 |
 | --- | --- | --- |
 | **名詞** — どの Mob がどこにいて体力がいくつか | `mc-sim` | `EntityManager`。セーブファイルが要る |
-| **動詞** — その配置のとき Mob が何をするか | **`mx-gameplay`** | `stepCreeperFuse` / `canHostileSpawnAt` / `explosionDamageAt` / `rollMobDrop` |
+| **動詞** — その配置のとき Mob が何をするか | **`mx-gameplay`** | `stepCreeperFuse` / `canHostileSpawnAt` / `explosionDamageAt` / `rollMobDrop` / `endermanTeleportUrge` / `stepShulkerShell` / `despawnVerdict` |
+
+エンダーマンのテレポートは、この線がどこまで引けるかの一番きわどい例である。
+「どこへ跳ぶか」は一見すると位置の話だが、参照実装が**自分の位置を使っていない**ため
+（`enderman-teleport.ts:28`）位置は約分され、残るのは**変位**——値から値への関数——だけになる。
+`endermanTeleportOffset` は `{xBlocks, zBlocks}` を返し、それを何に足すかは知らない。
+逆にドラゴンは絶対ワールド Y と速度で書かれているので、同じ分割ができず、
+アリーナの missing 一覧に**拒否**として載っている（docs/porting.md §5-2）。
 
 判定手順は §3 と同じ 1 つで足りた。**「セーブファイルに要るか」** ——
 クリーパーの位置と体力は要る（だから mc-sim）。「3 ブロック以内なら着火する」は要らない（だからここ）。

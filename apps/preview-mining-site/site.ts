@@ -58,6 +58,7 @@ import {
   type GameplayFrameState,
 } from '../../stages/registration'
 import { GAMEPLAY_STAGE_IDS } from '../../stages/stage-ids'
+import { emptyPreviewRoster } from './roster'
 import { AIR, floatingBlocks, makePreviewWorld, type PreviewWorld, type WorldSpec } from './world'
 
 /**
@@ -160,12 +161,17 @@ export const makeSite = (
     const world = yield* makePreviewWorld(spec)
     const state = yield* makeGameplayFrameState
     // The stages, from the shipped factory. `makeGameplayStages` would acquire
-    // the tag from a Layer; `gameplayStages` takes the state and the API
-    // directly, which is what lets this app hold the inbox and the outbox — the
-    // two Refs that stand in for services nobody has published yet
-    // (`stages/registration.ts:109-125`). The preview is the host that drains
-    // them, exactly as the comment there describes.
-    const stages = schedule(gameplayStages(state, world.api))
+    // the tags from Layers; `gameplayStages` takes the state and the APIs
+    // directly, which is what lets this app hold the inboxes and the outboxes —
+    // the Refs that stand in for services nobody has published yet. The preview
+    // is the host that drains them, exactly as the comment there describes.
+    //
+    // The roster is EMPTY AND REFUSES TO GROW; see `./roster.ts` for why a
+    // working one here would be mx-gameplay implementing mc-sim's service. The
+    // mining site has no mobs, so the mob half of `gameplay:entities` sweeps
+    // nothing every frame and costs nothing — which is the same claim the idle
+    // frame makes about blocks.
+    const stages = schedule(gameplayStages(state, world.api, emptyPreviewRoster))
 
     return {
       world,

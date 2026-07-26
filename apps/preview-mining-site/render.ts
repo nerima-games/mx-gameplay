@@ -16,7 +16,9 @@ import { positionKeyOf } from '../../domain/block-position-key'
 import {
   ARENA_AMOUNTS,
   ARENA_CAUSES,
+  ARENA_DROP_TABLES,
   ARENA_MISSING,
+  ARENA_WIRED,
   ARENA_STEP_SECS,
   arenaAmount,
   arenaCandidate,
@@ -24,12 +26,29 @@ import {
   arenaVerdict,
   blastCurve,
   blastRadius,
+  DESPAWN_PROBES,
+  DESPAWN_RADIUS,
+  dropsAtRoll,
+  endermanOffset,
+  endermanRoll,
+  endermanSequence,
+  endermanStuckTicks,
+  endermanUrge,
   fuseFraction,
   fuseLabel,
   groundName,
   healthBar,
   IGNITION_RANGE,
+  offsetDistance,
   phaseBand,
+  shellFraction,
+  shellLabel,
+  shulkerArmor,
+  shulkerFlees,
+  SHULKER_MAX_HEALTH,
+  sweepAt,
+  sweepLabel,
+  TELEPORT_BAND,
   wrapReport,
   type ArenaState,
   type TimeState,
@@ -390,6 +409,97 @@ const renderCreeper = (state: ArenaState, style: Style): ReadonlyArray<string> =
   ]
 }
 
+const bar = (fraction: number, width: number): string => {
+  const filled = Math.max(0, Math.min(width, Math.round(fraction * width)))
+  return `[${'#'.repeat(filled)}${'-'.repeat(width - filled)}]`
+}
+
+/**
+ * The enderman: a decision and an offset, and no enderman.
+ *
+ * There is no lane to draw here and no sprite to move, which is the honest
+ * picture of what `domain/mob/enderman-teleport.ts` decides. What the screen can
+ * show — and a unit test cannot — is the two halves being INDEPENDENT: the urge
+ * on the left is computed from three facts, the offset on the right from a roll
+ * sequence, and the rule never puts them together because putting them together
+ * means adding a position, which is mc-sim's.
+ */
+const renderEnderman = (state: ArenaState, style: Style): ReadonlyArray<string> => {
+  const urge = endermanUrge(state)
+  const roll = endermanRoll(state)
+  const [sequenceName, sequence] = endermanSequence(state)
+  const offset = endermanOffset(state)
+  const distance = offsetDistance(offset)
+
+  return [
+    `    hit this frame  ${padEnd(state.enderman.damaged ? 'yes' : 'no', 12)}${style.dim('d toggles — a hit short-circuits the other two branches')}`,
+    `    roll            ${padEnd(Number.isNaN(roll) ? 'NaN' : roll.toFixed(3), 12)}${style.dim('e cycles — the gates are < 0.3 hurt and < 0.05 chasing')}`,
+    `    stuckTicks      ${padEnd(String(endermanStuckTicks(state)), 12)}${style.dim('w cycles — the gate is > 40 FRAMES, not seconds')}`,
+    '',
+    `    ${style.bold('urge')}  ${
+      urge._tag === 'Stay'
+        ? style.dim('Stay')
+        : style.paint(`Teleport  reason=${urge.reason}  anchor=${urge.anchor}`, [180, 140, 235])
+    }`,
+    style.dim('    the anchor is part of the answer: a hurt enderman jumps away from ITSELF and a'),
+    style.dim('    restless one jumps to 8..32 blocks from YOU. The reference passes both and says neither.'),
+    '',
+    `    rolls           ${padEnd(sequenceName, 26)}${style.dim('y cycles')}`,
+    `    ${style.bold('offset')}  ${
+      offset === undefined
+        ? style.dim(`(none — ${String(Math.floor(sequence.length / 2))} attempt(s), all refused or out of rolls)`)
+        : style.paint(
+            `x ${offset.xBlocks.toFixed(2)}  z ${offset.zBlocks.toFixed(2)}   |offset| ${(distance ?? 0).toFixed(2)} blocks`,
+            [180, 140, 235],
+          )
+    }`,
+    style.dim(
+      `    the band is ${String(TELEPORT_BAND[0])}..${String(TELEPORT_BAND[1])} blocks, inclusive. There is no y — the reference copies the anchor's`,
+    ),
+    style.dim('    altitude unchanged, so nothing anywhere asks whether the destination is inside a block.'),
+  ]
+}
+
+/**
+ * The shulker: the same shape as the fuse, drawn the same way.
+ *
+ * The bar is the twenty frames of opening, and it is worth watching against the
+ * creeper's: both are countdowns with one irreversible-looking exit, and only
+ * one of them actually is. A shulker can be slammed shut at nineteen frames and
+ * has to start again — and then starts REOPENING one frame later, because the
+ * flinch is a test on this frame's damage and not a timer.
+ */
+const renderShulker = (state: ArenaState, style: Style): ReadonlyArray<string> => {
+  const shulker = state.shulker
+  const opening = shulker.shell._tag === 'Opening'
+
+  return [
+    `    target          ${padEnd(shulker.hasTarget ? 'yes' : 'no', 12)}${style.dim('m toggles — losing it shuts the shell in ONE frame')}`,
+    `    health          ${padEnd(`${String(shulker.healthPoints)} / ${String(SHULKER_MAX_HEALTH)}`, 12)}${style.dim('; hits it — a hit only flinches it BELOW half')}`,
+    `    landing next .  ${padEnd(String(shulker.hitThisFrame), 12)}${style.dim('damage belongs to one frame, then it is gone')}`,
+    '',
+    `    shell    ${opening ? style.paint(bar(shellFraction(shulker.shell), 20), [140, 200, 180]) : style.dim(bar(shellFraction(shulker.shell), 20))}  ${style.bold(shellLabel(shulker.shell))}`,
+    `    armour   ${padEnd(String(shulkerArmor(state)), 21)}${style.dim('points, NOT a mitigated damage — the 4%/point formula is combat’s')}`,
+    `    frames   ${padEnd(String(shulker.frames), 21)}${style.dim(`shots ${String(shulker.shots)}   wantsToTeleport ${String(shulkerFlees(state))}`)}`,
+    style.dim('    . steps this too. Twenty frames to open, one to shut: that asymmetry is the shell.'),
+  ]
+}
+
+/** The sweep, as a table, because every row is the rule answering. */
+const renderSweep = (state: ArenaState, style: Style): ReadonlyArray<string> => [
+  `    ${DESPAWN_PROBES.map((distance) => {
+    const verdict = sweepAt(distance, false)
+    const label = Number.isNaN(distance) ? 'NaN' : `${String(distance)}b`
+    return `${label}:${verdict._tag === 'Keep' ? 'keep' : verdict.reason}`
+  }).join('  ')}`,
+  `    at the spawn site (${String(state.site.distanceBlocks)} blocks): ${style.bold(sweepLabel(sweepAt(state.site.distanceBlocks, false)))}` +
+    style.dim(`   persistent: ${sweepLabel(sweepAt(state.site.distanceBlocks, true))}`),
+  style.dim(
+    `    ${String(DESPAWN_RADIUS)} blocks, measured in 3D, and 128 itself is kept. A persistent mob is exempt from the`,
+  ),
+  style.dim('    distance and NOT from being a number — that order is the reference’s and is easy to invert.'),
+]
+
 export const renderArenaScreen = (
   state: ArenaState,
   timeOfDay: number,
@@ -401,10 +511,10 @@ export const renderArenaScreen = (
   const candidate = arenaCandidate(state, timeOfDay)
   const verdict = state.verdict
   const lines: Array<string> = [
-    style.bold('mob arena — one mob: the creeper'),
-    style.dim('plan.md §3.11 asks for "スポーンさせて対峙" and for four behaviours. One of the four is'),
-    style.dim('written. Everything below is produced by domain/mob/ at run time: this screen holds'),
-    style.dim('the state mc-sim will hold (a distance and a CreeperFuse value) and decides nothing.'),
+    style.bold('mob arena — three mobs: a creeper, an enderman’s teleport, a shulker’s shell'),
+    style.dim('plan.md §3.11 asks for "スポーンさせて対峙" and for four behaviours. Three are written and'),
+    style.dim('the fourth is refused with its reason, below. Everything here is produced by domain/mob/'),
+    style.dim('at run time: this screen holds the state mc-sim will hold, and decides nothing at all.'),
     '',
     style.bold('  1. spawn condition — domain/mob/hostile-spawn.ts'),
     `    ground ${padEnd(groundName(candidate.groundBlock), 22)}${style.dim('u cycles')}`,
@@ -437,10 +547,46 @@ export const renderArenaScreen = (
     )}${style.dim(`xp ${String(state.xp)}`)}`,
     style.dim('    a creeper that detonates leaves nothing at all; only a kill drops gunpowder.'),
     '',
+    ...ARENA_DROP_TABLES.map(
+      ([name, rules, xp]) =>
+        `    ${padEnd(name, 9)}${padEnd(dropsAtRoll(rules, 0), 22)}${style.dim(
+          `at roll 0.9: ${padEnd(dropsAtRoll(rules, 0.9), 22)}xp ${String(xp)}`,
+        )}`,
+    ),
+    style.dim('    three tables, and the list stops where kernel’s vocabulary does — an enderman drops'),
+    style.dim('    ENDER_PEARL and there is no such ItemType, so there is no table rather than a guess.'),
+    '',
+    style.bold('  5. the enderman’s teleport — domain/mob/enderman-teleport.ts'),
+    ...renderEnderman(state, style),
+    '',
+    style.bold('  6. the shulker’s shell — domain/mob/shulker-shell.ts'),
+    ...renderShulker(state, style),
+    '',
+    style.bold('  7. the sweep — domain/mob/hostile-despawn.ts'),
+    ...renderSweep(state, style),
+    '',
     style.paint(`  ${state.note}`, [226, 202, 130]),
     '',
-    style.bold('  what is missing, and where it would go'),
+    // NOT drawn, and that is deliberate. This screen used to be the only host
+    // the seven rules had; `gameplay:entities` is now the real one, and a
+    // preview may not implement another repository's service in order to draw
+    // it (see apps/preview-mining-site/roster.ts). So the loop is NAMED here and
+    // exercised in a test, which is the honest division.
+    style.bold('  what now RUNS them, in the frame rather than on this screen'),
   ]
+
+  for (const [what, where] of ARENA_WIRED) {
+    lines.push(`    ${padEnd(what, 34)}${style.dim(where)}`)
+  }
+
+  lines.push(
+    style.dim('    The scenario that goes THROUGH the stage — spawn, fuse, blast, damage, drop, crater,'),
+    style.dim('    cascade, settle — is test/vertical-slice.test.ts. This screen still holds its own'),
+    style.dim('    creeper: mc-sim is not published, and mx-gameplay must not ship an EntityManager.'),
+  )
+
+  lines.push('')
+  lines.push(style.bold('  what is missing, and where it would go'))
 
   for (const [what, where] of ARENA_MISSING) {
     lines.push(`    ${padEnd(what, 34)}${style.dim(where)}`)

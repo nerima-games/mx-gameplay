@@ -21,34 +21,49 @@
 
 export * from './domain/day-night'
 export * from './domain/death-cause'
+export * from './domain/entities/mob-frame'
 export * from './domain/falling-block'
 export * from './domain/fluid-frontier'
+export * from './domain/frame-rolls'
+export * from './domain/interactions/explosion-crater'
 export * from './domain/mob/creeper-fuse'
+export * from './domain/mob/enderman-teleport'
 export * from './domain/mob/explosion'
+export * from './domain/mob/hostile-despawn'
 export * from './domain/mob/hostile-spawn'
 export * from './domain/mob/mob-drop'
+export * from './domain/mob/shulker-shell'
 export * from './stages/registration'
 export * from './stages/stage-ids'
 
 // --- Provisional ---------------------------------------------------------------
-// Five modules are temporary local stand-ins for packages that are not
+// Six modules are temporary local stand-ins for packages that are not
 // published yet, and NONE of them is re-exported:
 //
-//   domain/frame-contract.ts   -> @nerima-games/mc-kernel
-//   domain/position-key.ts     -> @nerima-games/mc-kernel
-//   domain/item-vocabulary.ts  -> @nerima-games/mc-kernel
-//   domain/chunk-store-port.ts -> @nerima-games/mc-worldgen
-//   domain/block-position-key.ts — the join between the two vocabularies above
+//   domain/frame-contract.ts      -> @nerima-games/mc-kernel
+//   domain/position-key.ts        -> @nerima-games/mc-kernel
+//   domain/item-vocabulary.ts     -> @nerima-games/mc-kernel
+//   domain/chunk-store-port.ts    -> @nerima-games/mc-worldgen
+//   domain/entity-manager-port.ts -> @nerima-games/mc-sim
+//   domain/block-position-key.ts — the join between two of the vocabularies above
 //
-// All four carry a deletion date — see the "WHY THIS FILE EXISTS AND WHEN IT
+// All of them carry a deletion date — see the "WHY THIS FILE EXISTS AND WHEN IT
 // DIES" header on the first — and re-exporting them would make `StageId`,
-// `DeltaTimeSecs`, `StageRegistration` and `ChunkStore` published API of a
-// package that does not own them, so deleting the stand-in would become a
-// breaking change for every consumer. Consumers take that vocabulary from
-// kernel and mc-worldgen; the types are structurally identical, so a consumer
-// importing them from there typechecks against the signatures above. Same
-// call, and the same reason, as mc-sim's and mc-render's barrels.
+// `DeltaTimeSecs`, `StageRegistration`, `ChunkStore` and `EntityManagerApi`
+// published API of a package that does not own them, so deleting the stand-in
+// would become a breaking change for every consumer. Consumers take that
+// vocabulary from kernel, mc-worldgen and mc-sim; the types are structurally
+// identical, so a consumer importing them from there typechecks against the
+// signatures above. Same call, and the same reason, as mc-sim's and mc-render's
+// barrels.
 //
-// `ChunkStore` is nonetheless VISIBLE to a consumer, because it appears in the
-// type of `makeGameplayStages`. That is why it is in the "Supporting
-// declarations" section of `api-lock.md`: not exported, but named by an export.
+// `ChunkStore`, `EntityManager` and `EntityManagerApi` are nonetheless VISIBLE
+// to a consumer, because they appear in the type of `makeGameplayStages`. That
+// is why they are in the "Supporting declarations" section of `api-lock.md`: not
+// exported, but named by an export.
+//
+// `MobBehaviour` and `repairMobBehaviour` ARE exported, and that is not an
+// inconsistency. They are this repository's own — the instantiation of mc-sim's
+// behaviour parameter and the repair function mc-sim's load path delegates to —
+// and a host has to import them by name in order to build the roster correctly.
+// `domain/entities/mob-frame.ts` explains why no compiler can check that it did.

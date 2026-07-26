@@ -7,10 +7,13 @@
  * violated with STRINGS rather than with imports.
  */
 import { describe, expect, it } from '@effect/vitest'
-import { Effect, Ref } from 'effect'
+import { Effect, Layer, Ref } from 'effect'
 import type { ChunkStore } from '../domain/chunk-store-port'
+import type { MobBehaviour } from '../domain/entities/mob-frame'
+import type { EntityManager } from '../domain/entity-manager-port'
 import { DeltaTimeSecs, StageId, type GameModule, type StageRegistration } from '../domain/frame-contract'
 import { disturb, takeBatch } from '../domain/falling-block'
+import { DEFAULT_ROLL_SEED } from '../domain/frame-rolls'
 import {
   gameplayStages,
   LAVA_TICK_INTERVAL,
@@ -25,24 +28,29 @@ import {
   UPSTREAM_STAGE_IDS,
 } from '../stages/stage-ids'
 import { emptyWorldStoreLayer, makeChunkStoreDouble, world } from './support/chunk-store-double'
+import { emptyRosterLayer, makeEntityManagerDouble } from './support/entity-manager-double'
 
 const stageIds = (stages: ReadonlyArray<StageRegistration>): ReadonlyArray<string> =>
   stages.map((stage) => stage.id)
 
 /**
- * The stages now read and write blocks, so building them takes mc-worldgen's
- * `ChunkStore` (in `frameStages` — see `domain/frame-contract.ts` on
- * `RRegister`). Tests about the SHAPE of the registration provide an empty
- * resident world: these assertions are about ordering and contract, and the
- * behaviour over a real world is `test/vertical-slice.test.ts`.
+ * The stages read and write blocks and iterate mobs, so building them takes
+ * mc-worldgen's `ChunkStore` AND mc-sim's `EntityManager` (in `frameStages` —
+ * see `domain/frame-contract.ts` on `RRegister`). Tests about the SHAPE of the
+ * registration provide an empty resident world and an empty roster: these
+ * assertions are about ordering and contract, and the behaviour over a real
+ * world is `test/vertical-slice.test.ts`.
  */
-const registeredStages = Effect.provide(makeGameplayStages, emptyWorldStoreLayer)
+const emptyWorld = Layer.merge(emptyWorldStoreLayer, emptyRosterLayer)
+
+const registeredStages = Effect.provide(makeGameplayStages, emptyWorld)
 
 /** The same, for the tests that need to reach into the frame state. */
 const builtStages = Effect.gen(function* () {
   const state = yield* makeGameplayFrameState
   const store = yield* makeChunkStoreDouble(world([]), ['0,0'])
-  return { state, store, stages: gameplayStages(state, store.api) }
+  const roster = yield* makeEntityManagerDouble<MobBehaviour>()
+  return { state, store, roster, stages: gameplayStages(state, store.api, roster.api) }
 })
 
 const allAfterEdges = (stages: ReadonlyArray<StageRegistration>): ReadonlyArray<string> =>
@@ -231,20 +239,62 @@ describe('stage behaviour', () => {
     Effect.gen(function* () {
       const state = yield* makeGameplayFrameState
 
-      // The list is exact on purpose: a fifth answer to "what does mx-gameplay
-      // remember between frames" has to be argued for in a diff. Two of these
-      // arrived with the block-write wiring and both pass the save-file test —
-      // `pendingBreaks` is this frame's input requests (a save file records
-      // that a block is gone, never that a button was down) and `minedItems` is
-      // the outbox that becomes `InventoryService.add` the moment mc-sim is
-      // published.
+      // The list is exact on purpose: another answer to "what does mx-gameplay
+      // remember between frames" has to be argued for in a diff. Two arrived
+      // with the block-write wiring and four with the mob wiring, and every one
+      // of the nine passes the save-file test — see the paragraph on
+      // `GameplayFrameState` in `stages/registration.ts`, which argues
+      // `targetPosition` at length because it is the one that most looks like a
+      // second owner of a noun and is not.
+      //
+      // WHAT IS STILL NOT HERE is the thing this list exists to keep out: there
+      // is no `Ref<Map<MobId, CreeperFuse>>`, no mob position, no mob health and
+      // no entity id. The roster is mc-sim's, and the stage reaches it through a
+      // service rather than through a field.
       expect(Object.keys(state).sort()).toStrictEqual([
         'fallingBlocks',
         'fluidFrontier',
         'minedItems',
+        'mobDrops',
         'pendingBreaks',
+        'rollSeed',
+        'spawnAttempts',
+        'targetPosition',
         'tickCount',
       ])
+    }),
+  )
+
+  // REGRESSION-SHAPED: the paragraph in `stages/registration.ts` that this file
+  // has enforced since the day-length deletion says a `Ref<Map<MobId,
+  // CreeperFuse>>` here would be 「the same mistake as the `timeOfDaySecs` Ref
+  // this file used to hold」. The roster now exists in mc-sim, so the temptation
+  // is gone — but the way it would come back is a stage that CACHES what it read
+  // from the roster, which looks like an optimisation rather than like ownership.
+  it.effect('REGRESSION: the frame state holds no mob, no mob position and no mob health', () =>
+    Effect.gen(function* () {
+      const state = yield* makeGameplayFrameState
+
+      // Nothing here is a Map, which is the shape a mob cache takes, and nothing
+      // is an entity. The two mob-shaped fields hold a target the frame is
+      // handed and candidate cells offered to a rule; both are emptied or
+      // overwritten within the frame that reads them.
+      expect(yield* Ref.get(state.targetPosition)).toBeUndefined()
+      expect(yield* Ref.get(state.spawnAttempts)).toStrictEqual([])
+      expect(yield* Ref.get(state.mobDrops)).toStrictEqual([])
+    }),
+  )
+
+  it.effect('the seed is a literal, so two frame states start from the same one', () =>
+    Effect.gen(function* () {
+      // `domain/frame-rolls.ts` is a whole file about why randomness enters here
+      // and nowhere else. The property that matters to plan.md §5.1-3 is this
+      // one: two runs of one scenario draw the same numbers.
+      const first = yield* makeGameplayFrameState
+      const second = yield* makeGameplayFrameState
+
+      expect(yield* Ref.get(first.rollSeed)).toBe(DEFAULT_ROLL_SEED)
+      expect(yield* Ref.get(second.rollSeed)).toBe(DEFAULT_ROLL_SEED)
     }),
   )
 
@@ -266,6 +316,10 @@ describe('stage behaviour', () => {
       expect(yield* Ref.get(state.tickCount)).toBe(0)
       expect(yield* Ref.get(state.pendingBreaks)).toStrictEqual([])
       expect(yield* Ref.get(state.minedItems)).toStrictEqual([])
+      expect(yield* Ref.get(state.mobDrops)).toStrictEqual([])
+      expect(yield* Ref.get(state.spawnAttempts)).toStrictEqual([])
+      expect(yield* Ref.get(state.targetPosition)).toBeUndefined()
+      expect(yield* Ref.get(state.rollSeed)).toBe(DEFAULT_ROLL_SEED)
     }),
   )
 
@@ -362,8 +416,8 @@ describe('the module contract has caught up with this file’s shape', () => {
    */
   it.effect('REGRESSION: exports a real GameModule, not "stages alone, the Layer comes later"', () =>
     Effect.gen(function* () {
-      const module: GameModule<never, never, never, ChunkStore> = gameplayModule
-      const stages = yield* Effect.provide(module.frameStages, emptyWorldStoreLayer)
+      const module: GameModule<never, never, never, ChunkStore | EntityManager> = gameplayModule
+      const stages = yield* Effect.provide(module.frameStages, emptyWorld)
 
       expect(stageIds(stages)).toStrictEqual(Object.values(GAMEPLAY_STAGE_IDS))
     }),
@@ -383,28 +437,48 @@ describe('the module contract has caught up with this file’s shape', () => {
 
   // This used to read "needs nothing to register today, and says so in the
   // type", with a note predicting that a service would arrive in `frameStages`
-  // — the `RRegister` parameter — rather than in the Layer. It has: the stages
-  // write blocks, so registering them takes mc-worldgen's `ChunkStore`.
+  // — the `RRegister` parameter — rather than in the Layer. Two have: the stages
+  // write blocks, so registering them takes mc-worldgen's `ChunkStore`, and they
+  // iterate mobs, so they take mc-sim's `EntityManager`.
   //
   // `RIn` is still `never` and that is the distinction `RRegister` exists for.
   // This repository BUILDS nothing another repository has to supply; it CALLS
-  // what mc-worldgen supplies. A `ChunkStore` that had leaked into `RIn` would
-  // be mx-gameplay claiming to construct part of mc-worldgen.
-  it.effect('acquires exactly one service to register — mc-worldgen’s store, in frameStages', () =>
+  // what mc-worldgen and mc-sim supply. Either service leaking into `RIn` would
+  // be mx-gameplay claiming to construct part of somebody else's repository.
+  it.effect('acquires exactly two services to register — the store and the roster, in frameStages', () =>
     Effect.gen(function* () {
       const registration: Effect.Effect<
         ReadonlyArray<StageRegistration>,
         never,
-        ChunkStore
+        ChunkStore | EntityManager
       > = gameplayModule.frameStages
 
-      // Providing the store — and nothing else — discharges the whole context.
-      // If a stage started demanding a second service at REGISTRATION time,
-      // this assignment would stop compiling, which is the point.
+      // Providing those two — and nothing else — discharges the whole context.
+      // If a stage started demanding a THIRD service at REGISTRATION time, this
+      // assignment would stop compiling, which is the point. The candidate for
+      // the third is mc-sim's `InventoryService`, and until it can be mirrored
+      // whole the mob drops go to an outbox instead; see `GameplayFrameState`.
       const satisfied: Effect.Effect<ReadonlyArray<StageRegistration>, never, never> =
-        Effect.provide(registration, emptyWorldStoreLayer)
+        Effect.provide(registration, emptyWorld)
 
       expect(yield* satisfied).toHaveLength(4)
+    }),
+  )
+
+  // REGRESSION-SHAPED, and it is the property mc-sim's §7-1 buys with
+  // `Context.GenericTag`: `EntityManager` appears ONCE in the requirement,
+  // without a parameter, however the behaviour type is instantiated. If mc-sim
+  // had used a Tag class per behaviour, this union would have grown a member per
+  // consumer and mc-compose would have had to name mx-gameplay's `MobBehaviour`.
+  it.effect('the roster requirement carries no behaviour parameter', () =>
+    Effect.sync(() => {
+      const unparameterised: Effect.Effect<
+        ReadonlyArray<StageRegistration>,
+        never,
+        ChunkStore | EntityManager
+      > = makeGameplayStages
+
+      expect(typeof unparameterised).toBe('object')
     }),
   )
 

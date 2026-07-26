@@ -166,7 +166,7 @@ plan.md §8 のリスク表も同じことを言っている。
 | 対象 | テストの置き場 | ファイル数 |
 | --- | --- | --- |
 | interaction | `packages/app/application/frame/stages/interaction-*.test.ts`（30）+ `packages/app/test/`（3） | 33 |
-| Mob | `packages/entity/test/mob/`（53）+ `packages/entity/test/`（5）+ `packages/entity/domain/mob/` 同居（3） | 61（うち **6 本移植済み**: `creeper-fuse` ×2、`explosion` ×1、`mob-spawner-rules` ×1、`terrain-spawn` ×1、`drop` ×1 → `test/mob.test.ts`） |
+| Mob | `packages/entity/test/mob/`（53）+ `packages/entity/test/`（5）+ `packages/entity/domain/mob/` 同居（3） | 61（うち **9 本移植済み**: `creeper-fuse` ×2、`explosion` ×1、`mob-spawner-rules` ×1、`terrain-spawn` ×1、`drop` ×1、`enderman-teleport` ×1、`shulker-behavior` ×1、`entity-manager-utils`（despawn 部）×1 → `test/mob.test.ts`） |
 | 流体 | `packages/world/test/fluid-*.test.ts` | 9 |
 | 落下ブロック | `packages/world/domain/falling-block.test.ts` / `packages/world/application/falling-block-maintenance.test.ts` | 2 |
 | 昼夜 | `packages/game/test/day-night-cycle.test.ts` / `day-night-cycle-appearance.test.ts` | 2 |
@@ -195,15 +195,34 @@ plan.md §8 のリスク表も同じことを言っている。
 経路探索、そして「Mob AI stage」そのもの。これらは全部 mc-sim の名詞を読む。
 
 移植できるのは**ルール**の部分であり、それは値から値への全域関数として書ける。
-実際に `domain/mob/` の 4 ファイルは `EntityManager` を 1 度も名指ししていない:
+実際に `domain/mob/` の 7 ファイルは `EntityManager` を 1 度も名指ししていない:
 導火線は `(CreeperFuse, 距離, dt) -> (CreeperFuse, 爆発?)`、
-スポーン判定は `(候補セル) -> 可否`、ドロップは `(規則, 死に方, ロール) -> 品目`。
+スポーン判定は `(候補セル) -> 可否`、ドロップは `(規則, 死に方, ロール) -> 品目`、
+テレポートは `(3 つの事実) -> 意思` と `(ロール列) -> 変位?`、
+シュルカーの殻は `(ShulkerShell, 4 つの事実) -> (ShulkerShell, 射撃可否)`、
+掃除は `(距離, 常駐か) -> 可否`。
 ホストが誰であるかを知らないので、テストとプレビューがホストを務められる。
 
 含意は移植順そのものにある。**「mc-sim 待ち」と書かれた行は、名詞を要求する部分だけが待っている。**
 着手前に「この行のどこが状態でどこがルールか」を分けると、待たずに済む分が出てくる。
-残りの 3 種（エンダーマン / シュルカー / ドラゴン）にも同じ分割が効くはずだが、
-テレポート先の探索は世界を読むので、クリーパーほどきれいには割れない見込みである。
+
+### 5-2. 残り 3 種のうち 2 種は割れた。ドラゴンは割れない（実測）
+
+§5-1 は「テレポート先の探索は世界を読むので、クリーパーほどきれいには割れない見込み」と書いた。
+**その見込みは外れた。** 参照実装の `computeEndermanTeleportTarget` は
+エンダーマン自身の位置を使っておらず（`enderman-teleport.ts:28` の `_position`）、
+候補を `targetPosition + offset` で作って**その `targetPosition` に対して**距離を検査するので、
+位置が約分されて**変位だけ**が残る。`domain/mob/enderman-teleport.ts` はその変位を返す。
+参照実装のオラクルの期待値と桁まで一致するので、割ったことで失ったものは無い。
+
+シュルカーの殻（`domain/mob/shulker-shell.ts`）はもっと単純で、導火線と同じ形である。
+デスポーン（`domain/mob/hostile-despawn.ts`）も距離 1 つと旗 1 つに落ちた。
+
+**ドラゴンだけは割れない。** 位相機械（`ender-dragon/dragon-phase.ts`）の分岐は
+`TAKEOFF_COMPLETE_Y = 80` / `LOW_ALTITUDE_Y = 70`（:51-52）という**絶対ワールド Y** で切り替わり、
+各位相は**速度**を返す（:89-109）。絶対高度はジ・エンドの黒曜石柱という**構造の事実**（mc-worldgen）、
+速度は**移動**（mc-physics）である。ここに書けるのはそのどちらでもないので、書かない。
+アリーナの missing 一覧に、理由つきの**拒否**として載せてある。
 
 4 と 5 は `mc-sim` の公開 API に強く依存する。plan.md §3.8 が
 「この公開 API が全下流の依存先（=最重要界面）」と書いているとおりで、
@@ -221,4 +240,9 @@ plan.md §8 のリスク表も同じことを言っている。
 | アプリスコープのシングルトン | DN-GP-6 |
 | **保存済みの数値を再判定する「爆発」**（`entity-manager-creeper-detonation.ts:19` の `fuseSecs >= 1.5`） | 参照実装は導火線 tick が返す `detonate` を捨て（`entity-manager-update-maintenance.ts:36`）、別ファイルで数値を再判定する。その結果「爆発は 1 回だけ」を担保しているのは 3 つ目のファイルの `HashMap.remove`（`entity-manager-combat.ts:60`）であり、削除を外した個体は毎フレーム爆発する。加えて再判定には距離検査が無いので、**導火線が満了した後は逃げても助からない**（燃焼中のキャンセルと矛盾する）。`domain/mob/creeper-fuse.ts` は爆発を**遷移**にし、`Detonated` を終端にしてある |
 | `Math.random()` を呼ぶドロップ経路（`interaction-melee-handler.ts:185` / `interaction-mob-drops.ts:18`） | 参照実装のドメインは純粋だがアプリ層がグローバル乱数を読むため、**ドロップは再現できない**。plan.md §5.1-3 の決定論はシナリオテストをオラクルにするための前提なので、ロールは引数で通す（`domain/mob/mob-drop.ts`） |
+| **ハードコードされたロール**（`entity-manager-damage-enderman.ts:14` の `shouldEndermanTeleport(true, 0, 0)`） | `0 < 0.3` は常に真なので、`DAMAGE_TELEPORT_CHANCE = 0.3` は**一度も走っていない**。被弾したエンダーマンは毎回テレポートする。定数が挙動ではなく意図の記録になっている典型で、`test/mob.test.ts` が両側の境界を固定して復活させてある |
+| **1 つのロールを 2 つの判断に使い回すこと**（`entity-manager-ai-enderman-teleport.ts:25` が `frame.randomWanderRoll` を渡す） | 同じ乱数が徘徊方向の再抽選（`WANDER_REDIRECT_PROBABILITY = 0.2`）とテレポート（0.05）を決めるので、**テレポートするフレームは必ず徘徊も切り替わる**。ロールを引数にすると、この相関はホスト側で見えるようになる |
+| **`isInvulnerable` フラグ**（`shulker-behavior.ts:54`） | 同じファイルの `computeShulkerShellDamage` は閉殻に 20% を通す（20 点＝80% 減）。フラグを読んだ呼び出し側が先に来れば Mob が不死になる。`domain/mob/shulker-shell.ts` は**装甲点数だけ**を報告し、フラグは持ち込まない |
+| **消費者も生産者も無い定数**（`SHULKER_FORCED_CLOSED_TICKS = 100`、`shulker-behavior.ts:9`） | 参照実装でもテストでも 1 度も参照されず、門番をする `closeTicksRemaining` に生産者も減算も無い。移植すると**両端を発明する**ことになるので、アリーナの missing 一覧に「未決」として置く |
+| **ヴィラジャーを名指しする despawn 免除**（`entity-manager-utils.ts:66` の `type === 'Villager'`） | ブロック名の名指しと同じ話（上の行）。`domain/mob/hostile-despawn.ts` は `persistent` という**旗**を受け取り、誰が常駐かは名簿が決める |
 | THREE.js に触るもの | `tsconfig.base.json` の `lib: ["ES2024"]` / `types: []` が型で拒否する |

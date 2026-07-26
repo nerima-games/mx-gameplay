@@ -13,10 +13,48 @@
 <!-- ------------------------------------------------------------------------- -->
 
 format: 1
-exported declarations: 72
-supporting declarations: 22
+exported declarations: 134
+supporting declarations: 36
 
 ## Exported
+
+### BLAZE_DROPS  `const`
+
+```ts
+const BLAZE_DROPS: ReadonlyArray<MobDropRule>;
+```
+
+### BLAZE_XP_REWARD  `const`
+
+```ts
+const BLAZE_XP_REWARD = 10;
+```
+
+### Blast  `type`
+
+```ts
+type Blast = {
+    readonly source: EntityId;
+    readonly kind: EntityKind;
+    readonly at: Position;
+    readonly explosion: Explosion;
+};
+```
+
+### BlastResolution  `type`
+
+```ts
+type BlastResolution = {
+    readonly casualties: ReadonlyArray<MobCasualty>;
+    readonly disturbed: ReadonlyArray<PositionKey>;
+};
+```
+
+### CLOSED_SHELL  `const`
+
+```ts
+const CLOSED_SHELL: ShulkerShell;
+```
 
 ### CREEPER_DROPS  `const`
 
@@ -42,10 +80,31 @@ const CREEPER_FUSE_SECS = 1.5;
 const CREEPER_IGNITION_RANGE_BLOCKS = 3;
 ```
 
+### CREEPER_KIND  `const`
+
+```ts
+const CREEPER_KIND: EntityKind;
+```
+
+### CREEPER_MAX_HEALTH  `const`
+
+```ts
+const CREEPER_MAX_HEALTH = 20;
+```
+
 ### CREEPER_XP_REWARD  `const`
 
 ```ts
 const CREEPER_XP_REWARD = 5;
+```
+
+### CasualtyDrops  `type`
+
+```ts
+type CasualtyDrops = {
+    readonly drops: ReadonlyArray<MobDrop>;
+    readonly seed: number;
+};
 ```
 
 ### CreeperFuse  `type`
@@ -96,6 +155,18 @@ const DEATH_MESSAGES: Readonly<Record<DeathCause, string>>;
 const DEFAULT_FLUID_FRONTIER_BUDGET = 64;
 ```
 
+### DEFAULT_ROLL_SEED  `const`
+
+```ts
+const DEFAULT_ROLL_SEED = 20260727;
+```
+
+### DESPAWN_DISTANCE_BLOCKS  `const`
+
+```ts
+const DESPAWN_DISTANCE_BLOCKS = 128;
+```
+
 ### DORMANT_FUSE  `const`
 
 ```ts
@@ -129,6 +200,32 @@ type DayPhase = 'night' | 'dawn' | 'day' | 'dusk';
 type DeathCause = 'fall' | 'lava' | 'fire' | 'drowning' | 'suffocation' | 'starvation' | 'mob' | 'projectile' | 'explosion' | 'void' | 'generic';
 ```
 
+### DespawnCandidate  `type`
+
+```ts
+type DespawnCandidate = {
+    readonly distanceToPlayerBlocks: number | undefined;
+    readonly persistent: boolean;
+};
+```
+
+### DespawnReason  `type`
+
+```ts
+type DespawnReason = 'too-far' | 'unmeasurable';
+```
+
+### DespawnVerdict  `type`
+
+```ts
+type DespawnVerdict = {
+    readonly _tag: 'Keep';
+} | {
+    readonly _tag: 'Despawn';
+    readonly reason: DespawnReason;
+};
+```
+
 ### DropRolls  `type`
 
 ```ts
@@ -138,10 +235,68 @@ type DropRolls = {
 };
 ```
 
+### ENDERMAN_CHASE_TELEPORT_CHANCE  `const`
+
+```ts
+const ENDERMAN_CHASE_TELEPORT_CHANCE = 0.05;
+```
+
+### ENDERMAN_DAMAGE_TELEPORT_CHANCE  `const`
+
+```ts
+const ENDERMAN_DAMAGE_TELEPORT_CHANCE = 0.3;
+```
+
+### ENDERMAN_STUCK_TELEPORT_TICKS  `const`
+
+```ts
+const ENDERMAN_STUCK_TELEPORT_TICKS = 40;
+```
+
+### ENDERMAN_TELEPORT_ATTEMPTS  `const`
+
+```ts
+const ENDERMAN_TELEPORT_ATTEMPTS = 16;
+```
+
+### ENDERMAN_TELEPORT_MAX_BLOCKS  `const`
+
+```ts
+const ENDERMAN_TELEPORT_MAX_BLOCKS = 32;
+```
+
+### ENDERMAN_TELEPORT_MIN_BLOCKS  `const`
+
+```ts
+const ENDERMAN_TELEPORT_MIN_BLOCKS = 8;
+```
+
 ### EXPERIENCE_MODULE_STAGE_PREFIXES  `const`
 
 ```ts
 const EXPERIENCE_MODULE_STAGE_PREFIXES: readonly ["gameplay:", "redstone:", "ui:", "multiplayer:"];
+```
+
+### EndermanSenses  `type`
+
+```ts
+type EndermanSenses = {
+    readonly damagedThisStep: boolean;
+    readonly stuckTicks: number;
+    readonly roll: number;
+};
+```
+
+### EndermanTeleportUrge  `type`
+
+```ts
+type EndermanTeleportUrge = {
+    readonly _tag: 'Stay';
+} | {
+    readonly _tag: 'Teleport';
+    readonly reason: TeleportReason;
+    readonly anchor: TeleportAnchor;
+};
 ```
 
 ### Explosion  `type`
@@ -217,12 +372,28 @@ const GAMEPLAY_STAGE_IDS: {
 };
 ```
 
+### GHAST_DROPS  `const`
+
+```ts
+const GHAST_DROPS: ReadonlyArray<MobDropRule>;
+```
+
+### GHAST_XP_REWARD  `const`
+
+```ts
+const GHAST_XP_REWARD = 5;
+```
+
 ### GameplayFrameState  `type`
 
 ```ts
 type GameplayFrameState = {
     readonly pendingBreaks: Ref.Ref<ReadonlyArray<PositionKey>>;
     readonly minedItems: Ref.Ref<ReadonlyArray<BlockId>>;
+    readonly mobDrops: Ref.Ref<ReadonlyArray<MobDrop>>;
+    readonly spawnAttempts: Ref.Ref<ReadonlyArray<MobSpawnAttempt>>;
+    readonly targetPosition: Ref.Ref<Position | undefined>;
+    readonly rollSeed: Ref.Ref<number>;
     readonly fallingBlocks: Ref.Ref<FallingBlockQueue>;
     readonly fluidFrontier: Ref.Ref<ReadonlyArray<FluidWorkItem>>;
     readonly tickCount: Ref.Ref<number>;
@@ -253,6 +424,12 @@ const LOWEST_ROLLS: DropRolls;
 const MAX_HEALTH_POINTS = 20;
 ```
 
+### MAX_HOSTILE_COUNT  `const`
+
+```ts
+const MAX_HOSTILE_COUNT = 16;
+```
+
 ### MAX_SPAWN_DISTANCE_BLOCKS  `const`
 
 ```ts
@@ -263,6 +440,21 @@ const MAX_SPAWN_DISTANCE_BLOCKS = 40;
 
 ```ts
 const MIN_SPAWN_DISTANCE_BLOCKS = 16;
+```
+
+### MobBehaviour  `type`
+
+```ts
+type MobBehaviour = CreeperFuse | undefined;
+```
+
+### MobCasualty  `type`
+
+```ts
+type MobCasualty = {
+    readonly id: EntityId;
+    readonly kind: EntityKind;
+};
 ```
 
 ### MobDrop  `type`
@@ -285,6 +477,15 @@ type MobDropRule = {
 };
 ```
 
+### MobFrameSenses  `type`
+
+```ts
+type MobFrameSenses = {
+    readonly target: Position | undefined;
+    readonly dt: DeltaTimeSecs;
+};
+```
+
 ### MobKill  `type`
 
 ```ts
@@ -293,6 +494,30 @@ type MobKill = {
     readonly lootingLevel: number;
 } | {
     readonly _tag: 'SelfDestruct';
+};
+```
+
+### MobSpawnAttempt  `type`
+
+```ts
+type MobSpawnAttempt = {
+    readonly candidate: SpawnCandidate;
+    readonly feetPosition: Position;
+};
+```
+
+### MobSpawnOutcome  `type`
+
+```ts
+type MobSpawnOutcome = {
+    readonly _tag: 'Spawned';
+    readonly id: EntityId;
+} | {
+    readonly _tag: 'Refused';
+    readonly reason: SpawnRefusal;
+} | {
+    readonly _tag: 'AtCapacity';
+    readonly population: number;
 };
 ```
 
@@ -306,6 +531,69 @@ const NOON_FRACTION = 0.5;
 
 ```ts
 const OWN_STAGE_PREFIX = "gameplay:";
+```
+
+### RollBatch  `type`
+
+```ts
+type RollBatch = {
+    readonly rolls: ReadonlyArray<number>;
+    readonly seed: number;
+};
+```
+
+### RollDraw  `type`
+
+```ts
+type RollDraw = {
+    readonly roll: number;
+    readonly seed: number;
+};
+```
+
+### SHULKER_CLOSED_ARMOR_POINTS  `const`
+
+```ts
+const SHULKER_CLOSED_ARMOR_POINTS = 20;
+```
+
+### SHULKER_OPENING_TICKS  `const`
+
+```ts
+const SHULKER_OPENING_TICKS = 20;
+```
+
+### ShulkerSenses  `type`
+
+```ts
+type ShulkerSenses = {
+    readonly hasTarget: boolean;
+    readonly damageTakenThisTick: number;
+    readonly healthPoints: number;
+    readonly maxHealthPoints: number;
+};
+```
+
+### ShulkerShell  `type`
+
+```ts
+type ShulkerShell = {
+    readonly _tag: 'Closed';
+} | {
+    readonly _tag: 'Opening';
+    readonly openedTicks: number;
+} | {
+    readonly _tag: 'Open';
+};
+```
+
+### ShulkerStep  `type`
+
+```ts
+type ShulkerStep = {
+    readonly shell: ShulkerShell;
+    readonly canFire: boolean;
+};
 ```
 
 ### SpawnCandidate  `type`
@@ -344,6 +632,27 @@ type SpawnVerdict = {
 const TWILIGHT_BAND = 0.05;
 ```
 
+### TeleportAnchor  `type`
+
+```ts
+type TeleportAnchor = 'self' | 'target';
+```
+
+### TeleportOffset  `type`
+
+```ts
+type TeleportOffset = {
+    readonly xBlocks: number;
+    readonly zBlocks: number;
+};
+```
+
+### TeleportReason  `type`
+
+```ts
+type TeleportReason = 'damaged' | 'stuck' | 'restless';
+```
+
 ### UPSTREAM_STAGE_IDS  `const`
 
 ```ts
@@ -367,6 +676,12 @@ type Vitals = {
 const applyDamage: (vitals: Vitals, damage: Damage) => Vitals;
 ```
 
+### applySpawnAttempts  `const`
+
+```ts
+const applySpawnAttempts: (roster: EntityManagerApi<MobBehaviour>, attempts: ReadonlyArray<MobSpawnAttempt>) => Effect.Effect<ReadonlyArray<MobSpawnOutcome>>;
+```
+
 ### canHostileSpawnAt  `const`
 
 ```ts
@@ -377,6 +692,30 @@ const canHostileSpawnAt: (candidate: SpawnCandidate) => SpawnVerdict;
 
 ```ts
 const carryOver: (frontier: ReadonlyArray<FluidWorkItem>, split: FluidBudgetSplit) => ReadonlyArray<FluidWorkItem>;
+```
+
+### carveExplosionCrater  `const`
+
+```ts
+const carveExplosionCrater: (store: ChunkStoreApi, centre: BlockPosition, power: number) => Effect.Effect<ReadonlyArray<PositionKey>>;
+```
+
+### cellOf  `const`
+
+```ts
+const cellOf: (position: Position) => BlockPosition;
+```
+
+### craterCells  `const`
+
+```ts
+const craterCells: (centre: BlockPosition, power: number) => ReadonlyArray<BlockPosition>;
+```
+
+### craterRadius  `const`
+
+```ts
+const craterRadius: (power: number) => number;
 ```
 
 ### dayPhase  `const`
@@ -397,10 +736,28 @@ const deathMessage: (vitals: Vitals) => string | undefined;
 const describeDeath: (cause: DeathCause) => string;
 ```
 
+### despawnVerdict  `const`
+
+```ts
+const despawnVerdict: (candidate: DespawnCandidate) => DespawnVerdict;
+```
+
+### distanceBetween  `const`
+
+```ts
+const distanceBetween: (from: Position, to: Position) => number;
+```
+
 ### disturb  `const`
 
 ```ts
 const disturb: (queue: FallingBlockQueue, positions: Iterable<PositionKey>) => FallingBlockQueue;
+```
+
+### drawRolls  `const`
+
+```ts
+const drawRolls: (seed: number, count: number) => RollBatch;
 ```
 
 ### dropPasses  `const`
@@ -409,10 +766,34 @@ const disturb: (queue: FallingBlockQueue, positions: Iterable<PositionKey>) => F
 const dropPasses: (rule: MobDropRule, roll: number) => boolean;
 ```
 
+### dropRollsNeeded  `const`
+
+```ts
+const dropRollsNeeded: (kind: EntityKind) => number;
+```
+
+### dropRulesOfKind  `const`
+
+```ts
+const dropRulesOfKind: (kind: EntityKind) => ReadonlyArray<MobDropRule>;
+```
+
 ### emptyFallingBlockQueue  `const`
 
 ```ts
 const emptyFallingBlockQueue: FallingBlockQueue;
+```
+
+### endermanTeleportOffset  `const`
+
+```ts
+const endermanTeleportOffset: (rolls: ReadonlyArray<number>) => TeleportOffset | undefined;
+```
+
+### endermanTeleportUrge  `const`
+
+```ts
+const endermanTeleportUrge: (senses: EndermanSenses) => EndermanTeleportUrge;
 ```
 
 ### explosionDamageAmount  `const`
@@ -442,13 +823,13 @@ const fullHealth: Vitals;
 ### gameplayModule  `const`
 
 ```ts
-const gameplayModule: GameModule<never, never, never, ChunkStore>;
+const gameplayModule: GameModule<never, never, never, ChunkStore | EntityManager>;
 ```
 
 ### gameplayStages  `const`
 
 ```ts
-const gameplayStages: (state: GameplayFrameState, store: ChunkStoreApi) => ReadonlyArray<StageRegistration>;
+const gameplayStages: (state: GameplayFrameState, store: ChunkStoreApi, roster: EntityManagerApi<MobBehaviour>) => ReadonlyArray<StageRegistration>;
 ```
 
 ### hostileSpawnsAllowed  `const`
@@ -478,13 +859,49 @@ const makeGameplayFrameState: Effect.Effect<GameplayFrameState>;
 ### makeGameplayStages  `const`
 
 ```ts
-const makeGameplayStages: Effect.Effect<ReadonlyArray<StageRegistration>, never, ChunkStore>;
+const makeGameplayStages: Effect.Effect<ReadonlyArray<StageRegistration>, never, ChunkStore | EntityManager>;
 ```
 
 ### mobXpReward  `const`
 
 ```ts
 const mobXpReward: (kill: MobKill, reward: number) => number;
+```
+
+### nextRoll  `const`
+
+```ts
+const nextRoll: (seed: number) => RollDraw;
+```
+
+### normaliseSeed  `const`
+
+```ts
+const normaliseSeed: (seed: number) => number;
+```
+
+### repairMobBehaviour  `const`
+
+```ts
+const repairMobBehaviour: (kind: EntityKind, behaviour: MobBehaviour) => MobBehaviour;
+```
+
+### resolveBlasts  `const`
+
+```ts
+const resolveBlasts: (roster: EntityManagerApi<MobBehaviour>, store: ChunkStoreApi, blasts: ReadonlyArray<Blast>) => Effect.Effect<BlastResolution>;
+```
+
+### rollCasualtyDrops  `const`
+
+```ts
+const rollCasualtyDrops: (casualties: ReadonlyArray<MobCasualty>, seed: number) => CasualtyDrops;
+```
+
+### rollDropsOfKind  `const`
+
+```ts
+const rollDropsOfKind: (kind: EntityKind, kill: MobKill, rolls: ReadonlyArray<number>) => ReadonlyArray<MobDrop>;
 ```
 
 ### rollMobDrop  `const`
@@ -499,10 +916,28 @@ const rollMobDrop: (rule: MobDropRule, kill: MobKill, rolls: DropRolls) => MobDr
 const rollMobDrops: (rules: ReadonlyArray<MobDropRule>, kill: MobKill, rollsFor: (index: number) => DropRolls) => ReadonlyArray<MobDrop>;
 ```
 
+### rollSelfDestructDrops  `const`
+
+```ts
+const rollSelfDestructDrops: (kind: EntityKind) => ReadonlyArray<MobDrop>;
+```
+
 ### settled  `const`
 
 ```ts
 const settled: (queue: FallingBlockQueue, destinations: Iterable<PositionKey>) => FallingBlockQueue;
+```
+
+### shulkerShellArmorPoints  `const`
+
+```ts
+const shulkerShellArmorPoints: (shell: ShulkerShell) => number;
+```
+
+### shulkerWantsToTeleport  `const`
+
+```ts
+const shulkerWantsToTeleport: (senses: ShulkerSenses) => boolean;
 ```
 
 ### splitBudget  `const`
@@ -518,6 +953,18 @@ const splitBudget: (frontier: ReadonlyArray<FluidWorkItem>, options: {
 
 ```ts
 const stepCreeperFuse: (fuse: CreeperFuse, senses: CreeperSenses, dt: DeltaTimeSecs) => CreeperStep;
+```
+
+### stepShulkerShell  `const`
+
+```ts
+const stepShulkerShell: (shell: ShulkerShell, senses: ShulkerSenses) => ShulkerStep;
+```
+
+### sweepMobs  `const`
+
+```ts
+const sweepMobs: (roster: EntityManagerApi<MobBehaviour>, senses: MobFrameSenses) => Effect.Effect<ReadonlyArray<Blast>>;
 ```
 
 ### takeBatch  `const`
@@ -661,6 +1108,105 @@ const DeltaTimeSecs: Brand.Brand.Constructor<DeltaTimeSecs>;
 type DeltaTimeSecs = number & Brand.Brand<'DeltaTimeSecs'>;
 ```
 
+### Entity  `type`
+
+```ts
+type Entity<S> = EntityState<S> & {
+    readonly id: EntityId;
+    readonly kind: EntityKind;
+};
+```
+
+### EntityId  `const`
+
+```ts
+const EntityId: Brand.Brand.Constructor<EntityId>;
+```
+
+### EntityId  `type`
+
+```ts
+type EntityId = string & Brand.Brand<'EntityId'>;
+```
+
+### EntityKind  `const`
+
+```ts
+const EntityKind: Brand.Brand.Constructor<EntityKind>;
+```
+
+### EntityKind  `type`
+
+```ts
+type EntityKind = string & Brand.Brand<'EntityKind'>;
+```
+
+### EntityManager  `type`
+
+```ts
+type EntityManager = {
+    readonly _tag: '@nerima-games/mc-sim/EntityManager';
+};
+```
+
+### EntityManagerApi  `type`
+
+```ts
+type EntityManagerApi<S> = {
+    readonly spawn: (request: SpawnRequest<S>) => Effect.Effect<Entity<S>>;
+    readonly despawn: (id: EntityId) => Effect.Effect<boolean>;
+    readonly entities: Effect.Effect<ReadonlyArray<Entity<S>>>;
+    readonly find: (id: EntityId) => Effect.Effect<Entity<S> | undefined>;
+    readonly count: Effect.Effect<number>;
+    readonly countOfKind: (kind: EntityKind) => Effect.Effect<number>;
+    readonly sweep: <A>(step: (entity: Entity<S>) => EntityStep<S, A>) => Effect.Effect<ReadonlyArray<A>>;
+    readonly snapshot: Effect.Effect<EntityRoster<S>>;
+    readonly restore: (roster: EntityRoster<S>) => Effect.Effect<RosterRepair>;
+    readonly reset: Effect.Effect<void>;
+};
+```
+
+### EntityRoster  `type`
+
+```ts
+type EntityRoster<S> = {
+    readonly entities: ReadonlyArray<Entity<S>>;
+    readonly nextSerial: number;
+};
+```
+
+### EntityState  `type`
+
+```ts
+type EntityState<S> = {
+    readonly feetPosition: Position;
+    readonly healthPoints: number;
+    readonly behaviour: S;
+};
+```
+
+### EntityStep  `type`
+
+```ts
+type EntityStep<S, A> = {
+    readonly transition: EntityTransition<S>;
+    readonly emit: A | undefined;
+};
+```
+
+### EntityTransition  `type`
+
+```ts
+type EntityTransition<S> = {
+    readonly _tag: 'Unchanged';
+} | {
+    readonly _tag: 'Changed';
+    readonly state: EntityState<S>;
+} | {
+    readonly _tag: 'Despawned';
+};
+```
+
 ### FrameServices  `type`
 
 ```ts
@@ -688,10 +1234,40 @@ const ITEM_TYPES: readonly ["stone", "cobblestone", "dirt", "grass_block", "sand
 type ItemType = (typeof ITEM_TYPES)[number];
 ```
 
+### Position  `type`
+
+```ts
+type Position = {
+    readonly x: number;
+    readonly y: number;
+    readonly z: number;
+};
+```
+
 ### PositionKey  `type`
 
 ```ts
 type PositionKey = string;
+```
+
+### RosterRepair  `type`
+
+```ts
+type RosterRepair = {
+    readonly discarded: number;
+    readonly reidentified: number;
+};
+```
+
+### SpawnRequest  `type`
+
+```ts
+type SpawnRequest<S> = {
+    readonly kind: EntityKind;
+    readonly feetPosition: Position;
+    readonly healthPoints: number;
+    readonly behaviour: S;
+};
 ```
 
 ### StageId  `const`
