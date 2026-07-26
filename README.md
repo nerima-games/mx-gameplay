@@ -115,9 +115,10 @@ Nix を使わない場合は Node.js 22 以上と pnpm 9.15.0 を用意する（
 
 ## 現状
 
-**実装前の叩き台（pre-implementation first cut）である。** 移植済みのルールは 2 本だけで、
+**実装前の叩き台（pre-implementation first cut）である。** 移植済みのルールは 6 本で、
 現在あるものの大半は、参照実装で実測された失敗を構造として固定した骨組みと、その回帰テストである。
-ただし**縦切り 1 本は通っている** — 掘る → 砂が落ちる → アイテムが渡る、が stage 登録経由で動く。
+ただし**縦切りは 2 本通っている** — 掘る → 砂が落ちる → アイテムが渡る、が stage 登録経由で動き、
+スポーン → 導火線 → 爆発 → 死因 → ドロップ、が Mob アリーナで動く。
 
 - **実行時依存は `effect` のみ。** `mc-sim` / `mc-worldgen` / `mc-audio` / `mc-kernel` は
   まだ GitHub Packages に 1 つも publish されていないため、`package.json` に書けない。
@@ -140,9 +141,21 @@ Nix を使わない場合は Node.js 22 以上と pnpm 9.15.0 を用意する（
   「掘る → 砂が落ちる → アイテムが渡る」の縦切りは `test/vertical-slice.test.ts` が
   **stage 登録経由で**回している。`gameplay:fluids` はキューの出し入れだけ、
   `gameplay:time-weather` は空のままである（mc-sim 待ち）。
-  移植済みのルールは 2 本（`domain/interactions/break-block.ts` /
-  `domain/entities/falling-block-move.ts`）で、~40 の `interaction-*` ハンドラも Mob AI も残っている。
+  ブロックに触るルールは 2 本（`domain/interactions/break-block.ts` /
+  `domain/entities/falling-block-move.ts`）で、~40 の `interaction-*` ハンドラが残っている。
   何を、どの順で移植するかは [docs/porting.md](./docs/porting.md)。
+- **Mob が 1 体いる。クリーパーである。** `domain/mob/` の 4 ファイル —— 導火線
+  （`creeper-fuse.ts`: 3 ブロックで着火、1.5 秒、**退避で消える**、爆発は**ちょうど 1 回**）、
+  爆風（`explosion.ts`: 参照実装の減衰式を逐語移植。中心 43 ダメージ、半径 6）、
+  スポーン条件（`hostile-spawn.ts`: 夜 + 光度 7 以下 + kernel の `validSpawnSurface` + 16〜40 ブロック）、
+  ドロップ（`mob-drop.ts`: 火薬 1 個。ただし**自爆したクリーパーは何も落とさない**）。
+  **状態は 1 つも持たない。** Mob の位置も体力も mc-sim の名詞であり（plan.md §7:
+  「状態管理は sim、AI/スポーン/ドロップのルールは gameplay」）、ここにあるのは
+  `stepCreeperFuse(fuse, senses, dt)` のように**値から値への全域関数**だけである。
+  だから `gameplay:entities` はまだ落下カスケードしか回していない —— 反復すべき Mob の名簿が無い。
+  ホスト役はプレビューが務める（`--screen arena`）。
+  **乱数はドメインに 1 つも無い。** ロールは引数で渡す（mc-worldgen が seed を通すのと同じ形）。
+  エンダーマン / シュルカー / ドラゴンは未着手であり、アリーナ画面がそう書く。
 - **`domain/chunk-store-port.ts` と `domain/block-position-key.ts` も削除日が決まっている。**
   前者は mc-worldgen の `ChunkStore` の**全面**ミラー（狭いミラーはタグキーが同じまま
   メソッドが `undefined` になる静かな実行時ハザードで、`test/chunk-store-mirror.test.ts` が両方向で固定する）、
@@ -151,19 +164,29 @@ Nix を使わない場合は Node.js 22 以上と pnpm 9.15.0 を用意する（
   plan.md §3.11 が挙げる 3 本に 1 対 1 で対応する `site` / `time` / `arena` を `g` で巡回する。
   ターミナルレンダラであり、`mc-playground-kit` も THREE.js も新規依存も**使っていない**
   （理由は当該 README と `main.ts` 冒頭）。
-  **`arena` は「Mob は存在しない」と画面の 1 行目に書く。** 欠けているものを行き先つきで列挙したうえで、
-  実在する `domain/death-cause.ts` だけを実際に叩く。スプライトを 2 つ置いて「✅」と書くのは
-  穴を進捗に見せることであり、それはしない。
+  **`arena` は「Mob が 1 体いる: クリーパー」と画面の 1 行目に書く。** スポーン判定 →
+  導火線 → 爆風 → 死因 → ドロップを実際に叩き、画面上の数字は全部 `domain/mob/` の戻り値である
+  （`pnpm preview --once --ascii --screen arena --time 0.9 --spawn --settle` で 1 フレーム出せる）。
+  **欠けているものを行き先つきで列挙する習慣は変えていない** —— エンダーマン / シュルカー /
+  ドラゴン、Mob 名簿、経路探索、近接/遠隔ハンドラ、爆発のクレーター、デスポーン、
+  そして「これを回す stage」が missing 一覧に並ぶ。実装済みの節より missing の節のほうが長く、
+  それが正直な比率である。
   `pnpm preview --stats` は初回実行（2026-07-27）で **6 件**の finding を出し、
   うち確認できた 4 件は `test/preview-findings.test.ts` に assertion として固定してある。
   3 件（F3 / F5 / F6）は既存 112 本のテストが 1 つも捕まえていなかった。
+  Mob 用に 3 チェックを足したが、finding は 1 件も増えていない（1 件は `[note]`:
+  導火線の長さはフレームレートに対して**1 フレーム以内**で一定 —— 60Hz だけ浮動小数の
+  累積で 91 ステップになり 1.5167 秒になる）。
 - **ビルド / publish はまだない。** `tsconfig.base.json` は `noEmit: true`、`package.json#exports` は
   TypeScript ソースを直接指している。`dist` は存在しない（[docs/versioning.md](./docs/versioning.md)）。
 - **カバレッジ閾値は未設定。** 計測とレポートは常に動かしており、99% ゲートは完成条件到達時に有効化する
   （`vitest.config.ts` に有効化する行がコメントで置いてある）。
-- `pnpm verify` は green。tsc clean（3 プロジェクト）、oxlint 36 ファイル 0 warnings / 0 errors、
-  `check:deps` 36 ファイル走査、`api:check` 61 エントリ一致、vitest 9 ファイル 122 テスト pass。
-  `apps/` を足しても公開 API は 61 エントリのまま — プレビューは `index.ts` から export されない。
+- `pnpm verify` は green。tsc clean（3 プロジェクト）、oxlint 43 ファイル 0 warnings / 0 errors、
+  `check:deps` 43 ファイル走査、`api:check` 94 エントリ一致、vitest 10 ファイル 160 テスト pass。
+  公開 API が 61 → 94 に増えたのはクリーパーの 4 ファイルを `index.ts` に載せたためで、
+  プレビューは相変わらず 1 つも export されない。
+  `domain/item-vocabulary.ts`（kernel の `ItemType` のミラー）も**バレルに載せていない** ——
+  他の 3 つのミラーと同じ理由で、`test/public-api.test.ts` がその不在を固定している。
 
 ## License
 

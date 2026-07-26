@@ -35,7 +35,21 @@ export type PreviewOptions = {
    * uninformative picture. Same role as mx-redstone's `--levers-on`.
    */
   readonly autoBreak: boolean
-  /** Advance until the queue is idle before drawing. */
+  /**
+   * Ask the arena's spawn rule, and walk the creeper into ignition range.
+   *
+   * The arena's `--break`: a piped frame has nobody to press `s`, and an arena
+   * with no creeper in it shows the spawn rule refusing nothing. The walk is
+   * explicit rather than automatic because there is no pathfinder — the flag
+   * does what the arrow keys do, and the screen's own missing-list says so.
+   */
+  readonly spawn: boolean
+  /**
+   * Advance until nothing more will happen before drawing.
+   *
+   * On the mining site that means the falling-block queue is idle; on the arena
+   * it means the creeper has stopped being alive, by fuse or by `k`.
+   */
   readonly settle: boolean
   readonly timeOfDay: number
   readonly once: boolean
@@ -55,6 +69,7 @@ const DEFAULTS = {
   runFrames: DEFAULT_RUN_FRAMES,
   frames: 0,
   autoBreak: false,
+  spawn: false,
   settle: false,
   timeOfDay: 0.3,
   once: false,
@@ -125,6 +140,9 @@ export const parseArguments = (argv: ReadonlyArray<string>): PreviewOptions => {
         break
       case '--break':
         accumulator.autoBreak = true
+        break
+      case '--spawn':
+        accumulator.spawn = true
         break
       case '--settle':
         accumulator.settle = true
@@ -212,7 +230,9 @@ export const USAGE: ReadonlyArray<string> = [
   '  --view <mode>       world | queue | timeline                (default world)',
   '  --break             queue a break at the scenario target before drawing — a piped',
   '                      frame of an undisturbed world measures nothing',
-  '  --settle            run frames until the falling-block queue is idle',
+  '  --spawn             arena: ask the spawn rule and walk the creeper into range',
+  '  --settle            site: run frames until the falling-block queue is idle;',
+  '                      arena: step the fuse until the creeper is no longer alive',
   '  --frames <n>        advance n frames before drawing         (default 0)',
   `  --run-frames <n>    how many frames the n key advances      (default ${String(DEFAULT_RUN_FRAMES)})`,
   '  --time <fraction>   starting time of day for the time screen (default 0.3)',
@@ -239,8 +259,14 @@ export const USAGE: ReadonlyArray<string> = [
   '    left/right    move the slider by 0.005          H/L by 0.05',
   '',
   '  arena',
+  '    s             ask the spawn rule (uses the TIME screen’s hour)',
+  '    u / t         cycle the ground block / the light level at the candidate cell',
+  '    [ ]           move the spawn CANDIDATE nearer / further (the 16..40 band)',
+  '    left/right    walk the spawned creeper in and out of its 3-block ignition range',
+  '    .             step one 0.25s frame              n step --run-frames of them',
+  '    k             kill it before the fuse ends      f cycle looting 0-3',
   '    c             cycle death cause                 a cycle damage amount',
-  '    space         apply one blow                    r respawn',
+  '    space         apply one blow                    r respawn (clears the creeper too)',
   '',
   '  ?  help    x  Esc  Ctrl-C  quit',
 ]

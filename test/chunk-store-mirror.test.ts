@@ -30,6 +30,7 @@ import {
   ChunkStore,
   fallsWhenUnsupported,
   isReplaceable,
+  validSpawnSurface,
   type BlockId,
   type BlockPosition,
   type BlockReading,
@@ -127,6 +128,32 @@ describe('the ChunkStore mirror', () => {
       expect(isReplaceable(6)).toBe(true)
       expect(isReplaceable(11)).toBe(true)
       expect(isReplaceable(2)).toBe(false)
+    }),
+  )
+
+  it.effect('validSpawnSurface is a NEGATIVE set, so it defaults to true like kernel’s', () =>
+    Effect.sync(() => {
+      // The third capability this repository reads, and the only one of the
+      // three whose kernel default is `true` (`TRUE_BY_DEFAULT_CAPABILITY_FLAGS`
+      // — the reference stored `NON_SPAWN_SURFACE_BLOCK_IDS` rather than the
+      // complement). Transcribing the negative set is what makes the two
+      // properties below hold without a second line of code.
+      expect(validSpawnSurface(2)).toBe(true) // stone
+      expect(validSpawnSurface(5)).toBe(true) // sand — falling, and still ground
+      expect(validSpawnSurface(0)).toBe(false) // air
+      expect(validSpawnSurface(6)).toBe(false) // water
+      expect(validSpawnSurface(11)).toBe(false) // lava
+
+      // kernel's audit §4.9: SOLID FOR COLLISION and still not a spawn surface.
+      // If a future edit collapses this into a `solid` test, these two flip and
+      // mobs start spawning in the canopy — the bug
+      // `block-collision-predicates.ts:18-21` records from the other direction.
+      expect(validSpawnSurface(10)).toBe(false) // oak_leaves
+      expect(validSpawnSurface(13)).toBe(false) // glass
+
+      // Total, and defaulting to "ordinary opaque cube" exactly as kernel's
+      // `capabilityOfBlockId` does for an id it cannot name.
+      expect(validSpawnSurface(200)).toBe(true)
     }),
   )
 

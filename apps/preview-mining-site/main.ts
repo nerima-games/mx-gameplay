@@ -94,12 +94,23 @@ import {
   type ViewMode,
 } from './render'
 import {
+  approach,
   ARENA_AMOUNTS,
+  ARENA_APPROACH_TO,
   ARENA_CAUSES,
+  ARENA_SETTLE_CAP,
+  ARENA_SPAWN_DISTANCE,
+  attemptSpawn,
+  cycleGround,
+  cycleLight,
+  cycleLooting,
   initialArenaState,
   initialTimeState,
+  nudgeSpawnDistance,
   nudgeTime,
   respawn,
+  slayCreeper,
+  stepArena,
   strike,
   TIME_STEP,
   TIME_STEP_COARSE,
@@ -205,7 +216,10 @@ const render = (state: State, options: PreviewOptions, style: Style): ReadonlyAr
     state.screen === 'time'
       ? renderTimeScreen(state.time, style, columns)
       : state.screen === 'arena'
-        ? renderArenaScreen(state.arena, style, columns)
+        ? // The arena reads the TIME screen's hour rather than keeping one of
+          // its own: the spawn rule gates on `hostileSpawnsAllowed`, and two
+          // answers to "what time is it" is the mistake DN-GP-7 records.
+          renderArenaScreen(state.arena, state.time.timeOfDay, style, columns)
         : state.view === 'queue'
           ? renderQueue(state.site, state.pending, style, rows)
           : state.view === 'timeline'
@@ -292,6 +306,46 @@ const handleKey = (state: State, key: string, options: PreviewOptions): Effect.E
 
     if (state.screen === 'arena') {
       switch (key) {
+        // --- the creeper -------------------------------------------------
+        case 's':
+          attemptSpawn(state.arena, state.time.timeOfDay)
+          break
+        case 'u':
+          cycleGround(state.arena)
+          break
+        case 't':
+          cycleLight(state.arena)
+          break
+        case '[':
+          nudgeSpawnDistance(state.arena, -1)
+          break
+        case ']':
+          nudgeSpawnDistance(state.arena, 1)
+          break
+        case 'left':
+        case 'h':
+          approach(state.arena, -1)
+          break
+        case 'right':
+        case 'l':
+          approach(state.arena, 1)
+          break
+        case '.':
+          stepArena(state.arena)
+          break
+        case 'n':
+          for (let step = 0; step < options.runFrames; step += 1) {
+            stepArena(state.arena)
+          }
+          break
+        case 'k':
+          slayCreeper(state.arena)
+          break
+        case 'f':
+          cycleLooting(state.arena)
+          break
+
+        // --- the death-cause driver (unchanged; finding F5 lives here) ----
         case 'c':
           state.arena.causeIndex = (state.arena.causeIndex + 1) % ARENA_CAUSES.length
           break
@@ -494,11 +548,28 @@ const program: Effect.Effect<number> = Effect.gen(function* () {
   if (options.autoBreak) {
     yield* requestBreak(state.site, positionAt(state.site, scenario.target.x, scenario.target.y))
   }
+  if (options.spawn) {
+    attemptSpawn(state.arena, state.time.timeOfDay)
+    // The arrow keys, in one flag. There is no pathfinder — the creeper spawns
+    // 16 blocks away by rule and something has to walk it in.
+    approach(state.arena, ARENA_APPROACH_TO - ARENA_SPAWN_DISTANCE)
+  }
   if (options.settle) {
-    const report = yield* settle(state.site)
-    state.site.note = report.gaveUp
-      ? `settle GAVE UP after ${String(report.cap)} frames`
-      : `settled after ${String(report.frames)} frame(s)`
+    if (state.screen === 'arena') {
+      // Step until the creeper stops being alive. The cap exists for the same
+      // reason the mining site's does: a rule that never terminates should say
+      // so rather than hang a preview.
+      let steps = 0
+      while (state.arena.creeper?.alive === true && steps < ARENA_SETTLE_CAP) {
+        stepArena(state.arena)
+        steps += 1
+      }
+    } else {
+      const report = yield* settle(state.site)
+      state.site.note = report.gaveUp
+        ? `settle GAVE UP after ${String(report.cap)} frames`
+        : `settled after ${String(report.frames)} frame(s)`
+    }
   }
   yield* runFrames(state.site, options.frames)
   yield* refresh(state)

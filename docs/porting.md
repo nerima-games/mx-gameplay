@@ -166,7 +166,7 @@ plan.md §8 のリスク表も同じことを言っている。
 | 対象 | テストの置き場 | ファイル数 |
 | --- | --- | --- |
 | interaction | `packages/app/application/frame/stages/interaction-*.test.ts`（30）+ `packages/app/test/`（3） | 33 |
-| Mob | `packages/entity/test/mob/`（53）+ `packages/entity/test/`（5）+ `packages/entity/domain/mob/` 同居（3） | 61 |
+| Mob | `packages/entity/test/mob/`（53）+ `packages/entity/test/`（5）+ `packages/entity/domain/mob/` 同居（3） | 61（うち **6 本移植済み**: `creeper-fuse` ×2、`explosion` ×1、`mob-spawner-rules` ×1、`terrain-spawn` ×1、`drop` ×1 → `test/mob.test.ts`） |
 | 流体 | `packages/world/test/fluid-*.test.ts` | 9 |
 | 落下ブロック | `packages/world/domain/falling-block.test.ts` / `packages/world/application/falling-block-maintenance.test.ts` | 2 |
 | 昼夜 | `packages/game/test/day-night-cycle.test.ts` / `day-night-cycle-appearance.test.ts` | 2 |
@@ -184,7 +184,26 @@ plan.md §8 のリスク表も同じことを言っている。
 | 2 | 落下ブロック | 167 | 採掘場 | `domain/falling-block.ts` の骨組みが既にある（DN-GP-1） |
 | 3 | 流体 | 889 (+143 要判断) | 採掘場（バケツ） | `fluid-test-utils.ts` を先に。境界移動の調整が要る（§3-3） |
 | 4 | interaction-* | 3,317 | 採掘場 | 40 ファイル。1 ルール 1 ファイルを維持（DN-GP-9） |
-| 5 | Mob | 4,722 | Mob アリーナ | 最大。`mc-sim` の `EntityManager` が実在してから |
+| 5 | Mob | 4,722 | Mob アリーナ | 最大。`mc-sim` の `EntityManager` が実在してから。**ただしルールの半分は先に来られた** —— §5-1 |
+
+### 5-1. クリーパーは `EntityManager` を待たずに移植できた（実測）
+
+上表は Mob を最後に置き、理由を「`mc-sim` の `EntityManager` が実在してから」としている。
+**半分は正しく、半分は間違っていた。**
+
+移植不能なのは Mob の**状態**を要求する部分である —— 名簿の反復、個体数上限、デスポーン、
+経路探索、そして「Mob AI stage」そのもの。これらは全部 mc-sim の名詞を読む。
+
+移植できるのは**ルール**の部分であり、それは値から値への全域関数として書ける。
+実際に `domain/mob/` の 4 ファイルは `EntityManager` を 1 度も名指ししていない:
+導火線は `(CreeperFuse, 距離, dt) -> (CreeperFuse, 爆発?)`、
+スポーン判定は `(候補セル) -> 可否`、ドロップは `(規則, 死に方, ロール) -> 品目`。
+ホストが誰であるかを知らないので、テストとプレビューがホストを務められる。
+
+含意は移植順そのものにある。**「mc-sim 待ち」と書かれた行は、名詞を要求する部分だけが待っている。**
+着手前に「この行のどこが状態でどこがルールか」を分けると、待たずに済む分が出てくる。
+残りの 3 種（エンダーマン / シュルカー / ドラゴン）にも同じ分割が効くはずだが、
+テレポート先の探索は世界を読むので、クリーパーほどきれいには割れない見込みである。
 
 4 と 5 は `mc-sim` の公開 API に強く依存する。plan.md §3.8 が
 「この公開 API が全下流の依存先（=最重要界面）」と書いているとおりで、
@@ -200,4 +219,6 @@ plan.md §8 のリスク表も同じことを言っている。
 | 「全チャンク走査」の類 | DN-GP-1。API に存在しないので書けないが、移植中に足さないこと |
 | 右クリック UI ルーティング（`interaction-right-click-target-routing.ts:12-27`） | 画面の選択は `mx-ui` の意味論。ここが持つのは `interactionId` まで |
 | アプリスコープのシングルトン | DN-GP-6 |
+| **保存済みの数値を再判定する「爆発」**（`entity-manager-creeper-detonation.ts:19` の `fuseSecs >= 1.5`） | 参照実装は導火線 tick が返す `detonate` を捨て（`entity-manager-update-maintenance.ts:36`）、別ファイルで数値を再判定する。その結果「爆発は 1 回だけ」を担保しているのは 3 つ目のファイルの `HashMap.remove`（`entity-manager-combat.ts:60`）であり、削除を外した個体は毎フレーム爆発する。加えて再判定には距離検査が無いので、**導火線が満了した後は逃げても助からない**（燃焼中のキャンセルと矛盾する）。`domain/mob/creeper-fuse.ts` は爆発を**遷移**にし、`Detonated` を終端にしてある |
+| `Math.random()` を呼ぶドロップ経路（`interaction-melee-handler.ts:185` / `interaction-mob-drops.ts:18`） | 参照実装のドメインは純粋だがアプリ層がグローバル乱数を読むため、**ドロップは再現できない**。plan.md §5.1-3 の決定論はシナリオテストをオラクルにするための前提なので、ロールは引数で通す（`domain/mob/mob-drop.ts`） |
 | THREE.js に触るもの | `tsconfig.base.json` の `lib: ["ES2024"]` / `types: []` が型で拒否する |

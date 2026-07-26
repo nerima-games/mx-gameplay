@@ -13,10 +13,70 @@
 <!-- ------------------------------------------------------------------------- -->
 
 format: 1
-exported declarations: 41
-supporting declarations: 20
+exported declarations: 72
+supporting declarations: 22
 
 ## Exported
+
+### CREEPER_DROPS  `const`
+
+```ts
+const CREEPER_DROPS: ReadonlyArray<MobDropRule>;
+```
+
+### CREEPER_EXPLOSION_POWER  `const`
+
+```ts
+const CREEPER_EXPLOSION_POWER = 3;
+```
+
+### CREEPER_FUSE_SECS  `const`
+
+```ts
+const CREEPER_FUSE_SECS = 1.5;
+```
+
+### CREEPER_IGNITION_RANGE_BLOCKS  `const`
+
+```ts
+const CREEPER_IGNITION_RANGE_BLOCKS = 3;
+```
+
+### CREEPER_XP_REWARD  `const`
+
+```ts
+const CREEPER_XP_REWARD = 5;
+```
+
+### CreeperFuse  `type`
+
+```ts
+type CreeperFuse = {
+    readonly _tag: 'Dormant';
+} | {
+    readonly _tag: 'Lit';
+    readonly burnedSecs: number;
+} | {
+    readonly _tag: 'Detonated';
+};
+```
+
+### CreeperSenses  `type`
+
+```ts
+type CreeperSenses = {
+    readonly distanceToTargetBlocks: number | undefined;
+};
+```
+
+### CreeperStep  `type`
+
+```ts
+type CreeperStep = {
+    readonly fuse: CreeperFuse;
+    readonly explosion: Explosion | undefined;
+};
+```
 
 ### DAWN_FRACTION  `const`
 
@@ -34,6 +94,12 @@ const DEATH_MESSAGES: Readonly<Record<DeathCause, string>>;
 
 ```ts
 const DEFAULT_FLUID_FRONTIER_BUDGET = 64;
+```
+
+### DORMANT_FUSE  `const`
+
+```ts
+const DORMANT_FUSE: CreeperFuse;
 ```
 
 ### DUSK_FRACTION  `const`
@@ -63,10 +129,34 @@ type DayPhase = 'night' | 'dawn' | 'day' | 'dusk';
 type DeathCause = 'fall' | 'lava' | 'fire' | 'drowning' | 'suffocation' | 'starvation' | 'mob' | 'projectile' | 'explosion' | 'void' | 'generic';
 ```
 
+### DropRolls  `type`
+
+```ts
+type DropRolls = {
+    readonly chance: number;
+    readonly count: number;
+};
+```
+
 ### EXPERIENCE_MODULE_STAGE_PREFIXES  `const`
 
 ```ts
 const EXPERIENCE_MODULE_STAGE_PREFIXES: readonly ["gameplay:", "redstone:", "ui:", "multiplayer:"];
+```
+
+### Explosion  `type`
+
+```ts
+type Explosion = {
+    readonly source: ExplosionSource;
+    readonly power: number;
+};
+```
+
+### ExplosionSource  `type`
+
+```ts
+type ExplosionSource = 'creeper';
 ```
 
 ### FALLING_BLOCK_MOVES_PER_TICK  `const`
@@ -139,16 +229,71 @@ type GameplayFrameState = {
 };
 ```
 
+### HOSTILE_SPAWN_MAX_BLOCK_LIGHT  `const`
+
+```ts
+const HOSTILE_SPAWN_MAX_BLOCK_LIGHT = 7;
+```
+
 ### LAVA_TICK_INTERVAL  `const`
 
 ```ts
 const LAVA_TICK_INTERVAL = 4;
 ```
 
+### LOWEST_ROLLS  `const`
+
+```ts
+const LOWEST_ROLLS: DropRolls;
+```
+
 ### MAX_HEALTH_POINTS  `const`
 
 ```ts
 const MAX_HEALTH_POINTS = 20;
+```
+
+### MAX_SPAWN_DISTANCE_BLOCKS  `const`
+
+```ts
+const MAX_SPAWN_DISTANCE_BLOCKS = 40;
+```
+
+### MIN_SPAWN_DISTANCE_BLOCKS  `const`
+
+```ts
+const MIN_SPAWN_DISTANCE_BLOCKS = 16;
+```
+
+### MobDrop  `type`
+
+```ts
+type MobDrop = {
+    readonly item: ItemType;
+    readonly count: number;
+};
+```
+
+### MobDropRule  `type`
+
+```ts
+type MobDropRule = {
+    readonly item: ItemType;
+    readonly count: number;
+    readonly chance?: number;
+    readonly maxCount?: number;
+};
+```
+
+### MobKill  `type`
+
+```ts
+type MobKill = {
+    readonly _tag: 'Slain';
+    readonly lootingLevel: number;
+} | {
+    readonly _tag: 'SelfDestruct';
+};
 ```
 
 ### NOON_FRACTION  `const`
@@ -161,6 +306,36 @@ const NOON_FRACTION = 0.5;
 
 ```ts
 const OWN_STAGE_PREFIX = "gameplay:";
+```
+
+### SpawnCandidate  `type`
+
+```ts
+type SpawnCandidate = {
+    readonly groundBlock: BlockId;
+    readonly footBlock: BlockId;
+    readonly headBlock: BlockId;
+    readonly blockLight: number;
+    readonly timeOfDay: number;
+    readonly distanceToPlayerBlocksXZ: number;
+};
+```
+
+### SpawnRefusal  `type`
+
+```ts
+type SpawnRefusal = 'daylight' | 'too-close' | 'too-far' | 'not-a-surface' | 'obstructed' | 'too-bright' | 'unmeasurable';
+```
+
+### SpawnVerdict  `type`
+
+```ts
+type SpawnVerdict = {
+    readonly _tag: 'Spawn';
+} | {
+    readonly _tag: 'Refused';
+    readonly reason: SpawnRefusal;
+};
 ```
 
 ### TWILIGHT_BAND  `const`
@@ -190,6 +365,12 @@ type Vitals = {
 
 ```ts
 const applyDamage: (vitals: Vitals, damage: Damage) => Vitals;
+```
+
+### canHostileSpawnAt  `const`
+
+```ts
+const canHostileSpawnAt: (candidate: SpawnCandidate) => SpawnVerdict;
 ```
 
 ### carryOver  `const`
@@ -222,10 +403,34 @@ const describeDeath: (cause: DeathCause) => string;
 const disturb: (queue: FallingBlockQueue, positions: Iterable<PositionKey>) => FallingBlockQueue;
 ```
 
+### dropPasses  `const`
+
+```ts
+const dropPasses: (rule: MobDropRule, roll: number) => boolean;
+```
+
 ### emptyFallingBlockQueue  `const`
 
 ```ts
 const emptyFallingBlockQueue: FallingBlockQueue;
+```
+
+### explosionDamageAmount  `const`
+
+```ts
+const explosionDamageAmount: (power: number, distanceToCentre: number, exposure?: number) => number;
+```
+
+### explosionDamageAt  `const`
+
+```ts
+const explosionDamageAt: (explosion: Explosion, distanceToCentre: number, exposure?: number) => Damage;
+```
+
+### explosionRadius  `const`
+
+```ts
+const explosionRadius: (power: number) => number;
 ```
 
 ### fullHealth  `const`
@@ -276,6 +481,24 @@ const makeGameplayFrameState: Effect.Effect<GameplayFrameState>;
 const makeGameplayStages: Effect.Effect<ReadonlyArray<StageRegistration>, never, ChunkStore>;
 ```
 
+### mobXpReward  `const`
+
+```ts
+const mobXpReward: (kill: MobKill, reward: number) => number;
+```
+
+### rollMobDrop  `const`
+
+```ts
+const rollMobDrop: (rule: MobDropRule, kill: MobKill, rolls: DropRolls) => MobDrop | undefined;
+```
+
+### rollMobDrops  `const`
+
+```ts
+const rollMobDrops: (rules: ReadonlyArray<MobDropRule>, kill: MobKill, rollsFor: (index: number) => DropRolls) => ReadonlyArray<MobDrop>;
+```
+
 ### settled  `const`
 
 ```ts
@@ -289,6 +512,12 @@ const splitBudget: (frontier: ReadonlyArray<FluidWorkItem>, options: {
     readonly budget?: number;
     readonly lavaTickActive: boolean;
 }) => FluidBudgetSplit;
+```
+
+### stepCreeperFuse  `const`
+
+```ts
+const stepCreeperFuse: (fuse: CreeperFuse, senses: CreeperSenses, dt: DeltaTimeSecs) => CreeperStep;
 ```
 
 ### takeBatch  `const`
@@ -445,6 +674,18 @@ interface GameModule<ROut, E, RIn, RRegister = never> {
     readonly layers: Layer.Layer<ROut, E, RIn>;
     readonly frameStages: Effect.Effect<ReadonlyArray<StageRegistration>, never, RRegister>;
 }
+```
+
+### ITEM_TYPES  `const`
+
+```ts
+const ITEM_TYPES: readonly ["stone", "cobblestone", "dirt", "grass_block", "sand", "gravel", "oak_log", "oak_planks", "oak_leaves", "glass", "torch", "glowstone", "piston", "stick", "glowstone_dust", "wooden_pickaxe", "coal", "iron_ingot", "flint", "gunpowder", "blaze_powder", "flint_and_steel", "fire_charge"];
+```
+
+### ItemType  `type`
+
+```ts
+type ItemType = (typeof ITEM_TYPES)[number];
 ```
 
 ### PositionKey  `type`

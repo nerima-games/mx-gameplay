@@ -23,15 +23,20 @@ export * from './domain/day-night'
 export * from './domain/death-cause'
 export * from './domain/falling-block'
 export * from './domain/fluid-frontier'
+export * from './domain/mob/creeper-fuse'
+export * from './domain/mob/explosion'
+export * from './domain/mob/hostile-spawn'
+export * from './domain/mob/mob-drop'
 export * from './stages/registration'
 export * from './stages/stage-ids'
 
 // --- Provisional ---------------------------------------------------------------
-// Four modules are temporary local stand-ins for packages that are not
+// Five modules are temporary local stand-ins for packages that are not
 // published yet, and NONE of them is re-exported:
 //
 //   domain/frame-contract.ts   -> @nerima-games/mc-kernel
 //   domain/position-key.ts     -> @nerima-games/mc-kernel
+//   domain/item-vocabulary.ts  -> @nerima-games/mc-kernel
 //   domain/chunk-store-port.ts -> @nerima-games/mc-worldgen
 //   domain/block-position-key.ts — the join between the two vocabularies above
 //

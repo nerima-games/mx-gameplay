@@ -297,6 +297,66 @@ kernel の `StageRegistration` に対してそのまま代入できる。
 | `applyDamage` / `isDead` / `deathMessage` / `describeDeath` | 内部(可視) | 体力状態の正は `mc-sim`。ここにあるのはルールの純粋な核 |
 | `DEATH_MESSAGES` / `MAX_HEALTH_POINTS` / `fullHealth` | 内部(可視) | |
 
+### domain/mob/creeper-fuse.ts（**Mob AI。状態は持たない**）
+
+| export | 種別 | 備考 |
+| --- | --- | --- |
+| `stepCreeperFuse` | 内部(可視) | `(fuse, senses, dt) => { fuse, explosion }`。**全域・純粋**。`dt` は `DeltaTimeSecs`（brand が `NaN` と負値を構築時に拒否する） |
+| `CreeperFuse` | 内部(可視) | `Dormant` / `Lit{burnedSecs}` / `Detonated` のタグ付きユニオン。**`Detonated` は終端** |
+| `CreeperSenses` | 内部(可視) | フィールド 1 つ（`distanceToTargetBlocks`）。**このルールがホストに要求する費用の全部**である |
+| `CreeperStep` / `DORMANT_FUSE` | 内部(可視) | |
+| `CREEPER_IGNITION_RANGE_BLOCKS` / `CREEPER_FUSE_SECS` | 内部(可視) | 3 / 1.5。参照実装 `packages/entity/domain/mob/creeper-fuse.ts:14-15` |
+
+**この 4 型のどこにも Mob の id が無い。** id は名簿への鍵であり、名簿は `mc-sim` の `EntityManager` である
+（plan.md §7）。導火線は `domain/death-cause.ts` の `Vitals` と同じ立場の**値**であり、
+ホストが持ち、ルールが変換する。
+
+参照実装との意図的な相違が 2 つあり、どちらもファイル冒頭に理由が書いてある。
+(1) 状態がユニオンであること（参照実装の `{fuseSecs, ignited}` は 2 つのフィールドが食い違える）、
+(2) **爆発が遷移であって述語でないこと**——参照実装は `detonate` フラグを捨てて
+（`entity-manager-update-maintenance.ts:36`）保存済みの数値を別ファイルで再判定しており、
+「1 回だけ」を担保しているのは 3 つ目のファイルの `HashMap.remove` である。
+
+### domain/mob/explosion.ts
+
+| export | 種別 | 備考 |
+| --- | --- | --- |
+| `explosionDamageAt` | 内部(可視) | **`Damage` を返す。素の数値を返すオーバーロードは無い**（DN-GP-3） |
+| `explosionDamageAmount` / `explosionRadius` | 内部(可視) | 参照実装 `explosion-resolution.ts:4,17-23` の逐語移植。半径 = `power * 2` |
+| `Explosion` / `ExplosionSource` / `CREEPER_EXPLOSION_POWER` | 内部(可視) | 3。`Explosion` は**座標を持たない**（座標は mc-sim の事実で、ホストが既に持っている） |
+
+**爆発は 2 つの半径を持つ。** ダメージは `power * 2` = 6 ブロック、クレーターは `floor(power)` = 3 ブロック。
+クレーターは**未実装**である（ブロックを書くルールなので `ChunkStoreApi` が要り、
+`disturb` を呼ばないと砂が宙に浮く。DN-GP-1 が別方向から現れる）。
+
+### domain/mob/hostile-spawn.ts
+
+| export | 種別 | 備考 |
+| --- | --- | --- |
+| `canHostileSpawnAt` | 内部(可視) | 候補セル 1 つに答える全域関数。`Spawn` か `Refused{reason}` |
+| `SpawnCandidate` / `SpawnVerdict` / `SpawnRefusal` | 内部(可視) | 理由は**語**で返る。「全部拒否する」と「全部**同じ理由で**拒否する」は別のバグで、後者だけが見つけられる |
+| `HOSTILE_SPAWN_MAX_BLOCK_LIGHT` | 内部(可視) | 7。判定は**厳密に大なり**（光度 7 はスポーンする） |
+| `MIN_SPAWN_DISTANCE_BLOCKS` / `MAX_SPAWN_DISTANCE_BLOCKS` | 内部(可視) | 16 / 40。**両端とも含む**（参照実装の比較子が非対称で、オラクルだけがそれを言う） |
+
+地面の判定は `domain/chunk-store-port.ts` の `validSpawnSurface`（kernel 能力表のミラー）であり、
+**ブロック名の列挙ではない**。参照実装の Mob スポーナはそもそも地面を検査しておらず
+（「上から最初の非 air」）、葉とガラスが地面として通っていた。
+kernel 監査 §4.9 が `solid` への統合を禁じている理由がその行である。
+
+### domain/mob/mob-drop.ts
+
+| export | 種別 | 備考 |
+| --- | --- | --- |
+| `rollMobDrop` / `rollMobDrops` | 内部(可視) | **ロールは引数**（`[0,1)`）。ドメインに `Math.random()` は 1 つも無く、`test/mob.test.ts` がソース走査で固定する |
+| `dropPasses` | 内部(可視) | 参照実装 `drop.ts:14-16` の逐語。比較は厳密 |
+| `mobXpReward` | 内部(可視) | XP の**量**はルール、XP の**残高**は mc-sim（plan.md §7） |
+| `MobDropRule` / `MobDrop` / `MobKill` / `DropRolls` / `LOWEST_ROLLS` | 内部(可視) | `MobKill` は `Slain{lootingLevel}` か `SelfDestruct` |
+| `CREEPER_DROPS` / `CREEPER_XP_REWARD` | 内部(可視) | 火薬 1 個 / 5。`item` の型は **kernel の `ItemType`**（`domain/item-vocabulary.ts` 経由） |
+
+**自爆したクリーパーは何も落とさない。** 参照実装ではこれはどこにも書かれておらず、
+2 つのファイルの実行順から落ちてくる（`entity-manager-combat.ts:56-64` が
+ドロップ経路より先にエンティティを削除する）。挙動は正しく、機構は偶然なので、ここでは引数の場合分けにしてある。
+
 ### domain/falling-block.ts
 
 | export | 種別 | 備考 |
@@ -344,6 +404,18 @@ kernel の `StageRegistration` に対してそのまま代入できる。
 
 `makeGameplayStages` の型に `ChunkStore` が現れるため、このファイルは re-export していなくても
 `api-lock.md` の "Supporting declarations" には載る（§2-2）。
+
+### domain/item-vocabulary.ts（**バレルから re-export しない**）
+
+| export | 種別 | 備考 |
+| --- | --- | --- |
+| `ITEM_TYPES` / `ItemType` | 非公開（所有者は kernel） | kernel `domain/item-type.ts` のミラー。`gunpowder` / `blaze_powder` は「Mob ドロップ。**ルールは mx-gameplay、語彙は kernel**」という注記つきで kernel の名簿に入った literal である |
+
+ロスタ全体を写してあるのは、**部分ミラーは機械比較できない**からである
+（`mc-dev-meta` の `pnpm check:mirrors` が `REPLACEABLE_IDS` の `lava` 欠落を見つけたのは集合ごと差分を取ったため）。
+kernel が literal を**足す**分にはこちらが stale になるだけで壊れず、
+こちらが名指ししている literal を kernel が**消した**ときだけ削除日に壊れる —— それは壊れるべき日である。
+固定しているテスト: `REGRESSION: does not republish mc-kernel’s vocabulary as its own`。
 
 ### domain/position-key.ts（**バレルから re-export しない**）
 

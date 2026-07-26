@@ -44,18 +44,19 @@ prettier も biome も `.editorconfig` も置かない。整形の権威が 2 �
 
 ## 2. 現在のスイート
 
-**9 ファイル / 122 テスト、全 pass。**
+**10 ファイル / 160 テスト、全 pass。**
 
 | ファイル | 本数 | 内容 |
 | --- | ---: | --- |
 | `test/api-lock.test.ts` | 26 | API ロック生成器そのもの（`scripts/api-lock.ts`） |
 | `test/rules.test.ts` | 19 | DN-GP-1 / DN-GP-2 / DN-GP-3 のドメイン単体 |
+| `test/mob.test.ts` | 36 | **クリーパー。** 導火線の状態機械を**列挙**し、爆風の減衰表・スポーン判定・ドロップを参照実装のオラクルから移植する（§2-2）。乱数がドメインに無いことをソース走査で固定する 1 本を含む |
 | `test/stage-registration.test.ts` | 19 | フレーム契約（§2.3-1 / §2.3-3）と stage の振る舞い。時刻の `Ref` が無いこと、store を**登録時に**取ること |
 | `test/check-dependency-whitelist.test.ts` | 17 | 依存ポリシーそのもの。うち 3 本は**他リポジトリの席から**読んだ roster 検査（§2-3） |
 | `test/vertical-slice.test.ts` | 12 | 縦切り。**stage 登録経由で**「掘る → 砂が落ちる → アイテムが渡る」を回す（DN-GP-1 / DN-GP-11） |
 | `test/day-night.test.ts` | 8 | DN-GP-7。昼夜**ルール**が何も保持していないこと、mc-sim と夜の定義が一致すること |
 | `test/public-api.test.ts` | 6 | `index.ts` のバレルを名前ごと固定する。kernel 語彙と時刻 API の**不在**も固定する |
-| `test/chunk-store-mirror.test.ts` | 5 | `domain/chunk-store-port.ts` を mc-worldgen の界面に**両方向で**固定する。タグキーは文字どおり検査する |
+| `test/chunk-store-mirror.test.ts` | 6 | `domain/chunk-store-port.ts` を mc-worldgen の界面に**両方向で**固定する。タグキーは文字どおり検査する。`validSpawnSurface` が**負リスト**であること（＝既定 true）もここ |
 | `test/preview-findings.test.ts` | 10 | **プレビューが見つけたもの**（§3-2）。うち 8 本は「現在の（誤った）挙動を固定する」テストで、直すと落ちる |
 
 `test/support/` はテストではなくテストの資材である（`vitest.config.ts` の `include` は
@@ -121,7 +122,7 @@ roster を各リポジトリが持ち回っている以上、**行の正しさ�
 | 2 | plan.md §3.11 の 7 つの責務が実装済み | ❌（1 つも未着手。[porting.md](./porting.md)） |
 | 3 | 参照実装のテストオラクルが移植済み | ❌ |
 | 4 | **プレビュー「採掘場」が操作可能** | ✅（`pnpm preview`。ただしドロップテーブルと設置ルールが未実装なので、確認できるのは「掘る」と落下カスケードまで。§3-1） |
-| 5 | **プレビュー「Mob アリーナ」が操作可能** | ❌（**Mob が存在しない。** `--screen arena` は欠けているものを列挙し、実在する死因ルールだけを叩く。§3-1） |
+| 5 | **プレビュー「Mob アリーナ」が操作可能** | ✅（`--screen arena`。**Mob は 1 体 = クリーパー。** スポーン → 導火線 → 爆風 → 死因 → ドロップが本物。エンダーマン / シュルカー / ドラゴンは未着手で、画面がそう書く。§3-1） |
 | 6 | **プレビュー「時間スライダー」が操作可能** | ✅（`--screen time`。時刻を**進める**のは mc-sim であり、そちらは未 publish） |
 | 7 | 99% カバレッジゲートが有効 | ❌（完成時に有効化。§4） |
 | 8 | `mc-kernel` を import し `domain/frame-contract.ts` / `domain/position-key.ts` を削除 | ❌（kernel の publish 待ち） |
@@ -136,7 +137,7 @@ plan.md §3.11 が指定する 3 本。`apps/preview-*/` に置く（plan.md §4
 | プレビュー | 画面 | 実体 | 主に検証されるルール |
 | --- | --- | --- | --- |
 | **採掘場** | `site` | **本物**。`gameplayStages` を本物の `ChunkStoreApi` に対して回す | `break-block`、落下ブロック（DN-GP-1）、`ChunkNotLoaded`（DN-GP-11）。**ドロップテーブルも設置ルールも存在しない**ので、掘って出るのは「そこにあったブロック」そのものであり、`p` キーはストアを直接書いて「これはルールではない」と HUD に出す |
-| **Mob アリーナ** | `arena` | **Mob は存在しない。画面の 1 行目がそう言う** | `domain/death-cause.ts`（DN-GP-3）だけ。欠けているもの（Mob エンティティ、AI、スポーン、近接/遠隔ハンドラ、ドロップ）を**行き先つきで**列挙する |
+| **Mob アリーナ** | `arena` | **本物。Mob は 1 体（クリーパー）** | `domain/mob/` の 4 本 —— `hostile-spawn`（夜・光度・`validSpawnSurface`・距離帯）、`creeper-fuse`（着火 / 退避で消える / 1 回だけ爆発）、`explosion`（減衰と死因）、`mob-drop`（火薬。自爆なら何も出ない）と、それらが到達する `domain/death-cause.ts`（DN-GP-3）。**状態はプレビューが持つ** —— mc-sim の役をこの画面が務めており、持っているのは距離 1 つと `CreeperFuse` 値 1 つだけである。欠けているもの（他 3 種の Mob、名簿、経路探索、近接/遠隔ハンドラ、クレーター、デスポーン、これを回す stage）は**行き先つきで**列挙し続ける |
 | **時間スライダー** | `time` | **ルールドライバとしては本物** | `domain/day-night.ts` の `isNight` / `dayPhase` / `hostileSpawnsAllowed`（DN-GP-7）。**時刻そのものを動かすのは mc-sim の `TimeService`** であり、`gameplay:time-weather` は `Effect.void` のままなので、スライダーは「書く先」を持たない。引数を掃くだけである |
 
 **`mc-playground-kit` は使っていない。** 本節は以前「いずれも kit を devDependency として使う」と
@@ -160,7 +161,7 @@ mx-redstone の回路盤が磨いた。`tsconfig.base.json` が `lib` から "DO
 
 ### 3-2. プレビューが見つけたもの
 
-`pnpm preview --stats` は 14 個のチェックを**実行時に測定**する。期待値は 1 つも記録していないので、
+`pnpm preview --stats` は 17 個のチェックを**実行時に測定**する。期待値は 1 つも記録していないので、
 **直すと finding は「固定される」のではなく静かに消える**。だから確認できたものは
 `test/preview-findings.test.ts` に assertion として落としてある —— レポートは読まれなければ効かないが、
 テストは落ちる。チェック自体は合格後も残してある。合格したら消すチェックは、コードを 1 回しか検査しない。
@@ -175,6 +176,14 @@ mx-redstone の回路盤が磨いた。`tsconfig.base.json` が `lib` から "DO
 | F4 | fluids stage だけが `Ref.get` → `Ref.set`（DN-GP-10 が禁じる形）。**今日は到達不能**なので形として報告 | `stages/registration.ts:267-270` | — |
 | F5 | NaN ダメージ 1 発でプレイヤーが永久に不死になる（`isDead` が永久に false、死亡メッセージが出ない） | `domain/death-cause.ts:110-122` | ✅ 3 本 |
 | F6 | 昼夜ルールが日周期でない。範囲外は全部 night で `hostileSpawnsAllowed` も真。負の端数は mc-sim の `% 1` から出る | `domain/day-night.ts:78-98` | ✅ 3 本 |
+
+Mob 用に 3 チェックを足した（2026-07-27）。**finding は 1 件も増えていない。**
+
+| チェック | 何を見るか | 結果 |
+| --- | --- | --- |
+| 導火線のフレームレート非依存性 | dt を 0.25 / 0.1 / 0.05 / 0.02 / 1/60 / 0.016 と変えて、爆発までの実時間を測る | `[note]`。**1 フレーム以内で一定。**1/60 だけ 91 ステップ（理想 90）で 1.5167 秒になる —— 浮動小数の累積であって tick 数ではない。開始時刻を持てば直るが、それには時計が要る（DN-GP-8 が禁じる） |
+| クリーパー縦切り | スポーン判定 → 導火線 → 爆風 → 死因 → ドロップを 1 本で回し、全数値を測る | ✅。`deathMessage()` が `You blew up.` であること（DN-GP-3 の新しい呼び出し地点）と、自爆したクリーパーのドロップが**空**であることを見る |
+| スポーンゲートの掃引 | 地面ブロック × 光度の格子を夜と正午で | ✅。葉とガラスが**衝突判定上は solid でも地面ではない**行が見える（kernel 監査 §4.9） |
 
 **F3 / F5 / F6 は当時の 112 本が 1 つも捕まえていなかった。** 理由はそれぞれ違う:
 

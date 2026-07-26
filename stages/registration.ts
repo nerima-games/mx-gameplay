@@ -226,6 +226,24 @@ export const gameplayStages = (
     // as the player just left it — reversing the two makes a creeper respond to
     // last frame's block placement, which reads as lag rather than as a bug.
     // It is also what lets a block broken this frame start falling this frame.
+    //
+    // THE CREEPER IS NOT RUN HERE, AND THE REASON IS THE POINT. `domain/mob/`
+    // now holds four rules — the fuse, the blast, the spawn condition and the
+    // drop — and this stage calls none of them. Running them would need
+    // something to iterate over: a roster of mobs with positions and health,
+    // and a way to ask how far each one is from the player. That is state, it
+    // has to survive a save/load round trip, and by the test in this file's
+    // header it therefore belongs to mc-sim (plan.md §7: 「状態管理は sim、
+    // AI/スポーン/ドロップのルールは gameplay」).
+    //
+    // A local `Ref<Map<MobId, CreeperFuse>>` here would run today and would be
+    // the same mistake as the `timeOfDaySecs` Ref this file used to hold: a
+    // second owner of a noun, diverging from the one that gets saved. So the
+    // rules stay callable and uncalled until `EntityManager` exists, and their
+    // host in the meantime is `apps/preview-mining-site`'s arena screen, which
+    // holds exactly what mc-sim will hold — a distance and a `CreeperFuse`.
+    // When the service lands, this stage grows a loop and nothing in
+    // `domain/mob/` changes.
     run: () =>
       Effect.gen(function* () {
         // `Ref.modify` rather than get-then-set: plan.md §3.8 lists TOCTOU on a

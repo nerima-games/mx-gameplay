@@ -17,15 +17,24 @@ import {
   ARENA_AMOUNTS,
   ARENA_CAUSES,
   ARENA_MISSING,
+  ARENA_STEP_SECS,
   arenaAmount,
+  arenaCandidate,
   arenaCause,
   arenaVerdict,
+  blastCurve,
+  blastRadius,
+  fuseFraction,
+  fuseLabel,
+  groundName,
   healthBar,
+  IGNITION_RANGE,
   phaseBand,
   wrapReport,
   type ArenaState,
   type TimeState,
 } from './screens'
+import { CREEPER_EXPLOSION_POWER, explosionDamageAmount } from '../../domain/mob/explosion'
 import { positionAt, type FrameRow, type Site } from './site'
 import { AIR, glyphOf } from './world'
 
@@ -337,29 +346,108 @@ export const renderTimeScreen = (
 // arena
 // ---------------------------------------------------------------------------
 
+/**
+ * The lane the creeper walks down.
+ *
+ * One cell per block, with the ignition range marked, because "three blocks" is
+ * a number until you watch the fuse light at the third cell. The blast radius is
+ * twice that and is marked separately — the two radii being different is the
+ * thing this drawing exists to make obvious.
+ */
+const approachLane = (distance: number, style: Style): string => {
+  const cells = Array.from({ length: 13 }, (_, index) =>
+    index === 0 ? '@' : index <= IGNITION_RANGE ? '=' : index <= blastRadius(CREEPER_EXPLOSION_POWER) ? '-' : '.',
+  )
+  const at = Math.min(cells.length - 1, Math.max(0, Math.round(distance)))
+  const drawn = cells.map((cell, index) => (index === at && at > 0 ? 'C' : cell)).join('')
+
+  return `    ${style.bold(drawn)}   ${style.dim('@ player   = ignition   - blast   C creeper')}`
+}
+
+const renderCreeper = (state: ArenaState, style: Style): ReadonlyArray<string> => {
+  const creeper = state.creeper
+  if (creeper === undefined) {
+    return [
+      style.dim('    no creeper. The spawn rule above has to say Spawn first — which is the point:'),
+      style.dim('    a mob appears because a rule allowed it, not because this screen drew one.'),
+    ]
+  }
+
+  const filled = Math.round(fuseFraction(creeper.fuse) * 24)
+  const bar = `[${'#'.repeat(filled)}${'-'.repeat(24 - filled)}]`
+  const damageNow = explosionDamageAmount(CREEPER_EXPLOSION_POWER, creeper.distanceBlocks)
+
+  return [
+    approachLane(creeper.distanceBlocks, style),
+    '',
+    `    distance   ${style.bold(creeper.distanceBlocks.toFixed(2))} blocks` +
+      style.dim(`   (ignition <= ${String(IGNITION_RANGE)}, blast < ${String(blastRadius(CREEPER_EXPLOSION_POWER))})`),
+    `    fuse       ${creeper.fuse._tag === 'Lit' ? style.paint(bar, [235, 160, 90]) : style.dim(bar)}  ${fuseLabel(creeper.fuse)}`,
+    `    steps      ${String(creeper.steps)} × ${String(ARENA_STEP_SECS)}s` +
+      style.dim(`   alive=${String(creeper.alive)}`),
+    `    if it went off now: ${style.bold(String(damageNow))} damage` +
+      style.dim('  (explosionDamageAmount, measured at this distance)'),
+  ]
+}
+
 export const renderArenaScreen = (
   state: ArenaState,
+  timeOfDay: number,
   style: Style,
   columns: number,
 ): ReadonlyArray<string> => {
   const width = Math.max(40, Math.min(100, columns - 4))
   const { label } = arenaAmount(state)
+  const candidate = arenaCandidate(state, timeOfDay)
+  const verdict = state.verdict
   const lines: Array<string> = [
-    style.bold('mob arena — THERE IS NO MOB'),
-    style.dim('plan.md §3.11 asks for "スポーンさせて対峙". Nothing in domain/ names a mob, and'),
-    style.dim('gameplay:entities runs the falling-block cascade and nothing else. Rather than draw'),
-    style.dim('an arena that simulates nothing, this drives what a mob would eventually reach:'),
-    style.dim('domain/death-cause.ts, for real. Every number below came out of applyDamage().'),
+    style.bold('mob arena — one mob: the creeper'),
+    style.dim('plan.md §3.11 asks for "スポーンさせて対峙" and for four behaviours. One of the four is'),
+    style.dim('written. Everything below is produced by domain/mob/ at run time: this screen holds'),
+    style.dim('the state mc-sim will hold (a distance and a CreeperFuse value) and decides nothing.'),
+    '',
+    style.bold('  1. spawn condition — domain/mob/hostile-spawn.ts'),
+    `    ground ${padEnd(groundName(candidate.groundBlock), 22)}${style.dim('u cycles')}`,
+    `    light  ${padEnd(String(candidate.blockLight), 22)}${style.dim('t cycles — the gate is > 7')}`,
+    `    range  ${padEnd(`${String(candidate.distanceToPlayerBlocksXZ)} blocks`, 22)}${style.dim('[ ] adjust — the band is 16..40')}`,
+    `    hour   ${padEnd(timeOfDay.toFixed(3), 22)}${style.dim('the TIME screen owns it (DN-GP-7); noon refuses')}`,
+    '',
+    `    ${style.bold('s')} asks the rule -> ${
+      verdict === undefined
+        ? style.dim('not asked yet')
+        : verdict._tag === 'Spawn'
+          ? style.paint('Spawn', [150, 220, 150])
+          : style.paint(`Refused: ${verdict.reason}`, [235, 160, 120])
+    }`,
+    '',
+    style.bold('  2. the fuse — domain/mob/creeper-fuse.ts'),
+    ...renderCreeper(state, style),
+    '',
+    style.bold('  3. the blast — domain/mob/explosion.ts'),
+    `    ${blastCurve(CREEPER_EXPLOSION_POWER)
+      .map(([distance, amount]) => `${String(distance)}b:${String(amount)}`)
+      .join('  ')}`,
+    style.dim('    43 at the centre against 20 maximum health — the fuse is the whole counter-play.'),
+    '',
+    style.bold('  4. the drop — domain/mob/mob-drop.ts, in mc-kernel’s vocabulary'),
+    `    looting ${padEnd(String(state.lootingLevel), 8)}${style.dim('f cycles   k kills it before the fuse ends')}`,
+    `    loot    ${padEnd(
+      state.loot.length === 0 ? '(nothing)' : state.loot.map((drop) => `${drop.item} x${String(drop.count)}`).join(', '),
+      24,
+    )}${style.dim(`xp ${String(state.xp)}`)}`,
+    style.dim('    a creeper that detonates leaves nothing at all; only a kill drops gunpowder.'),
+    '',
+    style.paint(`  ${state.note}`, [226, 202, 130]),
     '',
     style.bold('  what is missing, and where it would go'),
   ]
 
   for (const [what, where] of ARENA_MISSING) {
-    lines.push(`    ${padEnd(what, 28)}${style.dim(where)}`)
+    lines.push(`    ${padEnd(what, 34)}${style.dim(where)}`)
   }
 
   lines.push('')
-  lines.push(style.bold('  death-cause rules, driven'))
+  lines.push(style.bold('  death-cause rules, driven directly'))
   lines.push('')
   lines.push(
     `    health  ${healthBar(state.vitals, 20)}  ${

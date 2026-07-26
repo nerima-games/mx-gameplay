@@ -48,7 +48,13 @@ describe('public API surface', () => {
   // an `index.ts` comment and re-export nothing; this repository now matches.
   it.effect('REGRESSION: does not republish mc-kernel’s vocabulary as its own', () =>
     Effect.sync(() => {
-      const kernelsToOwn = ['StageId', 'DeltaTimeSecs']
+      // `ITEM_TYPES` joined this list when the creeper's drop needed a name for
+      // gunpowder. `domain/item-vocabulary.ts` mirrors kernel's item roster the
+      // way `domain/frame-contract.ts` mirrors its frame types, and it carries
+      // the same deletion date — so publishing it here would turn that promised
+      // deletion into a breaking change, and would give the organisation a
+      // second place to look up what an item is called.
+      const kernelsToOwn = ['StageId', 'DeltaTimeSecs', 'ITEM_TYPES', 'isItemType']
       for (const name of kernelsToOwn) {
         expect(Object.keys(gameplay)).not.toContain(name)
       }
@@ -84,6 +90,25 @@ describe('public API surface', () => {
         'isNight',
         'dayPhase',
         'hostileSpawnsAllowed',
+        // the creeper — a fuse, a blast, a spawn condition and a drop
+        'CREEPER_IGNITION_RANGE_BLOCKS',
+        'CREEPER_FUSE_SECS',
+        'DORMANT_FUSE',
+        'stepCreeperFuse',
+        'CREEPER_EXPLOSION_POWER',
+        'explosionRadius',
+        'explosionDamageAmount',
+        'explosionDamageAt',
+        'HOSTILE_SPAWN_MAX_BLOCK_LIGHT',
+        'MIN_SPAWN_DISTANCE_BLOCKS',
+        'MAX_SPAWN_DISTANCE_BLOCKS',
+        'canHostileSpawnAt',
+        'CREEPER_DROPS',
+        'CREEPER_XP_REWARD',
+        'dropPasses',
+        'rollMobDrop',
+        'rollMobDrops',
+        'mobXpReward',
         // stage helpers
         'LAVA_TICK_INTERVAL',
         'EXPERIENCE_MODULE_STAGE_PREFIXES',

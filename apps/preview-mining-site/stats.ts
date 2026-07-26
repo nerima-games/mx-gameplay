@@ -30,14 +30,33 @@ import {
   deathMessage,
   fullHealth,
   isDead,
+  MAX_HEALTH_POINTS,
   type DeathCause,
   type Vitals,
 } from '../../domain/death-cause'
 import { FALLING_BLOCK_MOVES_PER_TICK } from '../../domain/falling-block'
+import {
+  CREEPER_FUSE_SECS,
+  DORMANT_FUSE,
+  stepCreeperFuse,
+} from '../../domain/mob/creeper-fuse'
+import { canHostileSpawnAt } from '../../domain/mob/hostile-spawn'
 import { carryOver, splitBudget, type FluidWorkItem } from '../../domain/fluid-frontier'
 import { DeltaTimeSecs } from '../../domain/frame-contract'
 import { GAMEPLAY_STAGE_IDS } from '../../stages/stage-ids'
 import { SCENARIOS, scenarioByName } from './scenarios'
+import {
+  approach,
+  ARENA_APPROACH_TO,
+  ARENA_GROUNDS,
+  ARENA_SETTLE_CAP,
+  ARENA_SPAWN_DISTANCE,
+  ARENA_STEP_SECS,
+  attemptSpawn,
+  initialArenaState,
+  slayCreeper,
+  stepArena,
+} from './screens'
 import {
   floatingIn,
   makeSite,
@@ -810,6 +829,186 @@ const dayNightPeriodicity = Effect.sync((): Check => {
 })
 
 // ---------------------------------------------------------------------------
+// plan.md §3.11: the mob rules
+// ---------------------------------------------------------------------------
+
+/**
+ * How long the fuse actually lasts, measured at several frame rates.
+ *
+ * `domain/mob/creeper-fuse.ts` says the fuse is frame-rate independent by
+ * construction, because it accumulates SECONDS rather than counting ticks. That
+ * claim is true of the arithmetic and not quite true of the floating-point: the
+ * fuse ends on the first step whose running total reaches 1.5, and a running
+ * total of many small deltas is not the same number as their product.
+ *
+ * If this were broken — a tick count instead of a delta, or a comparison the
+ * wrong way round — the "elapsed" column would be a different number for every
+ * frame rate rather than the same one to within a frame.
+ */
+const creeperFuseFrameRate = Effect.sync((): Check => {
+  const lines: Array<string> = [
+    `  ${pad('dt', 10)}${pad('steps', 8)}${pad('ideal', 8)}${pad('elapsed', 10)}drift`,
+  ]
+  let worstDrift = 0
+
+  for (const dt of [0.25, 0.1, 0.05, 0.02, 1 / 60, 0.016]) {
+    let fuse = DORMANT_FUSE
+    let steps = 0
+    while (fuse._tag !== 'Detonated' && steps < 10_000) {
+      fuse = stepCreeperFuse(fuse, { distanceToTargetBlocks: 1 }, DeltaTimeSecs(dt)).fuse
+      steps += 1
+    }
+    const ideal = Math.ceil(CREEPER_FUSE_SECS / dt)
+    worstDrift = Math.max(worstDrift, Math.abs(steps - ideal))
+    lines.push(
+      `  ${pad(dt.toFixed(5), 10)}${pad(String(steps), 8)}${pad(String(ideal), 8)}` +
+        `${pad((steps * dt).toFixed(4), 10)}${String(steps - ideal)} frame(s)`,
+    )
+  }
+
+  lines.push('')
+  lines.push('  The fuse is 1.5 SECONDS at every frame rate, to within one frame. The residue is')
+  lines.push('  floating-point accumulation, not a tick count: 90 additions of 1/60 come to')
+  lines.push('  1.4999999999999993, so a 60 Hz fuse takes a 91st step and lasts 1.5167s (+1.1%).')
+  lines.push('  Reported rather than "fixed" — carrying the start time instead would need a clock,')
+  lines.push('  which DN-GP-8 forbids, and quarter-seconds (the arena screen`s step) are exact.')
+
+  return {
+    id: worstDrift <= 1 ? 'note' : 'F-fuse',
+    title: 'the creeper fuse lasts 1.5s at any frame rate, to within one frame',
+    finding: worstDrift > 1,
+    lines,
+  } satisfies Check
+})
+
+/**
+ * The whole creeper, driven end to end, with every number measured.
+ *
+ * Spawn condition -> fuse -> blast -> death cause -> drop. This is the one check
+ * that crosses all four mob files, and the failure it is looking for is
+ * DN-GP-3's: a death message that has collapsed back to the generic sentence
+ * because the cause was dropped somewhere between the formula and the screen.
+ *
+ * The second failure it is looking for is the drop rule's: a creeper that
+ * detonates must leave NOTHING. In the reference that property is an accident of
+ * statement order in a file two removes away (`entity-manager-combat.ts:60`
+ * removes the entity before the drop path runs), so it is exactly the kind of
+ * thing that comes back.
+ */
+const creeperEndToEnd = Effect.sync((): Check => {
+  const state = initialArenaState()
+  const night = 0.9
+
+  attemptSpawn(state, night)
+  approach(state, ARENA_APPROACH_TO - ARENA_SPAWN_DISTANCE)
+
+  const trace: Array<string> = []
+  let steps = 0
+  while (state.creeper?.alive === true && steps < ARENA_SETTLE_CAP) {
+    stepArena(state)
+    steps += 1
+    const fuse = state.creeper?.fuse
+    trace.push(fuse === undefined ? '-' : fuse._tag === 'Lit' ? fuse.burnedSecs.toFixed(2) : fuse._tag)
+  }
+
+  const message = deathMessage(state.vitals)
+  const collapsed = message === DEATH_MESSAGES.generic
+  const lootAfterSelfDestruct = state.loot.length
+
+  // ...and the other death: killed by the player before the fuse ends.
+  const killed = initialArenaState()
+  attemptSpawn(killed, night)
+  killed.lootingLevel = 2
+  slayCreeper(killed)
+
+  return {
+    id: collapsed || lootAfterSelfDestruct > 0 ? 'F-creeper' : 'ok',
+    title: 'spawn -> fuse -> blast -> death cause -> drop, every number measured',
+    finding: collapsed || lootAfterSelfDestruct > 0,
+    lines: [
+      `  spawn verdict                 ${String(state.verdict?._tag)}`,
+      `  distance when it went off     ${state.creeper?.distanceBlocks.toFixed(2) ?? '-'} blocks`,
+      `  steps of ${String(ARENA_STEP_SECS)}s               ${String(steps)}`,
+      `  fuse trace                    ${trace.join(' ')}`,
+      `  health                        ${String(MAX_HEALTH_POINTS)} -> ${String(state.vitals.healthPoints)}`,
+      `  lastDeathCause                ${String(state.vitals.lastDeathCause)}`,
+      `  deathMessage()                ${String(message)}`,
+      `  collapsed to "You died."      ${String(collapsed)}   <- DN-GP-3`,
+      '',
+      `  loot after SELF-DESTRUCT      ${lootAfterSelfDestruct} item(s), xp ${String(state.xp)}`,
+      `  loot after a KILL (looting 2) ${killed.loot.map((drop) => `${drop.item} x${String(drop.count)}`).join(', ')}` +
+        `, xp ${String(killed.xp)}`,
+      '',
+      '  Both loot lines came out of `rollMobDrops`; neither is written down here. The empty',
+      '  one is the rule, not a missing implementation — see `MobKill` in domain/mob/mob-drop.ts.',
+    ],
+  } satisfies Check
+})
+
+/**
+ * The spawn gate, swept.
+ *
+ * Two axes at once, because the interesting failures are conjunctions: a rule
+ * that ignored the hour would still refuse a bright cell, and a rule that
+ * collapsed `validSpawnSurface` into "is it solid" would still refuse water. The
+ * grid shows both at a glance and would show either mistake as a whole row or a
+ * whole column changing.
+ */
+const spawnGate = Effect.sync((): Check => {
+  const grounds = ARENA_GROUNDS
+  const lights = [0, 7, 8, 15]
+  const lines: Array<string> = [
+    `  night (0.90)      ${lights.map((light) => pad(`L${String(light)}`, 6)).join('')}`,
+  ]
+  let daylightAccepted = 0
+  let canopyAccepted = 0
+
+  for (const [block, name] of grounds) {
+    const cells = lights.map((light) => {
+      const verdict = canHostileSpawnAt({
+        groundBlock: block,
+        footBlock: 0,
+        headBlock: 0,
+        blockLight: light,
+        timeOfDay: 0.9,
+        distanceToPlayerBlocksXZ: 20,
+      })
+      if (verdict._tag === 'Spawn' && (block === 10 || block === 13)) {
+        canopyAccepted += 1
+      }
+      return pad(verdict._tag === 'Spawn' ? 'yes' : verdict.reason.slice(0, 5), 6)
+    })
+    lines.push(`  ${pad(name, 18)}${cells.join('')}`)
+  }
+
+  for (const light of lights) {
+    const verdict = canHostileSpawnAt({
+      groundBlock: 2,
+      footBlock: 0,
+      headBlock: 0,
+      blockLight: light,
+      timeOfDay: 0.5,
+      distanceToPlayerBlocksXZ: 20,
+    })
+    if (verdict._tag === 'Spawn') {
+      daylightAccepted += 1
+    }
+  }
+
+  lines.push('')
+  lines.push(`  noon (0.50), stone, every light level: accepted ${String(daylightAccepted)} of ${String(lights.length)}`)
+  lines.push('  leaves and glass are SOLID FOR COLLISION and are still not ground — kernel`s audit')
+  lines.push('  §4.9 keeps `validSpawnSurface` separate from solidity for exactly this row.')
+
+  return {
+    id: daylightAccepted === 0 && canopyAccepted === 0 ? 'ok' : 'F-spawn',
+    title: 'the spawn gate refuses daylight, brightness and the canopy',
+    finding: daylightAccepted > 0 || canopyAccepted > 0,
+    lines,
+  } satisfies Check
+})
+
+// ---------------------------------------------------------------------------
 // Report
 // ---------------------------------------------------------------------------
 
@@ -828,6 +1027,9 @@ const CHECKS = [
   nonFiniteDamage,
   causesDistinct,
   dayNightPeriodicity,
+  creeperFuseFrameRate,
+  creeperEndToEnd,
+  spawnGate,
 ] as const
 
 export const buildStatsReport: Effect.Effect<ReadonlyArray<string>> = Effect.gen(function* () {

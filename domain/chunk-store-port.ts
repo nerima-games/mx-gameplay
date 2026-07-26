@@ -216,8 +216,9 @@ export class ChunkStore extends Context.Tag('@nerima-games/mc-worldgen/ChunkStor
  * same rule over gravel.
  *
  * When mc-kernel is published these collapse into
- * `capabilityOfBlockId(id, 'fallsWhenUnsupported')` and
- * `capabilityOfBlockId(id, 'replaceable')`.
+ * `capabilityOfBlockId(id, 'fallsWhenUnsupported')`,
+ * `capabilityOfBlockId(id, 'replaceable')` and
+ * `capabilityOfBlockId(id, 'validSpawnSurface')`.
  */
 export const AIR_BLOCK_ID: BlockId = 0
 
@@ -242,6 +243,44 @@ const REPLACEABLE_IDS: ReadonlySet<BlockId> = new Set<BlockId>([
   11, // lava
 ])
 
+/**
+ * The blocks a mob may NOT stand on. A NEGATIVE list, and that is kernel's shape
+ * rather than a preference of this file.
+ *
+ * `validSpawnSurface` is one of kernel's three flags that default to `true`
+ * (`BLOCK_CAPABILITY_DEFAULTS`, `TRUE_BY_DEFAULT_CAPABILITY_FLAGS`), because for
+ * an ordinary opaque cube the true answer IS true and the reference
+ * implementation correspondingly stored `NON_SPAWN_SURFACE_BLOCK_IDS`
+ * (`spawn-selection-search.ts:41-60`) rather than the complement. Transcribing
+ * the negative set keeps two properties for free that the positive set would
+ * have to remember:
+ *
+ *   - an id this build cannot name resolves to `true`, exactly as kernel's
+ *     `capabilityOfBlockId` does (an unknown byte reads as an ordinary cube);
+ *   - adding an ordinary block to kernel's registry needs no edit here.
+ *
+ * DO NOT collapse this into a general `solid` test. kernel's audit §4.9 is
+ * explicit that `passable`, `suffocates`, `canSupportAttachments`,
+ * `validSpawnSurface` and `collisionShape` are five INDEPENDENT capabilities
+ * with different membership, and it names the disagreements: glass is solid for
+ * collision but is not a spawn surface, leaves are solid for collision but are
+ * not a spawn surface, snow is non-supporting but not passable. The reference
+ * kept two near-duplicate negative lists (`spawn-selection-search.ts:41-60` and
+ * `village-placement-surface.ts:6-12`) that DISAGREED with each other; a spawn
+ * rule that re-derives the answer from "is it solid" is how a third one starts.
+ */
+const NON_SPAWN_SURFACE_IDS: ReadonlySet<BlockId> = new Set<BlockId>([
+  0, // air — nothing to stand on
+  6, // water
+  10, // oak_leaves — solid for collision, and still not ground
+  11, // lava
+  13, // glass — solid for collision, and still not ground
+  14, // torch
+])
+
 export const fallsWhenUnsupported = (block: BlockId): boolean => FALLS_WHEN_UNSUPPORTED_IDS.has(block)
 
 export const isReplaceable = (block: BlockId): boolean => REPLACEABLE_IDS.has(block)
+
+/** Total, like kernel's: an id outside the transcription reads as ordinary ground. */
+export const validSpawnSurface = (block: BlockId): boolean => !NON_SPAWN_SURFACE_IDS.has(block)
