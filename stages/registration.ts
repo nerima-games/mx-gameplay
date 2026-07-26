@@ -124,8 +124,24 @@ export const gameplayStages = (state: GameplayFrameState): ReadonlyArray<StageRe
       Ref.modify(state.fallingBlocks, (queue) => {
         const { batch, rest } = takeBatch(queue)
         // FIRST CUT: `batch` is where each position's column is evaluated and
-        // the move applied through mc-sim's block service, then the
+        // the move applied through mc-worldgen's `ChunkStore`, then the
         // destinations fed back with `settled` to continue the cascade.
+        //
+        // This comment used to say "mc-sim's block service". There is no such
+        // service and there is not going to be one: plan.md left the owner of
+        // the block write path unassigned between §3.7 and §3.8, and it has
+        // been settled in mc-worldgen — see `domain/chunk-store-port.ts` for
+        // the consequences a rule author actually feels, and that repository's
+        // `application/chunk-store.ts` for the argument. What is unchanged is
+        // where the broken block GOES: mc-sim's `InventoryService`, which is
+        // plan.md §2.3-1's worked example.
+        //
+        // The body stays a queue drain until mc-worldgen is published and there
+        // is a `ChunkStore` to acquire (plan.md §6 Step 3 is bottom-up
+        // publish-then-pin). The whole loop, driven against this exact queue
+        // and against the mirrored port, is `test/vertical-slice.test.ts`; the
+        // same scenario against the real store is
+        // `mc-worldgen/test/vertical-slice.test.ts`.
         return [batch, rest] as const
       }).pipe(Effect.asVoid),
   },

@@ -59,7 +59,7 @@ plan.md §7 は「Minecraft クローンの全機能が 16 リポジトリで表
 
 | 親 | 何を借りるか |
 | --- | --- |
-| `mc-sim` | エンティティ / インベントリ / 体力 / XP / 時刻 の読み書き、チャンクダーティ通知。**最重要の界面**（plan.md §3.8） |
+| `mc-sim` | エンティティ / インベントリ / 体力 / XP / 時刻 の読み書き。**最重要の界面**（plan.md §3.8）。**チャンクダーティ通知はここではない** — `mc-worldgen` の `ChunkStore`（`domain/chunk-store-port.ts` のヘッダ参照） |
 | `mc-worldgen` | ブロックの読み書き、チャンクのロード状態 |
 | `mc-audio` | `SoundCuePort.play(cueId, options)`。字幕イベントは audio が発行し `mx-ui` が購読する |
 | `mc-kernel` | 共有語彙（全リポジトリ共通。許可リストに書かずに import 可） |
