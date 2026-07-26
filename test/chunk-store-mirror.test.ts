@@ -115,10 +115,17 @@ describe('the ChunkStore mirror', () => {
       expect(fallsWhenUnsupported(2)).toBe(false)
       expect(fallsWhenUnsupported(0)).toBe(false)
 
-      // air and water. Not stone, and not glass — `replaceable` is not
+      // air, water AND lava. Not stone, and not glass — `replaceable` is not
       // "non-solid", which kernel's audit §4.9 spends a section on.
+      //
+      // Lava is here because it was MISSING, and this assertion could not see
+      // that: it pins what this file transcribes, not what mc-kernel's registry
+      // says. mc-dev-meta's `pnpm check:mirrors` found the disagreement by
+      // importing both and diffing all 256 ids — that check is the one that
+      // guards this set, and this one only guards against a careless local edit.
       expect(isReplaceable(0)).toBe(true)
       expect(isReplaceable(6)).toBe(true)
+      expect(isReplaceable(11)).toBe(true)
       expect(isReplaceable(2)).toBe(false)
     }),
   )

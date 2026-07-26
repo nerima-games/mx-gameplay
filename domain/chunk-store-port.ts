@@ -229,6 +229,17 @@ const FALLS_WHEN_UNSUPPORTED_IDS: ReadonlySet<BlockId> = new Set<BlockId>([
 const REPLACEABLE_IDS: ReadonlySet<BlockId> = new Set<BlockId>([
   0, // air
   6, // water
+  // Lava was MISSING here until mc-dev-meta's `pnpm check:mirrors` compared this
+  // set against mc-kernel's `capabilityOfBlockId(id, 'replaceable')` and found
+  // the disagreement. kernel's registry says ids 0-10 reproduce mc-worldgen's
+  // BLOCK constant and 11+ are appended as blocks are needed — this transcription
+  // was written when the table stopped at 10 and did not follow the append.
+  //
+  // The consequence was not cosmetic: falling sand and gravel did not displace
+  // lava, and placement treated a lava cell as occupied. `chunk-store-mirror.test.ts`
+  // passed throughout, because it pins the transcription rather than the source.
+  // That is the whole reason the cross-repository check exists.
+  11, // lava
 ])
 
 export const fallsWhenUnsupported = (block: BlockId): boolean => FALLS_WHEN_UNSUPPORTED_IDS.has(block)
