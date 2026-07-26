@@ -29,9 +29,9 @@ interface StageRegistration {
   readonly run: (dt: DeltaTimeSecs) => Effect.Effect<void, never, FrameServices>
 }
 
-interface GameModule<ROut, E, RIn> {
+interface GameModule<ROut, E, RIn, RRegister = never> {
   readonly layers: Layer.Layer<ROut, E, RIn>          // 提供するサービス群
-  readonly frameStages: ReadonlyArray<StageRegistration>
+  readonly frameStages: Effect.Effect<ReadonlyArray<StageRegistration>, never, RRegister>
 }
 ```
 
@@ -48,19 +48,32 @@ kernel の `ClockPort` を再掲すると**同じ文字列 ID を持つ別の `C
 `Effect<void, never, never>` は `Effect<void, never, ClockPort>` が要求される位置に代入できるため、
 このファイルに対して書かれた stage は kernel import に差し替えても型検査を通り続ける。
 
-### 2-1. `GameModule` はまだ実装していない
+### 2-1. `GameModule` を実装した（`gameplayModule`）
 
-`GameModule` は `Layer.Layer<ROut, E, RIn>` を持つが、この `RIn`（要求するサービス集合）は
-**`mc-sim` の公開 API が存在するまで名前を付けられない**。名前の付けられない型引数を埋めるには
-仮の型を作るしかなく、それは後で必ず嘘になる。
+ここには長らく「`GameModule` はまだ実装していない。`RIn` は mc-sim の公開 API が存在するまで
+名前を付けられないから」と書いてあった。**診断は半分間違っていて、間違っていた側が重要だった。**
 
-そこで現在公開しているのは stage の配列だけである。
+Layer は障害ではなかった。mx-gameplay は他リポジトリが呼ぶサービスを 1 つも公開しない
+（ルールはサービスではない。他リポジトリが本リポジトリに尋ねたくなることは実際には状態への問いであり、
+状態は mc-sim か mc-worldgen にある。plan.md §2.3-1）。だから `layers` は空であり、最初から空だった。
+
+本当の障害は **`frameStages` が配列だったこと**である。本リポジトリの stage は Effect の中で確保した
+`Ref` から組み立てられるので、`ReadonlyArray` 型のフィールドに入れる方法が無かった。
+mc-sim が publish されても解決しない。縦切りスパイクが `frameStages` を Effect にしたことで解決した。
 
 ```typescript
 export const makeGameplayStages: Effect.Effect<ReadonlyArray<StageRegistration>>
+
+export const gameplayModule: GameModule<never, never, never> = {
+  layers: Layer.empty,
+  frameStages: makeGameplayStages,
+}
 ```
 
-`GameModule` の正直な部分集合であり、`layers` は要求するものが実在したときに足す。
+`RIn` は `never` のままである。mx-gameplay が mc-sim のサービス越しに書き込みを始めるとき、
+それらは `frameStages` の中で — つまり `RRegister` パラメータで — 取得される。
+本リポジトリは mc-sim が供給しなければならないものを**構築**するのではなく、
+mc-sim が供給するものを**呼ぶ**だけだからである。
 
 ## 3. 標準 stage 順序と、このリポジトリが埋めるスロット
 

@@ -8,13 +8,14 @@
  */
 import { describe, expect, it } from '@effect/vitest'
 import { Effect, Ref } from 'effect'
-import { DeltaTimeSecs, StageId, type StageRegistration } from '../domain/frame-contract'
+import { DeltaTimeSecs, StageId, type GameModule, type StageRegistration } from '../domain/frame-contract'
 import { disturb, takeBatch } from '../domain/falling-block'
 import {
   gameplayStages,
   LAVA_TICK_INTERVAL,
   makeGameplayFrameState,
   makeGameplayStages,
+  gameplayModule,
 } from '../stages/registration'
 import {
   EXPERIENCE_MODULE_STAGE_PREFIXES,
@@ -299,6 +300,61 @@ describe('the mirrored DeltaTimeSecs brand is kernel’s', () => {
       expect(() => DeltaTimeSecs(-0.000_001)).toThrow()
       expect(() => DeltaTimeSecs(Number.NaN)).toThrow()
       expect(() => DeltaTimeSecs(Number.POSITIVE_INFINITY)).toThrow()
+    }),
+  )
+})
+
+
+describe('the module contract has caught up with this file’s shape', () => {
+  /*
+   * REGRESSION — the change the vertical-slice spike forced on mc-kernel.
+   *
+   * `stages/registration.ts` used to carry a comment saying it was "NOT yet a
+   * `GameModule`" because the service set could not be named until mc-sim
+   * published. That diagnosis was half wrong, and the wrong half is what the
+   * spike found: mx-gameplay publishes no service for another repository to call — a rule is not a
+ * service (plan.md §2.3-1) — so its Layer is empty and always was.
+   *
+   * The real obstacle was that `GameModule.frameStages` was an ARRAY. These
+   * stages are built from `Ref`s allocated in an Effect, so there was no way to
+   * put them in a field typed `ReadonlyArray` — and, worse, an array gave NO
+   * module anywhere a context in which to acquire a service in order to build a
+   * stage, which forced every service any stage touched into `FrameServices`
+   * and would have made kernel name mc-sim's and mc-render's services.
+   *
+   * kernel's `frameStages` is now an Effect. This test is what says the
+   * repository actually took the shape, rather than the comment merely changing.
+   */
+  it.effect('REGRESSION: exports a real GameModule, not "stages alone, the Layer comes later"', () =>
+    Effect.gen(function* () {
+      const module: GameModule<never, never, never> = gameplayModule
+      const stages = yield* module.frameStages
+
+      expect(stageIds(stages)).toStrictEqual(Object.values(GAMEPLAY_STAGE_IDS))
+    }),
+  )
+
+  it.effect('its frameStages IS the registration Effect this file already exported', () =>
+    Effect.gen(function* () {
+      expect(gameplayModule.frameStages).toBe(makeGameplayStages)
+
+      // ...and it is re-entrant: two builds share no state, which is why it was
+      // an Effect in the first place (plan.md §3.8 on app-scope singletons).
+      const first = yield* gameplayModule.frameStages
+      const second = yield* gameplayModule.frameStages
+      expect(first).not.toBe(second)
+    }),
+  )
+
+  // `RRegister` defaults to `never`, which is what lets this repository keep
+  // writing three parameters. When these stages start acquiring mc-sim's
+  // services they acquire them HERE — in `frameStages` — and the fourth
+  // parameter appears; `RIn` stays `never`, because this repository builds
+  // nothing mc-sim has to supply.
+  it.effect('needs nothing to register today, and says so in the type', () =>
+    Effect.gen(function* () {
+      const noRequirement: Effect.Effect<unknown, never, never> = gameplayModule.frameStages
+      expect(yield* noRequirement).toBeDefined()
     }),
   )
 })

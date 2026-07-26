@@ -44,7 +44,7 @@
  * the first world's fibers and refs and deadlocked. Re-entrant initialisation
  * from the start is cheaper than retrofitting it.
  */
-import { Effect, Ref } from 'effect'
+import { Effect, Layer, Ref } from 'effect'
 import {
   emptyFallingBlockQueue,
   takeBatch,
@@ -55,7 +55,7 @@ import {
   splitBudget,
   type FluidWorkItem,
 } from '../domain/fluid-frontier'
-import type { StageRegistration } from '../domain/frame-contract'
+import type { GameModule, StageRegistration } from '../domain/frame-contract'
 import { GAMEPLAY_STAGE_IDS, UPSTREAM_STAGE_IDS } from './stage-ids'
 
 /**
@@ -171,13 +171,43 @@ export const gameplayStages = (state: GameplayFrameState): ReadonlyArray<StageRe
 /**
  * Build the module's state and its stages together.
  *
- * This is the shape mc-compose consumes. It is NOT yet a `GameModule` (plan.md
- * §4.1) because a `GameModule` carries a `Layer.Layer<ROut, E, RIn>`, and the
- * service set `RIn` cannot be named until mc-sim's public API exists. Returning
- * the stages alone is the honest subset; the Layer is added when there is
- * something real to require.
+ * This is exactly `GameModule.frameStages` — see `gameplayModule` below, and
+ * the note there on why that sentence is new.
  */
 export const makeGameplayStages: Effect.Effect<ReadonlyArray<StageRegistration>> = Effect.map(
   makeGameplayFrameState,
   gameplayStages,
 )
+
+/**
+ * mx-gameplay as a `GameModule` (plan.md §4.1).
+ *
+ * ---------------------------------------------------------------------------
+ * This used not to be expressible, and the reason is worth keeping
+ * ---------------------------------------------------------------------------
+ *
+ * `makeGameplayStages` above carried a comment saying it was "NOT yet a
+ * `GameModule`" because a `GameModule` carried a `Layer.Layer<ROut, E, RIn>`
+ * and the service set could not be named until mc-sim's public API existed.
+ *
+ * That diagnosis was half right. The Layer was never the obstacle — mx-gameplay
+ * PROVIDES no service at all (a rule is not a service; anything another
+ * repository would want to ask this repository is really a question about
+ * state, and state lives in mc-sim or mc-worldgen, plan.md §2.3-1), so its
+ * Layer is empty and always was. The obstacle was that `frameStages` was an
+ * ARRAY: this module's stages are built from `Ref`s allocated in an Effect, so
+ * there was no way to put them in a field typed `ReadonlyArray`. Publishing
+ * mc-sim would not have fixed that.
+ *
+ * The vertical-slice spike changed `frameStages` to an Effect, and the shape
+ * this repository had already been forced into became the contract.
+ *
+ * `RIn` is `never` and stays `never`. When mx-gameplay starts writing through
+ * mc-sim's services, those are acquired in `frameStages` — the `RRegister`
+ * parameter — not in the Layer: this repository builds nothing that mc-sim has
+ * to supply, it CALLS things mc-sim supplies.
+ */
+export const gameplayModule: GameModule<never, never, never> = {
+  layers: Layer.empty,
+  frameStages: makeGameplayStages,
+}

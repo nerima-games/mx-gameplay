@@ -84,6 +84,7 @@ graph BT
   compose --> redstone
   compose --> ui
   compose --> multiplayer
+  compose --> render
 ```
 
 エッジ集合は plan.md §2.1 の逐語再掲である。plan.md がそうしているとおり、
@@ -284,8 +285,9 @@ import licence. Either declare it as a direct dependency (REPOSITORY_POLICY.depe
 ポリシー上の免除であって、パッケージング上の免除ではない
 （`mc-kernel is importable without appearing in any allowlist, but must still be declared`）。
 
-この規則は上流にも同じだけ効く。`mc-compose` は 4 つの体験モジュールを import してよいが、
-その先の `mc-sim` には手を伸ばせない（`REGRESSION: mc-compose may not reach past its four children to mc-sim`）。
+この規則は上流にも同じだけ効く。`mc-compose` は 4 つの体験モジュール（と `mc-render`）を
+import してよいが、その先の `mc-sim` には手を伸ばせない
+（`REGRESSION: mc-compose may not reach past its four children to mc-sim`）。
 参照実装が合成層に 13k LOC のルールを溜めた（plan.md §3.15）経路を塞いでいるのがこの 1 行である。
 
 ## 6. stage 全順序は mc-compose だけが所有する（plan.md §2.3-3）
