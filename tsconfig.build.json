@@ -1,0 +1,21 @@
+{
+  // Shipped source only: `index.ts`, the rule domain, and the stage
+  // registrations. `types: []` (inherited) is deliberate — mx-gameplay is pure
+  // rule logic and must stay runnable in a Node scenario test, a worker and a
+  // browser alike, so a Node type leaking into it fails this project.
+  //
+  // `test/` and `scripts/` are excluded here and only here. That is what makes
+  // "mc-playground-kit is a devDependency" mean something: preview harness code
+  // may reach for kit, shipped rules may not (plan.md §2.3-2).
+  "extends": "./tsconfig.base.json",
+  "include": ["index.ts", "domain/**/*.ts", "stages/**/*.ts"],
+  "exclude": [
+    "node_modules",
+    "coverage",
+    "dist",
+    "test/**",
+    "scripts/**",
+    "**/*.test.ts",
+    "**/*.spec.ts"
+  ]
+}

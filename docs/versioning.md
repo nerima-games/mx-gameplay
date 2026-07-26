@@ -1,0 +1,135 @@
+# バージョニングと公開
+
+## 1. 現状
+
+- **バージョン: `0.1.0`。**
+- **publish はまだ 1 度も実行していない。** `package.json` の `exports` は TypeScript ソースを直接指しており、
+  `tsconfig.base.json` は `noEmit: true`。ビルド成果物は存在しない。
+- **`@nerima-games/*` への実行時依存が `package.json` に 1 つも無い。** 宣言上の親は
+  `mc-sim` / `mc-worldgen` / `mc-audio`（+ `mc-kernel`）だが、どれもまだ publish されていないので書けない。
+  現在の `dependencies` は `effect` のみである。
+
+## 2. 0.x に留める方針
+
+**下流リポジトリ（`mc-compose`）が実際に契約を消費して確認するまで、`0.x` から出ない。**
+
+plan.md §6 Step 3:
+
+> 界面が安定した（**APIロック4週間無変更**）リポジトリから GitHub Packages 等へ npm 公開 + changesets 運用に切り替え。
+> それまでは dev-meta workspace 統合で開発。
+
+plan.md §8 のリスク表も同じことを別角度から書いている。
+
+> **新規構築初期は全界面が高churn** → npm公開を遅らせ dev-meta workspace で開発。bump連鎖を構造的に回避
+
+**`1.0.0` は機能の完成度についての宣言ではなく、界面が実際に使われたことについての宣言である。**
+`mx-gameplay` の公開界面は `StageRegistration` の配列 1 つだけなので、
+机上では今日にでも凍結できる。凍結してよいかどうかは、`mc-compose` が
+4 モジュールの登録をマージして全順序を解いてみるまで分からない。
+そこで初めて「`after` を 1 本しか宣言していないのは足りていたか」が判明する。
+
+## 3. 公開先
+
+**GitHub Packages**（`https://npm.pkg.github.com`、`access: restricted`）。
+`package.json` の `publishConfig` に設定済みだが、**publish 自体はまだ実行されない**。
+
+```json
+"publishConfig": {
+  "registry": "https://npm.pkg.github.com",
+  "access": "restricted"
+}
+```
+
+`.npmrc` にはレジストリ設定が入っていない。現在の `.npmrc` は `fast-check` / `pure-rand` の
+hoist 設定だけであり（`effect` が `effect/FastCheck` として再エクスポートしているため tsc の型解決に必要）、
+`@nerima-games:registry=` の行と認証トークンの受け渡しは publish パイプラインを追加するときに足す。
+
+## 4. build / publish パイプラインは完成時に追加する
+
+完成条件（[testing.md](./testing.md) §3）に到達した時点で以下を追加する。
+
+1. `tsconfig.build.json` を emit ありに変更し、`dist/` を生成する
+2. `package.json` の `main` / `types` / `exports` を `dist/` に向ける
+3. `files` から `domain` / `stages` / `index.ts` を外し `dist` を入れる
+4. GitHub Actions に publish job を追加する（tag push トリガ）
+5. changesets を導入する
+
+**先にやらない理由**: ビルド成果物を介すと型エラーがビルド時にしか出なくなり、
+16 リポジトリを 1 つの workspace で開発している間の DX が落ちる。
+
+## 5. ボトムアップの publish-then-pin
+
+plan.md §6 Step 2 の構築順がそのまま publish 順になる。
+
+```
+kernel
+  → noise / meshing / physics / save / audio（並行可）
+    → worldgen
+      → sim
+        → render
+          → playground-kit
+            → gameplay / redstone（並行可）   ← ここ
+              → ui
+                → multiplayer
+                  → compose
+```
+
+**`mx-gameplay` の番は 7 段目である。** それまでは `mc-dev-meta` workspace（plan.md §6 Step 0）で
+`workspace:*` 解決により開発する。`repos/` に 15 リポジトリを clone して 1 つの pnpm workspace として束ねる薄いリポジトリで、
+モノレポ同等の DX を得ながらリポジトリ分割を保つ仕組みである。
+
+npm 公開は「API ロック 4 週間無変更」を満たすまで開始しない（plan.md §6 Step 3）。
+高 churn な初期に publish を始めると、kernel の 1 行修正が 7 段の republish カスケードを引き起こす。
+
+### 5-1. `domain/frame-contract.ts` と `domain/position-key.ts` の削除
+
+この 2 ファイルは `mc-kernel` の型（`StageRegistration` / `StageId` / `DeltaTimeSecs` / `FrameServices` / `Position` の鍵表現）の
+**ローカル再掲**であり、削除日が決まっている。
+
+```typescript
+// mc-kernel が publish されたら、これに置き換えて 2 ファイルを消す
+import type { StageRegistration } from '@nerima-games/mc-kernel'
+```
+
+**この削除自体は semver-MINOR の内部変更である。** 消えるのは型の**実装**であって、
+`index.ts` から見える名前と形は変わらない（`FrameServices` が `never` から `ClockPort` に広がるだけで、
+stage 作者にとっては非破壊 — `Effect<void, never, never>` は
+`Effect<void, never, ClockPort>` が要る位置に代入できる）。
+
+**ただし、この瞬間から `mc-kernel` へのバージョンピンが意味を持ち始める。**
+今日この repo は kernel の変更に一切影響されない（依存していないので当然である）。
+削除の後は、kernel の major bump がこの repo の major bump を要求する。
+再掲を消すのは「独立を捨てて正しさを買う」取引であり、kernel が publish されるまでは
+そもそも取引が成立しない。
+
+## 6. このリポジトリにとっての破壊的変更
+
+**公開しているのが stage 登録だけなので、破壊的になりうる変更は極めて少ない。**
+これは `mc-kernel` や `mc-sim` と決定的に違う点である（あちらは 14 / 全下流に波及する）。
+
+| 変更 | bump | なぜ |
+| --- | --- | --- |
+| **ルールを 1 本足す**（新しい `interaction-*`、新しい Mob） | **PATCH / MINOR** | 界面に何も現れない。`gameplay:interactions` の中で起きる |
+| ルールの挙動を変える（ドロップ数、ダメージ量） | MINOR | ゲームの挙動は変わるが、契約は変わらない |
+| 内部(可視) の export の追加 | MINOR | [public-api.md](./public-api.md) §5 |
+| 内部(可視) の export の削除 / 改名 | MINOR | 契約ではない。ただし自分のプレビューとテストは直す |
+| `domain/frame-contract.ts` / `position-key.ts` の削除（kernel 移行） | MINOR | §5-1 |
+| **新しい `StageId` を登録する** | **MAJOR** | `mc-compose` の順序表に新しい頂点が現れる。compose は必ず対応を要求される |
+| **`after` の集合を変える** | **MAJOR** | 全順序の解が変わる。他モジュールの位置が動きうる |
+| **stage の粒度を変える**（4 本を 3 本に統合、5 本に分割） | **MAJOR** | 上の 2 つの複合。compose 側の順序表を書き直させる |
+| `GameModule` の `layers` を追加する | MAJOR | compose が Layer をマージする必要が生じる |
+| ドキュメント・コメントのみ | PATCH | |
+
+**「ルールを足すのは破壊的変更ではない」がこのリポジトリの設計上の狙いである。**
+200 commits / 3 ヶ月（plan.md §3.11）の変更頻度で、その大半が
+`gameplay:interactions` の中の 1 ファイルの追加であるなら、
+下流の bump 連鎖は発生しない。これは偶然ではなく、
+**多数のファイルと 1 つの stage 登録**（DN-GP-9）を選んだ結果である。
+40 個の `StageRegistration` を公開していたら、ルールを 1 本足すたびに MAJOR になっていた。
+
+逆に言えば、**MAJOR に該当するのは全部「フレーム契約に現れる形」の変更だけ**である。
+`test/stage-registration.test.ts` の
+`the declared constraints form the §4.2 skeleton fragment gameplay is responsible for` が
+stage id の集合と `after` の集合を丸ごと assert しているので、
+これらの MAJOR 変更はテストの diff として必ず現れる。
+**bump の判断は git diff ではなくこのテストの diff を見て行う。**

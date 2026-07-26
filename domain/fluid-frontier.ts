@@ -1,0 +1,122 @@
+/**
+ * Fluid propagation — a frontier with a hard per-tick budget.
+ *
+ * ---------------------------------------------------------------------------
+ * The measured mistake this file exists to prevent
+ * ---------------------------------------------------------------------------
+ *
+ * plan.md §3.11: 「流体伝播はフロンティアサイズに上限(O(frontier)/tick が
+ * 37〜55倍の性能改善をもたらした)」. The reference records the same number from
+ * the other side, in `docs/reference/shipping-readiness-2026-07-10.md:51`:
+ *
+ *     Fluid simulation event-driven rework: 37–55× on its hot path.
+ *
+ * Two separate ideas got that improvement and both are reproduced here:
+ *
+ *   1. The tick works on a FRONTIER — the cells whose neighbourhood changed —
+ *      rather than on every fluid cell in the world.
+ *   2. The frontier is capped per tick. Water and lava share one budget, so a
+ *      lava flow cannot starve water propagation and vice versa.
+ *
+ * `splitBudget` reproduces the reference's allocation
+ * (`packages/world/application/fluid-tick-budget.ts:5-40`) exactly: water takes
+ * up to half the budget, lava fills the remainder, and lava's frontier is
+ * RETAINED rather than dropped when its slower tick is not active. Retaining is
+ * the part that is easy to get wrong — dropping the keys makes lava stop
+ * spreading in a way that only shows up minutes later, in a preview, as a lava
+ * lake with a straight edge.
+ *
+ * ---------------------------------------------------------------------------
+ * Why lava has its own tick at all
+ * ---------------------------------------------------------------------------
+ *
+ * Vanilla lava spreads several times more slowly than water. Modelling that as
+ * "run the lava half of the frontier only every N ticks" keeps one propagation
+ * algorithm instead of two. `lavaTickActive` is that switch, and the caller —
+ * the fluid stage — owns the counter, because a rate is a policy and this module
+ * is a mechanism.
+ */
+
+import type { PositionKey } from './position-key'
+
+export type FluidKind = 'water' | 'lava'
+
+export type FluidWorkItem = {
+  readonly key: PositionKey
+  readonly kind: FluidKind
+}
+
+/**
+ * Cells evaluated in one tick, across both fluids.
+ *
+ * Provisional: the reference tuned its budget against a specific frame time and
+ * this repository has not measured its own yet. The bound existing at all is the
+ * load-bearing part; the number is a knob.
+ */
+export const DEFAULT_FLUID_FRONTIER_BUDGET = 64
+
+export type FluidBudgetSplit = {
+  /** The cells to evaluate this tick. Never longer than the budget. */
+  readonly work: ReadonlyArray<FluidWorkItem>
+  /**
+   * Lava cells deferred because lava's tick was not active. These MUST be fed
+   * back into the next frontier; dropping them stops lava mid-flow.
+   */
+  readonly retainedLavaFrontier: ReadonlyArray<PositionKey>
+}
+
+/**
+ * Allocate one tick's budget across the frontier.
+ *
+ * Single classification pass, as in the reference: separate filter/filter/take
+ * sweeps allocate intermediates on a hot path that runs every tick.
+ */
+export const splitBudget = (
+  frontier: ReadonlyArray<FluidWorkItem>,
+  options: {
+    readonly budget?: number
+    readonly lavaTickActive: boolean
+  },
+): FluidBudgetSplit => {
+  const budget = Math.max(0, Math.trunc(options.budget ?? DEFAULT_FLUID_FRONTIER_BUDGET))
+
+  const water: Array<FluidWorkItem> = []
+  const lava: Array<FluidWorkItem> = []
+  for (const item of frontier) {
+    if (item.kind === 'water') {
+      water.push(item)
+    } else {
+      lava.push(item)
+    }
+  }
+
+  const waterSliceLength = Math.min(water.length, Math.floor(budget / 2))
+  const lavaAvailable = options.lavaTickActive ? lava.length : 0
+  const lavaSliceLength = Math.min(lavaAvailable, budget - waterSliceLength)
+
+  const work: Array<FluidWorkItem> = [
+    ...water.slice(0, waterSliceLength),
+    ...lava.slice(0, lavaSliceLength),
+  ]
+
+  const retainedLavaFrontier = options.lavaTickActive ? [] : lava.map((item) => item.key)
+
+  return { work, retainedLavaFrontier }
+}
+
+/**
+ * The frontier cells that were NOT evaluated and must survive into the next
+ * tick.
+ *
+ * Split out from `splitBudget` because the two answers have different owners:
+ * `work` goes to the propagation rule, `carryOver` goes back into the stage's
+ * state. Fusing them into one return type invited the reference's bug of
+ * dropping one of the two.
+ */
+export const carryOver = (
+  frontier: ReadonlyArray<FluidWorkItem>,
+  split: FluidBudgetSplit,
+): ReadonlyArray<FluidWorkItem> => {
+  const evaluated = new Set(split.work.map((item) => item.key))
+  return frontier.filter((item) => !evaluated.has(item.key))
+}

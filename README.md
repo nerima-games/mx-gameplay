@@ -1,0 +1,139 @@
+# @nerima-games/mx-gameplay
+
+## 責務
+
+**遊びのルール**を持つ。採掘 / 設置 / アイテム使用、Mob AI、ドロップとルートテーブル、流体伝播、乗り物、
+ポータルと次元移動、昼夜と天候（plan.md §3.11）。
+
+**状態は一切持たない。** インベントリもエンティティも体力も時刻もチャンクも、実体は `mc-sim` と `mc-worldgen` にある。
+このリポジトリが持つのはそれらに対する**動詞**だけである。
+
+## 依存
+
+`mc-sim` / `mc-worldgen` / `mc-audio`。加えて `mc-kernel`（全リポジトリから import 可）。
+`mc-playground-kit` は **devDependency 専用**（plan.md §2.3-2）。
+
+これは設計上の制約であり、`pnpm check:deps` で機械的に強制されている
+（`scripts/check-dependency-whitelist.ts` の `REPOSITORY_POLICY`）。green のときの出力はこの形になる。
+
+```console
+$ pnpm check:deps
+check-dependency-whitelist: OK — 13 file(s) scanned, allowed direct dependencies:
+@nerima-games/mc-audio, @nerima-games/mc-sim, @nerima-games/mc-worldgen
+(plus @nerima-games/mc-kernel, which every repository may import).
+```
+
+強制は import だけでは足りない。`after` に書く `StageId` は**文字列**なので import ゲートからは見えず、
+`after: [StageId('ui:hud-sync')]` は `pnpm check:deps` を素通りする。この穴は
+`test/stage-registration.test.ts` が塞いでいる。2 つのゲートが別の穴を見ている
+（詳細は [docs/architecture.md](./docs/architecture.md) §4）。
+
+## このリポジトリの位置づけ
+
+4 階層アーキテクチャの第 3 層、**体験モジュール**（plan.md §2.2）。
+
+- 体験モジュールは互いを知らない。`mx-redstone` / `mx-ui` / `mx-multiplayer` との依存エッジは**ゼロ**である。
+  「採掘 → インベントリに入る」は `mx-gameplay` → `mc-sim` の `InventoryService` → `mx-ui` という経路で成立し、
+  `mx-gameplay` → `mx-ui` というエッジにはならない（plan.md §2.3-1）。
+- 公開しているのは **stage 登録だけ**。サービスは 1 つも公開しない。ルールはサービスではないからで、
+  他リポジトリが `mx-gameplay` に尋ねたくなることは、よく見ると全部「状態への問い合わせ」であり、
+  状態は `mc-sim` か `mc-worldgen` にある（[docs/public-api.md](./docs/public-api.md)）。
+- **16 リポジトリ中もっとも変更頻度が高くなる**（参照実装で 200 commits / 3 ヶ月、plan.md §3.11）。
+  それでも**これ以上分割しない**。採掘 / 農業 / 戦闘は共通の stage 契約を共変更する一枚岩であり、
+  狭い界面が存在しない（plan.md §5.3）。分割の単位はファイルであってリポジトリではない
+  （[docs/responsibility.md](./docs/responsibility.md) §5）。
+
+## ドキュメント
+
+**[docs/README.md](./docs/README.md) が索引。**
+
+| ドキュメント | 内容 |
+| --- | --- |
+| [docs/architecture.md](./docs/architecture.md) | 4 階層、全 16 リポジトリの依存グラフ、**名詞/動詞ルール**、体験モジュール間エッジがゼロである理由 |
+| [docs/responsibility.md](./docs/responsibility.md) | 責務と、**明示的な非スコープ**（どこに行くのかを全部書いてある） |
+| [docs/public-api.md](./docs/public-api.md) | 契約は stage 登録だけ。`index.ts` の全 export を 契約 / 内部(可視) に分類 |
+| [docs/design-notes.md](./docs/design-notes.md) | **DN-GP-1〜10。** 参照実装で実測された失敗と、それを固定している回帰テストの名前 |
+| [docs/porting.md](./docs/porting.md) | 移植元の**実測 LOC**（`wc -l`、2026-07-26 計測）と plan.md 見積との差分 |
+| [docs/testing.md](./docs/testing.md) | 検証要件、プレビュー 3 本、99% カバレッジゲートの投入時期 |
+| [docs/versioning.md](./docs/versioning.md) | 0.x → 1.0.0 方針、GitHub Packages、このリポジトリにとっての破壊的変更の定義 |
+
+## 依存ルール（16 リポジトリ共通）
+
+| ルール | 内容 |
+| --- | --- |
+| ハード失敗 | 違反があれば CI は必ず非ゼロ終了する。警告で済ませない |
+| 循環禁止 | 循環依存は一切許可しない。「co-evolution ペア」のような例外リストは設けない |
+| 推移閉包の禁止 | A→B、B→C のとき A は C を import できない。`mc-sim` が `mc-physics` に依存していても `mx-gameplay` は `mc-physics` を import できない |
+| kernel は例外 | `mc-kernel` はどこからでも import 可。**これが唯一の例外** |
+| 宣言と実体の一致 | import する `@nerima-games/*` は `package.json` に記載されていなければならない |
+| mc-playground-kit は devDependency 専用 | `dependencies` に入れてはならない。実行時依存になると、出荷ビルドから入力処理が消える |
+| 壁時計の直読み禁止 | 時刻はすべて注入された Clock Port から取得する |
+
+`scripts/check-dependency-whitelist.ts` は 16 リポジトリ共通のテンプレートである。
+書き換えるのはファイル冒頭で囲ってある `REPOSITORY_POLICY` 定数だけで、それ以外はそのままコピーする。
+`dependencyGraph` には plan.md §2.1 の全 16 リポジトリが転記されており、
+`test/check-dependency-whitelist.test.ts` が roster の非循環性と各ルールを検査している。
+
+### 壁時計直読み禁止の実装方法
+
+oxlint 0.12 は `no-restricted-syntax` も `no-restricted-properties` も実装しておらず、
+`no-restricted-globals` は `oxlint --rules` の一覧に出るが実装されていない（0.12.0 で実測確認済み）。
+そのため `Date.now()` / `new Date()` / `performance.now()` の禁止は
+**`scripts/check-dependency-whitelist.ts` 側で実装**している。
+コメント・文字列リテラル・正規表現リテラルの中身はマスクされるので誤検知しない。
+oxlint が該当ルールを実装したら `oxlint.json` 側へ移す。
+
+## 開発
+
+### セットアップ
+
+```console
+$ direnv allow          # devenv 経由で nodejs_22 + pnpm が入る
+$ pnpm install
+```
+
+devenv を使わない場合は Node.js 22 以上と pnpm 9.15.0 を用意する（`corepack enable && corepack prepare pnpm@9.15.0 --activate`）。
+バージョンは `package.json` の `packageManager` でピン留めしてある。
+
+> **注意**: `devenv.lock` はコミットされていない。生成には `devenv` の実行が必要なため、
+> 初回に devenv を動かした人がコミットすること。
+
+### コマンド
+
+| コマンド | 内容 |
+| --- | --- |
+| `pnpm typecheck` | `tsconfig.build.json` と `tsconfig.test.json` の両方を型検査 |
+| `pnpm lint` | oxlint（このリポジトリ唯一の lint / format 設定。prettier も biome も .editorconfig も置かない） |
+| `pnpm lint:fix` | oxlint の自動修正 |
+| `pnpm test` | vitest（`@effect/vitest` の `it.effect` が主 API） |
+| `pnpm test:watch` | vitest watch |
+| `pnpm test:coverage` | カバレッジ計測（閾値は未設定。[docs/testing.md](./docs/testing.md) §4） |
+| `pnpm check:deps` | 依存ホワイトリスト + 循環検査 + 推移閉包検査 + 壁時計直読み禁止 |
+| `pnpm verify` | `typecheck && lint && check:deps && test`。CI と同じ内容 |
+
+## 現状
+
+**実装前の叩き台（pre-implementation first cut）である。** ルールはまだ 1 本も移植されていない。
+現在あるのは、参照実装で実測された失敗を構造として固定した骨組みと、その回帰テストである。
+
+- **実行時依存は `effect` のみ。** `mc-sim` / `mc-worldgen` / `mc-audio` / `mc-kernel` は
+  まだ GitHub Packages に 1 つも publish されていないため、`package.json` に書けない。
+  ボトムアップの publish-then-pin（plan.md §6 Step 2）なので、この repo の番は kit の後である。
+- **`domain/frame-contract.ts` と `domain/position-key.ts` は kernel 型のローカル再掲であり、削除日が決まっている。**
+  mc-kernel が publish された時点で `import type { StageRegistration } from '@nerima-games/mc-kernel'` に置き換えて消す。
+  `FrameServices` を `never` にしてあるのが唯一の意図的な乖離で、理由は当該ファイルのコメントにある
+  （kernel の `ClockPort` を再掲すると、同じ文字列 ID を持つ**別の** `Context.Tag` が 2 つできる）。
+- **stage の `run` は 4 本とも中身が空か、キューの出し入れだけ。** ~40 の `interaction-*` ハンドラも Mob AI も未移植。
+  何を、どの順で移植するかは [docs/porting.md](./docs/porting.md)。
+- **プレビューはまだ 1 本もない。** 完成条件は 3 本（採掘場 / Mob アリーナ / 時間スライダー、plan.md §3.11）。
+  `apps/preview-*/` に置き、`mc-playground-kit` を devDependency として使う。
+- **ビルド / publish はまだない。** `tsconfig.base.json` は `noEmit: true`、`package.json#exports` は
+  TypeScript ソースを直接指している。`dist` は存在しない（[docs/versioning.md](./docs/versioning.md)）。
+- **カバレッジ閾値は未設定。** 計測とレポートは常に動かしており、99% ゲートは完成条件到達時に有効化する
+  （`vitest.config.ts` に有効化する行がコメントで置いてある）。
+- `pnpm verify` は green。tsc clean、oxlint 13 ファイル 0 warnings / 0 errors、
+  `check:deps` 13 ファイル走査、vitest 4 ファイル 54 テスト pass。
+
+## License
+
+MIT
