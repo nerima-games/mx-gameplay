@@ -44,24 +44,25 @@ prettier も biome も `.editorconfig` も置かない。整形の権威が 2 �
 
 ## 2. 現在のスイート
 
-**15 ファイル / 343 テスト、全 pass。**
+**16 ファイル / 373 テスト、全 pass。**（`pnpm test` の出力。以前この行は 15 / 343 と書いていて、
+両方とも古かった —— ファイルの数え落としが 1 と、この回の移植分が 27）
 
 | ファイル | 本数 | 内容 |
 | --- | ---: | --- |
 | `test/api-lock.test.ts` | 26 | API ロック生成器そのもの（`scripts/api-lock.ts`） |
-| `test/rules.test.ts` | 19 | DN-GP-1 / DN-GP-2 / DN-GP-3 のドメイン単体 |
+| `test/rules.test.ts` | 21 | DN-GP-1 / DN-GP-2 / DN-GP-3 のドメイン単体。流体の予算配分は参照実装の `fluid-tick-budget.test.ts` から 2 本を追加（溶岩は**残り**を取る／有効な lava tick は retain しない）。同ファイルの空入力ケースを**反証できないので消した**理由もここにコメントで残っている |
 | `test/mob.test.ts` | 75 | **クリーパー / エンダーマン / シュルカー / 掃除。** 導火線と殻の状態機械を**列挙**し（両方とも全遷移を通す）、爆風の減衰表・スポーン判定・ドロップ・テレポート帯・デスポーン距離を参照実装のオラクルから移植する（§2-2）。乱数がドメインに無いことをソース走査で固定する 1 本と、シナリオ再現を 2 本含む |
 | `test/stage-registration.test.ts` | 23 | フレーム契約（§2.3-1 / §2.3-3）と stage の振る舞い。時刻の `Ref` が無いこと、store を**登録時に**取ること |
 | `test/check-dependency-whitelist.test.ts` | 18 | 依存ポリシーそのもの。うち 3 本は**他リポジトリの席から**読んだ roster 検査（§2-3） |
-| `test/vertical-slice.test.ts` | 32 | 縦切り。**stage 登録経由で**「掘る → 砂が落ちる → アイテムが渡る」「掘る → 置く → 落ちる」「クリーパーが湧く → 爆ぜる → ドロップ」を回す（DN-GP-1 / DN-GP-11） |
+| `test/vertical-slice.test.ts` | 34 | 縦切り。**stage 登録経由で**「掘る → 砂が落ちる → アイテムが渡る」「掘る → 置く → 落ちる」「クリーパーが湧く → 爆ぜる → ドロップ」を回す（DN-GP-1 / DN-GP-11）。砂が**水**を、砂利が**溶岩**を貫いて沈む 2 本は参照実装の `falling-block.test.ts:132-152` から。溶岩側は `REPLACEABLE_IDS` の欠落した行の**もう半分**で、これまで何も固定していなかった |
 | `test/day-night.test.ts` | 8 | DN-GP-7。昼夜**ルール**が何も保持していないこと、mc-sim と夜の定義が一致すること |
 | `test/public-api.test.ts` | 8 | `index.ts` のバレルを名前ごと固定する。kernel 語彙と時刻 API の**不在**も固定する |
 | `test/chunk-store-mirror.test.ts` | 7 | `domain/chunk-store-port.ts` を mc-worldgen の界面に**両方向で**固定する。タグキーは文字どおり検査する。`validSpawnSurface` が**負リスト**であること（＝既定 true）もここ |
-| `test/preview-findings.test.ts` | 10 | **プレビューが見つけたもの**（§3-4）。うち 8 本は「現在の（誤った）挙動を固定する」テストで、直すと落ちる |
+| `test/preview-findings.test.ts` | 10 | **プレビューが見つけたもの**（§3-4）。うち 8 本は「現在の（誤った）挙動を固定する」テストで、直すと落ちる。**F7 はここではなく `test/place-block.test.ts` にある** —— プレビューではなく移植が見つけたものだから（§3-5） |
 | `test/entity-manager-mirror.test.ts` | 15 | `domain/entity-manager-port.ts` を mc-sim の界面に固定する |
 | `test/mob-spawn-search.test.ts` | 22 | `domain/entities/mob-spawn-search.ts` のリングと、その 256 回のストア呼び出し |
-| `test/place-block.test.ts` | 30 | **設置**（§3-1 の 1 行目）。参照実装が**実際に間違えた 3 点**を `REGRESSION:` として持つ —— 溶岩は replaceable、自分の体の中には置けない、支えが要るブロックは支えを見る。`blockOverlapsPlayer` の境界表（`block-service-utils.test.ts:84-98`）は**そのまま移植**してある |
-| `test/block-loot.test.ts` | 27 | **ブロックのドロップテーブル**（§3-1 の 3 行目）。kernel の表を通る決定論的な半分と、audit §6-9 がこちらに置いた乱数の半分（fortune / 葉のボーナス）。「素手で石を掘っても何も出ない」が**見た目では気付けないほうの半分**である |
+| `test/place-block.test.ts` | 51 | **設置**（§3-1 の 1 行目）。参照実装が**実際に間違えた 3 点**を `REGRESSION:` として持つ —— 溶岩は replaceable、自分の体の中には置けない、支えが要るブロックは支えを見る。`blockOverlapsPlayer` の境界表（`block-service-utils.test.ts:84-98`）は**そのまま移植**してあり、参照実装が同じ関数に持っている**第 2 の表**（`block-utils.test.ts:88-121`、y 軸の排他境界と対角）も移植した。`block-support.test.ts` の支持表のうち **fallback を共有する行**と、**共有しない行 = F7**（§3-5）も |
+| `test/block-loot.test.ts` | 29 | **ブロックのドロップテーブル**（§3-1 の 3 行目）。kernel の表を通る決定論的な半分と、audit §6-9 がこちらに置いた乱数の半分（fortune / 葉のボーナス）。「素手で石を掘っても何も出ない」が**見た目では気付けないほうの半分**である。ボーナス 4 率（りんご 1/200・棒 2%・苗木 5%・種 1/8）は参照実装から移植 —— **うち 3 つは今日どの表にも載っていない**が、待っているのは kernel の roster 行であって発明ではない |
 | `test/weather.test.ts` | 23 | **天候**（§3-1 の 7 行目）。参照実装の `packages/game/test/weather.test.ts` の 8 本を**値を変えずに**移植し、そのうえで参照実装には書けないテスト —— 2 時間ぶんのフレームを回して遷移グラフを歩き、**2 回走らせて同じ列になる**こと（§5 の fast-forward）を足す |
 
 `test/support/` はテストではなくテストの資材である（`vitest.config.ts` の `include` は
@@ -96,8 +97,31 @@ plan.md §8:
 
 > 参照実装を仕様書として使い、テスト資産を各Stepで**先に**移植する。**ゼロから仕様を再発明しない**
 
-移植可能なオラクルの実測本数（interaction 33 / Mob 61 / 流体 9 / 落下ブロック 2 / 昼夜 2）は
+移植可能なオラクルの**ファイル数**（interaction 33 / Mob 61 / 流体 9 / 落下ブロック 2 / 昼夜 2）は
 [porting.md](./porting.md) §4 にまとめてある。**実装より先に移植すること。**
+
+> **この行は以前この 5 つを「実測本数」と書いていた。本数ではなくファイル数である。**
+> 再実測すると `it` の本数は 1 桁違う —— 流体は 9 ファイル / **94 本**、昼夜は 2 ファイル / **29 本**、
+> 落下ブロックは 2 ファイル / **19 本**、interaction は 33 ファイル / **402 本**。
+> porting.md §4 の列見出しは最初から「ファイル数」であり、**間違っていたのはこの行だけ**である。
+> 数字を引用するときに単位を変えた典型で、porting.md §1 が LOC について立てた規則
+> （計数条件を書く／規則をまたいで引き算しない）がテスト本数には及んでいなかった。
+> 内訳と再実測手順は porting.md §4-1。
+
+### 2-2-1. 移植の状況（2026-07-27）
+
+| 領域 | 状態 |
+| --- | --- |
+| Mob | 9 ファイル分を `test/mob.test.ts` へ（75 本）。porting.md §4 の表に内訳 |
+| 天候 | 参照実装の `weather.test.ts` の **8 本を値を変えずに**（`test/weather.test.ts`） |
+| 設置 | `block-service-utils.test.ts:84-98` の境界表 + `block-utils.test.ts:88-121` の**第 2 の表** + `block-support.test.ts` の共有 fallback 行 |
+| ブロックのドロップ | fortune 表・葉のボーナス・ボーナス 4 率 |
+| 落下ブロック | 液体を貫く 2 本。残りは走査のテストなので**拒否**（porting.md §4-2） |
+| 流体 | 予算配分 6 本。`fluid-contact.test.ts` の 7 本は **§3-3 の所有権未決でブロック中** |
+| 昼夜 | **移植すべきものが無い。** 参照実装の 29 本は全件が見た目であり mc-render の担当（porting.md §3-4） |
+
+この回に何を移植し何を断ったかは [porting.md](./porting.md) §4-2 に主張単位で表がある。
+**移植したものは全件、production を壊して赤を確認してある。**
 
 ### 2-3. 他リポジトリの席から roster を読む
 
@@ -284,6 +308,48 @@ Mob 用に 3 チェックを足した（2026-07-27）。**finding は 1 件も�
 これは §3 冒頭の主張の実例である。**型と単体テストが見ない層で起きるバグ**がこのリポジトリの
 主要な失敗様式であり、F5 と F6 はどちらも「値としては表現できてしまう不正な引数」、
 F3 は「終状態が同じで途中が違う」——3 つとも assertion の端点をすり抜ける形をしている。
+
+### 3-5. 移植が見つけたもの —— F7
+
+§3-4 の 6 件はプレビューが見つけた。**F7 は移植が見つけた**ので番号だけ続けて、
+置き場は `test/place-block.test.ts` にしてある（`test/preview-findings.test.ts` は
+「`pnpm preview --stats` が測ったもの」であり、F7 はそこを通っていない）。
+
+| # | 症状 | 場所 | pin |
+| --- | --- | --- | --- |
+| F7 | `canBlockStaySupported` の**per-block アーム**（`block-support.ts:73-89` の `SUPPORT_RULES`）が未移植で、10 種すべてが fallback で答えられている。睡蓮は**水の上で拒否され、石の上で許可される** —— 少ないほうに倒れた保留ではなく、両方向に間違っている | `domain/interactions/place-block.ts:325-337` | ✅ 6 本（うち 4 本が現在の誤挙動の固定） |
+
+**参照実装の `canBlockStaySupported` は 2 本のアームを持つ。**
+
+```
+if (!isSupportSensitiveBlock(blockType)) return true
+const supportRule = SUPPORT_RULES.get(blockType)
+if (supportRule) return supportRule(blockBelow)        // per-block
+return !NON_SUPPORTING_BLOCK_TYPES.has(blockBelow)     // fallback
+```
+
+移植されたのは fallback だけである。`SUPPORT_RULES` は睡蓮に「水だけ」、サボテンに
+「砂かサボテン」、サトウキビに「土/草/砂/サトウキビ」、地表の植物 7 種に「土/草/耕地」を
+割り当てており、参照実装ではこの 10 種が fallback に**到達しない**。
+
+**`place-block.ts` のヘッダはこれを判断として記録していない。** 「Only the placement half is
+here」が名指しで欠くと言っているのは**維持 sweep** のほうであり、per-block の表ではない。
+別途 4 つの設置ルール（キノコの光量・サトウキビの隣接水・サボテンの 4 面・ドア）を
+先送りしているが、それは `block-service-place-plan.ts:208-214` という**別の機構**であって
+この行を覆わない。
+
+**今日は休眠している。** 10 種のどれも `PlaceableItemType`（= `ItemType & BlockType`）ではないので、
+`placeBlock` から誤った答えに到達できない —— **支持感度を持つ 14 種のうち、握れるのは
+`torch` 1 種だけである**（これも `test/place-block.test.ts` が固定している）。
+述語は今日すでに誤っており、ゲームはまだ誤っていない。
+`domain/interactions/block-loot.ts` が既に「kernel が苗木を itemise するまで持ち運べない」と
+書いており、**その roster 行が入る日に F7 は目を覚ます**。書く人はこのファイルを読んでいない。
+
+**直していない。** 直すには表が要り、表には所有権の問いが付いている ——
+kernel のレジストリに `supportRule` 列が無く（`place-block.ts` が mc-kernel の
+`PENDING_CAPABILITIES` という自己申告を引用している）、ここに書くのは
+このリポジトリが kernel のフラグを発明することになる。
+これは §6 の「持ち込んではいけないもの」と同じ形の判断であり、**移植側で決められない。**
 
 ## 4. カバレッジ
 

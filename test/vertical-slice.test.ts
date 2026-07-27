@@ -76,6 +76,7 @@ import {
   type BlockWriteOutcome,
   type ChunkStoreApi,
 } from '../domain/chunk-store-port'
+import { isReplaceable } from '../domain/block-vocabulary'
 import { NOON_FRACTION } from '../domain/day-night'
 import {
   CREEPER_KIND,
@@ -115,6 +116,7 @@ import {
   makeChunkStoreDouble,
   SAND,
   STONE,
+  WATER,
   world,
 } from './support/chunk-store-double'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
@@ -124,6 +126,14 @@ import { runFrame, runFrames } from './support/frame-runner'
 // The column under test. Chunk (0, 0), which is the only resident one unless a
 // scenario says otherwise.
 // ---------------------------------------------------------------------------
+
+/**
+ * Not exported by `./support/chunk-store-double`, and deliberately spelled here
+ * rather than added there: the double's exports are the blocks its own scenarios
+ * need, and lava appears in exactly the two liquid-displacement cases below.
+ * `test/place-block.test.ts` spells it the same way for the same reason.
+ */
+const LAVA = 11
 
 const support: BlockPosition = { x: 2, y: 64, z: 3 }
 const floor: BlockPosition = { x: 2, y: 63, z: 3 }
@@ -288,6 +298,67 @@ describe('the slice, through the stage registration', () => {
       // `blockTypeToIndex('SAND')` in 229 places across 51 files (plan.md §3.1).
       expect(yield* store.blockAt(support)).toBe(GRAVEL)
       expect(yield* Ref.get(state.minedItems)).toStrictEqual(ONE_COBBLESTONE)
+    }),
+  )
+
+  /*
+   * PORTED ORACLE. `<reference-impl>/packages/world/domain/falling-block.test.ts:132-141`
+   * and `:143-152` — the last two cases in the reference's own falling-block
+   * file, and the two its production code has a named comment for
+   * (`falling-block.ts:12-14`):
+   *
+   *     Vanilla: falling blocks sink through liquids, not just air. The move
+   *     writes the falling block INTO the liquid cell (displacing it); the
+   *     fluid sim re-flows around the vacated source cell.
+   *
+   * The reference expresses the rule as a three-element id set,
+   * `FALLABLE_INTO_BLOCK_IDXS = { AIR, WATER, LAVA }` (`:15-19`) — a fourth
+   * hand-written membership list of the kind plan.md §3.1 counted. Here the same
+   * two cases run through `isReplaceable`, so a fifth replaceable block is a row
+   * in kernel's table and no edit to `domain/entities/falling-block-move.ts`.
+   *
+   * THE LAVA HALF IS THE ONE WORTH HAVING. `domain/block-vocabulary.ts`'s own
+   * comment records that lava was missing from `REPLACEABLE_IDS` and states the
+   * consequence in two halves — 「falling sand and gravel did not displace lava,
+   * and placement treated a lava cell as occupied」. `test/place-block.test.ts`
+   * pins the second half; until now nothing pinned the first, so the mirror
+   * could lose the row again and only the preview would notice.
+   */
+  it.effect('sand sinks through water, because water is replaceable and not because it is water', () =>
+    Effect.gen(function* () {
+      const { store, state, stages } = yield* slice(
+        world([
+          [floor, STONE],
+          [support, WATER],
+          [sandAt, SAND],
+        ]),
+      )
+
+      yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, [positionKeyOf(support)]))
+      yield* runFrame(stages)
+
+      expect(yield* store.blockAt(support)).toBe(SAND)
+      expect(yield* store.blockAt(sandAt)).toBe(AIR_BLOCK_ID)
+    }),
+  )
+
+  it.effect('gravel sinks through lava — the half of the missing REPLACEABLE row nothing else pinned', () =>
+    Effect.gen(function* () {
+      const { store, state, stages } = yield* slice(
+        world([
+          [floor, STONE],
+          [support, LAVA],
+          [sandAt, GRAVEL],
+        ]),
+      )
+
+      expect(isReplaceable(LAVA)).toBe(true)
+
+      yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, [positionKeyOf(support)]))
+      yield* runFrame(stages)
+
+      expect(yield* store.blockAt(support)).toBe(GRAVEL)
+      expect(yield* store.blockAt(sandAt)).toBe(AIR_BLOCK_ID)
     }),
   )
 

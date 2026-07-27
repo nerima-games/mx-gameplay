@@ -52,6 +52,9 @@ import {
   BLOCK_LOOT_ROLLS,
   blockLoot,
   FORTUNE_MULTIPLIERS,
+  GRASS_SEED_DROP_CHANCE,
+  LEAF_APPLE_DROP_CHANCE,
+  LEAF_SAPLING_DROP_CHANCE,
   LEAF_STICK_DROP_CHANCE,
   NO_TOOL,
   rollFortuneExtraDrops,
@@ -70,6 +73,8 @@ const OAK_LEAVES = 10
 const LAVA = 11
 const GLASS = 13
 const GLOWSTONE = 15
+const TALL_GRASS = 25
+const FERN = 26
 
 /** Rolls that fail every chance gate: nothing bonus, no fortune remainder. */
 const NO_LUCK: ReadonlyArray<number> = [0.999, 0.999, 0.999, 0.999]
@@ -334,6 +339,69 @@ describe('blockLoot — bonus lines', () => {
   it.effect('a block with no bonus row yields only its base drop, however lucky', () =>
     Effect.sync(() => {
       expect(blockLoot(DIRT, NO_TOOL, ALL_LUCK)).toStrictEqual([{ item: 'dirt', count: 1 }])
+    }),
+  )
+
+  /*
+   * PORTED ORACLE.
+   * `<reference-impl>/packages/world/test/block-service-drop-overrides.test.ts:137-142`
+   * (「vanilla-style rates: apple 1/200 = 0.005, stick 2% = 0.02, sapling
+   * 5% = 0.05」) and `:161-165` (the grass-seed 1/8), read against
+   * `block-service.config.ts:221-223` and `:235`.
+   *
+   * THREE OF THESE FOUR RATES GOVERN NOTHING TODAY, and porting them anyway is
+   * the point rather than an oversight. `domain/interactions/block-loot.ts`
+   * declares all four constants and its `BONUS_DROPS` table uses one, because
+   * the other three name items this build's roster does not have — `apple` and
+   * `wheat_seeds` are not `ItemType`s and `sapling` is a `BlockType` in
+   * `UNITEMISED_BLOCK_TYPES`. The file states each gap by name and refuses to
+   * substitute a stand-in item.
+   *
+   * A CONSTANT WITH NO CONSUMER IS EXACTLY WHAT DRIFTS. It is the shape
+   * `domain/mob/shulker-shell.ts` refuses outright (`SHULKER_FORCED_CLOSED_TICKS`
+   * has no producer and no consumer in the reference either, so it was not
+   * brought over at all) — the difference is that these three DO have a producer
+   * in the reference, and they are waiting on a kernel roster row rather than on
+   * an invented one. Pinning the values now means the day `apple` becomes an
+   * `ItemType` the row is added to `BONUS_DROPS` and nothing else has to be
+   * rediscovered from the reference.
+   *
+   * The reference's rate tests are constant assertions and nothing more, so this
+   * is a port at full strength rather than a weakened one.
+   */
+  it.effect('carries all four of the reference’s bonus rates, including the three with no table row yet', () =>
+    Effect.sync(() => {
+      expect(LEAF_APPLE_DROP_CHANCE).toBe(0.005)
+      expect(LEAF_STICK_DROP_CHANCE).toBe(0.02)
+      expect(LEAF_SAPLING_DROP_CHANCE).toBe(0.05)
+      expect(GRASS_SEED_DROP_CHANCE).toBe(0.125)
+
+      // ...and the fractions they are written as, which is how the reference
+      // words its own assertion (`:139-141`: 1/200, 2%, 5%; `:163`: 1/8).
+      expect(LEAF_APPLE_DROP_CHANCE).toBe(1 / 200)
+      expect(LEAF_SAPLING_DROP_CHANCE).toBe(1 / 20)
+      expect(GRASS_SEED_DROP_CHANCE).toBe(1 / 8)
+    }),
+  )
+
+  // The gap made VISIBLE rather than merely written down: the three unused rates
+  // are unused because breaking the blocks they belong to yields nothing extra,
+  // however lucky the rolls. If a row is ever added to `BONUS_DROPS` without
+  // updating the note in the rule's header, this fails.
+  it.effect('the three unshipped lines really are unshipped — luckiest rolls shake nothing loose', () =>
+    Effect.sync(() => {
+      // Leaves have exactly ONE bonus line, not three: all-zero rolls beat every
+      // chance there is, and a stick is all that comes out.
+      expect(blockLoot(OAK_LEAVES, NO_TOOL, ALL_LUCK)).toStrictEqual([{ item: 'stick', count: 1 }])
+      // Tall grass and fern yield NOTHING AT ALL, and for two reasons stacked:
+      // the seed line has no `wheat_seeds` to name, and the plants are not
+      // itemised either, so even the base drop has nowhere to go. The reference
+      // is where the whole rule lives (`rollGrassSeedDrop`, `:245-246`); here
+      // both ends are roster gaps and neither is papered over.
+      expect(UNITEMISED_BLOCK_TYPES).toContain('tall_grass')
+      expect(UNITEMISED_BLOCK_TYPES).toContain('fern')
+      expect(blockLoot(TALL_GRASS, NO_TOOL, ALL_LUCK)).toStrictEqual([])
+      expect(blockLoot(FERN, NO_TOOL, ALL_LUCK)).toStrictEqual([])
     }),
   )
 })

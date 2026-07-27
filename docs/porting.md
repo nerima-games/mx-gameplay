@@ -174,6 +174,81 @@ plan.md §8 のリスク表も同じことを言っている。
 加えて `packages/world/test/fluid-test-utils.ts`（147 LOC）は流体テストの共通 fixture であり、
 9 本のテストより先に移植する必要がある。
 
+### 4-1. 上表の 5 つは**ファイル数**である。`it` の本数ではない（2026-07-27 再実測）
+
+**再実測した。5 つとも合っている** —— 列見出しが「ファイル数」である限りは。
+
+```console
+$ cd <reference-impl>
+$ find packages/app/application/frame/stages -name 'interaction-*.test.ts' | wc -l   # 30
+$ ls packages/app/test/interaction-*.test.ts | wc -l                                 #  3   → 33
+$ find packages/entity/test/mob -name '*.test.ts' | wc -l                            # 53
+$ find packages/entity/domain/mob -name '*.test.ts' | wc -l                          #  3   → 53 + 5 + 3 = 61
+$ ls packages/world/test/fluid-*.test.ts | wc -l                                     #  9
+$ ls packages/world/*/falling-block*.test.ts | wc -l                                 #  2
+$ ls packages/game/test/day-night-cycle*.test.ts | wc -l                             #  2
+```
+
+しかし [testing.md](./testing.md) §2-2 はこの 5 つを
+「移植可能なオラクルの**実測本数**」と書いていた。**本数ではない。**
+同じ 5 つを `it` / `it.effect` の宣言数で数えると桁が変わる:
+
+| 対象 | ファイル数（本表） | **`it` の本数**（実測） | 比 |
+| --- | ---: | ---: | ---: |
+| interaction | 33 | **402**（stages 380 + `app/test` 22） | 12.2× |
+| Mob | 61 | **420 以上**（`test/mob/` 354 + 同居 66、`entity/test/` の 5 本を除く） | 6.9× |
+| 流体 | 9 | **94** | 10.4× |
+| 落下ブロック | 2 | **19** | 9.5× |
+| 昼夜 | 2 | **29** | 9.7× |
+
+**「9 本のオラクルを移植する」と「9 ファイル・94 本を移植する」は別の仕事である。**
+本書 §1 が LOC について立てた規則（計数条件を書く、規則をまたいで引き算しない）が
+テスト本数には適用されていなかった。testing.md §2-2 を直した。
+
+**「`packages/entity/test/`（5）」だけは再現できない。** 61 = 53 + 5 + 3 は算術としては
+合うが、`packages/entity/test/` 直下には Mob 関連のファイルが 5 本より多くある ——
+`test/mob/` と重複しないものだけで `dragon-combat` / `dragon-death` / `dragon-healing` /
+`dragon-phase` / `enderman-anger` / `enderman-teleport` / `entity-manager-skeleton-shot` /
+`explosion` / `explosion-resolution` / `get-mob-definition` の **10 本**が名前で拾える。
+どの 5 本を指しているかは本文からは決まらない。**61 という合計は「53 + 3 + 選び方の分からない 5」であり、
+他の 4 行と違って再現手順が無い。**
+
+### 4-2. この回に移植したもの（2026-07-27）
+
+実装が先に着地した 3 領域 —— **設置 / ブロックのドロップ表 / 天候** —— と、
+既存実装があって未移植だった 2 領域（落下ブロックの液体、流体の予算配分）を、
+**主張（claim）単位で**移植した。**27 本追加、346 → 373。**
+
+移植規則: 参照実装の `file:line` を全件に付ける。
+**全件について production を壊して赤を確認した**（下表の「反証」列）。
+
+| # | 移植元 | 主張 | 置き場 | 本数 | 反証に使った変異 |
+| ---: | --- | --- | --- | ---: | --- |
+| 1 | `world/domain/falling-block.test.ts:132-141` | 砂は**水**を貫いて沈む | `test/vertical-slice.test.ts` | 1 | `REPLACEABLE_IDS` から水を外す |
+| 2 | 同 `:143-152` | 砂利は**溶岩**を貫いて沈む | 同 | 1 | 同から溶岩を外す |
+| 3 | `world/test/block-utils.test.ts:88-121` | `blockOverlapsPlayer` の**第 2 のオラクル表** | `test/place-block.test.ts` | 6 | 半幅を 0.8 / 5 / 6 に、y の `<` を `<=` に、z 軸の半幅を落とす |
+| 4 | `world/domain/block-support.test.ts:10-25` | 支持感度と、**fallback を共有する 6 行** | 同 | 9 | `NON_SUPPORTING_IDS` から水 / 感圧板を外す、石を足す、`SUPPORT_SENSITIVE_BLOCK_TYPES` からレール / 感圧板を外す、`ITEM_TYPES` に睡蓮を足す |
+| 5 | 同 `:30-32`（**不一致**） | F7 —— `SUPPORT_RULES` が未移植 | 同 | 6 | 睡蓮 / サボテン / 苗木を感度集合から外す、石 / 土 / 砂を `NON_SUPPORTING_IDS` に足す、松明を感度集合から外す |
+| 6 | `world/test/fluid-tick-budget.test.ts:55-63` | 溶岩は**残り**を取る（第 2 の半分ではない） | `test/rules.test.ts` | 1 | `budget - waterSliceLength` を `floor(budget/2)` に |
+| 7 | 同 `:35-40` | lava tick が**有効**なら retain は空 | 同 | 1 | retain を無条件に |
+| 8 | `world/test/block-service-drop-overrides.test.ts:137-142`, `:161-165` | ボーナス 4 率（りんご 1/200・棒 2%・苗木 5%・種 1/8） | `test/block-loot.test.ts` | 2 | 各定数を動かす、`BONUS_DROPS` に 2 行目を足す |
+
+#### 移植を**断った**もの、と理由
+
+| 移植元 | 本数 | 断った理由 |
+| --- | ---: | --- |
+| `packages/game/test/day-night-cycle.test.ts` | 26 | **全件が見た目である。** `computeDaylightFactor` / `resolveDayNightCycleState` / `computeTerrainSunIntensity` / 太陽弧 / 月の不透明度 / 空色 —— §3-4 が既に決めているとおり、時刻を光量と色に変換するのは `mc-render` である。ここが持つのは「今が夜か」まで（DN-GP-7） |
+| `packages/game/test/day-night-cycle-appearance.test.ts` | 3 | 同上。ファイル名が `appearance` と言っている |
+| `packages/world/test/fluid-contact.test.ts` | 7 | **本書 §3-3 が禁じている。** `resolveContact` は `FluidCell` を取り、その型は `packages/block/domain/fluid-model.ts` の所有権が未決である（「決めるまでこの 143 行を移植しないこと」）。ここで `FluidCell` を書くと 2 箇所に生える。**所有権が決まり次第、最初に移植すべき 7 本** —— 12 LOC に対して 7 本のオラクルが付いている密度は本書中で最も高い |
+| `packages/world/test/fluid-tick-budget.test.ts:14-19` | 1 | **反証できない。** 空入力に対して両方の出力が空になるのは、分類ループを丸ごと削除しても成り立つ。落ちない移植は本数を増やすだけなので消し、理由を `test/rules.test.ts` にコメントとして残した |
+| `falling-block.test.ts` の `collectFallingBlockMoves` 8 本 | 8 | **全チャンク走査そのもののテストである**（DN-GP-1）。チャンクバッファの長さ検査・チャンク座標からワールド座標への写像・チャンク跨ぎの走査順は `mc-worldgen` の名詞であり、こちらの API には走査が存在しない |
+| `falling-block-maintenance.test.ts` | 7 | 同上。**7 本中 5 本が sweep cursor の挙動**（dirty chunk の即時走査、走査窓の外を飛ばす、cursor を進める）。残り 2 本（支えられた砂利は動かない / 世界の底では動かない）は `test/vertical-slice.test.ts` に既にある |
+| `block-service-drop-overrides.test.ts` の GRAVEL → FLINT ほか | 多数 | ブロック名の名指し（§6 の 1 行目）と、**この build の roster に無い品目**（`apple` / `sapling` / `wheat_seeds` / `snowball` / `flint`）。`domain/interactions/block-loot.ts` が各欠落を名指しで記録しており、代替品目での置き換えはしない |
+| `block-utils.test.ts` の `canHarvestBlock` 7 本 | 7 | 段の梯子そのものは `test/block-loot.test.ts` にある。**個々の段**（石つるはし→鉄鉱石、鉄→ダイヤ鉱石、ダイヤ→黒曜石）は roster ギャップ —— kernel の表に `iron_ore` / `diamond_ore` / `obsidian` の行が無い |
+| `block-utils.test.ts` の `isEffectiveTool` 4 本 | 4 | 採掘**速度**であってドロップではない。破壊進捗の担当（`break-block`）に付くべきで、ドロップ表には付かない |
+| `packages/app/test/placement-geometry.test.ts` | — | `adjacentToHit` は「プレイヤーがどこを見ているか」であり、mc-render のレイキャストと mc-sim の姿勢である（`place-block.ts` の「WHAT THIS RULE DOES NOT DO」） |
+| `packages/game/test/weather-service.test.ts` の serialize / restore / setWeather | 3 | **状態である。** `Ref` の往復とセーブ復元であり、`domain/weather.ts` 冒頭のとおり天候の値はホストが持つ |
+
 ## 5. 推奨する着手順
 
 依存の少ないものから、かつ**プレビューで確認できる単位で**閉じる（plan.md §6 Step 2 の「テスト green + プレビュー操作可能」）。

@@ -170,6 +170,60 @@ describe('fluids: the frontier budget that bought 37–55×', () => {
       expect(carryOver(frontier, split)).toStrictEqual(frontier)
     }),
   )
+
+  /*
+   * PORTED ORACLES. `<reference-impl>/packages/world/test/fluid-tick-budget.test.ts`,
+   * the three of its seven cases the tests above do not already make.
+   *
+   * The four that were already here are the halves-and-ceilings ones. These
+   * three are the asymmetries, and the first is the one a reader would guess
+   * wrong: HALF IS A CAP ON WATER, NOT A RESERVATION FOR LAVA. Water is capped
+   * at `floor(budget / 2)`; lava then takes `budget - waterSliceLength`, which
+   * is MORE than half whenever water did not fill its own half. The test above
+   * named 「water is guaranteed half the budget」 states the water side of that
+   * and would pass against an implementation that gave lava a fixed half too.
+   */
+  it.effect('lava takes the REMAINDER, not a second half — one water cell leaves it three of four', () =>
+    Effect.sync(() => {
+      // The reference's own numbers, `fluid-tick-budget.test.ts:55-63`: 1 water
+      // and 4 lava against a budget of 4. halfBudget = 2, water fills 1 of it,
+      // and lava gets 4 - 1 = 3 rather than 2.
+      const split = splitBudget(frontierOf(1, 4), { lavaTickActive: true, budget: 4 })
+
+      expect(split.work.filter((item) => item.kind === 'water')).toHaveLength(1)
+      expect(split.work.filter((item) => item.kind === 'lava')).toHaveLength(3)
+    }),
+  )
+
+  it.effect('an ACTIVE lava tick retains nothing — the retained frontier is the inactive case only', () =>
+    Effect.sync(() => {
+      // `fluid-tick-budget.test.ts:35-40`. The mirror of the RETAINS test above,
+      // and the row that stops "retain lava always" from passing both: retaining
+      // an evaluated cell is how the preview's F2 doubling starts.
+      const split = splitBudget(frontierOf(2, 2), { lavaTickActive: true, budget: 64 })
+      expect(split.retainedLavaFrontier).toStrictEqual([])
+    }),
+  )
+
+  /*
+   * NOT PORTED, and measured rather than judged:
+   * `fluid-tick-budget.test.ts:14-19`, 「returns empty work and no frontier for
+   * empty input」.
+   *
+   * It was written here and then deleted, because it CANNOT FAIL. Both outputs
+   * are built by iterating the input, so an empty input gives two empty lists
+   * under every mutation `splitBudget` can carry — deleting the whole
+   * classification loop (`if (item.kind === 'water')` and both pushes) leaves it
+   * green. A test that no wrong implementation fails is not an oracle; it is a
+   * line that makes the count look larger.
+   *
+   * The property it is REACHING for — an idle world produces no work — is real
+   * and is already held on the falling-block side, where the queue is stateful
+   * and the claim has content: 「REGRESSION: an untouched world produces no work,
+   * because work only enters through `disturb`」 above, and the frame-level
+   * 「REGRESSION: an idle frame does not touch the store at all」 in
+   * `test/vertical-slice.test.ts`.
+   */
 })
 
 describe('death: "You died." must not be the only message the game can print', () => {
