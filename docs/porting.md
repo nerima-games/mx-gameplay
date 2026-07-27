@@ -228,7 +228,7 @@ $ ls packages/game/test/day-night-cycle*.test.ts | wc -l                        
 | 2 | 同 `:143-152` | 砂利は**溶岩**を貫いて沈む | 同 | 1 | 同から溶岩を外す |
 | 3 | `world/test/block-utils.test.ts:88-121` | `blockOverlapsPlayer` の**第 2 のオラクル表** | `test/place-block.test.ts` | 6 | 半幅を 0.8 / 5 / 6 に、y の `<` を `<=` に、z 軸の半幅を落とす |
 | 4 | `world/domain/block-support.test.ts:10-25` | 支持感度と、**fallback を共有する 6 行** | 同 | 9 | `NON_SUPPORTING_IDS` から水 / 感圧板を外す、石を足す、`SUPPORT_SENSITIVE_BLOCK_TYPES` からレール / 感圧板を外す、`ITEM_TYPES` に睡蓮を足す |
-| 5 | 同 `:30-32`（**不一致**） | F7 —— `SUPPORT_RULES` が未移植 | 同 | 6 | 睡蓮 / サボテン / 苗木を感度集合から外す、石 / 土 / 砂を `NON_SUPPORTING_IDS` に足す、松明を感度集合から外す |
+| 5 | 同 `:30-32` | ~~F7 —— `SUPPORT_RULES` が未移植~~ **→ 移植済み。**参照実装の 4 行と**一致**する（睡蓮→水、睡蓮≠石、サボテン≠土、苗木≠石） | 同 | 8 | `SUPPORT_RULE_OVERRIDES` の睡蓮行を fallback に戻す、kernel 側の同じ行を戻す、`satisfiesSupportRule` の `'oneOf'` アームに fallback を混ぜる、`ITEM_TYPES` に睡蓮を足したうえで support ブランチを `canSupportAttachments` に戻す |
 | 6 | `world/test/fluid-tick-budget.test.ts:55-63` | 溶岩は**残り**を取る（第 2 の半分ではない） | `test/rules.test.ts` | 1 | `budget - waterSliceLength` を `floor(budget/2)` に |
 | 7 | 同 `:35-40` | lava tick が**有効**なら retain は空 | 同 | 1 | retain を無条件に |
 | 8 | `world/test/block-service-drop-overrides.test.ts:137-142`, `:161-165` | ボーナス 4 率（りんご 1/200・棒 2%・苗木 5%・種 1/8） | `test/block-loot.test.ts` | 2 | 各定数を動かす、`BONUS_DROPS` に 2 行目を足す |

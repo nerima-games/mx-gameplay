@@ -76,7 +76,7 @@ import {
 import { FALLING_BLOCK_MOVES_PER_TICK } from '../../domain/falling-block'
 import { DeltaTimeSecs, type StageRegistration } from '../../domain/frame-contract'
 import { NO_TOOL, type BlockLootContext, type MinedItem } from '../../domain/interactions/block-loot'
-import { isSupportSensitive, placementVerdict } from '../../domain/interactions/place-block'
+import { isSupportSensitiveOfBlock, placementVerdict } from '../../domain/interactions/place-block'
 import type { PositionKey } from '../../domain/position-key'
 import { INITIAL_WEATHER, type WeatherState } from '../../domain/weather'
 import {
@@ -350,7 +350,7 @@ export const previewPlacement = (
     const target = yield* site.world.api.getBlock(position)
     const block = blockIdOf(heldItem)
     const supportBelow =
-      block !== undefined && isSupportSensitive(block)
+      block !== undefined && isSupportSensitiveOfBlock(block)
         ? yield* site.world.api.getBlock(belowOf(position))
         : undefined
 

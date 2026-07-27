@@ -50,7 +50,7 @@ import {
 } from '../domain/block-vocabulary'
 import {
   blockOverlapsPlayer,
-  isSupportSensitive,
+  isSupportSensitiveOfBlock,
   placeBlock,
   PLAYER_HALF_HEIGHT,
   PLAYER_HALF_WIDTH,
@@ -352,7 +352,7 @@ describe('placeBlock — the player’s body', () => {
 describe('placeBlock — support', () => {
   it.effect('a torch needs something under it', () =>
     Effect.gen(function* () {
-      expect(isSupportSensitive(TORCH)).toBe(true)
+      expect(isSupportSensitiveOfBlock(TORCH)).toBe(true)
       const store = yield* storeWith([])
 
       expect(yield* placeBlock(store.api, { position: target, heldItem: 'torch' })).toStrictEqual({
@@ -489,10 +489,10 @@ describe('the reference\u2019s support table, on the rows whose rule IS the fall
   // not have and `docs/testing.md` §3-2 counts under item use.
   it.effect('agrees about which blocks are support-sensitive at all', () =>
     Effect.sync(() => {
-      expect(isSupportSensitive(TORCH)).toBe(true)
-      expect(isSupportSensitive(PRESSURE_PLATE)).toBe(true)
-      expect(isSupportSensitive(RAIL)).toBe(true)
-      expect(isSupportSensitive(STONE)).toBe(false)
+      expect(isSupportSensitiveOfBlock(TORCH)).toBe(true)
+      expect(isSupportSensitiveOfBlock(PRESSURE_PLATE)).toBe(true)
+      expect(isSupportSensitiveOfBlock(RAIL)).toBe(true)
+      expect(isSupportSensitiveOfBlock(STONE)).toBe(false)
     }),
   )
 
@@ -553,7 +553,7 @@ describe('the reference\u2019s support table, on the rows whose rule IS the fall
       // take is written rather than absent. This half is unchanged and is what
       // the whole file's support coverage rests on.
       for (const type of SUPPORT_SENSITIVE_TYPES) {
-        expect(isSupportSensitive(blockIdOf(type) ?? -1)).toBe(true)
+        expect(isSupportSensitiveOfBlock(blockIdOf(type) ?? -1)).toBe(true)
       }
     }),
   )
@@ -577,7 +577,7 @@ describe('the reference\u2019s support table, on the rows whose rule IS the fall
   for (const [name, held, support, stays] of sharedRule) {
     it.effect(`${name} — ${stays ? 'stays' : 'falls'}`, () =>
       Effect.sync(() => {
-        expect(isSupportSensitive(held)).toBe(true)
+        expect(isSupportSensitiveOfBlock(held)).toBe(true)
         // THROUGH THE RULE, not through the two predicates it used to AND. These
         // rows used to assert `canSupportAttachments(support)` directly, which
         // was the whole of the answer while the fallback was the whole of the
@@ -597,7 +597,7 @@ describe('the reference\u2019s support table, on the rows whose rule IS the fall
     Effect.gen(function* () {
       const store = yield* storeWith([[below, WATER]])
 
-      expect(isSupportSensitive(TORCH)).toBe(true)
+      expect(isSupportSensitiveOfBlock(TORCH)).toBe(true)
       expect(canSupportAttachments(WATER)).toBe(false)
       expect(yield* placeBlock(store.api, { position: target, heldItem: 'torch' })).toStrictEqual({
         _tag: 'Unsupported',
@@ -697,7 +697,7 @@ describe('F7 — CLOSED: the per-block support rules are ported, and all four ro
    * `placementVerdict`'s support branch, for a type nobody can hold yet.
    *
    * NO LONGER A RECONSTRUCTION. This used to be
-   * `!isSupportSensitive(id) || canSupportAttachments(support)` — the two
+   * `!isSupportSensitiveOfBlock(id) || canSupportAttachments(support)` — the two
    * predicates the rule ANDed, reassembled here because the ten types cannot be
    * put into a `PlaceRequest`. That reassembly was the weakness this describe
    * declared, and it was a real one: it could not see a fix applied inside the
@@ -736,7 +736,7 @@ describe('F7 — CLOSED: the per-block support rules are ported, and all four ro
   it.effect('the support branch agrees with the rule on every pair it can be handed', () =>
     Effect.gen(function* () {
       const heldable = PLACEABLE_ITEM_TYPES.filter((item) =>
-        isSupportSensitive(blockIdOf(item) ?? -1),
+        isSupportSensitiveOfBlock(blockIdOf(item) ?? -1),
       )
       expect(heldable.length).toBeGreaterThan(0)
 

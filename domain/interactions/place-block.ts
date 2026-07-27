@@ -174,16 +174,23 @@ export const blockOverlapsPlayer = (block: BlockPosition, playerFeet: Position):
  * repository inventing a kernel flag. That objection is answered rather than
  * overridden. The mirror now transcribes a column that EXISTS.
  *
- * Kept as an export under its own name because it is on this repository's
- * published surface (`test/public-api.test.ts`) and `apps/preview-mining-site`
- * calls it to decide whether to read the cell below. The name is this
- * repository's; the answer is kernel's.
+ * Kept as an export because it is on this repository's published surface
+ * (`test/public-api.test.ts`) and `apps/preview-mining-site` calls it to decide
+ * whether to read the cell below. The answer is kernel's.
+ *
+ * RENAMED from `isSupportSensitive`, which is kernel's name for the predicate
+ * over a RULE. The mirror in `domain/block-vocabulary.ts` must carry kernel's
+ * names exactly -- a renamed mirror typechecks, passes every local test, and
+ * yields a name that does not exist on the day the import is repointed -- so
+ * when the two collided, the local one moved. That direction is not a
+ * preference: the mirror is a transcription and has no freedom, while this name
+ * is ours to choose.
  *
  * TOTAL over ids, including ones this build cannot name: an unrecognised byte is
  * NOT support-sensitive, which is the inert direction — it places, rather than
  * being refused for a reason nobody can name.
  */
-export const isSupportSensitive = (block: BlockId): boolean => isSupportSensitiveBlockId(block)
+export const isSupportSensitiveOfBlock = (block: BlockId): boolean => isSupportSensitiveBlockId(block)
 
 /**
  * What the player is trying to put down, and where.
@@ -291,7 +298,7 @@ export const placementVerdict = (
     return { _tag: 'InsidePlayer' }
   }
 
-  if (isSupportSensitive(block)) {
+  if (isSupportSensitiveOfBlock(block)) {
     // `undefined` is the caller saying it did not read — which it does not when
     // the block is not support-sensitive. Reaching here with `undefined` would
     // be this function being asked a question about a fact nobody measured, and
@@ -343,7 +350,7 @@ export const placeBlock = (
     // into an occupied cell costs one call and not two.
     const block = blockIdOf(request.heldItem)
     const supportBelow =
-      block !== undefined && isSupportSensitive(block)
+      block !== undefined && isSupportSensitiveOfBlock(block)
         ? yield* store.getBlock(below(request.position))
         : undefined
 

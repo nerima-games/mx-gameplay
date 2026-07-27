@@ -960,8 +960,25 @@ export const needsOneOf = (...blocks: ReadonlyArray<BlockType>): SupportRule => 
   blocks,
 })
 
-/** kernel's `isSupportSensitive`, over a rule rather than over an id. */
-export const isSupportSensitiveRule = (rule: SupportRule): boolean => rule.kind !== 'none'
+/**
+ * kernel's `isSupportSensitive`, over a rule rather than over an id.
+ *
+ * Named EXACTLY as kernel names it, and that costs something: this repository
+ * also has an `isSupportSensitive` over a `BlockId`, on its published surface,
+ * so the two collide and the local one had to move (it is
+ * `isSupportSensitiveOfBlock` in `domain/interactions/place-block.ts`).
+ *
+ * The collision was resolved the other way first -- this one was called
+ * `isSupportSensitive` -- and `pnpm check:mirrors` rejected it. It was right
+ * to. A mirror that renames a symbol still typechecks, still passes every local
+ * test, and produces a name that DOES NOT EXIST on the day the import is
+ * repointed. Renaming is the quietest way to break the promise this file's
+ * header makes, because nothing local can tell that a name is not the source's.
+ *
+ * So the rule is: when a mirrored name collides with a local one, the LOCAL name
+ * moves. The mirror has no freedom; it is a transcription.
+ */
+export const isSupportSensitive = (rule: SupportRule): boolean => rule.kind !== 'none'
 
 /**
  * kernel's `satisfiesSupportRule` — `canBlockStaySupported` (`block-support.ts:
@@ -1062,7 +1079,7 @@ export const supportRuleOfBlockId = (block: BlockId): SupportRule =>
  * block is not refused for a reason nobody can state.
  */
 export const isSupportSensitiveBlockId = (block: BlockId): boolean =>
-  isSupportSensitiveRule(supportRuleOfBlockId(block))
+  isSupportSensitive(supportRuleOfBlockId(block))
 
 /**
  * `canBlockStaySupported` (`block-support.ts:96-101`) on two chunk buffer bytes.

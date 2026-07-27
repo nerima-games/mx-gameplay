@@ -57,11 +57,12 @@ prettier も biome も `.editorconfig` も置かない。整形の権威が 2 �
 | `test/vertical-slice.test.ts` | 34 | 縦切り。**stage 登録経由で**「掘る → 砂が落ちる → アイテムが渡る」「掘る → 置く → 落ちる」「クリーパーが湧く → 爆ぜる → ドロップ」を回す（DN-GP-1 / DN-GP-11）。砂が**水**を、砂利が**溶岩**を貫いて沈む 2 本は参照実装の `falling-block.test.ts:132-152` から。溶岩側は `REPLACEABLE_IDS` の欠落した行の**もう半分**で、これまで何も固定していなかった |
 | `test/day-night.test.ts` | 8 | DN-GP-7。昼夜**ルール**が何も保持していないこと、mc-sim と夜の定義が一致すること |
 | `test/public-api.test.ts` | 8 | `index.ts` のバレルを名前ごと固定する。kernel 語彙と時刻 API の**不在**も固定する |
+| `test/block-vocabulary-mirror.test.ts` | 11 | kernel 語彙のミラー。4 つの能力述語に加え、**`supportRule` の 19 行 override 表を全数**固定する（部分ミラーは別の型なので）。ミラーは転記を固定するだけで、源との比較は mc-dev-meta の `pnpm check:mirrors` である |
 | `test/chunk-store-mirror.test.ts` | 7 | `domain/chunk-store-port.ts` を mc-worldgen の界面に**両方向で**固定する。タグキーは文字どおり検査する。`validSpawnSurface` が**負リスト**であること（＝既定 true）もここ |
-| `test/preview-findings.test.ts` | 10 | **プレビューが見つけたもの**（§3-4）。うち 8 本は「現在の（誤った）挙動を固定する」テストで、直すと落ちる。**F7 はここではなく `test/place-block.test.ts` にある** —— プレビューではなく移植が見つけたものだから（§3-5） |
+| `test/preview-findings.test.ts` | 10 | **プレビューが見つけたもの**（§3-4）。うち 8 本は「現在の（誤った）挙動を固定する」テストで、直すと落ちる。**F7 はここではなく `test/place-block.test.ts` にある** —— プレビューではなく移植が見つけたものだから（§3-5）。F7 は**解決済み**で、8 本のうちの 1 つの前例になった：直したときテストは消さず、同じ参照行との**一致**へ書き換える（§3-5-1） |
 | `test/entity-manager-mirror.test.ts` | 15 | `domain/entity-manager-port.ts` を mc-sim の界面に固定する |
 | `test/mob-spawn-search.test.ts` | 22 | `domain/entities/mob-spawn-search.ts` のリングと、その 256 回のストア呼び出し |
-| `test/place-block.test.ts` | 51 | **設置**（§3-1 の 1 行目）。参照実装が**実際に間違えた 3 点**を `REGRESSION:` として持つ —— 溶岩は replaceable、自分の体の中には置けない、支えが要るブロックは支えを見る。`blockOverlapsPlayer` の境界表（`block-service-utils.test.ts:84-98`）は**そのまま移植**してあり、参照実装が同じ関数に持っている**第 2 の表**（`block-utils.test.ts:88-121`、y 軸の排他境界と対角）も移植した。`block-support.test.ts` の支持表のうち **fallback を共有する行**と、**共有しない行 = F7**（§3-5）も |
+| `test/place-block.test.ts` | 53 | **設置**（§3-1 の 1 行目）。参照実装が**実際に間違えた 3 点**を `REGRESSION:` として持つ —— 溶岩は replaceable、自分の体の中には置けない、支えが要るブロックは支えを見る。`blockOverlapsPlayer` の境界表（`block-service-utils.test.ts:84-98`）は**そのまま移植**してあり、参照実装が同じ関数に持っている**第 2 の表**（`block-utils.test.ts:88-121`、y 軸の排他境界と対角）も移植した。`block-support.test.ts` の支持表は**全行**移植済み —— fallback アームの行と、`SUPPORT_RULES` の行（旧 F7、§3-5-1 で解決）の両方 |
 | `test/block-loot.test.ts` | 29 | **ブロックのドロップテーブル**（§3-1 の 3 行目）。kernel の表を通る決定論的な半分と、audit §6-9 がこちらに置いた乱数の半分（fortune / 葉のボーナス）。「素手で石を掘っても何も出ない」が**見た目では気付けないほうの半分**である。ボーナス 4 率（りんご 1/200・棒 2%・苗木 5%・種 1/8）は参照実装から移植 —— **うち 3 つは今日どの表にも載っていない**が、待っているのは kernel の roster 行であって発明ではない |
 | `test/weather.test.ts` | 23 | **天候**（§3-1 の 7 行目）。参照実装の `packages/game/test/weather.test.ts` の 8 本を**値を変えずに**移植し、そのうえで参照実装には書けないテスト —— 2 時間ぶんのフレームを回して遷移グラフを歩き、**2 回走らせて同じ列になる**こと（§5 の fast-forward）を足す |
 
@@ -317,7 +318,7 @@ F3 は「終状態が同じで途中が違う」——3 つとも assertion の�
 
 | # | 症状 | 場所 | pin |
 | --- | --- | --- | --- |
-| F7 | `canBlockStaySupported` の**per-block アーム**（`block-support.ts:73-89` の `SUPPORT_RULES`）が未移植で、10 種すべてが fallback で答えられている。睡蓮は**水の上で拒否され、石の上で許可される** —— 少ないほうに倒れた保留ではなく、両方向に間違っている | `domain/interactions/place-block.ts:325-337` | ✅ 6 本（うち 4 本が現在の誤挙動の固定） |
+| F7 | ~~`canBlockStaySupported` の**per-block アーム**（`block-support.ts:73-89` の `SUPPORT_RULES`）が未移植で、10 種すべてが fallback で答えられている。睡蓮は**水の上で拒否され、石の上で許可される**~~ **→ 解決済み。**kernel が `supportRule` 列を持ったので、`domain/block-vocabulary.ts` がそれをミラーし `placementVerdict` が `canBlockStaySupported` を呼ぶ | `domain/interactions/place-block.ts`（support ブランチ） | ✅ 8 本（**うち 4 本は誤挙動の固定から一致の主張へ書き換えた**） |
 
 **参照実装の `canBlockStaySupported` は 2 本のアームを持つ。**
 
@@ -338,18 +339,39 @@ here」が名指しで欠くと言っているのは**維持 sweep** のほう�
 先送りしているが、それは `block-service-place-plan.ts:208-214` という**別の機構**であって
 この行を覆わない。
 
-**今日は休眠している。** 10 種のどれも `PlaceableItemType`（= `ItemType & BlockType`）ではないので、
-`placeBlock` から誤った答えに到達できない —— **支持感度を持つ 14 種のうち、握れるのは
-`torch` 1 種だけである**（これも `test/place-block.test.ts` が固定している）。
-述語は今日すでに誤っており、ゲームはまだ誤っていない。
-`domain/interactions/block-loot.ts` が既に「kernel が苗木を itemise するまで持ち運べない」と
-書いており、**その roster 行が入る日に F7 は目を覚ます**。書く人はこのファイルを読んでいない。
+**当時は休眠していた。** 10 種のどれも `PlaceableItemType`（= `ItemType & BlockType`）では
+ないので、`placeBlock` から誤った答えに到達できなかった。述語は誤っており、ゲームはまだ
+誤っていない、という状態である。
 
-**直していない。** 直すには表が要り、表には所有権の問いが付いている ——
-kernel のレジストリに `supportRule` 列が無く（`place-block.ts` が mc-kernel の
-`PENDING_CAPABILITIES` という自己申告を引用している）、ここに書くのは
-このリポジトリが kernel のフラグを発明することになる。
-これは §6 の「持ち込んではいけないもの」と同じ形の判断であり、**移植側で決められない。**
+**直さなかった理由は難易度ではなく所有権だった。** 直すには表が要り、kernel のレジストリに
+`supportRule` 列が無く（`place-block.ts` が mc-kernel の `PENDING_CAPABILITIES` という
+自己申告を引用していた）、ここに書くのは**このリポジトリが kernel のフラグを発明する**ことに
+なる。§6 の「持ち込んではいけないもの」と同じ形の判断であり、移植側では決められなかった。
+
+### 3-5-1. F7 は解決した（所有権の問いに kernel が答えた）
+
+**mc-kernel が `supportRule` を実装した**（`mc-kernel/domain/block-support.ts`、監査 §4.6.1）。
+異議は覆されたのではなく**答えられた** —— ここが転記しているのは、存在する列である。
+
+| 変えたところ | 内容 |
+| --- | --- |
+| `domain/block-vocabulary.ts` | `SupportRule` 型・3 つのアーム・`satisfiesSupportRule`・**19 行の override 表を全数**転記。部分ミラーは別の型になるので全数でなければならない |
+| `domain/interactions/place-block.ts` | 私有の `SUPPORT_SENSITIVE_BLOCK_TYPES`（14 行）を**削除**。support ブランチは `canSupportAttachments` ではなく `canBlockStaySupported` を 1 回呼ぶ |
+| `test/place-block.test.ts` | F7 の 4 本を「誤挙動の固定」から「参照実装の当該行との一致」へ**反転**。各テストが「以前は何を主張していたか」を書いている |
+
+**F7 のテストは自力では赤くならなかった。** これは記録に値する —— 4 本は
+`wouldStay` という**再構成**（2 つの述語を AND したもの）を評価しており、規則そのものを
+呼んでいなかった。F7 自身の文がそれを予告していた:「A fix that added a per-block table
+INSIDE `placementVerdict` and left both predicates alone would not turn these pins red on its
+own.」正しかった。再構成は削除し、`canBlockStaySupported` の直接呼び出しにしてある。
+
+**残る隙間も測って書いてある。** 4 本は今や「関数」を固定するが、
+`placementVerdict` が**それを呼んでいること**は固定できない。support ブランチを
+`canSupportAttachments` に戻しても 53 本すべてが緑のままである（**実際に戻して確認した**）。
+理由は同じ壁の一段先で、2 つの綴りが食い違うのは `'oneOf'` 規則を持つブロックだけであり、
+**そのブロックは 1 つも置けない**（置ける支持感度ブロック 4 種はすべて `'anySupporting'`）。
+`the support branch agrees with the rule on every pair it can be handed` は
+`PLACEABLE_ITEM_TYPES` で駆動しているので、10 種のどれかが itemise された日に自動で有効になる。
 
 ## 4. カバレッジ
 

@@ -215,7 +215,7 @@ describe('public API surface', () => {
         'placeBlock',
         'placementVerdict',
         'blockOverlapsPlayer',
-        'isSupportSensitive',
+        'isSupportSensitiveOfBlock',
         'PLAYER_HALF_WIDTH',
         'PLAYER_HALF_HEIGHT',
         // the block loot table — the random half kernel refuses to hold

@@ -1175,10 +1175,10 @@ const isNight: (timeOfDay: number) => boolean;
 const isPrecipitating: (weather: Weather) => boolean;
 ```
 
-### isSupportSensitive  `const`
+### isSupportSensitiveOfBlock  `const`
 
 ```ts
-const isSupportSensitive: (block: BlockId) => boolean;
+const isSupportSensitiveOfBlock: (block: BlockId) => boolean;
 ```
 
 ### isThunderstorm  `const`
