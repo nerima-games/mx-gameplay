@@ -301,10 +301,42 @@ const REPLACEABLE_IDS: ReadonlySet<BlockId> = new Set<BlockId>([
 const NON_SPAWN_SURFACE_IDS: ReadonlySet<BlockId> = new Set<BlockId>([
   0, // air — nothing to stand on
   6, // water
+  // oak_log was MISSING here, and so was kernel's own row: both resolved to the
+  // default `true` while the reference implementation lists WOOD in
+  // `NON_SPAWN_SURFACE_BLOCK_IDS` ("log — semi-solid / tree") and again in
+  // `VILLAGE_NON_GROUND_IDS`. Mobs and villages were treating the top of a tree
+  // trunk as ground. Unlike the lava case below, `pnpm check:mirrors` could NOT
+  // have caught this: `MIRROR_SPECS` probed `fallsWhenUnsupported` and
+  // `replaceable` and nothing else, so this file and kernel agreed — on the
+  // wrong answer. A `validSpawnSurface` probe has been added alongside the fix.
+  9, // oak_log
   10, // oak_leaves — solid for collision, and still not ground
   11, // lava
   13, // glass — solid for collision, and still not ground
   14, // torch
+  // Kernel's roster completed the reference's `PASSABLE_BLOCK_IDS` and the
+  // non-`full` collision shapes. These are the additions the reference's
+  // `NON_SPAWN_SURFACE_BLOCK_IDS` names.
+  18, // ladder
+  19, // cobweb
+  20, // sapling
+  21, // dandelion
+  22, // poppy
+  23, // brown_mushroom
+  24, // red_mushroom
+  25, // tall_grass
+  26, // fern
+  27, // sugar_cane
+  28, // lily_pad
+  33, // cactus — collides, and is still not ground
+  34, // pressure_plate
+  // DELIBERATELY ABSENT, and this is transcription rather than oversight:
+  // `rail` (31), `powered_rail` (32), `kelp` (29), `seagrass` (30) and
+  // `stone_slab` (35) are passable-or-partial blocks that the reference's
+  // negative list does NOT contain, so kernel resolves them to `true` and so
+  // must this set. Adding them "for consistency" would be the same class of
+  // error as omitting oak_log, in the opposite direction — and the probe now
+  // fails either way.
 ])
 
 export const fallsWhenUnsupported = (block: BlockId): boolean => FALLS_WHEN_UNSUPPORTED_IDS.has(block)

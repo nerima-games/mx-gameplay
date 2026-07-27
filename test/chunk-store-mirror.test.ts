@@ -153,6 +153,34 @@ describe('the ChunkStore mirror', () => {
       expect(validSpawnSurface(10)).toBe(false) // oak_leaves
       expect(validSpawnSurface(13)).toBe(false) // glass
 
+      // oak_log. This one was WRONG in both this file and kernel until the
+      // reference was re-read: `NON_SPAWN_SURFACE_BLOCK_IDS` lists WOOD, and
+      // `VILLAGE_NON_GROUND_IDS` lists it again. Nothing caught it because the
+      // mirror check probed only `fallsWhenUnsupported` and `replaceable` — two
+      // agreeing transcriptions of a third capability are not evidence.
+      expect(validSpawnSurface(9)).toBe(false)
+
+      // The blocks kernel's roster added that the reference's negative list
+      // names. Spot-checked across the groups rather than exhaustively: the
+      // exhaustive comparison is `pnpm check:mirrors`, which now probes this
+      // capability over every representable id.
+      expect(validSpawnSurface(18)).toBe(false) // ladder
+      expect(validSpawnSurface(19)).toBe(false) // cobweb
+      expect(validSpawnSurface(21)).toBe(false) // dandelion
+      expect(validSpawnSurface(28)).toBe(false) // lily_pad
+      expect(validSpawnSurface(33)).toBe(false) // cactus — collides, still not ground
+      expect(validSpawnSurface(34)).toBe(false) // pressure_plate
+
+      // ...and the ones the reference's list OMITS, which must stay `true`.
+      // These are the assertions that fail if someone "completes" the negative
+      // set by intuition: a rail is passable and is still, per the reference, a
+      // legal place for a mob to stand.
+      expect(validSpawnSurface(29)).toBe(true) // kelp
+      expect(validSpawnSurface(30)).toBe(true) // seagrass
+      expect(validSpawnSurface(31)).toBe(true) // rail
+      expect(validSpawnSurface(32)).toBe(true) // powered_rail
+      expect(validSpawnSurface(35)).toBe(true) // stone_slab
+
       // Total, and defaulting to "ordinary opaque cube" exactly as kernel's
       // `capabilityOfBlockId` does for an id it cannot name.
       expect(validSpawnSurface(200)).toBe(true)
