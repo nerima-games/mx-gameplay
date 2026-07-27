@@ -226,13 +226,22 @@ const timelineRow = (row: FrameRow): string =>
     padStart(String(row.reads), 6),
     padStart(String(row.writes), 7),
     padStart(String(row.floating), 6),
-    // Items and not block ids: what `domain/interactions/block-loot.ts`
-    // produced, plus what placement took off the stack with a leading `-`. The
-    // two are on one column because they are one story — a frame that mined a
-    // sand and placed it back reads `sand -sand`, which is the round trip.
+    // Items and not block ids: what the interactions stage handed to mc-sim's
+    // `InventoryService.add`, plus what placement took off the stack with a
+    // leading `-`. The two are on one column because they are one story — a
+    // frame that mined a sand and placed it back reads `sand -sand`, which is
+    // the round trip.
+    //
+    // A LEADING `!` IS WHAT THE INVENTORY REFUSED. It is on the same column
+    // deliberately: a full inventory shows `cobblestone !cobblestone`, so the
+    // deposit and its rejection are read together rather than the rejection
+    // needing a column of its own that is blank in every ordinary frame.
     '  ' +
       [
         ...row.mined.map((item) => (item.count === 1 ? item.item : `${item.item}x${String(item.count)}`)),
+        ...row.leftover.map((item) =>
+          item.count === 1 ? `!${item.item}` : `!${item.item}x${String(item.count)}`,
+        ),
         ...row.spent.map((item) => `-${item}`),
       ].join(' '),
   ].join('')

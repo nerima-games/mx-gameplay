@@ -125,6 +125,7 @@ import {
   useFlintAndSteel,
   type IgnitionItemType,
 } from '../domain/interactions/use-flint-and-steel'
+import { InventoryService, type InventoryServiceApi } from '../domain/inventory-port'
 import type { MobDrop } from '../domain/mob/mob-drop'
 import type { PositionKey } from '../domain/position-key'
 import {
@@ -188,31 +189,69 @@ const NO_ATTEMPTS: ReadonlyArray<never> = []
  *     from mc-sim's `InventoryService` by whoever fills the inbox, and a break
  *     request that had to carry an item field it never uses would invite one.
  *
- *   - `minedItems` is an OUTBOX. What a broken block yields belongs to mc-sim's
- *     `InventoryService`, which is plan.md §2.3-1's worked example and is NOT
- *     this repository's to hold. Until mc-sim is published there is no
- *     `InventoryService.add` to call, and inventing a local port would make
- *     this repository a second owner of the inventory — the exact mistake the
- *     day-length paragraph above records. A list the host drains is not an
- *     owner: it holds items for the width of one frame and answers no
- *     questions about them.
+ *   - `leftoverItems` IS WHAT IS LEFT OF AN OUTBOX CALLED `minedItems`, and the
+ *     replacement is the point of this paragraph rather than a rename.
  *
- *     ITS TYPE CHANGED, AND WITH IT THE ARGUMENT FOR A SECOND OUTBOX. It used to
- *     be `ReadonlyArray<BlockId>` — raw bytes out of a chunk buffer — and the
- *     paragraph on `mobDrops` below justified the two lists by saying they
- *     「carry different things: a broken block yields a `BlockId` and a dead mob
- *     yields an `ItemType` and a count」. `domain/interactions/block-loot.ts`
- *     ends that: a broken block now yields an `ItemType` and a count too, so the
- *     two outboxes carry the SAME SHAPE and the sentence is retired. What keeps
- *     them apart is stated with `mobDrops`.
+ *     `minedItems` held every item a broken block yielded, and its comment said
+ *     the items belonged to mc-sim's `InventoryService` — plan.md §2.3-1's
+ *     worked example — but that 「until mc-sim is published there is no
+ *     `InventoryService.add` to call」. TWO REASONS WERE GIVEN FOR THE OUTBOX
+ *     AND BOTH ARE DEAD. The type mismatch that made the seam unwirable is gone
+ *     (`domain/inventory-port.ts`'s header has the whole story: kernel published
+ *     `ItemType`, mc-sim deleted `ItemId`, and
+ *     `domain/interactions/block-loot.ts` speaks kernel's vocabulary on this
+ *     side), and 「inventing a local port would make this repository a second
+ *     owner of the inventory」 was never true of a MIRROR — a mirror is the
+ *     opposite of a second owner, which is why `domain/entity-manager-port.ts`
+ *     and `domain/chunk-store-port.ts` exist.
+ *
+ *     What was actually wrong with the outbox is that it was a list nothing had
+ *     been written to drain. 「A list the host drains is not an owner」 is true
+ *     and it is not the question: a list the host must REMEMBER to drain is an
+ *     inventory that silently empties, and no test in this repository or any
+ *     other could have said so. The stage calls `InventoryService.add` now, per
+ *     mined stack, and reads the number back.
+ *
+ *     WHAT REMAINS IN THE REF IS THE LEFTOVER — the count `add` says did not
+ *     fit — and it is here rather than discarded because mc-sim's comment names
+ *     this repository as the caller and says what the caller is for: 「The
+ *     caller in mx-gameplay turns it into a dropped-item entity」. This
+ *     repository cannot do that yet, and the blocker is named rather than
+ *     implied: a dropped item is an entity whose per-entity state is WHICH ITEM
+ *     AND HOW MANY, so it needs an arm on `MobBehaviour` in
+ *     `domain/entities/mob-frame.ts`, a matching arm in `repairMobBehaviour`
+ *     that mc-sim's load path delegates to, and a pickup rule and a despawn
+ *     timer that nothing in this repository has written. Spawning a
+ *     `dropped_item` on the roster today would put an entity in the world that
+ *     nothing renders, nothing picks up and nothing removes.
+ *
+ *     So the leftover waits in a Ref, which is what the outbox was always good
+ *     at, and it is now a list whose entries a host can SEE it must handle
+ *     rather than a list it can forget to drain without symptom. An item the
+ *     player mined into a full inventory is on it; nothing else ever is, so an
+ *     empty list is the ordinary case and a non-empty one is a real event.
  *
  *   - `consumedItems` is the OUTBOX POINTING THE OTHER WAY: one entry per block
- *     successfully placed, which is one item to take off the stack. It is not
- *     folded into `minedItems` as a negative count, and the reason is that
- *     mc-sim's `InventoryService` has TWO verbs — `add(item, count)` and
- *     `remove(item, count)` (`mc-sim/application/inventory-service.ts:49,51`) —
- *     so a signed list would make the host decide which verb each entry means,
- *     from a convention this file invented. Two lists name the two calls.
+ *     successfully placed, which is one item to take off the stack.
+ *
+ *     IT IS STILL AN OUTBOX ALTHOUGH THE SERVICE IS NOW IN HAND, and that is a
+ *     deliberate stop rather than an oversight. `InventoryService.remove`
+ *     answers with the number ACTUALLY TAKEN, so calling it here would mean
+ *     asking to be charged for a block that is ALREADY IN THE WORLD:
+ *     `placeBlock` has written the cell by the time this list is appended to,
+ *     and a `remove` that came back `0` would leave the player a block they
+ *     never had. Doing it correctly means consulting the inventory BEFORE the
+ *     write — a placement rule that reads what the player is carrying — and
+ *     that is a change to `domain/interactions/place-block.ts`'s contract, not
+ *     a call added here. The mining direction has no such asymmetry, which is
+ *     why it went first: `add` cannot fail, it can only report a remainder.
+ *
+ *     It was never folded into the mining list as a negative count either, and
+ *     the reason survives: mc-sim's `InventoryService` has TWO verbs —
+ *     `add(item, count)` and `remove(item, count)`
+ *     (`mc-sim/application/inventory-service.ts:49,51`) — so a signed list would
+ *     make the host decide which verb each entry means, from a convention this
+ *     file invented. Two lists name the two calls.
  *
  *     IT CARRIES NO COUNT, because one placement consumes exactly one item and
  *     there is no rule in this repository that consumes two. A count field would
@@ -237,8 +276,9 @@ const NO_ATTEMPTS: ReadonlyArray<never> = []
  *     DAMAGES a flint and steel by one point and consumes a fire charge whole.
  *     Those are two different `InventoryService` verbs — `damageSlot` against
  *     `remove` (`use-flint-and-steel.ts`) — and a host draining one merged list
- *     could not tell which to call. Same argument, and the same shape, as
- *     `minedItems` against `mobDrops`.
+ *     could not tell which to call. It stays an outbox for `consumedItems`'
+ *     reason and one of its own: mc-sim's published api has no `damageSlot` at
+ *     all, so half of this list has no method to become a call to.
  *
  * The inboxes disappear when their service exists: they become mc-render's input
  * events. The outboxes become calls inside the interactions stage. None of them
@@ -299,22 +339,28 @@ const NO_ATTEMPTS: ReadonlyArray<never> = []
  *     first minute, rather than a world that silently never spawns anything and
  *     looks like a broken search.
  *
- *   - `mobDrops` is an OUTBOX and `minedItems`'s twin. IT USED TO BE SEPARATE
- *     BECAUSE THE TWO CARRIED DIFFERENT SHAPES, and they no longer do (see
- *     `minedItems`). They stay separate for a reason that survives the change:
- *     PROVENANCE. A host draining one list cannot tell which entries came from a
- *     swing and which from a kill, and the two do not arrive at the same place —
- *     a mined item goes into the inventory directly, a mob's loot in vanilla
- *     falls on the ground first and is picked up. Merging them now would make
- *     that distinction unrecoverable, and the merge is available any day it
- *     turns out not to matter. Both become `InventoryService.add`
- *     calls together. mc-sim IS now mirrored — `domain/entity-manager-port.ts` —
- *     so the obvious question is why the inventory is not mirrored beside it, and
- *     the answer is the whole-api rule: `InventoryServiceApi` names `Inventory`,
- *     `RecipeTable`, `CraftGrid`, `RecipeMatch` and `CraftResult`, so mirroring it
- *     honestly means restating mc-sim's crafting vocabulary in a repository that
- *     has no crafting rule to justify it. The roster was worth that price because
- *     the stage cannot iterate mobs without it; the outbox works today.
+ *   - `mobDrops` is an OUTBOX, and it is the one the mining wiring did NOT
+ *     absorb. It used to be described as `minedItems`' twin — 「both become
+ *     `InventoryService.add` calls together」 — and that prediction was wrong in
+ *     the half that matters: they are not the same call, and PROVENANCE is why.
+ *     A mined item goes into the inventory directly, because the player's hand
+ *     is on the block. A mob's loot in vanilla FALLS ON THE GROUND FIRST and is
+ *     picked up, so `add` is not what a kill means; the honest destination is
+ *     the dropped-item entity `leftoverItems` above is also waiting on, and it
+ *     is blocked on the same missing `MobBehaviour` arm. Depositing mob drops
+ *     straight into the inventory would be a rule change dressed as a wiring
+ *     change — every creeper's gunpowder teleporting into a pocket across the
+ *     arena — so this list stays a list until there is something to spawn.
+ *
+ *     THE REASON GIVEN FOR NOT MIRRORING THE SERVICE AT ALL WAS THE COST, and
+ *     it is recorded here because it was paid rather than avoided: 「the
+ *     whole-api rule: `InventoryServiceApi` names `Inventory`, `RecipeTable`,
+ *     `CraftGrid`, `RecipeMatch` and `CraftResult`, so mirroring it honestly
+ *     means restating mc-sim's crafting vocabulary in a repository that has no
+ *     crafting rule to justify it. The roster was worth that price because the
+ *     stage cannot iterate mobs without it; the outbox works today.」 The last
+ *     four words were the error. `domain/inventory-port.ts` carries the crafting
+ *     vocabulary now, as dead weight, on purpose.
  *
  *   - `rollSeed` is neither. It is the frame's source of randomness, and
  *     `domain/frame-rolls.ts` is a whole file about why it is a seed here rather
@@ -355,12 +401,28 @@ const NO_ATTEMPTS: ReadonlyArray<never> = []
  *     advances by itself: nothing in this file writes `weather`, and
  *     `weatherAdvanced` is overwritten rather than accumulated because a
  *     countdown's last value subsumes every earlier one.
+ *
+ * ---------------------------------------------------------------------------
+ * ...and the inventory through mc-sim's `InventoryService`
+ * ---------------------------------------------------------------------------
+ *
+ * THE THIRD SERVICE, acquired in `makeGameplayStages` beside the other two and
+ * for the same reason. `domain/inventory-port.ts` is the mirror,
+ * `test/inventory-mirror.test.ts` keeps it honest, and it is what closes
+ * plan.md §2.3-1's worked example — 「mining a block puts an item in your
+ * inventory」 — which was the last of this repository's three verbs whose
+ * effect stopped at a `Ref`.
+ *
+ * Note what it did NOT add: an inventory. Nothing in `GameplayFrameState` holds
+ * a slot, a count or an item the player owns, and `test/stage-registration.test.ts`
+ * asserts that there is no key called `inventory`. The stage ASKS; mc-sim
+ * answers and remembers.
  */
 export type GameplayFrameState = {
   readonly pendingBreaks: Ref.Ref<ReadonlyArray<PositionKey>>
   readonly pendingPlacements: Ref.Ref<ReadonlyArray<PlacementRequest>>
   readonly pendingItemUses: Ref.Ref<ReadonlyArray<ItemUseRequest>>
-  readonly minedItems: Ref.Ref<ReadonlyArray<MinedItem>>
+  readonly leftoverItems: Ref.Ref<ReadonlyArray<MinedItem>>
   readonly consumedItems: Ref.Ref<ReadonlyArray<PlaceableItemType>>
   readonly usedItems: Ref.Ref<ReadonlyArray<IgnitionItemType>>
   readonly mobDrops: Ref.Ref<ReadonlyArray<MobDrop>>
@@ -426,7 +488,9 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
   const pendingBreaks = yield* Ref.make<ReadonlyArray<PositionKey>>([])
   const pendingPlacements = yield* Ref.make<ReadonlyArray<PlacementRequest>>([])
   const pendingItemUses = yield* Ref.make<ReadonlyArray<ItemUseRequest>>([])
-  const minedItems = yield* Ref.make<ReadonlyArray<MinedItem>>([])
+  // Empty is the ORDINARY state, unlike the outbox it replaces: an entry here
+  // means an item the inventory had no room for. See the module header.
+  const leftoverItems = yield* Ref.make<ReadonlyArray<MinedItem>>([])
   const consumedItems = yield* Ref.make<ReadonlyArray<PlaceableItemType>>([])
   const usedItems = yield* Ref.make<ReadonlyArray<IgnitionItemType>>([])
   const mobDrops = yield* Ref.make<ReadonlyArray<MobDrop>>([])
@@ -455,7 +519,7 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
     pendingBreaks,
     pendingPlacements,
     pendingItemUses,
-    minedItems,
+    leftoverItems,
     consumedItems,
     usedItems,
     mobDrops,
@@ -485,12 +549,14 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
  *
  * `store` is passed in rather than acquired per stage so that all four share
  * one service instance and so that `run` keeps kernel's signature exactly; see
- * the module header.
+ * the module header. `roster` and `inventory` arrived the same way and for the
+ * same reason.
  */
 export const gameplayStages = (
   state: GameplayFrameState,
   store: ChunkStoreApi,
   roster: EntityManagerApi<MobBehaviour>,
+  inventory: InventoryServiceApi,
 ): ReadonlyArray<StageRegistration> => [
   {
     id: GAMEPLAY_STAGE_IDS.interactions,
@@ -678,8 +744,39 @@ export const gameplayStages = (
           // cell they write was air, and filling a hole cannot start a fall.
         }
 
-        if (gained.length > 0) {
-          yield* Ref.update(state.minedItems, (items) => [...items, ...gained])
+        // ---- THE DEPOSIT ---------------------------------------------------
+        //
+        // plan.md §2.3-1's worked example, as one line of code and a great deal
+        // of argument that is in the module header rather than here. Each stack
+        // the loot table produced is offered to mc-sim, in the order it was
+        // mined.
+        //
+        // ONE `add` PER STACK, AND NOT ONE PER ITEM. `blockLoot` already folds
+        // the base drop and its fortune bonus into a single `MinedItem`
+        // (`domain/interactions/block-loot.ts` argues that at length), so three
+        // glowstone dust is one call with `count: 3` rather than three calls.
+        // That is not only cheaper: `add` tops up partial stacks before opening
+        // empty slots, so three separate calls and one call of three can leave
+        // an inventory in the same state and report DIFFERENT leftovers at the
+        // boundary.
+        //
+        // THE NUMBER THAT COMES BACK IS WHAT DID NOT FIT — not a success flag,
+        // and `0` is the ordinary answer. Ignoring it would be an item the
+        // player watched disappear, which is the failure mc-sim's own comment
+        // on `add` names this repository as responsible for avoiding.
+        const spilled: Array<MinedItem> = []
+        for (const item of gained) {
+          const leftover = yield* inventory.add(item.item, item.count)
+          if (leftover > 0) {
+            spilled.push({ item: item.item, count: leftover })
+          }
+        }
+
+        // ...and what did not fit waits in the Ref, because turning it into a
+        // dropped-item entity needs a `MobBehaviour` arm this repository has
+        // not written. The header says which one and why it is not one line.
+        if (spilled.length > 0) {
+          yield* Ref.update(state.leftoverItems, (items) => [...items, ...spilled])
         }
         if (spent.length > 0) {
           yield* Ref.update(state.consumedItems, (items) => [...items, ...spent])
@@ -967,7 +1064,7 @@ export const gameplayStages = (
         // `set` and not `update`: the outbox is a countdown and its last value
         // subsumes every earlier one, so a host that drains every other frame
         // loses nothing. That is the one respect in which it is unlike
-        // `minedItems`, where every entry is a separate item and dropping one
+        // `leftoverItems`, where every entry is a separate item and dropping one
         // would lose an item.
         yield* Ref.set(state.weatherAdvanced, next)
       }),
@@ -1011,13 +1108,14 @@ export const gameplayStages = (
 export const makeGameplayStages: Effect.Effect<
   ReadonlyArray<StageRegistration>,
   never,
-  ChunkStore | EntityManager
+  ChunkStore | EntityManager | InventoryService
 > = Effect.gen(function* () {
   const store = yield* ChunkStore
   const roster = yield* entityManagerTag<MobBehaviour>()
+  const inventory = yield* InventoryService
   const state = yield* makeGameplayFrameState
 
-  return gameplayStages(state, store, roster)
+  return gameplayStages(state, store, roster, inventory)
 })
 
 /**
@@ -1043,20 +1141,36 @@ export const makeGameplayStages: Effect.Effect<
  * The vertical-slice spike changed `frameStages` to an Effect, and the shape
  * this repository had already been forced into became the contract.
  *
- * `RRegister` is now `ChunkStore | EntityManager` and `RIn` is still `never`,
- * which is the distinction that parameter was added for: this repository needs
- * mc-worldgen's store in order to REGISTER stages that write blocks and mc-sim's
- * roster in order to register the stage that iterates mobs, and needs nothing at
- * all in order to build a Layer it does not have.
+ * `RRegister` is now `ChunkStore | EntityManager | InventoryService` and `RIn`
+ * is still `never`, which is the distinction that parameter was added for: this
+ * repository needs mc-worldgen's store in order to REGISTER stages that write
+ * blocks, mc-sim's roster in order to register the stage that iterates mobs and
+ * mc-sim's inventory in order to register the stage that mines, and needs
+ * nothing at all in order to build a Layer it does not have.
  *
- * The union growing from one service to two is the shape `RRegister` predicted
- * and is not a widening of anything a consumer relies on: `RIn` is untouched, so
- * mx-gameplay still BUILDS nothing another repository has to supply. What it
- * does mean is that a host which was providing only the store now fails to
- * compile, which is the correct failure — the alternative is a stage that
- * iterates a roster nobody built.
+ * The union growing from one service to three is the shape `RRegister`
+ * predicted and is not a widening of anything a consumer relies on: `RIn` is
+ * untouched, so mx-gameplay still BUILDS nothing another repository has to
+ * supply. What it does mean is that a host which was providing only the store
+ * and the roster now fails to compile, which is the correct failure — the
+ * alternative is a stage that deposits into an inventory nobody built.
+ *
+ * A HOST NOW NAMES TWO OF MC-SIM'S SERVICES, and the second is easier than the
+ * first: `InventoryServiceLayer()` has no type parameter, so the hazard
+ * `MobBehaviour` is about does not repeat. The host's line is
+ *
+ *     Layer.mergeAll(
+ *       simModule.layers,
+ *       EntityManagerLayer<MobBehaviour>(undefined, repairMobBehaviour),
+ *       InventoryServiceLayer(),
+ *     )
  */
-export const gameplayModule: GameModule<never, never, never, ChunkStore | EntityManager> = {
+export const gameplayModule: GameModule<
+  never,
+  never,
+  never,
+  ChunkStore | EntityManager | InventoryService
+> = {
   layers: Layer.empty,
   frameStages: makeGameplayStages,
 }

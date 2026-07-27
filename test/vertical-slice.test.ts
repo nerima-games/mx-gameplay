@@ -124,6 +124,11 @@ import {
   world,
 } from './support/chunk-store-double'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
+import {
+  brimming,
+  makeInventoryDouble,
+  type InventoryDouble,
+} from './support/inventory-service-double'
 import { runFrame, runFrames } from './support/frame-runner'
 
 // ---------------------------------------------------------------------------
@@ -152,9 +157,41 @@ const slice = (
   Effect.gen(function* () {
     const store = yield* makeChunkStoreDouble(initial, loaded)
     const roster = yield* makeEntityManagerDouble<MobBehaviour>()
+    const inventory = yield* makeInventoryDouble()
     const state = yield* makeGameplayFrameState
-    return { store, roster, state, stages: gameplayStages(state, store.api, roster.api) }
+    return {
+      store,
+      roster,
+      inventory,
+      state,
+      stages: gameplayStages(state, store.api, roster.api, inventory.api),
+    }
   })
+
+/**
+ * The `add` calls the interactions stage made, as `{ item, count }`.
+ *
+ * THIS IS WHAT `state.minedItems` USED TO BE, and the substitution is the point
+ * of the change rather than a refactor of the assertions. Every `toStrictEqual(
+ * ONE_COBBLESTONE)` below used to read a Ref that the stage appended to and
+ * nothing drained; it now reads the argument list of a call to mc-sim, made
+ * through `domain/inventory-port.ts` and answered by
+ * `test/support/inventory-service-double.ts`.
+ *
+ * The CALL LIST rather than the resulting slots, and the two are different
+ * evidence. `countOf` would say "the player has one cobblestone" and would be
+ * satisfied by a stage that called `add(item, 1)` after already calling it
+ * once and having the first refused; this says which calls were made, in which
+ * order, with which counts — which is what the loot table's "one stack, not one
+ * call per item" claim is about. Where the total is the interesting number, the
+ * tests below ask `inventory.api.countOf` as well.
+ */
+const deposited = (
+  inventory: InventoryDouble,
+): Effect.Effect<ReadonlyArray<MinedItem>> =>
+  Effect.map(inventory.deposits, (calls) =>
+    calls.map(({ item, count }) => ({ item, count })),
+  )
 
 const samePosition = (left: BlockPosition, right: BlockPosition): boolean =>
   left.x === right.x && left.y === right.y && left.z === right.z
@@ -185,7 +222,7 @@ const ONE_COBBLESTONE: ReadonlyArray<MinedItem> = [{ item: 'cobblestone', count:
 describe('the slice, through the stage registration', () => {
   it.effect('breaks a block in interactions and moves the sand in entities', () =>
     Effect.gen(function* () {
-      const { store, state, stages } = yield* slice(
+      const { store, inventory, state, stages } = yield* slice(
         world([
           [floor, STONE],
           [support, STONE],
@@ -207,7 +244,7 @@ describe('the slice, through the stage registration', () => {
       // `domain/interactions/block-loot.ts` is what turns it into an item. The
       // assertion is `cobblestone` and not `stone`, which is kernel's drop row
       // (`{ ...DEFAULT_BLOCK_DROP, item: 'cobblestone' }`) reaching the outbox.
-      expect(yield* Ref.get(state.minedItems)).toStrictEqual(ONE_COBBLESTONE)
+      expect(yield* deposited(inventory)).toStrictEqual(ONE_COBBLESTONE)
 
       // ---- and the sand above it moved down, in the same frame -------------
       expect(yield* store.blockAt(support)).toBe(SAND)
@@ -285,7 +322,7 @@ describe('the slice, through the stage registration', () => {
 
   it.effect('adding a falling block is a row in kernel’s table, not a change here', () =>
     Effect.gen(function* () {
-      const { store, state, stages } = yield* slice(
+      const { store, inventory, state, stages } = yield* slice(
         world([
           [floor, STONE],
           [support, STONE],
@@ -301,7 +338,7 @@ describe('the slice, through the stage registration', () => {
       // told that gravel exists — the reference implementation asked
       // `blockTypeToIndex('SAND')` in 229 places across 51 files (plan.md §3.1).
       expect(yield* store.blockAt(support)).toBe(GRAVEL)
-      expect(yield* Ref.get(state.minedItems)).toStrictEqual(ONE_COBBLESTONE)
+      expect(yield* deposited(inventory)).toStrictEqual(ONE_COBBLESTONE)
     }),
   )
 
@@ -372,7 +409,7 @@ describe('the slice, through the stage registration', () => {
       // that read "air" there would clear a cell it cannot see and drop the
       // block into ungenerated space.
       const edge: BlockPosition = { x: -1, y: 64, z: 3 }
-      const { store, state, stages } = yield* slice(world([[floor, STONE]]), ['0,0'])
+      const { store, inventory, state, stages } = yield* slice(world([[floor, STONE]]), ['0,0'])
 
       // Both entry points are exercised: a break request at the edge...
       yield* requestBreak(state, edge)
@@ -387,14 +424,14 @@ describe('the slice, through the stage registration', () => {
       // The write is the break request, which the store refused; the rule added
       // nothing to it.
       expect(calls.writes).toBe(1)
-      expect(yield* Ref.get(state.minedItems)).toStrictEqual([])
+      expect(yield* deposited(inventory)).toStrictEqual([])
       expect(yield* store.blockAt(edge)).toBeUndefined()
     }),
   )
 
   it.effect('REGRESSION: breaking air is `Unchanged` — no item, no dirty chunk, no falling-block work', () =>
     Effect.gen(function* () {
-      const { store, state, stages } = yield* slice(
+      const { store, inventory, state, stages } = yield* slice(
         world([
           [floor, STONE],
           [support, STONE],
@@ -409,7 +446,7 @@ describe('the slice, through the stage registration', () => {
       yield* requestBreak(state, aboveSand)
       yield* runFrames(stages, 3)
 
-      expect(yield* Ref.get(state.minedItems)).toStrictEqual([])
+      expect(yield* deposited(inventory)).toStrictEqual([])
       expect((yield* Ref.get(state.fallingBlocks)).pending.size).toBe(0)
       expect(yield* renderer.drain).toStrictEqual({ changed: [], removed: [] })
       expect(yield* store.blockAt(support)).toBe(STONE)
@@ -445,7 +482,7 @@ describe('the slice, through the stage registration', () => {
     Effect.gen(function* () {
       // The support is AIR, so without the wrapper below the sand falls into
       // it. The control is the very first test in this file.
-      const { store, roster, state } = yield* slice(world([[sandAt, SAND]]))
+      const { store, roster, inventory, state } = yield* slice(world([[sandAt, SAND]]))
 
       const hidesTheDestination: ChunkStoreApi = {
         ...store.api,
@@ -455,7 +492,7 @@ describe('the slice, through the stage registration', () => {
             : store.api.getBlock(position),
       }
 
-      const stages = gameplayStages(state, hidesTheDestination, roster.api)
+      const stages = gameplayStages(state, hidesTheDestination, roster.api, inventory.api)
       yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, [positionKeyOf(support)]))
       yield* runFrames(stages, 3)
 
@@ -468,7 +505,7 @@ describe('the slice, through the stage registration', () => {
 
   it.effect('REGRESSION: a refused destination write puts the block back rather than losing it', () =>
     Effect.gen(function* () {
-      const { store, roster, state } = yield* slice(world([[sandAt, SAND]]))
+      const { store, roster, inventory, state } = yield* slice(world([[sandAt, SAND]]))
 
       // Reads say the move is legal; the destination write is refused anyway —
       // the window the source-first write order opens.
@@ -480,7 +517,7 @@ describe('the slice, through the stage registration', () => {
             : store.api.setBlock(position, block),
       }
 
-      const stages = gameplayStages(state, refusesTheDestination, roster.api)
+      const stages = gameplayStages(state, refusesTheDestination, roster.api, inventory.api)
       yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, [positionKeyOf(support)]))
       yield* runFrame(stages)
 
@@ -503,7 +540,7 @@ describe('the slice, through the stage registration', () => {
       ] as ReadonlyArray<BlockWriteOutcome>,
       (refusal) =>
         Effect.gen(function* () {
-          const { store, roster, state } = yield* slice(world([[sandAt, SAND]]))
+          const { store, roster, inventory, state } = yield* slice(world([[sandAt, SAND]]))
 
           const refusesTheSource: ChunkStoreApi = {
             ...store.api,
@@ -513,7 +550,7 @@ describe('the slice, through the stage registration', () => {
                 : store.api.setBlock(position, block),
           }
 
-          const stages = gameplayStages(state, refusesTheSource, roster.api)
+          const stages = gameplayStages(state, refusesTheSource, roster.api, inventory.api)
           yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, [positionKeyOf(support)]))
           yield* runFrame(stages)
 
@@ -556,19 +593,19 @@ describe('the slice, through the stage registration', () => {
 
   it.effect('REGRESSION: a break below the world is `OutOfWorld`, and the frame carries on', () =>
     Effect.gen(function* () {
-      const { store, state, stages } = yield* slice(world([[floor, STONE]]))
+      const { store, inventory, state, stages } = yield* slice(world([[floor, STONE]]))
 
       // `run` has no error channel, so "the player aimed at nothing" has to be
       // an ordinary outcome rather than a failure. The frame must complete and
       // the next request must still be serviced.
       yield* requestBreak(state, { x: 2, y: -1, z: 3 })
       yield* runFrame(stages)
-      expect(yield* Ref.get(state.minedItems)).toStrictEqual([])
+      expect(yield* deposited(inventory)).toStrictEqual([])
 
       yield* holdWoodenPickaxe(state)
       yield* requestBreak(state, floor)
       yield* runFrame(stages)
-      expect(yield* Ref.get(state.minedItems)).toStrictEqual(ONE_COBBLESTONE)
+      expect(yield* deposited(inventory)).toStrictEqual(ONE_COBBLESTONE)
       expect(yield* store.blockAt(floor)).toBe(AIR_BLOCK_ID)
     }),
   )
@@ -680,7 +717,7 @@ const daylight = (state: { readonly timeOfDay: Ref.Ref<number> }): Effect.Effect
 describe('the mob slice, through the stage registration', () => {
   it.effect('a creeper spawns, lights, detonates once, and the blast reaches the world', () =>
     Effect.gen(function* () {
-      const { store, roster, state, stages } = yield* slice(
+      const { store, roster, inventory, state, stages } = yield* slice(
         world([
           [craterFloor, STONE],
           [craterLedge, STONE],
@@ -746,7 +783,7 @@ describe('the mob slice, through the stage registration', () => {
       // so one gunpowder and not two. The block outbox is untouched: a mob drop
       // is not a mined block, and the two are different lists for that reason.
       expect(yield* Ref.get(state.mobDrops)).toStrictEqual([{ item: 'gunpowder', count: 1 }])
-      expect(yield* Ref.get(state.minedItems)).toStrictEqual([])
+      expect(yield* deposited(inventory)).toStrictEqual([])
 
       // ---- the crater emptied its cells, and only those --------------------
       expect(yield* store.blockAt(craterFloor)).toBe(AIR_BLOCK_ID)
@@ -1468,7 +1505,7 @@ describe('the mining site slice: dig, drop, place', () => {
 
   it.effect('a pickaxe turns a stone block into cobblestone in the outbox', () =>
     Effect.gen(function* () {
-      const { store, state, stages } = yield* slice(
+      const { store, inventory, state, stages } = yield* slice(
         world([
           [under, STONE],
           [cell, STONE],
@@ -1481,13 +1518,13 @@ describe('the mining site slice: dig, drop, place', () => {
       yield* requestBreak(state, cell)
       yield* runFrame(stages)
       expect(yield* store.blockAt(cell)).toBe(AIR_BLOCK_ID)
-      expect(yield* Ref.get(state.minedItems)).toStrictEqual([])
+      expect(yield* deposited(inventory)).toStrictEqual([])
 
       // ...and with a pickaxe, against the block below.
       yield* holdWoodenPickaxe(state)
       yield* requestBreak(state, under)
       yield* runFrame(stages)
-      expect(yield* Ref.get(state.minedItems)).toStrictEqual(ONE_COBBLESTONE)
+      expect(yield* deposited(inventory)).toStrictEqual(ONE_COBBLESTONE)
     }),
   )
 
@@ -1515,7 +1552,7 @@ describe('the mining site slice: dig, drop, place', () => {
   // this is evidence about the edges.
   it.effect('dig then place, in one frame, with both outboxes correct', () =>
     Effect.gen(function* () {
-      const { store, state, stages } = yield* slice(
+      const { store, inventory, state, stages } = yield* slice(
         world([
           [under, STONE],
           [cell, STONE],
@@ -1527,7 +1564,7 @@ describe('the mining site slice: dig, drop, place', () => {
       yield* requestPlace(state, cell, 'sand')
       yield* runFrame(stages)
 
-      expect(yield* Ref.get(state.minedItems)).toStrictEqual(ONE_COBBLESTONE)
+      expect(yield* deposited(inventory)).toStrictEqual(ONE_COBBLESTONE)
       expect(yield* Ref.get(state.consumedItems)).toStrictEqual(['sand'])
       // The sand rests on the stone that was already under the cell, so nothing
       // cascades and the queue is empty again.
@@ -1536,34 +1573,105 @@ describe('the mining site slice: dig, drop, place', () => {
     }),
   )
 
-  // WHERE THE CHAIN STOPS, asserted rather than described. `minedItems` and
-  // `consumedItems` are lists the host drains: mc-sim's `InventoryService` has
-  // `add` and `remove` (`application/inventory-service.ts:49,51`) and this
-  // repository cannot call either, because mirroring `InventoryServiceApi`
-  // honestly means restating `Inventory`, `RecipeTable`, `CraftGrid`,
-  // `RecipeMatch` and `CraftResult` — mc-sim's crafting vocabulary — in a
-  // repository with no crafting rule to justify it.
-  //
-  // What the loot table DID close is the other half of that gap, and it is the
-  // half mc-compose's `docs/e2e-triage.md` §4.3 recorded as unanswerable from
-  // one repository: the outbox used to carry a `BlockId`, a NUMBER, and
-  // `InventoryService.add` takes an `ItemId`, a STRING. It carries item names
-  // now, so the remaining distance is a call and not a translation.
-  it.effect('the loot chain reaches an outbox and stops there — by name, not by number', () =>
+  /*
+   * WHERE THE CHAIN USED TO STOP, and this test is the record of it moving.
+   *
+   * The version of this case that stood here was titled 「the loot chain
+   * reaches an outbox and stops there」 and its comment gave two reasons why
+   * the last step could not be taken: mc-sim's `InventoryService` had `add` and
+   * `remove` and 「this repository cannot call either, because mirroring
+   * `InventoryServiceApi` honestly means restating `Inventory`, `RecipeTable`,
+   * `CraftGrid`, `RecipeMatch` and `CraftResult` — mc-sim's crafting vocabulary
+   * — in a repository with no crafting rule to justify it」; and, one paragraph
+   * up, that mc-compose's `docs/e2e-triage.md` §4.3 had recorded the seam as
+   * unanswerable from one repository because the outbox carried a `BlockId`, a
+   * NUMBER, and `add` took an `ItemId`, a STRING.
+   *
+   * The TYPE half had already been closed by `domain/interactions/block-loot.ts`
+   * and by mc-sim deleting `ItemId` outright, which is why that comment ends
+   * 「the remaining distance is a call and not a translation」. The COST half
+   * was paid: `domain/inventory-port.ts` carries the crafting vocabulary as
+   * dead weight, on purpose, and the call is made.
+   *
+   * So this asserts the whole of plan.md §2.3-1's worked example in one frame:
+   * a swing goes in at one end and mc-sim holds an item at the other.
+   */
+  it.effect('the loot chain reaches mc-sim’s inventory — the §2.3-1 worked example, end to end', () =>
     Effect.gen(function* () {
-      const { state, stages } = yield* slice(world([[cell, STONE]]))
+      const { inventory, state, stages } = yield* slice(world([[cell, STONE]]))
 
       yield* holdWoodenPickaxe(state)
       yield* requestBreak(state, cell)
       yield* runFrame(stages)
 
-      const mined = yield* Ref.get(state.minedItems)
-      // A STRING, which is what `InventoryService.add` takes.
-      expect(typeof mined[0]?.item).toBe('string')
-      expect(mined[0]?.item).toBe('cobblestone')
-      // And nothing in this repository holds the total. The frame state has no
+      // ONE `add`, with kernel's item name and kernel's count. A STRING, which
+      // is what `add` takes and what the number the outbox used to carry was
+      // not.
+      expect(yield* inventory.deposits).toStrictEqual([
+        { item: 'cobblestone', count: 1, leftover: 0 },
+      ])
+
+      // ...and the service HELD it, which is the assertion the outbox could
+      // never make: the old test could only say that a list had an entry in it,
+      // and a list nobody drains and an inventory are not the same claim.
+      expect(yield* inventory.api.countOf('cobblestone')).toBe(1)
+
+      // Nothing in this repository holds the total. The frame state has no
       // inventory; `test/stage-registration.test.ts` pins the whole key list.
       expect(Object.keys(state)).not.toContain('inventory')
+
+      // And nothing spilled, so the one Ref that survives the wiring is empty —
+      // which is its ordinary state.
+      expect(yield* Ref.get(state.leftoverItems)).toStrictEqual([])
+    }),
+  )
+
+  /*
+   * THE LEFTOVER, which is the half of `add`'s contract that is easy to drop.
+   *
+   * `add` resolves to what did NOT fit, so `0` is success and a non-zero answer
+   * is items the player earned and does not have. A stage that treated the
+   * number as a success flag — or ignored it, which is the same thing — would
+   * pass every other test in this file: the world changes identically, the
+   * deposit is made identically, and the only difference is an item that
+   * silently ceases to exist. mc-sim's own comment on `add` names this
+   * repository as the party responsible for not doing that.
+   *
+   * This repository cannot yet do what mc-sim expects with it — 「the caller in
+   * mx-gameplay turns it into a dropped-item entity」 needs an arm on
+   * `MobBehaviour`, a matching arm in `repairMobBehaviour`, and a pickup rule
+   * none of which exist — so the honest thing is to KEEP it, and that is
+   * `state.leftoverItems`. What must not happen is silence.
+   */
+  it.effect('REGRESSION: what the inventory refuses is kept, not silently dropped', () =>
+    Effect.gen(function* () {
+      const store = yield* makeChunkStoreDouble(world([[cell, STONE]]), ['0,0'])
+      const roster = yield* makeEntityManagerDouble<MobBehaviour>()
+      // 36 slots x 64 cobblestone. The only arrangement in which `add`
+      // overflows, and it is built through the service's own `add` rather than
+      // written out — see `test/support/inventory-service-double.ts`.
+      const inventory = yield* makeInventoryDouble(brimming('cobblestone'))
+      const state = yield* makeGameplayFrameState
+      const stages = gameplayStages(state, store.api, roster.api, inventory.api)
+
+      yield* holdWoodenPickaxe(state)
+      yield* requestBreak(state, cell)
+      yield* runFrame(stages)
+
+      // The swing LANDED — the block is gone from the world, which is what
+      // makes the lost item lost rather than merely unearned.
+      expect(yield* store.blockAt(cell)).toBe(AIR_BLOCK_ID)
+
+      // The call was made and the service refused all of it.
+      expect(yield* inventory.deposits).toStrictEqual([
+        { item: 'cobblestone', count: 1, leftover: 1 },
+      ])
+
+      // ...and the refusal is IN THE REF, with the item's name and the count
+      // that did not fit, which is exactly what a dropped-item entity needs.
+      expect(yield* Ref.get(state.leftoverItems)).toStrictEqual([
+        { item: 'cobblestone', count: 1 },
+      ])
     }),
   )
 })

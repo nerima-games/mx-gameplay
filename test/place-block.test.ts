@@ -65,6 +65,7 @@ import type { Position } from '../domain/entity-manager-port'
 import { gameplayStages, makeGameplayFrameState } from '../stages/registration'
 import { makeChunkStoreDouble, SAND, STONE, WATER, world } from './support/chunk-store-double'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
+import { makeInventoryDouble } from './support/inventory-service-double'
 import type { MobBehaviour } from '../domain/entities/mob-frame'
 import { runFrame } from './support/frame-runner'
 
@@ -974,8 +975,9 @@ const stagedSlice = (entries: ReadonlyArray<readonly [BlockPosition, number]>) =
   Effect.gen(function* () {
     const store = yield* storeWith(entries)
     const roster = yield* makeEntityManagerDouble<MobBehaviour>()
+    const inventory = yield* makeInventoryDouble()
     const state = yield* makeGameplayFrameState
-    return { store, state, stages: gameplayStages(state, store.api, roster.api) }
+    return { store, state, inventory, stages: gameplayStages(state, store.api, roster.api, inventory.api) }
   })
 
 describe('placement through gameplay:interactions', () => {

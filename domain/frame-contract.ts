@@ -60,6 +60,56 @@ export const DeltaTimeSecs = Brand.refined<DeltaTimeSecs>(
 )
 
 /**
+ * Maximum items in one inventory stack.
+ *
+ * PROVISIONAL in kernel, and its note is worth carrying: vanilla stack limits
+ * are per-item (64 / 16 / 1) and the per-item table belongs to the inventory
+ * repository. Kernel only fixes the upper bound of the representable range.
+ */
+export const MAX_STACK_COUNT = 64
+
+/**
+ * Number of items in one inventory stack. Integer in [0, MAX_STACK_COUNT].
+ *
+ * ---------------------------------------------------------------------------
+ * WHY A STACK COUNT IS IN A FILE CALLED `frame-contract`
+ * ---------------------------------------------------------------------------
+ *
+ * Because of the rule the mirrors in this repository are sorted by, which is
+ * WHOSE MODULE THE SYMBOL COMES FROM — `domain/portal-frame-port.ts`'s header
+ * states it as 「one mirror per source module; any number of them per package」.
+ * `StackCount` is `mc-kernel/domain/quantities.ts`, which is one of the three
+ * kernel modules THIS file already mirrors (see the header) and is where
+ * `DeltaTimeSecs` immediately above it comes from too. A second file mirroring
+ * the same module would be two mirrors of one source, which is the arrangement
+ * that rule exists to prevent — and it would put one half of `quantities.ts` in
+ * `MIRROR_SPECS` and the other half outside it.
+ *
+ * It arrived with `./inventory-port`, which needs it for mc-sim's `ItemStack`.
+ * The alternative considered and rejected was declaring it there: mc-sim's
+ * barrel does NOT re-export its own kernel mirror, so a `StackCount` inside a
+ * mirror of mc-sim would be a symbol that mc-sim cannot hand back on the day
+ * that file is deleted — which is precisely the broken repoint promise
+ * `./chunk-store-port`'s header records finding in its own capability
+ * predicates. mc-KERNEL's barrel exports it; this is the file kernel's barrel
+ * replaces.
+ *
+ * THE REFINEMENT IS TRANSCRIBED, not re-decided, for `DeltaTimeSecs`' reason: a
+ * brand is keyed by its STRING, so `Brand.Brand<'StackCount'>` here and in
+ * kernel are ONE TYPE however differently the two constructors validate. The
+ * mc-physics defect `test/stage-registration.test.ts` records is exactly a
+ * mirror refining to a tighter range than kernel's. mc-dev-meta's
+ * `pnpm check:mirrors` probes both constructors over a sample grid whose `63`,
+ * `64` and `65` rows were chosen for this boundary.
+ */
+export type StackCount = number & Brand.Brand<'StackCount'>
+
+export const StackCount = Brand.refined<StackCount>(
+  (value) => Number.isInteger(value) && value >= 0 && value <= MAX_STACK_COUNT,
+  (value) => Brand.error(`StackCount must be an integer in [0, ${MAX_STACK_COUNT}], received ${value}`),
+)
+
+/**
  * The context every frame stage may assume is present.
  *
  * kernel aliases this to `ClockPort`; here it is `never`, and that is a

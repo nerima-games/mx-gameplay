@@ -60,6 +60,7 @@ import type { MobBehaviour } from '../domain/entities/mob-frame'
 import { gameplayStages, makeGameplayFrameState } from '../stages/registration'
 import { makeChunkStoreDouble, world } from './support/chunk-store-double'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
+import { makeInventoryDouble } from './support/inventory-service-double'
 import { runFrame } from './support/frame-runner'
 
 // ---------------------------------------------------------------------------
@@ -391,8 +392,9 @@ describe('what the world does about the weather', () => {
 const stagedSlice = Effect.gen(function* () {
   const store = yield* makeChunkStoreDouble(world([]), ['0,0'])
   const roster = yield* makeEntityManagerDouble<MobBehaviour>()
+  const inventory = yield* makeInventoryDouble()
   const state = yield* makeGameplayFrameState
-  return { state, stages: gameplayStages(state, store.api, roster.api) }
+  return { state, stages: gameplayStages(state, store.api, roster.api, inventory.api) }
 })
 
 const ONE_SECOND = DeltaTimeSecs(1)
