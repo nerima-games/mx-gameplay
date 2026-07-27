@@ -926,15 +926,22 @@ export const ARENA_MISSING: ReadonlyArray<readonly [string, string]> = [
   ['the ender dragon', 'REFUSED, not deferred: its phases turn on absolute world Y (dragon-phase.ts:51-52) and emit velocities'],
   ['enderman / shulker DROPS', 'ender_pearl and shulker_shell are not ItemTypes. One row in mc-kernel’s roster, no edit here'],
   ['where a teleport LANDS', 'the offset has no y and no ground check — a ChunkStore query, next to domain/interactions/'],
-  ['whether an enderman was HIT', 'endermanTeleportUrge needs damagedThisStep and stuckTicks; mc-sim’s entity has neither field'],
+  // WAS: 'endermanTeleportUrge needs damagedThisStep and stuckTicks; mc-sim's
+  // entity has neither field'. That was the right observation and the wrong
+  // conclusion — mc-sim carries per-mob rule state on a type parameter that
+  // mx-gameplay instantiates, so `damagedThisStep` went on `MobBehaviour` as
+  // `EndermanFlinch` and needed no change in mc-sim at all. Only the half that is
+  // genuinely unmeasurable is left, and it names the lane it is waiting for.
+  ['an enderman’s stuckTicks', 'the > 40 branch needs a movement lane reporting no progress. Deriving it from "the position did not change" makes it a frame counter, because nothing writes feetPosition but the teleport'],
+  ['an enderman off the SPAWNER', 'the teleport is wired and a host can spawn one, but MobSpawnAttempt carries no kind — see "the mob roster", and MAX_HOSTILE_COUNT would have to become a sum'],
   ['water / daylight teleports', 'vanilla’s other two triggers. Needs a "submerged" capability from kernel and mc-worldgen’s sky light'],
   ['the shulker’s bullet', 'computeShulkerBulletDirection is a normalised vector — aiming is mc-physics’, canFire is here'],
-  ['a shulker on the roster', 'ShulkerShell fits MobBehaviour unchanged. Nothing spawns one and nothing consumes canFire, so it is not a member'],
+  ['a shulker on the roster', 'ShulkerShell fits MobBehaviour unchanged and the enderman’s wiring shows the roster is no obstacle. What blocks it is that canFire is a permission to fire a projectile nothing produces, and that hasTarget and maxHealthPoints have no measurement on this side'],
   ['projectile + melee cadence', 'canFire is a permission with no cooldown; attackCooldownRemaining is mc-sim’s combat state'],
   ['the armour formula', '4% per point, capped at 80% — every defender shares it, so it belongs in a domain/combat/, not here'],
   ['age-based despawn', 'vanilla sweeps on time as well as distance; the reference has no age on an entity and neither has this'],
   ['the mob roster', 'the reference rotates 8 hostiles; which mob spawns is a table this repository has no second row for'],
-  ['AI / pathfinding', 'the creeper’s distance is an arrow key on this screen. Movement is a write to feetPosition nothing makes'],
+  ['AI / pathfinding', 'the creeper’s distance is an arrow key on this screen. The teleport is now the ONLY write to feetPosition anywhere — walking, chasing and fleeing on foot are all still missing'],
   ['THE SPAWN SEARCH', 'the stage applies the verdict to candidates it is handed. The ring that offers them needs mc-worldgen’s block LIGHT (ChunkStoreApi has no light query) and mc-sim’s hour'],
   ['the player’s position', 'targetPosition is an inbox. PlayerService.cameraPose requires ClockPort, and a local ClockPort is worse than a narrow mirror'],
   ['mob drops reaching the inventory', 'mobDrops is an outbox. InventoryServiceApi names Inventory/RecipeTable/CraftGrid, so mirroring it whole means restating mc-sim’s crafting vocabulary'],

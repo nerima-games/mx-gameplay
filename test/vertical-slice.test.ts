@@ -79,15 +79,27 @@ import {
 import {
   CREEPER_KIND,
   CREEPER_MAX_HEALTH,
+  ENDERMAN_KIND,
+  ENDERMAN_TELEPORT_ROLLS,
   MAX_HOSTILE_COUNT,
+  STEADY_ENDERMAN,
+  STRUCK_ENDERMAN,
   type MobBehaviour,
   type MobSpawnAttempt,
 } from '../domain/entities/mob-frame'
-import { EntityKind, type Position } from '../domain/entity-manager-port'
+import { EntityKind, type EntityManagerApi, type Position } from '../domain/entity-manager-port'
 import { disturb } from '../domain/falling-block'
 import { DeltaTimeSecs } from '../domain/frame-contract'
+import { DEFAULT_ROLL_SEED, drawRolls, nextRoll } from '../domain/frame-rolls'
 import { craterCells, craterRadius } from '../domain/interactions/explosion-crater'
 import { CREEPER_FUSE_SECS, DORMANT_FUSE } from '../domain/mob/creeper-fuse'
+import {
+  ENDERMAN_CHASE_TELEPORT_CHANCE,
+  ENDERMAN_DAMAGE_TELEPORT_CHANCE,
+  ENDERMAN_TELEPORT_MAX_BLOCKS,
+  ENDERMAN_TELEPORT_MIN_BLOCKS,
+  endermanTeleportOffset,
+} from '../domain/mob/enderman-teleport'
 import { CREEPER_EXPLOSION_POWER, explosionDamageAmount } from '../domain/mob/explosion'
 import { DESPAWN_DISTANCE_BLOCKS } from '../domain/mob/hostile-despawn'
 import { gameplayStages, makeGameplayFrameState } from '../stages/registration'
@@ -787,6 +799,392 @@ describe('the mob slice, through the stage registration', () => {
 
       expect(first.drops).toStrictEqual([{ item: 'gunpowder', count: 1 }])
       expect(second).toStrictEqual(first)
+    }),
+  )
+})
+
+// ---------------------------------------------------------------------------
+// The enderman half of the slice.
+//
+// `domain/mob/enderman-teleport.ts` was written, tested against the reference's
+// oracle in `test/mob.test.ts`, and then called by nothing at all — the same
+// position `domain/mob/creeper-fuse.ts` was in before mc-sim published a roster.
+// The stated blocker was that `endermanTeleportUrge` wants `damagedThisStep` and
+// `stuckTicks` and 「mc-sim's entity has neither field」, which was true of
+// `EntityState`'s three fields and irrelevant: mc-sim carries per-mob rule state
+// on a TYPE PARAMETER that this repository instantiates, so a flag about a mob
+// belongs on `MobBehaviour` and needed no change in mc-sim to put there.
+//
+// What follows is the wiring that argument was hiding. One of the two facts turns
+// out to be measurable and the other does not, and the tests below pin both
+// answers rather than only the good one.
+// ---------------------------------------------------------------------------
+
+/** Four blocks from the creeper: inside the blast, and a long way from killed. */
+const endermanAt: Position = { x: 9, y: 64, z: 5 }
+
+/**
+ * An enderman's health at spawn.
+ *
+ * A LOCAL NUMBER AND NOT A CONSTANT, on purpose. A per-kind maximum is the rules
+ * tier's (`CREEPER_MAX_HEALTH` says so, quoting mc-sim's §7-6), but nothing on
+ * this side of the line spawns an enderman — see `ENDERMAN_KIND` — so a
+ * `ENDERMAN_MAX_HEALTH` would be an exported constant with no producer, which is
+ * the shape `domain/mob/shulker-shell.ts` refuses for `SHULKER_FORCED_CLOSED_TICKS`.
+ * Forty is vanilla's; the test needs only "survives ten damage".
+ */
+const ENDERMAN_HEALTH = 40
+
+/**
+ * The first seed whose draw sequence does what a scenario needs.
+ *
+ * Searched rather than hard-coded, and the predicates below are written out of
+ * the RULE's own constants and functions. A literal seed would be a number
+ * nobody could check, and would silently stop meaning what its comment said the
+ * day `nextRoll` or the teleport band moved.
+ *
+ * The bound is not arbitrary. MINSTD's first output is `16807 * seed` while that
+ * product stays under the modulus, so scanning upward from 1 walks the FIRST ROLL
+ * linearly through `[0, 1)` and runs out of roll space at `2^31 - 1` over 16807 —
+ * a little under 128 thousand. Anything beyond that would be re-searching rolls
+ * the scan has already offered, and a search that stopped at, say, twenty
+ * thousand would silently be unable to ask for a first roll above 0.16.
+ */
+const MAX_SEED_SEARCH = Math.ceil(2_147_483_647 / 16_807)
+
+const seedSuchThat = (accept: (seed: number) => boolean): number => {
+  for (let seed = 1; seed <= MAX_SEED_SEARCH; seed += 1) {
+    if (accept(seed)) {
+      return seed
+    }
+  }
+  throw new Error('no seed at all produces the draw sequence this scenario needs')
+}
+
+/** The rolls one frame of an enderman that decides to go consumes: the urge, then the search. */
+const teleportSucceedsFrom = (seed: number): boolean =>
+  endermanTeleportOffset(drawRolls(seed, ENDERMAN_TELEPORT_ROLLS).rolls) !== undefined
+
+const blocksApart = (from: Position, to: Position): number =>
+  Math.hypot(from.x - to.x, from.y - to.y, from.z - to.z)
+
+/** The one mob in a scenario that has exactly one. `[0]` rather than a search: an id is not the point. */
+const soleEntity = (roster: { readonly api: EntityManagerApi<MobBehaviour> }) =>
+  Effect.map(roster.api.entities, (entities) => entities[0])
+
+describe('the enderman slice: a rule that returns a displacement, run over a roster', () => {
+  it.effect('WIRING: a restless enderman closes on the player, and lands in the 8..32 band', () =>
+    Effect.gen(function* () {
+      // THE TEST THAT FAILS IF THE WIRING IS ABSENT. Before this change the sweep
+      // ignored every mob that was not a creeper, so the enderman below stayed
+      // exactly where it was spawned for as many frames as anyone cared to run.
+      const { roster, state, stages } = yield* slice(world([]))
+
+      // A seed whose FIRST roll passes the 5% chase gate and whose next
+      // thirty-two find an offset inside the band. Both halves are the rule's own
+      // arithmetic, so this is a scenario rather than a magic number.
+      const seed = seedSuchThat((candidate) => {
+        const urge = nextRoll(candidate)
+        return urge.roll < ENDERMAN_CHASE_TELEPORT_CHANCE && teleportSucceedsFrom(urge.seed)
+      })
+
+      yield* roster.api.spawn({
+        kind: ENDERMAN_KIND,
+        feetPosition: endermanAt,
+        healthPoints: ENDERMAN_HEALTH,
+        behaviour: STEADY_ENDERMAN,
+      })
+      yield* Ref.set(state.targetPosition, playerNear)
+      yield* Ref.set(state.rollSeed, seed)
+      yield* runFrame(stages, STRIDE)
+
+      const moved = yield* soleEntity(roster)
+
+      // THE ANCHOR IS THE PLAYER, and that is the half of the rule the reference
+      // lost: `reason: 'restless'` carries `anchor: 'target'`, so this is an
+      // APPROACH — 8 to 32 blocks from you, from whatever distance it started at
+      // — and not an escape. Measured against the player rather than against
+      // where it stood, which is what tells the two anchors apart.
+      const reach = blocksApart(moved?.feetPosition ?? endermanAt, playerNear)
+      expect(reach).toBeGreaterThanOrEqual(ENDERMAN_TELEPORT_MIN_BLOCKS)
+      expect(reach).toBeLessThanOrEqual(ENDERMAN_TELEPORT_MAX_BLOCKS)
+
+      // ...and it kept its own altitude. `domain/mob/enderman-teleport.ts`
+      // returns no `y` at all, and the reference copies the ANCHOR's — which puts
+      // an approaching enderman at the player's altitude, usually inside rock.
+      expect(moved?.feetPosition.y).toBe(endermanAt.y)
+
+      // The seed advanced by the urge plus the whole search budget, and by
+      // nothing else: an enderman that decided to go is what moved the generator.
+      expect(yield* Ref.get(state.rollSeed)).toBe(
+        drawRolls(nextRoll(seed).seed, ENDERMAN_TELEPORT_ROLLS).seed,
+      )
+    }),
+  )
+
+  it.effect('WIRING: a creeper’s blast marks the enderman beside it, and it flees on the next frame', () =>
+    Effect.gen(function* () {
+      // The whole path, end to end and across a frame boundary: the fuse ends,
+      // `resolveBlasts` damages a bystander and arms its flinch, and the NEXT
+      // sweep reads the flinch, rolls the 30%, and moves the mob. Two stages of
+      // one frame plus one more frame, none of it re-implemented here.
+      const { roster, state, stages } = yield* slice(world([]))
+
+      // Frame 1's roll must MISS the 5% chase gate (the enderman is Steady and
+      // has a target, so it consults the rule before the blast reaches it), and
+      // frame 2's must PASS the 30% damage gate and then find an offset.
+      const seed = seedSuchThat((candidate) => {
+        const chase = nextRoll(candidate)
+        if (chase.roll < ENDERMAN_CHASE_TELEPORT_CHANCE) {
+          return false
+        }
+        const flee = nextRoll(chase.seed)
+        return flee.roll < ENDERMAN_DAMAGE_TELEPORT_CHANCE && teleportSucceedsFrom(flee.seed)
+      })
+
+      yield* roster.api.spawn({
+        kind: CREEPER_KIND,
+        feetPosition: creeperAt,
+        // One step from the end, so the very next frame detonates.
+        healthPoints: CREEPER_MAX_HEALTH,
+        behaviour: { _tag: 'Lit', burnedSecs: 1.4 },
+      })
+      yield* roster.api.spawn({
+        kind: ENDERMAN_KIND,
+        feetPosition: endermanAt,
+        healthPoints: ENDERMAN_HEALTH,
+        behaviour: STEADY_ENDERMAN,
+      })
+      yield* Ref.set(state.targetPosition, playerNear)
+      yield* Ref.set(state.rollSeed, seed)
+
+      yield* runFrame(stages, STRIDE)
+
+      // ---- the blast landed, and it is the ONE blow this repository measures --
+      // Four blocks from a creeper is 10 damage against 40 health, and that
+      // number is `domain/mob/explosion.ts`'s curve rather than this file's
+      // arithmetic. The creeper is gone; the enderman is hurt and now REMEMBERS
+      // being hurt, which is the field mc-sim's `EntityState` was said not to
+      // have.
+      expect(explosionDamageAmount(CREEPER_EXPLOSION_POWER, 4)).toBe(10)
+      const struck = yield* soleEntity(roster)
+      expect(yield* roster.api.count).toBe(1)
+      expect(struck?.healthPoints ?? 0).toBe(ENDERMAN_HEALTH - 10)
+      expect(struck?.behaviour).toBe(STRUCK_ENDERMAN)
+      // It has NOT moved yet: the blast is resolved after the sweep, so the
+      // answer is a frame late and that is the design rather than a lag.
+      expect(struck?.feetPosition).toStrictEqual(endermanAt)
+
+      yield* runFrame(stages, STRIDE)
+
+      // ---- and on the next frame it flees ------------------------------------
+      // THE ANCHOR IS ITSELF. `reason: 'damaged'` carries `anchor: 'self'`, so
+      // this is measured from where it was STANDING — the opposite of the
+      // restless case above, and the distinction the reference makes by passing a
+      // different argument at each of two call sites and recording it nowhere.
+      const fled = yield* soleEntity(roster)
+      const escape = blocksApart(fled?.feetPosition ?? endermanAt, endermanAt)
+      expect(escape).toBeGreaterThanOrEqual(ENDERMAN_TELEPORT_MIN_BLOCKS)
+      expect(escape).toBeLessThanOrEqual(ENDERMAN_TELEPORT_MAX_BLOCKS)
+      expect(fled?.feetPosition.y).toBe(endermanAt.y)
+
+      // ...and the blow is SPENT. Keeping it would re-roll the same hit on every
+      // later frame until one of them came up under 0.3, teleporting a mob for
+      // damage it took ten seconds ago.
+      expect(fled?.behaviour).toBe(STEADY_ENDERMAN)
+    }),
+  )
+
+  it.effect('a hurt enderman that fails its 30% roll stays put — and still forgets the blow', () =>
+    Effect.gen(function* () {
+      // `endermanTeleportUrge`'s damage branch SHORT-CIRCUITS, which
+      // `test/mob.test.ts` pins on the rule; this is the frame honouring it. The
+      // interesting half is the second assertion: `Stay` must still consume the
+      // flinch, or a cornered enderman becomes one that escapes every hit
+      // eventually.
+      //
+      // It also exercises the constant the reference never ran: its only
+      // damage-side caller passes a hard-coded roll of `0`, so `0 < 0.3` is
+      // always true and a hurt enderman there teleports EVERY time. The frame
+      // feeds a real roll, which is what makes the 30% a behaviour rather than a
+      // comment.
+      const { roster, state, stages } = yield* slice(world([]))
+
+      const seed = seedSuchThat(
+        (candidate) => nextRoll(candidate).roll >= ENDERMAN_DAMAGE_TELEPORT_CHANCE,
+      )
+
+      const spawned = yield* roster.api.spawn({
+        kind: ENDERMAN_KIND,
+        feetPosition: endermanAt,
+        healthPoints: ENDERMAN_HEALTH,
+        behaviour: STRUCK_ENDERMAN,
+      })
+      // No target at all, so nothing but the flinch can make it act — the chase
+      // lane does not run, and the damage branch anchors on `self` and needs no
+      // player.
+      yield* Ref.set(state.rollSeed, seed)
+      yield* runFrame(stages, STRIDE)
+
+      const settled = yield* soleEntity(roster)
+      expect(settled?.feetPosition).toStrictEqual(spawned.feetPosition)
+      expect(settled?.behaviour).toBe(STEADY_ENDERMAN)
+
+      // Exactly one roll was drawn: the urge said `Stay`, so the thirty-two-roll
+      // search budget was never touched.
+      expect(yield* Ref.get(state.rollSeed)).toBe(nextRoll(seed).seed)
+    }),
+  )
+
+  it.effect('REGRESSION: an idle enderman costs one shared step object and does not move the seed', () =>
+    Effect.gen(function* () {
+      // The mob-side allocation property, extended to the behaviour that arrived
+      // with a random number generator attached. A rule that consults a roll is
+      // the obvious place for an idle frame to start allocating again — one
+      // `RollDraw` per mob per frame is DN-GP-1's mistake made out of objects —
+      // so the enderman draws NOTHING when it has nobody to chase and no blow to
+      // answer, and the generator is left exactly where it was found.
+      const { roster, state, stages } = yield* slice(world([]))
+
+      yield* Effect.forEach([0, 1, 2], (index) =>
+        roster.api.spawn({
+          kind: ENDERMAN_KIND,
+          feetPosition: { x: index, y: 64, z: 0 },
+          healthPoints: ENDERMAN_HEALTH,
+          behaviour: STEADY_ENDERMAN,
+        }),
+      )
+      // No target. `despawnVerdict` KEEPS a mob in a world with nobody in it —
+      // 「a world with nobody in it has nobody to be far from」 — so all three
+      // survive to be ignored.
+      const before = yield* roster.api.entities
+      yield* runFrames(stages, 10, STRIDE)
+
+      expect(yield* roster.api.entities).toBe(before)
+      const calls = yield* roster.calls
+      expect(calls.distinctStepObjects).toBe(1)
+      expect(calls.sweeps).toBe(10)
+      expect(yield* Ref.get(state.rollSeed)).toBe(DEFAULT_ROLL_SEED)
+    }),
+  )
+
+  it.effect('DECIDED AND PINNED: standing still is not being stuck — no 41-frame clock', () =>
+    Effect.gen(function* () {
+      // `ENDERMAN_STUCK_TELEPORT_TICKS = 40` is the one branch of the rule the
+      // frame cannot reach, and the temptation is to reach it anyway by counting
+      // frames in which `feetPosition` did not change. Nothing in this repository
+      // writes a mob's position except the teleport itself, so that counter would
+      // be true for every mob on every frame: every enderman in the world would
+      // teleport once every 41 frames, on a measurement carrying no information.
+      //
+      // So the frame passes zero, and this is what pins the decision — sixty
+      // consecutive frames with a target and no blow, in which the ONLY thing
+      // that can move the mob is the 5% chase roll. A frame counter would have
+      // moved it on the 41st.
+      const { roster, state, stages } = yield* slice(world([]))
+
+      const frames = 60
+      const seed = seedSuchThat((candidate) => {
+        let cursor = candidate
+        for (let frame = 0; frame < frames; frame += 1) {
+          const draw = nextRoll(cursor)
+          if (draw.roll < ENDERMAN_CHASE_TELEPORT_CHANCE) {
+            return false
+          }
+          cursor = draw.seed
+        }
+        return true
+      })
+
+      yield* roster.api.spawn({
+        kind: ENDERMAN_KIND,
+        feetPosition: endermanAt,
+        healthPoints: ENDERMAN_HEALTH,
+        behaviour: STEADY_ENDERMAN,
+      })
+      yield* Ref.set(state.targetPosition, playerNear)
+      yield* Ref.set(state.rollSeed, seed)
+      yield* runFrames(stages, frames, STRIDE)
+
+      expect((yield* soleEntity(roster))?.feetPosition).toStrictEqual(endermanAt)
+    }),
+  )
+
+  it.effect('the teleport is deterministic: two runs of one scenario land in the same place', () =>
+    Effect.gen(function* () {
+      // The property `domain/frame-rolls.ts` exists for, applied to the first rule
+      // in this repository that draws a roll on the FRAME path rather than on a
+      // death. The seed is threaded through the sweep as a local cursor rather
+      // than as a `Ref`, so "two runs agree" is also what pins that the cursor is
+      // handed back rather than dropped.
+      const run = Effect.gen(function* () {
+        const { roster, state, stages } = yield* slice(world([]))
+        yield* roster.api.spawn({
+          kind: ENDERMAN_KIND,
+          feetPosition: endermanAt,
+          healthPoints: ENDERMAN_HEALTH,
+          behaviour: STEADY_ENDERMAN,
+        })
+        yield* Ref.set(state.targetPosition, playerNear)
+        yield* runFrames(stages, 40, STRIDE)
+
+        return {
+          position: (yield* soleEntity(roster))?.feetPosition,
+          seed: yield* Ref.get(state.rollSeed),
+        }
+      })
+
+      const first = yield* run
+      const second = yield* run
+
+      expect(second).toStrictEqual(first)
+      // The run has to actually reach the teleport, or it asserts nothing but
+      // that two motionless mobs agree.
+      expect(first.position).not.toStrictEqual(endermanAt)
+      expect(first.seed).not.toBe(DEFAULT_ROLL_SEED)
+    }),
+  )
+
+  it.effect('REGRESSION: a mob whose behaviour does not match its kind runs no rule at all', () =>
+    Effect.gen(function* () {
+      // `repairMobBehaviour` enforces the kind/behaviour agreement on the LOAD
+      // path; `spawn` has no such guard, so the frame path enforces it too. The
+      // failure this prevents is not cosmetic: dispatching on the tag alone would
+      // make a pig carrying a fuse explode, and a creeper carrying a flinch
+      // consult the teleport rule instead of burning down.
+      const { roster, state, stages } = yield* slice(world([]))
+
+      const pig = EntityKind('pig')
+      yield* roster.api.spawn({
+        kind: pig,
+        feetPosition: endermanAt,
+        healthPoints: 10,
+        behaviour: STRUCK_ENDERMAN,
+      })
+      yield* roster.api.spawn({
+        kind: CREEPER_KIND,
+        feetPosition: creeperAt,
+        healthPoints: CREEPER_MAX_HEALTH,
+        behaviour: STRUCK_ENDERMAN,
+      })
+      yield* roster.api.spawn({
+        kind: ENDERMAN_KIND,
+        feetPosition: bystanderAt,
+        healthPoints: ENDERMAN_HEALTH,
+        // Two blocks from the player, which is well inside ignition range.
+        behaviour: DORMANT_FUSE,
+      })
+      yield* Ref.set(state.targetPosition, playerNear)
+
+      const before = yield* roster.api.entities
+      yield* runFrames(stages, 10, STRIDE)
+
+      // Nothing burned, nothing moved, nothing exploded, and the generator never
+      // turned. The roster is the array it was.
+      expect(yield* roster.api.entities).toBe(before)
+      expect((yield* roster.calls).distinctStepObjects).toBe(1)
+      expect(yield* Ref.get(state.rollSeed)).toBe(DEFAULT_ROLL_SEED)
+      expect(yield* Ref.get(state.mobDrops)).toStrictEqual([])
     }),
   )
 })

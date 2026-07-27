@@ -341,11 +341,27 @@ export const gameplayStages = (
         // ---- mobs ----------------------------------------------------------
         //
         // One sweep: despawn what is out of range, burn every creeper's fuse,
-        // collect the blasts. A mob this repository has no rule for costs one
-        // closure call and a shared object; see `mob-frame.ts` on why the step
-        // record is the allocation only this side can remove.
+        // move every enderman that wants to move, collect the blasts. A mob this
+        // repository has no rule for costs one closure call and a shared object;
+        // see `mob-frame.ts` on why the step record is the allocation only this
+        // side can remove.
+        //
+        // THE SEED IS READ BEFORE AND WRITTEN AFTER, which is the one place in
+        // this stage that is not a `Ref.modify`, and `mob-frame.ts`'s header
+        // argues it rather than assuming it: the sweep is an Effect over the
+        // roster, so there is no pure function to hand `Ref.modify`, and the
+        // window it opens is one in which two frames would already be sweeping a
+        // single roster. The drop roll below stays atomic because it can.
         const targetPosition = yield* Ref.get(state.targetPosition)
-        const blasts = yield* sweepMobs(roster, { target: targetPosition, dt })
+        const { blasts, seed: sweptSeed } = yield* sweepMobs(
+          roster,
+          { target: targetPosition, dt },
+          yield* Ref.get(state.rollSeed),
+        )
+        // Unconditional, and cheaper than testing whether it moved: a sweep that
+        // drew nothing hands back the seed it was given, so this writes the same
+        // number it read on every idle frame.
+        yield* Ref.set(state.rollSeed, sweptSeed)
 
         if (blasts.length > 0) {
           const { casualties, disturbed } = yield* resolveBlasts(roster, store, blasts)

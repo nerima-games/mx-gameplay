@@ -144,8 +144,10 @@ const world = Layer.merge(
 )
 ```
 
-`MobBehaviour` は `CreeperFuse | undefined` の別名であり、Mob が増えれば `|` が 1 本増える
-（`domain/entities/mob-frame.ts`）。`repairMobBehaviour` は mc-sim のロード経路が委譲してくる
+`MobBehaviour` は `CreeperFuse | EndermanFlinch | undefined` の別名であり、Mob が増えれば `|` が
+1 本増える（`domain/entities/mob-frame.ts`）。**エンダーマンの追加が実際にその 1 本だった**
+——mc-sim 側の変更は 0 行であり、それは `S` が型パラメータであることの意味そのものである。
+`repairMobBehaviour` は mc-sim のロード経路が委譲してくる
 `BehaviourRepair` で、mc-sim が「知らないと決めた型」を検査できる唯一の場所である。
 **この 2 つを `index.ts` から export しているのは、他のすべての export とは違う理由による**
 ——「テストとプレビューが直接叩くから」ではなく、**ホストが名前で import しなければ正しく配線できないから**である。
@@ -553,11 +555,14 @@ kernel が literal を**足す**分にはこちらが stale になるだけで�
 
 | export | 種別 | 備考 |
 | --- | --- | --- |
-| `MobBehaviour` | **契約に近い** | mc-sim の `S` の具体化。`CreeperFuse \| undefined`。**ホストが名前で import する必要がある**（§2-3） |
-| `repairMobBehaviour` | **契約に近い** | mc-sim の `BehaviourRepair`。ロード経路が委譲してくる、全域かつ不動点の修復（§2-3） |
-| `CREEPER_KIND` | 内部(可視) | 本リポジトリが `EntityKind` を名指しする**唯一の場所**。mc-sim は kind で分岐しない（DN-11）ので綴りを誰も検査しない |
+| `MobBehaviour` | **契約に近い** | mc-sim の `S` の具体化。`CreeperFuse \| EndermanFlinch \| undefined`。**ホストが名前で import する必要がある**（§2-3） |
+| `repairMobBehaviour` | **契約に近い** | mc-sim の `BehaviourRepair`。ロード経路が委譲してくる、全域かつ不動点の修復（§2-3）。kind ごとに腕があり、**形の合わない behaviour は信用せず差し替える** |
+| `EndermanFlinch` / `STEADY_ENDERMAN` / `STRUCK_ENDERMAN` | 内部(可視) | 「直前に殴られたか」だけを持つ 2 タグの union。フィールドが無いので save が壊せる数値も無い。`resolveBlasts` が立て、次の `sweepMobs` が**決定に関わらず消費する**（殴打は 1 フレームのもの） |
+| `CREEPER_KIND` / `ENDERMAN_KIND` | 内部(可視) | 本リポジトリが `EntityKind` を名指しする**唯一の場所**。mc-sim は kind で分岐しない（DN-11）ので綴りを誰も検査しない。`ENDERMAN_KIND` を**スポーンさせるものはまだ無い**（`MobSpawnAttempt` に kind が無く、上限が kind ごとのままだから）ので、到達経路は host の `spawn` とロード経路である |
 | `CREEPER_MAX_HEALTH` / `MAX_HOSTILE_COUNT` | 内部(可視) | kind ごとの定数はルール層のもの（mc-sim §7-6）。`MAX_HOSTILE_COUNT` は `hostile-spawn.ts` が「mc-sim と一緒に到着する」と書いていた数 |
-| `sweepMobs` / `resolveBlasts` / `applySpawnAttempts` | 内部(可視) | 1 フレーム＝ 2 sweep（導火線と爆風）＋ 候補ごとの spawn。非クリーパーは**共有された 1 個の `EntityStep`** を受け取る |
+| `ENDERMAN_TELEPORT_ROLLS` | 内部(可視) | テレポート 1 回が引くロール数（16 試行 × 2）。**当たった試行数ではなく固定の予算を引く**ので、種の進み方は「テレポートしたか」だけに依存する |
+| `MobSweep` | 内部(可視) | `sweepMobs` の戻り値。`{ blasts, seed }` ——エンダーマンがロールを引くので、種は sweep を**通り抜ける** |
+| `sweepMobs` / `resolveBlasts` / `applySpawnAttempts` | 内部(可視) | 1 フレーム＝ 2 sweep（ルールと爆風）＋ 候補ごとの spawn。ルールの選択は **behaviour のタグ**、その保証は **kind** ——両方要る。ルールの無い Mob は**共有された 1 個の `EntityStep`** を受け取る |
 | `rollCasualtyDrops` / `rollSelfDestructDrops` / `rollDropsOfKind` / `dropRulesOfKind` / `dropRollsNeeded` | 内部(可視) | ドロップ表は kind → ルールの表。自爆が何も落とさないのは**ルールに訊いた結果**であって stage の仮定ではない |
 | `distanceBetween` / `cellOf` | 内部(可視) | 測定。`Position`（連続）から `BlockPosition`（セル）へは `Math.floor` であって `Math.round` ではない |
 | `Blast` / `MobCasualty` / `MobFrameSenses` / `BlastResolution` / `CasualtyDrops` / `MobSpawnAttempt` / `MobSpawnOutcome` | 内部(可視) | |

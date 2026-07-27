@@ -47,7 +47,10 @@ import {
 } from '../domain/entity-manager-port'
 import {
   CREEPER_KIND,
+  ENDERMAN_KIND,
   repairMobBehaviour,
+  STEADY_ENDERMAN,
+  STRUCK_ENDERMAN,
   type MobBehaviour,
 } from '../domain/entities/mob-frame'
 import { DORMANT_FUSE } from '../domain/mob/creeper-fuse'
@@ -291,13 +294,60 @@ describe('repairMobBehaviour is the host half of mc-sim’s load path', () => {
     }),
   )
 
-  it.effect('a non-creeper loses whatever it was carrying', () =>
+  it.effect('a kind with no rule loses whatever it was carrying', () =>
     Effect.sync(() => {
       // No rule here would ever read it, and keeping it would make the roster's
       // contents depend on which build wrote the save.
       const pig = EntityKind('pig')
       expect(repairMobBehaviour(pig, DORMANT_FUSE)).toBeUndefined()
+      expect(repairMobBehaviour(pig, STRUCK_ENDERMAN)).toBeUndefined()
       expect(repairMobBehaviour(pig, undefined)).toBeUndefined()
+    }),
+  )
+
+  it.effect('an unreadable flinch becomes STEADY, which is the only direction that does not MOVE a mob', () =>
+    Effect.sync(() => {
+      // The enderman's arm of the repair, and its wrong direction is louder than
+      // the fuse's. Falling back to `Struck` would run the damage branch on the
+      // first frame after a world load and, 30% of the time, teleport a mob 8 to
+      // 32 blocks out of the place the save file put it — for a blow that was
+      // never struck, before the player has had a frame to act in.
+      const untyped = repairMobBehaviour as (kind: EntityKind, behaviour: unknown) => MobBehaviour
+
+      // Readable flinches survive untouched, by identity — both of them, because
+      // `Struck` is a legitimate thing to save: a mob hit on the last frame
+      // before the game was closed is owed its answer.
+      expect(repairMobBehaviour(ENDERMAN_KIND, STEADY_ENDERMAN)).toBe(STEADY_ENDERMAN)
+      expect(repairMobBehaviour(ENDERMAN_KIND, STRUCK_ENDERMAN)).toBe(STRUCK_ENDERMAN)
+
+      for (const junk of [undefined, null, 'Struck', 42, [], { _tag: 'Angry' }, { tag: 'Steady' }]) {
+        expect(untyped(ENDERMAN_KIND, junk)).toStrictEqual(STEADY_ENDERMAN)
+      }
+
+      // A FIELD THE RULE DOES NOT KNOW ABOUT SURVIVES, and that is the same
+      // answer `isCreeperFuse` gives a `{ _tag: 'Dormant', … }` with something
+      // extra on it. The repair is a validator and not a schema: it establishes
+      // that every field a rule READS is present and in range, which is what
+      // makes the frame path's tag test enough. Stripping the rest would allocate
+      // a replacement for every entity on the load path in order to discard data
+      // from a build that may be about to be rolled back to.
+      const embellished = { _tag: 'Steady', writtenBy: 'a later build' }
+      expect(untyped(ENDERMAN_KIND, embellished)).toBe(embellished)
+    }),
+  )
+
+  it.effect('a behaviour of the wrong shape for its kind is REPLACED, not trusted', () =>
+    Effect.sync(() => {
+      // The claim the repair has always made, now that there are two shapes for
+      // it to be wrong about. This is not tidiness: `sweepMobs` reads the tag to
+      // choose which rule runs, so a creeper that kept a `Struck` would tick no
+      // fuse at all and consult the teleport rule instead — a creeper that can
+      // never explode, which no test that only looks at one kind would see.
+      expect(repairMobBehaviour(CREEPER_KIND, STRUCK_ENDERMAN)).toStrictEqual(DORMANT_FUSE)
+      expect(repairMobBehaviour(ENDERMAN_KIND, DORMANT_FUSE)).toStrictEqual(STEADY_ENDERMAN)
+      expect(repairMobBehaviour(ENDERMAN_KIND, { _tag: 'Lit', burnedSecs: 1.4 })).toStrictEqual(
+        STEADY_ENDERMAN,
+      )
     }),
   )
 
@@ -314,12 +364,20 @@ describe('repairMobBehaviour is the host half of mc-sim’s load path', () => {
         { _tag: 'Lit', burnedSecs: 1.4 },
         { _tag: 'Detonated' },
         { _tag: 'Lit', burnedSecs: Number.POSITIVE_INFINITY },
+        { _tag: 'Steady' },
+        { _tag: 'Struck' },
+        { _tag: 'Angry' },
       ]
       const untyped = repairMobBehaviour as (kind: EntityKind, behaviour: unknown) => MobBehaviour
 
-      for (const input of inputs) {
-        const once = untyped(CREEPER_KIND, input)
-        expect(untyped(CREEPER_KIND, once)).toStrictEqual(once)
+      // Over every kind that has an arm, and over the one that has none: a repair
+      // that is a fixed point for creepers and not for endermen would reproduce
+      // exactly what it repairs on the second load.
+      for (const kind of [CREEPER_KIND, ENDERMAN_KIND, EntityKind('pig')]) {
+        for (const input of inputs) {
+          const once = untyped(kind, input)
+          expect(untyped(kind, once)).toStrictEqual(once)
+        }
       }
     }),
   )

@@ -165,6 +165,12 @@ describe('public API surface', () => {
         // the join — the rules above, run over mc-sim's roster
         'CREEPER_KIND',
         'CREEPER_MAX_HEALTH',
+        // the enderman's half of the join: a kind, the two flinch values a host
+        // spawns and restores with, and the search budget one teleport draws
+        'ENDERMAN_KIND',
+        'STEADY_ENDERMAN',
+        'STRUCK_ENDERMAN',
+        'ENDERMAN_TELEPORT_ROLLS',
         'MAX_HOSTILE_COUNT',
         'repairMobBehaviour',
         'dropRulesOfKind',

@@ -13,7 +13,7 @@
 <!-- ------------------------------------------------------------------------- -->
 
 format: 1
-exported declarations: 134
+exported declarations: 140
 supporting declarations: 36
 
 ## Exported
@@ -247,6 +247,12 @@ const ENDERMAN_CHASE_TELEPORT_CHANCE = 0.05;
 const ENDERMAN_DAMAGE_TELEPORT_CHANCE = 0.3;
 ```
 
+### ENDERMAN_KIND  `const`
+
+```ts
+const ENDERMAN_KIND: EntityKind;
+```
+
 ### ENDERMAN_STUCK_TELEPORT_TICKS  `const`
 
 ```ts
@@ -271,10 +277,26 @@ const ENDERMAN_TELEPORT_MAX_BLOCKS = 32;
 const ENDERMAN_TELEPORT_MIN_BLOCKS = 8;
 ```
 
+### ENDERMAN_TELEPORT_ROLLS  `const`
+
+```ts
+const ENDERMAN_TELEPORT_ROLLS: number;
+```
+
 ### EXPERIENCE_MODULE_STAGE_PREFIXES  `const`
 
 ```ts
 const EXPERIENCE_MODULE_STAGE_PREFIXES: readonly ["gameplay:", "redstone:", "ui:", "multiplayer:"];
+```
+
+### EndermanFlinch  `type`
+
+```ts
+type EndermanFlinch = {
+    readonly _tag: 'Steady';
+} | {
+    readonly _tag: 'Struck';
+};
 ```
 
 ### EndermanSenses  `type`
@@ -445,7 +467,7 @@ const MIN_SPAWN_DISTANCE_BLOCKS = 16;
 ### MobBehaviour  `type`
 
 ```ts
-type MobBehaviour = CreeperFuse | undefined;
+type MobBehaviour = CreeperFuse | EndermanFlinch | undefined;
 ```
 
 ### MobCasualty  `type`
@@ -521,6 +543,15 @@ type MobSpawnOutcome = {
 };
 ```
 
+### MobSweep  `type`
+
+```ts
+type MobSweep = {
+    readonly blasts: ReadonlyArray<Blast>;
+    readonly seed: number;
+};
+```
+
 ### NOON_FRACTION  `const`
 
 ```ts
@@ -561,6 +592,18 @@ const SHULKER_CLOSED_ARMOR_POINTS = 20;
 
 ```ts
 const SHULKER_OPENING_TICKS = 20;
+```
+
+### STEADY_ENDERMAN  `const`
+
+```ts
+const STEADY_ENDERMAN: EndermanFlinch;
+```
+
+### STRUCK_ENDERMAN  `const`
+
+```ts
+const STRUCK_ENDERMAN: EndermanFlinch;
 ```
 
 ### ShulkerSenses  `type`
@@ -964,7 +1007,7 @@ const stepShulkerShell: (shell: ShulkerShell, senses: ShulkerSenses) => ShulkerS
 ### sweepMobs  `const`
 
 ```ts
-const sweepMobs: (roster: EntityManagerApi<MobBehaviour>, senses: MobFrameSenses) => Effect.Effect<ReadonlyArray<Blast>>;
+const sweepMobs: (roster: EntityManagerApi<MobBehaviour>, senses: MobFrameSenses, seed: number) => Effect.Effect<MobSweep>;
 ```
 
 ### takeBatch  `const`
