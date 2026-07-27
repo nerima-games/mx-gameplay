@@ -27,6 +27,7 @@
  */
 import { Effect } from 'effect'
 import { DeltaTimeSecs, type StageRegistration } from '../../domain/frame-contract'
+import { FrameServicesLayer } from './frame-services'
 
 /** One frame's worth of simulated time, as a 60 Hz loop would produce it. */
 export const FRAME_DELTA = DeltaTimeSecs(1 / 60)
@@ -58,11 +59,23 @@ export const schedule = (
   return ordered
 }
 
+/**
+ * Resolving the order is only half of what a host does. The other half is
+ * PROVIDING the context the stages run in, which is why `FrameServicesLayer`
+ * is applied here and not left to each caller: a scenario test asks this
+ * function for a frame, and a frame it cannot run is not a frame.
+ *
+ * The layer is empty today, because `FrameServices` is `never` today. It is
+ * still written down — see `./frame-services.ts` for why deleting the pipe is
+ * invisible now and expensive later.
+ */
 export const runFrame = (
   stages: ReadonlyArray<StageRegistration>,
   dt: DeltaTimeSecs = FRAME_DELTA,
 ): Effect.Effect<void> =>
-  Effect.forEach(schedule(stages), (stage) => stage.run(dt), { discard: true })
+  Effect.forEach(schedule(stages), (stage) => stage.run(dt), { discard: true }).pipe(
+    Effect.provide(FrameServicesLayer),
+  )
 
 export const runFrames = (
   stages: ReadonlyArray<StageRegistration>,

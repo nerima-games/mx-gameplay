@@ -43,6 +43,7 @@ import {
   world,
   type LightLevels,
 } from './support/chunk-store-double'
+import { FrameServicesLayer } from './support/frame-services'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
 
 // ---------------------------------------------------------------------------
@@ -450,7 +451,7 @@ describe('the search inside the frame', () => {
         expect(HOSTILE_KINDS).toContain(entity.kind)
         expect(entity.behaviour).toBeDefined()
       }
-    }),
+    }).pipe(Effect.provide(FrameServicesLayer)),
   )
 
   it.effect('does not run in daylight, so a paced search costs nothing at noon', () =>
@@ -476,6 +477,6 @@ describe('the search inside the frame', () => {
       expect(yield* roster.api.count).toBe(0)
       // Not one store call, across ten frames and eight would-be searches.
       expect(yield* store.calls).toStrictEqual({ reads: 0, writes: 0 })
-    }),
+    }).pipe(Effect.provide(FrameServicesLayer)),
   )
 })

@@ -71,6 +71,7 @@ import {
   previewPlacement,
   type Site,
 } from './site'
+import { FrameServicesLayer } from './frame-services'
 import { GRAVEL, SAND, glyphOf, placeableItemOf, type WorldSpec } from './world'
 import { fallsWhenUnsupported, isReplaceable, type HarvestTier } from '../../domain/block-vocabulary'
 import { blockLoot } from '../../domain/interactions/block-loot'
@@ -508,7 +509,9 @@ const deltaTimeUnused = Effect.gen(function* () {
         if (pending === 0 && inbox.length === 0) {
           break
         }
-        yield* Effect.forEach(stages, (stage) => stage.run(DeltaTimeSecs(delta)), { discard: true })
+        yield* Effect.forEach(stages, (stage) => stage.run(DeltaTimeSecs(delta)), {
+          discard: true,
+        }).pipe(Effect.provide(FrameServicesLayer))
         frames += 1
       }
       const weather = yield* Ref.get(site.state.weatherAdvanced)
@@ -700,9 +703,12 @@ const fluidFrontierRace = Effect.gen(function* () {
     { key: 'arrived-mid-stage', kind: 'water' } as FluidWorkItem,
   ])
 
+  // The layer is provided AROUND the race and not inside either branch, so that
+  // building it cannot shift the interleaving this probe is here to measure.
+  // See `./frame-services.ts`: empty today, and not a line to delete.
   yield* Effect.all([fluids?.run(DeltaTimeSecs(1 / 60)) ?? Effect.void, producer], {
     concurrency: 'unbounded',
-  })
+  }).pipe(Effect.provide(FrameServicesLayer))
 
   const after = yield* Ref.get(site.state.fluidFrontier)
   const survived = after.some((item) => item.key === 'arrived-mid-stage')

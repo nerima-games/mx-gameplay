@@ -86,6 +86,7 @@ import {
   type PlacementRequest,
 } from '../../stages/registration'
 import { GAMEPLAY_STAGE_IDS } from '../../stages/stage-ids'
+import { FrameServicesLayer } from './frame-services'
 import { emptyPreviewRoster } from './roster'
 import { AIR, floatingBlocks, makePreviewWorld, type PreviewWorld, type WorldSpec } from './world'
 
@@ -396,7 +397,11 @@ export const stepFrame = (site: Site): Effect.Effect<FrameRow> =>
     // overwrites it every frame from whoever owns the inventory.
     yield* Ref.set(site.state.heldTool, site.tool)
 
-    yield* Effect.forEach(site.stages, (stage) => stage.run(FRAME_DELTA), { discard: true })
+    // A host provides the context its stages run in; see `./frame-services.ts`
+    // for why a layer that is empty today is written down rather than omitted.
+    yield* Effect.forEach(site.stages, (stage) => stage.run(FRAME_DELTA), { discard: true }).pipe(
+      Effect.provide(FrameServicesLayer),
+    )
 
     // Drain the outboxes. `minedItems` and `consumedItems` are explicitly lists
     // the HOST drains and they hold items for the width of one frame; leaving

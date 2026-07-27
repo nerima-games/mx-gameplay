@@ -11,7 +11,13 @@ import { Effect, Layer, Ref } from 'effect'
 import type { ChunkStore } from '../domain/chunk-store-port'
 import type { MobBehaviour } from '../domain/entities/mob-frame'
 import type { EntityManager } from '../domain/entity-manager-port'
-import { DeltaTimeSecs, StageId, type GameModule, type StageRegistration } from '../domain/frame-contract'
+import {
+  DeltaTimeSecs,
+  StageId,
+  type FrameServices,
+  type GameModule,
+  type StageRegistration,
+} from '../domain/frame-contract'
 import { disturb, takeBatch } from '../domain/falling-block'
 import { DEFAULT_ROLL_SEED } from '../domain/frame-rolls'
 import {
@@ -29,6 +35,7 @@ import {
 } from '../stages/stage-ids'
 import { emptyWorldStoreLayer, makeChunkStoreDouble, world } from './support/chunk-store-double'
 import { emptyRosterLayer, makeEntityManagerDouble } from './support/entity-manager-double'
+import { FrameServicesLayer } from './support/frame-services'
 
 const stageIds = (stages: ReadonlyArray<StageRegistration>): ReadonlyArray<string> =>
   stages.map((stage) => stage.id)
@@ -178,7 +185,7 @@ describe('stage behaviour', () => {
       expect(yield* store.calls).toStrictEqual({ reads: 0, writes: 0 })
       const queue = yield* Ref.get(state.fallingBlocks)
       expect(queue.pending.size).toBe(0)
-    }),
+    }).pipe(Effect.provide(FrameServicesLayer)),
   )
 
   it.effect('REGRESSION: a burst of disturbances is spread across ticks by the per-tick move budget', () =>
@@ -197,7 +204,7 @@ describe('stage behaviour', () => {
 
       yield* entities?.run(DeltaTimeSecs(0.016)) ?? Effect.void
       expect((yield* Ref.get(state.fallingBlocks)).pending.size).toBe(100 - 64)
-    }),
+    }).pipe(Effect.provide(FrameServicesLayer)),
   )
 
   it.effect('REGRESSION: lava keys survive the ticks on which lava is not scheduled', () =>
@@ -225,7 +232,7 @@ describe('stage behaviour', () => {
 
       // On the active tick they are consumed.
       expect(yield* Ref.get(state.fluidFrontier)).toStrictEqual([])
-    }),
+    }).pipe(Effect.provide(FrameServicesLayer)),
   )
 
   // REGRESSION: the time of day is mc-sim's. It survives save/load, which is
@@ -350,7 +357,7 @@ describe('stage behaviour', () => {
       // `timeOfDaySecs` Ref violated, and it is asserted rather than inferred
       // from a missing key.
       expect(yield* Ref.get(state.timeOfDay)).toBe(written)
-    }),
+    }).pipe(Effect.provide(FrameServicesLayer)),
   )
 
   // REGRESSION-SHAPED: the paragraph in `stages/registration.ts` that this file
@@ -419,7 +426,7 @@ describe('stage behaviour', () => {
       // The fluid stage counts ticks rather than seconds, so a zero delta still
       // advances it by one — what must not happen is a crash or a divide by dt.
       expect(yield* Ref.get(state.tickCount)).toBe(before + 1)
-    }),
+    }).pipe(Effect.provide(FrameServicesLayer)),
   )
 
   it.effect('each call to makeGameplayFrameState yields independent state (re-entrant initialisation)', () =>
@@ -575,14 +582,25 @@ describe('the module contract has caught up with this file’s shape', () => {
   // would be asking kernel to name mc-worldgen's services — which the tier
   // model (plan.md §2.2) forbids, and which no amount of local testing would
   // reveal until mc-compose tried to build a frame.
+  //
+  // The annotation below says `FrameServices` and NOT `never`, and the
+  // difference is the whole assertion. `never` says 「`run` demands nothing」,
+  // which is true only by the accident that this repository's mirror aliases
+  // `FrameServices` to `never` while kernel aliases it to `ClockPort`. What
+  // this test means — and what the paragraph above claims — is 「`run` demands
+  // nothing BEYOND the frame contract」, and `FrameServices` is how that
+  // sentence is spelled. It is the same assertion today, because the alias is
+  // `never` today; it is still the right assertion after the repoint, when a
+  // stage that reached for `ChunkStore` would fail this line exactly as it
+  // would have before.
   it.effect('REGRESSION: the store is acquired at registration, never demanded by `run`', () =>
     Effect.gen(function* () {
       const stages = yield* registeredStages
 
       for (const stage of stages) {
-        const runnable: Effect.Effect<void, never, never> = stage.run(DeltaTimeSecs(0.016))
+        const runnable: Effect.Effect<void, never, FrameServices> = stage.run(DeltaTimeSecs(0.016))
         yield* runnable
       }
-    }),
+    }).pipe(Effect.provide(FrameServicesLayer)),
   )
 })
