@@ -22,7 +22,7 @@
  */
 import { Effect, Ref } from 'effect'
 import { positionKeyOf } from '../../domain/block-position-key'
-import { fallsWhenUnsupported, isReplaceable, type BlockId } from '../../domain/chunk-store-port'
+import { type BlockId } from '../../domain/chunk-store-port'
 import { dayPhase, hostileSpawnsAllowed, isNight } from '../../domain/day-night'
 import {
   applyDamage,
@@ -72,7 +72,7 @@ import {
   type Site,
 } from './site'
 import { GRAVEL, SAND, glyphOf, placeableItemOf, type WorldSpec } from './world'
-import type { HarvestTier } from '../../domain/block-vocabulary'
+import { fallsWhenUnsupported, isReplaceable, type HarvestTier } from '../../domain/block-vocabulary'
 import { blockLoot } from '../../domain/interactions/block-loot'
 import { DEFAULT_ROLL_SEED, drawRolls } from '../../domain/frame-rolls'
 import {

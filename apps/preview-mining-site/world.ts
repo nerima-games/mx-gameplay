@@ -49,8 +49,6 @@
 import { Effect, Ref } from 'effect'
 import {
   AIR_BLOCK_ID,
-  fallsWhenUnsupported,
-  isReplaceable,
   type BlockId,
   type BlockPosition,
   type BlockReading,
@@ -62,11 +60,17 @@ import {
   type ChunkStoreApi,
   type ChunkNeighbours,
 } from '../../domain/chunk-store-port'
-import { blockTypeOfId, itemOfBlock, type PlaceableItemType } from '../../domain/block-vocabulary'
+import {
+  blockTypeOfId,
+  fallsWhenUnsupported,
+  isReplaceable,
+  itemOfBlock,
+  type PlaceableItemType,
+} from '../../domain/block-vocabulary'
 
 /**
  * Block ids, transcribed from kernel's `BLOCK_REGISTRY` exactly as
- * `domain/chunk-store-port.ts` transcribes the two capability sets.
+ * `domain/block-vocabulary.ts` transcribes the four capability sets.
  *
  * The preview NAMES blocks and the rules do not; that asymmetry is the point of
  * DN-GP-1's capability table. `LAVA` is here specifically because the mirror's

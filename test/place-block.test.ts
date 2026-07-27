@@ -13,7 +13,7 @@
  *   LAVA IS REPLACEABLE. `block-service-place-load.ts:48-58` asks
  *   `existing === 'AIR' || existing === 'WATER'` — a hand-written two-element
  *   list with a comment about underwater building — so a lava cell was refused
- *   as "block already exists". `domain/chunk-store-port.ts`'s own comment
+ *   as "block already exists". `domain/block-vocabulary.ts`'s own comment
  *   records the two halves of that omission and says the second is placement's.
  *
  *   PLACING INSIDE YOURSELF. `blockOverlapsPlayer` (`block-utils.ts:66-74`) is
@@ -36,14 +36,13 @@
 import { describe, expect, it } from '@effect/vitest'
 import { Effect, Ref } from 'effect'
 import { positionKeyOf } from '../domain/block-position-key'
+import { AIR_BLOCK_ID, type BlockPosition } from '../domain/chunk-store-port'
 import {
-  AIR_BLOCK_ID,
+  blockIdOf,
   canSupportAttachments,
   isReplaceable,
   validSpawnSurface,
-  type BlockPosition,
-} from '../domain/chunk-store-port'
-import { blockIdOf } from '../domain/block-vocabulary'
+} from '../domain/block-vocabulary'
 import {
   blockOverlapsPlayer,
   isSupportSensitive,

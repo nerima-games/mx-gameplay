@@ -37,7 +37,7 @@
  * fork, and step 3 above narrows rather than widens. The full list is here
  * because a transcription that is a SUBSET cannot be compared mechanically:
  * mc-dev-meta's `pnpm check:mirrors` is what caught `lava` missing from this
- * repository's `REPLACEABLE_IDS` (`./chunk-store-port`), and it caught it by
+ * repository's `REPLACEABLE_IDS` (`./block-vocabulary`), and it caught it by
  * diffing a whole set against kernel's. A partial mirror answers "is it a
  * subset?", which is true of a stale mirror too.
  *

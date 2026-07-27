@@ -43,13 +43,12 @@ import { Effect } from 'effect'
 import { above, below, positionKeyOf, positionOfKey } from '../block-position-key'
 import {
   AIR_BLOCK_ID,
-  fallsWhenUnsupported,
-  isReplaceable,
   type BlockId,
   type BlockReading,
   type BlockWriteOutcome,
   type ChunkStoreApi,
 } from '../chunk-store-port'
+import { fallsWhenUnsupported, isReplaceable } from '../block-vocabulary'
 import type { PositionKey } from '../position-key'
 
 export type FallingBlockMoves = {

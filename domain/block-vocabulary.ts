@@ -1,7 +1,7 @@
 /**
  * PROVISIONAL LOCAL MIRROR of `@nerima-games/mc-kernel`'s `domain/block-type.ts`,
- * `domain/block-item.ts`, `domain/block-harvest.ts` and the two DROP columns of
- * `domain/block-registry.ts`.
+ * `domain/block-item.ts`, `domain/block-harvest.ts`, `domain/block-capabilities.ts`
+ * and the DROP and CAPABILITY columns of `domain/block-registry.ts`.
  *
  * ---------------------------------------------------------------------------
  * This module is scheduled for deletion. Do not build on it.
@@ -19,23 +19,41 @@
  * pins that absence.
  *
  * ---------------------------------------------------------------------------
- * Why this exists at all, when `./chunk-store-port` already mirrors the registry
+ * THIS FILE IS WHERE EVERY KERNEL-SOURCED BLOCK FACT LIVES, AND IT WAS NOT
  * ---------------------------------------------------------------------------
  *
- * It mirrors DIFFERENT COLUMNS of the same kernel table, and the split is along
- * the line kernel itself drew. `./chunk-store-port`'s "Capability lookups"
- * section transcribes CAPABILITY membership — `fallsWhenUnsupported`,
- * `replaceable`, `validSpawnSurface`, `canSupportAttachments` — every one of
- * which is a boolean that `capabilityOfBlockId` answers and that
- * mc-dev-meta's `pnpm check:mirrors` probes as a SET. This file transcribes the
- * two STRUCT-valued columns, `harvestTool` and `drops`, which kernel keeps in
- * their own file for exactly this reason (`mc-kernel/domain/block-harvest.ts`,
- * quoting its audit §7: 「struct のため最も揺れやすい […] この 2 フィールドを別
- * ファイルに切り出して差分レビューを容易にすること」).
+ * The four capability predicates at the bottom of this file used to sit in
+ * `./chunk-store-port`, under a heading that said in as many words that they
+ * mirrored `mc-kernel/domain/block-registry.ts`. That file mirrors MC-WORLDGEN,
+ * and its header promises that deleting it and repointing every import at
+ * `@nerima-games/mc-worldgen` will typecheck. For these four the promise was
+ * false: mc-worldgen has never exported `fallsWhenUnsupported`, `isReplaceable`,
+ * `validSpawnSurface` or `canSupportAttachments`, and on the day of the repoint
+ * they would simply have vanished. One mirror file was mirroring two sources.
  *
- * Putting them in `./chunk-store-port` would have meant a mirror of
- * mc-worldgen's SERVICE growing a mirror of kernel's DROP TABLE, and the two
- * have different publication dates and different deletion steps.
+ * They live here now because a mirror's home is decided by WHOSE BARREL REPLACES
+ * IT, not by which rule reads it. `capabilityOfBlockId(id, flag)` is kernel's,
+ * this file is the mirror kernel's barrel replaces, so this is the file whose
+ * deletion step makes them appear. The move changes no membership and no
+ * polarity; the sets below are the same sets, comments and all.
+ *
+ * The split that remains is still kernel's own. Kernel keeps the two STRUCT-
+ * valued columns in their own file (`mc-kernel/domain/block-harvest.ts`, audit
+ * §7: 「struct のため最も揺れやすい […] この 2 フィールドを別ファイルに切り出して
+ * 差分レビューを容易にすること」) and the boolean CAPABILITY columns in
+ * `domain/block-capabilities.ts`. Both are kernel's, both are transcribed here,
+ * and the sections below are ordered as kernel orders them.
+ *
+ * ---------------------------------------------------------------------------
+ * Why `BlockId` is still imported from `./chunk-store-port`
+ * ---------------------------------------------------------------------------
+ *
+ * It is kernel's type, so by the rule above it belongs here — and it is NOT
+ * moved, deliberately. `./chunk-store-port` needs the alias for the service's
+ * own signatures and mc-worldgen's barrel re-exports kernel's `BlockId`, so the
+ * one spelling in this repository survives either repoint intact. A second local
+ * alias would be a second spelling of one concept, which is the defect this move
+ * exists to undo rather than to repeat.
  *
  * ---------------------------------------------------------------------------
  * `blockTypeOfId` IS THE BRIDGE THE MINING PATH WAS MISSING
@@ -58,10 +76,10 @@
  * ---------------------------------------------------------------------------
  *
  * `./item-vocabulary`'s header states the rule and it is repeated here because
- * this file has three rosters rather than one: a transcription that is a SUBSET
- * cannot be compared mechanically. `pnpm check:mirrors` caught `lava` missing
- * from `./chunk-store-port`'s `REPLACEABLE_IDS` by diffing a whole set against
- * kernel's, and "is it a subset?" is true of a stale mirror too.
+ * this file has several rosters rather than one: a transcription that is a
+ * SUBSET cannot be compared mechanically. `pnpm check:mirrors` caught `lava`
+ * missing from `REPLACEABLE_IDS` below by diffing a whole set against kernel's,
+ * and "is it a subset?" is true of a stale mirror too.
  *
  * The drift direction is one-way and worth stating: kernel ADDING a block or an
  * item leaves this file stale and nothing else, while kernel CHANGING a drop rule
@@ -431,11 +449,11 @@ export type BlockDropRegistryEntry = {
  * THE drop table, transcribed from kernel's `BLOCK_REGISTRY`.
  *
  * Ids 0-10 reproduce mc-worldgen's `BLOCK` constant exactly; 11+ are appended in
- * the order the blocks were needed. THAT IS THE FACT `./chunk-store-port`'s
- * `REPLACEABLE_IDS` got wrong — its transcription was written when the table
- * stopped at 10 and did not follow the append, so `lava` was missing from the
- * replaceable set for as long as the file existed. Every row below is present,
- * including the boring ones, so the same omission cannot hide here.
+ * the order the blocks were needed. THAT IS THE FACT `REPLACEABLE_IDS` below got
+ * wrong — its transcription was written when the table stopped at 10 and did not
+ * follow the append, so `lava` was missing from the replaceable set for as long
+ * as it existed. Every row below is present, including the boring ones, so the
+ * same omission cannot hide here.
  *
  * A row states only its differences from kernel's two defaults, which is why
  * most of them are `DEFAULT_HARVEST_TOOL` and `DEFAULT_BLOCK_DROP`: a row with
@@ -558,7 +576,7 @@ export const blockIdOf = (type: BlockType): BlockId | undefined => ID_BY_TYPE.ge
  * Chunk buffer byte -> the item that lands in the inventory. THE mining bridge.
  *
  * One call, with no block name on the read side, exactly as
- * `./chunk-store-port`'s `fallsWhenUnsupported` is for the falling-block rule.
+ * `fallsWhenUnsupported` below is for the falling-block rule.
  * `./interactions/block-loot` is its only caller and adds the random half.
  *
  * TOTAL, and `undefined` is a first-class answer meaning "nothing drops": the
@@ -582,3 +600,173 @@ export const dropOfBlockId = (
     ? undefined
     : resolveDrop(entry.harvestTool, entry.drops, entry.type, context)
 }
+
+// ---------------------------------------------------------------------------
+// The registry's capability columns — mirrors mc-kernel/domain/block-capabilities.ts
+// ---------------------------------------------------------------------------
+
+/**
+ * The block ids this repository's rules ask about, as CAPABILITY membership.
+ *
+ * Restated from kernel's `BLOCK_REGISTRY` rather than derived here. Note what
+ * the rules do NOT do: name a block. The reference implementation asked
+ * `blockTypeToIndex('SAND')` in 229 places across 51 files (plan.md §3.1), and
+ * that scatter is what made engine/content separation impossible. Adding a
+ * falling block should be one row in kernel's table and no change here at all —
+ * which is exactly what `test/vertical-slice.test.ts` checks by running the
+ * same rule over gravel.
+ *
+ * When mc-kernel is published these collapse into
+ * `capabilityOfBlockId(id, 'fallsWhenUnsupported')`,
+ * `capabilityOfBlockId(id, 'replaceable')`,
+ * `capabilityOfBlockId(id, 'validSpawnSurface')` and
+ * `capabilityOfBlockId(id, 'canSupportAttachments')` — which is a step this file
+ * can promise and `./chunk-store-port`, where they used to live, could not.
+ */
+const FALLS_WHEN_UNSUPPORTED_IDS: ReadonlySet<BlockId> = new Set<BlockId>([
+  5, // sand
+  8, // gravel
+])
+
+const REPLACEABLE_IDS: ReadonlySet<BlockId> = new Set<BlockId>([
+  0, // air
+  6, // water
+  // Lava was MISSING here until mc-dev-meta's `pnpm check:mirrors` compared this
+  // set against mc-kernel's `capabilityOfBlockId(id, 'replaceable')` and found
+  // the disagreement. kernel's registry says ids 0-10 reproduce mc-worldgen's
+  // BLOCK constant and 11+ are appended as blocks are needed — this transcription
+  // was written when the table stopped at 10 and did not follow the append.
+  //
+  // The consequence was not cosmetic: falling sand and gravel did not displace
+  // lava, and placement treated a lava cell as occupied. The mirror test passed
+  // throughout, because it pins the transcription rather than the source.
+  // That is the whole reason the cross-repository check exists.
+  11, // lava
+])
+
+/**
+ * The blocks a mob may NOT stand on. A NEGATIVE list, and that is kernel's shape
+ * rather than a preference of this file.
+ *
+ * `validSpawnSurface` is one of kernel's three flags that default to `true`
+ * (`BLOCK_CAPABILITY_DEFAULTS`, `TRUE_BY_DEFAULT_CAPABILITY_FLAGS`), because for
+ * an ordinary opaque cube the true answer IS true and the reference
+ * implementation correspondingly stored `NON_SPAWN_SURFACE_BLOCK_IDS`
+ * (`spawn-selection-search.ts:41-60`) rather than the complement. Transcribing
+ * the negative set keeps two properties for free that the positive set would
+ * have to remember:
+ *
+ *   - an id this build cannot name resolves to `true`, exactly as kernel's
+ *     `capabilityOfBlockId` does (an unknown byte reads as an ordinary cube);
+ *   - adding an ordinary block to kernel's registry needs no edit here.
+ *
+ * DO NOT collapse this into a general `solid` test. kernel's audit §4.9 is
+ * explicit that `passable`, `suffocates`, `canSupportAttachments`,
+ * `validSpawnSurface` and `collisionShape` are five INDEPENDENT capabilities
+ * with different membership, and it names the disagreements: glass is solid for
+ * collision but is not a spawn surface, leaves are solid for collision but are
+ * not a spawn surface, snow is non-supporting but not passable. The reference
+ * kept two near-duplicate negative lists (`spawn-selection-search.ts:41-60` and
+ * `village-placement-surface.ts:6-12`) that DISAGREED with each other; a spawn
+ * rule that re-derives the answer from "is it solid" is how a third one starts.
+ */
+const NON_SPAWN_SURFACE_IDS: ReadonlySet<BlockId> = new Set<BlockId>([
+  0, // air — nothing to stand on
+  6, // water
+  // oak_log was MISSING here, and so was kernel's own row: both resolved to the
+  // default `true` while the reference implementation lists WOOD in
+  // `NON_SPAWN_SURFACE_BLOCK_IDS` ("log — semi-solid / tree") and again in
+  // `VILLAGE_NON_GROUND_IDS`. Mobs and villages were treating the top of a tree
+  // trunk as ground. Unlike the lava case above, `pnpm check:mirrors` could NOT
+  // have caught this: `MIRROR_SPECS` probed `fallsWhenUnsupported` and
+  // `replaceable` and nothing else, so this transcription and kernel agreed — on
+  // the wrong answer. A `validSpawnSurface` probe has been added alongside the fix.
+  9, // oak_log
+  10, // oak_leaves — solid for collision, and still not ground
+  11, // lava
+  13, // glass — solid for collision, and still not ground
+  14, // torch
+  // Kernel's roster completed the reference's `PASSABLE_BLOCK_IDS` and the
+  // non-`full` collision shapes. These are the additions the reference's
+  // `NON_SPAWN_SURFACE_BLOCK_IDS` names.
+  18, // ladder
+  19, // cobweb
+  20, // sapling
+  21, // dandelion
+  22, // poppy
+  23, // brown_mushroom
+  24, // red_mushroom
+  25, // tall_grass
+  26, // fern
+  27, // sugar_cane
+  28, // lily_pad
+  33, // cactus — collides, and is still not ground
+  34, // pressure_plate
+  // DELIBERATELY ABSENT, and this is transcription rather than oversight:
+  // `rail` (31), `powered_rail` (32), `kelp` (29), `seagrass` (30) and
+  // `stone_slab` (35) are passable-or-partial blocks that the reference's
+  // negative list does NOT contain, so kernel resolves them to `true` and so
+  // must this set. Adding them "for consistency" would be the same class of
+  // error as omitting oak_log, in the opposite direction — and the probe now
+  // fails either way.
+])
+
+/**
+ * The blocks nothing may be ATTACHED TO. A NEGATIVE list, and kernel's shape for
+ * the same reason `NON_SPAWN_SURFACE_IDS` is one: `canSupportAttachments` is the
+ * second of kernel's three flags that default to `true`
+ * (`BLOCK_CAPABILITY_DEFAULTS`), because for an ordinary opaque cube the true
+ * answer IS true and the reference correspondingly stores
+ * `NON_SUPPORTING_BLOCK_TYPES` (`block-support.ts:47-61`) rather than the
+ * complement.
+ *
+ * THIS IS NOT `NON_SPAWN_SURFACE_IDS` AND MUST NOT BE COLLAPSED INTO IT, even
+ * though the two lists overlap heavily. kernel's audit §4.9 names the
+ * disagreement in this very pair: SNOW is NON-SUPPORTING but IS a valid spawn
+ * surface — a mob may stand on snow and a torch may not be planted in it — and
+ * `oak_log` / `oak_leaves` / `glass` are the mirror image, valid supports that
+ * are not ground. Five independent capabilities with different membership is
+ * exactly what the audit measured, and it measured it by finding five
+ * near-duplicate lists in the reference that DISAGREED.
+ *
+ * Read about the block BELOW a placement, by `./interactions/place-block`.
+ */
+const NON_SUPPORTING_IDS: ReadonlySet<BlockId> = new Set<BlockId>([
+  0, // air — nothing to attach to
+  6, // water
+  7, // snow — non-supporting, and STILL a valid spawn surface (audit §4.9)
+  11, // lava
+  14, // torch
+  // `SURFACE_PLANT_CAPABILITIES` in kernel's table, which is one constant
+  // because `block-support.ts:4-12` is one set (`SURFACE_PLANT_BLOCK_TYPES`)
+  // fed into three different negative lists.
+  20, // sapling
+  21, // dandelion
+  22, // poppy
+  23, // brown_mushroom
+  24, // red_mushroom
+  25, // tall_grass
+  26, // fern
+  27, // sugar_cane
+  28, // lily_pad
+  31, // rail
+  32, // powered_rail
+  33, // cactus
+  34, // pressure_plate
+  // DELIBERATELY ABSENT, and this is transcription rather than oversight:
+  // `ladder` (18), `cobweb` (19), `kelp` (29) and `seagrass` (30) are passable
+  // blocks that the reference's `NON_SUPPORTING_BLOCK_TYPES` does NOT contain,
+  // so kernel resolves them to `true` and so must this set. Adding them "for
+  // consistency" with `PASSABLE_BLOCK_IDS` would be the same class of error as
+  // omitting oak_log from the spawn list, in the opposite direction.
+])
+
+export const fallsWhenUnsupported = (block: BlockId): boolean => FALLS_WHEN_UNSUPPORTED_IDS.has(block)
+
+export const isReplaceable = (block: BlockId): boolean => REPLACEABLE_IDS.has(block)
+
+/** Total, like kernel's: an id outside the transcription reads as ordinary ground. */
+export const validSpawnSurface = (block: BlockId): boolean => !NON_SPAWN_SURFACE_IDS.has(block)
+
+/** Total, like kernel's: an id outside the transcription reads as an ordinary support. */
+export const canSupportAttachments = (block: BlockId): boolean => !NON_SUPPORTING_IDS.has(block)

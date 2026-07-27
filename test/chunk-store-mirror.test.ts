@@ -23,14 +23,25 @@
  *
  * So the shape is asserted in both directions, at compile time, and the tag key
  * is asserted literally.
+ *
+ * ---------------------------------------------------------------------------
+ * The capability assertions that used to be here
+ * ---------------------------------------------------------------------------
+ *
+ * They are in `./block-vocabulary-mirror.test.ts`, unchanged, because the
+ * predicates they cover are in `domain/block-vocabulary.ts` now. They were never
+ * really about `ChunkStore`: `fallsWhenUnsupported`, `isReplaceable`,
+ * `validSpawnSurface` and `canSupportAttachments` are mc-KERNEL's flags, and
+ * this file pins a mirror of mc-worldgen. Having them here made this test read
+ * as though it covered the repoint promise for them, which it could not — the
+ * promise was false the whole time and it took mc-dev-meta's `pnpm
+ * check:mirrors` to say so.
  */
 import { describe, expect, it } from '@effect/vitest'
 import { Effect, type Layer, type Scope } from 'effect'
 import {
+  AIR_BLOCK_ID,
   ChunkStore,
-  fallsWhenUnsupported,
-  isReplaceable,
-  validSpawnSurface,
   type BlockId,
   type BlockPosition,
   type BlockReading,
@@ -105,85 +116,45 @@ describe('the ChunkStore mirror', () => {
       // breaking change for consumers of mx-gameplay.
       const barrel = yield* Effect.promise(() => import('../index'))
       expect(Object.keys(barrel)).not.toContain('ChunkStore')
-      expect(Object.keys(barrel)).not.toContain('fallsWhenUnsupported')
+      // `AIR_BLOCK_ID` rather than `fallsWhenUnsupported`, which this module no
+      // longer exports — see the note on the capability move below. Naming a
+      // symbol the file does not have would assert nothing.
+      expect(Object.keys(barrel)).not.toContain('AIR_BLOCK_ID')
     }),
   )
 
-  it.effect('reads capabilities, and knows about exactly the ids kernel says carry them', () =>
-    Effect.sync(() => {
-      // Transcribed from mc-kernel's `BLOCK_REGISTRY`: sand is 5, gravel is 8,
-      // and they are the only two rows with `fallsWhenUnsupported`.
-      expect(fallsWhenUnsupported(5)).toBe(true)
-      expect(fallsWhenUnsupported(8)).toBe(true)
-      expect(fallsWhenUnsupported(2)).toBe(false)
-      expect(fallsWhenUnsupported(0)).toBe(false)
-
-      // air, water AND lava. Not stone, and not glass — `replaceable` is not
-      // "non-solid", which kernel's audit §4.9 spends a section on.
+  it.effect('hands back only what mc-worldgen\'s barrel can replace', () =>
+    Effect.gen(function* () {
+      // THE ASSERTION THE CAPABILITY MOVE ADDED, and the one this file was
+      // missing when it mattered. `domain/chunk-store-port.ts` used to export
+      // `fallsWhenUnsupported`, `isReplaceable`, `validSpawnSurface` and
+      // `canSupportAttachments` — mc-KERNEL's capability flags, in a file whose
+      // header promises that repointing every import at
+      // `@nerima-games/mc-worldgen` will typecheck. mc-worldgen exports none of
+      // the four, so the promise was false and the repoint would have deleted
+      // them. They live in `../domain/block-vocabulary` now, which is the mirror
+      // mc-kernel's barrel replaces.
       //
-      // Lava is here because it was MISSING, and this assertion could not see
-      // that: it pins what this file transcribes, not what mc-kernel's registry
-      // says. mc-dev-meta's `pnpm check:mirrors` found the disagreement by
-      // importing both and diffing all 256 ids — that check is the one that
-      // guards this set, and this one only guards against a careless local edit.
-      expect(isReplaceable(0)).toBe(true)
-      expect(isReplaceable(6)).toBe(true)
-      expect(isReplaceable(11)).toBe(true)
-      expect(isReplaceable(2)).toBe(false)
-    }),
-  )
+      // This does NOT re-check what mc-dev-meta's `pnpm check:mirrors` checks —
+      // that gate imports both packages and can see mc-worldgen's real barrel,
+      // and this repository cannot. What it pins is the LOCAL half: the four
+      // must not drift back into a mirror of a package that does not have them.
+      const port = yield* Effect.promise(() => import('../domain/chunk-store-port'))
+      for (const capability of [
+        'fallsWhenUnsupported',
+        'isReplaceable',
+        'validSpawnSurface',
+        'canSupportAttachments',
+      ]) {
+        expect(Object.keys(port)).not.toContain(capability)
+      }
 
-  it.effect('validSpawnSurface is a NEGATIVE set, so it defaults to true like kernel’s', () =>
-    Effect.sync(() => {
-      // The third capability this repository reads, and the only one of the
-      // three whose kernel default is `true` (`TRUE_BY_DEFAULT_CAPABILITY_FLAGS`
-      // — the reference stored `NON_SPAWN_SURFACE_BLOCK_IDS` rather than the
-      // complement). Transcribing the negative set is what makes the two
-      // properties below hold without a second line of code.
-      expect(validSpawnSurface(2)).toBe(true) // stone
-      expect(validSpawnSurface(5)).toBe(true) // sand — falling, and still ground
-      expect(validSpawnSurface(0)).toBe(false) // air
-      expect(validSpawnSurface(6)).toBe(false) // water
-      expect(validSpawnSurface(11)).toBe(false) // lava
-
-      // kernel's audit §4.9: SOLID FOR COLLISION and still not a spawn surface.
-      // If a future edit collapses this into a `solid` test, these two flip and
-      // mobs start spawning in the canopy — the bug
-      // `block-collision-predicates.ts:18-21` records from the other direction.
-      expect(validSpawnSurface(10)).toBe(false) // oak_leaves
-      expect(validSpawnSurface(13)).toBe(false) // glass
-
-      // oak_log. This one was WRONG in both this file and kernel until the
-      // reference was re-read: `NON_SPAWN_SURFACE_BLOCK_IDS` lists WOOD, and
-      // `VILLAGE_NON_GROUND_IDS` lists it again. Nothing caught it because the
-      // mirror check probed only `fallsWhenUnsupported` and `replaceable` — two
-      // agreeing transcriptions of a third capability are not evidence.
-      expect(validSpawnSurface(9)).toBe(false)
-
-      // The blocks kernel's roster added that the reference's negative list
-      // names. Spot-checked across the groups rather than exhaustively: the
-      // exhaustive comparison is `pnpm check:mirrors`, which now probes this
-      // capability over every representable id.
-      expect(validSpawnSurface(18)).toBe(false) // ladder
-      expect(validSpawnSurface(19)).toBe(false) // cobweb
-      expect(validSpawnSurface(21)).toBe(false) // dandelion
-      expect(validSpawnSurface(28)).toBe(false) // lily_pad
-      expect(validSpawnSurface(33)).toBe(false) // cactus — collides, still not ground
-      expect(validSpawnSurface(34)).toBe(false) // pressure_plate
-
-      // ...and the ones the reference's list OMITS, which must stay `true`.
-      // These are the assertions that fail if someone "completes" the negative
-      // set by intuition: a rail is passable and is still, per the reference, a
-      // legal place for a mob to stand.
-      expect(validSpawnSurface(29)).toBe(true) // kelp
-      expect(validSpawnSurface(30)).toBe(true) // seagrass
-      expect(validSpawnSurface(31)).toBe(true) // rail
-      expect(validSpawnSurface(32)).toBe(true) // powered_rail
-      expect(validSpawnSurface(35)).toBe(true) // stone_slab
-
-      // Total, and defaulting to "ordinary opaque cube" exactly as kernel's
-      // `capabilityOfBlockId` does for an id it cannot name.
-      expect(validSpawnSurface(200)).toBe(true)
+      // ...and the constant that DID survive the test, because mc-worldgen's
+      // `domain/kernel-vocabulary.ts` re-exports kernel's `AIR_BLOCK_ID`. The
+      // rule is whose barrel replaces the symbol, not whose table defines it,
+      // and this is the row where the two answers differ.
+      expect(Object.keys(port)).toContain('AIR_BLOCK_ID')
+      expect(AIR_BLOCK_ID).toBe(0)
     }),
   )
 

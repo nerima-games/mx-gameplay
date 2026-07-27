@@ -18,7 +18,7 @@
  * The surface test is kernel's capability, NOT a block list
  * ---------------------------------------------------------------------------
  *
- * `validSpawnSurface` comes from `../chunk-store-port`, which transcribes
+ * `validSpawnSurface` comes from `../block-vocabulary`, which transcribes
  * kernel's registry. This matters more than it looks, and it is the one place
  * this file deliberately does BETTER than the reference rather than porting it:
  *
@@ -69,7 +69,8 @@
  * roster. They arrive with mc-sim, and until then a rule that pretended to make
  * them would be a second owner of the mob population.
  */
-import { validSpawnSurface, AIR_BLOCK_ID, type BlockId } from '../chunk-store-port'
+import { AIR_BLOCK_ID, type BlockId } from '../chunk-store-port'
+import { validSpawnSurface } from '../block-vocabulary'
 import { hostileSpawnsAllowed } from '../day-night'
 
 /**

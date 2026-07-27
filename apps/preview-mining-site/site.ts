@@ -66,8 +66,13 @@
  */
 import { Effect, Ref } from 'effect'
 import { below as belowOf, positionKeyOf } from '../../domain/block-position-key'
-import { fallsWhenUnsupported, type BlockId, type BlockPosition } from '../../domain/chunk-store-port'
-import { blockIdOf, type HarvestTier, type PlaceableItemType } from '../../domain/block-vocabulary'
+import { type BlockId, type BlockPosition } from '../../domain/chunk-store-port'
+import {
+  blockIdOf,
+  fallsWhenUnsupported,
+  type HarvestTier,
+  type PlaceableItemType,
+} from '../../domain/block-vocabulary'
 import { FALLING_BLOCK_MOVES_PER_TICK } from '../../domain/falling-block'
 import { DeltaTimeSecs, type StageRegistration } from '../../domain/frame-contract'
 import { NO_TOOL, type BlockLootContext, type MinedItem } from '../../domain/interactions/block-loot'

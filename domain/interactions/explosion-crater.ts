@@ -54,7 +54,7 @@
  * ---------------------------------------------------------------------------
  *
  * BLAST RESISTANCE. Vanilla stops a blast at obsidian and bedrock, and kernel's
- * capability audit has no `blastResistance` flag for `../chunk-store-port` to
+ * capability audit has no `blastResistance` flag for `../block-vocabulary` to
  * transcribe. Inventing a block list here is precisely the scatter plan.md §3.1
  * measured (`blockTypeToIndex('SAND')` in 229 places), and the reference has no
  * such test either — its sphere sets every cell to AIR. So it is ported as it

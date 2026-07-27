@@ -134,7 +134,7 @@ export const SCENARIOS: ReadonlyArray<Scenario> = [
     name: 'lava-pit',
     title: 'sand into water and lava — both are `replaceable`, and lava once was not',
     notes: [
-      'the mirror in `domain/chunk-store-port.ts:229-243` records lava MISSING from the replaceable set',
+      'the mirror in `domain/block-vocabulary.ts` records lava MISSING from `REPLACEABLE_IDS`',
       'the symptom was exactly this: sand stopped on top of lava instead of sinking into it',
       'break the two supports and compare the water column with the lava column',
     ],

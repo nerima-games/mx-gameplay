@@ -49,7 +49,7 @@
  * (`block-service-place-load.ts:48-58`), a hand-written two-element list with a
  * comment about underwater building. LAVA IS MISSING FROM IT, so placing into a
  * lava cell is refused as "block already exists". That is the same omission
- * `./chunk-store-port`'s `REPLACEABLE_IDS` had — its own comment records the
+ * `../block-vocabulary`'s `REPLACEABLE_IDS` had — its own comment records the
  * consequence in two halves, 「falling sand and gravel did not displace lava, and
  * placement treated a lava cell as occupied」 — and this rule is the second half.
  * It asks `isReplaceable`, so the answer is kernel's capability rather than a
@@ -98,8 +98,6 @@
  */
 import { Effect } from 'effect'
 import {
-  canSupportAttachments,
-  isReplaceable,
   type BlockId,
   type BlockPosition,
   type BlockReading,
@@ -107,7 +105,14 @@ import {
   type ChunkStoreApi,
 } from '../chunk-store-port'
 import { below } from '../block-position-key'
-import { blockIdOf, blockTypeOfId, type BlockType, type PlaceableItemType } from '../block-vocabulary'
+import {
+  blockIdOf,
+  blockTypeOfId,
+  canSupportAttachments,
+  isReplaceable,
+  type BlockType,
+  type PlaceableItemType,
+} from '../block-vocabulary'
 import type { Position } from '../entity-manager-port'
 
 /**
