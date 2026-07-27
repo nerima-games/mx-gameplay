@@ -330,24 +330,44 @@ export type MobBehaviour = CreeperFuse | EndermanFlinch | undefined
 export const CREEPER_KIND: EntityKind = EntityKind('creeper')
 
 /**
- * The second, and it arrived with the teleport rather than with a spawner.
+ * The second, and it now arrives from the spawner as well as from a host.
  *
- * NOTHING IN THIS REPOSITORY PUTS ONE ON THE ROSTER, and that is a measured gap
- * rather than an omission this constant papers over. `applySpawnAttempts` below
- * spawns creepers because `MobSpawnAttempt` carries no kind, and the reason it
- * carries none is `ARENA_MISSING`'s 「the reference rotates 8 hostiles; which mob
- * spawns is a table this repository has no second row for」 — choosing which of
- * the eight a candidate cell produces is a weighted rotation, and inventing one
- * here would be inventing a spawn rule. Widening the cap is the other half of the
- * same decision: `MAX_HOSTILE_COUNT`'s note records that a second hostile kind
- * turns a per-kind cap into a sum over a roster of hostile kinds that does not
- * exist yet.
+ * THIS PARAGRAPH USED TO SAY 「NOTHING IN THIS REPOSITORY PUTS ONE ON THE
+ * ROSTER」, and gave two reasons: `MobSpawnAttempt` carried no kind, and
+ * `MAX_HOSTILE_COUNT` was a per-kind cap that a second hostile kind would turn
+ * into 「a sum over a roster of hostile kinds that does not exist yet」. Both were
+ * deferrals rather than refusals, and both are now done — the roster is
+ * `HOSTILE_KINDS` below, the attempt carries a kind, and the cap is the sum.
  *
- * An enderman therefore reaches the roster the way any mob does that the spawner
- * does not produce: a host's `spawn`, or `restore` on the world-load path — which
- * is precisely why `repairMobBehaviour` below now has an arm for it.
+ * What made them deferrable was that no search existed to offer candidates. With
+ * `./mob-spawn-search` the question stopped being hypothetical: a spawner that
+ * produced only creepers in a world that can contain endermen would enforce
+ * 「16 creepers」 rather than 「16 hostiles」, which is not the reference's cap and
+ * not a defensible one — a player could be surrounded by 16 creepers AND every
+ * enderman a host ever spawned.
  */
 export const ENDERMAN_KIND: EntityKind = EntityKind('enderman')
+
+/**
+ * Every kind this repository considers HOSTILE, and therefore every kind the
+ * population cap counts and the spawner may produce.
+ *
+ * TWO ROWS, and the reference has eight. `ARENA_MISSING` recorded the gap as
+ * 「the reference rotates 8 hostiles; which mob spawns is a table this repository
+ * has no second row for」 — it has a second row now, and it still does not have
+ * eight, because a third row would need a third `domain/mob/` rule behind it.
+ * Listing a zombie here without one would be a claim that this build has
+ * zombies, which is the direction `dropRulesOfKind` already refuses for the
+ * ghast and the blaze.
+ *
+ * THIS IS THE ONE LIST. `./mob-spawn-search` picks from it and
+ * `hostilePopulation` sums over it, so a kind cannot be spawnable without being
+ * counted — which is the failure a separate spawn-roster and cap-roster would
+ * eventually produce, and it is the same 「two lists, three consumers, no
+ * agreement」 shape `../mob/hostile-spawn`'s header measures in the reference's
+ * surface tables.
+ */
+export const HOSTILE_KINDS: ReadonlyArray<EntityKind> = [CREEPER_KIND, ENDERMAN_KIND]
 
 /**
  * A creeper's health at spawn.
@@ -362,7 +382,51 @@ export const ENDERMAN_KIND: EntityKind = EntityKind('enderman')
 export const CREEPER_MAX_HEALTH = 20
 
 /**
- * How many creepers may exist at once.
+ * An enderman's health at spawn.
+ *
+ * Vanilla's 40, and on this side of the line for `CREEPER_MAX_HEALTH`'s reason:
+ * mc-sim's §7-6 puts per-kind constants in the rules layer, because a table of
+ * them mirrored into mc-sim 「が「クリーパーとは何か」を知る商売に戻る」.
+ *
+ * It exists now because the spawner produces endermen. Before that, every
+ * enderman on the roster came from a host's `spawn`, which supplies its own
+ * health — so there was no place in this repository that had to know the number
+ * and inventing one would have been a constant with no caller.
+ */
+export const ENDERMAN_MAX_HEALTH = 40
+
+/**
+ * How much health a freshly spawned hostile has.
+ *
+ * Total, and the fallback is the interesting part: a kind with no row gets the
+ * creeper's 20 rather than a throw, because `applySpawnAttempts` runs inside a
+ * frame with no error channel. It is unreachable today — the only caller picks
+ * from `HOSTILE_KINDS`, and every member has a row — and it is written as a
+ * total function anyway so that adding a kind to that list produces a mob with
+ * plausible health rather than a `NaN`-healthed one that is instantly dead.
+ */
+export const maxHealthOfKind = (kind: EntityKind): number =>
+  kind === ENDERMAN_KIND ? ENDERMAN_MAX_HEALTH : CREEPER_MAX_HEALTH
+
+/**
+ * The behaviour a freshly spawned hostile carries.
+ *
+ * The two values are the ones each rule's own type documents as its starting
+ * state — `DORMANT_FUSE` 「the state a fresh creeper is in」 and `STEADY_ENDERMAN`
+ * 「the state a fresh enderman is in, and the one a repair falls back to」 — so
+ * there is no third constant here, only the choice between them.
+ *
+ * It agrees with `repairMobBehaviour` by construction: both send a creeper to a
+ * fuse and an enderman to a flinch, and `sweepMobs` picks its rule by the tag
+ * and guards on the kind. A spawner that handed a creeper a flinch would produce
+ * a mob that ticks nothing, which is exactly the mismatch that function's last
+ * paragraph is about.
+ */
+export const initialBehaviourOfKind = (kind: EntityKind): MobBehaviour =>
+  kind === ENDERMAN_KIND ? STEADY_ENDERMAN : DORMANT_FUSE
+
+/**
+ * How many hostiles may exist at once.
  *
  * `../mob/hostile-spawn.ts`'s header lists this among the things it does not
  * decide — 「HOW MANY (`MAX_HOSTILE_COUNT = 16` against a live census) [...] Every
@@ -370,14 +434,35 @@ export const CREEPER_MAX_HEALTH = 20
  * that arrival. The number is
  * `<reference-impl>/packages/entity/domain/mob/spawner-config.ts`'s.
  *
- * ONE DIVERGENCE, stated because it is invisible: the reference's cap is over ALL
- * hostiles and this one is per kind, because `countOfKind` is the census mc-sim
- * publishes and a total-hostiles count would need this repository to enumerate
- * which kinds are hostile — a roster it does not have (see the arena's missing
- * list). With exactly one hostile kind the two agree; the day a second arrives,
- * the cap has to become a sum and this comment is where that is recorded.
+ * THE DIVERGENCE THIS NOTE USED TO RECORD IS GONE. It read: 「the reference's cap
+ * is over ALL hostiles and this one is per kind, because `countOfKind` is the
+ * census mc-sim publishes and a total-hostiles count would need this repository
+ * to enumerate which kinds are hostile — a roster it does not have. With exactly
+ * one hostile kind the two agree; the day a second arrives, the cap has to become
+ * a sum and this comment is where that is recorded.」
+ *
+ * The day arrived with `./mob-spawn-search`. The roster is `HOSTILE_KINDS` and
+ * the cap is a sum over it — see `hostilePopulation`. The cost is one
+ * `countOfKind` call per hostile kind per accepted candidate instead of one,
+ * which is two calls today and is the correct shape however long the list grows:
+ * mc-sim's census answers about ONE kind (mc-sim DN-11 — `countOfKind` 「compares
+ * two strings the caller supplied and that is the whole of its interest」), so a
+ * total is this repository's to add up.
  */
 export const MAX_HOSTILE_COUNT = 16
+
+/**
+ * How many hostiles are on the roster right now.
+ *
+ * A SUM over `HOSTILE_KINDS` rather than a single count, and re-read per
+ * accepted candidate rather than hoisted — see `applySpawnAttempts` on why
+ * hoisting it breaks the cap in the only frame where the cap is what is being
+ * tested.
+ */
+export const hostilePopulation = <S>(roster: EntityManagerApi<S>): Effect.Effect<number> =>
+  Effect.reduce(HOSTILE_KINDS, 0, (total, kind) =>
+    Effect.map(roster.countOfKind(kind), (count) => total + count),
+  )
 
 /** What a creeper leaves behind. A creeper drops nothing at all, which is `../mob/mob-drop`'s rule and not this file's. */
 const SELF_DESTRUCT: MobKill = { _tag: 'SelfDestruct' }
@@ -1090,31 +1175,53 @@ export const rollSelfDestructDrops = (kind: EntityKind): ReadonlyArray<MobDrop> 
  * take a position and must not start to: 「every field is somebody else's fact」,
  * and a coordinate is the frame's business rather than the rule's.
  *
- * WHAT PRODUCES THESE IS NOT IN THIS REPOSITORY YET, and the blocker is worth
- * naming precisely because it is not "somebody has to write a loop". The
- * reference's spawner walks a ring of sixteen angles by four radii around the
- * player and asks about each cell, which needs two measurements this repository
- * cannot obtain today:
+ * WHAT PRODUCES THESE IS `./mob-spawn-search`, and this paragraph used to say it
+ * did not exist. It named two missing measurements:
  *
- *   BLOCK LIGHT   `SpawnCandidate.blockLight` is mc-worldgen's light grid, and
+ *   BLOCK LIGHT   「`SpawnCandidate.blockLight` is mc-worldgen's light grid, and
  *                 `../chunk-store-port` — a mirror of mc-worldgen's WHOLE
- *                 `ChunkStoreApi` — has no light query at all. Reading an absent
- *                 grid as 0 would be reading it as PITCH DARK, which spawns
- *                 hostiles in a lit room; that is the direction
- *                 `../mob/hostile-spawn`'s `unmeasurable` refusal exists to
- *                 avoid, and inventing it here would defeat it.
+ *                 `ChunkStoreApi` — has no light query at all」. It has one now.
+ *                 mc-worldgen built the grid it had been claiming to own since
+ *                 `application/chunk-store.ts`'s header was written, and the
+ *                 mirror carries `getLight` beside `getBlock`. The warning that
+ *                 came with the gap held: the reading is three-valued, so an
+ *                 unloaded chunk is still not darkness.
  *
- *   TIME OF DAY   mc-sim's `TimeService.timeOfDay`, and `stages/registration.ts`
- *                 records why there is no port for it: mirroring the service
- *                 would mean restating `ClockPort`, which `../frame-contract`
- *                 names as 「a far worse failure than a narrower type」.
+ *   TIME OF DAY   mc-sim's `TimeService.timeOfDay`, and it is STILL not
+ *                 mirrorable — `../frame-contract` names restating `ClockPort`
+ *                 as 「a far worse failure than a narrower type」 and that has not
+ *                 changed. It reaches the search as an inbox `Ref` instead, which
+ *                 `stages/registration.ts` argues in the same terms it argues
+ *                 `targetPosition`: the frame writes it and the stage reads it
+ *                 within one frame, it answers no question, and nothing reads it
+ *                 afterwards.
  *
- * So the stage applies the verdict to candidates it is HANDED, exactly as it
- * applies `breakBlock` to break requests it is handed, and the search is on the
- * arena's missing list with those two destinations.
+ * THE KIND IS NOW CARRIED, and that is the change this type's shape needed. It
+ * used to hold only a candidate and a position, and `applySpawnAttempts` spawned
+ * a creeper unconditionally — which was correct exactly as long as the creeper
+ * was the only hostile anything could produce. `HOSTILE_KINDS` and the search
+ * that picks from it end that; see `ENDERMAN_KIND` for the deferral this
+ * discharges.
  */
 export type MobSpawnAttempt = {
   readonly candidate: SpawnCandidate
+  /**
+   * Which hostile this cell would produce.
+   *
+   * CHOSEN BY WHOEVER OFFERS THE CELL, not by the rule and not by
+   * `applySpawnAttempts`. `../mob/hostile-spawn` answers about a cell and knows
+   * nothing about mobs; the population cap is about a total and does not care
+   * which. Putting the choice on the attempt keeps both of those true and puts
+   * it where the randomness already is — `./mob-spawn-search` draws it from
+   * `../frame-rolls` beside the roll that rotates its ring.
+   *
+   * A kind outside `HOSTILE_KINDS` is not rejected here. It would spawn, would
+   * count against nothing, and would tick whichever rule its behaviour's tag
+   * selects — which is the same latitude a host's `spawn` already has, and
+   * narrowing it would mean this function policing a roster mc-sim deliberately
+   * leaves open (mc-sim DN-11).
+   */
+  readonly kind: EntityKind
   readonly feetPosition: Position
 }
 
@@ -1155,20 +1262,23 @@ export const applySpawnAttempts = (
         continue
       }
 
-      const population = yield* roster.countOfKind(CREEPER_KIND)
+      // THE SUM, not `countOfKind(CREEPER_KIND)`. With two hostile kinds a
+      // per-kind cap enforces 「16 creepers」 rather than 「16 hostiles」, so a
+      // player could be surrounded by sixteen of each. See `MAX_HOSTILE_COUNT`,
+      // whose note recorded this as the thing that would have to change.
+      const population = yield* hostilePopulation(roster)
       if (population >= MAX_HOSTILE_COUNT) {
         outcomes.push({ _tag: 'AtCapacity', population })
         continue
       }
 
       const entity = yield* roster.spawn({
-        kind: CREEPER_KIND,
+        kind: attempt.kind,
         feetPosition: attempt.feetPosition,
-        healthPoints: CREEPER_MAX_HEALTH,
-        // A freshly spawned creeper is dormant — `../mob/creeper-fuse` says so in
-        // the type's own doc comment, which is why there is no second constant
-        // for it here.
-        behaviour: DORMANT_FUSE,
+        healthPoints: maxHealthOfKind(attempt.kind),
+        // Each rule's own type documents its starting state, which is why the
+        // two constants are looked up rather than restated here.
+        behaviour: initialBehaviourOfKind(attempt.kind),
       })
       outcomes.push({ _tag: 'Spawned', id: entity.id })
     }

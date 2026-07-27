@@ -933,16 +933,30 @@ export const ARENA_MISSING: ReadonlyArray<readonly [string, string]> = [
   // `EndermanFlinch` and needed no change in mc-sim at all. Only the half that is
   // genuinely unmeasurable is left, and it names the lane it is waiting for.
   ['an enderman’s stuckTicks', 'the > 40 branch needs a movement lane reporting no progress. Deriving it from "the position did not change" makes it a frame counter, because nothing writes feetPosition but the teleport'],
-  ['an enderman off the SPAWNER', 'the teleport is wired and a host can spawn one, but MobSpawnAttempt carries no kind — see "the mob roster", and MAX_HOSTILE_COUNT would have to become a sum'],
+  // WAS: 'an enderman off the SPAWNER — the teleport is wired and a host can
+  // spawn one, but MobSpawnAttempt carries no kind, and MAX_HOSTILE_COUNT would
+  // have to become a sum'. Both were deferrals rather than refusals and both are
+  // done: the attempt carries a kind, `HOSTILE_KINDS` is the roster the search
+  // picks from, and the cap is a sum over it. An enderman now arrives from the
+  // spawner like any other hostile.
   ['water / daylight teleports', 'vanilla’s other two triggers. Needs a "submerged" capability from kernel and mc-worldgen’s sky light'],
   ['the shulker’s bullet', 'computeShulkerBulletDirection is a normalised vector — aiming is mc-physics’, canFire is here'],
   ['a shulker on the roster', 'ShulkerShell fits MobBehaviour unchanged and the enderman’s wiring shows the roster is no obstacle. What blocks it is that canFire is a permission to fire a projectile nothing produces, and that hasTarget and maxHealthPoints have no measurement on this side'],
   ['projectile + melee cadence', 'canFire is a permission with no cooldown; attackCooldownRemaining is mc-sim’s combat state'],
   ['the armour formula', '4% per point, capped at 80% — every defender shares it, so it belongs in a domain/combat/, not here'],
   ['age-based despawn', 'vanilla sweeps on time as well as distance; the reference has no age on an entity and neither has this'],
-  ['the mob roster', 'the reference rotates 8 hostiles; which mob spawns is a table this repository has no second row for'],
+  ['the mob roster’s other SIX', 'HOSTILE_KINDS has two rows and the reference rotates eight. The missing six are not a table this repository can copy — each needs a domain/mob/ rule behind it, or the row is a claim that this build has zombies. The PICK is also uniform where the reference uses a round-robin cursor, which is per-world state and therefore mc-sim’s'],
   ['AI / pathfinding', 'the creeper’s distance is an arrow key on this screen. The teleport is now the ONLY write to feetPosition anywhere — walking, chasing and fleeing on foot are all still missing'],
-  ['THE SPAWN SEARCH', 'the stage applies the verdict to candidates it is handed. The ring that offers them needs mc-worldgen’s block LIGHT (ChunkStoreApi has no light query) and mc-sim’s hour'],
+  // WAS: 'THE SPAWN SEARCH — the stage applies the verdict to candidates it is
+  // handed. The ring that offers them needs mc-worldgen's block LIGHT
+  // (ChunkStoreApi has no light query) and mc-sim's hour'. Both halves are
+  // answered. mc-worldgen built the light grid it had claimed to own since
+  // `application/chunk-store.ts`'s header was written, `ChunkStoreApi.getLight`
+  // is the query, and the hour reaches the stage through an inbox `Ref` argued
+  // in `stages/registration.ts` beside `targetPosition`'s. The ring itself is
+  // `domain/entities/mob-spawn-search.ts`. What is left of the row is the ONE
+  // measurement that is still a stand-in.
+  ['a spawn candidate’s ALTITUDE', 'the ring searches the player’s own feet plane, not the surface. The reference scans down a column, which is the scan whose lack of a surface test hostile-spawn.ts was written to fix; the honest replacement is a heightmap the STORE maintains, since surfaceHeightAt answers about generated terrain and not about anything a player built'],
   ['the player’s position', 'targetPosition is an inbox. PlayerService.cameraPose requires ClockPort, and a local ClockPort is worse than a narrow mirror'],
   ['mob drops reaching the inventory', 'mobDrops is an outbox. InventoryServiceApi names Inventory/RecipeTable/CraftGrid, so mirroring it whole means restating mc-sim’s crafting vocabulary'],
   ['a mob’s death CAUSE', 'explosionDamageAt carries one and applyDamage records it; mc-sim’s EntityState has no field for it, so it is dropped'],

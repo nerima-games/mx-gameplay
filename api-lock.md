@@ -13,8 +13,8 @@
 <!-- ------------------------------------------------------------------------- -->
 
 format: 1
-exported declarations: 140
-supporting declarations: 36
+exported declarations: 146
+supporting declarations: 37
 
 ## Exported
 
@@ -253,6 +253,12 @@ const ENDERMAN_DAMAGE_TELEPORT_CHANCE = 0.3;
 const ENDERMAN_KIND: EntityKind;
 ```
 
+### ENDERMAN_MAX_HEALTH  `const`
+
+```ts
+const ENDERMAN_MAX_HEALTH = 40;
+```
+
 ### ENDERMAN_STUCK_TELEPORT_TICKS  `const`
 
 ```ts
@@ -415,11 +421,25 @@ type GameplayFrameState = {
     readonly mobDrops: Ref.Ref<ReadonlyArray<MobDrop>>;
     readonly spawnAttempts: Ref.Ref<ReadonlyArray<MobSpawnAttempt>>;
     readonly targetPosition: Ref.Ref<Position | undefined>;
+    readonly timeOfDay: Ref.Ref<number>;
+    readonly spawnClockSecs: Ref.Ref<number>;
     readonly rollSeed: Ref.Ref<number>;
     readonly fallingBlocks: Ref.Ref<FallingBlockQueue>;
     readonly fluidFrontier: Ref.Ref<ReadonlyArray<FluidWorkItem>>;
     readonly tickCount: Ref.Ref<number>;
 };
+```
+
+### HOSTILE_KINDS  `const`
+
+```ts
+const HOSTILE_KINDS: ReadonlyArray<EntityKind>;
+```
+
+### HOSTILE_SPAWN_INTERVAL_SECS  `const`
+
+```ts
+const HOSTILE_SPAWN_INTERVAL_SECS = 0.3;
 ```
 
 ### HOSTILE_SPAWN_MAX_BLOCK_LIGHT  `const`
@@ -524,6 +544,7 @@ type MobKill = {
 ```ts
 type MobSpawnAttempt = {
     readonly candidate: SpawnCandidate;
+    readonly kind: EntityKind;
     readonly feetPosition: Position;
 };
 ```
@@ -875,10 +896,22 @@ const gameplayModule: GameModule<never, never, never, ChunkStore | EntityManager
 const gameplayStages: (state: GameplayFrameState, store: ChunkStoreApi, roster: EntityManagerApi<MobBehaviour>) => ReadonlyArray<StageRegistration>;
 ```
 
+### hostilePopulation  `const`
+
+```ts
+const hostilePopulation: <S>(roster: EntityManagerApi<S>) => Effect.Effect<number>;
+```
+
 ### hostileSpawnsAllowed  `const`
 
 ```ts
 const hostileSpawnsAllowed: (timeOfDay: number) => boolean;
+```
+
+### initialBehaviourOfKind  `const`
+
+```ts
+const initialBehaviourOfKind: (kind: EntityKind) => MobBehaviour;
 ```
 
 ### isDead  `const`
@@ -903,6 +936,12 @@ const makeGameplayFrameState: Effect.Effect<GameplayFrameState>;
 
 ```ts
 const makeGameplayStages: Effect.Effect<ReadonlyArray<StageRegistration>, never, ChunkStore | EntityManager>;
+```
+
+### maxHealthOfKind  `const`
+
+```ts
+const maxHealthOfKind: (kind: EntityKind) => number;
 ```
 
 ### mobXpReward  `const`
@@ -1127,6 +1166,7 @@ type ChunkStoreApi = {
     readonly unload: (coord: ChunkCoord) => Effect.Effect<boolean>;
     readonly getBlock: (position: BlockPosition) => Effect.Effect<BlockReading>;
     readonly setBlock: (position: BlockPosition, block: BlockId) => Effect.Effect<BlockWriteOutcome>;
+    readonly getLight: (position: BlockPosition) => Effect.Effect<LightReading>;
     readonly subscribeDirty: Effect.Effect<ChunkDirtySubscription>;
     readonly subscribeDirtyScoped: Effect.Effect<ChunkDirtySubscription, never, Scope.Scope>;
     readonly reset: Effect.Effect<void>;
@@ -1275,6 +1315,20 @@ const ITEM_TYPES: readonly ["stone", "cobblestone", "dirt", "grass_block", "sand
 
 ```ts
 type ItemType = (typeof ITEM_TYPES)[number];
+```
+
+### LightReading  `type`
+
+```ts
+type LightReading = {
+    readonly _tag: 'Light';
+    readonly sky: number;
+    readonly block: number;
+} | {
+    readonly _tag: 'ChunkNotLoaded';
+} | {
+    readonly _tag: 'OutOfWorld';
+};
 ```
 
 ### Position  `type`

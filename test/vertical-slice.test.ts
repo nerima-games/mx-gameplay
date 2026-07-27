@@ -76,11 +76,13 @@ import {
   type BlockWriteOutcome,
   type ChunkStoreApi,
 } from '../domain/chunk-store-port'
+import { NOON_FRACTION } from '../domain/day-night'
 import {
   CREEPER_KIND,
   CREEPER_MAX_HEALTH,
   ENDERMAN_KIND,
   ENDERMAN_TELEPORT_ROLLS,
+  HOSTILE_KINDS,
   MAX_HOSTILE_COUNT,
   STEADY_ENDERMAN,
   STRUCK_ENDERMAN,
@@ -510,9 +512,13 @@ const ledgeSand: BlockPosition = { x: 5, y: 68, z: 5 }
  * Every field is somebody else's fact and the test is playing all of them:
  * midnight (mc-sim's hour), pitch dark and a stone floor with two cells of air
  * (mc-worldgen's blocks and light grid), 20 blocks away in XZ (mc-sim's player).
- * The SEARCH that would gather these is not in this repository and cannot be —
- * see `MobSpawnAttempt` — so the frame is handed candidates exactly as it is
- * handed break requests.
+ *
+ * These tests keep OFFERING candidates through the inbox even though
+ * `domain/entities/mob-spawn-search.ts` now gathers them for real. That is
+ * deliberate: an offered cell states every fact in one literal, so a test about
+ * the CAP or about a refusal reason is not also a test of the ring's geometry.
+ * The search has its own file (`test/mob-spawn-search.test.ts`) and its own
+ * end-to-end case below.
  */
 const legalCandidate = {
   groundBlock: STONE,
@@ -525,6 +531,10 @@ const legalCandidate = {
 
 const attemptAt = (feetPosition: Position): MobSpawnAttempt => ({
   candidate: legalCandidate,
+  // Named explicitly rather than defaulted. `MobSpawnAttempt` carries a kind
+  // because the spawner now produces more than one hostile, and a test that let
+  // the field be implicit would stop noticing which mob it asked for.
+  kind: CREEPER_KIND,
   feetPosition,
 })
 
@@ -541,6 +551,30 @@ const offerSpawns = (
  */
 const STRIDE = DeltaTimeSecs(0.25)
 
+/**
+ * Put the world at noon, so that the SPAWN SEARCH does not run.
+ *
+ * `domain/entities/mob-spawn-search.ts` is paced by
+ * `HOSTILE_SPAWN_INTERVAL_SECS` and gated on `hostileSpawnsAllowed`, and the
+ * stage's frame-state `timeOfDay` defaults to 0 — midnight — which is night and
+ * therefore ALLOWS spawns. That default is deliberate (see the paragraph on the
+ * inbox in `stages/registration.ts`: a host that forgets to write the hour gets
+ * a world that visibly spawns rather than one that silently never does).
+ *
+ * It means every test below that is about something ELSE has to say what time it
+ * is, exactly as it already has to say where the player is. The tests that ARE
+ * about the search are in `test/mob-spawn-search.test.ts` and in the end-to-end
+ * case at the bottom of this file, and they set night explicitly.
+ *
+ * This is NOT a way of switching the feature off to keep an old assertion
+ * passing. The assertions these tests make — no store reads, no rolls drawn, one
+ * shared step object — are claims about the MOB SWEEP, and the sweep is what
+ * they still measure. Measuring the sweep plus a paced search in one number
+ * would make both unfalsifiable.
+ */
+const daylight = (state: { readonly timeOfDay: Ref.Ref<number> }): Effect.Effect<void> =>
+  Ref.set(state.timeOfDay, NOON_FRACTION)
+
 describe('the mob slice, through the stage registration', () => {
   it.effect('a creeper spawns, lights, detonates once, and the blast reaches the world', () =>
     Effect.gen(function* () {
@@ -553,6 +587,7 @@ describe('the mob slice, through the stage registration', () => {
       )
 
       // ---- the player is far away, and two creepers are offered ------------
+      yield* daylight(state)
       yield* Ref.set(state.targetPosition, playerFar)
       yield* offerSpawns(state, [attemptAt(creeperAt), attemptAt(bystanderAt)])
       yield* runFrame(stages, STRIDE)
@@ -660,6 +695,7 @@ describe('the mob slice, through the stage registration', () => {
         healthPoints: CREEPER_MAX_HEALTH,
         behaviour: DORMANT_FUSE,
       })
+      yield* daylight(state)
       yield* Ref.set(state.targetPosition, playerNear)
 
       const before = yield* roster.api.entities
@@ -720,6 +756,7 @@ describe('the mob slice, through the stage registration', () => {
       // the frame in which the last slot is taken is the only frame in which the
       // cap is the thing being tested.
       const { roster, state, stages } = yield* slice(world([]))
+      yield* daylight(state)
       yield* Ref.set(state.targetPosition, playerFar)
 
       const offered = MAX_HOSTILE_COUNT + 4
@@ -731,9 +768,16 @@ describe('the mob slice, through the stage registration', () => {
 
       expect(yield* roster.api.countOfKind(CREEPER_KIND)).toBe(MAX_HOSTILE_COUNT)
 
-      // One census per candidate that got past the cell test, plus the one this
-      // assertion just took. A hoisted count would have spawned all twenty.
-      expect((yield* roster.calls).censuses).toBe(offered + 1)
+      // One census PER HOSTILE KIND per candidate that got past the cell test,
+      // plus the one this assertion just took. A hoisted count would have
+      // spawned all twenty, which is what this number is really guarding.
+      //
+      // The multiplier is `HOSTILE_KINDS.length` and it is the visible cost of
+      // the cap becoming a SUM. mc-sim's census answers about ONE kind
+      // (`countOfKind` 「compares two strings the caller supplied」), so a total
+      // over hostiles is this repository's to add up — and a per-kind cap with
+      // two hostile kinds would enforce 「16 creepers」 rather than 「16 hostiles」.
+      expect((yield* roster.calls).censuses).toBe(offered * HOSTILE_KINDS.length + 1)
     }),
   )
 
@@ -747,11 +791,11 @@ describe('the mob slice, through the stage registration', () => {
       yield* Ref.set(state.targetPosition, playerFar)
 
       yield* offerSpawns(state, [
-        { candidate: { ...legalCandidate, timeOfDay: 0.5 }, feetPosition: creeperAt },
-        { candidate: { ...legalCandidate, blockLight: 8 }, feetPosition: creeperAt },
-        { candidate: { ...legalCandidate, distanceToPlayerBlocksXZ: 4 }, feetPosition: creeperAt },
-        { candidate: { ...legalCandidate, groundBlock: AIR_BLOCK_ID }, feetPosition: creeperAt },
-        { candidate: { ...legalCandidate, blockLight: Number.NaN }, feetPosition: creeperAt },
+        { candidate: { ...legalCandidate, timeOfDay: 0.5 }, kind: CREEPER_KIND, feetPosition: creeperAt },
+        { candidate: { ...legalCandidate, blockLight: 8 }, kind: CREEPER_KIND, feetPosition: creeperAt },
+        { candidate: { ...legalCandidate, distanceToPlayerBlocksXZ: 4 }, kind: CREEPER_KIND, feetPosition: creeperAt },
+        { candidate: { ...legalCandidate, groundBlock: AIR_BLOCK_ID }, kind: CREEPER_KIND, feetPosition: creeperAt },
+        { candidate: { ...legalCandidate, blockLight: Number.NaN }, kind: CREEPER_KIND, feetPosition: creeperAt },
       ])
       yield* runFrame(stages, STRIDE)
 
@@ -1174,6 +1218,7 @@ describe('the enderman slice: a rule that returns a displacement, run over a ros
         // Two blocks from the player, which is well inside ignition range.
         behaviour: DORMANT_FUSE,
       })
+      yield* daylight(state)
       yield* Ref.set(state.targetPosition, playerNear)
 
       const before = yield* roster.api.entities

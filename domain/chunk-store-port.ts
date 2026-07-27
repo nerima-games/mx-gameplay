@@ -143,6 +143,26 @@ export type BlockWriteOutcome =
   | { readonly _tag: 'ChunkNotLoaded' }
   | { readonly _tag: 'OutOfWorld' }
 
+/**
+ * How bright a cell is, from the sky and from the blocks around it.
+ *
+ * THREE-VALUED, exactly as `BlockReading` is, and the third value is the whole
+ * reason this type is not a pair of numbers. `domain/mob/hostile-spawn.ts`
+ * refuses a candidate whose light is not finite and its comment says why:
+ * `NaN > 7` is `false`, so a light level that could not say "I do not know"
+ * would be read as PITCH DARK and would spawn a hostile in a lit room — or, at
+ * the edge of the loaded area, in broad daylight.
+ *
+ * `sky` and `block` are separate because the rule that reads them gates on
+ * BLOCK light alone (`HOSTILE_SPAWN_MAX_BLOCK_LIGHT`). A combined number would
+ * make a torch and a sunbeam the same fact, and the daylight gate has already
+ * run by the time this is consulted.
+ */
+export type LightReading =
+  | { readonly _tag: 'Light'; readonly sky: number; readonly block: number }
+  | { readonly _tag: 'ChunkNotLoaded' }
+  | { readonly _tag: 'OutOfWorld' }
+
 // ---------------------------------------------------------------------------
 // The dirty channel
 // ---------------------------------------------------------------------------
@@ -183,6 +203,15 @@ export type ChunkStoreApi = {
   readonly unload: (coord: ChunkCoord) => Effect.Effect<boolean>
   readonly getBlock: (position: BlockPosition) => Effect.Effect<BlockReading>
   readonly setBlock: (position: BlockPosition, block: BlockId) => Effect.Effect<BlockWriteOutcome>
+  /**
+   * The query the spawn search was blocked on.
+   *
+   * NOT free: mc-worldgen computes light lazily and a block write drops the
+   * chunk's cached grid, so the first read after a write relights that chunk.
+   * A caller on a per-frame per-cell path would be paying O(chunk) repeatedly;
+   * `stages/registration.ts` runs the search on a cadence for that reason.
+   */
+  readonly getLight: (position: BlockPosition) => Effect.Effect<LightReading>
   readonly subscribeDirty: Effect.Effect<ChunkDirtySubscription>
   readonly subscribeDirtyScoped: Effect.Effect<ChunkDirtySubscription, never, Scope.Scope>
   readonly reset: Effect.Effect<void>

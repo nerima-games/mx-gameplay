@@ -39,6 +39,7 @@ import {
   type ChunkDirtySubscription,
   type ChunkNeighbours,
   type ChunkStoreApi,
+  type LightReading,
   type WorldgenChunk,
 } from '../domain/chunk-store-port'
 
@@ -66,6 +67,7 @@ type WorldgenChunkStoreApi = {
   readonly unload: (coord: ChunkCoord) => Effect.Effect<boolean>
   readonly getBlock: (position: BlockPosition) => Effect.Effect<BlockReading>
   readonly setBlock: (position: BlockPosition, block: BlockId) => Effect.Effect<BlockWriteOutcome>
+  readonly getLight: (position: BlockPosition) => Effect.Effect<LightReading>
   readonly subscribeDirty: Effect.Effect<ChunkDirtySubscription>
   readonly subscribeDirtyScoped: Effect.Effect<ChunkDirtySubscription, never, Scope.Scope>
   readonly reset: Effect.Effect<void>
@@ -154,6 +156,35 @@ describe('the ChunkStore mirror', () => {
       // Total, and defaulting to "ordinary opaque cube" exactly as kernel's
       // `capabilityOfBlockId` does for an id it cannot name.
       expect(validSpawnSurface(200)).toBe(true)
+    }),
+  )
+
+  it.effect('LightReading can say "I do not know", which is the point of it', () =>
+    Effect.sync(() => {
+      // Restated from `mc-worldgen/domain/chunk-store-state.ts` rather than
+      // imported, for the reason `WorldgenChunkStoreApi` above is: mc-worldgen
+      // is not published. The three-valued shape is the load-bearing part —
+      // `domain/mob/hostile-spawn.ts` answers `unmeasurable` to a non-finite
+      // light level because `NaN > 7` is `false`, so a two-valued reading that
+      // forced "unknown" into a number would spawn hostiles in daylight at the
+      // edge of the loaded area.
+      type WorldgenLightReading =
+        | { readonly _tag: 'Light'; readonly sky: number; readonly block: number }
+        | { readonly _tag: 'ChunkNotLoaded' }
+        | { readonly _tag: 'OutOfWorld' }
+
+      const asWorldgen = (reading: LightReading): WorldgenLightReading => reading
+      const asMirror = (reading: WorldgenLightReading): LightReading => reading
+
+      expect(typeof asWorldgen).toBe('function')
+      expect(typeof asMirror).toBe('function')
+
+      // Sky and block are SEPARATE. A single combined level would make a torch
+      // and a sunbeam the same fact, and the spawn rule gates on block light
+      // alone — the daylight gate has already run by then.
+      const lit: LightReading = { _tag: 'Light', sky: 15, block: 0 }
+      expect(lit._tag === 'Light' ? lit.sky : -1).toBe(15)
+      expect(lit._tag === 'Light' ? lit.block : -1).toBe(0)
     }),
   )
 

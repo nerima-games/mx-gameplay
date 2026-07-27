@@ -235,22 +235,51 @@ describe('stage behaviour', () => {
   // `timeOfDaySecs` and `dayLengthSecs` Refs and advance them, with a
   // `DEFAULT_DAY_LENGTH_SECS` of 1200 against mc-sim's 400 — two owners of one
   // noun, disagreeing, with only mc-sim's copy reaching the save file.
-  it.effect('REGRESSION: the frame state holds no time of day and no day length', () =>
+  //
+  // ---------------------------------------------------------------------------
+  // THIS TEST WAS CALLED 「holds no time of day and no day length」 AND IS NOT
+  // ---------------------------------------------------------------------------
+  //
+  // A `timeOfDay` Ref now exists, and renaming a regression test to accommodate
+  // the thing it was built to prevent deserves the paragraph rather than a
+  // shrug. Two facts settle it.
+  //
+  // FIRST, the deleted failure was not "a field named timeOfDay". It was
+  // OWNERSHIP: this file computed the hour, advanced it every frame from its own
+  // day length, and disagreed with mc-sim about how long a day was. The new Ref
+  // does none of those three. Nothing in `stages/registration.ts` increments it,
+  // there is no day length anywhere in this repository, and the value is
+  // overwritten by the host every frame rather than accumulated.
+  //
+  // SECOND, the property that actually matters is now asserted DIRECTLY, in the
+  // test below, instead of being inferred from the absence of a key: running
+  // frames must not change the hour. That is a strictly stronger statement than
+  // "there is no field called this", because a field called something else that
+  // advanced the clock would have passed the old test and fails the new one.
+  //
+  // What survives here unchanged is the exact-list gate, which is the part that
+  // makes an addition reviewable.
+  it.effect('REGRESSION: the frame state holds no day length, and every Ref is scratch', () =>
     Effect.gen(function* () {
       const state = yield* makeGameplayFrameState
 
       // The list is exact on purpose: another answer to "what does mx-gameplay
       // remember between frames" has to be argued for in a diff. Two arrived
-      // with the block-write wiring and four with the mob wiring, and every one
-      // of the nine passes the save-file test — see the paragraph on
-      // `GameplayFrameState` in `stages/registration.ts`, which argues
-      // `targetPosition` at length because it is the one that most looks like a
-      // second owner of a noun and is not.
+      // with the block-write wiring, four with the mob wiring and two with the
+      // spawn search, and every one of the eleven passes the save-file test —
+      // see the paragraph on `GameplayFrameState` in `stages/registration.ts`,
+      // which argues `targetPosition` and `timeOfDay` at length because they are
+      // the two that most look like second owners of a noun and are not.
+      //
+      // `spawnClockSecs` is the least interesting of the eleven and the easiest
+      // to justify: it is a countdown to the next search, and losing it on a
+      // reload costs at most one 0.3s interval.
       //
       // WHAT IS STILL NOT HERE is the thing this list exists to keep out: there
-      // is no `Ref<Map<MobId, CreeperFuse>>`, no mob position, no mob health and
-      // no entity id. The roster is mc-sim's, and the stage reaches it through a
-      // service rather than through a field.
+      // is no `Ref<Map<MobId, CreeperFuse>>`, no mob position, no mob health, no
+      // entity id — and no DAY LENGTH, which is the half of the original failure
+      // that has no stand-in and never will, because nothing in this repository
+      // needs to know how long a day is.
       expect(Object.keys(state).sort()).toStrictEqual([
         'fallingBlocks',
         'fluidFrontier',
@@ -259,9 +288,49 @@ describe('stage behaviour', () => {
         'pendingBreaks',
         'rollSeed',
         'spawnAttempts',
+        'spawnClockSecs',
         'targetPosition',
         'tickCount',
+        'timeOfDay',
       ])
+
+      expect(Object.keys(state)).not.toContain('dayLength')
+      expect(Object.keys(state)).not.toContain('dayLengthSecs')
+      expect(Object.keys(state)).not.toContain('timeOfDaySecs')
+    }),
+  )
+
+  // REGRESSION, and the one that replaces what the rename above gave up: this
+  // repository READS the hour and never ADVANCES it.
+  //
+  // The deleted `timeOfDaySecs` Ref was advanced by the `gameplay:time-weather`
+  // stage, which is why that stage is still deliberately empty and says so.
+  // Anything that ticked the clock — there, or in the entities stage that now
+  // reads it — would recreate the two-owners failure under a different name, and
+  // the key-list test above could not see it.
+  it.effect('REGRESSION: no stage advances the clock, whatever the frame does', () =>
+    Effect.gen(function* () {
+      const { state, stages } = yield* builtStages
+
+      // A value no default could produce, so that "unchanged" cannot be
+      // satisfied by a stage resetting it to zero.
+      const written = 0.375
+      yield* Ref.set(state.timeOfDay, written)
+
+      // Every stage, many times, with a delta large enough that the spawn
+      // search's 0.3s cadence fires repeatedly. If anything ticked the clock —
+      // by dt, by a day length, or by a tick count — twenty frames would show
+      // it.
+      for (let frame = 0; frame < 20; frame += 1) {
+        for (const stage of stages) {
+          yield* stage.run(DeltaTimeSecs(0.25))
+        }
+      }
+
+      // EXACTLY what the host wrote. This is the property the deleted
+      // `timeOfDaySecs` Ref violated, and it is asserted rather than inferred
+      // from a missing key.
+      expect(yield* Ref.get(state.timeOfDay)).toBe(written)
     }),
   )
 

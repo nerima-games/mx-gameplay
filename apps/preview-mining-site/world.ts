@@ -54,6 +54,7 @@ import {
   type BlockId,
   type BlockPosition,
   type BlockReading,
+  type LightReading,
   type BlockWriteOutcome,
   type ChunkCoord,
   type ChunkDirtyBatch,
@@ -257,6 +258,52 @@ export const makePreviewWorld = (spec: WorldSpec): Effect.Effect<PreviewWorld> =
               { _tag: 'Block', block: doubles.blocks.get(blockKey(position)) ?? AIR_BLOCK_ID } as const,
               doubles,
             ] as const
+          }),
+
+        /**
+         * SKY EXPOSURE ONLY, and it is a stand-in rather than a light engine.
+         *
+         * mc-worldgen computes light with two BFS passes over a nibble-packed
+         * grid (`domain/light.ts` there). Reproducing that here would be a
+         * second implementation of one algorithm, and the preview's rule — see
+         * `main.ts` — is that a slider may drive a REAL rule but a fake may not
+         * imitate another repository's arithmetic. So this answers the one
+         * question the preview's world can answer honestly: is anything above
+         * this cell in its column?
+         *
+         * Consequences, stated because the arena screen prints the result:
+         *
+         *   - sky light is 15 or 0 with nothing in between, so there is no
+         *     sideways falloff under an overhang;
+         *   - BLOCK light is always 0, because this preview places no emitters —
+         *     its palette is stone, sand, gravel and water. A torch would need
+         *     the real engine, and the arena would be measuring this function
+         *     instead of the spawn rule.
+         *
+         * The spawn rule gates on BLOCK light, so what the arena exercises with
+         * this store is the DARK branch — which is the branch that spawns, and
+         * therefore the one worth being able to reach from a preview.
+         */
+        getLight: (position) =>
+          Ref.modify(state, (doubles): readonly [LightReading, Inner] => {
+            doubles.reads += 1
+            if (position.y < 0 || position.y >= WORLD_HEIGHT) {
+              return [{ _tag: 'OutOfWorld' } as const, doubles] as const
+            }
+            if (!doubles.loadedChunks.has(chunkKeyOf(position))) {
+              return [{ _tag: 'ChunkNotLoaded' } as const, doubles] as const
+            }
+
+            let exposed = true
+            for (let y = position.y + 1; y < WORLD_HEIGHT; y += 1) {
+              const above = doubles.blocks.get(blockKey({ x: position.x, y, z: position.z }))
+              if (above !== undefined && above !== AIR_BLOCK_ID) {
+                exposed = false
+                break
+              }
+            }
+
+            return [{ _tag: 'Light', sky: exposed ? 15 : 0, block: 0 } as const, doubles] as const
           }),
 
         setBlock: (position, block) =>

@@ -78,6 +78,7 @@
  */
 import { Effect, Layer, Ref } from 'effect'
 import { positionOfKey } from '../domain/block-position-key'
+import { hostileSpawnsAllowed } from '../domain/day-night'
 import { ChunkStore, type BlockId, type ChunkStoreApi } from '../domain/chunk-store-port'
 import { applyFallingBlocks } from '../domain/entities/falling-block-move'
 import {
@@ -89,6 +90,7 @@ import {
   type MobBehaviour,
   type MobSpawnAttempt,
 } from '../domain/entities/mob-frame'
+import { searchSpawnCandidates } from '../domain/entities/mob-spawn-search'
 import {
   entityManagerTag,
   type EntityManager,
@@ -121,6 +123,26 @@ import { GAMEPLAY_STAGE_IDS, UPSTREAM_STAGE_IDS } from './stage-ids'
  * shipped value comes out of the fluid preview, not out of a guess made here.
  */
 export const LAVA_TICK_INTERVAL = 4
+
+/**
+ * Seconds between two runs of the hostile spawn search.
+ *
+ * `<reference-impl>/packages/entity/domain/mob/spawner-config.ts`'s
+ * `SPAWN_INTERVAL_SECS`, and `domain/mob/hostile-spawn.ts`'s header lists it
+ * among the things that rule does not decide — 「HOW OFTEN (`SPAWN_INTERVAL_SECS
+ * = 0.3`)」. This is where it arrives.
+ *
+ * IN SECONDS AND NOT IN TICKS, unlike `LAVA_TICK_INTERVAL` above. The lava
+ * cadence is a ratio between two rules that both run per tick, so counting ticks
+ * is the honest unit for it. This one is a real-time budget for a fixed amount
+ * of work, so a frame-rate change must not change how often the world spawns
+ * mobs — which is precisely the divergence `domain/mob/enderman-teleport.ts`
+ * records as the known defect of the reference's tick-counted lanes.
+ */
+export const HOSTILE_SPAWN_INTERVAL_SECS = 0.3
+
+/** Shared empty list, so a frame that searches nothing allocates nothing. */
+const NO_ATTEMPTS: ReadonlyArray<never> = []
 
 /**
  * Frame-local scratch, and nothing else.
@@ -168,10 +190,43 @@ export const LAVA_TICK_INTERVAL = 4
  *     port that would carry it cannot be mirrored whole, and a narrow mirror of a
  *     `Context.Tag` is the hazard `domain/chunk-store-port.ts` exists to refuse.
  *
- *   - `spawnAttempts` is an INBOX of candidate cells. The SEARCH that produces
- *     them is not here and cannot be; see `MobSpawnAttempt` in
- *     `domain/entities/mob-frame.ts`, which names the two measurements it is
- *     missing and where each comes from.
+ *   - `spawnAttempts` is an INBOX of candidate cells. It used to be the ONLY way
+ *     a candidate could arrive, because 「the SEARCH that produces them is not
+ *     here and cannot be」. The search is here now
+ *     (`domain/entities/mob-spawn-search.ts`), and the inbox stays: a host, a
+ *     preview or a test may still offer a cell directly, exactly as
+ *     `pendingBreaks` lets one offer a break. What changed is that an empty
+ *     inbox no longer means no spawns.
+ *
+ *   - `timeOfDay` is an INBOX, and it is `targetPosition`'s twin in every
+ *     respect including the objection. The hour is saved state and it is
+ *     mc-sim's `TimeService` — this file's own header records DELETING a
+ *     `timeOfDaySecs` Ref for precisely that reason, and doing it again would be
+ *     the same mistake with a shorter name.
+ *
+ *     It is not the same thing, and the difference is the one that made
+ *     `targetPosition` acceptable: THIS REF DOES NOT ADVANCE. Nothing here
+ *     increments it, nothing derives a day length from it, and no rule asks it a
+ *     question — the frame writes this frame's hour, the entities stage reads it
+ *     within the same frame, and it is overwritten rather than accumulated. The
+ *     deleted Ref failed the save-file test because a save file needs the time
+ *     of day AND this file was the thing computing it. A save file does not need
+ *     a copy of a number that mc-sim already holds and that is rewritten every
+ *     frame.
+ *
+ *     What it stands in for is `(yield* time.timeOfDay)`, one line in the host,
+ *     and it cannot be written yet for `targetPosition`'s reason: `TimeService`
+ *     cannot be mirrored whole without restating `ClockPort`, which
+ *     `domain/frame-contract.ts` names as 「a far worse failure than a narrower
+ *     type」, and a narrow mirror of a `Context.Tag` is the hazard
+ *     `domain/chunk-store-port.ts` exists to refuse.
+ *
+ *     IT DEFAULTS TO MIDNIGHT — `0`, which `domain/day-night.ts` reads as night
+ *     and which therefore ALLOWS hostile spawns. That is the permissive
+ *     direction and it is chosen deliberately over noon: a host that forgets to
+ *     write the hour gets a world that spawns mobs, which is visible in the
+ *     first minute, rather than a world that silently never spawns anything and
+ *     looks like a broken search.
  *
  *   - `mobDrops` is an OUTBOX, `minedItems`'s twin, and separate from it because
  *     the two carry different things: a broken block yields a `BlockId` and a dead
@@ -195,6 +250,9 @@ export type GameplayFrameState = {
   readonly mobDrops: Ref.Ref<ReadonlyArray<MobDrop>>
   readonly spawnAttempts: Ref.Ref<ReadonlyArray<MobSpawnAttempt>>
   readonly targetPosition: Ref.Ref<Position | undefined>
+  readonly timeOfDay: Ref.Ref<number>
+  /** Seconds accumulated towards the next spawn search. Scratch: losing it costs one interval. */
+  readonly spawnClockSecs: Ref.Ref<number>
   readonly rollSeed: Ref.Ref<number>
   readonly fallingBlocks: Ref.Ref<FallingBlockQueue>
   readonly fluidFrontier: Ref.Ref<ReadonlyArray<FluidWorkItem>>
@@ -207,6 +265,10 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
   const mobDrops = yield* Ref.make<ReadonlyArray<MobDrop>>([])
   const spawnAttempts = yield* Ref.make<ReadonlyArray<MobSpawnAttempt>>([])
   const targetPosition = yield* Ref.make<Position | undefined>(undefined)
+  // Midnight, which `domain/day-night.ts` reads as night. See the module header
+  // on why the permissive default is the right one to be wrong with.
+  const timeOfDay = yield* Ref.make(0)
+  const spawnClockSecs = yield* Ref.make(0)
   // A LITERAL, not a clock reading: two runs of one scenario must draw the same
   // numbers (plan.md §5.1-3). A world seed is mc-worldgen's noun and this is
   // where it lands when that repository publishes one.
@@ -221,6 +283,8 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
     mobDrops,
     spawnAttempts,
     targetPosition,
+    timeOfDay,
+    spawnClockSecs,
     rollSeed,
     fallingBlocks,
     fluidFrontier,
@@ -393,12 +457,75 @@ export const gameplayStages = (
           }
         }
 
+        // ---- the spawn search ----------------------------------------------
+        //
+        // ON A CADENCE, NOT EVERY FRAME. `domain/entities/mob-spawn-search.ts`
+        // makes 256 store calls for a full ring — three blocks and a light per
+        // cell — and `domain/chunk-store-port.ts` records that a light read
+        // after a block write may relight a whole chunk. Running that at 20 Hz
+        // is DN-GP-1 rebuilt: work proportional to the world on every frame
+        // whether or not anything changed. The reference paces its spawner at
+        // `SPAWN_INTERVAL_SECS = 0.3` for the same reason and this is that
+        // number.
+        //
+        // `Ref.modify` so the accumulator is read, advanced and written in one
+        // step. It SUBTRACTS the interval rather than resetting to zero, so a
+        // long frame does not silently lose the remainder and the cadence stays
+        // 0.3s on average rather than 0.3s-or-more.
+        const searchDue = yield* Ref.modify(state.spawnClockSecs, (elapsed) => {
+          const next = elapsed + dt
+          return next >= HOSTILE_SPAWN_INTERVAL_SECS
+            ? ([true, next - HOSTILE_SPAWN_INTERVAL_SECS] as const)
+            : ([false, next] as const)
+        })
+
         // `getAndSet` rather than get-then-set, for `pendingBreaks`' reason: a
         // candidate offered between the two steps would be dropped silently.
-        const attempts = yield* Ref.getAndSet<ReadonlyArray<MobSpawnAttempt>>(
+        const offered = yield* Ref.getAndSet<ReadonlyArray<MobSpawnAttempt>>(
           state.spawnAttempts,
           [],
         )
+
+        let searched: ReadonlyArray<MobSpawnAttempt> = NO_ATTEMPTS
+        const hour = yield* Ref.get(state.timeOfDay)
+
+        // THREE GATES BEFORE THE 256 READS, and the third is the one that needs
+        // defending. `hostileSpawnsAllowed` is CALLED here as well as inside
+        // `canHostileSpawnAt`, and `domain/mob/hostile-spawn.ts`'s header is
+        // emphatic that the night gate is the rule's and 「a third opinion in
+        // this file would be the second half of that bug」. This is not a third
+        // opinion: it is the SAME FUNCTION, short-circuiting a search whose every
+        // candidate the rule would refuse with `daylight`. The rule still runs
+        // and still decides; what is skipped is 256 store reads to be told so 64
+        // times. Reimplementing the comparison here — `hour > 0.25 && ...` —
+        // would be the failure that header describes, and is exactly what is not
+        // done.
+        //
+        // The target gate is the same shape as the enderman's chase gate above:
+        // a search anchored on nobody has no ring to draw.
+        if (searchDue && targetPosition !== undefined && hostileSpawnsAllowed(hour)) {
+          const found = yield* searchSpawnCandidates(
+            store,
+            targetPosition,
+            hour,
+            yield* Ref.get(state.rollSeed),
+          )
+          // The seed advanced by exactly `SPAWN_SEARCH_ROLLS`, and only because a
+          // search ran. A frame that skipped it leaves the generator where it
+          // found it, which is `domain/frame-rolls.ts`'s rule that the sequence
+          // depends on what happened rather than on how many frames passed.
+          yield* Ref.set(state.rollSeed, found.seed)
+          searched = found.attempts
+        }
+
+        // Concatenated rather than run as two passes, so that the population cap
+        // sees ONE stream of candidates. Two passes would each apply the cap
+        // against a census taken inside their own loop, and a frame holding one
+        // offered cell and a full ring could spawn one more mob than
+        // `MAX_HOSTILE_COUNT` allows.
+        const attempts =
+          searched.length === 0 ? offered : offered.length === 0 ? searched : [...offered, ...searched]
+
         if (attempts.length > 0) {
           // The outcomes — a `Refused` reason per cell, or `AtCapacity` — are
           // returned by `applySpawnAttempts` and dropped HERE, because `run`

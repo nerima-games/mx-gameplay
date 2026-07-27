@@ -45,6 +45,7 @@ import {
   type ChunkDirtyBatch,
   type ChunkDirtySubscription,
   type ChunkStoreApi,
+  type LightReading,
 } from '../../domain/chunk-store-port'
 
 /** Block ids, transcribed from kernel's `BLOCK_REGISTRY` (see the mirror). */
@@ -79,6 +80,33 @@ export const world = (
 ): ReadonlyMap<string, BlockId> =>
   new Map(entries.map(([position, block]) => [blockKey(position), block] as const))
 
+/** One cell's brightness, as the double stores it. */
+export type LightLevels = {
+  readonly sky: number
+  readonly block: number
+}
+
+/**
+ * A sparse light world, for the cells a test actually cares about.
+ *
+ * SPARSE AND DARK BY DEFAULT, which is the honest default for a double of a
+ * grid rather than a convenient one: a cell nobody lit is a cell with no light,
+ * and the rule under test refuses cells that are too BRIGHT, so darkness is the
+ * permissive direction. A test that wants a refusal has to say so, which is
+ * what makes `too-bright` a claim rather than a coincidence.
+ *
+ * The double does NOT propagate. Computing light is mc-worldgen's job and
+ * `mc-worldgen/test/light.test.ts` is where the BFS is checked; reproducing it
+ * here would mean two implementations of one algorithm and a test suite that
+ * agreed with itself rather than with the store.
+ */
+export const lightWorld = (
+  entries: ReadonlyArray<readonly [BlockPosition, LightLevels]>,
+): ReadonlyMap<string, LightLevels> =>
+  new Map(entries.map(([position, levels]) => [blockKey(position), levels] as const))
+
+const DARK: LightLevels = { sky: 0, block: 0 }
+
 export type StoreCalls = {
   readonly reads: number
   readonly writes: number
@@ -86,6 +114,7 @@ export type StoreCalls = {
 
 type Doubles = {
   readonly blocks: Map<string, BlockId>
+  readonly lights: Map<string, LightLevels>
   readonly loadedChunks: Set<string>
   readonly subscribers: Map<number, Set<string>>
   nextSubscriber: number
@@ -106,10 +135,18 @@ export type ChunkStoreDouble = {
 export const makeChunkStoreDouble = (
   initial: ReadonlyMap<string, BlockId>,
   loaded: ReadonlyArray<string>,
+  /**
+   * Optional, and defaulted to an empty map rather than made required, so that
+   * the twenty-odd existing call sites keep their meaning: a world nobody lit
+   * is a dark world, which is exactly what they were testing against before
+   * `getLight` existed.
+   */
+  lights: ReadonlyMap<string, LightLevels> = new Map(),
 ): Effect.Effect<ChunkStoreDouble> =>
   Effect.map(
     Ref.make<Doubles>({
       blocks: new Map(initial),
+      lights: new Map(lights),
       loadedChunks: new Set(loaded),
       subscribers: new Map(),
       nextSubscriber: 0,
@@ -204,6 +241,28 @@ export const makeChunkStoreDouble = (
               { _tag: 'Written', previous, chunk: chunkCoordOf(position) } as const,
               doubles,
             ] as const
+          }),
+
+        getLight: (position) =>
+          Ref.modify(state, (doubles): readonly [LightReading, Doubles] => {
+            // COUNTED AS A READ, alongside `getBlock`. The spawn search's cost
+            // is the number of store calls it makes per attempt, and a light
+            // query that did not appear in the count would let the ring grow
+            // silently — which is DN-GP-1's failure measured in the one unit
+            // that catches it.
+            doubles.reads += 1
+            if (position.y < 0 || position.y >= WORLD_HEIGHT) {
+              return [{ _tag: 'OutOfWorld' } as const, doubles] as const
+            }
+            if (!doubles.loadedChunks.has(chunkKeyOf(position))) {
+              // NOT darkness. The whole reason the reading is three-valued: a
+              // rule that read an unloaded chunk as pitch dark would spawn
+              // hostiles at the edge of the loaded area in daylight.
+              return [{ _tag: 'ChunkNotLoaded' } as const, doubles] as const
+            }
+
+            const levels = doubles.lights.get(blockKey(position)) ?? DARK
+            return [{ _tag: 'Light', sky: levels.sky, block: levels.block } as const, doubles] as const
           }),
 
         subscribeDirty: subscribe,
