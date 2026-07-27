@@ -166,7 +166,7 @@ plan.md §8 のリスク表も同じことを言っている。
 | 対象 | テストの置き場 | ファイル数 |
 | --- | --- | --- |
 | interaction | `packages/app/application/frame/stages/interaction-*.test.ts`（30）+ `packages/app/test/`（3） | 33 |
-| Mob | `packages/entity/test/mob/`（53）+ `packages/entity/test/`（5）+ `packages/entity/domain/mob/` 同居（3） | 61（うち **9 本移植済み**: `creeper-fuse` ×2、`explosion` ×1、`mob-spawner-rules` ×1、`terrain-spawn` ×1、`drop` ×1、`enderman-teleport` ×1、`shulker-behavior` ×1、`entity-manager-utils`（despawn 部）×1 → `test/mob.test.ts`） |
+| Mob | `packages/entity/test/mob/`（53）+ `packages/entity/test/`（5）+ `packages/entity/domain/mob/` 同居（3） | 61（うち **10 本移植済み**: `creeper-fuse` ×2、`explosion` ×1、`mob-spawner-rules` ×1、`terrain-spawn` ×1、`drop` ×1、`enderman-teleport` ×1、`shulker-behavior` ×1、`entity-manager-utils`（despawn 部）×1 → `test/mob.test.ts`、`mob-spawner-helpers` ×1 → `test/mob-spawn-search.test.ts`。§4-3） |
 | 流体 | `packages/world/test/fluid-*.test.ts` | 9 |
 | 落下ブロック | `packages/world/domain/falling-block.test.ts` / `packages/world/application/falling-block-maintenance.test.ts` | 2 |
 | 昼夜 | `packages/game/test/day-night-cycle.test.ts` / `day-night-cycle-appearance.test.ts` | 2 |
@@ -248,6 +248,139 @@ $ ls packages/game/test/day-night-cycle*.test.ts | wc -l                        
 | `block-utils.test.ts` の `isEffectiveTool` 4 本 | 4 | 採掘**速度**であってドロップではない。破壊進捗の担当（`break-block`）に付くべきで、ドロップ表には付かない |
 | `packages/app/test/placement-geometry.test.ts` | — | `adjacentToHit` は「プレイヤーがどこを見ているか」であり、mc-render のレイキャストと mc-sim の姿勢である（`place-block.ts` の「WHAT THIS RULE DOES NOT DO」） |
 | `packages/game/test/weather-service.test.ts` の serialize / restore / setWeather | 3 | **状態である。** `Ref` の往復とセーブ復元であり、`domain/weather.ts` 冒頭のとおり天候の値はホストが持つ |
+
+### 4-2-1. 上表の本数と「27 本追加」は足し算が合わない（2026-07-27 再実測）
+
+§4-2 の本文は「**27 本追加、346 → 373**」と書いているが、**同じ節の表を足すと 29 である**
+（1 + 1 + 6 + 9 + 8 + 1 + 1 + 2）。差の 2 本がどこから出るのかは本文からは決まらない。
+
+`373 - 346 = 27` は算術として正しく、表の 29 も各行を数えれば正しいので、
+**食い違っているのは「追加」の定義のほうである** —— §3-5-1 が記録しているとおり F7 の 4 本は
+「誤挙動の固定」から「一致の主張」へ**書き換え**であって新規追加ではない。書き換えを
+「追加」に数えるかどうかで表と総数がずれる。どちらの数え方が使われたかは復元できない。
+
+§1 が LOC について立てた規則（計数条件を書く）と §4-1 がテスト本数について直した規則が、
+**「追加」という語には及んでいなかった。** 本書で今後この語を使うときは
+「新規 `it` の本数」か「変更した `it` の本数」かを明記すること。
+なお 373 という当時の総数も現在は再現できない（現在 415、§4-3）。
+
+### 4-3. この回に移植したもの（2026-07-27、2 回目）
+
+前節が着地させた 5 領域のうち、**オラクルが残っていた 3 つ** —— スポーン探索の幾何、
+道具の段の梯子、天候の遷移列 —— を主張単位で移植した。**新規 `it` を 6 本追加、409 → 415**
+（「追加」＝新規 `it` の本数。既存テストの書き換えは 0 本）。
+
+移植規則は §4-2 と同じ。参照実装の `file:line` を全件に付け、
+**全件について production を壊して赤を確認した**。
+
+| # | 移植元 | 主張 | 置き場 | 本数 | 反証に使った変異 |
+| ---: | --- | --- | --- | ---: | --- |
+| 1 | `entity/test/mob/mob-spawner-helpers.test.ts:6-13` | リングは**一周する** —— cursor 4 が真 +Z、距離 16 | `test/mob-spawn-search.test.ts` | 1 | 角度の `2 * Math.PI` を `Math.PI` に（半周リング）、`cos`/`sin` の入れ替え |
+| 2 | `entity/test/mob/mob-spawner-rules.test.ts:18-20` | 探索が出すセルは**3D でも**掃除距離の内側 | 同 | 1 | `feetPosition` の y を +200 に |
+| 3 | `world/test/harvestable-blocks.test.ts:33-88` | 段は**真の包含鎖**（各段が下の段を全部含み、かつ真に多い） | `test/block-loot.test.ts` | 1 | `satisfiesHarvestTier` の `>=` を `===` に、石段の行を木段に降格 |
+| 4 | `world/test/block-utils.test.ts:58-86` | **段ごとの 4 行**（木→石、石→鉄鉱石、鉄→ダイヤ鉱石、ダイヤ→黒曜石） | 同 | 1 | `HARVEST_TIERS` の `stone` と `iron` を入れ替え |
+| 5 | `game/test/weather-service.test.ts:89-113` | 遷移は**保持している天候**から選ぶ（3 連続の満了を歩く） | `test/weather.test.ts` | 1 | `resolveNextWeatherState(state.weather, …)` を `('clear', …)` に |
+| 6 | `world/test/block-service-silk-touch.test.ts:52-66` | **移植ではなく乖離の固定**（F8。§4-3-2） | `test/block-loot.test.ts` | 1 | `resolveDrop` に置換アームを足す（＝直す）と赤くなる |
+
+**1・4・5 の変異は、いずれも移植前の 409 本を 1 つも落とさなかった。**
+半周リング（モブが常にプレイヤーの前方にしか湧かない）、段の入れ替え
+（鉄つるはしが石段のブロックを掘れない）、`advanceWeather` が常に clear から遷移する
+（雨が雷にならない）—— 3 つとも走っているゲームでは見えるが、どのアサーションにも掛からなかった。
+
+### 4-3-1. §4-2 が断った理由のうち 1 つは**期限切れだった**
+
+§4-2 は `block-utils.test.ts` の `canHarvestBlock` 7 本をこう断っている:
+
+> **個々の段**（石つるはし→鉄鉱石、鉄→ダイヤ鉱石、ダイヤ→黒曜石）は roster ギャップ ——
+> kernel の表に `iron_ore` / `diamond_ore` / `obsidian` の行が無い
+
+**その 3 行は今ある。** kernel の roster 完成で `obsidian`(40) / `iron_ore`(51) /
+`diamond_ore`(53) が入り、`domain/block-vocabulary.ts` はそれを転記済みである。
+理由が境界でも乖離でもなく**他リポジトリの欠落**だった以上、これは最初から
+**終了条件つきの拒否**であり、条件は満たされた。上表の 4 がその移植である。
+
+**理由が成り立たなくなった拒否を誰も見直さないと、誰も下していない決定と区別が付かなくなる。**
+本書の拒否表は今後、理由が「他リポジトリの欠落」である行について
+**何が来たら再開するか**を書くこと。上の 3 行はそれが書いてあったので気付けた。
+
+### 4-3-2. F8 —— 参照実装が主張し、この build が**違うことをしている** 1 件
+
+`world/test/block-service-silk-touch.test.ts:52-58` は
+「シルクタッチは**ブロックそのもの**を落とす（DIAMOND_ORE であって DIAMOND ではない）」
+と主張する。**この build は一致しない。**
+
+シルクタッチは**関門**（そもそも落ちるか）としてのみ実装されており、
+**置換**（何が落ちるか）ではない。`domain/block-vocabulary.ts` の `resolveDrop` は
+kernel の 3 つの拒否を転記していて 4 つ目のアームが無いので、`item:` の上書きが勝つ:
+
+```
+石       + silk -> まるい石        （参照実装と vanilla: 石）
+草ブロック + silk -> 土            （vanilla: 草ブロック）
+グロウストーン + silk -> 粉 2 個   （vanilla: グロウストーン）
+```
+
+**kernel が既に書いている**（`mc-kernel/domain/block-harvest.ts:213-220`）:
+
+> KNOWN LIMITATION, recorded rather than faked: silk touch is modelled as a GATE,
+> not as a SUBSTITUTION. [...] The additive fix is one optional member
+> (`silkTouchItem?: ItemType`) [...] **it is left out until a consumer needs it.**
+
+**その consumer が来た。** 参照実装のシルクタッチのオラクルがそれである。
+気付かれなかったのは、規則が `'self'` のブロック——大半——では関門と置換が同じ関数だからで、
+`test/block-loot.test.ts` の既存のシルクタッチのテストは全部そちら側だった。
+
+§6 と同じ判断でここには書かない。表を作るのは kernel の列を発明することであり、
+F7（testing.md §3-5）が断ったのと同じ形である。**現挙動を参照行つきで固定**してあるので、
+kernel が `silkTouchItem` を生やした日にこのテストが赤くなり、
+§3-5-1 の前例どおり削除ではなく**一致の主張へ書き換える**ことになる。
+
+### 4-3-3. 残っているオラクルと、断った理由
+
+| 移植元 | 本数 | 断った理由 |
+| --- | ---: | --- |
+| `world/domain/block-placement-rules.test.ts` | 4 | **移植先が無い。** キノコの光量 / サトウキビの隣接水 / サボテンの側面は testing.md §3-1 の 1 行目が**先送り**にしているブロック別ルール 4 本そのもので、production が 1 行も無い。実装が着地した日に最初に移植すべき 4 本 |
+| `world/test/block-service-place.test.ts` の `seedWater` / `seedLava` | 2 | **水と溶岩は置けない。** どちらも `UNITEMISED_BLOCK_TYPES` にあり `PlaceableItemType` ではないので、`placeBlock` に渡す道が型で無い。バケツ（アイテム使用）が来るまで待ち |
+| 同 の inventory rollback | 1 | インベントリは mc-sim の名詞。ルールは「何を消費するか」を**報告**するだけ |
+| `world/test/block-service-utils.test.ts` の `worldToBlockLocal` 4 本 | 4 | チャンク座標の算術は mc-worldgen の名詞。こちらの API に chunk-local 座標が存在しない |
+| 同 の `BlockServiceError` 3 本 | 3 | エラー配管である。`StageRegistration.run` の error channel は `never` なので、対応する型が無い |
+| `world/test/block-service-drop-overrides.test.ts` の `NON_PLACEABLE_ITEM_TYPES` 完全性 | 1 | **主張が消える。** 参照実装のこのガードは手書きのリストが漏れることを防ぐもので、こちらの `PLACEABLE_ITEM_TYPES` は `ITEM_TYPES.filter(isPlaceableItem)` と**導出**されている。導出に完全性ガードを掛けても構成上真であり、何も固定しない |
+| 同 のブロック名を名指す行（`GRAVEL → FLINT` ほか） | 多数 | §6 の 1 行目。§4-2 と同じ |
+| `entity/test/mob/mob-spawner-helpers.test.ts` の `selectMobType` 2 本 | 2 | **意図的な乖離。** 参照実装は 8 種の名簿を**カーソル**で回す（round-robin であって重み付けではない）。カーソルは世界ごとの状態なので mc-sim のもので、`domain/entities/mob-spawn-search.ts` は一様なロールを引く —— ファイル冒頭に理由つきで書いてある |
+| `entity/test/mob/terrain-spawn.test.ts` の残り 6 本 | 6 | 8 本のうち光量の境界 2 本（7 は湧く / 8 は湧かない）は §4-2 以前に移植済み。残りの内訳: **列走査 3 本**は意図的な乖離 —— 「上から最初の非空気ブロック」を Y にする走査は `domain/mob/hostile-spawn.ts` が避けるために書かれたバグそのもの（葉とガラスが地面になる）で、`mob-spawn-search.ts` の「ONE PLANE, NOT A COLUMN SCAN」節が代償込みで書いてある。**非敵対スポーン 1 本**は移植先が無い（こちらの規則は敵対専用）。**chunk-local の折り返し 1 本**は mc-worldgen の座標。**残り 1 本は反対の乖離**（下記） |
+| `game/test/weather-service.test.ts` の残り 4 本 | 4 | 単一遷移の主張であり、`game/test/weather.test.ts` の 8 本として既に移植済み。同じ主張を 2 回数えない |
+| `world/test/harvestable-blocks.test.ts` の名指し行（`CAULDRON` / `GOLD_PICKAXE` ほか） | 多数 | §6 の 1 行目、および roster ギャップ。段の**形**だけが移植可能で、それが上表の 3 |
+
+#### 反対向きの乖離 —— 「光が読めないセル」
+
+`terrain-spawn.test.ts:62-66` は「`blockLight` グリッドが**無ければ 0（暗い）と読む**」——
+つまり**湧く**——と主張する。**こちらは逆に倒してある。**
+`test/mob-spawn-search.test.ts` の
+`a cell whose BLOCKS read but whose LIGHT does not is unreadable, not dark` が
+「読めなかったセルは `unreadable` に数えて提供しない」を固定している。
+
+F8（§4-3-2）と同じく参照実装と食い違うが、**向きが逆で、こちらは意図してそうしている**:
+参照実装の読みは「測れなかった」を「真っ暗」と同一視するので、
+**昼間の地上にモブを湧かせる**側に倒れる。`domain/mob/hostile-spawn.ts` の `unmeasurable` と
+プレビューの finding F5 が同じ形の判断である。移植しないこと自体が主張なので、ここに記録する。
+
+#### 決めるべき 1 行 —— `rollGrassSeedDrop`
+
+`test/block-loot.test.ts` の「the three unshipped lines really are unshipped」は
+**自分でこう書いている**:
+
+> 種の行は名指す `wheat_seeds` が無かった。**今はある** —— kernel の roster 完成で入った。
+> だから**その半分はもう kernel のギャップではない**。`rollGrassSeedDrop`（`:245-246`）の移植は
+> このリポジトリがいつやってもいい仕事であり、audit §6-9 は乱数のドロップ規則をこちらに置いている。
+
+つまり `world/test/block-service-drop-overrides.test.ts:144-165` の 4 本は**移植可能**である。
+**しかし移植すると同じファイルの既存テストと衝突する** —— そのテストは
+「tall_grass と fern はどんなに運が良くても何も落とさない」を現状として固定しており、
+`BONUS_DROPS` に行を足すと赤くなる。
+
+**これはテストの移植ではなく production の変更を要求する決定であり、片方を黙って直さない。**
+決めるべきことは 1 つ:「ベースドロップが無いブロック（`UNITEMISED_BLOCK_TYPES` にある
+tall_grass / fern）にボーナス行だけを持たせるか」。葉が先例で、答えは「持たせてよい」に見えるが、
+葉は**アイテム化されている**ブロックである。この行を決めるまで両方を現状のままにしてある。
 
 ## 5. 推奨する着手順
 

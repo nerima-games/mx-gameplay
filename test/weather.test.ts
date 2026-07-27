@@ -194,6 +194,79 @@ describe('the reference’s weather oracle, ported unchanged', () => {
       }
     }),
   )
+
+  /*
+   * PORTED ORACLE.
+   * `<reference-impl>/packages/game/test/weather-service.test.ts:89-113`
+   * (「uses random branch rolls and randomized target durations」), read against
+   * `packages/game/application/weather-service.ts:31-37`.
+   *
+   * The reference's own file above is eight assertions about ONE transition
+   * each. This is its ninth, from the service test rather than the domain test:
+   * three expiries in a row, six mocked rolls, and the sky walking
+   * clear -> rain -> thunder -> rain.
+   *
+   * WHY THE CHAIN IS NOT THE THREE EDGES ADDED UP. `advanceWeather` must choose
+   * the next weather from the state it is HOLDING, and the single-edge tests
+   * above all call `resolveNextWeatherState` with the weather written out as a
+   * literal. Nothing in this file has ever handed `advanceWeather` a state whose
+   * weather it did not already start at.
+   *
+   * FOUND BY A MUTATION. Replacing `resolveNextWeatherState(state.weather,
+   * rolls)` with `resolveNextWeatherState('clear', rolls)` — a sky that always
+   * transitions as if it were clear, so rain never becomes thunder — left all
+   * 409 tests in this repository green. The fast-forward test below did not
+   * catch it either, because it asserts that two runs AGREE and a wrong walk
+   * reproduces exactly as well as a right one.
+   *
+   * THE ROLLS ARE THE REFERENCE'S SIX, in its order, and the deltas are its
+   * three. The `Ref` and the `Math.random` spy are gone, which is the whole
+   * difference between the two files; every number is the reference's.
+   */
+  it.effect('walks the reference’s three-transition sequence, choosing from the weather it HOLDS', () =>
+    Effect.sync(() => {
+      // `weather-service.test.ts:92` — the service is restored to a clear stretch
+      // with one second left before the sequence starts.
+      const start: WeatherState = { weather: 'clear', remainingSecs: 1 }
+
+      // `:97-98`, the first pair. 0.5 misses THUNDER_AFTER_CLEAR_CHANCE, so
+      // clear goes to rain; 0 gives that rain its shortest stretch.
+      const rain = advanceWeather(start, 1.1, { transition: 0.5, duration: 0 })
+      expect(rain).toStrictEqual({ weather: 'rain', remainingSecs: RAIN_DURATION_RANGE_SECS.min })
+
+      // `:99-100`, and `:107` for the delta. 0.29 beats THUNDER_AFTER_RAIN_CHANCE
+      // (0.3), so rain goes to thunder. A rule that chose from a literal `clear`
+      // here would answer `rain` again and the expiry would be a no-op.
+      const thunder = advanceWeather(rain, RAIN_DURATION_RANGE_SECS.min + 1, {
+        transition: 0.29,
+        duration: 0,
+      })
+      expect(thunder).toStrictEqual({
+        weather: 'thunder',
+        remainingSecs: THUNDER_DURATION_RANGE_SECS.min,
+      })
+
+      // `:101-102`, and `:108`. 0.2 beats RAIN_AFTER_THUNDER_CHANCE (0.4), so
+      // thunder goes back to rain — the edge that only exists on the thunder arm.
+      const backToRain = advanceWeather(thunder, THUNDER_DURATION_RANGE_SECS.min + 1, {
+        transition: 0.2,
+        duration: 0,
+      })
+      expect(backToRain).toStrictEqual({
+        weather: 'rain',
+        remainingSecs: RAIN_DURATION_RANGE_SECS.min,
+      })
+
+      // ...and the same three rolls applied to a stretch that has NOT run out
+      // move nothing, which is what makes the sequence above a walk of the graph
+      // rather than three independent draws. `:20-25` is the reference's own
+      // version of this assertion.
+      expect(advanceWeather(rain, 1, { transition: 0.29, duration: 0 })).toStrictEqual({
+        weather: 'rain',
+        remainingSecs: RAIN_DURATION_RANGE_SECS.min - 1,
+      })
+    }),
+  )
 })
 
 // ---------------------------------------------------------------------------

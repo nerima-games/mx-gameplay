@@ -30,7 +30,8 @@ import {
   SPAWN_RING_RADIUS_STEPS,
   SPAWN_SEARCH_ROLLS,
 } from '../domain/entities/mob-spawn-search'
-import { drawRolls } from '../domain/frame-rolls'
+import { drawRolls, rollAt } from '../domain/frame-rolls'
+import { DESPAWN_DISTANCE_BLOCKS, despawnVerdict } from '../domain/mob/hostile-despawn'
 import {
   MAX_SPAWN_DISTANCE_BLOCKS,
   MIN_SPAWN_DISTANCE_BLOCKS,
@@ -220,6 +221,142 @@ describe('the spawn ring', () => {
           ...SPAWN_RING_RADIUS_STEPS.map((step) => Math.abs(distance - step)),
         )
         expect(nearest).toBeLessThanOrEqual(Math.SQRT2)
+      }
+    }),
+  )
+
+  /*
+   * PORTED ORACLE.
+   * `<reference-impl>/packages/entity/test/mob/mob-spawner-helpers.test.ts:6-13`
+   * (「keeps the spawn position on the player ring around the cursor angle」),
+   * read against `packages/entity/application/mob/mob-spawner-helpers.ts:9-18`.
+   *
+   * The reference asserts ONE point of its ring and that point carries the whole
+   * turn: at cursor 4 the spawn lands at `z = pz + 16` with `x` unchanged.
+   * Cursor 4 is a quarter of sixteen, so a quarter of the way round is due +Z —
+   * which is only true if the sixteen angles are spread over `2 * Math.PI`, if
+   * `x` takes the cosine and `z` the sine, and if the inner radius is
+   * `MIN_SPAWN_DISTANCE`. One assertion, three facts.
+   *
+   * FOUND BY A MUTATION, and it is the one this file could not see. Halving the
+   * turn — `((angleIndex + rotation) / SPAWN_RING_ANGLES) * Math.PI` — left all
+   * 409 tests in this repository green. The count is still 64, all four radii
+   * are still reached sixteen times each, the band still holds and the store
+   * cost is unchanged; the sixteen angles are simply crowded into a SEMICIRCLE.
+   * In a running game that is a spawner that never puts a mob behind the player,
+   * and the tests above cannot say so because every one of them is about
+   * distance and none is about bearing.
+   *
+   * The transcription is checked against the reference's own numbers first, so
+   * that what follows is a comparison with the reference rather than with
+   * itself: a formula copied out of the implementation under test would agree
+   * with any mutation of it.
+   */
+  it.effect('turns a FULL circle, which is the reference’s ring and not half of it', () =>
+    Effect.gen(function* () {
+      // `mob-spawner-helpers.ts:9-18`, transcribed. The reference ties angle and
+      // radius to ONE cursor (`cursor % 16` and `cursor % 4`); this repository
+      // separates them into an angle index and a radius, so the transcription
+      // takes the two apart and the rotation — which the reference does not have
+      // — is added where its `cursor % 16` sits.
+      const referenceRingPosition = (
+        angleIndex: number,
+        radiusIndex: number,
+        rotation: number,
+      ): { readonly x: number; readonly z: number } => {
+        const angle = ((angleIndex + rotation) / SPAWN_RING_ANGLES) * Math.PI * 2
+        const distance = MIN_SPAWN_DISTANCE_BLOCKS + radiusIndex * 8
+
+        return {
+          x: PLAYER.x + Math.cos(angle) * distance,
+          z: PLAYER.z + Math.sin(angle) * distance,
+        }
+      }
+
+      // THE REFERENCE'S ASSERTED POINT, at its own rotation of zero: cursor 4,
+      // radius step 0. `expect(spawnPosition.x).toBeCloseTo(playerPosition.x)`
+      // and `expect(spawnPosition.z).toBeCloseTo(playerPosition.z + 16)`.
+      const quarterTurn = referenceRingPosition(4, 0, 0)
+      expect(quarterTurn.x).toBeCloseTo(PLAYER.x, 10)
+      expect(quarterTurn.z).toBeCloseTo(PLAYER.z + MIN_SPAWN_DISTANCE_BLOCKS, 10)
+
+      // ...and the reference's radii, which its `MIN + (cursor % 4) * 8` spells
+      // as arithmetic and this repository derives from the rule's band. The two
+      // agree, and that agreement is what makes the transcription above usable
+      // as an oracle for the cells below.
+      expect(
+        SPAWN_RING_RADIUS_STEPS.map((_, index) => MIN_SPAWN_DISTANCE_BLOCKS + index * 8),
+      ).toStrictEqual([...SPAWN_RING_RADIUS_STEPS])
+
+      const { found } = yield* searchIn(FLOORED_WORLD, RESIDENT_CHUNKS)
+      const rotation = rollAt(drawRolls(1, SPAWN_SEARCH_ROLLS), 0)
+
+      expect(found.attempts.length).toBe(SPAWN_RING_CELLS)
+
+      for (const [cellIndex, attempt] of found.attempts.entries()) {
+        const angleIndex = Math.floor(cellIndex / SPAWN_RING_RADII)
+        const radiusIndex = cellIndex % SPAWN_RING_RADII
+        const expected = referenceRingPosition(angleIndex, radiusIndex, rotation)
+
+        // `Math.floor` and not a tolerance: the search floors the continuous
+        // ring position to a cell and the reference's formula is the position it
+        // floors. An off-by-one here would be a real disagreement about which
+        // cell a bearing names, not rounding noise.
+        expect(attempt.feetPosition.x).toBe(Math.floor(expected.x))
+        expect(attempt.feetPosition.z).toBe(Math.floor(expected.z))
+      }
+    }),
+  )
+
+  /*
+   * PORTED ORACLE.
+   * `<reference-impl>/packages/entity/test/mob/mob-spawner-rules.test.ts:18-20`
+   * (「rejects positions that would immediately despawn in 3D」), read against
+   * `packages/entity/application/mob/mob-spawner-rules.ts:18-19`.
+   *
+   * The reference's spawn test is XZ and its despawn guard is 3D, so a candidate
+   * 16 blocks away horizontally and `DESPAWN_DISTANCE` blocks UP passes the band
+   * and is swept on arrival. Its oracle asserts that the spawner refuses it.
+   *
+   * THIS REPOSITORY SPLIT THE TWO ACROSS A BOUNDARY, so the claim moved with the
+   * Y. `domain/mob/hostile-spawn.ts` gates on the horizontal distance alone and
+   * says so («The band is HORIZONTAL (XZ) in the reference; the vertical
+   * component enters only the 128-block despawn guard, which is not ported»), so
+   * the rule CANNOT make this refusal — the fact it would need is not in
+   * `SpawnCandidate`. The obligation therefore lands on the SEARCH, which is the
+   * only thing here that chooses a Y at all.
+   *
+   * `test/mob.test.ts` already pins the horizontal half of the same agreement
+   * (「nothing this repository can SPAWN is ever swept on the frame it spawns」,
+   * asserting `MAX_SPAWN_DISTANCE_BLOCKS < DESPAWN_DISTANCE_BLOCKS`). That test
+   * cannot see the vertical half, because a rule with no Y in its arguments
+   * cannot be asked about one.
+   */
+  it.effect('offers no cell that the sweep would take on arrival — the reference’s 3D check, moved', () =>
+    Effect.gen(function* () {
+      const { found } = yield* searchIn(FLOORED_WORLD, RESIDENT_CHUNKS)
+
+      expect(found.attempts.length).toBe(SPAWN_RING_CELLS)
+
+      for (const attempt of found.attempts) {
+        // THE FULL 3D DISTANCE, which is the whole point: the band the rule
+        // enforces is `Math.hypot(x, z)` and this is `Math.hypot(x, y, z)`. A
+        // search that put its candidates on a plane far from the player would
+        // satisfy every XZ assertion in this file and hand the sweep a mob per
+        // cell.
+        const distance3d = Math.hypot(
+          attempt.feetPosition.x - PLAYER.x,
+          attempt.feetPosition.y - PLAYER.y,
+          attempt.feetPosition.z - PLAYER.z,
+        )
+
+        // `persistent: false`, which is the interesting direction: a mob exempt
+        // from the sweep would be kept whatever the distance, and the claim
+        // would be about the exemption instead of about the ring.
+        expect(
+          despawnVerdict({ distanceToPlayerBlocks: distance3d, persistent: false }),
+        ).toStrictEqual({ _tag: 'Keep' })
+        expect(distance3d).toBeLessThan(DESPAWN_DISTANCE_BLOCKS)
       }
     }),
   )

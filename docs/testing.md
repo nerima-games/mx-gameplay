@@ -44,8 +44,9 @@ prettier も biome も `.editorconfig` も置かない。整形の権威が 2 �
 
 ## 2. 現在のスイート
 
-**18 ファイル / 409 テスト、全 pass。**（`pnpm test` の出力。以前この行は 16 / 373 と書いていた ——
-99% ゲートを入れるにあたって 2 ファイルと 36 本が増えた。内訳と、そのうち何本が
+**18 ファイル / 415 テスト、全 pass。**（`pnpm test` の出力。以前この行は 16 / 373 と書いていた ——
+99% ゲートを入れるにあたって 2 ファイルと 36 本が増え、[porting.md](./porting.md) §4-3 の
+移植 2 回目でさらに 6 本増えた。ゲート導入分の内訳と、そのうち何本が
 「数字のため」ではなかったかは §4 にある）
 
 | ファイル | 本数 | 内容 |
@@ -59,13 +60,13 @@ prettier も biome も `.editorconfig` も置かない。整形の権威が 2 �
 | `test/day-night.test.ts` | 8 | DN-GP-7。昼夜**ルール**が何も保持していないこと、mc-sim と夜の定義が一致すること |
 | `test/public-api.test.ts` | 8 | `index.ts` のバレルを名前ごと固定する。kernel 語彙と時刻 API の**不在**も固定する |
 | `test/block-vocabulary-mirror.test.ts` | 13 | kernel 語彙のミラー。4 つの能力述語に加え、**`supportRule` の 19 行 override 表を全数**固定する（部分ミラーは別の型なので）。ミラーは転記を固定するだけで、源との比較は mc-dev-meta の `pnpm check:mirrors` である |
-| `test/chunk-store-mirror.test.ts` | 7 | `domain/chunk-store-port.ts` を mc-worldgen の界面に**両方向で**固定する。タグキーは文字どおり検査する。`validSpawnSurface` が**負リスト**であること（＝既定 true）もここ |
+| `test/chunk-store-mirror.test.ts` | 6 | `domain/chunk-store-port.ts` を mc-worldgen の界面に**両方向で**固定する。タグキーは文字どおり検査する。`validSpawnSurface` が**負リスト**であること（＝既定 true）もここ（**この行は 7 と書かれたまま古くなっていた。実測 6**） |
 | `test/preview-findings.test.ts` | 10 | **プレビューが見つけたもの**（§3-4）。うち 8 本は「現在の（誤った）挙動を固定する」テストで、直すと落ちる。**F7 はここではなく `test/place-block.test.ts` にある** —— プレビューではなく移植が見つけたものだから（§3-5）。F7 は**解決済み**で、8 本のうちの 1 つの前例になった：直したときテストは消さず、同じ参照行との**一致**へ書き換える（§3-5-1） |
 | `test/entity-manager-mirror.test.ts` | 15 | `domain/entity-manager-port.ts` を mc-sim の界面に固定する |
-| `test/mob-spawn-search.test.ts` | 25 | `domain/entities/mob-spawn-search.ts` のリングと、その 256 回のストア呼び出し |
+| `test/mob-spawn-search.test.ts` | 27 | `domain/entities/mob-spawn-search.ts` のリングと、その 256 回のストア呼び出し。参照実装の `mob-spawner-helpers.test.ts:6-13` から**リングが一周すること**、`mob-spawner-rules.test.ts:18-20` から**3D でも掃除距離の内側**であること（porting.md §4-3）。前者は半周リングという変異が 409 本を 1 つも落とさなかったので足した |
 | `test/place-block.test.ts` | 56 | **設置**（§3-1 の 1 行目）。参照実装が**実際に間違えた 3 点**を `REGRESSION:` として持つ —— 溶岩は replaceable、自分の体の中には置けない、支えが要るブロックは支えを見る。`blockOverlapsPlayer` の境界表（`block-service-utils.test.ts:84-98`）は**そのまま移植**してあり、参照実装が同じ関数に持っている**第 2 の表**（`block-utils.test.ts:88-121`、y 軸の排他境界と対角）も移植した。`block-support.test.ts` の支持表は**全行**移植済み —— fallback アームの行と、`SUPPORT_RULES` の行（旧 F7、§3-5-1 で解決）の両方 |
-| `test/block-loot.test.ts` | 29 | **ブロックのドロップテーブル**（§3-1 の 3 行目）。kernel の表を通る決定論的な半分と、audit §6-9 がこちらに置いた乱数の半分（fortune / 葉のボーナス）。「素手で石を掘っても何も出ない」が**見た目では気付けないほうの半分**である。ボーナス 4 率（りんご 1/200・棒 2%・苗木 5%・種 1/8）は参照実装から移植 —— **うち 3 つは今日どの表にも載っていない**が、待っているのは kernel の roster 行であって発明ではない |
-| `test/weather.test.ts` | 24 | **天候**（§3-1 の 7 行目）。参照実装の `packages/game/test/weather.test.ts` の 8 本を**値を変えずに**移植し、そのうえで参照実装には書けないテスト —— 2 時間ぶんのフレームを回して遷移グラフを歩き、**2 回走らせて同じ列になる**こと（§5 の fast-forward）を足す |
+| `test/block-loot.test.ts` | 32 | **ブロックのドロップテーブル**（§3-1 の 3 行目）。kernel の表を通る決定論的な半分と、audit §6-9 がこちらに置いた乱数の半分（fortune / 葉のボーナス）。「素手で石を掘っても何も出ない」が**見た目では気付けないほうの半分**である。ボーナス 4 率（りんご 1/200・棒 2%・苗木 5%・種 1/8）は参照実装から移植 —— **うち 3 つは今日どの表にも載っていない**が、待っているのは kernel の roster 行であって発明ではない。道具の段は `harvestable-blocks.test.ts` の**真の包含鎖**と `block-utils.test.ts` の**段ごとの 4 行**を移植（porting.md §4-3。後者は §4-2 が roster ギャップで断っていたもので、kernel の roster 完成で**期限切れになった拒否**である）。**F8** —— シルクタッチが置換ではなく関門であるという参照実装との乖離 —— の pin もここ（§3-6） |
+| `test/weather.test.ts` | 25 | **天候**（§3-1 の 7 行目）。参照実装の `packages/game/test/weather.test.ts` の 8 本を**値を変えずに**移植し、`weather-service.test.ts:89-113` の**3 連続遷移**（保持している天候から選ぶこと）も移植する（porting.md §4-3）。そのうえで参照実装には書けないテスト —— 2 時間ぶんのフレームを回して遷移グラフを歩き、**2 回走らせて同じ列になる**こと（§5 の fast-forward）を足す。fast-forward は「2 回が一致する」しか見ないので、**間違った歩き方も同じくらいよく再現する** —— 3 連続遷移はそこを埋める |
 | `test/frame-rolls.test.ts` | 9 | **乱数がフレームに入る場所**（`domain/frame-rolls.ts`）。他のテストは全部 stage 経由で回すので、**生成器が作っていない**シードやカウントについては何も言えていなかった —— 0 が生成器の不動点であること、カウント 0 が種を動かさないこと、`rollAt` が末尾より先を 0 と読むこと。3 つとも本文が主張していて誰も確かめていなかった |
 | `test/mob-frame.test.ts` | 9 | `domain/entities/mob-frame.ts` の**フレーム層**。ルール（`domain/mob/`）は `mob.test.ts`、配線は `vertical-slice.test.ts` が持っており、その間が空いていた —— **外した**爆風、爆風ゼロ本のフレームの費用、爆風を生き延びたクリーパーが導火線を保つこと |
 
@@ -114,18 +115,30 @@ plan.md §8:
 
 ### 2-2-1. 移植の状況（2026-07-27）
 
+**参照実装のテストファイルを 20 本ぶん転記してある**（`test/**` の `packages/…test.ts` 引用を
+重複排除して実測）。領域別:
+
 | 領域 | 状態 |
 | --- | --- |
-| Mob | 9 ファイル分を `test/mob.test.ts` へ（75 本）。porting.md §4 の表に内訳 |
-| 天候 | 参照実装の `weather.test.ts` の **8 本を値を変えずに**（`test/weather.test.ts`） |
-| 設置 | `block-service-utils.test.ts:84-98` の境界表 + `block-utils.test.ts:88-121` の**第 2 の表** + `block-support.test.ts` の共有 fallback 行 |
-| ブロックのドロップ | fortune 表・葉のボーナス・ボーナス 4 率 |
+| Mob | 10 ファイル分 —— 9 本を `test/mob.test.ts` へ（75 本）、`mob-spawner-helpers` を `test/mob-spawn-search.test.ts` へ。porting.md §4 の表に内訳 |
+| スポーン探索 | リングが**一周する**こと（`mob-spawner-helpers.test.ts:6-13`）と、出したセルが**3D でも**掃除距離の内側であること（`mob-spawner-rules.test.ts:18-20`）。列走査・カーソル・水中スポーンは**意図的な乖離**（porting.md §4-3-3） |
+| 天候 | 参照実装の `weather.test.ts` の **8 本を値を変えずに** + `weather-service.test.ts` の 3 連続遷移 1 本（`test/weather.test.ts`）。同ファイルの残り 4 本は同じ主張の重複、3 本は状態なので拒否 |
+| 設置 | `block-service-utils.test.ts:84-98` の境界表 + `block-utils.test.ts:88-121` の**第 2 の表** + `block-support.test.ts` の共有 fallback 行と `SUPPORT_RULES` 行 |
+| ブロックのドロップ | fortune 表・葉のボーナス・ボーナス 4 率 + 道具の段の**真の包含鎖**と**段ごとの 4 行** |
 | 落下ブロック | 液体を貫く 2 本。残りは走査のテストなので**拒否**（porting.md §4-2） |
 | 流体 | 予算配分 6 本。`fluid-contact.test.ts` の 7 本は **§3-3 の所有権未決でブロック中** |
 | 昼夜 | **移植すべきものが無い。** 参照実装の 29 本は全件が見た目であり mc-render の担当（porting.md §3-4） |
 
-この回に何を移植し何を断ったかは [porting.md](./porting.md) §4-2 に主張単位で表がある。
+**まだ移植していない領域が 1 つある** —— `interaction-*`（33 ファイル / 402 本）。
+porting.md §5 が着手順の 4 番目に置いており、`mc-sim` の公開 API に強く依存する。
+`test/place-block.test.ts` と `test/block-loot.test.ts` はその**一部の主張**を
+`packages/world` 側のテストから取っているが、`packages/app/application/frame/stages/` の
+33 ファイルそのものには手を付けていない。**条件 3 が「部分」である主因はここである**（§3）。
+
+各回に何を移植し何を断ったかは [porting.md](./porting.md) §4-2 / §4-3 に主張単位で表がある。
 **移植したものは全件、production を壊して赤を確認してある。**
+参照実装と食い違ったものは 2 件あり、向きが逆である —— F8（§3-6、こちらが追随すべき）と
+「光が読めないセル」（porting.md §4-3-3、こちらが意図して逆に倒している）。
 
 ### 2-3. 他リポジトリの席から roster を読む
 
@@ -153,7 +166,7 @@ roster を各リポジトリが持ち回っている以上、**行の正しさ�
 | --- | --- | --- |
 | 1 | `pnpm verify` が green | ✅ |
 | 2 | plan.md §3.11 の 7 つの責務が実装済み | ❌（**7 分の 3 が実装済み、2 が部分、2 が未着手**。内訳は §3-1） |
-| 3 | 参照実装のテストオラクルが移植済み | ❌ |
+| 3 | 参照実装のテストオラクルが移植済み | ⚠️ **部分**（参照実装のテストファイル **20 本ぶん**を転記。**Mob・スポーン探索・天候・設置・ドロップ・落下ブロック・流体の予算配分は閉じており**、拒否は全件が理由つき。**未着手は `interaction-*` の 33 ファイル / 402 本**で、これは porting.md §5 が `mc-sim` の公開 API 待ちとしている行である。ほかに所有権待ちが 1 つ（`fluid-contact.test.ts` の 7 本、§3-3）と、決めるべき 1 行（`rollGrassSeedDrop`、porting.md §4-3-3）。**❌ ではなく部分と書く** —— 内訳は §2-2-1） |
 | 4 | **プレビュー「採掘場」が操作可能** | ✅（`pnpm preview`。plan.md §3.11 が名指しする **3 つとも** —— `b` で掘り、`p` でルールを通して置き、`t` で道具の段を替えると HUD のインベントリが変わる。§3-3） |
 | 5 | **プレビュー「Mob アリーナ」が操作可能** | ✅（`--screen arena`。**plan.md §3.11 の 4 挙動のうち 3 つ。** スポーン → 導火線 → 爆風 → 死因 → ドロップ、エンダーマンのテレポート判断と変位、シュルカーの殻、そして掃除が本物。4 つ目のドラゴンは**理由つきの拒否**として画面に載る。§3-3） |
 | 6 | **プレビュー「時間スライダー」が操作可能** | ✅（`--screen time`。昼夜と**天候**の両方。時刻を**進める**のは mc-sim であり、そちらは未 publish。天候は所有者が 1 人もいないので画面が持つ —— `domain/weather.ts` の冒頭） |
@@ -376,6 +389,34 @@ own.」正しかった。再構成は削除し、`canBlockStaySupported` の直�
 `the support branch agrees with the rule on every pair it can be handed` は
 `PLACEABLE_ITEM_TYPES` で駆動しているので、10 種のどれかが itemise された日に自動で有効になる。
 
+### 3-6. 移植が見つけたもの —— F8
+
+§3-5 と同じ経路（プレビューではなく移植）なので番号を続ける。置き場は
+`test/block-loot.test.ts` で、理由も F7 と同じ —— `pnpm preview --stats` を通っていない。
+
+| # | 症状 | 場所 | pin |
+| --- | --- | --- | --- |
+| F8 | シルクタッチが**関門**（そもそも落ちるか）としてのみ実装されており、**置換**（何が落ちるか）ではない。参照実装は `item:` の上書きより**ブロックそのもの**を優先する（`block-service-silk-touch.test.ts:52-58`）。この build では石＋シルクタッチが**まるい石**、草ブロックが**土**、グロウストーンが**粉 2 個**を落とす | `domain/block-vocabulary.ts` の `resolveDrop`（= kernel `domain/block-harvest.ts:227-243` の転記） | ✅ 1 本（**現挙動の固定**） |
+
+**kernel が既にこれを書いている**（`mc-kernel/domain/block-harvest.ts:213-220`）。
+「KNOWN LIMITATION, recorded rather than faked」と題して置換ではなく関門であることを述べ、
+追加的な修正が `silkTouchItem?: ItemType` の 1 メンバであることまで書いたうえで、
+**「it is left out until a consumer needs it」**で締めている。
+
+**その consumer が来た、というのが F8 の内容である。** 参照実装のシルクタッチのオラクルが
+それであり、条件は満たされた。F7 と違うのは、F7 は**異議**（kernel に列が無い）だったのに対し
+F8 は**期限切れの延期**（kernel が「必要になったら」と書いた）である点で、
+[porting.md](./porting.md) §4-3-1 の「期限切れの拒否」と同じ形をしている。
+
+**なぜ気付かれなかったか。** 規則が `'self'` のブロック —— 大半 —— では関門と置換が
+**同じ関数**である。`test/block-loot.test.ts` の既存のシルクタッチのテストは
+ガラス（`'self'` + 関門）と葉（ボーナスの抑制）で、どちらもその側にあった。
+`item:` の上書きを持つ行にシルクタッチを掛けたテストは 1 本も無かった。
+
+**ここには直さない。** 表を作るのは kernel の列を発明することであり、F7 が断ったのと
+同じ形である（§3-5 の末尾）。pin は §3-5-1 の前例に従う —— kernel が `silkTouchItem` を
+生やした日にこのテストが赤くなり、削除ではなく**一致の主張へ書き換える**。
+
 ## 4. カバレッジ — 99% ゲートは有効である
 
 **閾値は 4 指標すべてに設定してある。** 参照実装（`takeokunn/ts-minecraft`）と同じ 99% である。
@@ -385,7 +426,7 @@ own.」正しかった。再構成は削除し、`canBlockStaySupported` の直�
 thresholds: { branches: 99, functions: 99, lines: 99, statements: 99 },
 ```
 
-実測は **statements 99.84 / branch 99.49 / functions 100 / lines 99.84**（409 テスト、2026-07-27）。
+実測は **statements 99.84 / branch 99.49 / functions 100 / lines 99.84**（415 テスト、2026-07-27。移植 2 回目で 6 本増えたが 4 指標とも動いていない —— 新規テストはすべて既に到達していた行についての主張である）。
 
 閾値を置かなかった理由は「スケルトンに課しても意味がない」であり、その前提はもう成り立たない。
 `domain/` はモブのルール、フレームの sweep、スポーン探索、ドロップ表と支持表、天候と昼夜を持ち、
