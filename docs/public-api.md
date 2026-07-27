@@ -608,6 +608,26 @@ kernel が literal を**足す**分にはこちらが stale になるだけで�
 mc-sim の**純粋関数**（`spawnEntity` / `sweepRoster` / `normaliseRoster` …）は写していない
 ——タグを持たないので、欠けていれば呼び出し側でコンパイルエラーになるだけで、`undefined` にはならない。
 
+### domain/vehicle/rail-shape.ts（**レールのトポロジ。速度も名簿も持たない**）
+
+| export | 種別 | 備考 |
+| --- | --- | --- |
+| `resolveRailShape` | 内部(可視) | 周囲 4 方向のレールから形を決める全域関数。**import が 1 本も無い。** 最大 12 回、注入された述語を呼ぶだけで、`ChunkStoreApi` を名指さない |
+| `RailShape` | 内部(可視) | `'ns'` / `'ew'` / `'curve'` / `'isolated'`。`'isolated'` は「分からない」ではなく「**何も拘束しない**」である |
+| `IsRailAt` | 内部(可視) | `(wx, wy, wz) => boolean`。**注入される述語**で、`mc-physics` の `IsBlockSolid` と同じ形。ブロック ID を名指さずに済ませる仕掛けそのもので、呼び出し側は kernel の `railKind` から作る（plan.md §3.4） |
+
+### domain/vehicle/rail-ascent.ts
+
+| export | 種別 | 備考 |
+| --- | --- | --- |
+| `isAscendingAhead` | 内部(可視) | 向きの先・1 ブロック上にレールがあるか。**`isRailAt` をちょうど 1 回**呼ぶ。速度の形をした引数を取るが**大きさは答えに届かない**（[responsibility.md](./responsibility.md) §5-1。`test/rail.test.ts` が正の定数倍で固定） |
+| `RAIL_HEADING_EPSILON` | 内部(可視) | `1e-9`。**転記であって正当化ではない**ことを定数の doc comment に明記してある。参照実装 `rail-shape.ts:74` に測定は無い |
+
+> **`projectMinecartVelocity` と `RAIL_CLIMB_SPEED` はここに無い。** どちらも所有権としては
+> このリポジトリのものだが、消費者（＝速度を持つ乗り物）が `mc-sim` にまだ無い。
+> 判断は [responsibility.md](./responsibility.md) §5 が唯一の記述で、§6 の基準に照らせば
+> **昇格どころか実装がまだ早い**側である。
+
 ## 6. 契約を足すときの基準
 
 `makeGameplayStages` 以外を「契約」に昇格させてよいのは、

@@ -13,7 +13,7 @@
 <!-- ------------------------------------------------------------------------- -->
 
 format: 1
-exported declarations: 190
+exported declarations: 195
 supporting declarations: 43
 
 ## Exported
@@ -491,6 +491,12 @@ const HOSTILE_SPAWN_MAX_BLOCK_LIGHT = 7;
 const INITIAL_WEATHER: WeatherState;
 ```
 
+### IsRailAt  `type`
+
+```ts
+type IsRailAt = (wx: number, wy: number, wz: number) => boolean;
+```
+
 ### LAVA_TICK_INTERVAL  `const`
 
 ```ts
@@ -723,6 +729,12 @@ type PlacementRequest = {
 };
 ```
 
+### RAIL_HEADING_EPSILON  `const`
+
+```ts
+const RAIL_HEADING_EPSILON = 1e-9;
+```
+
 ### RAIN_AFTER_THUNDER_CHANCE  `const`
 
 ```ts
@@ -733,6 +745,12 @@ const RAIN_AFTER_THUNDER_CHANCE = 0.4;
 
 ```ts
 const RAIN_DURATION_RANGE_SECS: WeatherDurationRange;
+```
+
+### RailShape  `type`
+
+```ts
+type RailShape = 'ns' | 'ew' | 'curve' | 'isolated';
 ```
 
 ### RollBatch  `type`
@@ -1157,6 +1175,12 @@ const hostileSpawnsAllowed: (timeOfDay: number) => boolean;
 const initialBehaviourOfKind: (kind: EntityKind) => MobBehaviour;
 ```
 
+### isAscendingAhead  `const`
+
+```ts
+const isAscendingAhead: (isRailAt: IsRailAt, wx: number, wy: number, wz: number, headingX: number, headingZ: number) => boolean;
+```
+
 ### isDead  `const`
 
 ```ts
@@ -1254,6 +1278,12 @@ const resolveBlasts: (roster: EntityManagerApi<MobBehaviour>, store: ChunkStoreA
 
 ```ts
 const resolveNextWeatherState: (current: Weather, rolls: WeatherRolls) => WeatherState;
+```
+
+### resolveRailShape  `const`
+
+```ts
+const resolveRailShape: (isRailAt: IsRailAt, wx: number, wy: number, wz: number) => RailShape;
 ```
 
 ### resolveWeatherDurationSecs  `const`

@@ -44,9 +44,10 @@ prettier も biome も `.editorconfig` も置かない。整形の権威が 2 �
 
 ## 2. 現在のスイート
 
-**18 ファイル / 415 テスト、全 pass。**（`pnpm test` の出力。以前この行は 16 / 373 と書いていた ——
+**19 ファイル / 440 テスト、全 pass。**（`pnpm test` の出力。以前この行は 16 / 373 と書いていた ——
 99% ゲートを入れるにあたって 2 ファイルと 36 本が増え、[porting.md](./porting.md) §4-3 の
-移植 2 回目でさらに 6 本増えた。ゲート導入分の内訳と、そのうち何本が
+移植 2 回目でさらに 6 本増え、レールのトポロジ（§3-1 の 5 行目）で
+`test/rail.test.ts` 1 ファイル / 25 本が増えた。ゲート導入分の内訳と、そのうち何本が
 「数字のため」ではなかったかは §4 にある）
 
 | ファイル | 本数 | 内容 |
@@ -69,6 +70,7 @@ prettier も biome も `.editorconfig` も置かない。整形の権威が 2 �
 | `test/weather.test.ts` | 25 | **天候**（§3-1 の 7 行目）。参照実装の `packages/game/test/weather.test.ts` の 8 本を**値を変えずに**移植し、`weather-service.test.ts:89-113` の**3 連続遷移**（保持している天候から選ぶこと）も移植する（porting.md §4-3）。そのうえで参照実装には書けないテスト —— 2 時間ぶんのフレームを回して遷移グラフを歩き、**2 回走らせて同じ列になる**こと（§5 の fast-forward）を足す。fast-forward は「2 回が一致する」しか見ないので、**間違った歩き方も同じくらいよく再現する** —— 3 連続遷移はそこを埋める |
 | `test/frame-rolls.test.ts` | 9 | **乱数がフレームに入る場所**（`domain/frame-rolls.ts`）。他のテストは全部 stage 経由で回すので、**生成器が作っていない**シードやカウントについては何も言えていなかった —— 0 が生成器の不動点であること、カウント 0 が種を動かさないこと、`rollAt` が末尾より先を 0 と読むこと。3 つとも本文が主張していて誰も確かめていなかった |
 | `test/mob-frame.test.ts` | 9 | `domain/entities/mob-frame.ts` の**フレーム層**。ルール（`domain/mob/`）は `mob.test.ts`、配線は `vertical-slice.test.ts` が持っており、その間が空いていた —— **外した**爆風、爆風ゼロ本のフレームの費用、爆風を生き延びたクリーパーが導火線を保つこと |
+| `test/rail.test.ts` | 25 | **レールのトポロジ**（§3-1 の 5 行目）。参照実装の `rail-shape.test.ts` の 10 本のうち、**この責務に属する 7 本を転記**（残り 3 本は `projectMinecartVelocity` のもので、[responsibility.md](./responsibility.md) §5-3 によりまだ書いていない）。そのうえで参照実装のオラクルが見ていないものを足す —— 近傍 4 方向の**16 通り全数**（曲線が直線に勝つこと）、中心セルを**問わない**という前提、±1 の傾斜が**下向きにも**効くこと、探索が 12 セルで打ち止めなこと、同点の行き先、そして**向きを正の定数倍しても答えが変わらないこと**（§5-1 の所有権論をテストにしたもの）。非有限入力に対する 2 つの全域化は**参照実装との乖離**であり、そう明記してある |
 
 `test/support/` はテストではなくテストの資材である（`vitest.config.ts` の `include` は
 `test/**/*.{test,spec}.ts` なので収集されない）。`chunk-store-double.ts` が mc-worldgen の
@@ -115,7 +117,7 @@ plan.md §8:
 
 ### 2-2-1. 移植の状況（2026-07-27）
 
-**参照実装のテストファイルを 20 本ぶん転記してある**（`test/**` の `packages/…test.ts` 引用を
+**参照実装のテストファイルを 21 本ぶん転記してある**（`test/**` の `packages/…test.ts` 引用を
 重複排除して実測）。領域別:
 
 | 領域 | 状態 |
@@ -128,6 +130,7 @@ plan.md §8:
 | 落下ブロック | 液体を貫く 2 本。残りは走査のテストなので**拒否**（porting.md §4-2） |
 | 流体 | 予算配分 6 本。`fluid-contact.test.ts` の 7 本は **§3-3 の所有権未決でブロック中** |
 | 昼夜 | **移植すべきものが無い。** 参照実装の 29 本は全件が見た目であり mc-render の担当（porting.md §3-4） |
+| 乗り物（レール） | `rail-shape.test.ts` の 10 本のうち **7 本**（`resolveRailShape` 5 + `isAscendingAhead` 2）。残る 3 本は `projectMinecartVelocity` のもので、**行き先は決めたが実装を保留**している（[responsibility.md](./responsibility.md) §5-3）—— 拒否ではない |
 
 **まだ移植していない領域が 1 つある** —— `interaction-*`（33 ファイル / 402 本）。
 porting.md §5 が着手順の 4 番目に置いており、`mc-sim` の公開 API に強く依存する。
@@ -170,7 +173,7 @@ roster を各リポジトリが持ち回っている以上、**行の正しさ�
 | 4 | **プレビュー「採掘場」が操作可能** | ✅（`pnpm preview`。plan.md §3.11 が名指しする **3 つとも** —— `b` で掘り、`p` でルールを通して置き、`t` で道具の段を替えると HUD のインベントリが変わる。§3-3） |
 | 5 | **プレビュー「Mob アリーナ」が操作可能** | ✅（`--screen arena`。**plan.md §3.11 の 4 挙動のうち 3 つ。** スポーン → 導火線 → 爆風 → 死因 → ドロップ、エンダーマンのテレポート判断と変位、シュルカーの殻、そして掃除が本物。4 つ目のドラゴンは**理由つきの拒否**として画面に載る。§3-3） |
 | 6 | **プレビュー「時間スライダー」が操作可能** | ✅（`--screen time`。昼夜と**天候**の両方。時刻を**進める**のは mc-sim であり、そちらは未 publish。天候は所有者が 1 人もいないので画面が持つ —— `domain/weather.ts` の冒頭） |
-| 7 | 99% カバレッジゲートが有効 | ✅（`vitest.config.ts` の `thresholds` + CI の `Coverage (99% gate)` ステップ。実測 99.84 / 99.49 / 100 / 99.84、§4） |
+| 7 | 99% カバレッジゲートが有効 | ✅（`vitest.config.ts` の `thresholds` + CI の `Coverage (99% gate)` ステップ。実測 99.85 / 99.51 / 100 / 99.85、§4） |
 | 8 | `mc-kernel` を import し `domain/frame-contract.ts` / `domain/position-key.ts` を削除 | ❌（kernel の publish 待ち） |
 
 ### 3-1. 条件 2 の内訳（この行は「1 つも未着手」と書かれたまま古くなっていた）
@@ -190,14 +193,15 @@ roster を各リポジトリが持ち回っている以上、**行の正しさ�
 | 2 | Mob AI | **部分** | `domain/mob/` 7 本 + `domain/entities/mob-frame.ts` で**フレームに配線済み**。4 挙動のうち 3 つ。ドラゴンは §3-3 のとおり**理由つきの拒否** |
 | 3 | ドロップ / ルートテーブル | **実装済み** | `domain/mob/mob-drop.ts`（クリーパー / ガスト / ブレイズ、`lootingLevel` 込み）と `domain/interactions/block-loot.ts`。後者は kernel の `drops` / `harvestTool` 列（`domain/block-vocabulary.ts` にミラー）を通る決定論的な半分と、audit §6-9 がこちらに置いた乱数の半分（fortune、葉のボーナス）である。**掘って出るのは「そこにあったブロック」ではなくなった** —— 石はまるい石になり、素手では何も出ない |
 | 4 | 流体伝播 | **実装済み** | `domain/fluid-frontier.ts`。plan.md §3.11 が名指しするフロンティア上限つき |
-| 5 | 乗り物（ボート / トロッコ / レール） | **未着手** | §3-2 参照。**この行の根拠は間違っていた** |
+| 5 | 乗り物（ボート / トロッコ / レール） | **部分** | **レールのトポロジは実装済み**: `domain/vehicle/rail-shape.ts`（`resolveRailShape` / `RailShape` / `IsRailAt`）と `domain/vehicle/rail-ascent.ts`（`isAscendingAhead`）。どちらも import が 1 本も無い純関数で、ブロックの読みは**注入された述語**で受ける。**フレームには配線されていない** —— カートの速度も名簿も `mc-sim` に無いためで、欠けているものは [responsibility.md](./responsibility.md) §5-5 に名指しで並べてある。記号ごとの所有権（`projectMinecartVelocity` と `RAIL_CLIMB_SPEED` を含む）は同 §5 が**唯一の記述**である。旧記述「未着手」の根拠は §3-2 のとおり間違っていた |
 | 6 | ポータル / 次元移動 | **未着手** | §3-2 参照。結論は正しく、理由が違う |
 | 7 | 昼夜・天候 | **実装済み** | `domain/day-night.ts`（`isNight` / `dayPhase` / `hostileSpawnsAllowed`）と `domain/weather.ts`（遷移グラフ・継続時間・`isPrecipitating` / `isThunderstorm` / `weatherLightScale`）。`gameplay:time-weather` は **`Effect.void` ではなくなった**。時刻を**進める**のは依然 mc-sim の `TimeService` である |
 
-**3・4・7 が実装済み、1・2 が部分、5・6 が未着手。**
-**1 つも手が付いていない責務は 5 と 6 の 2 つだけ**なのは変わらない。
+**3・4・7 が実装済み、1・2・5 が部分、6 が未着手。**
+**1 つも手が付いていない責務は 6 の 1 つだけになった。** 5 はレールのトポロジ 2 本が入って
+**部分**に変わっている（§3-2）。
 
-### 3-2. 未着手の 2 つ —— 旧記述の根拠は**測って間違いだった**
+### 3-2. 旧「未着手の 2 つ」—— 根拠は**測って間違いだった**、そして 5 は着手した
 
 この節は以前こう書いていた:
 
@@ -221,20 +225,25 @@ roster を各リポジトリが持ち回っている以上、**行の正しさ�
 
 **5（乗り物）。** 「位置を持つ実体を動かす」で説明が付くのは**半分だけ**である。
 乗っている状態は `packages/game/application/game-state-service.ts:76` の `Ref<boolean>` ——
-状態なので mc-sim のもの —— で、積分は mc-physics のものである。残りの半分はそうではない:
+状態なので mc-sim のもの —— である。残りの半分はそうではない:
 
 - `resolveRailShape`（`packages/game/domain/rail-shape.ts:18-34`）は
   **1 セルの周囲 4 方向のブロック読みだけ**の全域関数である。速度も名簿も出てこない。
   これは `domain/interactions/place-block.ts` の支え判定や
   `domain/entities/mob-spawn-search.ts` のリングと**同じ形**である。
-- `projectMinecartVelocity`（`:39-60`）は速度を**引数に取って**制約したものを返す。
-  速度を**生む**関数ではない。これは `domain/mob/enderman-teleport.ts` の
-  `endermanTeleportOffset`（変位を返し、着地は呼び出し側が決める）と同じ形であり、
-  その形は**このリポジトリで既に受け入れられている**。
 - 語彙も揃っている: kernel の `BLOCK_REGISTRY` は `rail`(31) と `powered_rail`(32) を既に持つ。
 
-つまり **`domain/interactions/rail-shape.ts` は今日書ける**。書いていないのは本パスのスコープ外
-だからであって、境界に阻まれているからではない。`ARENA_MISSING` にその旨を行として載せてある。
+**その半分は書いた。** `domain/vehicle/rail-shape.ts` と `domain/vehicle/rail-ascent.ts` で、
+§3-1 の 5 行目は**部分**になった。
+
+**記号ごとの行き先は [responsibility.md](./responsibility.md) §5 が唯一の記述であり、ここでは繰り返さない。**
+そこで直っている点だけ挙げると: 本節の旧記述は残りを「速度を出す側は mc-physics」で片付けていたが、
+`mc-physics/docs/responsibility.md` §3 のスコープ表には
+「乗り物（ボート / トロッコ）の**物理** → mx-gameplay」という行が既にあり、
+かつ本リポジトリは mc-physics を直接 import できない（[responsibility.md](./responsibility.md) §3）。
+**mc-physics は 5 記号のうち 1 つも取らない**（§5-2）。置き場も
+`domain/interactions/` ではなく `domain/vehicle/` になった（§5-6）。
+実際にある線は所有権ではなく**到達可能性**で、`mc-sim` に何が要るかは §5-5 にある。
 
 **6（ポータル）。** こちらは着手すべきでないという結論が正しく、**理由が違う**。
 参照実装はポータル関連を 1 つ残らず **world パッケージ**に置いている ——
@@ -426,7 +435,14 @@ F8 は**期限切れの延期**（kernel が「必要になったら」と書い
 thresholds: { branches: 99, functions: 99, lines: 99, statements: 99 },
 ```
 
-実測は **statements 99.84 / branch 99.49 / functions 100 / lines 99.84**（415 テスト、2026-07-27。移植 2 回目で 6 本増えたが 4 指標とも動いていない —— 新規テストはすべて既に到達していた行についての主張である）。
+実測は **statements 99.85 / branch 99.51 / functions 100 / lines 99.85**（440 テスト、2026-07-27）。
+移植 2 回目の 6 本では 4 指標とも動かなかった —— どれも既に到達していた行についての主張だったからである。
+レールの 25 本は 4 指標を **99.84 / 99.49 → 99.85 / 99.51** へわずかに動かしたが、それは新しい行が
+2 本入って両方 100% だったからであって、**数字を上げるために書いたテストは 1 本も無い**。
+その 25 本が何を押さえているかは §3-1 の 5 行目と
+[responsibility.md](./responsibility.md) §5-1 にあり、
+10 個の変異（曲線と直線の優先順、±1 の傾斜許容、中心セルの前提、同点の行き先、
+非有限入力、デッドバンド、そして「速さが答えに届く」項の追加）で全部が赤くなることを確かめてある。
 
 閾値を置かなかった理由は「スケルトンに課しても意味がない」であり、その前提はもう成り立たない。
 `domain/` はモブのルール、フレームの sweep、スポーン探索、ドロップ表と支持表、天候と昼夜を持ち、
