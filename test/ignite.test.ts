@@ -121,13 +121,8 @@ describe('ignitePortal', () => {
     }),
   )
 
-  it.effect('lights the largest legal portal, so the window radius is not one block short', () =>
+  it.effect('lights the largest legal portal', () =>
     Effect.gen(function* () {
-      // The failure mode a hand-picked radius produces is invisible: a window
-      // one block narrower still lights every portal a test author would draw
-      // by hand, and silently refuses the ones at the limit.
-      // `PORTAL_WINDOW_RADIUS` is derived from the detector's own bound and this
-      // is the bracket.
       const origin: BlockPosition = { x: 4, y: 64, z: 20 }
       const store = yield* makeChunkStoreDouble(
         world(portalEntries(origin, MAX_PORTAL_WIDTH, 3)),
@@ -138,6 +133,39 @@ describe('ignitePortal', () => {
 
       expect(outcome._tag).toBe('Lit')
       if (outcome._tag !== 'Lit') return
+      expect(outcome.cells).toHaveLength(MAX_PORTAL_WIDTH * 3)
+    }),
+  )
+
+  it.effect('lights the largest legal portal from its FAR END, which is what the window radius is for', () =>
+    Effect.gen(function* () {
+      // THE TEST ABOVE DOES NOT BRACKET THE RADIUS, and a mutation run proved
+      // it: shrinking `PORTAL_WINDOW_RADIUS` by one left it green. Detection
+      // walks LEFT from the ignition cell, and a portal ignited at its
+      // bottom-left corner never walks anywhere — the ring is one cell away.
+      //
+      // Igniting the RIGHT-most interior cell of a maximum-width portal is what
+      // makes the walk go the full distance: twenty cells to the left edge, one
+      // more to the ring. A window narrower than that silently refuses a portal
+      // a player legitimately built, and refuses it only when they light the
+      // wrong end of it — which is the shape of bug that gets reported as
+      // "portals sometimes do not work".
+      //
+      // The origin is chosen so the far reach crosses a chunk boundary; inside
+      // one chunk the whole radius question is invisible because `peek` returns
+      // everything.
+      const origin: BlockPosition = { x: 16, y: 64, z: 20 }
+      const ignition: BlockPosition = { x: origin.x + MAX_PORTAL_WIDTH - 1, y: origin.y, z: origin.z }
+      const store = yield* makeChunkStoreDouble(
+        world(portalEntries(origin, MAX_PORTAL_WIDTH, 3)),
+        residentAround(ignition),
+      )
+
+      const outcome = yield* ignitePortal(store.api, ignition)
+
+      expect(outcome._tag).toBe('Lit')
+      if (outcome._tag !== 'Lit') return
+      expect(outcome.frame.width).toBe(MAX_PORTAL_WIDTH)
       expect(outcome.cells).toHaveLength(MAX_PORTAL_WIDTH * 3)
     }),
   )
@@ -169,6 +197,36 @@ describe('ignitePortal', () => {
       // Without this, holding the button re-writes six cells every frame.
       expect(yield* ignitePortal(store.api, ORIGIN)).toStrictEqual({ _tag: 'NoFrame' })
       expect((yield* store.calls).writes).toBe(0)
+    }),
+  )
+
+  it.effect('answers NoFrame when the cell clicked is the RING and not the hole', () =>
+    Effect.gen(function* () {
+      // THE GUARD THIS IS ABOUT IS ONE LINE — `blockAt(ignition) !== AIR` — and
+      // a mutation run is what found that nothing covered it. Deleting it leaves
+      // the already-lit case answering `NoFrame` anyway (a portal-block anchor
+      // measures a zero-width interior), so the obvious test is equivalent.
+      //
+      // THIS input is not. Anchored on the middle of the bottom edge, the walk
+      // upward lands exactly on the interior's bottom row, measures 2 x 3, and
+      // detection ACCEPTS — so without the guard, clicking the obsidian ring
+      // lights the portal, and clicking a wall lights whatever hole is above it.
+      const store = yield* makeChunkStoreDouble(
+        world(portalEntries(ORIGIN, 2, 3)),
+        residentAround(ORIGIN),
+      )
+      const ringCell: BlockPosition = { x: ORIGIN.x, y: ORIGIN.y - 1, z: ORIGIN.z }
+
+      expect(yield* ignitePortal(store.api, ringCell)).toStrictEqual({ _tag: 'NoFrame' })
+      expect((yield* store.calls).writes).toBe(0)
+
+      // ...and through the dispatch, the fall-through arm refuses it too,
+      // because the cell holds obsidian. One click on the frame changes nothing.
+      const outcome = yield* useFlintAndSteel(store.api, ringCell, 'flint_and_steel')
+      expect(outcome).toStrictEqual({
+        _tag: 'Fire',
+        outcome: { _tag: 'Occupied', existing: OBSIDIAN },
+      })
     }),
   )
 

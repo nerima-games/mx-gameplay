@@ -107,7 +107,7 @@ import { CREEPER_EXPLOSION_POWER, explosionDamageAmount } from '../domain/mob/ex
 import { DESPAWN_DISTANCE_BLOCKS } from '../domain/mob/hostile-despawn'
 import type { MinedItem } from '../domain/interactions/block-loot'
 import { chunkCoordsAround } from '../domain/chunk-window'
-import { PORTAL_WINDOW_RADIUS } from '../domain/interactions/ignite-portal'
+import { PORTAL_WINDOW_RADIUS, ignitePortal } from '../domain/interactions/ignite-portal'
 import { generatePortalLayout } from '../domain/portal-frame-port'
 import {
   gameplayStages,
@@ -1667,17 +1667,29 @@ describe('the ignition slice: an item use reaches the world', () => {
       // makes the order matter rather than a preference: the other order asks
       // `detectNetherPortal` about a ring that is one block short, and the
       // player gets a fire in the middle of the portal they just finished.
+      // THE CELL LEFT OUT MUST NOT BE A CORNER, and a mutation run is what
+      // said so: with `frame[0]` — which `generatePortalLayout` emits as the
+      // bottom-left CORNER — this test passed with the two loops in either
+      // order, because detection deliberately does not require corners. A
+      // portal missing a corner is already a portal.
+      //
+      // The middle of the bottom edge is the cell mc-worldgen's own preview
+      // knocks out for the same reason.
       const layout = generatePortalLayout(origin, 'x', 2, 3)
-      const lastCell = layout.frame[0]
-      expect(lastCell).toBeDefined()
-      const alreadyBuilt = layout.frame.slice(1)
+      const lastCell: BlockPosition = { x: origin.x, y: origin.y - 1, z: origin.z }
+      const alreadyBuilt = layout.frame.filter((cell) => !samePosition(cell, lastCell))
+      expect(alreadyBuilt).toHaveLength(layout.frame.length - 1)
 
       const { store, state, stages } = yield* slice(
         world(alreadyBuilt.map((cell) => [cell, OBSIDIAN] as const)),
         residentAround(origin),
       )
 
-      yield* requestPlace(state, lastCell ?? origin, 'obsidian')
+      // ...and without it there is no portal, so the assertion below is about
+      // the ORDER rather than about a frame that was already valid.
+      expect(yield* ignitePortal(store.api, origin)).toStrictEqual({ _tag: 'NoFrame' })
+
+      yield* requestPlace(state, lastCell, 'obsidian')
       yield* requestItemUse(state, origin, 'flint_and_steel')
       yield* runFrame(stages)
 

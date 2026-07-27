@@ -117,7 +117,7 @@ plan.md §8:
 
 ### 2-2-1. 移植の状況（2026-07-27）
 
-**参照実装のテストファイルを 21 本ぶん転記してある**（`test/**` の `packages/…test.ts` 引用を
+**参照実装のテストファイルを 23 本ぶん転記してある**（`test/**` の `packages/…test.ts` 引用を
 重複排除して実測）。領域別:
 
 | 領域 | 状態 |
@@ -131,12 +131,28 @@ plan.md §8:
 | 流体 | 予算配分 6 本。`fluid-contact.test.ts` の 7 本は **§3-3 の所有権未決でブロック中** |
 | 昼夜 | **移植すべきものが無い。** 参照実装の 29 本は全件が見た目であり mc-render の担当（porting.md §3-4） |
 | 乗り物（レール） | `rail-shape.test.ts` の 10 本のうち **7 本**（`resolveRailShape` 5 + `isAscendingAhead` 2）。残る 3 本は `projectMinecartVelocity` のもので、**行き先は決めたが実装を保留**している（[responsibility.md](./responsibility.md) §5-3）—— 拒否ではない |
+| ブロック別の設置ルール | `block-placement-rules.test.ts` の **4 本を全件**（`localHorizontalNeighbors` / キノコの光量 / サトウキビの隣接水 / サボテンの側面）を `test/placement-rules.test.ts` へ。値は変えていないが**名前ではなくバイトで**問うている。1 本目だけは**主張を反転させて**転記した —— 参照実装は「チャンク内の隣だけを作る」ことを確かめており、こちらは**4 方向すべてを作る**ことを確かめる（下記） |
+| ポータルの枠 | `world/domain/nether/portal-frame.test.ts` に当たるものは **mc-worldgen 側**にある。こちらの `test/portal-frame-mirror.test.ts` はミラーを固定するもので、**生成 → 検出の往復を全合法サイズ（2 軸 × 20 幅 × 19 高＝760 通り）**掃く。手書きの枠だけで試した検出器は、テストの作者＝検出器の作者なので必ず一致する |
 
-**まだ移植していない領域が 1 つある** —— `interaction-*`（33 ファイル / 402 本）。
-porting.md §5 が着手順の 4 番目に置いており、`mc-sim` の公開 API に強く依存する。
-`test/place-block.test.ts` と `test/block-loot.test.ts` はその**一部の主張**を
-`packages/world` 側のテストから取っているが、`packages/app/application/frame/stages/` の
-33 ファイルそのものには手を付けていない。**条件 3 が「部分」である主因はここである**（§3）。
+**`interaction-*`（33 ファイル / 402 本）に最初の 1 本が入った。**
+porting.md §5 が着手順の 4 番目に置いており、大半は依然 `mc-sim` の公開 API に強く依存する。
+入ったのは `interaction-flint-steel-portal.test.ts` の **2 本**で、どちらもチャンク座標の
+ヘルパーについての主張である —— 3×3 近傍の構築と、**負の座標を含む**チャンクキーの重複排除。
+`test/chunk-window.test.ts` の `chunkCoordsAround` / `chunkCoordOf` がその対応物で、
+3×3 は**検出器自身の上限から導いた半径**（`PORTAL_WINDOW_RADIUS`）に置き換わっているが、
+2 本目が守っている性質 —— `-1 % 16` が `-1` になる言語で西隣のチャンクを取り違えないこと ——
+はそのまま守られている。
+`test/place-block.test.ts` と `test/block-loot.test.ts` は以前から `packages/world` 側の
+テストから**一部の主張**を取っている。**条件 3 が「部分」である主因は依然ここである**（§3）。
+
+**参照実装と食い違いを 1 つ増やした**（向きはこちら側が正しい、と主張する側）。
+`localHorizontalNeighbors` はチャンク外の隣を**リストから落とす**。これはルールではなく、
+その関数の呼び手が `Chunk` を 1 枚しか持っていないことの副作用だが、**答えを変える**:
+チャンク境界のサボテンは 3 面しか検査されず、境界のサトウキビは 1 セル隣の水が見えない。
+どちらも**位置によって効いたり効かなかったりする設置ルール**である。
+こちらはセルを `ChunkStore` 越しに読むのでその制限が無く、
+`domain/block-position-key.ts` の `horizontalNeighbours` は常に 4 つ返す。
+読めなかった隣は**air とは見なさない**ので、拒否の向きに倒れる。
 
 各回に何を移植し何を断ったかは [porting.md](./porting.md) §4-2 / §4-3 に主張単位で表がある。
 **移植したものは全件、production を壊して赤を確認してある。**
@@ -168,8 +184,8 @@ roster を各リポジトリが持ち回っている以上、**行の正しさ�
 | # | 条件 | 状態 |
 | --- | --- | --- |
 | 1 | `pnpm verify` が green | ✅ |
-| 2 | plan.md §3.11 の 7 つの責務が実装済み | ⚠️ **部分**（**3 が実装済み、3 が部分、1 が未着手**。内訳は §3-1。要約と内訳が食い違っていたので実ファイルから数え直した —— §3-1 の注記を見よ） |
-| 3 | 参照実装のテストオラクルが移植済み | ⚠️ **部分**（参照実装のテストファイル **20 本ぶん**を転記。**Mob・スポーン探索・天候・設置・ドロップ・落下ブロック・流体の予算配分は閉じており**、拒否は全件が理由つき。**未着手は `interaction-*` の 33 ファイル / 402 本**で、これは porting.md §5 が `mc-sim` の公開 API 待ちとしている行である。ほかに所有権待ちが 1 つ（`fluid-contact.test.ts` の 7 本、§3-3）と、決めるべき 1 行（`rollGrassSeedDrop`、porting.md §4-3-3）。**❌ ではなく部分と書く** —— 内訳は §2-2-1） |
+| 2 | plan.md §3.11 の 7 つの責務が実装済み | ⚠️ **部分**（**3 が実装済み、4 が部分、未着手は 0**。内訳は §3-1、そこの末尾に 4 つの「部分」がそれぞれ何を待っているかも並べてある。**この行と §3-1 は突き合わせて書いた** —— 過去にこの 2 つは 6 回食い違っている） |
+| 3 | 参照実装のテストオラクルが移植済み | ⚠️ **部分**（参照実装のテストファイル **23 本ぶん**を転記 —— **この数はこの行と §2-2-1 で食い違っていた**（20 と 21）ので実測して両方を合わせた。**Mob・スポーン探索・天候・設置（ブロック別 4 本を含む）・ドロップ・落下ブロック・流体の予算配分は閉じており**、拒否は全件が理由つき。**`interaction-*` の 33 ファイル / 402 本のうち、入ったのは 2 本だけ**で、残りは porting.md §5 が `mc-sim` の公開 API 待ちとしている行である。ほかに所有権待ちが 1 つ（`fluid-contact.test.ts` の 7 本、§3-3）と、決めるべき 1 行（`rollGrassSeedDrop`、porting.md §4-3-3）。**❌ ではなく部分と書く** —— 内訳は §2-2-1） |
 | 4 | **プレビュー「採掘場」が操作可能** | ✅（`pnpm preview`。plan.md §3.11 が名指しする **3 つとも** —— `b` で掘り、`p` でルールを通して置き、`t` で道具の段を替えると HUD のインベントリが変わる。§3-3） |
 | 5 | **プレビュー「Mob アリーナ」が操作可能** | ✅（`--screen arena`。**plan.md §3.11 の 4 挙動のうち 3 つ。** スポーン → 導火線 → 爆風 → 死因 → ドロップ、エンダーマンのテレポート判断と変位、シュルカーの殻、そして掃除が本物。4 つ目のドラゴンは**理由つきの拒否**として画面に載る。§3-3） |
 | 6 | **プレビュー「時間スライダー」が操作可能** | ✅（`--screen time`。昼夜と**天候**の両方。時刻を**進める**のは mc-sim であり、そちらは未 publish。天候は所有者が 1 人もいないので画面が持つ —— `domain/weather.ts` の冒頭） |
@@ -189,19 +205,24 @@ roster を各リポジトリが持ち回っている以上、**行の正しさ�
 
 | # | plan.md §3.11 の責務 | 状態 | 実体 / 欠けているもの |
 | --- | --- | --- | --- |
-| 1 | 採掘 / 設置 / アイテム使用 | **部分** | `domain/interactions/break-block.ts` と `place-block.ts` はどちらも本物で、どちらも `gameplay:interactions` から回っている。**アイテム使用が無い**（バケツ・火打石・エンダーパール・弓・農業・ハサミ）。設置の**ブロック別ルール 4 本**（キノコの光量 / サトウキビの隣接水 / サボテンの側面 / ドアの上のセル）も無い —— DN-GP-9 によりそれぞれ別ファイルであり、**先送りであって拒否ではない** |
+| 1 | 採掘 / 設置 / アイテム使用 | **部分**（設置は閉じた、アイテム使用は kernel の名簿ぶんだけ） | 3 つの動詞すべてが `gameplay:interactions` から回っている。**採掘**は `break-block.ts`、**設置**は `place-block.ts` と**ブロック別ルール 4 本**（`place-mushroom-light.ts` / `place-sugar-cane-water.ts` / `place-cactus-sides.ts` / `place-door-upper.ts` —— DN-GP-9 のとおり 1 ルール 1 ファイルで、`place-block.ts` が名前で呼ぶ）、**アイテム使用**は `use-flint-and-steel.ts` → `ignite-portal.ts` / `ignite-fire.ts` で、`pendingItemUses` / `usedItems` の inbox・outbox が付いている。**この行の「先送りであって拒否ではない」は履行された。**<br><br>**残りは kernel への名簿要求であって、こちらの穴ではない。** バケツ・ハサミ・弓・エンダーパール・鍬は `ITEM_TYPES`（97 語）に**綴りが存在しない** —— `bucket` / `water_bucket` / `lava_bucket` / `shears` / `bow` / `arrow` / `ender_pearl` / `hoe` の 8 語で、書けばこのリポジトリが kernel の語彙を発明することになる（mc-sim の 7 語要求が先例）。弓とエンダーパールは**それに加えて**発射体なので mc-sim の名簿と mc-physics の速度も要る。<br><br>4 本のうち**3 本は今日は到達不能**で、理由は同じ名簿である: `brown_mushroom` / `red_mushroom` / `sugar_cane` / `cactus` はブロックだがアイテム形を持たないので `PlaceableItemType` に入らない。`test/placement-rules.test.ts` が**名前つきのテスト**でそれを固定し、kernel が 1 行足した日に落ちる |
 | 2 | Mob AI | **部分** | `domain/mob/` 7 本 + `domain/entities/mob-frame.ts` で**フレームに配線済み**。4 挙動のうち 3 つ。ドラゴンは §3-3 のとおり**理由つきの拒否** |
 | 3 | ドロップ / ルートテーブル | **実装済み** | `domain/mob/mob-drop.ts`（クリーパー / ガスト / ブレイズ、`lootingLevel` 込み）と `domain/interactions/block-loot.ts`。後者は kernel の `drops` / `harvestTool` 列（`domain/block-vocabulary.ts` にミラー）を通る決定論的な半分と、audit §6-9 がこちらに置いた乱数の半分（fortune、葉のボーナス）である。**掘って出るのは「そこにあったブロック」ではなくなった** —— 石はまるい石になり、素手では何も出ない |
 | 4 | 流体伝播 | **実装済み** | `domain/fluid-frontier.ts`。plan.md §3.11 が名指しするフロンティア上限つき |
 | 5 | 乗り物（ボート / トロッコ / レール） | **部分** | **レールのトポロジは実装済み**: `domain/vehicle/rail-shape.ts`（`resolveRailShape` / `RailShape` / `IsRailAt`）と `domain/vehicle/rail-ascent.ts`（`isAscendingAhead`）。どちらも import が 1 本も無い純関数で、ブロックの読みは**注入された述語**で受ける。**フレームには配線されていない** —— カートの速度も名簿も `mc-sim` に無いためで、欠けているものは [responsibility.md](./responsibility.md) §5-5 に名指しで並べてある。記号ごとの所有権（`projectMinecartVelocity` と `RAIL_CLIMB_SPEED` を含む）は同 §5 が**唯一の記述**である。旧記述「未着手」の根拠は §3-2 のとおり間違っていた |
-| 6 | ポータル / 次元移動 | **未着手（このリポジトリでは）** | **枠の検出は mc-worldgen に landed した**（`detectNetherPortal`。参照実装も `packages/world/domain/nether/portal-frame.ts` に置いており、`BlockAt` 注入の純関数である）。**こちらに残るのは点火ルール**——参照実装の `interaction-flint-steel-portal.ts` に当たるアイテム使用で、責務 1 の「アイテム使用が無い」と同じ行に属する。`flint_and_steel` は既に kernel の `ITEM_TYPES` にある。**次元間の移動そのものは実体を動かすので、どちらでもない** |
+| 6 | ポータル / 次元移動 | **部分**（点火は入った、移動は依然どちらでもない） | 参照実装がこの責務を**3 ファイルに割っている**とおりに割れた。**枠の検出**は mc-worldgen の `domain/portal-frame.ts`（`detectNetherPortal`）で、こちらは `domain/portal-frame-port.ts` として**ミラー**する —— `domain/chunk-store-port.ts` が `ChunkStore` をミラーするのと同じやり方で、import ではない。**点火**は `domain/interactions/ignite-portal.ts` で、これがこの行の残りだった分である。<br><br>`detectNetherPortal` は**同期**の `BlockAt` を取り、1 回で約 500 セルを探る。こちらのブロック読みは全部 `Effect` なので、その 2 つは合わない —— `domain/chunk-window.ts` がその橋で、その冒頭に**3 つの案と、選ばなかった 2 つを落とした理由**（セル単位＝右クリック 1 回あたり 3,872 回のストア呼び出し／要求駆動の不動点＝他人の制御フローに依存した限界）が書いてある。選んだのは参照実装と同じ形、チャンクを peek してバッファを引く方式である。**`ChunkNotLoaded` は近道の中でも air にならない**: 常駐していないチャンクのセルは `UNREADABLE_BLOCK`（`-1`、どの registry 行でもない）を返して**数えられ**、`ignite-portal.ts` はそれを `NoFrame` ではなく `ChunkNotLoaded` として報告する。<br><br>**移動そのものは依然どちらでもない。** 参照実装の 3 本目 `physics-stage-portal.ts` はプレイヤーの位置を読み、十分に立ったと判断し、別次元へ置く —— mc-sim の名簿と次元サービスが要り、どちらも無い |
 | 7 | 昼夜・天候 | **実装済み** | `domain/day-night.ts`（`isNight` / `dayPhase` / `hostileSpawnsAllowed`）と `domain/weather.ts`（遷移グラフ・継続時間・`isPrecipitating` / `isThunderstorm` / `weatherLightScale`）。`gameplay:time-weather` は **`Effect.void` ではなくなった**。時刻を**進める**のは依然 mc-sim の `TimeService` である |
 
-**3・4・7 が実装済み、1・2・5 が部分、6 が未着手。**
-**1 つも手が付いていない責務は 6 の 1 つだけになった。** 5 はレールのトポロジ 2 本が入って
-**部分**に変わっている（§3-2）。
+**3・4・7 が実装済み、1・2・5・6 が部分、未着手は 0 である。**
+**7 つの責務すべてに実体がある。** 6 は点火ルールとミラーが入って **未着手 → 部分** に変わり
+（§3-2）、5 はそれ以前にレールのトポロジ 2 本で同じ移動をしている。
 
-### 3-2. 旧「未着手の 2 つ」—— 根拠は**測って間違いだった**、そして 5 は着手した
+**「部分」の 4 つが何を待っているかは 4 つとも別である。** 1 は kernel の `ITEM_TYPES` に
+8 語（要求であって穴ではない）、2 は絶対ワールド Y と速度（ドラゴン、理由つきの拒否）、
+5 は `mc-sim` のカート速度と名簿、6 は `mc-sim` の名簿と次元サービス。
+**このうち 1 だけがこのリポジトリの外に 1 行足せば閉じる。** 残り 3 つは実体が要る。
+
+### 3-2. 旧「未着手の 2 つ」—— 根拠は**測って間違いだった**、そして 5 も 6 も着手した
 
 この節は以前こう書いていた:
 
@@ -245,15 +266,33 @@ roster を各リポジトリが持ち回っている以上、**行の正しさ�
 `domain/interactions/` ではなく `domain/vehicle/` になった（§5-6）。
 実際にある線は所有権ではなく**到達可能性**で、`mc-sim` に何が要るかは §5-5 にある。
 
-**6（ポータル）。** こちらは着手すべきでないという結論が正しく、**理由が違う**。
-参照実装はポータル関連を 1 つ残らず **world パッケージ**に置いている ——
-`nether-link.ts` は座標のスケーリング、`portal-frame.ts` は枠の検出とレイアウト生成、
-`resolveNetherTravel`（`nether-travel.ts:33-49`）はその合成である。
-mc-physics の速度でも mc-sim の名簿でもなく、**mc-worldgen の構造と座標**である。
-そして実際に詰まっているのは**誰も持っていない名詞**のほうである:
+**6（ポータル）。** ここも**測ったら間違いだった** —— 5 と同じ向きに、1 段遅れて。
+
+この節は「着手すべきでないという結論が正しく、理由が違う」と書いていた。
+理由の部分は正しかった: 参照実装はポータル関連を 1 つ残らず **world パッケージ**に置いており、
+mc-physics の速度でも mc-sim の名簿でもなく **mc-worldgen の構造と座標**である。
+**結論のほうが 3 分の 1 だけ間違っていた。** 参照実装はこの責務を 3 ファイルに割っており、
+そのうち**アイテム使用の 1 本はこのリポジトリのもの**である:
+
+| 参照実装のファイル | 何をするか | 行き先 | 状態 |
+| --- | --- | --- | --- |
+| `packages/world/domain/nether/portal-frame.ts` | 枠の**形** | mc-worldgen | ✅ landed（`detectNetherPortal`） |
+| `packages/app/.../interaction-flint-steel-portal.ts` | **点火** | **mx-gameplay** | ✅ `domain/interactions/ignite-portal.ts` |
+| `packages/app/.../physics-stage-portal.ts` | プレイヤーを**移す** | どちらでもない | ⬜ mc-sim の名簿と次元サービス待ち |
+
+**「未着手」で 3 本まとめて止めていたのが誤りだった。** 1 本目は隣のリポジトリが書き、
+2 本目はここが書けたのに「実体を動かすから」で 3 本まとめて棚上げされていた ——
+`ignite-portal.ts` は実体を 1 つも知らない。ブロックを読み、ブロックを書く。
+
+**3 本目については旧記述がそのまま生きている。** 詰まっているのは**誰も持っていない名詞**で、
 `Dimension` は kernel のどのファイルにも無く、mc-sim の `EntityState` は 3 フィールドで、
 そのどれも「この実体はどの世界に居るのか」を言わない。
 **着手する前に所有権を決めるべき 1 行**であるのは変わらない。
+
+**この節は同じ誤りを 2 回記録していることになる**（5 と 6）。どちらも
+「位置を持つ実体を動かす」という 1 文で**複数のファイル**をまとめて棚上げしたもので、
+どちらもファイル単位で見たら半分以上が純関数だった。
+ブロックを読んでブロックを書くルールは、隣に実体が居ても実体のルールではない。
 
 ### 3-3. プレビュー 3 本
 
@@ -264,7 +303,7 @@ plan.md §3.11 が指定する 3 本。`apps/preview-*/` に置く（plan.md §4
 
 | プレビュー | 画面 | 実体 | 主に検証されるルール |
 | --- | --- | --- | --- |
-| **採掘場** | `site` | **本物**。`gameplayStages` を本物の `ChunkStoreApi` に対して回す | `break-block`、`place-block`、`block-loot`、落下ブロック（DN-GP-1）、`ChunkNotLoaded`（DN-GP-11）。**plan.md §3.11 が名指しする「掘る / 置く / ドロップ確認」の 3 つとも本物である。** `b` は破壊要求を受信箱に積み、`p` は**設置要求を積む**（先にルールへ問い、拒否ならその `_tag` を HUD に出して積まない —— stage は拒否を捨てるので、拒否を見られるのはここだけである）。`t` / `u` / `f` で道具の段・シルクタッチ・fortune を変えると、**次のフレームから出るアイテムが変わる**。`--tool none` と `--tool wooden` の 2 枚は、1 行だけ違う貼り付け可能なフレームである。ストアを直接書く鍵は `e` だけになり、**disturb を呼ばない**ことが設置との対比になっている |
+| **採掘場** | `site` | **本物**。`gameplayStages` を本物の `ChunkStoreApi` に対して回す | `break-block`、`place-block`、`block-loot`、落下ブロック（DN-GP-1）、`ChunkNotLoaded`（DN-GP-11）。**plan.md §3.11 が名指しする「掘る / 置く / ドロップ確認」の 3 つとも本物である。** `b` は破壊要求を受信箱に積み、`p` は**設置要求を積む**（先にルールへ問い、拒否ならその `_tag` を HUD に出して積まない —— stage は拒否を捨てるので、拒否を見られるのはここだけである）。`t` / `u` / `f` で道具の段・シルクタッチ・fortune を変えると、**次のフレームから出るアイテムが変わる**。`--tool none` と `--tool wooden` の 2 枚は、1 行だけ違う貼り付け可能なフレームである。ストアを直接書く鍵は `e` だけになり、**disturb を呼ばない**ことが設置との対比になっている。**`i` で 3 つ目の動詞が入った** —— `domain/interactions/use-flint-and-steel.ts` を通るアイテム使用で、鍵は 1 つで**ルールは 2 つ**である: 黒曜石の枠（`O`、パレット 7）の内側で押すと `%`（ネザーポータル）になり、それ以外では `*`（火）になる。**どちらが走ったかは画面が言わず、世界が言う** —— 落とし込みそのものが見せたいものだからである。ここに dry run が無いのは `p` との不整合ではなく、検出と充填が 1 つのルールだからで、2 度問えば 2 度点火してしまう（`site.ts` の `requestItemUse`）。パレットは 10 になり `0` が 10 番目である。`nether_portal` と `fire` は**選べるが置けない** —— `p` が kernel の答え（アイテム形が無い）を出す。それはキノコ・サトウキビ・サボテンをホットバーから締め出しているのと同じ名簿の事実である |
 | **Mob アリーナ** | `arena` | **本物。plan.md §3.11 の 4 挙動のうち 3 つ** | `domain/mob/` の 7 本 —— `hostile-spawn`（夜・光度・`validSpawnSurface`・距離帯）、`creeper-fuse`（着火 / 退避で消える / 1 回だけ爆発）、`explosion`（減衰と死因）、`mob-drop`（クリーパー / ガスト / ブレイズ。自爆なら何も出ない）、`enderman-teleport`（3 つの引き金と 8..32 ブロックの変位）、`shulker-shell`（開くのに 20 フレーム、閉じるのに 1）、`hostile-despawn`（3D で 128 ブロック）と、それらが到達する `domain/death-cause.ts`（DN-GP-3）。**状態はプレビューが持つ** —— mc-sim の役をこの画面が務めており、`ArenaCreeper` 4 欄 + `ArenaShulker` 6 欄 + `ArenaEnderman` 4 欄のどれ 1 つも位置でも id でも乱数生成器でもない。欠けているものは**行き先つきで**列挙し続ける（4 つ目の挙動＝ドラゴンは、**理由つきの拒否**として一覧の先頭に載る） |
 | **時間スライダー** | `time` | **ルールドライバとしては本物**。昼夜と天候の両方 | `domain/day-night.ts` の `isNight` / `dayPhase` / `hostileSpawnsAllowed`（DN-GP-7）と、`domain/weather.ts` の遷移グラフ・継続時間・`isPrecipitating` / `isThunderstorm` / `weatherLightScale`。**時刻そのものを動かすのは依然 mc-sim の `TimeService`** である。**天候は動かす** —— `gameplay:time-weather` はもう `Effect.void` ではなく、`.` が 60 秒進め、`w` が次の遷移まで早送りする（§5 の fast-forward）。画面が値を持っているのは書く先が無いからではなく、**天候には所有者が 1 人もいない**からである（`domain/weather.ts` の冒頭）。遷移表は転記ではなくルールに**問うて**描いてあるので、表と実装が食い違えない |
 

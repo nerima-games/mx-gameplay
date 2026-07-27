@@ -10,6 +10,25 @@
  *      `ChunkNotLoaded` survives a chunk-buffer read;
  *   2. the layout arithmetic is right at a negative coordinate and at a chunk
  *      boundary, which is where `%` in JavaScript quietly does the wrong thing.
+ *
+ * ---------------------------------------------------------------------------
+ * The first oracle out of the reference's `interaction-*` directory
+ * ---------------------------------------------------------------------------
+ *
+ * `docs/testing.md` §2-2-1 has recorded `interaction-*` (33 files, 402 tests) as
+ * the one untouched area of the port. Two of those 402 land here, and they are
+ * both of
+ * `<reference-impl>/packages/app/application/frame/stages/interaction-flint-steel-portal.test.ts`:
+ *
+ *   「builds the 3x3 chunk neighborhood around the ignition position」
+ *   「deduplicates affected chunk coords by chunk key」
+ *
+ * Both are about chunk coordinates around an ignition cell, and both use a
+ * NEGATIVE anchor — `{ x: -1, z: -1 }` — which is the case they exist for. The
+ * 3x3 is replaced here by a radius derived from the detector's own bound
+ * (`PORTAL_WINDOW_RADIUS`), because a hand-picked neighbourhood silently refuses
+ * the largest legal portals; the property the second one protects is unchanged
+ * and is the last test below.
  */
 import { describe, expect, it } from '@effect/vitest'
 import { Effect } from 'effect'

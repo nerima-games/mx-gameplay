@@ -1336,7 +1336,13 @@ export const buildStatsReport: Effect.Effect<ReadonlyArray<string>> = Effect.gen
   lines.push(
     `capability table: fallsWhenUnsupported(sand,gravel)=${String(falls)}  ` +
       `isReplaceable(air,water,lava)=${String(replaceable)}  ` +
-      `(lava was missing once — domain/chunk-store-port.ts:267-281)`,
+      // The citation used to read `domain/chunk-store-port.ts:267-281`, which
+      // is where the four capability sets lived before they moved to the mirror
+      // whose barrel replaces them. Those lines are now the `AIR_BLOCK_ID`
+      // comment, so the note pointed a reader at the wrong paragraph in the
+      // wrong file. No line number this time: a citation that rots on every
+      // edit above it is a citation that will rot again.
+      `(lava was missing once — see REPLACEABLE_IDS in domain/block-vocabulary.ts)`,
   )
   lines.push(`positionKeyOf({x:-1,y:2,z:-3}) = ${positionKeyOf({ x: -1, y: 2, z: -3 })}`)
   lines.push(`glyph check: ${glyphOf(SAND).name}/${glyphOf(GRAVEL).name}`)

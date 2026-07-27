@@ -246,7 +246,8 @@ plan.md §4.2 を素直に読むと `input` の後ろでもあり、`redstone` �
 
 **契約** = 他リポジトリが import してよいもの。**内部(可視)** = テストとプレビューのために見えているだけのもの。
 
-`index.ts` は `export *` を 6 本並べているので、内部(可視) も外から見える。
+`index.ts` は `export *` を **29 本**並べているので、内部(可視) も外から見える。
+（この数は長く「6 本」と書かれたまま古くなっていた。数え直したものである。）
 見えることと契約であることは別で、内部(可視) の変更は semver 上 minor 扱いになる（[versioning.md](./versioning.md) §6）。
 
 > **`domain/frame-contract.ts` と `domain/position-key.ts` は re-export していない。**
@@ -271,10 +272,14 @@ plan.md §4.2 を素直に読むと `input` の後ろでもあり、`redstone` �
 | `makeGameplayStages` | **契約** | `mc-compose` が消費する唯一の入口。`ChunkStore` を要求する（§2-2） |
 | `gameplayStages(state, store)` | 内部(可視) | state と store を外から渡す版。プレビューとテストが state を覗くために使う |
 | `makeGameplayFrameState` | 内部(可視) | 再入可能な初期化。テストが 2 つ作って独立性を検査する（DN-GP-6） |
-| `GameplayFrameState` | 内部(可視) | フレームローカルの作業メモ（`Ref` 5 本）。ゲーム状態ではない |
+| `GameplayFrameState` | 内部(可視) | フレームローカルの作業メモ（`Ref` **18 本**）。ゲーム状態ではない |
+| `PlacementRequest` / `ItemUseRequest` | 内部(可視) | 受信箱に積む要求の形。どちらも「セル 1 つと手に持っているもの」で、**持ち物の型が互いに素**である（`PlaceableItemType` と `IgnitionItemType`）ので 1 つの union にはしていない |
 | `LAVA_TICK_INTERVAL` | 内部(可視) | 暫定値。プレビューで測って決める |
 
-`Ref` 5 本の内訳は「作業キュー 3 + 受信箱 1 + 送信箱 1」である。
+**`Ref` の本数は 18 で、内訳は「作業キュー 4 + 受信箱 6 + 送信箱 4 + 乱数の種 1 + ペア 2 + カウンタ 1」である。**
+下表は**全部ではなく、判定の型が違う 7 本**を挙げている —— 残りは同じ 2 つの型
+（受信箱 / 送信箱）のどれかで、`stages/registration.ts` の冒頭が 1 本ずつ論じている。
+この節は長く「5 本」と書いたまま古くなっていた。
 
 | `Ref` | 何のためか | 判定（セーブファイルに要るか） |
 | --- | --- | --- |
@@ -283,6 +288,8 @@ plan.md §4.2 を素直に読むと `input` の後ろでもあり、`redstone` �
 | `tickCount` | 溶岩の tick を刻む | 同上 |
 | `pendingBreaks` | **受信箱**。今フレームの破壊要求 | 要らない。セーブが記録するのは「ブロックが無い」ことであって「ボタンが押されていた」ことではない |
 | `minedItems` | **送信箱**。掘れたブロックが mc-sim の `InventoryService` に渡るまでの置き場 | 要らない。1 フレーム幅で drain される |
+| `pendingItemUses` | **受信箱**。今フレームのアイテム使用要求（火打石 / 火の玉） | 要らない。`pendingBreaks` と同じ理由 |
+| `usedItems` | **送信箱**。点火に使われた道具。`consumedItems` と**別**なのは、`InventoryService` の動詞が違う（消費ではなく耐久の消耗）からである | 要らない。同上 |
 
 後ろの 2 本は publish されていないサービスの仮置きであり、どちらも消える —
 受信箱は mc-render の入力イベントに、送信箱は interactions stage 内の `InventoryService.add` 呼び出しになる。

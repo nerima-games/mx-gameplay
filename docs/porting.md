@@ -334,11 +334,38 @@ F7（testing.md §3-5）が断ったのと同じ形である。**現挙動を参
 kernel が `silkTouchItem` を生やした日にこのテストが赤くなり、
 §3-5-1 の前例どおり削除ではなく**一致の主張へ書き換える**ことになる。
 
+### 4-3-2-1. `localHorizontalNeighbors` —— 参照実装が主張し、この build が**意図して逆に倒している** 2 件目
+
+`world/domain/block-placement-rules.test.ts` の 1 本目は
+
+> builds only in-chunk horizontal neighbors
+
+と主張し、`localHorizontalNeighbors(0, 0)` が **2 つ**（`{lx:1,lz:0}` と `{lx:0,lz:1}`）を返すことを
+確かめる。`test/placement-rules.test.ts` の対応する 1 本は **4 つ**を確かめる。
+
+**これはルールではない。** チャンク外を落とすフィルタは、その関数の呼び手が `Chunk` を 1 枚しか
+持っておらず隣を読めないことの副作用である。そして**答えを変える**:
+
+- チャンク境界のサボテンは 3 面（角なら 2 面）しか検査されないので、石の壁に密着させて置ける。
+- 境界のサトウキビは 1 セル隣の水が見えないので、実際には水辺なのに拒否される。
+
+どちらも**プレイヤーから見て「たまにしか効かない設置ルール」**になる。
+このリポジトリはセルを `domain/chunk-store-port.ts` の `ChunkStore` 越しに読むので制限が無く、
+`domain/block-position-key.ts` の `horizontalNeighbours` は常に 4 つ返す。
+読めなかった隣は `BlockReading` の 3 値目のまま渡り、**air とも water とも見なさない** ——
+サボテンは「全面が air」なので拒否に、サトウキビは「どれかが water」なので不成立に倒れる。
+どちらも拒否の向きで、これは `domain/interactions/place-block.ts` が
+「測っていない事実の上にはトーチを置かない」と書いているのと同じ倒し方である。
+
+F8（§4-3-2）と**向きが逆**である点を明記しておく: F8 はこちらが追随すべき食い違いで、
+これはこちらが正しいと主張する食い違いである。
+`test/placement-rules.test.ts` が両方の境界ケースを名前つきで固定している。
+
 ### 4-3-3. 残っているオラクルと、断った理由
 
 | 移植元 | 本数 | 断った理由 |
 | --- | ---: | --- |
-| `world/domain/block-placement-rules.test.ts` | 4 | **移植先が無い。** キノコの光量 / サトウキビの隣接水 / サボテンの側面は testing.md §3-1 の 1 行目が**先送り**にしているブロック別ルール 4 本そのもので、production が 1 行も無い。実装が着地した日に最初に移植すべき 4 本 |
+| ~~`world/domain/block-placement-rules.test.ts`~~ | ~~4~~ | **この行は履行された。** 「実装が着地した日に最初に移植すべき 4 本」と書いてあり、着地したので 4 本とも `test/placement-rules.test.ts` にある。移植先は `domain/interactions/place-mushroom-light.ts` / `place-sugar-cane-water.ts` / `place-cactus-sides.ts` の 3 ファイルと、1 本目の `localHorizontalNeighbors` に当たる `domain/block-position-key.ts` の `horizontalNeighbours`。値は変えず、**名前ではなくバイトで**問うている。1 本目だけは主張を**反転**させた —— 参照実装は「チャンク内の隣だけを作る」ことを確かめるが、それはルールではなく呼び手が `Chunk` を 1 枚しか持っていないことの副作用で、チャンク境界のサボテンを 3 面しか検査しない。§4-3 に食い違いとして 1 行足してある |
 | `world/test/block-service-place.test.ts` の `seedWater` / `seedLava` | 2 | **水と溶岩は置けない。** どちらも `UNITEMISED_BLOCK_TYPES` にあり `PlaceableItemType` ではないので、`placeBlock` に渡す道が型で無い。バケツ（アイテム使用）が来るまで待ち |
 | 同 の inventory rollback | 1 | インベントリは mc-sim の名詞。ルールは「何を消費するか」を**報告**するだけ |
 | `world/test/block-service-utils.test.ts` の `worldToBlockLocal` 4 本 | 4 | チャンク座標の算術は mc-worldgen の名詞。こちらの API に chunk-local 座標が存在しない |
@@ -391,7 +418,7 @@ tall_grass / fern）にボーナス行だけを持たせるか」。葉が先例
 | 1 | 昼夜（`packages/game` の 3 ファイル） | 271 | 時間スライダー | 依存が最も少ない。**ここに移植するのはルールだけ**——`domain/day-night.ts` の `isNight` / `dayPhase` / `hostileSpawnsAllowed` が既にある（DN-GP-7）。時刻の**状態**（tick カウンタ・日長・`advance`・順序ハザード）は `mc-sim/domain/time-of-day.ts` の担当であり、ここには移植しない |
 | 2 | 落下ブロック | 167 | 採掘場 | `domain/falling-block.ts` の骨組みが既にある（DN-GP-1） |
 | 3 | 流体 | 889 (+143 要判断) | 採掘場（バケツ） | `fluid-test-utils.ts` を先に。境界移動の調整が要る（§3-3） |
-| 4 | interaction-* | 3,317 | 採掘場 | 40 ファイル。1 ルール 1 ファイルを維持（DN-GP-9） |
+| 4 | interaction-* | 3,317 | 採掘場 | 40 ファイル。1 ルール 1 ファイルを維持（DN-GP-9）。**着手済み** —— 火打石の 2 本（`interaction-flint-steel-portal.ts` / `-fire.ts`）とディスパッチ、およびブロック別の設置ルール 4 本。§5-3 に**残りが何で止まっているか**の内訳 |
 | 5 | Mob | 4,722 | Mob アリーナ | 最大。`mc-sim` の `EntityManager` が実在してから。**ただしルールの半分は先に来られた** —— §5-1 |
 
 ### 5-1. クリーパーは `EntityManager` を待たずに移植できた（実測）
@@ -431,6 +458,27 @@ tall_grass / fern）にボーナス行だけを持たせるか」。葉が先例
 各位相は**速度**を返す（:89-109）。絶対高度はジ・エンドの黒曜石柱という**構造の事実**（mc-worldgen）、
 速度は**移動**（mc-physics）である。ここに書けるのはそのどちらでもないので、書かない。
 アリーナの missing 一覧に、理由つきの**拒否**として載せてある。
+
+### 5-3. `interaction-*` の 4 番目も割れた —— そして残りは**語彙**で止まっている
+
+§5-2 と同じ測りかたを `interaction-*` に当てた結果である。上表は 4 を丸ごと
+「`mc-sim` の公開 API に強く依存する」で後回しにしていたが、**依存の中身はファイルごとに違う。**
+
+| 参照実装のルール | 何で止まっていたか | 状態 |
+| --- | --- | --- |
+| 火打石 → ポータル点火 | 何も。枠の検出は mc-worldgen に landed し、`flint_and_steel` は kernel にある | ✅ `domain/interactions/ignite-portal.ts` |
+| 火打石 → 着火 | 何も | ✅ `domain/interactions/ignite-fire.ts` |
+| ブロック別の設置ルール 4 本 | 何も。`getLight` も 4 近傍も既にあった | ✅ 4 ファイル |
+| 火打石 → TNT 起爆 | `domain/mob/explosion.ts` の `ExplosionSource` が `'creeper'` 1 語で、TNT の威力が無い。プレイヤーへの爆風ダメージは mc-sim の体力 | ⬜ 2 つとも名指し済み |
+| バケツ（汲む / 撒く） | **kernel の `ITEM_TYPES` に語が無い** | ⬜ [responsibility.md](./responsibility.md) §7 |
+| ハサミ / 農業（鍬） | 同上 | ⬜ 同上 |
+| 弓 / エンダーパール | 語が無く、**かつ発射体**である | ⬜ 語が来ても閉じない |
+
+**止まっている理由は 3 種類しかなく、どれも `mc-sim` の公開 API ではない。**
+kernel の名簿（8 語）、こちらの `ExplosionSource`（1 語 + 威力）、そして発射体（実体）である。
+上表の「4 は mc-sim 待ち」は**インベントリの消費**についてだけ正しく、
+それは既に `usedItems` / `consumedItems` の outbox として先送りされている
+（`stages/registration.ts` の冒頭）。
 
 4 と 5 は `mc-sim` の公開 API に強く依存する。plan.md §3.8 が
 「この公開 API が全下流の依存先（=最重要界面）」と書いているとおりで、

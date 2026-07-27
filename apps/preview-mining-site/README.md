@@ -25,7 +25,7 @@ $ pnpm preview --once --ascii --screen arena --time 0.9 --spawn --settle
 
 | 画面 | 実体 | 何の証拠になるか |
 | --- | --- | --- |
-| `site` | **本物**。`gameplayStages` を本物の `ChunkStoreApi` に対して回す | `gameplay:interactions` と `gameplay:entities` が動くこと。画面上で動いたブロックは全部 `domain/entities/falling-block-move.ts` が動かし、`b` で掘って出てくるアイテムは全部 `domain/interactions/block-loot.ts` が kernel のドロップ表から出した。`p` は**ルールを通る設置**である |
+| `site` | **本物**。`gameplayStages` を本物の `ChunkStoreApi` に対して回す | `gameplay:interactions` と `gameplay:entities` が動くこと。画面上で動いたブロックは全部 `domain/entities/falling-block-move.ts` が動かし、`b` で掘って出てくるアイテムは全部 `domain/interactions/block-loot.ts` が kernel のドロップ表から出した。`p` は**ルールを通る設置**であり、`i` は**ルールを通るアイテム使用**である |
 | `time` | **ルールドライバとしては本物**。`domain/day-night.ts` と `domain/weather.ts` の全域関数に引数を掃かせる | `isNight` / `dayPhase` / `hostileSpawnsAllowed` の全域挙動と、天候の遷移グラフ。**時刻を進めることはしない** — 時刻は mc-sim のもの（DN-GP-7）。**天候は進める** — 進める先が無いからではなく、天候には所有者がまだ 1 人もいないからである（`domain/weather.ts` の冒頭） |
 | `arena` | **本物。plan.md §3.11 の 4 挙動のうち 3 つ** | `domain/mob/` の 7 本と、それが到達する `domain/death-cause.ts`。スポーン判定 → 導火線 → 爆風 → 死因 → ドロップ、エンダーマンの意思と変位、シュルカーの殻、そして掃除を実際に叩く。**状態はこの画面が持つ**（mc-sim の役） |
 
@@ -35,6 +35,22 @@ $ pnpm preview --once --ascii --screen arena --time 0.9 --spawn --settle
 stage が `domain/interactions/place-block.ts` を回して、置いた砂は**その場で落ち始める** ——
 `domain/falling-block.ts:73-77` が「設置も `disturb` する側だ」と書きつづけていた行の中身である。
 `p` が直接ストアを叩いていた頃の注記が予言していたのは正確にそれで、実際に 1 行だった。
+
+**そして採掘場は長いあいだ、動詞を 3 つのうち 2 つしか持っていなかった。** plan.md §3.11 の
+責務 1 は「採掘 / 設置 / **アイテム使用**」であり、3 つ目が `i` である ——
+`domain/interactions/use-flint-and-steel.ts` を通り、**鍵は 1 つでルールは 2 つ**になっている。
+黒曜石（`O`、パレット 7）で枠を組んでその内側で `i` を押すと内部が `%` になり、
+壁に向かって押すと `*` になる。**どちらが走ったかは画面が言わない** ——
+落とし込み（ポータル → 火）そのものが見せたいものだからで、
+これは `p` のように先にルールへ問う dry run が**できない**ことの裏返しでもある:
+枠の検出とセルの充填は 1 つのルールなので、2 度問えば 2 度点火してしまう。
+
+**パレットが 10 になり、`0` が 10 番目である。** 増えたのは `obsidian` / `door` /
+`nether_portal` / `fire` の 4 つで、後ろ 2 つは**選べるが置けない** —— `p` が
+「アイテム形が無い」と言う。それは飾りではなく、キノコ・サトウキビ・サボテンを
+ホットバーから締め出しているのと**同じ kernel の名簿の事実**である
+（設置のブロック別ルール 4 本のうち、プレイヤーの手から届くのは `door` だけで、
+その `door` は**2 セル**埋める唯一のパレット項目である）。
 
 **アリーナは長いあいだ「Mob は存在しない」と 1 行目に書いていた。** 今は 3 体いる。
 変わっていないのは**残りを列挙する習慣**のほうで、実装済みの節（7 行）より

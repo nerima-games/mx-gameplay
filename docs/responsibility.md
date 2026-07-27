@@ -236,3 +236,69 @@ kernel への追加要求は 1 つも無い。
 
 粒度の規則（DN-GP-9: 1 ルール 1 ファイル、stage 登録は増やさない）は守られている。
 2 ファイル、2 ルール、**stage 登録は 0 本増**（`test/stage-registration.test.ts` が 4 本ちょうどを固定）。
+
+## 6. ポータル（plan.md §3.11 の 6 番目）—— 3 ファイルの割れかたと、こちらの取り分
+
+§2 の表はこのリポジトリの取り分を「**次元移動のルール**（ポータル成立条件・遷移の発火）」と書いている。
+**その 2 つは同じ場所には無い。** 参照実装が既に 3 ファイルに割っており、割れ目は
+[testing.md](./testing.md) §3-2 の表のとおりである。
+
+| 参照実装のファイル | 何をするか | 行き先 | 状態 |
+| --- | --- | --- | --- |
+| `packages/world/domain/nether/portal-frame.ts` | 枠の**成立条件** | **mc-worldgen** | ✅ `detectNetherPortal` |
+| `packages/app/.../interaction-flint-steel-portal.ts` | **遷移の発火**（点火） | **mx-gameplay** | ✅ `domain/interactions/ignite-portal.ts` |
+| `packages/app/.../physics-stage-portal.ts` | プレイヤーを移す | 未決 | ⬜ |
+
+**成立条件が隣に行ったのは越境ではない。** mc-worldgen 側の判断であり、そのファイルの冒頭が根拠を書いている:
+入力が全部ブロックデータで、実体を 1 つも知らない。plan.md §3.11 が 「ポータル / 次元移動ルール」 を
+gameplay に与えているのは**動詞**についてであり、形についてではない。
+
+**こちらはそれを import せず、ミラーする。** `domain/portal-frame-port.ts` が
+`domain/chunk-store-port.ts` と同じ体裁で、同じ削除期日を持つ。
+mc-worldgen のミラーが 2 本になったのは矛盾ではなく、`domain/chunk-store-port.ts` の冒頭が
+書いている規則（**1 ミラー 1 ソースモジュール**、置き場は「どのバレルが置き換えるか」で決まる）に従った結果で、
+mc-kernel に対する `domain/block-vocabulary.ts` と `domain/item-vocabulary.ts` が先例である。
+
+### 6-1. 同期の `BlockAt` と `Effect` のあいだ
+
+`detectNetherPortal` は**同期**の `(x, y, z) => number` を取り、1 回の呼び出しで最大 500 セルほど探る。
+このリポジトリのブロック読みは全部 `Effect` である。`domain/chunk-window.ts` がその橋で、
+その冒頭に**案を 3 つ並べ、落とした 2 つの理由**が書いてある。要点だけ:
+
+- **セル単位で読む**: 探りうる範囲は 2 平面 × 44 × 44 で、右クリック 1 回あたり 3,872 回のストア呼び出し。
+  枠を指していようが土壁を指していようが**全額**払う。コストで却下。
+- **要求駆動の不動点**（キャッシュを外したセルを集めて読み、また回す）: 読み取り回数は答えに比例して安いが、
+  ラウンド数が**他人の制御フローの深さ**に比例する。他リポジトリの分岐に依存した上限は上限ではない。
+- **チャンクを peek してバッファを引く**: 9〜16 回の `peek` と、あとは純粋な配列読み。**これを採った。**
+  参照実装の `buildBlockAtFromCache` と同じ形なので、発明ではなく移植である。
+
+**近道は `ChunkNotLoaded` を潰さない。** そこが唯一気にすべき点で、2 段構えになっている:
+`load` ではなく `peek` を使う（ルールがチャンクを常駐させるのは生成の決定であり、こちらのものではない）ことと、
+常駐していないセル・世界の外の `y` が `UNREADABLE_BLOCK`（`-1`、どの registry 行でもない値）を返して
+**数えられる**こと。読めないセルは air にも黒曜石にもならないので、**枠を作り出すことはできず、拒めるだけ**である。
+`ignite-portal.ts` はその数を見て `NoFrame` と `ChunkNotLoaded` を**別の答え**として返す。
+
+### 6-2. 3 本目が待っているもの
+
+`physics-stage-portal.ts` はプレイヤーの位置を読み、十分に立ったと判断し、別次元へ置く。
+待っているものは以前から変わっておらず、**誰も持っていない名詞**である:
+`Dimension` は kernel のどのファイルにも無く、mc-sim の `EntityState` は 3 フィールドで、
+そのどれも「この実体はどの世界に居るのか」を言わない。
+
+## 7. kernel への名簿要求 —— アイテム 8 語
+
+責務 1 の「アイテム使用」で**書けなかったもの**の全部が、この 1 表である。
+mc-sim の 7 語要求が先例で、**要求として出すのが正しく、こちらで綴るのは誤り**である
+（kernel audit §4.9.1(c)）。
+
+| 要求する語 | 何のルールが待っているか | ほかに要るもの |
+| --- | --- | --- |
+| `bucket` / `water_bucket` / `lava_bucket` | 汲む / 撒く（`interaction-bucket-handler/`）。流体側は `domain/fluid-frontier.ts` が既に持っている | なし。**語だけで書ける** |
+| `shears` | 葉・草の採取、および羊の毛刈り | 毛刈りのほうは mc-sim の名簿（羊が要る） |
+| `hoe` | 耕す（`dirt` / `grass_block` → `farmland`）。3 ブロックとも registry にある | なし。**語だけで書ける** |
+| `bow` / `arrow` | 射る | **発射体**。mc-sim の名簿と mc-physics の速度 |
+| `ender_pearl` | 投げる（`interaction-item-use-handler/ender-pearl.ts`） | **発射体**。同上。落下地点の判定も要る |
+
+**`bucket` 系と `hoe` は語を 1 行足せば閉じる。** 弓とエンダーパールは語が来ても閉じない ——
+そこが止まる場所で、`domain/mob/` がエンダードラゴンを拒否したときと同じ線である。
+`flint_and_steel` と `fire_charge` は**既に kernel にある**ので、この表には無く、実装済みである。

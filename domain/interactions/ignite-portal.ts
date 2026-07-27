@@ -96,14 +96,20 @@ import { MAX_PORTAL_WIDTH, detectNetherPortal, type PortalFrame } from '../porta
 /**
  * How far from the ignition cell the chunk window must reach.
  *
- * DERIVED FROM THE DETECTOR'S OWN BOUND rather than picked. `detectInPlane`
- * walks at most `MAX_PORTAL_WIDTH + 1` cells to find the left edge, measures at
- * most `MAX_PORTAL_WIDTH + 1` more, and then reads the ring one cell beyond
- * that — so every horizontal probe lies within `MAX_PORTAL_WIDTH + 1` of the
- * anchor in each direction. A window one block narrower would silently refuse
- * the largest legal portals, which is the failure mode a hand-picked radius
- * produces and which `test/ignite.test.ts` brackets by sweeping the maximum
- * size.
+ * DERIVED FROM THE DETECTOR'S OWN BOUND rather than picked. `countAir` is
+ * called with `MAX_PORTAL_WIDTH + 1` as its cap, so the leftward walk probes at
+ * most `MAX_PORTAL_WIDTH` cells beyond the anchor, and the ring sits one cell
+ * beyond the widest accepted interior. `MAX_PORTAL_WIDTH + 1` covers both with
+ * one cell to spare, and the spare is deliberate: too large costs one extra
+ * `peek` of a chunk that is usually not resident anyway, while too small
+ * silently refuses a portal a player legitimately built.
+ *
+ * IT IS BRACKETED FROM THE EXPENSIVE SIDE, and finding out how took a mutation
+ * run. `test/ignite.test.ts`'s first maximum-size test left a shrunken radius
+ * GREEN, because a portal ignited at its bottom-left corner never walks: the
+ * ring is one cell away. The test that bites ignites the FAR END of a
+ * maximum-width portal across a chunk boundary, which is the only shape that
+ * makes the walk go the full distance.
  *
  * The VERTICAL extent needs no radius: chunks are full height
  * (`../chunk-store-port`'s `CHUNK_HEIGHT`), so a column is resident or it is
