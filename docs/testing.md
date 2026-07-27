@@ -168,7 +168,7 @@ roster を各リポジトリが持ち回っている以上、**行の正しさ�
 | # | 条件 | 状態 |
 | --- | --- | --- |
 | 1 | `pnpm verify` が green | ✅ |
-| 2 | plan.md §3.11 の 7 つの責務が実装済み | ❌（**7 分の 3 が実装済み、2 が部分、2 が未着手**。内訳は §3-1） |
+| 2 | plan.md §3.11 の 7 つの責務が実装済み | ⚠️ **部分**（**3 が実装済み、3 が部分、1 が未着手**。内訳は §3-1。要約と内訳が食い違っていたので実ファイルから数え直した —— §3-1 の注記を見よ） |
 | 3 | 参照実装のテストオラクルが移植済み | ⚠️ **部分**（参照実装のテストファイル **20 本ぶん**を転記。**Mob・スポーン探索・天候・設置・ドロップ・落下ブロック・流体の予算配分は閉じており**、拒否は全件が理由つき。**未着手は `interaction-*` の 33 ファイル / 402 本**で、これは porting.md §5 が `mc-sim` の公開 API 待ちとしている行である。ほかに所有権待ちが 1 つ（`fluid-contact.test.ts` の 7 本、§3-3）と、決めるべき 1 行（`rollGrassSeedDrop`、porting.md §4-3-3）。**❌ ではなく部分と書く** —— 内訳は §2-2-1） |
 | 4 | **プレビュー「採掘場」が操作可能** | ✅（`pnpm preview`。plan.md §3.11 が名指しする **3 つとも** —— `b` で掘り、`p` でルールを通して置き、`t` で道具の段を替えると HUD のインベントリが変わる。§3-3） |
 | 5 | **プレビュー「Mob アリーナ」が操作可能** | ✅（`--screen arena`。**plan.md §3.11 の 4 挙動のうち 3 つ。** スポーン → 導火線 → 爆風 → 死因 → ドロップ、エンダーマンのテレポート判断と変位、シュルカーの殻、そして掃除が本物。4 つ目のドラゴンは**理由つきの拒否**として画面に載る。§3-3） |
@@ -194,7 +194,7 @@ roster を各リポジトリが持ち回っている以上、**行の正しさ�
 | 3 | ドロップ / ルートテーブル | **実装済み** | `domain/mob/mob-drop.ts`（クリーパー / ガスト / ブレイズ、`lootingLevel` 込み）と `domain/interactions/block-loot.ts`。後者は kernel の `drops` / `harvestTool` 列（`domain/block-vocabulary.ts` にミラー）を通る決定論的な半分と、audit §6-9 がこちらに置いた乱数の半分（fortune、葉のボーナス）である。**掘って出るのは「そこにあったブロック」ではなくなった** —— 石はまるい石になり、素手では何も出ない |
 | 4 | 流体伝播 | **実装済み** | `domain/fluid-frontier.ts`。plan.md §3.11 が名指しするフロンティア上限つき |
 | 5 | 乗り物（ボート / トロッコ / レール） | **部分** | **レールのトポロジは実装済み**: `domain/vehicle/rail-shape.ts`（`resolveRailShape` / `RailShape` / `IsRailAt`）と `domain/vehicle/rail-ascent.ts`（`isAscendingAhead`）。どちらも import が 1 本も無い純関数で、ブロックの読みは**注入された述語**で受ける。**フレームには配線されていない** —— カートの速度も名簿も `mc-sim` に無いためで、欠けているものは [responsibility.md](./responsibility.md) §5-5 に名指しで並べてある。記号ごとの所有権（`projectMinecartVelocity` と `RAIL_CLIMB_SPEED` を含む）は同 §5 が**唯一の記述**である。旧記述「未着手」の根拠は §3-2 のとおり間違っていた |
-| 6 | ポータル / 次元移動 | **未着手** | §3-2 参照。結論は正しく、理由が違う |
+| 6 | ポータル / 次元移動 | **未着手（このリポジトリでは）** | **枠の検出は mc-worldgen に landed した**（`detectNetherPortal`。参照実装も `packages/world/domain/nether/portal-frame.ts` に置いており、`BlockAt` 注入の純関数である）。**こちらに残るのは点火ルール**——参照実装の `interaction-flint-steel-portal.ts` に当たるアイテム使用で、責務 1 の「アイテム使用が無い」と同じ行に属する。`flint_and_steel` は既に kernel の `ITEM_TYPES` にある。**次元間の移動そのものは実体を動かすので、どちらでもない** |
 | 7 | 昼夜・天候 | **実装済み** | `domain/day-night.ts`（`isNight` / `dayPhase` / `hostileSpawnsAllowed`）と `domain/weather.ts`（遷移グラフ・継続時間・`isPrecipitating` / `isThunderstorm` / `weatherLightScale`）。`gameplay:time-weather` は **`Effect.void` ではなくなった**。時刻を**進める**のは依然 mc-sim の `TimeService` である |
 
 **3・4・7 が実装済み、1・2・5 が部分、6 が未着手。**

@@ -86,15 +86,40 @@
  * item was consumed and `stages/registration.ts` parks it, for the same reason
  * and in the same shape as `minedItems`.
  *
- * THE PER-BLOCK PLACEMENT RULES. The reference has four more beyond support:
- * mushrooms need light <= 12, sugar cane needs adjacent water, cactus needs four
- * air sides, doors need the cell above (`block-service-place-plan.ts:208-214`).
- * Each is a genuine rule and each needs a fact this repository can measure —
- * `getLight` exists, the four horizontal neighbours are four more reads — so
- * they are deferred rather than refused, and they are deferred because each is
- * ANOTHER FILE by DN-GP-9 rather than another branch of this one. A `PlacementRule`
- * array here would be `block-service-place-plan.ts` reappearing: five unrelated
- * block-name tests in one function.
+ * THE PER-BLOCK PLACEMENT RULES — and this section used to say they did not
+ * exist. It said:
+ *
+ *     The reference has four more beyond support: mushrooms need light <= 12,
+ *     sugar cane needs adjacent water, cactus needs four air sides, doors need
+ *     the cell above (`block-service-place-plan.ts:208-214`). […] they are
+ *     deferred rather than refused, and they are deferred because each is
+ *     ANOTHER FILE by DN-GP-9 rather than another branch of this one. A
+ *     `PlacementRule` array here would be `block-service-place-plan.ts`
+ *     reappearing: five unrelated block-name tests in one function.
+ *
+ * All four are written now, one per file, and this file CALLS them:
+ *
+ *     ./place-mushroom-light     light <= 12                     1 light read
+ *     ./place-sugar-cane-water   water beside the support        0 or 4 reads
+ *     ./place-cactus-sides       four sides air                  4 reads
+ *     ./place-door-upper         the cell above, and it fills it 1 read + 1 write
+ *
+ * The deferral's reason survives the deferral ending. There is still no
+ * `PlacementRule` array here and there is still no block name in this file: each
+ * of the four asks kernel's registry whether the byte is ITS block, answers
+ * `undefined` for every other placement without reading anything, and is called
+ * by name below. The composition is one place; the five block-name tests are in
+ * the five files that own those blocks.
+ *
+ * THREE OF THE FOUR CANNOT BE REACHED FROM HERE TODAY, and the reason is kernel's
+ * roster rather than this wiring: `brown_mushroom`, `red_mushroom`, `sugar_cane`
+ * and `cactus` have no item form, so none of them is a `PlaceableItemType` and
+ * `request.heldItem` cannot name one. Only `door` can. That is the same
+ * situation `../block-vocabulary`'s `SupportRule` section records for the ten
+ * support-sensitive blocks, and it is answered the same way — the rules are
+ * written and wired, `test/rules.test.ts` pins the unreachability by name so
+ * that it fails the day it stops being true, and `placementVerdict` is reachable
+ * over any `BlockId` regardless of what a player can hold.
  */
 import { Effect } from 'effect'
 import {
@@ -113,6 +138,10 @@ import {
   type PlaceableItemType,
 } from '../block-vocabulary'
 import type { Position } from '../entity-manager-port'
+import { cactusSidesObjection, type CactusSidesRefusal } from './place-cactus-sides'
+import { doorUpperCell, type DoorUpperCell } from './place-door-upper'
+import { mushroomLightObjection, type MushroomLightRefusal } from './place-mushroom-light'
+import { sugarCaneWaterObjection, type SugarCaneWaterRefusal } from './place-sugar-cane-water'
 
 /**
  * Half-extents of the player's collision box, from
@@ -230,6 +259,21 @@ export type PlaceOutcome =
       readonly block: BlockId
       readonly consumed: PlaceableItemType
       readonly chunk: ChunkCoord
+      /**
+       * Cells beyond `request.position` that this placement also filled.
+       *
+       * EMPTY FOR EVERY BLOCK BUT A DOOR, which is the only one of the four
+       * per-block rules that writes a second cell (`./place-door-upper`). It is
+       * an array rather than an optional member so that a caller iterating it
+       * needs no test, and it holds the cells whose write actually came back
+       * `Written` — the same discipline `./explosion-crater` uses for the cells
+       * it reports.
+       *
+       * IT IS NOT A SECOND ITEM. `consumed` stays one, because one door in the
+       * hand becomes one door in the world; the second cell is the other half of
+       * the same object rather than a second placement.
+       */
+      readonly alsoPlaced: ReadonlyArray<BlockPosition>
     }
   /** Something is already there and it is not replaceable. */
   | { readonly _tag: 'Occupied'; readonly existing: BlockId }
@@ -252,6 +296,22 @@ export type PlaceOutcome =
   | { readonly _tag: 'ChunkNotLoaded' }
   /** Below bedrock or above the build limit. */
   | { readonly _tag: 'OutOfWorld' }
+  /**
+   * The four per-block refusals, each owned by the file that owns the block.
+   *
+   * They are IMPORTED rather than spelled here, and that is the difference
+   * between this union and the reference's one function: adding a fifth
+   * per-block rule adds a file and one member to this list, and touches no
+   * branch of `placementVerdict`. The tags stay flat — `TooBright` rather than
+   * `PerBlock { rule, reason }` — because a caller switching on `_tag` is the
+   * whole reason every refusal is named, and one more level of nesting would put
+   * the answer back behind a second switch.
+   */
+  | MushroomLightRefusal
+  | SugarCaneWaterRefusal
+  | CactusSidesRefusal
+  /** A door with something in the way above it. `./place-door-upper`. */
+  | { readonly _tag: 'NoRoomAbove' }
 
 /**
  * Decide, given what the store said is in the target cell and what is under it.
@@ -359,16 +419,70 @@ export const placeBlock = (
       return verdict
     }
 
+    // THE FOUR PER-BLOCK RULES, in the reference's own order
+    // (`PLACEMENT_RULES`, `block-service-place-plan.ts:207-213`): support —
+    // which `placementVerdict` has just done — then mushroom, sugar cane,
+    // cactus, door. The order is transcribed rather than chosen, because these
+    // are refusals about DIFFERENT blocks and no two can fire on one placement;
+    // preserving it costs nothing and means a reader can diff the two files.
+    //
+    // EACH READS NOTHING FOR A BLOCK THAT IS NOT ITS OWN. That is the cost
+    // argument for putting them on this path at all: stacking stone still costs
+    // one read, one write, and four pure registry lookups.
+    const tooBright = yield* mushroomLightObjection(store, verdict.block, request.position)
+    if (tooBright !== undefined) {
+      return tooBright
+    }
+
+    const noWater = yield* sugarCaneWaterObjection(store, verdict.block, request.position, supportBelow)
+    if (noWater !== undefined) {
+      return noWater
+    }
+
+    const sidesBlocked = yield* cactusSidesObjection(store, verdict.block, request.position)
+    if (sidesBlocked !== undefined) {
+      return sidesBlocked
+    }
+
+    // The door rule is the one that answers with WORK rather than only with a
+    // refusal, so its verdict is held across the write below. See
+    // `./place-door-upper` on why the cell is returned rather than written there.
+    const upper: DoorUpperCell = yield* doorUpperCell(store, verdict.block, request.position)
+    if (upper._tag === 'NoRoomAbove') {
+      return { _tag: 'NoRoomAbove' }
+    }
+
     const outcome = yield* store.setBlock(request.position, verdict.block)
 
     switch (outcome._tag) {
-      case 'Written':
+      case 'Written': {
+        // The door's upper half. It is written AFTER the lower one and only
+        // when the lower one landed, so a refused placement cannot leave half a
+        // door standing in the world.
+        //
+        // A NON-`Written` ANSWER HERE IS REPORTED BY OMISSION rather than by
+        // undoing the lower cell. The cell was read as air one instruction ago,
+        // so reaching this needs the store to have changed underneath — the
+        // window this file's header is about — and the two available answers are
+        // a compensating write that can itself fail, or a door with no top. The
+        // second is visible, breakable and recorded in `alsoPlaced`; the first
+        // is a second failure mode with nowhere to report itself.
+        const alsoPlaced: Array<BlockPosition> = []
+        if (upper._tag === 'Clear') {
+          const upperOutcome = yield* store.setBlock(upper.cell, verdict.block)
+          if (upperOutcome._tag === 'Written') {
+            alsoPlaced.push(upper.cell)
+          }
+        }
+
         return {
           _tag: 'Placed',
           block: verdict.block,
           consumed: request.heldItem,
           chunk: outcome.chunk,
+          alsoPlaced,
         }
+      }
 
       // See the module header: the cell already held this exact block, so
       // nothing was dirtied and nothing may be taken off the stack.

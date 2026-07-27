@@ -116,6 +116,12 @@ describe('placeBlock — the target cell', () => {
         block: STONE,
         consumed: 'stone',
         chunk: { cx: 0, cz: 0 },
+        // EMPTY, and asserted rather than omitted: `alsoPlaced` is the door
+        // rule's channel (`domain/interactions/place-door-upper.ts`) and an
+        // ordinary block must not acquire a second cell. `toStrictEqual` would
+        // catch an extra entry; spelling the empty array catches the day the
+        // member stops being present at all.
+        alsoPlaced: [],
       } satisfies PlaceOutcome)
       // ...and the id the rule chose came out of kernel's table rather than out
       // of this test: `stone` the item names `stone` the block, which is the

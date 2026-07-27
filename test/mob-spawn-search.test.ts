@@ -432,7 +432,7 @@ describe('what the search reads', () => {
       const { store, found } = yield* searchIn(FLOORED_WORLD, RESIDENT_CHUNKS)
 
       expect(found.attempts.length).toBe(SPAWN_RING_CELLS)
-      expect(yield* store.calls).toStrictEqual({ reads: SPAWN_RING_CELLS * 4, writes: 0 })
+      expect(yield* store.calls).toStrictEqual({ reads: SPAWN_RING_CELLS * 4, writes: 0, peeks: 0 })
     }),
   )
 
@@ -444,7 +444,7 @@ describe('what the search reads', () => {
       const { store, found } = yield* searchIn(FLOORED_WORLD, [])
 
       expect(found.unreadable).toBe(SPAWN_RING_CELLS)
-      expect(yield* store.calls).toStrictEqual({ reads: SPAWN_RING_CELLS * 3, writes: 0 })
+      expect(yield* store.calls).toStrictEqual({ reads: SPAWN_RING_CELLS * 3, writes: 0, peeks: 0 })
     }),
   )
 
@@ -752,7 +752,7 @@ describe('the search inside the frame', () => {
 
       expect(yield* roster.api.count).toBe(0)
       // Not one store call, across ten frames and eight would-be searches.
-      expect(yield* store.calls).toStrictEqual({ reads: 0, writes: 0 })
+      expect(yield* store.calls).toStrictEqual({ reads: 0, writes: 0, peeks: 0 })
     }).pipe(Effect.provide(FrameServicesLayer)),
   )
 })

@@ -281,3 +281,86 @@ export class ChunkStore extends Context.Tag('@nerima-games/mc-worldgen/ChunkStor
  * MOVED; see the header.
  */
 export const AIR_BLOCK_ID: BlockId = 0
+
+// ---------------------------------------------------------------------------
+// The chunk buffer's own layout — mirrors mc-worldgen/domain/constants.ts and
+// the primitive half of mc-worldgen/domain/chunk.ts
+// ---------------------------------------------------------------------------
+
+/**
+ * WHY A RULE IN THIS REPOSITORY MAY INDEX A CHUNK BUFFER AT ALL.
+ *
+ * It normally may not, and nothing did until `./interactions/ignite-portal`.
+ * Every other rule reads one cell at a time through `ChunkStoreApi.getBlock`,
+ * whose three-valued answer is the whole reason `BlockReading` exists: a rule
+ * that indexes a buffer has thrown away the distinction between air and
+ * not-loaded, which is DN-GP-11's mistake in its most direct form.
+ *
+ * Portal detection is the one rule that cannot be written that way, and the
+ * reason is in mc-worldgen's `detectNetherPortal`: it takes a SYNCHRONOUS
+ * `BlockAt` and probes on the order of five hundred cells per call. Five hundred
+ * `Effect` round trips per right-click is the cost of pretending otherwise, and
+ * the reference implementation does not pay it either — it fetches a chunk
+ * neighbourhood once and reads bytes out of it
+ * (`interaction-flint-steel-portal.ts`'s `buildBlockAtFromCache`).
+ * `./interactions/ignite-portal` is the same shape, and the three-valued answer
+ * is preserved rather than discarded: a chunk that is not resident is not read
+ * as air, it is refused by name.
+ *
+ * These are mirrored HERE, and not invented, by this file's own rule — whose
+ * barrel replaces them. mc-worldgen's `index.ts` re-exports `./domain/constants`
+ * and `./domain/chunk`, so `blockIndex`, `CHUNK_SIZE_XZ`, `CHUNK_HEIGHT` and
+ * `readBlock` all come back from `@nerima-games/mc-worldgen` on the day this
+ * file is deleted. `test/chunk-store-mirror.test.ts` pins them.
+ *
+ * `getBlockAt` is deliberately NOT mirrored, although it is on that barrel and
+ * would be the convenient one. Its first parameter is mc-worldgen's `Chunk`,
+ * whose `biomes` is `ReadonlyArray<BiomeType>`; the header above records that
+ * `WorldgenChunk` widens that field to `ReadonlyArray<string>` because this
+ * repository has no biome vocabulary. The widening is safe in the direction a
+ * consumer needs and WRONG in the direction a call site needs — mc-worldgen's
+ * `getBlockAt` would not accept a `WorldgenChunk` after the repoint, so
+ * mirroring it would be a name that stops compiling on deletion day. The two
+ * mirrored below take primitives and have no such problem.
+ */
+export const CHUNK_SIZE_XZ = 16
+export const CHUNK_HEIGHT = 256
+
+/**
+ * Flat index into a chunk's `blocks`. mc-worldgen's `blockIndex`, transcribed.
+ *
+ * Y-MAJOR — `y + z * CHUNK_HEIGHT + x * CHUNK_HEIGHT * CHUNK_SIZE_XZ` — which is
+ * a column-contiguous layout and is exactly the order a vertical walk wants.
+ * The arithmetic is restated rather than re-derived: an index function that is
+ * "obviously equivalent" is how two repositories end up reading one buffer two
+ * ways, and `test/chunk-store-mirror.test.ts` compares this against the source's
+ * spelling rather than against its behaviour on the cells a test happened to
+ * pick.
+ *
+ * The parameters are CHUNK-LOCAL x and z and a WORLD y, which is mc-worldgen's
+ * signature and its unit convention: a chunk is full height, so y needs no
+ * translation. It is total and unchecked — an out-of-range argument yields an
+ * out-of-range index, which `readBlock` then answers. See the note there.
+ */
+export const blockIndex = (x: number, y: number, z: number): number =>
+  y + z * CHUNK_HEIGHT + x * CHUNK_HEIGHT * CHUNK_SIZE_XZ
+
+/**
+ * Read one byte of a chunk buffer. mc-worldgen's `readBlock`, transcribed.
+ *
+ * TOTAL, AND ITS TOTALITY IS A TRAP FOR THIS REPOSITORY. An out-of-range index
+ * reads as AIR — that is mc-worldgen's answer and the mirror does not change it
+ * — which means a caller that hands it a `y` below bedrock or above the build
+ * limit gets told the cell is empty. In mc-worldgen that is harmless, because
+ * every caller there has already clamped. Here it is not: a portal detected in
+ * fabricated air under the world is a portal, and nothing about this function
+ * would say so.
+ *
+ * So the y guard belongs at the CALL SITE and is stated there rather than being
+ * folded in here, because folding it in would make this a differently-behaved
+ * function with mc-worldgen's name — which is the failure
+ * `../block-vocabulary`'s `isSupportSensitive` note is about, arriving from the
+ * behavioural side instead of the naming side.
+ */
+export const readBlock = (blocks: Uint8Array, index: number): BlockId =>
+  blocks[index] ?? AIR_BLOCK_ID

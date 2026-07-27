@@ -121,6 +121,10 @@ import {
   type MinedItem,
 } from '../domain/interactions/block-loot'
 import { placeBlock } from '../domain/interactions/place-block'
+import {
+  useFlintAndSteel,
+  type IgnitionItemType,
+} from '../domain/interactions/use-flint-and-steel'
 import type { MobDrop } from '../domain/mob/mob-drop'
 import type { PositionKey } from '../domain/position-key'
 import {
@@ -214,6 +218,27 @@ const NO_ATTEMPTS: ReadonlyArray<never> = []
  *     there is no rule in this repository that consumes two. A count field would
  *     be a number that is always 1, which is the kind of member kernel's
  *     `./block-definition` warns is the cheapest way to get a freeze wrong.
+ *
+ *   - `pendingItemUses` is an INBOX and `usedItems` is its OUTBOX, and the pair
+ *     arrived with `domain/interactions/use-flint-and-steel.ts` — the first ITEM
+ *     USE in this repository, which is the third verb plan.md §3.11's
+ *     responsibility 1 names and the one `docs/testing.md` §3-1 recorded as
+ *     missing.
+ *
+ *     The inbox is `pendingPlacements`' twin down to its shape: a cell and the
+ *     item in hand. It is a THIRD inbox rather than a tag on the second for the
+ *     same reason the second is not a tag on the first — the item types are
+ *     disjoint (`PlaceableItemType` against `IgnitionItemType`), so one union
+ *     would make "you cannot light a portal with a block of stone" a runtime
+ *     refusal where it is currently a type error at the call site.
+ *
+ *     The outbox is NOT `consumedItems`, and that distinction is the one worth
+ *     stating: a placement takes the item off the stack, while lighting a portal
+ *     DAMAGES a flint and steel by one point and consumes a fire charge whole.
+ *     Those are two different `InventoryService` verbs — `damageSlot` against
+ *     `remove` (`use-flint-and-steel.ts`) — and a host draining one merged list
+ *     could not tell which to call. Same argument, and the same shape, as
+ *     `minedItems` against `mobDrops`.
  *
  * The inboxes disappear when their service exists: they become mc-render's input
  * events. The outboxes become calls inside the interactions stage. None of them
@@ -334,8 +359,10 @@ const NO_ATTEMPTS: ReadonlyArray<never> = []
 export type GameplayFrameState = {
   readonly pendingBreaks: Ref.Ref<ReadonlyArray<PositionKey>>
   readonly pendingPlacements: Ref.Ref<ReadonlyArray<PlacementRequest>>
+  readonly pendingItemUses: Ref.Ref<ReadonlyArray<ItemUseRequest>>
   readonly minedItems: Ref.Ref<ReadonlyArray<MinedItem>>
   readonly consumedItems: Ref.Ref<ReadonlyArray<PlaceableItemType>>
+  readonly usedItems: Ref.Ref<ReadonlyArray<IgnitionItemType>>
   readonly mobDrops: Ref.Ref<ReadonlyArray<MobDrop>>
   readonly spawnAttempts: Ref.Ref<ReadonlyArray<MobSpawnAttempt>>
   readonly targetPosition: Ref.Ref<Position | undefined>
@@ -370,11 +397,38 @@ export type PlacementRequest = {
   readonly heldItem: PlaceableItemType
 }
 
+/**
+ * One use of an igniting item on a cell.
+ *
+ * `PlacementRequest`'s twin, and deliberately identical in shape: the position
+ * is a `PositionKey` so that a host which can queue a break can queue a
+ * placement and an item use the same way, through one encoding
+ * (`domain/block-position-key.ts`).
+ *
+ * `heldItem` is an `IgnitionItemType`, so "you cannot light a portal with a
+ * stick" is a type error where the request is BUILT rather than a refusal where
+ * it is serviced. The proof obligation is
+ * `domain/interactions/use-flint-and-steel.ts`'s `isIgnitionItem` and it belongs
+ * to whoever reads the hotbar — the same division `PlacementRequest` makes with
+ * `isPlaceableItem`.
+ *
+ * THE CELL IS THE ONE TO LIGHT, not the one that was clicked. `adjacentToHit`
+ * turns a raycast hit and a face normal into the cell one step along the normal,
+ * and that is mc-render's raycast and mc-sim's pose; every rule in this
+ * repository is handed a cell.
+ */
+export type ItemUseRequest = {
+  readonly positionKey: PositionKey
+  readonly heldItem: IgnitionItemType
+}
+
 export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.gen(function* () {
   const pendingBreaks = yield* Ref.make<ReadonlyArray<PositionKey>>([])
   const pendingPlacements = yield* Ref.make<ReadonlyArray<PlacementRequest>>([])
+  const pendingItemUses = yield* Ref.make<ReadonlyArray<ItemUseRequest>>([])
   const minedItems = yield* Ref.make<ReadonlyArray<MinedItem>>([])
   const consumedItems = yield* Ref.make<ReadonlyArray<PlaceableItemType>>([])
+  const usedItems = yield* Ref.make<ReadonlyArray<IgnitionItemType>>([])
   const mobDrops = yield* Ref.make<ReadonlyArray<MobDrop>>([])
   const spawnAttempts = yield* Ref.make<ReadonlyArray<MobSpawnAttempt>>([])
   const targetPosition = yield* Ref.make<Position | undefined>(undefined)
@@ -400,8 +454,10 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
   return {
     pendingBreaks,
     pendingPlacements,
+    pendingItemUses,
     minedItems,
     consumedItems,
+    usedItems,
     mobDrops,
     spawnAttempts,
     targetPosition,
@@ -463,12 +519,17 @@ export const gameplayStages = (
           state.pendingPlacements,
           [],
         )
-        if (breaks.length === 0 && placements.length === 0) {
+        const itemUses = yield* Ref.getAndSet<ReadonlyArray<ItemUseRequest>>(
+          state.pendingItemUses,
+          [],
+        )
+        if (breaks.length === 0 && placements.length === 0 && itemUses.length === 0) {
           return
         }
 
         const gained: Array<MinedItem> = []
         const spent: Array<PlaceableItemType> = []
+        const used: Array<IgnitionItemType> = []
         const disturbed: Array<PositionKey> = []
 
         // Read ONCE for the whole batch rather than per request. The tool is an
@@ -571,10 +632,50 @@ export const gameplayStages = (
             case 'Unsupported':
             case 'UnknownBlock':
             case 'ChunkNotLoaded':
-            case 'OutOfWorld': {
+            case 'OutOfWorld':
+            // The four per-block refusals, each named by the file that owns the
+            // block (`domain/interactions/place-mushroom-light.ts` and its three
+            // neighbours). They are dropped here for the same reason the six
+            // above are — `run` returns void — and the mining-site preview,
+            // which calls `placeBlock` directly, is what prints them.
+            case 'TooBright':
+            case 'LightUnknown':
+            case 'NoAdjacentWater':
+            case 'SidesBlocked':
+            case 'NoRoomAbove': {
               break
             }
           }
+        }
+
+        // ITEM USES ARE SERVICED LAST, after breaks and placements, and the
+        // order is the same decision the break-before-place one is: a player who
+        // builds the last block of an obsidian frame and lights it in the same
+        // frame gets the sequence they asked for. The other order asks
+        // `detectNetherPortal` about a ring that is one block short.
+        for (const request of itemUses) {
+          const ignition = yield* useFlintAndSteel(
+            store,
+            positionOfKey(request.positionKey),
+            request.heldItem,
+          )
+
+          // THE ITEM IS SPENT ONLY WHEN SOMETHING LIT, which is the reference's
+          // rule (`interaction-flint-steel-handler.ts` damages the held item
+          // inside each successful arm, not around the dispatch). A flint and
+          // steel clicked at a stone wall loses no durability.
+          //
+          // ONE TEST FOR BOTH ARMS. `IgnitePortalOutcome` and `IgniteFireOutcome`
+          // both spell success `Lit`, deliberately, so this reads the answer
+          // without first asking which rule gave it — the `_tag` on the pair is
+          // for a caller that wants to REPORT which one ran, which this stage
+          // does not.
+          if (ignition.outcome._tag === 'Lit') {
+            used.push(request.heldItem)
+          }
+
+          // NOTHING IS DISTURBED by either arm, and both rules say why: every
+          // cell they write was air, and filling a hole cannot start a fall.
         }
 
         if (gained.length > 0) {
@@ -582,6 +683,9 @@ export const gameplayStages = (
         }
         if (spent.length > 0) {
           yield* Ref.update(state.consumedItems, (items) => [...items, ...spent])
+        }
+        if (used.length > 0) {
+          yield* Ref.update(state.usedItems, (items) => [...items, ...used])
         }
         if (disturbed.length > 0) {
           yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, disturbed))

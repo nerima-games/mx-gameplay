@@ -38,6 +38,7 @@ import { Effect, Layer, Ref } from 'effect'
 import {
   AIR_BLOCK_ID,
   ChunkStore,
+  blockIndex,
   type BlockId,
   type BlockPosition,
   type BlockReading,
@@ -46,6 +47,7 @@ import {
   type ChunkDirtySubscription,
   type ChunkStoreApi,
   type LightReading,
+  type WorldgenChunk,
 } from '../../domain/chunk-store-port'
 
 /** Block ids, transcribed from kernel's `BLOCK_REGISTRY` (see the mirror). */
@@ -110,6 +112,18 @@ const DARK: LightLevels = { sky: 0, block: 0 }
 export type StoreCalls = {
   readonly reads: number
   readonly writes: number
+  /**
+   * `peek` calls. COUNTED SEPARATELY from `reads`, and that separation is the
+   * point of the counter rather than bookkeeping.
+   *
+   * A `peek` is one chunk and a `getBlock` is one cell, so folding them together
+   * would make `domain/interactions/ignite-portal.ts` — which fetches a handful
+   * of chunks and then reads five hundred cells out of them without touching the
+   * store — look identical to the five-hundred-round-trip version
+   * `domain/chunk-window.ts`'s header rejects on cost. The two are only
+   * distinguishable if the units are.
+   */
+  readonly peeks: number
 }
 
 type Doubles = {
@@ -120,6 +134,7 @@ type Doubles = {
   nextSubscriber: number
   reads: number
   writes: number
+  peeks: number
 }
 
 export type ChunkStoreDouble = {
@@ -152,6 +167,7 @@ export const makeChunkStoreDouble = (
       nextSubscriber: 0,
       reads: 0,
       writes: 0,
+      peeks: 0,
     }),
     (state) => {
       const notImplemented = Effect.dieMessage('not exercised by this test')
@@ -191,7 +207,47 @@ export const makeChunkStoreDouble = (
 
       const api: ChunkStoreApi = {
         load: () => notImplemented,
-        peek: () => notImplemented,
+
+        /**
+         * MATERIALISED FROM THE SPARSE MAP, not stored as a buffer.
+         *
+         * The double keeps a `Map` from a cell key to a block because every rule
+         * before `domain/interactions/ignite-portal.ts` read cells. That rule
+         * reads a chunk, so this builds the `Uint8Array` mc-worldgen would have
+         * handed back — 65,536 bytes per call, which is the wrong shape for a
+         * hot path and exactly the right shape for a test: it means the double's
+         * one source of truth stays the map, and a cell written through
+         * `setBlock` is visible to the next `peek` with no bookkeeping to get
+         * wrong.
+         *
+         * `undefined` for a chunk that is not resident, which is mc-worldgen's
+         * contract ("Look without loading") and is what makes
+         * `domain/chunk-window.ts`'s `UNREADABLE_BLOCK` reachable.
+         */
+        peek: (coord) =>
+          Ref.modify(state, (doubles): readonly [WorldgenChunk | undefined, Doubles] => {
+            doubles.peeks += 1
+            const key = `${String(coord.cx)},${String(coord.cz)}`
+            if (!doubles.loadedChunks.has(key)) {
+              return [undefined, doubles] as const
+            }
+
+            const blocks = new Uint8Array(CHUNK_SIDE * CHUNK_SIDE * WORLD_HEIGHT)
+            for (const [cell, block] of doubles.blocks) {
+              const [x, y, z] = cell.split(',').map(Number)
+              if (x === undefined || y === undefined || z === undefined) continue
+              if (Math.floor(x / CHUNK_SIDE) !== coord.cx) continue
+              if (Math.floor(z / CHUNK_SIDE) !== coord.cz) continue
+              if (y < 0 || y >= WORLD_HEIGHT) continue
+
+              const lx = ((x % CHUNK_SIDE) + CHUNK_SIDE) % CHUNK_SIDE
+              const lz = ((z % CHUNK_SIDE) + CHUNK_SIDE) % CHUNK_SIDE
+              blocks[blockIndex(lx, y, lz)] = block
+            }
+
+            return [{ coord, blocks, biomes: [] }, doubles] as const
+          }),
+
         snapshot: () => notImplemented,
         isLoaded: (coord) =>
           Effect.map(Ref.get(state), (doubles) =>
@@ -279,6 +335,7 @@ export const makeChunkStoreDouble = (
         calls: Effect.map(Ref.get(state), (doubles) => ({
           reads: doubles.reads,
           writes: doubles.writes,
+          peeks: doubles.peeks,
         })),
         blockAt: (position) =>
           Effect.map(Ref.get(state), (doubles) => doubles.blocks.get(blockKey(position))),

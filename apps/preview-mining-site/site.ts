@@ -79,10 +79,12 @@ import { NO_TOOL, type BlockLootContext, type MinedItem } from '../../domain/int
 import { isSupportSensitiveOfBlock, placementVerdict } from '../../domain/interactions/place-block'
 import type { PositionKey } from '../../domain/position-key'
 import { INITIAL_WEATHER, type WeatherState } from '../../domain/weather'
+import type { IgnitionItemType } from '../../domain/interactions/use-flint-and-steel'
 import {
   gameplayStages,
   makeGameplayFrameState,
   type GameplayFrameState,
+  type ItemUseRequest,
   type PlacementRequest,
 } from '../../stages/registration'
 import { GAMEPLAY_STAGE_IDS } from '../../stages/stage-ids'
@@ -321,6 +323,43 @@ export const requestPlace = (
     () => {
       site.submitted += 1
       site.note = `queued place of ${heldItem} at ${positionKeyOf(position)}`
+    },
+  )
+
+/**
+ * Queue an ITEM USE at this position. The third way a rule is asked to act.
+ *
+ * plan.md §3.11's responsibility 1 names three verbs and this screen could only
+ * do two of them; `docs/testing.md` §3-1 recorded the third as
+ * 「アイテム使用が無い」. `i` is that row closing.
+ *
+ * NO DRY RUN, unlike `requestPlace`'s `previewPlacement`, and the difference is
+ * not an inconsistency. A placement's refusals are decided by
+ * `placementVerdict`, which is PURE and separate from the writes, so asking it
+ * twice costs nothing. Portal detection has no such split — mc-worldgen's
+ * `detectNetherPortal` is the decision, and the only rule that runs it here is
+ * the one that also fills the interior. Running it twice would light the portal
+ * twice, which is the exact defect the note on `previewPlacement` warns about
+ * from the other side.
+ *
+ * So the screen queues, the stage acts, and what the player reads is the WORLD:
+ * a `%` where they clicked means the frame was valid, a `*` means it was not and
+ * a fire went in instead. That is a better demonstration than a printed tag,
+ * because the fall-through from one rule to the other is the thing worth seeing.
+ */
+export const requestItemUse = (
+  site: Site,
+  position: BlockPosition,
+  heldItem: IgnitionItemType,
+): Effect.Effect<void> =>
+  Effect.map(
+    Ref.update(site.state.pendingItemUses, (queue): ReadonlyArray<ItemUseRequest> => [
+      ...queue,
+      { positionKey: positionKeyOf(position), heldItem },
+    ]),
+    () => {
+      site.submitted += 1
+      site.note = `queued use of ${heldItem} at ${positionKeyOf(position)}`
     },
   )
 

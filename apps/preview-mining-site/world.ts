@@ -85,6 +85,24 @@ export const WATER: BlockId = 6
 export const GRAVEL: BlockId = 8
 export const LAVA: BlockId = 11
 
+/**
+ * The four that arrived with item use and the per-block placement rules.
+ *
+ * `OBSIDIAN` is what a player builds a portal ring out of; `NETHER_PORTAL` and
+ * `FIRE` are what `domain/interactions/ignite-portal.ts` and `./ignite-fire.ts`
+ * WRITE, so they are here to be drawn rather than to be selected — pressing `p`
+ * with either of them chosen prints kernel's answer, which is that neither has
+ * an item form. That refusal is worth a key: it is the same roster fact that
+ * keeps three of the four per-block placement rules off the hotbar.
+ *
+ * `DOOR` is the one per-block rule a player can actually reach, and it is the
+ * only palette entry whose placement fills TWO cells.
+ */
+export const OBSIDIAN: BlockId = 40
+export const DOOR: BlockId = 106
+export const NETHER_PORTAL: BlockId = 118
+export const FIRE: BlockId = 119
+
 export const CHUNK_SIDE = 16
 export const WORLD_HEIGHT = 256
 
@@ -103,6 +121,10 @@ export const BLOCKS: ReadonlyArray<Glyph> = [
   { id: GRAVEL, name: 'gravel', glyph: 'G', color: [162, 152, 148] },
   { id: WATER, name: 'water', glyph: '~', color: [80, 130, 230] },
   { id: LAVA, name: 'lava', glyph: '!', color: [232, 118, 44] },
+  { id: OBSIDIAN, name: 'obsidian', glyph: 'O', color: [72, 52, 108] },
+  { id: DOOR, name: 'door', glyph: 'D', color: [150, 110, 70] },
+  { id: NETHER_PORTAL, name: 'nether_portal', glyph: '%', color: [150, 70, 220] },
+  { id: FIRE, name: 'fire', glyph: '*', color: [240, 160, 40] },
 ]
 
 export const glyphOf = (id: BlockId): Glyph =>

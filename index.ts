@@ -25,9 +25,17 @@ export * from './domain/entities/mob-frame'
 export * from './domain/falling-block'
 export * from './domain/fluid-frontier'
 export * from './domain/frame-rolls'
+export * from './domain/chunk-window'
 export * from './domain/interactions/block-loot'
 export * from './domain/interactions/explosion-crater'
+export * from './domain/interactions/ignite-fire'
+export * from './domain/interactions/ignite-portal'
 export * from './domain/interactions/place-block'
+export * from './domain/interactions/place-cactus-sides'
+export * from './domain/interactions/place-door-upper'
+export * from './domain/interactions/place-mushroom-light'
+export * from './domain/interactions/place-sugar-cane-water'
+export * from './domain/interactions/use-flint-and-steel'
 export * from './domain/mob/creeper-fuse'
 export * from './domain/mob/enderman-teleport'
 export * from './domain/mob/explosion'
@@ -42,7 +50,7 @@ export * from './stages/registration'
 export * from './stages/stage-ids'
 
 // --- Provisional ---------------------------------------------------------------
-// Seven modules are temporary local stand-ins for packages that are not
+// Eight modules are temporary local stand-ins for packages that are not
 // published yet, and NONE of them is re-exported:
 //
 //   domain/frame-contract.ts      -> @nerima-games/mc-kernel
@@ -50,8 +58,19 @@ export * from './stages/stage-ids'
 //   domain/item-vocabulary.ts     -> @nerima-games/mc-kernel
 //   domain/block-vocabulary.ts    -> @nerima-games/mc-kernel
 //   domain/chunk-store-port.ts    -> @nerima-games/mc-worldgen
+//   domain/portal-frame-port.ts   -> @nerima-games/mc-worldgen
 //   domain/entity-manager-port.ts -> @nerima-games/mc-sim
 //   domain/block-position-key.ts — the join between two of the vocabularies above
+//
+// TWO of them now mirror mc-worldgen, which is not an inconsistency: that
+// file's own header records the lesson that one mirror file must have one
+// SOURCE module, and `domain/block-vocabulary.ts` beside
+// `domain/item-vocabulary.ts` is the same arrangement for mc-kernel.
+//
+// `domain/chunk-window.ts` sits beside them and IS re-exported, because it is
+// this repository's own: the bridge from an `Effect`-shaped store to the
+// synchronous accessor mc-worldgen's portal rule takes. It survives the
+// repoint; the mirror it names does not.
 //
 // All of them carry a deletion date — see the "WHY THIS FILE EXISTS AND WHEN IT
 // DIES" header on the first — and re-exporting them would make `StageId`,

@@ -76,7 +76,7 @@ import {
   type BlockWriteOutcome,
   type ChunkStoreApi,
 } from '../domain/chunk-store-port'
-import { isReplaceable } from '../domain/block-vocabulary'
+import { blockIdOf, isReplaceable } from '../domain/block-vocabulary'
 import { NOON_FRACTION } from '../domain/day-night'
 import {
   CREEPER_KIND,
@@ -106,9 +106,13 @@ import {
 import { CREEPER_EXPLOSION_POWER, explosionDamageAmount } from '../domain/mob/explosion'
 import { DESPAWN_DISTANCE_BLOCKS } from '../domain/mob/hostile-despawn'
 import type { MinedItem } from '../domain/interactions/block-loot'
+import { chunkCoordsAround } from '../domain/chunk-window'
+import { PORTAL_WINDOW_RADIUS } from '../domain/interactions/ignite-portal'
+import { generatePortalLayout } from '../domain/portal-frame-port'
 import {
   gameplayStages,
   makeGameplayFrameState,
+  type ItemUseRequest,
   type PlacementRequest,
 } from '../stages/registration'
 import {
@@ -274,7 +278,7 @@ describe('the slice, through the stage registration', () => {
       // Nobody broke anything. Every stage runs; none of them looks at a block.
       yield* runFrames(stages, 10)
 
-      expect(yield* store.calls).toStrictEqual({ reads: 0, writes: 0 })
+      expect(yield* store.calls).toStrictEqual({ reads: 0, writes: 0, peeks: 0 })
       expect(yield* renderer.drain).toStrictEqual({ changed: [], removed: [] })
     }),
   )
@@ -416,7 +420,7 @@ describe('the slice, through the stage registration', () => {
       // nothing. Enqueueing it would cost a pair of reads per held frame
       // forever, which is the shape of the workload this design exists to
       // avoid.
-      expect(yield* store.calls).toStrictEqual({ reads: 0, writes: 2 })
+      expect(yield* store.calls).toStrictEqual({ reads: 0, writes: 2, peeks: 0 })
     }),
   )
 
@@ -699,7 +703,7 @@ describe('the mob slice, through the stage registration', () => {
         CREEPER_MAX_HEALTH,
         CREEPER_MAX_HEALTH,
       ])
-      expect(yield* store.calls).toStrictEqual({ reads: 0, writes: 0 })
+      expect(yield* store.calls).toStrictEqual({ reads: 0, writes: 0, peeks: 0 })
 
       // ---- the player walks up ---------------------------------------------
       yield* Ref.set(state.targetPosition, playerNear)
@@ -757,7 +761,7 @@ describe('the mob slice, through the stage registration', () => {
       // The store was untouched until the blast, and the blast is the only
       // reason it was touched at all: one write per crater cell and no reads
       // beyond the falling-block rule's.
-      expect(beforeBlast).toStrictEqual({ reads: 0, writes: 0 })
+      expect(beforeBlast).toStrictEqual({ reads: 0, writes: 0, peeks: 0 })
       expect((yield* store.calls).writes).toBeGreaterThanOrEqual(craterCells(creeperAt, CREEPER_EXPLOSION_POWER).length)
     }),
   )
@@ -810,7 +814,7 @@ describe('the mob slice, through the stage registration', () => {
       expect(calls.despawns).toBe(0)
 
       // ...and the store was not touched at all, which is the original claim.
-      expect(yield* store.calls).toStrictEqual({ reads: 0, writes: 0 })
+      expect(yield* store.calls).toStrictEqual({ reads: 0, writes: 0, peeks: 0 })
       expect(yield* Ref.get(state.mobDrops)).toStrictEqual([])
     }),
   )
@@ -1560,6 +1564,157 @@ describe('the mining site slice: dig, drop, place', () => {
       // And nothing in this repository holds the total. The frame state has no
       // inventory; `test/stage-registration.test.ts` pins the whole key list.
       expect(Object.keys(state)).not.toContain('inventory')
+    }),
+  )
+})
+
+/**
+ * ITEM USE, through the shipped registration.
+ *
+ * plan.md §3.11's responsibility 1 names three verbs — 「採掘 / 設置 / アイテム使用」 —
+ * and until this describe existed the third had no path through a frame at all.
+ * `docs/testing.md` §3-1 recorded it as 「アイテム使用が無い」 and recorded the
+ * ignition half of responsibility 6 in the same row.
+ *
+ * The claims here are about the WIRING, not about the two rules: `test/ignite.test.ts`
+ * owns those. What is asserted below is that a request queued the way mc-render
+ * will queue it reaches the rule, that the item is reported as used only when
+ * something lit, and that it happens AFTER placements in the same frame.
+ */
+describe('the ignition slice: an item use reaches the world', () => {
+  const origin: BlockPosition = { x: 4, y: 64, z: 3 }
+
+  const NETHER_PORTAL = blockIdOf('nether_portal') ?? 118
+  const FIRE = blockIdOf('fire') ?? 119
+  const OBSIDIAN = blockIdOf('obsidian') ?? 40
+
+  /** Every chunk the portal window peeks, so nothing is unreadable by accident. */
+  const residentAround = (centre: BlockPosition): ReadonlyArray<string> =>
+    chunkCoordsAround(centre, PORTAL_WINDOW_RADIUS).map(
+      (coord) => `${String(coord.cx)},${String(coord.cz)}`,
+    )
+
+  /** What mc-render's input stage will do, once mc-render is published. */
+  const requestItemUse = (
+    state: { readonly pendingItemUses: Ref.Ref<ReadonlyArray<ItemUseRequest>> },
+    position: BlockPosition,
+    heldItem: ItemUseRequest['heldItem'],
+  ): Effect.Effect<void> =>
+    Ref.update(state.pendingItemUses, (queue): ReadonlyArray<ItemUseRequest> => [
+      ...queue,
+      { positionKey: positionKeyOf(position), heldItem },
+    ])
+
+  const requestPlace = (
+    state: { readonly pendingPlacements: Ref.Ref<ReadonlyArray<PlacementRequest>> },
+    position: BlockPosition,
+    heldItem: PlacementRequest['heldItem'],
+  ): Effect.Effect<void> =>
+    Ref.update(state.pendingPlacements, (queue): ReadonlyArray<PlacementRequest> => [
+      ...queue,
+      { positionKey: positionKeyOf(position), heldItem },
+    ])
+
+  it.effect('a flint and steel on a finished frame lights the portal and spends the item', () =>
+    Effect.gen(function* () {
+      const ring = generatePortalLayout(origin, 'x', 2, 3).frame
+      const { store, state, stages } = yield* slice(
+        world(ring.map((cell) => [cell, OBSIDIAN] as const)),
+        residentAround(origin),
+      )
+
+      yield* requestItemUse(state, origin, 'flint_and_steel')
+      yield* runFrame(stages)
+
+      expect(yield* store.blockAt(origin)).toBe(NETHER_PORTAL)
+      // The outbox, and it is NOT `consumedItems`: a placement takes the item
+      // off the stack while this damages a slot by one point. Two verbs, two
+      // lists — the same argument that keeps `minedItems` and `mobDrops` apart.
+      expect(yield* Ref.get(state.usedItems)).toStrictEqual(['flint_and_steel'])
+      expect(yield* Ref.get(state.consumedItems)).toStrictEqual([])
+    }),
+  )
+
+  it.effect('the same item on ordinary air sets fire instead', () =>
+    Effect.gen(function* () {
+      const { store, state, stages } = yield* slice(world([]), residentAround(origin))
+
+      yield* requestItemUse(state, origin, 'fire_charge')
+      yield* runFrame(stages)
+
+      expect(yield* store.blockAt(origin)).toBe(FIRE)
+      expect(yield* Ref.get(state.usedItems)).toStrictEqual(['fire_charge'])
+    }),
+  )
+
+  it.effect('REGRESSION: a use that lights nothing spends nothing', () =>
+    Effect.gen(function* () {
+      // The reference damages the held item inside each successful arm rather
+      // than around the dispatch, and this is that rule. Clicking a stone wall
+      // must not wear a flint and steel out.
+      const { state, stages } = yield* slice(world([[origin, STONE]]), residentAround(origin))
+
+      yield* requestItemUse(state, origin, 'flint_and_steel')
+      yield* runFrame(stages)
+
+      expect(yield* Ref.get(state.usedItems)).toStrictEqual([])
+    }),
+  )
+
+  it.effect('the LAST obsidian block placed and the ignition, in ONE frame', () =>
+    Effect.gen(function* () {
+      // ITEM USES ARE SERVICED AFTER PLACEMENTS, and this is the case that
+      // makes the order matter rather than a preference: the other order asks
+      // `detectNetherPortal` about a ring that is one block short, and the
+      // player gets a fire in the middle of the portal they just finished.
+      const layout = generatePortalLayout(origin, 'x', 2, 3)
+      const lastCell = layout.frame[0]
+      expect(lastCell).toBeDefined()
+      const alreadyBuilt = layout.frame.slice(1)
+
+      const { store, state, stages } = yield* slice(
+        world(alreadyBuilt.map((cell) => [cell, OBSIDIAN] as const)),
+        residentAround(origin),
+      )
+
+      yield* requestPlace(state, lastCell ?? origin, 'obsidian')
+      yield* requestItemUse(state, origin, 'flint_and_steel')
+      yield* runFrame(stages)
+
+      expect(yield* Ref.get(state.consumedItems)).toStrictEqual(['obsidian'])
+      expect(yield* Ref.get(state.usedItems)).toStrictEqual(['flint_and_steel'])
+      expect(yield* store.blockAt(origin)).toBe(NETHER_PORTAL)
+    }),
+  )
+
+  it.effect('REGRESSION: an idle frame does not drain an empty item-use inbox into store calls', () =>
+    Effect.gen(function* () {
+      // The inbox is drained with `getAndSet` up front and the stage returns
+      // immediately when all three are empty — so adding a third inbox must not
+      // have added a per-frame cost. DN-GP-1 measured in the unit that catches it.
+      const { store, stages } = yield* slice(world([]), residentAround(origin))
+
+      yield* runFrame(stages)
+
+      expect(yield* store.calls).toStrictEqual({ reads: 0, writes: 0, peeks: 0 })
+    }),
+  )
+
+  it.effect('nothing enters the falling-block queue: filling a hole cannot start a fall', () =>
+    Effect.gen(function* () {
+      const ring = generatePortalLayout(origin, 'x', 2, 3).frame
+      const { state, stages } = yield* slice(
+        world(ring.map((cell) => [cell, OBSIDIAN] as const)),
+        residentAround(origin),
+      )
+
+      yield* requestItemUse(state, origin, 'flint_and_steel')
+      yield* runFrame(stages)
+
+      // A break disturbs because it makes a hole. Both ignitions write into
+      // cells that were air, which is the opposite of one — so the queue must
+      // be empty even though six blocks changed.
+      expect((yield* Ref.get(state.fallingBlocks)).pending.size).toBe(0)
     }),
   )
 })

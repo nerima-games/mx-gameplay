@@ -58,9 +58,9 @@ export default defineConfig({
       // unrelated refactor into a red build, which teaches people to lower the
       // number instead of writing the test.
       //
-      // WHAT THE REMAINING 0.51% IS, because a threshold below 100 is only
-      // honest if the gap is named. Three branch arms, each recorded at its own
-      // call site, none of them reachable by any input a test can construct:
+      // WHAT THE REMAINING GAP IS, because a threshold below 100 is only honest
+      // if the gap is named. Five branch arms, each recorded at its own call
+      // site, none of them reachable by any input a test can construct:
       //
       //   `domain/entities/mob-frame.ts`   an enderman whose sixteen teleport
       //     attempts ALL miss the 8..32 band. About one decision in a billion;
@@ -76,12 +76,26 @@ export default defineConfig({
       //     nothing can reach it — the same shape as mc-kernel's own excluded
       //     `blockIdOf` fallback, and kept for the same reason: it fails toward
       //     a NAMED refusal rather than toward a block that silently vanishes.
+      //   `domain/interactions/ignite-fire.ts`   `UnknownBlock`, for `fire`.
+      //   `domain/interactions/ignite-portal.ts` `UnknownBlock`, for
+      //     `nether_portal`. The last two are the third one's shape exactly:
+      //     both ask kernel's registry for a block the registry carries, and
+      //     both would otherwise write a byte nobody chose into the world.
       //
-      // None of the three is excluded and the `exclude` list below was not
+      // WHAT IS NOT ON THIS LIST, and was nearly: the four per-block placement
+      // rules. Three of them name blocks kernel gives no item form, so
+      // `placeBlock` cannot be handed one and their arms in that file looked
+      // exactly like the five above. They are NOT unreachable — the missing
+      // thing is one row in kernel's `ITEM_TYPES`, not a logical impossibility —
+      // and `test/placement-rules.test.ts` reaches them through a cast that
+      // states in as many words that it stands in for that row. That is the
+      // distinction this list is for: an arm no input can produce gets named
+      // here, an arm one roster row away gets a test.
+      //
+      // None of the five is excluded and the `exclude` list below was not
       // widened to reach this number. Reaching a coverage figure by contriving
       // inputs to unreachable arms — or by hiding them — is the failure this
-      // gate is meant to make visible, so it would be a poor start to switch it
-      // on by doing exactly that.
+      // gate is meant to make visible.
       thresholds: { branches: 99, functions: 99, lines: 99, statements: 99 },
     },
   },

@@ -155,6 +155,22 @@ describe('the ChunkStore mirror', () => {
       // and this is the row where the two answers differ.
       expect(Object.keys(port)).toContain('AIR_BLOCK_ID')
       expect(AIR_BLOCK_ID).toBe(0)
+
+      // THE FOUR THAT ARRIVED WITH THE CHUNK WINDOW, and they pass the same
+      // test for the same reason: mc-worldgen's `index.ts` re-exports
+      // `./domain/constants` and `./domain/chunk`, so all four come back from
+      // `@nerima-games/mc-worldgen` on deletion day.
+      //
+      // `getBlockAt` is deliberately absent and its absence is the interesting
+      // half. It is on that barrel and would be the convenient one to mirror,
+      // and it takes mc-worldgen's `Chunk` — whose `biomes` this mirror WIDENS
+      // to `ReadonlyArray<string>`. The widening is safe for a consumer and
+      // wrong for a call site, so mirroring `getBlockAt` would produce a name
+      // that stops compiling on the day the header promises it will start.
+      for (const layout of ['blockIndex', 'readBlock', 'CHUNK_SIZE_XZ', 'CHUNK_HEIGHT']) {
+        expect(Object.keys(port)).toContain(layout)
+      }
+      expect(Object.keys(port)).not.toContain('getBlockAt')
     }),
   )
 

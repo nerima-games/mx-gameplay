@@ -85,6 +85,49 @@ describe('public API surface', () => {
     }),
   )
 
+  // The same rule for mc-worldgen's PORTAL RULE, which arrived with item use.
+  //
+  // `domain/portal-frame-port.ts` is the second mirror of mc-worldgen in this
+  // repository — `domain/chunk-store-port.ts` mirrors the SERVICE and this one
+  // mirrors a pure rule — and it carries the same deletion date. Publishing
+  // `detectNetherPortal` here would put another repository's rule on this
+  // package's surface and would make the promised deletion a breaking change.
+  //
+  // `domain/chunk-window.ts` IS published, and that is the opposite call for
+  // the opposite reason: it is this repository's own bridge from an
+  // `Effect`-shaped store to the synchronous accessor that rule takes, it
+  // survives the repoint, and `apps/preview-mining-site` and the tests drive it
+  // directly.
+  it.effect('REGRESSION: does not republish mc-worldgen’s portal rule as its own', () =>
+    Effect.sync(() => {
+      const worldgensToOwn = [
+        'detectNetherPortal',
+        'generatePortalLayout',
+        'MIN_PORTAL_WIDTH',
+        'MAX_PORTAL_WIDTH',
+        'MIN_PORTAL_HEIGHT',
+        'MAX_PORTAL_HEIGHT',
+        // The service mirror's own members, including the two that arrived with
+        // the chunk window. `blockIndex` in particular is mc-worldgen's memory
+        // layout, and a consumer reading it from here would be indexing a buffer
+        // through a repository that does not own one.
+        'ChunkStore',
+        'AIR_BLOCK_ID',
+        'blockIndex',
+        'readBlock',
+        'CHUNK_SIZE_XZ',
+        'CHUNK_HEIGHT',
+      ]
+      for (const name of worldgensToOwn) {
+        expect(Object.keys(gameplay)).not.toContain(name)
+      }
+
+      // ...and the bridge over them is ours, so it IS here.
+      expect(Object.keys(gameplay)).toContain('openChunkWindow')
+      expect(Object.keys(gameplay)).toContain('UNREADABLE_BLOCK')
+    }),
+  )
+
   // The same rule for mc-sim's, which arrived with the mob wiring.
   // `domain/entity-manager-port.ts` is a mirror with a deletion date, exactly as
   // `domain/chunk-store-port.ts` is, so publishing the roster's vocabulary here

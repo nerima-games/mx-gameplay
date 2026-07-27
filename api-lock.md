@@ -13,8 +13,8 @@
 <!-- ------------------------------------------------------------------------- -->
 
 format: 1
-exported declarations: 195
-supporting declarations: 43
+exported declarations: 233
+supporting declarations: 46
 
 ## Exported
 
@@ -34,6 +34,12 @@ const BLAZE_XP_REWARD = 10;
 
 ```ts
 const BLOCK_LOOT_ROLLS = 4;
+```
+
+### BROWN_MUSHROOM_BLOCK_ID  `const`
+
+```ts
+const BROWN_MUSHROOM_BLOCK_ID: BlockId | undefined;
 ```
 
 ### Blast  `type`
@@ -62,6 +68,12 @@ type BlastResolution = {
 type BlockLootContext = HarvestContext & {
     readonly fortuneLevel?: number;
 };
+```
+
+### CACTUS_BLOCK_ID  `const`
+
+```ts
+const CACTUS_BLOCK_ID: BlockId | undefined;
 ```
 
 ### CLEAR_DURATION_RANGE_SECS  `const`
@@ -118,12 +130,29 @@ const CREEPER_MAX_HEALTH = 20;
 const CREEPER_XP_REWARD = 5;
 ```
 
+### CactusSidesRefusal  `type`
+
+```ts
+type CactusSidesRefusal = {
+    readonly _tag: 'SidesBlocked';
+};
+```
+
 ### CasualtyDrops  `type`
 
 ```ts
 type CasualtyDrops = {
     readonly drops: ReadonlyArray<MobDrop>;
     readonly seed: number;
+};
+```
+
+### ChunkWindow  `type`
+
+```ts
+type ChunkWindow = {
+    readonly blockAt: BlockAt;
+    readonly unreadableProbes: () => number;
 };
 ```
 
@@ -187,6 +216,12 @@ const DEFAULT_ROLL_SEED = 20260727;
 const DESPAWN_DISTANCE_BLOCKS = 128;
 ```
 
+### DOOR_BLOCK_ID  `const`
+
+```ts
+const DOOR_BLOCK_ID: BlockId | undefined;
+```
+
 ### DORMANT_FUSE  `const`
 
 ```ts
@@ -243,6 +278,19 @@ type DespawnVerdict = {
 } | {
     readonly _tag: 'Despawn';
     readonly reason: DespawnReason;
+};
+```
+
+### DoorUpperCell  `type`
+
+```ts
+type DoorUpperCell = {
+    readonly _tag: 'NotADoor';
+} | {
+    readonly _tag: 'Clear';
+    readonly cell: BlockPosition;
+} | {
+    readonly _tag: 'NoRoomAbove';
 };
 ```
 
@@ -450,8 +498,10 @@ const GRASS_SEED_DROP_CHANCE = 0.125;
 type GameplayFrameState = {
     readonly pendingBreaks: Ref.Ref<ReadonlyArray<PositionKey>>;
     readonly pendingPlacements: Ref.Ref<ReadonlyArray<PlacementRequest>>;
+    readonly pendingItemUses: Ref.Ref<ReadonlyArray<ItemUseRequest>>;
     readonly minedItems: Ref.Ref<ReadonlyArray<MinedItem>>;
     readonly consumedItems: Ref.Ref<ReadonlyArray<PlaceableItemType>>;
+    readonly usedItems: Ref.Ref<ReadonlyArray<IgnitionItemType>>;
     readonly mobDrops: Ref.Ref<ReadonlyArray<MobDrop>>;
     readonly spawnAttempts: Ref.Ref<ReadonlyArray<MobSpawnAttempt>>;
     readonly targetPosition: Ref.Ref<Position | undefined>;
@@ -485,16 +535,83 @@ const HOSTILE_SPAWN_INTERVAL_SECS = 0.3;
 const HOSTILE_SPAWN_MAX_BLOCK_LIGHT = 7;
 ```
 
+### IGNITION_ITEM_TYPES  `const`
+
+```ts
+const IGNITION_ITEM_TYPES: readonly ["flint_and_steel", "fire_charge"];
+```
+
 ### INITIAL_WEATHER  `const`
 
 ```ts
 const INITIAL_WEATHER: WeatherState;
 ```
 
+### IgniteFireOutcome  `type`
+
+```ts
+type IgniteFireOutcome = {
+    readonly _tag: 'Lit';
+    readonly position: BlockPosition;
+} | {
+    readonly _tag: 'Occupied';
+    readonly existing: BlockId;
+} | {
+    readonly _tag: 'ChunkNotLoaded';
+} | {
+    readonly _tag: 'OutOfWorld';
+} | {
+    readonly _tag: 'UnknownBlock';
+};
+```
+
+### IgnitePortalOutcome  `type`
+
+```ts
+type IgnitePortalOutcome = {
+    readonly _tag: 'Lit';
+    readonly frame: PortalFrame;
+    readonly cells: ReadonlyArray<BlockPosition>;
+} | {
+    readonly _tag: 'NoFrame';
+} | {
+    readonly _tag: 'ChunkNotLoaded';
+} | {
+    readonly _tag: 'UnknownBlock';
+};
+```
+
+### IgnitionItemType  `type`
+
+```ts
+type IgnitionItemType = (typeof IGNITION_ITEM_TYPES)[number];
+```
+
+### IgnitionOutcome  `type`
+
+```ts
+type IgnitionOutcome = {
+    readonly _tag: 'Portal';
+    readonly outcome: IgnitePortalOutcome;
+} | {
+    readonly _tag: 'Fire';
+    readonly outcome: IgniteFireOutcome;
+};
+```
+
 ### IsRailAt  `type`
 
 ```ts
 type IsRailAt = (wx: number, wy: number, wz: number) => boolean;
+```
+
+### ItemUseRequest  `type`
+
+```ts
+type ItemUseRequest = {
+    readonly positionKey: PositionKey;
+    readonly heldItem: IgnitionItemType;
+};
 ```
 
 ### LAVA_TICK_INTERVAL  `const`
@@ -543,6 +660,12 @@ const MAX_HEALTH_POINTS = 20;
 
 ```ts
 const MAX_HOSTILE_COUNT = 16;
+```
+
+### MAX_MUSHROOM_PLACEMENT_LIGHT  `const`
+
+```ts
+const MAX_MUSHROOM_PLACEMENT_LIGHT = 12;
 ```
 
 ### MAX_SPAWN_DISTANCE_BLOCKS  `const`
@@ -655,6 +778,17 @@ type MobSweep = {
 };
 ```
 
+### MushroomLightRefusal  `type`
+
+```ts
+type MushroomLightRefusal = {
+    readonly _tag: 'TooBright';
+    readonly light: number;
+} | {
+    readonly _tag: 'LightUnknown';
+};
+```
+
 ### NOON_FRACTION  `const`
 
 ```ts
@@ -685,6 +819,12 @@ const PLAYER_HALF_HEIGHT = 0.9;
 const PLAYER_HALF_WIDTH = 0.3;
 ```
 
+### PORTAL_WINDOW_RADIUS  `const`
+
+```ts
+const PORTAL_WINDOW_RADIUS: number;
+```
+
 ### PlaceOutcome  `type`
 
 ```ts
@@ -693,6 +833,7 @@ type PlaceOutcome = {
     readonly block: BlockId;
     readonly consumed: PlaceableItemType;
     readonly chunk: ChunkCoord;
+    readonly alsoPlaced: ReadonlyArray<BlockPosition>;
 } | {
     readonly _tag: 'Occupied';
     readonly existing: BlockId;
@@ -707,6 +848,8 @@ type PlaceOutcome = {
     readonly _tag: 'ChunkNotLoaded';
 } | {
     readonly _tag: 'OutOfWorld';
+} | MushroomLightRefusal | SugarCaneWaterRefusal | CactusSidesRefusal | {
+    readonly _tag: 'NoRoomAbove';
 };
 ```
 
@@ -745,6 +888,12 @@ const RAIN_AFTER_THUNDER_CHANCE = 0.4;
 
 ```ts
 const RAIN_DURATION_RANGE_SECS: WeatherDurationRange;
+```
+
+### RED_MUSHROOM_BLOCK_ID  `const`
+
+```ts
+const RED_MUSHROOM_BLOCK_ID: BlockId | undefined;
 ```
 
 ### RailShape  `type`
@@ -793,6 +942,12 @@ const STEADY_ENDERMAN: EndermanFlinch;
 
 ```ts
 const STRUCK_ENDERMAN: EndermanFlinch;
+```
+
+### SUGAR_CANE_BLOCK_ID  `const`
+
+```ts
+const SUGAR_CANE_BLOCK_ID: BlockId | undefined;
 ```
 
 ### ShulkerSenses  `type`
@@ -858,6 +1013,14 @@ type SpawnVerdict = {
 };
 ```
 
+### SugarCaneWaterRefusal  `type`
+
+```ts
+type SugarCaneWaterRefusal = {
+    readonly _tag: 'NoAdjacentWater';
+};
+```
+
 ### THUNDER_AFTER_CLEAR_CHANCE  `const`
 
 ```ts
@@ -901,6 +1064,12 @@ type TeleportOffset = {
 
 ```ts
 type TeleportReason = 'damaged' | 'stuck' | 'restless';
+```
+
+### UNREADABLE_BLOCK  `const`
+
+```ts
+const UNREADABLE_BLOCK = -1;
 ```
 
 ### UPSTREAM_STAGE_IDS  `const`
@@ -1001,6 +1170,12 @@ const blockLoot: (block: BlockId, context?: BlockLootContext, rolls?: ReadonlyAr
 const blockOverlapsPlayer: (block: BlockPosition, playerFeet: Position) => boolean;
 ```
 
+### cactusSidesObjection  `const`
+
+```ts
+const cactusSidesObjection: (store: ChunkStoreApi, block: BlockId, position: BlockPosition) => Effect.Effect<CactusSidesRefusal | undefined>;
+```
+
 ### canHostileSpawnAt  `const`
 
 ```ts
@@ -1023,6 +1198,18 @@ const carveExplosionCrater: (store: ChunkStoreApi, centre: BlockPosition, power:
 
 ```ts
 const cellOf: (position: Position) => BlockPosition;
+```
+
+### chunkCoordOf  `const`
+
+```ts
+const chunkCoordOf: (position: BlockPosition) => ChunkCoord;
+```
+
+### chunkCoordsAround  `const`
+
+```ts
+const chunkCoordsAround: (centre: BlockPosition, radius: number) => ReadonlyArray<ChunkCoord>;
 ```
 
 ### craterCells  `const`
@@ -1077,6 +1264,12 @@ const distanceBetween: (from: Position, to: Position) => number;
 
 ```ts
 const disturb: (queue: FallingBlockQueue, positions: Iterable<PositionKey>) => FallingBlockQueue;
+```
+
+### doorUpperCell  `const`
+
+```ts
+const doorUpperCell: (store: ChunkStoreApi, block: BlockId, position: BlockPosition) => Effect.Effect<DoorUpperCell>;
 ```
 
 ### drawRolls  `const`
@@ -1157,6 +1350,18 @@ const gameplayModule: GameModule<never, never, never, ChunkStore | EntityManager
 const gameplayStages: (state: GameplayFrameState, store: ChunkStoreApi, roster: EntityManagerApi<MobBehaviour>) => ReadonlyArray<StageRegistration>;
 ```
 
+### hasClearCactusHorizontalSides  `const`
+
+```ts
+const hasClearCactusHorizontalSides: (sides: ReadonlyArray<BlockReading>) => boolean;
+```
+
+### hasRequiredSugarCaneAdjacentWater  `const`
+
+```ts
+const hasRequiredSugarCaneAdjacentWater: (supportBelow: BlockReading | undefined, besideSupport: ReadonlyArray<BlockReading>) => boolean;
+```
+
 ### hostilePopulation  `const`
 
 ```ts
@@ -1167,6 +1372,18 @@ const hostilePopulation: <S>(roster: EntityManagerApi<S>) => Effect.Effect<numbe
 
 ```ts
 const hostileSpawnsAllowed: (timeOfDay: number) => boolean;
+```
+
+### igniteFire  `const`
+
+```ts
+const igniteFire: (store: ChunkStoreApi, position: BlockPosition) => Effect.Effect<IgniteFireOutcome>;
+```
+
+### ignitePortal  `const`
+
+```ts
+const ignitePortal: (store: ChunkStoreApi, ignition: BlockPosition) => Effect.Effect<IgnitePortalOutcome>;
 ```
 
 ### initialBehaviourOfKind  `const`
@@ -1181,10 +1398,40 @@ const initialBehaviourOfKind: (kind: EntityKind) => MobBehaviour;
 const isAscendingAhead: (isRailAt: IsRailAt, wx: number, wy: number, wz: number, headingX: number, headingZ: number) => boolean;
 ```
 
+### isCactusBlock  `const`
+
+```ts
+const isCactusBlock: (block: BlockId) => boolean;
+```
+
 ### isDead  `const`
 
 ```ts
 const isDead: (vitals: Vitals) => boolean;
+```
+
+### isDoorBlock  `const`
+
+```ts
+const isDoorBlock: (block: BlockId) => boolean;
+```
+
+### isIgnitionItem  `const`
+
+```ts
+const isIgnitionItem: (item: ItemType) => item is IgnitionItemType;
+```
+
+### isMushroomBlock  `const`
+
+```ts
+const isMushroomBlock: (block: BlockId) => boolean;
+```
+
+### isMushroomPlacementLightAllowed  `const`
+
+```ts
+const isMushroomPlacementLightAllowed: (block: BlockId, lightLevel: number) => boolean;
 ```
 
 ### isNight  `const`
@@ -1197,6 +1444,12 @@ const isNight: (timeOfDay: number) => boolean;
 
 ```ts
 const isPrecipitating: (weather: Weather) => boolean;
+```
+
+### isSugarCaneBlock  `const`
+
+```ts
+const isSugarCaneBlock: (block: BlockId) => boolean;
 ```
 
 ### isSupportSensitiveOfBlock  `const`
@@ -1235,6 +1488,12 @@ const maxHealthOfKind: (kind: EntityKind) => number;
 const mobXpReward: (kill: MobKill, reward: number) => number;
 ```
 
+### mushroomLightObjection  `const`
+
+```ts
+const mushroomLightObjection: (store: ChunkStoreApi, block: BlockId, position: BlockPosition) => Effect.Effect<MushroomLightRefusal | undefined>;
+```
+
 ### nextRoll  `const`
 
 ```ts
@@ -1247,10 +1506,22 @@ const nextRoll: (seed: number) => RollDraw;
 const normaliseSeed: (seed: number) => number;
 ```
 
+### openChunkWindow  `const`
+
+```ts
+const openChunkWindow: (store: ChunkStoreApi, coords: ReadonlyArray<ChunkCoord>) => Effect.Effect<ChunkWindow>;
+```
+
 ### placeBlock  `const`
 
 ```ts
 const placeBlock: (store: ChunkStoreApi, request: PlaceRequest) => Effect.Effect<PlaceOutcome>;
+```
+
+### placementLightLevel  `const`
+
+```ts
+const placementLightLevel: (sky: number, block: number) => number;
 ```
 
 ### placementVerdict  `const`
@@ -1373,6 +1644,12 @@ const stepCreeperFuse: (fuse: CreeperFuse, senses: CreeperSenses, dt: DeltaTimeS
 const stepShulkerShell: (shell: ShulkerShell, senses: ShulkerSenses) => ShulkerStep;
 ```
 
+### sugarCaneWaterObjection  `const`
+
+```ts
+const sugarCaneWaterObjection: (store: ChunkStoreApi, block: BlockId, position: BlockPosition, supportBelow: BlockReading | undefined) => Effect.Effect<SugarCaneWaterRefusal | undefined>;
+```
+
 ### sweepMobs  `const`
 
 ```ts
@@ -1383,6 +1660,12 @@ const sweepMobs: (roster: EntityManagerApi<MobBehaviour>, senses: MobFrameSenses
 
 ```ts
 const takeBatch: (queue: FallingBlockQueue, budget?: number) => FallingBlockBatch;
+```
+
+### useFlintAndSteel  `const`
+
+```ts
+const useFlintAndSteel: (store: ChunkStoreApi, position: BlockPosition, item: IgnitionItemType) => Effect.Effect<IgnitionOutcome>;
 ```
 
 ### weatherExpires  `const`
@@ -1407,6 +1690,12 @@ type onto one of these.
 
 ```ts
 const BLOCK_TYPES: readonly ["air", "stone", "cobblestone", "dirt", "grass_block", "sand", "gravel", "water", "lava", "oak_log", "oak_planks", "oak_leaves", "glass", "torch", "glowstone", "bedrock", "piston", "snow", "ladder", "cobweb", "sapling", "dandelion", "poppy", "brown_mushroom", "red_mushroom", "tall_grass", "fern", "sugar_cane", "lily_pad", "kelp", "seagrass", "rail", "powered_rail", "cactus", "pressure_plate", "stone_slab", "granite", "diorite", "andesite", "deepslate", "obsidian", "smooth_basalt", "calcite", "amethyst_block", "amethyst_cluster", "sandstone", "prismarine", "soul_sand", "ice", "farmland", "coal_ore", "iron_ore", "gold_ore", "diamond_ore", "redstone_ore", "lapis_ore", "emerald_ore", "deepslate_coal_ore", "deepslate_iron_ore", "deepslate_gold_ore", "deepslate_diamond_ore", "deepslate_redstone_ore", "deepslate_lapis_ore", "deepslate_emerald_ore", "coal_block", "iron_block", "gold_block", "diamond_block", "redstone_block", "lapis_block", "emerald_block", "wheat_crop", "potato_crop", "nether_wart_crop", "redstone_wire", "redstone_torch", "lever", "stone_button", "repeater", "redstone_lamp", "redstone_lamp_lit", "observer", "comparator", "dispenser", "hopper", "piston_head", "end_stone", "end_portal_frame", "end_portal_frame_filled", "end_portal", "chorus_flower", "chorus_plant", "dragon_egg", "end_crystal", "end_gateway", "end_rod", "end_stone_bricks", "ender_chest", "purpur_block", "purpur_pillar", "purpur_slab", "purpur_stairs", "shulker_box", "crafting_table", "furnace", "chest", "door", "door_open", "oak_stairs", "anvil", "cauldron", "water_cauldron", "bed", "enchanting_table", "brewing_stand", "tnt", "nether_brick", "netherrack", "nether_portal", "fire"];
+```
+
+### BlockAt  `type`
+
+```ts
+type BlockAt = (x: number, y: number, z: number) => number;
 ```
 
 ### BlockId  `type`
@@ -1710,6 +1999,23 @@ type LightReading = {
 
 ```ts
 type PlaceableItemType = ItemType & BlockType;
+```
+
+### PortalAxis  `type`
+
+```ts
+type PortalAxis = 'x' | 'z';
+```
+
+### PortalFrame  `type`
+
+```ts
+type PortalFrame = {
+    readonly axis: PortalAxis;
+    readonly width: number;
+    readonly height: number;
+    readonly interior: ReadonlyArray<BlockPosition>;
+};
 ```
 
 ### Position  `type`

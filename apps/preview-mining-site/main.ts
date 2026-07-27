@@ -150,6 +150,7 @@ import {
   positionAt,
   previewPlacement,
   requestBreak,
+  requestItemUse,
   requestPlace,
   runFrames,
   setHeldTool,
@@ -501,6 +502,18 @@ const handleKey = (state: State, key: string, options: PreviewOptions): Effect.E
         }
         break
       }
+      // AN ITEM USE, through `domain/interactions/use-flint-and-steel.ts`. The
+      // third verb of plan.md §3.11's responsibility 1, which this screen could
+      // not do at all until the rules existed.
+      //
+      // ONE KEY FOR BOTH ARMS, because the fall-through is the thing worth
+      // seeing: press `i` inside a finished obsidian ring and the interior
+      // becomes `%`, press it against a wall and one cell becomes `*`. The
+      // player is not told which rule ran — the world is.
+      case 'i':
+        yield* requestItemUse(site, positionAt(site, state.cursor.x, state.cursor.y), 'flint_and_steel')
+        break
+
       case 'e':
         poke(site, positionAt(site, state.cursor.x, state.cursor.y), 0)
         break
@@ -559,7 +572,11 @@ const handleKey = (state: State, key: string, options: PreviewOptions): Effect.E
         break
 
       default: {
-        const slot = Number(key)
+        // `0` IS SLOT TEN, because the palette outgrew the digits when item use
+        // arrived: obsidian to build a frame with, a door, and the two blocks
+        // the ignition rules write. A tenth entry that no key could reach would
+        // be a legend line the screen prints and cannot honour.
+        const slot = key === '0' ? BLOCKS.length : Number(key)
         if (Number.isInteger(slot) && slot >= 1 && slot <= BLOCKS.length) {
           state.palette = BLOCKS[slot - 1]?.id ?? 0
           site.note = `poke palette: ${BLOCKS[slot - 1]?.name ?? 'air'}`

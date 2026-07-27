@@ -182,7 +182,7 @@ describe('stage behaviour', () => {
       // (falling-block-maintenance.ts:9-15). Now that the stage really holds a
       // store, "did no work" is checkable directly: zero calls, not merely zero
       // changes.
-      expect(yield* store.calls).toStrictEqual({ reads: 0, writes: 0 })
+      expect(yield* store.calls).toStrictEqual({ reads: 0, writes: 0, peeks: 0 })
       const queue = yield* Ref.get(state.fallingBlocks)
       expect(queue.pending.size).toBe(0)
     }).pipe(Effect.provide(FrameServicesLayer)),
@@ -291,6 +291,13 @@ describe('stage behaviour', () => {
       // two keys are an inbox and an outbox, and the test below asserts that
       // running frames does not change the inbox.
       //
+      // `pendingItemUses` / `usedItems` ARE THE THIRD INBOX AND THE THIRD
+      // OUTBOX, and they pass the same test the other five do: a save file
+      // records that a portal is lit, never that a flint and steel was clicked,
+      // and never that one point of durability is owed to a slot mc-sim owns.
+      // The outbox is separate from `consumedItems` because the two name
+      // different `InventoryService` verbs — see the header.
+      //
       // WHAT IS STILL NOT HERE is the thing this list exists to keep out: there
       // is no `Ref<Map<MobId, CreeperFuse>>`, no mob position, no mob health, no
       // entity id, no INVENTORY — and no DAY LENGTH, which is the half of the
@@ -304,6 +311,7 @@ describe('stage behaviour', () => {
         'minedItems',
         'mobDrops',
         'pendingBreaks',
+        'pendingItemUses',
         'pendingPlacements',
         'rollSeed',
         'spawnAttempts',
@@ -311,6 +319,7 @@ describe('stage behaviour', () => {
         'targetPosition',
         'tickCount',
         'timeOfDay',
+        'usedItems',
         'weather',
         'weatherAdvanced',
       ])
