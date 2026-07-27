@@ -9,8 +9,8 @@
  *
  * That is the whole design constraint. `mx-redstone`'s circuit-board preview had
  * to carry an `applyPistons` of its own, because `redstone:effects` is still
- * `Effect.void`, and its README says plainly that this means the preview running
- * is not evidence that the stage works. This preview is under no such handicap
+ * `Effect.void` there, and its README says plainly that this means the preview
+ * running is not evidence that the stage works. This preview is under no such handicap
  * for the part it claims: `stepFrame` below calls `gameplayStages(...)` — the
  * exported registrations — through a topological sort of their own `after`
  * edges, and every block that moves on screen moved because
@@ -21,14 +21,32 @@
  *
  *   - What you see IS evidence about `gameplay:interactions` and
  *     `gameplay:entities`. Breaking a block on screen goes through
- *     `breakBlock`, the item in the HUD came out of the write's `previous`, the
- *     queue in the `queue` view is the actual `FallingBlockQueue`, and the read
- *     and write counters are the actual store calls.
- *   - It is NOT evidence about anything unimplemented. `gameplay:time-weather`
- *     is `Effect.void` (`stages/registration.ts:293`); the `time` screen drives
- *     `domain/day-night.ts` directly and says so. `gameplay:fluids` cycles a
- *     frontier and propagates nothing; there is no placement rule, no drop
- *     table and no mob. See README.md, "What is not here".
+ *     `breakBlock`, PLACING one goes through `placeBlock`, the item in the HUD
+ *     came out of `domain/interactions/block-loot.ts` and therefore out of
+ *     kernel's drop table, the queue in the `queue` view is the actual
+ *     `FallingBlockQueue`, and the read and write counters are the actual store
+ *     calls.
+ *   - It is NOT evidence about anything unimplemented. `gameplay:fluids` cycles
+ *     a frontier and propagates nothing, and there is no mob here (`./roster.ts`
+ *     on why the roster is empty and refuses to grow). See README.md, "What is
+ *     not here".
+ *
+ * ---------------------------------------------------------------------------
+ * `p` IS A RULE NOW, AND WHAT THAT CHANGED IS WORTH READING
+ * ---------------------------------------------------------------------------
+ *
+ * This file used to carry a `pokeBlock` that wrote the store directly, with a
+ * headed paragraph saying it deliberately did NOT call `disturb` — 「Poking the
+ * store shows exactly what the missing rule would have to remember to do, which
+ * is more useful than a placement that pretended to work」.
+ *
+ * `domain/interactions/place-block.ts` exists, so `p` submits a real request
+ * into `pendingPlacements` and the stage services it. THE PREDICTION HELD: what
+ * the missing rule had to remember was the `disturb`, and that is one line in
+ * `stages/registration.ts`. `pokeBlock` is kept and renamed `poke`, because the
+ * stats harness needs a way to arrange a world that no rule would produce, and
+ * because the CONTRAST — a poke that changes nothing else against a placement
+ * that starts a cascade — is the thing the screen can now show.
  *
  * ---------------------------------------------------------------------------
  * The scheduler
@@ -47,15 +65,20 @@
  * export exists).
  */
 import { Effect, Ref } from 'effect'
-import { positionKeyOf } from '../../domain/block-position-key'
+import { below as belowOf, positionKeyOf } from '../../domain/block-position-key'
 import { fallsWhenUnsupported, type BlockId, type BlockPosition } from '../../domain/chunk-store-port'
+import { blockIdOf, type HarvestTier, type PlaceableItemType } from '../../domain/block-vocabulary'
 import { FALLING_BLOCK_MOVES_PER_TICK } from '../../domain/falling-block'
 import { DeltaTimeSecs, type StageRegistration } from '../../domain/frame-contract'
+import { NO_TOOL, type BlockLootContext, type MinedItem } from '../../domain/interactions/block-loot'
+import { isSupportSensitive, placementVerdict } from '../../domain/interactions/place-block'
 import type { PositionKey } from '../../domain/position-key'
+import { INITIAL_WEATHER, type WeatherState } from '../../domain/weather'
 import {
   gameplayStages,
   makeGameplayFrameState,
   type GameplayFrameState,
+  type PlacementRequest,
 } from '../../stages/registration'
 import { GAMEPLAY_STAGE_IDS } from '../../stages/stage-ids'
 import { emptyPreviewRoster } from './roster'
@@ -107,7 +130,7 @@ export const schedule = (
  */
 export type FrameRow = {
   readonly frame: number
-  /** Break requests submitted into the inbox before this frame ran. */
+  /** Break and placement requests submitted into the inboxes before this frame ran. */
   readonly requested: number
   readonly pendingBefore: number
   readonly examined: number
@@ -115,7 +138,10 @@ export type FrameRow = {
   readonly pendingAfter: number
   readonly reads: number
   readonly writes: number
-  readonly mined: ReadonlyArray<BlockId>
+  /** What `domain/interactions/block-loot.ts` produced. Items, not block ids. */
+  readonly mined: ReadonlyArray<MinedItem>
+  /** What placement took off the stack. */
+  readonly spent: ReadonlyArray<PlaceableItemType>
   /** Falling blocks currently hanging with a replaceable cell below them. */
   readonly floating: number
 }
@@ -127,14 +153,44 @@ export type Site = {
   readonly spec: WorldSpec
   readonly bounds: { readonly width: number; readonly height: number }
   frame: number
-  /** Items the host has drained out of `minedItems`. */
-  inventory: ReadonlyArray<BlockId>
+  /**
+   * Items the host has drained out of `minedItems`, less what it drained out of
+   * `consumedItems`.
+   *
+   * A `Map` and not a list, which is the change the loot table forced. A list of
+   * block ids could only ever grow; an inventory that a placement takes FROM has
+   * to be able to shrink, and the host is the one repository-external thing that
+   * knows both outboxes exist. This is the preview playing mc-sim's
+   * `InventoryService.add` / `.remove` pair, in the same spirit as the arena
+   * screen playing its `EntityManager`.
+   */
+  inventory: ReadonlyMap<string, number>
+  /** The weather the host is feeding back in, drained out of `weatherAdvanced`. */
+  weather: WeatherState
+  /** What the host is telling the rules the player is holding. Mirrors `state.heldTool`. */
+  tool: BlockLootContext
   trace: ReadonlyArray<FrameRow>
   note: string
   scenario: string
-  /** Break requests submitted but not yet consumed by a frame. */
+  /** Requests submitted but not yet consumed by a frame. */
   submitted: number
 }
+
+/**
+ * What `placementVerdict` answers: a refusal, or permission with the id.
+ *
+ * Named here rather than exported from the rule because it is the rule's
+ * RETURN type and not one of its nouns — `place-block.ts` spells it inline for
+ * the same reason `breakBlock` does not name `Effect<BreakOutcome>`.
+ */
+export type PlacementVerdict = ReturnType<typeof placementVerdict>
+
+/** Total items held, counting stack sizes. The number the HUD prints. */
+export const inventorySize = (site: Site): number =>
+  [...site.inventory.values()].reduce((total, count) => total + count, 0)
+
+/** How many of one item the host is holding. */
+export const inventoryCount = (site: Site, item: string): number => site.inventory.get(item) ?? 0
 
 export const positionAt = (site: Site, x: number, y: number): BlockPosition => ({
   x,
@@ -180,7 +236,9 @@ export const makeSite = (
       spec,
       bounds,
       frame: 0,
-      inventory: [],
+      inventory: new Map<string, number>(),
+      weather: INITIAL_WEATHER,
+      tool: NO_TOOL,
       trace: [],
       note: '',
       scenario,
@@ -188,7 +246,43 @@ export const makeSite = (
     }
   })
 
-/** Queue a break at this position. The ONLY way a rule is asked to do anything. */
+/**
+ * The tiers the `t` key walks, in order.
+ *
+ * IT STARTS AT BARE HANDS, which is the same default `stages/registration.ts`
+ * gives `heldTool` and is chosen for the same reason: the tool gate's REFUSAL is
+ * the half of the loot table that is invisible from a screenshot, so the screen
+ * opens on it rather than on the answer that looks like it always worked.
+ */
+export const TOOL_TIERS: ReadonlyArray<HarvestTier> = ['none', 'wooden', 'stone', 'iron', 'diamond']
+
+/** Fortune levels the `f` key walks. 0 is no enchantment at all. */
+export const FORTUNE_LEVELS: ReadonlyArray<number> = [0, 1, 2, 3]
+
+/**
+ * What the host says the player is swinging.
+ *
+ * This is the preview playing `InventoryService` again — the selected hotbar
+ * slot and whatever is enchanted on it — and it is one `Ref.set` because
+ * `heldTool` is an INBOX the stage reads within the frame that wrote it.
+ */
+export const setHeldTool = (site: Site, tool: BlockLootContext): Effect.Effect<void> =>
+  Effect.map(Ref.set(site.state.heldTool, tool), () => {
+    site.tool = tool
+    site.note = `holding ${describeTool(tool)}`
+  })
+
+/** `wooden pickaxe, fortune II` — what the HUD prints. */
+export const describeTool = (tool: BlockLootContext): string => {
+  const parts = [
+    tool.heldTier === undefined || tool.heldTier === 'none' ? 'bare hands' : `${tool.heldTier} tool`,
+    ...(tool.silkTouch === true ? ['silk touch'] : []),
+    ...((tool.fortuneLevel ?? 0) > 0 ? [`fortune ${String(tool.fortuneLevel ?? 0)}`] : []),
+  ]
+  return parts.join(', ')
+}
+
+/** Queue a break at this position. One of the two ways a rule is asked to act. */
 export const requestBreak = (site: Site, position: BlockPosition): Effect.Effect<void> =>
   Effect.map(
     Ref.update(site.state.pendingBreaks, (queue) => [...queue, positionKeyOf(position)]),
@@ -199,27 +293,80 @@ export const requestBreak = (site: Site, position: BlockPosition): Effect.Effect
   )
 
 /**
+ * Queue a placement at this position. The other one.
+ *
+ * THE HOST DOES NOT CHECK THE INVENTORY, and that gap is deliberate rather than
+ * missing. `placeBlock` consumes an item and reports which; whether the player
+ * HAD one is a question about mc-sim's `InventoryService`, and a preview that
+ * enforced it would be inventing the stack-size half of a service it is only
+ * standing in for. What the HUD does instead is print the running total, so a
+ * player watching it go negative is watching the missing check.
+ */
+export const requestPlace = (
+  site: Site,
+  position: BlockPosition,
+  heldItem: PlaceableItemType,
+): Effect.Effect<void> =>
+  Effect.map(
+    Ref.update(site.state.pendingPlacements, (queue): ReadonlyArray<PlacementRequest> => [
+      ...queue,
+      { positionKey: positionKeyOf(position), heldItem },
+    ]),
+    () => {
+      site.submitted += 1
+      site.note = `queued place of ${heldItem} at ${positionKeyOf(position)}`
+    },
+  )
+
+/**
+ * Ask the placement rule what it WOULD do, without writing anything.
+ *
+ * The stage drops every refusal — `run` returns void and there is nowhere in a
+ * frame to report a diagnostic to (`stages/registration.ts` says so where it
+ * drops them) — and the reasons are the interesting part of this rule: three of
+ * its four refusals are places the reference implementation got it wrong. So the
+ * screen asks for the verdict and prints it, which is the same thing the arena
+ * screen does with `canHostileSpawnAt`'s refusal reasons.
+ *
+ * IT CALLS `placementVerdict` AND NOT `placeBlock`, and that is the whole reason
+ * the rule exposes the decision separately from the writes. `placeBlock` WRITES
+ * when it says yes, so a dry run built on it would place the block here and
+ * again when the stage serviced the queued request — one keystroke, two blocks,
+ * and only one of them accounted for in the inventory.
+ */
+export const previewPlacement = (
+  site: Site,
+  position: BlockPosition,
+  heldItem: PlaceableItemType,
+): Effect.Effect<PlacementVerdict> =>
+  Effect.gen(function* () {
+    const request = { position, heldItem }
+    const target = yield* site.world.api.getBlock(position)
+    const block = blockIdOf(heldItem)
+    const supportBelow =
+      block !== undefined && isSupportSensitive(block)
+        ? yield* site.world.api.getBlock(belowOf(position))
+        : undefined
+
+    return placementVerdict(request, target, supportBelow)
+  })
+
+/**
  * Write a cell directly, WITHOUT a rule.
  *
- * There is no place-block rule in this repository — plan.md §3.11 lists ~40
- * interaction handlers and `domain/interactions/` holds exactly one — so the
- * `p` key cannot be "place, through the rules". Rather than draw a plausible
- * placement that simulates nothing, this pokes the store and SAYS SO in the
- * HUD, and it deliberately does NOT call `disturb`.
- *
- * That omission is the interesting part and it is why this function exists at
- * all. `domain/falling-block.ts:73-77` names placement among the callers that
- * must disturb; today nothing does, so a block placed under a sand column does
- * not make the column notice. Poking the store shows exactly what the missing
- * rule would have to remember to do, which is more useful than a placement that
- * pretended to work.
+ * There IS a place-block rule now (`requestPlace` above), so this is no longer
+ * standing in for one. It is kept for the one thing a rule cannot do: arrange a
+ * world that no rule would produce. `--stats` uses it to build the arrangements
+ * its checks are about, and the `e` key uses it to erase without mining — which
+ * is the contrast that makes the placement visible, because a poke deliberately
+ * does NOT `disturb` and a placement does.
  */
-export const pokeBlock = (site: Site, position: BlockPosition, block: BlockId): void => {
+export const poke = (site: Site, position: BlockPosition, block: BlockId): void => {
   site.world.poke(position, block)
   site.note =
     block === AIR
       ? `erased ${positionKeyOf(position)} directly in the store — no rule ran, nothing was disturbed`
-      : `poked ${positionKeyOf(position)} directly in the store — there is no place-block rule; nothing was disturbed`
+      : `poked ${positionKeyOf(position)} directly in the store — no rule ran, nothing was disturbed`
 }
 
 const pendingSize = (site: Site): Effect.Effect<number> =>
@@ -234,14 +381,47 @@ export const stepFrame = (site: Site): Effect.Effect<FrameRow> =>
     site.world.resetCalls()
     site.world.takeWriteLog()
 
+    // The weather INBOX, written before the stages run. This is the host's
+    // half of the pair `stages/registration.ts` argues for: the repository that
+    // owns the value writes it at the top of the frame, the rule says what it
+    // becomes, and the host writes it back below. Here the owner is this
+    // preview, because no repository owns weather yet.
+    yield* Ref.set(site.state.weather, site.weather)
+    // The tool INBOX, for the same reason and in the same place: the host
+    // overwrites it every frame from whoever owns the inventory.
+    yield* Ref.set(site.state.heldTool, site.tool)
+
     yield* Effect.forEach(site.stages, (stage) => stage.run(FRAME_DELTA), { discard: true })
 
-    // Drain the outbox. `minedItems` is explicitly a list the HOST drains
-    // (`stages/registration.ts:113-121`) and holds items for the width of one
-    // frame; leaving it to grow would make this preview the second owner of an
-    // inventory, which is the mistake that paragraph exists to prevent.
-    const mined = yield* Ref.getAndSet<ReadonlyArray<BlockId>>(site.state.minedItems, [])
-    site.inventory = [...site.inventory, ...mined]
+    // Drain the outboxes. `minedItems` and `consumedItems` are explicitly lists
+    // the HOST drains and they hold items for the width of one frame; leaving
+    // either to grow would make this preview the second owner of an inventory,
+    // which is the mistake that paragraph exists to prevent.
+    const mined = yield* Ref.getAndSet<ReadonlyArray<MinedItem>>(site.state.minedItems, [])
+    const spent = yield* Ref.getAndSet<ReadonlyArray<PlaceableItemType>>(
+      site.state.consumedItems,
+      [],
+    )
+
+    // `add` then `remove`, which is the pair of calls mc-sim's
+    // `InventoryService` actually publishes (`application/inventory-service.ts:49,51`)
+    // and the reason the two outboxes are two.
+    const held = new Map(site.inventory)
+    for (const item of mined) {
+      held.set(item.item, (held.get(item.item) ?? 0) + item.count)
+    }
+    for (const item of spent) {
+      held.set(item, (held.get(item) ?? 0) - 1)
+    }
+    site.inventory = held
+
+    // The weather OUTBOX, read after. `undefined` means the stage did not run,
+    // which cannot happen here and is answered with "keep what we had" rather
+    // than with a default — a default would silently reset a countdown.
+    const advanced = yield* Ref.get(site.state.weatherAdvanced)
+    if (advanced !== undefined) {
+      site.weather = advanced
+    }
 
     const pendingAfter = yield* pendingSize(site)
     const calls = site.world.calls()
@@ -269,6 +449,7 @@ export const stepFrame = (site: Site): Effect.Effect<FrameRow> =>
       reads: calls.reads,
       writes: calls.writes,
       mined,
+      spent,
       floating: floatingBlocks(site.world, allCells(site)).length,
     }
 
@@ -303,8 +484,9 @@ export const settle = (site: Site, cap = 512): Effect.Effect<SettleReport> =>
     let frames = 0
     while (frames < cap) {
       const pending = yield* pendingSize(site)
-      const inbox = yield* Ref.get(site.state.pendingBreaks)
-      if (pending === 0 && inbox.length === 0) {
+      const breaks = yield* Ref.get(site.state.pendingBreaks)
+      const placements = yield* Ref.get(site.state.pendingPlacements)
+      if (pending === 0 && breaks.length === 0 && placements.length === 0) {
         return { frames, gaveUp: false, cap }
       }
       yield* stepFrame(site)

@@ -13,8 +13,8 @@
 <!-- ------------------------------------------------------------------------- -->
 
 format: 1
-exported declarations: 146
-supporting declarations: 37
+exported declarations: 189
+supporting declarations: 43
 
 ## Exported
 
@@ -28,6 +28,12 @@ const BLAZE_DROPS: ReadonlyArray<MobDropRule>;
 
 ```ts
 const BLAZE_XP_REWARD = 10;
+```
+
+### BLOCK_LOOT_ROLLS  `const`
+
+```ts
+const BLOCK_LOOT_ROLLS = 4;
 ```
 
 ### Blast  `type`
@@ -48,6 +54,20 @@ type BlastResolution = {
     readonly casualties: ReadonlyArray<MobCasualty>;
     readonly disturbed: ReadonlyArray<PositionKey>;
 };
+```
+
+### BlockLootContext  `type`
+
+```ts
+type BlockLootContext = HarvestContext & {
+    readonly fortuneLevel?: number;
+};
+```
+
+### CLEAR_DURATION_RANGE_SECS  `const`
+
+```ts
+const CLEAR_DURATION_RANGE_SECS: WeatherDurationRange;
 ```
 
 ### CLOSED_SHELL  `const`
@@ -348,6 +368,12 @@ type ExplosionSource = 'creeper';
 const FALLING_BLOCK_MOVES_PER_TICK = 32;
 ```
 
+### FORTUNE_MULTIPLIERS  `const`
+
+```ts
+const FORTUNE_MULTIPLIERS: ReadonlyMap<number, number>;
+```
+
 ### FallingBlockBatch  `type`
 
 ```ts
@@ -412,16 +438,27 @@ const GHAST_DROPS: ReadonlyArray<MobDropRule>;
 const GHAST_XP_REWARD = 5;
 ```
 
+### GRASS_SEED_DROP_CHANCE  `const`
+
+```ts
+const GRASS_SEED_DROP_CHANCE = 0.125;
+```
+
 ### GameplayFrameState  `type`
 
 ```ts
 type GameplayFrameState = {
     readonly pendingBreaks: Ref.Ref<ReadonlyArray<PositionKey>>;
-    readonly minedItems: Ref.Ref<ReadonlyArray<BlockId>>;
+    readonly pendingPlacements: Ref.Ref<ReadonlyArray<PlacementRequest>>;
+    readonly minedItems: Ref.Ref<ReadonlyArray<MinedItem>>;
+    readonly consumedItems: Ref.Ref<ReadonlyArray<PlaceableItemType>>;
     readonly mobDrops: Ref.Ref<ReadonlyArray<MobDrop>>;
     readonly spawnAttempts: Ref.Ref<ReadonlyArray<MobSpawnAttempt>>;
     readonly targetPosition: Ref.Ref<Position | undefined>;
     readonly timeOfDay: Ref.Ref<number>;
+    readonly heldTool: Ref.Ref<BlockLootContext>;
+    readonly weather: Ref.Ref<WeatherState>;
+    readonly weatherAdvanced: Ref.Ref<WeatherState | undefined>;
     readonly spawnClockSecs: Ref.Ref<number>;
     readonly rollSeed: Ref.Ref<number>;
     readonly fallingBlocks: Ref.Ref<FallingBlockQueue>;
@@ -448,16 +485,46 @@ const HOSTILE_SPAWN_INTERVAL_SECS = 0.3;
 const HOSTILE_SPAWN_MAX_BLOCK_LIGHT = 7;
 ```
 
+### INITIAL_WEATHER  `const`
+
+```ts
+const INITIAL_WEATHER: WeatherState;
+```
+
 ### LAVA_TICK_INTERVAL  `const`
 
 ```ts
 const LAVA_TICK_INTERVAL = 4;
 ```
 
+### LEAF_APPLE_DROP_CHANCE  `const`
+
+```ts
+const LEAF_APPLE_DROP_CHANCE = 0.005;
+```
+
+### LEAF_SAPLING_DROP_CHANCE  `const`
+
+```ts
+const LEAF_SAPLING_DROP_CHANCE = 0.05;
+```
+
+### LEAF_STICK_DROP_CHANCE  `const`
+
+```ts
+const LEAF_STICK_DROP_CHANCE = 0.02;
+```
+
 ### LOWEST_ROLLS  `const`
 
 ```ts
 const LOWEST_ROLLS: DropRolls;
+```
+
+### LOWEST_WEATHER_ROLLS  `const`
+
+```ts
+const LOWEST_WEATHER_ROLLS: WeatherRolls;
 ```
 
 ### MAX_HEALTH_POINTS  `const`
@@ -482,6 +549,15 @@ const MAX_SPAWN_DISTANCE_BLOCKS = 40;
 
 ```ts
 const MIN_SPAWN_DISTANCE_BLOCKS = 16;
+```
+
+### MinedItem  `type`
+
+```ts
+type MinedItem = {
+    readonly item: ItemType;
+    readonly count: number;
+};
 ```
 
 ### MobBehaviour  `type`
@@ -579,10 +655,84 @@ type MobSweep = {
 const NOON_FRACTION = 0.5;
 ```
 
+### NO_TOOL  `const`
+
+```ts
+const NO_TOOL: BlockLootContext;
+```
+
 ### OWN_STAGE_PREFIX  `const`
 
 ```ts
 const OWN_STAGE_PREFIX = "gameplay:";
+```
+
+### PLAYER_HALF_HEIGHT  `const`
+
+```ts
+const PLAYER_HALF_HEIGHT = 0.9;
+```
+
+### PLAYER_HALF_WIDTH  `const`
+
+```ts
+const PLAYER_HALF_WIDTH = 0.3;
+```
+
+### PlaceOutcome  `type`
+
+```ts
+type PlaceOutcome = {
+    readonly _tag: 'Placed';
+    readonly block: BlockId;
+    readonly consumed: PlaceableItemType;
+    readonly chunk: ChunkCoord;
+} | {
+    readonly _tag: 'Occupied';
+    readonly existing: BlockId;
+} | {
+    readonly _tag: 'InsidePlayer';
+} | {
+    readonly _tag: 'Unsupported';
+    readonly support: BlockId;
+} | {
+    readonly _tag: 'UnknownBlock';
+} | {
+    readonly _tag: 'ChunkNotLoaded';
+} | {
+    readonly _tag: 'OutOfWorld';
+};
+```
+
+### PlaceRequest  `type`
+
+```ts
+type PlaceRequest = {
+    readonly position: BlockPosition;
+    readonly heldItem: PlaceableItemType;
+    readonly playerFeet?: Position;
+};
+```
+
+### PlacementRequest  `type`
+
+```ts
+type PlacementRequest = {
+    readonly positionKey: PositionKey;
+    readonly heldItem: PlaceableItemType;
+};
+```
+
+### RAIN_AFTER_THUNDER_CHANCE  `const`
+
+```ts
+const RAIN_AFTER_THUNDER_CHANCE = 0.4;
+```
+
+### RAIN_DURATION_RANGE_SECS  `const`
+
+```ts
+const RAIN_DURATION_RANGE_SECS: WeatherDurationRange;
 ```
 
 ### RollBatch  `type`
@@ -690,6 +840,24 @@ type SpawnVerdict = {
 };
 ```
 
+### THUNDER_AFTER_CLEAR_CHANCE  `const`
+
+```ts
+const THUNDER_AFTER_CLEAR_CHANCE = 0.1;
+```
+
+### THUNDER_AFTER_RAIN_CHANCE  `const`
+
+```ts
+const THUNDER_AFTER_RAIN_CHANCE = 0.3;
+```
+
+### THUNDER_DURATION_RANGE_SECS  `const`
+
+```ts
+const THUNDER_DURATION_RANGE_SECS: WeatherDurationRange;
+```
+
 ### TWILIGHT_BAND  `const`
 
 ```ts
@@ -734,6 +902,63 @@ type Vitals = {
 };
 ```
 
+### WEATHERS  `const`
+
+```ts
+const WEATHERS: ReadonlyArray<Weather>;
+```
+
+### WEATHER_DURATION_RANGES  `const`
+
+```ts
+const WEATHER_DURATION_RANGES: Readonly<Record<Weather, WeatherDurationRange>>;
+```
+
+### WEATHER_TRANSITION_ROLLS  `const`
+
+```ts
+const WEATHER_TRANSITION_ROLLS = 2;
+```
+
+### Weather  `type`
+
+```ts
+type Weather = 'clear' | 'rain' | 'thunder';
+```
+
+### WeatherDurationRange  `type`
+
+```ts
+type WeatherDurationRange = {
+    readonly min: number;
+    readonly max: number;
+};
+```
+
+### WeatherRolls  `type`
+
+```ts
+type WeatherRolls = {
+    readonly transition: number;
+    readonly duration: number;
+};
+```
+
+### WeatherState  `type`
+
+```ts
+type WeatherState = {
+    readonly weather: Weather;
+    readonly remainingSecs: number;
+};
+```
+
+### advanceWeather  `const`
+
+```ts
+const advanceWeather: (state: WeatherState, dt: number, rolls: WeatherRolls) => WeatherState;
+```
+
 ### applyDamage  `const`
 
 ```ts
@@ -744,6 +969,18 @@ const applyDamage: (vitals: Vitals, damage: Damage) => Vitals;
 
 ```ts
 const applySpawnAttempts: (roster: EntityManagerApi<MobBehaviour>, attempts: ReadonlyArray<MobSpawnAttempt>) => Effect.Effect<ReadonlyArray<MobSpawnOutcome>>;
+```
+
+### blockLoot  `const`
+
+```ts
+const blockLoot: (block: BlockId, context?: BlockLootContext, rolls?: ReadonlyArray<number>) => ReadonlyArray<MinedItem>;
+```
+
+### blockOverlapsPlayer  `const`
+
+```ts
+const blockOverlapsPlayer: (block: BlockPosition, playerFeet: Position) => boolean;
 ```
 
 ### canHostileSpawnAt  `const`
@@ -780,6 +1017,12 @@ const craterCells: (centre: BlockPosition, power: number) => ReadonlyArray<Block
 
 ```ts
 const craterRadius: (power: number) => number;
+```
+
+### createWeatherState  `const`
+
+```ts
+const createWeatherState: (weather: Weather, durationRoll: number) => WeatherState;
 ```
 
 ### dayPhase  `const`
@@ -926,6 +1169,24 @@ const isDead: (vitals: Vitals) => boolean;
 const isNight: (timeOfDay: number) => boolean;
 ```
 
+### isPrecipitating  `const`
+
+```ts
+const isPrecipitating: (weather: Weather) => boolean;
+```
+
+### isSupportSensitive  `const`
+
+```ts
+const isSupportSensitive: (block: BlockId) => boolean;
+```
+
+### isThunderstorm  `const`
+
+```ts
+const isThunderstorm: (weather: Weather) => boolean;
+```
+
 ### makeGameplayFrameState  `const`
 
 ```ts
@@ -962,6 +1223,21 @@ const nextRoll: (seed: number) => RollDraw;
 const normaliseSeed: (seed: number) => number;
 ```
 
+### placeBlock  `const`
+
+```ts
+const placeBlock: (store: ChunkStoreApi, request: PlaceRequest) => Effect.Effect<PlaceOutcome>;
+```
+
+### placementVerdict  `const`
+
+```ts
+const placementVerdict: (request: PlaceRequest, target: BlockReading, supportBelow: BlockReading | undefined) => PlaceOutcome | {
+    readonly _tag: "Allowed";
+    readonly block: BlockId;
+};
+```
+
 ### repairMobBehaviour  `const`
 
 ```ts
@@ -974,6 +1250,18 @@ const repairMobBehaviour: (kind: EntityKind, behaviour: MobBehaviour) => MobBeha
 const resolveBlasts: (roster: EntityManagerApi<MobBehaviour>, store: ChunkStoreApi, blasts: ReadonlyArray<Blast>) => Effect.Effect<BlastResolution>;
 ```
 
+### resolveNextWeatherState  `const`
+
+```ts
+const resolveNextWeatherState: (current: Weather, rolls: WeatherRolls) => WeatherState;
+```
+
+### resolveWeatherDurationSecs  `const`
+
+```ts
+const resolveWeatherDurationSecs: (weather: Weather, roll: number) => number;
+```
+
 ### rollCasualtyDrops  `const`
 
 ```ts
@@ -984,6 +1272,12 @@ const rollCasualtyDrops: (casualties: ReadonlyArray<MobCasualty>, seed: number) 
 
 ```ts
 const rollDropsOfKind: (kind: EntityKind, kill: MobKill, rolls: ReadonlyArray<number>) => ReadonlyArray<MobDrop>;
+```
+
+### rollFortuneExtraDrops  `const`
+
+```ts
+const rollFortuneExtraDrops: (level: number, roll: number) => number;
 ```
 
 ### rollMobDrop  `const`
@@ -1055,11 +1349,29 @@ const sweepMobs: (roster: EntityManagerApi<MobBehaviour>, senses: MobFrameSenses
 const takeBatch: (queue: FallingBlockQueue, budget?: number) => FallingBlockBatch;
 ```
 
+### weatherExpires  `const`
+
+```ts
+const weatherExpires: (state: WeatherState, dt: number) => boolean;
+```
+
+### weatherLightScale  `const`
+
+```ts
+const weatherLightScale: (weather: Weather) => number;
+```
+
 ## Supporting declarations
 
 Not exported from the barrel, but named by the signatures above, so a
 consumer is exposed to them. `Context.Tag` service classes emit their real
 type onto one of these.
+
+### BLOCK_TYPES  `const`
+
+```ts
+const BLOCK_TYPES: readonly ["air", "stone", "cobblestone", "dirt", "grass_block", "sand", "gravel", "water", "lava", "oak_log", "oak_planks", "oak_leaves", "glass", "torch", "glowstone", "bedrock", "piston", "snow", "ladder", "cobweb", "sapling", "dandelion", "poppy", "brown_mushroom", "red_mushroom", "tall_grass", "fern", "sugar_cane", "lily_pad", "kelp", "seagrass", "rail", "powered_rail", "cactus", "pressure_plate", "stone_slab"];
+```
 
 ### BlockId  `type`
 
@@ -1088,6 +1400,12 @@ type BlockReading = {
 } | {
     readonly _tag: 'OutOfWorld';
 };
+```
+
+### BlockType  `type`
+
+```ts
+type BlockType = (typeof BLOCK_TYPES)[number];
 ```
 
 ### BlockWriteOutcome  `type`
@@ -1305,6 +1623,27 @@ interface GameModule<ROut, E, RIn, RRegister = never> {
 }
 ```
 
+### HARVEST_TIERS  `const`
+
+```ts
+const HARVEST_TIERS: readonly ["none", "wooden", "stone", "iron", "diamond"];
+```
+
+### HarvestContext  `type`
+
+```ts
+type HarvestContext = {
+    readonly heldTier?: HarvestTier;
+    readonly silkTouch?: boolean;
+};
+```
+
+### HarvestTier  `type`
+
+```ts
+type HarvestTier = (typeof HARVEST_TIERS)[number];
+```
+
 ### ITEM_TYPES  `const`
 
 ```ts
@@ -1329,6 +1668,12 @@ type LightReading = {
 } | {
     readonly _tag: 'OutOfWorld';
 };
+```
+
+### PlaceableItemType  `type`
+
+```ts
+type PlaceableItemType = ItemType & BlockType;
 ```
 
 ### Position  `type`

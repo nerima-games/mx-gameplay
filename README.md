@@ -115,10 +115,14 @@ Nix を使わない場合は Node.js 22 以上と pnpm 9.15.0 を用意する（
 
 ## 現状
 
-**実装前の叩き台（pre-implementation first cut）である。** 移植済みのルールは 9 本で、
+**実装前の叩き台（pre-implementation first cut）である。** 移植済みのルールは 12 本で、
 現在あるものの大半は、参照実装で実測された失敗を構造として固定した骨組みと、その回帰テストである。
-ただし**縦切りは 2 本通っている** — 掘る → 砂が落ちる → アイテムが渡る、が stage 登録経由で動き、
-スポーン → 導火線 → 爆発 → 死因 → ドロップ、が Mob アリーナで動く。
+ただし**縦切りは 3 本通っている** — 掘る → 砂が落ちる → アイテムが渡る、
+**掘る → 置く → 落ちる**、そしてスポーン → 導火線 → 爆発 → 死因 → ドロップ、
+がいずれも stage 登録経由で動く。
+
+**plan.md §3.11 の 7 責務のうち 3 つが実装済み、2 つが部分、2 つが未着手である**
+（内訳は [docs/testing.md](./docs/testing.md) §3-1）。
 
 - **実行時依存は `effect` のみ。** `mc-sim` / `mc-worldgen` / `mc-audio` / `mc-kernel` は
   まだ GitHub Packages に 1 つも publish されていないため、`package.json` に書けない。
@@ -136,14 +140,32 @@ Nix を使わない場合は Node.js 22 以上と pnpm 9.15.0 を用意する（
   ここに残るのはルールのほう —— `domain/day-night.ts` の `isNight` / `dayPhase` /
   `hostileSpawnsAllowed`、すなわち「1 日の位置」だけを引数に取る全域関数である
   （[docs/design-notes.md](./docs/design-notes.md) DN-GP-7）。
+- **天候は同じ検査に違う答えを出した。** `domain/weather.ts` は遷移グラフ・継続時間・
+  `isPrecipitating` / `isThunderstorm` / `weatherLightScale` を持ち、`domain/day-night.ts` と同じく
+  **何も保持しない**。`WeatherState.remainingSecs` はセーブファイルが要る値だが、
+  時刻と違って**所有者が 1 人もいない** —— mc-sim には `TimeService` があり、天候サービスは無い。
+  だからここに `Ref` を置くと複製ではなく**最初の 1 つ**になる（それは複製より悪い。
+  複製は食い違った日に名乗り出るが、間違ったリポジトリにいる唯一の所有者は名乗り出ない）。
+  採った形は `minedItems` と同じ**受信箱 + 送信箱**で、書き戻すのはホストである。
+  `gameplay:time-weather` はこれで `Effect.void` ではなくなった（DN-GP-7）。
 - **ブロックの読み書きは配線済み。** `gameplay:interactions` が破壊を、`gameplay:entities` が落下を、
   mc-worldgen の `ChunkStore`（`domain/chunk-store-port.ts` のミラー越し）に対して実際に行う。
   「掘る → 砂が落ちる → アイテムが渡る」の縦切りは `test/vertical-slice.test.ts` が
-  **stage 登録経由で**回している。`gameplay:fluids` はキューの出し入れだけ、
-  `gameplay:time-weather` は空のままである（mc-sim 待ち）。
-  ブロックに触るルールは 2 本（`domain/interactions/break-block.ts` /
-  `domain/entities/falling-block-move.ts`）で、~40 の `interaction-*` ハンドラが残っている。
+  **stage 登録経由で**回している。`gameplay:fluids` はキューの出し入れだけである。
+  ブロックに触るルールは 4 本（`break-block.ts` / `place-block.ts` / `explosion-crater.ts` /
+  `entities/falling-block-move.ts`）で、~40 の `interaction-*` ハンドラのうち残りが残っている。
   何を、どの順で移植するかは [docs/porting.md](./docs/porting.md)。
+- **設置とブロックのドロップ表が入った。** `domain/interactions/place-block.ts` は
+  `break-block.ts` の鏡像で、参照実装が**実際に間違えた 3 点**を名前つきの拒否として持つ ——
+  溶岩は `replaceable` なのに `existing === 'AIR' || existing === 'WATER'` で拒否されていた
+  （`block-service-place-load.ts:48`）、自分の体の中に置けてしまうと窒息する、
+  支えが要るブロックは下のセルの `canSupportAttachments` を見る（**`validSpawnSurface` ではない** ——
+  雪がその 2 つを分ける行である）。**読んでから書く**しかない理由と、その窓を消す方法
+  （mc-worldgen の `setBlockIf`）は DN-GP-12 に書いてある。
+  `domain/interactions/block-loot.ts` は掘って出るものを kernel の `drops` / `harvestTool` 列に訊く ——
+  **石を掘ると丸石が出て、素手では何も出ない**。以前は書き込みが返したバイトをそのまま積んでいたので、
+  ダイヤ鉱石を掘れば鉱石ブロックが出て、素手で石が採れた（DN-GP-13）。
+  乱数の側（fortune、葉のボーナス）だけがこちらにあり、それは kernel の audit §6-9 の線である。
 - **plan.md §3.11 の Mob 挙動 4 つのうち 3 つが書けた。** `domain/mob/` の 7 ファイル —— 導火線
   （`creeper-fuse.ts`: 3 ブロックで着火、1.5 秒、**退避で消える**、爆発は**ちょうど 1 回**）、
   爆風（`explosion.ts`: 参照実装の減衰式を逐語移植。中心 43 ダメージ、半径 6）、

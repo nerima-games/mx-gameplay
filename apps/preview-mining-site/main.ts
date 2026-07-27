@@ -15,13 +15,19 @@
  *
  * `g` cycles three screens, one per preview plan.md names:
  *
- *   site   the mining site. REAL: it drives `gameplayStages` against a real
- *          `ChunkStoreApi`, and every block that moves was moved by
- *          `domain/entities/falling-block-move.ts`.
- *   time   the time slider. REAL as a rule driver: `domain/day-night.ts` is four
- *          total functions and the slider sweeps their argument. It does NOT
- *          advance time — mc-sim owns the hour (DN-GP-7) and
- *          `gameplay:time-weather` is `Effect.void`.
+ *   site   the mining site, and plan.md §3.11's three verbs — 掘る / 置く /
+ *          ドロップ確認 — are all real now. It drives `gameplayStages` against a
+ *          real `ChunkStoreApi`: every block that moves was moved by
+ *          `domain/entities/falling-block-move.ts`, `p` goes through
+ *          `domain/interactions/place-block.ts`, and the item in the HUD came
+ *          out of `domain/interactions/block-loot.ts` and therefore out of
+ *          kernel's drop table.
+ *   time   the time slider, and the weather. REAL as a rule driver:
+ *          `domain/day-night.ts` is four total functions and the slider sweeps
+ *          their argument; `domain/weather.ts` is a transition graph the screen
+ *          walks from a seed. It does NOT advance the HOUR — mc-sim owns it
+ *          (DN-GP-7). It DOES advance the weather, because nobody owns that yet;
+ *          see `screens.ts` on why those are two different answers.
  *   arena  the mob arena. REAL, and for three of plan.md §3.11's four mob
  *          behaviours: `domain/mob/`'s seven rule files drive a creeper end to
  *          end, an enderman's teleport decision and offset, a shulker's shell,
@@ -122,9 +128,13 @@ import {
   slayCreeper,
   stepArena,
   stepShulker,
+  cycleForcedWeather,
+  skipWeather,
+  stepWeather,
   strike,
   TIME_STEP,
   TIME_STEP_COARSE,
+  WEATHER_STEP_SECS,
   toggleEndermanDamage,
   toggleShulkerTarget,
   type ArenaState,
@@ -135,15 +145,20 @@ import { buildStatsReport } from './stats'
 import {
   makeSite,
   pendingPositions,
+  FORTUNE_LEVELS,
+  poke,
   positionAt,
-  pokeBlock,
+  previewPlacement,
   requestBreak,
+  requestPlace,
   runFrames,
+  setHeldTool,
   settle,
   stepFrame,
+  TOOL_TIERS,
   type Site,
 } from './site'
-import { BLOCKS } from './world'
+import { BLOCKS, glyphOf, placeableItemOf } from './world'
 import {
   enterFullScreen,
   isInteractive,
@@ -311,6 +326,25 @@ const handleKey = (state: State, key: string, options: PreviewOptions): Effect.E
         case 'r':
           state.time = initialTimeState()
           break
+
+        // --- weather -----------------------------------------------------
+        case '.':
+          stepWeather(state.time, WEATHER_STEP_SECS)
+          break
+        case 'n':
+          for (let step = 0; step < options.runFrames; step += 1) {
+            stepWeather(state.time, WEATHER_STEP_SECS)
+          }
+          break
+        // The fast-forward docs/testing.md §5 asks for: expire the stretch and
+        // let the RULE pick what follows, rather than waiting out 9000 seconds
+        // of clear sky a minute at a time.
+        case 'w':
+          skipWeather(state.time)
+          break
+        case 'c':
+          cycleForcedWeather(state.time)
+          break
         default:
           break
       }
@@ -441,11 +475,55 @@ const handleKey = (state: State, key: string, options: PreviewOptions): Effect.E
       case 'b':
         yield* requestBreak(site, positionAt(site, state.cursor.x, state.cursor.y))
         break
-      case 'p':
-        pokeBlock(site, positionAt(site, state.cursor.x, state.cursor.y), state.palette)
+      // A REAL PLACEMENT, through `domain/interactions/place-block.ts`. This key
+      // used to write the store directly, because there was no rule; `site.ts`'s
+      // header records what that stand-in was for and what it predicted.
+      //
+      // The verdict is asked FIRST and printed, because the stage drops every
+      // refusal (`run` returns void and has nowhere to report to) and the
+      // refusals are the interesting half of this rule. Only an allowed
+      // placement is queued, so a refused one costs no frame.
+      case 'p': {
+        const item = placeableItemOf(state.palette)
+        if (item === undefined) {
+          // kernel's `UNITEMISED_BLOCK_TYPES`, met in person: water and lava are
+          // blocks with no item form, so there is nothing to hold and nothing to
+          // place. Saying which is more useful than greying the key out.
+          site.note = `${glyphOf(state.palette).name} has no item form — nothing to hold (kernel's UNITEMISED_BLOCK_TYPES)`
+          break
+        }
+        const target = positionAt(site, state.cursor.x, state.cursor.y)
+        const verdict = yield* previewPlacement(site, target, item)
+        if (verdict._tag === 'Placed') {
+          yield* requestPlace(site, target, item)
+        } else {
+          site.note = `place ${item} at ${String(target.x)},${String(target.y)}: ${verdict._tag} — the rule refused; nothing queued`
+        }
         break
+      }
       case 'e':
-        pokeBlock(site, positionAt(site, state.cursor.x, state.cursor.y), 0)
+        poke(site, positionAt(site, state.cursor.x, state.cursor.y), 0)
+        break
+
+      // --- what the player is swinging -----------------------------------
+      // The tool gate is the half of the loot table nobody would notice going
+      // wrong, so it gets three keys rather than a flag: a tier, a silk touch
+      // and a fortune level, each visible in the HUD and each changing what `b`
+      // yields on the very next frame.
+      case 't':
+        yield* setHeldTool(site, {
+          ...site.tool,
+          heldTier: cycle(TOOL_TIERS, site.tool.heldTier ?? 'none', 'none'),
+        })
+        break
+      case 'u':
+        yield* setHeldTool(site, { ...site.tool, silkTouch: site.tool.silkTouch !== true })
+        break
+      case 'f':
+        yield* setHeldTool(site, {
+          ...site.tool,
+          fortuneLevel: cycle(FORTUNE_LEVELS, site.tool.fortuneLevel ?? 0, 0),
+        })
         break
 
       case '.': {
@@ -579,12 +657,21 @@ const program: Effect.Effect<number> = Effect.gen(function* () {
     view: options.view,
     cursor: { x: scenario.target.x, y: scenario.target.y },
     palette: 5,
-    time: { timeOfDay: options.timeOfDay },
+    // The hour comes from `--time`; the weather starts where the rule says a
+    // world starts. `--time` is not extended to it, because a weather flag would
+    // need a duration as well as a name and the duration is `createWeatherState`'s
+    // to pick — see `screens.ts`'s `cycleForcedWeather` on why the screen does
+    // not invent one either.
+    time: { ...initialTimeState(), timeOfDay: options.timeOfDay },
     arena: initialArenaState(),
     showHelp: false,
     pending: [],
   }
   yield* loadScenario(state, start)
+
+  // The tool inbox, before anything is broken. `--tool wooden` and `--tool none`
+  // over one scenario are the two frames that show the gate.
+  yield* setHeldTool(state.site, { heldTier: options.toolTier })
 
   if (options.autoBreak) {
     yield* requestBreak(state.site, positionAt(state.site, scenario.target.x, scenario.target.y))

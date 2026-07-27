@@ -59,6 +59,8 @@ import {
 } from './screens'
 import {
   floatingIn,
+  inventoryCount,
+  inventorySize,
   makeSite,
   pendingPositions,
   requestBreak,
@@ -66,11 +68,38 @@ import {
   stepFrame,
   runFrames,
   positionAt,
+  previewPlacement,
   type Site,
 } from './site'
-import { GRAVEL, SAND, glyphOf, type WorldSpec } from './world'
+import { GRAVEL, SAND, glyphOf, placeableItemOf, type WorldSpec } from './world'
+import type { HarvestTier } from '../../domain/block-vocabulary'
+import { blockLoot } from '../../domain/interactions/block-loot'
+import { DEFAULT_ROLL_SEED, drawRolls } from '../../domain/frame-rolls'
+import {
+  advanceWeather,
+  INITIAL_WEATHER,
+  isPrecipitating,
+  isThunderstorm,
+  weatherLightScale,
+  WEATHERS,
+  WEATHER_TRANSITION_ROLLS,
+} from '../../domain/weather'
 
 const BOUNDS = { width: 26, height: 18 }
+
+/**
+ * The item names a mined falling block yields, ASKED of kernel's table rather
+ * than written down.
+ *
+ * `placeableItemOf` is the id -> `BlockType` -> `ItemType` bridge, so if kernel
+ * ever renamed sand's item or removed its item form, this array would shrink and
+ * the conservation sum below would visibly stop counting rather than silently
+ * count the wrong thing.
+ */
+const FALLING_ITEM_NAMES: ReadonlyArray<string> = [SAND, GRAVEL].flatMap((id) => {
+  const item = placeableItemOf(id)
+  return item === undefined ? [] : [item]
+})
 
 const pad = (text: string, width: number): string =>
   text.length >= width ? text : text + ' '.repeat(width - text.length)
@@ -263,6 +292,13 @@ const burstBudget = Effect.gen(function* () {
  * `test/vertical-slice.test.ts` has a case for each mechanism; this asks the
  * question of the whole cascade instead, which is the only way a compound of two
  * correct steps can be caught.
+ *
+ * THE INVENTORY SIDE OF THE SUM IS NOW AN ITEM COUNT, not a list of block ids,
+ * and the check is stronger for it. `sand` and `gravel` are both `'self'` drops
+ * with no tool gate in kernel's table, so mining one still yields exactly one —
+ * which means the arithmetic is unchanged AND is now asserting that the drop
+ * table did not quietly change what falling materials yield. A row that started
+ * dropping two would show up here as mass created out of nothing.
  */
 const conservation = Effect.gen(function* () {
   const lines: Array<string> = [
@@ -294,14 +330,21 @@ const conservation = Effect.gen(function* () {
 
     yield* settle(site)
     const after = fallingCount(site)
-    const minedFalling = site.inventory.filter((id) => fallsWhenUnsupported(id)).length
+    // Items, by name, and only the ones that are falling materials. The block
+    // ids are `SAND` and `GRAVEL`; their item forms are named the same, which is
+    // kernel's name-identity bridge (`domain/block-vocabulary.ts`) and is why
+    // this can be written without a second table.
+    const minedFalling = FALLING_ITEM_NAMES.reduce(
+      (total, item) => total + inventoryCount(site, item),
+      0,
+    )
     const conserved = before === after + minedFalling
     if (!conserved) {
       broken = true
     }
     lines.push(
       `  ${pad(scenario.name, 14)}${pad(String(before), 16)}${pad(String(after), 8)}` +
-        `${pad(String(minedFalling), 7)}${String(site.inventory.length)} items  ` +
+        `${pad(String(minedFalling), 7)}${String(inventorySize(site))} items  ` +
         `${conserved ? 'conserved' : 'NOT CONSERVED'}`,
     )
   }
@@ -375,7 +418,7 @@ const chunkEdge = Effect.gen(function* () {
   // A break aimed into the unloaded chunk.
   yield* requestBreak(site, positionAt(site, 17, 3))
   yield* stepFrame(site)
-  const yieldedFromUnloaded = site.inventory.length
+  const yieldedFromUnloaded = inventorySize(site)
   const pendingAfterUnloaded = (yield* pendingPositions(site)).length
 
   // Sand standing at x=15 with air at x=15,y=0? No: the floor stops at x=15, so
@@ -468,7 +511,12 @@ const deltaTimeUnused = Effect.gen(function* () {
         yield* Effect.forEach(stages, (stage) => stage.run(DeltaTimeSecs(delta)), { discard: true })
         frames += 1
       }
-      return `${String(frames)} frames, world hash ${String(fallingCount(site))}`
+      const weather = yield* Ref.get(site.state.weatherAdvanced)
+      return (
+        `${pad(`${String(frames)} frames`, 12)}` +
+        `${pad(`falling ${String(fallingCount(site))}`, 14)}` +
+        `weather ${weather?.weather ?? '-'} ${(weather?.remainingSecs ?? 0).toFixed(1)}s left`
+      )
     })
 
   const zero = yield* withDelta(0)
@@ -477,16 +525,27 @@ const deltaTimeUnused = Effect.gen(function* () {
 
   return {
     id: 'note',
-    title: 'no stage reads `dt` yet — a frame is a frame, at any delta',
+    title: 'the BLOCK half is dt-independent and the WEATHER half is not — both on purpose',
     finding: false,
     lines: [
       `  dt = 0        ${zero}`,
       `  dt = 1/60     ${sixty}`,
       `  dt = 3600     ${huge}`,
       '',
-      '  identical. That is correct today (the cascade counts in ticks and time/weather is',
-      '  Effect.void) and it is why this preview never reads a clock: there is nothing a',
-      '  wall clock could make more accurate, and plenty it could make machine-dependent.',
+      '  THE FIRST TWO COLUMNS ARE IDENTICAL AND THE THIRD IS NOT, which is the whole of',
+      '  what `gameplay:time-weather` becoming non-empty changed about this check. It used',
+      '  to be titled "no stage reads dt yet" and every column agreed.',
+      '',
+      '  The cascade counts in TICKS: a column sinks one cell per frame whatever the frame',
+      '  was worth, because `settled` re-enqueues rather than looping to the floor. That is',
+      '  `domain/falling-block.ts`, and it is why a slow machine sees the same cascade.',
+      '  The weather counts in SECONDS, because a weather that lasted a fixed number of',
+      '  frames would last twice as long at 30 Hz — the same divergence',
+      '  `HOSTILE_SPAWN_INTERVAL_SECS` is spelled in seconds to avoid.',
+      '',
+      '  Neither reads a clock. `run(dt)` takes the delta as an argument, which is why a',
+      '  dt of 3600 is a legal thing for this harness to hand it and why two hours of',
+      '  weather costs a few microseconds in `test/weather.test.ts`.',
     ],
   } satisfies Check
 })
@@ -1008,6 +1067,211 @@ const spawnGate = Effect.sync((): Check => {
   } satisfies Check
 })
 
+/**
+ * THE LOOT TABLE, swept.
+ *
+ * The check `docs/testing.md` §3-1 said the mining screen could not make:
+ * 「ドロップテーブルも設置ルールも存在しない」. A grid of every block the palette
+ * can produce against every tool tier, so the two axes kernel keeps separate —
+ * WHICH item and WHETHER anything drops — are visible as a table rather than as
+ * two functions somebody has to read.
+ *
+ * The finding condition is the one that would matter: a row that yields the
+ * block it came from. That was the OLD behaviour, exactly, and it would look
+ * completely plausible on screen.
+ */
+const lootTable = Effect.sync(() => {
+  const tiers: ReadonlyArray<HarvestTier> = ['none', 'wooden', 'stone', 'iron', 'diamond']
+  const probed: ReadonlyArray<readonly [BlockId, string]> = [
+    [2, 'stone'],
+    [4, 'grass_block'],
+    [5, 'sand'],
+    [8, 'gravel'],
+    [10, 'oak_leaves'],
+    [13, 'glass'],
+    [15, 'glowstone'],
+    [11, 'lava'],
+  ]
+
+  const lines: Array<string> = [`  ${pad('block', 14)}${tiers.map((tier) => pad(tier, 19)).join('')}`]
+  let selfDrops = 0
+
+  for (const [id, name] of probed) {
+    const cells = tiers.map((heldTier) => {
+      // NO_LUCK so the bonus lines and the fortune remainder stay out of the
+      // deterministic half; both get their own rows below.
+      const loot = blockLoot(id, { heldTier }, [0.999, 0.999, 0.999, 0.999])
+      // A drop whose item is spelled the same as the block it came from is only
+      // wrong when kernel's row says otherwise — sand really does yield sand.
+      // The rows that must NOT self-drop are the two with an `item:` override.
+      if ((name === 'stone' || name === 'grass_block') && loot.some((drop) => drop.item === name)) {
+        selfDrops += 1
+      }
+      return pad(loot.length === 0 ? '-' : loot.map((drop) => `${drop.item} x${String(drop.count)}`).join(' '), 19)
+    })
+    lines.push(`  ${pad(name, 14)}${cells.join('')}`)
+  }
+
+  lines.push('')
+  lines.push('  `-` is a REFUSAL and not an empty row: stone needs a wooden pickaxe, glass needs')
+  lines.push('  silk touch, and lava and leaves yield nothing to anyone (kernel`s count: 0 rows).')
+  lines.push('')
+
+  // Silk touch and fortune, the two axes the tier grid cannot show.
+  const glowstone = (context: Parameters<typeof blockLoot>[1]): string => {
+    const loot = blockLoot(15, context, [0, 0, 0, 0])
+    return loot.map((drop) => `${drop.item} x${String(drop.count)}`).join(' ') || '-'
+  }
+  lines.push(`  glowstone, bare hands            ${glowstone({})}`)
+  lines.push(`  glowstone, fortune I             ${glowstone({ fortuneLevel: 1 })}`)
+  lines.push(`  glowstone, fortune III           ${glowstone({ fortuneLevel: 3 })}`)
+  lines.push(`  glowstone, fortune III + silk    ${glowstone({ fortuneLevel: 3, silkTouch: true })}`)
+  lines.push(`  glass,     bare hands            ${blockLoot(13, {}, []).length === 0 ? '-' : 'glass'}`)
+  lines.push(`  glass,     silk touch            ${blockLoot(13, { silkTouch: true }, []).map((d) => d.item).join(' ')}`)
+  lines.push(`  oak_leaves, lucky stick roll     ${blockLoot(10, {}, [0, 0, 0, 0]).map((d) => d.item).join(' ') || '-'}`)
+  lines.push('')
+  lines.push('  Fortune and silk touch are MUTUALLY EXCLUSIVE, which the reference enforces at the')
+  lines.push('  break site rather than at the enchanting table (interaction-break-handler.execute.ts:131).')
+
+  return {
+    id: selfDrops === 0 ? 'ok' : 'F-loot',
+    title: 'every block yields kernel`s drop, and bare hands do not harvest stone',
+    finding: selfDrops > 0,
+    lines,
+  } satisfies Check
+})
+
+/**
+ * THE PLACEMENT RULE's four refusals, each reached on purpose.
+ *
+ * Three of them are places the reference implementation got it wrong, and the
+ * lava row is the one the mirror's own comment predicted from the other end:
+ * 「falling sand and gravel did not displace lava, AND placement treated a lava
+ * cell as occupied」.
+ */
+const placementRefusals = Effect.gen(function* () {
+  const site = yield* buildSite(scenarioByName('lava-pit')?.build() ?? SCENARIOS[0]!.build(), 'placement')
+  const cell = positionAt(site, 4, 8)
+  const under = positionAt(site, 4, 7)
+
+  const lines: Array<string> = []
+  const seen = new Map<string, string>()
+  const say = (label: string, outcome: { readonly _tag: string }): void => {
+    seen.set(label, outcome._tag)
+    lines.push(`  ${pad(label, 34)}${outcome._tag}`)
+  }
+
+  // Air over stone: the ordinary case.
+  site.world.poke(cell, 0)
+  site.world.poke(under, 2)
+  say('air over stone, holding stone', yield* previewPlacement(site, cell, 'stone'))
+
+  // Occupied.
+  site.world.poke(cell, 2)
+  say('stone already there', yield* previewPlacement(site, cell, 'stone'))
+
+  // Lava — REPLACEABLE, and the reference refused it.
+  site.world.poke(cell, 11)
+  say('lava in the cell', yield* previewPlacement(site, cell, 'stone'))
+
+  // Water — the case the reference DID allow.
+  site.world.poke(cell, 6)
+  say('water in the cell', yield* previewPlacement(site, cell, 'stone'))
+
+  // A torch with nothing under it, and then with something.
+  site.world.poke(cell, 0)
+  site.world.poke(under, 0)
+  say('torch over air', yield* previewPlacement(site, cell, 'torch'))
+  site.world.poke(under, 7)
+  say('torch over snow', yield* previewPlacement(site, cell, 'torch'))
+  site.world.poke(under, 2)
+  say('torch over stone', yield* previewPlacement(site, cell, 'torch'))
+
+  // An item with no block form is a TYPE error at the call site, so the screen
+  // cannot even ask. What it can show is the other direction.
+  lines.push('')
+  lines.push(`  placeableItemOf(lava)             ${String(placeableItemOf(11))}`)
+  lines.push(`  placeableItemOf(water)            ${String(placeableItemOf(6))}`)
+  lines.push(`  placeableItemOf(stone)            ${String(placeableItemOf(2))}`)
+  lines.push('')
+  lines.push('  `lava in the cell` is the row the reference got wrong: block-service-place-load.ts:48')
+  lines.push('  asks `existing === AIR || existing === WATER`, so a lava cell read as occupied.')
+  lines.push('  `torch over snow` is kernel`s audit §4.9: snow is a valid SPAWN surface and is not a')
+  lines.push('  valid ATTACHMENT support, and the two flags must not be collapsed into one.')
+
+  // The two rows that are claims rather than illustrations. A build in which
+  // lava reads as occupied, or in which snow holds a torch up, is a build that
+  // has reintroduced one of the two bugs this rule was written against — and
+  // both would look entirely plausible in the table above.
+  const wrong =
+    seen.get('lava in the cell') !== 'Allowed' || seen.get('torch over snow') !== 'Unsupported'
+
+  return {
+    id: wrong ? 'F-place' : 'ok',
+    title: 'the placement rule refuses for four distinct, named reasons',
+    finding: wrong,
+    lines,
+  } satisfies Check
+})
+
+/**
+ * WEATHER, fast-forwarded.
+ *
+ * `docs/testing.md` §5 asks for exactly this and says why: 「実時間 20 分待つ
+ * テストは書かない」. The transition graph is walked from a SEED, so the sequence
+ * below is the same on every run — which the reference cannot say about its own
+ * `WeatherService.tick`, because that reads the global generator.
+ */
+const weatherWalk = Effect.sync(() => {
+  const lines: Array<string> = []
+  let state = INITIAL_WEATHER
+  let seed = DEFAULT_ROLL_SEED
+  const stretches: Array<string> = []
+  let elapsed = 0
+
+  // Twelve stretches, jumping straight to each expiry. Long enough to visit
+  // every edge of a three-node graph several times over.
+  for (let step = 0; step < 12; step += 1) {
+    elapsed += state.remainingSecs
+    stretches.push(`${state.weather}(${state.remainingSecs.toFixed(0)}s)`)
+    const batch = drawRolls(seed, WEATHER_TRANSITION_ROLLS)
+    seed = batch.seed
+    state = advanceWeather({ weather: state.weather, remainingSecs: 0 }, 0, {
+      transition: batch.rolls[0] ?? 0,
+      duration: batch.rolls[1] ?? 0,
+    })
+  }
+
+  lines.push(`  ${stretches.slice(0, 6).join(' -> ')}`)
+  lines.push(`  ${stretches.slice(6).join(' -> ')}`)
+  lines.push('')
+  lines.push(`  total game time covered           ${(elapsed / 60).toFixed(1)} minutes`)
+  lines.push(`  seed after 12 transitions         ${String(seed)}`)
+  lines.push('')
+
+  for (const weather of WEATHERS) {
+    lines.push(
+      `  ${pad(weather, 12)}precipitating=${pad(String(isPrecipitating(weather)), 7)}` +
+        `thunder=${pad(String(isThunderstorm(weather)), 7)}lightScale=${weatherLightScale(weather).toFixed(2)}`,
+    )
+  }
+  lines.push('')
+  lines.push('  No weather follows itself: every expiry is a change, and the roll only chooses which.')
+  lines.push('  hostileSpawnsAllowed is NOT consulted here — vanilla spawns hostiles in daylight rain')
+  lines.push('  and the reference implementation does not, so neither does this (docs/porting.md §4).')
+
+  const repeated = stretches.filter(
+    (entry, index) => index > 0 && entry.split('(')[0] === stretches[index - 1]?.split('(')[0],
+  ).length
+
+  return {
+    id: repeated === 0 ? 'ok' : 'F-weather',
+    title: 'weather walks its own transition graph from a seed, and replays identically',
+    finding: repeated > 0,
+    lines,
+  } satisfies Check
+})
+
 // ---------------------------------------------------------------------------
 // Report
 // ---------------------------------------------------------------------------
@@ -1030,6 +1294,9 @@ const CHECKS = [
   creeperFuseFrameRate,
   creeperEndToEnd,
   spawnGate,
+  lootTable,
+  placementRefusals,
+  weatherWalk,
 ] as const
 
 export const buildStatsReport: Effect.Effect<ReadonlyArray<string>> = Effect.gen(function* () {
@@ -1063,7 +1330,7 @@ export const buildStatsReport: Effect.Effect<ReadonlyArray<string>> = Effect.gen
   lines.push(
     `capability table: fallsWhenUnsupported(sand,gravel)=${String(falls)}  ` +
       `isReplaceable(air,water,lava)=${String(replaceable)}  ` +
-      `(lava was missing once — domain/chunk-store-port.ts:232-242)`,
+      `(lava was missing once — domain/chunk-store-port.ts:267-281)`,
   )
   lines.push(`positionKeyOf({x:-1,y:2,z:-3}) = ${positionKeyOf({ x: -1, y: 2, z: -3 })}`)
   lines.push(`glyph check: ${glyphOf(SAND).name}/${glyphOf(GRAVEL).name}`)

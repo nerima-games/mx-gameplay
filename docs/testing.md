@@ -44,20 +44,25 @@ prettier も biome も `.editorconfig` も置かない。整形の権威が 2 �
 
 ## 2. 現在のスイート
 
-**10 ファイル / 199 テスト、全 pass。**
+**15 ファイル / 343 テスト、全 pass。**
 
 | ファイル | 本数 | 内容 |
 | --- | ---: | --- |
 | `test/api-lock.test.ts` | 26 | API ロック生成器そのもの（`scripts/api-lock.ts`） |
 | `test/rules.test.ts` | 19 | DN-GP-1 / DN-GP-2 / DN-GP-3 のドメイン単体 |
 | `test/mob.test.ts` | 75 | **クリーパー / エンダーマン / シュルカー / 掃除。** 導火線と殻の状態機械を**列挙**し（両方とも全遷移を通す）、爆風の減衰表・スポーン判定・ドロップ・テレポート帯・デスポーン距離を参照実装のオラクルから移植する（§2-2）。乱数がドメインに無いことをソース走査で固定する 1 本と、シナリオ再現を 2 本含む |
-| `test/stage-registration.test.ts` | 19 | フレーム契約（§2.3-1 / §2.3-3）と stage の振る舞い。時刻の `Ref` が無いこと、store を**登録時に**取ること |
-| `test/check-dependency-whitelist.test.ts` | 17 | 依存ポリシーそのもの。うち 3 本は**他リポジトリの席から**読んだ roster 検査（§2-3） |
-| `test/vertical-slice.test.ts` | 12 | 縦切り。**stage 登録経由で**「掘る → 砂が落ちる → アイテムが渡る」を回す（DN-GP-1 / DN-GP-11） |
+| `test/stage-registration.test.ts` | 23 | フレーム契約（§2.3-1 / §2.3-3）と stage の振る舞い。時刻の `Ref` が無いこと、store を**登録時に**取ること |
+| `test/check-dependency-whitelist.test.ts` | 18 | 依存ポリシーそのもの。うち 3 本は**他リポジトリの席から**読んだ roster 検査（§2-3） |
+| `test/vertical-slice.test.ts` | 32 | 縦切り。**stage 登録経由で**「掘る → 砂が落ちる → アイテムが渡る」「掘る → 置く → 落ちる」「クリーパーが湧く → 爆ぜる → ドロップ」を回す（DN-GP-1 / DN-GP-11） |
 | `test/day-night.test.ts` | 8 | DN-GP-7。昼夜**ルール**が何も保持していないこと、mc-sim と夜の定義が一致すること |
-| `test/public-api.test.ts` | 6 | `index.ts` のバレルを名前ごと固定する。kernel 語彙と時刻 API の**不在**も固定する |
-| `test/chunk-store-mirror.test.ts` | 6 | `domain/chunk-store-port.ts` を mc-worldgen の界面に**両方向で**固定する。タグキーは文字どおり検査する。`validSpawnSurface` が**負リスト**であること（＝既定 true）もここ |
-| `test/preview-findings.test.ts` | 10 | **プレビューが見つけたもの**（§3-2）。うち 8 本は「現在の（誤った）挙動を固定する」テストで、直すと落ちる |
+| `test/public-api.test.ts` | 8 | `index.ts` のバレルを名前ごと固定する。kernel 語彙と時刻 API の**不在**も固定する |
+| `test/chunk-store-mirror.test.ts` | 7 | `domain/chunk-store-port.ts` を mc-worldgen の界面に**両方向で**固定する。タグキーは文字どおり検査する。`validSpawnSurface` が**負リスト**であること（＝既定 true）もここ |
+| `test/preview-findings.test.ts` | 10 | **プレビューが見つけたもの**（§3-4）。うち 8 本は「現在の（誤った）挙動を固定する」テストで、直すと落ちる |
+| `test/entity-manager-mirror.test.ts` | 15 | `domain/entity-manager-port.ts` を mc-sim の界面に固定する |
+| `test/mob-spawn-search.test.ts` | 22 | `domain/entities/mob-spawn-search.ts` のリングと、その 256 回のストア呼び出し |
+| `test/place-block.test.ts` | 30 | **設置**（§3-1 の 1 行目）。参照実装が**実際に間違えた 3 点**を `REGRESSION:` として持つ —— 溶岩は replaceable、自分の体の中には置けない、支えが要るブロックは支えを見る。`blockOverlapsPlayer` の境界表（`block-service-utils.test.ts:84-98`）は**そのまま移植**してある |
+| `test/block-loot.test.ts` | 27 | **ブロックのドロップテーブル**（§3-1 の 3 行目）。kernel の表を通る決定論的な半分と、audit §6-9 がこちらに置いた乱数の半分（fortune / 葉のボーナス）。「素手で石を掘っても何も出ない」が**見た目では気付けないほうの半分**である |
+| `test/weather.test.ts` | 23 | **天候**（§3-1 の 7 行目）。参照実装の `packages/game/test/weather.test.ts` の 8 本を**値を変えずに**移植し、そのうえで参照実装には書けないテスト —— 2 時間ぶんのフレームを回して遷移グラフを歩き、**2 回走らせて同じ列になる**こと（§5 の fast-forward）を足す |
 
 `test/support/` はテストではなくテストの資材である（`vitest.config.ts` の `include` は
 `test/**/*.{test,spec}.ts` なので収集されない）。`chunk-store-double.ts` が mc-worldgen の
@@ -119,15 +124,20 @@ roster を各リポジトリが持ち回っている以上、**行の正しさ�
 | # | 条件 | 状態 |
 | --- | --- | --- |
 | 1 | `pnpm verify` が green | ✅ |
-| 2 | plan.md §3.11 の 7 つの責務が実装済み | ❌（**7 分の 4 が部分実装、3 が未着手**。内訳は §3-2） |
+| 2 | plan.md §3.11 の 7 つの責務が実装済み | ❌（**7 分の 3 が実装済み、2 が部分、2 が未着手**。内訳は §3-1） |
 | 3 | 参照実装のテストオラクルが移植済み | ❌ |
-| 4 | **プレビュー「採掘場」が操作可能** | ✅（`pnpm preview`。ただしドロップテーブルと設置ルールが未実装なので、確認できるのは「掘る」と落下カスケードまで。§3-1） |
-| 5 | **プレビュー「Mob アリーナ」が操作可能** | ✅（`--screen arena`。**plan.md §3.11 の 4 挙動のうち 3 つ。** スポーン → 導火線 → 爆風 → 死因 → ドロップ、エンダーマンのテレポート判断と変位、シュルカーの殻、そして掃除が本物。4 つ目のドラゴンは**理由つきの拒否**として画面に載る。§3-1） |
-| 6 | **プレビュー「時間スライダー」が操作可能** | ✅（`--screen time`。時刻を**進める**のは mc-sim であり、そちらは未 publish） |
+| 4 | **プレビュー「採掘場」が操作可能** | ✅（`pnpm preview`。plan.md §3.11 が名指しする **3 つとも** —— `b` で掘り、`p` でルールを通して置き、`t` で道具の段を替えると HUD のインベントリが変わる。§3-3） |
+| 5 | **プレビュー「Mob アリーナ」が操作可能** | ✅（`--screen arena`。**plan.md §3.11 の 4 挙動のうち 3 つ。** スポーン → 導火線 → 爆風 → 死因 → ドロップ、エンダーマンのテレポート判断と変位、シュルカーの殻、そして掃除が本物。4 つ目のドラゴンは**理由つきの拒否**として画面に載る。§3-3） |
+| 6 | **プレビュー「時間スライダー」が操作可能** | ✅（`--screen time`。昼夜と**天候**の両方。時刻を**進める**のは mc-sim であり、そちらは未 publish。天候は所有者が 1 人もいないので画面が持つ —— `domain/weather.ts` の冒頭） |
 | 7 | 99% カバレッジゲートが有効 | ❌（完成時に有効化。§4） |
 | 8 | `mc-kernel` を import し `domain/frame-contract.ts` / `domain/position-key.ts` を削除 | ❌（kernel の publish 待ち） |
 
-### 3-2. 条件 2 の内訳（この行は「1 つも未着手」と書かれたまま古くなっていた）
+### 3-1. 条件 2 の内訳（この行は「1 つも未着手」と書かれたまま古くなっていた）
+
+> **節番号を振り直した。** この節と「プレビューが見つけたもの」の両方が `3-2` を名乗っていて、
+> 「§3-2 を見よ」がどちらを指すのか本文からは決まらなかった。同じ番号が 2 つあるのは
+> この文書自身が主要な失敗様式として挙げているもの（状態表が実際と食い違う）の一種なので、
+> 出現順に 3-1 / 3-2 / 3-3 / 3-4 へ振り直し、参照側も直してある。
 
 **この表は実ファイルを数えて作った。** 旧記述「1 つも未着手」は**同じ表の 4〜6 行目と矛盾していた** ——
 そこにはプレビュー 3 本が ✅ で載っており、Mob アリーナは「本物。plan.md §3.11 の 4 挙動のうち 3 つ」と
@@ -135,24 +145,67 @@ roster を各リポジトリが持ち回っている以上、**行の正しさ�
 
 | # | plan.md §3.11 の責務 | 状態 | 実体 / 欠けているもの |
 | --- | --- | --- | --- |
-| 1 | 採掘 / 設置 / アイテム使用 | **部分** | `domain/interactions/break-block.ts` は本物。**設置は無い**（`placeBlock` に相当する export がゼロ）。アイテム使用（バケツ・火打石・エンダーパール・弓・農業・ハサミ）も無い |
-| 2 | Mob AI | **部分** | `domain/mob/` 7 本 + `domain/entities/mob-frame.ts` で**フレームに配線済み**。4 挙動のうち 3 つ。ドラゴンは §3-1 のとおり**理由つきの拒否** |
-| 3 | ドロップ / ルートテーブル | **部分** | `domain/mob/mob-drop.ts` は本物（クリーパー / ガスト / ブレイズ、`lootingLevel` 込み）。**ブロックのドロップテーブルが無い** —— 掘って出るのは「そこにあったブロック」そのもので、§3-1 の採掘場プレビューがそう表示する |
+| 1 | 採掘 / 設置 / アイテム使用 | **部分** | `domain/interactions/break-block.ts` と `place-block.ts` はどちらも本物で、どちらも `gameplay:interactions` から回っている。**アイテム使用が無い**（バケツ・火打石・エンダーパール・弓・農業・ハサミ）。設置の**ブロック別ルール 4 本**（キノコの光量 / サトウキビの隣接水 / サボテンの側面 / ドアの上のセル）も無い —— DN-GP-9 によりそれぞれ別ファイルであり、**先送りであって拒否ではない** |
+| 2 | Mob AI | **部分** | `domain/mob/` 7 本 + `domain/entities/mob-frame.ts` で**フレームに配線済み**。4 挙動のうち 3 つ。ドラゴンは §3-3 のとおり**理由つきの拒否** |
+| 3 | ドロップ / ルートテーブル | **実装済み** | `domain/mob/mob-drop.ts`（クリーパー / ガスト / ブレイズ、`lootingLevel` 込み）と `domain/interactions/block-loot.ts`。後者は kernel の `drops` / `harvestTool` 列（`domain/block-vocabulary.ts` にミラー）を通る決定論的な半分と、audit §6-9 がこちらに置いた乱数の半分（fortune、葉のボーナス）である。**掘って出るのは「そこにあったブロック」ではなくなった** —— 石はまるい石になり、素手では何も出ない |
 | 4 | 流体伝播 | **実装済み** | `domain/fluid-frontier.ts`。plan.md §3.11 が名指しするフロンティア上限つき |
-| 5 | 乗り物（ボート / トロッコ / レール） | **未着手** | `domain/` に該当語なし |
-| 6 | ポータル / 次元移動 | **未着手** | 同上 |
-| 7 | 昼夜・天候 | **部分** | `domain/day-night.ts` は本物（`isNight` / `dayPhase` / `hostileSpawnsAllowed`）。**天候が無い**。加えて時刻を**進める**のは mc-sim の `TimeService` であり、`gameplay:time-weather` は `Effect.void` のまま |
+| 5 | 乗り物（ボート / トロッコ / レール） | **未着手** | §3-2 参照。**この行の根拠は間違っていた** |
+| 6 | ポータル / 次元移動 | **未着手** | §3-2 参照。結論は正しく、理由が違う |
+| 7 | 昼夜・天候 | **実装済み** | `domain/day-night.ts`（`isNight` / `dayPhase` / `hostileSpawnsAllowed`）と `domain/weather.ts`（遷移グラフ・継続時間・`isPrecipitating` / `isThunderstorm` / `weatherLightScale`）。`gameplay:time-weather` は **`Effect.void` ではなくなった**。時刻を**進める**のは依然 mc-sim の `TimeService` である |
 
-**4 が実装済み、1・2・3・7 が部分、5・6 が未着手。**
-「7 分の 4 が部分実装」と書いたのはこの意味で、**1 つも手が付いていない責務は 5 と 6 の 2 つだけ**である。
+**3・4・7 が実装済み、1・2 が部分、5・6 が未着手。**
+**1 つも手が付いていない責務は 5 と 6 の 2 つだけ**なのは変わらない。
 
-未着手の 2 つは他と性格が違う。**乗り物とポータルはどちらも「位置を持つ実体を動かす」ものであり、
-速度を出す側は mc-physics、実体の名簿は mc-sim である** —— エンダードラゴンを
-`domain/mob/` から拒否したのと同じ理由（[design-notes.md](./design-notes.md)）が、
-この 2 つにもそのまま当たる可能性が高い。**着手する前に所有権を決めるべき 2 行**であって、
-単に書かれていないだけの 2 行ではない。
+### 3-2. 未着手の 2 つ —— 旧記述の根拠は**測って間違いだった**
 
-### 3-1. プレビュー 3 本
+この節は以前こう書いていた:
+
+> 乗り物とポータルはどちらも「位置を持つ実体を動かす」ものであり、
+> 速度を出す側は mc-physics、実体の名簿は mc-sim である —— エンダードラゴンを
+> `domain/mob/` から拒否したのと同じ理由がこの 2 つにもそのまま当たる可能性が高い。
+
+**参照実装を読んで確かめた結果、5 については誤りで、6 については結論だけが正しい。**
+
+そして最初に見るべきだったのは参照実装ではなく plan.md §7 のほうだった。
+[responsibility.md](./responsibility.md) §2 が既に書き出している 5 行のうち、この 2 つはこうなっている:
+
+| 機能領域 | 割り当て先 | mx-gameplay の取り分 |
+| --- | --- | --- |
+| 乗り物（ボート/トロッコ/パワードレール）のルール | **gameplay** | 全部 |
+| 次元（ネザー/エンド、次元別地形・Mob 名簿・次元永続化） | worldgen + sim + gameplay + save | **次元移動のルール**（ポータル成立条件・遷移の発火） |
+
+**乗り物のルールは「全部」ここである** —— 単独割り当ての 2 行のうちの 1 行で、
+「所有権を決めるべき行」ではもともと無かった。ポータルのほうは 4 リポジトリの分担行で、
+こちらは確かに「決めるべき行」である。旧記述は**この表を読まずに 2 行を同じ箱に入れていた。**
+
+**5（乗り物）。** 「位置を持つ実体を動かす」で説明が付くのは**半分だけ**である。
+乗っている状態は `packages/game/application/game-state-service.ts:76` の `Ref<boolean>` ——
+状態なので mc-sim のもの —— で、積分は mc-physics のものである。残りの半分はそうではない:
+
+- `resolveRailShape`（`packages/game/domain/rail-shape.ts:18-34`）は
+  **1 セルの周囲 4 方向のブロック読みだけ**の全域関数である。速度も名簿も出てこない。
+  これは `domain/interactions/place-block.ts` の支え判定や
+  `domain/entities/mob-spawn-search.ts` のリングと**同じ形**である。
+- `projectMinecartVelocity`（`:39-60`）は速度を**引数に取って**制約したものを返す。
+  速度を**生む**関数ではない。これは `domain/mob/enderman-teleport.ts` の
+  `endermanTeleportOffset`（変位を返し、着地は呼び出し側が決める）と同じ形であり、
+  その形は**このリポジトリで既に受け入れられている**。
+- 語彙も揃っている: kernel の `BLOCK_REGISTRY` は `rail`(31) と `powered_rail`(32) を既に持つ。
+
+つまり **`domain/interactions/rail-shape.ts` は今日書ける**。書いていないのは本パスのスコープ外
+だからであって、境界に阻まれているからではない。`ARENA_MISSING` にその旨を行として載せてある。
+
+**6（ポータル）。** こちらは着手すべきでないという結論が正しく、**理由が違う**。
+参照実装はポータル関連を 1 つ残らず **world パッケージ**に置いている ——
+`nether-link.ts` は座標のスケーリング、`portal-frame.ts` は枠の検出とレイアウト生成、
+`resolveNetherTravel`（`nether-travel.ts:33-49`）はその合成である。
+mc-physics の速度でも mc-sim の名簿でもなく、**mc-worldgen の構造と座標**である。
+そして実際に詰まっているのは**誰も持っていない名詞**のほうである:
+`Dimension` は kernel のどのファイルにも無く、mc-sim の `EntityState` は 3 フィールドで、
+そのどれも「この実体はどの世界に居るのか」を言わない。
+**着手する前に所有権を決めるべき 1 行**であるのは変わらない。
+
+### 3-3. プレビュー 3 本
 
 plan.md §3.11 が指定する 3 本。`apps/preview-*/` に置く（plan.md §4.1: 「プレビューは契約に含めない」）。
 
@@ -161,9 +214,9 @@ plan.md §3.11 が指定する 3 本。`apps/preview-*/` に置く（plan.md §4
 
 | プレビュー | 画面 | 実体 | 主に検証されるルール |
 | --- | --- | --- | --- |
-| **採掘場** | `site` | **本物**。`gameplayStages` を本物の `ChunkStoreApi` に対して回す | `break-block`、落下ブロック（DN-GP-1）、`ChunkNotLoaded`（DN-GP-11）。**ドロップテーブルも設置ルールも存在しない**ので、掘って出るのは「そこにあったブロック」そのものであり、`p` キーはストアを直接書いて「これはルールではない」と HUD に出す |
+| **採掘場** | `site` | **本物**。`gameplayStages` を本物の `ChunkStoreApi` に対して回す | `break-block`、`place-block`、`block-loot`、落下ブロック（DN-GP-1）、`ChunkNotLoaded`（DN-GP-11）。**plan.md §3.11 が名指しする「掘る / 置く / ドロップ確認」の 3 つとも本物である。** `b` は破壊要求を受信箱に積み、`p` は**設置要求を積む**（先にルールへ問い、拒否ならその `_tag` を HUD に出して積まない —— stage は拒否を捨てるので、拒否を見られるのはここだけである）。`t` / `u` / `f` で道具の段・シルクタッチ・fortune を変えると、**次のフレームから出るアイテムが変わる**。`--tool none` と `--tool wooden` の 2 枚は、1 行だけ違う貼り付け可能なフレームである。ストアを直接書く鍵は `e` だけになり、**disturb を呼ばない**ことが設置との対比になっている |
 | **Mob アリーナ** | `arena` | **本物。plan.md §3.11 の 4 挙動のうち 3 つ** | `domain/mob/` の 7 本 —— `hostile-spawn`（夜・光度・`validSpawnSurface`・距離帯）、`creeper-fuse`（着火 / 退避で消える / 1 回だけ爆発）、`explosion`（減衰と死因）、`mob-drop`（クリーパー / ガスト / ブレイズ。自爆なら何も出ない）、`enderman-teleport`（3 つの引き金と 8..32 ブロックの変位）、`shulker-shell`（開くのに 20 フレーム、閉じるのに 1）、`hostile-despawn`（3D で 128 ブロック）と、それらが到達する `domain/death-cause.ts`（DN-GP-3）。**状態はプレビューが持つ** —— mc-sim の役をこの画面が務めており、`ArenaCreeper` 4 欄 + `ArenaShulker` 6 欄 + `ArenaEnderman` 4 欄のどれ 1 つも位置でも id でも乱数生成器でもない。欠けているものは**行き先つきで**列挙し続ける（4 つ目の挙動＝ドラゴンは、**理由つきの拒否**として一覧の先頭に載る） |
-| **時間スライダー** | `time` | **ルールドライバとしては本物** | `domain/day-night.ts` の `isNight` / `dayPhase` / `hostileSpawnsAllowed`（DN-GP-7）。**時刻そのものを動かすのは mc-sim の `TimeService`** であり、`gameplay:time-weather` は `Effect.void` のままなので、スライダーは「書く先」を持たない。引数を掃くだけである |
+| **時間スライダー** | `time` | **ルールドライバとしては本物**。昼夜と天候の両方 | `domain/day-night.ts` の `isNight` / `dayPhase` / `hostileSpawnsAllowed`（DN-GP-7）と、`domain/weather.ts` の遷移グラフ・継続時間・`isPrecipitating` / `isThunderstorm` / `weatherLightScale`。**時刻そのものを動かすのは依然 mc-sim の `TimeService`** である。**天候は動かす** —— `gameplay:time-weather` はもう `Effect.void` ではなく、`.` が 60 秒進め、`w` が次の遷移まで早送りする（§5 の fast-forward）。画面が値を持っているのは書く先が無いからではなく、**天候には所有者が 1 人もいない**からである（`domain/weather.ts` の冒頭）。遷移表は転記ではなくルールに**問うて**描いてあるので、表と実装が食い違えない |
 
 **`mc-playground-kit` は使っていない。** 本節は以前「いずれも kit を devDependency として使う」と
 書いていたが、kit は publish されておらず（plan.md §6 Step 3 はボトムアップ）、
@@ -184,9 +237,9 @@ mx-redstone の回路盤が磨いた。`tsconfig.base.json` が `lib` から "DO
 参照実装のあのバグが数分後に現れるものだったのは偶然ではなく、**型と単体テストが見ない層で起きるバグ**が
 このリポジトリの主要な失敗様式だからである。
 
-### 3-2. プレビューが見つけたもの
+### 3-4. プレビューが見つけたもの
 
-`pnpm preview --stats` は 17 個のチェックを**実行時に測定**する。期待値は 1 つも記録していないので、
+`pnpm preview --stats` は 20 個のチェックを**実行時に測定**する。期待値は 1 つも記録していないので、
 **直すと finding は「固定される」のではなく静かに消える**。だから確認できたものは
 `test/preview-findings.test.ts` に assertion として落としてある —— レポートは読まれなければ効かないが、
 テストは落ちる。チェック自体は合格後も残してある。合格したら消すチェックは、コードを 1 回しか検査しない。
@@ -198,7 +251,7 @@ mx-redstone の回路盤が磨いた。`tsconfig.base.json` が `lib` から "DO
 | F1 | 飽和したバッチの約半分が動けない位置に使われる（実測 0.41 moves/position、26 擾乱でキューは 52 まで膨張） | `domain/falling-block.ts:53-60` / `entities/falling-block-move.ts:167` | — （測定値。上限自体は破られていない） |
 | F2 | `retainedLavaFrontier` が `carryOver` の結果に完全に含まれ、両方の doc に従うと溶岩フロンティアが tick ごとに倍増する | `domain/fluid-frontier.ts:62-65`, `:116-122` | ✅ 2 本 |
 | F3 | `carryOver` が `key` だけで比較するため、水と溶岩が同座標に並ぶと**未評価の溶岩側**が黙って消える | `domain/fluid-frontier.ts:120` | ✅ 2 本 |
-| F4 | fluids stage だけが `Ref.get` → `Ref.set`（DN-GP-10 が禁じる形）。**今日は到達不能**なので形として報告 | `stages/registration.ts:267-270` | — |
+| F4 | fluids stage だけが `Ref.get` → `Ref.set`（DN-GP-10 が禁じる形）。**今日は到達不能**なので形として報告 | `stages/registration.ts:798-805` | — |
 | F5 | NaN ダメージ 1 発でプレイヤーが永久に不死になる（`isDead` が永久に false、死亡メッセージが出ない） | `domain/death-cause.ts:110-122` | ✅ 3 本 |
 | F6 | 昼夜ルールが日周期でない。範囲外は全部 night で `hostileSpawnsAllowed` も真。負の端数は mc-sim の `% 1` から出る | `domain/day-night.ts:78-98` | ✅ 3 本 |
 
@@ -209,6 +262,14 @@ Mob 用に 3 チェックを足した（2026-07-27）。**finding は 1 件も�
 | 導火線のフレームレート非依存性 | dt を 0.25 / 0.1 / 0.05 / 0.02 / 1/60 / 0.016 と変えて、爆発までの実時間を測る | `[note]`。**1 フレーム以内で一定。**1/60 だけ 91 ステップ（理想 90）で 1.5167 秒になる —— 浮動小数の累積であって tick 数ではない。開始時刻を持てば直るが、それには時計が要る（DN-GP-8 が禁じる） |
 | クリーパー縦切り | スポーン判定 → 導火線 → 爆風 → 死因 → ドロップを 1 本で回し、全数値を測る | ✅。`deathMessage()` が `You blew up.` であること（DN-GP-3 の新しい呼び出し地点）と、自爆したクリーパーのドロップが**空**であることを見る |
 | スポーンゲートの掃引 | 地面ブロック × 光度の格子を夜と正午で | ✅。葉とガラスが**衝突判定上は solid でも地面ではない**行が見える（kernel 監査 §4.9） |
+
+設置 / ドロップ / 天候用に 3 チェックを足した（2026-07-27）。**finding は 1 件も増えていない。**
+
+| チェック | 何を見るか | 結果 |
+| --- | --- | --- |
+| ドロップ表の掃引 | 8 ブロック × 5 段の道具、そして fortune / シルクタッチ / 葉のボーナス | ✅。`-` が**空行ではなく拒否**であることが表で読める。finding 条件は「`item:` の上書きを持つ行が自分自身を落とす」—— それが**旧挙動そのもの**であり、画面上は完全にもっともらしく見える |
+| 設置の 4 つの拒否 | 溶岩 / 水 / 既存ブロック / 支えの有無を 1 行ずつ | ✅。finding 条件は 2 行だけ: 溶岩セルが `Allowed` でなくなったら、雪の上の松明が `Unsupported` でなくなったら。参照実装が実際に間違えた 1 つ目と、kernel の audit §4.9 が「別々の能力だ」と言っている 2 つ目である |
+| 天候の遷移グラフ歩き | シードから 12 回遷移させ、各区間の長さを出す | ✅。**同じ列が毎回出る** —— 参照実装の `WeatherService.tick` は大域生成器を読むので、これは向こうでは書けない検査である |
 
 **F3 / F5 / F6 は当時の 112 本が 1 つも捕まえていなかった。** 理由はそれぞれ違う:
 
@@ -286,6 +347,14 @@ plan.md §5.1-3:
 移植で足すべきもの:
 
 - **シード固定のシナリオテスト。** 「スポーン → 掘る → インベントリを assert」を Node で高速実行する
-  （plan.md §3.8 が `mc-sim` について書いている形と同じ）。
-- **fast-forward。** クロック Port を進めて「1 ゲーム日後に天候が変わっている」を assert する。
-  実時間 20 分待つテストは書かない。
+  （plan.md §3.8 が `mc-sim` について書いている形と同じ）。**半分は済んだ** ——
+  `test/vertical-slice.test.ts` の「掘る → 置く → 落ちる」と
+  `test/weather.test.ts` の 2 時間ぶんは、どちらも `DEFAULT_ROLL_SEED` から回っていて再現する。
+  残りの半分（インベントリ）は書く先が無い。§3-1 の 3 行目を参照。
+- ~~**fast-forward。** クロック Port を進めて「1 ゲーム日後に天候が変わっている」を assert する。
+  実時間 20 分待つテストは書かない。~~ **済み。** `test/weather.test.ts` の
+  `fast-forward: two hours of frames walk the transition graph, reproducibly` が、
+  1 秒の `dt` で 7200 フレームを 2 回回して**同じ遷移列**が出ることを assert する。
+  クロック Port は要らなかった —— `run(dt)` が delta を引数に取るので、
+  「1 秒」は数 µs で済む（§5 冒頭の 2 番目の担保）。天候の値そのものは
+  受信箱と送信箱で往復させており、そのループがそのままホストの契約である。

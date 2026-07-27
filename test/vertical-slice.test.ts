@@ -104,7 +104,12 @@ import {
 } from '../domain/mob/enderman-teleport'
 import { CREEPER_EXPLOSION_POWER, explosionDamageAmount } from '../domain/mob/explosion'
 import { DESPAWN_DISTANCE_BLOCKS } from '../domain/mob/hostile-despawn'
-import { gameplayStages, makeGameplayFrameState } from '../stages/registration'
+import type { MinedItem } from '../domain/interactions/block-loot'
+import {
+  gameplayStages,
+  makeGameplayFrameState,
+  type PlacementRequest,
+} from '../stages/registration'
 import {
   GRAVEL,
   makeChunkStoreDouble,
@@ -147,6 +152,22 @@ const requestBreak = (
 ): Effect.Effect<void> =>
   Ref.update(state.pendingBreaks, (pending) => [...pending, positionKeyOf(position)])
 
+/**
+ * What mc-sim's `InventoryService` will supply: the tool the player is holding.
+ *
+ * A WOODEN PICKAXE IS NOT THE DEFAULT and every test that wants stone to drop
+ * has to say so, which is the whole of what `domain/interactions/block-loot.ts`
+ * changed about this file. Before it, `minedItems` received the raw byte the
+ * write returned, so bare hands harvested stone and mining it yielded STONE
+ * rather than cobblestone.
+ */
+const holdWoodenPickaxe = (
+  state: { readonly heldTool: Ref.Ref<{ readonly heldTier?: 'none' | 'wooden' | 'stone' | 'iron' | 'diamond' }> },
+): Effect.Effect<void> => Ref.set(state.heldTool, { heldTier: 'wooden' })
+
+/** kernel's answer for stone mined with a pickaxe: one cobblestone, no fortune. */
+const ONE_COBBLESTONE: ReadonlyArray<MinedItem> = [{ item: 'cobblestone', count: 1 }]
+
 describe('the slice, through the stage registration', () => {
   it.effect('breaks a block in interactions and moves the sand in entities', () =>
     Effect.gen(function* () {
@@ -162,13 +183,17 @@ describe('the slice, through the stage registration', () => {
       // cell moved, so a stage that worked from it would have to scan.
       const renderer = yield* store.api.subscribeDirty
 
+      yield* holdWoodenPickaxe(state)
       yield* requestBreak(state, support)
       yield* runFrame(stages)
 
-      // ---- the block was mined, and the item went to the inventory ---------
+      // ---- the block was mined, and the ITEM went to the inventory ---------
       // `previous` came back from the write itself, so there was no
-      // read-then-write race for it (mc-worldgen §6-3).
-      expect(yield* Ref.get(state.minedItems)).toStrictEqual([STONE])
+      // read-then-write race for it (mc-worldgen §6-3) — and it is a BYTE, so
+      // `domain/interactions/block-loot.ts` is what turns it into an item. The
+      // assertion is `cobblestone` and not `stone`, which is kernel's drop row
+      // (`{ ...DEFAULT_BLOCK_DROP, item: 'cobblestone' }`) reaching the outbox.
+      expect(yield* Ref.get(state.minedItems)).toStrictEqual(ONE_COBBLESTONE)
 
       // ---- and the sand above it moved down, in the same frame -------------
       expect(yield* store.blockAt(support)).toBe(SAND)
@@ -254,6 +279,7 @@ describe('the slice, through the stage registration', () => {
         ]),
       )
 
+      yield* holdWoodenPickaxe(state)
       yield* requestBreak(state, support)
       yield* runFrame(stages)
 
@@ -261,7 +287,7 @@ describe('the slice, through the stage registration', () => {
       // told that gravel exists — the reference implementation asked
       // `blockTypeToIndex('SAND')` in 229 places across 51 files (plan.md §3.1).
       expect(yield* store.blockAt(support)).toBe(GRAVEL)
-      expect(yield* Ref.get(state.minedItems)).toStrictEqual([STONE])
+      expect(yield* Ref.get(state.minedItems)).toStrictEqual(ONE_COBBLESTONE)
     }),
   )
 
@@ -464,9 +490,10 @@ describe('the slice, through the stage registration', () => {
       yield* runFrame(stages)
       expect(yield* Ref.get(state.minedItems)).toStrictEqual([])
 
+      yield* holdWoodenPickaxe(state)
       yield* requestBreak(state, floor)
       yield* runFrame(stages)
-      expect(yield* Ref.get(state.minedItems)).toStrictEqual([STONE])
+      expect(yield* Ref.get(state.minedItems)).toStrictEqual(ONE_COBBLESTONE)
       expect(yield* store.blockAt(floor)).toBe(AIR_BLOCK_ID)
     }),
   )
@@ -1330,6 +1357,138 @@ describe('the stage supplies its rolls from a seed', () => {
           offending: [],
         })
       }
+    }),
+  )
+})
+
+// ---------------------------------------------------------------------------
+// The mining site, end to end: swing, loot, place, cascade
+// ---------------------------------------------------------------------------
+
+/**
+ * THE LOOP THE PREVIEW'S 「採掘場」 SCREEN IS ABOUT, and the one plan.md §3.11
+ * names as the first of its three: 「掘る / 置く / ドロップ確認」.
+ *
+ * It could not be written before, and the reason is worth keeping: the
+ * interactions stage held one rule, `breakBlock`, and pushed the byte it
+ * returned into an outbox. So "dig" was real, "drop" was "the block that was
+ * there", and "place" did not exist at all — `apps/preview-mining-site/site.ts`
+ * carried a `pokeBlock` that wrote the store directly and said so in the HUD.
+ *
+ * All three run here, through the shipped registrations, in one frame each.
+ */
+describe('the mining site slice: dig, drop, place', () => {
+  const cell: BlockPosition = { x: 4, y: 64, z: 3 }
+  const under: BlockPosition = { x: 4, y: 63, z: 3 }
+
+  const requestPlace = (
+    state: { readonly pendingPlacements: Ref.Ref<ReadonlyArray<PlacementRequest>> },
+    position: BlockPosition,
+    heldItem: PlacementRequest['heldItem'],
+  ): Effect.Effect<void> =>
+    Ref.update(state.pendingPlacements, (queue): ReadonlyArray<PlacementRequest> => [
+      ...queue,
+      { positionKey: positionKeyOf(position), heldItem },
+    ])
+
+  it.effect('a pickaxe turns a stone block into cobblestone in the outbox', () =>
+    Effect.gen(function* () {
+      const { store, state, stages } = yield* slice(
+        world([
+          [under, STONE],
+          [cell, STONE],
+        ]),
+      )
+
+      // Bare-handed first: the swing lands, the block goes, and NOTHING is
+      // yielded. That is the tool gate, and it is the half of this change that
+      // is invisible from a screenshot.
+      yield* requestBreak(state, cell)
+      yield* runFrame(stages)
+      expect(yield* store.blockAt(cell)).toBe(AIR_BLOCK_ID)
+      expect(yield* Ref.get(state.minedItems)).toStrictEqual([])
+
+      // ...and with a pickaxe, against the block below.
+      yield* holdWoodenPickaxe(state)
+      yield* requestBreak(state, under)
+      yield* runFrame(stages)
+      expect(yield* Ref.get(state.minedItems)).toStrictEqual(ONE_COBBLESTONE)
+    }),
+  )
+
+  it.effect('places a block back, spends the item, and the cascade picks it up', () =>
+    Effect.gen(function* () {
+      const floorLevel: BlockPosition = { x: 4, y: 60, z: 3 }
+      const { store, state, stages } = yield* slice(world([[floorLevel, STONE]]))
+
+      yield* requestPlace(state, cell, 'sand')
+      yield* runFrame(stages)
+
+      // The item left the stack exactly once...
+      expect(yield* Ref.get(state.consumedItems)).toStrictEqual(['sand'])
+      // ...and the sand is already one cell lower, because `gameplay:entities`
+      // runs `after` `gameplay:interactions` and the placement disturbed the
+      // cell UNDER what it wrote.
+      expect(yield* store.blockAt(cell)).toBe(AIR_BLOCK_ID)
+      expect(yield* store.blockAt({ x: 4, y: 63, z: 3 })).toBe(SAND)
+    }),
+  )
+
+  // The whole loop, in the order a player does it, in ONE frame — which is the
+  // claim the `after` edges make and the thing an array-ordered runner would
+  // pass anyway. `test/support/frame-runner.ts` resolves the constraints, so
+  // this is evidence about the edges.
+  it.effect('dig then place, in one frame, with both outboxes correct', () =>
+    Effect.gen(function* () {
+      const { store, state, stages } = yield* slice(
+        world([
+          [under, STONE],
+          [cell, STONE],
+        ]),
+      )
+
+      yield* holdWoodenPickaxe(state)
+      yield* requestBreak(state, cell)
+      yield* requestPlace(state, cell, 'sand')
+      yield* runFrame(stages)
+
+      expect(yield* Ref.get(state.minedItems)).toStrictEqual(ONE_COBBLESTONE)
+      expect(yield* Ref.get(state.consumedItems)).toStrictEqual(['sand'])
+      // The sand rests on the stone that was already under the cell, so nothing
+      // cascades and the queue is empty again.
+      expect(yield* store.blockAt(cell)).toBe(SAND)
+      expect((yield* Ref.get(state.fallingBlocks)).pending.size).toBe(0)
+    }),
+  )
+
+  // WHERE THE CHAIN STOPS, asserted rather than described. `minedItems` and
+  // `consumedItems` are lists the host drains: mc-sim's `InventoryService` has
+  // `add` and `remove` (`application/inventory-service.ts:49,51`) and this
+  // repository cannot call either, because mirroring `InventoryServiceApi`
+  // honestly means restating `Inventory`, `RecipeTable`, `CraftGrid`,
+  // `RecipeMatch` and `CraftResult` — mc-sim's crafting vocabulary — in a
+  // repository with no crafting rule to justify it.
+  //
+  // What the loot table DID close is the other half of that gap, and it is the
+  // half mc-compose's `docs/e2e-triage.md` §4.3 recorded as unanswerable from
+  // one repository: the outbox used to carry a `BlockId`, a NUMBER, and
+  // `InventoryService.add` takes an `ItemId`, a STRING. It carries item names
+  // now, so the remaining distance is a call and not a translation.
+  it.effect('the loot chain reaches an outbox and stops there — by name, not by number', () =>
+    Effect.gen(function* () {
+      const { state, stages } = yield* slice(world([[cell, STONE]]))
+
+      yield* holdWoodenPickaxe(state)
+      yield* requestBreak(state, cell)
+      yield* runFrame(stages)
+
+      const mined = yield* Ref.get(state.minedItems)
+      // A STRING, which is what `InventoryService.add` takes.
+      expect(typeof mined[0]?.item).toBe('string')
+      expect(mined[0]?.item).toBe('cobblestone')
+      // And nothing in this repository holds the total. The frame state has no
+      // inventory; `test/stage-registration.test.ts` pins the whole key list.
+      expect(Object.keys(state)).not.toContain('inventory')
     }),
   )
 })

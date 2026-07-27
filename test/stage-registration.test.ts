@@ -265,38 +265,57 @@ describe('stage behaviour', () => {
 
       // The list is exact on purpose: another answer to "what does mx-gameplay
       // remember between frames" has to be argued for in a diff. Two arrived
-      // with the block-write wiring, four with the mob wiring and two with the
-      // spawn search, and every one of the eleven passes the save-file test —
-      // see the paragraph on `GameplayFrameState` in `stages/registration.ts`,
-      // which argues `targetPosition` and `timeOfDay` at length because they are
-      // the two that most look like second owners of a noun and are not.
+      // with the block-write wiring, four with the mob wiring, two with the
+      // spawn search and FIVE with placement, loot and weather, and every one of
+      // the sixteen passes the save-file test — see the paragraph on
+      // `GameplayFrameState` in `stages/registration.ts`, which argues
+      // `targetPosition`, `timeOfDay` and the weather pair at length because
+      // they are the ones that most look like second owners of a noun.
       //
-      // `spawnClockSecs` is the least interesting of the eleven and the easiest
+      // `spawnClockSecs` is the least interesting of the sixteen and the easiest
       // to justify: it is a countdown to the next search, and losing it on a
       // reload costs at most one 0.3s interval.
       //
+      // `weather` / `weatherAdvanced` ARE THE PAIR TO WATCH, and they are the
+      // reason this list is worth keeping exact. A save file does need the
+      // weather, and no repository owns it — so the temptation is a single
+      // advancing `Ref`, which would be `timeOfDaySecs` all over again except
+      // that nothing would ever disagree with it and nobody would find out. The
+      // two keys are an inbox and an outbox, and the test below asserts that
+      // running frames does not change the inbox.
+      //
       // WHAT IS STILL NOT HERE is the thing this list exists to keep out: there
       // is no `Ref<Map<MobId, CreeperFuse>>`, no mob position, no mob health, no
-      // entity id — and no DAY LENGTH, which is the half of the original failure
-      // that has no stand-in and never will, because nothing in this repository
-      // needs to know how long a day is.
+      // entity id, no INVENTORY — and no DAY LENGTH, which is the half of the
+      // original failure that has no stand-in and never will, because nothing in
+      // this repository needs to know how long a day is.
       expect(Object.keys(state).sort()).toStrictEqual([
+        'consumedItems',
         'fallingBlocks',
         'fluidFrontier',
+        'heldTool',
         'minedItems',
         'mobDrops',
         'pendingBreaks',
+        'pendingPlacements',
         'rollSeed',
         'spawnAttempts',
         'spawnClockSecs',
         'targetPosition',
         'tickCount',
         'timeOfDay',
+        'weather',
+        'weatherAdvanced',
       ])
 
       expect(Object.keys(state)).not.toContain('dayLength')
       expect(Object.keys(state)).not.toContain('dayLengthSecs')
       expect(Object.keys(state)).not.toContain('timeOfDaySecs')
+      // The inventory is mc-sim's. `minedItems` and `consumedItems` are lists
+      // the host drains, and a Ref named for the noun would be this repository
+      // becoming its second owner — the mistake `stages/registration.ts`'s
+      // header records having made once already with the hour.
+      expect(Object.keys(state)).not.toContain('inventory')
     }),
   )
 

@@ -25,7 +25,9 @@ export * from './domain/entities/mob-frame'
 export * from './domain/falling-block'
 export * from './domain/fluid-frontier'
 export * from './domain/frame-rolls'
+export * from './domain/interactions/block-loot'
 export * from './domain/interactions/explosion-crater'
+export * from './domain/interactions/place-block'
 export * from './domain/mob/creeper-fuse'
 export * from './domain/mob/enderman-teleport'
 export * from './domain/mob/explosion'
@@ -33,16 +35,18 @@ export * from './domain/mob/hostile-despawn'
 export * from './domain/mob/hostile-spawn'
 export * from './domain/mob/mob-drop'
 export * from './domain/mob/shulker-shell'
+export * from './domain/weather'
 export * from './stages/registration'
 export * from './stages/stage-ids'
 
 // --- Provisional ---------------------------------------------------------------
-// Six modules are temporary local stand-ins for packages that are not
+// Seven modules are temporary local stand-ins for packages that are not
 // published yet, and NONE of them is re-exported:
 //
 //   domain/frame-contract.ts      -> @nerima-games/mc-kernel
 //   domain/position-key.ts        -> @nerima-games/mc-kernel
 //   domain/item-vocabulary.ts     -> @nerima-games/mc-kernel
+//   domain/block-vocabulary.ts    -> @nerima-games/mc-kernel
 //   domain/chunk-store-port.ts    -> @nerima-games/mc-worldgen
 //   domain/entity-manager-port.ts -> @nerima-games/mc-sim
 //   domain/block-position-key.ts — the join between two of the vocabularies above

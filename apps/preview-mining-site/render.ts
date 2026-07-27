@@ -41,6 +41,7 @@ import {
   IGNITION_RANGE,
   offsetDistance,
   phaseBand,
+  readWeather,
   shellFraction,
   shellLabel,
   shulkerArmor,
@@ -49,11 +50,13 @@ import {
   sweepAt,
   sweepLabel,
   TELEPORT_BAND,
+  weatherTransitionTable,
   wrapReport,
   type ArenaState,
   type TimeState,
 } from './screens'
 import { CREEPER_EXPLOSION_POWER, explosionDamageAmount } from '../../domain/mob/explosion'
+import type { Weather } from '../../domain/weather'
 import { positionAt, type FrameRow, type Site } from './site'
 import { AIR, glyphOf } from './world'
 
@@ -68,6 +71,9 @@ export type ScreenName = (typeof SCREENS)[number]
 
 export const isScreenName = (value: string): value is ScreenName =>
   (SCREENS as ReadonlyArray<string>).includes(value)
+
+/** Width of the label column in the arena's missing list. */
+const MISSING_LABEL_WIDTH = 34
 
 const CURSOR_BACKDROP: Rgb = [90, 90, 110]
 const PENDING_BACKDROP: Rgb = [70, 55, 25]
@@ -220,7 +226,15 @@ const timelineRow = (row: FrameRow): string =>
     padStart(String(row.reads), 6),
     padStart(String(row.writes), 7),
     padStart(String(row.floating), 6),
-    '  ' + (row.mined.length === 0 ? '' : row.mined.map((id) => glyphOf(id).name).join(' ')),
+    // Items and not block ids: what `domain/interactions/block-loot.ts`
+    // produced, plus what placement took off the stack with a leading `-`. The
+    // two are on one column because they are one story — a frame that mined a
+    // sand and placed it back reads `sand -sand`, which is the round trip.
+    '  ' +
+      [
+        ...row.mined.map((item) => (item.count === 1 ? item.item : `${item.item}x${String(item.count)}`)),
+        ...row.spent.map((item) => `-${item}`),
+      ].join(' '),
   ].join('')
 
 /**
@@ -285,6 +299,12 @@ const PHASE_COLOR: Readonly<Record<DayPhase, Rgb>> = {
   dusk: [220, 120, 90],
 }
 
+const WEATHER_COLOR: Readonly<Record<Weather, readonly [number, number, number]>> = {
+  clear: [150, 200, 245],
+  rain: [110, 140, 180],
+  thunder: [90, 95, 130],
+}
+
 export const renderTimeScreen = (
   state: TimeState,
   style: Style,
@@ -327,10 +347,12 @@ export const renderTimeScreen = (
   const captions = place((caption) => caption)
 
   const reading = report.today
+  const weather = readWeather(state.weather)
   const lines: Array<string> = [
-    style.bold('time slider — domain/day-night.ts, driven directly'),
-    style.dim('mc-sim owns the HOUR (DN-GP-7). gameplay:time-weather is Effect.void, so there is'),
-    style.dim('nothing to advance; this sweeps the argument these rules are total functions of.'),
+    style.bold('time slider — domain/day-night.ts and domain/weather.ts, driven directly'),
+    style.dim('mc-sim owns the HOUR (DN-GP-7) and NOBODY owns the weather, so this screen holds it'),
+    style.dim('the way the mining site’s host does — see domain/weather.ts. Both rules are total'),
+    style.dim('functions; the seed below is threaded by hand, never Math.random().'),
     '',
     '    ' + bar,
     '    ' + style.dim(ruler),
@@ -356,6 +378,28 @@ export const renderTimeScreen = (
           '    THE THREE DISAGREE. Same moment of the day, three different answers — see F6.',
           [235, 120, 120],
         ),
+    '',
+    style.bold('  weather — domain/weather.ts'),
+    `  weather              ${style.paint(weather.weather, WEATHER_COLOR[weather.weather])}`,
+    `  remainingSecs        ${weather.remainingSecs.toFixed(1)}`,
+    `  isPrecipitating()    ${String(weather.precipitating)}`,
+    `  isThunderstorm()     ${String(weather.thunder)}`,
+    `  weatherLightScale()  ${weather.lightScale.toFixed(2)}`,
+    `  seed                 ${String(state.weatherSeed)}`,
+    '',
+    style.dim('  the transition graph, ASKED of resolveNextWeatherState rather than transcribed:'),
+    ...weatherTransitionTable().map(
+      ([from, threshold, low, high]) =>
+        `    ${padEnd(from, 9)}roll < ${threshold} -> ${padEnd(low, 9)}otherwise -> ${high}`,
+    ),
+    style.dim('    note that no row can stay put: every expiry changes the weather.'),
+    '',
+    style.dim(
+      '  vanilla lets rain spawn hostiles in DAYLIGHT. hostileSpawnsAllowed above ignores the',
+    ),
+    style.dim(
+      '  weather, deliberately: the reference implementation has no such gate (docs/porting.md §4).',
+    ),
   ]
 
   return lines
@@ -588,8 +632,16 @@ export const renderArenaScreen = (
   lines.push('')
   lines.push(style.bold('  what is missing, and where it would go'))
 
+  // A label longer than the column gets a line of its own rather than shoving the
+  // reason sideways. The list is the point of this screen, so a row that is hard
+  // to read is a row nobody reads.
   for (const [what, where] of ARENA_MISSING) {
-    lines.push(`    ${padEnd(what, 34)}${style.dim(where)}`)
+    if (what.length >= MISSING_LABEL_WIDTH) {
+      lines.push(`    ${what}`)
+      lines.push(`    ${' '.repeat(MISSING_LABEL_WIDTH)}${style.dim(where)}`)
+    } else {
+      lines.push(`    ${padEnd(what, MISSING_LABEL_WIDTH)}${style.dim(where)}`)
+    }
   }
 
   lines.push('')

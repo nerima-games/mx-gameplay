@@ -62,6 +62,7 @@ import {
   type ChunkStoreApi,
   type ChunkNeighbours,
 } from '../../domain/chunk-store-port'
+import { blockTypeOfId, itemOfBlock, type PlaceableItemType } from '../../domain/block-vocabulary'
 
 /**
  * Block ids, transcribed from kernel's `BLOCK_REGISTRY` exactly as
@@ -102,6 +103,26 @@ export const BLOCKS: ReadonlyArray<Glyph> = [
 
 export const glyphOf = (id: BlockId): Glyph =>
   BLOCKS.find((entry) => entry.id === id) ?? { id, name: `id ${String(id)}`, glyph: '?', color: [255, 0, 255] }
+
+/**
+ * The item a player would be holding in order to place this block, if there is
+ * one.
+ *
+ * `undefined` for THREE of the six palette entries — air, water and lava — and
+ * that is kernel's answer rather than this file's: `itemOfBlock` is partial and
+ * `UNITEMISED_BLOCK_TYPES` is the list of blocks with no item form
+ * (`domain/block-vocabulary.ts`). Pressing `p` with lava selected therefore says
+ * so, which is a more useful thing for the screen to demonstrate than a key that
+ * silently does nothing.
+ *
+ * The two hops — id -> `BlockType` -> `ItemType` — are exactly the bridge
+ * `stages/registration.ts` used to be missing in the other direction, and they
+ * are the reason this preview can name a held item at all.
+ */
+export const placeableItemOf = (id: BlockId): PlaceableItemType | undefined => {
+  const type = blockTypeOfId(id)
+  return type === undefined ? undefined : itemOfBlock(type)
+}
 
 export const chunkKeyOf = (position: BlockPosition): string =>
   `${String(Math.floor(position.x / CHUNK_SIDE))},${String(Math.floor(position.z / CHUNK_SIDE))}`

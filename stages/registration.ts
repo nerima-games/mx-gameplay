@@ -77,9 +77,10 @@
  * from the start is cheaper than retrofitting it.
  */
 import { Effect, Layer, Ref } from 'effect'
-import { positionOfKey } from '../domain/block-position-key'
+import { below, positionKeyOf, positionOfKey } from '../domain/block-position-key'
 import { hostileSpawnsAllowed } from '../domain/day-night'
-import { ChunkStore, type BlockId, type ChunkStoreApi } from '../domain/chunk-store-port'
+import { ChunkStore, type ChunkStoreApi } from '../domain/chunk-store-port'
+import type { PlaceableItemType } from '../domain/block-vocabulary'
 import { applyFallingBlocks } from '../domain/entities/falling-block-move'
 import {
   applySpawnAttempts,
@@ -110,10 +111,26 @@ import {
   type FluidWorkItem,
 } from '../domain/fluid-frontier'
 import type { GameModule, StageRegistration } from '../domain/frame-contract'
-import { DEFAULT_ROLL_SEED } from '../domain/frame-rolls'
+import { DEFAULT_ROLL_SEED, drawRolls } from '../domain/frame-rolls'
 import { breakBlock } from '../domain/interactions/break-block'
+import {
+  BLOCK_LOOT_ROLLS,
+  blockLoot,
+  NO_TOOL,
+  type BlockLootContext,
+  type MinedItem,
+} from '../domain/interactions/block-loot'
+import { placeBlock } from '../domain/interactions/place-block'
 import type { MobDrop } from '../domain/mob/mob-drop'
 import type { PositionKey } from '../domain/position-key'
+import {
+  advanceWeather,
+  INITIAL_WEATHER,
+  LOWEST_WEATHER_ROLLS,
+  weatherExpires,
+  WEATHER_TRANSITION_ROLLS,
+  type WeatherState,
+} from '../domain/weather'
 import { GAMEPLAY_STAGE_IDS, UPSTREAM_STAGE_IDS } from './stage-ids'
 
 /**
@@ -160,6 +177,13 @@ const NO_ATTEMPTS: ReadonlyArray<never> = []
  *     Nothing needs it after the frame that services it, so it is scratch by
  *     the save-file test — a save file records that a block is gone, never that
  *     a mouse button was down.
+ *   - `pendingPlacements` is `pendingBreaks`' twin and arrived with
+ *     `domain/interactions/place-block.ts`. It carries one more field than the
+ *     break inbox — WHICH ITEM — and that field is the reason it is a second
+ *     inbox rather than a tagged union inside the first: the held item is read
+ *     from mc-sim's `InventoryService` by whoever fills the inbox, and a break
+ *     request that had to carry an item field it never uses would invite one.
+ *
  *   - `minedItems` is an OUTBOX. What a broken block yields belongs to mc-sim's
  *     `InventoryService`, which is plan.md §2.3-1's worked example and is NOT
  *     this repository's to hold. Until mc-sim is published there is no
@@ -169,8 +193,30 @@ const NO_ATTEMPTS: ReadonlyArray<never> = []
  *     owner: it holds items for the width of one frame and answers no
  *     questions about them.
  *
- * Both disappear when their service exists: the inbox becomes mc-render's input
- * events and the outbox becomes a call inside the interactions stage. Neither
+ *     ITS TYPE CHANGED, AND WITH IT THE ARGUMENT FOR A SECOND OUTBOX. It used to
+ *     be `ReadonlyArray<BlockId>` — raw bytes out of a chunk buffer — and the
+ *     paragraph on `mobDrops` below justified the two lists by saying they
+ *     「carry different things: a broken block yields a `BlockId` and a dead mob
+ *     yields an `ItemType` and a count」. `domain/interactions/block-loot.ts`
+ *     ends that: a broken block now yields an `ItemType` and a count too, so the
+ *     two outboxes carry the SAME SHAPE and the sentence is retired. What keeps
+ *     them apart is stated with `mobDrops`.
+ *
+ *   - `consumedItems` is the OUTBOX POINTING THE OTHER WAY: one entry per block
+ *     successfully placed, which is one item to take off the stack. It is not
+ *     folded into `minedItems` as a negative count, and the reason is that
+ *     mc-sim's `InventoryService` has TWO verbs — `add(item, count)` and
+ *     `remove(item, count)` (`mc-sim/application/inventory-service.ts:49,51`) —
+ *     so a signed list would make the host decide which verb each entry means,
+ *     from a convention this file invented. Two lists name the two calls.
+ *
+ *     IT CARRIES NO COUNT, because one placement consumes exactly one item and
+ *     there is no rule in this repository that consumes two. A count field would
+ *     be a number that is always 1, which is the kind of member kernel's
+ *     `./block-definition` warns is the cheapest way to get a freeze wrong.
+ *
+ * The inboxes disappear when their service exists: they become mc-render's input
+ * events. The outboxes become calls inside the interactions stage. None of them
  * grows a query, a lookup or a second reader in the meantime.
  *
  * FOUR MORE ARRIVED WITH THE MOB WIRING, and each is one of the same two shapes.
@@ -228,9 +274,15 @@ const NO_ATTEMPTS: ReadonlyArray<never> = []
  *     first minute, rather than a world that silently never spawns anything and
  *     looks like a broken search.
  *
- *   - `mobDrops` is an OUTBOX, `minedItems`'s twin, and separate from it because
- *     the two carry different things: a broken block yields a `BlockId` and a dead
- *     mob yields an `ItemType` and a count. Both become `InventoryService.add`
+ *   - `mobDrops` is an OUTBOX and `minedItems`'s twin. IT USED TO BE SEPARATE
+ *     BECAUSE THE TWO CARRIED DIFFERENT SHAPES, and they no longer do (see
+ *     `minedItems`). They stay separate for a reason that survives the change:
+ *     PROVENANCE. A host draining one list cannot tell which entries came from a
+ *     swing and which from a kill, and the two do not arrive at the same place —
+ *     a mined item goes into the inventory directly, a mob's loot in vanilla
+ *     falls on the ground first and is picked up. Merging them now would make
+ *     that distinction unrecoverable, and the merge is available any day it
+ *     turns out not to matter. Both become `InventoryService.add`
  *     calls together. mc-sim IS now mirrored — `domain/entity-manager-port.ts` —
  *     so the obvious question is why the inventory is not mirrored beside it, and
  *     the answer is the whole-api rule: `InventoryServiceApi` names `Inventory`,
@@ -243,14 +295,54 @@ const NO_ATTEMPTS: ReadonlyArray<never> = []
  *     `domain/frame-rolls.ts` is a whole file about why it is a seed here rather
  *     than a `Math.random()` in the rules, an `Effect.Random` in `run`'s context,
  *     or a generator on mc-sim's entity.
+ *
+ * THREE MORE ARRIVED WITH PLACEMENT, LOOT AND WEATHER, and two of the three are
+ * the shapes above with nothing new to argue.
+ *
+ *   - `heldTool` is an INBOX and `timeOfDay`'s twin in every respect. What the
+ *     player is swinging is mc-sim's `InventoryService` — the selected hotbar
+ *     slot and its enchantments — and this Ref does not advance, answers no
+ *     question, is overwritten rather than accumulated, and is read within the
+ *     frame that wrote it. It exists because without it `domain/block-vocabulary.ts`'s
+ *     tool gate is unreachable: every swing would be bare-handed, and the whole
+ *     `harvestTool` column would be a table nothing consults.
+ *
+ *     IT DEFAULTS TO BARE HANDS, which is the RESTRICTIVE direction and the
+ *     opposite of `timeOfDay`'s choice. The reasoning is the same and the answer
+ *     differs because the failure looks different: a host that forgets to write
+ *     the hour gets a world that spawns mobs, visible in the first minute,
+ *     whereas a host that forgets to write the tool and got `diamond` would get
+ *     a world where a wooden pickaxe is never needed — invisible, and it makes
+ *     the gate look implemented when nothing is testing it.
+ *
+ *   - `weather` is an INBOX and `weatherAdvanced` is its OUTBOX, and this PAIR is
+ *     the one new shape. `domain/weather.ts`'s header argues it at length and the
+ *     short version is that weather fails the save-file test AND has no owner:
+ *     mc-sim has a `TimeService` and no weather service at all, so a `Ref` here
+ *     would not be a duplicate of somebody's state, it would be the FIRST copy of
+ *     it, in the repository plan.md §2.3-1 says holds no state. A duplicate
+ *     announces itself the day the two disagree; a sole owner in the wrong
+ *     repository never does.
+ *
+ *     So the stage READS this frame's weather and WRITES what it should become,
+ *     and the host does the round trip — exactly what a host already does for
+ *     `minedItems`, which is why this needed no new machinery. Neither Ref
+ *     advances by itself: nothing in this file writes `weather`, and
+ *     `weatherAdvanced` is overwritten rather than accumulated because a
+ *     countdown's last value subsumes every earlier one.
  */
 export type GameplayFrameState = {
   readonly pendingBreaks: Ref.Ref<ReadonlyArray<PositionKey>>
-  readonly minedItems: Ref.Ref<ReadonlyArray<BlockId>>
+  readonly pendingPlacements: Ref.Ref<ReadonlyArray<PlacementRequest>>
+  readonly minedItems: Ref.Ref<ReadonlyArray<MinedItem>>
+  readonly consumedItems: Ref.Ref<ReadonlyArray<PlaceableItemType>>
   readonly mobDrops: Ref.Ref<ReadonlyArray<MobDrop>>
   readonly spawnAttempts: Ref.Ref<ReadonlyArray<MobSpawnAttempt>>
   readonly targetPosition: Ref.Ref<Position | undefined>
   readonly timeOfDay: Ref.Ref<number>
+  readonly heldTool: Ref.Ref<BlockLootContext>
+  readonly weather: Ref.Ref<WeatherState>
+  readonly weatherAdvanced: Ref.Ref<WeatherState | undefined>
   /** Seconds accumulated towards the next spawn search. Scratch: losing it costs one interval. */
   readonly spawnClockSecs: Ref.Ref<number>
   readonly rollSeed: Ref.Ref<number>
@@ -259,15 +351,43 @@ export type GameplayFrameState = {
   readonly tickCount: Ref.Ref<number>
 }
 
+/**
+ * One request to put a block down.
+ *
+ * The position is a `PositionKey` rather than a `BlockPosition` so that the
+ * inbox matches `pendingBreaks` exactly — one encoding, one place
+ * (`domain/block-position-key.ts`), and a host that can queue a break can queue
+ * a placement the same way.
+ *
+ * `heldItem` is a `PlaceableItemType`, so "you cannot place a stick" is a type
+ * error where the request is BUILT rather than a refusal where it is serviced.
+ * The proof obligation is `domain/block-vocabulary.ts`'s `isPlaceableItem` and it
+ * belongs to whoever reads the hotbar, which is the same repository that would
+ * have had to read it anyway.
+ */
+export type PlacementRequest = {
+  readonly positionKey: PositionKey
+  readonly heldItem: PlaceableItemType
+}
+
 export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.gen(function* () {
   const pendingBreaks = yield* Ref.make<ReadonlyArray<PositionKey>>([])
-  const minedItems = yield* Ref.make<ReadonlyArray<BlockId>>([])
+  const pendingPlacements = yield* Ref.make<ReadonlyArray<PlacementRequest>>([])
+  const minedItems = yield* Ref.make<ReadonlyArray<MinedItem>>([])
+  const consumedItems = yield* Ref.make<ReadonlyArray<PlaceableItemType>>([])
   const mobDrops = yield* Ref.make<ReadonlyArray<MobDrop>>([])
   const spawnAttempts = yield* Ref.make<ReadonlyArray<MobSpawnAttempt>>([])
   const targetPosition = yield* Ref.make<Position | undefined>(undefined)
   // Midnight, which `domain/day-night.ts` reads as night. See the module header
   // on why the permissive default is the right one to be wrong with.
   const timeOfDay = yield* Ref.make(0)
+  // Bare hands. The RESTRICTIVE default, unlike the hour's — see the header.
+  const heldTool = yield* Ref.make<BlockLootContext>(NO_TOOL)
+  // Clear, for the shortest legal stretch, from a LITERAL roll. The reference
+  // seeds this with `Math.random()` (`weather-service.ts:13`), so two runs of
+  // one scenario disagree about when the first rain arrives.
+  const weather = yield* Ref.make<WeatherState>(INITIAL_WEATHER)
+  const weatherAdvanced = yield* Ref.make<WeatherState | undefined>(undefined)
   const spawnClockSecs = yield* Ref.make(0)
   // A LITERAL, not a clock reading: two runs of one scenario must draw the same
   // numbers (plan.md §5.1-3). A world seed is mc-worldgen's noun and this is
@@ -279,11 +399,16 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
 
   return {
     pendingBreaks,
+    pendingPlacements,
     minedItems,
+    consumedItems,
     mobDrops,
     spawnAttempts,
     targetPosition,
     timeOfDay,
+    heldTool,
+    weather,
+    weatherAdvanced,
     spawnClockSecs,
     rollSeed,
     fallingBlocks,
@@ -314,34 +439,72 @@ export const gameplayStages = (
   {
     id: GAMEPLAY_STAGE_IDS.interactions,
     after: [UPSTREAM_STAGE_IDS.simPhysics],
-    // FIRST CUT: `domain/interactions/break-block.ts` is one of the ~40
-    // one-rule-per-file handlers of plan.md §3.11 (break, place, bucket, flint
-    // & steel, bow, farming, shears, ender pearl, feed, shear, melee, …). They
-    // are deliberately many small files and ONE stage: the granularity that
-    // matters for review is the rule, the granularity that matters for
-    // composition is the stage (DN-GP-9).
+    // TWO OF THE ~40 one-rule-per-file handlers of plan.md §3.11 (break, place,
+    // bucket, flint & steel, bow, farming, shears, ender pearl, feed, shear,
+    // melee, …) now run here. They are deliberately many small files and ONE
+    // stage: the granularity that matters for review is the rule, the
+    // granularity that matters for composition is the stage (DN-GP-9).
+    //
+    // BREAKS ARE SERVICED BEFORE PLACEMENTS, and the order is a decision. A
+    // player who breaks a cell and places into it in the same frame gets the
+    // sequence they asked for; the other order silently drops the placement,
+    // because `place-block` would read the cell as occupied by a block that is
+    // about to stop existing. It is the same argument that puts `entities`
+    // after `interactions` one stage down.
     run: () =>
       Effect.gen(function* () {
-        // `getAndSet` rather than get-then-set: whoever fills the inbox is not
+        // `getAndSet` rather than get-then-set: whoever fills the inboxes is not
         // this fiber, and a request that arrived between the two steps would be
-        // dropped without a trace (DN-GP-10).
-        const requests = yield* Ref.getAndSet<ReadonlyArray<PositionKey>>(state.pendingBreaks, [])
-        if (requests.length === 0) {
+        // dropped without a trace (DN-GP-10). Both are drained UP FRONT, so a
+        // placement queued while the breaks are being serviced waits for the
+        // next frame rather than being serviced out of order.
+        const breaks = yield* Ref.getAndSet<ReadonlyArray<PositionKey>>(state.pendingBreaks, [])
+        const placements = yield* Ref.getAndSet<ReadonlyArray<PlacementRequest>>(
+          state.pendingPlacements,
+          [],
+        )
+        if (breaks.length === 0 && placements.length === 0) {
           return
         }
 
-        const mined: Array<BlockId> = []
+        const gained: Array<MinedItem> = []
+        const spent: Array<PlaceableItemType> = []
         const disturbed: Array<PositionKey> = []
 
-        for (const positionKey of requests) {
+        // Read ONCE for the whole batch rather than per request. The tool is an
+        // inbox the host overwrites every frame (see the header), so it cannot
+        // change while this loop runs, and re-reading it per block would be a
+        // `Ref.get` per swing that could only ever return the same value.
+        const tool = yield* Ref.get(state.heldTool)
+        const playerFeet = yield* Ref.get(state.targetPosition)
+
+        for (const positionKey of breaks) {
           const outcome = yield* breakBlock(store, positionOfKey(positionKey))
           switch (outcome._tag) {
             case 'Broken': {
-              // The write already told us what was there, so there is no
-              // read-then-write race for the drop (mc-worldgen §6-3).
-              mined.push(outcome.yielded)
+              // THE LOOT TABLE, and this is the line the mining path was
+              // missing. `outcome.yielded` is a chunk buffer BYTE and used to be
+              // pushed into the outbox as-is, so breaking stone gave you stone
+              // and bare hands harvested it; `domain/interactions/block-loot.ts`
+              // is what turns it into kernel's items, and it is asked even when
+              // it will answer with nothing.
+              //
+              // The seed is read, advanced and written in ONE step. A split
+              // read/write here would let two frames draw the same rolls, which
+              // is worse than a non-deterministic generator: it is a
+              // deterministic wrong one. `BLOCK_LOOT_ROLLS` is drawn per broken
+              // block whether or not the block has anything to roll for — see
+              // that file's header on why the budget is fixed.
+              const loot = yield* Ref.modify(state.rollSeed, (seed) => {
+                const batch = drawRolls(seed, BLOCK_LOOT_ROLLS)
+                return [blockLoot(outcome.yielded, tool, batch.rolls), batch.seed] as const
+              })
+              gained.push(...loot)
+
               // The ONLY entry point for falling-block work. Whatever rested on
-              // the block just removed may now be unsupported.
+              // the block just removed may now be unsupported. It is enqueued
+              // whether or not the block dropped anything: a bare-handed swing
+              // at stone yields no item AND still leaves a hole.
               disturbed.push(positionKey)
               break
             }
@@ -362,8 +525,63 @@ export const gameplayStages = (
           }
         }
 
-        if (mined.length > 0) {
-          yield* Ref.update(state.minedItems, (items) => [...items, ...mined])
+        for (const request of placements) {
+          const outcome = yield* placeBlock(store, {
+            position: positionOfKey(request.positionKey),
+            heldItem: request.heldItem,
+            // `undefined` means "there is nobody there", which the rule reads as
+            // "no body to place inside" rather than as a body at the origin.
+            ...(playerFeet === undefined ? {} : { playerFeet }),
+          })
+
+          switch (outcome._tag) {
+            case 'Placed': {
+              spent.push(outcome.consumed)
+              // PLACEMENT DISTURBS, and this is the sentence
+              // `domain/falling-block.ts:73-77` has been carrying with nothing
+              // behind it: 「Callers are the rules that mutate blocks: breaking,
+              // PLACING, explosions, fluid displacement, piston pushes」. The
+              // mining-site preview's `p` key wrote the store directly and
+              // deliberately did NOT disturb, precisely to show what the missing
+              // rule would have to remember.
+              //
+              // IT IS THE CELL BELOW AND NOT THE CELL WRITTEN, which is the
+              // half that is easy to get wrong and is why the preview's note
+              // was worth keeping. A queue entry P means "look at the block
+              // ABOVE P and see whether it falls INTO P"
+              // (`domain/entities/falling-block-move.ts`), so a BREAK disturbs
+              // the cell it emptied — the hole is what receives — while a
+              // PLACEMENT has to disturb the cell UNDER the block it just put
+              // down, or the sand a player drops in mid-air hangs there.
+              // Disturbing the written cell instead costs nothing visible: the
+              // queue drains, one read happens, the cell above is solid or
+              // absent, and nothing moves.
+              disturbed.push(positionKeyOf(below(positionOfKey(request.positionKey))))
+              break
+            }
+
+            // Every refusal is named by the rule and dropped HERE, for the
+            // reason `applySpawnAttempts`' outcomes are: `run` returns void and
+            // there is nowhere in the frame to report a diagnostic to. They are
+            // not dropped by the rule — whoever offers a placement is who wants
+            // to know why it was refused, and the mining-site preview calls
+            // `placeBlock` directly and prints the tag.
+            case 'Occupied':
+            case 'InsidePlayer':
+            case 'Unsupported':
+            case 'UnknownBlock':
+            case 'ChunkNotLoaded':
+            case 'OutOfWorld': {
+              break
+            }
+          }
+        }
+
+        if (gained.length > 0) {
+          yield* Ref.update(state.minedItems, (items) => [...items, ...gained])
+        }
+        if (spent.length > 0) {
+          yield* Ref.update(state.consumedItems, (items) => [...items, ...spent])
         }
         if (disturbed.length > 0) {
           yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, disturbed))
@@ -588,24 +806,67 @@ export const gameplayStages = (
   {
     id: GAMEPLAY_STAGE_IDS.timeWeather,
     after: [GAMEPLAY_STAGE_IDS.fluids],
-    // FIRST CUT, and deliberately empty rather than "advance the clock".
+    // NO LONGER EMPTY, and the half that filled it is the half that was always
+    // this repository's.
     //
-    // ADVANCING the clock is mc-sim's: `TimeService.advance(dt)` over
+    // ADVANCING THE CLOCK IS STILL mc-sim's: `TimeService.advance(dt)` over
     // `mc-sim/domain/time-of-day.ts`, which owns the absolute tick counter, the
     // day-length denominator, the `setDayLength -> setTimeOfDay` ordering rule
-    // and the value that reaches the save file. This stage held a second copy
-    // of that state until it was deleted; see the module header.
+    // and the value that reaches the save file. This stage held a second copy of
+    // that state until it was deleted; see the module header. mc-sim registers
+    // its advance inside `sim:physics` rather than a `sim:time-weather`, for a
+    // reason that repository documents at length: two stages in one phase are
+    // ordered lexicographically, `gameplay:` sorts before `sim:`, and this stage
+    // would read an hour the frame had not yet advanced. So by the time this
+    // runs, `timeOfDay` is this frame's.
     //
-    // What this stage grows into is the CONSEQUENCES of the hour — weather
-    // transitions, and gating hostile spawns on `domain/day-night.ts`'s
-    // `hostileSpawnsAllowed` — each applied as a write through mc-sim, in the
-    // same shape as `interactions` above. It stays empty until mc-sim is
-    // published and there is a service to read the hour from and write the
-    // consequences to: plan.md §6 Step 3 is bottom-up publish-then-pin, and an
-    // invented local port would be a third answer to "who owns the time of
-    // day". The registration is here now because the frame POSITION is what
-    // mc-compose needs, and that is settled.
-    run: () => Effect.void,
+    // WEATHER IS THE PART THAT IS HERE. `domain/weather.ts` holds the rule and
+    // holds nothing else; this stage reads the hour's weather out of an inbox,
+    // asks the rule what it becomes, and puts the answer in an outbox for
+    // whoever owns persistence. See the module header on why weather gets an
+    // inbox/outbox pair rather than the `Ref` its countdown looks like it wants.
+    //
+    // WHAT IS STILL NOT HERE: the CONSEQUENCES that need a service to write to.
+    // `weatherLightScale` is mc-render's to read, and the thunderstorm hazard is
+    // damage applied to a player whose health is mc-sim's `PlayerService` — the
+    // same boundary that keeps `mobXpReward` written and uncalled. Gating
+    // hostile spawns on the hour is NOT on that list and never was: it already
+    // happens, in `gameplay:entities` above, where the search is.
+    run: (dt) =>
+      Effect.gen(function* () {
+        const current = yield* Ref.get(state.weather)
+
+        // THE ROLLS ARE DRAWN ONLY WHEN THE STRETCH RUNS OUT, which is
+        // `domain/frame-rolls.ts`'s rule that the sequence depend on what
+        // happened rather than on how many frames passed — the same discipline
+        // the spawn search's cadence follows two stages up. A frame that only
+        // decrements a countdown leaves the generator exactly where it found it,
+        // so a scenario that runs ten thousand clear frames and then rains draws
+        // the same two numbers as one that rains immediately.
+        //
+        // `weatherExpires` is asked here rather than inside `advanceWeather`
+        // because only the caller can decide not to draw; the rule is total
+        // either way and ignores the rolls it does not need.
+        const next = weatherExpires(current, dt)
+          ? yield* Ref.modify(state.rollSeed, (seed) => {
+              const batch = drawRolls(seed, WEATHER_TRANSITION_ROLLS)
+              return [
+                advanceWeather(current, dt, {
+                  transition: batch.rolls[0] ?? 0,
+                  duration: batch.rolls[1] ?? 0,
+                }),
+                batch.seed,
+              ] as const
+            })
+          : advanceWeather(current, dt, LOWEST_WEATHER_ROLLS)
+
+        // `set` and not `update`: the outbox is a countdown and its last value
+        // subsumes every earlier one, so a host that drains every other frame
+        // loses nothing. That is the one respect in which it is unlike
+        // `minedItems`, where every entry is a separate item and dropping one
+        // would lose an item.
+        yield* Ref.set(state.weatherAdvanced, next)
+      }),
   },
 ]
 

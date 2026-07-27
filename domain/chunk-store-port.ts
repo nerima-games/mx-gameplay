@@ -246,8 +246,16 @@ export class ChunkStore extends Context.Tag('@nerima-games/mc-worldgen/ChunkStor
  *
  * When mc-kernel is published these collapse into
  * `capabilityOfBlockId(id, 'fallsWhenUnsupported')`,
- * `capabilityOfBlockId(id, 'replaceable')` and
- * `capabilityOfBlockId(id, 'validSpawnSurface')`.
+ * `capabilityOfBlockId(id, 'replaceable')`,
+ * `capabilityOfBlockId(id, 'validSpawnSurface')` and
+ * `capabilityOfBlockId(id, 'canSupportAttachments')`.
+ *
+ * THE TWO STRUCT-VALUED COLUMNS ARE NOT HERE. `harvestTool` and `drops` are
+ * mirrored in `./block-vocabulary`, because kernel keeps them in their own file
+ * (`domain/block-harvest.ts`, audit §7: struct fields are the ones most likely
+ * to grow a member, so they are split out to make the diff obvious) and because
+ * this file is a mirror of mc-worldgen's SERVICE, which has a different
+ * publication date and a different deletion step from kernel's table.
  */
 export const AIR_BLOCK_ID: BlockId = 0
 
@@ -339,9 +347,62 @@ const NON_SPAWN_SURFACE_IDS: ReadonlySet<BlockId> = new Set<BlockId>([
   // fails either way.
 ])
 
+/**
+ * The blocks nothing may be ATTACHED TO. A NEGATIVE list, and kernel's shape for
+ * the same reason `NON_SPAWN_SURFACE_IDS` is one: `canSupportAttachments` is the
+ * second of kernel's three flags that default to `true`
+ * (`BLOCK_CAPABILITY_DEFAULTS`), because for an ordinary opaque cube the true
+ * answer IS true and the reference correspondingly stores
+ * `NON_SUPPORTING_BLOCK_TYPES` (`block-support.ts:47-61`) rather than the
+ * complement.
+ *
+ * THIS IS NOT `NON_SPAWN_SURFACE_IDS` AND MUST NOT BE COLLAPSED INTO IT, even
+ * though the two lists overlap heavily. kernel's audit §4.9 names the
+ * disagreement in this very pair: SNOW is NON-SUPPORTING but IS a valid spawn
+ * surface — a mob may stand on snow and a torch may not be planted in it — and
+ * `oak_log` / `oak_leaves` / `glass` are the mirror image, valid supports that
+ * are not ground. Five independent capabilities with different membership is
+ * exactly what the audit measured, and it measured it by finding five
+ * near-duplicate lists in the reference that DISAGREED.
+ *
+ * Read about the block BELOW a placement, by `./interactions/place-block`.
+ */
+const NON_SUPPORTING_IDS: ReadonlySet<BlockId> = new Set<BlockId>([
+  0, // air — nothing to attach to
+  6, // water
+  7, // snow — non-supporting, and STILL a valid spawn surface (audit §4.9)
+  11, // lava
+  14, // torch
+  // `SURFACE_PLANT_CAPABILITIES` in kernel's table, which is one constant
+  // because `block-support.ts:4-12` is one set (`SURFACE_PLANT_BLOCK_TYPES`)
+  // fed into three different negative lists.
+  20, // sapling
+  21, // dandelion
+  22, // poppy
+  23, // brown_mushroom
+  24, // red_mushroom
+  25, // tall_grass
+  26, // fern
+  27, // sugar_cane
+  28, // lily_pad
+  31, // rail
+  32, // powered_rail
+  33, // cactus
+  34, // pressure_plate
+  // DELIBERATELY ABSENT, and this is transcription rather than oversight:
+  // `ladder` (18), `cobweb` (19), `kelp` (29) and `seagrass` (30) are passable
+  // blocks that the reference's `NON_SUPPORTING_BLOCK_TYPES` does NOT contain,
+  // so kernel resolves them to `true` and so must this set. Adding them "for
+  // consistency" with `PASSABLE_BLOCK_IDS` would be the same class of error as
+  // omitting oak_log from the spawn list, in the opposite direction.
+])
+
 export const fallsWhenUnsupported = (block: BlockId): boolean => FALLS_WHEN_UNSUPPORTED_IDS.has(block)
 
 export const isReplaceable = (block: BlockId): boolean => REPLACEABLE_IDS.has(block)
 
 /** Total, like kernel's: an id outside the transcription reads as ordinary ground. */
 export const validSpawnSurface = (block: BlockId): boolean => !NON_SPAWN_SURFACE_IDS.has(block)
+
+/** Total, like kernel's: an id outside the transcription reads as an ordinary support. */
+export const canSupportAttachments = (block: BlockId): boolean => !NON_SUPPORTING_IDS.has(block)

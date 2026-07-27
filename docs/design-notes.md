@@ -1,7 +1,7 @@
-# 設計注意（DN-GP-1 〜 DN-GP-11）
+# 設計注意（DN-GP-1 〜 DN-GP-13）
 
 本書は設計方針ではなく**事故報告**である。
-11 項目のうち想像で書かれたものは 1 つもなく、すべて参照実装
+13 項目のうち想像で書かれたものは 1 つもなく、すべて参照実装
 （`<reference-impl>`。以下 `packages/…` はそのルート相対）の production で実際に起きたことか、
 plan.md が実測知見として確定させたものである。
 
@@ -28,6 +28,8 @@ plan.md が実測知見として確定させたものである。
 | DN-GP-9 | 1 ルール 1 ファイル、しかし 1 stage | plan.md §3.11 | `test/stage-registration.test.ts` |
 | DN-GP-10 | `Ref.modify` で TOCTOU 回避 | plan.md §3.8 | （現状はコードレビュー規範。§DN-GP-10 参照） |
 | DN-GP-11 | ブロックの読み書きは全域。`ChunkNotLoaded` は air ではない | mc-worldgen `docs/public-api.md` §6-3 | `test/vertical-slice.test.ts` |
+| DN-GP-12 | 設置は read-then-write。置ける / 置けないは kernel の能力に訊く | `block-service-place-load.ts:48-58` | `test/place-block.test.ts` |
+| DN-GP-13 | 掘って出るものは kernel の表が決める。乱数の側だけがここ | kernel audit §6-9 / `block-service.config.ts:192-197` | `test/block-loot.test.ts` |
 
 ---
 
@@ -540,6 +542,38 @@ export const hostileSpawnsAllowed = (timeOfDay: number): boolean   // isNight �
 `timeOfDay` がバレルに**現れない**ことを assert する。
 2 人目の所有者は、公開面に名前が生えるところから始まる。
 
+### 天候は同じ問いで、**違う答え**になった
+
+`domain/weather.ts` が 2 つ目の名詞である。同じ検査（セーブファイルが要るか）を掛けると
+`WeatherState.remainingSecs` は**要る** —— 参照実装は `world-metadata-model.ts:43` で
+ワールドと一緒に直列化している。時刻と同じなら、ここに `Ref` を置いてはいけない。
+
+**違うのは「2 人目になるのか、1 人目になるのか」である。**
+時刻には mc-sim という所有者が既にいて、`timeOfDaySecs` はその**複製**だった。
+天候には所有者が**1 人もいない** —— mc-sim には `TimeService` があり、
+`grep -ri weather` はドキュメント 3 行（stage の名前）しか返さない。サービスも、ドメインも、状態も無い。
+
+だから `Ref` を置けば複製ではなく**最初の 1 つ**になる。それは複製より悪い:
+複製は 2 つが食い違った日に自分から名乗り出るが、間違ったリポジトリにいる**唯一の所有者**は名乗り出ない。
+
+採った形は `minedItems` と同じ**受信箱 + 送信箱**である。stage はこのフレームの天候を読み、
+ルールに「何になるか」を訊き、答えを送信箱に置く。書き戻すのは所有権を持つ側で、
+プレビューとテストではホスト役がその往復をやる。**このファイルのどの `Ref` も自分では進まない** ——
+`weather` を書くコードはこのリポジトリに 1 行も無く、`weatherAdvanced` は 1 フレーム分の送信箱である。
+
+| it（`test/weather.test.ts`） |
+| --- |
+| `REGRESSION: no stage advances the weather inbox — the host owns the round trip` |
+| `REGRESSION: a frame that only counts down leaves the generator where it found it` |
+| `advanceWeather is a total function — the same inputs give the same output` |
+| `fast-forward: two hours of frames walk the transition graph, reproducibly` |
+
+`test/public-api.test.ts` の
+`REGRESSION: exports the weather RULE and no way to store the weather` が、
+`WeatherService` / `setWeather` / `getWeather` がバレルに現れないことを assert する。
+参照実装にはその 3 つが全部ある（`packages/game/application/weather-service.ts`）。
+**あれは状態の側であって、ルールの側ではない。**
+
 ---
 
 ## DN-GP-8 `Date.now()` 禁止
@@ -768,3 +802,149 @@ mc-worldgen が 4 つ目の読み値を足せば、`tsc` がここで止まる�
 セクション化されたチャンク形式、メモリ圧による退避、並行アンロードのどれが来ても、
 インターフェースは 1 行も変わらずにこの状況が到達可能になる。
 そのため 2 本はストアの 1 メソッドだけを包んで書いてある（ダブルのロード集合では作れない）。
+
+---
+
+## DN-GP-12 設置は read-then-write。置ける / 置けないは kernel の能力に訊く
+
+**規則**: `placeBlock` は**読んでから書く**。その窓は消せないので、消せないことを書き留める。
+そして「そのセルは置き換えてよいか」は `isReplaceable`（kernel の `replaceable` 能力）に訊く。
+自前のブロック名リストを書かない。
+
+### 根拠
+
+`<reference-impl>/packages/world/application/block-service-place-load.ts:48-58`:
+
+```typescript
+// Vanilla: placing into a fluid cell displaces the fluid (underwater building).
+existing === 'AIR' || existing === 'WATER'
+  ? Effect.void
+  : Effect.fail(new BlockServiceError({ ... reason: `Block already exists at position ...` }))
+```
+
+**溶岩がこのリストから抜けている。** 手書きの 2 要素リストで、コメントは水中建築のことしか言っていない。
+その結果、溶岩のセルへの設置は「すでにブロックがある」として拒否される。
+
+これは `domain/chunk-store-port.ts` の `REPLACEABLE_IDS` から溶岩が抜けていた事故と**同じ 1 つの事故**である。
+その行のコメントは帰結を 2 つ挙げていた ——
+「落下する砂と砂利が溶岩を押しのけなかった、**そして設置が溶岩セルを occupied として扱った**」。
+1 つ目はあの時点で直り、2 つ目はまだ書かれていないルールの話だった。これがその 2 つ目である。
+
+### 読んでから書く窓は消せない
+
+`domain/interactions/break-block.ts` は「読まない」ことを冒頭で強く主張している ——
+`setBlock` が置き換えたブロックを返すので、先に読むのは TOCTOU であり費用の 2 倍払いでもある。
+
+**設置ではその道が使えない。** 破壊は無条件に AIR を書くので、どのセルも合法な対象で、
+何があっても書き込みは正しい。設置の対象は**置き換え可能でなければならず**、
+`setBlock` が「何があったか」を教えてくれた時点で**それはもう上書きされている**。
+`setBlock(cell, stone)` が土のセルに `Written { previous: dirt }` を返すとき、
+「置いてよいか」の答えは土が消えた 1 命令あとに届く。戻すのは補償書き込みで、それ自体が失敗しうる。
+
+だから読み、決め、書く。窓は実在し、次の 3 点をもって受け入れている:
+
+- **参照実装も同じ形で同じ窓を持つ。** `ensurePlacementTargetIsAir` が読み、
+  `commitPlacedBlocks` が書き、その間に `block-service-place-plan.ts` の読みが 4 回入る。移植である。
+- **1 フレーム中、このリポジトリのストア書き込み手は 1 人だけ**である。
+  `gameplay:interactions` と `gameplay:entities` は `after` で順序付いており、どちらも fork しない。
+- **本当の修正は他リポジトリの API である。** compare-and-set —— `setBlockIf(position, expected, block)` ——
+  が窓を完全に閉じ、それは mc-worldgen の `ChunkStore` の、`setBlock` の隣に属する。
+  `domain/chunk-store-port.ts` はそのサービスを丸ごとミラーしているので、
+  メソッドが生えた日にこのファイルは読みを 1 回と段落を 1 つ失う。
+
+### 能力は 3 つとも別物である
+
+kernel の audit §4.9 は「非固体」が 5 つの独立した概念であることを実測している。設置が触るのは 2 つで、
+**雪がその 2 つを分ける行**である: 雪は**有効なスポーン面**であり（Mob は雪の上に立てる）、
+**有効な取り付け先ではない**（松明は雪に刺さらない）。
+`canSupportAttachments` と `validSpawnSurface` を 1 つの `solid` に畳むと、この行が消える。
+参照実装は近い内容の負リストを 5 箇所に持っていて、audit はそれらが**互いに食い違っている**ことを数えた。
+
+### 回帰テスト
+
+`test/place-block.test.ts`:
+
+| it |
+| --- |
+| `REGRESSION: lava is replaceable — a block may be placed into it` |
+| `REGRESSION: refuses a block that would be placed inside the player` |
+| `REGRESSION: snow supports a mob and not a torch — the two flags are not one flag` |
+| `` REGRESSION: `ChunkNotLoaded` is not air — nothing is placed there `` |
+| `REGRESSION: the stage passes the player’s position, so the body guard is live` |
+| `REGRESSION: sand placed in mid-air falls — placement disturbs` |
+| `a stone placement does not read the cell below at all` |
+
+**変異テストで確かめてある。** `isReplaceable` を `!== AIR` に、`canSupportAttachments` を
+`validSpawnSurface` に書き換えると、対応する 1 本がそれぞれ落ちる。
+`domain/falling-block.ts:73-77` が挙げる「設置も `disturb` する側だ」も同様で、
+**擾乱する位置を「書いたセル」に変えると 1 本だけ落ちる** ——
+キューの項目 P は「P の**上**のブロックが P に落ちるか」を意味するので、
+破壊は空けたセルを、設置は**置いたブロックの下のセル**を擾乱しなければならない。
+
+---
+
+## DN-GP-13 掘って出るものは kernel の表が決める。乱数の側だけがここ
+
+**規則**: 掘って出るアイテムを `breakBlock` の戻り値から作らない。
+kernel の `drops` / `harvestTool` 列に訊く。乱数が要る部分（fortune、ボーナスドロップ）**だけ**がここに書かれ、
+その乱数は `domain/frame-rolls.ts` から**引数として**渡される。
+
+### 根拠
+
+kernel の `domain/block-harvest.ts` が境界を先に引いている:
+
+> Kernel is pure and deterministic — `StageRegistration.run` has error channel `never`
+> and no source of randomness — so it reports the base count and the fact that fortune
+> applies, and lets the rule that owns the RNG do the multiplication.
+
+capability-flag audit §6-9 は乱数ドロップ全般について同じことを言う（「`drops` では表現できない」）。
+`domain/mob/mob-drop.ts` はこの段落の Mob 側の双子であり、本項はブロック側である。
+
+### 直したのは 2 つで、目に見えるのは 1 つだけである
+
+`stages/registration.ts` は `outcome.yielded` —— 書き込みが返した**バイトそのもの** —— を
+送信箱に積んでいた。誤りは 2 つ同時に起きていた:
+
+1. **石を掘ると石が出た。** ドロップ表が無いので「アイテム」＝「そこにあったブロック」だった。
+   ダイヤ鉱石を掘れば鉱石ブロックが出る。docs/testing.md がこれを記録していた。
+2. **素手で石が掘れた。** 道具のゲートも無いので、kernel の `harvestTool` 列**まるごと**が、
+   それを読むはずの唯一のルールから到達不能だった。
+
+**2 つ目のほうが危ない。** ゲートの無いドロップ表は、外から見ると完全に正しく見える ——
+誰かが「ところでツルハシは何のために作るのか」と疑問に思うまでは。
+
+### バイトと文字列の橋
+
+`breakBlock` は `BlockId`（`Uint8Array` から出た**数**）を返し、
+mc-sim の `InventoryService.add` は `ItemId`（**文字列**）を取る。
+mc-compose の `docs/e2e-triage.md` §4.3 はこの不一致を「1 リポジトリからは立てられない」問いとして記録した。
+
+kernel が答えを持っている: `blockTypeOfId` が数を名前にし、`itemOfBlock` が名前をアイテムにし、
+`dropOfBlockId` が道具のゲートと合わせて 1 回で答える。`domain/block-vocabulary.ts` がそのミラーである。
+**残っているのは呼び出しであって、変換ではない。**
+
+### 回帰テスト
+
+`test/block-loot.test.ts`:
+
+| it |
+| --- |
+| `REGRESSION: stone yields COBBLESTONE, not the block that was there` |
+| `REGRESSION: bare hands do not harvest stone` |
+| `REGRESSION: an unknown byte has no name and no drop, rather than a default one` |
+| `REGRESSION: the wrong tool FAMILY is slow, not fruitless` |
+| `REGRESSION: fortune I is stochastic, not a rounded-down no-op` |
+| `REGRESSION: silk touch suppresses fortune — they are mutually exclusive` |
+| `REGRESSION: the bonus runs even though the block itself drops nothing` |
+| `` REGRESSION: a NaN roll cannot produce a stack whose size is not a number `` |
+
+`test/vertical-slice.test.ts`:
+
+| it |
+| --- |
+| `a pickaxe turns a stone block into cobblestone in the outbox` |
+| `the loot chain reaches an outbox and stops there — by name, not by number` |
+
+**変異テストで確かめてある。** `resolveDrop` の tier 判定を外す、`blockLoot` に常に最良の道具を渡す、
+ボーナス行を基本ドロップの有無でゲートする、fortune のシルクタッチ排他を外す —— の 4 通りで、
+それぞれ対応するテストが落ちる。

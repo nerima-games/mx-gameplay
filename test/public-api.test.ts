@@ -54,7 +54,31 @@ describe('public API surface', () => {
       // the same deletion date — so publishing it here would turn that promised
       // deletion into a breaking change, and would give the organisation a
       // second place to look up what an item is called.
-      const kernelsToOwn = ['StageId', 'DeltaTimeSecs', 'ITEM_TYPES', 'isItemType']
+      //
+      // `BLOCK_TYPES`, `blockTypeOfId`, `itemOfBlock`, `dropOfBlockId` and the
+      // harvest vocabulary joined it when the block loot table needed the
+      // number-to-item bridge. `domain/block-vocabulary.ts` mirrors THREE of
+      // kernel's files and carries the same deletion date; publishing any of
+      // them would put kernel's block registry on this package's surface, and
+      // `blockTypeOfId` in particular is the one function a consumer would most
+      // plausibly reach for from the wrong repository.
+      const kernelsToOwn = [
+        'StageId',
+        'DeltaTimeSecs',
+        'ITEM_TYPES',
+        'isItemType',
+        'BLOCK_TYPES',
+        'BLOCK_DROP_REGISTRY',
+        'blockTypeOfId',
+        'blockIdOf',
+        'itemOfBlock',
+        'isPlaceableItem',
+        'dropOfBlockId',
+        'resolveDrop',
+        'satisfiesHarvestTier',
+        'HARVEST_TIERS',
+        'DEFAULT_BLOCK_DROP',
+      ]
       for (const name of kernelsToOwn) {
         expect(Object.keys(gameplay)).not.toContain(name)
       }
@@ -187,6 +211,31 @@ describe('public API surface', () => {
         'craterRadius',
         'craterCells',
         'carveExplosionCrater',
+        // placement — the counterpart to break-block
+        'placeBlock',
+        'placementVerdict',
+        'blockOverlapsPlayer',
+        'isSupportSensitive',
+        'PLAYER_HALF_WIDTH',
+        'PLAYER_HALF_HEIGHT',
+        // the block loot table — the random half kernel refuses to hold
+        'blockLoot',
+        'rollFortuneExtraDrops',
+        'FORTUNE_MULTIPLIERS',
+        'BLOCK_LOOT_ROLLS',
+        'NO_TOOL',
+        // weather
+        'WEATHERS',
+        'advanceWeather',
+        'weatherExpires',
+        'resolveNextWeatherState',
+        'resolveWeatherDurationSecs',
+        'createWeatherState',
+        'INITIAL_WEATHER',
+        'isPrecipitating',
+        'isThunderstorm',
+        'weatherLightScale',
+        'WEATHER_TRANSITION_ROLLS',
         // where randomness enters a frame
         'DEFAULT_ROLL_SEED',
         'normaliseSeed',
@@ -220,6 +269,31 @@ describe('public API surface', () => {
         'setDayLength',
         'setTimeOfDay',
         'timeOfDay',
+      ]
+      for (const name of forbidden) {
+        expect(Object.keys(gameplay)).not.toContain(name)
+      }
+    }),
+  )
+
+  // The same rule, asked of the noun that arrived WITH a rule and no owner.
+  //
+  // `domain/weather.ts` is exported and `WeatherState` is a saved value, so the
+  // temptation this pins away is a `WeatherService`, a `setWeather` or a
+  // `getWeather` on this package's surface — the reference has all three
+  // (`packages/game/application/weather-service.ts`) and they are the state half,
+  // not the rule half. What IS exported is a pure transition function; what must
+  // not be is a way to ASK this repository what the weather is, because a
+  // consumer that could ask would have found its owner.
+  it.effect('REGRESSION: exports the weather RULE and no way to store the weather', () =>
+    Effect.sync(() => {
+      const forbidden = [
+        'WeatherService',
+        'weatherService',
+        'setWeather',
+        'getWeather',
+        'currentWeather',
+        'makeWeatherState',
       ]
       for (const name of forbidden) {
         expect(Object.keys(gameplay)).not.toContain(name)

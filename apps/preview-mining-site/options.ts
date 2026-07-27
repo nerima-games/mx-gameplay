@@ -16,6 +16,7 @@
  */
 import { isScreenName, isViewMode, SCREENS, VIEW_MODES, type ScreenName, type ViewMode } from './render'
 import { DEFAULT_SCENARIO, SCENARIO_NAMES, SCENARIOS } from './scenarios'
+import { HARVEST_TIERS, type HarvestTier } from '../../domain/block-vocabulary'
 
 /** How many frames the `n` key advances. */
 export const DEFAULT_RUN_FRAMES = 10
@@ -52,6 +53,15 @@ export type PreviewOptions = {
    */
   readonly settle: boolean
   readonly timeOfDay: number
+  /**
+   * The tool tier the site screen starts holding.
+   *
+   * A FLAG AND NOT JUST A KEY, because the tool gate is the half of the loot
+   * table that is invisible in a screenshot and `--once` is how a frame becomes
+   * a piece of evidence in a diff. `--tool none` and `--tool wooden` over the
+   * same scenario are two pasteable frames that differ in exactly one line.
+   */
+  readonly toolTier: HarvestTier
   readonly once: boolean
   readonly ascii: boolean
   readonly stats: boolean
@@ -72,6 +82,7 @@ const DEFAULTS = {
   spawn: false,
   settle: false,
   timeOfDay: 0.3,
+  toolTier: 'none',
   once: false,
   ascii: false,
   stats: false,
@@ -195,6 +206,20 @@ export const parseArguments = (argv: ReadonlyArray<string>): PreviewOptions => {
       case '--time':
         accumulator.timeOfDay = readNumber(accumulator, flag, takeValue()) ?? accumulator.timeOfDay
         break
+      case '--tool': {
+        const raw = takeValue()
+        if (raw === undefined) {
+          accumulator.errors = [...accumulator.errors, `${flag} needs a value`]
+        } else if ((HARVEST_TIERS as ReadonlyArray<string>).includes(raw)) {
+          accumulator.toolTier = raw as HarvestTier
+        } else {
+          accumulator.errors = [
+            ...accumulator.errors,
+            `${flag}: "${raw}" is not one of ${HARVEST_TIERS.join(' ')}`,
+          ]
+        }
+        break
+      }
       case '--width':
         accumulator.frameWidth = readNumber(accumulator, flag, takeValue()) ?? accumulator.frameWidth
         break
@@ -236,6 +261,8 @@ export const USAGE: ReadonlyArray<string> = [
   '  --frames <n>        advance n frames before drawing         (default 0)',
   `  --run-frames <n>    how many frames the n key advances      (default ${String(DEFAULT_RUN_FRAMES)})`,
   '  --time <fraction>   starting time of day for the time screen (default 0.3)',
+  `  --tool <tier>       what the site screen starts holding: ${HARVEST_TIERS.join(' | ')}`,
+  '                      (default none — bare hands, which mine stone and get NOTHING)',
   '  --once              render one frame to stdout and exit (no raw mode, pipe-safe)',
   '  --ascii             glyphs instead of colour — pasteable into an issue or a diff',
   '  --stats             print the measured report instead of a picture',
@@ -248,15 +275,27 @@ export const USAGE: ReadonlyArray<string> = [
   '  site',
   '    arrows / hjkl move the cursor (HJKL moves 5)   v cycle world/queue/timeline',
   '    b             queue a BREAK at the cursor, through gameplay:interactions',
-  '    p             poke a block into the store directly — NOT a rule, and it does',
-  '                  not disturb the falling-block queue (there is no placement rule)',
-  '    e             erase a cell directly, same caveat',
-  '    1-6           air stone sand gravel water lava (what p pokes)',
+  '    p             queue a PLACE at the cursor, through gameplay:interactions. The',
+  '                  rule is asked FIRST and a refusal is printed rather than queued —',
+  '                  the stage drops refusals, and they are the interesting half',
+  '    e             erase a cell directly — NOT a rule, and it disturbs nothing.',
+  '                  The contrast with p is the point: a placement starts a cascade',
+  '    1-6           air stone sand gravel water lava (what p places and e erases).',
+  '                  air, water and lava have no ITEM form, so p says so and stops',
+  '    t / u / f     cycle the tool TIER / toggle silk touch / cycle fortune. The',
+  '                  gate opens and shuts in the HUD: bare hands mine stone and get',
+  '                  NOTHING, a wooden tier gets cobblestone',
   '    .             run ONE frame     n run --run-frames     s settle',
   '    o / O         next / previous scenario           r  reload this scenario',
   '',
-  '  time',
+  '  time — the hour',
   '    left/right    move the slider by 0.005          H/L by 0.05',
+  '    r             reset the hour AND the weather',
+  '',
+  '  time — the weather (domain/weather.ts; the screen owns the value, nobody else does)',
+  '    .             advance 60s of weather            n advance --run-frames of those',
+  '    w             FAST-FORWARD to the next transition — the rule picks what follows',
+  '    c             force the next weather (its DURATION still comes from the rule)',
   '',
   '  arena — the creeper',
   '    s             ask the spawn rule (uses the TIME screen’s hour)',

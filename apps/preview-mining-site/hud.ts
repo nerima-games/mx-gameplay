@@ -10,7 +10,7 @@
 import { padEnd, type Style } from './ansi'
 import { USAGE } from './options'
 import type { ScreenName, ViewMode } from './render'
-import type { Site } from './site'
+import { describeTool, type Site } from './site'
 import { BLOCKS, glyphOf, type Glyph } from './world'
 import type { BlockId } from '../../domain/chunk-store-port'
 
@@ -25,16 +25,28 @@ export type HudState = {
   readonly clipped: boolean
 }
 
-/** `stone x3, sand x2` — a histogram, because a list of 40 ids is not readable. */
-const summariseInventory = (inventory: ReadonlyArray<BlockId>): string => {
-  if (inventory.length === 0) {
-    return '(empty)'
-  }
-  const counts = new Map<BlockId, number>()
-  for (const id of inventory) {
-    counts.set(id, (counts.get(id) ?? 0) + 1)
-  }
-  return [...counts.entries()].map(([id, count]) => `${glyphOf(id).name} x${String(count)}`).join(', ')
+/**
+ * `cobblestone x3, sand x2` — the host's stacks.
+ *
+ * IT NAMES ITEMS AND NOT BLOCKS NOW, and that difference is the whole of what
+ * `domain/interactions/block-loot.ts` changed on this screen. This function used
+ * to take `ReadonlyArray<BlockId>` and run each id through `glyphOf`, which is
+ * how a HUD ends up printing "stone" for a swing that in vanilla yields
+ * cobblestone: the id WAS the item. Now the keys are `ItemType` strings that
+ * came out of kernel's drop table, so mining stone with a pickaxe prints
+ * `cobblestone` and mining it bare-handed prints nothing at all.
+ *
+ * A ZERO-COUNT STACK IS PRINTED rather than hidden, and a negative one is
+ * printed too. Placement subtracts (`site.ts`'s `requestPlace` on why the host
+ * does not check the stack first), so `sand x-1` on screen is the missing
+ * inventory check being visible instead of being a comment.
+ */
+const summariseInventory = (inventory: ReadonlyMap<string, number>): string => {
+  const stacks = [...inventory.entries()].filter(([, count]) => count !== 0)
+
+  return stacks.length === 0
+    ? '(empty)'
+    : stacks.map(([item, count]) => `${item} x${String(count)}`).join(', ')
 }
 
 export const buildHud = (hud: HudState, site: Site, style: Style): ReadonlyArray<string> => {
@@ -48,7 +60,9 @@ export const buildHud = (hud: HudState, site: Site, style: Style): ReadonlyArray
       `screen ${padEnd(hud.screen, 7)}`,
       `view ${padEnd(hud.view, 10)}`,
       `cursor ${padEnd(`${String(hud.cursor.x)},${String(hud.cursor.y)},${String(site.spec.z)}`, 12)}`,
-      `poke ${padEnd(palette.name, 8)}`,
+      // "hold" and not "poke": the palette is what `p` PLACES now, through the
+      // rule, and `e` is the only key left that writes the store directly.
+      `hold ${padEnd(palette.name, 8)}`,
       `n=${String(hud.runFrames)}`,
     ].join(' '),
     [
@@ -57,7 +71,7 @@ export const buildHud = (hud: HudState, site: Site, style: Style): ReadonlyArray
       `resident ${padEnd(site.world.loadedChunkKeys().join(' '), 12)}`,
       `inventory ${summariseInventory(site.inventory)}`,
     ].join(' '),
-    style.dim(`scenario ${site.scenario}`),
+    style.dim(`scenario ${padEnd(site.scenario, 16)}holding ${describeTool(site.tool)}`),
     site.note === '' ? style.dim('?  help') : style.paint(site.note, [226, 202, 130]),
     ...(hud.clipped
       ? [style.paint('the world is wider or taller than this window — resize, or use --width/--height', [235, 160, 90])]

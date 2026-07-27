@@ -13,12 +13,26 @@
  *
  * `domain/day-night.ts` is four total functions of one number. A slider is
  * therefore the whole of it — there is nothing hidden behind state, so nothing
- * the slider fails to reach. What the slider does NOT do is ADVANCE time:
- * `gameplay:time-weather` is `Effect.void` (`stages/registration.ts:293`) and the
+ * the slider fails to reach. What the slider does NOT do is ADVANCE time: the
  * hour belongs to mc-sim's `TimeService` (DN-GP-7), so this screen sweeps the
- * argument and reads the rule's answer. docs/testing.md §3-1 says the same in
- * one sentence: "スライダーはそこへ書く" — and there is no `there` to write to
- * yet.
+ * argument and reads the rule's answer.
+ *
+ * ---------------------------------------------------------------------------
+ * The weather half arrived and it does advance, which is a DIFFERENT answer
+ * ---------------------------------------------------------------------------
+ *
+ * This paragraph used to end with 「there is no `there` to write to yet」, quoting
+ * docs/testing.md's one-sentence version of the same complaint. It is half
+ * retired: `gameplay:time-weather` is no longer `Effect.void`, and this screen
+ * advances a `WeatherState` from a seed.
+ *
+ * The distinction that made that possible is `domain/weather.ts`'s header and it
+ * is worth carrying here, because a reader looking at two sliders side by side
+ * will otherwise conclude that one of them is cheating. The HOUR has an owner and
+ * this screen must not become a second one. The WEATHER has no owner at all —
+ * mc-sim publishes a `TimeService` and nothing weather-shaped — so this screen
+ * holds it exactly as it holds `ArenaCreeper`: playing the repository that will
+ * own the value, and saying which repository that is.
  *
  * ---------------------------------------------------------------------------
  * The mob arena has THREE mobs, and the screen says which
@@ -78,6 +92,26 @@ import {
 } from '../../domain/death-cause'
 import { AIR_BLOCK_ID, type BlockId } from '../../domain/chunk-store-port'
 import { DeltaTimeSecs } from '../../domain/frame-contract'
+import { DEFAULT_ROLL_SEED, drawRolls } from '../../domain/frame-rolls'
+import {
+  advanceWeather,
+  createWeatherState,
+  INITIAL_WEATHER,
+  isPrecipitating,
+  isThunderstorm,
+  LOWEST_WEATHER_ROLLS,
+  RAIN_AFTER_THUNDER_CHANCE,
+  resolveNextWeatherState,
+  THUNDER_AFTER_CLEAR_CHANCE,
+  THUNDER_AFTER_RAIN_CHANCE,
+  weatherExpires,
+  weatherLightScale,
+  WEATHERS,
+  WEATHER_TRANSITION_ROLLS,
+  type Weather,
+  type WeatherRolls,
+  type WeatherState,
+} from '../../domain/weather'
 import {
   CREEPER_FUSE_SECS,
   CREEPER_IGNITION_RANGE_BLOCKS,
@@ -137,12 +171,147 @@ export const TIME_STEP = 0.005
 /** How far a shifted press moves it: to the next phase boundary, roughly. */
 export const TIME_STEP_COARSE = 0.05
 
+/**
+ * How much weather one `.` press advances. A MINUTE, not a frame.
+ *
+ * The shortest stretch any weather can have is 180 seconds
+ * (`THUNDER_DURATION_RANGE_SECS.min`) and the longest is 9000, so a slider that
+ * moved in 1/60ths would need half a million presses to see a transition. This
+ * is the same reason `docs/testing.md` §5 asks for fast-forward rather than for
+ * a test that waits twenty minutes.
+ */
+export const WEATHER_STEP_SECS = 60
+
 export type TimeState = {
   /** The fraction handed to the rules. NOT clamped — see `wrapReport`. */
   timeOfDay: number
+  /**
+   * The weather the screen is holding, EXACTLY as the site screen's host holds
+   * it: `domain/weather.ts` is a total function from a state to a state, so
+   * somebody has to be the owner and on this screen it is this field.
+   *
+   * That is the identical arrangement `ArenaCreeper` has with `domain/mob/` —
+   * the preview plays the repository that owns the value — and here the
+   * repository it is playing does not exist yet, which is the whole of
+   * `domain/weather.ts`'s header.
+   */
+  weather: WeatherState
+  /**
+   * The generator, threaded by hand.
+   *
+   * A SEED AND NOT `Math.random()`, which is the one thing this screen must get
+   * right to be a fair demonstration: the reference's `WeatherService` reads the
+   * global generator at every call site (`weather-service.ts:13,23,35`), so its
+   * weather cannot be replayed, and a preview that did the same would be showing
+   * a rule that is deterministic through a driver that is not.
+   */
+  weatherSeed: number
 }
 
-export const initialTimeState = (): TimeState => ({ timeOfDay: 0.3 })
+export const initialTimeState = (): TimeState => ({
+  timeOfDay: 0.3,
+  weather: INITIAL_WEATHER,
+  weatherSeed: DEFAULT_ROLL_SEED,
+})
+
+/** Draw the two rolls one transition needs, advancing the screen's seed. */
+const drawWeatherRolls = (state: TimeState): WeatherRolls => {
+  const batch = drawRolls(state.weatherSeed, WEATHER_TRANSITION_ROLLS)
+  state.weatherSeed = batch.seed
+
+  return { transition: batch.rolls[0] ?? 0, duration: batch.rolls[1] ?? 0 }
+}
+
+/**
+ * Advance the weather by `secs`.
+ *
+ * The rolls are drawn ONLY when the stretch runs out, which is what
+ * `stages/registration.ts` does and is `domain/frame-rolls.ts`' rule that the
+ * sequence depend on what happened. A screen that drew unconditionally would
+ * still look right and would quietly stop matching the stage.
+ */
+export const stepWeather = (state: TimeState, secs: number): void => {
+  state.weather = weatherExpires(state.weather, secs)
+    ? advanceWeather(state.weather, secs, drawWeatherRolls(state))
+    : advanceWeather(state.weather, secs, LOWEST_WEATHER_ROLLS)
+}
+
+/**
+ * Fast-forward to the next transition.
+ *
+ * The `docs/testing.md` §5 fast-forward, made a keystroke: rather than pressing
+ * `.` a hundred and fifty times, expire the stretch and let the RULE decide what
+ * follows. Note what this does NOT do — pick the next weather. The transition
+ * roll is drawn from the same seed as everything else, so pressing this key
+ * repeatedly walks the actual Markov chain rather than a cycle somebody wrote.
+ */
+export const skipWeather = (state: TimeState): void => {
+  state.weather = advanceWeather(
+    { weather: state.weather.weather, remainingSecs: 0 },
+    0,
+    drawWeatherRolls(state),
+  )
+}
+
+/**
+ * Force a weather, the way the reference's `setWeather` and its QA API do
+ * (`weather-service.ts:22-23`, `qa-api.ts:82`).
+ *
+ * The DURATION still comes from the rule, because `createWeatherState` is the
+ * only thing that knows a stretch's range — a forced weather with a made-up
+ * countdown would be the screen inventing half a rule.
+ */
+export const cycleForcedWeather = (state: TimeState): void => {
+  const next = WEATHERS[(WEATHERS.indexOf(state.weather.weather) + 1) % WEATHERS.length] ?? 'clear'
+  const batch = drawRolls(state.weatherSeed, 1)
+  state.weatherSeed = batch.seed
+  state.weather = createWeatherState(next, batch.rolls[0] ?? 0)
+}
+
+/** What the world does about the current weather. Every value is a rule's answer. */
+export type WeatherReading = {
+  readonly weather: Weather
+  readonly remainingSecs: number
+  readonly precipitating: boolean
+  readonly thunder: boolean
+  readonly lightScale: number
+}
+
+export const readWeather = (state: WeatherState): WeatherReading => ({
+  weather: state.weather,
+  remainingSecs: state.remainingSecs,
+  precipitating: isPrecipitating(state.weather),
+  thunder: isThunderstorm(state.weather),
+  lightScale: weatherLightScale(state.weather),
+})
+
+/**
+ * The six edges of the transition graph, computed from the RULE rather than
+ * transcribed.
+ *
+ * Each row asks `resolveNextWeatherState` with a roll on either side of the
+ * threshold, so the table on screen cannot disagree with the code — which is the
+ * failure the `place`/`captions` pair in `render.ts` is also built to avoid. A
+ * hard-coded table is how a chart ends up lying about its own axis.
+ */
+export const weatherTransitionTable = (): ReadonlyArray<
+  readonly [Weather, string, Weather, Weather]
+> =>
+  WEATHERS.map((from) => {
+    const threshold =
+      from === 'clear'
+        ? THUNDER_AFTER_CLEAR_CHANCE
+        : from === 'rain'
+          ? THUNDER_AFTER_RAIN_CHANCE
+          : RAIN_AFTER_THUNDER_CHANCE
+
+    return [
+      from,
+      threshold.toFixed(2),
+      resolveNextWeatherState(from, { transition: 0, duration: 0 }).weather,
+      resolveNextWeatherState(from, { transition: 1, duration: 0 }).weather,
+    ] as const
+  })
 
 export const nudgeTime = (state: TimeState, delta: number): void => {
   // Deliberately NOT wrapped. mc-sim owns the hour and owns its normalisation
@@ -924,6 +1093,8 @@ export const ARENA_WIRED: ReadonlyArray<readonly [string, string]> = [
  */
 export const ARENA_MISSING: ReadonlyArray<readonly [string, string]> = [
   ['the ender dragon', 'REFUSED, not deferred: its phases turn on absolute world Y (dragon-phase.ts:51-52) and emit velocities'],
+  ['the rail SHAPE (§3-2 measures it)', 'plan.md §7 assigns 乗り物のルール to gameplay and its share is 「全部」 — one of only two rows in that whole audit that go to ONE repository. docs/testing.md §3-2 set it aside anyway as "move an entity that has a position". Half of it is: mounting is a Ref<boolean> on the reference’s game-state service (state, so mc-sim’s) and integration is mc-physics’. The other half is NOT. resolveRailShape (rail-shape.ts:18-34) is a pure function of FOUR BLOCK READS around a cell — the same shape as this repository’s support check — and projectMinecartVelocity (:39-60) TAKES a velocity and returns a constrained one, which is endermanTeleportOffset’s accepted shape rather than a velocity producer. kernel already has rail (31) and powered_rail (32). Buildable here, and deliberately not built in this pass'],
+  ['portals — a 4-repo row', 'plan.md §7 makes 次元 a FOUR-repository row (worldgen + sim + gameplay + save) and gives this one 「ポータル成立条件・遷移の発火」, so it really is a row whose ownership has to be settled first. It is not mc-physics’ and not mc-sim’s, though. The reference puts every piece of it in its WORLD package: nether-link.ts is coordinate SCALING, portal-frame.ts detects a frame and generates a LAYOUT, and resolveNetherTravel (nether-travel.ts:33-49) composes them — all mc-worldgen’s structures and coordinates. What actually blocks it is a noun NOBODY owns: `Dimension` is in no kernel file, and mc-sim’s EntityState has three fields and none of them says which world an entity is in. An ownership decision, exactly as §3-2 concluded'],
   ['enderman / shulker DROPS', 'ender_pearl and shulker_shell are not ItemTypes. One row in mc-kernel’s roster, no edit here'],
   ['where a teleport LANDS', 'the offset has no y and no ground check — a ChunkStore query, next to domain/interactions/'],
   // WAS: 'endermanTeleportUrge needs damagedThisStep and stuckTicks; mc-sim's
@@ -962,4 +1133,15 @@ export const ARENA_MISSING: ReadonlyArray<readonly [string, string]> = [
   ['a mob’s death CAUSE', 'explosionDamageAt carries one and applyDamage records it; mc-sim’s EntityState has no field for it, so it is dropped'],
   ['experience from a kill', 'mobXpReward is written and uncalled. XP is a number on the player, and the player is PlayerService’s'],
   ['blast resistance', 'the crater sets every cell to AIR — obsidian and bedrock included. One flag in kernel’s capability table, no edit here'],
+  // ---- what the loot table and the placement rule did NOT close ------------
+  ['items reaching the inventory', 'minedItems and consumedItems are outboxes carrying ItemType NAMES now, so the remaining distance is a call to InventoryService.add / .remove and no longer a translation. Mirroring InventoryServiceApi whole means restating Inventory/RecipeTable/CraftGrid/RecipeMatch/CraftResult — mc-sim’s crafting vocabulary — in a repository with no crafting rule'],
+  ['the held TOOL', 'heldTool is an inbox. Which slot is selected and what is enchanted on it is InventoryService’s; the tier gate is live and the value reaching it is a stand-in'],
+  ['4 more placement rules', 'mushrooms need light <= 12, sugar cane needs adjacent water, cactus needs four air sides, doors need the cell above (block-service-place-plan.ts:208-214). Each is ANOTHER FILE by DN-GP-9 and each needs a measurement this repository can already take — deferred, not refused'],
+  ['a block popping off', 'canBlockStaySupported is checked at PLACEMENT time only. The other half needs a disturb-shaped queue for attachments, and a sweep would be DN-GP-1 rebuilt'],
+  ['apple / sapling / seeds', 'three of the reference’s four bonus drop lines have no ItemType. rollLeafDrops yields all three and only `stick` can ship — see UNITEMISED_BLOCK_TYPES, which exists so this is data'],
+  ['gravel -> flint', 'vanilla’s 10%. NOT ported, and that is docs/porting.md §4 rather than an oversight: the reference implementation has no such rule, and a drop rate is exactly the kind of change that should arrive with a measurement'],
+  ['silk touch as a SUBSTITUTION', 'kernel models it as a GATE, so "stone drops itself instead of cobblestone" is not expressible. The additive fix is one optional `silkTouchItem` on kernel’s BlockDropRule'],
+  ['who OWNS the weather', 'the rule is here and holds nothing; the countdown reaches the frame as an inbox and leaves as an outbox. mc-sim has a TimeService and no weather service at all, so this is the one noun with a rule and NO owner'],
+  ['the lightning strike', 'weather === thunder && exposedToSky is the reference’s hazard (environment.ts:101). The damage lands on a player, and a player’s health is PlayerService’s — the same wall mobXpReward is behind'],
+  ['weather in the SKY', 'weatherLightScale is a number this repository can compute and nobody here can apply. The reference’s same function also sets two HSL triples, and a sky tint is mc-render’s'],
 ]
