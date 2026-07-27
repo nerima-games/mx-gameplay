@@ -70,35 +70,50 @@ export const gameplayModule: GameModule<never, never, never, ChunkStore> = {
 }
 ```
 
-### 2-2. `RRegister` は `ChunkStore | EntityManager` になった。`RIn` は `never` のままである
+### 2-2. `RRegister` は `ChunkStore | EntityManager | InventoryService` になった。`RIn` は `never` のままである
 
 ここには「mx-gameplay が他リポジトリのサービス越しに書き込みを始めるとき、それらは `frameStages` の中で
 — つまり `RRegister` パラメータで — 取得される」と**予告**が書いてあった。そのとおりになった。
 stage がブロックを読み書きするようになったので、**登録**するのに mc-worldgen の `ChunkStore` が要る。
-そして stage が Mob を反復するようになったので、mc-sim の `EntityManager` も要る。
+stage が Mob を反復するようになったので、mc-sim の `EntityManager` も要る。
+そして stage が**採掘したアイテムを預ける**ようになったので、mc-sim の `InventoryService` も要る ——
+plan.md §2.3-1 の実例そのものであり、この 3 本目が入るまでは `Ref` で止まっていた。
+
+**3 本目は mc-compose が予告していたものでもある。** あちらの `docs/e2e-triage.md` §4.3 は
+「mx-gameplay は**登録時に**`InventoryService` を acquire するしかない。すると `registerModule` の
+`RRegister` に `InventoryService` が乗る」と書いており、そのとおりになった。
+そこに残る問い —— 「mx-gameplay が書き mx-ui が読む 1 つのインスタンスを、
+mc-sim を import できない mc-compose がどう構築するのか」 —— は**こちらでは解けない**。
+このリポジトリが答えられるのは「要求する」ところまでで、誰が discharge するかはホストの問題である。
 
 2 つのパラメータの違いがここで初めて観測できる。
 
 | | 値 | 意味 |
 | --- | --- | --- |
 | `RIn` | `never` | 本リポジトリが**構築**するのに要るもの。`layers` が空なので何も要らない |
-| `RRegister` | `ChunkStore \| EntityManager` | 本リポジトリが stage を**登録**するのに要るもの |
+| `RRegister` | `ChunkStore \| EntityManager \| InventoryService` | 本リポジトリが stage を**登録**するのに要るもの |
 
 本リポジトリは他リポジトリが供給しなければならないものを構築するのではなく、
 他リポジトリが供給するものを**呼ぶ**だけである。だから `RIn` は増えない。
 
 **`run` の側は増えてはならない。** `StageRegistration.run` の文脈は kernel の `FrameServices` であり、
 そこに `ChunkStore` を要求することは kernel に mc-worldgen のサービスを名指しさせることになる
-（階層モデル、plan.md §2.2 が禁じている）。だから store と roster は登録時に 1 度だけ取得し、4 stage が共有する。
+（階層モデル、plan.md §2.2 が禁じている）。だから 3 つとも登録時に 1 度だけ取得し、4 stage が共有する。
 固定しているテスト: `` REGRESSION: the store is acquired at registration, never demanded by `run` ``、
-`acquires exactly two services to register — the store and the roster, in frameStages`
-（`test/stage-registration.test.ts`）。
+`acquires exactly three services to register — the store, the roster and the inventory`
+（`test/stage-registration.test.ts`）。この最後のテストは長く「exactly **two**」だったうえに、
+「3 本目の候補は mc-sim の `InventoryService` であり、丸ごと写せるようになるまでは送信箱で代用する」と
+**コメントで名指ししていた**。その予告も履行された。次の候補は `PlayerService` で、
+そちらは丸ごと写せない —— `cameraPose` が `ClockPort` を要求し、`ClockPort` をローカルに書き直すのは
+`domain/frame-contract.ts` の言う「狭い型より遥かに悪い失敗」だからである。
 
 `ChunkStore` は mc-worldgen が publish されるまで `domain/chunk-store-port.ts` のミラーから、
-`EntityManager` は mc-sim が publish されるまで `domain/entity-manager-port.ts` のミラーから来る。
-どちらも `index.ts` から re-export していないが、`makeGameplayStages` の型に現れる以上、
+`EntityManager` と `InventoryService` は mc-sim が publish されるまで
+`domain/entity-manager-port.ts` / `domain/inventory-port.ts` のミラーから来る。
+どれも `index.ts` から re-export していないが、`makeGameplayStages` の型に現れる以上、
 消費者には見える —— `api-lock.md` の "Supporting declarations" に
-`ChunkStore` / `ChunkStoreApi` / `EntityManager` / `EntityManagerApi` などが載っているのはそのためである。
+`ChunkStore` / `ChunkStoreApi` / `EntityManager` / `EntityManagerApi` /
+`InventoryService` / `InventoryServiceApi` などが載っているのはそのためである。
 タグキーの文字列リテラルまで載るので、キーが動けば API ロックの diff に出る。
 
 ### 2-3. `simModule` に型引数を生やすべきか —— **生やすべきでない**
@@ -157,7 +172,7 @@ const world = Layer.merge(
 `domain/entity-manager-port.ts` のヘッダに同じ文言で記録してある。
 
 **mx-gameplay 側で `simModule` の型引数が要らなかった証拠**は `RRegister` にある:
-`ChunkStore | EntityManager` に `S` は現れない。ホストがどう具体化しても、
+`ChunkStore | EntityManager | InventoryService` に `S` は現れない。ホストがどう具体化しても、
 本リポジトリが宣言する要求は 1 つのままである（テスト
 `the roster requirement carries no behaviour parameter`）。
 
@@ -287,12 +302,19 @@ plan.md §4.2 を素直に読むと `input` の後ろでもあり、`redstone` �
 | `fluidFrontier` | 流体のフロンティア | 同上 |
 | `tickCount` | 溶岩の tick を刻む | 同上 |
 | `pendingBreaks` | **受信箱**。今フレームの破壊要求 | 要らない。セーブが記録するのは「ブロックが無い」ことであって「ボタンが押されていた」ことではない |
-| `minedItems` | **送信箱**。掘れたブロックが mc-sim の `InventoryService` に渡るまでの置き場 | 要らない。1 フレーム幅で drain される |
+| `leftoverItems` | **送信箱、ただし中身は「入らなかった」ぶんだけ**。`minedItems` を置き換えた —— 掘れたものは stage が `InventoryService.add` に直接渡すようになったので、ここに残るのは `add` が返した leftover である | 要らない。**通常フレームでは空である**ことが、`minedItems` と最も違う点 |
 | `pendingItemUses` | **受信箱**。今フレームのアイテム使用要求（火打石 / 火の玉） | 要らない。`pendingBreaks` と同じ理由 |
 | `usedItems` | **送信箱**。点火に使われた道具。`consumedItems` と**別**なのは、`InventoryService` の動詞が違う（消費ではなく耐久の消耗）からである | 要らない。同上 |
 
-後ろの 2 本は publish されていないサービスの仮置きであり、どちらも消える —
-受信箱は mc-render の入力イベントに、送信箱は interactions stage 内の `InventoryService.add` 呼び出しになる。
+受信箱は mc-render の入力イベントになる。**送信箱のうち採掘のぶんはもう消えた** ——
+`domain/inventory-port.ts` が mc-sim の `InventoryService` を丸ごと写し、
+`gameplay:interactions` が採掘したスタックごとに `add` を呼ぶ。
+残った `leftoverItems` は同じ形の `Ref` だが、意味が違う: **`add` が「入らなかった」と答えた数**であり、
+mc-sim 側のコメントが「呼び手（mx-gameplay）がこれを地面のドロップ item にする」と名指ししている値である。
+このリポジトリはまだそれができない（`MobBehaviour` に「どのアイテムを何個」を持つ腕が要り、
+`repairMobBehaviour` の腕と拾得ルールも要る）ので、**捨てずに置いてある**。
+`consumedItems` / `usedItems` は送信箱のままで、理由はそれぞれ
+「`remove` は書き込みの**後**では遅い」と「mc-sim の公開 api に `damageSlot` が無い」である。
 **送信箱は所有ではない**（何も問い合わせられず、drain されるだけ）ことが、
 「1 つの名詞に 2 人の所有者」（DN-GP-7）にならない理由である。
 固定しているテスト: `REGRESSION: the frame state holds no time of day and no day length`

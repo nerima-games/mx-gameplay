@@ -89,6 +89,7 @@ import {
 } from '../../stages/registration'
 import { GAMEPLAY_STAGE_IDS } from '../../stages/stage-ids'
 import { FrameServicesLayer } from './frame-services'
+import { makePreviewInventory, type PreviewInventory } from './inventory'
 import { emptyPreviewRoster } from './roster'
 import { AIR, floatingBlocks, makePreviewWorld, type PreviewWorld, type WorldSpec } from './world'
 
@@ -146,8 +147,21 @@ export type FrameRow = {
   readonly pendingAfter: number
   readonly reads: number
   readonly writes: number
-  /** What `domain/interactions/block-loot.ts` produced. Items, not block ids. */
+  /**
+   * The `add` calls the interactions stage made this frame. Items, not block
+   * ids, and no longer an outbox: `domain/interactions/block-loot.ts` produced
+   * them and `stages/registration.ts` handed each one to mc-sim's
+   * `InventoryService`. See `./inventory.ts`'s `takeDepositLog`.
+   */
   readonly mined: ReadonlyArray<MinedItem>
+  /**
+   * What the inventory REFUSED, drained out of `state.leftoverItems`.
+   *
+   * Almost always empty, and that is what makes it worth a column: a non-zero
+   * entry is an item the player earned and does not have, waiting for a
+   * dropped-item entity this repository cannot spawn yet.
+   */
+  readonly leftover: ReadonlyArray<MinedItem>
   /** What placement took off the stack. */
   readonly spent: ReadonlyArray<PlaceableItemType>
   /** Falling blocks currently hanging with a replaceable cell below them. */
@@ -156,21 +170,26 @@ export type FrameRow = {
 
 export type Site = {
   readonly world: PreviewWorld
+  readonly inventoryService: PreviewInventory
   readonly state: GameplayFrameState
   readonly stages: ReadonlyArray<StageRegistration>
   readonly spec: WorldSpec
   readonly bounds: { readonly width: number; readonly height: number }
   frame: number
   /**
-   * Items the host has drained out of `minedItems`, less what it drained out of
-   * `consumedItems`.
+   * WHAT MC-SIM HOLDS, refreshed from `snapshot` at the end of every frame.
    *
-   * A `Map` and not a list, which is the change the loot table forced. A list of
-   * block ids could only ever grow; an inventory that a placement takes FROM has
-   * to be able to shrink, and the host is the one repository-external thing that
-   * knows both outboxes exist. This is the preview playing mc-sim's
-   * `InventoryService.add` / `.remove` pair, in the same spirit as the arena
-   * screen playing its `EntityManager`.
+   * This used to be the preview's own tally — a `Map` this file added the
+   * `minedItems` outbox into and subtracted `consumedItems` from — under a
+   * comment saying 「This is the preview playing mc-sim's `InventoryService.add`
+   * / `.remove` pair」. It is playing the service for real now (`./inventory.ts`),
+   * so the number the HUD prints is the number the service would answer, by the
+   * service's stacking rule, and a stack that did not fit is missing from it
+   * rather than silently included.
+   *
+   * It stays a plain `Map` field because the HUD and `--stats` read it
+   * synchronously; it is a PROJECTION, refreshed in `stepFrame`, and writing to
+   * it would change nothing.
    */
   inventory: ReadonlyMap<string, number>
   /** The weather the host is feeding back in, drained out of `weatherAdvanced`. */
@@ -223,6 +242,7 @@ export const makeSite = (
 ): Effect.Effect<Site> =>
   Effect.gen(function* () {
     const world = yield* makePreviewWorld(spec)
+    const inventoryService = yield* makePreviewInventory()
     const state = yield* makeGameplayFrameState
     // The stages, from the shipped factory. `makeGameplayStages` would acquire
     // the tags from Layers; `gameplayStages` takes the state and the APIs
@@ -235,10 +255,13 @@ export const makeSite = (
     // mining site has no mobs, so the mob half of `gameplay:entities` sweeps
     // nothing every frame and costs nothing — which is the same claim the idle
     // frame makes about blocks.
-    const stages = schedule(gameplayStages(state, world.api, emptyPreviewRoster))
+    const stages = schedule(
+      gameplayStages(state, world.api, emptyPreviewRoster, inventoryService.api),
+    )
 
     return {
       world,
+      inventoryService,
       state,
       stages,
       spec,
@@ -442,27 +465,36 @@ export const stepFrame = (site: Site): Effect.Effect<FrameRow> =>
       Effect.provide(FrameServicesLayer),
     )
 
-    // Drain the outboxes. `minedItems` and `consumedItems` are explicitly lists
-    // the HOST drains and they hold items for the width of one frame; leaving
-    // either to grow would make this preview the second owner of an inventory,
-    // which is the mistake that paragraph exists to prevent.
-    const mined = yield* Ref.getAndSet<ReadonlyArray<MinedItem>>(site.state.minedItems, [])
+    // WHAT THE MINING HALF DOES NOW: nothing. The stage already called
+    // `InventoryService.add` for every stack it mined, inside the frame, so
+    // there is no `minedItems` to drain — the log below is a RECORD of those
+    // calls and not a queue of work the host still owes.
+    const mined = yield* site.inventoryService.takeDepositLog
+
+    // ...and the one Ref that survived the wiring: what `add` REFUSED. This is
+    // drained rather than accumulated because the frame tape reports per frame,
+    // and it is reported rather than ignored because an entry here is an item
+    // the player earned and does not have. `stages/registration.ts` says why it
+    // cannot yet be a dropped-item entity.
+    const leftover = yield* Ref.getAndSet<ReadonlyArray<MinedItem>>(site.state.leftoverItems, [])
+
+    // THE OTHER DIRECTION IS STILL A LIST, and the host still pays for it.
+    // `stages/registration.ts` declines to call `remove` from the stage,
+    // because `placeBlock` has already written the cell by then and a `remove`
+    // that came back `0` would leave the player a block they never had. So the
+    // charge happens HERE, after the fact, which is exactly the defect that
+    // paragraph is about — visible on this screen as a count that can go
+    // negative, and not fixable from a host.
     const spent = yield* Ref.getAndSet<ReadonlyArray<PlaceableItemType>>(
       site.state.consumedItems,
       [],
     )
-
-    // `add` then `remove`, which is the pair of calls mc-sim's
-    // `InventoryService` actually publishes (`application/inventory-service.ts:49,51`)
-    // and the reason the two outboxes are two.
-    const held = new Map(site.inventory)
-    for (const item of mined) {
-      held.set(item.item, (held.get(item.item) ?? 0) + item.count)
-    }
     for (const item of spent) {
-      held.set(item, (held.get(item) ?? 0) - 1)
+      yield* site.inventoryService.api.remove(item, 1)
     }
-    site.inventory = held
+
+    // The HUD's number, refreshed from the SERVICE rather than tallied here.
+    site.inventory = yield* site.inventoryService.held
 
     // The weather OUTBOX, read after. `undefined` means the stage did not run,
     // which cannot happen here and is answered with "keep what we had" rather
@@ -498,6 +530,7 @@ export const stepFrame = (site: Site): Effect.Effect<FrameRow> =>
       reads: calls.reads,
       writes: calls.writes,
       mined,
+      leftover,
       spent,
       floating: floatingBlocks(site.world, allCells(site)).length,
     }

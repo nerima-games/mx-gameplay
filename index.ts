@@ -50,7 +50,7 @@ export * from './stages/registration'
 export * from './stages/stage-ids'
 
 // --- Provisional ---------------------------------------------------------------
-// Eight modules are temporary local stand-ins for packages that are not
+// Nine modules are temporary local stand-ins for packages that are not
 // published yet, and NONE of them is re-exported:
 //
 //   domain/frame-contract.ts      -> @nerima-games/mc-kernel
@@ -60,12 +60,13 @@ export * from './stages/stage-ids'
 //   domain/chunk-store-port.ts    -> @nerima-games/mc-worldgen
 //   domain/portal-frame-port.ts   -> @nerima-games/mc-worldgen
 //   domain/entity-manager-port.ts -> @nerima-games/mc-sim
+//   domain/inventory-port.ts      -> @nerima-games/mc-sim
 //   domain/block-position-key.ts — the join between two of the vocabularies above
 //
-// TWO of them now mirror mc-worldgen, which is not an inconsistency: that
-// file's own header records the lesson that one mirror file must have one
-// SOURCE module, and `domain/block-vocabulary.ts` beside
-// `domain/item-vocabulary.ts` is the same arrangement for mc-kernel.
+// TWO of them mirror mc-worldgen and TWO mirror mc-sim, which is not an
+// inconsistency: `domain/portal-frame-port.ts`'s header records the lesson that
+// one mirror file must have one SOURCE module, and `domain/block-vocabulary.ts`
+// beside `domain/item-vocabulary.ts` is the same arrangement for mc-kernel.
 //
 // `domain/chunk-window.ts` sits beside them and IS re-exported, because it is
 // this repository's own: the bridge from an `Effect`-shaped store to the
@@ -74,16 +75,18 @@ export * from './stages/stage-ids'
 //
 // All of them carry a deletion date — see the "WHY THIS FILE EXISTS AND WHEN IT
 // DIES" header on the first — and re-exporting them would make `StageId`,
-// `DeltaTimeSecs`, `StageRegistration`, `ChunkStore` and `EntityManagerApi`
-// published API of a package that does not own them, so deleting the stand-in
-// would become a breaking change for every consumer. Consumers take that
+// `DeltaTimeSecs`, `StackCount`, `StageRegistration`, `ChunkStore`,
+// `EntityManagerApi` and `InventoryServiceApi` published API of a package that
+// does not own them, so deleting the stand-in would become a breaking change
+// for every consumer. Consumers take that
 // vocabulary from kernel, mc-worldgen and mc-sim; the types are structurally
 // identical, so a consumer importing them from there typechecks against the
 // signatures above. Same call, and the same reason, as mc-sim's and mc-render's
 // barrels.
 //
-// `ChunkStore`, `EntityManager` and `EntityManagerApi` are nonetheless VISIBLE
-// to a consumer, because they appear in the type of `makeGameplayStages`. That
+// `ChunkStore`, `EntityManager`, `EntityManagerApi`, `InventoryService` and
+// `InventoryServiceApi` are nonetheless VISIBLE to a consumer, because they
+// appear in the type of `makeGameplayStages`. That
 // is why they are in the "Supporting declarations" section of `api-lock.md`: not
 // exported, but named by an export.
 //

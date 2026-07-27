@@ -11,8 +11,11 @@ import { Effect, Layer, Ref } from 'effect'
 import type { ChunkStore } from '../domain/chunk-store-port'
 import type { MobBehaviour } from '../domain/entities/mob-frame'
 import type { EntityManager } from '../domain/entity-manager-port'
+import type { InventoryService } from '../domain/inventory-port'
 import {
   DeltaTimeSecs,
+  MAX_STACK_COUNT,
+  StackCount,
   StageId,
   type FrameServices,
   type GameModule,
@@ -35,20 +38,22 @@ import {
 } from '../stages/stage-ids'
 import { emptyWorldStoreLayer, makeChunkStoreDouble, world } from './support/chunk-store-double'
 import { emptyRosterLayer, makeEntityManagerDouble } from './support/entity-manager-double'
+import { emptyInventoryLayer, makeInventoryDouble } from './support/inventory-service-double'
 import { FrameServicesLayer } from './support/frame-services'
 
 const stageIds = (stages: ReadonlyArray<StageRegistration>): ReadonlyArray<string> =>
   stages.map((stage) => stage.id)
 
 /**
- * The stages read and write blocks and iterate mobs, so building them takes
- * mc-worldgen's `ChunkStore` AND mc-sim's `EntityManager` (in `frameStages` —
- * see `domain/frame-contract.ts` on `RRegister`). Tests about the SHAPE of the
- * registration provide an empty resident world and an empty roster: these
- * assertions are about ordering and contract, and the behaviour over a real
- * world is `test/vertical-slice.test.ts`.
+ * The stages read and write blocks, iterate mobs and deposit mined items, so
+ * building them takes mc-worldgen's `ChunkStore` AND mc-sim's `EntityManager`
+ * AND mc-sim's `InventoryService` (in `frameStages` — see
+ * `domain/frame-contract.ts` on `RRegister`). Tests about the SHAPE of the
+ * registration provide an empty resident world, an empty roster and an empty
+ * inventory: these assertions are about ordering and contract, and the
+ * behaviour over a real world is `test/vertical-slice.test.ts`.
  */
-const emptyWorld = Layer.merge(emptyWorldStoreLayer, emptyRosterLayer)
+const emptyWorld = Layer.mergeAll(emptyWorldStoreLayer, emptyRosterLayer, emptyInventoryLayer)
 
 const registeredStages = Effect.provide(makeGameplayStages, emptyWorld)
 
@@ -57,7 +62,14 @@ const builtStages = Effect.gen(function* () {
   const state = yield* makeGameplayFrameState
   const store = yield* makeChunkStoreDouble(world([]), ['0,0'])
   const roster = yield* makeEntityManagerDouble<MobBehaviour>()
-  return { state, store, roster, stages: gameplayStages(state, store.api, roster.api) }
+  const inventory = yield* makeInventoryDouble()
+  return {
+    state,
+    store,
+    roster,
+    inventory,
+    stages: gameplayStages(state, store.api, roster.api, inventory.api),
+  }
 })
 
 const allAfterEdges = (stages: ReadonlyArray<StageRegistration>): ReadonlyArray<string> =>
@@ -308,7 +320,7 @@ describe('stage behaviour', () => {
         'fallingBlocks',
         'fluidFrontier',
         'heldTool',
-        'minedItems',
+        'leftoverItems',
         'mobDrops',
         'pendingBreaks',
         'pendingItemUses',
@@ -327,11 +339,16 @@ describe('stage behaviour', () => {
       expect(Object.keys(state)).not.toContain('dayLength')
       expect(Object.keys(state)).not.toContain('dayLengthSecs')
       expect(Object.keys(state)).not.toContain('timeOfDaySecs')
-      // The inventory is mc-sim's. `minedItems` and `consumedItems` are lists
-      // the host drains, and a Ref named for the noun would be this repository
-      // becoming its second owner — the mistake `stages/registration.ts`'s
-      // header records having made once already with the hour.
+      // The inventory is mc-sim's, and this assertion means MORE now than it
+      // did when `minedItems` held every mined stack: the stage calls
+      // `InventoryService.add` and reads the number back, so the temptation is
+      // no longer a second outbox but a CACHE of what the service answered —
+      // which is what a Ref named for the noun would be. `leftoverItems` holds
+      // only what `add` refused, and `consumedItems` and `usedItems` are lists
+      // the host drains for verbs the rules do not call.
       expect(Object.keys(state)).not.toContain('inventory')
+      expect(Object.keys(state)).not.toContain('slots')
+      expect(Object.keys(state)).not.toContain('heldItems')
     }),
   )
 
@@ -411,15 +428,16 @@ describe('stage behaviour', () => {
 
       // A work queue of disturbed columns, a frontier of cells still to look
       // at, the counter that paces lava, an inbox of this frame's requests and
-      // an outbox of items on their way to mc-sim. Reconstructed within a frame
-      // of a reload; none of them is a fact about the world. In particular the
-      // outbox is not an inventory — it answers no question about what anyone
-      // is carrying, and it is emptied by whoever drains it.
+      // a list of what mc-sim's inventory had no room for. Reconstructed within
+      // a frame of a reload; none of them is a fact about the world. In
+      // particular `leftoverItems` is not an inventory — it answers no question
+      // about what anyone is carrying, it is empty in every ordinary frame, and
+      // it is emptied by whoever drains it.
       expect(yield* Ref.get(state.fallingBlocks)).toStrictEqual({ pending: new Set<string>() })
       expect(yield* Ref.get(state.fluidFrontier)).toStrictEqual([])
       expect(yield* Ref.get(state.tickCount)).toBe(0)
       expect(yield* Ref.get(state.pendingBreaks)).toStrictEqual([])
-      expect(yield* Ref.get(state.minedItems)).toStrictEqual([])
+      expect(yield* Ref.get(state.leftoverItems)).toStrictEqual([])
       expect(yield* Ref.get(state.mobDrops)).toStrictEqual([])
       expect(yield* Ref.get(state.spawnAttempts)).toStrictEqual([])
       expect(yield* Ref.get(state.targetPosition)).toBeUndefined()
@@ -497,6 +515,43 @@ describe('the mirrored DeltaTimeSecs brand is kernel’s', () => {
   )
 })
 
+describe('the mirrored StackCount brand is kernel’s too', () => {
+  /*
+   * The same regression shape as `DeltaTimeSecs` above, one module over and one
+   * commit later. `StackCount` arrived in `domain/frame-contract.ts` with
+   * `domain/inventory-port.ts`, which needs it for mc-sim's `ItemStack`, and it
+   * is in THAT file because `mc-kernel/domain/quantities.ts` is one of the
+   * three kernel modules it already mirrors — the file's header argues the
+   * placement and names the alternative it rejected.
+   *
+   * A brand is keyed by its string, so a mirror that refined `[1, 64]` instead
+   * of `[0, 64]` would reject the empty stack kernel accepts, in a repository
+   * where every value it touches came from mc-sim and is therefore already
+   * believed to be valid. That is the mc-physics defect exactly.
+   *
+   * The bounds are NOT symmetrical and both ends matter: 0 is legal because
+   * `removeItem` writes the count left in a slot before deciding whether the
+   * slot is empty, and 64 is `MAX_STACK_COUNT` — the cap that makes an
+   * inventory able to be FULL, which is what makes `add`'s leftover reachable
+   * at all (`test/inventory-mirror.test.ts`).
+   */
+  it.effect('accepts integers in [0, MAX_STACK_COUNT] and nothing else', () =>
+    Effect.sync(() => {
+      expect(MAX_STACK_COUNT).toBe(64)
+      expect(StackCount(0)).toBe(0)
+      expect(StackCount(1)).toBe(1)
+      expect(StackCount(MAX_STACK_COUNT)).toBe(64)
+
+      expect(() => StackCount(65)).toThrow()
+      expect(() => StackCount(-1)).toThrow()
+      // An integer, not a quantity: half a block is not a thing a slot holds.
+      expect(() => StackCount(2.5)).toThrow()
+      expect(() => StackCount(Number.NaN)).toThrow()
+      expect(() => StackCount(Number.POSITIVE_INFINITY)).toThrow()
+    }),
+  )
+})
+
 
 describe('the module contract has caught up with this file’s shape', () => {
   /*
@@ -520,7 +575,12 @@ describe('the module contract has caught up with this file’s shape', () => {
    */
   it.effect('REGRESSION: exports a real GameModule, not "stages alone, the Layer comes later"', () =>
     Effect.gen(function* () {
-      const module: GameModule<never, never, never, ChunkStore | EntityManager> = gameplayModule
+      const module: GameModule<
+        never,
+        never,
+        never,
+        ChunkStore | EntityManager | InventoryService
+      > = gameplayModule
       const stages = yield* Effect.provide(module.frameStages, emptyWorld)
 
       expect(stageIds(stages)).toStrictEqual(Object.values(GAMEPLAY_STAGE_IDS))
@@ -539,29 +599,33 @@ describe('the module contract has caught up with this file’s shape', () => {
     }),
   )
 
-  // This used to read "needs nothing to register today, and says so in the
-  // type", with a note predicting that a service would arrive in `frameStages`
-  // — the `RRegister` parameter — rather than in the Layer. Two have: the stages
-  // write blocks, so registering them takes mc-worldgen's `ChunkStore`, and they
-  // iterate mobs, so they take mc-sim's `EntityManager`.
+  // This used to read "acquires exactly TWO services", and the comment named
+  // the third by name: 「The candidate for the third is mc-sim's
+  // `InventoryService`, and until it can be mirrored whole the mob drops go to
+  // an outbox instead」. It is mirrored whole (`domain/inventory-port.ts`), the
+  // stage deposits through it, and the prediction is discharged — so the number
+  // in this title is three.
   //
   // `RIn` is still `never` and that is the distinction `RRegister` exists for.
   // This repository BUILDS nothing another repository has to supply; it CALLS
-  // what mc-worldgen and mc-sim supply. Either service leaking into `RIn` would
-  // be mx-gameplay claiming to construct part of somebody else's repository.
-  it.effect('acquires exactly two services to register — the store and the roster, in frameStages', () =>
+  // what mc-worldgen and mc-sim supply. Any of the three leaking into `RIn`
+  // would be mx-gameplay claiming to construct part of somebody else's
+  // repository.
+  it.effect('acquires exactly three services to register — the store, the roster and the inventory', () =>
     Effect.gen(function* () {
       const registration: Effect.Effect<
         ReadonlyArray<StageRegistration>,
         never,
-        ChunkStore | EntityManager
+        ChunkStore | EntityManager | InventoryService
       > = gameplayModule.frameStages
 
-      // Providing those two — and nothing else — discharges the whole context.
-      // If a stage started demanding a THIRD service at REGISTRATION time, this
-      // assignment would stop compiling, which is the point. The candidate for
-      // the third is mc-sim's `InventoryService`, and until it can be mirrored
-      // whole the mob drops go to an outbox instead; see `GameplayFrameState`.
+      // Providing those three — and nothing else — discharges the whole
+      // context. If a stage started demanding a FOURTH service at REGISTRATION
+      // time, this assignment would stop compiling, which is the point. The
+      // candidate for the fourth is mc-sim's `PlayerService`, and it cannot be
+      // mirrored whole for the reason `GameplayFrameState`'s `targetPosition`
+      // records: `cameraPose` requires `ClockPort`, and restating `ClockPort`
+      // locally is 「a far worse failure than a narrower type」.
       const satisfied: Effect.Effect<ReadonlyArray<StageRegistration>, never, never> =
         Effect.provide(registration, emptyWorld)
 
@@ -579,7 +643,7 @@ describe('the module contract has caught up with this file’s shape', () => {
       const unparameterised: Effect.Effect<
         ReadonlyArray<StageRegistration>,
         never,
-        ChunkStore | EntityManager
+        ChunkStore | EntityManager | InventoryService
       > = makeGameplayStages
 
       expect(typeof unparameterised).toBe('object')

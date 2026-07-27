@@ -146,7 +146,7 @@ Nix を使わない場合は Node.js 22 以上と pnpm 9.15.0 を用意する（
   時刻と違って**所有者が 1 人もいない** —— mc-sim には `TimeService` があり、天候サービスは無い。
   だからここに `Ref` を置くと複製ではなく**最初の 1 つ**になる（それは複製より悪い。
   複製は食い違った日に名乗り出るが、間違ったリポジトリにいる唯一の所有者は名乗り出ない）。
-  採った形は `minedItems` と同じ**受信箱 + 送信箱**で、書き戻すのはホストである。
+  採った形は当時の `minedItems`（現 `leftoverItems`）と同じ**受信箱 + 送信箱**で、書き戻すのはホストである。
   `gameplay:time-weather` はこれで `Effect.void` ではなくなった（DN-GP-7）。
 - **ブロックの読み書きは配線済み。** `gameplay:interactions` が破壊を、`gameplay:entities` が落下を、
   mc-worldgen の `ChunkStore`（`domain/chunk-store-port.ts` のミラー越し）に対して実際に行う。

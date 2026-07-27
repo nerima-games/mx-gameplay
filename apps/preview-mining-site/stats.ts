@@ -42,7 +42,7 @@ import {
 } from '../../domain/mob/creeper-fuse'
 import { canHostileSpawnAt } from '../../domain/mob/hostile-spawn'
 import { carryOver, splitBudget, type FluidWorkItem } from '../../domain/fluid-frontier'
-import { DeltaTimeSecs } from '../../domain/frame-contract'
+import { DeltaTimeSecs, MAX_STACK_COUNT } from '../../domain/frame-contract'
 import { GAMEPLAY_STAGE_IDS } from '../../stages/stage-ids'
 import { SCENARIOS, scenarioByName } from './scenarios'
 import {
@@ -64,6 +64,7 @@ import {
   makeSite,
   pendingPositions,
   requestBreak,
+  setHeldTool,
   settle,
   stepFrame,
   runFrames,
@@ -71,6 +72,7 @@ import {
   previewPlacement,
   type Site,
 } from './site'
+import { INVENTORY_SLOT_COUNT } from './inventory'
 import { FrameServicesLayer } from './frame-services'
 import { GRAVEL, SAND, glyphOf, placeableItemOf, type WorldSpec } from './world'
 import { fallsWhenUnsupported, isReplaceable, type HarvestTier } from '../../domain/block-vocabulary'
@@ -1282,6 +1284,97 @@ const weatherWalk = Effect.sync(() => {
 // Report
 // ---------------------------------------------------------------------------
 
+
+// ---------------------------------------------------------------------------
+// The seam plan.md §2.3-1 is the worked example for
+// ---------------------------------------------------------------------------
+
+/**
+ * Mining reaches mc-sim's inventory, and a FULL one is measured too.
+ *
+ * The first half is the whole point of `domain/inventory-port.ts` and it is the
+ * boring half: swing, item, count. It is measured anyway because it used to be
+ * a `Ref` this preview added up itself, and a number a host tallies and a
+ * number a service answers are different claims that look identical on a
+ * screen.
+ *
+ * THE SECOND HALF IS WHY THIS CHECK EXISTS. `add` resolves to what did NOT fit,
+ * and a stage that read that number as a success flag would produce a world
+ * indistinguishable from a correct one except for items that stop existing. A
+ * full inventory is unreachable by playing — 36 slots x 64 — so nothing on this
+ * screen would ever show it, and no scenario would either. This arranges it and
+ * then mines one more block.
+ *
+ * If this were broken, `refused` below would read 0 and `held after` would have
+ * grown past the cap: the leftover would have been discarded in
+ * `stages/registration.ts` and the block would be gone from the world with
+ * nothing to show for it.
+ */
+const inventoryDeposit = Effect.gen(function* () {
+  const scenario = scenarioByName('sand-column')
+  if (scenario === undefined) {
+    return { id: 'ok', title: 'inventory deposit', finding: false, lines: [] } satisfies Check
+  }
+
+  const site = yield* buildSite(scenario.build(), scenario.name)
+  yield* setHeldTool(site, { heldTier: 'wooden' })
+  yield* requestBreak(site, positionAt(site, scenario.target.x, scenario.target.y))
+  yield* stepFrame(site)
+
+  const depositedRow = site.trace[site.trace.length - 1]
+  const afterOneSwing = inventorySize(site)
+
+  // Now fill it. `add` through the SERVICE, so "full" is mc-sim's definition of
+  // full — every slot holding a whole stack of one item — rather than a number
+  // this file decided on.
+  const capacity = INVENTORY_SLOT_COUNT * MAX_STACK_COUNT
+  yield* site.inventoryService.api.add('cobblestone', capacity)
+  // Drain the log, so the row below reports the STAGE's call and not this
+  // arrangement. The same reason `poke` exists beside `requestPlace`: setting a
+  // world up is not part of what the measurement claims.
+  yield* site.inventoryService.takeDepositLog
+  const held = yield* site.inventoryService.api.countOf('cobblestone')
+
+  // One more swing, into a full inventory.
+  yield* requestBreak(site, positionAt(site, scenario.target.x, scenario.target.y - 1))
+  yield* stepFrame(site)
+  const spilledRow = site.trace[site.trace.length - 1]
+  const refused = (spilledRow?.leftover ?? []).reduce((total, item) => total + item.count, 0)
+  const heldAfter = yield* site.inventoryService.api.countOf('cobblestone')
+
+  const lost = refused > 0 && (spilledRow?.leftover ?? []).length === 0
+  const overflowed = heldAfter > capacity
+
+  return {
+    id: lost || overflowed ? 'F-inventory' : 'ok',
+    title: 'a mined block reaches mc-sim\u2019s inventory, and a FULL one keeps the leftover',
+    finding: lost || overflowed,
+    lines: [
+      `  one swing, wooden pickaxe`,
+      `    add() calls              ${(depositedRow?.mined ?? [])
+        .map((item) => `${item.item} x${String(item.count)}`)
+        .join(', ')}`,
+      `    held afterwards          ${String(afterOneSwing)}`,
+      '',
+      `  the same swing into a FULL inventory (${String(INVENTORY_SLOT_COUNT)} slots x ${String(MAX_STACK_COUNT)})`,
+      `    held before              ${String(held)}`,
+      `    add() calls              ${(spilledRow?.mined ?? [])
+        .map((item) => `${item.item} x${String(item.count)}`)
+        .join(', ')}`,
+      `    refused (the leftover)   ${String(refused)}   (must be > 0, or the cap is not real)`,
+      `    kept in leftoverItems    ${(spilledRow?.leftover ?? [])
+        .map((item) => `${item.item} x${String(item.count)}`)
+        .join(', ')}`,
+      `    held after               ${String(heldAfter)}   (must equal held before)`,
+      '',
+      '  The leftover is KEPT rather than dropped, and that is as far as this repository',
+      '  can take it: mc-sim expects the caller to spawn a dropped-item entity, which needs',
+      '  an arm on MobBehaviour for "which item, how many", a matching arm in',
+      '  repairMobBehaviour, and a pickup rule. The frame tape prints it as !item.',
+    ],
+  } satisfies Check
+})
+
 const CHECKS = [
   idleFrames,
   cascadeShape,
@@ -1301,6 +1394,7 @@ const CHECKS = [
   creeperEndToEnd,
   spawnGate,
   lootTable,
+  inventoryDeposit,
   placementRefusals,
   weatherWalk,
 ] as const
