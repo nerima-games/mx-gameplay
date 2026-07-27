@@ -85,19 +85,25 @@ import { applyFallingBlocks } from '../domain/entities/falling-block-move'
 import {
   applySpawnAttempts,
   resolveBlasts,
+  resolveBowHits,
   rollCasualtyDrops,
   rollSelfDestructDrops,
   sweepMobs,
+  ENDERMITE_KIND,
+  ENDERMITE_MAX_HEALTH,
+  type BowHit,
   type MobBehaviour,
   type MobSpawnAttempt,
 } from '../domain/entities/mob-frame'
 import { searchSpawnCandidates } from '../domain/entities/mob-spawn-search'
 import {
   entityManagerTag,
+  type EntityId,
   type EntityManager,
   type EntityManagerApi,
   type Position,
 } from '../domain/entity-manager-port'
+import type { Damage } from '../domain/death-cause'
 import {
   disturb,
   emptyFallingBlockQueue,
@@ -121,6 +127,21 @@ import {
   type MinedItem,
 } from '../domain/interactions/block-loot'
 import { placeBlock } from '../domain/interactions/place-block'
+import {
+  bowCharge,
+  bowDamage,
+  canFireBow,
+  BOW_MAX_RANGE,
+} from '../domain/interactions/draw-bow'
+import { shotTarget } from '../domain/interactions/bow-shot'
+import { knockbackDirection, type KnockbackDirection } from '../domain/interactions/knockback'
+import {
+  enderPearlDisplacement,
+  shouldSpawnEndermite,
+  ENDER_PEARL_DAMAGE,
+  ENDER_PEARL_DEATH_CAUSE,
+  type EnderPearlDisplacement,
+} from '../domain/interactions/throw-ender-pearl'
 import {
   useFlintAndSteel,
   type IgnitionItemType,
@@ -422,9 +443,13 @@ export type GameplayFrameState = {
   readonly pendingBreaks: Ref.Ref<ReadonlyArray<PositionKey>>
   readonly pendingPlacements: Ref.Ref<ReadonlyArray<PlacementRequest>>
   readonly pendingItemUses: Ref.Ref<ReadonlyArray<ItemUseRequest>>
+  readonly pendingBowShots: Ref.Ref<ReadonlyArray<BowShotRequest>>
+  readonly pendingPearlThrows: Ref.Ref<ReadonlyArray<EnderPearlThrowRequest>>
   readonly leftoverItems: Ref.Ref<ReadonlyArray<MinedItem>>
   readonly consumedItems: Ref.Ref<ReadonlyArray<PlaceableItemType>>
   readonly usedItems: Ref.Ref<ReadonlyArray<IgnitionItemType>>
+  readonly bowKnockbacks: Ref.Ref<ReadonlyArray<BowKnockback>>
+  readonly enderPearlOutcomes: Ref.Ref<ReadonlyArray<EnderPearlOutcome>>
   readonly mobDrops: Ref.Ref<ReadonlyArray<MobDrop>>
   readonly spawnAttempts: Ref.Ref<ReadonlyArray<MobSpawnAttempt>>
   readonly targetPosition: Ref.Ref<Position | undefined>
@@ -484,15 +509,147 @@ export type ItemUseRequest = {
   readonly heldItem: IgnitionItemType
 }
 
+/**
+ * One shot from a drawn bow.
+ *
+ * ---------------------------------------------------------------------------
+ * IT CARRIES NO `heldItem`, AND THAT IS THE WHOLE STORY OF THIS REQUEST
+ * ---------------------------------------------------------------------------
+ *
+ * `PlacementRequest` and `ItemUseRequest` above both carry one, and both explain
+ * why in the same words: the item is 「a type error where the request is BUILT
+ * rather than a refusal where it is serviced」, with `isPlaceableItem` and
+ * `isIgnitionItem` as the proof obligations. The bow cannot have that field,
+ * because `domain/item-vocabulary.ts` has no `bow` — kernel's `ITEM_TYPES` is 97
+ * words and `bow`, `arrow` and `ender_pearl` are three of the eight it is missing
+ * (docs/testing.md §3-1 row 1). Writing the literal here would make this
+ * repository invent kernel's vocabulary, which is the one thing that row refuses.
+ *
+ * So the request carries the PHYSICAL FACTS of the shot and not the name of the
+ * thing that produced it. That is not a workaround invented for the bow: it is
+ * `BlockLootContext`'s shape, which takes a `heldTier` and a `fortuneLevel` rather
+ * than the name of a pickaxe, and `domain/interactions/draw-bow.ts`'s
+ * `BowDrawContext` follows it deliberately.
+ *
+ * WHAT IS ACTUALLY LOST BY THAT is precise and is not the aiming: it is the
+ * INVENTORY traffic. The reference consumes one `ARROW`, damages the `BOW`'s
+ * durability slot, and skips both under Infinity and Unbreaking
+ * (`interaction-bow-handler.ts:184-198`). Every one of those is a call naming an
+ * item, `domain/inventory-port.ts`'s `add` / `remove` take an `ItemType`, and none
+ * of the three words exists. A bow wired here therefore fires FOR FREE. That is
+ * recorded rather than hidden, and it is the same shape as `consumedItems` — a
+ * verb this repository can perform whose bookkeeping it cannot yet do honestly.
+ *
+ * `origin` is the EYE and not the feet, which is why it is not read from
+ * `targetPosition`: that Ref holds where the player stands, the shot leaves from
+ * where they look, and the offset between them is a pose mc-sim owns.
+ */
+export type BowShotRequest = {
+  /** Where the shot starts. The eye, in world space. */
+  readonly origin: Position
+  /** Where it is aimed. NEED NOT BE A UNIT VECTOR — see `shotTarget`. */
+  readonly dirX: number
+  readonly dirY: number
+  readonly dirZ: number
+  /** How long the bow was drawn, in seconds. */
+  readonly chargeSecs: number
+  /** Level of Power on the bow. Absent = none. See `BowDrawContext`. */
+  readonly powerLevel?: number
+}
+
+/**
+ * One ender pearl thrown.
+ *
+ * Carries no `heldItem` for `BowShotRequest`'s reason, and loses the same thing by
+ * it: the reference consumes one `ENDER_PEARL` outside creative
+ * (`ender-pearl.ts:58-64`) and this cannot, so a pearl thrown here is free and
+ * infinite.
+ *
+ * `hitDistance` is how far along the aim a raycast struck something, and
+ * `undefined` means it struck nothing within its range. THE RAYCAST IS THE HOST'S
+ * — it is the same hit that decides which cell a block is placed against, which
+ * is why `ItemUseRequest`'s comment can say 「every rule in this repository is
+ * handed a cell」 — and the reference takes it the same way, as a `TargetRayHit`
+ * parameter (`ender-pearl.ts:8,45`).
+ */
+export type EnderPearlThrowRequest = {
+  /** Where the throw starts. The eye, in world space. */
+  readonly origin: Position
+  readonly dirX: number
+  readonly dirY: number
+  readonly dirZ: number
+  /** Distance to what the aim ray struck, in blocks. Absent = it struck nothing. */
+  readonly hitDistance?: number
+}
+
+/**
+ * Which way one bow hit shoved what it struck.
+ *
+ * AN OUTBOX WITH NO CONSUMER IN THIS REPOSITORY, and that is deliberate rather
+ * than unfinished. `domain/interactions/knockback.ts` §3 records why the impulse
+ * itself is not built: mc-sim's `EntityState` has no velocity field to receive
+ * one, exactly as it has none for the minecart (docs/responsibility.md §5-5). The
+ * DIRECTION is a rule and is decided here; turning it into a shove needs a field
+ * that does not exist.
+ *
+ * Parking it in a Ref rather than dropping it is the choice `consumedItems` made
+ * for the same situation. A host that has its own physics can act on it today; the
+ * day mc-sim grows a velocity, this Ref is what the impulse is built from and the
+ * rule above it does not change.
+ */
+export type BowKnockback = {
+  readonly id: EntityId
+  readonly direction: KnockbackDirection
+}
+
+/**
+ * What one ender pearl throw did to the thrower.
+ *
+ * AN OUTBOX, and for a sharper reason than `BowKnockback`'s: both halves are about
+ * the PLAYER, and this repository holds no player. The displacement wants
+ * mc-sim's `setPlayerPosition` and the damage wants its health service; the
+ * `targetPosition` Ref is an INBOX the host writes and reading a teleport back out
+ * of it would make two owners of one noun — the failure this file's header
+ * records for `timeOfDaySecs`.
+ *
+ * The damage is a `Damage` and not a bare number, so the CAUSE travels with it.
+ * `domain/death-cause.ts`'s `applyDamage` requires one, and a pearl that killed
+ * you saying 「You teleported too hard.」 rather than 「You died.」 is the entire
+ * point of that type.
+ *
+ * THE DAMAGE IS ALWAYS PRESENT, INCLUDING IN CREATIVE, and that is a DIVERGENCE
+ * from the reference stated as one. `ender-pearl.ts:57,68` gates both the
+ * consumption and the damage on `gameMode.isCreative()`, and there is no game mode
+ * in this repository — no port, no mirror, and no Ref. Which mode the player is in
+ * is state, state survives a save/load round trip, and by this file's header it is
+ * therefore mc-sim's. Emitting the damage unconditionally leaves the exemption to
+ * the one party that can know about it: a host in creative drops this field, and a
+ * host that ignores the question gets survival's behaviour, which is the inert
+ * direction of the two.
+ */
+export type EnderPearlOutcome = {
+  /** How far and which way the thrower moves, in blocks, from where they stood. */
+  readonly displacement: EnderPearlDisplacement
+  /** What the throw costs them. See the note above on creative mode. */
+  readonly damage: Damage
+}
+
 export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.gen(function* () {
   const pendingBreaks = yield* Ref.make<ReadonlyArray<PositionKey>>([])
   const pendingPlacements = yield* Ref.make<ReadonlyArray<PlacementRequest>>([])
   const pendingItemUses = yield* Ref.make<ReadonlyArray<ItemUseRequest>>([])
+  const pendingBowShots = yield* Ref.make<ReadonlyArray<BowShotRequest>>([])
+  const pendingPearlThrows = yield* Ref.make<ReadonlyArray<EnderPearlThrowRequest>>([])
   // Empty is the ORDINARY state, unlike the outbox it replaces: an entry here
   // means an item the inventory had no room for. See the module header.
   const leftoverItems = yield* Ref.make<ReadonlyArray<MinedItem>>([])
   const consumedItems = yield* Ref.make<ReadonlyArray<PlaceableItemType>>([])
   const usedItems = yield* Ref.make<ReadonlyArray<IgnitionItemType>>([])
+  // Both empty in the ORDINARY state, like `leftoverItems` and unlike the
+  // outboxes above: an entry means something happened that this repository
+  // computed and cannot itself deliver. See the two types.
+  const bowKnockbacks = yield* Ref.make<ReadonlyArray<BowKnockback>>([])
+  const enderPearlOutcomes = yield* Ref.make<ReadonlyArray<EnderPearlOutcome>>([])
   const mobDrops = yield* Ref.make<ReadonlyArray<MobDrop>>([])
   const spawnAttempts = yield* Ref.make<ReadonlyArray<MobSpawnAttempt>>([])
   const targetPosition = yield* Ref.make<Position | undefined>(undefined)
@@ -519,9 +676,13 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
     pendingBreaks,
     pendingPlacements,
     pendingItemUses,
+    pendingBowShots,
+    pendingPearlThrows,
     leftoverItems,
     consumedItems,
     usedItems,
+    bowKnockbacks,
+    enderPearlOutcomes,
     mobDrops,
     spawnAttempts,
     targetPosition,
@@ -589,7 +750,21 @@ export const gameplayStages = (
           state.pendingItemUses,
           [],
         )
-        if (breaks.length === 0 && placements.length === 0 && itemUses.length === 0) {
+        const bowShots = yield* Ref.getAndSet<ReadonlyArray<BowShotRequest>>(
+          state.pendingBowShots,
+          [],
+        )
+        const pearlThrows = yield* Ref.getAndSet<ReadonlyArray<EnderPearlThrowRequest>>(
+          state.pendingPearlThrows,
+          [],
+        )
+        if (
+          breaks.length === 0 &&
+          placements.length === 0 &&
+          itemUses.length === 0 &&
+          bowShots.length === 0 &&
+          pearlThrows.length === 0
+        ) {
           return
         }
 
@@ -744,6 +919,179 @@ export const gameplayStages = (
           // cell they write was air, and filling a hole cannot start a fall.
         }
 
+        // ---- THE BOW -------------------------------------------------------
+        //
+        // AFTER THE ITEM USES, and the order matters less than the others in this
+        // stage but is still a decision: a shot is aimed at a mob and not at a
+        // cell, so nothing above can change what it hits. It is last among the
+        // block verbs because it is not one.
+        //
+        // THE ROSTER IS READ ONCE FOR THE WHOLE BATCH, like `heldTool` above and
+        // for a stronger reason: `EntityManagerApi.entities` resolves to the
+        // roster's OWN array (mc-sim's contract, not an implementation detail), so
+        // re-reading it per shot would return the identical array object.
+        const shoves: Array<BowKnockback> = []
+        const bowHits: Array<BowHit> = []
+        if (bowShots.length > 0) {
+          const candidates = yield* roster.entities
+
+          for (const shot of bowShots) {
+            // A TAP IS NOT A SHOT. `canFireBow` is the gate and it is asked
+            // before anything else is computed, so a half-pressed button costs
+            // one comparison rather than a scan of the roster.
+            if (!canFireBow(shot.chargeSecs)) {
+              continue
+            }
+
+            const hit = shotTarget(
+              candidates,
+              shot.origin,
+              shot.dirX,
+              shot.dirY,
+              shot.dirZ,
+              BOW_MAX_RANGE,
+            )
+            // A MISS IS ORDINARY AND SILENT. It is also where the arrow would
+            // have gone, which this repository cannot say: no arrow exists to
+            // land, and the reference's own miss draws a particle streak and
+            // nothing else.
+            if (hit === undefined) {
+              continue
+            }
+
+            // TERRAIN IS NOT CONSULTED, AND THIS IS THE ONE GAP IN THIS ARM.
+            // `domain/interactions/bow-shot.ts`'s `shotBlockedByTerrain` is
+            // written, tested and NOT CALLED HERE, because it needs an
+            // `IsArrowBlockedAt` and building one needs to know which blocks stop
+            // an arrow. That is a kernel CAPABILITY and kernel has not published
+            // it: `domain/block-vocabulary.ts` mirrors four capability predicates
+            // — `fallsWhenUnsupported`, `isReplaceable`, `validSpawnSurface`,
+            // `canSupportAttachments` — and not one of them means "solid to a
+            // projectile". The reference has such a table
+            // (`block-collision-predicates.ts`'s `PASSABLE_BLOCK_IDS`) and it is
+            // mc-kernel's to publish, not this repository's to transcribe.
+            //
+            // Using `isReplaceable` for it would be inventing an equivalence
+            // neither owner has declared — the refusal
+            // `domain/entity-manager-port.ts` makes for `Position` against
+            // `BlockPosition`, which have identical shape and different meanings.
+            // So a bow wired here SHOOTS THROUGH WALLS, that is stated rather
+            // than hidden, and the missing thing is one capability with a name.
+            // `IsArrowBlockedAt`'s producer is the host, exactly as
+            // docs/responsibility.md §5-5 assigns `IsRailAt`'s.
+            // THE REQUEST IS ITSELF A `BowDrawContext`, structurally: it carries
+            // a `powerLevel` and the context wants nothing else. That is not a
+            // coincidence to be tidied away — `BowShotRequest`'s header explains
+            // that both types describe the bow by its PROPERTIES rather than by
+            // its name, so the day a second enchantment level joins the context
+            // the request grows the same field and this line does not change.
+            const damage = bowDamage(bowCharge(shot.chargeSecs), shot)
+            bowHits.push({ id: hit.id, damage })
+
+            // WHICH WAY IT SHOVES, computed from the shooter to the target and
+            // horizontal only. The target is looked up rather than carried out of
+            // `shotTarget`, which returns a distance ALONG THE RAY and not a
+            // position — and the shove is about where the mob stands, not about
+            // how far down the line it was found.
+            const target = candidates.find((candidate) => candidate.id === hit.id)
+            if (target !== undefined) {
+              shoves.push({
+                id: hit.id,
+                direction: knockbackDirection(
+                  target.feetPosition.x - shot.origin.x,
+                  target.feetPosition.z - shot.origin.z,
+                ),
+              })
+            }
+          }
+        }
+
+        // ONE SWEEP FOR EVERY HIT — `resolveBowHits` argues it, and it is
+        // `resolveBlasts`' argument with the nouns changed.
+        const bowCasualties = yield* resolveBowHits(roster, bowHits)
+        if (bowCasualties.length > 0) {
+          // The same atomic seed step the blast path uses, and for the same
+          // reason: a split read/write would let two frames draw one sequence.
+          const drops = yield* Ref.modify(state.rollSeed, (seed) => {
+            const rolled = rollCasualtyDrops(bowCasualties, seed)
+            return [rolled.drops, rolled.seed] as const
+          })
+          if (drops.length > 0) {
+            yield* Ref.update(state.mobDrops, (items) => [...items, ...drops])
+          }
+        }
+
+        // ---- THE ENDER PEARL -----------------------------------------------
+        //
+        // ONE ROLL PER THROW, drawn as a BATCH up front rather than one at a time
+        // inside the loop, which is `domain/interactions/block-loot.ts`'s
+        // convention and `domain/frame-rolls.ts`'s: the budget is a function of
+        // how many throws there were and not of what happened to them, so two runs
+        // of one scenario draw the same numbers whatever the endermites do.
+        const pearlOutcomes: Array<EnderPearlOutcome> = []
+        if (pearlThrows.length > 0) {
+          const rolls = yield* Ref.modify(state.rollSeed, (seed) => {
+            const batch = drawRolls(seed, pearlThrows.length)
+            return [batch, batch.seed] as const
+          })
+
+          for (const [index, thrown] of pearlThrows.entries()) {
+            const displacement = enderPearlDisplacement(
+              thrown.dirX,
+              thrown.dirY,
+              thrown.dirZ,
+              thrown.hitDistance,
+            )
+            // A THROW THAT MOVES NOBODY COSTS NOTHING. The rule refuses a
+            // degenerate aim (see its header on the reference's due-north
+            // fallback), and a pearl that did not go anywhere must not take five
+            // health points or roll for an endermite.
+            if (displacement === undefined) {
+              continue
+            }
+
+            pearlOutcomes.push({
+              displacement,
+              damage: { amount: ENDER_PEARL_DAMAGE, cause: ENDER_PEARL_DEATH_CAUSE },
+            })
+
+            if (!shouldSpawnEndermite(rollAt(rolls, index))) {
+              continue
+            }
+
+            // WHERE THE ENDERMITE GOES IS WHERE THE PLAYER LANDS
+            // (`ender-pearl.ts:73` spawns it at `teleportTarget`), and that is an
+            // ABSOLUTE position, which this arm has only as the player's feet
+            // plus the displacement it just computed.
+            //
+            // NO FEET, NO ENDERMITE. `targetPosition` is `undefined` when the host
+            // has not told this frame where the player is, and the alternatives
+            // are both worse than skipping: spawning at the origin puts a mob at
+            // world zero, and spawning at the bare displacement puts it wherever
+            // the player would be if they were standing at world zero. The pearl
+            // still teleports and still hurts — those are relative and need no
+            // anchor — so the divergence is confined to the one part that needs
+            // one.
+            if (playerFeet === undefined) {
+              continue
+            }
+
+            // `behaviour: undefined`, which ticks nothing. `ENDERMITE_KIND`'s
+            // header says at length what that means and why no rule is invented
+            // to fill it.
+            yield* roster.spawn({
+              kind: ENDERMITE_KIND,
+              feetPosition: {
+                x: playerFeet.x + displacement.x,
+                y: playerFeet.y + displacement.y,
+                z: playerFeet.z + displacement.z,
+              },
+              healthPoints: ENDERMITE_MAX_HEALTH,
+              behaviour: undefined,
+            })
+          }
+        }
+
         // ---- THE DEPOSIT ---------------------------------------------------
         //
         // plan.md §2.3-1's worked example, as one line of code and a great deal
@@ -783,6 +1131,14 @@ export const gameplayStages = (
         }
         if (used.length > 0) {
           yield* Ref.update(state.usedItems, (items) => [...items, ...used])
+        }
+        // Both are outboxes with no consumer in this repository; the types say
+        // which missing noun each is waiting for.
+        if (shoves.length > 0) {
+          yield* Ref.update(state.bowKnockbacks, (items) => [...items, ...shoves])
+        }
+        if (pearlOutcomes.length > 0) {
+          yield* Ref.update(state.enderPearlOutcomes, (items) => [...items, ...pearlOutcomes])
         }
         if (disturbed.length > 0) {
           yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, disturbed))

@@ -310,20 +310,36 @@ describe('stage behaviour', () => {
       // The outbox is separate from `consumedItems` because the two name
       // different `InventoryService` verbs — see the header.
       //
+      // `pendingBowShots` / `bowKnockbacks` AND `pendingPearlThrows` /
+      // `enderPearlOutcomes` are the fourth and fifth inbox/outbox pairs, and
+      // they pass the same test: a save file records where a mob is and how much
+      // health it has left — both mc-sim's — never that a bow was loosed, and
+      // never which way a hit shoved something. THE TWO OUTBOXES ARE HERE FOR A
+      // DIFFERENT REASON FROM THE OTHER THREE, though, and it is worth the
+      // distinction: `consumedItems` and `usedItems` wait on an inventory verb
+      // this repository could call wrongly, while these two wait on a noun that
+      // does not exist anywhere — a velocity field on the roster, and a player.
+      // See their types in `stages/registration.ts`.
+      //
       // WHAT IS STILL NOT HERE is the thing this list exists to keep out: there
       // is no `Ref<Map<MobId, CreeperFuse>>`, no mob position, no mob health, no
-      // entity id, no INVENTORY — and no DAY LENGTH, which is the half of the
-      // original failure that has no stand-in and never will, because nothing in
-      // this repository needs to know how long a day is.
+      // entity id, no INVENTORY, no PLAYER POSITION and no GAME MODE — and no DAY
+      // LENGTH, which is the half of the original failure that has no stand-in
+      // and never will, because nothing in this repository needs to know how long
+      // a day is.
       expect(Object.keys(state).sort()).toStrictEqual([
+        'bowKnockbacks',
         'consumedItems',
+        'enderPearlOutcomes',
         'fallingBlocks',
         'fluidFrontier',
         'heldTool',
         'leftoverItems',
         'mobDrops',
+        'pendingBowShots',
         'pendingBreaks',
         'pendingItemUses',
+        'pendingPearlThrows',
         'pendingPlacements',
         'rollSeed',
         'spawnAttempts',
@@ -335,6 +351,15 @@ describe('stage behaviour', () => {
         'weather',
         'weatherAdvanced',
       ])
+
+      // The pearl teleports the player and the game mode decides whether it
+      // hurts. NEITHER IS HERE, and both are named because the pearl is the first
+      // rule in this repository that wanted them: a `playerPosition` Ref would be
+      // a second owner of `targetPosition`'s noun, and a `gameMode` Ref would be
+      // a second owner of a save-file fact. Both leave through
+      // `enderPearlOutcomes` instead.
+      expect(Object.keys(state)).not.toContain('playerPosition')
+      expect(Object.keys(state)).not.toContain('gameMode')
 
       expect(Object.keys(state)).not.toContain('dayLength')
       expect(Object.keys(state)).not.toContain('dayLengthSecs')

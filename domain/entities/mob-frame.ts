@@ -313,7 +313,7 @@ export const STRUCK_ENDERMAN: EndermanFlinch = { _tag: 'Struck' }
 export type MobBehaviour = CreeperFuse | EndermanFlinch | undefined
 
 /**
- * The two entity kinds this repository names.
+ * The three entity kinds this repository names.
  *
  * mc-sim's `EntityKind` is deliberately OPEN and mc-sim never branches on one —
  * `countOfKind` compares two strings the caller supplied and that is the whole of
@@ -347,6 +347,72 @@ export const CREEPER_KIND: EntityKind = EntityKind('creeper')
  * enderman a host ever spawned.
  */
 export const ENDERMAN_KIND: EntityKind = EntityKind('enderman')
+
+/**
+ * The third, and the only one that is NOT in `HOSTILE_KINDS` below.
+ *
+ * An endermite exists because a player threw an ender pearl and lost a 5% roll
+ * (`../interactions/throw-ender-pearl.ts`), which is the only way vanilla makes
+ * one and the only way this repository does. `../../stages/registration.ts`
+ * performs the spawn.
+ *
+ * ---------------------------------------------------------------------------
+ * IT HAS NO BEHAVIOUR RULE, AND THAT IS RECORDED RATHER THAN STUBBED
+ * ---------------------------------------------------------------------------
+ *
+ * It is spawned with a `behaviour` of `undefined`, which `MobBehaviour` admits and
+ * `sweepMobs` ticks nothing for — 「a pig keeps its `undefined`」. So an endermite
+ * here appears, occupies a roster slot, can be shot, and does nothing else.
+ *
+ * The reference gives it `behavior: 'hostile'`
+ * (`<reference-impl>/packages/entity/domain/mob/mobs/endermite.ts:8`), which
+ * drives a generic chase-and-attack AI. THIS REPOSITORY HAS NO GENERIC MOB AI AT
+ * ALL: `../mob/` holds a creeper's fuse, an enderman's teleport and a shulker's
+ * shell, and not one of them is a chase. So the endermite is not less finished
+ * than its neighbours by having no chase — it is less finished by having no rule
+ * of its own, and 「small hostile End mob that spawns from ender pearl throws」
+ * (`endermite.ts:4`) does not name one the way a fuse or a teleport is named.
+ * Writing an attack loop to fill the gap would be inventing behaviour rather than
+ * porting it.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY IT IS OUTSIDE `HOSTILE_KINDS`, AND WHAT THAT COSTS
+ * ---------------------------------------------------------------------------
+ *
+ * That list is the SPAWNER's roster and the population cap's, and its header says
+ * 「THIS IS THE ONE LIST [...] a kind cannot be spawnable without being counted」.
+ * An endermite must not be in it, because `./mob-spawn-search` would then produce
+ * endermites from the night sky, which is neither vanilla nor the reference: the
+ * reference's spawner rotates eight hostiles and the endermite is not among the
+ * ones it picks — its only producer is the pearl.
+ *
+ * THE COST IS STATED BECAUSE IT IS REAL: an endermite is a hostile mob that
+ * `MAX_HOSTILE_COUNT` does not count, so a player throwing pearls can raise the
+ * hostile population past 16. That is a DIVERGENCE from a cap this repository
+ * argued for at length, and it is the correct half of the trade — the alternative
+ * makes the natural spawner produce a mob that only a pearl should. If a cap over
+ * pearl-spawned endermites is wanted, it is a rule of its own with its own number,
+ * and it does not exist in the reference either. `test/ender-pearl.test.ts` pins
+ * the exclusion so that adding this kind to `HOSTILE_KINDS` fails a named test
+ * rather than quietly changing what spawns at night.
+ */
+export const ENDERMITE_KIND: EntityKind = EntityKind('endermite')
+
+/**
+ * An endermite's health at spawn.
+ *
+ * `<reference-impl>/packages/entity/domain/mob/mobs/endermite.ts:9` (`maxHealth: 8`),
+ * which its comment attributes to vanilla. On this side of the line for
+ * `CREEPER_MAX_HEALTH`'s reason: mc-sim's §7-6 puts per-kind constants in the
+ * rules layer.
+ *
+ * It is NOT reachable through `maxHealthOfKind`, whose fallback is the creeper's
+ * 20 and whose only caller picks from `HOSTILE_KINDS`. The pearl's spawn passes
+ * this constant directly, because an endermite is not something the hostile
+ * spawner produces and routing it through that function would mean adding a row
+ * for a kind that function's callers can never be handed.
+ */
+export const ENDERMITE_MAX_HEALTH = 8
 
 /**
  * Every kind this repository considers HOSTILE, and therefore every kind the
@@ -654,10 +720,23 @@ export type Blast = {
   readonly explosion: Explosion
 }
 
-/** A mob that died to a blast, for the drop roll that happens outside the sweep. */
+/**
+ * A mob that died to a blow, for the drop roll that happens outside the sweep.
+ *
+ * TWO PRODUCERS NOW, not one: `resolveBlasts` and `resolveBowHits`. The name was
+ * always about what a casualty IS rather than what killed it, and the drop roll
+ * downstream (`rollCasualtyDrops`) has never asked.
+ */
 export type MobCasualty = {
   readonly id: EntityId
   readonly kind: EntityKind
+}
+
+/** One entity, and what a shot took off it. See `resolveBowHits`. */
+export type BowHit = {
+  readonly id: EntityId
+  /** Health points, already scaled by charge and Power (`../interactions/draw-bow.ts`). */
+  readonly damage: number
 }
 
 // ---------------------------------------------------------------------------
@@ -1085,6 +1164,100 @@ export const resolveBlasts = (
     }
 
     return { casualties, disturbed }
+  })
+
+/**
+ * Turn bow hits into damage.
+ *
+ * `resolveBlasts`' sibling, and deliberately the same shape: ONE sweep for every
+ * hit rather than one sweep per hit, because `sweep` is mc-sim's only write path
+ * and two arrows reaching one mob in a frame must both land — the second would
+ * otherwise be applied to a mob the first had already removed.
+ *
+ * THE DAMAGE PER ENTITY IS SUMMED BY THE CALLER, not here, and the parameter is a
+ * list rather than a map for that reason: two shots at one mob are two hits, and
+ * whether they add up is a question about a frame rather than about a sweep. The
+ * interactions stage sums them.
+ *
+ * NO CRATER, NO STORE, AND NO SECOND PASS. A blast reshapes the world and this
+ * does not, which is why this function takes no `ChunkStoreApi` and why it is much
+ * the shorter of the two.
+ *
+ * ---------------------------------------------------------------------------
+ * IT ARMS THE ENDERMAN'S FLINCH, AND THAT PARAGRAPH IS NOW OUT OF DATE
+ * ---------------------------------------------------------------------------
+ *
+ * `resolveBlasts` carries a long note ending 「melee belongs in a `domain/combat/`
+ * that does not exist [...] and A PROJECTILE HAS NO PRODUCER. A blast is the one
+ * hit the frame both delivers and knows about, so it is the one that arms the
+ * flinch」.
+ *
+ * The bow is that producer. It is not a projectile in the sense that sentence
+ * assumed — nothing flies (`../interactions/draw-bow.ts`'s header) — but it is
+ * exactly the thing the sentence was waiting for: a hit this frame delivers and
+ * knows about, from a weapon rather than from an explosion. So `bruise` is applied
+ * here too, and an enderman shot with a bow can now teleport away from it, which
+ * is `../mob/enderman-teleport.ts`'s `damaged` branch reached for the second time
+ * and the first time from a weapon.
+ *
+ * Melee is still absent and still for that note's reason.
+ */
+export const resolveBowHits = (
+  roster: EntityManagerApi<MobBehaviour>,
+  hits: ReadonlyArray<BowHit>,
+): Effect.Effect<ReadonlyArray<MobCasualty>> =>
+  Effect.gen(function* () {
+    if (hits.length === 0) {
+      return NO_CASUALTIES
+    }
+
+    // Summed here rather than by the caller after all — see above, the LIST is
+    // the contract and the summing is this function's reading of it. A map keyed
+    // by id costs one allocation per frame in which anything was shot at all.
+    const totals = new Map<EntityId, number>()
+    for (const hit of hits) {
+      if (!Number.isFinite(hit.damage) || hit.damage <= 0) {
+        continue
+      }
+      totals.set(hit.id, (totals.get(hit.id) ?? 0) + hit.damage)
+    }
+
+    if (totals.size === 0) {
+      return NO_CASUALTIES
+    }
+
+    return yield* roster.sweep<MobCasualty>((entity) => {
+      const amount = totals.get(entity.id)
+      if (amount === undefined) {
+        return IGNORED
+      }
+
+      // `../death-cause.ts`'s rule rather than a bare subtraction, for the reason
+      // this file's header gives: 「Writing a bare `healthPoints - amount`」 is how
+      // the floor at zero gets forgotten in one of the two places that need it.
+      // The cause is `projectile`, which is what the reference calls an arrow
+      // (`player-damage-cause.ts:5`) — it is discarded for a mob, whose death
+      // needs no message, and it is passed anyway because `Damage` requires one
+      // and inventing a second damage type without a cause is how the field
+      // becomes optional.
+      const vitals = applyDamage(
+        { healthPoints: entity.healthPoints, lastDeathCause: undefined },
+        { amount, cause: 'projectile' },
+      )
+
+      if (isDead(vitals)) {
+        return { transition: DESPAWNED, emit: { id: entity.id, kind: entity.kind } }
+      }
+
+      return {
+        transition: changed({
+          feetPosition: entity.feetPosition,
+          healthPoints: vitals.healthPoints,
+          behaviour: bruise(entity.behaviour),
+        }),
+        emit: undefined,
+      }
+    })
   })
 
 /**

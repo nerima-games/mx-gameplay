@@ -57,12 +57,35 @@ export type DeathCause =
   | 'projectile'
   | 'explosion'
   | 'void'
+  | 'ender_pearl'
   | 'generic'
 
 /**
  * `generic` maps to the reference's fallback string. It is a legitimate cause —
  * `/kill`, an unattributed defect — not a stand-in for "we lost the real one".
- * The regression test asserts that the OTHER ten never resolve to it.
+ * The regression test asserts that the OTHER eleven never resolve to it.
+ *
+ * `ender_pearl` ARRIVED WITH ITS RULE, which is the condition this union is meant
+ * to be extended under. The reference's `PlayerDamageCause`
+ * (`<reference-impl>/packages/entity/domain/player-damage-cause.ts:1-15`) has
+ * fourteen members and this transcription took eleven; the three it left were
+ * `cactus`, `lightning` and `ender_pearl`, and they were left because no rule here
+ * produced any of them. `./interactions/throw-ender-pearl.ts` now produces this
+ * one — it is `ENDER_PEARL_DAMAGE`'s cause — so the member is a completion of a
+ * partial transcription rather than an invention, and its message is the
+ * reference's own (`player-damage-cause.ts:29`).
+ *
+ * `cactus` and `lightning` are still absent and still for that reason. Adding a
+ * cause with no rule behind it would be a claim that this build can kill you that
+ * way, which is the direction `./entities/mob-frame.ts`'s `HOSTILE_KINDS` refuses
+ * for the zombie.
+ *
+ * NOTE THAT THIS IS THIS REPOSITORY'S OWN VOCABULARY and not a mirror of somebody
+ * else's: `DeathCause` is exported from `index.ts`, it is not one of the nine
+ * provisional stand-ins listed there, and mc-dev-meta's `MIRROR_SPECS` has no row
+ * for this file. Extending it needs no kernel word — which is exactly what
+ * `bow` / `arrow` / `ender_pearl` as ITEM names do need, and the contrast is the
+ * point. A cause is a rule's output; an item is a name.
  */
 export const DEATH_MESSAGES: Readonly<Record<DeathCause, string>> = {
   fall: 'You fell from a high place.',
@@ -75,6 +98,7 @@ export const DEATH_MESSAGES: Readonly<Record<DeathCause, string>> = {
   projectile: 'You were shot.',
   explosion: 'You blew up.',
   void: 'You fell out of the world.',
+  ender_pearl: 'You teleported too hard.',
   generic: 'You died.',
 }
 

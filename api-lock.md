@@ -13,7 +13,7 @@
 <!-- ------------------------------------------------------------------------- -->
 
 format: 1
-exported declarations: 233
+exported declarations: 273
 supporting declarations: 66
 
 ## Exported
@@ -34,6 +34,66 @@ const BLAZE_XP_REWARD = 10;
 
 ```ts
 const BLOCK_LOOT_ROLLS = 4;
+```
+
+### BOW_AIM_EPSILON_SQUARED  `const`
+
+```ts
+const BOW_AIM_EPSILON_SQUARED = 1e-18;
+```
+
+### BOW_FULL_CHARGE_SECS  `const`
+
+```ts
+const BOW_FULL_CHARGE_SECS = 1;
+```
+
+### BOW_LINE_OF_SIGHT_EPSILON  `const`
+
+```ts
+const BOW_LINE_OF_SIGHT_EPSILON = 0.000001;
+```
+
+### BOW_LINE_OF_SIGHT_STEP  `const`
+
+```ts
+const BOW_LINE_OF_SIGHT_STEP = 0.1;
+```
+
+### BOW_MAX_DAMAGE  `const`
+
+```ts
+const BOW_MAX_DAMAGE = 9;
+```
+
+### BOW_MAX_RANGE  `const`
+
+```ts
+const BOW_MAX_RANGE = 50;
+```
+
+### BOW_MIN_CHARGE_SECS  `const`
+
+```ts
+const BOW_MIN_CHARGE_SECS = 0.2;
+```
+
+### BOW_MIN_DAMAGE  `const`
+
+```ts
+const BOW_MIN_DAMAGE = 1;
+```
+
+### BOW_TARGET_CENTER_Y_OFFSET  `const`
+
+```ts
+const BOW_TARGET_CENTER_Y_OFFSET = 0.9;
+```
+
+### BOW_TARGET_RADIUS  `const`
+
+```ts
+const BOW_TARGET_RADIUS = 0.9;
 ```
 
 ### BROWN_MUSHROOM_BLOCK_ID  `const`
@@ -67,6 +127,45 @@ type BlastResolution = {
 ```ts
 type BlockLootContext = HarvestContext & {
     readonly fortuneLevel?: number;
+};
+```
+
+### BowDrawContext  `type`
+
+```ts
+type BowDrawContext = {
+    readonly powerLevel?: number;
+};
+```
+
+### BowHit  `type`
+
+```ts
+type BowHit = {
+    readonly id: EntityId;
+    readonly damage: number;
+};
+```
+
+### BowKnockback  `type`
+
+```ts
+type BowKnockback = {
+    readonly id: EntityId;
+    readonly direction: KnockbackDirection;
+};
+```
+
+### BowShotRequest  `type`
+
+```ts
+type BowShotRequest = {
+    readonly origin: Position;
+    readonly dirX: number;
+    readonly dirY: number;
+    readonly dirZ: number;
+    readonly chargeSecs: number;
+    readonly powerLevel?: number;
 };
 ```
 
@@ -252,7 +351,7 @@ type DayPhase = 'night' | 'dawn' | 'day' | 'dusk';
 ### DeathCause  `type`
 
 ```ts
-type DeathCause = 'fall' | 'lava' | 'fire' | 'drowning' | 'suffocation' | 'starvation' | 'mob' | 'projectile' | 'explosion' | 'void' | 'generic';
+type DeathCause = 'fall' | 'lava' | 'fire' | 'drowning' | 'suffocation' | 'starvation' | 'mob' | 'projectile' | 'explosion' | 'void' | 'ender_pearl' | 'generic';
 ```
 
 ### DespawnCandidate  `type`
@@ -357,10 +456,77 @@ const ENDERMAN_TELEPORT_MIN_BLOCKS = 8;
 const ENDERMAN_TELEPORT_ROLLS: number;
 ```
 
+### ENDERMITE_KIND  `const`
+
+```ts
+const ENDERMITE_KIND: EntityKind;
+```
+
+### ENDERMITE_MAX_HEALTH  `const`
+
+```ts
+const ENDERMITE_MAX_HEALTH = 8;
+```
+
+### ENDER_PEARL_DAMAGE  `const`
+
+```ts
+const ENDER_PEARL_DAMAGE = 5;
+```
+
+### ENDER_PEARL_DEATH_CAUSE  `const`
+
+```ts
+const ENDER_PEARL_DEATH_CAUSE: DeathCause;
+```
+
+### ENDER_PEARL_ENDERMITE_SPAWN_CHANCE  `const`
+
+```ts
+const ENDER_PEARL_ENDERMITE_SPAWN_CHANCE = 0.05;
+```
+
+### ENDER_PEARL_MAX_DISTANCE  `const`
+
+```ts
+const ENDER_PEARL_MAX_DISTANCE = 24;
+```
+
 ### EXPERIENCE_MODULE_STAGE_PREFIXES  `const`
 
 ```ts
 const EXPERIENCE_MODULE_STAGE_PREFIXES: readonly ["gameplay:", "redstone:", "ui:", "multiplayer:"];
+```
+
+### EnderPearlDisplacement  `type`
+
+```ts
+type EnderPearlDisplacement = {
+    readonly x: number;
+    readonly y: number;
+    readonly z: number;
+};
+```
+
+### EnderPearlOutcome  `type`
+
+```ts
+type EnderPearlOutcome = {
+    readonly displacement: EnderPearlDisplacement;
+    readonly damage: Damage;
+};
+```
+
+### EnderPearlThrowRequest  `type`
+
+```ts
+type EnderPearlThrowRequest = {
+    readonly origin: Position;
+    readonly dirX: number;
+    readonly dirY: number;
+    readonly dirZ: number;
+    readonly hitDistance?: number;
+};
 ```
 
 ### EndermanFlinch  `type`
@@ -499,9 +665,13 @@ type GameplayFrameState = {
     readonly pendingBreaks: Ref.Ref<ReadonlyArray<PositionKey>>;
     readonly pendingPlacements: Ref.Ref<ReadonlyArray<PlacementRequest>>;
     readonly pendingItemUses: Ref.Ref<ReadonlyArray<ItemUseRequest>>;
+    readonly pendingBowShots: Ref.Ref<ReadonlyArray<BowShotRequest>>;
+    readonly pendingPearlThrows: Ref.Ref<ReadonlyArray<EnderPearlThrowRequest>>;
     readonly leftoverItems: Ref.Ref<ReadonlyArray<MinedItem>>;
     readonly consumedItems: Ref.Ref<ReadonlyArray<PlaceableItemType>>;
     readonly usedItems: Ref.Ref<ReadonlyArray<IgnitionItemType>>;
+    readonly bowKnockbacks: Ref.Ref<ReadonlyArray<BowKnockback>>;
+    readonly enderPearlOutcomes: Ref.Ref<ReadonlyArray<EnderPearlOutcome>>;
     readonly mobDrops: Ref.Ref<ReadonlyArray<MobDrop>>;
     readonly spawnAttempts: Ref.Ref<ReadonlyArray<MobSpawnAttempt>>;
     readonly targetPosition: Ref.Ref<Position | undefined>;
@@ -599,6 +769,12 @@ type IgnitionOutcome = {
 };
 ```
 
+### IsArrowBlockedAt  `type`
+
+```ts
+type IsArrowBlockedAt = (wx: number, wy: number, wz: number) => boolean;
+```
+
 ### IsRailAt  `type`
 
 ```ts
@@ -611,6 +787,24 @@ type IsRailAt = (wx: number, wy: number, wz: number) => boolean;
 type ItemUseRequest = {
     readonly positionKey: PositionKey;
     readonly heldItem: IgnitionItemType;
+};
+```
+
+### KNOCKBACK_EPSILON  `const`
+
+```ts
+const KNOCKBACK_EPSILON = 1e-9;
+```
+
+### KnockbackDirection  `type`
+
+```ts
+type KnockbackDirection = {
+    readonly _tag: 'Away';
+    readonly x: number;
+    readonly z: number;
+} | {
+    readonly _tag: 'StraightUp';
 };
 ```
 
@@ -807,6 +1001,12 @@ const NO_TOOL: BlockLootContext;
 const OWN_STAGE_PREFIX = "gameplay:";
 ```
 
+### PLAIN_BOW  `const`
+
+```ts
+const PLAIN_BOW: BowDrawContext;
+```
+
 ### PLAYER_HALF_HEIGHT  `const`
 
 ```ts
@@ -948,6 +1148,24 @@ const STRUCK_ENDERMAN: EndermanFlinch;
 
 ```ts
 const SUGAR_CANE_BLOCK_ID: BlockId | undefined;
+```
+
+### ShotCandidate  `type`
+
+```ts
+type ShotCandidate = {
+    readonly id: EntityId;
+    readonly feetPosition: Position;
+};
+```
+
+### ShotHit  `type`
+
+```ts
+type ShotHit = {
+    readonly id: EntityId;
+    readonly distance: number;
+};
 ```
 
 ### ShulkerSenses  `type`
@@ -1170,10 +1388,34 @@ const blockLoot: (block: BlockId, context?: BlockLootContext, rolls?: ReadonlyAr
 const blockOverlapsPlayer: (block: BlockPosition, playerFeet: Position) => boolean;
 ```
 
+### bowCharge  `const`
+
+```ts
+const bowCharge: (secsHeld: number) => number;
+```
+
+### bowDamage  `const`
+
+```ts
+const bowDamage: (charge: number, context?: BowDrawContext) => number;
+```
+
+### bowPowerMultiplier  `const`
+
+```ts
+const bowPowerMultiplier: (powerLevel: number | undefined) => number;
+```
+
 ### cactusSidesObjection  `const`
 
 ```ts
 const cactusSidesObjection: (store: ChunkStoreApi, block: BlockId, position: BlockPosition) => Effect.Effect<CactusSidesRefusal | undefined>;
+```
+
+### canFireBow  `const`
+
+```ts
+const canFireBow: (secsHeld: number) => boolean;
 ```
 
 ### canHostileSpawnAt  `const`
@@ -1300,6 +1542,18 @@ const dropRulesOfKind: (kind: EntityKind) => ReadonlyArray<MobDropRule>;
 
 ```ts
 const emptyFallingBlockQueue: FallingBlockQueue;
+```
+
+### enderPearlDisplacement  `const`
+
+```ts
+const enderPearlDisplacement: (dirX: number, dirY: number, dirZ: number, hitDistance: number | undefined) => EnderPearlDisplacement | undefined;
+```
+
+### enderPearlDistance  `const`
+
+```ts
+const enderPearlDistance: (hitDistance: number | undefined) => number;
 ```
 
 ### endermanTeleportOffset  `const`
@@ -1464,6 +1718,12 @@ const isSupportSensitiveOfBlock: (block: BlockId) => boolean;
 const isThunderstorm: (weather: Weather) => boolean;
 ```
 
+### knockbackDirection  `const`
+
+```ts
+const knockbackDirection: (dx: number, dz: number) => KnockbackDirection;
+```
+
 ### makeGameplayFrameState  `const`
 
 ```ts
@@ -1545,6 +1805,12 @@ const repairMobBehaviour: (kind: EntityKind, behaviour: MobBehaviour) => MobBeha
 const resolveBlasts: (roster: EntityManagerApi<MobBehaviour>, store: ChunkStoreApi, blasts: ReadonlyArray<Blast>) => Effect.Effect<BlastResolution>;
 ```
 
+### resolveBowHits  `const`
+
+```ts
+const resolveBowHits: (roster: EntityManagerApi<MobBehaviour>, hits: ReadonlyArray<BowHit>) => Effect.Effect<ReadonlyArray<MobCasualty>>;
+```
+
 ### resolveNextWeatherState  `const`
 
 ```ts
@@ -1609,6 +1875,24 @@ const rollSelfDestructDrops: (kind: EntityKind) => ReadonlyArray<MobDrop>;
 
 ```ts
 const settled: (queue: FallingBlockQueue, destinations: Iterable<PositionKey>) => FallingBlockQueue;
+```
+
+### shotBlockedByTerrain  `const`
+
+```ts
+const shotBlockedByTerrain: (isArrowBlockedAt: IsArrowBlockedAt, from: Position, to: Position) => boolean;
+```
+
+### shotTarget  `const`
+
+```ts
+const shotTarget: (candidates: ReadonlyArray<ShotCandidate>, origin: Position, dirX: number, dirY: number, dirZ: number, reach?: number) => ShotHit | undefined;
+```
+
+### shouldSpawnEndermite  `const`
+
+```ts
+const shouldSpawnEndermite: (roll: number) => boolean;
 ```
 
 ### shulkerShellArmorPoints  `const`

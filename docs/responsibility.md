@@ -296,9 +296,98 @@ mc-sim の 7 語要求が先例で、**要求として出すのが正しく、�
 | `bucket` / `water_bucket` / `lava_bucket` | 汲む / 撒く（`interaction-bucket-handler/`）。流体側は `domain/fluid-frontier.ts` が既に持っている | なし。**語だけで書ける** |
 | `shears` | 葉・草の採取、および羊の毛刈り | 毛刈りのほうは mc-sim の名簿（羊が要る） |
 | `hoe` | 耕す（`dirt` / `grass_block` → `farmland`）。3 ブロックとも registry にある | なし。**語だけで書ける** |
-| `bow` / `arrow` | 射る | **発射体**。mc-sim の名簿と mc-physics の速度 |
-| `ender_pearl` | 投げる（`interaction-item-use-handler/ender-pearl.ts`） | **発射体**。同上。落下地点の判定も要る |
+| `bow` / `arrow` | 射る。**ルールは書けており、フレームからも回っている**（`domain/interactions/draw-bow.ts` / `bow-shot.ts` / `knockback.ts`） | なし。**語だけで閉じる**（§7-1） |
+| `ender_pearl` | 投げる。**ルールは書けており、フレームからも回っている**（`domain/interactions/throw-ender-pearl.ts`） | なし。**語だけで閉じる**（§7-1） |
 
-**`bucket` 系と `hoe` は語を 1 行足せば閉じる。** 弓とエンダーパールは語が来ても閉じない ——
-そこが止まる場所で、`domain/mob/` がエンダードラゴンを拒否したときと同じ線である。
+**5 行すべてが「語を足せば閉じる」になった。**
 `flint_and_steel` と `fire_charge` は**既に kernel にある**ので、この表には無く、実装済みである。
+
+### 7-1. 弓とエンダーパールの「ほかに要るもの」は**測って空だった**
+
+この表の下 2 行は、以前こう書いていた:
+
+> | `bow` / `arrow` | 射る | **発射体**。mc-sim の名簿と mc-physics の速度 |
+> | `ender_pearl` | 投げる | **発射体**。同上。落下地点の判定も要る |
+>
+> **`bucket` 系と `hoe` は語を 1 行足せば閉じる。** 弓とエンダーパールは語が来ても閉じない ——
+> そこが止まる場所で、`domain/mob/` がエンダードラゴンを拒否したときと同じ線である。
+
+**参照実装を読んで確かめた結果、どちらも誤りである。** 発射体は 1 つも飛ばない。
+
+- **弓は hitscan である。** `interaction-bow-handler.ts:200` のコメントが自分でそう言っている
+  ——「Hitscan: find the nearest entity in the crosshair within bow range」——
+  その次の行が呼ぶのは `findAttackableEntity`、**近接攻撃と同じ関数**で、
+  違いは reach に `BOW_MAX_RANGE` を渡すことだけである。実体は 1 つも作られず、
+  速度はどこにも書かれない。飛ぶのは装飾の粒子だけで、それはダメージを与えた**あとに**描かれる。
+- **エンダーパールは `TargetRayHit` を取る。** `ender-pearl.ts:8` の import がそれで、
+  ホストが**既に済ませた**レイキャストの結果である —— ブロックを設置する面を決めるのと同じ hit で、
+  `ItemUseRequest` のコメントが「every rule in this repository is handed a cell」と書いているものである。
+  同じフレームでプレイヤーが移動する（`:67`）。弧も無い。
+
+**「落下地点の判定も要る」も同じ根から来ている。** 落下地点は無い。24 ブロック先か、
+レイが当たったところか、どちらかである。
+
+**これで 4 度目である。** エンダーマン（状態が型引数に乗っていた）、レールとポータル枠
+（注入された述語で書ける純粋な規則、§3-2）、採掘のインベントリ行き（型の不一致が消えていた）、
+そしてこれ。**4 つとも、もっともらしい「カテゴリ」から書かれた拒否である** ——
+「位置を持つ実体を動かすもの」「発射体」——
+そしてカテゴリは確かめられない。確かめられるのは**名前**だけである。
+
+**残った 1 行は本物である。** `ITEM_TYPES` に `bow` / `arrow` / `ender_pearl` の綴りは無く、
+書けばこのリポジトリが kernel の語彙を発明することになる（kernel audit §4.9.1(c)）。
+その 3 語が無いことで**実際に失われているもの**は狙いでも命中判定でもなく、
+**インベントリの出納**である: 矢を 1 本消費すること、弓の耐久を 1 減らすこと、
+パールを 1 個消費すること。3 つとも `domain/inventory-port.ts` の `remove` を呼ぶ操作で、
+`remove` は `ItemType` を取る。だから**今日配線された弓は矢を消費せず、無限に撃てる。**
+`test/bow.test.ts` の「THE BOW FIRES FOR FREE」がそれを名指しで固定してあり、
+3 語が来た日にそのテストが落ちる。
+
+### 7-2. 弓が持ってきた、語とは無関係な穴が 1 つある —— **ブロックの貫通判定**
+
+参照実装の弓は地形の遮蔽を見る（`interaction-bow-handler.ts:67-94`）。
+こちらも `domain/interactions/bow-shot.ts` の `shotBlockedByTerrain` として**書いてあり、テストもある**が、
+**stage からは呼ばれていない。** 呼ぶには `IsArrowBlockedAt`、すなわち
+「このブロックは矢を止めるか」が要り、それは **kernel の能力（capability）** である。
+
+`domain/block-vocabulary.ts` がミラーしている能力述語は 4 つ ——
+`fallsWhenUnsupported` / `isReplaceable` / `validSpawnSurface` / `canSupportAttachments` ——
+で、**どれも「発射体に対して固い」を意味しない。**
+参照実装には表がある（`block-collision-predicates.ts` の `PASSABLE_BLOCK_IDS`）が、
+それは kernel が publish すべきもので、こちらが転記するものではない。
+
+`isReplaceable` で代用するのは**どちらの所有者も宣言していない等価を発明する**ことで、
+`domain/entity-manager-port.ts` が `Position` と `BlockPosition` について断っているのと同じ形である
+（形は同じ、意味は違う）。**したがって今日の弓は壁を撃ち抜く。**
+述語を作る側はホストで、これは §5-5 が `IsRailAt` に与えた割り当てとまったく同じである。
+
+**要求は語ではなく能力 1 つ**なので §7 の表には載せない。ここが唯一の記述である。
+
+### 7-3. `computeKnockback` の所有権 —— §5-1 の判定をもう 1 ファイルに当てた
+
+参照実装の `packages/entity/domain/combat-resolution.ts:111-119` は、
+`rail-shape.ts` と同じく **1 ファイルに関心が 2 つ**入っている。§5-1 の判定
+「**速度の「大きさ」が答えに届くか**」をそのまま当てると、真ん中で割れる。
+
+| 記号 | 引数 → 戻り値 | 速度の大きさが答えに届くか | 行き先 |
+| --- | --- | :-: | --- |
+| **向き**（水平の単位ベクトル、および真上に飛ぶ退化ケース） | `(dx, dz)` → `KnockbackDirection` | **取らない**。唯一の呼び出し元が渡すのは**位置の差**（`interaction-bow-handler.ts:122-125`）で、その大きさは `Math.hypot` と除算で 1 行目に捨てられる | **mx-gameplay**。`domain/interactions/knockback.ts`（**実装済み**） |
+| `KNOCKBACK_HORIZONTAL_SPEED = 5` / `KNOCKBACK_VERTICAL_SPEED = 4.2` | 定数（blocks/秒） | 速度そのもの | **mx-gameplay**。ただし**運ばない**（下記） |
+| Punch の倍率 | `(level)` → 倍率 | **届く**。`1 + punchBonus / 5` の `5` は `KNOCKBACK_HORIZONTAL_SPEED` の裸のリテラルで、**無次元に見えるだけ**である | **mx-gameplay**。ただし速度と一緒に来る |
+
+**向きの行は `isAscendingAhead` の行と同型である** —— 速度の形をした引数、
+1 行目で捨てられる大きさ、正の定数倍に対する不変性。
+そして `test/bow.test.ts` の
+`SCALE-INVARIANT under positive factors` が `test/rail.test.ts` と同じやり方でそれを固定する。
+
+**衝撃そのものを書かない理由は 2 つで、`projectMinecartVelocity`（§5-3）の 2 つである。**
+
+- **置き場が無い。** mc-sim の `EntityState` は `feetPosition` / `healthPoints` / `behaviour` の
+  3 欄で、速度の欄が無い —— §5-5 の 1 行目がカートについて言っているのと同じ観測である。
+  参照実装には `entityManager.applyKnockback` があり、こちらのミラーには無い。
+  代わりに `feetPosition` を書き換えるのは**別の規則**である（それはテレポートで、継続時間が無い）。
+- **2 つの速度は転記であって測定ではない。** `combat.config.ts:57-58` に導出は無く、
+  `RAIL_CLIMB_SPEED` と違って**検算すべき主張すら書かれていない**（§5-4）。
+
+**mc-physics は 1 つも取らない。** 根拠は §5-2 の 3 つがそのまま当たる ——
+向こうのスコープ表が戦闘のルールを手放していること、推移閉包禁止で import できないこと、
+そして「単位が blocks/秒 だから物理」はこの組織では**逆を向く**こと。
