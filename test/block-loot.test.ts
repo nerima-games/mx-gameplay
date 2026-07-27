@@ -68,6 +68,7 @@ const DIRT = 3
 const GRASS_BLOCK = 4
 const SAND = 5
 const WATER = 6
+const SNOW = 7
 const GRAVEL = 8
 const OAK_LEAVES = 10
 const LAVA = 11
@@ -114,11 +115,34 @@ describe('the kernel bridge — domain/block-vocabulary.ts', () => {
       expect(UNITEMISED_BLOCK_TYPES).toContain('water')
       expect(UNITEMISED_BLOCK_TYPES).toContain('lava')
       expect(UNITEMISED_BLOCK_TYPES).toContain('bedrock')
-      // A ROSTER GAP rather than a permanent absence: vanilla yields snowballs,
-      // and `snowball` is not in this build's `ITEM_TYPES`.
+      // `snow` is still here, and its reason CHANGED. It used to be a roster gap
+      // — vanilla yields snowballs and `snowball` was not in kernel's
+      // `ITEM_TYPES`. The item exists now, so `snow` is unitemised for the
+      // ordinary reason instead: its drop is an OVERRIDE pointing at `snowball`,
+      // and a block whose drop is an override needs no item form of its own.
       expect(UNITEMISED_BLOCK_TYPES).toContain('snow')
-      // ...and `sapling`, which is why the leaves' sapling line cannot ship.
+      expect(dropOfBlockId(SNOW, { heldTier: 'diamond' })?.item).toBe('snowball')
+
+      // `sapling` is still here, and its reason changed too — from "kernel has
+      // not got round to it" to a decision kernel made ON THIS REPOSITORY'S
+      // BEHALF, which is worth spelling out because it is the only one of its
+      // kind.
+      //
+      // kernel completed its roster to the reference's full 120 and gives an item
+      // form to every block whose drop resolves to itself. `sapling` qualifies —
+      // and kernel held it back anyway, along with nine other support-sensitive
+      // plants, because `PlaceableItemType = ItemType & BlockType` means an item
+      // form is what makes a block PLACEABLE, and F7 below is a placement rule
+      // that answers all ten wrongly. See `mc-kernel/domain/item-type.ts`.
       expect(UNITEMISED_BLOCK_TYPES).toContain('sapling')
+      expect(itemOfBlock('sapling')).toBeUndefined()
+
+      // The other seven of the eighteen kernel corrected DID get item forms,
+      // because none of them has a per-block `SUPPORT_RULES` entry and so none
+      // of them wakes F7. `ladder` is the plainest: it used to break into
+      // nothing.
+      expect(UNITEMISED_BLOCK_TYPES).not.toContain('ladder')
+      expect(itemOfBlock('ladder')).toBe('ladder')
 
       expect(itemOfBlock('air')).toBeUndefined()
       expect(itemOfBlock('stone')).toBe('stone')
@@ -393,11 +417,23 @@ describe('blockLoot — bonus lines', () => {
       // Leaves have exactly ONE bonus line, not three: all-zero rolls beat every
       // chance there is, and a stick is all that comes out.
       expect(blockLoot(OAK_LEAVES, NO_TOOL, ALL_LUCK)).toStrictEqual([{ item: 'stick', count: 1 }])
-      // Tall grass and fern yield NOTHING AT ALL, and for two reasons stacked:
-      // the seed line has no `wheat_seeds` to name, and the plants are not
-      // itemised either, so even the base drop has nowhere to go. The reference
-      // is where the whole rule lives (`rollGrassSeedDrop`, `:245-246`); here
-      // both ends are roster gaps and neither is papered over.
+
+      // Tall grass and fern yield NOTHING AT ALL, and for two reasons stacked.
+      // ONE OF THE TWO HAS CHANGED, so the note is worth re-reading rather than
+      // re-trusting.
+      //
+      // The seed line used to have no `wheat_seeds` to name. It has one now:
+      // kernel's roster completion added the item, because `WHEAT_CROP` drops it.
+      // So THAT half is no longer a kernel gap — porting `rollGrassSeedDrop`
+      // (`:245-246`) is work this repository can do whenever it likes, and audit
+      // §6-9 says random drop rules belong here.
+      expect(ITEM_TYPES).toContain('wheat_seeds')
+
+      // The other half stands, and stands on purpose: the plants themselves are
+      // still not itemised, so even the base drop has nowhere to go. That is
+      // kernel holding back ten support-sensitive plants until `supportRule`
+      // exists, because itemising them would make them placeable and wake F7 in
+      // `test/place-block.test.ts` — see `mc-kernel/domain/item-type.ts`.
       expect(UNITEMISED_BLOCK_TYPES).toContain('tall_grass')
       expect(UNITEMISED_BLOCK_TYPES).toContain('fern')
       expect(blockLoot(TALL_GRASS, NO_TOOL, ALL_LUCK)).toStrictEqual([])

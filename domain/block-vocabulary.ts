@@ -97,9 +97,16 @@ import type { BlockId } from './chunk-store-port'
  * kernel's `BLOCK_TYPES`, transcribed. Order, spelling and grouping are
  * kernel's, so that a reviewer can diff the two files rather than read them.
  *
- * THIRTY-SIX, and kernel's own header explains why it is not 120: the roster
- * grows by CLOSED REFERENCE TABLES rather than by count, because importing HALF
- * a membership set produces a set that disagrees with its source.
+ * ALL 120 NOW. This file said "THIRTY-SIX, and kernel's own header explains why
+ * it is not 120" for as long as kernel's roster was partial. Kernel completed it
+ * in one change, and a mirror that follows only part of the way is not a smaller
+ * mirror — a closed literal union's member set IS the type, so a partial
+ * transcription is a DIFFERENT type that happens to compile.
+ *
+ * `pnpm check:mirrors` in mc-dev-meta imports both this file and kernel's and
+ * compares them, so the two cannot drift silently. It is also what found the
+ * missing `lava` in `REPLACEABLE_IDS` and, once a `validSpawnSurface` probe
+ * existed, the missing `oak_log` in `NON_SPAWN_SURFACE_IDS`.
  */
 export const BLOCK_TYPES = [
   'air',
@@ -120,9 +127,6 @@ export const BLOCK_TYPES = [
   'bedrock',
   'piston',
   'snow',
-
-  // The reference's `PASSABLE_BLOCK_IDS` (`block-collision-predicates.ts:22-42`),
-  // completed. Fifteen of its nineteen members; the other four are above.
   'ladder',
   'cobweb',
   'sapling',
@@ -138,12 +142,93 @@ export const BLOCK_TYPES = [
   'seagrass',
   'rail',
   'powered_rail',
-
-  // The three non-`full` collision shapes, so kernel's `COLLISION_SHAPES` is
-  // inhabited by real rows rather than by enum members nothing produces.
   'cactus',
   'pressure_plate',
   'stone_slab',
+  'granite',
+  'diorite',
+  'andesite',
+  'deepslate',
+  'obsidian',
+  'smooth_basalt',
+  'calcite',
+  'amethyst_block',
+  'amethyst_cluster',
+  'sandstone',
+  'prismarine',
+  'soul_sand',
+  'ice',
+  'farmland',
+  'coal_ore',
+  'iron_ore',
+  'gold_ore',
+  'diamond_ore',
+  'redstone_ore',
+  'lapis_ore',
+  'emerald_ore',
+  'deepslate_coal_ore',
+  'deepslate_iron_ore',
+  'deepslate_gold_ore',
+  'deepslate_diamond_ore',
+  'deepslate_redstone_ore',
+  'deepslate_lapis_ore',
+  'deepslate_emerald_ore',
+  'coal_block',
+  'iron_block',
+  'gold_block',
+  'diamond_block',
+  'redstone_block',
+  'lapis_block',
+  'emerald_block',
+  'wheat_crop',
+  'potato_crop',
+  'nether_wart_crop',
+  'redstone_wire',
+  'redstone_torch',
+  'lever',
+  'stone_button',
+  'repeater',
+  'redstone_lamp',
+  'redstone_lamp_lit',
+  'observer',
+  'comparator',
+  'dispenser',
+  'hopper',
+  'piston_head',
+  'end_stone',
+  'end_portal_frame',
+  'end_portal_frame_filled',
+  'end_portal',
+  'chorus_flower',
+  'chorus_plant',
+  'dragon_egg',
+  'end_crystal',
+  'end_gateway',
+  'end_rod',
+  'end_stone_bricks',
+  'ender_chest',
+  'purpur_block',
+  'purpur_pillar',
+  'purpur_slab',
+  'purpur_stairs',
+  'shulker_box',
+  'crafting_table',
+  'furnace',
+  'chest',
+  'door',
+  'door_open',
+  'oak_stairs',
+  'anvil',
+  'cauldron',
+  'water_cauldron',
+  'bed',
+  'enchanting_table',
+  'brewing_stand',
+  'tnt',
+  'nether_brick',
+  'netherrack',
+  'nether_portal',
+  'fire',
 ] as const
 
 export type BlockType = (typeof BLOCK_TYPES)[number]
@@ -418,11 +503,38 @@ export const resolveDrop = (
 /** Drops nothing, to anyone, ever. kernel's `DROPS_NOTHING`. */
 const DROPS_NOTHING: BlockDropRule = { ...DEFAULT_BLOCK_DROP, count: 0 }
 
-/** The tier gate that separates "mined stone" from "wasted a swing". */
+/**
+ * The tier gate that separates "mined stone" from "wasted a swing".
+ *
+ * Four constants for the four stages of the reference's union ladder
+ * (`harvestable-blocks.ts:14-67`), transcribed from kernel's table of the same
+ * name. A block belongs to exactly one, by the tier at which it FIRST becomes
+ * mineable — so `iron_ore` is `stone` and `obsidian` is the sole `diamond`.
+ *
+ * The three beyond `wooden` arrived with kernel's ore rows. Nothing in
+ * mx-gameplay reads the tier directly: it reaches `resolveDrop` through
+ * `dropOfBlockId`, which is the point of transcribing the columns rather than
+ * the decisions.
+ */
 const NEEDS_WOODEN_PICKAXE: HarvestToolRequirement = {
   ...DEFAULT_HARVEST_TOOL,
   category: 'pickaxe',
   minTier: 'wooden',
+}
+const NEEDS_STONE_PICKAXE: HarvestToolRequirement = {
+  ...DEFAULT_HARVEST_TOOL,
+  category: 'pickaxe',
+  minTier: 'stone',
+}
+const NEEDS_IRON_PICKAXE: HarvestToolRequirement = {
+  ...DEFAULT_HARVEST_TOOL,
+  category: 'pickaxe',
+  minTier: 'iron',
+}
+const NEEDS_DIAMOND_PICKAXE: HarvestToolRequirement = {
+  ...DEFAULT_HARVEST_TOOL,
+  category: 'pickaxe',
+  minTier: 'diamond',
 }
 
 /**
@@ -461,85 +573,126 @@ export type BlockDropRegistryEntry = {
  * of itself to bare hands.
  */
 export const BLOCK_DROP_REGISTRY: ReadonlyArray<BlockDropRegistryEntry> = [
-  // Swinging at empty space must not manufacture an item, and the table must not
-  // depend on the caller getting that right: `./interactions/break-block` already
-  // refuses to reach here (`Unchanged` -> `NothingThere`), but `air` is a
-  // sentinel and not a thing (kernel audit §6-6).
   { id: 0, type: 'air', harvestTool: DEFAULT_HARVEST_TOOL, drops: DROPS_NOTHING },
   { id: 1, type: 'bedrock', harvestTool: DEFAULT_HARVEST_TOOL, drops: DROPS_NOTHING },
-  // THE tool-gated row, and the reason the two columns are one decision rather
-  // than two: stone mined bare-handed yields nothing, and stone mined with a
-  // pickaxe yields something that is not stone.
-  {
-    id: 2,
-    type: 'stone',
-    harvestTool: NEEDS_WOODEN_PICKAXE,
-    drops: { ...DEFAULT_BLOCK_DROP, item: 'cobblestone' },
-  },
+  { id: 2, type: 'stone', harvestTool: NEEDS_WOODEN_PICKAXE, drops: { ...DEFAULT_BLOCK_DROP, item: 'cobblestone' } },
   { id: 3, type: 'dirt', harvestTool: FASTER_WITH_SHOVEL, drops: DEFAULT_BLOCK_DROP },
-  // Different-drop with NO tool gate — the row that keeps the two axes visibly
-  // separate. Grass yields dirt to bare hands.
-  {
-    id: 4,
-    type: 'grass_block',
-    harvestTool: FASTER_WITH_SHOVEL,
-    drops: { ...DEFAULT_BLOCK_DROP, item: 'dirt' },
-  },
+  { id: 4, type: 'grass_block', harvestTool: FASTER_WITH_SHOVEL, drops: { ...DEFAULT_BLOCK_DROP, item: 'dirt' } },
   { id: 5, type: 'sand', harvestTool: FASTER_WITH_SHOVEL, drops: DEFAULT_BLOCK_DROP },
   { id: 6, type: 'water', harvestTool: DEFAULT_HARVEST_TOOL, drops: DROPS_NOTHING },
-  // Vanilla yields snowballs to a shovel. `snowball` is not in `ITEM_TYPES`, and
-  // kernel declined to invent it; the gap is `UNITEMISED_BLOCK_TYPES`.
-  { id: 7, type: 'snow', harvestTool: FASTER_WITH_SHOVEL, drops: DROPS_NOTHING },
-  // Vanilla's 10% flint is a RANDOM drop and audit §6-9 places those in this
-  // repository. It is NOT in `./interactions/block-loot` either, and the reason
-  // is docs/porting.md §4: the reference implementation has no such rule, and
-  // the reference is the specification. The deterministic half — gravel yields
-  // gravel — is this row.
+  { id: 7, type: 'snow', harvestTool: FASTER_WITH_SHOVEL, drops: { ...DEFAULT_BLOCK_DROP, item: 'snowball', count: 4 } },
   { id: 8, type: 'gravel', harvestTool: FASTER_WITH_SHOVEL, drops: DEFAULT_BLOCK_DROP },
   { id: 9, type: 'oak_log', harvestTool: FASTER_WITH_AXE, drops: DEFAULT_BLOCK_DROP },
-  // Nothing from the block itself; the apple / stick / sapling rolls are the
-  // reference's `rollLeafDrops` and live in `./interactions/block-loot`.
   { id: 10, type: 'oak_leaves', harvestTool: FASTER_WITH_SHEARS, drops: DROPS_NOTHING },
   { id: 11, type: 'lava', harvestTool: DEFAULT_HARVEST_TOOL, drops: DROPS_NOTHING },
   { id: 12, type: 'oak_planks', harvestTool: FASTER_WITH_AXE, drops: DEFAULT_BLOCK_DROP },
-  // THE silk-touch row, and the only one in the table.
-  {
-    id: 13,
-    type: 'glass',
-    harvestTool: DEFAULT_HARVEST_TOOL,
-    drops: { ...DEFAULT_BLOCK_DROP, requiresSilkTouch: true },
-  },
+  { id: 13, type: 'glass', harvestTool: DEFAULT_HARVEST_TOOL, drops: { ...DEFAULT_BLOCK_DROP, requiresSilkTouch: true } },
   { id: 14, type: 'torch', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
-  // THE fortune row, and the only one in the table — this build has no ore, so
-  // `affectedByFortune` would be an unreachable flag without it. It is also the
-  // row that forced `item` to be an `ItemType`: there is no block called
-  // `glowstone_dust`.
-  {
-    id: 15,
-    type: 'glowstone',
-    harvestTool: DEFAULT_HARVEST_TOOL,
-    drops: { ...DEFAULT_BLOCK_DROP, item: 'glowstone_dust', count: 2, affectedByFortune: true },
-  },
+  { id: 15, type: 'glowstone', harvestTool: DEFAULT_HARVEST_TOOL, drops: { ...DEFAULT_BLOCK_DROP, item: 'glowstone_dust', count: 2, affectedByFortune: true } },
   { id: 16, type: 'piston', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
   { id: 17, type: 'cobblestone', harvestTool: NEEDS_WOODEN_PICKAXE, drops: DEFAULT_BLOCK_DROP },
   { id: 18, type: 'ladder', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
-  { id: 19, type: 'cobweb', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
-  { id: 20, type: 'sapling', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
-  { id: 21, type: 'dandelion', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
-  { id: 22, type: 'poppy', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
-  { id: 23, type: 'brown_mushroom', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
-  { id: 24, type: 'red_mushroom', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
-  { id: 25, type: 'tall_grass', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
-  { id: 26, type: 'fern', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
-  { id: 27, type: 'sugar_cane', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
-  { id: 28, type: 'lily_pad', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
+  { id: 19, type: 'cobweb', harvestTool: DEFAULT_HARVEST_TOOL, drops: { ...DEFAULT_BLOCK_DROP, item: 'string' } },
+  { id: 20, type: 'sapling', harvestTool: DEFAULT_HARVEST_TOOL, drops: DROPS_NOTHING },
+  { id: 21, type: 'dandelion', harvestTool: DEFAULT_HARVEST_TOOL, drops: DROPS_NOTHING },
+  { id: 22, type: 'poppy', harvestTool: DEFAULT_HARVEST_TOOL, drops: DROPS_NOTHING },
+  { id: 23, type: 'brown_mushroom', harvestTool: DEFAULT_HARVEST_TOOL, drops: DROPS_NOTHING },
+  { id: 24, type: 'red_mushroom', harvestTool: DEFAULT_HARVEST_TOOL, drops: DROPS_NOTHING },
+  { id: 25, type: 'tall_grass', harvestTool: DEFAULT_HARVEST_TOOL, drops: DROPS_NOTHING },
+  { id: 26, type: 'fern', harvestTool: DEFAULT_HARVEST_TOOL, drops: DROPS_NOTHING },
+  { id: 27, type: 'sugar_cane', harvestTool: DEFAULT_HARVEST_TOOL, drops: DROPS_NOTHING },
+  { id: 28, type: 'lily_pad', harvestTool: DEFAULT_HARVEST_TOOL, drops: DROPS_NOTHING },
   { id: 29, type: 'kelp', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
   { id: 30, type: 'seagrass', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
   { id: 31, type: 'rail', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
   { id: 32, type: 'powered_rail', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
-  { id: 33, type: 'cactus', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
+  { id: 33, type: 'cactus', harvestTool: DEFAULT_HARVEST_TOOL, drops: DROPS_NOTHING },
   { id: 34, type: 'pressure_plate', harvestTool: NEEDS_WOODEN_PICKAXE, drops: DEFAULT_BLOCK_DROP },
   { id: 35, type: 'stone_slab', harvestTool: NEEDS_WOODEN_PICKAXE, drops: DEFAULT_BLOCK_DROP },
+  { id: 36, type: 'granite', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
+  { id: 37, type: 'diorite', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
+  { id: 38, type: 'andesite', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
+  { id: 39, type: 'deepslate', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
+  { id: 40, type: 'obsidian', harvestTool: NEEDS_DIAMOND_PICKAXE, drops: DEFAULT_BLOCK_DROP },
+  { id: 41, type: 'smooth_basalt', harvestTool: NEEDS_WOODEN_PICKAXE, drops: DEFAULT_BLOCK_DROP },
+  { id: 42, type: 'calcite', harvestTool: NEEDS_WOODEN_PICKAXE, drops: DEFAULT_BLOCK_DROP },
+  { id: 43, type: 'amethyst_block', harvestTool: NEEDS_WOODEN_PICKAXE, drops: DEFAULT_BLOCK_DROP },
+  { id: 44, type: 'amethyst_cluster', harvestTool: NEEDS_WOODEN_PICKAXE, drops: { ...DEFAULT_BLOCK_DROP, item: 'amethyst_shard', count: 4 } },
+  { id: 45, type: 'sandstone', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
+  { id: 46, type: 'prismarine', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
+  { id: 47, type: 'soul_sand', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
+  { id: 48, type: 'ice', harvestTool: DEFAULT_HARVEST_TOOL, drops: DROPS_NOTHING },
+  { id: 49, type: 'farmland', harvestTool: FASTER_WITH_SHOVEL, drops: { ...DEFAULT_BLOCK_DROP, item: 'dirt' } },
+  { id: 50, type: 'coal_ore', harvestTool: NEEDS_WOODEN_PICKAXE, drops: { ...DEFAULT_BLOCK_DROP, item: 'coal', affectedByFortune: true } },
+  { id: 51, type: 'iron_ore', harvestTool: NEEDS_STONE_PICKAXE, drops: { ...DEFAULT_BLOCK_DROP, item: 'raw_iron' } },
+  { id: 52, type: 'gold_ore', harvestTool: NEEDS_IRON_PICKAXE, drops: { ...DEFAULT_BLOCK_DROP, item: 'raw_gold' } },
+  { id: 53, type: 'diamond_ore', harvestTool: NEEDS_IRON_PICKAXE, drops: { ...DEFAULT_BLOCK_DROP, item: 'diamond', affectedByFortune: true } },
+  { id: 54, type: 'redstone_ore', harvestTool: NEEDS_IRON_PICKAXE, drops: { ...DEFAULT_BLOCK_DROP, item: 'redstone_dust', count: 4, affectedByFortune: true } },
+  { id: 55, type: 'lapis_ore', harvestTool: NEEDS_STONE_PICKAXE, drops: { ...DEFAULT_BLOCK_DROP, item: 'lapis_lazuli', count: 4, affectedByFortune: true } },
+  { id: 56, type: 'emerald_ore', harvestTool: NEEDS_IRON_PICKAXE, drops: { ...DEFAULT_BLOCK_DROP, item: 'emerald', affectedByFortune: true } },
+  { id: 57, type: 'deepslate_coal_ore', harvestTool: NEEDS_WOODEN_PICKAXE, drops: { ...DEFAULT_BLOCK_DROP, item: 'coal', affectedByFortune: true } },
+  { id: 58, type: 'deepslate_iron_ore', harvestTool: NEEDS_STONE_PICKAXE, drops: { ...DEFAULT_BLOCK_DROP, item: 'raw_iron' } },
+  { id: 59, type: 'deepslate_gold_ore', harvestTool: NEEDS_IRON_PICKAXE, drops: { ...DEFAULT_BLOCK_DROP, item: 'raw_gold' } },
+  { id: 60, type: 'deepslate_diamond_ore', harvestTool: NEEDS_IRON_PICKAXE, drops: { ...DEFAULT_BLOCK_DROP, item: 'diamond', affectedByFortune: true } },
+  { id: 61, type: 'deepslate_redstone_ore', harvestTool: NEEDS_IRON_PICKAXE, drops: { ...DEFAULT_BLOCK_DROP, item: 'redstone_dust', count: 4, affectedByFortune: true } },
+  { id: 62, type: 'deepslate_lapis_ore', harvestTool: NEEDS_STONE_PICKAXE, drops: { ...DEFAULT_BLOCK_DROP, item: 'lapis_lazuli', count: 4, affectedByFortune: true } },
+  { id: 63, type: 'deepslate_emerald_ore', harvestTool: NEEDS_IRON_PICKAXE, drops: { ...DEFAULT_BLOCK_DROP, item: 'emerald', affectedByFortune: true } },
+  { id: 64, type: 'coal_block', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
+  { id: 65, type: 'iron_block', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
+  { id: 66, type: 'gold_block', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
+  { id: 67, type: 'diamond_block', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
+  { id: 68, type: 'redstone_block', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
+  { id: 69, type: 'lapis_block', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
+  { id: 70, type: 'emerald_block', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
+  { id: 71, type: 'wheat_crop', harvestTool: DEFAULT_HARVEST_TOOL, drops: { ...DEFAULT_BLOCK_DROP, item: 'wheat_seeds' } },
+  { id: 72, type: 'potato_crop', harvestTool: DEFAULT_HARVEST_TOOL, drops: { ...DEFAULT_BLOCK_DROP, item: 'potato' } },
+  { id: 73, type: 'nether_wart_crop', harvestTool: DEFAULT_HARVEST_TOOL, drops: { ...DEFAULT_BLOCK_DROP, item: 'nether_wart' } },
+  { id: 74, type: 'redstone_wire', harvestTool: DEFAULT_HARVEST_TOOL, drops: { ...DEFAULT_BLOCK_DROP, item: 'redstone_dust' } },
+  { id: 75, type: 'redstone_torch', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
+  { id: 76, type: 'lever', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
+  { id: 77, type: 'stone_button', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
+  { id: 78, type: 'repeater', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
+  { id: 79, type: 'redstone_lamp', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
+  { id: 80, type: 'redstone_lamp_lit', harvestTool: DEFAULT_HARVEST_TOOL, drops: { ...DEFAULT_BLOCK_DROP, item: 'redstone_lamp' } },
+  { id: 81, type: 'observer', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
+  { id: 82, type: 'comparator', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
+  { id: 83, type: 'dispenser', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
+  { id: 84, type: 'hopper', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
+  { id: 85, type: 'piston_head', harvestTool: DEFAULT_HARVEST_TOOL, drops: DROPS_NOTHING },
+  { id: 86, type: 'end_stone', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
+  { id: 87, type: 'end_portal_frame', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
+  { id: 88, type: 'end_portal_frame_filled', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
+  { id: 89, type: 'end_portal', harvestTool: DEFAULT_HARVEST_TOOL, drops: DROPS_NOTHING },
+  { id: 90, type: 'chorus_flower', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
+  { id: 91, type: 'chorus_plant', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
+  { id: 92, type: 'dragon_egg', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
+  { id: 93, type: 'end_crystal', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
+  { id: 94, type: 'end_gateway', harvestTool: DEFAULT_HARVEST_TOOL, drops: DROPS_NOTHING },
+  { id: 95, type: 'end_rod', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
+  { id: 96, type: 'end_stone_bricks', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
+  { id: 97, type: 'ender_chest', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
+  { id: 98, type: 'purpur_block', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
+  { id: 99, type: 'purpur_pillar', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
+  { id: 100, type: 'purpur_slab', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
+  { id: 101, type: 'purpur_stairs', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
+  { id: 102, type: 'shulker_box', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
+  { id: 103, type: 'crafting_table', harvestTool: FASTER_WITH_AXE, drops: DEFAULT_BLOCK_DROP },
+  { id: 104, type: 'furnace', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
+  { id: 105, type: 'chest', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
+  { id: 106, type: 'door', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
+  { id: 107, type: 'door_open', harvestTool: DEFAULT_HARVEST_TOOL, drops: { ...DEFAULT_BLOCK_DROP, item: 'door' } },
+  { id: 108, type: 'oak_stairs', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
+  { id: 109, type: 'anvil', harvestTool: NEEDS_WOODEN_PICKAXE, drops: DEFAULT_BLOCK_DROP },
+  { id: 110, type: 'cauldron', harvestTool: NEEDS_WOODEN_PICKAXE, drops: DEFAULT_BLOCK_DROP },
+  { id: 111, type: 'water_cauldron', harvestTool: NEEDS_WOODEN_PICKAXE, drops: { ...DEFAULT_BLOCK_DROP, item: 'cauldron' } },
+  { id: 112, type: 'bed', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
+  { id: 113, type: 'enchanting_table', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
+  { id: 114, type: 'brewing_stand', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
+  { id: 115, type: 'tnt', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
+  { id: 116, type: 'nether_brick', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
+  { id: 117, type: 'netherrack', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
+  { id: 118, type: 'nether_portal', harvestTool: DEFAULT_HARVEST_TOOL, drops: DROPS_NOTHING },
+  { id: 119, type: 'fire', harvestTool: DEFAULT_HARVEST_TOOL, drops: DROPS_NOTHING },
 ]
 
 const REGISTRY_BY_ID: ReadonlyMap<BlockId, BlockDropRegistryEntry> = new Map(
@@ -671,24 +824,14 @@ const REPLACEABLE_IDS: ReadonlySet<BlockId> = new Set<BlockId>([
  * rule that re-derives the answer from "is it solid" is how a third one starts.
  */
 const NON_SPAWN_SURFACE_IDS: ReadonlySet<BlockId> = new Set<BlockId>([
-  0, // air — nothing to stand on
+  0, // air
   6, // water
-  // oak_log was MISSING here, and so was kernel's own row: both resolved to the
-  // default `true` while the reference implementation lists WOOD in
-  // `NON_SPAWN_SURFACE_BLOCK_IDS` ("log — semi-solid / tree") and again in
-  // `VILLAGE_NON_GROUND_IDS`. Mobs and villages were treating the top of a tree
-  // trunk as ground. Unlike the lava case above, `pnpm check:mirrors` could NOT
-  // have caught this: `MIRROR_SPECS` probed `fallsWhenUnsupported` and
-  // `replaceable` and nothing else, so this transcription and kernel agreed — on
-  // the wrong answer. A `validSpawnSurface` probe has been added alongside the fix.
   9, // oak_log
-  10, // oak_leaves — solid for collision, and still not ground
+  10, // oak_leaves
   11, // lava
-  13, // glass — solid for collision, and still not ground
+  13, // glass
   14, // torch
-  // Kernel's roster completed the reference's `PASSABLE_BLOCK_IDS` and the
-  // non-`full` collision shapes. These are the additions the reference's
-  // `NON_SPAWN_SURFACE_BLOCK_IDS` names.
+  16, // piston
   18, // ladder
   19, // cobweb
   20, // sapling
@@ -700,15 +843,26 @@ const NON_SPAWN_SURFACE_IDS: ReadonlySet<BlockId> = new Set<BlockId>([
   26, // fern
   27, // sugar_cane
   28, // lily_pad
-  33, // cactus — collides, and is still not ground
+  33, // cactus
   34, // pressure_plate
-  // DELIBERATELY ABSENT, and this is transcription rather than oversight:
-  // `rail` (31), `powered_rail` (32), `kelp` (29), `seagrass` (30) and
-  // `stone_slab` (35) are passable-or-partial blocks that the reference's
-  // negative list does NOT contain, so kernel resolves them to `true` and so
-  // must this set. Adding them "for consistency" would be the same class of
-  // error as omitting oak_log, in the opposite direction — and the probe now
-  // fails either way.
+  71, // wheat_crop
+  72, // potato_crop
+  73, // nether_wart_crop
+  74, // redstone_wire
+  75, // redstone_torch
+  76, // lever
+  77, // stone_button
+  78, // repeater
+  89, // end_portal
+  90, // chorus_flower
+  91, // chorus_plant
+  93, // end_crystal
+  94, // end_gateway
+  95, // end_rod
+  106, // door
+  107, // door_open
+  112, // bed
+  118, // nether_portal
 ])
 
 /**
@@ -732,14 +886,11 @@ const NON_SPAWN_SURFACE_IDS: ReadonlySet<BlockId> = new Set<BlockId>([
  * Read about the block BELOW a placement, by `./interactions/place-block`.
  */
 const NON_SUPPORTING_IDS: ReadonlySet<BlockId> = new Set<BlockId>([
-  0, // air — nothing to attach to
+  0, // air
   6, // water
-  7, // snow — non-supporting, and STILL a valid spawn surface (audit §4.9)
+  7, // snow
   11, // lava
   14, // torch
-  // `SURFACE_PLANT_CAPABILITIES` in kernel's table, which is one constant
-  // because `block-support.ts:4-12` is one set (`SURFACE_PLANT_BLOCK_TYPES`)
-  // fed into three different negative lists.
   20, // sapling
   21, // dandelion
   22, // poppy
@@ -753,12 +904,11 @@ const NON_SUPPORTING_IDS: ReadonlySet<BlockId> = new Set<BlockId>([
   32, // powered_rail
   33, // cactus
   34, // pressure_plate
-  // DELIBERATELY ABSENT, and this is transcription rather than oversight:
-  // `ladder` (18), `cobweb` (19), `kelp` (29) and `seagrass` (30) are passable
-  // blocks that the reference's `NON_SUPPORTING_BLOCK_TYPES` does NOT contain,
-  // so kernel resolves them to `true` and so must this set. Adding them "for
-  // consistency" with `PASSABLE_BLOCK_IDS` would be the same class of error as
-  // omitting oak_log from the spawn list, in the opposite direction.
+  71, // wheat_crop
+  72, // potato_crop
+  73, // nether_wart_crop
+  74, // redstone_wire
+  75, // redstone_torch
 ])
 
 export const fallsWhenUnsupported = (block: BlockId): boolean => FALLS_WHEN_UNSUPPORTED_IDS.has(block)
@@ -770,3 +920,163 @@ export const validSpawnSurface = (block: BlockId): boolean => !NON_SPAWN_SURFACE
 
 /** Total, like kernel's: an id outside the transcription reads as an ordinary support. */
 export const canSupportAttachments = (block: BlockId): boolean => !NON_SUPPORTING_IDS.has(block)
+
+// ---------------------------------------------------------------------------
+// supportRule — mirrors mc-kernel/domain/block-support.ts and the registry column
+// ---------------------------------------------------------------------------
+
+/**
+ * What a block requires in the cell directly BELOW it. kernel's `SupportRule`.
+ *
+ * THIS IS THE COLUMN `./interactions/place-block` WAS MISSING, and the reason
+ * its absence was tolerable for so long is worth stating before the type: no
+ * block that needs it could be held. `PlaceableItemType` is `ItemType &
+ * BlockType`, and kernel deliberately withholds an item form from the ten
+ * blocks whose rule differs from the fallback — so `placeBlock` could not reach
+ * the wrong answer even while the wrong answer was what it would have given.
+ * That was recorded as F7 in `test/place-block.test.ts` and it is fixed here.
+ *
+ * The three arms are kernel's and the collapse is kernel's argument: the
+ * reference implementation answers `canBlockStaySupported` out of THREE tables
+ * (`block-support.ts:22-32` sensitivity, `:75-91` the per-block map, `:47-61`
+ * the negative list) and kernel carries the first two as one column, deriving
+ * sensitivity as `kind !== 'none'`. The third is `canSupportAttachments` above,
+ * which this file already mirrored.
+ */
+export type SupportRule =
+  | { readonly kind: 'none' }
+  | { readonly kind: 'anySupporting' }
+  | { readonly kind: 'oneOf'; readonly blocks: ReadonlyArray<BlockType> }
+
+/** kernel's `NEEDS_NO_SUPPORT`. The default: an ordinary cube needs no floor. */
+export const NEEDS_NO_SUPPORT: SupportRule = { kind: 'none' }
+
+/** kernel's `NEEDS_ANY_SUPPORT`. The reference's fallback arm, named. */
+export const NEEDS_ANY_SUPPORT: SupportRule = { kind: 'anySupporting' }
+
+/** kernel's `needsOneOf`. Variadic so a row reads like the reference's set literal. */
+export const needsOneOf = (...blocks: ReadonlyArray<BlockType>): SupportRule => ({
+  kind: 'oneOf',
+  blocks,
+})
+
+/** kernel's `isSupportSensitive`, over a rule rather than over an id. */
+export const isSupportSensitiveRule = (rule: SupportRule): boolean => rule.kind !== 'none'
+
+/**
+ * kernel's `satisfiesSupportRule` — `canBlockStaySupported` (`block-support.ts:
+ * 96-101`) with the tables it reads passed in.
+ *
+ * The `undefined` asymmetry is kernel's and is transcribed rather than
+ * simplified: an unnameable block below DOES hold up a torch (an unknown byte
+ * reads as an ordinary cube, so it supports attachments) and does NOT float a
+ * lily pad (no unnameable block is a member of a list of names).
+ */
+export const satisfiesSupportRule = (
+  rule: SupportRule,
+  blockBelow: BlockType | undefined,
+  belowSupportsAttachments: boolean,
+): boolean => {
+  switch (rule.kind) {
+    case 'none':
+      return true
+
+    case 'anySupporting':
+      return belowSupportsAttachments
+
+    case 'oneOf':
+      return blockBelow !== undefined && rule.blocks.includes(blockBelow)
+  }
+}
+
+/**
+ * The five per-block lists, named as kernel names them.
+ *
+ * Transcribed from `mc-kernel/domain/block-registry.ts`, which transcribed them
+ * from `block-support.ts:63-69,78-88`. The reference's `GRASS` is the grass
+ * BLOCK and is `grass_block` here; its `TALL_GRASS` is one of the seven plants
+ * the surface rule applies TO, not one of the three blocks it names.
+ */
+const NEEDS_FARMLAND: SupportRule = needsOneOf('farmland')
+const NEEDS_PLANTABLE_GROUND: SupportRule = needsOneOf('dirt', 'grass_block', 'farmland')
+const NEEDS_SUGAR_CANE_GROUND: SupportRule = needsOneOf('dirt', 'grass_block', 'sand', 'sugar_cane')
+const NEEDS_SAND_OR_CACTUS: SupportRule = needsOneOf('sand', 'cactus')
+const NEEDS_WATER: SupportRule = needsOneOf('water')
+
+/**
+ * EVERY row of kernel's `supportRule` column that is not the default. All
+ * nineteen, and the completeness is the point rather than a courtesy.
+ *
+ * This file's header states the rule: a transcription that is a SUBSET cannot
+ * be compared mechanically, because "is it a subset?" is true of a stale mirror
+ * too. The closed set here is "the blocks with a non-default support rule",
+ * `test/block-vocabulary-mirror.test.ts` pins its membership as a list of names,
+ * and the 101 rows that are absent are absent because kernel's table states
+ * OVERRIDES only — an absent row is the statement "requires nothing below",
+ * which is exactly what `supportRuleOfBlockId` returns for it.
+ *
+ * SIX OF THE NINETEEN TAKE THE FALLBACK ARM, and they are the ones the
+ * reference gives NO per-block entry: `torch`, `redstone_torch`,
+ * `redstone_wire`, `pressure_plate`, `rail`, `powered_rail`. Their arm is an
+ * ABSENCE in the source, so `NEEDS_ANY_SUPPORT` is that absence written down —
+ * and inventing a list for them (they all plausibly want "dirt or stone") would
+ * be this repository fabricating content, which is the failure kernel's audit
+ * §4.9.1(c) names.
+ */
+const SUPPORT_RULE_OVERRIDES: ReadonlyMap<BlockId, SupportRule> = new Map<BlockId, SupportRule>([
+  [14, NEEDS_ANY_SUPPORT], // torch — block-support.ts:23, no entry at :75-89
+  [20, NEEDS_PLANTABLE_GROUND], // sapling
+  [21, NEEDS_PLANTABLE_GROUND], // dandelion
+  [22, NEEDS_PLANTABLE_GROUND], // poppy
+  [23, NEEDS_PLANTABLE_GROUND], // brown_mushroom
+  [24, NEEDS_PLANTABLE_GROUND], // red_mushroom
+  [25, NEEDS_PLANTABLE_GROUND], // tall_grass
+  [26, NEEDS_PLANTABLE_GROUND], // fern
+  [27, NEEDS_SUGAR_CANE_GROUND], // sugar_cane — block-support.ts:82
+  [28, NEEDS_WATER], // lily_pad — block-support.ts:84
+  [31, NEEDS_ANY_SUPPORT], // rail — block-support.ts:27, no entry at :75-89
+  [32, NEEDS_ANY_SUPPORT], // powered_rail — block-support.ts:28, no entry at :75-89
+  [33, NEEDS_SAND_OR_CACTUS], // cactus — block-support.ts:83
+  [34, NEEDS_ANY_SUPPORT], // pressure_plate — block-support.ts:26, no entry at :75-89
+  [71, NEEDS_FARMLAND], // wheat_crop — block-support.ts:78-81
+  [72, NEEDS_FARMLAND], // potato_crop — block-support.ts:78-81
+  [73, NEEDS_FARMLAND], // nether_wart_crop — block-support.ts:78-81
+  [74, NEEDS_ANY_SUPPORT], // redstone_wire — block-support.ts:25, no entry at :75-89
+  [75, NEEDS_ANY_SUPPORT], // redstone_torch — block-support.ts:24, no entry at :75-89
+])
+
+/**
+ * The support rule of a chunk buffer byte. kernel's `supportRuleOfBlockId`.
+ *
+ * TOTAL: an id outside the transcription requires nothing below, which is
+ * kernel's default and the inert reading — an unknown block sits where it was
+ * put rather than popping off.
+ */
+export const supportRuleOfBlockId = (block: BlockId): SupportRule =>
+  SUPPORT_RULE_OVERRIDES.get(block) ?? NEEDS_NO_SUPPORT
+
+/**
+ * Does this byte care what is under it? kernel's `isSupportSensitiveBlockId`.
+ *
+ * `false` for an unknown id, which is the permissive direction: an unnameable
+ * block is not refused for a reason nobody can state.
+ */
+export const isSupportSensitiveBlockId = (block: BlockId): boolean =>
+  isSupportSensitiveRule(supportRuleOfBlockId(block))
+
+/**
+ * `canBlockStaySupported` (`block-support.ts:96-101`) on two chunk buffer bytes.
+ * kernel's function of the same name.
+ *
+ * THE PRECEDENCE IS THE PART THAT GOES WRONG, and it is why this is one call
+ * rather than two predicates a caller ANDs. The per-block list WINS over the
+ * negative set, so a rule that asks `canSupportAttachments` first refuses a lily
+ * pad on water before the rule that permits it can run. That is precisely what
+ * this repository did until `supportRule` existed to consult.
+ */
+export const canBlockStaySupported = (block: BlockId, supportBelow: BlockId): boolean =>
+  satisfiesSupportRule(
+    supportRuleOfBlockId(block),
+    blockTypeOfId(supportBelow),
+    canSupportAttachments(supportBelow),
+  )

@@ -39,10 +39,19 @@
 import { describe, expect, it } from '@effect/vitest'
 import { Effect } from 'effect'
 import {
+  BLOCK_TYPES,
+  blockIdOf,
+  canBlockStaySupported,
   canSupportAttachments,
   fallsWhenUnsupported,
   isReplaceable,
+  isSupportSensitiveBlockId,
+  NEEDS_ANY_SUPPORT,
+  NEEDS_NO_SUPPORT,
+  needsOneOf,
+  supportRuleOfBlockId,
   validSpawnSurface,
+  type BlockType,
 } from '../domain/block-vocabulary'
 
 describe('the kernel capability mirror', () => {
@@ -181,6 +190,163 @@ describe('the kernel capability mirror', () => {
       // Total, defaulting to "ordinary opaque cube" for a byte this build cannot
       // name, exactly as `capabilityOfBlockId` does.
       expect(canSupportAttachments(200)).toBe(true)
+    }),
+  )
+})
+
+// ---------------------------------------------------------------------------
+// supportRule — the fifth column, and the one that is NOT a boolean
+// ---------------------------------------------------------------------------
+
+/**
+ * The nineteen blocks with a non-default support rule, in kernel's registry
+ * order. THE COMPLETE OVERRIDE SET, and completeness is the requirement rather
+ * than thoroughness.
+ *
+ * This file's header and `domain/block-vocabulary.ts`'s both state why: a
+ * transcription that is a SUBSET cannot be compared mechanically, because "is it
+ * a subset?" is true of a stale mirror too. The 101 rows NOT here are absent
+ * because kernel's table states overrides only, and their absence is itself the
+ * assertion `supportRuleOfBlockId` returns `NEEDS_NO_SUPPORT` for them — which
+ * the second test below checks over the whole roster rather than by sampling.
+ */
+const SUPPORT_SENSITIVE_NAMES: ReadonlyArray<BlockType> = [
+  'torch',
+  'sapling',
+  'dandelion',
+  'poppy',
+  'brown_mushroom',
+  'red_mushroom',
+  'tall_grass',
+  'fern',
+  'sugar_cane',
+  'lily_pad',
+  'rail',
+  'powered_rail',
+  'cactus',
+  'pressure_plate',
+  'wheat_crop',
+  'potato_crop',
+  'nether_wart_crop',
+  'redstone_wire',
+  'redstone_torch',
+]
+
+describe('the supportRule mirror', () => {
+  it.effect('transcribes kernel’s whole override set — all nineteen, and nothing else', () =>
+    Effect.sync(() => {
+      const sensitive = BLOCK_TYPES.filter((type) => {
+        const id = blockIdOf(type)
+        return id !== undefined && isSupportSensitiveBlockId(id)
+      })
+      expect(sensitive).toStrictEqual(SUPPORT_SENSITIVE_NAMES)
+      expect(sensitive.length).toBe(19)
+    }),
+  )
+
+  it.effect('the other 101 blocks require nothing below, which is what an override table means', () =>
+    Effect.sync(() => {
+      const indifferent = BLOCK_TYPES.filter((type) => {
+        const id = blockIdOf(type)
+        return id !== undefined && !isSupportSensitiveBlockId(id)
+      })
+      expect(indifferent.length).toBe(101)
+      expect(indifferent.length + SUPPORT_SENSITIVE_NAMES.length).toBe(BLOCK_TYPES.length)
+
+      for (const type of indifferent) {
+        expect(supportRuleOfBlockId(blockIdOf(type) ?? -1)).toStrictEqual(NEEDS_NO_SUPPORT)
+        // "requires nothing" means it stays up over ANYTHING, air included.
+        expect(canBlockStaySupported(blockIdOf(type) ?? -1, 0)).toBe(true)
+      }
+    }),
+  )
+
+  it.effect('the five per-block lists are transcribed with the reference’s exact membership', () =>
+    Effect.sync(() => {
+      const ruleOf = (type: BlockType) => supportRuleOfBlockId(blockIdOf(type) ?? -1)
+
+      // `block-support.ts:78-81` — the three crops, farmland and nothing else.
+      for (const crop of ['wheat_crop', 'potato_crop', 'nether_wart_crop'] as const) {
+        expect(ruleOf(crop)).toStrictEqual(needsOneOf('farmland'))
+      }
+      // `block-support.ts:63-67,85-88` — the seven surface plants, one rule.
+      for (const plant of [
+        'sapling',
+        'dandelion',
+        'poppy',
+        'brown_mushroom',
+        'red_mushroom',
+        'tall_grass',
+        'fern',
+      ] as const) {
+        expect(ruleOf(plant)).toStrictEqual(needsOneOf('dirt', 'grass_block', 'farmland'))
+      }
+      // The three waterside plants, three different rules (`:68`, `:69`, `:84`).
+      expect(ruleOf('sugar_cane')).toStrictEqual(needsOneOf('dirt', 'grass_block', 'sand', 'sugar_cane'))
+      expect(ruleOf('cactus')).toStrictEqual(needsOneOf('sand', 'cactus'))
+      expect(ruleOf('lily_pad')).toStrictEqual(needsOneOf('water'))
+    }),
+  )
+
+  it.effect('the six with NO reference rule take the fallback arm, and no list was invented for them', () =>
+    Effect.sync(() => {
+      // Their arm is an ABSENCE in the source — no entry between
+      // `block-support.ts:75` and :89 — so `NEEDS_ANY_SUPPORT` is that absence
+      // written down. All six plausibly want "dirt or stone" and the reference
+      // says only "anything that supports"; inventing the narrower rule would be
+      // this repository fabricating content.
+      for (const type of ['torch', 'redstone_torch', 'redstone_wire', 'pressure_plate', 'rail', 'powered_rail'] as const) {
+        expect(supportRuleOfBlockId(blockIdOf(type) ?? -1)).toStrictEqual(NEEDS_ANY_SUPPORT)
+        // The defining property of the arm: it tracks `canSupportAttachments`.
+        expect(canBlockStaySupported(blockIdOf(type) ?? -1, 2)).toBe(true) // stone
+        expect(canBlockStaySupported(blockIdOf(type) ?? -1, 7)).toBe(false) // snow
+      }
+    }),
+  )
+
+  it.effect('every block a rule names has a row, so no rule is unsatisfiable', () =>
+    Effect.sync(() => {
+      const named = BLOCK_TYPES.flatMap((type) => {
+        const rule = supportRuleOfBlockId(blockIdOf(type) ?? -1)
+        return rule.kind === 'oneOf' ? [...rule.blocks] : []
+      })
+      for (const block of named) {
+        // `blockIdOf` is PARTIAL in this mirror, so a rule naming a block with no
+        // registry row would silently never be satisfiable.
+        expect(blockIdOf(block)).toBeDefined()
+      }
+      expect([...new Set(named)].sort()).toStrictEqual([
+        'cactus',
+        'dirt',
+        'farmland',
+        'grass_block',
+        'sand',
+        'sugar_cane',
+        'water',
+      ])
+    }),
+  )
+
+  it.effect('canBlockStaySupported is total in both bytes, with kernel’s asymmetry intact', () =>
+    Effect.sync(() => {
+      // An unknown block above requires nothing and stays.
+      expect(canBlockStaySupported(200, 0)).toBe(true)
+      expect(isSupportSensitiveBlockId(200)).toBe(false)
+      expect(supportRuleOfBlockId(200)).toStrictEqual(NEEDS_NO_SUPPORT)
+
+      // An unknown block BELOW reads as an ordinary cube, so it holds a torch —
+      // and is a member of no list, so it floats no lily pad. Kernel states the
+      // asymmetry and this mirror transcribes it rather than smoothing it.
+      expect(canBlockStaySupported(blockIdOf('torch') ?? -1, 200)).toBe(true)
+      expect(canBlockStaySupported(blockIdOf('lily_pad') ?? -1, 200)).toBe(false)
+    }),
+  )
+
+  it.effect('does not leak into this package’s published surface either', () =>
+    Effect.gen(function* () {
+      const barrel = yield* Effect.promise(() => import('../index'))
+      expect(Object.keys(barrel)).not.toContain('canBlockStaySupported')
+      expect(Object.keys(barrel)).not.toContain('supportRuleOfBlockId')
     }),
   )
 })

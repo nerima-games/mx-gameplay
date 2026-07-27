@@ -107,10 +107,9 @@ import {
 import { below } from '../block-position-key'
 import {
   blockIdOf,
-  blockTypeOfId,
-  canSupportAttachments,
+  canBlockStaySupported,
   isReplaceable,
-  type BlockType,
+  isSupportSensitiveBlockId,
   type PlaceableItemType,
 } from '../block-vocabulary'
 import type { Position } from '../entity-manager-port'
@@ -161,60 +160,30 @@ export const blockOverlapsPlayer = (block: BlockPosition, playerFeet: Position):
 }
 
 /**
- * The blocks that fall off if there is nothing under them.
- *
- * A RULES-TIER TABLE, and it is here rather than in `../chunk-store-port`
- * because kernel does not have it: `mc-kernel/domain/block-registry.ts` records
- * the gap in as many words on its shared plant row — 「`supportRule` is the one
- * capability these blocks need and kernel does not have […] It is
- * `PENDING_CAPABILITIES`」. Transcribing it into the capability mirror would be
- * this repository inventing a kernel flag, which is worse than holding the set
- * where the rule that reads it lives.
- *
- * It is deliberately BLOCK TYPES and not ids, so it reads against the reference
- * rather than against a byte, and it is ONE set in ONE file — the property that
- * distinguishes it from the scatter plan.md §3.1 measured
- * (`blockTypeToIndex('SAND')` in 229 places across 51 files). When kernel adds
- * `supportSensitive` this becomes `capabilityOfBlockId(id, 'supportSensitive')`
- * and the set is deleted.
- *
- * Membership is `SUPPORT_SENSITIVE_BLOCK_TYPES` (`block-support.ts:22-32`)
- * intersected with this build's roster. The reference's `REDSTONE_TORCH`,
- * `REDSTONE_WIRE` and its three crops have no `BlockType` here — the redstone
- * pair is mx-redstone's vocabulary and the crops are farming, which
- * `docs/testing.md` §3-2 counts under item use.
- */
-const SUPPORT_SENSITIVE_BLOCK_TYPES: ReadonlySet<BlockType> = new Set<BlockType>([
-  'torch',
-  'pressure_plate',
-  'rail',
-  'powered_rail',
-  // `SURFACE_PLANT_BLOCK_TYPES` (`block-support.ts:4-12`), all seven.
-  'sapling',
-  'dandelion',
-  'poppy',
-  'brown_mushroom',
-  'red_mushroom',
-  'tall_grass',
-  'fern',
-  // `WATERSIDE_PLANT_BLOCK_TYPES` (`block-support.ts:14-18`), all three.
-  'sugar_cane',
-  'cactus',
-  'lily_pad',
-])
-
-/**
  * Does this block need something under it to stay put?
+ *
+ * THE TABLE THIS USED TO CARRY IS GONE, and its own comment named the day:
+ * 「When kernel adds `supportSensitive` this becomes `capabilityOfBlockId(id,
+ * …)` and the set is deleted」. Kernel added the column — as `supportRule`
+ * rather than as a boolean, which is the better shape and the one the audit
+ * always specified — so the set is deleted and this delegates to
+ * `../block-vocabulary`.
+ *
+ * The set was here on a stated objection: kernel's registry had no `supportRule`
+ * column, so transcribing one into the capability mirror would have been this
+ * repository inventing a kernel flag. That objection is answered rather than
+ * overridden. The mirror now transcribes a column that EXISTS.
+ *
+ * Kept as an export under its own name because it is on this repository's
+ * published surface (`test/public-api.test.ts`) and `apps/preview-mining-site`
+ * calls it to decide whether to read the cell below. The name is this
+ * repository's; the answer is kernel's.
  *
  * TOTAL over ids, including ones this build cannot name: an unrecognised byte is
  * NOT support-sensitive, which is the inert direction — it places, rather than
- * being refused for a reason nobody can name. That matches
- * `../chunk-store-port`'s rule that an unknown id reads as an ordinary cube.
+ * being refused for a reason nobody can name.
  */
-export const isSupportSensitive = (block: BlockId): boolean => {
-  const type = blockTypeOfId(block)
-  return type !== undefined && SUPPORT_SENSITIVE_BLOCK_TYPES.has(type)
-}
+export const isSupportSensitive = (block: BlockId): boolean => isSupportSensitiveBlockId(block)
 
 /**
  * What the player is trying to put down, and where.
@@ -331,7 +300,14 @@ export const placementVerdict = (
     if (supportBelow === undefined || supportBelow._tag !== 'Block') {
       return { _tag: 'Unsupported', support: 0 }
     }
-    if (!canSupportAttachments(supportBelow.block)) {
+    // ONE CALL, NOT TWO PREDICATES ANDED, and the difference is F7. This used to
+    // ask `canSupportAttachments` — the reference's FALLBACK arm — for every
+    // support-sensitive block, including the thirteen the reference answers from
+    // a per-block list instead. The list wins over the negative set, so asking
+    // the set first refuses a lily pad on water (water is non-supporting) and
+    // allows it on stone: wrong in both directions on the only cell it belongs
+    // on. `canBlockStaySupported` is the composition in the reference's order.
+    if (!canBlockStaySupported(block, supportBelow.block)) {
       return { _tag: 'Unsupported', support: supportBelow.block }
     }
   }

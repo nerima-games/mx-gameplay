@@ -39,9 +39,12 @@ import { positionKeyOf } from '../domain/block-position-key'
 import { AIR_BLOCK_ID, type BlockPosition } from '../domain/chunk-store-port'
 import {
   blockIdOf,
+  canBlockStaySupported,
   canSupportAttachments,
   isReplaceable,
+  needsOneOf,
   PLACEABLE_ITEM_TYPES,
+  supportRuleOfBlockId,
   validSpawnSurface,
   type BlockType,
 } from '../domain/block-vocabulary'
@@ -453,14 +456,13 @@ describe('placeBlock — support', () => {
  * asserted below rather than worked around with a cast: a cast would have made
  * six green tests that no production path can execute.
  *
- * So the rows go to the two predicates the rule ANDs — `isSupportSensitive`
- * (this file) and `canSupportAttachments` (`domain/block-vocabulary.ts`) — both
- * of which take a `BlockId`, which is a byte and has no roster gate. That is
- * where the reference's `canBlockStaySupported` lives too; `block-support.ts`
- * takes a `BlockType` and knows nothing about items either.
+ * So the rows go to `canBlockStaySupported` (`domain/block-vocabulary.ts`),
+ * which takes two `BlockId`s — bytes, with no roster gate. That is where the
+ * reference's function of the same name lives too; `block-support.ts` takes a
+ * `BlockType` and knows nothing about items either.
  *
  * ---------------------------------------------------------------------------
- * AND WHY THE TABLE IS SPLIT IN TWO
+ * THE TABLE USED TO BE SPLIT IN TWO. IT IS NOT ANY MORE.
  * ---------------------------------------------------------------------------
  *
  * `canBlockStaySupported` (`block-support.ts:96-101`) has two arms:
@@ -470,13 +472,18 @@ describe('placeBlock — support', () => {
  *     if (supportRule) return supportRule(blockBelow)          // <- PER BLOCK
  *     return !NON_SUPPORTING_BLOCK_TYPES.has(blockBelow)       // <- the fallback
  *
- * `domain/interactions/place-block.ts` ported the FALLBACK and applies it to
- * every support-sensitive block. The rows in this describe are the reference's
- * rows that reach that same fallback in the reference too, so they are a port in
- * the ordinary sense. The rows that reach `SUPPORT_RULES` are F7 below, and they
- * do NOT agree.
+ * `domain/interactions/place-block.ts` ported the FALLBACK ONLY and applied it
+ * to every support-sensitive block, so this describe held the rows that reach
+ * the fallback in the reference TOO, and F7 below held the rows that do not.
+ *
+ * **Kernel now ships the per-block arm as `supportRule`** (`mc-kernel/domain/
+ * block-support.ts`) and this repository reads it through the mirror, so both
+ * arms exist here and the split is history rather than structure. The rows below
+ * still take the fallback in the reference; what changed is that they now do so
+ * BECAUSE THEIR RULE SAYS `anySupporting`, rather than because this repository
+ * had no other rule to offer.
  */
-describe('the reference\u2019s support table, on the rows that share its rule', () => {
+describe('the reference\u2019s support table, on the rows whose rule IS the fallback', () => {
   // `block-support.test.ts:10-17`, the membership half. Two of the reference's
   // six rows (WHEAT_CROP, POTATO_CROP) are crops, which this build's roster does
   // not have and `docs/testing.md` §3-2 counts under item use.
@@ -490,21 +497,61 @@ describe('the reference\u2019s support table, on the rows that share its rule', 
   )
 
   /*
-   * THIRTEEN OF THE FOURTEEN CANNOT BE HELD, and that is the reason the rows
-   * below are predicate-level. It is asserted rather than described because it
-   * is the thing that will change: `domain/interactions/block-loot.ts` already
-   * records that a sapling 「cannot yield a sapling you can carry until kernel
-   * itemises it」, and the day kernel does, this test fails and F7 below stops
-   * being dormant on the same commit.
+   * WHAT THIS TEST NOW GUARDS, SINCE WHAT IT USED TO GUARD HAS ENDED.
+   *
+   * It has been rewritten twice and the history is the point. It began as "only
+   * the torch of the fourteen is placeable", with a prediction attached: the day
+   * kernel itemises a sapling, "this test fails and F7 below stops being dormant
+   * on the same commit". Kernel completed its roster, faced that choice for ten
+   * blocks at once, and split it along `SUPPORT_RULES` membership — itemising the
+   * four with no per-block entry and holding the ten that have one. So the test
+   * became "the four placeable ones are the four F7 does not cover", and its
+   * stated job was to keep F7 dormant.
+   *
+   * **F7 IS CLOSED**, so that job is gone. The ten are no longer held back
+   * because the code that would receive them is wrong — `supportRule` landed in
+   * kernel, this repository reads it, and a lily pad placed today would be
+   * refused on stone and allowed on water, correctly. Deleting this test was
+   * considered and rejected: it still fails on a real event, and the event is
+   * worth failing on.
+   *
+   * WHAT IT GUARDS NOW is the remaining ROSTER GAP, in the direction that costs
+   * something. Ten blocks in this build drop nothing when broken
+   * (`domain/block-vocabulary.ts`'s `DROPS_NOTHING` rows, mirroring kernel's),
+   * which is a stated divergence from the reference. The day kernel itemises
+   * them, those rows must become the default drop rule ON THE SAME COMMIT — and
+   * this test is what fails to say so. It is a different failure from the old
+   * one: then it meant "a wrong rule just became reachable", now it means
+   * "ten drop rules just went stale".
    */
-  it.effect('only the torch of the fourteen support-sensitive types is a placeable item today', () =>
+  it.effect('the ten unitemised support-sensitive blocks are the remaining roster gap, and drop nothing', () =>
     Effect.sync(() => {
       const placeable: ReadonlySet<string> = new Set<string>(PLACEABLE_ITEM_TYPES)
       const heldToday = SUPPORT_SENSITIVE_TYPES.filter((type) => placeable.has(type))
 
-      expect(heldToday).toStrictEqual(['torch'])
-      // ...and every one of the other thirteen IS support-sensitive, so the arm
-      // they would take is written and unreachable rather than absent.
+      expect(heldToday).toStrictEqual(['torch', 'pressure_plate', 'rail', 'powered_rail'])
+
+      // The complement, named. When a literal moves out of this list, the
+      // matching row in `BLOCK_DROP_REGISTRY` has to stop saying `DROPS_NOTHING`
+      // in the same change, or breaking the block yields nothing while claiming
+      // to yield itself.
+      const cannotBeHeld = SUPPORT_SENSITIVE_TYPES.filter((type) => !placeable.has(type))
+      expect(cannotBeHeld).toStrictEqual([
+        'sapling',
+        'dandelion',
+        'poppy',
+        'brown_mushroom',
+        'red_mushroom',
+        'tall_grass',
+        'fern',
+        'sugar_cane',
+        'cactus',
+        'lily_pad',
+      ])
+
+      // ...and every one of the fourteen IS support-sensitive, so the arm they
+      // take is written rather than absent. This half is unchanged and is what
+      // the whole file's support coverage rests on.
       for (const type of SUPPORT_SENSITIVE_TYPES) {
         expect(isSupportSensitive(blockIdOf(type) ?? -1)).toBe(true)
       }
@@ -531,6 +578,14 @@ describe('the reference\u2019s support table, on the rows that share its rule', 
     it.effect(`${name} — ${stays ? 'stays' : 'falls'}`, () =>
       Effect.sync(() => {
         expect(isSupportSensitive(held)).toBe(true)
+        // THROUGH THE RULE, not through the two predicates it used to AND. These
+        // rows used to assert `canSupportAttachments(support)` directly, which
+        // was the whole of the answer while the fallback was the whole of the
+        // implementation. It is not any more, so the assertion goes through the
+        // function `placementVerdict` actually calls — and these six rows are
+        // the ones where the two spellings agree, which is what makes them a
+        // safe place to check that the composition did not change their answers.
+        expect(canBlockStaySupported(held, support)).toBe(stays)
         expect(canSupportAttachments(support)).toBe(stays)
       }),
     )
@@ -553,7 +608,7 @@ describe('the reference\u2019s support table, on the rows that share its rule', 
 })
 
 /*
- * F7 — A CONTRADICTION, DORMANT, PINNED RATHER THAN FIXED.
+ * F7 — CLOSED. THE PER-BLOCK SUPPORT RULES ARE PORTED, AND THESE ROWS NOW AGREE.
  *
  * `<reference-impl>/packages/world/domain/block-support.ts:73-89` builds
  * `SUPPORT_RULES`, a per-block-type map consulted BEFORE the negative list:
@@ -564,67 +619,161 @@ describe('the reference\u2019s support table, on the rows that share its rule', 
  *     the seven surface plants -> DIRT | GRASS | FARMLAND
  *     the three crops          -> FARMLAND
  *
- * `domain/interactions/place-block.ts` carries all ten of those block types in
- * its `SUPPORT_SENSITIVE_BLOCK_TYPES` and then answers every one of them with
- * the FALLBACK arm — `canSupportAttachments`, kernel's mirror of
- * `NON_SUPPORTING_BLOCK_TYPES`. In the reference no lily pad, cactus, sugar cane
- * or surface plant ever reaches that arm.
+ * `domain/interactions/place-block.ts` used to carry all ten of the block types
+ * this build has in a private `SUPPORT_SENSITIVE_BLOCK_TYPES` and then answer
+ * every one of them with the FALLBACK arm — `canSupportAttachments`, kernel's
+ * mirror of `NON_SUPPORTING_BLOCK_TYPES`. In the reference no lily pad, cactus,
+ * sugar cane or surface plant ever reaches that arm.
  *
- * The file's header does not record this as a decision. It says
- * `canBlockStaySupported` is 「checked at PLACEMENT time in the reference」 and
- * that 「Only the placement half is here」 — the half it names as absent is the
- * MAINTENANCE sweep, not the per-block map. It separately defers four rules from
- * `block-service-place-plan.ts:208-214` (mushroom light, sugar cane's ADJACENT
- * water, cactus's four air sides, doors), which are a different mechanism in a
- * different file and do not cover these rows.
+ * THE WORST ROW WAS THE FIRST. Water is in `NON_SUPPORTING_IDS`, and water is
+ * the only thing that supports a lily pad — so under that rule a lily pad was
+ * refused on the one cell it belongs on and allowed on stone. Not a deferral in
+ * the direction of doing less; wrong in both directions at once.
  *
- * THE WORST ROW IS THE FIRST. Water is in `NON_SUPPORTING_IDS`, and water is the
- * only thing that supports a lily pad — so under this rule a lily pad is refused
- * on the one cell it belongs on and allowed on stone. That is not a deferral in
- * the direction of doing less; it is wrong in both directions at once.
+ * ---------------------------------------------------------------------------
+ * WHY IT WAS NOT FIXED HERE, AND WHAT REMOVED THE OBJECTION
+ * ---------------------------------------------------------------------------
  *
- * IT IS DORMANT, WHICH IS WHY NOTHING HAS SEEN IT. None of the ten types is a
- * `PlaceableItemType`, so no `placeBlock` call can reach the wrong answer today
- * (the describe above pins that, and pins the day it stops being true). The
- * predicates are wrong now; the game is not wrong yet. A dormant contradiction
- * is still worth a test, because the roster row that wakes it will be added by
- * somebody who is not reading this file.
+ * The objection was ownership, not difficulty: 「the fix is a new table and the
+ * table has an owner question attached: kernel's registry has no `supportRule`
+ * column, so writing one here is this repository inventing a kernel flag」.
  *
- * These tests pin the CURRENT behaviour, in the shape `test/preview-findings.test.ts`
- * established for exactly this situation: 「直すと finding は『固定される』のでは
- * なく静かに消える」. They FAIL when the divergence is fixed, by design, and each
- * names the reference row it contradicts so the fix is an edit here too.
+ * Kernel has the column now. `mc-kernel/domain/block-support.ts` carries
+ * `SupportRule` and `mc-kernel/domain/block-registry.ts` fills in all nineteen
+ * non-default rows; `domain/block-vocabulary.ts` mirrors both IN FULL, and
+ * `placementVerdict` calls `canBlockStaySupported` instead of ANDing two
+ * predicates. Nothing here was invented — the objection was answered rather than
+ * overruled.
  *
- * NOT FIXED HERE because the fix is a new table and the table has an owner
- * question attached: kernel's registry has no `supportRule` column
- * (`domain/interactions/place-block.ts` quotes mc-kernel's own note that it is
- * `PENDING_CAPABILITIES`), so writing one here is this repository inventing a
- * kernel flag — which that file's own `SUPPORT_SENSITIVE_BLOCK_TYPES` comment
- * calls 「worse than holding the set where the rule that reads it lives」.
+ * ---------------------------------------------------------------------------
+ * THESE TESTS USED TO PIN THE WRONG ANSWER. EVERY ONE IS INVERTED.
+ * ---------------------------------------------------------------------------
+ *
+ * They were written in the shape `test/preview-findings.test.ts` established —
+ * 「直すと finding は『固定される』のではなく静かに消える」— so that they would
+ * FAIL when the divergence was fixed, and each named the reference row it
+ * contradicted. Each now asserts AGREEMENT with that same row, and says which
+ * assertion flipped. They are not deleted, because a finding that disappears
+ * without a trace is one nobody can tell was ever fixed.
+ *
+ * THEY DID NOT GO RED ON THEIR OWN, which is the one thing worth knowing about
+ * the fix. They composed a RECONSTRUCTION (`wouldStay` below) rather than calling
+ * the rule, and this describe's own text predicted exactly that: 「A fix that
+ * added a per-block table INSIDE `placementVerdict` and left both predicates
+ * alone would not turn these pins red on its own.」 It was right. The
+ * reconstruction is gone — `wouldStay` is now a direct call to
+ * `canBlockStaySupported`, the single function the support branch calls — so
+ * these rows can no longer agree with a table that has drifted from them.
+ *
+ * ---------------------------------------------------------------------------
+ * THE RESIDUAL GAP, MEASURED RATHER THAN ASSERTED AWAY
+ * ---------------------------------------------------------------------------
+ *
+ * One weakness SURVIVES the fix and it is the mirror image of the old one.
+ * These rows now pin the FUNCTION; what they cannot pin is that
+ * `placementVerdict` still CALLS it. Reverting its support branch to
+ * `canSupportAttachments` — the exact F7 defect — leaves all 51 tests in this
+ * file green. That was verified by making the change and running them, not
+ * assumed.
+ *
+ * The reason is the same wall the old tests hit, one level along: the two
+ * spellings differ only on a block with a `'oneOf'` rule, and NO SUCH BLOCK IS
+ * PLACEABLE. All four support-sensitive types that have an item form
+ * (`torch`, `pressure_plate`, `rail`, `powered_rail`) have the `'anySupporting'`
+ * rule, on which the two functions agree BY CONSTRUCTION. So no `PlaceRequest`
+ * this build's types admit can tell them apart, and a cast would produce a green
+ * test no production path can execute — which is what the ported-oracle comment
+ * above already refused to do once.
+ *
+ * `the support branch agrees with the rule on every pair it can be handed` below
+ * is what can be written today, and it is the test that closes the gap on the
+ * day the gap becomes reachable: itemising any one of the ten plants
+ * (`mc-kernel/domain/item-type.ts` records that this is now the only step left)
+ * puts a `'oneOf'` block into `PLACEABLE_ITEM_TYPES`, and that test is driven by
+ * that array rather than by a list somebody maintains.
  */
-describe('F7 — the per-block support rules were not ported, and the fallback disagrees with four of them', () => {
+describe('F7 — CLOSED: the per-block support rules are ported, and all four rows now agree', () => {
   /**
    * `placementVerdict`'s support branch, for a type nobody can hold yet.
    *
-   * A RECONSTRUCTION, and its one weakness is stated rather than hidden: because
-   * the ten types cannot be put into a `PlaceRequest`, this composes the rule's
-   * two predicates instead of calling the rule. A fix that added a per-block
-   * table INSIDE `placementVerdict` and left both predicates alone would not
-   * turn these pins red on its own.
+   * NO LONGER A RECONSTRUCTION. This used to be
+   * `!isSupportSensitive(id) || canSupportAttachments(support)` — the two
+   * predicates the rule ANDed, reassembled here because the ten types cannot be
+   * put into a `PlaceRequest`. That reassembly was the weakness this describe
+   * declared, and it was a real one: it could not see a fix applied inside the
+   * rule.
    *
-   * The guard below is what narrows that. It runs `wouldStay` and the real
-   * `placeBlock` against each other on `torch` — the one support-sensitive type
-   * that fits through the type — on both sides of the answer, so the
-   * reconstruction cannot drift from the rule at the only point where both can
-   * be evaluated. The residual gap is a fix applied to the plants and NOT to the
-   * torch; the day the plants become placeable, `only the torch of the fourteen`
-   * above fails and this whole describe has to be revisited anyway, which is the
-   * coupling that closes it.
+   * It is now a direct call to `canBlockStaySupported`, the single function the
+   * support branch calls. The composition — the precedence of the per-block list
+   * over the negative set — lives in that function rather than in this file, so
+   * these rows can no longer agree with a table that has drifted from them.
+   *
+   * What this still does NOT prove is that `placementVerdict` calls it; see the
+   * residual-gap section in this describe's header, which measures exactly how
+   * far short of that these rows fall and names the day it closes.
    */
   const wouldStay = (held: BlockType, support: number): boolean =>
-    !isSupportSensitive(blockIdOf(held) ?? -1) || canSupportAttachments(support)
+    canBlockStaySupported(blockIdOf(held) ?? -1, support)
 
-  it.effect('the reconstruction above agrees with the real rule, on the one type that fits through it', () =>
+  /*
+   * THE COUPLING TEST, DRIVEN BY `PLACEABLE_ITEM_TYPES` RATHER THAN BY A LIST.
+   *
+   * It runs the REAL `placementVerdict` — the thing that must call the rule —
+   * against `canBlockStaySupported` for every support-sensitive item this build
+   * can put into a `PlaceRequest`, over every block id the store can hold.
+   *
+   * TODAY IT CANNOT FAIL FOR THE REASON IT EXISTS, and that is stated rather
+   * than hidden: all four placeable support-sensitive types have the
+   * `'anySupporting'` rule, on which `canBlockStaySupported` and
+   * `canSupportAttachments` agree by construction. The test is written against
+   * the ARRAY, so the day a `'oneOf'` block gains an item form it starts
+   * comparing rows where the two disagree — with no edit here.
+   *
+   * The second half is what makes that claim checkable now: it asserts the two
+   * functions DO differ, on the row F7 was about, so "they agree everywhere" is
+   * a fact about the reachable inputs rather than about the functions.
+   */
+  it.effect('the support branch agrees with the rule on every pair it can be handed', () =>
+    Effect.gen(function* () {
+      const heldable = PLACEABLE_ITEM_TYPES.filter((item) =>
+        isSupportSensitive(blockIdOf(item) ?? -1),
+      )
+      expect(heldable.length).toBeGreaterThan(0)
+
+      for (const item of heldable) {
+        for (const support of [STONE, WATER, SNOW, DIRT, SAND, AIR_BLOCK_ID, RAIL, LAVA]) {
+          const store = yield* storeWith([[below, support]])
+          const outcome = yield* placeBlock(store.api, { position: target, heldItem: item })
+          const stays = canBlockStaySupported(blockIdOf(item) ?? -1, support)
+
+          expect({ item, support, refused: outcome._tag === 'Unsupported' }).toStrictEqual({
+            item,
+            support,
+            refused: !stays,
+          })
+        }
+      }
+    }),
+  )
+
+  it.effect('...and the rule and the raw fallback DO differ, so that agreement is about the inputs', () =>
+    Effect.sync(() => {
+      // The F7 row itself. If these two ever stop disagreeing, the test above
+      // has become vacuous for a second reason and somebody should know.
+      expect(canBlockStaySupported(blockIdOf('lily_pad') ?? -1, WATER)).toBe(true)
+      expect(canSupportAttachments(WATER)).toBe(false)
+
+      // ...and no item can currently reach that disagreement, which is WHY the
+      // coupling test above cannot fail today. Asserted, so that the excuse
+      // expires automatically.
+      const reachable = PLACEABLE_ITEM_TYPES.filter(
+        (item) => supportRuleOfBlockId(blockIdOf(item) ?? -1).kind === 'oneOf',
+      )
+      expect(reachable).toStrictEqual([])
+    }),
+  )
+
+  it.effect('the helper above agrees with the real rule, on the one type that fits through it', () =>
     Effect.gen(function* () {
       const supported = yield* storeWith([[below, STONE]])
       expect(wouldStay('torch', STONE)).toBe(true)
@@ -641,42 +790,84 @@ describe('F7 — the per-block support rules were not ported, and the fallback d
   )
 
   // `block-support.test.ts:32` asserts LILY_PAD on WATER IS supported.
-  it.effect('pins the current behaviour: a lily pad on water would be REFUSED, so it could go nowhere', () =>
+  // WAS: `expect(wouldStay('lily_pad', WATER)).toBe(false)` — pinned as the
+  // wrong answer, with `canSupportAttachments(WATER)` false beside it as the
+  // explanation. The explanation still holds and the verdict has flipped: water
+  // is still a non-supporting block, and a lily pad still floats on it, because
+  // the per-block list is consulted first.
+  it.effect('AGREES with block-support.test.ts:32 — a lily pad floats on water, which is non-supporting', () =>
     Effect.sync(() => {
       expect(canSupportAttachments(WATER)).toBe(false)
-      expect(wouldStay('lily_pad', WATER)).toBe(false)
+      expect(wouldStay('lily_pad', WATER)).toBe(true)
     }),
   )
 
-  it.effect('pins the current behaviour: a lily pad on stone would be ALLOWED, which the reference refuses', () =>
+  // The complement of the row above, and the other half of "wrong in both
+  // directions". WAS: `expect(wouldStay('lily_pad', STONE)).toBe(true)` — pinned
+  // as allowed, which the reference refuses because `STONE` is not in
+  // `['WATER']` (`block-support.ts:84`).
+  it.effect('AGREES with block-support.ts:84 — a lily pad does NOT sit on stone', () =>
     Effect.sync(() => {
-      expect(wouldStay('lily_pad', STONE)).toBe(true)
+      expect(wouldStay('lily_pad', STONE)).toBe(false)
+      // Stone supports attachments, so the OLD rule allowed this. The assertion
+      // is kept beside the verdict to show that the fallback did not change —
+      // what changed is that a lily pad no longer consults it.
+      expect(canSupportAttachments(STONE)).toBe(true)
     }),
   )
 
   // `block-support.test.ts:31` asserts CACTUS on DIRT is NOT supported.
-  it.effect('pins the current behaviour: a cactus on dirt would be ALLOWED, which the reference refuses', () =>
+  // WAS: `expect(wouldStay('cactus', DIRT)).toBe(true)` — pinned as allowed,
+  // which is the reference's own case table contradicted directly.
+  it.effect('AGREES with block-support.test.ts:31 — a cactus does NOT stand on dirt', () =>
     Effect.sync(() => {
-      expect(wouldStay('cactus', DIRT)).toBe(true)
+      expect(wouldStay('cactus', DIRT)).toBe(false)
+      // ...and the rows the reference DOES allow, so the fix is not "refuse
+      // everything": `SAND | CACTUS` (`block-support.ts:69`).
+      expect(wouldStay('cactus', SAND)).toBe(true)
+      expect(wouldStay('cactus', blockIdOf('cactus') ?? -1)).toBe(true)
     }),
   )
 
   // The seven surface plants take `DIRT | GRASS | FARMLAND` in the reference
   // (`block-support.ts:85-88`). Stone is in none of them.
-  it.effect('pins the current behaviour: a sapling on stone would be ALLOWED, which the reference refuses', () =>
+  // WAS: `expect(wouldStay('sapling', STONE)).toBe(true)` — pinned as allowed.
+  it.effect('AGREES with block-support.ts:85-88 — a sapling does NOT grow on stone', () =>
     Effect.sync(() => {
-      expect(wouldStay('sapling', STONE)).toBe(true)
+      expect(wouldStay('sapling', STONE)).toBe(false)
+      expect(wouldStay('sapling', blockIdOf('grass_block') ?? -1)).toBe(true)
+      expect(wouldStay('sapling', blockIdOf('farmland') ?? -1)).toBe(true)
+      // All seven share ONE rule in the reference, so they share one here.
+      for (const plant of ['dandelion', 'poppy', 'brown_mushroom', 'red_mushroom', 'tall_grass', 'fern'] as const) {
+        expect(supportRuleOfBlockId(blockIdOf(plant) ?? -1)).toStrictEqual(
+          supportRuleOfBlockId(blockIdOf('sapling') ?? -1),
+        )
+      }
     }),
   )
 
-  // THE ROWS THAT AGREE BY ACCIDENT, kept so that a fix can be told apart from a
-  // regression. Both reach `SUPPORT_RULES` in the reference and the fallback
-  // here, and both happen to give the same answer — which is exactly why the
-  // four above went unnoticed.
-  it.effect('sugar cane on sand and a sapling on dirt agree with the reference, by coincidence', () =>
+  // THE ROWS THAT USED TO AGREE BY ACCIDENT, kept because they are the reason
+  // the four above went unnoticed for so long: they reach `SUPPORT_RULES` in the
+  // reference and reached the fallback here, and happened to give the same
+  // answer either way. They still agree, and now they agree for the right
+  // reason — which is a thing this test can now show rather than assert.
+  it.effect('sugar cane on sand and a sapling on dirt agree, and no longer by coincidence', () =>
     Effect.sync(() => {
       expect(wouldStay('sugar_cane', SAND)).toBe(true)
       expect(wouldStay('sapling', DIRT)).toBe(true)
+
+      // The proof that the coincidence is over: both are answered by a per-block
+      // list now, not by the negative set.
+      expect(supportRuleOfBlockId(blockIdOf('sugar_cane') ?? -1)).toStrictEqual(
+        needsOneOf('dirt', 'grass_block', 'sand', 'sugar_cane'),
+      )
+      expect(supportRuleOfBlockId(blockIdOf('sapling') ?? -1)).toStrictEqual(
+        needsOneOf('dirt', 'grass_block', 'farmland'),
+      )
+      // ...and sugar cane stacks on itself, a row the fallback could never have
+      // got right: sugar cane is in `NON_SUPPORTING_IDS`.
+      expect(canSupportAttachments(blockIdOf('sugar_cane') ?? -1)).toBe(false)
+      expect(wouldStay('sugar_cane', blockIdOf('sugar_cane') ?? -1)).toBe(true)
     }),
   )
 })
