@@ -78,6 +78,38 @@ describe('the reference’s weather oracle, ported unchanged', () => {
     }),
   )
 
+  it.effect('REGRESSION: a duration roll that is not a number gives the SHORTEST stretch, never a NaN countdown', () =>
+    Effect.sync(() => {
+      // `clampUnit`'s other half, and the half the reference's oracle does not
+      // reach: it passes -1 and 2, which are out of band but still numbers.
+      //
+      // The direction is chosen and it is the opposite of the one above. An
+      // out-of-band roll is clamped to the nearest END of the range, so -1 gives
+      // the minimum and 2 the maximum; a roll that is not a number at all is
+      // read as 0 and therefore ALWAYS gives the minimum, even for the roll that
+      // would otherwise have meant "a long one". That is deliberate: the
+      // arithmetic here is `min + floor(roll * span)`, so a `NaN` passed through
+      // would produce a `NaN` countdown — and `NaN > 0` is false, so
+      // `weatherExpires` would say the stretch had run out while
+      // `remainingSecs - dt` stayed `NaN` forever. Weather frozen for the life
+      // of the world, which is the failure the REGRESSION two describes below
+      // guards from the other side.
+      //
+      // The shortest stretch is the recoverable answer: the sky changes in ten
+      // minutes and the generator gets another chance.
+      for (const broken of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+        expect(resolveWeatherDurationSecs('clear', broken)).toBe(CLEAR_DURATION_RANGE_SECS.min)
+        expect(resolveWeatherDurationSecs('rain', broken)).toBe(RAIN_DURATION_RANGE_SECS.min)
+        expect(resolveWeatherDurationSecs('thunder', broken)).toBe(THUNDER_DURATION_RANGE_SECS.min)
+      }
+
+      // …and the state built from one is a state that can still expire.
+      const state = createWeatherState('thunder', Number.NaN)
+      expect(Number.isFinite(state.remainingSecs)).toBe(true)
+      expect(state.remainingSecs).toBeGreaterThan(0)
+    }),
+  )
+
   it.effect('createWeatherState assigns a rolled duration for the selected weather', () =>
     Effect.sync(() => {
       expect(createWeatherState('rain', 0)).toStrictEqual({

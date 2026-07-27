@@ -91,7 +91,7 @@
 import { Effect } from 'effect'
 import type { BlockPosition, ChunkStoreApi } from '../chunk-store-port'
 import { EntityKind, type Position } from '../entity-manager-port'
-import { drawRolls } from '../frame-rolls'
+import { drawRolls, rollAt } from '../frame-rolls'
 import {
   MAX_SPAWN_DISTANCE_BLOCKS,
   MIN_SPAWN_DISTANCE_BLOCKS,
@@ -180,10 +180,13 @@ export const searchSpawnCandidates = (
 ): Effect.Effect<MobSpawnSearch> =>
   Effect.gen(function* () {
     const batch = drawRolls(seed, SPAWN_SEARCH_ROLLS)
-    // `?? 0` is a total-function formality — `drawRolls` returns exactly the
-    // count asked for — and it lands on "no rotation", which is the inert
-    // reading rather than a fallback that would quietly move the ring.
-    const rotation = batch.rolls[0] ?? 0
+    // `rollAt` and not `batch.rolls[0] ?? 0`: the fallback is a
+    // `noUncheckedIndexedAccess` formality — `drawRolls` returns exactly the
+    // count asked for — and `../frame-rolls` now owns the one spelling of it,
+    // so this file no longer carries a guard of its own that nothing can reach.
+    // The value it lands on is "no rotation", the inert reading rather than one
+    // that would quietly move the ring.
+    const rotation = rollAt(batch, 0)
 
     const attempts: Array<MobSpawnAttempt> = []
     let unreadable = 0
@@ -199,8 +202,15 @@ export const searchSpawnCandidates = (
       // same cells with different indices and change nothing.
       const angle = ((angleIndex + rotation) / SPAWN_RING_ANGLES) * 2 * Math.PI
 
-      for (let radiusIndex = 0; radiusIndex < SPAWN_RING_RADII; radiusIndex += 1) {
-        const radius = SPAWN_RING_RADIUS_STEPS[radiusIndex] ?? MIN_SPAWN_DISTANCE_BLOCKS
+      // OVER THE STEPS, not over `SPAWN_RING_RADII` with an indexed read. The
+      // two say the same thing — the array is built `{ length: SPAWN_RING_RADII }`
+      // — but the indexed spelling is `number | undefined` under
+      // `noUncheckedIndexedAccess`, so it needed a `?? MIN_SPAWN_DISTANCE_BLOCKS`
+      // arm that no iteration can reach: an uncoverable branch, permanently red
+      // in the report, and one that would have hidden a real off-by-one by
+      // quietly probing the inner radius twice. Iterating the array cannot
+      // disagree with the array.
+      for (const [radiusIndex, radius] of SPAWN_RING_RADIUS_STEPS.entries()) {
         const cellIndex = angleIndex * SPAWN_RING_RADII + radiusIndex
 
         const x = Math.floor(target.x + radius * Math.cos(angle))
@@ -247,7 +257,7 @@ export const searchSpawnCandidates = (
 
         attempts.push({
           candidate,
-          kind: kindForRoll(batch.rolls[1 + cellIndex] ?? 0),
+          kind: kindForRoll(rollAt(batch, 1 + cellIndex)),
           feetPosition: { x, y: footY, z },
         })
       }
@@ -290,8 +300,23 @@ const at = (x: number, y: number, z: number): BlockPosition => ({ x, y, z })
  * `../frame-rolls` does not produce but which a caller passing its own array
  * could; landing outside the roster would be an `undefined` kind reaching
  * `roster.spawn`.
+ *
+ * ONE FALLBACK, AND IT IS UNREACHABLE — recorded rather than covered.
+ * `HOSTILE_KINDS[index]` is `EntityKind | undefined` under
+ * `noUncheckedIndexedAccess` no matter how the index was derived, so a total
+ * function has to answer for the `undefined` that the clamp above has already
+ * made impossible. That arm cannot be tested without contriving a roll no caller
+ * produces, and contriving one would teach the next reader that the roster can
+ * be missed. It is left uncovered on purpose; `docs/testing.md` §7 carries the
+ * argument and the coverage budget it spends.
+ *
+ * There used to be a SECOND fallback here — `?? EntityKind('creeper')` behind
+ * `?? HOSTILE_KINDS[0]` — covering the case where the roster is empty. That one
+ * was deleted by saying non-empty in `./mob-frame`'s type instead, which is a
+ * claim a future edit to the roster has to read. Two unreachable fallbacks for
+ * one lookup is how a formality stops being examined.
  */
 const kindForRoll = (roll: number): EntityKind => {
   const index = Math.min(HOSTILE_KINDS.length - 1, Math.floor(roll * HOSTILE_KINDS.length))
-  return HOSTILE_KINDS[index] ?? HOSTILE_KINDS[0] ?? EntityKind('creeper')
+  return HOSTILE_KINDS[index] ?? HOSTILE_KINDS[0]
 }

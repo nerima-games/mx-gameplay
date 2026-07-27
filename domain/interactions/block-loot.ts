@@ -276,19 +276,28 @@ const fortuneApplies = (context: BlockLootContext): boolean =>
  * item are one add of the sum — so folding loses nothing and stops the inventory
  * seeing a stack of 2 and a stack of 1 where a player sees three glowstone dust.
  */
-const withFortune = (
-  drop: BlockDrop,
-  context: BlockLootContext,
-  roll: number,
-): MinedItem | undefined => {
+/*
+ * TOTAL, and it used to end `count <= 0 ? undefined : …`. That guard was
+ * deleted rather than tested: a `BlockDrop` only ever reaches here from
+ * `dropOfBlockId`, which is `../block-vocabulary`'s `resolveDrop` and which
+ * REFUSES `rule.count <= 0` before it builds one — that is how the `count: 0`
+ * rows for air, water, bedrock and leaves yield nothing at all. `extra` cannot
+ * be negative either (`rollFortuneExtraDrops` returns `Math.floor(multiplier -
+ * 1)` plus 0 or 1, over multipliers of at least 1). So the guard was a second,
+ * weaker spelling of a decision another file had already made, and the two
+ * could only ever have disagreed in one direction: this one silently dropping a
+ * stack that `resolveDrop` had approved.
+ *
+ * It cost the caller a check too — `blockLoot` had to ask `base !== undefined`
+ * about a value that was never undefined.
+ */
+const withFortune = (drop: BlockDrop, context: BlockLootContext, roll: number): MinedItem => {
   const extra =
     drop.affectedByFortune && fortuneApplies(context)
       ? rollFortuneExtraDrops(context.fortuneLevel ?? 0, roll)
       : 0
 
-  const count = drop.count + extra
-
-  return count <= 0 ? undefined : { item: drop.item, count }
+  return { item: drop.item, count: drop.count + extra }
 }
 
 /**
@@ -327,10 +336,7 @@ export const blockLoot = (
   const items: Array<MinedItem> = []
 
   if (drop !== undefined) {
-    const base = withFortune(drop, context, rolls[0] ?? 0)
-    if (base !== undefined) {
-      items.push(base)
-    }
+    items.push(withFortune(drop, context, rolls[0] ?? 0))
   }
 
   // The bonus lines run even when the base drop yielded nothing, and leaves are

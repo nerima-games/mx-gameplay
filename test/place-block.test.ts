@@ -36,7 +36,12 @@
 import { describe, expect, it } from '@effect/vitest'
 import { Effect, Ref } from 'effect'
 import { positionKeyOf } from '../domain/block-position-key'
-import { AIR_BLOCK_ID, type BlockPosition } from '../domain/chunk-store-port'
+import {
+  AIR_BLOCK_ID,
+  type BlockPosition,
+  type BlockWriteOutcome,
+  type ChunkStoreApi,
+} from '../domain/chunk-store-port'
 import {
   blockIdOf,
   canBlockStaySupported,
@@ -163,23 +168,106 @@ describe('placeBlock — the target cell', () => {
     }),
   )
 
-  it.effect('reports `Unchanged` as Occupied, so a write that dirtied nothing spends nothing', () =>
+  it.effect('a second placement onto the block it just wrote is refused on the READ', () =>
     Effect.gen(function* () {
-      // Water onto water: the target IS replaceable, so the read-side gate opens
-      // and the write comes back `Unchanged`. `water` has no item form, so the
-      // only way to reach this arm through the public rule is a block that is
-      // both replaceable and placeable — which nothing in this build is. The
-      // arm is reached here by writing the same STONE twice through the store,
-      // and the assertion is on the RULE's translation of that outcome.
+      // NOT the `Unchanged` path, and the distinction is the point — this test
+      // used to claim it was. Stone is not replaceable, so the second call never
+      // reaches the store at all: it is refused by `isReplaceable` on the read,
+      // exactly like the `Occupied` case above. Coverage is what said so; the
+      // write-side arm below had never run.
+      //
+      // Nothing in this build is BOTH replaceable and placeable — the five
+      // replaceable blocks (air, water, lava, snow, …) have no item form — so
+      // there is no held item that can reach the store's `Unchanged` through the
+      // ordinary path. The one way it happens is a race, and that is the test
+      // that follows.
       const store = yield* storeWith([[target, WATER]])
 
       expect((yield* placeBlock(store.api, { position: target, heldItem: 'stone' }))._tag).toBe(
         'Placed',
       )
+
+      const writesAfterFirst = (yield* store.calls).writes
       const again = yield* placeBlock(store.api, { position: target, heldItem: 'stone' })
+
       expect(again).toStrictEqual({ _tag: 'Occupied', existing: STONE })
+      expect((yield* store.calls).writes).toBe(writesAfterFirst)
     }),
   )
+
+  describe('the window between the read and the write', () => {
+    /**
+     * A store that answers the read honestly and then changes its mind.
+     *
+     * This is the state the module header is about and the only way to produce
+     * it: `placeBlock` reads the target, decides, and writes, and between those
+     * two calls the world belongs to somebody else. The double cannot do it —
+     * its `getBlock` and `setBlock` consult the same map, so they always agree —
+     * and agreeing is precisely what a race does not do.
+     *
+     * NOT AN ASSERTION ABOUT A CONCURRENCY MODEL. mx-gameplay does not own one;
+     * `stages/registration.ts` runs inside a frame and mc-worldgen owns the
+     * store. The claim is narrower and is entirely about this file: whatever the
+     * write says, that is the answer — the rule does not re-report the verdict it
+     * formed from a reading that has since expired.
+     */
+    const storeThatChangesItsMind = (
+      honest: ChunkStoreApi,
+      onWrite: BlockWriteOutcome,
+    ): ChunkStoreApi => ({ ...honest, setBlock: () => Effect.succeed(onWrite) })
+
+    it.effect('a write that comes back `Unchanged` is Occupied, so nothing is taken off the stack', () =>
+      Effect.gen(function* () {
+        // The fourth refusal, and the only one that is not the reference's. A
+        // write that dirtied nothing must not report `Placed`, because `Placed`
+        // carries `consumed` and the caller spends it: the player would lose an
+        // item to a placement that changed nothing in the world.
+        //
+        // `existing` is the store's `previous` and not the rule's `verdict.block`
+        // — they are equal in the case the tag describes, and taking it from the
+        // store is what makes the answer a report rather than a restatement.
+        const store = yield* storeWith([[below, STONE]])
+        const raced = storeThatChangesItsMind(store.api, { _tag: 'Unchanged', previous: STONE })
+
+        const outcome = yield* placeBlock(raced, { position: target, heldItem: 'stone' })
+
+        expect(outcome).toStrictEqual({ _tag: 'Occupied', existing: STONE })
+        // No `consumed`, which is the half that costs a player an item.
+        expect(outcome).not.toHaveProperty('consumed')
+      }),
+    )
+
+    it.effect('a write that comes back `ChunkNotLoaded` gives the answer the READ would have given', () =>
+      Effect.gen(function* () {
+        // The chunk was unloaded between the two calls. The verdict is DECIDED
+        // rather than asserted away: reporting `Placed` would tell the caller to
+        // spend an item for a block that is not in any chunk, and dying here
+        // would take the frame down for a state the store is entitled to be in.
+        const store = yield* storeWith([[below, STONE]])
+        const raced = storeThatChangesItsMind(store.api, { _tag: 'ChunkNotLoaded' })
+
+        expect(yield* placeBlock(raced, { position: target, heldItem: 'stone' })).toStrictEqual({
+          _tag: 'ChunkNotLoaded',
+        })
+      }),
+    )
+
+    it.effect('a write that comes back `OutOfWorld` does too, and the two are kept apart', () =>
+      Effect.gen(function* () {
+        // Two tags rather than one shared "it did not happen", for the reason
+        // `BlockReading` is three-valued: `ChunkNotLoaded` is temporary and a
+        // caller may retry it, `OutOfWorld` never becomes true and a caller that
+        // retried would spin. Collapsing them is the cheap simplification that
+        // makes the difference unrecoverable.
+        const store = yield* storeWith([[below, STONE]])
+        const raced = storeThatChangesItsMind(store.api, { _tag: 'OutOfWorld' })
+
+        expect(yield* placeBlock(raced, { position: target, heldItem: 'stone' })).toStrictEqual({
+          _tag: 'OutOfWorld',
+        })
+      }),
+    )
+  })
 
   // DN-GP-11: `ChunkNotLoaded` is not air. A placement into a chunk nobody has
   // read is a placement into a cell that may already hold something.

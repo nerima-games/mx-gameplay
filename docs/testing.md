@@ -44,8 +44,9 @@ prettier も biome も `.editorconfig` も置かない。整形の権威が 2 �
 
 ## 2. 現在のスイート
 
-**16 ファイル / 373 テスト、全 pass。**（`pnpm test` の出力。以前この行は 15 / 343 と書いていて、
-両方とも古かった —— ファイルの数え落としが 1 と、この回の移植分が 27）
+**18 ファイル / 409 テスト、全 pass。**（`pnpm test` の出力。以前この行は 16 / 373 と書いていた ——
+99% ゲートを入れるにあたって 2 ファイルと 36 本が増えた。内訳と、そのうち何本が
+「数字のため」ではなかったかは §4 にある）
 
 | ファイル | 本数 | 内容 |
 | --- | ---: | --- |
@@ -57,14 +58,16 @@ prettier も biome も `.editorconfig` も置かない。整形の権威が 2 �
 | `test/vertical-slice.test.ts` | 34 | 縦切り。**stage 登録経由で**「掘る → 砂が落ちる → アイテムが渡る」「掘る → 置く → 落ちる」「クリーパーが湧く → 爆ぜる → ドロップ」を回す（DN-GP-1 / DN-GP-11）。砂が**水**を、砂利が**溶岩**を貫いて沈む 2 本は参照実装の `falling-block.test.ts:132-152` から。溶岩側は `REPLACEABLE_IDS` の欠落した行の**もう半分**で、これまで何も固定していなかった |
 | `test/day-night.test.ts` | 8 | DN-GP-7。昼夜**ルール**が何も保持していないこと、mc-sim と夜の定義が一致すること |
 | `test/public-api.test.ts` | 8 | `index.ts` のバレルを名前ごと固定する。kernel 語彙と時刻 API の**不在**も固定する |
-| `test/block-vocabulary-mirror.test.ts` | 11 | kernel 語彙のミラー。4 つの能力述語に加え、**`supportRule` の 19 行 override 表を全数**固定する（部分ミラーは別の型なので）。ミラーは転記を固定するだけで、源との比較は mc-dev-meta の `pnpm check:mirrors` である |
+| `test/block-vocabulary-mirror.test.ts` | 13 | kernel 語彙のミラー。4 つの能力述語に加え、**`supportRule` の 19 行 override 表を全数**固定する（部分ミラーは別の型なので）。ミラーは転記を固定するだけで、源との比較は mc-dev-meta の `pnpm check:mirrors` である |
 | `test/chunk-store-mirror.test.ts` | 7 | `domain/chunk-store-port.ts` を mc-worldgen の界面に**両方向で**固定する。タグキーは文字どおり検査する。`validSpawnSurface` が**負リスト**であること（＝既定 true）もここ |
 | `test/preview-findings.test.ts` | 10 | **プレビューが見つけたもの**（§3-4）。うち 8 本は「現在の（誤った）挙動を固定する」テストで、直すと落ちる。**F7 はここではなく `test/place-block.test.ts` にある** —— プレビューではなく移植が見つけたものだから（§3-5）。F7 は**解決済み**で、8 本のうちの 1 つの前例になった：直したときテストは消さず、同じ参照行との**一致**へ書き換える（§3-5-1） |
 | `test/entity-manager-mirror.test.ts` | 15 | `domain/entity-manager-port.ts` を mc-sim の界面に固定する |
-| `test/mob-spawn-search.test.ts` | 22 | `domain/entities/mob-spawn-search.ts` のリングと、その 256 回のストア呼び出し |
-| `test/place-block.test.ts` | 53 | **設置**（§3-1 の 1 行目）。参照実装が**実際に間違えた 3 点**を `REGRESSION:` として持つ —— 溶岩は replaceable、自分の体の中には置けない、支えが要るブロックは支えを見る。`blockOverlapsPlayer` の境界表（`block-service-utils.test.ts:84-98`）は**そのまま移植**してあり、参照実装が同じ関数に持っている**第 2 の表**（`block-utils.test.ts:88-121`、y 軸の排他境界と対角）も移植した。`block-support.test.ts` の支持表は**全行**移植済み —— fallback アームの行と、`SUPPORT_RULES` の行（旧 F7、§3-5-1 で解決）の両方 |
+| `test/mob-spawn-search.test.ts` | 25 | `domain/entities/mob-spawn-search.ts` のリングと、その 256 回のストア呼び出し |
+| `test/place-block.test.ts` | 56 | **設置**（§3-1 の 1 行目）。参照実装が**実際に間違えた 3 点**を `REGRESSION:` として持つ —— 溶岩は replaceable、自分の体の中には置けない、支えが要るブロックは支えを見る。`blockOverlapsPlayer` の境界表（`block-service-utils.test.ts:84-98`）は**そのまま移植**してあり、参照実装が同じ関数に持っている**第 2 の表**（`block-utils.test.ts:88-121`、y 軸の排他境界と対角）も移植した。`block-support.test.ts` の支持表は**全行**移植済み —— fallback アームの行と、`SUPPORT_RULES` の行（旧 F7、§3-5-1 で解決）の両方 |
 | `test/block-loot.test.ts` | 29 | **ブロックのドロップテーブル**（§3-1 の 3 行目）。kernel の表を通る決定論的な半分と、audit §6-9 がこちらに置いた乱数の半分（fortune / 葉のボーナス）。「素手で石を掘っても何も出ない」が**見た目では気付けないほうの半分**である。ボーナス 4 率（りんご 1/200・棒 2%・苗木 5%・種 1/8）は参照実装から移植 —— **うち 3 つは今日どの表にも載っていない**が、待っているのは kernel の roster 行であって発明ではない |
-| `test/weather.test.ts` | 23 | **天候**（§3-1 の 7 行目）。参照実装の `packages/game/test/weather.test.ts` の 8 本を**値を変えずに**移植し、そのうえで参照実装には書けないテスト —— 2 時間ぶんのフレームを回して遷移グラフを歩き、**2 回走らせて同じ列になる**こと（§5 の fast-forward）を足す |
+| `test/weather.test.ts` | 24 | **天候**（§3-1 の 7 行目）。参照実装の `packages/game/test/weather.test.ts` の 8 本を**値を変えずに**移植し、そのうえで参照実装には書けないテスト —— 2 時間ぶんのフレームを回して遷移グラフを歩き、**2 回走らせて同じ列になる**こと（§5 の fast-forward）を足す |
+| `test/frame-rolls.test.ts` | 9 | **乱数がフレームに入る場所**（`domain/frame-rolls.ts`）。他のテストは全部 stage 経由で回すので、**生成器が作っていない**シードやカウントについては何も言えていなかった —— 0 が生成器の不動点であること、カウント 0 が種を動かさないこと、`rollAt` が末尾より先を 0 と読むこと。3 つとも本文が主張していて誰も確かめていなかった |
+| `test/mob-frame.test.ts` | 9 | `domain/entities/mob-frame.ts` の**フレーム層**。ルール（`domain/mob/`）は `mob.test.ts`、配線は `vertical-slice.test.ts` が持っており、その間が空いていた —— **外した**爆風、爆風ゼロ本のフレームの費用、爆風を生き延びたクリーパーが導火線を保つこと |
 
 `test/support/` はテストではなくテストの資材である（`vitest.config.ts` の `include` は
 `test/**/*.{test,spec}.ts` なので収集されない）。`chunk-store-double.ts` が mc-worldgen の
@@ -154,7 +157,7 @@ roster を各リポジトリが持ち回っている以上、**行の正しさ�
 | 4 | **プレビュー「採掘場」が操作可能** | ✅（`pnpm preview`。plan.md §3.11 が名指しする **3 つとも** —— `b` で掘り、`p` でルールを通して置き、`t` で道具の段を替えると HUD のインベントリが変わる。§3-3） |
 | 5 | **プレビュー「Mob アリーナ」が操作可能** | ✅（`--screen arena`。**plan.md §3.11 の 4 挙動のうち 3 つ。** スポーン → 導火線 → 爆風 → 死因 → ドロップ、エンダーマンのテレポート判断と変位、シュルカーの殻、そして掃除が本物。4 つ目のドラゴンは**理由つきの拒否**として画面に載る。§3-3） |
 | 6 | **プレビュー「時間スライダー」が操作可能** | ✅（`--screen time`。昼夜と**天候**の両方。時刻を**進める**のは mc-sim であり、そちらは未 publish。天候は所有者が 1 人もいないので画面が持つ —— `domain/weather.ts` の冒頭） |
-| 7 | 99% カバレッジゲートが有効 | ❌（完成時に有効化。§4） |
+| 7 | 99% カバレッジゲートが有効 | ✅（`vitest.config.ts` の `thresholds` + CI の `Coverage (99% gate)` ステップ。実測 99.84 / 99.49 / 100 / 99.84、§4） |
 | 8 | `mc-kernel` を import し `domain/frame-contract.ts` / `domain/position-key.ts` を削除 | ❌（kernel の publish 待ち） |
 
 ### 3-1. 条件 2 の内訳（この行は「1 つも未着手」と書かれたまま古くなっていた）
@@ -373,29 +376,70 @@ own.」正しかった。再構成は削除し、`canBlockStaySupported` の直�
 `the support branch agrees with the rule on every pair it can be handed` は
 `PLACEABLE_ITEM_TYPES` で駆動しているので、10 種のどれかが itemise された日に自動で有効になる。
 
-## 4. カバレッジ
+## 4. カバレッジ — 99% ゲートは有効である
 
-**現在、閾値は設定していない。これは意図的である。**
-
-- 参照実装は branches / functions / lines / statements の全てに **99%** を強制している。
-- しかし**スケルトンに閾値を課しても意味がない**。現在このリポジトリの `domain/` の大半は
-  純関数と型宣言であり、型だけのモジュールがいくつかあれば 99% は簡単に満たせてしまう。
-  実装の品質について何も語らない数字になり、しかも「もう 99% だから大丈夫」という誤った安心を作る。
-- 計測とレポートは常に動かしている（`pnpm test:coverage`）ので、**数字はいつでも見える**。
-  CI も毎回 `pnpm test:coverage` を走らせ、`coverage/` をアーティファクトとして 7 日間保存する。
-
-**99% ゲートは完成条件（§3）に到達した時点で、`vitest.config.ts` と CI ワークフローの両方で有効化する。**
-`vitest.config.ts` には有効化する行がコメントとして既に置いてある。
+**閾値は 4 指標すべてに設定してある。** 参照実装（`takeokunn/ts-minecraft`）と同じ 99% である。
 
 ```typescript
-// thresholds: { branches: 99, functions: 99, lines: 99, statements: 99 },
+// vitest.config.ts
+thresholds: { branches: 99, functions: 99, lines: 99, statements: 99 },
 ```
 
-CI 側にも同じ趣旨の注記がある（`.github/workflows/ci.yaml`:
-"Coverage is reported but not yet thresholded — see vitest.config.ts."）。
-**2 箇所に書いてあるのは、片方だけ有効にすると「CI は緑だがローカルは赤」になるからである。**
+実測は **statements 99.84 / branch 99.49 / functions 100 / lines 99.84**（409 テスト、2026-07-27）。
+
+閾値を置かなかった理由は「スケルトンに課しても意味がない」であり、その前提はもう成り立たない。
+`domain/` はモブのルール、フレームの sweep、スポーン探索、ドロップ表と支持表、天候と昼夜を持ち、
+`stages/` は 2 つのミラーサービスにそれらを配線する 5 つの stage を持つ。
+パーセンテージがようやく**実装の挙動についての主張**になった。
+
+`vitest.config.ts` と CI ワークフロー（`Coverage (99% gate)` ステップ）の**両方**で有効にしてある。
+閾値は `vitest.config.ts` にしか書かない —— `vitest run --coverage` が自力で非ゼロ終了するので
+CI に追加のフラグは要らず、そうしておけば手元と CI が同じ判定をする。
+**「push して初めて落ちるゲート」を作らないための配置**である。
+なお `pnpm verify` はカバレッジを含まない（`pnpm test` であって `pnpm test:coverage` ではない）。
 
 計測対象は `index.ts` / `domain/**` / `stages/**`。`scripts/` と `test/` は含めない。
+
+### 4-0. 有効化のためにやったこと（テストは 36 本、しかし本題はコードの側にある）
+
+branch は **95.68%** で、未到達は 25 本だった。**そのうちテストを書くべきものは 16 本しか無かった。**
+
+| 分岐 | 判定 | 対応 |
+| --- | --- | --- |
+| `frame-rolls` の非有限シード / カウント 0 / 0 の不動点 | **本物の抜け**。本文が主張していて誰も確かめていない | `test/frame-rolls.test.ts` |
+| `resolveDrop` の「item 形を持たないブロックの `'self'`」 | 本物の抜け。**名前の無いアイテムを鋳造しうる** | `test/block-vocabulary-mirror.test.ts` |
+| `blockOfPlaceableItem`（**関数まるごと未実行**） | 本物の抜け。公開面 | 同上（往復で全数） |
+| `clampUnit` の非有限アーム | 本物の抜け。`NaN` の countdown は**永久に明けない空** | `test/weather.test.ts` |
+| `resolveBlasts` の 6 本（外した爆風、空リスト、bruise、…） | 本物の抜け。slice が作るフレームでは起きない | `test/mob-frame.test.ts`（新設） |
+| 光が読めないセル | 本物の抜け。**暗闇と読むと危険な向き**に倒れる | `test/mob-spawn-search.test.ts` |
+| `setBlock` の 3 つの結果アーム | 本物の抜け。**しかも既存テストが「ここを通る」と嘘をついていた**（下記） |	`test/place-block.test.ts` |
+| offered と searched の連結 | 本物の抜け。人口上限が 1 匹超える経路 | `test/mob-spawn-search.test.ts` |
+| `SPAWN_RING_RADIUS_STEPS[i] ?? MIN` | 型が排除済み | 配列を直接回して**削除** |
+| `HOSTILE_KINDS[0] ?? EntityKind('creeper')` | 名簿が空のときだけ。定数が排除済み | 型を非空タプルにして**削除** |
+| `batch.rolls[n] ?? 0` × 4 | 各呼び出し地点では到達不能。**4 箇所が同じ判断の写し** | `rollAt` に集約して**削除**（残る 1 本は到達可能で試験済み） |
+| `withFortune` の `count <= 0` | `resolveDrop` が既に拒否済み。**弱いほうの綴り** | 全域関数にして**削除**（呼び出し側の検査も消えた） |
+| 上記 3 件（下の §4-2） | **到達不能** | 呼び出し地点に理由を書いて残す |
+
+**数字のためのテストは 1 本も書いていない。** `exclude` リストも広げていない。
+
+#### 4-0-1. カバレッジが見つけた「嘘をついていたテスト」
+
+`test/place-block.test.ts` に *reports `Unchanged` as Occupied* という緑のテストがあり、
+コメントは「同じ石を 2 回書いてこのアームに到達する」と説明していた。**到達していなかった。**
+石は replaceable ではないので 2 回目は `isReplaceable` の**読み取り側**で断られ、ストアには届かない。
+結果は正しく、経路は書いてあるものと違い、`case 'Unchanged'` の実行回数は 0 だった。
+——**通っているテストがあることと、その分岐が試されていることは別である。**
+現在は読み取り側の主張として書き直し、書き込み側の 3 アームは
+「読みと書きの間で世界が変わった」レースを作るストアで別に固定してある（本文がまさにそう書いている状況）。
+
+#### 4-0-2. mutation が見つけた、カバレッジには見えない穴
+
+全新規テストについて対象コードを壊して赤を確認した（17 個中 16 個が即死）。
+生き残った 1 つが本題である: **リングの半径を全ステップ `MIN_SPAWN_DISTANCE_BLOCKS` に潰しても、
+このファイルの全テストが緑のまま通った。** 候補数は 64 のまま、帯の検査も通り（16 は帯の中）、
+ストア呼び出し数も同じ。実際のゲームでは**モブが常に同じ細いリングにしか湧かない**。
+カバレッジ 100% の行だった —— 実行はされていたが、どのアサーションもその値に依存していなかった。
+`SPANS the four radii` を足してある。
 
 ### 4-1. `domain/position-key.ts` を除外している理由
 
@@ -405,6 +449,25 @@ v8 provider は 100% ではなく **0%** として報告する。headline の数
 
 このファイルは kernel の座標語彙のプレースホルダであり、kernel publish 時に削除される
 （[versioning.md](./versioning.md) §5-1）。除外は恒久措置ではない。
+
+**除外は「測れないもの」に限り、「測ると都合が悪いもの」には使わない。**
+ゲートを入れるにあたってこのリストは 1 行も増やしていない。次節の 3 件は、
+除外ではなく**呼び出し地点のコメント**として残してある —— 除外は行を報告から消すが、
+コメントは読む人の前に残るからである。
+
+### 4-2. 覆っていない 3 本と、その理由（0.51%）
+
+100% ではなく 99% を閾値にしている以上、**空いている分が何なのかを名指しできなければ意味がない**。
+3 本あり、いずれも「テストが書けなかった」ではなく「どんな入力でも到達しない」である。
+
+| 場所 | なぜ到達しないか | なぜ消さないか |
+| --- | --- | --- |
+| `domain/entities/mob-frame.ts` の `offset === undefined` | エンダーマンの**16 回の転移試行が全部外れる**確率。帯は候補正方形の約 74% を覆うので、16 連続の失敗はおよそ**10 億回に 1 回**。他のテレポートテストを駆動している seed 探索（相異なる第 1 ロールを持つ約 12.8 万個）では届かず、どんな予算でも届かない | 死んだコードではない。`endermanTeleportOffset` のオラクルが `undefined` を駆動しており、これはフレーム側がそれを尊重している箇所である。「帯を広げれば必ず見つかる」を拒否しているのがこの分岐 |
+| `domain/entities/mob-spawn-search.ts` の `HOSTILE_KINDS[index] ?? HOSTILE_KINDS[0]` | `noUncheckedIndexedAccess` は添字読みを常に `\| undefined` にする。直前の行が `Math.min` で範囲に収めているので、値としては到達しない | 型が要求するので消せない。**2 段あった fallback は 1 段に減らした**（名簿が空である場合を型で排除した） |
+| `domain/interactions/place-block.ts` の `UnknownBlock` | `heldItem` は `PlaceableItemType`（= `ItemType & BlockType`）で、`test/block-vocabulary-mirror.test.ts` が `blockIdOf` を **120 の `BlockType` 全部について全域**だと固定している（19 + 101 = 120 の等式）。緑の木では到達しない | mc-kernel が同じ `blockIdOf` の fallback を除外しているのと**同じ形、逆の向き**である。kernel 側は `?? AIR_BLOCK_ID` で「未登録の型が静かに air になる」＝**消滅**する側に倒れる。こちらは**名前のついた拒否**に倒れる。ミラーは kernel の保証が成り立たない場所なので、倒れる向きが正しいほうを残す |
+
+**「到達不能な分岐に入力をでっち上げて覆う」ことはしていない。**
+それは将来の読み手に「この分岐は起こりうる」と教えることであり、このゲートが防ぐはずの不正そのものである。
 
 ## 5. 決定論
 

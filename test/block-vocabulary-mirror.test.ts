@@ -41,6 +41,7 @@ import { Effect } from 'effect'
 import {
   BLOCK_TYPES,
   blockIdOf,
+  blockOfPlaceableItem,
   canBlockStaySupported,
   canSupportAttachments,
   fallsWhenUnsupported,
@@ -51,6 +52,11 @@ import {
   needsOneOf,
   supportRuleOfBlockId,
   validSpawnSurface,
+  DEFAULT_BLOCK_DROP,
+  DEFAULT_HARVEST_TOOL,
+  itemOfBlock,
+  PLACEABLE_ITEM_TYPES,
+  resolveDrop,
   type BlockType,
 } from '../domain/block-vocabulary'
 
@@ -347,6 +353,67 @@ describe('the supportRule mirror', () => {
       const barrel = yield* Effect.promise(() => import('../index'))
       expect(Object.keys(barrel)).not.toContain('canBlockStaySupported')
       expect(Object.keys(barrel)).not.toContain('supportRuleOfBlockId')
+    }),
+  )
+})
+
+describe('the item form of a block, in both directions', () => {
+  it.effect('`blockOfPlaceableItem` is the identity, and the round trip is what the type buys', () =>
+    Effect.sync(() => {
+      // The function has no arithmetic in it at all — the work is in the type,
+      // and the reason to assert on it is that the type is the claim. kernel
+      // deliberately publishes no `blockOfItem(item: ItemType)` overload,
+      // because answering `blockOfItem('stick')` means either a partial result
+      // nobody checks or a lie; the caller has to prove placeability first, and
+      // once it has, the answer cannot fail.
+      //
+      // So the assertion is the ROUND TRIP over the whole intersection rather
+      // than a spot check: every placeable item is the block it places, and that
+      // block's item form is the item again. A day when the two tables drift
+      // apart is a day when a player places a block and gets a different one
+      // back on breaking it.
+      expect(PLACEABLE_ITEM_TYPES.length).toBeGreaterThan(0)
+
+      for (const item of PLACEABLE_ITEM_TYPES) {
+        const block = blockOfPlaceableItem(item)
+        expect(block).toBe(item)
+        expect(itemOfBlock(block)).toBe(item)
+        // And it is a block this build can actually put in the world.
+        expect(blockIdOf(block)).toBeDefined()
+      }
+    }),
+  )
+
+  it.effect('a `self` rule over a block with NO item form drops nothing, rather than a nameless item', () =>
+    Effect.sync(() => {
+      // The fourth way to get nothing, and the only one that is an ABSENCE
+      // rather than a denial — `resolveDrop`'s own header lists it and nothing
+      // asked for it. `'self'` is a sentinel meaning "whatever was broken", and
+      // for `water`, `lava`, `bedrock`, `snow` and the rest of the 45
+      // non-itemised blocks there is no whatever: kernel's audit §6-6 has `air`
+      // as a sentinel rather than a thing, and the others simply have no item
+      // form in this build.
+      //
+      // The failure this refuses is specific. `resolveDrop` returns
+      // `{ item, count, affectedByFortune }`, so passing the absence through
+      // would mint a `MinedItem` whose `item` is `undefined` — an inventory
+      // stack of one nothing, which mc-sim would accept and a player would see.
+      // Answering `undefined` makes it the same non-event as mining air.
+      const nonItemised = BLOCK_TYPES.filter((block) => itemOfBlock(block) === undefined)
+      expect(nonItemised.length).toBeGreaterThan(0)
+
+      for (const block of nonItemised) {
+        expect(resolveDrop(DEFAULT_HARVEST_TOOL, DEFAULT_BLOCK_DROP, block)).toBeUndefined()
+      }
+
+      // The control: the SAME rule over a block that does have an item form
+      // yields that item, so the assertion above is about the block and not
+      // about the rule.
+      expect(resolveDrop(DEFAULT_HARVEST_TOOL, DEFAULT_BLOCK_DROP, 'dirt')).toStrictEqual({
+        item: 'dirt',
+        count: 1,
+        affectedByFortune: false,
+      })
     }),
   )
 })

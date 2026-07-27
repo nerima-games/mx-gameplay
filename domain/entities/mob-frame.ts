@@ -367,7 +367,19 @@ export const ENDERMAN_KIND: EntityKind = EntityKind('enderman')
  * agreement」 shape `../mob/hostile-spawn`'s header measures in the reference's
  * surface tables.
  */
-export const HOSTILE_KINDS: ReadonlyArray<EntityKind> = [CREEPER_KIND, ENDERMAN_KIND]
+// NON-EMPTY IN THE TYPE, not merely in the literal. `./mob-spawn-search` picks a
+// member by a computed index, which `noUncheckedIndexedAccess` types
+// `EntityKind | undefined` however the index was derived; it therefore needs
+// somewhere total to land, and it used to land on `HOSTILE_KINDS[0] ??
+// EntityKind('creeper')` — a SECOND fallback whose only job was to cover the
+// possibility that this line is `[]`. Saying non-empty here deletes that layer
+// and, more usefully, moves the claim to where a future edit to the roster would
+// have to read it. A build with no hostiles is a decision, not an accident to be
+// absorbed three files away.
+export const HOSTILE_KINDS: readonly [EntityKind, ...ReadonlyArray<EntityKind>] = [
+  CREEPER_KIND,
+  ENDERMAN_KIND,
+]
 
 /**
  * A creeper's health at spawn.
@@ -947,6 +959,18 @@ export const sweepMobs = (
             // column, or 「is this cell solid」 for a mob rather than for a spawn
             // (`validSpawnSurface` answers about the block BELOW a candidate,
             // not about the two the mob would occupy).
+            //
+            // UNCOVERED ON PURPOSE, and this is the one place in the file where
+            // that is true. The `undefined` arm below needs all sixteen attempts
+            // to miss the 8..32 band, and the band covers about 74% of the
+            // square the offsets are drawn from — so sixteen misses is roughly
+            // one decision in a billion. `test/vertical-slice.test.ts`'s
+            // `seedSuchThat` scans the ~128 thousand seeds that produce distinct
+            // first rolls and cannot reach it; nothing can, at any budget worth
+            // spending. It is not dead code (`endermanTeleportOffset`'s own
+            // oracle drives the `undefined` and this is the frame honouring it)
+            // and it is not contrivable, so it is recorded here rather than
+            // covered. docs/testing.md §6-2 carries the argument.
             destination =
               offset === undefined
                 ? undefined

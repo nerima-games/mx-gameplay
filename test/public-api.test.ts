@@ -241,6 +241,7 @@ describe('public API surface', () => {
         'normaliseSeed',
         'nextRoll',
         'drawRolls',
+        'rollAt',
         // stage helpers
         'LAVA_TICK_INTERVAL',
         'EXPERIENCE_MODULE_STAGE_PREFIXES',

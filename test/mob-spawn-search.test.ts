@@ -13,11 +13,13 @@
  */
 import { describe, expect, it } from '@effect/vitest'
 import { Effect, Ref } from 'effect'
-import { AIR_BLOCK_ID, type BlockPosition } from '../domain/chunk-store-port'
+import { AIR_BLOCK_ID, type BlockPosition, type ChunkStoreApi } from '../domain/chunk-store-port'
+import type { Position } from '../domain/entity-manager-port'
 import {
   CREEPER_KIND,
   ENDERMAN_KIND,
   HOSTILE_KINDS,
+  MAX_HOSTILE_COUNT,
   type MobBehaviour,
 } from '../domain/entities/mob-frame'
 import {
@@ -35,7 +37,11 @@ import {
 } from '../domain/mob/hostile-spawn'
 import { DeltaTimeSecs } from '../domain/frame-contract'
 import { GAMEPLAY_STAGE_IDS } from '../stages/stage-ids'
-import { gameplayStages, makeGameplayFrameState } from '../stages/registration'
+import {
+  gameplayStages,
+  HOSTILE_SPAWN_INTERVAL_SECS,
+  makeGameplayFrameState,
+} from '../stages/registration'
 import {
   lightWorld,
   makeChunkStoreDouble,
@@ -181,6 +187,43 @@ describe('the spawn ring', () => {
     }),
   )
 
+  it.effect('SPANS the four radii — every step is actually probed, not just the inner one', () =>
+    Effect.gen(function* () {
+      // FOUND BY A MUTATION, and it was the one the loop's own comment predicted.
+      // Replacing the per-step radius with `MIN_SPAWN_DISTANCE_BLOCKS` — a ring
+      // that probes 16 blocks four times over and never looks past it — passed
+      // every other test in this file. The count is still 64, the band assertion
+      // still holds (16 is inside it), the store-call cost is unchanged, and the
+      // rule refuses nothing extra. In a running game it is a spawner that only
+      // ever produces mobs in a tight circle, which is visible to a player and to
+      // nothing else here.
+      //
+      // The assertion is over the STEPS rather than over four literals, so it
+      // moves with `SPAWN_RING_RADIUS_STEPS` the way the ring does. Each step is
+      // matched within one block on each axis, which is the most flooring a
+      // continuous ring position can cost.
+      const { found } = yield* searchIn(FLOORED_WORLD, RESIDENT_CHUNKS)
+
+      const distances = found.attempts.map((attempt) => attempt.candidate.distanceToPlayerBlocksXZ)
+
+      for (const step of SPAWN_RING_RADIUS_STEPS) {
+        const reached = distances.filter((distance) => Math.abs(distance - step) <= Math.SQRT2)
+        // One per angle, which is also the claim that the ring is not lopsided:
+        // a rotation applies to the angle and must not drop a radius.
+        expect(reached.length).toBe(SPAWN_RING_ANGLES)
+      }
+
+      // …and nothing was probed OUTSIDE the steps, which is the other half: a
+      // ring that reached every step and also a fifth would still pass above.
+      for (const distance of distances) {
+        const nearest = Math.min(
+          ...SPAWN_RING_RADIUS_STEPS.map((step) => Math.abs(distance - step)),
+        )
+        expect(nearest).toBeLessThanOrEqual(Math.SQRT2)
+      }
+    }),
+  )
+
   it.effect('carries the hour it was given, unchanged', () =>
     Effect.gen(function* () {
       // The search does not gate on time — the RULE does, and
@@ -265,6 +308,44 @@ describe('what the search reads', () => {
 
       expect(found.unreadable).toBe(SPAWN_RING_CELLS)
       expect(yield* store.calls).toStrictEqual({ reads: SPAWN_RING_CELLS * 3, writes: 0 })
+    }),
+  )
+
+  it.effect('a cell whose BLOCKS read but whose LIGHT does not is unreadable, not dark', () =>
+    Effect.gen(function* () {
+      // THE TWO QUERIES ARE INDEPENDENT, and the test above cannot say so: it
+      // makes the whole chunk absent, so the blocks and the light fail together
+      // and the light half is never reached. This one keeps the world exactly as
+      // the passing case has it — floored, resident, every block readable — and
+      // fails only `getLight`.
+      //
+      // The failure it refuses is the one `LightReading` is three-valued to
+      // prevent, and it is the more dangerous direction of the two. An
+      // unreadable BLOCK offers a mob a cell in ungenerated space, which the
+      // rule then refuses as `not-a-surface`; an unreadable LIGHT read as
+      // darkness offers a cell that looks like a legal pitch-black floor, which
+      // the rule ACCEPTS. `getLight`'s own note in `domain/chunk-store-port.ts`
+      // names the moment this happens — a read after a write, when a chunk is
+      // mid-relight — so it is a real state and not a hypothetical one.
+      //
+      // The count is the assertion rather than the emptiness: `unreadable` is
+      // reported precisely so a caller can tell "nothing was suitable" from
+      // "nothing could be looked at", and this is the second of those with the
+      // world of the first.
+      const store = yield* makeChunkStoreDouble(FLOORED_WORLD, RESIDENT_CHUNKS)
+      const blind: ChunkStoreApi = {
+        ...store.api,
+        getLight: () => Effect.succeed({ _tag: 'ChunkNotLoaded' as const }),
+      }
+
+      const found = yield* searchSpawnCandidates(blind, PLAYER, MIDNIGHT, 1)
+
+      expect(found.attempts.length).toBe(0)
+      expect(found.unreadable).toBe(SPAWN_RING_CELLS)
+      // The budget is still drawn in full — the search consumed its rolls
+      // whether or not it could see anything, which is the rule that keeps the
+      // sequence independent of how much a frame managed to read.
+      expect(found.seed).toBe(drawRolls(1, SPAWN_SEARCH_ROLLS).seed)
     }),
   )
 
@@ -451,6 +532,64 @@ describe('the search inside the frame', () => {
         expect(HOSTILE_KINDS).toContain(entity.kind)
         expect(entity.behaviour).toBeDefined()
       }
+    }).pipe(Effect.provide(FrameServicesLayer)),
+  )
+
+  it.effect('an OFFERED cell and a SEARCHED ring in one frame are ONE stream against the cap', () =>
+    Effect.gen(function* () {
+      // The concatenation, and the only frame in which it happens: the inbox has
+      // something in it AND the 0.3s cadence comes due on the same tick. Every
+      // other test has one or the other — the vertical slice puts the world at
+      // noon so the search cannot run, and the end-to-end case above feeds
+      // nothing into the inbox — so this arm had never executed.
+      //
+      // WHY IT IS ONE LIST AND NOT TWO PASSES. `applySpawnAttempts` applies
+      // `MAX_HOSTILE_COUNT` against a census it takes as it goes. Run twice, each
+      // pass starts from the count the other left, and a frame holding one
+      // offered cell and a full ring can spawn one mob PAST the cap — sixteen
+      // from the ring, then the offered one against a census that was taken
+      // before any of them. One stream cannot do that, and sixty-four candidates
+      // plus one is the shape that shows it: the cap is what stops this frame,
+      // not the supply.
+      //
+      // AND THE ORDER IS THE HOST'S FIRST. `offered` leads the concatenation, so
+      // a cell somebody asked for is not silently outbid by a ring that happened
+      // to be full — which is the failure mode of the other concatenation order
+      // and would be invisible in a count.
+      const store = yield* makeChunkStoreDouble(FLOORED_WORLD, RESIDENT_CHUNKS)
+      const roster = yield* makeEntityManagerDouble<MobBehaviour>()
+      const state = yield* makeGameplayFrameState
+      const stages = gameplayStages(state, store.api, roster.api)
+
+      const offeredAt: Position = { x: -20, y: 64, z: -20 }
+      yield* Ref.set(state.targetPosition, PLAYER)
+      yield* Ref.set(state.spawnAttempts, [
+        {
+          candidate: {
+            groundBlock: STONE,
+            footBlock: AIR_BLOCK_ID,
+            headBlock: AIR_BLOCK_ID,
+            blockLight: 0,
+            timeOfDay: MIDNIGHT,
+            distanceToPlayerBlocksXZ: 20,
+          },
+          kind: CREEPER_KIND,
+          feetPosition: offeredAt,
+        },
+      ])
+
+      const entities = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.entities)
+      // One frame that reaches the cadence, so the ring runs and the inbox is
+      // drained in the same pass.
+      yield* entities?.run(DeltaTimeSecs(HOSTILE_SPAWN_INTERVAL_SECS)) ?? Effect.void
+
+      const entries = yield* roster.api.entities
+      // The cap held over the COMBINED supply of 65 candidates.
+      expect(entries.length).toBe(MAX_HOSTILE_COUNT)
+      // The host's cell was taken, and taken first.
+      expect(entries[0]?.feetPosition).toStrictEqual(offeredAt)
+      // The inbox was drained rather than left to be re-offered next frame.
+      expect(yield* Ref.get(state.spawnAttempts)).toStrictEqual([])
     }).pipe(Effect.provide(FrameServicesLayer)),
   )
 

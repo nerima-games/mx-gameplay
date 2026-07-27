@@ -176,3 +176,30 @@ export const drawRolls = (seed: number, count: number): RollBatch => {
 
   return { rolls, seed: current }
 }
+
+/**
+ * The roll a batch holds at `index`, or 0 when it holds none there.
+ *
+ * TOTAL, and it exists so that the fallback is written ONCE. Every consumer
+ * reads `batch.rolls[n]` with an `n` its own call to `drawRolls` guaranteed —
+ * and `noUncheckedIndexedAccess` still types that read `number | undefined`, so
+ * each site grew its own `?? 0`. Four of them, in `./entities/mob-spawn-search`
+ * and `../stages/registration`, none reachable at its own site, each one a
+ * branch permanently red in the coverage report. The four could not disagree
+ * about the VALUE, but they could and did disagree about whether the question
+ * was worth asking, which is how a formality becomes four unexamined guards.
+ *
+ * Reading past the end is not a hypothetical: `drawRolls(seed, 0)` returns the
+ * empty batch on purpose, and `./interactions/block-loot` documents the same
+ * out-of-range reading as a deliberate calling convention — 「a test that means
+ * "every bonus line fires" should be able to say so by passing nothing」.
+ *
+ * 0 rather than `undefined` because every rule downstream documents its input as
+ * a number in `[0, 1)` and 0 is inside it. Note which way that falls: a roll of
+ * 0 PASSES a chance gate, so a caller that forgot to draw gets the most generous
+ * answer, not the least. That is the opposite of the inert direction and it is
+ * the direction `block-loot` already chose deliberately for the same reason —
+ * the only production caller draws its budget from `drawRolls`, so an absent
+ * roll means a test wrote one on purpose.
+ */
+export const rollAt = (batch: RollBatch, index: number): number => batch.rolls[index] ?? 0

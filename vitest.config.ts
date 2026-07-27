@@ -43,18 +43,46 @@ export default defineConfig({
       all: true,
       reporter: ['text', 'json', 'html', 'lcov'],
       reportsDirectory: './coverage',
-      // NO THRESHOLD YET — deliberate.
+      // THE 99% GATE, ON. `docs/testing.md` §6.
       //
-      // The reference repository (takeokunn/ts-minecraft) enforces 99% on
-      // branches/functions/lines/statements. A threshold on a skeleton would be
-      // meaningless: it would be trivially satisfied by a handful of type-only
-      // modules and would say nothing about the real implementation.
+      // This block used to explain why there was NO threshold: a number imposed
+      // on a skeleton is trivially satisfied by type-only modules and says
+      // nothing about the implementation. That argument was about the skeleton
+      // and it has expired — `domain/` now carries the mob rules, the frame
+      // sweep, the spawn search, the loot and support tables, the weather and
+      // the day-night cycle, and `stages/` carries five stages that wire them
+      // to two mirrored services.
       //
-      // Coverage is collected and reported (`pnpm test:coverage`) so the number
-      // is always visible. The 99% gate is turned on — here and in the CI
-      // workflow — when this repository reaches its completion criteria.
+      // It is 99 rather than the measured 99.49 because the gate exists to catch
+      // a REGRESSION. A threshold pinned to the current number turns every
+      // unrelated refactor into a red build, which teaches people to lower the
+      // number instead of writing the test.
       //
-      //   thresholds: { branches: 99, functions: 99, lines: 99, statements: 99 },
+      // WHAT THE REMAINING 0.51% IS, because a threshold below 100 is only
+      // honest if the gap is named. Three branch arms, each recorded at its own
+      // call site, none of them reachable by any input a test can construct:
+      //
+      //   `domain/entities/mob-frame.ts`   an enderman whose sixteen teleport
+      //     attempts ALL miss the 8..32 band. About one decision in a billion;
+      //     the seed search that drives every other teleport test cannot find
+      //     one and no budget would.
+      //   `domain/entities/mob-spawn-search.ts`  `HOSTILE_KINDS[index]` under
+      //     `noUncheckedIndexedAccess`, over an index the line above clamps into
+      //     range. A formality the type system demands and the arithmetic
+      //     forbids.
+      //   `domain/interactions/place-block.ts`   `UnknownBlock`, for a held item
+      //     with no registry row. `test/block-vocabulary-mirror.test.ts` pins
+      //     `blockIdOf` total over all 120 `BlockType`s, so in a green tree
+      //     nothing can reach it — the same shape as mc-kernel's own excluded
+      //     `blockIdOf` fallback, and kept for the same reason: it fails toward
+      //     a NAMED refusal rather than toward a block that silently vanishes.
+      //
+      // None of the three is excluded and the `exclude` list below was not
+      // widened to reach this number. Reaching a coverage figure by contriving
+      // inputs to unreachable arms — or by hiding them — is the failure this
+      // gate is meant to make visible, so it would be a poor start to switch it
+      // on by doing exactly that.
+      thresholds: { branches: 99, functions: 99, lines: 99, statements: 99 },
     },
   },
   esbuild: {

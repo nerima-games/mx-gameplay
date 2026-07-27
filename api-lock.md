@@ -13,7 +13,7 @@
 <!-- ------------------------------------------------------------------------- -->
 
 format: 1
-exported declarations: 189
+exported declarations: 190
 supporting declarations: 43
 
 ## Exported
@@ -470,7 +470,7 @@ type GameplayFrameState = {
 ### HOSTILE_KINDS  `const`
 
 ```ts
-const HOSTILE_KINDS: ReadonlyArray<EntityKind>;
+const HOSTILE_KINDS: readonly [EntityKind, ...ReadonlyArray<EntityKind>];
 ```
 
 ### HOSTILE_SPAWN_INTERVAL_SECS  `const`
@@ -1260,6 +1260,12 @@ const resolveNextWeatherState: (current: Weather, rolls: WeatherRolls) => Weathe
 
 ```ts
 const resolveWeatherDurationSecs: (weather: Weather, roll: number) => number;
+```
+
+### rollAt  `const`
+
+```ts
+const rollAt: (batch: RollBatch, index: number) => number;
 ```
 
 ### rollCasualtyDrops  `const`

@@ -111,7 +111,7 @@ import {
   type FluidWorkItem,
 } from '../domain/fluid-frontier'
 import type { GameModule, StageRegistration } from '../domain/frame-contract'
-import { DEFAULT_ROLL_SEED, drawRolls } from '../domain/frame-rolls'
+import { DEFAULT_ROLL_SEED, drawRolls, rollAt } from '../domain/frame-rolls'
 import { breakBlock } from '../domain/interactions/break-block'
 import {
   BLOCK_LOOT_ROLLS,
@@ -852,8 +852,8 @@ export const gameplayStages = (
               const batch = drawRolls(seed, WEATHER_TRANSITION_ROLLS)
               return [
                 advanceWeather(current, dt, {
-                  transition: batch.rolls[0] ?? 0,
-                  duration: batch.rolls[1] ?? 0,
+                  transition: rollAt(batch, 0),
+                  duration: rollAt(batch, 1),
                 }),
                 batch.seed,
               ] as const
