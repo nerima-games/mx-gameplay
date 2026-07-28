@@ -116,8 +116,12 @@ import {
   splitBudget,
   type FluidWorkItem,
 } from '../domain/fluid-frontier'
-import type { GameModule, StageRegistration } from '../domain/frame-contract'
+import type { DeltaTimeSecs, GameModule, StageRegistration } from '../domain/frame-contract'
 import { DEFAULT_ROLL_SEED, drawRolls, rollAt } from '../domain/frame-rolls'
+import { OUTSIDE_PORTAL, type PortalDwell, stepPortalDwell } from '../domain/portal-dwell'
+import { applyPortalTravel } from '../domain/portal-travel'
+import { PlayerService, type PlayerServiceApi } from '../domain/player-port'
+import { blockTypeOfId } from '../domain/block-vocabulary'
 import { breakBlock } from '../domain/interactions/break-block'
 import {
   BLOCK_LOOT_ROLLS,
@@ -485,6 +489,17 @@ export type GameplayFrameState = {
   readonly fallingBlocks: Ref.Ref<FallingBlockQueue>
   readonly fluidFrontier: Ref.Ref<ReadonlyArray<FluidWorkItem>>
   readonly tickCount: Ref.Ref<number>
+  /**
+   * How long the player has stood in a portal block, or how long until one may
+   * fire again.
+   *
+   * STATE, AND IT IS THIS REPOSITORY'S rather than mc-sim's, which is the
+   * distinction `domain/portal-dwell.ts` draws: the four-second timer is a RULE
+   * about when a transition fires, and it does not survive a save. The thing
+   * that does survive — which dimension the player ended up in — is mc-sim's and
+   * is reached through `PlayerServiceApi.setDimension`.
+   */
+  readonly portalDwell: Ref.Ref<PortalDwell>
 }
 
 /**
@@ -693,6 +708,10 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
   const fallingBlocks = yield* Ref.make<FallingBlockQueue>(emptyFallingBlockQueue)
   const fluidFrontier = yield* Ref.make<ReadonlyArray<FluidWorkItem>>([])
   const tickCount = yield* Ref.make(0)
+  // OUTSIDE, which is the only honest starting state: a fresh world has nobody
+  // standing in a portal, and a `Cooling` default would swallow the first
+  // crossing of a session.
+  const portalDwell = yield* Ref.make<PortalDwell>(OUTSIDE_PORTAL)
 
   return {
     pendingBreaks,
@@ -717,6 +736,7 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
     fallingBlocks,
     fluidFrontier,
     tickCount,
+    portalDwell,
   }
 })
 
@@ -735,11 +755,72 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
  * the module header. `roster` and `inventory` arrived the same way and for the
  * same reason.
  */
+/**
+ * The join: WHEN (dwell) -> WHERE (mc-worldgen) -> APPLY (mc-sim).
+ *
+ * Extracted from the stage body rather than inlined because it is the one place
+ * in this repository where three repositories' pieces meet, and burying it in a
+ * 200-line stage is how it would come to be edited without anyone noticing which
+ * of the three they had changed.
+ *
+ * THE PLAYER'S CELL IS FLOORED, and that is the coordinate convention rather
+ * than a rounding preference. `PlayerPose.feetPosition` is a floating-point
+ * entity position; `resolveNetherTravel` takes a `BlockPosition`, which is a
+ * cell. `Math.floor` is the same conversion mc-worldgen's header says vanished
+ * from the reference's `detectNetherPortal` once its parameter was branded, and
+ * it has to happen somewhere — here, at the boundary between an entity and a
+ * grid, is that somewhere.
+ *
+ * A CHUNK THAT IS NOT LOADED READS AS "NOT IN A PORTAL", which is the permissive
+ * answer and the right one to be wrong with: the alternative is a player who
+ * streams into an unloaded chunk being counted as dwelling in a portal they
+ * cannot be standing in. `ChunkNotLoaded` and `OutOfWorld` both take that arm.
+ */
+const stepPortalTravel = (
+  state: GameplayFrameState,
+  store: ChunkStoreApi,
+  player: PlayerServiceApi,
+  dt: DeltaTimeSecs,
+): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    const pose = yield* player.pose
+    const cell = {
+      x: Math.floor(pose.feetPosition.x),
+      y: Math.floor(pose.feetPosition.y),
+      z: Math.floor(pose.feetPosition.z),
+    }
+
+    const reading = yield* store.getBlock(cell)
+    const inPortal =
+      reading._tag === 'Block' && blockTypeOfId(reading.block) === 'nether_portal'
+
+    const step = stepPortalDwell(yield* Ref.get(state.portalDwell), inPortal, dt)
+    yield* Ref.set(state.portalDwell, step.dwell)
+
+    if (!step.travels) {
+      return
+    }
+
+    // NO CANDIDATE LIST IS PASSED, so `resolveNetherTravel` reuses nothing and
+    // every crossing plans a fresh portal. The missing thing is named and it is
+    // not a TODO: mc-worldgen owns the portal ledger (`mc-worldgen/docs/
+    // responsibility.md` §6, the 「ポータル一覧の所有者」 bullet) and has not built
+    // it yet, because a chunk-scoped persistent ledger with a save format is its
+    // own piece of work rather than a rider on a dwell timer.
+    //
+    // WHAT CHANGES HERE ON THAT DAY: this call gains the DESTINATION dimension's
+    // portals — never the source's, which would silently reuse a portal in the
+    // world being left, and no type can catch it because a `BlockPosition` does
+    // not say which world it is in. The hazard is written up at the owner.
+    yield* applyPortalTravel(player, cell)
+  })
+
 export const gameplayStages = (
   state: GameplayFrameState,
   store: ChunkStoreApi,
   roster: EntityManagerApi<MobBehaviour>,
   inventory: InventoryServiceApi,
+  player: PlayerServiceApi,
 ): ReadonlyArray<StageRegistration> => [
   {
     id: GAMEPLAY_STAGE_IDS.interactions,
@@ -756,8 +837,26 @@ export const gameplayStages = (
     // because `place-block` would read the cell as occupied by a block that is
     // about to stop existing. It is the same argument that puts `entities`
     // after `interactions` one stage down.
-    run: () =>
+    run: (dt) =>
       Effect.gen(function* () {
+        // ---------------------------------------------------------------
+        // PORTAL TRAVEL, and it runs BEFORE the inbox drain and its early
+        // return.
+        // ---------------------------------------------------------------
+        //
+        // THIS IS THE CALL THAT MAKES THE RULE REACHABLE. `domain/portal-dwell.ts`
+        // and `domain/portal-travel.ts` were both complete and callable while
+        // nothing called them, which is the 「callable but unreachable」 state
+        // this repository has had to correct more than once — a rule with a
+        // green test file and no call site passes every test that only checks
+        // the rule.
+        //
+        // It sits above the `return` below deliberately. That early return fires
+        // whenever all five inboxes are empty, which is MOST frames, and a
+        // dwell timer that only advanced on frames where somebody also broke a
+        // block would take four seconds of MINING to cross a portal.
+        yield* stepPortalTravel(state, store, player, dt)
+
         // `getAndSet` rather than get-then-set: whoever fills the inboxes is not
         // this fiber, and a request that arrived between the two steps would be
         // dropped without a trace (DN-GP-10). Both are drained UP FRONT, so a
@@ -1486,14 +1585,15 @@ export const gameplayStages = (
 export const makeGameplayStages: Effect.Effect<
   ReadonlyArray<StageRegistration>,
   never,
-  ChunkStore | EntityManager | InventoryService
+  ChunkStore | EntityManager | InventoryService | PlayerService
 > = Effect.gen(function* () {
   const store = yield* ChunkStore
   const roster = yield* entityManagerTag<MobBehaviour>()
   const inventory = yield* InventoryService
+  const player = yield* PlayerService
   const state = yield* makeGameplayFrameState
 
-  return gameplayStages(state, store, roster, inventory)
+  return gameplayStages(state, store, roster, inventory, player)
 })
 
 /**
@@ -1547,7 +1647,7 @@ export const gameplayModule: GameModule<
   never,
   never,
   never,
-  ChunkStore | EntityManager | InventoryService
+  ChunkStore | EntityManager | InventoryService | PlayerService
 > = {
   layers: Layer.empty,
   frameStages: makeGameplayStages,

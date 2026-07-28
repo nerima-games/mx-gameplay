@@ -237,7 +237,7 @@ roster を各リポジトリが持ち回っている以上、**行の正しさ�
 | 3 | ドロップ / ルートテーブル | **実装済み** | `domain/mob/mob-drop.ts`（クリーパー / ガスト / ブレイズ、`lootingLevel` 込み）と `domain/interactions/block-loot.ts`。後者は kernel の `drops` / `harvestTool` 列（`domain/block-vocabulary.ts` にミラー）を通る決定論的な半分と、audit §6-9 がこちらに置いた乱数の半分（fortune、葉のボーナス）である。**掘って出るのは「そこにあったブロック」ではなくなった** —— 石はまるい石になり、素手では何も出ない。**そして出たものは mc-sim の `InventoryService` に入る**（§3-1 の 1 行目） |
 | 4 | 流体伝播 | **実装済み** | `domain/fluid-frontier.ts`。plan.md §3.11 が名指しするフロンティア上限つき |
 | 5 | 乗り物（ボート / トロッコ / レール） | **部分** | **レールのトポロジは実装済み**: `domain/vehicle/rail-shape.ts`（`resolveRailShape` / `RailShape` / `IsRailAt`）と `domain/vehicle/rail-ascent.ts`（`isAscendingAhead`）。どちらも import が 1 本も無い純関数で、ブロックの読みは**注入された述語**で受ける。**フレームには配線されていない** —— カートの速度も名簿も `mc-sim` に無いためで、欠けているものは [responsibility.md](./responsibility.md) §5-5 に名指しで並べてある。記号ごとの所有権（`projectMinecartVelocity` と `RAIL_CLIMB_SPEED` を含む）は同 §5 が**唯一の記述**である。旧記述「未着手」の根拠は §3-2 のとおり間違っていた |
-| 6 | ポータル / 次元移動 | **部分**（点火と**発火タイマー**が入った。残るのは「置く」だけだが、それは**配線ではない** —— 理由は 3 つあり、名簿はそのうち 1 つでもない） | 参照実装がこの責務を**3 ファイルに割っている**とおりに割れた。**枠の検出**は mc-worldgen の `domain/portal-frame.ts`（`detectNetherPortal`）で、こちらは `domain/portal-frame-port.ts` として**ミラー**する —— `domain/chunk-store-port.ts` が `ChunkStore` をミラーするのと同じやり方で、import ではない。**点火**は `domain/interactions/ignite-portal.ts` で、これがこの行の残りだった分である。<br><br>`detectNetherPortal` は**同期**の `BlockAt` を取り、1 回で約 500 セルを探る。こちらのブロック読みは全部 `Effect` なので、その 2 つは合わない —— `domain/chunk-window.ts` がその橋で、その冒頭に**3 つの案と、選ばなかった 2 つを落とした理由**（セル単位＝右クリック 1 回あたり 3,872 回のストア呼び出し／要求駆動の不動点＝他人の制御フローに依存した限界）が書いてある。選んだのは参照実装と同じ形、チャンクを peek してバッファを引く方式である。**`ChunkNotLoaded` は近道の中でも air にならない**: 常駐していないチャンクのセルは `UNREADABLE_BLOCK`（`-1`、どの registry 行でもない）を返して**数えられ**、`ignite-portal.ts` はそれを `NoFrame` ではなく `ChunkNotLoaded` として報告する。<br><br>**3 本目も 3 つに割れた。** 参照実装の `physics-stage-portal.ts` はプレイヤーの位置を読み、十分に立ったと判断し、別次元へ置く —— この「**十分に立った**」が `domain/portal-dwell.ts`（`stepPortalDwell`）で、**4 秒の滞在と 4 秒の再突入冷却**は名簿ではなく**時間**である。`domain/mob/creeper-fuse.ts` と同じ形（タグつき状態機械、`DeltaTimeSecs`、overshoot が効く `>=`）で、座標を 1 つも持たない。「**どこへ**置くか」は mc-worldgen の `domain/nether-link.ts` / `domain/nether-travel.ts` に入った。<br><br>**残るのは「置く」だけである。ただしそれを「繋ぐだけ」と書いていたのは誤りで、測って 3 つに割れた** —— [responsibility.md](./responsibility.md) §6-2 が実測の唯一の記述である。(a) **次元という名詞に所有者が居ない**（欠けているメンバは `PlayerServiceApi.dimension` と `PlayerServiceApi.setDimension` の 2 つで、`Dimension` は kernel にも mc-sim にも 0 件）。**したがって今日書ける「移動」は 1 つの世界の中の再配置でしかない。** (b) **「どこへ」は mc-worldgen のバレルに無い** —— `index.ts` は `./domain/portal-frame` を出して `./domain/nether-travel` を出さず、`Dimension` は当該ファイルが意図的に非公開にしている。引数 `from` と `knownPortals` にも出所が無い。(c) **`moveTo` を呼ぶと `api-lock.md` が動く**（実測 +97/-4、supporting 66 → 78、`ClockPort` ごと入る）。しかも滞留 `Ref` だけでも +17/-1 で動く —— `GameplayFrameState` が公開されている以上、**状態を持つルールの配線は定義上 lock を動かす**。よって**この行を閉じるのは 4 週間の publish 時計を使う判断であり、テストの不足ではない** |
+| 6 | ポータル / 次元移動 | **ほぼ完**（点火・**発火タイマー**・**適用**が入った。残るのは既存ポータルの**再利用**だけで、それは `knownPortals` の所有者が居ないことによる） | 参照実装がこの責務を**3 ファイルに割っている**とおりに割れた。**枠の検出**は mc-worldgen の `domain/portal-frame.ts`（`detectNetherPortal`）で、こちらは `domain/portal-frame-port.ts` として**ミラー**する —— `domain/chunk-store-port.ts` が `ChunkStore` をミラーするのと同じやり方で、import ではない。**点火**は `domain/interactions/ignite-portal.ts` で、これがこの行の残りだった分である。<br><br>`detectNetherPortal` は**同期**の `BlockAt` を取り、1 回で約 500 セルを探る。こちらのブロック読みは全部 `Effect` なので、その 2 つは合わない —— `domain/chunk-window.ts` がその橋で、その冒頭に**3 つの案と、選ばなかった 2 つを落とした理由**（セル単位＝右クリック 1 回あたり 3,872 回のストア呼び出し／要求駆動の不動点＝他人の制御フローに依存した限界）が書いてある。選んだのは参照実装と同じ形、チャンクを peek してバッファを引く方式である。**`ChunkNotLoaded` は近道の中でも air にならない**: 常駐していないチャンクのセルは `UNREADABLE_BLOCK`（`-1`、どの registry 行でもない）を返して**数えられ**、`ignite-portal.ts` はそれを `NoFrame` ではなく `ChunkNotLoaded` として報告する。<br><br>**3 本目も 3 つに割れた。** 参照実装の `physics-stage-portal.ts` はプレイヤーの位置を読み、十分に立ったと判断し、別次元へ置く —— この「**十分に立った**」が `domain/portal-dwell.ts`（`stepPortalDwell`）で、**4 秒の滞在と 4 秒の再突入冷却**は名簿ではなく**時間**である。`domain/mob/creeper-fuse.ts` と同じ形（タグつき状態機械、`DeltaTimeSecs`、overshoot が効く `>=`）で、座標を 1 つも持たない。「**どこへ**置くか」は mc-worldgen の `domain/nether-link.ts` / `domain/nether-travel.ts` に入った。<br><br>**「置く」も入った。3 つに割れた見立ては正しく、3 つとも解けた** —— [responsibility.md](./responsibility.md) §6-2 が実測の唯一の記述である。(a) **次元という名詞の所有者**は **mc-worldgen** に決まった（kernel ではない —— kernel に `Dimension` 型は今も無く、候補ではあっても現職ではなかった）。名指ししていた `PlayerServiceApi.dimension` / `setDimension` は**その名前のまま存在する**。 (b) **「どこへ」はバレルに出た** —— 語を所有すると決めた以上伏せる理由が失効し、`index.ts` は `./domain/nether-travel` を出している。`domain/nether-travel-port.ts` は publish 済 module のミラーである。 (c) **`api-lock.md` は動いた**（`pnpm api:update` 済。`gameplayStages` は第 5 引数、`makeGameplayStages` は 4 つ目の要求サービスを得た）—— 見積り通りであり、待つ代償のほうが大きくなった時点で払った。**残るのは `knownPortals` の所有者だけで、それは barrel の問題ではなく所有の問題である** |
 | 7 | 昼夜・天候 | **実装済み** | `domain/day-night.ts`（`isNight` / `dayPhase` / `hostileSpawnsAllowed`）と `domain/weather.ts`（遷移グラフ・継続時間・`isPrecipitating` / `isThunderstorm` / `weatherLightScale`）。`gameplay:time-weather` は **`Effect.void` ではなくなった**。時刻を**進める**のは依然 mc-sim の `TimeService` である |
 
 **3・4・7 が実装済み、1・2・5・6 が部分、未着手は 0 である。**
@@ -315,7 +315,7 @@ mc-physics の速度でも mc-sim の名簿でもなく **mc-worldgen の構造�
 | `packages/app/.../interaction-flint-steel-portal.ts` | **点火** | **mx-gameplay** | ✅ `domain/interactions/ignite-portal.ts` |
 | `packages/app/.../physics-stage-portal.ts` の**発火判定** | 4 秒立ったか。再突入の冷却 | **mx-gameplay** | ✅ `domain/portal-dwell.ts`（`stepPortalDwell`） |
 | `packages/app/.../physics-stage-portal.ts` の**移動先** | 8:1 スケーリング、既存ポータルの再利用、無ければ設計 | **mc-worldgen** | ✅ `domain/nether-link.ts` / `domain/nether-travel.ts`。ただし**バレルには出ていない** —— mc-worldgen の `index.ts` は `./domain/portal-frame` を出してこの 2 本を出さないので、**こちらからは呼べない**（`Dimension` を意図的に非公開にしているため） |
-| `packages/app/.../physics-stage-portal.ts` の**適用** | プレイヤーをそこへ置き、次元を切り替える | **置くほうは mx-gameplay** | ⬜ **半分だけ閉じた。** 置く側は `domain/player-port.ts`（`PlayerServiceApi` 全 6 メンバのミラー）で写せる。切り替える側は**次元という名詞に所有者が居ない** —— 欠けているメンバは `PlayerServiceApi.dimension` と `PlayerServiceApi.setDimension` の 2 つである。**写せることと呼べることは別で**、呼ぶと `api-lock.md` が動く（[responsibility.md](./responsibility.md) §6-2 に実測） |
+| `packages/app/.../physics-stage-portal.ts` の**適用** | プレイヤーをそこへ置き、次元を切り替える | **置くほうは mx-gameplay** | ✅ **閉じた。** `domain/portal-travel.ts` の `applyPortalTravel` が `moveTo` と `setDimension` を対で呼び、`stages/registration.ts` の `stepPortalTravel` が `gameplay:interactions` から**毎フレーム呼ぶ**。`test/portal-travel.test.ts` は 8 本で、うち REACHABILITY 節は**本物の stage を回して**次元が変わることを見る —— 配線を消すと correctness 側 7 本は緑のまま REACHABILITY だけが赤くなる（実測）。次元の語は **mc-worldgen** が所有すると決まり barrel に出た（kernel ではない。kernel に `Dimension` 型は今も無い）。**残る制限は `knownPortals` の所有者が居ないことだけ**で、空リストを渡すため既存ポータルを再利用しない —— RESTRICTION 節がそれを固定している |
 
 **「未着手」で 3 本まとめて止めていたのが誤りだった。** 1 本目は隣のリポジトリが書き、
 2 本目はここが書けたのに「実体を動かすから」で 3 本まとめて棚上げされていた ——
@@ -352,18 +352,28 @@ mc-physics の速度でも mc-sim の名簿でもなく **mc-worldgen の構造�
   （mc-compose:「自分では construct しない `Context.Tag` を restate しても何も買えない」）。
   `cameraPose` がその「買えるもの」で、`domain/frame-contract.ts` の clock 節が経緯を持つ。
 
-**本当に無いのは次元のほうで、それは 1 語も存在しない。** 実測:
-`grep -rn "Dimension" mc-kernel/domain/*.ts` は 0 件、
-`grep -rn "setActiveDimension\|activeDimension" mc-sim` も 0 件、`NetherService` はどこにも無い。
-参照実装が 1 回の通過で 3 回呼んでいるもの
-（`netherService.setDimension` / `chunkManagerService.setActiveDimension` /
-`entityManager.setActiveDimension`、`physics-stage-portal.ts:59-61`）が
-**組織のどこにも 1 つも無い**。`EntityManagerApi<S>` は 10 メンバで、
-そのどれも「この実体はどの世界に居るのか」を言わない。
-**着手する前に所有権を決めるべき 1 行**であるのは変わらない ——
-変わったのは、それが「待ち」ではなく**決定**だということである。
+**本当に無かったのは次元のほうで、いま 1 語ある。**
+この段落は「1 語も存在しない」と書いていた。実測は当時も今も同じで、
+`grep -rn "Dimension" mc-kernel/domain/*.ts` は無関係なコメント 1 件だけである ——
+**kernel は候補ではあっても現職ではなかった**。所有者は **mc-worldgen** に決まった:
+参照実装が `packages/world`（= mc-worldgen）に宣言しており、
+その union を読むルールを既に所有しているのも mc-worldgen だからである。
+「全員が依存しているから」は所有の理由にならない。
 
-**この節は同じ誤りを 3 回記録していることになる**（5 と 6 と、6 の中でもう一度）。どれも
+`PlayerServiceApi` は `dimension` / `setDimension` を得て、mc-sim が**状態**を持つ。
+参照実装が 1 回の通過で 3 回呼んでいるもののうち、**プレイヤーの分はこれで揃った** ——
+`chunkManagerService.setActiveDimension` と `entityManager.setActiveDimension` の 2 つは
+まだ無い。`EntityManagerApi<S>` は 10 メンバで、そのどれも
+「この実体はどの世界に居るのか」を言わない。**Mob が次元を持つのは別の行であり、
+プレイヤーが持つことの帰結として自動的には来ない。**
+
+**「着手する前に所有権を決めるべき 1 行」だったのは正しく、そのとおりになった** ——
+決めるのに要ったのは実装ではなく、どのリポジトリのものかを論じることだった。
+
+**この節は同じ誤りを 3 回記録していることになる**（5 と 6 と、6 の中でもう一度）。
+**そして 6 の残り半分は、カテゴリの誤りではなく本物の欠落だった** ——
+所有者の居ない名詞であり、それを決めるまでは誰にも書けなかった。
+7 件中 6 件はカテゴリで、1 件は本物である。どれも
 「位置を持つ実体を動かす」という 1 文で**複数のファイル**をまとめて棚上げしたもので、
 どれもファイル単位で見たら半分以上が純関数だった。
 ブロックを読んでブロックを書くルールは、隣に実体が居ても実体のルールではない。

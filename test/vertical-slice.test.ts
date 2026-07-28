@@ -125,6 +125,7 @@ import {
   world,
 } from './support/chunk-store-double'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
+import { makePlayerServiceDouble } from './support/player-service-double'
 import {
   brimming,
   makeInventoryDouble,
@@ -159,13 +160,15 @@ const slice = (
     const store = yield* makeChunkStoreDouble(initial, loaded)
     const roster = yield* makeEntityManagerDouble<MobBehaviour>()
     const inventory = yield* makeInventoryDouble()
+    const player = yield* makePlayerServiceDouble()
     const state = yield* makeGameplayFrameState
     return {
       store,
       roster,
+      player,
       inventory,
       state,
-      stages: gameplayStages(state, store.api, roster.api, inventory.api),
+      stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api),
     }
   })
 
@@ -296,13 +299,16 @@ describe('the slice, through the stage registration', () => {
       // fed back destinations that turned out to be supported.
       expect((yield* Ref.get(state.fallingBlocks)).pending.size).toBe(0)
 
+      // Three idle frames add three portal probes and nothing else — no write,
+      // no peek, and no read beyond the one per frame. See the O(FRAMES) note on
+      // the idle-frame regression below.
       const before = yield* store.calls
       yield* runFrames(stages, 3)
-      expect(yield* store.calls).toStrictEqual(before)
+      expect(yield* store.calls).toStrictEqual({ ...before, reads: before.reads + 3 })
     }),
   )
 
-  it.effect('REGRESSION: an idle frame does not touch the store at all (the O(chunks × blocks) scan is gone)', () =>
+  it.effect('REGRESSION: an idle frame costs ONE read per frame, not O(chunks × blocks)', () =>
     Effect.gen(function* () {
       const { store, stages } = yield* slice(
         world([
@@ -313,10 +319,23 @@ describe('the slice, through the stage registration', () => {
       )
       const renderer = yield* store.api.subscribeDirty
 
-      // Nobody broke anything. Every stage runs; none of them looks at a block.
+      // Nobody broke anything.
+      //
+      // THIS USED TO ASSERT `reads: 0` AND NOW ASSERTS ONE READ PER FRAME, and
+      // the change is a real cost rather than a relaxed test. `stepPortalTravel`
+      // asks what block the player is standing in on EVERY frame, because that
+      // is the only way to know whether a portal dwell is accruing — the
+      // reference does the same (`physics-stage-portal.ts`).
+      //
+      // WHAT THE REGRESSION ACTUALLY GUARDS IS UNCHANGED and is now stated more
+      // precisely than `0` could state it: the count is O(FRAMES), not
+      // O(chunks × blocks). The pre-fix reference read ~7M blocks per frame here
+      // regardless of what happened (`falling-block-maintenance.ts:9-15`); ten
+      // frames now cost ten reads, and would cost ten in a world of any size.
+      // A scan coming back would make this number enormous, not merely wrong.
       yield* runFrames(stages, 10)
 
-      expect(yield* store.calls).toStrictEqual({ reads: 0, writes: 0, peeks: 0 })
+      expect(yield* store.calls).toStrictEqual({ reads: 10, writes: 0, peeks: 0 })
       expect(yield* renderer.drain).toStrictEqual({ changed: [], removed: [] })
     }),
   )
@@ -458,7 +477,9 @@ describe('the slice, through the stage registration', () => {
       // nothing. Enqueueing it would cost a pair of reads per held frame
       // forever, which is the shape of the workload this design exists to
       // avoid.
-      expect(yield* store.calls).toStrictEqual({ reads: 0, writes: 2, peeks: 0 })
+      // `reads` is the per-frame portal probe (one per frame); see the
+      // O(FRAMES) note on the idle-frame regression.
+      expect(yield* store.calls).toStrictEqual({ reads: 3, writes: 2, peeks: 0 })
     }),
   )
 
@@ -483,7 +504,7 @@ describe('the slice, through the stage registration', () => {
     Effect.gen(function* () {
       // The support is AIR, so without the wrapper below the sand falls into
       // it. The control is the very first test in this file.
-      const { store, roster, inventory, state } = yield* slice(world([[sandAt, SAND]]))
+      const { store, roster, inventory, state, player } = yield* slice(world([[sandAt, SAND]]))
 
       const hidesTheDestination: ChunkStoreApi = {
         ...store.api,
@@ -493,7 +514,7 @@ describe('the slice, through the stage registration', () => {
             : store.api.getBlock(position),
       }
 
-      const stages = gameplayStages(state, hidesTheDestination, roster.api, inventory.api)
+      const stages = gameplayStages(state, hidesTheDestination, roster.api, inventory.api, player.api)
       yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, [positionKeyOf(support)]))
       yield* runFrames(stages, 3)
 
@@ -506,7 +527,7 @@ describe('the slice, through the stage registration', () => {
 
   it.effect('REGRESSION: a refused destination write puts the block back rather than losing it', () =>
     Effect.gen(function* () {
-      const { store, roster, inventory, state } = yield* slice(world([[sandAt, SAND]]))
+      const { store, roster, inventory, state, player } = yield* slice(world([[sandAt, SAND]]))
 
       // Reads say the move is legal; the destination write is refused anyway —
       // the window the source-first write order opens.
@@ -518,7 +539,7 @@ describe('the slice, through the stage registration', () => {
             : store.api.setBlock(position, block),
       }
 
-      const stages = gameplayStages(state, refusesTheDestination, roster.api, inventory.api)
+      const stages = gameplayStages(state, refusesTheDestination, roster.api, inventory.api, player.api)
       yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, [positionKeyOf(support)]))
       yield* runFrame(stages)
 
@@ -541,7 +562,7 @@ describe('the slice, through the stage registration', () => {
       ] as ReadonlyArray<BlockWriteOutcome>,
       (refusal) =>
         Effect.gen(function* () {
-          const { store, roster, inventory, state } = yield* slice(world([[sandAt, SAND]]))
+          const { store, roster, inventory, state, player } = yield* slice(world([[sandAt, SAND]]))
 
           const refusesTheSource: ChunkStoreApi = {
             ...store.api,
@@ -551,7 +572,7 @@ describe('the slice, through the stage registration', () => {
                 : store.api.setBlock(position, block),
           }
 
-          const stages = gameplayStages(state, refusesTheSource, roster.api, inventory.api)
+          const stages = gameplayStages(state, refusesTheSource, roster.api, inventory.api, player.api)
           yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, [positionKeyOf(support)]))
           yield* runFrame(stages)
 
@@ -741,7 +762,9 @@ describe('the mob slice, through the stage registration', () => {
         CREEPER_MAX_HEALTH,
         CREEPER_MAX_HEALTH,
       ])
-      expect(yield* store.calls).toStrictEqual({ reads: 0, writes: 0, peeks: 0 })
+      // `reads` is the per-frame portal probe (one per frame); see the
+      // O(FRAMES) note on the idle-frame regression.
+      expect(yield* store.calls).toStrictEqual({ reads: 1, writes: 0, peeks: 0 })
 
       // ---- the player walks up ---------------------------------------------
       yield* Ref.set(state.targetPosition, playerNear)
@@ -799,7 +822,8 @@ describe('the mob slice, through the stage registration', () => {
       // The store was untouched until the blast, and the blast is the only
       // reason it was touched at all: one write per crater cell and no reads
       // beyond the falling-block rule's.
-      expect(beforeBlast).toStrictEqual({ reads: 0, writes: 0, peeks: 0 })
+      // Six frames of fuse, six portal probes, and nothing else touched.
+      expect(beforeBlast).toStrictEqual({ reads: 6, writes: 0, peeks: 0 })
       expect((yield* store.calls).writes).toBeGreaterThanOrEqual(craterCells(creeperAt, CREEPER_EXPLOSION_POWER).length)
     }),
   )
@@ -852,7 +876,9 @@ describe('the mob slice, through the stage registration', () => {
       expect(calls.despawns).toBe(0)
 
       // ...and the store was not touched at all, which is the original claim.
-      expect(yield* store.calls).toStrictEqual({ reads: 0, writes: 0, peeks: 0 })
+      // `reads` is the per-frame portal probe (one per frame); see the
+      // O(FRAMES) note on the idle-frame regression.
+      expect(yield* store.calls).toStrictEqual({ reads: 10, writes: 0, peeks: 0 })
       expect(yield* Ref.get(state.mobDrops)).toStrictEqual([])
     }),
   )
@@ -1419,9 +1445,10 @@ describe('the crater is the other radius, and it is the falling-block queue’s 
       expect(yield* roster.api.count).toBe(0)
       expect((yield* store.calls).writes).toBe(craterCells(creeperAt, CREEPER_EXPLOSION_POWER).length)
       expect((yield* Ref.get(state.fallingBlocks)).pending.size).toBe(0)
-      // ...and no reads at all: the falling-block pass had an empty batch, so it
+      // ...and no reads BEYOND the one portal probe this frame: the
+      // falling-block pass had an empty batch, so it
       // stopped before touching the store.
-      expect((yield* store.calls).reads).toBe(0)
+      expect((yield* store.calls).reads).toBe(1)
     }),
   )
 })
@@ -1681,12 +1708,13 @@ describe('the mining site slice: dig, drop, place', () => {
     Effect.gen(function* () {
       const store = yield* makeChunkStoreDouble(world([[cell, STONE]]), ['0,0'])
       const roster = yield* makeEntityManagerDouble<MobBehaviour>()
+      const player = yield* makePlayerServiceDouble()
       // 36 slots x 64 cobblestone. The only arrangement in which `add`
       // overflows, and it is built through the service's own `add` rather than
       // written out — see `test/support/inventory-service-double.ts`.
       const inventory = yield* makeInventoryDouble(brimming('cobblestone'))
       const state = yield* makeGameplayFrameState
-      const stages = gameplayStages(state, store.api, roster.api, inventory.api)
+      const stages = gameplayStages(state, store.api, roster.api, inventory.api, player.api)
 
       yield* holdWoodenPickaxe(state)
       yield* requestBreak(state, cell)
@@ -1853,7 +1881,9 @@ describe('the ignition slice: an item use reaches the world', () => {
 
       yield* runFrame(stages)
 
-      expect(yield* store.calls).toStrictEqual({ reads: 0, writes: 0, peeks: 0 })
+      // `reads` is the per-frame portal probe (one per frame); see the
+      // O(FRAMES) note on the idle-frame regression.
+      expect(yield* store.calls).toStrictEqual({ reads: 1, writes: 0, peeks: 0 })
     }),
   )
 

@@ -95,12 +95,34 @@ const refusalOf = (construct: () => unknown): string => {
  */
 type SimPlayerServiceApi = {
   readonly pose: Effect.Effect<PlayerPose>
+  /**
+   * Restated as `SimDimension` and not as the mirror's `Dimension`, which is the
+   * whole point of this file. Importing the mirror's spelling here would make
+   * the assignment below a reflection: a mirror that narrowed the union to two
+   * members would compare equal to itself and pass.
+   */
+  readonly dimension: Effect.Effect<SimDimension>
   readonly look: (deltaYaw: number, deltaPitch: number) => Effect.Effect<PlayerPose>
   readonly moveTo: (feetPosition: Position) => Effect.Effect<void>
+  readonly setDimension: (dimension: SimDimension) => Effect.Effect<void>
   readonly cameraPose: Effect.Effect<CameraPoseSnapshot, never, ClockPort>
-  readonly restore: (pose: PlayerPose) => Effect.Effect<void>
+  readonly restore: (pose: PlayerPose, dimension: SimDimension) => Effect.Effect<void>
   readonly reset: Effect.Effect<void>
 }
+
+/**
+ * `Dimension`, restated from `mc-worldgen/domain/nether-travel.ts`.
+ *
+ * NOT from mc-sim, even though this file compares against mc-sim's service.
+ * mc-worldgen owns the word and mc-sim mirrors it exactly as this repository
+ * does, so the authority both copies answer to is worldgen's — restating
+ * mc-sim's copy would be comparing two mirrors and calling it a check.
+ *
+ * All three members, in order. A closed literal union's MEMBERSHIP IS THE TYPE:
+ * a two-member restatement would make the `asMirror` direction fail and the
+ * `asSim` direction pass, which is the asymmetry that hides a narrowing.
+ */
+type SimDimension = 'overworld' | 'nether' | 'end'
 
 /**
  * `PlayerPose`, restated from `mc-sim/domain/camera-pose.ts`.

@@ -38,6 +38,8 @@ import {
 } from '../stages/stage-ids'
 import { emptyWorldStoreLayer, makeChunkStoreDouble, world } from './support/chunk-store-double'
 import { emptyRosterLayer, makeEntityManagerDouble } from './support/entity-manager-double'
+import { makePlayerServiceDouble, playerDoubleLayer } from './support/player-service-double'
+import { PlayerService } from '../domain/player-port'
 import { emptyInventoryLayer, makeInventoryDouble } from './support/inventory-service-double'
 import { FrameServicesLayer } from './support/frame-services'
 
@@ -53,7 +55,13 @@ const stageIds = (stages: ReadonlyArray<StageRegistration>): ReadonlyArray<strin
  * inventory: these assertions are about ordering and contract, and the
  * behaviour over a real world is `test/vertical-slice.test.ts`.
  */
-const emptyWorld = Layer.mergeAll(emptyWorldStoreLayer, emptyRosterLayer, emptyInventoryLayer)
+const emptyWorld = Layer.mergeAll(
+  emptyWorldStoreLayer,
+  emptyRosterLayer,
+  emptyInventoryLayer,
+  // mc-sim's PlayerService, which `stepPortalTravel` reads every frame.
+  playerDoubleLayer,
+)
 
 const registeredStages = Effect.provide(makeGameplayStages, emptyWorld)
 
@@ -62,13 +70,14 @@ const builtStages = Effect.gen(function* () {
   const state = yield* makeGameplayFrameState
   const store = yield* makeChunkStoreDouble(world([]), ['0,0'])
   const roster = yield* makeEntityManagerDouble<MobBehaviour>()
+  const player = yield* makePlayerServiceDouble()
   const inventory = yield* makeInventoryDouble()
   return {
     state,
     store,
     roster,
     inventory,
-    stages: gameplayStages(state, store.api, roster.api, inventory.api),
+    stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api),
   }
 })
 
@@ -321,6 +330,18 @@ describe('stage behaviour', () => {
       // does not exist anywhere — a velocity field on the roster, and a player.
       // See their types in `stages/registration.ts`.
       //
+      // `portalDwell` IS THE SEVENTEENTH AND IT IS NOT AN INBOX OR AN OUTBOX,
+      // which makes it the one most worth arguing. It holds how long the player
+      // has stood in a portal block, and it passes the save-file test cleanly: a
+      // save records WHICH DIMENSION the player is in — mc-sim's, reached
+      // through `PlayerServiceApi.setDimension` — and never that they were two
+      // seconds into a crossing. Losing it on a reload costs at most one dwell,
+      // which is the same trade `spawnClockSecs` makes.
+      //
+      // It is emphatically NOT a second owner of the dimension. The union is
+      // mc-worldgen's word and the current value is mc-sim's state; this Ref
+      // holds neither, only a timer and a cooldown.
+      //
       // WHAT IS STILL NOT HERE is the thing this list exists to keep out: there
       // is no `Ref<Map<MobId, CreeperFuse>>`, no mob position, no mob health, no
       // entity id, no INVENTORY, no PLAYER POSITION and no GAME MODE — and no DAY
@@ -341,6 +362,7 @@ describe('stage behaviour', () => {
         'pendingItemUses',
         'pendingPearlThrows',
         'pendingPlacements',
+        'portalDwell',
         'rollSeed',
         'spawnAttempts',
         'spawnClockSecs',
@@ -604,7 +626,7 @@ describe('the module contract has caught up with this file’s shape', () => {
         never,
         never,
         never,
-        ChunkStore | EntityManager | InventoryService
+        ChunkStore | EntityManager | InventoryService | PlayerService
       > = gameplayModule
       const stages = yield* Effect.provide(module.frameStages, emptyWorld)
 
@@ -624,33 +646,45 @@ describe('the module contract has caught up with this file’s shape', () => {
     }),
   )
 
-  // This used to read "acquires exactly TWO services", and the comment named
-  // the third by name: 「The candidate for the third is mc-sim's
-  // `InventoryService`, and until it can be mirrored whole the mob drops go to
-  // an outbox instead」. It is mirrored whole (`domain/inventory-port.ts`), the
-  // stage deposits through it, and the prediction is discharged — so the number
-  // in this title is three.
+  // This has now read TWO, then THREE, and reads FOUR. Each step discharged a
+  // prediction the previous comment had written down by name, which is why the
+  // history is kept rather than overwritten:
+  //
+  //   TWO   -> THREE: 「The candidate for the third is mc-sim's
+  //          `InventoryService`, and until it can be mirrored whole the mob
+  //          drops go to an outbox instead」. Mirrored whole
+  //          (`domain/inventory-port.ts`); the stage deposits through it.
+  //   THREE -> FOUR:  「The candidate for the fourth is mc-sim's
+  //          `PlayerService`, and it cannot be mirrored whole … `cameraPose`
+  //          requires `ClockPort`, and restating `ClockPort` locally is 『a far
+  //          worse failure than a narrower type』」.
+  //
+  // THAT SECOND PREDICTION WAS RIGHT ABOUT THE CANDIDATE AND WRONG ABOUT THE
+  // OBSTACLE. `domain/frame-contract.ts` carries `ClockPort` in the kernel
+  // mirror where kernel's barrel replaces it, so `cameraPose` is transcribed
+  // whole WITH its requirement and nothing was narrowed. What actually blocked
+  // the fourth service was a noun with no owner — `Dimension` — and mc-worldgen
+  // taking the word is what let `stepPortalTravel` call `PlayerService` every
+  // frame.
   //
   // `RIn` is still `never` and that is the distinction `RRegister` exists for.
   // This repository BUILDS nothing another repository has to supply; it CALLS
   // what mc-worldgen and mc-sim supply. Any of the three leaking into `RIn`
   // would be mx-gameplay claiming to construct part of somebody else's
   // repository.
-  it.effect('acquires exactly three services to register — the store, the roster and the inventory', () =>
+  it.effect('acquires exactly four services to register — store, roster, inventory and player', () =>
     Effect.gen(function* () {
       const registration: Effect.Effect<
         ReadonlyArray<StageRegistration>,
         never,
-        ChunkStore | EntityManager | InventoryService
+        ChunkStore | EntityManager | InventoryService | PlayerService
       > = gameplayModule.frameStages
 
-      // Providing those three — and nothing else — discharges the whole
-      // context. If a stage started demanding a FOURTH service at REGISTRATION
-      // time, this assignment would stop compiling, which is the point. The
-      // candidate for the fourth is mc-sim's `PlayerService`, and it cannot be
-      // mirrored whole for the reason `GameplayFrameState`'s `targetPosition`
-      // records: `cameraPose` requires `ClockPort`, and restating `ClockPort`
-      // locally is 「a far worse failure than a narrower type」.
+      // Providing those four — and nothing else — discharges the whole context.
+      // If a stage started demanding a FIFTH service at REGISTRATION time, this
+      // assignment would stop compiling, which is the point. There is no named
+      // candidate for a fifth today, and inventing one here would be the
+      // speculation this file's history is a record of NOT doing.
       const satisfied: Effect.Effect<ReadonlyArray<StageRegistration>, never, never> =
         Effect.provide(registration, emptyWorld)
 
@@ -668,7 +702,7 @@ describe('the module contract has caught up with this file’s shape', () => {
       const unparameterised: Effect.Effect<
         ReadonlyArray<StageRegistration>,
         never,
-        ChunkStore | EntityManager | InventoryService
+        ChunkStore | EntityManager | InventoryService | PlayerService
       > = makeGameplayStages
 
       expect(typeof unparameterised).toBe('object')

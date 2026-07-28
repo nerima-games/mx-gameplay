@@ -91,6 +91,7 @@ import { GAMEPLAY_STAGE_IDS } from '../../stages/stage-ids'
 import { FrameServicesLayer } from './frame-services'
 import { makePreviewInventory, type PreviewInventory } from './inventory'
 import { emptyPreviewRoster } from './roster'
+import { makePreviewPlayer } from './player'
 import { AIR, floatingBlocks, makePreviewWorld, type PreviewWorld, type WorldSpec } from './world'
 
 /**
@@ -255,8 +256,9 @@ export const makeSite = (
     // mining site has no mobs, so the mob half of `gameplay:entities` sweeps
     // nothing every frame and costs nothing — which is the same claim the idle
     // frame makes about blocks.
+    const previewPlayer = yield* makePreviewPlayer
     const stages = schedule(
-      gameplayStages(state, world.api, emptyPreviewRoster, inventoryService.api),
+      gameplayStages(state, world.api, emptyPreviewRoster, inventoryService.api, previewPlayer),
     )
 
     return {

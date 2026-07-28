@@ -52,6 +52,7 @@ import {
 } from './support/chunk-store-double'
 import { FrameServicesLayer } from './support/frame-services'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
+import { makePlayerServiceDouble } from './support/player-service-double'
 import { makeInventoryDouble } from './support/inventory-service-double'
 
 // ---------------------------------------------------------------------------
@@ -645,9 +646,10 @@ describe('the search inside the frame', () => {
       // hand-feeding a candidate into the inbox.
       const store = yield* makeChunkStoreDouble(FLOORED_WORLD, RESIDENT_CHUNKS)
       const roster = yield* makeEntityManagerDouble<MobBehaviour>()
+      const player = yield* makePlayerServiceDouble()
       const inventory = yield* makeInventoryDouble()
       const state = yield* makeGameplayFrameState
-      const stages = gameplayStages(state, store.api, roster.api, inventory.api)
+      const stages = gameplayStages(state, store.api, roster.api, inventory.api, player.api)
 
       // Midnight is the default, so only the player has to be supplied — which
       // is the same one line a host writes for the creeper's ignition range.
@@ -697,9 +699,10 @@ describe('the search inside the frame', () => {
       // and would be invisible in a count.
       const store = yield* makeChunkStoreDouble(FLOORED_WORLD, RESIDENT_CHUNKS)
       const roster = yield* makeEntityManagerDouble<MobBehaviour>()
+      const player = yield* makePlayerServiceDouble()
       const inventory = yield* makeInventoryDouble()
       const state = yield* makeGameplayFrameState
-      const stages = gameplayStages(state, store.api, roster.api, inventory.api)
+      const stages = gameplayStages(state, store.api, roster.api, inventory.api, player.api)
 
       const offeredAt: Position = { x: -20, y: 64, z: -20 }
       yield* Ref.set(state.targetPosition, PLAYER)
@@ -742,9 +745,10 @@ describe('the search inside the frame', () => {
       // told `daylight` sixty-four times.
       const store = yield* makeChunkStoreDouble(FLOORED_WORLD, RESIDENT_CHUNKS)
       const roster = yield* makeEntityManagerDouble<MobBehaviour>()
+      const player = yield* makePlayerServiceDouble()
       const inventory = yield* makeInventoryDouble()
       const state = yield* makeGameplayFrameState
-      const stages = gameplayStages(state, store.api, roster.api, inventory.api)
+      const stages = gameplayStages(state, store.api, roster.api, inventory.api, player.api)
 
       yield* Ref.set(state.targetPosition, PLAYER)
       yield* Ref.set(state.timeOfDay, 0.5)

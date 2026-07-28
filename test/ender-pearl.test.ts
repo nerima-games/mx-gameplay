@@ -38,6 +38,7 @@ import {
 } from '../stages/registration'
 import { makeChunkStoreDouble } from './support/chunk-store-double'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
+import { makePlayerServiceDouble } from './support/player-service-double'
 import { makeInventoryDouble } from './support/inventory-service-double'
 import { runFrame } from './support/frame-runner'
 
@@ -48,12 +49,13 @@ const scene = () =>
   Effect.gen(function* () {
     const store = yield* makeChunkStoreDouble(new Map<string, number>(), ['0,0'])
     const roster = yield* makeEntityManagerDouble<MobBehaviour>()
+    const player = yield* makePlayerServiceDouble()
     const inventory = yield* makeInventoryDouble()
     const state = yield* makeGameplayFrameState
     return {
       roster,
       state,
-      stages: gameplayStages(state, store.api, roster.api, inventory.api),
+      stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api),
     }
   })
 

@@ -14,7 +14,7 @@
 
 format: 1
 exported declarations: 273
-supporting declarations: 66
+supporting declarations: 80
 
 ## Exported
 
@@ -684,6 +684,7 @@ type GameplayFrameState = {
     readonly fallingBlocks: Ref.Ref<FallingBlockQueue>;
     readonly fluidFrontier: Ref.Ref<ReadonlyArray<FluidWorkItem>>;
     readonly tickCount: Ref.Ref<number>;
+    readonly portalDwell: Ref.Ref<PortalDwell>;
 };
 ```
 
@@ -1595,13 +1596,13 @@ const fullHealth: Vitals;
 ### gameplayModule  `const`
 
 ```ts
-const gameplayModule: GameModule<never, never, never, ChunkStore | EntityManager | InventoryService>;
+const gameplayModule: GameModule<never, never, never, ChunkStore | EntityManager | InventoryService | PlayerService>;
 ```
 
 ### gameplayStages  `const`
 
 ```ts
-const gameplayStages: (state: GameplayFrameState, store: ChunkStoreApi, roster: EntityManagerApi<MobBehaviour>, inventory: InventoryServiceApi) => ReadonlyArray<StageRegistration>;
+const gameplayStages: (state: GameplayFrameState, store: ChunkStoreApi, roster: EntityManagerApi<MobBehaviour>, inventory: InventoryServiceApi, player: PlayerServiceApi) => ReadonlyArray<StageRegistration>;
 ```
 
 ### hasClearCactusHorizontalSides  `const`
@@ -1733,7 +1734,7 @@ const makeGameplayFrameState: Effect.Effect<GameplayFrameState>;
 ### makeGameplayStages  `const`
 
 ```ts
-const makeGameplayStages: Effect.Effect<ReadonlyArray<StageRegistration>, never, ChunkStore | EntityManager | InventoryService>;
+const makeGameplayStages: Effect.Effect<ReadonlyArray<StageRegistration>, never, ChunkStore | EntityManager | InventoryService | PlayerService>;
 ```
 
 ### maxHealthOfKind  `const`
@@ -2034,6 +2035,17 @@ type BlockWriteOutcome = {
 };
 ```
 
+### CameraPoseSnapshot  `type`
+
+```ts
+type CameraPoseSnapshot = {
+    readonly position: Position;
+    readonly yawRadians: number;
+    readonly pitchRadians: number;
+    readonly capturedAtSecs: MonotonicTimeSecs;
+};
+```
+
 ### ChunkCoord  `type`
 
 ```ts
@@ -2106,6 +2118,28 @@ type ChunkStoreApi = {
 const ChunkStore_base: Context.TagClass<ChunkStore, "@nerima-games/mc-worldgen/ChunkStore", ChunkStoreApi>;
 ```
 
+### ClockPort  `class`
+
+```ts
+class ClockPort extends ClockPort_base {
+}
+```
+
+### ClockPort_base  `const`
+
+```ts
+const ClockPort_base: Context.TagClass<ClockPort, "@nerima-games/mc-kernel/ClockPort", ClockService>;
+```
+
+### ClockService  `type`
+
+```ts
+type ClockService = {
+    readonly monotonicSecs: Effect.Effect<MonotonicTimeSecs>;
+    readonly wallClockEpochMillis: Effect.Effect<EpochMillis>;
+};
+```
+
 ### CraftGrid  `type`
 
 ```ts
@@ -2143,6 +2177,12 @@ const DeltaTimeSecs: Brand.Brand.Constructor<DeltaTimeSecs>;
 
 ```ts
 type DeltaTimeSecs = number & Brand.Brand<'DeltaTimeSecs'>;
+```
+
+### Dimension  `type`
+
+```ts
+type Dimension = 'overworld' | 'nether' | 'end';
 ```
 
 ### Entity  `type`
@@ -2242,6 +2282,18 @@ type EntityTransition<S> = {
 } | {
     readonly _tag: 'Despawned';
 };
+```
+
+### EpochMillis  `const`
+
+```ts
+const EpochMillis: Brand.Brand.Constructor<EpochMillis>;
+```
+
+### EpochMillis  `type`
+
+```ts
+type EpochMillis = number & Brand.Brand<'EpochMillis'>;
 ```
 
 ### FrameServices  `type`
@@ -2370,6 +2422,18 @@ type MissingIngredient = {
 };
 ```
 
+### MonotonicTimeSecs  `const`
+
+```ts
+const MonotonicTimeSecs: Brand.Brand.Constructor<MonotonicTimeSecs>;
+```
+
+### MonotonicTimeSecs  `type`
+
+```ts
+type MonotonicTimeSecs = number & Brand.Brand<'MonotonicTimeSecs'>;
+```
+
 ### PatternCell  `type`
 
 ```ts
@@ -2382,10 +2446,62 @@ type PatternCell = Ingredient | undefined;
 type PlaceableItemType = ItemType & BlockType;
 ```
 
+### PlayerPose  `type`
+
+```ts
+type PlayerPose = {
+    readonly feetPosition: Position;
+    readonly yawRadians: number;
+    readonly pitchRadians: number;
+};
+```
+
+### PlayerService  `class`
+
+```ts
+class PlayerService extends PlayerService_base {
+}
+```
+
+### PlayerServiceApi  `type`
+
+```ts
+type PlayerServiceApi = {
+    readonly pose: Effect.Effect<PlayerPose>;
+    readonly dimension: Effect.Effect<Dimension>;
+    readonly look: (deltaYaw: number, deltaPitch: number) => Effect.Effect<PlayerPose>;
+    readonly moveTo: (feetPosition: Position) => Effect.Effect<void>;
+    readonly setDimension: (dimension: Dimension) => Effect.Effect<void>;
+    readonly cameraPose: Effect.Effect<CameraPoseSnapshot, never, ClockPort>;
+    readonly restore: (pose: PlayerPose, dimension: Dimension) => Effect.Effect<void>;
+    readonly reset: Effect.Effect<void>;
+};
+```
+
+### PlayerService_base  `const`
+
+```ts
+const PlayerService_base: Context.TagClass<PlayerService, "@nerima-games/mc-sim/PlayerService", PlayerServiceApi>;
+```
+
 ### PortalAxis  `type`
 
 ```ts
 type PortalAxis = 'x' | 'z';
+```
+
+### PortalDwell  `type`
+
+```ts
+type PortalDwell = {
+    readonly _tag: 'Outside';
+} | {
+    readonly _tag: 'Standing';
+    readonly dwelledSecs: number;
+} | {
+    readonly _tag: 'Cooling';
+    readonly remainingSecs: number;
+};
 ```
 
 ### PortalFrame  `type`

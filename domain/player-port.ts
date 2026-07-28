@@ -193,19 +193,54 @@
  * a defect wearing the join's shape — and it would be a rule this repository
  * invented, which is what `mx-gameplay` refused to do for buckets and shears.
  *
- * THE MISSING MEMBER, NAMED AS PRECISELY AS IT CAN BE: there is no
- * `PlayerServiceApi.dimension` and no `PlayerServiceApi.setDimension`, and no
- * member of any other mc-sim service holds one — the noun `Dimension` is
- * unspelled in mc-kernel and in mc-sim, so the missing thing is an OWNERSHIP
- * DECISION and not an unwritten method. `./portal-dwell`'s `stepPortalDwell`
- * note and mc-worldgen's `domain/nether-travel.ts` both nominate mc-kernel, on
- * the grounds that make it the owner of `BlockType`. Until that is decided a
- * `travels: true` has nowhere to travel to, and this mirror is the half of the
- * row that could be finished.
+ * THE MISSING MEMBER WAS NAMED HERE, AND IT NOW EXISTS. This paragraph used to
+ * read 「there is no `PlayerServiceApi.dimension` and no
+ * `PlayerServiceApi.setDimension` … the missing thing is an OWNERSHIP DECISION
+ * and not an unwritten method」, and that was the correct diagnosis: the decision
+ * was the work, and the method was three lines once it was taken.
+ *
+ * THE DECISION WENT TO mc-worldgen, NOT mc-kernel. This file and
+ * `./portal-dwell` and `mc-worldgen/domain/nether-travel.ts` all nominated
+ * kernel, on the grounds that make it the owner of `BlockType`. The nomination
+ * was not taken, and the reason is worth keeping because three files argued the
+ * other way: kernel had no `Dimension` (re-measured — one unrelated comment in
+ * `block-registry.ts`), so it was a candidate rather than an incumbent, while
+ * the reference declares its `Dimension` in `packages/world` — which IS
+ * mc-worldgen — and mc-worldgen already owns every rule that READS the union.
+ * A noun's owner being the repository that owns the rules beats a noun's owner
+ * being the repository everything happens to depend on.
+ *
+ * WHAT THAT COST, AND WHAT IT DID NOT BUY. mc-worldgen now publishes both
+ * `Dimension` and `resolveNetherTravel` from its barrel, so `./nether-travel-port`
+ * exists and the two ends of the middle step are answerable. `from` has a source
+ * (`dimension` below) and `plan.toDimension` has a receiver (`setDimension`).
+ *
+ * `knownPortals` STILL HAS NO OWNER, and it is the one thing on the list above
+ * that this change did not move. Measured again across mc-sim, mc-worldgen and
+ * mx-gameplay's `domain/` and `application/`: the only occurrences anywhere are
+ * the parameter and its use inside `mc-worldgen/domain/nether-travel.ts`.
+ * mc-worldgen's `docs/responsibility.md` §6 declines to grow the owner as a side
+ * effect of porting a distance comparison, and it is right to — the reference's
+ * owner is a SERVICE with a save file (`packages/world/application/
+ * nether-service.ts`, `getPortals(dimension)`), and a service is a noun.
+ *
+ * So `./portal-travel` passes an EMPTY candidate list and says so in its header.
+ * That is a real restriction with a visible consequence — every crossing plans a
+ * fresh portal and none is ever reused — and it is stated rather than hidden,
+ * because the alternative was inventing a registry here, which is what this
+ * repository refused to do for buckets and shears.
  */
 import { Context, type Effect } from 'effect'
 import type { Position } from './entity-manager-port'
 import type { CameraPoseSnapshot, ClockPort } from './frame-contract'
+// `Dimension` comes from the mc-WORLDGEN mirror and not from a declaration here,
+// for the reason `CameraPoseSnapshot` and `ClockPort` come from
+// `./frame-contract`: WHOSE BARREL REPLACES THE SYMBOL. mc-sim's barrel does not
+// re-export its own worldgen mirror, so `Dimension` does not come back from
+// `@nerima-games/mc-sim` on the day this file dies. It comes back from
+// `@nerima-games/mc-worldgen`, which is the barrel `./nether-travel-port` is
+// replaced by.
+import type { Dimension } from './nether-travel-port'
 
 // ---------------------------------------------------------------------------
 // Pose — mirrors mc-sim/domain/camera-pose.ts
@@ -232,6 +267,19 @@ export type PlayerPose = {
 
 export type PlayerServiceApi = {
   readonly pose: Effect.Effect<PlayerPose>
+  /**
+   * Which world the player is in.
+   *
+   * THE MEMBER THIS FILE'S HEADER USED TO SAY DID NOT EXIST. The paragraph
+   * 「THE MISSING MEMBER, NAMED AS PRECISELY AS IT CAN BE」 named
+   * `PlayerServiceApi.dimension` and `PlayerServiceApi.setDimension` as an
+   * OWNERSHIP DECISION rather than an unwritten method; the decision was taken —
+   * mc-worldgen owns the word — and these are the members it named.
+   *
+   * mc-sim never branches on this value; it records it. See
+   * `mc-sim/domain/worldgen-vocabulary.ts`.
+   */
+  readonly dimension: Effect.Effect<Dimension>
   /** Rotate the view. Pitch is clamped; yaw is not wrapped. */
   readonly look: (deltaYaw: number, deltaPitch: number) => Effect.Effect<PlayerPose>
   /**
@@ -245,6 +293,23 @@ export type PlayerServiceApi = {
    * moving the world.
    */
   readonly moveTo: (feetPosition: Position) => Effect.Effect<void>
+  /**
+   * Record that the player is now in another world.
+   *
+   * SEPARATE FROM `moveTo`, AND THAT SEPARATION IS THE HAZARD THIS FILE'S HEADER
+   * DESCRIBES rather than a fix for it. mc-sim's own comment explains why the
+   * two are not fused — `moveTo` alone is every ordinary movement in a world and
+   * far outnumbers this — and it names the consequence: 「The pairing is the
+   * CALLER's to get right and it is a rule, so it lives in mx-gameplay where the
+   * other portal rules are」.
+   *
+   * THIS REPOSITORY IS THAT CALLER. `./portal-travel` is where the pairing is
+   * performed and `test/portal-travel.test.ts` is where it is pinned, because a
+   * `moveTo` without this call is the defect this header named: a destination in
+   * the other world's coordinate frame applied to a world that was never
+   * switched.
+   */
+  readonly setDimension: (dimension: Dimension) => Effect.Effect<void>
   /**
    * The snapshot mc-render mirrors. Stamped from `ClockPort`.
    *
@@ -262,8 +327,32 @@ export type PlayerServiceApi = {
    * same call here, and `pnpm check:deps` enforces it.
    */
   readonly cameraPose: Effect.Effect<CameraPoseSnapshot, never, ClockPort>
-  readonly restore: (pose: PlayerPose) => Effect.Effect<void>
-  /** Return to the fresh-world pose. Required for re-entrant world loads. */
+  /**
+   * THE WORLD-LOAD PATH. Both halves of the player's location, together.
+   *
+   * `dimension` IS A REQUIRED SECOND PARAMETER rather than an optional one, and
+   * that is the whole reason this signature changed rather than gaining a
+   * sibling. A `restore(pose)` that left the dimension alone would load a save
+   * taken in the Nether into a player standing at the saved coordinates in the
+   * Overworld — no crash, no error, and the only bug report available is "my
+   * save opens in the wrong place". An optional parameter produces exactly that
+   * for every caller that does not know to pass it, which is every caller
+   * written before this member existed.
+   *
+   * No error channel, deliberately, for the reason `VitalsServiceApi.restore`
+   * has none: failing a world load over a recoverable field turns a repairable
+   * save into an unopenable one.
+   */
+  readonly restore: (pose: PlayerPose, dimension: Dimension) => Effect.Effect<void>
+  /**
+   * Return to the fresh-world pose AND dimension. Required for re-entrant world
+   * loads.
+   *
+   * The dimension is reset too. A `reset` that returned the pose to spawn while
+   * leaving the player in the Nether is the DN-09 failure the other services'
+   * `reset` notes describe — a teardown path that silently keeps one field of
+   * the world it was told to discard.
+   */
   readonly reset: Effect.Effect<void>
 }
 

@@ -284,29 +284,47 @@ mc-kernel に対する `domain/block-vocabulary.ts` と `domain/item-vocabulary.
 この行は一度「**3 つとも揃っていて、繋いでいないだけである**」と書いていた。**測ったら誤りである。**
 揃っているのは 1 つで、残り 2 つは配線では届かない。以下は全部実測である。
 
-**(a) 次元という名詞には所有者が居ない。** これは以前から変わっていない。
-`grep -rn "Dimension" mc-kernel/domain` は 0 件、mc-sim の `domain/` `application/` `index.ts` も 0 件、
-`NetherService` はワークスペース中どこにも無く（当たるのはこのリポジトリの散文だけ）、
-`setActiveDimension` も 0 件である。**欠けているメンバを正確に言えば
-`PlayerServiceApi.dimension` と `PlayerServiceApi.setDimension` の 2 つで、
-他のどのサービスにも代わりは無い。** `PlayerServiceApi` は 6 メンバ、
-`EntityManagerApi<S>` は 10 メンバで、どちらも世界を 1 つも名指さない。
-したがって**今日ここで書ける「移動」は 1 つの世界の中での再配置でしかなく、次元の切り替えは本当に無い。**
-`travelToNether` という名前の関数を置くことはできない —— 座標を動かすだけのものにその名を付けるのが、
-このリポジトリがバケツとハサミについて拒否した「発明」そのものだからである。
+**(a) 次元という名詞の所有者は決まった —— mc-worldgen である。解決済。**
+この項は以前「所有者が居ない」「**今日ここで書ける『移動』は 1 つの世界の中での再配置でしかなく、
+次元の切り替えは本当に無い**」と書いていた。**その記述はもう正しくない。**
 
-**(b) 「どこへ」は mc-worldgen のバレルに無い。** これは新しく測った分で、
-上の表が「揃っている」と書いた根拠を直接壊す。mc-worldgen の `index.ts` は
-`./domain/portal-frame` を出しているが `./domain/nether-travel` も `./domain/nether-link` も**出していない**。
-`resolveNetherTravel` の `Dimension` は当該ファイルが「**PROVISIONALLY**」と書いて
-意図的にバレルから外しているもので、理由は「綴りに依存されないようにするため」である。
-**こちらがミラーすれば、まさにその綴りに依存することになる。**
-引数も 2 つとも空である: `from: Dimension` は (a) のとおり出所が無く、
-`knownPortals` は mc-worldgen 自身の `docs/responsibility.md` §6 が
-「**世界に存在するポータルの一覧を所有するのが誰かはまだ誰にも割り当てられていない**」と書いている。
+測定自体は当時のまま正しい —— `grep -rn "Dimension" mc-kernel/domain` は今も
+`block-registry.ts` の無関係なコメント 1 件だけである。変わったのは所有の判断のほうで、
+kernel は候補ではあっても現職ではなく、参照実装が `Dimension` を `packages/world`
+（= mc-worldgen）に宣言しており、かつ**その union を読むルールを既に所有しているのが
+mc-worldgen だった**。「全員が依存しているから」は所有の理由にならない。
 
-**(c) 残る `moveTo` の呼び出しは 1 行ではなく、公開面の判断である。**
-`makeGameplayStages` に `PlayerService` を名指すと `api-lock.md` が動く。実測:
+当時「欠けているメンバ」として名指した `PlayerServiceApi.dimension` と
+`PlayerServiceApi.setDimension` は、**その 2 つの名前のまま存在する**
+（`mc-sim/application/player-service.ts`、ミラーは `domain/player-port.ts`）。
+`restore` は `(pose, dimension)` の 2 引数になった —— 片方だけ復元する save は
+「ネザーで取ったセーブがオーバーワールドで開く」という、報告の書けない欠陥だからである。
+
+**(b) 「どこへ」はバレルに出た。ただし引数の片方はまだ空である。**
+この項は「mc-worldgen の `index.ts` は `./domain/nether-travel` を出していない」
+「ミラーすればまさにその綴りに依存することになる」と書いていた。**源流で解決された。**
+mc-worldgen が語を所有すると決めた以上、伏せておく理由は失効し、
+`index.ts` は `./domain/nether-travel` を出している。`domain/nether-travel-port.ts` は
+**publish された module のミラー**であり、`domain/portal-frame-port.ts` が述べる規則
+「a mirror's home is decided by WHOSE BARREL REPLACES IT」を満たす。
+
+`from: Dimension` の出所は (a) で埋まった。**`knownPortals` はまだ空である** ——
+mc-worldgen 自身の `docs/responsibility.md` §6 が
+「**世界に存在するポータルの一覧を所有するのが誰かはまだ誰にも割り当てられていない**」と書いたままで、
+再実測しても mc-sim / mc-worldgen / mx-gameplay の `domain/` `application/` を通じて所有者は 0 件である。
+`domain/portal-travel.ts` は**空の候補リストを渡し、そう明記している**。
+結果は本物の制限である: **毎回新しいポータルを計画し、既存のものを再利用しない。**
+`test/portal-travel.test.ts` の RESTRICTION 節がこれを固定しているので、
+所有者が現れた日に変わるテストは「何が無かったか」を書いたテストになる。
+ここでレジストリを発明しないのは、参照実装の所有者がセーブファイルを持つ**サービス**であり、
+それはルールしか持たない本リポジトリのものではないからである。
+
+**(c) 残る `moveTo` の呼び出しは 1 行ではなく、公開面の判断だった。支払い済。**
+以下の表は支払う前の見積りで、**判断が正しかったことの記録として残してある**。
+`makeGameplayStages` は `PlayerService` を名指し、`api-lock.md` は動いた
+（`pnpm api:update` 済み、`gameplayStages` は第 5 引数を、`makeGameplayStages` と
+`gameplayModule` は 4 つ目の要求サービスを得た）。
+待つことの代償のほうが大きくなった時点で払う、というのがこの表の使い方である。実測:
 
 | 入れるもの | `api-lock.md` の差分 | supporting declarations | 何が公開面に入るか |
 | --- | --- | --- | --- |
