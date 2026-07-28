@@ -247,7 +247,7 @@ kernel への追加要求は 1 つも無い。
 | --- | --- | --- | --- |
 | `packages/world/domain/nether/portal-frame.ts` | 枠の**成立条件** | **mc-worldgen** | ✅ `detectNetherPortal` |
 | `packages/app/.../interaction-flint-steel-portal.ts` | **遷移の発火**（点火） | **mx-gameplay** | ✅ `domain/interactions/ignite-portal.ts` |
-| `packages/app/.../physics-stage-portal.ts` | プレイヤーを移す | 未決 | ⬜ |
+| `packages/app/.../physics-stage-portal.ts` の**適用** | プレイヤーをそこへ置く | mx-gameplay | 🟡 **ミラーはある、呼び出しがまだ。ただし「繋ぐだけ」ではない**。`domain/player-port.ts` が `PlayerServiceApi.moveTo` をミラーし（`check:mirrors` 13/13 と `check:repoint` の監視下）、**いつ**は `domain/portal-dwell.ts` が答える。残る 2 つは配線ではない: **どこへ**を答えるはずの `resolveNetherTravel` は mc-worldgen の**バレルに無く**、引数 2 つにも所有者が居ない。`moveTo` の呼び出しは `makeGameplayStages` に `PlayerService` を名指すことなので、**`api-lock.md` が動く**。どちらも §6-2 に実測がある |
 
 **成立条件が隣に行ったのは越境ではない。** mc-worldgen 側の判断であり、そのファイルの冒頭が根拠を書いている:
 入力が全部ブロックデータで、実体を 1 つも知らない。plan.md §3.11 が 「ポータル / 次元移動ルール」 を
@@ -278,12 +278,59 @@ mc-kernel に対する `domain/block-vocabulary.ts` と `domain/item-vocabulary.
 **数えられる**こと。読めないセルは air にも黒曜石にもならないので、**枠を作り出すことはできず、拒めるだけ**である。
 `ignite-portal.ts` はその数を見て `NoFrame` と `ChunkNotLoaded` を**別の答え**として返す。
 
-### 6-2. 3 本目が待っているもの
+### 6-2. 3 本目が待っているもの —— **3 つあり、名詞はそのうち 1 つでしかない**
 
 `physics-stage-portal.ts` はプレイヤーの位置を読み、十分に立ったと判断し、別次元へ置く。
-待っているものは以前から変わっておらず、**誰も持っていない名詞**である:
-`Dimension` は kernel のどのファイルにも無く、mc-sim の `EntityState` は 3 フィールドで、
-そのどれも「この実体はどの世界に居るのか」を言わない。
+この行は一度「**3 つとも揃っていて、繋いでいないだけである**」と書いていた。**測ったら誤りである。**
+揃っているのは 1 つで、残り 2 つは配線では届かない。以下は全部実測である。
+
+**(a) 次元という名詞には所有者が居ない。** これは以前から変わっていない。
+`grep -rn "Dimension" mc-kernel/domain` は 0 件、mc-sim の `domain/` `application/` `index.ts` も 0 件、
+`NetherService` はワークスペース中どこにも無く（当たるのはこのリポジトリの散文だけ）、
+`setActiveDimension` も 0 件である。**欠けているメンバを正確に言えば
+`PlayerServiceApi.dimension` と `PlayerServiceApi.setDimension` の 2 つで、
+他のどのサービスにも代わりは無い。** `PlayerServiceApi` は 6 メンバ、
+`EntityManagerApi<S>` は 10 メンバで、どちらも世界を 1 つも名指さない。
+したがって**今日ここで書ける「移動」は 1 つの世界の中での再配置でしかなく、次元の切り替えは本当に無い。**
+`travelToNether` という名前の関数を置くことはできない —— 座標を動かすだけのものにその名を付けるのが、
+このリポジトリがバケツとハサミについて拒否した「発明」そのものだからである。
+
+**(b) 「どこへ」は mc-worldgen のバレルに無い。** これは新しく測った分で、
+上の表が「揃っている」と書いた根拠を直接壊す。mc-worldgen の `index.ts` は
+`./domain/portal-frame` を出しているが `./domain/nether-travel` も `./domain/nether-link` も**出していない**。
+`resolveNetherTravel` の `Dimension` は当該ファイルが「**PROVISIONALLY**」と書いて
+意図的にバレルから外しているもので、理由は「綴りに依存されないようにするため」である。
+**こちらがミラーすれば、まさにその綴りに依存することになる。**
+引数も 2 つとも空である: `from: Dimension` は (a) のとおり出所が無く、
+`knownPortals` は mc-worldgen 自身の `docs/responsibility.md` §6 が
+「**世界に存在するポータルの一覧を所有するのが誰かはまだ誰にも割り当てられていない**」と書いている。
+
+**(c) 残る `moveTo` の呼び出しは 1 行ではなく、公開面の判断である。**
+`makeGameplayStages` に `PlayerService` を名指すと `api-lock.md` が動く。実測:
+
+| 入れるもの | `api-lock.md` の差分 | supporting declarations | 何が公開面に入るか |
+| --- | --- | --- | --- |
+| 滞留 `Ref` だけ（`moveTo` を呼ばない） | +17 / -1 | 66 → 67 | `PortalDwell` |
+| `PlayerService` を名指す | +97 / -4 | 66 → 78 | `PlayerService` / `PlayerService_base` / `PlayerServiceApi` / `PlayerPose` / `CameraPoseSnapshot` / `ClockPort` / `ClockPort_base` / `MonotonicTimeSecs` ほか |
+
+**下の行は `ClockPort` ごと引き込む。** `scripts/api-lock.ts` の冒頭が
+「`FrameServices = ClockPort` を 1.0.0 で凍結することがこの仕組みの要点である」と書いているものが、
+mx-gameplay の supporting declarations に載る。
+
+**そして上の行も 0 ではない**、というのがこの表のいちばん効く部分である。
+`GameplayFrameState` / `gameplayStages` / `makeGameplayStages` / `gameplayModule` は
+**4 つとも `index.ts` から出ており、4 つとも lock に描画される**。
+フレームをまたぐ状態は `GameplayFrameState` の 1 フィールドとして持つほかなく、
+そのフィールドは lock に出る。**つまりこのリポジトリでは「状態を持つルールを stage に配線する」ことは、
+定義上 `api-lock.md` を動かす。**
+`git log -1 -- api-lock.md` が `3ebf903`（弓とエンダーパール）を指しているのはそのためで、
+あれが `Ref` を足した最後のラウンドである。以降の 2 ラウンド
+（`85c0da8` ポータル滞留 + ネザー連結、`ec888b8` `PlayerService` ミラー）が 0 日で通ったのは、
+**どちらもバレルに出ない `domain/` のモジュールしか足していない**からであって、
+配線を含むラウンドが 0 日で通る道があったからではない。
+
+**したがってこの行を閉じることは 4 週間の publish 時計を使う判断であり、配線作業ではない。**
+判断そのものは記録されていないので、この行は 🟡 のままにしてある。
 
 ## 7. kernel への名簿要求 —— アイテム 8 語
 
