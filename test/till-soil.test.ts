@@ -179,7 +179,7 @@ describe('tillSoil', () => {
 
 describe('the loop closes', () => {
   it.effect('what tilling produces is what planting requires', () =>
-    Effect.gen(function* () {
+    Effect.sync(() => {
       // THE ASSERTION NEITHER FILE CAN MAKE ALONE, and the reason to have both.
       // If tilling produced `soil` and planting wanted `farmland`, each file's
       // own tests would pass and the game would have a step that cannot be
