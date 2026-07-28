@@ -316,11 +316,27 @@ const NO_ATTEMPTS: ReadonlyArray<never> = []
  *     nothing reads it after the frame that filled it, and it is overwritten
  *     rather than accumulated. What it stands in for is `(yield* player.pose)
  *     .feetPosition`, which mc-sim's §7-5 spells out as the host's second line —
- *     and which cannot be written yet, because `PlayerService.cameraPose`
- *     requires `ClockPort` and `domain/frame-contract.ts` names restating
- *     `ClockPort` locally as 「a far worse failure than a narrower type」. So the
- *     port that would carry it cannot be mirrored whole, and a narrow mirror of a
- *     `Context.Tag` is the hazard `domain/chunk-store-port.ts` exists to refuse.
+ *     and which STILL cannot be written, for a reason that is no longer the one
+ *     this paragraph used to give.
+ *
+ *     THE OLD REASON IS GONE. It read: 「`PlayerService.cameraPose` requires
+ *     `ClockPort` and `domain/frame-contract.ts` names restating `ClockPort`
+ *     locally as 「a far worse failure than a narrower type」. So the port that
+ *     would carry it cannot be mirrored whole」. `domain/player-port.ts` exists
+ *     now and mirrors all six members with `cameraPose`'s requirement intact;
+ *     `domain/frame-contract.ts`'s clock section records why the refusal it
+ *     rested on was wrong, and mc-compose is the repository that had already
+ *     written the refutation down.
+ *
+ *     WHAT REPLACES IT IS SMALLER AND IS NOT ABOUT THE CLOCK. Reading
+ *     `(yield* player.pose).feetPosition` here means naming `PlayerService` in
+ *     `makeGameplayStages`, which puts it into `api-lock.md`'s supporting
+ *     declarations and moves this package's published surface. That is a
+ *     deliberate act with a four-week publish clock attached to it, and it is
+ *     not worth spending on a Ref that already works — so the inbox stays until
+ *     something needs the port for a reason of its own. The portal row was going
+ *     to be that reason and is not: see `domain/player-port.ts`'s header on the
+ *     noun that has no owner.
  *
  *   - `spawnAttempts` is an INBOX of candidate cells. It used to be the ONLY way
  *     a candidate could arrive, because 「the SEARCH that produces them is not
@@ -347,11 +363,17 @@ const NO_ATTEMPTS: ReadonlyArray<never> = []
  *     frame.
  *
  *     What it stands in for is `(yield* time.timeOfDay)`, one line in the host,
- *     and it cannot be written yet for `targetPosition`'s reason: `TimeService`
- *     cannot be mirrored whole without restating `ClockPort`, which
- *     `domain/frame-contract.ts` names as 「a far worse failure than a narrower
- *     type」, and a narrow mirror of a `Context.Tag` is the hazard
- *     `domain/chunk-store-port.ts` exists to refuse.
+ *     and it is not written yet for `targetPosition`'s replacement reason rather
+ *     than its old one. The old one said 「`TimeService` cannot be mirrored whole
+ *     without restating `ClockPort`」 and that is simply no longer true —
+ *     `domain/frame-contract.ts` names `ClockPort`, and `domain/player-port.ts`
+ *     is the worked example of a whole mirror of a mc-sim service that needs it.
+ *     A `domain/time-port.ts` is now an ordinary afternoon's transcription.
+ *
+ *     WHAT IS LEFT IS THE PUBLISHED SURFACE, and it is a smaller claim: naming
+ *     `TimeService` in `makeGameplayStages` moves `api-lock.md`. The Ref works,
+ *     nothing is blocked behind it, and the mirror should land on the day
+ *     something wants the hour for a reason this file does not already serve.
  *
  *     IT DEFAULTS TO MIDNIGHT — `0`, which `domain/day-night.ts` reads as night
  *     and which therefore ALLOWS hostile spawns. That is the permissive

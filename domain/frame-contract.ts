@@ -25,7 +25,26 @@
  * exactly one home.
  */
 import type { Effect, Layer } from 'effect'
-import { Brand } from 'effect'
+import { Brand, Context } from 'effect'
+/**
+ * `Position` IS KERNEL'S AND IS IMPORTED FROM THE WRONG PLACE, knowingly.
+ *
+ * It belongs in this file by the rule `StackCount` above is sorted by — kernel's
+ * barrel is what replaces it — and it is declared in `./entity-manager-port`
+ * instead, which repoints at `@nerima-games/mc-sim`, a barrel that deliberately
+ * does not re-export its own kernel mirror and therefore CANNOT hand `Position`
+ * back on deletion day. That is the broken repoint promise
+ * `./chunk-store-port`'s header records finding in its own capability
+ * predicates, one file over and still open.
+ *
+ * It is imported rather than moved because moving it is a twenty-file edit in a
+ * change that is about `PlayerService`, and because `Position` is rendered into
+ * `api-lock.md` as a supporting declaration — so the move is worth doing on its
+ * own, where it can be checked, rather than folded in here. Importing it at
+ * least stops this file from becoming a SECOND declaration of a kernel type,
+ * which is the one thing this file's header forbids outright.
+ */
+import type { Position } from './entity-manager-port'
 
 /**
  * Identifies a frame stage. Stage ids are the vertices of the per-frame ordering
@@ -110,20 +129,161 @@ export const StackCount = Brand.refined<StackCount>(
 )
 
 /**
+ * A reading from a monotonic clock, in seconds.
+ *
+ * Monotonic means: never decreases, and is unaffected by wall-clock
+ * adjustments. The origin is unspecified — only differences are meaningful.
+ * Obtain it from `ClockPort`, never from a global.
+ *
+ * THE REFINEMENT IS TRANSCRIBED, for `StackCount`'s reason above and with the
+ * same consequence: `Brand.Brand<'MonotonicTimeSecs'>` here and in kernel are
+ * ONE TYPE however differently the two constructors validate.
+ */
+export type MonotonicTimeSecs = number & Brand.Brand<'MonotonicTimeSecs'>
+
+export const MonotonicTimeSecs = Brand.refined<MonotonicTimeSecs>(
+  (value) => Number.isFinite(value) && value >= 0,
+  (value) => Brand.error(`MonotonicTimeSecs must be a finite, non-negative number of seconds, received ${value}`),
+)
+
+/**
+ * A wall-clock reading: milliseconds since the Unix epoch.
+ *
+ * Use this only for things a human will read or that must survive a save/load
+ * round trip. Never use it to measure durations — it can jump backwards.
+ * Obtain it from `ClockPort`, never from a global.
+ *
+ * NOTHING IN THIS REPOSITORY READS IT, and it is here anyway because
+ * `ClockService` names it. See that type's note on why a narrower `ClockService`
+ * is the one shape a mirror of a Port must never take.
+ */
+export type EpochMillis = number & Brand.Brand<'EpochMillis'>
+
+export const EpochMillis = Brand.refined<EpochMillis>(
+  (value) => Number.isSafeInteger(value),
+  (value) => Brand.error(`EpochMillis must be a safe integer number of milliseconds, received ${value}`),
+)
+
+// ---------------------------------------------------------------------------
+// The clock Port — mirrors mc-kernel/domain/clock.ts
+//
+// THIS SECTION REVERSES A REFUSAL THIS FILE USED TO STATE, and the reversal is
+// recorded rather than quietly performed because two other files cite the old
+// text by name.
+//
+// The old `FrameServices` note said: 「Restating `ClockPort` locally would mean
+// constructing a second `Context.Tag` with the same textual identifier as
+// kernel's — two tags that look identical and are not, which is a far worse
+// failure than a narrower type.」 `stages/registration.ts` cites that sentence
+// TWICE, once for `targetPosition` and once for `timeOfDay`, as the reason
+// `PlayerService` and `TimeService` 「cannot be mirrored whole」.
+//
+// The premise is wrong, and the repository that had to get it right says so.
+// mc-compose's `domain/kernel-vocabulary.ts` mirrors this Port whole and states
+// the mechanism: 「Effect resolves Tags by their TEXTUAL KEY, so a mirror built
+// from `'@nerima-games/mc-kernel/ClockPort'` IS kernel's service at runtime.
+// That is what makes the mirror sound」. Two tags carrying one key are not two
+// services; they are one service and two nominal spellings of it, which is
+// exactly the situation `./chunk-store-port` and `./inventory-port` already live
+// in for `ChunkStore` and `InventoryService` and defend with a two-direction
+// assignment test.
+//
+// mc-compose also names what the mx-* refusal actually rested on, and it was
+// never safety: 「restating a `Context.Tag` they never construct would buy them
+// nothing」. That was true while nothing here needed the noun. It stopped being
+// true when `./player-port` arrived, because `PlayerServiceApi.cameraPose` has
+// `ClockPort` IN ITS TYPE — so the choice is no longer "name the tag or don't",
+// it is "name the tag or ship a narrow mirror of a `Context.Tag`", and the
+// second is the hazard `./chunk-store-port` exists to refuse.
+//
+// WHAT IS NOT REVERSED: `FrameServices` stays `never`. Its own argument was
+// always separate and is untouched — this repository authors stages and does not
+// provide them, an `Effect<void, never, never>` is assignable wherever
+// `Effect<void, never, ClockPort>` is wanted, and widening it would be a
+// breaking change for whoever BUILDS the runtime. Naming a tag in a mirrored
+// signature and requiring it from every stage are different acts.
+//
+// AND DN-GP-8 IS UNTOUCHED. Nothing here reads a clock. `monotonicSecs`,
+// `wallClockEpochMillis`, `fixedClock` and `FixedClockLayer` are kernel's and
+// are deliberately NOT mirrored, on `./entity-manager-port`'s standing rule: a
+// function absent from a mirror is a compile error at its call site, never an
+// `undefined` at run time. Only the Tag and the shape it resolves to are here,
+// because only those two carry the textual-key hazard.
+// ---------------------------------------------------------------------------
+
+/**
+ * What `ClockPort` resolves to.
+ *
+ * MIRRORED WHOLE, and this is the one type in this file where narrowing is a
+ * runtime defect rather than a smaller surface. mc-compose states it: 「a
+ * narrower `ClockService` would satisfy the same tag with a field missing, and
+ * the hole would open in a repository that never saw this file」. Both members
+ * are here even though this repository reads neither.
+ */
+export type ClockService = {
+  /** Monotonic reading. Only differences between readings are meaningful. */
+  readonly monotonicSecs: Effect.Effect<MonotonicTimeSecs>
+  /** Wall-clock reading. Never use for durations. */
+  readonly wallClockEpochMillis: Effect.Effect<EpochMillis>
+}
+
+/**
+ * The clock Port, named so that `./player-port` can transcribe `cameraPose`.
+ *
+ * THE KEY IS KERNEL'S AND IS ASSERTED AS A LITERAL by
+ * `test/kernel-clock-mirror.test.ts`. It is `'@nerima-games/mc-kernel/ClockPort'`
+ * and not this repository's, because it denotes kernel's service — the same
+ * rule `./inventory-port`'s tag follows, with the same consequence if it drifts:
+ * resolution silently finds nothing while both repositories typecheck.
+ */
+export class ClockPort extends Context.Tag('@nerima-games/mc-kernel/ClockPort')<ClockPort, ClockService>() {}
+
+// ---------------------------------------------------------------------------
+// Camera pose — mirrors mc-kernel/domain/camera.ts
+// ---------------------------------------------------------------------------
+
+/**
+ * The camera pose, as a value.
+ *
+ * Here for `./player-port`'s `cameraPose` and for nothing else — no rule in this
+ * repository reads a pose. `snapshotAgeSecs` and `forwardVector`, kernel's and
+ * mc-sim's functions over it, are NOT mirrored for the reason the clock section
+ * above gives.
+ *
+ * plan.md §4.3 / §5.1-2: mc-sim owns the truth and mc-render mirrors it. The
+ * type has no setter and must never grow one.
+ */
+export type CameraPoseSnapshot = {
+  /** Eye position in continuous world space. */
+  readonly position: Position
+  /** Rotation about the Y (up) axis, radians. Not normalised — consumers wrap if they care. */
+  readonly yawRadians: number
+  /** Rotation about the local right axis, radians. Positive looks up. */
+  readonly pitchRadians: number
+  /**
+   * Monotonic reading taken when the simulation produced this pose.
+   * Sourced from `ClockPort` — never from a global clock.
+   */
+  readonly capturedAtSecs: MonotonicTimeSecs
+}
+
+/**
  * The context every frame stage may assume is present.
  *
  * kernel aliases this to `ClockPort`; here it is `never`, and that is a
- * deliberate divergence rather than an oversight. Restating `ClockPort` locally
- * would mean constructing a second `Context.Tag` with the same textual
- * identifier as kernel's — two tags that look identical and are not, which is a
- * far worse failure than a narrower type.
+ * deliberate divergence rather than an oversight. It is NOT the divergence it
+ * used to be: the tag is now named directly above, so the reason is no longer
+ * 「this repository will not spell `ClockPort`」 but the narrower and more
+ * durable one below.
  *
  * `never` is forward-compatible in the direction that matters: an
  * `Effect<void, never, never>` is assignable wherever `Effect<void, never,
  * ClockPort>` is wanted, so every stage written against this file keeps
  * typechecking when the alias is replaced by the kernel import. Widening
  * `FrameServices` is a breaking change for whoever BUILDS the runtime, never for
- * stage authors — see kernel's note on the same alias.
+ * stage authors — see kernel's note on the same alias, and mc-compose's, which
+ * is the repository that has to discharge the requirement and therefore sets its
+ * own alias to `ClockPort`.
  */
 export type FrameServices = never
 
