@@ -13,7 +13,7 @@
 <!-- ------------------------------------------------------------------------- -->
 
 format: 1
-exported declarations: 367
+exported declarations: 373
 supporting declarations: 81
 
 ## Exported
@@ -960,6 +960,29 @@ const InMemoryInventoryLayer: (initial?: ReadonlyArray<Slot>) => Layer.Layer<Inv
 
 ```ts
 const InMemoryPlayerLayer: (initialPose?: PlayerPose, initialDimension?: Dimension) => Layer.Layer<PlayerService>;
+```
+
+### InMemoryWorld  `type`
+
+```ts
+type InMemoryWorld<S> = {
+    readonly layer: Layer.Layer<ChunkStore | EntityManager | InventoryService | PlayerService>;
+    readonly chunkStore: ChunkStoreApi;
+    readonly inventory: InventoryServiceApi;
+    readonly player: PlayerServiceApi;
+    readonly entities: EntityManagerApi<S>;
+};
+```
+
+### InMemoryWorldOptions  `type`
+
+```ts
+type InMemoryWorldOptions = {
+    readonly world?: WorldContents;
+    readonly spawnPose?: PlayerPose;
+    readonly dimension?: Dimension;
+    readonly inventory?: ReadonlyArray<Slot>;
+};
 ```
 
 ### InteractionIntent  `type`
@@ -2366,6 +2389,12 @@ const makeInMemoryInventory: (initial?: ReadonlyArray<Slot>) => Effect.Effect<In
 const makeInMemoryPlayer: (initialPose?: PlayerPose, initialDimension?: Dimension) => Effect.Effect<PlayerServiceApi>;
 ```
 
+### makeInMemoryWorld  `const`
+
+```ts
+const makeInMemoryWorld: <S>(options?: InMemoryWorldOptions) => Effect.Effect<InMemoryWorld<S>>;
+```
+
 ### maxHealthOfKind  `const`
 
 ```ts
@@ -2478,6 +2507,18 @@ const repairRoster: <S>(roster: EntityRoster<S>, repairBehaviour: BehaviourRepai
     readonly roster: EntityRoster<S>;
     readonly repair: RosterRepair;
 };
+```
+
+### requestBlockBreak  `const`
+
+```ts
+const requestBlockBreak: (state: GameplayFrameState, position: BlockPosition) => Effect.Effect<void>;
+```
+
+### requestBlockPlacement  `const`
+
+```ts
+const requestBlockPlacement: (state: GameplayFrameState, request: PlacementRequest) => Effect.Effect<void>;
 ```
 
 ### resolveBlasts  `const`
@@ -2613,6 +2654,16 @@ const shulkerShellArmorPoints: (shell: ShulkerShell) => number;
 
 ```ts
 const shulkerWantsToTeleport: (senses: ShulkerSenses) => boolean;
+```
+
+### solidityFromStore  `const`
+
+```ts
+const solidityFromStore: (store: ChunkStoreApi) => (position: {
+    readonly x: number;
+    readonly y: number;
+    readonly z: number;
+}) => boolean;
 ```
 
 ### splitBudget  `const`

@@ -79,7 +79,7 @@
 import { Effect, Layer, Ref } from 'effect'
 import { below, positionKeyOf, positionOfKey } from '../domain/block-position-key'
 import { hostileSpawnsAllowed } from '../domain/day-night'
-import { ChunkStore, type ChunkStoreApi } from '../domain/chunk-store-port'
+import { ChunkStore, type BlockPosition, type ChunkStoreApi } from '../domain/chunk-store-port'
 import type { PlaceableItemType } from '../domain/block-vocabulary'
 import { applyFallingBlocks } from '../domain/entities/falling-block-move'
 import {
@@ -814,6 +814,35 @@ const stepPortalTravel = (
     // not say which world it is in. The hazard is written up at the owner.
     yield* applyPortalTravel(player, cell)
   })
+
+/**
+ * Ask for a block to be broken on the next frame.
+ *
+ * THE INBOX'S ONLY PUBLIC DOOR, and it exists so the key encoding does not
+ * leave this repository. `positionKeyOf` lives in `domain/block-position-key.ts`,
+ * which `index.ts` keeps out of the barrel because it joins two MIRRORED
+ * vocabularies — a host that encoded the key itself would be the second
+ * hand-written copy of a format, and the first thing to break when the mirrors
+ * are deleted.
+ *
+ * A host calls this from its input handler; `gameplay:interactions` drains the
+ * inbox next frame. Deliberately NOT a direct `breakBlock` call: the stage
+ * services breaks before placements for a stated reason, and a caller that went
+ * straight to the rule would get neither that ordering nor the drop/inventory
+ * handling around it.
+ */
+export const requestBlockBreak = (
+  state: GameplayFrameState,
+  position: BlockPosition,
+): Effect.Effect<void> =>
+  Ref.update(state.pendingBreaks, (pending) => [...pending, positionKeyOf(position)])
+
+/** The placement twin. Carries WHICH ITEM, which is why it is a second inbox. */
+export const requestBlockPlacement = (
+  state: GameplayFrameState,
+  request: PlacementRequest,
+): Effect.Effect<void> =>
+  Ref.update(state.pendingPlacements, (pending) => [...pending, request])
 
 export const gameplayStages = (
   state: GameplayFrameState,
