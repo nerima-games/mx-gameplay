@@ -262,7 +262,10 @@ $ ls packages/game/test/day-night-cycle*.test.ts | wc -l                        
 §1 が LOC について立てた規則（計数条件を書く）と §4-1 がテスト本数について直した規則が、
 **「追加」という語には及んでいなかった。** 本書で今後この語を使うときは
 「新規 `it` の本数」か「変更した `it` の本数」かを明記すること。
-なお 373 という当時の総数も現在は再現できない（現在 440、§4-3 と §4-4）。
+なお 373 という当時の総数も現在は再現できない（**現在 660**、§4-3 と §4-4）。
+**この行は「現在 440」と書かれたまま古くなっていた** —— 実測は `pnpm test` の 644 で、
+§4-4 が参照していた先はそもそも節として存在していなかった（同節をこの回に書いた）。
+総数を本文に直書きすると、増えるたびに 3 箇所が別々に古くなる。
 
 ### 4-3. この回に移植したもの（2026-07-27、2 回目）
 
@@ -409,6 +412,148 @@ F8（§4-3-2）と同じく参照実装と食い違うが、**向きが逆で、
 tall_grass / fern）にボーナス行だけを持たせるか」。葉が先例で、答えは「持たせてよい」に見えるが、
 葉は**アイテム化されている**ブロックである。この行を決めるまで両方を現状のままにしてある。
 
+### 4-4. この回に移植したもの（2026-07-28、`interaction-*` の 3 回目）
+
+対象は `interaction-*` の 33 ファイル / 402 本だけである。**新規 `it` を 4 本追加、640 → 644**
+（同じ作業日にポータルの滞留タイマーが別途 1 ファイル / 16 本を足しているので、
+`pnpm test` の総数は 660 である。**この節が主張するのは 4 本のほうだけ**）
+（「追加」＝新規 `it` の本数、§4-2-1 の規則。既存テストの書き換えは 0 本）。
+全件 `test/chunk-window.test.ts` に入り、**全件について反証を確認した**（下表）。
+
+| # | 移植元 | 主張 | 本数 | 反証に使った変異 |
+| ---: | --- | --- | ---: | --- |
+| 1 | `interaction-stage-underwater.test.ts:29-58` | 近傍は **dx-major, dz-minor** の順に出る | 1 | `chunkCoordsAround` の 2 重ループの入れ子を逆にする |
+| 2 | `interaction-flint-steel-portal.test.ts:10-23` | 同じ入れ子を**負のアンカー**から | 1 | 同上 |
+| 3 | `interaction-stage-underwater.test.ts:24-27` | floor するのは**商であって座標ではない** | 1 | `Math.floor(Math.trunc(x) / 16)` |
+| 4 | `interaction-block-access.test.ts:78,93,104,170` | **F9 —— 移植ではなく乖離の固定**（§4-4-1） | 1 | `blockAt` に長さ検査を足す（＝直す）と赤くなる |
+
+**1 と 2 は既存の「covers the whole square, and covers it exactly once」を 1 つも落とさなかった。**
+その 1 本は `Set` で重複排除し `toContainEqual` で問うので、**順序に対して完全に盲目**である。
+入れ子を逆にしても緑のままで、落ちたのは新しい 2 本だけだった。
+
+**3 も同様に、既存の floor のテストが捕まえない変異を 1 本だけで捕まえる。**
+既存の 1 本は**整数**座標（`-1` / `16` / `31`）で問うており、整数は
+「商を floor する」と「座標を floor してから商を切り捨てる」を区別できない。
+参照実装の入力が小数なのは、その呼び手がブロック座標ではなく**プレイヤー座標**を持っているからで、
+`Math.floor(Math.trunc(x) / 16)` は既存 3 本すべてを通過して新しい 1 本だけを落とす。
+
+#### 4-4-1. F9 —— 参照実装が拒否し、この build が**空気を捏造する** 3 件目
+
+`interaction-block-access.test.ts` の 4 本（`:78` / `:93` / `:104` / `:170`）は
+「**切り詰められたチャンクバッファは読めない**」と主張し、参照実装は全件を
+`InteractionBlockReadError` にする。**この build は一致しない。**
+
+`domain/chunk-window.ts` の `blockAt` が守っているのは**座標**であって**バッファ**ではない:
+`y` が世界の内側、`x`/`z` が整数、チャンクが**常駐している**場合、
+`readBlock` の `blocks[index] ?? AIR_BLOCK_ID` がそのまま走る。
+同ファイルのヘッダが「`readBlock` は TOTAL で範囲外に AIR を答えるから、
+guard は座標が着くここに置く」と書いているとおりの guard であり、
+短いバッファは**別の扉から入ってくる**。
+
+**到達可能である。** `WorldgenChunk.blocks` は素の `Uint8Array` で型に長さが無く、
+`domain/` にも `test/` にも長さを検査する行が 1 つも無い。
+mc-worldgen の `peek` が部分的に流し込まれたチャンクを返せばこの形になる。
+
+害の向きは `unreadableProbes` を数えないことにある。
+`ignite-portal` はその数で `ChunkNotLoaded` と `NoFrame` を分けるので、
+**切り詰められたチャンクに立っている枠は「見えなかった」ではなく「無い」と報告される** ——
+`test/ignite.test.ts` の「an unreadable chunk can only REFUSE a frame, never manufacture one」が
+覆っていない唯一の向きである。
+
+F8（§4-3-2）と同じく**こちらが追随すべき**食い違いで、§4-3-2 と同じ扱いにした:
+**現挙動を参照行つきで固定**してあるので、guard が入った日にこのテストが赤くなり、
+§3-5-1 の前例どおり削除ではなく**一致の主張へ書き換える**ことになる。
+
+**直さなかったのは production の変更だからである**（§4-3-3 と同じ線引き）。
+実測として、`blockAt` に長さ検査を 1 つ足すと**この 1 本以外は 1 本も落ちない**ので、
+残っている決定は「長さの不変条件は mc-worldgen が境界で保証するものか、
+この window が検査するものか」の 1 行だけである。
+
+#### 4-4-2. 「33 ファイル」は glob の産物である（2026-07-28 実測）
+
+§4 の表と §4-1 の再実測手順は再現する —— **33 も 402 も出る**。
+
+```console
+$ cd <reference-impl>/packages/app
+$ find . -name 'interaction-*.test.ts' | wc -l                      # 33
+$ grep -ohE "^\s*(it|test)[a-zA-Z.]*\s*[(\`]" $(find . -name 'interaction-*.test.ts') \
+    | sed 's/^ *//' | sort | uniq -c                                # 174 it + 228 it.effect = 402
+```
+
+**`it` だけを数えると 174 にしかならない。** 残る 228 は `it.effect` であり、
+参照実装は Effect-TS なので `interaction-*` の 8 ファイルは `it` を **1 つも持たない**。
+§4-1 の「`it` / `it.effect` の宣言数で数える」という書き方は正しいが、
+`it` だけの正規表現で追試すると 174 が出て 402 が再現しない。**両方を数えること。**
+
+**そのうえで 33 は interaction のテスト全部ではない。** glob が basename に掛かるので、
+`application/frame/stages/interaction-item-use-handler/` の **5 ファイル / 36 本**が漏れる
+（`boat-mount` 6 / `chorus-fruit` 7 / `ender-pearl` 10 / `minecart-mount` 7 / `vehicle-enter` 6）。
+interaction 関連のテストファイルは実測 **38 ファイル**である。
+
+これは数え間違いではなく**列見出しの問題**である。§4 の表の行は
+「`interaction-*.test.ts`（30）+ `packages/app/test/`（3）」と置き場を明示しており、
+その glob に対しては 33 で正しい。しかし
+**`test/ender-pearl.test.ts` は既にこの 5 ファイルの 1 つから移植している**
+（ヘッダが `interaction-item-use-handler/ender-pearl.test.ts` を引いている）ので、
+「`interaction-*` は未着手」と「33 が interaction の全部」は**同時には成り立たない**。
+§1 の規則（計数条件を書く）どおり、この行を引くときは**glob を一緒に引くこと。**
+
+### 4-5. 断ったもの（`interaction-*`、2026-07-28）
+
+**欠けている名詞を必ず名指す。**「mc-sim」とだけ書いた行は 1 つも無い（§5-3 の反省）。
+
+| 移植元 | 本数 | 欠けている名詞 |
+| --- | ---: | --- |
+| `interaction-food-consumption.test.ts` | 20 | kernel の `ITEM_TYPES` に `bread` / `apple` / `golden_apple` / `rotten_flesh` / `potion_*` / `fishing_rod` / `iron_helmet` ほか防具語が無い。加えて**空腹値**（`hungerPoints`）が `EntityState` に無い |
+| `interaction-farming-handler.test.ts` | 35 | `hoe`（`wooden_hoe` / `iron_hoe`）と `bone_meal`、ブロック側の `farmland` / `wheat_crop` / `potato_crop` 語。加えて `CropGrowthService.plant` / `advanceByBoneMeal` に当たる**作物の成長状態**がどこにも無い |
+| `interaction-break-handler.crop-drops.config.test.ts` | 11 | 同上（`CROP_DROP_RULES` は作物語の表である）。`potato` / `nether_wart` / `wheat_seeds` は**あるが**、`wheat` と成長段階が無い |
+| `interaction-bucket-handler.test.ts` | 2 | `bucket` / `water_bucket` / `lava_bucket`。§5-3 のこの行だけは**期限切れになっていない**（下記） |
+| `interaction-shear-animal.test.ts` | 8 | `shears` と `wool`。加えて `EntityState` に**種と刈り取り済み旗**が無い |
+| `interaction-feed-animal.test.ts` | 8 | `wheat` と、`EntityState` の**繁殖状態**（love mode / 成体か） |
+| `interaction-unequip-armor.test.ts` | 4 | **防具スロット**（`EquipmentSlot`）。`InventoryService` にも `domain/inventory-port.ts` にも無い |
+| `interaction-mob-drops.test.ts` | 12 | **落下アイテム実体の spawn**（`spawnItemEntity`）と `EntityState` の**速度場** —— `domain/interactions/knockback.ts` の「4. WHAT ARRIVES ON THE DAY THE IMPULSE CAN BE WRITTEN」が同じ 1 行を名指している。ルール（何が落ちるか）は `domain/mob/mob-drop.ts` に移植済みで、残りは**置き場と初速**だけである |
+| `interaction-mob-sound.test.ts` | 2 | **音のイベント型**。`mobHurt` / `mobDeath` は mx-audio の名詞で、`StageRegistration` の outbox に音の口が無い |
+| `interaction-stage-redstone.test.ts` | 12 | `RedstoneComponent` と `PistonFacing`。`domain/redstone` が無い。`pistonFacingFromDirection` の 3 本は純粋な規則だが、**基数方向へのスナップは `knockbackDirection` と別の関数**である（あちらは単位ベクトルを返す）ので、移植先は新設になる |
+| `interaction-break-handler.progress.test.ts` | 13 | `Enchantment` 型（`AQUA_AFFINITY` / `EFFICIENCY`）と**ブロックごとの破壊 tick**。`domain/interactions/break-block.ts` は進捗を持たない（1 回の `setBlock`） |
+| `interaction-break-progress.test.ts` | 4 | 同上。**進捗状態**（`BreakProgress`）そのものがホスト側 |
+| `interaction-break-handler.test.ts` | 24 | 同上 + HUD・耐久・XP |
+| `interaction-bow-handler.test.ts` | 13 | `bow` / `arrow` 語と `Enchantment`。**ただし damage の算術は移植済み** —— `domain/interactions/draw-bow.ts` の `bowDamage` / `bowPowerMultiplier` が `test/bow.test.ts` で参照実装と桁まで突き合わせてある（§5-3 の弓の行は**期限切れ**、下記） |
+| `interaction-ender-pearl-handler.test.ts` | 8 | 同じ主張が既に `test/ender-pearl.test.ts` にある。参照実装の**別ファイル**（`interaction-item-use-handler/ender-pearl.test.ts`）から移植済みで、`:83` の「排他的上界」は `does NOT spawn at exactly the chance` が固定している。**同じ主張を 2 回数えない**（§4-3-3 の天候と同じ） |
+| `interaction-chorus-fruit-handler.test.ts` | 6 | `chorus_fruit`（`chorus_flower` / `chorus_plant` は**ある**）と空腹値。移送先の幾何は `domain/mob/enderman-teleport.ts` と同じ形だが、**定数が違う別の規則**なので相乗りさせない |
+| `interaction-melee-handler.test.ts` | 3 | **実体の所有権**（ローカルか遠隔か）。マルチプレイヤーの中継であり、`EntityState` に所有者が無い |
+| `interaction-stage-combat-targeting.test.ts` | 3 | 近接の**間合い**定数。`domain/interactions/bow-shot.ts` は弓の射程を持つが、近接の規則が無い |
+| `interaction-stage.test.ts` | 74 | 大半が上記の合成（ホットバー・体力・耐久・粒子・音・防具・釣り・XP オーブ）。剣の 4 段（`wooden_sword` ほか）も語が無い |
+| `interaction-placement-handler.test.ts` | 52 | 同上（バケツ・かまど・チェスト・金床・エンチャント台・ベッド）。**TNT の 6 本**は §5-3 が名指すとおり `ExplosionSource` の語と威力待ちで、`domain/interactions/explosion-crater.ts` は**その日に無改造で使える** |
+| `interaction-right-click-handler.test.ts` | 11 | 上記ハンドラ群のディスパッチ順。**構成要素が無いので順序に意味が無い** |
+| `interaction-right-click-target-routing.test.ts` | 8 | **§6 が禁じている**（「右クリック UI ルーティング」）。画面の選択は mx-ui の意味論 |
+| `interaction-stage-use-target-actions-helpers.test.ts` | 4 | 同上。`rightClick && !bowSelected` は純粋だが、移植先は mx-ui である |
+| `interaction-stage-use-state-updates.test.ts` / `test/` の同名 | 10 | **弓の charge 開始時刻**という状態。`bowCharge(secsHeld)` は移植済みで、いつ押し始めたかはホストが持つ（`stages/registration.ts` の outbox） |
+| `interaction-item-use-routing.test.ts` ×2 | 16 | 食べ物・防具・釣り竿の語（上記） |
+| `interaction-stage-intent.test.ts` | 4 | 一時停止 / 観戦モードという**ホストの状態** |
+| `interaction-stage-snapshot-helpers.test.ts` | 8 | 入力スナップショットの組み立て。`domain/frame-contract.ts` の `FrameInput` は別の形で、**参照実装のフラグ束は mx-ui の語彙** |
+| `interaction-block-access.test.ts` の残り 8 | 8 | 既に `test/chunk-window.test.ts` が同じ主張を**逆向き**に固定している（世界外は UNREADABLE であって air ではない）。F9 が残りの 4 本 |
+| `interaction-stage-underwater.test.ts:61` | 1 | **プレイヤーが水中にいるか**。プレイヤー位置は mc-sim の名詞で、`domain/fluid-frontier.ts` は伝播しか持たない |
+
+#### 4-5-1. §5-3 の「止まっている理由」のうち **2 行が期限切れだった**
+
+§4-3-1 が立てた規則（理由が他リポジトリの欠落である行には**何が来たら再開するか**を書く）を
+§5-3 の表に当てた結果である。
+
+- **弓 / エンダーパール**（「語が無く、**かつ発射体**である」「語が来ても閉じない」）——
+  **閉じた。** `domain/interactions/draw-bow.ts` / `bow-shot.ts` / `throw-ender-pearl.ts` が
+  landed し、`test/bow.test.ts`（70 本）と `test/ender-pearl.test.ts`（29 本）がある。
+  **語（`bow` / `ender_pearl`）は今も kernel に無い。** 閉じられたのは、
+  弓の規則が**幾何と算術**であって品目名を 1 度も読まないからで、これは §5-1 が
+  クリーパーについて書いた「ルールは値から値への全域関数として書ける」と同じ割り方である。
+  語が要るのは**ディスパッチ**（ホットバーの品目が弓か）だけで、それは outbox の側にある。
+- **バケツ / ハサミ / 農業**（「kernel の `ITEM_TYPES` に語が無い」）—— **今も正しい。**
+  実測で `bucket` / `water_bucket` / `lava_bucket` / `shears` / `hoe` はいずれも
+  `domain/item-vocabulary.ts` の 97 語に無い。roster が 23 → 97 に増えたのは事実だが、
+  **増えた 74 語にこの 5 つは入っていない。**
+
+**「`ITEM_TYPES` が 97 に増えたからこの表は全部期限切れ」は成り立たない。**
+期限切れになったのは、語を**そもそも要求していなかった** 2 行のほうである。
+
 ## 5. 推奨する着手順
 
 依存の少ないものから、かつ**プレビューで確認できる単位で**閉じる（plan.md §6 Step 2 の「テスト green + プレビュー操作可能」）。
@@ -418,7 +563,7 @@ tall_grass / fern）にボーナス行だけを持たせるか」。葉が先例
 | 1 | 昼夜（`packages/game` の 3 ファイル） | 271 | 時間スライダー | 依存が最も少ない。**ここに移植するのはルールだけ**——`domain/day-night.ts` の `isNight` / `dayPhase` / `hostileSpawnsAllowed` が既にある（DN-GP-7）。時刻の**状態**（tick カウンタ・日長・`advance`・順序ハザード）は `mc-sim/domain/time-of-day.ts` の担当であり、ここには移植しない |
 | 2 | 落下ブロック | 167 | 採掘場 | `domain/falling-block.ts` の骨組みが既にある（DN-GP-1） |
 | 3 | 流体 | 889 (+143 要判断) | 採掘場（バケツ） | `fluid-test-utils.ts` を先に。境界移動の調整が要る（§3-3） |
-| 4 | interaction-* | 3,317 | 採掘場 | 40 ファイル。1 ルール 1 ファイルを維持（DN-GP-9）。**着手済み** —— 火打石の 2 本（`interaction-flint-steel-portal.ts` / `-fire.ts`）とディスパッチ、およびブロック別の設置ルール 4 本。§5-3 に**残りが何で止まっているか**の内訳 |
+| 4 | interaction-* | 3,317 | 採掘場 | 40 ファイル。1 ルール 1 ファイルを維持（DN-GP-9）。**着手済み** —— 火打石の 2 本（`interaction-flint-steel-portal.ts` / `-fire.ts`）とディスパッチ、ブロック別の設置ルール 4 本、弓とエンダーパール。§5-3 に**残りが何で止まっているか**の内訳、§4-5 に**ファイル単位の欠けている名詞** |
 | 5 | Mob | 4,722 | Mob アリーナ | 最大。`mc-sim` の `EntityManager` が実在してから。**ただしルールの半分は先に来られた** —— §5-1 |
 
 ### 5-1. クリーパーは `EntityManager` を待たずに移植できた（実測）
@@ -472,7 +617,7 @@ tall_grass / fern）にボーナス行だけを持たせるか」。葉が先例
 | 火打石 → TNT 起爆 | `domain/mob/explosion.ts` の `ExplosionSource` が `'creeper'` 1 語で、TNT の威力が無い。プレイヤーへの爆風ダメージは mc-sim の体力 | ⬜ 2 つとも名指し済み |
 | バケツ（汲む / 撒く） | **kernel の `ITEM_TYPES` に語が無い** | ⬜ [responsibility.md](./responsibility.md) §7 |
 | ハサミ / 農業（鍬） | 同上 | ⬜ 同上 |
-| 弓 / エンダーパール | 語が無く、**かつ発射体**である | ⬜ 語が来ても閉じない |
+| 弓 / エンダーパール | ~~語が無く、**かつ発射体**である~~ **この行は期限切れだった**（§4-5-1）。規則は幾何と算術で、品目名を 1 度も読まない | ✅ `draw-bow.ts` / `bow-shot.ts` / `throw-ender-pearl.ts`。語は**今も無い** |
 
 **止まっている理由は 3 種類しかなく、どれも `mc-sim` の公開 API ではない。**
 kernel の名簿（8 語）、こちらの `ExplosionSource`（1 語 + 威力）、そして発射体（実体）である。

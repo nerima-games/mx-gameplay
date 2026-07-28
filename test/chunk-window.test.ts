@@ -38,8 +38,31 @@ import {
   chunkCoordsAround,
   openChunkWindow,
 } from '../domain/chunk-window'
-import { AIR_BLOCK_ID, CHUNK_HEIGHT, blockIndex } from '../domain/chunk-store-port'
+import {
+  AIR_BLOCK_ID,
+  CHUNK_HEIGHT,
+  blockIndex,
+  type ChunkStoreApi,
+} from '../domain/chunk-store-port'
 import { makeChunkStoreDouble, world, CHUNK_SIDE, STONE } from './support/chunk-store-double'
+
+/**
+ * A store whose every member dies if called.
+ *
+ * `./support/chunk-store-double` allocates a full-length buffer for every chunk
+ * it serves, which is the right default everywhere else in this suite and is
+ * exactly what the F9 test below has to defeat. Spreading this and overriding
+ * `peek` alone keeps that test honest about which member it exercises: anything
+ * it reaches by accident dies loudly instead of answering.
+ */
+const notAStore: ChunkStoreApi = new Proxy({} as ChunkStoreApi, {
+  get: (_target, property) => {
+    if (property === 'peek') {
+      return () => Effect.dieMessage('peek must be overridden')
+    }
+    return Effect.dieMessage(`chunk-window reached ChunkStoreApi.${String(property)}`)
+  },
+})
 
 describe('the buffer layout, transcribed', () => {
   it('is y-major, which is what makes a vertical walk contiguous', () => {
@@ -70,6 +93,73 @@ describe('chunkCoordOf and chunkCoordsAround', () => {
     expect(new Set(coords.map((coord) => `${String(coord.cx)},${String(coord.cz)}`)).size).toBe(9)
     expect(coords).toContainEqual({ cx: -1, cz: -1 })
     expect(coords).toContainEqual({ cx: 1, cz: 1 })
+  })
+
+  // `<reference-impl>/packages/app/application/frame/stages/interaction-stage-underwater.test.ts:29-58`
+  //
+  // 「loads the 3x3 chunk neighborhood in dx-major, dz-minor order」, and it is
+  // an ORDER claim: the reference records the nine `getChunk` calls and compares
+  // the whole array positionally. The test above this one cannot see order at
+  // all — it counts, de-duplicates through a `Set` and asks `toContainEqual`,
+  // all three of which survive the loops being nested the other way round.
+  //
+  // `<reference-impl>/…/interaction-flint-steel-portal.test.ts:10-23` asserts the
+  // same nesting on the same shape from a negative anchor, so this is two of the
+  // 402 agreeing rather than one file's incidental output being frozen.
+  //
+  // WHY IT IS WORTH PINNING HERE, where the reference's reason does not apply.
+  // There the order decides which chunk a partially-loaded neighbourhood serves
+  // first. Here `openChunkWindow` peeks every coordinate before answering, so no
+  // ANSWER depends on the nesting — but the peek order is observable through the
+  // store double, and `test/ignite.test.ts`'s 「costs peeks and writes」 counts
+  // those calls. An emission order that drifts turns a cost oracle into a
+  // sequence nobody chose.
+  it('emits the square in dx-major, dz-minor order, which is the reference nesting', () => {
+    expect(chunkCoordsAround({ x: 8, y: 64, z: 8 }, 22)).toStrictEqual([
+      { cx: -1, cz: -1 },
+      { cx: -1, cz: 0 },
+      { cx: -1, cz: 1 },
+      { cx: 0, cz: -1 },
+      { cx: 0, cz: 0 },
+      { cx: 0, cz: 1 },
+      { cx: 1, cz: -1 },
+      { cx: 1, cz: 0 },
+      { cx: 1, cz: 1 },
+    ])
+  })
+
+  // Same claim from the reference's own negative anchor
+  // (`interaction-flint-steel-portal.test.ts:10-23`, ignition at `x: -1, z: -1`,
+  // expecting `-2..0` on both axes). The radius is this repository's
+  // `PORTAL_WINDOW_RADIUS`-shaped bound rather than a hand-picked 3x3 — see this
+  // file's header — and one block of reach is enough to span the same three
+  // chunk columns from that anchor.
+  it('spans the reference neighbourhood from a negative ignition cell', () => {
+    expect(chunkCoordsAround({ x: -1, y: 64, z: -1 }, 16)).toStrictEqual([
+      { cx: -2, cz: -2 },
+      { cx: -2, cz: -1 },
+      { cx: -2, cz: 0 },
+      { cx: -1, cz: -2 },
+      { cx: -1, cz: -1 },
+      { cx: -1, cz: 0 },
+      { cx: 0, cz: -2 },
+      { cx: 0, cz: -1 },
+      { cx: 0, cz: 0 },
+    ])
+  })
+
+  // `interaction-stage-underwater.test.ts:24-27` —
+  // 「floors world coordinates into the containing chunk coordinate」.
+  //
+  // The oracle above this describe's first test uses INTEGER coordinates, and an
+  // integer cannot tell apart flooring the QUOTIENT from flooring the COORDINATE
+  // and then truncating the quotient. The reference's inputs are fractional
+  // because its caller holds a player position rather than a block position, and
+  // that is exactly the input that separates them: `Math.floor(-0.1)` is `-1`,
+  // and `-1 / 16` truncated is `0` — the wrong chunk, one column east.
+  it('floors the quotient and not the coordinate, which a fractional position can tell apart', () => {
+    expect(chunkCoordOf({ x: 0.1, y: 64, z: 15.9 })).toStrictEqual({ cx: 0, cz: 0 })
+    expect(chunkCoordOf({ x: -0.1, y: 64, z: -16.01 })).toStrictEqual({ cx: -1, cz: -2 })
   })
 
   it('yields nothing for a centre or a radius that is not a usable number', () => {
@@ -120,6 +210,68 @@ describe('openChunkWindow', () => {
       // A cell in the resident chunk still answers.
       expect(window.blockAt(0, 64, 0)).toBe(AIR_BLOCK_ID)
       expect(window.unreadableProbes()).toBe(2)
+    }),
+  )
+
+  // F9 — the reference REJECTS this and this build FABRICATES AIR. Pinned as
+  // current behaviour, not as agreement, exactly as `docs/porting.md` §4-3-2
+  // pinned F8: the day the guard lands, this test goes red and is rewritten into
+  // an agreement claim rather than deleted.
+  //
+  // Four of the 402 make the same claim, all in
+  // `<reference-impl>/…/interaction-block-access.test.ts` —
+  //
+  //   :78  「rejects incomplete chunk storage instead of converting missing
+  //         cells to air」   (`blocks: new Uint8Array(0)`)
+  //   :93  「rejects chunk block indexes outside the fixed storage range」
+  //   :104 「rejects fixed-length chunk storage with a missing cell」
+  //   :170 「fails when a cached chunk has incomplete storage」
+  //
+  // — and each one is an `InteractionBlockReadError` there.
+  //
+  // THE GUARD HERE IS ON THE COORDINATE, NOT ON THE BUFFER. This file's header
+  // argues that `../domain/chunk-store-port`'s `readBlock` is TOTAL and answers
+  // AIR for an out-of-range index, 「so handing it an unclamped `y` would report
+  // empty space below bedrock」, and puts the guard 「here, where the coordinate
+  // arrives」. A truncated buffer arrives by the other door: `y` is in the world,
+  // `x`/`z` are integers, the chunk IS resident, and `blocks[index]` is
+  // `undefined` anyway — so `?? AIR_BLOCK_ID` fabricates the very air the header
+  // exists to refuse, inside a chunk the window is speaking for.
+  //
+  // REACHABLE, not hypothetical: `WorldgenChunk.blocks` is a bare `Uint8Array`,
+  // which carries no length in the type, and nothing in `domain/` or `test/`
+  // asserts one. A partially streamed chunk from mc-worldgen's `peek` is this
+  // shape.
+  //
+  // NOT FIXED HERE because the fix is a production change and `docs/porting.md`
+  // §4-3-3 is explicit that those are decided rather than slipped in with a
+  // port — one length check in `blockAt`, and the decision is whose invariant it
+  // is: mc-worldgen's to guarantee at the boundary, or this window's to verify.
+  it.effect('F9 — DIVERGENCE: a resident chunk with a SHORT buffer reads as air, where the reference errors', () =>
+    Effect.gen(function* () {
+      const shortBuffered: ChunkStoreApi = {
+        ...notAStore,
+        peek: (coord) =>
+          Effect.succeed({
+            coord,
+            blocks: new Uint8Array(0),
+            biomes: [],
+          }),
+      }
+
+      const window = yield* openChunkWindow(shortBuffered, [{ cx: 0, cz: 0 }])
+
+      // The cell is inside the world, inside an integer column, inside a chunk
+      // the window holds. Every guard passes and the read still invents a block.
+      expect(window.blockAt(0, 64, 0)).toBe(AIR_BLOCK_ID)
+
+      // AND IT IS NOT COUNTED, which is the half that hurts: `ignitePortal` reads
+      // `unreadableProbes` to tell `ChunkNotLoaded` from `NoFrame`, so a portal
+      // frame standing in a truncated chunk is reported as absent rather than as
+      // unseen — the one direction `test/ignite.test.ts`'s 「an unreadable chunk
+      // can only REFUSE a frame, never manufacture one」 does not cover.
+      expect(window.unreadableProbes()).toBe(0)
+      expect(window.blockAt(0, 64, 0)).not.toBe(UNREADABLE_BLOCK)
     }),
   )
 
