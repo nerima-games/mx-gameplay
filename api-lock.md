@@ -13,10 +13,16 @@
 <!-- ------------------------------------------------------------------------- -->
 
 format: 1
-exported declarations: 319
+exported declarations: 327
 supporting declarations: 80
 
 ## Exported
+
+### ARMOR_SLOTS  `const`
+
+```ts
+const ARMOR_SLOTS: readonly ["helmet", "chestplate", "leggings", "boots"];
+```
 
 ### AdvanceBreakProgressInput  `type`
 
@@ -35,6 +41,12 @@ type AdvanceBreakProgressResult = {
     readonly nextProgress: BreakProgressState | null;
     readonly shouldBreak: boolean;
 };
+```
+
+### ArmorSlot  `type`
+
+```ts
+type ArmorSlot = (typeof ARMOR_SLOTS)[number];
 ```
 
 ### BLAZE_DROPS  `const`
@@ -639,6 +651,12 @@ type EndermanTeleportUrge = {
 };
 ```
 
+### Equipment  `type`
+
+```ts
+type Equipment = Partial<Readonly<Record<ArmorSlot, ItemType>>>;
+```
+
 ### Explosion  `type`
 
 ```ts
@@ -1125,6 +1143,12 @@ type MushroomLightRefusal = {
 
 ```ts
 const NOON_FRACTION = 0.5;
+```
+
+### NO_ARMOR  `const`
+
+```ts
+const NO_ARMOR: Equipment;
 ```
 
 ### NO_TOOL  `const`
@@ -1616,6 +1640,32 @@ const UPSTREAM_STAGE_IDS: {
 };
 ```
 
+### UnequipOutcome  `type`
+
+```ts
+type UnequipOutcome = {
+    readonly _tag: 'unequipped';
+    readonly slot: ArmorSlot;
+    readonly item: ItemType;
+} | {
+    readonly _tag: 'nothingWorn';
+} | {
+    readonly _tag: 'inventoryFull';
+    readonly slot: ArmorSlot;
+    readonly item: ItemType;
+};
+```
+
+### UnequipPort  `type`
+
+```ts
+type UnequipPort = {
+    readonly unequip: (slot: ArmorSlot) => Effect.Effect<unknown>;
+    readonly equip: (slot: ArmorSlot, item: ItemType) => Effect.Effect<unknown>;
+    readonly add: (item: ItemType, count: number) => Effect.Effect<number>;
+};
+```
+
 ### Vitals  `type`
 
 ```ts
@@ -1938,6 +1988,12 @@ const explosionDamageAt: (explosion: Explosion, distanceToCentre: number, exposu
 
 ```ts
 const explosionRadius: (power: number) => number;
+```
+
+### firstWornSlot  `const`
+
+```ts
+const firstWornSlot: (equipment: Equipment) => ArmorSlot | undefined;
 ```
 
 ### fullHealth  `const`
@@ -2349,6 +2405,12 @@ const tillSoil: (port: TillPort, held: TillingCapability, ground: BlockPosition)
 
 ```ts
 const tillingVerdict: (held: TillingCapability, ground: BlockPosition, groundBlock: BlockType, blockAbove: BlockType) => TillOutcome;
+```
+
+### unequipTopmost  `const`
+
+```ts
+const unequipTopmost: (port: UnequipPort, equipment: Equipment) => Effect.Effect<UnequipOutcome>;
 ```
 
 ### useFlintAndSteel  `const`
