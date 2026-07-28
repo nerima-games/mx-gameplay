@@ -13,7 +13,7 @@
 <!-- ------------------------------------------------------------------------- -->
 
 format: 1
-exported declarations: 273
+exported declarations: 282
 supporting declarations: 80
 
 ## Exported
@@ -227,6 +227,12 @@ const CREEPER_MAX_HEALTH = 20;
 
 ```ts
 const CREEPER_XP_REWARD = 5;
+```
+
+### CROP_OF_SEED  `const`
+
+```ts
+const CROP_OF_SEED: Readonly<Partial<Record<ItemType, BlockType>>>;
 ```
 
 ### CactusSidesRefusal  `type`
@@ -1008,6 +1014,12 @@ const OWN_STAGE_PREFIX = "gameplay:";
 const PLAIN_BOW: BowDrawContext;
 ```
 
+### PLANTABLE_SEEDS  `const`
+
+```ts
+const PLANTABLE_SEEDS: ReadonlyArray<ItemType>;
+```
+
 ### PLAYER_HALF_HEIGHT  `const`
 
 ```ts
@@ -1073,6 +1085,46 @@ type PlacementRequest = {
 };
 ```
 
+### PlantOutcome  `type`
+
+```ts
+type PlantOutcome = {
+    readonly _tag: 'planted';
+    readonly crop: BlockType;
+    readonly at: BlockPosition;
+} | {
+    readonly _tag: 'notASeed';
+    readonly held: ItemType;
+} | {
+    readonly _tag: 'wrongSoil';
+    readonly crop: BlockType;
+    readonly needs: BlockType;
+    readonly found: BlockType;
+} | {
+    readonly _tag: 'occupied';
+    readonly crop: BlockType;
+    readonly blockedBy: BlockType;
+};
+```
+
+### PlantPort  `type`
+
+```ts
+type PlantPort = {
+    readonly blockAt: (position: BlockPosition) => Effect.Effect<number | undefined>;
+    readonly setBlock: (position: BlockPosition, block: number) => Effect.Effect<unknown>;
+};
+```
+
+### PlantRequest  `type`
+
+```ts
+type PlantRequest = {
+    readonly held: ItemType;
+    readonly soil: BlockPosition;
+};
+```
+
 ### RAIL_HEADING_EPSILON  `const`
 
 ```ts
@@ -1131,6 +1183,12 @@ const SHULKER_CLOSED_ARMOR_POINTS = 20;
 
 ```ts
 const SHULKER_OPENING_TICKS = 20;
+```
+
+### SOIL_OF_CROP  `const`
+
+```ts
+const SOIL_OF_CROP: Readonly<Partial<Record<BlockType, BlockType>>>;
 ```
 
 ### STEADY_ENDERMAN  `const`
@@ -1473,6 +1531,12 @@ const craterRadius: (power: number) => number;
 const createWeatherState: (weather: Weather, durationRoll: number) => WeatherState;
 ```
 
+### cropCellAbove  `const`
+
+```ts
+const cropCellAbove: (soil: BlockPosition) => BlockPosition;
+```
+
 ### dayPhase  `const`
 
 ```ts
@@ -1792,6 +1856,18 @@ const placementVerdict: (request: PlaceRequest, target: BlockReading, supportBel
     readonly _tag: "Allowed";
     readonly block: BlockId;
 };
+```
+
+### plantCrop  `const`
+
+```ts
+const plantCrop: (port: PlantPort, request: PlantRequest) => Effect.Effect<PlantOutcome>;
+```
+
+### plantingVerdict  `const`
+
+```ts
+const plantingVerdict: (request: PlantRequest, soilBlock: BlockType, blockAbove: BlockType) => PlantOutcome;
 ```
 
 ### repairMobBehaviour  `const`
