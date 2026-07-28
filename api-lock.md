@@ -13,10 +13,29 @@
 <!-- ------------------------------------------------------------------------- -->
 
 format: 1
-exported declarations: 289
+exported declarations: 296
 supporting declarations: 80
 
 ## Exported
+
+### AdvanceBreakProgressInput  `type`
+
+```ts
+type AdvanceBreakProgressInput = {
+    readonly current: BreakProgressState | null;
+    readonly blockKey: string;
+    readonly breakTicks: number;
+};
+```
+
+### AdvanceBreakProgressResult  `type`
+
+```ts
+type AdvanceBreakProgressResult = {
+    readonly nextProgress: BreakProgressState | null;
+    readonly shouldBreak: boolean;
+};
+```
 
 ### BLAZE_DROPS  `const`
 
@@ -166,6 +185,16 @@ type BowShotRequest = {
     readonly dirZ: number;
     readonly chargeSecs: number;
     readonly powerLevel?: number;
+};
+```
+
+### BreakProgressState  `type`
+
+```ts
+type BreakProgressState = {
+    readonly blockKey: string;
+    readonly ticks: number;
+    readonly totalTicks: number;
 };
 ```
 
@@ -747,6 +776,12 @@ const IGNITION_ITEM_TYPES: readonly ["flint_and_steel", "fire_charge"];
 
 ```ts
 const INITIAL_WEATHER: WeatherState;
+```
+
+### INSTANT_BREAK  `const`
+
+```ts
+const INSTANT_BREAK: AdvanceBreakProgressResult;
 ```
 
 ### IgniteFireOutcome  `type`
@@ -1464,6 +1499,12 @@ type WeatherState = {
 };
 ```
 
+### advanceBreakProgress  `const`
+
+```ts
+const advanceBreakProgress: (input: AdvanceBreakProgressInput) => AdvanceBreakProgressResult;
+```
+
 ### advanceWeather  `const`
 
 ```ts
@@ -1510,6 +1551,12 @@ const bowDamage: (charge: number, context?: BowDrawContext) => number;
 
 ```ts
 const bowPowerMultiplier: (powerLevel: number | undefined) => number;
+```
+
+### breakProgressFraction  `const`
+
+```ts
+const breakProgressFraction: (state: BreakProgressState) => number;
 ```
 
 ### cactusSidesObjection  `const`
@@ -1876,6 +1923,12 @@ const mushroomLightObjection: (store: ChunkStoreApi, block: BlockId, position: B
 
 ```ts
 const nextRoll: (seed: number) => RollDraw;
+```
+
+### normaliseBreakTicks  `const`
+
+```ts
+const normaliseBreakTicks: (breakTicks: number) => number;
 ```
 
 ### normaliseSeed  `const`
