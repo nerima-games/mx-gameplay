@@ -13,7 +13,7 @@
 <!-- ------------------------------------------------------------------------- -->
 
 format: 1
-exported declarations: 302
+exported declarations: 310
 supporting declarations: 80
 
 ## Exported
@@ -778,10 +778,25 @@ const HOSTILE_SPAWN_INTERVAL_SECS = 0.3;
 const HOSTILE_SPAWN_MAX_BLOCK_LIGHT = 7;
 ```
 
+### HeldItemCapabilities  `type`
+
+```ts
+type HeldItemCapabilities = {
+    readonly charges: boolean;
+    readonly blocks: boolean;
+};
+```
+
 ### IGNITION_ITEM_TYPES  `const`
 
 ```ts
 const IGNITION_ITEM_TYPES: readonly ["flint_and_steel", "fire_charge"];
+```
+
+### INERT_ITEM  `const`
+
+```ts
+const INERT_ITEM: HeldItemCapabilities;
 ```
 
 ### INITIAL_WEATHER  `const`
@@ -845,6 +860,38 @@ type IgnitionOutcome = {
 } | {
     readonly _tag: 'Fire';
     readonly outcome: IgniteFireOutcome;
+};
+```
+
+### InteractionIntent  `type`
+
+```ts
+type InteractionIntent = {
+    readonly hasRedstoneInput: boolean;
+    readonly canInteract: boolean;
+    readonly shouldResetBreakProgress: boolean;
+    readonly shouldResetBlocking: boolean;
+    readonly shouldReleaseCharge: boolean;
+    readonly shouldStartCharge: boolean;
+    readonly shouldClearCharge: boolean;
+    readonly shouldBlock: boolean;
+};
+```
+
+### InteractionSnapshot  `type`
+
+```ts
+type InteractionSnapshot = {
+    readonly paused: boolean;
+    readonly isSpectator: boolean;
+    readonly leftClick: boolean;
+    readonly mouseHeld: boolean;
+    readonly middleClick: boolean;
+    readonly rightClick: boolean;
+    readonly rightMouseHeld: boolean;
+    readonly redstoneFlags: RedstoneInputFlags;
+    readonly held: HeldItemCapabilities;
+    readonly chargeStartedAtSecs: number | null;
 };
 ```
 
@@ -1221,6 +1268,12 @@ const RAIN_AFTER_THUNDER_CHANCE = 0.4;
 const RAIN_DURATION_RANGE_SECS: WeatherDurationRange;
 ```
 
+### REDSTONE_INPUT_FLAGS  `const`
+
+```ts
+const REDSTONE_INPUT_FLAGS: readonly ["placeWire", "placeLever", "placeButton", "placeTorch", "placePiston", "placeObserver", "placeHopper", "placeRepeater", "placeComparator", "placeDispenser", "toggleLever", "pressButton", "toggleTorch"];
+```
+
 ### RED_MUSHROOM_BLOCK_ID  `const`
 
 ```ts
@@ -1247,6 +1300,26 @@ const ROUTED_BLOCKS: ReadonlyArray<BlockType>;
 
 ```ts
 type RailShape = 'ns' | 'ew' | 'curve' | 'isolated';
+```
+
+### RedstoneInputFlags  `type`
+
+```ts
+type RedstoneInputFlags = Partial<{
+    readonly placeWire: boolean;
+    readonly placeLever: boolean;
+    readonly placeButton: boolean;
+    readonly placeTorch: boolean;
+    readonly placePiston: boolean;
+    readonly placeObserver: boolean;
+    readonly placeHopper: boolean;
+    readonly placeRepeater: boolean;
+    readonly placeComparator: boolean;
+    readonly placeDispenser: boolean;
+    readonly toggleLever: boolean;
+    readonly pressButton: boolean;
+    readonly toggleTorch: boolean;
+}>;
 ```
 
 ### RightClickRoute  `type`
@@ -1561,6 +1634,12 @@ const advanceBreakProgress: (input: AdvanceBreakProgressInput) => AdvanceBreakPr
 
 ```ts
 const advanceWeather: (state: WeatherState, dt: number, rolls: WeatherRolls) => WeatherState;
+```
+
+### anyRedstoneInput  `const`
+
+```ts
+const anyRedstoneInput: (flags: RedstoneInputFlags) => boolean;
 ```
 
 ### applyDamage  `const`
@@ -2044,6 +2123,12 @@ const resolveBlasts: (roster: EntityManagerApi<MobBehaviour>, store: ChunkStoreA
 
 ```ts
 const resolveBowHits: (roster: EntityManagerApi<MobBehaviour>, hits: ReadonlyArray<BowHit>) => Effect.Effect<ReadonlyArray<MobCasualty>>;
+```
+
+### resolveInteractionIntent  `const`
+
+```ts
+const resolveInteractionIntent: (snapshot: InteractionSnapshot) => InteractionIntent;
 ```
 
 ### resolveNextWeatherState  `const`
