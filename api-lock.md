@@ -13,7 +13,7 @@
 <!-- ------------------------------------------------------------------------- -->
 
 format: 1
-exported declarations: 359
+exported declarations: 367
 supporting declarations: 81
 
 ## Exported
@@ -232,6 +232,12 @@ const CLEAR_DURATION_RANGE_SECS: WeatherDurationRange;
 
 ```ts
 const CLOSED_SHELL: ShulkerShell;
+```
+
+### CONTACT_EPSILON  `const`
+
+```ts
+const CONTACT_EPSILON = 1e-9;
 ```
 
 ### CREEPER_DROPS  `const`
@@ -775,6 +781,12 @@ const GHAST_XP_REWARD = 5;
 const GRASS_SEED_DROP_CHANCE = 0.125;
 ```
 
+### GRAVITY_M_PER_S2  `const`
+
+```ts
+const GRAVITY_M_PER_S2 = 32;
+```
+
 ### GameplayFrameState  `type`
 
 ```ts
@@ -986,6 +998,12 @@ type InteractionSnapshot = {
 
 ```ts
 type IsArrowBlockedAt = (wx: number, wy: number, wz: number) => boolean;
+```
+
+### IsBlockSolid  `type`
+
+```ts
+type IsBlockSolid = (position: BlockPosition) => boolean;
 ```
 
 ### IsRailAt  `type`
@@ -1361,6 +1379,24 @@ type PlantRequest = {
 };
 ```
 
+### PlayerBody  `type`
+
+```ts
+type PlayerBody = {
+    readonly centre: Position;
+    readonly velocity: Position;
+};
+```
+
+### PlayerResolution  `type`
+
+```ts
+type PlayerResolution = {
+    readonly body: PlayerBody;
+    readonly isGrounded: boolean;
+};
+```
+
 ### RAIL_HEADING_EPSILON  `const`
 
 ```ts
@@ -1610,6 +1646,12 @@ type SugarCaneWaterRefusal = {
 };
 ```
 
+### TERMINAL_VELOCITY_M_PER_S  `const`
+
+```ts
+const TERMINAL_VELOCITY_M_PER_S = 78.4;
+```
+
 ### THUNDER_AFTER_CLEAR_CHANCE  `const`
 
 ```ts
@@ -1848,6 +1890,12 @@ const anyRedstoneInput: (flags: RedstoneInputFlags) => boolean;
 
 ```ts
 const applyDamage: (vitals: Vitals, damage: Damage) => Vitals;
+```
+
+### applyGravity  `const`
+
+```ts
+const applyGravity: (velocityY: number, deltaSecs: number) => number;
 ```
 
 ### applyLook  `const`
@@ -2454,6 +2502,12 @@ const resolveInteractionIntent: (snapshot: InteractionSnapshot) => InteractionIn
 
 ```ts
 const resolveNextWeatherState: (current: Weather, rolls: WeatherRolls) => WeatherState;
+```
+
+### resolvePlayerMovement  `const`
+
+```ts
+const resolvePlayerMovement: (body: PlayerBody, deltaSecs: number, isBlockSolid: IsBlockSolid) => PlayerResolution;
 ```
 
 ### resolveRailShape  `const`
