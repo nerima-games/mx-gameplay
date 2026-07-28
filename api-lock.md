@@ -13,7 +13,7 @@
 <!-- ------------------------------------------------------------------------- -->
 
 format: 1
-exported declarations: 310
+exported declarations: 319
 supporting declarations: 80
 
 ## Exported
@@ -202,6 +202,12 @@ type BreakProgressState = {
 
 ```ts
 const CACTUS_BLOCK_ID: BlockId | undefined;
+```
+
+### CANNOT_TILL  `const`
+
+```ts
+const CANNOT_TILL: TillingCapability;
 ```
 
 ### CLEAR_DURATION_RANGE_SECS  `const`
@@ -1517,6 +1523,18 @@ const THUNDER_AFTER_RAIN_CHANCE = 0.3;
 const THUNDER_DURATION_RANGE_SECS: WeatherDurationRange;
 ```
 
+### TILLABLE_BLOCKS  `const`
+
+```ts
+const TILLABLE_BLOCKS: ReadonlySet<BlockType>;
+```
+
+### TILLED_BLOCK  `const`
+
+```ts
+const TILLED_BLOCK: BlockType;
+```
+
 ### TWILIGHT_BAND  `const`
 
 ```ts
@@ -1542,6 +1560,40 @@ type TeleportOffset = {
 
 ```ts
 type TeleportReason = 'damaged' | 'stuck' | 'restless';
+```
+
+### TillOutcome  `type`
+
+```ts
+type TillOutcome = {
+    readonly _tag: 'tilled';
+    readonly at: BlockPosition;
+} | {
+    readonly _tag: 'noHoe';
+} | {
+    readonly _tag: 'notTillable';
+    readonly found: BlockType;
+} | {
+    readonly _tag: 'obstructed';
+    readonly blockedBy: BlockType;
+};
+```
+
+### TillPort  `type`
+
+```ts
+type TillPort = {
+    readonly blockAt: (position: BlockPosition) => Effect.Effect<number | undefined>;
+    readonly setBlock: (position: BlockPosition, block: number) => Effect.Effect<unknown>;
+};
+```
+
+### TillingCapability  `type`
+
+```ts
+type TillingCapability = {
+    readonly tills: boolean;
+};
 ```
 
 ### UNREADABLE_BLOCK  `const`
@@ -1718,6 +1770,12 @@ const carryOver: (frontier: ReadonlyArray<FluidWorkItem>, split: FluidBudgetSpli
 
 ```ts
 const carveExplosionCrater: (store: ChunkStoreApi, centre: BlockPosition, power: number) => Effect.Effect<ReadonlyArray<PositionKey>>;
+```
+
+### cellAbove  `const`
+
+```ts
+const cellAbove: (ground: BlockPosition) => BlockPosition;
 ```
 
 ### cellOf  `const`
@@ -2279,6 +2337,18 @@ const sweepMobs: (roster: EntityManagerApi<MobBehaviour>, senses: MobFrameSenses
 
 ```ts
 const takeBatch: (queue: FallingBlockQueue, budget?: number) => FallingBlockBatch;
+```
+
+### tillSoil  `const`
+
+```ts
+const tillSoil: (port: TillPort, held: TillingCapability, ground: BlockPosition) => Effect.Effect<TillOutcome>;
+```
+
+### tillingVerdict  `const`
+
+```ts
+const tillingVerdict: (held: TillingCapability, ground: BlockPosition, groundBlock: BlockType, blockAbove: BlockType) => TillOutcome;
 ```
 
 ### useFlintAndSteel  `const`
