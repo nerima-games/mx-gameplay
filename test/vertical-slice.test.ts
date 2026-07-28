@@ -1424,6 +1424,45 @@ describe('the crater is the other radius, and it is the falling-block queue’s 
     }),
   )
 
+  it.effect('emits in y-major, then x, then z order, which is the nesting the queue relies on', () =>
+    Effect.sync(() => {
+      // The test above counts the sphere and asks `toContainEqual`, and both of
+      // those are blind to the NESTING: reversing two of the three loops keeps
+      // exactly the same 123 cells and leaves every assertion in it green.
+      //
+      // The order is not incidental. `domain/interactions/explosion-crater.ts`
+      // states it — y outermost, then x, then z — because
+      // `domain/falling-block.ts`'s pending set is a native insertion-ordered
+      // `Set` and `takeBatch` returns a PREFIX of it. Two blasts that disturb
+      // the same cells in a different order hand the falling-block pass a
+      // different batch, so the nesting is what makes that queue an oracle.
+      //
+      // Stated as a property of the sequence rather than as a transcribed list,
+      // so it cannot agree with a wrong table the way a golden array would.
+      const cells = craterCells({ x: 0, y: 64, z: 0 }, CREEPER_EXPLOSION_POWER)
+
+      const ascends = cells.every((cell, index) => {
+        const previous = cells[index - 1]
+        if (previous === undefined) {
+          return true
+        }
+        if (previous.y !== cell.y) {
+          return previous.y < cell.y
+        }
+        if (previous.x !== cell.x) {
+          return previous.x < cell.x
+        }
+        return previous.z < cell.z
+      })
+      expect(ascends).toBe(true)
+
+      // The two poles of the sphere, which is where the outermost loop starts
+      // and ends. A y/x swap moves both of them.
+      expect(cells[0]).toStrictEqual({ x: 0, y: 61, z: 0 })
+      expect(cells[cells.length - 1]).toStrictEqual({ x: 0, y: 67, z: 0 })
+    }),
+  )
+
   it.effect('a blast in open sky enqueues nothing, because `Unchanged` did not dirty', () =>
     Effect.gen(function* () {
       // The interactions stage's rule, applied to a new writer: queueing a
