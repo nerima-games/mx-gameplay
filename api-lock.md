@@ -13,7 +13,7 @@
 <!-- ------------------------------------------------------------------------- -->
 
 format: 1
-exported declarations: 336
+exported declarations: 345
 supporting declarations: 80
 
 ## Exported
@@ -850,6 +850,12 @@ const INITIAL_WEATHER: WeatherState;
 const INSTANT_BREAK: AdvanceBreakProgressResult;
 ```
 
+### INVENTORY_SLOT_COUNT  `const`
+
+```ts
+const INVENTORY_SLOT_COUNT = 36;
+```
+
 ### IgniteFireOutcome  `type`
 
 ```ts
@@ -906,6 +912,12 @@ type IgnitionOutcome = {
 
 ```ts
 const InMemoryChunkStoreLayer: (contents?: WorldContents) => Layer.Layer<ChunkStore>;
+```
+
+### InMemoryInventoryLayer  `const`
+
+```ts
+const InMemoryInventoryLayer: (initial?: ReadonlyArray<Slot>) => Layer.Layer<InventoryService>;
 ```
 
 ### InteractionIntent  `type`
@@ -1170,6 +1182,12 @@ const NOON_FRACTION = 0.5;
 
 ```ts
 const NO_ARMOR: Equipment;
+```
+
+### NO_RECIPES  `const`
+
+```ts
+const NO_RECIPES: RecipeTable;
 ```
 
 ### NO_TOOL  `const`
@@ -1757,6 +1775,15 @@ type WorldContents = {
 };
 ```
 
+### addToSlots  `const`
+
+```ts
+const addToSlots: (slots: ReadonlyArray<Slot>, item: ItemType, count: number) => {
+    readonly slots: ReadonlyArray<Slot>;
+    readonly accepted: number;
+};
+```
+
 ### advanceBreakProgress  `const`
 
 ```ts
@@ -1997,6 +2024,12 @@ const dropRulesOfKind: (kind: EntityKind) => ReadonlyArray<MobDropRule>;
 const emptyFallingBlockQueue: FallingBlockQueue;
 ```
 
+### emptySlots  `const`
+
+```ts
+const emptySlots: () => ReadonlyArray<Slot>;
+```
+
 ### enderPearlDisplacement  `const`
 
 ```ts
@@ -2207,6 +2240,12 @@ const makeGameplayStages: Effect.Effect<ReadonlyArray<StageRegistration>, never,
 const makeInMemoryChunkStore: (contents?: WorldContents) => Effect.Effect<ChunkStoreApi>;
 ```
 
+### makeInMemoryInventory  `const`
+
+```ts
+const makeInMemoryInventory: (initial?: ReadonlyArray<Slot>) => Effect.Effect<InventoryServiceApi>;
+```
+
 ### maxHealthOfKind  `const`
 
 ```ts
@@ -2235,6 +2274,15 @@ const nextRoll: (seed: number) => RollDraw;
 
 ```ts
 const normaliseBreakTicks: (breakTicks: number) => number;
+```
+
+### normaliseInventory  `const`
+
+```ts
+const normaliseInventory: (inventory: Inventory) => {
+    readonly slots: ReadonlyArray<Slot>;
+    readonly discarded: number;
+};
 ```
 
 ### normaliseSeed  `const`
@@ -2280,6 +2328,15 @@ const plantCrop: (port: PlantPort, request: PlantRequest) => Effect.Effect<Plant
 
 ```ts
 const plantingVerdict: (request: PlantRequest, soilBlock: BlockType, blockAbove: BlockType) => PlantOutcome;
+```
+
+### removeFromSlots  `const`
+
+```ts
+const removeFromSlots: (slots: ReadonlyArray<Slot>, item: ItemType, count: number) => {
+    readonly slots: ReadonlyArray<Slot>;
+    readonly removed: number;
+};
 ```
 
 ### repairMobBehaviour  `const`
@@ -2466,6 +2523,12 @@ const tillSoil: (port: TillPort, held: TillingCapability, ground: BlockPosition)
 
 ```ts
 const tillingVerdict: (held: TillingCapability, ground: BlockPosition, groundBlock: BlockType, blockAbove: BlockType) => TillOutcome;
+```
+
+### totalOf  `const`
+
+```ts
+const totalOf: (slots: ReadonlyArray<Slot>, item: ItemType) => number;
 ```
 
 ### unequipTopmost  `const`

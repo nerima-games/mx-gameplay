@@ -31,13 +31,17 @@ const makeBody = (capacity: number) =>
     const port: UnequipPort = {
       unequip: (slot) => Ref.update(calls, (all) => [...all, `unequip:${slot}`]),
       equip: (slot, item) => Ref.update(calls, (all) => [...all, `equip:${slot}:${item}`]),
+      // Returns the LEFTOVER, matching `../inventory-port.ts`'s `add`. The
+      // first cut of this fake returned the accepted count, which agreed with
+      // a wrong comment in the port and hid an inverted check.
       add: (item, count) =>
         Effect.gen(function* () {
           const left = yield* Ref.get(remaining)
           const accepted = Math.min(left, count)
           yield* Ref.set(remaining, left - accepted)
-          yield* Ref.update(calls, (all) => [...all, `add:${item}:${String(accepted)}`])
-          return accepted
+          const leftover = count - accepted
+          yield* Ref.update(calls, (all) => [...all, `add:${item}:${String(leftover)}`])
+          return leftover
         }),
     }
     return { port, calls }
@@ -89,7 +93,7 @@ describe('unequipTopmost', () => {
       const outcome = yield* unequipTopmost(port, { chestplate: WORN })
 
       expect(outcome).toStrictEqual({ _tag: 'unequipped', slot: 'chestplate', item: WORN })
-      expect(yield* Ref.get(calls)).toStrictEqual(['unequip:chestplate', `add:${WORN}:1`])
+      expect(yield* Ref.get(calls)).toStrictEqual(['unequip:chestplate', `add:${WORN}:0`])
     }),
   )
 
@@ -130,7 +134,7 @@ describe('the rollback, which is why this file is not one line', () => {
       expect(outcome).toStrictEqual({ _tag: 'inventoryFull', slot: 'helmet', item: WORN })
       expect(yield* Ref.get(calls)).toStrictEqual([
         'unequip:helmet',
-        `add:${WORN}:0`,
+        `add:${WORN}:1`,
         `equip:helmet:${WORN}`,
       ])
     }),

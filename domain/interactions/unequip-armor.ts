@@ -95,9 +95,17 @@ export type UnequipPort = {
   /** Put it back on, after a failed stow. */
   readonly equip: (slot: ArmorSlot, item: ItemType) => Effect.Effect<unknown>
   /**
-   * Stow one item. Returns HOW MANY were accepted — 0 when the inventory is
-   * full, matching `../inventory-port.ts`'s `add`, which returns a count rather
-   * than a boolean because a partial accept is a real answer for a stack.
+   * Stow one item. Returns HOW MANY DID NOT FIT — 0 means it landed.
+   *
+   * THE LEFTOVER, matching `../inventory-port.ts`'s `add`, whose own comment is
+   * emphatic: "NOT A SUCCESS FLAG. `0` means everything landed; anything else
+   * is items the player earned and does not have."
+   *
+   * The first cut of this file documented the opposite polarity and checked
+   * `accepted < 1`. Wired to the real service that inverts the rule exactly:
+   * a successful stow (leftover 0) would trigger the rollback and re-equip the
+   * piece, and a full inventory (leftover 1) would drop it. Both type-check,
+   * and the tests passed because the fake matched the wrong comment.
    */
   readonly add: (item: ItemType, count: number) => Effect.Effect<number>
 }
@@ -129,9 +137,9 @@ export const unequipTopmost = (
     }
 
     yield* port.unequip(slot)
-    const accepted = yield* port.add(item, 1)
+    const leftover = yield* port.add(item, 1)
 
-    if (accepted < 1) {
+    if (leftover > 0) {
       // THE ROLLBACK. See the header: armour that vanished into a full
       // inventory would reproduce only under a condition nobody tests.
       yield* port.equip(slot, item)
