@@ -13,7 +13,7 @@
 <!-- ------------------------------------------------------------------------- -->
 
 format: 1
-exported declarations: 282
+exported declarations: 289
 supporting declarations: 80
 
 ## Exported
@@ -288,6 +288,31 @@ type CreeperSenses = {
 type CreeperStep = {
     readonly fuse: CreeperFuse;
     readonly explosion: Explosion | undefined;
+};
+```
+
+### CropDrop  `type`
+
+```ts
+type CropDrop = {
+    readonly item: ItemType;
+    readonly count: number;
+};
+```
+
+### CropDropOutcome  `type`
+
+```ts
+type CropDropOutcome = {
+    readonly _tag: 'drops';
+    readonly drops: ReadonlyArray<CropDrop>;
+} | {
+    readonly _tag: 'notACrop';
+    readonly block: BlockType;
+} | {
+    readonly _tag: 'unavailable';
+    readonly block: BlockType;
+    readonly missingItem: string;
 };
 ```
 
@@ -881,6 +906,12 @@ const MAX_SPAWN_DISTANCE_BLOCKS = 40;
 const MIN_SPAWN_DISTANCE_BLOCKS = 16;
 ```
 
+### MISSING_RIPE_PRODUCE  `const`
+
+```ts
+const MISSING_RIPE_PRODUCE: Readonly<Partial<Record<BlockType, string>>>;
+```
+
 ### MinedItem  `type`
 
 ```ts
@@ -1149,6 +1180,16 @@ const RAIN_DURATION_RANGE_SECS: WeatherDurationRange;
 const RED_MUSHROOM_BLOCK_ID: BlockId | undefined;
 ```
 
+### RIPE_CROP_YIELD  `const`
+
+```ts
+const RIPE_CROP_YIELD: Readonly<Partial<Record<BlockType, {
+    readonly item: ItemType;
+    readonly span: number;
+    readonly floor: number;
+}>>>;
+```
+
 ### RailShape  `type`
 
 ```ts
@@ -1349,6 +1390,12 @@ type TeleportReason = 'damaged' | 'stuck' | 'restless';
 const UNREADABLE_BLOCK = -1;
 ```
 
+### UNRIPE_CROP_DROP  `const`
+
+```ts
+const UNRIPE_CROP_DROP: Readonly<Partial<Record<BlockType, CropDrop>>>;
+```
+
 ### UPSTREAM_STAGE_IDS  `const`
 
 ```ts
@@ -1535,6 +1582,12 @@ const createWeatherState: (weather: Weather, durationRoll: number) => WeatherSta
 
 ```ts
 const cropCellAbove: (soil: BlockPosition) => BlockPosition;
+```
+
+### cropDrops  `const`
+
+```ts
+const cropDrops: (block: BlockType, ripe: boolean, roll: number) => CropDropOutcome;
 ```
 
 ### dayPhase  `const`
@@ -1904,6 +1957,15 @@ const resolveRailShape: (isRailAt: IsRailAt, wx: number, wy: number, wz: number)
 
 ```ts
 const resolveWeatherDurationSecs: (weather: Weather, roll: number) => number;
+```
+
+### ripeYieldRange  `const`
+
+```ts
+const ripeYieldRange: (block: BlockType) => {
+    readonly min: number;
+    readonly max: number;
+} | undefined;
 ```
 
 ### rollAt  `const`
