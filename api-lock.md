@@ -13,7 +13,7 @@
 <!-- ------------------------------------------------------------------------- -->
 
 format: 1
-exported declarations: 327
+exported declarations: 336
 supporting declarations: 80
 
 ## Exported
@@ -299,6 +299,15 @@ type CasualtyDrops = {
 };
 ```
 
+### CellLight  `type`
+
+```ts
+type CellLight = {
+    readonly sky: number;
+    readonly block: number;
+};
+```
+
 ### ChunkWindow  `type`
 
 ```ts
@@ -490,6 +499,12 @@ type DropRolls = {
     readonly chance: number;
     readonly count: number;
 };
+```
+
+### EMPTY_WORLD  `const`
+
+```ts
+const EMPTY_WORLD: WorldContents;
 ```
 
 ### ENDERMAN_CHASE_TELEPORT_CHANCE  `const`
@@ -885,6 +900,12 @@ type IgnitionOutcome = {
     readonly _tag: 'Fire';
     readonly outcome: IgniteFireOutcome;
 };
+```
+
+### InMemoryChunkStoreLayer  `const`
+
+```ts
+const InMemoryChunkStoreLayer: (contents?: WorldContents) => Layer.Layer<ChunkStore>;
 ```
 
 ### InteractionIntent  `type`
@@ -1726,6 +1747,16 @@ type WeatherState = {
 };
 ```
 
+### WorldContents  `type`
+
+```ts
+type WorldContents = {
+    readonly blocks: ReadonlyMap<string, BlockId>;
+    readonly loaded: Iterable<string>;
+    readonly lights?: ReadonlyMap<string, CellLight>;
+};
+```
+
 ### advanceBreakProgress  `const`
 
 ```ts
@@ -1828,6 +1859,12 @@ const carveExplosionCrater: (store: ChunkStoreApi, centre: BlockPosition, power:
 const cellAbove: (ground: BlockPosition) => BlockPosition;
 ```
 
+### cellKey  `const`
+
+```ts
+const cellKey: (position: BlockPosition) => string;
+```
+
 ### cellOf  `const`
 
 ```ts
@@ -1844,6 +1881,18 @@ const chunkCoordOf: (position: BlockPosition) => ChunkCoord;
 
 ```ts
 const chunkCoordsAround: (centre: BlockPosition, radius: number) => ReadonlyArray<ChunkCoord>;
+```
+
+### chunkKey  `const`
+
+```ts
+const chunkKey: (coord: ChunkCoord) => string;
+```
+
+### chunkOf  `const`
+
+```ts
+const chunkOf: (position: BlockPosition) => ChunkCoord;
 ```
 
 ### craterCells  `const`
@@ -2086,6 +2135,12 @@ const isDoorBlock: (block: BlockId) => boolean;
 const isIgnitionItem: (item: ItemType) => item is IgnitionItemType;
 ```
 
+### isInWorld  `const`
+
+```ts
+const isInWorld: (position: BlockPosition) => boolean;
+```
+
 ### isMushroomBlock  `const`
 
 ```ts
@@ -2144,6 +2199,12 @@ const makeGameplayFrameState: Effect.Effect<GameplayFrameState>;
 
 ```ts
 const makeGameplayStages: Effect.Effect<ReadonlyArray<StageRegistration>, never, ChunkStore | EntityManager | InventoryService | PlayerService>;
+```
+
+### makeInMemoryChunkStore  `const`
+
+```ts
+const makeInMemoryChunkStore: (contents?: WorldContents) => Effect.Effect<ChunkStoreApi>;
 ```
 
 ### maxHealthOfKind  `const`

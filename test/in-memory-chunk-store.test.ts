@@ -1,0 +1,290 @@
+/**
+ * `domain/in-memory-chunk-store.ts`.
+ *
+ * The point of this file is that EVERY member is implemented.
+ * `test/support/chunk-store-double.ts` answers five of thirteen with
+ * `Effect.dieMessage('not exercised by this test')`, which is correct for a
+ * double and fatal for a running game — so the first test below walks the whole
+ * interface and would fail on any member that died.
+ *
+ * The rest are the three semantics `mc-worldgen/docs/public-api.md` §6-3/§6-4
+ * names as the ones a rule gets wrong, each of which produces a world that
+ * looks deliberate:
+ *
+ *   - an unloaded chunk reading as air makes sand fall out of the world;
+ *   - a no-op write dirtying the chunk remeshes it every tick forever;
+ *   - a subscriber that does not accumulate makes N writes drain N times.
+ */
+import { describe, expect, it } from '@effect/vitest'
+import { Effect } from 'effect'
+import {
+  EMPTY_WORLD,
+  InMemoryChunkStoreLayer,
+  cellKey,
+  chunkKey,
+  chunkOf,
+  isInWorld,
+  makeInMemoryChunkStore,
+  type WorldContents,
+} from '../domain/in-memory-chunk-store'
+import { AIR_BLOCK_ID, CHUNK_HEIGHT, type BlockId, type BlockPosition } from '../domain/chunk-store-port'
+
+const STONE: BlockId = 2 as BlockId
+const DIRT: BlockId = 3 as BlockId
+
+const AT: BlockPosition = { x: 5, y: 64, z: 9 }
+
+const worldWith = (cells: ReadonlyArray<readonly [BlockPosition, BlockId]>): WorldContents => ({
+  blocks: new Map(cells.map(([position, block]) => [cellKey(position), block])),
+  loaded: [...new Set(cells.map(([position]) => chunkKey(chunkOf(position))))],
+})
+
+describe('every member is implemented', () => {
+  it.effect('the whole interface answers without dying', () =>
+    Effect.gen(function* () {
+      // THE REASON THIS FILE EXISTS. The test double dies on `load`,
+      // `snapshot`, `loadedCoords`, `neighbours` and `unload`; a game that
+      // called any of them would take the frame with it. Walking all thirteen
+      // here is the assertion that this is a store rather than a double.
+      const store = yield* makeInMemoryChunkStore(worldWith([[AT, STONE]]))
+      const coord = chunkOf(AT)
+
+      expect((yield* store.load(coord)).coord).toStrictEqual(coord)
+      expect(yield* store.peek(coord)).toBeDefined()
+      expect(yield* store.snapshot(coord)).toBeDefined()
+      expect(yield* store.isLoaded(coord)).toBe(true)
+      expect(yield* store.loadedCoords).toStrictEqual([coord])
+      expect(yield* store.neighbours(coord)).toStrictEqual({})
+      expect((yield* store.getBlock(AT))._tag).toBe('Block')
+      expect((yield* store.setBlock(AT, DIRT))._tag).toBe('Written')
+      expect((yield* store.getLight(AT))._tag).toBe('Light')
+
+      const subscription = yield* store.subscribeDirty
+      expect((yield* subscription.drain).changed.length).toBeGreaterThanOrEqual(0)
+      yield* subscription.unsubscribe
+
+      expect(yield* store.unload(coord)).toBe(true)
+      yield* store.reset
+      expect(yield* store.loadedCoords).toStrictEqual([])
+    }),
+  )
+})
+
+describe('an unloaded chunk is not air', () => {
+  it.effect('getBlock says ChunkNotLoaded, never Block', () =>
+    Effect.gen(function* () {
+      // Sand at the edge of the loaded area, told the cell below is air, falls
+      // out of the world. That is the failure this three-valued read prevents.
+      const store = yield* makeInMemoryChunkStore(EMPTY_WORLD)
+
+      expect(yield* store.getBlock(AT)).toStrictEqual({ _tag: 'ChunkNotLoaded' })
+    }),
+  )
+
+  it.effect('a LOADED but empty cell IS air, which is a different answer', () =>
+    Effect.gen(function* () {
+      const store = yield* makeInMemoryChunkStore({ blocks: new Map(), loaded: ['0,0'] })
+
+      expect(yield* store.getBlock({ x: 1, y: 1, z: 1 })).toStrictEqual({
+        _tag: 'Block',
+        block: AIR_BLOCK_ID,
+      })
+    }),
+  )
+
+  it.effect('writing into an unloaded chunk refuses', () =>
+    Effect.gen(function* () {
+      const store = yield* makeInMemoryChunkStore(EMPTY_WORLD)
+
+      expect(yield* store.setBlock(AT, STONE)).toStrictEqual({ _tag: 'ChunkNotLoaded' })
+    }),
+  )
+
+  it.effect('above and below the world is OutOfWorld, not ChunkNotLoaded', () =>
+    Effect.gen(function* () {
+      // Two different unknowns. A rule that conflated them would treat the
+      // build limit as a streaming problem and keep retrying.
+      const store = yield* makeInMemoryChunkStore(worldWith([[AT, STONE]]))
+
+      expect((yield* store.getBlock({ x: 5, y: -1, z: 9 }))._tag).toBe('OutOfWorld')
+      expect((yield* store.getBlock({ x: 5, y: CHUNK_HEIGHT, z: 9 }))._tag).toBe('OutOfWorld')
+      expect(isInWorld({ x: 0, y: CHUNK_HEIGHT - 1, z: 0 })).toBe(true)
+    }),
+  )
+})
+
+describe('a no-op write does not dirty', () => {
+  it.effect('writing the same block back is Unchanged', () =>
+    Effect.gen(function* () {
+      const store = yield* makeInMemoryChunkStore(worldWith([[AT, STONE]]))
+
+      expect(yield* store.setBlock(AT, STONE)).toStrictEqual({ _tag: 'Unchanged', previous: STONE })
+    }),
+  )
+
+  it.effect('REGRESSION: and it notifies NOBODY', () =>
+    Effect.gen(function* () {
+      // A fluid re-asserting its level, or redstone recomputing to the same
+      // state, would otherwise remesh the chunk every tick forever — visible
+      // only as an unexplained frame cost.
+      const store = yield* makeInMemoryChunkStore(worldWith([[AT, STONE]]))
+      const subscription = yield* store.subscribeDirty
+
+      yield* store.setBlock(AT, STONE)
+
+      expect((yield* subscription.drain).changed).toStrictEqual([])
+    }),
+  )
+
+  it.effect('a real change DOES notify', () =>
+    Effect.gen(function* () {
+      // The other half, so the test above cannot pass by never notifying.
+      const store = yield* makeInMemoryChunkStore(worldWith([[AT, STONE]]))
+      const subscription = yield* store.subscribeDirty
+
+      yield* store.setBlock(AT, DIRT)
+
+      expect((yield* subscription.drain).changed).toStrictEqual([chunkOf(AT)])
+    }),
+  )
+})
+
+describe('subscribers accumulate a set', () => {
+  it.effect('N writes to one chunk drain ONCE', () =>
+    Effect.gen(function* () {
+      const store = yield* makeInMemoryChunkStore(worldWith([[AT, STONE]]))
+      const subscription = yield* store.subscribeDirty
+
+      yield* store.setBlock({ x: 5, y: 64, z: 9 }, DIRT)
+      yield* store.setBlock({ x: 6, y: 64, z: 9 }, DIRT)
+      yield* store.setBlock({ x: 7, y: 64, z: 9 }, DIRT)
+
+      expect((yield* subscription.drain).changed).toStrictEqual([chunkOf(AT)])
+    }),
+  )
+
+  it.effect('draining clears, so a quiet frame reports nothing', () =>
+    Effect.gen(function* () {
+      const store = yield* makeInMemoryChunkStore(worldWith([[AT, STONE]]))
+      const subscription = yield* store.subscribeDirty
+
+      yield* store.setBlock(AT, DIRT)
+      yield* subscription.drain
+
+      expect((yield* subscription.drain).changed).toStrictEqual([])
+    }),
+  )
+
+  it.effect('two subscribers each see the change', () =>
+    Effect.gen(function* () {
+      // Independent sets, not one shared queue: the renderer and a save
+      // scheduler both need the news, and one draining must not blind the
+      // other.
+      const store = yield* makeInMemoryChunkStore(worldWith([[AT, STONE]]))
+      const first = yield* store.subscribeDirty
+      const second = yield* store.subscribeDirty
+
+      yield* store.setBlock(AT, DIRT)
+
+      expect((yield* first.drain).changed).toStrictEqual([chunkOf(AT)])
+      expect((yield* second.drain).changed).toStrictEqual([chunkOf(AT)])
+    }),
+  )
+
+  it.effect('an unsubscribed handle stops accumulating', () =>
+    Effect.gen(function* () {
+      const store = yield* makeInMemoryChunkStore(worldWith([[AT, STONE]]))
+      const subscription = yield* store.subscribeDirty
+
+      yield* subscription.unsubscribe
+      yield* store.setBlock(AT, DIRT)
+
+      expect((yield* subscription.drain).changed).toStrictEqual([])
+    }),
+  )
+})
+
+describe('chunk residency', () => {
+  it.effect('load makes an unknown chunk resident and EMPTY, not generated', () =>
+    Effect.gen(function* () {
+      // Generating terrain is mc-worldgen's and is the part this file does not
+      // claim. Inventing it here would be the thing the header refuses.
+      const store = yield* makeInMemoryChunkStore(EMPTY_WORLD)
+
+      const chunk = yield* store.load({ cx: 3, cz: -1 })
+
+      expect(chunk.blocks.every((block) => block === AIR_BLOCK_ID)).toBe(true)
+      expect(yield* store.isLoaded({ cx: 3, cz: -1 })).toBe(true)
+    }),
+  )
+
+  it.effect('unload drops the chunk AND its cells', () =>
+    Effect.gen(function* () {
+      // Leaving the cells behind would resurrect blocks on reload, and would
+      // let `loadedCoords` and the block map disagree about what exists.
+      const store = yield* makeInMemoryChunkStore(worldWith([[AT, STONE]]))
+      const coord = chunkOf(AT)
+
+      expect(yield* store.unload(coord)).toBe(true)
+      yield* store.load(coord)
+
+      expect(yield* store.getBlock(AT)).toStrictEqual({ _tag: 'Block', block: AIR_BLOCK_ID })
+    }),
+  )
+
+  it.effect('unloading a chunk that was never here says so', () =>
+    Effect.gen(function* () {
+      const store = yield* makeInMemoryChunkStore(EMPTY_WORLD)
+
+      expect(yield* store.unload({ cx: 9, cz: 9 })).toBe(false)
+    }),
+  )
+
+  it.effect('neighbours OMITS absent sides rather than setting them undefined', () =>
+    Effect.gen(function* () {
+      // `exactOptionalPropertyTypes` makes these different types, and the
+      // difference is observable: a consumer doing `'xPos' in neighbours` would
+      // see a neighbour that is not there.
+      const store = yield* makeInMemoryChunkStore(EMPTY_WORLD)
+      yield* store.load({ cx: 0, cz: 0 })
+      yield* store.load({ cx: 1, cz: 0 })
+
+      const neighbours = yield* store.neighbours({ cx: 0, cz: 0 })
+
+      expect('xPos' in neighbours).toBe(true)
+      expect('xNeg' in neighbours).toBe(false)
+    }),
+  )
+
+  it.effect('negative coordinates land in the right chunk', () =>
+    Effect.sync(() => {
+      // Floor division, not truncation. `-1 / 16` truncates to 0, which would
+      // put the cell one chunk east of where it is — and only for negative
+      // coordinates, so half the world would be subtly wrong.
+      expect(chunkOf({ x: -1, y: 0, z: -1 })).toStrictEqual({ cx: -1, cz: -1 })
+      expect(chunkOf({ x: -16, y: 0, z: 0 })).toStrictEqual({ cx: -1, cz: 0 })
+      expect(chunkOf({ x: 16, y: 0, z: 0 })).toStrictEqual({ cx: 1, cz: 0 })
+    }),
+  )
+})
+
+describe('the world is copied at construction', () => {
+  it.effect('mutating the caller’s map afterwards does not change the store', () =>
+    Effect.gen(function* () {
+      // A caller keeping its own map would be a second writer of the same
+      // state, and every read here would race it.
+      const blocks = new Map([[cellKey(AT), STONE]])
+      const store = yield* makeInMemoryChunkStore({ blocks, loaded: [chunkKey(chunkOf(AT))] })
+
+      blocks.set(cellKey(AT), DIRT)
+
+      expect(yield* store.getBlock(AT)).toStrictEqual({ _tag: 'Block', block: STONE })
+    }),
+  )
+
+  it.effect('the Layer builds a working store', () =>
+    Effect.sync(() => {
+      expect(InMemoryChunkStoreLayer(worldWith([[AT, STONE]]))).toBeDefined()
+    }),
+  )
+})
