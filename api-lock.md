@@ -13,7 +13,7 @@
 <!-- ------------------------------------------------------------------------- -->
 
 format: 1
-exported declarations: 296
+exported declarations: 302
 supporting declarations: 80
 
 ## Exported
@@ -375,6 +375,12 @@ const DEFAULT_ROLL_SEED = 20260727;
 const DESPAWN_DISTANCE_BLOCKS = 128;
 ```
 
+### DOOR_BLOCKS  `const`
+
+```ts
+const DOOR_BLOCKS: readonly ["door", "door_open"];
+```
+
 ### DOOR_BLOCK_ID  `const`
 
 ```ts
@@ -438,6 +444,12 @@ type DespawnVerdict = {
     readonly _tag: 'Despawn';
     readonly reason: DespawnReason;
 };
+```
+
+### DoorBlock  `type`
+
+```ts
+type DoorBlock = (typeof DOOR_BLOCKS)[number];
 ```
 
 ### DoorUpperCell  `type`
@@ -1225,10 +1237,44 @@ const RIPE_CROP_YIELD: Readonly<Partial<Record<BlockType, {
 }>>>;
 ```
 
+### ROUTED_BLOCKS  `const`
+
+```ts
+const ROUTED_BLOCKS: ReadonlyArray<BlockType>;
+```
+
 ### RailShape  `type`
 
 ```ts
 type RailShape = 'ns' | 'ew' | 'curve' | 'isolated';
+```
+
+### RightClickRoute  `type`
+
+```ts
+type RightClickRoute = {
+    readonly kind: 'storage';
+    readonly at: BlockPosition;
+} | {
+    readonly kind: 'craftingTable';
+    readonly at: BlockPosition;
+} | {
+    readonly kind: 'furnace';
+    readonly at: BlockPosition;
+} | {
+    readonly kind: 'bed';
+    readonly at: BlockPosition;
+} | {
+    readonly kind: 'enchantingTable';
+    readonly at: BlockPosition;
+} | {
+    readonly kind: 'anvil';
+    readonly at: BlockPosition;
+} | {
+    readonly kind: 'door';
+    readonly at: BlockPosition;
+    readonly block: DoorBlock;
+};
 ```
 
 ### RollBatch  `type`
@@ -1271,6 +1317,12 @@ const SOIL_OF_CROP: Readonly<Partial<Record<BlockType, BlockType>>>;
 
 ```ts
 const STEADY_ENDERMAN: EndermanFlinch;
+```
+
+### STORAGE_BLOCKS  `const`
+
+```ts
+const STORAGE_BLOCKS: ReadonlySet<BlockType>;
 ```
 
 ### STRUCK_ENDERMAN  `const`
@@ -2010,6 +2062,12 @@ const resolveRailShape: (isRailAt: IsRailAt, wx: number, wy: number, wz: number)
 
 ```ts
 const resolveWeatherDurationSecs: (weather: Weather, roll: number) => number;
+```
+
+### rightClickRoute  `const`
+
+```ts
+const rightClickRoute: (at: BlockPosition, block: BlockType | undefined) => RightClickRoute | undefined;
 ```
 
 ### ripeYieldRange  `const`
