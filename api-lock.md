@@ -13,8 +13,8 @@
 <!-- ------------------------------------------------------------------------- -->
 
 format: 1
-exported declarations: 345
-supporting declarations: 80
+exported declarations: 350
+supporting declarations: 81
 
 ## Exported
 
@@ -912,6 +912,12 @@ type IgnitionOutcome = {
 
 ```ts
 const InMemoryChunkStoreLayer: (contents?: WorldContents) => Layer.Layer<ChunkStore>;
+```
+
+### InMemoryEntityManagerLayer  `const`
+
+```ts
+const InMemoryEntityManagerLayer: <S>(initial?: EntityRoster<S>, repairBehaviour?: BehaviourRepair<S>) => Layer.Layer<EntityManager>;
 ```
 
 ### InMemoryInventoryLayer  `const`
@@ -2024,6 +2030,12 @@ const dropRulesOfKind: (kind: EntityKind) => ReadonlyArray<MobDropRule>;
 const emptyFallingBlockQueue: FallingBlockQueue;
 ```
 
+### emptyRoster  `const`
+
+```ts
+const emptyRoster: <S>() => EntityRoster<S>;
+```
+
 ### emptySlots  `const`
 
 ```ts
@@ -2240,6 +2252,12 @@ const makeGameplayStages: Effect.Effect<ReadonlyArray<StageRegistration>, never,
 const makeInMemoryChunkStore: (contents?: WorldContents) => Effect.Effect<ChunkStoreApi>;
 ```
 
+### makeInMemoryEntityManager  `const`
+
+```ts
+const makeInMemoryEntityManager: <S>(initial?: EntityRoster<S>, repairBehaviour?: BehaviourRepair<S>) => Effect.Effect<EntityManagerApi<S>>;
+```
+
 ### makeInMemoryInventory  `const`
 
 ```ts
@@ -2250,6 +2268,12 @@ const makeInMemoryInventory: (initial?: ReadonlyArray<Slot>) => Effect.Effect<In
 
 ```ts
 const maxHealthOfKind: (kind: EntityKind) => number;
+```
+
+### mintEntityId  `const`
+
+```ts
+const mintEntityId: (kind: EntityKind, serial: number) => EntityId;
 ```
 
 ### mobXpReward  `const`
@@ -2343,6 +2367,15 @@ const removeFromSlots: (slots: ReadonlyArray<Slot>, item: ItemType, count: numbe
 
 ```ts
 const repairMobBehaviour: (kind: EntityKind, behaviour: MobBehaviour) => MobBehaviour;
+```
+
+### repairRoster  `const`
+
+```ts
+const repairRoster: <S>(roster: EntityRoster<S>, repairBehaviour: BehaviourRepair<S>) => {
+    readonly roster: EntityRoster<S>;
+    readonly repair: RosterRepair;
+};
 ```
 
 ### resolveBlasts  `const`
@@ -2565,6 +2598,12 @@ type onto one of these.
 
 ```ts
 const BLOCK_TYPES: readonly ["air", "stone", "cobblestone", "dirt", "grass_block", "sand", "gravel", "water", "lava", "oak_log", "oak_planks", "oak_leaves", "glass", "torch", "glowstone", "bedrock", "piston", "snow", "ladder", "cobweb", "sapling", "dandelion", "poppy", "brown_mushroom", "red_mushroom", "tall_grass", "fern", "sugar_cane", "lily_pad", "kelp", "seagrass", "rail", "powered_rail", "cactus", "pressure_plate", "stone_slab", "granite", "diorite", "andesite", "deepslate", "obsidian", "smooth_basalt", "calcite", "amethyst_block", "amethyst_cluster", "sandstone", "prismarine", "soul_sand", "ice", "farmland", "coal_ore", "iron_ore", "gold_ore", "diamond_ore", "redstone_ore", "lapis_ore", "emerald_ore", "deepslate_coal_ore", "deepslate_iron_ore", "deepslate_gold_ore", "deepslate_diamond_ore", "deepslate_redstone_ore", "deepslate_lapis_ore", "deepslate_emerald_ore", "coal_block", "iron_block", "gold_block", "diamond_block", "redstone_block", "lapis_block", "emerald_block", "wheat_crop", "potato_crop", "nether_wart_crop", "redstone_wire", "redstone_torch", "lever", "stone_button", "repeater", "redstone_lamp", "redstone_lamp_lit", "observer", "comparator", "dispenser", "hopper", "piston_head", "end_stone", "end_portal_frame", "end_portal_frame_filled", "end_portal", "chorus_flower", "chorus_plant", "dragon_egg", "end_crystal", "end_gateway", "end_rod", "end_stone_bricks", "ender_chest", "purpur_block", "purpur_pillar", "purpur_slab", "purpur_stairs", "shulker_box", "crafting_table", "furnace", "chest", "door", "door_open", "oak_stairs", "anvil", "cauldron", "water_cauldron", "bed", "enchanting_table", "brewing_stand", "tnt", "nether_brick", "netherrack", "nether_portal", "fire"];
+```
+
+### BehaviourRepair  `type`
+
+```ts
+type BehaviourRepair<S> = (kind: EntityKind, behaviour: S) => S;
 ```
 
 ### BlockAt  `type`
