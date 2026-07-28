@@ -13,7 +13,7 @@
 <!-- ------------------------------------------------------------------------- -->
 
 format: 1
-exported declarations: 350
+exported declarations: 359
 supporting declarations: 81
 
 ## Exported
@@ -603,6 +603,12 @@ const ENDER_PEARL_MAX_DISTANCE = 24;
 const EXPERIENCE_MODULE_STAGE_PREFIXES: readonly ["gameplay:", "redstone:", "ui:", "multiplayer:"];
 ```
 
+### EYE_LEVEL_OFFSET  `const`
+
+```ts
+const EYE_LEVEL_OFFSET = 1.62;
+```
+
 ### EnderPearlDisplacement  `type`
 
 ```ts
@@ -838,6 +844,18 @@ const IGNITION_ITEM_TYPES: readonly ["flint_and_steel", "fire_charge"];
 const INERT_ITEM: HeldItemCapabilities;
 ```
 
+### INITIAL_DIMENSION  `const`
+
+```ts
+const INITIAL_DIMENSION: Dimension;
+```
+
+### INITIAL_PLAYER_POSE  `const`
+
+```ts
+const INITIAL_PLAYER_POSE: PlayerPose;
+```
+
 ### INITIAL_WEATHER  `const`
 
 ```ts
@@ -924,6 +942,12 @@ const InMemoryEntityManagerLayer: <S>(initial?: EntityRoster<S>, repairBehaviour
 
 ```ts
 const InMemoryInventoryLayer: (initial?: ReadonlyArray<Slot>) => Layer.Layer<InventoryService>;
+```
+
+### InMemoryPlayerLayer  `const`
+
+```ts
+const InMemoryPlayerLayer: (initialPose?: PlayerPose, initialDimension?: Dimension) => Layer.Layer<PlayerService>;
 ```
 
 ### InteractionIntent  `type`
@@ -1206,6 +1230,18 @@ const NO_TOOL: BlockLootContext;
 
 ```ts
 const OWN_STAGE_PREFIX = "gameplay:";
+```
+
+### PITCH_MAX_RADIANS  `const`
+
+```ts
+const PITCH_MAX_RADIANS: number;
+```
+
+### PITCH_MIN_RADIANS  `const`
+
+```ts
+const PITCH_MIN_RADIANS: number;
 ```
 
 ### PLAIN_BOW  `const`
@@ -1814,6 +1850,12 @@ const anyRedstoneInput: (flags: RedstoneInputFlags) => boolean;
 const applyDamage: (vitals: Vitals, damage: Damage) => Vitals;
 ```
 
+### applyLook  `const`
+
+```ts
+const applyLook: (pose: PlayerPose, deltaYaw: number, deltaPitch: number) => PlayerPose;
+```
+
 ### applySpawnAttempts  `const`
 
 ```ts
@@ -1926,6 +1968,12 @@ const chunkKey: (coord: ChunkCoord) => string;
 
 ```ts
 const chunkOf: (position: BlockPosition) => ChunkCoord;
+```
+
+### clampPitch  `const`
+
+```ts
+const clampPitch: (pitchRadians: number) => number;
 ```
 
 ### craterCells  `const`
@@ -2262,6 +2310,12 @@ const makeInMemoryEntityManager: <S>(initial?: EntityRoster<S>, repairBehaviour?
 
 ```ts
 const makeInMemoryInventory: (initial?: ReadonlyArray<Slot>) => Effect.Effect<InventoryServiceApi>;
+```
+
+### makeInMemoryPlayer  `const`
+
+```ts
+const makeInMemoryPlayer: (initialPose?: PlayerPose, initialDimension?: Dimension) => Effect.Effect<PlayerServiceApi>;
 ```
 
 ### maxHealthOfKind  `const`
