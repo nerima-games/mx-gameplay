@@ -836,6 +836,7 @@ type GeneratedWorld<S> = InMemoryWorld<S> & {
 ```ts
 type GeneratedWorldOptions = {
     readonly seed?: number;
+    readonly chunkSource?: ChunkSource;
     readonly spawnX?: number;
     readonly spawnZ?: number;
     readonly yawRadians?: number;

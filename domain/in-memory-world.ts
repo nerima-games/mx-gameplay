@@ -43,6 +43,7 @@ import {
   generatedChunkSource,
   makeChunkStore,
   surfaceHeightAt,
+  type ChunkSource,
   type ChunkStoreApi as WorldgenChunkStoreApi,
 } from '@nerima-games/mc-worldgen'
 import { ChunkStore, type ChunkStoreApi } from './chunk-store-port'
@@ -66,6 +67,7 @@ export type InMemoryWorldOptions = {
 /** Options for a deterministic generated overworld. */
 export type GeneratedWorldOptions = {
   readonly seed?: number
+  readonly chunkSource?: ChunkSource
   readonly spawnX?: number
   readonly spawnZ?: number
   readonly yawRadians?: number
@@ -165,7 +167,7 @@ export const makeGeneratedWorld = <S>(
     const seed = options.seed ?? 8675309
     const spawnX = options.spawnX ?? 0.5
     const spawnZ = options.spawnZ ?? 0.5
-    const worldgenStore = yield* makeChunkStore(generatedChunkSource(seed))
+    const worldgenStore = yield* makeChunkStore(options.chunkSource ?? generatedChunkSource(seed))
     const chunkStore = adaptGeneratedChunkStore(worldgenStore)
     const spawnPose: PlayerPose = {
       feetPosition: {

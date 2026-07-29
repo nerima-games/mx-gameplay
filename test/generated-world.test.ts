@@ -1,5 +1,10 @@
 import { describe, expect, it } from '@effect/vitest'
-import { surfaceHeightAt } from '@nerima-games/mc-worldgen'
+import {
+  CHUNK_SIZE_XZ,
+  emptyBlocks,
+  surfaceHeightAt,
+  type ChunkSource,
+} from '@nerima-games/mc-worldgen'
 import { Effect } from 'effect'
 import { makeGeneratedWorld, solidityFromStore } from '../domain/in-memory-world'
 import type { MobBehaviour } from '../domain/entities/mob-frame'
@@ -7,7 +12,7 @@ import type { MobBehaviour } from '../domain/entities/mob-frame'
 const SEED = 424242
 
 describe('generated world composition', () => {
-  it.effect('shares generated chunks, writes, and dirty notifications through one store', () =>
+  it.effect('uses generated chunks by default and shares writes and dirty notifications', () =>
     Effect.gen(function* () {
       const world = yield* makeGeneratedWorld<MobBehaviour>({ seed: SEED, spawnX: 0.5, spawnZ: 0.5 })
       const dirty = yield* world.chunkStore.subscribeDirty
@@ -26,6 +31,30 @@ describe('generated world composition', () => {
         block: 0,
       })
       expect((yield* dirty.drain).changed).toStrictEqual([{ cx: 0, cz: 0 }])
+    }),
+  )
+
+  it.effect('uses an injected chunk source instead of generated terrain', () =>
+    Effect.gen(function* () {
+      const loaded: Array<{ readonly cx: number; readonly cz: number }> = []
+      const chunkSource: ChunkSource = (coord) =>
+        Effect.sync(() => {
+          loaded.push({ cx: coord.cx, cz: coord.cz })
+          return {
+            coord,
+            blocks: emptyBlocks(),
+            biomes: Array.from({ length: CHUNK_SIZE_XZ * CHUNK_SIZE_XZ }, () => 'PLAINS' as const),
+          }
+        })
+      const world = yield* makeGeneratedWorld<MobBehaviour>({ seed: SEED, chunkSource })
+
+      yield* world.chunkStore.load({ cx: 0, cz: 0 })
+
+      expect(loaded).toStrictEqual([{ cx: 0, cz: 0 }])
+      expect(yield* world.chunkStore.getBlock({ x: 0, y: 0, z: 0 })).toStrictEqual({
+        _tag: 'Block',
+        block: 0,
+      })
     }),
   )
 
