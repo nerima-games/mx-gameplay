@@ -1305,10 +1305,10 @@ const weatherWalk = Effect.sync(() => {
  * screen would ever show it, and no scenario would either. This arranges it and
  * then mines one more block.
  *
- * If this were broken, `refused` below would read 0 and `held after` would have
- * grown past the cap: the leftover would have been discarded in
- * `stages/registration.ts` and the block would be gone from the world with
- * nothing to show for it.
+ * If this were broken, the dropped count below would differ from the mined
+ * count, or `held after` would have grown past the cap: the block would be gone
+ * from the world without the overflow existing either in inventory or on the
+ * ground.
  */
 const inventoryDeposit = Effect.gen(function* () {
   const scenario = scenarioByName('sand-column')
@@ -1339,15 +1339,16 @@ const inventoryDeposit = Effect.gen(function* () {
   yield* requestBreak(site, positionAt(site, scenario.target.x, scenario.target.y - 1))
   yield* stepFrame(site)
   const spilledRow = site.trace[site.trace.length - 1]
-  const refused = (spilledRow?.leftover ?? []).reduce((total, item) => total + item.count, 0)
+  const attempted = (spilledRow?.mined ?? []).reduce((total, item) => total + item.count, 0)
+  const dropped = (spilledRow?.dropped ?? []).reduce((total, item) => total + item.count, 0)
   const heldAfter = yield* site.inventoryService.api.countOf('cobblestone')
 
-  const lost = refused > 0 && (spilledRow?.leftover ?? []).length === 0
+  const lost = attempted > 0 && dropped !== attempted
   const overflowed = heldAfter > capacity
 
   return {
     id: lost || overflowed ? 'F-inventory' : 'ok',
-    title: 'a mined block reaches mc-sim\u2019s inventory, and a FULL one keeps the leftover',
+    title: 'a mined block reaches mc-sim\u2019s inventory, and a FULL one drops the overflow',
     finding: lost || overflowed,
     lines: [
       `  one swing, wooden pickaxe`,
@@ -1361,16 +1362,14 @@ const inventoryDeposit = Effect.gen(function* () {
       `    add() calls              ${(spilledRow?.mined ?? [])
         .map((item) => `${item.item} x${String(item.count)}`)
         .join(', ')}`,
-      `    refused (the leftover)   ${String(refused)}   (must be > 0, or the cap is not real)`,
-      `    kept in leftoverItems    ${(spilledRow?.leftover ?? [])
+      `    refused and dropped      ${String(dropped)}   (must equal the mined count)`,
+      `    entities on the ground   ${(spilledRow?.dropped ?? [])
         .map((item) => `${item.item} x${String(item.count)}`)
         .join(', ')}`,
       `    held after               ${String(heldAfter)}   (must equal held before)`,
       '',
-      '  The leftover is KEPT rather than dropped, and that is as far as this repository',
-      '  can take it: mc-sim expects the caller to spawn a dropped-item entity, which needs',
-      '  an arm on MobBehaviour for "which item, how many", a matching arm in',
-      '  repairMobBehaviour, and a pickup rule. The frame tape prints it as !item.',
+      '  The refused count is a dropped-item entity at the broken cell. The frame tape',
+      '  prints live ground items as !item; pickup removes the entity in a later frame.',
     ],
   } satisfies Check
 })

@@ -287,7 +287,7 @@ plan.md §4.2 を素直に読むと `input` の後ろでもあり、`redstone` �
 | `makeGameplayStages` | **契約** | `mc-compose` が消費する唯一の入口。`ChunkStore` を要求する（§2-2） |
 | `gameplayStages(state, store)` | 内部(可視) | state と store を外から渡す版。プレビューとテストが state を覗くために使う |
 | `makeGameplayFrameState` | 内部(可視) | 再入可能な初期化。テストが 2 つ作って独立性を検査する（DN-GP-6） |
-| `GameplayFrameState` | 内部(可視) | フレームローカルの作業メモ（`Ref` **20 本**）。ゲーム状態ではない |
+| `GameplayFrameState` | 内部(可視) | フレームローカルの作業メモ（`Ref` **19 本**）。ゲーム状態ではない |
 | `requestTargetedPrimaryAttack` | 内部(可視) | プレイヤーの姿勢から敵とブロックを同じクリックで解決し、敵がブロックより手前なら `pendingMeleeAttacks`、それ以外でブロックがあれば `pendingBreaks` の片方だけに積む |
 | `TargetedPrimaryAttackResult` / `TargetedPrimaryAttackOptions` | 内部(可視) | 結果は `Melee`（`ShotHit`）/ `Block`（`BlockTarget`）/ `None`。既定値は melee reach 3、damage 1、block reach 5 |
 | `PlacementRequest` / `ItemUseRequest` | 内部(可視) | 受信箱に積む要求の形。どちらも「セル 1 つと手に持っているもの」で、**持ち物の型が互いに素**である（`PlaceableItemType` と `IgnitionItemType`）ので 1 つの union にはしていない |
@@ -295,7 +295,7 @@ plan.md §4.2 を素直に読むと `input` の後ろでもあり、`redstone` �
 | `BlockUseRequestId` / `BlockUseRequest` / `BlockUseResult` | **契約** | 成否を入力イベントへ返す相関付きプロトコル。結果は 1 回だけ drain される |
 | `LAVA_TICK_INTERVAL` | 内部(可視) | 暫定値。プレビューで測って決める |
 
-**`Ref` の本数は 20 で、内訳は「作業キュー 4 + 受信箱 7 + 送信箱 5 + 乱数の種 1 + ペア 2 + カウンタ 1」である。**
+**`Ref` の本数は 19 で、内訳は「作業キュー 4 + 受信箱 7 + 送信箱 4 + 乱数の種 1 + ペア 2 + カウンタ 1」である。**
 下表は**全部ではなく、判定の型が違う 7 本**を挙げている —— 残りは同じ 2 つの型
 （受信箱 / 送信箱）のどれかで、`stages/registration.ts` の冒頭が 1 本ずつ論じている。
 この節は長く「5 本」と書いたまま古くなっていた。
@@ -306,18 +306,17 @@ plan.md §4.2 を素直に読むと `input` の後ろでもあり、`redstone` �
 | `fluidFrontier` | 流体のフロンティア | 同上 |
 | `tickCount` | 溶岩の tick を刻む | 同上 |
 | `pendingBreaks` | **受信箱**。今フレームの破壊要求 | 要らない。セーブが記録するのは「ブロックが無い」ことであって「ボタンが押されていた」ことではない |
-| `leftoverItems` | **送信箱、ただし中身は「入らなかった」ぶんだけ**。`minedItems` を置き換えた —— 掘れたものは stage が `InventoryService.add` に直接渡すようになったので、ここに残るのは `add` が返した leftover である | 要らない。**通常フレームでは空である**ことが、`minedItems` と最も違う点 |
 | `pendingItemUses` | **受信箱**。今フレームのアイテム使用要求（火打石 / 火の玉） | 要らない。`pendingBreaks` と同じ理由 |
 | `usedItems` | **送信箱**。点火に使われた道具。`consumedItems` と**別**なのは、`InventoryService` の動詞が違う（消費ではなく耐久の消耗）からである | 要らない。同上 |
 | `pendingBlockUses` / `blockUseResults` | 相関 ID 付きのレバー use 受信箱 / 結果送信箱 | 要らない。レバーの on/off はホストのワールド状態であり、ここには保存しない |
 
-受信箱は mc-render の入力イベントになる。**送信箱のうち採掘のぶんはもう消えた** ——
+受信箱は mc-render の入力イベントになる。**送信箱のうち採掘のぶんは消えた** ——
 `domain/inventory-port.ts` が mc-sim の `InventoryService` を丸ごと写し、
-`gameplay:interactions` が採掘したスタックごとに `add` を呼ぶ。
-残った `leftoverItems` は同じ形の `Ref` だが、意味が違う: **`add` が「入らなかった」と答えた数**であり、
-mc-sim 側のコメントが「呼び手（mx-gameplay）がこれを地面のドロップ item にする」と名指ししている値である。
-このリポジトリはまだそれができない（`MobBehaviour` に「どのアイテムを何個」を持つ腕が要り、
-`repairMobBehaviour` の腕と拾得ルールも要る）ので、**捨てずに置いてある**。
+`gameplay:interactions` が採掘したスタックごとに `add` をちょうど 1 回呼ぶ。
+`add` が返す「入らなかった数」が 0 より大きければ、stage は破壊前に保持したセル座標へ
+`spawnDroppedItems` で dropped-item entity を作る。全量を再度渡さず **leftover だけ**を spawn するので、
+部分受理でも二重入庫にならない。拾得は後続フレームの `gameplay:entities` が行い、全量が入れば despawn、
+まだ入らない分があれば同じ entity の count を縮める。
 `consumedItems` / `usedItems` は送信箱のままで、理由はそれぞれ
 「`remove` は書き込みの**後**では遅い」と「mc-sim の公開 api に `damageSlot` が無い」である。
 **送信箱は所有ではない**（何も問い合わせられず、drain されるだけ）ことが、
@@ -606,7 +605,7 @@ kernel が literal を**足す**分にはこちらが stale になるだけで�
 
 | export | 種別 | 備考 |
 | --- | --- | --- |
-| `MobBehaviour` | **契約に近い** | mc-sim の `S` の具体化。`CreeperFuse \| EndermanFlinch \| undefined`。**ホストが名前で import する必要がある**（§2-3） |
+| `MobBehaviour` | **契約に近い** | mc-sim の `S` の具体化。Mob 固有状態に dropped item の `{ item, count }` を加えた union。**ホストが名前で import する必要がある**（§2-3） |
 | `repairMobBehaviour` | **契約に近い** | mc-sim の `BehaviourRepair`。ロード経路が委譲してくる、全域かつ不動点の修復（§2-3）。kind ごとに腕があり、**形の合わない behaviour は信用せず差し替える** |
 | `EndermanFlinch` / `STEADY_ENDERMAN` / `STRUCK_ENDERMAN` | 内部(可視) | 「直前に殴られたか」だけを持つ 2 タグの union。フィールドが無いので save が壊せる数値も無い。`resolveBlasts` が立て、次の `sweepMobs` が**決定に関わらず消費する**（殴打は 1 フレームのもの） |
 | `CREEPER_KIND` / `ENDERMAN_KIND` | 内部(可視) | 本リポジトリが `EntityKind` を名指しする**唯一の場所**。mc-sim は kind で分岐しない（DN-11）ので綴りを誰も検査しない。`ENDERMAN_KIND` を**スポーンさせるものはまだ無い**（`MobSpawnAttempt` に kind が無く、上限が kind ごとのままだから）ので、到達経路は host の `spawn` とロード経路である |
@@ -620,6 +619,19 @@ kernel が literal を**足す**分にはこちらが stale になるだけで�
 
 `Blast` が位置を持つのは、`domain/mob/explosion.ts` の `Explosion` が**意図的に持たない**からである
 ——「座標はホストの事実」であり、ここがそのホストである。
+
+### domain/entities/dropped-item.ts
+
+| export | 種別 | 備考 |
+| --- | --- | --- |
+| `DroppedItemSpawn` | **契約** | `{ item, count, at }`。原因を限定しない地面アイテム生成要求で、採掘 overflow と Mob death の両方が使える |
+| `spawnDroppedItem` / `spawnDroppedItems` | **契約** | `DROPPED_ITEM_KIND` の entity を指定座標へ生成する汎用入口。複数版は入力順を保つ |
+| `spawnMobDrop` / `spawnMobDrops` | **互換契約** | 既存の Mob drop 用 API。汎用入口へ委譲し、従来の署名と挙動を保つ |
+| `pickupDroppedItems` / `DROPPED_ITEM_PICKUP_RADIUS` | **契約** | 範囲内の entity を inventory へ 1 回だけ渡す。全量受理なら despawn、部分受理なら拒否された count だけを同じ entity に残す |
+
+採掘 stage は `breakBlock` の前にセル座標を保持する。loot 全量を `InventoryService.add` へ渡し、
+戻った remainder だけをその座標へ spawn するため、部分受理でも inventory と地面の合計は loot 数と一致する。
+同一フレームに複数セルを壊した場合も各 remainder は元のセルを失わない。
 
 ### domain/frame-rolls.ts（**フレームに乱数が入る唯一の場所**）
 

@@ -36,6 +36,8 @@ describe('public API surface', () => {
         'requestMeleeAttack',
         'requestTargetedPrimaryAttack',
         'drainMobDrops',
+        'spawnDroppedItem',
+        'spawnDroppedItems',
         'GAMEPLAY_STAGE_IDS',
         'UPSTREAM_STAGE_IDS',
         'isPlaceableItem',

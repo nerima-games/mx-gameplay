@@ -81,10 +81,12 @@ import { blockIdOf, isReplaceable } from '../domain/block-vocabulary'
 import { NOON_FRACTION } from '../domain/day-night'
 import {
   CREEPER_KIND,
+  DROPPED_ITEM_KIND,
   CREEPER_MAX_HEALTH,
   ENDERMAN_KIND,
   ENDERMAN_TELEPORT_ROLLS,
   HOSTILE_KINDS,
+  isDroppedItemBehaviour,
   MAX_HOSTILE_COUNT,
   STEADY_ENDERMAN,
   STRUCK_ENDERMAN,
@@ -1701,7 +1703,7 @@ describe('the mining site slice: dig, drop, place', () => {
    */
   it.effect('the loot chain reaches mc-sim’s inventory — the §2.3-1 worked example, end to end', () =>
     Effect.gen(function* () {
-      const { inventory, state, stages } = yield* slice(world([[cell, STONE]]))
+      const { inventory, roster, state, stages } = yield* slice(world([[cell, STONE]]))
 
       yield* holdWoodenPickaxe(state)
       yield* requestBreak(state, cell)
@@ -1723,9 +1725,8 @@ describe('the mining site slice: dig, drop, place', () => {
       // inventory; `test/stage-registration.test.ts` pins the whole key list.
       expect(Object.keys(state)).not.toContain('inventory')
 
-      // And nothing spilled, so the one Ref that survives the wiring is empty —
-      // which is its ordinary state.
-      expect(yield* Ref.get(state.leftoverItems)).toStrictEqual([])
+      // The inventory accepted the whole stack, so no dropped entity exists.
+      expect(yield* roster.api.count).toBe(0)
     }),
   )
 
@@ -1762,52 +1763,122 @@ describe('the mining site slice: dig, drop, place', () => {
     }),
   )
 
-  /*
-   * THE LEFTOVER, which is the half of `add`'s contract that is easy to drop.
-   *
-   * `add` resolves to what did NOT fit, so `0` is success and a non-zero answer
-   * is items the player earned and does not have. A stage that treated the
-   * number as a success flag — or ignored it, which is the same thing — would
-   * pass every other test in this file: the world changes identically, the
-   * deposit is made identically, and the only difference is an item that
-   * silently ceases to exist. mc-sim's own comment on `add` names this
-   * repository as the party responsible for not doing that.
-   *
-   * This repository cannot yet do what mc-sim expects with it — 「the caller in
-   * mx-gameplay turns it into a dropped-item entity」 needs an arm on
-   * `MobBehaviour`, a matching arm in `repairMobBehaviour`, and a pickup rule
-   * none of which exist — so the honest thing is to KEEP it, and that is
-   * `state.leftoverItems`. What must not happen is silence.
-   */
-  it.effect('REGRESSION: what the inventory refuses is kept, not silently dropped', () =>
+  it.effect('spawns the full refused stack at the broken block', () =>
     Effect.gen(function* () {
-      const store = yield* makeChunkStoreDouble(world([[cell, STONE]]), ['0,0'])
-      const roster = yield* makeEntityManagerDouble<MobBehaviour>()
-      const player = yield* makePlayerServiceDouble()
-      // 36 slots x 64 cobblestone. The only arrangement in which `add`
-      // overflows, and it is built through the service's own `add` rather than
-      // written out — see `test/support/inventory-service-double.ts`.
-      const inventory = yield* makeInventoryDouble(brimming('cobblestone'))
-      const state = yield* makeGameplayFrameState
-      const stages = gameplayStages(state, store.api, roster.api, inventory.api, player.api)
+      const { inventory, roster, state, stages, store } = yield* slice(
+        world([[cell, STONE]]),
+        ['0,0'],
+        brimming('cobblestone'),
+      )
 
       yield* holdWoodenPickaxe(state)
       yield* requestBreak(state, cell)
       yield* runFrame(stages)
 
-      // The swing LANDED — the block is gone from the world, which is what
-      // makes the lost item lost rather than merely unearned.
       expect(yield* store.blockAt(cell)).toBe(AIR_BLOCK_ID)
-
-      // The call was made and the service refused all of it.
       expect(yield* inventory.deposits).toStrictEqual([
         { item: 'cobblestone', count: 1, leftover: 1 },
       ])
 
-      // ...and the refusal is IN THE REF, with the item's name and the count
-      // that did not fit, which is exactly what a dropped-item entity needs.
-      expect(yield* Ref.get(state.leftoverItems)).toStrictEqual([
-        { item: 'cobblestone', count: 1 },
+      const dropped = yield* soleEntity(roster)
+      expect(dropped?.kind).toBe(DROPPED_ITEM_KIND)
+      expect(dropped?.feetPosition).toStrictEqual(cell)
+      expect(isDroppedItemBehaviour(dropped?.behaviour)).toBe(true)
+      if (dropped !== undefined && isDroppedItemBehaviour(dropped.behaviour)) {
+        expect(dropped.behaviour.item).toBe('cobblestone')
+        expect(dropped.behaviour.count).toBe(1)
+      }
+    }),
+  )
+
+  it.effect('spawns only the part of a mined stack that the inventory refused', () =>
+    Effect.gen(function* () {
+      const GLOWSTONE: BlockId = 15
+      const almostFull = brimming('glowstone_dust').map((slot, index) =>
+        index === 0 ? { item: 'glowstone_dust' as const, count: StackCount(63) } : slot,
+      )
+      const { inventory, roster, state, stages } = yield* slice(
+        world([[cell, GLOWSTONE]]),
+        ['0,0'],
+        almostFull,
+      )
+
+      yield* requestBreak(state, cell)
+      yield* runFrame(stages)
+
+      expect(yield* inventory.deposits).toStrictEqual([
+        { item: 'glowstone_dust', count: 2, leftover: 1 },
+      ])
+      expect(yield* inventory.api.countOf('glowstone_dust')).toBe(36 * 64)
+
+      const dropped = yield* soleEntity(roster)
+      expect(dropped?.feetPosition).toStrictEqual(cell)
+      if (dropped !== undefined && isDroppedItemBehaviour(dropped.behaviour)) {
+        expect(dropped.behaviour.item).toBe('glowstone_dust')
+        expect(dropped.behaviour.count).toBe(1)
+      } else {
+        expect.fail('expected a dropped-item entity')
+      }
+    }),
+  )
+
+  it.effect('keeps each refused drop at its own break position in one frame', () =>
+    Effect.gen(function* () {
+      const { inventory, roster, state, stages } = yield* slice(
+        world([
+          [cell, STONE],
+          [under, STONE],
+        ]),
+        ['0,0'],
+        brimming('cobblestone'),
+      )
+
+      yield* holdWoodenPickaxe(state)
+      yield* requestBreak(state, cell)
+      yield* requestBreak(state, under)
+      yield* runFrame(stages)
+
+      expect(yield* inventory.deposits).toStrictEqual([
+        { item: 'cobblestone', count: 1, leftover: 1 },
+        { item: 'cobblestone', count: 1, leftover: 1 },
+      ])
+      expect(
+        (yield* roster.api.entities).map((entity) => ({
+          at: entity.feetPosition,
+          drop: isDroppedItemBehaviour(entity.behaviour)
+            ? { item: entity.behaviour.item, count: entity.behaviour.count }
+            : undefined,
+        })),
+      ).toStrictEqual([
+        { at: cell, drop: { item: 'cobblestone', count: 1 } },
+        { at: under, drop: { item: 'cobblestone', count: 1 } },
+      ])
+    }),
+  )
+
+  it.effect('picks the refused drop up on the next frame and despawns it', () =>
+    Effect.gen(function* () {
+      const { inventory, roster, state, stages } = yield* slice(
+        world([[cell, STONE]]),
+        ['0,0'],
+        brimming('cobblestone'),
+      )
+
+      yield* holdWoodenPickaxe(state)
+      yield* requestBreak(state, cell)
+      yield* runFrame(stages)
+      expect(yield* roster.api.count).toBe(1)
+
+      yield* inventory.api.remove('cobblestone', 1)
+      const beforePickup = yield* inventory.api.countOf('cobblestone')
+      yield* Ref.set(state.targetPosition, cell)
+      yield* runFrame(stages)
+
+      expect(yield* roster.api.count).toBe(0)
+      expect(yield* inventory.api.countOf('cobblestone')).toBe(beforePickup + 1)
+      expect(yield* inventory.deposits).toStrictEqual([
+        { item: 'cobblestone', count: 1, leftover: 1 },
+        { item: 'cobblestone', count: 1, leftover: 0 },
       ])
     }),
   )

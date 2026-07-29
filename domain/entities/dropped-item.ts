@@ -1,3 +1,4 @@
+import type { ItemType } from '@nerima-games/mc-kernel'
 import type { InventoryServiceApi } from '@nerima-games/mc-sim'
 import { Effect } from 'effect'
 import { changed, DESPAWNED, UNCHANGED, type Entity, type EntityManagerApi, type Position } from '../entity-manager-port'
@@ -10,9 +11,15 @@ import {
 
 export const DROPPED_ITEM_PICKUP_RADIUS = 1.5
 
-export const spawnMobDrop = (
+export type DroppedItemSpawn = {
+  readonly item: ItemType
+  readonly count: number
+  readonly at: Position
+}
+
+export const spawnDroppedItem = (
   roster: EntityManagerApi<MobBehaviour>,
-  drop: MobDropEvent,
+  drop: DroppedItemSpawn,
 ): Effect.Effect<Entity<MobBehaviour>> =>
   roster.spawn({
     kind: DROPPED_ITEM_KIND,
@@ -21,11 +28,21 @@ export const spawnMobDrop = (
     behaviour: { _tag: 'DroppedItem', item: drop.item, count: drop.count },
   })
 
+export const spawnDroppedItems = (
+  roster: EntityManagerApi<MobBehaviour>,
+  drops: ReadonlyArray<DroppedItemSpawn>,
+): Effect.Effect<ReadonlyArray<Entity<MobBehaviour>>> =>
+  Effect.forEach(drops, (drop) => spawnDroppedItem(roster, drop))
+
+export const spawnMobDrop = (
+  roster: EntityManagerApi<MobBehaviour>,
+  drop: MobDropEvent,
+): Effect.Effect<Entity<MobBehaviour>> => spawnDroppedItem(roster, drop)
+
 export const spawnMobDrops = (
   roster: EntityManagerApi<MobBehaviour>,
   drops: ReadonlyArray<MobDropEvent>,
-): Effect.Effect<ReadonlyArray<Entity<MobBehaviour>>> =>
-  Effect.forEach(drops, (drop) => spawnMobDrop(roster, drop))
+): Effect.Effect<ReadonlyArray<Entity<MobBehaviour>>> => spawnDroppedItems(roster, drops)
 
 const distanceSquared = (left: Position, right: Position): number => {
   const dx = left.x - right.x

@@ -381,7 +381,6 @@ describe('stage behaviour', () => {
         'heldTool',
         'hostileContactCooldowns',
         'itemUseResults',
-        'leftoverItems',
         'mobDrops',
         'pendingBlockUses',
         'pendingBowShots',
@@ -415,13 +414,9 @@ describe('stage behaviour', () => {
       expect(Object.keys(state)).not.toContain('dayLength')
       expect(Object.keys(state)).not.toContain('dayLengthSecs')
       expect(Object.keys(state)).not.toContain('timeOfDaySecs')
-      // The inventory is mc-sim's, and this assertion means MORE now than it
-      // did when `minedItems` held every mined stack: the stage calls
-      // `InventoryService.add` and reads the number back, so the temptation is
-      // no longer a second outbox but a CACHE of what the service answered —
-      // which is what a Ref named for the noun would be. `leftoverItems` holds
-      // only what `add` refused, and `consumedItems` and `usedItems` are lists
-      // the host drains for verbs the rules do not call.
+      // Inventory contents and mining overflow are both owned outside frame
+      // state: mc-sim owns carried stacks, while refused deposits become
+      // dropped-item entities in its roster.
       expect(Object.keys(state)).not.toContain('inventory')
       expect(Object.keys(state)).not.toContain('slots')
       expect(Object.keys(state)).not.toContain('heldItems')
@@ -621,17 +616,12 @@ describe('stage behaviour', () => {
       const state = yield* makeGameplayFrameState
 
       // A work queue of disturbed columns, a frontier of cells still to look
-      // at, the counter that paces lava, an inbox of this frame's requests and
-      // a list of what mc-sim's inventory had no room for. Reconstructed within
-      // a frame of a reload; none of them is a fact about the world. In
-      // particular `leftoverItems` is not an inventory — it answers no question
-      // about what anyone is carrying, it is empty in every ordinary frame, and
-      // it is emptied by whoever drains it.
+      // at, the counter that paces lava, and this frame's request inboxes are
+      // reconstructed within a frame of a reload.
       expect(yield* Ref.get(state.fallingBlocks)).toStrictEqual({ pending: new Set<string>() })
       expect(yield* Ref.get(state.fluidFrontier)).toStrictEqual([])
       expect(yield* Ref.get(state.tickCount)).toBe(0)
       expect(yield* Ref.get(state.pendingBreaks)).toStrictEqual([])
-      expect(yield* Ref.get(state.leftoverItems)).toStrictEqual([])
       expect(yield* Ref.get(state.mobDrops)).toStrictEqual([])
       expect(yield* Ref.get(state.spawnAttempts)).toStrictEqual([])
       expect(yield* Ref.get(state.targetPosition)).toBeUndefined()

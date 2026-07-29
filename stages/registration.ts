@@ -112,7 +112,11 @@ import {
   type MobBehaviour,
   type MobSpawnAttempt,
 } from '../domain/entities/mob-frame'
-import { pickupDroppedItems } from '../domain/entities/dropped-item'
+import {
+  pickupDroppedItems,
+  spawnDroppedItems,
+  type DroppedItemSpawn,
+} from '../domain/entities/dropped-item'
 import { searchSpawnCandidates } from '../domain/entities/mob-spawn-search'
 import {
   entityManagerTag,
@@ -151,7 +155,6 @@ import {
   blockLoot,
   NO_TOOL,
   type BlockLootContext,
-  type MinedItem,
 } from '../domain/interactions/block-loot'
 import { placeBlock } from '../domain/interactions/place-block'
 import {
@@ -248,46 +251,10 @@ const NO_ATTEMPTS: ReadonlyArray<never> = []
  *     from mc-sim's `InventoryService` by whoever fills the inbox, and a break
  *     request that had to carry an item field it never uses would invite one.
  *
- *   - `leftoverItems` IS WHAT IS LEFT OF AN OUTBOX CALLED `minedItems`, and the
- *     replacement is the point of this paragraph rather than a rename.
- *
- *     `minedItems` held every item a broken block yielded, and its comment said
- *     the items belonged to mc-sim's `InventoryService` — plan.md §2.3-1's
- *     worked example — but that 「until mc-sim is published there is no
- *     `InventoryService.add` to call」. TWO REASONS WERE GIVEN FOR THE OUTBOX
- *     AND BOTH ARE DEAD. The type mismatch that made the seam unwirable is gone
- *     (kernel published `ItemType`, mc-sim deleted `ItemId`, and
- *     `domain/interactions/block-loot.ts` speaks kernel's vocabulary on this
- *     side), and 「inventing a local port would make this repository a second
- *     owner of the inventory」 was never true of a MIRROR — a mirror is the
- *     opposite of a second owner, which is why `domain/entity-manager-port.ts`
- *     and `domain/chunk-store-port.ts` exist.
- *
- *     What was actually wrong with the outbox is that it was a list nothing had
- *     been written to drain. 「A list the host drains is not an owner」 is true
- *     and it is not the question: a list the host must REMEMBER to drain is an
- *     inventory that silently empties, and no test in this repository or any
- *     other could have said so. The stage calls `InventoryService.add` now, per
- *     mined stack, and reads the number back.
- *
- *     WHAT REMAINS IN THE REF IS THE LEFTOVER — the count `add` says did not
- *     fit — and it is here rather than discarded because mc-sim's comment names
- *     this repository as the caller and says what the caller is for: 「The
- *     caller in mx-gameplay turns it into a dropped-item entity」. This
- *     repository cannot do that yet, and the blocker is named rather than
- *     implied: a dropped item is an entity whose per-entity state is WHICH ITEM
- *     AND HOW MANY, so it needs an arm on `MobBehaviour` in
- *     `domain/entities/mob-frame.ts`, a matching arm in `repairMobBehaviour`
- *     that mc-sim's load path delegates to, and a pickup rule and a despawn
- *     timer that nothing in this repository has written. Spawning a
- *     `dropped_item` on the roster today would put an entity in the world that
- *     nothing renders, nothing picks up and nothing removes.
- *
- *     So the leftover waits in a Ref, which is what the outbox was always good
- *     at, and it is now a list whose entries a host can SEE it must handle
- *     rather than a list it can forget to drain without symptom. An item the
- *     player mined into a full inventory is on it; nothing else ever is, so an
- *     empty list is the ordinary case and a non-empty one is a real event.
+ *   - Mining overflow is not frame state. Each successful break carries its
+ *     source position through the inventory deposit, and only the remainder
+ *     returned by `InventoryService.add` is spawned as a dropped-item entity at
+ *     that position. The entity stage's pickup rule retries it on later frames.
  *
  *   - `consumedItems` is the OUTBOX POINTING THE OTHER WAY: one entry per block
  *     successfully placed, which is one item to take off the stack.
@@ -419,28 +386,9 @@ const NO_ATTEMPTS: ReadonlyArray<never> = []
  *     first minute, rather than a world that silently never spawns anything and
  *     looks like a broken search.
  *
- *   - `mobDrops` is an OUTBOX, and it is the one the mining wiring did NOT
- *     absorb. It used to be described as `minedItems`' twin — 「both become
- *     `InventoryService.add` calls together」 — and that prediction was wrong in
- *     the half that matters: they are not the same call, and PROVENANCE is why.
- *     A mined item goes into the inventory directly, because the player's hand
- *     is on the block. A mob's loot in vanilla FALLS ON THE GROUND FIRST and is
- *     picked up, so `add` is not what a kill means; the honest destination is
- *     the dropped-item entity `leftoverItems` above is also waiting on, and it
- *     is blocked on the same missing `MobBehaviour` arm. Depositing mob drops
- *     straight into the inventory would be a rule change dressed as a wiring
- *     change — every creeper's gunpowder teleporting into a pocket across the
- *     arena — so this list stays a list until there is something to spawn.
- *
- *     THE REASON GIVEN FOR NOT MIRRORING THE SERVICE AT ALL WAS THE COST, and
- *     it is recorded here because it was paid rather than avoided: 「the
- *     whole-api rule: `InventoryServiceApi` names `Inventory`, `RecipeTable`,
- *     `CraftGrid`, `RecipeMatch` and `CraftResult`, so mirroring it honestly
- *     means restating mc-sim's crafting vocabulary in a repository that has no
- *     crafting rule to justify it. The roster was worth that price because the
- *     stage cannot iterate mobs without it; the outbox works today.」 The last
- *     four words were the error. The stage now consumes mc-sim's service
- *     directly, including its crafting vocabulary.
+ *   - `mobDrops` is an OUTBOX because mob death and dropped-item spawning are
+ *     separate frame seams. Mining overflow does not use it: its source cell is
+ *     known in the interactions stage and is spawned directly.
  *
  *   - `rollSeed` is neither. It is the frame's source of randomness, and
  *     `domain/frame-rolls.ts` is a whole file about why it is a seed here rather
@@ -505,7 +453,6 @@ export type GameplayFrameState = {
   readonly pendingBowShots: Ref.Ref<ReadonlyArray<BowShotRequest>>
   readonly pendingMeleeAttacks: Ref.Ref<ReadonlyArray<MeleeAttackRequest>>
   readonly pendingPearlThrows: Ref.Ref<ReadonlyArray<EnderPearlThrowRequest>>
-  readonly leftoverItems: Ref.Ref<ReadonlyArray<MinedItem>>
   readonly consumedItems: Ref.Ref<ReadonlyArray<PlaceableItemType>>
   readonly usedItems: Ref.Ref<ReadonlyArray<IgnitionItemType>>
   readonly blockUseResults: Ref.Ref<ReadonlyArray<BlockUseResult>>
@@ -765,17 +712,14 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
   const pendingBowShots = yield* Ref.make<ReadonlyArray<BowShotRequest>>([])
   const pendingMeleeAttacks = yield* Ref.make<ReadonlyArray<MeleeAttackRequest>>([])
   const pendingPearlThrows = yield* Ref.make<ReadonlyArray<EnderPearlThrowRequest>>([])
-  // Empty is the ORDINARY state, unlike the outbox it replaces: an entry here
-  // means an item the inventory had no room for. See the module header.
-  const leftoverItems = yield* Ref.make<ReadonlyArray<MinedItem>>([])
   const consumedItems = yield* Ref.make<ReadonlyArray<PlaceableItemType>>([])
   const usedItems = yield* Ref.make<ReadonlyArray<IgnitionItemType>>([])
   const blockUseResults = yield* Ref.make<ReadonlyArray<BlockUseResult>>([])
   const itemUseResults = yield* Ref.make<ReadonlyArray<ItemUseResult>>([])
   const bowShotResults = yield* Ref.make<ReadonlyArray<BowShotResult>>([])
   const handledBowShotRequestIds = yield* Ref.make<ReadonlySet<BowShotRequestId>>(new Set())
-  // Both empty in the ORDINARY state, like `leftoverItems` and unlike the
-  // outboxes above: an entry means something happened that this repository
+  // Both are empty in the ordinary state. An entry means something happened
+  // that this repository computed and cannot itself deliver.
   // computed and cannot itself deliver. See the two types.
   const bowKnockbacks = yield* Ref.make<ReadonlyArray<BowKnockback>>([])
   const enderPearlOutcomes = yield* Ref.make<ReadonlyArray<EnderPearlOutcome>>([])
@@ -815,7 +759,6 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
     pendingBowShots,
     pendingMeleeAttacks,
     pendingPearlThrows,
-    leftoverItems,
     consumedItems,
     usedItems,
     blockUseResults,
@@ -1272,7 +1215,7 @@ export const gameplayStages = (
           return
         }
 
-        const gained: Array<MinedItem> = []
+        const gained: Array<DroppedItemSpawn> = []
         const spent: Array<PlaceableItemType> = []
         const used: Array<IgnitionItemType> = []
         const blockUseResults: Array<BlockUseResult> = []
@@ -1288,7 +1231,8 @@ export const gameplayStages = (
         const playerFeet = yield* Ref.get(state.targetPosition)
 
         for (const positionKey of breaks) {
-          const outcome = yield* breakBlock(store, positionOfKey(positionKey))
+          const breakPosition = positionOfKey(positionKey)
+          const outcome = yield* breakBlock(store, breakPosition)
           switch (outcome._tag) {
             case 'Broken': {
               // THE LOOT TABLE, and this is the line the mining path was
@@ -1308,7 +1252,7 @@ export const gameplayStages = (
                 const batch = drawRolls(seed, BLOCK_LOOT_ROLLS)
                 return [blockLoot(outcome.yielded, tool, batch.rolls), batch.seed] as const
               })
-              gained.push(...loot)
+              gained.push(...loot.map((item) => ({ ...item, at: breakPosition })))
 
               // The ONLY entry point for falling-block work. Whatever rested on
               // the block just removed may now be unsupported. It is enqueued
@@ -1698,19 +1642,16 @@ export const gameplayStages = (
         // and `0` is the ordinary answer. Ignoring it would be an item the
         // player watched disappear, which is the failure mc-sim's own comment
         // on `add` names this repository as responsible for avoiding.
-        const spilled: Array<MinedItem> = []
+        const spilled: Array<DroppedItemSpawn> = []
         for (const item of gained) {
           const leftover = yield* inventory.add(item.item, item.count)
           if (leftover > 0) {
-            spilled.push({ item: item.item, count: leftover })
+            spilled.push({ item: item.item, count: leftover, at: item.at })
           }
         }
 
-        // ...and what did not fit waits in the Ref, because turning it into a
-        // dropped-item entity needs a `MobBehaviour` arm this repository has
-        // not written. The header says which one and why it is not one line.
         if (spilled.length > 0) {
-          yield* Ref.update(state.leftoverItems, (items) => [...items, ...spilled])
+          yield* spawnDroppedItems(roster, spilled)
         }
         if (spent.length > 0) {
           yield* Ref.update(state.consumedItems, (items) => [...items, ...spent])
@@ -2034,9 +1975,8 @@ export const gameplayStages = (
 
         // `set` and not `update`: the outbox is a countdown and its last value
         // subsumes every earlier one, so a host that drains every other frame
-        // loses nothing. That is the one respect in which it is unlike
-        // `leftoverItems`, where every entry is a separate item and dropping one
-        // would lose an item.
+        // loses nothing. Unlike append-only event outboxes, only the newest
+        // countdown value matters.
         yield* Ref.set(state.weatherAdvanced, next)
       }),
   },

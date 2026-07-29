@@ -232,14 +232,14 @@ const timelineRow = (row: FrameRow): string =>
     // frame that mined a sand and placed it back reads `sand -sand`, which is
     // the round trip.
     //
-    // A LEADING `!` IS WHAT THE INVENTORY REFUSED. It is on the same column
+    // A LEADING `!` IS AN ITEM ON THE GROUND. It is on the same column
     // deliberately: a full inventory shows `cobblestone !cobblestone`, so the
-    // deposit and its rejection are read together rather than the rejection
-    // needing a column of its own that is blank in every ordinary frame.
+    // deposit and the spawned entity are read together rather than needing a
+    // column of their own that is blank in every ordinary frame.
     '  ' +
       [
         ...row.mined.map((item) => (item.count === 1 ? item.item : `${item.item}x${String(item.count)}`)),
-        ...row.leftover.map((item) =>
+        ...row.dropped.map((item) =>
           item.count === 1 ? `!${item.item}` : `!${item.item}x${String(item.count)}`,
         ),
         ...row.spent.map((item) => `-${item}`),

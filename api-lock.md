@@ -13,7 +13,7 @@
 <!-- ------------------------------------------------------------------------- -->
 
 format: 1
-exported declarations: 452
+exported declarations: 455
 supporting declarations: 61
 
 ## Exported
@@ -618,6 +618,16 @@ type DroppedItemBehaviour = {
 };
 ```
 
+### DroppedItemSpawn  `type`
+
+```ts
+type DroppedItemSpawn = {
+    readonly item: ItemType;
+    readonly count: number;
+    readonly at: Position;
+};
+```
+
 ### EMPTY_WORLD  `const`
 
 ```ts
@@ -958,7 +968,6 @@ type GameplayFrameState = {
     readonly pendingBowShots: Ref.Ref<ReadonlyArray<BowShotRequest>>;
     readonly pendingMeleeAttacks: Ref.Ref<ReadonlyArray<MeleeAttackRequest>>;
     readonly pendingPearlThrows: Ref.Ref<ReadonlyArray<EnderPearlThrowRequest>>;
-    readonly leftoverItems: Ref.Ref<ReadonlyArray<MinedItem>>;
     readonly consumedItems: Ref.Ref<ReadonlyArray<PlaceableItemType>>;
     readonly usedItems: Ref.Ref<ReadonlyArray<IgnitionItemType>>;
     readonly blockUseResults: Ref.Ref<ReadonlyArray<BlockUseResult>>;
@@ -3261,6 +3270,18 @@ const solidityFromStore: (store: ChunkStoreApi) => (position: {
     readonly y: number;
     readonly z: number;
 }) => boolean;
+```
+
+### spawnDroppedItem  `const`
+
+```ts
+const spawnDroppedItem: (roster: EntityManagerApi<MobBehaviour>, drop: DroppedItemSpawn) => Effect.Effect<Entity<MobBehaviour>>;
+```
+
+### spawnDroppedItems  `const`
+
+```ts
+const spawnDroppedItems: (roster: EntityManagerApi<MobBehaviour>, drops: ReadonlyArray<DroppedItemSpawn>) => Effect.Effect<ReadonlyArray<Entity<MobBehaviour>>>;
 ```
 
 ### spawnMobDrop  `const`

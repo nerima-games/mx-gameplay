@@ -27,9 +27,9 @@
  *     `FallingBlockQueue`, and the read and write counters are the actual store
  *     calls.
  *   - It is NOT evidence about anything unimplemented. `gameplay:fluids` cycles
- *     a frontier and propagates nothing, and there is no mob here (`./roster.ts`
- *     on why the roster is empty and refuses to grow). See README.md, "What is
- *     not here".
+ *     a frontier and propagates nothing, and this preview does not arrange any
+ *     living mobs. Its real mc-sim roster only contains dropped items produced
+ *     by mining overflow. See README.md, "What is not here".
  *
  * ---------------------------------------------------------------------------
  * `p` IS A RULE NOW, AND WHAT THAT CHANGED IS WORTH READING
@@ -77,6 +77,11 @@ import {
 import { FALLING_BLOCK_MOVES_PER_TICK } from '../../domain/falling-block'
 import { DeltaTimeSecs, type StageRegistration } from '../../domain/frame-contract'
 import { NO_TOOL, type BlockLootContext, type MinedItem } from '../../domain/interactions/block-loot'
+import type { EntityManagerApi } from '../../domain/entity-manager-port'
+import {
+  isDroppedItemBehaviour,
+  type MobBehaviour,
+} from '../../domain/entities/mob-frame'
 import { isSupportSensitiveOfBlock, placementVerdict } from '../../domain/interactions/place-block'
 import type { PositionKey } from '../../domain/position-key'
 import { INITIAL_WEATHER, type WeatherState } from '../../domain/weather'
@@ -91,7 +96,7 @@ import {
 import { GAMEPLAY_STAGE_IDS } from '../../stages/stage-ids'
 import { FrameServicesLayer } from './frame-services'
 import { makePreviewInventory, type PreviewInventory } from './inventory'
-import { emptyPreviewRoster } from './roster'
+import { makePreviewRoster } from './roster'
 import { makePreviewPlayer } from './player'
 import { AIR, floatingBlocks, makePreviewWorld, type PreviewWorld, type WorldSpec } from './world'
 
@@ -156,14 +161,8 @@ export type FrameRow = {
    * `InventoryService`. See `./inventory.ts`'s `takeDepositLog`.
    */
   readonly mined: ReadonlyArray<MinedItem>
-  /**
-   * What the inventory REFUSED, drained out of `state.leftoverItems`.
-   *
-   * Almost always empty, and that is what makes it worth a column: a non-zero
-   * entry is an item the player earned and does not have, waiting for a
-   * dropped-item entity this repository cannot spawn yet.
-   */
-  readonly leftover: ReadonlyArray<MinedItem>
+  /** Dropped-item entities currently on the ground after this frame. */
+  readonly dropped: ReadonlyArray<MinedItem>
   /** What placement took off the stack. */
   readonly spent: ReadonlyArray<PlaceableItemType>
   /** Falling blocks currently hanging with a replaceable cell below them. */
@@ -173,6 +172,7 @@ export type FrameRow = {
 export type Site = {
   readonly world: PreviewWorld
   readonly inventoryService: PreviewInventory
+  readonly roster: EntityManagerApi<MobBehaviour>
   readonly state: GameplayFrameState
   readonly stages: ReadonlyArray<StageRegistration>
   readonly spec: WorldSpec
@@ -245,6 +245,7 @@ export const makeSite = (
   Effect.gen(function* () {
     const world = yield* makePreviewWorld(spec)
     const inventoryService = yield* makePreviewInventory()
+    const roster = yield* makePreviewRoster
     const state = yield* makeGameplayFrameState
     // The stages, from the shipped factory. `makeGameplayStages` would acquire
     // the tags from Layers; `gameplayStages` takes the state and the APIs
@@ -252,19 +253,18 @@ export const makeSite = (
     // the Refs that stand in for services nobody has published yet. The preview
     // is the host that drains them, exactly as the comment there describes.
     //
-    // The roster is EMPTY AND REFUSES TO GROW; see `./roster.ts` for why a
-    // working one here would be mx-gameplay implementing mc-sim's service. The
-    // mining site has no mobs, so the mob half of `gameplay:entities` sweeps
-    // nothing every frame and costs nothing — which is the same claim the idle
-    // frame makes about blocks.
+    // This preview has no mobs, but mining overflow can spawn dropped-item
+    // entities. The roster is mc-sim's own in-memory service; `./roster.ts`
+    // deliberately contains no second implementation.
     const previewPlayer = yield* makePreviewPlayer
     const stages = schedule(
-      gameplayStages(state, world.api, emptyPreviewRoster, inventoryService.api, previewPlayer),
+      gameplayStages(state, world.api, roster, inventoryService.api, previewPlayer),
     )
 
     return {
       world,
       inventoryService,
+      roster,
       state,
       stages,
       spec,
@@ -471,12 +471,14 @@ export const stepFrame = (site: Site): Effect.Effect<FrameRow> =>
     // calls and not a queue of work the host still owes.
     const mined = yield* site.inventoryService.takeDepositLog
 
-    // ...and the one Ref that survived the wiring: what `add` REFUSED. This is
-    // drained rather than accumulated because the frame tape reports per frame,
-    // and it is reported rather than ignored because an entry here is an item
-    // the player earned and does not have. `stages/registration.ts` says why it
-    // cannot yet be a dropped-item entity.
-    const leftover = yield* Ref.getAndSet<ReadonlyArray<MinedItem>>(site.state.leftoverItems, [])
+    // What `add` refused is now a real entity at the broken cell. The tape
+    // projects the live roster after the frame, so pickup is visible as the
+    // corresponding entry disappearing.
+    const dropped = (yield* site.roster.entities).flatMap((entity) =>
+      isDroppedItemBehaviour(entity.behaviour)
+        ? [{ item: entity.behaviour.item, count: entity.behaviour.count }]
+        : [],
+    )
 
     // THE OTHER DIRECTION IS STILL A LIST, and the host still pays for it.
     // `stages/registration.ts` declines to call `remove` from the stage,
@@ -530,7 +532,7 @@ export const stepFrame = (site: Site): Effect.Effect<FrameRow> =>
       reads: calls.reads,
       writes: calls.writes,
       mined,
-      leftover,
+      dropped,
       spent,
       floating: floatingBlocks(site.world, allCells(site)).length,
     }
