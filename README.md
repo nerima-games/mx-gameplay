@@ -88,11 +88,11 @@ oxlint が該当ルールを実装したら `oxlint.json` 側へ移す。
 ### セットアップ
 
 ```console
-$ direnv allow          # flake.nix の devShell で nodejs_22 + corepack が入る
+$ direnv allow          # flake.nix の devShell で nodejs_24 + corepack が入る
 $ pnpm install
 ```
 
-Nix を使わない場合は Node.js 22 以上と pnpm 9.15.0 を用意する（`corepack enable && corepack prepare pnpm@9.15.0 --activate`）。
+Nix を使わない場合は Node.js 24 以上と pnpm 11 を用意する（`corepack enable && corepack prepare pnpm@11 --activate`）。
 バージョンは `package.json` の `packageManager` でピン留めしてある。
 
 > **注意**: ツールチェーンは `devenv.nix` から `flake.nix` + `flake.lock` に移行済みである。
