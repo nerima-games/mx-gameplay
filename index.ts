@@ -77,6 +77,7 @@ export {
 export * from './domain/interactions/use-block'
 export * from './stages/registration'
 export * from './stages/stage-ids'
+export * from './stages/targeted-right-click-route'
 
 // --- Provisional ---------------------------------------------------------------
 // Ten modules are temporary local stand-ins for packages that are not

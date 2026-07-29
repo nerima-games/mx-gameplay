@@ -13,7 +13,7 @@
 <!-- ------------------------------------------------------------------------- -->
 
 format: 1
-exported declarations: 455
+exported declarations: 456
 supporting declarations: 61
 
 ## Exported
@@ -3342,6 +3342,12 @@ const takeBatch: (queue: FallingBlockQueue, budget?: number) => FallingBlockBatc
 
 ```ts
 const targetabilityFromStore: (store: ChunkStoreApi) => (x: number, y: number, z: number) => boolean;
+```
+
+### targetedRightClickRoute  `const`
+
+```ts
+const targetedRightClickRoute: (store: ChunkStoreApi, player: PlayerServiceApi, maxDistance?: number) => Effect.Effect<RightClickRoute | undefined>;
 ```
 
 ### tillSoil  `const`

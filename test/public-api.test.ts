@@ -49,6 +49,12 @@ describe('public API surface', () => {
     }),
   )
 
+  it.effect('re-exports host-facing targeted right-click routing', () =>
+    Effect.sync(() => {
+      expect(Object.keys(gameplay)).toContain('targetedRightClickRoute')
+    }),
+  )
+
   // REGRESSION: `domain/frame-contract.ts` and `domain/position-key.ts` are
   // stand-ins for @nerima-games/mc-kernel with a deletion date written into
   // their headers. The barrel used to `export *` from both, which published
