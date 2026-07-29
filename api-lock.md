@@ -13,7 +13,7 @@
 <!-- ------------------------------------------------------------------------- -->
 
 format: 1
-exported declarations: 373
+exported declarations: 376
 supporting declarations: 81
 
 ## Exported
@@ -388,6 +388,12 @@ const DAWN_FRACTION = 0.25;
 
 ```ts
 const DEATH_MESSAGES: Readonly<Record<DeathCause, string>>;
+```
+
+### DEFAULT_BLOCK_REACH  `const`
+
+```ts
+const DEFAULT_BLOCK_REACH = 5;
 ```
 
 ### DEFAULT_FLUID_FRONTIER_BUDGET  `const`
@@ -2521,6 +2527,12 @@ const requestBlockBreak: (state: GameplayFrameState, position: BlockPosition) =>
 const requestBlockPlacement: (state: GameplayFrameState, request: PlacementRequest) => Effect.Effect<void>;
 ```
 
+### requestTargetedBlockBreak  `const`
+
+```ts
+const requestTargetedBlockBreak: (state: GameplayFrameState, store: ChunkStoreApi, player: PlayerServiceApi, maxDistance?: number) => Effect.Effect<Option.Option<BlockTarget>>;
+```
+
 ### resolveBlasts  `const`
 
 ```ts
@@ -2703,6 +2715,12 @@ const sweepMobs: (roster: EntityManagerApi<MobBehaviour>, senses: MobFrameSenses
 
 ```ts
 const takeBatch: (queue: FallingBlockQueue, budget?: number) => FallingBlockBatch;
+```
+
+### targetabilityFromStore  `const`
+
+```ts
+const targetabilityFromStore: (store: ChunkStoreApi) => (x: number, y: number, z: number) => boolean;
 ```
 
 ### tillSoil  `const`

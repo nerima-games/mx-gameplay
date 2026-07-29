@@ -56,6 +56,7 @@
     "verify": "pnpm typecheck && pnpm lint && pnpm check:deps && pnpm api:check && pnpm test"
   },
   "dependencies": {
+    "@nerima-games/mc-sim": "0.1.1",
     "effect": "^3.20.0"
   },
   "devDependencies": {

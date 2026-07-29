@@ -5,14 +5,14 @@
  * WHY THIS TEST IS HERE AND NOT IN A BROWSER
  * ---------------------------------------------------------------------------
  *
- * mc-compose wires a left click to `requestBlockBreak`, and that wiring cannot
+ * mc-compose wires a left click to `requestTargetedBlockBreak`, and that wiring cannot
  * be exercised by Playwright: mc-render's `InputService` treats a click as a
  * GAME action only while the pointer is LOCKED — the closed-world predicate
  * that stops a HUD click stealing the pointer — and plan.md §3.10 records that
  * Playwright on SwiftShader cannot do pointer lock at all. mc-render's
  * `apps/preview-render` exists because of the same limit.
  *
- * Everything BELOW the click is reachable here, and this is all of it: the same
+ * Everything BELOW the click is reachable here, including aim resolution: the same
  * public door the host calls, the real `gameplay:interactions` stage, the real
  * in-memory `ChunkStore` and `InventoryService`. What is not covered is one
  * mouse event, and that is named rather than faked.
@@ -24,11 +24,12 @@
  * test that only checks the rule.
  */
 import { describe, expect, it } from '@effect/vitest'
-import { Effect } from 'effect'
+import { Effect, Option, Ref } from 'effect'
 import {
   gameplayStages,
   makeGameplayFrameState,
   requestBlockBreak,
+  requestTargetedBlockBreak,
 } from '../stages/registration'
 import { GAMEPLAY_STAGE_IDS } from '../stages/stage-ids'
 import { makeInMemoryWorld } from '../domain/in-memory-world'
@@ -52,6 +53,20 @@ import type { MobBehaviour } from '../domain/entities/mob-frame'
  */
 const DIRT_ID = 3
 const AT: BlockPosition = { x: 3, y: 64, z: 7 }
+const IN_SIGHT: BlockPosition = { x: 0, y: 1, z: 0 }
+
+const lookingAtBlockWorld = (loaded: boolean) =>
+  makeInMemoryWorld<MobBehaviour>({
+    spawnPose: {
+      feetPosition: { x: 0.5, y: 0, z: 2.5 },
+      yawRadians: 0,
+      pitchRadians: 0,
+    },
+    world: {
+      blocks: new Map([[cellKey(IN_SIGHT), DIRT_ID]]),
+      loaded: loaded ? [chunkKey(chunkOf(IN_SIGHT))] : [],
+    },
+  })
 
 /** A world with one stone block, in a loaded chunk. */
 const oneBlockWorld = () =>
@@ -73,6 +88,32 @@ const runInteractions = (
 }
 
 describe('the break loop', () => {
+  it.effect('targets the first block under the crosshair and breaks it through the inbox', () =>
+    Effect.gen(function* () {
+      const world = yield* lookingAtBlockWorld(true)
+      const state = yield* makeGameplayFrameState
+      const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player)
+
+      const target = yield* requestTargetedBlockBreak(state, world.chunkStore, world.player)
+      expect(Option.getOrUndefined(target)?.position).toStrictEqual(IN_SIGHT)
+
+      yield* runInteractions(stages as never)
+      expect(yield* world.chunkStore.getBlock(IN_SIGHT)).toStrictEqual({ _tag: 'Block', block: 0 })
+    }),
+  )
+
+  it.effect('does not target stored block data from an unloaded chunk', () =>
+    Effect.gen(function* () {
+      const world = yield* lookingAtBlockWorld(false)
+      const state = yield* makeGameplayFrameState
+
+      const target = yield* requestTargetedBlockBreak(state, world.chunkStore, world.player)
+
+      expect(Option.isNone(target)).toBe(true)
+      expect(yield* Ref.get(state.pendingBreaks)).toStrictEqual([])
+    }),
+  )
+
   it.effect('a requested break removes the block from the store', () =>
     Effect.gen(function* () {
       const world = yield* oneBlockWorld()

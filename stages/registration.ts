@@ -76,9 +76,11 @@
  * the first world's fibers and refs and deadlocked. Re-entrant initialisation
  * from the start is cheaper than retrofitting it.
  */
-import { Effect, Layer, Ref } from 'effect'
+import { targetBlockFromPlayerPose, type BlockTarget } from '@nerima-games/mc-sim'
+import { Effect, Layer, Option, Ref } from 'effect'
 import { below, positionKeyOf, positionOfKey } from '../domain/block-position-key'
 import { hostileSpawnsAllowed } from '../domain/day-night'
+import { targetabilityFromStore } from '../domain/in-memory-world'
 import { ChunkStore, type BlockPosition, type ChunkStoreApi } from '../domain/chunk-store-port'
 import type { PlaceableItemType } from '../domain/block-vocabulary'
 import { applyFallingBlocks } from '../domain/entities/falling-block-move'
@@ -836,6 +838,25 @@ export const requestBlockBreak = (
   position: BlockPosition,
 ): Effect.Effect<void> =>
   Ref.update(state.pendingBreaks, (pending) => [...pending, positionKeyOf(position)])
+
+/** Vanilla-style survival reach, measured from the player's eye position. */
+export const DEFAULT_BLOCK_REACH = 5
+
+/** Resolve the block under the crosshair and enqueue its break for the interaction stage. */
+export const requestTargetedBlockBreak = (
+  state: GameplayFrameState,
+  store: ChunkStoreApi,
+  player: PlayerServiceApi,
+  maxDistance: number = DEFAULT_BLOCK_REACH,
+): Effect.Effect<Option.Option<BlockTarget>> =>
+  Effect.gen(function* () {
+    const pose = yield* player.pose
+    const target = targetBlockFromPlayerPose(pose, maxDistance, targetabilityFromStore(store))
+    if (Option.isSome(target)) {
+      yield* requestBlockBreak(state, target.value.position)
+    }
+    return target
+  })
 
 /** The placement twin. Carries WHICH ITEM, which is why it is a second inbox. */
 export const requestBlockPlacement = (

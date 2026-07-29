@@ -126,3 +126,11 @@ export const solidityFromStore =
         return true
     }
   }
+
+/** Only loaded, non-air cells can be selected by a player interaction ray. */
+export const targetabilityFromStore =
+  (store: ChunkStoreApi) =>
+  (x: number, y: number, z: number): boolean => {
+    const reading = Effect.runSync(store.getBlock({ x, y, z }))
+    return reading._tag === 'Block' && reading.block !== 0
+  }
