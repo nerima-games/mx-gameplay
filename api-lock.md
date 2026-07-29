@@ -13,7 +13,7 @@
 <!-- ------------------------------------------------------------------------- -->
 
 format: 1
-exported declarations: 421
+exported declarations: 426
 supporting declarations: 61
 
 ## Exported
@@ -406,6 +406,18 @@ const DEFAULT_BLOCK_REACH = 5;
 
 ```ts
 const DEFAULT_FLUID_FRONTIER_BUDGET = 64;
+```
+
+### DEFAULT_MELEE_DAMAGE  `const`
+
+```ts
+const DEFAULT_MELEE_DAMAGE = 1;
+```
+
+### DEFAULT_MELEE_REACH  `const`
+
+```ts
+const DEFAULT_MELEE_REACH = 3;
 ```
 
 ### DEFAULT_ROLL_SEED  `const`
@@ -1902,6 +1914,30 @@ const TILLED_BLOCK: BlockType;
 const TWILIGHT_BAND = 0.05;
 ```
 
+### TargetedPrimaryAttackOptions  `type`
+
+```ts
+type TargetedPrimaryAttackOptions = {
+    readonly meleeReach?: number;
+    readonly meleeDamage?: number;
+    readonly blockReach?: number;
+};
+```
+
+### TargetedPrimaryAttackResult  `type`
+
+```ts
+type TargetedPrimaryAttackResult = {
+    readonly _tag: 'Melee';
+    readonly target: ShotHit;
+} | {
+    readonly _tag: 'Block';
+    readonly target: BlockTarget;
+} | {
+    readonly _tag: 'None';
+};
+```
+
 ### TeleportAnchor  `type`
 
 ```ts
@@ -2845,6 +2881,12 @@ const requestTargetedBlockBreak: (state: GameplayFrameState, store: ChunkStoreAp
 
 ```ts
 const requestTargetedBlockPlacement: (state: GameplayFrameState, store: ChunkStoreApi, player: PlayerServiceApi, heldItem: PlaceableItemType, maxDistance?: number) => Effect.Effect<Option.Option<BlockTarget>>;
+```
+
+### requestTargetedPrimaryAttack  `const`
+
+```ts
+const requestTargetedPrimaryAttack: (state: GameplayFrameState, store: ChunkStoreApi, roster: EntityManagerApi<MobBehaviour>, player: PlayerServiceApi, options?: TargetedPrimaryAttackOptions) => Effect.Effect<TargetedPrimaryAttackResult>;
 ```
 
 ### resolveBlasts  `const`

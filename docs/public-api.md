@@ -288,6 +288,8 @@ plan.md §4.2 を素直に読むと `input` の後ろでもあり、`redstone` �
 | `gameplayStages(state, store)` | 内部(可視) | state と store を外から渡す版。プレビューとテストが state を覗くために使う |
 | `makeGameplayFrameState` | 内部(可視) | 再入可能な初期化。テストが 2 つ作って独立性を検査する（DN-GP-6） |
 | `GameplayFrameState` | 内部(可視) | フレームローカルの作業メモ（`Ref` **18 本**）。ゲーム状態ではない |
+| `requestTargetedPrimaryAttack` | 内部(可視) | プレイヤーの姿勢から敵とブロックを同じクリックで解決し、敵がブロックより手前なら `pendingMeleeAttacks`、それ以外でブロックがあれば `pendingBreaks` の片方だけに積む |
+| `TargetedPrimaryAttackResult` / `TargetedPrimaryAttackOptions` | 内部(可視) | 結果は `Melee`（`ShotHit`）/ `Block`（`BlockTarget`）/ `None`。既定値は melee reach 3、damage 1、block reach 5 |
 | `PlacementRequest` / `ItemUseRequest` | 内部(可視) | 受信箱に積む要求の形。どちらも「セル 1 つと手に持っているもの」で、**持ち物の型が互いに素**である（`PlaceableItemType` と `IgnitionItemType`）ので 1 つの union にはしていない |
 | `LAVA_TICK_INTERVAL` | 内部(可視) | 暫定値。プレビューで測って決める |
 

@@ -29,8 +29,11 @@ describe('public API surface', () => {
         // `stages/registration.ts` on why the array was the obstacle.
         'gameplayModule',
         'makeGameplayFrameState',
+        'DEFAULT_MELEE_DAMAGE',
+        'DEFAULT_MELEE_REACH',
         'requestMobSpawn',
         'requestMeleeAttack',
+        'requestTargetedPrimaryAttack',
         'drainMobDrops',
         'GAMEPLAY_STAGE_IDS',
         'UPSTREAM_STAGE_IDS',

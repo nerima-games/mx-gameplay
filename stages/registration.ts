@@ -77,7 +77,9 @@
  * from the start is cheaper than retrofitting it.
  */
 import {
+  EYE_LEVEL_OFFSET,
   InventoryService,
+  forwardVector,
   targetBlockFromPlayerPose,
   type BlockTarget,
   type InventoryServiceApi,
@@ -152,9 +154,15 @@ import {
   canFireBow,
   BOW_MAX_RANGE,
 } from '../domain/interactions/draw-bow'
-import { shotTarget } from '../domain/interactions/bow-shot'
+import { shotTarget, type ShotHit } from '../domain/interactions/bow-shot'
 import { knockbackDirection, type KnockbackDirection } from '../domain/interactions/knockback'
-import { meleeTarget, type MeleeAttackRequest } from '../domain/interactions/melee-attack'
+import {
+  DEFAULT_MELEE_DAMAGE,
+  DEFAULT_MELEE_REACH,
+  meleeTarget,
+  meleeTargetBeforeBlock,
+  type MeleeAttackRequest,
+} from '../domain/interactions/melee-attack'
 import {
   enderPearlDisplacement,
   shouldSpawnEndermite,
@@ -897,6 +905,61 @@ export const requestMeleeAttack = (
   request: MeleeAttackRequest,
 ): Effect.Effect<void> =>
   Ref.update(state.pendingMeleeAttacks, (pending) => [...pending, request])
+
+export type TargetedPrimaryAttackResult =
+  | { readonly _tag: 'Melee'; readonly target: ShotHit }
+  | { readonly _tag: 'Block'; readonly target: BlockTarget }
+  | { readonly _tag: 'None' }
+
+export type TargetedPrimaryAttackOptions = {
+  readonly meleeReach?: number
+  readonly meleeDamage?: number
+  readonly blockReach?: number
+}
+
+/** Resolve one primary click and enqueue exactly one kind of interaction, if any. */
+export const requestTargetedPrimaryAttack = (
+  state: GameplayFrameState,
+  store: ChunkStoreApi,
+  roster: EntityManagerApi<MobBehaviour>,
+  player: PlayerServiceApi,
+  options: TargetedPrimaryAttackOptions = {},
+): Effect.Effect<TargetedPrimaryAttackResult> =>
+  Effect.gen(function* () {
+    const pose = yield* player.pose
+    const blockTarget = targetBlockFromPlayerPose(
+      pose,
+      options.blockReach ?? DEFAULT_BLOCK_REACH,
+      targetabilityFromStore(store),
+    )
+    const snapshot = yield* roster.snapshot
+    const direction = forwardVector(pose)
+    const request: MeleeAttackRequest = {
+      origin: {
+        ...pose.feetPosition,
+        y: pose.feetPosition.y + EYE_LEVEL_OFFSET,
+      },
+      direction,
+      reach: options.meleeReach ?? DEFAULT_MELEE_REACH,
+      damage: options.meleeDamage ?? DEFAULT_MELEE_DAMAGE,
+      ...(Option.isSome(blockTarget) ? { hitDistance: blockTarget.value.distance } : {}),
+    }
+    const meleeHit = meleeTargetBeforeBlock(
+      snapshot.entities,
+      request,
+      Option.isSome(blockTarget) ? blockTarget.value.distance : undefined,
+    )
+
+    if (meleeHit !== undefined) {
+      yield* requestMeleeAttack(state, request)
+      return { _tag: 'Melee' as const, target: meleeHit }
+    }
+    if (Option.isSome(blockTarget)) {
+      yield* requestBlockBreak(state, blockTarget.value.position)
+      return { _tag: 'Block' as const, target: blockTarget.value }
+    }
+    return { _tag: 'None' as const }
+  })
 
 /** Enqueue one deterministic mob spawn candidate for the entities stage. */
 export const requestMobSpawn = (

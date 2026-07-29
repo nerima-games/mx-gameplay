@@ -2,6 +2,12 @@ import type { Entity, Position } from '../entity-manager-port'
 import { HOSTILE_KINDS, type MobBehaviour } from '../entities/mob-frame'
 import { shotTarget, type ShotHit } from './bow-shot'
 
+/** Vanilla-style survival melee reach, measured from the player's eye position. */
+export const DEFAULT_MELEE_REACH = 3
+
+/** Damage dealt by an unarmed primary attack. */
+export const DEFAULT_MELEE_DAMAGE = 1
+
 export type MeleeAttackRequest = {
   readonly origin: Position
   readonly direction: Position
