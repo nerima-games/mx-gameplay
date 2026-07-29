@@ -13,7 +13,7 @@
 <!-- ------------------------------------------------------------------------- -->
 
 format: 1
-exported declarations: 376
+exported declarations: 380
 supporting declarations: 81
 
 ## Exported
@@ -820,6 +820,28 @@ type GameplayFrameState = {
     readonly fluidFrontier: Ref.Ref<ReadonlyArray<FluidWorkItem>>;
     readonly tickCount: Ref.Ref<number>;
     readonly portalDwell: Ref.Ref<PortalDwell>;
+};
+```
+
+### GeneratedWorld  `type`
+
+```ts
+type GeneratedWorld<S> = InMemoryWorld<S> & {
+    readonly worldgenChunkStore: WorldgenChunkStoreApi;
+};
+```
+
+### GeneratedWorldOptions  `type`
+
+```ts
+type GeneratedWorldOptions = {
+    readonly seed?: number;
+    readonly spawnX?: number;
+    readonly spawnZ?: number;
+    readonly yawRadians?: number;
+    readonly pitchRadians?: number;
+    readonly dimension?: Dimension;
+    readonly inventory?: ReadonlyArray<Slot>;
 };
 ```
 
@@ -1888,6 +1910,12 @@ type WorldContents = {
 };
 ```
 
+### adaptGeneratedChunkStore  `const`
+
+```ts
+const adaptGeneratedChunkStore: (store: WorldgenChunkStoreApi) => ChunkStoreApi;
+```
+
 ### addToSlots  `const`
 
 ```ts
@@ -2369,6 +2397,12 @@ const makeGameplayFrameState: Effect.Effect<GameplayFrameState>;
 
 ```ts
 const makeGameplayStages: Effect.Effect<ReadonlyArray<StageRegistration>, never, ChunkStore | EntityManager | InventoryService | PlayerService>;
+```
+
+### makeGeneratedWorld  `const`
+
+```ts
+const makeGeneratedWorld: <S>(options?: GeneratedWorldOptions) => Effect.Effect<GeneratedWorld<S>>;
 ```
 
 ### makeInMemoryChunkStore  `const`

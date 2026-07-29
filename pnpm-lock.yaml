@@ -11,6 +11,9 @@ importers:
       '@nerima-games/mc-sim':
         specifier: 0.1.1
         version: 0.1.1
+      '@nerima-games/mc-worldgen':
+        specifier: 0.1.0
+        version: 0.1.0
       effect:
         specifier: ^3.20.0
         version: 3.22.0
@@ -253,6 +256,10 @@ packages:
 
   '@nerima-games/mc-sim@0.1.1':
     resolution: {integrity: sha512-1y2imZnjMeftQOvyjk4a3LafEbLslrl6Ci4Kv6ymtpTpANx3gTQMOPaP2cUNYRzHDdyeD+dk803DEscvpgS7Gg==, tarball: https://npm.pkg.github.com/download/@nerima-games/mc-sim/0.1.1/2c3ee4bd567ee2c3e3596552260bf524e6c80fed}
+    engines: {node: '>=24.0.0', pnpm: '>=11.0.0'}
+
+  '@nerima-games/mc-worldgen@0.1.0':
+    resolution: {integrity: sha512-h4ZR7nS6N1cDiGI/4sRhRK6OfCkiB9Ie9OPAUDxmsbhMd44PxMNPGScmtFOczCyYTwLRuIw2BE82/ul8FLylUw==, tarball: https://npm.pkg.github.com/download/@nerima-games/mc-worldgen/0.1.0/c99b20a7c7b480da138adef24a30667ff8c757e0}
     engines: {node: '>=24.0.0', pnpm: '>=11.0.0'}
 
   '@oxlint/darwin-arm64@0.12.0':
@@ -1041,6 +1048,10 @@ snapshots:
   '@nerima-games/mc-sim@0.1.1':
     dependencies:
       '@nerima-games/mc-physics': 0.1.0
+      effect: 3.22.0
+
+  '@nerima-games/mc-worldgen@0.1.0':
+    dependencies:
       effect: 3.22.0
 
   '@oxlint/darwin-arm64@0.12.0':
