@@ -30,6 +30,7 @@ describe('public API surface', () => {
         'gameplayModule',
         'makeGameplayFrameState',
         'requestMobSpawn',
+        'requestMeleeAttack',
         'drainMobDrops',
         'GAMEPLAY_STAGE_IDS',
         'UPSTREAM_STAGE_IDS',
@@ -157,6 +158,9 @@ describe('public API surface', () => {
       // nowhere for a compiler to check.
       expect(Object.keys(gameplay)).toContain('repairMobBehaviour')
       expect(Object.keys(gameplay)).toContain('CREEPER_KIND')
+      expect(Object.keys(gameplay)).toContain('DROPPED_ITEM_KIND')
+      expect(Object.keys(gameplay)).toContain('spawnMobDrops')
+      expect(Object.keys(gameplay)).toContain('meleeTargetBeforeBlock')
     }),
   )
 

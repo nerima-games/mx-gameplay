@@ -368,6 +368,7 @@ describe('stage behaviour', () => {
         'pendingBowShots',
         'pendingBreaks',
         'pendingItemUses',
+        'pendingMeleeAttacks',
         'pendingPearlThrows',
         'pendingPlacements',
         'playerDamages',

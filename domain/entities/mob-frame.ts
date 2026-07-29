@@ -222,6 +222,7 @@ import {
 import type { BlockPosition, ChunkStoreApi } from '../chunk-store-port'
 import type { DeltaTimeSecs } from '../frame-contract'
 import { drawRolls, nextRoll } from '../frame-rolls'
+import { ITEM_TYPES, type ItemType } from '../item-vocabulary'
 import { carveExplosionCrater } from '../interactions/explosion-crater'
 import type { PositionKey } from '../position-key'
 import { DORMANT_FUSE, stepCreeperFuse, type CreeperFuse, type CreeperSenses } from '../mob/creeper-fuse'
@@ -316,7 +317,13 @@ export const STRUCK_ENDERMAN: EndermanFlinch = { _tag: 'Struck' }
  * writes. A behaviour that can be stored and never acted on is a save-file field
  * with no rule behind it.
  */
-export type MobBehaviour = CreeperFuse | EndermanFlinch | undefined
+export type DroppedItemBehaviour = {
+  readonly _tag: 'DroppedItem'
+  readonly item: ItemType
+  readonly count: number
+}
+
+export type MobBehaviour = CreeperFuse | EndermanFlinch | DroppedItemBehaviour | undefined
 
 /**
  * The three entity kinds this repository names.
@@ -334,6 +341,7 @@ export type MobBehaviour = CreeperFuse | EndermanFlinch | undefined
  * §7-6 already records that repoint as one line.
  */
 export const CREEPER_KIND: EntityKind = EntityKind('creeper')
+export const DROPPED_ITEM_KIND: EntityKind = EntityKind('dropped_item')
 
 /**
  * The second, and it now arrives from the spawner as well as from a host.
@@ -640,7 +648,22 @@ export const repairMobBehaviour = (kind: EntityKind, behaviour: MobBehaviour): M
     return isEndermanFlinch(behaviour) ? behaviour : STEADY_ENDERMAN
   }
 
+  if (kind === DROPPED_ITEM_KIND) {
+    return isDroppedItemBehaviour(behaviour) ? behaviour : undefined
+  }
+
   return undefined
+}
+
+export const isDroppedItemBehaviour = (value: unknown): value is DroppedItemBehaviour => {
+  if (typeof value !== 'object' || value === null) return false
+  const candidate = value as { readonly _tag?: unknown; readonly item?: unknown; readonly count?: unknown }
+  return candidate._tag === 'DroppedItem' &&
+    typeof candidate.item === 'string' &&
+    ITEM_TYPES.includes(candidate.item as ItemType) &&
+    typeof candidate.count === 'number' &&
+    Number.isInteger(candidate.count) &&
+    candidate.count > 0
 }
 
 /**
@@ -930,6 +953,10 @@ export const sweepMobs = (
 
     return Effect.map(
       roster.sweep<Blast>((entity) => {
+        if (entity.kind === DROPPED_ITEM_KIND && isDroppedItemBehaviour(entity.behaviour)) {
+          return IGNORED
+        }
+
         const distance =
           senses.target === undefined ? undefined : distanceBetween(entity.feetPosition, senses.target)
 
@@ -1162,6 +1189,10 @@ export const resolveBlasts = (
     }
 
     const casualties = yield* roster.sweep<MobCasualty>((entity) => {
+      if (entity.kind === DROPPED_ITEM_KIND && isDroppedItemBehaviour(entity.behaviour)) {
+        return IGNORED
+      }
+
       const vitals = damageFrom(blasts, entity)
 
       if (vitals === undefined) {
@@ -1262,6 +1293,10 @@ export const resolveBowHits = (
     }
 
     return yield* roster.sweep<MobCasualty>((entity) => {
+      if (entity.kind === DROPPED_ITEM_KIND && isDroppedItemBehaviour(entity.behaviour)) {
+        return IGNORED
+      }
+
       const amount = totals.get(entity.id)
       if (amount === undefined) {
         return IGNORED
@@ -1297,6 +1332,9 @@ export const resolveBowHits = (
       }
     })
   })
+
+/** Melee uses the same batched entity transition as an instantaneous bow hit. */
+export const resolveMeleeHits = resolveBowHits
 
 /**
  * Record that a blow landed, for the behaviours that care.

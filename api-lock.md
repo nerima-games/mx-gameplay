@@ -13,7 +13,7 @@
 <!-- ------------------------------------------------------------------------- -->
 
 format: 1
-exported declarations: 409
+exported declarations: 421
 supporting declarations: 61
 
 ## Exported
@@ -438,6 +438,18 @@ const DOOR_BLOCK_ID: BlockId | undefined;
 const DORMANT_FUSE: CreeperFuse;
 ```
 
+### DROPPED_ITEM_KIND  `const`
+
+```ts
+const DROPPED_ITEM_KIND: EntityKind;
+```
+
+### DROPPED_ITEM_PICKUP_RADIUS  `const`
+
+```ts
+const DROPPED_ITEM_PICKUP_RADIUS = 1.5;
+```
+
 ### DUSK_FRACTION  `const`
 
 ```ts
@@ -515,6 +527,16 @@ type DoorUpperCell = {
 ```ts
 type DropRolls = {
     readonly chance: number;
+    readonly count: number;
+};
+```
+
+### DroppedItemBehaviour  `type`
+
+```ts
+type DroppedItemBehaviour = {
+    readonly _tag: 'DroppedItem';
+    readonly item: ItemType;
     readonly count: number;
 };
 ```
@@ -817,6 +839,7 @@ type GameplayFrameState = {
     readonly pendingPlacements: Ref.Ref<ReadonlyArray<PlacementRequest>>;
     readonly pendingItemUses: Ref.Ref<ReadonlyArray<ItemUseRequest>>;
     readonly pendingBowShots: Ref.Ref<ReadonlyArray<BowShotRequest>>;
+    readonly pendingMeleeAttacks: Ref.Ref<ReadonlyArray<MeleeAttackRequest>>;
     readonly pendingPearlThrows: Ref.Ref<ReadonlyArray<EnderPearlThrowRequest>>;
     readonly leftoverItems: Ref.Ref<ReadonlyArray<MinedItem>>;
     readonly consumedItems: Ref.Ref<ReadonlyArray<PlaceableItemType>>;
@@ -1225,6 +1248,18 @@ const MIN_SPAWN_DISTANCE_BLOCKS = 16;
 const MISSING_RIPE_PRODUCE: Readonly<Partial<Record<BlockType, string>>>;
 ```
 
+### MeleeAttackRequest  `type`
+
+```ts
+type MeleeAttackRequest = {
+    readonly origin: Position;
+    readonly direction: Position;
+    readonly reach: number;
+    readonly damage: number;
+    readonly hitDistance?: number;
+};
+```
+
 ### MinedItem  `type`
 
 ```ts
@@ -1237,7 +1272,7 @@ type MinedItem = {
 ### MobBehaviour  `type`
 
 ```ts
-type MobBehaviour = CreeperFuse | EndermanFlinch | undefined;
+type MobBehaviour = CreeperFuse | EndermanFlinch | DroppedItemBehaviour | undefined;
 ```
 
 ### MobCasualty  `type`
@@ -2500,6 +2535,12 @@ const isDead: (vitals: Vitals) => boolean;
 const isDoorBlock: (block: BlockId) => boolean;
 ```
 
+### isDroppedItemBehaviour  `const`
+
+```ts
+const isDroppedItemBehaviour: (value: unknown) => value is DroppedItemBehaviour;
+```
+
 ### isIgnitionItem  `const`
 
 ```ts
@@ -2632,6 +2673,18 @@ const makeInMemoryWorld: <S>(options?: InMemoryWorldOptions) => Effect.Effect<In
 const maxHealthOfKind: (kind: EntityKind) => number;
 ```
 
+### meleeTarget  `const`
+
+```ts
+const meleeTarget: (candidates: ReadonlyArray<Entity<MobBehaviour>>, request: MeleeAttackRequest) => ShotHit | undefined;
+```
+
+### meleeTargetBeforeBlock  `const`
+
+```ts
+const meleeTargetBeforeBlock: (candidates: ReadonlyArray<Entity<MobBehaviour>>, request: Omit<MeleeAttackRequest, "hitDistance">, blockDistance: number | undefined) => ShotHit | undefined;
+```
+
 ### mintEntityId  `const`
 
 ```ts
@@ -2681,6 +2734,12 @@ const normaliseSeed: (seed: number) => number;
 
 ```ts
 const openChunkWindow: (store: ChunkStoreApi, coords: ReadonlyArray<ChunkCoord>) => Effect.Effect<ChunkWindow>;
+```
+
+### pickupDroppedItems  `const`
+
+```ts
+const pickupDroppedItems: (roster: EntityManagerApi<MobBehaviour>, inventory: InventoryServiceApi, playerPosition: Position | undefined, radius?: number) => Effect.Effect<void>;
 ```
 
 ### placeBlock  `const`
@@ -2764,6 +2823,12 @@ const requestBlockPlacement: (state: GameplayFrameState, request: PlacementReque
 const requestBowShot: (state: GameplayFrameState, request: BowShotRequest) => Effect.Effect<void>;
 ```
 
+### requestMeleeAttack  `const`
+
+```ts
+const requestMeleeAttack: (state: GameplayFrameState, request: MeleeAttackRequest) => Effect.Effect<void>;
+```
+
 ### requestMobSpawn  `const`
 
 ```ts
@@ -2804,6 +2869,12 @@ const resolveHostileContacts: <S>(entities: ReadonlyArray<Entity<S>>, target: Po
 
 ```ts
 const resolveInteractionIntent: (snapshot: InteractionSnapshot) => InteractionIntent;
+```
+
+### resolveMeleeHits  `const`
+
+```ts
+const resolveMeleeHits: (roster: EntityManagerApi<MobBehaviour>, hits: ReadonlyArray<BowHit>) => Effect.Effect<ReadonlyArray<MobCasualty>>;
 ```
 
 ### resolveNextWeatherState  `const`
@@ -2937,6 +3008,18 @@ const solidityFromStore: (store: ChunkStoreApi) => (position: {
     readonly y: number;
     readonly z: number;
 }) => boolean;
+```
+
+### spawnMobDrop  `const`
+
+```ts
+const spawnMobDrop: (roster: EntityManagerApi<MobBehaviour>, drop: MobDropEvent) => Effect.Effect<Entity<MobBehaviour>>;
+```
+
+### spawnMobDrops  `const`
+
+```ts
+const spawnMobDrops: (roster: EntityManagerApi<MobBehaviour>, drops: ReadonlyArray<MobDropEvent>) => Effect.Effect<ReadonlyArray<Entity<MobBehaviour>>>;
 ```
 
 ### splitBudget  `const`

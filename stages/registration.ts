@@ -93,6 +93,7 @@ import {
   applySpawnAttempts,
   resolveBlasts,
   resolveBowHits,
+  resolveMeleeHits,
   rollCasualtyDrops,
   rollSelfDestructDrops,
   sweepMobs,
@@ -103,6 +104,7 @@ import {
   type MobBehaviour,
   type MobSpawnAttempt,
 } from '../domain/entities/mob-frame'
+import { pickupDroppedItems } from '../domain/entities/dropped-item'
 import { searchSpawnCandidates } from '../domain/entities/mob-spawn-search'
 import {
   entityManagerTag,
@@ -152,6 +154,7 @@ import {
 } from '../domain/interactions/draw-bow'
 import { shotTarget } from '../domain/interactions/bow-shot'
 import { knockbackDirection, type KnockbackDirection } from '../domain/interactions/knockback'
+import { meleeTarget, type MeleeAttackRequest } from '../domain/interactions/melee-attack'
 import {
   enderPearlDisplacement,
   shouldSpawnEndermite,
@@ -479,6 +482,7 @@ export type GameplayFrameState = {
   readonly pendingPlacements: Ref.Ref<ReadonlyArray<PlacementRequest>>
   readonly pendingItemUses: Ref.Ref<ReadonlyArray<ItemUseRequest>>
   readonly pendingBowShots: Ref.Ref<ReadonlyArray<BowShotRequest>>
+  readonly pendingMeleeAttacks: Ref.Ref<ReadonlyArray<MeleeAttackRequest>>
   readonly pendingPearlThrows: Ref.Ref<ReadonlyArray<EnderPearlThrowRequest>>
   readonly leftoverItems: Ref.Ref<ReadonlyArray<MinedItem>>
   readonly consumedItems: Ref.Ref<ReadonlyArray<PlaceableItemType>>
@@ -687,6 +691,7 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
   const pendingPlacements = yield* Ref.make<ReadonlyArray<PlacementRequest>>([])
   const pendingItemUses = yield* Ref.make<ReadonlyArray<ItemUseRequest>>([])
   const pendingBowShots = yield* Ref.make<ReadonlyArray<BowShotRequest>>([])
+  const pendingMeleeAttacks = yield* Ref.make<ReadonlyArray<MeleeAttackRequest>>([])
   const pendingPearlThrows = yield* Ref.make<ReadonlyArray<EnderPearlThrowRequest>>([])
   // Empty is the ORDINARY state, unlike the outbox it replaces: an entry here
   // means an item the inventory had no room for. See the module header.
@@ -731,6 +736,7 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
     pendingPlacements,
     pendingItemUses,
     pendingBowShots,
+    pendingMeleeAttacks,
     pendingPearlThrows,
     leftoverItems,
     consumedItems,
@@ -885,6 +891,13 @@ export const requestBowShot = (
 ): Effect.Effect<void> =>
   Ref.update(state.pendingBowShots, (pending) => [...pending, request])
 
+/** Enqueue one melee swing for the next interaction stage. */
+export const requestMeleeAttack = (
+  state: GameplayFrameState,
+  request: MeleeAttackRequest,
+): Effect.Effect<void> =>
+  Ref.update(state.pendingMeleeAttacks, (pending) => [...pending, request])
+
 /** Enqueue one deterministic mob spawn candidate for the entities stage. */
 export const requestMobSpawn = (
   state: GameplayFrameState,
@@ -982,6 +995,10 @@ export const gameplayStages = (
           state.pendingBowShots,
           [],
         )
+        const meleeAttacks = yield* Ref.getAndSet<ReadonlyArray<MeleeAttackRequest>>(
+          state.pendingMeleeAttacks,
+          [],
+        )
         const pearlThrows = yield* Ref.getAndSet<ReadonlyArray<EnderPearlThrowRequest>>(
           state.pendingPearlThrows,
           [],
@@ -991,6 +1008,7 @@ export const gameplayStages = (
           placements.length === 0 &&
           itemUses.length === 0 &&
           bowShots.length === 0 &&
+          meleeAttacks.length === 0 &&
           pearlThrows.length === 0
         ) {
           return
@@ -1243,11 +1261,23 @@ export const gameplayStages = (
         // ONE SWEEP FOR EVERY HIT — `resolveBowHits` argues it, and it is
         // `resolveBlasts`' argument with the nouns changed.
         const bowCasualties = yield* resolveBowHits(roster, bowHits)
-        if (bowCasualties.length > 0) {
+        const meleeHits: Array<BowHit> = []
+        if (meleeAttacks.length > 0) {
+          const candidates = yield* roster.entities
+          for (const attack of meleeAttacks) {
+            const hit = meleeTarget(candidates, attack)
+            if (hit !== undefined) {
+              meleeHits.push({ id: hit.id, damage: attack.damage })
+            }
+          }
+        }
+        const meleeCasualties = yield* resolveMeleeHits(roster, meleeHits)
+        const weaponCasualties = [...bowCasualties, ...meleeCasualties]
+        if (weaponCasualties.length > 0) {
           // The same atomic seed step the blast path uses, and for the same
           // reason: a split read/write would let two frames draw one sequence.
           const drops = yield* Ref.modify(state.rollSeed, (seed) => {
-            const rolled = rollCasualtyDrops(bowCasualties, seed)
+            const rolled = rollCasualtyDrops(weaponCasualties, seed)
             return [rolled.drops, rolled.seed] as const
           })
           if (drops.length > 0) {
@@ -1469,6 +1499,10 @@ export const gameplayStages = (
           if (disturbed.length > 0) {
             yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, disturbed))
           }
+        }
+
+        if (targetPosition !== undefined) {
+          yield* pickupDroppedItems(roster, inventory, targetPosition)
         }
 
         const contact = resolveHostileContacts(
