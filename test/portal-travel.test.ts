@@ -1,4 +1,5 @@
 import { describe, expect, it } from '@effect/vitest'
+import { makeTimeService } from '@nerima-games/mc-sim'
 import { Effect, Option, Ref } from 'effect'
 import { type BlockPosition } from '../domain/chunk-store-port'
 import { NETHER_HORIZONTAL_RATIO } from '../domain/nether-travel-port'
@@ -242,11 +243,12 @@ describe('REACHABILITY: the interactions stage performs the crossing', () => {
     const roster = yield* makeEntityManagerDouble<MobBehaviour>()
     const inventory = yield* makeInventoryDouble()
     const player = yield* makePlayerServiceDouble()
+    const time = yield* makeTimeService()
     const state = yield* makeGameplayFrameState
     return {
       player,
       state,
-      stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api),
+      stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api, time),
     }
   })
 
@@ -277,8 +279,9 @@ describe('REACHABILITY: the interactions stage performs the crossing', () => {
       const roster = yield* makeEntityManagerDouble<MobBehaviour>()
       const inventory = yield* makeInventoryDouble()
       const player = yield* makePlayerServiceDouble()
+      const time = yield* makeTimeService()
       const state = yield* makeGameplayFrameState
-      const stages = gameplayStages(state, store.api, roster.api, inventory.api, player.api)
+      const stages = gameplayStages(state, store.api, roster.api, inventory.api, player.api, time)
 
       yield* runFrames(stages, 600, DeltaTimeSecs(0.016))
 

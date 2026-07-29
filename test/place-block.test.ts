@@ -34,6 +34,7 @@
  * off the stack.
  */
 import { describe, expect, it } from '@effect/vitest'
+import { makeTimeService } from '@nerima-games/mc-sim'
 import { Effect, Ref } from 'effect'
 import { positionKeyOf } from '../domain/block-position-key'
 import { StackCount } from '../domain/frame-contract'
@@ -994,8 +995,15 @@ const stagedSlice = (
       return undefined
     })
     const inventory = yield* makeInventoryDouble(initialInventory)
+    const time = yield* makeTimeService()
     const state = yield* makeGameplayFrameState
-    return { store, state, inventory, stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api) }
+    return {
+      store,
+      state,
+      inventory,
+      player,
+      stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api, time),
+    }
   })
 
 describe('placement through gameplay:interactions', () => {
@@ -1146,15 +1154,18 @@ describe('placement through gameplay:interactions', () => {
     }),
   )
 
-  // The player's pose reaches the rule through `targetPosition`, which is the
-  // inbox `stages/registration.ts` argues at length. If the stage forgot to pass
-  // it, every placement would succeed and the suffocation guard would be dead
-  // code behind a passing unit test.
-  it.effect('REGRESSION: the stage passes the player’s position, so the body guard is live', () =>
+  // PlayerService is authoritative. Keep the compatibility Ref deliberately
+  // stale so this also detects any accidental fallback to the old inbox.
+  it.effect('REGRESSION: the stage reads the latest PlayerService pose, so the body guard is live', () =>
     Effect.gen(function* () {
-      const { store, state, stages } = yield* stagedSlice([[below, STONE]])
+      const { store, state, player, stages } = yield* stagedSlice([[below, STONE]])
 
       yield* Ref.set(state.targetPosition, {
+        x: target.x + 20.5,
+        y: target.y,
+        z: target.z + 20.5,
+      })
+      yield* player.api.moveTo({
         x: target.x + 0.5,
         y: target.y,
         z: target.z + 0.5,

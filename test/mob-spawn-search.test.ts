@@ -12,6 +12,7 @@
  * at a cost that can be stated.
  */
 import { describe, expect, it } from '@effect/vitest'
+import { makeTimeService } from '@nerima-games/mc-sim'
 import { Effect, Ref } from 'effect'
 import { AIR_BLOCK_ID, type BlockPosition, type ChunkStoreApi } from '../domain/chunk-store-port'
 import type { Position } from '../domain/entity-manager-port'
@@ -648,12 +649,13 @@ describe('the search inside the frame', () => {
       const roster = yield* makeEntityManagerDouble<MobBehaviour>()
       const player = yield* makePlayerServiceDouble()
       const inventory = yield* makeInventoryDouble()
+      const time = yield* makeTimeService()
       const state = yield* makeGameplayFrameState
-      const stages = gameplayStages(state, store.api, roster.api, inventory.api, player.api)
+      const stages = gameplayStages(state, store.api, roster.api, inventory.api, player.api, time)
 
-      // Midnight is the default, so only the player has to be supplied — which
-      // is the same one line a host writes for the creeper's ignition range.
-      yield* Ref.set(state.targetPosition, PLAYER)
+      // The authoritative mc-sim services supply both inputs to the stage.
+      yield* player.api.moveTo(PLAYER)
+      yield* time.setTimeOfDay(MIDNIGHT)
       expect(yield* Ref.get(state.timeOfDay)).toBe(MIDNIGHT)
 
       const entities = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.entities)
@@ -701,11 +703,13 @@ describe('the search inside the frame', () => {
       const roster = yield* makeEntityManagerDouble<MobBehaviour>()
       const player = yield* makePlayerServiceDouble()
       const inventory = yield* makeInventoryDouble()
+      const time = yield* makeTimeService()
       const state = yield* makeGameplayFrameState
-      const stages = gameplayStages(state, store.api, roster.api, inventory.api, player.api)
+      const stages = gameplayStages(state, store.api, roster.api, inventory.api, player.api, time)
 
       const offeredAt: Position = { x: -20, y: 64, z: -20 }
-      yield* Ref.set(state.targetPosition, PLAYER)
+      yield* player.api.moveTo(PLAYER)
+      yield* time.setTimeOfDay(MIDNIGHT)
       yield* Ref.set(state.spawnAttempts, [
         {
           candidate: {
@@ -747,11 +751,13 @@ describe('the search inside the frame', () => {
       const roster = yield* makeEntityManagerDouble<MobBehaviour>()
       const player = yield* makePlayerServiceDouble()
       const inventory = yield* makeInventoryDouble()
+      const time = yield* makeTimeService()
       const state = yield* makeGameplayFrameState
-      const stages = gameplayStages(state, store.api, roster.api, inventory.api, player.api)
+      const stages = gameplayStages(state, store.api, roster.api, inventory.api, player.api, time)
 
-      yield* Ref.set(state.targetPosition, PLAYER)
-      yield* Ref.set(state.timeOfDay, 0.5)
+      yield* player.api.moveTo(PLAYER)
+      yield* Ref.set(state.timeOfDay, MIDNIGHT)
+      yield* time.setTimeOfDay(0.5)
 
       const entities = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.entities)
       for (let frame = 0; frame < 10; frame += 1) {

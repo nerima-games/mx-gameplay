@@ -1210,10 +1210,11 @@ type InMemoryVitalsApi = {
 
 ```ts
 type InMemoryWorld<S> = {
-    readonly layer: Layer.Layer<ChunkStore | EntityManager | InventoryService | PlayerService>;
+    readonly layer: Layer.Layer<ChunkStore | EntityManager | InventoryService | PlayerService | TimeService>;
     readonly chunkStore: ChunkStoreApi;
     readonly inventory: InventoryServiceApi;
     readonly player: PlayerServiceApi;
+    readonly time: TimeServiceApi;
     readonly entities: EntityManagerApi<S>;
     readonly vitals: InMemoryVitalsApi;
 };
@@ -2664,13 +2665,13 @@ const fullHealth: Vitals;
 ### gameplayModule  `const`
 
 ```ts
-const gameplayModule: GameModule<never, never, never, ChunkStore | EntityManager | InventoryService | PlayerService>;
+const gameplayModule: GameModule<never, never, never, ChunkStore | EntityManager | InventoryService | PlayerService | TimeService>;
 ```
 
 ### gameplayStages  `const`
 
 ```ts
-const gameplayStages: (state: GameplayFrameState, store: ChunkStoreApi, roster: EntityManagerApi<MobBehaviour>, inventory: InventoryServiceApi, player: PlayerServiceApi) => ReadonlyArray<StageRegistration>;
+const gameplayStages: (state: GameplayFrameState, store: ChunkStoreApi, roster: EntityManagerApi<MobBehaviour>, inventory: InventoryServiceApi, player: PlayerServiceApi, time: TimeServiceApi) => ReadonlyArray<StageRegistration>;
 ```
 
 ### hasClearCactusHorizontalSides  `const`
@@ -2838,7 +2839,7 @@ const makeGameplayFrameState: Effect.Effect<GameplayFrameState>;
 ### makeGameplayStages  `const`
 
 ```ts
-const makeGameplayStages: Effect.Effect<ReadonlyArray<StageRegistration>, never, ChunkStore | EntityManager | InventoryService | PlayerService>;
+const makeGameplayStages: Effect.Effect<ReadonlyArray<StageRegistration>, never, ChunkStore | EntityManager | InventoryService | PlayerService | TimeService>;
 ```
 
 ### makeGeneratedWorld  `const`

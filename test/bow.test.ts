@@ -14,6 +14,7 @@
  * here. `domain/interactions/draw-bow.ts`'s header carries the measurement.
  */
 import { describe, expect, it } from '@effect/vitest'
+import { makeTimeService } from '@nerima-games/mc-sim'
 import { Effect } from 'effect'
 import {
   bowCharge,
@@ -630,12 +631,13 @@ const scene = (initial: EntityRoster<MobBehaviour>) =>
     const roster = yield* makeEntityManagerDouble<MobBehaviour>(initial)
     const player = yield* makePlayerServiceDouble()
     const inventory = yield* makeInventoryDouble()
+    const time = yield* makeTimeService()
     const state = yield* makeGameplayFrameState
     return {
       roster,
       state,
       inventory,
-      stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api),
+      stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api, time),
     }
   })
 

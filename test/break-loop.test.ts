@@ -97,7 +97,7 @@ describe('the break loop', () => {
     Effect.gen(function* () {
       const world = yield* lookingAtBlockWorld(true, LEVER_ID)
       const state = yield* makeGameplayFrameState
-      const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player)
+      const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player, world.time)
 
       yield* requestTargetedBlockUse(
         state,
@@ -151,7 +151,7 @@ describe('the break loop', () => {
     Effect.gen(function* () {
       const world = yield* lookingAtBlockWorld(true, LEVER_ID)
       const state = yield* makeGameplayFrameState
-      const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player)
+      const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player, world.time)
 
       yield* requestTargetedBlockUse(
         state,
@@ -198,7 +198,7 @@ describe('the break loop', () => {
     Effect.gen(function* () {
       const world = yield* lookingAtBlockWorld(true)
       const state = yield* makeGameplayFrameState
-      const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player)
+      const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player, world.time)
 
       const target = yield* requestTargetedBlockBreak(state, world.chunkStore, world.player)
       expect(Option.getOrUndefined(target)?.position).toStrictEqual(IN_SIGHT)
@@ -224,7 +224,7 @@ describe('the break loop', () => {
     Effect.gen(function* () {
       const world = yield* oneBlockWorld()
       const state = yield* makeGameplayFrameState
-      const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player)
+      const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player, world.time)
 
       expect((yield* world.chunkStore.getBlock(AT))._tag).toBe('Block')
 
@@ -244,7 +244,7 @@ describe('the break loop', () => {
       // rather than a boolean.
       const world = yield* oneBlockWorld()
       const state = yield* makeGameplayFrameState
-      const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player)
+      const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player, world.time)
 
       yield* requestBlockBreak(state, AT)
       yield* runInteractions(stages as never)
@@ -259,7 +259,7 @@ describe('the break loop', () => {
     Effect.gen(function* () {
       const world = yield* oneBlockWorld(blockIdOf('redstone_wire') ?? -1)
       const state = yield* makeGameplayFrameState
-      const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player)
+      const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player, world.time)
 
       yield* requestBlockBreak(state, AT)
       yield* runInteractions(stages as never)
@@ -275,7 +275,7 @@ describe('the break loop', () => {
       // once the cell is air, and a duplicate drop every frame until it is.
       const world = yield* oneBlockWorld()
       const state = yield* makeGameplayFrameState
-      const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player)
+      const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player, world.time)
 
       yield* requestBlockBreak(state, AT)
       yield* runInteractions(stages as never)
@@ -297,7 +297,7 @@ describe('the break loop', () => {
         world: { blocks: new Map(), loaded: [chunkKey(chunkOf(AT))] },
       })
       const state = yield* makeGameplayFrameState
-      const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player)
+      const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player, world.time)
 
       yield* requestBlockBreak(state, AT)
       yield* runInteractions(stages as never)
@@ -316,7 +316,7 @@ describe('the break loop', () => {
         world: { blocks: new Map(), loaded: [] },
       })
       const state = yield* makeGameplayFrameState
-      const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player)
+      const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player, world.time)
 
       yield* requestBlockBreak(state, AT)
       yield* runInteractions(stages as never)
@@ -333,7 +333,7 @@ describe('the break loop', () => {
       const world = yield* oneBlockWorld()
       const subscription = yield* world.chunkStore.subscribeDirty
       const state = yield* makeGameplayFrameState
-      const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player)
+      const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player, world.time)
 
       yield* requestBlockBreak(state, AT)
       yield* runInteractions(stages as never)

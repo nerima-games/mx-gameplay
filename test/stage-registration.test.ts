@@ -23,7 +23,12 @@ import {
 } from '../domain/entity-manager-port'
 import { BOW_TARGET_CENTER_Y_OFFSET } from '../domain/interactions/bow-shot'
 import { BOW_FULL_CHARGE_SECS, BOW_MIN_CHARGE_SECS } from '../domain/interactions/draw-bow'
-import type { InventoryService } from '@nerima-games/mc-sim'
+import {
+  TimeService,
+  TimeServiceLayer,
+  makeTimeService,
+  type InventoryService,
+} from '@nerima-games/mc-sim'
 import {
   DeltaTimeSecs,
   MAX_STACK_COUNT,
@@ -82,6 +87,7 @@ const emptyWorld = Layer.mergeAll(
   emptyInventoryLayer,
   // mc-sim's PlayerService, which `stepPortalTravel` reads every frame.
   playerDoubleLayer,
+  TimeServiceLayer(),
 )
 
 const registeredStages = Effect.provide(makeGameplayStages, emptyWorld)
@@ -93,12 +99,13 @@ const builtStages = Effect.gen(function* () {
   const roster = yield* makeEntityManagerDouble<MobBehaviour>()
   const player = yield* makePlayerServiceDouble()
   const inventory = yield* makeInventoryDouble()
+  const time = yield* makeTimeService()
   return {
     state,
     store,
     roster,
     inventory,
-    stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api),
+    stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api, time),
   }
 })
 
@@ -484,7 +491,8 @@ describe('stage behaviour', () => {
       const roster = yield* makeEntityManagerDouble<MobBehaviour>(target)
       const player = yield* makePlayerServiceDouble()
       const inventory = yield* makeInventoryDouble()
-      const stages = gameplayStages(state, store.api, roster.api, inventory.api, player.api)
+      const time = yield* makeTimeService()
+      const stages = gameplayStages(state, store.api, roster.api, inventory.api, player.api, time)
 
       yield* requestBowShot(state, 'wall-shot', {
         origin: { x: 0, y: 64, z: 0 },
@@ -763,7 +771,7 @@ describe('the module contract has caught up with this file’s shape', () => {
         never,
         never,
         never,
-        ChunkStore | EntityManager | InventoryService | PlayerService
+        ChunkStore | EntityManager | InventoryService | PlayerService | TimeService
       > = gameplayModule
       const stages = yield* Effect.provide(module.frameStages, emptyWorld)
 
@@ -783,7 +791,7 @@ describe('the module contract has caught up with this file’s shape', () => {
     }),
   )
 
-  // This has now read TWO, then THREE, and reads FOUR. Each step discharged a
+  // This has now read TWO, then THREE, then FOUR, and reads FIVE. Each step discharged a
   // prediction the previous comment had written down by name, which is why the
   // history is kept rather than overwritten:
   //
@@ -795,6 +803,8 @@ describe('the module contract has caught up with this file’s shape', () => {
   //          `PlayerService`, and it cannot be mirrored whole … `cameraPose`
   //          requires `ClockPort`, and restating `ClockPort` locally is 『a far
   //          worse failure than a narrower type』」.
+  //   FOUR  -> FIVE:  `TimeService` became the authoritative clock so gameplay
+  //          consumes the time advanced by mc-sim earlier in the same frame.
   //
   // THAT SECOND PREDICTION WAS RIGHT ABOUT THE CANDIDATE AND WRONG ABOUT THE
   // OBSTACLE. `domain/frame-contract.ts` carries `ClockPort` in the kernel
@@ -806,21 +816,21 @@ describe('the module contract has caught up with this file’s shape', () => {
   //
   // `RIn` is still `never` and that is the distinction `RRegister` exists for.
   // This repository BUILDS nothing another repository has to supply; it CALLS
-  // what mc-worldgen and mc-sim supply. Any of the three leaking into `RIn`
+  // what mc-worldgen and mc-sim supply. Any registration service leaking into `RIn`
   // would be mx-gameplay claiming to construct part of somebody else's
   // repository.
-  it.effect('acquires exactly four services to register — store, roster, inventory and player', () =>
+  it.effect('acquires exactly five services to register — store, roster, inventory, player and time', () =>
     Effect.gen(function* () {
       const registration: Effect.Effect<
         ReadonlyArray<StageRegistration>,
         never,
-        ChunkStore | EntityManager | InventoryService | PlayerService
+        ChunkStore | EntityManager | InventoryService | PlayerService | TimeService
       > = gameplayModule.frameStages
 
-      // Providing those four — and nothing else — discharges the whole context.
-      // If a stage started demanding a FIFTH service at REGISTRATION time, this
+      // Providing those five — and nothing else — discharges the whole context.
+      // If a stage started demanding a SIXTH service at REGISTRATION time, this
       // assignment would stop compiling, which is the point. There is no named
-      // candidate for a fifth today, and inventing one here would be the
+      // candidate for a sixth today, and inventing one here would be the
       // speculation this file's history is a record of NOT doing.
       const satisfied: Effect.Effect<ReadonlyArray<StageRegistration>, never, never> =
         Effect.provide(registration, emptyWorld)
@@ -839,7 +849,7 @@ describe('the module contract has caught up with this file’s shape', () => {
       const unparameterised: Effect.Effect<
         ReadonlyArray<StageRegistration>,
         never,
-        ChunkStore | EntityManager | InventoryService | PlayerService
+        ChunkStore | EntityManager | InventoryService | PlayerService | TimeService
       > = makeGameplayStages
 
       expect(typeof unparameterised).toBe('object')

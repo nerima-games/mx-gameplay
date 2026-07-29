@@ -36,7 +36,14 @@
  */
 import { Effect, Layer } from 'effect'
 import { capabilityOfBlockId } from '@nerima-games/mc-kernel'
-import { InventoryService, type InventoryServiceApi, type Slot } from '@nerima-games/mc-sim'
+import {
+  InventoryService,
+  TimeService,
+  makeTimeService,
+  type InventoryServiceApi,
+  type Slot,
+  type TimeServiceApi,
+} from '@nerima-games/mc-sim'
 import {
   BlockId as WorldgenBlockId,
   blockPosition as worldgenBlockPosition,
@@ -82,15 +89,18 @@ export type GeneratedWorldOptions = {
 /**
  * The service handles, plus the Layer that provides the stage-facing services.
  *
- * `layer` is what `registerModule` is provided from; the four handles are for
+ * `layer` is what `registerModule` is provided from; the five handles are for
  * a host loop that drives them directly. They are the SAME objects — see the
  * header on why that matters more than it looks.
  */
 export type InMemoryWorld<S> = {
-  readonly layer: Layer.Layer<ChunkStore | EntityManager | InventoryService | PlayerService>
+  readonly layer: Layer.Layer<
+    ChunkStore | EntityManager | InventoryService | PlayerService | TimeService
+  >
   readonly chunkStore: ChunkStoreApi
   readonly inventory: InventoryServiceApi
   readonly player: PlayerServiceApi
+  readonly time: TimeServiceApi
   readonly entities: EntityManagerApi<S>
   readonly vitals: InMemoryVitalsApi
 }
@@ -138,16 +148,18 @@ const makeWorldWithStore = <S>(
     const inventory = yield* makeInMemoryInventory(options.inventory)
     const player = yield* makeInMemoryPlayer(options.spawnPose, options.dimension)
     const entities = yield* makeInMemoryEntityManager<S>()
+    const time = yield* makeTimeService()
     const vitals = yield* makeInMemoryVitals(options.vitals)
 
     const layer = Layer.mergeAll(
       Layer.succeed(ChunkStore, chunkStore),
       Layer.succeed(InventoryService, inventory),
       Layer.succeed(PlayerService, player),
+      Layer.succeed(TimeService, time),
       Layer.succeed(entityManagerTag<S>(), entities),
     )
 
-    return { layer, chunkStore, inventory, player, entities, vitals }
+    return { layer, chunkStore, inventory, player, time, entities, vitals }
   })
 
 /**

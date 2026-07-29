@@ -80,10 +80,12 @@ import { capabilityOfBlockId } from '@nerima-games/mc-kernel'
 import {
   EYE_LEVEL_OFFSET,
   InventoryService,
+  TimeService,
   forwardVector,
   targetBlockFromPlayerPose,
   type BlockTarget,
   type InventoryServiceApi,
+  type TimeServiceApi,
 } from '@nerima-games/mc-sim'
 import { Effect, Layer, Option, Ref } from 'effect'
 import { below, positionKeyOf, positionOfKey } from '../domain/block-position-key'
@@ -312,36 +314,10 @@ const NO_ATTEMPTS: ReadonlyArray<never> = []
  *
  * FOUR MORE ARRIVED WITH THE MOB WIRING, and each is one of the same two shapes.
  *
- *   - `targetPosition` is an INBOX and the one that most looks like a mistake, so
- *     it is argued rather than asserted. The player's pose is saved state and it
- *     is mc-sim's `PlayerService`; a second owner of it here would be exactly the
- *     `timeOfDaySecs` failure this file records. It is not one, for the reason
- *     `minedItems` is not an inventory: the frame WRITES it and the stage READS
- *     it within the same frame, it answers no question about where anybody is,
- *     nothing reads it after the frame that filled it, and it is overwritten
- *     rather than accumulated. What it stands in for is `(yield* player.pose)
- *     .feetPosition`, which mc-sim's §7-5 spells out as the host's second line —
- *     and which STILL cannot be written, for a reason that is no longer the one
- *     this paragraph used to give.
- *
- *     THE OLD REASON IS GONE. It read: 「`PlayerService.cameraPose` requires
- *     `ClockPort` and `domain/frame-contract.ts` names restating `ClockPort`
- *     locally as 「a far worse failure than a narrower type」. So the port that
- *     would carry it cannot be mirrored whole」. `domain/player-port.ts` exists
- *     now and mirrors all six members with `cameraPose`'s requirement intact;
- *     `domain/frame-contract.ts`'s clock section records why the refusal it
- *     rested on was wrong, and mc-compose is the repository that had already
- *     written the refutation down.
- *
- *     WHAT REPLACES IT IS SMALLER AND IS NOT ABOUT THE CLOCK. Reading
- *     `(yield* player.pose).feetPosition` here means naming `PlayerService` in
- *     `makeGameplayStages`, which puts it into `api-lock.md`'s supporting
- *     declarations and moves this package's published surface. That is a
- *     deliberate act with a four-week publish clock attached to it, and it is
- *     not worth spending on a Ref that already works — so the inbox stays until
- *     something needs the port for a reason of its own. The portal row was going
- *     to be that reason and is not: see `domain/player-port.ts`'s header on the
- *     noun that has no owner.
+ *   - `targetPosition` is a compatibility inbox retained for hosts that still
+ *     write or inspect it. Gameplay stages never consume it: player position is
+ *     authoritative in mc-sim and is read from `PlayerService.pose` after the
+ *     simulation physics stage has completed.
  *
  *   - `spawnAttempts` is an INBOX of candidate cells. It used to be the ONLY way
  *     a candidate could arrive, because 「the SEARCH that produces them is not
@@ -351,41 +327,9 @@ const NO_ATTEMPTS: ReadonlyArray<never> = []
  *     `pendingBreaks` lets one offer a break. What changed is that an empty
  *     inbox no longer means no spawns.
  *
- *   - `timeOfDay` is an INBOX, and it is `targetPosition`'s twin in every
- *     respect including the objection. The hour is saved state and it is
- *     mc-sim's `TimeService` — this file's own header records DELETING a
- *     `timeOfDaySecs` Ref for precisely that reason, and doing it again would be
- *     the same mistake with a shorter name.
- *
- *     It is not the same thing, and the difference is the one that made
- *     `targetPosition` acceptable: THIS REF DOES NOT ADVANCE. Nothing here
- *     increments it, nothing derives a day length from it, and no rule asks it a
- *     question — the frame writes this frame's hour, the entities stage reads it
- *     within the same frame, and it is overwritten rather than accumulated. The
- *     deleted Ref failed the save-file test because a save file needs the time
- *     of day AND this file was the thing computing it. A save file does not need
- *     a copy of a number that mc-sim already holds and that is rewritten every
- *     frame.
- *
- *     What it stands in for is `(yield* time.timeOfDay)`, one line in the host,
- *     and it is not written yet for `targetPosition`'s replacement reason rather
- *     than its old one. The old one said 「`TimeService` cannot be mirrored whole
- *     without restating `ClockPort`」 and that is simply no longer true —
- *     `domain/frame-contract.ts` names `ClockPort`, and `domain/player-port.ts`
- *     is the worked example of a whole mirror of a mc-sim service that needs it.
- *     A `domain/time-port.ts` is now an ordinary afternoon's transcription.
- *
- *     WHAT IS LEFT IS THE PUBLISHED SURFACE, and it is a smaller claim: naming
- *     `TimeService` in `makeGameplayStages` moves `api-lock.md`. The Ref works,
- *     nothing is blocked behind it, and the mirror should land on the day
- *     something wants the hour for a reason this file does not already serve.
- *
- *     IT DEFAULTS TO MIDNIGHT — `0`, which `domain/day-night.ts` reads as night
- *     and which therefore ALLOWS hostile spawns. That is the permissive
- *     direction and it is chosen deliberately over noon: a host that forgets to
- *     write the hour gets a world that spawns mobs, which is visible in the
- *     first minute, rather than a world that silently never spawns anything and
- *     looks like a broken search.
+ *   - `timeOfDay` is the matching compatibility inbox. Gameplay stages never
+ *     consume it: hostile-spawn decisions read `TimeService.timeOfDay`, whose
+ *     value has already been advanced by mc-sim's time stage in the same frame.
  *
  *   - `mobDrops` is an OUTBOX because mob death and dropped-item spawning are
  *     separate frame seams. Mining overflow does not use it: its source cell is
@@ -1138,6 +1082,7 @@ export const gameplayStages = (
   roster: EntityManagerApi<MobBehaviour>,
   inventory: InventoryServiceApi,
   player: PlayerServiceApi,
+  time: TimeServiceApi,
 ): ReadonlyArray<StageRegistration> => [
   {
     id: GAMEPLAY_STAGE_IDS.interactions,
@@ -1229,7 +1174,7 @@ export const gameplayStages = (
         // change while this loop runs, and re-reading it per block would be a
         // `Ref.get` per swing that could only ever return the same value.
         const tool = yield* Ref.get(state.heldTool)
-        const playerFeet = yield* Ref.get(state.targetPosition)
+        const playerFeet = (yield* player.pose).feetPosition
 
         for (const positionKey of breaks) {
           const breakPosition = positionOfKey(positionKey)
@@ -1298,9 +1243,7 @@ export const gameplayStages = (
           const outcome = yield* placeBlock(store, {
             position: positionOfKey(request.positionKey),
             heldItem: request.heldItem,
-            // `undefined` means "there is nobody there", which the rule reads as
-            // "no body to place inside" rather than as a body at the origin.
-            ...(playerFeet === undefined ? {} : { playerFeet }),
+            playerFeet,
           })
 
           switch (outcome._tag) {
@@ -1595,18 +1538,6 @@ export const gameplayStages = (
             // ABSOLUTE position, which this arm has only as the player's feet
             // plus the displacement it just computed.
             //
-            // NO FEET, NO ENDERMITE. `targetPosition` is `undefined` when the host
-            // has not told this frame where the player is, and the alternatives
-            // are both worse than skipping: spawning at the origin puts a mob at
-            // world zero, and spawning at the bare displacement puts it wherever
-            // the player would be if they were standing at world zero. The pearl
-            // still teleports and still hurts — those are relative and need no
-            // anchor — so the divergence is confined to the one part that needs
-            // one.
-            if (playerFeet === undefined) {
-              continue
-            }
-
             // `behaviour: undefined`, which ticks nothing. `ENDERMITE_KIND`'s
             // header says at length what that means and why no rule is invented
             // to fill it.
@@ -1732,7 +1663,7 @@ export const gameplayStages = (
         // roster, so there is no pure function to hand `Ref.modify`, and the
         // window it opens is one in which two frames would already be sweeping a
         // single roster. The drop roll below stays atomic because it can.
-        const targetPosition = yield* Ref.get(state.targetPosition)
+        const targetPosition = (yield* player.pose).feetPosition
         const { blasts, seed: sweptSeed } = yield* sweepMobs(
           roster,
           { target: targetPosition, dt },
@@ -1778,15 +1709,13 @@ export const gameplayStages = (
           }
         }
 
-        if (targetPosition !== undefined) {
-          yield* pickupDroppedItems(
-            roster,
-            inventory,
-            targetPosition,
-            DROPPED_ITEM_PICKUP_RADIUS,
-            yield* Ref.get(state.tickCount),
-          )
-        }
+        yield* pickupDroppedItems(
+          roster,
+          inventory,
+          targetPosition,
+          DROPPED_ITEM_PICKUP_RADIUS,
+          yield* Ref.get(state.tickCount),
+        )
 
         const contact = resolveHostileContacts(
           yield* roster.entities,
@@ -1829,7 +1758,7 @@ export const gameplayStages = (
         )
 
         let searched: ReadonlyArray<MobSpawnAttempt> = NO_ATTEMPTS
-        const hour = yield* Ref.get(state.timeOfDay)
+        const hour = yield* time.timeOfDay
 
         // THREE GATES BEFORE THE 256 READS, and the third is the one that needs
         // defending. `hostileSpawnsAllowed` is CALLED here as well as inside
@@ -1843,9 +1772,7 @@ export const gameplayStages = (
         // would be the failure that header describes, and is exactly what is not
         // done.
         //
-        // The target gate is the same shape as the enderman's chase gate above:
-        // a search anchored on nobody has no ring to draw.
-        if (searchDue && targetPosition !== undefined && hostileSpawnsAllowed(hour)) {
+        if (searchDue && hostileSpawnsAllowed(hour)) {
           const found = yield* searchSpawnCandidates(
             store,
             targetPosition,
@@ -2030,15 +1957,16 @@ export const gameplayStages = (
 export const makeGameplayStages: Effect.Effect<
   ReadonlyArray<StageRegistration>,
   never,
-  ChunkStore | EntityManager | InventoryService | PlayerService
+  ChunkStore | EntityManager | InventoryService | PlayerService | TimeService
 > = Effect.gen(function* () {
   const store = yield* ChunkStore
   const roster = yield* entityManagerTag<MobBehaviour>()
   const inventory = yield* InventoryService
   const player = yield* PlayerService
+  const time = yield* TimeService
   const state = yield* makeGameplayFrameState
 
-  return gameplayStages(state, store, roster, inventory, player)
+  return gameplayStages(state, store, roster, inventory, player, time)
 })
 
 /**
@@ -2064,23 +1992,24 @@ export const makeGameplayStages: Effect.Effect<
  * The vertical-slice spike changed `frameStages` to an Effect, and the shape
  * this repository had already been forced into became the contract.
  *
- * `RRegister` is now `ChunkStore | EntityManager | InventoryService` and `RIn`
+ * `RRegister` is now `ChunkStore | EntityManager | InventoryService |
+ * PlayerService | TimeService` and `RIn`
  * is still `never`, which is the distinction that parameter was added for: this
  * repository needs mc-worldgen's store in order to REGISTER stages that write
  * blocks, mc-sim's roster in order to register the stage that iterates mobs and
  * mc-sim's inventory in order to register the stage that mines, and needs
  * nothing at all in order to build a Layer it does not have.
  *
- * The union growing from one service to three is the shape `RRegister`
+ * The union growing to five services is the shape `RRegister`
  * predicted and is not a widening of anything a consumer relies on: `RIn` is
  * untouched, so mx-gameplay still BUILDS nothing another repository has to
  * supply. What it does mean is that a host which was providing only the store
  * and the roster now fails to compile, which is the correct failure — the
  * alternative is a stage that deposits into an inventory nobody built.
  *
- * A HOST NOW NAMES TWO OF MC-SIM'S SERVICES, and the second is easier than the
- * first: `InventoryServiceLayer()` has no type parameter, so the hazard
- * `MobBehaviour` is about does not repeat. The host's line is
+ * A host supplies mc-sim's entity, inventory, player, and time layers. The
+ * latter three have no behaviour type parameter, so the `MobBehaviour` hazard
+ * does not repeat. The host's line is
  *
  *     Layer.mergeAll(
  *       simModule.layers,
@@ -2091,8 +2020,8 @@ export const makeGameplayStages: Effect.Effect<
 export const gameplayModule: GameModule<
   never,
   never,
-  never,
-  ChunkStore | EntityManager | InventoryService | PlayerService
+ never,
+  ChunkStore | EntityManager | InventoryService | PlayerService | TimeService
 > = {
   layers: Layer.empty,
   frameStages: makeGameplayStages,

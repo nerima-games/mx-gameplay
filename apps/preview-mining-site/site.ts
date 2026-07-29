@@ -74,6 +74,7 @@ import {
   type HarvestTier,
   type PlaceableItemType,
 } from '../../domain/block-vocabulary'
+import { makeTimeService } from '@nerima-games/mc-sim'
 import { FALLING_BLOCK_MOVES_PER_TICK } from '../../domain/falling-block'
 import { DeltaTimeSecs, type StageRegistration } from '../../domain/frame-contract'
 import { NO_TOOL, type BlockLootContext, type MinedItem } from '../../domain/interactions/block-loot'
@@ -257,8 +258,9 @@ export const makeSite = (
     // entities. The roster is mc-sim's own in-memory service; `./roster.ts`
     // deliberately contains no second implementation.
     const previewPlayer = yield* makePreviewPlayer
+    const time = yield* makeTimeService()
     const stages = schedule(
-      gameplayStages(state, world.api, roster, inventoryService.api, previewPlayer),
+      gameplayStages(state, world.api, roster, inventoryService.api, previewPlayer, time),
     )
 
     return {

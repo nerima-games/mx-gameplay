@@ -30,6 +30,7 @@
  * assert する。実時間 20 分待つテストは書かない」.
  */
 import { describe, expect, it } from '@effect/vitest'
+import { makeTimeService } from '@nerima-games/mc-sim'
 import { Effect, Ref } from 'effect'
 import { hostileSpawnsAllowed, NOON_FRACTION } from '../domain/day-night'
 import { DeltaTimeSecs } from '../domain/frame-contract'
@@ -395,8 +396,12 @@ const stagedSlice = Effect.gen(function* () {
   const roster = yield* makeEntityManagerDouble<MobBehaviour>()
   const player = yield* makePlayerServiceDouble()
   const inventory = yield* makeInventoryDouble()
+  const time = yield* makeTimeService()
   const state = yield* makeGameplayFrameState
-  return { state, stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api) }
+  return {
+    state,
+    stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api, time),
+  }
 })
 
 const ONE_SECOND = DeltaTimeSecs(1)
