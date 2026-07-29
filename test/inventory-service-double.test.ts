@@ -1,9 +1,10 @@
 import { describe, expect, it } from '@effect/vitest'
-import type { Slot } from '@nerima-games/mc-sim'
+import type { InventoryServiceApi, Slot } from '@nerima-games/mc-sim'
 import { Effect } from 'effect'
 import { StackCount } from '../domain/frame-contract'
-import type { ItemType } from '../domain/item-vocabulary'
 import { emptySlots, makeInventoryDouble } from './support/inventory-service-double'
+
+type ItemType = Parameters<InventoryServiceApi['add']>[0]
 
 const stack = (item: ItemType, count: number): Slot => ({ item, count: StackCount(count) })
 
@@ -72,6 +73,63 @@ describe('inventory service double clicks', () => {
         yield* inventory.api.click({ _tag: 'LeftClick', slotIndex: -1, carried }),
       ).toStrictEqual({ _tag: 'InvalidSlot', carried })
       expect((yield* inventory.api.snapshot).slots).toStrictEqual(initial)
+    }),
+  )
+})
+
+describe('inventory service double equipment', () => {
+  it.effect('keeps inventory, equipment, and durability coherent', () =>
+    Effect.gen(function* () {
+      const inventory = yield* makeInventoryDouble(
+        inventoryWith([0, stack('iron_helmet', 1)]),
+      )
+
+      expect(yield* inventory.api.equipFromInventory(0, 'head')).toMatchObject({
+        _tag: 'Equipped',
+        item: { item: 'iron_helmet', count: 1, durability: { current: 165, max: 165 } },
+      })
+      expect((yield* inventory.api.snapshot).slots[0]).toBeUndefined()
+      expect((yield* inventory.api.equipmentSnapshot).slots.head).toMatchObject({
+        item: 'iron_helmet',
+        durability: { current: 165, max: 165 },
+      })
+
+      expect(
+        yield* inventory.api.damageAt({ _tag: 'Equipment', slot: 'head' }, 5),
+      ).toMatchObject({ _tag: 'Damaged', item: { durability: { current: 160, max: 165 } } })
+      expect(yield* inventory.api.unequipToInventory('head', 2)).toMatchObject({
+        _tag: 'Unequipped',
+        slotIndex: 2,
+      })
+
+      const storage = yield* inventory.api.storageSnapshot
+      expect(storage.equipment.slots.head).toBeNull()
+      expect(storage.inventory.slots[2]).toStrictEqual(stack('iron_helmet', 1))
+      expect(storage.inventoryDurability[2]).toStrictEqual({ current: 160, max: 165 })
+    }),
+  )
+
+  it.effect('preserves durability while placing and picking up equippable items', () =>
+    Effect.gen(function* () {
+      const inventory = yield* makeInventoryDouble()
+      const helmet = {
+        item: 'iron_helmet' as const,
+        count: StackCount(1),
+        durability: { current: 120, max: 165 },
+      }
+
+      expect(
+        yield* inventory.api.click({ _tag: 'LeftClick', slotIndex: 0, carried: helmet }),
+      ).toStrictEqual({ _tag: 'Placed', carried: undefined })
+      expect((yield* inventory.api.storageSnapshot).inventoryDurability[0]).toStrictEqual({
+        current: 120,
+        max: 165,
+      })
+
+      expect(
+        yield* inventory.api.click({ _tag: 'LeftClick', slotIndex: 0, carried: undefined }),
+      ).toStrictEqual({ _tag: 'PickedUp', carried: helmet })
+      expect((yield* inventory.api.storageSnapshot).inventoryDurability[0]).toBeNull()
     }),
   )
 })

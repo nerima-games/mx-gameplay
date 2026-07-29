@@ -62,24 +62,37 @@
  * and asserting it on the resulting slots instead would pass for a stage that
  * called `add(item, 1)` three times.
  *
- * The four crafting members die rather than answering plausibly, following the
+ * The three crafting members die rather than answering plausibly, following the
  * store double's rule for `load`: no rule in this repository crafts, mc-sim's
  * recipe resolution is pinned by mc-sim's own tests, and a double that
  * half-implemented `matchRecipe` would let a test here assert a match nobody
- * computes. `restore` dies for the same reason the roster double's does — the
- * world-load path is the host's.
+ * computes. The persistence members use mc-sim's own validation and storage
+ * transitions so inventory, equipment, and durability cannot drift apart.
  */
 import { Effect, Layer, Ref } from 'effect'
 import { MAX_STACK_COUNT, StackCount } from '../../domain/frame-contract'
 import {
+  damageAt as damageStorageAt,
+  durabilityForItem,
+  emptyPlayerStorage,
+  equipFromInventory as equipStorageFromInventory,
   InventoryService,
+  isEquippableItemType,
+  isValidDurabilityForItem,
+  maxStackCountForItem,
+  storageFromInventory,
+  unequipToInventory as unequipStorageToInventory,
+  validatePlayerStorageSnapshot,
+  withInventory,
   type Inventory,
   type InventoryClick,
   type InventoryClickResult,
   type InventoryServiceApi,
+  type PlayerStorage,
   type Slot,
 } from '@nerima-games/mc-sim'
-import type { ItemType } from '../../domain/item-vocabulary'
+
+type ItemType = Parameters<InventoryServiceApi['add']>[0]
 
 /** mc-sim's `INVENTORY_SLOT_COUNT`, transcribed. The number that makes overflow reachable. */
 export const INVENTORY_SLOT_COUNT = 36
@@ -110,7 +123,7 @@ export type InventoryDouble = {
 }
 
 type Doubles = {
-  slots: ReadonlyArray<Slot>
+  storage: PlayerStorage
   deposits: ReadonlyArray<Deposit>
   withdrawals: ReadonlyArray<Withdrawal>
 }
@@ -141,14 +154,15 @@ const addTo = (
 
   const next = [...slots]
   let remaining = count
+  const maxStackCount = maxStackCountForItem(item)
 
   // Top up partial stacks of the same item first. See the module header.
   for (let index = 0; index < next.length && remaining > 0; index += 1) {
     const slot = next[index]
-    if (slot === undefined || slot.item !== item || slot.count >= MAX_STACK_COUNT) {
+    if (slot === undefined || slot.item !== item || slot.count >= maxStackCount) {
       continue
     }
-    const accepted = Math.min(MAX_STACK_COUNT - slot.count, remaining)
+    const accepted = Math.min(maxStackCount - slot.count, remaining)
     next[index] = { item, count: StackCount(slot.count + accepted) }
     remaining -= accepted
   }
@@ -158,7 +172,7 @@ const addTo = (
     if (next[index] !== undefined) {
       continue
     }
-    const accepted = Math.min(MAX_STACK_COUNT, remaining)
+    const accepted = Math.min(maxStackCount, remaining)
     next[index] = { item, count: StackCount(accepted) }
     remaining -= accepted
   }
@@ -200,16 +214,26 @@ const removeFrom = (
 }
 
 const totalOf = (slots: ReadonlyArray<Slot>, item: ItemType): number =>
-  slots.reduce((running, slot) => (slot?.item === item ? running + slot.count : running), 0)
+  slots.reduce(
+    (running, slot) =>
+      slot !== undefined && slot.item === item ? running + slot.count : running,
+    0,
+  )
 
 type ClickOutcome = {
   readonly slots: ReadonlyArray<Slot>
   readonly result: InventoryClickResult
 }
 
-const validCarried = (carried: Slot): boolean =>
+const validCarried = (carried: InventoryClick['carried']): boolean =>
   carried === undefined ||
-  (Number.isInteger(carried.count) && carried.count > 0 && carried.count <= MAX_STACK_COUNT)
+  (Number.isInteger(carried.count) &&
+    carried.count > 0 &&
+    carried.count <= maxStackCountForItem(carried.item) &&
+    (isEquippableItemType(carried.item)
+      ? carried.durability === undefined ||
+        isValidDurabilityForItem(carried.item, carried.durability)
+      : carried.durability === undefined))
 
 const clickSlot = (slots: ReadonlyArray<Slot>, click: InventoryClick): ClickOutcome => {
   if (!Number.isInteger(click.slotIndex) || click.slotIndex < 0 || click.slotIndex >= slots.length) {
@@ -220,6 +244,8 @@ const clickSlot = (slots: ReadonlyArray<Slot>, click: InventoryClick): ClickOutc
   }
 
   const slot = slots[click.slotIndex]
+  const maxStackCount =
+    click.carried === undefined ? MAX_STACK_COUNT : maxStackCountForItem(click.carried.item)
   if (click._tag === 'LeftClick') {
     if (click.carried === undefined) {
       if (slot === undefined) {
@@ -231,16 +257,16 @@ const clickSlot = (slots: ReadonlyArray<Slot>, click: InventoryClick): ClickOutc
     }
     if (slot === undefined) {
       const next = [...slots]
-      next[click.slotIndex] = click.carried
+      next[click.slotIndex] = { item: click.carried.item, count: click.carried.count }
       return { slots: next, result: { _tag: 'Placed', carried: undefined } }
     }
     if (slot.item !== click.carried.item) {
       const next = [...slots]
-      next[click.slotIndex] = click.carried
+      next[click.slotIndex] = { item: click.carried.item, count: click.carried.count }
       return { slots: next, result: { _tag: 'Swapped', carried: slot } }
     }
 
-    const accepted = Math.min(MAX_STACK_COUNT - slot.count, click.carried.count)
+    const accepted = Math.min(maxStackCount - slot.count, click.carried.count)
     if (accepted <= 0) {
       return { slots, result: { _tag: 'NoChange', carried: click.carried } }
     }
@@ -280,7 +306,7 @@ const clickSlot = (slots: ReadonlyArray<Slot>, click: InventoryClick): ClickOutc
     }
   }
 
-  if (slot !== undefined && (slot.item !== click.carried.item || slot.count >= MAX_STACK_COUNT)) {
+  if (slot !== undefined && (slot.item !== click.carried.item || slot.count >= maxStackCount)) {
     return { slots, result: { _tag: 'NoChange', carried: click.carried } }
   }
   const next = [...slots]
@@ -308,7 +334,11 @@ export const makeInventoryDouble = (
   initial: ReadonlyArray<Slot> = emptySlots(),
 ): Effect.Effect<InventoryDouble> =>
   Effect.map(
-    Ref.make<Doubles>({ slots: initial, deposits: [], withdrawals: [] }),
+    Ref.make<Doubles>({
+      storage: storageFromInventory({ slots: initial }),
+      deposits: [],
+      withdrawals: [],
+    }),
     (state) => {
       const api: InventoryServiceApi = {
         // `Ref.modify` and not get-then-set, which is mc-sim's own convention
@@ -317,12 +347,12 @@ export const makeInventoryDouble = (
         // split across two Effects loses one of them.
         add: (item, count) =>
           Ref.modify(state, (doubles) => {
-            const outcome = addTo(doubles.slots, item, count)
+            const outcome = addTo(doubles.storage.inventory.slots, item, count)
             return [
               outcome.leftover,
               {
                 ...doubles,
-                slots: outcome.slots,
+                storage: withInventory(doubles.storage, { slots: outcome.slots }),
                 deposits: [...doubles.deposits, { item, count, leftover: outcome.leftover }],
               },
             ] as const
@@ -330,12 +360,12 @@ export const makeInventoryDouble = (
 
         remove: (item, count) =>
           Ref.modify(state, (doubles) => {
-            const outcome = removeFrom(doubles.slots, item, count)
+            const outcome = removeFrom(doubles.storage.inventory.slots, item, count)
             return [
               outcome.removed,
               {
                 ...doubles,
-                slots: outcome.slots,
+                storage: withInventory(doubles.storage, { slots: outcome.slots }),
                 withdrawals: [...doubles.withdrawals, { item, count, removed: outcome.removed }],
               },
             ] as const
@@ -346,14 +376,15 @@ export const makeInventoryDouble = (
             Doubles,
             Effect.Effect.Success<ReturnType<InventoryServiceApi['removeAt']>>
           >(state, (doubles) => {
-            if (!Number.isInteger(slotIndex) || slotIndex < 0 || slotIndex >= doubles.slots.length) {
+            const currentSlots = doubles.storage.inventory.slots
+            if (!Number.isInteger(slotIndex) || slotIndex < 0 || slotIndex >= currentSlots.length) {
               return [{ _tag: 'InvalidSlot' } as const, doubles] as const
             }
             if (!Number.isInteger(count) || count <= 0) {
               return [{ _tag: 'InvalidCount' } as const, doubles] as const
             }
 
-            const slot = doubles.slots[slotIndex]
+            const slot = currentSlots[slotIndex]
             if (slot === undefined) {
               return [{ _tag: 'EmptySlot' } as const, doubles] as const
             }
@@ -364,7 +395,7 @@ export const makeInventoryDouble = (
               return [{ _tag: 'Insufficient', available: slot.count } as const, doubles] as const
             }
 
-            const slots = [...doubles.slots]
+            const slots = [...currentSlots]
             const remaining = slot.count - count
             slots[slotIndex] =
               remaining === 0 ? undefined : { item: expectedItem, count: StackCount(remaining) }
@@ -372,7 +403,7 @@ export const makeInventoryDouble = (
               { _tag: 'Removed', removed: count } as const,
               {
                 ...doubles,
-                slots,
+                storage: withInventory(doubles.storage, { slots }),
                 withdrawals: [
                   ...doubles.withdrawals,
                   { item: expectedItem, count, removed: count },
@@ -383,15 +414,81 @@ export const makeInventoryDouble = (
 
         click: (click) =>
           Ref.modify(state, (doubles) => {
-            const outcome = clickSlot(doubles.slots, click)
-            return [outcome.result, { ...doubles, slots: outcome.slots }] as const
+            const beforeDurability = doubles.storage.inventoryDurability[click.slotIndex]
+            const outcome = clickSlot(doubles.storage.inventory.slots, click)
+            let storage = withInventory(doubles.storage, { slots: outcome.slots })
+            if (
+              (outcome.result._tag === 'Placed' ||
+                outcome.result._tag === 'Swapped' ||
+                outcome.result._tag === 'Merged') &&
+              click.carried !== undefined &&
+              isEquippableItemType(click.carried.item)
+            ) {
+              const durability = click.carried.durability ?? durabilityForItem(click.carried.item)
+              const values = [...storage.inventoryDurability]
+              values[click.slotIndex] = durability === null ? null : { ...durability }
+              storage = { ...storage, inventoryDurability: values }
+            }
+            const result =
+              (outcome.result._tag === 'PickedUp' || outcome.result._tag === 'Swapped') &&
+              isEquippableItemType(outcome.result.carried.item) &&
+              beforeDurability !== null &&
+              beforeDurability !== undefined
+                ? {
+                    ...outcome.result,
+                    carried: { ...outcome.result.carried, durability: beforeDurability },
+                  }
+                : outcome.result
+            return [
+              result,
+              {
+                ...doubles,
+                storage,
+              },
+            ] as const
           }),
 
-        countOf: (item) => Effect.map(Ref.get(state), (doubles) => totalOf(doubles.slots, item)),
+        countOf: (item) =>
+          Effect.map(Ref.get(state), (doubles) => totalOf(doubles.storage.inventory.slots, item)),
 
-        snapshot: Effect.map(Ref.get(state), (doubles): Inventory => ({ slots: doubles.slots })),
+        snapshot: Effect.map(Ref.get(state), (doubles): Inventory => doubles.storage.inventory),
+        equipmentSnapshot: Effect.map(Ref.get(state), (doubles) => doubles.storage.equipment),
+        storageSnapshot: Effect.map(Ref.get(state), (doubles) => doubles.storage),
 
-        reset: Ref.update(state, (doubles) => ({ ...doubles, slots: emptySlots() })),
+        restoreStorage: (snapshot) => {
+          const validated = validatePlayerStorageSnapshot(snapshot)
+          return validated._tag === 'Invalid'
+            ? Effect.fail(validated.error)
+            : Ref.update(state, (doubles) => ({ ...doubles, storage: validated.storage }))
+        },
+
+        equipFromInventory: (inventorySlot, equipmentSlot) =>
+          Ref.modify(state, (doubles) => {
+            const outcome = equipStorageFromInventory(
+              doubles.storage,
+              inventorySlot,
+              equipmentSlot,
+            )
+            return [outcome.result, { ...doubles, storage: outcome.storage }] as const
+          }),
+
+        unequipToInventory: (equipmentSlot, inventorySlot) =>
+          Ref.modify(state, (doubles) => {
+            const outcome = unequipStorageToInventory(
+              doubles.storage,
+              equipmentSlot,
+              inventorySlot,
+            )
+            return [outcome.result, { ...doubles, storage: outcome.storage }] as const
+          }),
+
+        damageAt: (location, amount) =>
+          Ref.modify(state, (doubles) => {
+            const outcome = damageStorageAt(doubles.storage, location, amount)
+            return [outcome.result, { ...doubles, storage: outcome.storage }] as const
+          }),
+
+        reset: Ref.update(state, (doubles) => ({ ...doubles, storage: emptyPlayerStorage() })),
 
         // Not exercised by this repository's slice. See the module header.
         restore: () => refuse('restore'),

@@ -57,7 +57,7 @@
   },
   "dependencies": {
     "@nerima-games/mc-kernel": "0.2.0",
-    "@nerima-games/mc-sim": "0.1.7",
+    "@nerima-games/mc-sim": "0.1.8",
     "@nerima-games/mc-worldgen": "0.1.0",
     "effect": "^3.20.0"
   },

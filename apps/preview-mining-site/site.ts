@@ -96,7 +96,11 @@ import {
 } from '../../stages/registration'
 import { GAMEPLAY_STAGE_IDS } from '../../stages/stage-ids'
 import { FrameServicesLayer } from './frame-services'
-import { makePreviewInventory, type PreviewInventory } from './inventory'
+import {
+  makePreviewInventory,
+  type InventoryDeposit,
+  type PreviewInventory,
+} from './inventory'
 import { makePreviewRoster } from './roster'
 import { makePreviewPlayer } from './player'
 import { AIR, floatingBlocks, makePreviewWorld, type PreviewWorld, type WorldSpec } from './world'
@@ -161,7 +165,7 @@ export type FrameRow = {
    * them and `stages/registration.ts` handed each one to mc-sim's
    * `InventoryService`. See `./inventory.ts`'s `takeDepositLog`.
    */
-  readonly mined: ReadonlyArray<MinedItem>
+  readonly mined: ReadonlyArray<InventoryDeposit>
   /** Dropped-item entities currently on the ground after this frame. */
   readonly dropped: ReadonlyArray<MinedItem>
   /** What placement took off the stack. */

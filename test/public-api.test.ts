@@ -14,6 +14,7 @@
 import { describe, expect, it } from '@effect/vitest'
 import { Effect } from 'effect'
 import * as gameplay from '../index'
+import { applyArmorToDamage, armorPointsForEquipment } from '../domain/combat/armor'
 import { applyDamage } from '../domain/death-cause'
 import { takeBatch } from '../domain/falling-block'
 import { resolveFoodUse } from '../domain/interactions/eat-food'
@@ -199,6 +200,9 @@ describe('public API surface', () => {
         'isDead',
         'applyDamage',
         'deathMessage',
+        // armour — pure protection rules over equipment owned by mc-sim
+        'armorPointsForEquipment',
+        'applyArmorToDamage',
         // food use — a pure verdict; inventory and vitals remain host-owned
         'FOOD_PROPERTIES',
         'resolveFoodUse',
@@ -371,6 +375,8 @@ describe('public API surface', () => {
   it.effect('exposes the same implementations through the barrel as through the modules', () =>
     Effect.sync(() => {
       expect(gameplay.applyDamage).toBe(applyDamage)
+      expect(gameplay.armorPointsForEquipment).toBe(armorPointsForEquipment)
+      expect(gameplay.applyArmorToDamage).toBe(applyArmorToDamage)
       expect(gameplay.takeBatch).toBe(takeBatch)
       expect(gameplay.resolveFoodUse).toBe(resolveFoodUse)
       expect(gameplay.GAMEPLAY_STAGE_IDS).toBe(GAMEPLAY_STAGE_IDS)

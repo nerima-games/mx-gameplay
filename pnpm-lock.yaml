@@ -12,8 +12,8 @@ importers:
         specifier: 0.2.0
         version: 0.2.0
       '@nerima-games/mc-sim':
-        specifier: 0.1.7
-        version: 0.1.7
+        specifier: 0.1.8
+        version: 0.1.8
       '@nerima-games/mc-worldgen':
         specifier: 0.1.0
         version: 0.1.0
@@ -261,8 +261,8 @@ packages:
     resolution: {integrity: sha512-5RFYGtej8TvBFGetTbitEicGyohv2ZQrstL3R151Do1bVheqjIBJUH7R2SbtjDgOKVcTMSZgT8HogfZJ8Na7Kw==, tarball: https://npm.pkg.github.com/download/@nerima-games/mc-physics/0.1.0/83c9b8fbef29cda6f5aa9db047cfa8b3b7708fd7}
     engines: {node: '>=24.0.0', pnpm: '>=11.0.0'}
 
-  '@nerima-games/mc-sim@0.1.7':
-    resolution: {integrity: sha512-LiPmSZ3TI3c/9e4xwvccRdWBL++5rbnhu+ml9MdJ6KDNMlJUxTLF/oJfgYIVmc7o226vV6Yzj68sJ5Z37ztXaw==, tarball: https://npm.pkg.github.com/download/@nerima-games/mc-sim/0.1.7/ec63ec7d71510362b19839ec7087d9f5139ebda1}
+  '@nerima-games/mc-sim@0.1.8':
+    resolution: {integrity: sha512-jNqEERJtMAQEfZsKoA7kYpTWr6TVubkwX0rCIiMH4axGxivNTwfMClwzHWSs9igJVw4tex8FSN/Mm+QvWf+1Jw==, tarball: https://npm.pkg.github.com/download/@nerima-games/mc-sim/0.1.8/1d4005c257720c9d175f6a519b144871ebd3e0ae}
     engines: {node: '>=24.0.0', pnpm: '>=11.0.0'}
 
   '@nerima-games/mc-worldgen@0.1.0':
@@ -1056,7 +1056,7 @@ snapshots:
     dependencies:
       effect: 3.22.0
 
-  '@nerima-games/mc-sim@0.1.7':
+  '@nerima-games/mc-sim@0.1.8':
     dependencies:
       '@nerima-games/mc-physics': 0.1.0
       effect: 3.22.0

@@ -13,7 +13,7 @@
 <!-- ------------------------------------------------------------------------- -->
 
 format: 1
-exported declarations: 456
+exported declarations: 458
 supporting declarations: 61
 
 ## Exported
@@ -2320,6 +2320,12 @@ const advanceWeather: (state: WeatherState, dt: number, rolls: WeatherRolls) => 
 const anyRedstoneInput: (flags: RedstoneInputFlags) => boolean;
 ```
 
+### applyArmorToDamage  `const`
+
+```ts
+const applyArmorToDamage: (damage: Damage, armorPoints: number) => Damage;
+```
+
 ### applyDamage  `const`
 
 ```ts
@@ -2342,6 +2348,12 @@ const applyLook: (pose: PlayerPose, deltaYaw: number, deltaPitch: number) => Pla
 
 ```ts
 const applySpawnAttempts: (roster: EntityManagerApi<MobBehaviour>, attempts: ReadonlyArray<MobSpawnAttempt>) => Effect.Effect<ReadonlyArray<MobSpawnOutcome>>;
+```
+
+### armorPointsForEquipment  `const`
+
+```ts
+const armorPointsForEquipment: (equipment: Equipment) => number;
 ```
 
 ### blockLoot  `const`

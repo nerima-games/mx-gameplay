@@ -203,9 +203,7 @@ const onePlacementItem = (item: PlacementRequest['heldItem']) =>
  * call per item" claim is about. Where the total is the interesting number, the
  * tests below ask `inventory.api.countOf` as well.
  */
-const deposited = (
-  inventory: InventoryDouble,
-): Effect.Effect<ReadonlyArray<MinedItem>> =>
+const deposited = (inventory: InventoryDouble) =>
   Effect.map(inventory.deposits, (calls) =>
     calls.map(({ item, count }) => ({ item, count })),
   )
