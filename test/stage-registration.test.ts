@@ -11,7 +11,7 @@ import { Effect, Layer, Ref } from 'effect'
 import type { ChunkStore } from '../domain/chunk-store-port'
 import type { MobBehaviour } from '../domain/entities/mob-frame'
 import type { EntityManager } from '../domain/entity-manager-port'
-import type { InventoryService } from '../domain/inventory-port'
+import type { InventoryService } from '@nerima-games/mc-sim'
 import {
   DeltaTimeSecs,
   MAX_STACK_COUNT,
@@ -566,7 +566,7 @@ describe('the mirrored StackCount brand is kernel’s too', () => {
   /*
    * The same regression shape as `DeltaTimeSecs` above, one module over and one
    * commit later. `StackCount` arrived in `domain/frame-contract.ts` with
-   * `domain/inventory-port.ts`, which needs it for mc-sim's `ItemStack`, and it
+   * the inventory integration, which needs it for mc-sim's `ItemStack`, and it
    * is in THAT file because `mc-kernel/domain/quantities.ts` is one of the
    * three kernel modules it already mirrors — the file's header argues the
    * placement and names the alternative it rejected.
@@ -652,8 +652,8 @@ describe('the module contract has caught up with this file’s shape', () => {
   //
   //   TWO   -> THREE: 「The candidate for the third is mc-sim's
   //          `InventoryService`, and until it can be mirrored whole the mob
-  //          drops go to an outbox instead」. Mirrored whole
-  //          (`domain/inventory-port.ts`); the stage deposits through it.
+  //          drops go to an outbox instead」. Integrated whole from mc-sim; the
+  //          stage deposits through it.
   //   THREE -> FOUR:  「The candidate for the fourth is mc-sim's
   //          `PlayerService`, and it cannot be mirrored whole … `cameraPose`
   //          requires `ClockPort`, and restating `ClockPort` locally is 『a far

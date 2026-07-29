@@ -1,6 +1,5 @@
 /**
- * A test double for mc-sim's `InventoryService`, typed by this repository's
- * mirror of that service (`domain/inventory-port.ts`).
+ * A test double typed directly by mc-sim's `InventoryService`.
  *
  * ---------------------------------------------------------------------------
  * Why a double at all, and what makes it meaningful
@@ -77,7 +76,7 @@ import {
   type Inventory,
   type InventoryServiceApi,
   type Slot,
-} from '../../domain/inventory-port'
+} from '@nerima-games/mc-sim'
 import type { ItemType } from '../../domain/item-vocabulary'
 
 /** mc-sim's `INVENTORY_SLOT_COUNT`, transcribed. The number that makes overflow reachable. */

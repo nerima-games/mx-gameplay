@@ -1,6 +1,5 @@
 /**
- * A REAL INVENTORY for the preview, typed by this repository's mirror of
- * mc-sim's `InventoryService` (`domain/inventory-port.ts`).
+ * A REAL INVENTORY for the preview, typed by mc-sim's `InventoryService`.
  *
  * ---------------------------------------------------------------------------
  * `./roster.ts` REFUSES TO DO THIS, AND THE DIFFERENCE IS THE WHOLE POINT
@@ -53,7 +52,7 @@
 import { Effect, Ref } from 'effect'
 import { MAX_STACK_COUNT, StackCount } from '../../domain/frame-contract'
 import type { MinedItem } from '../../domain/interactions/block-loot'
-import type { Inventory, InventoryServiceApi, Slot } from '../../domain/inventory-port'
+import type { Inventory, InventoryServiceApi, Slot } from '@nerima-games/mc-sim'
 import type { ItemType } from '../../domain/item-vocabulary'
 
 /** mc-sim's `INVENTORY_SLOT_COUNT`. The number that makes overflow reachable. */

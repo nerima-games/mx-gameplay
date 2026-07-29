@@ -36,6 +36,7 @@
  */
 import { Effect, Layer } from 'effect'
 import { capabilityOfBlockId } from '@nerima-games/mc-kernel'
+import { InventoryService, type InventoryServiceApi, type Slot } from '@nerima-games/mc-sim'
 import {
   BlockId as WorldgenBlockId,
   blockPosition as worldgenBlockPosition,
@@ -48,7 +49,6 @@ import {
 } from '@nerima-games/mc-worldgen'
 import { ChunkStore, type ChunkStoreApi } from './chunk-store-port'
 import { entityManagerTag, type EntityManager, type EntityManagerApi } from './entity-manager-port'
-import { InventoryService, type InventoryServiceApi, type Slot } from './inventory-port'
 import { PlayerService, type PlayerPose, type PlayerServiceApi } from './player-port'
 import { makeInMemoryChunkStore, type WorldContents } from './in-memory-chunk-store'
 import { makeInMemoryEntityManager } from './in-memory-entity-manager'

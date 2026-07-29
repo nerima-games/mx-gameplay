@@ -76,7 +76,12 @@
  * the first world's fibers and refs and deadlocked. Re-entrant initialisation
  * from the start is cheaper than retrofitting it.
  */
-import { targetBlockFromPlayerPose, type BlockTarget } from '@nerima-games/mc-sim'
+import {
+  InventoryService,
+  targetBlockFromPlayerPose,
+  type BlockTarget,
+  type InventoryServiceApi,
+} from '@nerima-games/mc-sim'
 import { Effect, Layer, Option, Ref } from 'effect'
 import { below, positionKeyOf, positionOfKey } from '../domain/block-position-key'
 import { hostileSpawnsAllowed } from '../domain/day-night'
@@ -152,7 +157,6 @@ import {
   useFlintAndSteel,
   type IgnitionItemType,
 } from '../domain/interactions/use-flint-and-steel'
-import { InventoryService, type InventoryServiceApi } from '../domain/inventory-port'
 import type { MobDrop } from '../domain/mob/mob-drop'
 import type { PositionKey } from '../domain/position-key'
 import {
@@ -224,8 +228,7 @@ const NO_ATTEMPTS: ReadonlyArray<never> = []
  *     worked example — but that 「until mc-sim is published there is no
  *     `InventoryService.add` to call」. TWO REASONS WERE GIVEN FOR THE OUTBOX
  *     AND BOTH ARE DEAD. The type mismatch that made the seam unwirable is gone
- *     (`domain/inventory-port.ts`'s header has the whole story: kernel published
- *     `ItemType`, mc-sim deleted `ItemId`, and
+ *     (kernel published `ItemType`, mc-sim deleted `ItemId`, and
  *     `domain/interactions/block-loot.ts` speaks kernel's vocabulary on this
  *     side), and 「inventing a local port would make this repository a second
  *     owner of the inventory」 was never true of a MIRROR — a mirror is the
@@ -408,8 +411,8 @@ const NO_ATTEMPTS: ReadonlyArray<never> = []
  *     means restating mc-sim's crafting vocabulary in a repository that has no
  *     crafting rule to justify it. The roster was worth that price because the
  *     stage cannot iterate mobs without it; the outbox works today.」 The last
- *     four words were the error. `domain/inventory-port.ts` carries the crafting
- *     vocabulary now, as dead weight, on purpose.
+ *     four words were the error. The stage now consumes mc-sim's service
+ *     directly, including its crafting vocabulary.
  *
  *   - `rollSeed` is neither. It is the frame's source of randomness, and
  *     `domain/frame-rolls.ts` is a whole file about why it is a seed here rather
@@ -456,8 +459,7 @@ const NO_ATTEMPTS: ReadonlyArray<never> = []
  * ---------------------------------------------------------------------------
  *
  * THE THIRD SERVICE, acquired in `makeGameplayStages` beside the other two and
- * for the same reason. `domain/inventory-port.ts` is the mirror,
- * `test/inventory-mirror.test.ts` keeps it honest, and it is what closes
+ * for the same reason. The service now comes directly from mc-sim, and it closes
  * plan.md §2.3-1's worked example — 「mining a block puts an item in your
  * inventory」 — which was the last of this repository's three verbs whose
  * effect stopped at a `Ref`.
@@ -574,7 +576,7 @@ export type ItemUseRequest = {
  * INVENTORY traffic. The reference consumes one `ARROW`, damages the `BOW`'s
  * durability slot, and skips both under Infinity and Unbreaking
  * (`interaction-bow-handler.ts:184-198`). Every one of those is a call naming an
- * item, `domain/inventory-port.ts`'s `add` / `remove` take an `ItemType`, and none
+ * item, mc-sim's `add` / `remove` take an `ItemType`, and none
  * of the three words exists. A bow wired here therefore fires FOR FREE. That is
  * recorded rather than hidden, and it is the same shape as `consumedItems` — a
  * verb this repository can perform whose bookkeeping it cannot yet do honestly.

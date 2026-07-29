@@ -14,7 +14,7 @@
 
 format: 1
 exported declarations: 382
-supporting declarations: 81
+supporting declarations: 61
 
 ## Exported
 
@@ -2993,33 +2993,6 @@ type ClockService = {
 };
 ```
 
-### CraftGrid  `type`
-
-```ts
-type CraftGrid = {
-    readonly width: number;
-    readonly height: number;
-    readonly cells: ReadonlyArray<Slot>;
-};
-```
-
-### CraftResult  `type`
-
-```ts
-type CraftResult = {
-    readonly _tag: 'Crafted';
-    readonly recipeId: RecipeId;
-    readonly output: ItemStack;
-} | {
-    readonly _tag: 'NoMatch';
-} | {
-    readonly _tag: 'MissingIngredients';
-    readonly missing: ReadonlyArray<MissingIngredient>;
-} | {
-    readonly _tag: 'NoRoom';
-};
-```
-
 ### DeltaTimeSecs  `const`
 
 ```ts
@@ -3191,61 +3164,6 @@ type HarvestTier = (typeof HARVEST_TIERS)[number];
 const ITEM_TYPES: readonly ["stone", "cobblestone", "dirt", "grass_block", "sand", "gravel", "oak_log", "oak_planks", "oak_leaves", "glass", "torch", "glowstone", "piston", "stick", "glowstone_dust", "wooden_pickaxe", "coal", "iron_ingot", "flint", "gunpowder", "blaze_powder", "flint_and_steel", "fire_charge", "granite", "diorite", "andesite", "deepslate", "obsidian", "smooth_basalt", "calcite", "amethyst_block", "sandstone", "prismarine", "soul_sand", "coal_block", "iron_block", "gold_block", "diamond_block", "redstone_block", "lapis_block", "emerald_block", "redstone_torch", "lever", "stone_button", "repeater", "redstone_lamp", "observer", "comparator", "dispenser", "hopper", "end_stone", "end_portal_frame", "end_portal_frame_filled", "chorus_flower", "chorus_plant", "dragon_egg", "end_crystal", "end_rod", "end_stone_bricks", "ender_chest", "purpur_block", "purpur_pillar", "purpur_slab", "purpur_stairs", "shulker_box", "crafting_table", "furnace", "chest", "door", "oak_stairs", "anvil", "cauldron", "bed", "enchanting_table", "brewing_stand", "tnt", "nether_brick", "netherrack", "raw_iron", "raw_gold", "diamond", "emerald", "lapis_lazuli", "redstone_dust", "amethyst_shard", "wheat_seeds", "potato", "nether_wart", "ladder", "kelp", "seagrass", "rail", "powered_rail", "pressure_plate", "stone_slab", "string", "snowball"];
 ```
 
-### Ingredient  `type`
-
-```ts
-type Ingredient = {
-    readonly _tag: 'Exact';
-    readonly item: ItemType;
-};
-```
-
-### Inventory  `type`
-
-```ts
-type Inventory = {
-    readonly slots: ReadonlyArray<Slot>;
-};
-```
-
-### InventoryService  `class`
-
-```ts
-class InventoryService extends InventoryService_base {
-}
-```
-
-### InventoryServiceApi  `type`
-
-```ts
-type InventoryServiceApi = {
-    readonly add: (item: ItemType, count: number) => Effect.Effect<number>;
-    readonly remove: (item: ItemType, count: number) => Effect.Effect<number>;
-    readonly countOf: (item: ItemType) => Effect.Effect<number>;
-    readonly snapshot: Effect.Effect<Inventory>;
-    readonly restore: (inventory: Inventory) => Effect.Effect<number>;
-    readonly reset: Effect.Effect<void>;
-    readonly recipes: Effect.Effect<RecipeTable>;
-    readonly previewCraft: (grid: CraftGrid) => Effect.Effect<RecipeMatch>;
-    readonly craft: (grid: CraftGrid) => Effect.Effect<CraftResult>;
-};
-```
-
-### InventoryService_base  `const`
-
-```ts
-const InventoryService_base: Context.TagClass<InventoryService, "@nerima-games/mc-sim/InventoryService", InventoryServiceApi>;
-```
-
-### ItemStack  `type`
-
-```ts
-type ItemStack = {
-    readonly item: ItemType;
-    readonly count: StackCount;
-};
-```
-
 ### ItemType  `type`
 
 ```ts
@@ -3266,15 +3184,6 @@ type LightReading = {
 };
 ```
 
-### MissingIngredient  `type`
-
-```ts
-type MissingIngredient = {
-    readonly item: ItemType;
-    readonly short: number;
-};
-```
-
 ### MonotonicTimeSecs  `const`
 
 ```ts
@@ -3285,12 +3194,6 @@ const MonotonicTimeSecs: Brand.Brand.Constructor<MonotonicTimeSecs>;
 
 ```ts
 type MonotonicTimeSecs = number & Brand.Brand<'MonotonicTimeSecs'>;
-```
-
-### PatternCell  `type`
-
-```ts
-type PatternCell = Ingredient | undefined;
 ```
 
 ### PlaceableItemType  `type`
@@ -3384,46 +3287,6 @@ type Position = {
 type PositionKey = string;
 ```
 
-### Recipe  `type`
-
-```ts
-type Recipe = ShapedRecipe | ShapelessRecipe;
-```
-
-### RecipeId  `type`
-
-```ts
-type RecipeId = string;
-```
-
-### RecipeMatch  `type`
-
-```ts
-type RecipeMatch = {
-    readonly _tag: 'Match';
-    readonly recipe: Recipe;
-    readonly output: ItemStack;
-} | {
-    readonly _tag: 'NoMatch';
-};
-```
-
-### RecipePattern  `type`
-
-```ts
-type RecipePattern = {
-    readonly width: number;
-    readonly height: number;
-    readonly cells: ReadonlyArray<PatternCell>;
-};
-```
-
-### RecipeTable  `type`
-
-```ts
-type RecipeTable = ReadonlyArray<Recipe>;
-```
-
 ### RosterRepair  `type`
 
 ```ts
@@ -3431,34 +3294,6 @@ type RosterRepair = {
     readonly discarded: number;
     readonly reidentified: number;
 };
-```
-
-### ShapedRecipe  `type`
-
-```ts
-type ShapedRecipe = {
-    readonly _tag: 'Shaped';
-    readonly id: RecipeId;
-    readonly pattern: RecipePattern;
-    readonly output: ItemStack;
-};
-```
-
-### ShapelessRecipe  `type`
-
-```ts
-type ShapelessRecipe = {
-    readonly _tag: 'Shapeless';
-    readonly id: RecipeId;
-    readonly ingredients: ReadonlyArray<Ingredient>;
-    readonly output: ItemStack;
-};
-```
-
-### Slot  `type`
-
-```ts
-type Slot = ItemStack | undefined;
 ```
 
 ### SpawnRequest  `type`
@@ -3470,18 +3305,6 @@ type SpawnRequest<S> = {
     readonly healthPoints: number;
     readonly behaviour: S;
 };
-```
-
-### StackCount  `const`
-
-```ts
-const StackCount: Brand.Brand.Constructor<StackCount>;
-```
-
-### StackCount  `type`
-
-```ts
-type StackCount = number & Brand.Brand<'StackCount'>;
 ```
 
 ### StageId  `const`

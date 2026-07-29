@@ -13,10 +13,10 @@
  * their own names.
  */
 import { describe, expect, it } from '@effect/vitest'
+import { STARTER_RECIPES, craftGrid, type Slot } from '@nerima-games/mc-sim'
 import { Effect } from 'effect'
 import {
   INVENTORY_SLOT_COUNT,
-  NO_RECIPES,
   addToSlots,
   emptySlots,
   makeInMemoryInventory,
@@ -25,11 +25,12 @@ import {
   totalOf,
 } from '../domain/in-memory-inventory'
 import { MAX_STACK_COUNT, StackCount } from '../domain/frame-contract'
-import type { Slot } from '../domain/inventory-port'
 import type { ItemType } from '../domain/item-vocabulary'
 
 const STONE: ItemType = 'stone'
 const DIRT: ItemType = 'dirt'
+const OAK_LOG: ItemType = 'oak_log'
+const OAK_PLANKS: ItemType = 'oak_planks'
 
 const stack = (item: ItemType, count: number): Slot => ({ item, count: StackCount(count) })
 
@@ -188,25 +189,22 @@ describe('restore re-establishes the invariant', () => {
   )
 })
 
-describe('crafting is absent, and says so', () => {
-  it.effect('the recipe table is empty rather than fatal', () =>
-    Effect.gen(function* () {
-      // The double answers `Effect.dieMessage` here. An empty table is
-      // truthful: this inventory carries no recipes, because the table and the
-      // matching are mc-sim's.
-      const inventory = yield* makeInMemoryInventory()
-
-      expect(yield* inventory.recipes).toStrictEqual(NO_RECIPES)
-    }),
-  )
-
-  it.effect('previewCraft and craft answer NoMatch instead of dying', () =>
+describe('crafting delegates to mc-sim', () => {
+  it.effect('previews and crafts oak planks against the same inventory state', () =>
     Effect.gen(function* () {
       const inventory = yield* makeInMemoryInventory()
-      const grid = { width: 3, height: 3, cells: Array.from({ length: 9 }, () => undefined) }
+      const grid = craftGrid(1, 1, [OAK_LOG])
 
-      expect((yield* inventory.previewCraft(grid))._tag).toBe('NoMatch')
-      expect((yield* inventory.craft(grid))._tag).toBe('NoMatch')
+      expect(yield* inventory.recipes).toStrictEqual(STARTER_RECIPES)
+      yield* inventory.add(OAK_LOG, 1)
+
+      const beforePreview = yield* inventory.snapshot
+      expect((yield* inventory.previewCraft(grid))._tag).toBe('Match')
+      expect(yield* inventory.snapshot).toStrictEqual(beforePreview)
+
+      expect((yield* inventory.craft(grid))._tag).toBe('Crafted')
+      expect(yield* inventory.countOf(OAK_LOG)).toBe(0)
+      expect(yield* inventory.countOf(OAK_PLANKS)).toBe(4)
     }),
   )
 })

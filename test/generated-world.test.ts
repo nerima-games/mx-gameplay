@@ -1,4 +1,5 @@
 import { describe, expect, it } from '@effect/vitest'
+import { InventoryService, craftGrid } from '@nerima-games/mc-sim'
 import {
   CHUNK_SIZE_XZ,
   emptyBlocks,
@@ -66,6 +67,21 @@ describe('generated world composition', () => {
 
       expect(isSolid({ x: 0, y: 60, z: 0 })).toBe(false) // water
       expect(isSolid({ x: 0, y: 59, z: 0 })).toBe(true) // sand
+    }),
+  )
+
+  it.effect('shares recipe-enabled inventory between the world handle and layer', () =>
+    Effect.gen(function* () {
+      const world = yield* makeGeneratedWorld<MobBehaviour>({ seed: SEED })
+      const inventoryFromLayer = yield* InventoryService.pipe(Effect.provide(world.layer))
+      const grid = craftGrid(1, 1, ['oak_log'])
+
+      expect(inventoryFromLayer).toBe(world.inventory)
+      yield* world.inventory.add('oak_log', 1)
+      expect((yield* inventoryFromLayer.previewCraft(grid))._tag).toBe('Match')
+      expect((yield* inventoryFromLayer.craft(grid))._tag).toBe('Crafted')
+      expect(yield* world.inventory.countOf('oak_log')).toBe(0)
+      expect(yield* world.inventory.countOf('oak_planks')).toBe(4)
     }),
   )
 })
