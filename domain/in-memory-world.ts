@@ -1,5 +1,5 @@
 /**
- * The four in-memory services, built together, with handles AND a Layer.
+ * The in-memory services, built together, with handles AND a Layer.
  *
  * ---------------------------------------------------------------------------
  * WHY THIS EXISTS RATHER THAN THE HOST PULLING SERVICES OUT OF A CONTEXT
@@ -54,6 +54,7 @@ import { makeInMemoryChunkStore, type WorldContents } from './in-memory-chunk-st
 import { makeInMemoryEntityManager } from './in-memory-entity-manager'
 import { makeInMemoryInventory } from './in-memory-inventory'
 import { makeInMemoryPlayer } from './in-memory-player'
+import { makeInMemoryVitals, type InMemoryVitalsApi, type PlayerVitals } from './in-memory-vitals'
 import type { Dimension } from './nether-travel-port'
 
 /** What a host supplies to stand a world up. */
@@ -62,6 +63,7 @@ export type InMemoryWorldOptions = {
   readonly spawnPose?: PlayerPose
   readonly dimension?: Dimension
   readonly inventory?: ReadonlyArray<Slot>
+  readonly vitals?: PlayerVitals
 }
 
 /** Options for a deterministic generated overworld. */
@@ -74,10 +76,11 @@ export type GeneratedWorldOptions = {
   readonly pitchRadians?: number
   readonly dimension?: Dimension
   readonly inventory?: ReadonlyArray<Slot>
+  readonly vitals?: PlayerVitals
 }
 
 /**
- * The four services, plus the Layer that provides exactly them.
+ * The service handles, plus the Layer that provides the stage-facing services.
  *
  * `layer` is what `registerModule` is provided from; the four handles are for
  * a host loop that drives them directly. They are the SAME objects — see the
@@ -89,6 +92,7 @@ export type InMemoryWorld<S> = {
   readonly inventory: InventoryServiceApi
   readonly player: PlayerServiceApi
   readonly entities: EntityManagerApi<S>
+  readonly vitals: InMemoryVitalsApi
 }
 
 /** A generated world plus its typed store for meshing and rendering adapters. */
@@ -127,12 +131,14 @@ const makeWorldWithStore = <S>(
     readonly spawnPose?: PlayerPose | undefined
     readonly dimension?: Dimension | undefined
     readonly inventory?: ReadonlyArray<Slot> | undefined
+    readonly vitals?: PlayerVitals | undefined
   },
 ): Effect.Effect<InMemoryWorld<S>> =>
   Effect.gen(function* () {
     const inventory = yield* makeInMemoryInventory(options.inventory)
     const player = yield* makeInMemoryPlayer(options.spawnPose, options.dimension)
     const entities = yield* makeInMemoryEntityManager<S>()
+    const vitals = yield* makeInMemoryVitals(options.vitals)
 
     const layer = Layer.mergeAll(
       Layer.succeed(ChunkStore, chunkStore),
@@ -141,7 +147,7 @@ const makeWorldWithStore = <S>(
       Layer.succeed(entityManagerTag<S>(), entities),
     )
 
-    return { layer, chunkStore, inventory, player, entities }
+    return { layer, chunkStore, inventory, player, entities, vitals }
   })
 
 /**
@@ -183,6 +189,7 @@ export const makeGeneratedWorld = <S>(
       spawnPose,
       dimension: options.dimension,
       inventory: options.inventory,
+      vitals: options.vitals,
     })
 
     return { ...world, worldgenChunkStore: worldgenStore }

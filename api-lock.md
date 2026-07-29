@@ -13,7 +13,7 @@
 <!-- ------------------------------------------------------------------------- -->
 
 format: 1
-exported declarations: 382
+exported declarations: 391
 supporting declarations: 61
 
 ## Exported
@@ -758,6 +758,16 @@ type FluidWorkItem = {
 };
 ```
 
+### FoodTimerOutcome  `type`
+
+```ts
+type FoodTimerOutcome = {
+    readonly signal: PlayerFoodTickSignal;
+    readonly vitals: PlayerVitals;
+    readonly died: boolean;
+};
+```
+
 ### GAMEPLAY_STAGE_IDS  `const`
 
 ```ts
@@ -843,6 +853,7 @@ type GeneratedWorldOptions = {
     readonly pitchRadians?: number;
     readonly dimension?: Dimension;
     readonly inventory?: ReadonlyArray<Slot>;
+    readonly vitals?: PlayerVitals;
 };
 ```
 
@@ -991,6 +1002,23 @@ const InMemoryInventoryLayer: (initial?: ReadonlyArray<Slot>) => Layer.Layer<Inv
 const InMemoryPlayerLayer: (initialPose?: PlayerPose, initialDimension?: Dimension) => Layer.Layer<PlayerService>;
 ```
 
+### InMemoryVitalsApi  `type`
+
+```ts
+type InMemoryVitalsApi = {
+    readonly snapshot: Effect.Effect<PlayerVitals>;
+    readonly view: Effect.Effect<PlayerVitalsView>;
+    readonly damage: (damage: Damage) => Effect.Effect<VitalsDamageOutcome>;
+    readonly heal: (amount: number) => Effect.Effect<PlayerVitals>;
+    readonly addExhaustion: (amount: number) => Effect.Effect<void>;
+    readonly eat: (foodPoints: number, saturationModifier: number) => Effect.Effect<void>;
+    readonly advanceFoodTimer: (dt: DeltaTimeSecs) => Effect.Effect<FoodTimerOutcome>;
+    readonly respawn: Effect.Effect<void>;
+    readonly restore: (vitals: PlayerVitals) => Effect.Effect<void>;
+    readonly reset: Effect.Effect<void>;
+};
+```
+
 ### InMemoryWorld  `type`
 
 ```ts
@@ -1000,6 +1028,7 @@ type InMemoryWorld<S> = {
     readonly inventory: InventoryServiceApi;
     readonly player: PlayerServiceApi;
     readonly entities: EntityManagerApi<S>;
+    readonly vitals: InMemoryVitalsApi;
 };
 ```
 
@@ -1011,6 +1040,7 @@ type InMemoryWorldOptions = {
     readonly spawnPose?: PlayerPose;
     readonly dimension?: Dimension;
     readonly inventory?: ReadonlyArray<Slot>;
+    readonly vitals?: PlayerVitals;
 };
 ```
 
@@ -1440,6 +1470,12 @@ type PlayerBody = {
 };
 ```
 
+### PlayerFoodTickSignal  `type`
+
+```ts
+type PlayerFoodTickSignal = 'none' | 'regen' | 'starve';
+```
+
 ### PlayerResolution  `type`
 
 ```ts
@@ -1447,6 +1483,18 @@ type PlayerResolution = {
     readonly body: PlayerBody;
     readonly isGrounded: boolean;
 };
+```
+
+### PlayerVitals  `type`
+
+```ts
+type PlayerVitals = SimVitals;
+```
+
+### PlayerVitalsView  `type`
+
+```ts
+type PlayerVitalsView = SimVitalsView;
 ```
 
 ### RAIL_HEADING_EPSILON  `const`
@@ -1583,6 +1631,12 @@ const SHULKER_OPENING_TICKS = 20;
 
 ```ts
 const SOIL_OF_CROP: Readonly<Partial<Record<BlockType, BlockType>>>;
+```
+
+### SPAWN_PLAYER_VITALS  `const`
+
+```ts
+const SPAWN_PLAYER_VITALS: PlayerVitals;
 ```
 
 ### STEADY_ENDERMAN  `const`
@@ -1847,6 +1901,15 @@ type UnequipPort = {
 type Vitals = {
     readonly healthPoints: number;
     readonly lastDeathCause: DeathCause | undefined;
+};
+```
+
+### VitalsDamageOutcome  `type`
+
+```ts
+type VitalsDamageOutcome = {
+    readonly vitals: PlayerVitals;
+    readonly died: boolean;
 };
 ```
 
@@ -2388,6 +2451,12 @@ const isSupportSensitiveOfBlock: (block: BlockId) => boolean;
 const isThunderstorm: (weather: Weather) => boolean;
 ```
 
+### isValidPlayerVitals  `const`
+
+```ts
+const isValidPlayerVitals: (vitals: PlayerVitals) => boolean;
+```
+
 ### knockbackDirection  `const`
 
 ```ts
@@ -2434,6 +2503,12 @@ const makeInMemoryInventory: (initial?: ReadonlyArray<Slot>) => Effect.Effect<In
 
 ```ts
 const makeInMemoryPlayer: (initialPose?: PlayerPose, initialDimension?: Dimension) => Effect.Effect<PlayerServiceApi>;
+```
+
+### makeInMemoryVitals  `const`
+
+```ts
+const makeInMemoryVitals: (initial?: PlayerVitals) => Effect.Effect<InMemoryVitalsApi>;
 ```
 
 ### makeInMemoryWorld  `const`
