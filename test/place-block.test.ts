@@ -36,6 +36,7 @@
 import { describe, expect, it } from '@effect/vitest'
 import { Effect, Ref } from 'effect'
 import { positionKeyOf } from '../domain/block-position-key'
+import { StackCount } from '../domain/frame-contract'
 import {
   AIR_BLOCK_ID,
   type BlockPosition,
@@ -66,7 +67,7 @@ import { gameplayStages, makeGameplayFrameState } from '../stages/registration'
 import { makeChunkStoreDouble, SAND, STONE, WATER, world } from './support/chunk-store-double'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
 import { makePlayerServiceDouble } from './support/player-service-double'
-import { makeInventoryDouble } from './support/inventory-service-double'
+import { emptySlots, makeInventoryDouble } from './support/inventory-service-double'
 import type { MobBehaviour } from '../domain/entities/mob-frame'
 import { runFrame } from './support/frame-runner'
 
@@ -972,12 +973,21 @@ describe('F7 — CLOSED: the per-block support rules are ported, and all four ro
 // Through the stage
 // ---------------------------------------------------------------------------
 
-const stagedSlice = (entries: ReadonlyArray<readonly [BlockPosition, number]>) =>
+const stagedSlice = (
+  entries: ReadonlyArray<readonly [BlockPosition, number]>,
+  stocked = true,
+) =>
   Effect.gen(function* () {
     const store = yield* storeWith(entries)
     const roster = yield* makeEntityManagerDouble<MobBehaviour>()
     const player = yield* makePlayerServiceDouble()
-    const inventory = yield* makeInventoryDouble()
+    const initialInventory = emptySlots().map((_, index) => {
+      if (!stocked) return undefined
+      if (index === 0) return { item: 'sand' as const, count: StackCount(1) }
+      if (index === 1) return { item: 'stone' as const, count: StackCount(1) }
+      return undefined
+    })
+    const inventory = yield* makeInventoryDouble(initialInventory)
     const state = yield* makeGameplayFrameState
     return { store, state, inventory, stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api) }
   })
@@ -985,7 +995,8 @@ const stagedSlice = (entries: ReadonlyArray<readonly [BlockPosition, number]>) =
 describe('placement through gameplay:interactions', () => {
   it.effect('a queued placement is serviced and the item is reported as spent', () =>
     Effect.gen(function* () {
-      const { store, state, stages } = yield* stagedSlice([[below, STONE]])
+      const { store, state, inventory, stages } = yield* stagedSlice([[below, STONE]])
+      const before = yield* inventory.api.countOf('sand')
 
       yield* Ref.update(state.pendingPlacements, (queue) => [
         ...queue,
@@ -995,6 +1006,43 @@ describe('placement through gameplay:interactions', () => {
 
       expect(yield* store.blockAt(target)).toBe(blockIdOf('sand'))
       expect(yield* Ref.get(state.consumedItems)).toStrictEqual(['sand'])
+      expect(yield* inventory.api.countOf('sand')).toBe(before - 1)
+    }),
+  )
+
+  it.effect('competing placements cannot consume the same held item twice', () =>
+    Effect.gen(function* () {
+      const competingTarget: BlockPosition = { x: 3, y: 64, z: 3 }
+      const competingBelow: BlockPosition = { x: 3, y: 63, z: 3 }
+      const { store, state, inventory, stages } = yield* stagedSlice([
+        [below, STONE],
+        [competingBelow, STONE],
+      ])
+
+      yield* Ref.set(state.pendingPlacements, [
+        { positionKey: positionKeyOf(target), heldItem: 'sand' as const },
+        { positionKey: positionKeyOf(competingTarget), heldItem: 'sand' as const },
+      ])
+      yield* runFrame(stages)
+
+      const placements = [yield* store.blockAt(target), yield* store.blockAt(competingTarget)]
+      expect(placements.filter((block) => block === blockIdOf('sand'))).toHaveLength(1)
+      expect(yield* inventory.api.countOf('sand')).toBe(0)
+      expect(yield* Ref.get(state.consumedItems)).toStrictEqual(['sand'])
+    }),
+  )
+
+  it.effect('an empty inventory makes a queued placement a no-op', () =>
+    Effect.gen(function* () {
+      const { store, state, stages } = yield* stagedSlice([[below, STONE]], false)
+
+      yield* Ref.set(state.pendingPlacements, [
+        { positionKey: positionKeyOf(target), heldItem: 'sand' as const },
+      ])
+      yield* runFrame(stages)
+
+      expect(yield* store.blockAt(target)).toBeUndefined()
+      expect(yield* Ref.get(state.consumedItems)).toStrictEqual([])
     }),
   )
 
@@ -1039,7 +1087,8 @@ describe('placement through gameplay:interactions', () => {
   // is that a refused placement spends an item anyway.
   it.effect('a refused placement spends nothing and disturbs nothing', () =>
     Effect.gen(function* () {
-      const { store, state, stages } = yield* stagedSlice([[target, STONE]])
+      const { store, state, inventory, stages } = yield* stagedSlice([[target, STONE]])
+      const before = yield* inventory.api.countOf('sand')
 
       yield* Ref.update(state.pendingPlacements, (queue) => [
         ...queue,
@@ -1050,6 +1099,7 @@ describe('placement through gameplay:interactions', () => {
       expect(yield* store.blockAt(target)).toBe(STONE)
       expect(yield* Ref.get(state.consumedItems)).toStrictEqual([])
       expect((yield* Ref.get(state.fallingBlocks)).pending.size).toBe(0)
+      expect(yield* inventory.api.countOf('sand')).toBe(before)
     }),
   )
 

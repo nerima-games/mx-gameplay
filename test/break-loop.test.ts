@@ -30,6 +30,7 @@ import {
   makeGameplayFrameState,
   requestBlockBreak,
   requestTargetedBlockBreak,
+  requestTargetedBlockPlacement,
 } from '../stages/registration'
 import { GAMEPLAY_STAGE_IDS } from '../stages/stage-ids'
 import { makeInMemoryWorld } from '../domain/in-memory-world'
@@ -88,6 +89,26 @@ const runInteractions = (
 }
 
 describe('the break loop', () => {
+  it.effect('targets the adjacent cell for placement and preserves the held item', () =>
+    Effect.gen(function* () {
+      const world = yield* lookingAtBlockWorld(true)
+      const state = yield* makeGameplayFrameState
+
+      const target = yield* requestTargetedBlockPlacement(
+        state,
+        world.chunkStore,
+        world.player,
+        'sand',
+      )
+
+      expect(Option.getOrUndefined(target)?.position).toStrictEqual(IN_SIGHT)
+      expect(Option.getOrUndefined(target)?.adjacentPosition).toStrictEqual({ x: 0, y: 1, z: 1 })
+      expect(yield* Ref.get(state.pendingPlacements)).toStrictEqual([
+        { positionKey: '0,1,1', heldItem: 'sand' },
+      ])
+    }),
+  )
+
   it.effect('targets the first block under the crosshair and breaks it through the inbox', () =>
     Effect.gen(function* () {
       const world = yield* lookingAtBlockWorld(true)

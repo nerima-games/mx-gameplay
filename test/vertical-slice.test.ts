@@ -93,7 +93,7 @@ import {
 } from '../domain/entities/mob-frame'
 import { EntityKind, type EntityManagerApi, type Position } from '../domain/entity-manager-port'
 import { disturb } from '../domain/falling-block'
-import { DeltaTimeSecs } from '../domain/frame-contract'
+import { DeltaTimeSecs, StackCount } from '../domain/frame-contract'
 import { DEFAULT_ROLL_SEED, drawRolls, nextRoll } from '../domain/frame-rolls'
 import { craterCells, craterRadius } from '../domain/interactions/explosion-crater'
 import { CREEPER_FUSE_SECS, DORMANT_FUSE } from '../domain/mob/creeper-fuse'
@@ -128,6 +128,7 @@ import { makeEntityManagerDouble } from './support/entity-manager-double'
 import { makePlayerServiceDouble } from './support/player-service-double'
 import {
   brimming,
+  emptySlots,
   makeInventoryDouble,
   type InventoryDouble,
 } from './support/inventory-service-double'
@@ -155,11 +156,12 @@ const topOfColumn: BlockPosition = { x: 2, y: 67, z: 3 }
 const slice = (
   initial: ReadonlyMap<string, number>,
   loaded: ReadonlyArray<string> = ['0,0'],
+  inventorySlots = emptySlots(),
 ) =>
   Effect.gen(function* () {
     const store = yield* makeChunkStoreDouble(initial, loaded)
     const roster = yield* makeEntityManagerDouble<MobBehaviour>()
-    const inventory = yield* makeInventoryDouble()
+    const inventory = yield* makeInventoryDouble(inventorySlots)
     const player = yield* makePlayerServiceDouble()
     const state = yield* makeGameplayFrameState
     return {
@@ -171,6 +173,11 @@ const slice = (
       stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api),
     }
   })
+
+const onePlacementItem = (item: PlacementRequest['heldItem']) =>
+  emptySlots().map((_, index) =>
+    index === 0 ? { item, count: StackCount(1) } : undefined,
+  )
 
 /**
  * The `add` calls the interactions stage made, as `{ item, count }`.
@@ -1598,7 +1605,11 @@ describe('the mining site slice: dig, drop, place', () => {
   it.effect('places a block back, spends the item, and the cascade picks it up', () =>
     Effect.gen(function* () {
       const floorLevel: BlockPosition = { x: 4, y: 60, z: 3 }
-      const { store, state, stages } = yield* slice(world([[floorLevel, STONE]]))
+      const { store, state, stages } = yield* slice(
+        world([[floorLevel, STONE]]),
+        ['0,0'],
+        onePlacementItem('sand'),
+      )
 
       yield* requestPlace(state, cell, 'sand')
       yield* runFrame(stages)
@@ -1624,6 +1635,8 @@ describe('the mining site slice: dig, drop, place', () => {
           [under, STONE],
           [cell, STONE],
         ]),
+        ['0,0'],
+        onePlacementItem('sand'),
       )
 
       yield* holdWoodenPickaxe(state)
@@ -1895,6 +1908,7 @@ describe('the ignition slice: an item use reaches the world', () => {
       const { store, state, stages } = yield* slice(
         world(alreadyBuilt.map((cell) => [cell, OBSIDIAN] as const)),
         residentAround(origin),
+        onePlacementItem('obsidian'),
       )
 
       // ...and without it there is no portal, so the assertion below is about

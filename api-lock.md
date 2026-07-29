@@ -13,7 +13,7 @@
 <!-- ------------------------------------------------------------------------- -->
 
 format: 1
-exported declarations: 380
+exported declarations: 381
 supporting declarations: 81
 
 ## Exported
@@ -2565,6 +2565,12 @@ const requestBlockPlacement: (state: GameplayFrameState, request: PlacementReque
 
 ```ts
 const requestTargetedBlockBreak: (state: GameplayFrameState, store: ChunkStoreApi, player: PlayerServiceApi, maxDistance?: number) => Effect.Effect<Option.Option<BlockTarget>>;
+```
+
+### requestTargetedBlockPlacement  `const`
+
+```ts
+const requestTargetedBlockPlacement: (state: GameplayFrameState, store: ChunkStoreApi, player: PlayerServiceApi, heldItem: PlaceableItemType, maxDistance?: number) => Effect.Effect<Option.Option<BlockTarget>>;
 ```
 
 ### resolveBlasts  `const`

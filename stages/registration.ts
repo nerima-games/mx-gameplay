@@ -865,6 +865,26 @@ export const requestBlockPlacement = (
 ): Effect.Effect<void> =>
   Ref.update(state.pendingPlacements, (pending) => [...pending, request])
 
+/** Resolve the block under the crosshair and enqueue placement in its adjacent cell. */
+export const requestTargetedBlockPlacement = (
+  state: GameplayFrameState,
+  store: ChunkStoreApi,
+  player: PlayerServiceApi,
+  heldItem: PlaceableItemType,
+  maxDistance: number = DEFAULT_BLOCK_REACH,
+): Effect.Effect<Option.Option<BlockTarget>> =>
+  Effect.gen(function* () {
+    const pose = yield* player.pose
+    const target = targetBlockFromPlayerPose(pose, maxDistance, targetabilityFromStore(store))
+    if (Option.isSome(target)) {
+      yield* requestBlockPlacement(state, {
+        positionKey: positionKeyOf(target.value.adjacentPosition),
+        heldItem,
+      })
+    }
+    return target
+  })
+
 export const gameplayStages = (
   state: GameplayFrameState,
   store: ChunkStoreApi,
@@ -999,6 +1019,11 @@ export const gameplayStages = (
         }
 
         for (const request of placements) {
+          const reserved = yield* inventory.remove(request.heldItem, 1)
+          if (reserved === 0) {
+            continue
+          }
+
           const outcome = yield* placeBlock(store, {
             position: positionOfKey(request.positionKey),
             heldItem: request.heldItem,
@@ -1055,6 +1080,7 @@ export const gameplayStages = (
             case 'NoAdjacentWater':
             case 'SidesBlocked':
             case 'NoRoomAbove': {
+              yield* inventory.add(request.heldItem, reserved)
               break
             }
           }
