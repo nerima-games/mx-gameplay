@@ -35,6 +35,7 @@
  * another, which is a world where the camera never follows you.
  */
 import { Effect, Layer } from 'effect'
+import { capabilityOfBlockId } from '@nerima-games/mc-kernel'
 import {
   BlockId as WorldgenBlockId,
   blockPosition as worldgenBlockPosition,
@@ -205,7 +206,7 @@ export const solidityFromStore =
     const reading = Effect.runSync(store.getBlock(position))
     switch (reading._tag) {
       case 'Block':
-        return reading.block !== 0
+        return !capabilityOfBlockId(reading.block, 'passable')
       case 'ChunkNotLoaded':
         return true
       case 'OutOfWorld':

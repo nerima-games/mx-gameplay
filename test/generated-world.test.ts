@@ -1,7 +1,7 @@
 import { describe, expect, it } from '@effect/vitest'
 import { surfaceHeightAt } from '@nerima-games/mc-worldgen'
 import { Effect } from 'effect'
-import { makeGeneratedWorld } from '../domain/in-memory-world'
+import { makeGeneratedWorld, solidityFromStore } from '../domain/in-memory-world'
 import type { MobBehaviour } from '../domain/entities/mob-frame'
 
 const SEED = 424242
@@ -26,6 +26,17 @@ describe('generated world composition', () => {
         block: 0,
       })
       expect((yield* dirty.drain).changed).toStrictEqual([{ cx: 0, cz: 0 }])
+    }),
+  )
+
+  it.effect('uses kernel passability for generated block collision', () =>
+    Effect.gen(function* () {
+      const world = yield* makeGeneratedWorld<MobBehaviour>({ seed: 20260728 })
+      yield* world.chunkStore.load({ cx: 0, cz: 0 })
+      const isSolid = solidityFromStore(world.chunkStore)
+
+      expect(isSolid({ x: 0, y: 60, z: 0 })).toBe(false) // water
+      expect(isSolid({ x: 0, y: 59, z: 0 })).toBe(true) // sand
     }),
   )
 })
