@@ -242,6 +242,46 @@ export const makeInventoryDouble = (
             ] as const
           }),
 
+        removeAt: (slotIndex, expectedItem, count) =>
+          Ref.modify<
+            Doubles,
+            Effect.Effect.Success<ReturnType<InventoryServiceApi['removeAt']>>
+          >(state, (doubles) => {
+            if (!Number.isInteger(slotIndex) || slotIndex < 0 || slotIndex >= doubles.slots.length) {
+              return [{ _tag: 'InvalidSlot' } as const, doubles] as const
+            }
+            if (!Number.isInteger(count) || count <= 0) {
+              return [{ _tag: 'InvalidCount' } as const, doubles] as const
+            }
+
+            const slot = doubles.slots[slotIndex]
+            if (slot === undefined) {
+              return [{ _tag: 'EmptySlot' } as const, doubles] as const
+            }
+            if (slot.item !== expectedItem) {
+              return [{ _tag: 'ItemMismatch', actualItem: slot.item } as const, doubles] as const
+            }
+            if (slot.count < count) {
+              return [{ _tag: 'Insufficient', available: slot.count } as const, doubles] as const
+            }
+
+            const slots = [...doubles.slots]
+            const remaining = slot.count - count
+            slots[slotIndex] =
+              remaining === 0 ? undefined : { item: expectedItem, count: StackCount(remaining) }
+            return [
+              { _tag: 'Removed', removed: count } as const,
+              {
+                ...doubles,
+                slots,
+                withdrawals: [
+                  ...doubles.withdrawals,
+                  { item: expectedItem, count, removed: count },
+                ],
+              },
+            ] as const
+          }),
+
         countOf: (item) => Effect.map(Ref.get(state), (doubles) => totalOf(doubles.slots, item)),
 
         snapshot: Effect.map(Ref.get(state), (doubles): Inventory => ({ slots: doubles.slots })),

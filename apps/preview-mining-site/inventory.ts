@@ -183,6 +183,39 @@ export const makePreviewInventory = (): Effect.Effect<PreviewInventory> =>
           return [outcome.removed, { ...current, slots: outcome.slots }] as const
         }),
 
+      removeAt: (slotIndex, expectedItem, count) =>
+        Ref.modify<
+          State,
+          Effect.Effect.Success<ReturnType<InventoryServiceApi['removeAt']>>
+        >(state, (current) => {
+          if (!Number.isInteger(slotIndex) || slotIndex < 0 || slotIndex >= current.slots.length) {
+            return [{ _tag: 'InvalidSlot' } as const, current] as const
+          }
+          if (!Number.isInteger(count) || count <= 0) {
+            return [{ _tag: 'InvalidCount' } as const, current] as const
+          }
+
+          const slot = current.slots[slotIndex]
+          if (slot === undefined) {
+            return [{ _tag: 'EmptySlot' } as const, current] as const
+          }
+          if (slot.item !== expectedItem) {
+            return [{ _tag: 'ItemMismatch', actualItem: slot.item } as const, current] as const
+          }
+          if (slot.count < count) {
+            return [{ _tag: 'Insufficient', available: slot.count } as const, current] as const
+          }
+
+          const slots = [...current.slots]
+          const remaining = slot.count - count
+          slots[slotIndex] =
+            remaining === 0 ? undefined : { item: expectedItem, count: StackCount(remaining) }
+          return [
+            { _tag: 'Removed', removed: count } as const,
+            { ...current, slots },
+          ] as const
+        }),
+
       countOf: (item) =>
         Effect.map(Ref.get(state), (current) =>
           current.slots.reduce(
