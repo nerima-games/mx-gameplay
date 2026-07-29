@@ -83,8 +83,8 @@ import type { IgnitionItemType } from '../../domain/interactions/use-flint-and-s
 import {
   gameplayStages,
   makeGameplayFrameState,
+  requestItemUse as enqueueItemUse,
   type GameplayFrameState,
-  type ItemUseRequest,
   type PlacementRequest,
 } from '../../stages/registration'
 import { GAMEPLAY_STAGE_IDS } from '../../stages/stage-ids'
@@ -378,10 +378,7 @@ export const requestItemUse = (
   heldItem: IgnitionItemType,
 ): Effect.Effect<void> =>
   Effect.map(
-    Ref.update(site.state.pendingItemUses, (queue): ReadonlyArray<ItemUseRequest> => [
-      ...queue,
-      { positionKey: positionKeyOf(position), heldItem },
-    ]),
+    enqueueItemUse(site.state, `preview:${String(site.submitted + 1)}`, position, heldItem),
     () => {
       site.submitted += 1
       site.note = `queued use of ${heldItem} at ${positionKeyOf(position)}`

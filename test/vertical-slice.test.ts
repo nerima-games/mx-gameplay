@@ -111,9 +111,10 @@ import { chunkCoordsAround } from '../domain/chunk-window'
 import { PORTAL_WINDOW_RADIUS, ignitePortal } from '../domain/interactions/ignite-portal'
 import { generatePortalLayout } from '../domain/portal-frame-port'
 import {
+  drainItemUseResults,
   gameplayStages,
   makeGameplayFrameState,
-  type ItemUseRequest,
+  requestItemUse,
   type PlacementRequest,
 } from '../stages/registration'
 import {
@@ -1838,17 +1839,6 @@ describe('the ignition slice: an item use reaches the world', () => {
       (coord) => `${String(coord.cx)},${String(coord.cz)}`,
     )
 
-  /** What mc-render's input stage will do, once mc-render is published. */
-  const requestItemUse = (
-    state: { readonly pendingItemUses: Ref.Ref<ReadonlyArray<ItemUseRequest>> },
-    position: BlockPosition,
-    heldItem: ItemUseRequest['heldItem'],
-  ): Effect.Effect<void> =>
-    Ref.update(state.pendingItemUses, (queue): ReadonlyArray<ItemUseRequest> => [
-      ...queue,
-      { positionKey: positionKeyOf(position), heldItem },
-    ])
-
   const requestPlace = (
     state: { readonly pendingPlacements: Ref.Ref<ReadonlyArray<PlacementRequest>> },
     position: BlockPosition,
@@ -1867,7 +1857,7 @@ describe('the ignition slice: an item use reaches the world', () => {
         residentAround(origin),
       )
 
-      yield* requestItemUse(state, origin, 'flint_and_steel')
+      yield* requestItemUse(state, 'portal-use', origin, 'flint_and_steel')
       yield* runFrame(stages)
 
       expect(yield* store.blockAt(origin)).toBe(NETHER_PORTAL)
@@ -1879,6 +1869,13 @@ describe('the ignition slice: an item use reaches the world', () => {
       // become a call to.
       expect(yield* Ref.get(state.usedItems)).toStrictEqual(['flint_and_steel'])
       expect(yield* Ref.get(state.consumedItems)).toStrictEqual([])
+      const [result] = yield* drainItemUseResults(state)
+      expect(result).toMatchObject({
+        requestId: 'portal-use',
+        heldItem: 'flint_and_steel',
+        success: true,
+        outcome: { _tag: 'Portal', outcome: { _tag: 'Lit' } },
+      })
     }),
   )
 
@@ -1886,11 +1883,19 @@ describe('the ignition slice: an item use reaches the world', () => {
     Effect.gen(function* () {
       const { store, state, stages } = yield* slice(world([]), residentAround(origin))
 
-      yield* requestItemUse(state, origin, 'fire_charge')
+      yield* requestItemUse(state, 'fire-use', origin, 'fire_charge')
       yield* runFrame(stages)
 
       expect(yield* store.blockAt(origin)).toBe(FIRE)
       expect(yield* Ref.get(state.usedItems)).toStrictEqual(['fire_charge'])
+      expect(yield* drainItemUseResults(state)).toStrictEqual([
+        {
+          requestId: 'fire-use',
+          heldItem: 'fire_charge',
+          success: true,
+          outcome: { _tag: 'Fire', outcome: { _tag: 'Lit', position: origin } },
+        },
+      ])
     }),
   )
 
@@ -1901,10 +1906,37 @@ describe('the ignition slice: an item use reaches the world', () => {
       // must not wear a flint and steel out.
       const { state, stages } = yield* slice(world([[origin, STONE]]), residentAround(origin))
 
-      yield* requestItemUse(state, origin, 'flint_and_steel')
+      yield* requestItemUse(state, 'refused-use', origin, 'flint_and_steel')
       yield* runFrame(stages)
 
       expect(yield* Ref.get(state.usedItems)).toStrictEqual([])
+      expect(yield* drainItemUseResults(state)).toStrictEqual([
+        {
+          requestId: 'refused-use',
+          heldItem: 'flint_and_steel',
+          success: false,
+          outcome: { _tag: 'Fire', outcome: { _tag: 'Occupied', existing: STONE } },
+        },
+      ])
+    }),
+  )
+
+  it.effect('correlates multiple requests in order and drains their results exactly once', () =>
+    Effect.gen(function* () {
+      const second: BlockPosition = { ...origin, x: origin.x + 1 }
+      const { state, stages } = yield* slice(world([]), residentAround(origin))
+
+      yield* requestItemUse(state, 'first', origin, 'flint_and_steel')
+      yield* requestItemUse(state, 'second', second, 'fire_charge')
+      yield* runFrame(stages)
+
+      const results = yield* drainItemUseResults(state)
+      expect(results.map(({ requestId, heldItem, success }) => ({ requestId, heldItem, success })))
+        .toStrictEqual([
+          { requestId: 'first', heldItem: 'flint_and_steel', success: true },
+          { requestId: 'second', heldItem: 'fire_charge', success: true },
+        ])
+      expect(yield* drainItemUseResults(state)).toStrictEqual([])
     }),
   )
 
@@ -1938,7 +1970,7 @@ describe('the ignition slice: an item use reaches the world', () => {
       expect(yield* ignitePortal(store.api, origin)).toStrictEqual({ _tag: 'NoFrame' })
 
       yield* requestPlace(state, lastCell, 'obsidian')
-      yield* requestItemUse(state, origin, 'flint_and_steel')
+      yield* requestItemUse(state, 'placed-then-lit', origin, 'flint_and_steel')
       yield* runFrame(stages)
 
       expect(yield* Ref.get(state.consumedItems)).toStrictEqual(['obsidian'])
@@ -1970,7 +2002,7 @@ describe('the ignition slice: an item use reaches the world', () => {
         residentAround(origin),
       )
 
-      yield* requestItemUse(state, origin, 'flint_and_steel')
+      yield* requestItemUse(state, 'no-fall', origin, 'flint_and_steel')
       yield* runFrame(stages)
 
       // A break disturbs because it makes a hole. Both ignitions write into

@@ -363,6 +363,7 @@ describe('stage behaviour', () => {
         'fluidFrontier',
         'heldTool',
         'hostileContactCooldowns',
+        'itemUseResults',
         'leftoverItems',
         'mobDrops',
         'pendingBowShots',

@@ -13,7 +13,7 @@
 <!-- ------------------------------------------------------------------------- -->
 
 format: 1
-exported declarations: 431
+exported declarations: 436
 supporting declarations: 61
 
 ## Exported
@@ -895,6 +895,7 @@ type GameplayFrameState = {
     readonly leftoverItems: Ref.Ref<ReadonlyArray<MinedItem>>;
     readonly consumedItems: Ref.Ref<ReadonlyArray<PlaceableItemType>>;
     readonly usedItems: Ref.Ref<ReadonlyArray<IgnitionItemType>>;
+    readonly itemUseResults: Ref.Ref<ReadonlyArray<ItemUseResult>>;
     readonly bowKnockbacks: Ref.Ref<ReadonlyArray<BowKnockback>>;
     readonly enderPearlOutcomes: Ref.Ref<ReadonlyArray<EnderPearlOutcome>>;
     readonly playerDamages: Ref.Ref<ReadonlyArray<PlayerDamageEvent>>;
@@ -1204,8 +1205,26 @@ type IsRailAt = (wx: number, wy: number, wz: number) => boolean;
 
 ```ts
 type ItemUseRequest = {
+    readonly requestId: ItemUseRequestId;
     readonly positionKey: PositionKey;
     readonly heldItem: IgnitionItemType;
+};
+```
+
+### ItemUseRequestId  `type`
+
+```ts
+type ItemUseRequestId = string;
+```
+
+### ItemUseResult  `type`
+
+```ts
+type ItemUseResult = {
+    readonly requestId: ItemUseRequestId;
+    readonly heldItem: IgnitionItemType;
+    readonly success: boolean;
+    readonly outcome: IgnitionOutcome;
 };
 ```
 
@@ -2424,6 +2443,12 @@ const disturb: (queue: FallingBlockQueue, positions: Iterable<PositionKey>) => F
 const doorUpperCell: (store: ChunkStoreApi, block: BlockId, position: BlockPosition) => Effect.Effect<DoorUpperCell>;
 ```
 
+### drainItemUseResults  `const`
+
+```ts
+const drainItemUseResults: (state: GameplayFrameState) => Effect.Effect<ReadonlyArray<ItemUseResult>>;
+```
+
 ### drainMobDrops  `const`
 
 ```ts
@@ -2898,6 +2923,12 @@ const requestBlockPlacement: (state: GameplayFrameState, request: PlacementReque
 const requestBowShot: (state: GameplayFrameState, request: BowShotRequest) => Effect.Effect<void>;
 ```
 
+### requestItemUse  `const`
+
+```ts
+const requestItemUse: (state: GameplayFrameState, requestId: ItemUseRequestId, position: BlockPosition, heldItem: IgnitionItemType) => Effect.Effect<void>;
+```
+
 ### requestMeleeAttack  `const`
 
 ```ts
@@ -2920,6 +2951,12 @@ const requestTargetedBlockBreak: (state: GameplayFrameState, store: ChunkStoreAp
 
 ```ts
 const requestTargetedBlockPlacement: (state: GameplayFrameState, store: ChunkStoreApi, player: PlayerServiceApi, heldItem: PlaceableItemType, maxDistance?: number) => Effect.Effect<Option.Option<BlockTarget>>;
+```
+
+### requestTargetedItemUse  `const`
+
+```ts
+const requestTargetedItemUse: (state: GameplayFrameState, store: ChunkStoreApi, player: PlayerServiceApi, requestId: ItemUseRequestId, heldItem: IgnitionItemType, maxDistance?: number) => Effect.Effect<Option.Option<BlockTarget>>;
 ```
 
 ### requestTargetedPrimaryAttack  `const`

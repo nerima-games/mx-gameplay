@@ -172,6 +172,7 @@ import {
 } from '../domain/interactions/throw-ender-pearl'
 import {
   useFlintAndSteel,
+  type IgnitionOutcome,
   type IgnitionItemType,
 } from '../domain/interactions/use-flint-and-steel'
 import type { PositionKey } from '../domain/position-key'
@@ -495,6 +496,7 @@ export type GameplayFrameState = {
   readonly leftoverItems: Ref.Ref<ReadonlyArray<MinedItem>>
   readonly consumedItems: Ref.Ref<ReadonlyArray<PlaceableItemType>>
   readonly usedItems: Ref.Ref<ReadonlyArray<IgnitionItemType>>
+  readonly itemUseResults: Ref.Ref<ReadonlyArray<ItemUseResult>>
   readonly bowKnockbacks: Ref.Ref<ReadonlyArray<BowKnockback>>
   readonly enderPearlOutcomes: Ref.Ref<ReadonlyArray<EnderPearlOutcome>>
   readonly playerDamages: Ref.Ref<ReadonlyArray<PlayerDamageEvent>>
@@ -565,8 +567,20 @@ export type PlacementRequest = {
  * repository is handed a cell.
  */
 export type ItemUseRequest = {
+  readonly requestId: ItemUseRequestId
   readonly positionKey: PositionKey
   readonly heldItem: IgnitionItemType
+}
+
+/** Host-provided correlation key for one item-use request. */
+export type ItemUseRequestId = string
+
+/** The complete, drainable answer for one item-use request. */
+export type ItemUseResult = {
+  readonly requestId: ItemUseRequestId
+  readonly heldItem: IgnitionItemType
+  readonly success: boolean
+  readonly outcome: IgnitionOutcome
 }
 
 /**
@@ -706,6 +720,7 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
   const leftoverItems = yield* Ref.make<ReadonlyArray<MinedItem>>([])
   const consumedItems = yield* Ref.make<ReadonlyArray<PlaceableItemType>>([])
   const usedItems = yield* Ref.make<ReadonlyArray<IgnitionItemType>>([])
+  const itemUseResults = yield* Ref.make<ReadonlyArray<ItemUseResult>>([])
   // Both empty in the ORDINARY state, like `leftoverItems` and unlike the
   // outboxes above: an entry means something happened that this repository
   // computed and cannot itself deliver. See the two types.
@@ -749,6 +764,7 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
     leftoverItems,
     consumedItems,
     usedItems,
+    itemUseResults,
     bowKnockbacks,
     enderPearlOutcomes,
     playerDamages,
@@ -892,6 +908,23 @@ export const requestBlockPlacement = (
 ): Effect.Effect<void> =>
   Ref.update(state.pendingPlacements, (pending) => [...pending, request])
 
+/** Enqueue one igniting-item use without exposing the internal position encoding. */
+export const requestItemUse = (
+  state: GameplayFrameState,
+  requestId: ItemUseRequestId,
+  position: BlockPosition,
+  heldItem: IgnitionItemType,
+): Effect.Effect<void> =>
+  Ref.update(state.pendingItemUses, (pending) => [
+    ...pending,
+    { requestId, positionKey: positionKeyOf(position), heldItem },
+  ])
+
+/** Drain completed item-use results exactly once, preserving request order. */
+export const drainItemUseResults = (
+  state: GameplayFrameState,
+): Effect.Effect<ReadonlyArray<ItemUseResult>> => Ref.getAndSet(state.itemUseResults, [])
+
 /** Enqueue one bow release for the interaction stage. */
 export const requestBowShot = (
   state: GameplayFrameState,
@@ -998,6 +1031,24 @@ export const requestTargetedBlockPlacement = (
     return target
   })
 
+/** Resolve the block under the crosshair and enqueue an item use in its adjacent cell. */
+export const requestTargetedItemUse = (
+  state: GameplayFrameState,
+  store: ChunkStoreApi,
+  player: PlayerServiceApi,
+  requestId: ItemUseRequestId,
+  heldItem: IgnitionItemType,
+  maxDistance: number = DEFAULT_BLOCK_REACH,
+): Effect.Effect<Option.Option<BlockTarget>> =>
+  Effect.gen(function* () {
+    const pose = yield* player.pose
+    const target = targetBlockFromPlayerPose(pose, maxDistance, targetabilityFromStore(store))
+    if (Option.isSome(target)) {
+      yield* requestItemUse(state, requestId, target.value.adjacentPosition, heldItem)
+    }
+    return target
+  })
+
 export const gameplayStages = (
   state: GameplayFrameState,
   store: ChunkStoreApi,
@@ -1080,6 +1131,7 @@ export const gameplayStages = (
         const gained: Array<MinedItem> = []
         const spent: Array<PlaceableItemType> = []
         const used: Array<IgnitionItemType> = []
+        const itemUseResults: Array<ItemUseResult> = []
         const disturbed: Array<PositionKey> = []
 
         // Read ONCE for the whole batch rather than per request. The tool is an
@@ -1215,6 +1267,13 @@ export const gameplayStages = (
             positionOfKey(request.positionKey),
             request.heldItem,
           )
+          const success = ignition.outcome._tag === 'Lit'
+          itemUseResults.push({
+            requestId: request.requestId,
+            heldItem: request.heldItem,
+            success,
+            outcome: ignition,
+          })
 
           // THE ITEM IS SPENT ONLY WHEN SOMETHING LIT, which is the reference's
           // rule (`interaction-flint-steel-handler.ts` damages the held item
@@ -1226,7 +1285,7 @@ export const gameplayStages = (
           // without first asking which rule gave it — the `_tag` on the pair is
           // for a caller that wants to REPORT which one ran, which this stage
           // does not.
-          if (ignition.outcome._tag === 'Lit') {
+          if (success) {
             used.push(request.heldItem)
           }
 
@@ -1458,6 +1517,9 @@ export const gameplayStages = (
         }
         if (used.length > 0) {
           yield* Ref.update(state.usedItems, (items) => [...items, ...used])
+        }
+        if (itemUseResults.length > 0) {
+          yield* Ref.update(state.itemUseResults, (items) => [...items, ...itemUseResults])
         }
         // Both are outboxes with no consumer in this repository; the types say
         // which missing noun each is waiting for.

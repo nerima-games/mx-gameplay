@@ -52,7 +52,13 @@
 import { Effect, Ref } from 'effect'
 import { MAX_STACK_COUNT, StackCount } from '../../domain/frame-contract'
 import type { MinedItem } from '../../domain/interactions/block-loot'
-import type { Inventory, InventoryServiceApi, Slot } from '@nerima-games/mc-sim'
+import type {
+  Inventory,
+  InventoryClick,
+  InventoryClickResult,
+  InventoryServiceApi,
+  Slot,
+} from '@nerima-games/mc-sim'
 import type { ItemType } from '../../domain/item-vocabulary'
 
 /** mc-sim's `INVENTORY_SLOT_COUNT`. The number that makes overflow reachable. */
@@ -129,6 +135,101 @@ const removeFrom = (
   }
 
   return { slots: next, removed: count - remaining }
+}
+
+type ClickOutcome = {
+  readonly slots: ReadonlyArray<Slot>
+  readonly result: InventoryClickResult
+}
+
+const validCarried = (carried: Slot): boolean =>
+  carried === undefined ||
+  (Number.isInteger(carried.count) && carried.count > 0 && carried.count <= MAX_STACK_COUNT)
+
+/** `mc-sim` keeps this state transition private, so the preview mirrors its public contract. */
+const clickSlot = (slots: ReadonlyArray<Slot>, click: InventoryClick): ClickOutcome => {
+  if (!Number.isInteger(click.slotIndex) || click.slotIndex < 0 || click.slotIndex >= slots.length) {
+    return { slots, result: { _tag: 'InvalidSlot', carried: click.carried } }
+  }
+  if (!validCarried(click.carried)) {
+    return { slots, result: { _tag: 'InvalidCount', carried: click.carried } }
+  }
+
+  const slot = slots[click.slotIndex]
+  if (click._tag === 'LeftClick') {
+    if (click.carried === undefined) {
+      if (slot === undefined) {
+        return { slots, result: { _tag: 'NoChange', carried: undefined } }
+      }
+      const next = [...slots]
+      next[click.slotIndex] = undefined
+      return { slots: next, result: { _tag: 'PickedUp', carried: slot } }
+    }
+    if (slot === undefined) {
+      const next = [...slots]
+      next[click.slotIndex] = click.carried
+      return { slots: next, result: { _tag: 'Placed', carried: undefined } }
+    }
+    if (slot.item !== click.carried.item) {
+      const next = [...slots]
+      next[click.slotIndex] = click.carried
+      return { slots: next, result: { _tag: 'Swapped', carried: slot } }
+    }
+
+    const accepted = Math.min(MAX_STACK_COUNT - slot.count, click.carried.count)
+    if (accepted <= 0) {
+      return { slots, result: { _tag: 'NoChange', carried: click.carried } }
+    }
+    const next = [...slots]
+    next[click.slotIndex] = { item: slot.item, count: StackCount(slot.count + accepted) }
+    const remaining = click.carried.count - accepted
+    return {
+      slots: next,
+      result: {
+        _tag: 'Merged',
+        carried:
+          remaining === 0
+            ? undefined
+            : { item: click.carried.item, count: StackCount(remaining) },
+      },
+    }
+  }
+
+  if (click.carried === undefined) {
+    if (slot === undefined) {
+      return { slots, result: { _tag: 'NoChange', carried: undefined } }
+    }
+    const pickedUp = Math.ceil(slot.count / 2)
+    const remaining = slot.count - pickedUp
+    const next = [...slots]
+    next[click.slotIndex] =
+      remaining === 0 ? undefined : { item: slot.item, count: StackCount(remaining) }
+    return {
+      slots: next,
+      result: {
+        _tag: 'PickedUp',
+        carried: { item: slot.item, count: StackCount(pickedUp) },
+      },
+    }
+  }
+
+  if (slot !== undefined && (slot.item !== click.carried.item || slot.count >= MAX_STACK_COUNT)) {
+    return { slots, result: { _tag: 'NoChange', carried: click.carried } }
+  }
+  const next = [...slots]
+  next[click.slotIndex] = {
+    item: click.carried.item,
+    count: StackCount((slot?.count ?? 0) + 1),
+  }
+  const remaining = click.carried.count - 1
+  return {
+    slots: next,
+    result: {
+      _tag: slot === undefined ? 'Placed' : 'Merged',
+      carried:
+        remaining === 0 ? undefined : { item: click.carried.item, count: StackCount(remaining) },
+    },
+  }
 }
 
 const refuse = <A>(what: string): Effect.Effect<A> =>
@@ -214,6 +315,12 @@ export const makePreviewInventory = (): Effect.Effect<PreviewInventory> =>
             { _tag: 'Removed', removed: count } as const,
             { ...current, slots },
           ] as const
+        }),
+
+      click: (click) =>
+        Ref.modify(state, (current) => {
+          const outcome = clickSlot(current.slots, click)
+          return [outcome.result, { ...current, slots: outcome.slots }] as const
         }),
 
       countOf: (item) =>
