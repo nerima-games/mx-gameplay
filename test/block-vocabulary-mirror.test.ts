@@ -358,7 +358,7 @@ describe('the supportRule mirror', () => {
 })
 
 describe('the item form of a block, in both directions', () => {
-  it.effect('`blockOfPlaceableItem` is the identity, and the round trip is what the type buys', () =>
+  it.effect('`blockOfPlaceableItem` and `itemOfBlock` round-trip every placeable item', () =>
     Effect.sync(() => {
       // The function has no arithmetic in it at all — the work is in the type,
       // and the reason to assert on it is that the type is the claim. kernel
@@ -376,11 +376,14 @@ describe('the item form of a block, in both directions', () => {
 
       for (const item of PLACEABLE_ITEM_TYPES) {
         const block = blockOfPlaceableItem(item)
-        expect(block).toBe(item)
+        expect(block).toBe(item === 'redstone_dust' ? 'redstone_wire' : item)
         expect(itemOfBlock(block)).toBe(item)
         // And it is a block this build can actually put in the world.
         expect(blockIdOf(block)).toBeDefined()
       }
+
+      expect(blockOfPlaceableItem('redstone_dust')).toBe('redstone_wire')
+      expect(itemOfBlock('redstone_wire')).toBe('redstone_dust')
     }),
   )
 

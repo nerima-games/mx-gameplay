@@ -287,13 +287,15 @@ plan.md §4.2 を素直に読むと `input` の後ろでもあり、`redstone` �
 | `makeGameplayStages` | **契約** | `mc-compose` が消費する唯一の入口。`ChunkStore` を要求する（§2-2） |
 | `gameplayStages(state, store)` | 内部(可視) | state と store を外から渡す版。プレビューとテストが state を覗くために使う |
 | `makeGameplayFrameState` | 内部(可視) | 再入可能な初期化。テストが 2 つ作って独立性を検査する（DN-GP-6） |
-| `GameplayFrameState` | 内部(可視) | フレームローカルの作業メモ（`Ref` **18 本**）。ゲーム状態ではない |
+| `GameplayFrameState` | 内部(可視) | フレームローカルの作業メモ（`Ref` **20 本**）。ゲーム状態ではない |
 | `requestTargetedPrimaryAttack` | 内部(可視) | プレイヤーの姿勢から敵とブロックを同じクリックで解決し、敵がブロックより手前なら `pendingMeleeAttacks`、それ以外でブロックがあれば `pendingBreaks` の片方だけに積む |
 | `TargetedPrimaryAttackResult` / `TargetedPrimaryAttackOptions` | 内部(可視) | 結果は `Melee`（`ShotHit`）/ `Block`（`BlockTarget`）/ `None`。既定値は melee reach 3、damage 1、block reach 5 |
 | `PlacementRequest` / `ItemUseRequest` | 内部(可視) | 受信箱に積む要求の形。どちらも「セル 1 つと手に持っているもの」で、**持ち物の型が互いに素**である（`PlaceableItemType` と `IgnitionItemType`）ので 1 つの union にはしていない |
+| `requestTargetedBlockUse` / `requestBlockUse` / `drainBlockUseResults` | **契約** | レバーを優先する use 入り口と、`requestId` で相関した結果の enqueue/drain。非レバーなら通常の配置へフォールバックし、レバーなら配置しない |
+| `BlockUseRequestId` / `BlockUseRequest` / `BlockUseResult` | **契約** | 成否を入力イベントへ返す相関付きプロトコル。結果は 1 回だけ drain される |
 | `LAVA_TICK_INTERVAL` | 内部(可視) | 暫定値。プレビューで測って決める |
 
-**`Ref` の本数は 18 で、内訳は「作業キュー 4 + 受信箱 6 + 送信箱 4 + 乱数の種 1 + ペア 2 + カウンタ 1」である。**
+**`Ref` の本数は 20 で、内訳は「作業キュー 4 + 受信箱 7 + 送信箱 5 + 乱数の種 1 + ペア 2 + カウンタ 1」である。**
 下表は**全部ではなく、判定の型が違う 7 本**を挙げている —— 残りは同じ 2 つの型
 （受信箱 / 送信箱）のどれかで、`stages/registration.ts` の冒頭が 1 本ずつ論じている。
 この節は長く「5 本」と書いたまま古くなっていた。
@@ -307,6 +309,7 @@ plan.md §4.2 を素直に読むと `input` の後ろでもあり、`redstone` �
 | `leftoverItems` | **送信箱、ただし中身は「入らなかった」ぶんだけ**。`minedItems` を置き換えた —— 掘れたものは stage が `InventoryService.add` に直接渡すようになったので、ここに残るのは `add` が返した leftover である | 要らない。**通常フレームでは空である**ことが、`minedItems` と最も違う点 |
 | `pendingItemUses` | **受信箱**。今フレームのアイテム使用要求（火打石 / 火の玉） | 要らない。`pendingBreaks` と同じ理由 |
 | `usedItems` | **送信箱**。点火に使われた道具。`consumedItems` と**別**なのは、`InventoryService` の動詞が違う（消費ではなく耐久の消耗）からである | 要らない。同上 |
+| `pendingBlockUses` / `blockUseResults` | 相関 ID 付きのレバー use 受信箱 / 結果送信箱 | 要らない。レバーの on/off はホストのワールド状態であり、ここには保存しない |
 
 受信箱は mc-render の入力イベントになる。**送信箱のうち採掘のぶんはもう消えた** ——
 `domain/inventory-port.ts` が mc-sim の `InventoryService` を丸ごと写し、
@@ -541,6 +544,23 @@ kernel 監査 §4.9 が `solid` への統合を禁じている理由がその行
 `BreakOutcome` は `BlockWriteOutcome` と同じく全域である。`NothingThere`（= `Unchanged`）は
 アイテムを生まず、チャンクを汚さず、落下ブロックの仕事も作らない。
 固定しているテスト: `` REGRESSION: breaking air is `Unchanged` — no item, no dirty chunk, no falling-block work ``。
+
+### domain/interactions/use-block.ts
+
+| export | 種別 | 備考 |
+| --- | --- | --- |
+| `resolveBlockUse` / `isSuccessfulBlockUse` / `BlockUseOutcome` | **契約** | 読み取り結果を `ToggleLever` / `NotLever` / `ChunkNotLoaded` / `OutOfWorld` にする純粋規則。ブロックもレバー状態も変更しない |
+
+ホストは `drainBlockUseResults` の成功結果を受けて、自身が所有するレバーの `active` を反転する。
+その後、その状態を含む `RedstoneWorldSnapshot` を `mx-redstone` の
+`RedstoneWorldRuntime.syncSnapshot` に渡し、通常どおり redstone stage を実行する。
+現行の `mx-redstone` 公開 API にレバー専用の toggle 関数はなく、この snapshot 同期が正確な結線点である。
+
+### domain/block-vocabulary.ts
+
+| export | 種別 | 備考 |
+| --- | --- | --- |
+| `blockOfPlaceableItem` / `itemOfBlock` / `isPlaceableItem` / `PlaceableItemType` | **契約** | アイテムと設置ブロックの対応。通常は同名だが `redstone_dust` は `redstone_wire` を設置し、`redstone_wire` は `redstone_dust` を落とす |
 
 ### domain/entities/falling-block-move.ts（**バレルから re-export しない**）
 

@@ -68,7 +68,13 @@ export * from './domain/mob/shulker-shell'
 export * from './domain/vehicle/rail-ascent'
 export * from './domain/vehicle/rail-shape'
 export * from './domain/weather'
-export { isPlaceableItem } from './domain/block-vocabulary'
+export {
+  blockOfPlaceableItem,
+  isPlaceableItem,
+  itemOfBlock,
+  type PlaceableItemType,
+} from './domain/block-vocabulary'
+export * from './domain/interactions/use-block'
 export * from './stages/registration'
 export * from './stages/stage-ids'
 

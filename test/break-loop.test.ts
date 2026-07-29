@@ -26,11 +26,13 @@
 import { describe, expect, it } from '@effect/vitest'
 import { Effect, Option, Ref } from 'effect'
 import {
+  drainBlockUseResults,
   gameplayStages,
   makeGameplayFrameState,
   requestBlockBreak,
   requestTargetedBlockBreak,
   requestTargetedBlockPlacement,
+  requestTargetedBlockUse,
 } from '../stages/registration'
 import { GAMEPLAY_STAGE_IDS } from '../stages/stage-ids'
 import { makeInMemoryWorld } from '../domain/in-memory-world'
@@ -38,6 +40,7 @@ import { cellKey, chunkKey, chunkOf } from '../domain/in-memory-chunk-store'
 import { DeltaTimeSecs } from '../domain/frame-contract'
 import type { BlockPosition } from '../domain/chunk-store-port'
 import type { MobBehaviour } from '../domain/entities/mob-frame'
+import { blockIdOf } from '../domain/block-vocabulary'
 
 /**
  * DIRT, and the id took two corrections that are worth recording because both
@@ -53,10 +56,11 @@ import type { MobBehaviour } from '../domain/entities/mob-frame'
  * would have made the loop untestable while looking like a bug.
  */
 const DIRT_ID = 3
+const LEVER_ID = blockIdOf('lever') ?? -1
 const AT: BlockPosition = { x: 3, y: 64, z: 7 }
 const IN_SIGHT: BlockPosition = { x: 0, y: 1, z: 0 }
 
-const lookingAtBlockWorld = (loaded: boolean) =>
+const lookingAtBlockWorld = (loaded: boolean, block: number = DIRT_ID) =>
   makeInMemoryWorld<MobBehaviour>({
     spawnPose: {
       feetPosition: { x: 0.5, y: 0, z: 2.5 },
@@ -64,16 +68,16 @@ const lookingAtBlockWorld = (loaded: boolean) =>
       pitchRadians: 0,
     },
     world: {
-      blocks: new Map([[cellKey(IN_SIGHT), DIRT_ID]]),
+      blocks: new Map([[cellKey(IN_SIGHT), block]]),
       loaded: loaded ? [chunkKey(chunkOf(IN_SIGHT))] : [],
     },
   })
 
-/** A world with one stone block, in a loaded chunk. */
-const oneBlockWorld = () =>
+/** A world with one block, in a loaded chunk. */
+const oneBlockWorld = (block: number = DIRT_ID) =>
   makeInMemoryWorld<MobBehaviour>({
     world: {
-      blocks: new Map([[cellKey(AT), DIRT_ID]]),
+      blocks: new Map([[cellKey(AT), block]]),
       loaded: [chunkKey(chunkOf(AT))],
     },
   })
@@ -89,6 +93,87 @@ const runInteractions = (
 }
 
 describe('the break loop', () => {
+  it.effect('uses a targeted lever instead of placing the held item', () =>
+    Effect.gen(function* () {
+      const world = yield* lookingAtBlockWorld(true, LEVER_ID)
+      const state = yield* makeGameplayFrameState
+      const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player)
+
+      yield* requestTargetedBlockUse(
+        state,
+        world.chunkStore,
+        world.player,
+        'lever-use-1',
+        'redstone_dust',
+      )
+
+      expect(yield* Ref.get(state.pendingBlockUses)).toStrictEqual([
+        { requestId: 'lever-use-1', positionKey: '0,1,0' },
+      ])
+      expect(yield* Ref.get(state.pendingPlacements)).toStrictEqual([])
+
+      yield* runInteractions(stages as never)
+      expect(yield* drainBlockUseResults(state)).toStrictEqual([
+        {
+          requestId: 'lever-use-1',
+          success: true,
+          outcome: { _tag: 'ToggleLever', position: IN_SIGHT },
+        },
+      ])
+      expect(yield* world.chunkStore.getBlock(IN_SIGHT)).toStrictEqual({
+        _tag: 'Block',
+        block: LEVER_ID,
+      })
+    }),
+  )
+
+  it.effect('falls back to adjacent placement when the target is not a lever', () =>
+    Effect.gen(function* () {
+      const world = yield* lookingAtBlockWorld(true)
+      const state = yield* makeGameplayFrameState
+
+      yield* requestTargetedBlockUse(
+        state,
+        world.chunkStore,
+        world.player,
+        'ordinary-use',
+        'redstone_dust',
+      )
+
+      expect(yield* Ref.get(state.pendingBlockUses)).toStrictEqual([])
+      expect(yield* Ref.get(state.pendingPlacements)).toStrictEqual([
+        { positionKey: '0,1,1', heldItem: 'redstone_dust' },
+      ])
+    }),
+  )
+
+  it.effect('correlates a failed lever use when the target changes before the stage runs', () =>
+    Effect.gen(function* () {
+      const world = yield* lookingAtBlockWorld(true, LEVER_ID)
+      const state = yield* makeGameplayFrameState
+      const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player)
+
+      yield* requestTargetedBlockUse(
+        state,
+        world.chunkStore,
+        world.player,
+        'stale-lever-use',
+        'sand',
+      )
+      yield* world.chunkStore.setBlock(IN_SIGHT, DIRT_ID)
+      yield* runInteractions(stages as never)
+
+      expect(yield* drainBlockUseResults(state)).toStrictEqual([
+        {
+          requestId: 'stale-lever-use',
+          success: false,
+          outcome: { _tag: 'NotLever', position: IN_SIGHT, existing: DIRT_ID },
+        },
+      ])
+      expect(yield* drainBlockUseResults(state)).toStrictEqual([])
+    }),
+  )
+
   it.effect('targets the adjacent cell for placement and preserves the held item', () =>
     Effect.gen(function* () {
       const world = yield* lookingAtBlockWorld(true)
@@ -167,6 +252,19 @@ describe('the break loop', () => {
       const inventory = yield* world.inventory.snapshot
       const carried = inventory.slots.filter((slot) => slot !== undefined)
       expect(carried.length).toBeGreaterThan(0)
+    }),
+  )
+
+  it.effect('breaking redstone wire drops redstone dust', () =>
+    Effect.gen(function* () {
+      const world = yield* oneBlockWorld(blockIdOf('redstone_wire') ?? -1)
+      const state = yield* makeGameplayFrameState
+      const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player)
+
+      yield* requestBlockBreak(state, AT)
+      yield* runInteractions(stages as never)
+
+      expect(yield* world.inventory.countOf('redstone_dust')).toBe(1)
     }),
   )
 

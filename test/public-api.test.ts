@@ -79,7 +79,6 @@ describe('public API surface', () => {
         'BLOCK_DROP_REGISTRY',
         'blockTypeOfId',
         'blockIdOf',
-        'itemOfBlock',
         'dropOfBlockId',
         'resolveDrop',
         'satisfiesHarvestTier',
@@ -89,6 +88,9 @@ describe('public API surface', () => {
       for (const name of kernelsToOwn) {
         expect(Object.keys(gameplay)).not.toContain(name)
       }
+      expect(gameplay.blockOfPlaceableItem('redstone_dust')).toBe('redstone_wire')
+      expect(gameplay.itemOfBlock('redstone_wire')).toBe('redstone_dust')
+      expect(gameplay.isPlaceableItem('redstone_dust')).toBe(true)
     }),
   )
 

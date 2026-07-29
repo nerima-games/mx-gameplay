@@ -132,6 +132,7 @@ import {
 import { below } from '../block-position-key'
 import {
   blockIdOf,
+  blockOfPlaceableItem,
   canBlockStaySupported,
   isReplaceable,
   isSupportSensitiveBlockId,
@@ -349,7 +350,7 @@ export const placementVerdict = (
     return { _tag: 'Occupied', existing: target.block }
   }
 
-  const block = blockIdOf(request.heldItem)
+  const block = blockIdOf(blockOfPlaceableItem(request.heldItem))
   if (block === undefined) {
     return { _tag: 'UnknownBlock' }
   }
@@ -408,7 +409,7 @@ export const placeBlock = (
     // target read is interpreted, because it depends only on the held item. It
     // is issued after the target read rather than beside it so that a placement
     // into an occupied cell costs one call and not two.
-    const block = blockIdOf(request.heldItem)
+    const block = blockIdOf(blockOfPlaceableItem(request.heldItem))
     const supportBelow =
       block !== undefined && isSupportSensitiveOfBlock(block)
         ? yield* store.getBlock(below(request.position))

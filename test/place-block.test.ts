@@ -45,6 +45,7 @@ import {
 } from '../domain/chunk-store-port'
 import {
   blockIdOf,
+  blockOfPlaceableItem,
   canBlockStaySupported,
   canSupportAttachments,
   isReplaceable,
@@ -833,7 +834,7 @@ describe('F7 — CLOSED: the per-block support rules are ported, and all four ro
   it.effect('the support branch agrees with the rule on every pair it can be handed', () =>
     Effect.gen(function* () {
       const heldable = PLACEABLE_ITEM_TYPES.filter((item) =>
-        isSupportSensitiveOfBlock(blockIdOf(item) ?? -1),
+        isSupportSensitiveOfBlock(blockIdOf(blockOfPlaceableItem(item)) ?? -1),
       )
       expect(heldable.length).toBeGreaterThan(0)
 
@@ -841,7 +842,10 @@ describe('F7 — CLOSED: the per-block support rules are ported, and all four ro
         for (const support of [STONE, WATER, SNOW, DIRT, SAND, AIR_BLOCK_ID, RAIL, LAVA]) {
           const store = yield* storeWith([[below, support]])
           const outcome = yield* placeBlock(store.api, { position: target, heldItem: item })
-          const stays = canBlockStaySupported(blockIdOf(item) ?? -1, support)
+          const stays = canBlockStaySupported(
+            blockIdOf(blockOfPlaceableItem(item)) ?? -1,
+            support,
+          )
 
           expect({ item, support, refused: outcome._tag === 'Unsupported' }).toStrictEqual({
             item,
@@ -864,7 +868,8 @@ describe('F7 — CLOSED: the per-block support rules are ported, and all four ro
       // coupling test above cannot fail today. Asserted, so that the excuse
       // expires automatically.
       const reachable = PLACEABLE_ITEM_TYPES.filter(
-        (item) => supportRuleOfBlockId(blockIdOf(item) ?? -1).kind === 'oneOf',
+        (item) =>
+          supportRuleOfBlockId(blockIdOf(blockOfPlaceableItem(item)) ?? -1).kind === 'oneOf',
       )
       expect(reachable).toStrictEqual([])
     }),
@@ -985,6 +990,7 @@ const stagedSlice = (
       if (!stocked) return undefined
       if (index === 0) return { item: 'sand' as const, count: StackCount(1) }
       if (index === 1) return { item: 'stone' as const, count: StackCount(1) }
+      if (index === 2) return { item: 'redstone_dust' as const, count: StackCount(1) }
       return undefined
     })
     const inventory = yield* makeInventoryDouble(initialInventory)
@@ -1007,6 +1013,21 @@ describe('placement through gameplay:interactions', () => {
       expect(yield* store.blockAt(target)).toBe(blockIdOf('sand'))
       expect(yield* Ref.get(state.consumedItems)).toStrictEqual(['sand'])
       expect(yield* inventory.api.countOf('sand')).toBe(before - 1)
+    }),
+  )
+
+  it.effect('redstone dust places wire and consumes dust', () =>
+    Effect.gen(function* () {
+      const { store, state, inventory, stages } = yield* stagedSlice([[below, STONE]])
+
+      yield* Ref.set(state.pendingPlacements, [
+        { positionKey: positionKeyOf(target), heldItem: 'redstone_dust' as const },
+      ])
+      yield* runFrame(stages)
+
+      expect(yield* store.blockAt(target)).toBe(blockIdOf('redstone_wire'))
+      expect(yield* Ref.get(state.consumedItems)).toStrictEqual(['redstone_dust'])
+      expect(yield* inventory.api.countOf('redstone_dust')).toBe(0)
     }),
   )
 

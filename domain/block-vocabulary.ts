@@ -253,31 +253,37 @@ export type BlockType = (typeof BLOCK_TYPES)[number]
  * This is what `./interactions/place-block` takes: proving an item is placeable
  * is the caller's job, and having proved it there is nothing left to fail.
  */
-export type PlaceableItemType = ItemType & BlockType
+const SPECIAL_BLOCK_BY_ITEM = {
+  redstone_dust: 'redstone_wire',
+} as const satisfies Partial<Record<ItemType, BlockType>>
+
+const SPECIAL_ITEM_BY_BLOCK = {
+  redstone_wire: 'redstone_dust',
+} as const satisfies Partial<Record<BlockType, ItemType>>
+
+export type PlaceableItemType =
+  | (ItemType & BlockType)
+  | keyof typeof SPECIAL_BLOCK_BY_ITEM
 
 const BLOCK_NAMES: ReadonlySet<string> = new Set<string>(BLOCK_TYPES)
 const ITEM_NAMES: ReadonlySet<string> = new Set<string>(ITEM_TYPES)
 
-/** Does this item name a block that can be placed? */
-export const isPlaceableItem = (item: ItemType): item is PlaceableItemType => BLOCK_NAMES.has(item)
+const specialBlockOfItem = (item: ItemType): BlockType | undefined =>
+  SPECIAL_BLOCK_BY_ITEM[item as keyof typeof SPECIAL_BLOCK_BY_ITEM]
 
-const isItemisedBlock = (block: BlockType): block is PlaceableItemType => ITEM_NAMES.has(block)
+const specialItemOfBlock = (block: BlockType): ItemType | undefined =>
+  SPECIAL_ITEM_BY_BLOCK[block as keyof typeof SPECIAL_ITEM_BY_BLOCK]
+
+/** Does this item map to a block that can be placed? */
+export const isPlaceableItem = (item: ItemType): item is PlaceableItemType =>
+  BLOCK_NAMES.has(item) || specialBlockOfItem(item) !== undefined
+
+const isIdentityItemisedBlock = (
+  block: BlockType,
+): block is ItemType & BlockType => ITEM_NAMES.has(block)
 
 /** Every item that is also a block, in `ITEM_TYPES` order. */
 export const PLACEABLE_ITEM_TYPES: ReadonlyArray<PlaceableItemType> = ITEM_TYPES.filter(isPlaceableItem)
-
-/**
- * Every block with no item form.
- *
- * Data a test can assert on rather than a comment. A block landing here says
- * that breaking it yields nothing you can carry — correct and permanent for
- * `air` and the fluids, a ROSTER GAP for `snow` (vanilla yields snowballs and
- * `snowball` is not in this build's `ITEM_TYPES`) and for every plant.
- * `./interactions/block-loot` names the gaps its own rules run into.
- */
-export const UNITEMISED_BLOCK_TYPES: ReadonlyArray<BlockType> = BLOCK_TYPES.filter(
-  (block) => !ITEM_NAMES.has(block),
-)
 
 /**
  * Block -> the item it becomes in an inventory. PARTIAL.
@@ -288,8 +294,14 @@ export const UNITEMISED_BLOCK_TYPES: ReadonlyArray<BlockType> = BLOCK_TYPES.filt
  * `dropOfBlockId` below instead, which folds this together with the tool gate
  * and the drop rule.
  */
-export const itemOfBlock = (block: BlockType): PlaceableItemType | undefined =>
-  isItemisedBlock(block) ? block : undefined
+export const itemOfBlock = (block: BlockType): ItemType | undefined =>
+  specialItemOfBlock(block) ??
+  (isIdentityItemisedBlock(block) ? block : undefined)
+
+/** Every block with no corresponding inventory item in this build. */
+export const UNITEMISED_BLOCK_TYPES: ReadonlyArray<BlockType> = BLOCK_TYPES.filter(
+  (block) => itemOfBlock(block) === undefined,
+)
 
 /**
  * Item -> the block it places. TOTAL, but only on the intersection.
@@ -300,7 +312,8 @@ export const itemOfBlock = (block: BlockType): PlaceableItemType | undefined =>
  * answering `blockOfItem('stick')` means either a partial result nobody checks
  * or a lie.
  */
-export const blockOfPlaceableItem = (item: PlaceableItemType): BlockType => item
+export const blockOfPlaceableItem = (item: PlaceableItemType): BlockType =>
+  specialBlockOfItem(item) ?? (item as BlockType)
 
 // ---------------------------------------------------------------------------
 // harvestTool — mirrors mc-kernel/domain/block-harvest.ts (audit §4.5)

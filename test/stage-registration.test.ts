@@ -370,6 +370,7 @@ describe('stage behaviour', () => {
       // and never will, because nothing in this repository needs to know how long
       // a day is.
       expect(Object.keys(state).sort()).toStrictEqual([
+        'blockUseResults',
         'bowKnockbacks',
         'bowShotResults',
         'consumedItems',
@@ -382,6 +383,7 @@ describe('stage behaviour', () => {
         'itemUseResults',
         'leftoverItems',
         'mobDrops',
+        'pendingBlockUses',
         'pendingBowShots',
         'pendingBreaks',
         'pendingItemUses',

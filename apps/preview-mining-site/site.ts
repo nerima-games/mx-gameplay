@@ -69,6 +69,7 @@ import { below as belowOf, positionKeyOf } from '../../domain/block-position-key
 import { type BlockId, type BlockPosition } from '../../domain/chunk-store-port'
 import {
   blockIdOf,
+  blockOfPlaceableItem,
   fallsWhenUnsupported,
   type HarvestTier,
   type PlaceableItemType,
@@ -409,7 +410,7 @@ export const previewPlacement = (
   Effect.gen(function* () {
     const request = { position, heldItem }
     const target = yield* site.world.api.getBlock(position)
-    const block = blockIdOf(heldItem)
+    const block = blockIdOf(blockOfPlaceableItem(heldItem))
     const supportBelow =
       block !== undefined && isSupportSensitiveOfBlock(block)
         ? yield* site.world.api.getBlock(belowOf(position))

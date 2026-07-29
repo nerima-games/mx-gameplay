@@ -155,6 +155,11 @@ import {
 } from '../domain/interactions/block-loot'
 import { placeBlock } from '../domain/interactions/place-block'
 import {
+  isSuccessfulBlockUse,
+  resolveBlockUse,
+  type BlockUseOutcome,
+} from '../domain/interactions/use-block'
+import {
   bowCharge,
   bowDamage,
   canFireBow,
@@ -495,6 +500,7 @@ const NO_ATTEMPTS: ReadonlyArray<never> = []
 export type GameplayFrameState = {
   readonly pendingBreaks: Ref.Ref<ReadonlyArray<PositionKey>>
   readonly pendingPlacements: Ref.Ref<ReadonlyArray<PlacementRequest>>
+  readonly pendingBlockUses: Ref.Ref<ReadonlyArray<BlockUseRequest>>
   readonly pendingItemUses: Ref.Ref<ReadonlyArray<ItemUseRequest>>
   readonly pendingBowShots: Ref.Ref<ReadonlyArray<BowShotRequest>>
   readonly pendingMeleeAttacks: Ref.Ref<ReadonlyArray<MeleeAttackRequest>>
@@ -502,6 +508,7 @@ export type GameplayFrameState = {
   readonly leftoverItems: Ref.Ref<ReadonlyArray<MinedItem>>
   readonly consumedItems: Ref.Ref<ReadonlyArray<PlaceableItemType>>
   readonly usedItems: Ref.Ref<ReadonlyArray<IgnitionItemType>>
+  readonly blockUseResults: Ref.Ref<ReadonlyArray<BlockUseResult>>
   readonly itemUseResults: Ref.Ref<ReadonlyArray<ItemUseResult>>
   readonly bowShotResults: Ref.Ref<ReadonlyArray<BowShotResult>>
   readonly handledBowShotRequestIds: Ref.Ref<ReadonlySet<BowShotRequestId>>
@@ -552,6 +559,22 @@ export type GameplayFrameState = {
 export type PlacementRequest = {
   readonly positionKey: PositionKey
   readonly heldItem: PlaceableItemType
+}
+
+/** Host-provided correlation key for one targeted block-use request. */
+export type BlockUseRequestId = string
+
+/** A request to use the block in a cell without transferring its state here. */
+export type BlockUseRequest = {
+  readonly requestId: BlockUseRequestId
+  readonly positionKey: PositionKey
+}
+
+/** The drainable answer that tells the host whether to toggle its lever state. */
+export type BlockUseResult = {
+  readonly requestId: BlockUseRequestId
+  readonly success: boolean
+  readonly outcome: BlockUseOutcome
 }
 
 /**
@@ -737,6 +760,7 @@ export type EnderPearlOutcome = {
 export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.gen(function* () {
   const pendingBreaks = yield* Ref.make<ReadonlyArray<PositionKey>>([])
   const pendingPlacements = yield* Ref.make<ReadonlyArray<PlacementRequest>>([])
+  const pendingBlockUses = yield* Ref.make<ReadonlyArray<BlockUseRequest>>([])
   const pendingItemUses = yield* Ref.make<ReadonlyArray<ItemUseRequest>>([])
   const pendingBowShots = yield* Ref.make<ReadonlyArray<BowShotRequest>>([])
   const pendingMeleeAttacks = yield* Ref.make<ReadonlyArray<MeleeAttackRequest>>([])
@@ -746,6 +770,7 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
   const leftoverItems = yield* Ref.make<ReadonlyArray<MinedItem>>([])
   const consumedItems = yield* Ref.make<ReadonlyArray<PlaceableItemType>>([])
   const usedItems = yield* Ref.make<ReadonlyArray<IgnitionItemType>>([])
+  const blockUseResults = yield* Ref.make<ReadonlyArray<BlockUseResult>>([])
   const itemUseResults = yield* Ref.make<ReadonlyArray<ItemUseResult>>([])
   const bowShotResults = yield* Ref.make<ReadonlyArray<BowShotResult>>([])
   const handledBowShotRequestIds = yield* Ref.make<ReadonlySet<BowShotRequestId>>(new Set())
@@ -785,6 +810,7 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
   return {
     pendingBreaks,
     pendingPlacements,
+    pendingBlockUses,
     pendingItemUses,
     pendingBowShots,
     pendingMeleeAttacks,
@@ -792,6 +818,7 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
     leftoverItems,
     consumedItems,
     usedItems,
+    blockUseResults,
     itemUseResults,
     bowShotResults,
     handledBowShotRequestIds,
@@ -937,6 +964,22 @@ export const requestBlockPlacement = (
   request: PlacementRequest,
 ): Effect.Effect<void> =>
   Ref.update(state.pendingPlacements, (pending) => [...pending, request])
+
+/** Enqueue one correlated use of the block occupying a cell. */
+export const requestBlockUse = (
+  state: GameplayFrameState,
+  requestId: BlockUseRequestId,
+  position: BlockPosition,
+): Effect.Effect<void> =>
+  Ref.update(state.pendingBlockUses, (pending) => [
+    ...pending,
+    { requestId, positionKey: positionKeyOf(position) },
+  ])
+
+/** Atomically drain completed block-use results exactly once, preserving order. */
+export const drainBlockUseResults = (
+  state: GameplayFrameState,
+): Effect.Effect<ReadonlyArray<BlockUseResult>> => Ref.getAndSet(state.blockUseResults, [])
 
 /** Enqueue one igniting-item use without exposing the internal position encoding. */
 export const requestItemUse = (
@@ -1087,6 +1130,46 @@ export const requestTargetedBlockPlacement = (
     return target
   })
 
+/**
+ * Prefer using the targeted block over placement. Lever state remains owned by
+ * mx-redstone/the host; gameplay only emits a correlated toggle intent.
+ */
+export const requestTargetedBlockUse = (
+  state: GameplayFrameState,
+  store: ChunkStoreApi,
+  player: PlayerServiceApi,
+  requestId: BlockUseRequestId,
+  heldItem: PlaceableItemType,
+  maxDistance: number = DEFAULT_BLOCK_REACH,
+): Effect.Effect<Option.Option<BlockTarget>> =>
+  Effect.gen(function* () {
+    const pose = yield* player.pose
+    const target = targetBlockFromPlayerPose(pose, maxDistance, targetabilityFromStore(store))
+    if (Option.isNone(target)) {
+      return target
+    }
+
+    const outcome = resolveBlockUse(
+      target.value.position,
+      yield* store.getBlock(target.value.position),
+    )
+    switch (outcome._tag) {
+      case 'ToggleLever':
+        yield* requestBlockUse(state, requestId, target.value.position)
+        break
+      case 'NotLever':
+        yield* requestBlockPlacement(state, {
+          positionKey: positionKeyOf(target.value.adjacentPosition),
+          heldItem,
+        })
+        break
+      case 'ChunkNotLoaded':
+      case 'OutOfWorld':
+        break
+    }
+    return target
+  })
+
 /** Resolve the block under the crosshair and enqueue an item use in its adjacent cell. */
 export const requestTargetedItemUse = (
   state: GameplayFrameState,
@@ -1157,6 +1240,10 @@ export const gameplayStages = (
           state.pendingPlacements,
           [],
         )
+        const blockUses = yield* Ref.getAndSet<ReadonlyArray<BlockUseRequest>>(
+          state.pendingBlockUses,
+          [],
+        )
         const itemUses = yield* Ref.getAndSet<ReadonlyArray<ItemUseRequest>>(
           state.pendingItemUses,
           [],
@@ -1176,6 +1263,7 @@ export const gameplayStages = (
         if (
           breaks.length === 0 &&
           placements.length === 0 &&
+          blockUses.length === 0 &&
           itemUses.length === 0 &&
           bowShots.length === 0 &&
           meleeAttacks.length === 0 &&
@@ -1187,6 +1275,7 @@ export const gameplayStages = (
         const gained: Array<MinedItem> = []
         const spent: Array<PlaceableItemType> = []
         const used: Array<IgnitionItemType> = []
+        const blockUseResults: Array<BlockUseResult> = []
         const itemUseResults: Array<ItemUseResult> = []
         const bowShotResults: Array<BowShotResult> = []
         const disturbed: Array<PositionKey> = []
@@ -1243,6 +1332,16 @@ export const gameplayStages = (
               break
             }
           }
+        }
+
+        for (const request of blockUses) {
+          const position = positionOfKey(request.positionKey)
+          const outcome = resolveBlockUse(position, yield* store.getBlock(position))
+          blockUseResults.push({
+            requestId: request.requestId,
+            success: isSuccessfulBlockUse(outcome),
+            outcome,
+          })
         }
 
         for (const request of placements) {
@@ -1618,6 +1717,9 @@ export const gameplayStages = (
         }
         if (used.length > 0) {
           yield* Ref.update(state.usedItems, (items) => [...items, ...used])
+        }
+        if (blockUseResults.length > 0) {
+          yield* Ref.update(state.blockUseResults, (items) => [...items, ...blockUseResults])
         }
         if (itemUseResults.length > 0) {
           yield* Ref.update(state.itemUseResults, (items) => [...items, ...itemUseResults])

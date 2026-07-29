@@ -13,7 +13,7 @@
 <!-- ------------------------------------------------------------------------- -->
 
 format: 1
-exported declarations: 440
+exported declarations: 452
 supporting declarations: 61
 
 ## Exported
@@ -158,6 +158,50 @@ type BlastResolution = {
 ```ts
 type BlockLootContext = HarvestContext & {
     readonly fortuneLevel?: number;
+};
+```
+
+### BlockUseOutcome  `type`
+
+```ts
+type BlockUseOutcome = Readonly<{
+    _tag: 'ToggleLever';
+    position: BlockPosition;
+}> | Readonly<{
+    _tag: 'NotLever';
+    position: BlockPosition;
+    existing: BlockId;
+}> | Readonly<{
+    _tag: 'ChunkNotLoaded';
+    position: BlockPosition;
+}> | Readonly<{
+    _tag: 'OutOfWorld';
+    position: BlockPosition;
+}>;
+```
+
+### BlockUseRequest  `type`
+
+```ts
+type BlockUseRequest = {
+    readonly requestId: BlockUseRequestId;
+    readonly positionKey: PositionKey;
+};
+```
+
+### BlockUseRequestId  `type`
+
+```ts
+type BlockUseRequestId = string;
+```
+
+### BlockUseResult  `type`
+
+```ts
+type BlockUseResult = {
+    readonly requestId: BlockUseRequestId;
+    readonly success: boolean;
+    readonly outcome: BlockUseOutcome;
 };
 ```
 
@@ -909,6 +953,7 @@ const GRAVITY_M_PER_S2 = 32;
 type GameplayFrameState = {
     readonly pendingBreaks: Ref.Ref<ReadonlyArray<PositionKey>>;
     readonly pendingPlacements: Ref.Ref<ReadonlyArray<PlacementRequest>>;
+    readonly pendingBlockUses: Ref.Ref<ReadonlyArray<BlockUseRequest>>;
     readonly pendingItemUses: Ref.Ref<ReadonlyArray<ItemUseRequest>>;
     readonly pendingBowShots: Ref.Ref<ReadonlyArray<BowShotRequest>>;
     readonly pendingMeleeAttacks: Ref.Ref<ReadonlyArray<MeleeAttackRequest>>;
@@ -916,6 +961,7 @@ type GameplayFrameState = {
     readonly leftoverItems: Ref.Ref<ReadonlyArray<MinedItem>>;
     readonly consumedItems: Ref.Ref<ReadonlyArray<PlaceableItemType>>;
     readonly usedItems: Ref.Ref<ReadonlyArray<IgnitionItemType>>;
+    readonly blockUseResults: Ref.Ref<ReadonlyArray<BlockUseResult>>;
     readonly itemUseResults: Ref.Ref<ReadonlyArray<ItemUseResult>>;
     readonly bowShotResults: Ref.Ref<ReadonlyArray<BowShotResult>>;
     readonly handledBowShotRequestIds: Ref.Ref<ReadonlySet<BowShotRequestId>>;
@@ -1581,6 +1627,12 @@ type PlaceRequest = {
     readonly heldItem: PlaceableItemType;
     readonly playerFeet?: Position;
 };
+```
+
+### PlaceableItemType  `type`
+
+```ts
+type PlaceableItemType = (ItemType & BlockType) | keyof typeof SPECIAL_BLOCK_BY_ITEM;
 ```
 
 ### PlacementRequest  `type`
@@ -2286,6 +2338,12 @@ const applySpawnAttempts: (roster: EntityManagerApi<MobBehaviour>, attempts: Rea
 const blockLoot: (block: BlockId, context?: BlockLootContext, rolls?: ReadonlyArray<number>) => ReadonlyArray<MinedItem>;
 ```
 
+### blockOfPlaceableItem  `const`
+
+```ts
+const blockOfPlaceableItem: (item: PlaceableItemType) => BlockType;
+```
+
 ### blockOverlapsPlayer  `const`
 
 ```ts
@@ -2464,6 +2522,12 @@ const disturb: (queue: FallingBlockQueue, positions: Iterable<PositionKey>) => F
 
 ```ts
 const doorUpperCell: (store: ChunkStoreApi, block: BlockId, position: BlockPosition) => Effect.Effect<DoorUpperCell>;
+```
+
+### drainBlockUseResults  `const`
+
+```ts
+const drainBlockUseResults: (state: GameplayFrameState) => Effect.Effect<ReadonlyArray<BlockUseResult>>;
 ```
 
 ### drainBowShotResults  `const`
@@ -2712,6 +2776,12 @@ const isPlaceableItem: (item: ItemType) => item is PlaceableItemType;
 const isPrecipitating: (weather: Weather) => boolean;
 ```
 
+### isSuccessfulBlockUse  `const`
+
+```ts
+const isSuccessfulBlockUse: (outcome: BlockUseOutcome) => boolean;
+```
+
 ### isSugarCaneBlock  `const`
 
 ```ts
@@ -2734,6 +2804,12 @@ const isThunderstorm: (weather: Weather) => boolean;
 
 ```ts
 const isValidPlayerVitals: (vitals: PlayerVitals) => boolean;
+```
+
+### itemOfBlock  `const`
+
+```ts
+const itemOfBlock: (block: BlockType) => ItemType | undefined;
 ```
 
 ### knockbackDirection  `const`
@@ -2946,6 +3022,12 @@ const requestBlockBreak: (state: GameplayFrameState, position: BlockPosition) =>
 const requestBlockPlacement: (state: GameplayFrameState, request: PlacementRequest) => Effect.Effect<void>;
 ```
 
+### requestBlockUse  `const`
+
+```ts
+const requestBlockUse: (state: GameplayFrameState, requestId: BlockUseRequestId, position: BlockPosition) => Effect.Effect<void>;
+```
+
 ### requestBowShot  `function`
 
 ```ts
@@ -2988,6 +3070,12 @@ const requestTargetedBlockBreak: (state: GameplayFrameState, store: ChunkStoreAp
 const requestTargetedBlockPlacement: (state: GameplayFrameState, store: ChunkStoreApi, player: PlayerServiceApi, heldItem: PlaceableItemType, maxDistance?: number) => Effect.Effect<Option.Option<BlockTarget>>;
 ```
 
+### requestTargetedBlockUse  `const`
+
+```ts
+const requestTargetedBlockUse: (state: GameplayFrameState, store: ChunkStoreApi, player: PlayerServiceApi, requestId: BlockUseRequestId, heldItem: PlaceableItemType, maxDistance?: number) => Effect.Effect<Option.Option<BlockTarget>>;
+```
+
 ### requestTargetedItemUse  `const`
 
 ```ts
@@ -3004,6 +3092,12 @@ const requestTargetedPrimaryAttack: (state: GameplayFrameState, store: ChunkStor
 
 ```ts
 const resolveBlasts: (roster: EntityManagerApi<MobBehaviour>, store: ChunkStoreApi, blasts: ReadonlyArray<Blast>) => Effect.Effect<BlastResolution>;
+```
+
+### resolveBlockUse  `const`
+
+```ts
+const resolveBlockUse: (position: BlockPosition, reading: BlockReading) => BlockUseOutcome;
 ```
 
 ### resolveBowHits  `const`
@@ -3652,12 +3746,6 @@ const MonotonicTimeSecs: Brand.Brand.Constructor<MonotonicTimeSecs>;
 type MonotonicTimeSecs = number & Brand.Brand<'MonotonicTimeSecs'>;
 ```
 
-### PlaceableItemType  `type`
-
-```ts
-type PlaceableItemType = ItemType & BlockType;
-```
-
 ### PlayerPose  `type`
 
 ```ts
@@ -3749,6 +3837,14 @@ type PositionKey = string;
 type RosterRepair = {
     readonly discarded: number;
     readonly reidentified: number;
+};
+```
+
+### SPECIAL_BLOCK_BY_ITEM  `const`
+
+```ts
+const SPECIAL_BLOCK_BY_ITEM: {
+    readonly redstone_dust: "redstone_wire";
 };
 ```
 

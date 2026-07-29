@@ -63,6 +63,7 @@ import {
 import {
   blockTypeOfId,
   fallsWhenUnsupported,
+  isPlaceableItem,
   isReplaceable,
   itemOfBlock,
   type PlaceableItemType,
@@ -147,7 +148,8 @@ export const glyphOf = (id: BlockId): Glyph =>
  */
 export const placeableItemOf = (id: BlockId): PlaceableItemType | undefined => {
   const type = blockTypeOfId(id)
-  return type === undefined ? undefined : itemOfBlock(type)
+  const item = type === undefined ? undefined : itemOfBlock(type)
+  return item !== undefined && isPlaceableItem(item) ? item : undefined
 }
 
 export const chunkKeyOf = (position: BlockPosition): string =>
