@@ -13,7 +13,7 @@
 <!-- ------------------------------------------------------------------------- -->
 
 format: 1
-exported declarations: 426
+exported declarations: 431
 supporting declarations: 61
 
 ## Exported
@@ -751,6 +751,12 @@ type ExplosionSource = 'creeper';
 const FALLING_BLOCK_MOVES_PER_TICK = 32;
 ```
 
+### FOOD_PROPERTIES  `const`
+
+```ts
+const FOOD_PROPERTIES: Readonly<Partial<Record<ItemType, FoodProperties>>>;
+```
+
 ### FORTUNE_MULTIPLIERS  `const`
 
 ```ts
@@ -798,6 +804,15 @@ type FluidWorkItem = {
 };
 ```
 
+### FoodProperties  `type`
+
+```ts
+type FoodProperties = {
+    readonly foodPoints: number;
+    readonly saturationModifier: number;
+};
+```
+
 ### FoodTimerOutcome  `type`
 
 ```ts
@@ -805,6 +820,30 @@ type FoodTimerOutcome = {
     readonly signal: PlayerFoodTickSignal;
     readonly vitals: PlayerVitals;
     readonly died: boolean;
+};
+```
+
+### FoodUseOutcome  `type`
+
+```ts
+type FoodUseOutcome = ({
+    readonly _tag: 'consume';
+    readonly count: 1;
+} & FoodProperties) | {
+    readonly _tag: 'notFood';
+} | {
+    readonly _tag: 'full';
+} | {
+    readonly _tag: 'dead';
+};
+```
+
+### FoodUseRequest  `type`
+
+```ts
+type FoodUseRequest = {
+    readonly held: ItemType;
+    readonly vitals: Pick<PlayerVitals, 'healthPoints' | 'hungerPoints' | 'maxHungerPoints'>;
 };
 ```
 
@@ -2899,6 +2938,12 @@ const resolveBlasts: (roster: EntityManagerApi<MobBehaviour>, store: ChunkStoreA
 
 ```ts
 const resolveBowHits: (roster: EntityManagerApi<MobBehaviour>, hits: ReadonlyArray<BowHit>) => Effect.Effect<ReadonlyArray<MobCasualty>>;
+```
+
+### resolveFoodUse  `const`
+
+```ts
+const resolveFoodUse: ({ held, vitals }: FoodUseRequest) => FoodUseOutcome;
 ```
 
 ### resolveHostileContacts  `const`

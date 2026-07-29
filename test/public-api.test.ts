@@ -16,6 +16,7 @@ import { Effect } from 'effect'
 import * as gameplay from '../index'
 import { applyDamage } from '../domain/death-cause'
 import { takeBatch } from '../domain/falling-block'
+import { resolveFoodUse } from '../domain/interactions/eat-food'
 import { GAMEPLAY_STAGE_IDS } from '../stages/stage-ids'
 
 describe('public API surface', () => {
@@ -188,6 +189,9 @@ describe('public API surface', () => {
         'isDead',
         'applyDamage',
         'deathMessage',
+        // food use — a pure verdict; inventory and vitals remain host-owned
+        'FOOD_PROPERTIES',
+        'resolveFoodUse',
         // day/night — a rule over the hour mc-sim owns, holding nothing
         'DAWN_FRACTION',
         'NOON_FRACTION',
@@ -358,6 +362,7 @@ describe('public API surface', () => {
     Effect.sync(() => {
       expect(gameplay.applyDamage).toBe(applyDamage)
       expect(gameplay.takeBatch).toBe(takeBatch)
+      expect(gameplay.resolveFoodUse).toBe(resolveFoodUse)
       expect(gameplay.GAMEPLAY_STAGE_IDS).toBe(GAMEPLAY_STAGE_IDS)
     }),
   )
