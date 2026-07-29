@@ -183,6 +183,26 @@ describe('the axis order', () => {
       expect(result.isGrounded).toBe(true)
     }),
   )
+
+  it.effect('REGRESSION: crossing a floor-block boundary does not hit the floor as a wall', () =>
+    Effect.sync(() => {
+      // The destination overlaps this floor block, but the starting box does
+      // not. Y must therefore resolve at the destination X/Z before Z resolves;
+      // otherwise the slight downward motion leaves the floor to stop Z at its
+      // side face.
+      const floorAhead: IsBlockSolid = (position) => position.y === 59 && position.z === -1
+      const result = resolvePlayerMovement(
+        body({ centre: { x: 0.5, y: 60 + PLAYER_HALF_HEIGHT, z: 0.5 }, velocity: { x: 0, y: -1, z: -5 } }),
+        0.1,
+        floorAhead,
+      )
+
+      expect(result.body.centre.y).toBeCloseTo(60 + PLAYER_HALF_HEIGHT, 9)
+      expect(result.body.centre.z).toBeCloseTo(0, 9)
+      expect(result.body.velocity.z).toBe(-5)
+      expect(result.isGrounded).toBe(true)
+    }),
+  )
 })
 
 describe('non-finite inputs advance nothing', () => {

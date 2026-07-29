@@ -274,13 +274,13 @@ export const resolvePlayerMovement = (
   }
 
   const vertical = resolveVertical(
-    boxAt(body.centre.x, wanted.y, body.centre.z),
+    boxAt(wanted.x, wanted.y, wanted.z),
     { position: wanted.y, velocity: body.velocity.y },
     step,
     isBlockSolid,
   )
 
-  const boxAfterY = boxAt(wanted.x, vertical.position, body.centre.z)
+  const boxAfterY = boxAt(wanted.x, vertical.position, wanted.z)
   const alongX = clampAxis(
     { position: wanted.x, velocity: body.velocity.x },
     boxAfterY.minX,
