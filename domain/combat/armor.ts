@@ -35,3 +35,13 @@ export const applyArmorToDamage = (damage: Damage, armorPoints: number): Damage 
     cause: damage.cause,
   }
 }
+
+/**
+ * Return armour durability wear for one hit from its pre-mitigation damage amount.
+ * The damage cause does not affect this rule.
+ */
+export const armorDurabilityWearFromPreMitigationDamage = (damage: Damage): number => {
+  if (!Number.isFinite(damage.amount) || damage.amount <= 0) return 0
+
+  return Math.max(1, Math.floor(damage.amount / 4))
+}

@@ -13,7 +13,7 @@
 <!-- ------------------------------------------------------------------------- -->
 
 format: 1
-exported declarations: 458
+exported declarations: 459
 supporting declarations: 61
 
 ## Exported
@@ -2348,6 +2348,12 @@ const applyLook: (pose: PlayerPose, deltaYaw: number, deltaPitch: number) => Pla
 
 ```ts
 const applySpawnAttempts: (roster: EntityManagerApi<MobBehaviour>, attempts: ReadonlyArray<MobSpawnAttempt>) => Effect.Effect<ReadonlyArray<MobSpawnOutcome>>;
+```
+
+### armorDurabilityWearFromPreMitigationDamage  `const`
+
+```ts
+const armorDurabilityWearFromPreMitigationDamage: (damage: Damage) => number;
 ```
 
 ### armorPointsForEquipment  `const`

@@ -14,7 +14,11 @@
 import { describe, expect, it } from '@effect/vitest'
 import { Effect } from 'effect'
 import * as gameplay from '../index'
-import { applyArmorToDamage, armorPointsForEquipment } from '../domain/combat/armor'
+import {
+  applyArmorToDamage,
+  armorDurabilityWearFromPreMitigationDamage,
+  armorPointsForEquipment,
+} from '../domain/combat/armor'
 import { applyDamage } from '../domain/death-cause'
 import { takeBatch } from '../domain/falling-block'
 import { resolveFoodUse } from '../domain/interactions/eat-food'
@@ -203,6 +207,7 @@ describe('public API surface', () => {
         // armour — pure protection rules over equipment owned by mc-sim
         'armorPointsForEquipment',
         'applyArmorToDamage',
+        'armorDurabilityWearFromPreMitigationDamage',
         // food use — a pure verdict; inventory and vitals remain host-owned
         'FOOD_PROPERTIES',
         'resolveFoodUse',
@@ -377,6 +382,9 @@ describe('public API surface', () => {
       expect(gameplay.applyDamage).toBe(applyDamage)
       expect(gameplay.armorPointsForEquipment).toBe(armorPointsForEquipment)
       expect(gameplay.applyArmorToDamage).toBe(applyArmorToDamage)
+      expect(gameplay.armorDurabilityWearFromPreMitigationDamage).toBe(
+        armorDurabilityWearFromPreMitigationDamage,
+      )
       expect(gameplay.takeBatch).toBe(takeBatch)
       expect(gameplay.resolveFoodUse).toBe(resolveFoodUse)
       expect(gameplay.GAMEPLAY_STAGE_IDS).toBe(GAMEPLAY_STAGE_IDS)

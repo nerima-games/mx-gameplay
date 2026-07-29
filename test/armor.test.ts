@@ -6,7 +6,11 @@ import {
   type EquipmentItem,
   type EquipmentSlot,
 } from '@nerima-games/mc-sim'
-import { applyArmorToDamage, armorPointsForEquipment } from '../domain/combat/armor'
+import {
+  applyArmorToDamage,
+  armorDurabilityWearFromPreMitigationDamage,
+  armorPointsForEquipment,
+} from '../domain/combat/armor'
 
 const armourItem = (item: EquipmentItem['item']): EquipmentItem =>
   equipmentItem(itemStack(item, 1))
@@ -101,5 +105,32 @@ describe('iron armour damage reduction', () => {
 
   it('preserves the damage cause', () => {
     expect(applyArmorToDamage({ amount: 5, cause: 'lava' }, 2).cause).toBe('lava')
+  })
+})
+
+describe('armour durability wear from pre-mitigation damage', () => {
+  it.each([
+    [0, 0],
+    [-1, 0],
+    [Number.NaN, 0],
+    [Number.POSITIVE_INFINITY, 0],
+    [0.1, 1],
+    [3.99, 1],
+    [4, 1],
+    [7.99, 1],
+    [8, 2],
+  ] as const)(
+    'returns the expected wear for pre-mitigation amount %s',
+    (amount, expectedWear) => {
+      expect(armorDurabilityWearFromPreMitigationDamage({ amount, cause: 'mob' })).toBe(
+        expectedWear,
+      )
+    },
+  )
+
+  it('does not use the damage cause', () => {
+    expect(armorDurabilityWearFromPreMitigationDamage({ amount: 8, cause: 'fall' })).toBe(
+      armorDurabilityWearFromPreMitigationDamage({ amount: 8, cause: 'lava' }),
+    )
   })
 })
