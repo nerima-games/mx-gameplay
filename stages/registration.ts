@@ -113,6 +113,7 @@ import {
   type MobSpawnAttempt,
 } from '../domain/entities/mob-frame'
 import {
+  DROPPED_ITEM_PICKUP_RADIUS,
   pickupDroppedItems,
   spawnDroppedItems,
   type DroppedItemSpawn,
@@ -1651,7 +1652,11 @@ export const gameplayStages = (
         }
 
         if (spilled.length > 0) {
-          yield* spawnDroppedItems(roster, spilled)
+          const eligibleFromFrame = (yield* Ref.get(state.tickCount)) + 1
+          yield* spawnDroppedItems(
+            roster,
+            spilled.map((drop) => ({ ...drop, eligibleFromFrame })),
+          )
         }
         if (spent.length > 0) {
           yield* Ref.update(state.consumedItems, (items) => [...items, ...spent])
@@ -1774,7 +1779,13 @@ export const gameplayStages = (
         }
 
         if (targetPosition !== undefined) {
-          yield* pickupDroppedItems(roster, inventory, targetPosition)
+          yield* pickupDroppedItems(
+            roster,
+            inventory,
+            targetPosition,
+            DROPPED_ITEM_PICKUP_RADIUS,
+            yield* Ref.get(state.tickCount),
+          )
         }
 
         const contact = resolveHostileContacts(

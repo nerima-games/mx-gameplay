@@ -615,6 +615,7 @@ type DroppedItemBehaviour = {
     readonly _tag: 'DroppedItem';
     readonly item: ItemType;
     readonly count: number;
+    readonly eligibleFromFrame?: number;
 };
 ```
 
@@ -625,6 +626,7 @@ type DroppedItemSpawn = {
     readonly item: ItemType;
     readonly count: number;
     readonly at: Position;
+    readonly eligibleFromFrame?: number;
 };
 ```
 
@@ -2953,7 +2955,7 @@ const openChunkWindow: (store: ChunkStoreApi, coords: ReadonlyArray<ChunkCoord>)
 ### pickupDroppedItems  `const`
 
 ```ts
-const pickupDroppedItems: (roster: EntityManagerApi<MobBehaviour>, inventory: InventoryServiceApi, playerPosition: Position | undefined, radius?: number) => Effect.Effect<void>;
+const pickupDroppedItems: (roster: EntityManagerApi<MobBehaviour>, inventory: InventoryServiceApi, playerPosition: Position | undefined, radius?: number, currentFrame?: number) => Effect.Effect<void>;
 ```
 
 ### placeBlock  `const`

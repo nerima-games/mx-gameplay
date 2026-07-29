@@ -1866,12 +1866,16 @@ describe('the mining site slice: dig, drop, place', () => {
 
       yield* holdWoodenPickaxe(state)
       yield* requestBreak(state, cell)
+      yield* Ref.set(state.targetPosition, { x: cell.x + 0.5, y: cell.y, z: cell.z })
       yield* runFrame(stages)
+
       expect(yield* roster.api.count).toBe(1)
+      expect(yield* inventory.deposits).toStrictEqual([
+        { item: 'cobblestone', count: 1, leftover: 1 },
+      ])
 
       yield* inventory.api.remove('cobblestone', 1)
       const beforePickup = yield* inventory.api.countOf('cobblestone')
-      yield* Ref.set(state.targetPosition, cell)
       yield* runFrame(stages)
 
       expect(yield* roster.api.count).toBe(0)

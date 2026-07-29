@@ -624,10 +624,10 @@ kernel が literal を**足す**分にはこちらが stale になるだけで�
 
 | export | 種別 | 備考 |
 | --- | --- | --- |
-| `DroppedItemSpawn` | **契約** | `{ item, count, at }`。原因を限定しない地面アイテム生成要求で、採掘 overflow と Mob death の両方が使える |
+| `DroppedItemSpawn` | **契約** | `{ item, count, at, eligibleFromFrame? }`。原因を限定しない地面アイテム生成要求。採掘 overflow は次フレームを指定し、未指定の Mob death は従来どおり即時取得できる |
 | `spawnDroppedItem` / `spawnDroppedItems` | **契約** | `DROPPED_ITEM_KIND` の entity を指定座標へ生成する汎用入口。複数版は入力順を保つ |
 | `spawnMobDrop` / `spawnMobDrops` | **互換契約** | 既存の Mob drop 用 API。汎用入口へ委譲し、従来の署名と挙動を保つ |
-| `pickupDroppedItems` / `DROPPED_ITEM_PICKUP_RADIUS` | **契約** | 範囲内の entity を inventory へ 1 回だけ渡す。全量受理なら despawn、部分受理なら拒否された count だけを同じ entity に残す |
+| `pickupDroppedItems` / `DROPPED_ITEM_PICKUP_RADIUS` | **契約** | 範囲内かつ取得可能フレームに達した entity を inventory へ 1 回だけ渡す。`currentFrame` 未指定は従来どおり即時取得し、全量受理なら despawn、部分受理なら拒否された count だけを同じ entity に残す |
 
 採掘 stage は `breakBlock` の前にセル座標を保持する。loot 全量を `InventoryService.add` へ渡し、
 戻った remainder だけをその座標へ spawn するため、部分受理でも inventory と地面の合計は loot 数と一致する。

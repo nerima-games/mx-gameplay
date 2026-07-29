@@ -321,6 +321,7 @@ export type DroppedItemBehaviour = {
   readonly _tag: 'DroppedItem'
   readonly item: ItemType
   readonly count: number
+  readonly eligibleFromFrame?: number
 }
 
 export type MobBehaviour = CreeperFuse | EndermanFlinch | DroppedItemBehaviour | undefined
@@ -657,13 +658,22 @@ export const repairMobBehaviour = (kind: EntityKind, behaviour: MobBehaviour): M
 
 export const isDroppedItemBehaviour = (value: unknown): value is DroppedItemBehaviour => {
   if (typeof value !== 'object' || value === null) return false
-  const candidate = value as { readonly _tag?: unknown; readonly item?: unknown; readonly count?: unknown }
+  const candidate = value as {
+    readonly _tag?: unknown
+    readonly item?: unknown
+    readonly count?: unknown
+    readonly eligibleFromFrame?: unknown
+  }
   return candidate._tag === 'DroppedItem' &&
     typeof candidate.item === 'string' &&
     ITEM_TYPES.includes(candidate.item as ItemType) &&
     typeof candidate.count === 'number' &&
     Number.isInteger(candidate.count) &&
-    candidate.count > 0
+    candidate.count > 0 &&
+    (candidate.eligibleFromFrame === undefined ||
+      (typeof candidate.eligibleFromFrame === 'number' &&
+        Number.isInteger(candidate.eligibleFromFrame) &&
+        candidate.eligibleFromFrame >= 0))
 }
 
 /**

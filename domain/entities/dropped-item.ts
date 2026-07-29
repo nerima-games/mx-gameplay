@@ -15,6 +15,7 @@ export type DroppedItemSpawn = {
   readonly item: ItemType
   readonly count: number
   readonly at: Position
+  readonly eligibleFromFrame?: number
 }
 
 export const spawnDroppedItem = (
@@ -25,7 +26,14 @@ export const spawnDroppedItem = (
     kind: DROPPED_ITEM_KIND,
     feetPosition: drop.at,
     healthPoints: 1,
-    behaviour: { _tag: 'DroppedItem', item: drop.item, count: drop.count },
+    behaviour: {
+      _tag: 'DroppedItem',
+      item: drop.item,
+      count: drop.count,
+      ...(drop.eligibleFromFrame === undefined
+        ? {}
+        : { eligibleFromFrame: drop.eligibleFromFrame }),
+    },
   })
 
 export const spawnDroppedItems = (
@@ -56,6 +64,7 @@ export const pickupDroppedItems = (
   inventory: InventoryServiceApi,
   playerPosition: Position | undefined,
   radius: number = DROPPED_ITEM_PICKUP_RADIUS,
+  currentFrame?: number,
 ): Effect.Effect<void> =>
   Effect.gen(function* () {
     if (playerPosition === undefined || !Number.isFinite(radius) || radius < 0) return
@@ -66,6 +75,9 @@ export const pickupDroppedItems = (
       if (
         entity.kind !== DROPPED_ITEM_KIND ||
         !isDroppedItemBehaviour(entity.behaviour) ||
+        (currentFrame !== undefined &&
+          entity.behaviour.eligibleFromFrame !== undefined &&
+          currentFrame < entity.behaviour.eligibleFromFrame) ||
         distanceSquared(entity.feetPosition, playerPosition) > radiusSquared
       ) continue
 

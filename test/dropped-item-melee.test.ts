@@ -9,6 +9,7 @@ import {
 } from '../domain/entities/mob-frame'
 import {
   pickupDroppedItems,
+  spawnDroppedItem,
   spawnMobDrop,
 } from '../domain/entities/dropped-item'
 import { meleeTarget, meleeTargetBeforeBlock } from '../domain/interactions/melee-attack'
@@ -76,6 +77,31 @@ describe('dropped item entities', () => {
         item: 'gunpowder',
         count: 5,
       })
+    }),
+  )
+
+  it.effect('defers a frame-gated drop until its eligible frame', () =>
+    Effect.gen(function* () {
+      const roster = yield* makeEntityManagerDouble<MobBehaviour>()
+      const inventory = yield* makeInventoryDouble()
+      yield* spawnDroppedItem(roster.api, {
+        item: 'gunpowder',
+        count: 2,
+        at: origin,
+        eligibleFromFrame: 8,
+      })
+
+      yield* pickupDroppedItems(roster.api, inventory.api, origin, undefined, 7)
+
+      expect(yield* roster.api.count).toBe(1)
+      expect(yield* inventory.deposits).toStrictEqual([])
+
+      yield* pickupDroppedItems(roster.api, inventory.api, origin, undefined, 8)
+
+      expect(yield* roster.api.count).toBe(0)
+      expect(yield* inventory.deposits).toStrictEqual([
+        { item: 'gunpowder', count: 2, leftover: 0 },
+      ])
     }),
   )
 })
