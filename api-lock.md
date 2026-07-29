@@ -13,7 +13,7 @@
 <!-- ------------------------------------------------------------------------- -->
 
 format: 1
-exported declarations: 436
+exported declarations: 440
 supporting declarations: 61
 
 ## Exported
@@ -191,12 +191,33 @@ type BowKnockback = {
 
 ```ts
 type BowShotRequest = {
+    readonly requestId?: BowShotRequestId;
     readonly origin: Position;
     readonly dirX: number;
     readonly dirY: number;
     readonly dirZ: number;
     readonly chargeSecs: number;
     readonly powerLevel?: number;
+};
+```
+
+### BowShotRequestId  `type`
+
+```ts
+type BowShotRequestId = string;
+```
+
+### BowShotResult  `type`
+
+```ts
+type BowShotResult = {
+    readonly requestId: BowShotRequestId;
+    readonly success: true;
+    readonly outcome: 'Fired';
+} | {
+    readonly requestId: BowShotRequestId;
+    readonly success: false;
+    readonly outcome: 'Undercharged' | 'DuplicateRequest';
 };
 ```
 
@@ -896,6 +917,8 @@ type GameplayFrameState = {
     readonly consumedItems: Ref.Ref<ReadonlyArray<PlaceableItemType>>;
     readonly usedItems: Ref.Ref<ReadonlyArray<IgnitionItemType>>;
     readonly itemUseResults: Ref.Ref<ReadonlyArray<ItemUseResult>>;
+    readonly bowShotResults: Ref.Ref<ReadonlyArray<BowShotResult>>;
+    readonly handledBowShotRequestIds: Ref.Ref<ReadonlySet<BowShotRequestId>>;
     readonly bowKnockbacks: Ref.Ref<ReadonlyArray<BowKnockback>>;
     readonly enderPearlOutcomes: Ref.Ref<ReadonlyArray<EnderPearlOutcome>>;
     readonly playerDamages: Ref.Ref<ReadonlyArray<PlayerDamageEvent>>;
@@ -2443,6 +2466,12 @@ const disturb: (queue: FallingBlockQueue, positions: Iterable<PositionKey>) => F
 const doorUpperCell: (store: ChunkStoreApi, block: BlockId, position: BlockPosition) => Effect.Effect<DoorUpperCell>;
 ```
 
+### drainBowShotResults  `const`
+
+```ts
+const drainBowShotResults: (state: GameplayFrameState) => Effect.Effect<ReadonlyArray<BowShotResult>>;
+```
+
 ### drainItemUseResults  `const`
 
 ```ts
@@ -2917,10 +2946,16 @@ const requestBlockBreak: (state: GameplayFrameState, position: BlockPosition) =>
 const requestBlockPlacement: (state: GameplayFrameState, request: PlacementRequest) => Effect.Effect<void>;
 ```
 
-### requestBowShot  `const`
+### requestBowShot  `function`
 
 ```ts
-const requestBowShot: (state: GameplayFrameState, request: BowShotRequest) => Effect.Effect<void>;
+function requestBowShot(state: GameplayFrameState, request: BowShotRequest): Effect.Effect<void>;
+```
+
+### requestBowShot  `function`
+
+```ts
+function requestBowShot(state: GameplayFrameState, requestId: BowShotRequestId, request: Omit<BowShotRequest, 'requestId'>): Effect.Effect<void>;
 ```
 
 ### requestItemUse  `const`

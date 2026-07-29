@@ -76,6 +76,7 @@
  * the first world's fibers and refs and deadlocked. Re-entrant initialisation
  * from the start is cheaper than retrofitting it.
  */
+import { capabilityOfBlockId } from '@nerima-games/mc-kernel'
 import {
   EYE_LEVEL_OFFSET,
   InventoryService,
@@ -89,6 +90,11 @@ import { below, positionKeyOf, positionOfKey } from '../domain/block-position-ke
 import { hostileSpawnsAllowed } from '../domain/day-night'
 import { targetabilityFromStore } from '../domain/in-memory-world'
 import { ChunkStore, type BlockPosition, type ChunkStoreApi } from '../domain/chunk-store-port'
+import {
+  chunkCoordsAround,
+  openChunkWindow,
+  UNREADABLE_BLOCK,
+} from '../domain/chunk-window'
 import type { PlaceableItemType } from '../domain/block-vocabulary'
 import { applyFallingBlocks } from '../domain/entities/falling-block-move'
 import {
@@ -154,7 +160,7 @@ import {
   canFireBow,
   BOW_MAX_RANGE,
 } from '../domain/interactions/draw-bow'
-import { shotTarget, type ShotHit } from '../domain/interactions/bow-shot'
+import { shotBlockedByTerrain, shotTarget, type ShotHit } from '../domain/interactions/bow-shot'
 import { knockbackDirection, type KnockbackDirection } from '../domain/interactions/knockback'
 import {
   DEFAULT_MELEE_DAMAGE,
@@ -497,6 +503,8 @@ export type GameplayFrameState = {
   readonly consumedItems: Ref.Ref<ReadonlyArray<PlaceableItemType>>
   readonly usedItems: Ref.Ref<ReadonlyArray<IgnitionItemType>>
   readonly itemUseResults: Ref.Ref<ReadonlyArray<ItemUseResult>>
+  readonly bowShotResults: Ref.Ref<ReadonlyArray<BowShotResult>>
+  readonly handledBowShotRequestIds: Ref.Ref<ReadonlySet<BowShotRequestId>>
   readonly bowKnockbacks: Ref.Ref<ReadonlyArray<BowKnockback>>
   readonly enderPearlOutcomes: Ref.Ref<ReadonlyArray<EnderPearlOutcome>>
   readonly playerDamages: Ref.Ref<ReadonlyArray<PlayerDamageEvent>>
@@ -619,6 +627,8 @@ export type ItemUseResult = {
  * where they look, and the offset between them is a pose mc-sim owns.
  */
 export type BowShotRequest = {
+  /** Host correlation key. Legacy uncorrelated requests remain supported. */
+  readonly requestId?: BowShotRequestId
   /** Where the shot starts. The eye, in world space. */
   readonly origin: Position
   /** Where it is aimed. NEED NOT BE A UNIT VECTOR — see `shotTarget`. */
@@ -630,6 +640,22 @@ export type BowShotRequest = {
   /** Level of Power on the bow. Absent = none. See `BowDrawContext`. */
   readonly powerLevel?: number
 }
+
+/** Host-provided correlation key for one bow release. */
+export type BowShotRequestId = string
+
+/** Whether a correlated release crossed the draw gate and therefore spent an arrow. */
+export type BowShotResult =
+  | {
+      readonly requestId: BowShotRequestId
+      readonly success: true
+      readonly outcome: 'Fired'
+    }
+  | {
+      readonly requestId: BowShotRequestId
+      readonly success: false
+      readonly outcome: 'Undercharged' | 'DuplicateRequest'
+    }
 
 /**
  * One ender pearl thrown.
@@ -721,6 +747,8 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
   const consumedItems = yield* Ref.make<ReadonlyArray<PlaceableItemType>>([])
   const usedItems = yield* Ref.make<ReadonlyArray<IgnitionItemType>>([])
   const itemUseResults = yield* Ref.make<ReadonlyArray<ItemUseResult>>([])
+  const bowShotResults = yield* Ref.make<ReadonlyArray<BowShotResult>>([])
+  const handledBowShotRequestIds = yield* Ref.make<ReadonlySet<BowShotRequestId>>(new Set())
   // Both empty in the ORDINARY state, like `leftoverItems` and unlike the
   // outboxes above: an entry means something happened that this repository
   // computed and cannot itself deliver. See the two types.
@@ -765,6 +793,8 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
     consumedItems,
     usedItems,
     itemUseResults,
+    bowShotResults,
+    handledBowShotRequestIds,
     bowKnockbacks,
     enderPearlOutcomes,
     playerDamages,
@@ -925,12 +955,38 @@ export const drainItemUseResults = (
   state: GameplayFrameState,
 ): Effect.Effect<ReadonlyArray<ItemUseResult>> => Ref.getAndSet(state.itemUseResults, [])
 
-/** Enqueue one bow release for the interaction stage. */
-export const requestBowShot = (
+/** Enqueue one legacy, uncorrelated bow release for the interaction stage. */
+export function requestBowShot(
   state: GameplayFrameState,
   request: BowShotRequest,
-): Effect.Effect<void> =>
-  Ref.update(state.pendingBowShots, (pending) => [...pending, request])
+): Effect.Effect<void>
+/** Enqueue one correlated release whose result tells the host whether to spend an arrow. */
+export function requestBowShot(
+  state: GameplayFrameState,
+  requestId: BowShotRequestId,
+  request: Omit<BowShotRequest, 'requestId'>,
+): Effect.Effect<void>
+export function requestBowShot(
+  state: GameplayFrameState,
+  requestOrId: BowShotRequest | BowShotRequestId,
+  correlatedRequest?: Omit<BowShotRequest, 'requestId'>,
+): Effect.Effect<void> {
+  if (typeof requestOrId !== 'string') {
+    return Ref.update(state.pendingBowShots, (pending) => [...pending, requestOrId])
+  }
+  if (correlatedRequest === undefined) {
+    return Effect.dieMessage('requestBowShot: a correlated request requires shot geometry')
+  }
+
+  const request: BowShotRequest = { ...correlatedRequest, requestId: requestOrId }
+
+  return Ref.update(state.pendingBowShots, (pending) => [...pending, request])
+}
+
+/** Atomically drain completed bow releases exactly once, preserving request order. */
+export const drainBowShotResults = (
+  state: GameplayFrameState,
+): Effect.Effect<ReadonlyArray<BowShotResult>> => Ref.getAndSet(state.bowShotResults, [])
 
 /** Enqueue one melee swing for the next interaction stage. */
 export const requestMeleeAttack = (
@@ -1132,6 +1188,7 @@ export const gameplayStages = (
         const spent: Array<PlaceableItemType> = []
         const used: Array<IgnitionItemType> = []
         const itemUseResults: Array<ItemUseResult> = []
+        const bowShotResults: Array<BowShotResult> = []
         const disturbed: Array<PositionKey> = []
 
         // Read ONCE for the whole batch rather than per request. The tool is an
@@ -1308,13 +1365,44 @@ export const gameplayStages = (
         const bowHits: Array<BowHit> = []
         if (bowShots.length > 0) {
           const candidates = yield* roster.entities
+          const handledRequestIds = new Set(yield* Ref.get(state.handledBowShotRequestIds))
 
           for (const shot of bowShots) {
+            if (shot.requestId !== undefined) {
+              if (handledRequestIds.has(shot.requestId)) {
+                bowShotResults.push({
+                  requestId: shot.requestId,
+                  success: false,
+                  outcome: 'DuplicateRequest',
+                })
+                continue
+              }
+              handledRequestIds.add(shot.requestId)
+            }
+
             // A TAP IS NOT A SHOT. `canFireBow` is the gate and it is asked
             // before anything else is computed, so a half-pressed button costs
             // one comparison rather than a scan of the roster.
             if (!canFireBow(shot.chargeSecs)) {
+              if (shot.requestId !== undefined) {
+                bowShotResults.push({
+                  requestId: shot.requestId,
+                  success: false,
+                  outcome: 'Undercharged',
+                })
+              }
               continue
+            }
+
+            // Inventory belongs to the host. A correlated success means only
+            // that the release crossed the draw gate, so misses and wall hits
+            // still spend exactly one arrow when the host drains this outbox.
+            if (shot.requestId !== undefined) {
+              bowShotResults.push({
+                requestId: shot.requestId,
+                success: true,
+                outcome: 'Fired',
+              })
             }
 
             const hit = shotTarget(
@@ -1333,26 +1421,37 @@ export const gameplayStages = (
               continue
             }
 
-            // TERRAIN IS NOT CONSULTED, AND THIS IS THE ONE GAP IN THIS ARM.
-            // `domain/interactions/bow-shot.ts`'s `shotBlockedByTerrain` is
-            // written, tested and NOT CALLED HERE, because it needs an
-            // `IsArrowBlockedAt` and building one needs to know which blocks stop
-            // an arrow. That is a kernel CAPABILITY and kernel has not published
-            // it: `domain/block-vocabulary.ts` mirrors four capability predicates
-            // — `fallsWhenUnsupported`, `isReplaceable`, `validSpawnSurface`,
-            // `canSupportAttachments` — and not one of them means "solid to a
-            // projectile". The reference has such a table
-            // (`block-collision-predicates.ts`'s `PASSABLE_BLOCK_IDS`) and it is
-            // mc-kernel's to publish, not this repository's to transcribe.
-            //
-            // Using `isReplaceable` for it would be inventing an equivalence
-            // neither owner has declared — the refusal
-            // `domain/entity-manager-port.ts` makes for `Position` against
-            // `BlockPosition`, which have identical shape and different meanings.
-            // So a bow wired here SHOOTS THROUGH WALLS, that is stated rather
-            // than hidden, and the missing thing is one capability with a name.
-            // `IsArrowBlockedAt`'s producer is the host, exactly as
-            // docs/responsibility.md §5-5 assigns `IsRailAt`'s.
+            const directionLength = Math.hypot(shot.dirX, shot.dirY, shot.dirZ)
+            const hitPoint: Position = {
+              x: shot.origin.x + (shot.dirX / directionLength) * hit.distance,
+              y: shot.origin.y + (shot.dirY / directionLength) * hit.distance,
+              z: shot.origin.z + (shot.dirZ / directionLength) * hit.distance,
+            }
+            const centre: BlockPosition = {
+              x: (shot.origin.x + hitPoint.x) / 2,
+              y: (shot.origin.y + hitPoint.y) / 2,
+              z: (shot.origin.z + hitPoint.z) / 2,
+            }
+            const radius =
+              Math.max(
+                Math.abs(hitPoint.x - shot.origin.x),
+                Math.abs(hitPoint.z - shot.origin.z),
+              ) /
+                2 +
+              1
+            const terrain = yield* openChunkWindow(store, chunkCoordsAround(centre, radius))
+            const blocked = shotBlockedByTerrain(
+              (x, y, z) => {
+                const block = terrain.blockAt(x, y, z)
+                return block === UNREADABLE_BLOCK || !capabilityOfBlockId(block, 'passable')
+              },
+              shot.origin,
+              hitPoint,
+            )
+            if (blocked) {
+              continue
+            }
+
             // THE REQUEST IS ITSELF A `BowDrawContext`, structurally: it carries
             // a `powerLevel` and the context wants nothing else. That is not a
             // coincidence to be tidied away — `BowShotRequest`'s header explains
@@ -1378,6 +1477,8 @@ export const gameplayStages = (
               })
             }
           }
+
+          yield* Ref.set(state.handledBowShotRequestIds, handledRequestIds)
         }
 
         // ONE SWEEP FOR EVERY HIT — `resolveBowHits` argues it, and it is
@@ -1520,6 +1621,9 @@ export const gameplayStages = (
         }
         if (itemUseResults.length > 0) {
           yield* Ref.update(state.itemUseResults, (items) => [...items, ...itemUseResults])
+        }
+        if (bowShotResults.length > 0) {
+          yield* Ref.update(state.bowShotResults, (items) => [...items, ...bowShotResults])
         }
         // Both are outboxes with no consumer in this repository; the types say
         // which missing noun each is waiting for.

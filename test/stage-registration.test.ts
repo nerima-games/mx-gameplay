@@ -15,7 +15,14 @@ import {
   type MobDropEvent,
   type MobSpawnAttempt,
 } from '../domain/entities/mob-frame'
-import { EntityId, type EntityManager } from '../domain/entity-manager-port'
+import {
+  EntityId,
+  EntityKind,
+  type EntityManager,
+  type EntityRoster,
+} from '../domain/entity-manager-port'
+import { BOW_TARGET_CENTER_Y_OFFSET } from '../domain/interactions/bow-shot'
+import { BOW_FULL_CHARGE_SECS, BOW_MIN_CHARGE_SECS } from '../domain/interactions/draw-bow'
 import type { InventoryService } from '@nerima-games/mc-sim'
 import {
   DeltaTimeSecs,
@@ -30,11 +37,13 @@ import { disturb, takeBatch } from '../domain/falling-block'
 import { DEFAULT_ROLL_SEED } from '../domain/frame-rolls'
 import {
   gameplayStages,
+  drainBowShotResults,
   drainMobDrops,
   LAVA_TICK_INTERVAL,
   makeGameplayFrameState,
   makeGameplayStages,
   gameplayModule,
+  requestBowShot,
   requestMobSpawn,
 } from '../stages/registration'
 import {
@@ -43,7 +52,12 @@ import {
   OWN_STAGE_PREFIX,
   UPSTREAM_STAGE_IDS,
 } from '../stages/stage-ids'
-import { emptyWorldStoreLayer, makeChunkStoreDouble, world } from './support/chunk-store-double'
+import {
+  emptyWorldStoreLayer,
+  makeChunkStoreDouble,
+  STONE,
+  world,
+} from './support/chunk-store-double'
 import { emptyRosterLayer, makeEntityManagerDouble } from './support/entity-manager-double'
 import { makePlayerServiceDouble, playerDoubleLayer } from './support/player-service-double'
 import { PlayerService } from '../domain/player-port'
@@ -357,10 +371,12 @@ describe('stage behaviour', () => {
       // a day is.
       expect(Object.keys(state).sort()).toStrictEqual([
         'bowKnockbacks',
+        'bowShotResults',
         'consumedItems',
         'enderPearlOutcomes',
         'fallingBlocks',
         'fluidFrontier',
+        'handledBowShotRequestIds',
         'heldTool',
         'hostileContactCooldowns',
         'itemUseResults',
@@ -407,6 +423,87 @@ describe('stage behaviour', () => {
       expect(Object.keys(state)).not.toContain('inventory')
       expect(Object.keys(state)).not.toContain('slots')
       expect(Object.keys(state)).not.toContain('heldItems')
+    }),
+  )
+
+  it.effect('bow results correlate successful and refused requests and drain exactly once', () =>
+    Effect.gen(function* () {
+      const { state, inventory, stages } = yield* builtStages
+      const shot = {
+        origin: { x: 0, y: 64, z: 0 },
+        dirX: 0,
+        dirY: 1,
+        dirZ: 0,
+        chargeSecs: BOW_FULL_CHARGE_SECS,
+      }
+
+      yield* requestBowShot(state, 'fired', shot)
+      yield* requestBowShot(state, 'undercharged', {
+        ...shot,
+        chargeSecs: BOW_MIN_CHARGE_SECS / 2,
+      })
+      yield* requestBowShot(state, 'duplicate', shot)
+      yield* requestBowShot(state, 'duplicate', shot)
+
+      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)
+      yield* interactions!.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* drainBowShotResults(state)).toStrictEqual([
+        { requestId: 'fired', success: true, outcome: 'Fired' },
+        { requestId: 'undercharged', success: false, outcome: 'Undercharged' },
+        { requestId: 'duplicate', success: true, outcome: 'Fired' },
+        { requestId: 'duplicate', success: false, outcome: 'DuplicateRequest' },
+      ])
+      expect(yield* drainBowShotResults(state)).toStrictEqual([])
+      expect(yield* inventory.withdrawals).toStrictEqual([])
+
+      yield* requestBowShot(state, 'duplicate', shot)
+      yield* interactions!.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+      expect(yield* drainBowShotResults(state)).toStrictEqual([
+        { requestId: 'duplicate', success: false, outcome: 'DuplicateRequest' },
+      ])
+      expect(yield* inventory.withdrawals).toStrictEqual([])
+    }),
+  )
+
+  it.effect('terrain occludes entity damage before a fired shot reaches the roster', () =>
+    Effect.gen(function* () {
+      const target: EntityRoster<MobBehaviour> = {
+        entities: [
+          {
+            id: EntityId('target-behind-wall'),
+            kind: EntityKind('creeper'),
+            feetPosition: { x: 0, y: 64 - BOW_TARGET_CENTER_Y_OFFSET, z: 10 },
+            healthPoints: 20,
+            behaviour: undefined,
+          },
+        ],
+        nextSerial: 1,
+      }
+      const state = yield* makeGameplayFrameState
+      const store = yield* makeChunkStoreDouble(world([[{ x: 0, y: 64, z: 5 }, STONE]]), [
+        '0,0',
+      ])
+      const roster = yield* makeEntityManagerDouble<MobBehaviour>(target)
+      const player = yield* makePlayerServiceDouble()
+      const inventory = yield* makeInventoryDouble()
+      const stages = gameplayStages(state, store.api, roster.api, inventory.api, player.api)
+
+      yield* requestBowShot(state, 'wall-shot', {
+        origin: { x: 0, y: 64, z: 0 },
+        dirX: 0,
+        dirY: 0,
+        dirZ: 1,
+        chargeSecs: BOW_FULL_CHARGE_SECS,
+      })
+      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)
+      yield* interactions!.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* drainBowShotResults(state)).toStrictEqual([
+        { requestId: 'wall-shot', success: true, outcome: 'Fired' },
+      ])
+      expect((yield* roster.api.snapshot).entities[0]?.healthPoints).toBe(20)
+      expect(yield* Ref.get(state.bowKnockbacks)).toStrictEqual([])
     }),
   )
 
