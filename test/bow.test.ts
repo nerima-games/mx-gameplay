@@ -41,7 +41,7 @@ import {
 import { knockbackDirection, KNOCKBACK_EPSILON } from '../domain/interactions/knockback'
 import { resolveBowHits, type MobBehaviour } from '../domain/entities/mob-frame'
 import { EntityId, EntityKind, type EntityRoster } from '../domain/entity-manager-port'
-import { gameplayStages, makeGameplayFrameState } from '../stages/registration'
+import { gameplayStages, makeGameplayFrameState, requestBowShot } from '../stages/registration'
 import { makeChunkStoreDouble } from './support/chunk-store-double'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
 import { makePlayerServiceDouble } from './support/player-service-double'
@@ -522,7 +522,9 @@ describe('resolveBowHits', () => {
 
       const casualties = yield* resolveBowHits(roster.api, [{ id: EntityId('doomed'), damage: 9 }])
 
-      expect(casualties).toStrictEqual([{ id: 'doomed', kind: 'creeper' }])
+      expect(casualties).toStrictEqual([
+        { id: 'doomed', kind: 'creeper', at: { x: 0, y: 64, z: 0 } },
+      ])
       expect((yield* roster.api.snapshot).entities).toStrictEqual([])
     }),
   )
@@ -541,7 +543,9 @@ describe('resolveBowHits', () => {
         { id: EntityId('target'), damage: 9 },
       ])
 
-      expect(casualties).toStrictEqual([{ id: 'target', kind: 'creeper' }])
+      expect(casualties).toStrictEqual([
+        { id: 'target', kind: 'creeper', at: { x: 0, y: 64, z: 0 } },
+      ])
       expect((yield* roster.calls).sweeps).toBe(1)
     }),
   )
@@ -650,6 +654,23 @@ const AHEAD: EntityRoster<MobBehaviour> = {
 }
 
 describe('gameplay:interactions — the bow arm', () => {
+  it.effect('requestBowShot appends to the public inbox', () =>
+    Effect.gen(function* () {
+      const { state } = yield* scene(AHEAD)
+      const request = {
+        origin: EYE,
+        dirX: 0,
+        dirY: 0,
+        dirZ: 1,
+        chargeSecs: BOW_FULL_CHARGE_SECS,
+      }
+
+      yield* requestBowShot(state, request)
+
+      expect(yield* Ref.get(state.pendingBowShots)).toStrictEqual([request])
+    }),
+  )
+
   it.effect('A FULL DRAW REACHES THE ROSTER: nine health points off the mob in the crosshair', () =>
     Effect.gen(function* () {
       // This is the assertion the whole change exists for. The rules were

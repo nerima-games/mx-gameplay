@@ -8,9 +8,14 @@
  */
 import { describe, expect, it } from '@effect/vitest'
 import { Effect, Layer, Ref } from 'effect'
-import type { ChunkStore } from '../domain/chunk-store-port'
-import type { MobBehaviour } from '../domain/entities/mob-frame'
-import type { EntityManager } from '../domain/entity-manager-port'
+import { AIR_BLOCK_ID, type ChunkStore } from '../domain/chunk-store-port'
+import {
+  CREEPER_KIND,
+  type MobBehaviour,
+  type MobDropEvent,
+  type MobSpawnAttempt,
+} from '../domain/entities/mob-frame'
+import { EntityId, type EntityManager } from '../domain/entity-manager-port'
 import type { InventoryService } from '@nerima-games/mc-sim'
 import {
   DeltaTimeSecs,
@@ -25,10 +30,12 @@ import { disturb, takeBatch } from '../domain/falling-block'
 import { DEFAULT_ROLL_SEED } from '../domain/frame-rolls'
 import {
   gameplayStages,
+  drainMobDrops,
   LAVA_TICK_INTERVAL,
   makeGameplayFrameState,
   makeGameplayStages,
   gameplayModule,
+  requestMobSpawn,
 } from '../stages/registration'
 import {
   EXPERIENCE_MODULE_STAGE_PREFIXES,
@@ -355,6 +362,7 @@ describe('stage behaviour', () => {
         'fallingBlocks',
         'fluidFrontier',
         'heldTool',
+        'hostileContactCooldowns',
         'leftoverItems',
         'mobDrops',
         'pendingBowShots',
@@ -362,6 +370,7 @@ describe('stage behaviour', () => {
         'pendingItemUses',
         'pendingPearlThrows',
         'pendingPlacements',
+        'playerDamages',
         'portalDwell',
         'rollSeed',
         'spawnAttempts',
@@ -450,6 +459,43 @@ describe('stage behaviour', () => {
       expect(yield* Ref.get(state.targetPosition)).toBeUndefined()
       expect(yield* Ref.get(state.spawnAttempts)).toStrictEqual([])
       expect(yield* Ref.get(state.mobDrops)).toStrictEqual([])
+    }),
+  )
+
+  it.effect('host mob boundaries preserve spawn order and atomically drain drops', () =>
+    Effect.gen(function* () {
+      const state = yield* makeGameplayFrameState
+      const spawn = (x: number): MobSpawnAttempt => ({
+        candidate: {
+          groundBlock: AIR_BLOCK_ID,
+          footBlock: AIR_BLOCK_ID,
+          headBlock: AIR_BLOCK_ID,
+          blockLight: 0,
+          timeOfDay: 0,
+          distanceToPlayerBlocksXZ: 24,
+        },
+        kind: CREEPER_KIND,
+        feetPosition: { x, y: 64, z: 0 },
+      })
+      const first = spawn(1)
+      const second = spawn(2)
+
+      yield* requestMobSpawn(state, first)
+      yield* requestMobSpawn(state, second)
+      expect(yield* Ref.get(state.spawnAttempts)).toStrictEqual([first, second])
+
+      const drop: MobDropEvent = {
+        item: 'gunpowder',
+        count: 1,
+        source: EntityId('qa-creeper'),
+        kind: CREEPER_KIND,
+        at: { x: 1, y: 64, z: 0 },
+      }
+      yield* Ref.set(state.mobDrops, [drop])
+
+      expect(yield* drainMobDrops(state)).toStrictEqual([drop])
+      expect(yield* Ref.get(state.mobDrops)).toStrictEqual([])
+      expect(yield* drainMobDrops(state)).toStrictEqual([])
     }),
   )
 

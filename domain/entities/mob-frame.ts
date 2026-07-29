@@ -233,6 +233,12 @@ import {
 } from '../mob/enderman-teleport'
 import { explosionDamageAt, type Explosion } from '../mob/explosion'
 import { despawnVerdict, type DespawnCandidate } from '../mob/hostile-despawn'
+import {
+  CREEPER_LOCOMOTION,
+  pursueHorizontally,
+  ZOMBIE_KIND,
+  ZOMBIE_LOCOMOTION,
+} from '../mob/hostile-combat'
 import { canHostileSpawnAt, type SpawnCandidate, type SpawnRefusal } from '../mob/hostile-spawn'
 import {
   CREEPER_DROPS,
@@ -730,6 +736,7 @@ export type Blast = {
 export type MobCasualty = {
   readonly id: EntityId
   readonly kind: EntityKind
+  readonly at: Position
 }
 
 /** One entity, and what a shot took off it. See `resolveBowHits`. */
@@ -935,6 +942,25 @@ export const sweepMobs = (
         }
 
         const behaviour = entity.behaviour
+        if (entity.kind === ZOMBIE_KIND) {
+          const feetPosition = pursueHorizontally(
+            entity.feetPosition,
+            senses.target,
+            senses.dt,
+            ZOMBIE_LOCOMOTION,
+          )
+          return feetPosition === entity.feetPosition
+            ? IGNORED
+            : {
+                transition: changed({
+                  feetPosition,
+                  healthPoints: entity.healthPoints,
+                  behaviour,
+                }),
+                emit: undefined,
+              }
+        }
+
         if (behaviour === undefined) {
           // The whole cost of a mob this repository has no rule for: one closure
           // call, one distance, and a shared object.
@@ -942,6 +968,12 @@ export const sweepMobs = (
         }
 
         if (entity.kind === CREEPER_KIND && isFuse(behaviour)) {
+          const feetPosition = pursueHorizontally(
+            entity.feetPosition,
+            senses.target,
+            senses.dt,
+            CREEPER_LOCOMOTION,
+          )
           creeperScratch.distanceToTargetBlocks = distance
           const step = stepCreeperFuse(behaviour, creeperScratch, senses.dt)
 
@@ -960,7 +992,7 @@ export const sweepMobs = (
               emit: {
                 source: entity.id,
                 kind: entity.kind,
-                at: entity.feetPosition,
+                at: feetPosition,
                 explosion: step.explosion,
               },
             }
@@ -970,11 +1002,11 @@ export const sweepMobs = (
           // ARGUMENT fuse when nothing happened (a dormant creeper out of range, a
           // detonated one), so `===` is exact here and costs nothing — and it is
           // what lets an idle frame reach mc-sim's zero-allocation path.
-          return step.fuse === behaviour
+          return step.fuse === behaviour && feetPosition === entity.feetPosition
             ? IGNORED
             : {
                 transition: changed({
-                  feetPosition: entity.feetPosition,
+                  feetPosition,
                   healthPoints: entity.healthPoints,
                   behaviour: step.fuse,
                 }),
@@ -1137,7 +1169,10 @@ export const resolveBlasts = (
       }
 
       if (isDead(vitals)) {
-        return { transition: DESPAWNED, emit: { id: entity.id, kind: entity.kind } }
+        return {
+          transition: DESPAWNED,
+          emit: { id: entity.id, kind: entity.kind, at: entity.feetPosition },
+        }
       }
 
       return {
@@ -1246,7 +1281,10 @@ export const resolveBowHits = (
       )
 
       if (isDead(vitals)) {
-        return { transition: DESPAWNED, emit: { id: entity.id, kind: entity.kind } }
+        return {
+          transition: DESPAWNED,
+          emit: { id: entity.id, kind: entity.kind, at: entity.feetPosition },
+        }
       }
 
       return {
@@ -1309,8 +1347,14 @@ const damageFrom = (blasts: ReadonlyArray<Blast>, entity: Entity<MobBehaviour>):
 
 /** Every drop a blast's casualties leave, and the seed to keep. */
 export type CasualtyDrops = {
-  readonly drops: ReadonlyArray<MobDrop>
+  readonly drops: ReadonlyArray<MobDropEvent>
   readonly seed: number
+}
+
+export type MobDropEvent = MobDrop & {
+  readonly source: EntityId
+  readonly kind: EntityKind
+  readonly at: Position
 }
 
 const NO_DROPS: ReadonlyArray<never> = []
@@ -1335,13 +1379,20 @@ export const rollCasualtyDrops = (
     return { drops: NO_DROPS, seed }
   }
 
-  const drops: Array<MobDrop> = []
+  const drops: Array<MobDropEvent> = []
   let current = seed
 
   for (const casualty of casualties) {
     const batch = drawRolls(current, dropRollsNeeded(casualty.kind))
     current = batch.seed
-    drops.push(...rollDropsOfKind(casualty.kind, SLAIN_BY_BLAST, batch.rolls))
+    drops.push(
+      ...rollDropsOfKind(casualty.kind, SLAIN_BY_BLAST, batch.rolls).map((drop) => ({
+        ...drop,
+        source: casualty.id,
+        kind: casualty.kind,
+        at: casualty.at,
+      })),
+    )
   }
 
   return { drops, seed: current }
@@ -1357,8 +1408,13 @@ export const rollCasualtyDrops = (
  * accident」 of statement order, and 「move the removal three lines down and the
  * rule changes with no test to notice」. Here the rule is asked.
  */
-export const rollSelfDestructDrops = (kind: EntityKind): ReadonlyArray<MobDrop> =>
-  rollDropsOfKind(kind, SELF_DESTRUCT, NO_DROPS)
+export const rollSelfDestructDrops = (blast: Blast): ReadonlyArray<MobDropEvent> =>
+  rollDropsOfKind(blast.kind, SELF_DESTRUCT, NO_DROPS).map((drop) => ({
+    ...drop,
+    source: blast.source,
+    kind: blast.kind,
+    at: blast.at,
+  }))
 
 // ---------------------------------------------------------------------------
 // Spawning

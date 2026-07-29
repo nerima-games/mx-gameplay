@@ -99,6 +99,7 @@ import {
   ENDERMITE_KIND,
   ENDERMITE_MAX_HEALTH,
   type BowHit,
+  type MobDropEvent,
   type MobBehaviour,
   type MobSpawnAttempt,
 } from '../domain/entities/mob-frame'
@@ -111,6 +112,11 @@ import {
   type Position,
 } from '../domain/entity-manager-port'
 import type { Damage } from '../domain/death-cause'
+import {
+  resolveHostileContacts,
+  resolvePlayerBlastDamage,
+  type PlayerDamageEvent,
+} from '../domain/mob/hostile-combat'
 import {
   disturb,
   emptyFallingBlockQueue,
@@ -157,7 +163,6 @@ import {
   useFlintAndSteel,
   type IgnitionItemType,
 } from '../domain/interactions/use-flint-and-steel'
-import type { MobDrop } from '../domain/mob/mob-drop'
 import type { PositionKey } from '../domain/position-key'
 import {
   advanceWeather,
@@ -480,7 +485,9 @@ export type GameplayFrameState = {
   readonly usedItems: Ref.Ref<ReadonlyArray<IgnitionItemType>>
   readonly bowKnockbacks: Ref.Ref<ReadonlyArray<BowKnockback>>
   readonly enderPearlOutcomes: Ref.Ref<ReadonlyArray<EnderPearlOutcome>>
-  readonly mobDrops: Ref.Ref<ReadonlyArray<MobDrop>>
+  readonly playerDamages: Ref.Ref<ReadonlyArray<PlayerDamageEvent>>
+  readonly hostileContactCooldowns: Ref.Ref<ReadonlyMap<EntityId, number>>
+  readonly mobDrops: Ref.Ref<ReadonlyArray<MobDropEvent>>
   readonly spawnAttempts: Ref.Ref<ReadonlyArray<MobSpawnAttempt>>
   readonly targetPosition: Ref.Ref<Position | undefined>
   readonly timeOfDay: Ref.Ref<number>
@@ -691,7 +698,9 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
   // computed and cannot itself deliver. See the two types.
   const bowKnockbacks = yield* Ref.make<ReadonlyArray<BowKnockback>>([])
   const enderPearlOutcomes = yield* Ref.make<ReadonlyArray<EnderPearlOutcome>>([])
-  const mobDrops = yield* Ref.make<ReadonlyArray<MobDrop>>([])
+  const playerDamages = yield* Ref.make<ReadonlyArray<PlayerDamageEvent>>([])
+  const hostileContactCooldowns = yield* Ref.make<ReadonlyMap<EntityId, number>>(new Map())
+  const mobDrops = yield* Ref.make<ReadonlyArray<MobDropEvent>>([])
   const spawnAttempts = yield* Ref.make<ReadonlyArray<MobSpawnAttempt>>([])
   const targetPosition = yield* Ref.make<Position | undefined>(undefined)
   // Midnight, which `domain/day-night.ts` reads as night. See the module header
@@ -728,6 +737,8 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
     usedItems,
     bowKnockbacks,
     enderPearlOutcomes,
+    playerDamages,
+    hostileContactCooldowns,
     mobDrops,
     spawnAttempts,
     targetPosition,
@@ -866,6 +877,30 @@ export const requestBlockPlacement = (
   request: PlacementRequest,
 ): Effect.Effect<void> =>
   Ref.update(state.pendingPlacements, (pending) => [...pending, request])
+
+/** Enqueue one bow release for the interaction stage. */
+export const requestBowShot = (
+  state: GameplayFrameState,
+  request: BowShotRequest,
+): Effect.Effect<void> =>
+  Ref.update(state.pendingBowShots, (pending) => [...pending, request])
+
+/** Enqueue one deterministic mob spawn candidate for the entities stage. */
+export const requestMobSpawn = (
+  state: GameplayFrameState,
+  attempt: MobSpawnAttempt,
+): Effect.Effect<void> =>
+  Ref.update(state.spawnAttempts, (pending) => [...pending, attempt])
+
+/** Drain player damage computed by hostile contact and explosions. */
+export const drainPlayerDamages = (
+  state: GameplayFrameState,
+): Effect.Effect<ReadonlyArray<PlayerDamageEvent>> => Ref.getAndSet(state.playerDamages, [])
+
+/** Drain mob drops emitted by casualties during the entities stage. */
+export const drainMobDrops = (
+  state: GameplayFrameState,
+): Effect.Effect<ReadonlyArray<MobDropEvent>> => Ref.getAndSet(state.mobDrops, [])
 
 /** Resolve the block under the crosshair and enqueue placement in its adjacent cell. */
 export const requestTargetedBlockPlacement = (
@@ -1407,7 +1442,12 @@ export const gameplayStages = (
           // What the creeper itself leaves: nothing, and the RULE says so rather
           // than this stage assuming it (`domain/mob/mob-drop.ts` on why the
           // reference gets the same answer by accident of statement order).
-          const selfDestruct = blasts.flatMap((blast) => rollSelfDestructDrops(blast.kind))
+          const playerDamages = resolvePlayerBlastDamage(blasts, targetPosition)
+          if (playerDamages.length > 0) {
+            yield* Ref.update(state.playerDamages, (items) => [...items, ...playerDamages])
+          }
+
+          const selfDestruct = blasts.flatMap(rollSelfDestructDrops)
 
           // `Ref.modify`, so the seed is read, advanced and written in one step.
           // A split read/write here would let two frames draw the same rolls,
@@ -1429,6 +1469,17 @@ export const gameplayStages = (
           if (disturbed.length > 0) {
             yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, disturbed))
           }
+        }
+
+        const contact = resolveHostileContacts(
+          yield* roster.entities,
+          targetPosition,
+          dt,
+          yield* Ref.get(state.hostileContactCooldowns),
+        )
+        yield* Ref.set(state.hostileContactCooldowns, contact.cooldowns)
+        if (contact.damages.length > 0) {
+          yield* Ref.update(state.playerDamages, (items) => [...items, ...contact.damages])
         }
 
         // ---- the spawn search ----------------------------------------------

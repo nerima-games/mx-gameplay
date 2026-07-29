@@ -13,7 +13,7 @@
 <!-- ------------------------------------------------------------------------- -->
 
 format: 1
-exported declarations: 391
+exported declarations: 409
 supporting declarations: 61
 
 ## Exported
@@ -270,6 +270,12 @@ const CREEPER_IGNITION_RANGE_BLOCKS = 3;
 const CREEPER_KIND: EntityKind;
 ```
 
+### CREEPER_LOCOMOTION  `const`
+
+```ts
+const CREEPER_LOCOMOTION: HostileLocomotion;
+```
+
 ### CREEPER_MAX_HEALTH  `const`
 
 ```ts
@@ -300,7 +306,7 @@ type CactusSidesRefusal = {
 
 ```ts
 type CasualtyDrops = {
-    readonly drops: ReadonlyArray<MobDrop>;
+    readonly drops: ReadonlyArray<MobDropEvent>;
     readonly seed: number;
 };
 ```
@@ -817,7 +823,9 @@ type GameplayFrameState = {
     readonly usedItems: Ref.Ref<ReadonlyArray<IgnitionItemType>>;
     readonly bowKnockbacks: Ref.Ref<ReadonlyArray<BowKnockback>>;
     readonly enderPearlOutcomes: Ref.Ref<ReadonlyArray<EnderPearlOutcome>>;
-    readonly mobDrops: Ref.Ref<ReadonlyArray<MobDrop>>;
+    readonly playerDamages: Ref.Ref<ReadonlyArray<PlayerDamageEvent>>;
+    readonly hostileContactCooldowns: Ref.Ref<ReadonlyMap<EntityId, number>>;
+    readonly mobDrops: Ref.Ref<ReadonlyArray<MobDropEvent>>;
     readonly spawnAttempts: Ref.Ref<ReadonlyArray<MobSpawnAttempt>>;
     readonly targetPosition: Ref.Ref<Position | undefined>;
     readonly timeOfDay: Ref.Ref<number>;
@@ -857,6 +865,12 @@ type GeneratedWorldOptions = {
 };
 ```
 
+### HOSTILE_CONTACT_INTERVAL_SECS  `const`
+
+```ts
+const HOSTILE_CONTACT_INTERVAL_SECS = 1;
+```
+
 ### HOSTILE_KINDS  `const`
 
 ```ts
@@ -881,6 +895,24 @@ const HOSTILE_SPAWN_MAX_BLOCK_LIGHT = 7;
 type HeldItemCapabilities = {
     readonly charges: boolean;
     readonly blocks: boolean;
+};
+```
+
+### HostileContactResolution  `type`
+
+```ts
+type HostileContactResolution = {
+    readonly damages: ReadonlyArray<PlayerDamageEvent>;
+    readonly cooldowns: ReadonlyMap<EntityId, number>;
+};
+```
+
+### HostileLocomotion  `type`
+
+```ts
+type HostileLocomotion = {
+    readonly speedBlocksPerSecond: number;
+    readonly stoppingDistanceBlocks: number;
 };
 ```
 
@@ -1214,6 +1246,7 @@ type MobBehaviour = CreeperFuse | EndermanFlinch | undefined;
 type MobCasualty = {
     readonly id: EntityId;
     readonly kind: EntityKind;
+    readonly at: Position;
 };
 ```
 
@@ -1223,6 +1256,16 @@ type MobCasualty = {
 type MobDrop = {
     readonly item: ItemType;
     readonly count: number;
+};
+```
+
+### MobDropEvent  `type`
+
+```ts
+type MobDropEvent = MobDrop & {
+    readonly source: EntityId;
+    readonly kind: EntityKind;
+    readonly at: Position;
 };
 ```
 
@@ -1461,12 +1504,42 @@ type PlantRequest = {
 };
 ```
 
+### PlayerBlast  `type`
+
+```ts
+type PlayerBlast = {
+    readonly source: EntityId;
+    readonly kind: EntityKind;
+    readonly at: Position;
+    readonly explosion: Explosion;
+};
+```
+
 ### PlayerBody  `type`
 
 ```ts
 type PlayerBody = {
     readonly centre: Position;
     readonly velocity: Position;
+};
+```
+
+### PlayerDamageEvent  `type`
+
+```ts
+type PlayerDamageEvent = {
+    readonly _tag: 'HostileContact';
+    readonly source: EntityId;
+    readonly kind: EntityKind;
+    readonly at: Position;
+    readonly damage: Damage;
+} | {
+    readonly _tag: 'Explosion';
+    readonly source: EntityId;
+    readonly kind: EntityKind;
+    readonly at: Position;
+    readonly explosion: Explosion;
+    readonly damage: Damage;
 };
 ```
 
@@ -1974,6 +2047,30 @@ type WorldContents = {
 };
 ```
 
+### ZOMBIE_CONTACT_DAMAGE  `const`
+
+```ts
+const ZOMBIE_CONTACT_DAMAGE: Damage;
+```
+
+### ZOMBIE_CONTACT_RANGE_BLOCKS  `const`
+
+```ts
+const ZOMBIE_CONTACT_RANGE_BLOCKS = 1.5;
+```
+
+### ZOMBIE_KIND  `const`
+
+```ts
+const ZOMBIE_KIND: EntityKind;
+```
+
+### ZOMBIE_LOCOMOTION  `const`
+
+```ts
+const ZOMBIE_LOCOMOTION: HostileLocomotion;
+```
+
 ### adaptGeneratedChunkStore  `const`
 
 ```ts
@@ -2215,6 +2312,18 @@ const disturb: (queue: FallingBlockQueue, positions: Iterable<PositionKey>) => F
 
 ```ts
 const doorUpperCell: (store: ChunkStoreApi, block: BlockId, position: BlockPosition) => Effect.Effect<DoorUpperCell>;
+```
+
+### drainMobDrops  `const`
+
+```ts
+const drainMobDrops: (state: GameplayFrameState) => Effect.Effect<ReadonlyArray<MobDropEvent>>;
+```
+
+### drainPlayerDamages  `const`
+
+```ts
+const drainPlayerDamages: (state: GameplayFrameState) => Effect.Effect<ReadonlyArray<PlayerDamageEvent>>;
 ```
 
 ### drawRolls  `const`
@@ -2607,6 +2716,12 @@ const plantCrop: (port: PlantPort, request: PlantRequest) => Effect.Effect<Plant
 const plantingVerdict: (request: PlantRequest, soilBlock: BlockType, blockAbove: BlockType) => PlantOutcome;
 ```
 
+### pursueHorizontally  `const`
+
+```ts
+const pursueHorizontally: (from: Position, target: Position | undefined, dt: number, locomotion: HostileLocomotion) => Position;
+```
+
 ### removeFromSlots  `const`
 
 ```ts
@@ -2643,6 +2758,18 @@ const requestBlockBreak: (state: GameplayFrameState, position: BlockPosition) =>
 const requestBlockPlacement: (state: GameplayFrameState, request: PlacementRequest) => Effect.Effect<void>;
 ```
 
+### requestBowShot  `const`
+
+```ts
+const requestBowShot: (state: GameplayFrameState, request: BowShotRequest) => Effect.Effect<void>;
+```
+
+### requestMobSpawn  `const`
+
+```ts
+const requestMobSpawn: (state: GameplayFrameState, attempt: MobSpawnAttempt) => Effect.Effect<void>;
+```
+
 ### requestTargetedBlockBreak  `const`
 
 ```ts
@@ -2667,6 +2794,12 @@ const resolveBlasts: (roster: EntityManagerApi<MobBehaviour>, store: ChunkStoreA
 const resolveBowHits: (roster: EntityManagerApi<MobBehaviour>, hits: ReadonlyArray<BowHit>) => Effect.Effect<ReadonlyArray<MobCasualty>>;
 ```
 
+### resolveHostileContacts  `const`
+
+```ts
+const resolveHostileContacts: <S>(entities: ReadonlyArray<Entity<S>>, target: Position | undefined, dt: number, previousCooldowns: ReadonlyMap<EntityId, number>) => HostileContactResolution;
+```
+
 ### resolveInteractionIntent  `const`
 
 ```ts
@@ -2677,6 +2810,12 @@ const resolveInteractionIntent: (snapshot: InteractionSnapshot) => InteractionIn
 
 ```ts
 const resolveNextWeatherState: (current: Weather, rolls: WeatherRolls) => WeatherState;
+```
+
+### resolvePlayerBlastDamage  `const`
+
+```ts
+const resolvePlayerBlastDamage: (blasts: ReadonlyArray<PlayerBlast>, target: Position | undefined) => ReadonlyArray<PlayerDamageEvent>;
 ```
 
 ### resolvePlayerMovement  `const`
@@ -2751,7 +2890,7 @@ const rollMobDrops: (rules: ReadonlyArray<MobDropRule>, kill: MobKill, rollsFor:
 ### rollSelfDestructDrops  `const`
 
 ```ts
-const rollSelfDestructDrops: (kind: EntityKind) => ReadonlyArray<MobDrop>;
+const rollSelfDestructDrops: (blast: Blast) => ReadonlyArray<MobDropEvent>;
 ```
 
 ### settled  `const`

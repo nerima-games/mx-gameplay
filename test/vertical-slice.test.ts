@@ -785,9 +785,10 @@ describe('the mob slice, through the stage registration', () => {
       expect(lit[0]?.behaviour).toStrictEqual({ _tag: 'Lit', burnedSecs: 0.25 })
       expect(lit[1]?.behaviour).toBe(DORMANT_FUSE)
 
-      // ...and the unchanged bystander is the SAME OBJECT it was before, which
-      // is what mc-sim's zero-copy sweep is for.
-      expect(lit[1]).toBe(spawned[1])
+      // The bystander is outside ignition range, but hostile locomotion still
+      // closes the horizontal gap by speed * dt without changing altitude.
+      expect(lit[1]).not.toBe(spawned[1])
+      expect(lit[1]?.feetPosition).toStrictEqual({ x: 6.5, y: 64, z: 5 })
 
       // ---- five more quarter-seconds ---------------------------------------
       // 0.25 * 6 = 1.5 = CREEPER_FUSE_SECS, and the threshold is `>=`.
@@ -813,7 +814,15 @@ describe('the mob slice, through the stage registration', () => {
       // A creeper that blows itself up drops nothing — `MobKill.SelfDestruct` —
       // so one gunpowder and not two. The block outbox is untouched: a mob drop
       // is not a mined block, and the two are different lists for that reason.
-      expect(yield* Ref.get(state.mobDrops)).toStrictEqual([{ item: 'gunpowder', count: 1 }])
+      expect(yield* Ref.get(state.mobDrops)).toStrictEqual([
+        {
+          item: 'gunpowder',
+          count: 1,
+          source: spawned[1]?.id,
+          kind: CREEPER_KIND,
+          at: { x: 6, y: 64, z: 5 },
+        },
+      ])
       expect(yield* deposited(inventory)).toStrictEqual([])
 
       // ---- the crater emptied its cells, and only those --------------------
@@ -835,7 +844,7 @@ describe('the mob slice, through the stage registration', () => {
     }),
   )
 
-  it.effect('REGRESSION: an idle frame does no mob work — one shared step object, and the roster it was given', () =>
+  it.effect('REGRESSION: unruled mobs stay zero-copy while a hostile moves', () =>
     Effect.gen(function* () {
       // THE PROPERTY THE WHOLE DESIGN PROTECTS, and the mob-side twin of the
       // idle-frame test above. mc-sim's sweep returns the ARGUMENT roster when
@@ -872,13 +881,18 @@ describe('the mob slice, through the stage registration', () => {
       const before = yield* roster.api.entities
       yield* runFrames(stages, 10, STRIDE)
 
-      // The array is the SAME array, and every entity in it is the same object.
-      expect(yield* roster.api.entities).toBe(before)
+      const after = yield* roster.api.entities
+      expect(after).not.toBe(before)
+      expect(after.slice(0, 3)).toStrictEqual(before.slice(0, 3))
+      expect(after[0]).toBe(before[0])
+      expect(after[1]).toBe(before[1])
+      expect(after[2]).toBe(before[2])
+      expect(after[3]?.feetPosition).toStrictEqual({ x: 45, y: 64, z: 5 })
 
-      // ONE distinct step object across four mobs. Four would mean the stage is
-      // allocating per mob; the count is per sweep, so it is the last frame's.
+      // One shared ignored result plus the hostile mob's changed movement result.
+      // The count is per sweep, so this is the last frame's result.
       const calls = yield* roster.calls
-      expect(calls.distinctStepObjects).toBe(1)
+      expect(calls.distinctStepObjects).toBe(2)
       expect(calls.sweeps).toBe(10)
       expect(calls.despawns).toBe(0)
 
@@ -1014,7 +1028,15 @@ describe('the mob slice, through the stage registration', () => {
       const first = yield* run
       const second = yield* run
 
-      expect(first.drops).toStrictEqual([{ item: 'gunpowder', count: 1 }])
+      expect(first.drops).toStrictEqual([
+        {
+          item: 'gunpowder',
+          count: 1,
+          source: 'e:1',
+          kind: CREEPER_KIND,
+          at: { x: 6, y: 64, z: 5 },
+        },
+      ])
       expect(second).toStrictEqual(first)
     }),
   )

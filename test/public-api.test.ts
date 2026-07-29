@@ -29,6 +29,8 @@ describe('public API surface', () => {
         // `stages/registration.ts` on why the array was the obstacle.
         'gameplayModule',
         'makeGameplayFrameState',
+        'requestMobSpawn',
+        'drainMobDrops',
         'GAMEPLAY_STAGE_IDS',
         'UPSTREAM_STAGE_IDS',
         'isPlaceableItem',
