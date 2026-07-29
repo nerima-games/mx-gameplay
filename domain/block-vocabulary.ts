@@ -12,11 +12,13 @@
  *   2. delete this file and `./item-vocabulary` together;
  *   3. repoint every `from './block-vocabulary'` at `'@nerima-games/mc-kernel'`.
  *
- * It is NOT re-exported from `index.ts`, for the reason `./frame-contract`,
- * `./position-key`, `./chunk-store-port` and `./item-vocabulary` are not:
- * re-exporting somebody else's vocabulary would make the promised deletion a
- * breaking change for every consumer of mx-gameplay. `test/public-api.test.ts`
- * pins that absence.
+ * It is not re-exported wholesale from `index.ts`, for the reason
+ * `./frame-contract`, `./position-key`, `./chunk-store-port` and
+ * `./item-vocabulary` are not: re-exporting somebody else's vocabulary would
+ * make the promised deletion a breaking change for every consumer of
+ * mx-gameplay. The barrel exposes only `isPlaceableItem`, the guard consumers
+ * need before requesting gameplay placement. `test/public-api.test.ts` pins
+ * that narrow exception and the absence of the remaining vocabulary.
  *
  * ---------------------------------------------------------------------------
  * THIS FILE IS WHERE EVERY KERNEL-SOURCED BLOCK FACT LIVES, AND IT WAS NOT

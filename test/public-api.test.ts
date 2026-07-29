@@ -31,6 +31,7 @@ describe('public API surface', () => {
         'makeGameplayFrameState',
         'GAMEPLAY_STAGE_IDS',
         'UPSTREAM_STAGE_IDS',
+        'isPlaceableItem',
       ]
 
       for (const name of contract) {
@@ -72,7 +73,6 @@ describe('public API surface', () => {
         'blockTypeOfId',
         'blockIdOf',
         'itemOfBlock',
-        'isPlaceableItem',
         'dropOfBlockId',
         'resolveDrop',
         'satisfiesHarvestTier',

@@ -13,7 +13,7 @@
 <!-- ------------------------------------------------------------------------- -->
 
 format: 1
-exported declarations: 381
+exported declarations: 382
 supporting declarations: 81
 
 ## Exported
@@ -2355,6 +2355,12 @@ const isMushroomPlacementLightAllowed: (block: BlockId, lightLevel: number) => b
 
 ```ts
 const isNight: (timeOfDay: number) => boolean;
+```
+
+### isPlaceableItem  `const`
+
+```ts
+const isPlaceableItem: (item: ItemType) => item is PlaceableItemType;
 ```
 
 ### isPrecipitating  `const`

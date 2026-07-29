@@ -63,12 +63,13 @@ export * from './domain/mob/shulker-shell'
 export * from './domain/vehicle/rail-ascent'
 export * from './domain/vehicle/rail-shape'
 export * from './domain/weather'
+export { isPlaceableItem } from './domain/block-vocabulary'
 export * from './stages/registration'
 export * from './stages/stage-ids'
 
 // --- Provisional ---------------------------------------------------------------
 // Ten modules are temporary local stand-ins for packages that are not
-// published yet, and NONE of them is re-exported:
+// published yet, and none of their vocabularies is re-exported wholesale:
 //
 //   domain/frame-contract.ts      -> @nerima-games/mc-kernel
 //   domain/position-key.ts        -> @nerima-games/mc-kernel
@@ -98,6 +99,10 @@ export * from './stages/stage-ids'
 // this repository's own: the bridge from an `Effect`-shaped store to the
 // synchronous accessor mc-worldgen's portal rule takes. It survives the
 // repoint; the mirror it names does not.
+//
+// `isPlaceableItem` is the narrow exception: gameplay consumers need the guard
+// before requesting placement, so the barrel exports that operation without
+// republishing kernel's block and item rosters.
 //
 // All of them carry a deletion date — see the "WHY THIS FILE EXISTS AND WHEN IT
 // DIES" header on the first — and re-exporting them would make `StageId`,
