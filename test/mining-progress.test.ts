@@ -9,6 +9,7 @@ import { blockLoot } from '../domain/interactions/block-loot'
 import { type requestBlockBreak } from '../stages/registration'
 import {
   advanceMiningProgress,
+  DIAMOND_PICKAXE_MINING_TOOL,
   effectiveMiningSpeed,
   HAND_MINING_TOOL,
   IRON_PICKAXE_MINING_TOOL,
@@ -34,6 +35,7 @@ describe('mining duration', () => {
       expect(miningLootContextForItem('wooden_pickaxe')).toStrictEqual({ heldTier: 'wooden' })
       expect(miningLootContextForItem('stone_pickaxe')).toStrictEqual({ heldTier: 'stone' })
       expect(miningLootContextForItem('iron_pickaxe')).toStrictEqual({ heldTier: 'iron' })
+      expect(miningLootContextForItem('diamond_pickaxe')).toStrictEqual({ heldTier: 'diamond' })
       expect(miningLootContextForItem(null)).toStrictEqual({})
       expect(miningLootContextForItem('dirt')).toStrictEqual({})
     }),
@@ -66,11 +68,18 @@ describe('mining duration', () => {
       const woodenDuration = miningDurationSecsForBlock(STONE.blockId, 'wooden_pickaxe')
       const stoneDuration = miningDurationSecsForBlock(STONE.blockId, 'stone_pickaxe')
       const ironDuration = miningDurationSecsForBlock(STONE.blockId, 'iron_pickaxe')
+      const diamondDuration = miningDurationSecsForBlock(STONE.blockId, 'diamond_pickaxe')
 
       expect(stoneDuration).toBeLessThan(woodenDuration)
       expect(ironDuration).toBeLessThan(stoneDuration)
+      expect(diamondDuration).toBeLessThan(ironDuration)
       expect(miningToolForItem('iron_pickaxe')).toBe(IRON_PICKAXE_MINING_TOOL)
+      expect(miningToolForItem('diamond_pickaxe')).toBe(DIAMOND_PICKAXE_MINING_TOOL)
       expect(IRON_PICKAXE_MINING_TOOL).toStrictEqual({ category: 'pickaxe', speedMultiplier: 6 })
+      expect(DIAMOND_PICKAXE_MINING_TOOL).toStrictEqual({
+        category: 'pickaxe',
+        speedMultiplier: 8,
+      })
     }),
   )
 
@@ -79,6 +88,7 @@ describe('mining duration', () => {
       const ironOre = blockIdOf('iron_ore')
       const goldOre = blockIdOf('gold_ore')
       const diamondOre = blockIdOf('diamond_ore')
+      const obsidian = blockIdOf('obsidian')
 
       expect(blockLoot(ironOre, miningLootContextForItem('wooden_pickaxe'))).toStrictEqual([])
       expect(blockLoot(ironOre, miningLootContextForItem('stone_pickaxe'))).toStrictEqual([
@@ -91,6 +101,10 @@ describe('mining duration', () => {
       expect(blockLoot(diamondOre, miningLootContextForItem('stone_pickaxe'))).toStrictEqual([])
       expect(blockLoot(diamondOre, miningLootContextForItem('iron_pickaxe'))).toStrictEqual([
         { item: 'diamond', count: 1 },
+      ])
+      expect(blockLoot(obsidian, miningLootContextForItem('iron_pickaxe'))).toStrictEqual([])
+      expect(blockLoot(obsidian, miningLootContextForItem('diamond_pickaxe'))).toStrictEqual([
+        { item: 'obsidian', count: 1 },
       ])
     }),
   )

@@ -35,6 +35,11 @@ export const IRON_PICKAXE_MINING_TOOL: MiningToolProfile = {
   speedMultiplier: 6,
 }
 
+export const DIAMOND_PICKAXE_MINING_TOOL: MiningToolProfile = {
+  category: 'pickaxe',
+  speedMultiplier: 8,
+}
+
 export type MiningProgressState = {
   readonly blockKey: string
   readonly blockId: number
@@ -66,6 +71,7 @@ export const miningToolForItem = (item: ItemType | null): MiningToolProfile => {
   if (item === 'wooden_pickaxe') return WOODEN_PICKAXE_MINING_TOOL
   if (item === 'stone_pickaxe') return STONE_PICKAXE_MINING_TOOL
   if (item === 'iron_pickaxe') return IRON_PICKAXE_MINING_TOOL
+  if (item === 'diamond_pickaxe') return DIAMOND_PICKAXE_MINING_TOOL
   return HAND_MINING_TOOL
 }
 
@@ -73,6 +79,7 @@ export const miningLootContextForItem = (item: ItemType | null): BlockLootContex
   if (item === 'wooden_pickaxe') return { heldTier: 'wooden' }
   if (item === 'stone_pickaxe') return { heldTier: 'stone' }
   if (item === 'iron_pickaxe') return { heldTier: 'iron' }
+  if (item === 'diamond_pickaxe') return { heldTier: 'diamond' }
   return NO_TOOL
 }
 

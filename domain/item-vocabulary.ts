@@ -71,6 +71,7 @@ export const ITEM_TYPES = [
   'wooden_pickaxe',
   'stone_pickaxe',
   'iron_pickaxe',
+  'diamond_pickaxe',
   'coal',
   'iron_ingot',
   'flint',
