@@ -41,6 +41,7 @@ import { DeltaTimeSecs } from '../domain/frame-contract'
 import type { BlockPosition } from '../domain/chunk-store-port'
 import type { MobBehaviour } from '../domain/entities/mob-frame'
 import { blockIdOf } from '../domain/block-vocabulary'
+import { NO_TOOL } from '../domain/interactions/block-loot'
 
 /**
  * DIRT, and the id took two corrections that are worth recording because both
@@ -58,6 +59,7 @@ import { blockIdOf } from '../domain/block-vocabulary'
 const DIRT_ID = 3
 const LEVER_ID = blockIdOf('lever') ?? -1
 const AT: BlockPosition = { x: 3, y: 64, z: 7 }
+const BESIDE_AT: BlockPosition = { x: 4, y: 64, z: 7 }
 const IN_SIGHT: BlockPosition = { x: 0, y: 1, z: 0 }
 
 const lookingAtBlockWorld = (loaded: boolean, block: number = DIRT_ID) =>
@@ -78,6 +80,17 @@ const oneBlockWorld = (block: number = DIRT_ID) =>
   makeInMemoryWorld<MobBehaviour>({
     world: {
       blocks: new Map([[cellKey(AT), block]]),
+      loaded: [chunkKey(chunkOf(AT))],
+    },
+  })
+
+const twoBlockWorld = (block: number) =>
+  makeInMemoryWorld<MobBehaviour>({
+    world: {
+      blocks: new Map([
+        [cellKey(AT), block],
+        [cellKey(BESIDE_AT), block],
+      ]),
       loaded: [chunkKey(chunkOf(AT))],
     },
   })
@@ -233,6 +246,110 @@ describe('the break loop', () => {
 
       const after = yield* world.chunkStore.getBlock(AT)
       expect(after).toStrictEqual({ _tag: 'Block', block: 0 })
+    }),
+  )
+
+  it.effect('keeps the wooden tool context captured when the break was requested', () =>
+    Effect.gen(function* () {
+      const world = yield* oneBlockWorld(blockIdOf('stone'))
+      const state = yield* makeGameplayFrameState
+      const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player, world.time)
+
+      yield* requestBlockBreak(state, AT, { heldTier: 'wooden' })
+      yield* Ref.set(state.heldTool, NO_TOOL)
+      yield* runInteractions(stages as never)
+
+      expect(yield* world.inventory.countOf('cobblestone')).toBe(1)
+    }),
+  )
+
+  it.effect('copies the tool context when the break was requested', () =>
+    Effect.gen(function* () {
+      const world = yield* oneBlockWorld(blockIdOf('stone'))
+      const state = yield* makeGameplayFrameState
+      const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player, world.time)
+      const lootContext: { heldTier: 'wooden' | 'none' } = { heldTier: 'wooden' }
+
+      yield* requestBlockBreak(state, AT, lootContext)
+      lootContext.heldTier = 'none'
+      yield* runInteractions(stages as never)
+
+      expect(yield* world.inventory.countOf('cobblestone')).toBe(1)
+    }),
+  )
+
+  it.effect('keeps the bare-hand context captured when the break was requested', () =>
+    Effect.gen(function* () {
+      const world = yield* oneBlockWorld(blockIdOf('stone'))
+      const state = yield* makeGameplayFrameState
+      const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player, world.time)
+
+      yield* requestBlockBreak(state, AT, NO_TOOL)
+      yield* Ref.set(state.heldTool, { heldTier: 'wooden' })
+      yield* runInteractions(stages as never)
+
+      expect(yield* world.inventory.countOf('cobblestone')).toBe(0)
+    }),
+  )
+
+  it.effect('does not let a legacy break steal a later wooden snapshot at the same position', () =>
+    Effect.gen(function* () {
+      const world = yield* oneBlockWorld(blockIdOf('stone'))
+      const state = yield* makeGameplayFrameState
+      const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player, world.time)
+
+      yield* Ref.update(state.pendingBreaks, (pending) => [...pending, '3,64,7'])
+      yield* requestBlockBreak(state, AT, { heldTier: 'wooden' })
+      yield* Ref.set(state.heldTool, NO_TOOL)
+      yield* runInteractions(stages as never)
+
+      expect(yield* world.inventory.countOf('cobblestone')).toBe(0)
+    }),
+  )
+
+  it.effect('does not let a legacy break lose its wooden fallback to a later bare-hand snapshot', () =>
+    Effect.gen(function* () {
+      const world = yield* oneBlockWorld(blockIdOf('stone'))
+      const state = yield* makeGameplayFrameState
+      const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player, world.time)
+
+      yield* Ref.update(state.pendingBreaks, (pending) => [...pending, '3,64,7'])
+      yield* requestBlockBreak(state, AT, NO_TOOL)
+      yield* Ref.set(state.heldTool, { heldTier: 'wooden' })
+      yield* runInteractions(stages as never)
+
+      expect(yield* world.inventory.countOf('cobblestone')).toBe(1)
+    }),
+  )
+
+  it.effect('keeps request and snapshot paired across concurrent helper fibers', () =>
+    Effect.gen(function* () {
+      const world = yield* twoBlockWorld(blockIdOf('stone') ?? -1)
+      const state = yield* makeGameplayFrameState
+      const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player, world.time)
+
+      yield* Effect.all(
+        [
+          requestBlockBreak(state, AT, { heldTier: 'wooden' }),
+          requestBlockBreak(state, BESIDE_AT, NO_TOOL),
+        ],
+        { concurrency: 'unbounded' },
+      )
+      yield* Ref.set(state.heldTool, NO_TOOL)
+      yield* runInteractions(stages as never)
+
+      expect(yield* world.inventory.countOf('cobblestone')).toBe(1)
+      expect(yield* Ref.get(state.pendingBreaks)).toStrictEqual([])
+    }),
+  )
+
+  it.effect('keeps the legacy two-argument request as a raw position key', () =>
+    Effect.gen(function* () {
+      const state = yield* makeGameplayFrameState
+
+      yield* requestBlockBreak(state, AT)
+
+      expect(yield* Ref.get(state.pendingBreaks)).toStrictEqual(['3,64,7'])
     }),
   )
 

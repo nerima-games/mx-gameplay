@@ -117,6 +117,7 @@ import {
   drainItemUseResults,
   gameplayStages,
   makeGameplayFrameState,
+  requestBlockBreak,
   requestItemUse,
   type PlacementRequest,
 } from '../stages/registration'
@@ -212,11 +213,7 @@ const samePosition = (left: BlockPosition, right: BlockPosition): boolean =>
   left.x === right.x && left.y === right.y && left.z === right.z
 
 /** What mc-render's input stage will do, once mc-render is published. */
-const requestBreak = (
-  state: { readonly pendingBreaks: Ref.Ref<ReadonlyArray<string>> },
-  position: BlockPosition,
-): Effect.Effect<void> =>
-  Ref.update(state.pendingBreaks, (pending) => [...pending, positionKeyOf(position)])
+const requestBreak = requestBlockBreak
 
 /**
  * What mc-sim's `InventoryService` will supply: the tool the player is holding.

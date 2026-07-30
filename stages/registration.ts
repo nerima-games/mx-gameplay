@@ -390,6 +390,23 @@ const NO_ATTEMPTS: ReadonlyArray<never> = []
  * asserts that there is no key called `inventory`. The stage ASKS; mc-sim
  * answers and remembers.
  */
+type PendingBlockBreakRequest = {
+  readonly requestId: number
+  readonly publicQueueIndex: number
+  readonly positionKey: PositionKey
+  readonly lootContext: BlockLootContext | undefined
+}
+
+type PendingBlockBreakRequestState = {
+  readonly nextRequestId: number
+  readonly requests: ReadonlyArray<PendingBlockBreakRequest>
+}
+
+type PendingBlockBreakRequestQueue = {
+  readonly state: Ref.Ref<PendingBlockBreakRequestState>
+  readonly mutex: Effect.Semaphore
+}
+
 export type GameplayFrameState = {
   readonly pendingBreaks: Ref.Ref<ReadonlyArray<PositionKey>>
   readonly pendingPlacements: Ref.Ref<ReadonlyArray<PlacementRequest>>
@@ -432,6 +449,24 @@ export type GameplayFrameState = {
    * is reached through `PlayerServiceApi.setDimension`.
    */
   readonly portalDwell: Ref.Ref<PortalDwell>
+}
+
+const pendingBlockBreakRequests = new WeakMap<GameplayFrameState, PendingBlockBreakRequestQueue>()
+
+const breakRequestQueueFor = (state: GameplayFrameState): PendingBlockBreakRequestQueue => {
+  const existing = pendingBlockBreakRequests.get(state)
+  if (existing !== undefined) {
+    return existing
+  }
+
+  // Compatibility for structurally-created frame states. WeakMap creation is
+  // synchronous, so concurrent callers cannot observe two different queues.
+  const created: PendingBlockBreakRequestQueue = {
+    state: Ref.unsafeMake<PendingBlockBreakRequestState>({ nextRequestId: 0, requests: [] }),
+    mutex: Effect.unsafeMakeSemaphore(1),
+  }
+  pendingBlockBreakRequests.set(state, created)
+  return created
 }
 
 /**
@@ -651,6 +686,11 @@ export type EnderPearlOutcome = {
 
 export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.gen(function* () {
   const pendingBreaks = yield* Ref.make<ReadonlyArray<PositionKey>>([])
+  const breakRequests = yield* Ref.make<PendingBlockBreakRequestState>({
+    nextRequestId: 0,
+    requests: [],
+  })
+  const breakRequestMutex = yield* Effect.makeSemaphore(1)
   const pendingPlacements = yield* Ref.make<ReadonlyArray<PlacementRequest>>([])
   const pendingBlockUses = yield* Ref.make<ReadonlyArray<BlockUseRequest>>([])
   const pendingItemUses = yield* Ref.make<ReadonlyArray<ItemUseRequest>>([])
@@ -696,7 +736,7 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
   // crossing of a session.
   const portalDwell = yield* Ref.make<PortalDwell>(OUTSIDE_PORTAL)
 
-  return {
+  const state: GameplayFrameState = {
     pendingBreaks,
     pendingPlacements,
     pendingBlockUses,
@@ -728,6 +768,11 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
     tickCount,
     portalDwell,
   }
+  pendingBlockBreakRequests.set(state, {
+    state: breakRequests,
+    mutex: breakRequestMutex,
+  })
+  return state
 })
 
 /**
@@ -824,8 +869,34 @@ const stepPortalTravel = (
 export const requestBlockBreak = (
   state: GameplayFrameState,
   position: BlockPosition,
+  lootContext?: BlockLootContext,
 ): Effect.Effect<void> =>
-  Ref.update(state.pendingBreaks, (pending) => [...pending, positionKeyOf(position)])
+  Effect.suspend(() => {
+    const queue = breakRequestQueueFor(state)
+    return queue.mutex.withPermits(1)(
+      Effect.uninterruptible(
+        Effect.gen(function* () {
+          const positionKey = positionKeyOf(position)
+          const publicQueueIndex = yield* Ref.modify(state.pendingBreaks, (pending) => [
+            pending.length,
+            [...pending, positionKey],
+          ])
+          yield* Ref.update(queue.state, (pending) => ({
+            nextRequestId: pending.nextRequestId + 1,
+            requests: [
+              ...pending.requests,
+              {
+                requestId: pending.nextRequestId,
+                publicQueueIndex,
+                positionKey,
+                lootContext: lootContext === undefined ? undefined : { ...lootContext },
+              },
+            ],
+          }))
+        }),
+      ),
+    )
+  })
 
 /** Vanilla-style survival reach, measured from the player's eye position. */
 export const DEFAULT_BLOCK_REACH = 5
@@ -931,20 +1002,28 @@ export type TargetedPrimaryAttackResult =
   | { readonly _tag: 'Block'; readonly target: BlockTarget }
   | { readonly _tag: 'None' }
 
+export type TargetedPrimaryAttackResolution =
+  | {
+      readonly _tag: 'Melee'
+      readonly target: ShotHit
+      readonly request: MeleeAttackRequest
+    }
+  | { readonly _tag: 'Block'; readonly target: BlockTarget }
+  | { readonly _tag: 'None' }
+
 export type TargetedPrimaryAttackOptions = {
   readonly meleeReach?: number
   readonly meleeDamage?: number
   readonly blockReach?: number
 }
 
-/** Resolve one primary click and enqueue exactly one kind of interaction, if any. */
-export const requestTargetedPrimaryAttack = (
-  state: GameplayFrameState,
+/** Resolve one primary click without mutating either gameplay inbox. */
+export const resolveTargetedPrimaryAttack = (
   store: ChunkStoreApi,
   roster: EntityManagerApi<MobBehaviour>,
   player: PlayerServiceApi,
   options: TargetedPrimaryAttackOptions = {},
-): Effect.Effect<TargetedPrimaryAttackResult> =>
+): Effect.Effect<TargetedPrimaryAttackResolution> =>
   Effect.gen(function* () {
     const pose = yield* player.pose
     const blockTarget = targetBlockFromPlayerPose(
@@ -971,14 +1050,35 @@ export const requestTargetedPrimaryAttack = (
     )
 
     if (meleeHit !== undefined) {
-      yield* requestMeleeAttack(state, request)
-      return { _tag: 'Melee' as const, target: meleeHit }
+      return { _tag: 'Melee' as const, target: meleeHit, request }
     }
     if (Option.isSome(blockTarget)) {
-      yield* requestBlockBreak(state, blockTarget.value.position)
       return { _tag: 'Block' as const, target: blockTarget.value }
     }
     return { _tag: 'None' as const }
+  })
+
+/** Resolve one primary click and enqueue exactly one kind of interaction, if any. */
+export const requestTargetedPrimaryAttack = (
+  state: GameplayFrameState,
+  store: ChunkStoreApi,
+  roster: EntityManagerApi<MobBehaviour>,
+  player: PlayerServiceApi,
+  options: TargetedPrimaryAttackOptions = {},
+): Effect.Effect<TargetedPrimaryAttackResult> =>
+  Effect.gen(function* () {
+    const resolution = yield* resolveTargetedPrimaryAttack(store, roster, player, options)
+
+    switch (resolution._tag) {
+      case 'Melee':
+        yield* requestMeleeAttack(state, resolution.request)
+        return { _tag: 'Melee' as const, target: resolution.target }
+      case 'Block':
+        yield* requestBlockBreak(state, resolution.target.position)
+        return resolution
+      case 'None':
+        return resolution
+    }
   })
 
 /** Enqueue one deterministic mob spawn candidate for the entities stage. */
@@ -1124,7 +1224,28 @@ export const gameplayStages = (
         // dropped without a trace (DN-GP-10). Both are drained UP FRONT, so a
         // placement queued while the breaks are being serviced waits for the
         // next frame rather than being serviced out of order.
-        const breaks = yield* Ref.getAndSet<ReadonlyArray<PositionKey>>(state.pendingBreaks, [])
+        const breakRequestQueue = breakRequestQueueFor(state)
+        const { breaks, snapshots } = yield* breakRequestQueue.mutex.withPermits(1)(
+          Effect.uninterruptible(
+            Effect.gen(function* () {
+              const breaks = yield* Ref.getAndSet<ReadonlyArray<PositionKey>>(
+                state.pendingBreaks,
+                [],
+              )
+              const requests = yield* Ref.modify(breakRequestQueue.state, (pending) => [
+                pending.requests,
+                { ...pending, requests: [] },
+              ])
+              const snapshots = new Map<number, PendingBlockBreakRequest>()
+              for (const request of requests) {
+                if (breaks[request.publicQueueIndex] === request.positionKey) {
+                  snapshots.set(request.publicQueueIndex, request)
+                }
+              }
+              return { breaks, snapshots }
+            }),
+          ),
+        )
         const placements = yield* Ref.getAndSet<ReadonlyArray<PlacementRequest>>(
           state.pendingPlacements,
           [],
@@ -1169,14 +1290,14 @@ export const gameplayStages = (
         const bowShotResults: Array<BowShotResult> = []
         const disturbed: Array<PositionKey> = []
 
-        // Read ONCE for the whole batch rather than per request. The tool is an
-        // inbox the host overwrites every frame (see the header), so it cannot
-        // change while this loop runs, and re-reading it per block would be a
-        // `Ref.get` per swing that could only ever return the same value.
-        const tool = yield* Ref.get(state.heldTool)
+        // Legacy key-only requests have no completion-time snapshot, so they
+        // retain the old batch-level fallback. Requests made through the public
+        // helper use the context captured when mining completed.
+        const fallbackTool = yield* Ref.get(state.heldTool)
         const playerFeet = (yield* player.pose).feetPosition
 
-        for (const positionKey of breaks) {
+        for (const [index, positionKey] of breaks.entries()) {
+          const tool = snapshots.get(index)?.lootContext ?? fallbackTool
           const breakPosition = positionOfKey(positionKey)
           const outcome = yield* breakBlock(store, breakPosition)
           switch (outcome._tag) {

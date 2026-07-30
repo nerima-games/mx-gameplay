@@ -5,6 +5,7 @@ import {
   type GameplayFrameState,
   makeGameplayFrameState,
   requestTargetedPrimaryAttack,
+  resolveTargetedPrimaryAttack,
 } from '../stages/registration'
 import { makeChunkStoreDouble, STONE, world } from './support/chunk-store-double'
 import {
@@ -46,6 +47,70 @@ const inboxSizes = (state: GameplayFrameState) =>
   })
 
 describe('targeted primary attack', () => {
+  it.effect('resolves the full melee request without writing either inbox', () =>
+    Effect.gen(function* () {
+      const context = yield* makeContext()
+      const enemy = yield* spawnHostile(context.roster, 4)
+
+      const resolution = yield* resolveTargetedPrimaryAttack(
+        context.store.api,
+        context.roster.api,
+        context.player.api,
+      )
+
+      expect(resolution._tag).toBe('Melee')
+      if (resolution._tag === 'Melee') {
+        expect(resolution.target.id).toBe(enemy.id)
+        expect(resolution.request.origin).toStrictEqual({ x: 0.5, y: 65.62, z: 5.5 })
+        expect(resolution.request.direction.x).toBeCloseTo(0)
+        expect(resolution.request.direction.y).toBeCloseTo(0)
+        expect(resolution.request.direction.z).toBeCloseTo(-1)
+        expect(resolution.request.reach).toBe(3)
+        expect(resolution.request.damage).toBe(1)
+        expect(resolution.request).not.toHaveProperty('hitDistance')
+      }
+      expect(yield* inboxSizes(context.state)).toStrictEqual({ breaks: 0, melee: 0 })
+    }),
+  )
+
+  it.effect('keeps block priority at the exact resolver distance boundary without enqueueing', () =>
+    Effect.gen(function* () {
+      const context = yield* makeContext(4)
+      yield* spawnHostile(context.roster, 5)
+
+      const resolution = yield* resolveTargetedPrimaryAttack(
+        context.store.api,
+        context.roster.api,
+        context.player.api,
+      )
+
+      expect(resolution._tag).toBe('Block')
+      if (resolution._tag === 'Block') {
+        expect(resolution.target.position).toStrictEqual({ x: 0, y: 65, z: 4 })
+      }
+      expect(yield* inboxSizes(context.state)).toStrictEqual({ breaks: 0, melee: 0 })
+    }),
+  )
+
+  it.effect('wraps a melee resolution with exactly one enqueue and hides its request', () =>
+    Effect.gen(function* () {
+      const context = yield* makeContext()
+      const enemy = yield* spawnHostile(context.roster, 4)
+
+      const result = yield* requestTargetedPrimaryAttack(
+        context.state,
+        context.store.api,
+        context.roster.api,
+        context.player.api,
+      )
+
+      expect(result._tag).toBe('Melee')
+      if (result._tag === 'Melee') expect(result.target.id).toBe(enemy.id)
+      expect(result).not.toHaveProperty('request')
+      expect(yield* inboxSizes(context.state)).toStrictEqual({ breaks: 0, melee: 1 })
+    }),
+  )
+
   it.effect('prefers a hostile before the aimed block and enqueues only melee', () =>
     Effect.gen(function* () {
       const context = yield* makeContext(2)

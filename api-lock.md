@@ -13,7 +13,7 @@
 <!-- ------------------------------------------------------------------------- -->
 
 format: 1
-exported declarations: 459
+exported declarations: 475
 supporting declarations: 61
 
 ## Exported
@@ -39,6 +39,27 @@ type AdvanceBreakProgressInput = {
 ```ts
 type AdvanceBreakProgressResult = {
     readonly nextProgress: BreakProgressState | null;
+    readonly shouldBreak: boolean;
+};
+```
+
+### AdvanceMiningProgressInput  `type`
+
+```ts
+type AdvanceMiningProgressInput = {
+    readonly current: MiningProgressState | null;
+    readonly target: MiningTarget | null;
+    readonly isMining: boolean;
+    readonly selectedItem: ItemType | null;
+    readonly deltaSecs: number;
+};
+```
+
+### AdvanceMiningProgressResult  `type`
+
+```ts
+type AdvanceMiningProgressResult = {
+    readonly nextProgress: MiningProgressState | null;
     readonly shouldBreak: boolean;
 };
 ```
@@ -1020,6 +1041,12 @@ type GeneratedWorldOptions = {
 };
 ```
 
+### HAND_MINING_TOOL  `const`
+
+```ts
+const HAND_MINING_TOOL: MiningToolProfile;
+```
+
 ### HOSTILE_CONTACT_INTERVAL_SECS  `const`
 
 ```ts
@@ -1387,6 +1414,12 @@ const MAX_MUSHROOM_PLACEMENT_LIGHT = 12;
 const MAX_SPAWN_DISTANCE_BLOCKS = 40;
 ```
 
+### MINING_TICKS_PER_SECOND  `const`
+
+```ts
+const MINING_TICKS_PER_SECOND = 20;
+```
+
 ### MIN_SPAWN_DISTANCE_BLOCKS  `const`
 
 ```ts
@@ -1417,6 +1450,37 @@ type MeleeAttackRequest = {
 type MinedItem = {
     readonly item: ItemType;
     readonly count: number;
+};
+```
+
+### MiningProgressState  `type`
+
+```ts
+type MiningProgressState = {
+    readonly blockKey: string;
+    readonly blockId: number;
+    readonly elapsedSecs: number;
+    readonly requiredSecs: number;
+    readonly accumulatedWork: number;
+    readonly completed: boolean;
+};
+```
+
+### MiningTarget  `type`
+
+```ts
+type MiningTarget = {
+    readonly position: BlockPosition;
+    readonly blockId: number;
+};
+```
+
+### MiningToolProfile  `type`
+
+```ts
+type MiningToolProfile = {
+    readonly category: HarvestToolCategory;
+    readonly speedMultiplier: number;
 };
 ```
 
@@ -2069,6 +2133,21 @@ type TargetedPrimaryAttackOptions = {
 };
 ```
 
+### TargetedPrimaryAttackResolution  `type`
+
+```ts
+type TargetedPrimaryAttackResolution = {
+    readonly _tag: 'Melee';
+    readonly target: ShotHit;
+    readonly request: MeleeAttackRequest;
+} | {
+    readonly _tag: 'Block';
+    readonly target: BlockTarget;
+} | {
+    readonly _tag: 'None';
+};
+```
+
 ### TargetedPrimaryAttackResult  `type`
 
 ```ts
@@ -2220,6 +2299,12 @@ const WEATHER_DURATION_RANGES: Readonly<Record<Weather, WeatherDurationRange>>;
 const WEATHER_TRANSITION_ROLLS = 2;
 ```
 
+### WOODEN_PICKAXE_MINING_TOOL  `const`
+
+```ts
+const WOODEN_PICKAXE_MINING_TOOL: MiningToolProfile;
+```
+
 ### Weather  `type`
 
 ```ts
@@ -2306,6 +2391,12 @@ const addToSlots: (slots: ReadonlyArray<Slot>, item: ItemType, count: number) =>
 
 ```ts
 const advanceBreakProgress: (input: AdvanceBreakProgressInput) => AdvanceBreakProgressResult;
+```
+
+### advanceMiningProgress  `const`
+
+```ts
+const advanceMiningProgress: ({ current, target, isMining, selectedItem, deltaSecs, }: AdvanceMiningProgressInput) => AdvanceMiningProgressResult;
 ```
 
 ### advanceWeather  `const`
@@ -2606,6 +2697,12 @@ const dropRollsNeeded: (kind: EntityKind) => number;
 
 ```ts
 const dropRulesOfKind: (kind: EntityKind) => ReadonlyArray<MobDropRule>;
+```
+
+### effectiveMiningSpeed  `const`
+
+```ts
+const effectiveMiningSpeed: (tool: MiningToolProfile, requirement: HarvestToolRequirement) => number;
 ```
 
 ### emptyFallingBlockQueue  `const`
@@ -2920,6 +3017,30 @@ const meleeTarget: (candidates: ReadonlyArray<Entity<MobBehaviour>>, request: Me
 const meleeTargetBeforeBlock: (candidates: ReadonlyArray<Entity<MobBehaviour>>, request: Omit<MeleeAttackRequest, "hitDistance">, blockDistance: number | undefined) => ShotHit | undefined;
 ```
 
+### miningDurationSecsForBlock  `const`
+
+```ts
+const miningDurationSecsForBlock: (blockId: number, item: ItemType | null) => number;
+```
+
+### miningLootContextForItem  `const`
+
+```ts
+const miningLootContextForItem: (item: ItemType | null) => BlockLootContext;
+```
+
+### miningProgressFraction  `const`
+
+```ts
+const miningProgressFraction: (progress: MiningProgressState | null) => number;
+```
+
+### miningToolForItem  `const`
+
+```ts
+const miningToolForItem: (item: ItemType | null) => MiningToolProfile;
+```
+
 ### mintEntityId  `const`
 
 ```ts
@@ -3043,7 +3164,7 @@ const repairRoster: <S>(roster: EntityRoster<S>, repairBehaviour: BehaviourRepai
 ### requestBlockBreak  `const`
 
 ```ts
-const requestBlockBreak: (state: GameplayFrameState, position: BlockPosition) => Effect.Effect<void>;
+const requestBlockBreak: (state: GameplayFrameState, position: BlockPosition, lootContext?: BlockLootContext) => Effect.Effect<void>;
 ```
 
 ### requestBlockPlacement  `const`
@@ -3182,6 +3303,12 @@ const resolvePlayerMovement: (body: PlayerBody, deltaSecs: number, isBlockSolid:
 
 ```ts
 const resolveRailShape: (isRailAt: IsRailAt, wx: number, wy: number, wz: number) => RailShape;
+```
+
+### resolveTargetedPrimaryAttack  `const`
+
+```ts
+const resolveTargetedPrimaryAttack: (store: ChunkStoreApi, roster: EntityManagerApi<MobBehaviour>, player: PlayerServiceApi, options?: TargetedPrimaryAttackOptions) => Effect.Effect<TargetedPrimaryAttackResolution>;
 ```
 
 ### resolveWeatherDurationSecs  `const`
