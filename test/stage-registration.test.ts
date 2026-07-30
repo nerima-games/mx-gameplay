@@ -43,12 +43,14 @@ import { DEFAULT_ROLL_SEED } from '../domain/frame-rolls'
 import {
   gameplayStages,
   drainBowShotResults,
+  drainMeleeAttackResults,
   drainMobDrops,
   LAVA_TICK_INTERVAL,
   makeGameplayFrameState,
   makeGameplayStages,
   gameplayModule,
   requestBowShot,
+  requestMeleeAttack,
   requestMobSpawn,
 } from '../stages/registration'
 import {
@@ -388,6 +390,7 @@ describe('stage behaviour', () => {
         'heldTool',
         'hostileContactCooldowns',
         'itemUseResults',
+        'meleeAttackResults',
         'mobDrops',
         'pendingBlockUses',
         'pendingBowShots',
@@ -469,6 +472,47 @@ describe('stage behaviour', () => {
         { requestId: 'duplicate', success: false, outcome: 'DuplicateRequest' },
       ])
       expect(yield* inventory.withdrawals).toStrictEqual([])
+    }),
+  )
+
+  it.effect('melee results reflect actual stage hits and misses in request order and drain once', () =>
+    Effect.gen(function* () {
+      const { state, roster, stages } = yield* builtStages
+      const target = yield* roster.api.spawn({
+        kind: CREEPER_KIND,
+        feetPosition: { x: 0, y: 64 - BOW_TARGET_CENTER_Y_OFFSET, z: 2 },
+        healthPoints: 20,
+        behaviour: undefined,
+      })
+
+      yield* requestMeleeAttack(state, {
+        requestId: 'hit',
+        origin: { x: 0, y: 64, z: 0 },
+        direction: { x: 0, y: 0, z: 1 },
+        reach: 3,
+        damage: 4,
+      })
+      yield* requestMeleeAttack(state, {
+        requestId: 'miss',
+        origin: { x: 0, y: 64, z: 0 },
+        direction: { x: 1, y: 0, z: 0 },
+        reach: 3,
+        damage: 7,
+      })
+
+      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)
+      yield* interactions!.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+
+      const results = yield* drainMeleeAttackResults(state)
+      expect(results).toHaveLength(2)
+      expect(results[0]).toStrictEqual({
+        requestId: 'hit',
+        success: true,
+        target: { id: target.id, distance: 2 },
+      })
+      expect(results[1]).toStrictEqual({ requestId: 'miss', success: false })
+      expect(yield* drainMeleeAttackResults(state)).toStrictEqual([])
+      expect((yield* roster.api.snapshot).entities[0]?.healthPoints).toBe(16)
     }),
   )
 

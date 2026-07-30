@@ -1,6 +1,7 @@
 import { describe, expect, it } from '@effect/vitest'
 import { Effect, Ref } from 'effect'
 import { CREEPER_KIND, type MobBehaviour } from '../domain/entities/mob-frame'
+import { meleeDamageForItem } from '../domain/interactions/melee-attack'
 import {
   type GameplayFrameState,
   makeGameplayFrameState,
@@ -70,6 +71,25 @@ describe('targeted primary attack', () => {
         expect(resolution.request).not.toHaveProperty('hitDistance')
       }
       expect(yield* inboxSizes(context.state)).toStrictEqual({ breaks: 0, melee: 0 })
+      expect(yield* Ref.get(context.state.meleeAttackResults)).toStrictEqual([])
+    }),
+  )
+
+  it.effect('carries the selected melee damage into the queued request', () =>
+    Effect.gen(function* () {
+      const context = yield* makeContext()
+      yield* spawnHostile(context.roster, 4)
+
+      const resolution = yield* resolveTargetedPrimaryAttack(
+        context.store.api,
+        context.roster.api,
+        context.player.api,
+        { meleeDamage: meleeDamageForItem('diamond_sword') },
+      )
+
+      expect(resolution._tag).toBe('Melee')
+      if (resolution._tag === 'Melee') expect(resolution.request.damage).toBe(7)
+      expect(yield* Ref.get(context.state.meleeAttackResults)).toStrictEqual([])
     }),
   )
 

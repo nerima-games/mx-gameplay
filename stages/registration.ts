@@ -184,6 +184,7 @@ import {
   meleeTarget,
   meleeTargetBeforeBlock,
   type MeleeAttackRequest,
+  type MeleeAttackResult,
 } from '../domain/interactions/melee-attack'
 import {
   enderPearlDisplacement,
@@ -424,6 +425,7 @@ export type GameplayFrameState = {
   readonly blockUseResults: Ref.Ref<ReadonlyArray<BlockUseResult>>
   readonly itemUseResults: Ref.Ref<ReadonlyArray<ItemUseResult>>
   readonly bowShotResults: Ref.Ref<ReadonlyArray<BowShotResult>>
+  readonly meleeAttackResults: Ref.Ref<ReadonlyArray<MeleeAttackResult>>
   readonly handledBowShotRequestIds: Ref.Ref<ReadonlySet<BowShotRequestId>>
   readonly bowKnockbacks: Ref.Ref<ReadonlyArray<BowKnockback>>
   readonly enderPearlOutcomes: Ref.Ref<ReadonlyArray<EnderPearlOutcome>>
@@ -794,6 +796,7 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
   const blockUseResults = yield* Ref.make<ReadonlyArray<BlockUseResult>>([])
   const itemUseResults = yield* Ref.make<ReadonlyArray<ItemUseResult>>([])
   const bowShotResults = yield* Ref.make<ReadonlyArray<BowShotResult>>([])
+  const meleeAttackResults = yield* Ref.make<ReadonlyArray<MeleeAttackResult>>([])
   const handledBowShotRequestIds = yield* Ref.make<ReadonlySet<BowShotRequestId>>(new Set())
   // Both are empty in the ordinary state. An entry means something happened
   // that this repository computed and cannot itself deliver.
@@ -845,6 +848,7 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
     blockUseResults,
     itemUseResults,
     bowShotResults,
+    meleeAttackResults,
     handledBowShotRequestIds,
     bowKnockbacks,
     enderPearlOutcomes,
@@ -1169,6 +1173,11 @@ export function requestBowShot(
 export const drainBowShotResults = (
   state: GameplayFrameState,
 ): Effect.Effect<ReadonlyArray<BowShotResult>> => Ref.getAndSet(state.bowShotResults, [])
+
+/** Atomically drain completed correlated melee attacks exactly once, preserving request order. */
+export const drainMeleeAttackResults = (
+  state: GameplayFrameState,
+): Effect.Effect<ReadonlyArray<MeleeAttackResult>> => Ref.getAndSet(state.meleeAttackResults, [])
 
 /** Enqueue one melee swing for the next interaction stage. */
 export const requestMeleeAttack = (
@@ -1503,6 +1512,7 @@ export const gameplayStages = (
         const blockUseResults: Array<BlockUseResult> = []
         const itemUseResults: Array<ItemUseResult> = []
         const bowShotResults: Array<BowShotResult> = []
+        const meleeAttackResults: Array<MeleeAttackResult> = []
         const disturbed: Array<PositionKey> = []
 
         // Legacy key-only requests have no completion-time snapshot, so they
@@ -1890,6 +1900,13 @@ export const gameplayStages = (
             if (hit !== undefined) {
               meleeHits.push({ id: hit.id, damage: attack.damage })
             }
+            if (attack.requestId !== undefined) {
+              meleeAttackResults.push(
+                hit === undefined
+                  ? { requestId: attack.requestId, success: false }
+                  : { requestId: attack.requestId, success: true, target: hit },
+              )
+            }
           }
         }
         const meleeCasualties = yield* resolveMeleeHits(roster, meleeHits)
@@ -2014,6 +2031,9 @@ export const gameplayStages = (
         }
         if (bowShotResults.length > 0) {
           yield* Ref.update(state.bowShotResults, (items) => [...items, ...bowShotResults])
+        }
+        if (meleeAttackResults.length > 0) {
+          yield* Ref.update(state.meleeAttackResults, (items) => [...items, ...meleeAttackResults])
         }
         // Both are outboxes with no consumer in this repository; the types say
         // which missing noun each is waiting for.
