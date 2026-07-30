@@ -47,7 +47,9 @@ import {
 } from '../domain/entity-manager-port'
 import {
   CREEPER_KIND,
+  DROPPED_ITEM_KIND,
   ENDERMAN_KIND,
+  isDroppedItemBehaviour,
   repairMobBehaviour,
   STEADY_ENDERMAN,
   STRUCK_ENDERMAN,
@@ -255,6 +257,46 @@ describe('the behaviour parameter carries a CreeperFuse without mc-sim knowing w
 })
 
 describe('repairMobBehaviour is the host half of mc-sim’s load path', () => {
+  it.effect('migrates legacy dropped items to canonical durability', () =>
+    Effect.sync(() => {
+      const legacyStack = { _tag: 'DroppedItem', item: 'cobblestone', count: 3 } as const
+      const legacyTool = { _tag: 'DroppedItem', item: 'wooden_pickaxe', count: 1 } as const
+
+      expect(repairMobBehaviour(DROPPED_ITEM_KIND, legacyStack)).toStrictEqual({
+        ...legacyStack,
+        durability: null,
+      })
+      expect(repairMobBehaviour(DROPPED_ITEM_KIND, legacyTool)).toStrictEqual({
+        ...legacyTool,
+        durability: { current: 59, max: 59 },
+      })
+    }),
+  )
+
+  it.effect('accepts only canonical dropped-item durability', () =>
+    Effect.sync(() => {
+      const validTool = {
+        _tag: 'DroppedItem',
+        item: 'wooden_pickaxe',
+        count: 1,
+        durability: { current: 12, max: 59 },
+      } as const
+      expect(isDroppedItemBehaviour(validTool)).toBe(true)
+      expect(repairMobBehaviour(DROPPED_ITEM_KIND, validTool)).toBe(validTool)
+
+      for (const invalid of [
+        { ...validTool, durability: null },
+        { ...validTool, durability: { current: 60, max: 59 } },
+        { ...validTool, durability: { current: 12, max: 60 } },
+        { ...validTool, count: 2 },
+        { _tag: 'DroppedItem', item: 'cobblestone', count: 1, durability: validTool.durability },
+      ]) {
+        expect(isDroppedItemBehaviour(invalid)).toBe(false)
+        expect(repairMobBehaviour(DROPPED_ITEM_KIND, invalid)).toBeUndefined()
+      }
+    }),
+  )
+
   it.effect('is a BehaviourRepair, and is total over anything a save can hold', () =>
     Effect.sync(() => {
       // The type assignment is half the test: mc-sim's `EntityManagerLayer`

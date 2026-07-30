@@ -815,13 +815,11 @@ describe('gameplay:interactions — the bow arm', () => {
     }),
   )
 
-  it.effect('THE BOW FIRES FOR FREE, and that is the recorded gap rather than a defect', () =>
+  it.effect('delegates bow ammo and durability settlement to inventory orchestration', () =>
     Effect.gen(function* () {
-      // `BowShotRequest`'s header: consuming an ARROW and damaging the BOW's
-      // slot both name items `domain/item-vocabulary.ts` has no word for. The
-      // inventory is not touched, and this test says so out loud so that the
-      // day the three words arrive it fails and has to be rewritten rather than
-      // the gap being discovered by a player with infinite arrows.
+      // `BowShotRequest` resolves combat only. Consuming an ARROW and damaging
+      // the BOW slot belong to the inventory orchestration boundary, so this
+      // stage leaves inventory untouched rather than charging twice.
       const { state, inventory, stages } = yield* scene(AHEAD)
       yield* Ref.set(state.pendingBowShots, [
         { origin: EYE, dirX: 0, dirY: 0, dirZ: 1, chargeSecs: BOW_FULL_CHARGE_SECS },

@@ -207,6 +207,12 @@
  * existed.
  */
 import { isItemType, type ItemType } from '@nerima-games/mc-kernel'
+import {
+  durabilityForItem,
+  isDamageableItemType,
+  isValidDurabilityForItem,
+  type Durability,
+} from '@nerima-games/mc-sim'
 import { Effect } from 'effect'
 import { applyDamage, isDead, type Vitals } from '../death-cause'
 import {
@@ -321,6 +327,7 @@ export type DroppedItemBehaviour = {
   readonly _tag: 'DroppedItem'
   readonly item: ItemType
   readonly count: number
+  readonly durability: Durability | null
   readonly eligibleFromFrame?: number
 }
 
@@ -640,7 +647,7 @@ export const rollDropsOfKind = (
  * the tag to decide which rule runs, so a creeper that kept a `Struck` would tick
  * no fuse and consult the teleport rule instead.
  */
-export const repairMobBehaviour = (kind: EntityKind, behaviour: MobBehaviour): MobBehaviour => {
+export const repairMobBehaviour = (kind: EntityKind, behaviour: unknown): MobBehaviour => {
   if (kind === CREEPER_KIND) {
     return isCreeperFuse(behaviour) ? behaviour : DORMANT_FUSE
   }
@@ -650,18 +657,36 @@ export const repairMobBehaviour = (kind: EntityKind, behaviour: MobBehaviour): M
   }
 
   if (kind === DROPPED_ITEM_KIND) {
-    return isDroppedItemBehaviour(behaviour) ? behaviour : undefined
+    if (isDroppedItemBehaviour(behaviour)) return behaviour
+    if (!isLegacyDroppedItemBehaviour(behaviour)) return undefined
+    return { ...behaviour, durability: durabilityForItem(behaviour.item) }
   }
 
   return undefined
 }
 
 export const isDroppedItemBehaviour = (value: unknown): value is DroppedItemBehaviour => {
+  if (!hasDroppedItemFields(value)) return false
+  return isDamageableItemType(value.item)
+    ? value.count === 1 && isValidDurabilityForItem(value.item, value.durability)
+    : value.durability === null
+}
+
+const hasDroppedItemFields = (
+  value: unknown,
+): value is {
+  readonly _tag: 'DroppedItem'
+  readonly item: ItemType
+  readonly count: number
+  readonly durability?: unknown
+  readonly eligibleFromFrame?: number
+} => {
   if (typeof value !== 'object' || value === null) return false
   const candidate = value as {
     readonly _tag?: unknown
     readonly item?: unknown
     readonly count?: unknown
+    readonly durability?: unknown
     readonly eligibleFromFrame?: unknown
   }
   return candidate._tag === 'DroppedItem' &&
@@ -675,6 +700,13 @@ export const isDroppedItemBehaviour = (value: unknown): value is DroppedItemBeha
         Number.isInteger(candidate.eligibleFromFrame) &&
         candidate.eligibleFromFrame >= 0))
 }
+
+const isLegacyDroppedItemBehaviour = (
+  value: unknown,
+): value is Omit<DroppedItemBehaviour, 'durability'> =>
+  hasDroppedItemFields(value) &&
+  !Object.hasOwn(value, 'durability') &&
+  (!isDamageableItemType(value.item) || value.count === 1)
 
 /**
  * Is this actually a `CreeperFuse`?

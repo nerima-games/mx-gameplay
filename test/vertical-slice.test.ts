@@ -1795,6 +1795,7 @@ describe('the mining site slice: dig, drop, place', () => {
       if (dropped !== undefined && isDroppedItemBehaviour(dropped.behaviour)) {
         expect(dropped.behaviour.item).toBe('cobblestone')
         expect(dropped.behaviour.count).toBe(1)
+        expect(dropped.behaviour.durability).toBeNull()
       }
     }),
   )
@@ -1824,6 +1825,7 @@ describe('the mining site slice: dig, drop, place', () => {
       if (dropped !== undefined && isDroppedItemBehaviour(dropped.behaviour)) {
         expect(dropped.behaviour.item).toBe('glowstone_dust')
         expect(dropped.behaviour.count).toBe(1)
+        expect(dropped.behaviour.durability).toBeNull()
       } else {
         expect.fail('expected a dropped-item entity')
       }
@@ -1854,12 +1856,16 @@ describe('the mining site slice: dig, drop, place', () => {
         (yield* roster.api.entities).map((entity) => ({
           at: entity.feetPosition,
           drop: isDroppedItemBehaviour(entity.behaviour)
-            ? { item: entity.behaviour.item, count: entity.behaviour.count }
+            ? {
+                item: entity.behaviour.item,
+                count: entity.behaviour.count,
+                durability: entity.behaviour.durability,
+              }
             : undefined,
         })),
       ).toStrictEqual([
-        { at: cell, drop: { item: 'cobblestone', count: 1 } },
-        { at: under, drop: { item: 'cobblestone', count: 1 } },
+        { at: cell, drop: { item: 'cobblestone', count: 1, durability: null } },
+        { at: under, drop: { item: 'cobblestone', count: 1, durability: null } },
       ])
     }),
   )

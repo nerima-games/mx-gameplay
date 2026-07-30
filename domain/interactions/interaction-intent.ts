@@ -12,17 +12,16 @@
  * KEYED ON WHAT THE HELD ITEM CAN DO, NOT ON WHAT IT IS CALLED
  * ---------------------------------------------------------------------------
  *
- * The reference asks `selectedHotbarItem === 'SHIELD'` and `=== 'BOW'`.
- * **`../item-vocabulary.ts` has neither `bow` nor `shield`** — nor `arrow` —
- * so those two comparisons are unwritable here, and a rule keyed on the names
- * would have to wait for mc-kernel's vocabulary to grow.
+ * The reference asks `selectedHotbarItem === 'SHIELD'` and `=== 'BOW'`. This
+ * boundary instead receives capabilities so bow-like or shield-like items added
+ * later inherit the interaction rule without another item-name comparison.
  *
  * `./draw-bow` already hit this and already answered it, and this file takes
  * the same answer rather than inventing a second one. Its header:
  *
  *   「the rule needs to know how strongly the bow is enchanted, not what the bow
- *    is CALLED ... A rule keyed on the item's name would be unwritable today; a
- *    rule keyed on the item's PROPERTIES is writable, testable and complete.」
+ *    is CALLED ... A rule keyed on the item's PROPERTIES is testable and
+ *    complete.」
  *
  * So `HeldItemCapabilities` below carries two booleans and no name. The host
  * decides which items charge and which block; this file decides what holding

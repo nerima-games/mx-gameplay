@@ -143,10 +143,10 @@ export const canFireBow = (secsHeld: number): boolean =>
  *
  * IT IS A LEVEL AND NOT AN ITEM. `BlockLootContext.fortuneLevel` already drew
  * this line and it is the line that lets this file exist at all: the rule needs to
- * know how strongly the bow is enchanted, not what the bow is CALLED, and what it
- * is called is the one thing kernel has no word for (`../item-vocabulary.ts` has
- * no `bow`). A rule keyed on the item's name would be unwritable today; a rule
- * keyed on the item's PROPERTIES is writable, testable and complete.
+ * know how strongly the bow is enchanted, not what the bow is CALLED. The kernel
+ * vocabulary identifies `bow`, but the instance's properties carry its Power
+ * level and remain valid for future bow-like items. A rule keyed on those
+ * properties is writable, testable and complete.
  */
 export type BowDrawContext = {
   /** Level of Power on the bow. 0, absent or negative = none. */

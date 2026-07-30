@@ -1998,7 +1998,7 @@ export const gameplayStages = (
           yield* spawnDroppedItems(
             roster,
             spilled.map((drop) => ({ ...drop, eligibleFromFrame })),
-          )
+          ).pipe(Effect.orDie)
         }
         if (spent.length > 0) {
           yield* Ref.update(state.consumedItems, (items) => [...items, ...spent])

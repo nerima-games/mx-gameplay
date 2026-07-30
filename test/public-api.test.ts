@@ -12,6 +12,7 @@
  * here keeps the barrel honest, not the API frozen.
  */
 import { describe, expect, it } from '@effect/vitest'
+import { ITEM_TYPES as KERNEL_ITEM_TYPES } from '@nerima-games/mc-kernel'
 import { Effect } from 'effect'
 import * as gameplay from '../index'
 import {
@@ -22,9 +23,16 @@ import {
 import { applyDamage } from '../domain/death-cause'
 import { takeBatch } from '../domain/falling-block'
 import { resolveFoodUse } from '../domain/interactions/eat-food'
+import { ITEM_TYPES } from '../domain/item-vocabulary'
 import { GAMEPLAY_STAGE_IDS } from '../stages/stage-ids'
 
 describe('public API surface', () => {
+  it.effect('keeps the provisional item vocabulary identical to mc-kernel', () =>
+    Effect.sync(() => {
+      expect(ITEM_TYPES).toStrictEqual(KERNEL_ITEM_TYPES)
+    }),
+  )
+
   it.effect('re-exports the stage registration contract — the part mc-compose actually consumes', () =>
     Effect.sync(() => {
       const contract = [

@@ -72,6 +72,7 @@
 import { Effect, Layer, Ref } from 'effect'
 import { MAX_STACK_COUNT, StackCount } from '../../domain/frame-contract'
 import {
+  addStoredStack as addStorageStoredStack,
   damageAt as damageStorageAt,
   durabilityForItem,
   emptyPlayerStorage,
@@ -358,6 +359,24 @@ export const makeInventoryDouble = (
             ] as const
           }),
 
+        addStoredStack: (stack) =>
+          Ref.modify(state, (doubles) => {
+            const outcome = addStorageStoredStack(doubles.storage, stack)
+            const leftover =
+              outcome.result._tag === 'Added' ? (outcome.result.leftover?.count ?? 0) : stack.count
+            return [
+              outcome.result,
+              {
+                ...doubles,
+                storage: outcome.storage,
+                deposits: [
+                  ...doubles.deposits,
+                  { item: stack.item, count: stack.count, leftover },
+                ],
+              },
+            ] as const
+          }),
+
         remove: (item, count) =>
           Ref.modify(state, (doubles) => {
             const outcome = removeFrom(doubles.storage.inventory.slots, item, count)
@@ -487,6 +506,14 @@ export const makeInventoryDouble = (
             const outcome = damageStorageAt(doubles.storage, location, amount)
             return [outcome.result, { ...doubles, storage: outcome.storage }] as const
           }),
+
+        consumeAndDamageAt: () => refuse('consumeAndDamageAt'),
+        createContainer: () => refuse('createContainer'),
+        containerSnapshot: () => refuse('containerSnapshot'),
+        containerStorageSnapshot: refuse('containerStorageSnapshot'),
+        restoreContainerStorage: () => refuse('restoreContainerStorage'),
+        transferContainerItem: () => refuse('transferContainerItem'),
+        drainContainer: () => refuse('drainContainer'),
 
         reset: Ref.update(state, (doubles) => ({ ...doubles, storage: emptyPlayerStorage() })),
 

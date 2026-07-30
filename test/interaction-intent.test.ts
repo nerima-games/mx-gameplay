@@ -129,9 +129,8 @@ describe('charging', () => {
   it.effect('KEYED ON CAPABILITY: an item that does not charge never starts one', () =>
     Effect.sync(() => {
       // The whole reason this file takes capabilities rather than an item name:
-      // `../item-vocabulary.ts` has no `bow`, so `=== 'BOW'` is unwritable —
-      // and a capability also covers a crossbow or trident added later without
-      // another `||`.
+      // a capability also covers a crossbow or trident added later without
+      // another item-name `||`.
       expect(
         resolveInteractionIntent(snapshot({ rightMouseHeld: true, held: BLOCKING_ITEM }))
           .shouldStartCharge,

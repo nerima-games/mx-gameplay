@@ -261,7 +261,7 @@ const clickSlot = (slots: ReadonlyArray<Slot>, click: InventoryClick): ClickOutc
 
 const refuse = <A>(what: string): Effect.Effect<A> =>
   Effect.dieMessage(
-    `preview-mining-site: ${what} — this preview has no crafting screen, and mx-gameplay must not implement mc-sim's recipe resolution. See apps/preview-mining-site/inventory.ts.`,
+    `preview-mining-site: ${what} is not exercised by this preview, and mx-gameplay must not implement mc-sim's service here. See apps/preview-mining-site/inventory.ts.`,
   )
 
 export type PreviewInventory = {
@@ -309,6 +309,8 @@ export const makePreviewInventory = (): Effect.Effect<PreviewInventory> =>
             },
           ] as const
         }),
+
+      addStoredStack: () => refuse('addStoredStack'),
 
       remove: (item, count) =>
         Ref.modify(state, (current) => {
@@ -419,6 +421,14 @@ export const makePreviewInventory = (): Effect.Effect<PreviewInventory> =>
           const outcome = damageStorageAt(current.storage, location, amount)
           return [outcome.result, { ...current, storage: outcome.storage }] as const
         }),
+
+      consumeAndDamageAt: () => refuse('consumeAndDamageAt'),
+      createContainer: () => refuse('createContainer'),
+      containerSnapshot: () => refuse('containerSnapshot'),
+      containerStorageSnapshot: refuse('containerStorageSnapshot'),
+      restoreContainerStorage: () => refuse('restoreContainerStorage'),
+      transferContainerItem: () => refuse('transferContainerItem'),
+      drainContainer: () => refuse('drainContainer'),
 
       reset: Ref.update(state, (current) => ({ ...current, storage: emptyPlayerStorage() })),
 

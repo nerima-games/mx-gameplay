@@ -67,6 +67,8 @@ export const ITEM_TYPES = [
   'glowstone',
   'piston',
   'stick',
+  'bow',
+  'arrow',
   'glowstone_dust',
   'wooden_pickaxe',
   'stone_pickaxe',
