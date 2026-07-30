@@ -126,19 +126,10 @@ describe('the kernel bridge — domain/block-vocabulary.ts', () => {
       expect(UNITEMISED_BLOCK_TYPES).toContain('snow')
       expect(dropOfBlockId(SNOW, { heldTier: 'diamond' })?.item).toBe('snowball')
 
-      // `sapling` is still here, and its reason changed too — from "kernel has
-      // not got round to it" to a decision kernel made ON THIS REPOSITORY'S
-      // BEHALF, which is worth spelling out because it is the only one of its
-      // kind.
-      //
-      // kernel completed its roster to the reference's full 120 and gives an item
-      // form to every block whose drop resolves to itself. `sapling` qualifies —
-      // and kernel held it back anyway, along with nine other support-sensitive
-      // plants, because `PlaceableItemType = ItemType & BlockType` means an item
-      // form is what makes a block PLACEABLE, and F7 below is a placement rule
-      // that answers all ten wrongly. See `mc-kernel/domain/item-type.ts`.
-      expect(UNITEMISED_BLOCK_TYPES).toContain('sapling')
-      expect(itemOfBlock('sapling')).toBeUndefined()
+      // Support-sensitive plants now have explicit placement rules, so kernel
+      // can expose their item forms without making placement overly permissive.
+      expect(UNITEMISED_BLOCK_TYPES).not.toContain('sapling')
+      expect(itemOfBlock('sapling')).toBe('sapling')
 
       // The other seven of the eighteen kernel corrected DID get item forms,
       // because none of them has a per-block `SUPPORT_RULES` entry and so none
@@ -608,33 +599,20 @@ describe('blockLoot — bonus lines', () => {
   )
 
   // The gap made VISIBLE rather than merely written down: the three unused rates
-  // are unused because breaking the blocks they belong to yields nothing extra,
+  // are unused because breaking the blocks they belong to yields no bonus,
   // however lucky the rolls. If a row is ever added to `BONUS_DROPS` without
   // updating the note in the rule's header, this fails.
-  it.effect('the three unshipped lines really are unshipped — luckiest rolls shake nothing loose', () =>
+  it.effect('the three unshipped lines really are unshipped — luckiest rolls add no bonus', () =>
     Effect.sync(() => {
       // Leaves have exactly ONE bonus line, not three: all-zero rolls beat every
       // chance there is, and a stick is all that comes out.
       expect(blockLoot(OAK_LEAVES, NO_TOOL, ALL_LUCK)).toStrictEqual([{ item: 'stick', count: 1 }])
 
-      // Tall grass and fern yield NOTHING AT ALL, and for two reasons stacked.
-      // ONE OF THE TWO HAS CHANGED, so the note is worth re-reading rather than
-      // re-trusting.
-      //
-      // The seed line used to have no `wheat_seeds` to name. It has one now:
-      // kernel's roster completion added the item, because `WHEAT_CROP` drops it.
-      // So THAT half is no longer a kernel gap — porting `rollGrassSeedDrop`
-      // (`:245-246`) is work this repository can do whenever it likes, and audit
-      // §6-9 says random drop rules belong here.
+      // Tall grass and fern now have item forms, but their block rows explicitly
+      // suppress the base drop. The random wheat-seed bonus remains unimplemented.
       expect(ITEM_TYPES).toContain('wheat_seeds')
-
-      // The other half stands, and stands on purpose: the plants themselves are
-      // still not itemised, so even the base drop has nowhere to go. That is
-      // kernel holding back ten support-sensitive plants until `supportRule`
-      // exists, because itemising them would make them placeable and wake F7 in
-      // `test/place-block.test.ts` — see `mc-kernel/domain/item-type.ts`.
-      expect(UNITEMISED_BLOCK_TYPES).toContain('tall_grass')
-      expect(UNITEMISED_BLOCK_TYPES).toContain('fern')
+      expect(UNITEMISED_BLOCK_TYPES).not.toContain('tall_grass')
+      expect(UNITEMISED_BLOCK_TYPES).not.toContain('fern')
       expect(blockLoot(TALL_GRASS, NO_TOOL, ALL_LUCK)).toStrictEqual([])
       expect(blockLoot(FERN, NO_TOOL, ALL_LUCK)).toStrictEqual([])
     }),

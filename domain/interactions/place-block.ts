@@ -111,15 +111,12 @@
  * by name below. The composition is one place; the five block-name tests are in
  * the five files that own those blocks.
  *
- * THREE OF THE FOUR CANNOT BE REACHED FROM HERE TODAY, and the reason is kernel's
- * roster rather than this wiring: `brown_mushroom`, `red_mushroom`, `sugar_cane`
- * and `cactus` have no item form, so none of them is a `PlaceableItemType` and
- * `request.heldItem` cannot name one. Only `door` can. That is the same
- * situation `../block-vocabulary`'s `SupportRule` section records for the ten
- * support-sensitive blocks, and it is answered the same way — the rules are
- * written and wired, `test/rules.test.ts` pins the unreachability by name so
- * that it fails the day it stops being true, and `placementVerdict` is reachable
- * over any `BlockId` regardless of what a player can hold.
+ * Kernel 0.2.5 gives the support-sensitive plants item forms, so mushrooms,
+ * sugar cane and cactus now reach these rules through `request.heldItem`. The
+ * gates remain unchanged: support comes from kernel's `supportRule`, mushrooms
+ * additionally require light <= 12, sugar cane requires adjacent water, and a
+ * cactus requires four clear horizontal sides. `test/placement-rules.test.ts`
+ * exercises those combinations through `placeBlock` with real item literals.
  */
 import { Effect } from 'effect'
 import {

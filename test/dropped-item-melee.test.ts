@@ -5,6 +5,7 @@ import { EntityId, EntityKind } from '../domain/entity-manager-port'
 import {
   CREEPER_KIND,
   DROPPED_ITEM_KIND,
+  isDroppedItemBehaviour,
   type MobBehaviour,
 } from '../domain/entities/mob-frame'
 import {
@@ -23,6 +24,25 @@ const origin = { x: 0, y: 0, z: 0 }
 const dropSource = EntityId('source')
 
 describe('dropped item entities', () => {
+  it.effect('spawns and recognises plant items added by the kernel vocabulary', () =>
+    Effect.gen(function* () {
+      const roster = yield* makeEntityManagerDouble<MobBehaviour>()
+
+      const spawned = yield* spawnDroppedItem(roster.api, {
+        item: 'cactus',
+        count: 1,
+        at: origin,
+      })
+
+      expect(isDroppedItemBehaviour(spawned.behaviour)).toBe(true)
+      expect(spawned.behaviour).toStrictEqual({
+        _tag: 'DroppedItem',
+        item: 'cactus',
+        count: 1,
+      })
+    }),
+  )
+
   it.effect('preserves the item stack in snapshots and despawns it after a full pickup', () =>
     Effect.gen(function* () {
       const roster = yield* makeEntityManagerDouble<MobBehaviour>()

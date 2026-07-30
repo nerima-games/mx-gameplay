@@ -22,6 +22,7 @@
 export * from './domain/day-night'
 export * from './domain/death-cause'
 export * from './domain/environmental-contact-damage'
+export * from './domain/fall-damage'
 export * from './domain/entities/mob-frame'
 export * from './domain/falling-block'
 export * from './domain/fluid-frontier'

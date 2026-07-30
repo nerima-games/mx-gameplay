@@ -161,6 +161,16 @@ export const ITEM_TYPES = [
   'stone_slab',
   'string',
   'snowball',
+  'sapling',
+  'dandelion',
+  'poppy',
+  'brown_mushroom',
+  'red_mushroom',
+  'tall_grass',
+  'fern',
+  'sugar_cane',
+  'cactus',
+  'lily_pad',
 ] as const
 
 export type ItemType = (typeof ITEM_TYPES)[number]

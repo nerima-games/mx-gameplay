@@ -206,6 +206,7 @@
  * that the sequence must depend on what happened rather than on how many mobs
  * existed.
  */
+import { isItemType, type ItemType } from '@nerima-games/mc-kernel'
 import { Effect } from 'effect'
 import { applyDamage, isDead, type Vitals } from '../death-cause'
 import {
@@ -222,7 +223,6 @@ import {
 import type { BlockPosition, ChunkStoreApi } from '../chunk-store-port'
 import type { DeltaTimeSecs } from '../frame-contract'
 import { drawRolls, nextRoll } from '../frame-rolls'
-import { ITEM_TYPES, type ItemType } from '../item-vocabulary'
 import { carveExplosionCrater } from '../interactions/explosion-crater'
 import type { PositionKey } from '../position-key'
 import { DORMANT_FUSE, stepCreeperFuse, type CreeperFuse, type CreeperSenses } from '../mob/creeper-fuse'
@@ -666,7 +666,7 @@ export const isDroppedItemBehaviour = (value: unknown): value is DroppedItemBeha
   }
   return candidate._tag === 'DroppedItem' &&
     typeof candidate.item === 'string' &&
-    ITEM_TYPES.includes(candidate.item as ItemType) &&
+    isItemType(candidate.item) &&
     typeof candidate.count === 'number' &&
     Number.isInteger(candidate.count) &&
     candidate.count > 0 &&

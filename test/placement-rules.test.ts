@@ -13,19 +13,20 @@
  * happens at a chunk edge — is tested after them, because that is where this
  * repository's version DIFFERS rather than merely ports.
  *
- * ---------------------------------------------------------------------------
- * Three of the four cannot be reached from a held item, and that is pinned
- * ---------------------------------------------------------------------------
- *
- * See the last `describe`. It is a NAMED test rather than a silence for the
- * reason `domain/block-vocabulary.ts` gives about `supportRule`: the day kernel
- * gives mushrooms an item form, this repository must find out from a failing
- * test that points at the rule, not from a player.
+ * Kernel 0.2.5 itemises all ten support-sensitive plants. The last `describe`
+ * pins that vocabulary boundary positively, while the integration cases below
+ * reach the mushroom, sugar-cane and cactus gates through real held items.
  */
 import { describe, expect, it } from '@effect/vitest'
 import { Effect } from 'effect'
-import { BLOCK_TYPES, blockIdOf, isPlaceableItem } from '../domain/block-vocabulary'
-import { ITEM_TYPES, type ItemType } from '../domain/item-vocabulary'
+import {
+  BLOCK_TYPES,
+  PLACEABLE_ITEM_TYPES,
+  blockIdOf,
+  isPlaceableItem,
+  type PlaceableItemType,
+} from '../domain/block-vocabulary'
+import { ITEM_TYPES } from '../domain/item-vocabulary'
 import { AIR_BLOCK_ID, type BlockId, type BlockPosition, type BlockReading } from '../domain/chunk-store-port'
 import { horizontalNeighbours } from '../domain/block-position-key'
 import {
@@ -394,28 +395,6 @@ describe('placeBlock composes the four, and a door fills two cells', () => {
     }),
   )
 
-  /**
-   * The three rules kernel's roster keeps out of a player's hand, reached
-   * anyway.
-   *
-   * THE CAST IS THE POINT AND IT IS NOT A TRICK TO MOVE A COVERAGE NUMBER.
-   * `placeBlock` takes a `PlaceableItemType = ItemType & BlockType`, and
-   * `brown_mushroom` is a `BlockType` that kernel gives no item form — so the
-   * only thing standing between these three rules and a live placement path is
-   * ONE ROW in kernel's `ITEM_TYPES`. The cast is that row, borrowed for the
-   * length of a test.
-   *
-   * What it buys is the claim `docs/testing.md` §3-1 needs to be able to make:
-   * these rules are not written-and-parked, they are WIRED, and the day kernel
-   * adds the row the behaviour below is what a player gets with no edit in this
-   * repository. Asserting the rules in isolation could not say that — a gate
-   * nobody calls passes its own tests perfectly.
-   *
-   * The day the row exists, the cast is deleted and every assertion stands.
-   */
-  const heldItemKernelDoesNotOfferYet = (name: string): 'stone' =>
-    name as unknown as 'stone'
-
   it.effect('a mushroom refused by light, through placeBlock', () =>
     Effect.gen(function* () {
       const bright = yield* makeChunkStoreDouble(
@@ -428,7 +407,7 @@ describe('placeBlock composes the four, and a door fills two cells', () => {
         ['0,0'],
         lightWorld([[target, { sky: 12, block: 0 }]]),
       )
-      const held = heldItemKernelDoesNotOfferYet('brown_mushroom')
+      const held = 'brown_mushroom'
 
       expect(yield* placeBlock(bright.api, { position: target, heldItem: held })).toStrictEqual({
         _tag: 'TooBright',
@@ -451,7 +430,7 @@ describe('placeBlock composes the four, and a door fills two cells', () => {
         ]),
         ['0,0'],
       )
-      const held = heldItemKernelDoesNotOfferYet('sugar_cane')
+      const held = 'sugar_cane'
 
       expect(yield* placeBlock(dry.api, { position: target, heldItem: held })).toStrictEqual({
         _tag: 'NoAdjacentWater',
@@ -470,7 +449,7 @@ describe('placeBlock composes the four, and a door fills two cells', () => {
         ['0,0'],
       )
       const clear = yield* makeChunkStoreDouble(world([[supportCell, SAND]]), ['0,0'])
-      const held = heldItemKernelDoesNotOfferYet('cactus')
+      const held = 'cactus'
 
       expect(yield* placeBlock(blocked.api, { position: target, heldItem: held })).toStrictEqual({
         _tag: 'SidesBlocked',
@@ -527,32 +506,32 @@ describe('placeBlock composes the four, and a door fills two cells', () => {
   )
 })
 
-describe('THREE OF THE FOUR CANNOT BE REACHED FROM A HELD ITEM — kernel’s roster, not this wiring', () => {
+describe('kernel 0.2.5 makes all ten support-sensitive plants placeable items', () => {
   const items: ReadonlyArray<string> = ITEM_TYPES
   const blocks: ReadonlyArray<string> = BLOCK_TYPES
+  const plants: ReadonlyArray<PlaceableItemType> = [
+    'sapling',
+    'dandelion',
+    'poppy',
+    'brown_mushroom',
+    'red_mushroom',
+    'tall_grass',
+    'fern',
+    'sugar_cane',
+    'cactus',
+    'lily_pad',
+  ]
 
-  it('mushrooms, sugar cane and cactus are blocks with no item form', () => {
-    // The day this fails is the day kernel gave one of them an item form, and
-    // the rule is already written and already wired: `placeBlock` will consult
-    // it with no edit in this repository. That is why this is a named test and
-    // not a comment — see `domain/block-vocabulary.ts` on `supportRule`, where
-    // the same situation went unstated for as long as it was true.
-    for (const name of ['brown_mushroom', 'red_mushroom', 'sugar_cane', 'cactus']) {
+  it('names every plant as both an item and a placeable block', () => {
+    for (const name of plants) {
       expect(blocks).toContain(name)
-      expect(items).not.toContain(name)
+      expect(items).toContain(name)
+      expect(PLACEABLE_ITEM_TYPES).toContain(name)
+      expect(isPlaceableItem(name)).toBe(true)
     }
   })
 
-  it('the door is the one that can be held, so one of the four is live today', () => {
-    expect(blocks).toContain('door')
-    expect(items).toContain('door')
-    expect(isPlaceableItem('door' as ItemType)).toBe(true)
-  })
-
-  it('the rules are reachable over any BlockId regardless of what a player can hold', () => {
-    // `placementVerdict` and every gate take a `BlockId`, so a structure
-    // generator or a preview palette reaches all four. The roster gap is about
-    // the HOTBAR, not about the rule.
+  it('the block-specific classifiers still recognise their registry ids', () => {
     expect(isMushroomBlock(BROWN_MUSHROOM)).toBe(true)
     expect(isSugarCaneBlock(SUGAR_CANE)).toBe(true)
     expect(isCactusBlock(CACTUS)).toBe(true)
