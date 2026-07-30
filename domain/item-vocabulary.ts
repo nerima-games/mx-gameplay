@@ -70,6 +70,7 @@ export const ITEM_TYPES = [
   'glowstone_dust',
   'wooden_pickaxe',
   'stone_pickaxe',
+  'iron_pickaxe',
   'coal',
   'iron_ingot',
   'flint',

@@ -11,6 +11,7 @@ import {
   advanceMiningProgress,
   effectiveMiningSpeed,
   HAND_MINING_TOOL,
+  IRON_PICKAXE_MINING_TOOL,
   miningDurationSecsForBlock,
   miningLootContextForItem,
   miningProgressFraction,
@@ -32,6 +33,7 @@ describe('mining duration', () => {
     Effect.sync(() => {
       expect(miningLootContextForItem('wooden_pickaxe')).toStrictEqual({ heldTier: 'wooden' })
       expect(miningLootContextForItem('stone_pickaxe')).toStrictEqual({ heldTier: 'stone' })
+      expect(miningLootContextForItem('iron_pickaxe')).toStrictEqual({ heldTier: 'iron' })
       expect(miningLootContextForItem(null)).toStrictEqual({})
       expect(miningLootContextForItem('dirt')).toStrictEqual({})
     }),
@@ -59,21 +61,36 @@ describe('mining duration', () => {
     }),
   )
 
-  it.effect('a stone pickaxe mines pickaxe blocks faster than a wooden pickaxe', () =>
+  it.effect('each pickaxe tier mines pickaxe blocks faster than the previous tier', () =>
     Effect.sync(() => {
-      expect(miningDurationSecsForBlock(STONE.blockId, 'stone_pickaxe')).toBeLessThan(
-        miningDurationSecsForBlock(STONE.blockId, 'wooden_pickaxe'),
-      )
+      const woodenDuration = miningDurationSecsForBlock(STONE.blockId, 'wooden_pickaxe')
+      const stoneDuration = miningDurationSecsForBlock(STONE.blockId, 'stone_pickaxe')
+      const ironDuration = miningDurationSecsForBlock(STONE.blockId, 'iron_pickaxe')
+
+      expect(stoneDuration).toBeLessThan(woodenDuration)
+      expect(ironDuration).toBeLessThan(stoneDuration)
+      expect(miningToolForItem('iron_pickaxe')).toBe(IRON_PICKAXE_MINING_TOOL)
+      expect(IRON_PICKAXE_MINING_TOOL).toStrictEqual({ category: 'pickaxe', speedMultiplier: 6 })
     }),
   )
 
-  it.effect('only a stone-tier pickaxe yields raw iron from iron ore', () =>
+  it.effect('maps selected pickaxe tiers to gated ore drops', () =>
     Effect.sync(() => {
       const ironOre = blockIdOf('iron_ore')
+      const goldOre = blockIdOf('gold_ore')
+      const diamondOre = blockIdOf('diamond_ore')
 
       expect(blockLoot(ironOre, miningLootContextForItem('wooden_pickaxe'))).toStrictEqual([])
       expect(blockLoot(ironOre, miningLootContextForItem('stone_pickaxe'))).toStrictEqual([
         { item: 'raw_iron', count: 1 },
+      ])
+      expect(blockLoot(goldOre, miningLootContextForItem('stone_pickaxe'))).toStrictEqual([])
+      expect(blockLoot(goldOre, miningLootContextForItem('iron_pickaxe'))).toStrictEqual([
+        { item: 'raw_gold', count: 1 },
+      ])
+      expect(blockLoot(diamondOre, miningLootContextForItem('stone_pickaxe'))).toStrictEqual([])
+      expect(blockLoot(diamondOre, miningLootContextForItem('iron_pickaxe'))).toStrictEqual([
+        { item: 'diamond', count: 1 },
       ])
     }),
   )
