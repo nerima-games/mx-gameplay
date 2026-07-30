@@ -13,7 +13,7 @@
 <!-- ------------------------------------------------------------------------- -->
 
 format: 1
-exported declarations: 481
+exported declarations: 494
 supporting declarations: 63
 
 ## Exported
@@ -884,6 +884,66 @@ type FallingBlockQueue = {
 };
 ```
 
+### FarmingItemUseRequest  `type`
+
+```ts
+type FarmingItemUseRequest = {
+    readonly action: 'TillSoil';
+    readonly requestId: ItemUseRequestId;
+    readonly positionKey: PositionKey;
+    readonly heldItem: HoeItemType;
+} | {
+    readonly action: 'PlantPotato';
+    readonly requestId: ItemUseRequestId;
+    readonly positionKey: PositionKey;
+    readonly heldItem: 'potato';
+} | {
+    readonly action: 'HarvestPotato';
+    readonly requestId: ItemUseRequestId;
+    readonly positionKey: PositionKey;
+    readonly ripe: boolean;
+    readonly roll: number;
+} | {
+    readonly action: 'EatPotato';
+    readonly requestId: ItemUseRequestId;
+    readonly heldItem: 'potato';
+    readonly vitals: FoodUseRequest['vitals'];
+};
+```
+
+### FarmingItemUseResult  `type`
+
+```ts
+type FarmingItemUseResult = {
+    readonly action: 'TillSoil';
+    readonly requestId: ItemUseRequestId;
+    readonly heldItem: HoeItemType;
+    readonly success: boolean;
+    readonly durabilityDamage: 0 | 1;
+    readonly outcome: TillOutcome;
+} | {
+    readonly action: 'PlantPotato';
+    readonly requestId: ItemUseRequestId;
+    readonly heldItem: 'potato';
+    readonly success: boolean;
+    readonly consumedCount: 0 | 1;
+    readonly outcome: PlantOutcome;
+} | {
+    readonly action: 'HarvestPotato';
+    readonly requestId: ItemUseRequestId;
+    readonly positionKey: PositionKey;
+    readonly success: boolean;
+    readonly outcome: CropDropOutcome;
+} | {
+    readonly action: 'EatPotato';
+    readonly requestId: ItemUseRequestId;
+    readonly heldItem: 'potato';
+    readonly success: boolean;
+    readonly consumedCount: 0 | 1;
+    readonly outcome: FoodUseOutcome;
+};
+```
+
 ### FluidBudgetSplit  `type`
 
 ```ts
@@ -1055,6 +1115,12 @@ type GeneratedWorldOptions = {
 const HAND_MINING_TOOL: MiningToolProfile;
 ```
 
+### HOE_ITEM_TYPES  `const`
+
+```ts
+const HOE_ITEM_TYPES: readonly ["wooden_hoe", "stone_hoe", "iron_hoe", "diamond_hoe"];
+```
+
 ### HOSTILE_CONTACT_INTERVAL_SECS  `const`
 
 ```ts
@@ -1086,6 +1152,12 @@ type HeldItemCapabilities = {
     readonly charges: boolean;
     readonly blocks: boolean;
 };
+```
+
+### HoeItemType  `type`
+
+```ts
+type HoeItemType = (typeof HOE_ITEM_TYPES)[number];
 ```
 
 ### HostileContactResolution  `type`
@@ -1192,6 +1264,27 @@ type IgnitePortalOutcome = {
 
 ```ts
 type IgnitionItemType = (typeof IGNITION_ITEM_TYPES)[number];
+```
+
+### IgnitionItemUseRequest  `type`
+
+```ts
+type IgnitionItemUseRequest = {
+    readonly requestId: ItemUseRequestId;
+    readonly positionKey: PositionKey;
+    readonly heldItem: IgnitionItemType;
+};
+```
+
+### IgnitionItemUseResult  `type`
+
+```ts
+type IgnitionItemUseResult = {
+    readonly requestId: ItemUseRequestId;
+    readonly heldItem: IgnitionItemType;
+    readonly success: boolean;
+    readonly outcome: IgnitionOutcome;
+};
 ```
 
 ### IgnitionOutcome  `type`
@@ -1326,11 +1419,7 @@ type IsRailAt = (wx: number, wy: number, wz: number) => boolean;
 ### ItemUseRequest  `type`
 
 ```ts
-type ItemUseRequest = {
-    readonly requestId: ItemUseRequestId;
-    readonly positionKey: PositionKey;
-    readonly heldItem: IgnitionItemType;
-};
+type ItemUseRequest = IgnitionItemUseRequest | FarmingItemUseRequest;
 ```
 
 ### ItemUseRequestId  `type`
@@ -1342,12 +1431,7 @@ type ItemUseRequestId = string;
 ### ItemUseResult  `type`
 
 ```ts
-type ItemUseResult = {
-    readonly requestId: ItemUseRequestId;
-    readonly heldItem: IgnitionItemType;
-    readonly success: boolean;
-    readonly outcome: IgnitionOutcome;
-};
+type ItemUseResult = IgnitionItemUseResult | FarmingItemUseResult;
 ```
 
 ### KNOCKBACK_EPSILON  `const`
@@ -2897,6 +2981,12 @@ const isDoorBlock: (block: BlockId) => boolean;
 const isDroppedItemBehaviour: (value: unknown) => value is DroppedItemBehaviour;
 ```
 
+### isHoeItem  `const`
+
+```ts
+const isHoeItem: (item: ItemType) => item is HoeItemType;
+```
+
 ### isIgnitionItem  `const`
 
 ```ts
@@ -3245,6 +3335,30 @@ const requestMeleeAttack: (state: GameplayFrameState, request: MeleeAttackReques
 const requestMobSpawn: (state: GameplayFrameState, attempt: MobSpawnAttempt) => Effect.Effect<void>;
 ```
 
+### requestPotatoFoodUse  `const`
+
+```ts
+const requestPotatoFoodUse: (state: GameplayFrameState, requestId: ItemUseRequestId, vitals: FoodUseRequest["vitals"]) => Effect.Effect<void>;
+```
+
+### requestPotatoHarvest  `const`
+
+```ts
+const requestPotatoHarvest: (state: GameplayFrameState, requestId: ItemUseRequestId, position: BlockPosition, ripe: boolean, roll: number) => Effect.Effect<void>;
+```
+
+### requestPotatoPlanting  `const`
+
+```ts
+const requestPotatoPlanting: (state: GameplayFrameState, requestId: ItemUseRequestId, position: BlockPosition) => Effect.Effect<void>;
+```
+
+### requestSoilTill  `const`
+
+```ts
+const requestSoilTill: (state: GameplayFrameState, requestId: ItemUseRequestId, position: BlockPosition, heldItem: HoeItemType) => Effect.Effect<void>;
+```
+
 ### requestTargetedBlockBreak  `const`
 
 ```ts
@@ -3269,10 +3383,22 @@ const requestTargetedBlockUse: (state: GameplayFrameState, store: ChunkStoreApi,
 const requestTargetedItemUse: (state: GameplayFrameState, store: ChunkStoreApi, player: PlayerServiceApi, requestId: ItemUseRequestId, heldItem: IgnitionItemType, maxDistance?: number) => Effect.Effect<Option.Option<BlockTarget>>;
 ```
 
+### requestTargetedPotatoPlanting  `const`
+
+```ts
+const requestTargetedPotatoPlanting: (state: GameplayFrameState, store: ChunkStoreApi, player: PlayerServiceApi, requestId: ItemUseRequestId, maxDistance?: number) => Effect.Effect<Option.Option<BlockTarget>>;
+```
+
 ### requestTargetedPrimaryAttack  `const`
 
 ```ts
 const requestTargetedPrimaryAttack: (state: GameplayFrameState, store: ChunkStoreApi, roster: EntityManagerApi<MobBehaviour>, player: PlayerServiceApi, options?: TargetedPrimaryAttackOptions) => Effect.Effect<TargetedPrimaryAttackResult>;
+```
+
+### requestTargetedSoilTill  `const`
+
+```ts
+const requestTargetedSoilTill: (state: GameplayFrameState, store: ChunkStoreApi, player: PlayerServiceApi, requestId: ItemUseRequestId, heldItem: HoeItemType, maxDistance?: number) => Effect.Effect<Option.Option<BlockTarget>>;
 ```
 
 ### resolveBlasts  `const`
@@ -3928,7 +4054,7 @@ type HarvestTier = (typeof HARVEST_TIERS)[number];
 ### ITEM_TYPES  `const`
 
 ```ts
-const ITEM_TYPES: readonly ["stone", "cobblestone", "dirt", "grass_block", "sand", "gravel", "oak_log", "oak_planks", "oak_leaves", "glass", "torch", "glowstone", "piston", "stick", "glowstone_dust", "wooden_pickaxe", "stone_pickaxe", "iron_pickaxe", "diamond_pickaxe", "coal", "iron_ingot", "flint", "gunpowder", "blaze_powder", "flint_and_steel", "fire_charge", "iron_helmet", "iron_chestplate", "iron_leggings", "iron_boots", "granite", "diorite", "andesite", "deepslate", "obsidian", "smooth_basalt", "calcite", "amethyst_block", "sandstone", "prismarine", "soul_sand", "coal_block", "iron_block", "gold_block", "diamond_block", "redstone_block", "lapis_block", "emerald_block", "redstone_torch", "lever", "stone_button", "repeater", "redstone_lamp", "observer", "comparator", "dispenser", "hopper", "end_stone", "end_portal_frame", "end_portal_frame_filled", "chorus_flower", "chorus_plant", "dragon_egg", "end_crystal", "end_rod", "end_stone_bricks", "ender_chest", "purpur_block", "purpur_pillar", "purpur_slab", "purpur_stairs", "shulker_box", "crafting_table", "furnace", "chest", "door", "oak_stairs", "anvil", "cauldron", "bed", "enchanting_table", "brewing_stand", "tnt", "nether_brick", "netherrack", "raw_iron", "raw_gold", "diamond", "emerald", "lapis_lazuli", "redstone_dust", "amethyst_shard", "wheat_seeds", "potato", "nether_wart", "ladder", "kelp", "seagrass", "rail", "powered_rail", "pressure_plate", "stone_slab", "string", "snowball"];
+const ITEM_TYPES: readonly ["stone", "cobblestone", "dirt", "grass_block", "sand", "gravel", "oak_log", "oak_planks", "oak_leaves", "glass", "torch", "glowstone", "piston", "stick", "glowstone_dust", "wooden_pickaxe", "stone_pickaxe", "iron_pickaxe", "diamond_pickaxe", "wooden_hoe", "stone_hoe", "iron_hoe", "diamond_hoe", "coal", "iron_ingot", "flint", "gunpowder", "blaze_powder", "flint_and_steel", "fire_charge", "iron_helmet", "iron_chestplate", "iron_leggings", "iron_boots", "granite", "diorite", "andesite", "deepslate", "obsidian", "smooth_basalt", "calcite", "amethyst_block", "sandstone", "prismarine", "soul_sand", "coal_block", "iron_block", "gold_block", "diamond_block", "redstone_block", "lapis_block", "emerald_block", "redstone_torch", "lever", "stone_button", "repeater", "redstone_lamp", "observer", "comparator", "dispenser", "hopper", "end_stone", "end_portal_frame", "end_portal_frame_filled", "chorus_flower", "chorus_plant", "dragon_egg", "end_crystal", "end_rod", "end_stone_bricks", "ender_chest", "purpur_block", "purpur_pillar", "purpur_slab", "purpur_stairs", "shulker_box", "crafting_table", "furnace", "chest", "door", "oak_stairs", "anvil", "cauldron", "bed", "enchanting_table", "brewing_stand", "tnt", "nether_brick", "netherrack", "raw_iron", "raw_gold", "diamond", "emerald", "lapis_lazuli", "redstone_dust", "amethyst_shard", "wheat_seeds", "potato", "nether_wart", "ladder", "kelp", "seagrass", "rail", "powered_rail", "pressure_plate", "stone_slab", "string", "snowball"];
 ```
 
 ### ItemType  `type`

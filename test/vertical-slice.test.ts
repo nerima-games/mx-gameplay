@@ -119,6 +119,10 @@ import {
   makeGameplayFrameState,
   requestBlockBreak,
   requestItemUse,
+  requestPotatoFoodUse,
+  requestPotatoHarvest,
+  requestPotatoPlanting,
+  requestSoilTill,
   type PlacementRequest,
 } from '../stages/registration'
 import {
@@ -2010,7 +2014,11 @@ describe('the ignition slice: an item use reaches the world', () => {
       yield* runFrame(stages)
 
       const results = yield* drainItemUseResults(state)
-      expect(results.map(({ requestId, heldItem, success }) => ({ requestId, heldItem, success })))
+      expect(results.map((result) => ({
+        requestId: result.requestId,
+        heldItem: 'heldItem' in result ? result.heldItem : undefined,
+        success: result.success,
+      })))
         .toStrictEqual([
           { requestId: 'first', heldItem: 'flint_and_steel', success: true },
           { requestId: 'second', heldItem: 'fire_charge', success: true },
@@ -2088,6 +2096,85 @@ describe('the ignition slice: an item use reaches the world', () => {
       // cells that were air, which is the opposite of one — so the queue must
       // be empty even though six blocks changed.
       expect((yield* Ref.get(state.fallingBlocks)).pending.size).toBe(0)
+    }),
+  )
+})
+
+describe('the potato farming slice: host input reaches farming rules', () => {
+  const DIRT = blockIdOf('dirt') ?? 3
+  const FARMLAND = blockIdOf('farmland') ?? 49
+  const POTATO_CROP = blockIdOf('potato_crop') ?? 72
+  const soil: BlockPosition = { x: 8, y: 64, z: 8 }
+
+  it.effect('all published hoe tiers till soil and report one durability point', () =>
+    Effect.gen(function* () {
+      const hoes = ['wooden_hoe', 'stone_hoe', 'iron_hoe', 'diamond_hoe'] as const
+      const cells = hoes.map((_, index): BlockPosition => ({ ...soil, x: soil.x + index }))
+      const { store, state, stages } = yield* slice(
+        world(cells.map((cell) => [cell, DIRT] as const)),
+      )
+
+      for (const [index, hoe] of hoes.entries()) {
+        yield* requestSoilTill(state, `till-${hoe}`, cells[index]!, hoe)
+      }
+      yield* runFrame(stages)
+
+      for (const cell of cells) {
+        expect(yield* store.blockAt(cell)).toBe(FARMLAND)
+      }
+      expect(yield* drainItemUseResults(state)).toStrictEqual(
+        hoes.map((hoe, index) => ({
+          action: 'TillSoil',
+          requestId: `till-${hoe}`,
+          heldItem: hoe,
+          success: true,
+          durabilityDamage: 1,
+          outcome: { _tag: 'tilled', at: cells[index] },
+        })),
+      )
+    }),
+  )
+
+  it.effect('plants, exposes mature harvest drops, and exposes potato food use', () =>
+    Effect.gen(function* () {
+      const crop: BlockPosition = { ...soil, y: soil.y + 1 }
+      const { store, state, stages } = yield* slice(world([[soil, FARMLAND]]))
+
+      yield* requestPotatoPlanting(state, 'plant', soil)
+      yield* requestPotatoHarvest(state, 'harvest', crop, true, 0.5)
+      yield* requestPotatoFoodUse(state, 'eat', {
+        healthPoints: 20,
+        hungerPoints: 10,
+        maxHungerPoints: 20,
+      })
+      yield* runFrame(stages)
+
+      expect(yield* store.blockAt(crop)).toBe(POTATO_CROP)
+      expect(yield* drainItemUseResults(state)).toStrictEqual([
+        {
+          action: 'PlantPotato',
+          requestId: 'plant',
+          heldItem: 'potato',
+          success: true,
+          consumedCount: 1,
+          outcome: { _tag: 'planted', crop: 'potato_crop', at: crop },
+        },
+        {
+          action: 'HarvestPotato',
+          requestId: 'harvest',
+          positionKey: positionKeyOf(crop),
+          success: true,
+          outcome: { _tag: 'drops', drops: [{ item: 'potato', count: 4 }] },
+        },
+        {
+          action: 'EatPotato',
+          requestId: 'eat',
+          heldItem: 'potato',
+          success: true,
+          consumedCount: 1,
+          outcome: { _tag: 'consume', count: 1, foodPoints: 1, saturationModifier: 0.6 },
+        },
+      ])
     }),
   )
 })

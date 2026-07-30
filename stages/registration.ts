@@ -161,6 +161,10 @@ import {
   type BlockLootContext,
 } from '../domain/interactions/block-loot'
 import { placeBlock } from '../domain/interactions/place-block'
+import { cropDrops, type CropDropOutcome } from '../domain/interactions/crop-drops'
+import { resolveFoodUse, type FoodUseOutcome, type FoodUseRequest } from '../domain/interactions/eat-food'
+import { plantCrop, type PlantOutcome } from '../domain/interactions/plant-crop'
+import { tillSoil, type TillOutcome } from '../domain/interactions/till-soil'
 import {
   isSuccessfulBlockUse,
   resolveBlockUse,
@@ -194,6 +198,7 @@ import {
   type IgnitionItemType,
 } from '../domain/interactions/use-flint-and-steel'
 import type { PositionKey } from '../domain/position-key'
+import type { ItemType } from '../domain/item-vocabulary'
 import {
   advanceWeather,
   INITIAL_WEATHER,
@@ -287,18 +292,16 @@ const NO_ATTEMPTS: ReadonlyArray<never> = []
  *     be a number that is always 1, which is the kind of member kernel's
  *     `./block-definition` warns is the cheapest way to get a freeze wrong.
  *
- *   - `pendingItemUses` is an INBOX and `usedItems` is its OUTBOX, and the pair
- *     arrived with `domain/interactions/use-flint-and-steel.ts` — the first ITEM
- *     USE in this repository, which is the third verb plan.md §3.11's
- *     responsibility 1 names and the one `docs/testing.md` §3-1 recorded as
- *     missing.
+ *   - `pendingItemUses` is an INBOX. Ignition retains `usedItems` as its legacy
+ *     durability/consumption outbox, while every use also emits a correlated
+ *     `itemUseResults` entry. Farming adds discriminated requests for tilling,
+ *     planting, harvesting, and eating without changing the tagless ignition
+ *     request shape.
  *
- *     The inbox is `pendingPlacements`' twin down to its shape: a cell and the
- *     item in hand. It is a THIRD inbox rather than a tag on the second for the
- *     same reason the second is not a tag on the first — the item types are
- *     disjoint (`PlaceableItemType` against `IgnitionItemType`), so one union
- *     would make "you cannot light a portal with a block of stone" a runtime
- *     refusal where it is currently a type error at the call site.
+ *     The ignition member remains `pendingPlacements`' twin down to its shape:
+ *     a cell and the item in hand. Farming members carry only the host-owned
+ *     facts their rule needs; crop age remains in mc-sim rather than this frame
+ *     state.
  *
  *     The outbox is NOT `consumedItems`, and that distinction is the one worth
  *     stating: a placement takes the item off the stack, while lighting a portal
@@ -536,22 +539,99 @@ export type BlockUseResult = {
  * and that is mc-render's raycast and mc-sim's pose; every rule in this
  * repository is handed a cell.
  */
-export type ItemUseRequest = {
+export type IgnitionItemUseRequest = {
   readonly requestId: ItemUseRequestId
   readonly positionKey: PositionKey
   readonly heldItem: IgnitionItemType
 }
 
+/** Hoe names supplied by mc-kernel 0.2.4. Tilling behaviour is tier-independent. */
+export const HOE_ITEM_TYPES = [
+  'wooden_hoe',
+  'stone_hoe',
+  'iron_hoe',
+  'diamond_hoe',
+] as const satisfies ReadonlyArray<ItemType>
+
+export type HoeItemType = (typeof HOE_ITEM_TYPES)[number]
+
+export const isHoeItem = (item: ItemType): item is HoeItemType =>
+  (HOE_ITEM_TYPES as ReadonlyArray<ItemType>).includes(item)
+
+export type FarmingItemUseRequest =
+  | {
+      readonly action: 'TillSoil'
+      readonly requestId: ItemUseRequestId
+      readonly positionKey: PositionKey
+      readonly heldItem: HoeItemType
+    }
+  | {
+      readonly action: 'PlantPotato'
+      readonly requestId: ItemUseRequestId
+      readonly positionKey: PositionKey
+      readonly heldItem: 'potato'
+    }
+  | {
+      readonly action: 'HarvestPotato'
+      readonly requestId: ItemUseRequestId
+      readonly positionKey: PositionKey
+      readonly ripe: boolean
+      readonly roll: number
+    }
+  | {
+      readonly action: 'EatPotato'
+      readonly requestId: ItemUseRequestId
+      readonly heldItem: 'potato'
+      readonly vitals: FoodUseRequest['vitals']
+    }
+
+export type ItemUseRequest = IgnitionItemUseRequest | FarmingItemUseRequest
+
 /** Host-provided correlation key for one item-use request. */
 export type ItemUseRequestId = string
 
 /** The complete, drainable answer for one item-use request. */
-export type ItemUseResult = {
+export type IgnitionItemUseResult = {
   readonly requestId: ItemUseRequestId
   readonly heldItem: IgnitionItemType
   readonly success: boolean
   readonly outcome: IgnitionOutcome
 }
+
+export type FarmingItemUseResult =
+  | {
+      readonly action: 'TillSoil'
+      readonly requestId: ItemUseRequestId
+      readonly heldItem: HoeItemType
+      readonly success: boolean
+      readonly durabilityDamage: 0 | 1
+      readonly outcome: TillOutcome
+    }
+  | {
+      readonly action: 'PlantPotato'
+      readonly requestId: ItemUseRequestId
+      readonly heldItem: 'potato'
+      readonly success: boolean
+      readonly consumedCount: 0 | 1
+      readonly outcome: PlantOutcome
+    }
+  | {
+      readonly action: 'HarvestPotato'
+      readonly requestId: ItemUseRequestId
+      readonly positionKey: PositionKey
+      readonly success: boolean
+      readonly outcome: CropDropOutcome
+    }
+  | {
+      readonly action: 'EatPotato'
+      readonly requestId: ItemUseRequestId
+      readonly heldItem: 'potato'
+      readonly success: boolean
+      readonly consumedCount: 0 | 1
+      readonly outcome: FoodUseOutcome
+    }
+
+export type ItemUseResult = IgnitionItemUseResult | FarmingItemUseResult
 
 /**
  * One shot from a drawn bow.
@@ -971,6 +1051,70 @@ export const requestItemUse = (
     { requestId, positionKey: positionKeyOf(position), heldItem },
   ])
 
+/** Enqueue a hoe use against the targeted ground cell. */
+export const requestSoilTill = (
+  state: GameplayFrameState,
+  requestId: ItemUseRequestId,
+  position: BlockPosition,
+  heldItem: HoeItemType,
+): Effect.Effect<void> => {
+  const request: FarmingItemUseRequest = {
+    action: 'TillSoil',
+    requestId,
+    positionKey: positionKeyOf(position),
+    heldItem,
+  }
+  return Ref.update(state.pendingItemUses, (pending) => [...pending, request])
+}
+
+/** Enqueue planting a potato into the soil cell. */
+export const requestPotatoPlanting = (
+  state: GameplayFrameState,
+  requestId: ItemUseRequestId,
+  position: BlockPosition,
+): Effect.Effect<void> => {
+  const request: FarmingItemUseRequest = {
+    action: 'PlantPotato',
+    requestId,
+    positionKey: positionKeyOf(position),
+    heldItem: 'potato',
+  }
+  return Ref.update(state.pendingItemUses, (pending) => [...pending, request])
+}
+
+/** Resolve host-owned crop maturity into drops that the host can add to inventory. */
+export const requestPotatoHarvest = (
+  state: GameplayFrameState,
+  requestId: ItemUseRequestId,
+  position: BlockPosition,
+  ripe: boolean,
+  roll: number,
+): Effect.Effect<void> => {
+  const request: FarmingItemUseRequest = {
+    action: 'HarvestPotato',
+    requestId,
+    positionKey: positionKeyOf(position),
+    ripe,
+    roll,
+  }
+  return Ref.update(state.pendingItemUses, (pending) => [...pending, request])
+}
+
+/** Resolve eating without transferring host-owned player vitals or inventory. */
+export const requestPotatoFoodUse = (
+  state: GameplayFrameState,
+  requestId: ItemUseRequestId,
+  vitals: FoodUseRequest['vitals'],
+): Effect.Effect<void> => {
+  const request: FarmingItemUseRequest = {
+    action: 'EatPotato',
+    requestId,
+    heldItem: 'potato',
+    vitals,
+  }
+  return Ref.update(state.pendingItemUses, (pending) => [...pending, request])
+}
+
 /** Drain completed item-use results exactly once, preserving request order. */
 export const drainItemUseResults = (
   state: GameplayFrameState,
@@ -1208,6 +1352,41 @@ export const requestTargetedItemUse = (
     const target = targetBlockFromPlayerPose(pose, maxDistance, targetabilityFromStore(store))
     if (Option.isSome(target)) {
       yield* requestItemUse(state, requestId, target.value.adjacentPosition, heldItem)
+    }
+    return target
+  })
+
+/** Resolve the block under the crosshair and enqueue a hoe use against it. */
+export const requestTargetedSoilTill = (
+  state: GameplayFrameState,
+  store: ChunkStoreApi,
+  player: PlayerServiceApi,
+  requestId: ItemUseRequestId,
+  heldItem: HoeItemType,
+  maxDistance: number = DEFAULT_BLOCK_REACH,
+): Effect.Effect<Option.Option<BlockTarget>> =>
+  Effect.gen(function* () {
+    const pose = yield* player.pose
+    const target = targetBlockFromPlayerPose(pose, maxDistance, targetabilityFromStore(store))
+    if (Option.isSome(target)) {
+      yield* requestSoilTill(state, requestId, target.value.position, heldItem)
+    }
+    return target
+  })
+
+/** Resolve the block under the crosshair and enqueue potato planting on it. */
+export const requestTargetedPotatoPlanting = (
+  state: GameplayFrameState,
+  store: ChunkStoreApi,
+  player: PlayerServiceApi,
+  requestId: ItemUseRequestId,
+  maxDistance: number = DEFAULT_BLOCK_REACH,
+): Effect.Effect<Option.Option<BlockTarget>> =>
+  Effect.gen(function* () {
+    const pose = yield* player.pose
+    const target = targetBlockFromPlayerPose(pose, maxDistance, targetabilityFromStore(store))
+    if (Option.isSome(target)) {
+      yield* requestPotatoPlanting(state, requestId, target.value.position)
     }
     return target
   })
@@ -1463,6 +1642,81 @@ export const gameplayStages = (
         // frame gets the sequence they asked for. The other order asks
         // `detectNetherPortal` about a ring that is one block short.
         for (const request of itemUses) {
+          if ('action' in request) {
+            switch (request.action) {
+              case 'TillSoil': {
+                const outcome = yield* tillSoil(
+                  {
+                    blockAt: (position) =>
+                      Effect.map(store.getBlock(position), (reading) =>
+                        reading._tag === 'Block' ? reading.block : undefined,
+                      ),
+                    setBlock: store.setBlock,
+                  },
+                  { tills: true },
+                  positionOfKey(request.positionKey),
+                )
+                const success = outcome._tag === 'tilled'
+                itemUseResults.push({
+                  action: request.action,
+                  requestId: request.requestId,
+                  heldItem: request.heldItem,
+                  success,
+                  durabilityDamage: success ? 1 : 0,
+                  outcome,
+                })
+                break
+              }
+              case 'PlantPotato': {
+                const outcome = yield* plantCrop(
+                  {
+                    blockAt: (position) =>
+                      Effect.map(store.getBlock(position), (reading) =>
+                        reading._tag === 'Block' ? reading.block : undefined,
+                      ),
+                    setBlock: store.setBlock,
+                  },
+                  { held: request.heldItem, soil: positionOfKey(request.positionKey) },
+                )
+                const success = outcome._tag === 'planted'
+                itemUseResults.push({
+                  action: request.action,
+                  requestId: request.requestId,
+                  heldItem: request.heldItem,
+                  success,
+                  consumedCount: success ? 1 : 0,
+                  outcome,
+                })
+                break
+              }
+              case 'HarvestPotato': {
+                const outcome = cropDrops('potato_crop', request.ripe, request.roll)
+                itemUseResults.push({
+                  action: request.action,
+                  requestId: request.requestId,
+                  positionKey: request.positionKey,
+                  success: outcome._tag === 'drops',
+                  outcome,
+                })
+                break
+              }
+              case 'EatPotato': {
+                const outcome = resolveFoodUse({ held: request.heldItem, vitals: request.vitals })
+                const success = outcome._tag === 'consume'
+                itemUseResults.push({
+                  action: request.action,
+                  requestId: request.requestId,
+                  heldItem: request.heldItem,
+                  success,
+                  consumedCount: success ? 1 : 0,
+                  outcome,
+                })
+                break
+              }
+            }
+            continue
+          }
+
           const ignition = yield* useFlintAndSteel(
             store,
             positionOfKey(request.positionKey),
