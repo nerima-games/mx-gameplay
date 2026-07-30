@@ -395,6 +395,15 @@ kernel の `StageRegistration` に対してそのまま代入できる。
 | `applyDamage` / `isDead` / `deathMessage` / `describeDeath` | 内部(可視) | 体力状態の正は `mc-sim`。ここにあるのはルールの純粋な核 |
 | `DEATH_MESSAGES` / `MAX_HEALTH_POINTS` / `fullHealth` | 内部(可視) | |
 
+### domain/environmental-contact-damage.ts
+
+| export | 種別 | 備考 |
+| --- | --- | --- |
+| `resolveEnvironmentalContactDamage` | 内部(可視) | 解決済み kernel `contactDamage` を受ける純粋ルール。接触開始時は即時、その後は絶対 simulation elapsed time の 0.5 秒 cadence で最大 1 件を返す |
+| `EnvironmentalContact` / `EnvironmentalContactBlock` | 内部(可視) | `lava` / `cactus` の接触セルと解決済みダメージ値。複数セルは最大値 1 件に集約し、同値は `lava` を選ぶ |
+| `EnvironmentalContactDamageState` / `EnvironmentalContactDamageStep` | 内部(可視) | 状態は最後に発火した絶対時刻だけ。非接触・不正時刻で reset し、巻き戻しは新しい接触 cycle として即時発火する |
+| `ENVIRONMENTAL_CONTACT_DAMAGE_CADENCE_SECS` / `INITIAL_ENVIRONMENTAL_CONTACT_DAMAGE_STATE` | 内部(可視) | 0.5 / 初期状態 |
+
 ### domain/mob/creeper-fuse.ts（**Mob AI。状態は持たない**）
 
 | export | 種別 | 備考 |

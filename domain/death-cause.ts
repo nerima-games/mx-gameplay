@@ -49,6 +49,7 @@
 export type DeathCause =
   | 'fall'
   | 'lava'
+  | 'cactus'
   | 'fire'
   | 'drowning'
   | 'suffocation'
@@ -63,22 +64,19 @@ export type DeathCause =
 /**
  * `generic` maps to the reference's fallback string. It is a legitimate cause —
  * `/kill`, an unattributed defect — not a stand-in for "we lost the real one".
- * The regression test asserts that the OTHER eleven never resolve to it.
+ * The regression test asserts that the OTHER twelve never resolve to it.
  *
  * `ender_pearl` ARRIVED WITH ITS RULE, which is the condition this union is meant
  * to be extended under. The reference's `PlayerDamageCause`
  * (`<reference-impl>/packages/entity/domain/player-damage-cause.ts:1-15`) has
- * fourteen members and this transcription took eleven; the three it left were
- * `cactus`, `lightning` and `ender_pearl`, and they were left because no rule here
- * produced any of them. `./interactions/throw-ender-pearl.ts` now produces this
- * one — it is `ENDER_PEARL_DAMAGE`'s cause — so the member is a completion of a
- * partial transcription rather than an invention, and its message is the
- * reference's own (`player-damage-cause.ts:29`).
+ * fourteen members and this transcription initially left `cactus`, `lightning`
+ * and `ender_pearl` out because no rule here produced any of them. The ender
+ * pearl and environmental contact rules now produce two of those causes, so
+ * their members complete the partial transcription rather than inventing terms.
  *
- * `cactus` and `lightning` are still absent and still for that reason. Adding a
- * cause with no rule behind it would be a claim that this build can kill you that
- * way, which is the direction `./entities/mob-frame.ts`'s `HOSTILE_KINDS` refuses
- * for the zombie.
+ * `lightning` remains absent for that reason. Adding a cause with no rule behind
+ * it would claim that this build can kill you that way, which is the direction
+ * `./entities/mob-frame.ts`'s `HOSTILE_KINDS` refuses for the zombie.
  *
  * NOTE THAT THIS IS THIS REPOSITORY'S OWN VOCABULARY and not a mirror of somebody
  * else's: `DeathCause` is exported from `index.ts`, it is not one of the nine
@@ -90,6 +88,7 @@ export type DeathCause =
 export const DEATH_MESSAGES: Readonly<Record<DeathCause, string>> = {
   fall: 'You fell from a high place.',
   lava: 'You tried to swim in lava.',
+  cactus: 'You were pricked to death.',
   fire: 'You burned to death.',
   drowning: 'You drowned.',
   suffocation: 'You suffocated in a wall.',

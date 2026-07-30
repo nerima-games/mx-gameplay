@@ -13,7 +13,7 @@
 <!-- ------------------------------------------------------------------------- -->
 
 format: 1
-exported declarations: 494
+exported declarations: 501
 supporting declarations: 63
 
 ## Exported
@@ -578,7 +578,7 @@ type DayPhase = 'night' | 'dawn' | 'day' | 'dusk';
 ### DeathCause  `type`
 
 ```ts
-type DeathCause = 'fall' | 'lava' | 'fire' | 'drowning' | 'suffocation' | 'starvation' | 'mob' | 'projectile' | 'explosion' | 'void' | 'ender_pearl' | 'generic';
+type DeathCause = 'fall' | 'lava' | 'cactus' | 'fire' | 'drowning' | 'suffocation' | 'starvation' | 'mob' | 'projectile' | 'explosion' | 'void' | 'ender_pearl' | 'generic';
 ```
 
 ### DespawnCandidate  `type`
@@ -753,6 +753,12 @@ const ENDER_PEARL_ENDERMITE_SPAWN_CHANCE = 0.05;
 const ENDER_PEARL_MAX_DISTANCE = 24;
 ```
 
+### ENVIRONMENTAL_CONTACT_DAMAGE_CADENCE_SECS  `const`
+
+```ts
+const ENVIRONMENTAL_CONTACT_DAMAGE_CADENCE_SECS = 0.5;
+```
+
 ### EXPERIENCE_MODULE_STAGE_PREFIXES  `const`
 
 ```ts
@@ -825,6 +831,38 @@ type EndermanTeleportUrge = {
     readonly _tag: 'Teleport';
     readonly reason: TeleportReason;
     readonly anchor: TeleportAnchor;
+};
+```
+
+### EnvironmentalContact  `type`
+
+```ts
+type EnvironmentalContact = {
+    readonly block: EnvironmentalContactBlock;
+    readonly contactDamage: number;
+};
+```
+
+### EnvironmentalContactBlock  `type`
+
+```ts
+type EnvironmentalContactBlock = 'lava' | 'cactus';
+```
+
+### EnvironmentalContactDamageState  `type`
+
+```ts
+type EnvironmentalContactDamageState = {
+    readonly lastDamageElapsedSecs: number | undefined;
+};
+```
+
+### EnvironmentalContactDamageStep  `type`
+
+```ts
+type EnvironmentalContactDamageStep = {
+    readonly state: EnvironmentalContactDamageState;
+    readonly damages: ReadonlyArray<Damage>;
 };
 ```
 
@@ -1194,6 +1232,12 @@ const INERT_ITEM: HeldItemCapabilities;
 
 ```ts
 const INITIAL_DIMENSION: Dimension;
+```
+
+### INITIAL_ENVIRONMENTAL_CONTACT_DAMAGE_STATE  `const`
+
+```ts
+const INITIAL_ENVIRONMENTAL_CONTACT_DAMAGE_STATE: EnvironmentalContactDamageState;
 ```
 
 ### INITIAL_PLAYER_POSE  `const`
@@ -3417,6 +3461,12 @@ const resolveBlockUse: (position: BlockPosition, reading: BlockReading) => Block
 
 ```ts
 const resolveBowHits: (roster: EntityManagerApi<MobBehaviour>, hits: ReadonlyArray<BowHit>) => Effect.Effect<ReadonlyArray<MobCasualty>>;
+```
+
+### resolveEnvironmentalContactDamage  `const`
+
+```ts
+const resolveEnvironmentalContactDamage: (state: EnvironmentalContactDamageState, contacts: ReadonlyArray<EnvironmentalContact>, simulationElapsedSecs: number) => EnvironmentalContactDamageStep;
 ```
 
 ### resolveFoodUse  `const`

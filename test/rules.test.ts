@@ -35,6 +35,7 @@ import {
 const ALL_CAUSES: ReadonlyArray<DeathCause> = [
   'fall',
   'lava',
+  'cactus',
   'fire',
   'drowning',
   'suffocation',
