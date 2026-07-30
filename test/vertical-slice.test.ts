@@ -109,6 +109,7 @@ import {
 } from '../domain/mob/enderman-teleport'
 import { CREEPER_EXPLOSION_POWER, explosionDamageAmount } from '../domain/mob/explosion'
 import { DESPAWN_DISTANCE_BLOCKS } from '../domain/mob/hostile-despawn'
+import { ZOMBIE_KIND } from '../domain/mob/hostile-combat'
 import type { MinedItem } from '../domain/interactions/block-loot'
 import { chunkCoordsAround } from '../domain/chunk-window'
 import { PORTAL_WINDOW_RADIUS, ignitePortal } from '../domain/interactions/ignite-portal'
@@ -702,12 +703,12 @@ const legalCandidate = {
   distanceToPlayerBlocksXZ: 20,
 } as const
 
-const attemptAt = (feetPosition: Position): MobSpawnAttempt => ({
+const attemptAt = (feetPosition: Position, kind: EntityKind = CREEPER_KIND): MobSpawnAttempt => ({
   candidate: legalCandidate,
   // Named explicitly rather than defaulted. `MobSpawnAttempt` carries a kind
   // because the spawner now produces more than one hostile, and a test that let
   // the field be implicit would stop noticing which mob it asked for.
-  kind: CREEPER_KIND,
+  kind,
   feetPosition,
 })
 
@@ -844,6 +845,22 @@ describe('the mob slice, through the stage registration', () => {
       // Six frames of fuse, six portal probes, and nothing else touched.
       expect(beforeBlast).toStrictEqual({ reads: 6, writes: 0, peeks: 0 })
       expect((yield* store.calls).writes).toBeGreaterThanOrEqual(craterCells(creeperAt, CREEPER_EXPLOSION_POWER).length)
+    }),
+  )
+
+  it.effect('a zombie spawns with zombie health and no behaviour state', () =>
+    Effect.gen(function* () {
+      const { roster, state, player, time, stages } = yield* slice(world([]))
+
+      yield* daylight(time)
+      yield* player.api.moveTo(playerFar)
+      yield* offerSpawns(state, [attemptAt(creeperAt, ZOMBIE_KIND)])
+      yield* runFrame(stages, STRIDE)
+
+      const [zombie] = yield* roster.api.entities
+      expect(zombie?.kind).toBe(ZOMBIE_KIND)
+      expect(zombie?.healthPoints).toBe(20)
+      expect(zombie?.behaviour).toBeUndefined()
     }),
   )
 

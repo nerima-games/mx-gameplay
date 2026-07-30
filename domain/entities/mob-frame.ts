@@ -467,6 +467,7 @@ export const ENDERMITE_MAX_HEALTH = 8
 export const HOSTILE_KINDS: readonly [EntityKind, ...ReadonlyArray<EntityKind>] = [
   CREEPER_KIND,
   ENDERMAN_KIND,
+  ZOMBIE_KIND,
 ]
 
 /**
@@ -480,6 +481,9 @@ export const HOSTILE_KINDS: readonly [EntityKind, ...ReadonlyArray<EntityKind>] 
  * are not one constant.
  */
 export const CREEPER_MAX_HEALTH = 20
+
+/** A zombie's health at spawn. */
+const ZOMBIE_MAX_HEALTH = 20
 
 /**
  * An enderman's health at spawn.
@@ -505,16 +509,17 @@ export const ENDERMAN_MAX_HEALTH = 40
  * total function anyway so that adding a kind to that list produces a mob with
  * plausible health rather than a `NaN`-healthed one that is instantly dead.
  */
-export const maxHealthOfKind = (kind: EntityKind): number =>
-  kind === ENDERMAN_KIND ? ENDERMAN_MAX_HEALTH : CREEPER_MAX_HEALTH
+export const maxHealthOfKind = (kind: EntityKind): number => {
+  if (kind === ENDERMAN_KIND) return ENDERMAN_MAX_HEALTH
+  if (kind === ZOMBIE_KIND) return ZOMBIE_MAX_HEALTH
+  return CREEPER_MAX_HEALTH
+}
 
 /**
  * The behaviour a freshly spawned hostile carries.
  *
- * The two values are the ones each rule's own type documents as its starting
- * state — `DORMANT_FUSE` 「the state a fresh creeper is in」 and `STEADY_ENDERMAN`
- * 「the state a fresh enderman is in, and the one a repair falls back to」 — so
- * there is no third constant here, only the choice between them.
+ * Creepers start with `DORMANT_FUSE`, endermen with `STEADY_ENDERMAN`, and
+ * zombies carry no state because their pursuit rule is stateless.
  *
  * It agrees with `repairMobBehaviour` by construction: both send a creeper to a
  * fuse and an enderman to a flinch, and `sweepMobs` picks its rule by the tag
@@ -522,8 +527,11 @@ export const maxHealthOfKind = (kind: EntityKind): number =>
  * a mob that ticks nothing, which is exactly the mismatch that function's last
  * paragraph is about.
  */
-export const initialBehaviourOfKind = (kind: EntityKind): MobBehaviour =>
-  kind === ENDERMAN_KIND ? STEADY_ENDERMAN : DORMANT_FUSE
+export const initialBehaviourOfKind = (kind: EntityKind): MobBehaviour => {
+  if (kind === ENDERMAN_KIND) return STEADY_ENDERMAN
+  if (kind === ZOMBIE_KIND) return undefined
+  return DORMANT_FUSE
+}
 
 /**
  * How many hostiles may exist at once.
@@ -1595,7 +1603,7 @@ export const applySpawnAttempts = (
         continue
       }
 
-      // THE SUM, not `countOfKind(CREEPER_KIND)`. With two hostile kinds a
+      // THE SUM, not `countOfKind(CREEPER_KIND)`. With multiple hostile kinds a
       // per-kind cap enforces 「16 creepers」 rather than 「16 hostiles」, so a
       // player could be surrounded by sixteen of each. See `MAX_HOSTILE_COUNT`,
       // whose note recorded this as the thing that would have to change.
@@ -1609,8 +1617,8 @@ export const applySpawnAttempts = (
         kind: attempt.kind,
         feetPosition: attempt.feetPosition,
         healthPoints: maxHealthOfKind(attempt.kind),
-        // Each rule's own type documents its starting state, which is why the
-        // two constants are looked up rather than restated here.
+        // Each rule's own type documents its starting state, so the value is
+        // looked up rather than restated here.
         behaviour: initialBehaviourOfKind(attempt.kind),
       })
       outcomes.push({ _tag: 'Spawned', id: entity.id })

@@ -20,7 +20,9 @@ import {
   CREEPER_KIND,
   ENDERMAN_KIND,
   HOSTILE_KINDS,
+  initialBehaviourOfKind,
   MAX_HOSTILE_COUNT,
+  maxHealthOfKind,
   type MobBehaviour,
 } from '../domain/entities/mob-frame'
 import {
@@ -33,6 +35,7 @@ import {
 } from '../domain/entities/mob-spawn-search'
 import { drawRolls, rollAt } from '../domain/frame-rolls'
 import { DESPAWN_DISTANCE_BLOCKS, despawnVerdict } from '../domain/mob/hostile-despawn'
+import { ZOMBIE_KIND } from '../domain/mob/hostile-combat'
 import {
   MAX_SPAWN_DISTANCE_BLOCKS,
   MIN_SPAWN_DISTANCE_BLOCKS,
@@ -556,11 +559,11 @@ describe('the search’s randomness', () => {
     }),
   )
 
-  it.effect('picks kinds from HOSTILE_KINDS, and reaches both of them', () =>
+  it.effect('picks kinds from HOSTILE_KINDS, and reaches all of them', () =>
     Effect.gen(function* () {
       // The roster is the one the population cap sums over, so a kind cannot be
-      // spawnable without being counted. Reaching BOTH matters: a `Math.floor`
-      // that could never produce the last index would make the enderman
+      // spawnable without being counted. Reaching every kind matters: a `Math.floor`
+      // that could never produce the last index would make the zombie
       // unspawnable and nothing else would notice.
       const { found } = yield* searchIn(FLOORED_WORLD, RESIDENT_CHUNKS, new Map(), 31_337)
 
@@ -570,6 +573,7 @@ describe('the search’s randomness', () => {
       }
       expect(kinds.has(CREEPER_KIND)).toBe(true)
       expect(kinds.has(ENDERMAN_KIND)).toBe(true)
+      expect(kinds.has(ZOMBIE_KIND)).toBe(true)
     }),
   )
 })
@@ -673,7 +677,8 @@ describe('the search inside the frame', () => {
       const entries = yield* roster.api.entities
       for (const entity of entries) {
         expect(HOSTILE_KINDS).toContain(entity.kind)
-        expect(entity.behaviour).toBeDefined()
+        expect(entity.healthPoints).toBe(maxHealthOfKind(entity.kind))
+        expect(entity.behaviour).toStrictEqual(initialBehaviourOfKind(entity.kind))
       }
     }).pipe(Effect.provide(FrameServicesLayer)),
   )
