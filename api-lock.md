@@ -13,8 +13,8 @@
 <!-- ------------------------------------------------------------------------- -->
 
 format: 1
-exported declarations: 478
-supporting declarations: 61
+exported declarations: 481
+supporting declarations: 63
 
 ## Exported
 
@@ -1019,6 +1019,8 @@ type GameplayFrameState = {
     readonly fallingBlocks: Ref.Ref<FallingBlockQueue>;
     readonly fluidFrontier: Ref.Ref<ReadonlyArray<FluidWorkItem>>;
     readonly tickCount: Ref.Ref<number>;
+    readonly portalCandidates: Ref.Ref<ReadonlyMap<Dimension, ReadonlyArray<BlockPosition>>>;
+    readonly portalTravels: Ref.Ref<ReadonlyArray<PortalTravelEvent>>;
     readonly portalDwell: Ref.Ref<PortalDwell>;
 };
 ```
@@ -1836,6 +1838,16 @@ type PlayerVitals = SimVitals;
 
 ```ts
 type PlayerVitalsView = SimVitalsView;
+```
+
+### PortalTravelEvent  `type`
+
+```ts
+type PortalTravelEvent = {
+    readonly sourceDimension: Dimension;
+    readonly sourcePosition: BlockPosition;
+    readonly plan: PortalTravelPlan;
+};
 ```
 
 ### RAIL_HEADING_EPSILON  `const`
@@ -2693,6 +2705,12 @@ const drainMobDrops: (state: GameplayFrameState) => Effect.Effect<ReadonlyArray<
 const drainPlayerDamages: (state: GameplayFrameState) => Effect.Effect<ReadonlyArray<PlayerDamageEvent>>;
 ```
 
+### drainPortalTravels  `const`
+
+```ts
+const drainPortalTravels: (state: GameplayFrameState) => Effect.Effect<ReadonlyArray<PortalTravelEvent>>;
+```
+
 ### drawRolls  `const`
 
 ```ts
@@ -3392,6 +3410,12 @@ const rollMobDrops: (rules: ReadonlyArray<MobDropRule>, kill: MobKill, rollsFor:
 const rollSelfDestructDrops: (blast: Blast) => ReadonlyArray<MobDropEvent>;
 ```
 
+### setPortalCandidates  `const`
+
+```ts
+const setPortalCandidates: (state: GameplayFrameState, dimension: Dimension, candidates: ReadonlyArray<BlockPosition>) => Effect.Effect<void>;
+```
+
 ### settled  `const`
 
 ```ts
@@ -4005,6 +4029,25 @@ type PortalFrame = {
     readonly width: number;
     readonly height: number;
     readonly interior: ReadonlyArray<BlockPosition>;
+};
+```
+
+### PortalLayout  `type`
+
+```ts
+type PortalLayout = {
+    readonly frame: ReadonlyArray<BlockPosition>;
+    readonly interior: ReadonlyArray<BlockPosition>;
+};
+```
+
+### PortalTravelPlan  `type`
+
+```ts
+type PortalTravelPlan = {
+    readonly toDimension: Dimension;
+    readonly destination: BlockPosition;
+    readonly portalToCreate: Option.Option<PortalLayout>;
 };
 ```
 

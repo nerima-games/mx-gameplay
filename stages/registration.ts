@@ -148,8 +148,9 @@ import {
 } from '../domain/fluid-frontier'
 import type { DeltaTimeSecs, GameModule, StageRegistration } from '../domain/frame-contract'
 import { DEFAULT_ROLL_SEED, drawRolls, rollAt } from '../domain/frame-rolls'
+import type { Dimension, PortalTravelPlan } from '../domain/nether-travel-port'
 import { OUTSIDE_PORTAL, type PortalDwell, stepPortalDwell } from '../domain/portal-dwell'
-import { applyPortalTravel } from '../domain/portal-travel'
+import { applyPortalTravel, NO_KNOWN_PORTALS } from '../domain/portal-travel'
 import { PlayerService, type PlayerServiceApi } from '../domain/player-port'
 import { blockTypeOfId } from '../domain/block-vocabulary'
 import { breakBlock } from '../domain/interactions/break-block'
@@ -438,6 +439,10 @@ export type GameplayFrameState = {
   readonly fallingBlocks: Ref.Ref<FallingBlockQueue>
   readonly fluidFrontier: Ref.Ref<ReadonlyArray<FluidWorkItem>>
   readonly tickCount: Ref.Ref<number>
+  /** Destination-dimension portal snapshots supplied by the host. */
+  readonly portalCandidates: Ref.Ref<ReadonlyMap<Dimension, ReadonlyArray<BlockPosition>>>
+  /** Completed dimension crossings waiting for host-side world generation. */
+  readonly portalTravels: Ref.Ref<ReadonlyArray<PortalTravelEvent>>
   /**
    * How long the player has stood in a portal block, or how long until one may
    * fire again.
@@ -449,6 +454,13 @@ export type GameplayFrameState = {
    * is reached through `PlayerServiceApi.setDimension`.
    */
   readonly portalDwell: Ref.Ref<PortalDwell>
+}
+
+/** A completed crossing and the source context needed to apply its world changes. */
+export type PortalTravelEvent = {
+  readonly sourceDimension: Dimension
+  readonly sourcePosition: BlockPosition
+  readonly plan: PortalTravelPlan
 }
 
 const pendingBlockBreakRequests = new WeakMap<GameplayFrameState, PendingBlockBreakRequestQueue>()
@@ -731,6 +743,10 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
   const fallingBlocks = yield* Ref.make<FallingBlockQueue>(emptyFallingBlockQueue)
   const fluidFrontier = yield* Ref.make<ReadonlyArray<FluidWorkItem>>([])
   const tickCount = yield* Ref.make(0)
+  const portalCandidates = yield* Ref.make<
+    ReadonlyMap<Dimension, ReadonlyArray<BlockPosition>>
+  >(new Map())
+  const portalTravels = yield* Ref.make<ReadonlyArray<PortalTravelEvent>>([])
   // OUTSIDE, which is the only honest starting state: a fresh world has nobody
   // standing in a portal, and a `Cooling` default would swallow the first
   // crossing of a session.
@@ -766,6 +782,8 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
     fallingBlocks,
     fluidFrontier,
     tickCount,
+    portalCandidates,
+    portalTravels,
     portalDwell,
   }
   pendingBlockBreakRequests.set(state, {
@@ -836,18 +854,19 @@ const stepPortalTravel = (
       return
     }
 
-    // NO CANDIDATE LIST IS PASSED, so `resolveNetherTravel` reuses nothing and
-    // every crossing plans a fresh portal. The missing thing is named and it is
-    // not a TODO: mc-worldgen owns the portal ledger (`mc-worldgen/docs/
-    // responsibility.md` §6, the 「ポータル一覧の所有者」 bullet) and has not built
-    // it yet, because a chunk-scoped persistent ledger with a save format is its
-    // own piece of work rather than a rider on a dwell timer.
-    //
-    // WHAT CHANGES HERE ON THAT DAY: this call gains the DESTINATION dimension's
-    // portals — never the source's, which would silently reuse a portal in the
-    // world being left, and no type can catch it because a `BlockPosition` does
-    // not say which world it is in. The hazard is written up at the owner.
-    yield* applyPortalTravel(player, cell)
+    const sourceDimension = yield* player.dimension
+    const destinationDimension: Dimension =
+      sourceDimension === 'overworld' ? 'nether' : 'overworld'
+    const snapshots = yield* Ref.get(state.portalCandidates)
+    const candidates = snapshots.get(destinationDimension) ?? NO_KNOWN_PORTALS
+    const plan = yield* applyPortalTravel(player, cell, candidates)
+
+    if (plan.toDimension !== sourceDimension) {
+      yield* Ref.update(state.portalTravels, (completed) => [
+        ...completed,
+        { sourceDimension, sourcePosition: cell, plan },
+      ])
+    }
   })
 
 /**
@@ -956,6 +975,23 @@ export const requestItemUse = (
 export const drainItemUseResults = (
   state: GameplayFrameState,
 ): Effect.Effect<ReadonlyArray<ItemUseResult>> => Ref.getAndSet(state.itemUseResults, [])
+
+/** Replace one destination dimension's known-portal snapshot for subsequent crossings. */
+export const setPortalCandidates = (
+  state: GameplayFrameState,
+  dimension: Dimension,
+  candidates: ReadonlyArray<BlockPosition>,
+): Effect.Effect<void> =>
+  Ref.update(state.portalCandidates, (current) => {
+    const next = new Map(current)
+    next.set(dimension, [...candidates])
+    return next
+  })
+
+/** Atomically drain completed portal crossings exactly once, preserving order. */
+export const drainPortalTravels = (
+  state: GameplayFrameState,
+): Effect.Effect<ReadonlyArray<PortalTravelEvent>> => Ref.getAndSet(state.portalTravels, [])
 
 /** Enqueue one legacy, uncorrelated bow release for the interaction stage. */
 export function requestBowShot(

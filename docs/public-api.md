@@ -287,7 +287,10 @@ plan.md §4.2 を素直に読むと `input` の後ろでもあり、`redstone` �
 | `makeGameplayStages` | **契約** | `mc-compose` が消費する唯一の入口。`ChunkStore` を要求する（§2-2） |
 | `gameplayStages(state, store, entities, inventory, player, time)` | 内部(可視) | state と各サービスを外から渡す版。プレビューとテストが state を覗くために使う。プレイヤー位置と時刻はそれぞれ PlayerService と TimeService が権威であり、互換Refはステージから読まない |
 | `makeGameplayFrameState` | 内部(可視) | 再入可能な初期化。テストが 2 つ作って独立性を検査する（DN-GP-6） |
-| `GameplayFrameState` | 内部(可視) | フレームローカルの作業メモ（`Ref` **19 本**）。ゲーム状態ではない |
+| `GameplayFrameState` | 内部(可視) | フレームローカルの作業メモ（`Ref` 群）。ゲーム状態ではない |
+| `setPortalCandidates` | **契約** | ホストが宛先次元ごとの既知ポータル snapshot を渡す。未設定の次元は空候補として扱い、新規ポータル設計になる |
+| `drainPortalTravels` | **契約** | 成立した移動を FIFO で 1 回だけ取り出す。2 回目の drain は空になる |
+| `PortalTravelEvent` | **契約** | 出発次元・出発セル・`PortalTravelPlan` を束ねる。`portalToCreate` が `Some` のときだけホストが世界生成を行う |
 | `requestTargetedPrimaryAttack` | 内部(可視) | プレイヤーの姿勢から敵とブロックを同じクリックで解決し、敵がブロックより手前なら `pendingMeleeAttacks`、それ以外でブロックがあれば `pendingBreaks` の片方だけに積む |
 | `TargetedPrimaryAttackResult` / `TargetedPrimaryAttackOptions` | 内部(可視) | 結果は `Melee`（`ShotHit`）/ `Block`（`BlockTarget`）/ `None`。既定値は melee reach 3、damage 1、block reach 5 |
 | `PlacementRequest` / `ItemUseRequest` | 内部(可視) | 受信箱に積む要求の形。どちらも「セル 1 つと手に持っているもの」で、**持ち物の型が互いに素**である（`PlaceableItemType` と `IgnitionItemType`）ので 1 つの union にはしていない |
@@ -295,10 +298,8 @@ plan.md §4.2 を素直に読むと `input` の後ろでもあり、`redstone` �
 | `BlockUseRequestId` / `BlockUseRequest` / `BlockUseResult` | **契約** | 成否を入力イベントへ返す相関付きプロトコル。結果は 1 回だけ drain される |
 | `LAVA_TICK_INTERVAL` | 内部(可視) | 暫定値。プレビューで測って決める |
 
-**`Ref` の本数は 19 で、内訳は「作業キュー 4 + 受信箱 7 + 送信箱 4 + 乱数の種 1 + ペア 2 + カウンタ 1」である。**
-下表は**全部ではなく、判定の型が違う 7 本**を挙げている —— 残りは同じ 2 つの型
+下表は**全部ではなく、判定の型が違う Ref**を挙げている —— 残りは同じ型
 （受信箱 / 送信箱）のどれかで、`stages/registration.ts` の冒頭が 1 本ずつ論じている。
-この節は長く「5 本」と書いたまま古くなっていた。
 
 | `Ref` | 何のためか | 判定（セーブファイルに要るか） |
 | --- | --- | --- |
@@ -309,6 +310,7 @@ plan.md §4.2 を素直に読むと `input` の後ろでもあり、`redstone` �
 | `pendingItemUses` | **受信箱**。今フレームのアイテム使用要求（火打石 / 火の玉） | 要らない。`pendingBreaks` と同じ理由 |
 | `usedItems` | **送信箱**。点火に使われた道具。`consumedItems` と**別**なのは、`InventoryService` の動詞が違う（消費ではなく耐久の消耗）からである | 要らない。同上 |
 | `pendingBlockUses` / `blockUseResults` | 相関 ID 付きのレバー use 受信箱 / 結果送信箱 | 要らない。レバーの on/off はホストのワールド状態であり、ここには保存しない |
+| `portalCandidates` / `portalTravels` | 宛先次元別の既知ポータル snapshot / 成立した移動の送信箱 | 要らない。ポータル台帳と生成済み世界はホストが保存し、ここにはフレーム間の受け渡しだけを置く |
 
 受信箱は mc-render の入力イベントになる。**送信箱のうち採掘のぶんは消えた** ——
 `domain/inventory-port.ts` が mc-sim の `InventoryService` を丸ごと写し、
