@@ -25,6 +25,11 @@ export const WOODEN_PICKAXE_MINING_TOOL: MiningToolProfile = {
   speedMultiplier: 2,
 }
 
+export const STONE_PICKAXE_MINING_TOOL: MiningToolProfile = {
+  category: 'pickaxe',
+  speedMultiplier: 4,
+}
+
 export type MiningProgressState = {
   readonly blockKey: string
   readonly blockId: number
@@ -52,11 +57,17 @@ export type AdvanceMiningProgressResult = {
   readonly shouldBreak: boolean
 }
 
-export const miningToolForItem = (item: ItemType | null): MiningToolProfile =>
-  item === 'wooden_pickaxe' ? WOODEN_PICKAXE_MINING_TOOL : HAND_MINING_TOOL
+export const miningToolForItem = (item: ItemType | null): MiningToolProfile => {
+  if (item === 'wooden_pickaxe') return WOODEN_PICKAXE_MINING_TOOL
+  if (item === 'stone_pickaxe') return STONE_PICKAXE_MINING_TOOL
+  return HAND_MINING_TOOL
+}
 
-export const miningLootContextForItem = (item: ItemType | null): BlockLootContext =>
-  item === 'wooden_pickaxe' ? { heldTier: 'wooden' } : NO_TOOL
+export const miningLootContextForItem = (item: ItemType | null): BlockLootContext => {
+  if (item === 'wooden_pickaxe') return { heldTier: 'wooden' }
+  if (item === 'stone_pickaxe') return { heldTier: 'stone' }
+  return NO_TOOL
+}
 
 /** `minTier` is intentionally irrelevant here; it gates drops, not mining speed. */
 export const effectiveMiningSpeed = (

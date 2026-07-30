@@ -9,11 +9,11 @@ importers:
   .:
     dependencies:
       '@nerima-games/mc-kernel':
-        specifier: 0.2.0
-        version: 0.2.0
+        specifier: 0.2.1
+        version: 0.2.1
       '@nerima-games/mc-sim':
-        specifier: 0.1.9
-        version: 0.1.9
+        specifier: 0.1.10
+        version: 0.1.10
       '@nerima-games/mc-worldgen':
         specifier: 0.1.0
         version: 0.1.0
@@ -253,16 +253,16 @@ packages:
   '@jridgewell/trace-mapping@0.3.31':
     resolution: {integrity: sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw==}
 
-  '@nerima-games/mc-kernel@0.2.0':
-    resolution: {integrity: sha512-aNO7SZP8mfrxRo0XsDNfg2P+BSmriCvVa4rqMzQPZfbqa7orx5qfuPRdmHjxVhFRmTpvsswv/4yuy9Z1HOGrqQ==, tarball: https://npm.pkg.github.com/download/@nerima-games/mc-kernel/0.2.0/e78e32d4c2fed78a30b275ec5f2ee3e0ee16e030}
+  '@nerima-games/mc-kernel@0.2.1':
+    resolution: {integrity: sha512-cAKKqLNEqLG6zhlsadjh2k7ocrNQZWviENFTgL4XYRoIXMAL5GHmQgljjjF3V2gJWCA4Pz4UAoZzF09O/fctpQ==, tarball: https://npm.pkg.github.com/download/@nerima-games/mc-kernel/0.2.1/f94922f0bebd22e43a5fa3fed530ab08b72251c9}
     engines: {node: '>=24.0.0', pnpm: '>=11.0.0'}
 
   '@nerima-games/mc-physics@0.1.0':
     resolution: {integrity: sha512-5RFYGtej8TvBFGetTbitEicGyohv2ZQrstL3R151Do1bVheqjIBJUH7R2SbtjDgOKVcTMSZgT8HogfZJ8Na7Kw==, tarball: https://npm.pkg.github.com/download/@nerima-games/mc-physics/0.1.0/83c9b8fbef29cda6f5aa9db047cfa8b3b7708fd7}
     engines: {node: '>=24.0.0', pnpm: '>=11.0.0'}
 
-  '@nerima-games/mc-sim@0.1.9':
-    resolution: {integrity: sha512-tVRVXsd7WC1TqRahedTwaiOUkSdEuy+hoXRyxkhcbgJLR+VzmcDlS3kHCGDvsTifnd7uiRaHdjHs8hOdvc3n/Q==, tarball: https://npm.pkg.github.com/download/@nerima-games/mc-sim/0.1.9/29b7bd4c7c6aa0007a5b19493bda0d79245f0f96}
+  '@nerima-games/mc-sim@0.1.10':
+    resolution: {integrity: sha512-McIXJWqetZ6/FjZXu6oMIOQpaAsmFPJKoqO1pYVMm/jZ+XNQpPZsT57u1lo0rLJLah6fSNilJuuFSTOqF6SpYw==, tarball: https://npm.pkg.github.com/download/@nerima-games/mc-sim/0.1.10/a436c58aedcd9afae56f99ee9c6ae6133cbc0e1e}
     engines: {node: '>=24.0.0', pnpm: '>=11.0.0'}
 
   '@nerima-games/mc-worldgen@0.1.0':
@@ -1048,7 +1048,7 @@ snapshots:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.5.5
 
-  '@nerima-games/mc-kernel@0.2.0':
+  '@nerima-games/mc-kernel@0.2.1':
     dependencies:
       effect: 3.22.0
 
@@ -1056,7 +1056,7 @@ snapshots:
     dependencies:
       effect: 3.22.0
 
-  '@nerima-games/mc-sim@0.1.9':
+  '@nerima-games/mc-sim@0.1.10':
     dependencies:
       '@nerima-games/mc-physics': 0.1.0
       effect: 3.22.0

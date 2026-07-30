@@ -5,6 +5,7 @@ import {
   type HarvestToolRequirement,
 } from '@nerima-games/mc-kernel'
 import { Effect } from 'effect'
+import { blockLoot } from '../domain/interactions/block-loot'
 import { type requestBlockBreak } from '../stages/registration'
 import {
   advanceMiningProgress,
@@ -18,6 +19,7 @@ import {
 } from '../domain/interactions/mining-progress'
 
 const STONE = { position: blockPosition(1, 64, 2), blockId: blockIdOf('stone') }
+const STONE_BESIDE = { position: blockPosition(2, 64, 2), blockId: blockIdOf('stone') }
 const DIRT = { position: blockPosition(1, 64, 3), blockId: blockIdOf('dirt') }
 const DIRT_AT_STONE_POSITION = { position: STONE.position, blockId: DIRT.blockId }
 
@@ -29,6 +31,7 @@ describe('mining duration', () => {
   it.effect('maps the selected item to its loot context', () =>
     Effect.sync(() => {
       expect(miningLootContextForItem('wooden_pickaxe')).toStrictEqual({ heldTier: 'wooden' })
+      expect(miningLootContextForItem('stone_pickaxe')).toStrictEqual({ heldTier: 'stone' })
       expect(miningLootContextForItem(null)).toStrictEqual({})
       expect(miningLootContextForItem('dirt')).toStrictEqual({})
     }),
@@ -53,6 +56,25 @@ describe('mining duration', () => {
       expect(miningDurationSecsForBlock(DIRT.blockId, 'wooden_pickaxe')).toBe(
         miningDurationSecsForBlock(DIRT.blockId, null),
       )
+    }),
+  )
+
+  it.effect('a stone pickaxe mines pickaxe blocks faster than a wooden pickaxe', () =>
+    Effect.sync(() => {
+      expect(miningDurationSecsForBlock(STONE.blockId, 'stone_pickaxe')).toBeLessThan(
+        miningDurationSecsForBlock(STONE.blockId, 'wooden_pickaxe'),
+      )
+    }),
+  )
+
+  it.effect('only a stone-tier pickaxe yields raw iron from iron ore', () =>
+    Effect.sync(() => {
+      const ironOre = blockIdOf('iron_ore')
+
+      expect(blockLoot(ironOre, miningLootContextForItem('wooden_pickaxe'))).toStrictEqual([])
+      expect(blockLoot(ironOre, miningLootContextForItem('stone_pickaxe'))).toStrictEqual([
+        { item: 'raw_iron', count: 1 },
+      ])
     }),
   )
 
@@ -268,6 +290,39 @@ describe('delta-time progress', () => {
       expect(completed.shouldBreak).toBe(true)
       expect(heldAfterCompletion.shouldBreak).toBe(false)
       expect(heldAfterCompletion.nextProgress?.completed).toBe(true)
+    }),
+  )
+
+  it.effect('emits one completion per consecutively mined block for durability accounting', () =>
+    Effect.sync(() => {
+      const requiredSecs = miningDurationSecsForBlock(STONE.blockId, 'stone_pickaxe')
+      const first = advanceMiningProgress({
+        current: null,
+        target: STONE,
+        isMining: true,
+        selectedItem: 'stone_pickaxe',
+        deltaSecs: requiredSecs,
+      })
+      const held = advanceMiningProgress({
+        current: first.nextProgress,
+        target: STONE,
+        isMining: true,
+        selectedItem: 'stone_pickaxe',
+        deltaSecs: requiredSecs,
+      })
+      const second = advanceMiningProgress({
+        current: held.nextProgress,
+        target: STONE_BESIDE,
+        isMining: true,
+        selectedItem: 'stone_pickaxe',
+        deltaSecs: requiredSecs,
+      })
+
+      expect([first.shouldBreak, held.shouldBreak, second.shouldBreak]).toStrictEqual([
+        true,
+        false,
+        true,
+      ])
     }),
   )
 
