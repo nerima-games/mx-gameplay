@@ -13,8 +13,8 @@
 <!-- ------------------------------------------------------------------------- -->
 
 format: 1
-exported declarations: 502
-supporting declarations: 63
+exported declarations: 503
+supporting declarations: 64
 
 ## Exported
 
@@ -2056,6 +2056,7 @@ type RedstoneInputFlags = Partial<{
 type RightClickRoute = {
     readonly kind: 'storage';
     readonly at: BlockPosition;
+    readonly block: StorageBlock;
 } | {
     readonly kind: 'craftingTable';
     readonly at: BlockPosition;
@@ -2229,6 +2230,12 @@ type SpawnVerdict = {
     readonly _tag: 'Refused';
     readonly reason: SpawnRefusal;
 };
+```
+
+### StorageBlock  `type`
+
+```ts
+type StorageBlock = (typeof STORAGE_BLOCK_TYPES)[number];
 ```
 
 ### SugarCaneWaterRefusal  `type`
@@ -4264,6 +4271,12 @@ type RosterRepair = {
 const SPECIAL_BLOCK_BY_ITEM: {
     readonly redstone_dust: "redstone_wire";
 };
+```
+
+### STORAGE_BLOCK_TYPES  `const`
+
+```ts
+const STORAGE_BLOCK_TYPES: readonly ["chest", "shulker_box"];
 ```
 
 ### SpawnRequest  `type`

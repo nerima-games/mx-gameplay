@@ -27,15 +27,32 @@ const kindOf = (block: BlockType): RightClickRoute['kind'] | undefined =>
 describe('the routes the reference tests', () => {
   it.effect('a chest routes to storage', () =>
     Effect.sync(() => {
-      expect(rightClickRoute(AT, 'chest')).toStrictEqual({ kind: 'storage', at: AT })
+      expect(rightClickRoute(AT, 'chest')).toStrictEqual({
+        kind: 'storage',
+        at: AT,
+        block: 'chest',
+      })
     }),
   )
 
-  it.effect('a shulker box routes to the SAME place as a chest', () =>
+  it.effect('a shulker box uses the storage route and preserves its block type', () =>
     Effect.sync(() => {
-      // The reason storage is a set rather than two routes: both open the same
-      // screen, and a caller must not have to know which container it was.
       expect(kindOf('shulker_box')).toBe(kindOf('chest'))
+      expect(rightClickRoute(AT, 'shulker_box')).toStrictEqual({
+        kind: 'storage',
+        at: AT,
+        block: 'shulker_box',
+      })
+    }),
+  )
+
+  it.effect('storage routes narrow to the concrete container block', () =>
+    Effect.sync(() => {
+      for (const block of ['chest', 'shulker_box'] as const) {
+        const route = rightClickRoute(AT, block)
+        expect(route?.kind).toBe('storage')
+        expect(route?.kind === 'storage' && route.block).toBe(block)
+      }
     }),
   )
 

@@ -29,15 +29,10 @@
  * THE DOOR CARRIES ITS STATE AND THE OTHERS DO NOT
  * ---------------------------------------------------------------------------
  *
- * `door` is the one route with a payload beyond the position, because `door`
- * and `door_open` are two block types for one object and the rule that toggles
- * it needs to know which it is looking at. Every other route's block type is
- * recoverable from the route's own tag.
- *
- * That asymmetry is the reference's and is kept. Adding `blockType` to every
- * route "for consistency" would make the payload a copy of the tag everywhere
- * except one place, and a reader would have to check whether the two ever
- * disagree.
+ * `storage` and `door` carry the concrete block because each route represents
+ * more than one block type. The host needs that distinction to select the
+ * correct container lifecycle or door transition. Single-block routes remain
+ * identified completely by their tag.
  */
 import type { BlockType } from '../block-vocabulary'
 import type { BlockPosition } from '../chunk-store-port'
@@ -49,7 +44,9 @@ import type { BlockPosition } from '../chunk-store-port'
  * route whose membership is expected to grow (barrels, ender chests, trapped
  * chests all belong here), and a set is where a reader looks for that.
  */
-export const STORAGE_BLOCKS: ReadonlySet<BlockType> = new Set<BlockType>(['chest', 'shulker_box'])
+const STORAGE_BLOCK_TYPES = ['chest', 'shulker_box'] as const
+export type StorageBlock = (typeof STORAGE_BLOCK_TYPES)[number]
+export const STORAGE_BLOCKS: ReadonlySet<BlockType> = new Set<BlockType>(STORAGE_BLOCK_TYPES)
 
 /** The two block types that are the same door. */
 export const DOOR_BLOCKS = ['door', 'door_open'] as const
@@ -57,7 +54,7 @@ export type DoorBlock = (typeof DOOR_BLOCKS)[number]
 
 /** What kind of thing the player right-clicked. */
 export type RightClickRoute =
-  | { readonly kind: 'storage'; readonly at: BlockPosition }
+  | { readonly kind: 'storage'; readonly at: BlockPosition; readonly block: StorageBlock }
   | { readonly kind: 'craftingTable'; readonly at: BlockPosition }
   | { readonly kind: 'furnace'; readonly at: BlockPosition }
   | { readonly kind: 'bed'; readonly at: BlockPosition }
@@ -85,6 +82,8 @@ export const ROUTED_BLOCKS: ReadonlyArray<BlockType> = [
 const isDoor = (block: BlockType): block is DoorBlock =>
   (DOOR_BLOCKS as ReadonlyArray<BlockType>).includes(block)
 
+const isStorage = (block: BlockType): block is StorageBlock => STORAGE_BLOCKS.has(block)
+
 /**
  * Route a right-click, or `undefined` for a block with no screen and no toggle.
  *
@@ -105,8 +104,8 @@ export const rightClickRoute = (
     return undefined
   }
 
-  if (STORAGE_BLOCKS.has(block)) {
-    return { kind: 'storage', at }
+  if (isStorage(block)) {
+    return { kind: 'storage', at, block }
   }
 
   if (isDoor(block)) {

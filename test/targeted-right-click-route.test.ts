@@ -15,6 +15,8 @@ const SPAWN_POSE = {
   pitchRadians: 0,
 }
 const CRAFTING_TABLE_ID = blockIdOf('crafting_table') ?? -1
+const CHEST_ID = blockIdOf('chest') ?? -1
+const SHULKER_BOX_ID = blockIdOf('shulker_box') ?? -1
 const DIRT_ID = blockIdOf('dirt') ?? -1
 const UNKNOWN_BLOCK_ID = 999_999
 
@@ -34,6 +36,30 @@ describe('targetedRightClickRoute', () => {
       const route = yield* targetedRightClickRoute(world.chunkStore, world.player)
 
       expect(route).toEqual({ kind: 'craftingTable', at: TARGET })
+    }),
+  )
+
+  it.effect('preserves chest identity through targeting and routing', () =>
+    Effect.gen(function* () {
+      const world = yield* makeTargetedWorld(CHEST_ID)
+
+      expect(yield* targetedRightClickRoute(world.chunkStore, world.player)).toEqual({
+        kind: 'storage',
+        at: TARGET,
+        block: 'chest',
+      })
+    }),
+  )
+
+  it.effect('preserves shulker-box identity through targeting and routing', () =>
+    Effect.gen(function* () {
+      const world = yield* makeTargetedWorld(SHULKER_BOX_ID)
+
+      expect(yield* targetedRightClickRoute(world.chunkStore, world.player)).toEqual({
+        kind: 'storage',
+        at: TARGET,
+        block: 'shulker_box',
+      })
     }),
   )
 
