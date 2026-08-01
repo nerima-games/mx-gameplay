@@ -32,6 +32,12 @@ plan.md §3.11:
 prettier も biome も `.editorconfig` も置かない。整形の権威が 2 つあると
 「どちらが正か」の議論が発生し、CI が 2 回走る。
 
+**oxlint 自体は `package.json` の devDependency ではなく、`flake.nix` の devShell から供給される。**
+以前は各リポジトリが `package.json` に独自バージョンを固定しており、`no-restricted-imports` を
+実装していない oxlint 0.12.x に気づかず滞留する例があった。nixpkgs 由来の単一バージョンに
+統一することでこの drift を無くしている。CI（`.github/workflows/ci.yaml`）も
+`nix develop --command pnpm lint` で実行する。
+
 ### 1-2. 型検査を 2 回走らせている理由
 
 `tsconfig.build.json` は `test/**` と `scripts/**` を除外する。**除外はここにしかない。**

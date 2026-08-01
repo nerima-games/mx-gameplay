@@ -76,38 +76,29 @@
     "no-sync": "warn",
 
     // Style
-    "array-bracket-spacing": "warn",
-    "block-spacing": "warn",
-    "brace-style": ["warn", "1tbs", { "allowSingleLine": true }],
-    "camelcase": "warn",
-    "comma-dangle": ["warn", "always-multiline"],
-    "comma-spacing": "warn",
-    "comma-style": "warn",
-    "computed-property-spacing": "warn",
-    "eol-last": "warn",
-    "func-call-spacing": "warn",
-    "indent": "off",
-    "key-spacing": "warn",
-    "keyword-spacing": "warn",
-    "linebreak-style": ["warn", "unix"],
-    "lines-between-class-members": "warn",
+    // NOTE: as of oxlint 1.73.0, oxlint does not implement any ESLint-core
+    // *formatting* rules at all (array-bracket-spacing, block-spacing,
+    // brace-style, camelcase, comma-dangle, comma-spacing, comma-style,
+    // computed-property-spacing, eol-last, func-call-spacing, indent,
+    // key-spacing, keyword-spacing, linebreak-style,
+    // lines-between-class-members, no-mixed-spaces-and-tabs, no-new-object,
+    // no-tabs, no-trailing-spaces, no-whitespace-before-property,
+    // object-curly-spacing, one-var, operator-linebreak, padded-blocks,
+    // quote-props, semi-spacing, space-before-blocks, space-infix-ops,
+    // space-unary-ops, spaced-comment). Verified empirically against oxlint
+    // 1.73.0: `oxlint --print-config` hard-fails ("Rule 'X' not found in
+    // plugin 'eslint'") on every one of them. This was previously masked
+    // because the pinned oxlint@0.12.0 devDependency silently ignored both
+    // the unknown `"ignore"` config key and these unknown rule names instead
+    // of erroring (see flake.nix's comment on why oxlint moved to the Nix
+    // devShell). Oxlint's stance is that formatting is a formatter's job
+    // (Oxfmt), not the linter's; there is deliberately no replacement
+    // configured here since this repo runs no formatter (see the top-of-file
+    // note). If any of these are needed again, they must be loaded via
+    // oxlint's JS plugin system (stylistic ESLint plugin), not as bare rule
+    // names.
     "no-array-method-this-argument": "warn",
     "no-bitwise": "warn",
-    "no-mixed-spaces-and-tabs": "error",
-    "no-new-object": "warn",
-    "no-tabs": "error",
-    "no-trailing-spaces": "warn",
-    "no-whitespace-before-property": "warn",
-    "object-curly-spacing": ["warn", "always"],
-    "one-var": ["warn", "never"],
-    "operator-linebreak": "warn",
-    "padded-blocks": ["warn", "never"],
-    "quote-props": ["warn", "as-needed"],
-    "semi-spacing": "warn",
-    "space-before-blocks": "warn",
-    "space-infix-ops": "warn",
-    "space-unary-ops": "warn",
-    "spaced-comment": "warn",
 
     // Restriction
     "default-case": "warn",
@@ -156,5 +147,5 @@
     "no-param-reassign": "off",
     "no-plusplus": "off"
   },
-  "ignore": ["node_modules/**", "coverage/**", "dist/**", ".git/**", "*.config.ts", "docs/**"]
+  "ignorePatterns": ["node_modules/**", "coverage/**", "dist/**", ".git/**", "*.config.ts", "docs/**"]
 }

@@ -88,12 +88,16 @@ oxlint が該当ルールを実装したら `.oxlintrc.json` 側へ移す。
 ### セットアップ
 
 ```console
-$ direnv allow          # flake.nix の devShell で nodejs_22 + corepack が入る
+$ direnv allow          # flake.nix の devShell で nodejs_22 + corepack + oxlint が入る
 $ pnpm install
 ```
 
 Nix を使わない場合は Node.js 22 以上と pnpm 9.15.0 を用意する（`corepack enable && corepack prepare pnpm@9.15.0 --activate`）。
 バージョンは `package.json` の `packageManager` でピン留めしてある。
+**oxlint は `package.json` の devDependency ではない** — `flake.nix` の devShell からのみ供給される
+（各リポジトリが独自にバージョンを固定した結果、一部が `no-restricted-imports` 未実装の 0.12.x に
+気づかず滞留していた反省から、nixpkgs 由来の単一バージョンに統一した）。
+Nix を使わない場合は `nix develop --command pnpm lint` のように `nix develop` 経由で実行する。
 
 > **注意**: ツールチェーンは `devenv.nix` から `flake.nix` + `flake.lock` に移行済みである。
 > `flake.lock` はコミットされているので、`nix develop`（`.envrc` は `use flake`）は
