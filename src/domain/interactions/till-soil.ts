@@ -52,6 +52,7 @@
 import { Effect } from 'effect'
 import type { BlockType } from '../block-vocabulary'
 import { blockIdOf, blockTypeOfId } from '../block-vocabulary'
+import { above } from '../block-position-key'
 import type { BlockPosition } from '../chunk-store-port'
 
 /**
@@ -98,11 +99,7 @@ export type TillOutcome =
   | { readonly _tag: 'obstructed'; readonly blockedBy: BlockType }
 
 /** The cell a hoe must find clear. */
-export const cellAbove = (ground: BlockPosition): BlockPosition => ({
-  x: ground.x,
-  y: ground.y + 1,
-  z: ground.z,
-})
+export const cellAbove = (ground: BlockPosition): BlockPosition => above(ground)
 
 /**
  * Decide, given what is already known about the two cells.

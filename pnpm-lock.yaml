@@ -12,8 +12,8 @@ importers:
         specifier: 0.1.0
         version: 0.1.0
       '@nerima-games/mc-kernel':
-        specifier: 0.2.9
-        version: 0.2.9
+        specifier: 0.2.10
+        version: 0.2.10
       '@nerima-games/mc-sim':
         specifier: 0.1.25
         version: 0.1.25
@@ -344,6 +344,10 @@ packages:
 
   '@nerima-games/mc-audio@0.1.0':
     resolution: {integrity: sha512-bqEeDNNlXVnF+4nxQwZN2vcoC4fKlelUE6u0ig7KkIM66EyPqQGOYvtZTBzy8J9aSgEoLzWFlQ5Vj4BgVrUlRw==, tarball: https://npm.pkg.github.com/download/@nerima-games/mc-audio/0.1.0/1ff271b5de296c87043222c0e248aa6371b65c89}
+    engines: {node: '>=24.0.0', pnpm: '>=11.0.0'}
+
+  '@nerima-games/mc-kernel@0.2.10':
+    resolution: {integrity: sha512-bRq4FQhXFb1owCIHxGdPu6sdgXbkoxPasMwsmurQahWgr5WTsntn7IJkVmPvsj2bz9q9TAMuoHYjz8KnEIwCcA==, tarball: https://npm.pkg.github.com/download/@nerima-games/mc-kernel/0.2.10/1e5ae2529ce9c55acfbe9d8839b6439a54653028}
     engines: {node: '>=24.0.0', pnpm: '>=11.0.0'}
 
   '@nerima-games/mc-kernel@0.2.9':
@@ -1611,6 +1615,10 @@ snapshots:
       read-yaml-file: 1.1.0
 
   '@nerima-games/mc-audio@0.1.0':
+    dependencies:
+      effect: 3.22.0
+
+  '@nerima-games/mc-kernel@0.2.10':
     dependencies:
       effect: 3.22.0
 

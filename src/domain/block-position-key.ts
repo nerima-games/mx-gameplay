@@ -22,6 +22,7 @@
  * NOT re-exported from `index.ts`, for the reason its two neighbours are not:
  * it is somebody else's vocabulary wearing this repository's file name.
  */
+import { adjacentBlockPosition, blockPosition, horizontalBlockNeighbours } from '@nerima-games/mc-kernel'
 import type { BlockPosition } from './chunk-store-port'
 import type { PositionKey } from './position-key'
 
@@ -45,18 +46,14 @@ export const positionOfKey = (key: PositionKey): BlockPosition => {
 }
 
 /** The cell directly below `position`. */
-export const below = (position: BlockPosition): BlockPosition => ({
-  x: position.x,
-  y: position.y - 1,
-  z: position.z,
-})
+const kernelPosition = (position: BlockPosition) => blockPosition(position.x, position.y, position.z)
+
+export const below = (position: BlockPosition): BlockPosition =>
+  adjacentBlockPosition(kernelPosition(position), 'down')
 
 /** The cell directly above `position`. */
-export const above = (position: BlockPosition): BlockPosition => ({
-  x: position.x,
-  y: position.y + 1,
-  z: position.z,
-})
+export const above = (position: BlockPosition): BlockPosition =>
+  adjacentBlockPosition(kernelPosition(position), 'up')
 
 /**
  * The four cells beside `position` on the horizontal plane, in `-x, +x, -z, +z`
@@ -85,9 +82,5 @@ export const above = (position: BlockPosition): BlockPosition => ({
  * issue the same store calls in the same sequence (plan.md §5.1-3), and a test
  * that counts reads is otherwise counting an iteration order nobody wrote down.
  */
-export const horizontalNeighbours = (position: BlockPosition): ReadonlyArray<BlockPosition> => [
-  { x: position.x - 1, y: position.y, z: position.z },
-  { x: position.x + 1, y: position.y, z: position.z },
-  { x: position.x, y: position.y, z: position.z - 1 },
-  { x: position.x, y: position.y, z: position.z + 1 },
-]
+export const horizontalNeighbours = (position: BlockPosition): ReadonlyArray<BlockPosition> =>
+  horizontalBlockNeighbours(kernelPosition(position))

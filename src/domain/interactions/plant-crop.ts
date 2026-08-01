@@ -46,6 +46,7 @@
 import { Effect } from 'effect'
 import type { BlockType } from '../block-vocabulary'
 import { blockIdOf, blockTypeOfId } from '../block-vocabulary'
+import { above } from '../block-position-key'
 import type { ItemType } from '../item-vocabulary'
 import type { BlockPosition } from '../chunk-store-port'
 
@@ -105,11 +106,7 @@ export type PlantOutcome =
   | { readonly _tag: 'occupied'; readonly crop: BlockType; readonly blockedBy: BlockType }
 
 /** Where the crop goes: directly above the soil. */
-export const cropCellAbove = (soil: BlockPosition): BlockPosition => ({
-  x: soil.x,
-  y: soil.y + 1,
-  z: soil.z,
-})
+export const cropCellAbove = (soil: BlockPosition): BlockPosition => above(soil)
 
 /**
  * Decide, given what is already known about the two cells.
