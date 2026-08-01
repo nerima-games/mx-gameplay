@@ -34,14 +34,14 @@
  */
 import { describe, expect, it } from '@effect/vitest'
 import { Effect } from 'effect'
-import { DeltaTimeSecs } from '../domain/frame-contract'
+import { DeltaTimeSecs } from '../src/domain/frame-contract'
 import {
   OUTSIDE_PORTAL,
   PORTAL_ACTIVATION_SECS,
   PORTAL_REENTRY_COOLDOWN_SECS,
   stepPortalDwell,
   type PortalDwell,
-} from '../domain/portal-dwell'
+} from '../src/domain/portal-dwell'
 
 const dt = (seconds: number): DeltaTimeSecs => DeltaTimeSecs(seconds)
 

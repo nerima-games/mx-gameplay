@@ -31,7 +31,7 @@
  */
 import { describe, expect, it } from '@effect/vitest'
 import { Effect } from 'effect'
-import { DEFAULT_ROLL_SEED, drawRolls, nextRoll, normaliseSeed, rollAt } from '../domain/frame-rolls'
+import { DEFAULT_ROLL_SEED, drawRolls, nextRoll, normaliseSeed, rollAt } from '../src/domain/frame-rolls'
 
 /** The generator's modulus, restated. `domain/frame-rolls.ts` keeps it private. */
 const MODULUS = 2_147_483_647

@@ -58,7 +58,7 @@ import {
   PLACEABLE_ITEM_TYPES,
   resolveDrop,
   type BlockType,
-} from '../domain/block-vocabulary'
+} from '../src/domain/block-vocabulary'
 
 describe('the kernel capability mirror', () => {
   it.effect('does not leak into this package\'s published surface', () =>
@@ -67,7 +67,7 @@ describe('the kernel capability mirror', () => {
       // `domain/chunk-store-port.ts` and `domain/frame-contract.ts`.
       // Re-exporting another repository's vocabulary would make deleting the
       // stand-in a breaking change for every consumer of mx-gameplay.
-      const barrel = yield* Effect.promise(() => import('../index'))
+      const barrel = yield* Effect.promise(() => import('../src/index'))
       expect(Object.keys(barrel)).not.toContain('fallsWhenUnsupported')
       expect(Object.keys(barrel)).not.toContain('canSupportAttachments')
     }),
@@ -350,7 +350,7 @@ describe('the supportRule mirror', () => {
 
   it.effect('does not leak into this package’s published surface either', () =>
     Effect.gen(function* () {
-      const barrel = yield* Effect.promise(() => import('../index'))
+      const barrel = yield* Effect.promise(() => import('../src/index'))
       expect(Object.keys(barrel)).not.toContain('canBlockStaySupported')
       expect(Object.keys(barrel)).not.toContain('supportRuleOfBlockId')
     }),

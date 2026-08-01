@@ -21,21 +21,21 @@
  */
 import { describe, expect, it } from '@effect/vitest'
 import { Effect } from 'effect'
-import { blockIdOf } from '../domain/block-vocabulary'
-import { AIR_BLOCK_ID, type BlockId, type BlockPosition } from '../domain/chunk-store-port'
-import { igniteFire } from '../domain/interactions/ignite-fire'
-import { PORTAL_WINDOW_RADIUS, ignitePortal } from '../domain/interactions/ignite-portal'
-import { TNT_BLOCK_ID } from '../domain/interactions/ignite-tnt'
+import { blockIdOf } from '../src/domain/block-vocabulary'
+import { AIR_BLOCK_ID, type BlockId, type BlockPosition } from '../src/domain/chunk-store-port'
+import { igniteFire } from '../src/domain/interactions/ignite-fire'
+import { PORTAL_WINDOW_RADIUS, ignitePortal } from '../src/domain/interactions/ignite-portal'
+import { TNT_BLOCK_ID } from '../src/domain/interactions/ignite-tnt'
 import {
   IGNITION_ITEM_TYPES,
   isIgnitionItem,
   useFlintAndSteel,
-} from '../domain/interactions/use-flint-and-steel'
-import { MAX_PORTAL_WIDTH, generatePortalLayout } from '../domain/portal-frame-port'
-import { chunkCoordsAround } from '../domain/chunk-window'
-import { ITEM_TYPES } from '../domain/item-vocabulary'
+} from '../src/domain/interactions/use-flint-and-steel'
+import { MAX_PORTAL_WIDTH, generatePortalLayout } from '../src/domain/portal-frame-port'
+import { chunkCoordsAround } from '../src/domain/chunk-window'
+import { ITEM_TYPES } from '../src/domain/item-vocabulary'
 import { makeChunkStoreDouble, world, STONE } from './support/chunk-store-double'
-import type { BlockWriteOutcome, ChunkStoreApi } from '../domain/chunk-store-port'
+import type { BlockWriteOutcome, ChunkStoreApi } from '../src/domain/chunk-store-port'
 
 /**
  * A store that answers the read honestly and then changes its mind.

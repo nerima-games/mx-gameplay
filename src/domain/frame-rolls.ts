@@ -72,7 +72,7 @@
  *     reproducibility has to be argued for.
  *   - It is one line, and a reader can check it against a citation rather than
  *     against a comment.
- *   - It uses no bitwise operator, which `oxlint.json`'s `no-bitwise` would
+ *   - It uses no bitwise operator, which `.oxlintrc.json`'s `no-bitwise` would
  *     otherwise have to be suppressed for — and a suppression comment in the one
  *     file that produces randomness is exactly the kind of thing nobody reads.
  *

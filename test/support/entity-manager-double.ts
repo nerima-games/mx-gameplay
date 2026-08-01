@@ -61,7 +61,7 @@
  * performs.
  */
 import { Effect, Layer, Ref } from 'effect'
-import type { MobBehaviour } from '../../domain/entities/mob-frame'
+import type { MobBehaviour } from '../../src/domain/entities/mob-frame'
 import {
   EntityId,
   entityManagerTag,
@@ -72,7 +72,7 @@ import {
   type EntityState,
   type EntityStep,
   type Position,
-} from '../../domain/entity-manager-port'
+} from '../../src/domain/entity-manager-port'
 
 export type RosterCalls = {
   readonly sweeps: number

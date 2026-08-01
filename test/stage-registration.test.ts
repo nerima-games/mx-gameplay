@@ -8,21 +8,21 @@
  */
 import { describe, expect, it } from '@effect/vitest'
 import { Effect, Layer, Ref } from 'effect'
-import { AIR_BLOCK_ID, type ChunkStore } from '../domain/chunk-store-port'
+import { AIR_BLOCK_ID, type ChunkStore } from '../src/domain/chunk-store-port'
 import {
   CREEPER_KIND,
   type MobBehaviour,
   type MobDropEvent,
   type MobSpawnAttempt,
-} from '../domain/entities/mob-frame'
+} from '../src/domain/entities/mob-frame'
 import {
   EntityId,
   EntityKind,
   type EntityManager,
   type EntityRoster,
-} from '../domain/entity-manager-port'
-import { BOW_TARGET_CENTER_Y_OFFSET } from '../domain/interactions/bow-shot'
-import { BOW_FULL_CHARGE_SECS, BOW_MIN_CHARGE_SECS } from '../domain/interactions/draw-bow'
+} from '../src/domain/entity-manager-port'
+import { BOW_TARGET_CENTER_Y_OFFSET } from '../src/domain/interactions/bow-shot'
+import { BOW_FULL_CHARGE_SECS, BOW_MIN_CHARGE_SECS } from '../src/domain/interactions/draw-bow'
 import {
   TimeService,
   TimeServiceLayer,
@@ -37,9 +37,9 @@ import {
   type FrameServices,
   type GameModule,
   type StageRegistration,
-} from '../domain/frame-contract'
-import { disturb, takeBatch } from '../domain/falling-block'
-import { DEFAULT_ROLL_SEED } from '../domain/frame-rolls'
+} from '../src/domain/frame-contract'
+import { disturb, takeBatch } from '../src/domain/falling-block'
+import { DEFAULT_ROLL_SEED } from '../src/domain/frame-rolls'
 import {
   gameplayStages,
   drainBowShotResults,
@@ -53,13 +53,13 @@ import {
   requestBowShot,
   requestMeleeAttack,
   requestMobSpawn,
-} from '../stages/registration'
+} from '../src/stages/registration'
 import {
   EXPERIENCE_MODULE_STAGE_PREFIXES,
   GAMEPLAY_STAGE_IDS,
   OWN_STAGE_PREFIX,
   UPSTREAM_STAGE_IDS,
-} from '../stages/stage-ids'
+} from '../src/stages/stage-ids'
 import {
   emptyWorldStoreLayer,
   makeChunkStoreDouble,
@@ -68,7 +68,7 @@ import {
 } from './support/chunk-store-double'
 import { emptyRosterLayer, makeEntityManagerDouble } from './support/entity-manager-double'
 import { makePlayerServiceDouble, playerDoubleLayer } from './support/player-service-double'
-import { PlayerService } from '../domain/player-port'
+import { PlayerService } from '../src/domain/player-port'
 import { emptyInventoryLayer, makeInventoryDouble } from './support/inventory-service-double'
 import { FrameServicesLayer } from './support/frame-services'
 

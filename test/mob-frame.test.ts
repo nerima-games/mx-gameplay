@@ -35,11 +35,11 @@ import {
   STRUCK_ENDERMAN,
   type Blast,
   type MobBehaviour,
-} from '../domain/entities/mob-frame'
-import { CREEPER_DROPS, ENDERMAN_DROPS, ZOMBIE_DROPS } from '../domain/mob/mob-drop'
-import { CREEPER_EXPLOSION_POWER, explosionDamageAmount } from '../domain/mob/explosion'
-import { ZOMBIE_KIND } from '../domain/mob/hostile-combat'
-import { EntityId, type Position } from '../domain/entity-manager-port'
+} from '../src/domain/entities/mob-frame'
+import { CREEPER_DROPS, ENDERMAN_DROPS, ZOMBIE_DROPS } from '../src/domain/mob/mob-drop'
+import { CREEPER_EXPLOSION_POWER, explosionDamageAmount } from '../src/domain/mob/explosion'
+import { ZOMBIE_KIND } from '../src/domain/mob/hostile-combat'
+import { EntityId, type Position } from '../src/domain/entity-manager-port'
 import { makeChunkStoreDouble, STONE, world } from './support/chunk-store-double'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
 

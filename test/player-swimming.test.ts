@@ -7,7 +7,7 @@ import {
   SWIMMING_VERTICAL_ACCELERATION_BLOCKS_PER_S2,
   applyPlayerSwimming,
   type PlayerSwimmingInput,
-} from '../domain/player-swimming'
+} from '../src/domain/player-swimming'
 
 const input = (overrides: Partial<PlayerSwimmingInput> = {}): PlayerSwimmingInput => ({
   velocity: { x: 0, y: 0, z: 0 },

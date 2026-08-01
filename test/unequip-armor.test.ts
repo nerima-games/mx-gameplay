@@ -15,8 +15,8 @@ import {
   unequipTopmost,
   type Equipment,
   type UnequipPort,
-} from '../domain/interactions/unequip-armor'
-import type { ItemType } from '../domain/item-vocabulary'
+} from '../src/domain/interactions/unequip-armor'
+import type { ItemType } from '../src/domain/item-vocabulary'
 
 /**
  * A body and an inventory, recording every call.

@@ -45,9 +45,9 @@
  */
 import { describe, expect, it } from '@effect/vitest'
 import { Effect, type Layer } from 'effect'
-import type { Position } from '../domain/entity-manager-port'
-import { ClockPort, EpochMillis, MonotonicTimeSecs, type CameraPoseSnapshot } from '../domain/frame-contract'
-import { PlayerService, type PlayerPose, type PlayerServiceApi } from '../domain/player-port'
+import type { Position } from '../src/domain/entity-manager-port'
+import { ClockPort, EpochMillis, MonotonicTimeSecs, type CameraPoseSnapshot } from '../src/domain/frame-contract'
+import { PlayerService, type PlayerPose, type PlayerServiceApi } from '../src/domain/player-port'
 
 /**
  * Fixed readings for the clock double.
@@ -266,10 +266,10 @@ describe('the PlayerService mirror', () => {
       // `index.ts` deliberately omits this module, exactly as it omits the other
       // three ports. Re-exporting another repository's service would make
       // deleting the stand-in a breaking change for consumers of mx-gameplay.
-      const barrel = yield* Effect.promise(() => import('../index'))
+      const barrel = yield* Effect.promise(() => import('../src/index'))
       expect(Object.keys(barrel)).not.toContain('PlayerService')
 
-      const port = yield* Effect.promise(() => import('../domain/player-port'))
+      const port = yield* Effect.promise(() => import('../src/domain/player-port'))
       expect(Object.keys(port)).toStrictEqual(['PlayerService'])
     }),
   )
@@ -281,12 +281,12 @@ describe('the PlayerService mirror', () => {
       // mirror, because mc-sim's barrel deliberately does not re-export its own
       // kernel mirror — either one here would be a symbol
       // `@nerima-games/mc-sim` cannot hand back on deletion day.
-      const port = yield* Effect.promise(() => import('../domain/player-port'))
+      const port = yield* Effect.promise(() => import('../src/domain/player-port'))
       expect(Object.keys(port)).not.toContain('ClockPort')
       expect(Object.keys(port)).not.toContain('MonotonicTimeSecs')
 
       // ...and they come from the mirror kernel's barrel DOES replace.
-      const kernelMirror = yield* Effect.promise(() => import('../domain/frame-contract'))
+      const kernelMirror = yield* Effect.promise(() => import('../src/domain/frame-contract'))
       expect(Object.keys(kernelMirror)).toContain('ClockPort')
       expect(Object.keys(kernelMirror)).toContain('MonotonicTimeSecs')
     }),
@@ -338,7 +338,7 @@ describe('the clock Port this mirror made necessary', () => {
 describe('the two brands the clock Port names', () => {
   it.effect('MonotonicTimeSecs accepts a finite non-negative reading', () =>
     Effect.gen(function* () {
-      const { MonotonicTimeSecs } = yield* Effect.promise(() => import('../domain/frame-contract'))
+      const { MonotonicTimeSecs } = yield* Effect.promise(() => import('../src/domain/frame-contract'))
 
       expect(MonotonicTimeSecs(0)).toBe(0)
       expect(MonotonicTimeSecs(12.5)).toBe(12.5)
@@ -347,7 +347,7 @@ describe('the two brands the clock Port names', () => {
 
   it.effect('MonotonicTimeSecs refuses what a monotonic clock cannot produce', () =>
     Effect.gen(function* () {
-      const { MonotonicTimeSecs } = yield* Effect.promise(() => import('../domain/frame-contract'))
+      const { MonotonicTimeSecs } = yield* Effect.promise(() => import('../src/domain/frame-contract'))
 
       // TRANSCRIBED from kernel, not re-decided. A brand is keyed by its STRING,
       // so a mirror refining to a different range is ONE TYPE with kernel's and
@@ -368,7 +368,7 @@ describe('the two brands the clock Port names', () => {
 
   it.effect('EpochMillis accepts a safe integer and refuses the rest', () =>
     Effect.gen(function* () {
-      const { EpochMillis } = yield* Effect.promise(() => import('../domain/frame-contract'))
+      const { EpochMillis } = yield* Effect.promise(() => import('../src/domain/frame-contract'))
 
       expect(EpochMillis(0)).toBe(0)
       expect(EpochMillis(1_700_000_000_000)).toBe(1_700_000_000_000)

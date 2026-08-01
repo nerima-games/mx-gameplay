@@ -48,7 +48,7 @@ import {
   type ChunkStoreApi,
   type LightReading,
   type WorldgenChunk,
-} from '../../domain/chunk-store-port'
+} from '../../src/domain/chunk-store-port'
 
 /** Block ids, transcribed from kernel's `BLOCK_REGISTRY` (see the mirror). */
 export const STONE: BlockId = 2

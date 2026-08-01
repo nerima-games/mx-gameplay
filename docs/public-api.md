@@ -40,7 +40,7 @@ mc-kernel が publish された時点で削除される（[versioning.md](./vers
 **そのため `index.ts` はこのファイルを re-export しない** — 所有していない型を公開 API に載せると、
 約束済みの削除が消費者にとっての破壊的変更になる（§5）。
 `interface` のまま写してあるのは仕様とコードを字面ごと一致させるためで、
-`@typescript-eslint/consistent-type-definitions` の例外を `oxlint.json` に明記してある。
+`@typescript-eslint/consistent-type-definitions` の例外を `.oxlintrc.json` に明記してある。
 
 `FrameServices` だけは kernel と意図的に食い違わせてあり、ここでは `never` である。
 kernel の `ClockPort` を再掲すると**同じ文字列 ID を持つ別の `Context.Tag`** が 2 つできる。

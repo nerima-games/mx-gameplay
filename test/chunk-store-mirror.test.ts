@@ -52,7 +52,7 @@ import {
   type ChunkStoreApi,
   type LightReading,
   type WorldgenChunk,
-} from '../domain/chunk-store-port'
+} from '../src/domain/chunk-store-port'
 
 /**
  * mc-worldgen's `ChunkStoreApi`, restated from
@@ -114,7 +114,7 @@ describe('the ChunkStore mirror', () => {
       // `domain/frame-contract.ts` and `domain/position-key.ts`. Re-exporting
       // another repository's service would make deleting the stand-in a
       // breaking change for consumers of mx-gameplay.
-      const barrel = yield* Effect.promise(() => import('../index'))
+      const barrel = yield* Effect.promise(() => import('../src/index'))
       expect(Object.keys(barrel)).not.toContain('ChunkStore')
       // `AIR_BLOCK_ID` rather than `fallsWhenUnsupported`, which this module no
       // longer exports — see the note on the capability move below. Naming a
@@ -139,7 +139,7 @@ describe('the ChunkStore mirror', () => {
       // that gate imports both packages and can see mc-worldgen's real barrel,
       // and this repository cannot. What it pins is the LOCAL half: the four
       // must not drift back into a mirror of a package that does not have them.
-      const port = yield* Effect.promise(() => import('../domain/chunk-store-port'))
+      const port = yield* Effect.promise(() => import('../src/domain/chunk-store-port'))
       for (const capability of [
         'fallsWhenUnsupported',
         'isReplaceable',

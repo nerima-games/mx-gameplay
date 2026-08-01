@@ -1,12 +1,12 @@
 import { describe, expect, it } from '@effect/vitest'
-import { DeltaTimeSecs } from '../domain/frame-contract'
-import { TNT_EXPLOSION_POWER } from '../domain/mob/explosion'
+import { DeltaTimeSecs } from '../src/domain/frame-contract'
+import { TNT_EXPLOSION_POWER } from '../src/domain/mob/explosion'
 import {
   FRESH_PRIMED_TNT,
   PRIMED_TNT_FUSE_SECS,
   isPrimedTnt,
   stepPrimedTnt,
-} from '../domain/mob/primed-tnt'
+} from '../src/domain/mob/primed-tnt'
 
 describe('primed TNT', () => {
   it('preserves the fuse until four seconds have elapsed', () => {

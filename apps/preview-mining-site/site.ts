@@ -65,36 +65,36 @@
  * export exists).
  */
 import { Effect, Ref } from 'effect'
-import { below as belowOf, positionKeyOf } from '../../domain/block-position-key'
-import { type BlockId, type BlockPosition } from '../../domain/chunk-store-port'
+import { below as belowOf, positionKeyOf } from '../../src/domain/block-position-key'
+import { type BlockId, type BlockPosition } from '../../src/domain/chunk-store-port'
 import {
   blockIdOf,
   blockOfPlaceableItem,
   fallsWhenUnsupported,
   type HarvestTier,
   type PlaceableItemType,
-} from '../../domain/block-vocabulary'
+} from '../../src/domain/block-vocabulary'
 import { makeTimeService } from '@nerima-games/mc-sim'
-import { FALLING_BLOCK_MOVES_PER_TICK } from '../../domain/falling-block'
-import { DeltaTimeSecs, type StageRegistration } from '../../domain/frame-contract'
-import { NO_TOOL, type BlockLootContext, type MinedItem } from '../../domain/interactions/block-loot'
-import type { EntityManagerApi } from '../../domain/entity-manager-port'
+import { FALLING_BLOCK_MOVES_PER_TICK } from '../../src/domain/falling-block'
+import { DeltaTimeSecs, type StageRegistration } from '../../src/domain/frame-contract'
+import { NO_TOOL, type BlockLootContext, type MinedItem } from '../../src/domain/interactions/block-loot'
+import type { EntityManagerApi } from '../../src/domain/entity-manager-port'
 import {
   isDroppedItemBehaviour,
   type MobBehaviour,
-} from '../../domain/entities/mob-frame'
-import { isSupportSensitiveOfBlock, placementVerdict } from '../../domain/interactions/place-block'
-import type { PositionKey } from '../../domain/position-key'
-import { INITIAL_WEATHER, type WeatherState } from '../../domain/weather'
-import type { IgnitionItemType } from '../../domain/interactions/use-flint-and-steel'
+} from '../../src/domain/entities/mob-frame'
+import { isSupportSensitiveOfBlock, placementVerdict } from '../../src/domain/interactions/place-block'
+import type { PositionKey } from '../../src/domain/position-key'
+import { INITIAL_WEATHER, type WeatherState } from '../../src/domain/weather'
+import type { IgnitionItemType } from '../../src/domain/interactions/use-flint-and-steel'
 import {
   gameplayStages,
   makeGameplayFrameState,
   requestItemUse as enqueueItemUse,
   type GameplayFrameState,
   type PlacementRequest,
-} from '../../stages/registration'
-import { GAMEPLAY_STAGE_IDS } from '../../stages/stage-ids'
+} from '../../src/stages/registration'
+import { GAMEPLAY_STAGE_IDS } from '../../src/stages/stage-ids'
 import { FrameServicesLayer } from './frame-services'
 import {
   makePreviewInventory,

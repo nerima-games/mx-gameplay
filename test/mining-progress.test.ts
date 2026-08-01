@@ -5,8 +5,8 @@ import {
   type HarvestToolRequirement,
 } from '@nerima-games/mc-kernel'
 import { Effect } from 'effect'
-import { blockLoot } from '../domain/interactions/block-loot'
-import { type requestBlockBreak } from '../stages/registration'
+import { blockLoot } from '../src/domain/interactions/block-loot'
+import { type requestBlockBreak } from '../src/stages/registration'
 import {
   advanceMiningProgress,
   DIAMOND_PICKAXE_MINING_TOOL,
@@ -18,7 +18,7 @@ import {
   miningProgressFraction,
   miningToolForItem,
   type MiningProgressState,
-} from '../domain/interactions/mining-progress'
+} from '../src/domain/interactions/mining-progress'
 
 const STONE = { position: blockPosition(1, 64, 2), blockId: blockIdOf('stone') }
 const STONE_BESIDE = { position: blockPosition(2, 64, 2), blockId: blockIdOf('stone') }

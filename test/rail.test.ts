@@ -12,13 +12,13 @@
  */
 import { describe, expect, it } from '@effect/vitest'
 import { Effect } from 'effect'
-import { isAscendingAhead, RAIL_HEADING_EPSILON } from '../domain/vehicle/rail-ascent'
+import { isAscendingAhead, RAIL_HEADING_EPSILON } from '../src/domain/vehicle/rail-ascent'
 import {
   projectMinecartVelocity,
   resolveRailShape,
   type IsRailAt,
   type RailShape,
-} from '../domain/vehicle/rail-shape'
+} from '../src/domain/vehicle/rail-shape'
 
 /** A rail world as a set of cells. The reference's helper (`rail-shape.test.ts:10-13`). */
 const railsAt = (cells: ReadonlyArray<readonly [number, number, number]>): IsRailAt => {

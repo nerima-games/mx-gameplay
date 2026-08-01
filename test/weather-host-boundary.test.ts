@@ -4,7 +4,7 @@ import {
   isWeather,
   isWeatherState,
   type WeatherState,
-} from '../domain/weather'
+} from '../src/domain/weather'
 
 describe('weather host boundary', () => {
   it('accepts exactly the Minecraft weather vocabulary', () => {

@@ -50,7 +50,7 @@ import {
   UNITEMISED_BLOCK_TYPES,
   type BlockType,
   type HarvestTier,
-} from '../domain/block-vocabulary'
+} from '../src/domain/block-vocabulary'
 import {
   BLOCK_LOOT_ROLLS,
   blockLoot,
@@ -62,8 +62,8 @@ import {
   NO_TOOL,
   rollFortuneExtraDrops,
   type MinedItem,
-} from '../domain/interactions/block-loot'
-import { ITEM_TYPES } from '../domain/item-vocabulary'
+} from '../src/domain/interactions/block-loot'
+import { ITEM_TYPES } from '../src/domain/item-vocabulary'
 
 const AIR = 0
 const STONE = 2

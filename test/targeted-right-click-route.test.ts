@@ -1,11 +1,11 @@
 import { describe, expect, it } from '@effect/vitest'
 import { Effect } from 'effect'
 
-import { blockIdOf } from '../domain/block-vocabulary'
-import type { BlockPosition } from '../domain/chunk-store-port'
-import { cellKey, chunkKey, chunkOf } from '../domain/in-memory-chunk-store'
-import { makeInMemoryWorld } from '../domain/in-memory-world'
-import { targetedRightClickRoute } from '../stages/targeted-right-click-route'
+import { blockIdOf } from '../src/domain/block-vocabulary'
+import type { BlockPosition } from '../src/domain/chunk-store-port'
+import { cellKey, chunkKey, chunkOf } from '../src/domain/in-memory-chunk-store'
+import { makeInMemoryWorld } from '../src/domain/in-memory-world'
+import { targetedRightClickRoute } from '../src/stages/targeted-right-click-route'
 
 const TARGET = { x: 0, y: 1, z: 0 }
 const BEHIND_TARGET = { x: 0, y: 1, z: -1 }

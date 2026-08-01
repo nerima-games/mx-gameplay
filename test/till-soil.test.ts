@@ -21,10 +21,10 @@ import {
   tillingVerdict,
   type TillPort,
   type TillingCapability,
-} from '../domain/interactions/till-soil'
-import { CROP_OF_SEED, SOIL_OF_CROP } from '../domain/interactions/plant-crop'
-import { blockIdOf, type BlockType } from '../domain/block-vocabulary'
-import type { BlockPosition } from '../domain/chunk-store-port'
+} from '../src/domain/interactions/till-soil'
+import { CROP_OF_SEED, SOIL_OF_CROP } from '../src/domain/interactions/plant-crop'
+import { blockIdOf, type BlockType } from '../src/domain/block-vocabulary'
+import type { BlockPosition } from '../src/domain/chunk-store-port'
 
 const HOE: TillingCapability = { tills: true }
 const GROUND: BlockPosition = { x: -2, y: 61, z: 7 }

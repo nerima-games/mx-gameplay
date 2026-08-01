@@ -17,8 +17,8 @@ import {
   resolvePlayerMovement,
   type IsBlockSolid,
   type PlayerBody,
-} from '../domain/player-collision'
-import { PLAYER_HALF_HEIGHT, PLAYER_HALF_WIDTH } from '../domain/interactions/place-block'
+} from '../src/domain/player-collision'
+import { PLAYER_HALF_HEIGHT, PLAYER_HALF_WIDTH } from '../src/domain/interactions/place-block'
 
 /** A floor filling y = 0, air everywhere else. */
 const floorAtZero: IsBlockSolid = (position) => position.y === 0

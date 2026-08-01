@@ -21,9 +21,9 @@
  * see?". A measurement with no such answer is a number, not a check.
  */
 import { Effect, Ref } from 'effect'
-import { positionKeyOf } from '../../domain/block-position-key'
-import { type BlockId } from '../../domain/chunk-store-port'
-import { dayPhase, hostileSpawnsAllowed, isNight } from '../../domain/day-night'
+import { positionKeyOf } from '../../src/domain/block-position-key'
+import { type BlockId } from '../../src/domain/chunk-store-port'
+import { dayPhase, hostileSpawnsAllowed, isNight } from '../../src/domain/day-night'
 import {
   applyDamage,
   DEATH_MESSAGES,
@@ -33,17 +33,17 @@ import {
   MAX_HEALTH_POINTS,
   type DeathCause,
   type Vitals,
-} from '../../domain/death-cause'
-import { FALLING_BLOCK_MOVES_PER_TICK } from '../../domain/falling-block'
+} from '../../src/domain/death-cause'
+import { FALLING_BLOCK_MOVES_PER_TICK } from '../../src/domain/falling-block'
 import {
   CREEPER_FUSE_SECS,
   DORMANT_FUSE,
   stepCreeperFuse,
-} from '../../domain/mob/creeper-fuse'
-import { canHostileSpawnAt } from '../../domain/mob/hostile-spawn'
-import { carryOver, splitBudget, type FluidWorkItem } from '../../domain/fluid-frontier'
-import { DeltaTimeSecs, MAX_STACK_COUNT } from '../../domain/frame-contract'
-import { GAMEPLAY_STAGE_IDS } from '../../stages/stage-ids'
+} from '../../src/domain/mob/creeper-fuse'
+import { canHostileSpawnAt } from '../../src/domain/mob/hostile-spawn'
+import { carryOver, splitBudget, type FluidWorkItem } from '../../src/domain/fluid-frontier'
+import { DeltaTimeSecs, MAX_STACK_COUNT } from '../../src/domain/frame-contract'
+import { GAMEPLAY_STAGE_IDS } from '../../src/stages/stage-ids'
 import { SCENARIOS, scenarioByName } from './scenarios'
 import {
   approach,
@@ -75,9 +75,9 @@ import {
 import { INVENTORY_SLOT_COUNT } from './inventory'
 import { FrameServicesLayer } from './frame-services'
 import { GRAVEL, SAND, glyphOf, placeableItemOf, type WorldSpec } from './world'
-import { fallsWhenUnsupported, isReplaceable, type HarvestTier } from '../../domain/block-vocabulary'
-import { blockLoot } from '../../domain/interactions/block-loot'
-import { DEFAULT_ROLL_SEED, drawRolls } from '../../domain/frame-rolls'
+import { fallsWhenUnsupported, isReplaceable, type HarvestTier } from '../../src/domain/block-vocabulary'
+import { blockLoot } from '../../src/domain/interactions/block-loot'
+import { DEFAULT_ROLL_SEED, drawRolls } from '../../src/domain/frame-rolls'
 import {
   advanceWeather,
   INITIAL_WEATHER,
@@ -86,7 +86,7 @@ import {
   weatherLightScale,
   WEATHERS,
   WEATHER_TRANSITION_ROLLS,
-} from '../../domain/weather'
+} from '../../src/domain/weather'
 
 const BOUNDS = { width: 26, height: 18 }
 

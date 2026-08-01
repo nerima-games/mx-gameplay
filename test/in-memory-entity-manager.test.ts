@@ -20,7 +20,7 @@ import {
   makeInMemoryEntityManager,
   mintEntityId,
   repairRoster,
-} from '../domain/in-memory-entity-manager'
+} from '../src/domain/in-memory-entity-manager'
 import {
   DESPAWNED,
   EntityId,
@@ -30,7 +30,7 @@ import {
   type EntityRoster,
   type Position,
   type SpawnRequest,
-} from '../domain/entity-manager-port'
+} from '../src/domain/entity-manager-port'
 
 const position = (x: number, y: number, z: number): Position => ({ x, y, z })
 

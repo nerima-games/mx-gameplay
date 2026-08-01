@@ -27,7 +27,7 @@ import {
   BOW_MIN_CHARGE_SECS,
   BOW_MIN_DAMAGE,
   PLAIN_BOW,
-} from '../domain/interactions/draw-bow'
+} from '../src/domain/interactions/draw-bow'
 import {
   shotBlockedByTerrain,
   shotTarget,
@@ -38,11 +38,11 @@ import {
   BOW_TARGET_RADIUS,
   type IsArrowBlockedAt,
   type ShotCandidate,
-} from '../domain/interactions/bow-shot'
-import { knockbackDirection, KNOCKBACK_EPSILON } from '../domain/interactions/knockback'
-import { resolveBowHits, type MobBehaviour } from '../domain/entities/mob-frame'
-import { EntityId, EntityKind, type EntityRoster } from '../domain/entity-manager-port'
-import { gameplayStages, makeGameplayFrameState, requestBowShot } from '../stages/registration'
+} from '../src/domain/interactions/bow-shot'
+import { knockbackDirection, KNOCKBACK_EPSILON } from '../src/domain/interactions/knockback'
+import { resolveBowHits, type MobBehaviour } from '../src/domain/entities/mob-frame'
+import { EntityId, EntityKind, type EntityRoster } from '../src/domain/entity-manager-port'
+import { gameplayStages, makeGameplayFrameState, requestBowShot } from '../src/stages/registration'
 import { makeChunkStoreDouble } from './support/chunk-store-double'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
 import { makePlayerServiceDouble } from './support/player-service-double'

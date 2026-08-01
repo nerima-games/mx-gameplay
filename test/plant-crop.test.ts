@@ -26,9 +26,9 @@ import {
   plantingVerdict,
   type PlantPort,
   type PlantRequest,
-} from '../domain/interactions/plant-crop'
-import { blockIdOf, type BlockType } from '../domain/block-vocabulary'
-import type { BlockPosition } from '../domain/chunk-store-port'
+} from '../src/domain/interactions/plant-crop'
+import { blockIdOf, type BlockType } from '../src/domain/block-vocabulary'
+import type { BlockPosition } from '../src/domain/chunk-store-port'
 
 const SOIL: BlockPosition = { x: 4, y: 63, z: -9 }
 

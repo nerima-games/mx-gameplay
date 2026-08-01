@@ -7,8 +7,8 @@ import {
   type ChunkSource,
 } from '@nerima-games/mc-worldgen'
 import { Effect } from 'effect'
-import { makeGeneratedWorld, solidityFromStore } from '../domain/in-memory-world'
-import type { MobBehaviour } from '../domain/entities/mob-frame'
+import { makeGeneratedWorld, solidityFromStore } from '../src/domain/in-memory-world'
+import type { MobBehaviour } from '../src/domain/entities/mob-frame'
 
 const SEED = 424242
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from '@effect/vitest'
-import { resolveFallDamage } from '../domain/fall-damage'
+import { resolveFallDamage } from '../src/domain/fall-damage'
 
 describe('fall damage', () => {
   it.each([

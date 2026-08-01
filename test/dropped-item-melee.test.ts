@@ -1,20 +1,20 @@
 import { describe, expect, it } from '@effect/vitest'
 import { durabilityForItem, type InventoryServiceApi } from '@nerima-games/mc-sim'
 import { Effect } from 'effect'
-import { StackCount } from '../domain/frame-contract'
-import { EntityId, EntityKind } from '../domain/entity-manager-port'
+import { StackCount } from '../src/domain/frame-contract'
+import { EntityId, EntityKind } from '../src/domain/entity-manager-port'
 import {
   CREEPER_KIND,
   DROPPED_ITEM_KIND,
   isDroppedItemBehaviour,
   type MobBehaviour,
-} from '../domain/entities/mob-frame'
+} from '../src/domain/entities/mob-frame'
 import {
   pickupDroppedItems,
   spawnDroppedItem,
   spawnMobDrop,
-} from '../domain/entities/dropped-item'
-import { meleeTarget, meleeTargetBeforeBlock } from '../domain/interactions/melee-attack'
+} from '../src/domain/entities/dropped-item'
+import { meleeTarget, meleeTargetBeforeBlock } from '../src/domain/interactions/melee-attack'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
 import {
   emptySlots,

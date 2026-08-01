@@ -60,7 +60,7 @@
  * which plan.md §5.1-3 bans and `pnpm check:deps` refuses to compile.
  */
 import { Layer } from 'effect'
-import type { FrameServices } from '../../domain/frame-contract'
+import type { FrameServices } from '../../src/domain/frame-contract'
 
 /**
  * Everything a stage may assume is present when this preview runs it.
