@@ -1,5 +1,11 @@
 # @nerima-games/mx-gameplay
 
+## 0.1.41
+
+### Patch Changes
+
+- Add deterministic fire spreading, fuel consumption, weather extinguishing, natural expiry, and contact damage events.
+
 ## 0.1.38
 
 ### Patch Changes
