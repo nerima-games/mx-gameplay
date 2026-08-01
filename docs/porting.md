@@ -412,7 +412,7 @@ F8（§4-3-2）と同じく参照実装と食い違うが、**向きが逆で、
 | 1 | `interaction-stage-underwater.test.ts:29-58` | 近傍は **dx-major, dz-minor** の順に出る | 1 | `chunkCoordsAround` の 2 重ループの入れ子を逆にする |
 | 2 | `interaction-flint-steel-portal.test.ts:10-23` | 同じ入れ子を**負のアンカー**から | 1 | 同上 |
 | 3 | `interaction-stage-underwater.test.ts:24-27` | floor するのは**商であって座標ではない** | 1 | `Math.floor(Math.trunc(x) / 16)` |
-| 4 | `interaction-block-access.test.ts:78,93,104,170` | **F9 —— 移植ではなく乖離の固定**（§4-4-1） | 1 | `blockAt` に長さ検査を足す（＝直す）と赤くなる |
+| 4 | `interaction-block-access.test.ts:78,93,104,170` | **F9 —— 切り詰めたバッファを unreadable とする**（§4-4-1） | 1 | `blockAt` の長さ検査を外すと赤くなる |
 
 **1 と 2 は既存の「covers the whole square, and covers it exactly once」を 1 つも落とさなかった。**
 その 1 本は `Set` で重複排除し `toContainEqual` で問うので、**順序に対して完全に盲目**である。
@@ -424,37 +424,29 @@ F8（§4-3-2）と同じく参照実装と食い違うが、**向きが逆で、
 参照実装の入力が小数なのは、その呼び手がブロック座標ではなく**プレイヤー座標**を持っているからで、
 `Math.floor(Math.trunc(x) / 16)` は既存 3 本すべてを通過して新しい 1 本だけを落とす。
 
-#### 4-4-1. F9 —— 参照実装が拒否し、この build が**空気を捏造する** 3 件目
+#### 4-4-1. F9 —— 切り詰められたチャンクバッファを拒否する
 
 `interaction-block-access.test.ts` の 4 本（`:78` / `:93` / `:104` / `:170`）は
 「**切り詰められたチャンクバッファは読めない**」と主張し、参照実装は全件を
-`InteractionBlockReadError` にする。**この build は一致しない。**
+`InteractionBlockReadError` にする。この build も `UNREADABLE_BLOCK` を返し、参照実装と一致する。
 
-`domain/chunk-window.ts` の `blockAt` が守っているのは**座標**であって**バッファ**ではない:
-`y` が世界の内側、`x`/`z` が整数、チャンクが**常駐している**場合、
-`readBlock` の `blocks[index] ?? AIR_BLOCK_ID` がそのまま走る。
-同ファイルのヘッダが「`readBlock` は TOTAL で範囲外に AIR を答えるから、
-guard は座標が着くここに置く」と書いているとおりの guard であり、
-短いバッファは**別の扉から入ってくる**。
+`domain/chunk-window.ts` の `blockAt` は座標とチャンク常駐に加えて、算出した
+`blockIndex` が `blocks.length` の内側かを検査する。存在するセルは通常どおり読み、
+欠けたセルだけを unreadable として数える。
 
 **到達可能である。** `WorldgenChunk.blocks` は素の `Uint8Array` で型に長さが無く、
-`domain/` にも `test/` にも長さを検査する行が 1 つも無い。
-mc-worldgen の `peek` が部分的に流し込まれたチャンクを返せばこの形になる。
+mc-worldgen の `peek` が部分的に流し込まれたチャンクを返せばこの形になるため、
+チャンク窓の境界で検査する。
 
-害の向きは `unreadableProbes` を数えないことにある。
+修正前の害は `unreadableProbes` を数えないことにあった。
 `ignite-portal` はその数で `ChunkNotLoaded` と `NoFrame` を分けるので、
-**切り詰められたチャンクに立っている枠は「見えなかった」ではなく「無い」と報告される** ——
+**切り詰められたチャンクに立っている枠が「見えなかった」ではなく「無い」と報告されていた** ——
 `test/ignite.test.ts` の「an unreadable chunk can only REFUSE a frame, never manufacture one」が
 覆っていない唯一の向きである。
 
-F8（§4-3-2）と同じく**こちらが追随すべき**食い違いで、§4-3-2 と同じ扱いにした:
-**現挙動を参照行つきで固定**してあるので、guard が入った日にこのテストが赤くなり、
-§3-5-1 の前例どおり削除ではなく**一致の主張へ書き換える**ことになる。
-
-**直さなかったのは production の変更だからである**（§4-3-3 と同じ線引き）。
-実測として、`blockAt` に長さ検査を 1 つ足すと**この 1 本以外は 1 本も落ちない**ので、
-残っている決定は「長さの不変条件は mc-worldgen が境界で保証するものか、
-この window が検査するものか」の 1 行だけである。
+F8（§4-3-2）と同じくこちらが追随すべき食い違いとして、`blockAt` に長さ検査を追加した。
+`test/chunk-window.test.ts` の回帰テストは、欠けたセルが `UNREADABLE_BLOCK` になり
+`unreadableProbes` が増えることを直接固定する。
 
 #### 4-4-2. 「33 ファイル」は glob の産物である（2026-07-28 実測）
 

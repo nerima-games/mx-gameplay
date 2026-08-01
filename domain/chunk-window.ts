@@ -48,13 +48,11 @@
  *     then lets `./interactions/ignite-portal` say `ChunkNotLoaded` instead of
  *     "there is no frame here", which are different answers to the player.
  *
- * The same value answers a `y` outside the world, and that case is the sharper
- * one: `./chunk-store-port`'s `readBlock` is TOTAL and answers AIR for an
- * out-of-range index, so handing it an unclamped `y` would report empty space
- * below bedrock. A portal detected in fabricated air under the world is a
- * portal, and nothing in `readBlock` would say otherwise. The guard is here,
- * where the coordinate arrives, and it is the reason this file exists as
- * something other than a two-line closure.
+ * The same value answers a `y` outside the world or a cell missing from a
+ * truncated chunk buffer. `./chunk-store-port`'s `readBlock` is TOTAL and
+ * answers AIR for an out-of-range index, so both cases must be guarded here.
+ * Otherwise a portal probe could observe fabricated empty space and report a
+ * definite `NoFrame` where the world data was merely unavailable.
  *
  * ---------------------------------------------------------------------------
  * A LIVE VIEW, AND WHY THAT IS SAFE HERE AND NOT IN GENERAL
@@ -104,7 +102,7 @@ export type ChunkWindow = {
   readonly blockAt: BlockAt
   /**
    * How many probes fell on a cell this window could not answer — an absent
-   * chunk, or a `y` outside the world.
+   * chunk, a cell missing from its buffer, or a `y` outside the world.
    *
    * A FUNCTION AND NOT A NUMBER, because it is read AFTER the probing is done
    * and a number would have been captured before any of it happened. A caller
@@ -210,7 +208,13 @@ export const openChunkWindow = (
         return UNREADABLE_BLOCK
       }
 
-      return readBlock(chunk.blocks, blockIndex(localOf(x), y, localOf(z)))
+      const index = blockIndex(localOf(x), y, localOf(z))
+      if (index >= chunk.blocks.length) {
+        unreadable += 1
+        return UNREADABLE_BLOCK
+      }
+
+      return readBlock(chunk.blocks, index)
     }
 
     return { blockAt, unreadableProbes: () => unreadable }

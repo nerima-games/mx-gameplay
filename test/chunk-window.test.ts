@@ -51,8 +51,8 @@ import { makeChunkStoreDouble, world, CHUNK_SIDE, STONE } from './support/chunk-
  *
  * `./support/chunk-store-double` allocates a full-length buffer for every chunk
  * it serves, which is the right default everywhere else in this suite and is
- * exactly what the F9 test below has to defeat. Spreading this and overriding
- * `peek` alone keeps that test honest about which member it exercises: anything
+ * exactly what the truncated-buffer test below must override. Spreading this
+ * and replacing `peek` alone keeps that test honest about which member it exercises: anything
  * it reaches by accident dies loudly instead of answering.
  */
 const notAStore: ChunkStoreApi = new Proxy({} as ChunkStoreApi, {
@@ -213,10 +213,8 @@ describe('openChunkWindow', () => {
     }),
   )
 
-  // F9 — the reference REJECTS this and this build FABRICATES AIR. Pinned as
-  // current behaviour, not as agreement, exactly as `docs/porting.md` §4-3-2
-  // pinned F8: the day the guard lands, this test goes red and is rewritten into
-  // an agreement claim rather than deleted.
+  // F9 — the reference rejects incomplete chunk storage instead of converting
+  // missing cells to air. This is the agreement claim for that behaviour.
   //
   // Four of the 402 make the same claim, all in
   // `<reference-impl>/…/interaction-block-access.test.ts` —
@@ -229,25 +227,7 @@ describe('openChunkWindow', () => {
   //
   // — and each one is an `InteractionBlockReadError` there.
   //
-  // THE GUARD HERE IS ON THE COORDINATE, NOT ON THE BUFFER. This file's header
-  // argues that `../domain/chunk-store-port`'s `readBlock` is TOTAL and answers
-  // AIR for an out-of-range index, 「so handing it an unclamped `y` would report
-  // empty space below bedrock」, and puts the guard 「here, where the coordinate
-  // arrives」. A truncated buffer arrives by the other door: `y` is in the world,
-  // `x`/`z` are integers, the chunk IS resident, and `blocks[index]` is
-  // `undefined` anyway — so `?? AIR_BLOCK_ID` fabricates the very air the header
-  // exists to refuse, inside a chunk the window is speaking for.
-  //
-  // REACHABLE, not hypothetical: `WorldgenChunk.blocks` is a bare `Uint8Array`,
-  // which carries no length in the type, and nothing in `domain/` or `test/`
-  // asserts one. A partially streamed chunk from mc-worldgen's `peek` is this
-  // shape.
-  //
-  // NOT FIXED HERE because the fix is a production change and `docs/porting.md`
-  // §4-3-3 is explicit that those are decided rather than slipped in with a
-  // port — one length check in `blockAt`, and the decision is whose invariant it
-  // is: mc-worldgen's to guarantee at the boundary, or this window's to verify.
-  it.effect('F9 — DIVERGENCE: a resident chunk with a SHORT buffer reads as air, where the reference errors', () =>
+  it.effect('answers UNREADABLE for a cell missing from a resident chunk buffer', () =>
     Effect.gen(function* () {
       const shortBuffered: ChunkStoreApi = {
         ...notAStore,
@@ -261,17 +241,8 @@ describe('openChunkWindow', () => {
 
       const window = yield* openChunkWindow(shortBuffered, [{ cx: 0, cz: 0 }])
 
-      // The cell is inside the world, inside an integer column, inside a chunk
-      // the window holds. Every guard passes and the read still invents a block.
-      expect(window.blockAt(0, 64, 0)).toBe(AIR_BLOCK_ID)
-
-      // AND IT IS NOT COUNTED, which is the half that hurts: `ignitePortal` reads
-      // `unreadableProbes` to tell `ChunkNotLoaded` from `NoFrame`, so a portal
-      // frame standing in a truncated chunk is reported as absent rather than as
-      // unseen — the one direction `test/ignite.test.ts`'s 「an unreadable chunk
-      // can only REFUSE a frame, never manufacture one」 does not cover.
-      expect(window.unreadableProbes()).toBe(0)
-      expect(window.blockAt(0, 64, 0)).not.toBe(UNREADABLE_BLOCK)
+      expect(window.blockAt(0, 64, 0)).toBe(UNREADABLE_BLOCK)
+      expect(window.unreadableProbes()).toBe(1)
     }),
   )
 
