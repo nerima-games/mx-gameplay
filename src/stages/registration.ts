@@ -92,7 +92,6 @@ import {
 } from '@nerima-games/mc-sim'
 import { Effect, Effectable, Layer, Option, Readable, Ref } from 'effect'
 import { below, positionKeyOf, positionOfKey } from '../domain/block-position-key'
-import { hostileSpawnsAllowed } from '../domain/day-night'
 import {
   advanceVillagerRestock,
   copyVillagerTradeState,
@@ -172,6 +171,7 @@ import {
   type DroppedItemSpawn,
 } from '../domain/entities/dropped-item'
 import { searchSpawnCandidates } from '../domain/entities/mob-spawn-search'
+import { hostileSpawnsAllowed } from '../domain/day-night'
 import {
   entityManagerTag,
   type EntityId,
@@ -2665,7 +2665,7 @@ export const gameplayStages = (
         // window it opens is one in which two frames would already be sweeping a
         // single roster. The drop roll below stays atomic because it can.
         const targetPosition = (yield* player.pose).feetPosition
-        const { blasts, seed: sweptSeed } = yield* sweepMobs(
+        const { attacks, blasts, seed: sweptSeed } = yield* sweepMobs(
           roster,
           { target: targetPosition, dt },
           yield* Ref.get(state.rollSeed),
@@ -2674,6 +2674,22 @@ export const gameplayStages = (
         // drew nothing hands back the seed it was given, so this writes the same
         // number it read on every idle frame.
         yield* Ref.set(state.rollSeed, sweptSeed)
+
+        if (attacks.length > 0) {
+          const playerDamages = yield* resolveArmoredPlayerDamages(
+            inventory,
+            attacks.map((attack) => ({
+              _tag: 'HostileContact' as const,
+              source: attack.source,
+              kind: attack.attackerKind,
+              at: attack.at,
+              damage: { amount: attack.damage, cause: 'mob' as const },
+            })),
+          )
+          if (playerDamages.length > 0) {
+            yield* Ref.update(state.playerDamages, (items) => [...items, ...playerDamages])
+          }
+        }
 
         if (blasts.length > 0) {
           const { casualties, disturbed } = yield* resolveBlasts(roster, store, blasts)
@@ -2777,18 +2793,24 @@ export const gameplayStages = (
         // would be the failure that header describes, and is exactly what is not
         // done.
         //
-        if (searchDue && hostileSpawnsAllowed(hour)) {
+        const nightSearch = hostileSpawnsAllowed(hour)
+        const passiveRepopulationSearch = !nightSearch && (yield* roster.count) === 0
+        if (searchDue && (nightSearch || passiveRepopulationSearch)) {
+          const dimension = yield* player.dimension
           const found = yield* searchSpawnCandidates(
             store,
             targetPosition,
             hour,
             yield* Ref.get(state.rollSeed),
+            dimension,
           )
           // The seed advanced by exactly `SPAWN_SEARCH_ROLLS`, and only because a
           // search ran. A frame that skipped it leaves the generator where it
           // found it, which is `domain/frame-rolls.ts`'s rule that the sequence
           // depends on what happened rather than on how many frames passed.
-          yield* Ref.set(state.rollSeed, found.seed)
+          // Daylight repopulation must not perturb the shared combat/weather
+          // sequence. Once it succeeds the non-empty roster gates it off.
+          if (nightSearch) yield* Ref.set(state.rollSeed, found.seed)
           searched = found.attempts
         }
 

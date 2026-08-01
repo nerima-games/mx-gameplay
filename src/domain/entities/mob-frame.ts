@@ -254,7 +254,18 @@ import {
   ZOMBIE_KIND,
   ZOMBIE_LOCOMOTION,
 } from '../mob/hostile-combat'
-import { canHostileSpawnAt, type SpawnCandidate, type SpawnRefusal } from '../mob/hostile-spawn'
+import { canMobSpawnAt, type SpawnCandidate, type SpawnRefusal } from '../mob/hostile-spawn'
+import {
+  ECOSYSTEM_MOB_KINDS,
+  initialEcosystemMobState,
+  NETHER_HOSTILE_KINDS,
+  OVERWORLD_ECOSYSTEM_HOSTILE_KINDS,
+  PASSIVE_MOB_KINDS,
+  repairEcosystemMobState,
+  stepEcosystemMob,
+  type EcosystemAttack,
+  type EcosystemMobState,
+} from '../mob/mob-ecosystem'
 import {
   CREEPER_DROPS,
   CREEPER_XP_REWARD,
@@ -347,7 +358,7 @@ export type DroppedItemBehaviour = {
 
 export type HostileMobSnapshot = {
   readonly _tag: 'HostileMob'
-  readonly behaviour: CreeperFuse | EndermanFlinch | undefined
+  readonly behaviour: CreeperFuse | EndermanFlinch | EcosystemMobState | undefined
   readonly ageTicks: number
   readonly persistent: boolean
   readonly named: boolean
@@ -359,6 +370,7 @@ export type MobBehaviour =
   | CreeperFuse
   | PrimedTnt
   | EndermanFlinch
+  | EcosystemMobState
   | DroppedItemBehaviour
   | undefined
 
@@ -510,6 +522,8 @@ export const HOSTILE_KINDS: readonly [EntityKind, ...ReadonlyArray<EntityKind>] 
   CREEPER_KIND,
   ENDERMAN_KIND,
   ZOMBIE_KIND,
+  ...OVERWORLD_ECOSYSTEM_HOSTILE_KINDS,
+  ...NETHER_HOSTILE_KINDS,
 ]
 
 /**
@@ -554,6 +568,10 @@ export const ENDERMAN_MAX_HEALTH = 40
 export const maxHealthOfKind = (kind: EntityKind): number => {
   if (kind === ENDERMAN_KIND) return ENDERMAN_MAX_HEALTH
   if (kind === ZOMBIE_KIND) return ZOMBIE_MAX_HEALTH
+  if (kind === EntityKind('spider')) return 16
+  if (kind === EntityKind('cow') || kind === EntityKind('pig')) return 10
+  if (kind === EntityKind('sheep')) return 8
+  if (kind === EntityKind('chicken')) return 4
   return CREEPER_MAX_HEALTH
 }
 
@@ -570,6 +588,7 @@ export const maxHealthOfKind = (kind: EntityKind): number => {
  * paragraph is about.
  */
 export const initialBehaviourOfKind = (kind: EntityKind): MobBehaviour => {
+  if (ECOSYSTEM_MOB_KINDS.includes(kind as (typeof ECOSYSTEM_MOB_KINDS)[number])) return hostileMobSnapshot(initialEcosystemMobState())
   if (kind === ENDERMAN_KIND) return hostileMobSnapshot(STEADY_ENDERMAN)
   if (kind === ZOMBIE_KIND) return hostileMobSnapshot(undefined)
   return hostileMobSnapshot(DORMANT_FUSE)
@@ -611,6 +630,13 @@ export const MAX_HOSTILE_COUNT = 16
  */
 export const hostilePopulation = <S>(roster: EntityManagerApi<S>): Effect.Effect<number> =>
   Effect.reduce(HOSTILE_KINDS, 0, (total, kind) =>
+    Effect.map(roster.countOfKind(kind), (count) => total + count),
+  )
+
+export const MAX_PASSIVE_COUNT = 16
+
+export const passivePopulation = <S>(roster: EntityManagerApi<S>): Effect.Effect<number> =>
+  Effect.reduce(PASSIVE_MOB_KINDS, 0, (total, kind) =>
     Effect.map(roster.countOfKind(kind), (count) => total + count),
   )
 
@@ -730,6 +756,10 @@ export const repairMobBehaviour = (kind: EntityKind, behaviour: unknown): MobBeh
 
   if (kind === ZOMBIE_KIND) return hostileMobSnapshot(undefined)
 
+  if (ECOSYSTEM_MOB_KINDS.includes(kind as (typeof ECOSYSTEM_MOB_KINDS)[number])) {
+    return hostileMobSnapshot(repairEcosystemMobState(behaviour) ?? initialEcosystemMobState())
+  }
+
   if (kind === PRIMED_TNT_KIND) {
     return isPrimedTnt(behaviour) ? behaviour : FRESH_PRIMED_TNT
   }
@@ -749,6 +779,7 @@ const repairHostileInner = (
 ): HostileMobSnapshot['behaviour'] => {
   if (kind === CREEPER_KIND) return isCreeperFuse(behaviour) ? behaviour : DORMANT_FUSE
   if (kind === ENDERMAN_KIND) return isEndermanFlinch(behaviour) ? behaviour : STEADY_ENDERMAN
+  if (ECOSYSTEM_MOB_KINDS.includes(kind as (typeof ECOSYSTEM_MOB_KINDS)[number])) return repairEcosystemMobState(behaviour) ?? initialEcosystemMobState()
   return undefined
 }
 
@@ -1012,12 +1043,18 @@ export const ENDERMAN_TELEPORT_ROLLS = ENDERMAN_TELEPORT_ATTEMPTS * 2
 /** A frame's mob sweep: what blew up, and where the generator ended. */
 export type MobSweep = {
   readonly blasts: ReadonlyArray<Blast>
+  readonly attacks: ReadonlyArray<MobAttackEvent>
   /**
    * The seed to keep. Advanced by exactly the rolls the rules asked for and by no
    * more — see the module header, and `ENDERMAN_TELEPORT_ROLLS` for the one place
    * a budget is drawn rather than a single roll.
    */
   readonly seed: number
+}
+
+export type MobAttackEvent = EcosystemAttack & {
+  readonly source: EntityId
+  readonly at: Position
 }
 
 /**
@@ -1100,7 +1137,7 @@ export const sweepMobs = (
     let cursor = seed
 
     return Effect.map(
-      roster.sweep<Blast>((entity) => {
+      roster.sweep<Blast | MobAttackEvent>((entity) => {
         if (entity.kind === DROPPED_ITEM_KIND && isDroppedItemBehaviour(entity.behaviour)) {
           return IGNORED
         }
@@ -1193,6 +1230,27 @@ export const sweepMobs = (
                 }),
                 emit: undefined,
               }
+        }
+
+
+        if (ECOSYSTEM_MOB_KINDS.includes(entity.kind) && behaviour?._tag === 'EcosystemMob') {
+          const step = stepEcosystemMob(
+            entity.kind,
+            behaviour,
+            entity.feetPosition,
+            senses.target,
+            senses.dt,
+          )
+          return {
+            transition: changed({
+              feetPosition: step.feetPosition,
+              healthPoints: entity.healthPoints,
+              behaviour: storedBehaviour(step.state),
+            }),
+            emit: step.attack === undefined
+              ? undefined
+              : { ...step.attack, source: entity.id, at: entity.feetPosition },
+          }
         }
 
         if (behaviour === undefined) {
@@ -1360,7 +1418,11 @@ export const sweepMobs = (
         // the same answer as a pig, which is the inert one.
         return IGNORED
       }),
-      (blasts) => ({ blasts, seed: cursor }),
+      (events) => ({
+        blasts: events.filter((event): event is Blast => !('_tag' in event)),
+        attacks: events.filter((event): event is MobAttackEvent => '_tag' in event),
+        seed: cursor,
+      }),
     )
   })
 
@@ -1788,7 +1850,7 @@ export const applySpawnAttempts = (
     const outcomes: Array<MobSpawnOutcome> = []
 
     for (const attempt of attempts) {
-      const verdict = canHostileSpawnAt(attempt.candidate)
+      const verdict = canMobSpawnAt(attempt.kind, attempt.candidate)
       if (verdict._tag === 'Refused') {
         outcomes.push({ _tag: 'Refused', reason: verdict.reason })
         continue
@@ -1798,8 +1860,9 @@ export const applySpawnAttempts = (
       // per-kind cap enforces 「16 creepers」 rather than 「16 hostiles」, so a
       // player could be surrounded by sixteen of each. See `MAX_HOSTILE_COUNT`,
       // whose note recorded this as the thing that would have to change.
-      const population = yield* hostilePopulation(roster)
-      if (population >= MAX_HOSTILE_COUNT) {
+      const passive = PASSIVE_MOB_KINDS.includes(attempt.kind)
+      const population = yield* (passive ? passivePopulation(roster) : hostilePopulation(roster))
+      if (population >= (passive ? MAX_PASSIVE_COUNT : MAX_HOSTILE_COUNT)) {
         outcomes.push({ _tag: 'AtCapacity', population })
         continue
       }

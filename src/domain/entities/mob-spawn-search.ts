@@ -92,6 +92,13 @@ import { Effect } from 'effect'
 import type { BlockPosition, ChunkStoreApi } from '../chunk-store-port'
 import { EntityKind, type Position } from '../entity-manager-port'
 import { drawRolls, rollAt } from '../frame-rolls'
+import { hostileSpawnsAllowed } from '../day-night'
+import type { Dimension } from '../nether-travel-port'
+import {
+  ecosystemDimensionAllows,
+  NETHER_HOSTILE_KINDS,
+  PASSIVE_MOB_KINDS,
+} from '../mob/mob-ecosystem'
 import {
   MAX_SPAWN_DISTANCE_BLOCKS,
   MIN_SPAWN_DISTANCE_BLOCKS,
@@ -177,9 +184,16 @@ export const searchSpawnCandidates = (
   target: Position,
   timeOfDay: number,
   seed: number,
+  dimension: Dimension = 'overworld',
 ): Effect.Effect<MobSpawnSearch> =>
   Effect.gen(function* () {
     const batch = drawRolls(seed, SPAWN_SEARCH_ROLLS)
+    if (dimension === 'end') return { attempts: EMPTY_ATTEMPTS, unreadable: 0, seed: batch.seed }
+    const kinds: readonly [EntityKind, ...ReadonlyArray<EntityKind>] = dimension === 'nether'
+      ? NETHER_HOSTILE_KINDS
+      : hostileSpawnsAllowed(timeOfDay)
+        ? HOSTILE_KINDS.filter((kind) => ecosystemDimensionAllows(kind, dimension)) as [EntityKind, ...EntityKind[]]
+        : PASSIVE_MOB_KINDS
     // `rollAt` and not `batch.rolls[0] ?? 0`: the fallback is a
     // `noUncheckedIndexedAccess` formality — `drawRolls` returns exactly the
     // count asked for — and `../frame-rolls` now owns the one spelling of it,
@@ -253,11 +267,12 @@ export const searchSpawnCandidates = (
           blockLight: light.block,
           timeOfDay,
           distanceToPlayerBlocksXZ,
+          dimension,
         }
 
         attempts.push({
           candidate,
-          kind: kindForRoll(rollAt(batch, 1 + cellIndex)),
+          kind: kindForRoll(rollAt(batch, 1 + cellIndex), kinds),
           feetPosition: { x, y: footY, z },
         })
       }
@@ -316,7 +331,7 @@ const at = (x: number, y: number, z: number): BlockPosition => ({ x, y, z })
  * claim a future edit to the roster has to read. Two unreachable fallbacks for
  * one lookup is how a formality stops being examined.
  */
-const kindForRoll = (roll: number): EntityKind => {
-  const index = Math.min(HOSTILE_KINDS.length - 1, Math.floor(roll * HOSTILE_KINDS.length))
-  return HOSTILE_KINDS[index] ?? HOSTILE_KINDS[0]
+const kindForRoll = (roll: number, kinds: readonly [EntityKind, ...ReadonlyArray<EntityKind>]): EntityKind => {
+  const index = Math.min(kinds.length - 1, Math.floor(roll * kinds.length))
+  return kinds[index] ?? kinds[0]
 }

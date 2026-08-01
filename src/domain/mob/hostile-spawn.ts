@@ -72,6 +72,14 @@
 import { AIR_BLOCK_ID, type BlockId } from '../chunk-store-port'
 import { validSpawnSurface } from '../block-vocabulary'
 import { hostileSpawnsAllowed } from '../day-night'
+import type { EntityKind } from '../entity-manager-port'
+import type { Dimension } from '../nether-travel-port'
+import {
+  ecosystemDimensionAllows,
+  ECOSYSTEM_MOB_KINDS,
+  NETHER_HOSTILE_KINDS,
+  PASSIVE_MOB_KINDS,
+} from './mob-ecosystem'
 
 /**
  * Brightest block light a hostile may spawn in.
@@ -107,6 +115,7 @@ export const MAX_SPAWN_DISTANCE_BLOCKS = 40
  * host, once per candidate cell.
  */
 export type SpawnCandidate = {
+  readonly dimension?: Dimension
   /** The block the mob would stand ON. */
   readonly groundBlock: BlockId
   /** The cell the mob's feet would occupy. */
@@ -144,6 +153,7 @@ export type SpawnRefusal =
   | 'obstructed'
   | 'too-bright'
   | 'unmeasurable'
+  | 'wrong-dimension'
 
 export type SpawnVerdict =
   | { readonly _tag: 'Spawn' }
@@ -204,5 +214,28 @@ export const canHostileSpawnAt = (candidate: SpawnCandidate): SpawnVerdict => {
     return REFUSED('too-bright')
   }
 
+  return { _tag: 'Spawn' }
+}
+
+export const canMobSpawnAt = (kind: EntityKind, candidate: SpawnCandidate): SpawnVerdict => {
+  const dimension = candidate.dimension ?? 'overworld'
+  if (
+    ECOSYSTEM_MOB_KINDS.includes(kind as (typeof ECOSYSTEM_MOB_KINDS)[number]) &&
+    !ecosystemDimensionAllows(kind, dimension)
+  ) return REFUSED('wrong-dimension')
+
+  const passive = PASSIVE_MOB_KINDS.includes(kind as (typeof PASSIVE_MOB_KINDS)[number])
+  const nether = NETHER_HOSTILE_KINDS.includes(kind as (typeof NETHER_HOSTILE_KINDS)[number])
+  if (!passive && !nether) {
+    if (dimension !== 'overworld') return REFUSED('wrong-dimension')
+    return canHostileSpawnAt(candidate)
+  }
+
+  if (!Number.isFinite(candidate.distanceToPlayerBlocksXZ) || !Number.isFinite(candidate.blockLight)) return REFUSED('unmeasurable')
+  if (candidate.distanceToPlayerBlocksXZ < MIN_SPAWN_DISTANCE_BLOCKS) return REFUSED('too-close')
+  if (candidate.distanceToPlayerBlocksXZ > MAX_SPAWN_DISTANCE_BLOCKS) return REFUSED('too-far')
+  if (!validSpawnSurface(candidate.groundBlock)) return REFUSED('not-a-surface')
+  if (candidate.footBlock !== AIR_BLOCK_ID || candidate.headBlock !== AIR_BLOCK_ID) return REFUSED('obstructed')
+  if (nether && candidate.blockLight > HOSTILE_SPAWN_MAX_BLOCK_LIGHT) return REFUSED('too-bright')
   return { _tag: 'Spawn' }
 }

@@ -57,6 +57,7 @@ import {
   type MobBehaviour,
 } from '../src/domain/entities/mob-frame'
 import { DORMANT_FUSE } from '../src/domain/mob/creeper-fuse'
+import { initialEcosystemMobState } from '../src/domain/mob/mob-ecosystem'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
 
 /**
@@ -338,14 +339,18 @@ describe('repairMobBehaviour is the host half of mc-sim’s load path', () => {
     }),
   )
 
-  it.effect('a kind with no rule loses whatever it was carrying', () =>
+  it.effect('ecosystem kinds are repaired while a kind with no rule loses its state', () =>
     Effect.sync(() => {
-      // No rule here would ever read it, and keeping it would make the roster's
-      // contents depend on which build wrote the save.
       const pig = EntityKind('pig')
-      expect(repairMobBehaviour(pig, DORMANT_FUSE)).toBeUndefined()
-      expect(repairMobBehaviour(pig, STRUCK_ENDERMAN)).toBeUndefined()
-      expect(repairMobBehaviour(pig, undefined)).toBeUndefined()
+      expect(repairMobBehaviour(pig, DORMANT_FUSE)).toStrictEqual(
+        hostileMobSnapshot(initialEcosystemMobState()),
+      )
+
+      // No rule here would ever read this state, so retaining it would make the
+      // roster depend on which build wrote the save.
+      const unknown = EntityKind('unknown')
+      expect(repairMobBehaviour(unknown, STRUCK_ENDERMAN)).toBeUndefined()
+      expect(repairMobBehaviour(unknown, undefined)).toBeUndefined()
     }),
   )
 
