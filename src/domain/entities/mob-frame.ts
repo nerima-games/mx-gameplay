@@ -257,12 +257,16 @@ import {
 import { canHostileSpawnAt, type SpawnCandidate, type SpawnRefusal } from '../mob/hostile-spawn'
 import {
   CREEPER_DROPS,
+  CREEPER_XP_REWARD,
   ENDERMAN_DROPS,
+  ENDERMAN_XP_REWARD,
+  mobXpReward,
   rollMobDrops,
   type MobDrop,
   type MobDropRule,
   type MobKill,
   ZOMBIE_DROPS,
+  ZOMBIE_XP_REWARD,
 } from '../mob/mob-drop'
 
 // ---------------------------------------------------------------------------
@@ -614,13 +618,12 @@ export const hostilePopulation = <S>(roster: EntityManagerApi<S>): Effect.Effect
 const SELF_DESTRUCT: MobKill = { _tag: 'SelfDestruct' }
 
 /**
- * How a blast kills a bystander.
+ * A player-caused casualty with no Looting context.
  *
- * `lootingLevel: 0` because an explosion has no weapon. The reference reaches
- * looting only through the melee handler, and a creeper's blast is not a melee
- * blow — so this is the reference's behaviour rather than an omission.
+ * Bow and melee requests currently carry damage but no enchantment metadata,
+ * so both drop and experience resolution use level zero.
  */
-const SLAIN_BY_BLAST: MobKill = { _tag: 'Slain', lootingLevel: 0 }
+const SLAIN_WITHOUT_LOOTING: MobKill = { _tag: 'Slain', lootingLevel: 0 }
 
 const NO_DROP_RULES: ReadonlyArray<MobDropRule> = []
 
@@ -640,6 +643,16 @@ export const dropRulesOfKind = (kind: EntityKind): ReadonlyArray<MobDropRule> =>
       : kind === ENDERMAN_KIND
         ? ENDERMAN_DROPS
         : NO_DROP_RULES
+
+/** Experience granted when the player kills one runtime-supported hostile. */
+export const xpRewardOfKind = (kind: EntityKind): number =>
+  kind === CREEPER_KIND
+    ? CREEPER_XP_REWARD
+    : kind === ZOMBIE_KIND
+      ? ZOMBIE_XP_REWARD
+      : kind === ENDERMAN_KIND
+        ? ENDERMAN_XP_REWARD
+        : 0
 
 /** How many rolls `rollDropsOfKind` will consume for this kind. Two per drop line — a chance and a count. */
 export const dropRollsNeeded = (kind: EntityKind): number => dropRulesOfKind(kind).length * 2
@@ -1604,7 +1617,26 @@ export type MobDropEvent = MobDrop & {
   readonly at: Position
 }
 
+/** Experience left by a player-caused mob casualty for the host to award. */
+export type MobExperienceEvent = {
+  readonly source: EntityId
+  readonly kind: EntityKind
+  readonly at: Position
+  readonly amount: number
+}
+
 const NO_DROPS: ReadonlyArray<never> = []
+
+/** Resolve experience without consuming the deterministic loot seed. */
+export const experienceOfCasualties = (
+  casualties: ReadonlyArray<MobCasualty>,
+): ReadonlyArray<MobExperienceEvent> =>
+  casualties.flatMap((casualty) => {
+    const amount = mobXpReward(SLAIN_WITHOUT_LOOTING, xpRewardOfKind(casualty.kind))
+    return amount <= 0
+      ? []
+      : [{ source: casualty.id, kind: casualty.kind, at: casualty.at, amount }]
+  })
 
 /**
  * Roll what the dead leave behind.
@@ -1633,7 +1665,7 @@ export const rollCasualtyDrops = (
     const batch = drawRolls(current, dropRollsNeeded(casualty.kind))
     current = batch.seed
     drops.push(
-      ...rollDropsOfKind(casualty.kind, SLAIN_BY_BLAST, batch.rolls).map((drop) => ({
+      ...rollDropsOfKind(casualty.kind, SLAIN_WITHOUT_LOOTING, batch.rolls).map((drop) => ({
         ...drop,
         source: casualty.id,
         kind: casualty.kind,

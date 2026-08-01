@@ -109,6 +109,7 @@ import {
 import { applyFallingBlocks } from '../domain/entities/falling-block-move'
 import {
   applySpawnAttempts,
+  experienceOfCasualties,
   resolveBlasts,
   resolveBowHits,
   resolveMeleeHits,
@@ -120,6 +121,7 @@ import {
   PRIMED_TNT_KIND,
   type BowHit,
   type MobDropEvent,
+  type MobExperienceEvent,
   type MobBehaviour,
   type MobSpawnAttempt,
 } from '../domain/entities/mob-frame'
@@ -515,6 +517,7 @@ export type GameplayFrameState = {
   readonly fireLifecycle: Ref.Ref<FireLifecycleState>
   readonly hostileContactCooldowns: Ref.Ref<ReadonlyMap<EntityId, number>>
   readonly mobDrops: Ref.Ref<ReadonlyArray<MobDropEvent>>
+  readonly mobExperience: Ref.Ref<ReadonlyArray<MobExperienceEvent>>
   readonly spawnAttempts: Ref.Ref<ReadonlyArray<MobSpawnAttempt>>
   readonly targetPosition: Ref.Ref<Position | undefined>
   readonly timeOfDay: Ref.Ref<number>
@@ -905,6 +908,7 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
   const fireLifecycle = yield* Ref.make<FireLifecycleState>(makeFireLifecycleState([], DEFAULT_ROLL_SEED))
   const hostileContactCooldowns = yield* Ref.make<ReadonlyMap<EntityId, number>>(new Map())
   const mobDrops = yield* Ref.make<ReadonlyArray<MobDropEvent>>([])
+  const mobExperience = yield* Ref.make<ReadonlyArray<MobExperienceEvent>>([])
   const spawnAttempts = yield* Ref.make<ReadonlyArray<MobSpawnAttempt>>([])
   const targetPosition = yield* Ref.make<Position | undefined>(undefined)
   // Midnight, which `domain/day-night.ts` reads as night. See the module header
@@ -958,6 +962,7 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
     fireLifecycle,
     hostileContactCooldowns,
     mobDrops,
+    mobExperience,
     spawnAttempts,
     targetPosition,
     timeOfDay,
@@ -1502,6 +1507,11 @@ const stepFireLifecycle = (
 export const drainMobDrops = (
   state: GameplayFrameState,
 ): Effect.Effect<ReadonlyArray<MobDropEvent>> => Ref.getAndSet(state.mobDrops, [])
+
+/** Atomically drain experience emitted by player-caused mob casualties. */
+export const drainMobExperience = (
+  state: GameplayFrameState,
+): Effect.Effect<ReadonlyArray<MobExperienceEvent>> => Ref.getAndSet(state.mobExperience, [])
 
 /** Resolve the block under the crosshair and enqueue placement in its adjacent cell. */
 export const requestTargetedBlockPlacement = (
@@ -2160,6 +2170,11 @@ export const gameplayStages = (
         const meleeCasualties = yield* resolveMeleeHits(roster, meleeHits)
         const weaponCasualties = [...bowCasualties, ...meleeCasualties]
         if (weaponCasualties.length > 0) {
+          const experience = experienceOfCasualties(weaponCasualties)
+          if (experience.length > 0) {
+            yield* Ref.update(state.mobExperience, (items) => [...items, ...experience])
+          }
+
           // The same atomic seed step the blast path uses, and for the same
           // reason: a split read/write would let two frames draw one sequence.
           const drops = yield* Ref.modify(state.rollSeed, (seed) => {

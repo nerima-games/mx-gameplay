@@ -13,6 +13,7 @@ import {
   CREEPER_KIND,
   type MobBehaviour,
   type MobDropEvent,
+  type MobExperienceEvent,
   type MobSpawnAttempt,
 } from '../src/domain/entities/mob-frame'
 import {
@@ -46,6 +47,7 @@ import {
   drainFluidUpdates,
   drainMeleeAttackResults,
   drainMobDrops,
+  drainMobExperience,
   LAVA_TICK_INTERVAL,
   makeGameplayFrameState,
   makeGameplayStages,
@@ -441,6 +443,7 @@ describe('stage behaviour', () => {
         'itemUseResults',
         'meleeAttackResults',
         'mobDrops',
+        'mobExperience',
         'pendingBlockUses',
         'pendingBowShots',
         'pendingBreaks',
@@ -562,6 +565,35 @@ describe('stage behaviour', () => {
       expect(results[1]).toStrictEqual({ requestId: 'miss', success: false })
       expect(yield* drainMeleeAttackResults(state)).toStrictEqual([])
       expect((yield* roster.api.snapshot).entities[0]?.healthPoints).toBe(16)
+      expect(yield* drainMobExperience(state)).toStrictEqual([])
+    }),
+  )
+
+  it.effect('a lethal player melee hit emits mob experience exactly once', () =>
+    Effect.gen(function* () {
+      const { state, roster, stages } = yield* builtStages
+      const feetPosition = { x: 0, y: 64 - BOW_TARGET_CENTER_Y_OFFSET, z: 2 }
+      const target = yield* roster.api.spawn({
+        kind: CREEPER_KIND,
+        feetPosition,
+        healthPoints: 4,
+        behaviour: undefined,
+      })
+
+      yield* requestMeleeAttack(state, {
+        origin: { x: 0, y: 64, z: 0 },
+        direction: { x: 0, y: 0, z: 1 },
+        reach: 3,
+        damage: 4,
+      })
+      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)
+      yield* interactions!.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect((yield* roster.api.snapshot).entities).toStrictEqual([])
+      expect(yield* drainMobExperience(state)).toStrictEqual([
+        { source: target.id, kind: CREEPER_KIND, at: feetPosition, amount: 5 },
+      ])
+      expect(yield* drainMobExperience(state)).toStrictEqual([])
     }),
   )
 
@@ -690,11 +722,21 @@ describe('stage behaviour', () => {
         kind: CREEPER_KIND,
         at: { x: 1, y: 64, z: 0 },
       }
+      const experience: MobExperienceEvent = {
+        source: EntityId('qa-creeper'),
+        kind: CREEPER_KIND,
+        at: { x: 1, y: 64, z: 0 },
+        amount: 5,
+      }
       yield* Ref.set(state.mobDrops, [drop])
+      yield* Ref.set(state.mobExperience, [experience])
 
       expect(yield* drainMobDrops(state)).toStrictEqual([drop])
       expect(yield* Ref.get(state.mobDrops)).toStrictEqual([])
       expect(yield* drainMobDrops(state)).toStrictEqual([])
+      expect(yield* drainMobExperience(state)).toStrictEqual([experience])
+      expect(yield* Ref.get(state.mobExperience)).toStrictEqual([])
+      expect(yield* drainMobExperience(state)).toStrictEqual([])
     }),
   )
 
