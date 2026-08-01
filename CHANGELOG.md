@@ -1,5 +1,11 @@
 # @nerima-games/mx-gameplay
 
+## 0.1.43
+
+### Patch Changes
+
+- Add deterministic age, distance, persistence, difficulty, and random hostile mob despawn rules.
+
 ## 0.1.42
 
 ### Patch Changes

@@ -33,7 +33,7 @@
  * observation the preview's finding F5 makes about health.
  *
  * ---------------------------------------------------------------------------
- * There is NO time bound here, because the reference has none
+ * Time and random despawning are additive host-provided facts
  * ---------------------------------------------------------------------------
  *
  * Vanilla despawns on distance AND on time: past 128 blocks instantly, between
@@ -43,12 +43,11 @@
  * (`application/mob/mob-maintenance.ts:60`) and there is no age on an entity to
  * bound.
  *
- * That is ported as it stands rather than completed. docs/porting.md §4 makes
- * the reference the specification, and the missing two thirds are not a detail:
- * an age-based despawn needs a mob to HAVE an age, which is a field on mc-sim's
- * roster entry, and a random despawn needs a roll this rule would have to be
- * handed. Both are on the arena's missing list with those destinations. What is
- * here is the whole of what the reference decides.
+ * The original distance-only contract remains valid: age and roll are optional,
+ * so existing callers cannot randomly despawn. Hosts that own entity age and a
+ * deterministic random stream may provide both and receive the remaining
+ * vanilla-style natural despawn decision without this pure rule reading a clock
+ * or global random source.
  *
  * ---------------------------------------------------------------------------
  * `persistent` is a flag, and it is a flag for `./hostile-spawn`'s reason
@@ -81,6 +80,17 @@
  */
 export const DESPAWN_DISTANCE_BLOCKS = 128
 
+/** Inside this radius natural random despawning is suppressed. */
+export const RANDOM_DESPAWN_MIN_DISTANCE_BLOCKS = 32
+
+/** Natural random despawning starts after this many ticks, not at the boundary. */
+export const RANDOM_DESPAWN_MIN_AGE_TICKS = 600
+
+/** Vanilla's per-check random despawn probability. */
+export const RANDOM_DESPAWN_CHANCE = 1 / 800
+
+export type HostileDifficulty = 'peaceful' | 'easy' | 'normal' | 'hard'
+
 /**
  * Everything the rule needs about one mob, and nothing it does not.
  *
@@ -110,6 +120,16 @@ export type DespawnCandidate = {
    * spells it as a villager; see the module header.
    */
   readonly persistent: boolean
+  /** Named mobs are persistent even when the host does not set `persistent`. */
+  readonly named?: boolean
+  /** Tamed mobs are persistent even when the host does not set `persistent`. */
+  readonly tamed?: boolean
+  /** Age used by natural despawning. Omitted callers retain distance-only behaviour. */
+  readonly ageTicks?: number
+  /** Explicit deterministic roll in [0, 1). Omitted callers do not randomly despawn. */
+  readonly randomRoll?: number
+  /** Peaceful removes hostile mobs independently of natural despawning. */
+  readonly difficulty?: HostileDifficulty
 }
 
 /** Why a mob was swept, or why it was left alone. */
@@ -121,6 +141,10 @@ export type DespawnReason =
    * from a position or a velocity that has stopped being finite.
    */
   | 'unmeasurable'
+  /** Hostile mobs cannot remain in peaceful difficulty. */
+  | 'peaceful'
+  /** An old, non-persistent mob passed its explicit random despawn roll. */
+  | 'natural'
 
 export type DespawnVerdict =
   | { readonly _tag: 'Keep' }
@@ -148,18 +172,41 @@ const KEEP: DespawnVerdict = { _tag: 'Keep' }
 export const despawnVerdict = (candidate: DespawnCandidate): DespawnVerdict => {
   const distance = candidate.distanceToPlayerBlocks
 
+  // Before the exemption. See above.
+  if (distance !== undefined && !Number.isFinite(distance)) {
+    return { _tag: 'Despawn', reason: 'unmeasurable' }
+  }
+
+  if (candidate.difficulty === 'peaceful') {
+    return { _tag: 'Despawn', reason: 'peaceful' }
+  }
+
   if (distance === undefined) {
     return KEEP
   }
 
-  // Before the exemption. See above.
-  if (!Number.isFinite(distance)) {
-    return { _tag: 'Despawn', reason: 'unmeasurable' }
-  }
-
-  if (candidate.persistent) {
+  if (candidate.persistent || candidate.named === true || candidate.tamed === true) {
     return KEEP
   }
 
-  return distance > DESPAWN_DISTANCE_BLOCKS ? { _tag: 'Despawn', reason: 'too-far' } : KEEP
+  if (distance > DESPAWN_DISTANCE_BLOCKS) {
+    return { _tag: 'Despawn', reason: 'too-far' }
+  }
+
+  const age = candidate.ageTicks
+  const roll = candidate.randomRoll
+  if (
+    distance > RANDOM_DESPAWN_MIN_DISTANCE_BLOCKS &&
+    age !== undefined &&
+    Number.isFinite(age) &&
+    age > RANDOM_DESPAWN_MIN_AGE_TICKS &&
+    roll !== undefined &&
+    Number.isFinite(roll) &&
+    roll >= 0 &&
+    roll < RANDOM_DESPAWN_CHANCE
+  ) {
+    return { _tag: 'Despawn', reason: 'natural' }
+  }
+
+  return KEEP
 }
