@@ -1,5 +1,11 @@
 # @nerima-games/mx-gameplay
 
+## 0.1.42
+
+### Patch Changes
+
+- Add deterministic Enderman teleport landing validation for loaded, solid, clear, hazard-free destinations and environmental escape triggers.
+
 ## 0.1.41
 
 ### Patch Changes

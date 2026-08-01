@@ -167,6 +167,10 @@ export type TeleportReason =
   | 'stuck'
   /** Nothing in particular — the per-frame chase roll. `:56`. */
   | 'restless'
+  /** Water harms endermen, so an immersed one immediately seeks dry ground. */
+  | 'water'
+  /** Direct daylight is another environmental escape trigger. */
+  | 'daylight'
 
 export type EndermanTeleportUrge =
   | { readonly _tag: 'Stay' }
@@ -194,6 +198,9 @@ export type EndermanSenses = {
   readonly stuckTicks: number
   /** One roll in `[0, 1)`. */
   readonly roll: number
+  /** Optional world senses; omitted by hosts that cannot observe the environment. */
+  readonly inWater?: boolean
+  readonly exposedToDaylight?: boolean
 }
 
 /**
@@ -218,6 +225,14 @@ export const endermanTeleportUrge = (senses: EndermanSenses): EndermanTeleportUr
     return senses.roll < ENDERMAN_DAMAGE_TELEPORT_CHANCE
       ? { _tag: 'Teleport', reason: 'damaged', anchor: 'self' }
       : STAY
+  }
+
+  if (senses.inWater === true) {
+    return { _tag: 'Teleport', reason: 'water', anchor: 'self' }
+  }
+
+  if (senses.exposedToDaylight === true) {
+    return { _tag: 'Teleport', reason: 'daylight', anchor: 'self' }
   }
 
   if (senses.stuckTicks > ENDERMAN_STUCK_TELEPORT_TICKS) {
@@ -307,4 +322,71 @@ export const endermanTeleportOffset = (
   }
 
   return undefined
+}
+
+/** An integer block position used by the loaded-world teleport snapshot. */
+export type EndermanTeleportPosition = {
+  readonly x: number
+  readonly y: number
+  readonly z: number
+}
+
+/**
+ * One observed cell. Absence is deliberately different from air: it means the
+ * candidate crosses a load boundary and must be refused.
+ */
+export type EndermanTeleportCell = {
+  readonly position: EndermanTeleportPosition
+  readonly block: string
+  readonly solid: boolean
+}
+
+const DANGEROUS_TELEPORT_BLOCKS = new Set([
+  'water',
+  'lava',
+  'fire',
+  'cactus',
+  'magma_block',
+  'campfire',
+  'sweet_berry_bush',
+])
+
+const positionKey = (position: EndermanTeleportPosition): string =>
+  `${String(position.x)},${String(position.y)},${String(position.z)}`
+
+/**
+ * Finds the first safe destination in roll order. All three cells must be in
+ * the caller's loaded snapshot: solid safe floor, then two blocks of air.
+ * Failure returns `current` by identity, making a rejected teleport inert.
+ */
+export const resolveSafeEndermanTeleport = (
+  current: EndermanTeleportPosition,
+  anchor: EndermanTeleportPosition,
+  rolls: ReadonlyArray<number>,
+  cells: ReadonlyArray<EndermanTeleportCell>,
+): EndermanTeleportPosition => {
+  const cellByPosition = new Map(cells.map((cell) => [positionKey(cell.position), cell]))
+
+  for (let attempt = 0; attempt < ENDERMAN_TELEPORT_ATTEMPTS; attempt += 1) {
+    const xBlocks = offsetFromRoll(rolls[attempt * 2])
+    const zBlocks = offsetFromRoll(rolls[attempt * 2 + 1])
+    if (xBlocks === undefined || zBlocks === undefined) return current
+    if (!withinTeleportBand(xBlocks, zBlocks)) continue
+
+    const destination = { x: anchor.x + xBlocks, y: current.y, z: anchor.z + zBlocks }
+    const floor = cellByPosition.get(positionKey({ ...destination, y: destination.y - 1 }))
+    const feet = cellByPosition.get(positionKey(destination))
+    const head = cellByPosition.get(positionKey({ ...destination, y: destination.y + 1 }))
+    const safeFloor =
+      floor !== undefined && floor.solid && !DANGEROUS_TELEPORT_BLOCKS.has(floor.block)
+    const clearBody =
+      feet?.block === 'air' &&
+      head?.block === 'air' &&
+      !DANGEROUS_TELEPORT_BLOCKS.has(feet.block) &&
+      !DANGEROUS_TELEPORT_BLOCKS.has(head.block)
+
+    if (safeFloor && clearBody) return destination
+  }
+
+  return current
 }
