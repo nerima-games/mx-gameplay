@@ -43,6 +43,7 @@ import { disturb, takeBatch } from '../src/domain/falling-block'
 import { DEFAULT_ROLL_SEED } from '../src/domain/frame-rolls'
 import {
   gameplayStages,
+  collectBrewingPotion,
   drainPlayerDamages,
   drainPlayerHeals,
   drainBowShotResults,
@@ -54,13 +55,19 @@ import {
   makeGameplayFrameState,
   makeGameplayStages,
   gameplayModule,
+  insertBrewingBottle,
+  insertBrewingFuel,
+  insertBrewingIngredient,
   requestBowShot,
   requestMeleeAttack,
   requestMobSpawn,
   requestStatusEffect,
   getPlayerMovementSpeedMultiplier,
+  restoreBrewingStand,
   restoreStatusEffects,
+  snapshotBrewingStand,
   snapshotStatusEffects,
+  useBrewingPotion,
 } from '../src/stages/registration'
 import {
   EXPERIENCE_MODULE_STAGE_PREFIXES,
@@ -437,6 +444,7 @@ describe('stage behaviour', () => {
         'blockUseResults',
         'bowKnockbacks',
         'bowShotResults',
+        'brewingStand',
         'consumedItems',
         'enderPearlOutcomes',
         'fallingBlocks',
@@ -1084,6 +1092,55 @@ describe('the module contract has caught up with this file’s shape', () => {
       expect(yield* snapshotStatusEffects(restored)).toStrictEqual(snapshot)
       expect(yield* getPlayerMovementSpeedMultiplier(restored)).toBe(1.2)
       expect((yield* snapshotStatusEffects(restored)).effects).not.toBe(snapshot.effects)
+    }),
+  )
+
+  it.effect('brews and uses a speed potion through the existing status-effect pipeline', () =>
+    Effect.gen(function* () {
+      const { state, stages } = yield* builtStages
+      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+
+      expect(yield* insertBrewingBottle(state, 'water_bottle')).toMatchObject({ _tag: 'Accepted' })
+      expect(yield* insertBrewingFuel(state)).toMatchObject({ _tag: 'Accepted' })
+      expect(yield* insertBrewingIngredient(state, 'nether_wart')).toMatchObject({
+        _tag: 'Accepted',
+      })
+      yield* interactions.run(DeltaTimeSecs(20)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* insertBrewingFuel(state)).toMatchObject({ _tag: 'Accepted' })
+      expect(yield* insertBrewingIngredient(state, 'sugar')).toMatchObject({ _tag: 'Accepted' })
+      yield* interactions.run(DeltaTimeSecs(20)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* useBrewingPotion(state)).toStrictEqual({
+        _tag: 'Consumed',
+        consumed: { item: 'speed_potion', count: 1 },
+        effect: { type: 'speed', durationSecs: 180 },
+      })
+      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+      expect(yield* getPlayerMovementSpeedMultiplier(state)).toBe(1.2)
+      expect(yield* collectBrewingPotion(state)).toStrictEqual({
+        _tag: 'Rejected',
+        reason: 'Empty',
+      })
+    }),
+  )
+
+  it.effect('snapshots and restores an in-progress brew without retaining host references', () =>
+    Effect.gen(function* () {
+      const source = yield* makeGameplayFrameState
+      yield* restoreBrewingStand(source, {
+        fuelUnits: 0,
+        bottle: { potion: 'awkward' },
+        ingredient: undefined,
+        brewing: { output: 'speed', remainingSecs: 7 },
+      })
+      const snapshot = yield* snapshotBrewingStand(source)
+      const restored = yield* makeGameplayFrameState
+      yield* restoreBrewingStand(restored, snapshot)
+      const restoredSnapshot = yield* snapshotBrewingStand(restored)
+
+      expect(restoredSnapshot).toStrictEqual(snapshot)
+      expect(restoredSnapshot.brewing).not.toBe(snapshot.brewing)
     }),
   )
 })
