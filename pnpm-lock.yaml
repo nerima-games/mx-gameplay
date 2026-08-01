@@ -4,6 +4,9 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+overrides:
+  '@nerima-games/mc-kernel': 0.2.11
+
 importers:
 
   .:
@@ -12,8 +15,8 @@ importers:
         specifier: 0.1.0
         version: 0.1.0
       '@nerima-games/mc-kernel':
-        specifier: 0.2.10
-        version: 0.2.10
+        specifier: 0.2.11
+        version: 0.2.11
       '@nerima-games/mc-sim':
         specifier: 0.1.25
         version: 0.1.25
@@ -346,12 +349,8 @@ packages:
     resolution: {integrity: sha512-bqEeDNNlXVnF+4nxQwZN2vcoC4fKlelUE6u0ig7KkIM66EyPqQGOYvtZTBzy8J9aSgEoLzWFlQ5Vj4BgVrUlRw==, tarball: https://npm.pkg.github.com/download/@nerima-games/mc-audio/0.1.0/1ff271b5de296c87043222c0e248aa6371b65c89}
     engines: {node: '>=24.0.0', pnpm: '>=11.0.0'}
 
-  '@nerima-games/mc-kernel@0.2.10':
-    resolution: {integrity: sha512-bRq4FQhXFb1owCIHxGdPu6sdgXbkoxPasMwsmurQahWgr5WTsntn7IJkVmPvsj2bz9q9TAMuoHYjz8KnEIwCcA==, tarball: https://npm.pkg.github.com/download/@nerima-games/mc-kernel/0.2.10/1e5ae2529ce9c55acfbe9d8839b6439a54653028}
-    engines: {node: '>=24.0.0', pnpm: '>=11.0.0'}
-
-  '@nerima-games/mc-kernel@0.2.9':
-    resolution: {integrity: sha512-2Jn2gzoQJZMgwJ8biFdwxwSpgNsJRMtS6ajMtZ6WkkMAdI5djSHb6DDq+fmGBG4gyFeamf7RcJ6LnNPYY5wvCw==, tarball: https://npm.pkg.github.com/download/@nerima-games/mc-kernel/0.2.9/a3bb27aba5ac2d860d54c52431dd4a8a6a912cf3}
+  '@nerima-games/mc-kernel@0.2.11':
+    resolution: {integrity: sha512-AoOtCIA93KnXHT93icYrsXF2BxLrYw1gh2/oFeHMwXuxKowaeuDwWtxL1u4nb2CEBbatW3FJo4p212Q+O4jhbg==, tarball: https://npm.pkg.github.com/download/@nerima-games/mc-kernel/0.2.11/268e1c6637d9ac7dd2e287aeb279ee1ae372da83}
     engines: {node: '>=24.0.0', pnpm: '>=11.0.0'}
 
   '@nerima-games/mc-physics@0.1.0':
@@ -1618,11 +1617,7 @@ snapshots:
     dependencies:
       effect: 3.22.0
 
-  '@nerima-games/mc-kernel@0.2.10':
-    dependencies:
-      effect: 3.22.0
-
-  '@nerima-games/mc-kernel@0.2.9':
+  '@nerima-games/mc-kernel@0.2.11':
     dependencies:
       effect: 3.22.0
 
@@ -1636,7 +1631,7 @@ snapshots:
 
   '@nerima-games/mc-sim@0.1.25':
     dependencies:
-      '@nerima-games/mc-kernel': 0.2.9
+      '@nerima-games/mc-kernel': 0.2.11
       '@nerima-games/mc-physics': 0.1.0
       '@nerima-games/mc-save': 0.1.0
       '@nerima-games/mc-worldgen': 0.1.1

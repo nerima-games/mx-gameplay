@@ -1113,7 +1113,7 @@ describe('the module contract has caught up with this file’s shape', () => {
 
       expect(yield* useBrewingPotion(state)).toStrictEqual({
         _tag: 'Consumed',
-        consumed: { item: 'speed_potion', count: 1 },
+        consumed: { item: 'potion_of_swiftness', count: 1 },
         effect: { type: 'speed', durationSecs: 180 },
       })
       yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))

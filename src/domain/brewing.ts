@@ -1,4 +1,5 @@
 import type { DeltaTimeSecs } from './frame-contract'
+import type { ItemType } from './item-vocabulary'
 import type { StatusEffectApplication } from './status-effect'
 
 export const BREWING_INGREDIENTS = ['nether_wart', 'sugar', 'spider_eye', 'ghast_tear'] as const
@@ -8,8 +9,19 @@ export const POTION_TYPES = ['awkward', 'speed', 'poison', 'regeneration'] as co
 export type PotionType = (typeof POTION_TYPES)[number]
 export type BrewingBottle = 'water_bottle' | { readonly potion: PotionType }
 
+export type BrewingItem = Extract<
+  ItemType,
+  | 'blaze_powder'
+  | BrewingIngredient
+  | 'water_bottle'
+  | 'awkward_potion'
+  | 'potion_of_swiftness'
+  | 'potion_of_poison'
+  | 'potion_of_regeneration'
+>
+
 export type BrewingStack = {
-  readonly item: 'blaze_powder' | BrewingIngredient | 'water_bottle' | `${PotionType}_potion`
+  readonly item: BrewingItem
   readonly count: 1
 }
 
@@ -43,6 +55,13 @@ export const POTION_EFFECT_DURATION_SECS: Readonly<Record<Exclude<PotionType, 'a
   speed: 180,
   poison: 45,
   regeneration: 45,
+}
+
+const potionItem = (potion: PotionType): BrewingItem => {
+  if (potion === 'awkward') return 'awkward_potion'
+  if (potion === 'speed') return 'potion_of_swiftness'
+  if (potion === 'poison') return 'potion_of_poison'
+  return 'potion_of_regeneration'
 }
 
 export const emptyBrewingStandState = (): BrewingStandState => ({
@@ -86,7 +105,7 @@ export const acceptBrewingBottle = (
   if (state.ingredient !== undefined && brewingOutput(bottle, state.ingredient) === undefined) {
     return [state, { _tag: 'Rejected', reason: 'InvalidRecipe' }]
   }
-  const item = bottle === 'water_bottle' ? bottle : `${bottle.potion}_potion` as const
+  const item = bottle === 'water_bottle' ? bottle : potionItem(bottle.potion)
   return [{ ...state, bottle }, { _tag: 'Accepted', consumed: { item, count: 1 } }]
 }
 
@@ -110,9 +129,7 @@ export const collectBrewingBottle = (
 ): readonly [BrewingStandState, BrewingCollectionResult] => {
   if (state.brewing !== undefined) return [state, { _tag: 'Rejected', reason: 'Brewing' }]
   if (state.bottle === undefined) return [state, { _tag: 'Rejected', reason: 'Empty' }]
-  const item = state.bottle === 'water_bottle'
-    ? 'water_bottle' as const
-    : `${state.bottle.potion}_potion` as const
+  const item = state.bottle === 'water_bottle' ? state.bottle : potionItem(state.bottle.potion)
   return [{ ...state, bottle: undefined }, { _tag: 'Collected', returned: { item, count: 1 } }]
 }
 
@@ -160,7 +177,7 @@ export const drinkBrewingPotion = (
     { ...state, bottle: undefined },
     {
       _tag: 'Consumed',
-      consumed: { item: `${state.bottle.potion}_potion`, count: 1 },
+      consumed: { item: potionItem(state.bottle.potion), count: 1 },
       effect,
     },
   ]
