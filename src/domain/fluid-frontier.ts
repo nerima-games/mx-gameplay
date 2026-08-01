@@ -204,8 +204,10 @@ export type FluidBudgetSplit = {
   /** The cells to evaluate this tick. Never longer than the budget. */
   readonly work: ReadonlyArray<FluidWorkItem>
   /**
-   * Lava cells deferred because lava's tick was not active. These MUST be fed
-   * back into the next frontier; dropping them stops lava mid-flow.
+   * Position keys of lava cells deferred because lava's tick was not active.
+   * This is diagnostic compatibility data only. Callers MUST use `carryOver`
+   * as the sole source of next-tick work; reinserting these keys separately
+   * duplicates the deferred lava frontier.
    */
   readonly retainedLavaFrontier: ReadonlyArray<PositionKey>
 }
@@ -262,6 +264,15 @@ export const carryOver = (
   frontier: ReadonlyArray<FluidWorkItem>,
   split: FluidBudgetSplit,
 ): ReadonlyArray<FluidWorkItem> => {
-  const evaluated = new Set(split.work.map((item) => item.key))
-  return frontier.filter((item) => !evaluated.has(item.key))
+  const evaluatedWater = new Set<PositionKey>()
+  const evaluatedLava = new Set<PositionKey>()
+  for (const item of split.work) {
+    const evaluated = item.kind === 'water' ? evaluatedWater : evaluatedLava
+    evaluated.add(item.key)
+  }
+
+  return frontier.filter((item) => {
+    const evaluated = item.kind === 'water' ? evaluatedWater : evaluatedLava
+    return !evaluated.has(item.key)
+  })
 }

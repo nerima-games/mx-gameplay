@@ -134,31 +134,20 @@ describe('F6 — the day/night rules are not periodic in the day', () => {
   )
 })
 
-describe('F3 — carryOver compares by key, but the frontier is keyed by (key, kind)', () => {
-  // `splitBudget` classifies on `kind`; `carryOver` builds its "evaluated" set
-  // from `item.key` alone (`domain/fluid-frontier.ts:120`). When two kinds share
-  // one position the two disagree about what an item is, and the cell that was
-  // never evaluated is dropped from the frontier.
-  //
-  // Water and lava meet at one position by definition — that is the whole of the
-  // cobblestone and obsidian rules — so this is the encoding of a fluid
-  // interface, not a contrived input. DN-GP-2 records what a dropped frontier
-  // key looks like from the outside: a lava lake with a straight edge, minutes
-  // later, in a preview.
+describe('fluid frontier identity and carry-over contract', () => {
   const interfaceCell: ReadonlyArray<FluidWorkItem> = [
     { key: '10,64,10', kind: 'water' },
     { key: '10,64,10', kind: 'lava' },
   ]
 
-  it.effect('pins the current behaviour: the unevaluated lava half is silently dropped', () =>
+  it.effect('identifies work by position and kind so inactive lava survives a water evaluation', () =>
     Effect.sync(() => {
       const split = splitBudget(interfaceCell, { lavaTickActive: false, budget: 64 })
 
-      // The lava tick is not active, so no lava cell may be evaluated.
       expect(split.work).toStrictEqual([{ key: '10,64,10', kind: 'water' }])
-
-      // …and yet the lava cell does not survive into the next frontier.
-      expect(carryOver(interfaceCell, split)).toStrictEqual([])
+      expect(carryOver(interfaceCell, split)).toStrictEqual([
+        { key: '10,64,10', kind: 'lava' },
+      ])
     }),
   )
 
@@ -172,49 +161,18 @@ describe('F3 — carryOver compares by key, but the frontier is keyed by (key, k
       expect(carryOver(distinct, split)).toStrictEqual([{ key: '11,64,10', kind: 'lava' }])
     }),
   )
-})
-
-describe('F2 — retainedLavaFrontier names cells carryOver already keeps', () => {
-  // `FluidBudgetSplit.retainedLavaFrontier` is documented "These MUST be fed
-  // back into the next frontier"; `carryOver` is documented as returning the
-  // cells that were not evaluated. On an inactive lava tick every lava cell
-  // satisfies both, so a caller obeying both comments duplicates them — and
-  // duplicates them again on the next inactive tick.
-  //
-  // `stages/registration.ts:270` uses `carryOver` alone and is correct. The
-  // field is dead in the only caller that exists, and its doc comment reads as
-  // an obligation.
-  const frontier: ReadonlyArray<FluidWorkItem> = [
-    { key: 'w0', kind: 'water' },
-    { key: 'l0', kind: 'lava' },
-    { key: 'l1', kind: 'lava' },
-  ]
-
-  it.effect('pins the current behaviour: the two outputs overlap completely', () =>
+  it.effect('uses carryOver alone for reinsertion without doubling deferred lava', () =>
     Effect.sync(() => {
-      const split = splitBudget(frontier, { lavaTickActive: false, budget: 64 })
-      const carriedKeys = carryOver(frontier, split).map((item) => item.key)
-
-      expect(split.retainedLavaFrontier).toStrictEqual(['l0', 'l1'])
-      expect(carriedKeys).toStrictEqual(['l0', 'l1'])
-    }),
-  )
-
-  it.effect('pins the current behaviour: obeying both doc comments doubles the lava frontier each tick', () =>
-    Effect.sync(() => {
-      let naive: ReadonlyArray<FluidWorkItem> = frontier
-      const sizes: Array<number> = [naive.length]
+      let frontier: ReadonlyArray<FluidWorkItem> = interfaceCell
+      const sizes: Array<number> = [frontier.length]
 
       for (let tick = 0; tick < 4; tick += 1) {
-        const split = splitBudget(naive, { lavaTickActive: false, budget: 64 })
-        naive = [
-          ...carryOver(naive, split),
-          ...split.retainedLavaFrontier.map((key): FluidWorkItem => ({ key, kind: 'lava' })),
-        ]
-        sizes.push(naive.length)
+        const split = splitBudget(frontier, { lavaTickActive: false, budget: 64 })
+        frontier = carryOver(frontier, split)
+        sizes.push(frontier.length)
       }
 
-      expect(sizes).toStrictEqual([3, 4, 8, 16, 32])
+      expect(sizes).toStrictEqual([2, 1, 1, 1, 1])
     }),
   )
 })

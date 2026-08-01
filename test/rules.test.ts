@@ -260,6 +260,55 @@ describe('fluids: the frontier budget that bought 37–55×', () => {
     }),
   )
 
+  it.effect('same-position water and lava have distinct frontier identities', () =>
+    Effect.sync(() => {
+      const frontier: ReadonlyArray<FluidWorkItem> = [
+        { key: 'interface', kind: 'water' },
+        { key: 'interface', kind: 'lava' },
+      ]
+      const inactive = splitBudget(frontier, { lavaTickActive: false, budget: 2 })
+
+      expect(inactive.work).toStrictEqual([{ key: 'interface', kind: 'water' }])
+      expect(carryOver(frontier, inactive)).toStrictEqual([
+        { key: 'interface', kind: 'lava' },
+      ])
+
+      const active = splitBudget(frontier, { lavaTickActive: true, budget: 1 })
+      expect(active.work).toStrictEqual([{ key: 'interface', kind: 'lava' }])
+      expect(carryOver(frontier, active)).toStrictEqual([
+        { key: 'interface', kind: 'water' },
+      ])
+    }),
+  )
+
+  it.effect('repeated inactive ticks remain deterministic and bounded', () =>
+    Effect.sync(() => {
+      const initial: ReadonlyArray<FluidWorkItem> = [
+        { key: 'shared', kind: 'water' },
+        { key: 'shared', kind: 'lava' },
+        { key: 'lava-only', kind: 'lava' },
+      ]
+      const run = (): ReadonlyArray<ReadonlyArray<FluidWorkItem>> => {
+        let frontier = initial
+        const history: Array<ReadonlyArray<FluidWorkItem>> = []
+        for (let tick = 0; tick < 8; tick += 1) {
+          const split = splitBudget(frontier, { lavaTickActive: false, budget: 3 })
+          expect(split.work.length).toBeLessThanOrEqual(3)
+          frontier = carryOver(frontier, split)
+          expect(frontier.length).toBeLessThanOrEqual(initial.length)
+          history.push(frontier)
+        }
+        return history
+      }
+
+      expect(run()).toStrictEqual(run())
+      expect(run().at(-1)).toStrictEqual([
+        { key: 'shared', kind: 'lava' },
+        { key: 'lava-only', kind: 'lava' },
+      ])
+    }),
+  )
+
   it.effect('a zero budget evaluates nothing and loses nothing', () =>
     Effect.sync(() => {
       const frontier = frontierOf(3, 3)
