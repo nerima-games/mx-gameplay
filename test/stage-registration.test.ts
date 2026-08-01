@@ -43,6 +43,7 @@ import { DEFAULT_ROLL_SEED } from '../domain/frame-rolls'
 import {
   gameplayStages,
   drainBowShotResults,
+  drainFluidUpdates,
   drainMeleeAttackResults,
   drainMobDrops,
   LAVA_TICK_INTERVAL,
@@ -286,6 +287,52 @@ describe('stage behaviour', () => {
     }).pipe(Effect.provide(FrameServicesLayer)),
   )
 
+  it.effect('fluid updates are destructively drained without consuming inactive lava', () =>
+    Effect.gen(function* () {
+      const { state, stages } = yield* builtStages
+      const fluids = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids)
+      const water = { key: 'water-a', kind: 'water' } as const
+      const lava = { key: 'lava-a', kind: 'lava' } as const
+
+      yield* Ref.set(state.fluidFrontier, [water, lava])
+      yield* fluids?.run(DeltaTimeSecs(0.016)) ?? Effect.void
+
+      expect(yield* Ref.get(state.fluidFrontier)).toStrictEqual([lava])
+
+      for (let tick = 2; tick <= LAVA_TICK_INTERVAL; tick += 1) {
+        yield* fluids?.run(DeltaTimeSecs(0.016)) ?? Effect.void
+      }
+
+      expect(yield* drainFluidUpdates(state)).toStrictEqual([water, lava])
+      expect(yield* drainFluidUpdates(state)).toStrictEqual([])
+      expect(yield* Ref.get(state.fluidFrontier)).toStrictEqual([])
+    }).pipe(Effect.provide(FrameServicesLayer)),
+  )
+
+  it.effect('REGRESSION: concurrent fluid stage runs drain each work item at most once', () =>
+    Effect.gen(function* () {
+      const { state, stages } = yield* builtStages
+      const fluids = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids)
+      const work = Array.from({ length: 8 }, (_, index) => ({
+        key: `water-${String(index)}`,
+        kind: 'water' as const,
+      }))
+
+      yield* Ref.set(state.fluidFrontier, work)
+      yield* Effect.all(
+        [
+          fluids?.run(DeltaTimeSecs(0.016)) ?? Effect.void,
+          fluids?.run(DeltaTimeSecs(0.016)) ?? Effect.void,
+        ],
+        { concurrency: 2 },
+      )
+
+      expect(yield* drainFluidUpdates(state)).toStrictEqual(work)
+      expect(yield* drainFluidUpdates(state)).toStrictEqual([])
+      expect(yield* Ref.get(state.fluidFrontier)).toStrictEqual([])
+    }).pipe(Effect.provide(FrameServicesLayer)),
+  )
+
   // REGRESSION: the time of day is mc-sim's. It survives save/load, which is
   // the very test the module header names for whether a Ref belongs here, so it
   // is a noun and lives in `mc-sim/domain/time-of-day.ts` behind
@@ -386,6 +433,7 @@ describe('stage behaviour', () => {
         'enderPearlOutcomes',
         'fallingBlocks',
         'fluidFrontier',
+        'fluidUpdates',
         'handledBowShotRequestIds',
         'heldTool',
         'hostileContactCooldowns',

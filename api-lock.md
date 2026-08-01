@@ -13,7 +13,7 @@
 <!-- ------------------------------------------------------------------------- -->
 
 format: 1
-exported declarations: 518
+exported declarations: 533
 supporting declarations: 64
 
 ## Exported
@@ -685,6 +685,12 @@ const ENDERMAN_CHASE_TELEPORT_CHANCE = 0.05;
 const ENDERMAN_DAMAGE_TELEPORT_CHANCE = 0.3;
 ```
 
+### ENDERMAN_DROPS  `const`
+
+```ts
+const ENDERMAN_DROPS: ReadonlyArray<MobDropRule>;
+```
+
 ### ENDERMAN_KIND  `const`
 
 ```ts
@@ -1133,6 +1139,7 @@ type GameplayFrameState = {
     readonly rollSeed: Ref.Ref<number>;
     readonly fallingBlocks: Ref.Ref<FallingBlockQueue>;
     readonly fluidFrontier: Ref.Ref<ReadonlyArray<FluidWorkItem>>;
+    readonly fluidUpdates: Ref.Ref<ReadonlyArray<FluidWorkItem>>;
     readonly tickCount: Ref.Ref<number>;
     readonly portalCandidates: Ref.Ref<ReadonlyMap<Dimension, ReadonlyArray<BlockPosition>>>;
     readonly portalTravels: Ref.Ref<ReadonlyArray<PortalTravelEvent>>;
@@ -1213,6 +1220,15 @@ type HeldItemCapabilities = {
 
 ```ts
 type HoeItemType = (typeof HOE_ITEM_TYPES)[number];
+```
+
+### HorizontalSwimmingInput  `type`
+
+```ts
+type HorizontalSwimmingInput = Readonly<{
+    x: number;
+    z: number;
+}>;
 ```
 
 ### HostileContactResolution  `type`
@@ -2020,6 +2036,18 @@ type PlayerResolution = {
 };
 ```
 
+### PlayerSwimmingInput  `type`
+
+```ts
+type PlayerSwimmingInput = Readonly<{
+    velocity: SwimmingVelocity;
+    verticalInput: number;
+    horizontalInput: HorizontalSwimmingInput;
+    isInWater: boolean;
+    deltaSeconds: number;
+}>;
+```
+
 ### PlayerVitals  `type`
 
 ```ts
@@ -2097,6 +2125,7 @@ const RIPE_CROP_YIELD: Readonly<Partial<Record<BlockType, {
     readonly item: ItemType;
     readonly span: number;
     readonly floor: number;
+    readonly fixedDrops?: ReadonlyArray<CropDrop>;
 }>>>;
 ```
 
@@ -2233,6 +2262,30 @@ const STRUCK_ENDERMAN: EndermanFlinch;
 const SUGAR_CANE_BLOCK_ID: BlockId | undefined;
 ```
 
+### SWIMMING_BUOYANCY_BLOCKS_PER_S2  `const`
+
+```ts
+const SWIMMING_BUOYANCY_BLOCKS_PER_S2 = 4;
+```
+
+### SWIMMING_DRAG_PER_SECOND  `const`
+
+```ts
+const SWIMMING_DRAG_PER_SECOND = 2;
+```
+
+### SWIMMING_HORIZONTAL_ACCELERATION_BLOCKS_PER_S2  `const`
+
+```ts
+const SWIMMING_HORIZONTAL_ACCELERATION_BLOCKS_PER_S2 = 10;
+```
+
+### SWIMMING_VERTICAL_ACCELERATION_BLOCKS_PER_S2  `const`
+
+```ts
+const SWIMMING_VERTICAL_ACCELERATION_BLOCKS_PER_S2 = 8;
+```
+
 ### ShotCandidate  `type`
 
 ```ts
@@ -2326,6 +2379,16 @@ type StorageBlock = (typeof STORAGE_BLOCK_TYPES)[number];
 type SugarCaneWaterRefusal = {
     readonly _tag: 'NoAdjacentWater';
 };
+```
+
+### SwimmingVelocity  `type`
+
+```ts
+type SwimmingVelocity = Readonly<{
+    x: number;
+    y: number;
+    z: number;
+}>;
 ```
 
 ### TERMINAL_VELOCITY_M_PER_S  `const`
@@ -2619,6 +2682,12 @@ const ZOMBIE_CONTACT_DAMAGE: Damage;
 const ZOMBIE_CONTACT_RANGE_BLOCKS = 1.5;
 ```
 
+### ZOMBIE_DROPS  `const`
+
+```ts
+const ZOMBIE_DROPS: ReadonlyArray<MobDropRule>;
+```
+
 ### ZOMBIE_KIND  `const`
 
 ```ts
@@ -2694,10 +2763,22 @@ const applyGravity: (velocityY: number, deltaSecs: number) => number;
 const applyLook: (pose: PlayerPose, deltaYaw: number, deltaPitch: number) => PlayerPose;
 ```
 
+### applyPlayerSwimming  `const`
+
+```ts
+const applyPlayerSwimming: (input: PlayerSwimmingInput) => SwimmingVelocity;
+```
+
 ### applySpawnAttempts  `const`
 
 ```ts
 const applySpawnAttempts: (roster: EntityManagerApi<MobBehaviour>, attempts: ReadonlyArray<MobSpawnAttempt>) => Effect.Effect<ReadonlyArray<MobSpawnOutcome>>;
+```
+
+### applyWeatherState  `const`
+
+```ts
+const applyWeatherState: (current: WeatherState, candidate: unknown) => WeatherState;
 ```
 
 ### armorDurabilityWearFromPreMitigationDamage  `const`
@@ -2914,6 +2995,12 @@ const drainBlockUseResults: (state: GameplayFrameState) => Effect.Effect<Readonl
 
 ```ts
 const drainBowShotResults: (state: GameplayFrameState) => Effect.Effect<ReadonlyArray<BowShotResult>>;
+```
+
+### drainFluidUpdates  `const`
+
+```ts
+const drainFluidUpdates: (state: GameplayFrameState) => Effect.Effect<ReadonlyArray<FluidWorkItem>>;
 ```
 
 ### drainItemUseResults  `const`
@@ -3222,6 +3309,18 @@ const isThunderstorm: (weather: Weather) => boolean;
 const isValidPlayerVitals: (vitals: PlayerVitals) => boolean;
 ```
 
+### isWeather  `const`
+
+```ts
+const isWeather: (value: unknown) => value is Weather;
+```
+
+### isWeatherState  `const`
+
+```ts
+const isWeatherState: (value: unknown) => value is WeatherState;
+```
+
 ### itemOfBlock  `const`
 
 ```ts
@@ -3424,6 +3523,15 @@ const plantCrop: (port: PlantPort, request: PlantRequest) => Effect.Effect<Plant
 
 ```ts
 const plantingVerdict: (request: PlantRequest, soilBlock: BlockType, blockAbove: BlockType) => PlantOutcome;
+```
+
+### projectMinecartVelocity  `const`
+
+```ts
+const projectMinecartVelocity: (shape: RailShape, vx: number, vz: number) => {
+    readonly vx: number;
+    readonly vz: number;
+};
 ```
 
 ### pursueHorizontally  `const`
@@ -4241,7 +4349,7 @@ type HarvestTier = (typeof HARVEST_TIERS)[number];
 ### ITEM_TYPES  `const`
 
 ```ts
-const ITEM_TYPES: readonly ["stone", "cobblestone", "dirt", "grass_block", "sand", "gravel", "oak_log", "oak_planks", "oak_leaves", "glass", "torch", "glowstone", "piston", "stick", "bow", "arrow", "glowstone_dust", "wooden_pickaxe", "stone_pickaxe", "iron_pickaxe", "diamond_pickaxe", "wooden_hoe", "stone_hoe", "iron_hoe", "diamond_hoe", "wooden_sword", "stone_sword", "iron_sword", "diamond_sword", "coal", "iron_ingot", "flint", "gunpowder", "blaze_powder", "flint_and_steel", "fire_charge", "iron_helmet", "iron_chestplate", "iron_leggings", "iron_boots", "granite", "diorite", "andesite", "deepslate", "obsidian", "smooth_basalt", "calcite", "amethyst_block", "sandstone", "prismarine", "soul_sand", "coal_block", "iron_block", "gold_block", "diamond_block", "redstone_block", "lapis_block", "emerald_block", "redstone_torch", "lever", "stone_button", "repeater", "redstone_lamp", "observer", "comparator", "dispenser", "hopper", "end_stone", "end_portal_frame", "end_portal_frame_filled", "chorus_flower", "chorus_plant", "dragon_egg", "end_crystal", "end_rod", "end_stone_bricks", "ender_chest", "purpur_block", "purpur_pillar", "purpur_slab", "purpur_stairs", "shulker_box", "crafting_table", "furnace", "chest", "door", "oak_stairs", "anvil", "cauldron", "bed", "enchanting_table", "brewing_stand", "tnt", "nether_brick", "netherrack", "raw_iron", "raw_gold", "diamond", "emerald", "lapis_lazuli", "redstone_dust", "amethyst_shard", "wheat_seeds", "potato", "nether_wart", "ladder", "kelp", "seagrass", "rail", "powered_rail", "pressure_plate", "stone_slab", "string", "snowball", "sapling", "dandelion", "poppy", "brown_mushroom", "red_mushroom", "tall_grass", "fern", "sugar_cane", "cactus", "lily_pad"];
+const ITEM_TYPES: readonly ["stone", "cobblestone", "dirt", "grass_block", "sand", "gravel", "oak_log", "oak_planks", "oak_leaves", "glass", "torch", "glowstone", "piston", "stick", "bow", "arrow", "glowstone_dust", "wooden_pickaxe", "stone_pickaxe", "iron_pickaxe", "diamond_pickaxe", "wooden_hoe", "stone_hoe", "iron_hoe", "diamond_hoe", "wooden_sword", "stone_sword", "iron_sword", "diamond_sword", "coal", "iron_ingot", "flint", "gunpowder", "blaze_powder", "rotten_flesh", "ender_pearl", "flint_and_steel", "fire_charge", "iron_helmet", "iron_chestplate", "iron_leggings", "iron_boots", "granite", "diorite", "andesite", "deepslate", "obsidian", "smooth_basalt", "calcite", "amethyst_block", "sandstone", "prismarine", "soul_sand", "coal_block", "iron_block", "gold_block", "diamond_block", "redstone_block", "lapis_block", "emerald_block", "redstone_torch", "lever", "stone_button", "repeater", "redstone_lamp", "observer", "comparator", "dispenser", "hopper", "end_stone", "end_portal_frame", "end_portal_frame_filled", "chorus_flower", "chorus_plant", "dragon_egg", "end_crystal", "end_rod", "end_stone_bricks", "ender_chest", "purpur_block", "purpur_pillar", "purpur_slab", "purpur_stairs", "shulker_box", "crafting_table", "furnace", "chest", "door", "oak_stairs", "anvil", "cauldron", "bed", "enchanting_table", "brewing_stand", "tnt", "nether_brick", "netherrack", "raw_iron", "raw_gold", "diamond", "emerald", "lapis_lazuli", "redstone_dust", "amethyst_shard", "wheat_seeds", "wheat", "potato", "nether_wart", "ladder", "kelp", "seagrass", "rail", "powered_rail", "pressure_plate", "stone_slab", "string", "snowball", "sapling", "dandelion", "poppy", "brown_mushroom", "red_mushroom", "tall_grass", "fern", "sugar_cane", "cactus", "lily_pad"];
 ```
 
 ### ItemType  `type`

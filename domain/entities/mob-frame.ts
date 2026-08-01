@@ -250,10 +250,12 @@ import {
 import { canHostileSpawnAt, type SpawnCandidate, type SpawnRefusal } from '../mob/hostile-spawn'
 import {
   CREEPER_DROPS,
+  ENDERMAN_DROPS,
   rollMobDrops,
   type MobDrop,
   type MobDropRule,
   type MobKill,
+  ZOMBIE_DROPS,
 } from '../mob/mob-drop'
 
 // ---------------------------------------------------------------------------
@@ -597,7 +599,13 @@ const NO_DROP_RULES: ReadonlyArray<MobDropRule> = []
  * nothing produces would be a claim that this build has ghasts.
  */
 export const dropRulesOfKind = (kind: EntityKind): ReadonlyArray<MobDropRule> =>
-  kind === CREEPER_KIND ? CREEPER_DROPS : NO_DROP_RULES
+  kind === CREEPER_KIND
+    ? CREEPER_DROPS
+    : kind === ZOMBIE_KIND
+      ? ZOMBIE_DROPS
+      : kind === ENDERMAN_KIND
+        ? ENDERMAN_DROPS
+        : NO_DROP_RULES
 
 /** How many rolls `rollDropsOfKind` will consume for this kind. Two per drop line — a chance and a count. */
 export const dropRollsNeeded = (kind: EntityKind): number => dropRulesOfKind(kind).length * 2

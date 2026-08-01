@@ -546,6 +546,10 @@ kernel 監査 §4.9 が `solid` への統合を禁じている理由がその行
 | `FluidKind` / `FluidWorkItem` / `FluidBudgetSplit` | 内部(可視) | |
 | `DEFAULT_FLUID_FRONTIER_BUDGET` | 内部(可視) | 64。暫定値 |
 
+流体ステージが適用した更新は `drainFluidUpdates` でホストへ渡す。この操作は
+outbox を空にする破壊的な読み出しで、同一プロセス内では **at-most-once** である。
+永続化や配送確認を含む end-to-end の exactly-once 境界ではない。
+
 ### domain/interactions/break-block.ts（**バレルから re-export しない**）
 
 | export | 種別 | 備考 |
@@ -690,6 +694,7 @@ mc-sim の**純粋関数**（`spawnEntity` / `sweepRoster` / `normaliseRoster` �
 | `resolveRailShape` | 内部(可視) | 周囲 4 方向のレールから形を決める全域関数。**import が 1 本も無い。** 最大 12 回、注入された述語を呼ぶだけで、`ChunkStoreApi` を名指さない |
 | `RailShape` | 内部(可視) | `'ns'` / `'ew'` / `'curve'` / `'isolated'`。`'isolated'` は「分からない」ではなく「**何も拘束しない**」である |
 | `IsRailAt` | 内部(可視) | `(wx, wy, wz) => boolean`。**注入される述語**で、`mc-physics` の `IsBlockSolid` と同じ形。ブロック ID を名指さずに済ませる仕掛けそのもので、呼び出し側は kernel の `railKind` から作る（plan.md §3.4） |
+| `projectMinecartVelocity` | 内部(可視) | `RailShape` 上の水平速度を、その形に沿う向きへ投影する。速度の大きさは `Math.hypot` で保存し、`isolated` は入力をそのまま返す |
 
 ### domain/vehicle/rail-ascent.ts
 
@@ -698,10 +703,10 @@ mc-sim の**純粋関数**（`spawnEntity` / `sweepRoster` / `normaliseRoster` �
 | `isAscendingAhead` | 内部(可視) | 向きの先・1 ブロック上にレールがあるか。**`isRailAt` をちょうど 1 回**呼ぶ。速度の形をした引数を取るが**大きさは答えに届かない**（[responsibility.md](./responsibility.md) §5-1。`test/rail.test.ts` が正の定数倍で固定） |
 | `RAIL_HEADING_EPSILON` | 内部(可視) | `1e-9`。**転記であって正当化ではない**ことを定数の doc comment に明記してある。参照実装 `rail-shape.ts:74` に測定は無い |
 
-> **`projectMinecartVelocity` と `RAIL_CLIMB_SPEED` はここに無い。** どちらも所有権としては
-> このリポジトリのものだが、消費者（＝速度を持つ乗り物）が `mc-sim` にまだ無い。
-> 判断は [responsibility.md](./responsibility.md) §5 が唯一の記述で、§6 の基準に照らせば
-> **昇格どころか実装がまだ早い**側である。
+> **`RAIL_CLIMB_SPEED` はここに無い。** これは速度そのものなので、消費者が揃う
+> `mc-sim` 側の配線と一緒に来るべき値である。判断は [responsibility.md](./responsibility.md)
+> §5 が唯一の記述で、§6 の基準に照らせば、今ここにあるのは `projectMinecartVelocity`
+> までである。
 
 ## 6. 契約を足すときの基準
 

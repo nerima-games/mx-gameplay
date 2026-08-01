@@ -369,66 +369,29 @@ describe('blockLoot — the deterministic half', () => {
     }),
   )
 
-  /*
-   * F8 — A DIVERGENCE PINNED, NOT AN ORACLE PORTED.
-   *
-   * `<reference-impl>/packages/world/test/block-service-silk-touch.test.ts:52-58`
-   * asserts 「drops DIAMOND_ORE itself when silkTouch=true, not DIAMOND」, and
-   * `:60-66` the other side of it. THIS BUILD DOES NOT AGREE, and the
-   * disagreement is not one this repository may resolve.
-   *
-   * Silk touch is modelled as a GATE (does anything drop at all) and never as a
-   * SUBSTITUTION (which item drops). `domain/block-vocabulary.ts`'s `resolveDrop`
-   * transcribes kernel's three refusals and has no fourth arm, so the `item:`
-   * override wins even under silk touch:
-   *
-   *   stone       + silk -> cobblestone   (vanilla and the reference: stone)
-   *   grass_block + silk -> dirt          (vanilla: the grass block)
-   *   glowstone   + silk -> 2 dust        (vanilla: the glowstone block)
-   *
-   * KERNEL HAS ALREADY WRITTEN THIS DOWN, which is what makes it a decision
-   * rather than an oversight — `mc-kernel/domain/block-harvest.ts:213-220`:
-   *
-   *     KNOWN LIMITATION, recorded rather than faked: silk touch is modelled as
-   *     a GATE, not as a SUBSTITUTION. [...] The additive fix is one optional
-   *     member (`silkTouchItem?: ItemType`) [...] it is left out until a
-   *     consumer needs it.
-   *
-   * A CONSUMER NEEDS IT NOW, and that is this test's whole content: the
-   * reference's silk-touch oracle IS the consumer kernel was waiting for, and
-   * nothing was going to notice, because a gate and a substitution agree on
-   * every block whose rule says `'self'` — which is most of them.
-   *
-   * The pin follows F7's precedent exactly (docs/testing.md §3-5): the CURRENT
-   * behaviour is fixed with the reference's line beside it, so the day kernel
-   * grows `silkTouchItem` this test goes red and is REWRITTEN into agreement
-   * rather than deleted. Writing the table here instead would be this repository
-   * inventing a kernel column, which is the mistake F7 declined to make.
-   */
-  it.effect('F8 — silk touch is a GATE here and a SUBSTITUTION in the reference', () =>
+  it.effect('silk touch substitutes the harvested block for its normal drop', () =>
     Effect.sync(() => {
-      // The reference's claim, mapped onto the one block this build has that
-      // carries an `item:` override AND a tier gate. `block-service-silk-touch
-      // .test.ts:56` would have this be `stone`.
       expect(blockLoot(STONE, { heldTier: 'wooden', silkTouch: true })).toStrictEqual([
+        { item: 'stone', count: 1 },
+      ])
+      expect(blockLoot(GRASS_BLOCK, { silkTouch: true })).toStrictEqual([
+        { item: 'grass_block', count: 1 },
+      ])
+      expect(blockLoot(GLOWSTONE, { silkTouch: true }, NO_LUCK)).toStrictEqual([
+        { item: 'glowstone', count: 1 },
+      ])
+    }),
+  )
+
+  it.effect('silk-touch substitution leaves normal drops unchanged', () =>
+    Effect.sync(() => {
+      expect(blockLoot(STONE, { heldTier: 'wooden' })).toStrictEqual([
         { item: 'cobblestone', count: 1 },
       ])
-
-      // Two more, so that a fix cannot be mistaken for a special case about
-      // stone: the substitution arm is missing for every override row alike.
-      expect(blockLoot(GRASS_BLOCK, { silkTouch: true })).toStrictEqual([
-        { item: 'dirt', count: 1 },
+      expect(blockLoot(GRASS_BLOCK, NO_TOOL)).toStrictEqual([{ item: 'dirt', count: 1 }])
+      expect(blockLoot(GLOWSTONE, NO_TOOL, NO_LUCK)).toStrictEqual([
+        { item: 'glowstone_dust', count: 2 },
       ])
-      expect(blockLoot(GLOWSTONE, { heldTier: 'diamond', silkTouch: true }, NO_LUCK)).toStrictEqual(
-        [{ item: 'glowstone_dust', count: 2 }],
-      )
-
-      // ...and the half that DOES agree with the reference, stated so the
-      // divergence is bounded rather than open: for a rule that says `'self'`,
-      // a gate and a substitution are the same function. Glass above is the
-      // reference's ICE row (`:75-79`) and it agrees exactly.
-      expect(blockLoot(SAND, { silkTouch: true })).toStrictEqual([{ item: 'sand', count: 1 }])
-      expect(blockLoot(GLASS, { silkTouch: true })).toStrictEqual([{ item: 'glass', count: 1 }])
     }),
   )
 })
@@ -513,7 +476,7 @@ describe('blockLoot — fortune', () => {
   it.effect('REGRESSION: silk touch suppresses fortune — they are mutually exclusive', () =>
     Effect.sync(() => {
       expect(blockLoot(GLOWSTONE, { fortuneLevel: 3, silkTouch: true }, [0])).toStrictEqual([
-        { item: 'glowstone_dust', count: 2 },
+        { item: 'glowstone', count: 1 },
       ])
     }),
   )

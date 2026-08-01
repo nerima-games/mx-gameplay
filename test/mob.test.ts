@@ -69,6 +69,7 @@ import {
   CREEPER_DROPS,
   CREEPER_XP_REWARD,
   dropPasses,
+  ENDERMAN_DROPS,
   GHAST_DROPS,
   GHAST_XP_REWARD,
   LOWEST_ROLLS,
@@ -76,6 +77,7 @@ import {
   rollMobDrop,
   rollMobDrops,
   type MobDropRule,
+  ZOMBIE_DROPS,
 } from '../domain/mob/mob-drop'
 import {
   ENDERMAN_CHASE_TELEPORT_CHANCE,
@@ -577,6 +579,27 @@ describe('creeper: kernel names the drop, this repository decides the count', ()
     }),
   )
 
+  it.effect('zombie and enderman use Minecraft count ranges', () =>
+    Effect.sync(() => {
+      expect(ZOMBIE_DROPS).toStrictEqual([{ item: 'rotten_flesh', count: 0, maxCount: 2 }])
+      expect(ENDERMAN_DROPS).toStrictEqual([{ item: 'ender_pearl', count: 0, maxCount: 1 }])
+      expect(ITEM_TYPES).toContain('rotten_flesh')
+      expect(ITEM_TYPES).toContain('ender_pearl')
+
+      expect(rollMobDrops(ZOMBIE_DROPS, SLAIN, () => ({ chance: 0, count: 0 }))).toStrictEqual([])
+      expect(rollMobDrops(ZOMBIE_DROPS, SLAIN, () => ({ chance: 0, count: 0.34 }))).toStrictEqual([
+        { item: 'rotten_flesh', count: 1 },
+      ])
+      expect(rollMobDrops(ZOMBIE_DROPS, SLAIN, () => ({ chance: 0, count: 0.67 }))).toStrictEqual([
+        { item: 'rotten_flesh', count: 2 },
+      ])
+      expect(rollMobDrops(ENDERMAN_DROPS, SLAIN, () => ({ chance: 0, count: 0 }))).toStrictEqual([])
+      expect(rollMobDrops(ENDERMAN_DROPS, SLAIN, () => ({ chance: 0, count: 0.5 }))).toStrictEqual([
+        { item: 'ender_pearl', count: 1 },
+      ])
+    }),
+  )
+
   it.effect('a creeper that blew itself up leaves nothing at all', () =>
     Effect.sync(() => {
       // In the reference this is not written down anywhere — the detonating
@@ -715,7 +738,7 @@ describe('creeper: kernel names the drop, this repository decides the count', ()
     }),
   )
 
-  it.effect('the drops this repository CANNOT spell are absent rather than approximated', () =>
+  it.effect('a drop this repository cannot spell is absent rather than approximated', () =>
     Effect.sync(() => {
       // An enderman drops ENDER_PEARL and a shulker SHULKER_SHELL
       // (mobs/enderman.ts:15, mobs/shulker.ts:15). Neither name exists in
@@ -725,7 +748,6 @@ describe('creeper: kernel names the drop, this repository decides the count', ()
       // repository invented. So there is no ENDERMAN_DROPS and no SHULKER_DROPS,
       // and the arena's missing list says which kernel row would unblock them.
       const names = ITEM_TYPES as ReadonlyArray<string>
-      expect(names).not.toContain('ender_pearl')
       expect(names).not.toContain('shulker_shell')
     }),
   )

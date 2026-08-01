@@ -95,9 +95,10 @@
  * same way `lod-simplification.ts` did until mc-meshing's docs/responsibility.md
  * §3.4 split it by asking which half took a distance.
  *
- * `./rail-ascent.ts` is the second topology rule. The other two are decided in
- * docs/responsibility.md §5, ONCE, with the reasoning; they are not restated
- * here and they are not built here.
+ * `./rail-ascent.ts` is the second topology rule. `projectMinecartVelocity` is
+ * the third symbol and is built here because it is still a pure projection over
+ * a shape and a horizontal velocity. `RAIL_CLIMB_SPEED` remains decided in
+ * docs/responsibility.md §5, ONCE, with the reasoning; it is not restated here.
  */
 
 /**
@@ -212,4 +213,37 @@ export const resolveRailShape = (
     return 'ew'
   }
   return 'isolated'
+}
+
+/**
+ * Project a horizontal velocity onto the rail the cart is on.
+ *
+ * This preserves speed with `Math.hypot(vx, vz)` and rewrites only the
+ * direction. `isolated` is the inert case: it constrains nothing, so the input
+ * velocity is returned unchanged.
+ */
+export const projectMinecartVelocity = (
+  shape: RailShape,
+  vx: number,
+  vz: number,
+): { readonly vx: number; readonly vz: number } => {
+  if (!Number.isFinite(vx) || !Number.isFinite(vz)) {
+    return { vx: 0, vz: 0 }
+  }
+
+  const speed = Math.hypot(vx, vz)
+  if (speed === 0) {
+    return { vx: 0, vz: 0 }
+  }
+
+  if (shape === 'isolated') {
+    return { vx, vz }
+  }
+
+  const towardX = Math.abs(vx) >= Math.abs(vz)
+  if (shape === 'ew' || (shape === 'curve' && towardX)) {
+    return { vx: (Math.sign(vx) || Math.sign(vz)) * speed, vz: 0 }
+  }
+
+  return { vx: 0, vz: (Math.sign(vz) || Math.sign(vx)) * speed }
 }

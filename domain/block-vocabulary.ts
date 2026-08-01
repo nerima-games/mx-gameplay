@@ -504,6 +504,13 @@ export const resolveDrop = (
     return undefined
   }
 
+  if (context.silkTouch === true) {
+    const item = itemOfBlock(brokenBlock)
+    if (item !== undefined) {
+      return { item, count: 1, affectedByFortune: false }
+    }
+  }
+
   const item = resolveDropItem(rule, brokenBlock)
 
   return item === undefined

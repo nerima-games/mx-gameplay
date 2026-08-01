@@ -87,7 +87,7 @@ import {
   type InventoryServiceApi,
   type TimeServiceApi,
 } from '@nerima-games/mc-sim'
-import { Effect, Layer, Option, Ref } from 'effect'
+import { Effect, Effectable, Layer, Option, Readable, Ref } from 'effect'
 import { below, positionKeyOf, positionOfKey } from '../domain/block-position-key'
 import { hostileSpawnsAllowed } from '../domain/day-night'
 import { targetabilityFromStore } from '../domain/in-memory-world'
@@ -414,6 +414,57 @@ type PendingBlockBreakRequestQueue = {
   readonly mutex: Effect.Semaphore
 }
 
+type FluidRuntimeState = {
+  readonly frontier: ReadonlyArray<FluidWorkItem>
+  readonly updates: ReadonlyArray<FluidWorkItem>
+}
+
+class FluidStateRef extends Effectable.Class<ReadonlyArray<FluidWorkItem>>
+  implements Ref.Ref<ReadonlyArray<FluidWorkItem>>
+{
+  readonly [Ref.RefTypeId] = {
+    _A: (value: ReadonlyArray<FluidWorkItem>) => value,
+  }
+  readonly [Readable.TypeId]: Readable.TypeId = Readable.TypeId
+  readonly get: Effect.Effect<ReadonlyArray<FluidWorkItem>>
+
+  constructor(
+    readonly state: Ref.Ref<FluidRuntimeState>,
+    readonly field: keyof FluidRuntimeState,
+  ) {
+    super()
+    this.get = Ref.get(state).pipe(Effect.map((current) => current[field]))
+  }
+
+  commit(): Effect.Effect<ReadonlyArray<FluidWorkItem>> {
+    return this.get
+  }
+
+  modify<B>(
+    f: (value: ReadonlyArray<FluidWorkItem>) => readonly [B, ReadonlyArray<FluidWorkItem>],
+  ): Effect.Effect<B> {
+    return Ref.modify(this.state, (current) => {
+      const [result, value] = f(current[this.field])
+      return [result, { ...current, [this.field]: value }]
+    })
+  }
+}
+
+const fluidRuntimeStates = new WeakMap<
+  Ref.Ref<ReadonlyArray<FluidWorkItem>>,
+  Ref.Ref<FluidRuntimeState>
+>()
+
+const fluidRuntimeStateFor = (
+  frontier: Ref.Ref<ReadonlyArray<FluidWorkItem>>,
+): Ref.Ref<FluidRuntimeState> => {
+  const state = fluidRuntimeStates.get(frontier)
+  if (state === undefined) {
+    throw new Error('fluid frontier is not owned by a gameplay frame state')
+  }
+  return state
+}
+
 export type GameplayFrameState = {
   readonly pendingBreaks: Ref.Ref<ReadonlyArray<PositionKey>>
   readonly pendingPlacements: Ref.Ref<ReadonlyArray<PlacementRequest>>
@@ -445,6 +496,7 @@ export type GameplayFrameState = {
   readonly rollSeed: Ref.Ref<number>
   readonly fallingBlocks: Ref.Ref<FallingBlockQueue>
   readonly fluidFrontier: Ref.Ref<ReadonlyArray<FluidWorkItem>>
+  readonly fluidUpdates: Ref.Ref<ReadonlyArray<FluidWorkItem>>
   readonly tickCount: Ref.Ref<number>
   /** Destination-dimension portal snapshots supplied by the host. */
   readonly portalCandidates: Ref.Ref<ReadonlyMap<Dimension, ReadonlyArray<BlockPosition>>>
@@ -826,7 +878,10 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
   // where it lands when that repository publishes one.
   const rollSeed = yield* Ref.make(DEFAULT_ROLL_SEED)
   const fallingBlocks = yield* Ref.make<FallingBlockQueue>(emptyFallingBlockQueue)
-  const fluidFrontier = yield* Ref.make<ReadonlyArray<FluidWorkItem>>([])
+  const fluidState = yield* Ref.make<FluidRuntimeState>({ frontier: [], updates: [] })
+  const fluidFrontier = new FluidStateRef(fluidState, 'frontier')
+  const fluidUpdates = new FluidStateRef(fluidState, 'updates')
+  fluidRuntimeStates.set(fluidFrontier, fluidState)
   const tickCount = yield* Ref.make(0)
   const portalCandidates = yield* Ref.make<
     ReadonlyMap<Dimension, ReadonlyArray<BlockPosition>>
@@ -867,6 +922,7 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
     rollSeed,
     fallingBlocks,
     fluidFrontier,
+    fluidUpdates,
     tickCount,
     portalCandidates,
     portalTravels,
@@ -1142,6 +1198,16 @@ export const setPortalCandidates = (
 export const drainPortalTravels = (
   state: GameplayFrameState,
 ): Effect.Effect<ReadonlyArray<PortalTravelEvent>> => Ref.getAndSet(state.portalTravels, [])
+
+/**
+ * Destructively drain evaluated fluid cells at most once, preserving order.
+ *
+ * This is not end-to-end exactly-once delivery: entries are removed when this
+ * Effect returns them, even if the caller subsequently fails to process them.
+ */
+export const drainFluidUpdates = (
+  state: GameplayFrameState,
+): Effect.Effect<ReadonlyArray<FluidWorkItem>> => Ref.getAndSet(state.fluidUpdates, [])
 
 /** Enqueue one legacy, uncorrelated bow release for the interaction stage. */
 export function requestBowShot(
@@ -2288,12 +2354,17 @@ export const gameplayStages = (
       Effect.gen(function* () {
         const tick = yield* Ref.updateAndGet(state.tickCount, (value) => value + 1)
         const lavaTickActive = tick % LAVA_TICK_INTERVAL === 0
-        const frontier = yield* Ref.get(state.fluidFrontier)
-        const split = splitBudget(frontier, { lavaTickActive })
-        // `carryOver` keeps BOTH the over-budget cells and the lava cells whose
-        // tick was not active. Keeping only one of the two is the reference's
-        // straight-edged-lava-lake bug; see domain/fluid-frontier.ts.
-        yield* Ref.set(state.fluidFrontier, carryOver(frontier, split))
+        yield* Ref.modify(fluidRuntimeStateFor(state.fluidFrontier), (fluidState) => {
+          const split = splitBudget(fluidState.frontier, { lavaTickActive })
+          return [
+            undefined,
+            {
+              // `carryOver` keeps both over-budget cells and inactive lava.
+              frontier: carryOver(fluidState.frontier, split),
+              updates: [...fluidState.updates, ...split.work],
+            },
+          ]
+        })
       }),
   },
   {

@@ -118,6 +118,16 @@ export const LOWEST_ROLLS: DropRolls = { chance: 0, count: 0 }
  */
 export const CREEPER_DROPS: ReadonlyArray<MobDropRule> = [{ item: 'gunpowder', count: 1 }]
 
+/** A slain zombie drops zero to two rotten flesh. */
+export const ZOMBIE_DROPS: ReadonlyArray<MobDropRule> = [
+  { item: 'rotten_flesh', count: 0, maxCount: 2 },
+]
+
+/** A slain enderman drops zero or one ender pearl. */
+export const ENDERMAN_DROPS: ReadonlyArray<MobDropRule> = [
+  { item: 'ender_pearl', count: 0, maxCount: 1 },
+]
+
 /**
  * Experience for killing a creeper. `mobs/creeper.ts:17`.
  *

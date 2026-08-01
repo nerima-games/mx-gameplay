@@ -24,20 +24,16 @@
  * question; this file only knows what each answer implies.
  *
  * ---------------------------------------------------------------------------
- * THE THIRD CROP CANNOT BE FINISHED, AND THE MISSING THING IS AN ITEM
+ * RIPE WHEAT HAS BOTH A FIXED AND A ROLLED DROP
  * ---------------------------------------------------------------------------
  *
- * A ripe wheat crop drops `['WHEAT', 1]` plus 1-4 seeds. **`ITEM_TYPES` has no
- * `wheat`** — it has `wheat_seeds`, and the produce item is absent from all 97
- * literals. Potato and nether wart are complete because their produce IS their
- * seed (`potato`, `nether_wart`); wheat is the one crop where the two differ.
+ * Wheat differs from potato and nether wart: its produce and seed are separate
+ * items. A ripe wheat crop therefore drops one wheat plus 1-4 wheat seeds. The
+ * injected roll controls only the seed count; the produce count stays fixed.
  *
- * `ripeDrops` therefore returns a TAGGED OUTCOME rather than a list, and ripe
- * wheat answers `unavailable`. The alternative — returning the seeds and
- * omitting the wheat — is a rule that under-drops silently: the player breaks a
- * mature field, gets seeds, and replants forever with no yield. That reads as
- * a balance decision, which is the failure mode this project's notes count
- * eight instances of. Refusing names the gap at the call site instead.
+ * The tagged `unavailable` outcome remains the explicit fallback for a known
+ * crop whose ripe rule is missing, so an incomplete table cannot silently
+ * under-drop.
  */
 import type { ItemType } from '../item-vocabulary'
 import type { BlockType } from '../block-vocabulary'
@@ -70,33 +66,45 @@ export const UNRIPE_CROP_DROP: Readonly<Partial<Record<BlockType, CropDrop>>> = 
  * wart —「Vanilla mature nether wart: 2-4 warts」— is a statement about this
  * pair, and as data it is checkable rather than quotable.
  *
- * `wheat_crop` IS ABSENT and that absence is the point; see the header.
+ * Wheat uses `fixedDrops` for its produce because only its seed count is rolled.
  */
 export const RIPE_CROP_YIELD: Readonly<
-  Partial<Record<BlockType, { readonly item: ItemType; readonly span: number; readonly floor: number }>>
+  Partial<
+    Record<
+      BlockType,
+      {
+        readonly item: ItemType
+        readonly span: number
+        readonly floor: number
+        readonly fixedDrops?: ReadonlyArray<CropDrop>
+      }
+    >
+  >
 > = {
+  wheat_crop: {
+    item: 'wheat_seeds',
+    span: 4,
+    floor: 1,
+    fixedDrops: [{ item: 'wheat', count: 1 }],
+  },
   potato_crop: { item: 'potato', span: 4, floor: 2 },
   nether_wart_crop: { item: 'nether_wart', span: 3, floor: 2 },
 }
 
 /**
- * The item a ripe crop needs that this vocabulary does not have.
+ * Missing produce names for known crops whose ripe rule is not implemented.
  *
- * Named, and named as a STRING rather than an `ItemType`, because the whole
- * point is that it is not one. `test/crop-drops.test.ts` asserts it is still
- * absent — so the day mc-kernel gains the literal, that test fails and points
- * here, which is how this gap gets closed rather than forgotten.
+ * Kept as strings so the `unavailable` fallback can describe a vocabulary gap
+ * without pretending that the missing name is already an `ItemType`.
  */
-export const MISSING_RIPE_PRODUCE: Readonly<Partial<Record<BlockType, string>>> = {
-  wheat_crop: 'wheat',
-}
+export const MISSING_RIPE_PRODUCE: Readonly<Partial<Record<BlockType, string>>> = {}
 
 /** What breaking a crop yields. */
 export type CropDropOutcome =
   | { readonly _tag: 'drops'; readonly drops: ReadonlyArray<CropDrop> }
   /** Not a crop this rule knows. The caller falls through to the block's own loot. */
   | { readonly _tag: 'notACrop'; readonly block: BlockType }
-  /** A crop whose ripe produce is not in the vocabulary. See the header. */
+  /** A known crop whose ripe yield rule is incomplete. See the header. */
   | { readonly _tag: 'unavailable'; readonly block: BlockType; readonly missingItem: string }
 
 /**
@@ -128,11 +136,13 @@ export const cropDrops = (block: BlockType, ripe: boolean, roll: number): CropDr
   }
 
   const safeRoll = Number.isFinite(roll) ? Math.min(0.999_999, Math.max(0, roll)) : 0
+  const rolledDrop = {
+    item: yieldRule.item,
+    count: Math.floor(safeRoll * yieldRule.span) + yieldRule.floor,
+  }
   return {
     _tag: 'drops',
-    drops: [
-      { item: yieldRule.item, count: Math.floor(safeRoll * yieldRule.span) + yieldRule.floor },
-    ],
+    drops: [...(yieldRule.fixedDrops ?? []), rolledDrop],
   }
 }
 

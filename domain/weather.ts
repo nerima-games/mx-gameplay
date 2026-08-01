@@ -112,6 +112,37 @@ export type WeatherState = {
   readonly remainingSecs: number
 }
 
+/** Runtime validation for weather values crossing an untyped host boundary. */
+export const isWeather = (value: unknown): value is Weather =>
+  typeof value === 'string' && (WEATHERS as ReadonlyArray<string>).includes(value)
+
+/**
+ * A persisted weather state must name a known weather and contain a positive,
+ * finite countdown. Expired states are advanced before they leave gameplay.
+ */
+export const isWeatherState = (value: unknown): value is WeatherState => {
+  if (typeof value !== 'object' || value === null) {
+    return false
+  }
+
+  const candidate = value as { readonly weather?: unknown; readonly remainingSecs?: unknown }
+  return (
+    isWeather(candidate.weather) &&
+    typeof candidate.remainingSecs === 'number' &&
+    Number.isFinite(candidate.remainingSecs) &&
+    candidate.remainingSecs > 0
+  )
+}
+
+/**
+ * Applies a host-provided state only when it satisfies the persisted boundary.
+ * Returning a fresh value prevents later host mutation from changing domain state.
+ */
+export const applyWeatherState = (current: WeatherState, candidate: unknown): WeatherState =>
+  isWeatherState(candidate)
+    ? { weather: candidate.weather, remainingSecs: candidate.remainingSecs }
+    : current
+
 /** Clamp into `[0, 1]`. `weather.ts:30` — INCLUSIVE of 1, which the oracle pins. */
 const clampUnit = (value: number): number =>
   Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : 0

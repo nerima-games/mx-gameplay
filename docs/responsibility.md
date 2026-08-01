@@ -128,7 +128,7 @@ plan.md §3.11 と §5.3 の確定事項である。
 | `RailShape` / `IsRailAt` | 語彙 | 速度が出てこない | **mx-gameplay**。`domain/vehicle/rail-shape.ts`（**実装済み**） |
 | `resolveRailShape` | `(IsRailAt, wx, wy, wz)` → `RailShape` | **取らない** | **mx-gameplay**。同上（**実装済み**） |
 | `isAscendingAhead` | `(IsRailAt, wx, wy, wz, headingX, headingZ)` → `boolean` | **取るが、届かない** | **mx-gameplay**。`domain/vehicle/rail-ascent.ts`（**実装済み**） |
-| `projectMinecartVelocity` | `(RailShape, vx, vz)` → `{vx, vz}` | **届く**（`Math.hypot` で速さを保存して向け直す） | **mx-gameplay**。ただし §5-3 により**まだ書かない** |
+| `projectMinecartVelocity` | `(RailShape, vx, vz)` → `{vx, vz}` | **届く**（`Math.hypot` で速さを保存して向け直す） | **mx-gameplay**。`domain/vehicle/rail-shape.ts`（**実装済み**） |
 | `RAIL_CLIMB_SPEED = 3.5` | 定数（blocks/秒） | 速度そのもの | **mx-gameplay**。ただし §5-4 により**運ばない** |
 
 `isAscendingAhead` がこの表で唯一むずかしい行である。速度の形をした引数を取るのに、
@@ -178,7 +178,7 @@ plan.md §3.11 と §5.3 の確定事項である。
 `domain/vehicle/rail-shape.ts` と `rail-ascent.ts` は、注入された述語 1 つで完結する。
 `ChunkStoreApi` も `EntityManagerApi` も名指さず、import が 1 本も無い。**今日書けて、今日テストできる。**
 
-`projectMinecartVelocity` は所有権としてはここのものだが、**書いていない。** 理由は 2 つある。
+`projectMinecartVelocity` は所有権としてはここのものだが、**ここで書いた。** 理由は 2 つあった。
 
 - **消費者が無い。** 呼ぶには「レールに乗っている実体の速度」が要る。`mc-sim` の
   `EntityState` は `feetPosition` / `healthPoints` / `behaviour` の 3 欄で、**速度の欄が無い**。
@@ -189,6 +189,10 @@ plan.md §3.11 と §5.3 の確定事項である。
   3 分の 1 だけを export しておくと、残り 2 つが来た日に形が変わる。
   `domain/interactions/explosion-crater.ts` が「破壊ブロックのドロップ」を
   「消費するものがまだ無いので、ここで発明しない」と断ったのと同じ判断である。
+
+いま実装してあるのはこの 3 分の 1 までで、`projectMinecartVelocity` は
+コードにある。`resolveMinecartMultiplier` と `RAIL_CLIMB_SPEED` はまだ残っている。
+`mc-sim` 側の消費者が揃うまでは、速度の投影だけ先に置ける、という境界をこのまま維持する。
 
 ### 5-4. `RAIL_CLIMB_SPEED = 3.5` を運ばない —— **転記であって、正当化ではない**
 

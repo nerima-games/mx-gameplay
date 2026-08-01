@@ -27,7 +27,7 @@ import { ITEM_TYPES } from '../domain/item-vocabulary'
 import { GAMEPLAY_STAGE_IDS } from '../stages/stage-ids'
 
 describe('public API surface', () => {
-  it.effect('keeps the provisional item vocabulary identical to mc-kernel', () =>
+  it.effect('keeps the provisional item vocabulary mirrored', () =>
     Effect.sync(() => {
       expect(ITEM_TYPES).toStrictEqual(KERNEL_ITEM_TYPES)
     }),
@@ -45,6 +45,7 @@ describe('public API surface', () => {
         'makeGameplayFrameState',
         'setPortalCandidates',
         'drainPortalTravels',
+        'drainFluidUpdates',
         'DEFAULT_MELEE_DAMAGE',
         'DEFAULT_MELEE_REACH',
         'meleeDamageForItem',
@@ -318,6 +319,9 @@ describe('public API surface', () => {
         'resolveNextWeatherState',
         'resolveWeatherDurationSecs',
         'createWeatherState',
+        'isWeather',
+        'isWeatherState',
+        'applyWeatherState',
         'INITIAL_WEATHER',
         'isPrecipitating',
         'isThunderstorm',

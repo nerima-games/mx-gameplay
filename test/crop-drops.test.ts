@@ -53,6 +53,12 @@ describe('ripe yields', () => {
     }),
   )
 
+  it.effect('wheat seeds yield 1-4', () =>
+    Effect.sync(() => {
+      expect(ripeYieldRange('wheat_crop')).toStrictEqual({ min: 1, max: 4 })
+    }),
+  )
+
   it.effect('potato yields 2-5', () =>
     Effect.sync(() => {
       expect(ripeYieldRange('potato_crop')).toStrictEqual({ min: 2, max: 5 })
@@ -74,7 +80,7 @@ describe('ripe yields', () => {
             if (range === undefined || outcome._tag !== 'drops') {
               return false
             }
-            const count = outcome.drops[0]?.count ?? 0
+            const count = outcome.drops.at(-1)?.count ?? 0
             return count >= range.min && count <= range.max
           },
         ),
@@ -109,29 +115,34 @@ describe('ripe yields', () => {
         const range = ripeYieldRange(crop)
         const low = cropDrops(crop, true, 0)
         const high = cropDrops(crop, true, 0.999)
-        expect(low._tag === 'drops' && low.drops[0]?.count).toBe(range?.min)
-        expect(high._tag === 'drops' && high.drops[0]?.count).toBe(range?.max)
+        expect(low._tag === 'drops' && low.drops.at(-1)?.count).toBe(range?.min)
+        expect(high._tag === 'drops' && high.drops.at(-1)?.count).toBe(range?.max)
       }
     }),
   )
 })
 
-describe('the crop the vocabulary cannot finish', () => {
-  it.effect('ripe wheat refuses rather than dropping seeds only', () =>
+describe('wheat yields', () => {
+  it.effect('ripe wheat drops one wheat and 1-4 seeds', () =>
     Effect.sync(() => {
-      // THE FAILURE THIS PREVENTS: returning the seeds and omitting the wheat
-      // is a rule that under-drops silently — the player harvests a mature
-      // field, gets seeds, replants forever and never yields. That reads as a
-      // balance decision, not a defect.
-      expect(cropDrops('wheat_crop', true, 0.5)).toStrictEqual({
-        _tag: 'unavailable',
-        block: 'wheat_crop',
-        missingItem: 'wheat',
+      expect(cropDrops('wheat_crop', true, 0)).toStrictEqual({
+        _tag: 'drops',
+        drops: [
+          { item: 'wheat', count: 1 },
+          { item: 'wheat_seeds', count: 1 },
+        ],
+      })
+      expect(cropDrops('wheat_crop', true, 0.999)).toStrictEqual({
+        _tag: 'drops',
+        drops: [
+          { item: 'wheat', count: 1 },
+          { item: 'wheat_seeds', count: 4 },
+        ],
       })
     }),
   )
 
-  it.effect('UNRIPE wheat still works, so the gap is exactly one branch', () =>
+  it.effect('unripe wheat still returns only the planted seed', () =>
     Effect.sync(() => {
       expect(cropDrops('wheat_crop', false, 0.5)).toStrictEqual({
         _tag: 'drops',
@@ -140,14 +151,10 @@ describe('the crop the vocabulary cannot finish', () => {
     }),
   )
 
-  it.effect('REGRESSION: `wheat` really is absent from the vocabulary', () =>
+  it.effect('the ripe produce is part of the item vocabulary', () =>
     Effect.sync(() => {
-      // The assertion that closes this gap. The day mc-kernel gains the literal
-      // this test fails and points at `crop-drops.ts`, which is how the refusal
-      // above gets removed rather than forgotten.
-      for (const missing of Object.values(MISSING_RIPE_PRODUCE)) {
-        expect(ITEM_TYPES as ReadonlyArray<string>).not.toContain(missing)
-      }
+      expect(ITEM_TYPES).toContain('wheat')
+      expect(MISSING_RIPE_PRODUCE).not.toHaveProperty('wheat_crop')
     }),
   )
 })
