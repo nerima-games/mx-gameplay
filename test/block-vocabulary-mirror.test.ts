@@ -59,6 +59,7 @@ import {
   resolveDrop,
   type BlockType,
 } from '../src/domain/block-vocabulary'
+import { ITEM_TYPES } from '../src/domain/item-vocabulary'
 
 describe('the kernel capability mirror', () => {
   it.effect('does not leak into this package\'s published surface', () =>
@@ -144,6 +145,8 @@ describe('the kernel capability mirror', () => {
       expect(validSpawnSurface(31)).toBe(true) // rail
       expect(validSpawnSurface(32)).toBe(true) // powered_rail
       expect(validSpawnSurface(35)).toBe(true) // stone_slab
+      expect(validSpawnSurface(120)).toBe(true) // soul_soil
+      expect(validSpawnSurface(121)).toBe(false) // wither_skeleton_skull
 
       // Total, and defaulting to "ordinary opaque cube" exactly as kernel's
       // `capabilityOfBlockId` does for an id it cannot name.
@@ -192,6 +195,8 @@ describe('the kernel capability mirror', () => {
       expect(canSupportAttachments(19)).toBe(true) // cobweb
       expect(canSupportAttachments(29)).toBe(true) // kelp
       expect(canSupportAttachments(30)).toBe(true) // seagrass
+      expect(canSupportAttachments(120)).toBe(true) // soul_soil
+      expect(canSupportAttachments(121)).toBe(false) // wither_skeleton_skull
 
       // Total, defaulting to "ordinary opaque cube" for a byte this build cannot
       // name, exactly as `capabilityOfBlockId` does.
@@ -205,13 +210,13 @@ describe('the kernel capability mirror', () => {
 // ---------------------------------------------------------------------------
 
 /**
- * The nineteen blocks with a non-default support rule, in kernel's registry
+ * The twenty blocks with a non-default support rule, in kernel's registry
  * order. THE COMPLETE OVERRIDE SET, and completeness is the requirement rather
  * than thoroughness.
  *
  * This file's header and `domain/block-vocabulary.ts`'s both state why: a
  * transcription that is a SUBSET cannot be compared mechanically, because "is it
- * a subset?" is true of a stale mirror too. The 101 rows NOT here are absent
+ * a subset?" is true of a stale mirror too. The 102 rows NOT here are absent
  * because kernel's table states overrides only, and their absence is itself the
  * assertion `supportRuleOfBlockId` returns `NEEDS_NO_SUPPORT` for them — which
  * the second test below checks over the whole roster rather than by sampling.
@@ -236,27 +241,28 @@ const SUPPORT_SENSITIVE_NAMES: ReadonlyArray<BlockType> = [
   'nether_wart_crop',
   'redstone_wire',
   'redstone_torch',
+  'wither_skeleton_skull',
 ]
 
 describe('the supportRule mirror', () => {
-  it.effect('transcribes kernel’s whole override set — all nineteen, and nothing else', () =>
+  it.effect('transcribes kernel’s whole override set — all twenty, and nothing else', () =>
     Effect.sync(() => {
       const sensitive = BLOCK_TYPES.filter((type) => {
         const id = blockIdOf(type)
         return id !== undefined && isSupportSensitiveBlockId(id)
       })
       expect(sensitive).toStrictEqual(SUPPORT_SENSITIVE_NAMES)
-      expect(sensitive.length).toBe(19)
+      expect(sensitive.length).toBe(20)
     }),
   )
 
-  it.effect('the other 101 blocks require nothing below, which is what an override table means', () =>
+  it.effect('the other 102 blocks require nothing below, which is what an override table means', () =>
     Effect.sync(() => {
       const indifferent = BLOCK_TYPES.filter((type) => {
         const id = blockIdOf(type)
         return id !== undefined && !isSupportSensitiveBlockId(id)
       })
-      expect(indifferent.length).toBe(101)
+      expect(indifferent.length).toBe(102)
       expect(indifferent.length + SUPPORT_SENSITIVE_NAMES.length).toBe(BLOCK_TYPES.length)
 
       for (const type of indifferent) {
@@ -294,14 +300,14 @@ describe('the supportRule mirror', () => {
     }),
   )
 
-  it.effect('the six with NO reference rule take the fallback arm, and no list was invented for them', () =>
+  it.effect('the seven with NO reference rule take the fallback arm, and no list was invented for them', () =>
     Effect.sync(() => {
       // Their arm is an ABSENCE in the source — no entry between
       // `block-support.ts:75` and :89 — so `NEEDS_ANY_SUPPORT` is that absence
-      // written down. All six plausibly want "dirt or stone" and the reference
+      // written down. All seven plausibly want "dirt or stone" and the reference
       // says only "anything that supports"; inventing the narrower rule would be
       // this repository fabricating content.
-      for (const type of ['torch', 'redstone_torch', 'redstone_wire', 'pressure_plate', 'rail', 'powered_rail'] as const) {
+      for (const type of ['torch', 'redstone_torch', 'redstone_wire', 'pressure_plate', 'rail', 'powered_rail', 'wither_skeleton_skull'] as const) {
         expect(supportRuleOfBlockId(blockIdOf(type) ?? -1)).toStrictEqual(NEEDS_ANY_SUPPORT)
         // The defining property of the arm: it tracks `canSupportAttachments`.
         expect(canBlockStaySupported(blockIdOf(type) ?? -1, 2)).toBe(true) // stone
@@ -384,6 +390,24 @@ describe('the item form of a block, in both directions', () => {
 
       expect(blockOfPlaceableItem('redstone_dust')).toBe('redstone_wire')
       expect(itemOfBlock('redstone_wire')).toBe('redstone_dust')
+      expect(blockIdOf('soul_soil')).toBe(120)
+      expect(blockIdOf('wither_skeleton_skull')).toBe(121)
+      expect(PLACEABLE_ITEM_TYPES).toContain('soul_soil')
+      expect(PLACEABLE_ITEM_TYPES).toContain('wither_skeleton_skull')
+      expect(PLACEABLE_ITEM_TYPES).not.toContain('nether_star')
+      expect(ITEM_TYPES.indexOf('soul_soil')).toBe(152)
+      expect(ITEM_TYPES.indexOf('wither_skeleton_skull')).toBe(153)
+      expect(ITEM_TYPES.indexOf('nether_star')).toBe(154)
+      expect(resolveDrop(DEFAULT_HARVEST_TOOL, DEFAULT_BLOCK_DROP, 'soul_soil')).toStrictEqual({
+        item: 'soul_soil',
+        count: 1,
+        affectedByFortune: false,
+      })
+      expect(resolveDrop(DEFAULT_HARVEST_TOOL, DEFAULT_BLOCK_DROP, 'wither_skeleton_skull')).toStrictEqual({
+        item: 'wither_skeleton_skull',
+        count: 1,
+        affectedByFortune: false,
+      })
     }),
   )
 

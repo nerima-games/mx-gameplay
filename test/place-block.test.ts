@@ -79,6 +79,7 @@ const SNOW = 7
 const DIRT = 3
 const RAIL = 31
 const PRESSURE_PLATE = 34
+const WITHER_SKELETON_SKULL = 121
 
 const SUPPORT_SENSITIVE_PLANT_TYPES: ReadonlyArray<BlockType> = [
   'sapling',
@@ -98,6 +99,7 @@ const SUPPORT_SENSITIVE_TYPES: ReadonlyArray<BlockType> = [
   'pressure_plate',
   'rail',
   'powered_rail',
+  'wither_skeleton_skull',
   ...SUPPORT_SENSITIVE_PLANT_TYPES,
 ]
 
@@ -447,6 +449,43 @@ describe('placeBlock — the player’s body', () => {
 })
 
 describe('placeBlock — support', () => {
+  it.effect('places soul soil normally and requires support for a wither skeleton skull', () =>
+    Effect.gen(function* () {
+      const soulSoilStore = yield* storeWith([])
+      expect(
+        yield* placeBlock(soulSoilStore.api, { position: target, heldItem: 'soul_soil' }),
+      ).toStrictEqual({
+        _tag: 'Placed',
+        block: 120,
+        consumed: 'soul_soil',
+        chunk: { cx: 0, cz: 0 },
+        alsoPlaced: [],
+      } satisfies PlaceOutcome)
+
+      const supported = yield* storeWith([[below, STONE]])
+      expect(
+        yield* placeBlock(supported.api, {
+          position: target,
+          heldItem: 'wither_skeleton_skull',
+        }),
+      ).toStrictEqual({
+        _tag: 'Placed',
+        block: WITHER_SKELETON_SKULL,
+        consumed: 'wither_skeleton_skull',
+        chunk: { cx: 0, cz: 0 },
+        alsoPlaced: [],
+      } satisfies PlaceOutcome)
+
+      const unsupported = yield* storeWith([])
+      expect(
+        yield* placeBlock(unsupported.api, {
+          position: target,
+          heldItem: 'wither_skeleton_skull',
+        }),
+      ).toStrictEqual({ _tag: 'Unsupported', support: 0 })
+    }),
+  )
+
   it.effect('a torch needs something under it', () =>
     Effect.gen(function* () {
       expect(isSupportSensitiveOfBlock(TORCH)).toBe(true)
@@ -544,7 +583,7 @@ describe('placeBlock — support', () => {
  * WHY THESE ROWS ALSO STAY AT THE PREDICATE LEVEL
  * ---------------------------------------------------------------------------
  *
- * Kernel 0.2.5 gives all ten plants item forms, so all fourteen support-sensitive
+ * Kernel gives all ten plants item forms, so all fifteen support-sensitive
  * blocks are now reachable through `placeBlock`; the coupling test in F7 below
  * exercises that production path. These oracle rows remain at the predicate
  * level because they pin the support-rule answers independently and precisely.
@@ -584,7 +623,7 @@ describe('the reference\u2019s support table, on the rows whose rule IS the fall
     }),
   )
 
-  it.effect('all fourteen support-sensitive blocks are reachable as held items', () =>
+  it.effect('all fifteen support-sensitive blocks are reachable as held items', () =>
     Effect.sync(() => {
       const placeable: ReadonlySet<string> = new Set<string>(PLACEABLE_ITEM_TYPES)
       const heldToday = SUPPORT_SENSITIVE_TYPES.filter((type) => placeable.has(type))
@@ -594,7 +633,7 @@ describe('the reference\u2019s support table, on the rows whose rule IS the fall
       const cannotBeHeld = SUPPORT_SENSITIVE_TYPES.filter((type) => !placeable.has(type))
       expect(cannotBeHeld).toStrictEqual([])
 
-      // ...and every one of the fourteen IS support-sensitive, so the arm they
+      // ...and every one of the fifteen IS support-sensitive, so the arm they
       // take is written rather than absent. This half is unchanged and is what
       // the whole file's support coverage rests on.
       for (const type of SUPPORT_SENSITIVE_TYPES) {
@@ -684,7 +723,7 @@ describe('the reference\u2019s support table, on the rows whose rule IS the fall
  * column, so writing one here is this repository inventing a kernel flag」.
  *
  * Kernel has the column now. `mc-kernel/domain/block-support.ts` carries
- * `SupportRule` and `mc-kernel/domain/block-registry.ts` fills in all nineteen
+ * `SupportRule` and `mc-kernel/domain/block-registry.ts` fills in all twenty
  * non-default rows; `domain/block-vocabulary.ts` mirrors both IN FULL, and
  * `placementVerdict` calls `canBlockStaySupported` instead of ANDing two
  * predicates. Nothing here was invented — the objection was answered rather than
@@ -734,7 +773,7 @@ describe('F7 — CLOSED: per-block support rules are reachable through placeBloc
    * against `canBlockStaySupported` for every support-sensitive item this build
    * can put into a `PlaceRequest`, over every block id the store can hold.
    *
-   * Kernel 0.2.5 makes all fourteen named support-sensitive blocks reachable,
+   * Kernel makes all fifteen named support-sensitive blocks reachable,
    * including the ten `'oneOf'` plants on which the per-block rule differs from
    * the raw fallback. The dynamic list also covers any other placeable item the
    * kernel classifies as support-sensitive.

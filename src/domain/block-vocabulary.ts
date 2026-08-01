@@ -99,7 +99,7 @@ import type { BlockId } from './chunk-store-port'
  * kernel's `BLOCK_TYPES`, transcribed. Order, spelling and grouping are
  * kernel's, so that a reviewer can diff the two files rather than read them.
  *
- * ALL 120 NOW. This file said "THIRTY-SIX, and kernel's own header explains why
+ * ALL 122 NOW. This file said "THIRTY-SIX, and kernel's own header explains why
  * it is not 120" for as long as kernel's roster was partial. Kernel completed it
  * in one change, and a mirror that follows only part of the way is not a smaller
  * mirror — a closed literal union's member set IS the type, so a partial
@@ -231,6 +231,8 @@ export const BLOCK_TYPES = [
   'netherrack',
   'nether_portal',
   'fire',
+  'soul_soil',
+  'wither_skeleton_skull',
 ] as const
 
 export type BlockType = (typeof BLOCK_TYPES)[number]
@@ -715,6 +717,8 @@ export const BLOCK_DROP_REGISTRY: ReadonlyArray<BlockDropRegistryEntry> = [
   { id: 117, type: 'netherrack', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
   { id: 118, type: 'nether_portal', harvestTool: DEFAULT_HARVEST_TOOL, drops: DROPS_NOTHING },
   { id: 119, type: 'fire', harvestTool: DEFAULT_HARVEST_TOOL, drops: DROPS_NOTHING },
+  { id: 120, type: 'soul_soil', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
+  { id: 121, type: 'wither_skeleton_skull', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
 ]
 
 const REGISTRY_BY_ID: ReadonlyMap<BlockId, BlockDropRegistryEntry> = new Map(
@@ -885,6 +889,7 @@ const NON_SPAWN_SURFACE_IDS: ReadonlySet<BlockId> = new Set<BlockId>([
   107, // door_open
   112, // bed
   118, // nether_portal
+  121, // wither_skeleton_skull
 ])
 
 /**
@@ -931,6 +936,7 @@ const NON_SUPPORTING_IDS: ReadonlySet<BlockId> = new Set<BlockId>([
   73, // nether_wart_crop
   74, // redstone_wire
   75, // redstone_torch
+  121, // wither_skeleton_skull
 ])
 
 export const fallsWhenUnsupported = (block: BlockId): boolean => FALLS_WHEN_UNSUPPORTED_IDS.has(block)
@@ -1044,19 +1050,20 @@ const NEEDS_WATER: SupportRule = needsOneOf('water')
 
 /**
  * EVERY row of kernel's `supportRule` column that is not the default. All
- * nineteen, and the completeness is the point rather than a courtesy.
+ * twenty, and the completeness is the point rather than a courtesy.
  *
  * This file's header states the rule: a transcription that is a SUBSET cannot
  * be compared mechanically, because "is it a subset?" is true of a stale mirror
  * too. The closed set here is "the blocks with a non-default support rule",
  * `test/block-vocabulary-mirror.test.ts` pins its membership as a list of names,
- * and the 101 rows that are absent are absent because kernel's table states
+ * and the 102 rows that are absent are absent because kernel's table states
  * OVERRIDES only — an absent row is the statement "requires nothing below",
  * which is exactly what `supportRuleOfBlockId` returns for it.
  *
- * SIX OF THE NINETEEN TAKE THE FALLBACK ARM, and they are the ones the
+ * SEVEN OF THE TWENTY TAKE THE FALLBACK ARM, and they are the ones the
  * reference gives NO per-block entry: `torch`, `redstone_torch`,
- * `redstone_wire`, `pressure_plate`, `rail`, `powered_rail`. Their arm is an
+ * `redstone_wire`, `pressure_plate`, `rail`, `powered_rail`, and
+ * `wither_skeleton_skull`. Their arm is an
  * ABSENCE in the source, so `NEEDS_ANY_SUPPORT` is that absence written down —
  * and inventing a list for them (they all plausibly want "dirt or stone") would
  * be this repository fabricating content, which is the failure kernel's audit
@@ -1082,6 +1089,7 @@ const SUPPORT_RULE_OVERRIDES: ReadonlyMap<BlockId, SupportRule> = new Map<BlockI
   [73, NEEDS_FARMLAND], // nether_wart_crop — block-support.ts:78-81
   [74, NEEDS_ANY_SUPPORT], // redstone_wire — block-support.ts:25, no entry at :75-89
   [75, NEEDS_ANY_SUPPORT], // redstone_torch — block-support.ts:24, no entry at :75-89
+  [121, NEEDS_ANY_SUPPORT], // wither_skeleton_skull
 ])
 
 /**
