@@ -208,8 +208,13 @@ describe('public API surface', () => {
         'settled',
         // fluids — frontier with a per-tick budget
         'DEFAULT_FLUID_FRONTIER_BUDGET',
+        'enqueueFluidDisturbance',
         'splitBudget',
         'carryOver',
+        // bucket use — atomic world/inventory exchange plus fluid disturbance
+        'BUCKET_ITEM_TYPES',
+        'isBucketItem',
+        'useBucket',
         // death — the cause travels to the message
         'DEATH_MESSAGES',
         'describeDeath',

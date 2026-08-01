@@ -47,6 +47,21 @@ export type FluidWorkItem = {
 }
 
 /**
+ * Schedule a cell whose fluid state changed.
+ *
+ * A position may carry only one current fluid kind. Replacing an older entry
+ * avoids spending tick budget on stale work after two interactions touch the
+ * same cell before the next fluid stage runs.
+ */
+export const enqueueFluidDisturbance = (
+  frontier: ReadonlyArray<FluidWorkItem>,
+  item: FluidWorkItem,
+): ReadonlyArray<FluidWorkItem> => [
+  ...frontier.filter((candidate) => candidate.key !== item.key),
+  item,
+]
+
+/**
  * Cells evaluated in one tick, across both fluids.
  *
  * Provisional: the reference tuned its budget against a specific frame time and
