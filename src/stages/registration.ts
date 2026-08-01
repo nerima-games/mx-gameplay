@@ -264,6 +264,13 @@ import {
   WEATHER_TRANSITION_ROLLS,
   type WeatherState,
 } from '../domain/weather'
+import {
+  advanceWeatherGameplay,
+  makeWeatherGameplayState,
+  type WeatherGameplayEvent,
+  type WeatherGameplayInput,
+  type WeatherGameplayState,
+} from '../domain/weather-gameplay'
 import { GAMEPLAY_STAGE_IDS, UPSTREAM_STAGE_IDS } from './stage-ids'
 
 export const resolveArmoredPlayerDamages = (
@@ -571,6 +578,9 @@ export type GameplayFrameState = {
   readonly heldTool: Ref.Ref<BlockLootContext>
   readonly weather: Ref.Ref<WeatherState>
   readonly weatherAdvanced: Ref.Ref<WeatherState | undefined>
+  readonly weatherGameplayInput: Ref.Ref<WeatherGameplayInput>
+  readonly weatherGameplay: Ref.Ref<WeatherGameplayState>
+  readonly weatherGameplayEvents: Ref.Ref<ReadonlyArray<WeatherGameplayEvent>>
   /** Seconds accumulated towards the next spawn search. Scratch: losing it costs one interval. */
   readonly spawnClockSecs: Ref.Ref<number>
   readonly rollSeed: Ref.Ref<number>
@@ -989,6 +999,14 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
   // one scenario disagree about when the first rain arrives.
   const weather = yield* Ref.make<WeatherState>(INITIAL_WEATHER)
   const weatherAdvanced = yield* Ref.make<WeatherState | undefined>(undefined)
+  const weatherGameplayInput = yield* Ref.make<WeatherGameplayInput>({
+    dimension: 'overworld',
+    difficulty: 'normal',
+    blocks: [],
+    entities: [],
+  })
+  const weatherGameplay = yield* Ref.make(makeWeatherGameplayState(DEFAULT_ROLL_SEED))
+  const weatherGameplayEvents = yield* Ref.make<ReadonlyArray<WeatherGameplayEvent>>([])
   const spawnClockSecs = yield* Ref.make(0)
   // A LITERAL, not a clock reading: two runs of one scenario must draw the same
   // numbers (plan.md §5.1-3). A world seed is mc-worldgen's noun and this is
@@ -1045,6 +1063,9 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
     heldTool,
     weather,
     weatherAdvanced,
+    weatherGameplayInput,
+    weatherGameplay,
+    weatherGameplayEvents,
     spawnClockSecs,
     rollSeed,
     fallingBlocks,
@@ -1672,6 +1693,39 @@ export const restoreFireLifecycle = (
   Ref.set(state.fireLifecycle, {
     fires: snapshot.fires.map((fire) => ({ ...fire, position: { ...fire.position } })),
     seed: snapshot.seed,
+  })
+
+/** Replace the host-observed weather exposure snapshot for the next frame. */
+export const submitWeatherGameplayInput = (
+  state: GameplayFrameState,
+  input: WeatherGameplayInput,
+): Effect.Effect<void> => Ref.set(state.weatherGameplayInput, input)
+
+/** Atomically drain weather consequences exactly once in production order. */
+export const drainWeatherGameplayEvents = (
+  state: GameplayFrameState,
+): Effect.Effect<ReadonlyArray<WeatherGameplayEvent>> =>
+  Ref.getAndSet(state.weatherGameplayEvents, [])
+
+export const snapshotWeatherGameplay = (
+  state: GameplayFrameState,
+): Effect.Effect<WeatherGameplayState> =>
+  Ref.get(state.weatherGameplay).pipe(
+    Effect.map((snapshot) => ({
+      seed: snapshot.seed,
+      lastProcessedTick: snapshot.lastProcessedTick,
+      chargedCreepers: [...snapshot.chargedCreepers],
+    })),
+  )
+
+export const restoreWeatherGameplay = (
+  state: GameplayFrameState,
+  snapshot: WeatherGameplayState,
+): Effect.Effect<void> =>
+  Ref.set(state.weatherGameplay, {
+    seed: snapshot.seed >>> 0,
+    lastProcessedTick: snapshot.lastProcessedTick,
+    chargedCreepers: [...snapshot.chargedCreepers],
   })
 
 const firePositionKey = (position: FirePosition): string =>
@@ -2918,6 +2972,22 @@ export const gameplayStages = (
     run: (dt) =>
       Effect.gen(function* () {
         const current = yield* Ref.get(state.weather)
+        const weatherGameplayInput = yield* Ref.get(state.weatherGameplayInput)
+        const weatherGameplayState = yield* Ref.get(state.weatherGameplay)
+        const tick = yield* Ref.get(state.tickCount)
+        const weatherGameplayStep = advanceWeatherGameplay(
+          weatherGameplayState,
+          tick,
+          current.weather,
+          weatherGameplayInput,
+        )
+        yield* Ref.set(state.weatherGameplay, weatherGameplayStep.state)
+        if (weatherGameplayStep.events.length > 0) {
+          yield* Ref.update(state.weatherGameplayEvents, (events) => [
+            ...events,
+            ...weatherGameplayStep.events,
+          ])
+        }
 
         // THE ROLLS ARE DRAWN ONLY WHEN THE STRETCH RUNS OUT, which is
         // `domain/frame-rolls.ts`'s rule that the sequence depend on what

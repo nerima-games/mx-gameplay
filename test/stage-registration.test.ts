@@ -436,7 +436,7 @@ describe('stage behaviour', () => {
       //
       // WHAT IS STILL NOT HERE is the thing this list exists to keep out: there
       // is no `Ref<Map<MobId, CreeperFuse>>`, no mob position, no mob health, no
-      // entity id, no INVENTORY, no PLAYER POSITION and no GAME MODE — and no DAY
+      // entity roster, no INVENTORY, no PLAYER POSITION and no GAME MODE — and no DAY
       // LENGTH, which is the half of the original failure that has no stand-in
       // and never will, because nothing in this repository needs to know how long
       // a day is.
@@ -485,6 +485,9 @@ describe('stage behaviour', () => {
         'villagerTrades',
         'weather',
         'weatherAdvanced',
+        'weatherGameplay',
+        'weatherGameplayEvents',
+        'weatherGameplayInput',
       ])
 
       // The pearl teleports the player and the game mode decides whether it
