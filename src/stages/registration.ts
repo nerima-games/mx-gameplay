@@ -100,6 +100,20 @@ import {
   useVillagerOffer,
   type VillagerTradeState,
 } from '../domain/villager-trade'
+import {
+  PLAYER_MAXIMUM_HEALTH_POINTS,
+  POISON_DAMAGE_POINTS,
+  POISON_MINIMUM_HEALTH_POINTS,
+  REGENERATION_HEAL_POINTS,
+  SPEED_MOVEMENT_MULTIPLIER,
+  applyStatusEffect,
+  copyStatusEffectState,
+  emptyStatusEffectState,
+  tickStatusEffects,
+  type PlayerHealingEvent,
+  type StatusEffectApplication,
+  type StatusEffectState,
+} from '../domain/status-effect'
 import { targetabilityFromStore } from '../domain/in-memory-world'
 import { ChunkStore, type BlockPosition, type ChunkStoreApi } from '../domain/chunk-store-port'
 import {
@@ -514,6 +528,7 @@ export type GameplayFrameState = {
   readonly pendingMeleeAttacks: Ref.Ref<ReadonlyArray<MeleeAttackRequest>>
   readonly pendingPearlThrows: Ref.Ref<ReadonlyArray<EnderPearlThrowRequest>>
   readonly pendingVillagerTrades: Ref.Ref<ReadonlyArray<VillagerTradeRequest>>
+  readonly pendingStatusEffects: Ref.Ref<ReadonlyArray<StatusEffectApplication>>
   readonly consumedItems: Ref.Ref<ReadonlyArray<PlaceableItemType>>
   readonly usedItems: Ref.Ref<ReadonlyArray<IgnitionItemType>>
   readonly blockUseResults: Ref.Ref<ReadonlyArray<BlockUseResult>>
@@ -524,6 +539,9 @@ export type GameplayFrameState = {
   readonly bowKnockbacks: Ref.Ref<ReadonlyArray<BowKnockback>>
   readonly enderPearlOutcomes: Ref.Ref<ReadonlyArray<EnderPearlOutcome>>
   readonly playerDamages: Ref.Ref<ReadonlyArray<PlayerDamageEvent>>
+  readonly playerHeals: Ref.Ref<ReadonlyArray<PlayerHealingEvent>>
+  readonly playerMovementSpeedMultiplier: Ref.Ref<number>
+  readonly statusEffects: Ref.Ref<StatusEffectState>
   readonly fireLifecycle: Ref.Ref<FireLifecycleState>
   readonly hostileContactCooldowns: Ref.Ref<ReadonlyMap<EntityId, number>>
   readonly mobDrops: Ref.Ref<ReadonlyArray<MobDropEvent>>
@@ -918,6 +936,7 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
   const pendingMeleeAttacks = yield* Ref.make<ReadonlyArray<MeleeAttackRequest>>([])
   const pendingPearlThrows = yield* Ref.make<ReadonlyArray<EnderPearlThrowRequest>>([])
   const pendingVillagerTrades = yield* Ref.make<ReadonlyArray<VillagerTradeRequest>>([])
+  const pendingStatusEffects = yield* Ref.make<ReadonlyArray<StatusEffectApplication>>([])
   const consumedItems = yield* Ref.make<ReadonlyArray<PlaceableItemType>>([])
   const usedItems = yield* Ref.make<ReadonlyArray<IgnitionItemType>>([])
   const blockUseResults = yield* Ref.make<ReadonlyArray<BlockUseResult>>([])
@@ -931,6 +950,9 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
   const bowKnockbacks = yield* Ref.make<ReadonlyArray<BowKnockback>>([])
   const enderPearlOutcomes = yield* Ref.make<ReadonlyArray<EnderPearlOutcome>>([])
   const playerDamages = yield* Ref.make<ReadonlyArray<PlayerDamageEvent>>([])
+  const playerHeals = yield* Ref.make<ReadonlyArray<PlayerHealingEvent>>([])
+  const playerMovementSpeedMultiplier = yield* Ref.make(1)
+  const statusEffects = yield* Ref.make<StatusEffectState>(emptyStatusEffectState())
   const fireLifecycle = yield* Ref.make<FireLifecycleState>(makeFireLifecycleState([], DEFAULT_ROLL_SEED))
   const hostileContactCooldowns = yield* Ref.make<ReadonlyMap<EntityId, number>>(new Map())
   const mobDrops = yield* Ref.make<ReadonlyArray<MobDropEvent>>([])
@@ -978,6 +1000,7 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
     pendingMeleeAttacks,
     pendingPearlThrows,
     pendingVillagerTrades,
+    pendingStatusEffects,
     consumedItems,
     usedItems,
     blockUseResults,
@@ -988,6 +1011,9 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
     bowKnockbacks,
     enderPearlOutcomes,
     playerDamages,
+    playerHeals,
+    playerMovementSpeedMultiplier,
+    statusEffects,
     fireLifecycle,
     hostileContactCooldowns,
     mobDrops,
@@ -1448,6 +1474,78 @@ export const drainPlayerDamages = (
   state: GameplayFrameState,
 ): Effect.Effect<ReadonlyArray<PlayerDamageEvent>> => Ref.getAndSet(state.playerDamages, [])
 
+export const requestStatusEffect = (
+  state: GameplayFrameState,
+  application: StatusEffectApplication,
+): Effect.Effect<void> =>
+  Ref.update(state.pendingStatusEffects, (pending) => [...pending, application])
+
+export const drainPlayerHeals = (
+  state: GameplayFrameState,
+): Effect.Effect<ReadonlyArray<PlayerHealingEvent>> => Ref.getAndSet(state.playerHeals, [])
+
+export const getPlayerMovementSpeedMultiplier = (
+  state: GameplayFrameState,
+): Effect.Effect<number> => Ref.get(state.playerMovementSpeedMultiplier)
+
+export const snapshotStatusEffects = (
+  state: GameplayFrameState,
+): Effect.Effect<StatusEffectState> =>
+  Ref.get(state.statusEffects).pipe(Effect.map(copyStatusEffectState))
+
+export const restoreStatusEffects = (
+  state: GameplayFrameState,
+  snapshot: StatusEffectState,
+): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    const restored = copyStatusEffectState(snapshot)
+    yield* Ref.set(state.statusEffects, restored)
+    yield* Ref.set(
+      state.playerMovementSpeedMultiplier,
+      restored.effects.some((effect) => effect.type === 'speed')
+        ? SPEED_MOVEMENT_MULTIPLIER
+        : 1,
+    )
+  })
+
+const stepStatusEffects = (
+  state: GameplayFrameState,
+  dt: DeltaTimeSecs,
+): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    const applications = yield* Ref.getAndSet(state.pendingStatusEffects, [])
+    const current = yield* Ref.get(state.statusEffects)
+    const applied = applications.reduce(applyStatusEffect, current)
+    const tick = tickStatusEffects(applied, dt)
+
+    yield* Ref.set(state.statusEffects, tick.state)
+    yield* Ref.set(state.playerMovementSpeedMultiplier, tick.movementSpeedMultiplier)
+    if (tick.poisonPulses > 0) {
+      const damages: ReadonlyArray<PlayerDamageEvent> = Array.from(
+        { length: tick.poisonPulses },
+        () => ({
+          _tag: 'StatusEffect' as const,
+          effect: 'poison' as const,
+          damage: { amount: POISON_DAMAGE_POINTS, cause: 'poison' as const },
+          minimumHealthPoints: POISON_MINIMUM_HEALTH_POINTS,
+        }),
+      )
+      yield* Ref.update(state.playerDamages, (pending) => [...pending, ...damages])
+    }
+    if (tick.regenerationPulses > 0) {
+      const heals: ReadonlyArray<PlayerHealingEvent> = Array.from(
+        { length: tick.regenerationPulses },
+        () => ({
+          _tag: 'StatusEffect' as const,
+          effect: 'regeneration' as const,
+          amount: REGENERATION_HEAL_POINTS,
+          maximumHealthPoints: PLAYER_MAXIMUM_HEALTH_POINTS,
+        }),
+      )
+      yield* Ref.update(state.playerHeals, (pending) => [...pending, ...heals])
+    }
+  })
+
 export const requestVillagerTrade = (
   state: GameplayFrameState,
   request: VillagerTradeRequest,
@@ -1728,6 +1826,7 @@ export const gameplayStages = (
         yield* stepPortalTravel(state, store, player, dt)
         yield* stepFireLifecycle(state, store, player)
         yield* Ref.update(state.villagerTrades, (current) => advanceVillagerRestock(current, dt))
+        yield* stepStatusEffects(state, dt)
 
         // `getAndSet` rather than get-then-set: whoever fills the inboxes is not
         // this fiber, and a request that arrived between the two steps would be

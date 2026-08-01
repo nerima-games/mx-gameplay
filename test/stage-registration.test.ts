@@ -43,6 +43,8 @@ import { disturb, takeBatch } from '../src/domain/falling-block'
 import { DEFAULT_ROLL_SEED } from '../src/domain/frame-rolls'
 import {
   gameplayStages,
+  drainPlayerDamages,
+  drainPlayerHeals,
   drainBowShotResults,
   drainFluidUpdates,
   drainMeleeAttackResults,
@@ -55,6 +57,10 @@ import {
   requestBowShot,
   requestMeleeAttack,
   requestMobSpawn,
+  requestStatusEffect,
+  getPlayerMovementSpeedMultiplier,
+  restoreStatusEffects,
+  snapshotStatusEffects,
 } from '../src/stages/registration'
 import {
   EXPERIENCE_MODULE_STAGE_PREFIXES,
@@ -451,14 +457,18 @@ describe('stage behaviour', () => {
         'pendingMeleeAttacks',
         'pendingPearlThrows',
         'pendingPlacements',
+        'pendingStatusEffects',
         'pendingVillagerTrades',
         'playerDamages',
+        'playerHeals',
+        'playerMovementSpeedMultiplier',
         'portalCandidates',
         'portalDwell',
         'portalTravels',
         'rollSeed',
         'spawnAttempts',
         'spawnClockSecs',
+        'statusEffects',
         'targetPosition',
         'tickCount',
         'timeOfDay',
@@ -1025,5 +1035,55 @@ describe('the module contract has caught up with this file’s shape', () => {
         yield* runnable
       }
     }).pipe(Effect.provide(FrameServicesLayer)),
+  )
+
+  it.effect('routes status effect pulses and speed through host-facing frame contracts', () =>
+    Effect.gen(function* () {
+      const { state, stages } = yield* builtStages
+      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+
+      yield* requestStatusEffect(state, { type: 'poison', durationSecs: 1 })
+      yield* requestStatusEffect(state, { type: 'regeneration', durationSecs: 2.5 })
+      yield* requestStatusEffect(state, { type: 'speed', durationSecs: 2 })
+      yield* interactions.run(DeltaTimeSecs(1)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* drainPlayerDamages(state)).toStrictEqual([
+        {
+          _tag: 'StatusEffect',
+          effect: 'poison',
+          damage: { amount: 1, cause: 'poison' },
+          minimumHealthPoints: 1,
+        },
+      ])
+      expect(yield* drainPlayerHeals(state)).toStrictEqual([])
+      expect(yield* getPlayerMovementSpeedMultiplier(state)).toBe(1.2)
+
+      yield* interactions.run(DeltaTimeSecs(1.5)).pipe(Effect.provide(FrameServicesLayer))
+      expect(yield* drainPlayerHeals(state)).toStrictEqual([
+        {
+          _tag: 'StatusEffect',
+          effect: 'regeneration',
+          amount: 1,
+          maximumHealthPoints: 20,
+        },
+      ])
+      expect(yield* getPlayerMovementSpeedMultiplier(state)).toBe(1)
+    }),
+  )
+
+  it.effect('snapshots and restores status effects without retaining host references', () =>
+    Effect.gen(function* () {
+      const source = yield* makeGameplayFrameState
+      yield* restoreStatusEffects(source, {
+        effects: [{ type: 'speed', remainingSecs: 4, pulseClockSecs: 0 }],
+      })
+      const snapshot = yield* snapshotStatusEffects(source)
+      const restored = yield* makeGameplayFrameState
+      yield* restoreStatusEffects(restored, snapshot)
+
+      expect(yield* snapshotStatusEffects(restored)).toStrictEqual(snapshot)
+      expect(yield* getPlayerMovementSpeedMultiplier(restored)).toBe(1.2)
+      expect((yield* snapshotStatusEffects(restored)).effects).not.toBe(snapshot.effects)
+    }),
   )
 })
