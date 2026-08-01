@@ -317,6 +317,18 @@ describe('public API surface', () => {
         'FORTUNE_MULTIPLIERS',
         'BLOCK_LOOT_ROLLS',
         'NO_TOOL',
+        // enchantments — registry, deterministic table, codec and derivations
+        'ENCHANTMENT_REGISTRY',
+        'enchantmentOffers',
+        'applyEnchantmentOffer',
+        'encodeEnchantedItem',
+        'decodeEnchantedItemSnapshot',
+        'meleeDamageWithEnchantments',
+        'bowDamageWithEnchantments',
+        'armorDamageWithEnchantments',
+        'miningSpeedWithEnchantments',
+        'durabilityWearWithEnchantments',
+        'fortuneDropCountWithEnchantments',
         // weather
         'WEATHERS',
         'advanceWeather',
