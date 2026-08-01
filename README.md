@@ -12,6 +12,12 @@
 `planFurnaceAdvance` と、古い snapshot への適用を拒否する `applyFurnaceAdvance` に分離している。
 `requestFurnaceAdvance` で同じ規則を `gameplay:interactions` に投入でき、未処理時間は plan に返る。
 
+火災は `domain/fire-lifecycle.ts` の決定的な tick 規則と `gameplay:fire` stage で処理する。
+seed 付きの延焼、寿命、雨 / 水 / 手動消火、支持喪失、難易度別の接触ダメージと再着火を扱い、
+1 tick 128 セル、1 frame 4 tick、未ロード 3 回までの再試行で処理量を制限する。
+version 1 snapshot は火と Mob の燃焼状態、乱数 seed、未処理時間を復元し、ワールドへの論理反映は
+ブロック書き込み成功後に限る。致死ダメージは既存の casualty / drop 経路を再利用する。
+
 ## 依存
 
 `mc-sim` / `mc-worldgen` / `mc-audio`。加えて `mc-kernel`（全リポジトリから import 可）。
@@ -153,6 +159,7 @@ Nix を使わない場合は Node.js 22 以上と pnpm 9.15.0 を用意する（
   採った形は当時の `minedItems`（現 `leftoverItems`）と同じ**受信箱 + 送信箱**で、書き戻すのはホストである。
   `gameplay:time-weather` はこれで `Effect.void` ではなくなった（DN-GP-7）。
 - **ブロックの読み書きは配線済み。** `gameplay:interactions` が破壊を、`gameplay:entities` が落下を、
+  `gameplay:fire` が延焼と消火を、
   mc-worldgen の `ChunkStore`（`domain/chunk-store-port.ts` のミラー越し）に対して実際に行う。
   「掘る → 砂が落ちる → アイテムが渡る」の縦切りは `test/vertical-slice.test.ts` が
   **stage 登録経由で**回している。`gameplay:fluids` はキューの出し入れだけである。

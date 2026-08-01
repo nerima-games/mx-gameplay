@@ -39,6 +39,8 @@ export const GAMEPLAY_STAGE_IDS = {
    * sees and it should see one thing per responsibility.
    */
   interactions: StageId('gameplay:interactions'),
+  /** Deterministic block fire, burning actors, and extinguishing. */
+  fire: StageId('gameplay:fire'),
   /** Survival hunger, regeneration, and starvation after activity resolution. */
   survivalHunger: StageId('gameplay:survival-hunger'),
   /** Mob AI, drops, vehicles, and the falling-block cascade. */

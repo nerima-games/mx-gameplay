@@ -12,15 +12,21 @@ import {
   AIR_BLOCK_ID,
   type BlockId,
   type ChunkStore,
+  type ChunkStoreApi,
 } from '../src/domain/chunk-store-port'
 import { blockIdOf } from '../src/domain/block-vocabulary'
 import {
   CREEPER_KIND,
+  rollCasualtyDrops,
   type MobBehaviour,
   type MobDropEvent,
   type MobExperienceEvent,
   type MobSpawnAttempt,
 } from '../src/domain/entities/mob-frame'
+import {
+  FIRE_TICK_INTERVAL_SECS,
+  makeFireLifecycleState,
+} from '../src/domain/fire-lifecycle'
 import {
   EntityId,
   EntityKind,
@@ -69,6 +75,7 @@ import {
   insertBrewingFuel,
   insertBrewingIngredient,
   requestBowShot,
+  requestFireExtinguish,
   requestMeleeAttack,
   requestMobSpawn,
   requestStatusEffect,
@@ -216,6 +223,7 @@ describe('§2.3-3 the total order belongs to mc-compose', () => {
 
       expect(stageIds(stages)).toStrictEqual([
         GAMEPLAY_STAGE_IDS.interactions,
+        GAMEPLAY_STAGE_IDS.fire,
         GAMEPLAY_STAGE_IDS.survivalHunger,
         GAMEPLAY_STAGE_IDS.entities,
         GAMEPLAY_STAGE_IDS.enderDragon,
@@ -226,8 +234,11 @@ describe('§2.3-3 the total order belongs to mc-compose', () => {
       expect(byId.get(GAMEPLAY_STAGE_IDS.interactions)?.after).toStrictEqual([
         UPSTREAM_STAGE_IDS.simPhysics,
       ])
-      expect(byId.get(GAMEPLAY_STAGE_IDS.survivalHunger)?.after).toStrictEqual([
+      expect(byId.get(GAMEPLAY_STAGE_IDS.fire)?.after).toStrictEqual([
         GAMEPLAY_STAGE_IDS.interactions,
+      ])
+      expect(byId.get(GAMEPLAY_STAGE_IDS.survivalHunger)?.after).toStrictEqual([
+        GAMEPLAY_STAGE_IDS.fire,
       ])
       expect(byId.get(GAMEPLAY_STAGE_IDS.entities)?.after).toStrictEqual([
         GAMEPLAY_STAGE_IDS.survivalHunger,
@@ -272,6 +283,92 @@ describe('§2.3-3 the total order belongs to mc-compose', () => {
     Effect.sync(() => {
       expect(() => StageId('   ')).toThrow()
       expect(StageId('gameplay:interactions')).toBe('gameplay:interactions')
+    }),
+  )
+})
+
+describe('fire lifecycle stage integration', () => {
+  const FIRE = blockIdOf('fire') ?? 119
+
+  it.effect('retains an active fire while its chunk is temporarily unavailable', () =>
+    Effect.gen(function* () {
+      const { state, stages } = yield* builtStages
+      const position = { x: 16, y: 64, z: 0 }
+      yield* Ref.set(state.fireLifecycle, makeFireLifecycleState([position], 7))
+
+      const fireStage = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire)!
+      yield* fireStage.run(DeltaTimeSecs(FIRE_TICK_INTERVAL_SECS)).pipe(
+        Effect.provide(FrameServicesLayer),
+      )
+
+      expect((yield* Ref.get(state.fireLifecycle)).fires).toStrictEqual([
+        { position, ageTicks: 0, unloadedRetries: 1 },
+      ])
+    }),
+  )
+
+  it.effect('does not drift logical or world state when a manual extinguish write fails', () =>
+    Effect.gen(function* () {
+      const { state, store } = yield* builtStages
+      const position = { x: 1, y: 64, z: 0 }
+      yield* store.api.setBlock(position, FIRE)
+      const initial = makeFireLifecycleState([position], 11)
+      yield* Ref.set(state.fireLifecycle, initial)
+      const refusingStore: ChunkStoreApi = {
+        ...store.api,
+        setBlock: () => Effect.succeed({ _tag: 'OutOfWorld' }),
+      }
+
+      expect(yield* requestFireExtinguish(state, refusingStore, position)).toBe(false)
+      expect(yield* store.blockAt(position)).toBe(FIRE)
+      expect(yield* Ref.get(state.fireLifecycle)).toStrictEqual(initial)
+    }),
+  )
+
+  it.effect('routes lethal entity fire damage through the existing casualty and drop path', () =>
+    Effect.gen(function* () {
+      const { state, store, roster, stages } = yield* builtStages
+      const position = { x: 2, y: 64, z: 0 }
+      yield* store.api.setBlock({ ...position, y: position.y - 1 }, STONE)
+      yield* store.api.setBlock(position, FIRE)
+      yield* Ref.set(state.fireLifecycle, makeFireLifecycleState([position], 13))
+      const target = yield* roster.api.spawn({
+        kind: CREEPER_KIND,
+        feetPosition: position,
+        healthPoints: 1,
+        behaviour: undefined,
+      })
+      const expected = rollCasualtyDrops([
+        { id: target.id, kind: target.kind, at: target.feetPosition },
+      ], DEFAULT_ROLL_SEED)
+
+      const fireStage = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire)!
+      yield* fireStage.run(DeltaTimeSecs(FIRE_TICK_INTERVAL_SECS)).pipe(
+        Effect.provide(FrameServicesLayer),
+      )
+
+      expect((yield* roster.api.snapshot).entities).toStrictEqual([])
+      expect(yield* drainMobDrops(state)).toStrictEqual(expected.drops)
+      expect(yield* drainMobDrops(state)).toStrictEqual([])
+      expect(yield* Ref.get(state.rollSeed)).toBe(expected.seed)
+      expect((yield* Ref.get(state.fireLifecycle)).burningActors).toStrictEqual([])
+    }),
+  )
+
+  it.effect('caps a large frame to four fire ticks', () =>
+    Effect.gen(function* () {
+      const { state, store, stages } = yield* builtStages
+      const position = { x: 3, y: 64, z: 0 }
+      yield* store.api.setBlock({ ...position, y: position.y - 1 }, STONE)
+      yield* store.api.setBlock(position, FIRE)
+      yield* Ref.set(state.fireLifecycle, makeFireLifecycleState([position], 17))
+
+      const fireStage = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire)!
+      yield* fireStage.run(DeltaTimeSecs(99)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect((yield* Ref.get(state.fireLifecycle)).fires).toStrictEqual([
+        { position, ageTicks: 4 },
+      ])
     }),
   )
 })
@@ -1245,7 +1342,7 @@ describe('the module contract has caught up with this file’s shape', () => {
       const satisfied: Effect.Effect<ReadonlyArray<StageRegistration>, never, never> =
         Effect.provide(registration, emptyWorld)
 
-      expect(yield* satisfied).toHaveLength(6)
+      expect(yield* satisfied).toHaveLength(7)
     }),
   )
 

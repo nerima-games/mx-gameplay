@@ -149,9 +149,20 @@ import {
 import { blockIdOf, blockTypeOfId, type PlaceableItemType } from '../domain/block-vocabulary'
 import {
   advanceFireLifecycle,
+  FIRE_FRAME_TICK_BUDGET,
   FIRE_TICK_INTERVAL_SECS,
+  FIRE_UNAVAILABLE_BLOCK,
+  FIRE_UNLOADED_RETRY_LIMIT,
+  FIRE_WORK_BUDGET,
+  extinguishFire,
+  isFireLifecycleSnapshot,
+  makeFireLifecycleSnapshot,
   makeFireLifecycleState,
+  restoreFireLifecycleSnapshot,
+  type FireActorContact,
   type FireCell,
+  type FireEntityDamage,
+  type FireLifecycleSnapshot,
   type FireLifecycleState,
   type FirePosition,
 } from '../domain/fire-lifecycle'
@@ -172,6 +183,7 @@ import {
   type MobDropEvent,
   type MobExperienceEvent,
   type MobBehaviour,
+  type MobCasualty,
   type MobSpawnAttempt,
 } from '../domain/entities/mob-frame'
 import { FRESH_PRIMED_TNT } from '../domain/mob/primed-tnt'
@@ -184,7 +196,10 @@ import {
 import { searchSpawnCandidates } from '../domain/entities/mob-spawn-search'
 import { hostileSpawnsAllowed } from '../domain/day-night'
 import {
+  changed,
+  DESPAWNED,
   entityManagerTag,
+  UNCHANGED,
   type EntityId,
   type EntityManager,
   type EntityManagerApi,
@@ -1915,26 +1930,29 @@ export const restoreVillagerTrades = (
 /** Snapshot the deterministic fire state for host persistence. */
 export const snapshotFireLifecycle = (
   state: GameplayFrameState,
-): Effect.Effect<FireLifecycleState> =>
-  Ref.get(state.fireLifecycle).pipe(
-    Effect.map((current) => ({
-      fires: current.fires.map((fire) => ({ ...fire, position: { ...fire.position } })),
-      seed: current.seed,
-    })),
-  )
+): Effect.Effect<FireLifecycleSnapshot> =>
+  Effect.gen(function* () {
+    const current = yield* Ref.get(state.fireLifecycle)
+    const accumulator = yield* Ref.get(fireTickAccumulatorFor(state.fireLifecycle))
+    return makeFireLifecycleSnapshot(current, accumulator)
+  })
 
 /** Restore a previously persisted fire state without retaining host-owned references. */
 export const restoreFireLifecycle = (
   state: GameplayFrameState,
-  snapshot: FireLifecycleState,
+  snapshot: FireLifecycleSnapshot,
 ): Effect.Effect<void> =>
-  Effect.all([
-    Ref.set(state.fireLifecycle, {
-      fires: snapshot.fires.map((fire) => ({ ...fire, position: { ...fire.position } })),
-      seed: snapshot.seed,
-    }),
-    Ref.set(fireTickAccumulatorFor(state.fireLifecycle), 0),
-  ]).pipe(Effect.asVoid)
+  Effect.gen(function* () {
+    if (!isFireLifecycleSnapshot(snapshot)) {
+      return yield* Effect.die(new Error('Unsupported fire lifecycle snapshot'))
+    }
+    const restored = restoreFireLifecycleSnapshot(snapshot)
+    yield* Ref.set(state.fireLifecycle, restored.state)
+    yield* Ref.set(
+      fireTickAccumulatorFor(state.fireLifecycle),
+      restored.tickAccumulatorSecs,
+    )
+  })
 
 /** Replace the host-observed weather exposure snapshot for the next frame. */
 export const submitWeatherGameplayInput = (
@@ -1982,16 +2000,97 @@ const FIRE_SNAPSHOT_OFFSETS = [
   [0, 0, 1],
 ] as const
 
+/** Extinguish a loaded fire cell, committing logical state only after the world write succeeds. */
+export const requestFireExtinguish = (
+  state: GameplayFrameState,
+  store: ChunkStoreApi,
+  position: FirePosition,
+): Effect.Effect<boolean> =>
+  Effect.gen(function* () {
+    const current = yield* Ref.get(state.fireLifecycle)
+    if (!current.fires.some((active) => firePositionKey(active.position) === firePositionKey(position))) {
+      return false
+    }
+    const air = blockIdOf('air')
+    if (air === undefined) return false
+    const outcome = yield* store.setBlock(position, air)
+    if (outcome._tag !== 'Written' && outcome._tag !== 'Unchanged') return false
+    yield* Ref.set(state.fireLifecycle, extinguishFire(current, position))
+    if (outcome._tag === 'Written') {
+      yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, [positionKeyOf(position)]))
+    }
+    return true
+  })
+
 const stepFireTick = (
   state: GameplayFrameState,
   store: ChunkStoreApi,
+  roster: EntityManagerApi<MobBehaviour>,
+  inventory: InventoryServiceApi,
   player: PlayerServiceApi,
 ): Effect.Effect<void> =>
   Effect.gen(function* () {
     const current = yield* Ref.get(state.fireLifecycle)
-    if (current.fires.length === 0) return
+    if (current.fires.length === 0 && (current.burningActors?.length ?? 0) === 0) return
 
     const activeKeys = new Set(current.fires.map((fire) => firePositionKey(fire.position)))
+    const burningIds = new Set((current.burningActors ?? []).map((actor) => actor.id))
+    const survival = yield* state.survivalHunger.snapshot
+    const feet = (yield* player.pose).feetPosition
+    const playerContactPosition = {
+      x: Math.floor(feet.x),
+      y: Math.floor(feet.y),
+      z: Math.floor(feet.z),
+    }
+    const rosterEntities = [...(yield* roster.entities)]
+    const entityById = new Map(rosterEntities.map((entity) => [String(entity.id), entity]))
+    const burningEntityContacts = [...burningIds]
+      .filter((id) => id !== 'player')
+      .sort((a, b) => a.localeCompare(b))
+      .map((id): FireActorContact => {
+        const entity = entityById.get(id)
+        const previous = (current.burningActors ?? []).find((actor) => actor.id === id)
+        if (entity === undefined) {
+          return {
+            id,
+            kind: 'entity',
+            position: previous?.position ?? { x: 0, y: 0, z: 0 },
+            alive: false,
+          }
+        }
+        return {
+          id,
+          kind: 'entity',
+          position: {
+            x: Math.floor(entity.feetPosition.x),
+            y: Math.floor(entity.feetPosition.y),
+            z: Math.floor(entity.feetPosition.z),
+          },
+          alive: entity.healthPoints > 0,
+        }
+      })
+    const newEntityContacts = rosterEntities
+      .filter((entity) => !burningIds.has(String(entity.id)))
+      .sort((a, b) => String(a.id).localeCompare(String(b.id)))
+      .map((entity): FireActorContact => ({
+        id: String(entity.id),
+        kind: 'entity',
+        position: {
+          x: Math.floor(entity.feetPosition.x),
+          y: Math.floor(entity.feetPosition.y),
+          z: Math.floor(entity.feetPosition.z),
+        },
+        alive: entity.healthPoints > 0,
+      }))
+    const contacts: FireActorContact[] = [
+      {
+        id: 'player',
+        kind: 'player',
+        position: playerContactPosition,
+        alive: survival.vitals.healthPoints > 0,
+      },
+      ...[...burningEntityContacts, ...newEntityContacts].slice(0, FIRE_WORK_BUDGET),
+    ]
     const positions = new Map<string, FirePosition>()
     for (const fire of current.fires) {
       for (const [dx, dy, dz] of FIRE_SNAPSHOT_OFFSETS) {
@@ -2003,58 +2102,150 @@ const stepFireTick = (
         positions.set(firePositionKey(position), position)
       }
     }
+    for (const contact of contacts) positions.set(firePositionKey(contact.position), contact.position)
 
+    const weather = (yield* Ref.get(state.weather)).weather
     const cells: FireCell[] = []
     for (const position of positions.values()) {
       const reading = yield* store.getBlock(position)
-      if (reading._tag !== 'Block') continue
-      const block = blockTypeOfId(reading.block)
-      if (block === undefined) continue
+      const block = reading._tag === 'Block'
+        ? (blockTypeOfId(reading.block) ?? '__unknown_fire_block__')
+        : reading._tag === 'ChunkNotLoaded'
+          ? FIRE_UNAVAILABLE_BLOCK
+          : 'air'
       let exposedToSky = false
-      if (activeKeys.has(firePositionKey(position))) {
+      if (weather !== 'clear' &&
+        (activeKeys.has(firePositionKey(position)) || contacts.some((contact) =>
+          firePositionKey(contact.position) === firePositionKey(position)))) {
         const light = yield* store.getLight(position)
         exposedToSky = light._tag === 'Light' && light.sky === 15
       }
       cells.push({ position, block, exposedToSky })
     }
 
-    const feet = (yield* player.pose).feetPosition
-    const contact = { x: Math.floor(feet.x), y: Math.floor(feet.y), z: Math.floor(feet.z) }
-    const weather = (yield* Ref.get(state.weather)).weather
-    const step = advanceFireLifecycle(current, cells, weather, [contact])
+    const cellByPosition = new Map(cells.map((cell) => [firePositionKey(cell.position), cell]))
+    const hydratedContacts = contacts.map((contact) => {
+      const cell = cellByPosition.get(firePositionKey(contact.position))
+      return {
+        ...contact,
+        inWater: cell?.block === 'water',
+        exposedToSky: cell?.exposedToSky === true,
+      }
+    })
+    const step = advanceFireLifecycle(current, cells, weather, hydratedContacts, survival.difficulty)
     const air = blockIdOf('air')
     const fire = blockIdOf('fire')
     if (air === undefined || fire === undefined) return
+    const nextFires = new Map(step.state.fires.map((active) => [firePositionKey(active.position), active]))
+    const previousFires = new Map(current.fires.map((active) => [firePositionKey(active.position), active]))
+    const failedIgnitions = new Set<string>()
+    const disturbed: string[] = []
     for (const mutation of step.mutations) {
-      yield* store.setBlock(mutation.position, mutation.block === 'air' ? air : fire)
+      const mutationKey = firePositionKey(mutation.position)
+      const outcome = yield* store.setBlock(mutation.position, mutation.block === 'air' ? air : fire)
+      if (outcome._tag === 'Written') disturbed.push(positionKeyOf(mutation.position))
+      if (outcome._tag === 'Written' || outcome._tag === 'Unchanged') continue
+      if (mutation.block === 'fire') {
+        nextFires.delete(mutationKey)
+        failedIgnitions.add(mutationKey)
+        continue
+      }
+      const previous = previousFires.get(mutationKey)
+      if (previous === undefined) continue
+      if (outcome._tag !== 'ChunkNotLoaded') {
+        nextFires.set(mutationKey, previous)
+        continue
+      }
+      const unloadedRetries = (previous.unloadedRetries ?? 0) + 1
+      if (unloadedRetries <= FIRE_UNLOADED_RETRY_LIMIT) {
+        nextFires.set(mutationKey, { ...previous, unloadedRetries })
+      }
     }
-    yield* Ref.set(state.fireLifecycle, step.state)
-    if (step.damages.length > 0) {
-      yield* Ref.update(state.playerDamages, (damages) => [...damages, ...step.damages])
+
+    const previouslyBurningIds = new Set((current.burningActors ?? []).map((actor) => actor.id))
+    let burningActors = (step.state.burningActors ?? []).filter(
+      (actor) => previouslyBurningIds.has(actor.id) || !failedIgnitions.has(firePositionKey(actor.position)),
+    )
+    const entityDamages: ReadonlyArray<FireEntityDamage> = step.entityDamages.filter(
+      (damage) => previouslyBurningIds.has(damage.actorId) || !failedIgnitions.has(firePositionKey(damage.at)),
+    )
+    const playerDamages = step.damages.filter(
+      (damage) => previouslyBurningIds.has('player') || !failedIgnitions.has(firePositionKey(damage.at)),
+    )
+
+    const damageByEntity = new Map(entityDamages.map((damage) => [damage.actorId, damage]))
+    const casualties = yield* roster.sweep<MobCasualty>((entity) => {
+      const damage = damageByEntity.get(String(entity.id))
+      if (damage === undefined) return { transition: UNCHANGED, emit: undefined }
+      if (entity.healthPoints <= damage.damage.amount) {
+        return {
+          transition: DESPAWNED,
+          emit: { id: entity.id, kind: entity.kind, at: entity.feetPosition },
+        }
+      }
+      return {
+        transition: changed({
+          feetPosition: entity.feetPosition,
+          healthPoints: entity.healthPoints - damage.damage.amount,
+          behaviour: entity.behaviour,
+        }),
+        emit: undefined,
+      }
+    })
+    if (casualties.length > 0) {
+      const casualtyIds = new Set(casualties.map((casualty) => String(casualty.id)))
+      burningActors = burningActors.filter((actor) => !casualtyIds.has(actor.id))
+      const drops = yield* Ref.modify(state.rollSeed, (seed) => {
+        const rolled = rollCasualtyDrops(casualties, seed)
+        return [rolled.drops, rolled.seed] as const
+      })
+      if (drops.length > 0) {
+        yield* Ref.update(state.mobDrops, (items) => [...items, ...drops])
+      }
+    }
+
+    yield* Ref.set(state.fireLifecycle, {
+      ...step.state,
+      fires: [...nextFires.values()].sort((a, b) =>
+        a.position.x - b.position.x || a.position.y - b.position.y || a.position.z - b.position.z),
+      burningActors,
+    })
+    if (playerDamages.length > 0) {
+      const armored = yield* resolveArmoredPlayerDamages(inventory, playerDamages)
+      yield* Ref.update(state.playerDamages, (damages) => [...damages, ...armored])
+    }
+    if (disturbed.length > 0) {
+      yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, disturbed))
     }
   })
 
 const stepFireLifecycle = (
   state: GameplayFrameState,
   store: ChunkStoreApi,
+  roster: EntityManagerApi<MobBehaviour>,
+  inventory: InventoryServiceApi,
   player: PlayerServiceApi,
   dt: DeltaTimeSecs,
 ): Effect.Effect<void> =>
   Effect.gen(function* () {
     const current = yield* Ref.get(state.fireLifecycle)
     const accumulator = fireTickAccumulatorFor(state.fireLifecycle)
-    if (current.fires.length === 0) {
+    if (current.fires.length === 0 && (current.burningActors?.length ?? 0) === 0) {
       yield* Ref.set(accumulator, 0)
       return
     }
 
-    const elapsed = (yield* Ref.get(accumulator)) + dt
+    const elapsed = Math.min(
+      (yield* Ref.get(accumulator)) + Math.max(0, dt),
+      FIRE_TICK_INTERVAL_SECS * FIRE_FRAME_TICK_BUDGET,
+    )
     const ticks = Math.floor((elapsed + 1e-12) / FIRE_TICK_INTERVAL_SECS)
     yield* Ref.set(accumulator, elapsed - ticks * FIRE_TICK_INTERVAL_SECS)
 
     for (let index = 0; index < ticks; index += 1) {
-      yield* stepFireTick(state, store, player)
-      if ((yield* Ref.get(state.fireLifecycle)).fires.length === 0) {
+      yield* stepFireTick(state, store, roster, inventory, player)
+      const next = yield* Ref.get(state.fireLifecycle)
+      if (next.fires.length === 0 && (next.burningActors?.length ?? 0) === 0) {
         yield* Ref.set(accumulator, 0)
         return
       }
@@ -2226,7 +2417,6 @@ export const gameplayStages = (
         // dwell timer that only advanced on frames where somebody also broke a
         // block would take four seconds of MINING to cross a portal.
         yield* stepPortalTravel(state, store, player, dt)
-        yield* stepFireLifecycle(state, store, player, dt)
         yield* Ref.update(state.villagerTrades, (current) => advanceVillagerRestock(current, dt))
         yield* stepBrewing(state, dt)
         yield* stepStatusEffects(state, dt)
@@ -2944,8 +3134,13 @@ export const gameplayStages = (
       }),
   },
   {
-    id: GAMEPLAY_STAGE_IDS.survivalHunger,
+    id: GAMEPLAY_STAGE_IDS.fire,
     after: [GAMEPLAY_STAGE_IDS.interactions],
+    run: (dt) => stepFireLifecycle(state, store, roster, inventory, player, dt),
+  },
+  {
+    id: GAMEPLAY_STAGE_IDS.survivalHunger,
+    after: [GAMEPLAY_STAGE_IDS.fire],
     run: (dt) => Effect.asVoid(state.survivalHunger.tick(dt)),
   },
   {
