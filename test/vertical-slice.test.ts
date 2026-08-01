@@ -70,16 +70,16 @@ import { Effect, Ref } from 'effect'
 import { readdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { positionKeyOf } from '../domain/block-position-key'
+import { positionKeyOf } from '../src/domain/block-position-key'
 import {
   AIR_BLOCK_ID,
   type BlockId,
   type BlockPosition,
   type BlockWriteOutcome,
   type ChunkStoreApi,
-} from '../domain/chunk-store-port'
-import { blockIdOf, isReplaceable } from '../domain/block-vocabulary'
-import { NOON_FRACTION } from '../domain/day-night'
+} from '../src/domain/chunk-store-port'
+import { blockIdOf, isReplaceable } from '../src/domain/block-vocabulary'
+import { NOON_FRACTION } from '../src/domain/day-night'
 import {
   CREEPER_KIND,
   DROPPED_ITEM_KIND,
@@ -93,27 +93,27 @@ import {
   STRUCK_ENDERMAN,
   type MobBehaviour,
   type MobSpawnAttempt,
-} from '../domain/entities/mob-frame'
-import { EntityKind, type EntityManagerApi, type Position } from '../domain/entity-manager-port'
-import { disturb } from '../domain/falling-block'
-import { DeltaTimeSecs, StackCount } from '../domain/frame-contract'
-import { DEFAULT_ROLL_SEED, drawRolls, nextRoll } from '../domain/frame-rolls'
-import { craterCells, craterRadius } from '../domain/interactions/explosion-crater'
-import { CREEPER_FUSE_SECS, DORMANT_FUSE } from '../domain/mob/creeper-fuse'
+} from '../src/domain/entities/mob-frame'
+import { EntityKind, type EntityManagerApi, type Position } from '../src/domain/entity-manager-port'
+import { disturb } from '../src/domain/falling-block'
+import { DeltaTimeSecs, StackCount } from '../src/domain/frame-contract'
+import { DEFAULT_ROLL_SEED, drawRolls, nextRoll } from '../src/domain/frame-rolls'
+import { craterCells, craterRadius } from '../src/domain/interactions/explosion-crater'
+import { CREEPER_FUSE_SECS, DORMANT_FUSE } from '../src/domain/mob/creeper-fuse'
 import {
   ENDERMAN_CHASE_TELEPORT_CHANCE,
   ENDERMAN_DAMAGE_TELEPORT_CHANCE,
   ENDERMAN_TELEPORT_MAX_BLOCKS,
   ENDERMAN_TELEPORT_MIN_BLOCKS,
   endermanTeleportOffset,
-} from '../domain/mob/enderman-teleport'
-import { CREEPER_EXPLOSION_POWER, explosionDamageAmount } from '../domain/mob/explosion'
-import { DESPAWN_DISTANCE_BLOCKS } from '../domain/mob/hostile-despawn'
-import { ZOMBIE_KIND } from '../domain/mob/hostile-combat'
-import type { MinedItem } from '../domain/interactions/block-loot'
-import { chunkCoordsAround } from '../domain/chunk-window'
-import { PORTAL_WINDOW_RADIUS, ignitePortal } from '../domain/interactions/ignite-portal'
-import { generatePortalLayout } from '../domain/portal-frame-port'
+} from '../src/domain/mob/enderman-teleport'
+import { CREEPER_EXPLOSION_POWER, explosionDamageAmount } from '../src/domain/mob/explosion'
+import { DESPAWN_DISTANCE_BLOCKS } from '../src/domain/mob/hostile-despawn'
+import { ZOMBIE_KIND } from '../src/domain/mob/hostile-combat'
+import type { MinedItem } from '../src/domain/interactions/block-loot'
+import { chunkCoordsAround } from '../src/domain/chunk-window'
+import { PORTAL_WINDOW_RADIUS, ignitePortal } from '../src/domain/interactions/ignite-portal'
+import { generatePortalLayout } from '../src/domain/portal-frame-port'
 import {
   drainItemUseResults,
   gameplayStages,
@@ -125,7 +125,7 @@ import {
   requestPotatoPlanting,
   requestSoilTill,
   type PlacementRequest,
-} from '../stages/registration'
+} from '../src/stages/registration'
 import {
   GRAVEL,
   makeChunkStoreDouble,
@@ -1550,7 +1550,7 @@ describe('the crater is the other radius, and it is the falling-block queue’s 
 })
 
 describe('the stage supplies its rolls from a seed', () => {
-  const repositoryRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
+  const repositoryRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'src')
 
   it.effect('REGRESSION-PROOF BY SHAPE: nothing on the frame path reads a random number or a clock', () =>
     Effect.sync(() => {

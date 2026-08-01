@@ -16,7 +16,7 @@
  */
 import { describe, expect, it } from '@effect/vitest'
 import { Effect } from 'effect'
-import * as dayNight from '../domain/day-night'
+import * as dayNight from '../src/domain/day-night'
 import {
   DAWN_FRACTION,
   DUSK_FRACTION,
@@ -25,7 +25,7 @@ import {
   isNight,
   NOON_FRACTION,
   TWILIGHT_BAND,
-} from '../domain/day-night'
+} from '../src/domain/day-night'
 
 /** Every fraction the rule is asked about, at a resolution finer than a frame. */
 const acrossTheDay = Array.from({ length: 1_000 }, (_, index) => index / 1_000)

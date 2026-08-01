@@ -33,15 +33,15 @@ import {
   requestTargetedBlockBreak,
   requestTargetedBlockPlacement,
   requestTargetedBlockUse,
-} from '../stages/registration'
-import { GAMEPLAY_STAGE_IDS } from '../stages/stage-ids'
-import { makeInMemoryWorld } from '../domain/in-memory-world'
-import { cellKey, chunkKey, chunkOf } from '../domain/in-memory-chunk-store'
-import { DeltaTimeSecs } from '../domain/frame-contract'
-import type { BlockPosition } from '../domain/chunk-store-port'
-import type { MobBehaviour } from '../domain/entities/mob-frame'
-import { blockIdOf } from '../domain/block-vocabulary'
-import { NO_TOOL } from '../domain/interactions/block-loot'
+} from '../src/stages/registration'
+import { GAMEPLAY_STAGE_IDS } from '../src/stages/stage-ids'
+import { makeInMemoryWorld } from '../src/domain/in-memory-world'
+import { cellKey, chunkKey, chunkOf } from '../src/domain/in-memory-chunk-store'
+import { DeltaTimeSecs } from '../src/domain/frame-contract'
+import type { BlockPosition } from '../src/domain/chunk-store-port'
+import type { MobBehaviour } from '../src/domain/entities/mob-frame'
+import { blockIdOf } from '../src/domain/block-vocabulary'
+import { NO_TOOL } from '../src/domain/interactions/block-loot'
 
 /**
  * DIRT, and the id took two corrections that are worth recording because both

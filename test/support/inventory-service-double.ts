@@ -70,7 +70,7 @@
  * transitions so inventory, equipment, and durability cannot drift apart.
  */
 import { Effect, Layer, Ref } from 'effect'
-import { MAX_STACK_COUNT, StackCount } from '../../domain/frame-contract'
+import { MAX_STACK_COUNT, StackCount } from '../../src/domain/frame-contract'
 import {
   addStoredStack as addStorageStoredStack,
   damageAt as damageStorageAt,

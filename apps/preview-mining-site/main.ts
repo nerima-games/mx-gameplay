@@ -173,8 +173,8 @@ import {
   screenSize,
   writeLine,
 } from './terminal'
-import type { BlockId } from '../../domain/chunk-store-port'
-import type { PositionKey } from '../../domain/position-key'
+import type { BlockId } from '../../src/domain/chunk-store-port'
+import type { PositionKey } from '../../src/domain/position-key'
 
 const BOUNDS = { width: 26, height: 18 }
 

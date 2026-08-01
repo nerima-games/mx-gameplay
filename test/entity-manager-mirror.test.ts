@@ -44,7 +44,7 @@ import {
   type Position,
   type RosterRepair,
   type SpawnRequest,
-} from '../domain/entity-manager-port'
+} from '../src/domain/entity-manager-port'
 import {
   CREEPER_KIND,
   DROPPED_ITEM_KIND,
@@ -54,8 +54,8 @@ import {
   STEADY_ENDERMAN,
   STRUCK_ENDERMAN,
   type MobBehaviour,
-} from '../domain/entities/mob-frame'
-import { DORMANT_FUSE } from '../domain/mob/creeper-fuse'
+} from '../src/domain/entities/mob-frame'
+import { DORMANT_FUSE } from '../src/domain/mob/creeper-fuse'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
 
 /**
@@ -167,7 +167,7 @@ describe('the EntityManager mirror', () => {
       // `domain/chunk-store-port.ts` and `domain/frame-contract.ts`.
       // Re-exporting another repository's service would make deleting the
       // stand-in a breaking change for consumers of mx-gameplay.
-      const barrel = yield* Effect.promise(() => import('../index'))
+      const barrel = yield* Effect.promise(() => import('../src/index'))
       expect(Object.keys(barrel)).not.toContain('entityManagerTag')
       expect(Object.keys(barrel)).not.toContain('ENTITY_MANAGER_TAG_KEY')
       expect(Object.keys(barrel)).not.toContain('EntityId')

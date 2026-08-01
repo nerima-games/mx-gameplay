@@ -7,8 +7,8 @@
  */
 import { makeEntityManager } from '@nerima-games/mc-sim'
 import type { Effect } from 'effect'
-import type { EntityManagerApi } from '../../domain/entity-manager-port'
-import type { MobBehaviour } from '../../domain/entities/mob-frame'
+import type { EntityManagerApi } from '../../src/domain/entity-manager-port'
+import type { MobBehaviour } from '../../src/domain/entities/mob-frame'
 
 export const makePreviewRoster: Effect.Effect<EntityManagerApi<MobBehaviour>> =
   makeEntityManager<MobBehaviour>()

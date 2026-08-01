@@ -116,12 +116,29 @@
     // Declared for intent and for the day oxlint implements it; inert in 0.12.
     // The real enforcement lives in scripts/check-dependency-whitelist.ts.
     "no-restricted-globals": ["warn", "name", "open", "close", "event"],
+    // DEPENDENCY_POLICY.md §1: mx-gameplay is Tier3 (experience module) and may
+    // depend only on mc-sim, mc-worldgen, mc-audio, and mc-kernel (universal,
+    // exempt from this list by design — see DEPENDENCY_POLICY.md §2 rule 5).
     "no-restricted-imports": [
       "warn",
       {
         "name": "effect",
         "message": "Please use named imports from 'effect' package",
-        "importNames": ["default"]
+        "importNames": ["default"],
+        "patterns": [
+          {
+            "regex": "^@nerima-games/(mx-redstone|mx-ui|mx-multiplayer)(/.*)?$",
+            "message": "Tier3 experience modules do not depend on each other laterally (DEPENDENCY_POLICY.md §2 rule 2). Talk through mc-sim, mc-worldgen, or mc-audio instead."
+          },
+          {
+            "regex": "^@nerima-games/mc-compose(/.*)?$",
+            "message": "mc-compose is Tier4 (composition) and depends on mx-gameplay, not the other way around (DEPENDENCY_POLICY.md §1). Depending on it here would be a cycle."
+          },
+          {
+            "regex": "^@nerima-games/(mc-noise|mc-meshing|mc-physics|mc-save|mc-render|mc-playground-kit)(/.*)?$",
+            "message": "mx-gameplay (Tier3, DEPENDENCY_POLICY.md §1) may depend only on mc-sim, mc-worldgen, mc-audio, and mc-kernel. mc-playground-kit specifically is devDependency-only (DEPENDENCY_POLICY.md §3) and must never be imported from shipped src/."
+          }
+        ]
       }
     ],
     "prefer-template": "warn",

@@ -1,5 +1,5 @@
 import { describe, expect, it } from '@effect/vitest'
-import { meleeDamageForItem } from '../domain/interactions/melee-attack'
+import { meleeDamageForItem } from '../src/domain/interactions/melee-attack'
 
 describe('melee attack damage', () => {
   it('uses unarmed damage for empty hands and non-swords', () => {

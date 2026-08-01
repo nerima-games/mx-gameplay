@@ -1,13 +1,13 @@
 import { describe, expect, it } from '@effect/vitest'
 import { Effect, Ref } from 'effect'
-import { CREEPER_KIND, type MobBehaviour } from '../domain/entities/mob-frame'
-import { meleeDamageForItem } from '../domain/interactions/melee-attack'
+import { CREEPER_KIND, type MobBehaviour } from '../src/domain/entities/mob-frame'
+import { meleeDamageForItem } from '../src/domain/interactions/melee-attack'
 import {
   type GameplayFrameState,
   makeGameplayFrameState,
   requestTargetedPrimaryAttack,
   resolveTargetedPrimaryAttack,
-} from '../stages/registration'
+} from '../src/stages/registration'
 import { makeChunkStoreDouble, STONE, world } from './support/chunk-store-double'
 import {
   makeEntityManagerDouble,

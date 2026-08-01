@@ -37,32 +37,32 @@ import { Effect } from 'effect'
 import { readdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { AIR_BLOCK_ID, type BlockId } from '../domain/chunk-store-port'
-import { validSpawnSurface } from '../domain/block-vocabulary'
-import { applyDamage, deathMessage, fullHealth, isDead, MAX_HEALTH_POINTS } from '../domain/death-cause'
-import { DeltaTimeSecs } from '../domain/frame-contract'
-import { ITEM_TYPES } from '../domain/item-vocabulary'
+import { AIR_BLOCK_ID, type BlockId } from '../src/domain/chunk-store-port'
+import { validSpawnSurface } from '../src/domain/block-vocabulary'
+import { applyDamage, deathMessage, fullHealth, isDead, MAX_HEALTH_POINTS } from '../src/domain/death-cause'
+import { DeltaTimeSecs } from '../src/domain/frame-contract'
+import { ITEM_TYPES } from '../src/domain/item-vocabulary'
 import {
   CREEPER_FUSE_SECS,
   CREEPER_IGNITION_RANGE_BLOCKS,
   DORMANT_FUSE,
   stepCreeperFuse,
   type CreeperFuse,
-} from '../domain/mob/creeper-fuse'
+} from '../src/domain/mob/creeper-fuse'
 import {
   CREEPER_EXPLOSION_POWER,
   explosionDamageAmount,
   explosionDamageAt,
   explosionRadius,
   type Explosion,
-} from '../domain/mob/explosion'
+} from '../src/domain/mob/explosion'
 import {
   canHostileSpawnAt,
   HOSTILE_SPAWN_MAX_BLOCK_LIGHT,
   MAX_SPAWN_DISTANCE_BLOCKS,
   MIN_SPAWN_DISTANCE_BLOCKS,
   type SpawnCandidate,
-} from '../domain/mob/hostile-spawn'
+} from '../src/domain/mob/hostile-spawn'
 import {
   BLAZE_DROPS,
   BLAZE_XP_REWARD,
@@ -76,7 +76,7 @@ import {
   rollMobDrop,
   rollMobDrops,
   type MobDropRule,
-} from '../domain/mob/mob-drop'
+} from '../src/domain/mob/mob-drop'
 import {
   ENDERMAN_CHASE_TELEPORT_CHANCE,
   ENDERMAN_DAMAGE_TELEPORT_CHANCE,
@@ -87,7 +87,7 @@ import {
   endermanTeleportOffset,
   endermanTeleportUrge,
   type EndermanSenses,
-} from '../domain/mob/enderman-teleport'
+} from '../src/domain/mob/enderman-teleport'
 import {
   CLOSED_SHELL,
   SHULKER_CLOSED_ARMOR_POINTS,
@@ -97,12 +97,12 @@ import {
   stepShulkerShell,
   type ShulkerSenses,
   type ShulkerShell,
-} from '../domain/mob/shulker-shell'
+} from '../src/domain/mob/shulker-shell'
 import {
   DESPAWN_DISTANCE_BLOCKS,
   despawnVerdict,
   type DespawnCandidate,
-} from '../domain/mob/hostile-despawn'
+} from '../src/domain/mob/hostile-despawn'
 
 /** Block ids, from kernel's registry. The RULES never name one; a test may. */
 const STONE: BlockId = 2
@@ -1287,7 +1287,7 @@ describe('the sweep: a mob stops existing when nobody is near it', () => {
 })
 
 describe('the mob rules are deterministic by construction', () => {
-  const mobDomain = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'domain', 'mob')
+  const mobDomain = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'src', 'domain', 'mob')
 
   it.effect('REGRESSION-PROOF BY SHAPE: no mob rule reads a random number or a clock', () =>
     Effect.sync(() => {

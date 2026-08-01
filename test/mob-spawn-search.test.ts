@@ -14,8 +14,8 @@
 import { describe, expect, it } from '@effect/vitest'
 import { makeTimeService } from '@nerima-games/mc-sim'
 import { Effect, Ref } from 'effect'
-import { AIR_BLOCK_ID, type BlockPosition, type ChunkStoreApi } from '../domain/chunk-store-port'
-import type { Position } from '../domain/entity-manager-port'
+import { AIR_BLOCK_ID, type BlockPosition, type ChunkStoreApi } from '../src/domain/chunk-store-port'
+import type { Position } from '../src/domain/entity-manager-port'
 import {
   CREEPER_KIND,
   ENDERMAN_KIND,
@@ -24,7 +24,7 @@ import {
   MAX_HOSTILE_COUNT,
   maxHealthOfKind,
   type MobBehaviour,
-} from '../domain/entities/mob-frame'
+} from '../src/domain/entities/mob-frame'
 import {
   searchSpawnCandidates,
   SPAWN_RING_ANGLES,
@@ -32,21 +32,21 @@ import {
   SPAWN_RING_RADII,
   SPAWN_RING_RADIUS_STEPS,
   SPAWN_SEARCH_ROLLS,
-} from '../domain/entities/mob-spawn-search'
-import { drawRolls, rollAt } from '../domain/frame-rolls'
-import { DESPAWN_DISTANCE_BLOCKS, despawnVerdict } from '../domain/mob/hostile-despawn'
-import { ZOMBIE_KIND } from '../domain/mob/hostile-combat'
+} from '../src/domain/entities/mob-spawn-search'
+import { drawRolls, rollAt } from '../src/domain/frame-rolls'
+import { DESPAWN_DISTANCE_BLOCKS, despawnVerdict } from '../src/domain/mob/hostile-despawn'
+import { ZOMBIE_KIND } from '../src/domain/mob/hostile-combat'
 import {
   MAX_SPAWN_DISTANCE_BLOCKS,
   MIN_SPAWN_DISTANCE_BLOCKS,
-} from '../domain/mob/hostile-spawn'
-import { DeltaTimeSecs } from '../domain/frame-contract'
-import { GAMEPLAY_STAGE_IDS } from '../stages/stage-ids'
+} from '../src/domain/mob/hostile-spawn'
+import { DeltaTimeSecs } from '../src/domain/frame-contract'
+import { GAMEPLAY_STAGE_IDS } from '../src/stages/stage-ids'
 import {
   gameplayStages,
   HOSTILE_SPAWN_INTERVAL_SECS,
   makeGameplayFrameState,
-} from '../stages/registration'
+} from '../src/stages/registration'
 import {
   lightWorld,
   makeChunkStoreDouble,

@@ -36,14 +36,14 @@
 import { describe, expect, it } from '@effect/vitest'
 import { makeTimeService } from '@nerima-games/mc-sim'
 import { Effect, Ref } from 'effect'
-import { positionKeyOf } from '../domain/block-position-key'
-import { StackCount } from '../domain/frame-contract'
+import { positionKeyOf } from '../src/domain/block-position-key'
+import { StackCount } from '../src/domain/frame-contract'
 import {
   AIR_BLOCK_ID,
   type BlockPosition,
   type BlockWriteOutcome,
   type ChunkStoreApi,
-} from '../domain/chunk-store-port'
+} from '../src/domain/chunk-store-port'
 import {
   blockIdOf,
   blockOfPlaceableItem,
@@ -55,7 +55,7 @@ import {
   supportRuleOfBlockId,
   validSpawnSurface,
   type BlockType,
-} from '../domain/block-vocabulary'
+} from '../src/domain/block-vocabulary'
 import {
   blockOverlapsPlayer,
   isSupportSensitiveOfBlock,
@@ -63,14 +63,14 @@ import {
   PLAYER_HALF_HEIGHT,
   PLAYER_HALF_WIDTH,
   type PlaceOutcome,
-} from '../domain/interactions/place-block'
-import type { Position } from '../domain/entity-manager-port'
-import { gameplayStages, makeGameplayFrameState } from '../stages/registration'
+} from '../src/domain/interactions/place-block'
+import type { Position } from '../src/domain/entity-manager-port'
+import { gameplayStages, makeGameplayFrameState } from '../src/stages/registration'
 import { makeChunkStoreDouble, SAND, STONE, WATER, world } from './support/chunk-store-double'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
 import { makePlayerServiceDouble } from './support/player-service-double'
 import { emptySlots, makeInventoryDouble } from './support/inventory-service-double'
-import type { MobBehaviour } from '../domain/entities/mob-frame'
+import type { MobBehaviour } from '../src/domain/entities/mob-frame'
 import { runFrame } from './support/frame-runner'
 
 const LAVA = 11
