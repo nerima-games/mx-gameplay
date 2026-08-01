@@ -49,6 +49,7 @@ import {
   CREEPER_KIND,
   DROPPED_ITEM_KIND,
   ENDERMAN_KIND,
+  hostileMobSnapshot,
   isDroppedItemBehaviour,
   repairMobBehaviour,
   STEADY_ENDERMAN,
@@ -306,19 +307,20 @@ describe('repairMobBehaviour is the host half of mc-sim’s load path', () => {
 
       const untyped = repairMobBehaviour as (kind: EntityKind, behaviour: unknown) => MobBehaviour
 
-      // Readable fuses survive untouched, by identity.
+      // Legacy readable fuses are migrated into the hostile-mob save envelope.
       const lit: MobBehaviour = { _tag: 'Lit', burnedSecs: 0.5 }
-      expect(repairMobBehaviour(CREEPER_KIND, lit)).toBe(lit)
-      expect(repairMobBehaviour(CREEPER_KIND, DORMANT_FUSE)).toBe(DORMANT_FUSE)
+      expect(repairMobBehaviour(CREEPER_KIND, lit)).toStrictEqual(hostileMobSnapshot(lit))
+      expect(repairMobBehaviour(CREEPER_KIND, DORMANT_FUSE)).toStrictEqual(
+        hostileMobSnapshot(DORMANT_FUSE),
+      )
 
       // Everything a save can put there and a type cannot stop.
-      expect(untyped(CREEPER_KIND, undefined)).toStrictEqual(DORMANT_FUSE)
-      expect(untyped(CREEPER_KIND, null)).toStrictEqual(DORMANT_FUSE)
-      expect(untyped(CREEPER_KIND, 'Lit')).toStrictEqual(DORMANT_FUSE)
-      expect(untyped(CREEPER_KIND, { _tag: 'Swelling' })).toStrictEqual(DORMANT_FUSE)
-      expect(untyped(CREEPER_KIND, { _tag: 'Lit' })).toStrictEqual(DORMANT_FUSE)
-      expect(untyped(CREEPER_KIND, { _tag: 'Lit', burnedSecs: Number.NaN })).toStrictEqual(DORMANT_FUSE)
-      expect(untyped(CREEPER_KIND, { _tag: 'Lit', burnedSecs: -1 })).toStrictEqual(DORMANT_FUSE)
+      for (const invalid of [
+        undefined, null, 'Lit', { _tag: 'Swelling' }, { _tag: 'Lit' },
+        { _tag: 'Lit', burnedSecs: Number.NaN }, { _tag: 'Lit', burnedSecs: -1 },
+      ]) {
+        expect(untyped(CREEPER_KIND, invalid)).toStrictEqual(hostileMobSnapshot(DORMANT_FUSE))
+      }
     }),
   )
 
@@ -332,7 +334,7 @@ describe('repairMobBehaviour is the host half of mc-sim’s load path', () => {
         CREEPER_KIND,
         { _tag: 'Detonating' },
       )
-      expect(repaired).toStrictEqual({ _tag: 'Dormant' })
+      expect(repaired).toStrictEqual(hostileMobSnapshot(DORMANT_FUSE))
     }),
   )
 
@@ -356,14 +358,18 @@ describe('repairMobBehaviour is the host half of mc-sim’s load path', () => {
       // never struck, before the player has had a frame to act in.
       const untyped = repairMobBehaviour as (kind: EntityKind, behaviour: unknown) => MobBehaviour
 
-      // Readable flinches survive untouched, by identity — both of them, because
+      // Legacy readable flinches are migrated — both of them, because
       // `Struck` is a legitimate thing to save: a mob hit on the last frame
       // before the game was closed is owed its answer.
-      expect(repairMobBehaviour(ENDERMAN_KIND, STEADY_ENDERMAN)).toBe(STEADY_ENDERMAN)
-      expect(repairMobBehaviour(ENDERMAN_KIND, STRUCK_ENDERMAN)).toBe(STRUCK_ENDERMAN)
+      expect(repairMobBehaviour(ENDERMAN_KIND, STEADY_ENDERMAN)).toStrictEqual(
+        hostileMobSnapshot(STEADY_ENDERMAN),
+      )
+      expect(repairMobBehaviour(ENDERMAN_KIND, STRUCK_ENDERMAN)).toStrictEqual(
+        hostileMobSnapshot(STRUCK_ENDERMAN),
+      )
 
       for (const junk of [undefined, null, 'Struck', 42, [], { _tag: 'Angry' }, { tag: 'Steady' }]) {
-        expect(untyped(ENDERMAN_KIND, junk)).toStrictEqual(STEADY_ENDERMAN)
+        expect(untyped(ENDERMAN_KIND, junk)).toStrictEqual(hostileMobSnapshot(STEADY_ENDERMAN))
       }
 
       // A FIELD THE RULE DOES NOT KNOW ABOUT SURVIVES, and that is the same
@@ -373,8 +379,8 @@ describe('repairMobBehaviour is the host half of mc-sim’s load path', () => {
       // makes the frame path's tag test enough. Stripping the rest would allocate
       // a replacement for every entity on the load path in order to discard data
       // from a build that may be about to be rolled back to.
-      const embellished = { _tag: 'Steady', writtenBy: 'a later build' }
-      expect(untyped(ENDERMAN_KIND, embellished)).toBe(embellished)
+      const embellished = { _tag: 'Steady', writtenBy: 'a later build' } as const
+      expect(untyped(ENDERMAN_KIND, embellished)).toStrictEqual(hostileMobSnapshot(embellished))
     }),
   )
 
@@ -385,10 +391,14 @@ describe('repairMobBehaviour is the host half of mc-sim’s load path', () => {
       // choose which rule runs, so a creeper that kept a `Struck` would tick no
       // fuse at all and consult the teleport rule instead — a creeper that can
       // never explode, which no test that only looks at one kind would see.
-      expect(repairMobBehaviour(CREEPER_KIND, STRUCK_ENDERMAN)).toStrictEqual(DORMANT_FUSE)
-      expect(repairMobBehaviour(ENDERMAN_KIND, DORMANT_FUSE)).toStrictEqual(STEADY_ENDERMAN)
+      expect(repairMobBehaviour(CREEPER_KIND, STRUCK_ENDERMAN)).toStrictEqual(
+        hostileMobSnapshot(DORMANT_FUSE),
+      )
+      expect(repairMobBehaviour(ENDERMAN_KIND, DORMANT_FUSE)).toStrictEqual(
+        hostileMobSnapshot(STEADY_ENDERMAN),
+      )
       expect(repairMobBehaviour(ENDERMAN_KIND, { _tag: 'Lit', burnedSecs: 1.4 })).toStrictEqual(
-        STEADY_ENDERMAN,
+        hostileMobSnapshot(STEADY_ENDERMAN),
       )
     }),
   )

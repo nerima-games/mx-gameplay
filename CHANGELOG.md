@@ -1,5 +1,11 @@
 # @nerima-games/mx-gameplay
 
+## 0.1.44
+
+### Patch Changes
+
+- Integrate deterministic hostile mob despawning into the live mob frame with persistent snapshot state and save/restore compatibility.
+
 ## 0.1.43
 
 ### Patch Changes

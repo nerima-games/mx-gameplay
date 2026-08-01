@@ -92,6 +92,7 @@ import {
   ENDERMAN_KIND,
   ENDERMAN_TELEPORT_ROLLS,
   HOSTILE_KINDS,
+  hostileMobSnapshot,
   isDroppedItemBehaviour,
   MAX_HOSTILE_COUNT,
   STEADY_ENDERMAN,
@@ -775,7 +776,10 @@ describe('the mob slice, through the stage registration', () => {
       const spawned = yield* roster.api.entities
       // A mob spawned this frame does not act this frame: the sweep runs before
       // the spawn, so both are dormant with full health and nothing has moved.
-      expect(spawned.map((entity) => entity.behaviour)).toStrictEqual([DORMANT_FUSE, DORMANT_FUSE])
+      expect(spawned.map((entity) => entity.behaviour)).toStrictEqual([
+        hostileMobSnapshot(DORMANT_FUSE),
+        hostileMobSnapshot(DORMANT_FUSE),
+      ])
       expect(spawned.map((entity) => entity.healthPoints)).toStrictEqual([
         CREEPER_MAX_HEALTH,
         CREEPER_MAX_HEALTH,
@@ -793,8 +797,14 @@ describe('the mob slice, through the stage registration', () => {
       // The bystander is four blocks off — outside the three-block ignition
       // range — and is untouched.
       const lit = yield* roster.api.entities
-      expect(lit[0]?.behaviour).toStrictEqual({ _tag: 'Lit', burnedSecs: 0.25 })
-      expect(lit[1]?.behaviour).toBe(DORMANT_FUSE)
+      expect(lit[0]?.behaviour).toStrictEqual({
+        ...hostileMobSnapshot({ _tag: 'Lit', burnedSecs: 0.25 }),
+        ageTicks: 5,
+      })
+      expect(lit[1]?.behaviour).toStrictEqual({
+        ...hostileMobSnapshot(DORMANT_FUSE),
+        ageTicks: 5,
+      })
 
       // The bystander is outside ignition range, but hostile locomotion still
       // closes the horizontal gap by speed * dt without changing altitude.
@@ -806,8 +816,8 @@ describe('the mob slice, through the stage registration', () => {
       expect(CREEPER_FUSE_SECS).toBe(1.5)
       yield* runFrames(stages, 4, STRIDE)
       expect((yield* roster.api.entities)[0]?.behaviour).toStrictEqual({
-        _tag: 'Lit',
-        burnedSecs: 1.25,
+        ...hostileMobSnapshot({ _tag: 'Lit', burnedSecs: 1.25 }),
+        ageTicks: 25,
       })
 
       const beforeBlast = yield* store.calls
@@ -867,7 +877,7 @@ describe('the mob slice, through the stage registration', () => {
       const [zombie] = yield* roster.api.entities
       expect(zombie?.kind).toBe(ZOMBIE_KIND)
       expect(zombie?.healthPoints).toBe(20)
-      expect(zombie?.behaviour).toBeUndefined()
+      expect(zombie?.behaviour).toStrictEqual(hostileMobSnapshot(undefined))
     }),
   )
 

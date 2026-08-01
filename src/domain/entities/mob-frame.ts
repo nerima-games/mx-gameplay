@@ -240,7 +240,14 @@ import {
 } from '../mob/enderman-teleport'
 import { explosionDamageAt, type Explosion } from '../mob/explosion'
 import { FRESH_PRIMED_TNT, isPrimedTnt, stepPrimedTnt, type PrimedTnt } from '../mob/primed-tnt'
-import { despawnVerdict, type DespawnCandidate } from '../mob/hostile-despawn'
+import {
+  DESPAWN_DISTANCE_BLOCKS,
+  despawnVerdict,
+  RANDOM_DESPAWN_MIN_AGE_TICKS,
+  RANDOM_DESPAWN_MIN_DISTANCE_BLOCKS,
+  type DespawnCandidate,
+  type HostileDifficulty,
+} from '../mob/hostile-despawn'
 import {
   CREEPER_LOCOMOTION,
   pursueHorizontally,
@@ -334,7 +341,34 @@ export type DroppedItemBehaviour = {
   readonly eligibleFromFrame?: number
 }
 
-export type MobBehaviour = CreeperFuse | PrimedTnt | EndermanFlinch | DroppedItemBehaviour | undefined
+export type HostileMobSnapshot = {
+  readonly _tag: 'HostileMob'
+  readonly behaviour: CreeperFuse | EndermanFlinch | undefined
+  readonly ageTicks: number
+  readonly persistent: boolean
+  readonly named: boolean
+  readonly tamed: boolean
+}
+
+export type MobBehaviour =
+  | HostileMobSnapshot
+  | CreeperFuse
+  | PrimedTnt
+  | EndermanFlinch
+  | DroppedItemBehaviour
+  | undefined
+
+export const hostileMobSnapshot = (
+  behaviour: HostileMobSnapshot['behaviour'],
+  options: Partial<Omit<HostileMobSnapshot, '_tag' | 'behaviour'>> = {},
+): HostileMobSnapshot => ({
+  _tag: 'HostileMob',
+  behaviour,
+  ageTicks: options.ageTicks ?? 0,
+  persistent: options.persistent ?? false,
+  named: options.named ?? false,
+  tamed: options.tamed ?? false,
+})
 
 /**
  * The three entity kinds this repository names.
@@ -532,9 +566,9 @@ export const maxHealthOfKind = (kind: EntityKind): number => {
  * paragraph is about.
  */
 export const initialBehaviourOfKind = (kind: EntityKind): MobBehaviour => {
-  if (kind === ENDERMAN_KIND) return STEADY_ENDERMAN
-  if (kind === ZOMBIE_KIND) return undefined
-  return DORMANT_FUSE
+  if (kind === ENDERMAN_KIND) return hostileMobSnapshot(STEADY_ENDERMAN)
+  if (kind === ZOMBIE_KIND) return hostileMobSnapshot(undefined)
+  return hostileMobSnapshot(DORMANT_FUSE)
 }
 
 /**
@@ -666,13 +700,22 @@ export const rollDropsOfKind = (
  * no fuse and consult the teleport rule instead.
  */
 export const repairMobBehaviour = (kind: EntityKind, behaviour: unknown): MobBehaviour => {
+  if (isHostileMobSnapshot(behaviour) && HOSTILE_KINDS.includes(kind)) {
+    const inner = repairHostileInner(kind, behaviour.behaviour)
+    return inner === behaviour.behaviour && Object.hasOwn(behaviour, 'behaviour')
+      ? behaviour
+      : { ...behaviour, behaviour: inner }
+  }
+
   if (kind === CREEPER_KIND) {
-    return isCreeperFuse(behaviour) ? behaviour : DORMANT_FUSE
+    return hostileMobSnapshot(isCreeperFuse(behaviour) ? behaviour : DORMANT_FUSE)
   }
 
   if (kind === ENDERMAN_KIND) {
-    return isEndermanFlinch(behaviour) ? behaviour : STEADY_ENDERMAN
+    return hostileMobSnapshot(isEndermanFlinch(behaviour) ? behaviour : STEADY_ENDERMAN)
   }
+
+  if (kind === ZOMBIE_KIND) return hostileMobSnapshot(undefined)
 
   if (kind === PRIMED_TNT_KIND) {
     return isPrimedTnt(behaviour) ? behaviour : FRESH_PRIMED_TNT
@@ -685,6 +728,29 @@ export const repairMobBehaviour = (kind: EntityKind, behaviour: unknown): MobBeh
   }
 
   return undefined
+}
+
+const repairHostileInner = (
+  kind: EntityKind,
+  behaviour: unknown,
+): HostileMobSnapshot['behaviour'] => {
+  if (kind === CREEPER_KIND) return isCreeperFuse(behaviour) ? behaviour : DORMANT_FUSE
+  if (kind === ENDERMAN_KIND) return isEndermanFlinch(behaviour) ? behaviour : STEADY_ENDERMAN
+  return undefined
+}
+
+export const isHostileMobSnapshot = (value: unknown): value is HostileMobSnapshot => {
+  if (typeof value !== 'object' || value === null) return false
+  const candidate = value as Partial<HostileMobSnapshot>
+  return (
+    candidate._tag === 'HostileMob' &&
+    typeof candidate.ageTicks === 'number' &&
+    Number.isFinite(candidate.ageTicks) &&
+    candidate.ageTicks >= 0 &&
+    typeof candidate.persistent === 'boolean' &&
+    typeof candidate.named === 'boolean' &&
+    typeof candidate.tamed === 'boolean'
+  )
 }
 
 export const isDroppedItemBehaviour = (value: unknown): value is DroppedItemBehaviour => {
@@ -796,6 +862,9 @@ const isFuse = (behaviour: MobBehaviour): behaviour is CreeperFuse =>
 const isFlinch = (behaviour: MobBehaviour): behaviour is EndermanFlinch =>
   behaviour !== undefined && (behaviour._tag === 'Steady' || behaviour._tag === 'Struck')
 
+const innerBehaviour = (behaviour: MobBehaviour): HostileMobSnapshot['behaviour'] =>
+  isHostileMobSnapshot(behaviour) ? behaviour.behaviour : behaviour as HostileMobSnapshot['behaviour']
+
 /** What a creeper hands the rest of the frame on the one step it detonates. */
 export type Blast = {
   /** The entity that produced it. It is already off the roster by the time this is read. */
@@ -903,6 +972,8 @@ export type MobFrameSenses = {
    */
   readonly target: Position | undefined
   readonly dt: DeltaTimeSecs
+  /** Additive until the world host supplies its difficulty; omitted means normal. */
+  readonly difficulty?: HostileDifficulty
 }
 
 /**
@@ -1049,7 +1120,36 @@ export const sweepMobs = (
         const distance =
           senses.target === undefined ? undefined : distanceBetween(entity.feetPosition, senses.target)
 
+        const snapshot = isHostileMobSnapshot(entity.behaviour) ? entity.behaviour : undefined
+        const ageTicks = snapshot === undefined ? undefined : snapshot.ageTicks + senses.dt * 20
         despawnScratch.distanceToPlayerBlocks = distance
+        if (ageTicks === undefined) delete despawnScratch.ageTicks
+        else despawnScratch.ageTicks = ageTicks
+        despawnScratch.persistent = snapshot?.persistent ?? false
+        if (snapshot === undefined) {
+          delete despawnScratch.named
+          delete despawnScratch.tamed
+        } else {
+          despawnScratch.named = snapshot.named
+          despawnScratch.tamed = snapshot.tamed
+        }
+        despawnScratch.difficulty = senses.difficulty ?? 'normal'
+        delete despawnScratch.randomRoll
+        if (
+          distance !== undefined &&
+          distance > RANDOM_DESPAWN_MIN_DISTANCE_BLOCKS &&
+          distance <= DESPAWN_DISTANCE_BLOCKS &&
+          ageTicks !== undefined &&
+          ageTicks > RANDOM_DESPAWN_MIN_AGE_TICKS &&
+          !despawnScratch.persistent &&
+          !despawnScratch.named &&
+          !despawnScratch.tamed &&
+          despawnScratch.difficulty !== 'peaceful'
+        ) {
+          const draw = nextRoll(cursor)
+          cursor = draw.seed
+          despawnScratch.randomRoll = draw.roll
+        }
         if (despawnVerdict(despawnScratch)._tag === 'Despawn') {
           // NO DROPS. A despawn is not a death: nobody killed it, nobody is there
           // to pick anything up, and `../mob/mob-drop`'s `MobKill` has no case for
@@ -1057,7 +1157,12 @@ export const sweepMobs = (
           return SWEPT
         }
 
-        const behaviour = entity.behaviour
+        const behaviour = innerBehaviour(entity.behaviour)
+        const storedBehaviour = (
+          next: HostileMobSnapshot['behaviour'],
+        ): MobBehaviour => snapshot === undefined
+          ? next
+          : { ...snapshot, behaviour: next, ageTicks: ageTicks ?? snapshot.ageTicks }
         if (entity.kind === ZOMBIE_KIND) {
           const feetPosition = pursueHorizontally(
             entity.feetPosition,
@@ -1065,13 +1170,13 @@ export const sweepMobs = (
             senses.dt,
             ZOMBIE_LOCOMOTION,
           )
-          return feetPosition === entity.feetPosition
+          return feetPosition === entity.feetPosition && snapshot === undefined
             ? IGNORED
             : {
                 transition: changed({
                   feetPosition,
                   healthPoints: entity.healthPoints,
-                  behaviour,
+                  behaviour: storedBehaviour(behaviour),
                 }),
                 emit: undefined,
               }
@@ -1118,13 +1223,13 @@ export const sweepMobs = (
           // ARGUMENT fuse when nothing happened (a dormant creeper out of range, a
           // detonated one), so `===` is exact here and costs nothing — and it is
           // what lets an idle frame reach mc-sim's zero-allocation path.
-          return step.fuse === behaviour && feetPosition === entity.feetPosition
+          return step.fuse === behaviour && feetPosition === entity.feetPosition && snapshot === undefined
             ? IGNORED
             : {
                 transition: changed({
                   feetPosition,
                   healthPoints: entity.healthPoints,
-                  behaviour: step.fuse,
+                  behaviour: storedBehaviour(step.fuse),
                 }),
                 emit: undefined,
               }
@@ -1148,7 +1253,16 @@ export const sweepMobs = (
           // read as a chase — the identical reading `../mob/creeper-fuse` gets
           // from this same field.
           if (!struck && senses.target === undefined) {
-            return IGNORED
+            return snapshot === undefined
+              ? IGNORED
+              : {
+                  transition: changed({
+                    feetPosition: entity.feetPosition,
+                    healthPoints: entity.healthPoints,
+                    behaviour: storedBehaviour(behaviour),
+                  }),
+                  emit: undefined,
+                }
           }
 
           endermanScratch.damagedThisStep = struck
@@ -1211,7 +1325,7 @@ export const sweepMobs = (
 
           // Nothing moved and nothing was owed: the shared step, and the roster
           // stays the array it was.
-          if (destination === undefined && !struck) {
+          if (destination === undefined && !struck && snapshot === undefined) {
             return IGNORED
           }
 
@@ -1222,7 +1336,7 @@ export const sweepMobs = (
             transition: changed({
               feetPosition: destination ?? entity.feetPosition,
               healthPoints: entity.healthPoints,
-              behaviour: STEADY_ENDERMAN,
+              behaviour: storedBehaviour(STEADY_ENDERMAN),
             }),
             emit: undefined,
           }
@@ -1438,7 +1552,13 @@ export const resolveMeleeHits = resolveBowHits
  * allocates nothing on the second pass.
  */
 const bruise = (behaviour: MobBehaviour): MobBehaviour =>
-  isFlinch(behaviour) ? STRUCK_ENDERMAN : behaviour
+  isHostileMobSnapshot(behaviour)
+    ? isFlinch(behaviour.behaviour)
+      ? { ...behaviour, behaviour: STRUCK_ENDERMAN }
+      : behaviour
+    : isFlinch(behaviour)
+      ? STRUCK_ENDERMAN
+      : behaviour
 
 /**
  * What every blast in this frame does to one entity, or `undefined` if none of
