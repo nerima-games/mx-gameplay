@@ -8,6 +8,10 @@
 **状態は一切持たない。** インベントリもエンティティも体力も時刻もチャンクも、実体は `mc-sim` と `mc-worldgen` にある。
 このリポジトリが持つのはそれらに対する**動詞**だけである。
 
+炉の製錬は `mc-sim` が所有する `FurnaceState` を受け、1 要求あたり最大 10 秒だけ進める
+`planFurnaceAdvance` と、古い snapshot への適用を拒否する `applyFurnaceAdvance` に分離している。
+`requestFurnaceAdvance` で同じ規則を `gameplay:interactions` に投入でき、未処理時間は plan に返る。
+
 ## 依存
 
 `mc-sim` / `mc-worldgen` / `mc-audio`。加えて `mc-kernel`（全リポジトリから import 可）。

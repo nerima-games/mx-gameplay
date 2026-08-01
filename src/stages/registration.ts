@@ -84,6 +84,7 @@ import {
   forwardVector,
   targetBlockFromPlayerPose,
   type BlockTarget,
+  type FurnaceState,
   type InventoryServiceApi,
   type TimeServiceApi,
 } from '@nerima-games/mc-sim'
@@ -165,6 +166,11 @@ import {
 import { placeBlock } from '../domain/interactions/place-block'
 import { cropDrops, type CropDropOutcome } from '../domain/interactions/crop-drops'
 import { resolveFoodUse, type FoodUseOutcome, type FoodUseRequest } from '../domain/interactions/eat-food'
+import {
+  furnaceAdvanceChanged,
+  planFurnaceAdvance,
+  type FurnaceAdvancePlan,
+} from '../domain/interactions/advance-furnace'
 import { plantCrop, type PlantOutcome } from '../domain/interactions/plant-crop'
 import { tillSoil, type TillOutcome } from '../domain/interactions/till-soil'
 import {
@@ -641,7 +647,14 @@ export type FarmingItemUseRequest =
       readonly vitals: FoodUseRequest['vitals']
     }
 
-export type ItemUseRequest = IgnitionItemUseRequest | FarmingItemUseRequest
+export type FurnaceItemUseRequest = {
+  readonly action: 'AdvanceFurnace'
+  readonly requestId: ItemUseRequestId
+  readonly state: FurnaceState
+  readonly deltaTimeSecs: number
+}
+
+export type ItemUseRequest = IgnitionItemUseRequest | FarmingItemUseRequest | FurnaceItemUseRequest
 
 /** Host-provided correlation key for one item-use request. */
 export type ItemUseRequestId = string
@@ -687,7 +700,14 @@ export type FarmingItemUseResult =
       readonly outcome: FoodUseOutcome
     }
 
-export type ItemUseResult = IgnitionItemUseResult | FarmingItemUseResult
+export type FurnaceItemUseResult = {
+  readonly action: 'AdvanceFurnace'
+  readonly requestId: ItemUseRequestId
+  readonly success: boolean
+  readonly plan: FurnaceAdvancePlan
+}
+
+export type ItemUseResult = IgnitionItemUseResult | FarmingItemUseResult | FurnaceItemUseResult
 
 /**
  * One shot from a drawn bow.
@@ -1173,6 +1193,22 @@ export const requestPotatoFoodUse = (
     requestId,
     heldItem: 'potato',
     vitals,
+  }
+  return Ref.update(state.pendingItemUses, (pending) => [...pending, request])
+}
+
+/** Plan bounded progress for a host-owned furnace snapshot. */
+export const requestFurnaceAdvance = (
+  state: GameplayFrameState,
+  requestId: ItemUseRequestId,
+  furnace: FurnaceState,
+  deltaTimeSecs: number,
+): Effect.Effect<void> => {
+  const request: FurnaceItemUseRequest = {
+    action: 'AdvanceFurnace',
+    requestId,
+    state: furnace,
+    deltaTimeSecs,
   }
   return Ref.update(state.pendingItemUses, (pending) => [...pending, request])
 }
@@ -1788,6 +1824,16 @@ export const gameplayStages = (
                   success,
                   consumedCount: success ? 1 : 0,
                   outcome,
+                })
+                break
+              }
+              case 'AdvanceFurnace': {
+                const plan = planFurnaceAdvance(request.state, request.deltaTimeSecs)
+                itemUseResults.push({
+                  action: request.action,
+                  requestId: request.requestId,
+                  success: furnaceAdvanceChanged(plan),
+                  plan,
                 })
                 break
               }

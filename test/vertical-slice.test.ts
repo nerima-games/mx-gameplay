@@ -65,7 +65,12 @@
  *     reads, and it is the one the whole `EntityManager` design exists for.
  */
 import { describe, expect, it } from '@effect/vitest'
-import { makeTimeService, type TimeServiceApi } from '@nerima-games/mc-sim'
+import {
+  emptyFurnaceState,
+  itemStack,
+  makeTimeService,
+  type TimeServiceApi,
+} from '@nerima-games/mc-sim'
 import { Effect, Ref } from 'effect'
 import { readdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
@@ -119,6 +124,7 @@ import {
   gameplayStages,
   makeGameplayFrameState,
   requestBlockBreak,
+  requestFurnaceAdvance,
   requestItemUse,
   requestPotatoFoodUse,
   requestPotatoHarvest,
@@ -126,6 +132,7 @@ import {
   requestSoilTill,
   type PlacementRequest,
 } from '../src/stages/registration'
+import { MAX_FURNACE_ADVANCE_SECS } from '../src/domain/interactions/advance-furnace'
 import {
   GRAVEL,
   makeChunkStoreDouble,
@@ -1932,6 +1939,49 @@ describe('the mining site slice: dig, drop, place', () => {
  * will queue it reaches the rule, that the item is reported as used only when
  * something lit, and that it happens AFTER placements in the same frame.
  */
+describe('the furnace slice: host-owned state crosses the interaction stage', () => {
+  it.effect('bounds work, returns deferred time and drains the correlated plan once', () =>
+    Effect.gen(function* () {
+      const { state, stages } = yield* slice(world([]))
+      const furnace = {
+        ...emptyFurnaceState(),
+        input: itemStack('raw_iron', 2),
+        fuel: itemStack('coal', 1),
+      }
+
+      yield* requestFurnaceAdvance(state, 'furnace-1', furnace, 25)
+      yield* runFrame(stages)
+
+      const [result] = yield* drainItemUseResults(state)
+      expect(result).toMatchObject({
+        action: 'AdvanceFurnace',
+        requestId: 'furnace-1',
+        success: true,
+        plan: {
+          advancedSecs: MAX_FURNACE_ADVANCE_SECS,
+          deferredSecs: 15,
+          smelted: 1,
+          after: { output: itemStack('iron_ingot', 1) },
+        },
+      })
+      expect(yield* drainItemUseResults(state)).toStrictEqual([])
+    }),
+  )
+
+  it.effect('does not report an empty furnace as successful', () =>
+    Effect.gen(function* () {
+      const { state, stages } = yield* slice(world([]))
+
+      yield* requestFurnaceAdvance(state, 'empty-furnace', emptyFurnaceState(), 10)
+      yield* runFrame(stages)
+
+      expect(yield* drainItemUseResults(state)).toMatchObject([
+        { action: 'AdvanceFurnace', requestId: 'empty-furnace', success: false },
+      ])
+    }),
+  )
+})
+
 describe('the ignition slice: an item use reaches the world', () => {
   const origin: BlockPosition = { x: 4, y: 64, z: 3 }
 
