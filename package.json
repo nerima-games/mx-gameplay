@@ -1,6 +1,6 @@
 {
   "name": "@nerima-games/mx-gameplay",
-  "version": "0.1.60",
+  "version": "0.1.61",
   "type": "module",
   "description": "Experience module for the nerima-games Minecraft-clone rebuild: the rules of play — mining and placement, item use, mob behaviour, drops, fluid propagation, vehicles, portals, day/night and weather.",
   "homepage": "https://github.com/nerima-games/mx-gameplay#readme",

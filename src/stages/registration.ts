@@ -91,7 +91,12 @@ import {
   type TimeServiceApi,
 } from '@nerima-games/mc-sim'
 import { Effect, Effectable, Layer, Option, Readable, Ref } from 'effect'
-import { below, positionKeyOf, positionOfKey } from '../domain/block-position-key'
+import {
+  below,
+  horizontalNeighbours,
+  positionKeyOf,
+  positionOfKey,
+} from '../domain/block-position-key'
 import {
   advanceVillagerRestock,
   copyVillagerTradeState,
@@ -130,7 +135,12 @@ import {
   type BrewingTransferResult,
 } from '../domain/brewing'
 import { targetabilityFromStore } from '../domain/in-memory-world'
-import { ChunkStore, type BlockPosition, type ChunkStoreApi } from '../domain/chunk-store-port'
+import {
+  AIR_BLOCK_ID,
+  ChunkStore,
+  type BlockPosition,
+  type ChunkStoreApi,
+} from '../domain/chunk-store-port'
 import {
   chunkCoordsAround,
   openChunkWindow,
@@ -196,7 +206,13 @@ import {
 } from '../domain/falling-block'
 import {
   carryOver,
+  DEFAULT_FLUID_HORIZONTAL_RANGE,
+  enqueueFluidDisturbance,
+  MAX_FLUID_DEFERRED_ATTEMPTS,
   splitBudget,
+  transitionFluidCell,
+  type FluidCell,
+  type FluidProbe,
   type FluidWorkItem,
 } from '../domain/fluid-frontier'
 import type { DeltaTimeSecs, GameModule, StageRegistration } from '../domain/frame-contract'
@@ -499,6 +515,7 @@ type PendingBlockBreakRequestQueue = {
 type FluidRuntimeState = {
   readonly frontier: ReadonlyArray<FluidWorkItem>
   readonly updates: ReadonlyArray<FluidWorkItem>
+  readonly cells: ReadonlyMap<PositionKey, FluidCell>
 }
 
 class FluidStateRef extends Effectable.Class<ReadonlyArray<FluidWorkItem>>
@@ -512,7 +529,7 @@ class FluidStateRef extends Effectable.Class<ReadonlyArray<FluidWorkItem>>
 
   constructor(
     readonly state: Ref.Ref<FluidRuntimeState>,
-    readonly field: keyof FluidRuntimeState,
+    readonly field: 'frontier' | 'updates',
   ) {
     super()
     this.get = Ref.get(state).pipe(Effect.map((current) => current[field]))
@@ -537,6 +554,11 @@ const fluidRuntimeStates = new WeakMap<
   Ref.Ref<FluidRuntimeState>
 >()
 
+const fluidRuntimeSemaphores = new WeakMap<
+  Ref.Ref<ReadonlyArray<FluidWorkItem>>,
+  Effect.Semaphore
+>()
+
 const fireTickAccumulators = new WeakMap<Ref.Ref<FireLifecycleState>, Ref.Ref<number>>()
 
 const fireTickAccumulatorFor = (
@@ -558,6 +580,188 @@ const fluidRuntimeStateFor = (
   }
   return state
 }
+
+const fluidRuntimeSemaphoreFor = (
+  frontier: Ref.Ref<ReadonlyArray<FluidWorkItem>>,
+): Effect.Semaphore => {
+  const semaphore = fluidRuntimeSemaphores.get(frontier)
+  if (semaphore === undefined) {
+    throw new Error('fluid frontier is not owned by a gameplay frame state')
+  }
+  return semaphore
+}
+
+const validFluidPosition = (position: BlockPosition): boolean =>
+  Number.isFinite(position.x) && Number.isFinite(position.y) && Number.isFinite(position.z)
+
+const fluidWorkItemOf = (cell: FluidCell, deferred?: number): FluidWorkItem => ({
+  key: cell.key,
+  kind: cell.kind,
+  level: cell.level,
+  source: cell.source,
+  ...(cell.parent === undefined ? {} : { parent: cell.parent }),
+  falling: cell.falling,
+  ...(deferred === undefined ? {} : { deferred }),
+})
+
+const fluidProbeAt = (
+  store: ChunkStoreApi,
+  position: BlockPosition,
+  kind: FluidCell['kind'],
+  cells: ReadonlyMap<PositionKey, FluidCell>,
+): Effect.Effect<FluidProbe> => {
+  const key = positionKeyOf(position)
+  return Effect.map(store.getBlock(position), (reading): FluidProbe => {
+    if (reading._tag === 'ChunkNotLoaded') return { key, state: 'unloaded' }
+    if (reading._tag === 'OutOfWorld') return { key, state: 'out-of-world' }
+
+    const block = blockTypeOfId(reading.block)
+    if (block === 'air') return { key, state: 'air' }
+    if (block === kind) {
+      return { key, state: 'same-fluid', source: cells.get(key)?.source ?? true }
+    }
+    if (block === (kind === 'water' ? 'lava' : 'water')) {
+      return { key, state: 'opposite-fluid', source: cells.get(key)?.source ?? true }
+    }
+    return { key, state: 'blocked' }
+  })
+}
+
+const maximumFluidLevel = (kind: FluidCell['kind'], dimension: Dimension): number =>
+  kind === 'water'
+    ? DEFAULT_FLUID_HORIZONTAL_RANGE.water
+    : DEFAULT_FLUID_HORIZONTAL_RANGE.lava[dimension]
+
+const runFluidPropagation = (
+  store: ChunkStoreApi,
+  runtime: Ref.Ref<FluidRuntimeState>,
+  work: ReadonlyArray<FluidWorkItem>,
+  dimension: Dimension,
+): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    const snapshot = yield* Ref.get(runtime)
+    const cells = new Map(snapshot.cells)
+    let generated: ReadonlyArray<FluidWorkItem> = []
+
+    const enqueue = (item: FluidWorkItem): void => {
+      generated = enqueueFluidDisturbance(generated, item)
+    }
+    const enqueueDependents = (parent: PositionKey): void => {
+      for (const candidate of cells.values()) {
+        if (candidate.parent === parent) enqueue(fluidWorkItemOf(candidate))
+      }
+    }
+
+    for (const item of work) {
+      const position = positionOfKey(item.key)
+      // Legacy callers have historically used opaque diagnostic keys. They are
+      // still recorded as evaluated work, but must never turn NaN into a world IO.
+      if (!validFluidPosition(position)) continue
+
+      const cell: FluidCell = cells.get(item.key) ?? {
+        key: item.key,
+        kind: item.kind,
+        level: Math.max(0, Math.trunc(item.level ?? 0)),
+        source: item.source ?? true,
+        ...(item.parent === undefined ? {} : { parent: item.parent }),
+        falling: item.falling ?? false,
+      }
+      const current = yield* fluidProbeAt(store, position, cell.kind, cells)
+      const belowPosition = below(position)
+      const horizontalPositions = horizontalNeighbours(position)
+      let belowProbe: FluidProbe = { key: positionKeyOf(belowPosition), state: 'blocked' }
+      let horizontalProbes: ReadonlyArray<FluidProbe> = horizontalPositions.map((candidate) => ({
+        key: positionKeyOf(candidate),
+        state: 'blocked' as const,
+      }))
+
+      if (current.state === 'same-fluid') {
+        cells.set(cell.key, cell)
+        belowProbe = yield* fluidProbeAt(store, belowPosition, cell.kind, cells)
+        horizontalProbes = yield* Effect.forEach(horizontalPositions, (candidate) =>
+          fluidProbeAt(store, candidate, cell.kind, cells),
+        )
+      }
+
+      const transition = transitionFluidCell({
+        cell,
+        current,
+        below: belowProbe,
+        horizontal: horizontalProbes,
+        supported:
+          cell.source ||
+          (cell.parent !== undefined && cells.get(cell.parent)?.kind === cell.kind),
+        maximumHorizontalLevel: maximumFluidLevel(cell.kind, dimension),
+      })
+      let deferCurrent = transition.defer
+
+      for (const change of transition.changes) {
+        if (change._tag === 'ForgetFluid') {
+          cells.delete(change.key)
+          enqueueDependents(change.key)
+          continue
+        }
+
+        const changePosition = positionOfKey(
+          change._tag === 'PlaceFluid' ? change.cell.key : change.key,
+        )
+        if (!validFluidPosition(changePosition)) continue
+
+        if (change._tag === 'PlaceFluid') {
+          const fluidBlock = blockIdOf(change.cell.kind)
+          if (fluidBlock === undefined) continue
+          const outcome = yield* store.setBlock(changePosition, fluidBlock)
+          if (outcome._tag === 'Written' || outcome._tag === 'Unchanged') {
+            cells.set(change.cell.key, change.cell)
+            enqueue(fluidWorkItemOf(change.cell))
+          } else if (outcome._tag === 'ChunkNotLoaded') {
+            deferCurrent = true
+          }
+          continue
+        }
+
+        if (change._tag === 'RemoveFluid') {
+          const outcome = yield* store.setBlock(changePosition, AIR_BLOCK_ID)
+          if (outcome._tag === 'ChunkNotLoaded') {
+            deferCurrent = true
+          } else {
+            cells.delete(change.key)
+            enqueueDependents(change.key)
+          }
+          continue
+        }
+
+        const solidBlock = blockIdOf(change.block)
+        if (solidBlock === undefined) continue
+        const outcome = yield* store.setBlock(changePosition, solidBlock)
+        if (outcome._tag === 'ChunkNotLoaded') {
+          deferCurrent = true
+        } else {
+          cells.delete(change.key)
+          enqueueDependents(change.key)
+        }
+      }
+
+      const deferred = item.deferred ?? 0
+      if (
+        deferCurrent &&
+        deferred < MAX_FLUID_DEFERRED_ATTEMPTS &&
+        (current.state === 'unloaded' || cells.has(cell.key))
+      ) {
+        enqueue(fluidWorkItemOf(cell, deferred + 1))
+      }
+    }
+
+    yield* Ref.update(runtime, (current) => {
+      let frontier = current.frontier
+      for (const item of generated) frontier = enqueueFluidDisturbance(frontier, item)
+      return {
+        frontier,
+        updates: [...current.updates, ...work],
+        cells,
+      }
+    })
+  })
 
 export type GameplayFrameState = {
   readonly enderDragonEncounter: EnderDragonEncounterStageApi
@@ -1034,10 +1238,15 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
   // where it lands when that repository publishes one.
   const rollSeed = yield* Ref.make(DEFAULT_ROLL_SEED)
   const fallingBlocks = yield* Ref.make<FallingBlockQueue>(emptyFallingBlockQueue)
-  const fluidState = yield* Ref.make<FluidRuntimeState>({ frontier: [], updates: [] })
+  const fluidState = yield* Ref.make<FluidRuntimeState>({
+    frontier: [],
+    updates: [],
+    cells: new Map(),
+  })
   const fluidFrontier = new FluidStateRef(fluidState, 'frontier')
   const fluidUpdates = new FluidStateRef(fluidState, 'updates')
   fluidRuntimeStates.set(fluidFrontier, fluidState)
+  fluidRuntimeSemaphores.set(fluidFrontier, yield* Effect.makeSemaphore(1))
   const tickCount = yield* Ref.make(0)
   const portalCandidates = yield* Ref.make<
     ReadonlyMap<Dimension, ReadonlyArray<BlockPosition>>
@@ -2983,22 +3192,36 @@ export const gameplayStages = (
   {
     id: GAMEPLAY_STAGE_IDS.fluids,
     after: [GAMEPLAY_STAGE_IDS.enderDragon],
-    run: () =>
-      Effect.gen(function* () {
-        const tick = yield* Ref.updateAndGet(state.tickCount, (value) => value + 1)
-        const lavaTickActive = tick % LAVA_TICK_INTERVAL === 0
-        yield* Ref.modify(fluidRuntimeStateFor(state.fluidFrontier), (fluidState) => {
-          const split = splitBudget(fluidState.frontier, { lavaTickActive })
-          return [
-            undefined,
-            {
-              // `carryOver` keeps both over-budget cells and inactive lava.
-              frontier: carryOver(fluidState.frontier, split),
-              updates: [...fluidState.updates, ...split.work],
-            },
-          ]
-        })
-      }),
+    run: () => {
+      const runtime = fluidRuntimeStateFor(state.fluidFrontier)
+      return fluidRuntimeSemaphoreFor(state.fluidFrontier).withPermits(1)(
+        Effect.gen(function* () {
+          const tick = yield* Ref.updateAndGet(state.tickCount, (value) => value + 1)
+          const lavaTickActive = tick % LAVA_TICK_INTERVAL === 0
+          const work = yield* Ref.modify(runtime, (fluidState) => {
+            let uniqueFrontier: ReadonlyArray<FluidWorkItem> = []
+            for (const item of fluidState.frontier) {
+              uniqueFrontier = enqueueFluidDisturbance(uniqueFrontier, item)
+            }
+            const split = splitBudget(uniqueFrontier, { lavaTickActive })
+            return [
+              split.work,
+              {
+                ...fluidState,
+                // Reserve work before any asynchronous store access. New
+                // disturbances can still append to the remaining frontier.
+                frontier: carryOver(uniqueFrontier, split),
+              },
+            ] as const
+          })
+
+          if (work.length === 0) return
+
+          const dimension = yield* player.dimension
+          yield* runFluidPropagation(store, runtime, work, dimension)
+        }),
+      )
+    },
   },
   {
     id: GAMEPLAY_STAGE_IDS.timeWeather,

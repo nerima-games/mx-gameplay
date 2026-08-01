@@ -8,7 +8,12 @@
  */
 import { describe, expect, it } from '@effect/vitest'
 import { Effect, Layer, Ref } from 'effect'
-import { AIR_BLOCK_ID, type ChunkStore } from '../src/domain/chunk-store-port'
+import {
+  AIR_BLOCK_ID,
+  type BlockId,
+  type ChunkStore,
+} from '../src/domain/chunk-store-port'
+import { blockIdOf } from '../src/domain/block-vocabulary'
 import {
   CREEPER_KIND,
   type MobBehaviour,
@@ -44,6 +49,7 @@ import {
   type StageRegistration,
 } from '../src/domain/frame-contract'
 import { disturb, takeBatch } from '../src/domain/falling-block'
+import type { FluidWorkItem } from '../src/domain/fluid-frontier'
 import { DEFAULT_ROLL_SEED } from '../src/domain/frame-rolls'
 import {
   gameplayStages,
@@ -83,6 +89,7 @@ import {
   emptyWorldStoreLayer,
   makeChunkStoreDouble,
   STONE,
+  WATER,
   world,
 } from './support/chunk-store-double'
 import { emptyRosterLayer, makeEntityManagerDouble } from './support/entity-manager-double'
@@ -131,6 +138,25 @@ const builtStages = Effect.gen(function* () {
     stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api, time),
   }
 })
+
+const builtStagesInWorld = (
+  initial: ReadonlyMap<string, BlockId>,
+  loadedChunks: ReadonlyArray<string> = ['0,0'],
+) =>
+  Effect.gen(function* () {
+    const state = yield* makeGameplayFrameState
+    const store = yield* makeChunkStoreDouble(initial, loadedChunks)
+    const roster = yield* makeEntityManagerDouble<MobBehaviour>()
+    const player = yield* makePlayerServiceDouble()
+    const inventory = yield* makeInventoryDouble()
+    const time = yield* makeTimeService()
+    return {
+      state,
+      store,
+      player,
+      stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api, time),
+    }
+  })
 
 const allAfterEdges = (stages: ReadonlyArray<StageRegistration>): ReadonlyArray<string> =>
   stages.flatMap((stage) => [...(stage.after ?? [])])
@@ -404,6 +430,160 @@ describe('stage behaviour', () => {
       expect(yield* drainFluidUpdates(state)).toStrictEqual(work)
       expect(yield* drainFluidUpdates(state)).toStrictEqual([])
       expect(yield* Ref.get(state.fluidFrontier)).toStrictEqual([])
+    }).pipe(Effect.provide(FrameServicesLayer)),
+  )
+
+  it.effect('deduplicates direct frontier writes by position before spending budget', () =>
+    Effect.gen(function* () {
+      const { state, stages } = yield* builtStages
+      const fluids = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids)!
+      const latest = { key: 'water-a', kind: 'water' as const, deferred: 2 }
+
+      yield* Ref.set(state.fluidFrontier, [
+        { key: 'water-a', kind: 'water' },
+        latest,
+      ])
+      yield* fluids.run(DeltaTimeSecs(0.016))
+
+      expect(yield* drainFluidUpdates(state)).toStrictEqual([latest])
+      expect(yield* Ref.get(state.fluidFrontier)).toStrictEqual([])
+    }).pipe(Effect.provide(FrameServicesLayer)),
+  )
+
+  it.effect('fluid propagation writes downward before considering horizontal air', () =>
+    Effect.gen(function* () {
+      const origin = { x: 0, y: 64, z: 0 }
+      const { state, store, stages } = yield* builtStagesInWorld(world([[origin, WATER]]))
+      const fluids = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids)!
+
+      yield* Ref.set(state.fluidFrontier, [{ key: '0,64,0', kind: 'water' }])
+      yield* fluids.run(DeltaTimeSecs(0.016))
+
+      expect(yield* store.blockAt({ x: 0, y: 63, z: 0 })).toBe(WATER)
+      expect(yield* store.blockAt({ x: -1, y: 64, z: 0 })).toBeUndefined()
+      expect(yield* store.blockAt({ x: 1, y: 64, z: 0 })).toBeUndefined()
+      expect(yield* Ref.get(state.fluidFrontier)).toContainEqual({
+        key: '0,63,0',
+        kind: 'water',
+        level: 0,
+        source: false,
+        parent: '0,64,0',
+        falling: true,
+      })
+    }).pipe(Effect.provide(FrameServicesLayer)),
+  )
+
+  it.effect('blocked fluid spreads to the four horizontal neighbours in deterministic order', () =>
+    Effect.gen(function* () {
+      const origin = { x: 0, y: 64, z: 0 }
+      const { state, store, stages } = yield* builtStagesInWorld(
+        world([
+          [origin, WATER],
+          [{ x: 0, y: 63, z: 0 }, STONE],
+        ]),
+        ['0,0', '-1,0', '0,-1'],
+      )
+      const fluids = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids)!
+
+      yield* Ref.set(state.fluidFrontier, [{ key: '0,64,0', kind: 'water' }])
+      yield* fluids.run(DeltaTimeSecs(0.016))
+
+      expect((yield* Ref.get(state.fluidFrontier)).map((item) => item.key)).toStrictEqual([
+        '-1,64,0',
+        '1,64,0',
+        '0,64,-1',
+        '0,64,1',
+      ])
+      for (const position of [
+        { x: -1, y: 64, z: 0 },
+        { x: 1, y: 64, z: 0 },
+        { x: 0, y: 64, z: -1 },
+        { x: 0, y: 64, z: 1 },
+      ]) {
+        expect(yield* store.blockAt(position)).toBe(WATER)
+      }
+    }).pipe(Effect.provide(FrameServicesLayer)),
+  )
+
+  it.effect('removing a source retracts the flowing cells that depended on it', () =>
+    Effect.gen(function* () {
+      const origin = { x: 0, y: 64, z: 0 }
+      const neighbours = [
+        { x: -1, y: 64, z: 0 },
+        { x: 1, y: 64, z: 0 },
+        { x: 0, y: 64, z: -1 },
+        { x: 0, y: 64, z: 1 },
+      ] as const
+      const { state, store, stages } = yield* builtStagesInWorld(
+        world([
+          [origin, WATER],
+          [{ x: 0, y: 63, z: 0 }, STONE],
+        ]),
+        ['0,0', '-1,0', '0,-1'],
+      )
+      const fluids = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids)!
+
+      yield* Ref.set(state.fluidFrontier, [{ key: '0,64,0', kind: 'water' }])
+      yield* fluids.run(DeltaTimeSecs(0.016))
+      yield* store.api.setBlock(origin, AIR_BLOCK_ID)
+      yield* Ref.set(state.fluidFrontier, [{ key: '0,64,0', kind: 'water' }])
+      yield* fluids.run(DeltaTimeSecs(0.016))
+      yield* fluids.run(DeltaTimeSecs(0.016))
+
+      for (const position of neighbours) {
+        expect(yield* store.blockAt(position)).toBe(AIR_BLOCK_ID)
+      }
+      expect(yield* Ref.get(state.fluidFrontier)).toStrictEqual([])
+    }).pipe(Effect.provide(FrameServicesLayer)),
+  )
+
+  it.effect('water meeting a lava source materializes stone at the contact', () =>
+    Effect.gen(function* () {
+      const lava = blockIdOf('lava')!
+      const { state, store, stages } = yield* builtStagesInWorld(
+        world([
+          [{ x: 0, y: 64, z: 0 }, WATER],
+          [{ x: 0, y: 63, z: 0 }, STONE],
+          [{ x: 1, y: 64, z: 0 }, lava],
+        ]),
+      )
+      const fluids = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids)!
+
+      yield* Ref.set(state.fluidFrontier, [{ key: '0,64,0', kind: 'water' }])
+      yield* fluids.run(DeltaTimeSecs(0.016))
+
+      expect(yield* store.blockAt({ x: 1, y: 64, z: 0 })).toBe(STONE)
+    }).pipe(Effect.provide(FrameServicesLayer)),
+  )
+
+  it.effect('an unloaded chunk boundary defers a source finitely and never writes outside the loaded set', () =>
+    Effect.gen(function* () {
+      const origin = { x: 15, y: 64, z: 0 }
+      const { state, store, stages } = yield* builtStagesInWorld(
+        world([
+          [origin, WATER],
+          [{ x: 15, y: 63, z: 0 }, STONE],
+        ]),
+      )
+      const fluids = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids)!
+      let source: FluidWorkItem = { key: '15,64,0', kind: 'water' }
+
+      for (let attempt = 1; attempt <= 8; attempt += 1) {
+        yield* Ref.set(state.fluidFrontier, [source])
+        yield* fluids.run(DeltaTimeSecs(0.016))
+        const deferred = (yield* Ref.get(state.fluidFrontier)).find(
+          (item) => item.key === source.key,
+        )!
+        expect(deferred.deferred).toBe(attempt)
+        source = deferred
+      }
+
+      yield* Ref.set(state.fluidFrontier, [source])
+      yield* fluids.run(DeltaTimeSecs(0.016))
+      expect((yield* Ref.get(state.fluidFrontier)).some((item) => item.key === source.key)).toBe(
+        false,
+      )
+      expect(yield* store.blockAt({ x: 16, y: 64, z: 0 })).toBeUndefined()
     }).pipe(Effect.provide(FrameServicesLayer)),
   )
 

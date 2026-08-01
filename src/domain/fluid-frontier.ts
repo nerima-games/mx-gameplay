@@ -44,6 +44,136 @@ export type FluidKind = 'water' | 'lava'
 export type FluidWorkItem = {
   readonly key: PositionKey
   readonly kind: FluidKind
+  readonly level?: number
+  readonly source?: boolean
+  readonly parent?: PositionKey
+  readonly falling?: boolean
+  readonly deferred?: number
+}
+
+export type FluidCell = {
+  readonly key: PositionKey
+  readonly kind: FluidKind
+  readonly level: number
+  readonly source: boolean
+  readonly parent?: PositionKey
+  readonly falling: boolean
+}
+
+export type FluidProbeState =
+  | 'air'
+  | 'blocked'
+  | 'same-fluid'
+  | 'opposite-fluid'
+  | 'unloaded'
+  | 'out-of-world'
+
+export type FluidProbe = {
+  readonly key: PositionKey
+  readonly state: FluidProbeState
+  readonly source?: boolean
+}
+
+export type FluidChange =
+  | { readonly _tag: 'PlaceFluid'; readonly cell: FluidCell }
+  | { readonly _tag: 'RemoveFluid'; readonly key: PositionKey }
+  | {
+      readonly _tag: 'Solidify'
+      readonly key: PositionKey
+      readonly block: 'stone' | 'cobblestone'
+    }
+  | { readonly _tag: 'ForgetFluid'; readonly key: PositionKey }
+
+export type FluidTransition = {
+  readonly changes: ReadonlyArray<FluidChange>
+  readonly defer: boolean
+}
+
+export const DEFAULT_FLUID_HORIZONTAL_RANGE = {
+  water: 7,
+  lava: { overworld: 3, nether: 7, end: 3 },
+} as const
+
+export const MAX_FLUID_DEFERRED_ATTEMPTS = 8
+
+/** Decide one cell's propagation without performing world IO. */
+export const transitionFluidCell = (input: {
+  readonly cell: FluidCell
+  readonly current: FluidProbe
+  readonly below: FluidProbe
+  readonly horizontal: ReadonlyArray<FluidProbe>
+  readonly supported: boolean
+  readonly maximumHorizontalLevel: number
+}): FluidTransition => {
+  const { cell, current, below, horizontal } = input
+
+  if (current.state === 'unloaded') return { changes: [], defer: true }
+  if (current.state !== 'same-fluid') {
+    return { changes: [{ _tag: 'ForgetFluid', key: cell.key }], defer: false }
+  }
+  if (!cell.source && !input.supported) {
+    return { changes: [{ _tag: 'RemoveFluid', key: cell.key }], defer: false }
+  }
+
+  const contacts = [below, ...horizontal].filter(
+    (probe) => probe.state === 'opposite-fluid',
+  )
+  if (cell.kind === 'lava' && contacts.length > 0) {
+    return {
+      changes: [
+        {
+          _tag: 'Solidify',
+          key: cell.key,
+          block: cell.source ? 'stone' : 'cobblestone',
+        },
+      ],
+      defer: false,
+    }
+  }
+
+  const changes: Array<FluidChange> = contacts.map((probe) => ({
+    _tag: 'Solidify' as const,
+    key: probe.key,
+    block: probe.source ? ('stone' as const) : ('cobblestone' as const),
+  }))
+
+  if (below.state === 'air') {
+    changes.push({
+      _tag: 'PlaceFluid',
+      cell: {
+        key: below.key,
+        kind: cell.kind,
+        level: cell.level,
+        source: false,
+        parent: cell.key,
+        falling: true,
+      },
+    })
+    return { changes, defer: false }
+  }
+  if (below.state === 'unloaded') return { changes, defer: true }
+
+  if (cell.level < input.maximumHorizontalLevel) {
+    for (const probe of horizontal) {
+      if (probe.state !== 'air') continue
+      changes.push({
+        _tag: 'PlaceFluid',
+        cell: {
+          key: probe.key,
+          kind: cell.kind,
+          level: cell.level + 1,
+          source: false,
+          parent: cell.key,
+          falling: false,
+        },
+      })
+    }
+  }
+
+  return {
+    changes,
+    defer: horizontal.some((probe) => probe.state === 'unloaded'),
+  }
 }
 
 /**
