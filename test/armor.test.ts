@@ -10,6 +10,7 @@ import {
   applyArmorToDamage,
   armorDurabilityWearFromPreMitigationDamage,
   armorPointsForEquipment,
+  resolveArmorHit,
 } from '../src/domain/combat/armor'
 
 const armourItem = (item: EquipmentItem['item']): EquipmentItem =>
@@ -132,5 +133,36 @@ describe('armour durability wear from pre-mitigation damage', () => {
     expect(armorDurabilityWearFromPreMitigationDamage({ amount: 8, cause: 'fall' })).toBe(
       armorDurabilityWearFromPreMitigationDamage({ amount: 8, cause: 'lava' }),
     )
+  })
+})
+
+describe('armour hit resolution', () => {
+  it('returns mitigated damage and wear for every occupied armour slot', () => {
+    const equipment = equipmentWith({
+      head: armourItem('iron_helmet'),
+      chest: armourItem('iron_chestplate'),
+    })
+
+    const resolved = resolveArmorHit(equipment, { amount: 8, cause: 'mob' })
+
+    expect(resolved.damage.amount).toBeCloseTo(5.44)
+    expect({ ...resolved, damage: { ...resolved.damage, amount: 5.44 } }).toStrictEqual({
+      damage: { amount: 5.44, cause: 'mob' },
+      durabilityWear: 2,
+      wornSlots: ['head', 'chest'],
+    })
+  })
+
+  it('does not report the offhand as armour durability', () => {
+    expect(
+      resolveArmorHit(equipmentWith({ offhand: armourItem('iron_helmet') }), {
+        amount: 3,
+        cause: 'mob',
+      }),
+    ).toStrictEqual({
+      damage: { amount: 3, cause: 'mob' },
+      durabilityWear: 1,
+      wornSlots: [],
+    })
   })
 })

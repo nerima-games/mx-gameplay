@@ -132,6 +132,7 @@ import {
   type Position,
 } from '../domain/entity-manager-port'
 import type { Damage } from '../domain/death-cause'
+import { resolveArmorHit } from '../domain/combat/armor'
 import {
   resolveHostileContacts,
   resolvePlayerBlastDamage,
@@ -217,6 +218,22 @@ import {
   type WeatherState,
 } from '../domain/weather'
 import { GAMEPLAY_STAGE_IDS, UPSTREAM_STAGE_IDS } from './stage-ids'
+
+export const resolveArmoredPlayerDamages = (
+  inventory: InventoryServiceApi,
+  damages: ReadonlyArray<PlayerDamageEvent>,
+): Effect.Effect<ReadonlyArray<PlayerDamageEvent>> =>
+  Effect.forEach(damages, (event) =>
+    Effect.gen(function* () {
+      const resolved = resolveArmorHit(yield* inventory.equipmentSnapshot, event.damage)
+      if (resolved.durabilityWear > 0) {
+        yield* Effect.forEach(resolved.wornSlots, (slot) =>
+          inventory.damageAt({ _tag: 'Equipment', slot }, resolved.durabilityWear),
+        )
+      }
+      return { ...event, damage: resolved.damage }
+    }),
+  )
 
 /**
  * How many gameplay ticks pass between two active lava ticks.
@@ -2234,7 +2251,10 @@ export const gameplayStages = (
           // What the creeper itself leaves: nothing, and the RULE says so rather
           // than this stage assuming it (`domain/mob/mob-drop.ts` on why the
           // reference gets the same answer by accident of statement order).
-          const playerDamages = resolvePlayerBlastDamage(blasts, targetPosition)
+          const playerDamages = yield* resolveArmoredPlayerDamages(
+            inventory,
+            resolvePlayerBlastDamage(blasts, targetPosition),
+          )
           if (playerDamages.length > 0) {
             yield* Ref.update(state.playerDamages, (items) => [...items, ...playerDamages])
           }
@@ -2279,7 +2299,8 @@ export const gameplayStages = (
         )
         yield* Ref.set(state.hostileContactCooldowns, contact.cooldowns)
         if (contact.damages.length > 0) {
-          yield* Ref.update(state.playerDamages, (items) => [...items, ...contact.damages])
+          const playerDamages = yield* resolveArmoredPlayerDamages(inventory, contact.damages)
+          yield* Ref.update(state.playerDamages, (items) => [...items, ...playerDamages])
         }
 
         // ---- the spawn search ----------------------------------------------
