@@ -364,7 +364,7 @@ describe('stage behaviour', () => {
   //
   // What survives here unchanged is the exact-list gate, which is the part that
   // makes an addition reviewable.
-  it.effect('REGRESSION: the frame state holds no day length, and every Ref is scratch', () =>
+  it.effect('REGRESSION: the frame state holds no day length or host-owned state', () =>
     Effect.gen(function* () {
       const state = yield* makeGameplayFrameState
 
@@ -432,6 +432,7 @@ describe('stage behaviour', () => {
         'consumedItems',
         'enderPearlOutcomes',
         'fallingBlocks',
+        'fireLifecycle',
         'fluidFrontier',
         'fluidUpdates',
         'handledBowShotRequestIds',
@@ -710,10 +711,10 @@ describe('stage behaviour', () => {
     }),
   )
 
-  // REGRESSION: every Ref here must be free to lose on a reload. That is the
-  // save-file test from the module header, applied to the whole state rather
-  // than to the one field that failed it.
-  it.effect('REGRESSION: every Ref in the frame state is frame-local scratch, not saved state', () =>
+  // REGRESSION: host-owned state stays outside this object. Fire is the one
+  // gameplay-owned world process and has an explicit snapshot/restore boundary;
+  // every queue and outbox below remains disposable frame-local scratch.
+  it.effect('REGRESSION: frame-local queues start empty and deterministic state starts seeded', () =>
     Effect.gen(function* () {
       const state = yield* makeGameplayFrameState
 
@@ -728,6 +729,10 @@ describe('stage behaviour', () => {
       expect(yield* Ref.get(state.spawnAttempts)).toStrictEqual([])
       expect(yield* Ref.get(state.targetPosition)).toBeUndefined()
       expect(yield* Ref.get(state.rollSeed)).toBe(DEFAULT_ROLL_SEED)
+      expect(yield* Ref.get(state.fireLifecycle)).toStrictEqual({
+        fires: [],
+        seed: DEFAULT_ROLL_SEED,
+      })
     }),
   )
 

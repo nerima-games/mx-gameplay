@@ -98,7 +98,14 @@ import {
   openChunkWindow,
   UNREADABLE_BLOCK,
 } from '../domain/chunk-window'
-import type { PlaceableItemType } from '../domain/block-vocabulary'
+import { blockIdOf, blockTypeOfId, type PlaceableItemType } from '../domain/block-vocabulary'
+import {
+  advanceFireLifecycle,
+  makeFireLifecycleState,
+  type FireCell,
+  type FireLifecycleState,
+  type FirePosition,
+} from '../domain/fire-lifecycle'
 import { applyFallingBlocks } from '../domain/entities/falling-block-move'
 import {
   applySpawnAttempts,
@@ -156,7 +163,6 @@ import type { Dimension, PortalTravelPlan } from '../domain/nether-travel-port'
 import { OUTSIDE_PORTAL, type PortalDwell, stepPortalDwell } from '../domain/portal-dwell'
 import { applyPortalTravel, NO_KNOWN_PORTALS } from '../domain/portal-travel'
 import { PlayerService, type PlayerServiceApi } from '../domain/player-port'
-import { blockTypeOfId } from '../domain/block-vocabulary'
 import { breakBlock } from '../domain/interactions/break-block'
 import {
   BLOCK_LOOT_ROLLS,
@@ -506,6 +512,7 @@ export type GameplayFrameState = {
   readonly bowKnockbacks: Ref.Ref<ReadonlyArray<BowKnockback>>
   readonly enderPearlOutcomes: Ref.Ref<ReadonlyArray<EnderPearlOutcome>>
   readonly playerDamages: Ref.Ref<ReadonlyArray<PlayerDamageEvent>>
+  readonly fireLifecycle: Ref.Ref<FireLifecycleState>
   readonly hostileContactCooldowns: Ref.Ref<ReadonlyMap<EntityId, number>>
   readonly mobDrops: Ref.Ref<ReadonlyArray<MobDropEvent>>
   readonly spawnAttempts: Ref.Ref<ReadonlyArray<MobSpawnAttempt>>
@@ -895,6 +902,7 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
   const bowKnockbacks = yield* Ref.make<ReadonlyArray<BowKnockback>>([])
   const enderPearlOutcomes = yield* Ref.make<ReadonlyArray<EnderPearlOutcome>>([])
   const playerDamages = yield* Ref.make<ReadonlyArray<PlayerDamageEvent>>([])
+  const fireLifecycle = yield* Ref.make<FireLifecycleState>(makeFireLifecycleState([], DEFAULT_ROLL_SEED))
   const hostileContactCooldowns = yield* Ref.make<ReadonlyMap<EntityId, number>>(new Map())
   const mobDrops = yield* Ref.make<ReadonlyArray<MobDropEvent>>([])
   const spawnAttempts = yield* Ref.make<ReadonlyArray<MobSpawnAttempt>>([])
@@ -947,6 +955,7 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
     bowKnockbacks,
     enderPearlOutcomes,
     playerDamages,
+    fireLifecycle,
     hostileContactCooldowns,
     mobDrops,
     spawnAttempts,
@@ -1403,6 +1412,92 @@ export const drainPlayerDamages = (
   state: GameplayFrameState,
 ): Effect.Effect<ReadonlyArray<PlayerDamageEvent>> => Ref.getAndSet(state.playerDamages, [])
 
+/** Snapshot the deterministic fire state for host persistence. */
+export const snapshotFireLifecycle = (
+  state: GameplayFrameState,
+): Effect.Effect<FireLifecycleState> =>
+  Ref.get(state.fireLifecycle).pipe(
+    Effect.map((current) => ({
+      fires: current.fires.map((fire) => ({ ...fire, position: { ...fire.position } })),
+      seed: current.seed,
+    })),
+  )
+
+/** Restore a previously persisted fire state without retaining host-owned references. */
+export const restoreFireLifecycle = (
+  state: GameplayFrameState,
+  snapshot: FireLifecycleState,
+): Effect.Effect<void> =>
+  Ref.set(state.fireLifecycle, {
+    fires: snapshot.fires.map((fire) => ({ ...fire, position: { ...fire.position } })),
+    seed: snapshot.seed,
+  })
+
+const firePositionKey = (position: FirePosition): string =>
+  `${position.x},${position.y},${position.z}`
+
+const FIRE_SNAPSHOT_OFFSETS = [
+  [0, 0, 0],
+  [0, -1, 0],
+  [0, 1, 0],
+  [-1, 0, 0],
+  [1, 0, 0],
+  [0, 0, -1],
+  [0, 0, 1],
+] as const
+
+const stepFireLifecycle = (
+  state: GameplayFrameState,
+  store: ChunkStoreApi,
+  player: PlayerServiceApi,
+): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    const current = yield* Ref.get(state.fireLifecycle)
+    if (current.fires.length === 0) return
+
+    const activeKeys = new Set(current.fires.map((fire) => firePositionKey(fire.position)))
+    const positions = new Map<string, FirePosition>()
+    for (const fire of current.fires) {
+      for (const [dx, dy, dz] of FIRE_SNAPSHOT_OFFSETS) {
+        const position = {
+          x: fire.position.x + dx,
+          y: fire.position.y + dy,
+          z: fire.position.z + dz,
+        }
+        positions.set(firePositionKey(position), position)
+      }
+    }
+
+    const cells: FireCell[] = []
+    for (const position of positions.values()) {
+      const reading = yield* store.getBlock(position)
+      if (reading._tag !== 'Block') continue
+      const block = blockTypeOfId(reading.block)
+      if (block === undefined) continue
+      let exposedToSky = false
+      if (activeKeys.has(firePositionKey(position))) {
+        const light = yield* store.getLight(position)
+        exposedToSky = light._tag === 'Light' && light.sky === 15
+      }
+      cells.push({ position, block, exposedToSky })
+    }
+
+    const feet = (yield* player.pose).feetPosition
+    const contact = { x: Math.floor(feet.x), y: Math.floor(feet.y), z: Math.floor(feet.z) }
+    const weather = (yield* Ref.get(state.weather)).weather
+    const step = advanceFireLifecycle(current, cells, weather, [contact])
+    const air = blockIdOf('air')
+    const fire = blockIdOf('fire')
+    if (air === undefined || fire === undefined) return
+    for (const mutation of step.mutations) {
+      yield* store.setBlock(mutation.position, mutation.block === 'air' ? air : fire)
+    }
+    yield* Ref.set(state.fireLifecycle, step.state)
+    if (step.damages.length > 0) {
+      yield* Ref.update(state.playerDamages, (damages) => [...damages, ...step.damages])
+    }
+  })
+
 /** Drain mob drops emitted by casualties during the entities stage. */
 export const drainMobDrops = (
   state: GameplayFrameState,
@@ -1563,6 +1658,7 @@ export const gameplayStages = (
         // dwell timer that only advanced on frames where somebody also broke a
         // block would take four seconds of MINING to cross a portal.
         yield* stepPortalTravel(state, store, player, dt)
+        yield* stepFireLifecycle(state, store, player)
 
         // `getAndSet` rather than get-then-set: whoever fills the inboxes is not
         // this fiber, and a request that arrived between the two steps would be
@@ -1871,6 +1967,18 @@ export const gameplayStages = (
               feetPosition: { x: position.x + 0.5, y: position.y, z: position.z + 0.5 },
               healthPoints: 1,
               behaviour: FRESH_PRIMED_TNT,
+            })
+          }
+          if (ignition._tag === 'Fire' && ignition.outcome._tag === 'Lit') {
+            const position = ignition.outcome.position
+            yield* Ref.update(state.fireLifecycle, (current) => {
+              if (current.fires.some((fire) => firePositionKey(fire.position) === firePositionKey(position))) {
+                return current
+              }
+              return {
+                ...current,
+                fires: [...current.fires, { position, ageTicks: 0 }],
+              }
             })
           }
           itemUseResults.push({

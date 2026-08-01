@@ -104,6 +104,7 @@ import { EntityKind, type EntityManagerApi, type Position } from '../src/domain/
 import { disturb } from '../src/domain/falling-block'
 import { DeltaTimeSecs, StackCount } from '../src/domain/frame-contract'
 import { DEFAULT_ROLL_SEED, drawRolls, nextRoll } from '../src/domain/frame-rolls'
+import { FIRE_NATURAL_LIFETIME_TICKS } from '../src/domain/fire-lifecycle'
 import { craterCells, craterRadius } from '../src/domain/interactions/explosion-crater'
 import { CREEPER_FUSE_SECS, DORMANT_FUSE } from '../src/domain/mob/creeper-fuse'
 import {
@@ -122,6 +123,7 @@ import { PORTAL_WINDOW_RADIUS, ignitePortal } from '../src/domain/interactions/i
 import { generatePortalLayout } from '../src/domain/portal-frame-port'
 import {
   drainItemUseResults,
+  drainPlayerDamages,
   gameplayStages,
   makeGameplayFrameState,
   requestBlockBreak,
@@ -131,6 +133,8 @@ import {
   requestPotatoHarvest,
   requestPotatoPlanting,
   requestSoilTill,
+  restoreFireLifecycle,
+  snapshotFireLifecycle,
   type PlacementRequest,
 } from '../src/stages/registration'
 import { MAX_FURNACE_ADVANCE_SECS } from '../src/domain/interactions/advance-furnace'
@@ -2062,6 +2066,49 @@ describe('the ignition slice: an item use reaches the world', () => {
           outcome: { _tag: 'Fire', outcome: { _tag: 'Lit', position: origin } },
         },
       ])
+    }),
+  )
+
+  it.effect('a lit fire advances through the stage into spread and contact damage', () =>
+    Effect.gen(function* () {
+      const contactOrigin: BlockPosition = { x: 0, y: 64, z: 0 }
+      const fuel: BlockPosition = { x: 1, y: 64, z: 0 }
+      const oakPlanks = blockIdOf('oak_planks')
+      expect(oakPlanks).toBeDefined()
+      const { store, state, stages } = yield* slice(
+        world([[fuel, oakPlanks ?? STONE]]),
+        residentAround(contactOrigin),
+      )
+
+      yield* requestItemUse(state, 'tracked-fire', contactOrigin, 'flint_and_steel')
+      yield* runFrame(stages)
+      const registered = yield* snapshotFireLifecycle(state)
+      expect(registered.fires).toStrictEqual([{ position: contactOrigin, ageTicks: 0 }])
+
+      yield* restoreFireLifecycle(state, { ...registered, seed: 1 })
+      yield* runFrame(stages)
+
+      expect(yield* store.blockAt(fuel)).toBe(FIRE)
+      expect(yield* drainPlayerDamages(state)).toStrictEqual([
+        { _tag: 'FireContact', at: contactOrigin, damage: { amount: 1, cause: 'fire' } },
+      ])
+      expect((yield* snapshotFireLifecycle(state)).fires).toContainEqual({
+        position: fuel,
+        ageTicks: 0,
+      })
+    }),
+  )
+
+  it.effect('an item-lit fire naturally expires through gameplay frames', () =>
+    Effect.gen(function* () {
+      const { store, state, stages } = yield* slice(world([]), residentAround(origin))
+
+      yield* requestItemUse(state, 'expiring-fire', origin, 'fire_charge')
+      yield* runFrame(stages)
+      yield* runFrames(stages, FIRE_NATURAL_LIFETIME_TICKS)
+
+      expect(yield* store.blockAt(origin)).toBe(AIR_BLOCK_ID)
+      expect((yield* snapshotFireLifecycle(state)).fires).toStrictEqual([])
     }),
   )
 

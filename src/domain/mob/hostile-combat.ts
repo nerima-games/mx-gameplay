@@ -70,6 +70,11 @@ export type PlayerDamageEvent =
       readonly explosion: Explosion
       readonly damage: Damage
     }
+  | {
+      readonly _tag: 'FireContact'
+      readonly at: Position
+      readonly damage: Damage
+    }
 
 export type HostileContactResolution = {
   readonly damages: ReadonlyArray<PlayerDamageEvent>
