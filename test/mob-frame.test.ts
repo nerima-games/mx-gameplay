@@ -35,8 +35,16 @@ import {
   STRUCK_ENDERMAN,
   type Blast,
   type MobBehaviour,
+  xpRewardOfKind,
 } from '../src/domain/entities/mob-frame'
-import { CREEPER_DROPS, ENDERMAN_DROPS, ZOMBIE_DROPS } from '../src/domain/mob/mob-drop'
+import {
+  BLAZE_DROPS,
+  BLAZE_XP_REWARD,
+  CREEPER_DROPS,
+  ENDERMAN_DROPS,
+  ZOMBIE_DROPS,
+} from '../src/domain/mob/mob-drop'
+import { BLAZE_KIND } from '../src/domain/mob/mob-ecosystem'
 import { CREEPER_EXPLOSION_POWER, explosionDamageAmount } from '../src/domain/mob/explosion'
 import { ZOMBIE_KIND } from '../src/domain/mob/hostile-combat'
 import { EntityId, type Position } from '../src/domain/entity-manager-port'
@@ -75,16 +83,16 @@ describe('the loot table is keyed by a kind that something actually spawns', () 
     Effect.sync(() => {
       // The module header refuses a row for a kind nothing produces: 「a row
       // mapping a kind nothing produces would be a claim that this build has
-      // ghasts」. `domain/mob/mob-drop.ts` really does hold a ghast's and a
-      // blaze's rules, and neither is reachable here — so the honest statement
-      // is that the enderman, which this build DOES spawn, has an EMPTY table
-      // rather than no table.
+      // ghasts」. `domain/mob/mob-drop.ts` holds a ghast's table, but no ghast is
+      // spawned here. A blaze is spawned by the Nether ecosystem, so its table
+      // and XP reward must be reachable through the frame dispatchers.
       //
       // Asked over the whole roster and not just the enderman: a third hostile
       // added without a `domain/mob/` rule behind it should show up here as a
       // silent zero, and that is the state worth being able to see.
       const tables = [
         [CREEPER_KIND, CREEPER_DROPS],
+        [BLAZE_KIND, BLAZE_DROPS],
         [ENDERMAN_KIND, ENDERMAN_DROPS],
         [ZOMBIE_KIND, ZOMBIE_DROPS],
       ] as const
@@ -93,6 +101,7 @@ describe('the loot table is keyed by a kind that something actually spawns', () 
         expect(dropRulesOfKind(kind)).toBe(rules)
         expect(dropRollsNeeded(kind)).toBe(rules.length * 2)
       }
+      expect(xpRewardOfKind(BLAZE_KIND)).toBe(BLAZE_XP_REWARD)
     }),
   )
 

@@ -256,6 +256,7 @@ import {
 } from '../mob/hostile-combat'
 import { canMobSpawnAt, type SpawnCandidate, type SpawnRefusal } from '../mob/hostile-spawn'
 import {
+  BLAZE_KIND,
   ECOSYSTEM_MOB_KINDS,
   initialEcosystemMobState,
   NETHER_HOSTILE_KINDS,
@@ -267,6 +268,8 @@ import {
   type EcosystemMobState,
 } from '../mob/mob-ecosystem'
 import {
+  BLAZE_DROPS,
+  BLAZE_XP_REWARD,
   CREEPER_DROPS,
   CREEPER_XP_REWARD,
   ENDERMAN_DROPS,
@@ -657,9 +660,9 @@ const NO_DROP_RULES: ReadonlyArray<MobDropRule> = []
  * The loot table for a kind.
  *
  * A table in the rules tier, which is where mob identity lives (plan.md §3.11).
- * `../mob/mob-drop` also holds a ghast's and a blaze's; neither is here, because
- * neither has an `EntityKind` that anything spawns, and a row mapping a kind
- * nothing produces would be a claim that this build has ghasts.
+ * `../mob/mob-drop` also holds a ghast's; it is not here because no `EntityKind`
+ * in this build spawns one. Blaze is wired because the Nether ecosystem does
+ * spawn `BLAZE_KIND`.
  */
 export const dropRulesOfKind = (kind: EntityKind): ReadonlyArray<MobDropRule> =>
   kind === CREEPER_KIND
@@ -668,7 +671,9 @@ export const dropRulesOfKind = (kind: EntityKind): ReadonlyArray<MobDropRule> =>
       ? ZOMBIE_DROPS
       : kind === ENDERMAN_KIND
         ? ENDERMAN_DROPS
-        : NO_DROP_RULES
+        : kind === BLAZE_KIND
+          ? BLAZE_DROPS
+          : NO_DROP_RULES
 
 /** Experience granted when the player kills one runtime-supported hostile. */
 export const xpRewardOfKind = (kind: EntityKind): number =>
@@ -678,7 +683,9 @@ export const xpRewardOfKind = (kind: EntityKind): number =>
       ? ZOMBIE_XP_REWARD
       : kind === ENDERMAN_KIND
         ? ENDERMAN_XP_REWARD
-        : 0
+        : kind === BLAZE_KIND
+          ? BLAZE_XP_REWARD
+          : 0
 
 /** How many rolls `rollDropsOfKind` will consume for this kind. Two per drop line — a chance and a count. */
 export const dropRollsNeeded = (kind: EntityKind): number => dropRulesOfKind(kind).length * 2
