@@ -272,6 +272,10 @@ import {
   type WeatherGameplayInput,
   type WeatherGameplayState,
 } from '../domain/weather-gameplay'
+import {
+  makeEnderDragonEncounterRuntime,
+  type EnderDragonEncounterStageApi,
+} from './ender-dragon-encounter-stage'
 import { GAMEPLAY_STAGE_IDS, UPSTREAM_STAGE_IDS } from './stage-ids'
 
 export const resolveArmoredPlayerDamages = (
@@ -556,6 +560,7 @@ const fluidRuntimeStateFor = (
 }
 
 export type GameplayFrameState = {
+  readonly enderDragonEncounter: EnderDragonEncounterStageApi
   readonly pendingBreaks: Ref.Ref<ReadonlyArray<PositionKey>>
   readonly pendingPlacements: Ref.Ref<ReadonlyArray<PlacementRequest>>
   readonly pendingBlockUses: Ref.Ref<ReadonlyArray<BlockUseRequest>>
@@ -963,6 +968,7 @@ export type EnderPearlOutcome = {
 }
 
 export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.gen(function* () {
+  const enderDragonEncounter = yield* makeEnderDragonEncounterRuntime
   const pendingBreaks = yield* Ref.make<ReadonlyArray<PositionKey>>([])
   const breakRequests = yield* Ref.make<PendingBlockBreakRequestState>({
     nextRequestId: 0,
@@ -1043,6 +1049,7 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
   const portalDwell = yield* Ref.make<PortalDwell>(OUTSIDE_PORTAL)
 
   const state: GameplayFrameState = {
+    enderDragonEncounter,
     pendingBreaks,
     pendingPlacements,
     pendingBlockUses,
@@ -1099,7 +1106,7 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
 })
 
 /**
- * The four stages mx-gameplay registers.
+ * The stages mx-gameplay registers.
  *
  * Note what is NOT here: any resolution of a total order. Each registration
  * carries `after` constraints and nothing more; mc-compose topologically sorts
@@ -1108,7 +1115,7 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
  * relying on a coincidence, and `test/stage-registration.test.ts` asserts that
  * the declared constraints, not the array order, are what carry the meaning.
  *
- * `store` is passed in rather than acquired per stage so that all four share
+ * `store` is passed in rather than acquired per stage so that all stages share
  * one service instance and so that `run` keeps kernel's signature exactly; see
  * the module header. `roster` and `inventory` arrived the same way and for the
  * same reason.
@@ -2966,8 +2973,16 @@ export const gameplayStages = (
       }),
   },
   {
-    id: GAMEPLAY_STAGE_IDS.fluids,
+    id: GAMEPLAY_STAGE_IDS.enderDragon,
     after: [GAMEPLAY_STAGE_IDS.entities],
+    run: (dt) =>
+      Effect.flatMap(player.dimension, (dimension) =>
+        dimension === 'end' ? state.enderDragonEncounter.stage.run(dt) : Effect.void,
+      ),
+  },
+  {
+    id: GAMEPLAY_STAGE_IDS.fluids,
+    after: [GAMEPLAY_STAGE_IDS.enderDragon],
     run: () =>
       Effect.gen(function* () {
         const tick = yield* Ref.updateAndGet(state.tickCount, (value) => value + 1)

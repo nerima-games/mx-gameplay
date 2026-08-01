@@ -1,5 +1,5 @@
 import { Effect, Ref } from 'effect'
-import { StageId, type DeltaTimeSecs, type StageRegistration } from '../domain/frame-contract'
+import type { DeltaTimeSecs, StageRegistration } from '../domain/frame-contract'
 import {
   advanceEnderDragonEncounter,
   damageEnderDragonByPlayer,
@@ -12,7 +12,7 @@ import {
 import { GAMEPLAY_STAGE_IDS } from './stage-ids'
 
 /** Stage id for the optional End-only dragon encounter. */
-export const ENDER_DRAGON_STAGE_ID = StageId('gameplay:ender-dragon')
+export const ENDER_DRAGON_STAGE_ID = GAMEPLAY_STAGE_IDS.enderDragon
 
 type RuntimeState = {
   readonly encounter: EnderDragonEncounterSnapshot
@@ -27,13 +27,9 @@ export type EnderDragonEncounterStageApi = {
   readonly drainEvents: Effect.Effect<ReadonlyArray<EnderDragonEncounterEvent>>
 }
 
-/** The encounter exists only in the End; other dimensions are rejected at construction. */
-export const makeEnderDragonEncounterStage = (
-  dimension: unknown,
-): Effect.Effect<EnderDragonEncounterStageApi | undefined> => {
-  if (dimension !== 'end') return Effect.succeed(undefined)
-
-  return Effect.gen(function* () {
+/** Allocate encounter state for a host that gates the stage by the active dimension. */
+export const makeEnderDragonEncounterRuntime: Effect.Effect<EnderDragonEncounterStageApi> =
+  Effect.gen(function* () {
     const runtime = yield* Ref.make<RuntimeState>({ encounter: initialEnderDragonEncounter(), events: [] })
     const stage: StageRegistration = {
       id: ENDER_DRAGON_STAGE_ID,
@@ -63,4 +59,9 @@ export const makeEnderDragonEncounterStage = (
       drainEvents: Ref.modify(runtime, (current) => [current.events, { ...current, events: [] }]),
     }
   })
-}
+
+/** The standalone encounter exists only in the End; other dimensions are rejected. */
+export const makeEnderDragonEncounterStage = (
+  dimension: unknown,
+): Effect.Effect<EnderDragonEncounterStageApi | undefined> =>
+  dimension === 'end' ? makeEnderDragonEncounterRuntime : Effect.succeed(undefined)

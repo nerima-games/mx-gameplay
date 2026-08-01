@@ -25,6 +25,10 @@ import {
 import { BOW_TARGET_CENTER_Y_OFFSET } from '../src/domain/interactions/bow-shot'
 import { BOW_FULL_CHARGE_SECS, BOW_MIN_CHARGE_SECS } from '../src/domain/interactions/draw-bow'
 import {
+  ENDER_DRAGON_DEATH_XP,
+  ENDER_DRAGON_MAX_HEALTH,
+} from '../src/domain/mob/ender-dragon-encounter'
+import {
   TimeService,
   TimeServiceLayer,
   makeTimeService,
@@ -123,6 +127,7 @@ const builtStages = Effect.gen(function* () {
     store,
     roster,
     inventory,
+    player,
     stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api, time),
   }
 })
@@ -186,6 +191,7 @@ describe('§2.3-3 the total order belongs to mc-compose', () => {
       expect(stageIds(stages)).toStrictEqual([
         GAMEPLAY_STAGE_IDS.interactions,
         GAMEPLAY_STAGE_IDS.entities,
+        GAMEPLAY_STAGE_IDS.enderDragon,
         GAMEPLAY_STAGE_IDS.fluids,
         GAMEPLAY_STAGE_IDS.timeWeather,
       ])
@@ -196,7 +202,12 @@ describe('§2.3-3 the total order belongs to mc-compose', () => {
       expect(byId.get(GAMEPLAY_STAGE_IDS.entities)?.after).toStrictEqual([
         GAMEPLAY_STAGE_IDS.interactions,
       ])
-      expect(byId.get(GAMEPLAY_STAGE_IDS.fluids)?.after).toStrictEqual([GAMEPLAY_STAGE_IDS.entities])
+      expect(byId.get(GAMEPLAY_STAGE_IDS.enderDragon)?.after).toStrictEqual([
+        GAMEPLAY_STAGE_IDS.entities,
+      ])
+      expect(byId.get(GAMEPLAY_STAGE_IDS.fluids)?.after).toStrictEqual([
+        GAMEPLAY_STAGE_IDS.enderDragon,
+      ])
       expect(byId.get(GAMEPLAY_STAGE_IDS.timeWeather)?.after).toStrictEqual([
         GAMEPLAY_STAGE_IDS.fluids,
       ])
@@ -231,6 +242,54 @@ describe('§2.3-3 the total order belongs to mc-compose', () => {
     Effect.sync(() => {
       expect(() => StageId('   ')).toThrow()
       expect(StageId('gameplay:interactions')).toBe('gameplay:interactions')
+    }),
+  )
+})
+
+describe('Ender Dragon normal frame lifecycle', () => {
+  it.effect('does not advance outside the End and is deterministic across frame chunking', () =>
+    Effect.gen(function* () {
+      const once = yield* builtStages
+      const chunked = yield* builtStages
+      const onceStage = once.stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.enderDragon)!
+      const chunkedStage = chunked.stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.enderDragon)!
+
+      const initial = yield* once.state.enderDragonEncounter.snapshot
+      yield* onceStage.run(DeltaTimeSecs(14))
+      expect(yield* once.state.enderDragonEncounter.snapshot).toStrictEqual(initial)
+      expect(yield* once.state.enderDragonEncounter.drainEvents).toStrictEqual([])
+
+      yield* once.player.api.setDimension('end')
+      yield* chunked.player.api.setDimension('end')
+      yield* onceStage.run(DeltaTimeSecs(14))
+      yield* chunkedStage.run(DeltaTimeSecs(7))
+      yield* chunkedStage.run(DeltaTimeSecs(7))
+
+      expect(yield* chunked.state.enderDragonEncounter.snapshot).toStrictEqual(
+        yield* once.state.enderDragonEncounter.snapshot,
+      )
+      expect(yield* chunked.state.enderDragonEncounter.drainEvents).toStrictEqual(
+        yield* once.state.enderDragonEncounter.drainEvents,
+      )
+    }),
+  )
+
+  it.effect('exposes attacks, terminal world events, and exactly-once rewards across restore', () =>
+    Effect.gen(function* () {
+      const { state } = yield* builtStages
+      const result = yield* state.enderDragonEncounter.damageByPlayer(ENDER_DRAGON_MAX_HEALTH)
+      expect(result._tag).toBe('Applied')
+
+      const events = yield* state.enderDragonEncounter.drainEvents
+      expect(events).toContainEqual({ _tag: 'ExperienceRewarded', amount: ENDER_DRAGON_DEATH_XP })
+      expect(events.filter((event) => event._tag === 'ExperienceRewarded')).toHaveLength(1)
+      expect(events.filter((event) => event._tag === 'ExitPortalMaterializationRequested')).toHaveLength(1)
+      expect(events.filter((event) => event._tag === 'DragonEggRewarded')).toHaveLength(1)
+
+      const dead = yield* state.enderDragonEncounter.snapshot
+      expect(yield* state.enderDragonEncounter.restore(dead)).toBe(true)
+      yield* state.enderDragonEncounter.damageByPlayer(1)
+      expect(yield* state.enderDragonEncounter.drainEvents).toStrictEqual([])
     }),
   )
 })
@@ -446,6 +505,7 @@ describe('stage behaviour', () => {
         'bowShotResults',
         'brewingStand',
         'consumedItems',
+        'enderDragonEncounter',
         'enderPearlOutcomes',
         'fallingBlocks',
         'fireLifecycle',
@@ -1000,7 +1060,7 @@ describe('the module contract has caught up with this file’s shape', () => {
       const satisfied: Effect.Effect<ReadonlyArray<StageRegistration>, never, never> =
         Effect.provide(registration, emptyWorld)
 
-      expect(yield* satisfied).toHaveLength(4)
+      expect(yield* satisfied).toHaveLength(5)
     }),
   )
 
