@@ -20,6 +20,7 @@
  */
 
 export * from './domain/day-night'
+export * from './domain/bed-sleep'
 export * from './domain/death-cause'
 export * from './domain/environmental-contact-damage'
 export * from './domain/enchantment'
