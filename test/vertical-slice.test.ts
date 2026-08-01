@@ -111,7 +111,10 @@ import { EntityKind, type EntityManagerApi, type Position } from '../src/domain/
 import { disturb } from '../src/domain/falling-block'
 import { DeltaTimeSecs, StackCount } from '../src/domain/frame-contract'
 import { DEFAULT_ROLL_SEED, drawRolls, nextRoll } from '../src/domain/frame-rolls'
-import { FIRE_NATURAL_LIFETIME_TICKS } from '../src/domain/fire-lifecycle'
+import {
+  FIRE_NATURAL_LIFETIME_TICKS,
+  FIRE_TICK_INTERVAL_SECS,
+} from '../src/domain/fire-lifecycle'
 import { craterCells, craterRadius } from '../src/domain/interactions/explosion-crater'
 import { CREEPER_FUSE_SECS, DORMANT_FUSE } from '../src/domain/mob/creeper-fuse'
 import {
@@ -2097,7 +2100,7 @@ describe('the ignition slice: an item use reaches the world', () => {
       expect(registered.fires).toStrictEqual([{ position: contactOrigin, ageTicks: 0 }])
 
       yield* restoreFireLifecycle(state, { ...registered, seed: 1 })
-      yield* runFrame(stages)
+      yield* runFrame(stages, DeltaTimeSecs(FIRE_TICK_INTERVAL_SECS))
 
       expect(yield* store.blockAt(fuel)).toBe(FIRE)
       expect(yield* drainPlayerDamages(state)).toStrictEqual([
@@ -2116,10 +2119,43 @@ describe('the ignition slice: an item use reaches the world', () => {
 
       yield* requestItemUse(state, 'expiring-fire', origin, 'fire_charge')
       yield* runFrame(stages)
-      yield* runFrames(stages, FIRE_NATURAL_LIFETIME_TICKS)
+      yield* runFrames(
+        stages,
+        FIRE_NATURAL_LIFETIME_TICKS,
+        DeltaTimeSecs(FIRE_TICK_INTERVAL_SECS),
+      )
 
       expect(yield* store.blockAt(origin)).toBe(AIR_BLOCK_ID)
       expect((yield* snapshotFireLifecycle(state)).fires).toStrictEqual([])
+    }),
+  )
+
+  it.effect('fire lifetime is independent of the host render frequency', () =>
+    Effect.gen(function* () {
+      const simulate = (frequency: number) =>
+        Effect.gen(function* () {
+          const { store, state, stages } = yield* slice(world([]), residentAround(origin))
+          yield* requestItemUse(state, `fire-${frequency}`, origin, 'fire_charge')
+          yield* runFrame(stages, DeltaTimeSecs(0))
+          yield* runFrames(
+            stages,
+            (FIRE_NATURAL_LIFETIME_TICKS * frequency) / 20,
+            DeltaTimeSecs(1 / frequency),
+          )
+          return {
+            block: yield* store.blockAt(origin),
+            snapshot: yield* snapshotFireLifecycle(state),
+          }
+        })
+
+      const at20Hz = yield* simulate(20)
+      const at60Hz = yield* simulate(60)
+      const at120Hz = yield* simulate(120)
+
+      expect(at20Hz).toStrictEqual(at60Hz)
+      expect(at60Hz).toStrictEqual(at120Hz)
+      expect(at120Hz.block).toBe(AIR_BLOCK_ID)
+      expect(at120Hz.snapshot.fires).toStrictEqual([])
     }),
   )
 

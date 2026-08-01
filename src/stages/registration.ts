@@ -139,6 +139,7 @@ import {
 import { blockIdOf, blockTypeOfId, type PlaceableItemType } from '../domain/block-vocabulary'
 import {
   advanceFireLifecycle,
+  FIRE_TICK_INTERVAL_SECS,
   makeFireLifecycleState,
   type FireCell,
   type FireLifecycleState,
@@ -531,6 +532,18 @@ const fluidRuntimeStates = new WeakMap<
   Ref.Ref<ReadonlyArray<FluidWorkItem>>,
   Ref.Ref<FluidRuntimeState>
 >()
+
+const fireTickAccumulators = new WeakMap<Ref.Ref<FireLifecycleState>, Ref.Ref<number>>()
+
+const fireTickAccumulatorFor = (
+  fireLifecycle: Ref.Ref<FireLifecycleState>,
+): Ref.Ref<number> => {
+  const accumulator = fireTickAccumulators.get(fireLifecycle)
+  if (accumulator === undefined) {
+    throw new Error('fire lifecycle is not owned by a gameplay frame state')
+  }
+  return accumulator
+}
 
 const fluidRuntimeStateFor = (
   frontier: Ref.Ref<ReadonlyArray<FluidWorkItem>>,
@@ -982,6 +995,8 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
   const statusEffects = yield* Ref.make<StatusEffectState>(emptyStatusEffectState())
   const brewingStand = yield* Ref.make<BrewingStandState>(emptyBrewingStandState())
   const fireLifecycle = yield* Ref.make<FireLifecycleState>(makeFireLifecycleState([], DEFAULT_ROLL_SEED))
+  const fireTickAccumulator = yield* Ref.make(0)
+  fireTickAccumulators.set(fireLifecycle, fireTickAccumulator)
   const hostileContactCooldowns = yield* Ref.make<ReadonlyMap<EntityId, number>>(new Map())
   const mobDrops = yield* Ref.make<ReadonlyArray<MobDropEvent>>([])
   const mobExperience = yield* Ref.make<ReadonlyArray<MobExperienceEvent>>([])
@@ -1690,10 +1705,13 @@ export const restoreFireLifecycle = (
   state: GameplayFrameState,
   snapshot: FireLifecycleState,
 ): Effect.Effect<void> =>
-  Ref.set(state.fireLifecycle, {
-    fires: snapshot.fires.map((fire) => ({ ...fire, position: { ...fire.position } })),
-    seed: snapshot.seed,
-  })
+  Effect.all([
+    Ref.set(state.fireLifecycle, {
+      fires: snapshot.fires.map((fire) => ({ ...fire, position: { ...fire.position } })),
+      seed: snapshot.seed,
+    }),
+    Ref.set(fireTickAccumulatorFor(state.fireLifecycle), 0),
+  ]).pipe(Effect.asVoid)
 
 /** Replace the host-observed weather exposure snapshot for the next frame. */
 export const submitWeatherGameplayInput = (
@@ -1741,7 +1759,7 @@ const FIRE_SNAPSHOT_OFFSETS = [
   [0, 0, 1],
 ] as const
 
-const stepFireLifecycle = (
+const stepFireTick = (
   state: GameplayFrameState,
   store: ChunkStoreApi,
   player: PlayerServiceApi,
@@ -1790,6 +1808,33 @@ const stepFireLifecycle = (
     yield* Ref.set(state.fireLifecycle, step.state)
     if (step.damages.length > 0) {
       yield* Ref.update(state.playerDamages, (damages) => [...damages, ...step.damages])
+    }
+  })
+
+const stepFireLifecycle = (
+  state: GameplayFrameState,
+  store: ChunkStoreApi,
+  player: PlayerServiceApi,
+  dt: DeltaTimeSecs,
+): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    const current = yield* Ref.get(state.fireLifecycle)
+    const accumulator = fireTickAccumulatorFor(state.fireLifecycle)
+    if (current.fires.length === 0) {
+      yield* Ref.set(accumulator, 0)
+      return
+    }
+
+    const elapsed = (yield* Ref.get(accumulator)) + dt
+    const ticks = Math.floor((elapsed + 1e-12) / FIRE_TICK_INTERVAL_SECS)
+    yield* Ref.set(accumulator, elapsed - ticks * FIRE_TICK_INTERVAL_SECS)
+
+    for (let index = 0; index < ticks; index += 1) {
+      yield* stepFireTick(state, store, player)
+      if ((yield* Ref.get(state.fireLifecycle)).fires.length === 0) {
+        yield* Ref.set(accumulator, 0)
+        return
+      }
     }
   })
 
@@ -1958,7 +2003,7 @@ export const gameplayStages = (
         // dwell timer that only advanced on frames where somebody also broke a
         // block would take four seconds of MINING to cross a portal.
         yield* stepPortalTravel(state, store, player, dt)
-        yield* stepFireLifecycle(state, store, player)
+        yield* stepFireLifecycle(state, store, player, dt)
         yield* Ref.update(state.villagerTrades, (current) => advanceVillagerRestock(current, dt))
         yield* stepBrewing(state, dt)
         yield* stepStatusEffects(state, dt)

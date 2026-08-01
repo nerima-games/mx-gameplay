@@ -23,6 +23,8 @@ export type FireLifecycleStep = {
 }
 
 export const FIRE_NATURAL_LIFETIME_TICKS = 8
+/** Fire simulation runs at 20 Hz independently of the host render cadence. */
+export const FIRE_TICK_INTERVAL_SECS = 1 / 20
 export const FIRE_SPREAD_CHANCE = 0.3
 export const FIRE_CONTACT_DAMAGE: Damage = { amount: 1, cause: 'fire' }
 
