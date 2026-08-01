@@ -120,11 +120,15 @@
     // depend only on mc-sim, mc-worldgen, mc-audio, and mc-kernel (universal,
     // exempt from this list by design — see DEPENDENCY_POLICY.md §2 rule 5).
     "no-restricted-imports": [
-      "warn",
+      "error",
       {
-        "name": "effect",
-        "message": "Please use named imports from 'effect' package",
-        "importNames": ["default"],
+        "paths": [
+          {
+            "name": "effect",
+            "importNames": ["default"],
+            "message": "Please use named imports from 'effect' package"
+          }
+        ],
         "patterns": [
           {
             "regex": "^@nerima-games/(mx-redstone|mx-ui|mx-multiplayer)(/.*)?$",
