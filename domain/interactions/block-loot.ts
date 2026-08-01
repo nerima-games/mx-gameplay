@@ -201,11 +201,12 @@ type BonusDropLine = {
  * kernel's registry deliberately cannot express a random line.
  *
  * ---------------------------------------------------------------------------
- * TWO OF THE REFERENCE'S FOUR LINES ARE ROSTER GAPS, AND THEY ARE RECORDED
+ * TWO OF THE REFERENCE'S FIVE LINES ARE ROSTER GAPS, AND THEY ARE RECORDED
  * ---------------------------------------------------------------------------
  *
  * `rollLeafDrops` yields APPLE, STICKS and SAPLING, and `rollGrassSeedDrop`
- * yields WHEAT_SEEDS. Of those four items this build has exactly one:
+ * yields WHEAT_SEEDS from both tall grass and ferns. Of those item types this
+ * build has two:
  *
  *   `stick`         in `../item-vocabulary`. Shipped below.
  *   `apple`         NOT an `ItemType`. One row in kernel's roster, no edit here.
@@ -214,9 +215,9 @@ type BonusDropLine = {
  *                   the list that exists so this gap is data rather than a
  *                   comment. Breaking leaves cannot yield a sapling you can
  *                   carry until kernel itemises it.
- *   `wheat_seeds`   NOT an `ItemType`, and farming is not ported at all.
+ *   `wheat_seeds`   in `../item-vocabulary`. Both source blocks ship below.
  *
- * The three absent lines are NOT written with a substitute item. `../mob/mob-drop`
+ * The two absent lines are NOT written with a substitute item. `../mob/mob-drop`
  * records the one place this repository did substitute (`blaze_rod` ->
  * `blaze_powder`) and the paragraph justifying it is four times the length of
  * the line — because kernel had already decided that name. Nothing has decided
@@ -225,7 +226,11 @@ type BonusDropLine = {
 const BONUS_DROPS: ReadonlyMap<BlockType, ReadonlyArray<BonusDropLine>> = new Map<
   BlockType,
   ReadonlyArray<BonusDropLine>
->([['oak_leaves', [{ item: 'stick', chance: LEAF_STICK_DROP_CHANCE }]]])
+>([
+  ['oak_leaves', [{ item: 'stick', chance: LEAF_STICK_DROP_CHANCE }]],
+  ['tall_grass', [{ item: 'wheat_seeds', chance: GRASS_SEED_DROP_CHANCE }]],
+  ['fern', [{ item: 'wheat_seeds', chance: GRASS_SEED_DROP_CHANCE }]],
+])
 
 /**
  * How many rolls `blockLoot` consumes for ONE broken block, whatever block it is.

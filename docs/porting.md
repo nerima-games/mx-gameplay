@@ -393,24 +393,11 @@ F8（§4-3-2）と同じく参照実装と食い違うが、**向きが逆で、
 **昼間の地上にモブを湧かせる**側に倒れる。`domain/mob/hostile-spawn.ts` の `unmeasurable` と
 プレビューの finding F5 が同じ形の判断である。移植しないこと自体が主張なので、ここに記録する。
 
-#### 決めるべき 1 行 —— `rollGrassSeedDrop`
+#### 決定済み —— `rollGrassSeedDrop`
 
-`test/block-loot.test.ts` の「the three unshipped lines really are unshipped」は
-**自分でこう書いている**:
-
-> 種の行は名指す `wheat_seeds` が無かった。**今はある** —— kernel の roster 完成で入った。
-> だから**その半分はもう kernel のギャップではない**。`rollGrassSeedDrop`（`:245-246`）の移植は
-> このリポジトリがいつやってもいい仕事であり、audit §6-9 は乱数のドロップ規則をこちらに置いている。
-
-つまり `world/test/block-service-drop-overrides.test.ts:144-165` の 4 本は**移植可能**である。
-**しかし移植すると同じファイルの既存テストと衝突する** —— そのテストは
-「tall_grass と fern はどんなに運が良くても何も落とさない」を現状として固定しており、
-`BONUS_DROPS` に行を足すと赤くなる。
-
-**これはテストの移植ではなく production の変更を要求する決定であり、片方を黙って直さない。**
-決めるべきことは 1 つ:「ベースドロップが無いブロック（`UNITEMISED_BLOCK_TYPES` にある
-tall_grass / fern）にボーナス行だけを持たせるか」。葉が先例で、答えは「持たせてよい」に見えるが、
-葉は**アイテム化されている**ブロックである。この行を決めるまで両方を現状のままにしてある。
+`wheat_seeds` が `ItemType` に追加済みであり、葉と同じくベースドロップから独立した
+ボーナス行を持てるため、tall grass と fern の 1/8 ドロップを移植した。
+`test/block-loot.test.ts` は両ブロックについて排他的な確率境界と Silk Touch 抑制を固定する。
 
 ### 4-4. この回に移植したもの（2026-07-28、`interaction-*` の 3 回目）
 
