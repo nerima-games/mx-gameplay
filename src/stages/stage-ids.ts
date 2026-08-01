@@ -39,6 +39,8 @@ export const GAMEPLAY_STAGE_IDS = {
    * sees and it should see one thing per responsibility.
    */
   interactions: StageId('gameplay:interactions'),
+  /** Survival hunger, regeneration, and starvation after activity resolution. */
+  survivalHunger: StageId('gameplay:survival-hunger'),
   /** Mob AI, drops, vehicles, and the falling-block cascade. */
   entities: StageId('gameplay:entities'),
   /** Ender Dragon encounter progression while the player is in the End. */

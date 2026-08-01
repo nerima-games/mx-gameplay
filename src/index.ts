@@ -87,6 +87,7 @@ export * from './domain/weather'
 export * from './domain/weather-gameplay'
 export * from './domain/villager-trade'
 export * from './domain/status-effect'
+export * from './domain/survival-hunger'
 export * from './domain/brewing'
 export {
   blockOfPlaceableItem,

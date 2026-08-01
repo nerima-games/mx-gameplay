@@ -232,6 +232,10 @@ import { placeBlock } from '../domain/interactions/place-block'
 import { cropDrops, type CropDropOutcome } from '../domain/interactions/crop-drops'
 import { resolveFoodUse, type FoodUseOutcome, type FoodUseRequest } from '../domain/interactions/eat-food'
 import {
+  makeSurvivalHungerRuntime,
+  type SurvivalHungerRuntimeApi,
+} from '../domain/survival-hunger'
+import {
   furnaceAdvanceChanged,
   planFurnaceAdvance,
   type FurnaceAdvancePlan,
@@ -765,6 +769,7 @@ const runFluidPropagation = (
 
 export type GameplayFrameState = {
   readonly enderDragonEncounter: EnderDragonEncounterStageApi
+  readonly survivalHunger: SurvivalHungerRuntimeApi
   readonly pendingBreaks: Ref.Ref<ReadonlyArray<PositionKey>>
   readonly pendingPlacements: Ref.Ref<ReadonlyArray<PlacementRequest>>
   readonly pendingBlockUses: Ref.Ref<ReadonlyArray<BlockUseRequest>>
@@ -1173,6 +1178,7 @@ export type EnderPearlOutcome = {
 
 export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.gen(function* () {
   const enderDragonEncounter = yield* makeEnderDragonEncounterRuntime
+  const survivalHunger = yield* makeSurvivalHungerRuntime()
   const pendingBreaks = yield* Ref.make<ReadonlyArray<PositionKey>>([])
   const breakRequests = yield* Ref.make<PendingBlockBreakRequestState>({
     nextRequestId: 0,
@@ -1259,6 +1265,7 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
 
   const state: GameplayFrameState = {
     enderDragonEncounter,
+    survivalHunger,
     pendingBreaks,
     pendingPlacements,
     pendingBlockUses,
@@ -2562,6 +2569,9 @@ export const gameplayStages = (
               case 'EatPotato': {
                 const outcome = resolveFoodUse({ held: request.heldItem, vitals: request.vitals })
                 const success = outcome._tag === 'consume'
+                if (success) {
+                  yield* state.survivalHunger.eat(outcome.foodPoints, outcome.saturationModifier)
+                }
                 itemUseResults.push({
                   action: request.action,
                   requestId: request.requestId,
@@ -2934,8 +2944,13 @@ export const gameplayStages = (
       }),
   },
   {
-    id: GAMEPLAY_STAGE_IDS.entities,
+    id: GAMEPLAY_STAGE_IDS.survivalHunger,
     after: [GAMEPLAY_STAGE_IDS.interactions],
+    run: (dt) => Effect.asVoid(state.survivalHunger.tick(dt)),
+  },
+  {
+    id: GAMEPLAY_STAGE_IDS.entities,
+    after: [GAMEPLAY_STAGE_IDS.survivalHunger],
     // Entities run after interactions because a mob's reaction is to the world
     // as the player just left it — reversing the two makes a creeper respond to
     // last frame's block placement, which reads as lag rather than as a bug.

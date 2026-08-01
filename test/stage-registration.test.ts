@@ -216,6 +216,7 @@ describe('§2.3-3 the total order belongs to mc-compose', () => {
 
       expect(stageIds(stages)).toStrictEqual([
         GAMEPLAY_STAGE_IDS.interactions,
+        GAMEPLAY_STAGE_IDS.survivalHunger,
         GAMEPLAY_STAGE_IDS.entities,
         GAMEPLAY_STAGE_IDS.enderDragon,
         GAMEPLAY_STAGE_IDS.fluids,
@@ -225,8 +226,11 @@ describe('§2.3-3 the total order belongs to mc-compose', () => {
       expect(byId.get(GAMEPLAY_STAGE_IDS.interactions)?.after).toStrictEqual([
         UPSTREAM_STAGE_IDS.simPhysics,
       ])
-      expect(byId.get(GAMEPLAY_STAGE_IDS.entities)?.after).toStrictEqual([
+      expect(byId.get(GAMEPLAY_STAGE_IDS.survivalHunger)?.after).toStrictEqual([
         GAMEPLAY_STAGE_IDS.interactions,
+      ])
+      expect(byId.get(GAMEPLAY_STAGE_IDS.entities)?.after).toStrictEqual([
+        GAMEPLAY_STAGE_IDS.survivalHunger,
       ])
       expect(byId.get(GAMEPLAY_STAGE_IDS.enderDragon)?.after).toStrictEqual([
         GAMEPLAY_STAGE_IDS.entities,
@@ -717,6 +721,7 @@ describe('stage behaviour', () => {
         'spawnAttempts',
         'spawnClockSecs',
         'statusEffects',
+        'survivalHunger',
         'targetPosition',
         'tickCount',
         'timeOfDay',
@@ -1240,7 +1245,7 @@ describe('the module contract has caught up with this file’s shape', () => {
       const satisfied: Effect.Effect<ReadonlyArray<StageRegistration>, never, never> =
         Effect.provide(registration, emptyWorld)
 
-      expect(yield* satisfied).toHaveLength(5)
+      expect(yield* satisfied).toHaveLength(6)
     }),
   )
 
