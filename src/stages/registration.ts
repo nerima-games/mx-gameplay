@@ -81,7 +81,9 @@ import {
   EYE_LEVEL_OFFSET,
   InventoryService,
   TimeService,
+  addItem as addInventoryItem,
   forwardVector,
+  removeItem as removeInventoryItem,
   targetBlockFromPlayerPose,
   type BlockTarget,
   type FurnaceState,
@@ -91,6 +93,13 @@ import {
 import { Effect, Effectable, Layer, Option, Readable, Ref } from 'effect'
 import { below, positionKeyOf, positionOfKey } from '../domain/block-position-key'
 import { hostileSpawnsAllowed } from '../domain/day-night'
+import {
+  advanceVillagerRestock,
+  copyVillagerTradeState,
+  emptyVillagerTradeState,
+  useVillagerOffer,
+  type VillagerTradeState,
+} from '../domain/villager-trade'
 import { targetabilityFromStore } from '../domain/in-memory-world'
 import { ChunkStore, type BlockPosition, type ChunkStoreApi } from '../domain/chunk-store-port'
 import {
@@ -504,6 +513,7 @@ export type GameplayFrameState = {
   readonly pendingBowShots: Ref.Ref<ReadonlyArray<BowShotRequest>>
   readonly pendingMeleeAttacks: Ref.Ref<ReadonlyArray<MeleeAttackRequest>>
   readonly pendingPearlThrows: Ref.Ref<ReadonlyArray<EnderPearlThrowRequest>>
+  readonly pendingVillagerTrades: Ref.Ref<ReadonlyArray<VillagerTradeRequest>>
   readonly consumedItems: Ref.Ref<ReadonlyArray<PlaceableItemType>>
   readonly usedItems: Ref.Ref<ReadonlyArray<IgnitionItemType>>
   readonly blockUseResults: Ref.Ref<ReadonlyArray<BlockUseResult>>
@@ -518,6 +528,8 @@ export type GameplayFrameState = {
   readonly hostileContactCooldowns: Ref.Ref<ReadonlyMap<EntityId, number>>
   readonly mobDrops: Ref.Ref<ReadonlyArray<MobDropEvent>>
   readonly mobExperience: Ref.Ref<ReadonlyArray<MobExperienceEvent>>
+  readonly villagerTradeResults: Ref.Ref<ReadonlyArray<VillagerTradeResult>>
+  readonly villagerTrades: Ref.Ref<VillagerTradeState>
   readonly spawnAttempts: Ref.Ref<ReadonlyArray<MobSpawnAttempt>>
   readonly targetPosition: Ref.Ref<Position | undefined>
   readonly timeOfDay: Ref.Ref<number>
@@ -554,6 +566,19 @@ export type PortalTravelEvent = {
   readonly sourcePosition: BlockPosition
   readonly plan: PortalTravelPlan
 }
+
+export type VillagerTradeRequest = {
+  readonly requestId: string
+  readonly villagerId: string
+  readonly offerId: string
+}
+
+export type VillagerTradeResult =
+  | (VillagerTradeRequest & { readonly _tag: 'Traded' })
+  | (VillagerTradeRequest & {
+      readonly _tag: 'Rejected'
+      readonly reason: 'UnknownOffer' | 'OutOfStock' | 'InsufficientItems' | 'InventoryFull'
+    })
 
 const pendingBlockBreakRequests = new WeakMap<GameplayFrameState, PendingBlockBreakRequestQueue>()
 
@@ -892,6 +917,7 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
   const pendingBowShots = yield* Ref.make<ReadonlyArray<BowShotRequest>>([])
   const pendingMeleeAttacks = yield* Ref.make<ReadonlyArray<MeleeAttackRequest>>([])
   const pendingPearlThrows = yield* Ref.make<ReadonlyArray<EnderPearlThrowRequest>>([])
+  const pendingVillagerTrades = yield* Ref.make<ReadonlyArray<VillagerTradeRequest>>([])
   const consumedItems = yield* Ref.make<ReadonlyArray<PlaceableItemType>>([])
   const usedItems = yield* Ref.make<ReadonlyArray<IgnitionItemType>>([])
   const blockUseResults = yield* Ref.make<ReadonlyArray<BlockUseResult>>([])
@@ -909,6 +935,8 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
   const hostileContactCooldowns = yield* Ref.make<ReadonlyMap<EntityId, number>>(new Map())
   const mobDrops = yield* Ref.make<ReadonlyArray<MobDropEvent>>([])
   const mobExperience = yield* Ref.make<ReadonlyArray<MobExperienceEvent>>([])
+  const villagerTradeResults = yield* Ref.make<ReadonlyArray<VillagerTradeResult>>([])
+  const villagerTrades = yield* Ref.make<VillagerTradeState>(emptyVillagerTradeState())
   const spawnAttempts = yield* Ref.make<ReadonlyArray<MobSpawnAttempt>>([])
   const targetPosition = yield* Ref.make<Position | undefined>(undefined)
   // Midnight, which `domain/day-night.ts` reads as night. See the module header
@@ -949,6 +977,7 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
     pendingBowShots,
     pendingMeleeAttacks,
     pendingPearlThrows,
+    pendingVillagerTrades,
     consumedItems,
     usedItems,
     blockUseResults,
@@ -963,6 +992,8 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
     hostileContactCooldowns,
     mobDrops,
     mobExperience,
+    villagerTradeResults,
+    villagerTrades,
     spawnAttempts,
     targetPosition,
     timeOfDay,
@@ -1417,6 +1448,33 @@ export const drainPlayerDamages = (
   state: GameplayFrameState,
 ): Effect.Effect<ReadonlyArray<PlayerDamageEvent>> => Ref.getAndSet(state.playerDamages, [])
 
+export const requestVillagerTrade = (
+  state: GameplayFrameState,
+  request: VillagerTradeRequest,
+): Effect.Effect<void> =>
+  Ref.update(state.pendingVillagerTrades, (pending) => [...pending, request])
+
+export const drainVillagerTradeResults = (
+  state: GameplayFrameState,
+): Effect.Effect<ReadonlyArray<VillagerTradeResult>> =>
+  Ref.getAndSet(state.villagerTradeResults, [])
+
+const recordVillagerTradeResult = (
+  state: GameplayFrameState,
+  result: VillagerTradeResult,
+): Effect.Effect<void> =>
+  Ref.update(state.villagerTradeResults, (results) => [...results, result])
+
+export const snapshotVillagerTrades = (
+  state: GameplayFrameState,
+): Effect.Effect<VillagerTradeState> =>
+  Ref.get(state.villagerTrades).pipe(Effect.map(copyVillagerTradeState))
+
+export const restoreVillagerTrades = (
+  state: GameplayFrameState,
+  snapshot: VillagerTradeState,
+): Effect.Effect<void> => Ref.set(state.villagerTrades, copyVillagerTradeState(snapshot))
+
 /** Snapshot the deterministic fire state for host persistence. */
 export const snapshotFireLifecycle = (
   state: GameplayFrameState,
@@ -1669,6 +1727,7 @@ export const gameplayStages = (
         // block would take four seconds of MINING to cross a portal.
         yield* stepPortalTravel(state, store, player, dt)
         yield* stepFireLifecycle(state, store, player)
+        yield* Ref.update(state.villagerTrades, (current) => advanceVillagerRestock(current, dt))
 
         // `getAndSet` rather than get-then-set: whoever fills the inboxes is not
         // this fiber, and a request that arrived between the two steps would be
@@ -1721,6 +1780,10 @@ export const gameplayStages = (
           state.pendingPearlThrows,
           [],
         )
+        const villagerTrades = yield* Ref.getAndSet<ReadonlyArray<VillagerTradeRequest>>(
+          state.pendingVillagerTrades,
+          [],
+        )
         if (
           breaks.length === 0 &&
           placements.length === 0 &&
@@ -1728,7 +1791,8 @@ export const gameplayStages = (
           itemUses.length === 0 &&
           bowShots.length === 0 &&
           meleeAttacks.length === 0 &&
-          pearlThrows.length === 0
+          pearlThrows.length === 0 &&
+          villagerTrades.length === 0
         ) {
           return
         }
@@ -1741,6 +1805,69 @@ export const gameplayStages = (
         const bowShotResults: Array<BowShotResult> = []
         const meleeAttackResults: Array<MeleeAttackResult> = []
         const disturbed: Array<PositionKey> = []
+
+        for (const request of villagerTrades) {
+          const tradeState = yield* Ref.get(state.villagerTrades)
+          const villager = tradeState.villagers.find((candidate) => candidate.id === request.villagerId)
+          const offer = villager?.offers.find((candidate) => candidate.id === request.offerId)
+          if (offer === undefined) {
+            yield* recordVillagerTradeResult(state, {
+              ...request,
+              _tag: 'Rejected',
+              reason: 'UnknownOffer',
+            })
+            continue
+          }
+          if (offer.uses >= offer.maxUses) {
+            yield* recordVillagerTradeResult(state, {
+              ...request,
+              _tag: 'Rejected',
+              reason: 'OutOfStock',
+            })
+            continue
+          }
+
+          const before = yield* inventory.snapshot
+          const removed = removeInventoryItem(before, offer.input.item, offer.input.count)
+          if (removed.removed !== offer.input.count) {
+            yield* recordVillagerTradeResult(state, {
+              ...request,
+              _tag: 'Rejected',
+              reason: 'InsufficientItems',
+            })
+            continue
+          }
+          const added = addInventoryItem(removed.inventory, offer.output.item, offer.output.count)
+          if (added.leftover !== 0) {
+            yield* recordVillagerTradeResult(state, {
+              ...request,
+              _tag: 'Rejected',
+              reason: 'InventoryFull',
+            })
+            continue
+          }
+
+          const actuallyRemoved = yield* inventory.remove(offer.input.item, offer.input.count)
+          const leftover =
+            actuallyRemoved === offer.input.count
+              ? yield* inventory.add(offer.output.item, offer.output.count)
+              : offer.output.count
+          if (actuallyRemoved !== offer.input.count || leftover !== 0) {
+            yield* inventory.restore(before)
+            yield* recordVillagerTradeResult(state, {
+              ...request,
+              _tag: 'Rejected',
+              reason:
+                actuallyRemoved === offer.input.count ? 'InventoryFull' : 'InsufficientItems',
+            })
+            continue
+          }
+
+          yield* Ref.update(state.villagerTrades, (current) =>
+            useVillagerOffer(current, request.villagerId, request.offerId) ?? current,
+          )
+          yield* recordVillagerTradeResult(state, { ...request, _tag: 'Traded' })
+        }
 
         // Legacy key-only requests have no completion-time snapshot, so they
         // retain the old batch-level fallback. Requests made through the public

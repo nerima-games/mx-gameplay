@@ -77,6 +77,7 @@ export * from './domain/mob/shulker-shell'
 export * from './domain/vehicle/rail-ascent'
 export * from './domain/vehicle/rail-shape'
 export * from './domain/weather'
+export * from './domain/villager-trade'
 export {
   blockOfPlaceableItem,
   isPlaceableItem,

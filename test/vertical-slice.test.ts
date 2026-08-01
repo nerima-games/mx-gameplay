@@ -86,6 +86,13 @@ import {
 import { blockIdOf, isReplaceable } from '../src/domain/block-vocabulary'
 import { NOON_FRACTION } from '../src/domain/day-night'
 import {
+  addVillager,
+  emptyVillagerTradeState,
+  makeVillager,
+  useVillagerOffer,
+  VILLAGER_RESTOCK_INTERVAL_SECS,
+} from '../src/domain/villager-trade'
+import {
   CREEPER_KIND,
   DROPPED_ITEM_KIND,
   CREEPER_MAX_HEALTH,
@@ -124,6 +131,7 @@ import { generatePortalLayout } from '../src/domain/portal-frame-port'
 import {
   drainItemUseResults,
   drainPlayerDamages,
+  drainVillagerTradeResults,
   gameplayStages,
   makeGameplayFrameState,
   requestBlockBreak,
@@ -133,8 +141,11 @@ import {
   requestPotatoHarvest,
   requestPotatoPlanting,
   requestSoilTill,
+  requestVillagerTrade,
   restoreFireLifecycle,
+  restoreVillagerTrades,
   snapshotFireLifecycle,
+  snapshotVillagerTrades,
   type PlacementRequest,
 } from '../src/stages/registration'
 import { MAX_FURNACE_ADVANCE_SECS } from '../src/domain/interactions/advance-furnace'
@@ -2305,6 +2316,63 @@ describe('the potato farming slice: host input reaches farming rules', () => {
           outcome: { _tag: 'consume', count: 1, foodPoints: 1, saturationModifier: 0.6 },
         },
       ])
+    }),
+  )
+})
+
+describe('the villager trading slice: host input reaches deterministic offers', () => {
+  it.effect('atomically exchanges items and persists offer stock through snapshots', () =>
+    Effect.gen(function* () {
+      const slots = emptySlots().map((_, index) =>
+        index === 0 ? itemStack('wheat', 20) : undefined,
+      )
+      const runtime = yield* slice(world([]), ['0,0'], slots)
+      const villager = makeVillager('farmer-1', 'farmer')
+      const offer = villager.offers.find((candidate) => candidate.input.item === 'wheat')!
+      yield* Ref.set(
+        runtime.state.villagerTrades,
+        addVillager(emptyVillagerTradeState(), villager),
+      )
+
+      const request = { requestId: 'trade-1', villagerId: villager.id, offerId: offer.id }
+      yield* requestVillagerTrade(runtime.state, request)
+      yield* runFrame(runtime.stages)
+
+      expect(yield* runtime.inventory.api.countOf('wheat')).toBe(0)
+      expect(yield* runtime.inventory.api.countOf('emerald')).toBe(1)
+      expect(yield* drainVillagerTradeResults(runtime.state)).toStrictEqual([
+        { ...request, _tag: 'Traded' },
+      ])
+
+      const snapshot = yield* snapshotVillagerTrades(runtime.state)
+      expect(snapshot.villagers[0]?.offers.find((candidate) => candidate.id === offer.id)?.uses).toBe(1)
+      yield* Ref.set(runtime.state.villagerTrades, emptyVillagerTradeState())
+      yield* restoreVillagerTrades(runtime.state, snapshot)
+      expect(yield* snapshotVillagerTrades(runtime.state)).toStrictEqual(snapshot)
+    }),
+  )
+
+  it.effect('rejects unavailable stock and restocks it on the gameplay clock', () =>
+    Effect.gen(function* () {
+      const runtime = yield* slice(world([]))
+      const villager = makeVillager('farmer-stock', 'farmer')
+      const offer = villager.offers[0]!
+      let exhausted = addVillager(emptyVillagerTradeState(), villager)
+      for (let use = 0; use < offer.maxUses; use += 1) {
+        exhausted = useVillagerOffer(exhausted, villager.id, offer.id)!
+      }
+      yield* Ref.set(runtime.state.villagerTrades, exhausted)
+
+      const request = { requestId: 'sold-out', villagerId: villager.id, offerId: offer.id }
+      yield* requestVillagerTrade(runtime.state, request)
+      yield* runFrame(runtime.stages)
+      expect(yield* drainVillagerTradeResults(runtime.state)).toStrictEqual([
+        { ...request, _tag: 'Rejected', reason: 'OutOfStock' },
+      ])
+
+      yield* runFrame(runtime.stages, DeltaTimeSecs(VILLAGER_RESTOCK_INTERVAL_SECS))
+      const restocked = yield* snapshotVillagerTrades(runtime.state)
+      expect(restocked.villagers[0]?.offers.every((candidate) => candidate.uses === 0)).toBe(true)
     }),
   )
 })

@@ -451,6 +451,7 @@ describe('stage behaviour', () => {
         'pendingMeleeAttacks',
         'pendingPearlThrows',
         'pendingPlacements',
+        'pendingVillagerTrades',
         'playerDamages',
         'portalCandidates',
         'portalDwell',
@@ -462,6 +463,8 @@ describe('stage behaviour', () => {
         'tickCount',
         'timeOfDay',
         'usedItems',
+        'villagerTradeResults',
+        'villagerTrades',
         'weather',
         'weatherAdvanced',
       ])
