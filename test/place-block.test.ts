@@ -65,7 +65,12 @@ import {
   type PlaceOutcome,
 } from '../src/domain/interactions/place-block'
 import type { Position } from '../src/domain/entity-manager-port'
-import { gameplayStages, makeGameplayFrameState } from '../src/stages/registration'
+import {
+  drainBlockPlacementResults,
+  gameplayStages,
+  makeGameplayFrameState,
+  requestBlockPlacementCommand,
+} from '../src/stages/registration'
 import { makeChunkStoreDouble, SAND, STONE, WATER, world } from './support/chunk-store-double'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
 import { makePlayerServiceDouble } from './support/player-service-double'
@@ -1016,6 +1021,177 @@ describe('placement through gameplay:interactions', () => {
 
       expect(yield* store.blockAt(target)).toBeUndefined()
       expect(yield* Ref.get(state.consumedItems)).toStrictEqual([])
+    }),
+  )
+
+  it.effect('a correlated empty-hand placement reports failure without changing the world', () =>
+    Effect.gen(function* () {
+      const { store, state, inventory, stages } = yield* stagedSlice([[below, STONE]], false)
+
+      yield* requestBlockPlacementCommand(state, {
+        requestId: 'empty-hand',
+        positionKey: positionKeyOf(target),
+        heldItem: 'sand',
+      })
+      yield* runFrame(stages)
+
+      expect(yield* store.blockAt(target)).toBeUndefined()
+      expect(yield* inventory.withdrawals).toStrictEqual([
+        { item: 'sand', count: 1, removed: 0 },
+      ])
+      expect(yield* drainBlockPlacementResults(state)).toStrictEqual([
+        {
+          requestId: 'empty-hand',
+          success: false,
+          consumed: false,
+          replayed: false,
+          outcome: { _tag: 'InventoryUnavailable' },
+        },
+      ])
+    }),
+  )
+
+  it.effect('the last held item is consumed exactly once when placement succeeds', () =>
+    Effect.gen(function* () {
+      const { store, state, inventory, stages } = yield* stagedSlice([[below, STONE]])
+
+      yield* requestBlockPlacementCommand(state, {
+        requestId: 'last-item',
+        positionKey: positionKeyOf(target),
+        heldItem: 'sand',
+      })
+      yield* runFrame(stages)
+
+      expect(yield* store.blockAt(target)).toBe(blockIdOf('sand'))
+      expect(yield* inventory.api.countOf('sand')).toBe(0)
+      expect(yield* inventory.withdrawals).toStrictEqual([
+        { item: 'sand', count: 1, removed: 1 },
+      ])
+      const [result] = yield* drainBlockPlacementResults(state)
+      expect(result).toMatchObject({
+        requestId: 'last-item',
+        success: true,
+        consumed: true,
+        replayed: false,
+        outcome: { _tag: 'Placed', consumed: 'sand' },
+      })
+    }),
+  )
+
+  it.effect('a refused correlated placement restores the reservation and reports the reason', () =>
+    Effect.gen(function* () {
+      const { store, state, inventory, stages } = yield* stagedSlice([[target, STONE]])
+
+      yield* requestBlockPlacementCommand(state, {
+        requestId: 'occupied',
+        positionKey: positionKeyOf(target),
+        heldItem: 'sand',
+      })
+      yield* runFrame(stages)
+
+      expect(yield* store.blockAt(target)).toBe(STONE)
+      expect(yield* inventory.api.countOf('sand')).toBe(1)
+      expect(yield* drainBlockPlacementResults(state)).toStrictEqual([
+        {
+          requestId: 'occupied',
+          success: false,
+          consumed: false,
+          replayed: false,
+          outcome: { _tag: 'Occupied', existing: STONE },
+        },
+      ])
+    }),
+  )
+
+  it.effect('creative placement changes the world without touching inventory', () =>
+    Effect.gen(function* () {
+      const { store, state, inventory, stages } = yield* stagedSlice([[below, STONE]], false)
+
+      yield* requestBlockPlacementCommand(state, {
+        requestId: 'creative',
+        positionKey: positionKeyOf(target),
+        heldItem: 'sand',
+        mode: 'creative',
+      })
+      yield* runFrame(stages)
+
+      expect(yield* store.blockAt(target)).toBe(blockIdOf('sand'))
+      expect(yield* inventory.withdrawals).toStrictEqual([])
+      const [result] = yield* drainBlockPlacementResults(state)
+      expect(result).toMatchObject({
+        requestId: 'creative',
+        success: true,
+        consumed: false,
+        replayed: false,
+        outcome: { _tag: 'Placed' },
+      })
+    }),
+  )
+
+  it.effect('replaying the same command id returns its result without a second mutation', () =>
+    Effect.gen(function* () {
+      const { store, state, inventory, stages } = yield* stagedSlice([[below, STONE]])
+      const command = {
+        requestId: 'retry',
+        positionKey: positionKeyOf(target),
+        heldItem: 'sand' as const,
+      }
+
+      yield* requestBlockPlacementCommand(state, command)
+      yield* runFrame(stages)
+      yield* drainBlockPlacementResults(state)
+      yield* requestBlockPlacementCommand(state, command)
+      yield* runFrame(stages)
+
+      expect(yield* store.blockAt(target)).toBe(blockIdOf('sand'))
+      expect(yield* inventory.withdrawals).toStrictEqual([
+        { item: 'sand', count: 1, removed: 1 },
+      ])
+      const [result] = yield* drainBlockPlacementResults(state)
+      expect(result).toMatchObject({
+        requestId: 'retry',
+        success: true,
+        consumed: true,
+        replayed: true,
+        outcome: { _tag: 'Placed' },
+      })
+    }),
+  )
+
+  it.effect('reusing a command id for another payload is rejected without mutation', () =>
+    Effect.gen(function* () {
+      const secondTarget: BlockPosition = { x: 3, y: 64, z: 3 }
+      const secondBelow: BlockPosition = { x: 3, y: 63, z: 3 }
+      const { store, state, inventory, stages } = yield* stagedSlice([
+        [below, STONE],
+        [secondBelow, STONE],
+      ])
+
+      yield* requestBlockPlacementCommand(state, {
+        requestId: 'conflict',
+        positionKey: positionKeyOf(target),
+        heldItem: 'sand',
+      })
+      yield* runFrame(stages)
+      yield* drainBlockPlacementResults(state)
+      yield* requestBlockPlacementCommand(state, {
+        requestId: 'conflict',
+        positionKey: positionKeyOf(secondTarget),
+        heldItem: 'sand',
+      })
+      yield* runFrame(stages)
+
+      expect(yield* store.blockAt(secondTarget)).toBeUndefined()
+      expect(yield* inventory.withdrawals).toHaveLength(1)
+      expect(yield* drainBlockPlacementResults(state)).toStrictEqual([
+        {
+          requestId: 'conflict',
+          success: false,
+          consumed: false,
+          replayed: true,
+          outcome: { _tag: 'RequestIdConflict' },
+        },
+      ])
     }),
   )
 

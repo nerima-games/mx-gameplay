@@ -243,7 +243,7 @@ import {
   NO_TOOL,
   type BlockLootContext,
 } from '../domain/interactions/block-loot'
-import { placeBlock } from '../domain/interactions/place-block'
+import { placeBlock, type PlaceOutcome } from '../domain/interactions/place-block'
 import { cropDrops, type CropDropOutcome } from '../domain/interactions/crop-drops'
 import { resolveFoodUse, type FoodUseOutcome, type FoodUseRequest } from '../domain/interactions/eat-food'
 import {
@@ -868,6 +868,7 @@ export type VillagerTradeResult =
     })
 
 const pendingBlockBreakRequests = new WeakMap<GameplayFrameState, PendingBlockBreakRequestQueue>()
+const blockPlacementRuntimes = new WeakMap<GameplayFrameState, BlockPlacementRuntime>()
 
 const breakRequestQueueFor = (state: GameplayFrameState): PendingBlockBreakRequestQueue => {
   const existing = pendingBlockBreakRequests.get(state)
@@ -882,6 +883,20 @@ const breakRequestQueueFor = (state: GameplayFrameState): PendingBlockBreakReque
     mutex: Effect.unsafeMakeSemaphore(1),
   }
   pendingBlockBreakRequests.set(state, created)
+  return created
+}
+
+const blockPlacementRuntimeFor = (state: GameplayFrameState): BlockPlacementRuntime => {
+  const existing = blockPlacementRuntimes.get(state)
+  if (existing !== undefined) {
+    return existing
+  }
+
+  const created: BlockPlacementRuntime = {
+    state: Ref.unsafeMake<BlockPlacementRuntimeState>({ handled: new Map(), results: [] }),
+    mutex: Effect.unsafeMakeSemaphore(1),
+  }
+  blockPlacementRuntimes.set(state, created)
   return created
 }
 
@@ -902,6 +917,50 @@ const breakRequestQueueFor = (state: GameplayFrameState): PendingBlockBreakReque
 export type PlacementRequest = {
   readonly positionKey: PositionKey
   readonly heldItem: PlaceableItemType
+}
+
+export type BlockPlacementRequestId = string
+
+export type BlockPlacementMode = 'survival' | 'creative'
+
+/** A correlated placement command. Omitted mode preserves survival semantics. */
+export type BlockPlacementCommand = PlacementRequest & {
+  readonly requestId: BlockPlacementRequestId
+  readonly mode?: BlockPlacementMode
+}
+
+export type BlockPlacementCommandOutcome =
+  | PlaceOutcome
+  | { readonly _tag: 'InventoryUnavailable' }
+  | { readonly _tag: 'RequestIdConflict' }
+
+/** One drainable answer for a correlated placement command. */
+export type BlockPlacementResult = {
+  readonly requestId: BlockPlacementRequestId
+  readonly success: boolean
+  readonly consumed: boolean
+  readonly replayed: boolean
+  readonly outcome: BlockPlacementCommandOutcome
+}
+
+type NormalizedBlockPlacementCommand = PlacementRequest & {
+  readonly requestId: BlockPlacementRequestId
+  readonly mode: BlockPlacementMode
+}
+
+type HandledBlockPlacementCommand = {
+  readonly command: NormalizedBlockPlacementCommand
+  readonly result: BlockPlacementResult
+}
+
+type BlockPlacementRuntimeState = {
+  readonly handled: ReadonlyMap<BlockPlacementRequestId, HandledBlockPlacementCommand>
+  readonly results: ReadonlyArray<BlockPlacementResult>
+}
+
+type BlockPlacementRuntime = {
+  readonly state: Ref.Ref<BlockPlacementRuntimeState>
+  readonly mutex: Effect.Semaphore
 }
 
 /** Host-provided correlation key for one targeted block-use request. */
@@ -1485,6 +1544,22 @@ export const requestBlockPlacement = (
   request: PlacementRequest,
 ): Effect.Effect<void> =>
   Ref.update(state.pendingPlacements, (pending) => [...pending, request])
+
+/** Enqueue one correlated placement through the same ordered placement inbox. */
+export const requestBlockPlacementCommand = (
+  state: GameplayFrameState,
+  command: BlockPlacementCommand,
+): Effect.Effect<void> =>
+  Ref.update(state.pendingPlacements, (pending) => [...pending, command])
+
+/** Atomically drain correlated placement answers exactly once. */
+export const drainBlockPlacementResults = (
+  state: GameplayFrameState,
+): Effect.Effect<ReadonlyArray<BlockPlacementResult>> =>
+  Ref.modify(blockPlacementRuntimeFor(state).state, (runtime) => [
+    runtime.results,
+    { ...runtime, results: [] },
+  ])
 
 /** Enqueue one correlated use of the block occupying a cell. */
 export const requestBlockUse = (
@@ -2375,6 +2450,136 @@ export const requestTargetedPotatoPlanting = (
     return target
   })
 
+type BlockPlacementExecution = {
+  readonly outcome: BlockPlacementCommandOutcome
+  readonly consumed: boolean
+  readonly mutated: boolean
+}
+
+const isBlockPlacementCommand = (
+  request: PlacementRequest,
+): request is BlockPlacementCommand => 'requestId' in request
+
+const normalizedBlockPlacementCommand = (
+  command: BlockPlacementCommand,
+): NormalizedBlockPlacementCommand => ({ ...command, mode: command.mode ?? 'survival' })
+
+const sameBlockPlacementCommand = (
+  left: NormalizedBlockPlacementCommand,
+  right: NormalizedBlockPlacementCommand,
+): boolean =>
+  left.positionKey === right.positionKey &&
+  left.heldItem === right.heldItem &&
+  left.mode === right.mode
+
+const executeBlockPlacementAtomically = (
+  request: PlacementRequest,
+  mode: BlockPlacementMode,
+  store: ChunkStoreApi,
+  inventory: InventoryServiceApi,
+  playerFeet: Position,
+): Effect.Effect<BlockPlacementExecution> =>
+  Effect.uninterruptible(
+    Effect.gen(function* () {
+      if (mode === 'creative') {
+        const outcome = yield* placeBlock(store, {
+          position: positionOfKey(request.positionKey),
+          heldItem: request.heldItem,
+          playerFeet,
+        })
+        return { outcome, consumed: false, mutated: outcome._tag === 'Placed' }
+      }
+
+      const reserved = yield* inventory.remove(request.heldItem, 1)
+      if (reserved === 0) {
+        return {
+          outcome: { _tag: 'InventoryUnavailable' } as const,
+          consumed: false,
+          mutated: false,
+        }
+      }
+
+      const outcome = yield* placeBlock(store, {
+        position: positionOfKey(request.positionKey),
+        heldItem: request.heldItem,
+        playerFeet,
+      })
+      if (outcome._tag === 'Placed') {
+        return { outcome, consumed: true, mutated: true }
+      }
+
+      const leftover = yield* inventory.add(request.heldItem, reserved)
+      if (leftover !== 0) {
+        return yield* Effect.dieMessage(
+          `placement rollback could not restore ${String(request.heldItem)}`,
+        )
+      }
+      return { outcome, consumed: false, mutated: false }
+    }),
+  )
+
+const executeBlockPlacementCommand = (
+  state: GameplayFrameState,
+  command: BlockPlacementCommand,
+  store: ChunkStoreApi,
+  inventory: InventoryServiceApi,
+  playerFeet: Position,
+): Effect.Effect<BlockPlacementExecution> => {
+  const runtime = blockPlacementRuntimeFor(state)
+  const normalized = normalizedBlockPlacementCommand(command)
+
+  return runtime.mutex.withPermits(1)(
+    Effect.uninterruptible(
+      Effect.gen(function* () {
+        const current = yield* Ref.get(runtime.state)
+        const previous = current.handled.get(normalized.requestId)
+        if (previous !== undefined) {
+          const replayed: BlockPlacementResult = sameBlockPlacementCommand(
+            previous.command,
+            normalized,
+          )
+            ? { ...previous.result, replayed: true }
+            : {
+                requestId: normalized.requestId,
+                success: false,
+                consumed: false,
+                replayed: true,
+                outcome: { _tag: 'RequestIdConflict' },
+              }
+          yield* Ref.update(runtime.state, (latest) => ({
+            ...latest,
+            results: [...latest.results, replayed],
+          }))
+          return { outcome: replayed.outcome, consumed: false, mutated: false }
+        }
+
+        const execution = yield* executeBlockPlacementAtomically(
+          normalized,
+          normalized.mode,
+          store,
+          inventory,
+          playerFeet,
+        )
+        const result: BlockPlacementResult = {
+          requestId: normalized.requestId,
+          success: execution.outcome._tag === 'Placed',
+          consumed: execution.consumed,
+          replayed: false,
+          outcome: execution.outcome,
+        }
+        yield* Ref.update(runtime.state, (latest) => ({
+          handled: new Map(latest.handled).set(normalized.requestId, {
+            command: normalized,
+            result,
+          }),
+          results: [...latest.results, result],
+        }))
+        return execution
+      }),
+    ),
+  )
+}
+
 export const gameplayStages = (
   state: GameplayFrameState,
   store: ChunkStoreApi,
@@ -2627,68 +2832,29 @@ export const gameplayStages = (
         }
 
         for (const request of placements) {
-          const reserved = yield* inventory.remove(request.heldItem, 1)
-          if (reserved === 0) {
-            continue
+          const execution = isBlockPlacementCommand(request)
+            ? yield* executeBlockPlacementCommand(
+                state,
+                request,
+                store,
+                inventory,
+                playerFeet,
+              )
+            : yield* blockPlacementRuntimeFor(state).mutex.withPermits(1)(
+                executeBlockPlacementAtomically(
+                  request,
+                  'survival',
+                  store,
+                  inventory,
+                  playerFeet,
+                ),
+              )
+
+          if (execution.consumed && execution.outcome._tag === 'Placed') {
+            spent.push(execution.outcome.consumed)
           }
-
-          const outcome = yield* placeBlock(store, {
-            position: positionOfKey(request.positionKey),
-            heldItem: request.heldItem,
-            playerFeet,
-          })
-
-          switch (outcome._tag) {
-            case 'Placed': {
-              spent.push(outcome.consumed)
-              // PLACEMENT DISTURBS, and this is the sentence
-              // `domain/falling-block.ts:73-77` has been carrying with nothing
-              // behind it: 「Callers are the rules that mutate blocks: breaking,
-              // PLACING, explosions, fluid displacement, piston pushes」. The
-              // mining-site preview's `p` key wrote the store directly and
-              // deliberately did NOT disturb, precisely to show what the missing
-              // rule would have to remember.
-              //
-              // IT IS THE CELL BELOW AND NOT THE CELL WRITTEN, which is the
-              // half that is easy to get wrong and is why the preview's note
-              // was worth keeping. A queue entry P means "look at the block
-              // ABOVE P and see whether it falls INTO P"
-              // (`domain/entities/falling-block-move.ts`), so a BREAK disturbs
-              // the cell it emptied — the hole is what receives — while a
-              // PLACEMENT has to disturb the cell UNDER the block it just put
-              // down, or the sand a player drops in mid-air hangs there.
-              // Disturbing the written cell instead costs nothing visible: the
-              // queue drains, one read happens, the cell above is solid or
-              // absent, and nothing moves.
-              disturbed.push(positionKeyOf(below(positionOfKey(request.positionKey))))
-              break
-            }
-
-            // Every refusal is named by the rule and dropped HERE, for the
-            // reason `applySpawnAttempts`' outcomes are: `run` returns void and
-            // there is nowhere in the frame to report a diagnostic to. They are
-            // not dropped by the rule — whoever offers a placement is who wants
-            // to know why it was refused, and the mining-site preview calls
-            // `placeBlock` directly and prints the tag.
-            case 'Occupied':
-            case 'InsidePlayer':
-            case 'Unsupported':
-            case 'UnknownBlock':
-            case 'ChunkNotLoaded':
-            case 'OutOfWorld':
-            // The four per-block refusals, each named by the file that owns the
-            // block (`domain/interactions/place-mushroom-light.ts` and its three
-            // neighbours). They are dropped here for the same reason the six
-            // above are — `run` returns void — and the mining-site preview,
-            // which calls `placeBlock` directly, is what prints them.
-            case 'TooBright':
-            case 'LightUnknown':
-            case 'NoAdjacentWater':
-            case 'SidesBlocked':
-            case 'NoRoomAbove': {
-              yield* inventory.add(request.heldItem, reserved)
-              break
-            }
+          if (execution.mutated) {
+            disturbed.push(positionKeyOf(below(positionOfKey(request.positionKey))))
           }
         }
 
