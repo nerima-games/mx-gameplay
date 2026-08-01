@@ -15,7 +15,7 @@ import {
   resolveInteractionIntent,
   type HeldItemCapabilities,
   type InteractionSnapshot,
-} from '../domain/interactions/interaction-intent'
+} from '../src/domain/interactions/interaction-intent'
 
 const CHARGING_ITEM: HeldItemCapabilities = { charges: true, blocks: false }
 const BLOCKING_ITEM: HeldItemCapabilities = { charges: false, blocks: true }

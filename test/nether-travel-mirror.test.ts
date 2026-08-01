@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { Option } from 'effect'
-import { type BlockPosition } from '../domain/chunk-store-port'
+import { type BlockPosition } from '../src/domain/chunk-store-port'
 import {
   findNearestPortal,
   NETHER_HORIZONTAL_RATIO,
@@ -8,7 +8,7 @@ import {
   overworldToNether,
   PORTAL_SEARCH_RADIUS,
   resolveNetherTravel,
-} from '../domain/nether-travel-port'
+} from '../src/domain/nether-travel-port'
 
 /**
  * The mc-worldgen nether-travel mirror is pinned against the rule it transcribes.

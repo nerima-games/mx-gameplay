@@ -50,7 +50,7 @@
  * no world.
  */
 import { Effect, Ref } from 'effect'
-import { MAX_STACK_COUNT, StackCount } from '../../domain/frame-contract'
+import { MAX_STACK_COUNT, StackCount } from '../../src/domain/frame-contract'
 import {
   damageAt as damageStorageAt,
   durabilityForItem,

@@ -24,9 +24,9 @@ import {
   applyLook,
   clampPitch,
   makeInMemoryPlayer,
-} from '../domain/in-memory-player'
-import { ClockPort, MonotonicTimeSecs } from '../domain/frame-contract'
-import type { PlayerPose } from '../domain/player-port'
+} from '../src/domain/in-memory-player'
+import { ClockPort, MonotonicTimeSecs } from '../src/domain/frame-contract'
+import type { PlayerPose } from '../src/domain/player-port'
 
 const pose = (overrides: Partial<PlayerPose> = {}): PlayerPose => ({
   feetPosition: { x: 1, y: 64, z: 2 },

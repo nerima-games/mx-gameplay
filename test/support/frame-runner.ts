@@ -26,7 +26,7 @@
  * asserts that no such export exists.
  */
 import { Effect } from 'effect'
-import { DeltaTimeSecs, type StageRegistration } from '../../domain/frame-contract'
+import { DeltaTimeSecs, type StageRegistration } from '../../src/domain/frame-contract'
 import { FrameServicesLayer } from './frame-services'
 
 /** One frame's worth of simulated time, as a 60 Hz loop would produce it. */

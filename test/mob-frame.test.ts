@@ -33,9 +33,9 @@ import {
   STRUCK_ENDERMAN,
   type Blast,
   type MobBehaviour,
-} from '../domain/entities/mob-frame'
-import { CREEPER_EXPLOSION_POWER, explosionDamageAmount } from '../domain/mob/explosion'
-import { EntityId, type Position } from '../domain/entity-manager-port'
+} from '../src/domain/entities/mob-frame'
+import { CREEPER_EXPLOSION_POWER, explosionDamageAmount } from '../src/domain/mob/explosion'
+import { EntityId, type Position } from '../src/domain/entity-manager-port'
 import { makeChunkStoreDouble, STONE, world } from './support/chunk-store-double'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
 

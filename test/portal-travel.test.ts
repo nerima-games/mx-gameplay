@@ -1,20 +1,20 @@
 import { describe, expect, it } from '@effect/vitest'
 import { makeTimeService } from '@nerima-games/mc-sim'
 import { Effect, Option, Ref } from 'effect'
-import { type BlockPosition } from '../domain/chunk-store-port'
-import { NETHER_HORIZONTAL_RATIO } from '../domain/nether-travel-port'
-import { applyPortalTravel, NO_KNOWN_PORTALS } from '../domain/portal-travel'
-import { type Dimension } from '../domain/nether-travel-port'
-import { type PlayerPose, type PlayerServiceApi } from '../domain/player-port'
-import { blockIdOf } from '../domain/block-vocabulary'
-import { type MobBehaviour } from '../domain/entities/mob-frame'
-import { DeltaTimeSecs } from '../domain/frame-contract'
+import { type BlockPosition } from '../src/domain/chunk-store-port'
+import { NETHER_HORIZONTAL_RATIO } from '../src/domain/nether-travel-port'
+import { applyPortalTravel, NO_KNOWN_PORTALS } from '../src/domain/portal-travel'
+import { type Dimension } from '../src/domain/nether-travel-port'
+import { type PlayerPose, type PlayerServiceApi } from '../src/domain/player-port'
+import { blockIdOf } from '../src/domain/block-vocabulary'
+import { type MobBehaviour } from '../src/domain/entities/mob-frame'
+import { DeltaTimeSecs } from '../src/domain/frame-contract'
 import {
   drainPortalTravels,
   gameplayStages,
   makeGameplayFrameState,
   setPortalCandidates,
-} from '../stages/registration'
+} from '../src/stages/registration'
 import { makeChunkStoreDouble, world } from './support/chunk-store-double'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
 import { makeInventoryDouble } from './support/inventory-service-double'

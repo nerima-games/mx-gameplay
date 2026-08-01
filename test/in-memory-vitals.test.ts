@@ -1,9 +1,9 @@
 import { describe, expect, it } from '@effect/vitest'
 import { Effect } from 'effect'
-import { DeltaTimeSecs } from '../domain/frame-contract'
-import { makeInMemoryVitals, type PlayerVitals } from '../domain/in-memory-vitals'
-import { makeGeneratedWorld } from '../domain/in-memory-world'
-import { isValidPlayerVitals, SPAWN_PLAYER_VITALS } from '../index'
+import { DeltaTimeSecs } from '../src/domain/frame-contract'
+import { makeInMemoryVitals, type PlayerVitals } from '../src/domain/in-memory-vitals'
+import { makeGeneratedWorld } from '../src/domain/in-memory-world'
+import { isValidPlayerVitals, SPAWN_PLAYER_VITALS } from '../src/index'
 
 const vitals = (overrides: Partial<PlayerVitals> = {}): PlayerVitals => ({
   healthPoints: 20,

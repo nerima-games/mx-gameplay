@@ -1,5 +1,5 @@
 import { describe, expect, it } from '@effect/vitest'
-import { EntityId, EntityKind, type Entity } from '../domain/entity-manager-port'
+import { EntityId, EntityKind, type Entity } from '../src/domain/entity-manager-port'
 import {
   CREEPER_LOCOMOTION,
   pursueHorizontally,
@@ -7,7 +7,7 @@ import {
   resolvePlayerBlastDamage,
   ZOMBIE_KIND,
   ZOMBIE_LOCOMOTION,
-} from '../domain/mob/hostile-combat'
+} from '../src/domain/mob/hostile-combat'
 
 const zombie = (x: number): Entity<undefined> => ({
   id: EntityId('zombie:1'),

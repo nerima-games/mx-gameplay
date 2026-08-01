@@ -37,13 +37,13 @@ import {
   chunkCoordOf,
   chunkCoordsAround,
   openChunkWindow,
-} from '../domain/chunk-window'
+} from '../src/domain/chunk-window'
 import {
   AIR_BLOCK_ID,
   CHUNK_HEIGHT,
   blockIndex,
   type ChunkStoreApi,
-} from '../domain/chunk-store-port'
+} from '../src/domain/chunk-store-port'
 import { makeChunkStoreDouble, world, CHUNK_SIDE, STONE } from './support/chunk-store-double'
 
 /**

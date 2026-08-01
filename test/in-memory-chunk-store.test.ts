@@ -26,8 +26,8 @@ import {
   isInWorld,
   makeInMemoryChunkStore,
   type WorldContents,
-} from '../domain/in-memory-chunk-store'
-import { AIR_BLOCK_ID, CHUNK_HEIGHT, type BlockId, type BlockPosition } from '../domain/chunk-store-port'
+} from '../src/domain/in-memory-chunk-store'
+import { AIR_BLOCK_ID, CHUNK_HEIGHT, type BlockId, type BlockPosition } from '../src/domain/chunk-store-port'
 
 const STONE: BlockId = 2 as BlockId
 const DIRT: BlockId = 3 as BlockId

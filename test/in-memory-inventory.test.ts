@@ -23,9 +23,9 @@ import {
   normaliseInventory,
   removeFromSlots,
   totalOf,
-} from '../domain/in-memory-inventory'
-import { MAX_STACK_COUNT, StackCount } from '../domain/frame-contract'
-import type { ItemType } from '../domain/item-vocabulary'
+} from '../src/domain/in-memory-inventory'
+import { MAX_STACK_COUNT, StackCount } from '../src/domain/frame-contract'
+import type { ItemType } from '../src/domain/item-vocabulary'
 
 const STONE: ItemType = 'stone'
 const DIRT: ItemType = 'dirt'

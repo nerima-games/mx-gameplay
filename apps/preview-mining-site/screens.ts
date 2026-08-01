@@ -80,7 +80,7 @@
  * mc-sim does hold. The screen is the same; the claim it makes is weaker and
  * true.
  */
-import { dayPhase, hostileSpawnsAllowed, isNight, type DayPhase } from '../../domain/day-night'
+import { dayPhase, hostileSpawnsAllowed, isNight, type DayPhase } from '../../src/domain/day-night'
 import {
   applyDamage,
   deathMessage,
@@ -89,10 +89,10 @@ import {
   MAX_HEALTH_POINTS,
   type DeathCause,
   type Vitals,
-} from '../../domain/death-cause'
-import { AIR_BLOCK_ID, type BlockId } from '../../domain/chunk-store-port'
-import { DeltaTimeSecs } from '../../domain/frame-contract'
-import { DEFAULT_ROLL_SEED, drawRolls } from '../../domain/frame-rolls'
+} from '../../src/domain/death-cause'
+import { AIR_BLOCK_ID, type BlockId } from '../../src/domain/chunk-store-port'
+import { DeltaTimeSecs } from '../../src/domain/frame-contract'
+import { DEFAULT_ROLL_SEED, drawRolls } from '../../src/domain/frame-rolls'
 import {
   advanceWeather,
   createWeatherState,
@@ -111,21 +111,21 @@ import {
   type Weather,
   type WeatherRolls,
   type WeatherState,
-} from '../../domain/weather'
+} from '../../src/domain/weather'
 import {
   CREEPER_FUSE_SECS,
   CREEPER_IGNITION_RANGE_BLOCKS,
   DORMANT_FUSE,
   stepCreeperFuse,
   type CreeperFuse,
-} from '../../domain/mob/creeper-fuse'
-import { explosionDamageAmount, explosionDamageAt, explosionRadius } from '../../domain/mob/explosion'
+} from '../../src/domain/mob/creeper-fuse'
+import { explosionDamageAmount, explosionDamageAt, explosionRadius } from '../../src/domain/mob/explosion'
 import {
   canHostileSpawnAt,
   MIN_SPAWN_DISTANCE_BLOCKS,
   type SpawnCandidate,
   type SpawnVerdict,
-} from '../../domain/mob/hostile-spawn'
+} from '../../src/domain/mob/hostile-spawn'
 import {
   BLAZE_DROPS,
   BLAZE_XP_REWARD,
@@ -138,7 +138,7 @@ import {
   rollMobDrops,
   type MobDrop,
   type MobDropRule,
-} from '../../domain/mob/mob-drop'
+} from '../../src/domain/mob/mob-drop'
 import {
   ENDERMAN_TELEPORT_MAX_BLOCKS,
   ENDERMAN_TELEPORT_MIN_BLOCKS,
@@ -146,7 +146,7 @@ import {
   endermanTeleportUrge,
   type EndermanTeleportUrge,
   type TeleportOffset,
-} from '../../domain/mob/enderman-teleport'
+} from '../../src/domain/mob/enderman-teleport'
 import {
   CLOSED_SHELL,
   SHULKER_OPENING_TICKS,
@@ -154,12 +154,12 @@ import {
   shulkerWantsToTeleport,
   stepShulkerShell,
   type ShulkerShell,
-} from '../../domain/mob/shulker-shell'
+} from '../../src/domain/mob/shulker-shell'
 import {
   DESPAWN_DISTANCE_BLOCKS,
   despawnVerdict,
   type DespawnVerdict,
-} from '../../domain/mob/hostile-despawn'
+} from '../../src/domain/mob/hostile-despawn'
 
 // ---------------------------------------------------------------------------
 // Time slider

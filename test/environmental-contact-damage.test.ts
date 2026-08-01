@@ -1,12 +1,12 @@
 import { blockIdOf, propertyOfBlockId } from '@nerima-games/mc-kernel'
 import { describe, expect, it } from '@effect/vitest'
-import { applyDamage, deathMessage, fullHealth } from '../domain/death-cause'
+import { applyDamage, deathMessage, fullHealth } from '../src/domain/death-cause'
 import {
   ENVIRONMENTAL_CONTACT_DAMAGE_CADENCE_SECS,
   INITIAL_ENVIRONMENTAL_CONTACT_DAMAGE_STATE,
   resolveEnvironmentalContactDamage,
   type EnvironmentalContact,
-} from '../domain/environmental-contact-damage'
+} from '../src/domain/environmental-contact-damage'
 
 const contact = (block: EnvironmentalContact['block']): EnvironmentalContact => ({
   block,

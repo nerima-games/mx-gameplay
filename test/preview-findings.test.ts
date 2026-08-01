@@ -27,9 +27,9 @@
  */
 import { describe, expect, it } from '@effect/vitest'
 import { Effect } from 'effect'
-import { dayPhase, hostileSpawnsAllowed, isNight } from '../domain/day-night'
-import { applyDamage, deathMessage, fullHealth, isDead } from '../domain/death-cause'
-import { carryOver, splitBudget, type FluidWorkItem } from '../domain/fluid-frontier'
+import { dayPhase, hostileSpawnsAllowed, isNight } from '../src/domain/day-night'
+import { applyDamage, deathMessage, fullHealth, isDead } from '../src/domain/death-cause'
+import { carryOver, splitBudget, type FluidWorkItem } from '../src/domain/fluid-frontier'
 
 describe('F5 — a non-finite damage amount makes the player permanently immortal', () => {
   // `Damage.amount` is a bare `number`. `Math.max(0, NaN)` is NaN, `NaN <= 0` is

@@ -25,29 +25,29 @@ import {
   blockIdOf,
   isPlaceableItem,
   type PlaceableItemType,
-} from '../domain/block-vocabulary'
-import { ITEM_TYPES } from '../domain/item-vocabulary'
-import { AIR_BLOCK_ID, type BlockId, type BlockPosition, type BlockReading } from '../domain/chunk-store-port'
-import { horizontalNeighbours } from '../domain/block-position-key'
+} from '../src/domain/block-vocabulary'
+import { ITEM_TYPES } from '../src/domain/item-vocabulary'
+import { AIR_BLOCK_ID, type BlockId, type BlockPosition, type BlockReading } from '../src/domain/chunk-store-port'
+import { horizontalNeighbours } from '../src/domain/block-position-key'
 import {
   MAX_MUSHROOM_PLACEMENT_LIGHT,
   isMushroomBlock,
   isMushroomPlacementLightAllowed,
   mushroomLightObjection,
   placementLightLevel,
-} from '../domain/interactions/place-mushroom-light'
+} from '../src/domain/interactions/place-mushroom-light'
 import {
   hasRequiredSugarCaneAdjacentWater,
   isSugarCaneBlock,
   sugarCaneWaterObjection,
-} from '../domain/interactions/place-sugar-cane-water'
+} from '../src/domain/interactions/place-sugar-cane-water'
 import {
   hasClearCactusHorizontalSides,
   isCactusBlock,
   cactusSidesObjection,
-} from '../domain/interactions/place-cactus-sides'
-import { doorUpperCell, isDoorBlock } from '../domain/interactions/place-door-upper'
-import { placeBlock } from '../domain/interactions/place-block'
+} from '../src/domain/interactions/place-cactus-sides'
+import { doorUpperCell, isDoorBlock } from '../src/domain/interactions/place-door-upper'
+import { placeBlock } from '../src/domain/interactions/place-block'
 import { lightWorld, makeChunkStoreDouble, world, STONE, WATER } from './support/chunk-store-double'
 
 const id = (name: Parameters<typeof blockIdOf>[0]): BlockId => {

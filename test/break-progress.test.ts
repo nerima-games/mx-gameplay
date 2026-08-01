@@ -13,7 +13,7 @@ import {
   breakProgressFraction,
   normaliseBreakTicks,
   type BreakProgressState,
-} from '../domain/interactions/break-progress'
+} from '../src/domain/interactions/break-progress'
 
 const STONE = '1,64,2'
 const DIRT = '1,64,3'

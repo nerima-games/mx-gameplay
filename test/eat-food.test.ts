@@ -4,7 +4,7 @@ import {
   FOOD_PROPERTIES,
   resolveFoodUse,
   type FoodUseRequest,
-} from '../domain/interactions/eat-food'
+} from '../src/domain/interactions/eat-food'
 
 const request = (
   held: FoodUseRequest['held'],

@@ -26,8 +26,8 @@
  */
 import { describe, expect, it } from '@effect/vitest'
 import { Option } from 'effect'
-import { blockIdOf } from '../domain/block-vocabulary'
-import { AIR_BLOCK_ID, type BlockId, type BlockPosition } from '../domain/chunk-store-port'
+import { blockIdOf } from '../src/domain/block-vocabulary'
+import { AIR_BLOCK_ID, type BlockId, type BlockPosition } from '../src/domain/chunk-store-port'
 import {
   detectNetherPortal,
   generatePortalLayout,
@@ -37,7 +37,7 @@ import {
   MIN_PORTAL_WIDTH,
   type BlockAt,
   type PortalAxis,
-} from '../domain/portal-frame-port'
+} from '../src/domain/portal-frame-port'
 
 const OBSIDIAN = blockIdOf('obsidian')
 const STONE = blockIdOf('stone')

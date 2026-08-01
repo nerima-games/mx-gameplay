@@ -10,7 +10,7 @@ import {
   applyArmorToDamage,
   armorDurabilityWearFromPreMitigationDamage,
   armorPointsForEquipment,
-} from '../domain/combat/armor'
+} from '../src/domain/combat/armor'
 
 const armourItem = (item: EquipmentItem['item']): EquipmentItem =>
   equipmentItem(itemStack(item, 1))

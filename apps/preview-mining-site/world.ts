@@ -59,7 +59,7 @@ import {
   type ChunkDirtySubscription,
   type ChunkStoreApi,
   type ChunkNeighbours,
-} from '../../domain/chunk-store-port'
+} from '../../src/domain/chunk-store-port'
 import {
   blockTypeOfId,
   fallsWhenUnsupported,
@@ -67,7 +67,7 @@ import {
   isReplaceable,
   itemOfBlock,
   type PlaceableItemType,
-} from '../../domain/block-vocabulary'
+} from '../../src/domain/block-vocabulary'
 
 /**
  * Block ids, transcribed from kernel's `BLOCK_REGISTRY` exactly as

@@ -24,19 +24,19 @@ import {
   ENDER_PEARL_DEATH_CAUSE,
   ENDER_PEARL_ENDERMITE_SPAWN_CHANCE,
   ENDER_PEARL_MAX_DISTANCE,
-} from '../domain/interactions/throw-ender-pearl'
-import { applyDamage, deathMessage, DEATH_MESSAGES } from '../domain/death-cause'
+} from '../src/domain/interactions/throw-ender-pearl'
+import { applyDamage, deathMessage, DEATH_MESSAGES } from '../src/domain/death-cause'
 import {
   ENDERMITE_KIND,
   ENDERMITE_MAX_HEALTH,
   HOSTILE_KINDS,
   type MobBehaviour,
-} from '../domain/entities/mob-frame'
+} from '../src/domain/entities/mob-frame'
 import {
   gameplayStages,
   makeGameplayFrameState,
   type EnderPearlThrowRequest,
-} from '../stages/registration'
+} from '../src/stages/registration'
 import { makeChunkStoreDouble } from './support/chunk-store-double'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
 import { makePlayerServiceDouble } from './support/player-service-double'

@@ -603,10 +603,10 @@ oxlint 0.12 は `no-restricted-syntax` も `no-restricted-properties` も実装�
 
 そのため禁止は `scripts/check-dependency-whitelist.ts` 側で実装してある。
 コメント・文字列リテラル・正規表現リテラルの中身はマスクされるので誤検知しない。
-`oxlint.json` にはこの経緯がコメントで残してあり、`no-restricted-globals` の行も
+`.oxlintrc.json` にはこの経緯がコメントで残してあり、`no-restricted-globals` の行も
 「意図の表明として、かつ oxlint が実装した日のために」置いてある（0.12 では不活性）。
 
-oxlint が該当ルールを実装したら `oxlint.json` へ移し、スクリプトの time-source セクションを消す。
+oxlint が該当ルールを実装したら `.oxlintrc.json` へ移し、スクリプトの time-source セクションを消す。
 
 ### 回帰テスト
 
