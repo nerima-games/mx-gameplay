@@ -75,7 +75,7 @@ import type { Damage } from '../death-cause'
  * explosions wants to know which sound to play and which entity to blame — the
  * blast itself is identical.
  */
-export type ExplosionSource = 'creeper'
+export type ExplosionSource = 'creeper' | 'tnt'
 
 /**
  * An explosion that is happening.
@@ -95,6 +95,9 @@ export type Explosion = {
 
 /** A creeper's power. `packages/entity/domain/explosion.ts:4`. */
 export const CREEPER_EXPLOSION_POWER = 3
+
+/** A primed TNT block's power. */
+export const TNT_EXPLOSION_POWER = 4
 
 /**
  * How far the blast reaches, for DAMAGE.

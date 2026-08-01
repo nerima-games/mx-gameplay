@@ -25,6 +25,7 @@ import { blockIdOf } from '../domain/block-vocabulary'
 import { AIR_BLOCK_ID, type BlockId, type BlockPosition } from '../domain/chunk-store-port'
 import { igniteFire } from '../domain/interactions/ignite-fire'
 import { PORTAL_WINDOW_RADIUS, ignitePortal } from '../domain/interactions/ignite-portal'
+import { TNT_BLOCK_ID } from '../domain/interactions/ignite-tnt'
 import {
   IGNITION_ITEM_TYPES,
   isIgnitionItem,
@@ -57,6 +58,7 @@ const storeThatChangesItsMind = (honest: ChunkStoreApi, onWrite: BlockWriteOutco
 const OBSIDIAN = blockIdOf('obsidian') ?? 40
 const NETHER_PORTAL = blockIdOf('nether_portal') ?? 118
 const FIRE = blockIdOf('fire') ?? 119
+const TNT = TNT_BLOCK_ID ?? 46
 
 /** Bottom-left interior cell of the test portal. Chunk (0, 1) of the double. */
 const ORIGIN: BlockPosition = { x: 4, y: 64, z: 20 }
@@ -372,6 +374,20 @@ describe('ignitePortal, when the store changes its mind mid-fill', () => {
 })
 
 describe('useFlintAndSteel — the order of the two arms', () => {
+  it.effect('removes TNT before trying portal or fire', () =>
+    Effect.gen(function* () {
+      const store = yield* makeChunkStoreDouble(
+        world([[ORIGIN, TNT]]),
+        residentAround(ORIGIN),
+      )
+
+      const outcome = yield* useFlintAndSteel(store.api, ORIGIN, 'flint_and_steel')
+
+      expect(outcome).toStrictEqual({ _tag: 'Tnt', outcome: { _tag: 'Lit' } })
+      expect(yield* store.blockAt(ORIGIN)).toBe(AIR_BLOCK_ID)
+    }),
+  )
+
   it.effect('names two items, both of which are on kernel’s roster', () =>
     Effect.sync(() => {
       // The line `domain/interactions/use-flint-and-steel.ts` draws: the NAMES
@@ -422,9 +438,9 @@ describe('useFlintAndSteel — the order of the two arms', () => {
       const outcome = yield* useFlintAndSteel(store.api, ORIGIN, 'flint_and_steel')
 
       expect(outcome).toStrictEqual({ _tag: 'Portal', outcome: { _tag: 'ChunkNotLoaded' } })
-      // Not one cell read: the fire arm was never asked, so the second
-      // `getBlock` the fall-through would have cost was not paid.
-      expect((yield* store.calls).reads).toBe(0)
+      // TNT-first costs one cell read. Portal then refuses from its chunk
+      // window, and the fire arm is never asked for a second cell read.
+      expect((yield* store.calls).reads).toBe(1)
     }),
   )
 

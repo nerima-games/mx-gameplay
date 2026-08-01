@@ -4,10 +4,8 @@
  *
  * The reference implementation's
  * `<reference-impl>/packages/app/application/frame/stages/interaction-flint-steel-handler.ts`,
- * minus its TNT arm — this file is the ORDER of the two ignitions, and nothing
- * else. `./ignite-portal` and `./ignite-fire` are the rules; the question this
- * file answers is which one is asked first, and that question is genuinely its
- * own because getting it backwards is invisible.
+ * including its TNT-first ordering. `./ignite-tnt`, `./ignite-portal`, and
+ * `./ignite-fire` are the rules; this file only decides which one is asked first.
  *
  * ---------------------------------------------------------------------------
  * PORTAL BEFORE FIRE, AND IT IS NOT ARBITRARY
@@ -27,20 +25,11 @@
  * chunk window.
  *
  * ---------------------------------------------------------------------------
- * THE THIRD ARM THE REFERENCE HAS, AND WHY IT IS NOT HERE
+ * TNT GOES FIRST
  * ---------------------------------------------------------------------------
  *
- * The reference tries TNT first of all: a flint and steel on a TNT block
- * detonates it. That arm is absent and the two missing pieces are nameable
- * rather than vague — `../mob/explosion.ts`'s `ExplosionSource` is the single
- * literal `'creeper'` and its only power is `CREEPER_EXPLOSION_POWER`, so a TNT
- * blast has no power to be given; and the reference's version also applies blast
- * damage to the player, whose health is mc-sim's. `./explosion-crater` would
- * carve the hole the day both exist, unchanged.
- *
- * IT WOULD GO FIRST, ahead of both arms below, because a TNT block is not air
- * and neither ignition would fire on it — so adding it later is an insertion
- * rather than a reordering, and nothing below has to move.
+ * A TNT block is removed and converted to a primed entity before either rule
+ * can treat the target as portal interior or an ordinary fire cell.
  *
  * ---------------------------------------------------------------------------
  * WHICH ITEMS IGNITE IS A RULE; WHAT THEY ARE CALLED IS KERNEL'S
@@ -59,6 +48,7 @@ import type { BlockPosition, ChunkStoreApi } from '../chunk-store-port'
 import type { ItemType } from '../item-vocabulary'
 import { igniteFire, type IgniteFireOutcome } from './ignite-fire'
 import { ignitePortal, type IgnitePortalOutcome } from './ignite-portal'
+import { igniteTnt, type IgniteTntOutcome } from './ignite-tnt'
 
 /**
  * The items that light things, out of kernel's `ITEM_TYPES`.
@@ -102,6 +92,7 @@ export const isIgnitionItem = (item: ItemType): item is IgnitionItemType =>
  * failures.
  */
 export type IgnitionOutcome =
+  | { readonly _tag: 'Tnt'; readonly outcome: IgniteTntOutcome }
   /** The portal arm answered, and its answer was not `NoFrame`. */
   | { readonly _tag: 'Portal'; readonly outcome: IgnitePortalOutcome }
   /** The portal arm found no frame, so the fire arm answered. */
@@ -130,6 +121,15 @@ export const useFlintAndSteel = (
 ): Effect.Effect<IgnitionOutcome> =>
   Effect.gen(function* () {
     void item
+
+    const tnt = yield* igniteTnt(store, position)
+    if (
+      tnt._tag !== 'NotTnt' &&
+      tnt._tag !== 'ChunkNotLoaded' &&
+      tnt._tag !== 'OutOfWorld'
+    ) {
+      return { _tag: 'Tnt', outcome: tnt }
+    }
 
     const portal = yield* ignitePortal(store, position)
     if (portal._tag !== 'NoFrame') {

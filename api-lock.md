@@ -13,7 +13,7 @@
 <!-- ------------------------------------------------------------------------- -->
 
 format: 1
-exported declarations: 507
+exported declarations: 518
 supporting declarations: 64
 
 ## Exported
@@ -894,7 +894,7 @@ type Explosion = {
 ### ExplosionSource  `type`
 
 ```ts
-type ExplosionSource = 'creeper';
+type ExplosionSource = 'creeper' | 'tnt';
 ```
 
 ### FALLING_BLOCK_MOVES_PER_TICK  `const`
@@ -913,6 +913,12 @@ const FOOD_PROPERTIES: Readonly<Partial<Record<ItemType, FoodProperties>>>;
 
 ```ts
 const FORTUNE_MULTIPLIERS: ReadonlyMap<number, number>;
+```
+
+### FRESH_PRIMED_TNT  `const`
+
+```ts
+const FRESH_PRIMED_TNT: PrimedTnt;
 ```
 
 ### FallingBlockBatch  `type`
@@ -1315,6 +1321,24 @@ type IgnitePortalOutcome = {
 };
 ```
 
+### IgniteTntOutcome  `type`
+
+```ts
+type IgniteTntOutcome = {
+    readonly _tag: 'Lit';
+} | {
+    readonly _tag: 'NotTnt';
+} | {
+    readonly _tag: 'ChunkNotLoaded';
+} | {
+    readonly _tag: 'OutOfWorld';
+} | {
+    readonly _tag: 'UnknownBlock';
+} | {
+    readonly _tag: 'ChangedBeforeWrite';
+};
+```
+
 ### IgnitionItemType  `type`
 
 ```ts
@@ -1346,6 +1370,9 @@ type IgnitionItemUseResult = {
 
 ```ts
 type IgnitionOutcome = {
+    readonly _tag: 'Tnt';
+    readonly outcome: IgniteTntOutcome;
+} | {
     readonly _tag: 'Portal';
     readonly outcome: IgnitePortalOutcome;
 } | {
@@ -1654,7 +1681,7 @@ type MiningToolProfile = {
 ### MobBehaviour  `type`
 
 ```ts
-type MobBehaviour = CreeperFuse | EndermanFlinch | DroppedItemBehaviour | undefined;
+type MobBehaviour = CreeperFuse | PrimedTnt | EndermanFlinch | DroppedItemBehaviour | undefined;
 ```
 
 ### MobCasualty  `type`
@@ -1834,6 +1861,18 @@ const PLAYER_HALF_WIDTH = 0.3;
 const PORTAL_WINDOW_RADIUS: number;
 ```
 
+### PRIMED_TNT_FUSE_SECS  `const`
+
+```ts
+const PRIMED_TNT_FUSE_SECS = 4;
+```
+
+### PRIMED_TNT_KIND  `const`
+
+```ts
+const PRIMED_TNT_KIND: EntityKind;
+```
+
 ### PlaceOutcome  `type`
 
 ```ts
@@ -2000,6 +2039,24 @@ type PortalTravelEvent = {
     readonly sourceDimension: Dimension;
     readonly sourcePosition: BlockPosition;
     readonly plan: PortalTravelPlan;
+};
+```
+
+### PrimedTnt  `type`
+
+```ts
+type PrimedTnt = {
+    readonly _tag: 'PrimedTnt';
+    readonly burnedSecs: number;
+};
+```
+
+### PrimedTntStep  `type`
+
+```ts
+type PrimedTntStep = {
+    readonly tnt: PrimedTnt;
+    readonly explosion?: Explosion;
 };
 ```
 
@@ -2305,6 +2362,18 @@ const TILLABLE_BLOCKS: ReadonlySet<BlockType>;
 
 ```ts
 const TILLED_BLOCK: BlockType;
+```
+
+### TNT_BLOCK_ID  `const`
+
+```ts
+const TNT_BLOCK_ID: number | undefined;
+```
+
+### TNT_EXPLOSION_POWER  `const`
+
+```ts
+const TNT_EXPLOSION_POWER = 4;
 ```
 
 ### TWILIGHT_BAND  `const`
@@ -3027,6 +3096,12 @@ const igniteFire: (store: ChunkStoreApi, position: BlockPosition) => Effect.Effe
 const ignitePortal: (store: ChunkStoreApi, ignition: BlockPosition) => Effect.Effect<IgnitePortalOutcome>;
 ```
 
+### igniteTnt  `const`
+
+```ts
+const igniteTnt: (store: ChunkStoreApi, position: BlockPosition) => Effect.Effect<IgniteTntOutcome>;
+```
+
 ### initialBehaviourOfKind  `const`
 
 ```ts
@@ -3109,6 +3184,12 @@ const isPlaceableItem: (item: ItemType) => item is PlaceableItemType;
 
 ```ts
 const isPrecipitating: (weather: Weather) => boolean;
+```
+
+### isPrimedTnt  `const`
+
+```ts
+const isPrimedTnt: (value: unknown) => value is PrimedTnt;
 ```
 
 ### isSuccessfulBlockUse  `const`
@@ -3725,6 +3806,12 @@ const splitBudget: (frontier: ReadonlyArray<FluidWorkItem>, options: {
 
 ```ts
 const stepCreeperFuse: (fuse: CreeperFuse, senses: CreeperSenses, dt: DeltaTimeSecs) => CreeperStep;
+```
+
+### stepPrimedTnt  `const`
+
+```ts
+const stepPrimedTnt: (tnt: PrimedTnt, dt: DeltaTimeSecs) => PrimedTntStep;
 ```
 
 ### stepShulkerShell  `const`

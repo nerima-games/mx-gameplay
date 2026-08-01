@@ -109,11 +109,13 @@ import {
   sweepMobs,
   ENDERMITE_KIND,
   ENDERMITE_MAX_HEALTH,
+  PRIMED_TNT_KIND,
   type BowHit,
   type MobDropEvent,
   type MobBehaviour,
   type MobSpawnAttempt,
 } from '../domain/entities/mob-frame'
+import { FRESH_PRIMED_TNT } from '../domain/mob/primed-tnt'
 import {
   DROPPED_ITEM_PICKUP_RADIUS,
   pickupDroppedItems,
@@ -1733,6 +1735,15 @@ export const gameplayStages = (
             request.heldItem,
           )
           const success = ignition.outcome._tag === 'Lit'
+          if (ignition._tag === 'Tnt' && success) {
+            const position = positionOfKey(request.positionKey)
+            yield* roster.spawn({
+              kind: PRIMED_TNT_KIND,
+              feetPosition: { x: position.x + 0.5, y: position.y, z: position.z + 0.5 },
+              healthPoints: 1,
+              behaviour: FRESH_PRIMED_TNT,
+            })
+          }
           itemUseResults.push({
             requestId: request.requestId,
             heldItem: request.heldItem,

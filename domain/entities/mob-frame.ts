@@ -239,6 +239,7 @@ import {
   type EndermanSenses,
 } from '../mob/enderman-teleport'
 import { explosionDamageAt, type Explosion } from '../mob/explosion'
+import { FRESH_PRIMED_TNT, isPrimedTnt, stepPrimedTnt, type PrimedTnt } from '../mob/primed-tnt'
 import { despawnVerdict, type DespawnCandidate } from '../mob/hostile-despawn'
 import {
   CREEPER_LOCOMOTION,
@@ -331,7 +332,7 @@ export type DroppedItemBehaviour = {
   readonly eligibleFromFrame?: number
 }
 
-export type MobBehaviour = CreeperFuse | EndermanFlinch | DroppedItemBehaviour | undefined
+export type MobBehaviour = CreeperFuse | PrimedTnt | EndermanFlinch | DroppedItemBehaviour | undefined
 
 /**
  * The three entity kinds this repository names.
@@ -350,6 +351,7 @@ export type MobBehaviour = CreeperFuse | EndermanFlinch | DroppedItemBehaviour |
  */
 export const CREEPER_KIND: EntityKind = EntityKind('creeper')
 export const DROPPED_ITEM_KIND: EntityKind = EntityKind('dropped_item')
+export const PRIMED_TNT_KIND: EntityKind = EntityKind('primed_tnt')
 
 /**
  * The second, and it now arrives from the spawner as well as from a host.
@@ -662,6 +664,10 @@ export const repairMobBehaviour = (kind: EntityKind, behaviour: unknown): MobBeh
 
   if (kind === ENDERMAN_KIND) {
     return isEndermanFlinch(behaviour) ? behaviour : STEADY_ENDERMAN
+  }
+
+  if (kind === PRIMED_TNT_KIND) {
+    return isPrimedTnt(behaviour) ? behaviour : FRESH_PRIMED_TNT
   }
 
   if (kind === DROPPED_ITEM_KIND) {
@@ -1005,6 +1011,31 @@ export const sweepMobs = (
       roster.sweep<Blast>((entity) => {
         if (entity.kind === DROPPED_ITEM_KIND && isDroppedItemBehaviour(entity.behaviour)) {
           return IGNORED
+        }
+
+        if (entity.kind === PRIMED_TNT_KIND && isPrimedTnt(entity.behaviour)) {
+          const step = stepPrimedTnt(entity.behaviour, senses.dt)
+          if (step.explosion !== undefined) {
+            return {
+              transition: DESPAWNED,
+              emit: {
+                source: entity.id,
+                kind: entity.kind,
+                at: entity.feetPosition,
+                explosion: step.explosion,
+              },
+            }
+          }
+          return step.tnt === entity.behaviour
+            ? IGNORED
+            : {
+                transition: changed({
+                  feetPosition: entity.feetPosition,
+                  healthPoints: entity.healthPoints,
+                  behaviour: step.tnt,
+                }),
+                emit: undefined,
+              }
         }
 
         const distance =
