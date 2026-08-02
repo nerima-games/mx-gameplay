@@ -138,6 +138,7 @@ import {
   gameplayStages,
   makeGameplayFrameState,
   requestBlockBreak,
+  requestFoodUse,
   requestFurnaceAdvance,
   requestItemUse,
   requestPotatoFoodUse,
@@ -148,6 +149,7 @@ import {
   restoreFireLifecycle,
   restoreVillagerTrades,
   snapshotFireLifecycle,
+  snapshotStatusEffects,
   snapshotVillagerTrades,
   type PlacementRequest,
 } from '../src/stages/registration'
@@ -2349,9 +2351,58 @@ describe('the potato farming slice: host input reaches farming rules', () => {
           heldItem: 'potato',
           success: true,
           consumedCount: 1,
-          outcome: { _tag: 'consume', count: 1, foodPoints: 1, saturationModifier: 0.6 },
+          outcome: {
+            _tag: 'consume',
+            count: 1,
+            foodPoints: 1,
+            saturationModifier: 0.6,
+            effects: [],
+          },
         },
       ])
+    }),
+  )
+
+  it.effect('routes pufferfish food effects into status and hunger runtime state', () =>
+    Effect.gen(function* () {
+      const { state, stages } = yield* slice(world([]))
+
+      yield* requestFoodUse(state, 'eat-pufferfish', 'pufferfish', {
+        healthPoints: 20,
+        hungerPoints: 10,
+        maxHungerPoints: 20,
+      })
+      yield* runFrame(stages, STRIDE)
+
+      expect(yield* drainItemUseResults(state)).toStrictEqual([
+        {
+          action: 'EatFood',
+          requestId: 'eat-pufferfish',
+          heldItem: 'pufferfish',
+          success: true,
+          consumedCount: 1,
+          outcome: {
+            _tag: 'consume',
+            count: 1,
+            foodPoints: 1,
+            saturationModifier: 0.1,
+            effects: [
+              { type: 'poison', durationSecs: 60, amplifier: 3 },
+              { type: 'hunger', durationSecs: 15, amplifier: 2 },
+              { type: 'nausea', durationSecs: 15, amplifier: 0 },
+            ],
+          },
+        },
+      ])
+
+      yield* runFrame(stages, STRIDE)
+
+      expect((yield* snapshotStatusEffects(state)).effects).toStrictEqual([
+        { type: 'poison', remainingSecs: 59.75, pulseClockSecs: 0, amplifier: 3 },
+        { type: 'hunger', remainingSecs: 14.75, pulseClockSecs: 0, amplifier: 2 },
+        { type: 'nausea', remainingSecs: 14.75, pulseClockSecs: 0, amplifier: 0 },
+      ])
+      expect((yield* state.survivalHunger.snapshot).vitals.exhaustion).toBeCloseTo(0.075)
     }),
   )
 })

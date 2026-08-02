@@ -227,7 +227,13 @@ const BONUS_DROPS: ReadonlyMap<BlockType, ReadonlyArray<BonusDropLine>> = new Ma
   BlockType,
   ReadonlyArray<BonusDropLine>
 >([
-  ['oak_leaves', [{ item: 'stick', chance: LEAF_STICK_DROP_CHANCE }]],
+  [
+    'oak_leaves',
+    [
+      { item: 'stick', chance: LEAF_STICK_DROP_CHANCE },
+      { item: 'sapling', chance: LEAF_SAPLING_DROP_CHANCE },
+    ],
+  ],
   ['tall_grass', [{ item: 'wheat_seeds', chance: GRASS_SEED_DROP_CHANCE }]],
   ['fern', [{ item: 'wheat_seeds', chance: GRASS_SEED_DROP_CHANCE }]],
 ])

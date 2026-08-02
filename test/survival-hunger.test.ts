@@ -72,6 +72,40 @@ describe('survival hunger', () => {
     }),
   )
 
+  it.effect('adds explicit exhaustion directly and preserves vitals numeric guards', () =>
+    Effect.gen(function* () {
+      const runtime = yield* makeSurvivalHungerRuntime(initial('peaceful', { saturation: 2 }))
+
+      expect(yield* runtime.addExhaustion(4.5)).toBeUndefined()
+      expect((yield* runtime.snapshot).vitals).toMatchObject({
+        hungerPoints: 20,
+        saturation: 1,
+        exhaustion: 0.5,
+      })
+
+      yield* runtime.addExhaustion(8)
+      expect((yield* runtime.snapshot).vitals).toMatchObject({
+        hungerPoints: 19,
+        saturation: 0,
+        exhaustion: 0.5,
+      })
+
+      yield* runtime.addExhaustion(Number.NaN)
+      yield* runtime.addExhaustion(Number.NEGATIVE_INFINITY)
+      expect((yield* runtime.snapshot).vitals).toMatchObject({
+        hungerPoints: 19,
+        saturation: 0,
+        exhaustion: 0.5,
+      })
+
+      yield* runtime.addExhaustion(Number.POSITIVE_INFINITY)
+      expect((yield* runtime.snapshot).vitals).toMatchObject({
+        hungerPoints: 9,
+        saturation: 0,
+        exhaustion: 0,
+      })
+    }))
+
   it.effect('regenerates health, adds exhaustion, and counts every elapsed food tick', () =>
     Effect.gen(function* () {
       const runtime = yield* makeSurvivalHungerRuntime(initial('normal', {

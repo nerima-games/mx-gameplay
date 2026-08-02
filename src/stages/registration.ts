@@ -1044,6 +1044,13 @@ export type FarmingItemUseRequest =
       readonly heldItem: 'potato'
       readonly vitals: FoodUseRequest['vitals']
     }
+  | {
+      readonly action: 'EatFood'
+      readonly requestId: ItemUseRequestId
+      readonly heldItem: ItemType
+      readonly vitals: FoodUseRequest['vitals']
+      readonly effectRoll: number
+    }
 
 export type FurnaceItemUseRequest = {
   readonly action: 'AdvanceFurnace'
@@ -1093,6 +1100,14 @@ export type FarmingItemUseResult =
       readonly action: 'EatPotato'
       readonly requestId: ItemUseRequestId
       readonly heldItem: 'potato'
+      readonly success: boolean
+      readonly consumedCount: 0 | 1
+      readonly outcome: FoodUseOutcome
+    }
+  | {
+      readonly action: 'EatFood'
+      readonly requestId: ItemUseRequestId
+      readonly heldItem: ItemType
       readonly success: boolean
       readonly consumedCount: 0 | 1
       readonly outcome: FoodUseOutcome
@@ -1638,7 +1653,28 @@ export const requestPotatoHarvest = (
   return Ref.update(state.pendingItemUses, (pending) => [...pending, request])
 }
 
-/** Resolve eating without transferring host-owned player vitals or inventory. */
+/** Resolve eating for any kernel item, drawing one deterministic status-effect roll. */
+export const requestFoodUse = (
+  state: GameplayFrameState,
+  requestId: ItemUseRequestId,
+  heldItem: ItemType,
+  vitals: FoodUseRequest['vitals'],
+): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    const seed = yield* Ref.get(state.rollSeed)
+    const batch = drawRolls(seed, 1)
+    yield* Ref.set(state.rollSeed, batch.seed)
+
+    const request: FarmingItemUseRequest = {
+      action: 'EatFood',
+      requestId,
+      heldItem,
+      vitals,
+      effectRoll: batch.rolls[0] ?? 1,
+    }
+    yield* Ref.update(state.pendingItemUses, (pending) => [...pending, request])
+  })
+
 export const requestPotatoFoodUse = (
   state: GameplayFrameState,
   requestId: ItemUseRequestId,
@@ -1949,6 +1985,9 @@ const stepStatusEffects = (
 
     yield* Ref.set(state.statusEffects, tick.state)
     yield* Ref.set(state.playerMovementSpeedMultiplier, tick.movementSpeedMultiplier)
+    if (tick.hungerExhaustion > 0) {
+      yield* state.survivalHunger.addExhaustion(tick.hungerExhaustion)
+    }
     if (tick.poisonPulses > 0) {
       const damages: ReadonlyArray<PlayerDamageEvent> = Array.from(
         { length: tick.poisonPulses },
@@ -2923,13 +2962,44 @@ export const gameplayStages = (
                 break
               }
               case 'EatPotato': {
-                const outcome = resolveFoodUse({ held: request.heldItem, vitals: request.vitals })
+                const outcome = resolveFoodUse({
+                  held: request.heldItem,
+                  vitals: request.vitals,
+                })
                 const success = outcome._tag === 'consume'
                 if (success) {
                   yield* state.survivalHunger.eat(outcome.foodPoints, outcome.saturationModifier)
+                  yield* Ref.update(
+                    state.pendingStatusEffects,
+                    (pending) => [...pending, ...outcome.effects],
+                  )
                 }
                 itemUseResults.push({
-                  action: request.action,
+                  action: 'EatPotato',
+                  requestId: request.requestId,
+                  heldItem: request.heldItem,
+                  success,
+                  consumedCount: success ? 1 : 0,
+                  outcome,
+                })
+                break
+              }
+              case 'EatFood': {
+                const outcome = resolveFoodUse({
+                  held: request.heldItem,
+                  vitals: request.vitals,
+                  effectRoll: request.effectRoll,
+                })
+                const success = outcome._tag === 'consume'
+                if (success) {
+                  yield* state.survivalHunger.eat(outcome.foodPoints, outcome.saturationModifier)
+                  yield* Ref.update(
+                    state.pendingStatusEffects,
+                    (pending) => [...pending, ...outcome.effects],
+                  )
+                }
+                itemUseResults.push({
+                  action: 'EatFood',
                   requestId: request.requestId,
                   heldItem: request.heldItem,
                   success,

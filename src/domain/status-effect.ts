@@ -1,18 +1,26 @@
 import type { DeltaTimeSecs } from './frame-contract'
 
-export const STATUS_EFFECT_TYPES = ['poison', 'regeneration', 'speed'] as const
+export const STATUS_EFFECT_TYPES = [
+  'poison',
+  'regeneration',
+  'speed',
+  'hunger',
+  'nausea',
+] as const
 
 export type StatusEffectType = (typeof STATUS_EFFECT_TYPES)[number]
 
 export type StatusEffectApplication = {
   readonly type: StatusEffectType
   readonly durationSecs: number
+  readonly amplifier?: number
 }
 
 export type ActiveStatusEffect = {
   readonly type: StatusEffectType
   readonly remainingSecs: number
   readonly pulseClockSecs: number
+  readonly amplifier?: number
 }
 
 export type StatusEffectState = {
@@ -24,6 +32,8 @@ export type StatusEffectTick = {
   readonly poisonPulses: number
   readonly regenerationPulses: number
   readonly movementSpeedMultiplier: number
+  readonly hungerExhaustion: number
+  readonly nauseaAmplifier: number | null
 }
 
 export type PlayerHealingEvent = {
@@ -46,6 +56,9 @@ export const emptyStatusEffectState = (): StatusEffectState => ({ effects: [] })
 const finiteDuration = (durationSecs: number): number =>
   Number.isFinite(durationSecs) ? Math.max(0, durationSecs) : 0
 
+const finiteAmplifier = (amplifier: number | undefined): number =>
+  Number.isFinite(amplifier) ? Math.max(0, Math.floor(amplifier ?? 0)) : 0
+
 export const copyStatusEffectState = (state: StatusEffectState): StatusEffectState => ({
   effects: state.effects.map((effect) => ({ ...effect })),
 })
@@ -58,11 +71,21 @@ export const applyStatusEffect = (
   const others = state.effects.filter((effect) => effect.type !== application.type)
   if (durationSecs === 0) return { effects: others }
 
+  const amplifier = finiteAmplifier(application.amplifier)
   const current = state.effects.find((effect) => effect.type === application.type)
+  if (current !== undefined && finiteAmplifier(current.amplifier) > amplifier) return state
+
   const next: ActiveStatusEffect = current === undefined
-    ? { type: application.type, remainingSecs: durationSecs, pulseClockSecs: 0 }
+    || finiteAmplifier(current.amplifier) < amplifier
+    ? {
+        type: application.type,
+        remainingSecs: durationSecs,
+        pulseClockSecs: 0,
+        amplifier,
+      }
     : {
         ...current,
+        amplifier,
         remainingSecs: Math.max(current.remainingSecs, durationSecs),
       }
   return {
@@ -97,21 +120,50 @@ export const tickStatusEffects = (
   const effects: Array<ActiveStatusEffect> = []
   let poisonPulses = 0
   let regenerationPulses = 0
+  let hungerExhaustion = 0
 
   for (const effect of state.effects) {
-    if (effect.type === 'speed') {
-      const remainingSecs = Math.max(0, effect.remainingSecs - elapsedSecs)
-      if (remainingSecs > 0) effects.push({ ...effect, remainingSecs })
-      continue
-    }
+    const amplifier = finiteAmplifier(effect.amplifier)
+    const activeElapsedSecs = Math.min(effect.remainingSecs, elapsedSecs)
 
-    const interval = effect.type === 'poison'
-      ? POISON_INTERVAL_SECS
-      : REGENERATION_INTERVAL_SECS
-    const advanced = advancePulsingEffect(effect, elapsedSecs, interval)
-    if (advanced.effect !== undefined) effects.push(advanced.effect)
-    if (effect.type === 'poison') poisonPulses += advanced.pulses
-    else regenerationPulses += advanced.pulses
+    switch (effect.type) {
+      case 'poison': {
+        const advanced = advancePulsingEffect(
+          effect,
+          elapsedSecs,
+          POISON_INTERVAL_SECS / 2 ** amplifier,
+        )
+        if (advanced.effect !== undefined) effects.push(advanced.effect)
+        poisonPulses += advanced.pulses
+        break
+      }
+      case 'regeneration': {
+        const advanced = advancePulsingEffect(
+          effect,
+          elapsedSecs,
+          REGENERATION_INTERVAL_SECS / 2 ** amplifier,
+        )
+        if (advanced.effect !== undefined) effects.push(advanced.effect)
+        regenerationPulses += advanced.pulses
+        break
+      }
+      case 'hunger':
+        hungerExhaustion += activeElapsedSecs * 0.1 * (amplifier + 1)
+        if (effect.remainingSecs > elapsedSecs) {
+          effects.push({ ...effect, remainingSecs: effect.remainingSecs - elapsedSecs })
+        }
+        break
+      case 'nausea':
+      case 'speed':
+        if (effect.remainingSecs > elapsedSecs) {
+          effects.push({ ...effect, remainingSecs: effect.remainingSecs - elapsedSecs })
+        }
+        break
+      default: {
+        const exhaustiveEffect: never = effect.type
+        return exhaustiveEffect
+      }
+    }
   }
 
   return {
@@ -121,5 +173,9 @@ export const tickStatusEffects = (
     movementSpeedMultiplier: effects.some((effect) => effect.type === 'speed')
       ? SPEED_MOVEMENT_MULTIPLIER
       : 1,
+    hungerExhaustion,
+    nauseaAmplifier: effects.some((effect) => effect.type === 'nausea')
+      ? finiteAmplifier(effects.find((effect) => effect.type === 'nausea')?.amplifier)
+      : null,
   }
 }

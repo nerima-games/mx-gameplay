@@ -51,6 +51,7 @@ export type SurvivalHungerTickOutcome = {
 
 export type SurvivalHungerRuntimeApi = {
   readonly submit: (input: SurvivalActivityInput) => Effect.Effect<void>
+  readonly addExhaustion: (amount: number) => Effect.Effect<void>
   readonly tick: (dt: DeltaTimeSecs) => Effect.Effect<SurvivalHungerTickOutcome>
   readonly eat: (foodPoints: number, saturationModifier: number) => Effect.Effect<PlayerVitals>
   readonly setDifficulty: (difficulty: SurvivalDifficulty) => Effect.Effect<void>
@@ -182,6 +183,7 @@ export const makeSurvivalHungerRuntime = (
 
     return {
       submit: (input) => Ref.update(pending, (inputs) => [...inputs, input]),
+      addExhaustion: (amount) => vitals.addExhaustion(amount),
       tick,
       eat: (foodPoints, saturationModifier) =>
         Effect.zipRight(vitals.eat(foodPoints, saturationModifier), vitals.snapshot),

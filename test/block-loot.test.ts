@@ -483,15 +483,30 @@ describe('blockLoot — fortune', () => {
 })
 
 describe('blockLoot — bonus lines', () => {
-  // `block-service.config.ts:222`. Two per cent.
-  it.effect('leaves yield a stick 2% of the time and nothing else', () =>
+  it.effect('leaves roll stick and sapling independently at their vanilla boundaries', () =>
     Effect.sync(() => {
-      expect(LEAF_STICK_DROP_CHANCE).toBe(0.02)
-      // The bonus line reads `rolls[1]`; `rolls[0]` is the fortune slot.
-      expect(blockLoot(OAK_LEAVES, NO_TOOL, [0.5, 0.019, 0.5, 0.5])).toStrictEqual([
+      expect(ITEM_TYPES).toContain('sapling')
+
+      expect(blockLoot(OAK_LEAVES, NO_TOOL, [0.5, LEAF_STICK_DROP_CHANCE - Number.EPSILON, 0.5])).toStrictEqual([
         { item: 'stick', count: 1 },
       ])
-      expect(blockLoot(OAK_LEAVES, NO_TOOL, [0.5, 0.02, 0.5, 0.5])).toStrictEqual([])
+      expect(blockLoot(OAK_LEAVES, NO_TOOL, [0.5, LEAF_STICK_DROP_CHANCE, 0.5])).toStrictEqual([])
+
+      expect(blockLoot(OAK_LEAVES, NO_TOOL, [0.5, 0.5, LEAF_SAPLING_DROP_CHANCE - Number.EPSILON])).toStrictEqual([
+        { item: 'sapling', count: 1 },
+      ])
+      expect(blockLoot(OAK_LEAVES, NO_TOOL, [0.5, 0.5, LEAF_SAPLING_DROP_CHANCE])).toStrictEqual([])
+
+      expect(
+        blockLoot(OAK_LEAVES, NO_TOOL, [
+          0.5,
+          LEAF_STICK_DROP_CHANCE - Number.EPSILON,
+          LEAF_SAPLING_DROP_CHANCE - Number.EPSILON,
+        ]),
+      ).toStrictEqual([
+        { item: 'stick', count: 1 },
+        { item: 'sapling', count: 1 },
+      ])
     }),
   )
 
@@ -502,7 +517,10 @@ describe('blockLoot — bonus lines', () => {
   it.effect('REGRESSION: the bonus runs even though the block itself drops nothing', () =>
     Effect.sync(() => {
       expect(dropOfBlockId(OAK_LEAVES)).toBeUndefined()
-      expect(blockLoot(OAK_LEAVES, NO_TOOL, ALL_LUCK)).toStrictEqual([{ item: 'stick', count: 1 }])
+      expect(blockLoot(OAK_LEAVES, NO_TOOL, ALL_LUCK)).toStrictEqual([
+        { item: 'stick', count: 1 },
+        { item: 'sapling', count: 1 },
+      ])
     }),
   )
 
@@ -576,7 +594,10 @@ describe('blockLoot — the roll budget', () => {
   // all-zeros array means a test wrote one on purpose.
   it.effect('a missing roll reads as zero, which is the luckiest answer', () =>
     Effect.sync(() => {
-      expect(blockLoot(OAK_LEAVES, NO_TOOL, [])).toStrictEqual([{ item: 'stick', count: 1 }])
+      expect(blockLoot(OAK_LEAVES, NO_TOOL, [])).toStrictEqual([
+        { item: 'stick', count: 1 },
+        { item: 'sapling', count: 1 },
+      ])
     }),
   )
 
