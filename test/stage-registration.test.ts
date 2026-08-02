@@ -809,6 +809,7 @@ describe('stage behaviour', () => {
         'pendingStatusEffects',
         'pendingVillagerTrades',
         'playerDamages',
+        'playerDead',
         'playerHeals',
         'playerMovementSpeedMultiplier',
         'portalCandidates',

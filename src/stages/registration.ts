@@ -276,7 +276,7 @@ import {
   meleeTarget,
   meleeTargetBeforeBlock,
   type MeleeAttackRequest,
-  type MeleeAttackResult,
+  type MeleeAttackResult as ResolvedMeleeAttackResult,
 } from '../domain/interactions/melee-attack'
 import {
   enderPearlDisplacement,
@@ -785,6 +785,7 @@ const runFluidPropagation = (
 export type GameplayFrameState = {
   readonly enderDragonEncounter: EnderDragonEncounterStageApi
   readonly survivalHunger: SurvivalHungerRuntimeApi
+  readonly playerDead: Ref.Ref<boolean>
   readonly pendingBreaks: Ref.Ref<ReadonlyArray<PositionKey>>
   readonly pendingPlacements: Ref.Ref<ReadonlyArray<PlacementRequest>>
   readonly pendingBlockUses: Ref.Ref<ReadonlyArray<BlockUseRequest>>
@@ -799,7 +800,7 @@ export type GameplayFrameState = {
   readonly blockUseResults: Ref.Ref<ReadonlyArray<BlockUseResult>>
   readonly itemUseResults: Ref.Ref<ReadonlyArray<ItemUseResult>>
   readonly bowShotResults: Ref.Ref<ReadonlyArray<BowShotResult>>
-  readonly meleeAttackResults: Ref.Ref<ReadonlyArray<MeleeAttackResult>>
+  readonly meleeAttackResults: Ref.Ref<ReadonlyArray<GameplayMeleeAttackResult>>
   readonly handledBowShotRequestIds: Ref.Ref<ReadonlySet<BowShotRequestId>>
   readonly bowKnockbacks: Ref.Ref<ReadonlyArray<BowKnockback>>
   readonly enderPearlOutcomes: Ref.Ref<ReadonlyArray<EnderPearlOutcome>>
@@ -864,7 +865,12 @@ export type VillagerTradeResult =
   | (VillagerTradeRequest & { readonly _tag: 'Traded' })
   | (VillagerTradeRequest & {
       readonly _tag: 'Rejected'
-      readonly reason: 'UnknownOffer' | 'OutOfStock' | 'InsufficientItems' | 'InventoryFull'
+      readonly reason:
+        | 'UnknownOffer'
+        | 'OutOfStock'
+        | 'InsufficientItems'
+        | 'InventoryFull'
+        | 'PlayerDead'
     })
 
 const pendingBlockBreakRequests = new WeakMap<GameplayFrameState, PendingBlockBreakRequestQueue>()
@@ -933,6 +939,7 @@ export type BlockPlacementCommandOutcome =
   | PlaceOutcome
   | { readonly _tag: 'InventoryUnavailable' }
   | { readonly _tag: 'RequestIdConflict' }
+  | { readonly _tag: 'PlayerDead' }
 
 /** One drainable answer for a correlated placement command. */
 export type BlockPlacementResult = {
@@ -973,11 +980,17 @@ export type BlockUseRequest = {
 }
 
 /** The drainable answer that tells the host whether to toggle its lever state. */
-export type BlockUseResult = {
-  readonly requestId: BlockUseRequestId
-  readonly success: boolean
-  readonly outcome: BlockUseOutcome
-}
+export type BlockUseResult =
+  | {
+      readonly requestId: BlockUseRequestId
+      readonly success: boolean
+      readonly outcome: BlockUseOutcome
+    }
+  | {
+      readonly requestId: BlockUseRequestId
+      readonly success: false
+      readonly outcome: 'PlayerDead'
+    }
 
 /**
  * One use of an igniting item on a cell.
@@ -1120,7 +1133,17 @@ export type FurnaceItemUseResult = {
   readonly plan: FurnaceAdvancePlan
 }
 
-export type ItemUseResult = IgnitionItemUseResult | FarmingItemUseResult | FurnaceItemUseResult
+export type PlayerDeadItemUseResult = {
+  readonly requestId: ItemUseRequestId
+  readonly success: false
+  readonly outcome: 'PlayerDead'
+}
+
+export type ItemUseResult =
+  | IgnitionItemUseResult
+  | FarmingItemUseResult
+  | FurnaceItemUseResult
+  | PlayerDeadItemUseResult
 
 /**
  * One shot from a drawn bow.
@@ -1185,8 +1208,12 @@ export type BowShotResult =
   | {
       readonly requestId: BowShotRequestId
       readonly success: false
-      readonly outcome: 'Undercharged' | 'DuplicateRequest'
+      readonly outcome: 'Undercharged' | 'DuplicateRequest' | 'PlayerDead'
     }
+
+export type GameplayMeleeAttackResult =
+  | ResolvedMeleeAttackResult
+  | { readonly requestId: string; readonly success: false; readonly outcome: 'PlayerDead' }
 
 /**
  * One ender pearl thrown.
@@ -1268,6 +1295,7 @@ export type EnderPearlOutcome = {
 export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.gen(function* () {
   const enderDragonEncounter = yield* makeEnderDragonEncounterRuntime
   const survivalHunger = yield* makeSurvivalHungerRuntime()
+  const playerDead = yield* Ref.make(false)
   const pendingBreaks = yield* Ref.make<ReadonlyArray<PositionKey>>([])
   const breakRequests = yield* Ref.make<PendingBlockBreakRequestState>({
     nextRequestId: 0,
@@ -1287,7 +1315,7 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
   const blockUseResults = yield* Ref.make<ReadonlyArray<BlockUseResult>>([])
   const itemUseResults = yield* Ref.make<ReadonlyArray<ItemUseResult>>([])
   const bowShotResults = yield* Ref.make<ReadonlyArray<BowShotResult>>([])
-  const meleeAttackResults = yield* Ref.make<ReadonlyArray<MeleeAttackResult>>([])
+  const meleeAttackResults = yield* Ref.make<ReadonlyArray<GameplayMeleeAttackResult>>([])
   const handledBowShotRequestIds = yield* Ref.make<ReadonlySet<BowShotRequestId>>(new Set())
   // Both are empty in the ordinary state. An entry means something happened
   // that this repository computed and cannot itself deliver.
@@ -1355,6 +1383,7 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
   const state: GameplayFrameState = {
     enderDragonEncounter,
     survivalHunger,
+    playerDead,
     pendingBreaks,
     pendingPlacements,
     pendingBlockUses,
@@ -1409,6 +1438,12 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
   })
   return state
 })
+
+/** Set the host-derived death snapshot consumed by the next interaction stage run. */
+export const setPlayerDead = (
+  state: GameplayFrameState,
+  playerDead: boolean,
+): Effect.Effect<void> => Ref.set(state.playerDead, playerDead)
 
 /**
  * The stages mx-gameplay registers.
@@ -1773,7 +1808,8 @@ export const drainBowShotResults = (
 /** Atomically drain completed correlated melee attacks exactly once, preserving request order. */
 export const drainMeleeAttackResults = (
   state: GameplayFrameState,
-): Effect.Effect<ReadonlyArray<MeleeAttackResult>> => Ref.getAndSet(state.meleeAttackResults, [])
+): Effect.Effect<ReadonlyArray<GameplayMeleeAttackResult>> =>
+  Ref.getAndSet(state.meleeAttackResults, [])
 
 /** Enqueue one melee swing for the next interaction stage. */
 export const requestMeleeAttack = (
@@ -2563,6 +2599,7 @@ const executeBlockPlacementCommand = (
   store: ChunkStoreApi,
   inventory: InventoryServiceApi,
   playerFeet: Position,
+  playerDead: boolean,
 ): Effect.Effect<BlockPlacementExecution> => {
   const runtime = blockPlacementRuntimeFor(state)
   const normalized = normalizedBlockPlacementCommand(command)
@@ -2590,6 +2627,25 @@ const executeBlockPlacementCommand = (
             results: [...latest.results, replayed],
           }))
           return { outcome: replayed.outcome, consumed: false, mutated: false }
+        }
+
+        if (playerDead) {
+          const outcome = { _tag: 'PlayerDead' } as const
+          const result: BlockPlacementResult = {
+            requestId: normalized.requestId,
+            success: false,
+            consumed: false,
+            replayed: false,
+            outcome,
+          }
+          yield* Ref.update(runtime.state, (latest) => ({
+            handled: new Map(latest.handled).set(normalized.requestId, {
+              command: normalized,
+              result,
+            }),
+            results: [...latest.results, result],
+          }))
+          return { outcome, consumed: false, mutated: false }
         }
 
         const execution = yield* executeBlockPlacementAtomically(
@@ -2644,6 +2700,8 @@ export const gameplayStages = (
     // after `interactions` one stage down.
     run: (dt) =>
       Effect.gen(function* () {
+        const playerDead = yield* Ref.get(state.playerDead)
+
         // ---------------------------------------------------------------
         // PORTAL TRAVEL, and it runs BEFORE the inbox drain and its early
         // return.
@@ -2739,10 +2797,18 @@ export const gameplayStages = (
         const blockUseResults: Array<BlockUseResult> = []
         const itemUseResults: Array<ItemUseResult> = []
         const bowShotResults: Array<BowShotResult> = []
-        const meleeAttackResults: Array<MeleeAttackResult> = []
+        const meleeAttackResults: Array<GameplayMeleeAttackResult> = []
         const disturbed: Array<PositionKey> = []
 
         for (const request of villagerTrades) {
+          if (playerDead) {
+            yield* recordVillagerTradeResult(state, {
+              ...request,
+              _tag: 'Rejected',
+              reason: 'PlayerDead',
+            })
+            continue
+          }
           const tradeState = yield* Ref.get(state.villagerTrades)
           const villager = tradeState.villagers.find((candidate) => candidate.id === request.villagerId)
           const offer = villager?.offers.find((candidate) => candidate.id === request.offerId)
@@ -2812,6 +2878,7 @@ export const gameplayStages = (
         const playerFeet = (yield* player.pose).feetPosition
 
         for (const [index, positionKey] of breaks.entries()) {
+          if (playerDead) continue
           const tool = snapshots.get(index)?.lootContext ?? fallbackTool
           const breakPosition = positionOfKey(positionKey)
           const outcome = yield* breakBlock(store, breakPosition)
@@ -2861,6 +2928,14 @@ export const gameplayStages = (
         }
 
         for (const request of blockUses) {
+          if (playerDead) {
+            blockUseResults.push({
+              requestId: request.requestId,
+              success: false,
+              outcome: 'PlayerDead',
+            })
+            continue
+          }
           const position = positionOfKey(request.positionKey)
           const outcome = resolveBlockUse(position, yield* store.getBlock(position))
           blockUseResults.push({
@@ -2878,8 +2953,11 @@ export const gameplayStages = (
                 store,
                 inventory,
                 playerFeet,
+                playerDead,
               )
-            : yield* blockPlacementRuntimeFor(state).mutex.withPermits(1)(
+            : playerDead
+              ? undefined
+              : yield* blockPlacementRuntimeFor(state).mutex.withPermits(1)(
                 executeBlockPlacementAtomically(
                   request,
                   'survival',
@@ -2889,6 +2967,7 @@ export const gameplayStages = (
                 ),
               )
 
+          if (execution === undefined) continue
           if (execution.consumed && execution.outcome._tag === 'Placed') {
             spent.push(execution.outcome.consumed)
           }
@@ -2903,6 +2982,14 @@ export const gameplayStages = (
         // frame gets the sequence they asked for. The other order asks
         // `detectNetherPortal` about a ring that is one block short.
         for (const request of itemUses) {
+          if (playerDead && (!('action' in request) || request.action !== 'AdvanceFurnace')) {
+            itemUseResults.push({
+              requestId: request.requestId,
+              success: false,
+              outcome: 'PlayerDead',
+            })
+            continue
+          }
           if ('action' in request) {
             switch (request.action) {
               case 'TillSoil': {
@@ -3088,7 +3175,7 @@ export const gameplayStages = (
         const shoves: Array<BowKnockback> = []
         const bowHits: Array<BowHit> = []
         if (bowShots.length > 0) {
-          const candidates = yield* roster.entities
+          const candidates = playerDead ? [] : yield* roster.entities
           const handledRequestIds = new Set(yield* Ref.get(state.handledBowShotRequestIds))
 
           for (const shot of bowShots) {
@@ -3102,6 +3189,17 @@ export const gameplayStages = (
                 continue
               }
               handledRequestIds.add(shot.requestId)
+            }
+
+            if (playerDead) {
+              if (shot.requestId !== undefined) {
+                bowShotResults.push({
+                  requestId: shot.requestId,
+                  success: false,
+                  outcome: 'PlayerDead',
+                })
+              }
+              continue
             }
 
             // A TAP IS NOT A SHOT. `canFireBow` is the gate and it is asked
@@ -3210,8 +3308,18 @@ export const gameplayStages = (
         const bowCasualties = yield* resolveBowHits(roster, bowHits)
         const meleeHits: Array<BowHit> = []
         if (meleeAttacks.length > 0) {
-          const candidates = yield* roster.entities
+          const candidates = playerDead ? [] : yield* roster.entities
           for (const attack of meleeAttacks) {
+            if (playerDead) {
+              if (attack.requestId !== undefined) {
+                meleeAttackResults.push({
+                  requestId: attack.requestId,
+                  success: false,
+                  outcome: 'PlayerDead',
+                })
+              }
+              continue
+            }
             const hit = meleeTarget(candidates, attack)
             if (hit !== undefined) {
               meleeHits.push({ id: hit.id, damage: attack.damage })
@@ -3252,7 +3360,7 @@ export const gameplayStages = (
         // how many throws there were and not of what happened to them, so two runs
         // of one scenario draw the same numbers whatever the endermites do.
         const pearlOutcomes: Array<EnderPearlOutcome> = []
-        if (pearlThrows.length > 0) {
+        if (!playerDead && pearlThrows.length > 0) {
           const rolls = yield* Ref.modify(state.rollSeed, (seed) => {
             const batch = drawRolls(seed, pearlThrows.length)
             return [batch, batch.seed] as const

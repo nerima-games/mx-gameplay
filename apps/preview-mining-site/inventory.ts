@@ -1,76 +1,9 @@
-/**
- * A REAL INVENTORY for the preview, typed by mc-sim's `InventoryService`.
- *
- * ---------------------------------------------------------------------------
- * `./roster.ts` REFUSES TO DO THIS, AND THE DIFFERENCE IS THE WHOLE POINT
- * ---------------------------------------------------------------------------
- *
- * That file states the test and then applies it: `./world.ts` implements a real
- * store 「because the rules under test read and write blocks and a store that
- * refused would test nothing」, while the roster refuses because 「nothing here
- * is under test: this preview never spawns, never sets a target and never
- * offers a spawn candidate, so a working roster would be A SECOND
- * IMPLEMENTATION OF MC-SIM'S SERVICE living in mx-gameplay」.
- *
- * The inventory is on `./world.ts`'s side of that line, and only since
- * `stages/registration.ts` started depositing. `gameplay:interactions` calls
- * `add` for every mined stack and READS THE NUMBER BACK, so a refusing
- * inventory would kill the preview on the first swing and an always-`0` one
- * would make the leftover path — the path that loses items — invisible. This is
- * the preview playing mc-sim, exactly as `./world.ts` plays mc-worldgen, and it
- * is deleted the day mc-sim is published and `InventoryServiceLayer()` replaces
- * it.
- *
- * ---------------------------------------------------------------------------
- * It is a SECOND transcription of mc-sim's `addItem`, and that is deliberate
- * ---------------------------------------------------------------------------
- *
- * `test/support/inventory-service-double.ts` holds the first, and the two do
- * not share a file for the reason `./world.ts` and
- * `test/support/chunk-store-double.ts` do not: `tsconfig.build.json` proves the
- * shipped rules are platform-free and `tsconfig.preview.json` deliberately does
- * NOT include `test/**`, so a preview that imported a test double would be
- * reaching across a boundary that exists to keep Node types out of `domain/`.
- * Putting either implementation in `domain/` would be far worse — it would be
- * mx-gameplay shipping an inventory.
- *
- * What the duplication buys is that the two are INDEPENDENT witnesses of the
- * same rule: the tests and the screen agree about what a full inventory does
- * because both copied mc-sim, not because both copied each other.
- *
- * ---------------------------------------------------------------------------
- * What it refuses
- * ---------------------------------------------------------------------------
- *
- * The four crafting members die, following `./roster.ts`'s rule exactly: there
- * is no crafting rule in this repository and no crafting screen in this
- * preview, so a `matchRecipe` here would be the second implementation
- * `./roster.ts` is about, arriving through the one member nobody would check.
- * `restore` dies because the world-load path is a host's and this preview loads
- * no world.
- */
+/** A preview adapter over mx-gameplay's canonical recipe-enabled inventory. */
+import type { InventoryServiceApi } from '@nerima-games/mc-sim'
 import { Effect, Ref } from 'effect'
-import { MAX_STACK_COUNT, StackCount } from '../../src/domain/frame-contract'
-import {
-  damageAt as damageStorageAt,
-  durabilityForItem,
-  emptyPlayerStorage,
-  equipFromInventory as equipStorageFromInventory,
-  isEquippableItemType,
-  isValidDurabilityForItem,
-  maxStackCountForItem,
-  storageFromInventory,
-  unequipToInventory as unequipStorageToInventory,
-  validatePlayerStorageSnapshot,
-  withInventory,
-  type Inventory,
-  type InventoryCarriedSlot,
-  type InventoryClick,
-  type InventoryClickResult,
-  type InventoryServiceApi,
-  type PlayerStorage,
-  type Slot,
-} from '@nerima-games/mc-sim'
+import { makeInMemoryInventory } from '../../src/domain/in-memory-inventory'
+
+export { INVENTORY_SLOT_COUNT } from '../../src/domain/in-memory-inventory'
 
 type ItemType = Parameters<InventoryServiceApi['add']>[0]
 
@@ -79,380 +12,44 @@ export type InventoryDeposit = {
   readonly count: number
 }
 
-/** mc-sim's `INVENTORY_SLOT_COUNT`. The number that makes overflow reachable. */
-export const INVENTORY_SLOT_COUNT = 36
-
-const emptySlots = (): ReadonlyArray<Slot> =>
-  Array.from({ length: INVENTORY_SLOT_COUNT }, () => undefined)
-
-/**
- * `mc-sim/domain/inventory.ts`'s `addItem`, transcribed.
- *
- * Partial stacks are topped up before empty slots are opened, a stack caps at
- * mc-sim's item-specific limit, and a `count` that is not a positive integer is reported
- * as leftover unless it is not finite — in which case nothing is left behind,
- * because a `NaN` leftover is a number every caller downstream would believe.
- * The test double carries the same three paragraphs at length.
- */
-const addTo = (
-  slots: ReadonlyArray<Slot>,
-  item: ItemType,
-  count: number,
-): { readonly slots: ReadonlyArray<Slot>; readonly leftover: number } => {
-  if (!Number.isInteger(count) || count <= 0) {
-    return { slots, leftover: Number.isFinite(count) ? Math.max(0, count) : 0 }
-  }
-
-  const next = [...slots]
-  let remaining = count
-  const maxStackCount = maxStackCountForItem(item)
-
-  for (let index = 0; index < next.length && remaining > 0; index += 1) {
-    const slot = next[index]
-    if (slot === undefined || slot.item !== item || slot.count >= maxStackCount) {
-      continue
-    }
-    const accepted = Math.min(maxStackCount - slot.count, remaining)
-    next[index] = { item, count: StackCount(slot.count + accepted) }
-    remaining -= accepted
-  }
-
-  for (let index = 0; index < next.length && remaining > 0; index += 1) {
-    if (next[index] !== undefined) {
-      continue
-    }
-    const accepted = Math.min(maxStackCount, remaining)
-    next[index] = { item, count: StackCount(accepted) }
-    remaining -= accepted
-  }
-
-  return { slots: next, leftover: remaining }
-}
-
-/** `mc-sim/domain/inventory.ts`'s `removeItem`, transcribed. LAST-FIRST. */
-const removeFrom = (
-  slots: ReadonlyArray<Slot>,
-  item: ItemType,
-  count: number,
-): { readonly slots: ReadonlyArray<Slot>; readonly removed: number } => {
-  if (!Number.isInteger(count) || count <= 0) {
-    return { slots, removed: 0 }
-  }
-
-  const next = [...slots]
-  let remaining = count
-
-  for (let index = next.length - 1; index >= 0 && remaining > 0; index -= 1) {
-    const slot = next[index]
-    if (slot === undefined || slot.item !== item) {
-      continue
-    }
-    const taken = Math.min(slot.count, remaining)
-    const left = slot.count - taken
-    next[index] = left === 0 ? undefined : { item, count: StackCount(left) }
-    remaining -= taken
-  }
-
-  return { slots: next, removed: count - remaining }
-}
-
-type ClickOutcome = {
-  readonly slots: ReadonlyArray<Slot>
-  readonly result: InventoryClickResult
-}
-
-const validCarried = (carried: InventoryCarriedSlot): boolean =>
-  carried === undefined ||
-  (Number.isInteger(carried.count) &&
-    carried.count > 0 &&
-    carried.count <= maxStackCountForItem(carried.item) &&
-    (isEquippableItemType(carried.item)
-      ? carried.durability === undefined ||
-        isValidDurabilityForItem(carried.item, carried.durability)
-      : carried.durability === undefined))
-
-/** `mc-sim` keeps this state transition private, so the preview mirrors its public contract. */
-const clickSlot = (slots: ReadonlyArray<Slot>, click: InventoryClick): ClickOutcome => {
-  if (!Number.isInteger(click.slotIndex) || click.slotIndex < 0 || click.slotIndex >= slots.length) {
-    return { slots, result: { _tag: 'InvalidSlot', carried: click.carried } }
-  }
-  if (!validCarried(click.carried)) {
-    return { slots, result: { _tag: 'InvalidCount', carried: click.carried } }
-  }
-
-  const slot = slots[click.slotIndex]
-  const maxStackCount =
-    click.carried === undefined ? MAX_STACK_COUNT : maxStackCountForItem(click.carried.item)
-  if (click._tag === 'LeftClick') {
-    if (click.carried === undefined) {
-      if (slot === undefined) {
-        return { slots, result: { _tag: 'NoChange', carried: undefined } }
-      }
-      const next = [...slots]
-      next[click.slotIndex] = undefined
-      return { slots: next, result: { _tag: 'PickedUp', carried: slot } }
-    }
-    if (slot === undefined) {
-      const next = [...slots]
-      next[click.slotIndex] = click.carried
-      return { slots: next, result: { _tag: 'Placed', carried: undefined } }
-    }
-    if (slot.item !== click.carried.item) {
-      const next = [...slots]
-      next[click.slotIndex] = click.carried
-      return { slots: next, result: { _tag: 'Swapped', carried: slot } }
-    }
-
-    const accepted = Math.min(maxStackCount - slot.count, click.carried.count)
-    if (accepted <= 0) {
-      return { slots, result: { _tag: 'NoChange', carried: click.carried } }
-    }
-    const next = [...slots]
-    next[click.slotIndex] = { item: slot.item, count: StackCount(slot.count + accepted) }
-    const remaining = click.carried.count - accepted
-    return {
-      slots: next,
-      result: {
-        _tag: 'Merged',
-        carried:
-          remaining === 0
-            ? undefined
-            : { item: click.carried.item, count: StackCount(remaining) },
-      },
-    }
-  }
-
-  if (click.carried === undefined) {
-    if (slot === undefined) {
-      return { slots, result: { _tag: 'NoChange', carried: undefined } }
-    }
-    const pickedUp = Math.ceil(slot.count / 2)
-    const remaining = slot.count - pickedUp
-    const next = [...slots]
-    next[click.slotIndex] =
-      remaining === 0 ? undefined : { item: slot.item, count: StackCount(remaining) }
-    return {
-      slots: next,
-      result: {
-        _tag: 'PickedUp',
-        carried: { item: slot.item, count: StackCount(pickedUp) },
-      },
-    }
-  }
-
-  if (slot !== undefined && (slot.item !== click.carried.item || slot.count >= maxStackCount)) {
-    return { slots, result: { _tag: 'NoChange', carried: click.carried } }
-  }
-  const next = [...slots]
-  next[click.slotIndex] = {
-    item: click.carried.item,
-    count: StackCount((slot?.count ?? 0) + 1),
-  }
-  const remaining = click.carried.count - 1
-  return {
-    slots: next,
-    result: {
-      _tag: slot === undefined ? 'Placed' : 'Merged',
-      carried:
-        remaining === 0 ? undefined : { item: click.carried.item, count: StackCount(remaining) },
-    },
-  }
-}
-
-const refuse = <A>(what: string): Effect.Effect<A> =>
-  Effect.dieMessage(
-    `preview-mining-site: ${what} is not exercised by this preview, and mx-gameplay must not implement mc-sim's service here. See apps/preview-mining-site/inventory.ts.`,
-  )
-
 export type PreviewInventory = {
   /** Handed to `gameplayStages`, which takes the API rather than the tag. */
   readonly api: InventoryServiceApi
-  /**
-   * Held totals, item name to count, for the HUD.
-   *
-   * A PROJECTION OF `snapshot`, not a tally this preview keeps. `./site.ts`
-   * used to add up the outbox itself and its comment said so — 「This is the
-   * preview playing mc-sim's `InventoryService.add` / `.remove` pair」. It is
-   * playing the service for real now, so the number on screen is the number
-   * mc-sim would answer, arrived at by mc-sim's stacking rule.
-   */
+  /** Held totals projected from the canonical inventory snapshot for the HUD. */
   readonly held: Effect.Effect<ReadonlyMap<string, number>>
-  /**
-   * The `add` calls made since the last drain, as `{ item, count }`.
-   *
-   * `./world.ts`'s `takeWriteLog` in a different currency, and it exists for
-   * the same reason: the frame tape reports what HAPPENED in a frame, and after
-   * the wiring there is no outbox left to read that from. What the tape shows
-   * is now the argument list of a call to mc-sim.
-   */
+  /** The `add` calls made since the last drain. */
   readonly takeDepositLog: Effect.Effect<ReadonlyArray<InventoryDeposit>>
 }
 
-type State = {
-  storage: PlayerStorage
-  deposits: ReadonlyArray<InventoryDeposit>
-}
-
 export const makePreviewInventory = (): Effect.Effect<PreviewInventory> =>
-  Effect.map(
-    Ref.make<State>({ storage: storageFromInventory({ slots: emptySlots() }), deposits: [] }),
-    (state) => {
-      const api: InventoryServiceApi = {
+  Effect.gen(function* () {
+    const inventory = yield* makeInMemoryInventory()
+    const deposits = yield* Ref.make<ReadonlyArray<InventoryDeposit>>([])
+    const depositMutex = yield* Effect.makeSemaphore(1)
+
+    const api: InventoryServiceApi = {
+      ...inventory,
       add: (item, count) =>
-        Ref.modify(state, (current) => {
-          const outcome = addTo(current.storage.inventory.slots, item, count)
-          return [
-            outcome.leftover,
-            {
-              storage: withInventory(current.storage, { slots: outcome.slots }),
-              deposits: [...current.deposits, { item, count }],
-            },
-          ] as const
-        }),
-
-      addStoredStack: () => refuse('addStoredStack'),
-
-      remove: (item, count) =>
-        Ref.modify(state, (current) => {
-          const outcome = removeFrom(current.storage.inventory.slots, item, count)
-          return [
-            outcome.removed,
-            { ...current, storage: withInventory(current.storage, { slots: outcome.slots }) },
-          ] as const
-        }),
-
-      removeAt: (slotIndex, expectedItem, count) =>
-        Ref.modify<
-          State,
-          Effect.Effect.Success<ReturnType<InventoryServiceApi['removeAt']>>
-        >(state, (current) => {
-          const currentSlots = current.storage.inventory.slots
-          if (!Number.isInteger(slotIndex) || slotIndex < 0 || slotIndex >= currentSlots.length) {
-            return [{ _tag: 'InvalidSlot' } as const, current] as const
-          }
-          if (!Number.isInteger(count) || count <= 0) {
-            return [{ _tag: 'InvalidCount' } as const, current] as const
-          }
-
-          const slot = currentSlots[slotIndex]
-          if (slot === undefined) {
-            return [{ _tag: 'EmptySlot' } as const, current] as const
-          }
-          if (slot.item !== expectedItem) {
-            return [{ _tag: 'ItemMismatch', actualItem: slot.item } as const, current] as const
-          }
-          if (slot.count < count) {
-            return [{ _tag: 'Insufficient', available: slot.count } as const, current] as const
-          }
-
-          const slots = [...currentSlots]
-          const remaining = slot.count - count
-          slots[slotIndex] =
-            remaining === 0 ? undefined : { item: expectedItem, count: StackCount(remaining) }
-          return [
-            { _tag: 'Removed', removed: count } as const,
-            { ...current, storage: withInventory(current.storage, { slots }) },
-          ] as const
-        }),
-
-      click: (click) =>
-        Ref.modify(state, (current) => {
-          const beforeDurability = current.storage.inventoryDurability[click.slotIndex]
-          const outcome = clickSlot(current.storage.inventory.slots, click)
-          let storage = withInventory(current.storage, { slots: outcome.slots })
-          if (
-            (outcome.result._tag === 'Placed' ||
-              outcome.result._tag === 'Swapped' ||
-              outcome.result._tag === 'Merged') &&
-            click.carried !== undefined &&
-            isEquippableItemType(click.carried.item)
-          ) {
-            const durability = click.carried.durability ?? durabilityForItem(click.carried.item)
-            const values = [...storage.inventoryDurability]
-            values[click.slotIndex] = durability === null ? null : { ...durability }
-            storage = { ...storage, inventoryDurability: values }
-          }
-          const result =
-            (outcome.result._tag === 'PickedUp' || outcome.result._tag === 'Swapped') &&
-            isEquippableItemType(outcome.result.carried.item) &&
-            beforeDurability !== null &&
-            beforeDurability !== undefined
-              ? {
-                  ...outcome.result,
-                  carried: { ...outcome.result.carried, durability: beforeDurability },
-                }
-              : outcome.result
-          return [result, { ...current, storage }] as const
-        }),
-
-      countOf: (item) =>
-        Effect.map(Ref.get(state), (current) =>
-          current.storage.inventory.slots.reduce(
-            (running, slot) => (slot?.item === item ? running + slot.count : running),
-            0,
-          ),
+        depositMutex.withPermits(1)(
+          Effect.gen(function* () {
+            const result = yield* inventory.add(item, count)
+            yield* Ref.update(deposits, (current) => [...current, { item, count }])
+            return result
+          }),
         ),
+    }
 
-      snapshot: Effect.map(Ref.get(state), (current): Inventory => current.storage.inventory),
-      equipmentSnapshot: Effect.map(Ref.get(state), (current) => current.storage.equipment),
-      storageSnapshot: Effect.map(Ref.get(state), (current) => current.storage),
-
-      restoreStorage: (snapshot) => {
-        const validated = validatePlayerStorageSnapshot(snapshot)
-        return validated._tag === 'Invalid'
-          ? Effect.fail(validated.error)
-          : Ref.update(state, (current) => ({ ...current, storage: validated.storage }))
-      },
-
-      equipFromInventory: (inventorySlot, equipmentSlot) =>
-        Ref.modify(state, (current) => {
-          const outcome = equipStorageFromInventory(current.storage, inventorySlot, equipmentSlot)
-          return [outcome.result, { ...current, storage: outcome.storage }] as const
-        }),
-
-      unequipToInventory: (equipmentSlot, inventorySlot) =>
-        Ref.modify(state, (current) => {
-          const outcome = unequipStorageToInventory(current.storage, equipmentSlot, inventorySlot)
-          return [outcome.result, { ...current, storage: outcome.storage }] as const
-        }),
-
-      damageAt: (location, amount) =>
-        Ref.modify(state, (current) => {
-          const outcome = damageStorageAt(current.storage, location, amount)
-          return [outcome.result, { ...current, storage: outcome.storage }] as const
-        }),
-
-      consumeAndDamageAt: () => refuse('consumeAndDamageAt'),
-      createContainer: () => refuse('createContainer'),
-      containerSnapshot: () => refuse('containerSnapshot'),
-      containerStorageSnapshot: refuse('containerStorageSnapshot'),
-      restoreContainerStorage: () => refuse('restoreContainerStorage'),
-      transferContainerItem: () => refuse('transferContainerItem'),
-      drainContainer: () => refuse('drainContainer'),
-
-      reset: Ref.update(state, (current) => ({ ...current, storage: emptyPlayerStorage() })),
-
-      restore: () => refuse('restore'),
-      recipes: refuse('recipes'),
-      previewCraft: () => refuse('previewCraft'),
-      craft: () => refuse('craft'),
-      }
-
-      return {
-        api,
-        held: Effect.map(Ref.get(state), (current) => {
-          const totals = new Map<string, number>()
-          for (const slot of current.storage.inventory.slots) {
-            if (slot !== undefined) {
-              totals.set(slot.item, (totals.get(slot.item) ?? 0) + slot.count)
-            }
+    return {
+      api,
+      held: Effect.map(inventory.snapshot, (snapshot) => {
+        const totals = new Map<string, number>()
+        for (const slot of snapshot.slots) {
+          if (slot !== undefined) {
+            totals.set(slot.item, (totals.get(slot.item) ?? 0) + slot.count)
           }
-          return totals
-        }),
-        takeDepositLog: Ref.modify(state, (current) => [
-          current.deposits,
-          { ...current, deposits: [] },
-        ]),
-      }
-    },
-  )
+        }
+        return totals
+      }),
+      takeDepositLog: depositMutex.withPermits(1)(Ref.getAndSet(deposits, [])),
+    }
+  })
