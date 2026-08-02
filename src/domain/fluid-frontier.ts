@@ -80,7 +80,7 @@ export type FluidChange =
   | {
       readonly _tag: 'Solidify'
       readonly key: PositionKey
-      readonly block: 'stone' | 'cobblestone'
+      readonly block: 'obsidian' | 'cobblestone'
     }
   | { readonly _tag: 'ForgetFluid'; readonly key: PositionKey }
 
@@ -124,7 +124,7 @@ export const transitionFluidCell = (input: {
         {
           _tag: 'Solidify',
           key: cell.key,
-          block: cell.source ? 'stone' : 'cobblestone',
+          block: cell.source ? 'obsidian' : 'cobblestone',
         },
       ],
       defer: false,
@@ -134,7 +134,7 @@ export const transitionFluidCell = (input: {
   const changes: Array<FluidChange> = contacts.map((probe) => ({
     _tag: 'Solidify' as const,
     key: probe.key,
-    block: probe.source ? ('stone' as const) : ('cobblestone' as const),
+    block: probe.source ? ('obsidian' as const) : ('cobblestone' as const),
   }))
 
   if (below.state === 'air') {

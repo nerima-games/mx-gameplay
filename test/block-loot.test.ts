@@ -32,10 +32,9 @@
  *   fortune   `enchantment.ts:107-111` + `enchantment.config.ts:46`
  *   leaves    `block-service.config.ts:221-233` (`rollLeafDrops`)
  *
- * docs/porting.md §4 makes the reference the specification, which is why
- * vanilla's gravel-to-flint is NOT here: the reference has no such rule, and a
- * "fix" to a drop rate is the kind of change that should arrive with a
- * measurement.
+  * Gravel is the intentional exception to the reference-only random half: Survival
+ * follows Minecraft's block loot table, including its Fortune table-bonus chances
+ * and Silk Touch alternative.
  */
 import { describe, expect, it } from '@effect/vitest'
 import { Effect } from 'effect'
@@ -342,10 +341,17 @@ describe('blockLoot — the deterministic half', () => {
     }),
   )
 
-  it.effect('sand and gravel yield themselves, which is what the cascade’s mass check counts', () =>
+  it.effect('sand and unsuccessful gravel rolls yield themselves', () =>
     Effect.sync(() => {
       expect(blockLoot(SAND, NO_TOOL)).toStrictEqual([{ item: 'sand', count: 1 }])
-      expect(blockLoot(GRAVEL, NO_TOOL)).toStrictEqual([{ item: 'gravel', count: 1 }])
+      expect(blockLoot(GRAVEL, NO_TOOL, [0.1])).toStrictEqual([{ item: 'gravel', count: 1 }])
+    }),
+  )
+
+  it.effect('gravel replaces itself with flint below the vanilla chance boundary', () =>
+    Effect.sync(() => {
+      expect(blockLoot(GRAVEL, NO_TOOL, [0.099999])).toStrictEqual([{ item: 'flint', count: 1 }])
+      expect(blockLoot(GRAVEL, NO_TOOL, [0.1])).toStrictEqual([{ item: 'gravel', count: 1 }])
     }),
   )
 
@@ -466,6 +472,29 @@ describe('blockLoot — fortune', () => {
     Effect.sync(() => {
       expect(blockLoot(SAND, { fortuneLevel: 3 }, ALL_LUCK)).toStrictEqual([
         { item: 'sand', count: 1 },
+      ])
+    }),
+  )
+
+  it.effect('gravel applies the vanilla Fortune replacement chances and Silk Touch override', () =>
+    Effect.sync(() => {
+      expect(blockLoot(GRAVEL, { fortuneLevel: 1 }, [0.14285714])).toStrictEqual([
+        { item: 'flint', count: 1 },
+      ])
+      expect(blockLoot(GRAVEL, { fortuneLevel: 1 }, [0.14285715])).toStrictEqual([
+        { item: 'gravel', count: 1 },
+      ])
+      expect(blockLoot(GRAVEL, { fortuneLevel: 2 }, [0.249999])).toStrictEqual([
+        { item: 'flint', count: 1 },
+      ])
+      expect(blockLoot(GRAVEL, { fortuneLevel: 2 }, [0.25])).toStrictEqual([
+        { item: 'gravel', count: 1 },
+      ])
+      expect(blockLoot(GRAVEL, { fortuneLevel: 3 }, [0.999999])).toStrictEqual([
+        { item: 'flint', count: 1 },
+      ])
+      expect(blockLoot(GRAVEL, { fortuneLevel: 3, silkTouch: true }, [0])).toStrictEqual([
+        { item: 'gravel', count: 1 },
       ])
     }),
   )

@@ -125,6 +125,8 @@ export const NO_TOOL: BlockLootContext = {}
  * is `MAX_LEVEL` in a table this repository does not own, and dropping the two
  * rows would silently change what an over-levelled tool does.
  */
+/** Vanilla gravel-to-flint replacement chances for Fortune levels 0 through 3. */
+const GRAVEL_FLINT_CHANCES: ReadonlyArray<number> = [0.1, 0.14285715, 0.25, 1]
 export const FORTUNE_MULTIPLIERS: ReadonlyMap<number, number> = new Map([
   [1, 1.33],
   [2, 1.75],
@@ -343,11 +345,23 @@ export const blockLoot = (
 ): ReadonlyArray<MinedItem> => {
   const drop = dropOfBlockId(block, context)
   const type = blockTypeOfId(block)
+  const roll = rolls[0] ?? 0
 
   const items: Array<MinedItem> = []
 
   if (drop !== undefined) {
-    items.push(withFortune(drop, context, rolls[0] ?? 0))
+    const fortuneLevel = Number.isFinite(context.fortuneLevel ?? 0)
+      ? Math.max(0, Math.floor(context.fortuneLevel ?? 0))
+      : 0
+    const gravelFlintChance = GRAVEL_FLINT_CHANCES[Math.min(fortuneLevel, 3)] ?? 0
+    const mined =
+      type === 'gravel' &&
+      context.silkTouch !== true &&
+      Number.isFinite(roll) &&
+      roll < gravelFlintChance
+        ? { item: 'flint' as const, count: 1 }
+        : withFortune(drop, context, roll)
+    items.push(mined)
   }
 
   // The bonus lines run even when the base drop yielded nothing, and leaves are

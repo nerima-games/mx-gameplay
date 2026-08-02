@@ -3649,23 +3649,24 @@ export const gameplayStages = (
 
         let searched: ReadonlyArray<MobSpawnAttempt> = NO_ATTEMPTS
         const hour = yield* time.timeOfDay
+        const dimension = yield* player.dimension
 
         // THREE GATES BEFORE THE 256 READS, and the third is the one that needs
-        // defending. `hostileSpawnsAllowed` is CALLED here as well as inside
+        // defending. In the Overworld, `hostileSpawnsAllowed` is CALLED here as well as inside
         // `canHostileSpawnAt`, and `domain/mob/hostile-spawn.ts`'s header is
         // emphatic that the night gate is the rule's and 「a third opinion in
         // this file would be the second half of that bug」. This is not a third
         // opinion: it is the SAME FUNCTION, short-circuiting a search whose every
         // candidate the rule would refuse with `daylight`. The rule still runs
         // and still decides; what is skipped is 256 store reads to be told so 64
-        // times. Reimplementing the comparison here — `hour > 0.25 && ...` —
+        // times. The Nether bypasses only this time gate because its hostile
+        // roster is valid at every hour. Reimplementing the comparison here — `hour > 0.25 && ...` —
         // would be the failure that header describes, and is exactly what is not
         // done.
         //
-        const nightSearch = hostileSpawnsAllowed(hour)
-        const passiveRepopulationSearch = !nightSearch && (yield* roster.count) === 0
-        if (searchDue && (nightSearch || passiveRepopulationSearch)) {
-          const dimension = yield* player.dimension
+        const hostileSearch = dimension === 'nether' || hostileSpawnsAllowed(hour)
+        const passiveRepopulationSearch = !hostileSearch && (yield* roster.count) === 0
+        if (searchDue && (hostileSearch || passiveRepopulationSearch)) {
           const found = yield* searchSpawnCandidates(
             store,
             targetPosition,
@@ -3679,7 +3680,7 @@ export const gameplayStages = (
           // depends on what happened rather than on how many frames passed.
           // Daylight repopulation must not perturb the shared combat/weather
           // sequence. Once it succeeds the non-empty roster gates it off.
-          if (nightSearch) yield* Ref.set(state.rollSeed, found.seed)
+          if (hostileSearch) yield* Ref.set(state.rollSeed, found.seed)
           searched = found.attempts
         }
 

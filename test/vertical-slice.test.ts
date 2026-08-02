@@ -776,6 +776,38 @@ const daylight = (time: TimeServiceApi): Effect.Effect<void> =>
   time.setTimeOfDay(NOON_FRACTION)
 
 describe('the mob slice, through the stage registration', () => {
+  it.effect('searches for Nether hostiles at noon while Overworld hostile search stays night-gated', () =>
+    Effect.gen(function* () {
+      const searchAtNoon = (dimension: 'overworld' | 'nether') =>
+        Effect.gen(function* () {
+          const { store, roster, state, player, time, stages } = yield* slice(world([]))
+
+          yield* roster.api.spawn({
+            kind: CREEPER_KIND,
+            feetPosition: creeperAt,
+            healthPoints: CREEPER_MAX_HEALTH,
+            behaviour: DORMANT_FUSE,
+          })
+          yield* player.api.moveTo(playerFar)
+          yield* player.api.setDimension(dimension)
+          yield* daylight(time)
+          yield* runFrames(stages, 2, STRIDE)
+
+          return {
+            reads: (yield* store.calls).reads,
+            seed: yield* Ref.get(state.rollSeed),
+          }
+        })
+
+      const overworld = yield* searchAtNoon('overworld')
+      const nether = yield* searchAtNoon('nether')
+
+      expect(overworld).toStrictEqual({ reads: 2, seed: DEFAULT_ROLL_SEED })
+      expect(nether.reads).toBeGreaterThan(overworld.reads)
+      expect(nether.seed).not.toBe(DEFAULT_ROLL_SEED)
+    }),
+  )
+
   it.effect('a creeper spawns, lights, detonates once, and the blast reaches the world', () =>
     Effect.gen(function* () {
       const { store, roster, inventory, state, player, time, stages } = yield* slice(

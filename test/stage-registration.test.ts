@@ -107,6 +107,7 @@ import { FrameServicesLayer } from './support/frame-services'
 
 const stageIds = (stages: ReadonlyArray<StageRegistration>): ReadonlyArray<string> =>
   stages.map((stage) => stage.id)
+const OBSIDIAN = blockIdOf('obsidian')!
 
 /**
  * The stages read and write blocks, iterate mobs and deposit mined items, so
@@ -638,7 +639,7 @@ describe('stage behaviour', () => {
     }).pipe(Effect.provide(FrameServicesLayer)),
   )
 
-  it.effect('water meeting a lava source materializes stone at the contact', () =>
+  it.effect('water meeting a lava source materializes obsidian at the contact', () =>
     Effect.gen(function* () {
       const lava = blockIdOf('lava')!
       const { state, store, stages } = yield* builtStagesInWorld(
@@ -653,7 +654,7 @@ describe('stage behaviour', () => {
       yield* Ref.set(state.fluidFrontier, [{ key: '0,64,0', kind: 'water' }])
       yield* fluids.run(DeltaTimeSecs(0.016))
 
-      expect(yield* store.blockAt({ x: 1, y: 64, z: 0 })).toBe(STONE)
+      expect(yield* store.blockAt({ x: 1, y: 64, z: 0 })).toBe(OBSIDIAN)
     }).pipe(Effect.provide(FrameServicesLayer)),
   )
 

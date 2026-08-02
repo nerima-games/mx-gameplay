@@ -184,20 +184,38 @@ describe('fluids: the frontier budget that bought 37–55×', () => {
 
   it.effect('solidifies opposite-fluid contact and differentiates source lava', () =>
     Effect.sync(() => {
-      const water = transition({
+      const waterMeetingSourceLava = transition({
+        horizontal: [{ ...probe('1,64,0', 'opposite-fluid'), source: true }],
+      })
+      expect(waterMeetingSourceLava.changes[0]).toStrictEqual({
+        _tag: 'Solidify',
+        key: '1,64,0',
+        block: 'obsidian',
+      })
+
+      const waterMeetingFlowingLava = transition({
         horizontal: [{ ...probe('1,64,0', 'opposite-fluid'), source: false }],
       })
-      expect(water.changes[0]).toStrictEqual({
+      expect(waterMeetingFlowingLava.changes[0]).toStrictEqual({
         _tag: 'Solidify',
         key: '1,64,0',
         block: 'cobblestone',
       })
-      const lava = transition({
+
+      const sourceLava = transition({
         cell: { ...cell, kind: 'lava' },
         horizontal: [probe('1,64,0', 'opposite-fluid')],
       })
-      expect(lava.changes).toStrictEqual([
-        { _tag: 'Solidify', key: cell.key, block: 'stone' },
+      expect(sourceLava.changes).toStrictEqual([
+        { _tag: 'Solidify', key: cell.key, block: 'obsidian' },
+      ])
+
+      const flowingLava = transition({
+        cell: { ...cell, kind: 'lava', level: 1, source: false },
+        horizontal: [probe('1,64,0', 'opposite-fluid')],
+      })
+      expect(flowingLava.changes).toStrictEqual([
+        { _tag: 'Solidify', key: cell.key, block: 'cobblestone' },
       ])
     }),
   )
