@@ -79,15 +79,19 @@ import { FALLING_BLOCK_MOVES_PER_TICK } from '../../src/domain/falling-block'
 import { DeltaTimeSecs, type StageRegistration } from '../../src/domain/frame-contract'
 import { NO_TOOL, type BlockLootContext, type MinedItem } from '../../src/domain/interactions/block-loot'
 import type { EntityManagerApi } from '../../src/domain/entity-manager-port'
+import { spawnMobDrops } from '../../src/domain/entities/dropped-item'
 import {
   isDroppedItemBehaviour,
   type MobBehaviour,
+  type MobExperienceEvent,
 } from '../../src/domain/entities/mob-frame'
 import { isSupportSensitiveOfBlock, placementVerdict } from '../../src/domain/interactions/place-block'
 import type { PositionKey } from '../../src/domain/position-key'
 import { INITIAL_WEATHER, type WeatherState } from '../../src/domain/weather'
 import type { IgnitionItemType } from '../../src/domain/interactions/use-flint-and-steel'
 import {
+  drainMobDrops,
+  drainMobExperience,
   gameplayStages,
   makeGameplayFrameState,
   requestItemUse as enqueueItemUse,
@@ -199,6 +203,10 @@ export type Site = {
    * it would change nothing.
    */
   inventory: ReadonlyMap<string, number>
+  /** XP credited by this preview host after draining the gameplay outbox. */
+  experience: number
+  /** The host-owned audit trail behind `experience`, in credit order. */
+  experienceLedger: ReadonlyArray<MobExperienceEvent>
   /** The weather the host is feeding back in, drained out of `weatherAdvanced`. */
   weather: WeatherState
   /** What the host is telling the rules the player is holding. Mirrors `state.heldTool`. */
@@ -277,6 +285,8 @@ export const makeSite = (
       bounds,
       frame: 0,
       inventory: new Map<string, number>(),
+      experience: 0,
+      experienceLedger: [],
       weather: INITIAL_WEATHER,
       tool: NO_TOOL,
       trace: [],
@@ -284,6 +294,17 @@ export const makeSite = (
       scenario,
       submitted: 0,
     }
+  })
+
+/** Materialise and credit the reward outboxes owned by the preview host. */
+export const drainMobRewards = (site: Site) =>
+  Effect.gen(function* () {
+    const drops = yield* drainMobDrops(site.state)
+    const experience = yield* drainMobExperience(site.state)
+
+    yield* spawnMobDrops(site.roster, drops).pipe(Effect.orDie)
+    site.experienceLedger = [...site.experienceLedger, ...experience]
+    site.experience += experience.reduce((total, event) => total + event.amount, 0)
   })
 
 /**
@@ -470,6 +491,7 @@ export const stepFrame = (site: Site): Effect.Effect<FrameRow> =>
     yield* Effect.forEach(site.stages, (stage) => stage.run(FRAME_DELTA), { discard: true }).pipe(
       Effect.provide(FrameServicesLayer),
     )
+    yield* drainMobRewards(site)
 
     // WHAT THE MINING HALF DOES NOW: nothing. The stage already called
     // `InventoryService.add` for every stack it mined, inside the frame, so
