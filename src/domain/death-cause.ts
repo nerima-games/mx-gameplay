@@ -133,7 +133,7 @@ export const isDead = (vitals: Vitals): boolean => vitals.healthPoints <= 0
  * creeper does not have its death message rewritten.
  */
 export const applyDamage = (vitals: Vitals, damage: Damage): Vitals => {
-  if (isDead(vitals)) {
+  if (isDead(vitals) || !Number.isFinite(damage.amount)) {
     return vitals
   }
 

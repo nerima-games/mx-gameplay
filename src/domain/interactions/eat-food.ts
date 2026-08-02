@@ -16,6 +16,7 @@ export const FOOD_PROPERTIES: Readonly<Partial<Record<ItemType, FoodProperties>>
   salmon: { foodPoints: 2, saturationModifier: 0.1 },
   tropical_fish: { foodPoints: 1, saturationModifier: 0.1 },
   pufferfish: { foodPoints: 1, saturationModifier: 0.1 },
+  spider_eye: { foodPoints: 2, saturationModifier: 0.8 },
 }
 
 export type FoodUseRequest = {
@@ -56,6 +57,8 @@ export const resolveFoodUse = ({ held, vitals, effectRoll = 1 }: FoodUseRequest)
         { type: 'hunger', amplifier: 2, durationSecs: 15 },
         { type: 'nausea', amplifier: 0, durationSecs: 15 },
       ]
+    : held === 'spider_eye'
+      ? [{ type: 'poison', amplifier: 0, durationSecs: 5 }]
     : held === 'rotten_flesh' && effectRoll < 0.8
       ? [{ type: 'hunger', amplifier: 0, durationSecs: 30 }]
       : []

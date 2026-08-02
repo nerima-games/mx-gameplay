@@ -76,6 +76,18 @@ describe('resolveFoodUse', () => {
     }),
   )
 
+  it.effect('always applies Poison I for 5 seconds after eating a spider eye', () =>
+    Effect.sync(() => {
+      expect(resolveFoodUse(request('spider_eye', {}, 1))).toStrictEqual({
+        _tag: 'consume',
+        count: 1,
+        foodPoints: 2,
+        saturationModifier: 0.8,
+        effects: [{ type: 'poison', amplifier: 0, durationSecs: 5 }],
+      })
+    }),
+  )
+
   it.effect('consumes raw fish caught by fishing with no effects', () =>
     Effect.sync(() => {
       expect(resolveFoodUse(request('cod'))).toStrictEqual({
@@ -137,6 +149,7 @@ describe('resolveFoodUse', () => {
         salmon: { foodPoints: 2, saturationModifier: 0.1 },
         tropical_fish: { foodPoints: 1, saturationModifier: 0.1 },
         pufferfish: { foodPoints: 1, saturationModifier: 0.1 },
+        spider_eye: { foodPoints: 2, saturationModifier: 0.8 },
       })
     }),
   )

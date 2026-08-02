@@ -31,56 +31,34 @@ import { dayPhase, hostileSpawnsAllowed, isNight } from '../src/domain/day-night
 import { applyDamage, deathMessage, fullHealth, isDead } from '../src/domain/death-cause'
 import { carryOver, splitBudget, type FluidWorkItem } from '../src/domain/fluid-frontier'
 
-describe('F5 — a non-finite damage amount makes the player permanently immortal', () => {
-  // `Damage.amount` is a bare `number`. `Math.max(0, NaN)` is NaN, `NaN <= 0` is
-  // false, and `applyDamage` returns early only for the dead — so one NaN blow
-  // puts the player in a state from which no later blow can remove them.
-  //
-  // This is DN-GP-3's failure mode one level down. That note makes `cause` a
-  // required field so a death message can never lose its cause; this removes the
-  // death the cause was going to describe.
-  //
-  // The fix is the one `domain/frame-contract.ts:57` already uses for
-  // `DeltaTimeSecs`: a `Brand.refined` on `Number.isFinite(value)`. When it
-  // lands, these three assertions are the ones to invert.
-  it.effect('pins the current behaviour: NaN damage leaves health NaN and isDead false', () =>
+describe('F5 — non-finite damage is ignored', () => {
+  it.effect('preserves vitals for every non-finite damage amount', () =>
     Effect.sync(() => {
-      const struck = applyDamage(fullHealth, { amount: Number.NaN, cause: 'lava' })
-
-      expect(Number.isNaN(struck.healthPoints)).toBe(true)
-      expect(isDead(struck)).toBe(false)
-      expect(deathMessage(struck)).toBeUndefined()
-      // The cause was never recorded, because the transition to zero never
-      // happened — so even the field DN-GP-3 exists to protect is empty.
-      expect(struck.lastDeathCause).toBeUndefined()
-    }),
-  )
-
-  it.effect('pins the current behaviour: no amount of later damage can kill a NaN player', () =>
-    Effect.sync(() => {
-      let vitals = applyDamage(fullHealth, { amount: Number.NaN, cause: 'lava' })
-      for (const amount of [20, 1_000, 1_000_000]) {
-        vitals = applyDamage(vitals, { amount, cause: 'explosion' })
+      for (const amount of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+        expect(applyDamage(fullHealth, { amount, cause: 'lava' })).toEqual(fullHealth)
       }
-
-      expect(isDead(vitals)).toBe(false)
-      expect(deathMessage(vitals)).toBeUndefined()
     }),
   )
 
-  it.effect('the finite edges are already handled — only the non-number is not', () =>
+  it.effect('allows later finite damage to kill after non-finite damage is ignored', () =>
     Effect.sync(() => {
-      // Infinity kills, which is the right answer for "infinite damage".
-      const obliterated = applyDamage(fullHealth, { amount: Number.POSITIVE_INFINITY, cause: 'fall' })
-      expect(obliterated.healthPoints).toBe(0)
-      expect(deathMessage(obliterated)).toBe('You fell from a high place.')
+      const unaffected = applyDamage(fullHealth, { amount: Number.NaN, cause: 'lava' })
+      const killed = applyDamage(unaffected, { amount: 20, cause: 'explosion' })
 
-      // A negative amount is clamped by `Math.max(0, damage.amount)`, so damage
-      // cannot heal. -Infinity goes the same way.
+      expect(isDead(killed)).toBe(true)
+      expect(deathMessage(killed)).toBe('You blew up.')
+    }),
+  )
+
+  it.effect('preserves the existing finite negative, zero, and positive boundaries', () =>
+    Effect.sync(() => {
       expect(applyDamage(fullHealth, { amount: -5, cause: 'mob' }).healthPoints).toBe(20)
-      expect(
-        applyDamage(fullHealth, { amount: Number.NEGATIVE_INFINITY, cause: 'mob' }).healthPoints,
-      ).toBe(20)
+      expect(applyDamage(fullHealth, { amount: 0, cause: 'mob' }).healthPoints).toBe(20)
+      expect(applyDamage(fullHealth, { amount: 5, cause: 'mob' }).healthPoints).toBe(15)
+      expect(applyDamage(fullHealth, { amount: 20, cause: 'mob' })).toEqual({
+        healthPoints: 0,
+        lastDeathCause: 'mob',
+      })
     }),
   )
 })
