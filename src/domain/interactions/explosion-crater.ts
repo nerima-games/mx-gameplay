@@ -50,16 +50,12 @@
  * paid on a different trigger.
  *
  * ---------------------------------------------------------------------------
- * What this rule does NOT do
+ * Resistance scope and remaining omissions
  * ---------------------------------------------------------------------------
  *
- * BLAST RESISTANCE. Vanilla stops a blast at obsidian and bedrock, and kernel's
- * capability audit has no `blastResistance` flag for `../block-vocabulary` to
- * transcribe. Inventing a block list here is precisely the scatter plan.md §3.1
- * measured (`blockTypeToIndex('SAND')` in 229 places), and the reference has no
- * such test either — its sphere sets every cell to AIR. So it is ported as it
- * stands and named on the arena's missing list, where it arrives as one row in
- * kernel's table and no edit here.
+ * BLAST RESISTANCE is deliberately a block-vocabulary capability rather than a
+ * list of ids here. The current normal-explosion rule preserves obsidian and
+ * bedrock for both creeper and TNT callers.
  *
  * RAY-CAST EXPOSURE. Vanilla's crater is ragged because each cell's chance to
  * break is a function of a ray from the centre. The reference's is a plain
@@ -72,6 +68,7 @@
  */
 import { Effect } from 'effect'
 import { positionKeyOf } from '../block-position-key'
+import { resistsNormalExplosion } from '../block-vocabulary'
 import { AIR_BLOCK_ID, type BlockPosition, type ChunkStoreApi } from '../chunk-store-port'
 import type { PositionKey } from '../position-key'
 
@@ -134,11 +131,12 @@ export const craterCells = (
  * write came back `Written`, so a blast in open sky reports nothing and enqueues
  * nothing. See the module header on `Unchanged`.
  *
- * ONE store call per cell and no reads — the same discipline `breakBlock`
- * states: `setBlock` returns the block it replaced, so asking first would be a
- * TOCTOU as well as a doubling of the cost. A creeper's crater is 123 cells, and
- * it is paid on the frame a creeper detonates and on no other; the cascade it
- * starts is bounded separately by `FALLING_BLOCK_MOVES_PER_TICK`.
+ * Each cell is read before any write. Only a `Block` result can proceed;
+ * unloaded/out-of-world cells and normal-explosion-resistant blocks are skipped.
+ * Readable non-resistant cells are written to AIR even when already AIR, and
+ * only `Written` results are returned. A creeper's crater is 123 cells, paid on
+ * the detonation frame; its cascade is bounded separately by
+ * `FALLING_BLOCK_MOVES_PER_TICK`.
  */
 export const carveExplosionCrater = (
   store: ChunkStoreApi,
@@ -149,6 +147,11 @@ export const carveExplosionCrater = (
     const disturbed: Array<PositionKey> = []
 
     for (const cell of craterCells(centre, power)) {
+      const reading = yield* store.getBlock(cell)
+      if (reading._tag !== 'Block' || resistsNormalExplosion(reading.block)) {
+        continue
+      }
+
       const outcome = yield* store.setBlock(cell, AIR_BLOCK_ID)
 
       switch (outcome._tag) {

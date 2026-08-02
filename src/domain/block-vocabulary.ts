@@ -573,12 +573,14 @@ const FASTER_WITH_SHOVEL: HarvestToolRequirement = { ...DEFAULT_HARVEST_TOOL, ca
 const FASTER_WITH_AXE: HarvestToolRequirement = { ...DEFAULT_HARVEST_TOOL, category: 'axe' }
 const FASTER_WITH_SHEARS: HarvestToolRequirement = { ...DEFAULT_HARVEST_TOOL, category: 'shears' }
 
-/** One row: the permanent id, the name it denotes, and its two drop columns. */
+/** One row: the permanent id, the name it denotes, and its block capabilities. */
 export type BlockDropRegistryEntry = {
   readonly id: BlockId
   readonly type: BlockType
   readonly harvestTool: HarvestToolRequirement
   readonly drops: BlockDropRule
+  /** Whether creeper/TNT-style normal explosions leave this block intact. */
+  readonly resistsNormalExplosion?: true
 }
 
 /**
@@ -598,7 +600,7 @@ export type BlockDropRegistryEntry = {
  */
 export const BLOCK_DROP_REGISTRY: ReadonlyArray<BlockDropRegistryEntry> = [
   { id: 0, type: 'air', harvestTool: DEFAULT_HARVEST_TOOL, drops: DROPS_NOTHING },
-  { id: 1, type: 'bedrock', harvestTool: DEFAULT_HARVEST_TOOL, drops: DROPS_NOTHING },
+  { id: 1, type: 'bedrock', harvestTool: DEFAULT_HARVEST_TOOL, drops: DROPS_NOTHING, resistsNormalExplosion: true },
   { id: 2, type: 'stone', harvestTool: NEEDS_WOODEN_PICKAXE, drops: { ...DEFAULT_BLOCK_DROP, item: 'cobblestone' } },
   { id: 3, type: 'dirt', harvestTool: FASTER_WITH_SHOVEL, drops: DEFAULT_BLOCK_DROP },
   { id: 4, type: 'grass_block', harvestTool: FASTER_WITH_SHOVEL, drops: { ...DEFAULT_BLOCK_DROP, item: 'dirt' } },
@@ -637,7 +639,7 @@ export const BLOCK_DROP_REGISTRY: ReadonlyArray<BlockDropRegistryEntry> = [
   { id: 37, type: 'diorite', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
   { id: 38, type: 'andesite', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
   { id: 39, type: 'deepslate', harvestTool: DEFAULT_HARVEST_TOOL, drops: DEFAULT_BLOCK_DROP },
-  { id: 40, type: 'obsidian', harvestTool: NEEDS_DIAMOND_PICKAXE, drops: DEFAULT_BLOCK_DROP },
+  { id: 40, type: 'obsidian', harvestTool: NEEDS_DIAMOND_PICKAXE, drops: DEFAULT_BLOCK_DROP, resistsNormalExplosion: true },
   { id: 41, type: 'smooth_basalt', harvestTool: NEEDS_WOODEN_PICKAXE, drops: DEFAULT_BLOCK_DROP },
   { id: 42, type: 'calcite', harvestTool: NEEDS_WOODEN_PICKAXE, drops: DEFAULT_BLOCK_DROP },
   { id: 43, type: 'amethyst_block', harvestTool: NEEDS_WOODEN_PICKAXE, drops: DEFAULT_BLOCK_DROP },
@@ -737,6 +739,10 @@ const ID_BY_TYPE: ReadonlyMap<BlockType, BlockId> = new Map(
  * must not be readable as a block this build can name.
  */
 export const blockTypeOfId = (id: number): BlockType | undefined => REGISTRY_BY_ID.get(id)?.type
+
+/** Returns whether the registered block resists the normal creeper/TNT explosion model. */
+export const resistsNormalExplosion = (id: number): boolean =>
+  REGISTRY_BY_ID.get(id)?.resistsNormalExplosion === true
 
 /**
  * `BlockType` -> id.

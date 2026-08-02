@@ -876,12 +876,15 @@ describe('the mob slice, through the stage registration', () => {
       expect(yield* store.blockAt(ledgeSand)).toBe(AIR_BLOCK_ID)
       expect(yield* store.blockAt(craterLedge)).toBe(SAND)
 
-      // The store was untouched until the blast, and the blast is the only
-      // reason it was touched at all: one write per crater cell and no reads
-      // beyond the falling-block rule's.
+      // The store was untouched until the blast. The crater reads each cell to
+      // enforce block resistance, then writes each readable non-resistant cell;
+      // falling-block processing accounts for any additional calls.
       // Six frames of fuse, six portal probes, and nothing else touched.
       expect(beforeBlast).toStrictEqual({ reads: 6, writes: 0, peeks: 0 })
-      expect((yield* store.calls).writes).toBeGreaterThanOrEqual(craterCells(creeperAt, CREEPER_EXPLOSION_POWER).length)
+      const craterCellCount = craterCells(creeperAt, CREEPER_EXPLOSION_POWER).length
+      const afterBlast = yield* store.calls
+      expect(afterBlast.reads).toBeGreaterThanOrEqual(beforeBlast.reads + craterCellCount)
+      expect(afterBlast.writes).toBeGreaterThanOrEqual(craterCellCount)
     }),
   )
 
@@ -1576,12 +1579,12 @@ describe('the crater is the other radius, and it is the falling-block queue’s 
       yield* runFrame(stages, STRIDE)
 
       expect(yield* roster.api.count).toBe(0)
-      expect((yield* store.calls).writes).toBe(craterCells(creeperAt, CREEPER_EXPLOSION_POWER).length)
+      const craterCellCount = craterCells(creeperAt, CREEPER_EXPLOSION_POWER).length
+      expect((yield* store.calls).writes).toBe(craterCellCount)
       expect((yield* Ref.get(state.fallingBlocks)).pending.size).toBe(0)
-      // ...and no reads BEYOND the one portal probe this frame: the
-      // falling-block pass had an empty batch, so it
-      // stopped before touching the store.
-      expect((yield* store.calls).reads).toBe(1)
+      // The crater reads once per cell; beyond those, only the portal probe
+      // reads. The falling-block pass had an empty batch and touched no cells.
+      expect((yield* store.calls).reads).toBe(craterCellCount + 1)
     }),
   )
 })
