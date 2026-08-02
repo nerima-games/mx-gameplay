@@ -356,12 +356,9 @@ export const requestBreak = (site: Site, position: BlockPosition): Effect.Effect
 /**
  * Queue a placement at this position. The other one.
  *
- * THE HOST DOES NOT CHECK THE INVENTORY, and that gap is deliberate rather than
- * missing. `placeBlock` consumes an item and reports which; whether the player
- * HAD one is a question about mc-sim's `InventoryService`, and a preview that
- * enforced it would be inventing the stack-size half of a service it is only
- * standing in for. What the HUD does instead is print the running total, so a
- * player watching it go negative is watching the missing check.
+ * Inventory ownership stays in the stage. It reserves one item before calling
+ * `placeBlock`, restores it when placement is refused, and leaves an empty
+ * inventory as a no-op. The preview only queues the request.
  */
 export const requestPlace = (
   site: Site,
@@ -508,21 +505,12 @@ export const stepFrame = (site: Site): Effect.Effect<FrameRow> =>
         : [],
     )
 
-    // THE OTHER DIRECTION IS STILL A LIST, and the host still pays for it.
-    // `stages/registration.ts` declines to call `remove` from the stage,
-    // because `placeBlock` has already written the cell by then and a `remove`
-    // that came back `0` would leave the player a block they never had. So the
-    // charge happens HERE, after the fact, which is exactly the defect that
-    // paragraph is about — visible on this screen as a count that can go
-    // negative, and not fixable from a host.
+    // Placement already reserved and consumed the item inside the stage. This
+    // list is a frame audit record, not deferred inventory work.
     const spent = yield* Ref.getAndSet<ReadonlyArray<PlaceableItemType>>(
       site.state.consumedItems,
       [],
     )
-    for (const item of spent) {
-      yield* site.inventoryService.api.remove(item, 1)
-    }
-
     // The HUD's number, refreshed from the SERVICE rather than tallied here.
     site.inventory = yield* site.inventoryService.held
 

@@ -36,10 +36,9 @@ export type HudState = {
  * came out of kernel's drop table, so mining stone with a pickaxe prints
  * `cobblestone` and mining it bare-handed prints nothing at all.
  *
- * A ZERO-COUNT STACK IS PRINTED rather than hidden, and a negative one is
- * printed too. Placement subtracts (`site.ts`'s `requestPlace` on why the host
- * does not check the stack first), so `sand x-1` on screen is the missing
- * inventory check being visible instead of being a comment.
+ * Zero-count stacks are hidden because the inventory service is authoritative;
+ * placement reserves an item before changing the world and cannot make a stack
+ * negative.
  */
 const summariseInventory = (inventory: ReadonlyMap<string, number>): string => {
   const stacks = [...inventory.entries()].filter(([, count]) => count !== 0)

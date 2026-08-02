@@ -1139,7 +1139,8 @@ export const ARENA_MISSING: ReadonlyArray<readonly [string, string]> = [
   // paid: domain/inventory-port.ts carries that vocabulary as dead weight and
   // gameplay:interactions calls add(). What is left of the row is the OTHER
   // direction.
-  ['a placement CHARGING the player', 'consumedItems is still an outbox. remove() answers with what was ACTUALLY taken, and placeBlock has already written the cell by then — so charging from the stage would hand out a block on a remove that came back 0. Doing it right means place-block reading the inventory BEFORE the write'],
+  // WAS: 'a placement CHARGING the player'.
+  // CLOSED: the stage reserves inventory before placeBlock and restores it on refusal.
   ['durability', 'usedItems is an outbox and half of it has no method to become a call to: lighting a portal DAMAGES a flint and steel by one point, and mc-sim’s published api has no damageSlot at all'],
   ['the held TOOL', 'heldTool is an inbox. Which slot is selected and what is enchanted on it is InventoryService’s; the tier gate is live and the value reaching it is a stand-in'],
   ['4 more placement rules', 'mushrooms need light <= 12, sugar cane needs adjacent water, cactus needs four air sides, doors need the cell above (block-service-place-plan.ts:208-214). Each is ANOTHER FILE by DN-GP-9 and each needs a measurement this repository can already take — deferred, not refused'],
