@@ -50,18 +50,16 @@
  * pins it says which behaviour is vanilla's.
  */
 import { Effect } from 'effect'
-import type { BlockType } from '../block-vocabulary'
-import { blockIdOf, blockTypeOfId } from '../block-vocabulary'
+import { blockIdOf, blockTypeOfId, type BlockType } from '../block-vocabulary'
 import { above } from '../block-position-key'
 import type { BlockPosition } from '../chunk-store-port'
 
 /**
  * Ground that a hoe turns into farmland.
  *
- * TRANSCRIBED from `TILLABLE_BLOCK_TYPES` (`block-service.config.ts:264`),
- * which is two entries. `GRASS` there is `grass_block` here — the reference
- * uses `GRASS` for the full block and this vocabulary reserves that name shape
- * for the plant, which is why the pair is written out rather than mapped.
+ * The published kernel API does not yet expose the next capability-table
+ * revision, so this package keeps the current two-entry mirror until that
+ * release is consumed. The source list is the same as the kernel registry.
  */
 export const TILLABLE_BLOCKS: ReadonlySet<BlockType> = new Set<BlockType>(['dirt', 'grass_block'])
 

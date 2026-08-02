@@ -30,7 +30,7 @@
  * blast" is always at least one point of damage rather than a rounding artefact.
  *
  * ---------------------------------------------------------------------------
- * TWO DIFFERENT RADII, and the second one is not implemented here
+ * TWO DIFFERENT RADII, with block destruction implemented by the crater stage
  * ---------------------------------------------------------------------------
  *
  * The reference has an explosion damage entities out to `power * 2` = 6 blocks
@@ -39,7 +39,7 @@
  * Euclidean sphere set to AIR). Those are different numbers for the same event,
  * and whoever ports the crater must not reach for the one in this file.
  *
- * The crater is NOT here, and it is not an oversight: it is a rule that WRITES
+ * The crater is implemented in its own stage because it is a rule that WRITES
  * BLOCKS, so it belongs next to `../interactions/break-block.ts` with a
  * `ChunkStoreApi`, and it must feed `disturb` (`../falling-block`) or a blast
  * under a desert leaves the sand hanging — which is DN-GP-1's cascade, arriving

@@ -239,7 +239,7 @@ $ ls packages/game/test/day-night-cycle*.test.ts | wc -l                        
 | --- | ---: | --- |
 | `packages/game/test/day-night-cycle.test.ts` | 26 | **全件が見た目である。** `computeDaylightFactor` / `resolveDayNightCycleState` / `computeTerrainSunIntensity` / 太陽弧 / 月の不透明度 / 空色 —— §3-4 が既に決めているとおり、時刻を光量と色に変換するのは `mc-render` である。ここが持つのは「今が夜か」まで（DN-GP-7） |
 | `packages/game/test/day-night-cycle-appearance.test.ts` | 3 | 同上。ファイル名が `appearance` と言っている |
-| `packages/world/test/fluid-contact.test.ts` | 7 | **本書 §3-3 が禁じている。** `resolveContact` は `FluidCell` を取り、その型は `packages/block/domain/fluid-model.ts` の所有権が未決である（「決めるまでこの 143 行を移植しないこと」）。ここで `FluidCell` を書くと 2 箇所に生える。**所有権が決まり次第、最初に移植すべき 7 本** —— 12 LOC に対して 7 本のオラクルが付いている密度は本書中で最も高い |
+| `packages/world/test/fluid-contact.test.ts` | 7 | **未移植。** `FluidCell` の所有権は `src/domain/fluid-frontier.ts`（`mx-gameplay`）に確定したため、重複を避けてここへ移植する。12 LOC に対して 7 本のオラクルが付いている密度は本書中で最も高い |
 | `packages/world/test/fluid-tick-budget.test.ts:14-19` | 1 | **反証できない。** 空入力に対して両方の出力が空になるのは、分類ループを丸ごと削除しても成り立つ。落ちない移植は本数を増やすだけなので消し、理由を `test/rules.test.ts` にコメントとして残した |
 | `falling-block.test.ts` の `collectFallingBlockMoves` 8 本 | 8 | **全チャンク走査そのもののテストである**（DN-GP-1）。チャンクバッファの長さ検査・チャンク座標からワールド座標への写像・チャンク跨ぎの走査順は `mc-worldgen` の名詞であり、こちらの API には走査が存在しない |
 | `falling-block-maintenance.test.ts` | 7 | 同上。**7 本中 5 本が sweep cursor の挙動**（dirty chunk の即時走査、走査窓の外を飛ばす、cursor を進める）。残り 2 本（支えられた砂利は動かない / 世界の底では動かない）は `test/vertical-slice.test.ts` に既にある |
@@ -484,7 +484,7 @@ interaction 関連のテストファイルは実測 **38 ファイル**である
 | 移植元 | 本数 | 欠けている名詞 |
 | --- | ---: | --- |
 | `interaction-food-consumption.test.ts` | 20 | kernel の `ITEM_TYPES` に `bread` / `apple` / `golden_apple` / `rotten_flesh` / `potion_*` / `fishing_rod` / `iron_helmet` ほか防具語が無い。加えて**空腹値**（`hungerPoints`）が `EntityState` に無い |
-| `interaction-farming-handler.test.ts` | 35 | `hoe`（`wooden_hoe` / `iron_hoe`）と `bone_meal`、ブロック側の `farmland` / `wheat_crop` / `potato_crop` 語。加えて `CropGrowthService.plant` / `advanceByBoneMeal` に当たる**作物の成長状態**がどこにも無い |
+| `interaction-farming-handler.test.ts` | 35 | **主要ルールは実装済み。** `till-soil.ts` / `plant-crop.ts` / `bone-meal.ts` と `CropService.advanceByBoneMeal` が責務ごとに分離されている。 |
 | `interaction-break-handler.crop-drops.config.test.ts` | 11 | 同上（`CROP_DROP_RULES` は作物語の表である）。`potato` / `nether_wart` / `wheat_seeds` は**あるが**、`wheat` と成長段階が無い |
 | `interaction-bucket-handler.test.ts` | 2 | `bucket` / `water_bucket` / `lava_bucket`。§5-3 のこの行だけは**期限切れになっていない**（下記） |
 | `interaction-shear-animal.test.ts` | 8 | `shears` と `wool`。加えて `EntityState` に**種と刈り取り済み旗**が無い |
@@ -525,10 +525,10 @@ interaction 関連のテストファイルは実測 **38 ファイル**である
   弓の規則が**幾何と算術**であって品目名を 1 度も読まないからで、これは §5-1 が
   クリーパーについて書いた「ルールは値から値への全域関数として書ける」と同じ割り方である。
   語が要るのは**ディスパッチ**（ホットバーの品目が弓か）だけで、それは outbox の側にある。
-- **バケツ / ハサミ / 農業**（「kernel の `ITEM_TYPES` に語が無い」）—— **今も正しい。**
-  実測で `bucket` / `water_bucket` / `lava_bucket` / `shears` / `hoe` はいずれも
-  `domain/item-vocabulary.ts` の 97 語に無い。roster が 23 → 97 に増えたのは事実だが、
-  **増えた 74 語にこの 5 つは入っていない。**
+- **ハサミ**（「kernel の `ITEM_TYPES` に語が無い」）—— **今も正しい。**
+  `shears` は現在も未登録である。一方、`bucket` / `water_bucket` /
+  `lava_bucket` / `hoe` / `bone_meal` は `ITEM_TYPES` に登録済みで、各操作は
+  それぞれのドメイン責務へ移った。
 
 **「`ITEM_TYPES` が 97 に増えたからこの表は全部期限切れ」は成り立たない。**
 期限切れになったのは、語を**そもそも要求していなかった** 2 行のほうである。

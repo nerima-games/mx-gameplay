@@ -433,8 +433,8 @@ kernel の `StageRegistration` に対してそのまま代入できる。
 | `Explosion` / `ExplosionSource` / `CREEPER_EXPLOSION_POWER` | 内部(可視) | 3。`Explosion` は**座標を持たない**（座標は mc-sim の事実で、ホストが既に持っている） |
 
 **爆発は 2 つの半径を持つ。** ダメージは `power * 2` = 6 ブロック、クレーターは `floor(power)` = 3 ブロック。
-クレーターは**未実装**である（ブロックを書くルールなので `ChunkStoreApi` が要り、
-`disturb` を呼ばないと砂が宙に浮く。DN-GP-1 が別方向から現れる）。
+クレーターは `interactions/` の爆発解決で実装済みである（`ChunkStoreApi` へ書き込み、
+`disturb` で周辺の更新を通知する。DN-GP-1 の責務境界を守る）。
 
 ### domain/mob/hostile-spawn.ts
 

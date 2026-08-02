@@ -245,6 +245,7 @@ import {
 } from '../domain/interactions/block-loot'
 import { placeBlock, type PlaceOutcome } from '../domain/interactions/place-block'
 import { cropDrops, type CropDropOutcome } from '../domain/interactions/crop-drops'
+import { applyBoneMeal, type BoneMealOutcome } from '../domain/interactions/bone-meal'
 import { resolveFoodUse, type FoodUseOutcome, type FoodUseRequest } from '../domain/interactions/eat-food'
 import {
   makeSurvivalHungerRuntime,
@@ -1039,6 +1040,12 @@ export type FarmingItemUseRequest =
       readonly heldItem: HoeItemType
     }
   | {
+      readonly action: 'ApplyBoneMeal'
+      readonly requestId: ItemUseRequestId
+      readonly positionKey: PositionKey
+      readonly heldItem: 'bone_meal'
+    }
+  | {
       readonly action: 'PlantPotato'
       readonly requestId: ItemUseRequestId
       readonly positionKey: PositionKey
@@ -1093,6 +1100,14 @@ export type FarmingItemUseResult =
       readonly success: boolean
       readonly durabilityDamage: 0 | 1
       readonly outcome: TillOutcome
+    }
+  | {
+      readonly action: 'ApplyBoneMeal'
+      readonly requestId: ItemUseRequestId
+      readonly heldItem: 'bone_meal'
+      readonly success: boolean
+      readonly consumedCount: 0 | 1
+      readonly outcome: BoneMealOutcome
     }
   | {
       readonly action: 'PlantPotato'
@@ -1651,6 +1666,21 @@ export const requestSoilTill = (
     requestId,
     positionKey: positionKeyOf(position),
     heldItem,
+  }
+  return Ref.update(state.pendingItemUses, (pending) => [...pending, request])
+}
+
+/** Enqueue bone meal against the targeted crop cell. */
+export const requestBoneMeal = (
+  state: GameplayFrameState,
+  requestId: ItemUseRequestId,
+  position: BlockPosition,
+): Effect.Effect<void> => {
+  const request: FarmingItemUseRequest = {
+    action: 'ApplyBoneMeal',
+    requestId,
+    positionKey: positionKeyOf(position),
+    heldItem: 'bone_meal',
   }
   return Ref.update(state.pendingItemUses, (pending) => [...pending, request])
 }
@@ -2531,6 +2561,23 @@ type BlockPlacementExecution = {
   readonly mutated: boolean
 }
 
+/** Resolve the block under the crosshair and enqueue bone meal against it. */
+export const requestTargetedBoneMeal = (
+  state: GameplayFrameState,
+  store: ChunkStoreApi,
+  player: PlayerServiceApi,
+  requestId: ItemUseRequestId,
+  maxDistance: number = DEFAULT_BLOCK_REACH,
+): Effect.Effect<Option.Option<BlockTarget>> =>
+  Effect.gen(function* () {
+    const pose = yield* player.pose
+    const target = targetBlockFromPlayerPose(pose, maxDistance, targetabilityFromStore(store))
+    if (Option.isSome(target)) {
+      yield* requestBoneMeal(state, requestId, target.value.position)
+    }
+    return target
+  })
+
 const isBlockPlacementCommand = (
   request: PlacementRequest,
 ): request is BlockPlacementCommand => 'requestId' in request
@@ -2992,6 +3039,25 @@ export const gameplayStages = (
           }
           if ('action' in request) {
             switch (request.action) {
+              case 'ApplyBoneMeal': {
+                const outcome = yield* applyBoneMeal(
+                  (position) =>
+                    Effect.map(store.getBlock(position), (reading) =>
+                      reading._tag === 'Block' ? blockTypeOfId(reading.block) : undefined,
+                    ),
+                  positionOfKey(request.positionKey),
+                )
+                const success = outcome._tag === 'applied'
+                itemUseResults.push({
+                  action: request.action,
+                  requestId: request.requestId,
+                  heldItem: request.heldItem,
+                  success,
+                  consumedCount: success ? 1 : 0,
+                  outcome,
+                })
+                break
+              }
               case 'TillSoil': {
                 const outcome = yield* tillSoil(
                   {
