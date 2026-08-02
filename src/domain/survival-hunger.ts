@@ -1,4 +1,5 @@
 import { Effect, Ref } from 'effect'
+import type { Damage } from './death-cause'
 import { DeltaTimeSecs } from './frame-contract'
 import {
   SPAWN_PLAYER_VITALS,
@@ -6,6 +7,7 @@ import {
   makeInMemoryVitals,
   type InMemoryVitalsApi,
   type PlayerVitals,
+  type VitalsDamageOutcome,
 } from './in-memory-vitals'
 
 export const SURVIVAL_HUNGER_STATE_VERSION = 1 as const
@@ -54,6 +56,8 @@ export type SurvivalHungerRuntimeApi = {
   readonly addExhaustion: (amount: number) => Effect.Effect<void>
   readonly tick: (dt: DeltaTimeSecs) => Effect.Effect<SurvivalHungerTickOutcome>
   readonly eat: (foodPoints: number, saturationModifier: number) => Effect.Effect<PlayerVitals>
+  readonly damage: (damage: Damage) => Effect.Effect<VitalsDamageOutcome>
+  readonly heal: (amount: number) => Effect.Effect<PlayerVitals>
   readonly setDifficulty: (difficulty: SurvivalDifficulty) => Effect.Effect<void>
   readonly snapshot: Effect.Effect<SurvivalHungerState>
   readonly restore: (state: SurvivalHungerState) => Effect.Effect<void>
@@ -187,6 +191,8 @@ export const makeSurvivalHungerRuntime = (
       tick,
       eat: (foodPoints, saturationModifier) =>
         Effect.zipRight(vitals.eat(foodPoints, saturationModifier), vitals.snapshot),
+      damage: (damage) => vitals.damage(damage),
+      heal: (amount) => vitals.heal(amount),
       setDifficulty: (next) => Ref.set(difficulty, next),
       snapshot: Effect.gen(function* () {
         return {

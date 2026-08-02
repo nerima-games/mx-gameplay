@@ -180,6 +180,38 @@ describe('survival hunger', () => {
     }),
   )
 
+  it.effect('applies damage and healing while alive and reports death only once', () =>
+    Effect.gen(function* () {
+      const runtime = yield* makeSurvivalHungerRuntime(initial('normal', {
+        healthPoints: 10,
+      }))
+
+      expect(yield* runtime.damage({ amount: 3, cause: 'fall' })).toMatchObject({
+        died: false,
+        vitals: { healthPoints: 7 },
+      })
+      expect(yield* runtime.heal(2)).toMatchObject({
+        healthPoints: 9,
+      })
+      expect(yield* runtime.damage({ amount: 20, cause: 'explosion' })).toMatchObject({
+        died: true,
+        vitals: { healthPoints: 0, lastDamageCause: 'explosion' },
+      })
+      expect(yield* runtime.damage({ amount: 1, cause: 'mob' })).toMatchObject({
+        died: false,
+        vitals: { healthPoints: 0, lastDamageCause: 'explosion' },
+      })
+      expect(yield* runtime.heal(5)).toMatchObject({
+        healthPoints: 0,
+        lastDamageCause: 'explosion',
+      })
+      expect((yield* runtime.snapshot).vitals).toMatchObject({
+        healthPoints: 0,
+        lastDamageCause: 'explosion',
+      })
+    }),
+  )
+
   it.effect('stops processing while dead and restores spawn vitals on respawn', () =>
     Effect.gen(function* () {
       const runtime = yield* makeSurvivalHungerRuntime(initial('hard', {
