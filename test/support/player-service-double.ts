@@ -19,9 +19,9 @@
  * failing loudly is the useful answer.
  */
 import { Effect, Layer, Ref } from 'effect'
-import type { Dimension } from '../../domain/nether-travel-port'
-import { PlayerService, type PlayerPose, type PlayerServiceApi } from '../../domain/player-port'
-import type { Position } from '../../domain/entity-manager-port'
+import type { Dimension } from '../../src/domain/nether-travel-port'
+import { PlayerService, type PlayerPose, type PlayerServiceApi } from '../../src/domain/player-port'
+import type { Position } from '../../src/domain/entity-manager-port'
 
 /** mc-sim's `INITIAL_PLAYER_POSE`, restated. */
 export const SPAWN_POSE: PlayerPose = {

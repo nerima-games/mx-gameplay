@@ -13,9 +13,10 @@
 
 **下流リポジトリ（`mc-compose`）が実際に契約を消費して確認するまで、`0.x` から出ない。**
 
-plan.md §6 Step 3:
+plan.md §6 Step 3(のちに RELEASE_STANDARD.md §4.2 が正式なポリシーとして上書き。日数計測の自動凍結ゲートは廃止済み):
 
-> 界面が安定した（**APIロック4週間無変更**）リポジトリから GitHub Packages 等へ npm 公開 + changesets 運用に切り替え。
+> 界面が安定したリポジトリから GitHub Packages 等へ npm 公開 + changesets 運用に切り替える。
+> 「安定した」の判定は自動ゲートではなく maintainer の裁量判断による([RELEASE_STANDARD.md §4.2](../../.github/RELEASE_STANDARD.md#42-新しい昇格ポリシー人間による裁量判断))。
 > それまでは dev-meta workspace 統合で開発。
 
 plan.md §8 のリスク表も同じことを別角度から書いている。
@@ -78,8 +79,10 @@ kernel
 `workspace:*` 解決により開発する。`repos/` に 15 リポジトリを clone して 1 つの pnpm workspace として束ねる薄いリポジトリで、
 モノレポ同等の DX を得ながらリポジトリ分割を保つ仕組みである。
 
-npm 公開は「API ロック 4 週間無変更」を満たすまで開始しない（plan.md §6 Step 3）。
-高 churn な初期に publish を始めると、kernel の 1 行修正が 7 段の republish カスケードを引き起こす。
+npm 公開は maintainer が「界面が安定した」と裁量判断するまで開始しない（plan.md §6 Step 3、
+[RELEASE_STANDARD.md §4.2](../../.github/RELEASE_STANDARD.md#42-新しい昇格ポリシー人間による裁量判断)）。
+日数計測ベースの自動凍結ゲートは採用しない。高 churn な初期に publish を始めると、
+kernel の 1 行修正が 7 段の republish カスケードを引き起こす。
 
 ### 5-1. `domain/frame-contract.ts` と `domain/position-key.ts` の削除
 

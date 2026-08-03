@@ -37,38 +37,39 @@ import { Effect } from 'effect'
 import { readdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { AIR_BLOCK_ID, type BlockId } from '../domain/chunk-store-port'
-import { validSpawnSurface } from '../domain/block-vocabulary'
-import { applyDamage, deathMessage, fullHealth, isDead, MAX_HEALTH_POINTS } from '../domain/death-cause'
-import { DeltaTimeSecs } from '../domain/frame-contract'
-import { ITEM_TYPES } from '../domain/item-vocabulary'
+import { AIR_BLOCK_ID, type BlockId } from '../src/domain/chunk-store-port'
+import { validSpawnSurface } from '../src/domain/block-vocabulary'
+import { applyDamage, deathMessage, fullHealth, isDead, MAX_HEALTH_POINTS } from '../src/domain/death-cause'
+import { DeltaTimeSecs } from '../src/domain/frame-contract'
+import { ITEM_TYPES } from '../src/domain/item-vocabulary'
 import {
   CREEPER_FUSE_SECS,
   CREEPER_IGNITION_RANGE_BLOCKS,
   DORMANT_FUSE,
   stepCreeperFuse,
   type CreeperFuse,
-} from '../domain/mob/creeper-fuse'
+} from '../src/domain/mob/creeper-fuse'
 import {
   CREEPER_EXPLOSION_POWER,
   explosionDamageAmount,
   explosionDamageAt,
   explosionRadius,
   type Explosion,
-} from '../domain/mob/explosion'
+} from '../src/domain/mob/explosion'
 import {
   canHostileSpawnAt,
   HOSTILE_SPAWN_MAX_BLOCK_LIGHT,
   MAX_SPAWN_DISTANCE_BLOCKS,
   MIN_SPAWN_DISTANCE_BLOCKS,
   type SpawnCandidate,
-} from '../domain/mob/hostile-spawn'
+} from '../src/domain/mob/hostile-spawn'
 import {
   BLAZE_DROPS,
   BLAZE_XP_REWARD,
   CREEPER_DROPS,
   CREEPER_XP_REWARD,
   dropPasses,
+  ENDERMAN_DROPS,
   GHAST_DROPS,
   GHAST_XP_REWARD,
   LOWEST_ROLLS,
@@ -76,7 +77,8 @@ import {
   rollMobDrop,
   rollMobDrops,
   type MobDropRule,
-} from '../domain/mob/mob-drop'
+  ZOMBIE_DROPS,
+} from '../src/domain/mob/mob-drop'
 import {
   ENDERMAN_CHASE_TELEPORT_CHANCE,
   ENDERMAN_DAMAGE_TELEPORT_CHANCE,
@@ -87,7 +89,7 @@ import {
   endermanTeleportOffset,
   endermanTeleportUrge,
   type EndermanSenses,
-} from '../domain/mob/enderman-teleport'
+} from '../src/domain/mob/enderman-teleport'
 import {
   CLOSED_SHELL,
   SHULKER_CLOSED_ARMOR_POINTS,
@@ -97,12 +99,12 @@ import {
   stepShulkerShell,
   type ShulkerSenses,
   type ShulkerShell,
-} from '../domain/mob/shulker-shell'
+} from '../src/domain/mob/shulker-shell'
 import {
   DESPAWN_DISTANCE_BLOCKS,
   despawnVerdict,
   type DespawnCandidate,
-} from '../domain/mob/hostile-despawn'
+} from '../src/domain/mob/hostile-despawn'
 
 /** Block ids, from kernel's registry. The RULES never name one; a test may. */
 const STONE: BlockId = 2
@@ -577,6 +579,27 @@ describe('creeper: kernel names the drop, this repository decides the count', ()
     }),
   )
 
+  it.effect('zombie and enderman use Minecraft count ranges', () =>
+    Effect.sync(() => {
+      expect(ZOMBIE_DROPS).toStrictEqual([{ item: 'rotten_flesh', count: 0, maxCount: 2 }])
+      expect(ENDERMAN_DROPS).toStrictEqual([{ item: 'ender_pearl', count: 0, maxCount: 1 }])
+      expect(ITEM_TYPES).toContain('rotten_flesh')
+      expect(ITEM_TYPES).toContain('ender_pearl')
+
+      expect(rollMobDrops(ZOMBIE_DROPS, SLAIN, () => ({ chance: 0, count: 0 }))).toStrictEqual([])
+      expect(rollMobDrops(ZOMBIE_DROPS, SLAIN, () => ({ chance: 0, count: 0.34 }))).toStrictEqual([
+        { item: 'rotten_flesh', count: 1 },
+      ])
+      expect(rollMobDrops(ZOMBIE_DROPS, SLAIN, () => ({ chance: 0, count: 0.67 }))).toStrictEqual([
+        { item: 'rotten_flesh', count: 2 },
+      ])
+      expect(rollMobDrops(ENDERMAN_DROPS, SLAIN, () => ({ chance: 0, count: 0 }))).toStrictEqual([])
+      expect(rollMobDrops(ENDERMAN_DROPS, SLAIN, () => ({ chance: 0, count: 0.5 }))).toStrictEqual([
+        { item: 'ender_pearl', count: 1 },
+      ])
+    }),
+  )
+
   it.effect('a creeper that blew itself up leaves nothing at all', () =>
     Effect.sync(() => {
       // In the reference this is not written down anywhere — the detonating
@@ -715,7 +738,7 @@ describe('creeper: kernel names the drop, this repository decides the count', ()
     }),
   )
 
-  it.effect('the drops this repository CANNOT spell are absent rather than approximated', () =>
+  it.effect('a drop this repository cannot spell is absent rather than approximated', () =>
     Effect.sync(() => {
       // An enderman drops ENDER_PEARL and a shulker SHULKER_SHELL
       // (mobs/enderman.ts:15, mobs/shulker.ts:15). Neither name exists in
@@ -725,7 +748,6 @@ describe('creeper: kernel names the drop, this repository decides the count', ()
       // repository invented. So there is no ENDERMAN_DROPS and no SHULKER_DROPS,
       // and the arena's missing list says which kernel row would unblock them.
       const names = ITEM_TYPES as ReadonlyArray<string>
-      expect(names).not.toContain('ender_pearl')
       expect(names).not.toContain('shulker_shell')
     }),
   )

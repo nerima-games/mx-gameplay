@@ -14,6 +14,7 @@
  * here. `domain/interactions/draw-bow.ts`'s header carries the measurement.
  */
 import { describe, expect, it } from '@effect/vitest'
+import { makeTimeService } from '@nerima-games/mc-sim'
 import { Effect } from 'effect'
 import {
   bowCharge,
@@ -26,7 +27,7 @@ import {
   BOW_MIN_CHARGE_SECS,
   BOW_MIN_DAMAGE,
   PLAIN_BOW,
-} from '../domain/interactions/draw-bow'
+} from '../src/domain/interactions/draw-bow'
 import {
   shotBlockedByTerrain,
   shotTarget,
@@ -37,11 +38,11 @@ import {
   BOW_TARGET_RADIUS,
   type IsArrowBlockedAt,
   type ShotCandidate,
-} from '../domain/interactions/bow-shot'
-import { knockbackDirection, KNOCKBACK_EPSILON } from '../domain/interactions/knockback'
-import { resolveBowHits, type MobBehaviour } from '../domain/entities/mob-frame'
-import { EntityId, EntityKind, type EntityRoster } from '../domain/entity-manager-port'
-import { gameplayStages, makeGameplayFrameState } from '../stages/registration'
+} from '../src/domain/interactions/bow-shot'
+import { knockbackDirection, KNOCKBACK_EPSILON } from '../src/domain/interactions/knockback'
+import { resolveBowHits, type MobBehaviour } from '../src/domain/entities/mob-frame'
+import { EntityId, EntityKind, type EntityRoster } from '../src/domain/entity-manager-port'
+import { gameplayStages, makeGameplayFrameState, requestBowShot } from '../src/stages/registration'
 import { makeChunkStoreDouble } from './support/chunk-store-double'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
 import { makePlayerServiceDouble } from './support/player-service-double'
@@ -522,7 +523,9 @@ describe('resolveBowHits', () => {
 
       const casualties = yield* resolveBowHits(roster.api, [{ id: EntityId('doomed'), damage: 9 }])
 
-      expect(casualties).toStrictEqual([{ id: 'doomed', kind: 'creeper' }])
+      expect(casualties).toStrictEqual([
+        { id: 'doomed', kind: 'creeper', at: { x: 0, y: 64, z: 0 } },
+      ])
       expect((yield* roster.api.snapshot).entities).toStrictEqual([])
     }),
   )
@@ -541,7 +544,9 @@ describe('resolveBowHits', () => {
         { id: EntityId('target'), damage: 9 },
       ])
 
-      expect(casualties).toStrictEqual([{ id: 'target', kind: 'creeper' }])
+      expect(casualties).toStrictEqual([
+        { id: 'target', kind: 'creeper', at: { x: 0, y: 64, z: 0 } },
+      ])
       expect((yield* roster.calls).sweeps).toBe(1)
     }),
   )
@@ -626,12 +631,13 @@ const scene = (initial: EntityRoster<MobBehaviour>) =>
     const roster = yield* makeEntityManagerDouble<MobBehaviour>(initial)
     const player = yield* makePlayerServiceDouble()
     const inventory = yield* makeInventoryDouble()
+    const time = yield* makeTimeService()
     const state = yield* makeGameplayFrameState
     return {
       roster,
       state,
       inventory,
-      stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api),
+      stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api, time),
     }
   })
 
@@ -650,6 +656,23 @@ const AHEAD: EntityRoster<MobBehaviour> = {
 }
 
 describe('gameplay:interactions — the bow arm', () => {
+  it.effect('requestBowShot appends to the public inbox', () =>
+    Effect.gen(function* () {
+      const { state } = yield* scene(AHEAD)
+      const request = {
+        origin: EYE,
+        dirX: 0,
+        dirY: 0,
+        dirZ: 1,
+        chargeSecs: BOW_FULL_CHARGE_SECS,
+      }
+
+      yield* requestBowShot(state, request)
+
+      expect(yield* Ref.get(state.pendingBowShots)).toStrictEqual([request])
+    }),
+  )
+
   it.effect('A FULL DRAW REACHES THE ROSTER: nine health points off the mob in the crosshair', () =>
     Effect.gen(function* () {
       // This is the assertion the whole change exists for. The rules were
@@ -792,13 +815,11 @@ describe('gameplay:interactions — the bow arm', () => {
     }),
   )
 
-  it.effect('THE BOW FIRES FOR FREE, and that is the recorded gap rather than a defect', () =>
+  it.effect('delegates bow ammo and durability settlement to inventory orchestration', () =>
     Effect.gen(function* () {
-      // `BowShotRequest`'s header: consuming an ARROW and damaging the BOW's
-      // slot both name items `domain/item-vocabulary.ts` has no word for. The
-      // inventory is not touched, and this test says so out loud so that the
-      // day the three words arrive it fails and has to be rewritten rather than
-      // the gap being discovered by a player with infinite arrows.
+      // `BowShotRequest` resolves combat only. Consuming an ARROW and damaging
+      // the BOW slot belong to the inventory orchestration boundary, so this
+      // stage leaves inventory untouched rather than charging twice.
       const { state, inventory, stages } = yield* scene(AHEAD)
       yield* Ref.set(state.pendingBowShots, [
         { origin: EYE, dirX: 0, dirY: 0, dirZ: 1, chargeSecs: BOW_FULL_CHARGE_SECS },

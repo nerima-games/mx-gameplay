@@ -29,13 +29,17 @@ import {
   ENDERMAN_MAX_HEALTH,
   HOSTILE_KINDS,
   resolveBlasts,
+  resolveMeleeHits,
+  rollCasualtyDrops,
   STEADY_ENDERMAN,
   STRUCK_ENDERMAN,
   type Blast,
   type MobBehaviour,
-} from '../domain/entities/mob-frame'
-import { CREEPER_EXPLOSION_POWER, explosionDamageAmount } from '../domain/mob/explosion'
-import { EntityId, type Position } from '../domain/entity-manager-port'
+} from '../src/domain/entities/mob-frame'
+import { CREEPER_DROPS, ENDERMAN_DROPS, ZOMBIE_DROPS } from '../src/domain/mob/mob-drop'
+import { CREEPER_EXPLOSION_POWER, explosionDamageAmount } from '../src/domain/mob/explosion'
+import { ZOMBIE_KIND } from '../src/domain/mob/hostile-combat'
+import { EntityId, type Position } from '../src/domain/entity-manager-port'
 import { makeChunkStoreDouble, STONE, world } from './support/chunk-store-double'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
 
@@ -67,7 +71,7 @@ const GRAZING_BLOCKS = 5
 const emptyStore = makeChunkStoreDouble(world([]), ['0,0'])
 
 describe('the loot table is keyed by a kind that something actually spawns', () => {
-  it.effect('every hostile kind has a table, and only the creeper’s has rows in it', () =>
+  it.effect('every hostile kind has its drop table wired into the frame', () =>
     Effect.sync(() => {
       // The module header refuses a row for a kind nothing produces: 「a row
       // mapping a kind nothing produces would be a claim that this build has
@@ -79,14 +83,15 @@ describe('the loot table is keyed by a kind that something actually spawns', () 
       // Asked over the whole roster and not just the enderman: a third hostile
       // added without a `domain/mob/` rule behind it should show up here as a
       // silent zero, and that is the state worth being able to see.
-      expect(dropRulesOfKind(CREEPER_KIND).length).toBeGreaterThan(0)
-
-      for (const kind of HOSTILE_KINDS.filter((candidate) => candidate !== CREEPER_KIND)) {
-        expect(dropRulesOfKind(kind)).toStrictEqual([])
-        // And the frame draws NO rolls for it, which is the part that matters
-        // to reproducibility: a kind with no loot must not move the generator,
-        // or killing an enderman would change the next creeper's gunpowder.
-        expect(dropRollsNeeded(kind)).toBe(0)
+      const tables = [
+        [CREEPER_KIND, CREEPER_DROPS],
+        [ENDERMAN_KIND, ENDERMAN_DROPS],
+        [ZOMBIE_KIND, ZOMBIE_DROPS],
+      ] as const
+      for (const [kind, rules] of tables) {
+        expect(HOSTILE_KINDS).toContain(kind)
+        expect(dropRulesOfKind(kind)).toBe(rules)
+        expect(dropRollsNeeded(kind)).toBe(rules.length * 2)
       }
     }),
   )
@@ -96,6 +101,43 @@ describe('the loot table is keyed by a kind that something actually spawns', () 
       // A chance and a count per line. The budget is asked BEFORE the drop is
       // rolled, so this arithmetic is the contract between the two.
       expect(dropRollsNeeded(CREEPER_KIND)).toBe(dropRulesOfKind(CREEPER_KIND).length * 2)
+    }),
+  )
+})
+
+describe('mob drops through frame death paths', () => {
+  it.effect('normal deaths generate zombie and enderman drops', () =>
+    Effect.gen(function* () {
+      const roster = yield* makeEntityManagerDouble<MobBehaviour>()
+      const zombie = yield* roster.api.spawn({
+        kind: ZOMBIE_KIND, feetPosition: ORIGIN, healthPoints: 1, behaviour: undefined,
+      })
+      const enderman = yield* roster.api.spawn({
+        kind: ENDERMAN_KIND, feetPosition: ORIGIN, healthPoints: 1, behaviour: STEADY_ENDERMAN,
+      })
+      const casualties = yield* resolveMeleeHits(roster.api, [
+        { id: zombie.id, damage: 1 }, { id: enderman.id, damage: 1 },
+      ])
+      const { drops } = rollCasualtyDrops(casualties, 4)
+      expect(drops.map((drop) => drop.item)).toContain('rotten_flesh')
+      expect(drops.map((drop) => drop.item)).toContain('ender_pearl')
+    }),
+  )
+
+  it.effect('explosion deaths generate zombie and enderman drops', () =>
+    Effect.gen(function* () {
+      const roster = yield* makeEntityManagerDouble<MobBehaviour>()
+      const store = yield* makeChunkStoreDouble(world([]), ['0,0'])
+      yield* roster.api.spawn({
+        kind: ZOMBIE_KIND, feetPosition: ORIGIN, healthPoints: 1, behaviour: undefined,
+      })
+      yield* roster.api.spawn({
+        kind: ENDERMAN_KIND, feetPosition: ORIGIN, healthPoints: 1, behaviour: STEADY_ENDERMAN,
+      })
+      const resolution = yield* resolveBlasts(roster.api, store.api, [CREEPER_BLAST])
+      const { drops } = rollCasualtyDrops(resolution.casualties, 4)
+      expect(drops.map((drop) => drop.item)).toContain('rotten_flesh')
+      expect(drops.map((drop) => drop.item)).toContain('ender_pearl')
     }),
   )
 })

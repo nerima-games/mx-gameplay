@@ -1,14 +1,20 @@
 import { describe, expect, it } from '@effect/vitest'
+import { makeTimeService } from '@nerima-games/mc-sim'
 import { Effect, Option, Ref } from 'effect'
-import { type BlockPosition } from '../domain/chunk-store-port'
-import { NETHER_HORIZONTAL_RATIO } from '../domain/nether-travel-port'
-import { applyPortalTravel, NO_KNOWN_PORTALS } from '../domain/portal-travel'
-import { type Dimension } from '../domain/nether-travel-port'
-import { type PlayerPose, type PlayerServiceApi } from '../domain/player-port'
-import { blockIdOf } from '../domain/block-vocabulary'
-import { type MobBehaviour } from '../domain/entities/mob-frame'
-import { DeltaTimeSecs } from '../domain/frame-contract'
-import { gameplayStages, makeGameplayFrameState } from '../stages/registration'
+import { type BlockPosition } from '../src/domain/chunk-store-port'
+import { NETHER_HORIZONTAL_RATIO } from '../src/domain/nether-travel-port'
+import { applyPortalTravel, NO_KNOWN_PORTALS } from '../src/domain/portal-travel'
+import { type Dimension } from '../src/domain/nether-travel-port'
+import { type PlayerPose, type PlayerServiceApi } from '../src/domain/player-port'
+import { blockIdOf } from '../src/domain/block-vocabulary'
+import { type MobBehaviour } from '../src/domain/entities/mob-frame'
+import { DeltaTimeSecs } from '../src/domain/frame-contract'
+import {
+  drainPortalTravels,
+  gameplayStages,
+  makeGameplayFrameState,
+  setPortalCandidates,
+} from '../src/stages/registration'
 import { makeChunkStoreDouble, world } from './support/chunk-store-double'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
 import { makeInventoryDouble } from './support/inventory-service-double'
@@ -155,21 +161,8 @@ describe('a portal crossing actually completes', () => {
   )
 })
 
-/**
- * THE RESTRICTION, PINNED SO THAT LIFTING IT IS A VISIBLE CHANGE.
- *
- * The portal ledger is mc-worldgen's and is not built yet, so every crossing
- * plans a fresh portal and none is ever reused. `domain/portal-travel.ts`'s
- * header states the consequence; this is where it is checked, so that the day
- * the ledger lands the test that changes is the one describing what used to be
- * missing.
- *
- * NEITHER TEST IN THIS BLOCK PROVES REUSE HAPPENS IN A RUNNING GAME. The first
- * proves it does not; the second proves only that the parameter would work if
- * anything filled it.
- */
-describe('RESTRICTION: no portal is ever reused, because the ledger is unbuilt', () => {
-  it.effect('every crossing plans a portal to create', () =>
+describe('portal candidate defaults', () => {
+  it.effect('a direct caller without candidates plans a portal to create', () =>
     Effect.gen(function* () {
       const { api } = yield* makeRecordingPlayer('overworld')
 
@@ -180,20 +173,7 @@ describe('RESTRICTION: no portal is ever reused, because the ledger is unbuilt',
     }),
   )
 
-  /**
-   * THIS TEST DOES NOT DESCRIBE THE RUNNING GAME, and the name says so.
-   *
-   * It reaches past the production path and hands `applyPortalTravel` a
-   * candidate list by hand — something no caller in this repository does,
-   * because none can. What it proves is narrow and worth proving: the parameter
-   * WORKS, so the restriction above is a missing CALLER and not a missing rule,
-   * and `candidates` earns being a parameter rather than a hard-coded `[]`.
-   *
-   * The day mc-worldgen owns the ledger, this is the test that stops being
-   * hypothetical. Until then nothing here should be read as evidence that a
-   * player ever arrives at an existing portal — they do not.
-   */
-  it.effect('the parameter works when supplied by hand — NOT a path any caller takes', () =>
+  it.effect('a supplied candidate is reused', () =>
     Effect.gen(function* () {
       const { api, moves } = yield* makeRecordingPlayer('overworld')
       // Scales to { x: 16, y: 64, z: -32 }; the candidate sits one block off it.
@@ -225,10 +205,6 @@ describe('RESTRICTION: no portal is ever reused, because the ledger is unbuilt',
  * player ends up in the Nether. Deleting the `stepPortalTravel` call from the
  * stage leaves every test above green and turns this one red.
  *
- * WHAT IT DOES NOT PROVE, stated because a passing crossing invites the
- * assumption: it says nothing about arriving at an EXISTING portal. The stage
- * passes no candidate list, so the destination here is always the freshly
- * scaled point. Reuse is the RESTRICTION block above, and it is unbuilt.
  */
 describe('REACHABILITY: the interactions stage performs the crossing', () => {
   const spawnCell: BlockPosition = { x: 0, y: 64, z: 0 }
@@ -242,25 +218,29 @@ describe('REACHABILITY: the interactions stage performs the crossing', () => {
     const roster = yield* makeEntityManagerDouble<MobBehaviour>()
     const inventory = yield* makeInventoryDouble()
     const player = yield* makePlayerServiceDouble()
+    const time = yield* makeTimeService()
     const state = yield* makeGameplayFrameState
     return {
       player,
       state,
-      stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api),
+      stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api, time),
     }
   })
 
   it.effect('four seconds of standing in a portal block moves the player to the nether', () =>
     Effect.gen(function* () {
-      const { player, stages } = yield* portalWorld
+      const { player, state, stages } = yield* portalWorld
 
       expect(yield* player.api.dimension).toBe('overworld')
+      expect(yield* Ref.get(state.portalCandidates)).toStrictEqual(new Map())
+      expect(yield* drainPortalTravels(state)).toStrictEqual([])
 
       // Just under the activation time: nothing has fired yet, which is what
       // makes the assertion after it about the DWELL rather than about the very
       // first frame.
       yield* runFrames(stages, 200, DeltaTimeSecs(0.016))
       expect(yield* player.api.dimension).toBe('overworld')
+      expect(yield* drainPortalTravels(state)).toStrictEqual([])
 
       // Past four seconds.
       yield* runFrames(stages, 100, DeltaTimeSecs(0.016))
@@ -268,6 +248,34 @@ describe('REACHABILITY: the interactions stage performs the crossing', () => {
       expect(yield* player.api.dimension).toBe('nether')
       // And the placement half ran too, through the same stage.
       expect((yield* Ref.get(player.moves)).length).toBeGreaterThan(0)
+
+      const completed = yield* drainPortalTravels(state)
+      expect(completed).toHaveLength(1)
+      expect(completed[0]?.sourceDimension).toBe('overworld')
+      expect(completed[0]?.sourcePosition).toStrictEqual(spawnCell)
+      expect(completed[0]?.plan.toDimension).toBe('nether')
+      expect(Option.isSome(completed[0]?.plan.portalToCreate ?? Option.none())).toBe(true)
+      expect(yield* drainPortalTravels(state)).toStrictEqual([])
+
+      yield* runFrames(stages, 100, DeltaTimeSecs(0.016))
+      expect(yield* drainPortalTravels(state)).toStrictEqual([])
+    }),
+  )
+
+  it.effect('uses only the destination dimension candidate snapshot', () =>
+    Effect.gen(function* () {
+      const { player, state, stages } = yield* portalWorld
+      const wrongDimensionCandidate: BlockPosition = { x: 1, y: 64, z: 1 }
+      const netherCandidate: BlockPosition = { x: 2, y: 64, z: 2 }
+
+      yield* setPortalCandidates(state, 'overworld', [wrongDimensionCandidate])
+      yield* setPortalCandidates(state, 'nether', [netherCandidate])
+      yield* runFrames(stages, 300, DeltaTimeSecs(0.016))
+
+      const [completed] = yield* drainPortalTravels(state)
+      expect(completed?.plan.destination).toStrictEqual(netherCandidate)
+      expect(Option.isNone(completed?.plan.portalToCreate ?? Option.some(undefined))).toBe(true)
+      expect(yield* Ref.get(player.moves)).toStrictEqual([netherCandidate])
     }),
   )
 
@@ -277,13 +285,15 @@ describe('REACHABILITY: the interactions stage performs the crossing', () => {
       const roster = yield* makeEntityManagerDouble<MobBehaviour>()
       const inventory = yield* makeInventoryDouble()
       const player = yield* makePlayerServiceDouble()
+      const time = yield* makeTimeService()
       const state = yield* makeGameplayFrameState
-      const stages = gameplayStages(state, store.api, roster.api, inventory.api, player.api)
+      const stages = gameplayStages(state, store.api, roster.api, inventory.api, player.api, time)
 
       yield* runFrames(stages, 600, DeltaTimeSecs(0.016))
 
       expect(yield* player.api.dimension).toBe('overworld')
       expect(yield* Ref.get(player.switches)).toStrictEqual([])
+      expect(yield* drainPortalTravels(state)).toStrictEqual([])
     }),
   )
 })

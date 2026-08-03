@@ -80,7 +80,7 @@
  * mc-sim does hold. The screen is the same; the claim it makes is weaker and
  * true.
  */
-import { dayPhase, hostileSpawnsAllowed, isNight, type DayPhase } from '../../domain/day-night'
+import { dayPhase, hostileSpawnsAllowed, isNight, type DayPhase } from '../../src/domain/day-night'
 import {
   applyDamage,
   deathMessage,
@@ -89,10 +89,10 @@ import {
   MAX_HEALTH_POINTS,
   type DeathCause,
   type Vitals,
-} from '../../domain/death-cause'
-import { AIR_BLOCK_ID, type BlockId } from '../../domain/chunk-store-port'
-import { DeltaTimeSecs } from '../../domain/frame-contract'
-import { DEFAULT_ROLL_SEED, drawRolls } from '../../domain/frame-rolls'
+} from '../../src/domain/death-cause'
+import { AIR_BLOCK_ID, type BlockId } from '../../src/domain/chunk-store-port'
+import { DeltaTimeSecs } from '../../src/domain/frame-contract'
+import { DEFAULT_ROLL_SEED, drawRolls } from '../../src/domain/frame-rolls'
 import {
   advanceWeather,
   createWeatherState,
@@ -111,21 +111,21 @@ import {
   type Weather,
   type WeatherRolls,
   type WeatherState,
-} from '../../domain/weather'
+} from '../../src/domain/weather'
 import {
   CREEPER_FUSE_SECS,
   CREEPER_IGNITION_RANGE_BLOCKS,
   DORMANT_FUSE,
   stepCreeperFuse,
   type CreeperFuse,
-} from '../../domain/mob/creeper-fuse'
-import { explosionDamageAmount, explosionDamageAt, explosionRadius } from '../../domain/mob/explosion'
+} from '../../src/domain/mob/creeper-fuse'
+import { explosionDamageAmount, explosionDamageAt, explosionRadius } from '../../src/domain/mob/explosion'
 import {
   canHostileSpawnAt,
   MIN_SPAWN_DISTANCE_BLOCKS,
   type SpawnCandidate,
   type SpawnVerdict,
-} from '../../domain/mob/hostile-spawn'
+} from '../../src/domain/mob/hostile-spawn'
 import {
   BLAZE_DROPS,
   BLAZE_XP_REWARD,
@@ -138,7 +138,7 @@ import {
   rollMobDrops,
   type MobDrop,
   type MobDropRule,
-} from '../../domain/mob/mob-drop'
+} from '../../src/domain/mob/mob-drop'
 import {
   ENDERMAN_TELEPORT_MAX_BLOCKS,
   ENDERMAN_TELEPORT_MIN_BLOCKS,
@@ -146,7 +146,7 @@ import {
   endermanTeleportUrge,
   type EndermanTeleportUrge,
   type TeleportOffset,
-} from '../../domain/mob/enderman-teleport'
+} from '../../src/domain/mob/enderman-teleport'
 import {
   CLOSED_SHELL,
   SHULKER_OPENING_TICKS,
@@ -154,12 +154,12 @@ import {
   shulkerWantsToTeleport,
   stepShulkerShell,
   type ShulkerShell,
-} from '../../domain/mob/shulker-shell'
+} from '../../src/domain/mob/shulker-shell'
 import {
   DESPAWN_DISTANCE_BLOCKS,
   despawnVerdict,
   type DespawnVerdict,
-} from '../../domain/mob/hostile-despawn'
+} from '../../src/domain/mob/hostile-despawn'
 
 // ---------------------------------------------------------------------------
 // Time slider
@@ -1129,7 +1129,7 @@ export const ARENA_MISSING: ReadonlyArray<readonly [string, string]> = [
   // measurement that is still a stand-in.
   ['a spawn candidate’s ALTITUDE', 'the ring searches the player’s own feet plane, not the surface. The reference scans down a column, which is the scan whose lack of a surface test hostile-spawn.ts was written to fix; the honest replacement is a heightmap the STORE maintains, since surfaceHeightAt answers about generated terrain and not about anything a player built'],
   ['the player’s position', 'targetPosition is an inbox. PlayerService.cameraPose requires ClockPort, and a local ClockPort is worse than a narrow mirror'],
-  ['mob drops reaching the GROUND', 'mobDrops is still an outbox, and the reason changed: the service is mirrored and mining deposits through it, but a kill is not an `add`. Vanilla drops loot on the floor to be picked up, so the honest destination is a dropped-item entity — which needs a MobBehaviour arm, a repairMobBehaviour arm and a pickup rule'],
+  ['mob drops reaching the GROUND', 'mobDrops is still an outbox. The dropped-item entity and pickup rule now exist, but the host must drain each kill event and call spawnMobDrops at the death position'],
   ['a mob’s death CAUSE', 'explosionDamageAt carries one and applyDamage records it; mc-sim’s EntityState has no field for it, so it is dropped'],
   ['experience from a kill', 'mobXpReward is written and uncalled. XP is a number on the player, and the player is PlayerService’s'],
   ['blast resistance', 'the crater sets every cell to AIR — obsidian and bedrock included. One flag in kernel’s capability table, no edit here'],
@@ -1139,9 +1139,8 @@ export const ARENA_MISSING: ReadonlyArray<readonly [string, string]> = [
   // Inventory/RecipeTable/CraftGrid/RecipeMatch/CraftResult'. The price was
   // paid: domain/inventory-port.ts carries that vocabulary as dead weight and
   // gameplay:interactions calls add(). What is left of the row is the OTHER
-  // direction and the leftover.
+  // direction.
   ['a placement CHARGING the player', 'consumedItems is still an outbox. remove() answers with what was ACTUALLY taken, and placeBlock has already written the cell by then — so charging from the stage would hand out a block on a remove that came back 0. Doing it right means place-block reading the inventory BEFORE the write'],
-  ['a leftover becoming an ITEM ON THE GROUND', 'add() answers with what did not fit and the stage keeps it in leftoverItems rather than dropping it. mc-sim expects the caller to spawn a dropped-item entity; that needs a MobBehaviour arm for "which item, how many", a repairMobBehaviour arm, a pickup rule and a despawn timer. Mine into a full inventory and the frame tape prints !item'],
   ['durability', 'usedItems is an outbox and half of it has no method to become a call to: lighting a portal DAMAGES a flint and steel by one point, and mc-sim’s published api has no damageSlot at all'],
   ['the held TOOL', 'heldTool is an inbox. Which slot is selected and what is enchanted on it is InventoryService’s; the tier gate is live and the value reaching it is a stand-in'],
   ['4 more placement rules', 'mushrooms need light <= 12, sugar cane needs adjacent water, cactus needs four air sides, doors need the cell above (block-service-place-plan.ts:208-214). Each is ANOTHER FILE by DN-GP-9 and each needs a measurement this repository can already take — deferred, not refused'],

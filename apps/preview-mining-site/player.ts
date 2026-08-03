@@ -16,8 +16,8 @@
  * scenario is a worse diagnostic than one that quietly walks through.
  */
 import { Effect, Ref } from 'effect'
-import type { Dimension } from '../../domain/nether-travel-port'
-import type { PlayerPose, PlayerServiceApi } from '../../domain/player-port'
+import type { Dimension } from '../../src/domain/nether-travel-port'
+import type { PlayerPose, PlayerServiceApi } from '../../src/domain/player-port'
 
 const refuse = <A>(what: string): Effect.Effect<A> =>
   Effect.dieMessage(

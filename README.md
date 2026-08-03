@@ -81,19 +81,23 @@ oxlint 0.12 は `no-restricted-syntax` も `no-restricted-properties` も実装�
 そのため `Date.now()` / `new Date()` / `performance.now()` の禁止は
 **`scripts/check-dependency-whitelist.ts` 側で実装**している。
 コメント・文字列リテラル・正規表現リテラルの中身はマスクされるので誤検知しない。
-oxlint が該当ルールを実装したら `oxlint.json` 側へ移す。
+oxlint が該当ルールを実装したら `.oxlintrc.json` 側へ移す。
 
 ## 開発
 
 ### セットアップ
 
 ```console
-$ direnv allow          # flake.nix の devShell で nodejs_24 + corepack が入る
+$ direnv allow          # flake.nix の devShell で nodejs_22 + corepack + oxlint が入る
 $ pnpm install
 ```
 
-Nix を使わない場合は Node.js 24 以上と pnpm 11 を用意する（`corepack enable && corepack prepare pnpm@11 --activate`）。
+Nix を使わない場合は Node.js 22 以上と pnpm 9.15.0 を用意する（`corepack enable && corepack prepare pnpm@9.15.0 --activate`）。
 バージョンは `package.json` の `packageManager` でピン留めしてある。
+**oxlint は `package.json` の devDependency ではない** — `flake.nix` の devShell からのみ供給される
+（各リポジトリが独自にバージョンを固定した結果、一部が `no-restricted-imports` 未実装の 0.12.x に
+気づかず滞留していた反省から、nixpkgs 由来の単一バージョンに統一した）。
+Nix を使わない場合は `nix develop --command pnpm lint` のように `nix develop` 経由で実行する。
 
 > **注意**: ツールチェーンは `devenv.nix` から `flake.nix` + `flake.lock` に移行済みである。
 > `flake.lock` はコミットされているので、`nix develop`（`.envrc` は `use flake`）は
@@ -104,7 +108,7 @@ Nix を使わない場合は Node.js 24 以上と pnpm 11 を用意する（`cor
 | コマンド | 内容 |
 | --- | --- |
 | `pnpm typecheck` | `tsconfig.build.json`（出荷ソース）/ `tsconfig.test.json`（テスト + スクリプト）/ `tsconfig.preview.json`（`apps/`）の 3 プロジェクトを型検査 |
-| `pnpm lint` | oxlint（このリポジトリ唯一の lint / format 設定。prettier も biome も .editorconfig も置かない）。**`--deny-warnings` 付きで走る**ため、`warn` のルールもビルドを落とす（`oxlint.json` は 5 カテゴリすべてと個別 67 ルールが `warn`、`error` は 4 つだけ。このフラグが無かった頃は実質その 4 つしかゲートになっていなかった） |
+| `pnpm lint` | oxlint（このリポジトリ唯一の lint / format 設定。prettier も biome も .editorconfig も置かない）。**`--deny-warnings` 付きで走る**ため、`warn` のルールもビルドを落とす（`.oxlintrc.json` は 5 カテゴリすべてと個別 67 ルールが `warn`、`error` は 4 つだけ。このフラグが無かった頃は実質その 4 つしかゲートになっていなかった） |
 | `pnpm lint:fix` | oxlint の自動修正 |
 | `pnpm preview` | 内蔵プレビュー（採掘場 / 時間スライダー / Mob アリーナ）。**`pnpm verify` には入らない**。[apps/preview-mining-site/README.md](./apps/preview-mining-site/README.md) |
 | `pnpm test` | vitest（`@effect/vitest` の `it.effect` が主 API） |

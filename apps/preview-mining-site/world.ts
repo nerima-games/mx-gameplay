@@ -59,14 +59,15 @@ import {
   type ChunkDirtySubscription,
   type ChunkStoreApi,
   type ChunkNeighbours,
-} from '../../domain/chunk-store-port'
+} from '../../src/domain/chunk-store-port'
 import {
   blockTypeOfId,
   fallsWhenUnsupported,
+  isPlaceableItem,
   isReplaceable,
   itemOfBlock,
   type PlaceableItemType,
-} from '../../domain/block-vocabulary'
+} from '../../src/domain/block-vocabulary'
 
 /**
  * Block ids, transcribed from kernel's `BLOCK_REGISTRY` exactly as
@@ -147,7 +148,8 @@ export const glyphOf = (id: BlockId): Glyph =>
  */
 export const placeableItemOf = (id: BlockId): PlaceableItemType | undefined => {
   const type = blockTypeOfId(id)
-  return type === undefined ? undefined : itemOfBlock(type)
+  const item = type === undefined ? undefined : itemOfBlock(type)
+  return item !== undefined && isPlaceableItem(item) ? item : undefined
 }
 
 export const chunkKeyOf = (position: BlockPosition): string =>

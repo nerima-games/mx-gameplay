@@ -30,10 +30,11 @@
  * assert する。実時間 20 分待つテストは書かない」.
  */
 import { describe, expect, it } from '@effect/vitest'
+import { makeTimeService } from '@nerima-games/mc-sim'
 import { Effect, Ref } from 'effect'
-import { hostileSpawnsAllowed, NOON_FRACTION } from '../domain/day-night'
-import { DeltaTimeSecs } from '../domain/frame-contract'
-import { DEFAULT_ROLL_SEED } from '../domain/frame-rolls'
+import { hostileSpawnsAllowed, NOON_FRACTION } from '../src/domain/day-night'
+import { DeltaTimeSecs } from '../src/domain/frame-contract'
+import { DEFAULT_ROLL_SEED } from '../src/domain/frame-rolls'
 import {
   advanceWeather,
   CLEAR_DURATION_RANGE_SECS,
@@ -55,9 +56,9 @@ import {
   WEATHER_TRANSITION_ROLLS,
   type Weather,
   type WeatherState,
-} from '../domain/weather'
-import type { MobBehaviour } from '../domain/entities/mob-frame'
-import { gameplayStages, makeGameplayFrameState } from '../stages/registration'
+} from '../src/domain/weather'
+import type { MobBehaviour } from '../src/domain/entities/mob-frame'
+import { gameplayStages, makeGameplayFrameState } from '../src/stages/registration'
 import { makeChunkStoreDouble, world } from './support/chunk-store-double'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
 import { makePlayerServiceDouble } from './support/player-service-double'
@@ -395,8 +396,12 @@ const stagedSlice = Effect.gen(function* () {
   const roster = yield* makeEntityManagerDouble<MobBehaviour>()
   const player = yield* makePlayerServiceDouble()
   const inventory = yield* makeInventoryDouble()
+  const time = yield* makeTimeService()
   const state = yield* makeGameplayFrameState
-  return { state, stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api) }
+  return {
+    state,
+    stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api, time),
+  }
 })
 
 const ONE_SECOND = DeltaTimeSecs(1)

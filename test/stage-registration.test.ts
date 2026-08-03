@@ -8,10 +8,27 @@
  */
 import { describe, expect, it } from '@effect/vitest'
 import { Effect, Layer, Ref } from 'effect'
-import type { ChunkStore } from '../domain/chunk-store-port'
-import type { MobBehaviour } from '../domain/entities/mob-frame'
-import type { EntityManager } from '../domain/entity-manager-port'
-import type { InventoryService } from '../domain/inventory-port'
+import { AIR_BLOCK_ID, type ChunkStore } from '../src/domain/chunk-store-port'
+import {
+  CREEPER_KIND,
+  type MobBehaviour,
+  type MobDropEvent,
+  type MobSpawnAttempt,
+} from '../src/domain/entities/mob-frame'
+import {
+  EntityId,
+  EntityKind,
+  type EntityManager,
+  type EntityRoster,
+} from '../src/domain/entity-manager-port'
+import { BOW_TARGET_CENTER_Y_OFFSET } from '../src/domain/interactions/bow-shot'
+import { BOW_FULL_CHARGE_SECS, BOW_MIN_CHARGE_SECS } from '../src/domain/interactions/draw-bow'
+import {
+  TimeService,
+  TimeServiceLayer,
+  makeTimeService,
+  type InventoryService,
+} from '@nerima-games/mc-sim'
 import {
   DeltaTimeSecs,
   MAX_STACK_COUNT,
@@ -20,26 +37,38 @@ import {
   type FrameServices,
   type GameModule,
   type StageRegistration,
-} from '../domain/frame-contract'
-import { disturb, takeBatch } from '../domain/falling-block'
-import { DEFAULT_ROLL_SEED } from '../domain/frame-rolls'
+} from '../src/domain/frame-contract'
+import { disturb, takeBatch } from '../src/domain/falling-block'
+import { DEFAULT_ROLL_SEED } from '../src/domain/frame-rolls'
 import {
   gameplayStages,
+  drainBowShotResults,
+  drainFluidUpdates,
+  drainMeleeAttackResults,
+  drainMobDrops,
   LAVA_TICK_INTERVAL,
   makeGameplayFrameState,
   makeGameplayStages,
   gameplayModule,
-} from '../stages/registration'
+  requestBowShot,
+  requestMeleeAttack,
+  requestMobSpawn,
+} from '../src/stages/registration'
 import {
   EXPERIENCE_MODULE_STAGE_PREFIXES,
   GAMEPLAY_STAGE_IDS,
   OWN_STAGE_PREFIX,
   UPSTREAM_STAGE_IDS,
-} from '../stages/stage-ids'
-import { emptyWorldStoreLayer, makeChunkStoreDouble, world } from './support/chunk-store-double'
+} from '../src/stages/stage-ids'
+import {
+  emptyWorldStoreLayer,
+  makeChunkStoreDouble,
+  STONE,
+  world,
+} from './support/chunk-store-double'
 import { emptyRosterLayer, makeEntityManagerDouble } from './support/entity-manager-double'
 import { makePlayerServiceDouble, playerDoubleLayer } from './support/player-service-double'
-import { PlayerService } from '../domain/player-port'
+import { PlayerService } from '../src/domain/player-port'
 import { emptyInventoryLayer, makeInventoryDouble } from './support/inventory-service-double'
 import { FrameServicesLayer } from './support/frame-services'
 
@@ -61,6 +90,7 @@ const emptyWorld = Layer.mergeAll(
   emptyInventoryLayer,
   // mc-sim's PlayerService, which `stepPortalTravel` reads every frame.
   playerDoubleLayer,
+  TimeServiceLayer(),
 )
 
 const registeredStages = Effect.provide(makeGameplayStages, emptyWorld)
@@ -72,12 +102,13 @@ const builtStages = Effect.gen(function* () {
   const roster = yield* makeEntityManagerDouble<MobBehaviour>()
   const player = yield* makePlayerServiceDouble()
   const inventory = yield* makeInventoryDouble()
+  const time = yield* makeTimeService()
   return {
     state,
     store,
     roster,
     inventory,
-    stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api),
+    stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api, time),
   }
 })
 
@@ -256,6 +287,52 @@ describe('stage behaviour', () => {
     }).pipe(Effect.provide(FrameServicesLayer)),
   )
 
+  it.effect('fluid updates are destructively drained without consuming inactive lava', () =>
+    Effect.gen(function* () {
+      const { state, stages } = yield* builtStages
+      const fluids = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids)
+      const water = { key: 'water-a', kind: 'water' } as const
+      const lava = { key: 'lava-a', kind: 'lava' } as const
+
+      yield* Ref.set(state.fluidFrontier, [water, lava])
+      yield* fluids?.run(DeltaTimeSecs(0.016)) ?? Effect.void
+
+      expect(yield* Ref.get(state.fluidFrontier)).toStrictEqual([lava])
+
+      for (let tick = 2; tick <= LAVA_TICK_INTERVAL; tick += 1) {
+        yield* fluids?.run(DeltaTimeSecs(0.016)) ?? Effect.void
+      }
+
+      expect(yield* drainFluidUpdates(state)).toStrictEqual([water, lava])
+      expect(yield* drainFluidUpdates(state)).toStrictEqual([])
+      expect(yield* Ref.get(state.fluidFrontier)).toStrictEqual([])
+    }).pipe(Effect.provide(FrameServicesLayer)),
+  )
+
+  it.effect('REGRESSION: concurrent fluid stage runs drain each work item at most once', () =>
+    Effect.gen(function* () {
+      const { state, stages } = yield* builtStages
+      const fluids = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids)
+      const work = Array.from({ length: 8 }, (_, index) => ({
+        key: `water-${String(index)}`,
+        kind: 'water' as const,
+      }))
+
+      yield* Ref.set(state.fluidFrontier, work)
+      yield* Effect.all(
+        [
+          fluids?.run(DeltaTimeSecs(0.016)) ?? Effect.void,
+          fluids?.run(DeltaTimeSecs(0.016)) ?? Effect.void,
+        ],
+        { concurrency: 2 },
+      )
+
+      expect(yield* drainFluidUpdates(state)).toStrictEqual(work)
+      expect(yield* drainFluidUpdates(state)).toStrictEqual([])
+      expect(yield* Ref.get(state.fluidFrontier)).toStrictEqual([])
+    }).pipe(Effect.provide(FrameServicesLayer)),
+  )
+
   // REGRESSION: the time of day is mc-sim's. It survives save/load, which is
   // the very test the module header names for whether a Ref belongs here, so it
   // is a noun and lives in `mc-sim/domain/time-of-day.ts` behind
@@ -349,20 +426,31 @@ describe('stage behaviour', () => {
       // and never will, because nothing in this repository needs to know how long
       // a day is.
       expect(Object.keys(state).sort()).toStrictEqual([
+        'blockUseResults',
         'bowKnockbacks',
+        'bowShotResults',
         'consumedItems',
         'enderPearlOutcomes',
         'fallingBlocks',
         'fluidFrontier',
+        'fluidUpdates',
+        'handledBowShotRequestIds',
         'heldTool',
-        'leftoverItems',
+        'hostileContactCooldowns',
+        'itemUseResults',
+        'meleeAttackResults',
         'mobDrops',
+        'pendingBlockUses',
         'pendingBowShots',
         'pendingBreaks',
         'pendingItemUses',
+        'pendingMeleeAttacks',
         'pendingPearlThrows',
         'pendingPlacements',
+        'playerDamages',
+        'portalCandidates',
         'portalDwell',
+        'portalTravels',
         'rollSeed',
         'spawnAttempts',
         'spawnClockSecs',
@@ -386,16 +474,135 @@ describe('stage behaviour', () => {
       expect(Object.keys(state)).not.toContain('dayLength')
       expect(Object.keys(state)).not.toContain('dayLengthSecs')
       expect(Object.keys(state)).not.toContain('timeOfDaySecs')
-      // The inventory is mc-sim's, and this assertion means MORE now than it
-      // did when `minedItems` held every mined stack: the stage calls
-      // `InventoryService.add` and reads the number back, so the temptation is
-      // no longer a second outbox but a CACHE of what the service answered —
-      // which is what a Ref named for the noun would be. `leftoverItems` holds
-      // only what `add` refused, and `consumedItems` and `usedItems` are lists
-      // the host drains for verbs the rules do not call.
+      // Inventory contents and mining overflow are both owned outside frame
+      // state: mc-sim owns carried stacks, while refused deposits become
+      // dropped-item entities in its roster.
       expect(Object.keys(state)).not.toContain('inventory')
       expect(Object.keys(state)).not.toContain('slots')
       expect(Object.keys(state)).not.toContain('heldItems')
+    }),
+  )
+
+  it.effect('bow results correlate successful and refused requests and drain exactly once', () =>
+    Effect.gen(function* () {
+      const { state, inventory, stages } = yield* builtStages
+      const shot = {
+        origin: { x: 0, y: 64, z: 0 },
+        dirX: 0,
+        dirY: 1,
+        dirZ: 0,
+        chargeSecs: BOW_FULL_CHARGE_SECS,
+      }
+
+      yield* requestBowShot(state, 'fired', shot)
+      yield* requestBowShot(state, 'undercharged', {
+        ...shot,
+        chargeSecs: BOW_MIN_CHARGE_SECS / 2,
+      })
+      yield* requestBowShot(state, 'duplicate', shot)
+      yield* requestBowShot(state, 'duplicate', shot)
+
+      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)
+      yield* interactions!.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* drainBowShotResults(state)).toStrictEqual([
+        { requestId: 'fired', success: true, outcome: 'Fired' },
+        { requestId: 'undercharged', success: false, outcome: 'Undercharged' },
+        { requestId: 'duplicate', success: true, outcome: 'Fired' },
+        { requestId: 'duplicate', success: false, outcome: 'DuplicateRequest' },
+      ])
+      expect(yield* drainBowShotResults(state)).toStrictEqual([])
+      expect(yield* inventory.withdrawals).toStrictEqual([])
+
+      yield* requestBowShot(state, 'duplicate', shot)
+      yield* interactions!.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+      expect(yield* drainBowShotResults(state)).toStrictEqual([
+        { requestId: 'duplicate', success: false, outcome: 'DuplicateRequest' },
+      ])
+      expect(yield* inventory.withdrawals).toStrictEqual([])
+    }),
+  )
+
+  it.effect('melee results reflect actual stage hits and misses in request order and drain once', () =>
+    Effect.gen(function* () {
+      const { state, roster, stages } = yield* builtStages
+      const target = yield* roster.api.spawn({
+        kind: CREEPER_KIND,
+        feetPosition: { x: 0, y: 64 - BOW_TARGET_CENTER_Y_OFFSET, z: 2 },
+        healthPoints: 20,
+        behaviour: undefined,
+      })
+
+      yield* requestMeleeAttack(state, {
+        requestId: 'hit',
+        origin: { x: 0, y: 64, z: 0 },
+        direction: { x: 0, y: 0, z: 1 },
+        reach: 3,
+        damage: 4,
+      })
+      yield* requestMeleeAttack(state, {
+        requestId: 'miss',
+        origin: { x: 0, y: 64, z: 0 },
+        direction: { x: 1, y: 0, z: 0 },
+        reach: 3,
+        damage: 7,
+      })
+
+      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)
+      yield* interactions!.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+
+      const results = yield* drainMeleeAttackResults(state)
+      expect(results).toHaveLength(2)
+      expect(results[0]).toStrictEqual({
+        requestId: 'hit',
+        success: true,
+        target: { id: target.id, distance: 2 },
+      })
+      expect(results[1]).toStrictEqual({ requestId: 'miss', success: false })
+      expect(yield* drainMeleeAttackResults(state)).toStrictEqual([])
+      expect((yield* roster.api.snapshot).entities[0]?.healthPoints).toBe(16)
+    }),
+  )
+
+  it.effect('terrain occludes entity damage before a fired shot reaches the roster', () =>
+    Effect.gen(function* () {
+      const target: EntityRoster<MobBehaviour> = {
+        entities: [
+          {
+            id: EntityId('target-behind-wall'),
+            kind: EntityKind('creeper'),
+            feetPosition: { x: 0, y: 64 - BOW_TARGET_CENTER_Y_OFFSET, z: 10 },
+            healthPoints: 20,
+            behaviour: undefined,
+          },
+        ],
+        nextSerial: 1,
+      }
+      const state = yield* makeGameplayFrameState
+      const store = yield* makeChunkStoreDouble(world([[{ x: 0, y: 64, z: 5 }, STONE]]), [
+        '0,0',
+      ])
+      const roster = yield* makeEntityManagerDouble<MobBehaviour>(target)
+      const player = yield* makePlayerServiceDouble()
+      const inventory = yield* makeInventoryDouble()
+      const time = yield* makeTimeService()
+      const stages = gameplayStages(state, store.api, roster.api, inventory.api, player.api, time)
+
+      yield* requestBowShot(state, 'wall-shot', {
+        origin: { x: 0, y: 64, z: 0 },
+        dirX: 0,
+        dirY: 0,
+        dirZ: 1,
+        chargeSecs: BOW_FULL_CHARGE_SECS,
+      })
+      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)
+      yield* interactions!.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* drainBowShotResults(state)).toStrictEqual([
+        { requestId: 'wall-shot', success: true, outcome: 'Fired' },
+      ])
+      expect((yield* roster.api.snapshot).entities[0]?.healthPoints).toBe(20)
+      expect(yield* Ref.get(state.bowKnockbacks)).toStrictEqual([])
     }),
   )
 
@@ -453,6 +660,43 @@ describe('stage behaviour', () => {
     }),
   )
 
+  it.effect('host mob boundaries preserve spawn order and atomically drain drops', () =>
+    Effect.gen(function* () {
+      const state = yield* makeGameplayFrameState
+      const spawn = (x: number): MobSpawnAttempt => ({
+        candidate: {
+          groundBlock: AIR_BLOCK_ID,
+          footBlock: AIR_BLOCK_ID,
+          headBlock: AIR_BLOCK_ID,
+          blockLight: 0,
+          timeOfDay: 0,
+          distanceToPlayerBlocksXZ: 24,
+        },
+        kind: CREEPER_KIND,
+        feetPosition: { x, y: 64, z: 0 },
+      })
+      const first = spawn(1)
+      const second = spawn(2)
+
+      yield* requestMobSpawn(state, first)
+      yield* requestMobSpawn(state, second)
+      expect(yield* Ref.get(state.spawnAttempts)).toStrictEqual([first, second])
+
+      const drop: MobDropEvent = {
+        item: 'gunpowder',
+        count: 1,
+        source: EntityId('qa-creeper'),
+        kind: CREEPER_KIND,
+        at: { x: 1, y: 64, z: 0 },
+      }
+      yield* Ref.set(state.mobDrops, [drop])
+
+      expect(yield* drainMobDrops(state)).toStrictEqual([drop])
+      expect(yield* Ref.get(state.mobDrops)).toStrictEqual([])
+      expect(yield* drainMobDrops(state)).toStrictEqual([])
+    }),
+  )
+
   it.effect('the seed is a literal, so two frame states start from the same one', () =>
     Effect.gen(function* () {
       // `domain/frame-rolls.ts` is a whole file about why randomness enters here
@@ -474,17 +718,12 @@ describe('stage behaviour', () => {
       const state = yield* makeGameplayFrameState
 
       // A work queue of disturbed columns, a frontier of cells still to look
-      // at, the counter that paces lava, an inbox of this frame's requests and
-      // a list of what mc-sim's inventory had no room for. Reconstructed within
-      // a frame of a reload; none of them is a fact about the world. In
-      // particular `leftoverItems` is not an inventory — it answers no question
-      // about what anyone is carrying, it is empty in every ordinary frame, and
-      // it is emptied by whoever drains it.
+      // at, the counter that paces lava, and this frame's request inboxes are
+      // reconstructed within a frame of a reload.
       expect(yield* Ref.get(state.fallingBlocks)).toStrictEqual({ pending: new Set<string>() })
       expect(yield* Ref.get(state.fluidFrontier)).toStrictEqual([])
       expect(yield* Ref.get(state.tickCount)).toBe(0)
       expect(yield* Ref.get(state.pendingBreaks)).toStrictEqual([])
-      expect(yield* Ref.get(state.leftoverItems)).toStrictEqual([])
       expect(yield* Ref.get(state.mobDrops)).toStrictEqual([])
       expect(yield* Ref.get(state.spawnAttempts)).toStrictEqual([])
       expect(yield* Ref.get(state.targetPosition)).toBeUndefined()
@@ -566,7 +805,7 @@ describe('the mirrored StackCount brand is kernel’s too', () => {
   /*
    * The same regression shape as `DeltaTimeSecs` above, one module over and one
    * commit later. `StackCount` arrived in `domain/frame-contract.ts` with
-   * `domain/inventory-port.ts`, which needs it for mc-sim's `ItemStack`, and it
+   * the inventory integration, which needs it for mc-sim's `ItemStack`, and it
    * is in THAT file because `mc-kernel/domain/quantities.ts` is one of the
    * three kernel modules it already mirrors — the file's header argues the
    * placement and names the alternative it rejected.
@@ -626,7 +865,7 @@ describe('the module contract has caught up with this file’s shape', () => {
         never,
         never,
         never,
-        ChunkStore | EntityManager | InventoryService | PlayerService
+        ChunkStore | EntityManager | InventoryService | PlayerService | TimeService
       > = gameplayModule
       const stages = yield* Effect.provide(module.frameStages, emptyWorld)
 
@@ -646,18 +885,20 @@ describe('the module contract has caught up with this file’s shape', () => {
     }),
   )
 
-  // This has now read TWO, then THREE, and reads FOUR. Each step discharged a
+  // This has now read TWO, then THREE, then FOUR, and reads FIVE. Each step discharged a
   // prediction the previous comment had written down by name, which is why the
   // history is kept rather than overwritten:
   //
   //   TWO   -> THREE: 「The candidate for the third is mc-sim's
   //          `InventoryService`, and until it can be mirrored whole the mob
-  //          drops go to an outbox instead」. Mirrored whole
-  //          (`domain/inventory-port.ts`); the stage deposits through it.
+  //          drops go to an outbox instead」. Integrated whole from mc-sim; the
+  //          stage deposits through it.
   //   THREE -> FOUR:  「The candidate for the fourth is mc-sim's
   //          `PlayerService`, and it cannot be mirrored whole … `cameraPose`
   //          requires `ClockPort`, and restating `ClockPort` locally is 『a far
   //          worse failure than a narrower type』」.
+  //   FOUR  -> FIVE:  `TimeService` became the authoritative clock so gameplay
+  //          consumes the time advanced by mc-sim earlier in the same frame.
   //
   // THAT SECOND PREDICTION WAS RIGHT ABOUT THE CANDIDATE AND WRONG ABOUT THE
   // OBSTACLE. `domain/frame-contract.ts` carries `ClockPort` in the kernel
@@ -669,21 +910,21 @@ describe('the module contract has caught up with this file’s shape', () => {
   //
   // `RIn` is still `never` and that is the distinction `RRegister` exists for.
   // This repository BUILDS nothing another repository has to supply; it CALLS
-  // what mc-worldgen and mc-sim supply. Any of the three leaking into `RIn`
+  // what mc-worldgen and mc-sim supply. Any registration service leaking into `RIn`
   // would be mx-gameplay claiming to construct part of somebody else's
   // repository.
-  it.effect('acquires exactly four services to register — store, roster, inventory and player', () =>
+  it.effect('acquires exactly five services to register — store, roster, inventory, player and time', () =>
     Effect.gen(function* () {
       const registration: Effect.Effect<
         ReadonlyArray<StageRegistration>,
         never,
-        ChunkStore | EntityManager | InventoryService | PlayerService
+        ChunkStore | EntityManager | InventoryService | PlayerService | TimeService
       > = gameplayModule.frameStages
 
-      // Providing those four — and nothing else — discharges the whole context.
-      // If a stage started demanding a FIFTH service at REGISTRATION time, this
+      // Providing those five — and nothing else — discharges the whole context.
+      // If a stage started demanding a SIXTH service at REGISTRATION time, this
       // assignment would stop compiling, which is the point. There is no named
-      // candidate for a fifth today, and inventing one here would be the
+      // candidate for a sixth today, and inventing one here would be the
       // speculation this file's history is a record of NOT doing.
       const satisfied: Effect.Effect<ReadonlyArray<StageRegistration>, never, never> =
         Effect.provide(registration, emptyWorld)
@@ -702,7 +943,7 @@ describe('the module contract has caught up with this file’s shape', () => {
       const unparameterised: Effect.Effect<
         ReadonlyArray<StageRegistration>,
         never,
-        ChunkStore | EntityManager | InventoryService | PlayerService
+        ChunkStore | EntityManager | InventoryService | PlayerService | TimeService
       > = makeGameplayStages
 
       expect(typeof unparameterised).toBe('object')

@@ -34,16 +34,19 @@
  * off the stack.
  */
 import { describe, expect, it } from '@effect/vitest'
+import { makeTimeService } from '@nerima-games/mc-sim'
 import { Effect, Ref } from 'effect'
-import { positionKeyOf } from '../domain/block-position-key'
+import { positionKeyOf } from '../src/domain/block-position-key'
+import { StackCount } from '../src/domain/frame-contract'
 import {
   AIR_BLOCK_ID,
   type BlockPosition,
   type BlockWriteOutcome,
   type ChunkStoreApi,
-} from '../domain/chunk-store-port'
+} from '../src/domain/chunk-store-port'
 import {
   blockIdOf,
+  blockOfPlaceableItem,
   canBlockStaySupported,
   canSupportAttachments,
   isReplaceable,
@@ -52,7 +55,7 @@ import {
   supportRuleOfBlockId,
   validSpawnSurface,
   type BlockType,
-} from '../domain/block-vocabulary'
+} from '../src/domain/block-vocabulary'
 import {
   blockOverlapsPlayer,
   isSupportSensitiveOfBlock,
@@ -60,14 +63,14 @@ import {
   PLAYER_HALF_HEIGHT,
   PLAYER_HALF_WIDTH,
   type PlaceOutcome,
-} from '../domain/interactions/place-block'
-import type { Position } from '../domain/entity-manager-port'
-import { gameplayStages, makeGameplayFrameState } from '../stages/registration'
+} from '../src/domain/interactions/place-block'
+import type { Position } from '../src/domain/entity-manager-port'
+import { gameplayStages, makeGameplayFrameState } from '../src/stages/registration'
 import { makeChunkStoreDouble, SAND, STONE, WATER, world } from './support/chunk-store-double'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
 import { makePlayerServiceDouble } from './support/player-service-double'
-import { makeInventoryDouble } from './support/inventory-service-double'
-import type { MobBehaviour } from '../domain/entities/mob-frame'
+import { emptySlots, makeInventoryDouble } from './support/inventory-service-double'
+import type { MobBehaviour } from '../src/domain/entities/mob-frame'
 import { runFrame } from './support/frame-runner'
 
 const LAVA = 11
@@ -77,17 +80,7 @@ const DIRT = 3
 const RAIL = 31
 const PRESSURE_PLATE = 34
 
-/**
- * `SUPPORT_SENSITIVE_BLOCK_TYPES` in `domain/interactions/place-block.ts`, which
- * the rule keeps private. Restated here so the test can ask a question about the
- * WHOLE set rather than about the members somebody thought to list — the count
- * is the point, and it is the count that changes when kernel grows a row.
- */
-const SUPPORT_SENSITIVE_TYPES: ReadonlyArray<BlockType> = [
-  'torch',
-  'pressure_plate',
-  'rail',
-  'powered_rail',
+const SUPPORT_SENSITIVE_PLANT_TYPES: ReadonlyArray<BlockType> = [
   'sapling',
   'dandelion',
   'poppy',
@@ -98,6 +91,14 @@ const SUPPORT_SENSITIVE_TYPES: ReadonlyArray<BlockType> = [
   'sugar_cane',
   'cactus',
   'lily_pad',
+]
+
+const SUPPORT_SENSITIVE_TYPES: ReadonlyArray<BlockType> = [
+  'torch',
+  'pressure_plate',
+  'rail',
+  'powered_rail',
+  ...SUPPORT_SENSITIVE_PLANT_TYPES,
 ]
 
 const target: BlockPosition = { x: 2, y: 64, z: 3 }
@@ -540,22 +541,13 @@ describe('placeBlock — support', () => {
  * `canBlockStaySupported`.
  *
  * ---------------------------------------------------------------------------
- * WHY THESE ROWS ARE PUT TO THE PREDICATES AND NOT TO `placeBlock`
+ * WHY THESE ROWS ALSO STAY AT THE PREDICATE LEVEL
  * ---------------------------------------------------------------------------
  *
- * They were written against `placeBlock` first, and `pnpm typecheck` refused
- * them. `PlaceRequest.heldItem` is a `PlaceableItemType` — `ItemType & BlockType`
- * — and of the FOURTEEN block types `SUPPORT_SENSITIVE_BLOCK_TYPES` names,
- * exactly ONE (`torch`) is in that intersection. Rail, pressure plate, powered
- * rail and all ten plants have no item form in this build, so no caller can hold
- * one and no `placeBlock` call can reach the support arm with one. That fact is
- * asserted below rather than worked around with a cast: a cast would have made
- * six green tests that no production path can execute.
- *
- * So the rows go to `canBlockStaySupported` (`domain/block-vocabulary.ts`),
- * which takes two `BlockId`s — bytes, with no roster gate. That is where the
- * reference's function of the same name lives too; `block-support.ts` takes a
- * `BlockType` and knows nothing about items either.
+ * Kernel 0.2.5 gives all ten plants item forms, so all fourteen support-sensitive
+ * blocks are now reachable through `placeBlock`; the coupling test in F7 below
+ * exercises that production path. These oracle rows remain at the predicate
+ * level because they pin the support-rule answers independently and precisely.
  *
  * ---------------------------------------------------------------------------
  * THE TABLE USED TO BE SPLIT IN TWO. IT IS NOT ANY MORE.
@@ -592,58 +584,15 @@ describe('the reference\u2019s support table, on the rows whose rule IS the fall
     }),
   )
 
-  /*
-   * WHAT THIS TEST NOW GUARDS, SINCE WHAT IT USED TO GUARD HAS ENDED.
-   *
-   * It has been rewritten twice and the history is the point. It began as "only
-   * the torch of the fourteen is placeable", with a prediction attached: the day
-   * kernel itemises a sapling, "this test fails and F7 below stops being dormant
-   * on the same commit". Kernel completed its roster, faced that choice for ten
-   * blocks at once, and split it along `SUPPORT_RULES` membership — itemising the
-   * four with no per-block entry and holding the ten that have one. So the test
-   * became "the four placeable ones are the four F7 does not cover", and its
-   * stated job was to keep F7 dormant.
-   *
-   * **F7 IS CLOSED**, so that job is gone. The ten are no longer held back
-   * because the code that would receive them is wrong — `supportRule` landed in
-   * kernel, this repository reads it, and a lily pad placed today would be
-   * refused on stone and allowed on water, correctly. Deleting this test was
-   * considered and rejected: it still fails on a real event, and the event is
-   * worth failing on.
-   *
-   * WHAT IT GUARDS NOW is the remaining ROSTER GAP, in the direction that costs
-   * something. Ten blocks in this build drop nothing when broken
-   * (`domain/block-vocabulary.ts`'s `DROPS_NOTHING` rows, mirroring kernel's),
-   * which is a stated divergence from the reference. The day kernel itemises
-   * them, those rows must become the default drop rule ON THE SAME COMMIT — and
-   * this test is what fails to say so. It is a different failure from the old
-   * one: then it meant "a wrong rule just became reachable", now it means
-   * "ten drop rules just went stale".
-   */
-  it.effect('the ten unitemised support-sensitive blocks are the remaining roster gap, and drop nothing', () =>
+  it.effect('all fourteen support-sensitive blocks are reachable as held items', () =>
     Effect.sync(() => {
       const placeable: ReadonlySet<string> = new Set<string>(PLACEABLE_ITEM_TYPES)
       const heldToday = SUPPORT_SENSITIVE_TYPES.filter((type) => placeable.has(type))
 
-      expect(heldToday).toStrictEqual(['torch', 'pressure_plate', 'rail', 'powered_rail'])
+      expect(heldToday).toStrictEqual(SUPPORT_SENSITIVE_TYPES)
 
-      // The complement, named. When a literal moves out of this list, the
-      // matching row in `BLOCK_DROP_REGISTRY` has to stop saying `DROPS_NOTHING`
-      // in the same change, or breaking the block yields nothing while claiming
-      // to yield itself.
       const cannotBeHeld = SUPPORT_SENSITIVE_TYPES.filter((type) => !placeable.has(type))
-      expect(cannotBeHeld).toStrictEqual([
-        'sapling',
-        'dandelion',
-        'poppy',
-        'brown_mushroom',
-        'red_mushroom',
-        'tall_grass',
-        'fern',
-        'sugar_cane',
-        'cactus',
-        'lily_pad',
-      ])
+      expect(cannotBeHeld).toStrictEqual([])
 
       // ...and every one of the fourteen IS support-sensitive, so the arm they
       // take is written rather than absent. This half is unchanged and is what
@@ -762,51 +711,18 @@ describe('the reference\u2019s support table, on the rows whose rule IS the fall
  * these rows can no longer agree with a table that has drifted from them.
  *
  * ---------------------------------------------------------------------------
- * THE RESIDUAL GAP, MEASURED RATHER THAN ASSERTED AWAY
+ * THE RESIDUAL GAP IS CLOSED
  * ---------------------------------------------------------------------------
  *
- * One weakness SURVIVES the fix and it is the mirror image of the old one.
- * These rows now pin the FUNCTION; what they cannot pin is that
- * `placementVerdict` still CALLS it. Reverting its support branch to
- * `canSupportAttachments` — the exact F7 defect — leaves all 51 tests in this
- * file green. That was verified by making the change and running them, not
- * assumed.
- *
- * The reason is the same wall the old tests hit, one level along: the two
- * spellings differ only on a block with a `'oneOf'` rule, and NO SUCH BLOCK IS
- * PLACEABLE. All four support-sensitive types that have an item form
- * (`torch`, `pressure_plate`, `rail`, `powered_rail`) have the `'anySupporting'`
- * rule, on which the two functions agree BY CONSTRUCTION. So no `PlaceRequest`
- * this build's types admit can tell them apart, and a cast would produce a green
- * test no production path can execute — which is what the ported-oracle comment
- * above already refused to do once.
- *
- * `the support branch agrees with the rule on every pair it can be handed` below
- * is what can be written today, and it is the test that closes the gap on the
- * day the gap becomes reachable: itemising any one of the ten plants
- * (`mc-kernel/domain/item-type.ts` records that this is now the only step left)
- * puts a `'oneOf'` block into `PLACEABLE_ITEM_TYPES`, and that test is driven by
- * that array rather than by a list somebody maintains.
+ * Kernel 0.2.5 itemises all ten plants with a `'oneOf'` support rule. The
+ * coupling test below now passes those real item literals through `placeBlock`,
+ * so replacing the per-block rule with the raw fallback is observable without
+ * casts or reconstructed inputs.
  */
-describe('F7 — CLOSED: the per-block support rules are ported, and all four rows now agree', () => {
+describe('F7 — CLOSED: per-block support rules are reachable through placeBlock', () => {
   /**
-   * `placementVerdict`'s support branch, for a type nobody can hold yet.
-   *
-   * NO LONGER A RECONSTRUCTION. This used to be
-   * `!isSupportSensitiveOfBlock(id) || canSupportAttachments(support)` — the two
-   * predicates the rule ANDed, reassembled here because the ten types cannot be
-   * put into a `PlaceRequest`. That reassembly was the weakness this describe
-   * declared, and it was a real one: it could not see a fix applied inside the
-   * rule.
-   *
-   * It is now a direct call to `canBlockStaySupported`, the single function the
-   * support branch calls. The composition — the precedence of the per-block list
-   * over the negative set — lives in that function rather than in this file, so
-   * these rows can no longer agree with a table that has drifted from them.
-   *
-   * What this still does NOT prove is that `placementVerdict` calls it; see the
-   * residual-gap section in this describe's header, which measures exactly how
-   * far short of that these rows fall and names the day it closes.
+   * Direct helper for the detailed oracle rows below. Production-path coverage
+   * is provided separately by the coupling test.
    */
   const wouldStay = (held: BlockType, support: number): boolean =>
     canBlockStaySupported(blockIdOf(held) ?? -1, support)
@@ -818,29 +734,27 @@ describe('F7 — CLOSED: the per-block support rules are ported, and all four ro
    * against `canBlockStaySupported` for every support-sensitive item this build
    * can put into a `PlaceRequest`, over every block id the store can hold.
    *
-   * TODAY IT CANNOT FAIL FOR THE REASON IT EXISTS, and that is stated rather
-   * than hidden: all four placeable support-sensitive types have the
-   * `'anySupporting'` rule, on which `canBlockStaySupported` and
-   * `canSupportAttachments` agree by construction. The test is written against
-   * the ARRAY, so the day a `'oneOf'` block gains an item form it starts
-   * comparing rows where the two disagree — with no edit here.
-   *
-   * The second half is what makes that claim checkable now: it asserts the two
-   * functions DO differ, on the row F7 was about, so "they agree everywhere" is
-   * a fact about the reachable inputs rather than about the functions.
+   * Kernel 0.2.5 makes all fourteen named support-sensitive blocks reachable,
+   * including the ten `'oneOf'` plants on which the per-block rule differs from
+   * the raw fallback. The dynamic list also covers any other placeable item the
+   * kernel classifies as support-sensitive.
    */
   it.effect('the support branch agrees with the rule on every pair it can be handed', () =>
     Effect.gen(function* () {
       const heldable = PLACEABLE_ITEM_TYPES.filter((item) =>
-        isSupportSensitiveOfBlock(blockIdOf(item) ?? -1),
+        isSupportSensitiveOfBlock(blockIdOf(blockOfPlaceableItem(item)) ?? -1),
       )
-      expect(heldable.length).toBeGreaterThan(0)
+      const heldableSet = new Set<string>(heldable)
+      expect(SUPPORT_SENSITIVE_TYPES.filter((type) => !heldableSet.has(type))).toStrictEqual([])
 
       for (const item of heldable) {
         for (const support of [STONE, WATER, SNOW, DIRT, SAND, AIR_BLOCK_ID, RAIL, LAVA]) {
           const store = yield* storeWith([[below, support]])
           const outcome = yield* placeBlock(store.api, { position: target, heldItem: item })
-          const stays = canBlockStaySupported(blockIdOf(item) ?? -1, support)
+          const stays = canBlockStaySupported(
+            blockIdOf(blockOfPlaceableItem(item)) ?? -1,
+            support,
+          )
 
           expect({ item, support, refused: outcome._tag === 'Unsupported' }).toStrictEqual({
             item,
@@ -852,24 +766,22 @@ describe('F7 — CLOSED: the per-block support rules are ported, and all four ro
     }),
   )
 
-  it.effect('...and the rule and the raw fallback DO differ, so that agreement is about the inputs', () =>
+  it.effect('...and all ten oneOf rules are reachable through held items', () =>
     Effect.sync(() => {
       // The F7 row itself. If these two ever stop disagreeing, the test above
       // has become vacuous for a second reason and somebody should know.
       expect(canBlockStaySupported(blockIdOf('lily_pad') ?? -1, WATER)).toBe(true)
       expect(canSupportAttachments(WATER)).toBe(false)
 
-      // ...and no item can currently reach that disagreement, which is WHY the
-      // coupling test above cannot fail today. Asserted, so that the excuse
-      // expires automatically.
       const reachable = PLACEABLE_ITEM_TYPES.filter(
-        (item) => supportRuleOfBlockId(blockIdOf(item) ?? -1).kind === 'oneOf',
+        (item) =>
+          supportRuleOfBlockId(blockIdOf(blockOfPlaceableItem(item)) ?? -1).kind === 'oneOf',
       )
-      expect(reachable).toStrictEqual([])
+      expect(reachable).toStrictEqual(SUPPORT_SENSITIVE_PLANT_TYPES)
     }),
   )
 
-  it.effect('the helper above agrees with the real rule, on the one type that fits through it', () =>
+  it.effect('the helper agrees with the real rule for an anySupporting representative', () =>
     Effect.gen(function* () {
       const supported = yield* storeWith([[below, STONE]])
       expect(wouldStay('torch', STONE)).toBe(true)
@@ -972,20 +884,38 @@ describe('F7 — CLOSED: the per-block support rules are ported, and all four ro
 // Through the stage
 // ---------------------------------------------------------------------------
 
-const stagedSlice = (entries: ReadonlyArray<readonly [BlockPosition, number]>) =>
+const stagedSlice = (
+  entries: ReadonlyArray<readonly [BlockPosition, number]>,
+  stocked = true,
+) =>
   Effect.gen(function* () {
     const store = yield* storeWith(entries)
     const roster = yield* makeEntityManagerDouble<MobBehaviour>()
     const player = yield* makePlayerServiceDouble()
-    const inventory = yield* makeInventoryDouble()
+    const initialInventory = emptySlots().map((_, index) => {
+      if (!stocked) return undefined
+      if (index === 0) return { item: 'sand' as const, count: StackCount(1) }
+      if (index === 1) return { item: 'stone' as const, count: StackCount(1) }
+      if (index === 2) return { item: 'redstone_dust' as const, count: StackCount(1) }
+      return undefined
+    })
+    const inventory = yield* makeInventoryDouble(initialInventory)
+    const time = yield* makeTimeService()
     const state = yield* makeGameplayFrameState
-    return { store, state, inventory, stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api) }
+    return {
+      store,
+      state,
+      inventory,
+      player,
+      stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api, time),
+    }
   })
 
 describe('placement through gameplay:interactions', () => {
   it.effect('a queued placement is serviced and the item is reported as spent', () =>
     Effect.gen(function* () {
-      const { store, state, stages } = yield* stagedSlice([[below, STONE]])
+      const { store, state, inventory, stages } = yield* stagedSlice([[below, STONE]])
+      const before = yield* inventory.api.countOf('sand')
 
       yield* Ref.update(state.pendingPlacements, (queue) => [
         ...queue,
@@ -995,6 +925,58 @@ describe('placement through gameplay:interactions', () => {
 
       expect(yield* store.blockAt(target)).toBe(blockIdOf('sand'))
       expect(yield* Ref.get(state.consumedItems)).toStrictEqual(['sand'])
+      expect(yield* inventory.api.countOf('sand')).toBe(before - 1)
+    }),
+  )
+
+  it.effect('redstone dust places wire and consumes dust', () =>
+    Effect.gen(function* () {
+      const { store, state, inventory, stages } = yield* stagedSlice([[below, STONE]])
+
+      yield* Ref.set(state.pendingPlacements, [
+        { positionKey: positionKeyOf(target), heldItem: 'redstone_dust' as const },
+      ])
+      yield* runFrame(stages)
+
+      expect(yield* store.blockAt(target)).toBe(blockIdOf('redstone_wire'))
+      expect(yield* Ref.get(state.consumedItems)).toStrictEqual(['redstone_dust'])
+      expect(yield* inventory.api.countOf('redstone_dust')).toBe(0)
+    }),
+  )
+
+  it.effect('competing placements cannot consume the same held item twice', () =>
+    Effect.gen(function* () {
+      const competingTarget: BlockPosition = { x: 3, y: 64, z: 3 }
+      const competingBelow: BlockPosition = { x: 3, y: 63, z: 3 }
+      const { store, state, inventory, stages } = yield* stagedSlice([
+        [below, STONE],
+        [competingBelow, STONE],
+      ])
+
+      yield* Ref.set(state.pendingPlacements, [
+        { positionKey: positionKeyOf(target), heldItem: 'sand' as const },
+        { positionKey: positionKeyOf(competingTarget), heldItem: 'sand' as const },
+      ])
+      yield* runFrame(stages)
+
+      const placements = [yield* store.blockAt(target), yield* store.blockAt(competingTarget)]
+      expect(placements.filter((block) => block === blockIdOf('sand'))).toHaveLength(1)
+      expect(yield* inventory.api.countOf('sand')).toBe(0)
+      expect(yield* Ref.get(state.consumedItems)).toStrictEqual(['sand'])
+    }),
+  )
+
+  it.effect('an empty inventory makes a queued placement a no-op', () =>
+    Effect.gen(function* () {
+      const { store, state, stages } = yield* stagedSlice([[below, STONE]], false)
+
+      yield* Ref.set(state.pendingPlacements, [
+        { positionKey: positionKeyOf(target), heldItem: 'sand' as const },
+      ])
+      yield* runFrame(stages)
+
+      expect(yield* store.blockAt(target)).toBeUndefined()
+      expect(yield* Ref.get(state.consumedItems)).toStrictEqual([])
     }),
   )
 
@@ -1039,7 +1021,8 @@ describe('placement through gameplay:interactions', () => {
   // is that a refused placement spends an item anyway.
   it.effect('a refused placement spends nothing and disturbs nothing', () =>
     Effect.gen(function* () {
-      const { store, state, stages } = yield* stagedSlice([[target, STONE]])
+      const { store, state, inventory, stages } = yield* stagedSlice([[target, STONE]])
+      const before = yield* inventory.api.countOf('sand')
 
       yield* Ref.update(state.pendingPlacements, (queue) => [
         ...queue,
@@ -1050,6 +1033,7 @@ describe('placement through gameplay:interactions', () => {
       expect(yield* store.blockAt(target)).toBe(STONE)
       expect(yield* Ref.get(state.consumedItems)).toStrictEqual([])
       expect((yield* Ref.get(state.fallingBlocks)).pending.size).toBe(0)
+      expect(yield* inventory.api.countOf('sand')).toBe(before)
     }),
   )
 
@@ -1075,15 +1059,18 @@ describe('placement through gameplay:interactions', () => {
     }),
   )
 
-  // The player's pose reaches the rule through `targetPosition`, which is the
-  // inbox `stages/registration.ts` argues at length. If the stage forgot to pass
-  // it, every placement would succeed and the suffocation guard would be dead
-  // code behind a passing unit test.
-  it.effect('REGRESSION: the stage passes the player’s position, so the body guard is live', () =>
+  // PlayerService is authoritative. Keep the compatibility Ref deliberately
+  // stale so this also detects any accidental fallback to the old inbox.
+  it.effect('REGRESSION: the stage reads the latest PlayerService pose, so the body guard is live', () =>
     Effect.gen(function* () {
-      const { store, state, stages } = yield* stagedSlice([[below, STONE]])
+      const { store, state, player, stages } = yield* stagedSlice([[below, STONE]])
 
       yield* Ref.set(state.targetPosition, {
+        x: target.x + 20.5,
+        y: target.y,
+        z: target.z + 20.5,
+      })
+      yield* player.api.moveTo({
         x: target.x + 0.5,
         y: target.y,
         z: target.z + 0.5,

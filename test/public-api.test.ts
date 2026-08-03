@@ -12,13 +12,27 @@
  * here keeps the barrel honest, not the API frozen.
  */
 import { describe, expect, it } from '@effect/vitest'
+import { ITEM_TYPES as KERNEL_ITEM_TYPES } from '@nerima-games/mc-kernel'
 import { Effect } from 'effect'
-import * as gameplay from '../index'
-import { applyDamage } from '../domain/death-cause'
-import { takeBatch } from '../domain/falling-block'
-import { GAMEPLAY_STAGE_IDS } from '../stages/stage-ids'
+import * as gameplay from '../src/index'
+import {
+  applyArmorToDamage,
+  armorDurabilityWearFromPreMitigationDamage,
+  armorPointsForEquipment,
+} from '../src/domain/combat/armor'
+import { applyDamage } from '../src/domain/death-cause'
+import { takeBatch } from '../src/domain/falling-block'
+import { resolveFoodUse } from '../src/domain/interactions/eat-food'
+import { ITEM_TYPES } from '../src/domain/item-vocabulary'
+import { GAMEPLAY_STAGE_IDS } from '../src/stages/stage-ids'
 
 describe('public API surface', () => {
+  it.effect('keeps the provisional item vocabulary mirrored', () =>
+    Effect.sync(() => {
+      expect(ITEM_TYPES).toStrictEqual(KERNEL_ITEM_TYPES)
+    }),
+  )
+
   it.effect('re-exports the stage registration contract — the part mc-compose actually consumes', () =>
     Effect.sync(() => {
       const contract = [
@@ -29,13 +43,33 @@ describe('public API surface', () => {
         // `stages/registration.ts` on why the array was the obstacle.
         'gameplayModule',
         'makeGameplayFrameState',
+        'setPortalCandidates',
+        'drainPortalTravels',
+        'drainFluidUpdates',
+        'DEFAULT_MELEE_DAMAGE',
+        'DEFAULT_MELEE_REACH',
+        'meleeDamageForItem',
+        'requestMobSpawn',
+        'requestMeleeAttack',
+        'drainMeleeAttackResults',
+        'requestTargetedPrimaryAttack',
+        'drainMobDrops',
+        'spawnDroppedItem',
+        'spawnDroppedItems',
         'GAMEPLAY_STAGE_IDS',
         'UPSTREAM_STAGE_IDS',
+        'isPlaceableItem',
       ]
 
       for (const name of contract) {
         expect(Object.keys(gameplay)).toContain(name)
       }
+    }),
+  )
+
+  it.effect('re-exports host-facing targeted right-click routing', () =>
+    Effect.sync(() => {
+      expect(Object.keys(gameplay)).toContain('targetedRightClickRoute')
     }),
   )
 
@@ -71,8 +105,6 @@ describe('public API surface', () => {
         'BLOCK_DROP_REGISTRY',
         'blockTypeOfId',
         'blockIdOf',
-        'itemOfBlock',
-        'isPlaceableItem',
         'dropOfBlockId',
         'resolveDrop',
         'satisfiesHarvestTier',
@@ -82,6 +114,9 @@ describe('public API surface', () => {
       for (const name of kernelsToOwn) {
         expect(Object.keys(gameplay)).not.toContain(name)
       }
+      expect(gameplay.blockOfPlaceableItem('redstone_dust')).toBe('redstone_wire')
+      expect(gameplay.itemOfBlock('redstone_wire')).toBe('redstone_dust')
+      expect(gameplay.isPlaceableItem('redstone_dust')).toBe(true)
     }),
   )
 
@@ -155,6 +190,9 @@ describe('public API surface', () => {
       // nowhere for a compiler to check.
       expect(Object.keys(gameplay)).toContain('repairMobBehaviour')
       expect(Object.keys(gameplay)).toContain('CREEPER_KIND')
+      expect(Object.keys(gameplay)).toContain('DROPPED_ITEM_KIND')
+      expect(Object.keys(gameplay)).toContain('spawnMobDrops')
+      expect(Object.keys(gameplay)).toContain('meleeTargetBeforeBlock')
     }),
   )
 
@@ -179,6 +217,13 @@ describe('public API surface', () => {
         'isDead',
         'applyDamage',
         'deathMessage',
+        // armour — pure protection rules over equipment owned by mc-sim
+        'armorPointsForEquipment',
+        'applyArmorToDamage',
+        'armorDurabilityWearFromPreMitigationDamage',
+        // food use — a pure verdict; inventory and vitals remain host-owned
+        'FOOD_PROPERTIES',
+        'resolveFoodUse',
         // day/night — a rule over the hour mc-sim owns, holding nothing
         'DAWN_FRACTION',
         'NOON_FRACTION',
@@ -274,6 +319,9 @@ describe('public API surface', () => {
         'resolveNextWeatherState',
         'resolveWeatherDurationSecs',
         'createWeatherState',
+        'isWeather',
+        'isWeatherState',
+        'applyWeatherState',
         'INITIAL_WEATHER',
         'isPrecipitating',
         'isThunderstorm',
@@ -348,7 +396,13 @@ describe('public API surface', () => {
   it.effect('exposes the same implementations through the barrel as through the modules', () =>
     Effect.sync(() => {
       expect(gameplay.applyDamage).toBe(applyDamage)
+      expect(gameplay.armorPointsForEquipment).toBe(armorPointsForEquipment)
+      expect(gameplay.applyArmorToDamage).toBe(applyArmorToDamage)
+      expect(gameplay.armorDurabilityWearFromPreMitigationDamage).toBe(
+        armorDurabilityWearFromPreMitigationDamage,
+      )
       expect(gameplay.takeBatch).toBe(takeBatch)
+      expect(gameplay.resolveFoodUse).toBe(resolveFoodUse)
       expect(gameplay.GAMEPLAY_STAGE_IDS).toBe(GAMEPLAY_STAGE_IDS)
     }),
   )

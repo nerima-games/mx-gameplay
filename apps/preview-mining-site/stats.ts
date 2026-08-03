@@ -21,9 +21,9 @@
  * see?". A measurement with no such answer is a number, not a check.
  */
 import { Effect, Ref } from 'effect'
-import { positionKeyOf } from '../../domain/block-position-key'
-import { type BlockId } from '../../domain/chunk-store-port'
-import { dayPhase, hostileSpawnsAllowed, isNight } from '../../domain/day-night'
+import { positionKeyOf } from '../../src/domain/block-position-key'
+import { type BlockId } from '../../src/domain/chunk-store-port'
+import { dayPhase, hostileSpawnsAllowed, isNight } from '../../src/domain/day-night'
 import {
   applyDamage,
   DEATH_MESSAGES,
@@ -33,16 +33,16 @@ import {
   MAX_HEALTH_POINTS,
   type DeathCause,
   type Vitals,
-} from '../../domain/death-cause'
-import { FALLING_BLOCK_MOVES_PER_TICK } from '../../domain/falling-block'
+} from '../../src/domain/death-cause'
+import { FALLING_BLOCK_MOVES_PER_TICK } from '../../src/domain/falling-block'
 import {
   CREEPER_FUSE_SECS,
   DORMANT_FUSE,
   stepCreeperFuse,
-} from '../../domain/mob/creeper-fuse'
-import { canHostileSpawnAt } from '../../domain/mob/hostile-spawn'
-import { carryOver, splitBudget, type FluidWorkItem } from '../../domain/fluid-frontier'
-import { DeltaTimeSecs, MAX_STACK_COUNT } from '../../domain/frame-contract'
+} from '../../src/domain/mob/creeper-fuse'
+import { canHostileSpawnAt } from '../../src/domain/mob/hostile-spawn'
+import { carryOver, splitBudget, type FluidWorkItem } from '../../src/domain/fluid-frontier'
+import { DeltaTimeSecs, MAX_STACK_COUNT } from '../../src/domain/frame-contract'
 import { GAMEPLAY_STAGE_IDS } from '../../stages/stage-ids'
 import { SCENARIOS, scenarioByName } from './scenarios'
 import {
@@ -75,9 +75,9 @@ import {
 import { INVENTORY_SLOT_COUNT } from './inventory'
 import { FrameServicesLayer } from './frame-services'
 import { GRAVEL, SAND, glyphOf, placeableItemOf, type WorldSpec } from './world'
-import { fallsWhenUnsupported, isReplaceable, type HarvestTier } from '../../domain/block-vocabulary'
-import { blockLoot } from '../../domain/interactions/block-loot'
-import { DEFAULT_ROLL_SEED, drawRolls } from '../../domain/frame-rolls'
+import { fallsWhenUnsupported, isReplaceable, type HarvestTier } from '../../src/domain/block-vocabulary'
+import { blockLoot } from '../../src/domain/interactions/block-loot'
+import { DEFAULT_ROLL_SEED, drawRolls } from '../../src/domain/frame-rolls'
 import {
   advanceWeather,
   INITIAL_WEATHER,
@@ -86,7 +86,7 @@ import {
   weatherLightScale,
   WEATHERS,
   WEATHER_TRANSITION_ROLLS,
-} from '../../domain/weather'
+} from '../../src/domain/weather'
 
 const BOUNDS = { width: 26, height: 18 }
 
@@ -1305,10 +1305,10 @@ const weatherWalk = Effect.sync(() => {
  * screen would ever show it, and no scenario would either. This arranges it and
  * then mines one more block.
  *
- * If this were broken, `refused` below would read 0 and `held after` would have
- * grown past the cap: the leftover would have been discarded in
- * `stages/registration.ts` and the block would be gone from the world with
- * nothing to show for it.
+ * If this were broken, the dropped count below would differ from the mined
+ * count, or `held after` would have grown past the cap: the block would be gone
+ * from the world without the overflow existing either in inventory or on the
+ * ground.
  */
 const inventoryDeposit = Effect.gen(function* () {
   const scenario = scenarioByName('sand-column')
@@ -1339,15 +1339,16 @@ const inventoryDeposit = Effect.gen(function* () {
   yield* requestBreak(site, positionAt(site, scenario.target.x, scenario.target.y - 1))
   yield* stepFrame(site)
   const spilledRow = site.trace[site.trace.length - 1]
-  const refused = (spilledRow?.leftover ?? []).reduce((total, item) => total + item.count, 0)
+  const attempted = (spilledRow?.mined ?? []).reduce((total, item) => total + item.count, 0)
+  const dropped = (spilledRow?.dropped ?? []).reduce((total, item) => total + item.count, 0)
   const heldAfter = yield* site.inventoryService.api.countOf('cobblestone')
 
-  const lost = refused > 0 && (spilledRow?.leftover ?? []).length === 0
+  const lost = attempted > 0 && dropped !== attempted
   const overflowed = heldAfter > capacity
 
   return {
     id: lost || overflowed ? 'F-inventory' : 'ok',
-    title: 'a mined block reaches mc-sim\u2019s inventory, and a FULL one keeps the leftover',
+    title: 'a mined block reaches mc-sim\u2019s inventory, and a FULL one drops the overflow',
     finding: lost || overflowed,
     lines: [
       `  one swing, wooden pickaxe`,
@@ -1361,16 +1362,14 @@ const inventoryDeposit = Effect.gen(function* () {
       `    add() calls              ${(spilledRow?.mined ?? [])
         .map((item) => `${item.item} x${String(item.count)}`)
         .join(', ')}`,
-      `    refused (the leftover)   ${String(refused)}   (must be > 0, or the cap is not real)`,
-      `    kept in leftoverItems    ${(spilledRow?.leftover ?? [])
+      `    refused and dropped      ${String(dropped)}   (must equal the mined count)`,
+      `    entities on the ground   ${(spilledRow?.dropped ?? [])
         .map((item) => `${item.item} x${String(item.count)}`)
         .join(', ')}`,
       `    held after               ${String(heldAfter)}   (must equal held before)`,
       '',
-      '  The leftover is KEPT rather than dropped, and that is as far as this repository',
-      '  can take it: mc-sim expects the caller to spawn a dropped-item entity, which needs',
-      '  an arm on MobBehaviour for "which item, how many", a matching arm in',
-      '  repairMobBehaviour, and a pickup rule. The frame tape prints it as !item.',
+      '  The refused count is a dropped-item entity at the broken cell. The frame tape',
+      '  prints live ground items as !item; pickup removes the entity in a later frame.',
     ],
   } satisfies Check
 })

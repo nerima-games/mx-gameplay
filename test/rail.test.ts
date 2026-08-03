@@ -12,8 +12,13 @@
  */
 import { describe, expect, it } from '@effect/vitest'
 import { Effect } from 'effect'
-import { isAscendingAhead, RAIL_HEADING_EPSILON } from '../domain/vehicle/rail-ascent'
-import { resolveRailShape, type IsRailAt, type RailShape } from '../domain/vehicle/rail-shape'
+import { isAscendingAhead, RAIL_HEADING_EPSILON } from '../src/domain/vehicle/rail-ascent'
+import {
+  projectMinecartVelocity,
+  resolveRailShape,
+  type IsRailAt,
+  type RailShape,
+} from '../src/domain/vehicle/rail-shape'
 
 /** A rail world as a set of cells. The reference's helper (`rail-shape.test.ts:10-13`). */
 const railsAt = (cells: ReadonlyArray<readonly [number, number, number]>): IsRailAt => {
@@ -442,6 +447,38 @@ describe('isAscendingAhead: a broken measurement does not climb (DIVERGENCE from
       isAscendingAhead(isRailAt, Number.NaN, 60, 0, 0, 1)
       isAscendingAhead(isRailAt, 0, 60, 0, 0, 0)
       expect(probes).toStrictEqual([])
+    }),
+  )
+})
+
+describe('projectMinecartVelocity', () => {
+  it.effect('keeps speed while projecting onto a straight rail axis', () =>
+    Effect.sync(() => {
+      expect(projectMinecartVelocity('ns', 3, 4)).toStrictEqual({ vx: 0, vz: 5 })
+      expect(projectMinecartVelocity('ew', 3, 4)).toStrictEqual({ vx: 5, vz: 0 })
+    }),
+  )
+
+  it.effect('uses the dominant axis to steer a curve', () =>
+    Effect.sync(() => {
+      expect(projectMinecartVelocity('curve', 3, 4)).toStrictEqual({ vx: 0, vz: 5 })
+      expect(projectMinecartVelocity('curve', -4, 3)).toStrictEqual({ vx: -5, vz: 0 })
+    }),
+  )
+
+  it.effect('isolated track leaves the horizontal velocity untouched', () =>
+    Effect.sync(() => {
+      expect(projectMinecartVelocity('isolated', 3, 4)).toStrictEqual({ vx: 3, vz: 4 })
+    }),
+  )
+
+  it.effect('non-finite inputs refuse to propagate', () =>
+    Effect.sync(() => {
+      expect(projectMinecartVelocity('ew', Number.NaN, 4)).toStrictEqual({ vx: 0, vz: 0 })
+      expect(projectMinecartVelocity('ns', 3, Number.POSITIVE_INFINITY)).toStrictEqual({
+        vx: 0,
+        vz: 0,
+      })
     }),
   )
 })

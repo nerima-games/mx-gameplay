@@ -17,24 +17,25 @@ import {
   isDead,
   MAX_HEALTH_POINTS,
   type DeathCause,
-} from '../domain/death-cause'
+} from '../src/domain/death-cause'
 import {
   disturb,
   emptyFallingBlockQueue,
   FALLING_BLOCK_MOVES_PER_TICK,
   settled,
   takeBatch,
-} from '../domain/falling-block'
+} from '../src/domain/falling-block'
 import {
   carryOver,
   DEFAULT_FLUID_FRONTIER_BUDGET,
   splitBudget,
   type FluidWorkItem,
-} from '../domain/fluid-frontier'
+} from '../src/domain/fluid-frontier'
 
 const ALL_CAUSES: ReadonlyArray<DeathCause> = [
   'fall',
   'lava',
+  'cactus',
   'fire',
   'drowning',
   'suffocation',

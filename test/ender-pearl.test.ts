@@ -14,6 +14,7 @@
  * themselves」.
  */
 import { describe, expect, it } from '@effect/vitest'
+import { makeTimeService } from '@nerima-games/mc-sim'
 import { Effect, Ref } from 'effect'
 import {
   enderPearlDisplacement,
@@ -23,19 +24,19 @@ import {
   ENDER_PEARL_DEATH_CAUSE,
   ENDER_PEARL_ENDERMITE_SPAWN_CHANCE,
   ENDER_PEARL_MAX_DISTANCE,
-} from '../domain/interactions/throw-ender-pearl'
-import { applyDamage, deathMessage, DEATH_MESSAGES } from '../domain/death-cause'
+} from '../src/domain/interactions/throw-ender-pearl'
+import { applyDamage, deathMessage, DEATH_MESSAGES } from '../src/domain/death-cause'
 import {
   ENDERMITE_KIND,
   ENDERMITE_MAX_HEALTH,
   HOSTILE_KINDS,
   type MobBehaviour,
-} from '../domain/entities/mob-frame'
+} from '../src/domain/entities/mob-frame'
 import {
   gameplayStages,
   makeGameplayFrameState,
   type EnderPearlThrowRequest,
-} from '../stages/registration'
+} from '../src/stages/registration'
 import { makeChunkStoreDouble } from './support/chunk-store-double'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
 import { makePlayerServiceDouble } from './support/player-service-double'
@@ -51,11 +52,13 @@ const scene = () =>
     const roster = yield* makeEntityManagerDouble<MobBehaviour>()
     const player = yield* makePlayerServiceDouble()
     const inventory = yield* makeInventoryDouble()
+    const time = yield* makeTimeService()
     const state = yield* makeGameplayFrameState
     return {
       roster,
+      player,
       state,
-      stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api),
+      stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api, time),
     }
   })
 
@@ -270,8 +273,8 @@ describe('gameplay:interactions — the pearl arm', () => {
       // reference's tests as an oracle, and the reference's own pearl cannot be
       // replayed because `ender-pearl.ts:72` reads the global generator.
       const run = Effect.gen(function* () {
-        const { state, roster, stages } = yield* scene()
-        yield* Ref.set(state.targetPosition, ORIGIN)
+        const { state, roster, player, stages } = yield* scene()
+        yield* player.api.moveTo(ORIGIN)
         yield* Ref.set(
           state.pendingPearlThrows,
           Array.from({ length: 60 }, () =>
@@ -291,8 +294,8 @@ describe('gameplay:interactions — the pearl arm', () => {
       // `ender-pearl.ts:73` spawns it at `teleportTarget`. Sixty throws makes
       // the 5% roll a near-certainty for the seeded generator; the assertion is
       // about WHERE, not about how many.
-      const { state, roster, stages } = yield* scene()
-      yield* Ref.set(state.targetPosition, ORIGIN)
+      const { state, roster, player, stages } = yield* scene()
+      yield* player.api.moveTo(ORIGIN)
       yield* Ref.set(
         state.pendingPearlThrows,
         Array.from({ length: 60 }, () =>
@@ -314,12 +317,10 @@ describe('gameplay:interactions — the pearl arm', () => {
     }),
   )
 
-  it.effect('NO FEET, NO ENDERMITE — but the pearl still teleports and still hurts', () =>
+  it.effect('the compatibility target Ref does not override the mc-sim player pose', () =>
     Effect.gen(function* () {
-      // `targetPosition` is `undefined` when the host has not said where the
-      // player is. The displacement and the damage are relative and need no
-      // anchor; the spawn does. See the stage's comment.
-      const { state, roster, stages } = yield* scene()
+      const { state, roster, player, stages } = yield* scene()
+      yield* player.api.moveTo(ORIGIN)
       yield* Ref.set(
         state.pendingPearlThrows,
         Array.from({ length: 60 }, () =>
@@ -329,7 +330,10 @@ describe('gameplay:interactions — the pearl arm', () => {
 
       yield* runFrame(stages)
 
-      expect((yield* roster.api.snapshot).entities).toStrictEqual([])
+      const spawned = (yield* roster.api.snapshot).entities
+      expect(spawned.length).toBeGreaterThan(0)
+      expect(spawned.every((entity) => entity.feetPosition.z === ORIGIN.z + 4)).toBe(true)
+      expect(yield* Ref.get(state.targetPosition)).toBeUndefined()
       expect(yield* Ref.get(state.enderPearlOutcomes)).toHaveLength(60)
     }),
   )

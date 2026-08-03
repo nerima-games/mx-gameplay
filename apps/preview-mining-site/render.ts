@@ -9,10 +9,10 @@
  * gives.
  */
 import { padEnd, padStart, type Rgb, type Style } from './ansi'
-import type { DayPhase } from '../../domain/day-night'
-import { FALLING_BLOCK_MOVES_PER_TICK } from '../../domain/falling-block'
-import type { PositionKey } from '../../domain/position-key'
-import { positionKeyOf } from '../../domain/block-position-key'
+import type { DayPhase } from '../../src/domain/day-night'
+import { FALLING_BLOCK_MOVES_PER_TICK } from '../../src/domain/falling-block'
+import type { PositionKey } from '../../src/domain/position-key'
+import { positionKeyOf } from '../../src/domain/block-position-key'
 import {
   ARENA_AMOUNTS,
   ARENA_CAUSES,
@@ -55,8 +55,8 @@ import {
   type ArenaState,
   type TimeState,
 } from './screens'
-import { CREEPER_EXPLOSION_POWER, explosionDamageAmount } from '../../domain/mob/explosion'
-import type { Weather } from '../../domain/weather'
+import { CREEPER_EXPLOSION_POWER, explosionDamageAmount } from '../../src/domain/mob/explosion'
+import type { Weather } from '../../src/domain/weather'
 import { positionAt, type FrameRow, type Site } from './site'
 import { AIR, glyphOf } from './world'
 
@@ -232,14 +232,14 @@ const timelineRow = (row: FrameRow): string =>
     // frame that mined a sand and placed it back reads `sand -sand`, which is
     // the round trip.
     //
-    // A LEADING `!` IS WHAT THE INVENTORY REFUSED. It is on the same column
+    // A LEADING `!` IS AN ITEM ON THE GROUND. It is on the same column
     // deliberately: a full inventory shows `cobblestone !cobblestone`, so the
-    // deposit and its rejection are read together rather than the rejection
-    // needing a column of its own that is blank in every ordinary frame.
+    // deposit and the spawned entity are read together rather than needing a
+    // column of their own that is blank in every ordinary frame.
     '  ' +
       [
         ...row.mined.map((item) => (item.count === 1 ? item.item : `${item.item}x${String(item.count)}`)),
-        ...row.leftover.map((item) =>
+        ...row.dropped.map((item) =>
           item.count === 1 ? `!${item.item}` : `!${item.item}x${String(item.count)}`,
         ),
         ...row.spent.map((item) => `-${item}`),

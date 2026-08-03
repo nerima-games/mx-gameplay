@@ -300,7 +300,7 @@ mc-worldgen だった**。「全員が依存しているから」は所有の理
 `restore` は `(pose, dimension)` の 2 引数になった —— 片方だけ復元する save は
 「ネザーで取ったセーブがオーバーワールドで開く」という、報告の書けない欠陥だからである。
 
-**(b) 「どこへ」はバレルに出た。ただし引数の片方はまだ空である。**
+**(b) 「どこへ」はバレルに出て、候補はホスト境界から届く。**
 この項は「mc-worldgen の `index.ts` は `./domain/nether-travel` を出していない」
 「ミラーすればまさにその綴りに依存することになる」と書いていた。**源流で解決された。**
 mc-worldgen が語を所有すると決めた以上、伏せておく理由は失効し、
@@ -308,16 +308,12 @@ mc-worldgen が語を所有すると決めた以上、伏せておく理由は�
 **publish された module のミラー**であり、`domain/portal-frame-port.ts` が述べる規則
 「a mirror's home is decided by WHOSE BARREL REPLACES IT」を満たす。
 
-`from: Dimension` の出所は (a) で埋まった。**`knownPortals` はまだ空である** ——
-mc-worldgen 自身の `docs/responsibility.md` §6 が
-「**世界に存在するポータルの一覧を所有するのが誰かはまだ誰にも割り当てられていない**」と書いたままで、
-再実測しても mc-sim / mc-worldgen / mx-gameplay の `domain/` `application/` を通じて所有者は 0 件である。
-`domain/portal-travel.ts` は**空の候補リストを渡し、そう明記している**。
-結果は本物の制限である: **毎回新しいポータルを計画し、既存のものを再利用しない。**
-`test/portal-travel.test.ts` の RESTRICTION 節がこれを固定しているので、
-所有者が現れた日に変わるテストは「何が無かったか」を書いたテストになる。
-ここでレジストリを発明しないのは、参照実装の所有者がセーブファイルを持つ**サービス**であり、
-それはルールしか持たない本リポジトリのものではないからである。
+`from: Dimension` の出所は (a) で埋まった。`knownPortals` の永続的な台帳は引き続き
+セーブファイルを持つホストの名詞であり、mx-gameplay は所有しない。代わりに
+`setPortalCandidates` が宛先次元ごとの読み取り snapshot をフレーム境界へ渡す。
+`stepPortalTravel` はその宛先次元だけを選び、候補があれば再利用し、無ければ新規設計を返す。
+成立した計画は `drainPortalTravels` の FIFO outbox へ出発次元・出発セルと共に積まれ、
+ホストが世界生成を行う。これにより台帳を複製せず、既存ポータル再利用と生成要求の通知が閉じる。
 
 **(c) 残る `moveTo` の呼び出しは 1 行ではなく、公開面の判断だった。支払い済。**
 以下の表は支払う前の見積りで、**判断が正しかったことの記録として残してある**。

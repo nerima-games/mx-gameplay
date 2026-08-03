@@ -50,7 +50,7 @@ import {
   UNITEMISED_BLOCK_TYPES,
   type BlockType,
   type HarvestTier,
-} from '../domain/block-vocabulary'
+} from '../src/domain/block-vocabulary'
 import {
   BLOCK_LOOT_ROLLS,
   blockLoot,
@@ -62,8 +62,8 @@ import {
   NO_TOOL,
   rollFortuneExtraDrops,
   type MinedItem,
-} from '../domain/interactions/block-loot'
-import { ITEM_TYPES } from '../domain/item-vocabulary'
+} from '../src/domain/interactions/block-loot'
+import { ITEM_TYPES } from '../src/domain/item-vocabulary'
 
 const AIR = 0
 const STONE = 2
@@ -126,19 +126,10 @@ describe('the kernel bridge — domain/block-vocabulary.ts', () => {
       expect(UNITEMISED_BLOCK_TYPES).toContain('snow')
       expect(dropOfBlockId(SNOW, { heldTier: 'diamond' })?.item).toBe('snowball')
 
-      // `sapling` is still here, and its reason changed too — from "kernel has
-      // not got round to it" to a decision kernel made ON THIS REPOSITORY'S
-      // BEHALF, which is worth spelling out because it is the only one of its
-      // kind.
-      //
-      // kernel completed its roster to the reference's full 120 and gives an item
-      // form to every block whose drop resolves to itself. `sapling` qualifies —
-      // and kernel held it back anyway, along with nine other support-sensitive
-      // plants, because `PlaceableItemType = ItemType & BlockType` means an item
-      // form is what makes a block PLACEABLE, and F7 below is a placement rule
-      // that answers all ten wrongly. See `mc-kernel/domain/item-type.ts`.
-      expect(UNITEMISED_BLOCK_TYPES).toContain('sapling')
-      expect(itemOfBlock('sapling')).toBeUndefined()
+      // Support-sensitive plants now have explicit placement rules, so kernel
+      // can expose their item forms without making placement overly permissive.
+      expect(UNITEMISED_BLOCK_TYPES).not.toContain('sapling')
+      expect(itemOfBlock('sapling')).toBe('sapling')
 
       // The other seven of the eighteen kernel corrected DID get item forms,
       // because none of them has a per-block `SUPPORT_RULES` entry and so none
@@ -378,66 +369,29 @@ describe('blockLoot — the deterministic half', () => {
     }),
   )
 
-  /*
-   * F8 — A DIVERGENCE PINNED, NOT AN ORACLE PORTED.
-   *
-   * `<reference-impl>/packages/world/test/block-service-silk-touch.test.ts:52-58`
-   * asserts 「drops DIAMOND_ORE itself when silkTouch=true, not DIAMOND」, and
-   * `:60-66` the other side of it. THIS BUILD DOES NOT AGREE, and the
-   * disagreement is not one this repository may resolve.
-   *
-   * Silk touch is modelled as a GATE (does anything drop at all) and never as a
-   * SUBSTITUTION (which item drops). `domain/block-vocabulary.ts`'s `resolveDrop`
-   * transcribes kernel's three refusals and has no fourth arm, so the `item:`
-   * override wins even under silk touch:
-   *
-   *   stone       + silk -> cobblestone   (vanilla and the reference: stone)
-   *   grass_block + silk -> dirt          (vanilla: the grass block)
-   *   glowstone   + silk -> 2 dust        (vanilla: the glowstone block)
-   *
-   * KERNEL HAS ALREADY WRITTEN THIS DOWN, which is what makes it a decision
-   * rather than an oversight — `mc-kernel/domain/block-harvest.ts:213-220`:
-   *
-   *     KNOWN LIMITATION, recorded rather than faked: silk touch is modelled as
-   *     a GATE, not as a SUBSTITUTION. [...] The additive fix is one optional
-   *     member (`silkTouchItem?: ItemType`) [...] it is left out until a
-   *     consumer needs it.
-   *
-   * A CONSUMER NEEDS IT NOW, and that is this test's whole content: the
-   * reference's silk-touch oracle IS the consumer kernel was waiting for, and
-   * nothing was going to notice, because a gate and a substitution agree on
-   * every block whose rule says `'self'` — which is most of them.
-   *
-   * The pin follows F7's precedent exactly (docs/testing.md §3-5): the CURRENT
-   * behaviour is fixed with the reference's line beside it, so the day kernel
-   * grows `silkTouchItem` this test goes red and is REWRITTEN into agreement
-   * rather than deleted. Writing the table here instead would be this repository
-   * inventing a kernel column, which is the mistake F7 declined to make.
-   */
-  it.effect('F8 — silk touch is a GATE here and a SUBSTITUTION in the reference', () =>
+  it.effect('silk touch substitutes the harvested block for its normal drop', () =>
     Effect.sync(() => {
-      // The reference's claim, mapped onto the one block this build has that
-      // carries an `item:` override AND a tier gate. `block-service-silk-touch
-      // .test.ts:56` would have this be `stone`.
       expect(blockLoot(STONE, { heldTier: 'wooden', silkTouch: true })).toStrictEqual([
+        { item: 'stone', count: 1 },
+      ])
+      expect(blockLoot(GRASS_BLOCK, { silkTouch: true })).toStrictEqual([
+        { item: 'grass_block', count: 1 },
+      ])
+      expect(blockLoot(GLOWSTONE, { silkTouch: true }, NO_LUCK)).toStrictEqual([
+        { item: 'glowstone', count: 1 },
+      ])
+    }),
+  )
+
+  it.effect('silk-touch substitution leaves normal drops unchanged', () =>
+    Effect.sync(() => {
+      expect(blockLoot(STONE, { heldTier: 'wooden' })).toStrictEqual([
         { item: 'cobblestone', count: 1 },
       ])
-
-      // Two more, so that a fix cannot be mistaken for a special case about
-      // stone: the substitution arm is missing for every override row alike.
-      expect(blockLoot(GRASS_BLOCK, { silkTouch: true })).toStrictEqual([
-        { item: 'dirt', count: 1 },
+      expect(blockLoot(GRASS_BLOCK, NO_TOOL)).toStrictEqual([{ item: 'dirt', count: 1 }])
+      expect(blockLoot(GLOWSTONE, NO_TOOL, NO_LUCK)).toStrictEqual([
+        { item: 'glowstone_dust', count: 2 },
       ])
-      expect(blockLoot(GLOWSTONE, { heldTier: 'diamond', silkTouch: true }, NO_LUCK)).toStrictEqual(
-        [{ item: 'glowstone_dust', count: 2 }],
-      )
-
-      // ...and the half that DOES agree with the reference, stated so the
-      // divergence is bounded rather than open: for a rule that says `'self'`,
-      // a gate and a substitution are the same function. Glass above is the
-      // reference's ICE row (`:75-79`) and it agrees exactly.
-      expect(blockLoot(SAND, { silkTouch: true })).toStrictEqual([{ item: 'sand', count: 1 }])
-      expect(blockLoot(GLASS, { silkTouch: true })).toStrictEqual([{ item: 'glass', count: 1 }])
     }),
   )
 })
@@ -522,7 +476,7 @@ describe('blockLoot — fortune', () => {
   it.effect('REGRESSION: silk touch suppresses fortune — they are mutually exclusive', () =>
     Effect.sync(() => {
       expect(blockLoot(GLOWSTONE, { fortuneLevel: 3, silkTouch: true }, [0])).toStrictEqual([
-        { item: 'glowstone_dust', count: 2 },
+        { item: 'glowstone', count: 1 },
       ])
     }),
   )
@@ -565,34 +519,7 @@ describe('blockLoot — bonus lines', () => {
     }),
   )
 
-  /*
-   * PORTED ORACLE.
-   * `<reference-impl>/packages/world/test/block-service-drop-overrides.test.ts:137-142`
-   * (「vanilla-style rates: apple 1/200 = 0.005, stick 2% = 0.02, sapling
-   * 5% = 0.05」) and `:161-165` (the grass-seed 1/8), read against
-   * `block-service.config.ts:221-223` and `:235`.
-   *
-   * THREE OF THESE FOUR RATES GOVERN NOTHING TODAY, and porting them anyway is
-   * the point rather than an oversight. `domain/interactions/block-loot.ts`
-   * declares all four constants and its `BONUS_DROPS` table uses one, because
-   * the other three name items this build's roster does not have — `apple` and
-   * `wheat_seeds` are not `ItemType`s and `sapling` is a `BlockType` in
-   * `UNITEMISED_BLOCK_TYPES`. The file states each gap by name and refuses to
-   * substitute a stand-in item.
-   *
-   * A CONSTANT WITH NO CONSUMER IS EXACTLY WHAT DRIFTS. It is the shape
-   * `domain/mob/shulker-shell.ts` refuses outright (`SHULKER_FORCED_CLOSED_TICKS`
-   * has no producer and no consumer in the reference either, so it was not
-   * brought over at all) — the difference is that these three DO have a producer
-   * in the reference, and they are waiting on a kernel roster row rather than on
-   * an invented one. Pinning the values now means the day `apple` becomes an
-   * `ItemType` the row is added to `BONUS_DROPS` and nothing else has to be
-   * rediscovered from the reference.
-   *
-   * The reference's rate tests are constant assertions and nothing more, so this
-   * is a port at full strength rather than a weakened one.
-   */
-  it.effect('carries all four of the reference’s bonus rates, including the three with no table row yet', () =>
+  it.effect('carries all four of the reference’s bonus rates', () =>
     Effect.sync(() => {
       expect(LEAF_APPLE_DROP_CHANCE).toBe(0.005)
       expect(LEAF_STICK_DROP_CHANCE).toBe(0.02)
@@ -607,36 +534,26 @@ describe('blockLoot — bonus lines', () => {
     }),
   )
 
-  // The gap made VISIBLE rather than merely written down: the three unused rates
-  // are unused because breaking the blocks they belong to yields nothing extra,
-  // however lucky the rolls. If a row is ever added to `BONUS_DROPS` without
-  // updating the note in the rule's header, this fails.
-  it.effect('the three unshipped lines really are unshipped — luckiest rolls shake nothing loose', () =>
+  it.effect('tall grass and fern yield one wheat seed below the one-in-eight boundary', () =>
     Effect.sync(() => {
-      // Leaves have exactly ONE bonus line, not three: all-zero rolls beat every
-      // chance there is, and a stick is all that comes out.
-      expect(blockLoot(OAK_LEAVES, NO_TOOL, ALL_LUCK)).toStrictEqual([{ item: 'stick', count: 1 }])
-
-      // Tall grass and fern yield NOTHING AT ALL, and for two reasons stacked.
-      // ONE OF THE TWO HAS CHANGED, so the note is worth re-reading rather than
-      // re-trusting.
-      //
-      // The seed line used to have no `wheat_seeds` to name. It has one now:
-      // kernel's roster completion added the item, because `WHEAT_CROP` drops it.
-      // So THAT half is no longer a kernel gap — porting `rollGrassSeedDrop`
-      // (`:245-246`) is work this repository can do whenever it likes, and audit
-      // §6-9 says random drop rules belong here.
       expect(ITEM_TYPES).toContain('wheat_seeds')
+      expect(UNITEMISED_BLOCK_TYPES).not.toContain('tall_grass')
+      expect(UNITEMISED_BLOCK_TYPES).not.toContain('fern')
+      expect(blockLoot(TALL_GRASS, NO_TOOL, [0.5, GRASS_SEED_DROP_CHANCE - Number.EPSILON])).toStrictEqual([
+        { item: 'wheat_seeds', count: 1 },
+      ])
+      expect(blockLoot(FERN, NO_TOOL, [0.5, GRASS_SEED_DROP_CHANCE - Number.EPSILON])).toStrictEqual([
+        { item: 'wheat_seeds', count: 1 },
+      ])
+      expect(blockLoot(TALL_GRASS, NO_TOOL, [0.5, GRASS_SEED_DROP_CHANCE])).toStrictEqual([])
+      expect(blockLoot(FERN, NO_TOOL, [0.5, GRASS_SEED_DROP_CHANCE])).toStrictEqual([])
+    }),
+  )
 
-      // The other half stands, and stands on purpose: the plants themselves are
-      // still not itemised, so even the base drop has nowhere to go. That is
-      // kernel holding back ten support-sensitive plants until `supportRule`
-      // exists, because itemising them would make them placeable and wake F7 in
-      // `test/place-block.test.ts` — see `mc-kernel/domain/item-type.ts`.
-      expect(UNITEMISED_BLOCK_TYPES).toContain('tall_grass')
-      expect(UNITEMISED_BLOCK_TYPES).toContain('fern')
-      expect(blockLoot(TALL_GRASS, NO_TOOL, ALL_LUCK)).toStrictEqual([])
-      expect(blockLoot(FERN, NO_TOOL, ALL_LUCK)).toStrictEqual([])
+  it.effect('silk touch suppresses grass and fern seed bonuses', () =>
+    Effect.sync(() => {
+      expect(blockLoot(TALL_GRASS, { silkTouch: true }, ALL_LUCK)).toStrictEqual([])
+      expect(blockLoot(FERN, { silkTouch: true }, ALL_LUCK)).toStrictEqual([])
     }),
   )
 })

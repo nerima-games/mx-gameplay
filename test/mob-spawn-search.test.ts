@@ -12,16 +12,19 @@
  * at a cost that can be stated.
  */
 import { describe, expect, it } from '@effect/vitest'
+import { makeTimeService } from '@nerima-games/mc-sim'
 import { Effect, Ref } from 'effect'
-import { AIR_BLOCK_ID, type BlockPosition, type ChunkStoreApi } from '../domain/chunk-store-port'
-import type { Position } from '../domain/entity-manager-port'
+import { AIR_BLOCK_ID, type BlockPosition, type ChunkStoreApi } from '../src/domain/chunk-store-port'
+import type { Position } from '../src/domain/entity-manager-port'
 import {
   CREEPER_KIND,
   ENDERMAN_KIND,
   HOSTILE_KINDS,
+  initialBehaviourOfKind,
   MAX_HOSTILE_COUNT,
+  maxHealthOfKind,
   type MobBehaviour,
-} from '../domain/entities/mob-frame'
+} from '../src/domain/entities/mob-frame'
 import {
   searchSpawnCandidates,
   SPAWN_RING_ANGLES,
@@ -29,20 +32,21 @@ import {
   SPAWN_RING_RADII,
   SPAWN_RING_RADIUS_STEPS,
   SPAWN_SEARCH_ROLLS,
-} from '../domain/entities/mob-spawn-search'
-import { drawRolls, rollAt } from '../domain/frame-rolls'
-import { DESPAWN_DISTANCE_BLOCKS, despawnVerdict } from '../domain/mob/hostile-despawn'
+} from '../src/domain/entities/mob-spawn-search'
+import { drawRolls, rollAt } from '../src/domain/frame-rolls'
+import { DESPAWN_DISTANCE_BLOCKS, despawnVerdict } from '../src/domain/mob/hostile-despawn'
+import { ZOMBIE_KIND } from '../src/domain/mob/hostile-combat'
 import {
   MAX_SPAWN_DISTANCE_BLOCKS,
   MIN_SPAWN_DISTANCE_BLOCKS,
-} from '../domain/mob/hostile-spawn'
-import { DeltaTimeSecs } from '../domain/frame-contract'
-import { GAMEPLAY_STAGE_IDS } from '../stages/stage-ids'
+} from '../src/domain/mob/hostile-spawn'
+import { DeltaTimeSecs } from '../src/domain/frame-contract'
+import { GAMEPLAY_STAGE_IDS } from '../src/stages/stage-ids'
 import {
   gameplayStages,
   HOSTILE_SPAWN_INTERVAL_SECS,
   makeGameplayFrameState,
-} from '../stages/registration'
+} from '../src/stages/registration'
 import {
   lightWorld,
   makeChunkStoreDouble,
@@ -555,11 +559,11 @@ describe('the search’s randomness', () => {
     }),
   )
 
-  it.effect('picks kinds from HOSTILE_KINDS, and reaches both of them', () =>
+  it.effect('picks kinds from HOSTILE_KINDS, and reaches all of them', () =>
     Effect.gen(function* () {
       // The roster is the one the population cap sums over, so a kind cannot be
-      // spawnable without being counted. Reaching BOTH matters: a `Math.floor`
-      // that could never produce the last index would make the enderman
+      // spawnable without being counted. Reaching every kind matters: a `Math.floor`
+      // that could never produce the last index would make the zombie
       // unspawnable and nothing else would notice.
       const { found } = yield* searchIn(FLOORED_WORLD, RESIDENT_CHUNKS, new Map(), 31_337)
 
@@ -569,6 +573,7 @@ describe('the search’s randomness', () => {
       }
       expect(kinds.has(CREEPER_KIND)).toBe(true)
       expect(kinds.has(ENDERMAN_KIND)).toBe(true)
+      expect(kinds.has(ZOMBIE_KIND)).toBe(true)
     }),
   )
 })
@@ -648,12 +653,13 @@ describe('the search inside the frame', () => {
       const roster = yield* makeEntityManagerDouble<MobBehaviour>()
       const player = yield* makePlayerServiceDouble()
       const inventory = yield* makeInventoryDouble()
+      const time = yield* makeTimeService()
       const state = yield* makeGameplayFrameState
-      const stages = gameplayStages(state, store.api, roster.api, inventory.api, player.api)
+      const stages = gameplayStages(state, store.api, roster.api, inventory.api, player.api, time)
 
-      // Midnight is the default, so only the player has to be supplied — which
-      // is the same one line a host writes for the creeper's ignition range.
-      yield* Ref.set(state.targetPosition, PLAYER)
+      // The authoritative mc-sim services supply both inputs to the stage.
+      yield* player.api.moveTo(PLAYER)
+      yield* time.setTimeOfDay(MIDNIGHT)
       expect(yield* Ref.get(state.timeOfDay)).toBe(MIDNIGHT)
 
       const entities = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.entities)
@@ -671,7 +677,8 @@ describe('the search inside the frame', () => {
       const entries = yield* roster.api.entities
       for (const entity of entries) {
         expect(HOSTILE_KINDS).toContain(entity.kind)
-        expect(entity.behaviour).toBeDefined()
+        expect(entity.healthPoints).toBe(maxHealthOfKind(entity.kind))
+        expect(entity.behaviour).toStrictEqual(initialBehaviourOfKind(entity.kind))
       }
     }).pipe(Effect.provide(FrameServicesLayer)),
   )
@@ -701,11 +708,13 @@ describe('the search inside the frame', () => {
       const roster = yield* makeEntityManagerDouble<MobBehaviour>()
       const player = yield* makePlayerServiceDouble()
       const inventory = yield* makeInventoryDouble()
+      const time = yield* makeTimeService()
       const state = yield* makeGameplayFrameState
-      const stages = gameplayStages(state, store.api, roster.api, inventory.api, player.api)
+      const stages = gameplayStages(state, store.api, roster.api, inventory.api, player.api, time)
 
       const offeredAt: Position = { x: -20, y: 64, z: -20 }
-      yield* Ref.set(state.targetPosition, PLAYER)
+      yield* player.api.moveTo(PLAYER)
+      yield* time.setTimeOfDay(MIDNIGHT)
       yield* Ref.set(state.spawnAttempts, [
         {
           candidate: {
@@ -747,11 +756,13 @@ describe('the search inside the frame', () => {
       const roster = yield* makeEntityManagerDouble<MobBehaviour>()
       const player = yield* makePlayerServiceDouble()
       const inventory = yield* makeInventoryDouble()
+      const time = yield* makeTimeService()
       const state = yield* makeGameplayFrameState
-      const stages = gameplayStages(state, store.api, roster.api, inventory.api, player.api)
+      const stages = gameplayStages(state, store.api, roster.api, inventory.api, player.api, time)
 
-      yield* Ref.set(state.targetPosition, PLAYER)
-      yield* Ref.set(state.timeOfDay, 0.5)
+      yield* player.api.moveTo(PLAYER)
+      yield* Ref.set(state.timeOfDay, MIDNIGHT)
+      yield* time.setTimeOfDay(0.5)
 
       const entities = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.entities)
       for (let frame = 0; frame < 10; frame += 1) {

@@ -27,20 +27,29 @@
           pkgs = pkgsFor system;
         in
         {
-          # Node 24 matches the `engines` field and the CI runner. pnpm comes
+          # Node 22 matches the `engines` field and the CI runner. pnpm comes
           # from corepack rather than nixpkgs so that the version is decided by
           # the `packageManager` field in package.json — one source of truth
           # instead of two that can drift.
+          #
+          # oxlint is the opposite case: it is NOT a package.json devDependency.
+          # It used to be, and letting each repo pin its own oxlint version let
+          # this repo silently drift onto oxlint 0.12.x, which does not
+          # implement `no-restricted-imports` at all (the Tier dependency
+          # policy's enforcement mechanism never actually ran). A single
+          # pinned Nix-provided oxlint (nixpkgs currently ships 1.73.0) removes
+          # that drift entirely: one version, declared once, for local dev and
+          # CI alike.
           default = pkgs.mkShell {
             packages = [
-              pkgs.nodejs_24
-              pkgs.corepack_24
+              pkgs.nodejs_22
+              pkgs.corepack_22
               pkgs.typescript-language-server
+              pkgs.oxlint
             ];
 
             shellHook = ''
-              mkdir -p "$PWD/.corepack"
-              corepack enable --install-directory "$PWD/.corepack"
+              corepack enable --install-directory "$PWD/.corepack" 2>/dev/null || true
               export PATH="$PWD/.corepack:$PATH"
             '';
           };

@@ -65,57 +65,67 @@
  *     reads, and it is the one the whole `EntityManager` design exists for.
  */
 import { describe, expect, it } from '@effect/vitest'
+import { makeTimeService, type TimeServiceApi } from '@nerima-games/mc-sim'
 import { Effect, Ref } from 'effect'
 import { readdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { positionKeyOf } from '../domain/block-position-key'
+import { positionKeyOf } from '../src/domain/block-position-key'
 import {
   AIR_BLOCK_ID,
   type BlockId,
   type BlockPosition,
   type BlockWriteOutcome,
   type ChunkStoreApi,
-} from '../domain/chunk-store-port'
-import { blockIdOf, isReplaceable } from '../domain/block-vocabulary'
-import { NOON_FRACTION } from '../domain/day-night'
+} from '../src/domain/chunk-store-port'
+import { blockIdOf, isReplaceable } from '../src/domain/block-vocabulary'
+import { NOON_FRACTION } from '../src/domain/day-night'
 import {
   CREEPER_KIND,
+  DROPPED_ITEM_KIND,
   CREEPER_MAX_HEALTH,
   ENDERMAN_KIND,
   ENDERMAN_TELEPORT_ROLLS,
   HOSTILE_KINDS,
+  isDroppedItemBehaviour,
   MAX_HOSTILE_COUNT,
   STEADY_ENDERMAN,
   STRUCK_ENDERMAN,
   type MobBehaviour,
   type MobSpawnAttempt,
-} from '../domain/entities/mob-frame'
-import { EntityKind, type EntityManagerApi, type Position } from '../domain/entity-manager-port'
-import { disturb } from '../domain/falling-block'
-import { DeltaTimeSecs } from '../domain/frame-contract'
-import { DEFAULT_ROLL_SEED, drawRolls, nextRoll } from '../domain/frame-rolls'
-import { craterCells, craterRadius } from '../domain/interactions/explosion-crater'
-import { CREEPER_FUSE_SECS, DORMANT_FUSE } from '../domain/mob/creeper-fuse'
+} from '../src/domain/entities/mob-frame'
+import { EntityKind, type EntityManagerApi, type Position } from '../src/domain/entity-manager-port'
+import { disturb } from '../src/domain/falling-block'
+import { DeltaTimeSecs, StackCount } from '../src/domain/frame-contract'
+import { DEFAULT_ROLL_SEED, drawRolls, nextRoll } from '../src/domain/frame-rolls'
+import { craterCells, craterRadius } from '../src/domain/interactions/explosion-crater'
+import { CREEPER_FUSE_SECS, DORMANT_FUSE } from '../src/domain/mob/creeper-fuse'
 import {
   ENDERMAN_CHASE_TELEPORT_CHANCE,
   ENDERMAN_DAMAGE_TELEPORT_CHANCE,
   ENDERMAN_TELEPORT_MAX_BLOCKS,
   ENDERMAN_TELEPORT_MIN_BLOCKS,
   endermanTeleportOffset,
-} from '../domain/mob/enderman-teleport'
-import { CREEPER_EXPLOSION_POWER, explosionDamageAmount } from '../domain/mob/explosion'
-import { DESPAWN_DISTANCE_BLOCKS } from '../domain/mob/hostile-despawn'
-import type { MinedItem } from '../domain/interactions/block-loot'
-import { chunkCoordsAround } from '../domain/chunk-window'
-import { PORTAL_WINDOW_RADIUS, ignitePortal } from '../domain/interactions/ignite-portal'
-import { generatePortalLayout } from '../domain/portal-frame-port'
+} from '../src/domain/mob/enderman-teleport'
+import { CREEPER_EXPLOSION_POWER, explosionDamageAmount } from '../src/domain/mob/explosion'
+import { DESPAWN_DISTANCE_BLOCKS } from '../src/domain/mob/hostile-despawn'
+import { ZOMBIE_KIND } from '../src/domain/mob/hostile-combat'
+import type { MinedItem } from '../src/domain/interactions/block-loot'
+import { chunkCoordsAround } from '../src/domain/chunk-window'
+import { PORTAL_WINDOW_RADIUS, ignitePortal } from '../src/domain/interactions/ignite-portal'
+import { generatePortalLayout } from '../src/domain/portal-frame-port'
 import {
+  drainItemUseResults,
   gameplayStages,
   makeGameplayFrameState,
-  type ItemUseRequest,
+  requestBlockBreak,
+  requestItemUse,
+  requestPotatoFoodUse,
+  requestPotatoHarvest,
+  requestPotatoPlanting,
+  requestSoilTill,
   type PlacementRequest,
-} from '../stages/registration'
+} from '../src/stages/registration'
 import {
   GRAVEL,
   makeChunkStoreDouble,
@@ -128,6 +138,7 @@ import { makeEntityManagerDouble } from './support/entity-manager-double'
 import { makePlayerServiceDouble } from './support/player-service-double'
 import {
   brimming,
+  emptySlots,
   makeInventoryDouble,
   type InventoryDouble,
 } from './support/inventory-service-double'
@@ -155,12 +166,14 @@ const topOfColumn: BlockPosition = { x: 2, y: 67, z: 3 }
 const slice = (
   initial: ReadonlyMap<string, number>,
   loaded: ReadonlyArray<string> = ['0,0'],
+  inventorySlots = emptySlots(),
 ) =>
   Effect.gen(function* () {
     const store = yield* makeChunkStoreDouble(initial, loaded)
     const roster = yield* makeEntityManagerDouble<MobBehaviour>()
-    const inventory = yield* makeInventoryDouble()
+    const inventory = yield* makeInventoryDouble(inventorySlots)
     const player = yield* makePlayerServiceDouble()
+    const time = yield* makeTimeService()
     const state = yield* makeGameplayFrameState
     return {
       store,
@@ -168,9 +181,15 @@ const slice = (
       player,
       inventory,
       state,
-      stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api),
+      time,
+      stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api, time),
     }
   })
+
+const onePlacementItem = (item: PlacementRequest['heldItem']) =>
+  emptySlots().map((_, index) =>
+    index === 0 ? { item, count: StackCount(1) } : undefined,
+  )
 
 /**
  * The `add` calls the interactions stage made, as `{ item, count }`.
@@ -190,9 +209,7 @@ const slice = (
  * call per item" claim is about. Where the total is the interesting number, the
  * tests below ask `inventory.api.countOf` as well.
  */
-const deposited = (
-  inventory: InventoryDouble,
-): Effect.Effect<ReadonlyArray<MinedItem>> =>
+const deposited = (inventory: InventoryDouble) =>
   Effect.map(inventory.deposits, (calls) =>
     calls.map(({ item, count }) => ({ item, count })),
   )
@@ -201,11 +218,7 @@ const samePosition = (left: BlockPosition, right: BlockPosition): boolean =>
   left.x === right.x && left.y === right.y && left.z === right.z
 
 /** What mc-render's input stage will do, once mc-render is published. */
-const requestBreak = (
-  state: { readonly pendingBreaks: Ref.Ref<ReadonlyArray<string>> },
-  position: BlockPosition,
-): Effect.Effect<void> =>
-  Ref.update(state.pendingBreaks, (pending) => [...pending, positionKeyOf(position)])
+const requestBreak = requestBlockBreak
 
 /**
  * What mc-sim's `InventoryService` will supply: the tool the player is holding.
@@ -504,7 +517,7 @@ describe('the slice, through the stage registration', () => {
     Effect.gen(function* () {
       // The support is AIR, so without the wrapper below the sand falls into
       // it. The control is the very first test in this file.
-      const { store, roster, inventory, state, player } = yield* slice(world([[sandAt, SAND]]))
+      const { store, roster, inventory, state, player, time } = yield* slice(world([[sandAt, SAND]]))
 
       const hidesTheDestination: ChunkStoreApi = {
         ...store.api,
@@ -514,7 +527,7 @@ describe('the slice, through the stage registration', () => {
             : store.api.getBlock(position),
       }
 
-      const stages = gameplayStages(state, hidesTheDestination, roster.api, inventory.api, player.api)
+      const stages = gameplayStages(state, hidesTheDestination, roster.api, inventory.api, player.api, time)
       yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, [positionKeyOf(support)]))
       yield* runFrames(stages, 3)
 
@@ -527,7 +540,7 @@ describe('the slice, through the stage registration', () => {
 
   it.effect('REGRESSION: a refused destination write puts the block back rather than losing it', () =>
     Effect.gen(function* () {
-      const { store, roster, inventory, state, player } = yield* slice(world([[sandAt, SAND]]))
+      const { store, roster, inventory, state, player, time } = yield* slice(world([[sandAt, SAND]]))
 
       // Reads say the move is legal; the destination write is refused anyway —
       // the window the source-first write order opens.
@@ -539,7 +552,7 @@ describe('the slice, through the stage registration', () => {
             : store.api.setBlock(position, block),
       }
 
-      const stages = gameplayStages(state, refusesTheDestination, roster.api, inventory.api, player.api)
+      const stages = gameplayStages(state, refusesTheDestination, roster.api, inventory.api, player.api, time)
       yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, [positionKeyOf(support)]))
       yield* runFrame(stages)
 
@@ -562,7 +575,7 @@ describe('the slice, through the stage registration', () => {
       ] as ReadonlyArray<BlockWriteOutcome>,
       (refusal) =>
         Effect.gen(function* () {
-          const { store, roster, inventory, state, player } = yield* slice(world([[sandAt, SAND]]))
+          const { store, roster, inventory, state, player, time } = yield* slice(world([[sandAt, SAND]]))
 
           const refusesTheSource: ChunkStoreApi = {
             ...store.api,
@@ -572,7 +585,7 @@ describe('the slice, through the stage registration', () => {
                 : store.api.setBlock(position, block),
           }
 
-          const stages = gameplayStages(state, refusesTheSource, roster.api, inventory.api, player.api)
+          const stages = gameplayStages(state, refusesTheSource, roster.api, inventory.api, player.api, time)
           yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, [positionKeyOf(support)]))
           yield* runFrame(stages)
 
@@ -690,12 +703,12 @@ const legalCandidate = {
   distanceToPlayerBlocksXZ: 20,
 } as const
 
-const attemptAt = (feetPosition: Position): MobSpawnAttempt => ({
+const attemptAt = (feetPosition: Position, kind: EntityKind = CREEPER_KIND): MobSpawnAttempt => ({
   candidate: legalCandidate,
   // Named explicitly rather than defaulted. `MobSpawnAttempt` carries a kind
   // because the spawner now produces more than one hostile, and a test that let
   // the field be implicit would stop noticing which mob it asked for.
-  kind: CREEPER_KIND,
+  kind,
   feetPosition,
 })
 
@@ -717,10 +730,8 @@ const STRIDE = DeltaTimeSecs(0.25)
  *
  * `domain/entities/mob-spawn-search.ts` is paced by
  * `HOSTILE_SPAWN_INTERVAL_SECS` and gated on `hostileSpawnsAllowed`, and the
- * stage's frame-state `timeOfDay` defaults to 0 — midnight — which is night and
- * therefore ALLOWS spawns. That default is deliberate (see the paragraph on the
- * inbox in `stages/registration.ts`: a host that forgets to write the hour gets
- * a world that visibly spawns rather than one that silently never does).
+ * authoritative TimeService defaults to 0 — midnight — which is night and
+ * therefore ALLOWS spawns.
  *
  * It means every test below that is about something ELSE has to say what time it
  * is, exactly as it already has to say where the player is. The tests that ARE
@@ -733,13 +744,13 @@ const STRIDE = DeltaTimeSecs(0.25)
  * they still measure. Measuring the sweep plus a paced search in one number
  * would make both unfalsifiable.
  */
-const daylight = (state: { readonly timeOfDay: Ref.Ref<number> }): Effect.Effect<void> =>
-  Ref.set(state.timeOfDay, NOON_FRACTION)
+const daylight = (time: TimeServiceApi): Effect.Effect<void> =>
+  time.setTimeOfDay(NOON_FRACTION)
 
 describe('the mob slice, through the stage registration', () => {
   it.effect('a creeper spawns, lights, detonates once, and the blast reaches the world', () =>
     Effect.gen(function* () {
-      const { store, roster, inventory, state, stages } = yield* slice(
+      const { store, roster, inventory, state, player, time, stages } = yield* slice(
         world([
           [craterFloor, STONE],
           [craterLedge, STONE],
@@ -748,8 +759,8 @@ describe('the mob slice, through the stage registration', () => {
       )
 
       // ---- the player is far away, and two creepers are offered ------------
-      yield* daylight(state)
-      yield* Ref.set(state.targetPosition, playerFar)
+      yield* daylight(time)
+      yield* player.api.moveTo(playerFar)
       yield* offerSpawns(state, [attemptAt(creeperAt), attemptAt(bystanderAt)])
       yield* runFrame(stages, STRIDE)
 
@@ -767,7 +778,7 @@ describe('the mob slice, through the stage registration', () => {
       expect(yield* store.calls).toStrictEqual({ reads: 1, writes: 0, peeks: 0 })
 
       // ---- the player walks up ---------------------------------------------
-      yield* Ref.set(state.targetPosition, playerNear)
+      yield* player.api.moveTo(playerNear)
       yield* runFrame(stages, STRIDE)
 
       // Lighting and burning are ONE step (`domain/mob/creeper-fuse.ts`), so the
@@ -778,9 +789,10 @@ describe('the mob slice, through the stage registration', () => {
       expect(lit[0]?.behaviour).toStrictEqual({ _tag: 'Lit', burnedSecs: 0.25 })
       expect(lit[1]?.behaviour).toBe(DORMANT_FUSE)
 
-      // ...and the unchanged bystander is the SAME OBJECT it was before, which
-      // is what mc-sim's zero-copy sweep is for.
-      expect(lit[1]).toBe(spawned[1])
+      // The bystander is outside ignition range, but hostile locomotion still
+      // closes the horizontal gap by speed * dt without changing altitude.
+      expect(lit[1]).not.toBe(spawned[1])
+      expect(lit[1]?.feetPosition).toStrictEqual({ x: 6.5, y: 64, z: 5 })
 
       // ---- five more quarter-seconds ---------------------------------------
       // 0.25 * 6 = 1.5 = CREEPER_FUSE_SECS, and the threshold is `>=`.
@@ -806,7 +818,15 @@ describe('the mob slice, through the stage registration', () => {
       // A creeper that blows itself up drops nothing — `MobKill.SelfDestruct` —
       // so one gunpowder and not two. The block outbox is untouched: a mob drop
       // is not a mined block, and the two are different lists for that reason.
-      expect(yield* Ref.get(state.mobDrops)).toStrictEqual([{ item: 'gunpowder', count: 1 }])
+      expect(yield* Ref.get(state.mobDrops)).toStrictEqual([
+        {
+          item: 'gunpowder',
+          count: 1,
+          source: spawned[1]?.id,
+          kind: CREEPER_KIND,
+          at: { x: 6, y: 64, z: 5 },
+        },
+      ])
       expect(yield* deposited(inventory)).toStrictEqual([])
 
       // ---- the crater emptied its cells, and only those --------------------
@@ -828,7 +848,23 @@ describe('the mob slice, through the stage registration', () => {
     }),
   )
 
-  it.effect('REGRESSION: an idle frame does no mob work — one shared step object, and the roster it was given', () =>
+  it.effect('a zombie spawns with zombie health and no behaviour state', () =>
+    Effect.gen(function* () {
+      const { roster, state, player, time, stages } = yield* slice(world([]))
+
+      yield* daylight(time)
+      yield* player.api.moveTo(playerFar)
+      yield* offerSpawns(state, [attemptAt(creeperAt, ZOMBIE_KIND)])
+      yield* runFrame(stages, STRIDE)
+
+      const [zombie] = yield* roster.api.entities
+      expect(zombie?.kind).toBe(ZOMBIE_KIND)
+      expect(zombie?.healthPoints).toBe(20)
+      expect(zombie?.behaviour).toBeUndefined()
+    }),
+  )
+
+  it.effect('REGRESSION: unruled mobs stay zero-copy while a hostile moves', () =>
     Effect.gen(function* () {
       // THE PROPERTY THE WHOLE DESIGN PROTECTS, and the mob-side twin of the
       // idle-frame test above. mc-sim's sweep returns the ARGUMENT roster when
@@ -838,7 +874,7 @@ describe('the mob slice, through the stage registration', () => {
       // fresh one per mob would be completely correct and would hand back
       // per-mob-per-frame garbage on the frame path — DN-GP-1's mistake made out
       // of objects instead of block reads.
-      const { store, roster, state, stages } = yield* slice(world([[craterFloor, STONE]]))
+      const { store, roster, state, player, time, stages } = yield* slice(world([[craterFloor, STONE]]))
 
       // Three mobs this repository has no rule for, and one dormant creeper.
       // The creeper is 50 blocks off: outside the 3-block ignition range and
@@ -859,19 +895,24 @@ describe('the mob slice, through the stage registration', () => {
         healthPoints: CREEPER_MAX_HEALTH,
         behaviour: DORMANT_FUSE,
       })
-      yield* daylight(state)
-      yield* Ref.set(state.targetPosition, playerNear)
+      yield* daylight(time)
+      yield* player.api.moveTo(playerNear)
 
       const before = yield* roster.api.entities
       yield* runFrames(stages, 10, STRIDE)
 
-      // The array is the SAME array, and every entity in it is the same object.
-      expect(yield* roster.api.entities).toBe(before)
+      const after = yield* roster.api.entities
+      expect(after).not.toBe(before)
+      expect(after.slice(0, 3)).toStrictEqual(before.slice(0, 3))
+      expect(after[0]).toBe(before[0])
+      expect(after[1]).toBe(before[1])
+      expect(after[2]).toBe(before[2])
+      expect(after[3]?.feetPosition).toStrictEqual({ x: 45, y: 64, z: 5 })
 
-      // ONE distinct step object across four mobs. Four would mean the stage is
-      // allocating per mob; the count is per sweep, so it is the last frame's.
+      // One shared ignored result plus the hostile mob's changed movement result.
+      // The count is per sweep, so this is the last frame's result.
       const calls = yield* roster.calls
-      expect(calls.distinctStepObjects).toBe(1)
+      expect(calls.distinctStepObjects).toBe(2)
       expect(calls.sweeps).toBe(10)
       expect(calls.despawns).toBe(0)
 
@@ -889,7 +930,7 @@ describe('the mob slice, through the stage registration', () => {
       // nobody killed it, so `domain/mob/mob-drop.ts` is never consulted and the
       // outbox stays empty. Getting this wrong would have a player's inventory
       // fill up with the gunpowder of mobs they never met.
-      const { roster, state, stages } = yield* slice(world([]))
+      const { roster, state, player, stages } = yield* slice(world([]))
 
       yield* roster.api.spawn({
         kind: CREEPER_KIND,
@@ -906,7 +947,7 @@ describe('the mob slice, through the stage registration', () => {
         behaviour: DORMANT_FUSE,
       })
 
-      yield* Ref.set(state.targetPosition, { x: 0, y: 64, z: 0 })
+      yield* player.api.moveTo({ x: 0, y: 64, z: 0 })
       yield* runFrame(stages, STRIDE)
 
       expect((yield* roster.api.entities).map((entity) => entity.id)).toStrictEqual([kept.id])
@@ -921,9 +962,9 @@ describe('the mob slice, through the stage registration', () => {
       // that census. The cap is re-read per attempt rather than hoisted, because
       // the frame in which the last slot is taken is the only frame in which the
       // cap is the thing being tested.
-      const { roster, state, stages } = yield* slice(world([]))
-      yield* daylight(state)
-      yield* Ref.set(state.targetPosition, playerFar)
+      const { roster, state, player, time, stages } = yield* slice(world([]))
+      yield* daylight(time)
+      yield* player.api.moveTo(playerFar)
 
       const offered = MAX_HOSTILE_COUNT + 4
       yield* offerSpawns(
@@ -953,8 +994,8 @@ describe('the mob slice, through the stage registration', () => {
       // re-derived: its header records the reference shipping a fresh world that
       // spawned at midnight with daylight-immune hostiles camped on the respawn
       // point — an unrecoverable death loop on world creation.
-      const { roster, state, stages } = yield* slice(world([]))
-      yield* Ref.set(state.targetPosition, playerFar)
+      const { roster, state, player, stages } = yield* slice(world([]))
+      yield* player.api.moveTo(playerFar)
 
       yield* offerSpawns(state, [
         { candidate: { ...legalCandidate, timeOfDay: 0.5 }, kind: CREEPER_KIND, feetPosition: creeperAt },
@@ -982,7 +1023,7 @@ describe('the mob slice, through the stage registration', () => {
       // pins is the SEED PLUMBING: the same scenario advances the same generator
       // by the same number of draws.
       const run = Effect.gen(function* () {
-        const { roster, state, stages } = yield* slice(world([]))
+        const { roster, state, player, stages } = yield* slice(world([]))
         yield* roster.api.spawn({
           kind: CREEPER_KIND,
           feetPosition: creeperAt,
@@ -995,7 +1036,7 @@ describe('the mob slice, through the stage registration', () => {
           healthPoints: CREEPER_MAX_HEALTH,
           behaviour: DORMANT_FUSE,
         })
-        yield* Ref.set(state.targetPosition, playerNear)
+        yield* player.api.moveTo(playerNear)
         yield* runFrames(stages, 6, STRIDE)
 
         return {
@@ -1007,7 +1048,15 @@ describe('the mob slice, through the stage registration', () => {
       const first = yield* run
       const second = yield* run
 
-      expect(first.drops).toStrictEqual([{ item: 'gunpowder', count: 1 }])
+      expect(first.drops).toStrictEqual([
+        {
+          item: 'gunpowder',
+          count: 1,
+          source: 'e:1',
+          kind: CREEPER_KIND,
+          at: { x: 6, y: 64, z: 5 },
+        },
+      ])
       expect(second).toStrictEqual(first)
     }),
   )
@@ -1088,7 +1137,7 @@ describe('the enderman slice: a rule that returns a displacement, run over a ros
       // THE TEST THAT FAILS IF THE WIRING IS ABSENT. Before this change the sweep
       // ignored every mob that was not a creeper, so the enderman below stayed
       // exactly where it was spawned for as many frames as anyone cared to run.
-      const { roster, state, stages } = yield* slice(world([]))
+      const { roster, state, player, stages } = yield* slice(world([]))
 
       // A seed whose FIRST roll passes the 5% chase gate and whose next
       // thirty-two find an offset inside the band. Both halves are the rule's own
@@ -1104,7 +1153,7 @@ describe('the enderman slice: a rule that returns a displacement, run over a ros
         healthPoints: ENDERMAN_HEALTH,
         behaviour: STEADY_ENDERMAN,
       })
-      yield* Ref.set(state.targetPosition, playerNear)
+      yield* player.api.moveTo(playerNear)
       yield* Ref.set(state.rollSeed, seed)
       yield* runFrame(stages, STRIDE)
 
@@ -1138,7 +1187,7 @@ describe('the enderman slice: a rule that returns a displacement, run over a ros
       // `resolveBlasts` damages a bystander and arms its flinch, and the NEXT
       // sweep reads the flinch, rolls the 30%, and moves the mob. Two stages of
       // one frame plus one more frame, none of it re-implemented here.
-      const { roster, state, stages } = yield* slice(world([]))
+      const { roster, state, player, stages } = yield* slice(world([]))
 
       // Frame 1's roll must MISS the 5% chase gate (the enderman is Steady and
       // has a target, so it consults the rule before the blast reaches it), and
@@ -1165,7 +1214,7 @@ describe('the enderman slice: a rule that returns a displacement, run over a ros
         healthPoints: ENDERMAN_HEALTH,
         behaviour: STEADY_ENDERMAN,
       })
-      yield* Ref.set(state.targetPosition, playerNear)
+      yield* player.api.moveTo(playerNear)
       yield* Ref.set(state.rollSeed, seed)
 
       yield* runFrame(stages, STRIDE)
@@ -1246,15 +1295,26 @@ describe('the enderman slice: a rule that returns a displacement, run over a ros
     }),
   )
 
-  it.effect('REGRESSION: an idle enderman costs one shared step object and does not move the seed', () =>
+  it.effect('REGRESSION: endermen that stay cost one shared step object', () =>
     Effect.gen(function* () {
       // The mob-side allocation property, extended to the behaviour that arrived
       // with a random number generator attached. A rule that consults a roll is
       // the obvious place for an idle frame to start allocating again — one
       // `RollDraw` per mob per frame is DN-GP-1's mistake made out of objects —
-      // so the enderman draws NOTHING when it has nobody to chase and no blow to
-      // answer, and the generator is left exactly where it was found.
+      // so this seed makes every chase roll say Stay and isolates allocation.
       const { roster, state, stages } = yield* slice(world([]))
+
+      const draws = 3 * 10
+      const seed = seedSuchThat((candidate) => {
+        let cursor = candidate
+        for (let index = 0; index < draws; index += 1) {
+          const draw = nextRoll(cursor)
+          if (draw.roll < ENDERMAN_CHASE_TELEPORT_CHANCE) return false
+          cursor = draw.seed
+        }
+        return true
+      })
+      yield* Ref.set(state.rollSeed, seed)
 
       yield* Effect.forEach([0, 1, 2], (index) =>
         roster.api.spawn({
@@ -1264,9 +1324,6 @@ describe('the enderman slice: a rule that returns a displacement, run over a ros
           behaviour: STEADY_ENDERMAN,
         }),
       )
-      // No target. `despawnVerdict` KEEPS a mob in a world with nobody in it —
-      // 「a world with nobody in it has nobody to be far from」 — so all three
-      // survive to be ignored.
       const before = yield* roster.api.entities
       yield* runFrames(stages, 10, STRIDE)
 
@@ -1274,7 +1331,7 @@ describe('the enderman slice: a rule that returns a displacement, run over a ros
       const calls = yield* roster.calls
       expect(calls.distinctStepObjects).toBe(1)
       expect(calls.sweeps).toBe(10)
-      expect(yield* Ref.get(state.rollSeed)).toBe(DEFAULT_ROLL_SEED)
+      expect(yield* Ref.get(state.rollSeed)).toBe(drawRolls(seed, draws).seed)
     }),
   )
 
@@ -1291,7 +1348,7 @@ describe('the enderman slice: a rule that returns a displacement, run over a ros
       // consecutive frames with a target and no blow, in which the ONLY thing
       // that can move the mob is the 5% chase roll. A frame counter would have
       // moved it on the 41st.
-      const { roster, state, stages } = yield* slice(world([]))
+      const { roster, state, player, stages } = yield* slice(world([]))
 
       const frames = 60
       const seed = seedSuchThat((candidate) => {
@@ -1312,7 +1369,7 @@ describe('the enderman slice: a rule that returns a displacement, run over a ros
         healthPoints: ENDERMAN_HEALTH,
         behaviour: STEADY_ENDERMAN,
       })
-      yield* Ref.set(state.targetPosition, playerNear)
+      yield* player.api.moveTo(playerNear)
       yield* Ref.set(state.rollSeed, seed)
       yield* runFrames(stages, frames, STRIDE)
 
@@ -1328,14 +1385,14 @@ describe('the enderman slice: a rule that returns a displacement, run over a ros
       // than as a `Ref`, so "two runs agree" is also what pins that the cursor is
       // handed back rather than dropped.
       const run = Effect.gen(function* () {
-        const { roster, state, stages } = yield* slice(world([]))
+        const { roster, state, player, stages } = yield* slice(world([]))
         yield* roster.api.spawn({
           kind: ENDERMAN_KIND,
           feetPosition: endermanAt,
           healthPoints: ENDERMAN_HEALTH,
           behaviour: STEADY_ENDERMAN,
         })
-        yield* Ref.set(state.targetPosition, playerNear)
+        yield* player.api.moveTo(playerNear)
         yield* runFrames(stages, 40, STRIDE)
 
         return {
@@ -1362,7 +1419,7 @@ describe('the enderman slice: a rule that returns a displacement, run over a ros
       // failure this prevents is not cosmetic: dispatching on the tag alone would
       // make a pig carrying a fuse explode, and a creeper carrying a flinch
       // consult the teleport rule instead of burning down.
-      const { roster, state, stages } = yield* slice(world([]))
+      const { roster, state, player, time, stages } = yield* slice(world([]))
 
       const pig = EntityKind('pig')
       yield* roster.api.spawn({
@@ -1384,8 +1441,8 @@ describe('the enderman slice: a rule that returns a displacement, run over a ros
         // Two blocks from the player, which is well inside ignition range.
         behaviour: DORMANT_FUSE,
       })
-      yield* daylight(state)
-      yield* Ref.set(state.targetPosition, playerNear)
+      yield* daylight(time)
+      yield* player.api.moveTo(playerNear)
 
       const before = yield* roster.api.entities
       yield* runFrames(stages, 10, STRIDE)
@@ -1469,7 +1526,7 @@ describe('the crater is the other radius, and it is the falling-block queue’s 
       // disturbance for a write that changed nothing is how a cheap event
       // becomes a per-tick workload. A creeper detonating in mid-air writes air
       // over air 123 times and must leave the queue empty.
-      const { store, roster, state, stages } = yield* slice(world([]))
+      const { store, roster, state, player, stages } = yield* slice(world([]))
 
       yield* roster.api.spawn({
         kind: CREEPER_KIND,
@@ -1478,7 +1535,7 @@ describe('the crater is the other radius, and it is the falling-block queue’s 
         // Already one step from the end, so the very next frame detonates.
         behaviour: { _tag: 'Lit', burnedSecs: 1.4 },
       })
-      yield* Ref.set(state.targetPosition, playerNear)
+      yield* player.api.moveTo(playerNear)
       yield* runFrame(stages, STRIDE)
 
       expect(yield* roster.api.count).toBe(0)
@@ -1598,7 +1655,11 @@ describe('the mining site slice: dig, drop, place', () => {
   it.effect('places a block back, spends the item, and the cascade picks it up', () =>
     Effect.gen(function* () {
       const floorLevel: BlockPosition = { x: 4, y: 60, z: 3 }
-      const { store, state, stages } = yield* slice(world([[floorLevel, STONE]]))
+      const { store, state, stages } = yield* slice(
+        world([[floorLevel, STONE]]),
+        ['0,0'],
+        onePlacementItem('sand'),
+      )
 
       yield* requestPlace(state, cell, 'sand')
       yield* runFrame(stages)
@@ -1624,6 +1685,8 @@ describe('the mining site slice: dig, drop, place', () => {
           [under, STONE],
           [cell, STONE],
         ]),
+        ['0,0'],
+        onePlacementItem('sand'),
       )
 
       yield* holdWoodenPickaxe(state)
@@ -1665,7 +1728,7 @@ describe('the mining site slice: dig, drop, place', () => {
    */
   it.effect('the loot chain reaches mc-sim’s inventory — the §2.3-1 worked example, end to end', () =>
     Effect.gen(function* () {
-      const { inventory, state, stages } = yield* slice(world([[cell, STONE]]))
+      const { inventory, roster, state, stages } = yield* slice(world([[cell, STONE]]))
 
       yield* holdWoodenPickaxe(state)
       yield* requestBreak(state, cell)
@@ -1687,9 +1750,8 @@ describe('the mining site slice: dig, drop, place', () => {
       // inventory; `test/stage-registration.test.ts` pins the whole key list.
       expect(Object.keys(state)).not.toContain('inventory')
 
-      // And nothing spilled, so the one Ref that survives the wiring is empty —
-      // which is its ordinary state.
-      expect(yield* Ref.get(state.leftoverItems)).toStrictEqual([])
+      // The inventory accepted the whole stack, so no dropped entity exists.
+      expect(yield* roster.api.count).toBe(0)
     }),
   )
 
@@ -1726,52 +1788,132 @@ describe('the mining site slice: dig, drop, place', () => {
     }),
   )
 
-  /*
-   * THE LEFTOVER, which is the half of `add`'s contract that is easy to drop.
-   *
-   * `add` resolves to what did NOT fit, so `0` is success and a non-zero answer
-   * is items the player earned and does not have. A stage that treated the
-   * number as a success flag — or ignored it, which is the same thing — would
-   * pass every other test in this file: the world changes identically, the
-   * deposit is made identically, and the only difference is an item that
-   * silently ceases to exist. mc-sim's own comment on `add` names this
-   * repository as the party responsible for not doing that.
-   *
-   * This repository cannot yet do what mc-sim expects with it — 「the caller in
-   * mx-gameplay turns it into a dropped-item entity」 needs an arm on
-   * `MobBehaviour`, a matching arm in `repairMobBehaviour`, and a pickup rule
-   * none of which exist — so the honest thing is to KEEP it, and that is
-   * `state.leftoverItems`. What must not happen is silence.
-   */
-  it.effect('REGRESSION: what the inventory refuses is kept, not silently dropped', () =>
+  it.effect('spawns the full refused stack at the broken block', () =>
     Effect.gen(function* () {
-      const store = yield* makeChunkStoreDouble(world([[cell, STONE]]), ['0,0'])
-      const roster = yield* makeEntityManagerDouble<MobBehaviour>()
-      const player = yield* makePlayerServiceDouble()
-      // 36 slots x 64 cobblestone. The only arrangement in which `add`
-      // overflows, and it is built through the service's own `add` rather than
-      // written out — see `test/support/inventory-service-double.ts`.
-      const inventory = yield* makeInventoryDouble(brimming('cobblestone'))
-      const state = yield* makeGameplayFrameState
-      const stages = gameplayStages(state, store.api, roster.api, inventory.api, player.api)
+      const { inventory, roster, state, stages, store } = yield* slice(
+        world([[cell, STONE]]),
+        ['0,0'],
+        brimming('cobblestone'),
+      )
 
       yield* holdWoodenPickaxe(state)
       yield* requestBreak(state, cell)
       yield* runFrame(stages)
 
-      // The swing LANDED — the block is gone from the world, which is what
-      // makes the lost item lost rather than merely unearned.
       expect(yield* store.blockAt(cell)).toBe(AIR_BLOCK_ID)
-
-      // The call was made and the service refused all of it.
       expect(yield* inventory.deposits).toStrictEqual([
         { item: 'cobblestone', count: 1, leftover: 1 },
       ])
 
-      // ...and the refusal is IN THE REF, with the item's name and the count
-      // that did not fit, which is exactly what a dropped-item entity needs.
-      expect(yield* Ref.get(state.leftoverItems)).toStrictEqual([
-        { item: 'cobblestone', count: 1 },
+      const dropped = yield* soleEntity(roster)
+      expect(dropped?.kind).toBe(DROPPED_ITEM_KIND)
+      expect(dropped?.feetPosition).toStrictEqual(cell)
+      expect(isDroppedItemBehaviour(dropped?.behaviour)).toBe(true)
+      if (dropped !== undefined && isDroppedItemBehaviour(dropped.behaviour)) {
+        expect(dropped.behaviour.item).toBe('cobblestone')
+        expect(dropped.behaviour.count).toBe(1)
+        expect(dropped.behaviour.durability).toBeNull()
+      }
+    }),
+  )
+
+  it.effect('spawns only the part of a mined stack that the inventory refused', () =>
+    Effect.gen(function* () {
+      const GLOWSTONE: BlockId = 15
+      const almostFull = brimming('glowstone_dust').map((slot, index) =>
+        index === 0 ? { item: 'glowstone_dust' as const, count: StackCount(63) } : slot,
+      )
+      const { inventory, roster, state, stages } = yield* slice(
+        world([[cell, GLOWSTONE]]),
+        ['0,0'],
+        almostFull,
+      )
+
+      yield* requestBreak(state, cell)
+      yield* runFrame(stages)
+
+      expect(yield* inventory.deposits).toStrictEqual([
+        { item: 'glowstone_dust', count: 2, leftover: 1 },
+      ])
+      expect(yield* inventory.api.countOf('glowstone_dust')).toBe(36 * 64)
+
+      const dropped = yield* soleEntity(roster)
+      expect(dropped?.feetPosition).toStrictEqual(cell)
+      if (dropped !== undefined && isDroppedItemBehaviour(dropped.behaviour)) {
+        expect(dropped.behaviour.item).toBe('glowstone_dust')
+        expect(dropped.behaviour.count).toBe(1)
+        expect(dropped.behaviour.durability).toBeNull()
+      } else {
+        expect.fail('expected a dropped-item entity')
+      }
+    }),
+  )
+
+  it.effect('keeps each refused drop at its own break position in one frame', () =>
+    Effect.gen(function* () {
+      const { inventory, roster, state, stages } = yield* slice(
+        world([
+          [cell, STONE],
+          [under, STONE],
+        ]),
+        ['0,0'],
+        brimming('cobblestone'),
+      )
+
+      yield* holdWoodenPickaxe(state)
+      yield* requestBreak(state, cell)
+      yield* requestBreak(state, under)
+      yield* runFrame(stages)
+
+      expect(yield* inventory.deposits).toStrictEqual([
+        { item: 'cobblestone', count: 1, leftover: 1 },
+        { item: 'cobblestone', count: 1, leftover: 1 },
+      ])
+      expect(
+        (yield* roster.api.entities).map((entity) => ({
+          at: entity.feetPosition,
+          drop: isDroppedItemBehaviour(entity.behaviour)
+            ? {
+                item: entity.behaviour.item,
+                count: entity.behaviour.count,
+                durability: entity.behaviour.durability,
+              }
+            : undefined,
+        })),
+      ).toStrictEqual([
+        { at: cell, drop: { item: 'cobblestone', count: 1, durability: null } },
+        { at: under, drop: { item: 'cobblestone', count: 1, durability: null } },
+      ])
+    }),
+  )
+
+  it.effect('picks the refused drop up on the next frame and despawns it', () =>
+    Effect.gen(function* () {
+      const { inventory, roster, state, player, stages } = yield* slice(
+        world([[cell, STONE]]),
+        ['0,0'],
+        brimming('cobblestone'),
+      )
+
+      yield* holdWoodenPickaxe(state)
+      yield* requestBreak(state, cell)
+      yield* player.api.moveTo({ x: cell.x + 0.5, y: cell.y, z: cell.z })
+      yield* runFrame(stages)
+
+      expect(yield* roster.api.count).toBe(1)
+      expect(yield* inventory.deposits).toStrictEqual([
+        { item: 'cobblestone', count: 1, leftover: 1 },
+      ])
+
+      yield* inventory.api.remove('cobblestone', 1)
+      const beforePickup = yield* inventory.api.countOf('cobblestone')
+      yield* runFrame(stages)
+
+      expect(yield* roster.api.count).toBe(0)
+      expect(yield* inventory.api.countOf('cobblestone')).toBe(beforePickup + 1)
+      expect(yield* inventory.deposits).toStrictEqual([
+        { item: 'cobblestone', count: 1, leftover: 1 },
+        { item: 'cobblestone', count: 1, leftover: 0 },
       ])
     }),
   )
@@ -1803,17 +1945,6 @@ describe('the ignition slice: an item use reaches the world', () => {
       (coord) => `${String(coord.cx)},${String(coord.cz)}`,
     )
 
-  /** What mc-render's input stage will do, once mc-render is published. */
-  const requestItemUse = (
-    state: { readonly pendingItemUses: Ref.Ref<ReadonlyArray<ItemUseRequest>> },
-    position: BlockPosition,
-    heldItem: ItemUseRequest['heldItem'],
-  ): Effect.Effect<void> =>
-    Ref.update(state.pendingItemUses, (queue): ReadonlyArray<ItemUseRequest> => [
-      ...queue,
-      { positionKey: positionKeyOf(position), heldItem },
-    ])
-
   const requestPlace = (
     state: { readonly pendingPlacements: Ref.Ref<ReadonlyArray<PlacementRequest>> },
     position: BlockPosition,
@@ -1832,7 +1963,7 @@ describe('the ignition slice: an item use reaches the world', () => {
         residentAround(origin),
       )
 
-      yield* requestItemUse(state, origin, 'flint_and_steel')
+      yield* requestItemUse(state, 'portal-use', origin, 'flint_and_steel')
       yield* runFrame(stages)
 
       expect(yield* store.blockAt(origin)).toBe(NETHER_PORTAL)
@@ -1844,6 +1975,13 @@ describe('the ignition slice: an item use reaches the world', () => {
       // become a call to.
       expect(yield* Ref.get(state.usedItems)).toStrictEqual(['flint_and_steel'])
       expect(yield* Ref.get(state.consumedItems)).toStrictEqual([])
+      const [result] = yield* drainItemUseResults(state)
+      expect(result).toMatchObject({
+        requestId: 'portal-use',
+        heldItem: 'flint_and_steel',
+        success: true,
+        outcome: { _tag: 'Portal', outcome: { _tag: 'Lit' } },
+      })
     }),
   )
 
@@ -1851,11 +1989,19 @@ describe('the ignition slice: an item use reaches the world', () => {
     Effect.gen(function* () {
       const { store, state, stages } = yield* slice(world([]), residentAround(origin))
 
-      yield* requestItemUse(state, origin, 'fire_charge')
+      yield* requestItemUse(state, 'fire-use', origin, 'fire_charge')
       yield* runFrame(stages)
 
       expect(yield* store.blockAt(origin)).toBe(FIRE)
       expect(yield* Ref.get(state.usedItems)).toStrictEqual(['fire_charge'])
+      expect(yield* drainItemUseResults(state)).toStrictEqual([
+        {
+          requestId: 'fire-use',
+          heldItem: 'fire_charge',
+          success: true,
+          outcome: { _tag: 'Fire', outcome: { _tag: 'Lit', position: origin } },
+        },
+      ])
     }),
   )
 
@@ -1866,10 +2012,41 @@ describe('the ignition slice: an item use reaches the world', () => {
       // must not wear a flint and steel out.
       const { state, stages } = yield* slice(world([[origin, STONE]]), residentAround(origin))
 
-      yield* requestItemUse(state, origin, 'flint_and_steel')
+      yield* requestItemUse(state, 'refused-use', origin, 'flint_and_steel')
       yield* runFrame(stages)
 
       expect(yield* Ref.get(state.usedItems)).toStrictEqual([])
+      expect(yield* drainItemUseResults(state)).toStrictEqual([
+        {
+          requestId: 'refused-use',
+          heldItem: 'flint_and_steel',
+          success: false,
+          outcome: { _tag: 'Fire', outcome: { _tag: 'Occupied', existing: STONE } },
+        },
+      ])
+    }),
+  )
+
+  it.effect('correlates multiple requests in order and drains their results exactly once', () =>
+    Effect.gen(function* () {
+      const second: BlockPosition = { ...origin, x: origin.x + 1 }
+      const { state, stages } = yield* slice(world([]), residentAround(origin))
+
+      yield* requestItemUse(state, 'first', origin, 'flint_and_steel')
+      yield* requestItemUse(state, 'second', second, 'fire_charge')
+      yield* runFrame(stages)
+
+      const results = yield* drainItemUseResults(state)
+      expect(results.map((result) => ({
+        requestId: result.requestId,
+        heldItem: 'heldItem' in result ? result.heldItem : undefined,
+        success: result.success,
+      })))
+        .toStrictEqual([
+          { requestId: 'first', heldItem: 'flint_and_steel', success: true },
+          { requestId: 'second', heldItem: 'fire_charge', success: true },
+        ])
+      expect(yield* drainItemUseResults(state)).toStrictEqual([])
     }),
   )
 
@@ -1895,6 +2072,7 @@ describe('the ignition slice: an item use reaches the world', () => {
       const { store, state, stages } = yield* slice(
         world(alreadyBuilt.map((cell) => [cell, OBSIDIAN] as const)),
         residentAround(origin),
+        onePlacementItem('obsidian'),
       )
 
       // ...and without it there is no portal, so the assertion below is about
@@ -1902,7 +2080,7 @@ describe('the ignition slice: an item use reaches the world', () => {
       expect(yield* ignitePortal(store.api, origin)).toStrictEqual({ _tag: 'NoFrame' })
 
       yield* requestPlace(state, lastCell, 'obsidian')
-      yield* requestItemUse(state, origin, 'flint_and_steel')
+      yield* requestItemUse(state, 'placed-then-lit', origin, 'flint_and_steel')
       yield* runFrame(stages)
 
       expect(yield* Ref.get(state.consumedItems)).toStrictEqual(['obsidian'])
@@ -1934,13 +2112,92 @@ describe('the ignition slice: an item use reaches the world', () => {
         residentAround(origin),
       )
 
-      yield* requestItemUse(state, origin, 'flint_and_steel')
+      yield* requestItemUse(state, 'no-fall', origin, 'flint_and_steel')
       yield* runFrame(stages)
 
       // A break disturbs because it makes a hole. Both ignitions write into
       // cells that were air, which is the opposite of one — so the queue must
       // be empty even though six blocks changed.
       expect((yield* Ref.get(state.fallingBlocks)).pending.size).toBe(0)
+    }),
+  )
+})
+
+describe('the potato farming slice: host input reaches farming rules', () => {
+  const DIRT = blockIdOf('dirt') ?? 3
+  const FARMLAND = blockIdOf('farmland') ?? 49
+  const POTATO_CROP = blockIdOf('potato_crop') ?? 72
+  const soil: BlockPosition = { x: 8, y: 64, z: 8 }
+
+  it.effect('all published hoe tiers till soil and report one durability point', () =>
+    Effect.gen(function* () {
+      const hoes = ['wooden_hoe', 'stone_hoe', 'iron_hoe', 'diamond_hoe'] as const
+      const cells = hoes.map((_, index): BlockPosition => ({ ...soil, x: soil.x + index }))
+      const { store, state, stages } = yield* slice(
+        world(cells.map((cell) => [cell, DIRT] as const)),
+      )
+
+      for (const [index, hoe] of hoes.entries()) {
+        yield* requestSoilTill(state, `till-${hoe}`, cells[index]!, hoe)
+      }
+      yield* runFrame(stages)
+
+      for (const cell of cells) {
+        expect(yield* store.blockAt(cell)).toBe(FARMLAND)
+      }
+      expect(yield* drainItemUseResults(state)).toStrictEqual(
+        hoes.map((hoe, index) => ({
+          action: 'TillSoil',
+          requestId: `till-${hoe}`,
+          heldItem: hoe,
+          success: true,
+          durabilityDamage: 1,
+          outcome: { _tag: 'tilled', at: cells[index] },
+        })),
+      )
+    }),
+  )
+
+  it.effect('plants, exposes mature harvest drops, and exposes potato food use', () =>
+    Effect.gen(function* () {
+      const crop: BlockPosition = { ...soil, y: soil.y + 1 }
+      const { store, state, stages } = yield* slice(world([[soil, FARMLAND]]))
+
+      yield* requestPotatoPlanting(state, 'plant', soil)
+      yield* requestPotatoHarvest(state, 'harvest', crop, true, 0.5)
+      yield* requestPotatoFoodUse(state, 'eat', {
+        healthPoints: 20,
+        hungerPoints: 10,
+        maxHungerPoints: 20,
+      })
+      yield* runFrame(stages)
+
+      expect(yield* store.blockAt(crop)).toBe(POTATO_CROP)
+      expect(yield* drainItemUseResults(state)).toStrictEqual([
+        {
+          action: 'PlantPotato',
+          requestId: 'plant',
+          heldItem: 'potato',
+          success: true,
+          consumedCount: 1,
+          outcome: { _tag: 'planted', crop: 'potato_crop', at: crop },
+        },
+        {
+          action: 'HarvestPotato',
+          requestId: 'harvest',
+          positionKey: positionKeyOf(crop),
+          success: true,
+          outcome: { _tag: 'drops', drops: [{ item: 'potato', count: 4 }] },
+        },
+        {
+          action: 'EatPotato',
+          requestId: 'eat',
+          heldItem: 'potato',
+          success: true,
+          consumedCount: 1,
+          outcome: { _tag: 'consume', count: 1, foodPoints: 1, saturationModifier: 0.6 },
+        },
+      ])
     }),
   )
 })
