@@ -2504,6 +2504,17 @@ export const requestTargetedBlockUse = (
     return target
   })
 
+/** Resolve the block currently under the crosshair. */
+export const resolveTargetedBlock = (
+  store: ChunkStoreApi,
+  player: PlayerServiceApi,
+  maxDistance: number = DEFAULT_BLOCK_REACH,
+): Effect.Effect<Option.Option<BlockTarget>> =>
+  Effect.gen(function* () {
+    const pose = yield* player.pose
+    return targetBlockFromPlayerPose(pose, maxDistance, targetabilityFromStore(store))
+  })
+
 /** Resolve the block under the crosshair and enqueue an item use in its adjacent cell. */
 export const requestTargetedItemUse = (
   state: GameplayFrameState,
@@ -2514,8 +2525,7 @@ export const requestTargetedItemUse = (
   maxDistance: number = DEFAULT_BLOCK_REACH,
 ): Effect.Effect<Option.Option<BlockTarget>> =>
   Effect.gen(function* () {
-    const pose = yield* player.pose
-    const target = targetBlockFromPlayerPose(pose, maxDistance, targetabilityFromStore(store))
+    const target = yield* resolveTargetedBlock(store, player, maxDistance)
     if (Option.isSome(target)) {
       yield* requestItemUse(state, requestId, target.value.adjacentPosition, heldItem)
     }
