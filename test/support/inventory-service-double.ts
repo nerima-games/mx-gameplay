@@ -516,6 +516,7 @@ export const makeInventoryDouble = (
           }),
         createContainer: () => refuse('createContainer'),
         containerSnapshot: () => refuse('containerSnapshot'),
+        containerSnapshotAt: () => refuse('containerSnapshotAt'),
         containerStorageSnapshot: refuse('containerStorageSnapshot'),
         restoreContainerStorage: () => refuse('restoreContainerStorage'),
         transferContainerItem: () => refuse('transferContainerItem'),
