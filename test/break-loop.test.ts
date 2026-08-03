@@ -25,6 +25,7 @@
  */
 import { describe, expect, it } from '@effect/vitest'
 import { Effect, Option, Ref } from 'effect'
+import { positionKey } from '../src/domain/position-key'
 import {
   drainBlockUseResults,
   gameplayStages,
@@ -298,7 +299,7 @@ describe('the break loop', () => {
       const state = yield* makeGameplayFrameState
       const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player, world.time)
 
-      yield* Ref.update(state.pendingBreaks, (pending) => [...pending, '3,64,7'])
+      yield* Ref.update(state.pendingBreaks, (pending) => [...pending, positionKey('3,64,7')])
       yield* requestBlockBreak(state, AT, { heldTier: 'wooden' })
       yield* Ref.set(state.heldTool, NO_TOOL)
       yield* runInteractions(stages as never)
@@ -313,7 +314,7 @@ describe('the break loop', () => {
       const state = yield* makeGameplayFrameState
       const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player, world.time)
 
-      yield* Ref.update(state.pendingBreaks, (pending) => [...pending, '3,64,7'])
+      yield* Ref.update(state.pendingBreaks, (pending) => [...pending, positionKey('3,64,7')])
       yield* requestBlockBreak(state, AT, NO_TOOL)
       yield* Ref.set(state.heldTool, { heldTier: 'wooden' })
       yield* runInteractions(stages as never)

@@ -34,6 +34,7 @@ import {
   type FluidProbe,
   type FluidWorkItem,
 } from '../src/domain/fluid-frontier'
+import { positionKey } from '../src/domain/position-key'
 
 const ALL_CAUSES: ReadonlyArray<DeathCause> = [
   'fall',
@@ -63,7 +64,7 @@ describe('falling blocks: the O(chunks × blocks) full scan must not come back',
 
   it.effect('REGRESSION: one tick applies at most FALLING_BLOCK_MOVES_PER_TICK moves', () =>
     Effect.sync(() => {
-      const positions = Array.from({ length: 500 }, (_, index) => `0,${String(index)},0`)
+      const positions = Array.from({ length: 500 }, (_, index) => positionKey(`0,${String(index)},0`))
       const queue = disturb(emptyFallingBlockQueue, positions)
       const { batch, rest } = takeBatch(queue)
 
@@ -79,21 +80,21 @@ describe('falling blocks: the O(chunks × blocks) full scan must not come back',
       // (packages/world/application/falling-block-maintenance.ts:24-27); if the
       // destination is not re-queued the sand stops one cell short and stays
       // there until something unrelated dirties the chunk.
-      const afterMove = settled(emptyFallingBlockQueue, ['0,63,0'])
+      const afterMove = settled(emptyFallingBlockQueue, [positionKey('0,63,0')])
       expect(takeBatch(afterMove).batch).toStrictEqual(['0,63,0'])
     }),
   )
 
   it.effect('re-disturbing a pending position keeps its original queue position, so a hot spot cannot starve the queue', () =>
     Effect.sync(() => {
-      const queue = disturb(disturb(emptyFallingBlockQueue, ['a', 'b']), ['a', 'c'])
+      const queue = disturb(disturb(emptyFallingBlockQueue, [positionKey('a'), positionKey('b')]), [positionKey('a'), positionKey('c')])
       expect(takeBatch(queue).batch).toStrictEqual(['a', 'b', 'c'])
     }),
   )
 
   it.effect('a zero or negative budget takes nothing rather than throwing or taking everything', () =>
     Effect.sync(() => {
-      const queue = disturb(emptyFallingBlockQueue, ['a', 'b'])
+      const queue = disturb(emptyFallingBlockQueue, [positionKey('a'), positionKey('b')])
       expect(takeBatch(queue, 0).batch).toStrictEqual([])
       expect(takeBatch(queue, -1).rest).toBe(queue)
     }),
@@ -101,8 +102,8 @@ describe('falling blocks: the O(chunks × blocks) full scan must not come back',
 
   it.effect('disturb does not mutate the queue it was given', () =>
     Effect.sync(() => {
-      const before = disturb(emptyFallingBlockQueue, ['a'])
-      const after = disturb(before, ['b'])
+      const before = disturb(emptyFallingBlockQueue, [positionKey('a')])
+      const after = disturb(before, [positionKey('b')])
       expect([...before.pending]).toStrictEqual(['a'])
       expect([...after.pending]).toStrictEqual(['a', 'b'])
     }),
@@ -111,17 +112,17 @@ describe('falling blocks: the O(chunks × blocks) full scan must not come back',
 
 describe('fluids: the frontier budget that bought 37–55×', () => {
   const frontierOf = (water: number, lava: number): ReadonlyArray<FluidWorkItem> => [
-    ...Array.from({ length: water }, (_, i): FluidWorkItem => ({ key: `w${String(i)}`, kind: 'water' })),
-    ...Array.from({ length: lava }, (_, i): FluidWorkItem => ({ key: `l${String(i)}`, kind: 'lava' })),
+    ...Array.from({ length: water }, (_, i): FluidWorkItem => ({ key: positionKey(`w${String(i)}`), kind: 'water' })),
+    ...Array.from({ length: lava }, (_, i): FluidWorkItem => ({ key: positionKey(`l${String(i)}`), kind: 'lava' })),
   ]
   const cell: FluidCell = {
-    key: '0,64,0',
+    key: positionKey('0,64,0'),
     kind: 'water',
     level: 0,
     source: true,
     falling: false,
   }
-  const probe = (key: string, state: FluidProbe['state']): FluidProbe => ({ key, state })
+  const probe = (key: string, state: FluidProbe['state']): FluidProbe => ({ key: positionKey(key), state })
   const transition = (overrides: Partial<Parameters<typeof transitionFluidCell>[0]> = {}) =>
     transitionFluidCell({
       cell,
@@ -175,7 +176,7 @@ describe('fluids: the frontier budget that bought 37–55×', () => {
       })
       expect(blocked.changes).toStrictEqual([])
       const unsupported = transition({
-        cell: { ...cell, source: false, parent: '-1,64,0' },
+        cell: { ...cell, source: false, parent: positionKey('-1,64,0') },
         supported: false,
       })
       expect(unsupported.changes).toStrictEqual([{ _tag: 'RemoveFluid', key: cell.key }])
@@ -281,8 +282,8 @@ describe('fluids: the frontier budget that bought 37–55×', () => {
   it.effect('same-position water and lava have distinct frontier identities', () =>
     Effect.sync(() => {
       const frontier: ReadonlyArray<FluidWorkItem> = [
-        { key: 'interface', kind: 'water' },
-        { key: 'interface', kind: 'lava' },
+        { key: positionKey('interface'), kind: 'water' },
+        { key: positionKey('interface'), kind: 'lava' },
       ]
       const inactive = splitBudget(frontier, { lavaTickActive: false, budget: 2 })
 
@@ -302,9 +303,9 @@ describe('fluids: the frontier budget that bought 37–55×', () => {
   it.effect('repeated inactive ticks remain deterministic and bounded', () =>
     Effect.sync(() => {
       const initial: ReadonlyArray<FluidWorkItem> = [
-        { key: 'shared', kind: 'water' },
-        { key: 'shared', kind: 'lava' },
-        { key: 'lava-only', kind: 'lava' },
+        { key: positionKey('shared'), kind: 'water' },
+        { key: positionKey('shared'), kind: 'lava' },
+        { key: positionKey('lava-only'), kind: 'lava' },
       ]
       const run = (): ReadonlyArray<ReadonlyArray<FluidWorkItem>> => {
         let frontier = initial

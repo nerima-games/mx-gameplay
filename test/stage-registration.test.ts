@@ -56,6 +56,7 @@ import {
 } from '../src/domain/frame-contract'
 import { disturb, takeBatch } from '../src/domain/falling-block'
 import type { FluidWorkItem } from '../src/domain/fluid-frontier'
+import { positionKey } from '../src/domain/position-key'
 import { DEFAULT_ROLL_SEED } from '../src/domain/frame-rolls'
 import {
   gameplayStages,
@@ -450,7 +451,7 @@ describe('stage behaviour', () => {
       // A TNT blast under a desert. The world is empty, so none of these
       // positions produces a move — the assertion is about the BUDGET, which
       // bounds how many positions are examined rather than how many move.
-      const blast = Array.from({ length: 100 }, (_, index) => `0,${String(index)},0`)
+      const blast = Array.from({ length: 100 }, (_, index) => positionKey(`0,${String(index)},0`))
       yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, blast))
 
       yield* entities?.run(DeltaTimeSecs(0.016)) ?? Effect.void
@@ -467,8 +468,8 @@ describe('stage behaviour', () => {
       const fluids = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids)
 
       yield* Ref.set(state.fluidFrontier, [
-        { key: 'lava-a', kind: 'lava' },
-        { key: 'lava-b', kind: 'lava' },
+        { key: positionKey('lava-a'), kind: 'lava' },
+        { key: positionKey('lava-b'), kind: 'lava' },
       ])
 
       // Tick 1: lava's tick is inactive (1 % 4 !== 0), so nothing is evaluated
@@ -493,8 +494,8 @@ describe('stage behaviour', () => {
     Effect.gen(function* () {
       const { state, stages } = yield* builtStages
       const fluids = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids)
-      const water = { key: 'water-a', kind: 'water' } as const
-      const lava = { key: 'lava-a', kind: 'lava' } as const
+      const water = { key: positionKey('water-a'), kind: 'water' } as const
+      const lava = { key: positionKey('lava-a'), kind: 'lava' } as const
 
       yield* Ref.set(state.fluidFrontier, [water, lava])
       yield* fluids?.run(DeltaTimeSecs(0.016)) ?? Effect.void
@@ -516,7 +517,7 @@ describe('stage behaviour', () => {
       const { state, stages } = yield* builtStages
       const fluids = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids)
       const work = Array.from({ length: 8 }, (_, index) => ({
-        key: `water-${String(index)}`,
+        key: positionKey(`water-${String(index)}`),
         kind: 'water' as const,
       }))
 
@@ -539,10 +540,10 @@ describe('stage behaviour', () => {
     Effect.gen(function* () {
       const { state, stages } = yield* builtStages
       const fluids = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids)!
-      const latest = { key: 'water-a', kind: 'water' as const, deferred: 2 }
+      const latest = { key: positionKey('water-a'), kind: 'water' as const, deferred: 2 }
 
       yield* Ref.set(state.fluidFrontier, [
-        { key: 'water-a', kind: 'water' },
+        { key: positionKey('water-a'), kind: 'water' },
         latest,
       ])
       yield* fluids.run(DeltaTimeSecs(0.016))
@@ -558,7 +559,7 @@ describe('stage behaviour', () => {
       const { state, store, stages } = yield* builtStagesInWorld(world([[origin, WATER]]))
       const fluids = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids)!
 
-      yield* Ref.set(state.fluidFrontier, [{ key: '0,64,0', kind: 'water' }])
+      yield* Ref.set(state.fluidFrontier, [{ key: positionKey('0,64,0'), kind: 'water' }])
       yield* fluids.run(DeltaTimeSecs(0.016))
 
       expect(yield* store.blockAt({ x: 0, y: 63, z: 0 })).toBe(WATER)
@@ -587,7 +588,7 @@ describe('stage behaviour', () => {
       )
       const fluids = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids)!
 
-      yield* Ref.set(state.fluidFrontier, [{ key: '0,64,0', kind: 'water' }])
+      yield* Ref.set(state.fluidFrontier, [{ key: positionKey('0,64,0'), kind: 'water' }])
       yield* fluids.run(DeltaTimeSecs(0.016))
 
       expect((yield* Ref.get(state.fluidFrontier)).map((item) => item.key)).toStrictEqual([
@@ -625,10 +626,10 @@ describe('stage behaviour', () => {
       )
       const fluids = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids)!
 
-      yield* Ref.set(state.fluidFrontier, [{ key: '0,64,0', kind: 'water' }])
+      yield* Ref.set(state.fluidFrontier, [{ key: positionKey('0,64,0'), kind: 'water' }])
       yield* fluids.run(DeltaTimeSecs(0.016))
       yield* store.api.setBlock(origin, AIR_BLOCK_ID)
-      yield* Ref.set(state.fluidFrontier, [{ key: '0,64,0', kind: 'water' }])
+      yield* Ref.set(state.fluidFrontier, [{ key: positionKey('0,64,0'), kind: 'water' }])
       yield* fluids.run(DeltaTimeSecs(0.016))
       yield* fluids.run(DeltaTimeSecs(0.016))
 
@@ -651,7 +652,7 @@ describe('stage behaviour', () => {
       )
       const fluids = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids)!
 
-      yield* Ref.set(state.fluidFrontier, [{ key: '0,64,0', kind: 'water' }])
+      yield* Ref.set(state.fluidFrontier, [{ key: positionKey('0,64,0'), kind: 'water' }])
       yield* fluids.run(DeltaTimeSecs(0.016))
 
       expect(yield* store.blockAt({ x: 1, y: 64, z: 0 })).toBe(OBSIDIAN)
@@ -668,7 +669,7 @@ describe('stage behaviour', () => {
         ]),
       )
       const fluids = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids)!
-      let source: FluidWorkItem = { key: '15,64,0', kind: 'water' }
+      let source: FluidWorkItem = { key: positionKey('15,64,0'), kind: 'water' }
 
       for (let attempt = 1; attempt <= 8; attempt += 1) {
         yield* Ref.set(state.fluidFrontier, [source])
@@ -1165,7 +1166,7 @@ describe('stage behaviour', () => {
       const first = yield* makeGameplayFrameState
       const second = yield* makeGameplayFrameState
 
-      yield* Ref.update(first.fallingBlocks, (queue) => disturb(queue, ['1,2,3']))
+      yield* Ref.update(first.fallingBlocks, (queue) => disturb(queue, [positionKey('1,2,3')]))
 
       expect((yield* Ref.get(first.fallingBlocks)).pending.size).toBe(1)
       expect((yield* Ref.get(second.fallingBlocks)).pending.size).toBe(0)
@@ -1174,7 +1175,7 @@ describe('stage behaviour', () => {
 
   it.effect('takeBatch preserves disturbance order, which is what makes a scenario test an oracle', () =>
     Effect.sync(() => {
-      const queue = disturb({ pending: new Set<string>() }, ['c', 'a', 'b', 'a'])
+      const queue = disturb({ pending: new Set<ReturnType<typeof positionKey>>() }, [positionKey('c'), positionKey('a'), positionKey('b'), positionKey('a')])
       const { batch, rest } = takeBatch(queue, 2)
       expect(batch).toStrictEqual(['c', 'a'])
       expect([...rest.pending]).toStrictEqual(['b'])

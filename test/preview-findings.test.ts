@@ -30,6 +30,7 @@ import { Effect } from 'effect'
 import { dayPhase, hostileSpawnsAllowed, isNight } from '../src/domain/day-night'
 import { applyDamage, deathMessage, fullHealth, isDead } from '../src/domain/death-cause'
 import { carryOver, splitBudget, type FluidWorkItem } from '../src/domain/fluid-frontier'
+import { positionKey } from '../src/domain/position-key'
 
 describe('F5 — non-finite damage is ignored', () => {
   it.effect('preserves vitals for every non-finite damage amount', () =>
@@ -114,8 +115,8 @@ describe('F6 — the day/night rules are not periodic in the day', () => {
 
 describe('fluid frontier identity and carry-over contract', () => {
   const interfaceCell: ReadonlyArray<FluidWorkItem> = [
-    { key: '10,64,10', kind: 'water' },
-    { key: '10,64,10', kind: 'lava' },
+    { key: positionKey('10,64,10'), kind: 'water' },
+    { key: positionKey('10,64,10'), kind: 'lava' },
   ]
 
   it.effect('identifies work by position and kind so inactive lava survives a water evaluation', () =>
@@ -132,8 +133,8 @@ describe('fluid frontier identity and carry-over contract', () => {
   it.effect('with distinct keys the same call is correct, which is why no existing test caught it', () =>
     Effect.sync(() => {
       const distinct: ReadonlyArray<FluidWorkItem> = [
-        { key: '10,64,10', kind: 'water' },
-        { key: '11,64,10', kind: 'lava' },
+        { key: positionKey('10,64,10'), kind: 'water' },
+        { key: positionKey('11,64,10'), kind: 'lava' },
       ]
       const split = splitBudget(distinct, { lavaTickActive: false, budget: 64 })
       expect(carryOver(distinct, split)).toStrictEqual([{ key: '11,64,10', kind: 'lava' }])

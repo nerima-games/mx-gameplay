@@ -2,6 +2,7 @@ import { describe, expect, it } from '@effect/vitest'
 import type { InventoryServiceApi, Slot } from '@nerima-games/mc-sim'
 import { Effect, Ref } from 'effect'
 import { positionKeyOf } from '../src/domain/block-position-key'
+import { positionKey } from '../src/domain/position-key'
 import type { BlockId, BlockPosition, ChunkStoreApi } from '../src/domain/chunk-store-port'
 import {
   enqueueFluidDisturbance,
@@ -55,7 +56,7 @@ describe('bucket interaction', () => {
         )
         const inventory = yield* makeInventoryDouble(inventoryWith([0, stack('bucket', 1)]))
         const frontier = yield* Ref.make<ReadonlyArray<FluidWorkItem>>([
-          { key: '9,64,9', kind: 'water' },
+          { key: positionKey('9,64,9'), kind: 'water' },
         ])
 
         const outcome = yield* useBucket(store.api, inventory.api, frontier, request('bucket'))
@@ -112,7 +113,7 @@ describe('bucket interaction', () => {
   it.effect('rejects a target in another dimension before reading or mutating state', () =>
     Effect.gen(function* () {
       const initialInventory = inventoryWith([0, stack('bucket', 1)])
-      const initialFrontier = [{ key: '9,64,9', kind: 'lava' }] as const
+        const initialFrontier = [{ key: positionKey('9,64,9'), kind: 'lava' }] as const
       const store = yield* makeChunkStoreDouble(world([[POSITION, WATER]]), LOADED_CHUNKS)
       const inventory = yield* makeInventoryDouble(initialInventory)
       const frontier = yield* Ref.make<ReadonlyArray<FluidWorkItem>>(initialFrontier)
@@ -143,7 +144,7 @@ describe('bucket interaction', () => {
     it.effect(`rejects ${scenario.name} without a partial mutation`, () =>
       Effect.gen(function* () {
         const initialInventory = inventoryWith([0, stack(scenario.held, 1)])
-        const initialFrontier = [{ key: '9,64,9', kind: 'water' }] as const
+        const initialFrontier = [{ key: positionKey('9,64,9'), kind: 'water' }] as const
         const store = yield* makeChunkStoreDouble(world([[POSITION, STONE]]), LOADED_CHUNKS)
         const inventory = yield* makeInventoryDouble(initialInventory)
         const frontier = yield* Ref.make<ReadonlyArray<FluidWorkItem>>(initialFrontier)
@@ -164,7 +165,7 @@ describe('bucket interaction', () => {
       const initialInventory = emptySlots().map((_, index) =>
         index === 0 ? stack('bucket', 2) : stack('stone', 64),
       )
-      const initialFrontier = [{ key: '9,64,9', kind: 'water' }] as const
+        const initialFrontier = [{ key: positionKey('9,64,9'), kind: 'water' }] as const
       const store = yield* makeChunkStoreDouble(world([[POSITION, WATER]]), LOADED_CHUNKS)
       const inventory = yield* makeInventoryDouble(initialInventory)
       const frontier = yield* Ref.make<ReadonlyArray<FluidWorkItem>>(initialFrontier)
@@ -305,10 +306,10 @@ describe('fluid disturbance enqueue', () => {
   it('keeps exactly one current fluid kind per position across varied frontiers', () => {
     for (let size = 0; size < 80; size += 1) {
       const frontier: ReadonlyArray<FluidWorkItem> = Array.from({ length: size }, (_, index) => ({
-        key: `${String(index % 9)},64,0`,
+        key: positionKey(`${String(index % 9)},64,0`),
         kind: index % 2 === 0 ? 'water' : 'lava',
       }))
-      const key = `${String(size % 9)},64,0`
+      const key = positionKey(`${String(size % 9)},64,0`)
       const kind: FluidKind = size % 2 === 0 ? 'lava' : 'water'
 
       const next = enqueueFluidDisturbance(frontier, { key, kind })

@@ -22,6 +22,7 @@
  */
 import { Effect, Ref } from 'effect'
 import { positionKeyOf } from '../../src/domain/block-position-key'
+import { positionKey } from '../../src/domain/position-key'
 import { type BlockId } from '../../src/domain/chunk-store-port'
 import { dayPhase, hostileSpawnsAllowed, isNight } from '../../src/domain/day-night'
 import {
@@ -576,10 +577,10 @@ const deltaTimeUnused = Effect.gen(function* () {
  */
 const lavaRetentionOverlap = Effect.sync((): Check => {
   const frontier: ReadonlyArray<FluidWorkItem> = [
-    { key: 'w0', kind: 'water' },
-    { key: 'l0', kind: 'lava' },
-    { key: 'l1', kind: 'lava' },
-    { key: 'l2', kind: 'lava' },
+    { key: positionKey('w0'), kind: 'water' },
+    { key: positionKey('l0'), kind: 'lava' },
+    { key: positionKey('l1'), kind: 'lava' },
+    { key: positionKey('l2'), kind: 'lava' },
   ]
   const split = splitBudget(frontier, { lavaTickActive: false, budget: 64 })
   const carried = carryOver(frontier, split)
@@ -634,9 +635,9 @@ const lavaRetentionOverlap = Effect.sync((): Check => {
  */
 const carryOverKeyCollision = Effect.sync((): Check => {
   const frontier: ReadonlyArray<FluidWorkItem> = [
-    { key: '10,64,10', kind: 'water' },
-    { key: '10,64,10', kind: 'lava' },
-    { key: '11,64,10', kind: 'water' },
+    { key: positionKey('10,64,10'), kind: 'water' },
+    { key: positionKey('10,64,10'), kind: 'lava' },
+    { key: positionKey('11,64,10'), kind: 'water' },
   ]
   const split = splitBudget(frontier, { lavaTickActive: false, budget: 64 })
   const carried = carryOver(frontier, split)
@@ -695,8 +696,8 @@ const fluidFrontierRace = Effect.gen(function* () {
   const fluids = site.stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids)
 
   const seeded: ReadonlyArray<FluidWorkItem> = [
-    { key: 'a', kind: 'water' },
-    { key: 'b', kind: 'water' },
+    { key: positionKey('a'), kind: 'water' },
+    { key: positionKey('b'), kind: 'water' },
   ]
   yield* Ref.set(site.state.fluidFrontier, seeded)
 

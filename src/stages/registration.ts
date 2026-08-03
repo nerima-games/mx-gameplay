@@ -2319,7 +2319,7 @@ const stepFireTick = (
     const nextFires = new Map(step.state.fires.map((active) => [firePositionKey(active.position), active]))
     const previousFires = new Map(current.fires.map((active) => [firePositionKey(active.position), active]))
     const failedIgnitions = new Set<string>()
-    const disturbed: string[] = []
+    const disturbed: PositionKey[] = []
     for (const mutation of step.mutations) {
       const mutationKey = firePositionKey(mutation.position)
       const outcome = yield* store.setBlock(mutation.position, mutation.block === 'air' ? air : fire)
