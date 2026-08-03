@@ -237,6 +237,11 @@ import type { Dimension, PortalTravelPlan } from '../domain/nether-travel-port'
 import { OUTSIDE_PORTAL, type PortalDwell, stepPortalDwell } from '../domain/portal-dwell'
 import { applyPortalTravel, NO_KNOWN_PORTALS } from '../domain/portal-travel'
 import { PlayerService, type PlayerServiceApi } from '../domain/player-port'
+import {
+  applyEndPortalTravel,
+  isEndPortalBlock,
+  type EndPortalTravelEvent,
+} from '../domain/end-portal-travel'
 import { breakBlock } from '../domain/interactions/break-block'
 import {
   BLOCK_LOOT_ROLLS,
@@ -838,6 +843,8 @@ export type GameplayFrameState = {
   readonly portalCandidates: Ref.Ref<ReadonlyMap<Dimension, ReadonlyArray<BlockPosition>>>
   /** Completed dimension crossings waiting for host-side world generation. */
   readonly portalTravels: Ref.Ref<ReadonlyArray<PortalTravelEvent>>
+  /** Completed End crossings waiting for destination-world materialization. */
+  readonly endPortalTravels: Ref.Ref<ReadonlyArray<EndPortalTravelEvent>>
   /**
    * How long the player has stood in a portal block, or how long until one may
    * fire again.
@@ -1370,6 +1377,7 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
     ReadonlyMap<Dimension, ReadonlyArray<BlockPosition>>
   >(new Map())
   const portalTravels = yield* Ref.make<ReadonlyArray<PortalTravelEvent>>([])
+  const endPortalTravels = yield* Ref.make<ReadonlyArray<EndPortalTravelEvent>>([])
   // OUTSIDE, which is the only honest starting state: a fresh world has nobody
   // standing in a portal, and a `Cooling` default would swallow the first
   // crossing of a session.
@@ -1425,6 +1433,7 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
     tickCount,
     portalCandidates,
     portalTravels,
+    endPortalTravels,
     portalDwell,
   }
   pendingBlockBreakRequests.set(state, {
@@ -1491,8 +1500,10 @@ const stepPortalTravel = (
     }
 
     const reading = yield* store.getBlock(cell)
+    const block = reading._tag === 'Block' ? reading.block : undefined
     const inPortal =
-      reading._tag === 'Block' && blockTypeOfId(reading.block) === 'nether_portal'
+      block !== undefined &&
+      (blockTypeOfId(block) === 'nether_portal' || isEndPortalBlock(block))
 
     const step = stepPortalDwell(yield* Ref.get(state.portalDwell), inPortal, dt)
     yield* Ref.set(state.portalDwell, step.dwell)
@@ -1502,6 +1513,12 @@ const stepPortalTravel = (
     }
 
     const sourceDimension = yield* player.dimension
+    if (block !== undefined && isEndPortalBlock(block)) {
+      const event = yield* applyEndPortalTravel(player, cell)
+      yield* Ref.update(state.endPortalTravels, (completed) => [...completed, event])
+      return
+    }
+
     const destinationDimension: Dimension =
       sourceDimension === 'overworld' ? 'nether' : 'overworld'
     const snapshots = yield* Ref.get(state.portalCandidates)
@@ -1771,6 +1788,11 @@ export const setPortalCandidates = (
 export const drainPortalTravels = (
   state: GameplayFrameState,
 ): Effect.Effect<ReadonlyArray<PortalTravelEvent>> => Ref.getAndSet(state.portalTravels, [])
+
+/** Atomically drain completed End crossings exactly once. */
+export const drainEndPortalTravels = (
+  state: GameplayFrameState,
+): Effect.Effect<ReadonlyArray<EndPortalTravelEvent>> => Ref.getAndSet(state.endPortalTravels, [])
 
 /**
  * Destructively drain evaluated fluid cells at most once, preserving order.

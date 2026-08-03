@@ -792,6 +792,7 @@ describe('stage behaviour', () => {
         'bowShotResults',
         'brewingStand',
         'consumedItems',
+        'endPortalTravels',
         'enderDragonEncounter',
         'enderPearlOutcomes',
         'fallingBlocks',

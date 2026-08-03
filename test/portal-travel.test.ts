@@ -1,4 +1,5 @@
 import { describe, expect, it } from '@effect/vitest'
+import { END_PORTAL_BLOCK } from '@nerima-games/mc-worldgen'
 import { makeTimeService } from '@nerima-games/mc-sim'
 import { Effect, Option, Ref } from 'effect'
 import { type BlockPosition } from '../src/domain/chunk-store-port'
@@ -10,6 +11,7 @@ import { blockIdOf } from '../src/domain/block-vocabulary'
 import { type MobBehaviour } from '../src/domain/entities/mob-frame'
 import { DeltaTimeSecs } from '../src/domain/frame-contract'
 import {
+  drainEndPortalTravels,
   drainPortalTravels,
   gameplayStages,
   makeGameplayFrameState,
@@ -293,6 +295,32 @@ describe('REACHABILITY: the interactions stage performs the crossing', () => {
 
       expect(yield* player.api.dimension).toBe('overworld')
       expect(yield* Ref.get(player.switches)).toStrictEqual([])
+      expect(yield* drainPortalTravels(state)).toStrictEqual([])
+    }),
+  )
+
+  it.effect('an End portal moves the player and emits the worldgen arrival plan', () =>
+    Effect.gen(function* () {
+      const store = yield* makeChunkStoreDouble(world([[spawnCell, END_PORTAL_BLOCK.PORTAL]]), ['0,0'])
+      const roster = yield* makeEntityManagerDouble<MobBehaviour>()
+      const inventory = yield* makeInventoryDouble()
+      const player = yield* makePlayerServiceDouble()
+      const time = yield* makeTimeService()
+      const state = yield* makeGameplayFrameState
+      const stages = gameplayStages(state, store.api, roster.api, inventory.api, player.api, time)
+
+      yield* runFrames(stages, 300, DeltaTimeSecs(0.016))
+
+      expect(yield* player.api.dimension).toBe('end')
+      expect(yield* Ref.get(player.moves)).toStrictEqual([{ x: 0, y: 61, z: 0 }])
+
+      const [completed] = yield* drainEndPortalTravels(state)
+      expect(completed?.sourceDimension).toBe('overworld')
+      expect(completed?.toDimension).toBe('end')
+      expect(completed?.destination).toStrictEqual({ x: 0, y: 61, z: 0 })
+      expect(completed?.arrival?.platform).toHaveLength(25)
+      expect(completed?.arrival?.clear).toHaveLength(27)
+      expect(yield* drainEndPortalTravels(state)).toStrictEqual([])
       expect(yield* drainPortalTravels(state)).toStrictEqual([])
     }),
   )
