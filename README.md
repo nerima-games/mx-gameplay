@@ -204,7 +204,7 @@ Nix を使わない場合は `nix develop --command pnpm lint` のように `nix
   （`dragon-phase.ts:51-52`）で切り替わり速度を返す以上、それは mc-worldgen の構造と
   mc-physics の移動であって、ここに書けるルールではない。アリーナ画面が理由つきでそう書く。
 - **`gameplay:entities` はもう Mob を回している。** mc-sim が `EntityManager` を公開したので
-  （`domain/entity-manager-port.ts` の全面ミラー越し）、この stage は毎フレーム 1 回の sweep で
+  （公開 API を直接利用して）、この stage は毎フレーム 1 回の sweep で
   デスポーン判定 → 導火線 → 爆風の収集を行い、爆風をダメージと**クレーター**に解決し、
   ドロップを outbox に積み、渡されたスポーン候補に判定と個体数上限（`countOfKind` に対する 16）を適用する。
   接合部は `domain/entities/mob-frame.ts` の 1 ファイルで、**`domain/mob/` は 1 行も変わっていない**
@@ -222,11 +222,10 @@ Nix を使わない場合は `nix develop --command pnpm lint` のように `nix
   まだ来ていないのは**測定**のほう —— スポーン候補を探す輪はブロック光度を要求し
   `ChunkStoreApi` に光度クエリが無い、プレイヤー位置は `PlayerService` にあるが
   `cameraPose` が `ClockPort` を要求するのでミラーできない。両方ともアリーナの missing 一覧に行き先つきで載っている。
-- **`domain/chunk-store-port.ts` と `domain/entity-manager-port.ts` と `domain/block-position-key.ts` も削除日が決まっている。**
-  前 2 者は mc-worldgen の `ChunkStore` と mc-sim の `EntityManager` の**全面**ミラー
-  （狭いミラーはタグキーが同じままメソッドが `undefined` になる静かな実行時ハザードで、
-  `test/chunk-store-mirror.test.ts` と `test/entity-manager-mirror.test.ts` が両方向で固定する）、
-  最後は kernel の座標語彙との接続点である。どれもバレルから re-export していない。
+- **`domain/chunk-store-port.ts` と `domain/block-position-key.ts` も削除日が決まっている。**
+  前者は mc-worldgen の `ChunkStore` の**全面**ミラーで、狭いミラーはタグキーが同じまま
+  メソッドが `undefined` になる静かな実行時ハザードになるため、`test/chunk-store-mirror.test.ts` が
+  両方向で固定する。後者は kernel の座標語彙との接続点である。どちらもバレルから re-export していない。
   **例外が 2 つあり、理由が逆である。** `MobBehaviour` と `repairMobBehaviour` は
   `index.ts` に載せている —— mc-sim の型引数 `S` を具体化できるのはルール層だけで、
   `EntityManagerLayer<S>()` の戻り値に `S` が現れない以上、

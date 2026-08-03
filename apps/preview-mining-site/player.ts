@@ -17,7 +17,7 @@
  */
 import { Effect, Ref } from 'effect'
 import type { Dimension } from '../../src/domain/nether-travel-port'
-import type { PlayerPose, PlayerServiceApi } from '../../src/domain/player-port'
+import type { PlayerPose, PlayerServiceApi } from '@nerima-games/mc-sim'
 
 const refuse = <A>(what: string): Effect.Effect<A> =>
   Effect.dieMessage(

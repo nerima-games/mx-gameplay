@@ -25,9 +25,8 @@
  *   - It handles ONE body — the player — and full cubes only. mc-physics'
  *     takes any body and an injected `BlockShapeAt` for slabs and stairs. The
  *     narrowing is what keeps this small enough to be honest about.
- *   - IT IS DELETED WHEN mc-sim PUBLISHES, on the same commit that deletes
- *     `./player-port.ts`'s mirror. `docs/` should carry that as a row rather
- *     than this header being the only record.
+ *   - IT IS DELETED WHEN mc-sim PUBLISHES its collision integration. `docs/`
+ *     should carry that as a row rather than this header being the only record.
  *
  * The cost of the duplicate is stated rather than hidden: two implementations
  * of one algorithm drift, and the drift is invisible because each repository's
@@ -47,7 +46,7 @@
  * inside the floor, and a wall at head height stops them for a frame.
  */
 import type { BlockPosition } from './chunk-store-port'
-import type { Position } from './entity-manager-port'
+import type { Position } from '@nerima-games/mc-kernel'
 import { PLAYER_HALF_HEIGHT, PLAYER_HALF_WIDTH } from './interactions/place-block'
 
 /**
@@ -64,7 +63,7 @@ export type IsBlockSolid = (position: BlockPosition) => boolean
 
 /** A body in flight: where it is, and how fast. */
 export type PlayerBody = {
-  /** CENTRE position, not feet. See `./player-port.ts` on why the name matters. */
+  /** CENTRE position, not feet. See `@nerima-games/mc-sim` on why the name matters. */
   readonly centre: Position
   readonly velocity: Position
 }

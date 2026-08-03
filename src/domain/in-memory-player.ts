@@ -10,7 +10,7 @@
  * IT CLAMPS PITCH, AND THE TEST DOUBLE DOES NOT
  * ---------------------------------------------------------------------------
  *
- * `./player-port.ts` says of `look`: 「Pitch is clamped; yaw is not wrapped.」
+ * `@nerima-games/mc-sim` says of `look`: 「Pitch is clamped; yaw is not wrapped.」
  * `test/support/player-service-double.ts` adds both deltas and clamps neither:
  *
  *     pitchRadians: current.pitchRadians + deltaPitch,
@@ -21,7 +21,7 @@
  * the world turns upside down; past that the yaw basis degenerates and the view
  * spins on its own.
  *
- * THE CLAMP VALUE IS TRANSCRIBED, NOT MIRRORED. `./player-port.ts`'s header
+ * THE CLAMP VALUE IS TRANSCRIBED, NOT MIRRORED. `@nerima-games/mc-sim`'s header
  * lists `PITCH_MAX_RADIANS`, `PITCH_MIN_RADIANS` and `clampPitch` among the
  * things it deliberately does NOT carry, so the number below names its source
  * rather than importing it — the same treatment `./in-memory-inventory`'s
@@ -44,9 +44,9 @@
  * inexpressible, and that is the common case.
  */
 import { Effect, Layer, Ref } from 'effect'
-import { PlayerService, type PlayerPose, type PlayerServiceApi } from './player-port'
+import { PlayerService, type PlayerPose, type PlayerServiceApi } from '@nerima-games/mc-sim'
 import { ClockPort, type CameraPoseSnapshot } from './frame-contract'
-import type { Position } from './entity-manager-port'
+import type { Position } from '@nerima-games/mc-kernel'
 import type { Dimension } from './nether-travel-port'
 
 /**
@@ -96,7 +96,7 @@ export const INITIAL_DIMENSION: Dimension = 'overworld'
 /**
  * How far the eye sits above the feet, in metres.
  *
- * mc-sim's `EYE_LEVEL_OFFSET`, transcribed — `./player-port.ts`'s header lists
+ * mc-sim's `EYE_LEVEL_OFFSET`, transcribed — `@nerima-games/mc-sim`'s header lists
  * it among the constants deliberately not mirrored. 1.62 is vanilla's, and the
  * distinction it encodes is the one `feetPosition`'s name exists to carry: a
  * camera placed at the feet renders from inside the floor.
@@ -139,7 +139,7 @@ export const makeInMemoryPlayer = (
        * instant it was taken.
        *
        * IT TAKES `ClockPort` IN `R`, which is the whole point of the signature.
-       * `./player-port.ts` quotes the reason: 「making the clock dependency
+       * `@nerima-games/mc-sim` quotes the reason: 「making the clock dependency
        * visible in the type is what stops someone "simplifying" this into a
        * `Date.now()` call」 — and DN-GP-8 bans that call here outright, with
        * `pnpm check:deps` enforcing it.

@@ -36,6 +36,7 @@
 import { describe, expect, it } from '@effect/vitest'
 import { makeTimeService } from '@nerima-games/mc-sim'
 import { Effect, Ref } from 'effect'
+import type { Position } from '@nerima-games/mc-kernel'
 import { positionKeyOf } from '../src/domain/block-position-key'
 import { StackCount } from '../src/domain/frame-contract'
 import {
@@ -64,7 +65,6 @@ import {
   PLAYER_HALF_WIDTH,
   type PlaceOutcome,
 } from '../src/domain/interactions/place-block'
-import type { Position } from '../src/domain/entity-manager-port'
 import {
   drainBlockPlacementResults,
   gameplayStages,

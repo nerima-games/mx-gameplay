@@ -72,6 +72,7 @@ import {
   type TimeServiceApi,
 } from '@nerima-games/mc-sim'
 import { Effect, Ref } from 'effect'
+import type { Position } from '@nerima-games/mc-kernel'
 import { readdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -108,7 +109,7 @@ import {
   type MobBehaviour,
   type MobSpawnAttempt,
 } from '../src/domain/entities/mob-frame'
-import { EntityKind, type EntityManagerApi, type Position } from '../src/domain/entity-manager-port'
+import { EntityKind, type EntityManagerApi } from '@nerima-games/mc-sim'
 import { disturb } from '../src/domain/falling-block'
 import { DeltaTimeSecs, StackCount } from '../src/domain/frame-contract'
 import { DEFAULT_ROLL_SEED, drawRolls, nextRoll } from '../src/domain/frame-rolls'

@@ -32,7 +32,7 @@ import {
   EntityKind,
   type EntityManager,
   type EntityRoster,
-} from '../src/domain/entity-manager-port'
+} from '@nerima-games/mc-sim'
 import { BOW_TARGET_CENTER_Y_OFFSET } from '../src/domain/interactions/bow-shot'
 import { BOW_FULL_CHARGE_SECS, BOW_MIN_CHARGE_SECS } from '../src/domain/interactions/draw-bow'
 import {
@@ -102,7 +102,7 @@ import {
 } from './support/chunk-store-double'
 import { emptyRosterLayer, makeEntityManagerDouble } from './support/entity-manager-double'
 import { makePlayerServiceDouble, playerDoubleLayer } from './support/player-service-double'
-import { PlayerService } from '../src/domain/player-port'
+import { PlayerService } from '@nerima-games/mc-sim'
 import { emptyInventoryLayer, makeInventoryDouble } from './support/inventory-service-double'
 import { FrameServicesLayer } from './support/frame-services'
 

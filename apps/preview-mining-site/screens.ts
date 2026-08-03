@@ -71,7 +71,7 @@
  * ドロップのルールは gameplay」).
  *
  * mc-sim has now BUILT that — `EntityManager`, mirrored in
- * `domain/entity-manager-port.ts` and driven by `domain/entities/mob-frame.ts` —
+ * `@nerima-games/mc-sim` and driven by `domain/entities/mob-frame.ts` —
  * and this screen still plays the part, because a preview cannot ship an
  * implementation of another repository's service and mc-sim is not published.
  * What changed is the status of the shape: `ArenaCreeper` being four fields long

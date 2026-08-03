@@ -11,7 +11,7 @@ import { ZOMBIE_KIND } from '../src/domain/mob/hostile-combat'
 import { RANDOM_DESPAWN_CHANCE } from '../src/domain/mob/hostile-despawn'
 import { DeltaTimeSecs } from '../src/domain/frame-contract'
 import { nextRoll } from '../src/domain/frame-rolls'
-import type { Position } from '../src/domain/entity-manager-port'
+import type { Position } from '@nerima-games/mc-kernel'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
 
 const PLAYER: Position = { x: 0, y: 64, z: 0 }

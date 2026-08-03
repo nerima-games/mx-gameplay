@@ -8,7 +8,8 @@ import {
   type InventoryServiceApi,
 } from '@nerima-games/mc-sim'
 import { Effect } from 'effect'
-import { changed, DESPAWNED, UNCHANGED, type Entity, type EntityManagerApi, type Position } from '../entity-manager-port'
+import type { Position } from '@nerima-games/mc-kernel'
+import { changed, DESPAWNED, UNCHANGED, type Entity, type EntityManagerApi } from '@nerima-games/mc-sim'
 import { StackCount } from '../frame-contract'
 import {
   DROPPED_ITEM_KIND,

@@ -31,7 +31,7 @@
  *
  * The second service, acquired at the same moment and for the same reason. It is
  * the roster this file spent a headed paragraph explaining why it could not
- * invent, and mc-sim has now built it; `domain/entity-manager-port.ts` is the
+ * invent, and mc-sim has now built it; `@nerima-games/mc-sim` is the
  * mirror, `test/entity-manager-mirror.test.ts` keeps it honest, and
  * `domain/entities/mob-frame.ts` is the loop.
  *
@@ -92,6 +92,7 @@ import {
   type VehicleServiceApi,
 } from '@nerima-games/mc-sim'
 import { Effect, Effectable, Layer, Option, Readable, Ref } from 'effect'
+import type { Position } from '@nerima-games/mc-kernel'
 import {
   below,
   horizontalNeighbours,
@@ -204,8 +205,7 @@ import {
   type EntityId,
   type EntityManager,
   type EntityManagerApi,
-  type Position,
-} from '../domain/entity-manager-port'
+} from '@nerima-games/mc-sim'
 import type { Damage } from '../domain/death-cause'
 import { resolveArmorHit } from '../domain/combat/armor'
 import {
@@ -236,7 +236,7 @@ import { DEFAULT_ROLL_SEED, drawRolls, rollAt } from '../domain/frame-rolls'
 import type { Dimension, PortalTravelPlan } from '../domain/nether-travel-port'
 import { OUTSIDE_PORTAL, type PortalDwell, stepPortalDwell } from '../domain/portal-dwell'
 import { applyPortalTravel, NO_KNOWN_PORTALS } from '../domain/portal-travel'
-import { PlayerService, type PlayerServiceApi } from '../domain/player-port'
+import { PlayerService, type PlayerServiceApi } from '@nerima-games/mc-sim'
 import {
   applyEndPortalTravel,
   isEndPortalBlock,

@@ -1,4 +1,5 @@
-import type { Entity, Position } from '../entity-manager-port'
+import type { Position } from '@nerima-games/mc-kernel'
+import type { Entity } from '@nerima-games/mc-sim'
 import { HOSTILE_KINDS, type MobBehaviour } from '../entities/mob-frame'
 import type { ItemType } from '../item-vocabulary'
 import { shotTarget, type ShotHit } from './bow-shot'

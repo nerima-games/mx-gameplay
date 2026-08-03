@@ -27,24 +27,10 @@
 import type { Effect, Layer } from 'effect'
 import { Brand, Context } from 'effect'
 /**
- * `Position` IS KERNEL'S AND IS IMPORTED FROM THE WRONG PLACE, knowingly.
- *
- * It belongs in this file by the rule `StackCount` above is sorted by — kernel's
- * barrel is what replaces it — and it is declared in `./entity-manager-port`
- * instead, which repoints at `@nerima-games/mc-sim`, a barrel that deliberately
- * does not re-export its own kernel mirror and therefore CANNOT hand `Position`
- * back on deletion day. That is the broken repoint promise
- * `./chunk-store-port`'s header records finding in its own capability
- * predicates, one file over and still open.
- *
- * It is imported rather than moved because moving it is a twenty-file edit in a
- * change that is about `PlayerService`, and because `Position` is rendered into
- * `api-lock.md` as a supporting declaration — so the move is worth doing on its
- * own, where it can be checked, rather than folded in here. Importing it at
- * least stops this file from becoming a SECOND declaration of a kernel type,
- * which is the one thing this file's header forbids outright.
+ * `Position` is kernel vocabulary. Importing it directly keeps this module from
+ * becoming a second declaration of a type it does not own.
  */
-import type { Position } from './entity-manager-port'
+import type { Position } from '@nerima-games/mc-kernel'
 
 /**
  * Identifies a frame stage. Stage ids are the vertices of the per-frame ordering
@@ -191,7 +177,7 @@ export const EpochMillis = Brand.refined<EpochMillis>(
 // mc-compose also names what the mx-* refusal actually rested on, and it was
 // never safety: 「restating a `Context.Tag` they never construct would buy them
 // nothing」. That was true while nothing here needed the noun. It stopped being
-// true when `./player-port` arrived, because `PlayerServiceApi.cameraPose` has
+// true when `@nerima-games/mc-sim` arrived, because `PlayerServiceApi.cameraPose` has
 // `ClockPort` IN ITS TYPE — so the choice is no longer "name the tag or don't",
 // it is "name the tag or ship a narrow mirror of a `Context.Tag`", and the
 // second is the hazard `./chunk-store-port` exists to refuse.
@@ -205,9 +191,9 @@ export const EpochMillis = Brand.refined<EpochMillis>(
 //
 // AND DN-GP-8 IS UNTOUCHED. Nothing here reads a clock. `monotonicSecs`,
 // `wallClockEpochMillis`, `fixedClock` and `FixedClockLayer` are kernel's and
-// are deliberately NOT mirrored, on `./entity-manager-port`'s standing rule: a
-// function absent from a mirror is a compile error at its call site, never an
-// `undefined` at run time. Only the Tag and the shape it resolves to are here,
+// are deliberately NOT mirrored: a function absent from a public contract is a
+// compile error at its call site, never an `undefined` at run time. Only the Tag
+// and the shape it resolves to are here,
 // because only those two carry the textual-key hazard.
 // ---------------------------------------------------------------------------
 
@@ -228,7 +214,7 @@ export type ClockService = {
 }
 
 /**
- * The clock Port, named so that `./player-port` can transcribe `cameraPose`.
+ * The clock Port, named so that `@nerima-games/mc-sim` can transcribe `cameraPose`.
  *
  * THE KEY IS KERNEL'S AND IS ASSERTED AS A LITERAL by
  * `test/kernel-clock-mirror.test.ts`. It is `'@nerima-games/mc-kernel/ClockPort'`
@@ -245,7 +231,7 @@ export class ClockPort extends Context.Tag('@nerima-games/mc-kernel/ClockPort')<
 /**
  * The camera pose, as a value.
  *
- * Here for `./player-port`'s `cameraPose` and for nothing else — no rule in this
+ * Here for `@nerima-games/mc-sim`'s `cameraPose` and for nothing else — no rule in this
  * repository reads a pose. `snapshotAgeSecs` and `forwardVector`, kernel's and
  * mc-sim's functions over it, are NOT mirrored for the reason the clock section
  * above gives.

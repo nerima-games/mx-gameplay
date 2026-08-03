@@ -75,9 +75,7 @@ prettier も biome も `.editorconfig` も置かない。整形の権威が 2 �
 | `test/block-vocabulary-mirror.test.ts` | 13 | kernel 語彙のミラー。4 つの能力述語に加え、**`supportRule` の 19 行 override 表を全数**固定する（部分ミラーは別の型なので）。ミラーは転記を固定するだけで、源との比較は mc-dev-meta の `pnpm check:mirrors` である |
 | `test/chunk-store-mirror.test.ts` | 6 | `domain/chunk-store-port.ts` を mc-worldgen の界面に**両方向で**固定する。タグキーは文字どおり検査する。`validSpawnSurface` が**負リスト**であること（＝既定 true）もここ（**この行は 7 と書かれたまま古くなっていた。実測 6**） |
 | `test/preview-findings.test.ts` | 10 | **プレビューが見つけたもの**（§3-4）。うち 8 本は「現在の（誤った）挙動を固定する」テストで、直すと落ちる。**F7 はここではなく `test/place-block.test.ts` にある** —— プレビューではなく移植が見つけたものだから（§3-5）。F7 は**解決済み**で、8 本のうちの 1 つの前例になった：直したときテストは消さず、同じ参照行との**一致**へ書き換える（§3-5-1） |
-| `test/entity-manager-mirror.test.ts` | 15 | `domain/entity-manager-port.ts` を mc-sim の界面に固定する |
 | `test/inventory-mirror.test.ts` | 11 | `domain/inventory-port.ts` を mc-sim の界面に固定する。**このリポジトリで最も広いミラー** —— `InventoryServiceApi` 全体に加え、api が名指しする `Inventory` / `RecipeTable` / `CraftGrid` / `RecipeMatch` / `CraftResult` とその下の語彙 16 型を**両方向**で突き合わせる。**型の一致だけでは足りない 1 点**も入っている: `add` は「**入らなかった数**」を返し `remove` は「**実際に取れた数**」を返すので、両者は `(item, count) => Effect<number>` として区別がつかない。極性は double に対する**振る舞い**で固定してある |
-| `test/player-mirror.test.ts` | 15 | `domain/player-port.ts` を mc-sim の界面に固定する。**呼び手が 1 人も居ない唯一のミラー**なので、他の 3 本と違って**第 2 の防御線が無い** —— `ChunkStore` や `InventoryService` は stage が呼ぶからずれれば別のテストが落ちるが、こちらは このファイルだけが持っている。両方向の代入と `PlayerPose`（`feetPosition` の綴り）と鍵の literal に加え、**`check:mirrors` が構造的に見られない 1 点**を持つ: `cameraPose` の `R` チャンネル（`ClockPort`）。`type-shape.ts` はメンバの**名前と optional 性だけ**を比べるので、`Effect<CameraPoseSnapshot>` に狭めたミラーはあのゲートを通って repoint 日にコンパイラで落ちる。ついでに `frame-contract.ts` に来た `ClockPort` の鍵・`ClockService` の 2 メンバ・`MonotonicTimeSecs` / `EpochMillis` の精製と**文言**もここで固定する（文言は転記であって選択ではない） |
 | `test/mob-spawn-search.test.ts` | 27 | `domain/entities/mob-spawn-search.ts` のリングと、その 256 回のストア呼び出し。参照実装の `mob-spawner-helpers.test.ts:6-13` から**リングが一周すること**、`mob-spawner-rules.test.ts:18-20` から**3D でも掃除距離の内側**であること（porting.md §4-3）。前者は半周リングという変異が 409 本を 1 つも落とさなかったので足した |
 | `test/place-block.test.ts` | 56 | **設置**（§3-1 の 1 行目）。参照実装が**実際に間違えた 3 点**を `REGRESSION:` として持つ —— 溶岩は replaceable、自分の体の中には置けない、支えが要るブロックは支えを見る。`blockOverlapsPlayer` の境界表（`block-service-utils.test.ts:84-98`）は**そのまま移植**してあり、参照実装が同じ関数に持っている**第 2 の表**（`block-utils.test.ts:88-121`、y 軸の排他境界と対角）も移植した。`block-support.test.ts` の支持表は**全行**移植済み —— fallback アームの行と、`SUPPORT_RULES` の行（旧 F7、§3-5-1 で解決）の両方 |
 | `test/block-loot.test.ts` | 32 | **ブロックのドロップテーブル**（§3-1 の 3 行目）。kernel の表を通る決定論的な半分と、audit §6-9 がこちらに置いた乱数の半分（fortune / 葉のボーナス）。「素手で石を掘っても何も出ない」が**見た目では気付けないほうの半分**である。ボーナス 4 率（りんご 1/200・棒 2%・苗木 5%・種 1/8）は参照実装から移植 —— **うち 3 つは今日どの表にも載っていない**が、待っているのは kernel の roster 行であって発明ではない。道具の段は `harvestable-blocks.test.ts` の**真の包含鎖**と `block-utils.test.ts` の**段ごとの 4 行**を移植（porting.md §4-3。後者は §4-2 が roster ギャップで断っていたもので、kernel の roster 完成で**期限切れになった拒否**である）。**F8** —— シルクタッチが置換ではなく関門であるという参照実装との乖離 —— の pin もここ（§3-6） |
@@ -341,22 +339,8 @@ mc-physics の速度でも mc-sim の名簿でもなく **mc-worldgen の構造�
   `gameState.respawn(pos)` を呼ぶ（`physics-stage-portal.ts:63`）。mc-sim の対応物は
   **存在して publish 済み**である —— `PlayerServiceApi.moveTo(feetPosition)`
   （`mc-sim/application/player-service.ts:25`、barrel は `index.ts:40`）。
-  こちらに無いのは**そのサービスのミラー**であって、mc-sim に無いメソッドではない。
-  **そのミラーは書かれた** —— `domain/player-port.ts` が `PlayerServiceApi` の
-  6 メンバ全部を写し（`cameraPose` の `ClockPort` 要求も落とさずに）、
-  `test/player-mirror.test.ts` が両方向の代入と鍵の literal を固定し、
-  mc-dev-meta の `MIRROR_SPECS` に 13 行目として登録してある。
-  **これを止めていた理由は名簿ではなく `ClockPort` だった。** `stages/registration.ts` が
-  2 箇所で「`PlayerService` は `ClockPort` を restate せずに丸ごと写せない」と断っており、
-  その根拠は `domain/frame-contract.ts` の「kernel と同じ鍵の `Context.Tag` を
-  もう 1 つ作ることになる」だった。**その前提が誤りで、反証は組織の中に既にあった** ——
-  mc-compose の `domain/kernel-vocabulary.ts` が同じ Port を丸ごと写していて、
-  「Effect は Tag を**文字列の鍵**で解決するので、`'@nerima-games/mc-kernel/ClockPort'`
-  から作ったミラーは**実行時には kernel のサービスそのもの**である」と書いている。
-  `ChunkStore` と `InventoryService` が既に依っている性質と同じもので、
-  mx-* が断っていた本当の理由は安全性ではなく**必要が無かったこと**だった
-  （mc-compose:「自分では construct しない `Context.Tag` を restate しても何も買えない」）。
-  `cameraPose` がその「買えるもの」で、`domain/frame-contract.ts` の clock 節が経緯を持つ。
+  `PlayerServiceApi` は公開済みであり、このリポジトリはその型とサービスを直接利用する。
+  `cameraPose` の `ClockPort` 要求も mc-sim の契約に含まれるため、ローカルの再宣言は不要である。
 
 **本当に無かったのは次元のほうで、いま 1 語ある。**
 この段落は「1 語も存在しない」と書いていた。実測は当時も今も同じで、

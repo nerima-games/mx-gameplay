@@ -9,7 +9,7 @@
  * THE SWEEP IS THE ONLY WRITE PATH, AND ITS ALLOCATION CONTRACT IS A CONTRACT
  * ---------------------------------------------------------------------------
  *
- * `./entity-manager-port.ts` states two things about `sweep` that read as
+ * `@nerima-games/mc-sim` states two things about `sweep` that read as
  * performance notes and are not:
  *
  *   「A sweep in which nothing changed and nothing was emitted returns the
@@ -55,7 +55,7 @@ import {
   type EntityStep,
   type RosterRepair,
   type SpawnRequest,
-} from './entity-manager-port'
+} from '@nerima-games/mc-sim'
 
 /** A roster with nothing in it. */
 export const emptyRoster = <S>(): EntityRoster<S> => ({ entities: [], nextSerial: 0 })

@@ -1,10 +1,10 @@
 import type { Damage } from '../death-cause'
+import type { Position } from '@nerima-games/mc-kernel'
 import {
   EntityKind,
   type Entity,
   type EntityId,
-  type Position,
-} from '../entity-manager-port'
+} from '@nerima-games/mc-sim'
 import { explosionDamageAt, type Explosion } from './explosion'
 
 export const ZOMBIE_KIND: EntityKind = EntityKind('zombie')

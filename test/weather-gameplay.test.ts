@@ -1,6 +1,7 @@
 import { Effect, Ref } from 'effect'
+import type { Position } from '@nerima-games/mc-kernel'
 import { describe, expect, it } from 'vitest'
-import { EntityId, EntityKind, type Position } from '../src/domain/entity-manager-port'
+import { EntityId, EntityKind } from '@nerima-games/mc-sim'
 import type { Dimension } from '../src/domain/nether-travel-port'
 import type { PositionKey } from '../src/domain/position-key'
 import {

@@ -6,7 +6,7 @@
  * implementation rather than a promoted double:
  *
  *   THE PITCH CLAMP. The double adds the delta and clamps nothing, though
- *   `../domain/player-port.ts` says 「Pitch is clamped」. Nothing in this
+ *   `../@nerima-games/mc-sim` says 「Pitch is clamped」. Nothing in this
  *   repository's slice looks up far enough to notice.
  *
  *   `cameraPose`. The double DIES on it deliberately — a rule here reaching it
@@ -26,7 +26,7 @@ import {
   makeInMemoryPlayer,
 } from '../src/domain/in-memory-player'
 import { ClockPort, MonotonicTimeSecs } from '../src/domain/frame-contract'
-import type { PlayerPose } from '../src/domain/player-port'
+import type { PlayerPose } from '@nerima-games/mc-sim'
 
 const pose = (overrides: Partial<PlayerPose> = {}): PlayerPose => ({
   feetPosition: { x: 1, y: 64, z: 2 },

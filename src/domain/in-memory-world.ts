@@ -11,7 +11,7 @@
  *
  * The obvious way to get the second is `Context.get(context, PlayerService)` —
  * and that needs the TAG, which `index.ts` deliberately does not export.
- * `./player-port.ts` and `./chunk-store-port.ts` are MIRRORS, and this
+ * `@nerima-games/mc-sim` and `./chunk-store-port.ts` are MIRRORS, and this
  * organisation keeps mirrors out of the barrel on purpose: fourteen of fifteen
  * repositories do it, `test/chunk-store-mirror.test.ts` pins it with
  * `expect(Object.keys(barrel)).not.toContain('ChunkStore')`, and the reason is
@@ -55,8 +55,8 @@ import {
   type ChunkStoreApi as WorldgenChunkStoreApi,
 } from '@nerima-games/mc-worldgen'
 import { ChunkStore, type ChunkStoreApi } from './chunk-store-port'
-import { entityManagerTag, type EntityManager, type EntityManagerApi } from './entity-manager-port'
-import { PlayerService, type PlayerPose, type PlayerServiceApi } from './player-port'
+import { entityManagerTag, type EntityManager, type EntityManagerApi } from '@nerima-games/mc-sim'
+import { PlayerService, type PlayerPose, type PlayerServiceApi } from '@nerima-games/mc-sim'
 import { makeInMemoryChunkStore, type WorldContents } from './in-memory-chunk-store'
 import { makeInMemoryEntityManager } from './in-memory-entity-manager'
 import { makeInMemoryInventory } from './in-memory-inventory'

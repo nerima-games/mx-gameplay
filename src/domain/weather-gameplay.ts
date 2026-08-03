@@ -1,4 +1,5 @@
-import type { EntityId, EntityKind, Position } from './entity-manager-port'
+import type { Position } from '@nerima-games/mc-kernel'
+import type { EntityId, EntityKind } from '@nerima-games/mc-sim'
 import type { Dimension } from './nether-travel-port'
 import type { PositionKey } from './position-key'
 import type { Weather } from './weather'

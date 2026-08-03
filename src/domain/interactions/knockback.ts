@@ -68,7 +68,7 @@
  *
  * THERE IS NOWHERE TO PUT IT. An impulse needs something that accumulates one.
  * mc-sim's `EntityState` has three fields — `feetPosition`, `healthPoints`,
- * `behaviour` (`../entity-manager-port.ts`) — and none of them is a velocity, the
+ * `behaviour` (`@nerima-games/mc-sim`) — and none of them is a velocity, the
  * same three-field observation §5-5 makes for the cart. The reference has a
  * dedicated `entityManager.applyKnockback` (`interaction-bow-handler.ts:128`) and
  * this repository's mirror of that service has no such member, because mc-sim has

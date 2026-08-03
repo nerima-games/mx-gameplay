@@ -1,7 +1,7 @@
 import { describe, expect, it } from '@effect/vitest'
 import { Effect, Ref } from 'effect'
 import { makeSite, stepFrame } from '../apps/preview-mining-site/site'
-import { EntityId } from '../src/domain/entity-manager-port'
+import { EntityId } from '@nerima-games/mc-sim'
 import { StageId } from '../src/domain/frame-contract'
 import {
   CREEPER_KIND,

@@ -11,7 +11,7 @@ import {
   rightClickRoute,
   type RightClickRoute,
 } from '../domain/interactions/right-click-target'
-import type { PlayerServiceApi } from '../domain/player-port'
+import type { PlayerServiceApi } from '@nerima-games/mc-sim'
 import { DEFAULT_BLOCK_REACH } from './registration'
 
 const coordinateKey = (x: number, y: number, z: number): string => `${x},${y},${z}`

@@ -165,11 +165,9 @@ describe('public API surface', () => {
     }),
   )
 
-  // The same rule for mc-sim's, which arrived with the mob wiring.
-  // `domain/entity-manager-port.ts` is a mirror with a deletion date, exactly as
-  // `domain/chunk-store-port.ts` is, so publishing the roster's vocabulary here
-  // would make that deletion a breaking change AND would give the organisation a
-  // second place to look up what an entity id is.
+  // The same rule for mc-sim's vocabulary, which arrived with the mob wiring.
+  // Re-exporting it here would create a second owner for entity identifiers and
+  // make future mc-sim API changes a breaking change for this package.
   it.effect('REGRESSION: does not republish mc-sim’s roster vocabulary as its own', () =>
     Effect.sync(() => {
       const simsToOwn = [

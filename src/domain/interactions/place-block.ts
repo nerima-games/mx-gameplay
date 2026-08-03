@@ -135,7 +135,7 @@ import {
   isSupportSensitiveBlockId,
   type PlaceableItemType,
 } from '../block-vocabulary'
-import type { Position } from '../entity-manager-port'
+import type { Position } from '@nerima-games/mc-kernel'
 import { cactusSidesObjection, type CactusSidesRefusal } from './place-cactus-sides'
 import { doorUpperCell, type DoorUpperCell } from './place-door-upper'
 import { mushroomLightObjection, type MushroomLightRefusal } from './place-mushroom-light'
@@ -165,9 +165,8 @@ const BLOCK_HALF = 0.5
  * `<reference-impl>/packages/world/domain/block-utils.ts:66-74`, verbatim,
  * including the two things a reader should not have to reconstruct: the block's
  * centre is `blockPos + 0.5` on every axis, and the player's centre is their
- * FEET plus one half-height (the position mc-sim stores is the feet, which is
- * why `../entity-manager-port` mirrors `Position` and `BlockPosition` as two
- * types rather than one).
+ * FEET plus one half-height (the position mc-sim stores is the feet, while
+ * `Position` and `BlockPosition` deliberately remain distinct types).
  *
  * TOTAL. A coordinate that is not a number yields `NaN` in every comparison and
  * `NaN < x` is `false`, so an unmeasurable player does not block placement. That

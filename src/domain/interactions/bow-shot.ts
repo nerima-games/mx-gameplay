@@ -21,7 +21,7 @@
  * NO BOUNDING BOX IS CONSULTED, by the reference or here. An entity is a point
  * plus `BOW_TARGET_CENTER_Y_OFFSET`, so a shot passes through a creeper's shoulder
  * and hits the skeleton behind it. mc-sim's `EntityState` carries no extent to do
- * better with (`../entity-manager-port.ts`: `feetPosition` / `healthPoints` /
+ * better with (`@nerima-games/mc-sim`: `feetPosition` / `healthPoints` /
  * `behaviour`), so this is a limit of the roster rather than of the rule, and it
  * is recorded rather than guessed around.
  *
@@ -51,7 +51,8 @@
  * the bow ACTUALLY uses, cited to the line that supplies it, and `test/bow.test.ts`
  * pins that this repository's bow and melee radii are free to differ.
  */
-import type { EntityId, Position } from '../entity-manager-port'
+import type { Position } from '@nerima-games/mc-kernel'
+import type { EntityId } from '@nerima-games/mc-sim'
 import { BOW_MAX_RANGE } from './draw-bow'
 
 /**
@@ -101,7 +102,7 @@ export const BOW_AIM_EPSILON_SQUARED = 1e-18
 /**
  * Anything with a place in the world that an arrow could hit.
  *
- * Structurally a subset of `../entity-manager-port.ts`'s `Entity<S>`, so a roster
+ * Structurally a subset of `@nerima-games/mc-sim`'s `Entity<S>`, so a roster
  * read passes straight in with no projection and no copy — which matters because
  * `EntityManagerApi.entities` resolves to the roster's OWN array and this rule
  * runs on the shot path.

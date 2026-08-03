@@ -74,11 +74,10 @@ import {
   type HarvestTier,
   type PlaceableItemType,
 } from '../../src/domain/block-vocabulary'
-import { makeTimeService } from '@nerima-games/mc-sim'
+import { makeTimeService, type EntityManagerApi } from '@nerima-games/mc-sim'
 import { FALLING_BLOCK_MOVES_PER_TICK } from '../../src/domain/falling-block'
 import { DeltaTimeSecs, type StageRegistration } from '../../src/domain/frame-contract'
 import { NO_TOOL, type BlockLootContext, type MinedItem } from '../../src/domain/interactions/block-loot'
-import type { EntityManagerApi } from '../../src/domain/entity-manager-port'
 import { spawnMobDrops } from '../../src/domain/entities/dropped-item'
 import {
   isDroppedItemBehaviour,

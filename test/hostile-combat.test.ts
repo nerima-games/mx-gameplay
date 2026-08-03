@@ -1,5 +1,5 @@
 import { describe, expect, it } from '@effect/vitest'
-import { EntityId, EntityKind, type Entity } from '../src/domain/entity-manager-port'
+import { EntityId, EntityKind, type Entity } from '@nerima-games/mc-sim'
 import {
   CREEPER_LOCOMOTION,
   pursueHorizontally,

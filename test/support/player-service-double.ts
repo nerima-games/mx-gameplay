@@ -3,7 +3,7 @@
  *
  * mc-sim is not a `dependencies` edge yet (plan.md §6 Step 3 publishes
  * bottom-up), so the real service cannot be constructed in this repository's
- * tests. `domain/player-port.ts` mirrors the interface; this builds a working
+ * tests. `@nerima-games/mc-sim` publishes the interface; this builds a working
  * instance of it over plain `Ref`s.
  *
  * IT IS A REAL IMPLEMENTATION, NOT A STUB THAT RETURNS CONSTANTS, and that is
@@ -14,14 +14,14 @@
  * pins the same behaviours on the other side.
  *
  * `cameraPose` DIES rather than returning a value. Nothing in this repository
- * may call it (`domain/player-port.ts` says so and `pnpm check:deps` enforces
+ * may call it (`@nerima-games/mc-sim` says so and `pnpm check:deps` enforces
  * the reason), so a test that reaches it has found a rule reading a clock, and
  * failing loudly is the useful answer.
  */
 import { Effect, Layer, Ref } from 'effect'
 import type { Dimension } from '../../src/domain/nether-travel-port'
-import { PlayerService, type PlayerPose, type PlayerServiceApi } from '../../src/domain/player-port'
-import type { Position } from '../../src/domain/entity-manager-port'
+import { PlayerService, type PlayerPose, type PlayerServiceApi } from '@nerima-games/mc-sim'
+import type { Position } from '@nerima-games/mc-kernel'
 
 /** mc-sim's `INITIAL_PLAYER_POSE`, restated. */
 export const SPAWN_POSE: PlayerPose = {
@@ -80,7 +80,7 @@ export const makePlayerServiceDouble = (
  * The double as a `Layer`, for the tag-based `makeGameplayStages` path.
  *
  * PROVIDING mc-sim's TAG FROM A TEST IS SAFE HERE AND WOULD NOT BE IN `domain/`.
- * `domain/player-port.ts` deliberately omits `PlayerServiceLayer` because this
+ * `@nerima-games/mc-sim` deliberately omits `PlayerServiceLayer` because this
  * repository must never build a second authority for the player's pose. A test
  * fixture is not that: it exists to satisfy a requirement the host would
  * satisfy with mc-sim's own layer, and nothing outside `test/` can reach it.

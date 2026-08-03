@@ -90,7 +90,8 @@
  */
 import { Effect } from 'effect'
 import type { BlockPosition, ChunkStoreApi } from '../chunk-store-port'
-import { EntityKind, type Position } from '../entity-manager-port'
+import type { Position } from '@nerima-games/mc-kernel'
+import { EntityKind } from '@nerima-games/mc-sim'
 import { drawRolls, rollAt } from '../frame-rolls'
 import { hostileSpawnsAllowed } from '../day-night'
 import type { Dimension } from '../nether-travel-port'

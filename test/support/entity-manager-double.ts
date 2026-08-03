@@ -1,6 +1,6 @@
 /**
  * A test double for mc-sim's `EntityManager`, typed by this repository's mirror
- * of that service (`domain/entity-manager-port.ts`).
+ * of that service (`@nerima-games/mc-sim`).
  *
  * ---------------------------------------------------------------------------
  * Why a double at all, and what makes it meaningful
@@ -61,6 +61,7 @@
  * performs.
  */
 import { Effect, Layer, Ref } from 'effect'
+import type { Position } from '@nerima-games/mc-kernel'
 import type { MobBehaviour } from '../../src/domain/entities/mob-frame'
 import {
   EntityId,
@@ -71,8 +72,7 @@ import {
   type EntityRoster,
   type EntityState,
   type EntityStep,
-  type Position,
-} from '../../src/domain/entity-manager-port'
+} from '@nerima-games/mc-sim'
 
 export type RosterCalls = {
   readonly sweeps: number

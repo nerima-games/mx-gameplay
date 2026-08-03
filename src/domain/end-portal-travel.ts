@@ -6,7 +6,7 @@ import {
 import { Effect } from 'effect'
 import type { BlockPosition } from './chunk-store-port'
 import type { Dimension } from './nether-travel-port'
-import type { PlayerServiceApi } from './player-port'
+import type { PlayerServiceApi } from '@nerima-games/mc-sim'
 
 /** Deterministic End arrival origin until worldgen supplies a world spawn. */
 export const END_ARRIVAL_ORIGIN = worldgenBlockPosition(0, 60, 0)

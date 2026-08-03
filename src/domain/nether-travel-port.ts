@@ -19,7 +19,7 @@
  * WHY THIS FILE EXISTS NOW WHEN IT COULD NOT BEFORE
  * ---------------------------------------------------------------------------
  *
- * `./player-port`'s header recorded the blocker precisely: 「`resolveNetherTravel`
+ * `@nerima-games/mc-sim`'s header recorded the blocker precisely: 「`resolveNetherTravel`
  * IS NOT ON mc-worldgen's BARREL, so there is nothing here to mirror even if the
  * two arguments could be produced. Its `Dimension` is declared 「PROVISIONALLY」
  * and kept off `index.ts` deliberately … A mirror of it would be this repository
@@ -33,12 +33,12 @@
  * `./portal-frame-port` states: 「a mirror's home is decided by WHOSE BARREL
  * REPLACES IT」.
  *
- * `Dimension` LIVES HERE AND NOT IN `./player-port`, and that is that same test
- * applied twice. `./player-port` is replaced by `@nerima-games/mc-sim`, and
+ * `Dimension` LIVES HERE AND NOT IN `@nerima-games/mc-sim`, and that is that same test
+ * applied twice. `@nerima-games/mc-sim` is replaced by `@nerima-games/mc-sim`, and
  * mc-sim's barrel deliberately does NOT re-export its own worldgen mirror — so
  * `Dimension` does not come back from mc-sim on repoint day. It comes back from
  * `@nerima-games/mc-worldgen`, which is the barrel THIS file is replaced by.
- * Declaring it in `./player-port` would be the defect `./chunk-store-port`'s
+ * Declaring it in `@nerima-games/mc-sim` would be the defect `./chunk-store-port`'s
  * header records: a symbol sitting in a mirror whose source did not have it.
  *
  * ---------------------------------------------------------------------------

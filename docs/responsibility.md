@@ -251,7 +251,7 @@ kernel への追加要求は 1 つも無い。
 | --- | --- | --- | --- |
 | `packages/world/domain/nether/portal-frame.ts` | 枠の**成立条件** | **mc-worldgen** | ✅ `detectNetherPortal` |
 | `packages/app/.../interaction-flint-steel-portal.ts` | **遷移の発火**（点火） | **mx-gameplay** | ✅ `domain/interactions/ignite-portal.ts` |
-| `packages/app/.../physics-stage-portal.ts` の**適用** | プレイヤーをそこへ置く | mx-gameplay | 🟡 **ミラーはある、呼び出しがまだ。ただし「繋ぐだけ」ではない**。`domain/player-port.ts` が `PlayerServiceApi.moveTo` をミラーし（`check:mirrors` 13/13 と `check:repoint` の監視下）、**いつ**は `domain/portal-dwell.ts` が答える。残る 2 つは配線ではない: **どこへ**を答えるはずの `resolveNetherTravel` は mc-worldgen の**バレルに無く**、引数 2 つにも所有者が居ない。`moveTo` の呼び出しは `makeGameplayStages` に `PlayerService` を名指すことなので、**`api-lock.md` が動く**。どちらも §6-2 に実測がある |
+| `packages/app/.../physics-stage-portal.ts` の**適用** | プレイヤーをそこへ置く | mx-gameplay | 🟡 **公開 API は利用可能、呼び出しは未配線。** `@nerima-games/mc-sim` の `PlayerServiceApi.moveTo` を直接使えるが、**いつ**は `domain/portal-dwell.ts` が答える。残る 2 つは配線ではない: **どこへ**を答えるはずの `resolveNetherTravel` は mc-worldgen の**バレルに無く**、引数 2 つにも所有者が居ない。`moveTo` の呼び出しは `makeGameplayStages` に `PlayerService` を名指すことなので、**`api-lock.md` が動く**。どちらも §6-2 に実測がある |
 
 **成立条件が隣に行ったのは越境ではない。** mc-worldgen 側の判断であり、そのファイルの冒頭が根拠を書いている:
 入力が全部ブロックデータで、実体を 1 つも知らない。plan.md §3.11 が 「ポータル / 次元移動ルール」 を
@@ -300,7 +300,7 @@ mc-worldgen だった**。「全員が依存しているから」は所有の理
 
 当時「欠けているメンバ」として名指した `PlayerServiceApi.dimension` と
 `PlayerServiceApi.setDimension` は、**その 2 つの名前のまま存在する**
-（`mc-sim/application/player-service.ts`、ミラーは `domain/player-port.ts`）。
+（`mc-sim/application/player-service.ts`）。
 `restore` は `(pose, dimension)` の 2 引数になった —— 片方だけ復元する save は
 「ネザーで取ったセーブがオーバーワールドで開く」という、報告の書けない欠陥だからである。
 
@@ -421,7 +421,7 @@ mc-sim の 7 語要求が先例で、**要求として出すのが正しく、�
 それは kernel が publish すべきもので、こちらが転記するものではない。
 
 `isReplaceable` で代用するのは**どちらの所有者も宣言していない等価を発明する**ことで、
-`domain/entity-manager-port.ts` が `Position` と `BlockPosition` について断っているのと同じ形である
+`Position` と `BlockPosition` を混同するのと同じ形である
 （形は同じ、意味は違う）。**したがって今日の弓は壁を撃ち抜く。**
 述語を作る側はホストで、これは §5-5 が `IsRailAt` に与えた割り当てとまったく同じである。
 

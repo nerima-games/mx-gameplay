@@ -107,9 +107,8 @@ mc-sim を import できない mc-compose がどう構築するのか」 —— 
 そちらは丸ごと写せない —— `cameraPose` が `ClockPort` を要求し、`ClockPort` をローカルに書き直すのは
 `domain/frame-contract.ts` の言う「狭い型より遥かに悪い失敗」だからである。
 
-`ChunkStore` は mc-worldgen が publish されるまで `domain/chunk-store-port.ts` のミラーから、
-`EntityManager` と `InventoryService` は mc-sim が publish されるまで
-`domain/entity-manager-port.ts` / `domain/inventory-port.ts` のミラーから来る。
+`ChunkStore` は mc-worldgen が publish されるまで `domain/chunk-store-port.ts` のミラーから来る。
+`EntityManager` と `InventoryService` は mc-sim の公開 API を直接利用する。
 どれも `index.ts` から re-export していないが、`makeGameplayStages` の型に現れる以上、
 消費者には見える —— `api-lock.md` の "Supporting declarations" に
 `ChunkStore` / `ChunkStoreApi` / `EntityManager` / `EntityManagerApi` /
@@ -169,7 +168,7 @@ const world = Layer.merge(
 
 残るハザードは正直に書いておく: ホストが `EntityManagerLayer<number>()` と書いても
 **どちらのリポジトリのコンパイラも止められない**。`Context.GenericTag` を選んだ以上これは避けられず、
-`domain/entity-manager-port.ts` のヘッダに同じ文言で記録してある。
+mc-sim の `EntityManager` 契約にも同じ制約がある。
 
 **mx-gameplay 側で `simModule` の型引数が要らなかった証拠**は `RRegister` にある:
 `ChunkStore | EntityManager | InventoryService` に `S` は現れない。ホストがどう具体化しても、
@@ -674,22 +673,6 @@ kernel が literal を**足す**分にはこちらが stale になるだけで�
 `explosion.ts` が「クレーターはここではない。`ChunkStoreApi` を持つ `interactions/` の隣であり、
 `disturb` に食わせなければ砂漠の下の爆発は砂を宙に残す」と書いた行き先そのものである。
 `Written` になったセルだけを返すので、**空中の爆発はキューに何も入れない**。
-
-### domain/entity-manager-port.ts（**バレルから re-export しない**）
-
-| export | 種別 | 備考 |
-| --- | --- | --- |
-| `EntityManagerApi` / `EntityManager` / `entityManagerTag` / `ENTITY_MANAGER_TAG_KEY` | 非公開（所有者は mc-sim） | mc-sim `application/entity-manager.ts` のミラー。**全 11 メンバを写す**（狭いミラーは実行時ハザード） |
-| `Entity` / `EntityState` / `EntityRoster` / `EntityTransition` / `EntityStep` / `SpawnRequest` / `RosterRepair` / `BehaviourRepair` | 非公開（所有者は mc-sim） | |
-| `EntityId` / `EntityKind` | 非公開（所有者は mc-sim） | brand の refinement は**文字単位で転記**。brand は文字列で同一視されるので、緩い/厳しいミラーは mc-physics の `DeltaTimeSecs` 欠陥そのものになる |
-| `Position` | 非公開（所有者は kernel、2 ホップ） | `chunk-store-port.ts` の `BlockPosition` とは**別型**。連続点とセルは違う概念で、どちらの所有者も等価だと宣言していない |
-| `UNCHANGED` / `DESPAWNED` / `changed` | 非公開（所有者は mc-sim） | 共有定数。無風フレームが transition を 1 つも作らないための仕掛け |
-
-`ChunkStore` と違い `EntityManager` は `Context.Tag` クラスではなく**構造的な型**なので、
-公称の食い違いは起こり得ない（構造が同じなら同じ型である）。残るのは**キー**と**欠けたメンバ**で、
-`test/entity-manager-mirror.test.ts` が両方を固定している。
-mc-sim の**純粋関数**（`spawnEntity` / `sweepRoster` / `normaliseRoster` …）は写していない
-——タグを持たないので、欠けていれば呼び出し側でコンパイルエラーになるだけで、`undefined` にはならない。
 
 ### domain/vehicle/rail-shape.ts（**レールのトポロジ。速度も名簿も持たない**）
 

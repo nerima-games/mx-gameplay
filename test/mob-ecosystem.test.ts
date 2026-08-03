@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { EntityId, type Entity, type Position } from '../src/domain/entity-manager-port'
+import type { Position } from '@nerima-games/mc-kernel'
+import { EntityId, type Entity } from '@nerima-games/mc-sim'
 import {
   BLAZE_KIND,
   COW_KIND,

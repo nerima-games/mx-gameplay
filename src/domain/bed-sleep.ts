@@ -2,9 +2,9 @@ import type { TimeServiceApi } from '@nerima-games/mc-sim'
 import { Effect } from 'effect'
 import type { BlockPosition } from './chunk-store-port'
 import { DAWN_FRACTION, isNight } from './day-night'
-import type { Position } from './entity-manager-port'
+import type { Position } from '@nerima-games/mc-kernel'
 import type { Dimension } from './nether-travel-port'
-import type { PlayerServiceApi } from './player-port'
+import type { PlayerServiceApi } from '@nerima-games/mc-sim'
 import type { Weather } from './weather'
 
 export type SleepRejectionReason =

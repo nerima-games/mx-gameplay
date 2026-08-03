@@ -106,7 +106,7 @@ export * from './stages/stage-ids'
 export * from './stages/targeted-right-click-route'
 
 // --- Provisional ---------------------------------------------------------------
-// Ten modules are temporary local stand-ins for packages that are not
+// Eight modules are temporary local stand-ins for packages that are not
 // published yet, and none of their vocabularies is re-exported wholesale:
 //
 //   domain/frame-contract.ts      -> @nerima-games/mc-kernel
@@ -115,23 +115,13 @@ export * from './stages/targeted-right-click-route'
 //   domain/block-vocabulary.ts    -> @nerima-games/mc-kernel
 //   domain/chunk-store-port.ts    -> @nerima-games/mc-worldgen
 //   domain/portal-frame-port.ts   -> @nerima-games/mc-worldgen
-//   domain/entity-manager-port.ts -> @nerima-games/mc-sim
 //   domain/inventory-port.ts      -> @nerima-games/mc-sim
-//   domain/player-port.ts         -> @nerima-games/mc-sim
 //   domain/block-position-key.ts — the join between two of the vocabularies above
 //
-// TWO of them mirror mc-worldgen and THREE mirror mc-sim, which is not an
+// TWO of them mirror mc-worldgen and ONE mirrors mc-sim, which is not an
 // inconsistency: `domain/portal-frame-port.ts`'s header records the lesson that
 // one mirror file must have one SOURCE module, and `domain/block-vocabulary.ts`
 // beside `domain/item-vocabulary.ts` is the same arrangement for mc-kernel.
-//
-// `domain/player-port.ts` is the one of the ten that NOTHING NAMES YET, and the
-// list said "Nine" until this line was written. That is not only a miscount: it
-// is the property that keeps this package's publish clock at zero days. Because
-// no export names `PlayerService`, it stays out of `api-lock.md` entirely —
-// unlike the five services below, which are visible precisely because
-// `makeGameplayStages` names them. `docs/responsibility.md` §6-2 measures what
-// naming it would cost.
 //
 // `domain/chunk-window.ts` sits beside them and IS re-exported, because it is
 // this repository's own: the bridge from an `Effect`-shaped store to the

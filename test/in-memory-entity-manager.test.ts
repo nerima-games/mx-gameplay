@@ -2,7 +2,7 @@
  * `domain/in-memory-entity-manager.ts`.
  *
  * Two of these tests assert OBJECT IDENTITY rather than contents, and that is
- * deliberate: `./entity-manager-port.ts` states both as contracts, and both are
+ * deliberate: `@nerima-games/mc-sim` states both as contracts, and both are
  * invisible to a contents comparison.
  *
  *   `entities` resolves to the roster's OWN array — so two reads with no write
@@ -15,6 +15,7 @@
  */
 import { describe, expect, it } from '@effect/vitest'
 import { Effect } from 'effect'
+import type { Position } from '@nerima-games/mc-kernel'
 import {
   emptyRoster,
   makeInMemoryEntityManager,
@@ -28,9 +29,8 @@ import {
   UNCHANGED,
   type Entity,
   type EntityRoster,
-  type Position,
   type SpawnRequest,
-} from '../src/domain/entity-manager-port'
+} from '@nerima-games/mc-sim'
 
 const position = (x: number, y: number, z: number): Position => ({ x, y, z })
 

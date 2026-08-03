@@ -39,7 +39,7 @@
  *
  *     Layer.merge(simModule.layers, EntityManagerLayer<MobBehaviour>(undefined, repairMobBehaviour))
  *
- * with both arguments coming from here. See `../entity-manager-port`'s header for
+ * with both arguments coming from here. See `@nerima-games/mc-sim`'s header for
  * why no compiler can check that line, and `docs/public-api.md` for why
  * `simModule` should NOT grow a type parameter to try.
  *
@@ -131,7 +131,7 @@
  * TYPE PARAMETER, this repository instantiates it, and a flag about a mob is
  * exactly what `behaviour` is for. `EndermanFlinch` below is that flag, and
  * adding it needed no change in mc-sim at all — which is the claim
- * `../entity-manager-port`'s header makes for the parameter's existence.
+ * `@nerima-games/mc-sim`'s header makes for the parameter's existence.
  *
  * IT IS A FRAME LATE, AND DELIBERATELY. The only blow this repository can measure
  * is a blast, and a blast is resolved in `resolveBlasts` — AFTER `sweepMobs`, for
@@ -214,6 +214,7 @@ import {
   type Durability,
 } from '@nerima-games/mc-sim'
 import { Effect } from 'effect'
+import type { Position } from '@nerima-games/mc-kernel'
 import { applyDamage, isDead, type Vitals } from '../death-cause'
 import {
   changed,
@@ -224,8 +225,7 @@ import {
   type EntityId,
   type EntityManagerApi,
   type EntityStep,
-  type Position,
-} from '../entity-manager-port'
+} from '@nerima-games/mc-sim'
 import type { BlockPosition, ChunkStoreApi } from '../chunk-store-port'
 import type { DeltaTimeSecs } from '../frame-contract'
 import { drawRolls, nextRoll } from '../frame-rolls'
@@ -979,8 +979,8 @@ export const distanceBetween = (from: Position, to: Position): number =>
 /**
  * The cell a continuous point is standing in.
  *
- * `Math.floor` and not `Math.round`, which is the whole reason
- * `../entity-manager-port` mirrors `Position` and `BlockPosition` as two types:
+ * `Math.floor` and not `Math.round`, which is why `Position` and
+ * `BlockPosition` are distinct types:
  * a mob at `y = 64.0` is at the BOTTOM of cell 64, and rounding would put a
  * creeper standing on the floor of a room one cell above it and blow the roof
  * off instead of the floor.

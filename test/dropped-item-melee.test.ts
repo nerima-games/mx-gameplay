@@ -2,7 +2,7 @@ import { describe, expect, it } from '@effect/vitest'
 import { durabilityForItem, type InventoryServiceApi } from '@nerima-games/mc-sim'
 import { Effect } from 'effect'
 import { StackCount } from '../src/domain/frame-contract'
-import { EntityId, EntityKind } from '../src/domain/entity-manager-port'
+import { EntityId, EntityKind } from '@nerima-games/mc-sim'
 import {
   CREEPER_KIND,
   DROPPED_ITEM_KIND,

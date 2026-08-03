@@ -15,7 +15,7 @@ import { describe, expect, it } from '@effect/vitest'
 import { makeTimeService } from '@nerima-games/mc-sim'
 import { Effect, Ref } from 'effect'
 import { AIR_BLOCK_ID, type BlockPosition, type ChunkStoreApi } from '../src/domain/chunk-store-port'
-import type { Position } from '../src/domain/entity-manager-port'
+import type { Position } from '@nerima-games/mc-kernel'
 import {
   CREEPER_KIND,
   ENDERMAN_KIND,

@@ -41,7 +41,7 @@ import {
 } from '../src/domain/interactions/bow-shot'
 import { knockbackDirection, KNOCKBACK_EPSILON } from '../src/domain/interactions/knockback'
 import { resolveBowHits, type MobBehaviour } from '../src/domain/entities/mob-frame'
-import { EntityId, EntityKind, type EntityRoster } from '../src/domain/entity-manager-port'
+import { EntityId, EntityKind, type EntityRoster } from '@nerima-games/mc-sim'
 import {
   drainBowShotResults,
   gameplayStages,

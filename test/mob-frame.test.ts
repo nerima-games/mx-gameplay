@@ -20,6 +20,7 @@
  */
 import { describe, expect, it } from '@effect/vitest'
 import { Effect } from 'effect'
+import type { Position } from '@nerima-games/mc-kernel'
 import {
   CREEPER_KIND,
   CREEPER_MAX_HEALTH,
@@ -47,7 +48,7 @@ import {
 import { BLAZE_KIND } from '../src/domain/mob/mob-ecosystem'
 import { CREEPER_EXPLOSION_POWER, explosionDamageAmount } from '../src/domain/mob/explosion'
 import { ZOMBIE_KIND } from '../src/domain/mob/hostile-combat'
-import { EntityId, type Position } from '../src/domain/entity-manager-port'
+import { EntityId } from '@nerima-games/mc-sim'
 import { makeChunkStoreDouble, STONE, world } from './support/chunk-store-double'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
 

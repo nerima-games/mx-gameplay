@@ -12,7 +12,7 @@
  *   APPLY  this file — `moveTo` the destination, `setDimension` the plan's
  *          `toDimension`, in that order and never one without the other.
  *
- * `./player-port`'s header spent a long paragraph on why APPLY could not be
+ * `@nerima-games/mc-sim`'s header spent a long paragraph on why APPLY could not be
  * written, and the reason was that `from` had no source and `plan.toDimension`
  * had no receiver. Both now exist on `PlayerServiceApi`.
  *
@@ -28,7 +28,7 @@
  * called — which is what makes the pairing checkable rather than a convention.
  *
  * A `moveTo` without the `setDimension` is not this rule minus one step; it is
- * the defect `./player-port`'s header describes: a destination computed in the
+ * the defect `@nerima-games/mc-sim`'s header describes: a destination computed in the
  * OTHER world's coordinate frame, applied to a world that was never switched,
  * leaving the player at a scaled point with the same chunks around them.
  * `test/portal-travel.test.ts` fails on exactly that mutation.
@@ -41,7 +41,7 @@
 import { Effect } from 'effect'
 import { type BlockPosition } from './chunk-store-port'
 import { type Dimension, type PortalTravelPlan, resolveNetherTravel } from './nether-travel-port'
-import { type PlayerServiceApi } from './player-port'
+import { type PlayerServiceApi } from '@nerima-games/mc-sim'
 
 /**
  * Stable empty default for direct callers and frame states without a supplied
