@@ -38,7 +38,8 @@ const shot = {
   dirY: 0,
   dirZ: 1,
   chargeSecs: 1,
-}
+  inventory: { mode: 'creative', slotIndex: 0 },
+} as const
 const melee = {
   origin: { x: 0, y: 64, z: 0 },
   direction: { x: 0, y: 0, z: 1 },
@@ -153,7 +154,7 @@ describe('dead-player interaction boundary', () => {
         requestId: 'same-placement',
         positionKey: positionKeyOf({ x: 2, y: 64, z: 1 }),
         heldItem: 'sand' as const,
-      }
+      } as const
 
       yield* requestBlockPlacementCommand(state, placement)
       yield* requestBowShot(state, 'same-bow', shot)

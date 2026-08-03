@@ -5,15 +5,10 @@
  * Why a double at all, and what makes it meaningful
  * ---------------------------------------------------------------------------
  *
- * The argument `chunk-store-double.ts` and `entity-manager-double.ts` make:
- * nothing is published (plan.md §6 Step 3 is bottom-up publish-then-pin), so
- * mx-gameplay cannot import mc-sim's implementation today, but it CAN be typed
- * by mc-sim's interface — and the mirror is pinned against that interface in
- * both directions by `test/inventory-mirror.test.ts`. The same scenarios
- * against the REAL service are mc-sim's `test/inventory.test.ts` and its own
- * vertical slice; between the two the whole path is covered, and when mc-sim is
- * published this file is deleted and its Layer is replaced by
- * `InventoryServiceLayer()`.
+ * The double is intentionally typed directly by mc-sim's published interface.
+ * mx-gameplay supplies the service at its composition boundary while mc-sim
+ * remains the owner of inventory transitions; this keeps gameplay tests
+ * deterministic without creating a second inventory implementation.
  *
  * ---------------------------------------------------------------------------
  * IT IS A REAL INVENTORY, AND `./roster.ts`'s REFUSAL IS THE REASON IT MAY BE
@@ -73,6 +68,7 @@ import { Effect, Layer, Ref } from 'effect'
 import { MAX_STACK_COUNT, StackCount } from '../../src/domain/frame-contract'
 import {
   addStoredStack as addStorageStoredStack,
+  consumeAndDamageAt as consumeAndDamageStorageAt,
   damageAt as damageStorageAt,
   durabilityForItem,
   emptyPlayerStorage,
@@ -507,7 +503,11 @@ export const makeInventoryDouble = (
             return [outcome.result, { ...doubles, storage: outcome.storage }] as const
           }),
 
-        consumeAndDamageAt: () => refuse('consumeAndDamageAt'),
+        consumeAndDamageAt: (request) =>
+          Ref.modify(state, (doubles) => {
+            const outcome = consumeAndDamageStorageAt(doubles.storage, request)
+            return [outcome.result, { ...doubles, storage: outcome.storage }] as const
+          }),
         createContainer: () => refuse('createContainer'),
         containerSnapshot: () => refuse('containerSnapshot'),
         containerStorageSnapshot: refuse('containerStorageSnapshot'),

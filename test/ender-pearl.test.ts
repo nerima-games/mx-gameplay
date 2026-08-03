@@ -14,7 +14,7 @@
  * themselves」.
  */
 import { describe, expect, it } from '@effect/vitest'
-import { makeTimeService } from '@nerima-games/mc-sim'
+import { makeTimeService, type Slot } from '@nerima-games/mc-sim'
 import { Effect, Ref } from 'effect'
 import {
   enderPearlDisplacement,
@@ -42,27 +42,40 @@ import { makeEntityManagerDouble } from './support/entity-manager-double'
 import { makePlayerServiceDouble } from './support/player-service-double'
 import { makeInventoryDouble } from './support/inventory-service-double'
 import { runFrame } from './support/frame-runner'
+import { StackCount } from '../src/domain/frame-contract'
 
 const ORIGIN = { x: 10, y: 64, z: 10 }
 
 /** A frame with the shipped stages over the three doubles. */
-const scene = () =>
+const inventoryWithPearl = (): ReadonlyArray<Slot> =>
+  Array.from({ length: 36 }, (_, index) =>
+    index === 0 ? { item: 'ender_pearl' as const, count: StackCount(1) } : undefined,
+  )
+
+const scene = (inventorySlots?: ReadonlyArray<Slot>) =>
   Effect.gen(function* () {
     const store = yield* makeChunkStoreDouble(new Map<string, number>(), ['0,0'])
     const roster = yield* makeEntityManagerDouble<MobBehaviour>()
     const player = yield* makePlayerServiceDouble()
-    const inventory = yield* makeInventoryDouble()
+    const inventory = yield* makeInventoryDouble(inventorySlots)
     const time = yield* makeTimeService()
     const state = yield* makeGameplayFrameState
     return {
       roster,
       player,
+      inventory,
       state,
       stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api, time),
     }
   })
 
-const throwPearl = (request: EnderPearlThrowRequest): EnderPearlThrowRequest => request
+type PearlInput = Omit<EnderPearlThrowRequest, 'inventory'> &
+  Partial<Pick<EnderPearlThrowRequest, 'inventory'>>
+
+const throwPearl = (request: PearlInput): EnderPearlThrowRequest => ({
+  inventory: { mode: 'creative', slotIndex: 0 },
+  ...request,
+})
 
 // ---------------------------------------------------------------------------
 // The reference's oracle, transcribed
@@ -222,9 +235,16 @@ describe('the endermite is NOT a naturally spawning hostile', () => {
 describe('gameplay:interactions — the pearl arm', () => {
   it.effect('a throw produces a displacement and its cost in the outbox', () =>
     Effect.gen(function* () {
-      const { state, stages } = yield* scene()
+      const { state, inventory, stages } = yield* scene(inventoryWithPearl())
       yield* Ref.set(state.pendingPearlThrows, [
-        throwPearl({ origin: ORIGIN, dirX: 0, dirY: 0, dirZ: 1, hitDistance: 8 }),
+        throwPearl({
+          origin: ORIGIN,
+          dirX: 0,
+          dirY: 0,
+          dirZ: 1,
+          hitDistance: 8,
+          inventory: { mode: 'survival', slotIndex: 0 },
+        }),
       ])
 
       yield* runFrame(stages)
@@ -235,6 +255,34 @@ describe('gameplay:interactions — the pearl arm', () => {
       expect(outcomes[0]?.damage).toStrictEqual({
         amount: ENDER_PEARL_DAMAGE,
         cause: 'ender_pearl',
+      })
+      const storage = yield* inventory.api.storageSnapshot
+      expect(storage.inventory.slots[0]).toBeUndefined()
+      expect(storage.inventoryDurability[0]).toBeNull()
+    }),
+  )
+
+  it.effect('creative throws do not consume pearls or produce self-damage', () =>
+    Effect.gen(function* () {
+      const { state, inventory, stages } = yield* scene(inventoryWithPearl())
+      yield* Ref.set(state.pendingPearlThrows, [
+        throwPearl({
+          origin: ORIGIN,
+          dirX: 0,
+          dirY: 0,
+          dirZ: 1,
+          hitDistance: 8,
+          inventory: { mode: 'creative', slotIndex: 0 },
+        }),
+      ])
+
+      yield* runFrame(stages)
+
+      const outcomes = yield* Ref.get(state.enderPearlOutcomes)
+      expect(outcomes[0]?.damage).toBeUndefined()
+      expect((yield* inventory.api.storageSnapshot).inventory.slots[0]).toStrictEqual({
+        item: 'ender_pearl',
+        count: StackCount(1),
       })
     }),
   )
@@ -278,7 +326,7 @@ describe('gameplay:interactions — the pearl arm', () => {
         yield* Ref.set(
           state.pendingPearlThrows,
           Array.from({ length: 60 }, () =>
-            throwPearl({ origin: ORIGIN, dirX: 0, dirY: 0, dirZ: 1, hitDistance: 4 }),
+            throwPearl({ origin: ORIGIN, dirX: 0, dirY: 0, dirZ: 1, hitDistance: 4 , inventory: { mode: 'creative', slotIndex: 0 }}),
           ),
         )
         yield* runFrame(stages)
@@ -299,7 +347,7 @@ describe('gameplay:interactions — the pearl arm', () => {
       yield* Ref.set(
         state.pendingPearlThrows,
         Array.from({ length: 60 }, () =>
-          throwPearl({ origin: ORIGIN, dirX: 0, dirY: 0, dirZ: 1, hitDistance: 4 }),
+          throwPearl({ origin: ORIGIN, dirX: 0, dirY: 0, dirZ: 1, hitDistance: 4 , inventory: { mode: 'creative', slotIndex: 0 }}),
         ),
       )
 
@@ -324,7 +372,7 @@ describe('gameplay:interactions — the pearl arm', () => {
       yield* Ref.set(
         state.pendingPearlThrows,
         Array.from({ length: 60 }, () =>
-          throwPearl({ origin: ORIGIN, dirX: 0, dirY: 0, dirZ: 1, hitDistance: 4 }),
+          throwPearl({ origin: ORIGIN, dirX: 0, dirY: 0, dirZ: 1, hitDistance: 4 , inventory: { mode: 'creative', slotIndex: 0 }}),
         ),
       )
 

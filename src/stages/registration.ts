@@ -1161,35 +1161,9 @@ export type ItemUseResult =
   | PlayerDeadItemUseResult
 
 /**
- * One shot from a drawn bow.
- *
- * ---------------------------------------------------------------------------
- * IT CARRIES NO `heldItem`, AND THAT IS THE WHOLE STORY OF THIS REQUEST
- * ---------------------------------------------------------------------------
- *
- * `PlacementRequest` and `ItemUseRequest` above both carry one, and both explain
- * why in the same words: the item is 「a type error where the request is BUILT
- * rather than a refusal where it is serviced」, with `isPlaceableItem` and
- * `isIgnitionItem` as the proof obligations. The bow cannot have that field,
- * because `domain/item-vocabulary.ts` has no `bow` — kernel's `ITEM_TYPES` is 97
- * words and `bow`, `arrow` and `ender_pearl` are three of the eight it is missing
- * (docs/testing.md §3-1 row 1). Writing the literal here would make this
- * repository invent kernel's vocabulary, which is the one thing that row refuses.
- *
- * So the request carries the PHYSICAL FACTS of the shot and not the name of the
- * thing that produced it. That is not a workaround invented for the bow: it is
- * `BlockLootContext`'s shape, which takes a `heldTier` and a `fortuneLevel` rather
- * than the name of a pickaxe, and `domain/interactions/draw-bow.ts`'s
- * `BowDrawContext` follows it deliberately.
- *
- * WHAT IS ACTUALLY LOST BY THAT is precise and is not the aiming: it is the
- * INVENTORY traffic. The reference consumes one `ARROW`, damages the `BOW`'s
- * durability slot, and skips both under Infinity and Unbreaking
- * (`interaction-bow-handler.ts:184-198`). Every one of those is a call naming an
- * item, mc-sim's `add` / `remove` take an `ItemType`, and none
- * of the three words exists. A bow wired here therefore fires FOR FREE. That is
- * recorded rather than hidden, and it is the same shape as `consumedItems` — a
- * verb this repository can perform whose bookkeeping it cannot yet do honestly.
+ * One shot from a drawn bow. The host supplies the held slot and game mode;
+ * survival settlement consumes one arrow and damages the bow atomically before
+ * combat, while creative settlement is skipped.
  *
  * `origin` is the EYE and not the feet, which is why it is not read from
  * `targetPosition`: that Ref holds where the player stands, the shot leaves from
@@ -1208,6 +1182,14 @@ export type BowShotRequest = {
   readonly chargeSecs: number
   /** Level of Power on the bow. Absent = none. See `BowDrawContext`. */
   readonly powerLevel?: number
+  /** The held slot and game mode used for the atomic bow settlement. */
+  readonly inventory: InteractionInventoryContext
+}
+
+/** Inventory context supplied by the host for an item interaction. */
+export type InteractionInventoryContext = {
+  readonly mode: BlockPlacementMode
+  readonly slotIndex: number
 }
 
 /** Host-provided correlation key for one bow release. */
@@ -1223,7 +1205,11 @@ export type BowShotResult =
   | {
       readonly requestId: BowShotRequestId
       readonly success: false
-      readonly outcome: 'Undercharged' | 'DuplicateRequest' | 'PlayerDead'
+      readonly outcome:
+        | 'Undercharged'
+        | 'DuplicateRequest'
+        | 'PlayerDead'
+        | 'InventoryUnavailable'
     }
 
 export type GameplayMeleeAttackResult =
@@ -1233,10 +1219,8 @@ export type GameplayMeleeAttackResult =
 /**
  * One ender pearl thrown.
  *
- * Carries no `heldItem` for `BowShotRequest`'s reason, and loses the same thing by
- * it: the reference consumes one `ENDER_PEARL` outside creative
- * (`ender-pearl.ts:58-64`) and this cannot, so a pearl thrown here is free and
- * infinite.
+ * The host supplies the held slot and game mode. Survival throws consume one
+ * ender pearl; creative throws do not.
  *
  * `hitDistance` is how far along the aim a raycast struck something, and
  * `undefined` means it struck nothing within its range. THE RAYCAST IS THE HOST'S
@@ -1253,6 +1237,8 @@ export type EnderPearlThrowRequest = {
   readonly dirZ: number
   /** Distance to what the aim ray struck, in blocks. Absent = it struck nothing. */
   readonly hitDistance?: number
+  /** The held slot and game mode used for pearl consumption. */
+  readonly inventory: InteractionInventoryContext
 }
 
 /**
@@ -1290,21 +1276,13 @@ export type BowKnockback = {
  * you saying 「You teleported too hard.」 rather than 「You died.」 is the entire
  * point of that type.
  *
- * THE DAMAGE IS ALWAYS PRESENT, INCLUDING IN CREATIVE, and that is a DIVERGENCE
- * from the reference stated as one. `ender-pearl.ts:57,68` gates both the
- * consumption and the damage on `gameMode.isCreative()`, and there is no game mode
- * in this repository — no port, no mirror, and no Ref. Which mode the player is in
- * is state, state survives a save/load round trip, and by this file's header it is
- * therefore mc-sim's. Emitting the damage unconditionally leaves the exemption to
- * the one party that can know about it: a host in creative drops this field, and a
- * host that ignores the question gets survival's behaviour, which is the inert
- * direction of the two.
+ * Creative throws omit damage, matching the same mode gate as consumption.
  */
 export type EnderPearlOutcome = {
   /** How far and which way the thrower moves, in blocks, from where they stood. */
   readonly displacement: EnderPearlDisplacement
   /** What the throw costs them. See the note above on creative mode. */
-  readonly damage: Damage
+  readonly damage: Damage | undefined
 }
 
 export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.gen(function* () {
@@ -3282,9 +3260,27 @@ export const gameplayStages = (
               continue
             }
 
-            // Inventory belongs to the host. A correlated success means only
-            // that the release crossed the draw gate, so misses and wall hits
-            // still spend exactly one arrow when the host drains this outbox.
+            if (shot.inventory.mode === 'survival') {
+              const settled = yield* inventory.consumeAndDamageAt({
+                consume: { item: 'arrow', count: 1 },
+                damage: {
+                  location: { _tag: 'Inventory', slotIndex: shot.inventory.slotIndex },
+                  expectedItem: 'bow',
+                  amount: 1,
+                },
+              })
+              if (settled._tag !== 'Applied') {
+                if (shot.requestId !== undefined) {
+                  bowShotResults.push({
+                    requestId: shot.requestId,
+                    success: false,
+                    outcome: 'InventoryUnavailable',
+                  })
+                }
+                continue
+              }
+            }
+
             if (shot.requestId !== undefined) {
               bowShotResults.push({
                 requestId: shot.requestId,
@@ -3447,9 +3443,21 @@ export const gameplayStages = (
               continue
             }
 
+            if (thrown.inventory.mode === 'survival') {
+              const removed = yield* inventory.removeAt(
+                thrown.inventory.slotIndex,
+                'ender_pearl',
+                1,
+              )
+              if (removed._tag !== 'Removed') continue
+            }
+
             pearlOutcomes.push({
               displacement,
-              damage: { amount: ENDER_PEARL_DAMAGE, cause: ENDER_PEARL_DEATH_CAUSE },
+              damage:
+                thrown.inventory.mode === 'creative'
+                  ? undefined
+                  : { amount: ENDER_PEARL_DAMAGE, cause: ENDER_PEARL_DEATH_CAUSE },
             })
 
             if (!shouldSpawnEndermite(rollAt(rolls, index))) {

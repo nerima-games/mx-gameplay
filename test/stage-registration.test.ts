@@ -865,12 +865,14 @@ describe('stage behaviour', () => {
         dirY: 1,
         dirZ: 0,
         chargeSecs: BOW_FULL_CHARGE_SECS,
-      }
+        inventory: { mode: 'creative', slotIndex: 0 },
+      } as const
 
       yield* requestBowShot(state, 'fired', shot)
       yield* requestBowShot(state, 'undercharged', {
         ...shot,
         chargeSecs: BOW_MIN_CHARGE_SECS / 2,
+        inventory: { mode: 'creative', slotIndex: 0 },
       })
       yield* requestBowShot(state, 'duplicate', shot)
       yield* requestBowShot(state, 'duplicate', shot)
@@ -996,6 +998,7 @@ describe('stage behaviour', () => {
         dirY: 0,
         dirZ: 1,
         chargeSecs: BOW_FULL_CHARGE_SECS,
+        inventory: { mode: 'creative', slotIndex: 0 },
       })
       const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)
       yield* interactions!.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))

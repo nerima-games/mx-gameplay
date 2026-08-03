@@ -14,7 +14,7 @@
  * here. `domain/interactions/draw-bow.ts`'s header carries the measurement.
  */
 import { describe, expect, it } from '@effect/vitest'
-import { makeTimeService } from '@nerima-games/mc-sim'
+import { makeTimeService, type Slot } from '@nerima-games/mc-sim'
 import { Effect } from 'effect'
 import {
   bowCharge,
@@ -42,7 +42,13 @@ import {
 import { knockbackDirection, KNOCKBACK_EPSILON } from '../src/domain/interactions/knockback'
 import { resolveBowHits, type MobBehaviour } from '../src/domain/entities/mob-frame'
 import { EntityId, EntityKind, type EntityRoster } from '../src/domain/entity-manager-port'
-import { gameplayStages, makeGameplayFrameState, requestBowShot } from '../src/stages/registration'
+import {
+  drainBowShotResults,
+  gameplayStages,
+  makeGameplayFrameState,
+  requestBowShot,
+} from '../src/stages/registration'
+import { StackCount } from '../src/domain/frame-contract'
 import { makeChunkStoreDouble } from './support/chunk-store-double'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
 import { makePlayerServiceDouble } from './support/player-service-double'
@@ -625,12 +631,19 @@ describe('resolveBowHits', () => {
 // ---------------------------------------------------------------------------
 
 /** A frame with the shipped stages over the three doubles and a given roster. */
-const scene = (initial: EntityRoster<MobBehaviour>) =>
+const inventoryWith = (bow: boolean, arrow: boolean): ReadonlyArray<Slot> =>
+  Array.from({ length: 36 }, (_, index) => {
+    if (index === 0 && bow) return { item: 'bow' as const, count: StackCount(1) }
+    if (index === 1 && arrow) return { item: 'arrow' as const, count: StackCount(1) }
+    return undefined
+  })
+
+const scene = (initial: EntityRoster<MobBehaviour>, inventorySlots?: ReadonlyArray<Slot>) =>
   Effect.gen(function* () {
     const store = yield* makeChunkStoreDouble(new Map<string, number>(), ['0,0'])
     const roster = yield* makeEntityManagerDouble<MobBehaviour>(initial)
     const player = yield* makePlayerServiceDouble()
-    const inventory = yield* makeInventoryDouble()
+    const inventory = yield* makeInventoryDouble(inventorySlots)
     const time = yield* makeTimeService()
     const state = yield* makeGameplayFrameState
     return {
@@ -665,7 +678,8 @@ describe('gameplay:interactions — the bow arm', () => {
         dirY: 0,
         dirZ: 1,
         chargeSecs: BOW_FULL_CHARGE_SECS,
-      }
+inventory: { mode: 'creative', slotIndex: 0 },
+      } as const
 
       yield* requestBowShot(state, request)
 
@@ -681,7 +695,7 @@ describe('gameplay:interactions — the bow arm', () => {
       // to fix.
       const { state, roster, stages } = yield* scene(AHEAD)
       yield* Ref.set(state.pendingBowShots, [
-        { origin: EYE, dirX: 0, dirY: 0, dirZ: 1, chargeSecs: BOW_FULL_CHARGE_SECS },
+        { origin: EYE, dirX: 0, dirY: 0, dirZ: 1, chargeSecs: BOW_FULL_CHARGE_SECS , inventory: { mode: 'creative', slotIndex: 0 }},
       ])
 
       yield* runFrame(stages)
@@ -694,7 +708,7 @@ describe('gameplay:interactions — the bow arm', () => {
     Effect.gen(function* () {
       const { state, roster, stages } = yield* scene(AHEAD)
       yield* Ref.set(state.pendingBowShots, [
-        { origin: EYE, dirX: 0, dirY: 0, dirZ: 1, chargeSecs: BOW_MIN_CHARGE_SECS / 2 },
+        { origin: EYE, dirX: 0, dirY: 0, dirZ: 1, chargeSecs: BOW_MIN_CHARGE_SECS / 2 , inventory: { mode: 'creative', slotIndex: 0 }},
       ])
 
       yield* runFrame(stages)
@@ -708,7 +722,7 @@ describe('gameplay:interactions — the bow arm', () => {
     Effect.gen(function* () {
       const { state, roster, stages } = yield* scene(AHEAD)
       yield* Ref.set(state.pendingBowShots, [
-        { origin: EYE, dirX: 0, dirY: 0, dirZ: 1, chargeSecs: BOW_FULL_CHARGE_SECS / 2 },
+        { origin: EYE, dirX: 0, dirY: 0, dirZ: 1, chargeSecs: BOW_FULL_CHARGE_SECS / 2 , inventory: { mode: 'creative', slotIndex: 0 }},
       ])
 
       yield* runFrame(stages)
@@ -728,6 +742,7 @@ describe('gameplay:interactions — the bow arm', () => {
           dirY: 0,
           dirZ: 1,
           chargeSecs: BOW_FULL_CHARGE_SECS,
+inventory: { mode: 'creative', slotIndex: 0 },
           powerLevel: 1,
         },
       ])
@@ -746,7 +761,7 @@ describe('gameplay:interactions — the bow arm', () => {
         nextSerial: 1,
       })
       yield* Ref.set(state.pendingBowShots, [
-        { origin: EYE, dirX: 0, dirY: 0, dirZ: 1, chargeSecs: BOW_FULL_CHARGE_SECS },
+        { origin: EYE, dirX: 0, dirY: 0, dirZ: 1, chargeSecs: BOW_FULL_CHARGE_SECS , inventory: { mode: 'creative', slotIndex: 0 }},
       ])
 
       yield* runFrame(stages)
@@ -761,7 +776,7 @@ describe('gameplay:interactions — the bow arm', () => {
     Effect.gen(function* () {
       const { state, stages } = yield* scene(AHEAD)
       yield* Ref.set(state.pendingBowShots, [
-        { origin: EYE, dirX: 0, dirY: 0, dirZ: 1, chargeSecs: BOW_FULL_CHARGE_SECS },
+        { origin: EYE, dirX: 0, dirY: 0, dirZ: 1, chargeSecs: BOW_FULL_CHARGE_SECS , inventory: { mode: 'creative', slotIndex: 0 }},
       ])
 
       yield* runFrame(stages)
@@ -779,7 +794,7 @@ describe('gameplay:interactions — the bow arm', () => {
       const { state, roster, stages } = yield* scene(AHEAD)
       yield* Ref.set(state.pendingBowShots, [
         // Aimed straight up, at nothing.
-        { origin: EYE, dirX: 0, dirY: 1, dirZ: 0, chargeSecs: BOW_FULL_CHARGE_SECS },
+        { origin: EYE, dirX: 0, dirY: 1, dirZ: 0, chargeSecs: BOW_FULL_CHARGE_SECS , inventory: { mode: 'creative', slotIndex: 0 }},
       ])
 
       yield* runFrame(stages)
@@ -793,7 +808,7 @@ describe('gameplay:interactions — the bow arm', () => {
     Effect.gen(function* () {
       const { state, roster, stages } = yield* scene(AHEAD)
       yield* Ref.set(state.pendingBowShots, [
-        { origin: EYE, dirX: 0, dirY: 0, dirZ: 1, chargeSecs: BOW_FULL_CHARGE_SECS },
+        { origin: EYE, dirX: 0, dirY: 0, dirZ: 1, chargeSecs: BOW_FULL_CHARGE_SECS , inventory: { mode: 'creative', slotIndex: 0 }},
       ])
 
       yield* runFrame(stages)
@@ -815,19 +830,58 @@ describe('gameplay:interactions — the bow arm', () => {
     }),
   )
 
-  it.effect('delegates bow ammo and durability settlement to inventory orchestration', () =>
+  it.effect('settles survival bow ammo and durability atomically', () =>
     Effect.gen(function* () {
-      // `BowShotRequest` resolves combat only. Consuming an ARROW and damaging
-      // the BOW slot belong to the inventory orchestration boundary, so this
-      // stage leaves inventory untouched rather than charging twice.
-      const { state, inventory, stages } = yield* scene(AHEAD)
+      const { state, inventory, stages } = yield* scene(AHEAD, inventoryWith(true, true))
       yield* Ref.set(state.pendingBowShots, [
-        { origin: EYE, dirX: 0, dirY: 0, dirZ: 1, chargeSecs: BOW_FULL_CHARGE_SECS },
+        {
+          requestId: 'survival-shot',
+          origin: EYE,
+          dirX: 0,
+          dirY: 0,
+          dirZ: 1,
+          chargeSecs: BOW_FULL_CHARGE_SECS,
+          inventory: { mode: 'survival', slotIndex: 0 },
+        },
       ])
 
       yield* runFrame(stages)
 
-      expect(yield* inventory.withdrawals).toStrictEqual([])
+      const storage = yield* inventory.api.storageSnapshot
+      expect(storage.inventory.slots[0]).toStrictEqual({ item: 'bow', count: StackCount(1) })
+      expect(storage.inventory.slots[1]).toBeUndefined()
+      expect(storage.inventoryDurability[0]).toStrictEqual({ current: 383, max: 384 })
+      expect(yield* drainBowShotResults(state)).toStrictEqual([
+        { requestId: 'survival-shot', success: true, outcome: 'Fired' },
+      ])
+    }),
+  )
+
+  it.effect('rejects a survival shot without an arrow before combat', () =>
+    Effect.gen(function* () {
+      const { state, roster, inventory, stages } = yield* scene(AHEAD, inventoryWith(true, false))
+      yield* Ref.set(state.pendingBowShots, [
+        {
+          requestId: 'missing-arrow',
+          origin: EYE,
+          dirX: 0,
+          dirY: 0,
+          dirZ: 1,
+          chargeSecs: BOW_FULL_CHARGE_SECS,
+          inventory: { mode: 'survival', slotIndex: 0 },
+        },
+      ])
+
+      yield* runFrame(stages)
+
+      expect((yield* roster.api.snapshot).entities[0]?.healthPoints).toBe(20)
+      const storage = yield* inventory.api.storageSnapshot
+      expect(storage.inventory.slots[0]).toStrictEqual({ item: 'bow', count: StackCount(1) })
+      expect(storage.inventory.slots[1]).toBeUndefined()
+      expect(storage.inventoryDurability[0]).toStrictEqual({ current: 384, max: 384 })
+      expect(yield* drainBowShotResults(state)).toStrictEqual([
+        { requestId: 'missing-arrow', success: false, outcome: 'InventoryUnavailable' },
+      ])
     }),
   )
 })
