@@ -520,6 +520,8 @@ export const makeInventoryDouble = (
         containerStorageSnapshot: refuse('containerStorageSnapshot'),
         restoreContainerStorage: () => refuse('restoreContainerStorage'),
         transferContainerItem: () => refuse('transferContainerItem'),
+        extractContainerItem: () => refuse('extractContainerItem'),
+        moveContainerItem: () => refuse('moveContainerItem'),
         drainContainer: () => refuse('drainContainer'),
 
         reset: Ref.update(state, (doubles) => ({ ...doubles, storage: emptyPlayerStorage() })),

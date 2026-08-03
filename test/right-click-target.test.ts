@@ -48,7 +48,7 @@ describe('the routes the reference tests', () => {
 
   it.effect('storage routes narrow to the concrete container block', () =>
     Effect.sync(() => {
-      for (const block of ['chest', 'shulker_box'] as const) {
+      for (const block of ['chest', 'shulker_box', 'dispenser', 'hopper'] as const) {
         const route = rightClickRoute(AT, block)
         expect(route?.kind).toBe('storage')
         expect(route?.kind === 'storage' && route.block).toBe(block)

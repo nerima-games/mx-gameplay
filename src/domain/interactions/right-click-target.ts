@@ -44,7 +44,7 @@ import type { BlockPosition } from '../chunk-store-port'
  * route whose membership is expected to grow (barrels, ender chests, trapped
  * chests all belong here), and a set is where a reader looks for that.
  */
-const STORAGE_BLOCK_TYPES = ['chest', 'shulker_box'] as const
+const STORAGE_BLOCK_TYPES = ['chest', 'shulker_box', 'dispenser', 'hopper'] as const
 export type StorageBlock = (typeof STORAGE_BLOCK_TYPES)[number]
 export const STORAGE_BLOCKS: ReadonlySet<BlockType> = new Set<BlockType>(STORAGE_BLOCK_TYPES)
 
