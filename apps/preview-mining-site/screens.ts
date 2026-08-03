@@ -52,13 +52,9 @@
  * line ("enderman / shulker / dragon") into eight specific ones. Then WIRING
  * them into `gameplay:entities` retired four rows outright — the stage that runs
  * them, the population cap, the blast crater, and mob health and position as
- * state — and added seven more, every one of which is a MEASUREMENT the frame
- * cannot take rather than a rule nobody has written: the block light a spawn
- * search needs, the hour, the player's position, whether an enderman was hit,
- * where a mob's death cause could land. A rule that is written is a rule whose
- * edges can be named; a rule that is RUNNING is a rule whose inputs can be
- * counted. The fourth behaviour, the dragon, is on that list as a REFUSAL with
- * its reason, not as a to-do. See `ARENA_MISSING`.
+ * state. The dragon encounter and vehicle frame are now registered as well.
+ * The remaining rows are measurements or rules that still lack an executable
+ * path. A rule that is RUNNING is a rule whose inputs can be counted.
  *
  * ---------------------------------------------------------------------------
  * The preview is STILL the host, and that is now a smaller claim
@@ -1079,23 +1075,13 @@ export const ARENA_WIRED: ReadonlyArray<readonly [string, string]> = [
  * the nine that have been ported.
  *
  * ---------------------------------------------------------------------------
- * Why the dragon is a refusal and not a to-do
+ * What the missing list means
  * ---------------------------------------------------------------------------
  *
- * The other three behaviours reduced to numbers somebody else measured. The
- * dragon does not, and the reason is in two constants:
- * `<reference-impl>/packages/entity/domain/mob/ender-dragon/dragon-phase.ts:51-52`
- * turns on `TAKEOFF_COMPLETE_Y = 80` and `LOW_ALTITUDE_Y = 70` — ABSOLUTE world
- * altitudes, not distances — and every branch of its phase machine also produces
- * a VELOCITY (`:89-109`). Absolute altitudes are a fact about the End island's
- * obsidian pillars, which is mc-worldgen's structure; velocities are movement,
- * which is mc-physics'. A "rule" written here would be neither, and it would be
- * the boundary violation `domain/mob/creeper-fuse.ts` was careful to avoid.
+ * Each row is an unimplemented behaviour or a required measurement that this
+ * repository cannot derive without crossing an ownership boundary.
  */
 export const ARENA_MISSING: ReadonlyArray<readonly [string, string]> = [
-  ['the ender dragon', 'REFUSED, not deferred: its phases turn on absolute world Y (dragon-phase.ts:51-52) and emit velocities'],
-  ['a CART to run on the rails', 'the rail TOPOLOGY is no longer missing: domain/vehicle/rail-shape.ts and rail-ascent.ts are built, tested and 100% covered. What is missing is anything to run on them, and it is missing in mc-sim rather than here — EntityState has three fields (feetPosition / healthPoints / behaviour) and NONE of them is a velocity, and minecart / boat / mount / ride appear in no mc-sim file at all. So the two rules are callable and unreachable, which this repository normally treats as a defect; the exception is argued in docs/responsibility.md §5-3 and the shopping list is §5-5. Note what this row USED to say — that the other half was mc-physics’. It is not: mc-physics’ own docs/responsibility.md §3 already carries the row 「乗り物（ボート / トロッコ）の物理 → mx-gameplay」, and this repository cannot import mc-physics anyway (推移閉包禁止). §5-2'],
-  ['portals — a 4-repo row', 'plan.md §7 makes 次元 a FOUR-repository row (worldgen + sim + gameplay + save) and gives this one 「ポータル成立条件・遷移の発火」, so it really is a row whose ownership has to be settled first. It is not mc-physics’ and not mc-sim’s, though. The reference puts every piece of it in its WORLD package: nether-link.ts is coordinate SCALING, portal-frame.ts detects a frame and generates a LAYOUT, and resolveNetherTravel (nether-travel.ts:33-49) composes them — all mc-worldgen’s structures and coordinates. What actually blocks it is a noun NOBODY owns: `Dimension` is in no kernel file, and mc-sim’s EntityState has three fields and none of them says which world an entity is in. An ownership decision, exactly as §3-2 concluded'],
   ['enderman / shulker DROPS', 'ender_pearl and shulker_shell are not ItemTypes. One row in mc-kernel’s roster, no edit here'],
   ['where a teleport LANDS', 'the offset has no y and no ground check — a ChunkStore query, next to domain/interactions/'],
   // WAS: 'endermanTeleportUrge needs damagedThisStep and stuckTicks; mc-sim's

@@ -3,7 +3,7 @@ import { Effect } from 'effect'
 import type { BlockPosition } from './chunk-store-port'
 import { DAWN_FRACTION, isNight } from './day-night'
 import type { Position } from '@nerima-games/mc-kernel'
-import type { Dimension } from './nether-travel-port'
+import type { Dimension } from '@nerima-games/mc-worldgen'
 import type { PlayerServiceApi } from '@nerima-games/mc-sim'
 import type { Weather } from './weather'
 

@@ -19,7 +19,7 @@
  * failing loudly is the useful answer.
  */
 import { Effect, Layer, Ref } from 'effect'
-import type { Dimension } from '../../src/domain/nether-travel-port'
+import type { Dimension } from '@nerima-games/mc-worldgen'
 import { PlayerService, type PlayerPose, type PlayerServiceApi } from '@nerima-games/mc-sim'
 import type { Position } from '@nerima-games/mc-kernel'
 

@@ -233,7 +233,7 @@ import {
 } from '../domain/fluid-frontier'
 import type { DeltaTimeSecs, GameModule, StageRegistration } from '../domain/frame-contract'
 import { DEFAULT_ROLL_SEED, drawRolls, rollAt } from '../domain/frame-rolls'
-import type { Dimension, PortalTravelPlan } from '../domain/nether-travel-port'
+import type { Dimension, PortalTravelPlan } from '@nerima-games/mc-worldgen'
 import { OUTSIDE_PORTAL, type PortalDwell, stepPortalDwell } from '../domain/portal-dwell'
 import { applyPortalTravel, NO_KNOWN_PORTALS } from '../domain/portal-travel'
 import { PlayerService, type PlayerServiceApi } from '@nerima-games/mc-sim'

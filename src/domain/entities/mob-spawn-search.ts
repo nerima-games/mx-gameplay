@@ -94,7 +94,7 @@ import type { Position } from '@nerima-games/mc-kernel'
 import { EntityKind } from '@nerima-games/mc-sim'
 import { drawRolls, rollAt } from '../frame-rolls'
 import { hostileSpawnsAllowed } from '../day-night'
-import type { Dimension } from '../nether-travel-port'
+import type { Dimension } from '@nerima-games/mc-worldgen'
 import {
   ecosystemDimensionAllows,
   NETHER_HOSTILE_KINDS,

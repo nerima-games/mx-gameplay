@@ -62,7 +62,7 @@ import { makeInMemoryEntityManager } from './in-memory-entity-manager'
 import { makeInMemoryInventory } from './in-memory-inventory'
 import { makeInMemoryPlayer } from './in-memory-player'
 import { makeInMemoryVitals, type InMemoryVitalsApi, type PlayerVitals } from './in-memory-vitals'
-import type { Dimension } from './nether-travel-port'
+import type { Dimension } from '@nerima-games/mc-worldgen'
 
 /** What a host supplies to stand a world up. */
 export type InMemoryWorldOptions = {

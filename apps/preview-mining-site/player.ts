@@ -16,7 +16,7 @@
  * scenario is a worse diagnostic than one that quietly walks through.
  */
 import { Effect, Ref } from 'effect'
-import type { Dimension } from '../../src/domain/nether-travel-port'
+import type { Dimension } from '@nerima-games/mc-worldgen'
 import type { PlayerPose, PlayerServiceApi } from '@nerima-games/mc-sim'
 
 const refuse = <A>(what: string): Effect.Effect<A> =>

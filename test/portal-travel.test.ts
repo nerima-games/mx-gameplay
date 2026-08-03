@@ -1,11 +1,9 @@
 import { describe, expect, it } from '@effect/vitest'
-import { END_PORTAL_BLOCK } from '@nerima-games/mc-worldgen'
+import { END_PORTAL_BLOCK, type Dimension } from '@nerima-games/mc-worldgen'
 import { makeTimeService } from '@nerima-games/mc-sim'
 import { Effect, Option, Ref } from 'effect'
 import { type BlockPosition } from '../src/domain/chunk-store-port'
-import { NETHER_HORIZONTAL_RATIO } from '../src/domain/nether-travel-port'
 import { applyPortalTravel, NO_KNOWN_PORTALS } from '../src/domain/portal-travel'
-import { type Dimension } from '../src/domain/nether-travel-port'
 import { type PlayerPose, type PlayerServiceApi } from '@nerima-games/mc-sim'
 import { blockIdOf } from '../src/domain/block-vocabulary'
 import { type MobBehaviour } from '../src/domain/entities/mob-frame'
@@ -97,9 +95,9 @@ describe('a portal crossing actually completes', () => {
       // WHERE — mc-worldgen's rule, divided by eight.
       expect(plan.toDimension).toBe('nether')
       expect(plan.destination).toStrictEqual({
-        x: overworldCell.x / NETHER_HORIZONTAL_RATIO,
+        x: 16,
         y: overworldCell.y,
-        z: overworldCell.z / NETHER_HORIZONTAL_RATIO,
+        z: -32,
       })
 
       // APPLY — both halves, exactly once each.
@@ -120,9 +118,9 @@ describe('a portal crossing actually completes', () => {
 
       expect(plan.toDimension).toBe('overworld')
       expect(plan.destination).toStrictEqual({
-        x: netherCell.x * NETHER_HORIZONTAL_RATIO,
+        x: 128,
         y: netherCell.y,
-        z: netherCell.z * NETHER_HORIZONTAL_RATIO,
+        z: -256,
       })
       expect(yield* Ref.get(moves)).toStrictEqual([plan.destination])
       expect(yield* Ref.get(switches)).toStrictEqual(['overworld'])

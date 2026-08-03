@@ -73,7 +73,7 @@ import { AIR_BLOCK_ID, type BlockId } from '../chunk-store-port'
 import { validSpawnSurface } from '../block-vocabulary'
 import { hostileSpawnsAllowed } from '../day-night'
 import type { EntityKind } from '@nerima-games/mc-sim'
-import type { Dimension } from '../nether-travel-port'
+import type { Dimension } from '@nerima-games/mc-worldgen'
 import {
   ecosystemDimensionAllows,
   ECOSYSTEM_MOB_KINDS,

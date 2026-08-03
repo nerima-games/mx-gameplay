@@ -1,6 +1,6 @@
 import type { Position } from '@nerima-games/mc-kernel'
 import { EntityKind, type Entity, type EntityId } from '@nerima-games/mc-sim'
-import type { Dimension } from '../nether-travel-port'
+import type { Dimension } from '@nerima-games/mc-worldgen'
 import { ZOMBIE_KIND } from './hostile-combat'
 
 export const SKELETON_KIND = EntityKind('skeleton')

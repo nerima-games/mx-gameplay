@@ -20,7 +20,7 @@ import {
   type FluidWorkItem,
 } from '../fluid-frontier'
 import type { ItemType } from '../item-vocabulary'
-import type { Dimension } from '../nether-travel-port'
+import type { Dimension } from '@nerima-games/mc-worldgen'
 
 export const BUCKET_ITEM_TYPES = ['bucket', 'water_bucket', 'lava_bucket'] as const
 export type BucketItemType = (typeof BUCKET_ITEM_TYPES)[number]

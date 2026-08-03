@@ -251,7 +251,7 @@ kernel への追加要求は 1 つも無い。
 | --- | --- | --- | --- |
 | `packages/world/domain/nether/portal-frame.ts` | 枠の**成立条件** | **mc-worldgen** | ✅ `detectNetherPortal` |
 | `packages/app/.../interaction-flint-steel-portal.ts` | **遷移の発火**（点火） | **mx-gameplay** | ✅ `domain/interactions/ignite-portal.ts` |
-| `packages/app/.../physics-stage-portal.ts` の**適用** | プレイヤーをそこへ置く | mx-gameplay | 🟡 **公開 API は利用可能、呼び出しは未配線。** `@nerima-games/mc-sim` の `PlayerServiceApi.moveTo` を直接使えるが、**いつ**は `domain/portal-dwell.ts` が答える。残る 2 つは配線ではない: **どこへ**を答えるはずの `resolveNetherTravel` は mc-worldgen の**バレルに無く**、引数 2 つにも所有者が居ない。`moveTo` の呼び出しは `makeGameplayStages` に `PlayerService` を名指すことなので、**`api-lock.md` が動く**。どちらも §6-2 に実測がある |
+| `packages/app/.../physics-stage-portal.ts` の**適用** | プレイヤーをそこへ置く | mx-gameplay | ✅ `domain/portal-travel.ts` が `PlayerServiceApi.moveTo` と `setDimension` を対にして適用する。**いつ**は `domain/portal-dwell.ts`、**どこへ**は `@nerima-games/mc-worldgen` の公開 `resolveNetherTravel` が答える |
 
 **成立条件が隣に行ったのは越境ではない。** mc-worldgen 側の判断であり、そのファイルの冒頭が根拠を書いている:
 入力が全部ブロックデータで、実体を 1 つも知らない。plan.md §3.11 が 「ポータル / 次元移動ルール」 を
@@ -308,9 +308,9 @@ mc-worldgen だった**。「全員が依存しているから」は所有の理
 この項は「mc-worldgen の `index.ts` は `./domain/nether-travel` を出していない」
 「ミラーすればまさにその綴りに依存することになる」と書いていた。**源流で解決された。**
 mc-worldgen が語を所有すると決めた以上、伏せておく理由は失効し、
-`index.ts` は `./domain/nether-travel` を出している。`domain/nether-travel-port.ts` は
-**publish された module のミラー**であり、`domain/portal-frame-port.ts` が述べる規則
-「a mirror's home is decided by WHOSE BARREL REPLACES IT」を満たす。
+`index.ts` は `./domain/nether-travel` を出しているため、mx-gameplay はその公開 API を
+直接利用する。`domain/portal-frame-port.ts` だけが、まだ公開されていない形を隔離する
+ミラーとして残る。
 
 `from: Dimension` の出所は (a) で埋まった。`knownPortals` の永続的な台帳は引き続き
 セーブファイルを持つホストの名詞であり、mx-gameplay は所有しない。代わりに

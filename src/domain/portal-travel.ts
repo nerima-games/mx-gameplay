@@ -7,8 +7,8 @@
  *
  *   WHEN   `./portal-dwell`'s `stepPortalDwell` — four seconds in the block,
  *          then a cooldown. Holds no coordinate and knows no world.
- *   WHERE  `./nether-travel-port`'s `resolveNetherTravel` — mc-worldgen's rule,
- *          mirrored. Scales the position and picks or plans a portal.
+ *   WHERE  `@nerima-games/mc-worldgen`'s `resolveNetherTravel` — scales the
+ *          position and picks or plans a portal.
  *   APPLY  this file — `moveTo` the destination, `setDimension` the plan's
  *          `toDimension`, in that order and never one without the other.
  *
@@ -39,8 +39,13 @@
  * this rule still owns neither the portal ledger nor world generation.
  */
 import { Effect } from 'effect'
+import {
+  blockPosition,
+  type Dimension,
+  type PortalTravelPlan,
+  resolveNetherTravel,
+} from '@nerima-games/mc-worldgen'
 import { type BlockPosition } from './chunk-store-port'
-import { type Dimension, type PortalTravelPlan, resolveNetherTravel } from './nether-travel-port'
 import { type PlayerServiceApi } from '@nerima-games/mc-sim'
 
 /**
@@ -48,6 +53,9 @@ import { type PlayerServiceApi } from '@nerima-games/mc-sim'
  * destination snapshot.
  */
 export const NO_KNOWN_PORTALS: ReadonlyArray<BlockPosition> = []
+
+const asWorldgenPosition = (position: BlockPosition) =>
+  blockPosition(position.x, position.y, position.z)
 
 /**
  * Perform a crossing: resolve the plan, move, and switch.
@@ -75,7 +83,11 @@ export const applyPortalTravel = (
 ): Effect.Effect<PortalTravelPlan> =>
   Effect.gen(function* () {
     const from: Dimension = yield* player.dimension
-    const plan = resolveNetherTravel(from, playerCell, candidates)
+    const plan = resolveNetherTravel(
+      from,
+      asWorldgenPosition(playerCell),
+      candidates.map(asWorldgenPosition),
+    )
 
     yield* player.moveTo({ x: plan.destination.x, y: plan.destination.y, z: plan.destination.z })
     yield* player.setDimension(plan.toDimension)

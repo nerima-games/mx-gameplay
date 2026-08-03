@@ -47,7 +47,7 @@ import { Effect, Layer, Ref } from 'effect'
 import { PlayerService, type PlayerPose, type PlayerServiceApi } from '@nerima-games/mc-sim'
 import { ClockPort, type CameraPoseSnapshot } from './frame-contract'
 import type { Position } from '@nerima-games/mc-kernel'
-import type { Dimension } from './nether-travel-port'
+import type { Dimension } from '@nerima-games/mc-worldgen'
 
 /**
  * How far the view may pitch, in radians.

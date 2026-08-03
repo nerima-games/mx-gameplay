@@ -1,11 +1,11 @@
 import {
   blockPosition as worldgenBlockPosition,
+  type Dimension,
   END_PORTAL_BLOCK,
   endArrivalDescriptor,
 } from '@nerima-games/mc-worldgen'
 import { Effect } from 'effect'
 import type { BlockPosition } from './chunk-store-port'
-import type { Dimension } from './nether-travel-port'
 import type { PlayerServiceApi } from '@nerima-games/mc-sim'
 
 /** Deterministic End arrival origin until worldgen supplies a world spawn. */
