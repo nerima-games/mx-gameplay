@@ -463,6 +463,12 @@ export const makeInventoryDouble = (
             ] as const
           }),
 
+        getSlot: () => refuse('getSlot'),
+        setSlot: () => refuse('setSlot'),
+        moveStack: () => refuse('moveStack'),
+        quickMove: () => refuse('quickMove'),
+        sortInventory: refuse('sortInventory'),
+
         countOf: (item) =>
           Effect.map(Ref.get(state), (doubles) => totalOf(doubles.storage.inventory.slots, item)),
 
