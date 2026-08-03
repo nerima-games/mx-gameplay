@@ -67,10 +67,5 @@
     "tsx": "^4.19.2",
     "typescript": "^5.9.3",
     "vitest": "^3.2.4"
-  },
-  "pnpm": {
-    "overrides": {
-      "@nerima-games/mc-kernel": "0.2.16"
-    }
   }
 }

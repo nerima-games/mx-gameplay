@@ -116,13 +116,13 @@ export type GeneratedWorld<S> = InMemoryWorld<S> & {
  * same underlying store; no chunks or dirty queues are copied.
  */
 export const adaptGeneratedChunkStore = (store: WorldgenChunkStoreApi): ChunkStoreApi => ({
-  load: (coord) => store.load(worldgenChunkCoord(coord.cx, coord.cz)),
+  load: (coord) => store.load(worldgenChunkCoord(coord.cx, coord.cz)).pipe(Effect.orDie),
   peek: (coord) => store.peek(worldgenChunkCoord(coord.cx, coord.cz)),
   snapshot: (coord) => store.snapshot(worldgenChunkCoord(coord.cx, coord.cz)),
   isLoaded: (coord) => store.isLoaded(worldgenChunkCoord(coord.cx, coord.cz)),
   loadedCoords: store.loadedCoords,
   neighbours: (coord) => store.neighbours(worldgenChunkCoord(coord.cx, coord.cz)),
-  unload: (coord) => store.unload(worldgenChunkCoord(coord.cx, coord.cz)),
+  unload: (coord) => store.unload(worldgenChunkCoord(coord.cx, coord.cz)).pipe(Effect.orDie),
   getBlock: (position) => store.getBlock(worldgenBlockPosition(position.x, position.y, position.z)),
   setBlock: (position, block) =>
     store.setBlock(
