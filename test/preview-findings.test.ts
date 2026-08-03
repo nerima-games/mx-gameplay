@@ -31,56 +31,34 @@ import { dayPhase, hostileSpawnsAllowed, isNight } from '../src/domain/day-night
 import { applyDamage, deathMessage, fullHealth, isDead } from '../src/domain/death-cause'
 import { carryOver, splitBudget, type FluidWorkItem } from '../src/domain/fluid-frontier'
 
-describe('F5 — a non-finite damage amount makes the player permanently immortal', () => {
-  // `Damage.amount` is a bare `number`. `Math.max(0, NaN)` is NaN, `NaN <= 0` is
-  // false, and `applyDamage` returns early only for the dead — so one NaN blow
-  // puts the player in a state from which no later blow can remove them.
-  //
-  // This is DN-GP-3's failure mode one level down. That note makes `cause` a
-  // required field so a death message can never lose its cause; this removes the
-  // death the cause was going to describe.
-  //
-  // The fix is the one `domain/frame-contract.ts:57` already uses for
-  // `DeltaTimeSecs`: a `Brand.refined` on `Number.isFinite(value)`. When it
-  // lands, these three assertions are the ones to invert.
-  it.effect('pins the current behaviour: NaN damage leaves health NaN and isDead false', () =>
+describe('F5 — non-finite damage is ignored', () => {
+  it.effect('preserves vitals for every non-finite damage amount', () =>
     Effect.sync(() => {
-      const struck = applyDamage(fullHealth, { amount: Number.NaN, cause: 'lava' })
-
-      expect(Number.isNaN(struck.healthPoints)).toBe(true)
-      expect(isDead(struck)).toBe(false)
-      expect(deathMessage(struck)).toBeUndefined()
-      // The cause was never recorded, because the transition to zero never
-      // happened — so even the field DN-GP-3 exists to protect is empty.
-      expect(struck.lastDeathCause).toBeUndefined()
-    }),
-  )
-
-  it.effect('pins the current behaviour: no amount of later damage can kill a NaN player', () =>
-    Effect.sync(() => {
-      let vitals = applyDamage(fullHealth, { amount: Number.NaN, cause: 'lava' })
-      for (const amount of [20, 1_000, 1_000_000]) {
-        vitals = applyDamage(vitals, { amount, cause: 'explosion' })
+      for (const amount of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+        expect(applyDamage(fullHealth, { amount, cause: 'lava' })).toEqual(fullHealth)
       }
-
-      expect(isDead(vitals)).toBe(false)
-      expect(deathMessage(vitals)).toBeUndefined()
     }),
   )
 
-  it.effect('the finite edges are already handled — only the non-number is not', () =>
+  it.effect('allows later finite damage to kill after non-finite damage is ignored', () =>
     Effect.sync(() => {
-      // Infinity kills, which is the right answer for "infinite damage".
-      const obliterated = applyDamage(fullHealth, { amount: Number.POSITIVE_INFINITY, cause: 'fall' })
-      expect(obliterated.healthPoints).toBe(0)
-      expect(deathMessage(obliterated)).toBe('You fell from a high place.')
+      const unaffected = applyDamage(fullHealth, { amount: Number.NaN, cause: 'lava' })
+      const killed = applyDamage(unaffected, { amount: 20, cause: 'explosion' })
 
-      // A negative amount is clamped by `Math.max(0, damage.amount)`, so damage
-      // cannot heal. -Infinity goes the same way.
+      expect(isDead(killed)).toBe(true)
+      expect(deathMessage(killed)).toBe('You blew up.')
+    }),
+  )
+
+  it.effect('preserves the existing finite negative, zero, and positive boundaries', () =>
+    Effect.sync(() => {
       expect(applyDamage(fullHealth, { amount: -5, cause: 'mob' }).healthPoints).toBe(20)
-      expect(
-        applyDamage(fullHealth, { amount: Number.NEGATIVE_INFINITY, cause: 'mob' }).healthPoints,
-      ).toBe(20)
+      expect(applyDamage(fullHealth, { amount: 0, cause: 'mob' }).healthPoints).toBe(20)
+      expect(applyDamage(fullHealth, { amount: 5, cause: 'mob' }).healthPoints).toBe(15)
+      expect(applyDamage(fullHealth, { amount: 20, cause: 'mob' })).toEqual({
+        healthPoints: 0,
+        lastDeathCause: 'mob',
+      })
     }),
   )
 })
@@ -134,31 +112,20 @@ describe('F6 — the day/night rules are not periodic in the day', () => {
   )
 })
 
-describe('F3 — carryOver compares by key, but the frontier is keyed by (key, kind)', () => {
-  // `splitBudget` classifies on `kind`; `carryOver` builds its "evaluated" set
-  // from `item.key` alone (`domain/fluid-frontier.ts:120`). When two kinds share
-  // one position the two disagree about what an item is, and the cell that was
-  // never evaluated is dropped from the frontier.
-  //
-  // Water and lava meet at one position by definition — that is the whole of the
-  // cobblestone and obsidian rules — so this is the encoding of a fluid
-  // interface, not a contrived input. DN-GP-2 records what a dropped frontier
-  // key looks like from the outside: a lava lake with a straight edge, minutes
-  // later, in a preview.
+describe('fluid frontier identity and carry-over contract', () => {
   const interfaceCell: ReadonlyArray<FluidWorkItem> = [
     { key: '10,64,10', kind: 'water' },
     { key: '10,64,10', kind: 'lava' },
   ]
 
-  it.effect('pins the current behaviour: the unevaluated lava half is silently dropped', () =>
+  it.effect('identifies work by position and kind so inactive lava survives a water evaluation', () =>
     Effect.sync(() => {
       const split = splitBudget(interfaceCell, { lavaTickActive: false, budget: 64 })
 
-      // The lava tick is not active, so no lava cell may be evaluated.
       expect(split.work).toStrictEqual([{ key: '10,64,10', kind: 'water' }])
-
-      // …and yet the lava cell does not survive into the next frontier.
-      expect(carryOver(interfaceCell, split)).toStrictEqual([])
+      expect(carryOver(interfaceCell, split)).toStrictEqual([
+        { key: '10,64,10', kind: 'lava' },
+      ])
     }),
   )
 
@@ -172,49 +139,18 @@ describe('F3 — carryOver compares by key, but the frontier is keyed by (key, k
       expect(carryOver(distinct, split)).toStrictEqual([{ key: '11,64,10', kind: 'lava' }])
     }),
   )
-})
-
-describe('F2 — retainedLavaFrontier names cells carryOver already keeps', () => {
-  // `FluidBudgetSplit.retainedLavaFrontier` is documented "These MUST be fed
-  // back into the next frontier"; `carryOver` is documented as returning the
-  // cells that were not evaluated. On an inactive lava tick every lava cell
-  // satisfies both, so a caller obeying both comments duplicates them — and
-  // duplicates them again on the next inactive tick.
-  //
-  // `stages/registration.ts:270` uses `carryOver` alone and is correct. The
-  // field is dead in the only caller that exists, and its doc comment reads as
-  // an obligation.
-  const frontier: ReadonlyArray<FluidWorkItem> = [
-    { key: 'w0', kind: 'water' },
-    { key: 'l0', kind: 'lava' },
-    { key: 'l1', kind: 'lava' },
-  ]
-
-  it.effect('pins the current behaviour: the two outputs overlap completely', () =>
+  it.effect('uses carryOver alone for reinsertion without doubling deferred lava', () =>
     Effect.sync(() => {
-      const split = splitBudget(frontier, { lavaTickActive: false, budget: 64 })
-      const carriedKeys = carryOver(frontier, split).map((item) => item.key)
-
-      expect(split.retainedLavaFrontier).toStrictEqual(['l0', 'l1'])
-      expect(carriedKeys).toStrictEqual(['l0', 'l1'])
-    }),
-  )
-
-  it.effect('pins the current behaviour: obeying both doc comments doubles the lava frontier each tick', () =>
-    Effect.sync(() => {
-      let naive: ReadonlyArray<FluidWorkItem> = frontier
-      const sizes: Array<number> = [naive.length]
+      let frontier: ReadonlyArray<FluidWorkItem> = interfaceCell
+      const sizes: Array<number> = [frontier.length]
 
       for (let tick = 0; tick < 4; tick += 1) {
-        const split = splitBudget(naive, { lavaTickActive: false, budget: 64 })
-        naive = [
-          ...carryOver(naive, split),
-          ...split.retainedLavaFrontier.map((key): FluidWorkItem => ({ key, kind: 'lava' })),
-        ]
-        sizes.push(naive.length)
+        const split = splitBudget(frontier, { lavaTickActive: false, budget: 64 })
+        frontier = carryOver(frontier, split)
+        sizes.push(frontier.length)
       }
 
-      expect(sizes).toStrictEqual([3, 4, 8, 16, 32])
+      expect(sizes).toStrictEqual([2, 1, 1, 1, 1])
     }),
   )
 })

@@ -65,7 +65,12 @@
  *     reads, and it is the one the whole `EntityManager` design exists for.
  */
 import { describe, expect, it } from '@effect/vitest'
-import { makeTimeService, type TimeServiceApi } from '@nerima-games/mc-sim'
+import {
+  emptyFurnaceState,
+  itemStack,
+  makeTimeService,
+  type TimeServiceApi,
+} from '@nerima-games/mc-sim'
 import { Effect, Ref } from 'effect'
 import { readdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
@@ -81,12 +86,20 @@ import {
 import { blockIdOf, isReplaceable } from '../src/domain/block-vocabulary'
 import { NOON_FRACTION } from '../src/domain/day-night'
 import {
+  addVillager,
+  emptyVillagerTradeState,
+  makeVillager,
+  useVillagerOffer,
+  VILLAGER_RESTOCK_INTERVAL_SECS,
+} from '../src/domain/villager-trade'
+import {
   CREEPER_KIND,
   DROPPED_ITEM_KIND,
   CREEPER_MAX_HEALTH,
   ENDERMAN_KIND,
   ENDERMAN_TELEPORT_ROLLS,
   HOSTILE_KINDS,
+  hostileMobSnapshot,
   isDroppedItemBehaviour,
   MAX_HOSTILE_COUNT,
   STEADY_ENDERMAN,
@@ -98,6 +111,10 @@ import { EntityKind, type EntityManagerApi, type Position } from '../src/domain/
 import { disturb } from '../src/domain/falling-block'
 import { DeltaTimeSecs, StackCount } from '../src/domain/frame-contract'
 import { DEFAULT_ROLL_SEED, drawRolls, nextRoll } from '../src/domain/frame-rolls'
+import {
+  FIRE_NATURAL_LIFETIME_TICKS,
+  FIRE_TICK_INTERVAL_SECS,
+} from '../src/domain/fire-lifecycle'
 import { craterCells, craterRadius } from '../src/domain/interactions/explosion-crater'
 import { CREEPER_FUSE_SECS, DORMANT_FUSE } from '../src/domain/mob/creeper-fuse'
 import {
@@ -116,16 +133,27 @@ import { PORTAL_WINDOW_RADIUS, ignitePortal } from '../src/domain/interactions/i
 import { generatePortalLayout } from '../src/domain/portal-frame-port'
 import {
   drainItemUseResults,
+  drainPlayerDamages,
+  drainVillagerTradeResults,
   gameplayStages,
   makeGameplayFrameState,
   requestBlockBreak,
+  requestFoodUse,
+  requestFurnaceAdvance,
   requestItemUse,
   requestPotatoFoodUse,
   requestPotatoHarvest,
   requestPotatoPlanting,
   requestSoilTill,
+  requestVillagerTrade,
+  restoreFireLifecycle,
+  restoreVillagerTrades,
+  snapshotFireLifecycle,
+  snapshotStatusEffects,
+  snapshotVillagerTrades,
   type PlacementRequest,
 } from '../src/stages/registration'
+import { MAX_FURNACE_ADVANCE_SECS } from '../src/domain/interactions/advance-furnace'
 import {
   GRAVEL,
   makeChunkStoreDouble,
@@ -748,6 +776,38 @@ const daylight = (time: TimeServiceApi): Effect.Effect<void> =>
   time.setTimeOfDay(NOON_FRACTION)
 
 describe('the mob slice, through the stage registration', () => {
+  it.effect('searches for Nether hostiles at noon while Overworld hostile search stays night-gated', () =>
+    Effect.gen(function* () {
+      const searchAtNoon = (dimension: 'overworld' | 'nether') =>
+        Effect.gen(function* () {
+          const { store, roster, state, player, time, stages } = yield* slice(world([]))
+
+          yield* roster.api.spawn({
+            kind: CREEPER_KIND,
+            feetPosition: creeperAt,
+            healthPoints: CREEPER_MAX_HEALTH,
+            behaviour: DORMANT_FUSE,
+          })
+          yield* player.api.moveTo(playerFar)
+          yield* player.api.setDimension(dimension)
+          yield* daylight(time)
+          yield* runFrames(stages, 2, STRIDE)
+
+          return {
+            reads: (yield* store.calls).reads,
+            seed: yield* Ref.get(state.rollSeed),
+          }
+        })
+
+      const overworld = yield* searchAtNoon('overworld')
+      const nether = yield* searchAtNoon('nether')
+
+      expect(overworld).toStrictEqual({ reads: 2, seed: DEFAULT_ROLL_SEED })
+      expect(nether.reads).toBeGreaterThan(overworld.reads)
+      expect(nether.seed).not.toBe(DEFAULT_ROLL_SEED)
+    }),
+  )
+
   it.effect('a creeper spawns, lights, detonates once, and the blast reaches the world', () =>
     Effect.gen(function* () {
       const { store, roster, inventory, state, player, time, stages } = yield* slice(
@@ -768,7 +828,10 @@ describe('the mob slice, through the stage registration', () => {
       const spawned = yield* roster.api.entities
       // A mob spawned this frame does not act this frame: the sweep runs before
       // the spawn, so both are dormant with full health and nothing has moved.
-      expect(spawned.map((entity) => entity.behaviour)).toStrictEqual([DORMANT_FUSE, DORMANT_FUSE])
+      expect(spawned.map((entity) => entity.behaviour)).toStrictEqual([
+        hostileMobSnapshot(DORMANT_FUSE),
+        hostileMobSnapshot(DORMANT_FUSE),
+      ])
       expect(spawned.map((entity) => entity.healthPoints)).toStrictEqual([
         CREEPER_MAX_HEALTH,
         CREEPER_MAX_HEALTH,
@@ -786,8 +849,14 @@ describe('the mob slice, through the stage registration', () => {
       // The bystander is four blocks off — outside the three-block ignition
       // range — and is untouched.
       const lit = yield* roster.api.entities
-      expect(lit[0]?.behaviour).toStrictEqual({ _tag: 'Lit', burnedSecs: 0.25 })
-      expect(lit[1]?.behaviour).toBe(DORMANT_FUSE)
+      expect(lit[0]?.behaviour).toStrictEqual({
+        ...hostileMobSnapshot({ _tag: 'Lit', burnedSecs: 0.25 }),
+        ageTicks: 5,
+      })
+      expect(lit[1]?.behaviour).toStrictEqual({
+        ...hostileMobSnapshot(DORMANT_FUSE),
+        ageTicks: 5,
+      })
 
       // The bystander is outside ignition range, but hostile locomotion still
       // closes the horizontal gap by speed * dt without changing altitude.
@@ -799,8 +868,8 @@ describe('the mob slice, through the stage registration', () => {
       expect(CREEPER_FUSE_SECS).toBe(1.5)
       yield* runFrames(stages, 4, STRIDE)
       expect((yield* roster.api.entities)[0]?.behaviour).toStrictEqual({
-        _tag: 'Lit',
-        burnedSecs: 1.25,
+        ...hostileMobSnapshot({ _tag: 'Lit', burnedSecs: 1.25 }),
+        ageTicks: 25,
       })
 
       const beforeBlast = yield* store.calls
@@ -839,12 +908,15 @@ describe('the mob slice, through the stage registration', () => {
       expect(yield* store.blockAt(ledgeSand)).toBe(AIR_BLOCK_ID)
       expect(yield* store.blockAt(craterLedge)).toBe(SAND)
 
-      // The store was untouched until the blast, and the blast is the only
-      // reason it was touched at all: one write per crater cell and no reads
-      // beyond the falling-block rule's.
+      // The store was untouched until the blast. The crater reads each cell to
+      // enforce block resistance, then writes each readable non-resistant cell;
+      // falling-block processing accounts for any additional calls.
       // Six frames of fuse, six portal probes, and nothing else touched.
       expect(beforeBlast).toStrictEqual({ reads: 6, writes: 0, peeks: 0 })
-      expect((yield* store.calls).writes).toBeGreaterThanOrEqual(craterCells(creeperAt, CREEPER_EXPLOSION_POWER).length)
+      const craterCellCount = craterCells(creeperAt, CREEPER_EXPLOSION_POWER).length
+      const afterBlast = yield* store.calls
+      expect(afterBlast.reads).toBeGreaterThanOrEqual(beforeBlast.reads + craterCellCount)
+      expect(afterBlast.writes).toBeGreaterThanOrEqual(craterCellCount)
     }),
   )
 
@@ -860,7 +932,7 @@ describe('the mob slice, through the stage registration', () => {
       const [zombie] = yield* roster.api.entities
       expect(zombie?.kind).toBe(ZOMBIE_KIND)
       expect(zombie?.healthPoints).toBe(20)
-      expect(zombie?.behaviour).toBeUndefined()
+      expect(zombie?.behaviour).toStrictEqual(hostileMobSnapshot(undefined))
     }),
   )
 
@@ -1539,18 +1611,18 @@ describe('the crater is the other radius, and it is the falling-block queue’s 
       yield* runFrame(stages, STRIDE)
 
       expect(yield* roster.api.count).toBe(0)
-      expect((yield* store.calls).writes).toBe(craterCells(creeperAt, CREEPER_EXPLOSION_POWER).length)
+      const craterCellCount = craterCells(creeperAt, CREEPER_EXPLOSION_POWER).length
+      expect((yield* store.calls).writes).toBe(craterCellCount)
       expect((yield* Ref.get(state.fallingBlocks)).pending.size).toBe(0)
-      // ...and no reads BEYOND the one portal probe this frame: the
-      // falling-block pass had an empty batch, so it
-      // stopped before touching the store.
-      expect((yield* store.calls).reads).toBe(1)
+      // The crater reads once per cell; beyond those, only the portal probe
+      // reads. The falling-block pass had an empty batch and touched no cells.
+      expect((yield* store.calls).reads).toBe(craterCellCount + 1)
     }),
   )
 })
 
 describe('the stage supplies its rolls from a seed', () => {
-  const repositoryRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
+  const repositoryRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'src')
 
   it.effect('REGRESSION-PROOF BY SHAPE: nothing on the frame path reads a random number or a clock', () =>
     Effect.sync(() => {
@@ -1932,6 +2004,49 @@ describe('the mining site slice: dig, drop, place', () => {
  * will queue it reaches the rule, that the item is reported as used only when
  * something lit, and that it happens AFTER placements in the same frame.
  */
+describe('the furnace slice: host-owned state crosses the interaction stage', () => {
+  it.effect('bounds work, returns deferred time and drains the correlated plan once', () =>
+    Effect.gen(function* () {
+      const { state, stages } = yield* slice(world([]))
+      const furnace = {
+        ...emptyFurnaceState(),
+        input: itemStack('raw_iron', 2),
+        fuel: itemStack('coal', 1),
+      }
+
+      yield* requestFurnaceAdvance(state, 'furnace-1', furnace, 25)
+      yield* runFrame(stages)
+
+      const [result] = yield* drainItemUseResults(state)
+      expect(result).toMatchObject({
+        action: 'AdvanceFurnace',
+        requestId: 'furnace-1',
+        success: true,
+        plan: {
+          advancedSecs: MAX_FURNACE_ADVANCE_SECS,
+          deferredSecs: 15,
+          smelted: 1,
+          after: { output: itemStack('iron_ingot', 1) },
+        },
+      })
+      expect(yield* drainItemUseResults(state)).toStrictEqual([])
+    }),
+  )
+
+  it.effect('does not report an empty furnace as successful', () =>
+    Effect.gen(function* () {
+      const { state, stages } = yield* slice(world([]))
+
+      yield* requestFurnaceAdvance(state, 'empty-furnace', emptyFurnaceState(), 10)
+      yield* runFrame(stages)
+
+      expect(yield* drainItemUseResults(state)).toMatchObject([
+        { action: 'AdvanceFurnace', requestId: 'empty-furnace', success: false },
+      ])
+    }),
+  )
+})
+
 describe('the ignition slice: an item use reaches the world', () => {
   const origin: BlockPosition = { x: 4, y: 64, z: 3 }
 
@@ -2002,6 +2117,82 @@ describe('the ignition slice: an item use reaches the world', () => {
           outcome: { _tag: 'Fire', outcome: { _tag: 'Lit', position: origin } },
         },
       ])
+    }),
+  )
+
+  it.effect('a lit fire advances through the stage into spread and contact damage', () =>
+    Effect.gen(function* () {
+      const contactOrigin: BlockPosition = { x: 0, y: 64, z: 0 }
+      const fuel: BlockPosition = { x: 1, y: 64, z: 0 }
+      const oakPlanks = blockIdOf('oak_planks')
+      expect(oakPlanks).toBeDefined()
+      const { store, state, stages } = yield* slice(
+        world([[fuel, oakPlanks ?? STONE]]),
+        residentAround(contactOrigin),
+      )
+
+      yield* requestItemUse(state, 'tracked-fire', contactOrigin, 'flint_and_steel')
+      yield* runFrame(stages)
+      const registered = yield* snapshotFireLifecycle(state)
+      expect(registered.fires).toStrictEqual([{ position: contactOrigin, ageTicks: 0 }])
+
+      yield* restoreFireLifecycle(state, { ...registered, seed: 1 })
+      yield* runFrame(stages, DeltaTimeSecs(FIRE_TICK_INTERVAL_SECS))
+
+      expect(yield* store.blockAt(fuel)).toBe(FIRE)
+      expect(yield* drainPlayerDamages(state)).toStrictEqual([
+        { _tag: 'FireContact', at: contactOrigin, damage: { amount: 1, cause: 'fire' } },
+      ])
+      expect((yield* snapshotFireLifecycle(state)).fires).toContainEqual({
+        position: fuel,
+        ageTicks: 0,
+      })
+    }),
+  )
+
+  it.effect('an item-lit fire naturally expires through gameplay frames', () =>
+    Effect.gen(function* () {
+      const { store, state, stages } = yield* slice(world([]), residentAround(origin))
+
+      yield* requestItemUse(state, 'expiring-fire', origin, 'fire_charge')
+      yield* runFrame(stages)
+      yield* runFrames(
+        stages,
+        FIRE_NATURAL_LIFETIME_TICKS,
+        DeltaTimeSecs(FIRE_TICK_INTERVAL_SECS),
+      )
+
+      expect(yield* store.blockAt(origin)).toBe(AIR_BLOCK_ID)
+      expect((yield* snapshotFireLifecycle(state)).fires).toStrictEqual([])
+    }),
+  )
+
+  it.effect('fire lifetime is independent of the host render frequency', () =>
+    Effect.gen(function* () {
+      const simulate = (frequency: number) =>
+        Effect.gen(function* () {
+          const { store, state, stages } = yield* slice(world([]), residentAround(origin))
+          yield* requestItemUse(state, `fire-${frequency}`, origin, 'fire_charge')
+          yield* runFrame(stages, DeltaTimeSecs(0))
+          yield* runFrames(
+            stages,
+            (FIRE_NATURAL_LIFETIME_TICKS * frequency) / 20,
+            DeltaTimeSecs(1 / frequency),
+          )
+          return {
+            block: yield* store.blockAt(origin),
+            snapshot: yield* snapshotFireLifecycle(state),
+          }
+        })
+
+      const at20Hz = yield* simulate(20)
+      const at60Hz = yield* simulate(60)
+      const at120Hz = yield* simulate(120)
+
+      expect(at20Hz).toStrictEqual(at60Hz)
+      expect(at60Hz).toStrictEqual(at120Hz)
+      expect(at120Hz.block).toBe(AIR_BLOCK_ID)
+      expect(at120Hz.snapshot.fires).toStrictEqual([])
     }),
   )
 
@@ -2195,9 +2386,115 @@ describe('the potato farming slice: host input reaches farming rules', () => {
           heldItem: 'potato',
           success: true,
           consumedCount: 1,
-          outcome: { _tag: 'consume', count: 1, foodPoints: 1, saturationModifier: 0.6 },
+          outcome: {
+            _tag: 'consume',
+            count: 1,
+            foodPoints: 1,
+            saturationModifier: 0.6,
+            effects: [],
+          },
         },
       ])
+    }),
+  )
+
+  it.effect('routes pufferfish food effects into status and hunger runtime state', () =>
+    Effect.gen(function* () {
+      const { state, stages } = yield* slice(world([]))
+
+      yield* requestFoodUse(state, 'eat-pufferfish', 'pufferfish', {
+        healthPoints: 20,
+        hungerPoints: 10,
+        maxHungerPoints: 20,
+      })
+      yield* runFrame(stages, STRIDE)
+
+      expect(yield* drainItemUseResults(state)).toStrictEqual([
+        {
+          action: 'EatFood',
+          requestId: 'eat-pufferfish',
+          heldItem: 'pufferfish',
+          success: true,
+          consumedCount: 1,
+          outcome: {
+            _tag: 'consume',
+            count: 1,
+            foodPoints: 1,
+            saturationModifier: 0.1,
+            effects: [
+              { type: 'poison', durationSecs: 60, amplifier: 3 },
+              { type: 'hunger', durationSecs: 15, amplifier: 2 },
+              { type: 'nausea', durationSecs: 15, amplifier: 0 },
+            ],
+          },
+        },
+      ])
+
+      yield* runFrame(stages, STRIDE)
+
+      expect((yield* snapshotStatusEffects(state)).effects).toStrictEqual([
+        { type: 'poison', remainingSecs: 59.75, pulseClockSecs: 0, amplifier: 3 },
+        { type: 'hunger', remainingSecs: 14.75, pulseClockSecs: 0, amplifier: 2 },
+        { type: 'nausea', remainingSecs: 14.75, pulseClockSecs: 0, amplifier: 0 },
+      ])
+      expect((yield* state.survivalHunger.snapshot).vitals.exhaustion).toBeCloseTo(0.075)
+    }),
+  )
+})
+
+describe('the villager trading slice: host input reaches deterministic offers', () => {
+  it.effect('atomically exchanges items and persists offer stock through snapshots', () =>
+    Effect.gen(function* () {
+      const slots = emptySlots().map((_, index) =>
+        index === 0 ? itemStack('wheat', 20) : undefined,
+      )
+      const runtime = yield* slice(world([]), ['0,0'], slots)
+      const villager = makeVillager('farmer-1', 'farmer')
+      const offer = villager.offers.find((candidate) => candidate.input.item === 'wheat')!
+      yield* Ref.set(
+        runtime.state.villagerTrades,
+        addVillager(emptyVillagerTradeState(), villager),
+      )
+
+      const request = { requestId: 'trade-1', villagerId: villager.id, offerId: offer.id }
+      yield* requestVillagerTrade(runtime.state, request)
+      yield* runFrame(runtime.stages)
+
+      expect(yield* runtime.inventory.api.countOf('wheat')).toBe(0)
+      expect(yield* runtime.inventory.api.countOf('emerald')).toBe(1)
+      expect(yield* drainVillagerTradeResults(runtime.state)).toStrictEqual([
+        { ...request, _tag: 'Traded' },
+      ])
+
+      const snapshot = yield* snapshotVillagerTrades(runtime.state)
+      expect(snapshot.villagers[0]?.offers.find((candidate) => candidate.id === offer.id)?.uses).toBe(1)
+      yield* Ref.set(runtime.state.villagerTrades, emptyVillagerTradeState())
+      yield* restoreVillagerTrades(runtime.state, snapshot)
+      expect(yield* snapshotVillagerTrades(runtime.state)).toStrictEqual(snapshot)
+    }),
+  )
+
+  it.effect('rejects unavailable stock and restocks it on the gameplay clock', () =>
+    Effect.gen(function* () {
+      const runtime = yield* slice(world([]))
+      const villager = makeVillager('farmer-stock', 'farmer')
+      const offer = villager.offers[0]!
+      let exhausted = addVillager(emptyVillagerTradeState(), villager)
+      for (let use = 0; use < offer.maxUses; use += 1) {
+        exhausted = useVillagerOffer(exhausted, villager.id, offer.id)!
+      }
+      yield* Ref.set(runtime.state.villagerTrades, exhausted)
+
+      const request = { requestId: 'sold-out', villagerId: villager.id, offerId: offer.id }
+      yield* requestVillagerTrade(runtime.state, request)
+      yield* runFrame(runtime.stages)
+      expect(yield* drainVillagerTradeResults(runtime.state)).toStrictEqual([
+        { ...request, _tag: 'Rejected', reason: 'OutOfStock' },
+      ])
+
+      yield* runFrame(runtime.stages, DeltaTimeSecs(VILLAGER_RESTOCK_INTERVAL_SECS))
+      const restocked = yield* snapshotVillagerTrades(runtime.state)
+      expect(restocked.villagers[0]?.offers.every((candidate) => candidate.uses === 0)).toBe(true)
     }),
   )
 })

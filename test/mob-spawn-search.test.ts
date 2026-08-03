@@ -22,6 +22,7 @@ import {
   HOSTILE_KINDS,
   initialBehaviourOfKind,
   MAX_HOSTILE_COUNT,
+  MAX_PASSIVE_COUNT,
   maxHealthOfKind,
   type MobBehaviour,
 } from '../src/domain/entities/mob-frame'
@@ -36,6 +37,7 @@ import {
 import { drawRolls, rollAt } from '../src/domain/frame-rolls'
 import { DESPAWN_DISTANCE_BLOCKS, despawnVerdict } from '../src/domain/mob/hostile-despawn'
 import { ZOMBIE_KIND } from '../src/domain/mob/hostile-combat'
+import { PASSIVE_MOB_KINDS } from '../src/domain/mob/mob-ecosystem'
 import {
   MAX_SPAWN_DISTANCE_BLOCKS,
   MIN_SPAWN_DISTANCE_BLOCKS,
@@ -745,13 +747,8 @@ describe('the search inside the frame', () => {
     }).pipe(Effect.provide(FrameServicesLayer)),
   )
 
-  it.effect('does not run in daylight, so a paced search costs nothing at noon', () =>
+  it.effect('uses daylight searches for passive mobs and respects their population cap', () =>
     Effect.gen(function* () {
-      // `hostileSpawnsAllowed` is CALLED as a pre-gate, not re-derived — see the
-      // comment at the call site, which argues this against
-      // `domain/mob/hostile-spawn.ts`'s 「a third opinion in this file would be
-      // the second half of that bug」. What is skipped is 256 store reads to be
-      // told `daylight` sixty-four times.
       const store = yield* makeChunkStoreDouble(FLOORED_WORLD, RESIDENT_CHUNKS)
       const roster = yield* makeEntityManagerDouble<MobBehaviour>()
       const player = yield* makePlayerServiceDouble()
@@ -769,9 +766,17 @@ describe('the search inside the frame', () => {
         yield* entities?.run(DeltaTimeSecs(0.25)) ?? Effect.void
       }
 
-      expect(yield* roster.api.count).toBe(0)
-      // Not one store call, across ten frames and eight would-be searches.
-      expect(yield* store.calls).toStrictEqual({ reads: 0, writes: 0, peeks: 0 })
+      const entries = yield* roster.api.entities
+      expect(entries).toHaveLength(MAX_PASSIVE_COUNT)
+      expect(
+        entries.every(({ kind }) =>
+          PASSIVE_MOB_KINDS.includes(kind as (typeof PASSIVE_MOB_KINDS)[number]),
+        ),
+      ).toBe(true)
+
+      const calls = yield* store.calls
+      expect(calls.reads).toBeGreaterThan(0)
+      expect(calls.writes).toBe(0)
     }).pipe(Effect.provide(FrameServicesLayer)),
   )
 })

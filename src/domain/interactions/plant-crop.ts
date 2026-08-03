@@ -8,26 +8,11 @@
  * the shape is deliberately the same, and the differences are the crop rules.
  *
  * ---------------------------------------------------------------------------
- * WHY PLANTING AND NOT ALSO TILLING OR BONE MEAL
+ * PLANTING IS KEPT SEPARATE FROM TILLING AND BONE MEAL
  * ---------------------------------------------------------------------------
  *
- * THE MISSING THING IS A NOUN, AND THE NOUN IS AN ITEM. `ITEM_TYPES` has 97
- * literals and neither `hoe` nor `bone_meal` is among them — the tools it
- * carries are `wooden_pickaxe`, `flint` and `flint_and_steel`. Tilling is
- * "hoe + tillable block -> farmland" and bone meal is "bone_meal + crop ->
- * advance growth"; both name an item that does not exist, so neither rule can
- * be WRITTEN here, let alone be wrong.
- *
- * That is a vocabulary change and vocabulary is mc-kernel's. `./item-vocabulary`
- * is a MIRROR (`check:mirrors` compares it whole), so adding two literals here
- * would either diverge from the source or require the source to move — and
- * moving mc-kernel's public surface resets its four-week clock, which
- * `plan.md` §6 Step 3 makes the critical path for the whole roster.
- *
- * So the split is: what the vocabulary can express is here and is complete;
- * what it cannot is named above rather than approximated. A `hoe` faked as
- * `wooden_pickaxe` would till, pass its tests, and be wrong in a way no test in
- * this repository could see.
+ * Tilling and bone meal have dedicated interaction modules with their own
+ * input and world-state rules. The planting module owns only seed placement.
  *
  * ---------------------------------------------------------------------------
  * THE SOIL TABLE IS PER-CROP AND THAT IS THE POINT
@@ -46,6 +31,7 @@
 import { Effect } from 'effect'
 import type { BlockType } from '../block-vocabulary'
 import { blockIdOf, blockTypeOfId } from '../block-vocabulary'
+import { above } from '../block-position-key'
 import type { ItemType } from '../item-vocabulary'
 import type { BlockPosition } from '../chunk-store-port'
 
@@ -105,11 +91,7 @@ export type PlantOutcome =
   | { readonly _tag: 'occupied'; readonly crop: BlockType; readonly blockedBy: BlockType }
 
 /** Where the crop goes: directly above the soil. */
-export const cropCellAbove = (soil: BlockPosition): BlockPosition => ({
-  x: soil.x,
-  y: soil.y + 1,
-  z: soil.z,
-})
+export const cropCellAbove = (soil: BlockPosition): BlockPosition => above(soil)
 
 /**
  * Decide, given what is already known about the two cells.

@@ -70,6 +70,7 @@ import {
   CREEPER_XP_REWARD,
   dropPasses,
   ENDERMAN_DROPS,
+  ENDERMAN_XP_REWARD,
   GHAST_DROPS,
   GHAST_XP_REWARD,
   LOWEST_ROLLS,
@@ -78,6 +79,7 @@ import {
   rollMobDrops,
   type MobDropRule,
   ZOMBIE_DROPS,
+  ZOMBIE_XP_REWARD,
 } from '../src/domain/mob/mob-drop'
 import {
   ENDERMAN_CHASE_TELEPORT_CHANCE,
@@ -612,6 +614,8 @@ describe('creeper: kernel names the drop, this repository decides the count', ()
 
       expect(mobXpReward(SLAIN, CREEPER_XP_REWARD)).toBe(5)
       expect(CREEPER_XP_REWARD).toBe(5)
+      expect(ZOMBIE_XP_REWARD).toBe(5)
+      expect(ENDERMAN_XP_REWARD).toBe(5)
     }),
   )
 
@@ -1309,7 +1313,7 @@ describe('the sweep: a mob stops existing when nobody is near it', () => {
 })
 
 describe('the mob rules are deterministic by construction', () => {
-  const mobDomain = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'domain', 'mob')
+  const mobDomain = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'src', 'domain', 'mob')
 
   it.effect('REGRESSION-PROOF BY SHAPE: no mob rule reads a random number or a clock', () =>
     Effect.sync(() => {

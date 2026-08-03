@@ -29,6 +29,9 @@ import {
   carryOver,
   DEFAULT_FLUID_FRONTIER_BUDGET,
   splitBudget,
+  transitionFluidCell,
+  type FluidCell,
+  type FluidProbe,
   type FluidWorkItem,
 } from '../src/domain/fluid-frontier'
 
@@ -111,6 +114,118 @@ describe('fluids: the frontier budget that bought 37–55×', () => {
     ...Array.from({ length: water }, (_, i): FluidWorkItem => ({ key: `w${String(i)}`, kind: 'water' })),
     ...Array.from({ length: lava }, (_, i): FluidWorkItem => ({ key: `l${String(i)}`, kind: 'lava' })),
   ]
+  const cell: FluidCell = {
+    key: '0,64,0',
+    kind: 'water',
+    level: 0,
+    source: true,
+    falling: false,
+  }
+  const probe = (key: string, state: FluidProbe['state']): FluidProbe => ({ key, state })
+  const transition = (overrides: Partial<Parameters<typeof transitionFluidCell>[0]> = {}) =>
+    transitionFluidCell({
+      cell,
+      current: probe(cell.key, 'same-fluid'),
+      below: probe('0,63,0', 'blocked'),
+      horizontal: [
+        probe('-1,64,0', 'air'),
+        probe('1,64,0', 'air'),
+        probe('0,64,-1', 'air'),
+        probe('0,64,1', 'air'),
+      ],
+      supported: true,
+      maximumHorizontalLevel: 7,
+      ...overrides,
+    })
+
+  it.effect('propagates downward before horizontal neighbours', () =>
+    Effect.sync(() => {
+      const result = transition({ below: probe('0,63,0', 'air') })
+      expect(result.changes).toStrictEqual([
+        {
+          _tag: 'PlaceFluid',
+          cell: {
+            key: '0,63,0',
+            kind: 'water',
+            level: 0,
+            source: false,
+            parent: '0,64,0',
+            falling: true,
+          },
+        },
+      ])
+    }),
+  )
+
+  it.effect('spreads horizontally in deterministic order and stops at the configured level', () =>
+    Effect.sync(() => {
+      expect(
+        transition().changes.map((change) =>
+          change._tag === 'PlaceFluid' ? change.cell.key : change.key,
+        ),
+      ).toStrictEqual(['-1,64,0', '1,64,0', '0,64,-1', '0,64,1'])
+      expect(transition({ cell: { ...cell, level: 7 } }).changes).toStrictEqual([])
+    }),
+  )
+
+  it.effect('does not replace blocked cells and removes an unsupported flow', () =>
+    Effect.sync(() => {
+      const blocked = transition({
+        horizontal: [probe('-1,64,0', 'blocked')],
+      })
+      expect(blocked.changes).toStrictEqual([])
+      const unsupported = transition({
+        cell: { ...cell, source: false, parent: '-1,64,0' },
+        supported: false,
+      })
+      expect(unsupported.changes).toStrictEqual([{ _tag: 'RemoveFluid', key: cell.key }])
+    }),
+  )
+
+  it.effect('solidifies opposite-fluid contact and differentiates source lava', () =>
+    Effect.sync(() => {
+      const waterMeetingSourceLava = transition({
+        horizontal: [{ ...probe('1,64,0', 'opposite-fluid'), source: true }],
+      })
+      expect(waterMeetingSourceLava.changes[0]).toStrictEqual({
+        _tag: 'Solidify',
+        key: '1,64,0',
+        block: 'obsidian',
+      })
+
+      const waterMeetingFlowingLava = transition({
+        horizontal: [{ ...probe('1,64,0', 'opposite-fluid'), source: false }],
+      })
+      expect(waterMeetingFlowingLava.changes[0]).toStrictEqual({
+        _tag: 'Solidify',
+        key: '1,64,0',
+        block: 'cobblestone',
+      })
+
+      const sourceLava = transition({
+        cell: { ...cell, kind: 'lava' },
+        horizontal: [probe('1,64,0', 'opposite-fluid')],
+      })
+      expect(sourceLava.changes).toStrictEqual([
+        { _tag: 'Solidify', key: cell.key, block: 'obsidian' },
+      ])
+
+      const flowingLava = transition({
+        cell: { ...cell, kind: 'lava', level: 1, source: false },
+        horizontal: [probe('1,64,0', 'opposite-fluid')],
+      })
+      expect(flowingLava.changes).toStrictEqual([
+        { _tag: 'Solidify', key: cell.key, block: 'cobblestone' },
+      ])
+    }),
+  )
+
+  it.effect('defers an unloaded downward decision without speculative spreading', () =>
+    Effect.sync(() => {
+      const result = transition({ below: probe('0,63,0', 'unloaded') })
+      expect(result).toStrictEqual({ changes: [], defer: true })
+    }),
+  )
 
   it.effect('REGRESSION: work never exceeds the budget, however large the frontier grows', () =>
     Effect.sync(() => {
@@ -160,6 +275,55 @@ describe('fluids: the frontier budget that bought 37–55×', () => {
       const split = splitBudget(frontier, { lavaTickActive: true, budget: 4 })
       expect(split.work).toHaveLength(2)
       expect(carryOver(frontier, split).map((item) => item.key)).toStrictEqual(['w2', 'w3'])
+    }),
+  )
+
+  it.effect('same-position water and lava have distinct frontier identities', () =>
+    Effect.sync(() => {
+      const frontier: ReadonlyArray<FluidWorkItem> = [
+        { key: 'interface', kind: 'water' },
+        { key: 'interface', kind: 'lava' },
+      ]
+      const inactive = splitBudget(frontier, { lavaTickActive: false, budget: 2 })
+
+      expect(inactive.work).toStrictEqual([{ key: 'interface', kind: 'water' }])
+      expect(carryOver(frontier, inactive)).toStrictEqual([
+        { key: 'interface', kind: 'lava' },
+      ])
+
+      const active = splitBudget(frontier, { lavaTickActive: true, budget: 1 })
+      expect(active.work).toStrictEqual([{ key: 'interface', kind: 'lava' }])
+      expect(carryOver(frontier, active)).toStrictEqual([
+        { key: 'interface', kind: 'water' },
+      ])
+    }),
+  )
+
+  it.effect('repeated inactive ticks remain deterministic and bounded', () =>
+    Effect.sync(() => {
+      const initial: ReadonlyArray<FluidWorkItem> = [
+        { key: 'shared', kind: 'water' },
+        { key: 'shared', kind: 'lava' },
+        { key: 'lava-only', kind: 'lava' },
+      ]
+      const run = (): ReadonlyArray<ReadonlyArray<FluidWorkItem>> => {
+        let frontier = initial
+        const history: Array<ReadonlyArray<FluidWorkItem>> = []
+        for (let tick = 0; tick < 8; tick += 1) {
+          const split = splitBudget(frontier, { lavaTickActive: false, budget: 3 })
+          expect(split.work.length).toBeLessThanOrEqual(3)
+          frontier = carryOver(frontier, split)
+          expect(frontier.length).toBeLessThanOrEqual(initial.length)
+          history.push(frontier)
+        }
+        return history
+      }
+
+      expect(run()).toStrictEqual(run())
+      expect(run().at(-1)).toStrictEqual([
+        { key: 'shared', kind: 'lava' },
+        { key: 'lava-only', kind: 'lava' },
+      ])
     }),
   )
 

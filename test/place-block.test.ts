@@ -65,7 +65,12 @@ import {
   type PlaceOutcome,
 } from '../src/domain/interactions/place-block'
 import type { Position } from '../src/domain/entity-manager-port'
-import { gameplayStages, makeGameplayFrameState } from '../src/stages/registration'
+import {
+  drainBlockPlacementResults,
+  gameplayStages,
+  makeGameplayFrameState,
+  requestBlockPlacementCommand,
+} from '../src/stages/registration'
 import { makeChunkStoreDouble, SAND, STONE, WATER, world } from './support/chunk-store-double'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
 import { makePlayerServiceDouble } from './support/player-service-double'
@@ -79,6 +84,7 @@ const SNOW = 7
 const DIRT = 3
 const RAIL = 31
 const PRESSURE_PLATE = 34
+const WITHER_SKELETON_SKULL = 121
 
 const SUPPORT_SENSITIVE_PLANT_TYPES: ReadonlyArray<BlockType> = [
   'sapling',
@@ -98,6 +104,7 @@ const SUPPORT_SENSITIVE_TYPES: ReadonlyArray<BlockType> = [
   'pressure_plate',
   'rail',
   'powered_rail',
+  'wither_skeleton_skull',
   ...SUPPORT_SENSITIVE_PLANT_TYPES,
 ]
 
@@ -447,6 +454,43 @@ describe('placeBlock — the player’s body', () => {
 })
 
 describe('placeBlock — support', () => {
+  it.effect('places soul soil normally and requires support for a wither skeleton skull', () =>
+    Effect.gen(function* () {
+      const soulSoilStore = yield* storeWith([])
+      expect(
+        yield* placeBlock(soulSoilStore.api, { position: target, heldItem: 'soul_soil' }),
+      ).toStrictEqual({
+        _tag: 'Placed',
+        block: 120,
+        consumed: 'soul_soil',
+        chunk: { cx: 0, cz: 0 },
+        alsoPlaced: [],
+      } satisfies PlaceOutcome)
+
+      const supported = yield* storeWith([[below, STONE]])
+      expect(
+        yield* placeBlock(supported.api, {
+          position: target,
+          heldItem: 'wither_skeleton_skull',
+        }),
+      ).toStrictEqual({
+        _tag: 'Placed',
+        block: WITHER_SKELETON_SKULL,
+        consumed: 'wither_skeleton_skull',
+        chunk: { cx: 0, cz: 0 },
+        alsoPlaced: [],
+      } satisfies PlaceOutcome)
+
+      const unsupported = yield* storeWith([])
+      expect(
+        yield* placeBlock(unsupported.api, {
+          position: target,
+          heldItem: 'wither_skeleton_skull',
+        }),
+      ).toStrictEqual({ _tag: 'Unsupported', support: 0 })
+    }),
+  )
+
   it.effect('a torch needs something under it', () =>
     Effect.gen(function* () {
       expect(isSupportSensitiveOfBlock(TORCH)).toBe(true)
@@ -544,7 +588,7 @@ describe('placeBlock — support', () => {
  * WHY THESE ROWS ALSO STAY AT THE PREDICATE LEVEL
  * ---------------------------------------------------------------------------
  *
- * Kernel 0.2.5 gives all ten plants item forms, so all fourteen support-sensitive
+ * Kernel gives all ten plants item forms, so all fifteen support-sensitive
  * blocks are now reachable through `placeBlock`; the coupling test in F7 below
  * exercises that production path. These oracle rows remain at the predicate
  * level because they pin the support-rule answers independently and precisely.
@@ -584,7 +628,7 @@ describe('the reference\u2019s support table, on the rows whose rule IS the fall
     }),
   )
 
-  it.effect('all fourteen support-sensitive blocks are reachable as held items', () =>
+  it.effect('all fifteen support-sensitive blocks are reachable as held items', () =>
     Effect.sync(() => {
       const placeable: ReadonlySet<string> = new Set<string>(PLACEABLE_ITEM_TYPES)
       const heldToday = SUPPORT_SENSITIVE_TYPES.filter((type) => placeable.has(type))
@@ -594,7 +638,7 @@ describe('the reference\u2019s support table, on the rows whose rule IS the fall
       const cannotBeHeld = SUPPORT_SENSITIVE_TYPES.filter((type) => !placeable.has(type))
       expect(cannotBeHeld).toStrictEqual([])
 
-      // ...and every one of the fourteen IS support-sensitive, so the arm they
+      // ...and every one of the fifteen IS support-sensitive, so the arm they
       // take is written rather than absent. This half is unchanged and is what
       // the whole file's support coverage rests on.
       for (const type of SUPPORT_SENSITIVE_TYPES) {
@@ -684,7 +728,7 @@ describe('the reference\u2019s support table, on the rows whose rule IS the fall
  * column, so writing one here is this repository inventing a kernel flag」.
  *
  * Kernel has the column now. `mc-kernel/domain/block-support.ts` carries
- * `SupportRule` and `mc-kernel/domain/block-registry.ts` fills in all nineteen
+ * `SupportRule` and `mc-kernel/domain/block-registry.ts` fills in all twenty
  * non-default rows; `domain/block-vocabulary.ts` mirrors both IN FULL, and
  * `placementVerdict` calls `canBlockStaySupported` instead of ANDing two
  * predicates. Nothing here was invented — the objection was answered rather than
@@ -734,7 +778,7 @@ describe('F7 — CLOSED: per-block support rules are reachable through placeBloc
    * against `canBlockStaySupported` for every support-sensitive item this build
    * can put into a `PlaceRequest`, over every block id the store can hold.
    *
-   * Kernel 0.2.5 makes all fourteen named support-sensitive blocks reachable,
+   * Kernel makes all fifteen named support-sensitive blocks reachable,
    * including the ten `'oneOf'` plants on which the per-block rule differs from
    * the raw fallback. The dynamic list also covers any other placeable item the
    * kernel classifies as support-sensitive.
@@ -977,6 +1021,177 @@ describe('placement through gameplay:interactions', () => {
 
       expect(yield* store.blockAt(target)).toBeUndefined()
       expect(yield* Ref.get(state.consumedItems)).toStrictEqual([])
+    }),
+  )
+
+  it.effect('a correlated empty-hand placement reports failure without changing the world', () =>
+    Effect.gen(function* () {
+      const { store, state, inventory, stages } = yield* stagedSlice([[below, STONE]], false)
+
+      yield* requestBlockPlacementCommand(state, {
+        requestId: 'empty-hand',
+        positionKey: positionKeyOf(target),
+        heldItem: 'sand',
+      })
+      yield* runFrame(stages)
+
+      expect(yield* store.blockAt(target)).toBeUndefined()
+      expect(yield* inventory.withdrawals).toStrictEqual([
+        { item: 'sand', count: 1, removed: 0 },
+      ])
+      expect(yield* drainBlockPlacementResults(state)).toStrictEqual([
+        {
+          requestId: 'empty-hand',
+          success: false,
+          consumed: false,
+          replayed: false,
+          outcome: { _tag: 'InventoryUnavailable' },
+        },
+      ])
+    }),
+  )
+
+  it.effect('the last held item is consumed exactly once when placement succeeds', () =>
+    Effect.gen(function* () {
+      const { store, state, inventory, stages } = yield* stagedSlice([[below, STONE]])
+
+      yield* requestBlockPlacementCommand(state, {
+        requestId: 'last-item',
+        positionKey: positionKeyOf(target),
+        heldItem: 'sand',
+      })
+      yield* runFrame(stages)
+
+      expect(yield* store.blockAt(target)).toBe(blockIdOf('sand'))
+      expect(yield* inventory.api.countOf('sand')).toBe(0)
+      expect(yield* inventory.withdrawals).toStrictEqual([
+        { item: 'sand', count: 1, removed: 1 },
+      ])
+      const [result] = yield* drainBlockPlacementResults(state)
+      expect(result).toMatchObject({
+        requestId: 'last-item',
+        success: true,
+        consumed: true,
+        replayed: false,
+        outcome: { _tag: 'Placed', consumed: 'sand' },
+      })
+    }),
+  )
+
+  it.effect('a refused correlated placement restores the reservation and reports the reason', () =>
+    Effect.gen(function* () {
+      const { store, state, inventory, stages } = yield* stagedSlice([[target, STONE]])
+
+      yield* requestBlockPlacementCommand(state, {
+        requestId: 'occupied',
+        positionKey: positionKeyOf(target),
+        heldItem: 'sand',
+      })
+      yield* runFrame(stages)
+
+      expect(yield* store.blockAt(target)).toBe(STONE)
+      expect(yield* inventory.api.countOf('sand')).toBe(1)
+      expect(yield* drainBlockPlacementResults(state)).toStrictEqual([
+        {
+          requestId: 'occupied',
+          success: false,
+          consumed: false,
+          replayed: false,
+          outcome: { _tag: 'Occupied', existing: STONE },
+        },
+      ])
+    }),
+  )
+
+  it.effect('creative placement changes the world without touching inventory', () =>
+    Effect.gen(function* () {
+      const { store, state, inventory, stages } = yield* stagedSlice([[below, STONE]], false)
+
+      yield* requestBlockPlacementCommand(state, {
+        requestId: 'creative',
+        positionKey: positionKeyOf(target),
+        heldItem: 'sand',
+        mode: 'creative',
+      })
+      yield* runFrame(stages)
+
+      expect(yield* store.blockAt(target)).toBe(blockIdOf('sand'))
+      expect(yield* inventory.withdrawals).toStrictEqual([])
+      const [result] = yield* drainBlockPlacementResults(state)
+      expect(result).toMatchObject({
+        requestId: 'creative',
+        success: true,
+        consumed: false,
+        replayed: false,
+        outcome: { _tag: 'Placed' },
+      })
+    }),
+  )
+
+  it.effect('replaying the same command id returns its result without a second mutation', () =>
+    Effect.gen(function* () {
+      const { store, state, inventory, stages } = yield* stagedSlice([[below, STONE]])
+      const command = {
+        requestId: 'retry',
+        positionKey: positionKeyOf(target),
+        heldItem: 'sand' as const,
+      }
+
+      yield* requestBlockPlacementCommand(state, command)
+      yield* runFrame(stages)
+      yield* drainBlockPlacementResults(state)
+      yield* requestBlockPlacementCommand(state, command)
+      yield* runFrame(stages)
+
+      expect(yield* store.blockAt(target)).toBe(blockIdOf('sand'))
+      expect(yield* inventory.withdrawals).toStrictEqual([
+        { item: 'sand', count: 1, removed: 1 },
+      ])
+      const [result] = yield* drainBlockPlacementResults(state)
+      expect(result).toMatchObject({
+        requestId: 'retry',
+        success: true,
+        consumed: true,
+        replayed: true,
+        outcome: { _tag: 'Placed' },
+      })
+    }),
+  )
+
+  it.effect('reusing a command id for another payload is rejected without mutation', () =>
+    Effect.gen(function* () {
+      const secondTarget: BlockPosition = { x: 3, y: 64, z: 3 }
+      const secondBelow: BlockPosition = { x: 3, y: 63, z: 3 }
+      const { store, state, inventory, stages } = yield* stagedSlice([
+        [below, STONE],
+        [secondBelow, STONE],
+      ])
+
+      yield* requestBlockPlacementCommand(state, {
+        requestId: 'conflict',
+        positionKey: positionKeyOf(target),
+        heldItem: 'sand',
+      })
+      yield* runFrame(stages)
+      yield* drainBlockPlacementResults(state)
+      yield* requestBlockPlacementCommand(state, {
+        requestId: 'conflict',
+        positionKey: positionKeyOf(secondTarget),
+        heldItem: 'sand',
+      })
+      yield* runFrame(stages)
+
+      expect(yield* store.blockAt(secondTarget)).toBeUndefined()
+      expect(yield* inventory.withdrawals).toHaveLength(1)
+      expect(yield* drainBlockPlacementResults(state)).toStrictEqual([
+        {
+          requestId: 'conflict',
+          success: false,
+          consumed: false,
+          replayed: true,
+          outcome: { _tag: 'RequestIdConflict' },
+        },
+      ])
     }),
   )
 

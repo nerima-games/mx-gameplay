@@ -240,22 +240,47 @@ import {
 } from '../mob/enderman-teleport'
 import { explosionDamageAt, type Explosion } from '../mob/explosion'
 import { FRESH_PRIMED_TNT, isPrimedTnt, stepPrimedTnt, type PrimedTnt } from '../mob/primed-tnt'
-import { despawnVerdict, type DespawnCandidate } from '../mob/hostile-despawn'
+import {
+  DESPAWN_DISTANCE_BLOCKS,
+  despawnVerdict,
+  RANDOM_DESPAWN_MIN_AGE_TICKS,
+  RANDOM_DESPAWN_MIN_DISTANCE_BLOCKS,
+  type DespawnCandidate,
+  type HostileDifficulty,
+} from '../mob/hostile-despawn'
 import {
   CREEPER_LOCOMOTION,
   pursueHorizontally,
   ZOMBIE_KIND,
   ZOMBIE_LOCOMOTION,
 } from '../mob/hostile-combat'
-import { canHostileSpawnAt, type SpawnCandidate, type SpawnRefusal } from '../mob/hostile-spawn'
+import { canMobSpawnAt, type SpawnCandidate, type SpawnRefusal } from '../mob/hostile-spawn'
 import {
+  BLAZE_KIND,
+  ECOSYSTEM_MOB_KINDS,
+  initialEcosystemMobState,
+  NETHER_HOSTILE_KINDS,
+  OVERWORLD_ECOSYSTEM_HOSTILE_KINDS,
+  PASSIVE_MOB_KINDS,
+  repairEcosystemMobState,
+  stepEcosystemMob,
+  type EcosystemAttack,
+  type EcosystemMobState,
+} from '../mob/mob-ecosystem'
+import {
+  BLAZE_DROPS,
+  BLAZE_XP_REWARD,
   CREEPER_DROPS,
+  CREEPER_XP_REWARD,
   ENDERMAN_DROPS,
+  ENDERMAN_XP_REWARD,
+  mobXpReward,
   rollMobDrops,
   type MobDrop,
   type MobDropRule,
   type MobKill,
   ZOMBIE_DROPS,
+  ZOMBIE_XP_REWARD,
 } from '../mob/mob-drop'
 
 // ---------------------------------------------------------------------------
@@ -334,7 +359,35 @@ export type DroppedItemBehaviour = {
   readonly eligibleFromFrame?: number
 }
 
-export type MobBehaviour = CreeperFuse | PrimedTnt | EndermanFlinch | DroppedItemBehaviour | undefined
+export type HostileMobSnapshot = {
+  readonly _tag: 'HostileMob'
+  readonly behaviour: CreeperFuse | EndermanFlinch | EcosystemMobState | undefined
+  readonly ageTicks: number
+  readonly persistent: boolean
+  readonly named: boolean
+  readonly tamed: boolean
+}
+
+export type MobBehaviour =
+  | HostileMobSnapshot
+  | CreeperFuse
+  | PrimedTnt
+  | EndermanFlinch
+  | EcosystemMobState
+  | DroppedItemBehaviour
+  | undefined
+
+export const hostileMobSnapshot = (
+  behaviour: HostileMobSnapshot['behaviour'],
+  options: Partial<Omit<HostileMobSnapshot, '_tag' | 'behaviour'>> = {},
+): HostileMobSnapshot => ({
+  _tag: 'HostileMob',
+  behaviour,
+  ageTicks: options.ageTicks ?? 0,
+  persistent: options.persistent ?? false,
+  named: options.named ?? false,
+  tamed: options.tamed ?? false,
+})
 
 /**
  * The three entity kinds this repository names.
@@ -472,6 +525,8 @@ export const HOSTILE_KINDS: readonly [EntityKind, ...ReadonlyArray<EntityKind>] 
   CREEPER_KIND,
   ENDERMAN_KIND,
   ZOMBIE_KIND,
+  ...OVERWORLD_ECOSYSTEM_HOSTILE_KINDS,
+  ...NETHER_HOSTILE_KINDS,
 ]
 
 /**
@@ -516,6 +571,10 @@ export const ENDERMAN_MAX_HEALTH = 40
 export const maxHealthOfKind = (kind: EntityKind): number => {
   if (kind === ENDERMAN_KIND) return ENDERMAN_MAX_HEALTH
   if (kind === ZOMBIE_KIND) return ZOMBIE_MAX_HEALTH
+  if (kind === EntityKind('spider')) return 16
+  if (kind === EntityKind('cow') || kind === EntityKind('pig')) return 10
+  if (kind === EntityKind('sheep')) return 8
+  if (kind === EntityKind('chicken')) return 4
   return CREEPER_MAX_HEALTH
 }
 
@@ -532,9 +591,10 @@ export const maxHealthOfKind = (kind: EntityKind): number => {
  * paragraph is about.
  */
 export const initialBehaviourOfKind = (kind: EntityKind): MobBehaviour => {
-  if (kind === ENDERMAN_KIND) return STEADY_ENDERMAN
-  if (kind === ZOMBIE_KIND) return undefined
-  return DORMANT_FUSE
+  if (ECOSYSTEM_MOB_KINDS.includes(kind as (typeof ECOSYSTEM_MOB_KINDS)[number])) return hostileMobSnapshot(initialEcosystemMobState())
+  if (kind === ENDERMAN_KIND) return hostileMobSnapshot(STEADY_ENDERMAN)
+  if (kind === ZOMBIE_KIND) return hostileMobSnapshot(undefined)
+  return hostileMobSnapshot(DORMANT_FUSE)
 }
 
 /**
@@ -576,17 +636,23 @@ export const hostilePopulation = <S>(roster: EntityManagerApi<S>): Effect.Effect
     Effect.map(roster.countOfKind(kind), (count) => total + count),
   )
 
+export const MAX_PASSIVE_COUNT = 16
+
+export const passivePopulation = <S>(roster: EntityManagerApi<S>): Effect.Effect<number> =>
+  Effect.reduce(PASSIVE_MOB_KINDS, 0, (total, kind) =>
+    Effect.map(roster.countOfKind(kind), (count) => total + count),
+  )
+
 /** What a creeper leaves behind. A creeper drops nothing at all, which is `../mob/mob-drop`'s rule and not this file's. */
 const SELF_DESTRUCT: MobKill = { _tag: 'SelfDestruct' }
 
 /**
- * How a blast kills a bystander.
+ * A player-caused casualty with no Looting context.
  *
- * `lootingLevel: 0` because an explosion has no weapon. The reference reaches
- * looting only through the melee handler, and a creeper's blast is not a melee
- * blow — so this is the reference's behaviour rather than an omission.
+ * Bow and melee requests currently carry damage but no enchantment metadata,
+ * so both drop and experience resolution use level zero.
  */
-const SLAIN_BY_BLAST: MobKill = { _tag: 'Slain', lootingLevel: 0 }
+const SLAIN_WITHOUT_LOOTING: MobKill = { _tag: 'Slain', lootingLevel: 0 }
 
 const NO_DROP_RULES: ReadonlyArray<MobDropRule> = []
 
@@ -594,9 +660,9 @@ const NO_DROP_RULES: ReadonlyArray<MobDropRule> = []
  * The loot table for a kind.
  *
  * A table in the rules tier, which is where mob identity lives (plan.md §3.11).
- * `../mob/mob-drop` also holds a ghast's and a blaze's; neither is here, because
- * neither has an `EntityKind` that anything spawns, and a row mapping a kind
- * nothing produces would be a claim that this build has ghasts.
+ * `../mob/mob-drop` also holds a ghast's; it is not here because no `EntityKind`
+ * in this build spawns one. Blaze is wired because the Nether ecosystem does
+ * spawn `BLAZE_KIND`.
  */
 export const dropRulesOfKind = (kind: EntityKind): ReadonlyArray<MobDropRule> =>
   kind === CREEPER_KIND
@@ -605,7 +671,21 @@ export const dropRulesOfKind = (kind: EntityKind): ReadonlyArray<MobDropRule> =>
       ? ZOMBIE_DROPS
       : kind === ENDERMAN_KIND
         ? ENDERMAN_DROPS
-        : NO_DROP_RULES
+        : kind === BLAZE_KIND
+          ? BLAZE_DROPS
+          : NO_DROP_RULES
+
+/** Experience granted when the player kills one runtime-supported hostile. */
+export const xpRewardOfKind = (kind: EntityKind): number =>
+  kind === CREEPER_KIND
+    ? CREEPER_XP_REWARD
+    : kind === ZOMBIE_KIND
+      ? ZOMBIE_XP_REWARD
+      : kind === ENDERMAN_KIND
+        ? ENDERMAN_XP_REWARD
+        : kind === BLAZE_KIND
+          ? BLAZE_XP_REWARD
+          : 0
 
 /** How many rolls `rollDropsOfKind` will consume for this kind. Two per drop line — a chance and a count. */
 export const dropRollsNeeded = (kind: EntityKind): number => dropRulesOfKind(kind).length * 2
@@ -666,12 +746,25 @@ export const rollDropsOfKind = (
  * no fuse and consult the teleport rule instead.
  */
 export const repairMobBehaviour = (kind: EntityKind, behaviour: unknown): MobBehaviour => {
+  if (isHostileMobSnapshot(behaviour) && HOSTILE_KINDS.includes(kind)) {
+    const inner = repairHostileInner(kind, behaviour.behaviour)
+    return inner === behaviour.behaviour && Object.hasOwn(behaviour, 'behaviour')
+      ? behaviour
+      : { ...behaviour, behaviour: inner }
+  }
+
   if (kind === CREEPER_KIND) {
-    return isCreeperFuse(behaviour) ? behaviour : DORMANT_FUSE
+    return hostileMobSnapshot(isCreeperFuse(behaviour) ? behaviour : DORMANT_FUSE)
   }
 
   if (kind === ENDERMAN_KIND) {
-    return isEndermanFlinch(behaviour) ? behaviour : STEADY_ENDERMAN
+    return hostileMobSnapshot(isEndermanFlinch(behaviour) ? behaviour : STEADY_ENDERMAN)
+  }
+
+  if (kind === ZOMBIE_KIND) return hostileMobSnapshot(undefined)
+
+  if (ECOSYSTEM_MOB_KINDS.includes(kind as (typeof ECOSYSTEM_MOB_KINDS)[number])) {
+    return hostileMobSnapshot(repairEcosystemMobState(behaviour) ?? initialEcosystemMobState())
   }
 
   if (kind === PRIMED_TNT_KIND) {
@@ -685,6 +778,30 @@ export const repairMobBehaviour = (kind: EntityKind, behaviour: unknown): MobBeh
   }
 
   return undefined
+}
+
+const repairHostileInner = (
+  kind: EntityKind,
+  behaviour: unknown,
+): HostileMobSnapshot['behaviour'] => {
+  if (kind === CREEPER_KIND) return isCreeperFuse(behaviour) ? behaviour : DORMANT_FUSE
+  if (kind === ENDERMAN_KIND) return isEndermanFlinch(behaviour) ? behaviour : STEADY_ENDERMAN
+  if (ECOSYSTEM_MOB_KINDS.includes(kind as (typeof ECOSYSTEM_MOB_KINDS)[number])) return repairEcosystemMobState(behaviour) ?? initialEcosystemMobState()
+  return undefined
+}
+
+export const isHostileMobSnapshot = (value: unknown): value is HostileMobSnapshot => {
+  if (typeof value !== 'object' || value === null) return false
+  const candidate = value as Partial<HostileMobSnapshot>
+  return (
+    candidate._tag === 'HostileMob' &&
+    typeof candidate.ageTicks === 'number' &&
+    Number.isFinite(candidate.ageTicks) &&
+    candidate.ageTicks >= 0 &&
+    typeof candidate.persistent === 'boolean' &&
+    typeof candidate.named === 'boolean' &&
+    typeof candidate.tamed === 'boolean'
+  )
 }
 
 export const isDroppedItemBehaviour = (value: unknown): value is DroppedItemBehaviour => {
@@ -796,6 +913,9 @@ const isFuse = (behaviour: MobBehaviour): behaviour is CreeperFuse =>
 const isFlinch = (behaviour: MobBehaviour): behaviour is EndermanFlinch =>
   behaviour !== undefined && (behaviour._tag === 'Steady' || behaviour._tag === 'Struck')
 
+const innerBehaviour = (behaviour: MobBehaviour): HostileMobSnapshot['behaviour'] =>
+  isHostileMobSnapshot(behaviour) ? behaviour.behaviour : behaviour as HostileMobSnapshot['behaviour']
+
 /** What a creeper hands the rest of the frame on the one step it detonates. */
 export type Blast = {
   /** The entity that produced it. It is already off the roster by the time this is read. */
@@ -903,6 +1023,8 @@ export type MobFrameSenses = {
    */
   readonly target: Position | undefined
   readonly dt: DeltaTimeSecs
+  /** Additive until the world host supplies its difficulty; omitted means normal. */
+  readonly difficulty?: HostileDifficulty
 }
 
 /**
@@ -928,12 +1050,18 @@ export const ENDERMAN_TELEPORT_ROLLS = ENDERMAN_TELEPORT_ATTEMPTS * 2
 /** A frame's mob sweep: what blew up, and where the generator ended. */
 export type MobSweep = {
   readonly blasts: ReadonlyArray<Blast>
+  readonly attacks: ReadonlyArray<MobAttackEvent>
   /**
    * The seed to keep. Advanced by exactly the rolls the rules asked for and by no
    * more — see the module header, and `ENDERMAN_TELEPORT_ROLLS` for the one place
    * a budget is drawn rather than a single roll.
    */
   readonly seed: number
+}
+
+export type MobAttackEvent = EcosystemAttack & {
+  readonly source: EntityId
+  readonly at: Position
 }
 
 /**
@@ -1016,7 +1144,7 @@ export const sweepMobs = (
     let cursor = seed
 
     return Effect.map(
-      roster.sweep<Blast>((entity) => {
+      roster.sweep<Blast | MobAttackEvent>((entity) => {
         if (entity.kind === DROPPED_ITEM_KIND && isDroppedItemBehaviour(entity.behaviour)) {
           return IGNORED
         }
@@ -1049,7 +1177,36 @@ export const sweepMobs = (
         const distance =
           senses.target === undefined ? undefined : distanceBetween(entity.feetPosition, senses.target)
 
+        const snapshot = isHostileMobSnapshot(entity.behaviour) ? entity.behaviour : undefined
+        const ageTicks = snapshot === undefined ? undefined : snapshot.ageTicks + senses.dt * 20
         despawnScratch.distanceToPlayerBlocks = distance
+        if (ageTicks === undefined) delete despawnScratch.ageTicks
+        else despawnScratch.ageTicks = ageTicks
+        despawnScratch.persistent = snapshot?.persistent ?? false
+        if (snapshot === undefined) {
+          delete despawnScratch.named
+          delete despawnScratch.tamed
+        } else {
+          despawnScratch.named = snapshot.named
+          despawnScratch.tamed = snapshot.tamed
+        }
+        despawnScratch.difficulty = senses.difficulty ?? 'normal'
+        delete despawnScratch.randomRoll
+        if (
+          distance !== undefined &&
+          distance > RANDOM_DESPAWN_MIN_DISTANCE_BLOCKS &&
+          distance <= DESPAWN_DISTANCE_BLOCKS &&
+          ageTicks !== undefined &&
+          ageTicks > RANDOM_DESPAWN_MIN_AGE_TICKS &&
+          !despawnScratch.persistent &&
+          !despawnScratch.named &&
+          !despawnScratch.tamed &&
+          despawnScratch.difficulty !== 'peaceful'
+        ) {
+          const draw = nextRoll(cursor)
+          cursor = draw.seed
+          despawnScratch.randomRoll = draw.roll
+        }
         if (despawnVerdict(despawnScratch)._tag === 'Despawn') {
           // NO DROPS. A despawn is not a death: nobody killed it, nobody is there
           // to pick anything up, and `../mob/mob-drop`'s `MobKill` has no case for
@@ -1057,7 +1214,12 @@ export const sweepMobs = (
           return SWEPT
         }
 
-        const behaviour = entity.behaviour
+        const behaviour = innerBehaviour(entity.behaviour)
+        const storedBehaviour = (
+          next: HostileMobSnapshot['behaviour'],
+        ): MobBehaviour => snapshot === undefined
+          ? next
+          : { ...snapshot, behaviour: next, ageTicks: ageTicks ?? snapshot.ageTicks }
         if (entity.kind === ZOMBIE_KIND) {
           const feetPosition = pursueHorizontally(
             entity.feetPosition,
@@ -1065,16 +1227,37 @@ export const sweepMobs = (
             senses.dt,
             ZOMBIE_LOCOMOTION,
           )
-          return feetPosition === entity.feetPosition
+          return feetPosition === entity.feetPosition && snapshot === undefined
             ? IGNORED
             : {
                 transition: changed({
                   feetPosition,
                   healthPoints: entity.healthPoints,
-                  behaviour,
+                  behaviour: storedBehaviour(behaviour),
                 }),
                 emit: undefined,
               }
+        }
+
+
+        if (ECOSYSTEM_MOB_KINDS.includes(entity.kind) && behaviour?._tag === 'EcosystemMob') {
+          const step = stepEcosystemMob(
+            entity.kind,
+            behaviour,
+            entity.feetPosition,
+            senses.target,
+            senses.dt,
+          )
+          return {
+            transition: changed({
+              feetPosition: step.feetPosition,
+              healthPoints: entity.healthPoints,
+              behaviour: storedBehaviour(step.state),
+            }),
+            emit: step.attack === undefined
+              ? undefined
+              : { ...step.attack, source: entity.id, at: entity.feetPosition },
+          }
         }
 
         if (behaviour === undefined) {
@@ -1118,13 +1301,13 @@ export const sweepMobs = (
           // ARGUMENT fuse when nothing happened (a dormant creeper out of range, a
           // detonated one), so `===` is exact here and costs nothing — and it is
           // what lets an idle frame reach mc-sim's zero-allocation path.
-          return step.fuse === behaviour && feetPosition === entity.feetPosition
+          return step.fuse === behaviour && feetPosition === entity.feetPosition && snapshot === undefined
             ? IGNORED
             : {
                 transition: changed({
                   feetPosition,
                   healthPoints: entity.healthPoints,
-                  behaviour: step.fuse,
+                  behaviour: storedBehaviour(step.fuse),
                 }),
                 emit: undefined,
               }
@@ -1148,7 +1331,16 @@ export const sweepMobs = (
           // read as a chase — the identical reading `../mob/creeper-fuse` gets
           // from this same field.
           if (!struck && senses.target === undefined) {
-            return IGNORED
+            return snapshot === undefined
+              ? IGNORED
+              : {
+                  transition: changed({
+                    feetPosition: entity.feetPosition,
+                    healthPoints: entity.healthPoints,
+                    behaviour: storedBehaviour(behaviour),
+                  }),
+                  emit: undefined,
+                }
           }
 
           endermanScratch.damagedThisStep = struck
@@ -1211,7 +1403,7 @@ export const sweepMobs = (
 
           // Nothing moved and nothing was owed: the shared step, and the roster
           // stays the array it was.
-          if (destination === undefined && !struck) {
+          if (destination === undefined && !struck && snapshot === undefined) {
             return IGNORED
           }
 
@@ -1222,7 +1414,7 @@ export const sweepMobs = (
             transition: changed({
               feetPosition: destination ?? entity.feetPosition,
               healthPoints: entity.healthPoints,
-              behaviour: STEADY_ENDERMAN,
+              behaviour: storedBehaviour(STEADY_ENDERMAN),
             }),
             emit: undefined,
           }
@@ -1233,7 +1425,11 @@ export const sweepMobs = (
         // the same answer as a pig, which is the inert one.
         return IGNORED
       }),
-      (blasts) => ({ blasts, seed: cursor }),
+      (events) => ({
+        blasts: events.filter((event): event is Blast => !('_tag' in event)),
+        attacks: events.filter((event): event is MobAttackEvent => '_tag' in event),
+        seed: cursor,
+      }),
     )
   })
 
@@ -1438,7 +1634,13 @@ export const resolveMeleeHits = resolveBowHits
  * allocates nothing on the second pass.
  */
 const bruise = (behaviour: MobBehaviour): MobBehaviour =>
-  isFlinch(behaviour) ? STRUCK_ENDERMAN : behaviour
+  isHostileMobSnapshot(behaviour)
+    ? isFlinch(behaviour.behaviour)
+      ? { ...behaviour, behaviour: STRUCK_ENDERMAN }
+      : behaviour
+    : isFlinch(behaviour)
+      ? STRUCK_ENDERMAN
+      : behaviour
 
 /**
  * What every blast in this frame does to one entity, or `undefined` if none of
@@ -1484,7 +1686,26 @@ export type MobDropEvent = MobDrop & {
   readonly at: Position
 }
 
+/** Experience left by a player-caused mob casualty for the host to award. */
+export type MobExperienceEvent = {
+  readonly source: EntityId
+  readonly kind: EntityKind
+  readonly at: Position
+  readonly amount: number
+}
+
 const NO_DROPS: ReadonlyArray<never> = []
+
+/** Resolve experience without consuming the deterministic loot seed. */
+export const experienceOfCasualties = (
+  casualties: ReadonlyArray<MobCasualty>,
+): ReadonlyArray<MobExperienceEvent> =>
+  casualties.flatMap((casualty) => {
+    const amount = mobXpReward(SLAIN_WITHOUT_LOOTING, xpRewardOfKind(casualty.kind))
+    return amount <= 0
+      ? []
+      : [{ source: casualty.id, kind: casualty.kind, at: casualty.at, amount }]
+  })
 
 /**
  * Roll what the dead leave behind.
@@ -1513,7 +1734,7 @@ export const rollCasualtyDrops = (
     const batch = drawRolls(current, dropRollsNeeded(casualty.kind))
     current = batch.seed
     drops.push(
-      ...rollDropsOfKind(casualty.kind, SLAIN_BY_BLAST, batch.rolls).map((drop) => ({
+      ...rollDropsOfKind(casualty.kind, SLAIN_WITHOUT_LOOTING, batch.rolls).map((drop) => ({
         ...drop,
         source: casualty.id,
         kind: casualty.kind,
@@ -1636,7 +1857,7 @@ export const applySpawnAttempts = (
     const outcomes: Array<MobSpawnOutcome> = []
 
     for (const attempt of attempts) {
-      const verdict = canHostileSpawnAt(attempt.candidate)
+      const verdict = canMobSpawnAt(attempt.kind, attempt.candidate)
       if (verdict._tag === 'Refused') {
         outcomes.push({ _tag: 'Refused', reason: verdict.reason })
         continue
@@ -1646,8 +1867,9 @@ export const applySpawnAttempts = (
       // per-kind cap enforces 「16 creepers」 rather than 「16 hostiles」, so a
       // player could be surrounded by sixteen of each. See `MAX_HOSTILE_COUNT`,
       // whose note recorded this as the thing that would have to change.
-      const population = yield* hostilePopulation(roster)
-      if (population >= MAX_HOSTILE_COUNT) {
+      const passive = PASSIVE_MOB_KINDS.includes(attempt.kind)
+      const population = yield* (passive ? passivePopulation(roster) : hostilePopulation(roster))
+      if (population >= (passive ? MAX_PASSIVE_COUNT : MAX_HOSTILE_COUNT)) {
         outcomes.push({ _tag: 'AtCapacity', population })
         continue
       }

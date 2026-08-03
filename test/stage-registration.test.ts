@@ -8,13 +8,25 @@
  */
 import { describe, expect, it } from '@effect/vitest'
 import { Effect, Layer, Ref } from 'effect'
-import { AIR_BLOCK_ID, type ChunkStore } from '../src/domain/chunk-store-port'
+import {
+  AIR_BLOCK_ID,
+  type BlockId,
+  type ChunkStore,
+  type ChunkStoreApi,
+} from '../src/domain/chunk-store-port'
+import { blockIdOf } from '../src/domain/block-vocabulary'
 import {
   CREEPER_KIND,
+  rollCasualtyDrops,
   type MobBehaviour,
   type MobDropEvent,
+  type MobExperienceEvent,
   type MobSpawnAttempt,
 } from '../src/domain/entities/mob-frame'
+import {
+  FIRE_TICK_INTERVAL_SECS,
+  makeFireLifecycleState,
+} from '../src/domain/fire-lifecycle'
 import {
   EntityId,
   EntityKind,
@@ -23,6 +35,10 @@ import {
 } from '../src/domain/entity-manager-port'
 import { BOW_TARGET_CENTER_Y_OFFSET } from '../src/domain/interactions/bow-shot'
 import { BOW_FULL_CHARGE_SECS, BOW_MIN_CHARGE_SECS } from '../src/domain/interactions/draw-bow'
+import {
+  ENDER_DRAGON_DEATH_XP,
+  ENDER_DRAGON_MAX_HEALTH,
+} from '../src/domain/mob/ender-dragon-encounter'
 import {
   TimeService,
   TimeServiceLayer,
@@ -39,20 +55,36 @@ import {
   type StageRegistration,
 } from '../src/domain/frame-contract'
 import { disturb, takeBatch } from '../src/domain/falling-block'
+import type { FluidWorkItem } from '../src/domain/fluid-frontier'
 import { DEFAULT_ROLL_SEED } from '../src/domain/frame-rolls'
 import {
   gameplayStages,
+  collectBrewingPotion,
+  drainPlayerDamages,
+  drainPlayerHeals,
   drainBowShotResults,
   drainFluidUpdates,
   drainMeleeAttackResults,
   drainMobDrops,
+  drainMobExperience,
   LAVA_TICK_INTERVAL,
   makeGameplayFrameState,
   makeGameplayStages,
   gameplayModule,
+  insertBrewingBottle,
+  insertBrewingFuel,
+  insertBrewingIngredient,
   requestBowShot,
+  requestFireExtinguish,
   requestMeleeAttack,
   requestMobSpawn,
+  requestStatusEffect,
+  getPlayerMovementSpeedMultiplier,
+  restoreBrewingStand,
+  restoreStatusEffects,
+  snapshotBrewingStand,
+  snapshotStatusEffects,
+  useBrewingPotion,
 } from '../src/stages/registration'
 import {
   EXPERIENCE_MODULE_STAGE_PREFIXES,
@@ -64,6 +96,7 @@ import {
   emptyWorldStoreLayer,
   makeChunkStoreDouble,
   STONE,
+  WATER,
   world,
 } from './support/chunk-store-double'
 import { emptyRosterLayer, makeEntityManagerDouble } from './support/entity-manager-double'
@@ -74,6 +107,7 @@ import { FrameServicesLayer } from './support/frame-services'
 
 const stageIds = (stages: ReadonlyArray<StageRegistration>): ReadonlyArray<string> =>
   stages.map((stage) => stage.id)
+const OBSIDIAN = blockIdOf('obsidian')!
 
 /**
  * The stages read and write blocks, iterate mobs and deposit mined items, so
@@ -108,9 +142,29 @@ const builtStages = Effect.gen(function* () {
     store,
     roster,
     inventory,
+    player,
     stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api, time),
   }
 })
+
+const builtStagesInWorld = (
+  initial: ReadonlyMap<string, BlockId>,
+  loadedChunks: ReadonlyArray<string> = ['0,0'],
+) =>
+  Effect.gen(function* () {
+    const state = yield* makeGameplayFrameState
+    const store = yield* makeChunkStoreDouble(initial, loadedChunks)
+    const roster = yield* makeEntityManagerDouble<MobBehaviour>()
+    const player = yield* makePlayerServiceDouble()
+    const inventory = yield* makeInventoryDouble()
+    const time = yield* makeTimeService()
+    return {
+      state,
+      store,
+      player,
+      stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api, time),
+    }
+  })
 
 const allAfterEdges = (stages: ReadonlyArray<StageRegistration>): ReadonlyArray<string> =>
   stages.flatMap((stage) => [...(stage.after ?? [])])
@@ -170,7 +224,10 @@ describe('§2.3-3 the total order belongs to mc-compose', () => {
 
       expect(stageIds(stages)).toStrictEqual([
         GAMEPLAY_STAGE_IDS.interactions,
+        GAMEPLAY_STAGE_IDS.fire,
+        GAMEPLAY_STAGE_IDS.survivalHunger,
         GAMEPLAY_STAGE_IDS.entities,
+        GAMEPLAY_STAGE_IDS.enderDragon,
         GAMEPLAY_STAGE_IDS.fluids,
         GAMEPLAY_STAGE_IDS.timeWeather,
       ])
@@ -178,10 +235,21 @@ describe('§2.3-3 the total order belongs to mc-compose', () => {
       expect(byId.get(GAMEPLAY_STAGE_IDS.interactions)?.after).toStrictEqual([
         UPSTREAM_STAGE_IDS.simPhysics,
       ])
-      expect(byId.get(GAMEPLAY_STAGE_IDS.entities)?.after).toStrictEqual([
+      expect(byId.get(GAMEPLAY_STAGE_IDS.fire)?.after).toStrictEqual([
         GAMEPLAY_STAGE_IDS.interactions,
       ])
-      expect(byId.get(GAMEPLAY_STAGE_IDS.fluids)?.after).toStrictEqual([GAMEPLAY_STAGE_IDS.entities])
+      expect(byId.get(GAMEPLAY_STAGE_IDS.survivalHunger)?.after).toStrictEqual([
+        GAMEPLAY_STAGE_IDS.fire,
+      ])
+      expect(byId.get(GAMEPLAY_STAGE_IDS.entities)?.after).toStrictEqual([
+        GAMEPLAY_STAGE_IDS.survivalHunger,
+      ])
+      expect(byId.get(GAMEPLAY_STAGE_IDS.enderDragon)?.after).toStrictEqual([
+        GAMEPLAY_STAGE_IDS.entities,
+      ])
+      expect(byId.get(GAMEPLAY_STAGE_IDS.fluids)?.after).toStrictEqual([
+        GAMEPLAY_STAGE_IDS.enderDragon,
+      ])
       expect(byId.get(GAMEPLAY_STAGE_IDS.timeWeather)?.after).toStrictEqual([
         GAMEPLAY_STAGE_IDS.fluids,
       ])
@@ -216,6 +284,140 @@ describe('§2.3-3 the total order belongs to mc-compose', () => {
     Effect.sync(() => {
       expect(() => StageId('   ')).toThrow()
       expect(StageId('gameplay:interactions')).toBe('gameplay:interactions')
+    }),
+  )
+})
+
+describe('fire lifecycle stage integration', () => {
+  const FIRE = blockIdOf('fire') ?? 119
+
+  it.effect('retains an active fire while its chunk is temporarily unavailable', () =>
+    Effect.gen(function* () {
+      const { state, stages } = yield* builtStages
+      const position = { x: 16, y: 64, z: 0 }
+      yield* Ref.set(state.fireLifecycle, makeFireLifecycleState([position], 7))
+
+      const fireStage = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire)!
+      yield* fireStage.run(DeltaTimeSecs(FIRE_TICK_INTERVAL_SECS)).pipe(
+        Effect.provide(FrameServicesLayer),
+      )
+
+      expect((yield* Ref.get(state.fireLifecycle)).fires).toStrictEqual([
+        { position, ageTicks: 0, unloadedRetries: 1 },
+      ])
+    }),
+  )
+
+  it.effect('does not drift logical or world state when a manual extinguish write fails', () =>
+    Effect.gen(function* () {
+      const { state, store } = yield* builtStages
+      const position = { x: 1, y: 64, z: 0 }
+      yield* store.api.setBlock(position, FIRE)
+      const initial = makeFireLifecycleState([position], 11)
+      yield* Ref.set(state.fireLifecycle, initial)
+      const refusingStore: ChunkStoreApi = {
+        ...store.api,
+        setBlock: () => Effect.succeed({ _tag: 'OutOfWorld' }),
+      }
+
+      expect(yield* requestFireExtinguish(state, refusingStore, position)).toBe(false)
+      expect(yield* store.blockAt(position)).toBe(FIRE)
+      expect(yield* Ref.get(state.fireLifecycle)).toStrictEqual(initial)
+    }),
+  )
+
+  it.effect('routes lethal entity fire damage through the existing casualty and drop path', () =>
+    Effect.gen(function* () {
+      const { state, store, roster, stages } = yield* builtStages
+      const position = { x: 2, y: 64, z: 0 }
+      yield* store.api.setBlock({ ...position, y: position.y - 1 }, STONE)
+      yield* store.api.setBlock(position, FIRE)
+      yield* Ref.set(state.fireLifecycle, makeFireLifecycleState([position], 13))
+      const target = yield* roster.api.spawn({
+        kind: CREEPER_KIND,
+        feetPosition: position,
+        healthPoints: 1,
+        behaviour: undefined,
+      })
+      const expected = rollCasualtyDrops([
+        { id: target.id, kind: target.kind, at: target.feetPosition },
+      ], DEFAULT_ROLL_SEED)
+
+      const fireStage = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire)!
+      yield* fireStage.run(DeltaTimeSecs(FIRE_TICK_INTERVAL_SECS)).pipe(
+        Effect.provide(FrameServicesLayer),
+      )
+
+      expect((yield* roster.api.snapshot).entities).toStrictEqual([])
+      expect(yield* drainMobDrops(state)).toStrictEqual(expected.drops)
+      expect(yield* drainMobDrops(state)).toStrictEqual([])
+      expect(yield* Ref.get(state.rollSeed)).toBe(expected.seed)
+      expect((yield* Ref.get(state.fireLifecycle)).burningActors).toStrictEqual([])
+    }),
+  )
+
+  it.effect('caps a large frame to four fire ticks', () =>
+    Effect.gen(function* () {
+      const { state, store, stages } = yield* builtStages
+      const position = { x: 3, y: 64, z: 0 }
+      yield* store.api.setBlock({ ...position, y: position.y - 1 }, STONE)
+      yield* store.api.setBlock(position, FIRE)
+      yield* Ref.set(state.fireLifecycle, makeFireLifecycleState([position], 17))
+
+      const fireStage = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire)!
+      yield* fireStage.run(DeltaTimeSecs(99)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect((yield* Ref.get(state.fireLifecycle)).fires).toStrictEqual([
+        { position, ageTicks: 4 },
+      ])
+    }),
+  )
+})
+
+describe('Ender Dragon normal frame lifecycle', () => {
+  it.effect('does not advance outside the End and is deterministic across frame chunking', () =>
+    Effect.gen(function* () {
+      const once = yield* builtStages
+      const chunked = yield* builtStages
+      const onceStage = once.stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.enderDragon)!
+      const chunkedStage = chunked.stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.enderDragon)!
+
+      const initial = yield* once.state.enderDragonEncounter.snapshot
+      yield* onceStage.run(DeltaTimeSecs(14))
+      expect(yield* once.state.enderDragonEncounter.snapshot).toStrictEqual(initial)
+      expect(yield* once.state.enderDragonEncounter.drainEvents).toStrictEqual([])
+
+      yield* once.player.api.setDimension('end')
+      yield* chunked.player.api.setDimension('end')
+      yield* onceStage.run(DeltaTimeSecs(14))
+      yield* chunkedStage.run(DeltaTimeSecs(7))
+      yield* chunkedStage.run(DeltaTimeSecs(7))
+
+      expect(yield* chunked.state.enderDragonEncounter.snapshot).toStrictEqual(
+        yield* once.state.enderDragonEncounter.snapshot,
+      )
+      expect(yield* chunked.state.enderDragonEncounter.drainEvents).toStrictEqual(
+        yield* once.state.enderDragonEncounter.drainEvents,
+      )
+    }),
+  )
+
+  it.effect('exposes attacks, terminal world events, and exactly-once rewards across restore', () =>
+    Effect.gen(function* () {
+      const { state } = yield* builtStages
+      const result = yield* state.enderDragonEncounter.damageByPlayer(ENDER_DRAGON_MAX_HEALTH)
+      expect(result._tag).toBe('Applied')
+
+      const events = yield* state.enderDragonEncounter.drainEvents
+      expect(events).toContainEqual({ _tag: 'ExperienceRewarded', amount: ENDER_DRAGON_DEATH_XP })
+      expect(events.filter((event) => event._tag === 'ExperienceRewarded')).toHaveLength(1)
+      expect(events.filter((event) => event._tag === 'ExitPortalMaterializationRequested')).toHaveLength(1)
+      expect(events.filter((event) => event._tag === 'DragonEggRewarded')).toHaveLength(1)
+
+      const dead = yield* state.enderDragonEncounter.snapshot
+      expect(yield* state.enderDragonEncounter.restore(dead)).toBe(true)
+      yield* state.enderDragonEncounter.damageByPlayer(1)
+      expect(yield* state.enderDragonEncounter.drainEvents).toStrictEqual([])
     }),
   )
 })
@@ -333,6 +535,160 @@ describe('stage behaviour', () => {
     }).pipe(Effect.provide(FrameServicesLayer)),
   )
 
+  it.effect('deduplicates direct frontier writes by position before spending budget', () =>
+    Effect.gen(function* () {
+      const { state, stages } = yield* builtStages
+      const fluids = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids)!
+      const latest = { key: 'water-a', kind: 'water' as const, deferred: 2 }
+
+      yield* Ref.set(state.fluidFrontier, [
+        { key: 'water-a', kind: 'water' },
+        latest,
+      ])
+      yield* fluids.run(DeltaTimeSecs(0.016))
+
+      expect(yield* drainFluidUpdates(state)).toStrictEqual([latest])
+      expect(yield* Ref.get(state.fluidFrontier)).toStrictEqual([])
+    }).pipe(Effect.provide(FrameServicesLayer)),
+  )
+
+  it.effect('fluid propagation writes downward before considering horizontal air', () =>
+    Effect.gen(function* () {
+      const origin = { x: 0, y: 64, z: 0 }
+      const { state, store, stages } = yield* builtStagesInWorld(world([[origin, WATER]]))
+      const fluids = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids)!
+
+      yield* Ref.set(state.fluidFrontier, [{ key: '0,64,0', kind: 'water' }])
+      yield* fluids.run(DeltaTimeSecs(0.016))
+
+      expect(yield* store.blockAt({ x: 0, y: 63, z: 0 })).toBe(WATER)
+      expect(yield* store.blockAt({ x: -1, y: 64, z: 0 })).toBeUndefined()
+      expect(yield* store.blockAt({ x: 1, y: 64, z: 0 })).toBeUndefined()
+      expect(yield* Ref.get(state.fluidFrontier)).toContainEqual({
+        key: '0,63,0',
+        kind: 'water',
+        level: 0,
+        source: false,
+        parent: '0,64,0',
+        falling: true,
+      })
+    }).pipe(Effect.provide(FrameServicesLayer)),
+  )
+
+  it.effect('blocked fluid spreads to the four horizontal neighbours in deterministic order', () =>
+    Effect.gen(function* () {
+      const origin = { x: 0, y: 64, z: 0 }
+      const { state, store, stages } = yield* builtStagesInWorld(
+        world([
+          [origin, WATER],
+          [{ x: 0, y: 63, z: 0 }, STONE],
+        ]),
+        ['0,0', '-1,0', '0,-1'],
+      )
+      const fluids = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids)!
+
+      yield* Ref.set(state.fluidFrontier, [{ key: '0,64,0', kind: 'water' }])
+      yield* fluids.run(DeltaTimeSecs(0.016))
+
+      expect((yield* Ref.get(state.fluidFrontier)).map((item) => item.key)).toStrictEqual([
+        '-1,64,0',
+        '1,64,0',
+        '0,64,-1',
+        '0,64,1',
+      ])
+      for (const position of [
+        { x: -1, y: 64, z: 0 },
+        { x: 1, y: 64, z: 0 },
+        { x: 0, y: 64, z: -1 },
+        { x: 0, y: 64, z: 1 },
+      ]) {
+        expect(yield* store.blockAt(position)).toBe(WATER)
+      }
+    }).pipe(Effect.provide(FrameServicesLayer)),
+  )
+
+  it.effect('removing a source retracts the flowing cells that depended on it', () =>
+    Effect.gen(function* () {
+      const origin = { x: 0, y: 64, z: 0 }
+      const neighbours = [
+        { x: -1, y: 64, z: 0 },
+        { x: 1, y: 64, z: 0 },
+        { x: 0, y: 64, z: -1 },
+        { x: 0, y: 64, z: 1 },
+      ] as const
+      const { state, store, stages } = yield* builtStagesInWorld(
+        world([
+          [origin, WATER],
+          [{ x: 0, y: 63, z: 0 }, STONE],
+        ]),
+        ['0,0', '-1,0', '0,-1'],
+      )
+      const fluids = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids)!
+
+      yield* Ref.set(state.fluidFrontier, [{ key: '0,64,0', kind: 'water' }])
+      yield* fluids.run(DeltaTimeSecs(0.016))
+      yield* store.api.setBlock(origin, AIR_BLOCK_ID)
+      yield* Ref.set(state.fluidFrontier, [{ key: '0,64,0', kind: 'water' }])
+      yield* fluids.run(DeltaTimeSecs(0.016))
+      yield* fluids.run(DeltaTimeSecs(0.016))
+
+      for (const position of neighbours) {
+        expect(yield* store.blockAt(position)).toBe(AIR_BLOCK_ID)
+      }
+      expect(yield* Ref.get(state.fluidFrontier)).toStrictEqual([])
+    }).pipe(Effect.provide(FrameServicesLayer)),
+  )
+
+  it.effect('water meeting a lava source materializes obsidian at the contact', () =>
+    Effect.gen(function* () {
+      const lava = blockIdOf('lava')!
+      const { state, store, stages } = yield* builtStagesInWorld(
+        world([
+          [{ x: 0, y: 64, z: 0 }, WATER],
+          [{ x: 0, y: 63, z: 0 }, STONE],
+          [{ x: 1, y: 64, z: 0 }, lava],
+        ]),
+      )
+      const fluids = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids)!
+
+      yield* Ref.set(state.fluidFrontier, [{ key: '0,64,0', kind: 'water' }])
+      yield* fluids.run(DeltaTimeSecs(0.016))
+
+      expect(yield* store.blockAt({ x: 1, y: 64, z: 0 })).toBe(OBSIDIAN)
+    }).pipe(Effect.provide(FrameServicesLayer)),
+  )
+
+  it.effect('an unloaded chunk boundary defers a source finitely and never writes outside the loaded set', () =>
+    Effect.gen(function* () {
+      const origin = { x: 15, y: 64, z: 0 }
+      const { state, store, stages } = yield* builtStagesInWorld(
+        world([
+          [origin, WATER],
+          [{ x: 15, y: 63, z: 0 }, STONE],
+        ]),
+      )
+      const fluids = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids)!
+      let source: FluidWorkItem = { key: '15,64,0', kind: 'water' }
+
+      for (let attempt = 1; attempt <= 8; attempt += 1) {
+        yield* Ref.set(state.fluidFrontier, [source])
+        yield* fluids.run(DeltaTimeSecs(0.016))
+        const deferred = (yield* Ref.get(state.fluidFrontier)).find(
+          (item) => item.key === source.key,
+        )!
+        expect(deferred.deferred).toBe(attempt)
+        source = deferred
+      }
+
+      yield* Ref.set(state.fluidFrontier, [source])
+      yield* fluids.run(DeltaTimeSecs(0.016))
+      expect((yield* Ref.get(state.fluidFrontier)).some((item) => item.key === source.key)).toBe(
+        false,
+      )
+      expect(yield* store.blockAt({ x: 16, y: 64, z: 0 })).toBeUndefined()
+    }).pipe(Effect.provide(FrameServicesLayer)),
+  )
+
   // REGRESSION: the time of day is mc-sim's. It survives save/load, which is
   // the very test the module header names for whether a Ref belongs here, so it
   // is a noun and lives in `mc-sim/domain/time-of-day.ts` behind
@@ -364,7 +720,7 @@ describe('stage behaviour', () => {
   //
   // What survives here unchanged is the exact-list gate, which is the part that
   // makes an addition reviewable.
-  it.effect('REGRESSION: the frame state holds no day length, and every Ref is scratch', () =>
+  it.effect('REGRESSION: the frame state holds no day length or host-owned state', () =>
     Effect.gen(function* () {
       const state = yield* makeGameplayFrameState
 
@@ -421,7 +777,7 @@ describe('stage behaviour', () => {
       //
       // WHAT IS STILL NOT HERE is the thing this list exists to keep out: there
       // is no `Ref<Map<MobId, CreeperFuse>>`, no mob position, no mob health, no
-      // entity id, no INVENTORY, no PLAYER POSITION and no GAME MODE — and no DAY
+      // entity roster, no INVENTORY, no PLAYER POSITION and no GAME MODE — and no DAY
       // LENGTH, which is the half of the original failure that has no stand-in
       // and never will, because nothing in this repository needs to know how long
       // a day is.
@@ -429,9 +785,12 @@ describe('stage behaviour', () => {
         'blockUseResults',
         'bowKnockbacks',
         'bowShotResults',
+        'brewingStand',
         'consumedItems',
+        'enderDragonEncounter',
         'enderPearlOutcomes',
         'fallingBlocks',
+        'fireLifecycle',
         'fluidFrontier',
         'fluidUpdates',
         'handledBowShotRequestIds',
@@ -440,6 +799,7 @@ describe('stage behaviour', () => {
         'itemUseResults',
         'meleeAttackResults',
         'mobDrops',
+        'mobExperience',
         'pendingBlockUses',
         'pendingBowShots',
         'pendingBreaks',
@@ -447,19 +807,31 @@ describe('stage behaviour', () => {
         'pendingMeleeAttacks',
         'pendingPearlThrows',
         'pendingPlacements',
+        'pendingStatusEffects',
+        'pendingVillagerTrades',
         'playerDamages',
+        'playerDead',
+        'playerHeals',
+        'playerMovementSpeedMultiplier',
         'portalCandidates',
         'portalDwell',
         'portalTravels',
         'rollSeed',
         'spawnAttempts',
         'spawnClockSecs',
+        'statusEffects',
+        'survivalHunger',
         'targetPosition',
         'tickCount',
         'timeOfDay',
         'usedItems',
+        'villagerTradeResults',
+        'villagerTrades',
         'weather',
         'weatherAdvanced',
+        'weatherGameplay',
+        'weatherGameplayEvents',
+        'weatherGameplayInput',
       ])
 
       // The pearl teleports the player and the game mode decides whether it
@@ -561,6 +933,35 @@ describe('stage behaviour', () => {
       expect(results[1]).toStrictEqual({ requestId: 'miss', success: false })
       expect(yield* drainMeleeAttackResults(state)).toStrictEqual([])
       expect((yield* roster.api.snapshot).entities[0]?.healthPoints).toBe(16)
+      expect(yield* drainMobExperience(state)).toStrictEqual([])
+    }),
+  )
+
+  it.effect('a lethal player melee hit emits mob experience exactly once', () =>
+    Effect.gen(function* () {
+      const { state, roster, stages } = yield* builtStages
+      const feetPosition = { x: 0, y: 64 - BOW_TARGET_CENTER_Y_OFFSET, z: 2 }
+      const target = yield* roster.api.spawn({
+        kind: CREEPER_KIND,
+        feetPosition,
+        healthPoints: 4,
+        behaviour: undefined,
+      })
+
+      yield* requestMeleeAttack(state, {
+        origin: { x: 0, y: 64, z: 0 },
+        direction: { x: 0, y: 0, z: 1 },
+        reach: 3,
+        damage: 4,
+      })
+      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)
+      yield* interactions!.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect((yield* roster.api.snapshot).entities).toStrictEqual([])
+      expect(yield* drainMobExperience(state)).toStrictEqual([
+        { source: target.id, kind: CREEPER_KIND, at: feetPosition, amount: 5 },
+      ])
+      expect(yield* drainMobExperience(state)).toStrictEqual([])
     }),
   )
 
@@ -689,11 +1090,21 @@ describe('stage behaviour', () => {
         kind: CREEPER_KIND,
         at: { x: 1, y: 64, z: 0 },
       }
+      const experience: MobExperienceEvent = {
+        source: EntityId('qa-creeper'),
+        kind: CREEPER_KIND,
+        at: { x: 1, y: 64, z: 0 },
+        amount: 5,
+      }
       yield* Ref.set(state.mobDrops, [drop])
+      yield* Ref.set(state.mobExperience, [experience])
 
       expect(yield* drainMobDrops(state)).toStrictEqual([drop])
       expect(yield* Ref.get(state.mobDrops)).toStrictEqual([])
       expect(yield* drainMobDrops(state)).toStrictEqual([])
+      expect(yield* drainMobExperience(state)).toStrictEqual([experience])
+      expect(yield* Ref.get(state.mobExperience)).toStrictEqual([])
+      expect(yield* drainMobExperience(state)).toStrictEqual([])
     }),
   )
 
@@ -710,10 +1121,10 @@ describe('stage behaviour', () => {
     }),
   )
 
-  // REGRESSION: every Ref here must be free to lose on a reload. That is the
-  // save-file test from the module header, applied to the whole state rather
-  // than to the one field that failed it.
-  it.effect('REGRESSION: every Ref in the frame state is frame-local scratch, not saved state', () =>
+  // REGRESSION: host-owned state stays outside this object. Fire is the one
+  // gameplay-owned world process and has an explicit snapshot/restore boundary;
+  // every queue and outbox below remains disposable frame-local scratch.
+  it.effect('REGRESSION: frame-local queues start empty and deterministic state starts seeded', () =>
     Effect.gen(function* () {
       const state = yield* makeGameplayFrameState
 
@@ -728,6 +1139,10 @@ describe('stage behaviour', () => {
       expect(yield* Ref.get(state.spawnAttempts)).toStrictEqual([])
       expect(yield* Ref.get(state.targetPosition)).toBeUndefined()
       expect(yield* Ref.get(state.rollSeed)).toBe(DEFAULT_ROLL_SEED)
+      expect(yield* Ref.get(state.fireLifecycle)).toStrictEqual({
+        fires: [],
+        seed: DEFAULT_ROLL_SEED,
+      })
     }),
   )
 
@@ -929,7 +1344,7 @@ describe('the module contract has caught up with this file’s shape', () => {
       const satisfied: Effect.Effect<ReadonlyArray<StageRegistration>, never, never> =
         Effect.provide(registration, emptyWorld)
 
-      expect(yield* satisfied).toHaveLength(4)
+      expect(yield* satisfied).toHaveLength(7)
     }),
   )
 
@@ -975,5 +1390,104 @@ describe('the module contract has caught up with this file’s shape', () => {
         yield* runnable
       }
     }).pipe(Effect.provide(FrameServicesLayer)),
+  )
+
+  it.effect('routes status effect pulses and speed through host-facing frame contracts', () =>
+    Effect.gen(function* () {
+      const { state, stages } = yield* builtStages
+      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+
+      yield* requestStatusEffect(state, { type: 'poison', durationSecs: 1 })
+      yield* requestStatusEffect(state, { type: 'regeneration', durationSecs: 2.5 })
+      yield* requestStatusEffect(state, { type: 'speed', durationSecs: 2 })
+      yield* interactions.run(DeltaTimeSecs(1)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* drainPlayerDamages(state)).toStrictEqual([
+        {
+          _tag: 'StatusEffect',
+          effect: 'poison',
+          damage: { amount: 1, cause: 'poison' },
+          minimumHealthPoints: 1,
+        },
+      ])
+      expect(yield* drainPlayerHeals(state)).toStrictEqual([])
+      expect(yield* getPlayerMovementSpeedMultiplier(state)).toBe(1.2)
+
+      yield* interactions.run(DeltaTimeSecs(1.5)).pipe(Effect.provide(FrameServicesLayer))
+      expect(yield* drainPlayerHeals(state)).toStrictEqual([
+        {
+          _tag: 'StatusEffect',
+          effect: 'regeneration',
+          amount: 1,
+          maximumHealthPoints: 20,
+        },
+      ])
+      expect(yield* getPlayerMovementSpeedMultiplier(state)).toBe(1)
+    }),
+  )
+
+  it.effect('snapshots and restores status effects without retaining host references', () =>
+    Effect.gen(function* () {
+      const source = yield* makeGameplayFrameState
+      yield* restoreStatusEffects(source, {
+        effects: [{ type: 'speed', remainingSecs: 4, pulseClockSecs: 0 }],
+      })
+      const snapshot = yield* snapshotStatusEffects(source)
+      const restored = yield* makeGameplayFrameState
+      yield* restoreStatusEffects(restored, snapshot)
+
+      expect(yield* snapshotStatusEffects(restored)).toStrictEqual(snapshot)
+      expect(yield* getPlayerMovementSpeedMultiplier(restored)).toBe(1.2)
+      expect((yield* snapshotStatusEffects(restored)).effects).not.toBe(snapshot.effects)
+    }),
+  )
+
+  it.effect('brews and uses a speed potion through the existing status-effect pipeline', () =>
+    Effect.gen(function* () {
+      const { state, stages } = yield* builtStages
+      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+
+      expect(yield* insertBrewingBottle(state, 'water_bottle')).toMatchObject({ _tag: 'Accepted' })
+      expect(yield* insertBrewingFuel(state)).toMatchObject({ _tag: 'Accepted' })
+      expect(yield* insertBrewingIngredient(state, 'nether_wart')).toMatchObject({
+        _tag: 'Accepted',
+      })
+      yield* interactions.run(DeltaTimeSecs(20)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* insertBrewingFuel(state)).toMatchObject({ _tag: 'Accepted' })
+      expect(yield* insertBrewingIngredient(state, 'sugar')).toMatchObject({ _tag: 'Accepted' })
+      yield* interactions.run(DeltaTimeSecs(20)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* useBrewingPotion(state)).toStrictEqual({
+        _tag: 'Consumed',
+        consumed: { item: 'potion_of_swiftness', count: 1 },
+        effect: { type: 'speed', durationSecs: 180 },
+      })
+      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+      expect(yield* getPlayerMovementSpeedMultiplier(state)).toBe(1.2)
+      expect(yield* collectBrewingPotion(state)).toStrictEqual({
+        _tag: 'Rejected',
+        reason: 'Empty',
+      })
+    }),
+  )
+
+  it.effect('snapshots and restores an in-progress brew without retaining host references', () =>
+    Effect.gen(function* () {
+      const source = yield* makeGameplayFrameState
+      yield* restoreBrewingStand(source, {
+        fuelUnits: 0,
+        bottle: { potion: 'awkward' },
+        ingredient: undefined,
+        brewing: { output: 'speed', remainingSecs: 7 },
+      })
+      const snapshot = yield* snapshotBrewingStand(source)
+      const restored = yield* makeGameplayFrameState
+      yield* restoreBrewingStand(restored, snapshot)
+      const restoredSnapshot = yield* snapshotBrewingStand(restored)
+
+      expect(restoredSnapshot).toStrictEqual(snapshot)
+      expect(restoredSnapshot.brewing).not.toBe(snapshot.brewing)
+    }),
   )
 })

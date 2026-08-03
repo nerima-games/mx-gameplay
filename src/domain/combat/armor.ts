@@ -1,8 +1,10 @@
-import type { Equipment } from '@nerima-games/mc-sim'
+import type { Equipment, EquipmentSlot } from '@nerima-games/mc-sim'
 import type { Damage } from '../death-cause'
 
 const MAX_ARMOR_POINTS = 20
 const DAMAGE_REDUCTION_PER_ARMOR_POINT = 0.04
+
+const WORN_ARMOR_SLOTS = ['head', 'chest', 'legs', 'feet'] as const satisfies ReadonlyArray<EquipmentSlot>
 
 const IRON_ARMOR_POINTS = {
   head: { item: 'iron_helmet', points: 2 },
@@ -45,3 +47,16 @@ export const armorDurabilityWearFromPreMitigationDamage = (damage: Damage): numb
 
   return Math.max(1, Math.floor(damage.amount / 4))
 }
+
+export type ArmorHitResolution = {
+  readonly damage: Damage
+  readonly durabilityWear: number
+  readonly wornSlots: ReadonlyArray<(typeof WORN_ARMOR_SLOTS)[number]>
+}
+
+/** Resolve one hit against the equipment snapshot that exists before that hit. */
+export const resolveArmorHit = (equipment: Equipment, damage: Damage): ArmorHitResolution => ({
+  damage: applyArmorToDamage(damage, armorPointsForEquipment(equipment)),
+  durabilityWear: armorDurabilityWearFromPreMitigationDamage(damage),
+  wornSlots: WORN_ARMOR_SLOTS.filter((slot) => equipment.slots[slot] !== null),
+})

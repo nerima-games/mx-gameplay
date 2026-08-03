@@ -18,6 +18,7 @@ import {
   miningProgressFraction,
   miningToolForItem,
   type MiningProgressState,
+  WOODEN_PICKAXE_MINING_TOOL,
 } from '../src/domain/interactions/mining-progress'
 
 const STONE = { position: blockPosition(1, 64, 2), blockId: blockIdOf('stone') }
@@ -118,6 +119,41 @@ describe('mining duration', () => {
       expect(effectiveMiningSpeed(woodenPickaxe, lowTier)).toBe(2)
       expect(effectiveMiningSpeed(woodenPickaxe, highTier)).toBe(2)
       expect(effectiveMiningSpeed(HAND_MINING_TOOL, highTier)).toBe(1)
+    }),
+  )
+
+  it.effect('applies Efficiency only when the selected tool matches the block category', () =>
+    Effect.sync(() => {
+      const plainStone = miningDurationSecsForBlock(STONE.blockId, 'wooden_pickaxe')
+      const efficientStone = miningDurationSecsForBlock(STONE.blockId, 'wooden_pickaxe', 3)
+
+      expect(efficientStone).toBeLessThan(plainStone)
+      expect(miningDurationSecsForBlock(DIRT.blockId, 'wooden_pickaxe', 3)).toBe(
+        miningDurationSecsForBlock(DIRT.blockId, 'wooden_pickaxe'),
+      )
+      expect(
+        effectiveMiningSpeed(miningToolForItem('wooden_pickaxe', 3), {
+          category: 'pickaxe',
+          minTier: 'wooden',
+        }),
+      ).toBe(12)
+    }),
+  )
+
+  it.effect('ignores invalid Efficiency levels', () =>
+    Effect.sync(() => {
+      const requirement: HarvestToolRequirement = { category: 'pickaxe', minTier: 'wooden' }
+
+      expect(effectiveMiningSpeed(miningToolForItem('wooden_pickaxe', -1), requirement)).toBe(2)
+      expect(
+        effectiveMiningSpeed(miningToolForItem('wooden_pickaxe', Number.NaN), requirement),
+      ).toBe(2)
+      expect(
+        effectiveMiningSpeed(
+          { ...WOODEN_PICKAXE_MINING_TOOL, efficiencyLevel: 0.5 },
+          requirement,
+        ),
+      ).toBe(2)
     }),
   )
 })
@@ -247,6 +283,29 @@ describe('delta-time progress', () => {
       expect(partitioned?.accumulatedWork).toBeCloseTo(coarse?.accumulatedWork ?? -1)
       expect(miningProgressFraction(partitioned)).toBeCloseTo(miningProgressFraction(coarse))
       expect(partitioned?.completed).toBe(coarse?.completed)
+    }),
+  )
+
+  it.effect('accumulates Efficiency work only during frames where it is active', () =>
+    Effect.sync(() => {
+      const first = advanceMiningProgress({
+        current: null,
+        target: STONE,
+        isMining: true,
+        selectedItem: 'wooden_pickaxe',
+        deltaSecs: 0.01,
+      })
+      const enchanted = advanceMiningProgress({
+        current: first.nextProgress,
+        target: STONE,
+        isMining: true,
+        selectedItem: 'wooden_pickaxe',
+        efficiencyLevel: 2,
+        deltaSecs: 0.01,
+      })
+
+      expect(first.nextProgress?.accumulatedWork).toBeCloseTo(0.02)
+      expect(enchanted.nextProgress?.accumulatedWork).toBeCloseTo(0.09)
     }),
   )
 

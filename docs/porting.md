@@ -239,7 +239,7 @@ $ ls packages/game/test/day-night-cycle*.test.ts | wc -l                        
 | --- | ---: | --- |
 | `packages/game/test/day-night-cycle.test.ts` | 26 | **全件が見た目である。** `computeDaylightFactor` / `resolveDayNightCycleState` / `computeTerrainSunIntensity` / 太陽弧 / 月の不透明度 / 空色 —— §3-4 が既に決めているとおり、時刻を光量と色に変換するのは `mc-render` である。ここが持つのは「今が夜か」まで（DN-GP-7） |
 | `packages/game/test/day-night-cycle-appearance.test.ts` | 3 | 同上。ファイル名が `appearance` と言っている |
-| `packages/world/test/fluid-contact.test.ts` | 7 | **本書 §3-3 が禁じている。** `resolveContact` は `FluidCell` を取り、その型は `packages/block/domain/fluid-model.ts` の所有権が未決である（「決めるまでこの 143 行を移植しないこと」）。ここで `FluidCell` を書くと 2 箇所に生える。**所有権が決まり次第、最初に移植すべき 7 本** —— 12 LOC に対して 7 本のオラクルが付いている密度は本書中で最も高い |
+| `packages/world/test/fluid-contact.test.ts` | 7 | **未移植。** `FluidCell` の所有権は `src/domain/fluid-frontier.ts`（`mx-gameplay`）に確定したため、重複を避けてここへ移植する。12 LOC に対して 7 本のオラクルが付いている密度は本書中で最も高い |
 | `packages/world/test/fluid-tick-budget.test.ts:14-19` | 1 | **反証できない。** 空入力に対して両方の出力が空になるのは、分類ループを丸ごと削除しても成り立つ。落ちない移植は本数を増やすだけなので消し、理由を `test/rules.test.ts` にコメントとして残した |
 | `falling-block.test.ts` の `collectFallingBlockMoves` 8 本 | 8 | **全チャンク走査そのもののテストである**（DN-GP-1）。チャンクバッファの長さ検査・チャンク座標からワールド座標への写像・チャンク跨ぎの走査順は `mc-worldgen` の名詞であり、こちらの API には走査が存在しない |
 | `falling-block-maintenance.test.ts` | 7 | 同上。**7 本中 5 本が sweep cursor の挙動**（dirty chunk の即時走査、走査窓の外を飛ばす、cursor を進める）。残り 2 本（支えられた砂利は動かない / 世界の底では動かない）は `test/vertical-slice.test.ts` に既にある |
@@ -393,24 +393,11 @@ F8（§4-3-2）と同じく参照実装と食い違うが、**向きが逆で、
 **昼間の地上にモブを湧かせる**側に倒れる。`domain/mob/hostile-spawn.ts` の `unmeasurable` と
 プレビューの finding F5 が同じ形の判断である。移植しないこと自体が主張なので、ここに記録する。
 
-#### 決めるべき 1 行 —— `rollGrassSeedDrop`
+#### 決定済み —— `rollGrassSeedDrop`
 
-`test/block-loot.test.ts` の「the three unshipped lines really are unshipped」は
-**自分でこう書いている**:
-
-> 種の行は名指す `wheat_seeds` が無かった。**今はある** —— kernel の roster 完成で入った。
-> だから**その半分はもう kernel のギャップではない**。`rollGrassSeedDrop`（`:245-246`）の移植は
-> このリポジトリがいつやってもいい仕事であり、audit §6-9 は乱数のドロップ規則をこちらに置いている。
-
-つまり `world/test/block-service-drop-overrides.test.ts:144-165` の 4 本は**移植可能**である。
-**しかし移植すると同じファイルの既存テストと衝突する** —— そのテストは
-「tall_grass と fern はどんなに運が良くても何も落とさない」を現状として固定しており、
-`BONUS_DROPS` に行を足すと赤くなる。
-
-**これはテストの移植ではなく production の変更を要求する決定であり、片方を黙って直さない。**
-決めるべきことは 1 つ:「ベースドロップが無いブロック（`UNITEMISED_BLOCK_TYPES` にある
-tall_grass / fern）にボーナス行だけを持たせるか」。葉が先例で、答えは「持たせてよい」に見えるが、
-葉は**アイテム化されている**ブロックである。この行を決めるまで両方を現状のままにしてある。
+`wheat_seeds` が `ItemType` に追加済みであり、葉と同じくベースドロップから独立した
+ボーナス行を持てるため、tall grass と fern の 1/8 ドロップを移植した。
+`test/block-loot.test.ts` は両ブロックについて排他的な確率境界と Silk Touch 抑制を固定する。
 
 ### 4-4. この回に移植したもの（2026-07-28、`interaction-*` の 3 回目）
 
@@ -425,7 +412,7 @@ tall_grass / fern）にボーナス行だけを持たせるか」。葉が先例
 | 1 | `interaction-stage-underwater.test.ts:29-58` | 近傍は **dx-major, dz-minor** の順に出る | 1 | `chunkCoordsAround` の 2 重ループの入れ子を逆にする |
 | 2 | `interaction-flint-steel-portal.test.ts:10-23` | 同じ入れ子を**負のアンカー**から | 1 | 同上 |
 | 3 | `interaction-stage-underwater.test.ts:24-27` | floor するのは**商であって座標ではない** | 1 | `Math.floor(Math.trunc(x) / 16)` |
-| 4 | `interaction-block-access.test.ts:78,93,104,170` | **F9 —— 移植ではなく乖離の固定**（§4-4-1） | 1 | `blockAt` に長さ検査を足す（＝直す）と赤くなる |
+| 4 | `interaction-block-access.test.ts:78,93,104,170` | **F9 —— 切り詰めたバッファを unreadable とする**（§4-4-1） | 1 | `blockAt` の長さ検査を外すと赤くなる |
 
 **1 と 2 は既存の「covers the whole square, and covers it exactly once」を 1 つも落とさなかった。**
 その 1 本は `Set` で重複排除し `toContainEqual` で問うので、**順序に対して完全に盲目**である。
@@ -437,37 +424,29 @@ tall_grass / fern）にボーナス行だけを持たせるか」。葉が先例
 参照実装の入力が小数なのは、その呼び手がブロック座標ではなく**プレイヤー座標**を持っているからで、
 `Math.floor(Math.trunc(x) / 16)` は既存 3 本すべてを通過して新しい 1 本だけを落とす。
 
-#### 4-4-1. F9 —— 参照実装が拒否し、この build が**空気を捏造する** 3 件目
+#### 4-4-1. F9 —— 切り詰められたチャンクバッファを拒否する
 
 `interaction-block-access.test.ts` の 4 本（`:78` / `:93` / `:104` / `:170`）は
 「**切り詰められたチャンクバッファは読めない**」と主張し、参照実装は全件を
-`InteractionBlockReadError` にする。**この build は一致しない。**
+`InteractionBlockReadError` にする。この build も `UNREADABLE_BLOCK` を返し、参照実装と一致する。
 
-`domain/chunk-window.ts` の `blockAt` が守っているのは**座標**であって**バッファ**ではない:
-`y` が世界の内側、`x`/`z` が整数、チャンクが**常駐している**場合、
-`readBlock` の `blocks[index] ?? AIR_BLOCK_ID` がそのまま走る。
-同ファイルのヘッダが「`readBlock` は TOTAL で範囲外に AIR を答えるから、
-guard は座標が着くここに置く」と書いているとおりの guard であり、
-短いバッファは**別の扉から入ってくる**。
+`domain/chunk-window.ts` の `blockAt` は座標とチャンク常駐に加えて、算出した
+`blockIndex` が `blocks.length` の内側かを検査する。存在するセルは通常どおり読み、
+欠けたセルだけを unreadable として数える。
 
 **到達可能である。** `WorldgenChunk.blocks` は素の `Uint8Array` で型に長さが無く、
-`domain/` にも `test/` にも長さを検査する行が 1 つも無い。
-mc-worldgen の `peek` が部分的に流し込まれたチャンクを返せばこの形になる。
+mc-worldgen の `peek` が部分的に流し込まれたチャンクを返せばこの形になるため、
+チャンク窓の境界で検査する。
 
-害の向きは `unreadableProbes` を数えないことにある。
+修正前の害は `unreadableProbes` を数えないことにあった。
 `ignite-portal` はその数で `ChunkNotLoaded` と `NoFrame` を分けるので、
-**切り詰められたチャンクに立っている枠は「見えなかった」ではなく「無い」と報告される** ——
+**切り詰められたチャンクに立っている枠が「見えなかった」ではなく「無い」と報告されていた** ——
 `test/ignite.test.ts` の「an unreadable chunk can only REFUSE a frame, never manufacture one」が
 覆っていない唯一の向きである。
 
-F8（§4-3-2）と同じく**こちらが追随すべき**食い違いで、§4-3-2 と同じ扱いにした:
-**現挙動を参照行つきで固定**してあるので、guard が入った日にこのテストが赤くなり、
-§3-5-1 の前例どおり削除ではなく**一致の主張へ書き換える**ことになる。
-
-**直さなかったのは production の変更だからである**（§4-3-3 と同じ線引き）。
-実測として、`blockAt` に長さ検査を 1 つ足すと**この 1 本以外は 1 本も落ちない**ので、
-残っている決定は「長さの不変条件は mc-worldgen が境界で保証するものか、
-この window が検査するものか」の 1 行だけである。
+F8（§4-3-2）と同じくこちらが追随すべき食い違いとして、`blockAt` に長さ検査を追加した。
+`test/chunk-window.test.ts` の回帰テストは、欠けたセルが `UNREADABLE_BLOCK` になり
+`unreadableProbes` が増えることを直接固定する。
 
 #### 4-4-2. 「33 ファイル」は glob の産物である（2026-07-28 実測）
 
@@ -505,7 +484,7 @@ interaction 関連のテストファイルは実測 **38 ファイル**である
 | 移植元 | 本数 | 欠けている名詞 |
 | --- | ---: | --- |
 | `interaction-food-consumption.test.ts` | 20 | kernel の `ITEM_TYPES` に `bread` / `apple` / `golden_apple` / `rotten_flesh` / `potion_*` / `fishing_rod` / `iron_helmet` ほか防具語が無い。加えて**空腹値**（`hungerPoints`）が `EntityState` に無い |
-| `interaction-farming-handler.test.ts` | 35 | `hoe`（`wooden_hoe` / `iron_hoe`）と `bone_meal`、ブロック側の `farmland` / `wheat_crop` / `potato_crop` 語。加えて `CropGrowthService.plant` / `advanceByBoneMeal` に当たる**作物の成長状態**がどこにも無い |
+| `interaction-farming-handler.test.ts` | 35 | **主要ルールは実装済み。** `till-soil.ts` / `plant-crop.ts` / `bone-meal.ts` と `CropService.advanceByBoneMeal` が責務ごとに分離されている。 |
 | `interaction-break-handler.crop-drops.config.test.ts` | 11 | 同上（`CROP_DROP_RULES` は作物語の表である）。`potato` / `nether_wart` / `wheat_seeds` は**あるが**、`wheat` と成長段階が無い |
 | `interaction-bucket-handler.test.ts` | 2 | `bucket` / `water_bucket` / `lava_bucket`。§5-3 のこの行だけは**期限切れになっていない**（下記） |
 | `interaction-shear-animal.test.ts` | 8 | `shears` と `wool`。加えて `EntityState` に**種と刈り取り済み旗**が無い |
@@ -546,10 +525,10 @@ interaction 関連のテストファイルは実測 **38 ファイル**である
   弓の規則が**幾何と算術**であって品目名を 1 度も読まないからで、これは §5-1 が
   クリーパーについて書いた「ルールは値から値への全域関数として書ける」と同じ割り方である。
   語が要るのは**ディスパッチ**（ホットバーの品目が弓か）だけで、それは outbox の側にある。
-- **バケツ / ハサミ / 農業**（「kernel の `ITEM_TYPES` に語が無い」）—— **今も正しい。**
-  実測で `bucket` / `water_bucket` / `lava_bucket` / `shears` / `hoe` はいずれも
-  `domain/item-vocabulary.ts` の 97 語に無い。roster が 23 → 97 に増えたのは事実だが、
-  **増えた 74 語にこの 5 つは入っていない。**
+- **ハサミ**（「kernel の `ITEM_TYPES` に語が無い」）—— **今も正しい。**
+  `shears` は現在も未登録である。一方、`bucket` / `water_bucket` /
+  `lava_bucket` / `hoe` / `bone_meal` は `ITEM_TYPES` に登録済みで、各操作は
+  それぞれのドメイン責務へ移った。
 
 **「`ITEM_TYPES` が 97 に増えたからこの表は全部期限切れ」は成り立たない。**
 期限切れになったのは、語を**そもそも要求していなかった** 2 行のほうである。

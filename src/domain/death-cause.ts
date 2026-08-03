@@ -59,6 +59,7 @@ export type DeathCause =
   | 'explosion'
   | 'void'
   | 'ender_pearl'
+  | 'poison'
   | 'generic'
 
 /**
@@ -98,6 +99,7 @@ export const DEATH_MESSAGES: Readonly<Record<DeathCause, string>> = {
   explosion: 'You blew up.',
   void: 'You fell out of the world.',
   ender_pearl: 'You teleported too hard.',
+  poison: 'You were poisoned.',
   generic: 'You died.',
 }
 
@@ -131,7 +133,7 @@ export const isDead = (vitals: Vitals): boolean => vitals.healthPoints <= 0
  * creeper does not have its death message rewritten.
  */
 export const applyDamage = (vitals: Vitals, damage: Damage): Vitals => {
-  if (isDead(vitals)) {
+  if (isDead(vitals) || !Number.isFinite(damage.amount)) {
     return vitals
   }
 

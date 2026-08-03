@@ -81,26 +81,95 @@ import {
   EYE_LEVEL_OFFSET,
   InventoryService,
   TimeService,
+  addItem as addInventoryItem,
   forwardVector,
+  removeItem as removeInventoryItem,
   targetBlockFromPlayerPose,
   type BlockTarget,
+  type FurnaceState,
   type InventoryServiceApi,
   type TimeServiceApi,
 } from '@nerima-games/mc-sim'
 import { Effect, Effectable, Layer, Option, Readable, Ref } from 'effect'
-import { below, positionKeyOf, positionOfKey } from '../domain/block-position-key'
-import { hostileSpawnsAllowed } from '../domain/day-night'
+import {
+  below,
+  horizontalNeighbours,
+  positionKeyOf,
+  positionOfKey,
+} from '../domain/block-position-key'
+import {
+  advanceVillagerRestock,
+  copyVillagerTradeState,
+  emptyVillagerTradeState,
+  useVillagerOffer,
+  type VillagerTradeState,
+} from '../domain/villager-trade'
+import {
+  PLAYER_MAXIMUM_HEALTH_POINTS,
+  POISON_DAMAGE_POINTS,
+  POISON_MINIMUM_HEALTH_POINTS,
+  REGENERATION_HEAL_POINTS,
+  SPEED_MOVEMENT_MULTIPLIER,
+  applyStatusEffect,
+  copyStatusEffectState,
+  emptyStatusEffectState,
+  tickStatusEffects,
+  type PlayerHealingEvent,
+  type StatusEffectApplication,
+  type StatusEffectState,
+} from '../domain/status-effect'
+import {
+  collectBrewingBottle as collectBottle,
+  copyBrewingStandState,
+  drinkBrewingPotion as drinkPotion,
+  emptyBrewingStandState,
+  acceptBrewingBottle as insertBottle,
+  acceptBrewingFuel as insertFuel,
+  acceptBrewingIngredient as insertIngredient,
+  tickBrewingStand,
+  type BrewingBottle,
+  type BrewingCollectionResult,
+  type BrewingDrinkResult,
+  type BrewingIngredient,
+  type BrewingStandState,
+  type BrewingTransferResult,
+} from '../domain/brewing'
 import { targetabilityFromStore } from '../domain/in-memory-world'
-import { ChunkStore, type BlockPosition, type ChunkStoreApi } from '../domain/chunk-store-port'
+import {
+  AIR_BLOCK_ID,
+  ChunkStore,
+  type BlockPosition,
+  type ChunkStoreApi,
+} from '../domain/chunk-store-port'
 import {
   chunkCoordsAround,
   openChunkWindow,
   UNREADABLE_BLOCK,
 } from '../domain/chunk-window'
-import type { PlaceableItemType } from '../domain/block-vocabulary'
+import { blockIdOf, blockTypeOfId, type PlaceableItemType } from '../domain/block-vocabulary'
+import {
+  advanceFireLifecycle,
+  FIRE_FRAME_TICK_BUDGET,
+  FIRE_TICK_INTERVAL_SECS,
+  FIRE_UNAVAILABLE_BLOCK,
+  FIRE_UNLOADED_RETRY_LIMIT,
+  FIRE_WORK_BUDGET,
+  extinguishFire,
+  isFireLifecycleSnapshot,
+  makeFireLifecycleSnapshot,
+  makeFireLifecycleState,
+  restoreFireLifecycleSnapshot,
+  type FireActorContact,
+  type FireCell,
+  type FireEntityDamage,
+  type FireLifecycleSnapshot,
+  type FireLifecycleState,
+  type FirePosition,
+} from '../domain/fire-lifecycle'
 import { applyFallingBlocks } from '../domain/entities/falling-block-move'
 import {
   applySpawnAttempts,
+  experienceOfCasualties,
   resolveBlasts,
   resolveBowHits,
   resolveMeleeHits,
@@ -112,7 +181,9 @@ import {
   PRIMED_TNT_KIND,
   type BowHit,
   type MobDropEvent,
+  type MobExperienceEvent,
   type MobBehaviour,
+  type MobCasualty,
   type MobSpawnAttempt,
 } from '../domain/entities/mob-frame'
 import { FRESH_PRIMED_TNT } from '../domain/mob/primed-tnt'
@@ -123,14 +194,19 @@ import {
   type DroppedItemSpawn,
 } from '../domain/entities/dropped-item'
 import { searchSpawnCandidates } from '../domain/entities/mob-spawn-search'
+import { hostileSpawnsAllowed } from '../domain/day-night'
 import {
+  changed,
+  DESPAWNED,
   entityManagerTag,
+  UNCHANGED,
   type EntityId,
   type EntityManager,
   type EntityManagerApi,
   type Position,
 } from '../domain/entity-manager-port'
 import type { Damage } from '../domain/death-cause'
+import { resolveArmorHit } from '../domain/combat/armor'
 import {
   resolveHostileContacts,
   resolvePlayerBlastDamage,
@@ -145,7 +221,13 @@ import {
 } from '../domain/falling-block'
 import {
   carryOver,
+  DEFAULT_FLUID_HORIZONTAL_RANGE,
+  enqueueFluidDisturbance,
+  MAX_FLUID_DEFERRED_ATTEMPTS,
   splitBudget,
+  transitionFluidCell,
+  type FluidCell,
+  type FluidProbe,
   type FluidWorkItem,
 } from '../domain/fluid-frontier'
 import type { DeltaTimeSecs, GameModule, StageRegistration } from '../domain/frame-contract'
@@ -154,7 +236,6 @@ import type { Dimension, PortalTravelPlan } from '../domain/nether-travel-port'
 import { OUTSIDE_PORTAL, type PortalDwell, stepPortalDwell } from '../domain/portal-dwell'
 import { applyPortalTravel, NO_KNOWN_PORTALS } from '../domain/portal-travel'
 import { PlayerService, type PlayerServiceApi } from '../domain/player-port'
-import { blockTypeOfId } from '../domain/block-vocabulary'
 import { breakBlock } from '../domain/interactions/break-block'
 import {
   BLOCK_LOOT_ROLLS,
@@ -162,9 +243,19 @@ import {
   NO_TOOL,
   type BlockLootContext,
 } from '../domain/interactions/block-loot'
-import { placeBlock } from '../domain/interactions/place-block'
+import { placeBlock, type PlaceOutcome } from '../domain/interactions/place-block'
 import { cropDrops, type CropDropOutcome } from '../domain/interactions/crop-drops'
+import { applyBoneMeal, type BoneMealOutcome } from '../domain/interactions/bone-meal'
 import { resolveFoodUse, type FoodUseOutcome, type FoodUseRequest } from '../domain/interactions/eat-food'
+import {
+  makeSurvivalHungerRuntime,
+  type SurvivalHungerRuntimeApi,
+} from '../domain/survival-hunger'
+import {
+  furnaceAdvanceChanged,
+  planFurnaceAdvance,
+  type FurnaceAdvancePlan,
+} from '../domain/interactions/advance-furnace'
 import { plantCrop, type PlantOutcome } from '../domain/interactions/plant-crop'
 import { tillSoil, type TillOutcome } from '../domain/interactions/till-soil'
 import {
@@ -186,7 +277,7 @@ import {
   meleeTarget,
   meleeTargetBeforeBlock,
   type MeleeAttackRequest,
-  type MeleeAttackResult,
+  type MeleeAttackResult as ResolvedMeleeAttackResult,
 } from '../domain/interactions/melee-attack'
 import {
   enderPearlDisplacement,
@@ -210,7 +301,34 @@ import {
   WEATHER_TRANSITION_ROLLS,
   type WeatherState,
 } from '../domain/weather'
+import {
+  advanceWeatherGameplay,
+  makeWeatherGameplayState,
+  type WeatherGameplayEvent,
+  type WeatherGameplayInput,
+  type WeatherGameplayState,
+} from '../domain/weather-gameplay'
+import {
+  makeEnderDragonEncounterRuntime,
+  type EnderDragonEncounterStageApi,
+} from './ender-dragon-encounter-stage'
 import { GAMEPLAY_STAGE_IDS, UPSTREAM_STAGE_IDS } from './stage-ids'
+
+export const resolveArmoredPlayerDamages = (
+  inventory: InventoryServiceApi,
+  damages: ReadonlyArray<PlayerDamageEvent>,
+): Effect.Effect<ReadonlyArray<PlayerDamageEvent>> =>
+  Effect.forEach(damages, (event) =>
+    Effect.gen(function* () {
+      const resolved = resolveArmorHit(yield* inventory.equipmentSnapshot, event.damage)
+      if (resolved.durabilityWear > 0) {
+        yield* Effect.forEach(resolved.wornSlots, (slot) =>
+          inventory.damageAt({ _tag: 'Equipment', slot }, resolved.durabilityWear),
+        )
+      }
+      return { ...event, damage: resolved.damage }
+    }),
+  )
 
 /**
  * How many gameplay ticks pass between two active lava ticks.
@@ -417,6 +535,7 @@ type PendingBlockBreakRequestQueue = {
 type FluidRuntimeState = {
   readonly frontier: ReadonlyArray<FluidWorkItem>
   readonly updates: ReadonlyArray<FluidWorkItem>
+  readonly cells: ReadonlyMap<PositionKey, FluidCell>
 }
 
 class FluidStateRef extends Effectable.Class<ReadonlyArray<FluidWorkItem>>
@@ -430,7 +549,7 @@ class FluidStateRef extends Effectable.Class<ReadonlyArray<FluidWorkItem>>
 
   constructor(
     readonly state: Ref.Ref<FluidRuntimeState>,
-    readonly field: keyof FluidRuntimeState,
+    readonly field: 'frontier' | 'updates',
   ) {
     super()
     this.get = Ref.get(state).pipe(Effect.map((current) => current[field]))
@@ -455,6 +574,23 @@ const fluidRuntimeStates = new WeakMap<
   Ref.Ref<FluidRuntimeState>
 >()
 
+const fluidRuntimeSemaphores = new WeakMap<
+  Ref.Ref<ReadonlyArray<FluidWorkItem>>,
+  Effect.Semaphore
+>()
+
+const fireTickAccumulators = new WeakMap<Ref.Ref<FireLifecycleState>, Ref.Ref<number>>()
+
+const fireTickAccumulatorFor = (
+  fireLifecycle: Ref.Ref<FireLifecycleState>,
+): Ref.Ref<number> => {
+  const accumulator = fireTickAccumulators.get(fireLifecycle)
+  if (accumulator === undefined) {
+    throw new Error('fire lifecycle is not owned by a gameplay frame state')
+  }
+  return accumulator
+}
+
 const fluidRuntimeStateFor = (
   frontier: Ref.Ref<ReadonlyArray<FluidWorkItem>>,
 ): Ref.Ref<FluidRuntimeState> => {
@@ -465,7 +601,192 @@ const fluidRuntimeStateFor = (
   return state
 }
 
+const fluidRuntimeSemaphoreFor = (
+  frontier: Ref.Ref<ReadonlyArray<FluidWorkItem>>,
+): Effect.Semaphore => {
+  const semaphore = fluidRuntimeSemaphores.get(frontier)
+  if (semaphore === undefined) {
+    throw new Error('fluid frontier is not owned by a gameplay frame state')
+  }
+  return semaphore
+}
+
+const validFluidPosition = (position: BlockPosition): boolean =>
+  Number.isFinite(position.x) && Number.isFinite(position.y) && Number.isFinite(position.z)
+
+const fluidWorkItemOf = (cell: FluidCell, deferred?: number): FluidWorkItem => ({
+  key: cell.key,
+  kind: cell.kind,
+  level: cell.level,
+  source: cell.source,
+  ...(cell.parent === undefined ? {} : { parent: cell.parent }),
+  falling: cell.falling,
+  ...(deferred === undefined ? {} : { deferred }),
+})
+
+const fluidProbeAt = (
+  store: ChunkStoreApi,
+  position: BlockPosition,
+  kind: FluidCell['kind'],
+  cells: ReadonlyMap<PositionKey, FluidCell>,
+): Effect.Effect<FluidProbe> => {
+  const key = positionKeyOf(position)
+  return Effect.map(store.getBlock(position), (reading): FluidProbe => {
+    if (reading._tag === 'ChunkNotLoaded') return { key, state: 'unloaded' }
+    if (reading._tag === 'OutOfWorld') return { key, state: 'out-of-world' }
+
+    const block = blockTypeOfId(reading.block)
+    if (block === 'air') return { key, state: 'air' }
+    if (block === kind) {
+      return { key, state: 'same-fluid', source: cells.get(key)?.source ?? true }
+    }
+    if (block === (kind === 'water' ? 'lava' : 'water')) {
+      return { key, state: 'opposite-fluid', source: cells.get(key)?.source ?? true }
+    }
+    return { key, state: 'blocked' }
+  })
+}
+
+const maximumFluidLevel = (kind: FluidCell['kind'], dimension: Dimension): number =>
+  kind === 'water'
+    ? DEFAULT_FLUID_HORIZONTAL_RANGE.water
+    : DEFAULT_FLUID_HORIZONTAL_RANGE.lava[dimension]
+
+const runFluidPropagation = (
+  store: ChunkStoreApi,
+  runtime: Ref.Ref<FluidRuntimeState>,
+  work: ReadonlyArray<FluidWorkItem>,
+  dimension: Dimension,
+): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    const snapshot = yield* Ref.get(runtime)
+    const cells = new Map(snapshot.cells)
+    let generated: ReadonlyArray<FluidWorkItem> = []
+
+    const enqueue = (item: FluidWorkItem): void => {
+      generated = enqueueFluidDisturbance(generated, item)
+    }
+    const enqueueDependents = (parent: PositionKey): void => {
+      for (const candidate of cells.values()) {
+        if (candidate.parent === parent) enqueue(fluidWorkItemOf(candidate))
+      }
+    }
+
+    for (const item of work) {
+      const position = positionOfKey(item.key)
+      // Legacy callers have historically used opaque diagnostic keys. They are
+      // still recorded as evaluated work, but must never turn NaN into a world IO.
+      if (!validFluidPosition(position)) continue
+
+      const cell: FluidCell = cells.get(item.key) ?? {
+        key: item.key,
+        kind: item.kind,
+        level: Math.max(0, Math.trunc(item.level ?? 0)),
+        source: item.source ?? true,
+        ...(item.parent === undefined ? {} : { parent: item.parent }),
+        falling: item.falling ?? false,
+      }
+      const current = yield* fluidProbeAt(store, position, cell.kind, cells)
+      const belowPosition = below(position)
+      const horizontalPositions = horizontalNeighbours(position)
+      let belowProbe: FluidProbe = { key: positionKeyOf(belowPosition), state: 'blocked' }
+      let horizontalProbes: ReadonlyArray<FluidProbe> = horizontalPositions.map((candidate) => ({
+        key: positionKeyOf(candidate),
+        state: 'blocked' as const,
+      }))
+
+      if (current.state === 'same-fluid') {
+        cells.set(cell.key, cell)
+        belowProbe = yield* fluidProbeAt(store, belowPosition, cell.kind, cells)
+        horizontalProbes = yield* Effect.forEach(horizontalPositions, (candidate) =>
+          fluidProbeAt(store, candidate, cell.kind, cells),
+        )
+      }
+
+      const transition = transitionFluidCell({
+        cell,
+        current,
+        below: belowProbe,
+        horizontal: horizontalProbes,
+        supported:
+          cell.source ||
+          (cell.parent !== undefined && cells.get(cell.parent)?.kind === cell.kind),
+        maximumHorizontalLevel: maximumFluidLevel(cell.kind, dimension),
+      })
+      let deferCurrent = transition.defer
+
+      for (const change of transition.changes) {
+        if (change._tag === 'ForgetFluid') {
+          cells.delete(change.key)
+          enqueueDependents(change.key)
+          continue
+        }
+
+        const changePosition = positionOfKey(
+          change._tag === 'PlaceFluid' ? change.cell.key : change.key,
+        )
+        if (!validFluidPosition(changePosition)) continue
+
+        if (change._tag === 'PlaceFluid') {
+          const fluidBlock = blockIdOf(change.cell.kind)
+          if (fluidBlock === undefined) continue
+          const outcome = yield* store.setBlock(changePosition, fluidBlock)
+          if (outcome._tag === 'Written' || outcome._tag === 'Unchanged') {
+            cells.set(change.cell.key, change.cell)
+            enqueue(fluidWorkItemOf(change.cell))
+          } else if (outcome._tag === 'ChunkNotLoaded') {
+            deferCurrent = true
+          }
+          continue
+        }
+
+        if (change._tag === 'RemoveFluid') {
+          const outcome = yield* store.setBlock(changePosition, AIR_BLOCK_ID)
+          if (outcome._tag === 'ChunkNotLoaded') {
+            deferCurrent = true
+          } else {
+            cells.delete(change.key)
+            enqueueDependents(change.key)
+          }
+          continue
+        }
+
+        const solidBlock = blockIdOf(change.block)
+        if (solidBlock === undefined) continue
+        const outcome = yield* store.setBlock(changePosition, solidBlock)
+        if (outcome._tag === 'ChunkNotLoaded') {
+          deferCurrent = true
+        } else {
+          cells.delete(change.key)
+          enqueueDependents(change.key)
+        }
+      }
+
+      const deferred = item.deferred ?? 0
+      if (
+        deferCurrent &&
+        deferred < MAX_FLUID_DEFERRED_ATTEMPTS &&
+        (current.state === 'unloaded' || cells.has(cell.key))
+      ) {
+        enqueue(fluidWorkItemOf(cell, deferred + 1))
+      }
+    }
+
+    yield* Ref.update(runtime, (current) => {
+      let frontier = current.frontier
+      for (const item of generated) frontier = enqueueFluidDisturbance(frontier, item)
+      return {
+        frontier,
+        updates: [...current.updates, ...work],
+        cells,
+      }
+    })
+  })
+
 export type GameplayFrameState = {
+  readonly enderDragonEncounter: EnderDragonEncounterStageApi
+  readonly survivalHunger: SurvivalHungerRuntimeApi
+  readonly playerDead: Ref.Ref<boolean>
   readonly pendingBreaks: Ref.Ref<ReadonlyArray<PositionKey>>
   readonly pendingPlacements: Ref.Ref<ReadonlyArray<PlacementRequest>>
   readonly pendingBlockUses: Ref.Ref<ReadonlyArray<BlockUseRequest>>
@@ -473,24 +794,37 @@ export type GameplayFrameState = {
   readonly pendingBowShots: Ref.Ref<ReadonlyArray<BowShotRequest>>
   readonly pendingMeleeAttacks: Ref.Ref<ReadonlyArray<MeleeAttackRequest>>
   readonly pendingPearlThrows: Ref.Ref<ReadonlyArray<EnderPearlThrowRequest>>
+  readonly pendingVillagerTrades: Ref.Ref<ReadonlyArray<VillagerTradeRequest>>
+  readonly pendingStatusEffects: Ref.Ref<ReadonlyArray<StatusEffectApplication>>
   readonly consumedItems: Ref.Ref<ReadonlyArray<PlaceableItemType>>
   readonly usedItems: Ref.Ref<ReadonlyArray<IgnitionItemType>>
   readonly blockUseResults: Ref.Ref<ReadonlyArray<BlockUseResult>>
   readonly itemUseResults: Ref.Ref<ReadonlyArray<ItemUseResult>>
   readonly bowShotResults: Ref.Ref<ReadonlyArray<BowShotResult>>
-  readonly meleeAttackResults: Ref.Ref<ReadonlyArray<MeleeAttackResult>>
+  readonly meleeAttackResults: Ref.Ref<ReadonlyArray<GameplayMeleeAttackResult>>
   readonly handledBowShotRequestIds: Ref.Ref<ReadonlySet<BowShotRequestId>>
   readonly bowKnockbacks: Ref.Ref<ReadonlyArray<BowKnockback>>
   readonly enderPearlOutcomes: Ref.Ref<ReadonlyArray<EnderPearlOutcome>>
   readonly playerDamages: Ref.Ref<ReadonlyArray<PlayerDamageEvent>>
+  readonly playerHeals: Ref.Ref<ReadonlyArray<PlayerHealingEvent>>
+  readonly playerMovementSpeedMultiplier: Ref.Ref<number>
+  readonly statusEffects: Ref.Ref<StatusEffectState>
+  readonly brewingStand: Ref.Ref<BrewingStandState>
+  readonly fireLifecycle: Ref.Ref<FireLifecycleState>
   readonly hostileContactCooldowns: Ref.Ref<ReadonlyMap<EntityId, number>>
   readonly mobDrops: Ref.Ref<ReadonlyArray<MobDropEvent>>
+  readonly mobExperience: Ref.Ref<ReadonlyArray<MobExperienceEvent>>
+  readonly villagerTradeResults: Ref.Ref<ReadonlyArray<VillagerTradeResult>>
+  readonly villagerTrades: Ref.Ref<VillagerTradeState>
   readonly spawnAttempts: Ref.Ref<ReadonlyArray<MobSpawnAttempt>>
   readonly targetPosition: Ref.Ref<Position | undefined>
   readonly timeOfDay: Ref.Ref<number>
   readonly heldTool: Ref.Ref<BlockLootContext>
   readonly weather: Ref.Ref<WeatherState>
   readonly weatherAdvanced: Ref.Ref<WeatherState | undefined>
+  readonly weatherGameplayInput: Ref.Ref<WeatherGameplayInput>
+  readonly weatherGameplay: Ref.Ref<WeatherGameplayState>
+  readonly weatherGameplayEvents: Ref.Ref<ReadonlyArray<WeatherGameplayEvent>>
   /** Seconds accumulated towards the next spawn search. Scratch: losing it costs one interval. */
   readonly spawnClockSecs: Ref.Ref<number>
   readonly rollSeed: Ref.Ref<number>
@@ -522,7 +856,26 @@ export type PortalTravelEvent = {
   readonly plan: PortalTravelPlan
 }
 
+export type VillagerTradeRequest = {
+  readonly requestId: string
+  readonly villagerId: string
+  readonly offerId: string
+}
+
+export type VillagerTradeResult =
+  | (VillagerTradeRequest & { readonly _tag: 'Traded' })
+  | (VillagerTradeRequest & {
+      readonly _tag: 'Rejected'
+      readonly reason:
+        | 'UnknownOffer'
+        | 'OutOfStock'
+        | 'InsufficientItems'
+        | 'InventoryFull'
+        | 'PlayerDead'
+    })
+
 const pendingBlockBreakRequests = new WeakMap<GameplayFrameState, PendingBlockBreakRequestQueue>()
+const blockPlacementRuntimes = new WeakMap<GameplayFrameState, BlockPlacementRuntime>()
 
 const breakRequestQueueFor = (state: GameplayFrameState): PendingBlockBreakRequestQueue => {
   const existing = pendingBlockBreakRequests.get(state)
@@ -537,6 +890,20 @@ const breakRequestQueueFor = (state: GameplayFrameState): PendingBlockBreakReque
     mutex: Effect.unsafeMakeSemaphore(1),
   }
   pendingBlockBreakRequests.set(state, created)
+  return created
+}
+
+const blockPlacementRuntimeFor = (state: GameplayFrameState): BlockPlacementRuntime => {
+  const existing = blockPlacementRuntimes.get(state)
+  if (existing !== undefined) {
+    return existing
+  }
+
+  const created: BlockPlacementRuntime = {
+    state: Ref.unsafeMake<BlockPlacementRuntimeState>({ handled: new Map(), results: [] }),
+    mutex: Effect.unsafeMakeSemaphore(1),
+  }
+  blockPlacementRuntimes.set(state, created)
   return created
 }
 
@@ -559,6 +926,51 @@ export type PlacementRequest = {
   readonly heldItem: PlaceableItemType
 }
 
+export type BlockPlacementRequestId = string
+
+export type BlockPlacementMode = 'survival' | 'creative'
+
+/** A correlated placement command. Omitted mode preserves survival semantics. */
+export type BlockPlacementCommand = PlacementRequest & {
+  readonly requestId: BlockPlacementRequestId
+  readonly mode?: BlockPlacementMode
+}
+
+export type BlockPlacementCommandOutcome =
+  | PlaceOutcome
+  | { readonly _tag: 'InventoryUnavailable' }
+  | { readonly _tag: 'RequestIdConflict' }
+  | { readonly _tag: 'PlayerDead' }
+
+/** One drainable answer for a correlated placement command. */
+export type BlockPlacementResult = {
+  readonly requestId: BlockPlacementRequestId
+  readonly success: boolean
+  readonly consumed: boolean
+  readonly replayed: boolean
+  readonly outcome: BlockPlacementCommandOutcome
+}
+
+type NormalizedBlockPlacementCommand = PlacementRequest & {
+  readonly requestId: BlockPlacementRequestId
+  readonly mode: BlockPlacementMode
+}
+
+type HandledBlockPlacementCommand = {
+  readonly command: NormalizedBlockPlacementCommand
+  readonly result: BlockPlacementResult
+}
+
+type BlockPlacementRuntimeState = {
+  readonly handled: ReadonlyMap<BlockPlacementRequestId, HandledBlockPlacementCommand>
+  readonly results: ReadonlyArray<BlockPlacementResult>
+}
+
+type BlockPlacementRuntime = {
+  readonly state: Ref.Ref<BlockPlacementRuntimeState>
+  readonly mutex: Effect.Semaphore
+}
+
 /** Host-provided correlation key for one targeted block-use request. */
 export type BlockUseRequestId = string
 
@@ -569,11 +981,17 @@ export type BlockUseRequest = {
 }
 
 /** The drainable answer that tells the host whether to toggle its lever state. */
-export type BlockUseResult = {
-  readonly requestId: BlockUseRequestId
-  readonly success: boolean
-  readonly outcome: BlockUseOutcome
-}
+export type BlockUseResult =
+  | {
+      readonly requestId: BlockUseRequestId
+      readonly success: boolean
+      readonly outcome: BlockUseOutcome
+    }
+  | {
+      readonly requestId: BlockUseRequestId
+      readonly success: false
+      readonly outcome: 'PlayerDead'
+    }
 
 /**
  * One use of an igniting item on a cell.
@@ -622,6 +1040,12 @@ export type FarmingItemUseRequest =
       readonly heldItem: HoeItemType
     }
   | {
+      readonly action: 'ApplyBoneMeal'
+      readonly requestId: ItemUseRequestId
+      readonly positionKey: PositionKey
+      readonly heldItem: 'bone_meal'
+    }
+  | {
       readonly action: 'PlantPotato'
       readonly requestId: ItemUseRequestId
       readonly positionKey: PositionKey
@@ -640,8 +1064,22 @@ export type FarmingItemUseRequest =
       readonly heldItem: 'potato'
       readonly vitals: FoodUseRequest['vitals']
     }
+  | {
+      readonly action: 'EatFood'
+      readonly requestId: ItemUseRequestId
+      readonly heldItem: ItemType
+      readonly vitals: FoodUseRequest['vitals']
+      readonly effectRoll: number
+    }
 
-export type ItemUseRequest = IgnitionItemUseRequest | FarmingItemUseRequest
+export type FurnaceItemUseRequest = {
+  readonly action: 'AdvanceFurnace'
+  readonly requestId: ItemUseRequestId
+  readonly state: FurnaceState
+  readonly deltaTimeSecs: number
+}
+
+export type ItemUseRequest = IgnitionItemUseRequest | FarmingItemUseRequest | FurnaceItemUseRequest
 
 /** Host-provided correlation key for one item-use request. */
 export type ItemUseRequestId = string
@@ -662,6 +1100,14 @@ export type FarmingItemUseResult =
       readonly success: boolean
       readonly durabilityDamage: 0 | 1
       readonly outcome: TillOutcome
+    }
+  | {
+      readonly action: 'ApplyBoneMeal'
+      readonly requestId: ItemUseRequestId
+      readonly heldItem: 'bone_meal'
+      readonly success: boolean
+      readonly consumedCount: 0 | 1
+      readonly outcome: BoneMealOutcome
     }
   | {
       readonly action: 'PlantPotato'
@@ -686,8 +1132,33 @@ export type FarmingItemUseResult =
       readonly consumedCount: 0 | 1
       readonly outcome: FoodUseOutcome
     }
+  | {
+      readonly action: 'EatFood'
+      readonly requestId: ItemUseRequestId
+      readonly heldItem: ItemType
+      readonly success: boolean
+      readonly consumedCount: 0 | 1
+      readonly outcome: FoodUseOutcome
+    }
 
-export type ItemUseResult = IgnitionItemUseResult | FarmingItemUseResult
+export type FurnaceItemUseResult = {
+  readonly action: 'AdvanceFurnace'
+  readonly requestId: ItemUseRequestId
+  readonly success: boolean
+  readonly plan: FurnaceAdvancePlan
+}
+
+export type PlayerDeadItemUseResult = {
+  readonly requestId: ItemUseRequestId
+  readonly success: false
+  readonly outcome: 'PlayerDead'
+}
+
+export type ItemUseResult =
+  | IgnitionItemUseResult
+  | FarmingItemUseResult
+  | FurnaceItemUseResult
+  | PlayerDeadItemUseResult
 
 /**
  * One shot from a drawn bow.
@@ -752,8 +1223,12 @@ export type BowShotResult =
   | {
       readonly requestId: BowShotRequestId
       readonly success: false
-      readonly outcome: 'Undercharged' | 'DuplicateRequest'
+      readonly outcome: 'Undercharged' | 'DuplicateRequest' | 'PlayerDead'
     }
+
+export type GameplayMeleeAttackResult =
+  | ResolvedMeleeAttackResult
+  | { readonly requestId: string; readonly success: false; readonly outcome: 'PlayerDead' }
 
 /**
  * One ender pearl thrown.
@@ -833,6 +1308,9 @@ export type EnderPearlOutcome = {
 }
 
 export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.gen(function* () {
+  const enderDragonEncounter = yield* makeEnderDragonEncounterRuntime
+  const survivalHunger = yield* makeSurvivalHungerRuntime()
+  const playerDead = yield* Ref.make(false)
   const pendingBreaks = yield* Ref.make<ReadonlyArray<PositionKey>>([])
   const breakRequests = yield* Ref.make<PendingBlockBreakRequestState>({
     nextRequestId: 0,
@@ -845,12 +1323,14 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
   const pendingBowShots = yield* Ref.make<ReadonlyArray<BowShotRequest>>([])
   const pendingMeleeAttacks = yield* Ref.make<ReadonlyArray<MeleeAttackRequest>>([])
   const pendingPearlThrows = yield* Ref.make<ReadonlyArray<EnderPearlThrowRequest>>([])
+  const pendingVillagerTrades = yield* Ref.make<ReadonlyArray<VillagerTradeRequest>>([])
+  const pendingStatusEffects = yield* Ref.make<ReadonlyArray<StatusEffectApplication>>([])
   const consumedItems = yield* Ref.make<ReadonlyArray<PlaceableItemType>>([])
   const usedItems = yield* Ref.make<ReadonlyArray<IgnitionItemType>>([])
   const blockUseResults = yield* Ref.make<ReadonlyArray<BlockUseResult>>([])
   const itemUseResults = yield* Ref.make<ReadonlyArray<ItemUseResult>>([])
   const bowShotResults = yield* Ref.make<ReadonlyArray<BowShotResult>>([])
-  const meleeAttackResults = yield* Ref.make<ReadonlyArray<MeleeAttackResult>>([])
+  const meleeAttackResults = yield* Ref.make<ReadonlyArray<GameplayMeleeAttackResult>>([])
   const handledBowShotRequestIds = yield* Ref.make<ReadonlySet<BowShotRequestId>>(new Set())
   // Both are empty in the ordinary state. An entry means something happened
   // that this repository computed and cannot itself deliver.
@@ -858,8 +1338,18 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
   const bowKnockbacks = yield* Ref.make<ReadonlyArray<BowKnockback>>([])
   const enderPearlOutcomes = yield* Ref.make<ReadonlyArray<EnderPearlOutcome>>([])
   const playerDamages = yield* Ref.make<ReadonlyArray<PlayerDamageEvent>>([])
+  const playerHeals = yield* Ref.make<ReadonlyArray<PlayerHealingEvent>>([])
+  const playerMovementSpeedMultiplier = yield* Ref.make(1)
+  const statusEffects = yield* Ref.make<StatusEffectState>(emptyStatusEffectState())
+  const brewingStand = yield* Ref.make<BrewingStandState>(emptyBrewingStandState())
+  const fireLifecycle = yield* Ref.make<FireLifecycleState>(makeFireLifecycleState([], DEFAULT_ROLL_SEED))
+  const fireTickAccumulator = yield* Ref.make(0)
+  fireTickAccumulators.set(fireLifecycle, fireTickAccumulator)
   const hostileContactCooldowns = yield* Ref.make<ReadonlyMap<EntityId, number>>(new Map())
   const mobDrops = yield* Ref.make<ReadonlyArray<MobDropEvent>>([])
+  const mobExperience = yield* Ref.make<ReadonlyArray<MobExperienceEvent>>([])
+  const villagerTradeResults = yield* Ref.make<ReadonlyArray<VillagerTradeResult>>([])
+  const villagerTrades = yield* Ref.make<VillagerTradeState>(emptyVillagerTradeState())
   const spawnAttempts = yield* Ref.make<ReadonlyArray<MobSpawnAttempt>>([])
   const targetPosition = yield* Ref.make<Position | undefined>(undefined)
   // Midnight, which `domain/day-night.ts` reads as night. See the module header
@@ -872,16 +1362,29 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
   // one scenario disagree about when the first rain arrives.
   const weather = yield* Ref.make<WeatherState>(INITIAL_WEATHER)
   const weatherAdvanced = yield* Ref.make<WeatherState | undefined>(undefined)
+  const weatherGameplayInput = yield* Ref.make<WeatherGameplayInput>({
+    dimension: 'overworld',
+    difficulty: 'normal',
+    blocks: [],
+    entities: [],
+  })
+  const weatherGameplay = yield* Ref.make(makeWeatherGameplayState(DEFAULT_ROLL_SEED))
+  const weatherGameplayEvents = yield* Ref.make<ReadonlyArray<WeatherGameplayEvent>>([])
   const spawnClockSecs = yield* Ref.make(0)
   // A LITERAL, not a clock reading: two runs of one scenario must draw the same
   // numbers (plan.md §5.1-3). A world seed is mc-worldgen's noun and this is
   // where it lands when that repository publishes one.
   const rollSeed = yield* Ref.make(DEFAULT_ROLL_SEED)
   const fallingBlocks = yield* Ref.make<FallingBlockQueue>(emptyFallingBlockQueue)
-  const fluidState = yield* Ref.make<FluidRuntimeState>({ frontier: [], updates: [] })
+  const fluidState = yield* Ref.make<FluidRuntimeState>({
+    frontier: [],
+    updates: [],
+    cells: new Map(),
+  })
   const fluidFrontier = new FluidStateRef(fluidState, 'frontier')
   const fluidUpdates = new FluidStateRef(fluidState, 'updates')
   fluidRuntimeStates.set(fluidFrontier, fluidState)
+  fluidRuntimeSemaphores.set(fluidFrontier, yield* Effect.makeSemaphore(1))
   const tickCount = yield* Ref.make(0)
   const portalCandidates = yield* Ref.make<
     ReadonlyMap<Dimension, ReadonlyArray<BlockPosition>>
@@ -893,6 +1396,9 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
   const portalDwell = yield* Ref.make<PortalDwell>(OUTSIDE_PORTAL)
 
   const state: GameplayFrameState = {
+    enderDragonEncounter,
+    survivalHunger,
+    playerDead,
     pendingBreaks,
     pendingPlacements,
     pendingBlockUses,
@@ -900,6 +1406,8 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
     pendingBowShots,
     pendingMeleeAttacks,
     pendingPearlThrows,
+    pendingVillagerTrades,
+    pendingStatusEffects,
     consumedItems,
     usedItems,
     blockUseResults,
@@ -910,14 +1418,25 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
     bowKnockbacks,
     enderPearlOutcomes,
     playerDamages,
+    playerHeals,
+    playerMovementSpeedMultiplier,
+    statusEffects,
+    brewingStand,
+    fireLifecycle,
     hostileContactCooldowns,
     mobDrops,
+    mobExperience,
+    villagerTradeResults,
+    villagerTrades,
     spawnAttempts,
     targetPosition,
     timeOfDay,
     heldTool,
     weather,
     weatherAdvanced,
+    weatherGameplayInput,
+    weatherGameplay,
+    weatherGameplayEvents,
     spawnClockSecs,
     rollSeed,
     fallingBlocks,
@@ -935,8 +1454,14 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
   return state
 })
 
+/** Set the host-derived death snapshot consumed by the next interaction stage run. */
+export const setPlayerDead = (
+  state: GameplayFrameState,
+  playerDead: boolean,
+): Effect.Effect<void> => Ref.set(state.playerDead, playerDead)
+
 /**
- * The four stages mx-gameplay registers.
+ * The stages mx-gameplay registers.
  *
  * Note what is NOT here: any resolution of a total order. Each registration
  * carries `after` constraints and nothing more; mc-compose topologically sorts
@@ -945,7 +1470,7 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
  * relying on a coincidence, and `test/stage-registration.test.ts` asserts that
  * the declared constraints, not the array order, are what carry the meaning.
  *
- * `store` is passed in rather than acquired per stage so that all four share
+ * `store` is passed in rather than acquired per stage so that all stages share
  * one service instance and so that `run` keeps kernel's signature exactly; see
  * the module header. `roster` and `inventory` arrived the same way and for the
  * same reason.
@@ -1085,6 +1610,22 @@ export const requestBlockPlacement = (
 ): Effect.Effect<void> =>
   Ref.update(state.pendingPlacements, (pending) => [...pending, request])
 
+/** Enqueue one correlated placement through the same ordered placement inbox. */
+export const requestBlockPlacementCommand = (
+  state: GameplayFrameState,
+  command: BlockPlacementCommand,
+): Effect.Effect<void> =>
+  Ref.update(state.pendingPlacements, (pending) => [...pending, command])
+
+/** Atomically drain correlated placement answers exactly once. */
+export const drainBlockPlacementResults = (
+  state: GameplayFrameState,
+): Effect.Effect<ReadonlyArray<BlockPlacementResult>> =>
+  Ref.modify(blockPlacementRuntimeFor(state).state, (runtime) => [
+    runtime.results,
+    { ...runtime, results: [] },
+  ])
+
 /** Enqueue one correlated use of the block occupying a cell. */
 export const requestBlockUse = (
   state: GameplayFrameState,
@@ -1129,6 +1670,21 @@ export const requestSoilTill = (
   return Ref.update(state.pendingItemUses, (pending) => [...pending, request])
 }
 
+/** Enqueue bone meal against the targeted crop cell. */
+export const requestBoneMeal = (
+  state: GameplayFrameState,
+  requestId: ItemUseRequestId,
+  position: BlockPosition,
+): Effect.Effect<void> => {
+  const request: FarmingItemUseRequest = {
+    action: 'ApplyBoneMeal',
+    requestId,
+    positionKey: positionKeyOf(position),
+    heldItem: 'bone_meal',
+  }
+  return Ref.update(state.pendingItemUses, (pending) => [...pending, request])
+}
+
 /** Enqueue planting a potato into the soil cell. */
 export const requestPotatoPlanting = (
   state: GameplayFrameState,
@@ -1162,7 +1718,28 @@ export const requestPotatoHarvest = (
   return Ref.update(state.pendingItemUses, (pending) => [...pending, request])
 }
 
-/** Resolve eating without transferring host-owned player vitals or inventory. */
+/** Resolve eating for any kernel item, drawing one deterministic status-effect roll. */
+export const requestFoodUse = (
+  state: GameplayFrameState,
+  requestId: ItemUseRequestId,
+  heldItem: ItemType,
+  vitals: FoodUseRequest['vitals'],
+): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    const seed = yield* Ref.get(state.rollSeed)
+    const batch = drawRolls(seed, 1)
+    yield* Ref.set(state.rollSeed, batch.seed)
+
+    const request: FarmingItemUseRequest = {
+      action: 'EatFood',
+      requestId,
+      heldItem,
+      vitals,
+      effectRoll: batch.rolls[0] ?? 1,
+    }
+    yield* Ref.update(state.pendingItemUses, (pending) => [...pending, request])
+  })
+
 export const requestPotatoFoodUse = (
   state: GameplayFrameState,
   requestId: ItemUseRequestId,
@@ -1173,6 +1750,22 @@ export const requestPotatoFoodUse = (
     requestId,
     heldItem: 'potato',
     vitals,
+  }
+  return Ref.update(state.pendingItemUses, (pending) => [...pending, request])
+}
+
+/** Plan bounded progress for a host-owned furnace snapshot. */
+export const requestFurnaceAdvance = (
+  state: GameplayFrameState,
+  requestId: ItemUseRequestId,
+  furnace: FurnaceState,
+  deltaTimeSecs: number,
+): Effect.Effect<void> => {
+  const request: FurnaceItemUseRequest = {
+    action: 'AdvanceFurnace',
+    requestId,
+    state: furnace,
+    deltaTimeSecs,
   }
   return Ref.update(state.pendingItemUses, (pending) => [...pending, request])
 }
@@ -1245,7 +1838,8 @@ export const drainBowShotResults = (
 /** Atomically drain completed correlated melee attacks exactly once, preserving request order. */
 export const drainMeleeAttackResults = (
   state: GameplayFrameState,
-): Effect.Effect<ReadonlyArray<MeleeAttackResult>> => Ref.getAndSet(state.meleeAttackResults, [])
+): Effect.Effect<ReadonlyArray<GameplayMeleeAttackResult>> =>
+  Ref.getAndSet(state.meleeAttackResults, [])
 
 /** Enqueue one melee swing for the next interaction stage. */
 export const requestMeleeAttack = (
@@ -1350,10 +1944,503 @@ export const drainPlayerDamages = (
   state: GameplayFrameState,
 ): Effect.Effect<ReadonlyArray<PlayerDamageEvent>> => Ref.getAndSet(state.playerDamages, [])
 
+export const requestStatusEffect = (
+  state: GameplayFrameState,
+  application: StatusEffectApplication,
+): Effect.Effect<void> =>
+  Ref.update(state.pendingStatusEffects, (pending) => [...pending, application])
+
+export const drainPlayerHeals = (
+  state: GameplayFrameState,
+): Effect.Effect<ReadonlyArray<PlayerHealingEvent>> => Ref.getAndSet(state.playerHeals, [])
+
+export const getPlayerMovementSpeedMultiplier = (
+  state: GameplayFrameState,
+): Effect.Effect<number> => Ref.get(state.playerMovementSpeedMultiplier)
+
+export const snapshotStatusEffects = (
+  state: GameplayFrameState,
+): Effect.Effect<StatusEffectState> =>
+  Ref.get(state.statusEffects).pipe(Effect.map(copyStatusEffectState))
+
+export const restoreStatusEffects = (
+  state: GameplayFrameState,
+  snapshot: StatusEffectState,
+): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    const restored = copyStatusEffectState(snapshot)
+    yield* Ref.set(state.statusEffects, restored)
+    yield* Ref.set(
+      state.playerMovementSpeedMultiplier,
+      restored.effects.some((effect) => effect.type === 'speed')
+        ? SPEED_MOVEMENT_MULTIPLIER
+        : 1,
+    )
+  })
+
+export const insertBrewingFuel = (
+  state: GameplayFrameState,
+): Effect.Effect<BrewingTransferResult> =>
+  Ref.modify(state.brewingStand, (current) => {
+    const [next, result] = insertFuel(current)
+    return [result, next]
+  })
+
+export const insertBrewingBottle = (
+  state: GameplayFrameState,
+  bottle: BrewingBottle,
+): Effect.Effect<BrewingTransferResult> =>
+  Ref.modify(state.brewingStand, (current) => {
+    const [next, result] = insertBottle(current, bottle)
+    return [result, next]
+  })
+
+export const insertBrewingIngredient = (
+  state: GameplayFrameState,
+  ingredient: BrewingIngredient,
+): Effect.Effect<BrewingTransferResult> =>
+  Ref.modify(state.brewingStand, (current) => {
+    const [next, result] = insertIngredient(current, ingredient)
+    return [result, next]
+  })
+
+export const collectBrewingPotion = (
+  state: GameplayFrameState,
+): Effect.Effect<BrewingCollectionResult> =>
+  Ref.modify(state.brewingStand, (current) => {
+    const [next, result] = collectBottle(current)
+    return [result, next]
+  })
+
+export const useBrewingPotion = (
+  state: GameplayFrameState,
+): Effect.Effect<BrewingDrinkResult> =>
+  Effect.gen(function* () {
+    const result = yield* Ref.modify(state.brewingStand, (current) => {
+      const [next, outcome] = drinkPotion(current)
+      return [outcome, next]
+    })
+    if (result._tag === 'Consumed') yield* requestStatusEffect(state, result.effect)
+    return result
+  })
+
+export const snapshotBrewingStand = (
+  state: GameplayFrameState,
+): Effect.Effect<BrewingStandState> =>
+  Ref.get(state.brewingStand).pipe(Effect.map(copyBrewingStandState))
+
+export const restoreBrewingStand = (
+  state: GameplayFrameState,
+  snapshot: BrewingStandState,
+): Effect.Effect<void> => Ref.set(state.brewingStand, copyBrewingStandState(snapshot))
+
+const stepBrewing = (
+  state: GameplayFrameState,
+  dt: DeltaTimeSecs,
+): Effect.Effect<void> => Ref.update(state.brewingStand, (current) => tickBrewingStand(current, dt))
+
+const stepStatusEffects = (
+  state: GameplayFrameState,
+  dt: DeltaTimeSecs,
+): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    const applications = yield* Ref.getAndSet(state.pendingStatusEffects, [])
+    const current = yield* Ref.get(state.statusEffects)
+    const applied = applications.reduce(applyStatusEffect, current)
+    const tick = tickStatusEffects(applied, dt)
+
+    yield* Ref.set(state.statusEffects, tick.state)
+    yield* Ref.set(state.playerMovementSpeedMultiplier, tick.movementSpeedMultiplier)
+    if (tick.hungerExhaustion > 0) {
+      yield* state.survivalHunger.addExhaustion(tick.hungerExhaustion)
+    }
+    if (tick.poisonPulses > 0) {
+      const damages: ReadonlyArray<PlayerDamageEvent> = Array.from(
+        { length: tick.poisonPulses },
+        () => ({
+          _tag: 'StatusEffect' as const,
+          effect: 'poison' as const,
+          damage: { amount: POISON_DAMAGE_POINTS, cause: 'poison' as const },
+          minimumHealthPoints: POISON_MINIMUM_HEALTH_POINTS,
+        }),
+      )
+      yield* Ref.update(state.playerDamages, (pending) => [...pending, ...damages])
+    }
+    if (tick.regenerationPulses > 0) {
+      const heals: ReadonlyArray<PlayerHealingEvent> = Array.from(
+        { length: tick.regenerationPulses },
+        () => ({
+          _tag: 'StatusEffect' as const,
+          effect: 'regeneration' as const,
+          amount: REGENERATION_HEAL_POINTS,
+          maximumHealthPoints: PLAYER_MAXIMUM_HEALTH_POINTS,
+        }),
+      )
+      yield* Ref.update(state.playerHeals, (pending) => [...pending, ...heals])
+    }
+  })
+
+export const requestVillagerTrade = (
+  state: GameplayFrameState,
+  request: VillagerTradeRequest,
+): Effect.Effect<void> =>
+  Ref.update(state.pendingVillagerTrades, (pending) => [...pending, request])
+
+export const drainVillagerTradeResults = (
+  state: GameplayFrameState,
+): Effect.Effect<ReadonlyArray<VillagerTradeResult>> =>
+  Ref.getAndSet(state.villagerTradeResults, [])
+
+const recordVillagerTradeResult = (
+  state: GameplayFrameState,
+  result: VillagerTradeResult,
+): Effect.Effect<void> =>
+  Ref.update(state.villagerTradeResults, (results) => [...results, result])
+
+export const snapshotVillagerTrades = (
+  state: GameplayFrameState,
+): Effect.Effect<VillagerTradeState> =>
+  Ref.get(state.villagerTrades).pipe(Effect.map(copyVillagerTradeState))
+
+export const restoreVillagerTrades = (
+  state: GameplayFrameState,
+  snapshot: VillagerTradeState,
+): Effect.Effect<void> => Ref.set(state.villagerTrades, copyVillagerTradeState(snapshot))
+
+/** Snapshot the deterministic fire state for host persistence. */
+export const snapshotFireLifecycle = (
+  state: GameplayFrameState,
+): Effect.Effect<FireLifecycleSnapshot> =>
+  Effect.gen(function* () {
+    const current = yield* Ref.get(state.fireLifecycle)
+    const accumulator = yield* Ref.get(fireTickAccumulatorFor(state.fireLifecycle))
+    return makeFireLifecycleSnapshot(current, accumulator)
+  })
+
+/** Restore a previously persisted fire state without retaining host-owned references. */
+export const restoreFireLifecycle = (
+  state: GameplayFrameState,
+  snapshot: FireLifecycleSnapshot,
+): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    if (!isFireLifecycleSnapshot(snapshot)) {
+      return yield* Effect.die(new Error('Unsupported fire lifecycle snapshot'))
+    }
+    const restored = restoreFireLifecycleSnapshot(snapshot)
+    yield* Ref.set(state.fireLifecycle, restored.state)
+    yield* Ref.set(
+      fireTickAccumulatorFor(state.fireLifecycle),
+      restored.tickAccumulatorSecs,
+    )
+  })
+
+/** Replace the host-observed weather exposure snapshot for the next frame. */
+export const submitWeatherGameplayInput = (
+  state: GameplayFrameState,
+  input: WeatherGameplayInput,
+): Effect.Effect<void> => Ref.set(state.weatherGameplayInput, input)
+
+/** Atomically drain weather consequences exactly once in production order. */
+export const drainWeatherGameplayEvents = (
+  state: GameplayFrameState,
+): Effect.Effect<ReadonlyArray<WeatherGameplayEvent>> =>
+  Ref.getAndSet(state.weatherGameplayEvents, [])
+
+export const snapshotWeatherGameplay = (
+  state: GameplayFrameState,
+): Effect.Effect<WeatherGameplayState> =>
+  Ref.get(state.weatherGameplay).pipe(
+    Effect.map((snapshot) => ({
+      seed: snapshot.seed,
+      lastProcessedTick: snapshot.lastProcessedTick,
+      chargedCreepers: [...snapshot.chargedCreepers],
+    })),
+  )
+
+export const restoreWeatherGameplay = (
+  state: GameplayFrameState,
+  snapshot: WeatherGameplayState,
+): Effect.Effect<void> =>
+  Ref.set(state.weatherGameplay, {
+    seed: snapshot.seed >>> 0,
+    lastProcessedTick: snapshot.lastProcessedTick,
+    chargedCreepers: [...snapshot.chargedCreepers],
+  })
+
+const firePositionKey = (position: FirePosition): string =>
+  `${position.x},${position.y},${position.z}`
+
+const FIRE_SNAPSHOT_OFFSETS = [
+  [0, 0, 0],
+  [0, -1, 0],
+  [0, 1, 0],
+  [-1, 0, 0],
+  [1, 0, 0],
+  [0, 0, -1],
+  [0, 0, 1],
+] as const
+
+/** Extinguish a loaded fire cell, committing logical state only after the world write succeeds. */
+export const requestFireExtinguish = (
+  state: GameplayFrameState,
+  store: ChunkStoreApi,
+  position: FirePosition,
+): Effect.Effect<boolean> =>
+  Effect.gen(function* () {
+    const current = yield* Ref.get(state.fireLifecycle)
+    if (!current.fires.some((active) => firePositionKey(active.position) === firePositionKey(position))) {
+      return false
+    }
+    const air = blockIdOf('air')
+    if (air === undefined) return false
+    const outcome = yield* store.setBlock(position, air)
+    if (outcome._tag !== 'Written' && outcome._tag !== 'Unchanged') return false
+    yield* Ref.set(state.fireLifecycle, extinguishFire(current, position))
+    if (outcome._tag === 'Written') {
+      yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, [positionKeyOf(position)]))
+    }
+    return true
+  })
+
+const stepFireTick = (
+  state: GameplayFrameState,
+  store: ChunkStoreApi,
+  roster: EntityManagerApi<MobBehaviour>,
+  inventory: InventoryServiceApi,
+  player: PlayerServiceApi,
+): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    const current = yield* Ref.get(state.fireLifecycle)
+    if (current.fires.length === 0 && (current.burningActors?.length ?? 0) === 0) return
+
+    const activeKeys = new Set(current.fires.map((fire) => firePositionKey(fire.position)))
+    const burningIds = new Set((current.burningActors ?? []).map((actor) => actor.id))
+    const survival = yield* state.survivalHunger.snapshot
+    const feet = (yield* player.pose).feetPosition
+    const playerContactPosition = {
+      x: Math.floor(feet.x),
+      y: Math.floor(feet.y),
+      z: Math.floor(feet.z),
+    }
+    const rosterEntities = [...(yield* roster.entities)]
+    const entityById = new Map(rosterEntities.map((entity) => [String(entity.id), entity]))
+    const burningEntityContacts = [...burningIds]
+      .filter((id) => id !== 'player')
+      .sort((a, b) => a.localeCompare(b))
+      .map((id): FireActorContact => {
+        const entity = entityById.get(id)
+        const previous = (current.burningActors ?? []).find((actor) => actor.id === id)
+        if (entity === undefined) {
+          return {
+            id,
+            kind: 'entity',
+            position: previous?.position ?? { x: 0, y: 0, z: 0 },
+            alive: false,
+          }
+        }
+        return {
+          id,
+          kind: 'entity',
+          position: {
+            x: Math.floor(entity.feetPosition.x),
+            y: Math.floor(entity.feetPosition.y),
+            z: Math.floor(entity.feetPosition.z),
+          },
+          alive: entity.healthPoints > 0,
+        }
+      })
+    const newEntityContacts = rosterEntities
+      .filter((entity) => !burningIds.has(String(entity.id)))
+      .sort((a, b) => String(a.id).localeCompare(String(b.id)))
+      .map((entity): FireActorContact => ({
+        id: String(entity.id),
+        kind: 'entity',
+        position: {
+          x: Math.floor(entity.feetPosition.x),
+          y: Math.floor(entity.feetPosition.y),
+          z: Math.floor(entity.feetPosition.z),
+        },
+        alive: entity.healthPoints > 0,
+      }))
+    const contacts: FireActorContact[] = [
+      {
+        id: 'player',
+        kind: 'player',
+        position: playerContactPosition,
+        alive: survival.vitals.healthPoints > 0,
+      },
+      ...[...burningEntityContacts, ...newEntityContacts].slice(0, FIRE_WORK_BUDGET),
+    ]
+    const positions = new Map<string, FirePosition>()
+    for (const fire of current.fires) {
+      for (const [dx, dy, dz] of FIRE_SNAPSHOT_OFFSETS) {
+        const position = {
+          x: fire.position.x + dx,
+          y: fire.position.y + dy,
+          z: fire.position.z + dz,
+        }
+        positions.set(firePositionKey(position), position)
+      }
+    }
+    for (const contact of contacts) positions.set(firePositionKey(contact.position), contact.position)
+
+    const weather = (yield* Ref.get(state.weather)).weather
+    const cells: FireCell[] = []
+    for (const position of positions.values()) {
+      const reading = yield* store.getBlock(position)
+      const block = reading._tag === 'Block'
+        ? (blockTypeOfId(reading.block) ?? '__unknown_fire_block__')
+        : reading._tag === 'ChunkNotLoaded'
+          ? FIRE_UNAVAILABLE_BLOCK
+          : 'air'
+      let exposedToSky = false
+      if (weather !== 'clear' &&
+        (activeKeys.has(firePositionKey(position)) || contacts.some((contact) =>
+          firePositionKey(contact.position) === firePositionKey(position)))) {
+        const light = yield* store.getLight(position)
+        exposedToSky = light._tag === 'Light' && light.sky === 15
+      }
+      cells.push({ position, block, exposedToSky })
+    }
+
+    const cellByPosition = new Map(cells.map((cell) => [firePositionKey(cell.position), cell]))
+    const hydratedContacts = contacts.map((contact) => {
+      const cell = cellByPosition.get(firePositionKey(contact.position))
+      return {
+        ...contact,
+        inWater: cell?.block === 'water',
+        exposedToSky: cell?.exposedToSky === true,
+      }
+    })
+    const step = advanceFireLifecycle(current, cells, weather, hydratedContacts, survival.difficulty)
+    const air = blockIdOf('air')
+    const fire = blockIdOf('fire')
+    if (air === undefined || fire === undefined) return
+    const nextFires = new Map(step.state.fires.map((active) => [firePositionKey(active.position), active]))
+    const previousFires = new Map(current.fires.map((active) => [firePositionKey(active.position), active]))
+    const failedIgnitions = new Set<string>()
+    const disturbed: string[] = []
+    for (const mutation of step.mutations) {
+      const mutationKey = firePositionKey(mutation.position)
+      const outcome = yield* store.setBlock(mutation.position, mutation.block === 'air' ? air : fire)
+      if (outcome._tag === 'Written') disturbed.push(positionKeyOf(mutation.position))
+      if (outcome._tag === 'Written' || outcome._tag === 'Unchanged') continue
+      if (mutation.block === 'fire') {
+        nextFires.delete(mutationKey)
+        failedIgnitions.add(mutationKey)
+        continue
+      }
+      const previous = previousFires.get(mutationKey)
+      if (previous === undefined) continue
+      if (outcome._tag !== 'ChunkNotLoaded') {
+        nextFires.set(mutationKey, previous)
+        continue
+      }
+      const unloadedRetries = (previous.unloadedRetries ?? 0) + 1
+      if (unloadedRetries <= FIRE_UNLOADED_RETRY_LIMIT) {
+        nextFires.set(mutationKey, { ...previous, unloadedRetries })
+      }
+    }
+
+    const previouslyBurningIds = new Set((current.burningActors ?? []).map((actor) => actor.id))
+    let burningActors = (step.state.burningActors ?? []).filter(
+      (actor) => previouslyBurningIds.has(actor.id) || !failedIgnitions.has(firePositionKey(actor.position)),
+    )
+    const entityDamages: ReadonlyArray<FireEntityDamage> = step.entityDamages.filter(
+      (damage) => previouslyBurningIds.has(damage.actorId) || !failedIgnitions.has(firePositionKey(damage.at)),
+    )
+    const playerDamages = step.damages.filter(
+      (damage) => previouslyBurningIds.has('player') || !failedIgnitions.has(firePositionKey(damage.at)),
+    )
+
+    const damageByEntity = new Map(entityDamages.map((damage) => [damage.actorId, damage]))
+    const casualties = yield* roster.sweep<MobCasualty>((entity) => {
+      const damage = damageByEntity.get(String(entity.id))
+      if (damage === undefined) return { transition: UNCHANGED, emit: undefined }
+      if (entity.healthPoints <= damage.damage.amount) {
+        return {
+          transition: DESPAWNED,
+          emit: { id: entity.id, kind: entity.kind, at: entity.feetPosition },
+        }
+      }
+      return {
+        transition: changed({
+          feetPosition: entity.feetPosition,
+          healthPoints: entity.healthPoints - damage.damage.amount,
+          behaviour: entity.behaviour,
+        }),
+        emit: undefined,
+      }
+    })
+    if (casualties.length > 0) {
+      const casualtyIds = new Set(casualties.map((casualty) => String(casualty.id)))
+      burningActors = burningActors.filter((actor) => !casualtyIds.has(actor.id))
+      const drops = yield* Ref.modify(state.rollSeed, (seed) => {
+        const rolled = rollCasualtyDrops(casualties, seed)
+        return [rolled.drops, rolled.seed] as const
+      })
+      if (drops.length > 0) {
+        yield* Ref.update(state.mobDrops, (items) => [...items, ...drops])
+      }
+    }
+
+    yield* Ref.set(state.fireLifecycle, {
+      ...step.state,
+      fires: [...nextFires.values()].sort((a, b) =>
+        a.position.x - b.position.x || a.position.y - b.position.y || a.position.z - b.position.z),
+      burningActors,
+    })
+    if (playerDamages.length > 0) {
+      const armored = yield* resolveArmoredPlayerDamages(inventory, playerDamages)
+      yield* Ref.update(state.playerDamages, (damages) => [...damages, ...armored])
+    }
+    if (disturbed.length > 0) {
+      yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, disturbed))
+    }
+  })
+
+const stepFireLifecycle = (
+  state: GameplayFrameState,
+  store: ChunkStoreApi,
+  roster: EntityManagerApi<MobBehaviour>,
+  inventory: InventoryServiceApi,
+  player: PlayerServiceApi,
+  dt: DeltaTimeSecs,
+): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    const current = yield* Ref.get(state.fireLifecycle)
+    const accumulator = fireTickAccumulatorFor(state.fireLifecycle)
+    if (current.fires.length === 0 && (current.burningActors?.length ?? 0) === 0) {
+      yield* Ref.set(accumulator, 0)
+      return
+    }
+
+    const elapsed = Math.min(
+      (yield* Ref.get(accumulator)) + Math.max(0, dt),
+      FIRE_TICK_INTERVAL_SECS * FIRE_FRAME_TICK_BUDGET,
+    )
+    const ticks = Math.floor((elapsed + 1e-12) / FIRE_TICK_INTERVAL_SECS)
+    yield* Ref.set(accumulator, elapsed - ticks * FIRE_TICK_INTERVAL_SECS)
+
+    for (let index = 0; index < ticks; index += 1) {
+      yield* stepFireTick(state, store, roster, inventory, player)
+      const next = yield* Ref.get(state.fireLifecycle)
+      if (next.fires.length === 0 && (next.burningActors?.length ?? 0) === 0) {
+        yield* Ref.set(accumulator, 0)
+        return
+      }
+    }
+  })
+
 /** Drain mob drops emitted by casualties during the entities stage. */
 export const drainMobDrops = (
   state: GameplayFrameState,
 ): Effect.Effect<ReadonlyArray<MobDropEvent>> => Ref.getAndSet(state.mobDrops, [])
+
+/** Atomically drain experience emitted by player-caused mob casualties. */
+export const drainMobExperience = (
+  state: GameplayFrameState,
+): Effect.Effect<ReadonlyArray<MobExperienceEvent>> => Ref.getAndSet(state.mobExperience, [])
 
 /** Resolve the block under the crosshair and enqueue placement in its adjacent cell. */
 export const requestTargetedBlockPlacement = (
@@ -1468,6 +2555,173 @@ export const requestTargetedPotatoPlanting = (
     return target
   })
 
+type BlockPlacementExecution = {
+  readonly outcome: BlockPlacementCommandOutcome
+  readonly consumed: boolean
+  readonly mutated: boolean
+}
+
+/** Resolve the block under the crosshair and enqueue bone meal against it. */
+export const requestTargetedBoneMeal = (
+  state: GameplayFrameState,
+  store: ChunkStoreApi,
+  player: PlayerServiceApi,
+  requestId: ItemUseRequestId,
+  maxDistance: number = DEFAULT_BLOCK_REACH,
+): Effect.Effect<Option.Option<BlockTarget>> =>
+  Effect.gen(function* () {
+    const pose = yield* player.pose
+    const target = targetBlockFromPlayerPose(pose, maxDistance, targetabilityFromStore(store))
+    if (Option.isSome(target)) {
+      yield* requestBoneMeal(state, requestId, target.value.position)
+    }
+    return target
+  })
+
+const isBlockPlacementCommand = (
+  request: PlacementRequest,
+): request is BlockPlacementCommand => 'requestId' in request
+
+const normalizedBlockPlacementCommand = (
+  command: BlockPlacementCommand,
+): NormalizedBlockPlacementCommand => ({ ...command, mode: command.mode ?? 'survival' })
+
+const sameBlockPlacementCommand = (
+  left: NormalizedBlockPlacementCommand,
+  right: NormalizedBlockPlacementCommand,
+): boolean =>
+  left.positionKey === right.positionKey &&
+  left.heldItem === right.heldItem &&
+  left.mode === right.mode
+
+const executeBlockPlacementAtomically = (
+  request: PlacementRequest,
+  mode: BlockPlacementMode,
+  store: ChunkStoreApi,
+  inventory: InventoryServiceApi,
+  playerFeet: Position,
+): Effect.Effect<BlockPlacementExecution> =>
+  Effect.uninterruptible(
+    Effect.gen(function* () {
+      if (mode === 'creative') {
+        const outcome = yield* placeBlock(store, {
+          position: positionOfKey(request.positionKey),
+          heldItem: request.heldItem,
+          playerFeet,
+        })
+        return { outcome, consumed: false, mutated: outcome._tag === 'Placed' }
+      }
+
+      const reserved = yield* inventory.remove(request.heldItem, 1)
+      if (reserved === 0) {
+        return {
+          outcome: { _tag: 'InventoryUnavailable' } as const,
+          consumed: false,
+          mutated: false,
+        }
+      }
+
+      const outcome = yield* placeBlock(store, {
+        position: positionOfKey(request.positionKey),
+        heldItem: request.heldItem,
+        playerFeet,
+      })
+      if (outcome._tag === 'Placed') {
+        return { outcome, consumed: true, mutated: true }
+      }
+
+      const leftover = yield* inventory.add(request.heldItem, reserved)
+      if (leftover !== 0) {
+        return yield* Effect.dieMessage(
+          `placement rollback could not restore ${String(request.heldItem)}`,
+        )
+      }
+      return { outcome, consumed: false, mutated: false }
+    }),
+  )
+
+const executeBlockPlacementCommand = (
+  state: GameplayFrameState,
+  command: BlockPlacementCommand,
+  store: ChunkStoreApi,
+  inventory: InventoryServiceApi,
+  playerFeet: Position,
+  playerDead: boolean,
+): Effect.Effect<BlockPlacementExecution> => {
+  const runtime = blockPlacementRuntimeFor(state)
+  const normalized = normalizedBlockPlacementCommand(command)
+
+  return runtime.mutex.withPermits(1)(
+    Effect.uninterruptible(
+      Effect.gen(function* () {
+        const current = yield* Ref.get(runtime.state)
+        const previous = current.handled.get(normalized.requestId)
+        if (previous !== undefined) {
+          const replayed: BlockPlacementResult = sameBlockPlacementCommand(
+            previous.command,
+            normalized,
+          )
+            ? { ...previous.result, replayed: true }
+            : {
+                requestId: normalized.requestId,
+                success: false,
+                consumed: false,
+                replayed: true,
+                outcome: { _tag: 'RequestIdConflict' },
+              }
+          yield* Ref.update(runtime.state, (latest) => ({
+            ...latest,
+            results: [...latest.results, replayed],
+          }))
+          return { outcome: replayed.outcome, consumed: false, mutated: false }
+        }
+
+        if (playerDead) {
+          const outcome = { _tag: 'PlayerDead' } as const
+          const result: BlockPlacementResult = {
+            requestId: normalized.requestId,
+            success: false,
+            consumed: false,
+            replayed: false,
+            outcome,
+          }
+          yield* Ref.update(runtime.state, (latest) => ({
+            handled: new Map(latest.handled).set(normalized.requestId, {
+              command: normalized,
+              result,
+            }),
+            results: [...latest.results, result],
+          }))
+          return { outcome, consumed: false, mutated: false }
+        }
+
+        const execution = yield* executeBlockPlacementAtomically(
+          normalized,
+          normalized.mode,
+          store,
+          inventory,
+          playerFeet,
+        )
+        const result: BlockPlacementResult = {
+          requestId: normalized.requestId,
+          success: execution.outcome._tag === 'Placed',
+          consumed: execution.consumed,
+          replayed: false,
+          outcome: execution.outcome,
+        }
+        yield* Ref.update(runtime.state, (latest) => ({
+          handled: new Map(latest.handled).set(normalized.requestId, {
+            command: normalized,
+            result,
+          }),
+          results: [...latest.results, result],
+        }))
+        return execution
+      }),
+    ),
+  )
+}
+
 export const gameplayStages = (
   state: GameplayFrameState,
   store: ChunkStoreApi,
@@ -1493,6 +2747,8 @@ export const gameplayStages = (
     // after `interactions` one stage down.
     run: (dt) =>
       Effect.gen(function* () {
+        const playerDead = yield* Ref.get(state.playerDead)
+
         // ---------------------------------------------------------------
         // PORTAL TRAVEL, and it runs BEFORE the inbox drain and its early
         // return.
@@ -1510,6 +2766,9 @@ export const gameplayStages = (
         // dwell timer that only advanced on frames where somebody also broke a
         // block would take four seconds of MINING to cross a portal.
         yield* stepPortalTravel(state, store, player, dt)
+        yield* Ref.update(state.villagerTrades, (current) => advanceVillagerRestock(current, dt))
+        yield* stepBrewing(state, dt)
+        yield* stepStatusEffects(state, dt)
 
         // `getAndSet` rather than get-then-set: whoever fills the inboxes is not
         // this fiber, and a request that arrived between the two steps would be
@@ -1562,6 +2821,10 @@ export const gameplayStages = (
           state.pendingPearlThrows,
           [],
         )
+        const villagerTrades = yield* Ref.getAndSet<ReadonlyArray<VillagerTradeRequest>>(
+          state.pendingVillagerTrades,
+          [],
+        )
         if (
           breaks.length === 0 &&
           placements.length === 0 &&
@@ -1569,7 +2832,8 @@ export const gameplayStages = (
           itemUses.length === 0 &&
           bowShots.length === 0 &&
           meleeAttacks.length === 0 &&
-          pearlThrows.length === 0
+          pearlThrows.length === 0 &&
+          villagerTrades.length === 0
         ) {
           return
         }
@@ -1580,8 +2844,79 @@ export const gameplayStages = (
         const blockUseResults: Array<BlockUseResult> = []
         const itemUseResults: Array<ItemUseResult> = []
         const bowShotResults: Array<BowShotResult> = []
-        const meleeAttackResults: Array<MeleeAttackResult> = []
+        const meleeAttackResults: Array<GameplayMeleeAttackResult> = []
         const disturbed: Array<PositionKey> = []
+
+        for (const request of villagerTrades) {
+          if (playerDead) {
+            yield* recordVillagerTradeResult(state, {
+              ...request,
+              _tag: 'Rejected',
+              reason: 'PlayerDead',
+            })
+            continue
+          }
+          const tradeState = yield* Ref.get(state.villagerTrades)
+          const villager = tradeState.villagers.find((candidate) => candidate.id === request.villagerId)
+          const offer = villager?.offers.find((candidate) => candidate.id === request.offerId)
+          if (offer === undefined) {
+            yield* recordVillagerTradeResult(state, {
+              ...request,
+              _tag: 'Rejected',
+              reason: 'UnknownOffer',
+            })
+            continue
+          }
+          if (offer.uses >= offer.maxUses) {
+            yield* recordVillagerTradeResult(state, {
+              ...request,
+              _tag: 'Rejected',
+              reason: 'OutOfStock',
+            })
+            continue
+          }
+
+          const before = yield* inventory.snapshot
+          const removed = removeInventoryItem(before, offer.input.item, offer.input.count)
+          if (removed.removed !== offer.input.count) {
+            yield* recordVillagerTradeResult(state, {
+              ...request,
+              _tag: 'Rejected',
+              reason: 'InsufficientItems',
+            })
+            continue
+          }
+          const added = addInventoryItem(removed.inventory, offer.output.item, offer.output.count)
+          if (added.leftover !== 0) {
+            yield* recordVillagerTradeResult(state, {
+              ...request,
+              _tag: 'Rejected',
+              reason: 'InventoryFull',
+            })
+            continue
+          }
+
+          const actuallyRemoved = yield* inventory.remove(offer.input.item, offer.input.count)
+          const leftover =
+            actuallyRemoved === offer.input.count
+              ? yield* inventory.add(offer.output.item, offer.output.count)
+              : offer.output.count
+          if (actuallyRemoved !== offer.input.count || leftover !== 0) {
+            yield* inventory.restore(before)
+            yield* recordVillagerTradeResult(state, {
+              ...request,
+              _tag: 'Rejected',
+              reason:
+                actuallyRemoved === offer.input.count ? 'InventoryFull' : 'InsufficientItems',
+            })
+            continue
+          }
+
+          yield* Ref.update(state.villagerTrades, (current) =>
+            useVillagerOffer(current, request.villagerId, request.offerId) ?? current,
+          )
+          yield* recordVillagerTradeResult(state, { ...request, _tag: 'Traded' })
+        }
 
         // Legacy key-only requests have no completion-time snapshot, so they
         // retain the old batch-level fallback. Requests made through the public
@@ -1590,6 +2925,7 @@ export const gameplayStages = (
         const playerFeet = (yield* player.pose).feetPosition
 
         for (const [index, positionKey] of breaks.entries()) {
+          if (playerDead) continue
           const tool = snapshots.get(index)?.lootContext ?? fallbackTool
           const breakPosition = positionOfKey(positionKey)
           const outcome = yield* breakBlock(store, breakPosition)
@@ -1639,6 +2975,14 @@ export const gameplayStages = (
         }
 
         for (const request of blockUses) {
+          if (playerDead) {
+            blockUseResults.push({
+              requestId: request.requestId,
+              success: false,
+              outcome: 'PlayerDead',
+            })
+            continue
+          }
           const position = positionOfKey(request.positionKey)
           const outcome = resolveBlockUse(position, yield* store.getBlock(position))
           blockUseResults.push({
@@ -1649,68 +2993,33 @@ export const gameplayStages = (
         }
 
         for (const request of placements) {
-          const reserved = yield* inventory.remove(request.heldItem, 1)
-          if (reserved === 0) {
-            continue
+          const execution = isBlockPlacementCommand(request)
+            ? yield* executeBlockPlacementCommand(
+                state,
+                request,
+                store,
+                inventory,
+                playerFeet,
+                playerDead,
+              )
+            : playerDead
+              ? undefined
+              : yield* blockPlacementRuntimeFor(state).mutex.withPermits(1)(
+                executeBlockPlacementAtomically(
+                  request,
+                  'survival',
+                  store,
+                  inventory,
+                  playerFeet,
+                ),
+              )
+
+          if (execution === undefined) continue
+          if (execution.consumed && execution.outcome._tag === 'Placed') {
+            spent.push(execution.outcome.consumed)
           }
-
-          const outcome = yield* placeBlock(store, {
-            position: positionOfKey(request.positionKey),
-            heldItem: request.heldItem,
-            playerFeet,
-          })
-
-          switch (outcome._tag) {
-            case 'Placed': {
-              spent.push(outcome.consumed)
-              // PLACEMENT DISTURBS, and this is the sentence
-              // `domain/falling-block.ts:73-77` has been carrying with nothing
-              // behind it: 「Callers are the rules that mutate blocks: breaking,
-              // PLACING, explosions, fluid displacement, piston pushes」. The
-              // mining-site preview's `p` key wrote the store directly and
-              // deliberately did NOT disturb, precisely to show what the missing
-              // rule would have to remember.
-              //
-              // IT IS THE CELL BELOW AND NOT THE CELL WRITTEN, which is the
-              // half that is easy to get wrong and is why the preview's note
-              // was worth keeping. A queue entry P means "look at the block
-              // ABOVE P and see whether it falls INTO P"
-              // (`domain/entities/falling-block-move.ts`), so a BREAK disturbs
-              // the cell it emptied — the hole is what receives — while a
-              // PLACEMENT has to disturb the cell UNDER the block it just put
-              // down, or the sand a player drops in mid-air hangs there.
-              // Disturbing the written cell instead costs nothing visible: the
-              // queue drains, one read happens, the cell above is solid or
-              // absent, and nothing moves.
-              disturbed.push(positionKeyOf(below(positionOfKey(request.positionKey))))
-              break
-            }
-
-            // Every refusal is named by the rule and dropped HERE, for the
-            // reason `applySpawnAttempts`' outcomes are: `run` returns void and
-            // there is nowhere in the frame to report a diagnostic to. They are
-            // not dropped by the rule — whoever offers a placement is who wants
-            // to know why it was refused, and the mining-site preview calls
-            // `placeBlock` directly and prints the tag.
-            case 'Occupied':
-            case 'InsidePlayer':
-            case 'Unsupported':
-            case 'UnknownBlock':
-            case 'ChunkNotLoaded':
-            case 'OutOfWorld':
-            // The four per-block refusals, each named by the file that owns the
-            // block (`domain/interactions/place-mushroom-light.ts` and its three
-            // neighbours). They are dropped here for the same reason the six
-            // above are — `run` returns void — and the mining-site preview,
-            // which calls `placeBlock` directly, is what prints them.
-            case 'TooBright':
-            case 'LightUnknown':
-            case 'NoAdjacentWater':
-            case 'SidesBlocked':
-            case 'NoRoomAbove': {
-              yield* inventory.add(request.heldItem, reserved)
-              break
-            }
+          if (execution.mutated) {
+            disturbed.push(positionKeyOf(below(positionOfKey(request.positionKey))))
           }
         }
 
@@ -1720,8 +3029,35 @@ export const gameplayStages = (
         // frame gets the sequence they asked for. The other order asks
         // `detectNetherPortal` about a ring that is one block short.
         for (const request of itemUses) {
+          if (playerDead && (!('action' in request) || request.action !== 'AdvanceFurnace')) {
+            itemUseResults.push({
+              requestId: request.requestId,
+              success: false,
+              outcome: 'PlayerDead',
+            })
+            continue
+          }
           if ('action' in request) {
             switch (request.action) {
+              case 'ApplyBoneMeal': {
+                const outcome = yield* applyBoneMeal(
+                  (position) =>
+                    Effect.map(store.getBlock(position), (reading) =>
+                      reading._tag === 'Block' ? blockTypeOfId(reading.block) : undefined,
+                    ),
+                  positionOfKey(request.positionKey),
+                )
+                const success = outcome._tag === 'applied'
+                itemUseResults.push({
+                  action: request.action,
+                  requestId: request.requestId,
+                  heldItem: request.heldItem,
+                  success,
+                  consumedCount: success ? 1 : 0,
+                  outcome,
+                })
+                break
+              }
               case 'TillSoil': {
                 const outcome = yield* tillSoil(
                   {
@@ -1779,15 +3115,59 @@ export const gameplayStages = (
                 break
               }
               case 'EatPotato': {
-                const outcome = resolveFoodUse({ held: request.heldItem, vitals: request.vitals })
+                const outcome = resolveFoodUse({
+                  held: request.heldItem,
+                  vitals: request.vitals,
+                })
                 const success = outcome._tag === 'consume'
+                if (success) {
+                  yield* state.survivalHunger.eat(outcome.foodPoints, outcome.saturationModifier)
+                  yield* Ref.update(
+                    state.pendingStatusEffects,
+                    (pending) => [...pending, ...outcome.effects],
+                  )
+                }
                 itemUseResults.push({
-                  action: request.action,
+                  action: 'EatPotato',
                   requestId: request.requestId,
                   heldItem: request.heldItem,
                   success,
                   consumedCount: success ? 1 : 0,
                   outcome,
+                })
+                break
+              }
+              case 'EatFood': {
+                const outcome = resolveFoodUse({
+                  held: request.heldItem,
+                  vitals: request.vitals,
+                  effectRoll: request.effectRoll,
+                })
+                const success = outcome._tag === 'consume'
+                if (success) {
+                  yield* state.survivalHunger.eat(outcome.foodPoints, outcome.saturationModifier)
+                  yield* Ref.update(
+                    state.pendingStatusEffects,
+                    (pending) => [...pending, ...outcome.effects],
+                  )
+                }
+                itemUseResults.push({
+                  action: 'EatFood',
+                  requestId: request.requestId,
+                  heldItem: request.heldItem,
+                  success,
+                  consumedCount: success ? 1 : 0,
+                  outcome,
+                })
+                break
+              }
+              case 'AdvanceFurnace': {
+                const plan = planFurnaceAdvance(request.state, request.deltaTimeSecs)
+                itemUseResults.push({
+                  action: request.action,
+                  requestId: request.requestId,
+                  success: furnaceAdvanceChanged(plan),
+                  plan,
                 })
                 break
               }
@@ -1808,6 +3188,18 @@ export const gameplayStages = (
               feetPosition: { x: position.x + 0.5, y: position.y, z: position.z + 0.5 },
               healthPoints: 1,
               behaviour: FRESH_PRIMED_TNT,
+            })
+          }
+          if (ignition._tag === 'Fire' && ignition.outcome._tag === 'Lit') {
+            const position = ignition.outcome.position
+            yield* Ref.update(state.fireLifecycle, (current) => {
+              if (current.fires.some((fire) => firePositionKey(fire.position) === firePositionKey(position))) {
+                return current
+              }
+              return {
+                ...current,
+                fires: [...current.fires, { position, ageTicks: 0 }],
+              }
             })
           }
           itemUseResults.push({
@@ -1849,7 +3241,7 @@ export const gameplayStages = (
         const shoves: Array<BowKnockback> = []
         const bowHits: Array<BowHit> = []
         if (bowShots.length > 0) {
-          const candidates = yield* roster.entities
+          const candidates = playerDead ? [] : yield* roster.entities
           const handledRequestIds = new Set(yield* Ref.get(state.handledBowShotRequestIds))
 
           for (const shot of bowShots) {
@@ -1863,6 +3255,17 @@ export const gameplayStages = (
                 continue
               }
               handledRequestIds.add(shot.requestId)
+            }
+
+            if (playerDead) {
+              if (shot.requestId !== undefined) {
+                bowShotResults.push({
+                  requestId: shot.requestId,
+                  success: false,
+                  outcome: 'PlayerDead',
+                })
+              }
+              continue
             }
 
             // A TAP IS NOT A SHOT. `canFireBow` is the gate and it is asked
@@ -1971,8 +3374,18 @@ export const gameplayStages = (
         const bowCasualties = yield* resolveBowHits(roster, bowHits)
         const meleeHits: Array<BowHit> = []
         if (meleeAttacks.length > 0) {
-          const candidates = yield* roster.entities
+          const candidates = playerDead ? [] : yield* roster.entities
           for (const attack of meleeAttacks) {
+            if (playerDead) {
+              if (attack.requestId !== undefined) {
+                meleeAttackResults.push({
+                  requestId: attack.requestId,
+                  success: false,
+                  outcome: 'PlayerDead',
+                })
+              }
+              continue
+            }
             const hit = meleeTarget(candidates, attack)
             if (hit !== undefined) {
               meleeHits.push({ id: hit.id, damage: attack.damage })
@@ -1989,6 +3402,11 @@ export const gameplayStages = (
         const meleeCasualties = yield* resolveMeleeHits(roster, meleeHits)
         const weaponCasualties = [...bowCasualties, ...meleeCasualties]
         if (weaponCasualties.length > 0) {
+          const experience = experienceOfCasualties(weaponCasualties)
+          if (experience.length > 0) {
+            yield* Ref.update(state.mobExperience, (items) => [...items, ...experience])
+          }
+
           // The same atomic seed step the blast path uses, and for the same
           // reason: a split read/write would let two frames draw one sequence.
           const drops = yield* Ref.modify(state.rollSeed, (seed) => {
@@ -2008,7 +3426,7 @@ export const gameplayStages = (
         // how many throws there were and not of what happened to them, so two runs
         // of one scenario draw the same numbers whatever the endermites do.
         const pearlOutcomes: Array<EnderPearlOutcome> = []
-        if (pearlThrows.length > 0) {
+        if (!playerDead && pearlThrows.length > 0) {
           const rolls = yield* Ref.modify(state.rollSeed, (seed) => {
             const batch = drawRolls(seed, pearlThrows.length)
             return [batch, batch.seed] as const
@@ -2126,8 +3544,18 @@ export const gameplayStages = (
       }),
   },
   {
-    id: GAMEPLAY_STAGE_IDS.entities,
+    id: GAMEPLAY_STAGE_IDS.fire,
     after: [GAMEPLAY_STAGE_IDS.interactions],
+    run: (dt) => stepFireLifecycle(state, store, roster, inventory, player, dt),
+  },
+  {
+    id: GAMEPLAY_STAGE_IDS.survivalHunger,
+    after: [GAMEPLAY_STAGE_IDS.fire],
+    run: (dt) => Effect.asVoid(state.survivalHunger.tick(dt)),
+  },
+  {
+    id: GAMEPLAY_STAGE_IDS.entities,
+    after: [GAMEPLAY_STAGE_IDS.survivalHunger],
     // Entities run after interactions because a mob's reaction is to the world
     // as the player just left it — reversing the two makes a creeper respond to
     // last frame's block placement, which reads as lag rather than as a bug.
@@ -2172,7 +3600,7 @@ export const gameplayStages = (
         // window it opens is one in which two frames would already be sweeping a
         // single roster. The drop roll below stays atomic because it can.
         const targetPosition = (yield* player.pose).feetPosition
-        const { blasts, seed: sweptSeed } = yield* sweepMobs(
+        const { attacks, blasts, seed: sweptSeed } = yield* sweepMobs(
           roster,
           { target: targetPosition, dt },
           yield* Ref.get(state.rollSeed),
@@ -2182,13 +3610,32 @@ export const gameplayStages = (
         // number it read on every idle frame.
         yield* Ref.set(state.rollSeed, sweptSeed)
 
+        if (attacks.length > 0) {
+          const playerDamages = yield* resolveArmoredPlayerDamages(
+            inventory,
+            attacks.map((attack) => ({
+              _tag: 'HostileContact' as const,
+              source: attack.source,
+              kind: attack.attackerKind,
+              at: attack.at,
+              damage: { amount: attack.damage, cause: 'mob' as const },
+            })),
+          )
+          if (playerDamages.length > 0) {
+            yield* Ref.update(state.playerDamages, (items) => [...items, ...playerDamages])
+          }
+        }
+
         if (blasts.length > 0) {
           const { casualties, disturbed } = yield* resolveBlasts(roster, store, blasts)
 
           // What the creeper itself leaves: nothing, and the RULE says so rather
           // than this stage assuming it (`domain/mob/mob-drop.ts` on why the
           // reference gets the same answer by accident of statement order).
-          const playerDamages = resolvePlayerBlastDamage(blasts, targetPosition)
+          const playerDamages = yield* resolveArmoredPlayerDamages(
+            inventory,
+            resolvePlayerBlastDamage(blasts, targetPosition),
+          )
           if (playerDamages.length > 0) {
             yield* Ref.update(state.playerDamages, (items) => [...items, ...playerDamages])
           }
@@ -2233,7 +3680,8 @@ export const gameplayStages = (
         )
         yield* Ref.set(state.hostileContactCooldowns, contact.cooldowns)
         if (contact.damages.length > 0) {
-          yield* Ref.update(state.playerDamages, (items) => [...items, ...contact.damages])
+          const playerDamages = yield* resolveArmoredPlayerDamages(inventory, contact.damages)
+          yield* Ref.update(state.playerDamages, (items) => [...items, ...playerDamages])
         }
 
         // ---- the spawn search ----------------------------------------------
@@ -2267,31 +3715,38 @@ export const gameplayStages = (
 
         let searched: ReadonlyArray<MobSpawnAttempt> = NO_ATTEMPTS
         const hour = yield* time.timeOfDay
+        const dimension = yield* player.dimension
 
         // THREE GATES BEFORE THE 256 READS, and the third is the one that needs
-        // defending. `hostileSpawnsAllowed` is CALLED here as well as inside
+        // defending. In the Overworld, `hostileSpawnsAllowed` is CALLED here as well as inside
         // `canHostileSpawnAt`, and `domain/mob/hostile-spawn.ts`'s header is
         // emphatic that the night gate is the rule's and 「a third opinion in
         // this file would be the second half of that bug」. This is not a third
         // opinion: it is the SAME FUNCTION, short-circuiting a search whose every
         // candidate the rule would refuse with `daylight`. The rule still runs
         // and still decides; what is skipped is 256 store reads to be told so 64
-        // times. Reimplementing the comparison here — `hour > 0.25 && ...` —
+        // times. The Nether bypasses only this time gate because its hostile
+        // roster is valid at every hour. Reimplementing the comparison here — `hour > 0.25 && ...` —
         // would be the failure that header describes, and is exactly what is not
         // done.
         //
-        if (searchDue && hostileSpawnsAllowed(hour)) {
+        const hostileSearch = dimension === 'nether' || hostileSpawnsAllowed(hour)
+        const passiveRepopulationSearch = !hostileSearch && (yield* roster.count) === 0
+        if (searchDue && (hostileSearch || passiveRepopulationSearch)) {
           const found = yield* searchSpawnCandidates(
             store,
             targetPosition,
             hour,
             yield* Ref.get(state.rollSeed),
+            dimension,
           )
           // The seed advanced by exactly `SPAWN_SEARCH_ROLLS`, and only because a
           // search ran. A frame that skipped it leaves the generator where it
           // found it, which is `domain/frame-rolls.ts`'s rule that the sequence
           // depends on what happened rather than on how many frames passed.
-          yield* Ref.set(state.rollSeed, found.seed)
+          // Daylight repopulation must not perturb the shared combat/weather
+          // sequence. Once it succeeds the non-empty roster gates it off.
+          if (hostileSearch) yield* Ref.set(state.rollSeed, found.seed)
           searched = found.attempts
         }
 
@@ -2348,24 +3803,46 @@ export const gameplayStages = (
       }),
   },
   {
-    id: GAMEPLAY_STAGE_IDS.fluids,
+    id: GAMEPLAY_STAGE_IDS.enderDragon,
     after: [GAMEPLAY_STAGE_IDS.entities],
-    run: () =>
-      Effect.gen(function* () {
-        const tick = yield* Ref.updateAndGet(state.tickCount, (value) => value + 1)
-        const lavaTickActive = tick % LAVA_TICK_INTERVAL === 0
-        yield* Ref.modify(fluidRuntimeStateFor(state.fluidFrontier), (fluidState) => {
-          const split = splitBudget(fluidState.frontier, { lavaTickActive })
-          return [
-            undefined,
-            {
-              // `carryOver` keeps both over-budget cells and inactive lava.
-              frontier: carryOver(fluidState.frontier, split),
-              updates: [...fluidState.updates, ...split.work],
-            },
-          ]
-        })
-      }),
+    run: (dt) =>
+      Effect.flatMap(player.dimension, (dimension) =>
+        dimension === 'end' ? state.enderDragonEncounter.stage.run(dt) : Effect.void,
+      ),
+  },
+  {
+    id: GAMEPLAY_STAGE_IDS.fluids,
+    after: [GAMEPLAY_STAGE_IDS.enderDragon],
+    run: () => {
+      const runtime = fluidRuntimeStateFor(state.fluidFrontier)
+      return fluidRuntimeSemaphoreFor(state.fluidFrontier).withPermits(1)(
+        Effect.gen(function* () {
+          const tick = yield* Ref.updateAndGet(state.tickCount, (value) => value + 1)
+          const lavaTickActive = tick % LAVA_TICK_INTERVAL === 0
+          const work = yield* Ref.modify(runtime, (fluidState) => {
+            let uniqueFrontier: ReadonlyArray<FluidWorkItem> = []
+            for (const item of fluidState.frontier) {
+              uniqueFrontier = enqueueFluidDisturbance(uniqueFrontier, item)
+            }
+            const split = splitBudget(uniqueFrontier, { lavaTickActive })
+            return [
+              split.work,
+              {
+                ...fluidState,
+                // Reserve work before any asynchronous store access. New
+                // disturbances can still append to the remaining frontier.
+                frontier: carryOver(uniqueFrontier, split),
+              },
+            ] as const
+          })
+
+          if (work.length === 0) return
+
+          const dimension = yield* player.dimension
+          yield* runFluidPropagation(store, runtime, work, dimension)
+        }),
+      )
+    },
   },
   {
     id: GAMEPLAY_STAGE_IDS.timeWeather,
@@ -2399,6 +3876,22 @@ export const gameplayStages = (
     run: (dt) =>
       Effect.gen(function* () {
         const current = yield* Ref.get(state.weather)
+        const weatherGameplayInput = yield* Ref.get(state.weatherGameplayInput)
+        const weatherGameplayState = yield* Ref.get(state.weatherGameplay)
+        const tick = yield* Ref.get(state.tickCount)
+        const weatherGameplayStep = advanceWeatherGameplay(
+          weatherGameplayState,
+          tick,
+          current.weather,
+          weatherGameplayInput,
+        )
+        yield* Ref.set(state.weatherGameplay, weatherGameplayStep.state)
+        if (weatherGameplayStep.events.length > 0) {
+          yield* Ref.update(state.weatherGameplayEvents, (events) => [
+            ...events,
+            ...weatherGameplayStep.events,
+          ])
+        }
 
         // THE ROLLS ARE DRAWN ONLY WHEN THE STRETCH RUNS OUT, which is
         // `domain/frame-rolls.ts`'s rule that the sequence depend on what

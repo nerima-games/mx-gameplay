@@ -4,6 +4,9 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+overrides:
+  '@nerima-games/mc-kernel': 0.2.16
+
 importers:
 
   .:
@@ -12,11 +15,11 @@ importers:
         specifier: 0.1.0
         version: 0.1.0
       '@nerima-games/mc-kernel':
-        specifier: 0.2.7
-        version: 0.2.7
+        specifier: 0.2.16
+        version: 0.2.16
       '@nerima-games/mc-sim':
-        specifier: 0.1.23
-        version: 0.1.23
+        specifier: 0.1.32
+        version: 0.1.32
       '@nerima-games/mc-worldgen':
         specifier: 0.1.0
         version: 0.1.0
@@ -39,6 +42,9 @@ importers:
       '@vitest/coverage-v8':
         specifier: ^3.2.4
         version: 3.2.7(vitest@3.2.7(@types/node@22.20.1)(tsx@4.23.1))
+      oxlint:
+        specifier: ^0.12.0
+        version: 0.12.0
       tsx:
         specifier: ^4.19.2
         version: 4.23.1
@@ -343,20 +349,28 @@ packages:
     resolution: {integrity: sha512-bqEeDNNlXVnF+4nxQwZN2vcoC4fKlelUE6u0ig7KkIM66EyPqQGOYvtZTBzy8J9aSgEoLzWFlQ5Vj4BgVrUlRw==, tarball: https://npm.pkg.github.com/download/@nerima-games/mc-audio/0.1.0/1ff271b5de296c87043222c0e248aa6371b65c89}
     engines: {node: '>=24.0.0', pnpm: '>=11.0.0'}
 
-  '@nerima-games/mc-kernel@0.2.7':
-    resolution: {integrity: sha512-PC1daK53I5PBO+1F4QLQ4ld/ukFfXIzk49FHlmpQWNomntnFXY/uob3IFIwRxPdkrqGObg2KP9SbwMfd8+0NDw==, tarball: https://npm.pkg.github.com/download/@nerima-games/mc-kernel/0.2.7/9d65025d9f40b47fb26fb49616369f60fa73b102}
+  '@nerima-games/mc-kernel@0.2.16':
+    resolution: {integrity: sha512-dR/BzRL/G+wkrOCKPPoVQ9mRLvUwn2udU5pMzY3c51glPAySNfbEzIm8A/H1D//DTy5zvjP6mo94JCmGrgy88Q==, tarball: https://npm.pkg.github.com/download/@nerima-games/mc-kernel/0.2.16/da9a741d74c4f0909e287dacd147cabe04cb5a82}
     engines: {node: '>=24.0.0', pnpm: '>=11.0.0'}
 
   '@nerima-games/mc-physics@0.1.0':
     resolution: {integrity: sha512-5RFYGtej8TvBFGetTbitEicGyohv2ZQrstL3R151Do1bVheqjIBJUH7R2SbtjDgOKVcTMSZgT8HogfZJ8Na7Kw==, tarball: https://npm.pkg.github.com/download/@nerima-games/mc-physics/0.1.0/83c9b8fbef29cda6f5aa9db047cfa8b3b7708fd7}
     engines: {node: '>=24.0.0', pnpm: '>=11.0.0'}
 
-  '@nerima-games/mc-sim@0.1.23':
-    resolution: {integrity: sha512-01RemCOMBOkD6axGWhKEOqiMXp9P9kwhUsFDXC9KhHTZAbxzewXnuDD+uKCVpquoJc6eTf+0b8QLGcZLxqf7vg==, tarball: https://npm.pkg.github.com/download/@nerima-games/mc-sim/0.1.23/2569333eb28f8b15925917bbe7765a7a87810fe3}
+  '@nerima-games/mc-save@0.1.0':
+    resolution: {integrity: sha512-Ll2BXTiLXSJ7XadRLzeHUsuS95O5memtxQcOi0b3vg4rCl7NRklyQLBNmu85FXjPPdRG9z8O/L06FMf1U001/A==, tarball: https://npm.pkg.github.com/download/@nerima-games/mc-save/0.1.0/13c4c084ede3cc667049e3fdbc11e71ee8972113}
+    engines: {node: '>=24.0.0', pnpm: '>=11.0.0'}
+
+  '@nerima-games/mc-sim@0.1.32':
+    resolution: {integrity: sha512-0OJqf2x2xczvVrKZcUNe+3sUQzsOKgRiC2hKACJO4T1Jtn9nEyp8bOIuMB0YOL7T2cP+gfzpQQ+3VqKsfX1uzA==, tarball: https://npm.pkg.github.com/download/@nerima-games/mc-sim/0.1.32/b4cdf6cbd9fed5aadb801eee045a9edf1766df10}
     engines: {node: '>=24.0.0', pnpm: '>=11.0.0'}
 
   '@nerima-games/mc-worldgen@0.1.0':
     resolution: {integrity: sha512-h4ZR7nS6N1cDiGI/4sRhRK6OfCkiB9Ie9OPAUDxmsbhMd44PxMNPGScmtFOczCyYTwLRuIw2BE82/ul8FLylUw==, tarball: https://npm.pkg.github.com/download/@nerima-games/mc-worldgen/0.1.0/c99b20a7c7b480da138adef24a30667ff8c757e0}
+    engines: {node: '>=24.0.0', pnpm: '>=11.0.0'}
+
+  '@nerima-games/mc-worldgen@0.1.1':
+    resolution: {integrity: sha512-VI+LZIQV1f07+aAmvm/qN5spDsbJB2kbpEkzIjbdG4sNpgxqmXkJWULfP3axaCv40tNTAS54RVR6DpBBb6N6lw==, tarball: https://npm.pkg.github.com/download/@nerima-games/mc-worldgen/0.1.1/0eae0d1c46e81807c0b440f19b5f9c4e7f4d91bf}
     engines: {node: '>=24.0.0', pnpm: '>=11.0.0'}
 
   '@nodelib/fs.scandir@2.1.5':
@@ -370,6 +384,46 @@ packages:
   '@nodelib/fs.walk@1.2.8':
     resolution: {integrity: sha512-oGB+UxlgWcgQkgwo8GcEGwemoTFt3FIO9ababBmaGwXIoBKZ+GTy0pP185beGg7Llih/NSHSV2XAs1lnznocSg==}
     engines: {node: '>= 8'}
+
+  '@oxlint/darwin-arm64@0.12.0':
+    resolution: {integrity: sha512-UydkjcAImpmBn8JYaMPg0zJrwgWJMGvJagvCnyPfyiBRWAN83Kq+BDgJZgIq+2Te6kvlnoiHWNJKVJmpy0f0BA==}
+    cpu: [arm64]
+    os: [darwin]
+
+  '@oxlint/darwin-x64@0.12.0':
+    resolution: {integrity: sha512-bxLyiAiHzXB56w7cf50YNPpZlK+PMxA8GgHutRSoNK/Z/BR/xsibNLs/9YNUnjHB+PF19+EbIRtJxoHjmbRr8g==}
+    cpu: [x64]
+    os: [darwin]
+
+  '@oxlint/linux-arm64-gnu@0.12.0':
+    resolution: {integrity: sha512-jVkmfoMjPKFDIZySmpykwrCmx5xhpLJdMpUAR8ycEkFRJFp5qKLWZd6cEjiMb7gxmWN6qcCvDVTF/zEs3aRpyQ==}
+    cpu: [arm64]
+    os: [linux]
+
+  '@oxlint/linux-arm64-musl@0.12.0':
+    resolution: {integrity: sha512-8VdV1nKYDj7AFaw1a03Ih43/+pUS/hhMZbTFLRMpvlVp1cPtdB77c+bl/OdiJ/BwNTzLIzr/GrospwCoEJkQKg==}
+    cpu: [arm64]
+    os: [linux]
+
+  '@oxlint/linux-x64-gnu@0.12.0':
+    resolution: {integrity: sha512-MacAt8N4XU5DeoHcseXLom/z+B0seecCz8vGAH4ppF2EH49o7NbN7VvFsw2nZ2QNO/4vw+pdS1BHXLTr9lY6zQ==}
+    cpu: [x64]
+    os: [linux]
+
+  '@oxlint/linux-x64-musl@0.12.0':
+    resolution: {integrity: sha512-/ZBDJ9wpUE6bB05nniQl29kD5vJUMg6n75LdHD8F6ThXfsHGI/n7Je3gzggnXokgf9UQpTUPWrWlfEuWVCBMag==}
+    cpu: [x64]
+    os: [linux]
+
+  '@oxlint/win32-arm64@0.12.0':
+    resolution: {integrity: sha512-hY1ya9dv8VY8113YSSDfMs/989aFmoA2fIZco8uxTxIEVl9nGY6tDtpgKZqUIiGrrMbDO8BBb1G5jsekmfexbA==}
+    cpu: [arm64]
+    os: [win32]
+
+  '@oxlint/win32-x64@0.12.0':
+    resolution: {integrity: sha512-NHLJolo4sZk3nu/bPNuaJ+6p5DdHoRuZAjyuSO6CnLgpmZcYqx7LgngA/x2oB/bLgi4Hv9twjHjODc5Ce5o14g==}
+    cpu: [x64]
+    os: [win32]
 
   '@pkgjs/parseargs@0.11.0':
     resolution: {integrity: sha512-+1VkjdD0QBLPodGrJUeqarH8VAIvQODIbwh9XpP5Syisf7YoQgsJKPNFoqqLQlu+VQ/tVSshMR6loPMn8U+dPg==}
@@ -917,6 +971,11 @@ packages:
 
   outdent@0.5.0:
     resolution: {integrity: sha512-/jHxFIzoMXdqPzTaCpFzAAWhpkSjZPF4Vsn6jAfNpmbH/ymsmd7Qc6VE9BGn0L6YMj6uwpQLxCECpus4ukKS9Q==}
+
+  oxlint@0.12.0:
+    resolution: {integrity: sha512-M0vWq8KYtp4vpweRxcdCiVO8QFwzoRyp5bWTMrEL/0Z+GDKCMJltac7H3T3T09FIiktOZLvID733d7OcKk/caw==}
+    engines: {node: '>=14.*'}
+    hasBin: true
 
   p-filter@2.1.0:
     resolution: {integrity: sha512-ZBxxZ5sL2HghephhpGAQdoskxplTwr7ICaehZwLIlfL6acuVgZPm8yBNuRAFBGEqtD/hmUeq9eqLg2ys9Xr/yw==}
@@ -1558,7 +1617,7 @@ snapshots:
     dependencies:
       effect: 3.22.0
 
-  '@nerima-games/mc-kernel@0.2.7':
+  '@nerima-games/mc-kernel@0.2.16':
     dependencies:
       effect: 3.22.0
 
@@ -1566,13 +1625,23 @@ snapshots:
     dependencies:
       effect: 3.22.0
 
-  '@nerima-games/mc-sim@0.1.23':
+  '@nerima-games/mc-save@0.1.0':
     dependencies:
-      '@nerima-games/mc-kernel': 0.2.7
+      effect: 3.22.0
+
+  '@nerima-games/mc-sim@0.1.32':
+    dependencies:
+      '@nerima-games/mc-kernel': 0.2.16
       '@nerima-games/mc-physics': 0.1.0
+      '@nerima-games/mc-save': 0.1.0
+      '@nerima-games/mc-worldgen': 0.1.1
       effect: 3.22.0
 
   '@nerima-games/mc-worldgen@0.1.0':
+    dependencies:
+      effect: 3.22.0
+
+  '@nerima-games/mc-worldgen@0.1.1':
     dependencies:
       effect: 3.22.0
 
@@ -1587,6 +1656,30 @@ snapshots:
     dependencies:
       '@nodelib/fs.scandir': 2.1.5
       fastq: 1.20.1
+
+  '@oxlint/darwin-arm64@0.12.0':
+    optional: true
+
+  '@oxlint/darwin-x64@0.12.0':
+    optional: true
+
+  '@oxlint/linux-arm64-gnu@0.12.0':
+    optional: true
+
+  '@oxlint/linux-arm64-musl@0.12.0':
+    optional: true
+
+  '@oxlint/linux-x64-gnu@0.12.0':
+    optional: true
+
+  '@oxlint/linux-x64-musl@0.12.0':
+    optional: true
+
+  '@oxlint/win32-arm64@0.12.0':
+    optional: true
+
+  '@oxlint/win32-x64@0.12.0':
+    optional: true
 
   '@pkgjs/parseargs@0.11.0':
     optional: true
@@ -2090,6 +2183,17 @@ snapshots:
       whatwg-url: 5.0.0
 
   outdent@0.5.0: {}
+
+  oxlint@0.12.0:
+    optionalDependencies:
+      '@oxlint/darwin-arm64': 0.12.0
+      '@oxlint/darwin-x64': 0.12.0
+      '@oxlint/linux-arm64-gnu': 0.12.0
+      '@oxlint/linux-arm64-musl': 0.12.0
+      '@oxlint/linux-x64-gnu': 0.12.0
+      '@oxlint/linux-x64-musl': 0.12.0
+      '@oxlint/win32-arm64': 0.12.0
+      '@oxlint/win32-x64': 0.12.0
 
   p-filter@2.1.0:
     dependencies:

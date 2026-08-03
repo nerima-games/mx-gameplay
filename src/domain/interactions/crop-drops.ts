@@ -92,10 +92,10 @@ export const RIPE_CROP_YIELD: Readonly<
 }
 
 /**
- * Missing produce names for known crops whose ripe rule is not implemented.
+ * Reserved for known crops whose ripe rule may later need a non-registry
+ * produce name.
  *
- * Kept as strings so the `unavailable` fallback can describe a vocabulary gap
- * without pretending that the missing name is already an `ItemType`.
+ * Kept as strings so the `unavailable` fallback remains explicit.
  */
 export const MISSING_RIPE_PRODUCE: Readonly<Partial<Record<BlockType, string>>> = {}
 

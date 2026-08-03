@@ -19,14 +19,14 @@ import { StageId } from '../domain/frame-contract'
 /**
  * Stages owned by mx-gameplay.
  *
- * These four are the `interactions`, `entities`, `fluids` and `time/weather`
+ * These are the `interactions`, `entities`, End encounter, `fluids` and `time/weather`
  * slots of the standard skeleton in plan.md §4.2:
  *
  *     input -> simulation(physics -> interactions -> entities -> fluids ->
  *     redstone -> time/weather) -> camera-mirror -> chunk-sync -> render ->
  *     post-fx -> hud-sync
  *
- * mx-gameplay fills four of that skeleton's slots; mx-redstone fills
+ * mx-gameplay fills those gameplay slots; mx-redstone fills
  * `redstone`; mc-sim fills `physics`; mc-render fills `input`, `render` and
  * `post-fx`; mx-ui fills `hud-sync`. NOBODY declares the skeleton itself —
  * mc-compose does (plan.md §2.3-3).
@@ -39,8 +39,14 @@ export const GAMEPLAY_STAGE_IDS = {
    * sees and it should see one thing per responsibility.
    */
   interactions: StageId('gameplay:interactions'),
+  /** Deterministic block fire, burning actors, and extinguishing. */
+  fire: StageId('gameplay:fire'),
+  /** Survival hunger, regeneration, and starvation after activity resolution. */
+  survivalHunger: StageId('gameplay:survival-hunger'),
   /** Mob AI, drops, vehicles, and the falling-block cascade. */
   entities: StageId('gameplay:entities'),
+  /** Ender Dragon encounter progression while the player is in the End. */
+  enderDragon: StageId('gameplay:ender-dragon'),
   /** Budgeted fluid propagation. */
   fluids: StageId('gameplay:fluids'),
   /** Day/night advance and weather transitions. */

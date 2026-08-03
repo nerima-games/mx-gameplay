@@ -43,6 +43,7 @@ describe('public API surface', () => {
         // `stages/registration.ts` on why the array was the obstacle.
         'gameplayModule',
         'makeGameplayFrameState',
+        'setPlayerDead',
         'setPortalCandidates',
         'drainPortalTravels',
         'drainFluidUpdates',
@@ -54,6 +55,7 @@ describe('public API surface', () => {
         'drainMeleeAttackResults',
         'requestTargetedPrimaryAttack',
         'drainMobDrops',
+        'drainMobExperience',
         'spawnDroppedItem',
         'spawnDroppedItems',
         'GAMEPLAY_STAGE_IDS',
@@ -207,8 +209,13 @@ describe('public API surface', () => {
         'settled',
         // fluids — frontier with a per-tick budget
         'DEFAULT_FLUID_FRONTIER_BUDGET',
+        'enqueueFluidDisturbance',
         'splitBudget',
         'carryOver',
+        // bucket use — atomic world/inventory exchange plus fluid disturbance
+        'BUCKET_ITEM_TYPES',
+        'isBucketItem',
+        'useBucket',
         // death — the cause travels to the message
         'DEATH_MESSAGES',
         'describeDeath',
@@ -247,6 +254,8 @@ describe('public API surface', () => {
         'canHostileSpawnAt',
         'CREEPER_DROPS',
         'CREEPER_XP_REWARD',
+        'ZOMBIE_XP_REWARD',
+        'ENDERMAN_XP_REWARD',
         'GHAST_DROPS',
         'GHAST_XP_REWARD',
         'BLAZE_DROPS',
@@ -255,6 +264,8 @@ describe('public API surface', () => {
         'rollMobDrop',
         'rollMobDrops',
         'mobXpReward',
+        'xpRewardOfKind',
+        'experienceOfCasualties',
         // the enderman — a decision and an offset, and no position anywhere
         'ENDERMAN_TELEPORT_MIN_BLOCKS',
         'ENDERMAN_TELEPORT_MAX_BLOCKS',
@@ -312,6 +323,18 @@ describe('public API surface', () => {
         'FORTUNE_MULTIPLIERS',
         'BLOCK_LOOT_ROLLS',
         'NO_TOOL',
+        // enchantments — registry, deterministic table, codec and derivations
+        'ENCHANTMENT_REGISTRY',
+        'enchantmentOffers',
+        'applyEnchantmentOffer',
+        'encodeEnchantedItem',
+        'decodeEnchantedItemSnapshot',
+        'meleeDamageWithEnchantments',
+        'bowDamageWithEnchantments',
+        'armorDamageWithEnchantments',
+        'miningSpeedWithEnchantments',
+        'durabilityWearWithEnchantments',
+        'fortuneDropCountWithEnchantments',
         // weather
         'WEATHERS',
         'advanceWeather',

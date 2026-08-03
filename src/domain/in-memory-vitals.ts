@@ -38,7 +38,10 @@ export type InMemoryVitalsApi = {
   readonly heal: (amount: number) => Effect.Effect<PlayerVitals>
   readonly addExhaustion: (amount: number) => Effect.Effect<void>
   readonly eat: (foodPoints: number, saturationModifier: number) => Effect.Effect<void>
-  readonly advanceFoodTimer: (dt: DeltaTimeSecs) => Effect.Effect<FoodTimerOutcome>
+  readonly advanceFoodTimer: (
+    dt: DeltaTimeSecs,
+    starvationHealthFloor?: number,
+  ) => Effect.Effect<FoodTimerOutcome>
   readonly respawn: Effect.Effect<void>
   readonly restore: (vitals: PlayerVitals) => Effect.Effect<void>
   readonly reset: Effect.Effect<void>
@@ -55,7 +58,10 @@ export const makeInMemoryVitals = (
     const whileAlive = (effect: Effect.Effect<void>): Effect.Effect<void> =>
       Effect.flatMap(service.snapshot, (vitals) => isAlive(vitals) ? effect : Effect.void)
 
-    const advanceFoodTimer = (dt: DeltaTimeSecs): Effect.Effect<FoodTimerOutcome> =>
+    const advanceFoodTimer = (
+      dt: DeltaTimeSecs,
+      starvationHealthFloor = 0,
+    ): Effect.Effect<FoodTimerOutcome> =>
       Effect.gen(function* () {
         const before = yield* service.snapshot
         if (!isAlive(before)) {
@@ -68,7 +74,11 @@ export const makeInMemoryVitals = (
           return { signal, vitals, died: false }
         }
         if (signal === 'starve') {
-          const outcome = yield* service.damage({ amount: 1, cause: 'starvation' })
+          const damage = Math.min(1, Math.max(0, before.healthPoints - starvationHealthFloor))
+          if (damage === 0) {
+            return { signal, vitals: yield* service.snapshot, died: false }
+          }
+          const outcome = yield* service.damage({ amount: damage, cause: 'starvation' })
           return { signal, ...outcome }
         }
 

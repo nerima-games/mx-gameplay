@@ -4,11 +4,8 @@
  *
  * PORTED FROM `interaction-farming-handler.test.ts` (35 cases across four
  * rules). The cases here are the ones that are about PLANTING; the ones about
- * tilling, bone meal and sapling-to-tree are not, because `ITEM_TYPES` has no
- * `hoe` and no `bone_meal` and the rules cannot be written. That is stated in
- * the implementation's header with the noun named, per the porting rule: a
- * blocker written as a category is an impression, a blocker written as a noun
- * is checkable in a minute.
+ * tilling, bone meal and sapling-to-tree are covered by dedicated interaction
+ * modules and tests.
  *
  * The interesting cases are the REFUSALS. "Seed on the right soil grows a crop"
  * is one line and would be hard to get wrong; "nether wart refuses farmland"

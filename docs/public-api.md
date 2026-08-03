@@ -293,8 +293,8 @@ plan.md §4.2 を素直に読むと `input` の後ろでもあり、`redstone` �
 | `PortalTravelEvent` | **契約** | 出発次元・出発セル・`PortalTravelPlan` を束ねる。`portalToCreate` が `Some` のときだけホストが世界生成を行う |
 | `requestTargetedPrimaryAttack` | 内部(可視) | プレイヤーの姿勢から敵とブロックを同じクリックで解決し、敵がブロックより手前なら `pendingMeleeAttacks`、それ以外でブロックがあれば `pendingBreaks` の片方だけに積む |
 | `TargetedPrimaryAttackResult` / `TargetedPrimaryAttackOptions` | 内部(可視) | 結果は `Melee`（`ShotHit`）/ `Block`（`BlockTarget`）/ `None`。既定値は melee reach 3、damage 1、block reach 5 |
-| `PlacementRequest` / `ItemUseRequest` | 内部(可視) | 受信箱に積む要求の形。`ItemUseRequest` は従来の tagless な点火要求を維持しつつ、耕作・ジャガイモの植付け・収穫・食事を `action` で判別する additive union |
-| `requestSoilTill` / `requestPotatoPlanting` / `requestPotatoHarvest` / `requestPotatoFoodUse` / `drainItemUseResults` | **契約** | 相関 ID 付きの farming use enqueue/drain。耕作と植付けは gameplay が world write を行う。収穫の成熟状態と乱数、食事前の vitals は host が渡し、結果に従う inventory・vitals 反映も host が所有する |
+| `PlacementRequest` / `ItemUseRequest` | 内部(可視) | 受信箱に積む要求の形。`ItemUseRequest` は従来の tagless な点火要求を維持しつつ、耕作・ジャガイモの植付け・収穫・食事・炉進行を `action` で判別する additive union |
+| `requestSoilTill` / `requestPotatoPlanting` / `requestPotatoHarvest` / `requestPotatoFoodUse` / `requestFurnaceAdvance` / `drainItemUseResults` | **契約** | 相関 ID 付きの item use enqueue/drain。炉は host 所有の snapshot を最大 10 秒だけ決定的に進め、未処理時間と typed plan を返す。耕作と植付けは gameplay が world write を行う。収穫の成熟状態と乱数、食事前の vitals は host が渡し、結果に従う inventory・vitals・炉状態の反映も host が所有する |
 | `requestTargetedBlockUse` / `requestBlockUse` / `drainBlockUseResults` | **契約** | レバーを優先する use 入り口と、`requestId` で相関した結果の enqueue/drain。非レバーなら通常の配置へフォールバックし、レバーなら配置しない |
 | `BlockUseRequestId` / `BlockUseRequest` / `BlockUseResult` | **契約** | 成否を入力イベントへ返す相関付きプロトコル。結果は 1 回だけ drain される |
 | `LAVA_TICK_INTERVAL` | 内部(可視) | 暫定値。プレビューで測って決める |
@@ -308,7 +308,7 @@ plan.md §4.2 を素直に読むと `input` の後ろでもあり、`redstone` �
 | `fluidFrontier` | 流体のフロンティア | 同上 |
 | `tickCount` | 溶岩の tick を刻む | 同上 |
 | `pendingBreaks` | **受信箱**。今フレームの破壊要求 | 要らない。セーブが記録するのは「ブロックが無い」ことであって「ボタンが押されていた」ことではない |
-| `pendingItemUses` / `itemUseResults` | **受信箱 / 送信箱**。今フレームの点火・耕作・ジャガイモ使用要求と相関結果 | 要らない。`pendingBreaks` と同じ理由。作物の経過時間は mc-sim が所有し、収穫要求は host が判定済みの `ripe` と `roll` だけを渡す |
+| `pendingItemUses` / `itemUseResults` | **受信箱 / 送信箱**。今フレームの点火・耕作・ジャガイモ・炉進行要求と相関結果 | 要らない。`pendingBreaks` と同じ理由。作物の経過時間と炉状態は mc-sim / host が所有し、gameplay は判定済み入力から plan だけを返す |
 | `usedItems` | **送信箱**。点火に使われた道具。`consumedItems` と**別**なのは、`InventoryService` の動詞が違う（消費ではなく耐久の消耗）からである | 要らない。同上 |
 | `pendingBlockUses` / `blockUseResults` | 相関 ID 付きのレバー use 受信箱 / 結果送信箱 | 要らない。レバーの on/off はホストのワールド状態であり、ここには保存しない |
 | `portalCandidates` / `portalTravels` | 宛先次元別の既知ポータル snapshot / 成立した移動の送信箱 | 要らない。ポータル台帳と生成済み世界はホストが保存し、ここにはフレーム間の受け渡しだけを置く |
@@ -433,8 +433,8 @@ kernel の `StageRegistration` に対してそのまま代入できる。
 | `Explosion` / `ExplosionSource` / `CREEPER_EXPLOSION_POWER` | 内部(可視) | 3。`Explosion` は**座標を持たない**（座標は mc-sim の事実で、ホストが既に持っている） |
 
 **爆発は 2 つの半径を持つ。** ダメージは `power * 2` = 6 ブロック、クレーターは `floor(power)` = 3 ブロック。
-クレーターは**未実装**である（ブロックを書くルールなので `ChunkStoreApi` が要り、
-`disturb` を呼ばないと砂が宙に浮く。DN-GP-1 が別方向から現れる）。
+クレーターは `interactions/` の爆発解決で実装済みである（`ChunkStoreApi` へ書き込み、
+`disturb` で周辺の更新を通知する。DN-GP-1 の責務境界を守る）。
 
 ### domain/mob/hostile-spawn.ts
 
@@ -545,6 +545,14 @@ kernel 監査 §4.9 が `solid` への統合を禁じている理由がその行
 | `splitBudget` / `carryOver` | 内部(可視) | 2 つに分けてあるのが要点（DN-GP-2） |
 | `FluidKind` / `FluidWorkItem` / `FluidBudgetSplit` | 内部(可視) | |
 | `DEFAULT_FLUID_FRONTIER_BUDGET` | 内部(可視) | 64。暫定値 |
+
+次 tick の frontier は `carryOver(frontier, split)` の戻り値だけを再投入する。
+`retainedLavaFrontier` は診断用の position key 一覧であり、別途再投入すると溶岩を二重登録する。
+評価済み判定の identity は `(position key, fluid kind)` で、水と溶岩が同じ座標にある場合も区別する。
+
+流体ステージが適用した更新は `drainFluidUpdates` でホストへ渡す。この操作は
+outbox を空にする破壊的な読み出しで、同一プロセス内では **at-most-once** である。
+永続化や配送確認を含む end-to-end の exactly-once 境界ではない。
 
 ### domain/interactions/break-block.ts（**バレルから re-export しない**）
 
@@ -690,6 +698,7 @@ mc-sim の**純粋関数**（`spawnEntity` / `sweepRoster` / `normaliseRoster` �
 | `resolveRailShape` | 内部(可視) | 周囲 4 方向のレールから形を決める全域関数。**import が 1 本も無い。** 最大 12 回、注入された述語を呼ぶだけで、`ChunkStoreApi` を名指さない |
 | `RailShape` | 内部(可視) | `'ns'` / `'ew'` / `'curve'` / `'isolated'`。`'isolated'` は「分からない」ではなく「**何も拘束しない**」である |
 | `IsRailAt` | 内部(可視) | `(wx, wy, wz) => boolean`。**注入される述語**で、`mc-physics` の `IsBlockSolid` と同じ形。ブロック ID を名指さずに済ませる仕掛けそのもので、呼び出し側は kernel の `railKind` から作る（plan.md §3.4） |
+| `projectMinecartVelocity` | 内部(可視) | `RailShape` 上の水平速度を、その形に沿う向きへ投影する。速度の大きさは `Math.hypot` で保存し、`isolated` は入力をそのまま返す |
 
 ### domain/vehicle/rail-ascent.ts
 
@@ -698,10 +707,10 @@ mc-sim の**純粋関数**（`spawnEntity` / `sweepRoster` / `normaliseRoster` �
 | `isAscendingAhead` | 内部(可視) | 向きの先・1 ブロック上にレールがあるか。**`isRailAt` をちょうど 1 回**呼ぶ。速度の形をした引数を取るが**大きさは答えに届かない**（[responsibility.md](./responsibility.md) §5-1。`test/rail.test.ts` が正の定数倍で固定） |
 | `RAIL_HEADING_EPSILON` | 内部(可視) | `1e-9`。**転記であって正当化ではない**ことを定数の doc comment に明記してある。参照実装 `rail-shape.ts:74` に測定は無い |
 
-> **`projectMinecartVelocity` と `RAIL_CLIMB_SPEED` はここに無い。** どちらも所有権としては
-> このリポジトリのものだが、消費者（＝速度を持つ乗り物）が `mc-sim` にまだ無い。
-> 判断は [responsibility.md](./responsibility.md) §5 が唯一の記述で、§6 の基準に照らせば
-> **昇格どころか実装がまだ早い**側である。
+> **`RAIL_CLIMB_SPEED` はここに無い。** これは速度そのものなので、消費者が揃う
+> `mc-sim` 側の配線と一緒に来るべき値である。判断は [responsibility.md](./responsibility.md)
+> §5 が唯一の記述で、§6 の基準に照らせば、今ここにあるのは `projectMinecartVelocity`
+> までである。
 
 ## 6. 契約を足すときの基準
 

@@ -43,7 +43,7 @@ import {
 import { canHostileSpawnAt } from '../../src/domain/mob/hostile-spawn'
 import { carryOver, splitBudget, type FluidWorkItem } from '../../src/domain/fluid-frontier'
 import { DeltaTimeSecs, MAX_STACK_COUNT } from '../../src/domain/frame-contract'
-import { GAMEPLAY_STAGE_IDS } from '../../stages/stage-ids'
+import { GAMEPLAY_STAGE_IDS } from '../../src/stages/stage-ids'
 import { SCENARIOS, scenarioByName } from './scenarios'
 import {
   approach,

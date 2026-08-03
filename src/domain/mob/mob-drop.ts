@@ -123,10 +123,16 @@ export const ZOMBIE_DROPS: ReadonlyArray<MobDropRule> = [
   { item: 'rotten_flesh', count: 0, maxCount: 2 },
 ]
 
+/** Experience for killing a zombie. */
+export const ZOMBIE_XP_REWARD = 5
+
 /** A slain enderman drops zero or one ender pearl. */
 export const ENDERMAN_DROPS: ReadonlyArray<MobDropRule> = [
   { item: 'ender_pearl', count: 0, maxCount: 1 },
 ]
+
+/** Experience for killing an enderman. */
+export const ENDERMAN_XP_REWARD = 5
 
 /**
  * Experience for killing a creeper. `mobs/creeper.ts:17`.

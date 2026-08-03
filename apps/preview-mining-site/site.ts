@@ -79,22 +79,26 @@ import { FALLING_BLOCK_MOVES_PER_TICK } from '../../src/domain/falling-block'
 import { DeltaTimeSecs, type StageRegistration } from '../../src/domain/frame-contract'
 import { NO_TOOL, type BlockLootContext, type MinedItem } from '../../src/domain/interactions/block-loot'
 import type { EntityManagerApi } from '../../src/domain/entity-manager-port'
+import { spawnMobDrops } from '../../src/domain/entities/dropped-item'
 import {
   isDroppedItemBehaviour,
   type MobBehaviour,
+  type MobExperienceEvent,
 } from '../../src/domain/entities/mob-frame'
 import { isSupportSensitiveOfBlock, placementVerdict } from '../../src/domain/interactions/place-block'
 import type { PositionKey } from '../../src/domain/position-key'
 import { INITIAL_WEATHER, type WeatherState } from '../../src/domain/weather'
 import type { IgnitionItemType } from '../../src/domain/interactions/use-flint-and-steel'
 import {
+  drainMobDrops,
+  drainMobExperience,
   gameplayStages,
   makeGameplayFrameState,
   requestItemUse as enqueueItemUse,
   type GameplayFrameState,
   type PlacementRequest,
-} from '../../stages/registration'
-import { GAMEPLAY_STAGE_IDS } from '../../stages/stage-ids'
+} from '../../src/stages/registration'
+import { GAMEPLAY_STAGE_IDS } from '../../src/stages/stage-ids'
 import { FrameServicesLayer } from './frame-services'
 import {
   makePreviewInventory,
@@ -199,6 +203,10 @@ export type Site = {
    * it would change nothing.
    */
   inventory: ReadonlyMap<string, number>
+  /** XP credited by this preview host after draining the gameplay outbox. */
+  experience: number
+  /** The host-owned audit trail behind `experience`, in credit order. */
+  experienceLedger: ReadonlyArray<MobExperienceEvent>
   /** The weather the host is feeding back in, drained out of `weatherAdvanced`. */
   weather: WeatherState
   /** What the host is telling the rules the player is holding. Mirrors `state.heldTool`. */
@@ -277,6 +285,8 @@ export const makeSite = (
       bounds,
       frame: 0,
       inventory: new Map<string, number>(),
+      experience: 0,
+      experienceLedger: [],
       weather: INITIAL_WEATHER,
       tool: NO_TOOL,
       trace: [],
@@ -284,6 +294,17 @@ export const makeSite = (
       scenario,
       submitted: 0,
     }
+  })
+
+/** Materialise and credit the reward outboxes owned by the preview host. */
+export const drainMobRewards = (site: Site) =>
+  Effect.gen(function* () {
+    const drops = yield* drainMobDrops(site.state)
+    const experience = yield* drainMobExperience(site.state)
+
+    yield* spawnMobDrops(site.roster, drops).pipe(Effect.orDie)
+    site.experienceLedger = [...site.experienceLedger, ...experience]
+    site.experience += experience.reduce((total, event) => total + event.amount, 0)
   })
 
 /**
@@ -335,12 +356,9 @@ export const requestBreak = (site: Site, position: BlockPosition): Effect.Effect
 /**
  * Queue a placement at this position. The other one.
  *
- * THE HOST DOES NOT CHECK THE INVENTORY, and that gap is deliberate rather than
- * missing. `placeBlock` consumes an item and reports which; whether the player
- * HAD one is a question about mc-sim's `InventoryService`, and a preview that
- * enforced it would be inventing the stack-size half of a service it is only
- * standing in for. What the HUD does instead is print the running total, so a
- * player watching it go negative is watching the missing check.
+ * Inventory ownership stays in the stage. It reserves one item before calling
+ * `placeBlock`, restores it when placement is refused, and leaves an empty
+ * inventory as a no-op. The preview only queues the request.
  */
 export const requestPlace = (
   site: Site,
@@ -470,6 +488,7 @@ export const stepFrame = (site: Site): Effect.Effect<FrameRow> =>
     yield* Effect.forEach(site.stages, (stage) => stage.run(FRAME_DELTA), { discard: true }).pipe(
       Effect.provide(FrameServicesLayer),
     )
+    yield* drainMobRewards(site)
 
     // WHAT THE MINING HALF DOES NOW: nothing. The stage already called
     // `InventoryService.add` for every stack it mined, inside the frame, so
@@ -486,21 +505,12 @@ export const stepFrame = (site: Site): Effect.Effect<FrameRow> =>
         : [],
     )
 
-    // THE OTHER DIRECTION IS STILL A LIST, and the host still pays for it.
-    // `stages/registration.ts` declines to call `remove` from the stage,
-    // because `placeBlock` has already written the cell by then and a `remove`
-    // that came back `0` would leave the player a block they never had. So the
-    // charge happens HERE, after the fact, which is exactly the defect that
-    // paragraph is about — visible on this screen as a count that can go
-    // negative, and not fixable from a host.
+    // Placement already reserved and consumed the item inside the stage. This
+    // list is a frame audit record, not deferred inventory work.
     const spent = yield* Ref.getAndSet<ReadonlyArray<PlaceableItemType>>(
       site.state.consumedItems,
       [],
     )
-    for (const item of spent) {
-      yield* site.inventoryService.api.remove(item, 1)
-    }
-
     // The HUD's number, refreshed from the SERVICE rather than tallied here.
     site.inventory = yield* site.inventoryService.held
 
