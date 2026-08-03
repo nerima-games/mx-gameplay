@@ -4,6 +4,7 @@ import {
   SPEED_MOVEMENT_MULTIPLIER,
   applyStatusEffect,
   emptyStatusEffectState,
+  isValidStatusEffectState,
   tickStatusEffects,
 } from '../src/domain/status-effect'
 
@@ -142,5 +143,21 @@ describe('status effects', () => {
     expect(active.movementSpeedMultiplier).toBe(SPEED_MOVEMENT_MULTIPLIER)
     expect(expired.movementSpeedMultiplier).toBe(1)
     expect(expired.state.effects).toStrictEqual([])
+  })
+
+  it('validates saved effects before restoration', () => {
+    expect(isValidStatusEffectState(emptyStatusEffectState())).toBe(true)
+    expect(isValidStatusEffectState({
+      effects: [{ type: 'poison', remainingSecs: 10, pulseClockSecs: 0, amplifier: 1 }],
+    })).toBe(true)
+    expect(isValidStatusEffectState({
+      effects: [
+        { type: 'poison', remainingSecs: 10, pulseClockSecs: 0 },
+        { type: 'poison', remainingSecs: 5, pulseClockSecs: 0 },
+      ],
+    })).toBe(false)
+    expect(isValidStatusEffectState({
+      effects: [{ type: 'speed', remainingSecs: Number.POSITIVE_INFINITY, pulseClockSecs: 0 }],
+    })).toBe(false)
   })
 })

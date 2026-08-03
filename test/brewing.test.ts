@@ -3,6 +3,7 @@ import {
   BREWING_DURATION_SECS,
   collectBrewingBottle,
   emptyBrewingStandState,
+  isValidBrewingStandState,
   acceptBrewingBottle,
   acceptBrewingFuel,
   acceptBrewingIngredient,
@@ -88,5 +89,22 @@ describe('basic brewing runtime', () => {
 
     expect(result).toStrictEqual({ _tag: 'Rejected', reason: 'InvalidRecipe' })
     expect(unchanged).toBe(withBottle)
+  })
+
+  it('validates saved state before restoration', () => {
+    expect(isValidBrewingStandState(emptyBrewingStandState())).toBe(true)
+    expect(isValidBrewingStandState({
+      fuelUnits: 0,
+      bottle: { potion: 'speed' },
+      ingredient: undefined,
+      brewing: { output: 'speed', remainingSecs: 10 },
+    })).toBe(true)
+    expect(isValidBrewingStandState({ ...emptyBrewingStandState(), fuelUnits: -1 })).toBe(false)
+    expect(isValidBrewingStandState({
+      fuelUnits: 0,
+      bottle: undefined,
+      ingredient: undefined,
+      brewing: { output: 'speed', remainingSecs: 10 },
+    })).toBe(false)
   })
 })

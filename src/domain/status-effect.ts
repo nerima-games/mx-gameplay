@@ -53,6 +53,40 @@ export const PLAYER_MAXIMUM_HEALTH_POINTS = 20
 
 export const emptyStatusEffectState = (): StatusEffectState => ({ effects: [] })
 
+const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
+  typeof value === 'object' && value !== null
+
+const isStatusEffectType = (value: unknown): value is StatusEffectType =>
+  typeof value === 'string' && STATUS_EFFECT_TYPES.includes(value as StatusEffectType)
+
+const isFiniteNonNegative = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isFinite(value) && value >= 0
+
+/** Validates an untrusted saved status-effect snapshot before restoring gameplay state. */
+export const isValidStatusEffectState = (value: unknown): value is StatusEffectState => {
+  const effects = isRecord(value) ? value['effects'] : undefined
+  if (!Array.isArray(effects)) return false
+  const types = new Set<StatusEffectType>()
+  return effects.every((effect) => {
+    if (!isRecord(effect)) return false
+    const type = effect['type']
+    const remainingSecs = effect['remainingSecs']
+    const pulseClockSecs = effect['pulseClockSecs']
+    const amplifier = effect['amplifier']
+    if (!isStatusEffectType(type) || types.has(type)) return false
+    if (!isFiniteNonNegative(remainingSecs) || remainingSecs === 0) return false
+    if (!isFiniteNonNegative(pulseClockSecs)) return false
+    if (
+      amplifier !== undefined
+      && (typeof amplifier !== 'number' || !Number.isInteger(amplifier) || amplifier < 0)
+    ) {
+      return false
+    }
+    types.add(type)
+    return true
+  })
+}
+
 const finiteDuration = (durationSecs: number): number =>
   Number.isFinite(durationSecs) ? Math.max(0, durationSecs) : 0
 

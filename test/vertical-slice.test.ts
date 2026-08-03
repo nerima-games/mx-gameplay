@@ -88,6 +88,7 @@ import { NOON_FRACTION } from '../src/domain/day-night'
 import {
   addVillager,
   emptyVillagerTradeState,
+  isValidVillagerTradeState,
   makeVillager,
   useVillagerOffer,
   VILLAGER_RESTOCK_INTERVAL_SECS,
@@ -2443,6 +2444,19 @@ describe('the potato farming slice: host input reaches farming rules', () => {
 })
 
 describe('the villager trading slice: host input reaches deterministic offers', () => {
+  it('validates persisted villager trade invariants', () => {
+    const villager = makeVillager('validation-farmer', 'farmer')
+    expect(isValidVillagerTradeState({ villagers: [villager], restockElapsedSecs: 0 })).toBe(true)
+    expect(isValidVillagerTradeState({
+      villagers: [{ ...villager, offers: [{ ...villager.offers[0]!, uses: 17 }] }],
+      restockElapsedSecs: 0,
+    })).toBe(false)
+    expect(isValidVillagerTradeState({
+      villagers: [villager, villager],
+      restockElapsedSecs: 0,
+    })).toBe(false)
+  })
+
   it.effect('atomically exchanges items and persists offer stock through snapshots', () =>
     Effect.gen(function* () {
       const slots = emptySlots().map((_, index) =>
