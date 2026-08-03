@@ -8,6 +8,7 @@
  */
 import { describe, expect, it } from '@effect/vitest'
 import { Effect } from 'effect'
+import { blockIdOf } from '@nerima-games/mc-kernel'
 import {
   applyDamage,
   DEATH_MESSAGES,
@@ -22,6 +23,7 @@ import {
   disturb,
   emptyFallingBlockQueue,
   FALLING_BLOCK_MOVES_PER_TICK,
+  planFallingBlockMoves,
   settled,
   takeBatch,
 } from '../src/domain/falling-block'
@@ -106,6 +108,30 @@ describe('falling blocks: the O(chunks × blocks) full scan must not come back',
       const after = disturb(before, [positionKey('b')])
       expect([...before.pending]).toStrictEqual(['a'])
       expect([...after.pending]).toStrictEqual(['a', 'b'])
+    }),
+  )
+
+  it.effect('plans one-cell moves through a storage-free read boundary', () =>
+    Effect.sync(() => {
+      const sand = blockIdOf('sand')
+      const air = blockIdOf('air')
+      const blocks = new Map<string, number>([
+        ['0,64,0', sand],
+        ['0,63,0', air],
+      ])
+      const moves = planFallingBlockMoves([{ x: 0, y: 63, z: 0 }], (at) => blocks.get(`${String(at.x)},${String(at.y)},${String(at.z)}`))
+
+      expect(moves).toStrictEqual([{
+        source: { x: 0, y: 64, z: 0 },
+        target: { x: 0, y: 63, z: 0 },
+        blockId: sand,
+      }])
+    }),
+  )
+
+  it.effect('does not move across an unavailable world boundary', () =>
+    Effect.sync(() => {
+      expect(planFallingBlockMoves([{ x: 0, y: 63, z: 0 }], () => undefined)).toStrictEqual([])
     }),
   )
 })

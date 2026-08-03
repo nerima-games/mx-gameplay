@@ -47,6 +47,7 @@
  * collection.
  */
 
+import { blockIdOf, capabilityOfBlockId } from '@nerima-games/mc-kernel'
 import type { PositionKey } from './position-key'
 
 /**
@@ -133,3 +134,49 @@ export const settled = (
   queue: FallingBlockQueue,
   destinations: Iterable<PositionKey>,
 ): FallingBlockQueue => disturb(queue, destinations)
+
+/** A public, storage-agnostic coordinate for hosts that do not use ChunkStoreApi. */
+export type FallingBlockPosition = Readonly<{ x: number; y: number; z: number }>
+
+export type PlannedFallingBlockMove = Readonly<{
+  source: FallingBlockPosition
+  target: FallingBlockPosition
+  blockId: number
+}>
+
+export type FallingBlockRead = (at: FallingBlockPosition) => number | undefined
+
+const fallingPositionKey = ({ x, y, z }: FallingBlockPosition): string => `${String(x)},${String(y)},${String(z)}`
+
+/**
+ * Plan one-cell falling moves against a synchronous world view.
+ *
+ * The planner is deliberately storage-free: multiplayer hosts own persistence
+ * and replication, while this module remains the single owner of the physical
+ * rule. `undefined` means unavailable or out of bounds and prevents a move.
+ */
+export const planFallingBlockMoves = (
+  targets: Iterable<FallingBlockPosition>,
+  readBlock: FallingBlockRead,
+): ReadonlyArray<PlannedFallingBlockMove> => {
+  const overlay = new Map<string, number>()
+  const read = (at: FallingBlockPosition): number | undefined => overlay.get(fallingPositionKey(at)) ?? readBlock(at)
+  const air = blockIdOf('air')
+  const moves: Array<PlannedFallingBlockMove> = []
+
+  for (const target of targets) {
+    const source = { x: target.x, y: target.y + 1, z: target.z }
+    const material = read(source)
+    const destination = read(target)
+    if (material === undefined || destination === undefined) continue
+    if (!capabilityOfBlockId(material, 'fallsWhenUnsupported')) continue
+    if (!capabilityOfBlockId(destination, 'replaceable')) continue
+
+    const move = { source, target: { ...target }, blockId: material }
+    moves.push(move)
+    overlay.set(fallingPositionKey(source), air)
+    overlay.set(fallingPositionKey(target), material)
+  }
+
+  return moves
+}
