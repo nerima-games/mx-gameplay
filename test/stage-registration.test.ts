@@ -224,6 +224,7 @@ describe('§2.3-3 the total order belongs to mc-compose', () => {
       const byId = new Map(stages.map((stage) => [stage.id, stage]))
 
       expect(stageIds(stages)).toStrictEqual([
+        GAMEPLAY_STAGE_IDS.vehicles,
         GAMEPLAY_STAGE_IDS.interactions,
         GAMEPLAY_STAGE_IDS.fire,
         GAMEPLAY_STAGE_IDS.survivalHunger,
@@ -233,6 +234,9 @@ describe('§2.3-3 the total order belongs to mc-compose', () => {
         GAMEPLAY_STAGE_IDS.timeWeather,
       ])
 
+      expect(byId.get(GAMEPLAY_STAGE_IDS.vehicles)?.after).toStrictEqual([
+        UPSTREAM_STAGE_IDS.simPhysics,
+      ])
       expect(byId.get(GAMEPLAY_STAGE_IDS.interactions)?.after).toStrictEqual([
         UPSTREAM_STAGE_IDS.simPhysics,
       ])
@@ -1332,7 +1336,7 @@ describe('the module contract has caught up with this file’s shape', () => {
   // what mc-worldgen and mc-sim supply. Any registration service leaking into `RIn`
   // would be mx-gameplay claiming to construct part of somebody else's
   // repository.
-  it.effect('acquires exactly five services to register — store, roster, inventory, player and time', () =>
+  it.effect('acquires exactly five services to register and exposes eight stages', () =>
     Effect.gen(function* () {
       const registration: Effect.Effect<
         ReadonlyArray<StageRegistration>,
@@ -1348,7 +1352,7 @@ describe('the module contract has caught up with this file’s shape', () => {
       const satisfied: Effect.Effect<ReadonlyArray<StageRegistration>, never, never> =
         Effect.provide(registration, emptyWorld)
 
-      expect(yield* satisfied).toHaveLength(7)
+      expect(yield* satisfied).toHaveLength(8)
     }),
   )
 

@@ -89,6 +89,7 @@ import {
   type FurnaceState,
   type InventoryServiceApi,
   type TimeServiceApi,
+  type VehicleServiceApi,
 } from '@nerima-games/mc-sim'
 import { Effect, Effectable, Layer, Option, Readable, Ref } from 'effect'
 import {
@@ -313,6 +314,7 @@ import {
   type EnderDragonEncounterStageApi,
 } from './ender-dragon-encounter-stage'
 import { GAMEPLAY_STAGE_IDS, UPSTREAM_STAGE_IDS } from './stage-ids'
+import { advanceVehicles, type VehicleFrameEnvironment } from '../domain/vehicle/vehicle-frame'
 
 export const resolveArmoredPlayerDamages = (
   inventory: InventoryServiceApi,
@@ -2707,7 +2709,17 @@ export const gameplayStages = (
   inventory: InventoryServiceApi,
   player: PlayerServiceApi,
   time: TimeServiceApi,
+  vehicleService?: VehicleServiceApi,
+  vehicleEnvironment?: VehicleFrameEnvironment,
 ): ReadonlyArray<StageRegistration> => [
+  {
+    id: GAMEPLAY_STAGE_IDS.vehicles,
+    after: [UPSTREAM_STAGE_IDS.simPhysics],
+    run: (dt: Parameters<StageRegistration['run']>[0]) =>
+      vehicleService === undefined
+        ? Effect.void
+        : advanceVehicles(store, vehicleService, dt, vehicleEnvironment),
+  },
   {
     id: GAMEPLAY_STAGE_IDS.interactions,
     after: [UPSTREAM_STAGE_IDS.simPhysics],

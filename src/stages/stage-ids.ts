@@ -32,6 +32,8 @@ import { StageId } from '../domain/frame-contract'
  * mc-compose does (plan.md §2.3-3).
  */
 export const GAMEPLAY_STAGE_IDS = {
+  /** Rail and water vehicle integration after physics has advanced. */
+  vehicles: StageId('gameplay:vehicles'),
   /**
    * Break / place / item use / mob interaction. The ~40 one-rule-per-file
    * handlers of plan.md §3.11 all run inside this single stage; they are many
@@ -43,7 +45,7 @@ export const GAMEPLAY_STAGE_IDS = {
   fire: StageId('gameplay:fire'),
   /** Survival hunger, regeneration, and starvation after activity resolution. */
   survivalHunger: StageId('gameplay:survival-hunger'),
-  /** Mob AI, drops, vehicles, and the falling-block cascade. */
+  /** Mob AI, drops, and the falling-block cascade. */
   entities: StageId('gameplay:entities'),
   /** Ender Dragon encounter progression while the player is in the End. */
   enderDragon: StageId('gameplay:ender-dragon'),
