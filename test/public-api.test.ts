@@ -58,6 +58,7 @@ describe('public API surface', () => {
         'drainMobExperience',
         'spawnDroppedItem',
         'spawnDroppedItems',
+        'requestBucketUse',
         'GAMEPLAY_STAGE_IDS',
         'UPSTREAM_STAGE_IDS',
         'isPlaceableItem',

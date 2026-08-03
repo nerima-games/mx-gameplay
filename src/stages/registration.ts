@@ -297,6 +297,11 @@ import {
   type IgnitionOutcome,
   type IgnitionItemType,
 } from '../domain/interactions/use-flint-and-steel'
+import {
+  useBucket,
+  type BucketItemType,
+  type BucketUseOutcome,
+} from '../domain/interactions/use-bucket'
 import type { PositionKey } from '../domain/position-key'
 import type { ItemType } from '../domain/item-vocabulary'
 import {
@@ -1088,7 +1093,20 @@ export type FurnaceItemUseRequest = {
   readonly deltaTimeSecs: number
 }
 
-export type ItemUseRequest = IgnitionItemUseRequest | FarmingItemUseRequest | FurnaceItemUseRequest
+export type BucketItemUseRequest = {
+  readonly action: 'UseBucket'
+  readonly requestId: ItemUseRequestId
+  readonly positionKey: PositionKey
+  readonly heldItem: BucketItemType
+  readonly activeDimension: Dimension
+  readonly targetDimension: Dimension
+}
+
+export type ItemUseRequest =
+  | IgnitionItemUseRequest
+  | FarmingItemUseRequest
+  | FurnaceItemUseRequest
+  | BucketItemUseRequest
 
 /** Host-provided correlation key for one item-use request. */
 export type ItemUseRequestId = string
@@ -1157,6 +1175,25 @@ export type FurnaceItemUseResult = {
   readonly plan: FurnaceAdvancePlan
 }
 
+type SuccessfulBucketUseOutcome = Extract<BucketUseOutcome, { readonly _tag: 'Collected' | 'Placed' }>
+type FailedBucketUseOutcome = Exclude<BucketUseOutcome, SuccessfulBucketUseOutcome>
+
+export type BucketItemUseResult =
+  | {
+      readonly action: 'UseBucket'
+      readonly requestId: ItemUseRequestId
+      readonly heldItem: BucketItemType
+      readonly success: true
+      readonly outcome: SuccessfulBucketUseOutcome
+    }
+  | {
+      readonly action: 'UseBucket'
+      readonly requestId: ItemUseRequestId
+      readonly heldItem: BucketItemType
+      readonly success: false
+      readonly outcome: FailedBucketUseOutcome
+    }
+
 export type PlayerDeadItemUseResult = {
   readonly requestId: ItemUseRequestId
   readonly success: false
@@ -1167,6 +1204,7 @@ export type ItemUseResult =
   | IgnitionItemUseResult
   | FarmingItemUseResult
   | FurnaceItemUseResult
+  | BucketItemUseResult
   | PlayerDeadItemUseResult
 
 /**
@@ -1650,6 +1688,26 @@ export const requestItemUse = (
     ...pending,
     { requestId, positionKey: positionKeyOf(position), heldItem },
   ])
+
+/** Enqueue one atomic bucket use with an explicitly declared dimension boundary. */
+export const requestBucketUse = (
+  state: GameplayFrameState,
+  requestId: ItemUseRequestId,
+  position: BlockPosition,
+  heldItem: BucketItemType,
+  activeDimension: Dimension,
+  targetDimension: Dimension = activeDimension,
+): Effect.Effect<void> => {
+  const request: BucketItemUseRequest = {
+    action: 'UseBucket',
+    requestId,
+    positionKey: positionKeyOf(position),
+    heldItem,
+    activeDimension,
+    targetDimension,
+  }
+  return Ref.update(state.pendingItemUses, (pending) => [...pending, request])
+}
 
 /** Enqueue a hoe use against the targeted ground cell. */
 export const requestSoilTill = (
@@ -3187,6 +3245,32 @@ export const gameplayStages = (
                   consumedCount: success ? 1 : 0,
                   outcome,
                 })
+                break
+              }
+              case 'UseBucket': {
+                const outcome = yield* useBucket(store, inventory, state.fluidFrontier, {
+                  activeDimension: request.activeDimension,
+                  targetDimension: request.targetDimension,
+                  position: positionOfKey(request.positionKey),
+                  heldItem: request.heldItem,
+                })
+                if (outcome._tag === 'Collected' || outcome._tag === 'Placed') {
+                  itemUseResults.push({
+                    action: request.action,
+                    requestId: request.requestId,
+                    heldItem: request.heldItem,
+                    success: true,
+                    outcome,
+                  })
+                } else {
+                  itemUseResults.push({
+                    action: request.action,
+                    requestId: request.requestId,
+                    heldItem: request.heldItem,
+                    success: false,
+                    outcome,
+                  })
+                }
                 break
               }
               case 'AdvanceFurnace': {

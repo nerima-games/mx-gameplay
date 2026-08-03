@@ -350,62 +350,24 @@ mx-gameplay の supporting declarations に載る。
 **したがってこの行を閉じることは 4 週間の publish 時計を使う判断であり、配線作業ではない。**
 判断そのものは記録されていないので、この行は 🟡 のままにしてある。
 
-## 7. kernel への名簿要求 —— アイテム 8 語
+## 7. アイテム語彙と残る能力境界
 
-責務 1 の「アイテム使用」で**書けなかったもの**の全部が、この 1 表である。
-mc-sim の 7 語要求が先例で、**要求として出すのが正しく、こちらで綴るのは誤り**である
-（kernel audit §4.9.1(c)）。
+`mc-kernel` は `bucket` / `water_bucket` / `lava_bucket`、各種鍬、`shears`、`bow`、`arrow`、
+`ender_pearl` を現在の `ITEM_TYPES` として公開している。したがって gameplay は語彙を発明せず、
+その型を直接受けてアイテム使用を実行できる。
 
-| 要求する語 | 何のルールが待っているか | ほかに要るもの |
+| 語彙 | gameplay の責務 | 状態 |
 | --- | --- | --- |
-| `bucket` / `water_bucket` / `lava_bucket` | 汲む / 撒く（`interaction-bucket-handler/`）。流体側は `domain/fluid-frontier.ts` が既に持っている | なし。**語だけで書ける** |
-| `shears` | 葉・草の採取、および羊の毛刈り | 毛刈りのほうは mc-sim の名簿（羊が要る） |
-| `hoe` | 耕す（`dirt` / `grass_block` → `farmland`）。3 ブロックとも registry にある | なし。**語だけで書ける** |
-| `bow` / `arrow` | 射る。**ルールは書けており、フレームからも回っている**（`domain/interactions/draw-bow.ts` / `bow-shot.ts` / `knockback.ts`） | なし。**語だけで閉じる**（§7-1） |
-| `ender_pearl` | 投げる。**ルールは書けており、フレームからも回っている**（`domain/interactions/throw-ender-pearl.ts`） | なし。**語だけで閉じる**（§7-1） |
+| `bucket` / `water_bucket` / `lava_bucket` | `use-bucket.ts` が world cell と `InventoryService` を原子的に交換し、`requestBucketUse` が次元境界を明示して interaction stage に投入する | **実装済み** |
+| 各種鍬 | `TillSoil` が `dirt` / `grass_block` を `farmland` に更新する | **実装済み** |
+| `bow` / `arrow` / `ender_pearl` | hitscan、ノックバック方向、テレポート結果を frame へ配送する | **配線済み**。消費・耐久は inventory 契約で確定する |
+| `shears` | 葉・草の採取、羊の毛刈り | **未接続**。羊の名簿と耐久更新は mc-sim 側の責務 |
 
-**5 行すべてが「語を足せば閉じる」になった。**
-`flint_and_steel` と `fire_charge` は**既に kernel にある**ので、この表には無く、実装済みである。
+### 7-1. 弓とエンダーパールは発射体を要求しない
 
-### 7-1. 弓とエンダーパールの「ほかに要るもの」は**測って空だった**
-
-この表の下 2 行は、以前こう書いていた:
-
-> | `bow` / `arrow` | 射る | **発射体**。mc-sim の名簿と mc-physics の速度 |
-> | `ender_pearl` | 投げる | **発射体**。同上。落下地点の判定も要る |
->
-> **`bucket` 系と `hoe` は語を 1 行足せば閉じる。** 弓とエンダーパールは語が来ても閉じない ——
-> そこが止まる場所で、`domain/mob/` がエンダードラゴンを拒否したときと同じ線である。
-
-**参照実装を読んで確かめた結果、どちらも誤りである。** 発射体は 1 つも飛ばない。
-
-- **弓は hitscan である。** `interaction-bow-handler.ts:200` のコメントが自分でそう言っている
-  ——「Hitscan: find the nearest entity in the crosshair within bow range」——
-  その次の行が呼ぶのは `findAttackableEntity`、**近接攻撃と同じ関数**で、
-  違いは reach に `BOW_MAX_RANGE` を渡すことだけである。実体は 1 つも作られず、
-  速度はどこにも書かれない。飛ぶのは装飾の粒子だけで、それはダメージを与えた**あとに**描かれる。
-- **エンダーパールは `TargetRayHit` を取る。** `ender-pearl.ts:8` の import がそれで、
-  ホストが**既に済ませた**レイキャストの結果である —— ブロックを設置する面を決めるのと同じ hit で、
-  `ItemUseRequest` のコメントが「every rule in this repository is handed a cell」と書いているものである。
-  同じフレームでプレイヤーが移動する（`:67`）。弧も無い。
-
-**「落下地点の判定も要る」も同じ根から来ている。** 落下地点は無い。24 ブロック先か、
-レイが当たったところか、どちらかである。
-
-**これで 4 度目である。** エンダーマン（状態が型引数に乗っていた）、レールとポータル枠
-（注入された述語で書ける純粋な規則、§3-2）、採掘のインベントリ行き（型の不一致が消えていた）、
-そしてこれ。**4 つとも、もっともらしい「カテゴリ」から書かれた拒否である** ——
-「位置を持つ実体を動かすもの」「発射体」——
-そしてカテゴリは確かめられない。確かめられるのは**名前**だけである。
-
-**残った 1 行は本物である。** `ITEM_TYPES` に `bow` / `arrow` / `ender_pearl` の綴りは無く、
-書けばこのリポジトリが kernel の語彙を発明することになる（kernel audit §4.9.1(c)）。
-その 3 語が無いことで**実際に失われているもの**は狙いでも命中判定でもなく、
-**インベントリの出納**である: 矢を 1 本消費すること、弓の耐久を 1 減らすこと、
-パールを 1 個消費すること。3 つとも `domain/inventory-port.ts` の `remove` を呼ぶ操作で、
-`remove` は `ItemType` を取る。だから**今日配線された弓は矢を消費せず、無限に撃てる。**
-`test/bow.test.ts` の「THE BOW FIRES FOR FREE」がそれを名指しで固定してあり、
-3 語が来た日にそのテストが落ちる。
+弓は近接攻撃と同じ照準対象探索を射程だけ替えて使う hitscan であり、エンダーパールはホストが
+解決済みのレイキャスト結果から同一フレームの移動を決める。どちらも projectile entity や速度 API を
+必要としない。出納・耐久の永続化は `InventoryService` を所有する mc-sim が担う。
 
 ### 7-2. 弓が持ってきた、語とは無関係な穴が 1 つある —— **ブロックの貫通判定**
 

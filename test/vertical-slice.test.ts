@@ -143,6 +143,7 @@ import {
   requestFoodUse,
   requestFurnaceAdvance,
   requestItemUse,
+  requestBucketUse,
   requestPotatoFoodUse,
   requestPotatoHarvest,
   requestPotatoPlanting,
@@ -217,6 +218,11 @@ const slice = (
   })
 
 const onePlacementItem = (item: PlacementRequest['heldItem']) =>
+  emptySlots().map((_, index) =>
+    index === 0 ? { item, count: StackCount(1) } : undefined,
+  )
+
+const oneBucketItem = (item: 'bucket' | 'water_bucket' | 'lava_bucket') =>
   emptySlots().map((_, index) =>
     index === 0 ? { item, count: StackCount(1) } : undefined,
   )
@@ -2044,6 +2050,74 @@ describe('the furnace slice: host-owned state crosses the interaction stage', ()
 
       expect(yield* drainItemUseResults(state)).toMatchObject([
         { action: 'AdvanceFurnace', requestId: 'empty-furnace', success: false },
+      ])
+    }),
+  )
+})
+
+describe('the bucket slice: item use atomically exchanges fluid and inventory', () => {
+  const source: BlockPosition = { x: 12, y: 64, z: 12 }
+
+  it.effect('collects water, updates the inventory, and reports the completed use', () =>
+    Effect.gen(function* () {
+      const { store, inventory, state, stages } = yield* slice(
+        world([[source, WATER]]),
+        ['0,0'],
+        oneBucketItem('bucket'),
+      )
+
+      yield* requestBucketUse(state, 'collect-water', source, 'bucket', 'overworld')
+      yield* runFrame(stages)
+
+      expect(yield* store.blockAt(source)).toBe(AIR_BLOCK_ID)
+      expect(yield* inventory.api.countOf('bucket')).toBe(0)
+      expect(yield* inventory.api.countOf('water_bucket')).toBe(1)
+      expect(yield* drainItemUseResults(state)).toMatchObject([
+        {
+          action: 'UseBucket',
+          requestId: 'collect-water',
+          heldItem: 'bucket',
+          success: true,
+          outcome: { _tag: 'Collected', fluid: 'water', position: source },
+        },
+      ])
+      expect(yield* drainItemUseResults(state)).toStrictEqual([])
+    }),
+  )
+
+  it.effect('rejects a cross-dimension request without mutating world or inventory', () =>
+    Effect.gen(function* () {
+      const { store, inventory, state, stages } = yield* slice(
+        world([[source, WATER]]),
+        ['0,0'],
+        oneBucketItem('bucket'),
+      )
+
+      yield* requestBucketUse(
+        state,
+        'wrong-dimension',
+        source,
+        'bucket',
+        'overworld',
+        'nether',
+      )
+      yield* runFrame(stages)
+
+      expect(yield* store.blockAt(source)).toBe(WATER)
+      expect(yield* inventory.api.countOf('bucket')).toBe(1)
+      expect(yield* inventory.api.countOf('water_bucket')).toBe(0)
+      expect(yield* drainItemUseResults(state)).toStrictEqual([
+        {
+          action: 'UseBucket',
+          requestId: 'wrong-dimension',
+          heldItem: 'bucket',
+          success: false,
+          outcome: {
+            _tag: 'WrongDimension',
+            activeDimension: 'overworld',
+            targetDimension: 'nether',
+          },
+        },
       ])
     }),
   )
