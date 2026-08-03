@@ -1,5 +1,6 @@
 import { EntityKind, type Entity, type EntityId, type Position } from '../entity-manager-port'
 import type { Dimension } from '../nether-travel-port'
+import { ZOMBIE_KIND } from './hostile-combat'
 
 export const SKELETON_KIND = EntityKind('skeleton')
 export const SPIDER_KIND = EntityKind('spider')
@@ -98,8 +99,8 @@ export const stepEcosystemMob = (
   if (kind === ZOMBIFIED_PIGLIN_KIND && !state.provoked) return { state: nextState(), feetPosition: self, jumping: false }
   if ((kind === SKELETON_KIND || kind === BLAZE_KIND) && cooldown === 0 && distance >= (kind === BLAZE_KIND ? 8 : 6) && distance <= (kind === BLAZE_KIND ? 24 : 16))
     return attack('projectile', kind === BLAZE_KIND ? 6 : 4, kind === BLAZE_KIND ? 3 : 2)
-  if ((kind === SPIDER_KIND || kind === ZOMBIFIED_PIGLIN_KIND) && cooldown === 0 && distance <= 1.5)
-    return attack('melee', kind === SPIDER_KIND ? 3 : 5, 1)
+  if ((kind === SPIDER_KIND || kind === ZOMBIE_KIND || kind === ZOMBIFIED_PIGLIN_KIND) && cooldown === 0 && distance <= 1.5)
+    return attack('melee', kind === SPIDER_KIND ? 3 : kind === ZOMBIE_KIND ? 3 : 5, 1)
   const speed = kind === SPIDER_KIND ? 4 : 2.5
   return { state: nextState(), feetPosition: move(self, target, Math.min(distance, speed * dt)), jumping: kind === SPIDER_KIND && distance > 1.5 }
 }
