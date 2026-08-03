@@ -2724,6 +2724,11 @@ const executeBlockPlacementCommand = (
   )
 }
 
+export interface GameplayStageOptions {
+  /** Whether this frame owns local Mob simulation and spawning. */
+  readonly mobSimulation?: boolean
+}
+
 export const gameplayStages = (
   state: GameplayFrameState,
   store: ChunkStoreApi,
@@ -2733,6 +2738,7 @@ export const gameplayStages = (
   time: TimeServiceApi,
   vehicleService?: VehicleServiceApi,
   vehicleEnvironment?: VehicleFrameEnvironment,
+  options: GameplayStageOptions = {},
 ): ReadonlyArray<StageRegistration> => [
   {
     id: GAMEPLAY_STAGE_IDS.vehicles,
@@ -3627,6 +3633,7 @@ export const gameplayStages = (
     // emptied.
     run: (dt) =>
       Effect.gen(function* () {
+        if (options.mobSimulation !== false) {
         // ---- mobs ----------------------------------------------------------
         //
         // One sweep: despawn what is out of range, burn every creeper's fuse,
@@ -3810,6 +3817,7 @@ export const gameplayStages = (
           // function directly and read them. `apps/preview-mining-site`'s arena
           // screen already prints the word.
           yield* applySpawnAttempts(roster, attempts)
+        }
         }
 
         // ---- falling blocks ------------------------------------------------

@@ -1050,6 +1050,49 @@ describe('stage behaviour', () => {
     }).pipe(Effect.provide(FrameServicesLayer)),
   )
 
+  it.effect('multiplayer authority leaves local Mob simulation disabled', () =>
+    Effect.gen(function* () {
+      const state = yield* makeGameplayFrameState
+      const store = yield* makeChunkStoreDouble(world([]), ['0,0'])
+      const roster = yield* makeEntityManagerDouble<MobBehaviour>()
+      const player = yield* makePlayerServiceDouble()
+      const inventory = yield* makeInventoryDouble()
+      const time = yield* makeTimeService()
+      const offered: MobSpawnAttempt = {
+        candidate: {
+          groundBlock: AIR_BLOCK_ID,
+          footBlock: AIR_BLOCK_ID,
+          headBlock: AIR_BLOCK_ID,
+          blockLight: 0,
+          timeOfDay: 0,
+          distanceToPlayerBlocksXZ: 24,
+        },
+        kind: CREEPER_KIND,
+        feetPosition: { x: 1, y: 64, z: 0 },
+      }
+      yield* Ref.set(state.spawnAttempts, [offered])
+      yield* Ref.set(state.spawnClockSecs, 0.2)
+
+      const stages = gameplayStages(
+        state,
+        store.api,
+        roster.api,
+        inventory.api,
+        player.api,
+        time,
+        undefined,
+        undefined,
+        { mobSimulation: false },
+      )
+      const entities = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.entities)
+      yield* entities!.run(DeltaTimeSecs(1))
+
+      expect(yield* Ref.get(state.spawnAttempts)).toStrictEqual([offered])
+      expect(yield* Ref.get(state.spawnClockSecs)).toBe(0.2)
+      expect(yield* roster.api.count).toBe(0)
+    }).pipe(Effect.provide(FrameServicesLayer)),
+  )
+
   // REGRESSION-SHAPED: the paragraph in `stages/registration.ts` that this file
   // has enforced since the day-length deletion says a `Ref<Map<MobId,
   // CreeperFuse>>` here would be 「the same mistake as the `timeOfDaySecs` Ref
