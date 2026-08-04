@@ -1129,7 +1129,6 @@ export const ARENA_MISSING: ReadonlyArray<readonly [string, string]> = [
   // CLOSED: the stage reserves inventory before placeBlock and restores it on refusal.
   ['durability', 'usedItems is an outbox and half of it has no method to become a call to: lighting a portal DAMAGES a flint and steel by one point, and mc-sim’s published api has no damageSlot at all'],
   ['the held TOOL', 'heldTool is an inbox. Which slot is selected and what is enchanted on it is InventoryService’s; the tier gate is live and the value reaching it is a stand-in'],
-  ['4 more placement rules', 'mushrooms need light <= 12, sugar cane needs adjacent water, cactus needs four air sides, doors need the cell above (block-service-place-plan.ts:208-214). Each is ANOTHER FILE by DN-GP-9 and each needs a measurement this repository can already take — deferred, not refused'],
   ['a block popping off', 'canBlockStaySupported is checked at PLACEMENT time only. The other half needs a disturb-shaped queue for attachments, and a sweep would be DN-GP-1 rebuilt'],
   ['apple / sapling / seeds', 'three of the reference’s four bonus drop lines have no ItemType. rollLeafDrops yields all three and only `stick` can ship — see UNITEMISED_BLOCK_TYPES, which exists so this is data'],
   ['gravel -> flint', 'vanilla’s 10%. NOT ported, and that is docs/porting.md §4 rather than an oversight: the reference implementation has no such rule, and a drop rate is exactly the kind of change that should arrive with a measurement'],

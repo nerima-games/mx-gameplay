@@ -87,19 +87,22 @@ export const GRAVEL: BlockId = 8
 export const LAVA: BlockId = 11
 
 /**
- * The four that arrived with item use and the per-block placement rules.
+ * Blocks that demonstrate item use and the per-block placement rules.
  *
  * `OBSIDIAN` is what a player builds a portal ring out of; `NETHER_PORTAL` and
  * `FIRE` are what `domain/interactions/ignite-portal.ts` and `./ignite-fire.ts`
  * WRITE, so they are here to be drawn rather than to be selected — pressing `p`
  * with either of them chosen prints kernel's answer, which is that neither has
- * an item form. That refusal is worth a key: it is the same roster fact that
- * keeps three of the four per-block placement rules off the hotbar.
+ * an item form.
  *
  * `DOOR` is the one per-block rule a player can actually reach, and it is the
  * only palette entry whose placement fills TWO cells.
  */
 export const OBSIDIAN: BlockId = 40
+export const BROWN_MUSHROOM: BlockId = 23
+export const RED_MUSHROOM: BlockId = 24
+export const SUGAR_CANE: BlockId = 27
+export const CACTUS: BlockId = 33
 export const DOOR: BlockId = 106
 export const NETHER_PORTAL: BlockId = 118
 export const FIRE: BlockId = 119
@@ -114,7 +117,7 @@ export type Glyph = {
   readonly color: readonly [number, number, number]
 }
 
-/** The palette the number keys select, and the legend the HUD prints. */
+/** The palette the number keys and palette cycling select, and the HUD prints. */
 export const BLOCKS: ReadonlyArray<Glyph> = [
   { id: AIR, name: 'air', glyph: '.', color: [58, 58, 68] },
   { id: STONE, name: 'stone', glyph: '#', color: [150, 150, 155] },
@@ -123,6 +126,10 @@ export const BLOCKS: ReadonlyArray<Glyph> = [
   { id: WATER, name: 'water', glyph: '~', color: [80, 130, 230] },
   { id: LAVA, name: 'lava', glyph: '!', color: [232, 118, 44] },
   { id: OBSIDIAN, name: 'obsidian', glyph: 'O', color: [72, 52, 108] },
+  { id: BROWN_MUSHROOM, name: 'brown_mushroom', glyph: 'm', color: [156, 116, 76] },
+  { id: RED_MUSHROOM, name: 'red_mushroom', glyph: 'M', color: [204, 68, 60] },
+  { id: SUGAR_CANE, name: 'sugar_cane', glyph: '|', color: [96, 192, 80] },
+  { id: CACTUS, name: 'cactus', glyph: 'C', color: [72, 168, 76] },
   { id: DOOR, name: 'door', glyph: 'D', color: [150, 110, 70] },
   { id: NETHER_PORTAL, name: 'nether_portal', glyph: '%', color: [150, 70, 220] },
   { id: FIRE, name: 'fire', glyph: '*', color: [240, 160, 40] },
@@ -135,8 +142,8 @@ export const glyphOf = (id: BlockId): Glyph =>
  * The item a player would be holding in order to place this block, if there is
  * one.
  *
- * `undefined` for THREE of the six palette entries — air, water and lava — and
- * that is kernel's answer rather than this file's: `itemOfBlock` is partial and
+ * `undefined` for five palette entries — air, water, lava, nether_portal and
+ * fire — and that is kernel's answer rather than this file's: `itemOfBlock` is partial and
  * `UNITEMISED_BLOCK_TYPES` is the list of blocks with no item form
  * (`domain/block-vocabulary.ts`). Pressing `p` with lava selected therefore says
  * so, which is a more useful thing for the screen to demonstrate than a key that

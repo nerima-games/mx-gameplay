@@ -518,6 +518,17 @@ const handleKey = (state: State, key: string, options: PreviewOptions): Effect.E
         poke(site, positionAt(site, state.cursor.x, state.cursor.y), 0)
         break
 
+      case '[':
+      case ']': {
+        const direction = key === '[' ? -1 : 1
+        const current = BLOCKS.findIndex((entry) => entry.id === state.palette)
+        const index = (current + direction + BLOCKS.length) % BLOCKS.length
+        const next = BLOCKS[index] ?? BLOCKS[0]
+        state.palette = next?.id ?? 0
+        site.note = `poke palette: ${next?.name ?? 'air'}`
+        break
+      }
+
       // --- what the player is swinging -----------------------------------
       // The tool gate is the half of the loot table nobody would notice going
       // wrong, so it gets three keys rather than a flag: a tier, a silk touch
@@ -576,8 +587,8 @@ const handleKey = (state: State, key: string, options: PreviewOptions): Effect.E
         // arrived: obsidian to build a frame with, a door, and the two blocks
         // the ignition rules write. A tenth entry that no key could reach would
         // be a legend line the screen prints and cannot honour.
-        const slot = key === '0' ? BLOCKS.length : Number(key)
-        if (Number.isInteger(slot) && slot >= 1 && slot <= BLOCKS.length) {
+        const slot = key === '0' ? 10 : Number(key)
+        if (Number.isInteger(slot) && slot >= 1 && slot <= Math.min(BLOCKS.length, 10)) {
           state.palette = BLOCKS[slot - 1]?.id ?? 0
           site.note = `poke palette: ${BLOCKS[slot - 1]?.name ?? 'air'}`
         }
