@@ -12,7 +12,8 @@ import {
 import { GAMEPLAY_STAGE_IDS } from './stage-ids'
 
 /** Stage id for the optional End-only dragon encounter. */
-export const ENDER_DRAGON_STAGE_ID = GAMEPLAY_STAGE_IDS.enderDragon
+const enderDragonStageId = GAMEPLAY_STAGE_IDS.enderDragon
+export const ENDER_DRAGON_STAGE_ID: string = enderDragonStageId
 
 type RuntimeState = {
   readonly encounter: EnderDragonEncounterSnapshot
@@ -32,7 +33,7 @@ export const makeEnderDragonEncounterRuntime: Effect.Effect<EnderDragonEncounter
   Effect.gen(function* () {
     const runtime = yield* Ref.make<RuntimeState>({ encounter: initialEnderDragonEncounter(), events: [] })
     const stage: StageRegistration = {
-      id: ENDER_DRAGON_STAGE_ID,
+      id: enderDragonStageId,
       after: [GAMEPLAY_STAGE_IDS.entities],
       run: (dt: DeltaTimeSecs) =>
         Ref.update(runtime, (current) => {

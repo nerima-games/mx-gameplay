@@ -50,6 +50,12 @@ jobs:
       - name: Lint
         run: pnpm lint
 
+      - name: Dependency whitelist / time-source ban
+        run: pnpm check:deps
+
+      - name: API lock
+        run: pnpm api:check
+
       - name: Test
         run: pnpm test
 
