@@ -66,8 +66,11 @@
  */
 import { describe, expect, it } from '@effect/vitest'
 import {
+  durability,
   emptyFurnaceState,
+  equipmentItem,
   itemStack,
+  type EquipmentItem,
   makeTimeService,
   type TimeServiceApi,
 } from '@nerima-games/mc-sim'
@@ -142,6 +145,10 @@ import {
   requestBlockBreak,
   requestFoodUse,
   requestFurnaceAdvance,
+  requestFishingAdvance,
+  requestFishingCancel,
+  requestFishingCast,
+  requestFishingReel,
   requestItemUse,
   requestBucketUse,
   requestPotatoFoodUse,
@@ -154,6 +161,8 @@ import {
   snapshotFireLifecycle,
   snapshotStatusEffects,
   snapshotVillagerTrades,
+  type FishingItemUseResult,
+  type ItemUseResult,
   type PlacementRequest,
 } from '../src/stages/registration'
 import { MAX_FURNACE_ADVANCE_SECS } from '../src/domain/interactions/advance-furnace'
@@ -226,6 +235,23 @@ const oneBucketItem = (item: 'bucket' | 'water_bucket' | 'lava_bucket') =>
   emptySlots().map((_, index) =>
     index === 0 ? { item, count: StackCount(1) } : undefined,
   )
+
+const fishingRod = (current = 64): EquipmentItem =>
+  equipmentItem(itemStack('fishing_rod', 1), durability(current, 64))
+
+const FISHING_ENVIRONMENT = {
+  hasWater: true,
+  hasSkyAccess: true,
+  isRaining: false,
+  isOpenWater: true,
+} as const
+
+const isFishingItemUseResult = (result: ItemUseResult): result is FishingItemUseResult =>
+  'action' in result &&
+  (result.action === 'CastFishing' ||
+    result.action === 'AdvanceFishing' ||
+    result.action === 'CancelFishing' ||
+    result.action === 'ReelFishing')
 
 /**
  * The `add` calls the interactions stage made, as `{ item, count }`.
@@ -2117,6 +2143,122 @@ describe('the bucket slice: item use atomically exchanges fluid and inventory', 
             activeDimension: 'overworld',
             targetDimension: 'nether',
           },
+        },
+      ])
+    }),
+  )
+})
+
+describe('the fishing slice: gameplay holds casts while the host owns settlement', () => {
+  it.effect('casts, bites, and returns loot and the worn rod without mutating host inventory', () =>
+    Effect.gen(function* () {
+      const { inventory, state, stages } = yield* slice(world([]))
+
+      yield* requestFishingCast(state, 'cast', fishingRod(), FISHING_ENVIRONMENT)
+      yield* runFrame(stages)
+      const [cast] = yield* drainItemUseResults(state)
+      if (
+        cast === undefined ||
+        !isFishingItemUseResult(cast) ||
+        cast.action !== 'CastFishing' ||
+        !cast.success ||
+        cast.outcome._tag !== 'Cast'
+      ) {
+        throw new Error('Expected a successful fishing cast')
+      }
+
+      const seedAfterCast = yield* Ref.get(state.rollSeed)
+      yield* requestFishingCast(state, 'duplicate-cast', fishingRod(), FISHING_ENVIRONMENT)
+      yield* runFrame(stages)
+      expect(yield* drainItemUseResults(state)).toStrictEqual([
+        {
+          action: 'CastFishing',
+          requestId: 'duplicate-cast',
+          success: false,
+          outcome: 'AlreadyFishing',
+        },
+      ])
+      expect(yield* Ref.get(state.rollSeed)).toBe(seedAfterCast)
+
+      yield* requestFishingAdvance(state, 'bite', cast.outcome.session.waitSecs, { hasWater: true })
+      yield* runFrame(stages)
+      expect(yield* drainItemUseResults(state)).toMatchObject([
+        { action: 'AdvanceFishing', requestId: 'bite', success: true, outcome: { _tag: 'Bite' } },
+      ])
+
+      yield* requestFishingReel(state, 'reel')
+      yield* runFrame(stages)
+      const [reel] = yield* drainItemUseResults(state)
+      if (
+        reel === undefined ||
+        !isFishingItemUseResult(reel) ||
+        reel.action !== 'ReelFishing' ||
+        !reel.success ||
+        reel.outcome._tag !== 'Caught'
+      ) {
+        throw new Error('Expected a caught fishing result')
+      }
+
+      expect(reel.outcome.rod).toMatchObject({
+        item: 'fishing_rod',
+        durability: { current: 63, max: 64 },
+      })
+      expect(yield* inventory.api.countOf('fishing_rod')).toBe(0)
+      expect(yield* inventory.api.countOf(reel.outcome.loot.item)).toBe(0)
+    }),
+  )
+
+  it.effect('returns the rod on cancellation and clears a cast lost with its water', () =>
+    Effect.gen(function* () {
+      const { state, stages } = yield* slice(world([]))
+
+      yield* requestFishingCast(state, 'cast-to-cancel', fishingRod(), FISHING_ENVIRONMENT)
+      yield* runFrame(stages)
+      yield* drainItemUseResults(state)
+      yield* requestFishingCancel(state, 'cancel')
+      yield* runFrame(stages)
+      expect(yield* drainItemUseResults(state)).toMatchObject([
+        {
+          action: 'CancelFishing',
+          requestId: 'cancel',
+          success: true,
+          outcome: { _tag: 'Cancelled', reason: 'Player', rod: { item: 'fishing_rod' } },
+        },
+      ])
+
+      yield* requestFishingAdvance(state, 'after-cancel', 1, { hasWater: true })
+      yield* runFrame(stages)
+      expect(yield* drainItemUseResults(state)).toStrictEqual([
+        {
+          action: 'AdvanceFishing',
+          requestId: 'after-cancel',
+          success: false,
+          outcome: 'NoActiveFishingSession',
+        },
+      ])
+
+      yield* requestFishingCast(state, 'cast-to-lose', fishingRod(), FISHING_ENVIRONMENT)
+      yield* runFrame(stages)
+      yield* drainItemUseResults(state)
+      yield* requestFishingAdvance(state, 'lose-water', 1, { hasWater: false })
+      yield* runFrame(stages)
+      expect(yield* drainItemUseResults(state)).toMatchObject([
+        {
+          action: 'AdvanceFishing',
+          requestId: 'lose-water',
+          success: false,
+          outcome: { _tag: 'Cancelled', reason: 'LostWater', rod: { item: 'fishing_rod' } },
+        },
+      ])
+
+      yield* requestFishingReel(state, 'after-water-loss')
+      yield* runFrame(stages)
+      expect(yield* drainItemUseResults(state)).toStrictEqual([
+        {
+          action: 'ReelFishing',
+          requestId: 'after-water-loss',
+          success: false,
+          outcome: 'NoActiveFishingSession',
         },
       ])
     }),

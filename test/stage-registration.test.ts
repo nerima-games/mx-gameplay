@@ -797,6 +797,7 @@ describe('stage behaviour', () => {
         'enderPearlOutcomes',
         'fallingBlocks',
         'fireLifecycle',
+        'fishingSession',
         'fluidFrontier',
         'fluidUpdates',
         'handledBowShotRequestIds',

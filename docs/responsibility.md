@@ -359,6 +359,7 @@ mx-gameplay の supporting declarations に載る。
 | 語彙 | gameplay の責務 | 状態 |
 | --- | --- | --- |
 | `bucket` / `water_bucket` / `lava_bucket` | `use-bucket.ts` が world cell と `InventoryService` を原子的に交換し、`requestBucketUse` が次元境界を明示して interaction stage に投入する | **実装済み** |
+| `fishing_rod` | `fishing.ts` がキャスト・待機・食いつき・巻き上げを決定し、stage は進行中の cast だけを保持する。更新済みロッドと釣果は相関結果で host に返し、inventory 反映は host が原子的に行う | **配線済み** |
 | 各種鍬 | `TillSoil` が `dirt` / `grass_block` を `farmland` に更新する | **実装済み** |
 | `bow` / `arrow` / `ender_pearl` | hitscan、ノックバック方向、テレポート結果を frame へ配送する | **配線済み**。消費・耐久は inventory 契約で確定する |
 | `shears` | 葉・草の採取、羊の毛刈り | **未接続**。羊の名簿と耐久更新は mc-sim 側の責務 |

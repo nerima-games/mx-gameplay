@@ -292,8 +292,8 @@ plan.md §4.2 を素直に読むと `input` の後ろでもあり、`redstone` �
 | `PortalTravelEvent` | **契約** | 出発次元・出発セル・`PortalTravelPlan` を束ねる。`portalToCreate` が `Some` のときだけホストが世界生成を行う |
 | `requestTargetedPrimaryAttack` | 内部(可視) | プレイヤーの姿勢から敵とブロックを同じクリックで解決し、敵がブロックより手前なら `pendingMeleeAttacks`、それ以外でブロックがあれば `pendingBreaks` の片方だけに積む |
 | `TargetedPrimaryAttackResult` / `TargetedPrimaryAttackOptions` | 内部(可視) | 結果は `Melee`（`ShotHit`）/ `Block`（`BlockTarget`）/ `None`。既定値は melee reach 3、damage 1、block reach 5 |
-| `PlacementRequest` / `ItemUseRequest` | 内部(可視) | 受信箱に積む要求の形。`ItemUseRequest` は従来の tagless な点火要求を維持しつつ、耕作・ジャガイモの植付け・収穫・食事・炉進行・バケツ使用を `action` で判別する additive union |
-| `requestSoilTill` / `requestPotatoPlanting` / `requestPotatoHarvest` / `requestPotatoFoodUse` / `requestFurnaceAdvance` / `requestBucketUse` / `drainItemUseResults` | **契約** | 相関 ID 付きの item use enqueue/drain。炉は host 所有の snapshot を最大 10 秒だけ決定的に進め、未処理時間と typed plan を返す。バケツは host が出発・対象次元を明示し、gameplay が world cell と `InventoryService` の交換を原子的に確定して流体フロンティアを起こす。耕作と植付けは gameplay が world write を行う。収穫の成熟状態と乱数、食事前の vitals は host が渡し、結果に従う inventory・vitals・炉状態の反映も host が所有する |
+| `PlacementRequest` / `ItemUseRequest` | 内部(可視) | 受信箱に積む要求の形。`ItemUseRequest` は従来の tagless な点火要求を維持しつつ、耕作・ジャガイモの植付け・収穫・食事・炉進行・バケツ使用・釣りを `action` で判別する additive union |
+| `requestSoilTill` / `requestPotatoPlanting` / `requestPotatoHarvest` / `requestPotatoFoodUse` / `requestFurnaceAdvance` / `requestBucketUse` / `requestFishingCast` / `requestFishingAdvance` / `requestFishingCancel` / `requestFishingReel` / `drainItemUseResults` | **契約** | 相関 ID 付きの item use enqueue/drain。炉は host 所有の snapshot を最大 10 秒だけ決定的に進め、未処理時間と typed plan を返す。バケツは host が出発・対象次元を明示し、gameplay が world cell と `InventoryService` の交換を原子的に確定して流体フロンティアを起こす。釣りは gameplay が進行中の cast だけを保持し、結果に更新済みロッドと釣果を返す。host はその結果を inventory へ原子的に反映する。耕作と植付けは gameplay が world write を行う。収穫の成熟状態と乱数、食事前の vitals は host が渡し、結果に従う inventory・vitals・炉状態の反映も host が所有する |
 | `requestTargetedBlockUse` / `requestBlockUse` / `drainBlockUseResults` | **契約** | レバーを優先する use 入り口と、`requestId` で相関した結果の enqueue/drain。非レバーなら通常の配置へフォールバックし、レバーなら配置しない |
 | `BlockUseRequestId` / `BlockUseRequest` / `BlockUseResult` | **契約** | 成否を入力イベントへ返す相関付きプロトコル。結果は 1 回だけ drain される |
 | `LAVA_TICK_INTERVAL` | 内部(可視) | 暫定値。プレビューで測って決める |
@@ -308,6 +308,7 @@ plan.md §4.2 を素直に読むと `input` の後ろでもあり、`redstone` �
 | `tickCount` | 溶岩の tick を刻む | 同上 |
 | `pendingBreaks` | **受信箱**。今フレームの破壊要求 | 要らない。セーブが記録するのは「ブロックが無い」ことであって「ボタンが押されていた」ことではない |
 | `pendingItemUses` / `itemUseResults` | **受信箱 / 送信箱**。今フレームの点火・耕作・ジャガイモ・炉進行要求と相関結果 | 要らない。`pendingBreaks` と同じ理由。作物の経過時間と炉状態は mc-sim / host が所有し、gameplay は判定済み入力から plan だけを返す |
+| `fishingSession` | 進行中の釣り cast | 要らない。ロッドと釣果の inventory 反映は host が所有し、ここには次フレームまでの純粋な相互作用状態だけを置く |
 | `usedItems` | **送信箱**。点火に使われた道具。`consumedItems` と**別**なのは、`InventoryService` の動詞が違う（消費ではなく耐久の消耗）からである | 要らない。同上 |
 | `pendingBlockUses` / `blockUseResults` | 相関 ID 付きのレバー use 受信箱 / 結果送信箱 | 要らない。レバーの on/off はホストのワールド状態であり、ここには保存しない |
 | `portalCandidates` / `portalTravels` | 宛先次元別の既知ポータル snapshot / 成立した移動の送信箱 | 要らない。ポータル台帳と生成済み世界はホストが保存し、ここにはフレーム間の受け渡しだけを置く |

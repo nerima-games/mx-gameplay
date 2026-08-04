@@ -86,6 +86,7 @@ import {
   removeItem as removeInventoryItem,
   targetBlockFromPlayerPose,
   type BlockTarget,
+  type EquipmentItem,
   type FurnaceState,
   type InventoryServiceApi,
   type TimeServiceApi,
@@ -302,6 +303,18 @@ import {
   type BucketItemType,
   type BucketUseOutcome,
 } from '../domain/interactions/use-bucket'
+import {
+  advanceFishing,
+  cancelFishing,
+  castFishing,
+  reelFishing,
+  type AdvanceFishingResult,
+  type CancelFishingResult,
+  type CastFishingResult,
+  type FishingEnvironment,
+  type FishingSession,
+  type ReelFishingResult,
+} from '../domain/interactions/fishing'
 import type { PositionKey } from '../domain/position-key'
 import type { ItemType } from '../domain/item-vocabulary'
 import {
@@ -812,6 +825,8 @@ export type GameplayFrameState = {
   readonly usedItems: Ref.Ref<ReadonlyArray<IgnitionItemType>>
   readonly blockUseResults: Ref.Ref<ReadonlyArray<BlockUseResult>>
   readonly itemUseResults: Ref.Ref<ReadonlyArray<ItemUseResult>>
+  /** Live cast state only; the host owns the rod and any awarded loot. */
+  readonly fishingSession: Ref.Ref<FishingSession | undefined>
   readonly bowShotResults: Ref.Ref<ReadonlyArray<BowShotResult>>
   readonly meleeAttackResults: Ref.Ref<ReadonlyArray<GameplayMeleeAttackResult>>
   readonly handledBowShotRequestIds: Ref.Ref<ReadonlySet<BowShotRequestId>>
@@ -1102,11 +1117,30 @@ export type BucketItemUseRequest = {
   readonly targetDimension: Dimension
 }
 
+export type FishingItemUseRequest =
+  | {
+      readonly action: 'CastFishing'
+      readonly requestId: ItemUseRequestId
+      readonly rod: EquipmentItem | null
+      readonly environment: FishingEnvironment
+    }
+  | {
+      readonly action: 'AdvanceFishing'
+      readonly requestId: ItemUseRequestId
+      readonly deltaTimeSecs: number
+      readonly environment: Pick<FishingEnvironment, 'hasWater'>
+    }
+  | {
+      readonly action: 'CancelFishing' | 'ReelFishing'
+      readonly requestId: ItemUseRequestId
+    }
+
 export type ItemUseRequest =
   | IgnitionItemUseRequest
   | FarmingItemUseRequest
   | FurnaceItemUseRequest
   | BucketItemUseRequest
+  | FishingItemUseRequest
 
 /** Host-provided correlation key for one item-use request. */
 export type ItemUseRequestId = string
@@ -1194,6 +1228,62 @@ export type BucketItemUseResult =
       readonly outcome: FailedBucketUseOutcome
     }
 
+type SuccessfulFishingCast = Extract<CastFishingResult, { readonly _tag: 'Cast' }>
+type FailedFishingCast = Exclude<CastFishingResult, SuccessfulFishingCast>
+type AdvancedFishingResult = Extract<
+  AdvanceFishingResult,
+  { readonly _tag: 'Waiting' | 'Bite' | 'Escaped' }
+>
+type FailedFishingAdvance = Exclude<AdvanceFishingResult, AdvancedFishingResult>
+
+/**
+ * Correlated fishing outcomes. The host applies returned rod/loot changes to
+ * its inventory atomically; gameplay only owns the active cast between frames.
+ */
+export type FishingItemUseResult =
+  | {
+      readonly action: 'CastFishing'
+      readonly requestId: ItemUseRequestId
+      readonly success: true
+      readonly outcome: SuccessfulFishingCast
+    }
+  | {
+      readonly action: 'CastFishing'
+      readonly requestId: ItemUseRequestId
+      readonly success: false
+      readonly outcome: FailedFishingCast | 'AlreadyFishing'
+    }
+  | {
+      readonly action: 'AdvanceFishing'
+      readonly requestId: ItemUseRequestId
+      readonly success: true
+      readonly outcome: AdvancedFishingResult
+    }
+  | {
+      readonly action: 'AdvanceFishing'
+      readonly requestId: ItemUseRequestId
+      readonly success: false
+      readonly outcome: FailedFishingAdvance | 'NoActiveFishingSession'
+    }
+  | {
+      readonly action: 'CancelFishing'
+      readonly requestId: ItemUseRequestId
+      readonly success: true
+      readonly outcome: CancelFishingResult
+    }
+  | {
+      readonly action: 'ReelFishing'
+      readonly requestId: ItemUseRequestId
+      readonly success: true
+      readonly outcome: ReelFishingResult
+    }
+  | {
+      readonly action: 'CancelFishing' | 'ReelFishing'
+      readonly requestId: ItemUseRequestId
+      readonly success: false
+      readonly outcome: 'NoActiveFishingSession'
+    }
+
 export type PlayerDeadItemUseResult = {
   readonly requestId: ItemUseRequestId
   readonly success: false
@@ -1205,6 +1295,7 @@ export type ItemUseResult =
   | FarmingItemUseResult
   | FurnaceItemUseResult
   | BucketItemUseResult
+  | FishingItemUseResult
   | PlayerDeadItemUseResult
 
 /**
@@ -1354,6 +1445,7 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
   const usedItems = yield* Ref.make<ReadonlyArray<IgnitionItemType>>([])
   const blockUseResults = yield* Ref.make<ReadonlyArray<BlockUseResult>>([])
   const itemUseResults = yield* Ref.make<ReadonlyArray<ItemUseResult>>([])
+  const fishingSession = yield* Ref.make<FishingSession | undefined>(undefined)
   const bowShotResults = yield* Ref.make<ReadonlyArray<BowShotResult>>([])
   const meleeAttackResults = yield* Ref.make<ReadonlyArray<GameplayMeleeAttackResult>>([])
   const handledBowShotRequestIds = yield* Ref.make<ReadonlySet<BowShotRequestId>>(new Set())
@@ -1438,6 +1530,7 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
     usedItems,
     blockUseResults,
     itemUseResults,
+    fishingSession,
     bowShotResults,
     meleeAttackResults,
     handledBowShotRequestIds,
@@ -1706,6 +1799,56 @@ export const requestBucketUse = (
     activeDimension,
     targetDimension,
   }
+  return Ref.update(state.pendingItemUses, (pending) => [...pending, request])
+}
+
+/** Start a cast; the caller retains ownership of the supplied equipment item. */
+export const requestFishingCast = (
+  state: GameplayFrameState,
+  requestId: ItemUseRequestId,
+  rod: EquipmentItem | null,
+  environment: FishingEnvironment,
+): Effect.Effect<void> => {
+  const request: FishingItemUseRequest = {
+    action: 'CastFishing',
+    requestId,
+    rod,
+    environment: { ...environment },
+  }
+  return Ref.update(state.pendingItemUses, (pending) => [...pending, request])
+}
+
+/** Advance the active cast by host-measured time without transferring inventory ownership. */
+export const requestFishingAdvance = (
+  state: GameplayFrameState,
+  requestId: ItemUseRequestId,
+  deltaTimeSecs: number,
+  environment: Pick<FishingEnvironment, 'hasWater'>,
+): Effect.Effect<void> => {
+  const request: FishingItemUseRequest = {
+    action: 'AdvanceFishing',
+    requestId,
+    deltaTimeSecs,
+    environment: { ...environment },
+  }
+  return Ref.update(state.pendingItemUses, (pending) => [...pending, request])
+}
+
+/** Cancel the active cast and return its unchanged rod through the result inbox. */
+export const requestFishingCancel = (
+  state: GameplayFrameState,
+  requestId: ItemUseRequestId,
+): Effect.Effect<void> => {
+  const request: FishingItemUseRequest = { action: 'CancelFishing', requestId }
+  return Ref.update(state.pendingItemUses, (pending) => [...pending, request])
+}
+
+/** Reel the active cast; the result carries any loot and durability update for the host to settle. */
+export const requestFishingReel = (
+  state: GameplayFrameState,
+  requestId: ItemUseRequestId,
+): Effect.Effect<void> => {
+  const request: FishingItemUseRequest = { action: 'ReelFishing', requestId }
   return Ref.update(state.pendingItemUses, (pending) => [...pending, request])
 }
 
@@ -3271,6 +3414,122 @@ export const gameplayStages = (
                     outcome,
                   })
                 }
+                break
+              }
+              case 'CastFishing': {
+                const active = yield* Ref.get(state.fishingSession)
+                if (active !== undefined) {
+                  itemUseResults.push({
+                    action: request.action,
+                    requestId: request.requestId,
+                    success: false,
+                    outcome: 'AlreadyFishing',
+                  })
+                  break
+                }
+                const rolls = yield* Ref.modify(state.rollSeed, (seed) => {
+                  const drawn = drawRolls(seed, 3)
+                  return [
+                    { wait: drawn.rolls[0]!, category: drawn.rolls[1]!, item: drawn.rolls[2]! },
+                    drawn.seed,
+                  ] as const
+                })
+                const outcome = castFishing(request.rod, request.environment, rolls)
+                if (outcome._tag === 'Cast') {
+                  yield* Ref.set(state.fishingSession, outcome.session)
+                  itemUseResults.push({
+                    action: request.action,
+                    requestId: request.requestId,
+                    success: true,
+                    outcome,
+                  })
+                } else {
+                  itemUseResults.push({
+                    action: request.action,
+                    requestId: request.requestId,
+                    success: false,
+                    outcome,
+                  })
+                }
+                break
+              }
+              case 'AdvanceFishing': {
+                const session = yield* Ref.get(state.fishingSession)
+                if (session === undefined) {
+                  itemUseResults.push({
+                    action: request.action,
+                    requestId: request.requestId,
+                    success: false,
+                    outcome: 'NoActiveFishingSession',
+                  })
+                  break
+                }
+                const outcome = advanceFishing(session, request.deltaTimeSecs, request.environment)
+                if (
+                  outcome._tag === 'Waiting' ||
+                  outcome._tag === 'Bite' ||
+                  outcome._tag === 'Escaped'
+                ) {
+                  yield* Ref.set(state.fishingSession, outcome.session)
+                  itemUseResults.push({
+                    action: request.action,
+                    requestId: request.requestId,
+                    success: true,
+                    outcome,
+                  })
+                } else {
+                  if (outcome._tag === 'Cancelled') {
+                    yield* Ref.set(state.fishingSession, undefined)
+                  }
+                  itemUseResults.push({
+                    action: request.action,
+                    requestId: request.requestId,
+                    success: false,
+                    outcome,
+                  })
+                }
+                break
+              }
+              case 'CancelFishing': {
+                const session = yield* Ref.get(state.fishingSession)
+                if (session === undefined) {
+                  itemUseResults.push({
+                    action: request.action,
+                    requestId: request.requestId,
+                    success: false,
+                    outcome: 'NoActiveFishingSession',
+                  })
+                  break
+                }
+                const outcome = cancelFishing(session)
+                yield* Ref.set(state.fishingSession, undefined)
+                itemUseResults.push({
+                  action: request.action,
+                  requestId: request.requestId,
+                  success: true,
+                  outcome,
+                })
+                break
+              }
+              case 'ReelFishing': {
+                const session = yield* Ref.get(state.fishingSession)
+                if (session === undefined) {
+                  itemUseResults.push({
+                    action: request.action,
+                    requestId: request.requestId,
+                    success: false,
+                    outcome: 'NoActiveFishingSession',
+                  })
+                  break
+                }
+                const outcome = reelFishing(session)
+                yield* Ref.set(state.fishingSession, undefined)
+                itemUseResults.push({
+                  action: request.action,
+                  requestId: request.requestId,
+                  success: true,
+                  outcome,
+                })
                 break
               }
               case 'AdvanceFurnace': {
