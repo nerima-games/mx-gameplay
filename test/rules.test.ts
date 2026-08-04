@@ -114,18 +114,19 @@ describe('falling blocks: the O(chunks × blocks) full scan must not come back',
   it.effect('plans one-cell moves through a storage-free read boundary', () =>
     Effect.sync(() => {
       const sand = blockIdOf('sand')
-      const air = blockIdOf('air')
-      const blocks = new Map<string, number>([
-        ['0,64,0', sand],
-        ['0,63,0', air],
-      ])
-      const moves = planFallingBlockMoves([{ x: 0, y: 63, z: 0 }], (at) => blocks.get(`${String(at.x)},${String(at.y)},${String(at.z)}`))
+        for (const targetBlock of ['air', 'water', 'lava'] as const) {
+          const blocks = new Map<string, number>([
+            ['0,64,0', sand],
+            ['0,63,0', blockIdOf(targetBlock)],
+          ])
+          const moves = planFallingBlockMoves([{ x: 0, y: 63, z: 0 }], (at) => blocks.get(`${String(at.x)},${String(at.y)},${String(at.z)}`))
 
-      expect(moves).toStrictEqual([{
-        source: { x: 0, y: 64, z: 0 },
-        target: { x: 0, y: 63, z: 0 },
-        blockId: sand,
-      }])
+          expect(moves).toStrictEqual([{
+            source: { x: 0, y: 64, z: 0 },
+            target: { x: 0, y: 63, z: 0 },
+            blockId: sand,
+          }])
+        }
     }),
   )
 

@@ -21,9 +21,8 @@ import {
   armorPointsForEquipment,
 } from '../src/domain/combat/armor'
 import { applyDamage } from '../src/domain/death-cause'
-import { takeBatch } from '../src/domain/falling-block'
+import { planFallingBlockMoves, takeBatch } from '../src/domain/falling-block'
 import { resolveFoodUse } from '../src/domain/interactions/eat-food'
-import { planFallingBlockMoves } from '../src/domain/interactions/plan-falling-block-moves'
 import { ITEM_TYPES } from '../src/domain/item-vocabulary'
 import { GAMEPLAY_STAGE_IDS } from '../src/stages/stage-ids'
 

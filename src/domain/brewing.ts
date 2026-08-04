@@ -71,43 +71,6 @@ export const emptyBrewingStandState = (): BrewingStandState => ({
   brewing: undefined,
 })
 
-const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
-  typeof value === 'object' && value !== null
-
-const isFiniteNonNegativeInteger = (value: unknown): value is number =>
-  typeof value === 'number' && Number.isFinite(value) && Number.isInteger(value) && value >= 0
-
-const isPotionType = (value: unknown): value is PotionType =>
-  typeof value === 'string' && POTION_TYPES.includes(value as PotionType)
-
-const isBrewingIngredient = (value: unknown): value is BrewingIngredient =>
-  typeof value === 'string' && BREWING_INGREDIENTS.includes(value as BrewingIngredient)
-
-const isBrewingBottle = (value: unknown): value is BrewingBottle =>
-  value === 'water_bottle'
-  || (isRecord(value) && isPotionType(value['potion']))
-
-/** Validates an untrusted saved brewing snapshot before restoring gameplay state. */
-export const isValidBrewingStandState = (value: unknown): value is BrewingStandState => {
-  if (!isRecord(value) || !isFiniteNonNegativeInteger(value['fuelUnits'])) return false
-  const bottle = value['bottle']
-  const ingredient = value['ingredient']
-  const brewing = value['brewing']
-  if (bottle !== undefined && !isBrewingBottle(bottle)) return false
-  if (ingredient !== undefined && !isBrewingIngredient(ingredient)) {
-    return false
-  }
-  if (brewing === undefined) return true
-  if (!isRecord(brewing)) return false
-  const remainingSecs = brewing['remainingSecs']
-  return isPotionType(brewing['output'])
-    && typeof remainingSecs === 'number'
-    && Number.isFinite(remainingSecs)
-    && remainingSecs > 0
-    && bottle !== undefined
-    && ingredient === undefined
-}
-
 export const copyBrewingStandState = (state: BrewingStandState): BrewingStandState => ({
   fuelUnits: Math.max(0, Math.floor(state.fuelUnits)),
   bottle: typeof state.bottle === 'object' ? { ...state.bottle } : state.bottle,
@@ -177,9 +140,7 @@ export const isValidBrewingStandState = (
     return false
   }
 
-  return BREWING_INGREDIENTS.some(
-    (candidate) => brewingOutput(bottle, candidate) === brewing['output'],
-  )
+  return true
 }
 
 export const acceptBrewingFuel = (

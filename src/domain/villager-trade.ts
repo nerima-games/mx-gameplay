@@ -53,7 +53,8 @@ const isTradeStack = (
 
 const isVillagerTradeOffer = (value: unknown): value is VillagerTradeOffer =>
   isRecord(value) &&
-  typeof value['id'] === 'string' &&
+    typeof value['id'] === 'string' &&
+    value['id'].length > 0 &&
   isTradeStack(value['input']) &&
   isTradeStack(value['output']) &&
   isPositiveCount(value['maxUses']) &&
@@ -80,7 +81,8 @@ export const isValidVillagerTradeState = (
   return value['villagers'].every((villager) => {
     if (
       !isRecord(villager) ||
-      typeof villager['id'] !== 'string' ||
+        typeof villager['id'] !== 'string' ||
+        villager['id'].length === 0 ||
       villagerIds.has(villager['id']) ||
       !isVillagerProfession(villager['profession']) ||
       !Array.isArray(villager['offers'])
@@ -124,65 +126,6 @@ export const emptyVillagerTradeState = (): VillagerTradeState => ({
   villagers: [],
   restockElapsedSecs: 0,
 })
-
-const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
-  typeof value === 'object' && value !== null
-
-const isPositiveInteger = (value: unknown): value is number =>
-  typeof value === 'number' && Number.isFinite(value) && Number.isInteger(value) && value > 0
-
-const isVillagerProfession = (value: unknown): value is VillagerProfession =>
-  value === 'farmer' || value === 'toolsmith'
-
-const isValidTradeStack = (value: unknown): value is VillagerTradeOffer['input'] =>
-  isRecord(value)
-  && typeof value['item'] === 'string'
-  && isItemType(value['item'])
-  && isPositiveInteger(value['count'])
-
-const isValidVillagerTradeOffer = (value: unknown): value is VillagerTradeOffer => {
-  if (!isRecord(value)) return false
-  const id = value['id']
-  const uses = value['uses']
-  const maxUses = value['maxUses']
-  return typeof id === 'string'
-    && id.length > 0
-    && isValidTradeStack(value['input'])
-    && isValidTradeStack(value['output'])
-    && typeof uses === 'number'
-    && Number.isFinite(uses)
-    && Number.isInteger(uses)
-    && uses >= 0
-    && isPositiveInteger(maxUses)
-    && uses <= maxUses
-}
-
-/** Validates an untrusted saved villager-trading snapshot before restoring gameplay state. */
-export const isValidVillagerTradeState = (value: unknown): value is VillagerTradeState => {
-  const villagers = isRecord(value) ? value['villagers'] : undefined
-  const restockElapsedSecs = isRecord(value) ? value['restockElapsedSecs'] : undefined
-  if (!Array.isArray(villagers)) return false
-  if (typeof restockElapsedSecs !== 'number' || !Number.isFinite(restockElapsedSecs)) return false
-  if (restockElapsedSecs < 0 || restockElapsedSecs >= VILLAGER_RESTOCK_INTERVAL_SECS) return false
-  const villagerIds = new Set<string>()
-  return villagers.every((villager) => {
-    if (!isRecord(villager)) return false
-    const id = villager['id']
-    const offers = villager['offers']
-    if (typeof id !== 'string' || id.length === 0) return false
-    if (!isVillagerProfession(villager['profession']) || !Array.isArray(offers)) return false
-    if (villagerIds.has(id)) return false
-    const offerIds = new Set<string>()
-    const validOffers = offers.every((offer) => {
-      if (!isValidVillagerTradeOffer(offer) || offerIds.has(offer.id)) return false
-      offerIds.add(offer.id)
-      return true
-    })
-    if (!validOffers) return false
-    villagerIds.add(id)
-    return true
-  })
-}
 
 export const addVillager = (state: VillagerTradeState, villager: Villager): VillagerTradeState => ({
   ...state,

@@ -537,12 +537,7 @@ kernel 監査 §4.9 が `solid` への統合を禁じている理由がその行
 | `disturb` / `takeBatch` / `settled` | 内部(可視) | **「世界を走査する」関数が存在しないこと**が API の要点（DN-GP-1） |
 | `FallingBlockQueue` / `FallingBlockBatch` / `emptyFallingBlockQueue` | 内部(可視) | |
 | `FALLING_BLOCK_MOVES_PER_TICK` | 内部(可視) | 32。参照実装の `FALLING_BLOCK_MAX_PER_TICK` と同値 |
-
-### domain/interactions/plan-falling-block-moves.ts
-
-| export | 種別 | 備考 |
-| --- | --- | --- |
-| `planFallingBlockMoves` / `FallingBlockMove` | **契約** | ホスト所有の世界を変更せず、要求された source ごとの 1 ブロック下への移動を計画する。`undefined` は未ロードまたは範囲外であり air ではないため、source/target のどちらでも移動しない。air / water / lava の replaceable target にだけ落下する。 |
+| `planFallingBlockMoves` / `PlannedFallingBlockMove` | **契約** | ホスト所有の世界を変更せず、要求された target の上のブロックを 1 ブロック下へ移動する。`undefined` は未ロードまたは範囲外であり air ではないため、source/target のどちらでも移動しない。air / water / lava の replaceable target にだけ落下する。 |
 
 ### domain/fluid-frontier.ts
 
