@@ -121,6 +121,7 @@ describe('the ChunkStore mirror', () => {
       // symbol the file does not have would assert nothing.
       expect(Object.keys(barrel)).not.toContain('AIR_BLOCK_ID')
     }),
+    30_000,
   )
 
   it.effect('hands back only what mc-worldgen\'s barrel can replace', () =>

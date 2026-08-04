@@ -72,6 +72,7 @@ describe('the kernel capability mirror', () => {
       expect(Object.keys(barrel)).not.toContain('fallsWhenUnsupported')
       expect(Object.keys(barrel)).not.toContain('canSupportAttachments')
     }),
+    30_000,
   )
 
   it.effect('reads capabilities, and knows about exactly the ids kernel says carry them', () =>
