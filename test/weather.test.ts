@@ -398,9 +398,15 @@ const stagedSlice = Effect.gen(function* () {
   const inventory = yield* makeInventoryDouble()
   const time = yield* makeTimeService()
   const state = yield* makeGameplayFrameState
+  const stages = gameplayStages(state, store.api, roster.api, inventory.api, player.api, time)
+  const timeWeatherStage = stages.find((stage) => stage.id === 'gameplay:time-weather')
+  if (timeWeatherStage === undefined) {
+    throw new Error('gameplay:time-weather stage is not registered')
+  }
   return {
     state,
-    stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api, time),
+    stages,
+    timeWeatherStages: [timeWeatherStage],
   }
 })
 
@@ -486,13 +492,13 @@ describe('gameplay:time-weather', () => {
   it.effect('fast-forward: two hours of frames walk the transition graph, reproducibly', () =>
     Effect.gen(function* () {
       const runTwoHours = Effect.gen(function* () {
-        const { state, stages } = yield* stagedSlice
+        const { state, timeWeatherStages } = yield* stagedSlice
         const seen: Array<Weather> = [INITIAL_WEATHER.weather]
 
         // 7200 seconds at one second a frame. `run(dt)` takes its delta as an
         // argument, so a "second" costs nothing (docs/testing.md §5).
         for (let frame = 0; frame < 7200; frame += 1) {
-          yield* runFrame(stages, ONE_SECOND)
+          yield* runFrame(timeWeatherStages, ONE_SECOND)
           const advanced = yield* Ref.get(state.weatherAdvanced)
           if (advanced !== undefined) {
             if (advanced.weather !== seen[seen.length - 1]) {
