@@ -116,6 +116,19 @@ describe('when night is', () => {
       }
     }),
   )
+
+  it.effect('is periodic across whole-day offsets, including a rewound clock', () =>
+    Effect.sync(() => {
+      for (let step = 0; step < 1_000; step += 1) {
+        const fraction = step / 1_000
+        for (const days of [-3, -1, 0, 1, 4]) {
+          expect(isNight(fraction + days)).toBe(isNight(fraction))
+          expect(dayPhase(fraction + days)).toBe(dayPhase(fraction))
+          expect(hostileSpawnsAllowed(fraction + days)).toBe(hostileSpawnsAllowed(fraction))
+        }
+      }
+    }),
+  )
 })
 
 describe('the four phases', () => {

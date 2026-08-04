@@ -64,48 +64,41 @@ describe('F5 — non-finite damage is ignored', () => {
   )
 })
 
-describe('F6 — the day/night rules are not periodic in the day', () => {
-  // `isNight(t) = t < DAWN || t > DUSK` has no modulo in it, so it answers a
-  // question about the NUMBER rather than about the time of day the number
-  // names. `t`, `t + 1` and `t - 1` are the same instant on three consecutive
-  // days and get three different answers.
-  //
-  // The reachable input is the negative one. mc-sim advances the hour as
-  // `(base + elapsed / dayLength) % 1`; JS `%` keeps the sign of its left
-  // operand, so a clock that steps backwards produces a negative fraction.
-  // DN-GP-7's whole point is that this repository and mc-sim must agree about
-  // when night is, and this is the seam.
-  it.effect('pins the current behaviour: noon on the next day reads as night', () =>
+describe('F6 regression — the day/night rules are periodic in the day', () => {
+  it.effect('keeps noon as day on the next day', () =>
     Effect.sync(() => {
       expect(dayPhase(0.5)).toBe('day')
-      expect(dayPhase(1.5)).toBe('night')
-      expect(isNight(1.5)).toBe(true)
-      expect(hostileSpawnsAllowed(1.5)).toBe(true)
+      expect(dayPhase(1.5)).toBe('day')
+      expect(isNight(1.5)).toBe(false)
+      expect(hostileSpawnsAllowed(1.5)).toBe(false)
     }),
   )
 
-  it.effect('pins the current behaviour: a negative fraction always reads as night', () =>
+  it.effect('maps negative fractions to the previous day', () =>
     Effect.sync(() => {
       // -0.25 is dusk on the previous day; -0.5 is noon on the previous day.
-      expect(dayPhase(-0.25)).toBe('night')
-      expect(dayPhase(-0.5)).toBe('night')
-      expect(hostileSpawnsAllowed(-0.5)).toBe(true)
+      expect(dayPhase(-0.25)).toBe('dusk')
+      expect(dayPhase(-0.5)).toBe('day')
+      expect(hostileSpawnsAllowed(-0.5)).toBe(false)
 
       // And this is how a negative fraction is produced, in one line.
       expect((-0.3) % 1).toBe(-0.3)
     }),
   )
 
-  it.effect('inside [0, 1) the two predicates do agree, at every one of 1000 samples', () =>
+  it.effect('keeps the phase and spawn predicates aligned across whole-day offsets', () =>
     Effect.sync(() => {
       let disagreements = 0
       for (let step = 0; step < 1000; step += 1) {
         const t = step / 1000
-        if (isNight(t) !== (dayPhase(t) === 'night')) {
-          disagreements += 1
-        }
-        if (hostileSpawnsAllowed(t) !== isNight(t)) {
-          disagreements += 1
+        for (const day of [-2, -1, 0, 1, 2]) {
+          const shifted = t + day
+          if (isNight(shifted) !== (dayPhase(shifted) === 'night')) {
+            disagreements += 1
+          }
+          if (hostileSpawnsAllowed(shifted) !== isNight(shifted)) {
+            disagreements += 1
+          }
         }
       }
       expect(disagreements).toBe(0)

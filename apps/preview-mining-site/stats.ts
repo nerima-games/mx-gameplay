@@ -742,24 +742,14 @@ const fluidFrontierRace = Effect.gen(function* () {
 // ---------------------------------------------------------------------------
 
 /**
- * A non-finite damage amount makes the player permanently immortal.
+ * Non-finite damage is ignored before it reaches the vital-state arithmetic.
  *
- * `Damage.amount` is a bare `number`. `Math.max(0, NaN)` is `NaN`, so
- * `healthPoints` becomes `NaN`; `isDead` is `healthPoints <= 0`, and every
- * comparison with `NaN` is false, so the player is not dead. `applyDamage`
- * returns early when `isDead`, so the next blow is applied to `NaN` and produces
- * `NaN` again. The player can never die and `deathMessage` can never be
- * produced.
+ * `Damage.amount` remains a bare `number` at the public boundary, so the rule
+ * explicitly rejects non-finite input. That preserves total API behaviour
+ * without allowing `Math.max(0, NaN)` to poison `healthPoints`.
  *
- * This is DN-GP-3's own failure mode one level down. The note is titled "carry
- * the cause all the way to the death message" and the defence it describes is
- * structural — `cause` is a required field, `applyDamage` is the only route to
- * zero health — but the amount was left unconstrained, and an unconstrained
- * amount removes the death the cause was going to describe.
- *
- * The repository already knows the shape of the fix. `domain/frame-contract.ts`
- * brands `DeltaTimeSecs` with `Number.isFinite(value) && value >= 0` and says
- * why; `Damage.amount` wants the same brand.
+ * This keeps DN-GP-3's required death cause meaningful: invalid damage cannot
+ * make an otherwise healthy player immortal.
  */
 const nonFiniteDamage = Effect.sync((): Check => {
   const struck = applyDamage(fullHealth, { amount: Number.NaN, cause: 'lava' })
@@ -777,7 +767,7 @@ const nonFiniteDamage = Effect.sync((): Check => {
 
   return {
     id: immortal ? 'F5' : 'ok',
-    title: 'one NaN damage makes the player immortal, and no death message can follow',
+    title: 'non-finite damage is ignored before it can corrupt player vitals',
     finding: immortal,
     lines: [
       `  applyDamage(full, {amount: NaN, cause: 'lava'})      ${show(struck)}`,
@@ -786,15 +776,11 @@ const nonFiniteDamage = Effect.sync((): Check => {
       `  applyDamage(full, {amount: Infinity})                ${show(infinite)}`,
       `  applyDamage(full, {amount: -Infinity})               ${show(negativeInfinite)}`,
       '',
-      '  `Math.max(0, NaN)` is NaN; `NaN <= 0` is false, so `isDead` says alive; `applyDamage`',
-      '  returns early only for the dead, so every later blow recomputes NaN. Health is neither',
-      '  a number nor a death.',
+      '  `applyDamage` rejects non-finite values before health arithmetic, so a later finite',
+      '  damage amount remains able to kill and produce its normal death message.',
       '',
-      '  `-Infinity` is handled (the `Math.max(0, amount)` guard catches a negative amount) and',
-      '  `Infinity` is handled (it kills). Only the non-number is not.',
-      '',
-      "  domain/frame-contract.ts:57 brands DeltaTimeSecs with `Number.isFinite(value) && value >= 0`",
-      '  for exactly this class of argument. `Damage.amount` is a bare number.',
+      '  All three non-finite values are ignored; finite negative, zero, and positive values',
+      '  retain their existing semantics.',
     ],
   } satisfies Check
 })
@@ -826,22 +812,14 @@ const causesDistinct = Effect.sync((): Check => {
 // ---------------------------------------------------------------------------
 
 /**
- * These rules are not periodic, and a time of day is a period.
+ * Day/night rules consume a phase, not an absolute day count.
  *
- * `isNight(t) = t < 0.25 || t > 0.75` has no modulo in it, so it answers a
- * question about the NUMBER rather than about the time of day the number names.
- * `t`, `t + 1` and `t - 1` are the same instant on three consecutive days;
- * `dayPhase` gives them three different answers, and the one it gives for
- * anything outside [0, 1) is always `night` — which also means
- * `hostileSpawnsAllowed` is always true there.
+ * `t`, `t + 1` and `t - 1` are the same phase on consecutive days. The rule
+ * reduces finite input to [0, 1) before applying the shared dawn/dusk predicate.
  *
- * The reachable input is the negative one. mc-sim advances the hour as
- * `(base + elapsed / dayLength) % 1` and JS `%` keeps the sign of its left
- * operand, so a clock that steps backwards — NTP, DST, a user changing the
- * system time, the exact hazard mx-multiplayer's DN-3 spends a section on —
- * produces a negative fraction. DN-GP-7's whole point is that this repository
- * and mc-sim must agree about when night is, and they are in different
- * repositories, so the seam is where the disagreement lands.
+ * JavaScript `%` preserves a negative dividend's sign, so a rewound clock can
+ * supply a negative fraction. Canonicalising at the gameplay-rule boundary
+ * keeps that host detail from spawning mobs at noon.
  */
 const dayNightPeriodicity = Effect.sync((): Check => {
   const samples = [0.0, 0.1, 0.25, 0.3, 0.5, 0.7, 0.75, 0.9, 0.99]
@@ -861,37 +839,38 @@ const dayNightPeriodicity = Effect.sync((): Check => {
     )
   }
 
-  // And within one day the two predicates do agree, which is worth keeping.
+  // The phase predicates must agree even when the clock includes a day count.
   let inconsistent = 0
   for (let step = 0; step < 1000; step += 1) {
-    const t = step / 1000
-    if (isNight(t) !== (dayPhase(t) === 'night')) {
-      inconsistent += 1
-    }
-    if (hostileSpawnsAllowed(t) !== isNight(t)) {
-      inconsistent += 1
+    for (const dayOffset of [-2, -1, 0, 1, 2]) {
+      const t = step / 1000 + dayOffset
+      if (isNight(t) !== (dayPhase(t) === 'night')) {
+        inconsistent += 1
+      }
+      if (hostileSpawnsAllowed(t) !== isNight(t)) {
+        inconsistent += 1
+      }
     }
   }
 
   return {
     id: disagreements > 0 ? 'F6' : 'ok',
-    title: 'dayPhase / isNight / hostileSpawnsAllowed are not periodic in the day',
+    title: 'dayPhase / isNight / hostileSpawnsAllowed are periodic in the day',
     finding: disagreements > 0,
     lines: [
       ...rows,
       '',
       `  disagreements over ${String(samples.length)} samples: ${String(disagreements)}`,
-      `  inside [0,1): isNight and dayPhase agree at all 1000 sample points ` +
+      `  across whole-day offsets, isNight and dayPhase agree at all 5000 sample points ` +
         `(${String(inconsistent)} disagreements)`,
       '',
-      '  every out-of-range value answers "night", so hostileSpawnsAllowed is true there too:',
+      '  out-of-range finite values resolve to their matching phase:',
       `    dayPhase(1.5)  = ${dayPhase(1.5)}    (1.5 mod 1 = 0.5, which is noon)`,
       `    dayPhase(-0.25)= ${dayPhase(-0.25)}    (-0.25 mod 1 = 0.75, which is dusk)`,
       `    (-0.3) % 1 in JS = ${String((-0.3) % 1)} — the sign survives the modulo`,
       '',
-      '  mc-sim owns the normalisation (DN-GP-7) and this repository states no precondition,',
-      '  brands nothing and rejects nothing. `domain/frame-contract.ts` brands DeltaTimeSecs',
-      '  rather than trusting its callers; `timeOfDay` is the same kind of argument.',
+      '  mx-sim owns the persistent clock. mx-gameplay only canonicalises the finite value',
+      '  supplied to its pure rule, preserving one state owner and one phase definition.',
     ],
   } satisfies Check
 })

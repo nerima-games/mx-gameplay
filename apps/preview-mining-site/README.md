@@ -125,12 +125,9 @@ mc-sim が未 publish なので、この画面が距離 1 つと `CreeperFuse` �
 | --- | --- | --- |
 | F1 | **飽和したバッチの約半分は動けない位置に使われる** | 予算は MOVES の名前で POSITIONS に効く。1 move が 2 位置を enqueue する（`below(target)` と `source`）ので、柱の崩落では片方は必ず動けない。実測 0.41 moves/position、26 個の擾乱でキューは 52 まで膨らみ、消えるまで 8 フレーム。**上限自体は破られていない**（超過フレーム 0）ので正しさのバグではない |
 | F2 | **`retainedLavaFrontier` が `carryOver` の結果に完全に含まれる** | 両方の doc comment に従って両方を次フロンティアに戻すと、溶岩セルが非アクティブ tick ごとに倍増する（実測 4 → 6 → 12 → 24 → 48 → 96）。`stages/registration.ts:270` は `carryOver` だけを使っており正しい。危険なのは、**死んでいるフィールドの doc が義務のように読める**ことである |
-| F3 | **`carryOver` が未評価のセルを黙って捨てる** | フロンティアは `(key, kind)` の集合なのに、`domain/fluid-frontier.ts:120` は `item.key` だけで「評価済み」集合を作る。水と溶岩が同じ座標に並ぶ（＝界面。丸石/黒曜石ルールそのもの）と、**一度も評価されていない溶岩側**がフロンティアから消える。DN-GP-2 が言う「溶岩湖の縁が直線になる」の発生機序そのもの |
 | F4 | **fluids stage だけが get-then-set** | `stages/registration.ts:267-270`。同じファイルの `interactions` は `Ref.getAndSet`、`entities` は `Ref.modify` と `Ref.update`（「`set` だと消える」というコメント付き）。DN-GP-10 が禁じている形である。**今日は到達不能**（`fluidFrontier` を書く者が他に無い）ので、観測された喪失ではなく**形**として報告している |
-| F5 | **NaN ダメージ 1 発でプレイヤーが不死になる** | `Math.max(0, NaN)` は `NaN`、`NaN <= 0` は `false`。以後 `isDead` は永久に `false` で、`applyDamage` は死者にしか早期 return しないので、次の 1000 ダメージも `NaN` を再生産する。**死因が死亡メッセージに届かない**という DN-GP-3 の失敗様式の 1 段下である（死ぬこと自体が起きない）。`-Infinity` と `Infinity` は正しく処理される。`domain/frame-contract.ts:57` は `DeltaTimeSecs` に `Number.isFinite` の brand を付けている |
-| F6 | **昼夜ルールが日周期になっていない** | `isNight(t) = t < 0.25 \|\| t > 0.75` に剰余が無いので、`t` / `t+1` / `t-1`（同じ時刻の 3 日分）で答えが違う。範囲外は**全部 night** になり、`hostileSpawnsAllowed` も真になる。到達経路は負の値で、mc-sim の `(base + elapsed/len) % 1` は JS の `%` が左辺の符号を保つため、**時計が巻き戻ると負の端数を出す** — mx-multiplayer の DN-3 が 1 節を割いている危険そのもの。DN-GP-7 の要点は「mc-sim とこのリポジトリが夜の定義で一致すること」であり、その継ぎ目である |
 
-**F3・F5・F6 は既存 112 本のテストが 1 つも捕まえていなかった。** 理由はそれぞれ異なる:
+**F3・F5・F6 は修正済みで、`test/preview-findings.test.ts` が回帰を防ぐ。** 初回調査時は既存 112 本のテストが 1 つも捕まえていなかった。理由はそれぞれ異なる:
 
 - F3: `test/rules.test.ts` の `carryOver` テストは `key` が全部異なるフロンティアしか使わない。
   `(key, kind)` が 2 対 1 になる入力を誰も書いていない。

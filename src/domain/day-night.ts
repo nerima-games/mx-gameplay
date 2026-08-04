@@ -31,7 +31,9 @@
  * ---------------------------------------------------------------------------
  *
  * `timeOfDay` is a fraction in [0, 1) supplied by mc-sim's
- * `TimeService.timeOfDay`. ZERO IS MIDNIGHT: 0.25 is dawn, 0.5 noon, 0.75 dusk.
+ * `TimeService.timeOfDay`. Finite values outside that range still denote the
+ * same phase on an adjacent day, so this rule canonicalises them before
+ * deciding the phase. ZERO IS MIDNIGHT: 0.25 is dawn, 0.5 noon, 0.75 dusk.
  * That is the reference implementation's convention, and mc-sim carries it —
  * `mc-sim/domain/time-of-day.ts:117-120` computes night as
  * `fraction < 0.25 || fraction > 0.75`, and the same file records why a
@@ -39,10 +41,10 @@
  * night-mob roster on top of a brand-new player and daylight-immune hostiles
  * camped the respawn point, an unrecoverable death loop on world creation.
  *
- * `isNight` below reproduces mc-sim's predicate exactly, deliberately. The
- * spawn rule and the state that feeds it must agree about when night is, and
- * they are in different repositories, so the agreement is written down twice
- * and pinned by a test in each rather than assumed.
+ * `isNight` below uses mc-sim's predicate after canonicalising its finite
+ * input. The spawn rule and the state that feeds it must agree about when night
+ * is, and they are in different repositories, so the agreement is written down
+ * twice and pinned by a test in each rather than assumed.
  */
 
 /** Dawn: the sun clears the horizon. */
@@ -68,15 +70,32 @@ export const TWILIGHT_BAND = 0.05
 export type DayPhase = 'night' | 'dawn' | 'day' | 'dusk'
 
 /**
+ * Map finite day counts to the one-day phase consumed by gameplay rules.
+ *
+ * Quantising far below the clock's tick resolution removes transport noise
+ * such as `0.3` becoming `0.2999999999999998` after adding a whole day.
+ */
+const canonicalTimeOfDay = (timeOfDay: number): number => {
+  if (!Number.isFinite(timeOfDay) || (timeOfDay >= 0 && timeOfDay < 1)) {
+    return timeOfDay
+  }
+
+  const fraction = ((timeOfDay % 1) + 1) % 1
+  return Math.round(fraction * 1_000_000_000_000) / 1_000_000_000_000
+}
+
+/**
  * Is it night?
  *
- * Character-identical to `mc-sim/domain/time-of-day.ts`'s `isNight`, on
- * purpose: this is the predicate hostile spawning keys off, and mc-sim is the
- * repository that persists the value it is applied to. Two repositories, one
- * boundary — so both state it and both pin it.
+ * The comparison is identical to `mc-sim/domain/time-of-day.ts` after finite
+ * input is reduced to the current day's fraction. This keeps a rewound or
+ * manually advanced clock from changing the phase merely because it crossed a
+ * day boundary.
  */
-export const isNight = (timeOfDay: number): boolean =>
-  timeOfDay < DAWN_FRACTION || timeOfDay > DUSK_FRACTION
+export const isNight = (timeOfDay: number): boolean => {
+  const fraction = canonicalTimeOfDay(timeOfDay)
+  return fraction < DAWN_FRACTION || fraction > DUSK_FRACTION
+}
 
 /**
  * Which phase a given time of day falls in.
@@ -85,13 +104,14 @@ export const isNight = (timeOfDay: number): boolean =>
  * daylight, so nothing that this reports as `dawn` or `dusk` is also night.
  */
 export const dayPhase = (timeOfDay: number): DayPhase => {
-  if (isNight(timeOfDay)) {
+  const fraction = canonicalTimeOfDay(timeOfDay)
+  if (isNight(fraction)) {
     return 'night'
   }
-  if (timeOfDay < DAWN_FRACTION + TWILIGHT_BAND) {
+  if (fraction < DAWN_FRACTION + TWILIGHT_BAND) {
     return 'dawn'
   }
-  if (timeOfDay > DUSK_FRACTION - TWILIGHT_BAND) {
+  if (fraction > DUSK_FRACTION - TWILIGHT_BAND) {
     return 'dusk'
   }
   return 'day'
