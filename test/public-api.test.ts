@@ -23,6 +23,7 @@ import {
 import { applyDamage } from '../src/domain/death-cause'
 import { takeBatch } from '../src/domain/falling-block'
 import { resolveFoodUse } from '../src/domain/interactions/eat-food'
+import { planFallingBlockMoves } from '../src/domain/interactions/plan-falling-block-moves'
 import { ITEM_TYPES } from '../src/domain/item-vocabulary'
 import { GAMEPLAY_STAGE_IDS } from '../src/stages/stage-ids'
 
@@ -77,6 +78,24 @@ describe('public API surface', () => {
   it.effect('re-exports host-facing targeted right-click routing', () =>
     Effect.sync(() => {
       expect(Object.keys(gameplay)).toContain('targetedRightClickRoute')
+    }),
+  )
+
+  it.effect('re-exports host-facing falling-block planning', () =>
+    Effect.sync(() => {
+      expect(Object.keys(gameplay)).toContain('planFallingBlockMoves')
+    }),
+  )
+
+  it.effect('re-exports gameplay-owned session snapshot validators', () =>
+    Effect.sync(() => {
+      for (const name of [
+        'isValidBrewingStandState',
+        'isValidStatusEffectState',
+        'isValidVillagerTradeState',
+      ]) {
+        expect(Object.keys(gameplay)).toContain(name)
+      }
     }),
   )
 
@@ -429,6 +448,7 @@ describe('public API surface', () => {
       )
       expect(gameplay.takeBatch).toBe(takeBatch)
       expect(gameplay.resolveFoodUse).toBe(resolveFoodUse)
+      expect(gameplay.planFallingBlockMoves).toBe(planFallingBlockMoves)
       expect(gameplay.GAMEPLAY_STAGE_IDS).toBe(GAMEPLAY_STAGE_IDS)
     }),
   )

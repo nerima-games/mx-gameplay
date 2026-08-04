@@ -127,6 +127,61 @@ export const brewingOutput = (
   return undefined
 }
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value)
+
+const isPotionType = (value: unknown): value is PotionType =>
+  typeof value === 'string' && POTION_TYPES.includes(value as PotionType)
+
+const isBrewingIngredient = (value: unknown): value is BrewingIngredient =>
+  typeof value === 'string' && BREWING_INGREDIENTS.includes(value as BrewingIngredient)
+
+const isBrewingBottle = (value: unknown): value is BrewingBottle =>
+  value === 'water_bottle' || (isRecord(value) && isPotionType(value['potion']))
+
+export const isValidBrewingStandState = (
+  value: unknown,
+): value is BrewingStandState => {
+  const fuelUnits = isRecord(value) ? value['fuelUnits'] : undefined
+  const bottle = isRecord(value) ? value['bottle'] : undefined
+  const ingredient = isRecord(value) ? value['ingredient'] : undefined
+  const brewing = isRecord(value) ? value['brewing'] : undefined
+  if (
+    !isRecord(value) ||
+    typeof fuelUnits !== 'number' ||
+    !Number.isSafeInteger(fuelUnits) ||
+    fuelUnits < 0 ||
+    !(bottle === undefined || isBrewingBottle(bottle)) ||
+    !(ingredient === undefined || isBrewingIngredient(ingredient))
+  ) {
+    return false
+  }
+
+  if (brewing === undefined) {
+    return (
+      bottle === undefined ||
+      ingredient === undefined ||
+      brewingOutput(bottle, ingredient) !== undefined
+    )
+  }
+
+  if (
+    !isRecord(brewing) ||
+    !isPotionType(brewing['output']) ||
+    typeof brewing['remainingSecs'] !== 'number' ||
+    !Number.isFinite(brewing['remainingSecs']) ||
+    brewing['remainingSecs'] <= 0 ||
+    bottle === undefined ||
+    ingredient !== undefined
+  ) {
+    return false
+  }
+
+  return BREWING_INGREDIENTS.some(
+    (candidate) => brewingOutput(bottle, candidate) === brewing['output'],
+  )
+}
+
 export const acceptBrewingFuel = (
   state: BrewingStandState,
 ): readonly [BrewingStandState, BrewingTransferResult] => [

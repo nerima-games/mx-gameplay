@@ -93,6 +93,43 @@ const finiteDuration = (durationSecs: number): number =>
 const finiteAmplifier = (amplifier: number | undefined): number =>
   Number.isFinite(amplifier) ? Math.max(0, Math.floor(amplifier ?? 0)) : 0
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value)
+
+const isStatusEffectType = (value: unknown): value is StatusEffectType =>
+  typeof value === 'string' && STATUS_EFFECT_TYPES.includes(value as StatusEffectType)
+
+export const isValidStatusEffectState = (
+  value: unknown,
+): value is StatusEffectState => {
+  if (!isRecord(value) || !Array.isArray(value['effects'])) return false
+
+  const effectTypes = new Set<StatusEffectType>()
+  return value['effects'].every((effect) => {
+    const amplifier = isRecord(effect) ? effect['amplifier'] : undefined
+    if (
+      !isRecord(effect) ||
+      !isStatusEffectType(effect['type']) ||
+      effectTypes.has(effect['type']) ||
+      typeof effect['remainingSecs'] !== 'number' ||
+      !Number.isFinite(effect['remainingSecs']) ||
+      effect['remainingSecs'] <= 0 ||
+      typeof effect['pulseClockSecs'] !== 'number' ||
+      !Number.isFinite(effect['pulseClockSecs']) ||
+      effect['pulseClockSecs'] < 0 ||
+      (amplifier !== undefined &&
+        (typeof amplifier !== 'number' ||
+          !Number.isSafeInteger(amplifier) ||
+          amplifier < 0))
+    ) {
+      return false
+    }
+
+    effectTypes.add(effect['type'])
+    return true
+  })
+}
+
 export const copyStatusEffectState = (state: StatusEffectState): StatusEffectState => ({
   effects: state.effects.map((effect) => ({ ...effect })),
 })

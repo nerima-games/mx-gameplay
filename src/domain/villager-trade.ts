@@ -34,6 +34,71 @@ const OFFER_TABLE: Record<VillagerProfession, ReadonlyArray<Omit<VillagerTradeOf
   ],
 }
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value)
+
+const isVillagerProfession = (value: unknown): value is VillagerProfession =>
+  value === 'farmer' || value === 'toolsmith'
+
+const isPositiveCount = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isSafeInteger(value) && value > 0
+
+const isTradeStack = (
+  value: unknown,
+): value is { readonly item: ItemType; readonly count: number } =>
+  isRecord(value) &&
+  typeof value['item'] === 'string' &&
+  isItemType(value['item']) &&
+  isPositiveCount(value['count'])
+
+const isVillagerTradeOffer = (value: unknown): value is VillagerTradeOffer =>
+  isRecord(value) &&
+  typeof value['id'] === 'string' &&
+  isTradeStack(value['input']) &&
+  isTradeStack(value['output']) &&
+  isPositiveCount(value['maxUses']) &&
+  typeof value['uses'] === 'number' &&
+  Number.isSafeInteger(value['uses']) &&
+  value['uses'] >= 0 &&
+  value['uses'] <= value['maxUses']
+
+export const isValidVillagerTradeState = (
+  value: unknown,
+): value is VillagerTradeState => {
+  if (
+    !isRecord(value) ||
+    typeof value['restockElapsedSecs'] !== 'number' ||
+    !Number.isFinite(value['restockElapsedSecs']) ||
+    value['restockElapsedSecs'] < 0 ||
+    value['restockElapsedSecs'] >= VILLAGER_RESTOCK_INTERVAL_SECS ||
+    !Array.isArray(value['villagers'])
+  ) {
+    return false
+  }
+
+  const villagerIds = new Set<string>()
+  return value['villagers'].every((villager) => {
+    if (
+      !isRecord(villager) ||
+      typeof villager['id'] !== 'string' ||
+      villagerIds.has(villager['id']) ||
+      !isVillagerProfession(villager['profession']) ||
+      !Array.isArray(villager['offers'])
+    ) {
+      return false
+    }
+
+    const offerIds = new Set<string>()
+    for (const offer of villager['offers']) {
+      if (!isVillagerTradeOffer(offer) || offerIds.has(offer.id)) return false
+      offerIds.add(offer.id)
+    }
+
+    villagerIds.add(villager['id'])
+    return true
+  })
+}
+
 const hash = (value: string): number => {
   let result = 2166136261
   for (let index = 0; index < value.length; index += 1) {

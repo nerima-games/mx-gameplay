@@ -11,6 +11,7 @@ import {
   stepEcosystemMob,
   ZOMBIFIED_PIGLIN_KIND,
 } from '../src/domain/mob/mob-ecosystem'
+import { ZOMBIE_KIND } from '../src/domain/mob/hostile-combat'
 
 const position = (x: number, z = 0): Position => ({ x, y: 64, z })
 
@@ -40,6 +41,22 @@ describe('mob ecosystem', () => {
     const second = stepEcosystemMob(SKELETON_KIND, first.state, position(0), position(10), 0.05)
 
     expect(first.attack).toMatchObject({ mode: 'projectile', damage: 4 })
+    expect(second.attack).toBeUndefined()
+  })
+
+  it('lets zombies attack in melee range and respects their cooldown', () => {
+    const first = stepEcosystemMob(
+      ZOMBIE_KIND,
+      initialEcosystemMobState(),
+      position(1),
+      position(0),
+      0.05,
+    )
+    const second = stepEcosystemMob(ZOMBIE_KIND, first.state, position(1), position(0), 0.05)
+
+    expect(first.attack).toMatchObject({ mode: 'melee', damage: 3 })
+    expect(first.state.attackCooldownSecs).toBe(1)
+    expect(first.feetPosition).toEqual(position(1))
     expect(second.attack).toBeUndefined()
   })
 
