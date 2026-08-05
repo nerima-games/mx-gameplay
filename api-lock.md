@@ -13,7 +13,7 @@
 <!-- ------------------------------------------------------------------------- -->
 
 format: 1
-exported declarations: 871
+exported declarations: 874
 supporting declarations: 38
 
 ## Exported
@@ -1095,6 +1095,19 @@ type DespawnVerdict = {
 
 ```ts
 type DoorBlock = (typeof DOOR_BLOCKS)[number];
+```
+
+### DoorUpperBreakCell  `type`
+
+```ts
+type DoorUpperBreakCell = {
+    readonly _tag: 'NotADoor';
+} | {
+    readonly _tag: 'NoDoorAbove';
+} | {
+    readonly _tag: 'DoorAbove';
+    readonly cell: BlockPosition;
+};
 ```
 
 ### DoorUpperCell  `type`
@@ -5151,6 +5164,12 @@ const distanceBetween: (from: Position, to: Position) => number;
 const disturb: (queue: FallingBlockQueue, positions: Iterable<PositionKey>) => FallingBlockQueue;
 ```
 
+### doorUpperBreakCell  `const`
+
+```ts
+const doorUpperBreakCell: (store: ChunkStoreApi, block: BlockId, position: BlockPosition) => Effect.Effect<DoorUpperBreakCell>;
+```
+
 ### doorUpperCell  `const`
 
 ```ts
@@ -5167,6 +5186,12 @@ const drainBlockPlacementResults: (state: GameplayFrameState) => Effect.Effect<R
 
 ```ts
 const drainBlockUseResults: (state: GameplayFrameState) => Effect.Effect<ReadonlyArray<BlockUseResult>>;
+```
+
+### drainBowKnockbacks  `const`
+
+```ts
+const drainBowKnockbacks: (state: GameplayFrameState) => Effect.Effect<ReadonlyArray<BowKnockback>>;
 ```
 
 ### drainBowShotResults  `const`
