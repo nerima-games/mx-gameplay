@@ -119,7 +119,11 @@
  * in range, which is the inert answer.
  */
 import type { DeltaTimeSecs } from '../frame-contract'
-import { CREEPER_EXPLOSION_POWER, type Explosion } from './explosion'
+import {
+  CHARGED_CREEPER_EXPLOSION_POWER,
+  CREEPER_EXPLOSION_POWER,
+  type Explosion,
+} from './explosion'
 
 /**
  * Inside this many blocks, a dormant fuse lights.
@@ -186,6 +190,8 @@ export const DORMANT_FUSE: CreeperFuse = { _tag: 'Dormant' }
 export type CreeperSenses = {
   /** Blocks between this creeper and its target, measured by mc-sim. */
   readonly distanceToTargetBlocks: number | undefined
+  /** Whether a prior lightning strike has charged this creeper. */
+  readonly charged?: boolean
 }
 
 /**
@@ -217,14 +223,20 @@ const withinIgnitionRange = (senses: CreeperSenses): boolean =>
  * long enough to skip past 1.5 seconds detonates on that frame rather than
  * deferring to the next one, so a lag spike cannot buy the player time.
  */
-const burn = (burnedSoFar: number, dt: DeltaTimeSecs): CreeperStep => {
+const burn = (burnedSoFar: number, dt: DeltaTimeSecs, charged: boolean): CreeperStep => {
   const burnedSecs = burnedSoFar + dt
 
   return burnedSecs < CREEPER_FUSE_SECS
     ? // Monotone: `burnedSecs` only ever moves up, so a fuse that stays in
       // range cannot restart. `dt = 0` lands here unchanged.
       { fuse: { _tag: 'Lit', burnedSecs }, explosion: undefined }
-    : { fuse: { _tag: 'Detonated' }, explosion: { source: 'creeper', power: CREEPER_EXPLOSION_POWER } }
+    : {
+        fuse: { _tag: 'Detonated' },
+        explosion: {
+          source: 'creeper',
+          power: charged ? CHARGED_CREEPER_EXPLOSION_POWER : CREEPER_EXPLOSION_POWER,
+        },
+      }
 }
 
 /**
@@ -253,7 +265,7 @@ export const stepCreeperFuse = (
     // of hiss on ignition — invisible, unjustifiable, and a gratuitous
     // divergence from the numbers this file is ported from.
     case 'Dormant': {
-      return withinIgnitionRange(senses) ? burn(0, dt) : { fuse, explosion: undefined }
+      return withinIgnitionRange(senses) ? burn(0, dt, senses.charged === true) : { fuse, explosion: undefined }
     }
 
     case 'Lit': {
@@ -261,7 +273,7 @@ export const stepCreeperFuse = (
       // burned (`creeper-fuse.ts:49`). See the module header — a decision, not
       // an omission.
       return withinIgnitionRange(senses)
-        ? burn(fuse.burnedSecs, dt)
+        ? burn(fuse.burnedSecs, dt, senses.charged === true)
         : { fuse: DORMANT_FUSE, explosion: undefined }
     }
 

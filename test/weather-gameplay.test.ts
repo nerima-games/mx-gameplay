@@ -6,6 +6,8 @@ import type { Dimension } from '@nerima-games/mc-worldgen'
 import type { PositionKey } from '../src/domain/position-key'
 import {
   advanceWeatherGameplay,
+  isWithinLightningStrikeRadius,
+  LIGHTNING_STRIKE_RADIUS_BLOCKS,
   makeWeatherGameplayState,
   type WeatherGameplayInput,
 } from '../src/domain/weather-gameplay'
@@ -27,6 +29,12 @@ const input = (overrides: Partial<WeatherGameplayInput> = {}): WeatherGameplayIn
 })
 
 describe('weather gameplay', () => {
+  it('uses an inclusive spherical lightning radius', () => {
+    expect(LIGHTNING_STRIKE_RADIUS_BLOCKS).toBe(3)
+    expect(isWithinLightningStrikeRadius(position(3, 64, 0), position(0, 64, 0))).toBe(true)
+    expect(isWithinLightningStrikeRadius(position(3.01, 64, 0), position(0, 64, 0))).toBe(false)
+  })
+
   it('rain affects only sky-exposed fire and farmland in the overworld', () => {
     const result = advanceWeatherGameplay(
       makeWeatherGameplayState(1),

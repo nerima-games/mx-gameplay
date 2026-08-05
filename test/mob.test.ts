@@ -50,6 +50,7 @@ import {
   type CreeperFuse,
 } from '../src/domain/mob/creeper-fuse'
 import {
+  CHARGED_CREEPER_EXPLOSION_POWER,
   CREEPER_EXPLOSION_POWER,
   explosionDamageAmount,
   explosionDamageAt,
@@ -261,6 +262,9 @@ describe('creeper: the fuse is a state machine with a timer and an irreversible 
 
       expect(step.fuse).toStrictEqual({ _tag: 'Detonated' })
       expect(step.explosion).toStrictEqual({ source: 'creeper', power: CREEPER_EXPLOSION_POWER })
+
+      const charged = stepCreeperFuse(lit(1.49), { ...at(2), charged: true }, TICK)
+      expect(charged.explosion).toStrictEqual({ source: 'creeper', power: CHARGED_CREEPER_EXPLOSION_POWER })
 
       // A single enormous frame detonates on that frame rather than deferring.
       const lagSpike = stepCreeperFuse(lit(0), at(2), DeltaTimeSecs(30))
