@@ -46,11 +46,9 @@
  * question and `docs/porting.md` is where it is tracked; a local invention here
  * would be a second block-state vocabulary.
  *
- * TAKE THE UPPER HALF AWAY WHEN THE LOWER IS BROKEN. `./break-block` removes one
- * cell, so breaking the bottom of a door leaves the top floating. That is the
- * `disturb`-shaped attachment queue `./place-block`'s header names as the
- * missing half of `canBlockStaySupported`, met from a second direction — and it
- * is the same one consumer that does not exist yet, not a new one.
+ * TAKE THE UPPER HALF AWAY WHEN THE LOWER IS BROKEN. The break loop asks this
+ * module whether the cell above is the matching closed-door half before it
+ * removes it. That keeps a malformed world from losing an unrelated block.
  */
 import { Effect } from 'effect'
 import { above } from '../block-position-key'
@@ -114,6 +112,35 @@ export const doorUpperCell = (
     }
 
     return { _tag: 'Clear', cell }
+  })
+
+/** What the cell above says about breaking a door's lower half. */
+export type DoorUpperBreakCell =
+  | { readonly _tag: 'NotADoor' }
+  | { readonly _tag: 'NoDoorAbove' }
+  | { readonly _tag: 'DoorAbove'; readonly cell: BlockPosition }
+
+/**
+ * Finds the closed-door upper half that must be removed with a broken lower
+ * half. A non-door or an inconsistent cell above is deliberately left alone.
+ */
+export const doorUpperBreakCell = (
+  store: ChunkStoreApi,
+  block: BlockId,
+  position: BlockPosition,
+): Effect.Effect<DoorUpperBreakCell> =>
+  Effect.gen(function* () {
+    if (!isDoorBlock(block)) {
+      return { _tag: 'NotADoor' }
+    }
+
+    const cell = above(position)
+    const reading = yield* store.getBlock(cell)
+    if (reading._tag !== 'Block' || !isDoorBlock(reading.block)) {
+      return { _tag: 'NoDoorAbove' }
+    }
+
+    return { _tag: 'DoorAbove', cell }
   })
 
 /** The id this rule is about, for a caller that wants to demonstrate it. */

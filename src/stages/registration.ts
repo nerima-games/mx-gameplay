@@ -244,6 +244,7 @@ import {
   type EndPortalTravelEvent,
 } from '../domain/end-portal-travel'
 import { breakBlock } from '../domain/interactions/break-block'
+import { doorUpperBreakCell } from '../domain/interactions/place-door-upper'
 import {
   BLOCK_LOOT_ROLLS,
   blockLoot,
@@ -3160,6 +3161,14 @@ export const gameplayStages = (
           const outcome = yield* breakBlock(store, breakPosition)
           switch (outcome._tag) {
             case 'Broken': {
+              const upperDoor = yield* doorUpperBreakCell(store, outcome.yielded, breakPosition)
+              if (upperDoor._tag === 'DoorAbove') {
+                const upperOutcome = yield* store.setBlock(upperDoor.cell, AIR_BLOCK_ID)
+                if (upperOutcome._tag === 'Written') {
+                  disturbed.push(positionKeyOf(upperDoor.cell))
+                }
+              }
+
               // THE LOOT TABLE, and this is the line the mining path was
               // missing. `outcome.yielded` is a chunk buffer BYTE and used to be
               // pushed into the outbox as-is, so breaking stone gave you stone

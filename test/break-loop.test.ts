@@ -59,7 +59,9 @@ import { NO_TOOL } from '../src/domain/interactions/block-loot'
  */
 const DIRT_ID = 3
 const LEVER_ID = blockIdOf('lever') ?? -1
+const DOOR_ID = blockIdOf('door') ?? -1
 const AT: BlockPosition = { x: 3, y: 64, z: 7 }
+const ABOVE_AT: BlockPosition = { x: 3, y: 65, z: 7 }
 const BESIDE_AT: BlockPosition = { x: 4, y: 64, z: 7 }
 const IN_SIGHT: BlockPosition = { x: 0, y: 1, z: 0 }
 
@@ -91,6 +93,17 @@ const twoBlockWorld = (block: number) =>
       blocks: new Map([
         [cellKey(AT), block],
         [cellKey(BESIDE_AT), block],
+      ]),
+      loaded: [chunkKey(chunkOf(AT))],
+    },
+  })
+
+const doorWorld = () =>
+  makeInMemoryWorld<MobBehaviour>({
+    world: {
+      blocks: new Map([
+        [cellKey(AT), DOOR_ID],
+        [cellKey(ABOVE_AT), DOOR_ID],
       ]),
       loaded: [chunkKey(chunkOf(AT))],
     },
@@ -247,6 +260,20 @@ describe('the break loop', () => {
 
       const after = yield* world.chunkStore.getBlock(AT)
       expect(after).toStrictEqual({ _tag: 'Block', block: 0 })
+    }),
+  )
+
+  it.effect('removes the upper half when a door lower half is broken', () =>
+    Effect.gen(function* () {
+      const world = yield* doorWorld()
+      const state = yield* makeGameplayFrameState
+      const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player, world.time)
+
+      yield* requestBlockBreak(state, AT)
+      yield* runInteractions(stages as never)
+
+      expect(yield* world.chunkStore.getBlock(AT)).toStrictEqual({ _tag: 'Block', block: 0 })
+      expect(yield* world.chunkStore.getBlock(ABOVE_AT)).toStrictEqual({ _tag: 'Block', block: 0 })
     }),
   )
 
