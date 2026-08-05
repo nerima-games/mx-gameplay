@@ -1,6 +1,6 @@
 {
   "name": "@nerima-games/mx-gameplay",
-  "version": "0.1.71",
+  "version": "0.2.0",
   "type": "module",
   "description": "Experience module for the nerima-games Minecraft-clone rebuild: the rules of play — mining and placement, item use, mob behaviour, drops, fluid propagation, vehicles, portals, day/night and weather.",
   "homepage": "https://github.com/nerima-games/mx-gameplay#readme",
@@ -52,9 +52,9 @@
   },
   "dependencies": {
     "@nerima-games/mc-audio": "0.2.6",
-    "@nerima-games/mc-kernel": "0.2.16",
-    "@nerima-games/mc-sim": "0.1.37",
-    "@nerima-games/mc-worldgen": "0.1.13",
+    "@nerima-games/mc-kernel": "0.2.18",
+    "@nerima-games/mc-sim": "0.1.41",
+    "@nerima-games/mc-worldgen": "0.1.14",
     "effect": "^3.22.0"
   },
   "devDependencies": {
