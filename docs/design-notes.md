@@ -154,7 +154,7 @@ plan.md §3.11:
 | --- | --- | --- |
 | 水は予算の**半分まで** | `:25-26` `halfBudget = Math.floor(budget / 2)` / `waterSliceLen = Math.min(water.length, halfBudget)` | `splitBudget` の `waterSliceLength` |
 | 溶岩は**残りを埋める**（自分の tick が有効なときだけ） | `:27-28` `lavaAvail = lavaTickActive ? lava.length : 0` / `lavaSliceLen = Math.min(lavaAvail, budget - waterSliceLen)` | `lavaAvailable` / `lavaSliceLength` |
-| 溶岩の tick が無効なとき、フロンティアは**捨てずに保持** | `:34-37` `if (!lavaTickActive) { … retainedLavaFrontier.push(lava[i]!.key) }` | `retainedLavaFrontier` |
+| 溶岩の tick が無効なとき、フロンティアは**捨てずに保持** | `:34-37` `if (!lavaTickActive) { … carryOver に残る }` | `carryOver` |
 
 **間違えやすいのは 3 番目である。** 捨てても何も落ちない。型エラーも例外も出ない。
 症状は数分後にプレビューで現れる — **溶岩湖の縁が直線になる**。

@@ -124,10 +124,8 @@ mc-sim が未 publish なので、この画面が距離 1 つと `CreeperFuse` �
 | # | 症状 | 詳細 |
 | --- | --- | --- |
 | F1 | **飽和したバッチの約半分は動けない位置に使われる** | 予算は MOVES の名前で POSITIONS に効く。1 move が 2 位置を enqueue する（`below(target)` と `source`）ので、柱の崩落では片方は必ず動けない。実測 0.41 moves/position、26 個の擾乱でキューは 52 まで膨らみ、消えるまで 8 フレーム。**上限自体は破られていない**（超過フレーム 0）ので正しさのバグではない |
-| F2 | **`retainedLavaFrontier` が `carryOver` の結果に完全に含まれる** | 両方の doc comment に従って両方を次フロンティアに戻すと、溶岩セルが非アクティブ tick ごとに倍増する（実測 4 → 6 → 12 → 24 → 48 → 96）。`stages/registration.ts:270` は `carryOver` だけを使っており正しい。危険なのは、**死んでいるフィールドの doc が義務のように読める**ことである |
-| F4 | **fluids stage だけが get-then-set** | `stages/registration.ts:267-270`。同じファイルの `interactions` は `Ref.getAndSet`、`entities` は `Ref.modify` と `Ref.update`（「`set` だと消える」というコメント付き）。DN-GP-10 が禁じている形である。**今日は到達不能**（`fluidFrontier` を書く者が他に無い）ので、観測された喪失ではなく**形**として報告している |
 
-**F3・F5・F6 は修正済みで、`test/preview-findings.test.ts` が回帰を防ぐ。** 初回調査時は既存 112 本のテストが 1 つも捕まえていなかった。理由はそれぞれ異なる:
+**F2・F3・F4・F5・F6 は修正済みで、`test/preview-findings.test.ts` が回帰を防ぐ。** F2 は二重の frontier API を削除し、F4 は fluid frontier の予約を `Ref.modify` に統一した。初回調査時は既存 112 本のテストが 1 つも捕まえていなかった。理由はそれぞれ異なる:
 
 - F3: `test/rules.test.ts` の `carryOver` テストは `key` が全部異なるフロンティアしか使わない。
   `(key, kind)` が 2 対 1 になる入力を誰も書いていない。
@@ -136,7 +134,7 @@ mc-sim が未 publish なので、この画面が距離 1 つと `CreeperFuse` �
 - F6: `test/day-night.test.ts` は `[0, 1)` の中しかサンプルしない。
   前提条件がどこにも書かれていないので、破る入力を思いつく理由が無い。
 
-F1・F2・F4 は**正しさのバグではない**。F1 は測定値、F2 は API の罠、F4 は形である。
+F1 は**正しさのバグではない**。飽和時の測定値として残している。
 そう書いてある。
 
 ## 制約

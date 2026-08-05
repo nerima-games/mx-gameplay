@@ -414,9 +414,9 @@ mx-redstone の回路盤が磨いた。`tsconfig.base.json` が `lib` から "DO
 | # | 症状 | 場所 | pin |
 | --- | --- | --- | --- |
 | F1 | 飽和したバッチの約半分が動けない位置に使われる（実測 0.41 moves/position、26 擾乱でキューは 52 まで膨張） | `domain/falling-block.ts:53-60` / `entities/falling-block-move.ts:167` | — （測定値。上限自体は破られていない） |
-| F2 | `retainedLavaFrontier` が `carryOver` の結果に完全に含まれ、両方の doc に従うと溶岩フロンティアが tick ごとに倍増する | `domain/fluid-frontier.ts:62-65`, `:116-122` | ✅ 2 本 |
+| F2 | 重複する溶岩 frontier API により、両方を再投入すると tick ごとに倍増した | `domain/fluid-frontier.ts` | ✅ 修正済み（単一の `carryOver` 所有者） |
 | F3 | `carryOver` が `key` だけで比較するため、水と溶岩が同座標に並ぶと**未評価の溶岩側**が黙って消える | `domain/fluid-frontier.ts:120` | ✅ 2 本 |
-| F4 | fluids stage だけが `Ref.get` → `Ref.set`（DN-GP-10 が禁じる形）。**今日は到達不能**なので形として報告 | `stages/registration.ts:798-805` | — |
+| F4 | fluids stage が `Ref.get` → `Ref.set` だった（DN-GP-10 が禁じる形） | `stages/registration.ts` | ✅ 修正済み（`Ref.modify`） |
 | F5 | NaN ダメージ 1 発でプレイヤーが永久に不死になる（`isDead` が永久に false、死亡メッセージが出ない） | `domain/death-cause.ts:110-122` | ✅ 3 本 |
 | F6 | 昼夜ルールが日周期でない。範囲外は全部 night で `hostileSpawnsAllowed` も真。負の端数は mc-sim の `% 1` から出る | `domain/day-night.ts:78-98` | ✅ 3 本 |
 

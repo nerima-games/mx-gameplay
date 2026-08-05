@@ -290,9 +290,8 @@ describe('fluids: the frontier budget that bought 37–55×', () => {
       const split = splitBudget(frontier, { lavaTickActive: false })
 
       expect(split.work).toStrictEqual([])
-      expect(split.retainedLavaFrontier).toStrictEqual(['l0', 'l1', 'l2'])
-      // And the carry-over agrees, so the stage cannot keep one and lose the
-      // other. Dropping these is what produces a lava lake with a straight edge.
+      // `carryOver` is the single next-tick owner. Dropping these is what
+      // produces a lava lake with a straight edge.
       expect(carryOver(frontier, split)).toStrictEqual(frontier)
     }),
   )
@@ -388,13 +387,18 @@ describe('fluids: the frontier budget that bought 37–55×', () => {
     }),
   )
 
-  it.effect('an ACTIVE lava tick retains nothing — the retained frontier is the inactive case only', () =>
+  it.effect('returns work only; carryOver is the sole owner of inactive lava', () =>
     Effect.sync(() => {
-      // `fluid-tick-budget.test.ts:35-40`. The mirror of the RETAINS test above,
-      // and the row that stops "retain lava always" from passing both: retaining
-      // an evaluated cell is how the preview's F2 doubling starts.
-      const split = splitBudget(frontierOf(2, 2), { lavaTickActive: true, budget: 64 })
-      expect(split.retainedLavaFrontier).toStrictEqual([])
+      const frontier = frontierOf(2, 2)
+      const split = splitBudget(frontier, { lavaTickActive: false, budget: 64 })
+
+      expect(split).toStrictEqual({
+        work: [
+          { key: 'w0', kind: 'water' },
+          { key: 'w1', kind: 'water' },
+        ],
+      })
+      expect(carryOver(frontier, split).map((item) => item.key)).toStrictEqual(['l0', 'l1'])
     }),
   )
 

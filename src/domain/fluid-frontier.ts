@@ -203,13 +203,6 @@ export const DEFAULT_FLUID_FRONTIER_BUDGET = 64
 export type FluidBudgetSplit = {
   /** The cells to evaluate this tick. Never longer than the budget. */
   readonly work: ReadonlyArray<FluidWorkItem>
-  /**
-   * Position keys of lava cells deferred because lava's tick was not active.
-   * This is diagnostic compatibility data only. Callers MUST use `carryOver`
-   * as the sole source of next-tick work; reinserting these keys separately
-   * duplicates the deferred lava frontier.
-   */
-  readonly retainedLavaFrontier: ReadonlyArray<PositionKey>
 }
 
 /**
@@ -246,9 +239,7 @@ export const splitBudget = (
     ...lava.slice(0, lavaSliceLength),
   ]
 
-  const retainedLavaFrontier = options.lavaTickActive ? [] : lava.map((item) => item.key)
-
-  return { work, retainedLavaFrontier }
+  return { work }
 }
 
 /**

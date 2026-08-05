@@ -140,6 +140,8 @@ describe('fluid frontier identity and carry-over contract', () => {
 
       for (let tick = 0; tick < 4; tick += 1) {
         const split = splitBudget(frontier, { lavaTickActive: false, budget: 64 })
+        expect(split).toHaveProperty('work')
+        expect(Object.keys(split)).toStrictEqual(['work'])
         frontier = carryOver(frontier, split)
         sizes.push(frontier.length)
       }

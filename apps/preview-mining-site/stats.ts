@@ -560,21 +560,7 @@ const deltaTimeUnused = Effect.gen(function* () {
 // DN-GP-2: fluids
 // ---------------------------------------------------------------------------
 
-/**
- * `retainedLavaFrontier` and `carryOver` return the same cells.
- *
- * `FluidBudgetSplit.retainedLavaFrontier` is documented "These MUST be fed back
- * into the next frontier; dropping them stops lava mid-flow"
- * (`domain/fluid-frontier.ts:62-65`). `carryOver` is documented as "the frontier
- * cells that were NOT evaluated and must survive into the next tick". On an
- * inactive lava tick the lava cells satisfy both descriptions, so a caller that
- * does what the two doc comments jointly say duplicates every lava cell — and
- * duplicates them again on the next inactive tick.
- *
- * `stages/registration.ts:270` gets this right by using only `carryOver`, which
- * means the field is dead in the only caller that exists. The hazard is that it
- * is dead in a way that reads like an obligation.
- */
+/** The split has one owner for deferred cells: `carryOver`. */
 const lavaRetentionOverlap = Effect.sync((): Check => {
   const frontier: ReadonlyArray<FluidWorkItem> = [
     { key: positionKey('w0'), kind: 'water' },
@@ -584,36 +570,20 @@ const lavaRetentionOverlap = Effect.sync((): Check => {
   ]
   const split = splitBudget(frontier, { lavaTickActive: false, budget: 64 })
   const carried = carryOver(frontier, split)
-  const carriedKeys = new Set(carried.map((item) => item.key))
-  const overlap = split.retainedLavaFrontier.filter((key) => carriedKeys.has(key))
-
-  // What five inactive ticks of "feed both back" would do.
-  let naive: ReadonlyArray<FluidWorkItem> = frontier
-  const growth: Array<number> = [naive.length]
-  for (let tick = 0; tick < 5; tick += 1) {
-    const step = splitBudget(naive, { lavaTickActive: false, budget: 64 })
-    naive = [
-      ...carryOver(naive, step),
-      ...step.retainedLavaFrontier.map((key): FluidWorkItem => ({ key, kind: 'lava' })),
-    ]
-    growth.push(naive.length)
-  }
+  const splitKeys = Object.keys(split)
+  const onlyWork = splitKeys.length === 1 && splitKeys[0] === 'work'
 
   return {
-    id: overlap.length === 0 ? 'ok' : 'F2',
-    title: 'retainedLavaFrontier is a strict subset of what carryOver already keeps',
-    finding: overlap.length > 0,
+    id: onlyWork ? 'ok' : 'F2',
+    title: 'carryOver is the only next-tick owner of inactive lava',
+    finding: !onlyWork,
     lines: [
       `  frontier                       ${String(frontier.length)} cells (1 water, 3 lava)`,
-      `  split.retainedLavaFrontier     ${JSON.stringify(split.retainedLavaFrontier)}`,
+      `  split result keys               ${JSON.stringify(splitKeys)}`,
       `  carryOver(...)                 ${JSON.stringify(carried.map((item) => item.key))}`,
-      `  cells named by BOTH            ${String(overlap.length)} of ${String(split.retainedLavaFrontier.length)}`,
       '',
-      `  a caller obeying both doc comments, over 5 inactive lava ticks:`,
-      `    frontier size  ${growth.join(' -> ')}`,
-      '',
-      '  stages/registration.ts:270 uses carryOver alone and is correct. The field is dead in',
-      '  the only caller there is, and its doc comment reads as an obligation to use it.',
+      '  splitBudget supplies work for this tick only. carryOver retains every unevaluated',
+      '  cell, including inactive lava, so there is no second result to reinsert.',
     ],
   } satisfies Check
 })
@@ -652,7 +622,7 @@ const carryOverKeyCollision = Effect.sync((): Check => {
 
   return {
     id: lost.length === 0 ? 'ok' : 'F3',
-    title: 'carryOver drops an unevaluated cell when two kinds share a position',
+    title: 'carryOver preserves an unevaluated cell when two kinds share a position',
     finding: lost.length > 0,
     lines: [
       `  frontier            ${JSON.stringify(frontier)}`,
@@ -669,28 +639,7 @@ const carryOverKeyCollision = Effect.sync((): Check => {
   } satisfies Check
 })
 
-/**
- * The fluids stage reads and writes its frontier in two steps.
- *
- * `stages/registration.ts:267-270`:
- *
- *     const frontier = yield* Ref.get(state.fluidFrontier)
- *     const split = splitBudget(frontier, { lavaTickActive })
- *     yield* Ref.set(state.fluidFrontier, carryOver(frontier, split))
- *
- * DN-GP-10 is titled "`Ref.modify` で TOCTOU 回避" and the other two stages in
- * this same file take it seriously: `interactions` uses `Ref.getAndSet` with a
- * comment saying a request arriving between the two steps "would be dropped
- * without a trace", and `entities` uses `Ref.modify` and then `Ref.update` with
- * a comment saying "`update`, not `set`: … a `set` would erase them". The fluids
- * stage is the one that does not.
- *
- * The probe below is honest about what it can and cannot show. Effect does not
- * preempt between two adjacent non-yielding operations, and nothing else in the
- * repository writes `fluidFrontier` yet, so the loss is not reachable today.
- * What is reachable is the shape, and the shape is the same one this file's own
- * comments call a bug twice.
- */
+/** The fluids stage reserves work and retains its frontier with one `Ref.modify`. */
 const fluidFrontierRace = Effect.gen(function* () {
   const site = yield* buildSite({ z: 0, loadedChunks: ['0,0'], cells: [] }, 'race')
   const fluids = site.stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids)
@@ -717,22 +666,19 @@ const fluidFrontierRace = Effect.gen(function* () {
   const survived = after.some((item) => item.key === 'arrived-mid-stage')
 
   return {
-    id: 'F4',
-    title: 'the fluids stage is the one stage in the file that uses get-then-set',
-    finding: true,
+    id: survived ? 'ok' : 'F4',
+    title: 'the fluids stage preserves a concurrent frontier producer',
+    finding: !survived,
     lines: [
       `  stages/registration.ts:177  interactions  Ref.getAndSet   atomic`,
       `  stages/registration.ts:236  entities      Ref.modify      atomic`,
       `  stages/registration.ts:254  entities      Ref.update      atomic ("a set would erase them")`,
-      `  stages/registration.ts:267  fluids        Ref.get         <- read`,
-      `  stages/registration.ts:270  fluids        Ref.set         <- write, from the stale read`,
+      `  stages/registration.ts:267  fluids        Ref.modify      atomic reservation`,
       '',
       `  concurrent-producer probe: the injected cell survived = ${String(survived)}`,
       '',
-      '  Not reachable today, and the probe says so: nothing else writes `fluidFrontier`, and',
-      '  Effect does not preempt between two adjacent non-yielding operations. This is reported',
-      '  as a shape, not as an observed loss. It is the shape DN-GP-10 exists to forbid and the',
-      '  shape the neighbouring stage carries a comment against, and it is one line to fix.',
+      '  Ref.modify commits reservation and carry-over from one state snapshot. A producer',
+      '  scheduled alongside the stage remains in the frontier for a later tick.',
     ],
   } satisfies Check
 })

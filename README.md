@@ -19,7 +19,6 @@ version 1 snapshot は火と Mob の燃焼状態、乱数 seed、未処理時間
 ブロック書き込み成功後に限る。致死ダメージは既存の casualty / drop 経路を再利用する。
 
 流体frontierの次tickへの再投入は `carryOver(frontier, split)` の戻り値だけを使う。
-`retainedLavaFrontier` は互換性のため残した診断用のposition key一覧であり、別途再投入してはならない。
 frontier上の作業identityは `(position key, fluid kind)` なので、水と溶岩が同じ座標で接触しても
 未評価側は失われない。
 

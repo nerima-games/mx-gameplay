@@ -548,7 +548,6 @@ kernel 監査 §4.9 が `solid` への統合を禁じている理由がその行
 | `DEFAULT_FLUID_FRONTIER_BUDGET` | 内部(可視) | 64。暫定値 |
 
 次 tick の frontier は `carryOver(frontier, split)` の戻り値だけを再投入する。
-`retainedLavaFrontier` は診断用の position key 一覧であり、別途再投入すると溶岩を二重登録する。
 評価済み判定の identity は `(position key, fluid kind)` で、水と溶岩が同じ座標にある場合も区別する。
 
 流体ステージが適用した更新は `drainFluidUpdates` でホストへ渡す。この操作は

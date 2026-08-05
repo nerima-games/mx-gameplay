@@ -13,7 +13,7 @@
 <!-- ------------------------------------------------------------------------- -->
 
 format: 1
-exported declarations: 875
+exported declarations: 871
 supporting declarations: 38
 
 ## Exported
@@ -722,6 +722,12 @@ const CACTUS_BLOCK_ID: BlockId | undefined;
 const CANNOT_TILL: TillingCapability;
 ```
 
+### CHARGED_CREEPER_EXPLOSION_POWER  `const`
+
+```ts
+const CHARGED_CREEPER_EXPLOSION_POWER = 6;
+```
+
 ### CHICKEN_KIND  `const`
 
 ```ts
@@ -744,12 +750,6 @@ const CLOSED_SHELL: ShulkerShell;
 
 ```ts
 const COLLISION_EXIT_SPEED = 6;
-```
-
-### CONTACT_EPSILON  `const`
-
-```ts
-const CONTACT_EPSILON = 1e-9;
 ```
 
 ### COW_KIND  `const`
@@ -892,6 +892,7 @@ type CreeperFuse = {
 ```ts
 type CreeperSenses = {
     readonly distanceToTargetBlocks: number | undefined;
+    readonly charged?: boolean;
 };
 ```
 
@@ -2207,7 +2208,6 @@ type FishingSession = {
 ```ts
 type FluidBudgetSplit = {
     readonly work: ReadonlyArray<FluidWorkItem>;
-    readonly retainedLavaFrontier: ReadonlyArray<PositionKey>;
 };
 ```
 
@@ -2411,12 +2411,6 @@ const GHAST_XP_REWARD = 5;
 
 ```ts
 const GRASS_SEED_DROP_CHANCE = 0.125;
-```
-
-### GRAVITY_M_PER_S2  `const`
-
-```ts
-const GRAVITY_M_PER_S2 = 32;
 ```
 
 ### GameplayFrameState  `type`
@@ -2879,12 +2873,6 @@ type InteractionSnapshot = {
 type IsArrowBlockedAt = (wx: number, wy: number, wz: number) => boolean;
 ```
 
-### IsBlockSolid  `type`
-
-```ts
-type IsBlockSolid = (position: BlockPosition) => boolean;
-```
-
 ### IsRailAt  `type`
 
 ```ts
@@ -2949,6 +2937,12 @@ const LEAF_SAPLING_DROP_CHANCE = 0.05;
 
 ```ts
 const LEAF_STICK_DROP_CHANCE = 0.02;
+```
+
+### LIGHTNING_STRIKE_RADIUS_BLOCKS  `const`
+
+```ts
+const LIGHTNING_STRIKE_RADIUS_BLOCKS = 3;
 ```
 
 ### LOWEST_ROLLS  `const`
@@ -3516,15 +3510,6 @@ type PlayerBlast = {
 };
 ```
 
-### PlayerBody  `type`
-
-```ts
-type PlayerBody = {
-    readonly centre: Position;
-    readonly velocity: Position;
-};
-```
-
 ### PlayerDamageEvent  `type`
 
 ```ts
@@ -3577,15 +3562,6 @@ type PlayerHealingEvent = {
     readonly effect: 'regeneration';
     readonly amount: number;
     readonly maximumHealthPoints: number;
-};
-```
-
-### PlayerResolution  `type`
-
-```ts
-type PlayerResolution = {
-    readonly body: PlayerBody;
-    readonly isGrounded: boolean;
 };
 ```
 
@@ -4182,12 +4158,6 @@ type SwimmingVelocity = Readonly<{
     y: number;
     z: number;
 }>;
-```
-
-### TERMINAL_VELOCITY_M_PER_S  `const`
-
-```ts
-const TERMINAL_VELOCITY_M_PER_S = 78.4;
 ```
 
 ### THUNDER_AFTER_CLEAR_CHANCE  `const`
@@ -4845,12 +4815,6 @@ const applyEndPortalTravel: (player: PlayerServiceApi, sourcePosition: BlockPosi
 const applyFurnaceAdvance: (current: FurnaceState, plan: FurnaceAdvancePlan) => FurnaceAdvanceApplyResult;
 ```
 
-### applyGravity  `const`
-
-```ts
-const applyGravity: (velocityY: number, deltaSecs: number) => number;
-```
-
 ### applyLook  `const`
 
 ```ts
@@ -4897,6 +4861,12 @@ const armorDurabilityWearFromPreMitigationDamage: (damage: Damage) => number;
 
 ```ts
 const armorPointsForEquipment: (equipment: Equipment) => number;
+```
+
+### arrowHitProjection  `const`
+
+```ts
+const arrowHitProjection: (from: Position, to: Position, target: Position) => number | undefined;
 ```
 
 ### attemptBedSleep  `const`
@@ -5769,6 +5739,12 @@ const isWeather: (value: unknown) => value is Weather;
 const isWeatherState: (value: unknown) => value is WeatherState;
 ```
 
+### isWithinLightningStrikeRadius  `const`
+
+```ts
+const isWithinLightningStrikeRadius: (position: Position, strike: Position) => boolean;
+```
+
 ### itemOfBlock  `const`
 
 ```ts
@@ -6388,12 +6364,6 @@ const resolveNextWeatherState: (current: Weather, rolls: WeatherRolls) => Weathe
 
 ```ts
 const resolvePlayerBlastDamage: (blasts: ReadonlyArray<PlayerBlast>, target: Position | undefined) => ReadonlyArray<PlayerDamageEvent>;
-```
-
-### resolvePlayerMovement  `const`
-
-```ts
-const resolvePlayerMovement: (body: PlayerBody, deltaSecs: number, isBlockSolid: IsBlockSolid) => PlayerResolution;
 ```
 
 ### resolveRailShape  `const`
