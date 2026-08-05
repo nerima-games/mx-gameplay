@@ -44,6 +44,7 @@ import { knockbackDirection, KNOCKBACK_EPSILON } from '../src/domain/interaction
 import { resolveBowHits, type MobBehaviour } from '../src/domain/entities/mob-frame'
 import { EntityId, EntityKind, type EntityRoster } from '@nerima-games/mc-sim'
 import {
+  drainBowKnockbacks,
   drainBowShotResults,
   gameplayStages,
   makeGameplayFrameState,
@@ -803,6 +804,22 @@ inventory: { mode: 'creative', slotIndex: 0 },
       expect(shoves[0]?.id).toBe('target')
       // Straight ahead of the shooter, so straight away from them on +z.
       expect(shoves[0]?.direction).toStrictEqual({ _tag: 'Away', x: 0, z: 1 })
+    }),
+  )
+
+  it.effect('drains each parked bow knockback exactly once', () =>
+    Effect.gen(function* () {
+      const { state, stages } = yield* scene(AHEAD)
+      yield* Ref.set(state.pendingBowShots, [
+        { origin: EYE, dirX: 0, dirY: 0, dirZ: 1, chargeSecs: BOW_FULL_CHARGE_SECS, inventory: { mode: 'creative', slotIndex: 0 } },
+      ])
+
+      yield* runFrame(stages)
+
+      expect(yield* drainBowKnockbacks(state)).toStrictEqual([
+        { id: 'target', direction: { _tag: 'Away', x: 0, z: 1 } },
+      ])
+      expect(yield* drainBowKnockbacks(state)).toStrictEqual([])
     }),
   )
 

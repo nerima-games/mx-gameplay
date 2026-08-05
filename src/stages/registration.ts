@@ -2039,6 +2039,11 @@ export const drainBowShotResults = (
   state: GameplayFrameState,
 ): Effect.Effect<ReadonlyArray<BowShotResult>> => Ref.getAndSet(state.bowShotResults, [])
 
+/** Atomically drain queued bow knockbacks exactly once, preserving hit order. */
+export const drainBowKnockbacks = (
+  state: GameplayFrameState,
+): Effect.Effect<ReadonlyArray<BowKnockback>> => Ref.getAndSet(state.bowKnockbacks, [])
+
 /** Atomically drain completed correlated melee attacks exactly once, preserving request order. */
 export const drainMeleeAttackResults = (
   state: GameplayFrameState,
