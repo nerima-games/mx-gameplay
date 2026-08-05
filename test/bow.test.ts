@@ -29,6 +29,7 @@ import {
   PLAIN_BOW,
 } from '../src/domain/interactions/draw-bow'
 import {
+  arrowHitProjection,
   shotBlockedByTerrain,
   shotTarget,
   BOW_AIM_EPSILON_SQUARED,
@@ -363,6 +364,22 @@ describe('shotTarget — the ownership argument, executable', () => {
       1,
     )
     expect(hit?.id).toBe('real')
+  })
+})
+
+describe('arrowHitProjection', () => {
+  it('returns the normalized nearest position for a target inside the arrow cylinder', () => {
+    expect(arrowHitProjection({ x: 0, y: 64, z: 0 }, { x: 0, y: 64, z: 10 }, { x: 0.5, y: 64, z: 4 })).toBeCloseTo(0.4)
+  })
+
+  it('clamps targets beyond either segment end', () => {
+    expect(arrowHitProjection({ x: 0, y: 64, z: 0 }, { x: 0, y: 64, z: 10 }, { x: 0, y: 64, z: -0.5 })).toBe(0)
+    expect(arrowHitProjection({ x: 0, y: 64, z: 0 }, { x: 0, y: 64, z: 10 }, { x: 0, y: 64, z: 10.5 })).toBe(1)
+  })
+
+  it('misses targets outside BOW_TARGET_RADIUS and non-finite positions', () => {
+    expect(arrowHitProjection({ x: 0, y: 64, z: 0 }, { x: 0, y: 64, z: 10 }, { x: BOW_TARGET_RADIUS + 0.01, y: 64, z: 4 })).toBeUndefined()
+    expect(arrowHitProjection({ x: 0, y: 64, z: 0 }, { x: Number.NaN, y: 64, z: 10 }, { x: 0, y: 64, z: 4 })).toBeUndefined()
   })
 })
 

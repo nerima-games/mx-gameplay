@@ -96,6 +96,9 @@ export type Explosion = {
 /** A creeper's power. `packages/entity/domain/explosion.ts:4`. */
 export const CREEPER_EXPLOSION_POWER = 3
 
+/** A lightning-charged creeper's power. */
+export const CHARGED_CREEPER_EXPLOSION_POWER = 6
+
 /** A primed TNT block's power. */
 export const TNT_EXPLOSION_POWER = 4
 

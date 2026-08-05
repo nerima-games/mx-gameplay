@@ -142,6 +142,49 @@ export type ShotHit = {
 }
 
 /**
+ * Returns where a moving arrow first reaches a point-sized target, or misses it.
+ *
+ * The returned value is the normalized position on the segment: `0` at `from`,
+ * `1` at `to`. Keeping this collision rule beside targeting gives every bow path
+ * the same radius and makes the server an adapter rather than a second ruleset.
+ */
+export const arrowHitProjection = (
+  from: Position,
+  to: Position,
+  target: Position,
+): number | undefined => {
+  if (
+    !Number.isFinite(from.x) ||
+    !Number.isFinite(from.y) ||
+    !Number.isFinite(from.z) ||
+    !Number.isFinite(to.x) ||
+    !Number.isFinite(to.y) ||
+    !Number.isFinite(to.z) ||
+    !Number.isFinite(target.x) ||
+    !Number.isFinite(target.y) ||
+    !Number.isFinite(target.z)
+  ) {
+    return undefined
+  }
+
+  const dx = to.x - from.x
+  const dy = to.y - from.y
+  const dz = to.z - from.z
+  const lengthSquared = dx * dx + dy * dy + dz * dz
+  const projection = lengthSquared === 0
+    ? 0
+    : Math.min(1, Math.max(0, ((target.x - from.x) * dx + (target.y - from.y) * dy + (target.z - from.z) * dz) / lengthSquared))
+  const nearestX = from.x + dx * projection
+  const nearestY = from.y + dy * projection
+  const nearestZ = from.z + dz * projection
+  const radiusSquared = BOW_TARGET_RADIUS * BOW_TARGET_RADIUS
+
+  return (target.x - nearestX) ** 2 + (target.y - nearestY) ** 2 + (target.z - nearestZ) ** 2 <= radiusSquared
+    ? projection
+    : undefined
+}
+
+/**
  * The nearest entity in the crosshair, or `undefined`.
  *
  * PURE and TOTAL. `origin` is the eye, `dirX/dirY/dirZ` the direction it looks;

@@ -65,6 +65,12 @@ const blockOrder = (left: WeatherBlockCandidate, right: WeatherBlockCandidate): 
 const distanceSquared = (left: Position, right: Position): number =>
   (left.x - right.x) ** 2 + (left.y - right.y) ** 2 + (left.z - right.z) ** 2
 
+/** The spherical area affected by one lightning strike. */
+export const LIGHTNING_STRIKE_RADIUS_BLOCKS = 3
+
+export const isWithinLightningStrikeRadius = (position: Position, strike: Position): boolean =>
+  distanceSquared(position, strike) <= LIGHTNING_STRIKE_RADIUS_BLOCKS ** 2
+
 const LIGHTNING_DAMAGE: Record<WeatherDifficulty, number> = {
   peaceful: 0,
   easy: 3,
@@ -110,7 +116,7 @@ export const advanceWeatherGameplay = (
       const damage = LIGHTNING_DAMAGE[input.difficulty]
       if (damage > 0) {
         for (const entity of entities) {
-          if (!entity.exposedToSky || distanceSquared(entity.position, target.position) > 9) continue
+          if (!entity.exposedToSky || !isWithinLightningStrikeRadius(entity.position, target.position)) continue
           events.push({ _tag: 'EntityLightningDamage', id: entity.id, amount: damage })
           if (String(entity.kind) === 'creeper' && !chargedCreepers.includes(entity.id)) {
             chargedCreepers = [...chargedCreepers, entity.id].sort((a, b) => String(a).localeCompare(String(b)))
