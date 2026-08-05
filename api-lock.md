@@ -13,7 +13,7 @@
 <!-- ------------------------------------------------------------------------- -->
 
 format: 1
-exported declarations: 874
+exported declarations: 878
 supporting declarations: 38
 
 ## Exported
@@ -1675,6 +1675,18 @@ type EndermanTeleportPosition = {
 };
 ```
 
+### EndermanTeleportProbe  `type`
+
+```ts
+type EndermanTeleportProbe = {
+    readonly _tag: 'EndermanTeleport';
+    readonly entityId: EntityId;
+    readonly current: EndermanTeleportPosition;
+    readonly anchor: EndermanTeleportPosition;
+    readonly rolls: ReadonlyArray<number>;
+};
+```
+
 ### EndermanTeleportUrge  `type`
 
 ```ts
@@ -3244,6 +3256,7 @@ type MobSpawnOutcome = {
 type MobSweep = {
     readonly blasts: ReadonlyArray<Blast>;
     readonly attacks: ReadonlyArray<MobAttackEvent>;
+    readonly teleports: ReadonlyArray<EndermanTeleportProbe>;
     readonly seed: number;
 };
 ```
@@ -5398,6 +5411,18 @@ const enderPearlDisplacement: (dirX: number, dirY: number, dirZ: number, hitDist
 const enderPearlDistance: (hitDistance: number | undefined) => number;
 ```
 
+### endermanTeleportCandidateCells  `const`
+
+```ts
+const endermanTeleportCandidateCells: (current: EndermanTeleportPosition, anchor: EndermanTeleportPosition, rolls: ReadonlyArray<number>) => ReadonlyArray<EndermanTeleportPosition>;
+```
+
+### endermanTeleportCandidates  `const`
+
+```ts
+const endermanTeleportCandidates: (current: EndermanTeleportPosition, anchor: EndermanTeleportPosition, rolls: ReadonlyArray<number>) => ReadonlyArray<EndermanTeleportPosition>;
+```
+
 ### endermanTeleportOffset  `const`
 
 ```ts
@@ -6341,6 +6366,12 @@ const resolveBlockUse: (position: BlockPosition, reading: BlockReading) => Block
 
 ```ts
 const resolveBowHits: (roster: EntityManagerApi<MobBehaviour>, hits: ReadonlyArray<BowHit>) => Effect.Effect<ReadonlyArray<MobCasualty>>;
+```
+
+### resolveEndermanTeleportProbes  `const`
+
+```ts
+const resolveEndermanTeleportProbes: (roster: EntityManagerApi<MobBehaviour>, store: ChunkStoreApi, probes: ReadonlyArray<EndermanTeleportProbe>) => Effect.Effect<void>;
 ```
 
 ### resolveEnvironmentalContactDamage  `const`

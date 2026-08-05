@@ -341,6 +341,37 @@ export type EndermanTeleportCell = {
   readonly solid: boolean
 }
 
+/** Every geometrically valid landing, preserving the rule's deterministic order. */
+export const endermanTeleportCandidates = (
+  current: EndermanTeleportPosition,
+  anchor: EndermanTeleportPosition,
+  rolls: ReadonlyArray<number>,
+): ReadonlyArray<EndermanTeleportPosition> => {
+  const candidates: Array<EndermanTeleportPosition> = []
+
+  for (let attempt = 0; attempt < ENDERMAN_TELEPORT_ATTEMPTS; attempt += 1) {
+    const xBlocks = offsetFromRoll(rolls[attempt * 2])
+    const zBlocks = offsetFromRoll(rolls[attempt * 2 + 1])
+    if (xBlocks === undefined || zBlocks === undefined) break
+    if (!withinTeleportBand(xBlocks, zBlocks)) continue
+    candidates.push({ x: anchor.x + xBlocks, y: current.y, z: anchor.z + zBlocks })
+  }
+
+  return candidates
+}
+
+/** The floor and body cells needed to decide every candidate in one world snapshot. */
+export const endermanTeleportCandidateCells = (
+  current: EndermanTeleportPosition,
+  anchor: EndermanTeleportPosition,
+  rolls: ReadonlyArray<number>,
+): ReadonlyArray<EndermanTeleportPosition> =>
+  endermanTeleportCandidates(current, anchor, rolls).flatMap((destination) => [
+    { ...destination, y: destination.y - 1 },
+    destination,
+    { ...destination, y: destination.y + 1 },
+  ])
+
 const DANGEROUS_TELEPORT_BLOCKS = new Set([
   'water',
   'lava',
@@ -367,13 +398,7 @@ export const resolveSafeEndermanTeleport = (
 ): EndermanTeleportPosition => {
   const cellByPosition = new Map(cells.map((cell) => [positionKey(cell.position), cell]))
 
-  for (let attempt = 0; attempt < ENDERMAN_TELEPORT_ATTEMPTS; attempt += 1) {
-    const xBlocks = offsetFromRoll(rolls[attempt * 2])
-    const zBlocks = offsetFromRoll(rolls[attempt * 2 + 1])
-    if (xBlocks === undefined || zBlocks === undefined) return current
-    if (!withinTeleportBand(xBlocks, zBlocks)) continue
-
-    const destination = { x: anchor.x + xBlocks, y: current.y, z: anchor.z + zBlocks }
+  for (const destination of endermanTeleportCandidates(current, anchor, rolls)) {
     const floor = cellByPosition.get(positionKey({ ...destination, y: destination.y - 1 }))
     const feet = cellByPosition.get(positionKey(destination))
     const head = cellByPosition.get(positionKey({ ...destination, y: destination.y + 1 }))
