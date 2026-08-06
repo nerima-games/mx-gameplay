@@ -215,6 +215,7 @@ import {
 } from '@nerima-games/mc-sim'
 import { Effect } from 'effect'
 import type { Position } from '@nerima-games/mc-kernel'
+import { blockTypeOfId, validSpawnSurface } from '../block-vocabulary'
 import { applyDamage, isDead, type Vitals } from '../death-cause'
 import {
   changed,
@@ -234,9 +235,13 @@ import type { PositionKey } from '../position-key'
 import { DORMANT_FUSE, stepCreeperFuse, type CreeperFuse, type CreeperSenses } from '../mob/creeper-fuse'
 import {
   ENDERMAN_TELEPORT_ATTEMPTS,
-  endermanTeleportOffset,
+  endermanTeleportCandidateCells,
+  endermanTeleportCandidates,
   endermanTeleportUrge,
+  resolveSafeEndermanTeleport,
   type EndermanSenses,
+  type EndermanTeleportCell,
+  type EndermanTeleportPosition,
 } from '../mob/enderman-teleport'
 import { explosionDamageAt, type Explosion } from '../mob/explosion'
 import { FRESH_PRIMED_TNT, isPrimedTnt, stepPrimedTnt, type PrimedTnt } from '../mob/primed-tnt'
@@ -1051,6 +1056,7 @@ export const ENDERMAN_TELEPORT_ROLLS = ENDERMAN_TELEPORT_ATTEMPTS * 2
 export type MobSweep = {
   readonly blasts: ReadonlyArray<Blast>
   readonly attacks: ReadonlyArray<MobAttackEvent>
+  readonly teleports: ReadonlyArray<EndermanTeleportProbe>
   /**
    * The seed to keep. Advanced by exactly the rolls the rules asked for and by no
    * more — see the module header, and `ENDERMAN_TELEPORT_ROLLS` for the one place
@@ -1062,6 +1068,15 @@ export type MobSweep = {
 export type MobAttackEvent = EcosystemAttack & {
   readonly source: EntityId
   readonly at: Position
+}
+
+/** A deterministic teleport decision awaiting world-backed landing validation. */
+export type EndermanTeleportProbe = {
+  readonly _tag: 'EndermanTeleport'
+  readonly entityId: EntityId
+  readonly current: EndermanTeleportPosition
+  readonly anchor: EndermanTeleportPosition
+  readonly rolls: ReadonlyArray<number>
 }
 
 /**
@@ -1144,7 +1159,7 @@ export const sweepMobs = (
     let cursor = seed
 
     return Effect.map(
-      roster.sweep<Blast | MobAttackEvent>((entity) => {
+      roster.sweep<Blast | MobAttackEvent | EndermanTeleportProbe>((entity) => {
         if (entity.kind === DROPPED_ITEM_KIND && isDroppedItemBehaviour(entity.behaviour)) {
           return IGNORED
         }
@@ -1358,53 +1373,27 @@ export const sweepMobs = (
                 ? entity.feetPosition
                 : senses.target
 
-          let destination: Position | undefined
+          let teleport: EndermanTeleportProbe | undefined
           if (anchor !== undefined) {
             const batch = drawRolls(cursor, ENDERMAN_TELEPORT_ROLLS)
             cursor = batch.seed
-            const offset = endermanTeleportOffset(batch.rolls)
-
-            // `undefined` is sixteen misses, which is an ANSWER — the rule's own
-            // header and the reference's oracle both pin "it stays where it is"
-            // rather than a widened band. Nothing further is measured about the
-            // destination either, and that gap is `ARENA_MISSING`'s 「where a
-            // teleport LANDS」: the cell an enderman arrives in is a
-            // `ChunkStoreApi.getBlock` question and this function holds no store,
-            // by design — `sweepMobs` runs inside `Ref.modify`, so a read there
-            // would be an Effect inside an atomic update. The honest place for a
-            // ground check is a second pass beside `resolveBlasts`, which is
-            // where the crater's writes already live, and it needs a query
-            // `../chunk-store-port` does not have: the surface height of a
-            // column, or 「is this cell solid」 for a mob rather than for a spawn
-            // (`validSpawnSurface` answers about the block BELOW a candidate,
-            // not about the two the mob would occupy).
-            //
-            // UNCOVERED ON PURPOSE, and this is the one place in the file where
-            // that is true. The `undefined` arm below needs all sixteen attempts
-            // to miss the 8..32 band, and the band covers about 74% of the
-            // square the offsets are drawn from — so sixteen misses is roughly
-            // one decision in a billion. `test/vertical-slice.test.ts`'s
-            // `seedSuchThat` scans the ~128 thousand seeds that produce distinct
-            // first rolls and cannot reach it; nothing can, at any budget worth
-            // spending. It is not dead code (`endermanTeleportOffset`'s own
-            // oracle drives the `undefined` and this is the frame honouring it)
-            // and it is not contrivable, so it is recorded here rather than
-            // covered. docs/testing.md §6-2 carries the argument.
-            destination =
-              offset === undefined
-                ? undefined
-                : {
-                    x: anchor.x + offset.xBlocks,
-                    // ITS OWN, not the anchor's. See the module header.
-                    y: entity.feetPosition.y,
-                    z: anchor.z + offset.zBlocks,
-                  }
+            if (endermanTeleportCandidates(entity.feetPosition, anchor, batch.rolls).length > 0) {
+              // ChunkStore reads happen after the atomic roster sweep. Unloaded
+              // or unsafe candidates are rejected by resolveEndermanTeleportProbes.
+              teleport = {
+                _tag: 'EndermanTeleport',
+                entityId: entity.id,
+                current: entity.feetPosition,
+                anchor,
+                rolls: batch.rolls,
+              }
+            }
           }
 
           // Nothing moved and nothing was owed: the shared step, and the roster
           // stays the array it was.
-          if (destination === undefined && !struck && snapshot === undefined) {
-            return IGNORED
+          if (!struck && snapshot === undefined) {
+            return teleport === undefined ? IGNORED : { transition: UNCHANGED, emit: teleport }
           }
 
           // A blow is spent whether or not it moved the mob. `STEADY_ENDERMAN` is
@@ -1412,11 +1401,11 @@ export const sweepMobs = (
           // record every `Changed` transition needs.
           return {
             transition: changed({
-              feetPosition: destination ?? entity.feetPosition,
+              feetPosition: entity.feetPosition,
               healthPoints: entity.healthPoints,
               behaviour: storedBehaviour(STEADY_ENDERMAN),
             }),
-            emit: undefined,
+            emit: teleport,
           }
         }
 
@@ -1427,10 +1416,62 @@ export const sweepMobs = (
       }),
       (events) => ({
         blasts: events.filter((event): event is Blast => !('_tag' in event)),
-        attacks: events.filter((event): event is MobAttackEvent => '_tag' in event),
+        attacks: events.filter(
+          (event): event is MobAttackEvent => '_tag' in event && event._tag !== 'EndermanTeleport',
+        ),
+        teleports: events.filter(
+          (event): event is EndermanTeleportProbe =>
+            '_tag' in event && event._tag === 'EndermanTeleport',
+        ),
         seed: cursor,
       }),
     )
+  })
+
+/** Resolves planned teleports against loaded terrain, then applies only safe landings. */
+export const resolveEndermanTeleportProbes = (
+  roster: EntityManagerApi<MobBehaviour>,
+  store: ChunkStoreApi,
+  probes: ReadonlyArray<EndermanTeleportProbe>,
+): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    const destinations = new Map<EntityId, EndermanTeleportPosition>()
+
+    for (const probe of probes) {
+      const cells = yield* Effect.forEach(
+        endermanTeleportCandidateCells(probe.current, probe.anchor, probe.rolls),
+        (position) =>
+          Effect.map(store.getBlock(position), (reading): EndermanTeleportCell | undefined => {
+            if (reading._tag !== 'Block') return undefined
+            const block = blockTypeOfId(reading.block)
+            if (block === undefined) return undefined
+            return { position, block, solid: validSpawnSurface(reading.block) }
+          }),
+      )
+      const destination = resolveSafeEndermanTeleport(
+        probe.current,
+        probe.anchor,
+        probe.rolls,
+        cells.filter((cell): cell is EndermanTeleportCell => cell !== undefined),
+      )
+      if (destination !== probe.current) destinations.set(probe.entityId, destination)
+    }
+
+    if (destinations.size === 0) return
+
+    yield* roster.sweep<never>((entity) => {
+      const destination = destinations.get(entity.id)
+      return destination === undefined
+        ? IGNORED
+        : {
+            transition: changed({
+              feetPosition: destination,
+              healthPoints: entity.healthPoints,
+              behaviour: entity.behaviour,
+            }),
+            emit: undefined,
+          }
+    })
   })
 
 // ---------------------------------------------------------------------------

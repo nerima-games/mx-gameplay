@@ -175,6 +175,7 @@ import {
   experienceOfCasualties,
   resolveBlasts,
   resolveBowHits,
+  resolveEndermanTeleportProbes,
   resolveMeleeHits,
   rollCasualtyDrops,
   rollSelfDestructDrops,
@@ -4004,7 +4005,7 @@ export const gameplayStages = (
         // ---- mobs ----------------------------------------------------------
         //
         // One sweep: despawn what is out of range, burn every creeper's fuse,
-        // move every enderman that wants to move, collect the blasts. A mob this
+        // plan enderman teleports, resolve their safe landings, collect blasts. A mob this
         // repository has no rule for costs one closure call and a shared object;
         // see `mob-frame.ts` on why the step record is the allocation only this
         // side can remove.
@@ -4016,7 +4017,7 @@ export const gameplayStages = (
         // window it opens is one in which two frames would already be sweeping a
         // single roster. The drop roll below stays atomic because it can.
         const targetPosition = (yield* player.pose).feetPosition
-        const { attacks, blasts, seed: sweptSeed } = yield* sweepMobs(
+        const { attacks, blasts, teleports, seed: sweptSeed } = yield* sweepMobs(
           roster,
           { target: targetPosition, dt },
           yield* Ref.get(state.rollSeed),
@@ -4025,6 +4026,10 @@ export const gameplayStages = (
         // drew nothing hands back the seed it was given, so this writes the same
         // number it read on every idle frame.
         yield* Ref.set(state.rollSeed, sweptSeed)
+
+        if (teleports.length > 0) {
+          yield* resolveEndermanTeleportProbes(roster, store, teleports)
+        }
 
         if (attacks.length > 0) {
           const playerDamages = yield* resolveArmoredPlayerDamages(

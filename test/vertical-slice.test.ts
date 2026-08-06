@@ -127,7 +127,7 @@ import {
   ENDERMAN_DAMAGE_TELEPORT_CHANCE,
   ENDERMAN_TELEPORT_MAX_BLOCKS,
   ENDERMAN_TELEPORT_MIN_BLOCKS,
-  endermanTeleportOffset,
+  endermanTeleportCandidates,
 } from '../src/domain/mob/enderman-teleport'
 import { CREEPER_EXPLOSION_POWER, explosionDamageAmount } from '../src/domain/mob/explosion'
 import { DESPAWN_DISTANCE_BLOCKS } from '../src/domain/mob/hostile-despawn'
@@ -168,6 +168,7 @@ import {
 import { MAX_FURNACE_ADVANCE_SECS } from '../src/domain/interactions/advance-furnace'
 import {
   GRAVEL,
+  chunkKeyOf,
   makeChunkStoreDouble,
   SAND,
   STONE,
@@ -1226,9 +1227,25 @@ const seedSuchThat = (accept: (seed: number) => boolean): number => {
   throw new Error('no seed at all produces the draw sequence this scenario needs')
 }
 
-/** The rolls one frame of an enderman that decides to go consumes: the urge, then the search. */
-const teleportSucceedsFrom = (seed: number): boolean =>
-  endermanTeleportOffset(drawRolls(seed, ENDERMAN_TELEPORT_ROLLS).rolls) !== undefined
+/** A loaded terrain snapshot where the second geometrically valid landing is safe. */
+const teleportTerrain = (
+  current: Position,
+  anchor: Position,
+  rolls: ReadonlyArray<number>,
+) => {
+  const candidates = endermanTeleportCandidates(current, anchor, rolls)
+  const destination = candidates[1]
+  if (destination === undefined) throw new Error('scenario needs two teleport candidates')
+  return {
+    destination,
+    initial: world([[{ ...destination, y: destination.y - 1 }, STONE]]),
+    loaded: [...new Set(candidates.flatMap((candidate) => [
+      chunkKeyOf({ ...candidate, y: candidate.y - 1 }),
+      chunkKeyOf(candidate),
+      chunkKeyOf({ ...candidate, y: candidate.y + 1 }),
+    ]))],
+  }
+}
 
 const blocksApart = (from: Position, to: Position): number =>
   Math.hypot(from.x - to.x, from.y - to.y, from.z - to.z)
@@ -1243,15 +1260,24 @@ describe('the enderman slice: a rule that returns a displacement, run over a ros
       // THE TEST THAT FAILS IF THE WIRING IS ABSENT. Before this change the sweep
       // ignored every mob that was not a creeper, so the enderman below stayed
       // exactly where it was spawned for as many frames as anyone cared to run.
-      const { roster, state, player, stages } = yield* slice(world([]))
-
       // A seed whose FIRST roll passes the 5% chase gate and whose next
       // thirty-two find an offset inside the band. Both halves are the rule's own
       // arithmetic, so this is a scenario rather than a magic number.
       const seed = seedSuchThat((candidate) => {
         const urge = nextRoll(candidate)
-        return urge.roll < ENDERMAN_CHASE_TELEPORT_CHANCE && teleportSucceedsFrom(urge.seed)
+        return (
+          urge.roll < ENDERMAN_CHASE_TELEPORT_CHANCE &&
+          endermanTeleportCandidates(endermanAt, playerNear, drawRolls(urge.seed, ENDERMAN_TELEPORT_ROLLS).rolls)
+            .length >= 2
+        )
       })
+      const urge = nextRoll(seed)
+      const terrain = teleportTerrain(
+        endermanAt,
+        playerNear,
+        drawRolls(urge.seed, ENDERMAN_TELEPORT_ROLLS).rolls,
+      )
+      const { roster, state, player, stages } = yield* slice(terrain.initial, terrain.loaded)
 
       yield* roster.api.spawn({
         kind: ENDERMAN_KIND,
@@ -1270,6 +1296,7 @@ describe('the enderman slice: a rule that returns a displacement, run over a ros
       // APPROACH — 8 to 32 blocks from you, from whatever distance it started at
       // — and not an escape. Measured against the player rather than against
       // where it stood, which is what tells the two anchors apart.
+      expect(moved?.feetPosition).toStrictEqual(terrain.destination)
       const reach = blocksApart(moved?.feetPosition ?? endermanAt, playerNear)
       expect(reach).toBeGreaterThanOrEqual(ENDERMAN_TELEPORT_MIN_BLOCKS)
       expect(reach).toBeLessThanOrEqual(ENDERMAN_TELEPORT_MAX_BLOCKS)
@@ -1293,8 +1320,6 @@ describe('the enderman slice: a rule that returns a displacement, run over a ros
       // `resolveBlasts` damages a bystander and arms its flinch, and the NEXT
       // sweep reads the flinch, rolls the 30%, and moves the mob. Two stages of
       // one frame plus one more frame, none of it re-implemented here.
-      const { roster, state, player, stages } = yield* slice(world([]))
-
       // Frame 1's roll must MISS the 5% chase gate (the enderman is Steady and
       // has a target, so it consults the rule before the blast reaches it), and
       // frame 2's must PASS the 30% damage gate and then find an offset.
@@ -1304,8 +1329,19 @@ describe('the enderman slice: a rule that returns a displacement, run over a ros
           return false
         }
         const flee = nextRoll(chase.seed)
-        return flee.roll < ENDERMAN_DAMAGE_TELEPORT_CHANCE && teleportSucceedsFrom(flee.seed)
+        return (
+          flee.roll < ENDERMAN_DAMAGE_TELEPORT_CHANCE &&
+          endermanTeleportCandidates(endermanAt, endermanAt, drawRolls(flee.seed, ENDERMAN_TELEPORT_ROLLS).rolls)
+            .length >= 2
+        )
       })
+      const flee = nextRoll(nextRoll(seed).seed)
+      const terrain = teleportTerrain(
+        endermanAt,
+        endermanAt,
+        drawRolls(flee.seed, ENDERMAN_TELEPORT_ROLLS).rolls,
+      )
+      const { roster, state, player, stages } = yield* slice(terrain.initial, terrain.loaded)
 
       yield* roster.api.spawn({
         kind: CREEPER_KIND,
@@ -1348,6 +1384,7 @@ describe('the enderman slice: a rule that returns a displacement, run over a ros
       // restless case above, and the distinction the reference makes by passing a
       // different argument at each of two call sites and recording it nowhere.
       const fled = yield* soleEntity(roster)
+      expect(fled?.feetPosition).toStrictEqual(terrain.destination)
       const escape = blocksApart(fled?.feetPosition ?? endermanAt, endermanAt)
       expect(escape).toBeGreaterThanOrEqual(ENDERMAN_TELEPORT_MIN_BLOCKS)
       expect(escape).toBeLessThanOrEqual(ENDERMAN_TELEPORT_MAX_BLOCKS)
@@ -1490,8 +1527,24 @@ describe('the enderman slice: a rule that returns a displacement, run over a ros
       // death. The seed is threaded through the sweep as a local cursor rather
       // than as a `Ref`, so "two runs agree" is also what pins that the cursor is
       // handed back rather than dropped.
+      const seed = seedSuchThat((candidate) => {
+        const urge = nextRoll(candidate)
+        return urge.roll < ENDERMAN_CHASE_TELEPORT_CHANCE
+          && endermanTeleportCandidates(
+            endermanAt,
+            playerNear,
+            drawRolls(urge.seed, ENDERMAN_TELEPORT_ROLLS).rolls,
+          ).length >= 2
+      })
+      const urge = nextRoll(seed)
+      const terrain = teleportTerrain(
+        endermanAt,
+        playerNear,
+        drawRolls(urge.seed, ENDERMAN_TELEPORT_ROLLS).rolls,
+      )
+
       const run = Effect.gen(function* () {
-        const { roster, state, player, stages } = yield* slice(world([]))
+        const { roster, state, player, stages } = yield* slice(terrain.initial, terrain.loaded)
         yield* roster.api.spawn({
           kind: ENDERMAN_KIND,
           feetPosition: endermanAt,
@@ -1499,7 +1552,8 @@ describe('the enderman slice: a rule that returns a displacement, run over a ros
           behaviour: STEADY_ENDERMAN,
         })
         yield* player.api.moveTo(playerNear)
-        yield* runFrames(stages, 40, STRIDE)
+        yield* Ref.set(state.rollSeed, seed)
+        yield* runFrames(stages, 1, STRIDE)
 
         return {
           position: (yield* soleEntity(roster))?.feetPosition,
