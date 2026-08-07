@@ -1414,17 +1414,19 @@ export const sweepMobs = (
         // the same answer as a pig, which is the inert one.
         return IGNORED
       }),
-      (events) => ({
-        blasts: events.filter((event): event is Blast => !('_tag' in event)),
-        attacks: events.filter(
-          (event): event is MobAttackEvent => '_tag' in event && event._tag !== 'EndermanTeleport',
-        ),
-        teleports: events.filter(
-          (event): event is EndermanTeleportProbe =>
-            '_tag' in event && event._tag === 'EndermanTeleport',
-        ),
-        seed: cursor,
-      }),
+      (events) => {
+        const blasts: Blast[] = []
+        const attacks: MobAttackEvent[] = []
+        const teleports: EndermanTeleportProbe[] = []
+
+        for (const event of events) {
+          if (!('_tag' in event)) blasts.push(event)
+          else if (event._tag === 'EndermanTeleport') teleports.push(event)
+          else attacks.push(event)
+        }
+
+        return { blasts, attacks, teleports, seed: cursor }
+      },
     )
   })
 
