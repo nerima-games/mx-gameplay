@@ -385,6 +385,9 @@ export const HOSTILE_SPAWN_INTERVAL_SECS = 0.3
 /** Shared empty list, so a frame that searches nothing allocates nothing. */
 const NO_ATTEMPTS: ReadonlyArray<never> = []
 
+/** Shared empty list, so draining idle frame inboxes allocates nothing. */
+const NO_REQUESTS: ReadonlyArray<never> = []
+
 /**
  * Frame-local scratch, and nothing else.
  *
@@ -2254,7 +2257,7 @@ const stepStatusEffects = (
   dt: DeltaTimeSecs,
 ): Effect.Effect<void> =>
   Effect.gen(function* () {
-    const applications = yield* Ref.getAndSet(state.pendingStatusEffects, [])
+    const applications = yield* Ref.getAndSet(state.pendingStatusEffects, NO_REQUESTS)
     const current = yield* Ref.get(state.statusEffects)
     const applied = applications.reduce(applyStatusEffect, current)
     const tick = tickStatusEffects(applied, dt)
@@ -3017,7 +3020,7 @@ export const gameplayStages = (
             Effect.gen(function* () {
               const breaks = yield* Ref.getAndSet<ReadonlyArray<PositionKey>>(
                 state.pendingBreaks,
-                [],
+                NO_REQUESTS,
               )
               const requests = yield* Ref.modify(breakRequestQueue.state, (pending) => [
                 pending.requests,
@@ -3035,31 +3038,31 @@ export const gameplayStages = (
         )
         const placements = yield* Ref.getAndSet<ReadonlyArray<PlacementRequest>>(
           state.pendingPlacements,
-          [],
+          NO_REQUESTS,
         )
         const blockUses = yield* Ref.getAndSet<ReadonlyArray<BlockUseRequest>>(
           state.pendingBlockUses,
-          [],
+          NO_REQUESTS,
         )
         const itemUses = yield* Ref.getAndSet<ReadonlyArray<ItemUseRequest>>(
           state.pendingItemUses,
-          [],
+          NO_REQUESTS,
         )
         const bowShots = yield* Ref.getAndSet<ReadonlyArray<BowShotRequest>>(
           state.pendingBowShots,
-          [],
+          NO_REQUESTS,
         )
         const meleeAttacks = yield* Ref.getAndSet<ReadonlyArray<MeleeAttackRequest>>(
           state.pendingMeleeAttacks,
-          [],
+          NO_REQUESTS,
         )
         const pearlThrows = yield* Ref.getAndSet<ReadonlyArray<EnderPearlThrowRequest>>(
           state.pendingPearlThrows,
-          [],
+          NO_REQUESTS,
         )
         const villagerTrades = yield* Ref.getAndSet<ReadonlyArray<VillagerTradeRequest>>(
           state.pendingVillagerTrades,
-          [],
+          NO_REQUESTS,
         )
         if (
           breaks.length === 0 &&

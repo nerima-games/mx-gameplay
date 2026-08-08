@@ -35,7 +35,12 @@
  * another, which is a world where the camera never follows you.
  */
 import { Effect, Layer } from 'effect'
-import { capabilityOfBlockId } from '@nerima-games/mc-kernel'
+import {
+  BlockId as WorldgenBlockId,
+  blockPosition as worldgenBlockPosition,
+  capabilityOfBlockId,
+  chunkCoord as worldgenChunkCoord,
+} from '@nerima-games/mc-kernel'
 import {
   InventoryService,
   TimeService,
@@ -45,9 +50,6 @@ import {
   type TimeServiceApi,
 } from '@nerima-games/mc-sim'
 import {
-  BlockId as WorldgenBlockId,
-  blockPosition as worldgenBlockPosition,
-  chunkCoord as worldgenChunkCoord,
   generatedChunkSource,
   makeChunkStore,
   surfaceHeightAt,

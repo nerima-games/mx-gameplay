@@ -1,7 +1,7 @@
 import { describe, expect, it } from '@effect/vitest'
+import { CHUNK_SIZE_XZ } from '@nerima-games/mc-kernel'
 import { InventoryService, craftGrid } from '@nerima-games/mc-sim'
 import {
-  CHUNK_SIZE_XZ,
   emptyBlocks,
   surfaceHeightAt,
   type ChunkSource,
