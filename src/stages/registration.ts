@@ -114,6 +114,22 @@ import {
   type StatusEffectApplication,
   type StatusEffectState,
 } from '../domain/status-effect'
+import {
+  collectBrewingBottle as collectBottle,
+  copyBrewingStandState,
+  drinkBrewingPotion as drinkPotion,
+  emptyBrewingStandState,
+  insertBrewingBottle as insertBottle,
+  insertBrewingFuel as insertFuel,
+  insertBrewingIngredient as insertIngredient,
+  tickBrewingStand,
+  type BrewingBottle,
+  type BrewingCollectionResult,
+  type BrewingDrinkResult,
+  type BrewingIngredient,
+  type BrewingStandState,
+  type BrewingTransferResult,
+} from '../domain/brewing'
 import { targetabilityFromStore } from '../domain/in-memory-world'
 import { ChunkStore, type BlockPosition, type ChunkStoreApi } from '../domain/chunk-store-port'
 import {
@@ -542,6 +558,7 @@ export type GameplayFrameState = {
   readonly playerHeals: Ref.Ref<ReadonlyArray<PlayerHealingEvent>>
   readonly playerMovementSpeedMultiplier: Ref.Ref<number>
   readonly statusEffects: Ref.Ref<StatusEffectState>
+  readonly brewingStand: Ref.Ref<BrewingStandState>
   readonly fireLifecycle: Ref.Ref<FireLifecycleState>
   readonly hostileContactCooldowns: Ref.Ref<ReadonlyMap<EntityId, number>>
   readonly mobDrops: Ref.Ref<ReadonlyArray<MobDropEvent>>
@@ -953,6 +970,7 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
   const playerHeals = yield* Ref.make<ReadonlyArray<PlayerHealingEvent>>([])
   const playerMovementSpeedMultiplier = yield* Ref.make(1)
   const statusEffects = yield* Ref.make<StatusEffectState>(emptyStatusEffectState())
+  const brewingStand = yield* Ref.make<BrewingStandState>(emptyBrewingStandState())
   const fireLifecycle = yield* Ref.make<FireLifecycleState>(makeFireLifecycleState([], DEFAULT_ROLL_SEED))
   const hostileContactCooldowns = yield* Ref.make<ReadonlyMap<EntityId, number>>(new Map())
   const mobDrops = yield* Ref.make<ReadonlyArray<MobDropEvent>>([])
@@ -1014,6 +1032,7 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
     playerHeals,
     playerMovementSpeedMultiplier,
     statusEffects,
+    brewingStand,
     fireLifecycle,
     hostileContactCooldowns,
     mobDrops,
@@ -1508,6 +1527,67 @@ export const restoreStatusEffects = (
     )
   })
 
+export const insertBrewingFuel = (
+  state: GameplayFrameState,
+): Effect.Effect<BrewingTransferResult> =>
+  Ref.modify(state.brewingStand, (current) => {
+    const [next, result] = insertFuel(current)
+    return [result, next]
+  })
+
+export const insertBrewingBottle = (
+  state: GameplayFrameState,
+  bottle: BrewingBottle,
+): Effect.Effect<BrewingTransferResult> =>
+  Ref.modify(state.brewingStand, (current) => {
+    const [next, result] = insertBottle(current, bottle)
+    return [result, next]
+  })
+
+export const insertBrewingIngredient = (
+  state: GameplayFrameState,
+  ingredient: BrewingIngredient,
+): Effect.Effect<BrewingTransferResult> =>
+  Ref.modify(state.brewingStand, (current) => {
+    const [next, result] = insertIngredient(current, ingredient)
+    return [result, next]
+  })
+
+export const collectBrewingPotion = (
+  state: GameplayFrameState,
+): Effect.Effect<BrewingCollectionResult> =>
+  Ref.modify(state.brewingStand, (current) => {
+    const [next, result] = collectBottle(current)
+    return [result, next]
+  })
+
+export const useBrewingPotion = (
+  state: GameplayFrameState,
+): Effect.Effect<BrewingDrinkResult> =>
+  Effect.gen(function* () {
+    const result = yield* Ref.modify(state.brewingStand, (current) => {
+      const [next, outcome] = drinkPotion(current)
+      return [outcome, next]
+    })
+    if (result._tag === 'Consumed') yield* requestStatusEffect(state, result.effect)
+    return result
+  })
+
+export const snapshotBrewingStand = (
+  state: GameplayFrameState,
+): Effect.Effect<BrewingStandState> =>
+  Ref.get(state.brewingStand).pipe(Effect.map(copyBrewingStandState))
+
+export const restoreBrewingStand = (
+  state: GameplayFrameState,
+  snapshot: BrewingStandState,
+): Effect.Effect<void> => Ref.set(state.brewingStand, copyBrewingStandState(snapshot))
+
+const stepBrewing = (
+  state: GameplayFrameState,
+  dt: DeltaTimeSecs,
+): Effect.Effect<void> => Ref.update(state.brewingStand, (current) => tickBrewingStand(current, dt))
+
 const stepStatusEffects = (
   state: GameplayFrameState,
   dt: DeltaTimeSecs,
@@ -1826,6 +1906,7 @@ export const gameplayStages = (
         yield* stepPortalTravel(state, store, player, dt)
         yield* stepFireLifecycle(state, store, player)
         yield* Ref.update(state.villagerTrades, (current) => advanceVillagerRestock(current, dt))
+        yield* stepBrewing(state, dt)
         yield* stepStatusEffects(state, dt)
 
         // `getAndSet` rather than get-then-set: whoever fills the inboxes is not
