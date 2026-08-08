@@ -21,12 +21,24 @@
     }
   },
   "plugins": [],
+  // Categories are deliberately "off": this repository enables individual
+  // rules explicitly below, not whole categories. Turning a category "warn"
+  // blanket-enables every rule oxlint tags with that category (far more than
+  // the curated list below — under nixpkgs' oxlint 1.73.0 this pulled in
+  // ~57 rules never chosen here, such as no-magic-numbers, sort-keys,
+  // capitalized-comments, no-undefined, no-ternary and id-length, none of
+  // which appear in the curated "rules" block, and none of which fired
+  // under the oxlint@0.12.0 package.json devDependency this repo used
+  // before migrating to the Nix-provided binary). Rules are enumerated
+  // explicitly so the lint contract does not grow silently with the oxlint
+  // version. Same root cause and fix as mc-dev-meta PR #12 and mc-save's
+  // earlier org-standardization pass.
   "categories": {
-    "correctness": "warn",
-    "suspicious": "warn",
-    "perf": "warn",
-    "style": "warn",
-    "restriction": "warn"
+    "correctness": "off",
+    "suspicious": "off",
+    "perf": "off",
+    "style": "off",
+    "restriction": "off"
   },
   "rules": {
     // TypeScript-specific rules
@@ -147,5 +159,38 @@
     "no-param-reassign": "off",
     "no-plusplus": "off"
   },
-  "ignorePatterns": ["node_modules/**", "coverage/**", "dist/**", ".git/**", "*.config.ts", "docs/**"]
+  "ignorePatterns": ["node_modules/**", "coverage/**", "dist/**", ".git/**", "*.config.ts", "docs/**"],
+  "overrides": [
+    {
+      // CLI scripts, not shipped src/: console output is their literal
+      // product (api-lock's report, check-dependency-whitelist's summary).
+      "files": ["scripts/**"],
+      "rules": {
+        "no-console": "off"
+      }
+    },
+    {
+      // PERFORMANCE / CORRECTNESS EXCEPTION, same class as mc-noise's
+      // documented no-bitwise exception. Every flagged operator in these
+      // files is uint32 wrapping arithmetic (`>>> 0`, `^`, `Math.imul`) that
+      // defines a deterministic hash or PRNG mix: villager-trade.ts's FNV-1a
+      // offer hash, enchantment.ts's seed mixer, weather-gameplay.ts's LCG
+      // tick, and registration.ts's restore of a persisted weather seed.
+      // Rewriting these with non-bitwise arithmetic would change the
+      // seed -> value mapping, which is the specification, not an
+      // implementation detail. api-lock.ts's one use is a TypeScript
+      // compiler API bitflag check (`symbol.flags & ts.SymbolFlags.Alias`),
+      // the standard way to test a `ts.SymbolFlags` bitmask enum.
+      "files": [
+        "src/domain/villager-trade.ts",
+        "src/domain/enchantment.ts",
+        "src/domain/weather-gameplay.ts",
+        "src/stages/registration.ts",
+        "scripts/api-lock.ts"
+      ],
+      "rules": {
+        "no-bitwise": "off"
+      }
+    }
+  ]
 }
