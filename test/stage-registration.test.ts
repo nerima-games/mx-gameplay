@@ -1479,6 +1479,19 @@ describe('the module contract has caught up with this file’s shape', () => {
     }),
   )
 
+  it.effect('accepts a status effect queued after an idle interaction frame', () =>
+    Effect.gen(function* () {
+      const { state, stages } = yield* builtStages
+      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+
+      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+      yield* requestStatusEffect(state, { type: 'speed', durationSecs: 2 })
+      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* getPlayerMovementSpeedMultiplier(state)).toBe(1.2)
+    }),
+  )
+
   it.effect('snapshots and restores status effects without retaining host references', () =>
     Effect.gen(function* () {
       const source = yield* makeGameplayFrameState

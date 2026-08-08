@@ -1,5 +1,5 @@
+import { blockPosition as worldgenBlockPosition } from '@nerima-games/mc-kernel'
 import {
-  blockPosition as worldgenBlockPosition,
   type Dimension,
   END_PORTAL_BLOCK,
   endArrivalDescriptor,
