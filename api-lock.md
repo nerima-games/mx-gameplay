@@ -1327,7 +1327,7 @@ const ENDER_PEARL_MAX_DISTANCE = 24;
 ### END_ARRIVAL_ORIGIN  `const`
 
 ```ts
-const END_ARRIVAL_ORIGIN: import("@nerima-games/mc-worldgen").BlockPosition;
+const END_ARRIVAL_ORIGIN: import("@nerima-games/mc-kernel").BlockPosition;
 ```
 
 ### ENVIRONMENTAL_CONTACT_DAMAGE_CADENCE_SECS  `const`
