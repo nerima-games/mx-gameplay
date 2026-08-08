@@ -80,6 +80,69 @@ describe('weather gameplay', () => {
     expect(left.events.some((event) => event._tag === 'EntityTransformationRequested')).toBe(true)
   })
 
+  it('skips lightning damage for a sheltered entity, even one standing where the strike lands', () => {
+    // The only existing thunder-damage cases leave every entity exposed, so
+    // the `continue` guard's `!entity.exposedToSky` clause has never fired.
+    // Same position as the (sole, so deterministic) target: only shelter
+    // explains the skip.
+    const sheltered = { id: EntityId('sheltered'), kind: EntityKind('creeper'), position: position(0, 64, 0), exposedToSky: false }
+    const struck = { id: EntityId('struck'), kind: EntityKind('pig'), position: position(0, 64, 0), exposedToSky: true }
+
+    const result = advanceWeatherGameplay(
+      makeWeatherGameplayState(1),
+      5,
+      'thunder',
+      input({ entities: [sheltered, struck] }),
+    )
+
+    expect(result.events.filter((event) => event._tag === 'EntityLightningDamage')).toStrictEqual([
+      { _tag: 'EntityLightningDamage', id: struck.id, amount: 5 },
+    ])
+  })
+
+  it('skips lightning damage for an exposed entity outside the strike radius', () => {
+    // Both entities are exposed and so are both candidate targets — the seed
+    // picks one deterministically, but this test does not need to know which.
+    // Whichever is struck, the other sits 1000 blocks away, far outside
+    // LIGHTNING_STRIKE_RADIUS_BLOCKS, so exactly one of the two can ever be
+    // damaged.
+    const near = { id: EntityId('near'), kind: EntityKind('pig'), position: position(0, 64, 0), exposedToSky: true }
+    const far = {
+      id: EntityId('far'),
+      kind: EntityKind('pig'),
+      position: position(1000, 64, 0),
+      exposedToSky: true,
+    }
+
+    const result = advanceWeatherGameplay(
+      makeWeatherGameplayState(1),
+      5,
+      'thunder',
+      input({ entities: [near, far] }),
+    )
+
+    const damaged = result.events.filter((event) => event._tag === 'EntityLightningDamage')
+    expect(damaged).toHaveLength(1)
+  })
+
+  it('does not re-charge, or re-emit CreeperCharged for, an already-charged creeper', () => {
+    // The one existing "preserves charged creepers" case below skips the whole
+    // lightning branch via the duplicate-tick guard, so it never reaches the
+    // `!chargedCreepers.includes(...)` clause itself. Striking a creeper that
+    // is ALREADY charged, on a fresh tick, is the case that does.
+    const alreadyCharged = EntityId('creeper')
+    const state = { ...makeWeatherGameplayState(9), chargedCreepers: [alreadyCharged] }
+    const entities = [
+      { id: alreadyCharged, kind: EntityKind('creeper'), position: position(0, 64, 0), exposedToSky: true },
+    ]
+
+    const result = advanceWeatherGameplay(state, 5, 'thunder', input({ entities }))
+
+    expect(result.events.some((event) => event._tag === 'CreeperCharged')).toBe(false)
+    expect(result.events.some((event) => event._tag === 'EntityLightningDamage')).toBe(true)
+    expect(result.state.chargedCreepers).toStrictEqual([alreadyCharged])
+  })
+
   it('does not duplicate a restored tick and preserves charged creepers', () => {
     const entities = [
       { id: EntityId('creeper'), kind: EntityKind('creeper'), position: position(0, 64, 0), exposedToSky: true },

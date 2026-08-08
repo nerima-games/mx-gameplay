@@ -71,7 +71,7 @@ import {
   makeGameplayFrameState,
   requestBlockPlacementCommand,
 } from '../src/stages/registration'
-import { makeChunkStoreDouble, SAND, STONE, WATER, world } from './support/chunk-store-double'
+import { lightWorld, makeChunkStoreDouble, SAND, STONE, WATER, world } from './support/chunk-store-double'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
 import { makePlayerServiceDouble } from './support/player-service-double'
 import { emptySlots, makeInventoryDouble } from './support/inventory-service-double'
@@ -570,6 +570,81 @@ describe('placeBlock — support', () => {
       expect(
         yield* placeBlock(store.api, { position: floorLevel, heldItem: 'torch' }),
       ).toStrictEqual({ _tag: 'Unsupported', support: AIR_BLOCK_ID })
+    }),
+  )
+})
+
+describe('placeBlock — the four per-block rules, reached through a real held item', () => {
+  // `./place-mushroom-light.ts`'s gate: it reads nothing unless the block is a
+  // mushroom, and reads the light at the TARGET cell — the one being placed
+  // into, not the support cell below it.
+  it.effect('a mushroom is refused when the cell is too bright', () =>
+    Effect.gen(function* () {
+      const store = yield* makeChunkStoreDouble(
+        world([[below, DIRT]]),
+        ['0,0'],
+        lightWorld([[target, { sky: 13, block: 0 }]]),
+      )
+
+      expect(
+        yield* placeBlock(store.api, { position: target, heldItem: 'brown_mushroom' }),
+      ).toStrictEqual({ _tag: 'TooBright', light: 13 })
+      expect((yield* store.calls).writes).toBe(0)
+    }),
+  )
+
+  // `./place-cactus-sides.ts`'s gate: all four horizontal neighbours must read
+  // `AIR`, and one blocked side is enough to refuse the whole placement.
+  it.effect('a cactus is refused when a horizontal side is blocked', () =>
+    Effect.gen(function* () {
+      const store = yield* storeWith([
+        [below, SAND],
+        [{ x: target.x + 1, y: target.y, z: target.z }, STONE],
+      ])
+
+      expect(
+        yield* placeBlock(store.api, { position: target, heldItem: 'cactus' }),
+      ).toStrictEqual({ _tag: 'SidesBlocked' })
+      expect((yield* store.calls).writes).toBe(0)
+    }),
+  )
+
+  // `./place-door-upper.ts`'s refusal arm: the gate runs BEFORE the write, so a
+  // door with no room above writes nothing at all — not even the lower half.
+  it.effect('a door is refused when the cell above is not clear, and nothing is written', () =>
+    Effect.gen(function* () {
+      const store = yield* storeWith([
+        [below, STONE],
+        [{ x: target.x, y: target.y + 1, z: target.z }, STONE],
+      ])
+
+      expect(
+        yield* placeBlock(store.api, { position: target, heldItem: 'door' }),
+      ).toStrictEqual({ _tag: 'NoRoomAbove' })
+      expect((yield* store.calls).writes).toBe(0)
+      expect(yield* store.blockAt(target)).toBeUndefined()
+    }),
+  )
+
+  // The `Clear` arm of `./place-door-upper.ts`, and the only branch of
+  // `placeBlock`'s own `switch` that writes a SECOND cell: the module header's
+  // `alsoPlaced` contract, exercised end to end.
+  it.effect('a door places both halves and reports the second cell in alsoPlaced', () =>
+    Effect.gen(function* () {
+      const upperCell: BlockPosition = { x: target.x, y: target.y + 1, z: target.z }
+      const store = yield* storeWith([[below, STONE]])
+
+      const outcome = yield* placeBlock(store.api, { position: target, heldItem: 'door' })
+
+      expect(outcome).toStrictEqual({
+        _tag: 'Placed',
+        block: blockIdOf('door')!,
+        consumed: 'door',
+        chunk: { cx: 0, cz: 0 },
+        alsoPlaced: [upperCell],
+      } satisfies PlaceOutcome)
+      expect(yield* store.blockAt(target)).toBe(blockIdOf('door'))
+      expect(yield* store.blockAt(upperCell)).toBe(blockIdOf('door'))
     }),
   )
 })

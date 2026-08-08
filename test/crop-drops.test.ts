@@ -167,6 +167,14 @@ describe('blocks that are not crops', () => {
     }),
   )
 
+  it.effect('have no ripe yield range', () =>
+    Effect.sync(() => {
+      // `ripeYieldRange` is looked up independently of `UNRIPE_CROP_DROP`, so a
+      // block that was never a crop at all exercises the `undefined` arm directly.
+      expect(ripeYieldRange('stone')).toBeUndefined()
+    }),
+  )
+
   it.effect('REGRESSION: the crop set is not everything', () =>
     Effect.sync(() => {
       // Guards the test above from being vacuous: if `UNRIPE_CROP_DROP` ever

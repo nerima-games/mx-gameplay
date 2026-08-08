@@ -3,7 +3,7 @@ import { Effect } from 'effect'
 import { positionKeyOf } from '../src/domain/block-position-key'
 import { blockIdOf, type BlockType } from '../src/domain/block-vocabulary'
 import { AIR_BLOCK_ID, type BlockId, type BlockPosition } from '../src/domain/chunk-store-port'
-import { carveExplosionCrater, craterCells } from '../src/domain/interactions/explosion-crater'
+import { carveExplosionCrater, craterCells, craterRadius } from '../src/domain/interactions/explosion-crater'
 import { makeChunkStoreDouble, world } from './support/chunk-store-double'
 
 const registeredBlockId = (type: BlockType): BlockId => {
@@ -63,4 +63,22 @@ describe('explosion crater', () => {
       })
     }),
   )
+
+  it('craterRadius is 0 for a non-finite power, rather than propagating NaN', () => {
+    expect(craterRadius(Number.NaN)).toBe(0)
+    expect(craterRadius(Number.POSITIVE_INFINITY)).toBe(0)
+  })
+
+  it('craterCells returns no cells for a non-positive power', () => {
+    const centre: BlockPosition = { x: 8, y: 64, z: 8 }
+
+    expect(craterCells(centre, 0)).toStrictEqual([])
+    expect(craterCells(centre, -3)).toStrictEqual([])
+  })
+
+  it('craterCells returns no cells when the centre has a non-finite coordinate', () => {
+    expect(craterCells({ x: Number.NaN, y: 64, z: 8 }, 1)).toStrictEqual([])
+    expect(craterCells({ x: 8, y: Number.POSITIVE_INFINITY, z: 8 }, 1)).toStrictEqual([])
+    expect(craterCells({ x: 8, y: 64, z: Number.NaN }, 1)).toStrictEqual([])
+  })
 })

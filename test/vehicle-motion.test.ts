@@ -31,6 +31,11 @@ describe('vehicle occupancy', () => {
       exited: { occupant: rider, reason: 'requested' },
     })
   })
+
+  it('exiting an unoccupied vehicle is a no-op', () => {
+    const empty = vehicle('boat')
+    expect(exitVehicle(empty)).toStrictEqual({ vehicle: empty })
+  })
 })
 
 describe('boat motion', () => {
@@ -52,6 +57,19 @@ describe('boat motion', () => {
     expect(water.yawRadians).toBe(0)
     expect(Math.abs(land.velocity.x)).toBeLessThan(Math.abs(water.velocity.x))
   })
+
+  it('treats a non-finite delta time as zero elapsed time rather than throwing or freezing', () => {
+    const boat = vehicle('boat', { occupant: rider, velocity: { x: 1, y: 0, z: 0 } })
+    const result = stepBoat(boat, { throttle: 1, steering: 1, inWater: true }, Number.NaN).vehicle
+    expect(result.yawRadians).toBe(0)
+    expect(result.velocity.x).toBeCloseTo(1)
+    expect(result.velocity.z).toBeCloseTo(0)
+  })
+
+  it('is a no-op for a non-boat vehicle', () => {
+    const cart = vehicle('minecart')
+    expect(stepBoat(cart, { throttle: 1, steering: 1, inWater: true }, 0.1)).toStrictEqual({ vehicle: cart })
+  })
 })
 
 describe('minecart motion', () => {
@@ -69,6 +87,20 @@ describe('minecart motion', () => {
     expect(powered.velocity.x).toBe(8)
     const braking = stepMinecart(cart, { kind: 'powered', shape: 'ew', powered: false }, {}, 0.1).vehicle
     expect(braking.velocity.x).toBeCloseTo(1.58)
+  })
+
+  it('a stationary cart on a freshly powered rail accelerates along the way it is facing', () => {
+    const stationary = vehicle('minecart', { velocity: { x: 0, y: 0, z: 0 }, yawRadians: 0 })
+    const result = stepMinecart(stationary, { kind: 'powered', shape: 'ew', powered: true }, {}, 0.1).vehicle
+    // currentSpeed is 0, so direction comes from facing (yaw 0 faces -z) rather
+    // than from normalising the (zero) velocity vector.
+    expect(result.velocity.x).toBeCloseTo(0)
+    expect(result.velocity.z).toBeCloseTo(-0.5)
+  })
+
+  it('is a no-op for a non-minecart vehicle', () => {
+    const boat = vehicle('boat')
+    expect(stepMinecart(boat, { kind: 'none', shape: 'isolated' }, {}, 0.1)).toStrictEqual({ vehicle: boat })
   })
 })
 
@@ -95,5 +127,23 @@ describe('vehicle collision lifecycle', () => {
     }, 0.05)
     expect(destroyed.exited).toStrictEqual({ occupant: rider, reason: 'destroyed' })
     expect(destroyed.vehicle.velocity).toStrictEqual({ x: 0, y: 0, z: 0 })
+  })
+
+  it('stops a destroyed vehicle with no occupant to eject', () => {
+    const empty = vehicle('boat', { velocity: { x: 5, y: 2, z: 0 } })
+    const result = stepBoat(empty, { throttle: 0, steering: 0, inWater: true, destroyed: true }, 0.05)
+    expect(result.exited).toBeUndefined()
+    expect(result.vehicle.velocity).toStrictEqual({ x: 0, y: 0, z: 0 })
+    expect(result.vehicle.occupant).toBeUndefined()
+  })
+
+  it('falls back to the vehicle\'s own speed when impactSpeed is omitted, and does not eject below the exit threshold', () => {
+    const slow = vehicle('minecart', { occupant: rider, velocity: { x: 1, y: 0, z: 0 } })
+    const result = stepMinecart(slow, { kind: 'none', shape: 'isolated' }, { collided: true }, 0.05)
+    expect(result.exited).toBeUndefined()
+    expect(result.vehicle.occupant).toBe(rider)
+    // speed(vehicle) = hypot(1, 0, 0) = 1, well under COLLISION_EXIT_SPEED, so
+    // the occupant stays and only the usual collision drag applies.
+    expect(result.vehicle.velocity.x).toBeCloseTo(0.2)
   })
 })

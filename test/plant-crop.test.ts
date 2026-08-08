@@ -233,6 +233,20 @@ describe('plantCrop', () => {
     }),
   )
 
+  it.effect('a non-seed held over an UNLOADED cell is still notASeed, not wrongSoil', () =>
+    Effect.gen(function* () {
+      // The unloaded-cell refusal above always held a real seed, so it only
+      // ever reached the `wrongSoil` arm of the inner ternary. An unloaded
+      // cell with a non-seed in hand is the case that reaches the other arm.
+      const { port, written } = yield* makeWorld({})
+
+      const outcome = yield* plantCrop(port, request('stone'))
+
+      expect(outcome).toStrictEqual({ _tag: 'notASeed', held: 'stone' })
+      expect(yield* Ref.get(written)).toStrictEqual([])
+    }),
+  )
+
   it.effect('a non-seed still reads nothing and writes nothing', () =>
     Effect.gen(function* () {
       const { port, written } = yield* makeWorld({

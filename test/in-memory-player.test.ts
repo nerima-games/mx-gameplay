@@ -19,6 +19,7 @@ import {
   EYE_LEVEL_OFFSET,
   INITIAL_DIMENSION,
   INITIAL_PLAYER_POSE,
+  InMemoryPlayerLayer,
   PITCH_MAX_RADIANS,
   PITCH_MIN_RADIANS,
   applyLook,
@@ -26,7 +27,7 @@ import {
   makeInMemoryPlayer,
 } from '../src/domain/in-memory-player'
 import { ClockPort, MonotonicTimeSecs } from '../src/domain/frame-contract'
-import type { PlayerPose } from '@nerima-games/mc-sim'
+import { PlayerService, type PlayerPose } from '@nerima-games/mc-sim'
 
 const pose = (overrides: Partial<PlayerPose> = {}): PlayerPose => ({
   feetPosition: { x: 1, y: 64, z: 2 },
@@ -91,6 +92,16 @@ describe('the pitch clamp the double does not have', () => {
       const start = pose({ yawRadians: 1, pitchRadians: 0.5 })
 
       expect(applyLook(start, Number.NaN, Number.NaN)).toStrictEqual(start)
+    }),
+  )
+
+  it.effect('REGRESSION: clampPitch itself falls back to 0 for a non-finite pitch', () =>
+    Effect.sync(() => {
+      // `applyLook` never calls `clampPitch` with a non-finite value — its own
+      // `Number.isFinite` guard substitutes 0 for the delta first — so this is
+      // the only path that reaches `clampPitch`'s own fallback directly.
+      expect(clampPitch(Number.NaN)).toBe(0)
+      expect(clampPitch(Number.POSITIVE_INFINITY)).toBe(0)
     }),
   )
 })
@@ -207,5 +218,27 @@ describe('restore and reset', () => {
       expect(yield* player.pose).toStrictEqual(INITIAL_PLAYER_POSE)
       expect(yield* player.dimension).toBe(INITIAL_DIMENSION)
     }),
+  )
+})
+
+describe('InMemoryPlayerLayer', () => {
+  it.effect('provides a PlayerService a host can compose gameplayModule against', () =>
+    Effect.gen(function* () {
+      // Every other test in this file builds the service directly through
+      // `makeInMemoryPlayer`; this is the only path that exercises the `Layer`
+      // wrapper a real host actually provides.
+      const player = yield* PlayerService
+
+      expect(yield* player.pose).toStrictEqual(INITIAL_PLAYER_POSE)
+      expect(yield* player.dimension).toBe(INITIAL_DIMENSION)
+    }).pipe(Effect.provide(InMemoryPlayerLayer())),
+  )
+
+  it.effect('honours the initial pose and dimension it is built with', () =>
+    Effect.gen(function* () {
+      const player = yield* PlayerService
+
+      expect(yield* player.dimension).toBe('nether')
+    }).pipe(Effect.provide(InMemoryPlayerLayer(pose(), 'nether'))),
   )
 })

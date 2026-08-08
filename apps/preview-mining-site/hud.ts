@@ -90,7 +90,5 @@ export const buildNotes = (
 /** The palette legend, printed once by `--once` so a pasted frame is readable. */
 export const buildLegend = (style: Style): string =>
   style.dim(
-    'legend  ' +
-      BLOCKS.map((entry) => `${entry.glyph}=${entry.name}`).join('  ') +
-      '  /=chunk not loaded  (shaded cell = in the falling-block queue)',
+    `legend  ${BLOCKS.map((entry) => `${entry.glyph}=${entry.name}`).join('  ')}  /=chunk not loaded  (shaded cell = in the falling-block queue)`,
   )

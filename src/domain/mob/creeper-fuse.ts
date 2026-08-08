@@ -283,5 +283,14 @@ export const stepCreeperFuse = (
     case 'Detonated': {
       return { fuse, explosion: undefined }
     }
+
+    /* v8 ignore start -- exhaustiveness safety net over CreeperFuse's `_tag` union
+     * ('Dormant' | 'Lit' | 'Detonated'), a closed union every case above already
+     * covers; no input can reach this arm. */
+    default: {
+      const exhaustive: never = fuse
+      return exhaustive
+    }
+    /* v8 ignore stop */
   }
 }

@@ -74,5 +74,14 @@ export const breakBlock = (
 
       case 'OutOfWorld':
         return { _tag: 'OutOfWorld' }
+      // exhaustiveness arm over BlockWriteOutcome, a closed four-tag union
+      // (chunk-store-port.ts): 'Written', 'Unchanged', 'ChunkNotLoaded' and
+      // 'OutOfWorld' are all handled above, so no input can reach this arm.
+      /* v8 ignore start */
+      default: {
+        const exhaustive: never = outcome
+        return exhaustive
+      }
+      /* v8 ignore stop */
     }
   })

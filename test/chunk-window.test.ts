@@ -42,6 +42,7 @@ import {
   AIR_BLOCK_ID,
   CHUNK_HEIGHT,
   blockIndex,
+  readBlock,
   type ChunkStoreApi,
 } from '../src/domain/chunk-store-port'
 import { makeChunkStoreDouble, world, CHUNK_SIDE, STONE } from './support/chunk-store-double'
@@ -73,6 +74,16 @@ describe('the buffer layout, transcribed', () => {
     expect(blockIndex(0, 1, 0)).toBe(1)
     expect(blockIndex(0, 0, 1)).toBe(CHUNK_HEIGHT)
     expect(blockIndex(1, 0, 0)).toBe(CHUNK_HEIGHT * CHUNK_SIDE)
+  })
+
+  it('readBlock is TOTAL: an out-of-range index reads as air rather than throwing', () => {
+    // `openChunkWindow` never hands `readBlock` an out-of-range index — it
+    // guards y at the call site, per the header above `readBlock` itself — so
+    // this is the one place that exercises `readBlock`'s own totality directly,
+    // against a buffer too short for the index it is asked to read.
+    const shortBuffer = new Uint8Array(1)
+    expect(readBlock(shortBuffer, 5)).toBe(AIR_BLOCK_ID)
+    expect(readBlock(shortBuffer, -1)).toBe(AIR_BLOCK_ID)
   })
 })
 

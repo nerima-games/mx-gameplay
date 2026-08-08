@@ -17,6 +17,7 @@ import { describe, expect, it } from '@effect/vitest'
 import { Effect } from 'effect'
 import type { Position } from '@nerima-games/mc-kernel'
 import {
+  InMemoryEntityManagerLayer,
   emptyRoster,
   makeInMemoryEntityManager,
   mintEntityId,
@@ -27,6 +28,7 @@ import {
   EntityId,
   EntityKind,
   UNCHANGED,
+  entityManagerTag,
   type Entity,
   type EntityRoster,
   type SpawnRequest,
@@ -322,6 +324,75 @@ describe('restore repairs rather than validates', () => {
       expect(yield* roster.snapshot).toStrictEqual(emptyRoster<Behaviour>())
       const respawned = yield* roster.spawn(spawnRequest())
       expect(respawned.id).toBe(mintEntityId(ZOMBIE, 0))
+    }),
+  )
+})
+
+describe('InMemoryEntityManagerLayer, for a host that composes gameplayModule', () => {
+  it.effect('resolves to a working EntityManager, defaulting to an empty roster', () =>
+    Effect.gen(function* () {
+      const manager = yield* entityManagerTag<Behaviour>().pipe(
+        Effect.provide(InMemoryEntityManagerLayer<Behaviour>()),
+      )
+
+      expect(yield* manager.count).toBe(0)
+      const entity = yield* manager.spawn(spawnRequest())
+      expect(yield* manager.find(entity.id)).toStrictEqual(entity)
+    }),
+  )
+
+  it.effect('seeds the service from the initial roster it is given', () =>
+    Effect.gen(function* () {
+      const initial: EntityRoster<Behaviour> = {
+        entities: [saved({ id: EntityId('zombie-9') })],
+        nextSerial: 10,
+      }
+      const manager = yield* entityManagerTag<Behaviour>().pipe(
+        Effect.provide(InMemoryEntityManagerLayer<Behaviour>(initial)),
+      )
+
+      expect(yield* manager.count).toBe(1)
+      expect(yield* manager.find(EntityId('zombie-9'))).toBeDefined()
+      // The next spawn continues from the seeded roster's own counter rather
+      // than starting over at zero.
+      const spawned = yield* manager.spawn(spawnRequest())
+      expect(spawned.id).toBe(mintEntityId(ZOMBIE, 10))
+    }),
+  )
+
+  it.effect('defaults the repair hook to the identity, leaving behaviour untouched on restore', () =>
+    Effect.gen(function* () {
+      // The two tests above never call `restore`, so the identity default this
+      // Layer falls back to when no hook is given — distinct from
+      // `makeInMemoryEntityManager`'s own identity default, which the
+      // "restore repairs rather than validates" suite already exercises — was
+      // never itself invoked.
+      const manager = yield* entityManagerTag<Behaviour>().pipe(
+        Effect.provide(InMemoryEntityManagerLayer<Behaviour>()),
+      )
+      const seeded = saved({ id: EntityId('zombie-9') })
+
+      yield* manager.restore({ entities: [seeded], nextSerial: 10 })
+
+      expect((yield* manager.find(EntityId('zombie-9')))?.behaviour).toStrictEqual(seeded.behaviour)
+    }),
+  )
+
+  it.effect('threads the repair hook it is given through to restore', () =>
+    Effect.gen(function* () {
+      const manager = yield* entityManagerTag<Behaviour>().pipe(
+        Effect.provide(
+          InMemoryEntityManagerLayer<Behaviour>(emptyRoster<Behaviour>(), () => ({
+            mood: 'reincarnated',
+          })),
+        ),
+      )
+
+      yield* manager.restore({ entities: [saved({ id: EntityId('zombie-9') })], nextSerial: 10 })
+
+      expect((yield* manager.find(EntityId('zombie-9')))?.behaviour).toStrictEqual({
+        mood: 'reincarnated',
+      })
     }),
   )
 })

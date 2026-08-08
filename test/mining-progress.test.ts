@@ -156,6 +156,14 @@ describe('mining duration', () => {
       ).toBe(2)
     }),
   )
+
+  it.effect('an instant-break block (zero hardness) needs no time to mine', () =>
+    Effect.sync(() => {
+      // A dandelion breaks in one hit regardless of tool, same as vanilla:
+      // kernel registers it with hardness 0.
+      expect(miningDurationSecsForBlock(blockIdOf('dandelion'), null)).toBe(0)
+    }),
+  )
 })
 
 describe('delta-time progress', () => {
@@ -458,6 +466,61 @@ describe('delta-time progress', () => {
       expect(miningProgressFraction(progress(Number.POSITIVE_INFINITY))).toBe(0)
       expect(miningProgressFraction(progress(Number.NEGATIVE_INFINITY))).toBe(0)
       expect(miningProgressFraction(progress(-1))).toBe(0)
+    }),
+  )
+
+  it.effect('an instant-break target completes on the first frame with zero required work', () =>
+    Effect.sync(() => {
+      const dandelion = { position: blockPosition(5, 64, 5), blockId: blockIdOf('dandelion') }
+      const result = advanceMiningProgress({
+        current: null,
+        target: dandelion,
+        isMining: true,
+        selectedItem: null,
+        deltaSecs: 0.1,
+      })
+
+      expect(result.shouldBreak).toBe(true)
+      expect(result.nextProgress?.completed).toBe(true)
+      expect(result.nextProgress?.accumulatedWork).toBe(0)
+      expect(miningProgressFraction(result.nextProgress)).toBe(1)
+    }),
+  )
+
+  it.effect('a null target has no progress to report', () =>
+    Effect.sync(() => {
+      expect(miningProgressFraction(null)).toBe(0)
+    }),
+  )
+
+  it.effect('a completed block reports full progress regardless of stored work', () =>
+    Effect.sync(() => {
+      const progress: MiningProgressState = {
+        blockKey: '1,64,2',
+        blockId: STONE.blockId,
+        elapsedSecs: 1,
+        requiredSecs: 1,
+        // Deliberately stale/mismatched: `completed` alone must decide the answer.
+        accumulatedWork: 0,
+        completed: true,
+      }
+      expect(miningProgressFraction(progress)).toBe(1)
+    }),
+  )
+
+  it.effect('treats a not-yet-flagged-completed instant-break block as fully mined', () =>
+    Effect.sync(() => {
+      // Models externally-supplied progress (e.g. persisted state) for a block
+      // whose hardness is zero but whose `completed` flag was never set.
+      const progress: MiningProgressState = {
+        blockKey: '5,64,5',
+        blockId: blockIdOf('dandelion'),
+        elapsedSecs: 0,
+        requiredSecs: 0,
+        accumulatedWork: 0,
+        completed: false,
+      }
+      expect(miningProgressFraction(progress)).toBe(1)
     }),
   )
 })

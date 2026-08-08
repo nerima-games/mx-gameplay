@@ -143,7 +143,14 @@ const itemFor = (category: FishingCategory, roll: number): ItemType => {
         : FISHING_TREASURE_LOOT
   const index = Math.min(items.length - 1, Math.floor(roll * items.length))
   const selected = items[index]
+  /* v8 ignore start -- unreachable while every session's rolls pass
+   * `isNormalisedRoll` (`0 <= value <= 1`) at `castFishing`, and all three loot
+   * tables are fixed non-empty arrays: `index` is always in `[0, items.length -
+   * 1]`, so `items[index]` is never `undefined`. `noUncheckedIndexedAccess`
+   * still demands the guard; the throw names the invariant rather than
+   * asserting past it. */
   if (selected === undefined) throw new Error('Fishing loot tables must not be empty')
+  /* v8 ignore stop */
   return selected
 }
 

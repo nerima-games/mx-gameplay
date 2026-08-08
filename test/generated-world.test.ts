@@ -1,6 +1,7 @@
 import { describe, expect, it } from '@effect/vitest'
 import { InventoryService, craftGrid } from '@nerima-games/mc-sim'
 import {
+  CHUNK_HEIGHT,
   CHUNK_SIZE_XZ,
   emptyBlocks,
   surfaceHeightAt,
@@ -67,6 +68,76 @@ describe('generated world composition', () => {
 
       expect(isSolid({ x: 0, y: 60, z: 0 })).toBe(false) // water
       expect(isSolid({ x: 0, y: 59, z: 0 })).toBe(true) // sand
+    }),
+  )
+
+  it.effect('defaults to seed 8675309 when none is provided', () =>
+    Effect.gen(function* () {
+      const world = yield* makeGeneratedWorld<MobBehaviour>({})
+      const defaultSurfaceY = surfaceHeightAt(8675309, 0, 0)
+
+      expect((yield* world.player.pose).feetPosition).toStrictEqual({
+        x: 0.5,
+        y: defaultSurfaceY + 1,
+        z: 0.5,
+      })
+    }),
+  )
+
+  it.effect('treats an unloaded chunk as solid, not as air', () =>
+    Effect.gen(function* () {
+      const world = yield* makeGeneratedWorld<MobBehaviour>({ seed: SEED })
+      const isSolid = solidityFromStore(world.chunkStore)
+
+      // Chunk (0,0) is never loaded in this test, so the read is ChunkNotLoaded.
+      expect(isSolid({ x: 0, y: 64, z: 0 })).toBe(true)
+    }),
+  )
+
+  it.effect('treats a position outside the build height as solid', () =>
+    Effect.gen(function* () {
+      const world = yield* makeGeneratedWorld<MobBehaviour>({ seed: SEED })
+      yield* world.chunkStore.load({ cx: 0, cz: 0 })
+      const isSolid = solidityFromStore(world.chunkStore)
+
+      expect(isSolid({ x: 0, y: -1, z: 0 })).toBe(true) // below bedrock
+      expect(isSolid({ x: 0, y: CHUNK_HEIGHT, z: 0 })).toBe(true) // above the build limit
+    }),
+  )
+
+  it.effect('adapts peek, snapshot, isLoaded, neighbours, unload and getLight, coordinate-branded', () =>
+    Effect.gen(function* () {
+      // The other tests in this file only exercise `load`, `getBlock` and
+      // `setBlock` on the adapted store — this is the one that reaches every
+      // remaining member `adaptGeneratedChunkStore` wraps.
+      const world = yield* makeGeneratedWorld<MobBehaviour>({ seed: SEED })
+      const coord = { cx: 0, cz: 0 }
+      const eastCoord = { cx: 1, cz: 0 }
+
+      expect(yield* world.chunkStore.isLoaded(coord)).toBe(false)
+      expect(yield* world.chunkStore.peek(coord)).toBeUndefined()
+      expect(yield* world.chunkStore.snapshot(coord)).toBeUndefined()
+
+      yield* world.chunkStore.load(coord)
+      yield* world.chunkStore.load(eastCoord)
+
+      expect(yield* world.chunkStore.isLoaded(coord)).toBe(true)
+      const peeked = yield* world.chunkStore.peek(coord)
+      expect(peeked?.coord).toStrictEqual(coord)
+      const snapshotted = yield* world.chunkStore.snapshot(coord)
+      expect(snapshotted?.coord).toStrictEqual(coord)
+
+      const neighbours = yield* world.chunkStore.neighbours(coord)
+      expect(neighbours.xPos?.coord).toStrictEqual(eastCoord)
+      expect(neighbours.xNeg).toBeUndefined()
+
+      const light = yield* world.chunkStore.getLight({ x: 0, y: 100, z: 0 })
+      expect(light._tag).toBe('Light')
+      const unloadedLight = yield* world.chunkStore.getLight({ x: 500, y: 100, z: 500 })
+      expect(unloadedLight).toStrictEqual({ _tag: 'ChunkNotLoaded' })
+
+      expect(yield* world.chunkStore.unload(coord)).toBe(true)
+      expect(yield* world.chunkStore.isLoaded(coord)).toBe(false)
     }),
   )
 

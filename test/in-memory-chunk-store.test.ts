@@ -288,3 +288,167 @@ describe('the world is copied at construction', () => {
     }),
   )
 })
+
+describe('setBlock and getLight above the world', () => {
+  it.effect('setBlock refuses OutOfWorld without touching the map', () =>
+    Effect.gen(function* () {
+      const store = yield* makeInMemoryChunkStore(worldWith([[AT, STONE]]))
+
+      expect(yield* store.setBlock({ x: 5, y: CHUNK_HEIGHT, z: 9 }, DIRT)).toStrictEqual({
+        _tag: 'OutOfWorld',
+      })
+      // Unchanged: the out-of-world write must not have touched the real cell.
+      expect(yield* store.getBlock(AT)).toStrictEqual({ _tag: 'Block', block: STONE })
+    }),
+  )
+
+  it.effect('getLight above the world is OutOfWorld', () =>
+    Effect.gen(function* () {
+      const store = yield* makeInMemoryChunkStore(worldWith([[AT, STONE]]))
+
+      expect(yield* store.getLight({ x: 5, y: -1, z: 9 })).toStrictEqual({ _tag: 'OutOfWorld' })
+    }),
+  )
+
+  it.effect('getLight on an unloaded chunk is ChunkNotLoaded, not dark', () =>
+    Effect.gen(function* () {
+      // Same three-valued reasoning as getBlock: an unlit reading here would be
+      // indistinguishable from a chunk that is merely dark.
+      const store = yield* makeInMemoryChunkStore(EMPTY_WORLD)
+
+      expect(yield* store.getLight(AT)).toStrictEqual({ _tag: 'ChunkNotLoaded' })
+    }),
+  )
+
+  it.effect('getLight returns an actually-lit cell’s levels, not just the dark default', () =>
+    Effect.gen(function* () {
+      // The other half of the `?? 0` default: a lit cell must report its own
+      // sky/block levels rather than falling through to the absent-cell zero.
+      const store = yield* makeInMemoryChunkStore({
+        blocks: new Map([[cellKey(AT), STONE]]),
+        loaded: [chunkKey(chunkOf(AT))],
+        lights: new Map([[cellKey(AT), { sky: 15, block: 4 }]]),
+      })
+
+      expect(yield* store.getLight(AT)).toStrictEqual({ _tag: 'Light', sky: 15, block: 4 })
+    }),
+  )
+})
+
+describe('writing air deletes the cell rather than storing it', () => {
+  it.effect('setBlock(AIR_BLOCK_ID) removes the block from the sparse map', () =>
+    Effect.gen(function* () {
+      const store = yield* makeInMemoryChunkStore(worldWith([[AT, STONE]]))
+
+      expect(yield* store.setBlock(AT, AIR_BLOCK_ID)).toStrictEqual({
+        _tag: 'Written',
+        previous: STONE,
+        chunk: chunkOf(AT),
+      })
+      const chunk = yield* store.peek(chunkOf(AT))
+      expect(chunk?.blocks.every((block) => block === AIR_BLOCK_ID)).toBe(true)
+    }),
+  )
+})
+
+describe('subscribeDirtyScoped unsubscribes when its scope closes', () => {
+  it.effect('a change after the scope closes is not seen by the released subscription', () =>
+    Effect.gen(function* () {
+      const store = yield* makeInMemoryChunkStore(worldWith([[AT, STONE]]))
+
+      const subscription = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const sub = yield* store.subscribeDirtyScoped
+          yield* store.setBlock(AT, DIRT)
+          expect((yield* sub.drain).changed).toStrictEqual([chunkOf(AT)])
+          return sub
+        }),
+      )
+
+      // The scope above has already closed and run the finalizer, so this
+      // write must not be seen by the same subscription handle.
+      yield* store.setBlock(AT, STONE)
+      expect((yield* subscription.drain).changed).toStrictEqual([])
+    }),
+  )
+})
+
+describe('reset clears pending dirty batches, not only the world', () => {
+  it.effect('an undrained subscriber sees nothing after reset', () =>
+    Effect.gen(function* () {
+      const store = yield* makeInMemoryChunkStore(worldWith([[AT, STONE]]))
+      const subscription = yield* store.subscribeDirty
+
+      yield* store.setBlock(AT, DIRT)
+      yield* store.reset
+
+      expect((yield* subscription.drain).changed).toStrictEqual([])
+    }),
+  )
+})
+
+describe('materialise draws only from the requested chunk', () => {
+  it.effect('a neighbour chunk’s blocks on either axis are not pulled in', () =>
+    Effect.gen(function* () {
+      // AT is chunk (0,0). One neighbour shares its z but differs in x, the
+      // other shares x but differs in z — so both filter arms in materialise
+      // (the x check and the z check) each have something to reject.
+      const neighbourOnX: BlockPosition = { x: 20, y: 64, z: 9 }
+      const neighbourOnZ: BlockPosition = { x: 5, y: 64, z: 20 }
+      expect(chunkOf(neighbourOnX)).toStrictEqual({ cx: 1, cz: 0 })
+      expect(chunkOf(neighbourOnZ)).toStrictEqual({ cx: 0, cz: 1 })
+
+      const store = yield* makeInMemoryChunkStore(
+        worldWith([
+          [AT, STONE],
+          [neighbourOnX, DIRT],
+          [neighbourOnZ, DIRT],
+        ]),
+      )
+
+      const chunk = yield* store.load(chunkOf(AT))
+
+      expect([...chunk.blocks].filter((block) => block !== AIR_BLOCK_ID)).toStrictEqual([STONE])
+    }),
+  )
+})
+
+describe('malformed sparse-map keys are skipped rather than crashing', () => {
+  // `WorldContents.blocks` is a plain `ReadonlyMap<string, BlockId>` handed in
+  // at construction — nothing enforces that its keys came from `cellKey`. A
+  // corrupt save or a hand-built fixture can carry a key that does not parse
+  // to a full x,y,z, or a y outside the world's vertical extent; materialise
+  // and unload both guard against exactly that rather than trusting the key.
+  it.effect('an unparsable key is skipped by materialise and by unload', () =>
+    Effect.gen(function* () {
+      const blocks = new Map<string, BlockId>([
+        [cellKey(AT), STONE],
+        ['garbage,64', DIRT], // missing z component
+      ])
+      const store = yield* makeInMemoryChunkStore({ blocks, loaded: [chunkKey(chunkOf(AT))] })
+
+      const chunk = yield* store.load(chunkOf(AT))
+      expect([...chunk.blocks].filter((block) => block !== AIR_BLOCK_ID)).toStrictEqual([STONE])
+
+      expect(yield* store.unload(chunkOf(AT))).toBe(true)
+      yield* store.load(chunkOf(AT))
+      // The valid cell is gone after unload+reload; the unparsable key never
+      // resurrects anything because materialise skips it too.
+      expect(yield* store.getBlock(AT)).toStrictEqual({ _tag: 'Block', block: AIR_BLOCK_ID })
+    }),
+  )
+
+  it.effect('a y outside the vertical extent is skipped by materialise', () =>
+    Effect.gen(function* () {
+      const blocks = new Map<string, BlockId>([
+        [cellKey(AT), STONE],
+        ['5,999,5', DIRT], // y >= CHUNK_HEIGHT
+      ])
+      const store = yield* makeInMemoryChunkStore({ blocks, loaded: [chunkKey(chunkOf(AT))] })
+
+      const chunk = yield* store.load(chunkOf(AT))
+
+      expect([...chunk.blocks].filter((block) => block !== AIR_BLOCK_ID)).toStrictEqual([STONE])
+    }),
+  )
+})

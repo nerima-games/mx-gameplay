@@ -259,5 +259,14 @@ export const stepPortalDwell = (
     case 'Standing': {
       return inPortal ? dwell(current.dwelledSecs + dt) : { dwell: OUTSIDE_PORTAL, travels: false }
     }
+
+    /* v8 ignore start -- exhaustiveness safety net over PortalDwell's `_tag` union
+     * ('Outside' | 'Standing' | 'Cooling'), a closed union every case above already
+     * covers; no input can reach this arm. */
+    default: {
+      const exhaustive: never = current
+      return exhaustive
+    }
+    /* v8 ignore stop */
   }
 }

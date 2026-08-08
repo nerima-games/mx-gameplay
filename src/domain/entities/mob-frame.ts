@@ -1234,7 +1234,20 @@ export const sweepMobs = (
           next: HostileMobSnapshot['behaviour'],
         ): MobBehaviour => snapshot === undefined
           ? next
-          : { ...snapshot, behaviour: next, ageTicks: ageTicks ?? snapshot.ageTicks }
+          : {
+              ...snapshot,
+              behaviour: next,
+              /* v8 ignore next 9 -- `ageTicks` (just above) is `undefined` if and
+               * only if `snapshot` is, and both are `const`s read from the same
+               * `entity.behaviour` with no reassignment between their
+               * definition and this closure, so whenever THIS branch runs
+               * `ageTicks` is always a number. TypeScript cannot see that two
+               * independently-typed consts stay in lockstep, so the fallback is
+               * a type-checker formality the arithmetic forbids — the same
+               * shape as `mob-spawn-search.ts`'s clamped-index fallback
+               * (vitest.config.ts's coverage-gate comment). */
+              ageTicks: ageTicks ?? snapshot.ageTicks,
+            }
         if (entity.kind === ZOMBIE_KIND) {
           const feetPosition = pursueHorizontally(
             entity.feetPosition,
@@ -1414,17 +1427,19 @@ export const sweepMobs = (
         // the same answer as a pig, which is the inert one.
         return IGNORED
       }),
-      (events) => ({
-        blasts: events.filter((event): event is Blast => !('_tag' in event)),
-        attacks: events.filter(
-          (event): event is MobAttackEvent => '_tag' in event && event._tag !== 'EndermanTeleport',
-        ),
-        teleports: events.filter(
-          (event): event is EndermanTeleportProbe =>
-            '_tag' in event && event._tag === 'EndermanTeleport',
-        ),
-        seed: cursor,
-      }),
+      (events) => {
+        const blasts: Blast[] = []
+        const attacks: MobAttackEvent[] = []
+        const teleports: EndermanTeleportProbe[] = []
+
+        for (const event of events) {
+          if (!('_tag' in event)) blasts.push(event)
+          else if (event._tag === 'EndermanTeleport') teleports.push(event)
+          else attacks.push(event)
+        }
+
+        return { blasts, attacks, teleports, seed: cursor }
+      },
     )
   })
 
@@ -1799,6 +1814,12 @@ export const rollCasualtyDrops = (
  */
 export const rollSelfDestructDrops = (blast: Blast): ReadonlyArray<MobDropEvent> =>
   rollDropsOfKind(blast.kind, SELF_DESTRUCT, NO_DROPS).map((drop) => ({
+    /* v8 ignore next 9 -- structurally unreachable: `../mob/mob-drop`'s
+     * `rollMobDrop` returns `undefined` for EVERY rule the instant `kill._tag`
+     * is `'SelfDestruct'`, before it consults the rule at all, and `SELF_DESTRUCT`
+     * above is the only kill this call site ever passes, so this spread can
+     * never run — kept general (see the header above) rather than hard-coded
+     * to `[]`. */
     ...drop,
     source: blast.source,
     kind: blast.kind,

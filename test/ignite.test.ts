@@ -25,7 +25,7 @@ import { blockIdOf } from '../src/domain/block-vocabulary'
 import { AIR_BLOCK_ID, type BlockId, type BlockPosition } from '../src/domain/chunk-store-port'
 import { igniteFire } from '../src/domain/interactions/ignite-fire'
 import { PORTAL_WINDOW_RADIUS, ignitePortal } from '../src/domain/interactions/ignite-portal'
-import { TNT_BLOCK_ID } from '../src/domain/interactions/ignite-tnt'
+import { TNT_BLOCK_ID, igniteTnt } from '../src/domain/interactions/ignite-tnt'
 import {
   IGNITION_ITEM_TYPES,
   isIgnitionItem,
@@ -343,6 +343,84 @@ describe('igniteFire', () => {
         expect(
           yield* igniteFire(storeThatChangesItsMind(store.api, { _tag: 'OutOfWorld' }), target),
         ).toStrictEqual({ _tag: 'OutOfWorld' })
+      }),
+    )
+  })
+})
+
+describe('igniteTnt', () => {
+  const target: BlockPosition = { x: 2, y: 64, z: 3 }
+
+  it.effect('lights a TNT block and removes it', () =>
+    Effect.gen(function* () {
+      const store = yield* makeChunkStoreDouble(world([[target, TNT]]), ['0,0'])
+
+      expect(yield* igniteTnt(store.api, target)).toStrictEqual({ _tag: 'Lit' })
+      expect(yield* store.blockAt(target)).toBe(AIR_BLOCK_ID)
+    }),
+  )
+
+  it.effect('refuses a block that is not TNT, and writes nothing', () =>
+    Effect.gen(function* () {
+      const store = yield* makeChunkStoreDouble(world([[target, STONE]]), ['0,0'])
+
+      expect(yield* igniteTnt(store.api, target)).toStrictEqual({ _tag: 'NotTnt' })
+      expect((yield* store.calls).writes).toBe(0)
+    }),
+  )
+
+  it.effect('reports ChunkNotLoaded and OutOfWorld from the read, apart from each other', () =>
+    Effect.gen(function* () {
+      const store = yield* makeChunkStoreDouble(world([]), ['0,0'])
+
+      expect(yield* igniteTnt(store.api, { x: 200, y: 64, z: 3 })).toStrictEqual({
+        _tag: 'ChunkNotLoaded',
+      })
+      expect(yield* igniteTnt(store.api, { x: 2, y: -1, z: 3 })).toStrictEqual({
+        _tag: 'OutOfWorld',
+      })
+      expect((yield* store.calls).writes).toBe(0)
+    }),
+  )
+
+  describe('the window between the read and the write', () => {
+    it.effect('a write that comes back ChunkNotLoaded or OutOfWorld is reported as-is, not as ChangedBeforeWrite', () =>
+      Effect.gen(function* () {
+        const store = yield* makeChunkStoreDouble(world([[target, TNT]]), ['0,0'])
+
+        expect(
+          yield* igniteTnt(storeThatChangesItsMind(store.api, { _tag: 'ChunkNotLoaded' }), target),
+        ).toStrictEqual({ _tag: 'ChunkNotLoaded' })
+        expect(
+          yield* igniteTnt(storeThatChangesItsMind(store.api, { _tag: 'OutOfWorld' }), target),
+        ).toStrictEqual({ _tag: 'OutOfWorld' })
+      }),
+    )
+
+    it.effect('a write that comes back Unchanged is ChangedBeforeWrite — something else already removed the TNT', () =>
+      Effect.gen(function* () {
+        const store = yield* makeChunkStoreDouble(world([[target, TNT]]), ['0,0'])
+        const raced = storeThatChangesItsMind(store.api, { _tag: 'Unchanged', previous: TNT })
+
+        expect(yield* igniteTnt(raced, target)).toStrictEqual({ _tag: 'ChangedBeforeWrite' })
+      }),
+    )
+
+    it.effect('a Written outcome whose `previous` disagrees with TNT is ChangedBeforeWrite too', () =>
+      Effect.gen(function* () {
+        // The read saw TNT, but by the time the write landed the cell held
+        // something else — a second player broke it in the same window. The
+        // write still happened (`Written`), so this is NOT the `Unchanged`
+        // case above; it is caught by the `previous !== TNT_BLOCK_ID` half of
+        // the same guard.
+        const store = yield* makeChunkStoreDouble(world([[target, TNT]]), ['0,0'])
+        const raced = storeThatChangesItsMind(store.api, {
+          _tag: 'Written',
+          previous: STONE,
+          chunk: { cx: 0, cz: 0 },
+        })
+
+        expect(yield* igniteTnt(raced, target)).toStrictEqual({ _tag: 'ChangedBeforeWrite' })
       }),
     )
   })

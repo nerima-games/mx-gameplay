@@ -121,4 +121,144 @@ describe('vehicle frame', () => {
     expect(next?.['occupant']).toBeUndefined()
     expect(exit).toBe('collision')
   })
+
+  it('stops a boat before a solid block and reports collision exits', async () => {
+    const vehicle = {
+      id: VehicleId('v:boat-collision'),
+      type: 'boat' as const,
+      dimension: 'overworld' as const,
+      position: { x: 0, y: 64, z: 0 },
+      velocity: { x: 8, y: 0, z: 0 },
+      yawRadians: 0,
+      occupant: 'player:local',
+    }
+    let next: Record<string, unknown> | undefined
+    let exit: string | undefined
+    const service = {
+      vehicles: Effect.succeed([vehicle]),
+      updateState: (_id: VehicleId, state: Record<string, unknown>) => Effect.sync(() => { next = state }),
+    } as unknown as VehicleServiceApi
+    const stone = blockIdOf('stone')!
+    const water = blockIdOf('water')!
+    const store = {
+      getBlock: (position: { x: number; y: number; z: number }) => Effect.succeed(
+        position.x === 1 && position.y === 64 && position.z === 0
+          ? { _tag: 'Block' as const, block: stone }
+          : { _tag: 'Block' as const, block: water },
+      ),
+    } as unknown as ChunkStoreApi
+
+    await Effect.runPromise(advanceVehicles(store, service, 0.1, {
+      onVehicleExit: (_vehicle, reason) => { exit = reason },
+    }))
+
+    expect(next?.['position']).toEqual({ x: 0, y: 64, z: 0 })
+    expect(next?.['occupant']).toBeUndefined()
+    expect(exit).toBe('collision')
+  })
+
+  it('reads track power for both the free step and the collision-resolved re-step', async () => {
+    const vehicle = {
+      id: VehicleId('v:powered'),
+      type: 'minecart' as const,
+      dimension: 'overworld' as const,
+      position: { x: 0, y: 64, z: 0 },
+      velocity: { x: 8, y: 0, z: 0 },
+      yawRadians: 0,
+    }
+    let next: Record<string, unknown> | undefined
+    const service = {
+      vehicles: Effect.succeed([vehicle]),
+      updateState: (_id: VehicleId, state: Record<string, unknown>) => Effect.sync(() => { next = state }),
+    } as unknown as VehicleServiceApi
+    const stone = blockIdOf('stone')!
+    const poweredRail = blockIdOf('powered_rail')!
+    const store = {
+      getBlock: (position: { x: number; y: number; z: number }) => Effect.succeed(
+        position.x === 1 && position.y === 64 && position.z === 0
+          ? { _tag: 'Block' as const, block: stone }
+          : position.x === 0 && position.y === 64 && position.z === 0
+            ? { _tag: 'Block' as const, block: poweredRail }
+            : { _tag: 'OutOfWorld' as const },
+      ),
+    } as unknown as ChunkStoreApi
+    let poweredQueries = 0
+
+    await Effect.runPromise(advanceVehicles(store, service, 0.1, {
+      isPoweredRailAt: () => {
+        poweredQueries += 1
+        return true
+      },
+    }))
+
+    // Queried once building the track for the initial, uncollided step and once
+    // more building the track the collision forces `stepVehicle` to re-run with.
+    expect(poweredQueries).toBe(2)
+    expect(next?.['position']).toEqual({ x: 0, y: 64, z: 0 })
+  })
+
+  it('falls back to unpowered on both steps when no isPoweredRailAt hook is provided', async () => {
+    const vehicle = {
+      id: VehicleId('v:no-power-hook'),
+      type: 'minecart' as const,
+      dimension: 'overworld' as const,
+      position: { x: 0, y: 64, z: 0 },
+      // Deliberately far beyond a realistic minecart speed: braking (rather
+      // than the powered acceleration) cuts it to a fifth, and that reduced
+      // speed still needs to reach the block one cell away within a single
+      // (dt-clamped) frame, so the collision-resolved re-step also runs.
+      velocity: { x: 50, y: 0, z: 0 },
+      yawRadians: 0,
+    }
+    let next: Record<string, unknown> | undefined
+    const service = {
+      vehicles: Effect.succeed([vehicle]),
+      updateState: (_id: VehicleId, state: Record<string, unknown>) => Effect.sync(() => { next = state }),
+    } as unknown as VehicleServiceApi
+    const stone = blockIdOf('stone')!
+    const poweredRail = blockIdOf('powered_rail')!
+    const store = {
+      getBlock: (position: { x: number; y: number; z: number }) => Effect.succeed(
+        position.x === 1 && position.y === 64 && position.z === 0
+          ? { _tag: 'Block' as const, block: stone }
+          : position.x === 0 && position.y === 64 && position.z === 0
+            ? { _tag: 'Block' as const, block: poweredRail }
+            : { _tag: 'OutOfWorld' as const },
+      ),
+    } as unknown as ChunkStoreApi
+
+    await Effect.runPromise(advanceVehicles(store, service, 0.1))
+
+    // Braked (not accelerated) despite standing on a powered rail, because no
+    // `isPoweredRailAt` hook means the track can never be reported "powered".
+    const velocity = next?.['velocity'] as { x: number; y: number; z: number }
+    expect(velocity.x).toBeCloseTo(2)
+    expect(velocity.y).toBe(0)
+    expect(velocity.z).toBe(0)
+  })
+
+  it('treats a non-finite delta time as no elapsed time and performs no updates', async () => {
+    const vehicle = {
+      id: VehicleId('v:frozen'),
+      type: 'minecart' as const,
+      dimension: 'overworld' as const,
+      position: { x: 0, y: 64, z: 0 },
+      velocity: { x: 2, y: 0, z: 0 },
+      yawRadians: 0,
+    }
+    let updateCount = 0
+    const service = {
+      vehicles: Effect.succeed([vehicle]),
+      updateState: () => Effect.sync(() => {
+        updateCount += 1
+      }),
+    } as unknown as VehicleServiceApi
+    const store = {
+      getBlock: () => Effect.succeed({ _tag: 'OutOfWorld' as const }),
+    } as unknown as ChunkStoreApi
+
+    await Effect.runPromise(advanceVehicles(store, service, Number.NaN))
+
+    expect(updateCount).toBe(0)
+  })
 })

@@ -175,6 +175,17 @@ describe('tillSoil', () => {
       expect(yield* Ref.get(written)).toStrictEqual([])
     }),
   )
+
+  it.effect('an unloaded cell ABOVE refuses too, with the ground itself loaded', () =>
+    Effect.gen(function* () {
+      // The case above always left GROUND unloaded; this is the mirror where
+      // the ground reads fine and only the cell above is not resident.
+      const { port, written } = yield* makeWorld({ [keyOf(GROUND)]: 'dirt' })
+
+      expect((yield* tillSoil(port, HOE, GROUND))._tag).not.toBe('tilled')
+      expect(yield* Ref.get(written)).toStrictEqual([])
+    }),
+  )
 })
 
 describe('the loop closes', () => {

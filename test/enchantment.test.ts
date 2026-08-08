@@ -19,6 +19,7 @@ import {
   miningSpeedWithEnchantments,
   rerollEnchantmentSeed,
   snapshotEnchantedItem,
+  validateEnchantedItem,
   type EnchantedItem,
   type EnchantmentId,
   type EnchantmentOffer,
@@ -43,6 +44,20 @@ const compatibleOffer = (item: EnchantedItem['item']): EnchantmentOffer => {
   throw new Error(`no compatible offer for ${item}`)
 }
 
+const compatibleOfferExcluding = (
+  item: EnchantedItem['item'],
+  excludedId: EnchantmentId,
+): EnchantmentOffer => {
+  for (let seed = 0; seed < 10_000; seed += 1) {
+    for (const offer of enchantmentOffers(seed, 15)) {
+      if (offer.enchantment.id !== excludedId && enchantmentAppliesTo(offer.enchantment.id, item)) {
+        return offer
+      }
+    }
+  }
+  throw new Error(`no compatible offer for ${item} excluding ${excludedId}`)
+}
+
 describe('enchantment registry', () => {
   it('defines caps, targets and vanilla conflicts', () => {
     expect(Object.fromEntries(Object.entries(ENCHANTMENT_REGISTRY).map(([id, entry]) => [id, entry.maxLevel]))).toEqual({
@@ -64,6 +79,8 @@ describe('enchantment registry', () => {
     expect(enchantmentsConflict('sharpness', 'smite')).toBe(true)
     expect(enchantmentsConflict('fortune', 'silk_touch')).toBe(true)
     expect(enchantmentsConflict('efficiency', 'fortune')).toBe(false)
+    expect(enchantmentsConflict('protection', 'protection')).toBe(false)
+    expect(enchantmentsConflict('fire_protection', 'protection')).toBe(true)
   })
 })
 
@@ -101,6 +118,13 @@ describe('enchanted item codec', () => {
     [{ item: 'missing', durability: null, enchantments: [] }, 'item'],
     [{ item: 'bow', durability: null, enchantments: [] }, 'durability'],
     [{ item: 'stick', durability: { current: 1, max: 1 }, enchantments: [] }, 'durability'],
+    [{ item: 'bow', enchantments: [] }, 'durability'],
+    [{ item: 'bow', durability: durabilityForItem('bow'), enchantments: 'nope' }, 'enchantments'],
+    [{ item: 'bow', durability: durabilityForItem('bow'), enchantments: [null] }, 'enchantments.0'],
+    [
+      { item: 'bow', durability: durabilityForItem('bow'), enchantments: [{ id: 'bogus', level: 1 }] },
+      'enchantments.0.id',
+    ],
     [
       { item: 'bow', durability: durabilityForItem('bow'), enchantments: [{ id: 'power', level: 6 }] },
       'enchantments.0.level',
@@ -133,6 +157,35 @@ describe('enchanted item codec', () => {
       issues: [{ path: '$', reason: 'must be valid JSON' }],
     })
   })
+
+  it('rejects a non-record top-level value, and validateEnchantedItem mirrors decode as a type guard', () => {
+    expect(decodeEnchantedItem(null)).toEqual({
+      ok: false,
+      issues: [{ path: '$', reason: 'must be an object' }],
+    })
+    expect(validateEnchantedItem(null)).toBe(false)
+    expect(
+      validateEnchantedItem({
+        item: 'diamond_pickaxe',
+        durability: durabilityForItem('diamond_pickaxe'),
+        enchantments: [],
+      }),
+    ).toBe(true)
+  })
+
+  it('round-trips a non-damageable item with null durability', () => {
+    expect(decodeEnchantedItem({ item: 'stick', durability: null, enchantments: [] })).toEqual({
+      ok: true,
+      value: { item: 'stick', durability: null, enchantments: [] },
+    })
+  })
+
+  it('surfaces snapshot issues through encodeEnchantedItem instead of encoding', () => {
+    const encoded = encodeEnchantedItem({ item: 'diamond_sword', durability: null, enchantments: [] })
+    expect(encoded.ok).toBe(false)
+    if (encoded.ok) throw new Error('expected encode failure')
+    expect(encoded.issues.map((issue) => issue.path)).toContain('durability')
+  })
 })
 
 describe('enchantment table offers and transaction', () => {
@@ -144,6 +197,8 @@ describe('enchantment table offers and transaction', () => {
     expect(enchantmentOffers(1234, 15).map((offer) => offer.slot)).toEqual([0, 1, 2])
     expect(rerollEnchantmentSeed(1234)).toBe(rerollEnchantmentSeed(1234))
     expect(rerollEnchantmentSeed(1234)).not.toBe(1234)
+    expect(enchantmentOffer(Number.NaN, 15, 0).seed).toBe(0)
+    expect(enchantmentOffer(1234, Number.NaN, 0).bookshelfCount).toBe(0)
   })
 
   it('atomically consumes levels and lapis, enchants the item and rerolls the seed', () => {
@@ -215,12 +270,46 @@ describe('enchantment table offers and transaction', () => {
       reason: 'invalid_item',
     })
   })
+
+  it('rejects an offer forged with an out-of-range slot without regenerating the expected offer', () => {
+    const swordOffer = compatibleOffer('diamond_sword')
+    const base = {
+      seed: swordOffer.seed,
+      bookshelfCount: swordOffer.bookshelfCount,
+      playerLevel: 30,
+      lapis: 3,
+      item: enchantedItem('diamond_sword'),
+    }
+    const forgedSlotOffer = { ...swordOffer, slot: 5 } as unknown as EnchantmentOffer
+    expect(applyEnchantmentOffer(base, forgedSlotOffer)).toEqual({
+      ok: false,
+      state: base,
+      reason: 'invalid_offer',
+    })
+  })
+
+  it('adds a second compatible enchantment to an item that already carries one', () => {
+    const offer = compatibleOfferExcluding('diamond_sword', 'unbreaking')
+    const state = {
+      seed: offer.seed,
+      bookshelfCount: offer.bookshelfCount,
+      playerLevel: 30,
+      lapis: 3,
+      item: enchantedItem('diamond_sword', 'unbreaking', 3),
+    }
+    const result = applyEnchantmentOffer(state, offer)
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error('expected successful transaction')
+    expect(result.state.item?.enchantments).toContainEqual({ id: 'unbreaking', level: 3 })
+    expect(result.state.item?.enchantments).toContainEqual(offer.enchantment)
+  })
 })
 
 describe('enchantment derivations', () => {
   it('applies sharpness and power with inert invalid bases', () => {
     expect(meleeDamageWithEnchantments(7, enchantedItem('diamond_sword', 'sharpness', 5))).toBe(10)
     expect(meleeDamageWithEnchantments(Number.NaN, enchantedItem('diamond_sword', 'sharpness', 1))).toBe(1)
+    expect(meleeDamageWithEnchantments(5, enchantedItem('diamond_sword'))).toBe(5)
     expect(bowDamageWithEnchantments(9, enchantedItem('bow', 'power', 5))).toBe(23)
     expect(bowDamageWithEnchantments(-10, enchantedItem('bow', 'power', 5))).toBe(0)
   })
@@ -245,6 +334,7 @@ describe('enchantment derivations', () => {
     const tool = enchantedItem('diamond_pickaxe', 'efficiency', 5)
     expect(miningSpeedWithEnchantments(8, tool)).toBe(34)
     expect(miningSpeedWithEnchantments(Number.NaN, tool)).toBe(27)
+    expect(miningSpeedWithEnchantments(8, enchantedItem('diamond_pickaxe'))).toBe(8)
   })
 
   it('uses one injected roll per durability point and conservatively applies missing or invalid rolls', () => {
@@ -252,6 +342,7 @@ describe('enchantment derivations', () => {
     expect(durabilityWearWithEnchantments(5, tool, [0, 0.74, 0.75, 0.99, Number.NaN])).toBe(3)
     expect(durabilityWearWithEnchantments(-1, tool, [])).toBe(0)
     expect(durabilityWearWithEnchantments(3, enchantedItem('diamond_pickaxe'), [])).toBe(3)
+    expect(durabilityWearWithEnchantments(Number.NaN, tool, [])).toBe(0)
   })
 
   it('uses deterministic Fortune rolls and clamps invalid base counts', () => {

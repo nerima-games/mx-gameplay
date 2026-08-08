@@ -906,6 +906,10 @@ export const shellLabel = (shell: ShulkerShell): string => {
       return `Opening ${String(shell.openedTicks)} / ${String(SHULKER_OPENING_TICKS)}`
     case 'Open':
       return 'Open'
+    default: {
+      const exhaustive: never = shell
+      return exhaustive
+    }
   }
 }
 
@@ -977,6 +981,10 @@ export const fuseLabel = (fuse: CreeperFuse): string => {
       return `Lit ${fuse.burnedSecs.toFixed(2)} / ${String(CREEPER_FUSE_SECS)}s`
     case 'Detonated':
       return 'Detonated'
+    default: {
+      const exhaustive: never = fuse
+      return exhaustive
+    }
   }
 }
 

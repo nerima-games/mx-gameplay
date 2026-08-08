@@ -86,6 +86,28 @@ describe('environmental contact damage', () => {
     })
   })
 
+  it('ignores a contact whose resolved damage is non-finite or non-positive', () => {
+    const zeroed = resolveEnvironmentalContactDamage(
+      INITIAL_ENVIRONMENTAL_CONTACT_DAMAGE_STATE,
+      [
+        { block: 'cactus', contactDamage: 0 },
+        { block: 'lava', contactDamage: Number.NaN },
+      ],
+      0,
+    )
+    expect(zeroed.damages).toStrictEqual([])
+
+    const mixed = resolveEnvironmentalContactDamage(
+      INITIAL_ENVIRONMENTAL_CONTACT_DAMAGE_STATE,
+      [
+        { block: 'cactus', contactDamage: -5 },
+        { block: 'lava', contactDamage: 4 },
+      ],
+      0,
+    )
+    expect(mixed.damages).toStrictEqual([{ amount: 4, cause: 'lava' }])
+  })
+
   it('preserves cactus as the fatal cause through applyDamage', () => {
     const damage = resolveEnvironmentalContactDamage(
       INITIAL_ENVIRONMENTAL_CONTACT_DAMAGE_STATE,

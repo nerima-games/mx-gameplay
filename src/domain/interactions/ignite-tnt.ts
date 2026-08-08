@@ -17,7 +17,14 @@ export const igniteTnt = (
   position: BlockPosition,
 ): Effect.Effect<IgniteTntOutcome> =>
   Effect.gen(function* () {
+    /* v8 ignore start -- UnknownBlock is unreachable in a green tree: `tnt` is
+     * one of the 120 `BlockType`s `test/block-vocabulary-mirror.test.ts` pins
+     * `blockIdOf` total over, so `TNT_BLOCK_ID` — computed once at module load —
+     * is never `undefined`. Kept for the reason `./place-block.ts`'s own
+     * `UnknownBlock` arm is: it fails toward a NAMED refusal rather than TNT
+     * silently never igniting. */
     if (TNT_BLOCK_ID === undefined) return { _tag: 'UnknownBlock' }
+    /* v8 ignore stop */
 
     const target = yield* store.getBlock(position)
     if (target._tag !== 'Block') return target

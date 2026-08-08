@@ -145,7 +145,15 @@ export const pickupDroppedItems = (
         if (leftover === undefined) return { transition: UNCHANGED, emit: undefined }
         if (leftover === null) return { transition: DESPAWNED, emit: undefined }
         const behaviour = entity.behaviour
+        /* v8 ignore start -- unreachable while entity ids are unique for a
+         * roster's lifetime, which `spawn`'s ever-incrementing serial guarantees
+         * (see `test/support/entity-manager-double.ts`'s header) and no caller in
+         * this repository's slice violates: `leftover` is only set, above, for an
+         * id whose entity already passed `isDroppedItemBehaviour`, and the same
+         * id cannot name a second, differently-shaped entity by the time this
+         * sweep runs. */
         if (!isDroppedItemBehaviour(behaviour)) return { transition: UNCHANGED, emit: undefined }
+        /* v8 ignore stop */
         return {
           transition: changed({
             feetPosition: entity.feetPosition,

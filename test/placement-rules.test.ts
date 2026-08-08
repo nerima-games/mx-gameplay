@@ -46,7 +46,7 @@ import {
   isCactusBlock,
   cactusSidesObjection,
 } from '../src/domain/interactions/place-cactus-sides'
-import { doorUpperCell, isDoorBlock } from '../src/domain/interactions/place-door-upper'
+import { doorUpperBreakCell, doorUpperCell, isDoorBlock } from '../src/domain/interactions/place-door-upper'
 import { placeBlock } from '../src/domain/interactions/place-block'
 import { lightWorld, makeChunkStoreDouble, world, STONE, WATER } from './support/chunk-store-double'
 
@@ -65,7 +65,7 @@ const SAND = id('sand')
 
 const target: BlockPosition = { x: 4, y: 64, z: 4 }
 const supportCell: BlockPosition = { x: 4, y: 63, z: 4 }
-const block = (id: BlockId): BlockReading => ({ _tag: 'Block', block: id })
+const block = (blockId: BlockId): BlockReading => ({ _tag: 'Block', block: blockId })
 
 describe('horizontalNeighbours', () => {
   it('returns all four, in a fixed order, and does not clip at a chunk edge', () => {
@@ -353,6 +353,36 @@ describe('a door needs the cell above', () => {
   )
 })
 
+describe('doorUpperBreakCell finds the upper half that must break with the lower', () => {
+  it.effect('is NotADoor for a non-door block, without reading the cell above', () =>
+    Effect.gen(function* () {
+      const store = yield* makeChunkStoreDouble(world([]), ['0,0'])
+
+      expect(yield* doorUpperBreakCell(store.api, STONE, target)).toStrictEqual({ _tag: 'NotADoor' })
+      expect((yield* store.calls).reads).toBe(0)
+    }),
+  )
+
+  it.effect('is NoDoorAbove when the cell above is not a door, so nothing extra is broken', () =>
+    Effect.gen(function* () {
+      const store = yield* makeChunkStoreDouble(world([[{ x: 4, y: 65, z: 4 }, STONE]]), ['0,0'])
+
+      expect(yield* doorUpperBreakCell(store.api, DOOR, target)).toStrictEqual({ _tag: 'NoDoorAbove' })
+    }),
+  )
+
+  it.effect('is DoorAbove when the cell above is the matching upper half', () =>
+    Effect.gen(function* () {
+      const store = yield* makeChunkStoreDouble(world([[{ x: 4, y: 65, z: 4 }, DOOR]]), ['0,0'])
+
+      expect(yield* doorUpperBreakCell(store.api, DOOR, target)).toStrictEqual({
+        _tag: 'DoorAbove',
+        cell: { x: 4, y: 65, z: 4 },
+      })
+    }),
+  )
+})
+
 describe('placeBlock composes the four, and a door fills two cells', () => {
   it.effect('places both halves of a door and reports the second in `alsoPlaced`', () =>
     Effect.gen(function* () {
@@ -468,10 +498,10 @@ describe('placeBlock composes the four, and a door fills two cells', () => {
       let writes = 0
       const dropsTheSecondWrite = {
         ...store.api,
-        setBlock: (position: BlockPosition, id: BlockId) => {
+        setBlock: (position: BlockPosition, blockId: BlockId) => {
           writes += 1
           return writes === 1
-            ? store.api.setBlock(position, id)
+            ? store.api.setBlock(position, blockId)
             : Effect.succeed({ _tag: 'ChunkNotLoaded' } as const)
         },
       }

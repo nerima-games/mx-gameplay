@@ -103,6 +103,17 @@ describe('Ender Dragon encounter stage', () => {
         rewardEmitted: false,
       })).toBe(false)
 
+      // Distinct from the case above: this object never reaches the
+      // consistency check at all — `phase` fails the schema's own decoding,
+      // which is a different failure than a schema-shaped value whose fields
+      // disagree with each other.
+      expect(yield* runtime.restore({
+        phase: 'not-a-real-phase',
+        phaseTimerSecs: 0,
+        health: ENDER_DRAGON_MAX_HEALTH,
+        rewardEmitted: false,
+      })).toBe(false)
+
       yield* runtime.damageByPlayer(ENDER_DRAGON_MAX_HEALTH)
       const firstEvents = yield* runtime.drainEvents
       expect(firstEvents.filter((event) => event._tag === 'ExperienceRewarded')).toHaveLength(1)

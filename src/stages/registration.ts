@@ -569,7 +569,13 @@ class FluidStateRef extends Effectable.Class<ReadonlyArray<FluidWorkItem>>
   implements Ref.Ref<ReadonlyArray<FluidWorkItem>>
 {
   readonly [Ref.RefTypeId] = {
+    /* v8 ignore start -- `_A` is `Ref.RefTypeId`'s phantom variance witness, the
+     * same shape as effect's own internal `effectVariance._A: _ => _` (see
+     * `effect/src/internal/effectable.ts`). It exists so `Ref.Ref<A>`'s type
+     * parameter carries the right variance at compile time; nothing calls it at
+     * runtime, on this class or on effect's own. */
     _A: (value: ReadonlyArray<FluidWorkItem>) => value,
+    /* v8 ignore stop */
   }
   readonly [Readable.TypeId]: Readable.TypeId = Readable.TypeId
   readonly get: Effect.Effect<ReadonlyArray<FluidWorkItem>>
@@ -632,9 +638,20 @@ const fluidRuntimeSemaphoreFor = (
   frontier: Ref.Ref<ReadonlyArray<FluidWorkItem>>,
 ): Effect.Semaphore => {
   const semaphore = fluidRuntimeSemaphores.get(frontier)
+  /* v8 ignore start -- `fluidRuntimeStates` and `fluidRuntimeSemaphores` are
+   * populated together, in the same synchronous step of `makeGameplayFrameState`
+   * (see below), for every `fluidFrontier` ref that exists. The one call site
+   * that reaches this function — the fluids stage's `run` — always calls
+   * `fluidRuntimeStateFor` on the same ref FIRST, and that throws before this
+   * function is ever reached whenever the ref is foreign. Test coverage of the
+   * "foreign ref" case lives on `fluidRuntimeStateFor`, in
+   * `test/stage-registration.test.ts`; there is no path that reaches this guard
+   * with it unregistered while `fluidRuntimeStateFor`'s twin registration is not
+   * also missing. */
   if (semaphore === undefined) {
     throw new Error('fluid frontier is not owned by a gameplay frame state')
   }
+  /* v8 ignore stop */
   return semaphore
 }
 
@@ -752,11 +769,28 @@ const runFluidPropagation = (
         const changePosition = positionOfKey(
           change._tag === 'PlaceFluid' ? change.cell.key : change.key,
         )
+        /* v8 ignore start -- `changePosition` is always `below(position)`,
+         * `horizontalNeighbours(position)[i]` or a probe key already computed
+         * from `position`, and `position` was already proven finite by the
+         * `validFluidPosition(position)` check above (the "opaque diagnostic
+         * keys" guard this comment references). +-1 arithmetic on a finite
+         * number is always finite, so this second check can never see a
+         * non-finite `changePosition`; it is defence-in-depth for a future
+         * caller that derives positions differently, not a reachable path
+         * today. */
         if (!validFluidPosition(changePosition)) continue
+        /* v8 ignore stop */
 
         if (change._tag === 'PlaceFluid') {
           const fluidBlock = blockIdOf(change.cell.kind)
+          // `change.cell.kind` is `FluidCell['kind']`, `'water' | 'lava'`, and
+          // both are registered blocks (block-vocabulary.ts's BLOCK_REGISTRY,
+          // pinned total over BlockType by `test/block-vocabulary-mirror.test.ts`
+          // the same way the five branches vitest.config.ts names are pinned);
+          // `blockIdOf` cannot return `undefined` for either.
+          /* v8 ignore start */
           if (fluidBlock === undefined) continue
+          /* v8 ignore stop */
           const outcome = yield* store.setBlock(changePosition, fluidBlock)
           if (outcome._tag === 'Written' || outcome._tag === 'Unchanged') {
             cells.set(change.cell.key, change.cell)
@@ -779,7 +813,12 @@ const runFluidPropagation = (
         }
 
         const solidBlock = blockIdOf(change.block)
+        // `change.block` is the Solidify member's `'obsidian' | 'cobblestone'`,
+        // both registered blocks; same totality argument as the `fluidBlock`
+        // check above.
+        /* v8 ignore start */
         if (solidBlock === undefined) continue
+        /* v8 ignore stop */
         const outcome = yield* store.setBlock(changePosition, solidBlock)
         if (outcome._tag === 'ChunkNotLoaded') {
           deferCurrent = true
@@ -1935,6 +1974,13 @@ export const requestFoodUse = (
       requestId,
       heldItem,
       vitals,
+      // `?? 1` is a `noUncheckedIndexedAccess` formality: `drawRolls(seed, 1)`
+      // always returns exactly one roll (frame-rolls.ts's `drawRolls` pushes
+      // `Math.floor(count)` times for a finite, positive `count`), so
+      // `batch.rolls[0]` is never `undefined` here — the same shape as
+      // mob-spawn-search.ts's `HOSTILE_KINDS[index]` fallback (vitest.config.ts's
+      // coverage-gap note).
+      /* v8 ignore next */
       effectRoll: batch.rolls[0] ?? 1,
     }
     yield* Ref.update(state.pendingItemUses, (pending) => [...pending, request])
@@ -2139,6 +2185,15 @@ export const requestTargetedPrimaryAttack = (
         return resolution
       case 'None':
         return resolution
+      // exhaustiveness arm over TargetedPrimaryAttackResult's `_tag`, a closed
+      // three-tag union; all three tags are handled above, so no input can
+      // reach this arm.
+      /* v8 ignore start */
+      default: {
+        const exhaustive: never = resolution
+        return exhaustive
+      }
+      /* v8 ignore stop */
     }
   })
 
@@ -2402,7 +2457,11 @@ export const requestFireExtinguish = (
       return false
     }
     const air = blockIdOf('air')
+    // `'air'` is BlockType's own zero-arg member (block-vocabulary-mirror.test.ts
+    // pins `blockIdOf` total over every BlockType, `'air'` included).
+    /* v8 ignore start */
     if (air === undefined) return false
+    /* v8 ignore stop */
     const outcome = yield* store.setBlock(position, air)
     if (outcome._tag !== 'Written' && outcome._tag !== 'Unchanged') return false
     yield* Ref.set(state.fireLifecycle, extinguishFire(current, position))
@@ -2421,7 +2480,14 @@ const stepFireTick = (
 ): Effect.Effect<void> =>
   Effect.gen(function* () {
     const current = yield* Ref.get(state.fireLifecycle)
+    // Redundant with the caller's own gate: `stepFireLifecycle` (below) checks
+    // this identical predicate before ever entering the loop that calls
+    // `stepFireTick`, and again after every call before looping again — so
+    // every call this function receives already has at least one of
+    // `fires`/`burningActors` non-empty. `stepFireTick` has no other caller.
+    /* v8 ignore start */
     if (current.fires.length === 0 && (current.burningActors?.length ?? 0) === 0) return
+    /* v8 ignore stop */
 
     const activeKeys = new Set(current.fires.map((fire) => firePositionKey(fire.position)))
     const burningIds = new Set((current.burningActors ?? []).map((actor) => actor.id))
@@ -2439,11 +2505,21 @@ const stepFireTick = (
       .sort((a, b) => a.localeCompare(b))
       .map((id): FireActorContact => {
         const entity = entityById.get(id)
+        // `id` is drawn from `burningIds`, which is built two lines up from
+        // `(current.burningActors ?? []).map(actor => actor.id)` — so by the
+        // time this callback runs for a given `id`, `current.burningActors`
+        // is proven non-undefined (it produced `id`) and proven to contain an
+        // actor whose `.id === id` (the same map produced `id` from it). Both
+        // fallbacks below are for a caller who could see `id` without that
+        // provenance; none exists.
+        /* v8 ignore start */
         const previous = (current.burningActors ?? []).find((actor) => actor.id === id)
+        /* v8 ignore stop */
         if (entity === undefined) {
           return {
             id,
             kind: 'entity',
+            /* v8 ignore next */
             position: previous?.position ?? { x: 0, y: 0, z: 0 },
             alive: false,
           }
@@ -2525,7 +2601,12 @@ const stepFireTick = (
     const step = advanceFireLifecycle(current, cells, weather, hydratedContacts, survival.difficulty)
     const air = blockIdOf('air')
     const fire = blockIdOf('fire')
+    // Same totality argument as `requestFireExtinguish`'s `air` check above:
+    // `'air'` and `'fire'` are both registered BlockTypes, so `blockIdOf`
+    // cannot return `undefined` for either.
+    /* v8 ignore start */
     if (air === undefined || fire === undefined) return
+    /* v8 ignore stop */
     const nextFires = new Map(step.state.fires.map((active) => [firePositionKey(active.position), active]))
     const previousFires = new Map(current.fires.map((active) => [firePositionKey(active.position), active]))
     const failedIgnitions = new Set<string>()
@@ -2541,7 +2622,15 @@ const stepFireTick = (
         continue
       }
       const previous = previousFires.get(mutationKey)
+      // Every 'air' mutation `advanceFireLifecycle` emits names the position
+      // of a fire it read from `state.fires` (fire-lifecycle.ts's
+      // `advanceBurningActors`-adjacent extinguish arms, both keyed by
+      // `fire.position`) — the exact same `state.fires` this function passed
+      // in as `current`, which `previousFires` is built from with the same
+      // key function. No input reaches this arm with a miss.
+      /* v8 ignore start */
       if (previous === undefined) continue
+      /* v8 ignore stop */
       if (outcome._tag !== 'ChunkNotLoaded') {
         nextFires.set(mutationKey, previous)
         continue
@@ -2635,6 +2724,13 @@ const stepFireLifecycle = (
     for (let index = 0; index < ticks; index += 1) {
       yield* stepFireTick(state, store, roster, inventory, player)
       const next = yield* Ref.get(state.fireLifecycle)
+      // `stepFireTick`'s only early returns are the two proven-dead guards
+      // above (both pragma'd), so any call that reaches back here ran all the
+      // way to `stepFireTick`'s own `Ref.set`, which always writes a defined
+      // `burningActors` array (possibly empty, never omitted). `next.burningActors`
+      // is therefore never `undefined` at this point, and neither is `?.`'s or
+      // `?? 0`'s fallback ever consulted.
+      /* v8 ignore next */
       if (next.fires.length === 0 && (next.burningActors?.length ?? 0) === 0) {
         yield* Ref.set(accumulator, 0)
         return
@@ -2708,6 +2804,16 @@ export const requestTargetedBlockUse = (
       case 'ChunkNotLoaded':
       case 'OutOfWorld':
         break
+      // exhaustiveness arm over BlockUseOutcome, a closed four-tag union
+      // (use-block.ts's own exhaustiveness arm pins the same fact); all four
+      // tags are handled above, so no input can reach this arm.
+      /* v8 ignore start */
+      default: {
+        const exhaustive: never = outcome
+        void exhaustive
+        break
+      }
+      /* v8 ignore stop */
     }
     return target
   })
@@ -3015,7 +3121,7 @@ export const gameplayStages = (
         const { breaks, snapshots } = yield* breakRequestQueue.mutex.withPermits(1)(
           Effect.uninterruptible(
             Effect.gen(function* () {
-              const breaks = yield* Ref.getAndSet<ReadonlyArray<PositionKey>>(
+              const drainedBreaks = yield* Ref.getAndSet<ReadonlyArray<PositionKey>>(
                 state.pendingBreaks,
                 [],
               )
@@ -3023,13 +3129,13 @@ export const gameplayStages = (
                 pending.requests,
                 { ...pending, requests: [] },
               ])
-              const snapshots = new Map<number, PendingBlockBreakRequest>()
+              const requestSnapshots = new Map<number, PendingBlockBreakRequest>()
               for (const request of requests) {
-                if (breaks[request.publicQueueIndex] === request.positionKey) {
-                  snapshots.set(request.publicQueueIndex, request)
+                if (drainedBreaks[request.publicQueueIndex] === request.positionKey) {
+                  requestSnapshots.set(request.publicQueueIndex, request)
                 }
               }
-              return { breaks, snapshots }
+              return { breaks: drainedBreaks, snapshots: requestSnapshots }
             }),
           ),
         )
@@ -3211,10 +3317,21 @@ export const gameplayStages = (
             // player aimed at the edge of the world, or at a chunk that has
             // not finished loading — and `run` has no error channel to put one
             // in anyway.
+            // falls through
             case 'ChunkNotLoaded':
             case 'OutOfWorld': {
               break
             }
+            // exhaustiveness arm over BreakOutcome, a closed four-tag union
+            // (break-block.ts's own `BreakOutcome` definition); all four tags
+            // are handled above, so no input can reach this arm.
+            /* v8 ignore start */
+            default: {
+              const exhaustive: never = outcome
+              void exhaustive
+              break
+            }
+            /* v8 ignore stop */
           }
         }
 
@@ -3557,6 +3674,19 @@ export const gameplayStages = (
                 })
                 break
               }
+              // exhaustiveness arm over ItemUseRequest's `action`, a closed
+              // twelve-case union across IgnitionItemUseRequest (tagless, routed
+              // above the `if ('action' in request)` guard), FarmingItemUseRequest
+              // (6), FurnaceItemUseRequest (1), BucketItemUseRequest (1) and
+              // FishingItemUseRequest (4); every `action` is handled above, so no
+              // input can reach this arm.
+              /* v8 ignore start */
+              default: {
+                const exhaustive: never = request
+                void exhaustive
+                break
+              }
+              /* v8 ignore stop */
             }
             continue
           }
@@ -3669,7 +3799,7 @@ export const gameplayStages = (
             }
 
             if (shot.inventory.mode === 'survival') {
-              const settled = yield* inventory.consumeAndDamageAt({
+              const consumeOutcome = yield* inventory.consumeAndDamageAt({
                 consume: { item: 'arrow', count: 1 },
                 damage: {
                   location: { _tag: 'Inventory', slotIndex: shot.inventory.slotIndex },
@@ -3677,7 +3807,7 @@ export const gameplayStages = (
                   amount: 1,
                 },
               })
-              if (settled._tag !== 'Applied') {
+              if (consumeOutcome._tag !== 'Applied') {
                 if (shot.requestId !== undefined) {
                   bowShotResults.push({
                     requestId: shot.requestId,
