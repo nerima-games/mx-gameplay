@@ -129,12 +129,14 @@ export const unequipTopmost = (
     }
 
     const item = equipment[slot]
+    /* v8 ignore start -- unreachable while `firstWornSlot` is the only way in: it
+     * finds `slot` by testing `equipment[slot] !== undefined`, so `item` here is
+     * always defined. Narrowed rather than asserted: a non-null assertion here
+     * would be the one place in this file a future change could make lie. */
     if (item === undefined) {
-      // Unreachable while `firstWornSlot` is the only way in, and narrowed
-      // rather than asserted: a non-null assertion here would be the one place
-      // in this file a future change could make lie.
       return { _tag: 'nothingWorn' as const }
     }
+    /* v8 ignore stop */
 
     yield* port.unequip(slot)
     const leftover = yield* port.add(item, 1)

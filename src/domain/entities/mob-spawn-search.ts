@@ -334,5 +334,10 @@ const at = (x: number, y: number, z: number): BlockPosition => ({ x, y, z })
  */
 const kindForRoll = (roll: number, kinds: readonly [EntityKind, ...ReadonlyArray<EntityKind>]): EntityKind => {
   const index = Math.min(kinds.length - 1, Math.floor(roll * kinds.length))
+  /* v8 ignore start -- see the header immediately above: `?? kinds[0]` is the
+   * ONE FALLBACK left, documented as unreachable rather than covered.
+   * `docs/testing.md` §7 and `vitest.config.ts`'s coverage-threshold comment
+   * both name it. */
   return kinds[index] ?? kinds[0]
+  /* v8 ignore stop */
 }

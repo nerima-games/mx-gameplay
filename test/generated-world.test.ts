@@ -105,6 +105,42 @@ describe('generated world composition', () => {
     }),
   )
 
+  it.effect('adapts peek, snapshot, isLoaded, neighbours, unload and getLight, coordinate-branded', () =>
+    Effect.gen(function* () {
+      // The other tests in this file only exercise `load`, `getBlock` and
+      // `setBlock` on the adapted store — this is the one that reaches every
+      // remaining member `adaptGeneratedChunkStore` wraps.
+      const world = yield* makeGeneratedWorld<MobBehaviour>({ seed: SEED })
+      const coord = { cx: 0, cz: 0 }
+      const eastCoord = { cx: 1, cz: 0 }
+
+      expect(yield* world.chunkStore.isLoaded(coord)).toBe(false)
+      expect(yield* world.chunkStore.peek(coord)).toBeUndefined()
+      expect(yield* world.chunkStore.snapshot(coord)).toBeUndefined()
+
+      yield* world.chunkStore.load(coord)
+      yield* world.chunkStore.load(eastCoord)
+
+      expect(yield* world.chunkStore.isLoaded(coord)).toBe(true)
+      const peeked = yield* world.chunkStore.peek(coord)
+      expect(peeked?.coord).toStrictEqual(coord)
+      const snapshotted = yield* world.chunkStore.snapshot(coord)
+      expect(snapshotted?.coord).toStrictEqual(coord)
+
+      const neighbours = yield* world.chunkStore.neighbours(coord)
+      expect(neighbours.xPos?.coord).toStrictEqual(eastCoord)
+      expect(neighbours.xNeg).toBeUndefined()
+
+      const light = yield* world.chunkStore.getLight({ x: 0, y: 100, z: 0 })
+      expect(light._tag).toBe('Light')
+      const unloadedLight = yield* world.chunkStore.getLight({ x: 500, y: 100, z: 500 })
+      expect(unloadedLight).toStrictEqual({ _tag: 'ChunkNotLoaded' })
+
+      expect(yield* world.chunkStore.unload(coord)).toBe(true)
+      expect(yield* world.chunkStore.isLoaded(coord)).toBe(false)
+    }),
+  )
+
   it.effect('shares recipe-enabled inventory between the world handle and layer', () =>
     Effect.gen(function* () {
       const world = yield* makeGeneratedWorld<MobBehaviour>({ seed: SEED })

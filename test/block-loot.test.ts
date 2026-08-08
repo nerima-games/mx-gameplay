@@ -499,6 +499,21 @@ describe('blockLoot — fortune', () => {
     }),
   )
 
+  it.effect('a non-finite fortuneLevel is treated as 0 rather than propagating NaN', () =>
+    Effect.sync(() => {
+      // Gravel is the vocabulary's only fortune-sensitive drop whose chance
+      // depends on this exact clamp, so it is the case that shows a NaN
+      // fortuneLevel resolving to the unenchanted 0.1 chance rather than NaN
+      // poisoning the comparison and never dropping flint.
+      expect(blockLoot(GRAVEL, { fortuneLevel: Number.NaN }, [0.099999])).toStrictEqual([
+        { item: 'flint', count: 1 },
+      ])
+      expect(blockLoot(GRAVEL, { fortuneLevel: Number.NaN }, [0.1])).toStrictEqual([
+        { item: 'gravel', count: 1 },
+      ])
+    }),
+  )
+
   // Vanilla makes the two enchantments mutually exclusive and the reference
   // enforces it at the BREAK site rather than at the enchanting table
   // (`interaction-break-handler.execute.ts:131-134`: `!hasSilkTouch && fortune`).

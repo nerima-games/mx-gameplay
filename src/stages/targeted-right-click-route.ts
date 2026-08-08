@@ -61,7 +61,16 @@ export const targetedRightClickRoute = (
         target.value.position.z,
       ),
     )
+    /* v8 ignore start -- unreachable while `targetBlockFromPlayerPose` is
+     * deterministic in (pose, maxDistance): the second call above stops
+     * exactly at the first position whose callback test — `readings.get(key)
+     * ?._tag === 'Block' && block !== 0` — returns true, so `target.value
+     * .position`'s key is, by construction, a `readings` entry that already
+     * satisfies this same test. Narrowed rather than asserted, for
+     * `./unequip-armor.ts`'s reason: a non-null assertion here would be the one
+     * place a future change to either walk could make lie. */
     if (reading?._tag !== 'Block') return undefined
+    /* v8 ignore stop */
 
     return rightClickRoute(
       target.value.position,

@@ -382,6 +382,14 @@ describe('arrowHitProjection', () => {
     expect(arrowHitProjection({ x: 0, y: 64, z: 0 }, { x: 0, y: 64, z: 10 }, { x: BOW_TARGET_RADIUS + 0.01, y: 64, z: 4 })).toBeUndefined()
     expect(arrowHitProjection({ x: 0, y: 64, z: 0 }, { x: Number.NaN, y: 64, z: 10 }, { x: 0, y: 64, z: 4 })).toBeUndefined()
   })
+
+  it('a zero-length segment projects to its own single point rather than dividing by zero', () => {
+    // `from` and `to` coincide, so `lengthSquared` is 0 and the projection
+    // formula's division is skipped rather than producing NaN.
+    const point = { x: 3, y: 64, z: 3 }
+    expect(arrowHitProjection(point, point, { x: 3, y: 64, z: 3.5 })).toBe(0)
+    expect(arrowHitProjection(point, point, { x: 3, y: 64, z: 3 + BOW_TARGET_RADIUS + 0.01 })).toBeUndefined()
+  })
 })
 
 // ---------------------------------------------------------------------------

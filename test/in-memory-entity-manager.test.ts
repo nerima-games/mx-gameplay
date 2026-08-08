@@ -360,6 +360,24 @@ describe('InMemoryEntityManagerLayer, for a host that composes gameplayModule', 
     }),
   )
 
+  it.effect('defaults the repair hook to the identity, leaving behaviour untouched on restore', () =>
+    Effect.gen(function* () {
+      // The two tests above never call `restore`, so the identity default this
+      // Layer falls back to when no hook is given — distinct from
+      // `makeInMemoryEntityManager`'s own identity default, which the
+      // "restore repairs rather than validates" suite already exercises — was
+      // never itself invoked.
+      const manager = yield* entityManagerTag<Behaviour>().pipe(
+        Effect.provide(InMemoryEntityManagerLayer<Behaviour>()),
+      )
+      const seeded = saved({ id: EntityId('zombie-9') })
+
+      yield* manager.restore({ entities: [seeded], nextSerial: 10 })
+
+      expect((yield* manager.find(EntityId('zombie-9')))?.behaviour).toStrictEqual(seeded.behaviour)
+    }),
+  )
+
   it.effect('threads the repair hook it is given through to restore', () =>
     Effect.gen(function* () {
       const manager = yield* entityManagerTag<Behaviour>().pipe(

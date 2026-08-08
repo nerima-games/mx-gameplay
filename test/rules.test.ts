@@ -135,6 +135,41 @@ describe('falling blocks: the O(chunks × blocks) full scan must not come back',
       expect(planFallingBlockMoves([{ x: 0, y: 63, z: 0 }], () => undefined)).toStrictEqual([])
     }),
   )
+
+  it.effect('does not move a block that lacks fallsWhenUnsupported', () =>
+    Effect.sync(() => {
+      // Stone above a clear target: a real material, but not a falling one.
+      const stone = blockIdOf('stone')
+      const air = blockIdOf('air')
+      const blocks = new Map<string, number>([
+        ['0,64,0', stone],
+        ['0,63,0', air],
+      ])
+      const moves = planFallingBlockMoves(
+        [{ x: 0, y: 63, z: 0 }],
+        (at) => blocks.get(`${String(at.x)},${String(at.y)},${String(at.z)}`),
+      )
+
+      expect(moves).toStrictEqual([])
+    }),
+  )
+
+  it.effect('does not move sand onto a destination that is not replaceable', () =>
+    Effect.sync(() => {
+      const sand = blockIdOf('sand')
+      const stone = blockIdOf('stone')
+      const blocks = new Map<string, number>([
+        ['0,64,0', sand],
+        ['0,63,0', stone],
+      ])
+      const moves = planFallingBlockMoves(
+        [{ x: 0, y: 63, z: 0 }],
+        (at) => blocks.get(`${String(at.x)},${String(at.y)},${String(at.z)}`),
+      )
+
+      expect(moves).toStrictEqual([])
+    }),
+  )
 })
 
 describe('fluids: the frontier budget that bought 37–55×', () => {
@@ -245,6 +280,15 @@ describe('fluids: the frontier budget that bought 37–55×', () => {
       expect(flowingLava.changes).toStrictEqual([
         { _tag: 'Solidify', key: cell.key, block: 'cobblestone' },
       ])
+    }),
+  )
+
+  it.effect('defers when the cell itself is unloaded, before even checking `below`', () =>
+    Effect.sync(() => {
+      // Distinct from the "unloaded downward decision" case below, which
+      // leaves `current` at its default 'same-fluid' and only unloads `below`.
+      const result = transition({ current: probe(cell.key, 'unloaded') })
+      expect(result).toStrictEqual({ changes: [], defer: true })
     }),
   )
 

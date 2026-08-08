@@ -104,6 +104,46 @@ describe('dropped item entities', () => {
     }),
   )
 
+  it.effect('does nothing without a player position, and rejects an invalid radius', () =>
+    Effect.gen(function* () {
+      const roster = yield* makeEntityManagerDouble<MobBehaviour>()
+      const inventory = yield* makeInventoryDouble()
+      yield* spawnDroppedItem(roster.api, { item: 'gunpowder', count: 1, at: origin })
+
+      yield* pickupDroppedItems(roster.api, inventory.api, undefined)
+      yield* pickupDroppedItems(roster.api, inventory.api, origin, Number.NaN)
+      yield* pickupDroppedItems(roster.api, inventory.api, origin, -1)
+
+      expect(yield* roster.api.count).toBe(1)
+      expect(yield* inventory.deposits).toStrictEqual([])
+    }),
+  )
+
+  it.effect('leaves an out-of-radius dropped item untouched while a nearer one is picked up', () =>
+    Effect.gen(function* () {
+      // The near item is the only one with a `leftovers` entry; the far one is
+      // swept over anyway (`sweep` visits every entity) and must be reported
+      // as UNCHANGED rather than mistaken for one of the processed drops.
+      const roster = yield* makeEntityManagerDouble<MobBehaviour>()
+      const inventory = yield* makeInventoryDouble()
+      yield* spawnDroppedItem(roster.api, { item: 'gunpowder', count: 1, at: origin })
+      const far = yield* spawnDroppedItem(roster.api, {
+        item: 'stick',
+        count: 1,
+        at: { x: 100, y: 0, z: 100 },
+      })
+
+      yield* pickupDroppedItems(roster.api, inventory.api, origin)
+
+      expect(yield* roster.api.count).toBe(1)
+      const [remaining] = yield* roster.api.entities
+      expect(remaining).toStrictEqual(far)
+      expect(yield* inventory.deposits).toStrictEqual([
+        { item: 'gunpowder', count: 1, leftover: 0 },
+      ])
+    }),
+  )
+
   it.effect('defaults durable drops to maximum durability and copies explicit input', () =>
     Effect.gen(function* () {
       const roster = yield* makeEntityManagerDouble<MobBehaviour>()
@@ -306,6 +346,28 @@ describe('melee targeting', () => {
       expect(meleeTarget(candidates, request)?.id).toBe(near.id)
       expect(meleeTargetBeforeBlock(candidates, request, 1.5)).toBeUndefined()
       expect(meleeTargetBeforeBlock(candidates, request, 2.5)?.id).toBe(near.id)
+    }),
+  )
+
+  it.effect('rejects a non-finite or negative hitDistance rather than treating it as unblocked', () =>
+    Effect.gen(function* () {
+      const roster = yield* makeEntityManagerDouble<MobBehaviour>()
+      yield* roster.api.spawn({
+        kind: CREEPER_KIND,
+        feetPosition: { x: 2, y: 0, z: 0 },
+        healthPoints: 10,
+        behaviour: undefined,
+      })
+      const candidates = yield* roster.api.entities
+      const request = {
+        origin: { x: 0, y: 0.9, z: 0 },
+        direction: { x: 1, y: 0, z: 0 },
+        reach: 4,
+        damage: 4,
+      }
+
+      expect(meleeTarget(candidates, { ...request, hitDistance: Number.NaN })).toBeUndefined()
+      expect(meleeTarget(candidates, { ...request, hitDistance: -1 })).toBeUndefined()
     }),
   )
 })

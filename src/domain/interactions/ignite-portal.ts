@@ -187,9 +187,17 @@ export const ignitePortal = (
 ): Effect.Effect<IgnitePortalOutcome> =>
   Effect.gen(function* () {
     const portalBlock: BlockId | undefined = blockIdOf('nether_portal')
+    /* v8 ignore start -- UnknownBlock is unreachable in a green tree: `nether_portal`
+     * is one of the 120 `BlockType`s `test/block-vocabulary-mirror.test.ts` pins
+     * `blockIdOf` total over, so `blockIdOf('nether_portal')` never returns
+     * `undefined`. Kept for the reason `./place-block.ts`'s own `UnknownBlock` arm
+     * is: it fails toward a NAMED refusal rather than a portal silently vanishing.
+     * Named in `vitest.config.ts`'s coverage-threshold comment as one of the five
+     * documented-unreachable branches the 99% gate accounts for. */
     if (portalBlock === undefined) {
       return { _tag: 'UnknownBlock' }
     }
+    /* v8 ignore stop */
 
     const window = yield* openChunkWindow(store, chunkCoordsAround(ignition, PORTAL_WINDOW_RADIUS))
     const detected = detectNetherPortal(window.blockAt, ignition)
@@ -222,11 +230,13 @@ export const ignitePortal = (
         // rather than asserted away, for `./place-block`'s reason: the window
         // between a read and a write is real, and the answer that invents
         // nothing is to leave the cell out of the report.
+        /* v8 ignore start */
         case 'Unchanged':
         case 'ChunkNotLoaded':
         case 'OutOfWorld': {
           break
         }
+        /* v8 ignore stop */
         // exhaustiveness arm over BlockWriteOutcome, a closed four-tag union
         // (chunk-store-port.ts's BlockWriteOutcome); 'Written', 'Unchanged',
         // 'ChunkNotLoaded' and 'OutOfWorld' are the only reachable tags and

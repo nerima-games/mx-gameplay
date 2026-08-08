@@ -249,10 +249,14 @@ export const stepShulkerShell = (shell: ShulkerShell, senses: ShulkerSenses): Sh
         : { shell: CLOSED_SHELL, canFire: false }
     }
 
+    /* v8 ignore start -- exhaustiveness safety net over ShulkerShell's `_tag` union
+     * ('Closed' | 'Opening' | 'Open'), a closed union every case above already
+     * covers; no input can reach this arm. */
     default: {
       const exhaustive: never = shell
       return exhaustive
     }
+    /* v8 ignore stop */
   }
 }
 

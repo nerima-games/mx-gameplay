@@ -182,6 +182,29 @@ describe('fire lifecycle', () => {
     expect(step.state.burningActors?.[0]?.remainingTicks).toBe(FIRE_BURN_DURATION_TICKS - 1)
   })
 
+  it('an actor whose burn duration lapses stops burning without dying or being doused', () => {
+    // Distinct from the water/rain/death paths below: here the actor is
+    // present in `contacts` (so its remaining ticks are decremented, unlike
+    // the "deferred" case) and is not standing in a fire cell (so it is not
+    // re-ignited to full duration first). One tick of decrement exhausts it.
+    const burning: FireLifecycleState = {
+      fires: [],
+      seed: 1,
+      burningActors: [{
+        id: 'mob:1',
+        kind: 'entity',
+        position: fire.position,
+        remainingTicks: 1,
+        damageCooldownTicks: 0,
+      }],
+    }
+    const contact = { id: 'mob:1', kind: 'entity' as const, position: fire.position, alive: true }
+
+    const step = advanceFireLifecycle(burning, [], 'clear', [contact])
+
+    expect(step.state.burningActors).toStrictEqual([])
+  })
+
   it('water, rain exposure and death clear burning state while deferred actors remain stable', () => {
     const burning: FireLifecycleState = {
       fires: [],
@@ -256,6 +279,29 @@ describe('fire lifecycle', () => {
     })
     expect(restored.state.fires[0]?.position).not.toBe(snapshot.fires[0]?.position)
     expect(makeFireLifecycleSnapshot(state, Number.NaN).tickAccumulatorSecs).toBe(0)
+  })
+
+  it('rejects a bare null snapshot without touching its shape', () => {
+    expect(isFireLifecycleSnapshot(null)).toBe(false)
+  })
+
+  it('validates unloadedRetries when present, and both burning-actor kinds', () => {
+    const base = makeFireLifecycleSnapshot(makeFireLifecycleState([fire.position], 1), 0)
+    const validFire = { ...base.fires[0]!, unloadedRetries: 2 }
+    const invalidFire = { ...base.fires[0]!, unloadedRetries: -1 }
+    const entityActor = {
+      id: 'mob:1',
+      kind: 'entity' as const,
+      position: fire.position,
+      remainingTicks: 5,
+      damageCooldownTicks: 0,
+    }
+    const invalidKindActor = { ...entityActor, kind: 'zombie' }
+
+    expect(isFireLifecycleSnapshot({ ...base, fires: [validFire] })).toBe(true)
+    expect(isFireLifecycleSnapshot({ ...base, fires: [invalidFire] })).toBe(false)
+    expect(isFireLifecycleSnapshot({ ...base, burningActors: [entityActor] })).toBe(true)
+    expect(isFireLifecycleSnapshot({ ...base, burningActors: [invalidKindActor] })).toBe(false)
   })
 
   it('bounds per-tick fire work and preserves deferred fires', () => {

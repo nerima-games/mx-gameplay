@@ -353,7 +353,13 @@ export const blockLoot = (
     const fortuneLevel = Number.isFinite(context.fortuneLevel ?? 0)
       ? Math.max(0, Math.floor(context.fortuneLevel ?? 0))
       : 0
+    /* v8 ignore start -- `?? 0` guards Math.min's indexed read against
+     * `noUncheckedIndexedAccess`'s type only: `fortuneLevel` is always a
+     * non-negative integer (the ternary above forces 0 for a non-finite input),
+     * so `Math.min(fortuneLevel, 3)` is always one of 0, 1, 2 or 3 — exactly the
+     * four indices `GRAVEL_FLINT_CHANCES` has. No input reaches the fallback. */
     const gravelFlintChance = GRAVEL_FLINT_CHANCES[Math.min(fortuneLevel, 3)] ?? 0
+    /* v8 ignore stop */
     const mined =
       type === 'gravel' &&
       context.silkTouch !== true &&

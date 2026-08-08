@@ -130,10 +130,16 @@ export const cropDrops = (block: BlockType, ripe: boolean, roll: number): CropDr
   }
 
   const yieldRule = RIPE_CROP_YIELD[block]
+  /* v8 ignore start -- `unavailable` is the defensive fallback for a crop present in
+   * `UNRIPE_CROP_DROP` but missing from `RIPE_CROP_YIELD`. The two tables currently
+   * name the exact same three crops, so no `BlockType` a real caller can pass reaches
+   * this arm; it exists so a future crop added to one table without the other fails
+   * toward a named `unavailable` outcome instead of an under-drop. */
   if (yieldRule === undefined) {
     const missingItem = MISSING_RIPE_PRODUCE[block]
     return { _tag: 'unavailable', block, missingItem: missingItem ?? 'unknown' }
   }
+  /* v8 ignore stop */
 
   const safeRoll = Number.isFinite(roll) ? Math.min(0.999_999, Math.max(0, roll)) : 0
   const rolledDrop = {

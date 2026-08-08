@@ -117,7 +117,13 @@ export const plantingVerdict = (
     // `test/plant-crop.test.ts` asserts that they do rather than leaving this
     // branch to be argued about. Reported as `wrongSoil` because that is what a
     // caller can act on; there is no outcome for "the table is inconsistent".
+    /* v8 ignore start -- the `?? 'air'` fallback only fires when `needs` is
+     * undefined, which the table-agreement invariant above makes unreachable on
+     * every path that reaches this line: `needs === undefined` is itself the
+     * documented-unreachable disjunct, and the other disjunct (`soilBlock !==
+     * needs`) requires `needs` to already be defined. */
     return { _tag: 'wrongSoil', crop, needs: needs ?? 'air', found: soilBlock }
+    /* v8 ignore stop */
   }
 
   if (blockAbove !== 'air') {
@@ -166,7 +172,12 @@ export const plantCrop = (
       const crop = CROP_OF_SEED[request.held]
       return crop === undefined
         ? { _tag: 'notASeed' as const, held: request.held }
-        : { _tag: 'wrongSoil' as const, crop, needs: SOIL_OF_CROP[crop] ?? 'air', found: 'air' as BlockType }
+        : /* v8 ignore start -- the `?? 'air'` fallback only fires when `crop` is
+           * defined but `SOIL_OF_CROP[crop]` is not, which the table-agreement
+           * invariant `test/plant-crop.test.ts` asserts (`CROP_OF_SEED` and
+           * `SOIL_OF_CROP` name the same crops) makes unreachable. */
+          { _tag: 'wrongSoil' as const, crop, needs: SOIL_OF_CROP[crop] ?? 'air', found: 'air' as BlockType }
+      /* v8 ignore stop */
     }
 
     const verdict = plantingVerdict(request, soilBlock, aboveBlock)
