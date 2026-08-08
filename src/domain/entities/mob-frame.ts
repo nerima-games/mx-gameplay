@@ -206,7 +206,13 @@
  * that the sequence must depend on what happened rather than on how many mobs
  * existed.
  */
-import { isItemType, type ItemType } from '@nerima-games/mc-kernel'
+import {
+  blockTypeOfId,
+  capabilityOfBlockId,
+  isItemType,
+  type ItemType,
+  type Position,
+} from '@nerima-games/mc-kernel'
 import {
   durabilityForItem,
   isDamageableItemType,
@@ -214,8 +220,6 @@ import {
   type Durability,
 } from '@nerima-games/mc-sim'
 import { Effect } from 'effect'
-import type { Position } from '@nerima-games/mc-kernel'
-import { blockTypeOfId, validSpawnSurface } from '../block-vocabulary'
 import { applyDamage, isDead, type Vitals } from '../death-cause'
 import {
   changed,
@@ -1445,7 +1449,11 @@ export const resolveEndermanTeleportProbes = (
             if (reading._tag !== 'Block') return undefined
             const block = blockTypeOfId(reading.block)
             if (block === undefined) return undefined
-            return { position, block, solid: validSpawnSurface(reading.block) }
+            return {
+              position,
+              block,
+              solid: capabilityOfBlockId(reading.block, 'validSpawnSurface'),
+            }
           }),
       )
       const destination = resolveSafeEndermanTeleport(

@@ -69,8 +69,8 @@
  * roster. They arrive with mc-sim, and until then a rule that pretended to make
  * them would be a second owner of the mob population.
  */
+import { capabilityOfBlockId } from '@nerima-games/mc-kernel'
 import { AIR_BLOCK_ID, type BlockId } from '../chunk-store-port'
-import { validSpawnSurface } from '../block-vocabulary'
 import { hostileSpawnsAllowed } from '../day-night'
 import type { EntityKind } from '@nerima-games/mc-sim'
 import type { Dimension } from '@nerima-games/mc-worldgen'
@@ -195,7 +195,7 @@ export const canHostileSpawnAt = (candidate: SpawnCandidate): SpawnVerdict => {
     return REFUSED('too-far')
   }
 
-  if (!validSpawnSurface(candidate.groundBlock)) {
+  if (!capabilityOfBlockId(candidate.groundBlock, 'validSpawnSurface')) {
     return REFUSED('not-a-surface')
   }
 
@@ -234,7 +234,7 @@ export const canMobSpawnAt = (kind: EntityKind, candidate: SpawnCandidate): Spaw
   if (!Number.isFinite(candidate.distanceToPlayerBlocksXZ) || !Number.isFinite(candidate.blockLight)) return REFUSED('unmeasurable')
   if (candidate.distanceToPlayerBlocksXZ < MIN_SPAWN_DISTANCE_BLOCKS) return REFUSED('too-close')
   if (candidate.distanceToPlayerBlocksXZ > MAX_SPAWN_DISTANCE_BLOCKS) return REFUSED('too-far')
-  if (!validSpawnSurface(candidate.groundBlock)) return REFUSED('not-a-surface')
+  if (!capabilityOfBlockId(candidate.groundBlock, 'validSpawnSurface')) return REFUSED('not-a-surface')
   if (candidate.footBlock !== AIR_BLOCK_ID || candidate.headBlock !== AIR_BLOCK_ID) return REFUSED('obstructed')
   if (nether && candidate.blockLight > HOSTILE_SPAWN_MAX_BLOCK_LIGHT) return REFUSED('too-bright')
   return { _tag: 'Spawn' }
