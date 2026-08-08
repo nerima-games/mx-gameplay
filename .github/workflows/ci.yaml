@@ -21,7 +21,7 @@ jobs:
       - name: Checkout
         # Pinned to a commit, not the mutable v6 tag: a tag can be repointed at
         # new code without any change here (SUPPLY_CHAIN.md「アクションの固定」).
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Fork PR jobs need no push access, so nothing here should keep
           # GITHUB_TOKEN readable by later steps (SUPPLY_CHAIN.md).
