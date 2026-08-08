@@ -59,8 +59,13 @@ const applyCollision = (vehicle: Vehicle, collision: VehicleCollision): VehicleT
   }
   if (!collision.collided) return { vehicle }
 
+  // The non-null assertion, not `?? 0`, is deliberate: `impactSpeed?: number`
+  // is not narrowed to `number` by `Number.isFinite`, but the guard above still
+  // forbids `undefined` here (`Number.isFinite(undefined)` is `false`), so a
+  // runtime fallback can never fire and would be dead code purely to satisfy
+  // the type checker.
   const impactSpeed = Number.isFinite(collision.impactSpeed)
-    ? Math.max(0, collision.impactSpeed ?? 0)
+    ? Math.max(0, collision.impactSpeed!)
     : speed(vehicle)
   const collided: Vehicle = {
     ...vehicle,

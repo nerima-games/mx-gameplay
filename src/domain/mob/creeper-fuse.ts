@@ -283,5 +283,10 @@ export const stepCreeperFuse = (
     case 'Detonated': {
       return { fuse, explosion: undefined }
     }
+
+    default: {
+      const exhaustive: never = fuse
+      return exhaustive
+    }
   }
 }

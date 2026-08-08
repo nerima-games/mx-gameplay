@@ -199,9 +199,7 @@ const cascadeShape = Effect.gen(function* () {
     const reads = site.trace.reduce((sum, row) => sum + row.reads, 0)
     const writes = site.trace.reduce((sum, row) => sum + row.writes, 0)
     lines.push(
-      `  ${pad(String(height), 8)}${pad(String(report.frames), 8)}${pad(String(moves), 7)}` +
-        `${pad(String(reads), 7)}${pad(String(writes), 8)}` +
-        (moves === 0 ? '-' : (reads / moves).toFixed(2)),
+      `  ${pad(String(height), 8)}${pad(String(report.frames), 8)}${pad(String(moves), 7)}${pad(String(reads), 7)}${pad(String(writes), 8)}${moves === 0 ? '-' : (reads / moves).toFixed(2)}`,
     )
     if (report.frames !== height + 1) {
       linear = false
@@ -387,8 +385,7 @@ const supportInvariant = Effect.gen(function* () {
       broken = true
     }
     lines.push(
-      `  ${pad(scenario.name, 14)}${pad(String(peak), 14)}${String(left)}` +
-        (initiallyHanging === 0 ? '' : ` (already hanging in the fixture: ${String(initiallyHanging)})`),
+      `  ${pad(scenario.name, 14)}${pad(String(peak), 14)}${String(left)}${initiallyHanging === 0 ? '' : ` (already hanging in the fixture: ${String(initiallyHanging)})`}`,
     )
   }
 
@@ -957,7 +954,8 @@ const spawnGate = Effect.sync((): Check => {
   let canopyAccepted = 0
 
   for (const [block, name] of grounds) {
-    const cells = lights.map((light) => {
+    const cells: Array<string> = []
+    for (const light of lights) {
       const verdict = canHostileSpawnAt({
         groundBlock: block,
         footBlock: 0,
@@ -969,8 +967,8 @@ const spawnGate = Effect.sync((): Check => {
       if (verdict._tag === 'Spawn' && (block === 10 || block === 13)) {
         canopyAccepted += 1
       }
-      return pad(verdict._tag === 'Spawn' ? 'yes' : verdict.reason.slice(0, 5), 6)
-    })
+      cells.push(pad(verdict._tag === 'Spawn' ? 'yes' : verdict.reason.slice(0, 5), 6))
+    }
     lines.push(`  ${pad(name, 18)}${cells.join('')}`)
   }
 
@@ -1031,7 +1029,8 @@ const lootTable = Effect.sync(() => {
   let selfDrops = 0
 
   for (const [id, name] of probed) {
-    const cells = tiers.map((heldTier) => {
+    const cells: Array<string> = []
+    for (const heldTier of tiers) {
       // NO_LUCK so the bonus lines and the fortune remainder stay out of the
       // deterministic half; both get their own rows below.
       const loot = blockLoot(id, { heldTier }, [0.999, 0.999, 0.999, 0.999])
@@ -1041,8 +1040,8 @@ const lootTable = Effect.sync(() => {
       if ((name === 'stone' || name === 'grass_block') && loot.some((drop) => drop.item === name)) {
         selfDrops += 1
       }
-      return pad(loot.length === 0 ? '-' : loot.map((drop) => `${drop.item} x${String(drop.count)}`).join(' '), 19)
-    })
+      cells.push(pad(loot.length === 0 ? '-' : loot.map((drop) => `${drop.item} x${String(drop.count)}`).join(' '), 19))
+    }
     lines.push(`  ${pad(name, 14)}${cells.join('')}`)
   }
 

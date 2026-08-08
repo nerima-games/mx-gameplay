@@ -347,9 +347,15 @@ export const placementVerdict = (
   }
 
   const block = blockIdOf(blockOfPlaceableItem(request.heldItem))
+  /* v8 ignore start -- UnknownBlock is unreachable in a green tree: PlaceableItemType
+   * is exactly the roster `blockIdOf` is pinned total over
+   * (test/block-vocabulary-mirror.test.ts), so `blockIdOf(blockOfPlaceableItem(x))`
+   * never returns `undefined` for a request this type permits. Kept for the reason
+   * the `UnknownBlock` tag's own comment states, on `PlaceOutcome` above. */
   if (block === undefined) {
     return { _tag: 'UnknownBlock' }
   }
+  /* v8 ignore stop */
 
   if (request.playerFeet !== undefined && blockOverlapsPlayer(request.position, request.playerFeet)) {
     return { _tag: 'InsidePlayer' }
@@ -494,5 +500,14 @@ export const placeBlock = (
 
       case 'OutOfWorld':
         return { _tag: 'OutOfWorld' }
+      // exhaustiveness arm over `BlockWriteOutcome`, a closed four-tag union
+      // (chunk-store-port.ts): `Written`, `Unchanged`, `ChunkNotLoaded` and
+      // `OutOfWorld` are all handled above, so no input can reach this arm.
+      /* v8 ignore start */
+      default: {
+        const exhaustive: never = outcome
+        return exhaustive
+      }
+      /* v8 ignore stop */
     }
   })

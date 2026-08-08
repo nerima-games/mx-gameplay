@@ -1037,6 +1037,16 @@ export const satisfiesSupportRule = (
 
     case 'oneOf':
       return blockBelow !== undefined && rule.blocks.includes(blockBelow)
+    /* v8 ignore start -- SupportRule's `kind` union is exhaustively handled
+     * above (`none` | `anySupporting` | `oneOf`); this arm only exists so a
+     * fourth variant added later fails typecheck (`never`) instead of
+     * silently falling through. It cannot be reached by any value the union
+     * currently admits. */
+    default: {
+      const exhaustive: never = rule
+      return exhaustive
+    }
+    /* v8 ignore stop */
   }
 }
 

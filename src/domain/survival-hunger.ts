@@ -83,6 +83,12 @@ export const exhaustionForSurvivalActivity = (input: SurvivalActivityInput): num
       return finiteNonNegative(input.blocks) * SURVIVAL_EXHAUSTION.minePerBlock
     case 'attack':
       return finiteNonNegative(input.count) * SURVIVAL_EXHAUSTION.attack
+    /* v8 ignore start -- exhaustiveness safety net over SurvivalActivityInput, a closed union every case above already covers; no input can reach this arm. */
+    default: {
+      const exhaustive: never = input
+      return exhaustive
+    }
+    /* v8 ignore stop */
   }
 }
 
@@ -96,6 +102,12 @@ export const starvationHealthFloor = (difficulty: SurvivalDifficulty): number =>
       return 1
     case 'hard':
       return 0
+    /* v8 ignore start -- exhaustiveness safety net over SurvivalDifficulty, a closed union every case above already covers; no input can reach this arm. */
+    default: {
+      const exhaustive: never = difficulty
+      return exhaustive
+    }
+    /* v8 ignore stop */
   }
 }
 

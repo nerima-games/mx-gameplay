@@ -2139,6 +2139,10 @@ export const requestTargetedPrimaryAttack = (
         return resolution
       case 'None':
         return resolution
+      default: {
+        const exhaustive: never = resolution
+        return exhaustive
+      }
     }
   })
 
@@ -2708,6 +2712,11 @@ export const requestTargetedBlockUse = (
       case 'ChunkNotLoaded':
       case 'OutOfWorld':
         break
+      default: {
+        const exhaustive: never = outcome
+        void exhaustive
+        break
+      }
     }
     return target
   })
@@ -3015,7 +3024,7 @@ export const gameplayStages = (
         const { breaks, snapshots } = yield* breakRequestQueue.mutex.withPermits(1)(
           Effect.uninterruptible(
             Effect.gen(function* () {
-              const breaks = yield* Ref.getAndSet<ReadonlyArray<PositionKey>>(
+              const drainedBreaks = yield* Ref.getAndSet<ReadonlyArray<PositionKey>>(
                 state.pendingBreaks,
                 [],
               )
@@ -3023,13 +3032,13 @@ export const gameplayStages = (
                 pending.requests,
                 { ...pending, requests: [] },
               ])
-              const snapshots = new Map<number, PendingBlockBreakRequest>()
+              const requestSnapshots = new Map<number, PendingBlockBreakRequest>()
               for (const request of requests) {
-                if (breaks[request.publicQueueIndex] === request.positionKey) {
-                  snapshots.set(request.publicQueueIndex, request)
+                if (drainedBreaks[request.publicQueueIndex] === request.positionKey) {
+                  requestSnapshots.set(request.publicQueueIndex, request)
                 }
               }
-              return { breaks, snapshots }
+              return { breaks: drainedBreaks, snapshots: requestSnapshots }
             }),
           ),
         )
@@ -3211,8 +3220,14 @@ export const gameplayStages = (
             // player aimed at the edge of the world, or at a chunk that has
             // not finished loading — and `run` has no error channel to put one
             // in anyway.
+            // falls through
             case 'ChunkNotLoaded':
             case 'OutOfWorld': {
+              break
+            }
+            default: {
+              const exhaustive: never = outcome
+              void exhaustive
               break
             }
           }
@@ -3557,6 +3572,11 @@ export const gameplayStages = (
                 })
                 break
               }
+              default: {
+                const exhaustive: never = request
+                void exhaustive
+                break
+              }
             }
             continue
           }
@@ -3669,7 +3689,7 @@ export const gameplayStages = (
             }
 
             if (shot.inventory.mode === 'survival') {
-              const settled = yield* inventory.consumeAndDamageAt({
+              const consumeOutcome = yield* inventory.consumeAndDamageAt({
                 consume: { item: 'arrow', count: 1 },
                 damage: {
                   location: { _tag: 'Inventory', slotIndex: shot.inventory.slotIndex },
@@ -3677,7 +3697,7 @@ export const gameplayStages = (
                   amount: 1,
                 },
               })
-              if (settled._tag !== 'Applied') {
+              if (consumeOutcome._tag !== 'Applied') {
                 if (shot.requestId !== undefined) {
                   bowShotResults.push({
                     requestId: shot.requestId,

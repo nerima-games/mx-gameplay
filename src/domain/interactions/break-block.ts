@@ -74,5 +74,9 @@ export const breakBlock = (
 
       case 'OutOfWorld':
         return { _tag: 'OutOfWorld' }
+      default: {
+        const exhaustive: never = outcome
+        return exhaustive
+      }
     }
   })

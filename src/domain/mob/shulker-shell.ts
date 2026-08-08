@@ -248,6 +248,11 @@ export const stepShulkerShell = (shell: ShulkerShell, senses: ShulkerSenses): Sh
         ? { shell, canFire: true }
         : { shell: CLOSED_SHELL, canFire: false }
     }
+
+    default: {
+      const exhaustive: never = shell
+      return exhaustive
+    }
   }
 }
 

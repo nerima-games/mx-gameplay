@@ -30,6 +30,15 @@ export const resolveBlockUse = (
       return reading.block === LEVER_BLOCK_ID
         ? { _tag: 'ToggleLever', position }
         : { _tag: 'NotLever', position, existing: reading.block }
+    // exhaustiveness arm over BlockReading, a closed three-tag union
+    // (chunk-store-port.ts's BlockReading); all three tags are handled
+    // above, so no input can reach this arm.
+    /* v8 ignore start */
+    default: {
+      const exhaustive: never = reading
+      return exhaustive
+    }
+    /* v8 ignore stop */
   }
 }
 

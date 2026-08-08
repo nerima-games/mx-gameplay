@@ -234,6 +234,16 @@ export const solidityFromStore =
         // Below bedrock or above the build limit. Solid at the bottom stops a
         // fall; solid at the top is harmless because nothing reaches it.
         return true
+      // exhaustiveness arm over BlockReading, a closed three-tag union
+      // (chunk-store-port.ts's BlockReading); 'Block', 'ChunkNotLoaded' and
+      // 'OutOfWorld' are the only reachable tags and all three are covered
+      // above, so no input can reach this arm.
+      /* v8 ignore start */
+      default: {
+        const exhaustive: never = reading
+        return exhaustive
+      }
+      /* v8 ignore stop */
     }
   }
 

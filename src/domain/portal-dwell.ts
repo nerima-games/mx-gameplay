@@ -259,5 +259,10 @@ export const stepPortalDwell = (
     case 'Standing': {
       return inPortal ? dwell(current.dwelledSecs + dt) : { dwell: OUTSIDE_PORTAL, travels: false }
     }
+
+    default: {
+      const exhaustive: never = current
+      return exhaustive
+    }
   }
 }

@@ -99,6 +99,11 @@ const itemMatchesTarget = (item: ItemType, target: EnchantmentTarget): boolean =
       return item === 'bow'
     case 'damageable':
       return isDamageableItemType(item)
+    /* v8 ignore next 4 -- EnchantmentTarget is a closed union; the five cases above are exhaustive, so this arm can never execute. */
+    default: {
+      const exhaustive: never = target
+      return exhaustive
+    }
   }
 }
 
@@ -212,6 +217,7 @@ export const decodeEnchantedItem = (value: unknown): EnchantedItemResult => {
         issues.push({ path: `enchantments.${index}.id`, reason: 'does not apply to this item' })
         continue
       }
+      /* v8 ignore next 4 -- unreachable: no two of the six EnchantmentIds are ever mutually incompatible in ENCHANTMENT_REGISTRY (incompatibleWith only names the six non-EnchantmentId conflict ids), so enchantmentsConflict can never return true for two ids that both passed isEnchantmentId. */
       if (enchantments.some((existing) => enchantmentsConflict(existing.id, idValue))) {
         issues.push({ path: `enchantments.${index}.id`, reason: 'conflicts with another enchantment' })
         continue
@@ -296,6 +302,7 @@ export const enchantmentOffer = (
       : slot === 1
         ? Math.max(1, Math.floor((base * 2) / 3) + 1)
         : Math.max(1, Math.min(30, Math.max(shelves * 2, base)))
+  /* v8 ignore next -- `?? 'protection'` is a noUncheckedIndexedAccess formality: mixSeed's uint32 result mod ENCHANTMENT_IDS.length (6) is always 0..5, so the lookup is never undefined; same shape as mob-spawn-search.ts's HOSTILE_KINDS[index] fallback (see vitest.config.ts's coverage-gap note). */
   const id = ENCHANTMENT_IDS[mixSeed(slotSeed + 1) % ENCHANTMENT_IDS.length] ?? 'protection'
   const maxLevel = ENCHANTMENT_REGISTRY[id].maxLevel
   const level = Math.min(maxLevel, Math.max(1, 1 + Math.floor(requiredPlayerLevel / 6)))
@@ -378,11 +385,8 @@ export const applyEnchantmentOffer = (
   if (!enchantmentAppliesTo(offer.enchantment.id, itemSnapshot.value.item)) {
     return rejectTransaction(state, 'incompatible_item')
   }
-  if (
-    itemSnapshot.value.enchantments.some((existing) =>
-      enchantmentsConflict(existing.id, offer.enchantment.id),
-    )
-  ) {
+  /* v8 ignore next 3 -- unreachable for the same reason as decodeEnchantedItem's identical check: no two EnchantmentIds are ever mutually incompatible in ENCHANTMENT_REGISTRY. */
+  if (itemSnapshot.value.enchantments.some((existing) => enchantmentsConflict(existing.id, offer.enchantment.id))) {
     return rejectTransaction(state, 'conflicting_enchantment')
   }
   if (state.playerLevel < offer.requiredPlayerLevel) {
@@ -395,7 +399,10 @@ export const applyEnchantmentOffer = (
   )
   nextEnchantments.push(offer.enchantment)
   const nextItem = decodeEnchantedItem({ ...itemSnapshot.value, enchantments: nextEnchantments })
-  if (!nextItem.ok) return rejectTransaction(state, 'invalid_item')
+  /* v8 ignore next 3 -- unreachable: item/durability are copied unchanged from the already-ok itemSnapshot; the retained enchantments were already valid on that snapshot; the added enchantment's id and level are guaranteed equal to the already-checked offer (offersMatch passed); the filter above removes any existing entry with the same id before pushing (no duplicate); and no pairing can conflict, per the proof at the enchantmentsConflict check above. */
+  if (!nextItem.ok) {
+    return rejectTransaction(state, 'invalid_item')
+  }
 
   return {
     ok: true,

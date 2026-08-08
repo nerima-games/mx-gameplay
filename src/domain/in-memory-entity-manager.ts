@@ -190,6 +190,16 @@ export const makeInMemoryEntityManager = <S>(
             case 'Despawned':
               mutated = true
               break
+            // exhaustiveness arm over EntityStep['transition'], a closed
+            // three-tag union ('Unchanged' | 'Changed' | 'Despawned'); all
+            // three are handled above, so no input can reach this arm.
+            /* v8 ignore start */
+            default: {
+              const exhaustive: never = outcome.transition
+              void exhaustive
+              break
+            }
+            /* v8 ignore stop */
           }
         }
 

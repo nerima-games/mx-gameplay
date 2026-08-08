@@ -99,7 +99,7 @@ export const renderWorld = (
   const lines: Array<string> = []
 
   for (let y = height - 1; y >= 0; y -= 1) {
-    let line = style.dim(padStart(String(y), GUTTER - 1) + ' ')
+    let line = style.dim(`${padStart(String(y), GUTTER - 1)} `)
     for (let x = 0; x < width; x += 1) {
       const position = positionAt(site, x, y)
       const resident = site.world.isResident(position)
@@ -236,14 +236,15 @@ const timelineRow = (row: FrameRow): string =>
     // deliberately: a full inventory shows `cobblestone !cobblestone`, so the
     // deposit and the spawned entity are read together rather than needing a
     // column of their own that is blank in every ordinary frame.
-    '  ' +
+    `  ${
       [
         ...row.mined.map((item) => (item.count === 1 ? item.item : `${item.item}x${String(item.count)}`)),
         ...row.dropped.map((item) =>
           item.count === 1 ? `!${item.item}` : `!${item.item}x${String(item.count)}`,
         ),
         ...row.spent.map((item) => `-${item}`),
-      ].join(' '),
+      ].join(' ')
+    }`,
   ].join('')
 
 /**
@@ -363,9 +364,9 @@ export const renderTimeScreen = (
     style.dim('the way the mining site’s host does — see domain/weather.ts. Both rules are total'),
     style.dim('functions; the seed below is threaded by hand, never Math.random().'),
     '',
-    '    ' + bar,
-    '    ' + style.dim(ruler),
-    '    ' + style.dim(captions),
+    `    ${bar}`,
+    `    ${style.dim(ruler)}`,
+    `    ${style.dim(captions)}`,
     '',
     `  timeOfDay            ${style.bold(reading.timeOfDay.toFixed(4))}`,
     `  dayPhase()           ${style.paint(reading.phase, PHASE_COLOR[reading.phase])}`,
@@ -452,13 +453,10 @@ const renderCreeper = (state: ArenaState, style: Style): ReadonlyArray<string> =
   return [
     approachLane(creeper.distanceBlocks, style),
     '',
-    `    distance   ${style.bold(creeper.distanceBlocks.toFixed(2))} blocks` +
-      style.dim(`   (ignition <= ${String(IGNITION_RANGE)}, blast < ${String(blastRadius(CREEPER_EXPLOSION_POWER))})`),
+    `    distance   ${style.bold(creeper.distanceBlocks.toFixed(2))} blocks${style.dim(`   (ignition <= ${String(IGNITION_RANGE)}, blast < ${String(blastRadius(CREEPER_EXPLOSION_POWER))})`)}`,
     `    fuse       ${creeper.fuse._tag === 'Lit' ? style.paint(bar, [235, 160, 90]) : style.dim(bar)}  ${fuseLabel(creeper.fuse)}`,
-    `    steps      ${String(creeper.steps)} × ${String(ARENA_STEP_SECS)}s` +
-      style.dim(`   alive=${String(creeper.alive)}`),
-    `    if it went off now: ${style.bold(String(damageNow))} damage` +
-      style.dim('  (explosionDamageAmount, measured at this distance)'),
+    `    steps      ${String(creeper.steps)} × ${String(ARENA_STEP_SECS)}s${style.dim(`   alive=${String(creeper.alive)}`)}`,
+    `    if it went off now: ${style.bold(String(damageNow))} damage${style.dim('  (explosionDamageAmount, measured at this distance)')}`,
   ]
 }
 
@@ -545,8 +543,7 @@ const renderSweep = (state: ArenaState, style: Style): ReadonlyArray<string> => 
     const label = Number.isNaN(distance) ? 'NaN' : `${String(distance)}b`
     return `${label}:${verdict._tag === 'Keep' ? 'keep' : verdict.reason}`
   }).join('  ')}`,
-  `    at the spawn site (${String(state.site.distanceBlocks)} blocks): ${style.bold(sweepLabel(sweepAt(state.site.distanceBlocks, false)))}` +
-    style.dim(`   persistent: ${sweepLabel(sweepAt(state.site.distanceBlocks, true))}`),
+  `    at the spawn site (${String(state.site.distanceBlocks)} blocks): ${style.bold(sweepLabel(sweepAt(state.site.distanceBlocks, false)))}${style.dim(`   persistent: ${sweepLabel(sweepAt(state.site.distanceBlocks, true))}`)}`,
   style.dim(
     `    ${String(DESPAWN_RADIUS)} blocks, measured in 3D, and 128 itself is kept. A persistent mob is exempt from the`,
   ),
@@ -665,8 +662,7 @@ export const renderArenaScreen = (
   lines.push(`    deathMessage()   ${arenaVerdict(state.vitals)}`)
   lines.push('')
   lines.push(
-    `    cause  ${style.bold(arenaCause(state))}   amount  ${style.bold(label)}` +
-      style.dim('   (c cycles cause, a cycles amount, space strikes, r respawns)'),
+    `    cause  ${style.bold(arenaCause(state))}   amount  ${style.bold(label)}${style.dim('   (c cycles cause, a cycles amount, space strikes, r respawns)')}`,
   )
   lines.push(
     style.dim(

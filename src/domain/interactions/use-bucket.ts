@@ -112,15 +112,23 @@ const planBucketUse = (heldItem: BucketItemType, block: BlockId): BucketPlan | u
 
   const fluid: FluidKind = heldItem === 'water_bucket' ? 'water' : 'lava'
   const nextBlock = fluidBlockId(fluid)
-  return nextBlock === undefined
-    ? undefined
-    : {
-        action: 'place',
-        fluid,
-        expectedBlock: AIR_BLOCK_ID,
-        nextBlock,
-        nextItem: 'bucket',
-      }
+  // UNREACHABLE TODAY, same shape as `./ignite-fire`'s `UnknownBlock`:
+  // `FluidKind` is closed to 'water' | 'lava' (fluid-frontier.ts), and
+  // `test/block-vocabulary-mirror.test.ts` proves `blockIdOf` total over
+  // every `BlockType`, water and lava included, so no legal `fluid` value
+  // can reach this branch.
+  /* v8 ignore start */
+  if (nextBlock === undefined) {
+    return undefined
+  }
+  /* v8 ignore stop */
+  return {
+    action: 'place',
+    fluid,
+    expectedBlock: AIR_BLOCK_ID,
+    nextBlock,
+    nextItem: 'bucket',
+  }
 }
 
 type WorldRollback = 'Restored' | 'ChunkNotLoaded' | 'OutOfWorld'

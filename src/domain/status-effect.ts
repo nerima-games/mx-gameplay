@@ -57,7 +57,9 @@ const finiteDuration = (durationSecs: number): number =>
   Number.isFinite(durationSecs) ? Math.max(0, durationSecs) : 0
 
 const finiteAmplifier = (amplifier: number | undefined): number =>
+  /* v8 ignore start -- `?? 0` guards Math.floor's parameter type only; Number.isFinite(amplifier) being true already proves amplifier is a finite number, never nullish, so this fallback cannot execute. */
   Number.isFinite(amplifier) ? Math.max(0, Math.floor(amplifier ?? 0)) : 0
+  /* v8 ignore stop */
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -196,10 +198,12 @@ export const tickStatusEffects = (
           effects.push({ ...effect, remainingSecs: effect.remainingSecs - elapsedSecs })
         }
         break
+      /* v8 ignore start -- exhaustiveness safety net over StatusEffectType, a closed union every case above already covers; no input can reach this arm. */
       default: {
         const exhaustiveEffect: never = effect.type
         return exhaustiveEffect
       }
+      /* v8 ignore stop */
     }
   }
 

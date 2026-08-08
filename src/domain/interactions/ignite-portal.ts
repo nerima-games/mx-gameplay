@@ -227,6 +227,17 @@ export const ignitePortal = (
         case 'OutOfWorld': {
           break
         }
+        // exhaustiveness arm over BlockWriteOutcome, a closed four-tag union
+        // (chunk-store-port.ts's BlockWriteOutcome); 'Written', 'Unchanged',
+        // 'ChunkNotLoaded' and 'OutOfWorld' are the only reachable tags and
+        // all four are handled above, so no input can reach this arm.
+        /* v8 ignore start */
+        default: {
+          const exhaustive: never = outcome
+          void exhaustive
+          break
+        }
+        /* v8 ignore stop */
       }
     }
 
