@@ -481,4 +481,29 @@ describe('projectMinecartVelocity', () => {
       })
     }),
   )
+
+  it.effect('a genuinely stationary cart (zero speed) stays at zero, on any shape', () =>
+    Effect.sync(() => {
+      // Distinct from the non-finite guard above: 0 and 0 are both finite, so
+      // this is the OTHER way `Math.hypot` can hand back a speed the rule
+      // must not divide direction out of.
+      expect(projectMinecartVelocity('ns', 0, 0)).toStrictEqual({ vx: 0, vz: 0 })
+      expect(projectMinecartVelocity('isolated', 0, 0)).toStrictEqual({ vx: 0, vz: 0 })
+    }),
+  )
+
+  it.effect('a straight rail perpendicular to the velocity still gets a sign, from the axis that has one', () =>
+    Effect.sync(() => {
+      // `vx` is exactly 0 on an east-west rail: `Math.sign(vx)` alone would
+      // collapse the result to zero even though the cart is moving (along z),
+      // so the rule falls back to `Math.sign(vz)` to pick a direction along x.
+      expect(projectMinecartVelocity('ew', 0, 5)).toStrictEqual({ vx: 5, vz: 0 })
+      expect(projectMinecartVelocity('ew', 0, -5)).toStrictEqual({ vx: -5, vz: 0 })
+
+      // The mirrored case on a north-south rail: `vz` is 0, so `Math.sign(vz)`
+      // falls back to `Math.sign(vx)`.
+      expect(projectMinecartVelocity('ns', 5, 0)).toStrictEqual({ vx: 0, vz: 5 })
+      expect(projectMinecartVelocity('ns', -5, 0)).toStrictEqual({ vx: 0, vz: -5 })
+    }),
+  )
 })

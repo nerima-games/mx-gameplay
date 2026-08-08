@@ -3,6 +3,10 @@ import { END_PORTAL_BLOCK, type Dimension } from '@nerima-games/mc-worldgen'
 import { makeTimeService } from '@nerima-games/mc-sim'
 import { Effect, Option, Ref } from 'effect'
 import { type BlockPosition } from '../src/domain/chunk-store-port'
+import {
+  OVERWORLD_RETURN_POSITION,
+  applyEndPortalTravel,
+} from '../src/domain/end-portal-travel'
 import { applyPortalTravel, NO_KNOWN_PORTALS } from '../src/domain/portal-travel'
 import { type PlayerPose, type PlayerServiceApi } from '@nerima-games/mc-sim'
 import { blockIdOf } from '../src/domain/block-vocabulary'
@@ -156,6 +160,30 @@ describe('a portal crossing actually completes', () => {
       yield* applyPortalTravel(api, { x: 16, y: 64, z: -32 })
 
       expect(yield* Ref.get(switches)).toStrictEqual(['nether', 'overworld'])
+      expect(yield* api.dimension).toBe('overworld')
+    }),
+  )
+})
+
+describe('applyEndPortalTravel, called directly', () => {
+  /**
+   * The REACHABILITY suite below drives the overworld-to-end leg through the
+   * real stage. It never drives a player standing IN the End back out, so
+   * that branch of `applyEndPortalTravel` — the `else` of its one `if` — has
+   * never run. This calls the APPLY step directly, the same way
+   * `applyPortalTravel` is unit-tested above it, to reach it.
+   */
+  it.effect('the end returns a player to the deterministic overworld position', () =>
+    Effect.gen(function* () {
+      const { api, moves, switches } = yield* makeRecordingPlayer('end')
+
+      const event = yield* applyEndPortalTravel(api, { x: 8, y: 64, z: 8 })
+
+      expect(event.toDimension).toBe('overworld')
+      expect(event.destination).toStrictEqual(OVERWORLD_RETURN_POSITION)
+      expect(event.arrival).toBeUndefined()
+      expect(yield* Ref.get(moves)).toStrictEqual([OVERWORLD_RETURN_POSITION])
+      expect(yield* Ref.get(switches)).toStrictEqual(['overworld'])
       expect(yield* api.dimension).toBe('overworld')
     }),
   )

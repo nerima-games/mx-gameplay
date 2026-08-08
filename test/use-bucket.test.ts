@@ -11,10 +11,12 @@ import {
 } from '../src/domain/fluid-frontier'
 import { StackCount } from '../src/domain/frame-contract'
 import {
+  isBucketItem,
   useBucket,
   type BucketItemType,
   type BucketUseRequest,
 } from '../src/domain/interactions/use-bucket'
+import { AIR_BLOCK_ID } from '../src/domain/chunk-store-port'
 import { makeChunkStoreDouble, STONE, WATER, world } from './support/chunk-store-double'
 import { emptySlots, makeInventoryDouble } from './support/inventory-service-double'
 
@@ -300,6 +302,93 @@ describe('bucket interaction', () => {
       expect(restores).toBe(2)
     }),
   )
+
+  it.effect('passes through a non-Block world reading without touching inventory or scheduling work', () =>
+    Effect.gen(function* () {
+      const initialInventory = inventoryWith([0, stack('bucket', 1)])
+      const store = yield* makeChunkStoreDouble(world([[POSITION, WATER]]), LOADED_CHUNKS)
+      const unreadableStore: ChunkStoreApi = {
+        ...store.api,
+        getBlock: () => Effect.succeed({ _tag: 'ChunkNotLoaded' } as const),
+      }
+      const inventory = yield* makeInventoryDouble(initialInventory)
+      const frontier = yield* Ref.make<ReadonlyArray<FluidWorkItem>>([])
+
+      const outcome = yield* useBucket(unreadableStore, inventory.api, frontier, request('bucket'))
+
+      expect(outcome).toStrictEqual({ _tag: 'ChunkNotLoaded' })
+      expect((yield* inventory.api.snapshot).slots).toStrictEqual(initialInventory)
+      expect(yield* Ref.get(frontier)).toStrictEqual([])
+    }),
+  )
+
+  it.effect('reports WorldChanged when its own write finds the target already at the intended block', () =>
+    Effect.gen(function* () {
+      // A concurrent actor already left the exact block this collection was
+      // about to write (collecting water leaves air behind), so the real
+      // write is a no-op (`Unchanged`) rather than `Written` — and that must
+      // still be reported as a changed world, not silently treated as success.
+      const initialInventory = inventoryWith([0, stack('bucket', 1)])
+      const store = yield* makeChunkStoreDouble(world([[POSITION, WATER]]), LOADED_CHUNKS)
+      const racingStore: ChunkStoreApi = {
+        ...store.api,
+        setBlock: (position, block) =>
+          Effect.gen(function* () {
+            yield* store.api.setBlock(position, block)
+            return yield* store.api.setBlock(position, block)
+          }),
+      }
+      const inventory = yield* makeInventoryDouble(initialInventory)
+      const frontier = yield* Ref.make<ReadonlyArray<FluidWorkItem>>([])
+
+      const outcome = yield* useBucket(racingStore, inventory.api, frontier, request('bucket'))
+
+      expect(outcome).toStrictEqual({ _tag: 'WorldChanged' })
+      expect(yield* store.blockAt(POSITION)).toBe(AIR_BLOCK_ID)
+      expect((yield* inventory.api.snapshot).slots).toStrictEqual(initialInventory)
+      expect(yield* Ref.get(frontier)).toStrictEqual([])
+    }),
+  )
+
+  it.effect('reports a rollback failure trigger when the inventory cannot be restored either', () =>
+    Effect.gen(function* () {
+      const initialInventory = inventoryWith([0, stack('bucket', 1)])
+      const store = yield* makeChunkStoreDouble(world([[POSITION, WATER]]), LOADED_CHUNKS)
+      const inventory = yield* makeInventoryDouble(initialInventory)
+      const refusingInventory: InventoryServiceApi = {
+        ...inventory.api,
+        // Both the initial install AND the compensating rollback die, so
+        // neither half of the recovery succeeds.
+        restoreStorage: () => Effect.dieMessage('injected inventory update failure'),
+      }
+      const frontier = yield* Ref.make<ReadonlyArray<FluidWorkItem>>([])
+
+      const outcome = yield* useBucket(store.api, refusingInventory, frontier, request('bucket'))
+
+      expect(outcome).toStrictEqual({
+        _tag: 'RollbackFailed',
+        trigger: 'InventoryUpdateFailed',
+        world: 'Restored',
+        inventory: 'RestoreFailed',
+      })
+      // The world half of the rollback used the real store and did succeed.
+      expect(yield* store.blockAt(POSITION)).toBe(WATER)
+      expect((yield* inventory.api.snapshot).slots).toStrictEqual(initialInventory)
+      expect(yield* Ref.get(frontier)).toStrictEqual([])
+    }),
+  )
+})
+
+describe('isBucketItem', () => {
+  it('accepts exactly the three bucket item names', () => {
+    expect(isBucketItem('bucket')).toBe(true)
+    expect(isBucketItem('water_bucket')).toBe(true)
+    expect(isBucketItem('lava_bucket')).toBe(true)
+  })
+
+  it('rejects an item that is not a bucket', () => {
+    expect(isBucketItem('stone')).toBe(false)
+  })
 })
 
 describe('fluid disturbance enqueue', () => {

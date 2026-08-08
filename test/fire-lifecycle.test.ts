@@ -86,6 +86,28 @@ describe('fire lifecycle', () => {
     })
   })
 
+  it('breaks position ties on y and then on z, not only on x', () => {
+    // `compare`'s three-term `||` chain: two fires that share x need the y
+    // term to order them, and two that share x AND y need the z term.
+    const sameX = makeFireLifecycleState([
+      { x: 0, y: 2, z: 0 },
+      { x: 0, y: 1, z: 0 },
+    ], 1)
+    expect(sameX.fires.map((active) => active.position)).toStrictEqual([
+      { x: 0, y: 1, z: 0 },
+      { x: 0, y: 2, z: 0 },
+    ])
+
+    const sameXY = makeFireLifecycleState([
+      { x: 0, y: 1, z: 2 },
+      { x: 0, y: 1, z: 1 },
+    ], 1)
+    expect(sameXY.fires.map((active) => active.position)).toStrictEqual([
+      { x: 0, y: 1, z: 1 },
+      { x: 0, y: 1, z: 2 },
+    ])
+  })
+
   it('manual extinguish removes only the selected fire', () => {
     const other = { x: 4, y: 1, z: 0 }
     const state = makeFireLifecycleState([fire.position, other], 1)

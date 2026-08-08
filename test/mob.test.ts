@@ -59,11 +59,19 @@ import {
 } from '../src/domain/mob/explosion'
 import {
   canHostileSpawnAt,
+  canMobSpawnAt,
   HOSTILE_SPAWN_MAX_BLOCK_LIGHT,
   MAX_SPAWN_DISTANCE_BLOCKS,
   MIN_SPAWN_DISTANCE_BLOCKS,
   type SpawnCandidate,
 } from '../src/domain/mob/hostile-spawn'
+import {
+  BLAZE_KIND,
+  COW_KIND,
+  SKELETON_KIND,
+  ZOMBIFIED_PIGLIN_KIND,
+} from '../src/domain/mob/mob-ecosystem'
+import { ZOMBIE_KIND } from '../src/domain/mob/hostile-combat'
 import {
   BLAZE_DROPS,
   BLAZE_XP_REWARD,
@@ -548,6 +556,105 @@ describe('creeper: spawning is a rule about light and surface, never a block lis
           }),
         ),
       ).toStrictEqual({ _tag: 'Refused', reason: 'daylight' })
+    }),
+  )
+})
+
+describe('canMobSpawnAt: the ecosystem roster on top of the hostile rule', () => {
+  const NIGHT = 0.9
+
+  const candidate = (overrides: Partial<SpawnCandidate> = {}): SpawnCandidate => ({
+    groundBlock: STONE,
+    footBlock: AIR_BLOCK_ID,
+    headBlock: AIR_BLOCK_ID,
+    blockLight: 0,
+    timeOfDay: NIGHT,
+    distanceToPlayerBlocksXZ: 20,
+    ...overrides,
+  })
+
+  it.effect('an ecosystem hostile in the wrong dimension is refused before any cell fact is read', () =>
+    Effect.sync(() => {
+      // SKELETON_KIND is an OVERWORLD ecosystem hostile — `ecosystemDimensionAllows`
+      // requires 'overworld' for it, so asking about it in the nether refuses on
+      // the dimension alone, even though every other fact on the candidate would
+      // otherwise say `Spawn`.
+      expect(
+        canMobSpawnAt(SKELETON_KIND, candidate({ dimension: 'nether' })),
+      ).toStrictEqual({ _tag: 'Refused', reason: 'wrong-dimension' })
+    }),
+  )
+
+  it.effect('a non-ecosystem hostile is confined to the overworld too, via the plain dimension check', () =>
+    Effect.sync(() => {
+      // ZOMBIE_KIND is not in ECOSYSTEM_MOB_KINDS at all, so it skips the
+      // ecosystem-dimension branch entirely and is caught by the second,
+      // unconditional overworld check instead — a different line reaching the
+      // same refusal.
+      expect(
+        canMobSpawnAt(ZOMBIE_KIND, candidate({ dimension: 'nether' })),
+      ).toStrictEqual({ _tag: 'Refused', reason: 'wrong-dimension' })
+    }),
+  )
+
+  it.effect('a non-ecosystem, non-passive, non-nether hostile in the overworld defers to canHostileSpawnAt', () =>
+    Effect.sync(() => {
+      expect(canMobSpawnAt(ZOMBIE_KIND, candidate())).toStrictEqual(
+        canHostileSpawnAt(candidate()),
+      )
+      expect(canMobSpawnAt(ZOMBIE_KIND, candidate())).toStrictEqual({ _tag: 'Spawn' })
+    }),
+  )
+
+  it.effect('a passive mob spawns by the same distance and surface facts, but is never light-gated', () =>
+    Effect.sync(() => {
+      // COW_KIND is in PASSIVE_MOB_KINDS, so `nether` is false for it and the
+      // final `nether && blockLight > 7` guard can never refuse it — a cow
+      // spawns at noon in a lit field, unlike a creeper.
+      expect(canMobSpawnAt(COW_KIND, candidate({ timeOfDay: 0.5, blockLight: 15 }))).toStrictEqual({
+        _tag: 'Spawn',
+      })
+    }),
+  )
+
+  it.effect('a passive mob is still refused for an unmeasurable, too-close, too-far, or bad surface', () =>
+    Effect.sync(() => {
+      expect(
+        canMobSpawnAt(COW_KIND, candidate({ distanceToPlayerBlocksXZ: Number.NaN })),
+      ).toStrictEqual({ _tag: 'Refused', reason: 'unmeasurable' })
+      expect(
+        canMobSpawnAt(COW_KIND, candidate({ distanceToPlayerBlocksXZ: 15 })),
+      ).toStrictEqual({ _tag: 'Refused', reason: 'too-close' })
+      expect(
+        canMobSpawnAt(COW_KIND, candidate({ distanceToPlayerBlocksXZ: 41 })),
+      ).toStrictEqual({ _tag: 'Refused', reason: 'too-far' })
+      expect(
+        canMobSpawnAt(COW_KIND, candidate({ groundBlock: OAK_LEAVES })),
+      ).toStrictEqual({ _tag: 'Refused', reason: 'not-a-surface' })
+      expect(
+        canMobSpawnAt(COW_KIND, candidate({ footBlock: STONE })),
+      ).toStrictEqual({ _tag: 'Refused', reason: 'obstructed' })
+    }),
+  )
+
+  it.effect('a nether hostile IS light-gated, unlike a passive mob, and needs the nether dimension to reach it', () =>
+    Effect.sync(() => {
+      // ZOMBIFIED_PIGLIN_KIND and BLAZE_KIND are both ecosystem AND nether-hostile
+      // kinds: `ecosystemDimensionAllows` only lets them through in 'nether', and
+      // once through, `nether && blockLight > 7` is the guard a passive mob never
+      // reaches.
+      expect(
+        canMobSpawnAt(
+          BLAZE_KIND,
+          candidate({ dimension: 'nether', blockLight: 15 }),
+        ),
+      ).toStrictEqual({ _tag: 'Refused', reason: 'too-bright' })
+      expect(
+        canMobSpawnAt(
+          ZOMBIFIED_PIGLIN_KIND,
+          candidate({ dimension: 'nether', blockLight: 7 }),
+        ),
+      ).toStrictEqual({ _tag: 'Spawn' })
     }),
   )
 })

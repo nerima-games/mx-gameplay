@@ -355,6 +355,24 @@ describe('the supportRule mirror', () => {
     }),
   )
 
+  it.effect('an `oneOf` rule is actually evaluated against a NAMED block below, not just stated', () =>
+    Effect.sync(() => {
+      // Every `oneOf` assertion above compares the RULE (`supportRuleOfBlockId`)
+      // to `needsOneOf(...)`; none of them has yet asked `canBlockStaySupported`
+      // to walk the list itself. This is that: a crop over its one legal block
+      // stays, and the same crop over a block that is not on the list does not —
+      // both branches of `rule.blocks.includes(blockBelow)`, with `blockBelow`
+      // actually defined (the `200`-below cases above only ever hit the
+      // `blockBelow === undefined` short-circuit).
+      expect(
+        canBlockStaySupported(blockIdOf('wheat_crop') ?? -1, blockIdOf('farmland') ?? -1),
+      ).toBe(true)
+      expect(
+        canBlockStaySupported(blockIdOf('wheat_crop') ?? -1, blockIdOf('stone') ?? -1),
+      ).toBe(false)
+    }),
+  )
+
   it.effect('does not leak into this package’s published surface either', () =>
     Effect.gen(function* () {
       const barrel = yield* Effect.promise(() => import('../src/index'))

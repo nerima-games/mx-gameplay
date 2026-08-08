@@ -3,6 +3,7 @@ import { DeltaTimeSecs } from '../src/domain/frame-contract'
 import {
   SPEED_MOVEMENT_MULTIPLIER,
   applyStatusEffect,
+  copyStatusEffectState,
   emptyStatusEffectState,
   isValidStatusEffectState,
   tickStatusEffects,
@@ -159,5 +160,75 @@ describe('status effects', () => {
     expect(isValidStatusEffectState({
       effects: [{ type: 'speed', remainingSecs: Number.POSITIVE_INFINITY, pulseClockSecs: 0 }],
     })).toBe(false)
+  })
+
+  it('rejects a save whose top level is not a well-formed effects record', () => {
+    // Distinct from the per-effect rejections above: these never even reach
+    // the `.every()` walk because the container itself is malformed.
+    expect(isValidStatusEffectState(null)).toBe(false)
+    expect(isValidStatusEffectState('not an object')).toBe(false)
+    expect(isValidStatusEffectState({ effects: 'not an array' })).toBe(false)
+    expect(isValidStatusEffectState({ effects: [null] })).toBe(false)
+    expect(isValidStatusEffectState({ effects: ['not a record either'] })).toBe(false)
+  })
+
+  it('applying a non-finite duration clears any existing effect of that type', () => {
+    // A malformed application (e.g. from an untrusted caller) must not throw
+    // or silently keep the old effect — it is treated the same as an
+    // explicit durationSecs: 0, which is applyStatusEffect's own removal
+    // convention.
+    const withPoison = applyStatusEffect(emptyStatusEffectState(), {
+      type: 'poison',
+      durationSecs: 5,
+    })
+
+    const cleared = applyStatusEffect(withPoison, {
+      type: 'poison',
+      durationSecs: Number.NaN,
+    })
+
+    expect(cleared.effects).toStrictEqual([])
+  })
+
+  it('a hunger effect that outlives the frame keeps ticking next frame', () => {
+    const state = applyStatusEffect(emptyStatusEffectState(), {
+      type: 'hunger',
+      durationSecs: 5,
+      amplifier: 1,
+    })
+
+    const tick = tickStatusEffects(state, DeltaTimeSecs(2))
+
+    expect(tick.hungerExhaustion).toBeCloseTo(2 * 0.1 * 2)
+    expect(tick.state.effects).toStrictEqual([
+      { type: 'hunger', remainingSecs: 3, pulseClockSecs: 0, amplifier: 1 },
+    ])
+  })
+
+  it('treats a non-finite delta time as zero elapsed, defending against an unvalidated dt', () => {
+    // `DeltaTimeSecs` is a refined brand that normally refuses this value —
+    // this simulates state restored from outside the constructor, the same
+    // way `savedStack` does in the inventory tests.
+    const state = applyStatusEffect(emptyStatusEffectState(), {
+      type: 'poison',
+      durationSecs: 5,
+    })
+
+    const tick = tickStatusEffects(state, Number.NaN as unknown as DeltaTimeSecs)
+
+    expect(tick.poisonPulses).toBe(0)
+    expect(tick.state.effects).toStrictEqual(state.effects)
+  })
+
+  it('copyStatusEffectState clones each effect rather than aliasing it', () => {
+    const original = applyStatusEffect(emptyStatusEffectState(), {
+      type: 'speed',
+      durationSecs: 5,
+    })
+
+    const copy = copyStatusEffectState(original)
+
+    expect(copy).toStrictEqual(original)
+    expect(copy.effects[0]).not.toBe(original.effects[0])
   })
 })

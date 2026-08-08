@@ -65,7 +65,7 @@ const SAND = id('sand')
 
 const target: BlockPosition = { x: 4, y: 64, z: 4 }
 const supportCell: BlockPosition = { x: 4, y: 63, z: 4 }
-const block = (id: BlockId): BlockReading => ({ _tag: 'Block', block: id })
+const block = (blockId: BlockId): BlockReading => ({ _tag: 'Block', block: blockId })
 
 describe('horizontalNeighbours', () => {
   it('returns all four, in a fixed order, and does not clip at a chunk edge', () => {
@@ -468,10 +468,10 @@ describe('placeBlock composes the four, and a door fills two cells', () => {
       let writes = 0
       const dropsTheSecondWrite = {
         ...store.api,
-        setBlock: (position: BlockPosition, id: BlockId) => {
+        setBlock: (position: BlockPosition, blockId: BlockId) => {
           writes += 1
           return writes === 1
-            ? store.api.setBlock(position, id)
+            ? store.api.setBlock(position, blockId)
             : Effect.succeed({ _tag: 'ChunkNotLoaded' } as const)
         },
       }

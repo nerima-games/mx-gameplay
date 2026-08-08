@@ -13,10 +13,11 @@
  * their own names.
  */
 import { describe, expect, it } from '@effect/vitest'
-import { STARTER_RECIPES, craftGrid, type Slot } from '@nerima-games/mc-sim'
+import { InventoryService, STARTER_RECIPES, craftGrid, type Slot } from '@nerima-games/mc-sim'
 import { Effect } from 'effect'
 import {
   INVENTORY_SLOT_COUNT,
+  InMemoryInventoryLayer,
   addToSlots,
   emptySlots,
   makeInMemoryInventory,
@@ -121,6 +122,31 @@ describe('the two slot rules', () => {
     }),
   )
 
+  it.effect('pass two skips a slot pass one already left occupied', () =>
+    Effect.sync(() => {
+      // Slot 0 holds dirt (a different item, so pass one's top-up skips it
+      // too) and is still occupied when pass two goes looking for empty
+      // slots to open — it must skip over it rather than overwrite it.
+      const slots: ReadonlyArray<Slot> = [stack(DIRT, 5), undefined]
+
+      const result = addToSlots(slots, STONE, 3)
+
+      expect(result.slots[0]).toStrictEqual(stack(DIRT, 5))
+      expect(result.slots[1]).toStrictEqual(stack(STONE, 3))
+      expect(result.accepted).toBe(3)
+    }),
+  )
+
+  it.effect('removing skips slots holding a different item', () =>
+    Effect.sync(() => {
+      const result = removeFromSlots([stack(DIRT, 3), stack(STONE, 2)], STONE, 2)
+
+      expect(result.slots[0]).toStrictEqual(stack(DIRT, 3))
+      expect(result.slots[1]).toBeUndefined()
+      expect(result.removed).toBe(2)
+    }),
+  )
+
   it.effect('removing empties a slot rather than leaving a zero stack', () =>
     Effect.sync(() => {
       // A zero-count stack still occupies a slot and still matches `item`,
@@ -128,6 +154,15 @@ describe('the two slot rules', () => {
       const result = removeFromSlots([stack(STONE, 2)], STONE, 2)
 
       expect(result.slots[0]).toBeUndefined()
+      expect(result.removed).toBe(2)
+    }),
+  )
+
+  it.effect('a partial removal leaves the remainder behind in the slot', () =>
+    Effect.sync(() => {
+      const result = removeFromSlots([stack(STONE, 5)], STONE, 2)
+
+      expect(result.slots[0]).toStrictEqual(stack(STONE, 3))
       expect(result.removed).toBe(2)
     }),
   )
@@ -176,6 +211,31 @@ describe('restore re-establishes the invariant', () => {
     }),
   )
 
+  it.effect('a save with a negative count clamps to an empty slot, not a negative discard', () =>
+    Effect.sync(() => {
+      // A corrupted save cannot go negative through Math.max(0, ...) — the
+      // slot drops out entirely and the malformed count is not tallied as a
+      // loss, since there was never a real item there to lose.
+      const result = normaliseInventory({ slots: [savedStack(STONE, -5)] })
+
+      expect(result.slots[0]).toBeUndefined()
+      expect(result.discarded).toBe(0)
+    }),
+  )
+
+  it.effect('a hole past the slot boundary costs nothing', () =>
+    Effect.sync(() => {
+      // Longer than INVENTORY_SLOT_COUNT, but the overflow itself is empty —
+      // distinct from the case above where the overflow holds a real stack.
+      const overlong = [...Array.from({ length: INVENTORY_SLOT_COUNT }, () => undefined), undefined]
+
+      const result = normaliseInventory({ slots: overlong })
+
+      expect(result.slots).toHaveLength(INVENTORY_SLOT_COUNT)
+      expect(result.discarded).toBe(0)
+    }),
+  )
+
   it.effect('REGRESSION: restore reports the LEFTOVER, not a repair count', () =>
     Effect.gen(function* () {
       // Two different quantities in the same `number`. A padded 2-slot save
@@ -206,6 +266,29 @@ describe('crafting delegates to mc-sim', () => {
       expect(yield* inventory.countOf(OAK_LOG)).toBe(0)
       expect(yield* inventory.countOf(OAK_PLANKS)).toBe(4)
     }),
+  )
+})
+
+describe('InMemoryInventoryLayer', () => {
+  it.effect('provides InventoryService to a host that composes gameplayModule', () =>
+    Effect.gen(function* () {
+      const service = yield* InventoryService
+
+      expect(yield* service.add(STONE, 5)).toBe(0)
+      expect(yield* service.countOf(STONE)).toBe(5)
+    }).pipe(Effect.provide(InMemoryInventoryLayer())),
+  )
+
+  it.effect('accepts an initial slot layout', () =>
+    Effect.gen(function* () {
+      const service = yield* InventoryService
+
+      expect(yield* service.countOf(DIRT)).toBe(3)
+    }).pipe(
+      Effect.provide(
+        InMemoryInventoryLayer([stack(DIRT, 3), ...Array.from({ length: INVENTORY_SLOT_COUNT - 1 }, () => undefined)]),
+      ),
+    ),
   )
 })
 

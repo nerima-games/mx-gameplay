@@ -678,8 +678,9 @@ describe('stage behaviour', () => {
       for (let attempt = 1; attempt <= 8; attempt += 1) {
         yield* Ref.set(state.fluidFrontier, [source])
         yield* fluids.run(DeltaTimeSecs(0.016))
+        const sourceKey = source.key
         const deferred = (yield* Ref.get(state.fluidFrontier)).find(
-          (item) => item.key === source.key,
+          (item) => item.key === sourceKey,
         )!
         expect(deferred.deferred).toBe(attempt)
         source = deferred

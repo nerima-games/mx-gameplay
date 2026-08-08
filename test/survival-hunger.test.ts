@@ -212,6 +212,39 @@ describe('survival hunger', () => {
     }),
   )
 
+  it.effect('setDifficulty changes which starvation floor a later tick enforces', () =>
+    Effect.gen(function* () {
+      const runtime = yield* makeSurvivalHungerRuntime(initial('peaceful', {
+        healthPoints: 1,
+        hungerPoints: 0,
+        saturation: 0,
+      }))
+
+      yield* runtime.setDifficulty('hard')
+
+      const outcome = yield* runtime.tick(DeltaTimeSecs(4))
+
+      // If setDifficulty had not taken effect, 'peaceful' floors starvation
+      // at 20 and this player would not take damage at all. Reaching 0 and
+      // dying is only possible because the runtime is now on 'hard'.
+      expect(outcome.vitals.healthPoints).toBe(0)
+      expect(outcome.died).toBe(true)
+      expect((yield* runtime.snapshot).difficulty).toBe('hard')
+    }),
+  )
+
+  it('validates every difficulty, including the ones no other test decodes', () => {
+    expect(isSurvivalHungerState(initial('normal'))).toBe(true)
+    expect(isSurvivalHungerState(initial('hard'))).toBe(true)
+    expect(isSurvivalHungerState({ ...initial('easy'), difficulty: 'nightmare' })).toBe(false)
+  })
+
+  it('rejects a save that is not even an object before looking at its fields', () => {
+    expect(isSurvivalHungerState(null)).toBe(false)
+    expect(isSurvivalHungerState('not an object')).toBe(false)
+    expect(isSurvivalHungerState(42)).toBe(false)
+  })
+
   it.effect('stops processing while dead and restores spawn vitals on respawn', () =>
     Effect.gen(function* () {
       const runtime = yield* makeSurvivalHungerRuntime(initial('hard', {
