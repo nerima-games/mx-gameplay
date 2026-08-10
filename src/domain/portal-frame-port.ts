@@ -66,9 +66,9 @@
  * The comments below are the source's, shortened where they discuss decisions
  * that were made in that repository and cannot be revisited here.
  */
+import { blockTypeOfId } from '@nerima-games/mc-kernel'
 import { Option } from 'effect'
 import { AIR_BLOCK_ID, type BlockId, type BlockPosition } from './chunk-store-port'
-import { blockTypeOfId } from './block-vocabulary'
 
 /**
  * Reads the block at an integer world coordinate.
