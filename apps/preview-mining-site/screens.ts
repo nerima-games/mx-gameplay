@@ -87,7 +87,7 @@ import {
   type Vitals,
 } from '../../src/domain/death-cause'
 import { AIR_BLOCK_ID, type BlockId } from '../../src/domain/chunk-store-port'
-import { DeltaTimeSecs } from '../../src/domain/frame-contract'
+import { DeltaTimeSecs } from '@nerima-games/mc-kernel'
 import { DEFAULT_ROLL_SEED, drawRolls } from '../../src/domain/frame-rolls'
 import {
   advanceWeather,
@@ -396,7 +396,7 @@ export const ARENA_CAUSES: ReadonlyArray<DeathCause> = [
  * `NaN` is on this list on purpose and is the reason the arena screen is worth
  * having at all. `Damage.amount` is a bare `number` with no refinement, while
  * this very repository brands `DeltaTimeSecs` with `Number.isFinite`
- * (`domain/frame-contract.ts:57-60`) for exactly the same class of argument.
+ * (kernel's `domain/quantities.ts`) for exactly the same class of argument.
  * Press it and watch what happens to the health bar.
  */
 export const ARENA_AMOUNTS: ReadonlyArray<{ readonly label: string; readonly amount: number }> = [

@@ -30,7 +30,7 @@ import { Effect } from 'effect'
 import { dayPhase, hostileSpawnsAllowed, isNight } from '../src/domain/day-night'
 import { applyDamage, deathMessage, fullHealth, isDead } from '../src/domain/death-cause'
 import { carryOver, splitBudget, type FluidWorkItem } from '../src/domain/fluid-frontier'
-import { positionKey } from '../src/domain/position-key'
+import { BlockPositionKey as positionKey } from '@nerima-games/mc-kernel'
 
 describe('F5 — non-finite damage is ignored', () => {
   it.effect('preserves vitals for every non-finite damage amount', () =>

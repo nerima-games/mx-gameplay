@@ -33,7 +33,7 @@ import {
 } from '../src/domain/interactions/use-flint-and-steel'
 import { MAX_PORTAL_WIDTH, generatePortalLayout } from '../src/domain/portal-frame-port'
 import { chunkCoordsAround } from '../src/domain/chunk-window'
-import { ITEM_TYPES } from '../src/domain/item-vocabulary'
+import { ITEM_TYPES } from '@nerima-games/mc-kernel'
 import { makeChunkStoreDouble, world, STONE } from './support/chunk-store-double'
 import type { BlockWriteOutcome, ChunkStoreApi } from '../src/domain/chunk-store-port'
 

@@ -14,7 +14,7 @@
  *
  * The store is acquired ONCE, in `makeGameplayStages` — that is, in
  * `GameModule.frameStages`, whose `RRegister` parameter exists for exactly this
- * (`domain/frame-contract.ts`). It is not acquired in `run`, because
+ * (kernel's `domain/frame.ts`). It is not acquired in `run`, because
  * `StageRegistration.run` has `FrameServices` as its context and `FrameServices`
  * is kernel's, not this repository's: a stage that demanded `ChunkStore` there
  * would be asking kernel to name mc-worldgen's services, which the tier model
@@ -76,7 +76,21 @@
  * the first world's fibers and refs and deadlocked. Re-entrant initialisation
  * from the start is cheaper than retrofitting it.
  */
-import { capabilityOfBlockId } from '@nerima-games/mc-kernel'
+import {
+  adjacentBlockPosition,
+  blockPosition as kernelBlockPosition,
+  blockPositionKeyOf,
+  blockPositionOfKey,
+  capabilityOfBlockId,
+  decodeBlockPositionKey,
+  horizontalBlockNeighbours,
+  type BlockPositionKey,
+  type DeltaTimeSecs,
+  type GameModule,
+  type ItemType,
+  type Position,
+  type StageRegistration,
+} from '@nerima-games/mc-kernel'
 import {
   EYE_LEVEL_OFFSET,
   InventoryService,
@@ -93,13 +107,6 @@ import {
   type VehicleServiceApi,
 } from '@nerima-games/mc-sim'
 import { Effect, Effectable, Layer, Option, Readable, Ref } from 'effect'
-import type { Position } from '@nerima-games/mc-kernel'
-import {
-  below,
-  horizontalNeighbours,
-  positionKeyOf,
-  positionOfKey,
-} from '../domain/block-position-key.js'
 import {
   advanceVillagerRestock,
   copyVillagerTradeState,
@@ -233,7 +240,6 @@ import {
   type FluidProbe,
   type FluidWorkItem,
 } from '../domain/fluid-frontier.js'
-import type { DeltaTimeSecs, GameModule, StageRegistration } from '../domain/frame-contract.js'
 import { DEFAULT_ROLL_SEED, drawRolls, rollAt } from '../domain/frame-rolls.js'
 import type { Dimension, PortalTravelPlan } from '@nerima-games/mc-worldgen'
 import { OUTSIDE_PORTAL, type PortalDwell, stepPortalDwell } from '../domain/portal-dwell.js'
@@ -317,8 +323,6 @@ import {
   type FishingSession,
   type ReelFishingResult,
 } from '../domain/interactions/fishing.js'
-import type { PositionKey } from '../domain/position-key.js'
-import type { ItemType } from '../domain/item-vocabulary.js'
 import {
   advanceWeather,
   INITIAL_WEATHER,
@@ -340,6 +344,18 @@ import {
 } from './ender-dragon-encounter-stage.js'
 import { GAMEPLAY_STAGE_IDS, UPSTREAM_STAGE_IDS } from './stage-ids.js'
 import { advanceVehicles, type VehicleFrameEnvironment } from '../domain/vehicle/vehicle-frame.js'
+
+/**
+ * Lift this repository's local, unbranded `BlockPosition` (`domain/chunk-store-port.ts`)
+ * into kernel's branded one, for the coordinate-vocabulary calls below.
+ *
+ * `chunk-store-port.ts`'s own header states the direction that is safe without a
+ * lift: kernel's branded value is assignable to the local alias, never the
+ * reverse. This is that lift, expressed with kernel's own validated
+ * constructor rather than a type assertion.
+ */
+const toKernelPosition = (position: BlockPosition) =>
+  kernelBlockPosition(position.x, position.y, position.z)
 
 export const resolveArmoredPlayerDamages = (
   inventory: InventoryServiceApi,
@@ -545,7 +561,7 @@ const NO_ATTEMPTS: ReadonlyArray<never> = []
 type PendingBlockBreakRequest = {
   readonly requestId: number
   readonly publicQueueIndex: number
-  readonly positionKey: PositionKey
+  readonly positionKey: BlockPositionKey
   readonly lootContext: BlockLootContext | undefined
 }
 
@@ -562,7 +578,7 @@ type PendingBlockBreakRequestQueue = {
 type FluidRuntimeState = {
   readonly frontier: ReadonlyArray<FluidWorkItem>
   readonly updates: ReadonlyArray<FluidWorkItem>
-  readonly cells: ReadonlyMap<PositionKey, FluidCell>
+  readonly cells: ReadonlyMap<BlockPositionKey, FluidCell>
 }
 
 class FluidStateRef extends Effectable.Class<ReadonlyArray<FluidWorkItem>>
@@ -678,9 +694,9 @@ const fluidProbeAt = (
   store: ChunkStoreApi,
   position: BlockPosition,
   kind: FluidCell['kind'],
-  cells: ReadonlyMap<PositionKey, FluidCell>,
+  cells: ReadonlyMap<BlockPositionKey, FluidCell>,
 ): Effect.Effect<FluidProbe> => {
-  const key = positionKeyOf(position)
+  const key = blockPositionKeyOf(toKernelPosition(position))
   return Effect.map(store.getBlock(position), (reading): FluidProbe => {
     if (reading._tag === 'ChunkNotLoaded') return { key, state: 'unloaded' }
     if (reading._tag === 'OutOfWorld') return { key, state: 'out-of-world' }
@@ -716,16 +732,21 @@ const runFluidPropagation = (
     const enqueue = (item: FluidWorkItem): void => {
       generated = enqueueFluidDisturbance(generated, item)
     }
-    const enqueueDependents = (parent: PositionKey): void => {
+    const enqueueDependents = (parent: BlockPositionKey): void => {
       for (const candidate of cells.values()) {
         if (candidate.parent === parent) enqueue(fluidWorkItemOf(candidate))
       }
     }
 
     for (const item of work) {
-      const position = positionOfKey(item.key)
-      // Legacy callers have historically used opaque diagnostic keys. They are
-      // still recorded as evaluated work, but must never turn NaN into a world IO.
+      // Legacy callers have historically used opaque diagnostic keys — kernel's
+      // `blockPositionOfKey` throws on those, unlike this repository's former
+      // `positionOfKey`, so decoding goes through the non-throwing
+      // `decodeBlockPositionKey` and an undecodable key becomes the same NaN
+      // sentinel the old total function returned. They are still recorded as
+      // evaluated work, but must never turn NaN into a world IO.
+      const position: BlockPosition =
+        decodeBlockPositionKey(item.key) ?? { x: Number.NaN, y: Number.NaN, z: Number.NaN }
       if (!validFluidPosition(position)) continue
 
       const cell: FluidCell = cells.get(item.key) ?? {
@@ -737,11 +758,11 @@ const runFluidPropagation = (
         falling: item.falling ?? false,
       }
       const current = yield* fluidProbeAt(store, position, cell.kind, cells)
-      const belowPosition = below(position)
-      const horizontalPositions = horizontalNeighbours(position)
-      let belowProbe: FluidProbe = { key: positionKeyOf(belowPosition), state: 'blocked' }
+      const belowPosition = adjacentBlockPosition(toKernelPosition(position), 'down')
+      const horizontalPositions = horizontalBlockNeighbours(toKernelPosition(position))
+      let belowProbe: FluidProbe = { key: blockPositionKeyOf(toKernelPosition(belowPosition)), state: 'blocked' }
       let horizontalProbes: ReadonlyArray<FluidProbe> = horizontalPositions.map((candidate) => ({
-        key: positionKeyOf(candidate),
+        key: blockPositionKeyOf(toKernelPosition(candidate)),
         state: 'blocked' as const,
       }))
 
@@ -772,11 +793,11 @@ const runFluidPropagation = (
           continue
         }
 
-        const changePosition = positionOfKey(
+        const changePosition = blockPositionOfKey(
           change._tag === 'PlaceFluid' ? change.cell.key : change.key,
         )
-        /* v8 ignore start -- `changePosition` is always `below(position)`,
-         * `horizontalNeighbours(position)[i]` or a probe key already computed
+        /* v8 ignore start -- `changePosition` is always `adjacentBlockPosition(toKernelPosition(position), 'down')`,
+         * `horizontalBlockNeighbours(toKernelPosition(position))[i]` or a probe key already computed
          * from `position`, and `position` was already proven finite by the
          * `validFluidPosition(position)` check above (the "opaque diagnostic
          * keys" guard this comment references). +-1 arithmetic on a finite
@@ -863,7 +884,7 @@ export type GameplayFrameState = {
   readonly enderDragonEncounter: EnderDragonEncounterStageApi
   readonly survivalHunger: SurvivalHungerRuntimeApi
   readonly playerDead: Ref.Ref<boolean>
-  readonly pendingBreaks: Ref.Ref<ReadonlyArray<PositionKey>>
+  readonly pendingBreaks: Ref.Ref<ReadonlyArray<BlockPositionKey>>
   readonly pendingPlacements: Ref.Ref<ReadonlyArray<PlacementRequest>>
   readonly pendingBlockUses: Ref.Ref<ReadonlyArray<BlockUseRequest>>
   readonly pendingItemUses: Ref.Ref<ReadonlyArray<ItemUseRequest>>
@@ -990,9 +1011,9 @@ const blockPlacementRuntimeFor = (state: GameplayFrameState): BlockPlacementRunt
 /**
  * One request to put a block down.
  *
- * The position is a `PositionKey` rather than a `BlockPosition` so that the
+ * The position is a `BlockPositionKey` rather than a `BlockPosition` so that the
  * inbox matches `pendingBreaks` exactly — one encoding, one place
- * (`domain/block-position-key.ts`), and a host that can queue a break can queue
+ * (kernel's `domain/coordinate-keys.ts`), and a host that can queue a break can queue
  * a placement the same way.
  *
  * `heldItem` is a `PlaceableItemType`, so "you cannot place a stick" is a type
@@ -1002,7 +1023,7 @@ const blockPlacementRuntimeFor = (state: GameplayFrameState): BlockPlacementRunt
  * have had to read it anyway.
  */
 export type PlacementRequest = {
-  readonly positionKey: PositionKey
+  readonly positionKey: BlockPositionKey
   readonly heldItem: PlaceableItemType
 }
 
@@ -1057,7 +1078,7 @@ export type BlockUseRequestId = string
 /** A request to use the block in a cell without transferring its state here. */
 export type BlockUseRequest = {
   readonly requestId: BlockUseRequestId
-  readonly positionKey: PositionKey
+  readonly positionKey: BlockPositionKey
 }
 
 /** The drainable answer that tells the host whether to toggle its lever state. */
@@ -1077,9 +1098,9 @@ export type BlockUseResult =
  * One use of an igniting item on a cell.
  *
  * `PlacementRequest`'s twin, and deliberately identical in shape: the position
- * is a `PositionKey` so that a host which can queue a break can queue a
+ * is a `BlockPositionKey` so that a host which can queue a break can queue a
  * placement and an item use the same way, through one encoding
- * (`domain/block-position-key.ts`).
+ * (kernel's `domain/coordinate-keys.ts`).
  *
  * `heldItem` is an `IgnitionItemType`, so "you cannot light a portal with a
  * stick" is a type error where the request is BUILT rather than a refusal where
@@ -1095,7 +1116,7 @@ export type BlockUseResult =
  */
 export type IgnitionItemUseRequest = {
   readonly requestId: ItemUseRequestId
-  readonly positionKey: PositionKey
+  readonly positionKey: BlockPositionKey
   readonly heldItem: IgnitionItemType
 }
 
@@ -1116,25 +1137,25 @@ export type FarmingItemUseRequest =
   | {
       readonly action: 'TillSoil'
       readonly requestId: ItemUseRequestId
-      readonly positionKey: PositionKey
+      readonly positionKey: BlockPositionKey
       readonly heldItem: HoeItemType
     }
   | {
       readonly action: 'ApplyBoneMeal'
       readonly requestId: ItemUseRequestId
-      readonly positionKey: PositionKey
+      readonly positionKey: BlockPositionKey
       readonly heldItem: 'bone_meal'
     }
   | {
       readonly action: 'PlantPotato'
       readonly requestId: ItemUseRequestId
-      readonly positionKey: PositionKey
+      readonly positionKey: BlockPositionKey
       readonly heldItem: 'potato'
     }
   | {
       readonly action: 'HarvestPotato'
       readonly requestId: ItemUseRequestId
-      readonly positionKey: PositionKey
+      readonly positionKey: BlockPositionKey
       readonly ripe: boolean
       readonly roll: number
     }
@@ -1162,7 +1183,7 @@ export type FurnaceItemUseRequest = {
 export type BucketItemUseRequest = {
   readonly action: 'UseBucket'
   readonly requestId: ItemUseRequestId
-  readonly positionKey: PositionKey
+  readonly positionKey: BlockPositionKey
   readonly heldItem: BucketItemType
   readonly activeDimension: Dimension
   readonly targetDimension: Dimension
@@ -1232,7 +1253,7 @@ export type FarmingItemUseResult =
   | {
       readonly action: 'HarvestPotato'
       readonly requestId: ItemUseRequestId
-      readonly positionKey: PositionKey
+      readonly positionKey: BlockPositionKey
       readonly success: boolean
       readonly outcome: CropDropOutcome
     }
@@ -1478,7 +1499,7 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
   const enderDragonEncounter = yield* makeEnderDragonEncounterRuntime
   const survivalHunger = yield* makeSurvivalHungerRuntime()
   const playerDead = yield* Ref.make(false)
-  const pendingBreaks = yield* Ref.make<ReadonlyArray<PositionKey>>([])
+  const pendingBreaks = yield* Ref.make<ReadonlyArray<BlockPositionKey>>([])
   const breakRequests = yield* Ref.make<PendingBlockBreakRequestState>({
     nextRequestId: 0,
     requests: [],
@@ -1722,11 +1743,10 @@ const stepPortalTravel = (
  * Ask for a block to be broken on the next frame.
  *
  * THE INBOX'S ONLY PUBLIC DOOR, and it exists so the key encoding does not
- * leave this repository. `positionKeyOf` lives in `domain/block-position-key.ts`,
- * which `index.ts` keeps out of the barrel because it joins two MIRRORED
- * vocabularies — a host that encoded the key itself would be the second
- * hand-written copy of a format, and the first thing to break when the mirrors
- * are deleted.
+ * leave this repository. `blockPositionKeyOf` is kernel's
+ * (`domain/coordinate-keys.ts`), so this repository does no encoding of its
+ * own — a host that encoded the key itself would be a second, hand-written
+ * copy of kernel's format.
  *
  * A host calls this from its input handler; `gameplay:interactions` drains the
  * inbox next frame. Deliberately NOT a direct `breakBlock` call: the stage
@@ -1744,7 +1764,7 @@ export const requestBlockBreak = (
     return queue.mutex.withPermits(1)(
       Effect.uninterruptible(
         Effect.gen(function* () {
-          const positionKey = positionKeyOf(position)
+          const positionKey = blockPositionKeyOf(toKernelPosition(position))
           const publicQueueIndex = yield* Ref.modify(state.pendingBreaks, (pending) => [
             pending.length,
             [...pending, positionKey],
@@ -1816,7 +1836,7 @@ export const requestBlockUse = (
 ): Effect.Effect<void> =>
   Ref.update(state.pendingBlockUses, (pending) => [
     ...pending,
-    { requestId, positionKey: positionKeyOf(position) },
+    { requestId, positionKey: blockPositionKeyOf(toKernelPosition(position)) },
   ])
 
 /** Atomically drain completed block-use results exactly once, preserving order. */
@@ -1833,7 +1853,7 @@ export const requestItemUse = (
 ): Effect.Effect<void> =>
   Ref.update(state.pendingItemUses, (pending) => [
     ...pending,
-    { requestId, positionKey: positionKeyOf(position), heldItem },
+    { requestId, positionKey: blockPositionKeyOf(toKernelPosition(position)), heldItem },
   ])
 
 /** Enqueue one atomic bucket use with an explicitly declared dimension boundary. */
@@ -1848,7 +1868,7 @@ export const requestBucketUse = (
   const request: BucketItemUseRequest = {
     action: 'UseBucket',
     requestId,
-    positionKey: positionKeyOf(position),
+    positionKey: blockPositionKeyOf(toKernelPosition(position)),
     heldItem,
     activeDimension,
     targetDimension,
@@ -1916,7 +1936,7 @@ export const requestSoilTill = (
   const request: FarmingItemUseRequest = {
     action: 'TillSoil',
     requestId,
-    positionKey: positionKeyOf(position),
+    positionKey: blockPositionKeyOf(toKernelPosition(position)),
     heldItem,
   }
   return Ref.update(state.pendingItemUses, (pending) => [...pending, request])
@@ -1931,7 +1951,7 @@ export const requestBoneMeal = (
   const request: FarmingItemUseRequest = {
     action: 'ApplyBoneMeal',
     requestId,
-    positionKey: positionKeyOf(position),
+    positionKey: blockPositionKeyOf(toKernelPosition(position)),
     heldItem: 'bone_meal',
   }
   return Ref.update(state.pendingItemUses, (pending) => [...pending, request])
@@ -1946,7 +1966,7 @@ export const requestPotatoPlanting = (
   const request: FarmingItemUseRequest = {
     action: 'PlantPotato',
     requestId,
-    positionKey: positionKeyOf(position),
+    positionKey: blockPositionKeyOf(toKernelPosition(position)),
     heldItem: 'potato',
   }
   return Ref.update(state.pendingItemUses, (pending) => [...pending, request])
@@ -1963,7 +1983,7 @@ export const requestPotatoHarvest = (
   const request: FarmingItemUseRequest = {
     action: 'HarvestPotato',
     requestId,
-    positionKey: positionKeyOf(position),
+    positionKey: blockPositionKeyOf(toKernelPosition(position)),
     ripe,
     roll,
   }
@@ -2479,7 +2499,7 @@ export const requestFireExtinguish = (
     if (outcome._tag !== 'Written' && outcome._tag !== 'Unchanged') return false
     yield* Ref.set(state.fireLifecycle, extinguishFire(current, position))
     if (outcome._tag === 'Written') {
-      yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, [positionKeyOf(position)]))
+      yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, [blockPositionKeyOf(toKernelPosition(position))]))
     }
     return true
   })
@@ -2623,11 +2643,11 @@ const stepFireTick = (
     const nextFires = new Map(step.state.fires.map((active) => [firePositionKey(active.position), active]))
     const previousFires = new Map(current.fires.map((active) => [firePositionKey(active.position), active]))
     const failedIgnitions = new Set<string>()
-    const disturbed: PositionKey[] = []
+    const disturbed: BlockPositionKey[] = []
     for (const mutation of step.mutations) {
       const mutationKey = firePositionKey(mutation.position)
       const outcome = yield* store.setBlock(mutation.position, mutation.block === 'air' ? air : fire)
-      if (outcome._tag === 'Written') disturbed.push(positionKeyOf(mutation.position))
+      if (outcome._tag === 'Written') disturbed.push(blockPositionKeyOf(toKernelPosition(mutation.position)))
       if (outcome._tag === 'Written' || outcome._tag === 'Unchanged') continue
       if (mutation.block === 'fire') {
         nextFires.delete(mutationKey)
@@ -2774,7 +2794,7 @@ export const requestTargetedBlockPlacement = (
     const target = targetBlockFromPlayerPose(pose, maxDistance, targetabilityFromStore(store))
     if (Option.isSome(target)) {
       yield* requestBlockPlacement(state, {
-        positionKey: positionKeyOf(target.value.adjacentPosition),
+        positionKey: blockPositionKeyOf(toKernelPosition(target.value.adjacentPosition)),
         heldItem,
       })
     }
@@ -2810,7 +2830,7 @@ export const requestTargetedBlockUse = (
         break
       case 'NotLever':
         yield* requestBlockPlacement(state, {
-          positionKey: positionKeyOf(target.value.adjacentPosition),
+          positionKey: blockPositionKeyOf(toKernelPosition(target.value.adjacentPosition)),
           heldItem,
         })
         break
@@ -2944,7 +2964,7 @@ const executeBlockPlacementAtomically = (
     Effect.gen(function* () {
       if (mode === 'creative') {
         const outcome = yield* placeBlock(store, {
-          position: positionOfKey(request.positionKey),
+          position: blockPositionOfKey(request.positionKey),
           heldItem: request.heldItem,
           playerFeet,
         })
@@ -2961,7 +2981,7 @@ const executeBlockPlacementAtomically = (
       }
 
       const outcome = yield* placeBlock(store, {
-        position: positionOfKey(request.positionKey),
+        position: blockPositionOfKey(request.positionKey),
         heldItem: request.heldItem,
         playerFeet,
       })
@@ -3143,7 +3163,7 @@ export const gameplayStages = (
         const { breaks, snapshots } = yield* breakRequestQueue.mutex.withPermits(1)(
           Effect.uninterruptible(
             Effect.gen(function* () {
-              const drainedBreaks = yield* Ref.getAndSet<ReadonlyArray<PositionKey>>(
+              const drainedBreaks = yield* Ref.getAndSet<ReadonlyArray<BlockPositionKey>>(
                 state.pendingBreaks,
                 [],
               )
@@ -3209,7 +3229,7 @@ export const gameplayStages = (
         const itemUseResults: Array<ItemUseResult> = []
         const bowShotResults: Array<BowShotResult> = []
         const meleeAttackResults: Array<GameplayMeleeAttackResult> = []
-        const disturbed: Array<PositionKey> = []
+        const disturbed: Array<BlockPositionKey> = []
 
         for (const request of villagerTrades) {
           if (playerDead) {
@@ -3291,7 +3311,7 @@ export const gameplayStages = (
         for (const [index, positionKey] of breaks.entries()) {
           if (playerDead) continue
           const tool = snapshots.get(index)?.lootContext ?? fallbackTool
-          const breakPosition = positionOfKey(positionKey)
+          const breakPosition = blockPositionOfKey(positionKey)
           const outcome = yield* breakBlock(store, breakPosition)
           switch (outcome._tag) {
             case 'Broken': {
@@ -3299,7 +3319,7 @@ export const gameplayStages = (
               if (upperDoor._tag === 'DoorAbove') {
                 const upperOutcome = yield* store.setBlock(upperDoor.cell, AIR_BLOCK_ID)
                 if (upperOutcome._tag === 'Written') {
-                  disturbed.push(positionKeyOf(upperDoor.cell))
+                  disturbed.push(blockPositionKeyOf(toKernelPosition(upperDoor.cell)))
                 }
               }
 
@@ -3366,7 +3386,7 @@ export const gameplayStages = (
             })
             continue
           }
-          const position = positionOfKey(request.positionKey)
+          const position = blockPositionOfKey(request.positionKey)
           const outcome = resolveBlockUse(position, yield* store.getBlock(position))
           blockUseResults.push({
             requestId: request.requestId,
@@ -3402,7 +3422,11 @@ export const gameplayStages = (
             spent.push(execution.outcome.consumed)
           }
           if (execution.mutated) {
-            disturbed.push(positionKeyOf(below(positionOfKey(request.positionKey))))
+            disturbed.push(
+              blockPositionKeyOf(
+                adjacentBlockPosition(blockPositionOfKey(request.positionKey), 'down'),
+              ),
+            )
           }
         }
 
@@ -3428,7 +3452,7 @@ export const gameplayStages = (
                     Effect.map(store.getBlock(position), (reading) =>
                       reading._tag === 'Block' ? blockTypeOfId(reading.block) : undefined,
                     ),
-                  positionOfKey(request.positionKey),
+                  blockPositionOfKey(request.positionKey),
                 )
                 const success = outcome._tag === 'applied'
                 itemUseResults.push({
@@ -3451,7 +3475,7 @@ export const gameplayStages = (
                     setBlock: store.setBlock,
                   },
                   { tills: true },
-                  positionOfKey(request.positionKey),
+                  blockPositionOfKey(request.positionKey),
                 )
                 const success = outcome._tag === 'tilled'
                 itemUseResults.push({
@@ -3473,7 +3497,7 @@ export const gameplayStages = (
                       ),
                     setBlock: store.setBlock,
                   },
-                  { held: request.heldItem, soil: positionOfKey(request.positionKey) },
+                  { held: request.heldItem, soil: blockPositionOfKey(request.positionKey) },
                 )
                 const success = outcome._tag === 'planted'
                 itemUseResults.push({
@@ -3548,7 +3572,7 @@ export const gameplayStages = (
                 const outcome = yield* useBucket(store, inventory, state.fluidFrontier, {
                   activeDimension: request.activeDimension,
                   targetDimension: request.targetDimension,
-                  position: positionOfKey(request.positionKey),
+                  position: blockPositionOfKey(request.positionKey),
                   heldItem: request.heldItem,
                 })
                 if (outcome._tag === 'Collected' || outcome._tag === 'Placed') {
@@ -3715,12 +3739,12 @@ export const gameplayStages = (
 
           const ignition = yield* useFlintAndSteel(
             store,
-            positionOfKey(request.positionKey),
+            blockPositionOfKey(request.positionKey),
             request.heldItem,
           )
           const success = ignition.outcome._tag === 'Lit'
           if (ignition._tag === 'Tnt' && success) {
-            const position = positionOfKey(request.positionKey)
+            const position = blockPositionOfKey(request.positionKey)
             yield* roster.spawn({
               kind: PRIMED_TNT_KIND,
               feetPosition: { x: position.x + 0.5, y: position.y, z: position.z + 0.5 },

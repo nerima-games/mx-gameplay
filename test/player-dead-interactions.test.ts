@@ -1,9 +1,8 @@
 import { describe, expect, it } from '@effect/vitest'
 import { emptyFurnaceState, makeTimeService } from '@nerima-games/mc-sim'
 import { Effect, Ref } from 'effect'
-import { positionKeyOf } from '../src/domain/block-position-key'
+import { blockPosition, blockPositionKeyOf, DeltaTimeSecs } from '@nerima-games/mc-kernel'
 import { type MobBehaviour } from '../src/domain/entities/mob-frame'
-import { DeltaTimeSecs } from '../src/domain/frame-contract'
 import {
   drainBlockPlacementResults,
   drainBlockUseResults,
@@ -69,11 +68,11 @@ describe('dead-player interaction boundary', () => {
       yield* requestBlockBreak(state, cell)
       yield* requestBlockPlacementCommand(state, {
         requestId: 'place',
-        positionKey: positionKeyOf({ x: 2, y: 64, z: 1 }),
+        positionKey: blockPositionKeyOf(blockPosition(2, 64, 1)),
         heldItem: 'sand',
       })
       yield* requestBlockPlacement(state, {
-        positionKey: positionKeyOf({ x: 3, y: 64, z: 1 }),
+        positionKey: blockPositionKeyOf(blockPosition(3, 64, 1)),
         heldItem: 'sand',
       })
       yield* requestBlockUse(state, 'use-block', cell)
@@ -152,7 +151,7 @@ describe('dead-player interaction boundary', () => {
       yield* setPlayerDead(state, true)
       const placement = {
         requestId: 'same-placement',
-        positionKey: positionKeyOf({ x: 2, y: 64, z: 1 }),
+        positionKey: blockPositionKeyOf(blockPosition(2, 64, 1)),
         heldItem: 'sand' as const,
       } as const
 
@@ -169,7 +168,7 @@ describe('dead-player interaction boundary', () => {
       yield* requestBlockPlacementCommand(state, placement)
       yield* requestBlockPlacementCommand(state, {
         ...placement,
-        positionKey: positionKeyOf({ x: 4, y: 64, z: 1 }),
+        positionKey: blockPositionKeyOf(blockPosition(4, 64, 1)),
       })
       yield* requestBowShot(state, 'same-bow', shot)
       yield* runInteractions

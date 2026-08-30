@@ -31,7 +31,7 @@
  * row 1 now carries the count.
  *
  * **What that sentence got right was its FIRST clause**, which is a different
- * blocker and is still standing: `../item-vocabulary.ts` has no `ender_pearl`, so
+ * blocker and is still standing: kernel's `ITEM_TYPES` has no `ender_pearl`, so
  * this rule can be run but the item that triggers it cannot be named. See
  * `../../stages/registration.ts` and docs/responsibility.md §7-3.
  *

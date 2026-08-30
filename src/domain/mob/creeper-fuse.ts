@@ -106,7 +106,7 @@
  * ---------------------------------------------------------------------------
  *
  * `DeltaTimeSecs` refuses `NaN` and refuses a negative AT CONSTRUCTION
- * (`../frame-contract`), so a fuse cannot be advanced by a non-number and cannot
+ * (kernel's `domain/quantities.ts`), so a fuse cannot be advanced by a non-number and cannot
  * be wound backwards. That brand is load-bearing rather than decorative: the
  * preview's finding F5 is a bare `number` reaching `applyDamage`, where a single
  * `NaN` makes the player permanently immortal. The same argument arrives here as
@@ -118,7 +118,7 @@
  * value one can be: `NaN <= 3` is `false`, so an unmeasurable distance is nobody
  * in range, which is the inert answer.
  */
-import type { DeltaTimeSecs } from '../frame-contract.js'
+import type { DeltaTimeSecs } from '@nerima-games/mc-kernel'
 import {
   CHARGED_CREEPER_EXPLOSION_POWER,
   CREEPER_EXPLOSION_POWER,
@@ -249,7 +249,7 @@ const burn = (burnedSoFar: number, dt: DeltaTimeSecs, charged: boolean): Creeper
  * break it with.
  *
  * `dt = 0` is legal and ADVANCES NOTHING rather than being rejected: a frame may
- * be scheduled twice inside one clock tick (`../frame-contract`), and a fuse
+ * be scheduled twice inside one clock tick (kernel's `domain/quantities.ts`), and a fuse
  * that burned on a zero delta would burn faster on a faster machine.
  */
 export const stepCreeperFuse = (

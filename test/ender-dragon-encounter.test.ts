@@ -10,7 +10,8 @@ import {
   initialEnderDragonEncounter,
   makeEnderDragonEncounterStage,
 } from '../src'
-import { DeltaTimeSecs } from '../src/domain/frame-contract'
+import { DeltaTimeSecs } from '@nerima-games/mc-kernel'
+import { FrameServicesLayer } from './support/frame-services'
 
 describe('Ender Dragon encounter domain', () => {
   it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY, '10', undefined])(
@@ -88,7 +89,7 @@ describe('Ender Dragon encounter stage', () => {
       yield* restored.stage.run(DeltaTimeSecs(2.5))
       expect(yield* restored.snapshot).toStrictEqual(yield* source.snapshot)
       expect(yield* restored.drainEvents).toStrictEqual(yield* source.drainEvents)
-    }),
+    }).pipe(Effect.provide(FrameServicesLayer)),
   )
 
   it.effect('rejects inconsistent snapshots and never re-emits rewards after restoring death', () =>
@@ -126,6 +127,6 @@ describe('Ender Dragon encounter stage', () => {
       yield* runtime.damageByPlayer(1)
       expect(yield* runtime.drainEvents).toStrictEqual([])
       expect(yield* runtime.snapshot).toStrictEqual(dead)
-    }),
+    }).pipe(Effect.provide(FrameServicesLayer)),
   )
 })

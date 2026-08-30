@@ -79,7 +79,6 @@ import type { Position } from '@nerima-games/mc-kernel'
 import { readdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { positionKeyOf } from '../src/domain/block-position-key'
 import {
   AIR_BLOCK_ID,
   type BlockId,
@@ -114,7 +113,7 @@ import {
 } from '../src/domain/entities/mob-frame'
 import { EntityKind, type EntityManagerApi } from '@nerima-games/mc-sim'
 import { disturb } from '../src/domain/falling-block'
-import { DeltaTimeSecs, StackCount } from '../src/domain/frame-contract'
+import { blockPosition, blockPositionKeyOf, DeltaTimeSecs, StackCount } from '@nerima-games/mc-kernel'
 import { DEFAULT_ROLL_SEED, drawRolls, nextRoll } from '../src/domain/frame-rolls'
 import {
   FIRE_NATURAL_LIFETIME_TICKS,
@@ -471,7 +470,7 @@ describe('the slice, through the stage registration', () => {
         ]),
       )
 
-      yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, [positionKeyOf(support)]))
+      yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, [blockPositionKeyOf(blockPosition(support.x, support.y, support.z))]))
       yield* runFrame(stages)
 
       expect(yield* store.blockAt(support)).toBe(SAND)
@@ -491,7 +490,7 @@ describe('the slice, through the stage registration', () => {
 
       expect(isReplaceable(LAVA)).toBe(true)
 
-      yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, [positionKeyOf(support)]))
+      yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, [blockPositionKeyOf(blockPosition(support.x, support.y, support.z))]))
       yield* runFrame(stages)
 
       expect(yield* store.blockAt(support)).toBe(GRAVEL)
@@ -511,7 +510,7 @@ describe('the slice, through the stage registration', () => {
       yield* requestBreak(state, edge)
       // ...and a position that reached the queue some other way (an explosion
       // in a chunk that has since been unloaded, say).
-      yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, [positionKeyOf(edge)]))
+      yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, [blockPositionKeyOf(blockPosition(edge.x, edge.y, edge.z))]))
       yield* runFrames(stages, 3)
 
       const calls = yield* store.calls
@@ -591,7 +590,7 @@ describe('the slice, through the stage registration', () => {
       }
 
       const stages = gameplayStages(state, hidesTheDestination, roster.api, inventory.api, player.api, time)
-      yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, [positionKeyOf(support)]))
+      yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, [blockPositionKeyOf(blockPosition(support.x, support.y, support.z))]))
       yield* runFrames(stages, 3)
 
       // Unknown is not empty: the sand stays where it is rather than being
@@ -616,7 +615,7 @@ describe('the slice, through the stage registration', () => {
       }
 
       const stages = gameplayStages(state, refusesTheDestination, roster.api, inventory.api, player.api, time)
-      yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, [positionKeyOf(support)]))
+      yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, [blockPositionKeyOf(blockPosition(support.x, support.y, support.z))]))
       yield* runFrame(stages)
 
       // The sand is still sand. A rule that trusted its own read would have
@@ -649,7 +648,7 @@ describe('the slice, through the stage registration', () => {
           }
 
           const stages = gameplayStages(state, refusesTheSource, roster.api, inventory.api, player.api, time)
-          yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, [positionKeyOf(support)]))
+          yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, [blockPositionKeyOf(blockPosition(support.x, support.y, support.z))]))
           yield* runFrame(stages)
 
           expect(yield* store.blockAt(support)).toBeUndefined()
@@ -665,7 +664,7 @@ describe('the slice, through the stage registration', () => {
       const { store, state, stages } = yield* slice(world([[bottom, SAND]]))
 
       yield* Ref.update(state.fallingBlocks, (queue) =>
-        disturb(queue, [positionKeyOf(belowTheWorld)]),
+        disturb(queue, [blockPositionKeyOf(blockPosition(belowTheWorld.x, belowTheWorld.y, belowTheWorld.z))]),
       )
       yield* runFrames(stages, 2)
 
@@ -682,7 +681,7 @@ describe('the slice, through the stage registration', () => {
       // The cell examined is the one ABOVE the disturbance, and at y = 256 that
       // is outside the world rather than empty. Reading it as air would be
       // harmless; asking for it and then acting on the answer would not.
-      yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, [positionKeyOf(ceiling)]))
+      yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, [blockPositionKeyOf(blockPosition(ceiling.x, ceiling.y, ceiling.z))]))
       yield* runFrames(stages, 2)
 
       expect((yield* store.calls).writes).toBe(0)
@@ -1784,7 +1783,7 @@ describe('the mining site slice: dig, drop, place', () => {
   ): Effect.Effect<void> =>
     Ref.update(state.pendingPlacements, (queue): ReadonlyArray<PlacementRequest> => [
       ...queue,
-      { positionKey: positionKeyOf(position), heldItem },
+      { positionKey: blockPositionKeyOf(blockPosition(position.x, position.y, position.z)), heldItem },
     ])
 
   it.effect('a pickaxe turns a stone block into cobblestone in the outbox', () =>
@@ -2339,7 +2338,7 @@ describe('the ignition slice: an item use reaches the world', () => {
   ): Effect.Effect<void> =>
     Ref.update(state.pendingPlacements, (queue): ReadonlyArray<PlacementRequest> => [
       ...queue,
-      { positionKey: positionKeyOf(position), heldItem },
+      { positionKey: blockPositionKeyOf(blockPosition(position.x, position.y, position.z)), heldItem },
     ])
 
   it.effect('a flint and steel on a finished frame lights the portal and spends the item', () =>
@@ -2648,7 +2647,7 @@ describe('the potato farming slice: host input reaches farming rules', () => {
         {
           action: 'HarvestPotato',
           requestId: 'harvest',
-          positionKey: positionKeyOf(crop),
+          positionKey: blockPositionKeyOf(blockPosition(crop.x, crop.y, crop.z)),
           success: true,
           outcome: { _tag: 'drops', drops: [{ item: 'potato', count: 4 }] },
         },

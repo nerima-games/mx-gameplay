@@ -65,7 +65,7 @@
  * transitions so inventory, equipment, and durability cannot drift apart.
  */
 import { Effect, Layer, Ref } from 'effect'
-import { MAX_STACK_COUNT, StackCount } from '../../src/domain/frame-contract'
+import { MAX_STACK_COUNT, StackCount } from '@nerima-games/mc-kernel'
 import {
   addStoredStack as addStorageStoredStack,
   consumeAndDamageAt as consumeAndDamageStorageAt,

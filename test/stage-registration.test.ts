@@ -7,7 +7,7 @@
  * violated with STRINGS rather than with imports.
  */
 import { describe, expect, it } from '@effect/vitest'
-import { Cause, Effect, Exit, Layer, Option, Ref } from 'effect'
+import { Brand, Cause, Effect, Exit, Layer, Option, Ref } from 'effect'
 import {
   AIR_BLOCK_ID,
   type BlockId,
@@ -70,15 +70,14 @@ import {
 import {
   DeltaTimeSecs,
   MAX_STACK_COUNT,
-  StackCount,
   StageId,
+  type BlockPositionKey,
   type FrameServices,
   type GameModule,
   type StageRegistration,
-} from '../src/domain/frame-contract'
+} from '@nerima-games/mc-kernel'
 import { disturb, takeBatch } from '../src/domain/falling-block'
 import type { FluidWorkItem } from '../src/domain/fluid-frontier'
-import { positionKey } from '../src/domain/position-key'
 import { chunkCoordsAround } from '../src/domain/chunk-window'
 import { PORTAL_WINDOW_RADIUS } from '../src/domain/interactions/ignite-portal'
 import { DEFAULT_ROLL_SEED } from '../src/domain/frame-rolls'
@@ -163,10 +162,19 @@ const stageIds = (stages: ReadonlyArray<StageRegistration>): ReadonlyArray<strin
 const OBSIDIAN = blockIdOf('obsidian')!
 
 /**
+ * These fixtures name cells `'a'`, `'lava-a'`, `'water-a'` — scenario-graph
+ * identifiers, not coordinates — so they cannot go through kernel's
+ * `BlockPositionKey(value)`, which validates the canonical `x,y,z` text and
+ * throws on anything else. `Brand.nominal` is the same unchecked construction
+ * kernel's own constructor is built on.
+ */
+const positionKey = Brand.nominal<BlockPositionKey>()
+
+/**
  * The stages read and write blocks, iterate mobs and deposit mined items, so
  * building them takes mc-worldgen's `ChunkStore` AND mc-sim's `EntityManager`
  * AND mc-sim's `InventoryService` (in `frameStages` — see
- * `domain/frame-contract.ts` on `RRegister`). Tests about the SHAPE of the
+ * kernel's `domain/frame.ts` on `RRegister`). Tests about the SHAPE of the
  * registration provide an empty resident world, an empty roster and an empty
  * inventory: these assertions are about ordering and contract, and the
  * behaviour over a real world is `test/vertical-slice.test.ts`.
@@ -326,7 +334,7 @@ describe('§2.3-3 the total order belongs to mc-compose', () => {
           const edgePosition = position.get(edge)
           // A dangling edge (a stage nobody registered) is scheduled as if the
           // edge were absent — that is what lets a module order itself against
-          // an optional peer. See domain/frame-contract.ts.
+          // an optional peer. See kernel's domain/frame.ts.
           return edgePosition === undefined || edgePosition < (position.get(stage.id) ?? 0)
         }),
       )
@@ -456,7 +464,7 @@ describe('Ender Dragon normal frame lifecycle', () => {
       expect(yield* chunked.state.enderDragonEncounter.drainEvents).toStrictEqual(
         yield* once.state.enderDragonEncounter.drainEvents,
       )
-    }),
+    }).pipe(Effect.provide(FrameServicesLayer)),
   )
 
   it.effect('exposes attacks, terminal world events, and exactly-once rewards across restore', () =>
@@ -1362,78 +1370,6 @@ describe('stage behaviour', () => {
   )
 })
 
-describe('the mirrored DeltaTimeSecs brand is kernel’s', () => {
-  /*
-   * REGRESSION. `domain/frame-contract.ts` restates kernel's `DeltaTimeSecs`
-   * (`mc-kernel/domain/quantities.ts:37-42`), and a brand is keyed by its
-   * STRING: `Brand.Brand<'DeltaTimeSecs'>` here and in kernel are ONE TYPE to
-   * TypeScript, however differently the two constructors validate. So a mirror
-   * that refined differently would be a false guarantee the compiler could
-   * never contradict — which is exactly what mc-physics had, refining to the
-   * frame-loop clamp [0.001, 0.05] while kernel refines to "finite and
-   * non-negative". A kernel-built `DeltaTimeSecs(30)` satisfied its parameter
-   * types while breaking the invariant its comments claimed.
-   *
-   * Kernel's is the agreed refinement and it is deliberately LOOSE: a zero
-   * delta is legal, because a frame may be scheduled twice inside one clock
-   * tick, and the clamp of plan.md §3.4 is a frame-loop concern applied at the
-   * boundary by whoever PRODUCES the delta — mc-sim's `frame-timing.ts`,
-   * mc-physics' `clampDeltaTime` — never a property of the quantity itself.
-   * A stage receives whatever the loop produced and must cope.
-   */
-  it.effect('accepts zero and any finite non-negative delta, and rejects nothing else', () =>
-    Effect.sync(() => {
-      expect(DeltaTimeSecs(0)).toBe(0)
-      expect(DeltaTimeSecs(0.0001)).toBe(0.0001)
-      // Out of the integrator's safe range, and still a valid quantity: this is
-      // what a tab that was backgrounded for thirty seconds produces.
-      expect(DeltaTimeSecs(30)).toBe(30)
-
-      expect(() => DeltaTimeSecs(-0.000_001)).toThrow()
-      expect(() => DeltaTimeSecs(Number.NaN)).toThrow()
-      expect(() => DeltaTimeSecs(Number.POSITIVE_INFINITY)).toThrow()
-    }),
-  )
-})
-
-describe('the mirrored StackCount brand is kernel’s too', () => {
-  /*
-   * The same regression shape as `DeltaTimeSecs` above, one module over and one
-   * commit later. `StackCount` arrived in `domain/frame-contract.ts` with
-   * the inventory integration, which needs it for mc-sim's `ItemStack`, and it
-   * is in THAT file because `mc-kernel/domain/quantities.ts` is one of the
-   * three kernel modules it already mirrors — the file's header argues the
-   * placement and names the alternative it rejected.
-   *
-   * A brand is keyed by its string, so a mirror that refined `[1, 64]` instead
-   * of `[0, 64]` would reject the empty stack kernel accepts, in a repository
-   * where every value it touches came from mc-sim and is therefore already
-   * believed to be valid. That is the mc-physics defect exactly.
-   *
-   * The bounds are NOT symmetrical and both ends matter: 0 is legal because
-   * `removeItem` writes the count left in a slot before deciding whether the
-   * slot is empty, and 64 is `MAX_STACK_COUNT` — the cap that makes an
-   * inventory able to be FULL, which is what makes `add`'s leftover reachable
-   * at all (`test/inventory-mirror.test.ts`).
-   */
-  it.effect('accepts integers in [0, MAX_STACK_COUNT] and nothing else', () =>
-    Effect.sync(() => {
-      expect(MAX_STACK_COUNT).toBe(64)
-      expect(StackCount(0)).toBe(0)
-      expect(StackCount(1)).toBe(1)
-      expect(StackCount(MAX_STACK_COUNT)).toBe(64)
-
-      expect(() => StackCount(65)).toThrow()
-      expect(() => StackCount(-1)).toThrow()
-      // An integer, not a quantity: half a block is not a thing a slot holds.
-      expect(() => StackCount(2.5)).toThrow()
-      expect(() => StackCount(Number.NaN)).toThrow()
-      expect(() => StackCount(Number.POSITIVE_INFINITY)).toThrow()
-    }),
-  )
-})
-
-
 describe('the module contract has caught up with this file’s shape', () => {
   /*
    * REGRESSION — the change the vertical-slice spike forced on mc-kernel.
@@ -1496,9 +1432,8 @@ describe('the module contract has caught up with this file’s shape', () => {
   //          consumes the time advanced by mc-sim earlier in the same frame.
   //
   // THAT SECOND PREDICTION WAS RIGHT ABOUT THE CANDIDATE AND WRONG ABOUT THE
-  // OBSTACLE. `domain/frame-contract.ts` carries `ClockPort` in the kernel
-  // mirror where kernel's barrel replaces it, so `cameraPose` is transcribed
-  // whole WITH its requirement and nothing was narrowed. What actually blocked
+  // OBSTACLE. `ClockPort` is kernel's own (`domain/clock.ts`), so `cameraPose`
+  // is transcribed whole WITH its requirement and nothing was narrowed. What actually blocked
   // the fourth service was a noun with no owner — `Dimension` — and mc-worldgen
   // taking the word is what let `stepPortalTravel` call `PlayerService` every
   // frame.
@@ -1552,15 +1487,10 @@ describe('the module contract has caught up with this file’s shape', () => {
   // reveal until mc-compose tried to build a frame.
   //
   // The annotation below says `FrameServices` and NOT `never`, and the
-  // difference is the whole assertion. `never` says 「`run` demands nothing」,
-  // which is true only by the accident that this repository's mirror aliases
-  // `FrameServices` to `never` while kernel aliases it to `ClockPort`. What
-  // this test means — and what the paragraph above claims — is 「`run` demands
-  // nothing BEYOND the frame contract」, and `FrameServices` is how that
-  // sentence is spelled. It is the same assertion today, because the alias is
-  // `never` today; it is still the right assertion after the repoint, when a
-  // stage that reached for `ChunkStore` would fail this line exactly as it
-  // would have before.
+  // difference is the whole assertion: `run` demands nothing BEYOND the frame
+  // contract, and `FrameServices` — kernel's `ClockPort` — is how that
+  // sentence is spelled. A stage that reached for `ChunkStore` here would fail
+  // this line to typecheck.
   it.effect('REGRESSION: the store is acquired at registration, never demanded by `run`', () =>
     Effect.gen(function* () {
       const stages = yield* registeredStages
@@ -3100,7 +3030,7 @@ describe('the vehicles stage advances real vehicles when a vehicle service is re
       yield* vehicles.run(DeltaTimeSecs(0.016))
 
       expect(yield* vehicleService.vehicles).toStrictEqual([])
-    }),
+    }).pipe(Effect.provide(FrameServicesLayer)),
   )
 })
 

@@ -1,15 +1,18 @@
 import { describe, expect, it } from '@effect/vitest'
 import type { InventoryServiceApi, Slot } from '@nerima-games/mc-sim'
 import { Effect, Ref } from 'effect'
-import { positionKeyOf } from '../src/domain/block-position-key'
-import { positionKey } from '../src/domain/position-key'
+import {
+  blockPosition,
+  blockPositionKeyOf,
+  BlockPositionKey as positionKey,
+} from '@nerima-games/mc-kernel'
 import type { BlockId, BlockPosition, ChunkStoreApi } from '../src/domain/chunk-store-port'
 import {
   enqueueFluidDisturbance,
   type FluidKind,
   type FluidWorkItem,
 } from '../src/domain/fluid-frontier'
-import { StackCount } from '../src/domain/frame-contract'
+import { StackCount } from '@nerima-games/mc-kernel'
 import {
   isBucketItem,
   useBucket,
@@ -74,7 +77,7 @@ describe('bucket interaction', () => {
         )
         expect(yield* Ref.get(frontier)).toStrictEqual([
           { key: '9,64,9', kind: 'water' },
-          { key: positionKeyOf(POSITION), kind: scenario.fluid },
+          { key: blockPositionKeyOf(blockPosition(POSITION.x, POSITION.y, POSITION.z)), kind: scenario.fluid },
         ])
         expect(yield* store.calls).toMatchObject({ reads: 1, writes: 1 })
       }),
@@ -105,7 +108,7 @@ describe('bucket interaction', () => {
           inventoryWith([0, stack('bucket', 1)]),
         )
         expect(yield* Ref.get(frontier)).toStrictEqual([
-          { key: positionKeyOf(POSITION), kind: scenario.fluid },
+          { key: blockPositionKeyOf(blockPosition(POSITION.x, POSITION.y, POSITION.z)), kind: scenario.fluid },
         ])
         expect(yield* store.calls).toMatchObject({ reads: 1, writes: 1 })
       }),

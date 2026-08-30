@@ -110,10 +110,11 @@ describe('the ChunkStore mirror', () => {
 
   it.effect('does not leak into this package\'s published surface', () =>
     Effect.gen(function* () {
-      // `index.ts` deliberately omits this module, exactly as it omits
-      // `domain/frame-contract.ts` and `domain/position-key.ts`. Re-exporting
-      // another repository's service would make deleting the stand-in a
-      // breaking change for consumers of mx-gameplay.
+      // `index.ts` deliberately omits this module (`domain/frame-contract.ts`
+      // and `domain/position-key.ts` are gone — Wave 1 (W1-M3) repointed them
+      // to kernel directly and deleted them). Re-exporting another
+      // repository's service would make deleting the stand-in a breaking
+      // change for consumers of mx-gameplay.
       const barrel = yield* Effect.promise(() => import('../src/index'))
       expect(Object.keys(barrel)).not.toContain('ChunkStore')
       // `AIR_BLOCK_ID` rather than `fallsWhenUnsupported`, which this module no

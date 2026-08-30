@@ -1,4 +1,4 @@
-import type { DeltaTimeSecs } from '../frame-contract.js'
+import type { DeltaTimeSecs } from '@nerima-games/mc-kernel'
 import { TNT_EXPLOSION_POWER, type Explosion } from './explosion.js'
 
 export const PRIMED_TNT_FUSE_SECS = 4

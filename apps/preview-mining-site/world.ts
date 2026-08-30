@@ -40,7 +40,7 @@
  * ---------------------------------------------------------------------------
  *
  * The site is a vertical cross-section at a fixed `z`. Falling blocks move along
- * exactly one axis (`domain/block-position-key.ts`'s `above` / `below`), so the
+ * exactly one axis (kernel's `adjacentBlockPosition`, `'up'` / `'down'`), so the
  * third dimension adds nothing a viewer can use and costs the ability to see a
  * whole column at once. The store underneath is fully three-dimensional and the
  * chunk arithmetic is real — `cx = floor(x / 16)`, which is what makes the

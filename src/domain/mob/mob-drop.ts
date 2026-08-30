@@ -13,8 +13,8 @@
  *     the multiplication.
  *
  * This file is the mob-side twin of that sentence. `gunpowder` is a NAME and
- * names are kernel's (`../item-vocabulary`, mirroring `mc-kernel`'s
- * `domain/item-type.ts`, where the literal arrived with the note "mob drops —
+ * names are kernel's (`ITEM_TYPES`, `mc-kernel/domain/item-type.ts`, where the
+ * literal arrived with the note "mob drops —
  * plan.md §3.11 gives the rules to mx-gameplay; the vocabulary is kernel's").
  * "One, always, unless it blew itself up" is a RULE and it is here.
  *
@@ -44,7 +44,7 @@
  * seven roster entries that do have a `chance`, and taking them now is cheaper
  * than retrofitting determinism onto a signature later.
  */
-import type { ItemType } from '../item-vocabulary.js'
+import type { ItemType } from '@nerima-games/mc-kernel'
 
 /**
  * One line of a mob's loot, in kernel's vocabulary.
@@ -168,7 +168,7 @@ export const GHAST_XP_REWARD = 5
  * `chance` any real mob in this repository has, so `rollMobDrop`'s gate finally
  * runs against a table rather than against one written for the test.
  *
- * The ITEM is not. The reference drops `BLAZE_ROD`; `../item-vocabulary` has no
+ * The ITEM is not. The reference drops `BLAZE_ROD`; kernel's `ITEM_TYPES` has no
  * `blaze_rod`, and it does have `blaze_powder`, which kernel added with the note
  * quoted in that file's header —
  *

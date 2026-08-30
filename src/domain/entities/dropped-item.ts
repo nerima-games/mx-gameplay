@@ -10,7 +10,7 @@ import {
 import { Effect } from 'effect'
 import type { Position } from '@nerima-games/mc-kernel'
 import { changed, DESPAWNED, UNCHANGED, type Entity, type EntityManagerApi } from '@nerima-games/mc-sim'
-import { StackCount } from '../frame-contract.js'
+import { StackCount } from '@nerima-games/mc-kernel'
 import {
   DROPPED_ITEM_KIND,
   isDroppedItemBehaviour,

@@ -1,6 +1,6 @@
 import { Effect, Ref } from 'effect'
 import type { Damage } from './death-cause.js'
-import { DeltaTimeSecs } from './frame-contract.js'
+import { DeltaTimeSecs } from '@nerima-games/mc-kernel'
 import {
   SPAWN_PLAYER_VITALS,
   isValidPlayerVitals,

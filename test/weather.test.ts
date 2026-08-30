@@ -33,7 +33,7 @@ import { describe, expect, it } from '@effect/vitest'
 import { makeTimeService } from '@nerima-games/mc-sim'
 import { Effect, Ref } from 'effect'
 import { hostileSpawnsAllowed, NOON_FRACTION } from '../src/domain/day-night'
-import { DeltaTimeSecs } from '../src/domain/frame-contract'
+import { DeltaTimeSecs } from '@nerima-games/mc-kernel'
 import { DEFAULT_ROLL_SEED } from '../src/domain/frame-rolls'
 import {
   advanceWeather,

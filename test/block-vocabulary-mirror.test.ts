@@ -59,13 +59,14 @@ import {
   resolveDrop,
   type BlockType,
 } from '../src/domain/block-vocabulary'
-import { ITEM_TYPES } from '../src/domain/item-vocabulary'
+import { ITEM_TYPES } from '@nerima-games/mc-kernel'
 
 describe('the kernel capability mirror', () => {
   it.effect('does not leak into this package\'s published surface', () =>
     Effect.gen(function* () {
       // `index.ts` deliberately omits this module, exactly as it omits
-      // `domain/chunk-store-port.ts` and `domain/frame-contract.ts`.
+      // `domain/chunk-store-port.ts` (`domain/frame-contract.ts` is gone —
+      // Wave 1 (W1-M3) repointed it to kernel directly and deleted it).
       // Re-exporting another repository's vocabulary would make deleting the
       // stand-in a breaking change for every consumer of mx-gameplay.
       const barrel = yield* Effect.promise(() => import('../src/index'))

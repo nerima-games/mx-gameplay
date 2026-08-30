@@ -86,7 +86,7 @@
  * correcting a transcribed number is not a test edit — the same convention
  * mc-worldgen's `test/portal-frame.test.ts` uses for its two unjustified bounds.
  */
-import type { DeltaTimeSecs } from './frame-contract.js'
+import type { DeltaTimeSecs } from '@nerima-games/mc-kernel'
 
 /**
  * How long a traveller must stand in a portal block before it fires.
@@ -173,7 +173,7 @@ const dwell = (dwelledSecs: number): PortalDwellStep =>
  * repository owns」.
  *
  * `dt = 0` is legal and ADVANCES NOTHING rather than being rejected: a frame may
- * be scheduled twice inside one clock tick (`./frame-contract`), and a dwell
+ * be scheduled twice inside one clock tick (kernel's `domain/quantities.ts`), and a dwell
  * that accrued on a zero delta would fire sooner on a faster machine.
  *
  * ---------------------------------------------------------------------------

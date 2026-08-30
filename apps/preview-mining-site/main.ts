@@ -174,7 +174,7 @@ import {
   writeLine,
 } from './terminal'
 import type { BlockId } from '../../src/domain/chunk-store-port'
-import type { PositionKey } from '../../src/domain/position-key'
+import type { BlockPositionKey } from '@nerima-games/mc-kernel'
 
 const BOUNDS = { width: 26, height: 18 }
 
@@ -189,7 +189,7 @@ type State = {
   arena: ArenaState
   showHelp: boolean
   /** Cached each redraw so the renderers stay pure functions. */
-  pending: ReadonlyArray<PositionKey>
+  pending: ReadonlyArray<BlockPositionKey>
 }
 
 const scenarioAt = (index: number): Scenario => {

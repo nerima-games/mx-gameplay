@@ -57,9 +57,8 @@
  * needed in order to allow the placement in the first place.
  */
 import { Effect } from 'effect'
-import { horizontalNeighbours } from '../block-position-key.js'
+import { adjacentBlockPosition, blockPosition, horizontalBlockNeighbours } from '@nerima-games/mc-kernel'
 import { blockIdOf, blockTypeOfId } from '../block-vocabulary.js'
-import { below } from '../block-position-key.js'
 import type { BlockId, BlockPosition, BlockReading, ChunkStoreApi } from '../chunk-store-port.js'
 
 /** Is this byte sugar cane? Asked of kernel's registry; see `./place-mushroom-light`. */
@@ -81,8 +80,8 @@ const isWaterBlock = (block: BlockId): boolean => blockTypeOfId(block) === 'wate
  * established by a side nobody read, and the alternative would place a cane
  * against unloaded space and let the shoreline turn out not to be there. The
  * reference cannot express this case at all — it drops out-of-chunk neighbours
- * from the list entirely, which `../block-position-key`'s `horizontalNeighbours`
- * records as a defect rather than reproduces.
+ * from the list entirely, which kernel's `horizontalBlockNeighbours`
+ * fixes rather than reproduces.
  */
 export const hasRequiredSugarCaneAdjacentWater = (
   supportBelow: BlockReading | undefined,
@@ -120,8 +119,9 @@ export const sugarCaneWaterObjection = (
       return undefined
     }
 
+    const belowSupport = adjacentBlockPosition(blockPosition(position.x, position.y, position.z), 'down')
     const besideSupport: Array<BlockReading> = []
-    for (const neighbour of horizontalNeighbours(below(position))) {
+    for (const neighbour of horizontalBlockNeighbours(belowSupport)) {
       besideSupport.push(yield* store.getBlock(neighbour))
     }
 

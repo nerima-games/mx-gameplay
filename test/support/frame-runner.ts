@@ -26,7 +26,7 @@
  * asserts that no such export exists.
  */
 import { Effect } from 'effect'
-import { DeltaTimeSecs, type StageRegistration } from '../../src/domain/frame-contract'
+import { DeltaTimeSecs, type StageRegistration } from '@nerima-games/mc-kernel'
 import { FrameServicesLayer } from './frame-services'
 
 /** One frame's worth of simulated time, as a 60 Hz loop would produce it. */
@@ -65,9 +65,9 @@ export const schedule = (
  * is applied here and not left to each caller: a scenario test asks this
  * function for a frame, and a frame it cannot run is not a frame.
  *
- * The layer is empty today, because `FrameServices` is `never` today. It is
- * still written down — see `./frame-services.ts` for why deleting the pipe is
- * invisible now and expensive later.
+ * `FrameServices` is kernel's `ClockPort`, so the layer now discharges a real
+ * (fixed, deterministic) clock — see `./frame-services.ts` for why removing
+ * this pipe would fail to typecheck rather than fail silently.
  */
 export const runFrame = (
   stages: ReadonlyArray<StageRegistration>,

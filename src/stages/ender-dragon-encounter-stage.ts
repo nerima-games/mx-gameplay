@@ -1,5 +1,5 @@
 import { Effect, Ref } from 'effect'
-import type { DeltaTimeSecs, StageRegistration } from '../domain/frame-contract.js'
+import type { DeltaTimeSecs, StageRegistration } from '@nerima-games/mc-kernel'
 import {
   advanceEnderDragonEncounter,
   damageEnderDragonByPlayer,

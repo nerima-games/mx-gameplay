@@ -1,6 +1,6 @@
 import { describe, expect, it } from '@effect/vitest'
 import { Effect } from 'effect'
-import { DeltaTimeSecs } from '../src/domain/frame-contract'
+import { DeltaTimeSecs } from '@nerima-games/mc-kernel'
 import { makeInMemoryVitals, type PlayerVitals } from '../src/domain/in-memory-vitals'
 import { makeGeneratedWorld } from '../src/domain/in-memory-world'
 import { isValidPlayerVitals, SPAWN_PLAYER_VITALS } from '../src/index'

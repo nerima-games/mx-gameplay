@@ -1,5 +1,4 @@
-import type { DeltaTimeSecs } from './frame-contract.js'
-import type { ItemType } from './item-vocabulary.js'
+import type { DeltaTimeSecs, ItemType } from '@nerima-games/mc-kernel'
 import type { StatusEffectApplication } from './status-effect.js'
 
 export const BREWING_INGREDIENTS = ['nether_wart', 'sugar', 'spider_eye', 'ghast_tear'] as const

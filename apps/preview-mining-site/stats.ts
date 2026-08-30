@@ -20,9 +20,14 @@
  * Every check answers a question of the form "if this were broken, what would I
  * see?". A measurement with no such answer is a number, not a check.
  */
-import { Effect, Ref } from 'effect'
-import { positionKeyOf } from '../../src/domain/block-position-key'
-import { positionKey } from '../../src/domain/position-key'
+import { Brand, Effect, Ref } from 'effect'
+import {
+  blockPosition,
+  blockPositionKeyOf,
+  DeltaTimeSecs,
+  MAX_STACK_COUNT,
+  type BlockPositionKey,
+} from '@nerima-games/mc-kernel'
 import { type BlockId } from '../../src/domain/chunk-store-port'
 import { dayPhase, hostileSpawnsAllowed, isNight } from '../../src/domain/day-night'
 import {
@@ -43,7 +48,6 @@ import {
 } from '../../src/domain/mob/creeper-fuse'
 import { canHostileSpawnAt } from '../../src/domain/mob/hostile-spawn'
 import { carryOver, splitBudget, type FluidWorkItem } from '../../src/domain/fluid-frontier'
-import { DeltaTimeSecs, MAX_STACK_COUNT } from '../../src/domain/frame-contract'
 import { GAMEPLAY_STAGE_IDS } from '../../src/stages/stage-ids'
 import { SCENARIOS, scenarioByName } from './scenarios'
 import {
@@ -90,6 +94,20 @@ import {
 } from '../../src/domain/weather'
 
 const BOUNDS = { width: 26, height: 18 }
+
+/**
+ * A scenario-graph identifier, not a coordinate.
+ *
+ * This report's fluid-frontier fixtures name cells `'w0'`, `'a'`, `'b'` — the
+ * caller cares about which entry is which, not where in the world it sits — so
+ * they cannot go through kernel's `BlockPositionKey(value)`, which validates
+ * the canonical `x,y,z` text and throws on anything else. Before the Wave 1
+ * (W1-M3) repoint this repository's own `domain/position-key.ts` exposed the
+ * same unchecked construction; this is that same escape hatch, expressed with
+ * `Brand.nominal` (the mechanism kernel's own constructor is built on) rather
+ * than a type assertion.
+ */
+const opaqueTestKey = Brand.nominal<BlockPositionKey>()
 
 /**
  * The item names a mined falling block yields, ASKED of kernel's table rather
@@ -560,10 +578,10 @@ const deltaTimeUnused = Effect.gen(function* () {
 /** The split has one owner for deferred cells: `carryOver`. */
 const lavaRetentionOverlap = Effect.sync((): Check => {
   const frontier: ReadonlyArray<FluidWorkItem> = [
-    { key: positionKey('w0'), kind: 'water' },
-    { key: positionKey('l0'), kind: 'lava' },
-    { key: positionKey('l1'), kind: 'lava' },
-    { key: positionKey('l2'), kind: 'lava' },
+    { key: opaqueTestKey('w0'), kind: 'water' },
+    { key: opaqueTestKey('l0'), kind: 'lava' },
+    { key: opaqueTestKey('l1'), kind: 'lava' },
+    { key: opaqueTestKey('l2'), kind: 'lava' },
   ]
   const split = splitBudget(frontier, { lavaTickActive: false, budget: 64 })
   const carried = carryOver(frontier, split)
@@ -602,9 +620,9 @@ const lavaRetentionOverlap = Effect.sync((): Check => {
  */
 const carryOverKeyCollision = Effect.sync((): Check => {
   const frontier: ReadonlyArray<FluidWorkItem> = [
-    { key: positionKey('10,64,10'), kind: 'water' },
-    { key: positionKey('10,64,10'), kind: 'lava' },
-    { key: positionKey('11,64,10'), kind: 'water' },
+    { key: opaqueTestKey('10,64,10'), kind: 'water' },
+    { key: opaqueTestKey('10,64,10'), kind: 'lava' },
+    { key: opaqueTestKey('11,64,10'), kind: 'water' },
   ]
   const split = splitBudget(frontier, { lavaTickActive: false, budget: 64 })
   const carried = carryOver(frontier, split)
@@ -642,8 +660,8 @@ const fluidFrontierRace = Effect.gen(function* () {
   const fluids = site.stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids)
 
   const seeded: ReadonlyArray<FluidWorkItem> = [
-    { key: positionKey('a'), kind: 'water' },
-    { key: positionKey('b'), kind: 'water' },
+    { key: opaqueTestKey('a'), kind: 'water' },
+    { key: opaqueTestKey('b'), kind: 'water' },
   ]
   yield* Ref.set(site.state.fluidFrontier, seeded)
 
@@ -1362,7 +1380,7 @@ export const buildStatsReport: Effect.Effect<ReadonlyArray<string>> = Effect.gen
       // edit above it is a citation that will rot again.
       `(lava was missing once — see REPLACEABLE_IDS in domain/block-vocabulary.ts)`,
   )
-  lines.push(`positionKeyOf({x:-1,y:2,z:-3}) = ${positionKeyOf({ x: -1, y: 2, z: -3 })}`)
+  lines.push(`positionKeyOf({x:-1,y:2,z:-3}) = ${blockPositionKeyOf(blockPosition(-1, 2, -3))}`)
   lines.push(`glyph check: ${glyphOf(SAND).name}/${glyphOf(GRAVEL).name}`)
 
   return lines

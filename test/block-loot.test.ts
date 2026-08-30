@@ -62,7 +62,7 @@ import {
   rollFortuneExtraDrops,
   type MinedItem,
 } from '../src/domain/interactions/block-loot'
-import { ITEM_TYPES } from '../src/domain/item-vocabulary'
+import { ITEM_TYPES } from '@nerima-games/mc-kernel'
 
 const AIR = 0
 const STONE = 2

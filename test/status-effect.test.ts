@@ -1,5 +1,5 @@
 import { describe, expect, it } from '@effect/vitest'
-import { DeltaTimeSecs } from '../src/domain/frame-contract'
+import { DeltaTimeSecs } from '@nerima-games/mc-kernel'
 import {
   SPEED_MOVEMENT_MULTIPLIER,
   applyStatusEffect,

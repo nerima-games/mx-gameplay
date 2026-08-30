@@ -264,7 +264,7 @@ export const weatherExpires = (state: WeatherState, dt: number): boolean =>
  *
  * A NON-FINITE `dt` ADVANCES NOTHING rather than poisoning the countdown. The
  * frame's delta comes from mc-compose and is not this repository's to trust
- * (`../frame-contract`'s `DeltaTimeSecs` is a brand, not a refinement), and a
+ * (kernel's `DeltaTimeSecs` is a brand, not a refinement), and a
  * single `NaN` frame would otherwise make `remainingSecs` `NaN` for good — the
  * preview's finding F5 in a second place.
  */

@@ -40,7 +40,12 @@
  * right for drawing and wrong for simulating.
  */
 import { Effect } from 'effect'
-import { above, below, positionKeyOf, positionOfKey } from '../block-position-key.js'
+import {
+  adjacentBlockPosition,
+  blockPositionKeyOf,
+  blockPositionOfKey,
+  type BlockPositionKey,
+} from '@nerima-games/mc-kernel'
 import {
   AIR_BLOCK_ID,
   type BlockId,
@@ -49,7 +54,6 @@ import {
   type ChunkStoreApi,
 } from '../chunk-store-port.js'
 import { fallsWhenUnsupported, isReplaceable } from '../block-vocabulary.js'
-import type { PositionKey } from '../position-key.js'
 
 export type FallingBlockMoves = {
   /** How many blocks actually sank one cell this tick. */
@@ -61,7 +65,7 @@ export type FallingBlockMoves = {
    * finished; nothing external will re-dirty it, and without this the sand
    * stops one cell short of where it belongs.
    */
-  readonly destinations: ReadonlyArray<PositionKey>
+  readonly destinations: ReadonlyArray<BlockPositionKey>
 }
 
 /** The block that would fall from `reading`, or `undefined` if none would. */
@@ -154,15 +158,15 @@ const vacated = (outcome: BlockWriteOutcome): boolean => {
  */
 export const applyFallingBlocks = (
   store: ChunkStoreApi,
-  batch: ReadonlyArray<PositionKey>,
+  batch: ReadonlyArray<BlockPositionKey>,
 ): Effect.Effect<FallingBlockMoves> =>
   Effect.gen(function* () {
-    const destinations: Array<PositionKey> = []
+    const destinations: Array<BlockPositionKey> = []
     let moved = 0
 
     for (const positionKey of batch) {
-      const target = positionOfKey(positionKey)
-      const source = above(target)
+      const target = blockPositionOfKey(positionKey)
+      const source = adjacentBlockPosition(target, 'up')
 
       const material = fallingMaterial(yield* store.getBlock(source))
       if (material === undefined) {
@@ -194,7 +198,10 @@ export const applyFallingBlocks = (
           // The cell BELOW the new resting place, so the column keeps sinking,
           // and the cell it came FROM, because whatever was above that is now
           // unsupported in its turn.
-          destinations.push(positionKeyOf(below(target)), positionKeyOf(source))
+          destinations.push(
+            blockPositionKeyOf(adjacentBlockPosition(target, 'down')),
+            blockPositionKeyOf(source),
+          )
           break
         }
 

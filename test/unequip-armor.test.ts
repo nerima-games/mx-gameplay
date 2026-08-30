@@ -16,7 +16,7 @@ import {
   type Equipment,
   type UnequipPort,
 } from '../src/domain/interactions/unequip-armor'
-import type { ItemType } from '../src/domain/item-vocabulary'
+import type { ItemType } from '@nerima-games/mc-kernel'
 
 /**
  * A body and an inventory, recording every call.

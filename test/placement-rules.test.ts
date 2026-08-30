@@ -26,9 +26,8 @@ import {
   isPlaceableItem,
   type PlaceableItemType,
 } from '../src/domain/block-vocabulary'
-import { ITEM_TYPES } from '../src/domain/item-vocabulary'
+import { blockPosition, horizontalBlockNeighbours, ITEM_TYPES } from '@nerima-games/mc-kernel'
 import { AIR_BLOCK_ID, type BlockId, type BlockPosition, type BlockReading } from '../src/domain/chunk-store-port'
-import { horizontalNeighbours } from '../src/domain/block-position-key'
 import {
   MAX_MUSHROOM_PLACEMENT_LIGHT,
   isMushroomBlock,
@@ -67,18 +66,18 @@ const target: BlockPosition = { x: 4, y: 64, z: 4 }
 const supportCell: BlockPosition = { x: 4, y: 63, z: 4 }
 const block = (blockId: BlockId): BlockReading => ({ _tag: 'Block', block: blockId })
 
-describe('horizontalNeighbours', () => {
+describe('horizontalBlockNeighbours', () => {
   it('returns all four, in a fixed order, and does not clip at a chunk edge', () => {
     // THE REFERENCE'S DEFECT, NOT REPRODUCED. `localHorizontalNeighbors` drops
     // any neighbour outside the chunk it holds, so a cactus at x = 15 is checked
     // on three sides and a sugar cane at x = 0 cannot see water one cell west.
-    expect(horizontalNeighbours({ x: 0, y: 64, z: 0 })).toStrictEqual([
+    expect(horizontalBlockNeighbours(blockPosition(0, 64, 0))).toStrictEqual([
       { x: -1, y: 64, z: 0 },
       { x: 1, y: 64, z: 0 },
       { x: 0, y: 64, z: -1 },
       { x: 0, y: 64, z: 1 },
     ])
-    expect(horizontalNeighbours({ x: 15, y: 64, z: 15 })).toHaveLength(4)
+    expect(horizontalBlockNeighbours(blockPosition(15, 64, 15))).toHaveLength(4)
   })
 })
 

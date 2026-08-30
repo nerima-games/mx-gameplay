@@ -34,7 +34,7 @@
  */
 import { describe, expect, it } from '@effect/vitest'
 import { Effect } from 'effect'
-import { DeltaTimeSecs } from '../src/domain/frame-contract'
+import { DeltaTimeSecs } from '@nerima-games/mc-kernel'
 import {
   OUTSIDE_PORTAL,
   PORTAL_ACTIVATION_SECS,

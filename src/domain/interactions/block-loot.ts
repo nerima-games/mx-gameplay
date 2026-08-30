@@ -68,7 +68,7 @@ import {
   type HarvestContext,
 } from '../block-vocabulary.js'
 import type { BlockId } from '../chunk-store-port.js'
-import type { ItemType } from '../item-vocabulary.js'
+import type { ItemType } from '@nerima-games/mc-kernel'
 
 /**
  * What actually lands: a name and a number, and nothing that needs resolving.
@@ -210,14 +210,14 @@ type BonusDropLine = {
  * yields WHEAT_SEEDS from both tall grass and ferns. Of those item types this
  * build has two:
  *
- *   `stick`         in `../item-vocabulary`. Shipped below.
+ *   `stick`         in kernel's `ITEM_TYPES`. Shipped below.
  *   `apple`         NOT an `ItemType`. One row in kernel's roster, no edit here.
  *   `sapling`       a `BlockType` and NOT an `ItemType` — so it is in
  *                   `../block-vocabulary`'s `UNITEMISED_BLOCK_TYPES`, which is
  *                   the list that exists so this gap is data rather than a
  *                   comment. Breaking leaves cannot yield a sapling you can
  *                   carry until kernel itemises it.
- *   `wheat_seeds`   in `../item-vocabulary`. Both source blocks ship below.
+ *   `wheat_seeds`   in kernel's `ITEM_TYPES`. Both source blocks ship below.
  *
  * The two absent lines are NOT written with a substitute item. `../mob/mob-drop`
  * records the one place this repository did substitute (`blaze_rod` ->

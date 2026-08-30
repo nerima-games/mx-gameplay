@@ -22,8 +22,8 @@
  * "look away and the progress resets" work — the rule everyone knows from
  * playing, and which nothing else in the file mentions.
  *
- * `./block-position-key` is what a caller in this repository uses to make one.
- * Taking the key rather than a `BlockPosition` is the reference's choice and it
+ * Kernel's `blockPositionKeyOf` is what a caller in this repository uses to make
+ * one. Taking the key rather than a `BlockPosition` is the reference's choice and it
  * is kept: a position would invite this file to do arithmetic on coordinates,
  * and there is no arithmetic here that should ever depend on where the block is.
  *
@@ -107,8 +107,8 @@ export const INSTANT_BREAK: AdvanceBreakProgressResult = {
  * increments by exactly 1 and takes no delta, which ties the mining rate to the
  * frame rate — a real defect, and NOT one this file can fix: the fix is to take
  * a `DeltaTimeSecs` and a ticks-per-second, and both of those are the frame's
- * to supply. `./frame-contract` is where that would arrive from. Recorded here
- * rather than silently reproduced.
+ * to supply. Kernel's `domain/quantities.ts` is where that would arrive from.
+ * Recorded here rather than silently reproduced.
  *
  * SWITCHING BLOCKS RESTARTS FROM ZERO rather than carrying the count across.
  * That is the rule the opaque key exists for, and it is why `current` is

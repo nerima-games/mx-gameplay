@@ -11,7 +11,7 @@ import { applyPortalTravel, NO_KNOWN_PORTALS } from '../src/domain/portal-travel
 import { type PlayerPose, type PlayerServiceApi } from '@nerima-games/mc-sim'
 import { blockIdOf } from '../src/domain/block-vocabulary'
 import { type MobBehaviour } from '../src/domain/entities/mob-frame'
-import { DeltaTimeSecs } from '../src/domain/frame-contract'
+import { DeltaTimeSecs } from '@nerima-games/mc-kernel'
 import {
   drainEndPortalTravels,
   drainPortalTravels,

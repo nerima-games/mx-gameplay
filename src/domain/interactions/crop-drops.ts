@@ -35,7 +35,7 @@
  * crop whose ripe rule is missing, so an incomplete table cannot silently
  * under-drop.
  */
-import type { ItemType } from '../item-vocabulary.js'
+import type { ItemType } from '@nerima-games/mc-kernel'
 import type { BlockType } from '../block-vocabulary.js'
 
 /** An item and how many of it. */

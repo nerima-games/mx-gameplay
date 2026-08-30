@@ -60,7 +60,7 @@ export const CHUNK_SIDE = 16
 export const WORLD_HEIGHT = 256
 
 /**
- * The double's own key encoding, deliberately NOT `domain/block-position-key.ts`.
+ * The double's own key encoding, deliberately NOT kernel's `blockPositionKeyOf`.
  *
  * Sharing that function would make a double consistent with a broken encoding:
  * the rule would write where the double reads and every test would pass while

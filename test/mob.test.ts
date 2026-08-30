@@ -40,8 +40,7 @@ import { fileURLToPath } from 'node:url'
 import { AIR_BLOCK_ID, type BlockId } from '../src/domain/chunk-store-port'
 import { validSpawnSurface } from '../src/domain/block-vocabulary'
 import { applyDamage, deathMessage, fullHealth, isDead, MAX_HEALTH_POINTS } from '../src/domain/death-cause'
-import { DeltaTimeSecs } from '../src/domain/frame-contract'
-import { ITEM_TYPES } from '../src/domain/item-vocabulary'
+import { DeltaTimeSecs, ITEM_TYPES } from '@nerima-games/mc-kernel'
 import {
   CREEPER_FUSE_SECS,
   CREEPER_IGNITION_RANGE_BLOCKS,
@@ -217,7 +216,7 @@ describe('creeper: the fuse is a state machine with a timer and an irreversible 
     Effect.sync(() => {
       // The structural half of the finding F5 argument: `DeltaTimeSecs` is
       // `Brand.refined` on `Number.isFinite(value) && value >= 0`
-      // (domain/frame-contract.ts:57), so a fuse cannot be advanced by a
+      // (kernel's domain/quantities.ts), so a fuse cannot be advanced by a
       // non-number and cannot be wound backwards. There is no overload here
       // that takes a bare number.
       expect(() => DeltaTimeSecs(Number.NaN)).toThrow()

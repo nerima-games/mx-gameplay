@@ -1,5 +1,5 @@
 import { describe, expect, it } from '@effect/vitest'
-import { DeltaTimeSecs } from '../src/domain/frame-contract'
+import { DeltaTimeSecs } from '@nerima-games/mc-kernel'
 import { TNT_EXPLOSION_POWER } from '../src/domain/mob/explosion'
 import {
   FRESH_PRIMED_TNT,

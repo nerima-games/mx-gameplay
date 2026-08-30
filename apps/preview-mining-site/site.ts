@@ -65,7 +65,15 @@
  * export exists).
  */
 import { Effect, Ref } from 'effect'
-import { below as belowOf, positionKeyOf } from '../../src/domain/block-position-key'
+import {
+  adjacentBlockPosition,
+  blockPosition as kernelBlockPosition,
+  blockPositionKeyOf,
+  DeltaTimeSecs,
+  type BlockPositionKey,
+  type StageId,
+  type StageRegistration,
+} from '@nerima-games/mc-kernel'
 import { type BlockId, type BlockPosition } from '../../src/domain/chunk-store-port'
 import {
   blockIdOf,
@@ -76,7 +84,6 @@ import {
 } from '../../src/domain/block-vocabulary'
 import { makeTimeService, type EntityManagerApi } from '@nerima-games/mc-sim'
 import { FALLING_BLOCK_MOVES_PER_TICK } from '../../src/domain/falling-block'
-import { DeltaTimeSecs, type StageId, type StageRegistration } from '../../src/domain/frame-contract'
 import { NO_TOOL, type BlockLootContext, type MinedItem } from '../../src/domain/interactions/block-loot'
 import { spawnMobDrops } from '../../src/domain/entities/dropped-item'
 import {
@@ -85,7 +92,6 @@ import {
   type MobExperienceEvent,
 } from '../../src/domain/entities/mob-frame'
 import { isSupportSensitiveOfBlock, placementVerdict } from '../../src/domain/interactions/place-block'
-import type { PositionKey } from '../../src/domain/position-key'
 import { INITIAL_WEATHER, type WeatherState } from '../../src/domain/weather'
 import type { IgnitionItemType } from '../../src/domain/interactions/use-flint-and-steel'
 import {
@@ -345,10 +351,10 @@ export const describeTool = (tool: BlockLootContext): string => {
 /** Queue a break at this position. One of the two ways a rule is asked to act. */
 export const requestBreak = (site: Site, position: BlockPosition): Effect.Effect<void> =>
   Effect.map(
-    Ref.update(site.state.pendingBreaks, (queue) => [...queue, positionKeyOf(position)]),
+    Ref.update(site.state.pendingBreaks, (queue) => [...queue, blockPositionKeyOf(kernelBlockPosition(position.x, position.y, position.z))]),
     () => {
       site.submitted += 1
-      site.note = `queued break at ${positionKeyOf(position)}`
+      site.note = `queued break at ${blockPositionKeyOf(kernelBlockPosition(position.x, position.y, position.z))}`
     },
   )
 
@@ -367,11 +373,11 @@ export const requestPlace = (
   Effect.map(
     Ref.update(site.state.pendingPlacements, (queue): ReadonlyArray<PlacementRequest> => [
       ...queue,
-      { positionKey: positionKeyOf(position), heldItem },
+      { positionKey: blockPositionKeyOf(kernelBlockPosition(position.x, position.y, position.z)), heldItem },
     ]),
     () => {
       site.submitted += 1
-      site.note = `queued place of ${heldItem} at ${positionKeyOf(position)}`
+      site.note = `queued place of ${heldItem} at ${blockPositionKeyOf(kernelBlockPosition(position.x, position.y, position.z))}`
     },
   )
 
@@ -405,7 +411,7 @@ export const requestItemUse = (
     enqueueItemUse(site.state, `preview:${String(site.submitted + 1)}`, position, heldItem),
     () => {
       site.submitted += 1
-      site.note = `queued use of ${heldItem} at ${positionKeyOf(position)}`
+      site.note = `queued use of ${heldItem} at ${blockPositionKeyOf(kernelBlockPosition(position.x, position.y, position.z))}`
     },
   )
 
@@ -436,7 +442,7 @@ export const previewPlacement = (
     const block = blockIdOf(blockOfPlaceableItem(heldItem))
     const supportBelow =
       block !== undefined && isSupportSensitiveOfBlock(block)
-        ? yield* site.world.api.getBlock(belowOf(position))
+        ? yield* site.world.api.getBlock(adjacentBlockPosition(kernelBlockPosition(position.x, position.y, position.z), 'down'))
         : undefined
 
     return placementVerdict(request, target, supportBelow)
@@ -456,8 +462,8 @@ export const poke = (site: Site, position: BlockPosition, block: BlockId): void 
   site.world.poke(position, block)
   site.note =
     block === AIR
-      ? `erased ${positionKeyOf(position)} directly in the store — no rule ran, nothing was disturbed`
-      : `poked ${positionKeyOf(position)} directly in the store — no rule ran, nothing was disturbed`
+      ? `erased ${blockPositionKeyOf(kernelBlockPosition(position.x, position.y, position.z))} directly in the store — no rule ran, nothing was disturbed`
+      : `poked ${blockPositionKeyOf(kernelBlockPosition(position.x, position.y, position.z))} directly in the store — no rule ran, nothing was disturbed`
 }
 
 const pendingSize = (site: Site): Effect.Effect<number> =>
@@ -599,7 +605,7 @@ export const floatingIn = (site: Site): ReadonlyArray<BlockPosition> =>
   floatingBlocks(site.world, allCells(site))
 
 /** The pending queue, as coordinates, for the `queue` view. */
-export const pendingPositions = (site: Site): Effect.Effect<ReadonlyArray<PositionKey>> =>
+export const pendingPositions = (site: Site): Effect.Effect<ReadonlyArray<BlockPositionKey>> =>
   Effect.map(Ref.get(site.state.fallingBlocks), (queue) => [...queue.pending])
 
 export const STAGE_ORDER_LABEL = (site: Site): string =>

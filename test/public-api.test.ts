@@ -12,7 +12,6 @@
  * here keeps the barrel honest, not the API frozen.
  */
 import { describe, expect, it } from '@effect/vitest'
-import { ITEM_TYPES as KERNEL_ITEM_TYPES } from '@nerima-games/mc-kernel'
 import { Effect } from 'effect'
 import * as gameplay from '../src/index'
 import {
@@ -23,16 +22,9 @@ import {
 import { applyDamage } from '../src/domain/death-cause'
 import { planFallingBlockMoves, takeBatch } from '../src/domain/falling-block'
 import { resolveFoodUse } from '../src/domain/interactions/eat-food'
-import { ITEM_TYPES } from '../src/domain/item-vocabulary'
 import { GAMEPLAY_STAGE_IDS } from '../src/stages/stage-ids'
 
 describe('public API surface', () => {
-  it.effect('keeps the provisional item vocabulary mirrored', () =>
-    Effect.sync(() => {
-      expect(ITEM_TYPES).toStrictEqual(KERNEL_ITEM_TYPES)
-    }),
-  )
-
   it.effect('re-exports the stage registration contract — the part mc-compose actually consumes', () =>
     Effect.sync(() => {
       const contract = [
@@ -98,21 +90,19 @@ describe('public API surface', () => {
     }),
   )
 
-  // REGRESSION: `domain/frame-contract.ts` and `domain/position-key.ts` are
-  // stand-ins for @nerima-games/mc-kernel with a deletion date written into
-  // their headers. The barrel used to `export *` from both, which published
-  // `StageId` and `DeltaTimeSecs` as API of a package that does not own them —
-  // and therefore turned the promised deletion into a breaking change for every
-  // consumer. mc-sim, mc-render and mc-playground-kit mention their mirrors in
-  // an `index.ts` comment and re-export nothing; this repository now matches.
+  // REGRESSION: this repository's `domain/frame-contract.ts`, `domain/position-key.ts`,
+  // `domain/item-vocabulary.ts` and `domain/block-position-key.ts` were stand-ins for
+  // @nerima-games/mc-kernel with a deletion date written into their headers; Wave 1
+  // (W1-M3) repointed every importer at kernel directly and deleted all four. The
+  // barrel must still not republish kernel's vocabulary as its own — that would make
+  // `StageId`, `DeltaTimeSecs`, `BlockPositionKey` and the rest API of a package that
+  // does not own them, a breaking change for every consumer the day kernel's own
+  // shape moves. mc-sim, mc-render and mc-playground-kit mention their mirrors in
+  // an `index.ts` comment and re-export nothing; this repository matches.
   it.effect('REGRESSION: does not republish mc-kernel’s vocabulary as its own', () =>
     Effect.sync(() => {
       // `ITEM_TYPES` joined this list when the creeper's drop needed a name for
-      // gunpowder. `domain/item-vocabulary.ts` mirrors kernel's item roster the
-      // way `domain/frame-contract.ts` mirrors its frame types, and it carries
-      // the same deletion date — so publishing it here would turn that promised
-      // deletion into a breaking change, and would give the organisation a
-      // second place to look up what an item is called.
+      // gunpowder — kernel's item roster, taken directly since W1-M3.
       //
       // `BLOCK_TYPES`, `blockTypeOfId`, `itemOfBlock`, `dropOfBlockId` and the
       // harvest vocabulary joined it when the block loot table needed the
@@ -124,6 +114,13 @@ describe('public API surface', () => {
       const kernelsToOwn = [
         'StageId',
         'DeltaTimeSecs',
+        'StackCount',
+        'MAX_STACK_COUNT',
+        'ClockPort',
+        'BlockPositionKey',
+        'blockPositionKeyOf',
+        'blockPositionOfKey',
+        'isBlockPositionKey',
         'ITEM_TYPES',
         'isItemType',
         'BLOCK_TYPES',

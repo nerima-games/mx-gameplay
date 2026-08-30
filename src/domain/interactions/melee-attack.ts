@@ -1,7 +1,7 @@
 import type { Position } from '@nerima-games/mc-kernel'
 import type { Entity } from '@nerima-games/mc-sim'
 import { HOSTILE_KINDS, type MobBehaviour } from '../entities/mob-frame.js'
-import type { ItemType } from '../item-vocabulary.js'
+import type { ItemType } from '@nerima-games/mc-kernel'
 import { shotTarget, type ShotHit } from './bow-shot.js'
 
 /** Vanilla-style survival melee reach, measured from the player's eye position. */

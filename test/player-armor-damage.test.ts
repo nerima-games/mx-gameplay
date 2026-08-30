@@ -1,7 +1,7 @@
 import { describe, expect, it } from '@effect/vitest'
 import type { Slot } from '@nerima-games/mc-sim'
 import { Effect } from 'effect'
-import { StackCount } from '../src/domain/frame-contract'
+import { StackCount } from '@nerima-games/mc-kernel'
 import { EntityId } from '@nerima-games/mc-sim'
 import { ZOMBIE_KIND, type PlayerDamageEvent } from '../src/domain/mob/hostile-combat'
 import { resolveArmoredPlayerDamages } from '../src/stages/registration'

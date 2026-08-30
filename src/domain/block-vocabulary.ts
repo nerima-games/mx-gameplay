@@ -7,14 +7,18 @@
  * This module is scheduled for deletion. Do not build on it.
  * ---------------------------------------------------------------------------
  *
- * WHEN mc-kernel IS PUBLISHED:
- *   1. add `@nerima-games/mc-kernel` to `package.json#dependencies`;
- *   2. delete this file and `./item-vocabulary` together;
+ * mc-kernel IS PUBLISHED (0.5.1). `./item-vocabulary`, the file this was meant
+ * to be deleted alongside, was repointed to kernel and deleted in Wave 1
+ * (W1-M3); this file's own deletion step is:
+ *   1. `@nerima-games/mc-kernel` is already a `package.json#dependencies` entry;
+ *   2. delete this file (the kernel PR for the six exports kernel does not yet
+ *      have, noted below, must publish first — W1-M4);
  *   3. repoint every `from './block-vocabulary.js'` at `'@nerima-games/mc-kernel'`.
  *
  * It is not re-exported wholesale from `index.ts`, for the reason
- * `./frame-contract`, `./position-key`, `./chunk-store-port` and
- * `./item-vocabulary` are not: re-exporting somebody else's vocabulary would
+ * `./chunk-store-port` is not, and the former `./frame-contract`,
+ * `./position-key` and `./item-vocabulary` were not (Wave 1, W1-M3: repointed
+ * to kernel and deleted): re-exporting somebody else's vocabulary would
  * make the promised deletion a breaking change for every consumer of
  * mx-gameplay. The barrel exposes only `isPlaceableItem`, the guard consumers
  * need before requesting gameplay placement. `test/public-api.test.ts` pins
@@ -77,8 +81,8 @@
  * Why whole rosters are transcribed when a handful of literals are used
  * ---------------------------------------------------------------------------
  *
- * `./item-vocabulary`'s header states the rule and it is repeated here because
- * this file has several rosters rather than one: a transcription that is a
+ * The former `./item-vocabulary`'s header stated the rule and it is repeated
+ * here because this file has several rosters rather than one: a transcription that is a
  * SUBSET cannot be compared mechanically. `pnpm check:mirrors` caught `lava`
  * missing from `REPLACEABLE_IDS` below by diffing a whole set against kernel's,
  * and "is it a subset?" is true of a stale mirror too.
@@ -88,7 +92,7 @@
  * this repository's tests pin breaks on deletion day — which is the day it should
  * break, loudly, with the mirror still present to diff against.
  */
-import { ITEM_TYPES, type ItemType } from './item-vocabulary.js'
+import { ITEM_TYPES, type ItemType } from '@nerima-games/mc-kernel'
 import type { BlockId } from './chunk-store-port.js'
 
 // ---------------------------------------------------------------------------
