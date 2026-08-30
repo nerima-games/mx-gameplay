@@ -9,7 +9,7 @@
  * FILED AS UNWRITABLE, AND WRONG FOR THE THIRD TIME
  * ---------------------------------------------------------------------------
  *
- * The triage recorded this as blocked because `../item-vocabulary.ts` has no
+ * The triage recorded this as blocked because kernel's `ITEM_TYPES` has no
  * armour items — no `helmet`, no `chestplate`, none of the sixteen the
  * reference's `ARMOR_DEFENSE_POINTS` names.
  *
@@ -39,7 +39,7 @@
  * test. `UnequipOutcome` names the case so a caller cannot ignore it.
  */
 import { Effect } from 'effect'
-import type { ItemType } from '../item-vocabulary.js'
+import type { ItemType } from '@nerima-games/mc-kernel'
 
 /**
  * Where armour sits, in the order it comes off.
@@ -49,7 +49,7 @@ import type { ItemType } from '../item-vocabulary.js'
  * the key repeatedly expects a stable sequence, and iterating a record's keys
  * instead would make it depend on insertion order.
  *
- * These are PLACES ON THE BODY and not entries in `../item-vocabulary.ts`. See
+ * These are PLACES ON THE BODY and not entries in kernel's `ITEM_TYPES`. See
  * the header — that distinction is why this file exists.
  */
 export const ARMOR_SLOTS = ['helmet', 'chestplate', 'leggings', 'boots'] as const

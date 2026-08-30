@@ -15,7 +15,7 @@ import {
   type BrewingIngredient,
   type BrewingStandState,
 } from '../src/domain/brewing'
-import { DeltaTimeSecs } from '../src/domain/frame-contract'
+import { DeltaTimeSecs } from '@nerima-games/mc-kernel'
 
 const loadedStand = (ingredient: BrewingIngredient): BrewingStandState => {
   const [withFuel] = acceptBrewingFuel(emptyBrewingStandState())

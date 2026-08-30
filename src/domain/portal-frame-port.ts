@@ -11,9 +11,10 @@
  *   2. delete this file;
  *   3. repoint every `from './portal-frame-port.js'` at `'@nerima-games/mc-worldgen'`.
  *
- * It is NOT re-exported from `index.ts`, for the reason `./chunk-store-port`,
- * `./frame-contract`, `./position-key`, `./item-vocabulary` and
- * `./block-vocabulary` are not: re-exporting another repository's rule would
+ * It is NOT re-exported from `index.ts`, for the reason `./chunk-store-port` and
+ * `./block-vocabulary` are not, and the former `./frame-contract`,
+ * `./position-key` and `./item-vocabulary` were not (Wave 1, W1-M3: repointed
+ * to kernel and deleted): re-exporting another repository's rule would
  * make the promised deletion a breaking change for every consumer of
  * mx-gameplay. `test/public-api.test.ts` pins that absence.
  *
@@ -31,10 +32,11 @@
  * Both files are replaced by the same barrel, so by that rule they could be one
  * file. They are two because the SOURCES are two modules with two lifetimes:
  * `application/chunk-store.ts` is a service and `domain/portal-frame.ts` is a
- * pure rule, mc-worldgen may publish or move either without the other, and
- * `./block-vocabulary` and `./item-vocabulary` are already the precedent for two
- * mirrors of one package. One mirror per source module; any number of them per
- * package.
+ * pure rule, mc-worldgen may publish or move either without the other. This
+ * repository already carried the precedent for two mirrors of one package —
+ * `./block-vocabulary` beside the former `./item-vocabulary` (Wave 1, W1-M3:
+ * repointed to kernel and deleted), both mirroring mc-kernel. One mirror per
+ * source module; any number of them per package.
  *
  * ---------------------------------------------------------------------------
  * THE ONE PLACE THIS TRANSCRIPTION IS NOT LITERAL, AND WHY

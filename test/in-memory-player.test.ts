@@ -26,7 +26,7 @@ import {
   clampPitch,
   makeInMemoryPlayer,
 } from '../src/domain/in-memory-player'
-import { ClockPort, MonotonicTimeSecs } from '../src/domain/frame-contract'
+import { ClockPort, MonotonicTimeSecs } from '@nerima-games/mc-kernel'
 import { PlayerService, type PlayerPose } from '@nerima-games/mc-sim'
 
 const pose = (overrides: Partial<PlayerPose> = {}): PlayerPose => ({

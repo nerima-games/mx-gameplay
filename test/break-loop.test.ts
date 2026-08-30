@@ -25,7 +25,7 @@
  */
 import { describe, expect, it } from '@effect/vitest'
 import { Effect, Option, Ref } from 'effect'
-import { positionKey } from '../src/domain/position-key'
+import { BlockPositionKey as positionKey } from '@nerima-games/mc-kernel'
 import {
   drainBlockUseResults,
   gameplayStages,
@@ -38,7 +38,7 @@ import {
 import { GAMEPLAY_STAGE_IDS } from '../src/stages/stage-ids'
 import { makeInMemoryWorld } from '../src/domain/in-memory-world'
 import { cellKey, chunkKey, chunkOf } from '../src/domain/in-memory-chunk-store'
-import { DeltaTimeSecs } from '../src/domain/frame-contract'
+import { DeltaTimeSecs } from '@nerima-games/mc-kernel'
 import type { BlockPosition } from '../src/domain/chunk-store-port'
 import type { MobBehaviour } from '../src/domain/entities/mob-frame'
 import { blockIdOf } from '../src/domain/block-vocabulary'

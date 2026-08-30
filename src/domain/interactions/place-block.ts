@@ -126,7 +126,6 @@ import {
   type ChunkCoord,
   type ChunkStoreApi,
 } from '../chunk-store-port.js'
-import { below } from '../block-position-key.js'
 import {
   blockIdOf,
   blockOfPlaceableItem,
@@ -135,7 +134,7 @@ import {
   isSupportSensitiveBlockId,
   type PlaceableItemType,
 } from '../block-vocabulary.js'
-import type { Position } from '@nerima-games/mc-kernel'
+import { adjacentBlockPosition, blockPosition, type Position } from '@nerima-games/mc-kernel'
 import { cactusSidesObjection, type CactusSidesRefusal } from './place-cactus-sides.js'
 import { doorUpperCell, type DoorUpperCell } from './place-door-upper.js'
 import { mushroomLightObjection, type MushroomLightRefusal } from './place-mushroom-light.js'
@@ -240,7 +239,7 @@ export type PlaceRequest = {
 /**
  * TOTAL, mirroring `./break-block`'s `BreakOutcome`. There is no error channel
  * here because there is none in `StageRegistration.run`
- * (`../frame-contract`), so a failure would have nowhere to go but a `catchAll`
+ * (kernel's `domain/frame.ts`), so a failure would have nowhere to go but a `catchAll`
  * that drops it.
  *
  * Every refusal names WHICH test failed rather than answering `false`, for the
@@ -414,7 +413,12 @@ export const placeBlock = (
     const block = blockIdOf(blockOfPlaceableItem(request.heldItem))
     const supportBelow =
       block !== undefined && isSupportSensitiveOfBlock(block)
-        ? yield* store.getBlock(below(request.position))
+        ? yield* store.getBlock(
+            adjacentBlockPosition(
+              blockPosition(request.position.x, request.position.y, request.position.z),
+              'down',
+            ),
+          )
         : undefined
 
     const verdict = placementVerdict(request, target, supportBelow)

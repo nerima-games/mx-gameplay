@@ -50,7 +50,7 @@ import {
   makeGameplayFrameState,
   requestBowShot,
 } from '../src/stages/registration'
-import { StackCount } from '../src/domain/frame-contract'
+import { StackCount } from '@nerima-games/mc-kernel'
 import { makeChunkStoreDouble } from './support/chunk-store-double'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
 import { makePlayerServiceDouble } from './support/player-service-double'

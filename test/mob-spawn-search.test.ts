@@ -42,7 +42,7 @@ import {
   MAX_SPAWN_DISTANCE_BLOCKS,
   MIN_SPAWN_DISTANCE_BLOCKS,
 } from '../src/domain/mob/hostile-spawn'
-import { DeltaTimeSecs } from '../src/domain/frame-contract'
+import { DeltaTimeSecs } from '@nerima-games/mc-kernel'
 import { GAMEPLAY_STAGE_IDS } from '../src/stages/stage-ids'
 import {
   gameplayStages,

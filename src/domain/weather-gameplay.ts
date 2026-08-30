@@ -1,13 +1,13 @@
 import type { Position } from '@nerima-games/mc-kernel'
 import type { EntityId, EntityKind } from '@nerima-games/mc-sim'
 import type { Dimension } from '@nerima-games/mc-worldgen'
-import type { PositionKey } from './position-key.js'
+import type { BlockPositionKey } from '@nerima-games/mc-kernel'
 import type { Weather } from './weather.js'
 
 export type WeatherDifficulty = 'peaceful' | 'easy' | 'normal' | 'hard'
 
 export type WeatherBlockCandidate = {
-  readonly position: PositionKey
+  readonly position: BlockPositionKey
   readonly block: 'fire' | 'farmland' | 'flammable' | 'other'
   readonly exposedToSky: boolean
 }
@@ -27,8 +27,8 @@ export type WeatherGameplayInput = {
 }
 
 export type WeatherGameplayEvent =
-  | { readonly _tag: 'FireExtinguished'; readonly position: PositionKey }
-  | { readonly _tag: 'FarmlandHydrated'; readonly position: PositionKey }
+  | { readonly _tag: 'FireExtinguished'; readonly position: BlockPositionKey }
+  | { readonly _tag: 'FarmlandHydrated'; readonly position: BlockPositionKey }
   | { readonly _tag: 'LightningStrike'; readonly position: Position }
   | { readonly _tag: 'EntityLightningDamage'; readonly id: EntityId; readonly amount: number }
   | { readonly _tag: 'CreeperCharged'; readonly id: EntityId }
@@ -38,7 +38,7 @@ export type WeatherGameplayEvent =
       readonly from: EntityKind
       readonly to: EntityKind
     }
-  | { readonly _tag: 'FireIgnited'; readonly position: PositionKey }
+  | { readonly _tag: 'FireIgnited'; readonly position: BlockPositionKey }
 
 export type WeatherGameplayState = {
   readonly seed: number

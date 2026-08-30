@@ -28,7 +28,6 @@ export * from './domain/fall-damage.js'
 export * from './domain/entities/mob-frame.js'
 export * from './domain/falling-block.js'
 export * from './domain/fluid-frontier.js'
-export * from './domain/position-key.js'
 export * from './domain/frame-rolls.js'
 export * from './domain/fire-lifecycle.js'
 export * from './domain/chunk-window.js'
@@ -105,22 +104,23 @@ export * from './stages/stage-ids.js'
 export * from './stages/targeted-right-click-route.js'
 
 // --- Provisional ---------------------------------------------------------------
-// Eight modules are temporary local stand-ins for packages that are not
+// Three modules are temporary local stand-ins for packages that are not
 // published yet, and none of their vocabularies is re-exported wholesale:
 //
-//   domain/frame-contract.ts      -> @nerima-games/mc-kernel
-//   domain/position-key.ts        -> @nerima-games/mc-kernel
-//   domain/item-vocabulary.ts     -> @nerima-games/mc-kernel
 //   domain/block-vocabulary.ts    -> @nerima-games/mc-kernel
 //   domain/chunk-store-port.ts    -> @nerima-games/mc-worldgen
 //   domain/portal-frame-port.ts   -> @nerima-games/mc-worldgen
-//   domain/inventory-port.ts      -> @nerima-games/mc-sim
-//   domain/block-position-key.ts — the join between two of the vocabularies above
 //
-// TWO of them mirror mc-worldgen and ONE mirrors mc-sim, which is not an
+// (Wave 1 (W1-M3) already repointed and deleted this repository's four
+// mc-kernel mirrors of coordinate/frame/item vocabulary — domain/frame-contract.ts,
+// domain/item-vocabulary.ts, domain/position-key.ts and domain/block-position-key.ts.
+// Consumers of `StageId`, `DeltaTimeSecs`, `StackCount`, `CameraPoseSnapshot`,
+// `ClockPort`, `FrameServices`, `GameModule`, `StageRegistration`, `ItemType` and
+// `BlockPositionKey` take them directly from `@nerima-games/mc-kernel` now.)
+//
+// TWO of the remaining three mirror mc-worldgen, which is not an
 // inconsistency: `domain/portal-frame-port.ts`'s header records the lesson that
-// one mirror file must have one SOURCE module, and `domain/block-vocabulary.ts`
-// beside `domain/item-vocabulary.ts` is the same arrangement for mc-kernel.
+// one mirror file must have one SOURCE module.
 //
 // `domain/chunk-window.ts` sits beside them and IS re-exported, because it is
 // this repository's own: the bridge from an `Effect`-shaped store to the
@@ -132,12 +132,11 @@ export * from './stages/targeted-right-click-route.js'
 // republishing kernel's block and item rosters.
 //
 // All of them carry a deletion date — see the "WHY THIS FILE EXISTS AND WHEN IT
-// DIES" header on the first — and re-exporting them would make `StageId`,
-// `DeltaTimeSecs`, `StackCount`, `StageRegistration`, `ChunkStore`,
+// DIES" header on the first — and re-exporting them would make `ChunkStore`,
 // `EntityManagerApi` and `InventoryServiceApi` published API of a package that
 // does not own them, so deleting the stand-in would become a breaking change
 // for every consumer. Consumers take that
-// vocabulary from kernel, mc-worldgen and mc-sim; the types are structurally
+// vocabulary from mc-worldgen and mc-sim; the types are structurally
 // identical, so a consumer importing them from there typechecks against the
 // signatures above. Same call, and the same reason, as mc-sim's and mc-render's
 // barrels.

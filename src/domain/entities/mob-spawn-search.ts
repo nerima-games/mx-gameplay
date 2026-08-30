@@ -20,7 +20,7 @@
  *                 the same reason `getBlock` is, backed by
  *                 `mc-worldgen/domain/light.ts`.
  *   TIME OF DAY   mc-sim's `TimeService.timeOfDay`, still unmirrorable for the
- *                 reason `../frame-contract` gives about `ClockPort`. It reaches
+ *                 reason kernel's `domain/clock.ts` gives about `ClockPort`. It reaches
  *                 this function as an ARGUMENT rather than as a service, and
  *                 `stages/registration.ts` argues the inbox that carries it.
  *

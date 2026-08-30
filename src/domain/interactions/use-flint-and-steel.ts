@@ -35,7 +35,7 @@
  * WHICH ITEMS IGNITE IS A RULE; WHAT THEY ARE CALLED IS KERNEL'S
  * ---------------------------------------------------------------------------
  *
- * `../item-vocabulary`'s header draws that line for `gunpowder` and it is drawn
+ * `../mob/mob-drop.ts` draws that line for `gunpowder` and it is drawn
  * again here: `flint_and_steel` and `fire_charge` are kernel's NAMES, arrived
  * with a kernel-side reason, and 「a flint and steel lights a portal」 is a RULE
  * and lives in this repository. `IGNITION_ITEM_TYPES` below is therefore a
@@ -45,7 +45,7 @@
  */
 import { Effect } from 'effect'
 import type { BlockPosition, ChunkStoreApi } from '../chunk-store-port.js'
-import type { ItemType } from '../item-vocabulary.js'
+import type { ItemType } from '@nerima-games/mc-kernel'
 import { igniteFire, type IgniteFireOutcome } from './ignite-fire.js'
 import { ignitePortal, type IgnitePortalOutcome } from './ignite-portal.js'
 import { igniteTnt, type IgniteTntOutcome } from './ignite-tnt.js'
@@ -53,8 +53,7 @@ import { igniteTnt, type IgniteTntOutcome } from './ignite-tnt.js'
 /**
  * The items that light things, out of kernel's `ITEM_TYPES`.
  *
- * TWO, and both arrived in the batch kernel's `../item-vocabulary` header
- * records — 「`flint_and_steel` / `fire_charge` […] each arrived with a
+ * TWO, and both arrived in the same batch kernel's `ITEM_TYPES` — 「`flint_and_steel` / `fire_charge` […] each arrived with a
  * kernel-side reason」. This is the rule that makes them mean something.
  *
  * THEY BEHAVE IDENTICALLY BELOW, which is deliberate and is not the end state.

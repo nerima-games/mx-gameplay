@@ -2,51 +2,27 @@
  * The context a frame stage runs in, for tests.
  *
  * ---------------------------------------------------------------------------
- * WHY THIS FILE EXISTS, AND WHY IT LOOKS LIKE IT DOES NOTHING
+ * WHY THIS FILE EXISTS
  * ---------------------------------------------------------------------------
  *
- * `Layer.empty` below is not a placeholder waiting to be inlined away. It is
- * the ONE place at which this repository's tests will have to hand a real clock
- * to the stages they run, and it is written as a layer today so that the day it
- * has to carry one is a one-line edit here rather than an edit at every test
- * that runs a stage.
- *
- * `domain/frame-contract.ts` aliases `FrameServices` to `never` and gives the
- * argument for it: mc-kernel is unpublished, and restating its `ClockPort`
- * locally would mean a second `Context.Tag` carrying kernel's identifier
- * string. Kernel's own alias is `ClockPort`. So on the day that mirror is
- * deleted and its importers repointed at `@nerima-games/mc-kernel`, every
- * `stage.run(dt)` in this repository's tests stops being an
- * `Effect<void, never, never>` and becomes an `Effect<void, never, ClockPort>`
- * — which `it.effect` cannot run, because a test context that was never given a
- * clock cannot discharge it.
- *
- * That is measured rather than predicted. mc-dev-meta's `pnpm check:repoint`
- * performs the repoint on a throwaway copy and compiles it; before this file
- * existed it reported NINE such call sites in this repository's
- * `tsconfig.test.json` — six in `test/stage-registration.test.ts`, two in
- * `test/mob-spawn-search.test.ts`, and one in `test/support/frame-runner.ts`.
- * Each of them now resolves through `FrameServicesLayer`, so the count is one —
- * this declaration — and the remaining fix is to replace `Layer.empty` with
- * kernel's own fixed clock:
- *
- *     import { FixedClockLayer, MonotonicTimeSecs, EpochMillis } from '@nerima-games/mc-kernel'
- *
- *     export const FrameServicesLayer: Layer.Layer<FrameServices> = FixedClockLayer({
- *       monotonicSecs: MonotonicTimeSecs(0),
- *       wallClockEpochMillis: EpochMillis(0),
- *     })
+ * `domain/frame-contract.ts` used to alias `FrameServices` to `never`, so this
+ * layer could stay `Layer.empty` — the mirror's whole point was that mc-kernel
+ * was unpublished. Wave 1 (W1-M3) deleted that mirror and repointed every
+ * importer at `@nerima-games/mc-kernel`, whose own alias is `ClockPort`
+ * (settled at the vertical-slice spike, `domain/frame.ts`'s header). Every
+ * `stage.run(dt)` in this repository's tests is now an
+ * `Effect<void, never, ClockPort>`, which `it.effect` cannot run unless a test
+ * context was given a clock — so this layer stopped being empty and started
+ * providing kernel's own deterministic fixed clock.
  *
  * The preview under `apps/preview-mining-site/` carries its own copy of this
  * declaration and NOT an import of this one, because `tsconfig.preview.json`
  * deliberately does not include `test/**` — see that file's header on why the
  * preview is a separate project. Two declarations, one substitution each.
  *
- * DO NOT SIMPLIFY THE CALL SITES. Deleting an
- * `Effect.provide(FrameServicesLayer)` is invisible today — the layer is empty,
- * so providing it changes neither type nor behaviour — and silently re-opens
- * that call site on the day of the repoint. The pipe is load-bearing in the
- * future tense, which is the only tense a mirror lives in.
+ * DO NOT SIMPLIFY THE CALL SITES. Every `Effect.provide(FrameServicesLayer)`
+ * pipe is load-bearing now that the layer actually discharges `ClockPort` —
+ * removing one reopens the exact compile error the repoint fixed.
  *
  * ---------------------------------------------------------------------------
  * Why a layer and not a hand-rolled clock
@@ -59,17 +35,20 @@
  * `test/stage-registration.test.ts` carries a named regression saying no stage
  * advances the hour, and the whole falling-block and fluid cascade is driven by
  * accumulated `dt`. Kernel ships `FixedClockLayer` so that a deterministic
- * clock never has to be written by hand again; when this file needs one it
- * takes kernel's, and the substitution above is the whole of the work.
+ * clock never has to be written by hand again; this file takes kernel's rather
+ * than writing its own.
  */
 import { Layer } from 'effect'
-import type { FrameServices } from '../../src/domain/frame-contract'
+import { EpochMillis, FixedClockLayer, MonotonicTimeSecs, type FrameServices } from '@nerima-games/mc-kernel'
 
 /**
  * Everything a stage of this repository may assume is present when it runs.
  *
- * Empty today because `FrameServices` is `never` today. The TYPE is what
- * carries the intent: it tracks the contract rather than the current state of
- * the mirror, so widening the alias moves this declaration and nothing else.
+ * `FrameServices` is kernel's `ClockPort` now that the mirror is repointed
+ * (Wave 1, W1-M3), so this hands every test stage a deterministic fixed clock
+ * rather than the `Layer.empty` this declaration used to be.
  */
-export const FrameServicesLayer: Layer.Layer<FrameServices> = Layer.empty
+export const FrameServicesLayer: Layer.Layer<FrameServices> = FixedClockLayer({
+  monotonicSecs: MonotonicTimeSecs(0),
+  wallClockEpochMillis: EpochMillis(0),
+})

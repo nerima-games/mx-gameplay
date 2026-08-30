@@ -36,7 +36,7 @@ import {
 
 /**
  * TOTAL, mirroring `BlockWriteOutcome`. There is no error channel here because
- * there is none in `StageRegistration.run` (`domain/frame-contract.ts`), so a
+ * there is none in `StageRegistration.run` (kernel's `domain/frame.ts`), so a
  * failure would have nowhere to go but a `catchAll` that drops it.
  */
 export type BreakOutcome =

@@ -1,4 +1,4 @@
-import type { ItemType } from '../item-vocabulary.js'
+import type { ItemType } from '@nerima-games/mc-kernel'
 import type { PlayerVitals } from '../in-memory-vitals.js'
 import type { StatusEffectApplication } from '../status-effect.js'
 

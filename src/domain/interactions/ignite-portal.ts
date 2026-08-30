@@ -11,8 +11,8 @@
  * WHY THIS IS THE ITEM USE THAT COULD BE BUILT, AND MOST OF THE OTHERS CANNOT
  * ---------------------------------------------------------------------------
  *
- * `flint_and_steel` and `fire_charge` are in kernel's `ITEM_TYPES`
- * (`../item-vocabulary`). `bucket`, `water_bucket`, `lava_bucket`, `shears`,
+ * `flint_and_steel` and `fire_charge` are in kernel's `ITEM_TYPES`.
+ * `bucket`, `water_bucket`, `lava_bucket`, `shears`,
  * `bow`, `arrow`, `ender_pearl` and `hoe` are NOT — kernel's roster is 97 items
  * and none of those eight is one of them. So the other item uses in the
  * reference's `interaction-item-use-handler/` directory are not deferred here
@@ -119,7 +119,7 @@ export const PORTAL_WINDOW_RADIUS: number = MAX_PORTAL_WIDTH + 1
 
 /**
  * TOTAL, mirroring `./place-block`'s `PlaceOutcome`. There is no error channel
- * because `StageRegistration.run` has none (`../frame-contract`).
+ * because `StageRegistration.run` has none (kernel's `domain/frame.ts`).
  *
  * Every refusal names WHICH test failed rather than answering `false`, which is
  * the shape `./place-block` and `../mob/hostile-spawn` argue: 「a placement rule

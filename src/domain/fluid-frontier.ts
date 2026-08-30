@@ -37,26 +37,26 @@
  * is a mechanism.
  */
 
-import type { PositionKey } from './position-key.js'
+import type { BlockPositionKey } from '@nerima-games/mc-kernel'
 
 export type FluidKind = 'water' | 'lava'
 
 export type FluidWorkItem = {
-  readonly key: PositionKey
+  readonly key: BlockPositionKey
   readonly kind: FluidKind
   readonly level?: number
   readonly source?: boolean
-  readonly parent?: PositionKey
+  readonly parent?: BlockPositionKey
   readonly falling?: boolean
   readonly deferred?: number
 }
 
 export type FluidCell = {
-  readonly key: PositionKey
+  readonly key: BlockPositionKey
   readonly kind: FluidKind
   readonly level: number
   readonly source: boolean
-  readonly parent?: PositionKey
+  readonly parent?: BlockPositionKey
   readonly falling: boolean
 }
 
@@ -69,20 +69,20 @@ export type FluidProbeState =
   | 'out-of-world'
 
 export type FluidProbe = {
-  readonly key: PositionKey
+  readonly key: BlockPositionKey
   readonly state: FluidProbeState
   readonly source?: boolean
 }
 
 export type FluidChange =
   | { readonly _tag: 'PlaceFluid'; readonly cell: FluidCell }
-  | { readonly _tag: 'RemoveFluid'; readonly key: PositionKey }
+  | { readonly _tag: 'RemoveFluid'; readonly key: BlockPositionKey }
   | {
       readonly _tag: 'Solidify'
-      readonly key: PositionKey
+      readonly key: BlockPositionKey
       readonly block: 'obsidian' | 'cobblestone'
     }
-  | { readonly _tag: 'ForgetFluid'; readonly key: PositionKey }
+  | { readonly _tag: 'ForgetFluid'; readonly key: BlockPositionKey }
 
 export type FluidTransition = {
   readonly changes: ReadonlyArray<FluidChange>
@@ -255,8 +255,8 @@ export const carryOver = (
   frontier: ReadonlyArray<FluidWorkItem>,
   split: FluidBudgetSplit,
 ): ReadonlyArray<FluidWorkItem> => {
-  const evaluatedWater = new Set<PositionKey>()
-  const evaluatedLava = new Set<PositionKey>()
+  const evaluatedWater = new Set<BlockPositionKey>()
+  const evaluatedLava = new Set<BlockPositionKey>()
   for (const item of split.work) {
     const evaluated = item.kind === 'water' ? evaluatedWater : evaluatedLava
     evaluated.add(item.key)

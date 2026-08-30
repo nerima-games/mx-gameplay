@@ -7,8 +7,8 @@
  * a checkout of the frozen `takeokunn/ts-minecraft` — see docs/README.md.
  */
 import { describe, expect, it } from '@effect/vitest'
-import { Effect } from 'effect'
-import { blockIdOf } from '@nerima-games/mc-kernel'
+import { Brand, Effect } from 'effect'
+import { blockIdOf, type BlockPositionKey } from '@nerima-games/mc-kernel'
 import {
   applyDamage,
   DEATH_MESSAGES,
@@ -36,7 +36,14 @@ import {
   type FluidProbe,
   type FluidWorkItem,
 } from '../src/domain/fluid-frontier'
-import { positionKey } from '../src/domain/position-key'
+/**
+ * These fixtures name cells `'a'`, `'interface'`, `'shared'` — scenario-graph
+ * identifiers, not coordinates — so they cannot go through kernel's
+ * `BlockPositionKey(value)`, which validates the canonical `x,y,z` text and
+ * throws on anything else. `Brand.nominal` is the same unchecked construction
+ * kernel's own constructor is built on.
+ */
+const positionKey = Brand.nominal<BlockPositionKey>()
 
 const ALL_CAUSES: ReadonlyArray<DeathCause> = [
   'fall',

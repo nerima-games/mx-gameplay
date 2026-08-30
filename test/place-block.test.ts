@@ -36,9 +36,7 @@
 import { describe, expect, it } from '@effect/vitest'
 import { makeTimeService } from '@nerima-games/mc-sim'
 import { Effect, Ref } from 'effect'
-import type { Position } from '@nerima-games/mc-kernel'
-import { positionKeyOf } from '../src/domain/block-position-key'
-import { StackCount } from '../src/domain/frame-contract'
+import { blockPosition, blockPositionKeyOf, StackCount, type Position } from '@nerima-games/mc-kernel'
 import {
   AIR_BLOCK_ID,
   type BlockPosition,
@@ -1038,7 +1036,7 @@ describe('placement through gameplay:interactions', () => {
 
       yield* Ref.update(state.pendingPlacements, (queue) => [
         ...queue,
-        { positionKey: positionKeyOf(target), heldItem: 'sand' as const },
+        { positionKey: blockPositionKeyOf(blockPosition(target.x, target.y, target.z)), heldItem: 'sand' as const },
       ])
       yield* runFrame(stages)
 
@@ -1053,7 +1051,7 @@ describe('placement through gameplay:interactions', () => {
       const { store, state, inventory, stages } = yield* stagedSlice([[below, STONE]])
 
       yield* Ref.set(state.pendingPlacements, [
-        { positionKey: positionKeyOf(target), heldItem: 'redstone_dust' as const },
+        { positionKey: blockPositionKeyOf(blockPosition(target.x, target.y, target.z)), heldItem: 'redstone_dust' as const },
       ])
       yield* runFrame(stages)
 
@@ -1073,8 +1071,8 @@ describe('placement through gameplay:interactions', () => {
       ])
 
       yield* Ref.set(state.pendingPlacements, [
-        { positionKey: positionKeyOf(target), heldItem: 'sand' as const },
-        { positionKey: positionKeyOf(competingTarget), heldItem: 'sand' as const },
+        { positionKey: blockPositionKeyOf(blockPosition(target.x, target.y, target.z)), heldItem: 'sand' as const },
+        { positionKey: blockPositionKeyOf(blockPosition(competingTarget.x, competingTarget.y, competingTarget.z)), heldItem: 'sand' as const },
       ])
       yield* runFrame(stages)
 
@@ -1090,7 +1088,7 @@ describe('placement through gameplay:interactions', () => {
       const { store, state, stages } = yield* stagedSlice([[below, STONE]], false)
 
       yield* Ref.set(state.pendingPlacements, [
-        { positionKey: positionKeyOf(target), heldItem: 'sand' as const },
+        { positionKey: blockPositionKeyOf(blockPosition(target.x, target.y, target.z)), heldItem: 'sand' as const },
       ])
       yield* runFrame(stages)
 
@@ -1105,7 +1103,7 @@ describe('placement through gameplay:interactions', () => {
 
       yield* requestBlockPlacementCommand(state, {
         requestId: 'empty-hand',
-        positionKey: positionKeyOf(target),
+        positionKey: blockPositionKeyOf(blockPosition(target.x, target.y, target.z)),
         heldItem: 'sand',
       })
       yield* runFrame(stages)
@@ -1132,7 +1130,7 @@ describe('placement through gameplay:interactions', () => {
 
       yield* requestBlockPlacementCommand(state, {
         requestId: 'last-item',
-        positionKey: positionKeyOf(target),
+        positionKey: blockPositionKeyOf(blockPosition(target.x, target.y, target.z)),
         heldItem: 'sand',
       })
       yield* runFrame(stages)
@@ -1159,7 +1157,7 @@ describe('placement through gameplay:interactions', () => {
 
       yield* requestBlockPlacementCommand(state, {
         requestId: 'occupied',
-        positionKey: positionKeyOf(target),
+        positionKey: blockPositionKeyOf(blockPosition(target.x, target.y, target.z)),
         heldItem: 'sand',
       })
       yield* runFrame(stages)
@@ -1184,7 +1182,7 @@ describe('placement through gameplay:interactions', () => {
 
       yield* requestBlockPlacementCommand(state, {
         requestId: 'creative',
-        positionKey: positionKeyOf(target),
+        positionKey: blockPositionKeyOf(blockPosition(target.x, target.y, target.z)),
         heldItem: 'sand',
         mode: 'creative',
       })
@@ -1208,7 +1206,7 @@ describe('placement through gameplay:interactions', () => {
       const { store, state, inventory, stages } = yield* stagedSlice([[below, STONE]])
       const command = {
         requestId: 'retry',
-        positionKey: positionKeyOf(target),
+        positionKey: blockPositionKeyOf(blockPosition(target.x, target.y, target.z)),
         heldItem: 'sand' as const,
       }
 
@@ -1244,14 +1242,14 @@ describe('placement through gameplay:interactions', () => {
 
       yield* requestBlockPlacementCommand(state, {
         requestId: 'conflict',
-        positionKey: positionKeyOf(target),
+        positionKey: blockPositionKeyOf(blockPosition(target.x, target.y, target.z)),
         heldItem: 'sand',
       })
       yield* runFrame(stages)
       yield* drainBlockPlacementResults(state)
       yield* requestBlockPlacementCommand(state, {
         requestId: 'conflict',
-        positionKey: positionKeyOf(secondTarget),
+        positionKey: blockPositionKeyOf(blockPosition(secondTarget.x, secondTarget.y, secondTarget.z)),
         heldItem: 'sand',
       })
       yield* runFrame(stages)
@@ -1283,7 +1281,7 @@ describe('placement through gameplay:interactions', () => {
 
       yield* Ref.update(state.pendingPlacements, (queue) => [
         ...queue,
-        { positionKey: positionKeyOf(target), heldItem: 'sand' as const },
+        { positionKey: blockPositionKeyOf(blockPosition(target.x, target.y, target.z)), heldItem: 'sand' as const },
       ])
 
       // ONE FRAME MOVES IT ONE CELL, and both halves of that are the design.
@@ -1316,7 +1314,7 @@ describe('placement through gameplay:interactions', () => {
 
       yield* Ref.update(state.pendingPlacements, (queue) => [
         ...queue,
-        { positionKey: positionKeyOf(target), heldItem: 'sand' as const },
+        { positionKey: blockPositionKeyOf(blockPosition(target.x, target.y, target.z)), heldItem: 'sand' as const },
       ])
       yield* runFrame(stages)
 
@@ -1338,9 +1336,9 @@ describe('placement through gameplay:interactions', () => {
         [target, STONE],
       ])
 
-      yield* Ref.set(state.pendingBreaks, [positionKeyOf(target)])
+      yield* Ref.set(state.pendingBreaks, [blockPositionKeyOf(blockPosition(target.x, target.y, target.z))])
       yield* Ref.set(state.pendingPlacements, [
-        { positionKey: positionKeyOf(target), heldItem: 'sand' as const },
+        { positionKey: blockPositionKeyOf(blockPosition(target.x, target.y, target.z)), heldItem: 'sand' as const },
       ])
       yield* runFrame(stages)
 
@@ -1366,7 +1364,7 @@ describe('placement through gameplay:interactions', () => {
         z: target.z + 0.5,
       })
       yield* Ref.set(state.pendingPlacements, [
-        { positionKey: positionKeyOf(target), heldItem: 'stone' as const },
+        { positionKey: blockPositionKeyOf(blockPosition(target.x, target.y, target.z)), heldItem: 'stone' as const },
       ])
       yield* runFrame(stages)
 

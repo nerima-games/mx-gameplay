@@ -11,8 +11,11 @@
 import { padEnd, padStart, type Rgb, type Style } from './ansi'
 import type { DayPhase } from '../../src/domain/day-night'
 import { FALLING_BLOCK_MOVES_PER_TICK } from '../../src/domain/falling-block'
-import type { PositionKey } from '../../src/domain/position-key'
-import { positionKeyOf } from '../../src/domain/block-position-key'
+import {
+  blockPosition,
+  blockPositionKeyOf,
+  type BlockPositionKey,
+} from '@nerima-games/mc-kernel'
 import {
   ARENA_AMOUNTS,
   ARENA_CAUSES,
@@ -89,7 +92,7 @@ const GUTTER = 4
 export const renderWorld = (
   site: Site,
   cursor: { readonly x: number; readonly y: number },
-  pending: ReadonlySet<PositionKey>,
+  pending: ReadonlySet<BlockPositionKey>,
   style: Style,
   columns: number,
   rows: number,
@@ -110,7 +113,7 @@ export const renderWorld = (
       // which is why the marker sits on the position itself and not on the
       // block. Reading it the other way round is the single easiest mistake to
       // make about `FallingBlockQueue` and the queue view spells it out.
-      const isPending = pending.has(positionKeyOf(position))
+      const isPending = pending.has(blockPositionKeyOf(blockPosition(position.x, position.y, position.z)))
 
       const backdrop = isCursor ? CURSOR_BACKDROP : isPending ? PENDING_BACKDROP : undefined
       const glyph = resident ? entry.glyph : '/'
@@ -151,7 +154,7 @@ export const isClipped = (site: Site, columns: number, rows: number): boolean =>
  */
 export const renderQueue = (
   site: Site,
-  pending: ReadonlyArray<PositionKey>,
+  pending: ReadonlyArray<BlockPositionKey>,
   style: Style,
   rows: number,
 ): ReadonlyArray<string> => {

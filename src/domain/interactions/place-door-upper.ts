@@ -51,7 +51,7 @@
  * removes it. That keeps a malformed world from losing an unrelated block.
  */
 import { Effect } from 'effect'
-import { above } from '../block-position-key.js'
+import { adjacentBlockPosition, blockPosition } from '@nerima-games/mc-kernel'
 import { blockIdOf, blockTypeOfId } from '../block-vocabulary.js'
 import { AIR_BLOCK_ID, type BlockId, type BlockPosition, type ChunkStoreApi } from '../chunk-store-port.js'
 
@@ -104,7 +104,7 @@ export const doorUpperCell = (
       return { _tag: 'NotADoor' }
     }
 
-    const cell = above(position)
+    const cell = adjacentBlockPosition(blockPosition(position.x, position.y, position.z), 'up')
     const reading = yield* store.getBlock(cell)
 
     if (reading._tag !== 'Block' || reading.block !== AIR_BLOCK_ID) {
@@ -134,7 +134,7 @@ export const doorUpperBreakCell = (
       return { _tag: 'NotADoor' }
     }
 
-    const cell = above(position)
+    const cell = adjacentBlockPosition(blockPosition(position.x, position.y, position.z), 'up')
     const reading = yield* store.getBlock(cell)
     if (reading._tag !== 'Block' || !isDoorBlock(reading.block)) {
       return { _tag: 'NoDoorAbove' }

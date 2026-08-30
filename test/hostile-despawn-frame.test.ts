@@ -9,7 +9,7 @@ import {
 } from '../src/domain/entities/mob-frame'
 import { ZOMBIE_KIND } from '../src/domain/mob/hostile-combat'
 import { RANDOM_DESPAWN_CHANCE } from '../src/domain/mob/hostile-despawn'
-import { DeltaTimeSecs } from '../src/domain/frame-contract'
+import { DeltaTimeSecs } from '@nerima-games/mc-kernel'
 import { nextRoll } from '../src/domain/frame-rolls'
 import type { Position } from '@nerima-games/mc-kernel'
 import { makeEntityManagerDouble } from './support/entity-manager-double'

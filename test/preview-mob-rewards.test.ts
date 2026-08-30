@@ -2,7 +2,7 @@ import { describe, expect, it } from '@effect/vitest'
 import { Effect, Ref } from 'effect'
 import { makeSite, stepFrame } from '../apps/preview-mining-site/site'
 import { EntityId } from '@nerima-games/mc-sim'
-import { StageId } from '../src/domain/frame-contract'
+import { StageId } from '@nerima-games/mc-kernel'
 import {
   CREEPER_KIND,
   isDroppedItemBehaviour,

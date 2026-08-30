@@ -1,4 +1,4 @@
-import type { DeltaTimeSecs } from './frame-contract.js'
+import type { DeltaTimeSecs } from '@nerima-games/mc-kernel'
 
 export const STATUS_EFFECT_TYPES = [
   'poison',

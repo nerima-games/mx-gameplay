@@ -13,13 +13,12 @@ import {
   type ChunkCoord,
   type ChunkStoreApi,
 } from '../chunk-store-port.js'
-import { positionKeyOf } from '../block-position-key.js'
+import { blockPosition, blockPositionKeyOf, type ItemType } from '@nerima-games/mc-kernel'
 import {
   enqueueFluidDisturbance,
   type FluidKind,
   type FluidWorkItem,
 } from '../fluid-frontier.js'
-import type { ItemType } from '../item-vocabulary.js'
 import type { Dimension } from '@nerima-games/mc-worldgen'
 
 export const BUCKET_ITEM_TYPES = ['bucket', 'water_bucket', 'lava_bucket'] as const
@@ -230,7 +229,9 @@ export const useBucket = (
     }
     yield* Ref.update(fluidFrontier, (frontier) =>
       enqueueFluidDisturbance(frontier, {
-        key: positionKeyOf(request.position),
+        key: blockPositionKeyOf(
+          blockPosition(request.position.x, request.position.y, request.position.z),
+        ),
         kind: plan.fluid,
       }),
     )

@@ -1,6 +1,6 @@
 import { describe, expect, it } from '@effect/vitest'
 import { Effect } from 'effect'
-import { positionKeyOf } from '../src/domain/block-position-key'
+import { blockPosition, blockPositionKeyOf } from '@nerima-games/mc-kernel'
 import { blockIdOf, type BlockType } from '../src/domain/block-vocabulary'
 import { AIR_BLOCK_ID, type BlockId, type BlockPosition } from '../src/domain/chunk-store-port'
 import { carveExplosionCrater, craterCells, craterRadius } from '../src/domain/interactions/explosion-crater'
@@ -36,9 +36,11 @@ describe('explosion crater', () => {
       expect(yield* store.blockAt(centre)).toBe(AIR_BLOCK_ID)
       expect(yield* store.blockAt(bedrockAt)).toBe(BEDROCK)
       expect(yield* store.blockAt(obsidianAt)).toBe(OBSIDIAN)
-      expect(disturbed).toContain(positionKeyOf(centre))
-      expect(disturbed).not.toContain(positionKeyOf(bedrockAt))
-      expect(disturbed).not.toContain(positionKeyOf(obsidianAt))
+      expect(disturbed).toContain(blockPositionKeyOf(blockPosition(centre.x, centre.y, centre.z)))
+      expect(disturbed).not.toContain(blockPositionKeyOf(blockPosition(bedrockAt.x, bedrockAt.y, bedrockAt.z)))
+      expect(disturbed).not.toContain(
+        blockPositionKeyOf(blockPosition(obsidianAt.x, obsidianAt.y, obsidianAt.z)),
+      )
       expect(yield* store.calls).toStrictEqual({
         reads: craterCells(centre, 1).length,
         writes: craterCells(centre, 1).length - 2,

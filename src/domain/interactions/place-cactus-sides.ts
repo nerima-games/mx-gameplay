@@ -32,7 +32,7 @@
  * The reference reads only the neighbours whose CHUNK-LOCAL coordinate stays
  * inside the chunk it is holding, so a cactus placed against a chunk boundary is
  * checked on two or three sides and can be built flush against a stone wall.
- * `../block-position-key`'s `horizontalNeighbours` records that defect and does
+ * kernel's `horizontalBlockNeighbours` fixes that defect and does
  * not reproduce it; a cell in the next chunk is one more `getBlock` here.
  *
  * An unreadable side REFUSES, which is the same direction
@@ -42,7 +42,7 @@
  * turn out to be there.
  */
 import { Effect } from 'effect'
-import { horizontalNeighbours } from '../block-position-key.js'
+import { blockPosition, horizontalBlockNeighbours } from '@nerima-games/mc-kernel'
 import { blockIdOf, blockTypeOfId } from '../block-vocabulary.js'
 import { AIR_BLOCK_ID, type BlockId, type BlockPosition, type BlockReading, type ChunkStoreApi } from '../chunk-store-port.js'
 
@@ -85,7 +85,7 @@ export const cactusSidesObjection = (
     }
 
     const sides: Array<BlockReading> = []
-    for (const neighbour of horizontalNeighbours(position)) {
+    for (const neighbour of horizontalBlockNeighbours(blockPosition(position.x, position.y, position.z))) {
       sides.push(yield* store.getBlock(neighbour))
     }
 

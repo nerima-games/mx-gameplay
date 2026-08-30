@@ -23,8 +23,8 @@
  *
  *   Effect's `Random` service     A service in the context. `StageRegistration.run`
  *                                 has `FrameServices` as its context and
- *                                 `FrameServices` is kernel's — today `never`
- *                                 (`./frame-contract`). A stage that demanded
+ *                                 `FrameServices` is kernel's `ClockPort`
+ *                                 (`domain/frame.ts`). A stage that demanded
  *                                 `Random` there would be asking kernel to widen
  *                                 the one alias plan.md §6 wants frozen at 1.0.0,
  *                                 in order to obtain a number.

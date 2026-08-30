@@ -228,10 +228,10 @@ import {
   type EntityStep,
 } from '@nerima-games/mc-sim'
 import type { BlockPosition, ChunkStoreApi } from '../chunk-store-port.js'
-import type { DeltaTimeSecs } from '../frame-contract.js'
+import type { DeltaTimeSecs } from '@nerima-games/mc-kernel'
 import { drawRolls, nextRoll } from '../frame-rolls.js'
 import { carveExplosionCrater } from '../interactions/explosion-crater.js'
-import type { PositionKey } from '../position-key.js'
+import type { BlockPositionKey } from '@nerima-games/mc-kernel'
 import { DORMANT_FUSE, stepCreeperFuse, type CreeperFuse, type CreeperSenses } from '../mob/creeper-fuse.js'
 import {
   ENDERMAN_TELEPORT_ATTEMPTS,
@@ -1514,7 +1514,7 @@ export type BlastResolution = {
   /** Mobs the blast killed. Their drops are rolled outside the sweep, where the seed lives. */
   readonly casualties: ReadonlyArray<MobCasualty>
   /** Cells the crater emptied, for `disturb`. Empty when nothing was destroyed. */
-  readonly disturbed: ReadonlyArray<PositionKey>
+  readonly disturbed: ReadonlyArray<BlockPositionKey>
 }
 
 const NO_CASUALTIES: ReadonlyArray<never> = []
@@ -1582,7 +1582,7 @@ export const resolveBlasts = (
       }
     })
 
-    const disturbed: Array<PositionKey> = []
+    const disturbed: Array<BlockPositionKey> = []
     for (const blast of blasts) {
       disturbed.push(...(yield* carveExplosionCrater(store, cellOf(blast.at), blast.explosion.power)))
     }
@@ -1869,7 +1869,7 @@ export const rollSelfDestructDrops = (blast: Blast): ReadonlyArray<MobDropEvent>
  *                 unloaded chunk is still not darkness.
  *
  *   TIME OF DAY   mc-sim's `TimeService.timeOfDay`, and it is STILL not
- *                 mirrorable — `../frame-contract` names restating `ClockPort`
+ *                 mirrorable — kernel's `domain/clock.ts` names restating `ClockPort`
  *                 as 「a far worse failure than a narrower type」 and that has not
  *                 changed. It reaches the search as an inbox `Ref` instead, which
  *                 `stages/registration.ts` argues in the same terms it argues

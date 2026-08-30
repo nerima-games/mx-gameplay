@@ -6,7 +6,8 @@
  * ---------------------------------------------------------------------------
  *
  * mc-worldgen is a legitimate `dependencies` edge for this repository
- * (plan.md §2.1: `gameplay --> worldgen`), so unlike `./frame-contract` this
+ * (plan.md §2.1: `gameplay --> worldgen`), so unlike the former `./frame-contract`
+ * (Wave 1, W1-M3: repointed to kernel and deleted) this
  * mirror is not standing in for a forbidden import — only for an unpublished
  * one. plan.md §6 Step 3 publishes bottom-up and nothing is published yet, so
  * `pnpm check:deps` would reject an import of a package absent from
@@ -52,8 +53,9 @@
  * mirror's own repoint promise. A file that needs a probe row is a file
  * mirroring something its own source does not have.
  *
- * It is NOT re-exported from `index.ts`, for the same reason `./frame-contract`
- * and `./position-key` are not: re-exporting it would make another repository's
+ * It is NOT re-exported from `index.ts`, for the same reason the former
+ * `./frame-contract` and `./position-key` were not (Wave 1, W1-M3: repointed to
+ * kernel and deleted): re-exporting it would make another repository's
  * service part of THIS package's published surface, and deleting the stand-in
  * would then be a breaking change for consumers of mx-gameplay.
  *
@@ -120,12 +122,12 @@ export type BlockPosition = {
 /**
  * Mirrors kernel's `BlockId`.
  *
- * Deliberately UNBRANDED, unlike kernel's. `PositionKey` in this repository
- * carries the same note and the same reason: a brand declared here would let
- * mx-gameplay masquerade as the owner of the concept, and a downstream reader
- * would end up converting between two brands of one number. A branded value
- * from kernel is assignable to this alias, which is the direction that matters
- * for a consumer, and the deletion in step 3 above narrows rather than widens.
+ * Deliberately UNBRANDED, unlike kernel's, for the same reason `BlockPosition`
+ * above is: a brand declared here would let mx-gameplay masquerade as the
+ * owner of the concept, and a downstream reader would end up converting
+ * between two brands of one number. A branded value from kernel is assignable
+ * to this alias, which is the direction that matters for a consumer, and the
+ * deletion in step 3 above narrows rather than widens.
  */
 export type BlockId = number
 
@@ -164,8 +166,8 @@ export type BlockReading =
 
 /**
  * The outcome of a block write. TOTAL — there is no error channel, because
- * `StageRegistration.run` has none either (`./frame-contract`), so a rule would
- * have nowhere to put a failure and would end up swallowing one.
+ * `StageRegistration.run` has none either (kernel's `domain/frame.ts`), so a rule
+ * would have nowhere to put a failure and would end up swallowing one.
  *
  * `Unchanged` does not dirty the chunk. Re-placing the block that is already
  * there is a legal thing for a rule to do — a fluid re-asserting its level, a

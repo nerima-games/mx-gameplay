@@ -67,10 +67,9 @@
  * `../mob/mob-drop`; nothing consumes it yet, so it is not invented here.
  */
 import { Effect } from 'effect'
-import { positionKeyOf } from '../block-position-key.js'
+import { blockPosition, blockPositionKeyOf, type BlockPositionKey } from '@nerima-games/mc-kernel'
 import { resistsNormalExplosion } from '../block-vocabulary.js'
 import { AIR_BLOCK_ID, type BlockPosition, type ChunkStoreApi } from '../chunk-store-port.js'
-import type { PositionKey } from '../position-key.js'
 
 /**
  * How far a blast destroys blocks, as opposed to how far it hurts.
@@ -142,9 +141,9 @@ export const carveExplosionCrater = (
   store: ChunkStoreApi,
   centre: BlockPosition,
   power: number,
-): Effect.Effect<ReadonlyArray<PositionKey>> =>
+): Effect.Effect<ReadonlyArray<BlockPositionKey>> =>
   Effect.gen(function* () {
-    const disturbed: Array<PositionKey> = []
+    const disturbed: Array<BlockPositionKey> = []
 
     for (const cell of craterCells(centre, power)) {
       const reading = yield* store.getBlock(cell)
@@ -156,7 +155,7 @@ export const carveExplosionCrater = (
 
       switch (outcome._tag) {
         case 'Written': {
-          disturbed.push(positionKeyOf(cell))
+          disturbed.push(blockPositionKeyOf(blockPosition(cell.x, cell.y, cell.z)))
           break
         }
 

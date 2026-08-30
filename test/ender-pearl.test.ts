@@ -42,7 +42,7 @@ import { makeEntityManagerDouble } from './support/entity-manager-double'
 import { makePlayerServiceDouble } from './support/player-service-double'
 import { makeInventoryDouble } from './support/inventory-service-double'
 import { runFrame } from './support/frame-runner'
-import { StackCount } from '../src/domain/frame-contract'
+import { StackCount } from '@nerima-games/mc-kernel'
 
 const ORIGIN = { x: 10, y: 64, z: 10 }
 

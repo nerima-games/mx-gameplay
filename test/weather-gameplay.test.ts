@@ -1,9 +1,8 @@
-import { Effect, Ref } from 'effect'
-import type { Position } from '@nerima-games/mc-kernel'
+import { Brand, Effect, Ref } from 'effect'
+import { type BlockPositionKey, type Position } from '@nerima-games/mc-kernel'
 import { describe, expect, it } from 'vitest'
 import { EntityId, EntityKind } from '@nerima-games/mc-sim'
 import type { Dimension } from '@nerima-games/mc-worldgen'
-import type { PositionKey } from '../src/domain/position-key'
 import {
   advanceWeatherGameplay,
   isWithinLightningStrikeRadius,
@@ -19,7 +18,14 @@ import {
 } from '../src/stages/registration'
 
 const position = (x: number, y: number, z: number): Position => ({ x, y, z })
-const key = (value: string): PositionKey => value as PositionKey
+/**
+ * These fixtures name cells `'open'`, `'sheltered'`, `'farm'` — scenario-graph
+ * identifiers, not coordinates — so they cannot go through kernel's
+ * `BlockPositionKey(value)`, which validates the canonical `x,y,z` text and
+ * throws on anything else. `Brand.nominal` is the same unchecked construction
+ * kernel's own constructor is built on.
+ */
+const key = Brand.nominal<BlockPositionKey>()
 const input = (overrides: Partial<WeatherGameplayInput> = {}): WeatherGameplayInput => ({
   dimension: 'overworld' as Dimension,
   difficulty: 'normal',

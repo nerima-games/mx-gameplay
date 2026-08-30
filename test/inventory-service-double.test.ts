@@ -1,7 +1,7 @@
 import { describe, expect, it } from '@effect/vitest'
 import type { InventoryServiceApi, Slot } from '@nerima-games/mc-sim'
 import { Effect } from 'effect'
-import { StackCount } from '../src/domain/frame-contract'
+import { StackCount } from '@nerima-games/mc-kernel'
 import { emptySlots, makeInventoryDouble } from './support/inventory-service-double'
 
 type ItemType = Parameters<InventoryServiceApi['add']>[0]

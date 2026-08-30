@@ -48,7 +48,7 @@
  */
 
 import { blockIdOf, capabilityOfBlockId } from '@nerima-games/mc-kernel'
-import type { PositionKey } from './position-key.js'
+import type { BlockPositionKey } from '@nerima-games/mc-kernel'
 
 /**
  * Upper bound on block moves applied in one tick.
@@ -62,10 +62,10 @@ export const FALLING_BLOCK_MOVES_PER_TICK = 32
 
 export type FallingBlockQueue = {
   /** Positions whose support may have changed. Insertion-ordered. */
-  readonly pending: ReadonlySet<PositionKey>
+  readonly pending: ReadonlySet<BlockPositionKey>
 }
 
-export const emptyFallingBlockQueue: FallingBlockQueue = { pending: new Set<PositionKey>() }
+export const emptyFallingBlockQueue: FallingBlockQueue = { pending: new Set<BlockPositionKey>() }
 
 /**
  * Record that something changed at these positions, so the column above each of
@@ -78,7 +78,7 @@ export const emptyFallingBlockQueue: FallingBlockQueue = { pending: new Set<Posi
  */
 export const disturb = (
   queue: FallingBlockQueue,
-  positions: Iterable<PositionKey>,
+  positions: Iterable<BlockPositionKey>,
 ): FallingBlockQueue => {
   const pending = new Set(queue.pending)
   for (const position of positions) {
@@ -89,7 +89,7 @@ export const disturb = (
 
 export type FallingBlockBatch = {
   /** At most `budget` positions, in the order they were disturbed. */
-  readonly batch: ReadonlyArray<PositionKey>
+  readonly batch: ReadonlyArray<BlockPositionKey>
   /** The queue with those positions removed. */
   readonly rest: FallingBlockQueue
 }
@@ -108,8 +108,8 @@ export const takeBatch = (
     return { batch: [], rest: queue }
   }
 
-  const batch: Array<PositionKey> = []
-  const rest = new Set<PositionKey>()
+  const batch: Array<BlockPositionKey> = []
+  const rest = new Set<BlockPositionKey>()
   for (const position of queue.pending) {
     if (batch.length < budget) {
       batch.push(position)
@@ -132,7 +132,7 @@ export const takeBatch = (
  */
 export const settled = (
   queue: FallingBlockQueue,
-  destinations: Iterable<PositionKey>,
+  destinations: Iterable<BlockPositionKey>,
 ): FallingBlockQueue => disturb(queue, destinations)
 
 /** A public, storage-agnostic coordinate for hosts that do not use ChunkStoreApi. */

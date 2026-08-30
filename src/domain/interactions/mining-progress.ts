@@ -1,11 +1,11 @@
 import {
+  blockPositionKeyOf,
   propertyOfBlockId,
   type BlockPosition,
   type HarvestToolCategory,
   type HarvestToolRequirement,
   type ItemType,
 } from '@nerima-games/mc-kernel'
-import { positionKeyOf } from '../block-position-key.js'
 import { NO_TOOL, type BlockLootContext } from './block-loot.js'
 
 export const MINING_TICKS_PER_SECOND = 20
@@ -162,7 +162,7 @@ export const advanceMiningProgress = ({
     return { nextProgress: null, shouldBreak: false }
   }
 
-  const blockKey = positionKeyOf(target.position)
+  const blockKey = blockPositionKeyOf(target.position)
   const sameTarget = current?.blockKey === blockKey && current.blockId === target.blockId
   const requiredWork = miningWorkRequiredForBlock(target.blockId)
   if (sameTarget && current.completed) {

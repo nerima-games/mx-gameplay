@@ -17,7 +17,7 @@ import {
   ripeYieldRange,
 } from '../src/domain/interactions/crop-drops'
 import { CROP_OF_SEED } from '../src/domain/interactions/plant-crop'
-import { ITEM_TYPES } from '../src/domain/item-vocabulary'
+import { ITEM_TYPES } from '@nerima-games/mc-kernel'
 import type { BlockType } from '../src/domain/block-vocabulary'
 
 const CROPS = Object.keys(UNRIPE_CROP_DROP) as ReadonlyArray<BlockType>

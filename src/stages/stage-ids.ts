@@ -14,7 +14,7 @@
  * whole answer at once. `test/stage-registration.test.ts` reads this file and
  * fails if an edge points at a sibling experience module.
  */
-import { StageId } from '../domain/frame-contract.js'
+import { StageId } from '@nerima-games/mc-kernel'
 
 /**
  * Stages owned by mx-gameplay.

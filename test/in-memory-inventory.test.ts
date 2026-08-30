@@ -25,8 +25,7 @@ import {
   removeFromSlots,
   totalOf,
 } from '../src/domain/in-memory-inventory'
-import { MAX_STACK_COUNT, StackCount } from '../src/domain/frame-contract'
-import type { ItemType } from '../src/domain/item-vocabulary'
+import { MAX_STACK_COUNT, StackCount, type ItemType } from '@nerima-games/mc-kernel'
 
 const STONE: ItemType = 'stone'
 const DIRT: ItemType = 'dirt'

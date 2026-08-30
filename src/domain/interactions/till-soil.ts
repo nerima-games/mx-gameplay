@@ -13,7 +13,7 @@
  *
  * `./plant-crop`'s header says tilling "cannot be WRITTEN here, let alone be
  * wrong", because the reference keys it on `HOE_ITEM_TYPES` — five literals
- * (`WOODEN_HOE` … `DIAMOND_HOE`) and `../item-vocabulary.ts` has none of them.
+ * (`WOODEN_HOE` … `DIAMOND_HOE`) and kernel's `ITEM_TYPES` has none of them.
  *
  * That was a statement about the reference's implementation, not about the
  * rule. THE RULE DOES NOT NEED TO KNOW WHAT THE TOOL IS CALLED. It needs to
@@ -51,7 +51,7 @@
  */
 import { Effect } from 'effect'
 import { blockIdOf, blockTypeOfId, type BlockType } from '../block-vocabulary.js'
-import { above } from '../block-position-key.js'
+import { adjacentBlockPosition, blockPosition } from '@nerima-games/mc-kernel'
 import type { BlockPosition } from '../chunk-store-port.js'
 
 /**
@@ -97,7 +97,8 @@ export type TillOutcome =
   | { readonly _tag: 'obstructed'; readonly blockedBy: BlockType }
 
 /** The cell a hoe must find clear. */
-export const cellAbove = (ground: BlockPosition): BlockPosition => above(ground)
+export const cellAbove = (ground: BlockPosition): BlockPosition =>
+  adjacentBlockPosition(blockPosition(ground.x, ground.y, ground.z), 'up')
 
 /**
  * Decide, given what is already known about the two cells.
