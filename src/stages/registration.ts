@@ -3064,6 +3064,15 @@ const executeBlockPlacementCommand = (
 export interface GameplayStageOptions {
   /** Whether this frame owns local Mob simulation and spawning. */
   readonly mobSimulation?: boolean
+  /**
+   * Whether this frame runs its own dropped-item pickup sweep.
+   *
+   * A consumer that runs a richer pickup loop of its own (preserving
+   * metadata, durability or custom names this stage's `pickupDroppedItems`
+   * does not carry) sets this `false` to avoid double-consuming the same
+   * dropped item. Defaults to `true`, unchanged from every other caller.
+   */
+  readonly droppedItemPickup?: boolean
 }
 
 export const gameplayStages = (
@@ -4251,6 +4260,7 @@ export const gameplayStages = (
           }
         }
 
+        if (options.droppedItemPickup !== false) {
         yield* pickupDroppedItems(
           roster,
           inventory,
@@ -4258,6 +4268,7 @@ export const gameplayStages = (
           DROPPED_ITEM_PICKUP_RADIUS,
           yield* Ref.get(state.tickCount),
         )
+        }
 
         const contact = resolveHostileContacts(
           yield* roster.entities,
