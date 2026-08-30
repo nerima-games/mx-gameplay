@@ -3,7 +3,7 @@ import type {
   BlockPosition,
   BlockReading,
 } from '../chunk-store-port.js'
-import { blockIdOf } from '../block-vocabulary.js'
+import { blockIdOf } from '@nerima-games/mc-kernel'
 
 const LEVER_BLOCK_ID = blockIdOf('lever')
 

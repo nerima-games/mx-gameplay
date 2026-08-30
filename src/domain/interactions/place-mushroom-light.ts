@@ -26,8 +26,8 @@
  * item form.
  *
  * That is worth stating plainly rather than leaving to be discovered, because it
- * is the SECOND time this repository has met it. `../block-vocabulary`'s
- * `SupportRule` section records the first:
+ * is the SECOND time this repository has met it. `test/place-block.test.ts`'s
+ * F7 regression records the first:
  *
  *     no block that needs it could be held. `PlaceableItemType` is `ItemType &
  *     BlockType`, and kernel deliberately withholds an item form from the ten
@@ -61,7 +61,7 @@
  * below takes the block rather than the store deciding.
  */
 import { Effect } from 'effect'
-import { blockIdOf, blockTypeOfId } from '../block-vocabulary.js'
+import { blockIdOf, blockTypeOfId } from '@nerima-games/mc-kernel'
 import type { BlockId, BlockPosition, ChunkStoreApi } from '../chunk-store-port.js'
 
 /**
@@ -164,7 +164,7 @@ export const mushroomLightObjection = (
  *
  * `BlockId | undefined` and not a filtered array, because `blockIdOf` is PARTIAL
  * on this mirror (see its comment) and a filter would introduce an arm no test
- * can reach — `test/block-vocabulary-mirror.test.ts` pins `blockIdOf` total over
+ * can reach — kernel's own type declaration pins `blockIdOf` total over
  * all 120 block types, so in a green tree neither of these is ever `undefined`.
  * The type says what the mirror can promise; the test says what is true today.
  */

@@ -1,5 +1,5 @@
 import { describe, expect, it } from '@effect/vitest'
-import { blockIdOf } from '../src/domain/block-vocabulary'
+import { blockIdOf } from '@nerima-games/mc-kernel'
 import type { BlockPosition, BlockReading } from '../src/domain/chunk-store-port'
 import { isSuccessfulBlockUse, resolveBlockUse } from '../src/domain/interactions/use-block'
 

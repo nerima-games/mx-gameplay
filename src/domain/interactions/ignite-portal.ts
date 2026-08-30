@@ -88,7 +88,7 @@
  * the sound.
  */
 import { Effect, Option } from 'effect'
-import { blockIdOf } from '../block-vocabulary.js'
+import { blockIdOf } from '@nerima-games/mc-kernel'
 import { chunkCoordsAround, openChunkWindow } from '../chunk-window.js'
 import type { BlockId, BlockPosition, ChunkStoreApi } from '../chunk-store-port.js'
 import { MAX_PORTAL_WIDTH, detectNetherPortal, type PortalFrame } from '../portal-frame-port.js'
@@ -157,7 +157,7 @@ export type IgnitePortalOutcome =
    * This build has no id for `nether_portal`.
    *
    * UNREACHABLE TODAY and kept for `./place-block`'s `UnknownBlock` reason:
-   * kernel's registry carries the row, `test/block-vocabulary-mirror.test.ts`
+   * kernel's registry carries the row, kernel's own type declaration
    * pins `blockIdOf` total over all 120 block types, and a named refusal is the
    * only answer that does not write a byte nobody chose into the world.
    */
@@ -188,7 +188,7 @@ export const ignitePortal = (
   Effect.gen(function* () {
     const portalBlock: BlockId | undefined = blockIdOf('nether_portal')
     /* v8 ignore start -- UnknownBlock is unreachable in a green tree: `nether_portal`
-     * is one of the 120 `BlockType`s `test/block-vocabulary-mirror.test.ts` pins
+     * is one of the 120 `BlockType`s kernel's own type declaration pins
      * `blockIdOf` total over, so `blockIdOf('nether_portal')` never returns
      * `undefined`. Kept for the reason `./place-block.ts`'s own `UnknownBlock` arm
      * is: it fails toward a NAMED refusal rather than a portal silently vanishing.

@@ -1,6 +1,7 @@
 /**
- * `domain/interactions/block-loot.ts` and the kernel table it reads —
- * `domain/block-vocabulary.ts`.
+ * `domain/interactions/block-loot.ts` and kernel's `dropOfBlockId`, which it
+ * reads directly (the former `domain/block-vocabulary.ts` mirror in between
+ * was repointed and deleted, Wave 1, W1-M4).
  *
  * ---------------------------------------------------------------------------
  * The two things this file exists to stop coming back
@@ -24,8 +25,8 @@
  * Where the numbers come from
  * ---------------------------------------------------------------------------
  *
- * The DETERMINISTIC half is kernel's `BLOCK_REGISTRY`, transcribed in
- * `domain/block-vocabulary.ts` row by row. The RANDOM half is the reference
+ * The DETERMINISTIC half is kernel's `BLOCK_REGISTRY`, read through
+ * `dropOfBlockId` directly. The RANDOM half is the reference
  * implementation's, and audit §6-9 is why it is on this side of the line
  * (「`drops` では表現できない」):
  *
@@ -49,7 +50,7 @@ import {
   UNITEMISED_BLOCK_TYPES,
   type BlockType,
   type HarvestTier,
-} from '../src/domain/block-vocabulary'
+} from '@nerima-games/mc-kernel'
 import {
   BLOCK_LOOT_ROLLS,
   blockLoot,
@@ -85,7 +86,7 @@ const NO_LUCK: ReadonlyArray<number> = [0.999, 0.999, 0.999, 0.999]
 /** Rolls that pass every chance gate. */
 const ALL_LUCK: ReadonlyArray<number> = [0, 0, 0, 0]
 
-describe('the kernel bridge — domain/block-vocabulary.ts', () => {
+describe('the kernel bridge — dropOfBlockId', () => {
   // The number-to-string hop mc-compose's `docs/e2e-triage.md` §4.3 recorded as
   // an open question it could not answer from one repository: `breakBlock`
   // yields a `BlockId` and `InventoryService.add` takes an item.
@@ -232,7 +233,7 @@ describe('the kernel bridge — domain/block-vocabulary.ts', () => {
         }
 
         // ...and STRICTLY, which is `:78-88`. Without this half a ladder whose
-        // five rungs all meant the same thing would pass: every set would equal
+        // rungs all meant the same thing would pass: every set would equal
         // every other and every inclusion would hold, and `harvestTool` would be
         // a column nothing reads.
         //
@@ -240,7 +241,19 @@ describe('the kernel bridge — domain/block-vocabulary.ts', () => {
         // docs/porting.md §4-2 declined the reference's `canHarvestBlock` rows
         // on the grounds that 「kernel の表に `iron_ore` / `diamond_ore` /
         // `obsidian` の行が無い」. All three exist now, so each of the four
-        // pickaxe rungs gates at least one block and the chain is strict.
+        // pickaxe rungs up to `diamond` gates at least one block and the chain
+        // is strict there.
+        //
+        // `diamond` -> `netherite` IS THE ONE EXCEPTION, and it is vanilla's own
+        // shape rather than a roster gap: kernel's `HARVEST_TIERS` grew a sixth
+        // tier (`mc-kernel/domain/block-harvest-data.ts`), but no registry row
+        // sets `minTier: 'netherite'` — a netherite pickaxe is faster than a
+        // diamond one, never a tier gate. The strict check below therefore
+        // covers only the rungs where the reference names a gated block.
+        if (lower === 'diamond') {
+          expect(above.size).toBe(below.size)
+          continue
+        }
         expect(above.size).toBeGreaterThan(below.size)
       }
     }),
@@ -383,8 +396,15 @@ describe('blockLoot — the deterministic half', () => {
       expect(blockLoot(GRASS_BLOCK, { silkTouch: true })).toStrictEqual([
         { item: 'grass_block', count: 1 },
       ])
+      // GLOWSTONE is the row that distinguishes two theories STONE and
+      // GRASS_BLOCK cannot, because their normal-drop count is already 1.
+      // kernel's `silkTouchItem` (mc-kernel 0.6.1) substitutes only the ITEM;
+      // the row's own `count` — glowstone's is 2, before fortune — still
+      // applies. That is kernel's row-level model and not this repository's
+      // former mirror rule, which set every silk-touch drop to a flat count
+      // of 1 regardless of the block's own count.
       expect(blockLoot(GLOWSTONE, { silkTouch: true }, NO_LUCK)).toStrictEqual([
-        { item: 'glowstone', count: 1 },
+        { item: 'glowstone', count: 2 },
       ])
     }),
   )
@@ -519,8 +539,12 @@ describe('blockLoot — fortune', () => {
   // (`interaction-break-handler.execute.ts:131-134`: `!hasSilkTouch && fortune`).
   it.effect('REGRESSION: silk touch suppresses fortune — they are mutually exclusive', () =>
     Effect.sync(() => {
+      // count: 2, not 1 — see the note on 'silk touch substitutes the
+      // harvested block for its normal drop' above. What this test still
+      // proves: fortuneLevel: 3 added nothing beyond the row's own base
+      // count, because `fortuneApplies` refuses whenever `silkTouch` is true.
       expect(blockLoot(GLOWSTONE, { fortuneLevel: 3, silkTouch: true }, [0])).toStrictEqual([
-        { item: 'glowstone', count: 1 },
+        { item: 'glowstone', count: 2 },
       ])
     }),
   )

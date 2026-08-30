@@ -96,7 +96,7 @@ export {
   isPlaceableItem,
   itemOfBlock,
   type PlaceableItemType,
-} from './domain/block-vocabulary.js'
+} from '@nerima-games/mc-kernel'
 export * from './domain/interactions/use-block.js'
 export * from './stages/registration.js'
 export * from './stages/ender-dragon-encounter-stage.js'
@@ -104,23 +104,27 @@ export * from './stages/stage-ids.js'
 export * from './stages/targeted-right-click-route.js'
 
 // --- Provisional ---------------------------------------------------------------
-// Three modules are temporary local stand-ins for packages that are not
-// published yet, and none of their vocabularies is re-exported wholesale:
+// Two modules are temporary local stand-ins for packages that are not
+// published yet, and neither vocabulary is re-exported wholesale:
 //
-//   domain/block-vocabulary.ts    -> @nerima-games/mc-kernel
 //   domain/chunk-store-port.ts    -> @nerima-games/mc-worldgen
 //   domain/portal-frame-port.ts   -> @nerima-games/mc-worldgen
 //
-// (Wave 1 (W1-M3) already repointed and deleted this repository's four
-// mc-kernel mirrors of coordinate/frame/item vocabulary — domain/frame-contract.ts,
-// domain/item-vocabulary.ts, domain/position-key.ts and domain/block-position-key.ts.
-// Consumers of `StageId`, `DeltaTimeSecs`, `StackCount`, `CameraPoseSnapshot`,
-// `ClockPort`, `FrameServices`, `GameModule`, `StageRegistration`, `ItemType` and
-// `BlockPositionKey` take them directly from `@nerima-games/mc-kernel` now.)
+// (Wave 1 already repointed and deleted this repository's five mc-kernel
+// mirrors: domain/frame-contract.ts, domain/item-vocabulary.ts,
+// domain/position-key.ts and domain/block-position-key.ts (W1-M3), and
+// domain/block-vocabulary.ts (W1-M4, kernel 0.6.0 — capabilityOfBlockId
+// replaces the four renamed predicates, resistsExplosion(id, power) replaces
+// resistsNormalExplosion(id)). Consumers of `StageId`, `DeltaTimeSecs`,
+// `StackCount`, `CameraPoseSnapshot`, `ClockPort`, `FrameServices`,
+// `GameModule`, `StageRegistration`, `ItemType`, `BlockPositionKey`,
+// `BlockType`, `blockIdOf`, `blockTypeOfId`, `dropOfBlockId`,
+// `capabilityOfBlockId`, `supportRuleOfBlockId` and the rest of the block
+// vocabulary take them directly from `@nerima-games/mc-kernel` now.)
 //
-// TWO of the remaining three mirror mc-worldgen, which is not an
-// inconsistency: `domain/portal-frame-port.ts`'s header records the lesson that
-// one mirror file must have one SOURCE module.
+// BOTH remaining mirror mc-worldgen, which is not an inconsistency:
+// `domain/portal-frame-port.ts`'s header records the lesson that one mirror
+// file must have one SOURCE module.
 //
 // `domain/chunk-window.ts` sits beside them and IS re-exported, because it is
 // this repository's own: the bridge from an `Effect`-shaped store to the

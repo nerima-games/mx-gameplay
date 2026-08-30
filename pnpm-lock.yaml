@@ -15,8 +15,8 @@ importers:
         specifier: 0.2.7
         version: 0.2.7
       '@nerima-games/mc-kernel':
-        specifier: 0.5.1
-        version: 0.5.1
+        specifier: 0.6.1
+        version: 0.6.1
       '@nerima-games/mc-sim':
         specifier: 0.2.1
         version: 0.2.1
@@ -371,8 +371,8 @@ packages:
     peerDependencies:
       effect: ^3.22.1
 
-  '@nerima-games/mc-kernel@0.5.1':
-    resolution: {integrity: sha512-DlyTf/UUDZh8SKPO+H0mSCL7ywGiIa5KqZJs/xIqj/MpCKLma6lu9QxlnmvWyH0ikV32lyw+Z6yIgCaVIaFCdg==, tarball: https://npm.pkg.github.com/download/@nerima-games/mc-kernel/0.5.1/0637d8dce6026f6ef114455f0d8f0969a99333f3}
+  '@nerima-games/mc-kernel@0.6.1':
+    resolution: {integrity: sha512-dFesm1TZW+/TjQe9zsLtFTAS3uu1y7hxpOBFJifvHiwrKjQG547Cc/7kGhFk72jhqfZU4Fef7+/1keTNFqmf3g==, tarball: https://npm.pkg.github.com/download/@nerima-games/mc-kernel/0.6.1/b7dd614eefc85d83cf48d94d5f8178a90c79f5fc}
     engines: {node: '>=24.0.0', pnpm: '>=11.24.0'}
 
   '@nerima-games/mc-noise@0.3.0':
@@ -1578,7 +1578,7 @@ snapshots:
     dependencies:
       effect: 3.22.1
 
-  '@nerima-games/mc-kernel@0.5.1':
+  '@nerima-games/mc-kernel@0.6.1':
     dependencies:
       effect: 3.22.1
 
@@ -2277,8 +2277,8 @@ snapshots:
   vite@7.3.6(@types/node@26.4.0)(jiti@2.7.0)(tsx@4.23.12)(yaml@2.9.0):
     dependencies:
       esbuild: 0.28.1
-      fdir: 6.5.0(picomatch@4.0.5)
-      picomatch: 4.0.5
+      fdir: 6.5.0(picomatch@4.0.7)
+      picomatch: 4.0.7
       postcss: 8.5.23
       rollup: 4.62.2
       tinyglobby: 0.2.17

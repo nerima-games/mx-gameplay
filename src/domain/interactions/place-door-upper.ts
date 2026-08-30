@@ -52,7 +52,7 @@
  */
 import { Effect } from 'effect'
 import { adjacentBlockPosition, blockPosition } from '@nerima-games/mc-kernel'
-import { blockIdOf, blockTypeOfId } from '../block-vocabulary.js'
+import { blockIdOf, blockTypeOfId } from '@nerima-games/mc-kernel'
 import { AIR_BLOCK_ID, type BlockId, type BlockPosition, type ChunkStoreApi } from '../chunk-store-port.js'
 
 /**

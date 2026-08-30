@@ -73,7 +73,7 @@ const IGNITION_ITEM_NAMES: ReadonlySet<string> = new Set<string>(IGNITION_ITEM_T
  *
  * The proof obligation for `useFlintAndSteel`'s parameter, and it belongs to
  * whoever reads the hotbar — the same shape and the same argument as
- * `../block-vocabulary`'s `isPlaceableItem`, so that "you cannot light a portal
+ * kernel's `isPlaceableItem`, so that "you cannot light a portal
  * with a stick" is a TYPE ERROR where the request is built rather than a refusal
  * where it is serviced.
  */

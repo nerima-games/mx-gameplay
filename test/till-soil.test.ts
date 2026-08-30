@@ -23,7 +23,7 @@ import {
   type TillingCapability,
 } from '../src/domain/interactions/till-soil'
 import { CROP_OF_SEED, SOIL_OF_CROP } from '../src/domain/interactions/plant-crop'
-import { blockIdOf, type BlockType } from '../src/domain/block-vocabulary'
+import { blockIdOf, type BlockType } from '@nerima-games/mc-kernel'
 import type { BlockPosition } from '../src/domain/chunk-store-port'
 
 const HOE: TillingCapability = { tills: true }

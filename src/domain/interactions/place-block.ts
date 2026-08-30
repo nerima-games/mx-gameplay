@@ -49,8 +49,8 @@
  * (`block-service-place-load.ts:48-58`), a hand-written two-element list with a
  * comment about underwater building. LAVA IS MISSING FROM IT, so placing into a
  * lava cell is refused as "block already exists". That is the same omission
- * `../block-vocabulary`'s `REPLACEABLE_IDS` had — its own comment records the
- * consequence in two halves, 「falling sand and gravel did not displace lava, and
+ * the former `../block-vocabulary`'s `REPLACEABLE_IDS` had — its own comment
+ * recorded the consequence in two halves, 「falling sand and gravel did not displace lava, and
  * placement treated a lava cell as occupied」 — and this rule is the second half.
  * It asks `isReplaceable`, so the answer is kernel's capability rather than a
  * third hand-written list, and adding a replaceable block is a row in kernel's
@@ -127,14 +127,16 @@ import {
   type ChunkStoreApi,
 } from '../chunk-store-port.js'
 import {
+  adjacentBlockPosition,
   blockIdOf,
   blockOfPlaceableItem,
+  blockPosition,
   canBlockStaySupported,
-  isReplaceable,
+  capabilityOfBlockId,
   isSupportSensitiveBlockId,
   type PlaceableItemType,
-} from '../block-vocabulary.js'
-import { adjacentBlockPosition, blockPosition, type Position } from '@nerima-games/mc-kernel'
+  type Position,
+} from '@nerima-games/mc-kernel'
 import { cactusSidesObjection, type CactusSidesRefusal } from './place-cactus-sides.js'
 import { doorUpperCell, type DoorUpperCell } from './place-door-upper.js'
 import { mushroomLightObjection, type MushroomLightRefusal } from './place-mushroom-light.js'
@@ -191,8 +193,8 @@ export const blockOverlapsPlayer = (block: BlockPosition, playerFeet: Position):
  * 「When kernel adds `supportSensitive` this becomes `capabilityOfBlockId(id,
  * …)` and the set is deleted」. Kernel added the column — as `supportRule`
  * rather than as a boolean, which is the better shape and the one the audit
- * always specified — so the set is deleted and this delegates to
- * `../block-vocabulary`.
+ * always specified — so the set is deleted and this delegates to kernel's
+ * `supportRuleOfBlockId` / `isSupportSensitiveBlockId` directly.
  *
  * The set was here on a stated objection: kernel's registry had no `supportRule`
  * column, so transcribing one into the capability mirror would have been this
@@ -204,12 +206,15 @@ export const blockOverlapsPlayer = (block: BlockPosition, playerFeet: Position):
  * whether to read the cell below. The answer is kernel's.
  *
  * RENAMED from `isSupportSensitive`, which is kernel's name for the predicate
- * over a RULE. The mirror in `domain/block-vocabulary.ts` must carry kernel's
+ * over a RULE. The former block-vocabulary.ts mirror had to carry kernel's
  * names exactly -- a renamed mirror typechecks, passes every local test, and
  * yields a name that does not exist on the day the import is repointed -- so
- * when the two collided, the local one moved. That direction is not a
- * preference: the mirror is a transcription and has no freedom, while this name
- * is ours to choose.
+ * when the two collided, the local one moved rather than the mirror. That
+ * direction was not a preference: the mirror was a transcription and had no
+ * freedom, while this name is ours to choose. The name stays post-repoint
+ * because the collision itself is real: kernel's own `isSupportSensitive`
+ * (imported directly now) takes a `SupportRule`, and this function takes a
+ * `BlockId`.
  *
  * TOTAL over ids, including ones this build cannot name: an unrecognised byte is
  * NOT support-sensitive, which is the inert direction — it places, rather than
@@ -222,7 +227,7 @@ export const isSupportSensitiveOfBlock = (block: BlockId): boolean => isSupportS
  *
  * `heldItem` is a `PlaceableItemType` — `ItemType & BlockType`, kernel's audit
  * §6-8 intersection — so "you cannot place a stick" is a TYPE ERROR at the call
- * site rather than a refusal at runtime. `../block-vocabulary`'s `isPlaceableItem`
+ * site rather than a refusal at runtime. kernel's `isPlaceableItem`
  * is the proof obligation, and it belongs to whoever reads the hotbar.
  *
  * `playerFeet` is OPTIONAL and `undefined` means "there is nobody there", which
@@ -282,8 +287,8 @@ export type PlaceOutcome =
    *
    * UNREACHABLE TODAY and kept anyway. `PlaceableItemType` is derived from the
    * two rosters, and every member of it has a registry row — but the rosters and
-   * the registry are two transcriptions in `../block-vocabulary`, and kernel's
-   * own `blockIdOf` records what the alternative costs: 「an unregistered type
+   * the registry are two of kernel's own files, taken directly since W1-M4, and
+   * kernel's own `blockIdOf` records what the alternative costs: 「an unregistered type
    * silently becomes AIR, so the block does not merely misread, it VANISHES」.
    * A named refusal is the only answer that does not delete a cell.
    */
@@ -341,14 +346,14 @@ export const placementVerdict = (
   if (target._tag === 'OutOfWorld') {
     return { _tag: 'OutOfWorld' }
   }
-  if (!isReplaceable(target.block)) {
+  if (!capabilityOfBlockId(target.block, 'replaceable')) {
     return { _tag: 'Occupied', existing: target.block }
   }
 
   const block = blockIdOf(blockOfPlaceableItem(request.heldItem))
   /* v8 ignore start -- UnknownBlock is unreachable in a green tree: PlaceableItemType
    * is exactly the roster `blockIdOf` is pinned total over
-   * (test/block-vocabulary-mirror.test.ts), so `blockIdOf(blockOfPlaceableItem(x))`
+   * (kernel's own type declaration), so `blockIdOf(blockOfPlaceableItem(x))`
    * never returns `undefined` for a request this type permits. Kept for the reason
    * the `UnknownBlock` tag's own comment states, on `PlaceOutcome` above. */
   if (block === undefined) {

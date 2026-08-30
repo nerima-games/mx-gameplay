@@ -16,7 +16,7 @@ import {
   type ChunkStore,
   type ChunkStoreApi,
 } from '../src/domain/chunk-store-port'
-import { blockIdOf } from '../src/domain/block-vocabulary'
+import { blockIdOf } from '@nerima-games/mc-kernel'
 import {
   CREEPER_KIND,
   DROPPED_ITEM_KIND,
@@ -2249,9 +2249,9 @@ describe('fire lifecycle: extinguish, restore, and burning-actor bookkeeping', (
 
   it.effect('classifies an unregistered block id near a fire as unknown rather than crashing', () =>
     Effect.gen(function* () {
-      // `blockTypeOfId` is documented PARTIAL over `BlockType`
-      // (`domain/block-vocabulary.ts`) — a mirror carries no gate proving
-      // every id a save or a corrupted chunk could hold is registered. Every
+      // `blockTypeOfId` is kernel's own function and is documented PARTIAL over
+      // `BlockType` — nothing gates every id a save or a corrupted chunk could
+      // hold being registered. Every
       // other fire test only ever reads registered blocks, so the
       // `blockTypeOfId(reading.block) ?? '__unknown_fire_block__'` fallback
       // had never fired.
@@ -2698,7 +2698,7 @@ describe('additional fluid propagation branches', () => {
 
 describe('fire tick budget, unregistered blocks and duplicate ignition', () => {
   const FIRE = blockIdOf('fire') ?? 119
-  // Deliberately outside block-vocabulary.ts's registered id range (its
+  // Deliberately outside kernel's registered id range (its
   // highest registered id is in the 120s), so `blockTypeOfId` returns
   // `undefined` for it — a block this vocabulary does not know, exactly the
   // shape `place-block.ts`'s own `UnknownBlock` arm defends against.

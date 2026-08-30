@@ -75,7 +75,7 @@ import {
   type TimeServiceApi,
 } from '@nerima-games/mc-sim'
 import { Effect, Ref } from 'effect'
-import type { Position } from '@nerima-games/mc-kernel'
+import { blockIdOf, capabilityOfBlockId, type HarvestTier, type Position } from '@nerima-games/mc-kernel'
 import { readdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -86,7 +86,6 @@ import {
   type BlockWriteOutcome,
   type ChunkStoreApi,
 } from '../src/domain/chunk-store-port'
-import { blockIdOf, isReplaceable } from '../src/domain/block-vocabulary'
 import { NOON_FRACTION } from '../src/domain/day-night'
 import {
   addVillager,
@@ -292,7 +291,7 @@ const requestBreak = requestBlockBreak
  * rather than cobblestone.
  */
 const holdWoodenPickaxe = (
-  state: { readonly heldTool: Ref.Ref<{ readonly heldTier?: 'none' | 'wooden' | 'stone' | 'iron' | 'diamond' }> },
+  state: { readonly heldTool: Ref.Ref<{ readonly heldTier?: HarvestTier }> },
 ): Effect.Effect<void> => Ref.set(state.heldTool, { heldTier: 'wooden' })
 
 /** kernel's answer for stone mined with a pickaxe: one cobblestone, no fortune. */
@@ -453,12 +452,12 @@ describe('the slice, through the stage registration', () => {
    * two cases run through `isReplaceable`, so a fifth replaceable block is a row
    * in kernel's table and no edit to `domain/entities/falling-block-move.ts`.
    *
-   * THE LAVA HALF IS THE ONE WORTH HAVING. `domain/block-vocabulary.ts`'s own
-   * comment records that lava was missing from `REPLACEABLE_IDS` and states the
+   * THE LAVA HALF IS THE ONE WORTH HAVING. The former `domain/block-vocabulary.ts`'s
+   * own comment recorded that lava was missing from `REPLACEABLE_IDS` and stated the
    * consequence in two halves — 「falling sand and gravel did not displace lava,
    * and placement treated a lava cell as occupied」. `test/place-block.test.ts`
-   * pins the second half; until now nothing pinned the first, so the mirror
-   * could lose the row again and only the preview would notice.
+   * pins the second half; this test pins the first, so a kernel regression on
+   * this capability would not go unnoticed again.
    */
   it.effect('sand sinks through water, because water is replaceable and not because it is water', () =>
     Effect.gen(function* () {
@@ -488,7 +487,7 @@ describe('the slice, through the stage registration', () => {
         ]),
       )
 
-      expect(isReplaceable(LAVA)).toBe(true)
+      expect(capabilityOfBlockId(LAVA, 'replaceable')).toBe(true)
 
       yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, [blockPositionKeyOf(blockPosition(support.x, support.y, support.z))]))
       yield* runFrame(stages)

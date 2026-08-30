@@ -38,9 +38,8 @@ import { readdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { AIR_BLOCK_ID, type BlockId } from '../src/domain/chunk-store-port'
-import { validSpawnSurface } from '../src/domain/block-vocabulary'
 import { applyDamage, deathMessage, fullHealth, isDead, MAX_HEALTH_POINTS } from '../src/domain/death-cause'
-import { DeltaTimeSecs, ITEM_TYPES } from '@nerima-games/mc-kernel'
+import { capabilityOfBlockId, DeltaTimeSecs, ITEM_TYPES } from '@nerima-games/mc-kernel'
 import {
   CREEPER_FUSE_SECS,
   CREEPER_IGNITION_RANGE_BLOCKS,
@@ -462,8 +461,8 @@ describe('creeper: spawning is a rule about light and surface, never a block lis
       // separately from `solid`. A rule that tested solidity would spawn mobs in
       // the canopy — and the reference's mob spawner, which tested nothing at
       // all beyond "first non-air block from the top", did.
-      expect(validSpawnSurface(OAK_LEAVES)).toBe(false)
-      expect(validSpawnSurface(GLASS)).toBe(false)
+      expect(capabilityOfBlockId(OAK_LEAVES, 'validSpawnSurface')).toBe(false)
+      expect(capabilityOfBlockId(GLASS, 'validSpawnSurface')).toBe(false)
 
       for (const ground of [OAK_LEAVES, GLASS, WATER, AIR_BLOCK_ID]) {
         expect(canHostileSpawnAt(candidate({ groundBlock: ground }))).toStrictEqual({

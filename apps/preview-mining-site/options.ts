@@ -16,7 +16,7 @@
  */
 import { isScreenName, isViewMode, SCREENS, VIEW_MODES, type ScreenName, type ViewMode } from './render'
 import { DEFAULT_SCENARIO, SCENARIO_NAMES, SCENARIOS } from './scenarios'
-import { HARVEST_TIERS, type HarvestTier } from '../../src/domain/block-vocabulary'
+import { HARVEST_TIERS, type HarvestTier } from '@nerima-games/mc-kernel'
 
 /** How many frames the `n` key advances. */
 export const DEFAULT_RUN_FRAMES = 10

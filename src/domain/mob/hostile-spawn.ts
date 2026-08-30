@@ -18,8 +18,8 @@
  * The surface test is kernel's capability, NOT a block list
  * ---------------------------------------------------------------------------
  *
- * `validSpawnSurface` comes from `../block-vocabulary`, which transcribes
- * kernel's registry. This matters more than it looks, and it is the one place
+ * `capabilityOfBlockId(id, 'validSpawnSurface')` comes from kernel's registry
+ * directly. This matters more than it looks, and it is the one place
  * this file deliberately does BETTER than the reference rather than porting it:
  *
  *  - The reference's mob spawner had no surface test at all. `terrain-spawn.ts`
@@ -70,7 +70,7 @@
  * them would be a second owner of the mob population.
  */
 import { AIR_BLOCK_ID, type BlockId } from '../chunk-store-port.js'
-import { validSpawnSurface } from '../block-vocabulary.js'
+import { capabilityOfBlockId } from '@nerima-games/mc-kernel'
 import { hostileSpawnsAllowed } from '../day-night.js'
 import type { EntityKind } from '@nerima-games/mc-sim'
 import type { Dimension } from '@nerima-games/mc-worldgen'
@@ -195,7 +195,7 @@ export const canHostileSpawnAt = (candidate: SpawnCandidate): SpawnVerdict => {
     return REFUSED('too-far')
   }
 
-  if (!validSpawnSurface(candidate.groundBlock)) {
+  if (!capabilityOfBlockId(candidate.groundBlock, 'validSpawnSurface')) {
     return REFUSED('not-a-surface')
   }
 
@@ -234,7 +234,7 @@ export const canMobSpawnAt = (kind: EntityKind, candidate: SpawnCandidate): Spaw
   if (!Number.isFinite(candidate.distanceToPlayerBlocksXZ) || !Number.isFinite(candidate.blockLight)) return REFUSED('unmeasurable')
   if (candidate.distanceToPlayerBlocksXZ < MIN_SPAWN_DISTANCE_BLOCKS) return REFUSED('too-close')
   if (candidate.distanceToPlayerBlocksXZ > MAX_SPAWN_DISTANCE_BLOCKS) return REFUSED('too-far')
-  if (!validSpawnSurface(candidate.groundBlock)) return REFUSED('not-a-surface')
+  if (!capabilityOfBlockId(candidate.groundBlock, 'validSpawnSurface')) return REFUSED('not-a-surface')
   if (candidate.footBlock !== AIR_BLOCK_ID || candidate.headBlock !== AIR_BLOCK_ID) return REFUSED('obstructed')
   if (nether && candidate.blockLight > HOSTILE_SPAWN_MAX_BLOCK_LIGHT) return REFUSED('too-bright')
   return { _tag: 'Spawn' }

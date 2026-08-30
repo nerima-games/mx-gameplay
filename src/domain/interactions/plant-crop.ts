@@ -29,9 +29,14 @@
  * design choice rather than a defect.
  */
 import { Effect } from 'effect'
-import type { BlockType } from '../block-vocabulary.js'
-import { blockIdOf, blockTypeOfId } from '../block-vocabulary.js'
-import { adjacentBlockPosition, blockPosition, type ItemType } from '@nerima-games/mc-kernel'
+import {
+  adjacentBlockPosition,
+  blockIdOf,
+  blockPosition,
+  blockTypeOfId,
+  type BlockType,
+  type ItemType,
+} from '@nerima-games/mc-kernel'
 import type { BlockPosition } from '../chunk-store-port.js'
 
 /**
@@ -184,10 +189,10 @@ export const plantCrop = (
     if (verdict._tag === 'planted') {
       // `verdict.crop` is drawn only from `CROP_OF_SEED`'s three values
       // (`wheat_crop` / `potato_crop` / `nether_wart_crop`), and all three carry
-      // a `BLOCK_DROP_REGISTRY` row (ids 71-73 in `../block-vocabulary.ts`), so
+      // a row in kernel's own registry (ids 71-73), so
       // `blockIdOf` cannot return `undefined` here. Asserted rather than
       // branched on, since a vocabulary defect that removed one of those rows
-      // would be caught by `test/block-vocabulary-mirror.test.ts` long before
+      // would be caught by kernel's own type declaration long before
       // this line ran, not by a runtime fallback that plants nothing and
       // reports success.
       yield* port.setBlock(verdict.at, blockIdOf(verdict.crop)!)

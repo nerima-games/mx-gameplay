@@ -1,7 +1,7 @@
 import { describe, expect, it } from '@effect/vitest'
 import { Effect } from 'effect'
 import { applyBoneMeal } from '../src/domain/interactions/bone-meal'
-import { blockIdOf, blockTypeOfId } from '../src/domain/block-vocabulary'
+import { blockIdOf, blockTypeOfId } from '@nerima-games/mc-kernel'
 import type { BlockPosition } from '../src/domain/chunk-store-port'
 
 const TARGET: BlockPosition = { x: 2, y: 64, z: -1 }

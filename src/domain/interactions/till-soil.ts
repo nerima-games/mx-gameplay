@@ -50,7 +50,7 @@
  * pins it says which behaviour is vanilla's.
  */
 import { Effect } from 'effect'
-import { blockIdOf, blockTypeOfId, type BlockType } from '../block-vocabulary.js'
+import { blockIdOf, blockTypeOfId, type BlockType } from '@nerima-games/mc-kernel'
 import { adjacentBlockPosition, blockPosition } from '@nerima-games/mc-kernel'
 import type { BlockPosition } from '../chunk-store-port.js'
 
@@ -162,12 +162,12 @@ export const tillSoil = (
 
     const verdict = tillingVerdict(held, ground, groundBlock, aboveBlock)
     if (verdict._tag === 'tilled') {
-      // `TILLED_BLOCK` is the literal `'farmland'`, which carries a
-      // `BLOCK_DROP_REGISTRY` row (id 49 in `../block-vocabulary.ts`), so
-      // `blockIdOf` cannot return `undefined` here. Asserted rather than
+      // `TILLED_BLOCK` is the literal `'farmland'`, which carries a row in
+      // kernel's own registry, so `blockIdOf` cannot return `undefined` here.
+      // Asserted rather than
       // branched on, for the same reason `./plant-crop.ts` asserts its own
       // three crop ids: a vocabulary defect that removed that row would be
-      // caught by `test/block-vocabulary-mirror.test.ts`, not by a runtime
+      // caught by kernel's own type declaration, not by a runtime
       // fallback that tills nothing and reports success.
       yield* port.setBlock(verdict.at, blockIdOf(TILLED_BLOCK)!)
     }

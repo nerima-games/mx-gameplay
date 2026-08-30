@@ -42,7 +42,7 @@
  * ---------------------------------------------------------------------------
  *
  * `sugar_cane`'s `supportRule` is `needsOneOf('dirt', 'grass_block', 'sand',
- * 'sugar_cane')` (`../block-vocabulary`), so `./place-block` has ALREADY read the
+ * 'sugar_cane')` (kernel's registry), so `./place-block` has ALREADY read the
  * cell below by the time this gate is asked — `placementVerdict` cannot answer
  * without it. The reading is therefore a parameter rather than a second
  * `getBlock`, and the alternative is a store call per placement that can only
@@ -58,7 +58,7 @@
  */
 import { Effect } from 'effect'
 import { adjacentBlockPosition, blockPosition, horizontalBlockNeighbours } from '@nerima-games/mc-kernel'
-import { blockIdOf, blockTypeOfId } from '../block-vocabulary.js'
+import { blockIdOf, blockTypeOfId } from '@nerima-games/mc-kernel'
 import type { BlockId, BlockPosition, BlockReading, ChunkStoreApi } from '../chunk-store-port.js'
 
 /** Is this byte sugar cane? Asked of kernel's registry; see `./place-mushroom-light`. */

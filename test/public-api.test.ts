@@ -91,9 +91,10 @@ describe('public API surface', () => {
   )
 
   // REGRESSION: this repository's `domain/frame-contract.ts`, `domain/position-key.ts`,
-  // `domain/item-vocabulary.ts` and `domain/block-position-key.ts` were stand-ins for
-  // @nerima-games/mc-kernel with a deletion date written into their headers; Wave 1
-  // (W1-M3) repointed every importer at kernel directly and deleted all four. The
+  // `domain/item-vocabulary.ts`, `domain/block-position-key.ts` (Wave 1, W1-M3) and
+  // `domain/block-vocabulary.ts` (Wave 1, W1-M4) were stand-ins for
+  // @nerima-games/mc-kernel with a deletion date written into their headers; each
+  // Wave repointed every importer at kernel directly and deleted the mirror. The
   // barrel must still not republish kernel's vocabulary as its own — that would make
   // `StageId`, `DeltaTimeSecs`, `BlockPositionKey` and the rest API of a package that
   // does not own them, a breaking change for every consumer the day kernel's own
@@ -104,13 +105,13 @@ describe('public API surface', () => {
       // `ITEM_TYPES` joined this list when the creeper's drop needed a name for
       // gunpowder — kernel's item roster, taken directly since W1-M3.
       //
-      // `BLOCK_TYPES`, `blockTypeOfId`, `itemOfBlock`, `dropOfBlockId` and the
-      // harvest vocabulary joined it when the block loot table needed the
-      // number-to-item bridge. `domain/block-vocabulary.ts` mirrors THREE of
-      // kernel's files and carries the same deletion date; publishing any of
-      // them would put kernel's block registry on this package's surface, and
-      // `blockTypeOfId` in particular is the one function a consumer would most
-      // plausibly reach for from the wrong repository.
+      // `BLOCK_TYPES`, `blockTypeOfId`, `itemOfBlock`, `dropOfBlockId`, the
+      // harvest vocabulary and the capability/support-rule predicates joined it
+      // when `domain/block-vocabulary.ts` (three of kernel's files) was
+      // repointed and deleted in W1-M4; publishing any of them would put
+      // kernel's block registry on this package's surface, and `blockTypeOfId`
+      // in particular is the one function a consumer would most plausibly
+      // reach for from the wrong repository.
       const kernelsToOwn = [
         'StageId',
         'DeltaTimeSecs',
@@ -125,6 +126,7 @@ describe('public API surface', () => {
         'isItemType',
         'BLOCK_TYPES',
         'BLOCK_DROP_REGISTRY',
+        'BLOCK_REGISTRY',
         'blockTypeOfId',
         'blockIdOf',
         'dropOfBlockId',
@@ -132,6 +134,12 @@ describe('public API surface', () => {
         'satisfiesHarvestTier',
         'HARVEST_TIERS',
         'DEFAULT_BLOCK_DROP',
+        'capabilityOfBlockId',
+        'capabilitiesOfBlockId',
+        'supportRuleOfBlockId',
+        'canBlockStaySupported',
+        'isSupportSensitiveBlockId',
+        'resistsExplosion',
       ]
       for (const name of kernelsToOwn) {
         expect(Object.keys(gameplay)).not.toContain(name)

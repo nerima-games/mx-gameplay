@@ -23,10 +23,12 @@ import {
   BLOCK_TYPES,
   PLACEABLE_ITEM_TYPES,
   blockIdOf,
+  blockPosition,
+  horizontalBlockNeighbours,
   isPlaceableItem,
+  ITEM_TYPES,
   type PlaceableItemType,
-} from '../src/domain/block-vocabulary'
-import { blockPosition, horizontalBlockNeighbours, ITEM_TYPES } from '@nerima-games/mc-kernel'
+} from '@nerima-games/mc-kernel'
 import { AIR_BLOCK_ID, type BlockId, type BlockPosition, type BlockReading } from '../src/domain/chunk-store-port'
 import {
   MAX_MUSHROOM_PLACEMENT_LIGHT,

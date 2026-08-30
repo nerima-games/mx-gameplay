@@ -19,8 +19,8 @@
  * next tick, so admitting water at PLACEMENT time builds a plant whose only
  * future is to pop. The strict test is transcribed.
  *
- * It is also the reason this rule and `../block-vocabulary`'s
- * `canSupportAttachments` must not be folded together. Kernel's audit §4.9 is
+ * It is also the reason this rule and kernel's
+ * `capabilityOfBlockId(id, 'canSupportAttachments')` must not be folded together. Kernel's audit §4.9 is
  * explicit that the capabilities are independent with different membership, and
  * "may a cactus be here" is a question about the four cells BESIDE the cactus
  * while every capability flag is a question about one cell.
@@ -43,7 +43,7 @@
  */
 import { Effect } from 'effect'
 import { blockPosition, horizontalBlockNeighbours } from '@nerima-games/mc-kernel'
-import { blockIdOf, blockTypeOfId } from '../block-vocabulary.js'
+import { blockIdOf, blockTypeOfId } from '@nerima-games/mc-kernel'
 import { AIR_BLOCK_ID, type BlockId, type BlockPosition, type BlockReading, type ChunkStoreApi } from '../chunk-store-port.js'
 
 /** Is this byte a cactus? Asked of kernel's registry; see `./place-mushroom-light`. */
