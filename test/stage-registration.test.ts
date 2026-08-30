@@ -27,6 +27,7 @@ import {
   type MobSpawnAttempt,
 } from '../src/domain/entities/mob-frame'
 import {
+  FIRE_DAMAGE_INTERVAL_TICKS,
   FIRE_TICK_INTERVAL_SECS,
   makeFireLifecycleState,
   type FireLifecycleSnapshot,
@@ -104,7 +105,9 @@ import {
   requestBoneMeal,
   requestBowShot,
   requestFireExtinguish,
+  requestFishingAdvance,
   requestFishingCancel,
+  requestFishingCast,
   requestFoodUse,
   requestMeleeAttack,
   requestMobSpawn,
@@ -114,6 +117,7 @@ import {
   requestStatusEffect,
   requestTargetedBoneMeal,
   requestTargetedItemUse,
+  requestTargetedBlockPlacement,
   requestTargetedBlockUse,
   requestTargetedPotatoPlanting,
   requestTargetedSoilTill,
@@ -993,6 +997,38 @@ describe('stage behaviour', () => {
     }),
   )
 
+  it.effect('a lethal melee hit on a kind with no XP reward or drop table emits neither', () =>
+    Effect.gen(function* () {
+      // Every other lethal-hit test in this file kills a `CREEPER_KIND`, which
+      // has both an XP reward and a drop table, so `experience.length > 0` and
+      // `drops.length > 0` had only ever been taken. `skeleton` is a
+      // `HOSTILE_KINDS` member (melee can target it) for which
+      // `xpRewardOfKind` and `dropRulesOfKind` both fall through to their
+      // zero/empty default, so a lethal hit on it takes neither.
+      const { state, roster, stages } = yield* builtStages
+      const feetPosition = { x: 0, y: 64 - BOW_TARGET_CENTER_Y_OFFSET, z: 2 }
+      yield* roster.api.spawn({
+        kind: EntityKind('skeleton'),
+        feetPosition,
+        healthPoints: 4,
+        behaviour: undefined,
+      })
+
+      yield* requestMeleeAttack(state, {
+        origin: { x: 0, y: 64, z: 0 },
+        direction: { x: 0, y: 0, z: 1 },
+        reach: 3,
+        damage: 4,
+      })
+      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)
+      yield* interactions!.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect((yield* roster.api.snapshot).entities).toStrictEqual([])
+      expect(yield* drainMobExperience(state)).toStrictEqual([])
+      expect(yield* drainMobDrops(state)).toStrictEqual([])
+    }),
+  )
+
   it.effect('a lethal player melee hit emits mob experience exactly once', () =>
     Effect.gen(function* () {
       const { state, roster, stages } = yield* builtStages
@@ -1526,6 +1562,19 @@ describe('the module contract has caught up with this file’s shape', () => {
     }),
   )
 
+  it.effect('useBrewingPotion on an empty stand requests no status effect', () =>
+    Effect.gen(function* () {
+      // Every other `useBrewingPotion` call in this file drinks a real potion,
+      // so its `result._tag === 'Consumed'` guard had only ever taken that
+      // branch. A freshly-built state's brewing stand is empty.
+      const state = yield* makeGameplayFrameState
+
+      expect(yield* useBrewingPotion(state)).toStrictEqual({ _tag: 'Rejected', reason: 'Empty' })
+      expect(yield* drainPlayerHeals(state)).toStrictEqual([])
+      expect(yield* getPlayerMovementSpeedMultiplier(state)).toBe(1)
+    }),
+  )
+
   it.effect('snapshots and restores status effects without retaining host references', () =>
     Effect.gen(function* () {
       const source = yield* makeGameplayFrameState
@@ -1937,6 +1986,32 @@ describe('the targeted-block family resolves through the same raycast as placeme
     }),
   )
 
+  it.effect('the Targeted* request family enqueues nothing when nothing is within reach', () =>
+    Effect.gen(function* () {
+      // Every other test in this describe block aims at a real block, so each
+      // Targeted* wrapper's `if (Option.isSome(target))` guard had only ever
+      // seen `Some`. An empty, loaded world and the default spawn pose (the
+      // same setup `resolveTargetedBlock is None...` above uses) reaches None
+      // for all five wrappers at once.
+      const state = yield* makeGameplayFrameState
+      const store = yield* makeChunkStoreDouble(world([]), ['0,0'])
+      const player = yield* makePlayerServiceDouble()
+
+      const placement = yield* requestTargetedBlockPlacement(state, store.api, player.api, 'sand')
+      expect(Option.isNone(placement)).toBe(true)
+      expect(yield* Ref.get(state.pendingItemUses)).toStrictEqual([])
+
+      const itemUse = yield* requestTargetedItemUse(state, store.api, player.api, 'miss-ignite', 'fire_charge')
+      expect(Option.isNone(itemUse)).toBe(true)
+
+      yield* requestTargetedSoilTill(state, store.api, player.api, 'miss-till', 'iron_hoe')
+      yield* requestTargetedPotatoPlanting(state, store.api, player.api, 'miss-plant')
+      yield* requestTargetedBoneMeal(state, store.api, player.api, 'miss-bonemeal')
+
+      expect(yield* Ref.get(state.pendingItemUses)).toStrictEqual([])
+    }),
+  )
+
   it.effect('requestTargetedItemUse enqueues an ignition use against the adjacent cell', () =>
     Effect.gen(function* () {
       const { state, store, player } = yield* aimingAt(STONE)
@@ -2075,6 +2150,27 @@ describe('fire lifecycle: extinguish, restore, and burning-actor bookkeeping', (
     }),
   )
 
+  it.effect('requestFireExtinguish clears stale tracking without disturbing falling blocks when the world was already air', () =>
+    Effect.gen(function* () {
+      // The only other extinguish test writes `FIRE` first, so `setBlock`
+      // there always returns `'Written'` — its `'Unchanged'` sibling (the
+      // fireLifecycle Ref tracks a position the world already reads as air)
+      // had never fired.
+      const { state, store } = yield* builtStages
+      const position = { x: 5, y: 64, z: 5 }
+      yield* Ref.set(state.fireLifecycle, makeFireLifecycleState([position], 3))
+
+      expect(yield* requestFireExtinguish(state, store.api, position)).toBe(true)
+      // Sparse storage: a cell nobody ever wrote reads `undefined`, the same
+      // "air" answer as an explicit `AIR_BLOCK_ID` write — see "writing air
+      // deletes the cell rather than storing it" in
+      // test/in-memory-chunk-store.test.ts.
+      expect(yield* store.blockAt(position)).toBeUndefined()
+      expect((yield* Ref.get(state.fireLifecycle)).fires).toStrictEqual([])
+      expect((yield* Ref.get(state.fallingBlocks)).pending.size).toBe(0)
+    }),
+  )
+
   it.effect('restoreFireLifecycle dies on a snapshot that fails validation', () =>
     Effect.gen(function* () {
       const state = yield* makeGameplayFrameState
@@ -2085,6 +2181,37 @@ describe('fire lifecycle: extinguish, restore, and burning-actor bookkeeping', (
       if (Exit.isFailure(exit)) {
         expect((Cause.squash(exit.cause) as Error).message).toBe('Unsupported fire lifecycle snapshot')
       }
+    }),
+  )
+
+  it.effect('a fire-killed actor with no XP reward or drop table yields neither', () =>
+    Effect.gen(function* () {
+      // Every other fire-casualty path in this file leaves the entity alive,
+      // so `drops.length > 0` (fed by `rollCasualtyDrops` over fire deaths,
+      // not weapon kills) had never fired. `skeleton` has no entry in
+      // `xpRewardOfKind` / `dropRulesOfKind` (see the melee equivalent above),
+      // so a fire death yields empty drops the same way a fire death yields
+      // no mob-frame test's `MobDropRule` output.
+      const { state, store, roster, stages } = yield* builtStages
+      const position = { x: 7, y: 64, z: 7 }
+      yield* store.api.setBlock({ ...position, y: position.y - 1 }, STONE)
+      yield* store.api.setBlock(position, FIRE)
+      yield* Ref.set(state.fireLifecycle, makeFireLifecycleState([position], 23))
+      yield* roster.api.spawn({
+        kind: EntityKind('skeleton'),
+        feetPosition: position,
+        healthPoints: 1,
+        behaviour: undefined,
+      })
+
+      const fireStage = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire)!
+      for (let tick = 0; tick <= FIRE_DAMAGE_INTERVAL_TICKS; tick += 1) {
+        yield* fireStage.run(DeltaTimeSecs(FIRE_TICK_INTERVAL_SECS)).pipe(Effect.provide(FrameServicesLayer))
+      }
+
+      expect((yield* roster.api.snapshot).entities).toStrictEqual([])
+      expect(yield* drainMobExperience(state)).toStrictEqual([])
+      expect(yield* drainMobDrops(state)).toStrictEqual([])
     }),
   )
 
@@ -2119,6 +2246,119 @@ describe('fire lifecycle: extinguish, restore, and burning-actor bookkeeping', (
       expect(
         (yield* Ref.get(state.fireLifecycle)).burningActors?.some((actor) => actor.id === String(target.id)),
       ).toBe(false)
+    }),
+  )
+
+  it.effect('classifies a fire-spread neighbour in an unloaded chunk as unavailable rather than air', () =>
+    Effect.gen(function* () {
+      // Every other fire test reads only loaded cells, so the block
+      // classification ternary's `reading._tag === 'ChunkNotLoaded'` arm had
+      // never fired. A fire at the x=15 edge of the only loaded chunk has an
+      // x+1 snapshot neighbour in chunk `1,0`, which is not loaded.
+      const firePosition = { x: 15, y: 64, z: 0 }
+      const { state, stages } = yield* builtStagesInWorld(
+        world([[firePosition, FIRE], [{ x: 15, y: 63, z: 0 }, STONE]]),
+        ['0,0'],
+      )
+      yield* Ref.set(state.fireLifecycle, makeFireLifecycleState([firePosition], 19))
+
+      const fireStage = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire)!
+      yield* fireStage.run(DeltaTimeSecs(FIRE_TICK_INTERVAL_SECS)).pipe(Effect.provide(FrameServicesLayer))
+
+      // Nothing crashed reading past the loaded edge; the fire itself is
+      // unaffected by its own unloaded neighbour.
+      const fires = (yield* Ref.get(state.fireLifecycle)).fires
+      expect(fires).toHaveLength(1)
+      expect(fires[0]?.position).toStrictEqual(firePosition)
+    }),
+  )
+
+  it.effect('classifies an unregistered block id near a fire as unknown rather than crashing', () =>
+    Effect.gen(function* () {
+      // `blockTypeOfId` is documented PARTIAL over `BlockType`
+      // (`domain/block-vocabulary.ts`) — a mirror carries no gate proving
+      // every id a save or a corrupted chunk could hold is registered. Every
+      // other fire test only ever reads registered blocks, so the
+      // `blockTypeOfId(reading.block) ?? '__unknown_fire_block__'` fallback
+      // had never fired.
+      const firePosition = { x: 8, y: 64, z: 8 }
+      const UNREGISTERED_BLOCK_ID = 999_999 as BlockId
+      const { state, stages } = yield* builtStagesInWorld(
+        world([
+          [firePosition, FIRE],
+          [{ x: 8, y: 63, z: 8 }, STONE],
+          [{ x: 9, y: 64, z: 8 }, UNREGISTERED_BLOCK_ID],
+        ]),
+        ['0,0'],
+      )
+      yield* Ref.set(state.fireLifecycle, makeFireLifecycleState([firePosition], 29))
+
+      const fireStage = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire)!
+      yield* fireStage.run(DeltaTimeSecs(FIRE_TICK_INTERVAL_SECS)).pipe(Effect.provide(FrameServicesLayer))
+
+      // Nothing crashed reading the unregistered neighbour; the fire itself
+      // is unaffected by it.
+      const fires = (yield* Ref.get(state.fireLifecycle)).fires
+      expect(fires).toHaveLength(1)
+      expect(fires[0]?.position).toStrictEqual(firePosition)
+    }),
+  )
+
+  it.effect('sorts burning-actor and new-entity fire contacts deterministically with two or more of each', () =>
+    Effect.gen(function* () {
+      // Every other fire-contact test has at most one burning actor and at
+      // most one non-burning entity at a time, so both `.sort(...)` comparator
+      // callbacks that order `burningEntityContacts` and `newEntityContacts`
+      // had never actually been invoked — `Array.prototype.sort` never calls
+      // its comparator for an array of 0 or 1 elements.
+      const { state, store, roster, stages } = yield* builtStages
+      const firePosition = { x: 6, y: 64, z: 6 }
+      yield* store.api.setBlock({ ...firePosition, y: firePosition.y - 1 }, STONE)
+      yield* store.api.setBlock(firePosition, FIRE)
+      yield* Ref.set(state.fireLifecycle, makeFireLifecycleState([firePosition], 19))
+
+      const burningA = yield* roster.api.spawn({
+        kind: CREEPER_KIND,
+        feetPosition: firePosition,
+        healthPoints: 100,
+        behaviour: undefined,
+      })
+      const burningB = yield* roster.api.spawn({
+        kind: CREEPER_KIND,
+        feetPosition: firePosition,
+        healthPoints: 100,
+        behaviour: undefined,
+      })
+      const safeA = yield* roster.api.spawn({
+        kind: CREEPER_KIND,
+        feetPosition: { x: 20, y: 64, z: 20 },
+        healthPoints: 100,
+        behaviour: undefined,
+      })
+      const safeB = yield* roster.api.spawn({
+        kind: CREEPER_KIND,
+        feetPosition: { x: 21, y: 64, z: 21 },
+        healthPoints: 100,
+        behaviour: undefined,
+      })
+
+      const fireStage = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire)!
+      // Tick 1: both entities standing in the fire catch it.
+      yield* fireStage.run(DeltaTimeSecs(FIRE_TICK_INTERVAL_SECS)).pipe(Effect.provide(FrameServicesLayer))
+      expect((yield* Ref.get(state.fireLifecycle)).burningActors?.length).toBe(2)
+
+      // Tick 2: `current.burningActors` now holds both from tick 1, so this
+      // run's `burningEntityContacts` sorts two ids, and its `newEntityContacts`
+      // sorts the two entities that never caught fire.
+      yield* fireStage.run(DeltaTimeSecs(FIRE_TICK_INTERVAL_SECS)).pipe(Effect.provide(FrameServicesLayer))
+
+      const burning = (yield* Ref.get(state.fireLifecycle)).burningActors ?? []
+      expect(burning.map((actor) => actor.id).sort()).toStrictEqual(
+        [String(burningA.id), String(burningB.id)].sort(),
+      )
+      // The two safe entities never joined the burning set.
+      expect(burning.some((actor) => actor.id === String(safeA.id))).toBe(false)
+      expect(burning.some((actor) => actor.id === String(safeB.id))).toBe(false)
     }),
   )
 
@@ -2863,6 +3103,52 @@ describe('villager trade: the real removal disagreeing with the preflight check 
   )
 })
 
+describe('villager trade: the roster changing underneath an already-approved commit', () => {
+  it.effect('still reports Traded when the commit finds no villager left to record the use against', () =>
+    Effect.gen(function* () {
+      const state = yield* makeGameplayFrameState
+      const store = yield* makeChunkStoreDouble(world([]), ['0,0'])
+      const roster = yield* makeEntityManagerDouble<MobBehaviour>()
+      const player = yield* makePlayerServiceDouble()
+      const slots: Array<Slot> = emptySlots().map((slot, index) =>
+        index === 0 ? itemStack('wheat', 20) : slot,
+      )
+      const inventory = yield* makeInventoryDouble(slots)
+      const villager = makeVillager('vanishing-trader', 'farmer')
+      const offer = villager.offers.find((candidate) => candidate.input.item === 'wheat')!
+      // The commit's own `add` (line 3253 of registration.ts, called only after
+      // the preflight has already approved this trade) also empties the trade
+      // roster as a side effect -- simulating the villager despawning in the
+      // window between the preflight's lookup (line 3210-3212) and the commit
+      // at line 3266. `useVillagerOffer` then finds no matching villager and
+      // returns undefined; the `?? current` fallback must keep the roster as
+      // the racy `add` left it rather than throwing or resurrecting the
+      // villager.
+      const racyInventory: InventoryServiceApi = {
+        ...inventory.api,
+        add: (item, count) =>
+          Ref.set(state.villagerTrades, emptyVillagerTradeState()).pipe(
+            Effect.andThen(inventory.api.add(item, count)),
+          ),
+      }
+      const time = yield* makeTimeService()
+      const stages = gameplayStages(state, store.api, roster.api, racyInventory, player.api, time)
+      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+
+      yield* Ref.set(state.villagerTrades, addVillager(emptyVillagerTradeState(), villager))
+
+      const request = { requestId: 'vanishing', villagerId: villager.id, offerId: offer.id }
+      yield* requestVillagerTrade(state, request)
+      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* drainVillagerTradeResults(state)).toStrictEqual([{ ...request, _tag: 'Traded' }])
+      // The fallback kept the racy `add`'s empty roster rather than crashing
+      // or reintroducing a villager `useVillagerOffer` could not find.
+      expect((yield* Ref.get(state.villagerTrades)).villagers).toStrictEqual([])
+    }),
+  )
+})
+
 describe('farming and food item uses through the full interactions stage', () => {
   it.effect('bone meal against a non-crop cell still reaches the ApplyBoneMeal arm', () =>
     Effect.gen(function* () {
@@ -3028,6 +3314,40 @@ describe('CastFishing fails without water rather than starting a session', () =>
         },
       ])
       expect(yield* Ref.get(state.fishingSession)).toBeUndefined()
+    }),
+  )
+})
+
+describe('AdvanceFishing rejects an invalid duration without discarding the active session', () => {
+  it.effect('a negative duration reports InvalidDuration rather than Cancelled, and keeps the session', () =>
+    Effect.gen(function* () {
+      const { state, stages } = yield* builtStages
+      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+      const rod = equipmentItem(itemStack('fishing_rod', 1), durability(64, 64))
+      const environment = { hasWater: true, hasSkyAccess: true, isRaining: false, isOpenWater: true }
+
+      yield* requestFishingCast(state, 'cast', rod, environment)
+      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+      yield* drainItemUseResults(state)
+
+      // `advanceFishing` (fishing.ts) checks the duration before it checks
+      // water, so a negative duration reports `InvalidDuration` even with
+      // `hasWater: true` -- the false side of registration.ts:3622's
+      // `outcome._tag === 'Cancelled'` check, which must leave
+      // `state.fishingSession` alone for this outcome and clear it only for a
+      // real `Cancelled`.
+      yield* requestFishingAdvance(state, 'bad-duration', -1, { hasWater: true })
+      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* drainItemUseResults(state)).toMatchObject([
+        {
+          action: 'AdvanceFishing',
+          requestId: 'bad-duration',
+          success: false,
+          outcome: { _tag: 'InvalidDuration', durationSecs: -1 },
+        },
+      ])
+      expect(yield* Ref.get(state.fishingSession)).not.toBeUndefined()
     }),
   )
 })

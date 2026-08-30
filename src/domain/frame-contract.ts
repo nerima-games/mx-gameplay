@@ -45,7 +45,7 @@ import type { Position } from '@nerima-games/mc-kernel'
  */
 export type StageId = string & Brand.Brand<'StageId'>
 
-export const StageId = Brand.refined<StageId>(
+export const StageId: Brand.Brand.Constructor<StageId> = Brand.refined<StageId>(
   (value) => value.trim().length > 0,
   (value) => Brand.error(`StageId must be a non-blank string, received ${JSON.stringify(value)}`),
 )
@@ -59,7 +59,7 @@ export const StageId = Brand.refined<StageId>(
  */
 export type DeltaTimeSecs = number & Brand.Brand<'DeltaTimeSecs'>
 
-export const DeltaTimeSecs = Brand.refined<DeltaTimeSecs>(
+export const DeltaTimeSecs: Brand.Brand.Constructor<DeltaTimeSecs> = Brand.refined<DeltaTimeSecs>(
   (value) => Number.isFinite(value) && value >= 0,
   (value) => Brand.error(`DeltaTimeSecs must be a finite, non-negative number of seconds, received ${value}`),
 )
@@ -109,7 +109,7 @@ export const MAX_STACK_COUNT = 64
  */
 export type StackCount = number & Brand.Brand<'StackCount'>
 
-export const StackCount = Brand.refined<StackCount>(
+export const StackCount: Brand.Brand.Constructor<StackCount> = Brand.refined<StackCount>(
   (value) => Number.isInteger(value) && value >= 0 && value <= MAX_STACK_COUNT,
   (value) => Brand.error(`StackCount must be an integer in [0, ${MAX_STACK_COUNT}], received ${value}`),
 )
@@ -127,7 +127,7 @@ export const StackCount = Brand.refined<StackCount>(
  */
 export type MonotonicTimeSecs = number & Brand.Brand<'MonotonicTimeSecs'>
 
-export const MonotonicTimeSecs = Brand.refined<MonotonicTimeSecs>(
+export const MonotonicTimeSecs: Brand.Brand.Constructor<MonotonicTimeSecs> = Brand.refined<MonotonicTimeSecs>(
   (value) => Number.isFinite(value) && value >= 0,
   (value) => Brand.error(`MonotonicTimeSecs must be a finite, non-negative number of seconds, received ${value}`),
 )
@@ -145,7 +145,7 @@ export const MonotonicTimeSecs = Brand.refined<MonotonicTimeSecs>(
  */
 export type EpochMillis = number & Brand.Brand<'EpochMillis'>
 
-export const EpochMillis = Brand.refined<EpochMillis>(
+export const EpochMillis: Brand.Brand.Constructor<EpochMillis> = Brand.refined<EpochMillis>(
   (value) => Number.isSafeInteger(value),
   (value) => Brand.error(`EpochMillis must be a safe integer number of milliseconds, received ${value}`),
 )
@@ -222,7 +222,10 @@ export type ClockService = {
  * rule `./inventory-port`'s tag follows, with the same consequence if it drifts:
  * resolution silently finds nothing while both repositories typecheck.
  */
-export class ClockPort extends Context.Tag('@nerima-games/mc-kernel/ClockPort')<ClockPort, ClockService>() {}
+const ClockPortBase: Context.TagClass<ClockPort, '@nerima-games/mc-kernel/ClockPort', ClockService> =
+  Context.Tag('@nerima-games/mc-kernel/ClockPort')<ClockPort, ClockService>()
+
+export class ClockPort extends ClockPortBase {}
 
 // ---------------------------------------------------------------------------
 // Camera pose — mirrors mc-kernel/domain/camera.ts

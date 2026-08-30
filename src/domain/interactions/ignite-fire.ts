@@ -59,8 +59,8 @@
  * services own them and neither is published.
  */
 import { Effect } from 'effect'
-import { blockIdOf } from '../block-vocabulary'
-import { AIR_BLOCK_ID, type BlockId, type BlockPosition, type ChunkStoreApi } from '../chunk-store-port'
+import { blockIdOf } from '../block-vocabulary.js'
+import { AIR_BLOCK_ID, type BlockId, type BlockPosition, type ChunkStoreApi } from '../chunk-store-port.js'
 
 /**
  * TOTAL, mirroring `./place-block`'s `PlaceOutcome` and `./ignite-portal`'s.

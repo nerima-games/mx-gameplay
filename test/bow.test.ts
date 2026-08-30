@@ -926,6 +926,36 @@ inventory: { mode: 'creative', slotIndex: 0 },
       ])
     }),
   )
+
+  it.effect('an uncorrelated survival shot without an arrow is refused silently, like its playerDead and Undercharged siblings', () =>
+    Effect.gen(function* () {
+      // Legacy, uncorrelated requests (no `requestId`) get the same refusal
+      // as a correlated one, but report nothing to `bowShotResults` -- there
+      // is no request id for a host to match a result against. This is the
+      // same "nothing to report" shape the playerDead and Undercharged arms
+      // already exercise for an uncorrelated request; this proves it holds
+      // for the InventoryUnavailable arm too, reached only in survival mode
+      // when the atomic ammo+durability settlement does not apply.
+      const { state, roster, inventory, stages } = yield* scene(AHEAD, inventoryWith(true, false))
+      yield* Ref.set(state.pendingBowShots, [
+        {
+          origin: EYE,
+          dirX: 0,
+          dirY: 0,
+          dirZ: 1,
+          chargeSecs: BOW_FULL_CHARGE_SECS,
+          inventory: { mode: 'survival', slotIndex: 0 },
+        },
+      ])
+
+      yield* runFrame(stages)
+
+      expect((yield* roster.api.snapshot).entities[0]?.healthPoints).toBe(20)
+      const storage = yield* inventory.api.storageSnapshot
+      expect(storage.inventoryDurability[0]).toStrictEqual({ current: 384, max: 384 })
+      expect(yield* drainBowShotResults(state)).toStrictEqual([])
+    }),
+  )
 })
 
 describe('shotBlockedByTerrain — the walk never oversteps the target', () => {

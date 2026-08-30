@@ -102,13 +102,13 @@ oxlint が該当ルールを実装したら `.oxlintrc.json` 側へ移す。
 ### セットアップ
 
 ```console
-$ direnv allow          # flake.nix の devShell で nodejs_22 + corepack + oxlint が入る
-$ pnpm install
+$ direnv allow          # flake.nix の devShell で nodejs_24 + corepack_24 + oxlint + ast-grep が入る
+$ NODE_AUTH_TOKEN=$(gh auth token) pnpm install   # @nerima-games/* を GitHub Packages から解決するため
 ```
 
-Nix を使わない場合は Node.js 22 以上と pnpm 9.15.0 を用意する（`corepack enable && corepack prepare pnpm@9.15.0 --activate`）。
+Nix を使わない場合は Node.js 24 以上と pnpm 11.24.0 を用意する（`corepack enable && corepack prepare pnpm@11.24.0 --activate`）。
 バージョンは `package.json` の `packageManager` でピン留めしてある。
-**oxlint は `package.json` の devDependency ではない** — `flake.nix` の devShell からのみ供給される
+**oxlint と ast-grep は `package.json` の devDependency ではない** — `flake.nix` の devShell からのみ供給される
 （各リポジトリが独自にバージョンを固定した結果、一部が `no-restricted-imports` 未実装の 0.12.x に
 気づかず滞留していた反省から、nixpkgs 由来の単一バージョンに統一した）。
 Nix を使わない場合は `nix develop --command pnpm lint` のように `nix develop` 経由で実行する。
@@ -116,6 +116,9 @@ Nix を使わない場合は `nix develop --command pnpm lint` のように `nix
 > **注意**: ツールチェーンは `devenv.nix` から `flake.nix` + `flake.lock` に移行済みである。
 > `flake.lock` はコミットされているので、`nix develop`（`.envrc` は `use flake`）は
 > 誰の手元でも同じ nixpkgs に解決される。`devenv.nix` / `devenv.lock` はもう存在しない。
+> `flake.nix` の `nixpkgs` は org 共通の理由で特定コミットにロックしてある
+> （nixos-unstable の現行 oxlint 1.79.0 が `no-redeclare` を `type X … & Brand` イディオムに誤検知するため。
+> 詳細は `flake.nix` 内のコメント）。
 
 ### コマンド
 

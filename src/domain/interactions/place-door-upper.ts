@@ -51,9 +51,9 @@
  * removes it. That keeps a malformed world from losing an unrelated block.
  */
 import { Effect } from 'effect'
-import { above } from '../block-position-key'
-import { blockIdOf, blockTypeOfId } from '../block-vocabulary'
-import { AIR_BLOCK_ID, type BlockId, type BlockPosition, type ChunkStoreApi } from '../chunk-store-port'
+import { above } from '../block-position-key.js'
+import { blockIdOf, blockTypeOfId } from '../block-vocabulary.js'
+import { AIR_BLOCK_ID, type BlockId, type BlockPosition, type ChunkStoreApi } from '../chunk-store-port.js'
 
 /**
  * Is this byte a door?

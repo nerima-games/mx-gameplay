@@ -4,8 +4,8 @@ import {
   blockPosition,
   horizontalBlockNeighbours,
 } from '@nerima-games/mc-kernel'
-import type { BlockPosition } from './chunk-store-port'
-import { positionKey, type PositionKey } from './position-key'
+import type { BlockPosition } from './chunk-store-port.js'
+import { positionKey, type PositionKey } from './position-key.js'
 
 export const positionKeyOf = (position: BlockPosition): PositionKey =>
   positionKey(`${String(position.x)},${String(position.y)},${String(position.z)}`)

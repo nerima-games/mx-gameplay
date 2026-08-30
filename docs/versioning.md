@@ -2,12 +2,14 @@
 
 ## 1. 現状
 
-- **バージョン: `0.1.0`。**
-- **publish はまだ 1 度も実行していない。** `package.json` の `exports` は TypeScript ソースを直接指しており、
-  `tsconfig.base.json` は `noEmit: true`。ビルド成果物は存在しない。
-- **`@nerima-games/*` への実行時依存が `package.json` に 1 つも無い。** 宣言上の親は
-  `mc-sim` / `mc-worldgen` / `mc-audio`（+ `mc-kernel`）だが、どれもまだ publish されていないので書けない。
-  現在の `dependencies` は `effect` のみである。
+- **バージョン: `0.3.1`。**
+- **build / publish パイプラインが Wave 0（org 全体のツールチェーン凍結）で追加された。**
+  `package.json` の `exports` は `dist/index.js` を指し、`tsc -p tsconfig.release.json` が
+  `scripts/clean-dist.mjs` に続けて emit する。`.github/workflows/release.yaml` が
+  `main` へのバージョン変化を検知して GitHub Packages へ publish し、tag を打つ。
+- **`@nerima-games/*` への実行時依存は `mc-kernel` / `mc-sim` / `mc-worldgen` / `mc-audio` の 4 本。**
+  4 リポジトリとも Wave 0 で dist 付き publish 済みになったため、`dependencies` に exact pin で書ける
+  （§5 のボトムアップ publish-then-pin 順）。
 
 ## 2. 0.x に留める方針
 
@@ -31,32 +33,34 @@ plan.md §8 のリスク表も同じことを別角度から書いている。
 
 ## 3. 公開先
 
-**GitHub Packages**（`https://npm.pkg.github.com`、`access: restricted`）。
-`package.json` の `publishConfig` に設定済みだが、**publish 自体はまだ実行されない**。
+**GitHub Packages**（`https://npm.pkg.github.com`、`access: public`）。packages が public 化済みのため
+`restricted` のままだと新規 publish が private に戻り下流 CI が 403 になる（org 全体のポリシー）。
 
 ```json
 "publishConfig": {
   "registry": "https://npm.pkg.github.com",
-  "access": "restricted"
+  "access": "public"
 }
 ```
 
-`.npmrc` にはレジストリ設定が入っていない。現在の `.npmrc` は `fast-check` / `pure-rand` の
-hoist 設定だけであり（`effect` が `effect/FastCheck` として再エクスポートしているため tsc の型解決に必要）、
-`@nerima-games:registry=` の行と認証トークンの受け渡しは publish パイプラインを追加するときに足す。
+`.npmrc` の `@nerima-games:registry=https://npm.pkg.github.com` が `@nerima-games/*` の依存解決先を
+GitHub Packages に固定する。認証トークンは CI では `.github/workflows/ci.yaml` / `release.yaml` の
+「Configure GitHub Packages authentication」ステップが、手元では `NODE_AUTH_TOKEN=$(gh auth token)` が渡す。
 
-## 4. build / publish パイプラインは完成時に追加する
+## 4. build / publish パイプライン（Wave 0 で追加済み）
 
-完成条件（[testing.md](./testing.md) §3）に到達した時点で以下を追加する。
+`docs/testing.md` §3 の完成条件と独立に、org 全体のツールチェーン凍結（Wave 0）で以下が入った。
 
-1. `tsconfig.build.json` を emit ありに変更し、`dist/` を生成する
+1. `tsconfig.release.json` を新設し、`node scripts/clean-dist.mjs && tsc -p tsconfig.release.json` で
+   `dist/` を生成する（`tsconfig.build.json` / `tsconfig.test.json` / `tsconfig.preview.json` は
+   引き続き check-only のまま — ビルド成果物を介すと型エラーがビルド時にしか出ず、
+   16 リポジトリを 1 つの workspace で開発する間の DX が落ちるため、型検査とビルドを分けている）
 2. `package.json` の `main` / `types` / `exports` を `dist/` に向ける
-3. `files` から `domain` / `stages` / `index.ts` を外し `dist` を入れる
-4. GitHub Actions に publish job を追加する（tag push トリガ）
-5. changesets を導入する
-
-**先にやらない理由**: ビルド成果物を介すと型エラーがビルド時にしか出なくなり、
-16 リポジトリを 1 つの workspace で開発している間の DX が落ちる。
+3. `files` から `src` / `tsconfig.base.json` を外し `dist` / `LICENSE` / `README.md` にする
+4. `.github/workflows/release.yaml` を追加する（`main` への push トリガ。version 変化を検知して publish、
+   `workflow_dispatch` での手動再実行にも対応）
+5. `scripts/verify-package.mjs` で packed tarball をクリーンな consumer から import し、
+   `pnpm package:verify` として CI とローカルの両方でゲートする
 
 ## 5. ボトムアップの publish-then-pin
 

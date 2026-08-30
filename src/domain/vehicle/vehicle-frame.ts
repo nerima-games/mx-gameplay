@@ -1,11 +1,11 @@
 import { propertyOfBlockId } from '@nerima-games/mc-kernel'
 import type { Vehicle, VehicleServiceApi } from '@nerima-games/mc-sim'
 import { Effect } from 'effect'
-import type { BlockPosition, BlockReading, ChunkStoreApi } from '../chunk-store-port'
+import type { BlockPosition, BlockReading, ChunkStoreApi } from '../chunk-store-port.js'
 import type { Dimension } from '@nerima-games/mc-worldgen'
-import { isAscendingAhead } from './rail-ascent'
-import { resolveRailShape } from './rail-shape'
-import { stepBoat, stepMinecart, type VehicleExitReason } from './vehicle-motion'
+import { isAscendingAhead } from './rail-ascent.js'
+import { resolveRailShape } from './rail-shape.js'
+import { stepBoat, stepMinecart, type VehicleExitReason } from './vehicle-motion.js'
 
 export type VehicleControlInput = Readonly<{
   throttle: number

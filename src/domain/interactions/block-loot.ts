@@ -66,9 +66,9 @@ import {
   type BlockDrop,
   type BlockType,
   type HarvestContext,
-} from '../block-vocabulary'
-import type { BlockId } from '../chunk-store-port'
-import type { ItemType } from '../item-vocabulary'
+} from '../block-vocabulary.js'
+import type { BlockId } from '../chunk-store-port.js'
+import type { ItemType } from '../item-vocabulary.js'
 
 /**
  * What actually lands: a name and a number, and nothing that needs resolving.

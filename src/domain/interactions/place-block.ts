@@ -125,8 +125,8 @@ import {
   type BlockReading,
   type ChunkCoord,
   type ChunkStoreApi,
-} from '../chunk-store-port'
-import { below } from '../block-position-key'
+} from '../chunk-store-port.js'
+import { below } from '../block-position-key.js'
 import {
   blockIdOf,
   blockOfPlaceableItem,
@@ -134,12 +134,12 @@ import {
   isReplaceable,
   isSupportSensitiveBlockId,
   type PlaceableItemType,
-} from '../block-vocabulary'
+} from '../block-vocabulary.js'
 import type { Position } from '@nerima-games/mc-kernel'
-import { cactusSidesObjection, type CactusSidesRefusal } from './place-cactus-sides'
-import { doorUpperCell, type DoorUpperCell } from './place-door-upper'
-import { mushroomLightObjection, type MushroomLightRefusal } from './place-mushroom-light'
-import { sugarCaneWaterObjection, type SugarCaneWaterRefusal } from './place-sugar-cane-water'
+import { cactusSidesObjection, type CactusSidesRefusal } from './place-cactus-sides.js'
+import { doorUpperCell, type DoorUpperCell } from './place-door-upper.js'
+import { mushroomLightObjection, type MushroomLightRefusal } from './place-mushroom-light.js'
+import { sugarCaneWaterObjection, type SugarCaneWaterRefusal } from './place-sugar-cane-water.js'
 
 /**
  * Half-extents of the player's collision box, from

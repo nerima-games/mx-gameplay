@@ -42,9 +42,9 @@
  * turn out to be there.
  */
 import { Effect } from 'effect'
-import { horizontalNeighbours } from '../block-position-key'
-import { blockIdOf, blockTypeOfId } from '../block-vocabulary'
-import { AIR_BLOCK_ID, type BlockId, type BlockPosition, type BlockReading, type ChunkStoreApi } from '../chunk-store-port'
+import { horizontalNeighbours } from '../block-position-key.js'
+import { blockIdOf, blockTypeOfId } from '../block-vocabulary.js'
+import { AIR_BLOCK_ID, type BlockId, type BlockPosition, type BlockReading, type ChunkStoreApi } from '../chunk-store-port.js'
 
 /** Is this byte a cactus? Asked of kernel's registry; see `./place-mushroom-light`. */
 export const isCactusBlock = (block: BlockId): boolean => blockTypeOfId(block) === 'cactus'

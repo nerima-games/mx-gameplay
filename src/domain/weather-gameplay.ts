@@ -1,8 +1,8 @@
 import type { Position } from '@nerima-games/mc-kernel'
 import type { EntityId, EntityKind } from '@nerima-games/mc-sim'
 import type { Dimension } from '@nerima-games/mc-worldgen'
-import type { PositionKey } from './position-key'
-import type { Weather } from './weather'
+import type { PositionKey } from './position-key.js'
+import type { Weather } from './weather.js'
 
 export type WeatherDifficulty = 'peaceful' | 'easy' | 'normal' | 'hard'
 

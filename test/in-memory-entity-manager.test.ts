@@ -93,6 +93,22 @@ describe('spawn and despawn', () => {
     }),
   )
 
+  it.effect('despawn removes exactly the named entity and leaves the rest', () =>
+    Effect.gen(function* () {
+      // The only other despawn test uses an empty roster, so `despawn`'s
+      // filter callback (`entity.id !== id`) had never actually run —
+      // `Array.prototype.filter` never calls its callback for an empty array.
+      const roster = yield* makeInMemoryEntityManager<Behaviour>()
+      const kept = yield* roster.spawn(spawnRequest(ZOMBIE))
+      const removed = yield* roster.spawn(spawnRequest(CREEPER))
+
+      expect(yield* roster.despawn(removed.id)).toBe(true)
+      expect(yield* roster.count).toBe(1)
+      expect(yield* roster.find(kept.id)).toStrictEqual(kept)
+      expect(yield* roster.find(removed.id)).toBeUndefined()
+    }),
+  )
+
   it.effect('countOfKind counts one kind, not all of them', () =>
     Effect.gen(function* () {
       // The census a spawn cap reads. Counting everything would cap creepers

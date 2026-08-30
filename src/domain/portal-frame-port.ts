@@ -9,7 +9,7 @@
  * WHEN mc-worldgen IS PUBLISHED:
  *   1. add `@nerima-games/mc-worldgen` to `package.json#dependencies`;
  *   2. delete this file;
- *   3. repoint every `from './portal-frame-port'` at `'@nerima-games/mc-worldgen'`.
+ *   3. repoint every `from './portal-frame-port.js'` at `'@nerima-games/mc-worldgen'`.
  *
  * It is NOT re-exported from `index.ts`, for the reason `./chunk-store-port`,
  * `./frame-contract`, `./position-key`, `./item-vocabulary` and
@@ -67,8 +67,8 @@
  * that were made in that repository and cannot be revisited here.
  */
 import { Option } from 'effect'
-import { AIR_BLOCK_ID, type BlockId, type BlockPosition } from './chunk-store-port'
-import { blockTypeOfId } from './block-vocabulary'
+import { AIR_BLOCK_ID, type BlockId, type BlockPosition } from './chunk-store-port.js'
+import { blockTypeOfId } from './block-vocabulary.js'
 
 /**
  * Reads the block at an integer world coordinate.

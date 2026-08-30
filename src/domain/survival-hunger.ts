@@ -1,6 +1,6 @@
 import { Effect, Ref } from 'effect'
-import type { Damage } from './death-cause'
-import { DeltaTimeSecs } from './frame-contract'
+import type { Damage } from './death-cause.js'
+import { DeltaTimeSecs } from './frame-contract.js'
 import {
   SPAWN_PLAYER_VITALS,
   isValidPlayerVitals,
@@ -8,7 +8,7 @@ import {
   type InMemoryVitalsApi,
   type PlayerVitals,
   type VitalsDamageOutcome,
-} from './in-memory-vitals'
+} from './in-memory-vitals.js'
 
 export const SURVIVAL_HUNGER_STATE_VERSION = 1 as const
 export const DEFAULT_SURVIVAL_DIFFICULTY = 'normal' as const

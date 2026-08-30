@@ -1,4 +1,4 @@
-import type { Damage } from './death-cause'
+import type { Damage } from './death-cause.js'
 
 export const resolveFallDamage = (fallDistance: number): Damage | undefined => {
   if (!Number.isFinite(fallDistance) || fallDistance <= 3) {

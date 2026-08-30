@@ -14,7 +14,7 @@
  * for one reason: 「弓とエンダーパールは**それに加えて**発射体なので mc-sim の
  * 名簿と mc-physics の速度も要る」. Read the reference's imports:
  *
- *     ender-pearl.ts:8   import type { TargetRayHit } from '...interaction-types'
+ *     ender-pearl.ts:8   import type { TargetRayHit } from '...interaction-types.js'
  *     ender-pearl.ts:11  export const ENDER_PEARL_MAX_DISTANCE = 24
  *
  * A `TargetRayHit` is the result of a raycast the host has ALREADY done — the same
@@ -54,7 +54,7 @@
  * is the player's line of sight and its vertical component is the whole reason a
  * pearl gets you up a cliff.
  */
-import type { DeathCause } from '../death-cause'
+import type { DeathCause } from '../death-cause.js'
 
 /**
  * Furthest a pearl carries, in blocks.

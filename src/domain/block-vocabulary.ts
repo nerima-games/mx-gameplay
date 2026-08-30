@@ -10,7 +10,7 @@
  * WHEN mc-kernel IS PUBLISHED:
  *   1. add `@nerima-games/mc-kernel` to `package.json#dependencies`;
  *   2. delete this file and `./item-vocabulary` together;
- *   3. repoint every `from './block-vocabulary'` at `'@nerima-games/mc-kernel'`.
+ *   3. repoint every `from './block-vocabulary.js'` at `'@nerima-games/mc-kernel'`.
  *
  * It is not re-exported wholesale from `index.ts`, for the reason
  * `./frame-contract`, `./position-key`, `./chunk-store-port` and
@@ -88,8 +88,8 @@
  * this repository's tests pin breaks on deletion day — which is the day it should
  * break, loudly, with the mirror still present to diff against.
  */
-import { ITEM_TYPES, type ItemType } from './item-vocabulary'
-import type { BlockId } from './chunk-store-port'
+import { ITEM_TYPES, type ItemType } from './item-vocabulary.js'
+import type { BlockId } from './chunk-store-port.js'
 
 // ---------------------------------------------------------------------------
 // The block roster — mirrors mc-kernel/domain/block-type.ts
@@ -257,11 +257,18 @@ export type BlockType = (typeof BLOCK_TYPES)[number]
  */
 const SPECIAL_BLOCK_BY_ITEM = {
   redstone_dust: 'redstone_wire',
-} as const satisfies Partial<Record<ItemType, BlockType>>
+} as const
+// Compile-time-only validation, kept as a bare expression statement rather than
+// `satisfies` on the declaration above: isolatedDeclarations needs the exported
+// `PlaceableItemType` below to read `keyof typeof SPECIAL_BLOCK_BY_ITEM` as the
+// literal key type, not the widened `Partial<Record<ItemType, BlockType>>` an
+// explicit annotation would force.
+SPECIAL_BLOCK_BY_ITEM satisfies Partial<Record<ItemType, BlockType>>
 
 const SPECIAL_ITEM_BY_BLOCK = {
   redstone_wire: 'redstone_dust',
-} as const satisfies Partial<Record<BlockType, ItemType>>
+} as const
+SPECIAL_ITEM_BY_BLOCK satisfies Partial<Record<BlockType, ItemType>>
 
 export type PlaceableItemType =
   | (ItemType & BlockType)

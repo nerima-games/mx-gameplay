@@ -14,8 +14,8 @@ import {
   type Slot,
 } from '@nerima-games/mc-sim'
 import { Effect, Layer } from 'effect'
-import { MAX_STACK_COUNT, StackCount } from './frame-contract'
-import type { ItemType } from './item-vocabulary'
+import { MAX_STACK_COUNT, StackCount } from './frame-contract.js'
+import type { ItemType } from './item-vocabulary.js'
 
 /**
  * mc-sim's `INVENTORY_SLOT_COUNT`, transcribed.

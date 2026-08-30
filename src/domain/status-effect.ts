@@ -1,4 +1,4 @@
-import type { DeltaTimeSecs } from './frame-contract'
+import type { DeltaTimeSecs } from './frame-contract.js'
 
 export const STATUS_EFFECT_TYPES = [
   'poison',

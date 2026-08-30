@@ -110,6 +110,25 @@ describe('player damage resolution', () => {
     ])
   })
 
+  it('drops a blast whose damage falls off to zero at distance, rather than reporting a zero-amount event', () => {
+    // The only prior blast test is close enough to always damage — the
+    // `damage.amount > 0` filter's FALSE arm, a blast too far away to hurt at
+    // all, had never fired.
+    expect(
+      resolvePlayerBlastDamage(
+        [
+          {
+            source: EntityId('creeper:3'),
+            kind: EntityKind('creeper'),
+            at: { x: 0, y: 64, z: 0 },
+            explosion: { source: 'creeper', power: 3 },
+          },
+        ],
+        { x: 100, y: 64, z: 0 },
+      ),
+    ).toStrictEqual([])
+  })
+
   it('returns no blast damage without a target', () => {
     expect(
       resolvePlayerBlastDamage(

@@ -3,21 +3,21 @@
   // oxlint is the ONLY lint/format configuration in this repository.
   // There is deliberately no prettier, no biome and no .editorconfig.
   //
-  // NOTE on the `Date.now()` ban (see README 現状 / scripts/check-dependency-whitelist.ts):
-  // oxlint 0.12 does not implement `no-restricted-syntax` or `no-restricted-properties`,
-  // and while `no-restricted-globals` is listed by `oxlint --rules` it is not implemented
-  // either (no checkmark). Verified empirically against oxlint 0.12.0: a file containing
-  // `Date.now()` produces 0 diagnostics under all three rules. The ban is therefore
-  // enforced by `pnpm check:deps` (scripts/check-dependency-whitelist.ts) instead.
-  // When oxlint gains `no-restricted-syntax`, move the ban here and delete the script's
-  // time-source section.
+  // NOTE on the `Date.now()` ban: the Nix-provided oxlint does not implement
+  // `no-restricted-syntax` or `no-restricted-properties`, and while
+  // `no-restricted-globals` is listed by `oxlint --rules` it is not implemented
+  // either (no checkmark). The ban is enforced structurally instead, by
+  // `.ast-grep/rules/no-wall-clock-read.yml` (org-wide, Wave 0). The former
+  // `scripts/check-dependency-whitelist.ts` mechanism that used to carry this
+  // check was retired org-wide along with the api-lock/dependency-whitelist
+  // scripts.
   "env": {
     "es2022": true,
     "node": true
   },
   "settings": {
     "typescript": {
-      "version": "5.9"
+      "version": "7.0"
     }
   },
   "plugins": [],
@@ -120,8 +120,11 @@
     // The real enforcement lives in scripts/check-dependency-whitelist.ts.
     "no-restricted-globals": ["warn", "name", "open", "close", "event"],
     // DEPENDENCY_POLICY.md §1: mx-gameplay is Tier3 (experience module) and may
-    // depend only on mc-sim, mc-worldgen, mc-audio, and mc-kernel (universal,
-    // exempt from this list by design — see DEPENDENCY_POLICY.md §2 rule 5).
+    // depend only on mc-sim, mc-worldgen, mc-audio, and mc-kernel. Allow-list
+    // form (Wave 0, D.9): `@nerima-games/**` is forbidden except the packages
+    // named with a leading `!`. A forbidden import added under `test/**/*.ts`
+    // with `.oxlintrc.json` scoped to `src test scripts apps` was used to
+    // verify this block fires (see the PR body for the captured error line).
     "no-restricted-imports": [
       "error",
       {
@@ -134,16 +137,18 @@
         ],
         "patterns": [
           {
-            "regex": "^@nerima-games/(mx-redstone|mx-ui|mx-multiplayer)(/.*)?$",
-            "message": "Tier3 experience modules do not depend on each other laterally (DEPENDENCY_POLICY.md §2 rule 2). Talk through mc-sim, mc-worldgen, or mc-audio instead."
-          },
-          {
-            "regex": "^@nerima-games/mc-compose(/.*)?$",
-            "message": "mc-compose is Tier4 (composition) and depends on mx-gameplay, not the other way around (DEPENDENCY_POLICY.md §1). Depending on it here would be a cycle."
-          },
-          {
-            "regex": "^@nerima-games/(mc-noise|mc-meshing|mc-physics|mc-save|mc-render|mc-playground-kit)(/.*)?$",
-            "message": "mx-gameplay (Tier3, DEPENDENCY_POLICY.md §1) may depend only on mc-sim, mc-worldgen, mc-audio, and mc-kernel. mc-playground-kit specifically is devDependency-only (DEPENDENCY_POLICY.md §3) and must never be imported from shipped src/."
+            "group": [
+              "@nerima-games/**",
+              "!@nerima-games/mc-kernel",
+              "!@nerima-games/mc-kernel/**",
+              "!@nerima-games/mc-sim",
+              "!@nerima-games/mc-sim/**",
+              "!@nerima-games/mc-worldgen",
+              "!@nerima-games/mc-worldgen/**",
+              "!@nerima-games/mc-audio",
+              "!@nerima-games/mc-audio/**"
+            ],
+            "message": "mx-gameplay is Tier3 (DEPENDENCY_POLICY.md §1); only the listed packages may be imported."
           }
         ]
       }
@@ -163,7 +168,7 @@
   "overrides": [
     {
       // CLI scripts, not shipped src/: console output is their literal
-      // product (api-lock's report, check-dependency-whitelist's summary).
+      // product (clean-dist.mjs / verify-package.mjs progress and errors).
       "files": ["scripts/**"],
       "rules": {
         "no-console": "off"
@@ -178,15 +183,12 @@
       // tick, and registration.ts's restore of a persisted weather seed.
       // Rewriting these with non-bitwise arithmetic would change the
       // seed -> value mapping, which is the specification, not an
-      // implementation detail. api-lock.ts's one use is a TypeScript
-      // compiler API bitflag check (`symbol.flags & ts.SymbolFlags.Alias`),
-      // the standard way to test a `ts.SymbolFlags` bitmask enum.
+      // implementation detail.
       "files": [
         "src/domain/villager-trade.ts",
         "src/domain/enchantment.ts",
         "src/domain/weather-gameplay.ts",
-        "src/stages/registration.ts",
-        "scripts/api-lock.ts"
+        "src/stages/registration.ts"
       ],
       "rules": {
         "no-bitwise": "off"

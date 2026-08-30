@@ -35,7 +35,11 @@
  * another, which is a world where the camera never follows you.
  */
 import { Effect, Layer } from 'effect'
-import { capabilityOfBlockId } from '@nerima-games/mc-kernel'
+import {
+  BlockId as WorldgenBlockId,
+  blockPosition as worldgenBlockPosition,
+  capabilityOfBlockId,
+} from '@nerima-games/mc-kernel'
 import {
   InventoryService,
   TimeService,
@@ -45,8 +49,6 @@ import {
   type TimeServiceApi,
 } from '@nerima-games/mc-sim'
 import {
-  BlockId as WorldgenBlockId,
-  blockPosition as worldgenBlockPosition,
   chunkCoord as worldgenChunkCoord,
   generatedChunkSource,
   makeChunkStore,
@@ -54,14 +56,14 @@ import {
   type ChunkSource,
   type ChunkStoreApi as WorldgenChunkStoreApi,
 } from '@nerima-games/mc-worldgen'
-import { ChunkStore, type ChunkStoreApi } from './chunk-store-port'
+import { ChunkStore, type ChunkStoreApi } from './chunk-store-port.js'
 import { entityManagerTag, type EntityManager, type EntityManagerApi } from '@nerima-games/mc-sim'
 import { PlayerService, type PlayerPose, type PlayerServiceApi } from '@nerima-games/mc-sim'
-import { makeInMemoryChunkStore, type WorldContents } from './in-memory-chunk-store'
-import { makeInMemoryEntityManager } from './in-memory-entity-manager'
-import { makeInMemoryInventory } from './in-memory-inventory'
-import { makeInMemoryPlayer } from './in-memory-player'
-import { makeInMemoryVitals, type InMemoryVitalsApi, type PlayerVitals } from './in-memory-vitals'
+import { makeInMemoryChunkStore, type WorldContents } from './in-memory-chunk-store.js'
+import { makeInMemoryEntityManager } from './in-memory-entity-manager.js'
+import { makeInMemoryInventory } from './in-memory-inventory.js'
+import { makeInMemoryPlayer } from './in-memory-player.js'
+import { makeInMemoryVitals, type InMemoryVitalsApi, type PlayerVitals } from './in-memory-vitals.js'
 import type { Dimension } from '@nerima-games/mc-worldgen'
 
 /** What a host supplies to stand a world up. */

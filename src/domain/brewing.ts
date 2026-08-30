@@ -1,6 +1,6 @@
-import type { DeltaTimeSecs } from './frame-contract'
-import type { ItemType } from './item-vocabulary'
-import type { StatusEffectApplication } from './status-effect'
+import type { DeltaTimeSecs } from './frame-contract.js'
+import type { ItemType } from './item-vocabulary.js'
+import type { StatusEffectApplication } from './status-effect.js'
 
 export const BREWING_INGREDIENTS = ['nether_wart', 'sugar', 'spider_eye', 'ghast_tear'] as const
 export type BrewingIngredient = (typeof BREWING_INGREDIENTS)[number]

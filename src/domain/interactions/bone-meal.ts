@@ -1,12 +1,8 @@
 import { Effect } from 'effect'
-import type { BlockType } from '../block-vocabulary'
-import type { BlockPosition } from '../chunk-store-port'
+import type { BlockType } from '../block-vocabulary.js'
+import type { BlockPosition } from '../chunk-store-port.js'
 
-export const BONE_MEAL_CROPS = [
-  'wheat_crop',
-  'potato_crop',
-  'nether_wart_crop',
-] as const satisfies ReadonlyArray<BlockType>
+export const BONE_MEAL_CROPS: ReadonlyArray<BlockType> = ['wheat_crop', 'potato_crop', 'nether_wart_crop']
 
 export type BoneMealOutcome =
   | { readonly _tag: 'applied'; readonly at: BlockPosition }

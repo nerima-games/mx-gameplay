@@ -57,10 +57,10 @@
  * needed in order to allow the placement in the first place.
  */
 import { Effect } from 'effect'
-import { horizontalNeighbours } from '../block-position-key'
-import { blockIdOf, blockTypeOfId } from '../block-vocabulary'
-import { below } from '../block-position-key'
-import type { BlockId, BlockPosition, BlockReading, ChunkStoreApi } from '../chunk-store-port'
+import { horizontalNeighbours } from '../block-position-key.js'
+import { blockIdOf, blockTypeOfId } from '../block-vocabulary.js'
+import { below } from '../block-position-key.js'
+import type { BlockId, BlockPosition, BlockReading, ChunkStoreApi } from '../chunk-store-port.js'
 
 /** Is this byte sugar cane? Asked of kernel's registry; see `./place-mushroom-light`. */
 export const isSugarCaneBlock = (block: BlockId): boolean => blockTypeOfId(block) === 'sugar_cane'

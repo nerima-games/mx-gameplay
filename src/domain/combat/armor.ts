@@ -1,10 +1,14 @@
 import type { Equipment, EquipmentSlot } from '@nerima-games/mc-sim'
-import type { Damage } from '../death-cause'
+import type { Damage } from '../death-cause.js'
 
 const MAX_ARMOR_POINTS = 20
 const DAMAGE_REDUCTION_PER_ARMOR_POINT = 0.04
 
-const WORN_ARMOR_SLOTS = ['head', 'chest', 'legs', 'feet'] as const satisfies ReadonlyArray<EquipmentSlot>
+const WORN_ARMOR_SLOTS = ['head', 'chest', 'legs', 'feet'] as const
+// Compile-time-only validation, kept off the declaration above: line 54 below
+// reads `(typeof WORN_ARMOR_SLOTS)[number]` for its narrow 4-member union, and
+// an explicit `: ReadonlyArray<EquipmentSlot>` annotation would widen it.
+WORN_ARMOR_SLOTS satisfies ReadonlyArray<EquipmentSlot>
 
 const IRON_ARMOR_POINTS = {
   head: { item: 'iron_helmet', points: 2 },

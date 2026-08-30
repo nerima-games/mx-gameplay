@@ -40,16 +40,16 @@
  * right for drawing and wrong for simulating.
  */
 import { Effect } from 'effect'
-import { above, below, positionKeyOf, positionOfKey } from '../block-position-key'
+import { above, below, positionKeyOf, positionOfKey } from '../block-position-key.js'
 import {
   AIR_BLOCK_ID,
   type BlockId,
   type BlockReading,
   type BlockWriteOutcome,
   type ChunkStoreApi,
-} from '../chunk-store-port'
-import { fallsWhenUnsupported, isReplaceable } from '../block-vocabulary'
-import type { PositionKey } from '../position-key'
+} from '../chunk-store-port.js'
+import { fallsWhenUnsupported, isReplaceable } from '../block-vocabulary.js'
+import type { PositionKey } from '../position-key.js'
 
 export type FallingBlockMoves = {
   /** How many blocks actually sank one cell this tick. */

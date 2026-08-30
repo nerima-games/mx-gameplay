@@ -76,7 +76,7 @@ import {
 } from '../../src/domain/block-vocabulary'
 import { makeTimeService, type EntityManagerApi } from '@nerima-games/mc-sim'
 import { FALLING_BLOCK_MOVES_PER_TICK } from '../../src/domain/falling-block'
-import { DeltaTimeSecs, type StageRegistration } from '../../src/domain/frame-contract'
+import { DeltaTimeSecs, type StageId, type StageRegistration } from '../../src/domain/frame-contract'
 import { NO_TOOL, type BlockLootContext, type MinedItem } from '../../src/domain/interactions/block-loot'
 import { spawnMobDrops } from '../../src/domain/entities/dropped-item'
 import {
@@ -116,7 +116,7 @@ import { AIR, floatingBlocks, makePreviewWorld, type PreviewWorld, type WorldSpe
  * world. `dt` is not used by any stage this repository has written yet, which is
  * itself worth knowing and is reported by `--stats`.
  */
-export const FRAME_DELTA = DeltaTimeSecs(1 / 60)
+export const FRAME_DELTA: DeltaTimeSecs = DeltaTimeSecs(1 / 60)
 
 export const schedule = (
   stages: ReadonlyArray<StageRegistration>,
@@ -296,7 +296,7 @@ export const makeSite = (
   })
 
 /** Materialise and credit the reward outboxes owned by the preview host. */
-export const drainMobRewards = (site: Site) =>
+export const drainMobRewards = (site: Site): Effect.Effect<void> =>
   Effect.gen(function* () {
     const drops = yield* drainMobDrops(site.state)
     const experience = yield* drainMobExperience(site.state)
@@ -607,7 +607,7 @@ export const STAGE_ORDER_LABEL = (site: Site): string =>
     .map((stage) => stage.id.replace('gameplay:', ''))
     .join(' -> ')
 
-export const IDLE_STAGE_IDS = [
+export const IDLE_STAGE_IDS: readonly [StageId, StageId] = [
   GAMEPLAY_STAGE_IDS.fluids,
   GAMEPLAY_STAGE_IDS.timeWeather,
-] as const
+]

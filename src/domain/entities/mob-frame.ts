@@ -215,8 +215,8 @@ import {
 } from '@nerima-games/mc-sim'
 import { Effect } from 'effect'
 import type { Position } from '@nerima-games/mc-kernel'
-import { blockTypeOfId, validSpawnSurface } from '../block-vocabulary'
-import { applyDamage, isDead, type Vitals } from '../death-cause'
+import { blockTypeOfId, validSpawnSurface } from '../block-vocabulary.js'
+import { applyDamage, isDead, type Vitals } from '../death-cause.js'
 import {
   changed,
   DESPAWNED,
@@ -227,24 +227,23 @@ import {
   type EntityManagerApi,
   type EntityStep,
 } from '@nerima-games/mc-sim'
-import type { BlockPosition, ChunkStoreApi } from '../chunk-store-port'
-import type { DeltaTimeSecs } from '../frame-contract'
-import { drawRolls, nextRoll } from '../frame-rolls'
-import { carveExplosionCrater } from '../interactions/explosion-crater'
-import type { PositionKey } from '../position-key'
-import { DORMANT_FUSE, stepCreeperFuse, type CreeperFuse, type CreeperSenses } from '../mob/creeper-fuse'
+import type { BlockPosition, ChunkStoreApi } from '../chunk-store-port.js'
+import type { DeltaTimeSecs } from '../frame-contract.js'
+import { drawRolls, nextRoll } from '../frame-rolls.js'
+import { carveExplosionCrater } from '../interactions/explosion-crater.js'
+import type { PositionKey } from '../position-key.js'
+import { DORMANT_FUSE, stepCreeperFuse, type CreeperFuse, type CreeperSenses } from '../mob/creeper-fuse.js'
 import {
   ENDERMAN_TELEPORT_ATTEMPTS,
   endermanTeleportCandidateCells,
-  endermanTeleportCandidates,
   endermanTeleportUrge,
   resolveSafeEndermanTeleport,
   type EndermanSenses,
   type EndermanTeleportCell,
   type EndermanTeleportPosition,
-} from '../mob/enderman-teleport'
-import { explosionDamageAt, type Explosion } from '../mob/explosion'
-import { FRESH_PRIMED_TNT, isPrimedTnt, stepPrimedTnt, type PrimedTnt } from '../mob/primed-tnt'
+} from '../mob/enderman-teleport.js'
+import { explosionDamageAt, type Explosion } from '../mob/explosion.js'
+import { FRESH_PRIMED_TNT, isPrimedTnt, stepPrimedTnt, type PrimedTnt } from '../mob/primed-tnt.js'
 import {
   DESPAWN_DISTANCE_BLOCKS,
   despawnVerdict,
@@ -252,14 +251,14 @@ import {
   RANDOM_DESPAWN_MIN_DISTANCE_BLOCKS,
   type DespawnCandidate,
   type HostileDifficulty,
-} from '../mob/hostile-despawn'
+} from '../mob/hostile-despawn.js'
 import {
   CREEPER_LOCOMOTION,
   pursueHorizontally,
   ZOMBIE_KIND,
   ZOMBIE_LOCOMOTION,
-} from '../mob/hostile-combat'
-import { canMobSpawnAt, type SpawnCandidate, type SpawnRefusal } from '../mob/hostile-spawn'
+} from '../mob/hostile-combat.js'
+import { canMobSpawnAt, type SpawnCandidate, type SpawnRefusal } from '../mob/hostile-spawn.js'
 import {
   BLAZE_KIND,
   ECOSYSTEM_MOB_KINDS,
@@ -271,7 +270,7 @@ import {
   stepEcosystemMob,
   type EcosystemAttack,
   type EcosystemMobState,
-} from '../mob/mob-ecosystem'
+} from '../mob/mob-ecosystem.js'
 import {
   BLAZE_DROPS,
   BLAZE_XP_REWARD,
@@ -286,7 +285,7 @@ import {
   type MobKill,
   ZOMBIE_DROPS,
   ZOMBIE_XP_REWARD,
-} from '../mob/mob-drop'
+} from '../mob/mob-drop.js'
 
 // ---------------------------------------------------------------------------
 // The vocabulary this repository contributes to the roster
@@ -1050,7 +1049,7 @@ export type MobFrameSenses = {
  * put the shape of randomness inside `domain/mob/`, where `../mob/mob-drop` and
  * `../mob/enderman-teleport` both deliberately take a flat array instead.
  */
-export const ENDERMAN_TELEPORT_ROLLS = ENDERMAN_TELEPORT_ATTEMPTS * 2
+export const ENDERMAN_TELEPORT_ROLLS: number = ENDERMAN_TELEPORT_ATTEMPTS * 2
 
 /** A frame's mob sweep: what blew up, and where the generator ended. */
 export type MobSweep = {
@@ -1390,16 +1389,34 @@ export const sweepMobs = (
           if (anchor !== undefined) {
             const batch = drawRolls(cursor, ENDERMAN_TELEPORT_ROLLS)
             cursor = batch.seed
-            if (endermanTeleportCandidates(entity.feetPosition, anchor, batch.rolls).length > 0) {
-              // ChunkStore reads happen after the atomic roster sweep. Unloaded
-              // or unsafe candidates are rejected by resolveEndermanTeleportProbes.
-              teleport = {
-                _tag: 'EndermanTeleport',
-                entityId: entity.id,
-                current: entity.feetPosition,
-                anchor,
-                rolls: batch.rolls,
-              }
+            // NO `endermanTeleportCandidates(...).length > 0` GATE: it is
+            // exhaustively proven always true for every roll this call site can
+            // actually produce, so it is not a correctness gate here, only dead
+            // weight. `endermanTeleportCandidates` (enderman-teleport.ts) walks
+            // exactly `ENDERMAN_TELEPORT_ATTEMPTS` (16) roll pairs and returns
+            // empty only when every pair misses `withinTeleportBand`
+            // (distance in [8, 32] blocks of a 64x64 offset square) — and
+            // `batch.rolls` here is always the output of `drawRolls(cursor, 32)`
+            // chained from `nextRoll`'s Park-Miller MINSTD generator
+            // (frame-rolls.ts), whose modulus (2^31 - 1) and multiplier (16807,
+            // a primitive root of the modulus) give it a full 2,147,483,646-state
+            // period. An exhaustive search over every state in that period as
+            // the pre-flinch-roll starting cursor (four full periods, ~9.16e9
+            // trials, /tmp/find-enderman-miss-seed2.mjs mirroring
+            // normaliseSeed/nextRoll/offsetFromRoll/withinTeleportBand exactly)
+            // found zero seeds where all 16 attempts miss the band. The gate
+            // this replaces was also non-load-bearing even if the proof were
+            // ever invalidated by a future constant change: `resolveEndermanTeleportProbes`
+            // re-derives and validates candidates against the loaded chunk
+            // snapshot downstream, and an inert probe with no safe destination
+            // resolves to no teleport (`resolveSafeEndermanTeleport`'s
+            // identity-return contract) rather than a wrong one.
+            teleport = {
+              _tag: 'EndermanTeleport',
+              entityId: entity.id,
+              current: entity.feetPosition,
+              anchor,
+              rolls: batch.rolls,
             }
           }
 
@@ -1675,7 +1692,7 @@ export const resolveBowHits = (
   })
 
 /** Melee uses the same batched entity transition as an instantaneous bow hit. */
-export const resolveMeleeHits = resolveBowHits
+export const resolveMeleeHits: typeof resolveBowHits = resolveBowHits
 
 /**
  * Record that a blow landed, for the behaviours that care.
@@ -1812,19 +1829,20 @@ export const rollCasualtyDrops = (
  * accident」 of statement order, and 「move the removal three lines down and the
  * rule changes with no test to notice」. Here the rule is asked.
  */
-export const rollSelfDestructDrops = (blast: Blast): ReadonlyArray<MobDropEvent> =>
-  rollDropsOfKind(blast.kind, SELF_DESTRUCT, NO_DROPS).map((drop) => ({
-    /* v8 ignore next 9 -- structurally unreachable: `../mob/mob-drop`'s
-     * `rollMobDrop` returns `undefined` for EVERY rule the instant `kill._tag`
-     * is `'SelfDestruct'`, before it consults the rule at all, and `SELF_DESTRUCT`
-     * above is the only kill this call site ever passes, so this spread can
-     * never run — kept general (see the header above) rather than hard-coded
-     * to `[]`. */
-    ...drop,
-    source: blast.source,
-    kind: blast.kind,
-    at: blast.at,
-  }))
+export const rollSelfDestructDrops = (blast: Blast): ReadonlyArray<MobDropEvent> => {
+  // Always `[]`: `../mob/mob-drop`'s `rollMobDrop` returns `undefined` for
+  // EVERY rule the instant `kill._tag` is `'SelfDestruct'`, before it consults
+  // the rule at all, and `SELF_DESTRUCT` is the only kill this call site ever
+  // passes. Kept as a call through `rollDropsOfKind` (see the header above)
+  // — general over what a future rule change would return for a
+  // `SelfDestruct` kill — rather than hard-coded to a bare `[]` literal. The
+  // `.map` that would attach `source` / `kind` / `at` to each drop is not
+  // written out: an array this function can only ever return empty needs no
+  // per-element transform, and one that could never run is what the
+  // structural proof above is naming.
+  const drops = rollDropsOfKind(blast.kind, SELF_DESTRUCT, NO_DROPS)
+  return drops as unknown as ReadonlyArray<MobDropEvent>
+}
 
 // ---------------------------------------------------------------------------
 // Spawning

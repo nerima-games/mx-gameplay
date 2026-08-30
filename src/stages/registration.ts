@@ -99,14 +99,14 @@ import {
   horizontalNeighbours,
   positionKeyOf,
   positionOfKey,
-} from '../domain/block-position-key'
+} from '../domain/block-position-key.js'
 import {
   advanceVillagerRestock,
   copyVillagerTradeState,
   emptyVillagerTradeState,
   useVillagerOffer,
   type VillagerTradeState,
-} from '../domain/villager-trade'
+} from '../domain/villager-trade.js'
 import {
   PLAYER_MAXIMUM_HEALTH_POINTS,
   POISON_DAMAGE_POINTS,
@@ -120,7 +120,7 @@ import {
   type PlayerHealingEvent,
   type StatusEffectApplication,
   type StatusEffectState,
-} from '../domain/status-effect'
+} from '../domain/status-effect.js'
 import {
   collectBrewingBottle as collectBottle,
   copyBrewingStandState,
@@ -136,20 +136,20 @@ import {
   type BrewingIngredient,
   type BrewingStandState,
   type BrewingTransferResult,
-} from '../domain/brewing'
-import { targetabilityFromStore } from '../domain/in-memory-world'
+} from '../domain/brewing.js'
+import { targetabilityFromStore } from '../domain/in-memory-world.js'
 import {
   AIR_BLOCK_ID,
   ChunkStore,
   type BlockPosition,
   type ChunkStoreApi,
-} from '../domain/chunk-store-port'
+} from '../domain/chunk-store-port.js'
 import {
   chunkCoordsAround,
   openChunkWindow,
   UNREADABLE_BLOCK,
-} from '../domain/chunk-window'
-import { blockIdOf, blockTypeOfId, type PlaceableItemType } from '../domain/block-vocabulary'
+} from '../domain/chunk-window.js'
+import { blockIdOf, blockTypeOfId, type PlaceableItemType } from '../domain/block-vocabulary.js'
 import {
   advanceFireLifecycle,
   FIRE_FRAME_TICK_BUDGET,
@@ -168,8 +168,8 @@ import {
   type FireLifecycleSnapshot,
   type FireLifecycleState,
   type FirePosition,
-} from '../domain/fire-lifecycle'
-import { applyFallingBlocks } from '../domain/entities/falling-block-move'
+} from '../domain/fire-lifecycle.js'
+import { applyFallingBlocks } from '../domain/entities/falling-block-move.js'
 import {
   applySpawnAttempts,
   experienceOfCasualties,
@@ -189,16 +189,16 @@ import {
   type MobBehaviour,
   type MobCasualty,
   type MobSpawnAttempt,
-} from '../domain/entities/mob-frame'
-import { FRESH_PRIMED_TNT } from '../domain/mob/primed-tnt'
+} from '../domain/entities/mob-frame.js'
+import { FRESH_PRIMED_TNT } from '../domain/mob/primed-tnt.js'
 import {
   DROPPED_ITEM_PICKUP_RADIUS,
   pickupDroppedItems,
   spawnDroppedItems,
   type DroppedItemSpawn,
-} from '../domain/entities/dropped-item'
-import { searchSpawnCandidates } from '../domain/entities/mob-spawn-search'
-import { hostileSpawnsAllowed } from '../domain/day-night'
+} from '../domain/entities/dropped-item.js'
+import { searchSpawnCandidates } from '../domain/entities/mob-spawn-search.js'
+import { hostileSpawnsAllowed } from '../domain/day-night.js'
 import {
   changed,
   DESPAWNED,
@@ -208,20 +208,20 @@ import {
   type EntityManager,
   type EntityManagerApi,
 } from '@nerima-games/mc-sim'
-import type { Damage } from '../domain/death-cause'
-import { resolveArmorHit } from '../domain/combat/armor'
+import type { Damage } from '../domain/death-cause.js'
+import { resolveArmorHit } from '../domain/combat/armor.js'
 import {
   resolveHostileContacts,
   resolvePlayerBlastDamage,
   type PlayerDamageEvent,
-} from '../domain/mob/hostile-combat'
+} from '../domain/mob/hostile-combat.js'
 import {
   disturb,
   emptyFallingBlockQueue,
   settled,
   takeBatch,
   type FallingBlockQueue,
-} from '../domain/falling-block'
+} from '../domain/falling-block.js'
 import {
   carryOver,
   DEFAULT_FLUID_HORIZONTAL_RANGE,
@@ -232,54 +232,54 @@ import {
   type FluidCell,
   type FluidProbe,
   type FluidWorkItem,
-} from '../domain/fluid-frontier'
-import type { DeltaTimeSecs, GameModule, StageRegistration } from '../domain/frame-contract'
-import { DEFAULT_ROLL_SEED, drawRolls, rollAt } from '../domain/frame-rolls'
+} from '../domain/fluid-frontier.js'
+import type { DeltaTimeSecs, GameModule, StageRegistration } from '../domain/frame-contract.js'
+import { DEFAULT_ROLL_SEED, drawRolls, rollAt } from '../domain/frame-rolls.js'
 import type { Dimension, PortalTravelPlan } from '@nerima-games/mc-worldgen'
-import { OUTSIDE_PORTAL, type PortalDwell, stepPortalDwell } from '../domain/portal-dwell'
-import { applyPortalTravel, NO_KNOWN_PORTALS } from '../domain/portal-travel'
+import { OUTSIDE_PORTAL, type PortalDwell, stepPortalDwell } from '../domain/portal-dwell.js'
+import { applyPortalTravel, NO_KNOWN_PORTALS } from '../domain/portal-travel.js'
 import { PlayerService, type PlayerServiceApi } from '@nerima-games/mc-sim'
 import {
   applyEndPortalTravel,
   isEndPortalBlock,
   type EndPortalTravelEvent,
-} from '../domain/end-portal-travel'
-import { breakBlock } from '../domain/interactions/break-block'
-import { doorUpperBreakCell } from '../domain/interactions/place-door-upper'
+} from '../domain/end-portal-travel.js'
+import { breakBlock } from '../domain/interactions/break-block.js'
+import { doorUpperBreakCell } from '../domain/interactions/place-door-upper.js'
 import {
   BLOCK_LOOT_ROLLS,
   blockLoot,
   NO_TOOL,
   type BlockLootContext,
-} from '../domain/interactions/block-loot'
-import { placeBlock, type PlaceOutcome } from '../domain/interactions/place-block'
-import { cropDrops, type CropDropOutcome } from '../domain/interactions/crop-drops'
-import { applyBoneMeal, type BoneMealOutcome } from '../domain/interactions/bone-meal'
-import { resolveFoodUse, type FoodUseOutcome, type FoodUseRequest } from '../domain/interactions/eat-food'
+} from '../domain/interactions/block-loot.js'
+import { placeBlock, type PlaceOutcome } from '../domain/interactions/place-block.js'
+import { cropDrops, type CropDropOutcome } from '../domain/interactions/crop-drops.js'
+import { applyBoneMeal, type BoneMealOutcome } from '../domain/interactions/bone-meal.js'
+import { resolveFoodUse, type FoodUseOutcome, type FoodUseRequest } from '../domain/interactions/eat-food.js'
 import {
   makeSurvivalHungerRuntime,
   type SurvivalHungerRuntimeApi,
-} from '../domain/survival-hunger'
+} from '../domain/survival-hunger.js'
 import {
   furnaceAdvanceChanged,
   planFurnaceAdvance,
   type FurnaceAdvancePlan,
-} from '../domain/interactions/advance-furnace'
-import { plantCrop, type PlantOutcome } from '../domain/interactions/plant-crop'
-import { tillSoil, type TillOutcome } from '../domain/interactions/till-soil'
+} from '../domain/interactions/advance-furnace.js'
+import { plantCrop, type PlantOutcome } from '../domain/interactions/plant-crop.js'
+import { tillSoil, type TillOutcome } from '../domain/interactions/till-soil.js'
 import {
   isSuccessfulBlockUse,
   resolveBlockUse,
   type BlockUseOutcome,
-} from '../domain/interactions/use-block'
+} from '../domain/interactions/use-block.js'
 import {
   bowCharge,
   bowDamage,
   canFireBow,
   BOW_MAX_RANGE,
-} from '../domain/interactions/draw-bow'
-import { shotBlockedByTerrain, shotTarget, type ShotHit } from '../domain/interactions/bow-shot'
-import { knockbackDirection, type KnockbackDirection } from '../domain/interactions/knockback'
+} from '../domain/interactions/draw-bow.js'
+import { shotBlockedByTerrain, shotTarget, type ShotHit } from '../domain/interactions/bow-shot.js'
+import { knockbackDirection, type KnockbackDirection } from '../domain/interactions/knockback.js'
 import {
   DEFAULT_MELEE_DAMAGE,
   DEFAULT_MELEE_REACH,
@@ -287,24 +287,24 @@ import {
   meleeTargetBeforeBlock,
   type MeleeAttackRequest,
   type MeleeAttackResult as ResolvedMeleeAttackResult,
-} from '../domain/interactions/melee-attack'
+} from '../domain/interactions/melee-attack.js'
 import {
   enderPearlDisplacement,
   shouldSpawnEndermite,
   ENDER_PEARL_DAMAGE,
   ENDER_PEARL_DEATH_CAUSE,
   type EnderPearlDisplacement,
-} from '../domain/interactions/throw-ender-pearl'
+} from '../domain/interactions/throw-ender-pearl.js'
 import {
   useFlintAndSteel,
   type IgnitionOutcome,
   type IgnitionItemType,
-} from '../domain/interactions/use-flint-and-steel'
+} from '../domain/interactions/use-flint-and-steel.js'
 import {
   useBucket,
   type BucketItemType,
   type BucketUseOutcome,
-} from '../domain/interactions/use-bucket'
+} from '../domain/interactions/use-bucket.js'
 import {
   advanceFishing,
   cancelFishing,
@@ -316,9 +316,9 @@ import {
   type FishingEnvironment,
   type FishingSession,
   type ReelFishingResult,
-} from '../domain/interactions/fishing'
-import type { PositionKey } from '../domain/position-key'
-import type { ItemType } from '../domain/item-vocabulary'
+} from '../domain/interactions/fishing.js'
+import type { PositionKey } from '../domain/position-key.js'
+import type { ItemType } from '../domain/item-vocabulary.js'
 import {
   advanceWeather,
   INITIAL_WEATHER,
@@ -326,20 +326,20 @@ import {
   weatherExpires,
   WEATHER_TRANSITION_ROLLS,
   type WeatherState,
-} from '../domain/weather'
+} from '../domain/weather.js'
 import {
   advanceWeatherGameplay,
   makeWeatherGameplayState,
   type WeatherGameplayEvent,
   type WeatherGameplayInput,
   type WeatherGameplayState,
-} from '../domain/weather-gameplay'
+} from '../domain/weather-gameplay.js'
 import {
   makeEnderDragonEncounterRuntime,
   type EnderDragonEncounterStageApi,
-} from './ender-dragon-encounter-stage'
-import { GAMEPLAY_STAGE_IDS, UPSTREAM_STAGE_IDS } from './stage-ids'
-import { advanceVehicles, type VehicleFrameEnvironment } from '../domain/vehicle/vehicle-frame'
+} from './ender-dragon-encounter-stage.js'
+import { GAMEPLAY_STAGE_IDS, UPSTREAM_STAGE_IDS } from './stage-ids.js'
+import { advanceVehicles, type VehicleFrameEnvironment } from '../domain/vehicle/vehicle-frame.js'
 
 export const resolveArmoredPlayerDamages = (
   inventory: InventoryServiceApi,
@@ -579,12 +579,18 @@ class FluidStateRef extends Effectable.Class<ReadonlyArray<FluidWorkItem>>
   }
   readonly [Readable.TypeId]: Readable.TypeId = Readable.TypeId
   readonly get: Effect.Effect<ReadonlyArray<FluidWorkItem>>
+  // Explicit field declarations, not TypeScript parameter properties: the
+  // `erasableSyntaxOnly` flag (Wave 0 toolchain freeze) requires every
+  // construct to erase to nothing but a type annotation, and a parameter
+  // property emits an assignment statement the compiler would otherwise have
+  // to synthesize.
+  readonly state: Ref.Ref<FluidRuntimeState>
+  readonly field: 'frontier' | 'updates'
 
-  constructor(
-    readonly state: Ref.Ref<FluidRuntimeState>,
-    readonly field: 'frontier' | 'updates',
-  ) {
+  constructor(state: Ref.Ref<FluidRuntimeState>, field: 'frontier' | 'updates') {
     super()
+    this.state = state
+    this.field = field
     this.get = Ref.get(state).pipe(Effect.map((current) => current[field]))
   }
 
@@ -795,7 +801,11 @@ const runFluidPropagation = (
           if (outcome._tag === 'Written' || outcome._tag === 'Unchanged') {
             cells.set(change.cell.key, change.cell)
             enqueue(fluidWorkItemOf(change.cell))
-          } else if (outcome._tag === 'ChunkNotLoaded') {
+          } else {
+            // `SetBlockOutcome` (chunk-store-port.ts) has exactly three tags —
+            // `Written`, `Unchanged`, `ChunkNotLoaded` — and the `if` above has
+            // already excluded the first two, so the compiler narrows `outcome`
+            // here to `ChunkNotLoaded` with no runtime check needed.
             deferCurrent = true
           }
           continue
@@ -1090,12 +1100,12 @@ export type IgnitionItemUseRequest = {
 }
 
 /** Hoe names supplied by mc-kernel 0.2.4. Tilling behaviour is tier-independent. */
-export const HOE_ITEM_TYPES = [
-  'wooden_hoe',
-  'stone_hoe',
-  'iron_hoe',
-  'diamond_hoe',
-] as const satisfies ReadonlyArray<ItemType>
+export const HOE_ITEM_TYPES = ['wooden_hoe', 'stone_hoe', 'iron_hoe', 'diamond_hoe'] as const
+// Compile-time-only validation, kept off the declaration above: `HoeItemType`
+// below reads `(typeof HOE_ITEM_TYPES)[number]` for its narrow 4-member union,
+// and an explicit `: ReadonlyArray<ItemType>` annotation would widen it to
+// `ItemType` instead.
+HOE_ITEM_TYPES satisfies ReadonlyArray<ItemType>
 
 export type HoeItemType = (typeof HOE_ITEM_TYPES)[number]
 
@@ -1697,12 +1707,15 @@ const stepPortalTravel = (
     const candidates = snapshots.get(destinationDimension) ?? NO_KNOWN_PORTALS
     const plan = yield* applyPortalTravel(player, cell, candidates)
 
-    if (plan.toDimension !== sourceDimension) {
-      yield* Ref.update(state.portalTravels, (completed) => [
-        ...completed,
-        { sourceDimension, sourcePosition: cell, plan },
-      ])
-    }
+    // No `plan.toDimension !== sourceDimension` guard: mc-worldgen's
+    // `resolveNetherTravel` maps `'overworld' -> 'nether'` and anything else
+    // (`'nether'` or `'end'`) `-> 'overworld'` — for all three of `Dimension`'s
+    // values, `toDimension` is never the input `from`, so the plan built from
+    // `sourceDimension` here can never equal it.
+    yield* Ref.update(state.portalTravels, (completed) => [
+      ...completed,
+      { sourceDimension, sourcePosition: cell, plan },
+    ])
   })
 
 /**
@@ -2729,9 +2742,9 @@ const stepFireLifecycle = (
       // way to `stepFireTick`'s own `Ref.set`, which always writes a defined
       // `burningActors` array (possibly empty, never omitted). `next.burningActors`
       // is therefore never `undefined` at this point, and neither is `?.`'s or
-      // `?? 0`'s fallback ever consulted.
-      /* v8 ignore next */
-      if (next.fires.length === 0 && (next.burningActors?.length ?? 0) === 0) {
+      // `?? 0`'s fallback ever consulted. Asserted (`!`, `next.burningActors!`)
+      // rather than kept as a branch a coverage gate cannot reach.
+      if (next.fires.length === 0 && next.burningActors!.length === 0) {
         yield* Ref.set(accumulator, 0)
         return
       }
@@ -3888,16 +3901,23 @@ export const gameplayStages = (
             // `shotTarget`, which returns a distance ALONG THE RAY and not a
             // position — and the shove is about where the mob stands, not about
             // how far down the line it was found.
-            const target = candidates.find((candidate) => candidate.id === hit.id)
-            if (target !== undefined) {
-              shoves.push({
-                id: hit.id,
-                direction: knockbackDirection(
-                  target.feetPosition.x - shot.origin.x,
-                  target.feetPosition.z - shot.origin.z,
-                ),
-              })
-            }
+            //
+            // NO `undefined` GUARD: `hit.id` is `candidate.id` for some
+            // `candidate` in this exact `candidates` array (`shotTarget`'s
+            // `nearest = { id: candidate.id, distance: alongRay }`, bow-shot.ts).
+            // `candidates` is read once for the whole batch (the comment above
+            // this loop) and nothing between that read and here reassigns it or
+            // removes a roster entry — terrain sampling and the damage/shove
+            // math are both pure, and the roster is not touched again until
+            // `resolveBowHits` runs after this loop. The lookup cannot miss.
+            const target = candidates.find((candidate) => candidate.id === hit.id)!
+            shoves.push({
+              id: hit.id,
+              direction: knockbackDirection(
+                target.feetPosition.x - shot.origin.x,
+                target.feetPosition.z - shot.origin.z,
+              ),
+            })
           }
 
           yield* Ref.set(state.handledBowShotRequestIds, handledRequestIds)
@@ -4162,6 +4182,11 @@ export const gameplayStages = (
         }
 
         if (attacks.length > 0) {
+          // No `playerDamages.length > 0` guard: `resolveArmoredPlayerDamages`
+          // is `Effect.forEach` over its input with no filtering (unlike the
+          // blast path below, which filters through `resolvePlayerBlastDamage`
+          // first), so its output is always the same length as `attacks`,
+          // which this `if` has already proven non-empty.
           const playerDamages = yield* resolveArmoredPlayerDamages(
             inventory,
             attacks.map((attack) => ({
@@ -4172,9 +4197,7 @@ export const gameplayStages = (
               damage: { amount: attack.damage, cause: 'mob' as const },
             })),
           )
-          if (playerDamages.length > 0) {
-            yield* Ref.update(state.playerDamages, (items) => [...items, ...playerDamages])
-          }
+          yield* Ref.update(state.playerDamages, (items) => [...items, ...playerDamages])
         }
 
         if (blasts.length > 0) {
@@ -4183,13 +4206,26 @@ export const gameplayStages = (
           // What the creeper itself leaves: nothing, and the RULE says so rather
           // than this stage assuming it (`domain/mob/mob-drop.ts` on why the
           // reference gets the same answer by accident of statement order).
+          //
+          // No `playerDamages.length > 0` guard: every `Blast` in `blasts`
+          // comes from THIS sweep's own creeper self-detonation (line ~4159's
+          // `sweepMobs`), gated by `stepCreeperFuse`'s `withinIgnitionRange`
+          // (`domain/mob/creeper-fuse.ts`) on both the `Lit` and the
+          // detonating step — so `blast.at` is always within
+          // `CREEPER_IGNITION_RANGE_BLOCKS` (3) of `targetPosition`, the same
+          // 3D `distanceBetween` metric `resolvePlayerBlastDamage` measures
+          // against. The smallest explosion radius this rule produces
+          // (`explosionRadius(CREEPER_EXPLOSION_POWER)`, power 3) is 6 blocks
+          // — strictly larger than the 3-block ignition gate — so the player
+          // is always inside blast range when a creeper the sweep itself lit
+          // detonates. `resolvePlayerBlastDamage`'s own filter can return
+          // empty (its unit test proves it, for a blast built independently
+          // of any ignition gate); this call site can never hand it one.
           const playerDamages = yield* resolveArmoredPlayerDamages(
             inventory,
             resolvePlayerBlastDamage(blasts, targetPosition),
           )
-          if (playerDamages.length > 0) {
-            yield* Ref.update(state.playerDamages, (items) => [...items, ...playerDamages])
-          }
+          yield* Ref.update(state.playerDamages, (items) => [...items, ...playerDamages])
 
           const selfDestruct = blasts.flatMap(rollSelfDestructDrops)
 

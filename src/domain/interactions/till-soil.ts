@@ -50,9 +50,9 @@
  * pins it says which behaviour is vanilla's.
  */
 import { Effect } from 'effect'
-import { blockIdOf, blockTypeOfId, type BlockType } from '../block-vocabulary'
-import { above } from '../block-position-key'
-import type { BlockPosition } from '../chunk-store-port'
+import { blockIdOf, blockTypeOfId, type BlockType } from '../block-vocabulary.js'
+import { above } from '../block-position-key.js'
+import type { BlockPosition } from '../chunk-store-port.js'
 
 /**
  * Ground that a hoe turns into farmland.
@@ -161,10 +161,14 @@ export const tillSoil = (
 
     const verdict = tillingVerdict(held, ground, groundBlock, aboveBlock)
     if (verdict._tag === 'tilled') {
-      const farmlandId = blockIdOf(TILLED_BLOCK)
-      if (farmlandId !== undefined) {
-        yield* port.setBlock(verdict.at, farmlandId)
-      }
+      // `TILLED_BLOCK` is the literal `'farmland'`, which carries a
+      // `BLOCK_DROP_REGISTRY` row (id 49 in `../block-vocabulary.ts`), so
+      // `blockIdOf` cannot return `undefined` here. Asserted rather than
+      // branched on, for the same reason `./plant-crop.ts` asserts its own
+      // three crop ids: a vocabulary defect that removed that row would be
+      // caught by `test/block-vocabulary-mirror.test.ts`, not by a runtime
+      // fallback that tills nothing and reports success.
+      yield* port.setBlock(verdict.at, blockIdOf(TILLED_BLOCK)!)
     }
     return verdict
   })

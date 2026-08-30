@@ -1,25 +1,37 @@
 import type { Position } from '@nerima-games/mc-kernel'
 import { EntityKind, type Entity, type EntityId } from '@nerima-games/mc-sim'
 import type { Dimension } from '@nerima-games/mc-worldgen'
-import { ZOMBIE_KIND } from './hostile-combat'
+import { ZOMBIE_KIND } from './hostile-combat.js'
 
-export const SKELETON_KIND = EntityKind('skeleton')
-export const SPIDER_KIND = EntityKind('spider')
-export const COW_KIND = EntityKind('cow')
-export const PIG_KIND = EntityKind('pig')
-export const SHEEP_KIND = EntityKind('sheep')
-export const CHICKEN_KIND = EntityKind('chicken')
-export const ZOMBIFIED_PIGLIN_KIND = EntityKind('zombified_piglin')
-export const BLAZE_KIND = EntityKind('blaze')
+export const SKELETON_KIND: EntityKind = EntityKind('skeleton')
+export const SPIDER_KIND: EntityKind = EntityKind('spider')
+export const COW_KIND: EntityKind = EntityKind('cow')
+export const PIG_KIND: EntityKind = EntityKind('pig')
+export const SHEEP_KIND: EntityKind = EntityKind('sheep')
+export const CHICKEN_KIND: EntityKind = EntityKind('chicken')
+export const ZOMBIFIED_PIGLIN_KIND: EntityKind = EntityKind('zombified_piglin')
+export const BLAZE_KIND: EntityKind = EntityKind('blaze')
 
-export const PASSIVE_MOB_KINDS = [COW_KIND, PIG_KIND, SHEEP_KIND, CHICKEN_KIND] as const
-export const OVERWORLD_ECOSYSTEM_HOSTILE_KINDS = [SKELETON_KIND, SPIDER_KIND] as const
-export const NETHER_HOSTILE_KINDS = [ZOMBIFIED_PIGLIN_KIND, BLAZE_KIND] as const
-export const ECOSYSTEM_MOB_KINDS = [
+// Explicit fixed-length tuple annotations (not `ReadonlyArray<EntityKind>`) are
+// deliberate on these three: `./entities/mob-frame`'s `HOSTILE_KINDS` and
+// `./entities/mob-spawn-search` both need the non-empty TUPLE type these
+// produce, not a widened array — see `HOSTILE_KINDS`' own explicit
+// `readonly [EntityKind, ...]` annotation, which a plain array-typed source
+// would no longer satisfy at its direct (non-spread) use in the ternary in
+// `searchSpawnCandidates`.
+export const PASSIVE_MOB_KINDS: readonly [EntityKind, EntityKind, EntityKind, EntityKind] = [
+  COW_KIND,
+  PIG_KIND,
+  SHEEP_KIND,
+  CHICKEN_KIND,
+]
+export const OVERWORLD_ECOSYSTEM_HOSTILE_KINDS: readonly [EntityKind, EntityKind] = [SKELETON_KIND, SPIDER_KIND]
+export const NETHER_HOSTILE_KINDS: readonly [EntityKind, EntityKind] = [ZOMBIFIED_PIGLIN_KIND, BLAZE_KIND]
+export const ECOSYSTEM_MOB_KINDS: ReadonlyArray<EntityKind> = [
   ...OVERWORLD_ECOSYSTEM_HOSTILE_KINDS,
   ...PASSIVE_MOB_KINDS,
   ...NETHER_HOSTILE_KINDS,
-] as const
+]
 
 export type EcosystemMobState = {
   readonly _tag: 'EcosystemMob'

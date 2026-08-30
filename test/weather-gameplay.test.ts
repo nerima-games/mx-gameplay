@@ -166,6 +166,42 @@ describe('weather gameplay', () => {
     expect(result.events.map((event) => event._tag)).toEqual(['LightningStrike'])
   })
 
+  it('strikes nothing during a thunderstorm with no sky-exposed entity', () => {
+    // Every other thunder test supplies at least one sky-exposed entity, so
+    // `targets.length > 0`'s FALSE arm — no candidate for the strike at all —
+    // had never fired. An empty roster and a sheltered one both take it.
+    const empty = advanceWeatherGameplay(makeWeatherGameplayState(7), 5, 'thunder', input({ entities: [] }))
+    expect(empty.events).toEqual([])
+    expect(empty.state.seed).toBe(7)
+
+    const sheltered = advanceWeatherGameplay(
+      makeWeatherGameplayState(7),
+      5,
+      'thunder',
+      input({
+        entities: [{ id: EntityId('pig'), kind: EntityKind('pig'), position: position(0, 64, 0), exposedToSky: false }],
+      }),
+    )
+    expect(sheltered.events).toEqual([])
+    expect(sheltered.state.seed).toBe(7)
+  })
+
+  it('sorts newly-charged creepers deterministically when two or more charge in one strike', () => {
+    // Every other thunder test charges at most one creeper per strike, so the
+    // `chargedCreepers.sort(...)` comparator had never actually run —
+    // `Array.prototype.sort` never calls its comparator for an array of 0 or
+    // 1 elements. `selects lightning targets deterministically...` above
+    // exercises exactly one creeper charging; this needs two struck by the
+    // SAME strike's radius simultaneously.
+    const entities = [
+      { id: EntityId('creeper-b'), kind: EntityKind('creeper'), position: position(1, 64, 0), exposedToSky: true },
+      { id: EntityId('creeper-a'), kind: EntityKind('creeper'), position: position(-1, 64, 0), exposedToSky: true },
+    ]
+    const result = advanceWeatherGameplay(makeWeatherGameplayState(42), 80, 'thunder', input({ entities }))
+    const charged = result.events.filter((event) => event._tag === 'CreeperCharged').map((event) => event.id)
+    expect(charged.sort()).toStrictEqual(['creeper-a', 'creeper-b'].sort())
+  })
+
   it('never leaves exposed fire from a thunderstorm ignition', () => {
     const result = advanceWeatherGameplay(
       makeWeatherGameplayState(7),

@@ -2,8 +2,8 @@ import type {
   BlockId,
   BlockPosition,
   BlockReading,
-} from '../chunk-store-port'
-import { blockIdOf } from '../block-vocabulary'
+} from '../chunk-store-port.js'
+import { blockIdOf } from '../block-vocabulary.js'
 
 const LEVER_BLOCK_ID = blockIdOf('lever')
 

@@ -56,7 +56,7 @@
  * climb needs a rule, because climbing is the direction gravity will not
  * produce.
  */
-import type { IsRailAt } from './rail-shape'
+import type { IsRailAt } from './rail-shape.js'
 
 /**
  * Below this, a heading is no heading at all and the cart does not climb.

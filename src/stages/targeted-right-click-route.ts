@@ -1,18 +1,18 @@
 import { targetBlockFromPlayerPose } from '@nerima-games/mc-sim'
 import { Effect, Option } from 'effect'
 
-import { blockTypeOfId } from '../domain/block-vocabulary'
+import { blockTypeOfId } from '../domain/block-vocabulary.js'
 import type {
   BlockPosition,
   BlockReading,
   ChunkStoreApi,
-} from '../domain/chunk-store-port'
+} from '../domain/chunk-store-port.js'
 import {
   rightClickRoute,
   type RightClickRoute,
-} from '../domain/interactions/right-click-target'
+} from '../domain/interactions/right-click-target.js'
 import type { PlayerServiceApi } from '@nerima-games/mc-sim'
-import { DEFAULT_BLOCK_REACH } from './registration'
+import { DEFAULT_BLOCK_REACH } from './registration.js'
 
 const coordinateKey = (x: number, y: number, z: number): string => `${x},${y},${z}`
 
@@ -25,13 +25,12 @@ export const targetedRightClickRoute = (
   Effect.gen(function* () {
     const pose = yield* player.pose
     const candidates: Array<BlockPosition> = []
-    const visited = new Set<string>()
+    // No dedup Set: `@nerima-games/mc-physics`'s `voxelRaycast` DDA walk
+    // (`domain/dda.js`) advances exactly one axis by exactly one cell per
+    // step, so no two steps of one walk ever produce the same `(x, y, z)` —
+    // there is no candidate here to deduplicate.
     targetBlockFromPlayerPose(pose, maxDistance, (x, y, z) => {
-      const key = coordinateKey(x, y, z)
-      if (!visited.has(key)) {
-        visited.add(key)
-        candidates.push({ x, y, z })
-      }
+      candidates.push({ x, y, z })
       return false
     })
 
