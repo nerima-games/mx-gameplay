@@ -24,7 +24,7 @@ import {
   type PlantPort,
   type PlantRequest,
 } from '../src/domain/interactions/plant-crop'
-import { blockIdOf, type BlockType } from '../src/domain/block-vocabulary'
+import { blockIdOf, type BlockType } from '@nerima-games/mc-kernel'
 import type { BlockPosition } from '../src/domain/chunk-store-port'
 
 const SOIL: BlockPosition = { x: 4, y: 63, z: -9 }

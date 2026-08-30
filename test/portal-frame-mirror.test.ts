@@ -26,7 +26,7 @@
  */
 import { describe, expect, it } from '@effect/vitest'
 import { Option } from 'effect'
-import { blockIdOf } from '../src/domain/block-vocabulary'
+import { blockIdOf } from '@nerima-games/mc-kernel'
 import { AIR_BLOCK_ID, type BlockId, type BlockPosition } from '../src/domain/chunk-store-port'
 import {
   detectNetherPortal,

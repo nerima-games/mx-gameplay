@@ -11,10 +11,10 @@
  *   2. delete this file;
  *   3. repoint every `from './portal-frame-port.js'` at `'@nerima-games/mc-worldgen'`.
  *
- * It is NOT re-exported from `index.ts`, for the reason `./chunk-store-port` and
- * `./block-vocabulary` are not, and the former `./frame-contract`,
- * `./position-key` and `./item-vocabulary` were not (Wave 1, W1-M3: repointed
- * to kernel and deleted): re-exporting another repository's rule would
+ * It is NOT re-exported from `index.ts`, for the reason `./chunk-store-port` is
+ * not, and the former `./frame-contract`, `./position-key`, `./item-vocabulary`
+ * (Wave 1, W1-M3) and `./block-vocabulary` (Wave 1, W1-M4) were not, each
+ * repointed to kernel and deleted: re-exporting another repository's rule would
  * make the promised deletion a breaking change for every consumer of
  * mx-gameplay. `test/public-api.test.ts` pins that absence.
  *
@@ -34,9 +34,10 @@
  * `application/chunk-store.ts` is a service and `domain/portal-frame.ts` is a
  * pure rule, mc-worldgen may publish or move either without the other. This
  * repository already carried the precedent for two mirrors of one package —
- * `./block-vocabulary` beside the former `./item-vocabulary` (Wave 1, W1-M3:
- * repointed to kernel and deleted), both mirroring mc-kernel. One mirror per
- * source module; any number of them per package.
+ * the former `./block-vocabulary` (Wave 1, W1-M4) beside the former
+ * `./item-vocabulary` (Wave 1, W1-M3), both mirroring mc-kernel and both
+ * repointed and deleted. One mirror per source module; any number of them
+ * per package.
  *
  * ---------------------------------------------------------------------------
  * THE ONE PLACE THIS TRANSCRIPTION IS NOT LITERAL, AND WHY
@@ -49,9 +50,9 @@
  *   - a literal `40` for obsidian would be exactly the scatter plan.md §3.1
  *     measured (`blockTypeToIndex('SAND')` in 229 places across 51 files), and
  *     it would go stale silently if kernel ever renumbered a row;
- *   - `blockTypeOfId(id) === 'obsidian'` asks KERNEL's registry
- *     (`./block-vocabulary`) what the byte denotes, which is the same question
- *     `BLOCK.OBSIDIAN` answers from the other end.
+ *   - `blockTypeOfId(id) === 'obsidian'` asks KERNEL's registry directly
+ *     what the byte denotes, which is the same question `BLOCK.OBSIDIAN`
+ *     answers from the other end.
  *
  * The second is used. It is a different EXPRESSION of the same comparison and
  * not a different rule: `test/portal-frame-mirror.test.ts` pins the two answers
@@ -70,7 +71,7 @@
  */
 import { Option } from 'effect'
 import { AIR_BLOCK_ID, type BlockId, type BlockPosition } from './chunk-store-port.js'
-import { blockTypeOfId } from './block-vocabulary.js'
+import { blockTypeOfId } from '@nerima-games/mc-kernel'
 
 /**
  * Reads the block at an integer world coordinate.

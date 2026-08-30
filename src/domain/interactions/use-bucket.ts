@@ -5,7 +5,7 @@ import {
   type InventoryServiceApi,
 } from '@nerima-games/mc-sim'
 import { Effect, Exit, Ref } from 'effect'
-import { blockIdOf } from '../block-vocabulary.js'
+import { blockIdOf } from '@nerima-games/mc-kernel'
 import {
   AIR_BLOCK_ID,
   type BlockId,
@@ -113,7 +113,7 @@ const planBucketUse = (heldItem: BucketItemType, block: BlockId): BucketPlan | u
   const nextBlock = fluidBlockId(fluid)
   // UNREACHABLE TODAY, same shape as `./ignite-fire`'s `UnknownBlock`:
   // `FluidKind` is closed to 'water' | 'lava' (fluid-frontier.ts), and
-  // `test/block-vocabulary-mirror.test.ts` proves `blockIdOf` total over
+  // kernel's own type declaration proves `blockIdOf` total over
   // every `BlockType`, water and lava included, so no legal `fluid` value
   // can reach this branch.
   /* v8 ignore start */

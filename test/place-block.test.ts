@@ -13,8 +13,9 @@
  *   LAVA IS REPLACEABLE. `block-service-place-load.ts:48-58` asks
  *   `existing === 'AIR' || existing === 'WATER'` — a hand-written two-element
  *   list with a comment about underwater building — so a lava cell was refused
- *   as "block already exists". `domain/block-vocabulary.ts`'s own comment
- *   records the two halves of that omission and says the second is placement's.
+ *   as "block already exists". The former `domain/block-vocabulary.ts`'s own
+ *   comment recorded the two halves of that omission and said the second was
+ *   placement's.
  *
  *   PLACING INSIDE YOURSELF. `blockOverlapsPlayer` (`block-utils.ts:66-74`) is
  *   the suffocation guard, and its boundary table
@@ -36,25 +37,26 @@
 import { describe, expect, it } from '@effect/vitest'
 import { makeTimeService } from '@nerima-games/mc-sim'
 import { Effect, Ref } from 'effect'
-import { blockPosition, blockPositionKeyOf, StackCount, type Position } from '@nerima-games/mc-kernel'
+import {
+  blockIdOf,
+  blockOfPlaceableItem,
+  blockPosition,
+  blockPositionKeyOf,
+  canBlockStaySupported,
+  capabilityOfBlockId,
+  needsOneOf,
+  PLACEABLE_ITEM_TYPES,
+  StackCount,
+  supportRuleOfBlockId,
+  type BlockType,
+  type Position,
+} from '@nerima-games/mc-kernel'
 import {
   AIR_BLOCK_ID,
   type BlockPosition,
   type BlockWriteOutcome,
   type ChunkStoreApi,
 } from '../src/domain/chunk-store-port'
-import {
-  blockIdOf,
-  blockOfPlaceableItem,
-  canBlockStaySupported,
-  canSupportAttachments,
-  isReplaceable,
-  needsOneOf,
-  PLACEABLE_ITEM_TYPES,
-  supportRuleOfBlockId,
-  validSpawnSurface,
-  type BlockType,
-} from '../src/domain/block-vocabulary'
 import {
   blockOverlapsPlayer,
   isSupportSensitiveOfBlock,
@@ -132,8 +134,8 @@ describe('placeBlock — the target cell', () => {
         alsoPlaced: [],
       } satisfies PlaceOutcome)
       // ...and the id the rule chose came out of kernel's table rather than out
-      // of this test: `stone` the item names `stone` the block, which is the
-      // name-identity bridge `domain/block-vocabulary.ts` is built on.
+      // of this test: `stone` the item names `stone` the block, which is
+      // kernel's own name-identity bridge (`PlaceableItemType`).
       expect(blockIdOf('stone')).toBe(STONE)
       expect(yield* store.blockAt(target)).toBe(STONE)
     }),
@@ -174,7 +176,7 @@ describe('placeBlock — the target cell', () => {
     Effect.gen(function* () {
       const store = yield* storeWith([[target, LAVA]])
 
-      expect(isReplaceable(LAVA)).toBe(true)
+      expect(capabilityOfBlockId(LAVA, 'replaceable')).toBe(true)
       expect((yield* placeBlock(store.api, { position: target, heldItem: 'stone' }))._tag).toBe(
         'Placed',
       )
@@ -519,8 +521,8 @@ describe('placeBlock — support', () => {
   // collapsing them into one `solid` test here is how a sixth one starts.
   it.effect('REGRESSION: snow supports a mob and not a torch — the two flags are not one flag', () =>
     Effect.gen(function* () {
-      expect(validSpawnSurface(SNOW)).toBe(true)
-      expect(canSupportAttachments(SNOW)).toBe(false)
+      expect(capabilityOfBlockId(SNOW, 'validSpawnSurface')).toBe(true)
+      expect(capabilityOfBlockId(SNOW, 'canSupportAttachments')).toBe(false)
 
       const store = yield* storeWith([[below, SNOW]])
 
@@ -741,14 +743,14 @@ describe('the reference\u2019s support table, on the rows whose rule IS the fall
       Effect.sync(() => {
         expect(isSupportSensitiveOfBlock(held)).toBe(true)
         // THROUGH THE RULE, not through the two predicates it used to AND. These
-        // rows used to assert `canSupportAttachments(support)` directly, which
+        // rows used to assert `capabilityOfBlockId(support, 'canSupportAttachments')` directly, which
         // was the whole of the answer while the fallback was the whole of the
         // implementation. It is not any more, so the assertion goes through the
         // function `placementVerdict` actually calls — and these six rows are
         // the ones where the two spellings agree, which is what makes them a
         // safe place to check that the composition did not change their answers.
         expect(canBlockStaySupported(held, support)).toBe(stays)
-        expect(canSupportAttachments(support)).toBe(stays)
+        expect(capabilityOfBlockId(support, 'canSupportAttachments')).toBe(stays)
       }),
     )
   }
@@ -760,7 +762,7 @@ describe('the reference\u2019s support table, on the rows whose rule IS the fall
       const store = yield* storeWith([[below, WATER]])
 
       expect(isSupportSensitiveOfBlock(TORCH)).toBe(true)
-      expect(canSupportAttachments(WATER)).toBe(false)
+      expect(capabilityOfBlockId(WATER, 'canSupportAttachments')).toBe(false)
       expect(yield* placeBlock(store.api, { position: target, heldItem: 'torch' })).toStrictEqual({
         _tag: 'Unsupported',
         support: WATER,
@@ -802,7 +804,7 @@ describe('the reference\u2019s support table, on the rows whose rule IS the fall
  *
  * Kernel has the column now. `mc-kernel/domain/block-support.ts` carries
  * `SupportRule` and `mc-kernel/domain/block-registry.ts` fills in all twenty
- * non-default rows; `domain/block-vocabulary.ts` mirrors both IN FULL, and
+ * non-default rows; this repository reads both directly since W1-M4, and
  * `placementVerdict` calls `canBlockStaySupported` instead of ANDing two
  * predicates. Nothing here was invented — the objection was answered rather than
  * overruled.
@@ -888,7 +890,7 @@ describe('F7 — CLOSED: per-block support rules are reachable through placeBloc
       // The F7 row itself. If these two ever stop disagreeing, the test above
       // has become vacuous for a second reason and somebody should know.
       expect(canBlockStaySupported(blockIdOf('lily_pad') ?? -1, WATER)).toBe(true)
-      expect(canSupportAttachments(WATER)).toBe(false)
+      expect(capabilityOfBlockId(WATER, 'canSupportAttachments')).toBe(false)
 
       const reachable = PLACEABLE_ITEM_TYPES.filter(
         (item) =>
@@ -916,13 +918,13 @@ describe('F7 — CLOSED: per-block support rules are reachable through placeBloc
 
   // `block-support.test.ts:32` asserts LILY_PAD on WATER IS supported.
   // WAS: `expect(wouldStay('lily_pad', WATER)).toBe(false)` — pinned as the
-  // wrong answer, with `canSupportAttachments(WATER)` false beside it as the
+  // wrong answer, with `capabilityOfBlockId(WATER, 'canSupportAttachments')` false beside it as the
   // explanation. The explanation still holds and the verdict has flipped: water
   // is still a non-supporting block, and a lily pad still floats on it, because
   // the per-block list is consulted first.
   it.effect('AGREES with block-support.test.ts:32 — a lily pad floats on water, which is non-supporting', () =>
     Effect.sync(() => {
-      expect(canSupportAttachments(WATER)).toBe(false)
+      expect(capabilityOfBlockId(WATER, 'canSupportAttachments')).toBe(false)
       expect(wouldStay('lily_pad', WATER)).toBe(true)
     }),
   )
@@ -937,7 +939,7 @@ describe('F7 — CLOSED: per-block support rules are reachable through placeBloc
       // Stone supports attachments, so the OLD rule allowed this. The assertion
       // is kept beside the verdict to show that the fallback did not change —
       // what changed is that a lily pad no longer consults it.
-      expect(canSupportAttachments(STONE)).toBe(true)
+      expect(capabilityOfBlockId(STONE, 'canSupportAttachments')).toBe(true)
     }),
   )
 
@@ -991,7 +993,7 @@ describe('F7 — CLOSED: per-block support rules are reachable through placeBloc
       )
       // ...and sugar cane stacks on itself, a row the fallback could never have
       // got right: sugar cane is in `NON_SUPPORTING_IDS`.
-      expect(canSupportAttachments(blockIdOf('sugar_cane') ?? -1)).toBe(false)
+      expect(capabilityOfBlockId(blockIdOf('sugar_cane') ?? -1, 'canSupportAttachments')).toBe(false)
       expect(wouldStay('sugar_cane', blockIdOf('sugar_cane') ?? -1)).toBe(true)
     }),
   )

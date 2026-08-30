@@ -28,10 +28,12 @@
  * The capability assertions that used to be here
  * ---------------------------------------------------------------------------
  *
- * They are in `./block-vocabulary-mirror.test.ts`, unchanged, because the
- * predicates they cover are in `domain/block-vocabulary.ts` now. They were never
- * really about `ChunkStore`: `fallsWhenUnsupported`, `isReplaceable`,
- * `validSpawnSurface` and `canSupportAttachments` are mc-KERNEL's flags, and
+ * They were in `./block-vocabulary-mirror.test.ts`, and then in
+ * `domain/block-vocabulary.ts` itself (both deleted, W1-M4); the predicates
+ * they cover — `capabilityOfBlockId(id, 'fallsWhenUnsupported' | 'replaceable'
+ * | 'validSpawnSurface' | 'canSupportAttachments')` — come from
+ * `@nerima-games/mc-kernel` directly now. They were never
+ * really about `ChunkStore`: those are mc-KERNEL's flags, and
  * this file pins a mirror of mc-worldgen. Having them here made this test read
  * as though it covered the repoint promise for them, which it could not — the
  * promise was false the whole time and it took mc-dev-meta's `pnpm
@@ -134,8 +136,9 @@ describe('the ChunkStore mirror', () => {
       // header promises that repointing every import at
       // `@nerima-games/mc-worldgen` will typecheck. mc-worldgen exports none of
       // the four, so the promise was false and the repoint would have deleted
-      // them. They live in `../domain/block-vocabulary` now, which is the mirror
-      // mc-kernel's barrel replaces.
+      // them. They lived next in `../domain/block-vocabulary` until that mirror
+      // was itself repointed and deleted (Wave 1, W1-M4); callers take them
+      // from `@nerima-games/mc-kernel` directly now.
       //
       // This does NOT re-check what mc-dev-meta's `pnpm check:mirrors` checks —
       // that gate imports both packages and can see mc-worldgen's real barrel,

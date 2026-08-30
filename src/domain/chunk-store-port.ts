@@ -30,9 +30,10 @@
  * have deleted them. One mirror file was mirroring two sources, and the file
  * that promised to be replaceable by one package needed two.
  *
- * They now live in `./block-vocabulary`, which is the mirror mc-kernel's barrel
- * replaces. Nothing else about them changed: same sets, same polarity, same
- * comments.
+ * They lived next in `./block-vocabulary` until that mirror was itself
+ * repointed and deleted (Wave 1, W1-M4); callers take them from kernel's
+ * `capabilityOfBlockId(id, flag)` now. Nothing else about them changed: same
+ * sets, same polarity.
  *
  * mc-dev-meta's `pnpm check:mirrors` is the only thing in the organisation that
  * can see this, because it is the only place where both packages exist in one
@@ -360,9 +361,11 @@ export const blockIndex = (x: number, y: number, z: number): number =>
  *
  * So the y guard belongs at the CALL SITE and is stated there rather than being
  * folded in here, because folding it in would make this a differently-behaved
- * function with mc-worldgen's name — which is the failure
- * `../block-vocabulary`'s `isSupportSensitive` note is about, arriving from the
- * behavioural side instead of the naming side.
+ * function with mc-worldgen's name — which is the failure `domain/place-block.ts`'s
+ * `isSupportSensitiveOfBlock` naming-collision note records (a renamed mirror
+ * still typechecks and passes every local test while quietly meaning
+ * something else), arriving from the behavioural side instead of the naming
+ * side.
  */
 export const readBlock = (blocks: Uint8Array, index: number): BlockId =>
   blocks[index] ?? AIR_BLOCK_ID

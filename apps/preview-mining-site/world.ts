@@ -62,20 +62,21 @@ import {
 } from '../../src/domain/chunk-store-port'
 import {
   blockTypeOfId,
-  fallsWhenUnsupported,
+  capabilityOfBlockId,
   isPlaceableItem,
-  isReplaceable,
   itemOfBlock,
   type PlaceableItemType,
-} from '../../src/domain/block-vocabulary'
+} from '@nerima-games/mc-kernel'
 
 /**
- * Block ids, transcribed from kernel's `BLOCK_REGISTRY` exactly as
- * `domain/block-vocabulary.ts` transcribes the four capability sets.
+ * Block ids, transcribed from kernel's `BLOCK_REGISTRY` for this preview's own
+ * demonstration purposes, the same reason this repository's rule files read
+ * the capability sets from `capabilityOfBlockId` rather than naming blocks.
  *
  * The preview NAMES blocks and the rules do not; that asymmetry is the point of
- * DN-GP-1's capability table. `LAVA` is here specifically because the mirror's
- * comment records that its absence from `REPLEACABLE_IDS` was a real bug found
+ * DN-GP-1's capability table. `LAVA` is here specifically because the former
+ * block-vocabulary.ts mirror's own comment recorded that its absence from
+ * `REPLACEABLE_IDS` was a real bug found
  * by `mc-dev-meta`'s `pnpm check:mirrors` — falling sand did not displace lava —
  * and the `lava-pit` scenario is what that bug would have looked like.
  */
@@ -144,8 +145,8 @@ export const glyphOf = (id: BlockId): Glyph =>
  *
  * `undefined` for five palette entries — air, water, lava, nether_portal and
  * fire — and that is kernel's answer rather than this file's: `itemOfBlock` is partial and
- * `UNITEMISED_BLOCK_TYPES` is the list of blocks with no item form
- * (`domain/block-vocabulary.ts`). Pressing `p` with lava selected therefore says
+ * `UNITEMISED_BLOCK_TYPES` is kernel's own list of blocks with no item form.
+ * Pressing `p` with lava selected therefore says
  * so, which is a more useful thing for the screen to demonstrate than a key that
  * silently does nothing.
  *
@@ -455,7 +456,7 @@ export const restsOnSupport = (world: PreviewWorld, position: BlockPosition): bo
   if (!world.isResident(belowPosition)) {
     return true
   }
-  return !isReplaceable(world.peekBlock(belowPosition) ?? AIR_BLOCK_ID)
+  return !capabilityOfBlockId(world.peekBlock(belowPosition) ?? AIR_BLOCK_ID, 'replaceable')
 }
 
 /**
@@ -472,5 +473,6 @@ export const floatingBlocks = (
 ): ReadonlyArray<BlockPosition> =>
   cells.filter(
     (position) =>
-      fallsWhenUnsupported(world.peekBlock(position) ?? AIR_BLOCK_ID) && !restsOnSupport(world, position),
+      capabilityOfBlockId(world.peekBlock(position) ?? AIR_BLOCK_ID, 'fallsWhenUnsupported') &&
+        !restsOnSupport(world, position),
   )

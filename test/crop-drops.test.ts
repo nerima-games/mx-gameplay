@@ -18,7 +18,7 @@ import {
 } from '../src/domain/interactions/crop-drops'
 import { CROP_OF_SEED } from '../src/domain/interactions/plant-crop'
 import { ITEM_TYPES } from '@nerima-games/mc-kernel'
-import type { BlockType } from '../src/domain/block-vocabulary'
+import type { BlockType } from '@nerima-games/mc-kernel'
 
 const CROPS = Object.keys(UNRIPE_CROP_DROP) as ReadonlyArray<BlockType>
 

@@ -5,7 +5,7 @@
  * THE HALF KERNEL REFUSED TO HOLD, AND WHY THE SPLIT IS THERE
  * ---------------------------------------------------------------------------
  *
- * `../block-vocabulary`'s `dropOfBlockId` answers the DETERMINISTIC question —
+ * kernel's `dropOfBlockId` answers the DETERMINISTIC question —
  * which item, how many, does the tool gate open, does silk touch apply — and
  * carries `affectedByFortune` OUT as a flag rather than applying it. kernel's
  * `domain/block-harvest.ts` says why in a sentence that names this file's job:
@@ -66,7 +66,7 @@ import {
   type BlockDrop,
   type BlockType,
   type HarvestContext,
-} from '../block-vocabulary.js'
+} from '@nerima-games/mc-kernel'
 import type { BlockId } from '../chunk-store-port.js'
 import type { ItemType } from '@nerima-games/mc-kernel'
 
@@ -213,7 +213,7 @@ type BonusDropLine = {
  *   `stick`         in kernel's `ITEM_TYPES`. Shipped below.
  *   `apple`         NOT an `ItemType`. One row in kernel's roster, no edit here.
  *   `sapling`       a `BlockType` and NOT an `ItemType` — so it is in
- *                   `../block-vocabulary`'s `UNITEMISED_BLOCK_TYPES`, which is
+ *                   kernel's `UNITEMISED_BLOCK_TYPES`, which is
  *                   the list that exists so this gap is data rather than a
  *                   comment. Breaking leaves cannot yield a sapling you can
  *                   carry until kernel itemises it.
@@ -292,7 +292,7 @@ const fortuneApplies = (context: BlockLootContext): boolean =>
 /*
  * TOTAL, and it used to end `count <= 0 ? undefined : …`. That guard was
  * deleted rather than tested: a `BlockDrop` only ever reaches here from
- * `dropOfBlockId`, which is `../block-vocabulary`'s `resolveDrop` and which
+ * `dropOfBlockId`, which is kernel's own `resolveDrop` under the hood and which
  * REFUSES `rule.count <= 0` before it builds one — that is how the `count: 0`
  * rows for air, water, bedrock and leaves yield nothing at all. `extra` cannot
  * be negative either (`rollFortuneExtraDrops` returns `Math.floor(multiplier -
@@ -321,7 +321,7 @@ const withFortune = (drop: BlockDrop, context: BlockLootContext, roll: number): 
  * a fifth answer in and a stack of zero is an item that exists and weighs
  * nothing:
  *
- *   - a byte this build cannot name yields nothing (`../block-vocabulary`'s
+ *   - a byte this build cannot name yields nothing (kernel's own
  *     rule: minting an item out of an unknown id is how a save from a newer
  *     build prints items into inventories);
  *   - stone swung at bare-handed yields nothing (the tool gate);

@@ -34,7 +34,7 @@
  * correct container lifecycle or door transition. Single-block routes remain
  * identified completely by their tag.
  */
-import type { BlockType } from '../block-vocabulary.js'
+import type { BlockType } from '@nerima-games/mc-kernel'
 import type { BlockPosition } from '../chunk-store-port.js'
 
 /**

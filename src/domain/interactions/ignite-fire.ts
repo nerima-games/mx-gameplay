@@ -59,7 +59,7 @@
  * services own them and neither is published.
  */
 import { Effect } from 'effect'
-import { blockIdOf } from '../block-vocabulary.js'
+import { blockIdOf } from '@nerima-games/mc-kernel'
 import { AIR_BLOCK_ID, type BlockId, type BlockPosition, type ChunkStoreApi } from '../chunk-store-port.js'
 
 /**
@@ -104,7 +104,7 @@ export const igniteFire = (
   Effect.gen(function* () {
     const fireBlock = blockIdOf('fire')
     /* v8 ignore start -- UnknownBlock is unreachable in a green tree: `fire` is one
-     * of the 120 `BlockType`s `test/block-vocabulary-mirror.test.ts` pins `blockIdOf`
+     * of the 120 `BlockType`s kernel's own type declaration pins `blockIdOf`
      * total over, so `blockIdOf('fire')` never returns `undefined`. Kept for the
      * reason `./place-block.ts`'s own `UnknownBlock` arm is: it fails toward a NAMED
      * refusal rather than a fire block silently vanishing. Named in

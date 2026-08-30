@@ -1,7 +1,6 @@
 import { describe, expect, it } from '@effect/vitest'
 import { Effect } from 'effect'
-import { blockPosition, blockPositionKeyOf } from '@nerima-games/mc-kernel'
-import { blockIdOf, type BlockType } from '../src/domain/block-vocabulary'
+import { blockIdOf, blockPosition, blockPositionKeyOf, type BlockType } from '@nerima-games/mc-kernel'
 import { AIR_BLOCK_ID, type BlockId, type BlockPosition } from '../src/domain/chunk-store-port'
 import { carveExplosionCrater, craterCells, craterRadius } from '../src/domain/interactions/explosion-crater'
 import { makeChunkStoreDouble, world } from './support/chunk-store-double'

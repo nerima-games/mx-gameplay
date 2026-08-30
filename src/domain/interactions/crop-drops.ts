@@ -36,7 +36,7 @@
  * under-drop.
  */
 import type { ItemType } from '@nerima-games/mc-kernel'
-import type { BlockType } from '../block-vocabulary.js'
+import type { BlockType } from '@nerima-games/mc-kernel'
 
 /** An item and how many of it. */
 export type CropDrop = {

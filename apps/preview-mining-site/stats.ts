@@ -24,9 +24,12 @@ import { Brand, Effect, Ref } from 'effect'
 import {
   blockPosition,
   blockPositionKeyOf,
+  capabilityOfBlockId,
   DeltaTimeSecs,
+  HARVEST_TIERS,
   MAX_STACK_COUNT,
   type BlockPositionKey,
+  type HarvestTier,
 } from '@nerima-games/mc-kernel'
 import { type BlockId } from '../../src/domain/chunk-store-port'
 import { dayPhase, hostileSpawnsAllowed, isNight } from '../../src/domain/day-night'
@@ -80,7 +83,6 @@ import {
 import { INVENTORY_SLOT_COUNT } from './inventory'
 import { FrameServicesLayer } from './frame-services'
 import { GRAVEL, SAND, glyphOf, placeableItemOf, type WorldSpec } from './world'
-import { fallsWhenUnsupported, isReplaceable, type HarvestTier } from '../../src/domain/block-vocabulary'
 import { blockLoot } from '../../src/domain/interactions/block-loot'
 import { DEFAULT_ROLL_SEED, drawRolls } from '../../src/domain/frame-rolls'
 import {
@@ -140,7 +142,7 @@ const buildSite = (spec: WorldSpec, name: string): Effect.Effect<Site> =>
 const fallingCount = (site: Site): number => {
   let total = 0
   for (const [id, count] of site.world.census()) {
-    if (fallsWhenUnsupported(id)) {
+    if (capabilityOfBlockId(id, 'fallsWhenUnsupported')) {
       total += count
     }
   }
@@ -341,7 +343,7 @@ const conservation = Effect.gen(function* () {
     for (let x = 0; x < BOUNDS.width && minedTargets < 3; x += 1) {
       for (let y = BOUNDS.height - 1; y >= 0 && minedTargets < 3; y -= 1) {
         const position = positionAt(site, x, y)
-        if (fallsWhenUnsupported(site.world.peekBlock(position) ?? 0)) {
+        if (capabilityOfBlockId(site.world.peekBlock(position) ?? 0, 'fallsWhenUnsupported')) {
           yield* requestBreak(site, position)
           minedTargets += 1
         }
@@ -352,7 +354,7 @@ const conservation = Effect.gen(function* () {
     const after = fallingCount(site)
     // Items, by name, and only the ones that are falling materials. The block
     // ids are `SAND` and `GRAVEL`; their item forms are named the same, which is
-    // kernel's name-identity bridge (`domain/block-vocabulary.ts`) and is why
+    // kernel's own name-identity bridge and is why
     // this can be written without a second table.
     const minedFalling = FALLING_ITEM_NAMES.reduce(
       (total, item) => total + inventoryCount(site, item),
@@ -1031,7 +1033,7 @@ const spawnGate = Effect.sync((): Check => {
  * completely plausible on screen.
  */
 const lootTable = Effect.sync(() => {
-  const tiers: ReadonlyArray<HarvestTier> = ['none', 'wooden', 'stone', 'iron', 'diamond']
+  const tiers: ReadonlyArray<HarvestTier> = HARVEST_TIERS
   const probed: ReadonlyArray<readonly [BlockId, string]> = [
     [2, 'stone'],
     [4, 'grass_block'],
@@ -1367,8 +1369,8 @@ export const buildStatsReport: Effect.Effect<ReadonlyArray<string>> = Effect.gen
 
   // A last sanity line that is cheap and would be embarrassing to get wrong: the
   // capability table the whole cascade keys off.
-  const falls = [SAND, GRAVEL].every((id) => fallsWhenUnsupported(id))
-  const replaceable = [0, 6, 11].every((id) => isReplaceable(id))
+  const falls = [SAND, GRAVEL].every((id) => capabilityOfBlockId(id, 'fallsWhenUnsupported'))
+  const replaceable = [0, 6, 11].every((id) => capabilityOfBlockId(id, 'replaceable'))
   lines.push(
     `capability table: fallsWhenUnsupported(sand,gravel)=${String(falls)}  ` +
       `isReplaceable(air,water,lava)=${String(replaceable)}  ` +
@@ -1378,7 +1380,7 @@ export const buildStatsReport: Effect.Effect<ReadonlyArray<string>> = Effect.gen
       // comment, so the note pointed a reader at the wrong paragraph in the
       // wrong file. No line number this time: a citation that rots on every
       // edit above it is a citation that will rot again.
-      `(lava was missing once — see REPLACEABLE_IDS in domain/block-vocabulary.ts)`,
+      `(lava was missing from kernel's replaceable set once, before mc-kernel 0.5.1)`,
   )
   lines.push(`positionKeyOf({x:-1,y:2,z:-3}) = ${blockPositionKeyOf(blockPosition(-1, 2, -3))}`)
   lines.push(`glyph check: ${glyphOf(SAND).name}/${glyphOf(GRAVEL).name}`)

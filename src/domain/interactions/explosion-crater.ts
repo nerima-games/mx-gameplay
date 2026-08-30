@@ -53,8 +53,10 @@
  * Resistance scope and remaining omissions
  * ---------------------------------------------------------------------------
  *
- * BLAST RESISTANCE is deliberately a block-vocabulary capability rather than a
- * list of ids here. The current normal-explosion rule preserves obsidian and
+ * BLAST RESISTANCE is deliberately kernel's `resistsExplosion(id, power)`
+ * rather than a list of ids here (Wave 1, W1-M4: kernel 0.6.0 generalised the
+ * former mirror's boolean `resistsNormalExplosion(id)` to a power-aware
+ * predicate). The current normal-explosion rule preserves obsidian and
  * bedrock for both creeper and TNT callers.
  *
  * RAY-CAST EXPOSURE. Vanilla's crater is ragged because each cell's chance to
@@ -67,8 +69,12 @@
  * `../mob/mob-drop`; nothing consumes it yet, so it is not invented here.
  */
 import { Effect } from 'effect'
-import { blockPosition, blockPositionKeyOf, type BlockPositionKey } from '@nerima-games/mc-kernel'
-import { resistsNormalExplosion } from '../block-vocabulary.js'
+import {
+  blockPosition,
+  blockPositionKeyOf,
+  resistsExplosion,
+  type BlockPositionKey,
+} from '@nerima-games/mc-kernel'
 import { AIR_BLOCK_ID, type BlockPosition, type ChunkStoreApi } from '../chunk-store-port.js'
 
 /**
@@ -147,7 +153,12 @@ export const carveExplosionCrater = (
 
     for (const cell of craterCells(centre, power)) {
       const reading = yield* store.getBlock(cell)
-      if (reading._tag !== 'Block' || resistsNormalExplosion(reading.block)) {
+      // `craterCells` above already excludes every cell when `power` is not
+      // finite and positive (`craterRadius`'s guard), so `power` here is
+      // always the finite positive value `resistsExplosion`'s contract
+      // requires — kernel's own doc comment on the function names this exact
+      // mirror predicate as the case it reproduces exactly.
+      if (reading._tag !== 'Block' || resistsExplosion(reading.block, power)) {
         continue
       }
 

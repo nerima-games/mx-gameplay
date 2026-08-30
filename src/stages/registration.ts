@@ -78,9 +78,11 @@
  */
 import {
   adjacentBlockPosition,
+  blockIdOf,
   blockPosition as kernelBlockPosition,
   blockPositionKeyOf,
   blockPositionOfKey,
+  blockTypeOfId,
   capabilityOfBlockId,
   decodeBlockPositionKey,
   horizontalBlockNeighbours,
@@ -88,6 +90,7 @@ import {
   type DeltaTimeSecs,
   type GameModule,
   type ItemType,
+  type PlaceableItemType,
   type Position,
   type StageRegistration,
 } from '@nerima-games/mc-kernel'
@@ -156,7 +159,6 @@ import {
   openChunkWindow,
   UNREADABLE_BLOCK,
 } from '../domain/chunk-window.js'
-import { blockIdOf, blockTypeOfId, type PlaceableItemType } from '../domain/block-vocabulary.js'
 import {
   advanceFireLifecycle,
   FIRE_FRAME_TICK_BUDGET,
@@ -515,8 +517,8 @@ const NO_ATTEMPTS: ReadonlyArray<never> = []
  *     player is swinging is mc-sim's `InventoryService` — the selected hotbar
  *     slot and its enchantments — and this Ref does not advance, answers no
  *     question, is overwritten rather than accumulated, and is read within the
- *     frame that wrote it. It exists because without it `domain/block-vocabulary.ts`'s
- *     tool gate is unreachable: every swing would be bare-handed, and the whole
+ *     frame that wrote it. It exists because without it kernel's tool gate is
+ *     unreachable: every swing would be bare-handed, and the whole
  *     `harvestTool` column would be a table nothing consults.
  *
  *     IT DEFAULTS TO BARE HANDS, which is the RESTRICTIVE direction and the
@@ -811,8 +813,8 @@ const runFluidPropagation = (
         if (change._tag === 'PlaceFluid') {
           const fluidBlock = blockIdOf(change.cell.kind)
           // `change.cell.kind` is `FluidCell['kind']`, `'water' | 'lava'`, and
-          // both are registered blocks (block-vocabulary.ts's BLOCK_REGISTRY,
-          // pinned total over BlockType by `test/block-vocabulary-mirror.test.ts`
+          // both are registered blocks (kernel's own `BLOCK_REGISTRY`,
+          // pinned total over BlockType by kernel's own type declaration
           // the same way the five branches vitest.config.ts names are pinned);
           // `blockIdOf` cannot return `undefined` for either.
           /* v8 ignore start */
@@ -1018,7 +1020,7 @@ const blockPlacementRuntimeFor = (state: GameplayFrameState): BlockPlacementRunt
  *
  * `heldItem` is a `PlaceableItemType`, so "you cannot place a stick" is a type
  * error where the request is BUILT rather than a refusal where it is serviced.
- * The proof obligation is `domain/block-vocabulary.ts`'s `isPlaceableItem` and it
+ * The proof obligation is kernel's `isPlaceableItem` and it
  * belongs to whoever reads the hotbar, which is the same repository that would
  * have had to read it anyway.
  */
@@ -2490,7 +2492,7 @@ export const requestFireExtinguish = (
       return false
     }
     const air = blockIdOf('air')
-    // `'air'` is BlockType's own zero-arg member (block-vocabulary-mirror.test.ts
+    // `'air'` is BlockType's own zero-arg member (kernel's own type declaration
     // pins `blockIdOf` total over every BlockType, `'air'` included).
     /* v8 ignore start */
     if (air === undefined) return false

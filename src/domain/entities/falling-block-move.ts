@@ -44,6 +44,7 @@ import {
   adjacentBlockPosition,
   blockPositionKeyOf,
   blockPositionOfKey,
+  capabilityOfBlockId,
   type BlockPositionKey,
 } from '@nerima-games/mc-kernel'
 import {
@@ -53,7 +54,6 @@ import {
   type BlockWriteOutcome,
   type ChunkStoreApi,
 } from '../chunk-store-port.js'
-import { fallsWhenUnsupported, isReplaceable } from '../block-vocabulary.js'
 
 export type FallingBlockMoves = {
   /** How many blocks actually sank one cell this tick. */
@@ -72,7 +72,7 @@ export type FallingBlockMoves = {
 const fallingMaterial = (reading: BlockReading): BlockId | undefined => {
   switch (reading._tag) {
     case 'Block':
-      return fallsWhenUnsupported(reading.block) ? reading.block : undefined
+      return capabilityOfBlockId(reading.block, 'fallsWhenUnsupported') ? reading.block : undefined
     // Unknown, not empty. Whatever is up there stays up there until the chunk
     // is resident and something disturbs it again.
     case 'ChunkNotLoaded':
@@ -99,7 +99,7 @@ const canReceive = (reading: BlockReading): boolean => {
     // `replaceable`, from kernel's table: air and water, not "everything
     // non-solid" — kernel's audit §4.9 spends a section on the difference.
     case 'Block':
-      return isReplaceable(reading.block)
+      return capabilityOfBlockId(reading.block, 'replaceable')
     // THE case this whole three-valued read exists for. Treating it as air
     // drops the block out of the world at the edge of the loaded area.
     case 'ChunkNotLoaded':

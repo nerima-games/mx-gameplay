@@ -16,7 +16,7 @@ import {
   rightClickRoute,
   type RightClickRoute,
 } from '../src/domain/interactions/right-click-target'
-import { BLOCK_TYPES, type BlockType } from '../src/domain/block-vocabulary'
+import { BLOCK_TYPES, type BlockType } from '@nerima-games/mc-kernel'
 import type { BlockPosition } from '../src/domain/chunk-store-port'
 
 const AT: BlockPosition = { x: 12, y: 70, z: -3 }

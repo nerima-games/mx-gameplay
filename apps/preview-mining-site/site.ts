@@ -67,21 +67,20 @@
 import { Effect, Ref } from 'effect'
 import {
   adjacentBlockPosition,
+  blockIdOf,
+  blockOfPlaceableItem,
   blockPosition as kernelBlockPosition,
   blockPositionKeyOf,
+  capabilityOfBlockId,
   DeltaTimeSecs,
+  HARVEST_TIERS,
   type BlockPositionKey,
+  type HarvestTier,
+  type PlaceableItemType,
   type StageId,
   type StageRegistration,
 } from '@nerima-games/mc-kernel'
 import { type BlockId, type BlockPosition } from '../../src/domain/chunk-store-port'
-import {
-  blockIdOf,
-  blockOfPlaceableItem,
-  fallsWhenUnsupported,
-  type HarvestTier,
-  type PlaceableItemType,
-} from '../../src/domain/block-vocabulary'
 import { makeTimeService, type EntityManagerApi } from '@nerima-games/mc-sim'
 import { FALLING_BLOCK_MOVES_PER_TICK } from '../../src/domain/falling-block'
 import { NO_TOOL, type BlockLootContext, type MinedItem } from '../../src/domain/interactions/block-loot'
@@ -320,7 +319,7 @@ export const drainMobRewards = (site: Site): Effect.Effect<void> =>
  * the half of the loot table that is invisible from a screenshot, so the screen
  * opens on it rather than on the answer that looks like it always worked.
  */
-export const TOOL_TIERS: ReadonlyArray<HarvestTier> = ['none', 'wooden', 'stone', 'iron', 'diamond']
+export const TOOL_TIERS: ReadonlyArray<HarvestTier> = HARVEST_TIERS
 
 /** Fortune levels the `f` key walks. 0 is no enchantment at all. */
 export const FORTUNE_LEVELS: ReadonlyArray<number> = [0, 1, 2, 3]
@@ -540,7 +539,7 @@ export const stepFrame = (site: Site): Effect.Effect<FrameRow> =>
     // counted here; it is unreachable for the reason recorded at that line, and
     // `--stats` measures whether it stayed unreachable.
     const moved = writes.filter(
-      (record) => record.outcome === 'Written' && fallsWhenUnsupported(record.block),
+      (record) => record.outcome === 'Written' && capabilityOfBlockId(record.block, 'fallsWhenUnsupported'),
     ).length
 
     const row: FrameRow = {

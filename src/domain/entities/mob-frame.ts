@@ -214,8 +214,7 @@ import {
   type Durability,
 } from '@nerima-games/mc-sim'
 import { Effect } from 'effect'
-import type { Position } from '@nerima-games/mc-kernel'
-import { blockTypeOfId, validSpawnSurface } from '../block-vocabulary.js'
+import { blockTypeOfId, capabilityOfBlockId, type Position } from '@nerima-games/mc-kernel'
 import { applyDamage, isDead, type Vitals } from '../death-cause.js'
 import {
   changed,
@@ -1477,7 +1476,7 @@ export const resolveEndermanTeleportProbes = (
             if (reading._tag !== 'Block') return undefined
             const block = blockTypeOfId(reading.block)
             if (block === undefined) return undefined
-            return { position, block, solid: validSpawnSurface(reading.block) }
+            return { position, block, solid: capabilityOfBlockId(reading.block, 'validSpawnSurface') }
           }),
       )
       const destination = resolveSafeEndermanTeleport(

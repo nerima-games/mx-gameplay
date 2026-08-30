@@ -1,7 +1,7 @@
 import { targetBlockFromPlayerPose } from '@nerima-games/mc-sim'
 import { Effect, Option } from 'effect'
 
-import { blockTypeOfId } from '../domain/block-vocabulary.js'
+import { blockTypeOfId } from '@nerima-games/mc-kernel'
 import type {
   BlockPosition,
   BlockReading,
