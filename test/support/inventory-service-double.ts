@@ -464,6 +464,9 @@ export const makeInventoryDouble = (
           }),
 
         getSlot: () => refuse('getSlot'),
+        // mc-sim 0.2.1 (dist release, Wave 0 toolchain freeze). Not exercised by
+        // this repository's slice — same `refuse` convention as `getSlot`.
+        getHotbarSlots: refuse('getHotbarSlots'),
         setSlot: () => refuse('setSlot'),
         moveStack: () => refuse('moveStack'),
         quickMove: () => refuse('quickMove'),
@@ -515,13 +518,18 @@ export const makeInventoryDouble = (
             return [outcome.result, { ...doubles, storage: outcome.storage }] as const
           }),
         createContainer: () => refuse('createContainer'),
+        // mc-sim 0.2.1 (dist release, Wave 0 toolchain freeze). Same `refuse`
+        // convention as the world-container methods above and below it.
+        createContainerAt: () => refuse('createContainerAt'),
         containerSnapshot: () => refuse('containerSnapshot'),
         containerSnapshotAt: () => refuse('containerSnapshotAt'),
         containerStorageSnapshot: refuse('containerStorageSnapshot'),
         restoreContainerStorage: () => refuse('restoreContainerStorage'),
         transferContainerItem: () => refuse('transferContainerItem'),
         extractContainerItem: () => refuse('extractContainerItem'),
+        extractOneContainerItemAt: () => refuse('extractOneContainerItemAt'),
         moveContainerItem: () => refuse('moveContainerItem'),
+        moveOneContainerItemAt: () => refuse('moveOneContainerItemAt'),
         drainContainer: () => refuse('drainContainer'),
 
         reset: Ref.update(state, (doubles) => ({ ...doubles, storage: emptyPlayerStorage() })),

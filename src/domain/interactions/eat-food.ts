@@ -1,6 +1,6 @@
-import type { ItemType } from '../item-vocabulary'
-import type { PlayerVitals } from '../in-memory-vitals'
-import type { StatusEffectApplication } from '../status-effect'
+import type { ItemType } from '../item-vocabulary.js'
+import type { PlayerVitals } from '../in-memory-vitals.js'
+import type { StatusEffectApplication } from '../status-effect.js'
 
 /** Nutrition passed to the vitals service after an item has been consumed. */
 export type FoodProperties = {

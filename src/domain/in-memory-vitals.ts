@@ -6,8 +6,8 @@ import {
   type Vitals as SimVitals,
   type VitalsView as SimVitalsView,
 } from '@nerima-games/mc-sim'
-import type { Damage } from './death-cause'
-import type { DeltaTimeSecs } from './frame-contract'
+import type { Damage } from './death-cause.js'
+import type { DeltaTimeSecs } from './frame-contract.js'
 
 export type PlayerVitals = SimVitals
 

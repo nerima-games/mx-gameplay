@@ -232,6 +232,21 @@ describe('chunk residency', () => {
     }),
   )
 
+  it.effect('unload leaves a DIFFERENT resident chunk’s cells untouched', () =>
+    Effect.gen(function* () {
+      // Every prior unload test populated exactly one chunk, so the cell scan's
+      // `chunkKey(...) === key` comparison had only ever seen a match — its
+      // FALSE arm (a cell that belongs to some OTHER resident chunk) never ran.
+      const FAR: BlockPosition = { x: 500, y: 64, z: 500 }
+      const store = yield* makeInMemoryChunkStore(worldWith([[AT, STONE], [FAR, DIRT]]))
+
+      expect(yield* store.unload(chunkOf(AT))).toBe(true)
+
+      expect(yield* store.getBlock(FAR)).toStrictEqual({ _tag: 'Block', block: DIRT })
+      expect(yield* store.isLoaded(chunkOf(FAR))).toBe(true)
+    }),
+  )
+
   it.effect('unloading a chunk that was never here says so', () =>
     Effect.gen(function* () {
       const store = yield* makeInMemoryChunkStore(EMPTY_WORLD)

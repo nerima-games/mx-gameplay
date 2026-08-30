@@ -11,28 +11,18 @@ export const FISHING_MAX_WAIT_SECS = 30
 export const FISHING_BITE_WINDOW_SECS = 2
 export const FISHING_RAIN_WAIT_MULTIPLIER = 0.8
 
-export const FISHING_FISH_LOOT = [
-  'cod',
-  'salmon',
-  'tropical_fish',
-  'pufferfish',
-] as const satisfies ReadonlyArray<ItemType>
+export const FISHING_FISH_LOOT: ReadonlyArray<ItemType> = ['cod', 'salmon', 'tropical_fish', 'pufferfish']
 
-export const FISHING_JUNK_LOOT = [
+export const FISHING_JUNK_LOOT: ReadonlyArray<ItemType> = [
   'bowl',
   'leather',
   'bone',
   'string',
   'stick',
   'lily_pad',
-] as const satisfies ReadonlyArray<ItemType>
+]
 
-export const FISHING_TREASURE_LOOT = [
-  'name_tag',
-  'saddle',
-  'bow',
-  'enchanted_book',
-] as const satisfies ReadonlyArray<ItemType>
+export const FISHING_TREASURE_LOOT: ReadonlyArray<ItemType> = ['name_tag', 'saddle', 'bow', 'enchanted_book']
 
 export type FishingCategory = 'fish' | 'junk' | 'treasure'
 

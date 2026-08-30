@@ -5,21 +5,21 @@ import {
   type InventoryServiceApi,
 } from '@nerima-games/mc-sim'
 import { Effect, Exit, Ref } from 'effect'
-import { blockIdOf } from '../block-vocabulary'
+import { blockIdOf } from '../block-vocabulary.js'
 import {
   AIR_BLOCK_ID,
   type BlockId,
   type BlockPosition,
   type ChunkCoord,
   type ChunkStoreApi,
-} from '../chunk-store-port'
-import { positionKeyOf } from '../block-position-key'
+} from '../chunk-store-port.js'
+import { positionKeyOf } from '../block-position-key.js'
 import {
   enqueueFluidDisturbance,
   type FluidKind,
   type FluidWorkItem,
-} from '../fluid-frontier'
-import type { ItemType } from '../item-vocabulary'
+} from '../fluid-frontier.js'
+import type { ItemType } from '../item-vocabulary.js'
 import type { Dimension } from '@nerima-games/mc-worldgen'
 
 export const BUCKET_ITEM_TYPES = ['bucket', 'water_bucket', 'lava_bucket'] as const

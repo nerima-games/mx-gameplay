@@ -30,7 +30,7 @@ import { DeltaTimeSecs, type StageRegistration } from '../../src/domain/frame-co
 import { FrameServicesLayer } from './frame-services'
 
 /** One frame's worth of simulated time, as a 60 Hz loop would produce it. */
-export const FRAME_DELTA = DeltaTimeSecs(1 / 60)
+export const FRAME_DELTA: DeltaTimeSecs = DeltaTimeSecs(1 / 60)
 
 export const schedule = (
   stages: ReadonlyArray<StageRegistration>,

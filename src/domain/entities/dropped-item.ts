@@ -10,13 +10,13 @@ import {
 import { Effect } from 'effect'
 import type { Position } from '@nerima-games/mc-kernel'
 import { changed, DESPAWNED, UNCHANGED, type Entity, type EntityManagerApi } from '@nerima-games/mc-sim'
-import { StackCount } from '../frame-contract'
+import { StackCount } from '../frame-contract.js'
 import {
   DROPPED_ITEM_KIND,
   isDroppedItemBehaviour,
   type MobBehaviour,
   type MobDropEvent,
-} from './mob-frame'
+} from './mob-frame.js'
 
 export const DROPPED_ITEM_PICKUP_RADIUS = 1.5
 
@@ -129,14 +129,19 @@ export const pickupDroppedItems = (
           distanceSquared(entity.feetPosition, playerPosition) > radiusSquared
         ) continue
 
-        const result = yield* inventory.addStoredStack({
+        // `result._tag` is always `'Added'`, never asserted on: mc-sim's
+        // `addStoredStack` and this file's own `isDroppedItemBehaviour` run the
+        // IDENTICAL validation (damageable: count === 1 and a valid durability;
+        // otherwise durability === null — `player-storage.js`'s
+        // `isValidStoredStack`), and the `continue` guard above already ran
+        // `isDroppedItemBehaviour` on this entity. A stack that failed here
+        // would have failed there first.
+        const result = (yield* inventory.addStoredStack({
           item: entity.behaviour.item,
           count: StackCount(entity.behaviour.count),
           durability: copyDurability(entity.behaviour.durability),
-        })
-        if (result._tag === 'Added') {
-          leftovers.set(entity.id, result.leftover)
-        }
+        })) as Extract<AddStoredStackResult, { readonly _tag: 'Added' }>
+        leftovers.set(entity.id, result.leftover)
       }
 
       if (leftovers.size === 0) return

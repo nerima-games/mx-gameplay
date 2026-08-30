@@ -86,7 +86,7 @@
  * correcting a transcribed number is not a test edit — the same convention
  * mc-worldgen's `test/portal-frame.test.ts` uses for its two unjustified bounds.
  */
-import type { DeltaTimeSecs } from './frame-contract'
+import type { DeltaTimeSecs } from './frame-contract.js'
 
 /**
  * How long a traveller must stand in a portal block before it fires.

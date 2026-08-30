@@ -1,8 +1,8 @@
 import type { Position } from '@nerima-games/mc-kernel'
 import type { Entity } from '@nerima-games/mc-sim'
-import { HOSTILE_KINDS, type MobBehaviour } from '../entities/mob-frame'
-import type { ItemType } from '../item-vocabulary'
-import { shotTarget, type ShotHit } from './bow-shot'
+import { HOSTILE_KINDS, type MobBehaviour } from '../entities/mob-frame.js'
+import type { ItemType } from '../item-vocabulary.js'
+import { shotTarget, type ShotHit } from './bow-shot.js'
 
 /** Vanilla-style survival melee reach, measured from the player's eye position. */
 export const DEFAULT_MELEE_REACH = 3

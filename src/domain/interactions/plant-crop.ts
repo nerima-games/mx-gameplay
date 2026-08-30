@@ -29,11 +29,11 @@
  * design choice rather than a defect.
  */
 import { Effect } from 'effect'
-import type { BlockType } from '../block-vocabulary'
-import { blockIdOf, blockTypeOfId } from '../block-vocabulary'
-import { above } from '../block-position-key'
-import type { ItemType } from '../item-vocabulary'
-import type { BlockPosition } from '../chunk-store-port'
+import type { BlockType } from '../block-vocabulary.js'
+import { blockIdOf, blockTypeOfId } from '../block-vocabulary.js'
+import { above } from '../block-position-key.js'
+import type { ItemType } from '../item-vocabulary.js'
+import type { BlockPosition } from '../chunk-store-port.js'
 
 /**
  * Which crop each seed item becomes.
@@ -182,14 +182,15 @@ export const plantCrop = (
 
     const verdict = plantingVerdict(request, soilBlock, aboveBlock)
     if (verdict._tag === 'planted') {
-      const cropId = blockIdOf(verdict.crop)
-      // `blockIdOf` is total over `BlockType` in practice — every literal in the
-      // vocabulary has a registry row — but it returns `undefined` because the
-      // registry is data. A crop with no id would be a vocabulary defect, and
-      // writing `0` (air) to cover it would plant nothing and report success.
-      if (cropId !== undefined) {
-        yield* port.setBlock(verdict.at, cropId)
-      }
+      // `verdict.crop` is drawn only from `CROP_OF_SEED`'s three values
+      // (`wheat_crop` / `potato_crop` / `nether_wart_crop`), and all three carry
+      // a `BLOCK_DROP_REGISTRY` row (ids 71-73 in `../block-vocabulary.ts`), so
+      // `blockIdOf` cannot return `undefined` here. Asserted rather than
+      // branched on, since a vocabulary defect that removed one of those rows
+      // would be caught by `test/block-vocabulary-mirror.test.ts` long before
+      // this line ran, not by a runtime fallback that plants nothing and
+      // reports success.
+      yield* port.setBlock(verdict.at, blockIdOf(verdict.crop)!)
     }
     return verdict
   })

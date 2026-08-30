@@ -118,12 +118,12 @@
  * value one can be: `NaN <= 3` is `false`, so an unmeasurable distance is nobody
  * in range, which is the inert answer.
  */
-import type { DeltaTimeSecs } from '../frame-contract'
+import type { DeltaTimeSecs } from '../frame-contract.js'
 import {
   CHARGED_CREEPER_EXPLOSION_POWER,
   CREEPER_EXPLOSION_POWER,
   type Explosion,
-} from './explosion'
+} from './explosion.js'
 
 /**
  * Inside this many blocks, a dormant fuse lights.

@@ -37,7 +37,7 @@
  * is a mechanism.
  */
 
-import type { PositionKey } from './position-key'
+import type { PositionKey } from './position-key.js'
 
 export type FluidKind = 'water' | 'lava'
 

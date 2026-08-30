@@ -88,10 +88,10 @@
  * the sound.
  */
 import { Effect, Option } from 'effect'
-import { blockIdOf } from '../block-vocabulary'
-import { chunkCoordsAround, openChunkWindow } from '../chunk-window'
-import type { BlockId, BlockPosition, ChunkStoreApi } from '../chunk-store-port'
-import { MAX_PORTAL_WIDTH, detectNetherPortal, type PortalFrame } from '../portal-frame-port'
+import { blockIdOf } from '../block-vocabulary.js'
+import { chunkCoordsAround, openChunkWindow } from '../chunk-window.js'
+import type { BlockId, BlockPosition, ChunkStoreApi } from '../chunk-store-port.js'
+import { MAX_PORTAL_WIDTH, detectNetherPortal, type PortalFrame } from '../portal-frame-port.js'
 
 /**
  * How far from the ignition cell the chunk window must reach.
@@ -115,7 +115,7 @@ import { MAX_PORTAL_WIDTH, detectNetherPortal, type PortalFrame } from '../porta
  * (`../chunk-store-port`'s `CHUNK_HEIGHT`), so a column is resident or it is
  * not.
  */
-export const PORTAL_WINDOW_RADIUS = MAX_PORTAL_WIDTH + 1
+export const PORTAL_WINDOW_RADIUS: number = MAX_PORTAL_WIDTH + 1
 
 /**
  * TOTAL, mirroring `./place-block`'s `PlaceOutcome`. There is no error channel

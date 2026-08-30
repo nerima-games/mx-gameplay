@@ -60,6 +60,33 @@ describe('vehicle frame', () => {
     expect(updateCount).toBe(0)
   })
 
+  it('swallows a per-vehicle update failure rather than failing the whole frame', async () => {
+    // Every other test's `updateState` succeeds, so the `Effect.catchAll(() =>
+    // Effect.void)` at the end of the per-vehicle pipe had never actually
+    // caught anything — one bad vehicle write must not stop the rest of the
+    // frame, or a roster of ten carts becomes a roster of one bad write away
+    // from none moving at all.
+    const vehicle = {
+      id: VehicleId('v:broken'),
+      type: 'minecart' as const,
+      dimension: 'overworld' as const,
+      position: { x: 0, y: 64, z: 0 },
+      velocity: { x: 2, y: 0, z: 0 },
+      yawRadians: 0,
+    }
+    const service = {
+      vehicles: Effect.succeed([vehicle]),
+      updateState: () => Effect.fail({ _tag: 'VehicleNotFound' as const, id: vehicle.id }),
+    } as unknown as VehicleServiceApi
+    const store = {
+      getBlock: () => Effect.succeed({ _tag: 'OutOfWorld' as const }),
+    } as unknown as ChunkStoreApi
+
+    const result = await Effect.runPromiseExit(advanceVehicles(store, service, 1))
+
+    expect(Exit.isSuccess(result)).toBe(true)
+  })
+
   it('passes boat controls into the vehicle motion step', async () => {
     const vehicle = {
       id: VehicleId('v:boat'),
@@ -155,6 +182,50 @@ describe('vehicle frame', () => {
     expect(next?.['position']).toEqual({ x: 0, y: 64, z: 0 })
     expect(next?.['occupant']).toBeUndefined()
     expect(exit).toBe('collision')
+  })
+
+  it('does not collide with a solid block that only touches the AABB’s edge', () => {
+    // Every collision test above puts the solid block fully inside the AABB,
+    // so `collidesAt`'s exact per-axis check (`maxX > x && minX < x + 1 &&
+    // ...`) only ever saw its all-TRUE case — the geometric candidate range
+    // (`Math.floor(minX)..Math.floor(maxX)`, inclusive) always includes the
+    // boundary cell whose edge merely TOUCHES the AABB, and the strict `>`/`<`
+    // comparisons are what correctly exclude a touch from counting as a
+    // collision. A stationary minecart (velocity zero, so `integrate` leaves
+    // its position untouched) whose AABB's right edge lands on EXACTLY an
+    // integer boundary reaches that boundary cell without ever overlapping it.
+    const vehicle = {
+      id: VehicleId('v:edge-touch'),
+      type: 'minecart' as const,
+      dimension: 'overworld' as const,
+      // halfWidth is 0.45 for a minecart, so maxX = 0.55 + 0.45 = 1.0 exactly.
+      position: { x: 0.55, y: 64, z: 0 },
+      velocity: { x: 0, y: 0, z: 0 },
+      yawRadians: 0,
+      occupant: 'player:local',
+    }
+    let next: Record<string, unknown> | undefined
+    let exit: string | undefined
+    const service = {
+      vehicles: Effect.succeed([vehicle]),
+      updateState: (_id: VehicleId, state: Record<string, unknown>) => Effect.sync(() => { next = state }),
+    } as unknown as VehicleServiceApi
+    const stone = blockIdOf('stone')!
+    const store = {
+      getBlock: (position: { x: number; y: number; z: number }) => Effect.succeed(
+        position.x === 1 && position.y === 64 && position.z === 0
+          ? { _tag: 'Block' as const, block: stone }
+          : { _tag: 'OutOfWorld' as const },
+      ),
+    } as unknown as ChunkStoreApi
+
+    return Effect.runPromise(advanceVehicles(store, service, 0.1, {
+      onVehicleExit: (_vehicle, reason) => { exit = reason },
+    })).then(() => {
+      expect(next?.['position']).toEqual({ x: 0.55, y: 64, z: 0 })
+      expect(next?.['occupant']).toBe('player:local')
+      expect(exit).toBeUndefined()
+    })
   })
 
   it('reads track power for both the free step and the collision-resolved re-step', async () => {

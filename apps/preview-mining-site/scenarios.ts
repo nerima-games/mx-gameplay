@@ -196,7 +196,7 @@ export const scenarioByName = (name: string): Scenario | undefined =>
   SCENARIOS.find((scenario) => scenario.name === name)
 
 /** Where the unloaded region starts in the `chunk-edge` scenario, for the HUD. */
-export const CHUNK_BOUNDARY = CHUNK_SIDE
+export const CHUNK_BOUNDARY: number = CHUNK_SIDE
 
 /** Every block id a scenario can contain, for the census oracle. */
 export const SCENARIO_BLOCK_IDS: ReadonlyArray<BlockId> = [AIR, STONE, SAND, GRAVEL, WATER, LAVA]

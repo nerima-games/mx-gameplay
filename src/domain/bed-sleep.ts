@@ -1,11 +1,11 @@
 import type { TimeServiceApi } from '@nerima-games/mc-sim'
 import { Effect } from 'effect'
-import type { BlockPosition } from './chunk-store-port'
-import { DAWN_FRACTION, isNight } from './day-night'
+import type { BlockPosition } from './chunk-store-port.js'
+import { DAWN_FRACTION, isNight } from './day-night.js'
 import type { Position } from '@nerima-games/mc-kernel'
 import type { Dimension } from '@nerima-games/mc-worldgen'
 import type { PlayerServiceApi } from '@nerima-games/mc-sim'
-import type { Weather } from './weather'
+import type { Weather } from './weather.js'
 
 export type SleepRejectionReason =
   | 'wrong-dimension'

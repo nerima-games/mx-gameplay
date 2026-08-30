@@ -1,4 +1,4 @@
-import type { Damage } from './death-cause'
+import type { Damage } from './death-cause.js'
 
 export const ENVIRONMENTAL_CONTACT_DAMAGE_CADENCE_SECS = 0.5
 

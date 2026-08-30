@@ -1,5 +1,5 @@
 import { Effect, Ref } from 'effect'
-import type { DeltaTimeSecs, StageRegistration } from '../domain/frame-contract'
+import type { DeltaTimeSecs, StageRegistration } from '../domain/frame-contract.js'
 import {
   advanceEnderDragonEncounter,
   damageEnderDragonByPlayer,
@@ -8,8 +8,8 @@ import {
   type EnderDragonDamageResult,
   type EnderDragonEncounterEvent,
   type EnderDragonEncounterSnapshot,
-} from '../domain/mob/ender-dragon-encounter'
-import { GAMEPLAY_STAGE_IDS } from './stage-ids'
+} from '../domain/mob/ender-dragon-encounter.js'
+import { GAMEPLAY_STAGE_IDS } from './stage-ids.js'
 
 /** Stage id for the optional End-only dragon encounter. */
 const enderDragonStageId = GAMEPLAY_STAGE_IDS.enderDragon

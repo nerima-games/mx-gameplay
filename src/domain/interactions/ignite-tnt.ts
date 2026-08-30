@@ -1,8 +1,8 @@
 import { Effect } from 'effect'
-import { blockIdOf } from '../block-vocabulary'
-import { AIR_BLOCK_ID, type BlockPosition, type ChunkStoreApi } from '../chunk-store-port'
+import { blockIdOf } from '../block-vocabulary.js'
+import { AIR_BLOCK_ID, type BlockId, type BlockPosition, type ChunkStoreApi } from '../chunk-store-port.js'
 
-export const TNT_BLOCK_ID = blockIdOf('tnt')
+export const TNT_BLOCK_ID: BlockId | undefined = blockIdOf('tnt')
 
 export type IgniteTntOutcome =
   | { readonly _tag: 'Lit' }

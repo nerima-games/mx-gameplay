@@ -67,10 +67,10 @@
  * `../mob/mob-drop`; nothing consumes it yet, so it is not invented here.
  */
 import { Effect } from 'effect'
-import { positionKeyOf } from '../block-position-key'
-import { resistsNormalExplosion } from '../block-vocabulary'
-import { AIR_BLOCK_ID, type BlockPosition, type ChunkStoreApi } from '../chunk-store-port'
-import type { PositionKey } from '../position-key'
+import { positionKeyOf } from '../block-position-key.js'
+import { resistsNormalExplosion } from '../block-vocabulary.js'
+import { AIR_BLOCK_ID, type BlockPosition, type ChunkStoreApi } from '../chunk-store-port.js'
+import type { PositionKey } from '../position-key.js'
 
 /**
  * How far a blast destroys blocks, as opposed to how far it hurts.

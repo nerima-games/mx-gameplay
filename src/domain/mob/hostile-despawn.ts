@@ -87,7 +87,7 @@ export const RANDOM_DESPAWN_MIN_DISTANCE_BLOCKS = 32
 export const RANDOM_DESPAWN_MIN_AGE_TICKS = 600
 
 /** Vanilla's per-check random despawn probability. */
-export const RANDOM_DESPAWN_CHANCE = 1 / 800
+export const RANDOM_DESPAWN_CHANCE: number = 1 / 800
 
 export type HostileDifficulty = 'peaceful' | 'easy' | 'normal' | 'hard'
 

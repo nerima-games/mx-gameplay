@@ -53,7 +53,7 @@
  */
 import type { Position } from '@nerima-games/mc-kernel'
 import type { EntityId } from '@nerima-games/mc-sim'
-import { BOW_MAX_RANGE } from './draw-bow'
+import { BOW_MAX_RANGE } from './draw-bow.js'
 
 /**
  * Radius of the targeting cylinder, in blocks.

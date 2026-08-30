@@ -44,11 +44,11 @@
  * refuses to invent.
  */
 import { Effect } from 'effect'
-import type { BlockPosition, ChunkStoreApi } from '../chunk-store-port'
-import type { ItemType } from '../item-vocabulary'
-import { igniteFire, type IgniteFireOutcome } from './ignite-fire'
-import { ignitePortal, type IgnitePortalOutcome } from './ignite-portal'
-import { igniteTnt, type IgniteTntOutcome } from './ignite-tnt'
+import type { BlockPosition, ChunkStoreApi } from '../chunk-store-port.js'
+import type { ItemType } from '../item-vocabulary.js'
+import { igniteFire, type IgniteFireOutcome } from './ignite-fire.js'
+import { ignitePortal, type IgnitePortalOutcome } from './ignite-portal.js'
+import { igniteTnt, type IgniteTntOutcome } from './ignite-tnt.js'
 
 /**
  * The items that light things, out of kernel's `ITEM_TYPES`.

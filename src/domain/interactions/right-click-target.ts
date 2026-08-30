@@ -34,8 +34,8 @@
  * correct container lifecycle or door transition. Single-block routes remain
  * identified completely by their tag.
  */
-import type { BlockType } from '../block-vocabulary'
-import type { BlockPosition } from '../chunk-store-port'
+import type { BlockType } from '../block-vocabulary.js'
+import type { BlockPosition } from '../chunk-store-port.js'
 
 /**
  * Blocks that open a storage screen.

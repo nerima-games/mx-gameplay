@@ -39,7 +39,7 @@
  * test. `UnequipOutcome` names the case so a caller cannot ignore it.
  */
 import { Effect } from 'effect'
-import type { ItemType } from '../item-vocabulary'
+import type { ItemType } from '../item-vocabulary.js'
 
 /**
  * Where armour sits, in the order it comes off.

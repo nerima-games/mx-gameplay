@@ -48,7 +48,7 @@
  */
 
 import { blockIdOf, capabilityOfBlockId } from '@nerima-games/mc-kernel'
-import type { PositionKey } from './position-key'
+import type { PositionKey } from './position-key.js'
 
 /**
  * Upper bound on block moves applied in one tick.

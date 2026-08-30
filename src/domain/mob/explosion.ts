@@ -64,7 +64,7 @@
  * and its `DEATH_MESSAGES` maps it to the same sentence this repository's
  * `../death-cause` does.
  */
-import type { Damage } from '../death-cause'
+import type { Damage } from '../death-cause.js'
 
 /**
  * What set the blast off.

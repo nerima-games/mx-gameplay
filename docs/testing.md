@@ -10,29 +10,30 @@ plan.md §3.11:
 **テストだけでは完成にならない。** 各リポジトリが単独で正しさを閉じるという構成の前提が
 「テスト green + プレビューで目視確認済み」（plan.md §1）だからである。
 
-### 1-1. 4 つのゲート
+### 1-1. 3 つのゲート（Wave 0 でホワイトリスト境界ゲートを ast-grep 構造検査に置き換え）
 
-`pnpm verify` = `typecheck && lint && check:deps && api:check && test`。CI（`.github/workflows/ci.yaml`）と同じ内容。
+`pnpm verify` = `typecheck && lint && test`。CI（`.github/workflows/ci.yaml`）と同じ内容。
 
 **`pnpm preview` はここに入らない。** プレビューは完成条件（§3）であってゲートではない。
 型検査（`tsconfig.preview.json`）と lint は掛かるが、CI がプレビューを**実行**することはない。
 
 | ゲート | コマンド | 何を捕まえるか |
 | --- | --- | --- |
-| 型 | `pnpm typecheck` | `tsconfig.build.json`（出荷ソース）と `tsconfig.test.json`（テスト + スクリプト）と `tsconfig.preview.json`（`apps/`）の**3 つ**。前者は `types: []` / `lib: ["ES2024"]` なので、Node 型や DOM 型が出荷ソースに漏れた時点で落ちる |
-| lint | `pnpm lint` | oxlint。`index.ts domain stages scripts test apps` の 46 ファイル。**`--deny-warnings` 付きで走る**ため、`warn` のルールもビルドを落とす（`.oxlintrc.json` は 5 カテゴリすべてと個別 67 ルールが `warn`、`error` は 4 つだけ。このフラグが無かった頃は実質その 4 つしかゲートになっていなかった） |
-| 境界 | `pnpm check:deps` | 依存ホワイトリスト / 循環 / 推移閉包 / kit の実行時混入 / `Date.now()` |
+| 型 | `pnpm typecheck` | `tsconfig.build.json`（出荷ソース）と `tsconfig.test.json`（テスト + スクリプト）と `tsconfig.preview.json`（`apps/`）の**3 つ** |
+| lint | `pnpm lint` | `oxlint --deny-warnings src scripts test apps && ast-grep scan`。`no-restricted-imports` が依存ホワイトリスト境界を（`.oxlintrc.json`、DEPENDENCY_POLICY.md §1 の Tier3 許可リスト）、`.ast-grep/rules/no-wall-clock-read.yml` が壁時計直読み禁止を機械検査する |
 | 振る舞い | `pnpm test` | vitest |
 
-**このリポジトリで最も重要なのは 3 番目**である。型検査も lint も、
-`import … from '@nerima-games/mx-ui'` を止められない。止めるのは `check:deps` だけである
-（[architecture.md](./architecture.md) §4-3）。
+**依存境界の実効性は `no-restricted-imports` が持つ。** 型検査も通常の lint ルールも、
+`import … from '@nerima-games/mx-ui'` を単体では止められないが、`.oxlintrc.json` の
+`no-restricted-imports`（Tier3 許可リスト方式、org 共通 D.9 形式）が禁止パッケージの import に対して
+`error` を出す。旧 `pnpm check:deps`（`scripts/check-dependency-whitelist.ts`）と旧 `pnpm api:check`
+（`scripts/api-lock.ts`）は org 全体で廃止された（api-lock 機構の廃止、Wave 0 toolchain freeze）。
 
 **oxlint がこのリポジトリ唯一の lint / format 設定である。**
 prettier も biome も `.editorconfig` も置かない。整形の権威が 2 つあると
 「どちらが正か」の議論が発生し、CI が 2 回走る。
 
-**oxlint 自体は `package.json` の devDependency ではなく、`flake.nix` の devShell から供給される。**
+**oxlint と ast-grep は `package.json` の devDependency ではなく、`flake.nix` の devShell から供給される。**
 以前は各リポジトリが `package.json` に独自バージョンを固定しており、`no-restricted-imports` を
 実装していない oxlint 0.12.x に気づかず滞留する例があった。nixpkgs 由来の単一バージョンに
 統一することでこの drift を無くしている。CI（`.github/workflows/ci.yaml`）も

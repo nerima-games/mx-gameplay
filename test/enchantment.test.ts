@@ -119,6 +119,10 @@ describe('enchanted item codec', () => {
     [{ item: 'bow', durability: null, enchantments: [] }, 'durability'],
     [{ item: 'stick', durability: { current: 1, max: 1 }, enchantments: [] }, 'durability'],
     [{ item: 'bow', enchantments: [] }, 'durability'],
+    // A durability RECORD whose `current`/`max` are not both numbers — distinct
+    // from the case above, where `durability` is absent entirely. `isRecord`
+    // passes but the object shape inside it does not.
+    [{ item: 'bow', durability: { current: 'x', max: 10 }, enchantments: [] }, 'durability'],
     [{ item: 'bow', durability: durabilityForItem('bow'), enchantments: 'nope' }, 'enchantments'],
     [{ item: 'bow', durability: durabilityForItem('bow'), enchantments: [null] }, 'enchantments.0'],
     [

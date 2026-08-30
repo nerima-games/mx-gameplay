@@ -44,7 +44,7 @@
  * seven roster entries that do have a `chance`, and taking them now is cheaper
  * than retrofitting determinism onto a signature later.
  */
-import type { ItemType } from '../item-vocabulary'
+import type { ItemType } from '../item-vocabulary.js'
 
 /**
  * One line of a mob's loot, in kernel's vocabulary.

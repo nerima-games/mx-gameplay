@@ -507,7 +507,7 @@ export type ArenaState = {
 }
 
 /** Blocks a spawned creeper starts at. The near end of the reference's band. */
-export const ARENA_SPAWN_DISTANCE = MIN_SPAWN_DISTANCE_BLOCKS
+export const ARENA_SPAWN_DISTANCE: number = MIN_SPAWN_DISTANCE_BLOCKS
 
 /** Where `--spawn` walks it to: inside ignition range, and not on top of you. */
 export const ARENA_APPROACH_TO = 2
@@ -823,7 +823,7 @@ export const endermanOffset = (state: ArenaState): TeleportOffset | undefined =>
 export const offsetDistance = (offset: TeleportOffset | undefined): number | undefined =>
   offset === undefined ? undefined : Math.hypot(offset.xBlocks, offset.zBlocks)
 
-export const TELEPORT_BAND = [ENDERMAN_TELEPORT_MIN_BLOCKS, ENDERMAN_TELEPORT_MAX_BLOCKS] as const
+export const TELEPORT_BAND: readonly [number, number] = [ENDERMAN_TELEPORT_MIN_BLOCKS, ENDERMAN_TELEPORT_MAX_BLOCKS]
 
 export const toggleEndermanDamage = (state: ArenaState): void => {
   state.enderman.damaged = !state.enderman.damaged
@@ -945,7 +945,7 @@ export const sweepAt = (distanceBlocks: number, persistent: boolean): DespawnVer
 export const sweepLabel = (verdict: DespawnVerdict): string =>
   verdict._tag === 'Keep' ? 'Keep' : `Despawn: ${verdict.reason}`
 
-export const DESPAWN_RADIUS = DESPAWN_DISTANCE_BLOCKS
+export const DESPAWN_RADIUS: number = DESPAWN_DISTANCE_BLOCKS
 
 // ---------------------------------------------------------------------------
 // Arena — the other drop tables
@@ -1001,9 +1001,9 @@ export const fuseFraction = (fuse: CreeperFuse): number =>
 export const blastCurve = (power: number): ReadonlyArray<readonly [number, number]> =>
   [0, 1, 2, 3, 4, 5, 6, 7].map((distance) => [distance, explosionDamageAmount(power, distance)] as const)
 
-export const blastRadius = explosionRadius
+export const blastRadius: typeof explosionRadius = explosionRadius
 
-export const IGNITION_RANGE = CREEPER_IGNITION_RANGE_BLOCKS
+export const IGNITION_RANGE: number = CREEPER_IGNITION_RANGE_BLOCKS
 
 /**
  * The health bar, and what it says when health is not a number.

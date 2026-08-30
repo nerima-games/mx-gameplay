@@ -1,15 +1,15 @@
 import {
-  blockPosition as worldgenBlockPosition,
   type Dimension,
   END_PORTAL_BLOCK,
   endArrivalDescriptor,
 } from '@nerima-games/mc-worldgen'
+import { blockPosition as kernelBlockPosition } from '@nerima-games/mc-kernel'
 import { Effect } from 'effect'
-import type { BlockPosition } from './chunk-store-port'
+import type { BlockPosition } from './chunk-store-port.js'
 import type { PlayerServiceApi } from '@nerima-games/mc-sim'
 
 /** Deterministic End arrival origin until worldgen supplies a world spawn. */
-export const END_ARRIVAL_ORIGIN = worldgenBlockPosition(0, 60, 0)
+export const END_ARRIVAL_ORIGIN: ReturnType<typeof kernelBlockPosition> = kernelBlockPosition(0, 60, 0)
 
 /** Deterministic return position until mc-sim exposes the Overworld spawn. */
 export const OVERWORLD_RETURN_POSITION: BlockPosition = { x: 0, y: 64, z: 0 }

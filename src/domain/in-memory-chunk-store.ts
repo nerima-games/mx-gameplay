@@ -76,7 +76,7 @@ import {
   type ChunkStoreApi,
   type LightReading,
   type WorldgenChunk,
-} from './chunk-store-port'
+} from './chunk-store-port.js'
 
 /** How bright a cell is. Absent means dark, which is the honest default. */
 export type CellLight = {

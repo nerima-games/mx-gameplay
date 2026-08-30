@@ -5,8 +5,8 @@ import {
   type HarvestToolRequirement,
   type ItemType,
 } from '@nerima-games/mc-kernel'
-import { positionKeyOf } from '../block-position-key'
-import { NO_TOOL, type BlockLootContext } from './block-loot'
+import { positionKeyOf } from '../block-position-key.js'
+import { NO_TOOL, type BlockLootContext } from './block-loot.js'
 
 export const MINING_TICKS_PER_SECOND = 20
 

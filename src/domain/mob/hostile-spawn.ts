@@ -69,9 +69,9 @@
  * roster. They arrive with mc-sim, and until then a rule that pretended to make
  * them would be a second owner of the mob population.
  */
-import { AIR_BLOCK_ID, type BlockId } from '../chunk-store-port'
-import { validSpawnSurface } from '../block-vocabulary'
-import { hostileSpawnsAllowed } from '../day-night'
+import { AIR_BLOCK_ID, type BlockId } from '../chunk-store-port.js'
+import { validSpawnSurface } from '../block-vocabulary.js'
+import { hostileSpawnsAllowed } from '../day-night.js'
 import type { EntityKind } from '@nerima-games/mc-sim'
 import type { Dimension } from '@nerima-games/mc-worldgen'
 import {
@@ -79,7 +79,7 @@ import {
   ECOSYSTEM_MOB_KINDS,
   NETHER_HOSTILE_KINDS,
   PASSIVE_MOB_KINDS,
-} from './mob-ecosystem'
+} from './mob-ecosystem.js'
 
 /**
  * Brightest block light a hostile may spawn in.

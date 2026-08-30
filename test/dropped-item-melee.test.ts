@@ -256,6 +256,37 @@ describe('dropped item entities', () => {
     }),
   )
 
+  it.effect('leaves an entity behind whose stored behaviour is invalid, rather than crediting it', () =>
+    Effect.gen(function* () {
+      // `spawnDroppedItem` validates before spawning, so an entity with an
+      // invalid durability normally cannot exist. Reached here by spawning
+      // through the roster double directly, bypassing that guard — proving
+      // `pickupDroppedItems`'s own `isDroppedItemBehaviour` filter, not
+      // `spawnDroppedItem`'s, is what keeps such an entity from being
+      // credited.
+      const roster = yield* makeEntityManagerDouble<MobBehaviour>()
+      const inventory = yield* makeInventoryDouble()
+      const spawned = yield* roster.api.spawn({
+        kind: DROPPED_ITEM_KIND,
+        feetPosition: origin,
+        healthPoints: 1,
+        behaviour: {
+          _tag: 'DroppedItem',
+          item: 'wooden_pickaxe',
+          count: StackCount(1),
+          durability: { current: 0, max: 59 },
+        },
+      })
+
+      yield* pickupDroppedItems(roster.api, inventory.api, origin)
+
+      const remaining = yield* roster.api.entities
+      expect(remaining.map((entity) => entity.id)).toStrictEqual([spawned.id])
+      const storage = yield* inventory.api.storageSnapshot
+      expect(storage.inventory.slots.every((slot) => slot === undefined)).toBe(true)
+    }),
+  )
+
   it.effect('defers a frame-gated drop until its eligible frame', () =>
     Effect.gen(function* () {
       const roster = yield* makeEntityManagerDouble<MobBehaviour>()

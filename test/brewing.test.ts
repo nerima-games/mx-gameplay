@@ -263,6 +263,28 @@ describe('basic brewing runtime', () => {
     })
   })
 
+  it('does not start brewing an invalid bottle/ingredient pairing loaded from outside acceptBrewingIngredient', () => {
+    // `acceptBrewingIngredient` refuses an invalid pairing before it is ever
+    // stored, so every other tick test's `brewingOutput(...) !== undefined`
+    // check inside `tickBrewingStand` has only ever seen a valid pairing.
+    // `tickBrewingStand` takes a plain `BrewingStandState`, not a value only
+    // constructible through the blessed setters, so a state restored from a
+    // stale or corrupted save can still carry an invalid pairing — this is
+    // that defensive check exercised directly.
+    const corrupted: BrewingStandState = {
+      fuelUnits: 1,
+      bottle: 'water_bottle',
+      ingredient: 'sugar',
+      brewing: undefined,
+    }
+
+    const result = tickBrewingStand(corrupted, DeltaTimeSecs(1))
+
+    expect(result.brewing).toBeUndefined()
+    expect(result.fuelUnits).toBe(1)
+    expect(result.ingredient).toBe('sugar')
+  })
+
   it('leaves an idle stand untouched and treats a non-finite delta as no time passing', () => {
     const idle = emptyBrewingStandState()
     expect(tickBrewingStand(idle, DeltaTimeSecs(1))).toStrictEqual(idle)

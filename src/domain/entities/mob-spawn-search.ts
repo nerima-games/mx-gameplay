@@ -89,23 +89,23 @@
  * light query was.
  */
 import { Effect } from 'effect'
-import type { BlockPosition, ChunkStoreApi } from '../chunk-store-port'
+import type { BlockPosition, ChunkStoreApi } from '../chunk-store-port.js'
 import type { Position } from '@nerima-games/mc-kernel'
 import { EntityKind } from '@nerima-games/mc-sim'
-import { drawRolls, rollAt } from '../frame-rolls'
-import { hostileSpawnsAllowed } from '../day-night'
+import { drawRolls, rollAt } from '../frame-rolls.js'
+import { hostileSpawnsAllowed } from '../day-night.js'
 import type { Dimension } from '@nerima-games/mc-worldgen'
 import {
   ecosystemDimensionAllows,
   NETHER_HOSTILE_KINDS,
   PASSIVE_MOB_KINDS,
-} from '../mob/mob-ecosystem'
+} from '../mob/mob-ecosystem.js'
 import {
   MAX_SPAWN_DISTANCE_BLOCKS,
   MIN_SPAWN_DISTANCE_BLOCKS,
   type SpawnCandidate,
-} from '../mob/hostile-spawn'
-import { HOSTILE_KINDS, type MobSpawnAttempt } from './mob-frame'
+} from '../mob/hostile-spawn.js'
+import { HOSTILE_KINDS, type MobSpawnAttempt } from './mob-frame.js'
 
 /**
  * Angles around the player. The reference's sixteen
@@ -117,7 +117,7 @@ export const SPAWN_RING_ANGLES = 16
 export const SPAWN_RING_RADII = 4
 
 /** Cells offered per attempt, before any of them is read. */
-export const SPAWN_RING_CELLS = SPAWN_RING_ANGLES * SPAWN_RING_RADII
+export const SPAWN_RING_CELLS: number = SPAWN_RING_ANGLES * SPAWN_RING_RADII
 
 /**
  * How many rolls one search consumes: one to rotate the ring, then one per cell
@@ -130,7 +130,7 @@ export const SPAWN_RING_CELLS = SPAWN_RING_ANGLES * SPAWN_RING_RADII
  * mob's loot depend on how many cells this search happened to reject, and would
  * silently reshuffle every later draw the day the ring's size changed.
  */
-export const SPAWN_SEARCH_ROLLS = 1 + SPAWN_RING_CELLS
+export const SPAWN_SEARCH_ROLLS: number = 1 + SPAWN_RING_CELLS
 
 /**
  * The radii of the ring, from the rule's band rather than from four literals.

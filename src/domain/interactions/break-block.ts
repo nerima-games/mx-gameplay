@@ -32,7 +32,7 @@ import {
   type BlockPosition,
   type ChunkCoord,
   type ChunkStoreApi,
-} from '../chunk-store-port'
+} from '../chunk-store-port.js'
 
 /**
  * TOTAL, mirroring `BlockWriteOutcome`. There is no error channel here because

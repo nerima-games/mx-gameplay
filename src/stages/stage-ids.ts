@@ -14,7 +14,7 @@
  * whole answer at once. `test/stage-registration.test.ts` reads this file and
  * fails if an edge points at a sibling experience module.
  */
-import { StageId } from '../domain/frame-contract'
+import { StageId } from '../domain/frame-contract.js'
 
 /**
  * Stages owned by mx-gameplay.
@@ -31,7 +31,16 @@ import { StageId } from '../domain/frame-contract'
  * `post-fx`; mx-ui fills `hud-sync`. NOBODY declares the skeleton itself —
  * mc-compose does (plan.md §2.3-3).
  */
-export const GAMEPLAY_STAGE_IDS = {
+export const GAMEPLAY_STAGE_IDS: {
+  readonly vehicles: StageId
+  readonly interactions: StageId
+  readonly fire: StageId
+  readonly survivalHunger: StageId
+  readonly entities: StageId
+  readonly enderDragon: StageId
+  readonly fluids: StageId
+  readonly timeWeather: StageId
+} = {
   /** Rail and water vehicle integration after physics has advanced. */
   vehicles: StageId('gameplay:vehicles'),
   /**
@@ -70,7 +79,9 @@ export const GAMEPLAY_STAGE_IDS = {
  * is scheduled as if the edge were absent, so a module may order itself against
  * something it does not depend on. mx-gameplay simply has no reason to.
  */
-export const UPSTREAM_STAGE_IDS = {
+export const UPSTREAM_STAGE_IDS: {
+  readonly simPhysics: StageId
+} = {
   /**
    * Interactions read the player's post-integration position: raycasting for a
    * block target against a stale position is how you mine the wrong cell while

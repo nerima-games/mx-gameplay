@@ -1,5 +1,5 @@
 import type { OccupantId, Vehicle } from '@nerima-games/mc-sim'
-import { projectMinecartVelocity, type RailShape } from './rail-shape'
+import { projectMinecartVelocity, type RailShape } from './rail-shape.js'
 
 export type VehicleExitReason = 'requested' | 'collision' | 'destroyed'
 

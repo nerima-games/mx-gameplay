@@ -83,8 +83,8 @@ import {
   type ChunkCoord,
   type ChunkStoreApi,
   type WorldgenChunk,
-} from './chunk-store-port'
-import type { BlockAt } from './portal-frame-port'
+} from './chunk-store-port.js'
+import type { BlockAt } from './portal-frame-port.js'
 
 /**
  * The answer for a cell this window cannot speak for.

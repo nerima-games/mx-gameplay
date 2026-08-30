@@ -15,7 +15,7 @@
  * WHEN mc-worldgen IS PUBLISHED:
  *   1. add `@nerima-games/mc-worldgen` to `package.json#dependencies`;
  *   2. delete this file;
- *   3. repoint every `from './chunk-store-port'` at `'@nerima-games/mc-worldgen'`.
+ *   3. repoint every `from './chunk-store-port.js'` at `'@nerima-games/mc-worldgen'`.
  *
  * ---------------------------------------------------------------------------
  * That promise used to be FALSE, and this is how it was found
@@ -258,10 +258,10 @@ export type ChunkStoreApi = {
  * string breaks resolution silently at runtime while typechecking cleanly, so
  * `test/chunk-store-mirror.test.ts` asserts it literally.
  */
-export class ChunkStore extends Context.Tag('@nerima-games/mc-worldgen/ChunkStore')<
-  ChunkStore,
-  ChunkStoreApi
->() {}
+const ChunkStoreBase: Context.TagClass<ChunkStore, '@nerima-games/mc-worldgen/ChunkStore', ChunkStoreApi> =
+  Context.Tag('@nerima-games/mc-worldgen/ChunkStore')<ChunkStore, ChunkStoreApi>()
+
+export class ChunkStore extends ChunkStoreBase {}
 
 // ---------------------------------------------------------------------------
 // The one block constant that is mc-worldgen's to hand back

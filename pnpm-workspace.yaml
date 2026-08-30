@@ -1,8 +1,20 @@
 packages:
   - '.'
 
+minimumReleaseAgeExclude:
+  - '@nerima-games/mc-audio@0.2.7'
+  - '@nerima-games/mc-noise@0.3.0'
+  - '@nerima-games/mc-physics@0.2.1'
+  - '@nerima-games/mc-save@0.3.0'
+  - '@nerima-games/mc-sim@0.2.1'
+  - '@nerima-games/mc-worldgen@0.2.0'
+  - '@nerima-games/mc-kernel@0.5.1'
+
+allowBuilds:
+  esbuild: true
+
+# GHSA-2v37-7h3g-55p8: nanoid <3.3.18 loops indefinitely for a zero-size custom
+# generator. Transitive only (vitest > vite > postcss > nanoid); pinned here
+# rather than waiting on the toolchain to bump it upstream.
 overrides:
-  '@nerima-games/mc-kernel': 0.2.16
-  '@nerima-games/mc-physics': 0.1.6
-  '@nerima-games/mc-save': 0.2.2
-  '@nerima-games/mc-worldgen': 0.1.12
+  nanoid: '>=3.3.18'

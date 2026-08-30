@@ -61,8 +61,8 @@
  * below takes the block rather than the store deciding.
  */
 import { Effect } from 'effect'
-import { blockIdOf, blockTypeOfId } from '../block-vocabulary'
-import type { BlockId, BlockPosition, ChunkStoreApi } from '../chunk-store-port'
+import { blockIdOf, blockTypeOfId } from '../block-vocabulary.js'
+import type { BlockId, BlockPosition, ChunkStoreApi } from '../chunk-store-port.js'
 
 /**
  * The brightest a cell may be and still take a mushroom.

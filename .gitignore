@@ -1,4 +1,5 @@
 .claude/
+.worktrees/
 
 # Tool caches
 .serena/
@@ -12,6 +13,7 @@
 # Dependencies
 node_modules/
 .pnpm-store/
+.corepack/
 
 # Build outputs (none yet — the build pipeline is added at completion)
 dist/
@@ -56,5 +58,3 @@ pnpm-debug.log*
 # System files
 .DS_Store
 Thumbs.db
-.worktrees/
-.corepack/

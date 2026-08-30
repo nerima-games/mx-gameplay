@@ -16,6 +16,23 @@ const contactDamage = (amount: number): PlayerDamageEvent => ({
 })
 
 describe('player armour damage integration', () => {
+  it.effect('spends no durability for a zero-amount damage event', () =>
+    Effect.gen(function* () {
+      // `armorDurabilityWearFromPreMitigationDamage` returns 0 only for a
+      // non-finite or non-positive `damage.amount` — every other test here
+      // uses a positive amount, so `resolveArmorHit`'s `durabilityWear > 0`
+      // guard had only ever seen a wear amount above zero.
+      const inventory = yield* makeInventoryDouble()
+
+      const damages = yield* resolveArmoredPlayerDamages(inventory.api, [contactDamage(0)])
+
+      expect(damages[0]?.damage.amount).toBe(0)
+      expect((yield* inventory.api.storageSnapshot).inventoryDurability.every((slot) => slot === null)).toBe(
+        true,
+      )
+    }),
+  )
+
   it.effect('uses the latest equipment after armour breaks between queued hits', () =>
     Effect.gen(function* () {
       const slots = [...emptySlots()]

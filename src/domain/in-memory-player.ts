@@ -45,7 +45,7 @@
  */
 import { Effect, Layer, Ref } from 'effect'
 import { PlayerService, type PlayerPose, type PlayerServiceApi } from '@nerima-games/mc-sim'
-import { ClockPort, type CameraPoseSnapshot } from './frame-contract'
+import { ClockPort, type CameraPoseSnapshot } from './frame-contract.js'
 import type { Position } from '@nerima-games/mc-kernel'
 import type { Dimension } from '@nerima-games/mc-worldgen'
 
@@ -57,8 +57,8 @@ import type { Dimension } from '@nerima-games/mc-worldgen'
  * forward vector is parallel to the up axis and the yaw basis is undefined, so
  * the view's roll becomes whatever the arithmetic happens to produce.
  */
-export const PITCH_MAX_RADIANS = Math.PI / 2 - 0.001
-export const PITCH_MIN_RADIANS = -PITCH_MAX_RADIANS
+export const PITCH_MAX_RADIANS: number = Math.PI / 2 - 0.001
+export const PITCH_MIN_RADIANS: number = -PITCH_MAX_RADIANS
 
 /** Hold the pitch inside the range the basis is defined on. */
 export const clampPitch = (pitchRadians: number): number =>

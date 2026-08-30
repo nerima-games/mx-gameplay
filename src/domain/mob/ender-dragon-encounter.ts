@@ -10,13 +10,19 @@ export const ENDER_DRAGON_PHASE_DURATION_SECS = {
   charging: 2,
 } as const
 
-export const EnderDragonPhaseSchema = Schema.Literal('circling', 'perching', 'charging', 'dead')
+export const EnderDragonPhaseSchema: Schema.Schema<'circling' | 'perching' | 'charging' | 'dead'> =
+  Schema.Literal('circling', 'perching', 'charging', 'dead')
 export type EnderDragonPhase = typeof EnderDragonPhaseSchema.Type
 
-const HealthSchema = Schema.Number.pipe(Schema.finite(), Schema.between(0, ENDER_DRAGON_MAX_HEALTH))
-const PhaseTimerSchema = Schema.Number.pipe(Schema.finite(), Schema.nonNegative())
+const HealthSchema: Schema.Schema<number> = Schema.Number.pipe(Schema.finite(), Schema.between(0, ENDER_DRAGON_MAX_HEALTH))
+const PhaseTimerSchema: Schema.Schema<number> = Schema.Number.pipe(Schema.finite(), Schema.nonNegative())
 
-export const EnderDragonEncounterSnapshotSchema = Schema.Struct({
+export const EnderDragonEncounterSnapshotSchema: Schema.Struct<{
+  phase: typeof EnderDragonPhaseSchema
+  phaseTimerSecs: typeof PhaseTimerSchema
+  health: typeof HealthSchema
+  rewardEmitted: typeof Schema.Boolean
+}> = Schema.Struct({
   phase: EnderDragonPhaseSchema,
   phaseTimerSecs: PhaseTimerSchema,
   health: HealthSchema,

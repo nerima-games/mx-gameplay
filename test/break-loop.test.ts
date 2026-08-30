@@ -263,6 +263,32 @@ describe('the break loop', () => {
     }),
   )
 
+  it.effect('ignores a break request whose queue slot no longer holds its position', () =>
+    Effect.gen(function* () {
+      // The `publicQueueIndex` snapshot lets `requestBlockBreak`'s two Refs
+      // (`state.pendingBreaks` and the queue's own `requests`) drift apart if
+      // something else writes `pendingBreaks` directly (a restore, a test, a
+      // future caller outside the queue's mutex) between the request and the
+      // drain. Every other break test in this file goes through
+      // `requestBlockBreak` alone, so `drainedBreaks[index] ===
+      // request.positionKey` had only ever been true.
+      const world = yield* oneBlockWorld()
+      const state = yield* makeGameplayFrameState
+      const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player, world.time)
+
+      yield* requestBlockBreak(state, AT)
+      // Simulate the drift: the public inbox now names a different cell at
+      // slot 0 than the one the request snapshot recorded.
+      yield* Ref.set(state.pendingBreaks, [positionKey('99,64,99')])
+
+      yield* runInteractions(stages as never)
+
+      // The stale request was dropped rather than breaking the wrong (or any)
+      // cell: the original block survives untouched.
+      expect(yield* world.chunkStore.getBlock(AT)).toStrictEqual({ _tag: 'Block', block: DIRT_ID })
+    }),
+  )
+
   it.effect('removes the upper half when a door lower half is broken', () =>
     Effect.gen(function* () {
       const world = yield* doorWorld()
@@ -274,6 +300,37 @@ describe('the break loop', () => {
 
       expect(yield* world.chunkStore.getBlock(AT)).toStrictEqual({ _tag: 'Block', block: 0 })
       expect(yield* world.chunkStore.getBlock(ABOVE_AT)).toStrictEqual({ _tag: 'Block', block: 0 })
+    }),
+  )
+
+  it.effect('does not record a disturbance when the door-above write reports no change', () =>
+    Effect.gen(function* () {
+      // The test above always sees the upper-half write succeed as `Written`.
+      // `doorUpperBreakCell` reads the upper cell moments earlier in the same
+      // fiber, so nothing in THIS repository can make its answer disagree
+      // with the write that follows — but a real store is not required to
+      // agree with itself between two calls (another system, or the world
+      // generator's own async boundary, could have already cleared that
+      // cell). Intercepting the write is the same technique
+      // `test/stage-registration.test.ts`'s "a blocked horizontal PlaceFluid
+      // write..." test uses for the same reason.
+      const world = yield* doorWorld()
+      const state = yield* makeGameplayFrameState
+      const interceptedStore = {
+        ...world.chunkStore,
+        setBlock: (position: BlockPosition, block: number) =>
+          cellKey(position) === cellKey(ABOVE_AT) && block === 0
+            ? Effect.succeed({ _tag: 'Unchanged' as const, previous: 0 })
+            : world.chunkStore.setBlock(position, block),
+      }
+      const stages = gameplayStages(state, interceptedStore, world.entities, world.inventory, world.player, world.time)
+
+      yield* requestBlockBreak(state, AT)
+      yield* runInteractions(stages as never)
+
+      // The lower half still broke; the upper-half write was intercepted as
+      // `Unchanged`, so no disturbance was queued for it and nothing crashed.
+      expect(yield* world.chunkStore.getBlock(AT)).toStrictEqual({ _tag: 'Block', block: 0 })
     }),
   )
 
