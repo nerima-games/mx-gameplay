@@ -19,6 +19,7 @@ import {
 import { blockIdOf } from '../src/domain/block-vocabulary'
 import {
   CREEPER_KIND,
+  DROPPED_ITEM_KIND,
   PRIMED_TNT_KIND,
   rollCasualtyDrops,
   type MobBehaviour,
@@ -26,6 +27,7 @@ import {
   type MobExperienceEvent,
   type MobSpawnAttempt,
 } from '../src/domain/entities/mob-frame'
+import { spawnDroppedItem } from '../src/domain/entities/dropped-item'
 import {
   FIRE_DAMAGE_INTERVAL_TICKS,
   FIRE_TICK_INTERVAL_SECS,
@@ -1174,6 +1176,48 @@ describe('stage behaviour', () => {
       expect(yield* Ref.get(state.spawnAttempts)).toStrictEqual([offered])
       expect(yield* Ref.get(state.spawnClockSecs)).toBe(0.2)
       expect(yield* roster.api.count).toBe(0)
+    }).pipe(Effect.provide(FrameServicesLayer)),
+  )
+
+  it.effect('droppedItemPickup: false leaves a dropped item at the player\'s feet untouched', () =>
+    Effect.gen(function* () {
+      // A consumer that runs its own richer pickup loop (preserving metadata,
+      // durability or custom names this stage's `pickupDroppedItems` does not
+      // carry) sets `droppedItemPickup: false` to avoid double-consuming the
+      // same dropped item. Spawned AT the player's feet — distance zero, well
+      // inside `DROPPED_ITEM_PICKUP_RADIUS` — so the only thing that could be
+      // keeping it on the ground is the option, not range.
+      const state = yield* makeGameplayFrameState
+      const store = yield* makeChunkStoreDouble(world([]), ['0,0'])
+      const roster = yield* makeEntityManagerDouble<MobBehaviour>()
+      const player = yield* makePlayerServiceDouble()
+      const inventory = yield* makeInventoryDouble()
+      const time = yield* makeTimeService()
+      const spawned = yield* spawnDroppedItem(roster.api, {
+        item: 'gunpowder',
+        count: 1,
+        at: { x: 0, y: 64, z: 0 },
+      })
+
+      const stages = gameplayStages(
+        state,
+        store.api,
+        roster.api,
+        inventory.api,
+        player.api,
+        time,
+        undefined,
+        undefined,
+        { droppedItemPickup: false },
+      )
+      const entities = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.entities)
+      yield* entities!.run(DeltaTimeSecs(1))
+
+      expect(yield* roster.api.count).toBe(1)
+      const [remaining] = yield* roster.api.entities
+      expect(remaining).toStrictEqual(spawned)
+      expect(remaining?.kind).toBe(DROPPED_ITEM_KIND)
+      expect(yield* inventory.deposits).toStrictEqual([])
     }).pipe(Effect.provide(FrameServicesLayer)),
   )
 
