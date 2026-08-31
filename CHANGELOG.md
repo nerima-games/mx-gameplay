@@ -1,5 +1,29 @@
 # @nerima-games/mx-gameplay
 
+## 0.5.0
+
+### Minor Changes
+
+- [#22](https://github.com/nerima-games/mx-gameplay/pull/22) [`dd4de4c`](https://github.com/nerima-games/mx-gameplay/commit/dd4de4c1b2ee88476577a347e18e273bc1c7872f) Thanks [@takeokunn](https://github.com/takeokunn)! - Add item metadata, the wither boss, audio cues and hotbar placement
+  
+  Four areas move into this package from the composing app.
+  
+  `createItemMetadataStore` tracks per-stack metadata and container-scoped
+  metadata, keyed so that a container id containing a separator still resolves
+  correctly. The wither boss builds on the state machine mc-sim already
+  publishes, adding the encounter rules around it. `audio-cues` covers the
+  placement latch, inventory-transition announcements and the footstep
+  when-to-fire accumulator. `requestPlacementFromSelectedSlot` routes a
+  placement request from whichever hotbar slot is selected.
+  
+  `advanceFootstepRuntime` takes a block id and resolves the surface through
+  the kernel block property table and the audio package's cue mapping, rather
+  than through a caller-supplied surface string. Callers that previously
+  resolved a surface themselves should pass the block id straight through; the
+  resulting cue is unchanged for every block in the registry.
+
+- [#21](https://github.com/nerima-games/mx-gameplay/pull/21) [`d56624a`](https://github.com/nerima-games/mx-gameplay/commit/d56624a4a8a70cd60466c012a940a5cf66d83ec1) Thanks [@takeokunn](https://github.com/takeokunn)! - Bring down the dropped-item lifecycle (lifetime, metadata, pickup eligibility, and death drops), the furnace advance policy, the swimming oxygen and drowning machine, the multiplayer sleep roster, and the eye-of-ender flight from the composing app. Dropped-item behaviour now carries custom names and enchantments as typed fields rather than having them bolted on at restore time.
+
 ## 0.4.0
 
 ### Minor Changes
