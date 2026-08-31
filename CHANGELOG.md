@@ -1,5 +1,17 @@
 # @nerima-games/mx-gameplay
 
+## 0.5.2
+
+### Patch Changes
+
+- [#27](https://github.com/nerima-games/mx-gameplay/pull/27) [`8e5995f`](https://github.com/nerima-games/mx-gameplay/commit/8e5995fa1408deeeaba857b0fefbf2fafc3e18d2) Thanks [@takeokunn](https://github.com/takeokunn)! - Align internal pins to the current published versions
+  
+  - `@nerima-games/mc-audio` to 0.2.8
+  - `@nerima-games/mc-sim` to 0.4.2
+  - `@nerima-games/mc-worldgen` to 0.3.2
+  Each of these upstream releases contained a pin change and no source change,
+  so no behaviour moves with this bump.
+
 ## 0.5.1
 
 ### Patch Changes
