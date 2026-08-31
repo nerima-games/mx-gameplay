@@ -5,10 +5,10 @@ minimumReleaseAgeExclude:
   - '@nerima-games/mc-audio@0.2.7'
   - '@nerima-games/mc-noise@0.3.0'
   - '@nerima-games/mc-physics@0.2.1'
-  - '@nerima-games/mc-save@0.3.0'
-  - '@nerima-games/mc-sim@0.2.1'
-  - '@nerima-games/mc-worldgen@0.2.0 || 0.3.0'
-  - '@nerima-games/mc-kernel@0.5.1 || 0.6.0 || 0.6.1'
+  - '@nerima-games/mc-save@0.3.0 || 0.4.1'
+  - '@nerima-games/mc-sim@0.2.1 || 0.4.1'
+  - '@nerima-games/mc-worldgen@0.2.0 || 0.3.0 || 0.3.1'
+  - '@nerima-games/mc-kernel@0.5.1 || 0.6.0 || 0.6.1 || 0.7.0'
 
 allowBuilds:
   esbuild: true

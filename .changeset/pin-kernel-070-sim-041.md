@@ -1,0 +1,5 @@
+---
+"@nerima-games/mx-gameplay": patch
+---
+
+Pin mc-kernel 0.7.0 and mc-sim 0.4.1. mc-kernel 0.7.0 merges the player-settings value rules into one domain (`rebindKey` replaces `bindKey`, `audioEnabled`/`mouseSensitivity` defaults change); this repository never imports the settings domain, so no call sites moved. mc-sim 0.3.0 added a save coordinator and a placement-consumption rule brought down from the composing app, and 0.4.0 adopted that same settings domain; this repository has no local save coordinator or placement-consumption rule to collide with, and does not read `rebindKey`/`DEFAULT_SETTINGS`, so neither changed anything here. mc-sim 0.4.1 only re-pins mc-save and mc-worldgen one level further down, with no source changes of its own. Verified the footstep-material vocabulary this repository reads from kernel's block registry (`propertyOfBlockId(id, 'footstepMaterial')`) still agrees with mc-audio's `FOOTSTEP_SURFACES` by enumerating every registered block id: all 123 resolve to one of the four known surfaces and every non-`'default'` surface still resolves to a cue. No source changes were required beyond the two pins.
