@@ -75,7 +75,8 @@ import {
   resistsExplosion,
   type BlockPositionKey,
 } from '@nerima-games/mc-kernel'
-import { AIR_BLOCK_ID, type BlockPosition, type ChunkStoreApi } from '../chunk-store-port.js'
+import type { ChunkStoreApi } from '@nerima-games/mc-worldgen'
+import { AIR_BLOCK_ID, type BlockPosition } from '@nerima-games/mc-kernel'
 
 /**
  * How far a blast destroys blocks, as opposed to how far it hurts.
@@ -103,9 +104,15 @@ export const craterRadius = (power: number): number =>
  * against `Math.hypot`: the coordinates are integers, so the squared form is
  * exact and the boundary cell at exactly `r` is included without depending on
  * how a square root rounded.
+ *
+ * `centre` takes the plain unbranded shape rather than kernel's `BlockPosition`
+ * on purpose: the TOTAL claim above means a non-finite centre must be handled
+ * rather than rejected by construction, which is exactly the input kernel's
+ * `blockPosition()` constructor would throw on. This function's job is to
+ * validate that input, not to receive it pre-validated.
  */
 export const craterCells = (
-  centre: BlockPosition,
+  centre: { readonly x: number; readonly y: number; readonly z: number },
   power: number,
 ): ReadonlyArray<BlockPosition> => {
   const radius = craterRadius(power)
@@ -120,7 +127,7 @@ export const craterCells = (
     for (let dx = -radius; dx <= radius; dx += 1) {
       for (let dz = -radius; dz <= radius; dz += 1) {
         if (dx * dx + dy * dy + dz * dz <= limit) {
-          cells.push({ x: centre.x + dx, y: centre.y + dy, z: centre.z + dz })
+          cells.push(blockPosition(centre.x + dx, centre.y + dy, centre.z + dz))
         }
       }
     }

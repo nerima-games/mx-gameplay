@@ -7,7 +7,7 @@ minimumReleaseAgeExclude:
   - '@nerima-games/mc-physics@0.2.1'
   - '@nerima-games/mc-save@0.3.0'
   - '@nerima-games/mc-sim@0.2.1'
-  - '@nerima-games/mc-worldgen@0.2.0'
+  - '@nerima-games/mc-worldgen@0.2.0 || 0.3.0'
   - '@nerima-games/mc-kernel@0.5.1 || 0.6.0 || 0.6.1'
 
 allowBuilds:

@@ -11,16 +11,14 @@
  *
  * The obvious way to get the second is `Context.get(context, PlayerService)` —
  * and that needs the TAG, which `index.ts` deliberately does not export.
- * `@nerima-games/mc-sim` and `./chunk-store-port.ts` are MIRRORS, and this
- * organisation keeps mirrors out of the barrel on purpose: fourteen of fifteen
- * repositories do it, `test/chunk-store-mirror.test.ts` pins it with
- * `expect(Object.keys(barrel)).not.toContain('ChunkStore')`, and the reason is
- * that the day mc-sim publishes, these files are deleted — a consumer that had
- * imported the tag from here would break, where one that never could does not.
+ * `ChunkStore` and `PlayerService` are `@nerima-games/mc-worldgen`'s and
+ * `@nerima-games/mc-sim`'s own tags, and `index.ts`'s "Formerly provisional"
+ * note records the general rule this repository holds to: it does not
+ * republish another package's tags as its own barrel's API, published or not.
  *
  * So the handles are handed over directly. The tag stays private, the barrel
- * stays clean, and the host gets what it needs without naming a mirrored
- * symbol.
+ * stays clean, and the host gets what it needs without naming a tag this
+ * repository does not own.
  *
  * ---------------------------------------------------------------------------
  * ONE CONSTRUCTION, NOT FOUR
@@ -35,11 +33,7 @@
  * another, which is a world where the camera never follows you.
  */
 import { Effect, Layer } from 'effect'
-import {
-  BlockId as WorldgenBlockId,
-  blockPosition as worldgenBlockPosition,
-  capabilityOfBlockId,
-} from '@nerima-games/mc-kernel'
+import { blockPosition, capabilityOfBlockId } from '@nerima-games/mc-kernel'
 import {
   InventoryService,
   TimeService,
@@ -49,14 +43,13 @@ import {
   type TimeServiceApi,
 } from '@nerima-games/mc-sim'
 import {
-  chunkCoord as worldgenChunkCoord,
+  ChunkStore,
   generatedChunkSource,
   makeChunkStore,
   surfaceHeightAt,
   type ChunkSource,
-  type ChunkStoreApi as WorldgenChunkStoreApi,
+  type ChunkStoreApi,
 } from '@nerima-games/mc-worldgen'
-import { ChunkStore, type ChunkStoreApi } from './chunk-store-port.js'
 import { entityManagerTag, type EntityManager, type EntityManagerApi } from '@nerima-games/mc-sim'
 import { PlayerService, type PlayerPose, type PlayerServiceApi } from '@nerima-games/mc-sim'
 import { makeInMemoryChunkStore, type WorldContents } from './in-memory-chunk-store.js'
@@ -107,34 +100,25 @@ export type InMemoryWorld<S> = {
   readonly vitals: InMemoryVitalsApi
 }
 
-/** A generated world plus its typed store for meshing and rendering adapters. */
+/** A generated world plus its unwrapped store for meshing and rendering adapters. */
 export type GeneratedWorld<S> = InMemoryWorld<S> & {
-  readonly worldgenChunkStore: WorldgenChunkStoreApi
+  readonly worldgenChunkStore: ChunkStoreApi
 }
 
 /**
- * Adapt the published branded worldgen boundary to gameplay's temporary,
- * deliberately unbranded mirror. The returned methods still operate on the
- * same underlying store; no chunks or dirty queues are copied.
+ * `ChunkStoreApi` is `@nerima-games/mc-worldgen`'s real type now — no
+ * coordinate or block-id branding conversion is needed here any more. The one
+ * thing this repository still cannot take unmodified is `load`/`unload`'s
+ * `ChunkPersistenceError` channel: nothing downstream of `ChunkStore` in this
+ * repository is written to handle it, so it is turned into a defect at this
+ * boundary, same as `WorldgenChunkStoreApi` used to be adapted for branding.
+ * `worldgenChunkStore` on `GeneratedWorld` keeps the raw, un-widened store for
+ * a consumer (mc-render, mc-meshing) that wants the real error channel.
  */
-export const adaptGeneratedChunkStore = (store: WorldgenChunkStoreApi): ChunkStoreApi => ({
-  load: (coord) => store.load(worldgenChunkCoord(coord.cx, coord.cz)).pipe(Effect.orDie),
-  peek: (coord) => store.peek(worldgenChunkCoord(coord.cx, coord.cz)),
-  snapshot: (coord) => store.snapshot(worldgenChunkCoord(coord.cx, coord.cz)),
-  isLoaded: (coord) => store.isLoaded(worldgenChunkCoord(coord.cx, coord.cz)),
-  loadedCoords: store.loadedCoords,
-  neighbours: (coord) => store.neighbours(worldgenChunkCoord(coord.cx, coord.cz)),
-  unload: (coord) => store.unload(worldgenChunkCoord(coord.cx, coord.cz)).pipe(Effect.orDie),
-  getBlock: (position) => store.getBlock(worldgenBlockPosition(position.x, position.y, position.z)),
-  setBlock: (position, block) =>
-    store.setBlock(
-      worldgenBlockPosition(position.x, position.y, position.z),
-      WorldgenBlockId(block),
-    ),
-  getLight: (position) => store.getLight(worldgenBlockPosition(position.x, position.y, position.z)),
-  subscribeDirty: store.subscribeDirty,
-  subscribeDirtyScoped: store.subscribeDirtyScoped,
-  reset: store.reset,
+export const adaptGeneratedChunkStore = (store: ChunkStoreApi): ChunkStoreApi => ({
+  ...store,
+  load: (coord) => store.load(coord).pipe(Effect.orDie),
+  unload: (coord) => store.unload(coord).pipe(Effect.orDie),
 })
 
 const makeWorldWithStore = <S>(
@@ -215,7 +199,7 @@ export const makeGeneratedWorld = <S>(
  * BOUND TO A STORE rather than taking one per call, so a host wires it once and
  * `resolvePlayerMovement` gets the predicate shape it wants.
  *
- * AN UNLOADED CHUNK ANSWERS SOLID. `./chunk-store-port.ts` reports
+ * AN UNLOADED CHUNK ANSWERS SOLID. `@nerima-games/mc-worldgen` reports
  * `ChunkNotLoaded` rather than air precisely so a caller can choose, and for
  * COLLISION the safe choice is solid: treating the edge of the loaded world as
  * air lets a player walk off it and fall forever. `mc-meshing` makes the
@@ -226,7 +210,7 @@ export const makeGeneratedWorld = <S>(
 export const solidityFromStore =
   (store: ChunkStoreApi) =>
   (position: { readonly x: number; readonly y: number; readonly z: number }): boolean => {
-    const reading = Effect.runSync(store.getBlock(position))
+    const reading = Effect.runSync(store.getBlock(blockPosition(position.x, position.y, position.z)))
     switch (reading._tag) {
       case 'Block':
         return !capabilityOfBlockId(reading.block, 'passable')
@@ -237,7 +221,7 @@ export const solidityFromStore =
         // fall; solid at the top is harmless because nothing reaches it.
         return true
       // exhaustiveness arm over BlockReading, a closed three-tag union
-      // (chunk-store-port.ts's BlockReading); 'Block', 'ChunkNotLoaded' and
+      // (mc-worldgen's chunk-store-state.d.ts); 'Block', 'ChunkNotLoaded' and
       // 'OutOfWorld' are the only reachable tags and all three are covered
       // above, so no input can reach this arm.
       /* v8 ignore start */
@@ -253,6 +237,6 @@ export const solidityFromStore =
 export const targetabilityFromStore =
   (store: ChunkStoreApi) =>
   (x: number, y: number, z: number): boolean => {
-    const reading = Effect.runSync(store.getBlock({ x, y, z }))
+    const reading = Effect.runSync(store.getBlock(blockPosition(x, y, z)))
     return reading._tag === 'Block' && reading.block !== 0
   }

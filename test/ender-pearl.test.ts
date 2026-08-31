@@ -42,7 +42,7 @@ import { makeEntityManagerDouble } from './support/entity-manager-double'
 import { makePlayerServiceDouble } from './support/player-service-double'
 import { makeInventoryDouble } from './support/inventory-service-double'
 import { runFrame } from './support/frame-runner'
-import { StackCount } from '@nerima-games/mc-kernel'
+import { StackCount, type BlockId } from '@nerima-games/mc-kernel'
 
 const ORIGIN = { x: 10, y: 64, z: 10 }
 
@@ -54,7 +54,7 @@ const inventoryWithPearl = (): ReadonlyArray<Slot> =>
 
 const scene = (inventorySlots?: ReadonlyArray<Slot>) =>
   Effect.gen(function* () {
-    const store = yield* makeChunkStoreDouble(new Map<string, number>(), ['0,0'])
+    const store = yield* makeChunkStoreDouble(new Map<string, BlockId>(), ['0,0'])
     const roster = yield* makeEntityManagerDouble<MobBehaviour>()
     const player = yield* makePlayerServiceDouble()
     const inventory = yield* makeInventoryDouble(inventorySlots)

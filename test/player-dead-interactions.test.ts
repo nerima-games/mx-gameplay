@@ -30,7 +30,7 @@ import { FrameServicesLayer } from './support/frame-services'
 import { makeInventoryDouble } from './support/inventory-service-double'
 import { makePlayerServiceDouble } from './support/player-service-double'
 
-const cell = { x: 1, y: 64, z: 1 }
+const cell = blockPosition(1, 64, 1)
 const shot = {
   origin: { x: 0, y: 64, z: 0 },
   dirX: 0,

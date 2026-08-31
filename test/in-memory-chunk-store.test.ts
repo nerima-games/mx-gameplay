@@ -27,12 +27,19 @@ import {
   makeInMemoryChunkStore,
   type WorldContents,
 } from '../src/domain/in-memory-chunk-store'
-import { AIR_BLOCK_ID, CHUNK_HEIGHT, type BlockId, type BlockPosition } from '../src/domain/chunk-store-port'
+import {
+  AIR_BLOCK_ID,
+  blockPosition,
+  chunkCoord,
+  type BlockId,
+  type BlockPosition,
+} from '@nerima-games/mc-kernel'
+import { CHUNK_HEIGHT } from '@nerima-games/mc-worldgen'
 
 const STONE: BlockId = 2 as BlockId
 const DIRT: BlockId = 3 as BlockId
 
-const AT: BlockPosition = { x: 5, y: 64, z: 9 }
+const AT: BlockPosition = blockPosition(5, 64, 9)
 
 const worldWith = (cells: ReadonlyArray<readonly [BlockPosition, BlockId]>): WorldContents => ({
   blocks: new Map(cells.map(([position, block]) => [cellKey(position), block])),
@@ -85,7 +92,7 @@ describe('an unloaded chunk is not air', () => {
     Effect.gen(function* () {
       const store = yield* makeInMemoryChunkStore({ blocks: new Map(), loaded: ['0,0'] })
 
-      expect(yield* store.getBlock({ x: 1, y: 1, z: 1 })).toStrictEqual({
+      expect(yield* store.getBlock(blockPosition(1, 1, 1))).toStrictEqual({
         _tag: 'Block',
         block: AIR_BLOCK_ID,
       })
@@ -106,9 +113,9 @@ describe('an unloaded chunk is not air', () => {
       // build limit as a streaming problem and keep retrying.
       const store = yield* makeInMemoryChunkStore(worldWith([[AT, STONE]]))
 
-      expect((yield* store.getBlock({ x: 5, y: -1, z: 9 }))._tag).toBe('OutOfWorld')
-      expect((yield* store.getBlock({ x: 5, y: CHUNK_HEIGHT, z: 9 }))._tag).toBe('OutOfWorld')
-      expect(isInWorld({ x: 0, y: CHUNK_HEIGHT - 1, z: 0 })).toBe(true)
+      expect((yield* store.getBlock(blockPosition(5, -1, 9)))._tag).toBe('OutOfWorld')
+      expect((yield* store.getBlock(blockPosition(5, CHUNK_HEIGHT, 9)))._tag).toBe('OutOfWorld')
+      expect(isInWorld(blockPosition(0, CHUNK_HEIGHT - 1, 0))).toBe(true)
     }),
   )
 })
@@ -155,9 +162,9 @@ describe('subscribers accumulate a set', () => {
       const store = yield* makeInMemoryChunkStore(worldWith([[AT, STONE]]))
       const subscription = yield* store.subscribeDirty
 
-      yield* store.setBlock({ x: 5, y: 64, z: 9 }, DIRT)
-      yield* store.setBlock({ x: 6, y: 64, z: 9 }, DIRT)
-      yield* store.setBlock({ x: 7, y: 64, z: 9 }, DIRT)
+      yield* store.setBlock(blockPosition(5, 64, 9), DIRT)
+      yield* store.setBlock(blockPosition(6, 64, 9), DIRT)
+      yield* store.setBlock(blockPosition(7, 64, 9), DIRT)
 
       expect((yield* subscription.drain).changed).toStrictEqual([chunkOf(AT)])
     }),
@@ -211,10 +218,10 @@ describe('chunk residency', () => {
       // claim. Inventing it here would be the thing the header refuses.
       const store = yield* makeInMemoryChunkStore(EMPTY_WORLD)
 
-      const chunk = yield* store.load({ cx: 3, cz: -1 })
+      const chunk = yield* store.load(chunkCoord(3, -1))
 
       expect(chunk.blocks.every((block) => block === AIR_BLOCK_ID)).toBe(true)
-      expect(yield* store.isLoaded({ cx: 3, cz: -1 })).toBe(true)
+      expect(yield* store.isLoaded(chunkCoord(3, -1))).toBe(true)
     }),
   )
 
@@ -237,7 +244,7 @@ describe('chunk residency', () => {
       // Every prior unload test populated exactly one chunk, so the cell scan's
       // `chunkKey(...) === key` comparison had only ever seen a match — its
       // FALSE arm (a cell that belongs to some OTHER resident chunk) never ran.
-      const FAR: BlockPosition = { x: 500, y: 64, z: 500 }
+      const FAR: BlockPosition = blockPosition(500, 64, 500)
       const store = yield* makeInMemoryChunkStore(worldWith([[AT, STONE], [FAR, DIRT]]))
 
       expect(yield* store.unload(chunkOf(AT))).toBe(true)
@@ -251,7 +258,7 @@ describe('chunk residency', () => {
     Effect.gen(function* () {
       const store = yield* makeInMemoryChunkStore(EMPTY_WORLD)
 
-      expect(yield* store.unload({ cx: 9, cz: 9 })).toBe(false)
+      expect(yield* store.unload(chunkCoord(9, 9))).toBe(false)
     }),
   )
 
@@ -261,10 +268,10 @@ describe('chunk residency', () => {
       // difference is observable: a consumer doing `'xPos' in neighbours` would
       // see a neighbour that is not there.
       const store = yield* makeInMemoryChunkStore(EMPTY_WORLD)
-      yield* store.load({ cx: 0, cz: 0 })
-      yield* store.load({ cx: 1, cz: 0 })
+      yield* store.load(chunkCoord(0, 0))
+      yield* store.load(chunkCoord(1, 0))
 
-      const neighbours = yield* store.neighbours({ cx: 0, cz: 0 })
+      const neighbours = yield* store.neighbours(chunkCoord(0, 0))
 
       expect('xPos' in neighbours).toBe(true)
       expect('xNeg' in neighbours).toBe(false)
@@ -276,9 +283,9 @@ describe('chunk residency', () => {
       // Floor division, not truncation. `-1 / 16` truncates to 0, which would
       // put the cell one chunk east of where it is — and only for negative
       // coordinates, so half the world would be subtly wrong.
-      expect(chunkOf({ x: -1, y: 0, z: -1 })).toStrictEqual({ cx: -1, cz: -1 })
-      expect(chunkOf({ x: -16, y: 0, z: 0 })).toStrictEqual({ cx: -1, cz: 0 })
-      expect(chunkOf({ x: 16, y: 0, z: 0 })).toStrictEqual({ cx: 1, cz: 0 })
+      expect(chunkOf(blockPosition(-1, 0, -1))).toStrictEqual({ cx: -1, cz: -1 })
+      expect(chunkOf(blockPosition(-16, 0, 0))).toStrictEqual({ cx: -1, cz: 0 })
+      expect(chunkOf(blockPosition(16, 0, 0))).toStrictEqual({ cx: 1, cz: 0 })
     }),
   )
 })
@@ -309,7 +316,7 @@ describe('setBlock and getLight above the world', () => {
     Effect.gen(function* () {
       const store = yield* makeInMemoryChunkStore(worldWith([[AT, STONE]]))
 
-      expect(yield* store.setBlock({ x: 5, y: CHUNK_HEIGHT, z: 9 }, DIRT)).toStrictEqual({
+      expect(yield* store.setBlock(blockPosition(5, CHUNK_HEIGHT, 9), DIRT)).toStrictEqual({
         _tag: 'OutOfWorld',
       })
       // Unchanged: the out-of-world write must not have touched the real cell.
@@ -321,7 +328,7 @@ describe('setBlock and getLight above the world', () => {
     Effect.gen(function* () {
       const store = yield* makeInMemoryChunkStore(worldWith([[AT, STONE]]))
 
-      expect(yield* store.getLight({ x: 5, y: -1, z: 9 })).toStrictEqual({ _tag: 'OutOfWorld' })
+      expect(yield* store.getLight(blockPosition(5, -1, 9))).toStrictEqual({ _tag: 'OutOfWorld' })
     }),
   )
 
@@ -408,8 +415,8 @@ describe('materialise draws only from the requested chunk', () => {
       // AT is chunk (0,0). One neighbour shares its z but differs in x, the
       // other shares x but differs in z — so both filter arms in materialise
       // (the x check and the z check) each have something to reject.
-      const neighbourOnX: BlockPosition = { x: 20, y: 64, z: 9 }
-      const neighbourOnZ: BlockPosition = { x: 5, y: 64, z: 20 }
+      const neighbourOnX: BlockPosition = blockPosition(20, 64, 9)
+      const neighbourOnZ: BlockPosition = blockPosition(5, 64, 20)
       expect(chunkOf(neighbourOnX)).toStrictEqual({ cx: 1, cz: 0 })
       expect(chunkOf(neighbourOnZ)).toStrictEqual({ cx: 0, cz: 1 })
 

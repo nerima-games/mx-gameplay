@@ -1,12 +1,8 @@
 import { targetBlockFromPlayerPose } from '@nerima-games/mc-sim'
 import { Effect, Option } from 'effect'
 
-import { blockTypeOfId } from '@nerima-games/mc-kernel'
-import type {
-  BlockPosition,
-  BlockReading,
-  ChunkStoreApi,
-} from '../domain/chunk-store-port.js'
+import { blockPosition, blockTypeOfId, type BlockPosition } from '@nerima-games/mc-kernel'
+import type { BlockReading, ChunkStoreApi } from '@nerima-games/mc-worldgen'
 import {
   rightClickRoute,
   type RightClickRoute,
@@ -30,7 +26,7 @@ export const targetedRightClickRoute = (
     // step, so no two steps of one walk ever produce the same `(x, y, z)` —
     // there is no candidate here to deduplicate.
     targetBlockFromPlayerPose(pose, maxDistance, (x, y, z) => {
-      candidates.push({ x, y, z })
+      candidates.push(blockPosition(x, y, z))
       return false
     })
 
@@ -72,7 +68,7 @@ export const targetedRightClickRoute = (
     /* v8 ignore stop */
 
     return rightClickRoute(
-      target.value.position,
+      blockPosition(target.value.position.x, target.value.position.y, target.value.position.z),
       blockTypeOfId(reading.block),
     )
   })

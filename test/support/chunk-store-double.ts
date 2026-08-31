@@ -1,20 +1,22 @@
 /**
- * A test double for mc-worldgen's `ChunkStore`, typed by this repository's
- * mirror of that service (`domain/chunk-store-port.ts`).
+ * A test double for mc-worldgen's `ChunkStore`, typed by
+ * `@nerima-games/mc-worldgen`'s real `ChunkStoreApi` directly.
  *
  * ---------------------------------------------------------------------------
  * Why a double at all, and what makes it meaningful
  * ---------------------------------------------------------------------------
  *
- * Nothing is published (plan.md §6 Step 3 is bottom-up publish-then-pin), so
- * mx-gameplay cannot import mc-worldgen's implementation today. What it CAN do
- * is be typed by mc-worldgen's interface: the mirror is pinned against that
- * interface in both directions by `test/chunk-store-mirror.test.ts`, so a
- * double built against the mirror cannot quietly drift into a different
- * service. The same scenarios against the REAL store are
+ * Historically this file was typed by a local mirror (`domain/chunk-store-port.ts`,
+ * pinned against mc-worldgen's interface in both directions by the now-deleted
+ * `test/chunk-store-mirror.test.ts`), because mc-worldgen was not yet
+ * published and mx-gameplay could not import its implementation. mc-worldgen
+ * has since published, the mirror is deleted, and this double is typed
+ * against the real interface directly — but it is still a double, not the
+ * real store: the header below on which methods die rather than answer still
+ * holds. The same scenarios against the REAL store are
  * `mc-worldgen/test/vertical-slice.test.ts`; between the two the whole path is
- * covered, and when mc-worldgen is published this file is deleted and its Layer
- * is replaced by the real one.
+ * covered. Whether this double itself should now be retired in favour of the
+ * real store is a flagged follow-up, not done here.
  *
  * It is sparse — a `Map` from a position key to a block id — because the rules
  * under test never look at a chunk, only at cells. It reproduces the three
@@ -35,26 +37,25 @@
  * test suite would not notice.
  */
 import { Effect, Layer, Ref } from 'effect'
+import { AIR_BLOCK_ID, BlockId, chunkCoord, type BlockPosition } from '@nerima-games/mc-kernel'
 import {
-  AIR_BLOCK_ID,
   ChunkStore,
   blockIndex,
-  type BlockId,
-  type BlockPosition,
   type BlockReading,
   type BlockWriteOutcome,
+  type Chunk,
   type ChunkDirtyBatch,
   type ChunkDirtySubscription,
   type ChunkStoreApi,
   type LightReading,
-  type WorldgenChunk,
-} from '../../src/domain/chunk-store-port'
+  type SubscriberId,
+} from '@nerima-games/mc-worldgen'
 
-/** Block ids, transcribed from kernel's `BLOCK_REGISTRY` (see the mirror). */
-export const STONE: BlockId = 2
-export const SAND: BlockId = 5
-export const WATER: BlockId = 6
-export const GRAVEL: BlockId = 8
+/** Block ids, transcribed from kernel's `BLOCK_REGISTRY`. */
+export const STONE: BlockId = BlockId(2)
+export const SAND: BlockId = BlockId(5)
+export const WATER: BlockId = BlockId(6)
+export const GRAVEL: BlockId = BlockId(8)
 
 export const CHUNK_SIDE = 16
 export const WORLD_HEIGHT = 256
@@ -72,10 +73,8 @@ export const blockKey = (position: BlockPosition): string =>
 export const chunkKeyOf = (position: BlockPosition): string =>
   `${String(Math.floor(position.x / CHUNK_SIDE))},${String(Math.floor(position.z / CHUNK_SIDE))}`
 
-const chunkCoordOf = (position: BlockPosition) => ({
-  cx: Math.floor(position.x / CHUNK_SIDE),
-  cz: Math.floor(position.z / CHUNK_SIDE),
-})
+const chunkCoordOf = (position: BlockPosition) =>
+  chunkCoord(Math.floor(position.x / CHUNK_SIDE), Math.floor(position.z / CHUNK_SIDE))
 
 export const world = (
   entries: ReadonlyArray<readonly [BlockPosition, BlockId]>,
@@ -183,13 +182,20 @@ export const makeChunkStoreDouble = (
         doubles.subscribers.set(id, new Set())
 
         const subscription: ChunkDirtySubscription = {
-          id,
+          // `@nerima-games/mc-worldgen` exports no public constructor for
+          // `SubscriberId` — it is minted only inside the package's own
+          // `ChunkStoreState.subscribed`, which this double, as an independent
+          // reimplementation of `ChunkStoreApi`, has no way to call. This
+          // counter-derived id is a genuine, never-reused subscriber
+          // identity by construction; the cast asserts only that, not that
+          // an unchecked value has an unverified shape.
+          id: id as SubscriberId,
           drain: Ref.modify(state, (current) => {
             const pending = current.subscribers.get(id) ?? new Set<string>()
             const batch: ChunkDirtyBatch = {
               changed: [...pending].map((entry) => {
                 const [cx, cz] = entry.split(',')
-                return { cx: Number(cx), cz: Number(cz) }
+                return chunkCoord(Number(cx), Number(cz))
               }),
               removed: [],
             }
@@ -225,7 +231,7 @@ export const makeChunkStoreDouble = (
          * `domain/chunk-window.ts`'s `UNREADABLE_BLOCK` reachable.
          */
         peek: (coord) =>
-          Ref.modify(state, (doubles): readonly [WorldgenChunk | undefined, Doubles] => {
+          Ref.modify(state, (doubles): readonly [Chunk | undefined, Doubles] => {
             doubles.peeks += 1
             const key = `${String(coord.cx)},${String(coord.cz)}`
             if (!doubles.loadedChunks.has(key)) {

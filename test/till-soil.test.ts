@@ -23,11 +23,11 @@ import {
   type TillingCapability,
 } from '../src/domain/interactions/till-soil'
 import { CROP_OF_SEED, SOIL_OF_CROP } from '../src/domain/interactions/plant-crop'
-import { blockIdOf, type BlockType } from '@nerima-games/mc-kernel'
-import type { BlockPosition } from '../src/domain/chunk-store-port'
+import { blockIdOf, blockPosition, type BlockType } from '@nerima-games/mc-kernel'
+import type { BlockPosition } from '@nerima-games/mc-kernel'
 
 const HOE: TillingCapability = { tills: true }
-const GROUND: BlockPosition = { x: -2, y: 61, z: 7 }
+const GROUND: BlockPosition = blockPosition(-2, 61, 7)
 
 const keyOf = (p: BlockPosition): string => `${String(p.x)},${String(p.y)},${String(p.z)}`
 

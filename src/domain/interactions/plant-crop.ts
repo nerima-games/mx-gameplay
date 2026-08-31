@@ -37,7 +37,7 @@ import {
   type BlockType,
   type ItemType,
 } from '@nerima-games/mc-kernel'
-import type { BlockPosition } from '../chunk-store-port.js'
+import type { BlockPosition } from '@nerima-games/mc-kernel'
 
 /**
  * Which crop each seed item becomes.
@@ -155,10 +155,11 @@ export type PlantPort = {
  * `setBlockIf` on mc-worldgen's `ChunkStore`.
  *
  * AN UNLOADED CELL READS AS `undefined` AND IS TREATED AS NOT-SOIL rather than
- * as air. `./chunk-store-port` returns `undefined` for a chunk that is not
- * resident, and defaulting that to air would let a player plant into a chunk
- * nobody has loaded — the write would land, and the chunk that eventually loads
- * would overwrite it. Refusing is the inert reading.
+ * as air. `blockAt` collapses `@nerima-games/mc-worldgen`'s three-valued
+ * `BlockReading` — `ChunkNotLoaded` and `OutOfWorld` both become `undefined` —
+ * and defaulting that to air would let a player plant into a chunk nobody has
+ * loaded — the write would land, and the chunk that eventually loads would
+ * overwrite it. Refusing is the inert reading.
  */
 export const plantCrop = (
   port: PlantPort,

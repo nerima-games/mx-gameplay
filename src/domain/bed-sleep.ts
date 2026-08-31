@@ -1,6 +1,6 @@
 import type { TimeServiceApi } from '@nerima-games/mc-sim'
 import { Effect } from 'effect'
-import type { BlockPosition } from './chunk-store-port.js'
+import type { BlockPosition } from '@nerima-games/mc-kernel'
 import { DAWN_FRACTION, isNight } from './day-night.js'
 import type { Position } from '@nerima-games/mc-kernel'
 import type { Dimension } from '@nerima-games/mc-worldgen'

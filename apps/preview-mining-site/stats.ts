@@ -22,6 +22,8 @@
  */
 import { Brand, Effect, Ref } from 'effect'
 import {
+  AIR_BLOCK_ID,
+  BlockId,
   blockPosition,
   blockPositionKeyOf,
   capabilityOfBlockId,
@@ -31,7 +33,6 @@ import {
   type BlockPositionKey,
   type HarvestTier,
 } from '@nerima-games/mc-kernel'
-import { type BlockId } from '../../src/domain/chunk-store-port'
 import { dayPhase, hostileSpawnsAllowed, isNight } from '../../src/domain/day-night'
 import {
   applyDamage,
@@ -206,7 +207,7 @@ const cascadeShape = Effect.gen(function* () {
   let linear = true
 
   for (const height of [1, 2, 3, 4, 6, 8, 12]) {
-    const cells: Array<readonly [number, number, BlockId]> = [[4, 0, 2], [4, 1, 2]]
+    const cells: Array<readonly [number, number, BlockId]> = [[4, 0, BlockId(2)], [4, 1, BlockId(2)]]
     for (let index = 0; index < height; index += 1) {
       cells.push([4, 2 + index, SAND])
     }
@@ -978,8 +979,8 @@ const spawnGate = Effect.sync((): Check => {
     for (const light of lights) {
       const verdict = canHostileSpawnAt({
         groundBlock: block,
-        footBlock: 0,
-        headBlock: 0,
+        footBlock: AIR_BLOCK_ID,
+        headBlock: AIR_BLOCK_ID,
         blockLight: light,
         timeOfDay: 0.9,
         distanceToPlayerBlocksXZ: 20,
@@ -994,9 +995,9 @@ const spawnGate = Effect.sync((): Check => {
 
   for (const light of lights) {
     const verdict = canHostileSpawnAt({
-      groundBlock: 2,
-      footBlock: 0,
-      headBlock: 0,
+      groundBlock: BlockId(2),
+      footBlock: AIR_BLOCK_ID,
+      headBlock: AIR_BLOCK_ID,
       blockLight: light,
       timeOfDay: 0.5,
       distanceToPlayerBlocksXZ: 20,
@@ -1035,14 +1036,14 @@ const spawnGate = Effect.sync((): Check => {
 const lootTable = Effect.sync(() => {
   const tiers: ReadonlyArray<HarvestTier> = HARVEST_TIERS
   const probed: ReadonlyArray<readonly [BlockId, string]> = [
-    [2, 'stone'],
-    [4, 'grass_block'],
-    [5, 'sand'],
-    [8, 'gravel'],
-    [10, 'oak_leaves'],
-    [13, 'glass'],
-    [15, 'glowstone'],
-    [11, 'lava'],
+    [BlockId(2), 'stone'],
+    [BlockId(4), 'grass_block'],
+    [BlockId(5), 'sand'],
+    [BlockId(8), 'gravel'],
+    [BlockId(10), 'oak_leaves'],
+    [BlockId(13), 'glass'],
+    [BlockId(15), 'glowstone'],
+    [BlockId(11), 'lava'],
   ]
 
   const lines: Array<string> = [`  ${pad('block', 14)}${tiers.map((tier) => pad(tier, 19)).join('')}`]
@@ -1072,16 +1073,16 @@ const lootTable = Effect.sync(() => {
 
   // Silk touch and fortune, the two axes the tier grid cannot show.
   const glowstone = (context: Parameters<typeof blockLoot>[1]): string => {
-    const loot = blockLoot(15, context, [0, 0, 0, 0])
+    const loot = blockLoot(BlockId(15), context, [0, 0, 0, 0])
     return loot.map((drop) => `${drop.item} x${String(drop.count)}`).join(' ') || '-'
   }
   lines.push(`  glowstone, bare hands            ${glowstone({})}`)
   lines.push(`  glowstone, fortune I             ${glowstone({ fortuneLevel: 1 })}`)
   lines.push(`  glowstone, fortune III           ${glowstone({ fortuneLevel: 3 })}`)
   lines.push(`  glowstone, fortune III + silk    ${glowstone({ fortuneLevel: 3, silkTouch: true })}`)
-  lines.push(`  glass,     bare hands            ${blockLoot(13, {}, []).length === 0 ? '-' : 'glass'}`)
-  lines.push(`  glass,     silk touch            ${blockLoot(13, { silkTouch: true }, []).map((d) => d.item).join(' ')}`)
-  lines.push(`  oak_leaves, lucky stick roll     ${blockLoot(10, {}, [0, 0, 0, 0]).map((d) => d.item).join(' ') || '-'}`)
+  lines.push(`  glass,     bare hands            ${blockLoot(BlockId(13), {}, []).length === 0 ? '-' : 'glass'}`)
+  lines.push(`  glass,     silk touch            ${blockLoot(BlockId(13), { silkTouch: true }, []).map((d) => d.item).join(' ')}`)
+  lines.push(`  oak_leaves, lucky stick roll     ${blockLoot(BlockId(10), {}, [0, 0, 0, 0]).map((d) => d.item).join(' ') || '-'}`)
   lines.push('')
   lines.push('  Fortune and silk touch are MUTUALLY EXCLUSIVE, which the reference enforces at the')
   lines.push('  break site rather than at the enchanting table (interaction-break-handler.execute.ts:131).')
@@ -1115,37 +1116,37 @@ const placementRefusals = Effect.gen(function* () {
   }
 
   // Air over stone: the ordinary case.
-  site.world.poke(cell, 0)
-  site.world.poke(under, 2)
+  site.world.poke(cell, AIR_BLOCK_ID)
+  site.world.poke(under, BlockId(2))
   say('air over stone, holding stone', yield* previewPlacement(site, cell, 'stone'))
 
   // Occupied.
-  site.world.poke(cell, 2)
+  site.world.poke(cell, BlockId(2))
   say('stone already there', yield* previewPlacement(site, cell, 'stone'))
 
   // Lava — REPLACEABLE, and the reference refused it.
-  site.world.poke(cell, 11)
+  site.world.poke(cell, BlockId(11))
   say('lava in the cell', yield* previewPlacement(site, cell, 'stone'))
 
   // Water — the case the reference DID allow.
-  site.world.poke(cell, 6)
+  site.world.poke(cell, BlockId(6))
   say('water in the cell', yield* previewPlacement(site, cell, 'stone'))
 
   // A torch with nothing under it, and then with something.
-  site.world.poke(cell, 0)
-  site.world.poke(under, 0)
+  site.world.poke(cell, AIR_BLOCK_ID)
+  site.world.poke(under, AIR_BLOCK_ID)
   say('torch over air', yield* previewPlacement(site, cell, 'torch'))
-  site.world.poke(under, 7)
+  site.world.poke(under, BlockId(7))
   say('torch over snow', yield* previewPlacement(site, cell, 'torch'))
-  site.world.poke(under, 2)
+  site.world.poke(under, BlockId(2))
   say('torch over stone', yield* previewPlacement(site, cell, 'torch'))
 
   // An item with no block form is a TYPE error at the call site, so the screen
   // cannot even ask. What it can show is the other direction.
   lines.push('')
-  lines.push(`  placeableItemOf(lava)             ${String(placeableItemOf(11))}`)
-  lines.push(`  placeableItemOf(water)            ${String(placeableItemOf(6))}`)
-  lines.push(`  placeableItemOf(stone)            ${String(placeableItemOf(2))}`)
+  lines.push(`  placeableItemOf(lava)             ${String(placeableItemOf(BlockId(11)))}`)
+  lines.push(`  placeableItemOf(water)            ${String(placeableItemOf(BlockId(6)))}`)
+  lines.push(`  placeableItemOf(stone)            ${String(placeableItemOf(BlockId(2)))}`)
   lines.push('')
   lines.push('  `lava in the cell` is the row the reference got wrong: block-service-place-load.ts:48')
   lines.push('  asks `existing === AIR || existing === WATER`, so a lava cell read as occupied.')

@@ -13,7 +13,7 @@
  * so an ASCII map would put the sky at `y = 0` and the first person to edit it
  * would build the world upside down.
  */
-import type { BlockId } from '../../src/domain/chunk-store-port'
+import type { BlockId } from '@nerima-games/mc-kernel'
 import { AIR, CHUNK_SIDE, GRAVEL, LAVA, SAND, STONE, WATER, type WorldSpec } from './world'
 
 export type Scenario = {

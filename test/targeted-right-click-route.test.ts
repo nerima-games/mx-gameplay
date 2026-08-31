@@ -1,14 +1,13 @@
 import { describe, expect, it } from '@effect/vitest'
 import { Effect } from 'effect'
 
-import { blockIdOf } from '@nerima-games/mc-kernel'
-import type { BlockPosition } from '../src/domain/chunk-store-port'
+import { BlockId, blockIdOf, blockPosition, type BlockPosition } from '@nerima-games/mc-kernel'
 import { cellKey, chunkKey, chunkOf } from '../src/domain/in-memory-chunk-store'
 import { makeInMemoryWorld } from '../src/domain/in-memory-world'
 import { targetedRightClickRoute } from '../src/stages/targeted-right-click-route'
 
-const TARGET = { x: 0, y: 1, z: 0 }
-const BEHIND_TARGET = { x: 0, y: 1, z: -1 }
+const TARGET = blockPosition(0, 1, 0)
+const BEHIND_TARGET = blockPosition(0, 1, -1)
 const SPAWN_POSE = {
   feetPosition: { x: 0.5, y: 0, z: 2.5 },
   yawRadians: 0,
@@ -18,12 +17,17 @@ const CRAFTING_TABLE_ID = blockIdOf('crafting_table') ?? -1
 const CHEST_ID = blockIdOf('chest') ?? -1
 const SHULKER_BOX_ID = blockIdOf('shulker_box') ?? -1
 const DIRT_ID = blockIdOf('dirt') ?? -1
-const UNKNOWN_BLOCK_ID = 999_999
+// 60_000: inside kernel's `BlockId` brand range ([0, 65535], a storage bound)
+// but far outside its registry (~120 rows), so it is genuinely unregistered
+// rather than out-of-range-invalid — `999_999` used to stand in for this
+// before the mirror's unbranded `BlockId` was repointed to kernel's real,
+// range-validated one.
+const UNKNOWN_BLOCK_ID = 60_000
 
 const makeTargetedWorld = (block: number, loaded: boolean = true) =>
   makeInMemoryWorld({
     world: {
-      blocks: new Map([[cellKey(TARGET), block]]),
+      blocks: new Map([[cellKey(TARGET), BlockId(block)]]),
       loaded: loaded ? [chunkKey(chunkOf(TARGET))] : [],
     },
     spawnPose: SPAWN_POSE,

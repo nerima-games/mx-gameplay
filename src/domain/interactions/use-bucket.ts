@@ -11,8 +11,8 @@ import {
   type BlockId,
   type BlockPosition,
   type ChunkCoord,
-  type ChunkStoreApi,
-} from '../chunk-store-port.js'
+} from '@nerima-games/mc-kernel'
+import type { ChunkStoreApi } from '@nerima-games/mc-worldgen'
 import { blockPosition, blockPositionKeyOf, type ItemType } from '@nerima-games/mc-kernel'
 import {
   enqueueFluidDisturbance,

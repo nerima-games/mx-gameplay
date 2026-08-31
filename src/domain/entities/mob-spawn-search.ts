@@ -70,7 +70,7 @@
  *  2. **A scan has no bounded cost anyone here can cite.** Walking a 256-cell
  *     column for each of 64 candidates is ~16,000 store reads per attempt, and
  *     every read after a block write may relight a chunk (see `getLight`'s note
- *     in `../chunk-store-port`). Three reads per candidate is 192, and it is a
+ *     in `@nerima-games/mc-worldgen`). Three reads per candidate is 192, and it is a
  *     number rather than a hope.
  *
  * The consequence is honest and worth stating: a player standing on a plain sees
@@ -89,8 +89,8 @@
  * light query was.
  */
 import { Effect } from 'effect'
-import type { BlockPosition, ChunkStoreApi } from '../chunk-store-port.js'
-import type { Position } from '@nerima-games/mc-kernel'
+import type { ChunkStoreApi } from '@nerima-games/mc-worldgen'
+import { blockPosition, type BlockPosition, type Position } from '@nerima-games/mc-kernel'
 import { EntityKind } from '@nerima-games/mc-sim'
 import { drawRolls, rollAt } from '../frame-rolls.js'
 import { hostileSpawnsAllowed } from '../day-night.js'
@@ -171,8 +171,8 @@ const EMPTY_ATTEMPTS: ReadonlyArray<never> = []
  *
  * READS 3 BLOCKS AND 1 LIGHT PER CELL, so 256 store calls for the full ring.
  * That is why this is called on a CADENCE and not every frame — see
- * `stages/registration.ts`, which paces it, and `../chunk-store-port`'s note on
- * `getLight` being occasionally O(chunk) rather than O(1).
+ * `stages/registration.ts`, which paces it, and `@nerima-games/mc-worldgen`'s
+ * note on `getLight` being occasionally O(chunk) rather than O(1).
  *
  * The rule is NOT applied here. This function gathers facts and hands them over;
  * `applySpawnAttempts` runs `canHostileSpawnAt` and the population cap. Keeping
@@ -236,8 +236,8 @@ export const searchSpawnCandidates = (
         const head = yield* store.getBlock(at(x, footY + 1, z))
 
         if (ground._tag !== 'Block' || foot._tag !== 'Block' || head._tag !== 'Block') {
-          // NOT offered as air. `../chunk-store-port`'s `BlockReading` exists to
-          // keep these apart: 「sand at the edge of the loaded area, told the cell
+          // NOT offered as air. `@nerima-games/mc-worldgen`'s `BlockReading`
+          // exists to keep these apart: 「sand at the edge of the loaded area, told the cell
           // below it is air, falls out of the world」, and a spawner told the same
           // thing puts a mob there.
           unreadable += 1
@@ -297,7 +297,7 @@ export const searchSpawnCandidates = (
  * else」. A search that pre-filtered on air would be a second, unnamed and
  * untested copy of the `obstructed` test.
  */
-const at = (x: number, y: number, z: number): BlockPosition => ({ x, y, z })
+const at = (x: number, y: number, z: number): BlockPosition => blockPosition(x, y, z)
 
 /**
  * Which hostile a cell would produce.

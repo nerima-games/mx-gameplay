@@ -21,8 +21,8 @@ importers:
         specifier: 0.2.1
         version: 0.2.1
       '@nerima-games/mc-worldgen':
-        specifier: 0.2.0
-        version: 0.2.0
+        specifier: 0.3.0
+        version: 0.3.0
       effect:
         specifier: 3.22.1
         version: 3.22.1
@@ -371,6 +371,10 @@ packages:
     peerDependencies:
       effect: ^3.22.1
 
+  '@nerima-games/mc-kernel@0.5.1':
+    resolution: {integrity: sha512-DlyTf/UUDZh8SKPO+H0mSCL7ywGiIa5KqZJs/xIqj/MpCKLma6lu9QxlnmvWyH0ikV32lyw+Z6yIgCaVIaFCdg==, tarball: https://npm.pkg.github.com/download/@nerima-games/mc-kernel/0.5.1/0637d8dce6026f6ef114455f0d8f0969a99333f3}
+    engines: {node: '>=24.0.0', pnpm: '>=11.24.0'}
+
   '@nerima-games/mc-kernel@0.6.1':
     resolution: {integrity: sha512-dFesm1TZW+/TjQe9zsLtFTAS3uu1y7hxpOBFJifvHiwrKjQG547Cc/7kGhFk72jhqfZU4Fef7+/1keTNFqmf3g==, tarball: https://npm.pkg.github.com/download/@nerima-games/mc-kernel/0.6.1/b7dd614eefc85d83cf48d94d5f8178a90c79f5fc}
     engines: {node: '>=24.0.0', pnpm: '>=11.24.0'}
@@ -393,6 +397,10 @@ packages:
 
   '@nerima-games/mc-worldgen@0.2.0':
     resolution: {integrity: sha512-UumeyQ2hlSauT5kqK+nfNrktP7D3oRF5ludoOI5cH3jHZfyq5pdDA7yK9FqGM/YziM7omlON1uZAToQuaCafZQ==, tarball: https://npm.pkg.github.com/download/@nerima-games/mc-worldgen/0.2.0/775029996c974970e912572a964f66dc098f843d}
+    engines: {node: '>=24.0.0', pnpm: '>=11.24.0'}
+
+  '@nerima-games/mc-worldgen@0.3.0':
+    resolution: {integrity: sha512-W54+IFLV5V9OPZmxgtzwXZXKTG3O7iysY+dKLMKry64zhVagEQd8z7Q5imZy6fpHfoSLiXYMKBft79Jc1UVJ9g==, tarball: https://npm.pkg.github.com/download/@nerima-games/mc-worldgen/0.3.0/4933740adbf432010f983f309046f2de258da17f}
     engines: {node: '>=24.0.0', pnpm: '>=11.24.0'}
 
   '@oxc-parser/binding-android-arm-eabi@0.147.0':
@@ -1578,6 +1586,10 @@ snapshots:
     dependencies:
       effect: 3.22.1
 
+  '@nerima-games/mc-kernel@0.5.1':
+    dependencies:
+      effect: 3.22.1
+
   '@nerima-games/mc-kernel@0.6.1':
     dependencies:
       effect: 3.22.1
@@ -1608,6 +1620,13 @@ snapshots:
   '@nerima-games/mc-worldgen@0.2.0':
     dependencies:
       '@nerima-games/mc-kernel': 0.4.0(effect@3.22.1)
+      '@nerima-games/mc-noise': 0.3.0
+      '@nerima-games/mc-save': 0.3.0
+      effect: 3.22.1
+
+  '@nerima-games/mc-worldgen@0.3.0':
+    dependencies:
+      '@nerima-games/mc-kernel': 0.5.1
       '@nerima-games/mc-noise': 0.3.0
       '@nerima-games/mc-save': 0.3.0
       effect: 3.22.1

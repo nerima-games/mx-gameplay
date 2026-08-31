@@ -173,8 +173,7 @@ import {
   screenSize,
   writeLine,
 } from './terminal'
-import type { BlockId } from '../../src/domain/chunk-store-port'
-import type { BlockPositionKey } from '@nerima-games/mc-kernel'
+import { AIR_BLOCK_ID, BlockId, type BlockPositionKey } from '@nerima-games/mc-kernel'
 
 const BOUNDS = { width: 26, height: 18 }
 
@@ -515,7 +514,7 @@ const handleKey = (state: State, key: string, options: PreviewOptions): Effect.E
         break
 
       case 'e':
-        poke(site, positionAt(site, state.cursor.x, state.cursor.y), 0)
+        poke(site, positionAt(site, state.cursor.x, state.cursor.y), AIR_BLOCK_ID)
         break
 
       case '[':
@@ -524,7 +523,7 @@ const handleKey = (state: State, key: string, options: PreviewOptions): Effect.E
         const current = BLOCKS.findIndex((entry) => entry.id === state.palette)
         const index = (current + direction + BLOCKS.length) % BLOCKS.length
         const next = BLOCKS[index] ?? BLOCKS[0]
-        state.palette = next?.id ?? 0
+        state.palette = next?.id ?? AIR_BLOCK_ID
         site.note = `poke palette: ${next?.name ?? 'air'}`
         break
       }
@@ -589,7 +588,7 @@ const handleKey = (state: State, key: string, options: PreviewOptions): Effect.E
         // be a legend line the screen prints and cannot honour.
         const slot = key === '0' ? 10 : Number(key)
         if (Number.isInteger(slot) && slot >= 1 && slot <= Math.min(BLOCKS.length, 10)) {
-          state.palette = BLOCKS[slot - 1]?.id ?? 0
+          state.palette = BLOCKS[slot - 1]?.id ?? AIR_BLOCK_ID
           site.note = `poke palette: ${BLOCKS[slot - 1]?.name ?? 'air'}`
         }
         break
@@ -684,7 +683,7 @@ const program: Effect.Effect<number> = Effect.gen(function* () {
     screen: options.screen,
     view: options.view,
     cursor: { x: scenario.target.x, y: scenario.target.y },
-    palette: 5,
+    palette: BlockId(5),
     // The hour comes from `--time`; the weather starts where the rule says a
     // world starts. `--time` is not extended to it, because a weather flag would
     // need a duration as well as a name and the duration is `createWeatherState`'s

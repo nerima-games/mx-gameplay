@@ -1,7 +1,7 @@
-import { propertyOfBlockId } from '@nerima-games/mc-kernel'
+import { blockPosition, propertyOfBlockId, type BlockPosition } from '@nerima-games/mc-kernel'
 import type { Vehicle, VehicleServiceApi } from '@nerima-games/mc-sim'
 import { Effect } from 'effect'
-import type { BlockPosition, BlockReading, ChunkStoreApi } from '../chunk-store-port.js'
+import type { BlockReading, ChunkStoreApi } from '@nerima-games/mc-worldgen'
 import type { Dimension } from '@nerima-games/mc-worldgen'
 import { isAscendingAhead } from './rail-ascent.js'
 import { resolveRailShape } from './rail-shape.js'
@@ -38,7 +38,7 @@ const railKindAt = (readings: ReadonlyMap<string, BlockReading>, position: Block
 }
 
 const waterAt = (readings: ReadonlyMap<string, BlockReading>, position: BlockPosition): boolean => {
-  const cells = [position, { ...position, y: position.y + 1 }]
+  const cells = [position, blockPosition(position.x, position.y + 1, position.z)]
   return cells.some((cell) => {
     const reading = blockAt(readings, cell)
     return reading !== undefined && isBlock(reading) && propertyOfBlockId(reading.block, 'fluid') === 'water'
@@ -60,7 +60,7 @@ const collidesAt = (
   for (let y = Math.floor(minY); y <= Math.floor(maxY); y += 1) {
     for (let z = Math.floor(minZ); z <= Math.floor(maxZ); z += 1) {
       for (let x = Math.floor(minX); x <= Math.floor(maxX); x += 1) {
-        const reading = blockAt(readings, { x, y, z })
+        const reading = blockAt(readings, blockPosition(x, y, z))
         if (reading === undefined || !isBlock(reading)) continue
         if (propertyOfBlockId(reading.block, 'collisionShape') === 'none') continue
         if (maxX > x && minX < x + 1 && maxY > y && minY < y + 1 && maxZ > z && minZ < z + 1) return true
@@ -75,7 +75,7 @@ const neighbourhood = (position: BlockPosition): ReadonlyArray<BlockPosition> =>
   const cells: BlockPosition[] = []
   for (let y = centre.y - 1; y <= centre.y + 1; y += 1) {
     for (let z = centre.z - 1; z <= centre.z + 1; z += 1) {
-      for (let x = centre.x - 1; x <= centre.x + 1; x += 1) cells.push({ x, y, z })
+      for (let x = centre.x - 1; x <= centre.x + 1; x += 1) cells.push(blockPosition(x, y, z))
     }
   }
   return cells
@@ -103,7 +103,11 @@ const stepVehicle = (
   environment: VehicleFrameEnvironment,
   dt: number,
 ): Effect.Effect<Readonly<{ vehicle: Vehicle; exited?: Readonly<{ reason: VehicleExitReason }> }>> => Effect.gen(function* () {
-  const position = { x: Math.floor(vehicle.position.x), y: Math.floor(vehicle.position.y), z: Math.floor(vehicle.position.z) }
+  const position = blockPosition(
+    Math.floor(vehicle.position.x),
+    Math.floor(vehicle.position.y),
+    Math.floor(vehicle.position.z),
+  )
   const readings = yield* readNeighbourhood(store, position)
   const controls = environment.controlsForVehicle?.(vehicle) ?? { throttle: 0, steering: 0 }
   if (vehicle.type === 'boat') {
@@ -129,7 +133,7 @@ const stepVehicle = (
   }
 
   const kind = railKindAt(readings, position)
-  const isRailAt = (x: number, y: number, z: number): boolean => railKindAt(readings, { x, y, z }) !== 'none'
+  const isRailAt = (x: number, y: number, z: number): boolean => railKindAt(readings, blockPosition(x, y, z)) !== 'none'
   const transition = stepMinecart(vehicle, {
     kind,
     shape: resolveRailShape(isRailAt, position.x, position.y, position.z),

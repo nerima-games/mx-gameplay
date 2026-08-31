@@ -1,10 +1,10 @@
 import { describe, expect, it } from '@effect/vitest'
 import { Effect } from 'effect'
 import { applyBoneMeal } from '../src/domain/interactions/bone-meal'
-import { blockIdOf, blockTypeOfId } from '@nerima-games/mc-kernel'
-import type { BlockPosition } from '../src/domain/chunk-store-port'
+import { blockIdOf, blockPosition, blockTypeOfId } from '@nerima-games/mc-kernel'
+import type { BlockPosition } from '@nerima-games/mc-kernel'
 
-const TARGET: BlockPosition = { x: 2, y: 64, z: -1 }
+const TARGET: BlockPosition = blockPosition(2, 64, -1)
 
 const blockAt = (block: Parameters<typeof blockIdOf>[0]) =>
   (position: BlockPosition): Effect.Effect<ReturnType<typeof blockTypeOfId>> => {

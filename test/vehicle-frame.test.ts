@@ -2,7 +2,7 @@ import { describe, expect, it } from '@effect/vitest'
 import { Effect, Exit } from 'effect'
 import { blockIdOf } from '@nerima-games/mc-kernel'
 import { VehicleId, type VehicleServiceApi } from '@nerima-games/mc-sim'
-import type { ChunkStoreApi } from '../src/domain/chunk-store-port'
+import type { ChunkStoreApi } from '@nerima-games/mc-worldgen'
 import { advanceVehicles } from '../src/domain/vehicle/vehicle-frame'
 
 describe('vehicle frame', () => {

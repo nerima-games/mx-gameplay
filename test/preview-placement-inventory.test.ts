@@ -1,9 +1,10 @@
 import { describe, expect, it } from '@effect/vitest'
 import { Effect } from 'effect'
+import { blockPosition } from '@nerima-games/mc-kernel'
 import { makeSite, requestPlace, stepFrame } from '../apps/preview-mining-site/site'
 import { AIR, STONE } from '../apps/preview-mining-site/world'
 
-const TARGET = { x: 2, y: 64, z: 0 } as const
+const TARGET = blockPosition(2, 64, 0)
 
 describe('preview placement inventory bridge', () => {
   it.effect('charges exactly one item for a successful placement', () =>

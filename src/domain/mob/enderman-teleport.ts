@@ -88,8 +88,8 @@
  *
  * Water and daylight are not added here. Both would need a fact this rule cannot
  * get honestly — the block at the enderman's own cell (a kernel capability
- * question this repository has no flag for; `../chunk-store-port` has
- * `isReplaceable` and `validSpawnSurface`, and neither means "submerged") and
+ * question this repository has no flag for; kernel's capability table has
+ * `replaceable` and `validSpawnSurface`, and neither means "submerged") and
  * the SKY light at it (mc-worldgen's grid, distinct from the block light
  * `./hostile-spawn` already takes). Inventing either would be inventing a
  * measurement, so they are on the arena's missing list with those destinations.
@@ -354,7 +354,19 @@ export const endermanTeleportCandidates = (
     const zBlocks = offsetFromRoll(rolls[attempt * 2 + 1])
     if (xBlocks === undefined || zBlocks === undefined) break
     if (!withinTeleportBand(xBlocks, zBlocks)) continue
-    candidates.push({ x: anchor.x + xBlocks, y: current.y, z: anchor.z + zBlocks })
+    // FLOORED HERE, not inside `offsetFromRoll`: `xBlocks`/`zBlocks` are a
+    // continuous displacement (the reference's own unchanged formula, see
+    // `offsetFromRoll`'s header) and `withinTeleportBand` above measures the
+    // real-valued distance the reference measures. Only the LANDING CELL has
+    // to be an integer — `EndermanTeleportPosition`'s own contract — so the
+    // floor belongs at the one place a continuous displacement becomes a
+    // cell, the same convention `domain/entities/mob-frame.ts`'s `cellOf`
+    // and `stages/registration.ts`'s "THE PLAYER'S CELL IS FLOORED" use.
+    candidates.push({
+      x: Math.floor(anchor.x + xBlocks),
+      y: current.y,
+      z: Math.floor(anchor.z + zBlocks),
+    })
   }
 
   return candidates

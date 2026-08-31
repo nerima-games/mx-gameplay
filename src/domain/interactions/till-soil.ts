@@ -52,7 +52,7 @@
 import { Effect } from 'effect'
 import { blockIdOf, blockTypeOfId, type BlockType } from '@nerima-games/mc-kernel'
 import { adjacentBlockPosition, blockPosition } from '@nerima-games/mc-kernel'
-import type { BlockPosition } from '../chunk-store-port.js'
+import type { BlockPosition } from '@nerima-games/mc-kernel'
 
 /**
  * Ground that a hoe turns into farmland.

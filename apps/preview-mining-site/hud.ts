@@ -12,7 +12,7 @@ import { USAGE } from './options'
 import type { ScreenName, ViewMode } from './render'
 import { describeTool, type Site } from './site'
 import { BLOCKS, glyphOf, type Glyph } from './world'
-import type { BlockId } from '../../src/domain/chunk-store-port'
+import type { BlockId } from '@nerima-games/mc-kernel'
 
 export const HUD_ROWS = 5
 

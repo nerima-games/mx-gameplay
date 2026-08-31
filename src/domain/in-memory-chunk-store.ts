@@ -1,5 +1,6 @@
 /**
- * A COMPLETE in-memory `ChunkStore`, typed by this repository's mirror.
+ * A COMPLETE in-memory `ChunkStore`, typed by `@nerima-games/mc-worldgen`'s
+ * real `ChunkStoreApi`.
  *
  * ---------------------------------------------------------------------------
  * WHY THIS EXISTS, AND WHY IT IS NOT A TEST DOUBLE
@@ -35,14 +36,16 @@
  * policy, no disk. `load` on an unknown chunk yields an empty one rather than
  * generating, because generating is precisely the part that is not ours.
  *
- * It exists because `domain/chunk-store-port.ts` is a mirror that
- * `check:mirrors` pins in both directions, so an implementation written against
- * it cannot drift into a different service — and because a rule with no store
- * cannot be exercised by anything except a test. THE DAY mc-worldgen PUBLISHES,
- * THIS FILE IS DELETED and its Layer is replaced by
- * `GeneratedChunkStoreLayer`, on the same commit that deletes the mirror. That
- * is the same lifecycle the mirror already has, and it is the reason this is
- * acceptable rather than a second implementation to maintain forever.
+ * It existed, historically, because `domain/chunk-store-port.ts` was a mirror
+ * that `check:mirrors` pinned in both directions, so an implementation written
+ * against it could not drift into a different service — and because a rule
+ * with no store cannot be exercised by anything except a test. mc-worldgen has
+ * now published and `chunk-store-port.ts` is deleted, its callers repointed to
+ * mc-worldgen directly, which is the trigger this header used to say would
+ * delete this file too and replace its Layer with `GeneratedChunkStoreLayer`.
+ * That has NOT happened yet: it is a flagged follow-up rather than done here.
+ * Until then this remains a second implementation to maintain, typed against
+ * mc-worldgen's real `ChunkStoreApi` directly rather than against a mirror.
  *
  * ---------------------------------------------------------------------------
  * THE THREE SEMANTICS A RULE CAN GET WRONG
@@ -61,22 +64,27 @@
 import { Effect, Layer, Ref } from 'effect'
 import {
   AIR_BLOCK_ID,
+  blockPosition,
+  chunkCoord,
+  type BlockId,
+  type BlockPosition,
+  type ChunkCoord,
+} from '@nerima-games/mc-kernel'
+import {
   CHUNK_HEIGHT,
   CHUNK_SIZE_XZ,
   ChunkStore,
   blockIndex,
-  type BlockId,
-  type BlockPosition,
   type BlockReading,
   type BlockWriteOutcome,
-  type ChunkCoord,
+  type Chunk,
   type ChunkDirtyBatch,
   type ChunkDirtySubscription,
   type ChunkNeighbours,
   type ChunkStoreApi,
   type LightReading,
-  type WorldgenChunk,
-} from './chunk-store-port.js'
+  type SubscriberId,
+} from '@nerima-games/mc-worldgen'
 
 /** How bright a cell is. Absent means dark, which is the honest default. */
 export type CellLight = {
@@ -92,14 +100,12 @@ export const cellKey = (position: BlockPosition): string =>
 export const chunkKey = (coord: ChunkCoord): string => `${String(coord.cx)},${String(coord.cz)}`
 
 /** Which chunk a cell is in. Floor division, so negative coordinates work. */
-export const chunkOf = (position: BlockPosition): ChunkCoord => ({
-  cx: Math.floor(position.x / CHUNK_SIZE_XZ),
-  cz: Math.floor(position.z / CHUNK_SIZE_XZ),
-})
+export const chunkOf = (position: BlockPosition): ChunkCoord =>
+  chunkCoord(Math.floor(position.x / CHUNK_SIZE_XZ), Math.floor(position.z / CHUNK_SIZE_XZ))
 
 const parseChunkKey = (key: string): ChunkCoord => {
   const [cx, cz] = key.split(',')
-  return { cx: Number(cx), cz: Number(cz) }
+  return chunkCoord(Number(cx), Number(cz))
 }
 
 /** Is this cell inside the world's vertical extent? */
@@ -132,8 +138,8 @@ type State = {
  *
  * The world is COPIED at construction. A caller that kept its own map and
  * mutated it would be a second writer of the same state, and every read here
- * would race it — the exact hazard `./chunk-store-port`'s `setBlock` contract
- * exists to make single-threaded.
+ * would race it — the exact hazard `@nerima-games/mc-worldgen`'s `setBlock`
+ * contract exists to make single-threaded.
  */
 export const makeInMemoryChunkStore = (
   contents: WorldContents = EMPTY_WORLD,
@@ -162,7 +168,7 @@ export const makeInMemoryChunkStore = (
        * wrong. It allocates 65,536 bytes per call, which is the wrong shape for
        * a hot path and the right shape for a store whose world fits in a Map.
        */
-      const materialise = (current: State, coord: ChunkCoord): WorldgenChunk => {
+      const materialise = (current: State, coord: ChunkCoord): Chunk => {
         const blocks = new Uint8Array(CHUNK_SIZE_XZ * CHUNK_SIZE_XZ * CHUNK_HEIGHT)
         for (const [cell, block] of current.blocks) {
           const [x, y, z] = cell.split(',').map(Number)
@@ -178,7 +184,7 @@ export const makeInMemoryChunkStore = (
         return { coord, blocks, biomes: [] }
       }
 
-      const peekChunk = (current: State, coord: ChunkCoord): WorldgenChunk | undefined =>
+      const peekChunk = (current: State, coord: ChunkCoord): Chunk | undefined =>
         current.loaded.has(chunkKey(coord)) ? materialise(current, coord) : undefined
 
       const subscribe: Effect.Effect<ChunkDirtySubscription> = Ref.modify(state, (current) => {
@@ -186,7 +192,14 @@ export const makeInMemoryChunkStore = (
         current.subscribers.set(id, new Set())
 
         const subscription: ChunkDirtySubscription = {
-          id,
+          // `@nerima-games/mc-worldgen` exports no public constructor for
+          // `SubscriberId` — it is minted only inside the package's own
+          // `ChunkStoreState.subscribed`, which this file, as an independent
+          // reimplementation of `ChunkStoreApi`, has no way to call. This
+          // counter-derived id is a genuine, never-reused subscriber
+          // identity by construction; the cast asserts only that, not that
+          // an unchecked value has an unverified shape.
+          id: id as SubscriberId,
           drain: Ref.modify(state, (now) => {
             const pending = now.subscribers.get(id) ?? new Set<string>()
             const batch: ChunkDirtyBatch = {
@@ -248,14 +261,14 @@ export const makeInMemoryChunkStore = (
           Effect.map(Ref.get(state), (current): ChunkNeighbours => {
             // ABSENT KEYS, NOT `undefined` VALUES. `tsconfig.base.json` sets
             // `exactOptionalPropertyTypes`, so `{ xPos: undefined }` is NOT a
-            // `{ xPos?: WorldgenChunk }` — and the distinction is real here
+            // `{ xPos?: Chunk }` — and the distinction is real here
             // rather than pedantic: a consumer doing `'xPos' in neighbours`
             // would see a neighbour that is not there.
             const sides = [
-              ['xPos', { cx: coord.cx + 1, cz: coord.cz }],
-              ['xNeg', { cx: coord.cx - 1, cz: coord.cz }],
-              ['zPos', { cx: coord.cx, cz: coord.cz + 1 }],
-              ['zNeg', { cx: coord.cx, cz: coord.cz - 1 }],
+              ['xPos', chunkCoord(coord.cx + 1, coord.cz)],
+              ['xNeg', chunkCoord(coord.cx - 1, coord.cz)],
+              ['zPos', chunkCoord(coord.cx, coord.cz + 1)],
+              ['zNeg', chunkCoord(coord.cx, coord.cz - 1)],
             ] as const
 
             const neighbours: { -readonly [K in keyof ChunkNeighbours]: ChunkNeighbours[K] } = {}
@@ -291,7 +304,7 @@ export const makeInMemoryChunkStore = (
               for (const cell of current.blocks.keys()) {
                 const [x, , z] = cell.split(',').map(Number)
                 if (x === undefined || z === undefined) continue
-                if (chunkKey(chunkOf({ x, y: 0, z })) === key) {
+                if (chunkKey(chunkOf(blockPosition(x, 0, z))) === key) {
                   current.blocks.delete(cell)
                   current.lights.delete(cell)
                 }

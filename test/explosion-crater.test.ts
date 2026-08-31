@@ -1,7 +1,7 @@
 import { describe, expect, it } from '@effect/vitest'
 import { Effect } from 'effect'
 import { blockIdOf, blockPosition, blockPositionKeyOf, type BlockType } from '@nerima-games/mc-kernel'
-import { AIR_BLOCK_ID, type BlockId, type BlockPosition } from '../src/domain/chunk-store-port'
+import { AIR_BLOCK_ID, type BlockId, type BlockPosition } from '@nerima-games/mc-kernel'
 import { carveExplosionCrater, craterCells, craterRadius } from '../src/domain/interactions/explosion-crater'
 import { makeChunkStoreDouble, world } from './support/chunk-store-double'
 
@@ -18,9 +18,9 @@ const OBSIDIAN = registeredBlockId('obsidian')
 describe('explosion crater', () => {
   it.effect('destroys stone but preserves normal-explosion-resistant blocks', () =>
     Effect.gen(function* () {
-      const centre: BlockPosition = { x: 8, y: 64, z: 8 }
-      const bedrockAt: BlockPosition = { x: 9, y: 64, z: 8 }
-      const obsidianAt: BlockPosition = { x: 8, y: 65, z: 8 }
+      const centre: BlockPosition = blockPosition(8, 64, 8)
+      const bedrockAt: BlockPosition = blockPosition(9, 64, 8)
+      const obsidianAt: BlockPosition = blockPosition(8, 65, 8)
       const store = yield* makeChunkStoreDouble(
         world([
           [centre, STONE],
@@ -50,7 +50,7 @@ describe('explosion crater', () => {
 
   it.effect('does not write crater cells in unloaded chunks', () =>
     Effect.gen(function* () {
-      const centre: BlockPosition = { x: 8, y: 64, z: 8 }
+      const centre: BlockPosition = blockPosition(8, 64, 8)
       const store = yield* makeChunkStoreDouble(world([[centre, STONE]]), [])
 
       const disturbed = yield* carveExplosionCrater(store.api, centre, 1)
@@ -71,7 +71,7 @@ describe('explosion crater', () => {
   })
 
   it('craterCells returns no cells for a non-positive power', () => {
-    const centre: BlockPosition = { x: 8, y: 64, z: 8 }
+    const centre: BlockPosition = blockPosition(8, 64, 8)
 
     expect(craterCells(centre, 0)).toStrictEqual([])
     expect(craterCells(centre, -3)).toStrictEqual([])

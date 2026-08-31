@@ -40,8 +40,9 @@
  * them somewhere else in another dimension. That needs mc-sim's roster and a
  * dimension service, and neither exists.
  *
- * So this rule consumes the shape through `../portal-frame-port`, which mirrors
- * mc-worldgen's rule exactly as `../chunk-store-port` mirrors its service.
+ * So this rule consumes the shape directly from `@nerima-games/mc-kernel`'s
+ * `detectNetherPortal`/`generatePortalLayout`, and the chunk buffer through
+ * `@nerima-games/mc-worldgen`'s `ChunkStore`.
  *
  * ---------------------------------------------------------------------------
  * READ EVERYTHING, THEN DECIDE, THEN WRITE — AND THE ORDER IS LOAD-BEARING
@@ -87,11 +88,17 @@
  * mx-gameplay has no edge to it (plan.md §2.1). Whoever drains the outbox plays
  * the sound.
  */
-import { Effect, Option } from 'effect'
-import { blockIdOf } from '@nerima-games/mc-kernel'
+import { Effect } from 'effect'
+import {
+  blockIdOf,
+  detectNetherPortal,
+  MAX_PORTAL_WIDTH,
+  type BlockId,
+  type BlockPosition,
+  type PortalFrame,
+} from '@nerima-games/mc-kernel'
 import { chunkCoordsAround, openChunkWindow } from '../chunk-window.js'
-import type { BlockId, BlockPosition, ChunkStoreApi } from '../chunk-store-port.js'
-import { MAX_PORTAL_WIDTH, detectNetherPortal, type PortalFrame } from '../portal-frame-port.js'
+import type { ChunkStoreApi } from '@nerima-games/mc-worldgen'
 
 /**
  * How far from the ignition cell the chunk window must reach.
@@ -112,8 +119,8 @@ import { MAX_PORTAL_WIDTH, detectNetherPortal, type PortalFrame } from '../porta
  * makes the walk go the full distance.
  *
  * The VERTICAL extent needs no radius: chunks are full height
- * (`../chunk-store-port`'s `CHUNK_HEIGHT`), so a column is resident or it is
- * not.
+ * (`@nerima-games/mc-worldgen`'s `CHUNK_HEIGHT`), so a column is resident or
+ * it is not.
  */
 export const PORTAL_WINDOW_RADIUS: number = MAX_PORTAL_WIDTH + 1
 
@@ -200,9 +207,9 @@ export const ignitePortal = (
     /* v8 ignore stop */
 
     const window = yield* openChunkWindow(store, chunkCoordsAround(ignition, PORTAL_WINDOW_RADIUS))
-    const detected = detectNetherPortal(window.blockAt, ignition)
+    const frame = detectNetherPortal(window.blockAt, ignition)
 
-    if (Option.isNone(detected)) {
+    if (frame === undefined) {
       // The ORDER of these two answers is a decision. A window with an absent
       // chunk in it can refuse a frame that is really there, so "I could not
       // see" is checked first and reported in preference to "there is nothing
@@ -210,8 +217,6 @@ export const ignitePortal = (
       // area that their portal is malformed.
       return window.unreadableProbes() > 0 ? { _tag: 'ChunkNotLoaded' } : { _tag: 'NoFrame' }
     }
-
-    const frame = detected.value
 
     // FROM HERE ON `window.blockAt` IS STALE. `../chunk-window` peeks LIVE
     // buffers, so the first write below changes what it would answer.
@@ -238,7 +243,7 @@ export const ignitePortal = (
         }
         /* v8 ignore stop */
         // exhaustiveness arm over BlockWriteOutcome, a closed four-tag union
-        // (chunk-store-port.ts's BlockWriteOutcome); 'Written', 'Unchanged',
+        // (mc-worldgen's chunk-store-state.d.ts's BlockWriteOutcome); 'Written', 'Unchanged',
         // 'ChunkNotLoaded' and 'OutOfWorld' are the only reachable tags and
         // all four are handled above, so no input can reach this arm.
         /* v8 ignore start */
