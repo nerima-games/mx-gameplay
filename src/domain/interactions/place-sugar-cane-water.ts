@@ -57,9 +57,16 @@
  * needed in order to allow the placement in the first place.
  */
 import { Effect } from 'effect'
-import { adjacentBlockPosition, blockPosition, horizontalBlockNeighbours } from '@nerima-games/mc-kernel'
-import { blockIdOf, blockTypeOfId } from '@nerima-games/mc-kernel'
-import type { BlockId, BlockPosition, BlockReading, ChunkStoreApi } from '../chunk-store-port.js'
+import {
+  adjacentBlockPosition,
+  blockIdOf,
+  blockPosition,
+  blockTypeOfId,
+  horizontalBlockNeighbours,
+  type BlockId,
+  type BlockPosition,
+} from '@nerima-games/mc-kernel'
+import type { BlockReading, ChunkStoreApi } from '@nerima-games/mc-worldgen'
 
 /** Is this byte sugar cane? Asked of kernel's registry; see `./place-mushroom-light`. */
 export const isSugarCaneBlock = (block: BlockId): boolean => blockTypeOfId(block) === 'sugar_cane'

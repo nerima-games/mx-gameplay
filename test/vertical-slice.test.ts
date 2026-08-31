@@ -26,13 +26,13 @@
  *
  * A STAND-IN: the store, `test/support/chunk-store-double.ts`; the roster,
  * `test/support/entity-manager-double.ts`; and the frame loop,
- * `test/support/frame-runner.ts`. The first two are typed by this repository's
- * mirrors of mc-worldgen's `ChunkStore` and mc-sim's `EntityManager`, and both
- * mirrors are pinned against the real interfaces by `test/chunk-store-mirror.test.ts`
- * and `test/entity-manager-mirror.test.ts`; the third resolves the `after` edges
- * the way mc-compose will, rather than trusting the array order. The same
- * scenarios against the REAL services are `mc-worldgen/test/vertical-slice.test.ts`
- * and mc-sim's own entity tests.
+ * `test/support/frame-runner.ts`. The store double is now typed by
+ * mc-worldgen's real `ChunkStoreApi` directly (the local mirror that used to
+ * stand in for it, pinned by the now-deleted `test/chunk-store-mirror.test.ts`,
+ * is gone); the roster double is typed by mc-sim's `EntityManager`. The third
+ * resolves the `after` edges the way mc-compose will, rather than trusting the
+ * array order. The same scenarios against the REAL services are
+ * `mc-worldgen/test/vertical-slice.test.ts` and mc-sim's own entity tests.
  *
  * ---------------------------------------------------------------------------
  * The properties this file exists to protect
@@ -75,17 +75,18 @@ import {
   type TimeServiceApi,
 } from '@nerima-games/mc-sim'
 import { Effect, Ref } from 'effect'
-import { blockIdOf, capabilityOfBlockId, type HarvestTier, type Position } from '@nerima-games/mc-kernel'
+import {
+  AIR_BLOCK_ID,
+  blockIdOf,
+  capabilityOfBlockId,
+  type BlockPosition,
+  type HarvestTier,
+  type Position,
+} from '@nerima-games/mc-kernel'
 import { readdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import {
-  AIR_BLOCK_ID,
-  type BlockId,
-  type BlockPosition,
-  type BlockWriteOutcome,
-  type ChunkStoreApi,
-} from '../src/domain/chunk-store-port'
+import type { BlockWriteOutcome, ChunkStoreApi } from '@nerima-games/mc-worldgen'
 import { NOON_FRACTION } from '../src/domain/day-night'
 import {
   addVillager,
@@ -112,7 +113,13 @@ import {
 } from '../src/domain/entities/mob-frame'
 import { EntityKind, type EntityManagerApi } from '@nerima-games/mc-sim'
 import { disturb } from '../src/domain/falling-block'
-import { blockPosition, blockPositionKeyOf, DeltaTimeSecs, StackCount } from '@nerima-games/mc-kernel'
+import {
+  BlockId,
+  blockPosition,
+  blockPositionKeyOf,
+  DeltaTimeSecs,
+  StackCount,
+} from '@nerima-games/mc-kernel'
 import { DEFAULT_ROLL_SEED, drawRolls, nextRoll } from '../src/domain/frame-rolls'
 import {
   FIRE_NATURAL_LIFETIME_TICKS,
@@ -133,7 +140,7 @@ import { ZOMBIE_KIND } from '../src/domain/mob/hostile-combat'
 import type { MinedItem } from '../src/domain/interactions/block-loot'
 import { chunkCoordsAround } from '../src/domain/chunk-window'
 import { PORTAL_WINDOW_RADIUS, ignitePortal } from '../src/domain/interactions/ignite-portal'
-import { generatePortalLayout } from '../src/domain/portal-frame-port'
+import { generatePortalLayout } from '@nerima-games/mc-kernel'
 import {
   drainItemUseResults,
   drainPlayerDamages,
@@ -194,16 +201,16 @@ import { runFrame, runFrames } from './support/frame-runner'
  * need, and lava appears in exactly the two liquid-displacement cases below.
  * `test/place-block.test.ts` spells it the same way for the same reason.
  */
-const LAVA = 11
+const LAVA: BlockId = BlockId(11)
 
-const support: BlockPosition = { x: 2, y: 64, z: 3 }
-const floor: BlockPosition = { x: 2, y: 63, z: 3 }
-const sandAt: BlockPosition = { x: 2, y: 65, z: 3 }
-const aboveSand: BlockPosition = { x: 2, y: 66, z: 3 }
-const topOfColumn: BlockPosition = { x: 2, y: 67, z: 3 }
+const support: BlockPosition = blockPosition(2, 64, 3)
+const floor: BlockPosition = blockPosition(2, 63, 3)
+const sandAt: BlockPosition = blockPosition(2, 65, 3)
+const aboveSand: BlockPosition = blockPosition(2, 66, 3)
+const topOfColumn: BlockPosition = blockPosition(2, 67, 3)
 
 const slice = (
-  initial: ReadonlyMap<string, number>,
+  initial: ReadonlyMap<string, BlockId>,
   loaded: ReadonlyArray<string> = ['0,0'],
   inventorySlots = emptySlots(),
 ) =>
@@ -502,7 +509,7 @@ describe('the slice, through the stage registration', () => {
       // Chunk (-1, 0) is not resident. Whatever is in it is UNKNOWN, and a rule
       // that read "air" there would clear a cell it cannot see and drop the
       // block into ungenerated space.
-      const edge: BlockPosition = { x: -1, y: 64, z: 3 }
+      const edge: BlockPosition = blockPosition(-1, 64, 3)
       const { store, inventory, state, stages } = yield* slice(world([[floor, STONE]]), ['0,0'])
 
       // Both entry points are exercised: a break request at the edge...
@@ -658,8 +665,8 @@ describe('the slice, through the stage registration', () => {
 
   it.effect('REGRESSION: the floor of the world holds a block up — `OutOfWorld` is not a free cell', () =>
     Effect.gen(function* () {
-      const bottom: BlockPosition = { x: 2, y: 0, z: 3 }
-      const belowTheWorld: BlockPosition = { x: 2, y: -1, z: 3 }
+      const bottom: BlockPosition = blockPosition(2, 0, 3)
+      const belowTheWorld: BlockPosition = blockPosition(2, -1, 3)
       const { store, state, stages } = yield* slice(world([[bottom, SAND]]))
 
       yield* Ref.update(state.fallingBlocks, (queue) =>
@@ -674,7 +681,7 @@ describe('the slice, through the stage registration', () => {
 
   it.effect('nothing falls from above the build limit', () =>
     Effect.gen(function* () {
-      const ceiling: BlockPosition = { x: 2, y: 255, z: 3 }
+      const ceiling: BlockPosition = blockPosition(2, 255, 3)
       const { store, state, stages } = yield* slice(world([]))
 
       // The cell examined is the one ABOVE the disturbance, and at y = 256 that
@@ -694,7 +701,7 @@ describe('the slice, through the stage registration', () => {
       // `run` has no error channel, so "the player aimed at nothing" has to be
       // an ordinary outcome rather than a failure. The frame must complete and
       // the next request must still be serviced.
-      yield* requestBreak(state, { x: 2, y: -1, z: 3 })
+      yield* requestBreak(state, blockPosition(2, -1, 3))
       yield* runFrame(stages)
       expect(yield* deposited(inventory)).toStrictEqual([])
 
@@ -727,7 +734,7 @@ describe('the slice, through the stage registration', () => {
 // ---------------------------------------------------------------------------
 
 /** Chunk (0, 0), so that a creeper's whole 3-block crater is resident. */
-const creeperAt: Position = { x: 5, y: 64, z: 5 }
+const creeperAt: BlockPosition = blockPosition(5, 64, 5)
 const bystanderAt: Position = { x: 7, y: 64, z: 5 }
 /** 20 blocks off in XZ, which is inside `hostile-spawn`'s 16..40 band. */
 const playerFar: Position = { x: 25, y: 64, z: 5 }
@@ -735,11 +742,11 @@ const playerFar: Position = { x: 25, y: 64, z: 5 }
 const playerNear: Position = { x: 3, y: 64, z: 5 }
 
 /** In the crater (distance 1), and the creeper's floor. */
-const craterFloor: BlockPosition = { x: 5, y: 63, z: 5 }
+const craterFloor: BlockPosition = blockPosition(5, 63, 5)
 /** In the crater at exactly the radius (distance 3), and it is holding sand up. */
-const craterLedge: BlockPosition = { x: 5, y: 67, z: 5 }
+const craterLedge: BlockPosition = blockPosition(5, 67, 5)
 /** Outside the crater (distance 4), resting on the ledge. */
-const ledgeSand: BlockPosition = { x: 5, y: 68, z: 5 }
+const ledgeSand: BlockPosition = blockPosition(5, 68, 5)
 
 /**
  * A candidate cell that `canHostileSpawnAt` says yes to.
@@ -1236,11 +1243,11 @@ const teleportTerrain = (
   if (destination === undefined) throw new Error('scenario needs two teleport candidates')
   return {
     destination,
-    initial: world([[{ ...destination, y: destination.y - 1 }, STONE]]),
+    initial: world([[blockPosition(destination.x, destination.y - 1, destination.z), STONE]]),
     loaded: [...new Set(candidates.flatMap((candidate) => [
-      chunkKeyOf({ ...candidate, y: candidate.y - 1 }),
-      chunkKeyOf(candidate),
-      chunkKeyOf({ ...candidate, y: candidate.y + 1 }),
+      chunkKeyOf(blockPosition(candidate.x, candidate.y - 1, candidate.z)),
+      chunkKeyOf(blockPosition(candidate.x, candidate.y, candidate.z)),
+      chunkKeyOf(blockPosition(candidate.x, candidate.y + 1, candidate.z)),
     ]))],
   }
 }
@@ -1772,8 +1779,8 @@ describe('the stage supplies its rolls from a seed', () => {
  * All three run here, through the shipped registrations, in one frame each.
  */
 describe('the mining site slice: dig, drop, place', () => {
-  const cell: BlockPosition = { x: 4, y: 64, z: 3 }
-  const under: BlockPosition = { x: 4, y: 63, z: 3 }
+  const cell: BlockPosition = blockPosition(4, 64, 3)
+  const under: BlockPosition = blockPosition(4, 63, 3)
 
   const requestPlace = (
     state: { readonly pendingPlacements: Ref.Ref<ReadonlyArray<PlacementRequest>> },
@@ -1812,7 +1819,7 @@ describe('the mining site slice: dig, drop, place', () => {
 
   it.effect('places a block back, spends the item, and the cascade picks it up', () =>
     Effect.gen(function* () {
-      const floorLevel: BlockPosition = { x: 4, y: 60, z: 3 }
+      const floorLevel: BlockPosition = blockPosition(4, 60, 3)
       const { store, state, stages } = yield* slice(
         world([[floorLevel, STONE]]),
         ['0,0'],
@@ -1828,7 +1835,7 @@ describe('the mining site slice: dig, drop, place', () => {
       // runs `after` `gameplay:interactions` and the placement disturbed the
       // cell UNDER what it wrote.
       expect(yield* store.blockAt(cell)).toBe(AIR_BLOCK_ID)
-      expect(yield* store.blockAt({ x: 4, y: 63, z: 3 })).toBe(SAND)
+      expect(yield* store.blockAt(blockPosition(4, 63, 3))).toBe(SAND)
     }),
   )
 
@@ -1930,7 +1937,7 @@ describe('the mining site slice: dig, drop, place', () => {
    */
   it.effect('deposits ONE stack per broken block, with the loot table’s count on it', () =>
     Effect.gen(function* () {
-      const GLOWSTONE: BlockId = 15
+      const GLOWSTONE: BlockId = BlockId(15)
       const { inventory, state, stages } = yield* slice(world([[cell, GLOWSTONE]]))
 
       // Bare hands: glowstone needs no tool, so this is the loot table's count
@@ -1977,7 +1984,7 @@ describe('the mining site slice: dig, drop, place', () => {
 
   it.effect('spawns only the part of a mined stack that the inventory refused', () =>
     Effect.gen(function* () {
-      const GLOWSTONE: BlockId = 15
+      const GLOWSTONE: BlockId = BlockId(15)
       const almostFull = brimming('glowstone_dust').map((slot, index) =>
         index === 0 ? { item: 'glowstone_dust' as const, count: StackCount(63) } : slot,
       )
@@ -2134,7 +2141,7 @@ describe('the furnace slice: host-owned state crosses the interaction stage', ()
 })
 
 describe('the bucket slice: item use atomically exchanges fluid and inventory', () => {
-  const source: BlockPosition = { x: 12, y: 64, z: 12 }
+  const source: BlockPosition = blockPosition(12, 64, 12)
 
   it.effect('collects water, updates the inventory, and reports the completed use', () =>
     Effect.gen(function* () {
@@ -2318,7 +2325,7 @@ describe('the fishing slice: gameplay holds casts while the host owns settlement
 })
 
 describe('the ignition slice: an item use reaches the world', () => {
-  const origin: BlockPosition = { x: 4, y: 64, z: 3 }
+  const origin: BlockPosition = blockPosition(4, 64, 3)
 
   const NETHER_PORTAL = blockIdOf('nether_portal') ?? 118
   const FIRE = blockIdOf('fire') ?? 119
@@ -2392,8 +2399,8 @@ describe('the ignition slice: an item use reaches the world', () => {
 
   it.effect('a lit fire advances through the stage into spread and contact damage', () =>
     Effect.gen(function* () {
-      const contactOrigin: BlockPosition = { x: 0, y: 64, z: 0 }
-      const fuel: BlockPosition = { x: 1, y: 64, z: 0 }
+      const contactOrigin: BlockPosition = blockPosition(0, 64, 0)
+      const fuel: BlockPosition = blockPosition(1, 64, 0)
       const oakPlanks = blockIdOf('oak_planks')
       expect(oakPlanks).toBeDefined()
       const { store, state, stages } = yield* slice(
@@ -2490,7 +2497,7 @@ describe('the ignition slice: an item use reaches the world', () => {
 
   it.effect('correlates multiple requests in order and drains their results exactly once', () =>
     Effect.gen(function* () {
-      const second: BlockPosition = { ...origin, x: origin.x + 1 }
+      const second: BlockPosition = blockPosition(origin.x + 1, origin.y, origin.z)
       const { state, stages } = yield* slice(world([]), residentAround(origin))
 
       yield* requestItemUse(state, 'first', origin, 'flint_and_steel')
@@ -2526,7 +2533,7 @@ describe('the ignition slice: an item use reaches the world', () => {
       // The middle of the bottom edge is the cell mc-worldgen's own preview
       // knocks out for the same reason.
       const layout = generatePortalLayout(origin, 'x', 2, 3)
-      const lastCell: BlockPosition = { x: origin.x, y: origin.y - 1, z: origin.z }
+      const lastCell: BlockPosition = blockPosition(origin.x, origin.y - 1, origin.z)
       const alreadyBuilt = layout.frame.filter((cell) => !samePosition(cell, lastCell))
       expect(alreadyBuilt).toHaveLength(layout.frame.length - 1)
 
@@ -2588,12 +2595,12 @@ describe('the potato farming slice: host input reaches farming rules', () => {
   const DIRT = blockIdOf('dirt') ?? 3
   const FARMLAND = blockIdOf('farmland') ?? 49
   const POTATO_CROP = blockIdOf('potato_crop') ?? 72
-  const soil: BlockPosition = { x: 8, y: 64, z: 8 }
+  const soil: BlockPosition = blockPosition(8, 64, 8)
 
   it.effect('all published hoe tiers till soil and report one durability point', () =>
     Effect.gen(function* () {
       const hoes = ['wooden_hoe', 'stone_hoe', 'iron_hoe', 'diamond_hoe'] as const
-      const cells = hoes.map((_, index): BlockPosition => ({ ...soil, x: soil.x + index }))
+      const cells = hoes.map((_, index): BlockPosition => blockPosition(soil.x + index, soil.y, soil.z))
       const { store, state, stages } = yield* slice(
         world(cells.map((cell) => [cell, DIRT] as const)),
       )
@@ -2621,7 +2628,7 @@ describe('the potato farming slice: host input reaches farming rules', () => {
 
   it.effect('plants, exposes mature harvest drops, and exposes potato food use', () =>
     Effect.gen(function* () {
-      const crop: BlockPosition = { ...soil, y: soil.y + 1 }
+      const crop: BlockPosition = blockPosition(soil.x, soil.y + 1, soil.z)
       const { store, state, stages } = yield* slice(world([[soil, FARMLAND]]))
 
       yield* requestPotatoPlanting(state, 'plant', soil)

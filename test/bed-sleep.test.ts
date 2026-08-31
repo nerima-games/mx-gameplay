@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from '@effect/vitest'
 import { Effect } from 'effect'
+import { blockPosition } from '@nerima-games/mc-kernel'
 import {
   attemptBedSleep,
   resolveBedSleep,
@@ -7,7 +8,7 @@ import {
   type BedSleepTime,
 } from '../src/domain/bed-sleep'
 
-const bedPosition = { x: 5, y: 64, z: -3 }
+const bedPosition = blockPosition(5, 64, -3)
 
 const makePlayer = (dimension: 'overworld' | 'nether' | 'end'): BedSleepPlayer => ({
   dimension: Effect.succeed(dimension),

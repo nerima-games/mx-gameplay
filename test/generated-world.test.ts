@@ -8,6 +8,7 @@ import {
   type ChunkSource,
 } from '@nerima-games/mc-worldgen'
 import { Effect } from 'effect'
+import { BlockId, blockPosition, chunkCoord } from '@nerima-games/mc-kernel'
 import { makeGeneratedWorld, solidityFromStore } from '../src/domain/in-memory-world'
 import type { MobBehaviour } from '../src/domain/entities/mob-frame'
 
@@ -22,13 +23,13 @@ describe('generated world composition', () => {
 
       expect((yield* world.player.pose).feetPosition).toStrictEqual({ x: 0.5, y: surfaceY + 1, z: 0.5 })
 
-      yield* world.chunkStore.load({ cx: 0, cz: 0 })
+      yield* world.chunkStore.load(chunkCoord(0, 0))
       expect((yield* dirty.drain).changed).toStrictEqual([{ cx: 0, cz: 0 }])
-      expect(yield* world.chunkStore.getBlock({ x: 0, y: surfaceY, z: 0 })).toMatchObject({ _tag: 'Block' })
+      expect(yield* world.chunkStore.getBlock(blockPosition(0, surfaceY, 0))).toMatchObject({ _tag: 'Block' })
 
-      const write = yield* world.chunkStore.setBlock({ x: 0, y: surfaceY, z: 0 }, 0)
+      const write = yield* world.chunkStore.setBlock(blockPosition(0, surfaceY, 0), BlockId(0))
       expect(write._tag).toBe('Written')
-      expect(yield* world.chunkStore.getBlock({ x: 0, y: surfaceY, z: 0 })).toStrictEqual({
+      expect(yield* world.chunkStore.getBlock(blockPosition(0, surfaceY, 0))).toStrictEqual({
         _tag: 'Block',
         block: 0,
       })
@@ -50,10 +51,10 @@ describe('generated world composition', () => {
         })
       const world = yield* makeGeneratedWorld<MobBehaviour>({ seed: SEED, chunkSource })
 
-      yield* world.chunkStore.load({ cx: 0, cz: 0 })
+      yield* world.chunkStore.load(chunkCoord(0, 0))
 
       expect(loaded).toStrictEqual([{ cx: 0, cz: 0 }])
-      expect(yield* world.chunkStore.getBlock({ x: 0, y: 0, z: 0 })).toStrictEqual({
+      expect(yield* world.chunkStore.getBlock(blockPosition(0, 0, 0))).toStrictEqual({
         _tag: 'Block',
         block: 0,
       })
@@ -63,7 +64,7 @@ describe('generated world composition', () => {
   it.effect('uses kernel passability for generated block collision', () =>
     Effect.gen(function* () {
       const world = yield* makeGeneratedWorld<MobBehaviour>({ seed: 20260728 })
-      yield* world.chunkStore.load({ cx: 0, cz: 0 })
+      yield* world.chunkStore.load(chunkCoord(0, 0))
       const isSolid = solidityFromStore(world.chunkStore)
 
       expect(isSolid({ x: 0, y: 60, z: 0 })).toBe(false) // water
@@ -97,7 +98,7 @@ describe('generated world composition', () => {
   it.effect('treats a position outside the build height as solid', () =>
     Effect.gen(function* () {
       const world = yield* makeGeneratedWorld<MobBehaviour>({ seed: SEED })
-      yield* world.chunkStore.load({ cx: 0, cz: 0 })
+      yield* world.chunkStore.load(chunkCoord(0, 0))
       const isSolid = solidityFromStore(world.chunkStore)
 
       expect(isSolid({ x: 0, y: -1, z: 0 })).toBe(true) // below bedrock
@@ -109,10 +110,12 @@ describe('generated world composition', () => {
     Effect.gen(function* () {
       // The other tests in this file only exercise `load`, `getBlock` and
       // `setBlock` on the adapted store — this is the one that reaches every
-      // remaining member `adaptGeneratedChunkStore` wraps.
+      // other member of the real `ChunkStoreApi`, passed through unchanged by
+      // `adaptGeneratedChunkStore` (only `load`/`unload` are wrapped, for
+      // `Effect.orDie`).
       const world = yield* makeGeneratedWorld<MobBehaviour>({ seed: SEED })
-      const coord = { cx: 0, cz: 0 }
-      const eastCoord = { cx: 1, cz: 0 }
+      const coord = chunkCoord(0, 0)
+      const eastCoord = chunkCoord(1, 0)
 
       expect(yield* world.chunkStore.isLoaded(coord)).toBe(false)
       expect(yield* world.chunkStore.peek(coord)).toBeUndefined()
@@ -131,9 +134,9 @@ describe('generated world composition', () => {
       expect(neighbours.xPos?.coord).toStrictEqual(eastCoord)
       expect(neighbours.xNeg).toBeUndefined()
 
-      const light = yield* world.chunkStore.getLight({ x: 0, y: 100, z: 0 })
+      const light = yield* world.chunkStore.getLight(blockPosition(0, 100, 0))
       expect(light._tag).toBe('Light')
-      const unloadedLight = yield* world.chunkStore.getLight({ x: 500, y: 100, z: 500 })
+      const unloadedLight = yield* world.chunkStore.getLight(blockPosition(500, 100, 500))
       expect(unloadedLight).toStrictEqual({ _tag: 'ChunkNotLoaded' })
 
       expect(yield* world.chunkStore.unload(coord)).toBe(true)

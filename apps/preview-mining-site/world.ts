@@ -7,19 +7,20 @@
  * Why the preview builds its own store instead of importing the test double
  * ---------------------------------------------------------------------------
  *
- * `test/support/chunk-store-double.ts` exists and is typed by the same mirror.
- * It is deliberately NOT imported here, for the reason its own header gives for
- * not sharing `positionKeyOf`: a double that a preview and a test both depend on
+ * `test/support/chunk-store-double.ts` exists and is typed by the same
+ * `ChunkStoreApi`. It is deliberately NOT imported here, for the reason its
+ * own header gives for not sharing `positionKeyOf`: a double that a preview
+ * and a test both depend on
  * becomes a second implementation nobody audits, and the two consumers want
  * different things. The double dies (`Effect.dieMessage`) on every method
  * outside its slice, which is right for a test — a rule that starts scanning
  * chunks must break the suite — and wrong for a preview, which wants to SHOW you
  * the loaded set.
  *
- * What is shared is the thing that must be: `domain/chunk-store-port.ts`, the
- * mirror of mc-worldgen's service. This store implements that interface, so
- * every semantic a rule can get wrong is reproduced here rather than smoothed
- * over (`mc-worldgen/docs/public-api.md` §6-3, §6-4):
+ * What is shared is the thing that must be: `@nerima-games/mc-worldgen`'s own
+ * `ChunkStoreApi`. This store implements that interface, so every semantic a
+ * rule can get wrong is reproduced here rather than smoothed over
+ * (`mc-worldgen/docs/public-api.md` §6-3, §6-4):
  *
  *   - a position in an unloaded chunk reads `ChunkNotLoaded`, NEVER air;
  *   - a position outside [0, WORLD_HEIGHT) reads `OutOfWorld`;
@@ -49,24 +50,27 @@
 import { Effect, Ref } from 'effect'
 import {
   AIR_BLOCK_ID,
-  type BlockId,
-  type BlockPosition,
-  type BlockReading,
-  type LightReading,
-  type BlockWriteOutcome,
-  type ChunkCoord,
-  type ChunkDirtyBatch,
-  type ChunkDirtySubscription,
-  type ChunkStoreApi,
-  type ChunkNeighbours,
-} from '../../src/domain/chunk-store-port'
-import {
+  BlockId,
+  blockPosition,
   blockTypeOfId,
   capabilityOfBlockId,
+  chunkCoord,
   isPlaceableItem,
   itemOfBlock,
+  type BlockPosition,
+  type ChunkCoord,
   type PlaceableItemType,
 } from '@nerima-games/mc-kernel'
+import type {
+  BlockReading,
+  LightReading,
+  BlockWriteOutcome,
+  ChunkDirtyBatch,
+  ChunkDirtySubscription,
+  ChunkStoreApi,
+  ChunkNeighbours,
+  SubscriberId,
+} from '@nerima-games/mc-worldgen'
 
 /**
  * Block ids, transcribed from kernel's `BLOCK_REGISTRY` for this preview's own
@@ -81,11 +85,11 @@ import {
  * and the `lava-pit` scenario is what that bug would have looked like.
  */
 export const AIR: BlockId = AIR_BLOCK_ID
-export const STONE: BlockId = 2
-export const SAND: BlockId = 5
-export const WATER: BlockId = 6
-export const GRAVEL: BlockId = 8
-export const LAVA: BlockId = 11
+export const STONE: BlockId = BlockId(2)
+export const SAND: BlockId = BlockId(5)
+export const WATER: BlockId = BlockId(6)
+export const GRAVEL: BlockId = BlockId(8)
+export const LAVA: BlockId = BlockId(11)
 
 /**
  * Blocks that demonstrate item use and the per-block placement rules.
@@ -99,14 +103,14 @@ export const LAVA: BlockId = 11
  * `DOOR` is the one per-block rule a player can actually reach, and it is the
  * only palette entry whose placement fills TWO cells.
  */
-export const OBSIDIAN: BlockId = 40
-export const BROWN_MUSHROOM: BlockId = 23
-export const RED_MUSHROOM: BlockId = 24
-export const SUGAR_CANE: BlockId = 27
-export const CACTUS: BlockId = 33
-export const DOOR: BlockId = 106
-export const NETHER_PORTAL: BlockId = 118
-export const FIRE: BlockId = 119
+export const OBSIDIAN: BlockId = BlockId(40)
+export const BROWN_MUSHROOM: BlockId = BlockId(23)
+export const RED_MUSHROOM: BlockId = BlockId(24)
+export const SUGAR_CANE: BlockId = BlockId(27)
+export const CACTUS: BlockId = BlockId(33)
+export const DOOR: BlockId = BlockId(106)
+export const NETHER_PORTAL: BlockId = BlockId(118)
+export const FIRE: BlockId = BlockId(119)
 
 export const CHUNK_SIDE = 16
 export const WORLD_HEIGHT = 256
@@ -163,10 +167,8 @@ export const placeableItemOf = (id: BlockId): PlaceableItemType | undefined => {
 export const chunkKeyOf = (position: BlockPosition): string =>
   `${String(Math.floor(position.x / CHUNK_SIDE))},${String(Math.floor(position.z / CHUNK_SIDE))}`
 
-const chunkCoordOf = (position: BlockPosition): ChunkCoord => ({
-  cx: Math.floor(position.x / CHUNK_SIDE),
-  cz: Math.floor(position.z / CHUNK_SIDE),
-})
+const chunkCoordOf = (position: BlockPosition): ChunkCoord =>
+  chunkCoord(Math.floor(position.x / CHUNK_SIDE), Math.floor(position.z / CHUNK_SIDE))
 
 const blockKey = (position: BlockPosition): string =>
   `${String(position.x)},${String(position.y)},${String(position.z)}`
@@ -237,7 +239,7 @@ export type WorldSpec = {
 export const makePreviewWorld = (spec: WorldSpec): Effect.Effect<PreviewWorld> =>
   Effect.map(
     Ref.make<Inner>({
-      blocks: new Map(spec.cells.map(([x, y, id]) => [blockKey({ x, y, z: spec.z }), id] as const)),
+      blocks: new Map(spec.cells.map(([x, y, id]) => [blockKey(blockPosition(x, y, spec.z)), id] as const)),
       loadedChunks: new Set(spec.loadedChunks),
       subscribers: new Map(),
       writeLog: [],
@@ -265,13 +267,21 @@ export const makePreviewWorld = (spec: WorldSpec): Effect.Effect<PreviewWorld> =
         doubles.subscribers.set(id, new Set())
 
         const subscription: ChunkDirtySubscription = {
-          id,
+          // `@nerima-games/mc-worldgen` exports no public constructor for
+          // `SubscriberId` — it is minted only inside the package's own
+          // `ChunkStoreState.subscribed`, which this preview store, as an
+          // independent reimplementation of `ChunkStoreApi`, has no way to
+          // call. This counter-derived id is a genuine, never-reused
+          // subscriber identity by construction; the cast asserts only that,
+          // not that an unchecked value has an unverified shape. See
+          // `src/domain/in-memory-chunk-store.ts` for the same pattern.
+          id: id as SubscriberId,
           drain: Ref.modify(state, (current) => {
             const pending = current.subscribers.get(id) ?? new Set<string>()
             const batch: ChunkDirtyBatch = {
               changed: [...pending].map((entry) => {
                 const [cx, cz] = entry.split(',')
-                return { cx: Number(cx), cz: Number(cz) }
+                return chunkCoord(Number(cx), Number(cz))
               }),
               removed: [],
             }
@@ -296,7 +306,7 @@ export const makePreviewWorld = (spec: WorldSpec): Effect.Effect<PreviewWorld> =
         loadedCoords: Effect.sync(() =>
           [...inner().loadedChunks].map((entry): ChunkCoord => {
             const [cx, cz] = entry.split(',')
-            return { cx: Number(cx), cz: Number(cz) }
+            return chunkCoord(Number(cx), Number(cz))
           }),
         ),
         neighbours: (): Effect.Effect<ChunkNeighbours> => notImplemented('neighbours'),
@@ -353,7 +363,7 @@ export const makePreviewWorld = (spec: WorldSpec): Effect.Effect<PreviewWorld> =
 
             let exposed = true
             for (let y = position.y + 1; y < WORLD_HEIGHT; y += 1) {
-              const above = doubles.blocks.get(blockKey({ x: position.x, y, z: position.z }))
+              const above = doubles.blocks.get(blockKey(blockPosition(position.x, y, position.z)))
               if (above !== undefined && above !== AIR_BLOCK_ID) {
                 exposed = false
                 break
@@ -449,7 +459,7 @@ export const makePreviewWorld = (spec: WorldSpec): Effect.Effect<PreviewWorld> =
  * built on it would report a bug that is not there.
  */
 export const restsOnSupport = (world: PreviewWorld, position: BlockPosition): boolean => {
-  const belowPosition = { x: position.x, y: position.y - 1, z: position.z }
+  const belowPosition = blockPosition(position.x, position.y - 1, position.z)
   if (belowPosition.y < 0 || belowPosition.y >= WORLD_HEIGHT) {
     return true
   }

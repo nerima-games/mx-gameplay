@@ -61,8 +61,8 @@
  * below takes the block rather than the store deciding.
  */
 import { Effect } from 'effect'
-import { blockIdOf, blockTypeOfId } from '@nerima-games/mc-kernel'
-import type { BlockId, BlockPosition, ChunkStoreApi } from '../chunk-store-port.js'
+import { blockIdOf, blockTypeOfId, type BlockId, type BlockPosition } from '@nerima-games/mc-kernel'
+import type { ChunkStoreApi } from '@nerima-games/mc-worldgen'
 
 /**
  * The brightest a cell may be and still take a mushroom.
@@ -77,9 +77,10 @@ export const MAX_MUSHROOM_PLACEMENT_LIGHT = 12
 /**
  * Is this byte one of the two mushrooms?
  *
- * Asked of kernel's registry rather than of a literal pair of ids, for
- * `../portal-frame-port`'s reason: a literal `23` is the scatter plan.md §3.1
- * measured, and it goes stale silently if a row is ever renumbered. TOTAL — a
+ * Asked of kernel's registry rather than of a literal pair of ids, for the
+ * usual reason a magic id is refused elsewhere in this repository: a literal
+ * `23` is the scatter plan.md §3.1 measured, and it goes stale silently if a
+ * row is ever renumbered. TOTAL — a
  * byte this build cannot name is not a mushroom, which is the arm that lets an
  * unknown id through rather than refusing it for a reason nobody can state.
  */
@@ -127,8 +128,8 @@ export type MushroomLightRefusal =
  *
  * `Math.max(skyLight, blockLight)`, which is the reference's `placementLightLevel`.
  * Note that this is NOT the combination `../mob/hostile-spawn` uses — that rule
- * gates on BLOCK light alone, and `../chunk-store-port`'s `LightReading` keeps
- * the two apart precisely so that two rules can want two different answers.
+ * gates on BLOCK light alone, and `@nerima-games/mc-worldgen`'s `LightReading`
+ * keeps the two apart precisely so that two rules can want two different answers.
  * A mushroom cares whether the cell is dark; a torch and a sunbeam make it
  * equally not-dark.
  */

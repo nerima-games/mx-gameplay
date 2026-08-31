@@ -90,28 +90,39 @@ describe('public API surface', () => {
     }),
   )
 
-  // REGRESSION: this repository's `domain/frame-contract.ts`, `domain/position-key.ts`,
-  // `domain/item-vocabulary.ts`, `domain/block-position-key.ts` (Wave 1, W1-M3) and
-  // `domain/block-vocabulary.ts` (Wave 1, W1-M4) were stand-ins for
-  // @nerima-games/mc-kernel with a deletion date written into their headers; each
-  // Wave repointed every importer at kernel directly and deleted the mirror. The
-  // barrel must still not republish kernel's vocabulary as its own — that would make
-  // `StageId`, `DeltaTimeSecs`, `BlockPositionKey` and the rest API of a package that
-  // does not own them, a breaking change for every consumer the day kernel's own
-  // shape moves. mc-sim, mc-render and mc-playground-kit mention their mirrors in
-  // an `index.ts` comment and re-export nothing; this repository matches.
+  // REGRESSION: this repository carried six local mirrors, all now repointed
+  // and deleted — `domain/frame-contract.ts`, `domain/position-key.ts`,
+  // `domain/item-vocabulary.ts`, `domain/block-position-key.ts` and
+  // `domain/block-vocabulary.ts` for @nerima-games/mc-kernel, and
+  // `domain/chunk-store-port.ts` / `domain/portal-frame-port.ts` for
+  // mc-worldgen and mc-kernel respectively (see `src/index.ts`'s "Formerly
+  // provisional" note for the full history). The barrel must still not
+  // republish kernel's vocabulary as its own — that would make `StageId`,
+  // `DeltaTimeSecs`, `BlockPositionKey` and the rest API of a package that
+  // does not own them, a breaking change for every consumer the day kernel's
+  // own shape moves. mc-sim, mc-render and mc-playground-kit mention their
+  // mirrors in an `index.ts` comment and re-export nothing; this repository
+  // matches.
   it.effect('REGRESSION: does not republish mc-kernel’s vocabulary as its own', () =>
     Effect.sync(() => {
       // `ITEM_TYPES` joined this list when the creeper's drop needed a name for
-      // gunpowder — kernel's item roster, taken directly since W1-M3.
+      // gunpowder — kernel's item roster.
       //
       // `BLOCK_TYPES`, `blockTypeOfId`, `itemOfBlock`, `dropOfBlockId`, the
       // harvest vocabulary and the capability/support-rule predicates joined it
       // when `domain/block-vocabulary.ts` (three of kernel's files) was
-      // repointed and deleted in W1-M4; publishing any of them would put
-      // kernel's block registry on this package's surface, and `blockTypeOfId`
-      // in particular is the one function a consumer would most plausibly
-      // reach for from the wrong repository.
+      // repointed and deleted; publishing any of them would put kernel's block
+      // registry on this package's surface, and `blockTypeOfId` in particular
+      // is the one function a consumer would most plausibly reach for from the
+      // wrong repository.
+      //
+      // `AIR_BLOCK_ID` and the portal-frame family (`detectNetherPortal`,
+      // `generatePortalLayout`, `MIN`/`MAX_PORTAL_WIDTH`,
+      // `MIN`/`MAX_PORTAL_HEIGHT`) joined it when `domain/chunk-store-port.ts`
+      // and `domain/portal-frame-port.ts` were repointed and deleted: both are
+      // kernel's now, not mc-worldgen's — `domain/portal-frame-port.ts`'s
+      // header named mc-worldgen as its repoint target, but by the time it was
+      // removed mc-worldgen no longer carried the portal-frame family at all.
       const kernelsToOwn = [
         'StageId',
         'DeltaTimeSecs',
@@ -140,6 +151,13 @@ describe('public API surface', () => {
         'canBlockStaySupported',
         'isSupportSensitiveBlockId',
         'resistsExplosion',
+        'AIR_BLOCK_ID',
+        'detectNetherPortal',
+        'generatePortalLayout',
+        'MIN_PORTAL_WIDTH',
+        'MAX_PORTAL_WIDTH',
+        'MIN_PORTAL_HEIGHT',
+        'MAX_PORTAL_HEIGHT',
       ]
       for (const name of kernelsToOwn) {
         expect(Object.keys(gameplay)).not.toContain(name)
@@ -150,39 +168,19 @@ describe('public API surface', () => {
     }),
   )
 
-  // The same rule for mc-worldgen's PORTAL RULE, which arrived with item use.
-  //
-  // `domain/portal-frame-port.ts` is the second mirror of mc-worldgen in this
-  // repository — `domain/chunk-store-port.ts` mirrors the SERVICE and this one
-  // mirrors a pure rule — and it carries the same deletion date. Publishing
-  // `detectNetherPortal` here would put another repository's rule on this
-  // package's surface and would make the promised deletion a breaking change.
+  // The same rule for mc-worldgen's CHUNK-STORE vocabulary, which arrived with
+  // `domain/chunk-store-port.ts`'s repoint. `blockIndex` in particular is
+  // mc-worldgen's memory layout, and a consumer reading it from here would be
+  // indexing a buffer through a repository that does not own one.
   //
   // `domain/chunk-window.ts` IS published, and that is the opposite call for
   // the opposite reason: it is this repository's own bridge from an
-  // `Effect`-shaped store to the synchronous accessor that rule takes, it
-  // survives the repoint, and `apps/preview-mining-site` and the tests drive it
-  // directly.
-  it.effect('REGRESSION: does not republish mc-worldgen’s portal rule as its own', () =>
+  // `Effect`-shaped store to the synchronous accessor mc-worldgen's portal
+  // rule takes, it survives the repoint, and `apps/preview-mining-site` and
+  // the tests drive it directly.
+  it.effect('REGRESSION: does not republish mc-worldgen’s chunk-store vocabulary as its own', () =>
     Effect.sync(() => {
-      const worldgensToOwn = [
-        'detectNetherPortal',
-        'generatePortalLayout',
-        'MIN_PORTAL_WIDTH',
-        'MAX_PORTAL_WIDTH',
-        'MIN_PORTAL_HEIGHT',
-        'MAX_PORTAL_HEIGHT',
-        // The service mirror's own members, including the two that arrived with
-        // the chunk window. `blockIndex` in particular is mc-worldgen's memory
-        // layout, and a consumer reading it from here would be indexing a buffer
-        // through a repository that does not own one.
-        'ChunkStore',
-        'AIR_BLOCK_ID',
-        'blockIndex',
-        'readBlock',
-        'CHUNK_SIZE_XZ',
-        'CHUNK_HEIGHT',
-      ]
+      const worldgensToOwn = ['ChunkStore', 'blockIndex', 'readBlock', 'CHUNK_SIZE_XZ', 'CHUNK_HEIGHT']
       for (const name of worldgensToOwn) {
         expect(Object.keys(gameplay)).not.toContain(name)
       }

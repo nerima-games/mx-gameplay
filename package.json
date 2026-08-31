@@ -60,7 +60,7 @@
     "@nerima-games/mc-audio": "0.2.7",
     "@nerima-games/mc-kernel": "0.6.1",
     "@nerima-games/mc-sim": "0.2.1",
-    "@nerima-games/mc-worldgen": "0.2.0",
+    "@nerima-games/mc-worldgen": "0.3.0",
     "effect": "3.22.1"
   },
   "devDependencies": {

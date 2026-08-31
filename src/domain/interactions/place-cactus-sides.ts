@@ -42,9 +42,16 @@
  * turn out to be there.
  */
 import { Effect } from 'effect'
-import { blockPosition, horizontalBlockNeighbours } from '@nerima-games/mc-kernel'
-import { blockIdOf, blockTypeOfId } from '@nerima-games/mc-kernel'
-import { AIR_BLOCK_ID, type BlockId, type BlockPosition, type BlockReading, type ChunkStoreApi } from '../chunk-store-port.js'
+import {
+  AIR_BLOCK_ID,
+  blockIdOf,
+  blockPosition,
+  blockTypeOfId,
+  horizontalBlockNeighbours,
+  type BlockId,
+  type BlockPosition,
+} from '@nerima-games/mc-kernel'
+import type { BlockReading, ChunkStoreApi } from '@nerima-games/mc-worldgen'
 
 /** Is this byte a cactus? Asked of kernel's registry; see `./place-mushroom-light`. */
 export const isCactusBlock = (block: BlockId): boolean => blockTypeOfId(block) === 'cactus'

@@ -63,22 +63,22 @@ import {
   rollFortuneExtraDrops,
   type MinedItem,
 } from '../src/domain/interactions/block-loot'
-import { ITEM_TYPES } from '@nerima-games/mc-kernel'
+import { BlockId, ITEM_TYPES } from '@nerima-games/mc-kernel'
 
-const AIR = 0
-const STONE = 2
-const DIRT = 3
-const GRASS_BLOCK = 4
-const SAND = 5
-const WATER = 6
-const SNOW = 7
-const GRAVEL = 8
-const OAK_LEAVES = 10
-const LAVA = 11
-const GLASS = 13
-const GLOWSTONE = 15
-const TALL_GRASS = 25
-const FERN = 26
+const AIR = BlockId(0)
+const STONE = BlockId(2)
+const DIRT = BlockId(3)
+const GRASS_BLOCK = BlockId(4)
+const SAND = BlockId(5)
+const WATER = BlockId(6)
+const SNOW = BlockId(7)
+const GRAVEL = BlockId(8)
+const OAK_LEAVES = BlockId(10)
+const LAVA = BlockId(11)
+const GLASS = BlockId(13)
+const GLOWSTONE = BlockId(15)
+const TALL_GRASS = BlockId(25)
+const FERN = BlockId(26)
 
 /** Rolls that fail every chance gate: nothing bonus, no fortune remainder. */
 const NO_LUCK: ReadonlyArray<number> = [0.999, 0.999, 0.999, 0.999]
@@ -105,7 +105,7 @@ describe('the kernel bridge — dropOfBlockId', () => {
     Effect.sync(() => {
       expect(blockTypeOfId(200)).toBeUndefined()
       expect(dropOfBlockId(200)).toBeUndefined()
-      expect(blockLoot(200)).toStrictEqual([])
+      expect(blockLoot(BlockId(200))).toStrictEqual([])
     }),
   )
 

@@ -1,8 +1,5 @@
-import type {
-  BlockId,
-  BlockPosition,
-  BlockReading,
-} from '../chunk-store-port.js'
+import type { BlockId, BlockPosition } from '@nerima-games/mc-kernel'
+import type { BlockReading } from '@nerima-games/mc-worldgen'
 import { blockIdOf } from '@nerima-games/mc-kernel'
 
 const LEVER_BLOCK_ID = blockIdOf('lever')
@@ -31,7 +28,7 @@ export const resolveBlockUse = (
         ? { _tag: 'ToggleLever', position }
         : { _tag: 'NotLever', position, existing: reading.block }
     // exhaustiveness arm over BlockReading, a closed three-tag union
-    // (chunk-store-port.ts's BlockReading); all three tags are handled
+    // (mc-worldgen's chunk-store-state.d.ts's BlockReading); all three tags are handled
     // above, so no input can reach this arm.
     /* v8 ignore start */
     default: {

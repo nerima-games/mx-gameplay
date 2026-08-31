@@ -1,6 +1,6 @@
 import { Effect } from 'effect'
-import { blockIdOf } from '@nerima-games/mc-kernel'
-import { AIR_BLOCK_ID, type BlockId, type BlockPosition, type ChunkStoreApi } from '../chunk-store-port.js'
+import { AIR_BLOCK_ID, blockIdOf, type BlockId, type BlockPosition } from '@nerima-games/mc-kernel'
+import type { ChunkStoreApi } from '@nerima-games/mc-worldgen'
 
 export const TNT_BLOCK_ID: BlockId | undefined = blockIdOf('tnt')
 

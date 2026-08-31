@@ -35,7 +35,7 @@
  * identified completely by their tag.
  */
 import type { BlockType } from '@nerima-games/mc-kernel'
-import type { BlockPosition } from '../chunk-store-port.js'
+import type { BlockPosition } from '@nerima-games/mc-kernel'
 
 /**
  * Blocks that open a storage screen.

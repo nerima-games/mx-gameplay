@@ -31,8 +31,8 @@ import {
   type BlockId,
   type BlockPosition,
   type ChunkCoord,
-  type ChunkStoreApi,
-} from '../chunk-store-port.js'
+} from '@nerima-games/mc-kernel'
+import type { ChunkStoreApi } from '@nerima-games/mc-worldgen'
 
 /**
  * TOTAL, mirroring `BlockWriteOutcome`. There is no error channel here because
@@ -75,7 +75,7 @@ export const breakBlock = (
       case 'OutOfWorld':
         return { _tag: 'OutOfWorld' }
       // exhaustiveness arm over BlockWriteOutcome, a closed four-tag union
-      // (chunk-store-port.ts): 'Written', 'Unchanged', 'ChunkNotLoaded' and
+      // (mc-worldgen's chunk-store-state.d.ts): 'Written', 'Unchanged', 'ChunkNotLoaded' and
       // 'OutOfWorld' are all handled above, so no input can reach this arm.
       /* v8 ignore start */
       default: {

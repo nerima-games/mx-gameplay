@@ -50,7 +50,7 @@ import {
   makeGameplayFrameState,
   requestBowShot,
 } from '../src/stages/registration'
-import { StackCount } from '@nerima-games/mc-kernel'
+import { StackCount, type BlockId } from '@nerima-games/mc-kernel'
 import { makeChunkStoreDouble } from './support/chunk-store-double'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
 import { makePlayerServiceDouble } from './support/player-service-double'
@@ -666,7 +666,7 @@ const inventoryWith = (bow: boolean, arrow: boolean): ReadonlyArray<Slot> =>
 
 const scene = (initial: EntityRoster<MobBehaviour>, inventorySlots?: ReadonlyArray<Slot>) =>
   Effect.gen(function* () {
-    const store = yield* makeChunkStoreDouble(new Map<string, number>(), ['0,0'])
+    const store = yield* makeChunkStoreDouble(new Map<string, BlockId>(), ['0,0'])
     const roster = yield* makeEntityManagerDouble<MobBehaviour>(initial)
     const player = yield* makePlayerServiceDouble()
     const inventory = yield* makeInventoryDouble(inventorySlots)

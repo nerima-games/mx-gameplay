@@ -44,8 +44,8 @@
  * refuses to invent.
  */
 import { Effect } from 'effect'
-import type { BlockPosition, ChunkStoreApi } from '../chunk-store-port.js'
-import type { ItemType } from '@nerima-games/mc-kernel'
+import type { ChunkStoreApi } from '@nerima-games/mc-worldgen'
+import type { BlockPosition, ItemType } from '@nerima-games/mc-kernel'
 import { igniteFire, type IgniteFireOutcome } from './ignite-fire.js'
 import { ignitePortal, type IgnitePortalOutcome } from './ignite-portal.js'
 import { igniteTnt, type IgniteTntOutcome } from './ignite-tnt.js'

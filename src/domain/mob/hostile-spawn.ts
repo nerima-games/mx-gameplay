@@ -69,8 +69,7 @@
  * roster. They arrive with mc-sim, and until then a rule that pretended to make
  * them would be a second owner of the mob population.
  */
-import { AIR_BLOCK_ID, type BlockId } from '../chunk-store-port.js'
-import { capabilityOfBlockId } from '@nerima-games/mc-kernel'
+import { AIR_BLOCK_ID, capabilityOfBlockId, type BlockId } from '@nerima-games/mc-kernel'
 import { hostileSpawnsAllowed } from '../day-night.js'
 import type { EntityKind } from '@nerima-games/mc-sim'
 import type { Dimension } from '@nerima-games/mc-worldgen'

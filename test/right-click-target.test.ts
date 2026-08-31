@@ -16,10 +16,10 @@ import {
   rightClickRoute,
   type RightClickRoute,
 } from '../src/domain/interactions/right-click-target'
-import { BLOCK_TYPES, type BlockType } from '@nerima-games/mc-kernel'
-import type { BlockPosition } from '../src/domain/chunk-store-port'
+import { BLOCK_TYPES, blockPosition, type BlockType } from '@nerima-games/mc-kernel'
+import type { BlockPosition } from '@nerima-games/mc-kernel'
 
-const AT: BlockPosition = { x: 12, y: 70, z: -3 }
+const AT: BlockPosition = blockPosition(12, 70, -3)
 
 const kindOf = (block: BlockType): RightClickRoute['kind'] | undefined =>
   rightClickRoute(AT, block)?.kind

@@ -16,13 +16,22 @@
  * reports `ChunkNotLoaded` rather than `NoFrame`; a fall-through to fire AND the
  * two answers that must NOT fall through.
  *
- * `test/portal-frame-mirror.test.ts` owns the detector's own behaviour. Nothing
- * here re-tests it.
+ * `detectNetherPortal` and `generatePortalLayout` are `@nerima-games/mc-kernel`'s
+ * own, tested there. Nothing here re-tests them.
  */
 import { describe, expect, it } from '@effect/vitest'
 import { Effect } from 'effect'
-import { blockIdOf } from '@nerima-games/mc-kernel'
-import { AIR_BLOCK_ID, type BlockId, type BlockPosition } from '../src/domain/chunk-store-port'
+import {
+  AIR_BLOCK_ID,
+  BlockId,
+  blockIdOf,
+  blockPosition,
+  chunkCoord,
+  generatePortalLayout,
+  ITEM_TYPES,
+  MAX_PORTAL_WIDTH,
+  type BlockPosition,
+} from '@nerima-games/mc-kernel'
 import { igniteFire } from '../src/domain/interactions/ignite-fire'
 import { PORTAL_WINDOW_RADIUS, ignitePortal } from '../src/domain/interactions/ignite-portal'
 import { TNT_BLOCK_ID, igniteTnt } from '../src/domain/interactions/ignite-tnt'
@@ -31,11 +40,9 @@ import {
   isIgnitionItem,
   useFlintAndSteel,
 } from '../src/domain/interactions/use-flint-and-steel'
-import { MAX_PORTAL_WIDTH, generatePortalLayout } from '../src/domain/portal-frame-port'
 import { chunkCoordsAround } from '../src/domain/chunk-window'
-import { ITEM_TYPES } from '@nerima-games/mc-kernel'
 import { makeChunkStoreDouble, world, STONE } from './support/chunk-store-double'
-import type { BlockWriteOutcome, ChunkStoreApi } from '../src/domain/chunk-store-port'
+import type { BlockWriteOutcome, ChunkStoreApi } from '@nerima-games/mc-worldgen'
 
 /**
  * A store that answers the read honestly and then changes its mind.
@@ -55,13 +62,13 @@ const storeThatChangesItsMind = (honest: ChunkStoreApi, onWrite: BlockWriteOutco
   setBlock: () => Effect.succeed(onWrite),
 })
 
-const OBSIDIAN = blockIdOf('obsidian') ?? 40
-const NETHER_PORTAL = blockIdOf('nether_portal') ?? 118
-const FIRE = blockIdOf('fire') ?? 119
-const TNT = TNT_BLOCK_ID ?? 46
+const OBSIDIAN = blockIdOf('obsidian') ?? BlockId(40)
+const NETHER_PORTAL = blockIdOf('nether_portal') ?? BlockId(118)
+const FIRE = blockIdOf('fire') ?? BlockId(119)
+const TNT = TNT_BLOCK_ID ?? BlockId(46)
 
 /** Bottom-left interior cell of the test portal. Chunk (0, 1) of the double. */
-const ORIGIN: BlockPosition = { x: 4, y: 64, z: 20 }
+const ORIGIN: BlockPosition = blockPosition(4, 64, 20)
 
 /** Every chunk the window will peek, so that nothing is unreadable by accident. */
 const residentAround = (centre: BlockPosition): ReadonlyArray<string> =>
@@ -125,7 +132,7 @@ describe('ignitePortal', () => {
 
   it.effect('lights the largest legal portal', () =>
     Effect.gen(function* () {
-      const origin: BlockPosition = { x: 4, y: 64, z: 20 }
+      const origin: BlockPosition = blockPosition(4, 64, 20)
       const store = yield* makeChunkStoreDouble(
         world(portalEntries(origin, MAX_PORTAL_WIDTH, 3)),
         residentAround(origin),
@@ -156,8 +163,8 @@ describe('ignitePortal', () => {
       // The origin is chosen so the far reach crosses a chunk boundary; inside
       // one chunk the whole radius question is invisible because `peek` returns
       // everything.
-      const origin: BlockPosition = { x: 16, y: 64, z: 20 }
-      const ignition: BlockPosition = { x: origin.x + MAX_PORTAL_WIDTH - 1, y: origin.y, z: origin.z }
+      const origin: BlockPosition = blockPosition(16, 64, 20)
+      const ignition: BlockPosition = blockPosition(origin.x + MAX_PORTAL_WIDTH - 1, origin.y, origin.z)
       const store = yield* makeChunkStoreDouble(
         world(portalEntries(origin, MAX_PORTAL_WIDTH, 3)),
         residentAround(ignition),
@@ -217,7 +224,7 @@ describe('ignitePortal', () => {
         world(portalEntries(ORIGIN, 2, 3)),
         residentAround(ORIGIN),
       )
-      const ringCell: BlockPosition = { x: ORIGIN.x, y: ORIGIN.y - 1, z: ORIGIN.z }
+      const ringCell: BlockPosition = blockPosition(ORIGIN.x, ORIGIN.y - 1, ORIGIN.z)
 
       expect(yield* ignitePortal(store.api, ringCell)).toStrictEqual({ _tag: 'NoFrame' })
       expect((yield* store.calls).writes).toBe(0)
@@ -239,7 +246,7 @@ describe('ignitePortal', () => {
       // different things to tell the player, and only the first is worth
       // retrying — `domain/interactions/ignite-portal.ts` checks the counter
       // FIRST for exactly this case.
-      const origin: BlockPosition = { x: 14, y: 64, z: 20 }
+      const origin: BlockPosition = blockPosition(14, 64, 20)
       const store = yield* makeChunkStoreDouble(world(portalEntries(origin, 4, 3)), ['0,1'])
 
       expect(yield* ignitePortal(store.api, origin)).toStrictEqual({ _tag: 'ChunkNotLoaded' })
@@ -263,7 +270,7 @@ describe('ignitePortal', () => {
 })
 
 describe('igniteFire', () => {
-  const target: BlockPosition = { x: 2, y: 64, z: 3 }
+  const target: BlockPosition = blockPosition(2, 64, 3)
 
   it.effect('puts kernel’s fire block into an air cell', () =>
     Effect.gen(function* () {
@@ -307,10 +314,10 @@ describe('igniteFire', () => {
     Effect.gen(function* () {
       const store = yield* makeChunkStoreDouble(world([]), ['0,0'])
 
-      expect(yield* igniteFire(store.api, { x: 200, y: 64, z: 3 })).toStrictEqual({
+      expect(yield* igniteFire(store.api, blockPosition(200, 64, 3))).toStrictEqual({
         _tag: 'ChunkNotLoaded',
       })
-      expect(yield* igniteFire(store.api, { x: 2, y: -1, z: 3 })).toStrictEqual({
+      expect(yield* igniteFire(store.api, blockPosition(2, -1, 3))).toStrictEqual({
         _tag: 'OutOfWorld',
       })
       expect((yield* store.calls).writes).toBe(0)
@@ -349,7 +356,7 @@ describe('igniteFire', () => {
 })
 
 describe('igniteTnt', () => {
-  const target: BlockPosition = { x: 2, y: 64, z: 3 }
+  const target: BlockPosition = blockPosition(2, 64, 3)
 
   it.effect('lights a TNT block and removes it', () =>
     Effect.gen(function* () {
@@ -373,10 +380,10 @@ describe('igniteTnt', () => {
     Effect.gen(function* () {
       const store = yield* makeChunkStoreDouble(world([]), ['0,0'])
 
-      expect(yield* igniteTnt(store.api, { x: 200, y: 64, z: 3 })).toStrictEqual({
+      expect(yield* igniteTnt(store.api, blockPosition(200, 64, 3))).toStrictEqual({
         _tag: 'ChunkNotLoaded',
       })
-      expect(yield* igniteTnt(store.api, { x: 2, y: -1, z: 3 })).toStrictEqual({
+      expect(yield* igniteTnt(store.api, blockPosition(2, -1, 3))).toStrictEqual({
         _tag: 'OutOfWorld',
       })
       expect((yield* store.calls).writes).toBe(0)
@@ -417,7 +424,7 @@ describe('igniteTnt', () => {
         const raced = storeThatChangesItsMind(store.api, {
           _tag: 'Written',
           previous: STONE,
-          chunk: { cx: 0, cz: 0 },
+          chunk: chunkCoord(0, 0),
         })
 
         expect(yield* igniteTnt(raced, target)).toStrictEqual({ _tag: 'ChangedBeforeWrite' })

@@ -20,6 +20,7 @@
 import { describe, expect, it } from '@effect/vitest'
 import { Effect } from 'effect'
 import {
+  AIR_BLOCK_ID,
   BLOCK_TYPES,
   PLACEABLE_ITEM_TYPES,
   blockIdOf,
@@ -27,9 +28,11 @@ import {
   horizontalBlockNeighbours,
   isPlaceableItem,
   ITEM_TYPES,
+  BlockId,
+  type BlockPosition,
   type PlaceableItemType,
 } from '@nerima-games/mc-kernel'
-import { AIR_BLOCK_ID, type BlockId, type BlockPosition, type BlockReading } from '../src/domain/chunk-store-port'
+import type { BlockReading } from '@nerima-games/mc-worldgen'
 import {
   MAX_MUSHROOM_PLACEMENT_LIGHT,
   isMushroomBlock,
@@ -64,8 +67,8 @@ const CACTUS = id('cactus')
 const DOOR = id('door')
 const SAND = id('sand')
 
-const target: BlockPosition = { x: 4, y: 64, z: 4 }
-const supportCell: BlockPosition = { x: 4, y: 63, z: 4 }
+const target: BlockPosition = blockPosition(4, 64, 4)
+const supportCell: BlockPosition = blockPosition(4, 63, 4)
 const block = (blockId: BlockId): BlockReading => ({ _tag: 'Block', block: blockId })
 
 describe('horizontalBlockNeighbours', () => {
@@ -114,7 +117,7 @@ describe('mushrooms need light 12 or lower', () => {
     expect(isMushroomBlock(STONE)).toBe(false)
     // An id this build cannot name is not a mushroom: the arm that lets an
     // unknown byte through rather than refusing it for a reason nobody can state.
-    expect(isMushroomBlock(250)).toBe(false)
+    expect(isMushroomBlock(BlockId(250))).toBe(false)
   })
 
   it('takes the BRIGHTER of sky and block, which is not what the spawn rule does', () => {
@@ -163,7 +166,7 @@ describe('mushrooms need light 12 or lower', () => {
       const store = yield* makeChunkStoreDouble(world([]), ['0,0'])
 
       expect(
-        yield* mushroomLightObjection(store.api, BROWN_MUSHROOM, { x: 200, y: 64, z: 0 }),
+        yield* mushroomLightObjection(store.api, BROWN_MUSHROOM, blockPosition(200, 64, 0)),
       ).toStrictEqual({ _tag: 'LightUnknown' })
     }),
   )
@@ -213,10 +216,10 @@ describe('sugar cane needs water beside its support', () => {
       // water the plant is standing in; sugar cane grows on a bank with water
       // lapping against the BANK.
       const besideSupport = yield* makeChunkStoreDouble(
-        world([[{ x: 5, y: 63, z: 4 }, WATER]]),
+        world([[blockPosition(5, 63, 4), WATER]]),
         ['0,0'],
       )
-      const besideCane = yield* makeChunkStoreDouble(world([[{ x: 5, y: 64, z: 4 }, WATER]]), ['0,0'])
+      const besideCane = yield* makeChunkStoreDouble(world([[blockPosition(5, 64, 4), WATER]]), ['0,0'])
 
       expect(
         yield* sugarCaneWaterObjection(besideSupport.api, SUGAR_CANE, target, block(SAND)),
@@ -235,9 +238,9 @@ describe('sugar cane needs water beside its support', () => {
       // A cane at x = 0 with water at x = -1. The reference filters that
       // neighbour out of its list entirely, so the shoreline is invisible and
       // the cane is refused — a position-dependent placement rule.
-      const edge: BlockPosition = { x: 0, y: 64, z: 4 }
+      const edge: BlockPosition = blockPosition(0, 64, 4)
       const store = yield* makeChunkStoreDouble(
-        world([[{ x: -1, y: 63, z: 4 }, WATER]]),
+        world([[blockPosition(-1, 63, 4), WATER]]),
         ['0,0', '-1,0'],
       )
 
@@ -279,7 +282,7 @@ describe('cactus needs four clear sides', () => {
   it.effect('reads nothing for another block, and exactly four sides for a cactus', () =>
     Effect.gen(function* () {
       const clear = yield* makeChunkStoreDouble(world([]), ['0,0'])
-      const blocked = yield* makeChunkStoreDouble(world([[{ x: 5, y: 64, z: 4 }, STONE]]), ['0,0'])
+      const blocked = yield* makeChunkStoreDouble(world([[blockPosition(5, 64, 4), STONE]]), ['0,0'])
 
       expect(yield* cactusSidesObjection(clear.api, STONE, target)).toBeUndefined()
       expect((yield* clear.calls).reads).toBe(0)
@@ -299,8 +302,8 @@ describe('cactus needs four clear sides', () => {
 
   it.effect('checks all four sides at a chunk boundary, which the reference does not', () =>
     Effect.gen(function* () {
-      const edge: BlockPosition = { x: 15, y: 64, z: 4 }
-      const store = yield* makeChunkStoreDouble(world([[{ x: 16, y: 64, z: 4 }, STONE]]), ['0,0', '1,0'])
+      const edge: BlockPosition = blockPosition(15, 64, 4)
+      const store = yield* makeChunkStoreDouble(world([[blockPosition(16, 64, 4), STONE]]), ['0,0', '1,0'])
 
       expect(yield* cactusSidesObjection(store.api, CACTUS, edge)).toStrictEqual({
         _tag: 'SidesBlocked',
@@ -333,13 +336,13 @@ describe('a door needs the cell above', () => {
 
   it.effect('refuses a blocked cell above, an unloaded one, and the build limit', () =>
     Effect.gen(function* () {
-      const store = yield* makeChunkStoreDouble(world([[{ x: 4, y: 65, z: 4 }, STONE]]), ['0,0'])
+      const store = yield* makeChunkStoreDouble(world([[blockPosition(4, 65, 4), STONE]]), ['0,0'])
 
       expect(yield* doorUpperCell(store.api, DOOR, target)).toStrictEqual({ _tag: 'NoRoomAbove' })
-      expect(yield* doorUpperCell(store.api, DOOR, { x: 200, y: 64, z: 4 })).toStrictEqual({
+      expect(yield* doorUpperCell(store.api, DOOR, blockPosition(200, 64, 4))).toStrictEqual({
         _tag: 'NoRoomAbove',
       })
-      expect(yield* doorUpperCell(store.api, DOOR, { x: 4, y: 255, z: 4 })).toStrictEqual({
+      expect(yield* doorUpperCell(store.api, DOOR, blockPosition(4, 255, 4))).toStrictEqual({
         _tag: 'NoRoomAbove',
       })
     }),
@@ -347,7 +350,7 @@ describe('a door needs the cell above', () => {
 
   it.effect('refuses WATER above, although `isReplaceable` admits it', () =>
     Effect.gen(function* () {
-      const store = yield* makeChunkStoreDouble(world([[{ x: 4, y: 65, z: 4 }, WATER]]), ['0,0'])
+      const store = yield* makeChunkStoreDouble(world([[blockPosition(4, 65, 4), WATER]]), ['0,0'])
 
       expect(yield* doorUpperCell(store.api, DOOR, target)).toStrictEqual({ _tag: 'NoRoomAbove' })
     }),
@@ -366,7 +369,7 @@ describe('doorUpperBreakCell finds the upper half that must break with the lower
 
   it.effect('is NoDoorAbove when the cell above is not a door, so nothing extra is broken', () =>
     Effect.gen(function* () {
-      const store = yield* makeChunkStoreDouble(world([[{ x: 4, y: 65, z: 4 }, STONE]]), ['0,0'])
+      const store = yield* makeChunkStoreDouble(world([[blockPosition(4, 65, 4), STONE]]), ['0,0'])
 
       expect(yield* doorUpperBreakCell(store.api, DOOR, target)).toStrictEqual({ _tag: 'NoDoorAbove' })
     }),
@@ -374,7 +377,7 @@ describe('doorUpperBreakCell finds the upper half that must break with the lower
 
   it.effect('is DoorAbove when the cell above is the matching upper half', () =>
     Effect.gen(function* () {
-      const store = yield* makeChunkStoreDouble(world([[{ x: 4, y: 65, z: 4 }, DOOR]]), ['0,0'])
+      const store = yield* makeChunkStoreDouble(world([[blockPosition(4, 65, 4), DOOR]]), ['0,0'])
 
       expect(yield* doorUpperBreakCell(store.api, DOOR, target)).toStrictEqual({
         _tag: 'DoorAbove',
@@ -399,7 +402,7 @@ describe('placeBlock composes the four, and a door fills two cells', () => {
         alsoPlaced: [{ x: 4, y: 65, z: 4 }],
       })
       expect(yield* store.blockAt(target)).toBe(DOOR)
-      expect(yield* store.blockAt({ x: 4, y: 65, z: 4 })).toBe(DOOR)
+      expect(yield* store.blockAt(blockPosition(4, 65, 4))).toBe(DOOR)
       // ONE ITEM, TWO CELLS. The second cell is the other half of the same
       // object rather than a second placement.
       expect(outcome._tag === 'Placed' && outcome.consumed).toBe('door')
@@ -411,7 +414,7 @@ describe('placeBlock composes the four, and a door fills two cells', () => {
       const store = yield* makeChunkStoreDouble(
         world([
           [supportCell, STONE],
-          [{ x: 4, y: 65, z: 4 }, STONE],
+          [blockPosition(4, 65, 4), STONE],
         ]),
         ['0,0'],
       )
@@ -457,7 +460,7 @@ describe('placeBlock composes the four, and a door fills two cells', () => {
       const wet = yield* makeChunkStoreDouble(
         world([
           [supportCell, SAND],
-          [{ x: 5, y: 63, z: 4 }, WATER],
+          [blockPosition(5, 63, 4), WATER],
         ]),
         ['0,0'],
       )
@@ -475,7 +478,7 @@ describe('placeBlock composes the four, and a door fills two cells', () => {
       const blocked = yield* makeChunkStoreDouble(
         world([
           [supportCell, SAND],
-          [{ x: 5, y: 64, z: 4 }, STONE],
+          [blockPosition(5, 64, 4), STONE],
         ]),
         ['0,0'],
       )

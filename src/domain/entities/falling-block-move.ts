@@ -47,13 +47,8 @@ import {
   capabilityOfBlockId,
   type BlockPositionKey,
 } from '@nerima-games/mc-kernel'
-import {
-  AIR_BLOCK_ID,
-  type BlockId,
-  type BlockReading,
-  type BlockWriteOutcome,
-  type ChunkStoreApi,
-} from '../chunk-store-port.js'
+import { AIR_BLOCK_ID, type BlockId } from '@nerima-games/mc-kernel'
+import type { BlockReading, BlockWriteOutcome, ChunkStoreApi } from '@nerima-games/mc-worldgen'
 
 export type FallingBlockMoves = {
   /** How many blocks actually sank one cell this tick. */
@@ -81,7 +76,7 @@ const fallingMaterial = (reading: BlockReading): BlockId | undefined => {
     case 'OutOfWorld':
       return undefined
     // exhaustiveness arm over BlockReading, a closed three-tag union
-    // (chunk-store-port.ts's BlockReading); 'Block', 'ChunkNotLoaded' and
+    // (mc-worldgen's chunk-store-state.d.ts's BlockReading); 'Block', 'ChunkNotLoaded' and
     // 'OutOfWorld' are the only reachable tags and all three are covered
     // above, so no input can reach this arm.
     /* v8 ignore start */
@@ -108,7 +103,7 @@ const canReceive = (reading: BlockReading): boolean => {
     case 'OutOfWorld':
       return false
     // exhaustiveness arm over BlockReading, a closed three-tag union
-    // (chunk-store-port.ts's BlockReading); 'Block', 'ChunkNotLoaded' and
+    // (mc-worldgen's chunk-store-state.d.ts's BlockReading); 'Block', 'ChunkNotLoaded' and
     // 'OutOfWorld' are the only reachable tags and all three are covered
     // above, so no input can reach this arm.
     /* v8 ignore start */
@@ -134,7 +129,7 @@ const vacated = (outcome: BlockWriteOutcome): boolean => {
     case 'OutOfWorld':
       return false
     // exhaustiveness arm over BlockWriteOutcome, a closed four-tag union
-    // (chunk-store-port.ts's BlockWriteOutcome); 'Written', 'Unchanged',
+    // (mc-worldgen's chunk-store-state.d.ts's BlockWriteOutcome); 'Written', 'Unchanged',
     // 'ChunkNotLoaded' and 'OutOfWorld' are the only reachable tags and all
     // four are covered above, so no input can reach this arm.
     /* v8 ignore start */
@@ -214,7 +209,7 @@ export const applyFallingBlocks = (
           break
         }
         // exhaustiveness arm over BlockWriteOutcome, a closed four-tag union
-        // (chunk-store-port.ts's BlockWriteOutcome); 'Written', 'Unchanged',
+        // (mc-worldgen's chunk-store-state.d.ts's BlockWriteOutcome); 'Written', 'Unchanged',
         // 'ChunkNotLoaded' and 'OutOfWorld' are the only reachable tags and
         // all four are covered above, so no input can reach this arm.
         /* v8 ignore start */

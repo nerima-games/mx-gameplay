@@ -103,47 +103,49 @@ export * from './stages/ender-dragon-encounter-stage.js'
 export * from './stages/stage-ids.js'
 export * from './stages/targeted-right-click-route.js'
 
-// --- Provisional ---------------------------------------------------------------
-// Two modules are temporary local stand-ins for packages that are not
-// published yet, and neither vocabulary is re-exported wholesale:
+// --- Formerly provisional --------------------------------------------------
+// This repository carried six local mirrors for packages that were not yet
+// published, and none of their vocabularies were ever re-exported wholesale.
+// All six are now deleted; every mirrored symbol is taken directly from its
+// real package.
 //
-//   domain/chunk-store-port.ts    -> @nerima-games/mc-worldgen
-//   domain/portal-frame-port.ts   -> @nerima-games/mc-worldgen
+//   domain/frame-contract.ts, domain/item-vocabulary.ts,
+//   domain/position-key.ts, domain/block-position-key.ts   (W1-M3, kernel)
+//   domain/block-vocabulary.ts                              (W1-M4, kernel
+//     0.6.0 — capabilityOfBlockId replaces the four renamed predicates,
+//     resistsExplosion(id, power) replaces resistsNormalExplosion(id))
+//   domain/chunk-store-port.ts                              (W1-M5,
+//     @nerima-games/mc-worldgen 0.3.0)
+//   domain/portal-frame-port.ts                             (W1-M5,
+//     @nerima-games/mc-kernel — its header's original repoint target named
+//     mc-worldgen, but by the time of removal mc-worldgen no longer carried
+//     the portal-frame family at all; kernel owns it)
 //
-// (Wave 1 already repointed and deleted this repository's five mc-kernel
-// mirrors: domain/frame-contract.ts, domain/item-vocabulary.ts,
-// domain/position-key.ts and domain/block-position-key.ts (W1-M3), and
-// domain/block-vocabulary.ts (W1-M4, kernel 0.6.0 — capabilityOfBlockId
-// replaces the four renamed predicates, resistsExplosion(id, power) replaces
-// resistsNormalExplosion(id)). Consumers of `StageId`, `DeltaTimeSecs`,
-// `StackCount`, `CameraPoseSnapshot`, `ClockPort`, `FrameServices`,
-// `GameModule`, `StageRegistration`, `ItemType`, `BlockPositionKey`,
-// `BlockType`, `blockIdOf`, `blockTypeOfId`, `dropOfBlockId`,
-// `capabilityOfBlockId`, `supportRuleOfBlockId` and the rest of the block
-// vocabulary take them directly from `@nerima-games/mc-kernel` now.)
+// Consumers of `StageId`, `DeltaTimeSecs`, `StackCount`, `CameraPoseSnapshot`,
+// `ClockPort`, `FrameServices`, `GameModule`, `StageRegistration`, `ItemType`,
+// `BlockPositionKey`, `BlockType`, `BlockPosition`, `BlockId`, `ChunkCoord`,
+// `AIR_BLOCK_ID`, `blockIdOf`, `blockTypeOfId`, `dropOfBlockId`,
+// `capabilityOfBlockId`, `supportRuleOfBlockId`, `detectNetherPortal`,
+// `generatePortalLayout` and the rest of the block and portal-frame
+// vocabulary take them directly from `@nerima-games/mc-kernel` now;
+// `ChunkStore`, `ChunkStoreApi` and the rest of the chunk-store vocabulary
+// take them directly from `@nerima-games/mc-worldgen`.
 //
-// BOTH remaining mirror mc-worldgen, which is not an inconsistency:
-// `domain/portal-frame-port.ts`'s header records the lesson that one mirror
-// file must have one SOURCE module.
-//
-// `domain/chunk-window.ts` sits beside them and IS re-exported, because it is
-// this repository's own: the bridge from an `Effect`-shaped store to the
-// synchronous accessor mc-worldgen's portal rule takes. It survives the
-// repoint; the mirror it names does not.
+// `domain/chunk-window.ts` is re-exported because it is this repository's
+// own: the bridge from an `Effect`-shaped store to the synchronous accessor
+// kernel's portal rule takes. It named the mirrors in its own header while
+// they existed; it needed no change when they were deleted.
 //
 // `isPlaceableItem` is the narrow exception: gameplay consumers need the guard
 // before requesting placement, so the barrel exports that operation without
 // republishing kernel's block and item rosters.
 //
-// All of them carry a deletion date — see the "WHY THIS FILE EXISTS AND WHEN IT
-// DIES" header on the first — and re-exporting them would make `ChunkStore`,
-// `EntityManagerApi` and `InventoryServiceApi` published API of a package that
-// does not own them, so deleting the stand-in would become a breaking change
-// for every consumer. Consumers take that
-// vocabulary from mc-worldgen and mc-sim; the types are structurally
-// identical, so a consumer importing them from there typechecks against the
-// signatures above. Same call, and the same reason, as mc-sim's and mc-render's
-// barrels.
+// None of `ChunkStore`, `EntityManagerApi` or `InventoryServiceApi` is
+// re-exported wholesale, because doing so would make them published API of a
+// package that does not own them: this repository CALLS mc-worldgen's and
+// mc-sim's services, it does not name them for anyone else. Consumers take
+// that vocabulary from mc-worldgen and mc-sim directly. Same call, and the
+// same reason, as mc-sim's and mc-render's barrels.
 //
 // `ChunkStore`, `EntityManager`, `EntityManagerApi`, `InventoryService` and
 // `InventoryServiceApi` are nonetheless VISIBLE to a consumer, because they

@@ -38,13 +38,13 @@ import {
   chunkCoordsAround,
   openChunkWindow,
 } from '../src/domain/chunk-window'
+import { AIR_BLOCK_ID, blockPosition, chunkCoord, CHUNK_SIZE_XZ } from '@nerima-games/mc-kernel'
 import {
-  AIR_BLOCK_ID,
   CHUNK_HEIGHT,
   blockIndex,
   readBlock,
   type ChunkStoreApi,
-} from '../src/domain/chunk-store-port'
+} from '@nerima-games/mc-worldgen'
 import { makeChunkStoreDouble, world, CHUNK_SIDE, STONE } from './support/chunk-store-double'
 
 /**
@@ -67,7 +67,7 @@ const notAStore: ChunkStoreApi = new Proxy({} as ChunkStoreApi, {
 
 describe('the buffer layout, transcribed', () => {
   it('is y-major, which is what makes a vertical walk contiguous', () => {
-    // Restated rather than re-derived — see `domain/chunk-store-port.ts`. An
+    // Restated rather than re-derived — see mc-worldgen's `blockIndex`. An
     // index function that is "obviously equivalent" is how two repositories end
     // up reading one buffer two ways.
     expect(blockIndex(0, 0, 0)).toBe(0)
@@ -87,13 +87,23 @@ describe('the buffer layout, transcribed', () => {
   })
 })
 
+/**
+ * `chunkCoordOf`'s own expression (`domain/chunk-window.ts`), reproduced here
+ * rather than called, for the one test below that needs a fractional
+ * position: `chunkCoordOf` takes kernel's branded `BlockPosition` and throws
+ * on a non-integer `x`/`z`, which is exactly the input that test exists to
+ * exercise.
+ */
+const chunkCoordOfRaw = (position: { readonly x: number; readonly z: number }) =>
+  chunkCoord(Math.floor(position.x / CHUNK_SIZE_XZ), Math.floor(position.z / CHUNK_SIZE_XZ))
+
 describe('chunkCoordOf and chunkCoordsAround', () => {
   it('floors, so a negative world coordinate lands in the chunk west of the origin', () => {
     // `Math.trunc` would put x = -1 in chunk 0 along with x = 0, which is a
     // sixteen-block-wide chunk covering thirty-one columns.
-    expect(chunkCoordOf({ x: 0, y: 64, z: 0 })).toStrictEqual({ cx: 0, cz: 0 })
-    expect(chunkCoordOf({ x: -1, y: 64, z: -1 })).toStrictEqual({ cx: -1, cz: -1 })
-    expect(chunkCoordOf({ x: 16, y: 64, z: 31 })).toStrictEqual({ cx: 1, cz: 1 })
+    expect(chunkCoordOf(blockPosition(0, 64, 0))).toStrictEqual({ cx: 0, cz: 0 })
+    expect(chunkCoordOf(blockPosition(-1, 64, -1))).toStrictEqual({ cx: -1, cz: -1 })
+    expect(chunkCoordOf(blockPosition(16, 64, 31))).toStrictEqual({ cx: 1, cz: 1 })
   })
 
   it('covers the whole square, and covers it exactly once', () => {
@@ -169,8 +179,15 @@ describe('chunkCoordOf and chunkCoordsAround', () => {
   // that is exactly the input that separates them: `Math.floor(-0.1)` is `-1`,
   // and `-1 / 16` truncated is `0` — the wrong chunk, one column east.
   it('floors the quotient and not the coordinate, which a fractional position can tell apart', () => {
-    expect(chunkCoordOf({ x: 0.1, y: 64, z: 15.9 })).toStrictEqual({ cx: 0, cz: 0 })
-    expect(chunkCoordOf({ x: -0.1, y: 64, z: -16.01 })).toStrictEqual({ cx: -1, cz: -2 })
+    // `chunkCoordOf` itself takes kernel's branded, integer-only `BlockPosition`
+    // and would throw on the fractional input this test needs — the whole point
+    // being made above is about a caller (a player position) that is NOT a
+    // `BlockPosition`. `chunkCoordOfRaw` below is `chunkCoordOf`'s own
+    // Math.floor-the-quotient expression, inlined ahead of that branded
+    // boundary, for exactly the reason `domain/chunk-window.ts`'s
+    // `chunkCoordsAround` takes the same plain shape.
+    expect(chunkCoordOfRaw({ x: 0.1, z: 15.9 })).toStrictEqual({ cx: 0, cz: 0 })
+    expect(chunkCoordOfRaw({ x: -0.1, z: -16.01 })).toStrictEqual({ cx: -1, cz: -2 })
   })
 
   it('yields nothing for a centre or a radius that is not a usable number', () => {
@@ -187,8 +204,8 @@ describe('chunkCoordOf and chunkCoordsAround', () => {
 describe('openChunkWindow', () => {
   it.effect('reads real bytes out of the peeked buffers, and costs one peek per chunk', () =>
     Effect.gen(function* () {
-      const store = yield* makeChunkStoreDouble(world([[{ x: 3, y: 64, z: 5 }, STONE]]), ['0,0'])
-      const window = yield* openChunkWindow(store.api, [{ cx: 0, cz: 0 }])
+      const store = yield* makeChunkStoreDouble(world([[blockPosition(3, 64, 5), STONE]]), ['0,0'])
+      const window = yield* openChunkWindow(store.api, [chunkCoord(0, 0)])
 
       expect(window.blockAt(3, 64, 5)).toBe(STONE)
       expect(window.blockAt(3, 65, 5)).toBe(AIR_BLOCK_ID)
@@ -206,8 +223,8 @@ describe('openChunkWindow', () => {
     Effect.gen(function* () {
       const store = yield* makeChunkStoreDouble(world([]), ['0,0'])
       const window = yield* openChunkWindow(store.api, [
-        { cx: 0, cz: 0 },
-        { cx: 1, cz: 0 },
+        chunkCoord(0, 0),
+        chunkCoord(1, 0),
       ])
 
       // NOT AIR. This is the distinction a chunk-buffer read normally throws
@@ -250,7 +267,7 @@ describe('openChunkWindow', () => {
           }),
       }
 
-      const window = yield* openChunkWindow(shortBuffered, [{ cx: 0, cz: 0 }])
+      const window = yield* openChunkWindow(shortBuffered, [chunkCoord(0, 0)])
 
       expect(window.blockAt(0, 64, 0)).toBe(UNREADABLE_BLOCK)
       expect(window.unreadableProbes()).toBe(1)
@@ -261,7 +278,7 @@ describe('openChunkWindow', () => {
     Effect.gen(function* () {
       const store = yield* makeChunkStoreDouble(world([]), ['0,0', '1,0'])
       // Chunk 1,0 is resident but was NOT asked for.
-      const window = yield* openChunkWindow(store.api, [{ cx: 0, cz: 0 }])
+      const window = yield* openChunkWindow(store.api, [chunkCoord(0, 0)])
 
       expect(window.blockAt(20, 64, 0)).toBe(UNREADABLE_BLOCK)
       expect(window.unreadableProbes()).toBe(1)
@@ -272,7 +289,7 @@ describe('openChunkWindow', () => {
   it.effect('answers UNREADABLE below bedrock and above the build limit', () =>
     Effect.gen(function* () {
       const store = yield* makeChunkStoreDouble(world([]), ['0,0'])
-      const window = yield* openChunkWindow(store.api, [{ cx: 0, cz: 0 }])
+      const window = yield* openChunkWindow(store.api, [chunkCoord(0, 0)])
 
       // THE SHARP CASE. `readBlock` is total and answers AIR for an
       // out-of-range index, so without this guard a portal could be detected in
@@ -287,7 +304,7 @@ describe('openChunkWindow', () => {
   it.effect('answers UNREADABLE for a coordinate that is not an integer', () =>
     Effect.gen(function* () {
       const store = yield* makeChunkStoreDouble(world([]), ['0,0'])
-      const window = yield* openChunkWindow(store.api, [{ cx: 0, cz: 0 }])
+      const window = yield* openChunkWindow(store.api, [chunkCoord(0, 0)])
 
       // `positionOfKey` yields `NaN` for a malformed key and says so: a `NaN`
       // position must not be answered with a plausible byte.
@@ -307,12 +324,12 @@ describe('openChunkWindow', () => {
       // local x = 15 of chunk -1.
       const store = yield* makeChunkStoreDouble(
         world([
-          [{ x: -1, y: 64, z: -1 }, STONE],
-          [{ x: -16, y: 70, z: -16 }, STONE],
+          [blockPosition(-1, 64, -1), STONE],
+          [blockPosition(-16, 70, -16), STONE],
         ]),
         ['-1,-1'],
       )
-      const window = yield* openChunkWindow(store.api, [{ cx: -1, cz: -1 }])
+      const window = yield* openChunkWindow(store.api, [chunkCoord(-1, -1)])
 
       expect(window.blockAt(-1, 64, -1)).toBe(STONE)
       expect(window.blockAt(-16, 70, -16)).toBe(STONE)

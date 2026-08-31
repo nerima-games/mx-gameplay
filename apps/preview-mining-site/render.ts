@@ -173,8 +173,8 @@ export const renderQueue = (
 
   pending.slice(0, visible).forEach((key, index) => {
     const parts = key.split(',')
-    const position = { x: Number(parts[0]), y: Number(parts[1]), z: Number(parts[2]) }
-    const source = { ...position, y: position.y + 1 }
+    const position = blockPosition(Number(parts[0]), Number(parts[1]), Number(parts[2]))
+    const source = blockPosition(position.x, position.y + 1, position.z)
     const resident = site.world.isResident(position)
     const at = resident ? glyphOf(site.world.peekBlock(position) ?? AIR).name : 'not loaded'
     const above = resident ? glyphOf(site.world.peekBlock(source) ?? AIR).name : 'not loaded'

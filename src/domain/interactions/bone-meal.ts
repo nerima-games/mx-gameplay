@@ -1,6 +1,6 @@
 import { Effect } from 'effect'
 import type { BlockType } from '@nerima-games/mc-kernel'
-import type { BlockPosition } from '../chunk-store-port.js'
+import type { BlockPosition } from '@nerima-games/mc-kernel'
 
 export const BONE_MEAL_CROPS: ReadonlyArray<BlockType> = ['wheat_crop', 'potato_crop', 'nether_wart_crop']
 

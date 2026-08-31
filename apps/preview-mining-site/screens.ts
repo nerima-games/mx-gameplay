@@ -86,8 +86,7 @@ import {
   type DeathCause,
   type Vitals,
 } from '../../src/domain/death-cause'
-import { AIR_BLOCK_ID, type BlockId } from '../../src/domain/chunk-store-port'
-import { DeltaTimeSecs } from '@nerima-games/mc-kernel'
+import { AIR_BLOCK_ID, BlockId, DeltaTimeSecs } from '@nerima-games/mc-kernel'
 import { DEFAULT_ROLL_SEED, drawRolls } from '../../src/domain/frame-rolls'
 import {
   advanceWeather,
@@ -554,7 +553,7 @@ export const initialArenaState = (): ArenaState => ({
   causeIndex: 0,
   amountIndex: 1,
   log: [],
-  site: { groundBlock: 2, blockLight: 0, distanceBlocks: 20 },
+  site: { groundBlock: BlockId(2), blockLight: 0, distanceBlocks: 20 },
   creeper: undefined,
   enderman: initialEnderman(),
   shulker: initialShulker(),
@@ -599,13 +598,13 @@ export const respawn = (state: ArenaState): void => {
 
 /** Ground blocks worth trying, and what each one demonstrates. */
 export const ARENA_GROUNDS: ReadonlyArray<readonly [BlockId, string]> = [
-  [2, 'stone'],
-  [5, 'sand'],
-  [10, 'oak_leaves'],
-  [13, 'glass'],
-  [6, 'water'],
+  [BlockId(2), 'stone'],
+  [BlockId(5), 'sand'],
+  [BlockId(10), 'oak_leaves'],
+  [BlockId(13), 'glass'],
+  [BlockId(6), 'water'],
   [AIR_BLOCK_ID, 'air'],
-  [200, 'id 200 (unknown)'],
+  [BlockId(200), 'id 200 (unknown)'],
 ]
 
 /** Light levels either side of the threshold, plus the extremes. */

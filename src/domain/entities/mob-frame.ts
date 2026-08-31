@@ -214,7 +214,7 @@ import {
   type Durability,
 } from '@nerima-games/mc-sim'
 import { Effect } from 'effect'
-import { blockTypeOfId, capabilityOfBlockId, type Position } from '@nerima-games/mc-kernel'
+import { blockPosition, blockTypeOfId, capabilityOfBlockId, type Position } from '@nerima-games/mc-kernel'
 import { applyDamage, isDead, type Vitals } from '../death-cause.js'
 import {
   changed,
@@ -226,8 +226,8 @@ import {
   type EntityManagerApi,
   type EntityStep,
 } from '@nerima-games/mc-sim'
-import type { BlockPosition, ChunkStoreApi } from '../chunk-store-port.js'
-import type { DeltaTimeSecs } from '@nerima-games/mc-kernel'
+import type { ChunkStoreApi } from '@nerima-games/mc-worldgen'
+import type { BlockPosition, DeltaTimeSecs } from '@nerima-games/mc-kernel'
 import { drawRolls, nextRoll } from '../frame-rolls.js'
 import { carveExplosionCrater } from '../interactions/explosion-crater.js'
 import type { BlockPositionKey } from '@nerima-games/mc-kernel'
@@ -988,11 +988,8 @@ export const distanceBetween = (from: Position, to: Position): number =>
  * creeper standing on the floor of a room one cell above it and blow the roof
  * off instead of the floor.
  */
-export const cellOf = (position: Position): BlockPosition => ({
-  x: Math.floor(position.x),
-  y: Math.floor(position.y),
-  z: Math.floor(position.z),
-})
+export const cellOf = (position: Position): BlockPosition =>
+  blockPosition(Math.floor(position.x), Math.floor(position.y), Math.floor(position.z))
 
 // ---------------------------------------------------------------------------
 // The sweep
@@ -1472,7 +1469,7 @@ export const resolveEndermanTeleportProbes = (
       const cells = yield* Effect.forEach(
         endermanTeleportCandidateCells(probe.current, probe.anchor, probe.rolls),
         (position) =>
-          Effect.map(store.getBlock(position), (reading): EndermanTeleportCell | undefined => {
+          Effect.map(store.getBlock(blockPosition(position.x, position.y, position.z)), (reading): EndermanTeleportCell | undefined => {
             if (reading._tag !== 'Block') return undefined
             const block = blockTypeOfId(reading.block)
             if (block === undefined) return undefined

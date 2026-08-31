@@ -14,8 +14,8 @@
 import { describe, expect, it } from '@effect/vitest'
 import { makeTimeService } from '@nerima-games/mc-sim'
 import { Effect, Ref } from 'effect'
-import { AIR_BLOCK_ID, type BlockPosition, type ChunkStoreApi } from '../src/domain/chunk-store-port'
-import type { Position } from '@nerima-games/mc-kernel'
+import { AIR_BLOCK_ID, BlockId, blockPosition, type BlockPosition, type Position } from '@nerima-games/mc-kernel'
+import type { ChunkStoreApi } from '@nerima-games/mc-worldgen'
 import {
   CREEPER_KIND,
   ENDERMAN_KIND,
@@ -87,17 +87,17 @@ const RESIDENT_CHUNKS: ReadonlyArray<string> = (() => {
 
 /** Stone at y = 63 across the whole area, air above it. */
 const FLOORED_WORLD = (() => {
-  const cells: Array<readonly [BlockPosition, number]> = []
+  const cells: Array<readonly [BlockPosition, BlockId]> = []
   for (let x = -48; x <= 47; x += 1) {
     for (let z = -48; z <= 47; z += 1) {
-      cells.push([{ x, y: FLOOR_Y, z }, STONE] as const)
+      cells.push([blockPosition(x, FLOOR_Y, z), STONE] as const)
     }
   }
   return world(cells)
 })()
 
 const searchIn = (
-  blocks: ReadonlyMap<string, number>,
+  blocks: ReadonlyMap<string, BlockId>,
   loaded: ReadonlyArray<string>,
   lights: ReadonlyMap<string, LightLevels> = new Map(),
   seed = 1,
@@ -395,7 +395,7 @@ describe('what the search reads', () => {
       const lit: Array<readonly [BlockPosition, LightLevels]> = []
       for (let x = -48; x <= 47; x += 1) {
         for (let z = -48; z <= 47; z += 1) {
-          lit.push([{ x, y: 64, z }, { sky: 15, block: 3 }] as const)
+          lit.push([blockPosition(x, 64, z), { sky: 15, block: 3 }] as const)
         }
       }
 
@@ -469,7 +469,7 @@ describe('what the search reads', () => {
       // unreadable BLOCK offers a mob a cell in ungenerated space, which the
       // rule then refuses as `not-a-surface`; an unreadable LIGHT read as
       // darkness offers a cell that looks like a legal pitch-black floor, which
-      // the rule ACCEPTS. `getLight`'s own note in `domain/chunk-store-port.ts`
+      // the rule ACCEPTS. `getLight`'s own note in `@nerima-games/mc-worldgen`
       // names the moment this happens — a read after a write, when a chunk is
       // mid-relight — so it is a real state and not a hypothetical one.
       //
@@ -590,7 +590,7 @@ describe('the cells the rule then refuses', () => {
       const lit: Array<readonly [BlockPosition, LightLevels]> = []
       for (let x = -48; x <= 47; x += 1) {
         for (let z = -48; z <= 47; z += 1) {
-          lit.push([{ x, y: 64, z }, { sky: 0, block: 15 }] as const)
+          lit.push([blockPosition(x, 64, z), { sky: 0, block: 15 }] as const)
         }
       }
 
@@ -607,11 +607,11 @@ describe('the cells the rule then refuses', () => {
       // A world that is solid at the feet cell as well as the floor. The search
       // must report the stone it found; the `obstructed` test is the rule's, and
       // a second copy of it here would be untested and would drift.
-      const solid: Array<readonly [BlockPosition, number]> = []
+      const solid: Array<readonly [BlockPosition, BlockId]> = []
       for (let x = -48; x <= 47; x += 1) {
         for (let z = -48; z <= 47; z += 1) {
-          solid.push([{ x, y: FLOOR_Y, z }, STONE] as const)
-          solid.push([{ x, y: 64, z }, STONE] as const)
+          solid.push([blockPosition(x, FLOOR_Y, z), STONE] as const)
+          solid.push([blockPosition(x, 64, z), STONE] as const)
         }
       }
 
@@ -628,13 +628,13 @@ describe('the cells the rule then refuses', () => {
       // the ground cell instead would measure the brightness of the inside of a
       // rock, which is 0 for every solid floor in the world — so every cell would
       // read dark and `too-bright` would never fire.
-      const oneCellLit = lightWorld([[{ x: 0, y: 64, z: 0 }, { sky: 0, block: 9 }]])
+      const oneCellLit = lightWorld([[blockPosition(0, 64, 0), { sky: 0, block: 9 }]])
       const store = yield* makeChunkStoreDouble(FLOORED_WORLD, RESIDENT_CHUNKS, oneCellLit)
 
-      const reading = yield* store.api.getLight({ x: 0, y: 64, z: 0 })
+      const reading = yield* store.api.getLight(blockPosition(0, 64, 0))
       expect(reading).toStrictEqual({ _tag: 'Light', sky: 0, block: 9 })
 
-      const ground = yield* store.api.getLight({ x: 0, y: FLOOR_Y, z: 0 })
+      const ground = yield* store.api.getLight(blockPosition(0, FLOOR_Y, 0))
       expect(ground).toStrictEqual({ _tag: 'Light', sky: 0, block: 0 })
 
       // And the search asks about the foot cell: every candidate sits at

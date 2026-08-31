@@ -39,13 +39,12 @@
  * this rule still owns neither the portal ledger nor world generation.
  */
 import { Effect } from 'effect'
-import { blockPosition } from '@nerima-games/mc-kernel'
+import { blockPosition, type BlockPosition } from '@nerima-games/mc-kernel'
 import {
   type Dimension,
   type PortalTravelPlan,
   resolveNetherTravel,
 } from '@nerima-games/mc-worldgen'
-import { type BlockPosition } from './chunk-store-port.js'
 import { type PlayerServiceApi } from '@nerima-games/mc-sim'
 
 /**

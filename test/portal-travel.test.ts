@@ -2,7 +2,7 @@ import { describe, expect, it } from '@effect/vitest'
 import { END_PORTAL_BLOCK, type Dimension } from '@nerima-games/mc-worldgen'
 import { makeTimeService } from '@nerima-games/mc-sim'
 import { Effect, Option, Ref } from 'effect'
-import { type BlockPosition } from '../src/domain/chunk-store-port'
+import { blockPosition, type BlockPosition } from '@nerima-games/mc-kernel'
 import {
   OVERWORLD_RETURN_POSITION,
   applyEndPortalTravel,
@@ -56,7 +56,7 @@ const makeRecordingPlayer = (
       moveTo: (feetPosition) =>
         Ref.update(moves, (seen) => [
           ...seen,
-          { x: feetPosition.x, y: feetPosition.y, z: feetPosition.z },
+          blockPosition(feetPosition.x, feetPosition.y, feetPosition.z),
         ]),
       setDimension: (next) =>
         Effect.zipRight(
@@ -88,7 +88,7 @@ const makeRecordingPlayer = (
  * the rule. These check the CALL.
  */
 describe('a portal crossing actually completes', () => {
-  const overworldCell: BlockPosition = { x: 128, y: 64, z: -256 }
+  const overworldCell: BlockPosition = blockPosition(128, 64, -256)
 
   it.effect('overworld to nether: the player moves AND the dimension changes', () =>
     Effect.gen(function* () {
@@ -115,7 +115,7 @@ describe('a portal crossing actually completes', () => {
 
   it.effect('nether to overworld: the reverse crossing multiplies by eight', () =>
     Effect.gen(function* () {
-      const netherCell: BlockPosition = { x: 16, y: 70, z: -32 }
+      const netherCell: BlockPosition = blockPosition(16, 70, -32)
       const { api, moves, switches } = yield* makeRecordingPlayer('nether')
 
       const plan = yield* applyPortalTravel(api, netherCell)
@@ -145,7 +145,7 @@ describe('a portal crossing actually completes', () => {
     Effect.gen(function* () {
       const { api, switches } = yield* makeRecordingPlayer('end')
 
-      const plan = yield* applyPortalTravel(api, { x: 8, y: 64, z: 8 })
+      const plan = yield* applyPortalTravel(api, blockPosition(8, 64, 8))
 
       expect(plan.toDimension).toBe('overworld')
       expect(yield* Ref.get(switches)).toStrictEqual(['overworld'])
@@ -157,7 +157,7 @@ describe('a portal crossing actually completes', () => {
       const { api, switches } = yield* makeRecordingPlayer('overworld')
 
       yield* applyPortalTravel(api, overworldCell)
-      yield* applyPortalTravel(api, { x: 16, y: 64, z: -32 })
+      yield* applyPortalTravel(api, blockPosition(16, 64, -32))
 
       expect(yield* Ref.get(switches)).toStrictEqual(['nether', 'overworld'])
       expect(yield* api.dimension).toBe('overworld')
@@ -177,7 +177,7 @@ describe('applyEndPortalTravel, called directly', () => {
     Effect.gen(function* () {
       const { api, moves, switches } = yield* makeRecordingPlayer('end')
 
-      const event = yield* applyEndPortalTravel(api, { x: 8, y: 64, z: 8 })
+      const event = yield* applyEndPortalTravel(api, blockPosition(8, 64, 8))
 
       expect(event.toDimension).toBe('overworld')
       expect(event.destination).toStrictEqual(OVERWORLD_RETURN_POSITION)
@@ -194,7 +194,7 @@ describe('portal candidate defaults', () => {
     Effect.gen(function* () {
       const { api } = yield* makeRecordingPlayer('overworld')
 
-      const plan = yield* applyPortalTravel(api, { x: 0, y: 64, z: 0 })
+      const plan = yield* applyPortalTravel(api, blockPosition(0, 64, 0))
 
       expect(Option.isSome(plan.portalToCreate)).toBe(true)
       expect(NO_KNOWN_PORTALS).toStrictEqual([])
@@ -205,8 +205,8 @@ describe('portal candidate defaults', () => {
     Effect.gen(function* () {
       const { api, moves } = yield* makeRecordingPlayer('overworld')
       // Scales to { x: 16, y: 64, z: -32 }; the candidate sits one block off it.
-      const departure: BlockPosition = { x: 128, y: 64, z: -256 }
-      const existing: BlockPosition = { x: 17, y: 64, z: -31 }
+      const departure: BlockPosition = blockPosition(128, 64, -256)
+      const existing: BlockPosition = blockPosition(17, 64, -31)
 
       const plan = yield* applyPortalTravel(api, departure, [existing])
 
@@ -235,7 +235,7 @@ describe('portal candidate defaults', () => {
  *
  */
 describe('REACHABILITY: the interactions stage performs the crossing', () => {
-  const spawnCell: BlockPosition = { x: 0, y: 64, z: 0 }
+  const spawnCell: BlockPosition = blockPosition(0, 64, 0)
   // `?? 118` matches `test/vertical-slice.test.ts`'s idiom: kernel's id is the
   // authority, and the literal is the fallback that keeps the test readable
   // rather than a second source of truth.
@@ -293,8 +293,8 @@ describe('REACHABILITY: the interactions stage performs the crossing', () => {
   it.effect('uses only the destination dimension candidate snapshot', () =>
     Effect.gen(function* () {
       const { player, state, stages } = yield* portalWorld
-      const wrongDimensionCandidate: BlockPosition = { x: 1, y: 64, z: 1 }
-      const netherCandidate: BlockPosition = { x: 2, y: 64, z: 2 }
+      const wrongDimensionCandidate: BlockPosition = blockPosition(1, 64, 1)
+      const netherCandidate: BlockPosition = blockPosition(2, 64, 2)
 
       yield* setPortalCandidates(state, 'overworld', [wrongDimensionCandidate])
       yield* setPortalCandidates(state, 'nether', [netherCandidate])

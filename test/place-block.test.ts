@@ -38,25 +38,24 @@ import { describe, expect, it } from '@effect/vitest'
 import { makeTimeService } from '@nerima-games/mc-sim'
 import { Effect, Ref } from 'effect'
 import {
+  AIR_BLOCK_ID,
   blockIdOf,
+  BlockId,
   blockOfPlaceableItem,
   blockPosition,
   blockPositionKeyOf,
   canBlockStaySupported,
   capabilityOfBlockId,
+  chunkCoord,
   needsOneOf,
   PLACEABLE_ITEM_TYPES,
   StackCount,
   supportRuleOfBlockId,
+  type BlockPosition,
   type BlockType,
   type Position,
 } from '@nerima-games/mc-kernel'
-import {
-  AIR_BLOCK_ID,
-  type BlockPosition,
-  type BlockWriteOutcome,
-  type ChunkStoreApi,
-} from '../src/domain/chunk-store-port'
+import type { BlockWriteOutcome, ChunkStoreApi } from '@nerima-games/mc-worldgen'
 import {
   blockOverlapsPlayer,
   isSupportSensitiveOfBlock,
@@ -108,11 +107,14 @@ const SUPPORT_SENSITIVE_TYPES: ReadonlyArray<BlockType> = [
   ...SUPPORT_SENSITIVE_PLANT_TYPES,
 ]
 
-const target: BlockPosition = { x: 2, y: 64, z: 3 }
-const below: BlockPosition = { x: 2, y: 63, z: 3 }
+const target: BlockPosition = blockPosition(2, 64, 3)
+const below: BlockPosition = blockPosition(2, 63, 3)
 
 const storeWith = (entries: ReadonlyArray<readonly [BlockPosition, number]>) =>
-  makeChunkStoreDouble(world(entries), ['0,0'])
+  makeChunkStoreDouble(
+    world(entries.map(([position, id]) => [position, BlockId(id)] as const)),
+    ['0,0'],
+  )
 
 describe('placeBlock — the target cell', () => {
   it.effect('places into air and reports the item to spend', () =>
@@ -125,7 +127,7 @@ describe('placeBlock — the target cell', () => {
         _tag: 'Placed',
         block: STONE,
         consumed: 'stone',
-        chunk: { cx: 0, cz: 0 },
+        chunk: chunkCoord(0, 0),
         // EMPTY, and asserted rather than omitted: `alsoPlaced` is the door
         // rule's channel (`domain/interactions/place-door-upper.ts`) and an
         // ordinary block must not acquire a second cell. `toStrictEqual` would
@@ -168,10 +170,9 @@ describe('placeBlock — the target cell', () => {
 
   // REGRESSION. `block-service-place-load.ts:48-58` asks
   // `existing === 'AIR' || existing === 'WATER'`, so a lava cell was refused as
-  // occupied. This asks `isReplaceable`, which is kernel's capability, and
-  // `domain/chunk-store-port.ts` records that lava was MISSING from the mirror's
-  // copy of that set until `pnpm check:mirrors` diffed it — the same omission,
-  // found from the other end.
+  // occupied. This asks `replaceable`, which is kernel's capability, and lava
+  // was MISSING from kernel's own `replaceable` set before mc-kernel 0.5.1 —
+  // the same omission, found from the other end.
   it.effect('REGRESSION: lava is replaceable — a block may be placed into it', () =>
     Effect.gen(function* () {
       const store = yield* storeWith([[target, LAVA]])
@@ -290,7 +291,7 @@ describe('placeBlock — the target cell', () => {
   it.effect('REGRESSION: `ChunkNotLoaded` is not air — nothing is placed there', () =>
     Effect.gen(function* () {
       const store = yield* storeWith([])
-      const edge: BlockPosition = { x: -1, y: 64, z: 3 }
+      const edge: BlockPosition = blockPosition(-1, 64, 3)
 
       expect(yield* placeBlock(store.api, { position: edge, heldItem: 'stone' })).toStrictEqual({
         _tag: 'ChunkNotLoaded',
@@ -304,7 +305,7 @@ describe('placeBlock — the target cell', () => {
       const store = yield* storeWith([])
 
       expect(
-        yield* placeBlock(store.api, { position: { x: 2, y: -1, z: 3 }, heldItem: 'stone' }),
+        yield* placeBlock(store.api, { position: blockPosition(2, -1, 3), heldItem: 'stone' }),
       ).toStrictEqual({ _tag: 'OutOfWorld' })
     }),
   )
@@ -327,13 +328,13 @@ describe('blockOverlapsPlayer — the suffocation guard', () => {
   // 0.8 = blockHalf + PLAYER_HALF_WIDTH, so a change to either half-extent moves
   // one of them and fails. A single "far away is false" row would not.
   const oracle: ReadonlyArray<readonly [string, BlockPosition, Position, boolean]> = [
-    ['overlap on all 3 axes', { x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 0 }, true],
-    ['separated on X', { x: 2, y: 0, z: 0 }, { x: 0, y: 0, z: 0 }, false],
-    ['separated on Z', { x: 0, y: 0, z: 2 }, { x: 0, y: 0, z: 0 }, false],
-    ['separated on Y (block above player)', { x: 0, y: 3, z: 0 }, { x: 0, y: 0, z: 0 }, false],
-    ['overlap away from the origin', { x: 5, y: 0, z: 5 }, { x: 5, y: 0, z: 5 }, true],
-    ['X just beyond the threshold (player at 1.31) — placeable', { x: 0, y: 0, z: 0 }, { x: 1.31, y: 0, z: 0 }, false],
-    ['X just inside the threshold (player at 1.29) — blocked', { x: 0, y: 0, z: 0 }, { x: 1.29, y: 0, z: 0 }, true],
+    ['overlap on all 3 axes', blockPosition(0, 0, 0), { x: 0, y: 0, z: 0 }, true],
+    ['separated on X', blockPosition(2, 0, 0), { x: 0, y: 0, z: 0 }, false],
+    ['separated on Z', blockPosition(0, 0, 2), { x: 0, y: 0, z: 0 }, false],
+    ['separated on Y (block above player)', blockPosition(0, 3, 0), { x: 0, y: 0, z: 0 }, false],
+    ['overlap away from the origin', blockPosition(5, 0, 5), { x: 5, y: 0, z: 5 }, true],
+    ['X just beyond the threshold (player at 1.31) — placeable', blockPosition(0, 0, 0), { x: 1.31, y: 0, z: 0 }, false],
+    ['X just inside the threshold (player at 1.29) — blocked', blockPosition(0, 0, 0), { x: 1.29, y: 0, z: 0 }, true],
   ]
 
   for (const [name, block, player, expected] of oracle) {
@@ -376,21 +377,21 @@ describe('blockOverlapsPlayer — the suffocation guard', () => {
   const secondOracle: ReadonlyArray<readonly [string, BlockPosition, Position, boolean]> = [
     // `:92-95`. Block (-1, 0, -1) spans [-1,0]×[0,1]×[-1,0]; its + faces touch
     // the player's box on both horizontal axes at once.
-    ['the block the player is standing inside — a corner touch still overlaps', { x: -1, y: 0, z: -1 }, { x: 0, y: 0, z: 0 }, true],
+    ['the block the player is standing inside — a corner touch still overlaps', blockPosition(-1, 0, -1), { x: 0, y: 0, z: 0 }, true],
     // `:106-108`. The cell the feet are in.
-    ['a block at the player’s feet level overlaps', { x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 0 }, true],
+    ['a block at the player’s feet level overlaps', blockPosition(0, 0, 0), { x: 0, y: 0, z: 0 }, true],
     // `:110-113`. The NEAREST side cell that clears: block centre 1.5 against a
     // threshold of 0.8. (The reference's comment on this row says the gap is
     // 1.2; the arithmetic its own code does gives 1.5. What is ported is the
     // EXPECTATION, not the annotation.) The table above only has x = 2.
-    ['the nearest side block that clears the horizontal half-extent', { x: 1, y: 0, z: 0 }, { x: 0, y: 0, z: 0 }, false],
+    ['the nearest side block that clears the horizontal half-extent', blockPosition(1, 0, 0), { x: 0, y: 0, z: 0 }, false],
     // `:115-118`. THE VERTICAL BRACKET — it pins the `<` and not the 0.9, for
     // the reason measured in the note above.
-    ['one cube below just clears, because the y comparison is exclusive', { x: 0, y: -1, z: 0 }, { x: 0, y: 0, z: 0 }, false],
+    ['one cube below just clears, because the y comparison is exclusive', blockPosition(0, -1, 0), { x: 0, y: 0, z: 0 }, false],
     // `:119-121`. The other side of the same threshold.
-    ['lowering the player a tenth brings that same cube into reach', { x: 0, y: -1, z: 0 }, { x: 0, y: -0.1, z: 0 }, true],
+    ['lowering the player a tenth brings that same cube into reach', blockPosition(0, -1, 0), { x: 0, y: -0.1, z: 0 }, true],
     // `:97-99`. Well outside on both horizontal axes.
-    ['a block well outside the footprint does not overlap', { x: 5, y: 0, z: 5 }, { x: 0, y: 0, z: 0 }, false],
+    ['a block well outside the footprint does not overlap', blockPosition(5, 0, 5), { x: 0, y: 0, z: 0 }, false],
   ]
 
   for (const [name, block, player, expected] of secondOracle) {
@@ -408,7 +409,7 @@ describe('blockOverlapsPlayer — the suffocation guard', () => {
   // the other way for a reason it states.
   it.effect('a NaN player position does not block placement', () =>
     Effect.sync(() => {
-      expect(blockOverlapsPlayer({ x: 0, y: 0, z: 0 }, { x: Number.NaN, y: 0, z: 0 })).toBe(false)
+      expect(blockOverlapsPlayer(blockPosition(0, 0, 0), { x: Number.NaN, y: 0, z: 0 })).toBe(false)
     }),
   )
 })
@@ -444,10 +445,10 @@ describe('placeBlock — the player’s body', () => {
   // (0, 0, 0) in a world with no player in it.
   it.effect('an absent player is nobody, not somebody at the origin', () =>
     Effect.gen(function* () {
-      const store = yield* storeWith([[{ x: 0, y: 63, z: 0 }, STONE]])
+      const store = yield* storeWith([[blockPosition(0, 63, 0), STONE]])
 
       expect(
-        (yield* placeBlock(store.api, { position: { x: 0, y: 64, z: 0 }, heldItem: 'stone' }))._tag,
+        (yield* placeBlock(store.api, { position: blockPosition(0, 64, 0), heldItem: 'stone' }))._tag,
       ).toBe('Placed')
     }),
   )
@@ -461,9 +462,9 @@ describe('placeBlock — support', () => {
         yield* placeBlock(soulSoilStore.api, { position: target, heldItem: 'soul_soil' }),
       ).toStrictEqual({
         _tag: 'Placed',
-        block: 120,
+        block: BlockId(120),
         consumed: 'soul_soil',
-        chunk: { cx: 0, cz: 0 },
+        chunk: chunkCoord(0, 0),
         alsoPlaced: [],
       } satisfies PlaceOutcome)
 
@@ -475,9 +476,9 @@ describe('placeBlock — support', () => {
         }),
       ).toStrictEqual({
         _tag: 'Placed',
-        block: WITHER_SKELETON_SKULL,
+        block: BlockId(WITHER_SKELETON_SKULL),
         consumed: 'wither_skeleton_skull',
-        chunk: { cx: 0, cz: 0 },
+        chunk: chunkCoord(0, 0),
         alsoPlaced: [],
       } satisfies PlaceOutcome)
 
@@ -493,7 +494,7 @@ describe('placeBlock — support', () => {
 
   it.effect('a torch needs something under it', () =>
     Effect.gen(function* () {
-      expect(isSupportSensitiveOfBlock(TORCH)).toBe(true)
+      expect(isSupportSensitiveOfBlock(BlockId(TORCH))).toBe(true)
       const store = yield* storeWith([])
 
       expect(yield* placeBlock(store.api, { position: target, heldItem: 'torch' })).toStrictEqual({
@@ -565,7 +566,7 @@ describe('placeBlock — support', () => {
       const store = yield* makeChunkStoreDouble(world([]), ['0,0'])
       // y = 0 is inside the world; y = -1 is not, so the support read answers
       // `OutOfWorld` while the target itself is a legal cell.
-      const floorLevel: BlockPosition = { x: 2, y: 0, z: 3 }
+      const floorLevel: BlockPosition = blockPosition(2, 0, 3)
 
       expect(
         yield* placeBlock(store.api, { position: floorLevel, heldItem: 'torch' }),
@@ -581,7 +582,7 @@ describe('placeBlock — the four per-block rules, reached through a real held i
   it.effect('a mushroom is refused when the cell is too bright', () =>
     Effect.gen(function* () {
       const store = yield* makeChunkStoreDouble(
-        world([[below, DIRT]]),
+        world([[below, BlockId(DIRT)]]),
         ['0,0'],
         lightWorld([[target, { sky: 13, block: 0 }]]),
       )
@@ -599,7 +600,7 @@ describe('placeBlock — the four per-block rules, reached through a real held i
     Effect.gen(function* () {
       const store = yield* storeWith([
         [below, SAND],
-        [{ x: target.x + 1, y: target.y, z: target.z }, STONE],
+        [blockPosition(target.x + 1, target.y, target.z), STONE],
       ])
 
       expect(
@@ -615,7 +616,7 @@ describe('placeBlock — the four per-block rules, reached through a real held i
     Effect.gen(function* () {
       const store = yield* storeWith([
         [below, STONE],
-        [{ x: target.x, y: target.y + 1, z: target.z }, STONE],
+        [blockPosition(target.x, target.y + 1, target.z), STONE],
       ])
 
       expect(
@@ -631,7 +632,7 @@ describe('placeBlock — the four per-block rules, reached through a real held i
   // `alsoPlaced` contract, exercised end to end.
   it.effect('a door places both halves and reports the second cell in alsoPlaced', () =>
     Effect.gen(function* () {
-      const upperCell: BlockPosition = { x: target.x, y: target.y + 1, z: target.z }
+      const upperCell: BlockPosition = blockPosition(target.x, target.y + 1, target.z)
       const store = yield* storeWith([[below, STONE]])
 
       const outcome = yield* placeBlock(store.api, { position: target, heldItem: 'door' })
@@ -640,7 +641,7 @@ describe('placeBlock — the four per-block rules, reached through a real held i
         _tag: 'Placed',
         block: blockIdOf('door')!,
         consumed: 'door',
-        chunk: { cx: 0, cz: 0 },
+        chunk: chunkCoord(0, 0),
         alsoPlaced: [upperCell],
       } satisfies PlaceOutcome)
       expect(yield* store.blockAt(target)).toBe(blockIdOf('door'))
@@ -696,9 +697,9 @@ describe('the reference\u2019s support table, on the rows whose rule IS the fall
   // not have and `docs/testing.md` §3-2 counts under item use.
   it.effect('agrees about which blocks are support-sensitive at all', () =>
     Effect.sync(() => {
-      expect(isSupportSensitiveOfBlock(TORCH)).toBe(true)
-      expect(isSupportSensitiveOfBlock(PRESSURE_PLATE)).toBe(true)
-      expect(isSupportSensitiveOfBlock(RAIL)).toBe(true)
+      expect(isSupportSensitiveOfBlock(BlockId(TORCH))).toBe(true)
+      expect(isSupportSensitiveOfBlock(BlockId(PRESSURE_PLATE))).toBe(true)
+      expect(isSupportSensitiveOfBlock(BlockId(RAIL))).toBe(true)
       expect(isSupportSensitiveOfBlock(STONE)).toBe(false)
     }),
   )
@@ -741,7 +742,7 @@ describe('the reference\u2019s support table, on the rows whose rule IS the fall
   for (const [name, held, support, stays] of sharedRule) {
     it.effect(`${name} — ${stays ? 'stays' : 'falls'}`, () =>
       Effect.sync(() => {
-        expect(isSupportSensitiveOfBlock(held)).toBe(true)
+        expect(isSupportSensitiveOfBlock(BlockId(held))).toBe(true)
         // THROUGH THE RULE, not through the two predicates it used to AND. These
         // rows used to assert `capabilityOfBlockId(support, 'canSupportAttachments')` directly, which
         // was the whole of the answer while the fallback was the whole of the
@@ -761,7 +762,7 @@ describe('the reference\u2019s support table, on the rows whose rule IS the fall
     Effect.gen(function* () {
       const store = yield* storeWith([[below, WATER]])
 
-      expect(isSupportSensitiveOfBlock(TORCH)).toBe(true)
+      expect(isSupportSensitiveOfBlock(BlockId(TORCH))).toBe(true)
       expect(capabilityOfBlockId(WATER, 'canSupportAttachments')).toBe(false)
       expect(yield* placeBlock(store.api, { position: target, heldItem: 'torch' })).toStrictEqual({
         _tag: 'Unsupported',
@@ -1065,8 +1066,8 @@ describe('placement through gameplay:interactions', () => {
 
   it.effect('competing placements cannot consume the same held item twice', () =>
     Effect.gen(function* () {
-      const competingTarget: BlockPosition = { x: 3, y: 64, z: 3 }
-      const competingBelow: BlockPosition = { x: 3, y: 63, z: 3 }
+      const competingTarget: BlockPosition = blockPosition(3, 64, 3)
+      const competingBelow: BlockPosition = blockPosition(3, 63, 3)
       const { store, state, inventory, stages } = yield* stagedSlice([
         [below, STONE],
         [competingBelow, STONE],
@@ -1235,8 +1236,8 @@ describe('placement through gameplay:interactions', () => {
 
   it.effect('reusing a command id for another payload is rejected without mutation', () =>
     Effect.gen(function* () {
-      const secondTarget: BlockPosition = { x: 3, y: 64, z: 3 }
-      const secondBelow: BlockPosition = { x: 3, y: 63, z: 3 }
+      const secondTarget: BlockPosition = blockPosition(3, 64, 3)
+      const secondBelow: BlockPosition = blockPosition(3, 63, 3)
       const { store, state, inventory, stages } = yield* stagedSlice([
         [below, STONE],
         [secondBelow, STONE],
@@ -1278,7 +1279,7 @@ describe('placement through gameplay:interactions', () => {
   it.effect('REGRESSION: sand placed in mid-air falls — placement disturbs', () =>
     Effect.gen(function* () {
       // A floor at y = 60 and nothing between it and the placement at y = 64.
-      const groundLevel: BlockPosition = { x: 2, y: 60, z: 3 }
+      const groundLevel: BlockPosition = blockPosition(2, 60, 3)
       const { store, state, stages } = yield* stagedSlice([[groundLevel, STONE]])
 
       yield* Ref.update(state.pendingPlacements, (queue) => [
@@ -1294,14 +1295,14 @@ describe('placement through gameplay:interactions', () => {
       // rather than looping to the floor inside one tick.
       yield* runFrame(stages)
       expect(yield* store.blockAt(target)).toBe(AIR_BLOCK_ID)
-      expect(yield* store.blockAt({ x: 2, y: 63, z: 3 })).toBe(blockIdOf('sand'))
+      expect(yield* store.blockAt(blockPosition(2, 63, 3))).toBe(blockIdOf('sand'))
 
       for (let frame = 0; frame < 8; frame += 1) {
         yield* runFrame(stages)
       }
 
       // Resting on the floor at y = 60, and the queue is empty again.
-      expect(yield* store.blockAt({ x: 2, y: 61, z: 3 })).toBe(blockIdOf('sand'))
+      expect(yield* store.blockAt(blockPosition(2, 61, 3))).toBe(blockIdOf('sand'))
       expect((yield* Ref.get(state.fallingBlocks)).pending.size).toBe(0)
     }),
   )

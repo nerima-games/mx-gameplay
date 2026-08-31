@@ -24,10 +24,10 @@ import {
   type PlantPort,
   type PlantRequest,
 } from '../src/domain/interactions/plant-crop'
-import { blockIdOf, type BlockType } from '@nerima-games/mc-kernel'
-import type { BlockPosition } from '../src/domain/chunk-store-port'
+import { blockIdOf, blockPosition, type BlockType } from '@nerima-games/mc-kernel'
+import type { BlockPosition } from '@nerima-games/mc-kernel'
 
-const SOIL: BlockPosition = { x: 4, y: 63, z: -9 }
+const SOIL: BlockPosition = blockPosition(4, 63, -9)
 
 const request = (held: PlantRequest['held']): PlantRequest => ({ held, soil: SOIL })
 
@@ -37,7 +37,7 @@ const keyOf = (position: BlockPosition): string =>
 /**
  * A world of exactly two cells, plus whatever a test adds.
  *
- * `undefined` for anything not listed, which is `chunk-store-port`'s "that
+ * `undefined` for anything not listed, which is `PlantPort.blockAt`'s "that
  * chunk is not resident" and NOT air — the distinction the implementation
  * refuses to collapse.
  */

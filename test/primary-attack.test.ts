@@ -1,5 +1,6 @@
 import { describe, expect, it } from '@effect/vitest'
 import { Effect, Ref } from 'effect'
+import { blockPosition } from '@nerima-games/mc-kernel'
 import { CREEPER_KIND, type MobBehaviour } from '../src/domain/entities/mob-frame'
 import { meleeDamageForItem } from '../src/domain/interactions/melee-attack'
 import {
@@ -25,7 +26,7 @@ const makeContext = (blockZ?: number) =>
   Effect.gen(function* () {
     const state = yield* makeGameplayFrameState
     const store = yield* makeChunkStoreDouble(
-      blockZ === undefined ? world([]) : world([[{ x: 0, y: 65, z: blockZ }, STONE]]),
+      blockZ === undefined ? world([]) : world([[blockPosition(0, 65, blockZ), STONE]]),
       ['0,0'],
     )
     const roster = yield* makeEntityManagerDouble<MobBehaviour>()

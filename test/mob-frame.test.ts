@@ -63,7 +63,7 @@ import { ZOMBIE_KIND } from '../src/domain/mob/hostile-combat'
 import { DORMANT_FUSE } from '../src/domain/mob/creeper-fuse'
 import { FRESH_PRIMED_TNT } from '../src/domain/mob/primed-tnt'
 import type { EndermanTeleportPosition } from '../src/domain/mob/enderman-teleport'
-import { DeltaTimeSecs } from '@nerima-games/mc-kernel'
+import { BlockId, blockPosition, DeltaTimeSecs } from '@nerima-games/mc-kernel'
 import { durabilityForItem, EntityId, EntityKind } from '@nerima-games/mc-sim'
 import { makeChunkStoreDouble, STONE, world } from './support/chunk-store-double'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
@@ -357,7 +357,7 @@ describe('resolveBlasts: what a survivor remembers', () => {
       // terrain intact.
       const roster = yield* makeEntityManagerDouble<MobBehaviour>()
       const store = yield* makeChunkStoreDouble(
-        world([[{ x: 0, y: 64, z: 0 }, STONE]]),
+        world([[blockPosition(0, 64, 0), STONE]]),
         ['0,0'],
       )
 
@@ -714,14 +714,19 @@ describe('resolveEndermanTeleportProbes: validating a candidate against the stor
       // 0 lands at `first`, attempt 1 at `second`.
       const first = { x: 116, y: 64, z: 100 }
       const second = { x: 100, y: 64, z: 116 }
-      const UNREGISTERED_BLOCK_ID = 999_999
+      // 60_000: inside kernel's `BlockId` brand range ([0, 65535], a storage
+      // bound) but far outside its registry (~120 rows), so it is genuinely
+      // unregistered rather than out-of-range-invalid — `999_999` used to
+      // stand in for this before the mirror's unbranded `BlockId` was
+      // repointed to kernel's real, range-validated one.
+      const UNREGISTERED_BLOCK_ID = BlockId(60_000)
       const store = yield* makeChunkStoreDouble(
         world([
           // The first candidate's floor names a block id kernel's registry does
           // not carry — the same "asks the registry rather than assumes" shape
           // `blockTypeOfId`'s other callers refuse a held item over.
-          [{ ...first, y: first.y - 1 }, UNREGISTERED_BLOCK_ID],
-          [{ ...second, y: second.y - 1 }, STONE],
+          [blockPosition(first.x, first.y - 1, first.z), UNREGISTERED_BLOCK_ID],
+          [blockPosition(second.x, second.y - 1, second.z), STONE],
         ]),
         ['7,6', '6,7'],
       )

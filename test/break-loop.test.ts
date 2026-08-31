@@ -39,9 +39,9 @@ import { GAMEPLAY_STAGE_IDS } from '../src/stages/stage-ids'
 import { makeInMemoryWorld } from '../src/domain/in-memory-world'
 import { cellKey, chunkKey, chunkOf } from '../src/domain/in-memory-chunk-store'
 import { DeltaTimeSecs } from '@nerima-games/mc-kernel'
-import type { BlockPosition } from '../src/domain/chunk-store-port'
+import type { BlockPosition } from '@nerima-games/mc-kernel'
 import type { MobBehaviour } from '../src/domain/entities/mob-frame'
-import { blockIdOf } from '@nerima-games/mc-kernel'
+import { BlockId, blockIdOf, blockPosition } from '@nerima-games/mc-kernel'
 import { NO_TOOL } from '../src/domain/interactions/block-loot'
 
 /**
@@ -57,15 +57,15 @@ import { NO_TOOL } from '../src/domain/interactions/block-loot'
  * not about the tier rule, and picking a block that legitimately drops nothing
  * would have made the loop untestable while looking like a bug.
  */
-const DIRT_ID = 3
-const LEVER_ID = blockIdOf('lever') ?? -1
-const DOOR_ID = blockIdOf('door') ?? -1
-const AT: BlockPosition = { x: 3, y: 64, z: 7 }
-const ABOVE_AT: BlockPosition = { x: 3, y: 65, z: 7 }
-const BESIDE_AT: BlockPosition = { x: 4, y: 64, z: 7 }
-const IN_SIGHT: BlockPosition = { x: 0, y: 1, z: 0 }
+const DIRT_ID = BlockId(3)
+const LEVER_ID = blockIdOf('lever') ?? BlockId(-1)
+const DOOR_ID = blockIdOf('door') ?? BlockId(-1)
+const AT: BlockPosition = blockPosition(3, 64, 7)
+const ABOVE_AT: BlockPosition = blockPosition(3, 65, 7)
+const BESIDE_AT: BlockPosition = blockPosition(4, 64, 7)
+const IN_SIGHT: BlockPosition = blockPosition(0, 1, 0)
 
-const lookingAtBlockWorld = (loaded: boolean, block: number = DIRT_ID) =>
+const lookingAtBlockWorld = (loaded: boolean, block: BlockId = DIRT_ID) =>
   makeInMemoryWorld<MobBehaviour>({
     spawnPose: {
       feetPosition: { x: 0.5, y: 0, z: 2.5 },
@@ -79,7 +79,7 @@ const lookingAtBlockWorld = (loaded: boolean, block: number = DIRT_ID) =>
   })
 
 /** A world with one block, in a loaded chunk. */
-const oneBlockWorld = (block: number = DIRT_ID) =>
+const oneBlockWorld = (block: BlockId = DIRT_ID) =>
   makeInMemoryWorld<MobBehaviour>({
     world: {
       blocks: new Map([[cellKey(AT), block]]),
@@ -87,7 +87,7 @@ const oneBlockWorld = (block: number = DIRT_ID) =>
     },
   })
 
-const twoBlockWorld = (block: number) =>
+const twoBlockWorld = (block: BlockId) =>
   makeInMemoryWorld<MobBehaviour>({
     world: {
       blocks: new Map([
@@ -318,9 +318,9 @@ describe('the break loop', () => {
       const state = yield* makeGameplayFrameState
       const interceptedStore = {
         ...world.chunkStore,
-        setBlock: (position: BlockPosition, block: number) =>
+        setBlock: (position: BlockPosition, block: BlockId) =>
           cellKey(position) === cellKey(ABOVE_AT) && block === 0
-            ? Effect.succeed({ _tag: 'Unchanged' as const, previous: 0 })
+            ? Effect.succeed({ _tag: 'Unchanged' as const, previous: BlockId(0) })
             : world.chunkStore.setBlock(position, block),
       }
       const stages = gameplayStages(state, interceptedStore, world.entities, world.inventory, world.player, world.time)
@@ -409,7 +409,7 @@ describe('the break loop', () => {
 
   it.effect('keeps request and snapshot paired across concurrent helper fibers', () =>
     Effect.gen(function* () {
-      const world = yield* twoBlockWorld(blockIdOf('stone') ?? -1)
+      const world = yield* twoBlockWorld(blockIdOf('stone') ?? BlockId(-1))
       const state = yield* makeGameplayFrameState
       const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player, world.time)
 
@@ -459,7 +459,7 @@ describe('the break loop', () => {
 
   it.effect('breaking redstone wire drops redstone dust', () =>
     Effect.gen(function* () {
-      const world = yield* oneBlockWorld(blockIdOf('redstone_wire') ?? -1)
+      const world = yield* oneBlockWorld(blockIdOf('redstone_wire') ?? BlockId(-1))
       const state = yield* makeGameplayFrameState
       const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player, world.time)
 

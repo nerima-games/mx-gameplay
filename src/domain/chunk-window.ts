@@ -5,8 +5,8 @@
  * The one problem this file exists to solve
  * ---------------------------------------------------------------------------
  *
- * `./portal-frame-port`'s `detectNetherPortal` takes a SYNCHRONOUS accessor and
- * probes on the order of five hundred cells. Every block read in this repository
+ * `@nerima-games/mc-kernel`'s `detectNetherPortal` takes a SYNCHRONOUS accessor
+ * and probes on the order of five hundred cells. Every block read in this repository
  * is an `Effect`. Those two facts do not compose, and there are exactly three
  * ways to make them:
  *
@@ -28,8 +28,8 @@
  * Three is also what the reference implementation does — `buildBlockAtFromCache`
  * over a 3x3 chunk neighbourhood
  * (`<reference-impl>/packages/app/application/frame/stages/interaction-flint-steel-portal.ts`)
- * — so it is a port rather than an invention, and `./chunk-store-port`'s note on
- * `blockIndex` argues the buffer indexing itself.
+ * — so it is a port rather than an invention, and `@nerima-games/mc-worldgen`'s
+ * note on `blockIndex` argues the buffer indexing itself.
  *
  * ---------------------------------------------------------------------------
  * `ChunkNotLoaded` IS NOT AIR, AND THAT SURVIVES THE SHORTCUT
@@ -49,8 +49,8 @@
  *     "there is no frame here", which are different answers to the player.
  *
  * The same value answers a `y` outside the world or a cell missing from a
- * truncated chunk buffer. `./chunk-store-port`'s `readBlock` is TOTAL and
- * answers AIR for an out-of-range index, so both cases must be guarded here.
+ * truncated chunk buffer. `@nerima-games/mc-worldgen`'s `readBlock` is TOTAL
+ * and answers AIR for an out-of-range index, so both cases must be guarded here.
  * Otherwise a portal probe could observe fabricated empty space and report a
  * definite `NoFrame` where the world data was merely unavailable.
  *
@@ -75,16 +75,14 @@
  */
 import { Effect } from 'effect'
 import {
-  CHUNK_HEIGHT,
+  blockPosition,
+  chunkCoord,
   CHUNK_SIZE_XZ,
-  blockIndex,
-  readBlock,
+  type BlockAt,
   type BlockPosition,
   type ChunkCoord,
-  type ChunkStoreApi,
-  type WorldgenChunk,
-} from './chunk-store-port.js'
-import type { BlockAt } from './portal-frame-port.js'
+} from '@nerima-games/mc-kernel'
+import { CHUNK_HEIGHT, blockIndex, readBlock, type Chunk, type ChunkStoreApi } from '@nerima-games/mc-worldgen'
 
 /**
  * The answer for a cell this window cannot speak for.
@@ -98,7 +96,7 @@ import type { BlockAt } from './portal-frame-port.js'
 export const UNREADABLE_BLOCK = -1
 
 export type ChunkWindow = {
-  /** The synchronous accessor `./portal-frame-port` wants. */
+  /** The synchronous accessor `@nerima-games/mc-kernel`'s portal rule wants. */
   readonly blockAt: BlockAt
   /**
    * How many probes fell on a cell this window could not answer — an absent
@@ -113,10 +111,8 @@ export type ChunkWindow = {
 }
 
 /** The chunk a world position lives in. `Math.floor`, so negative x works. */
-export const chunkCoordOf = (position: BlockPosition): ChunkCoord => ({
-  cx: Math.floor(position.x / CHUNK_SIZE_XZ),
-  cz: Math.floor(position.z / CHUNK_SIZE_XZ),
-})
+export const chunkCoordOf = (position: BlockPosition): ChunkCoord =>
+  chunkCoord(Math.floor(position.x / CHUNK_SIZE_XZ), Math.floor(position.z / CHUNK_SIZE_XZ))
 
 /**
  * Every chunk coordinate covering the square `[x-radius, x+radius]` by
@@ -131,9 +127,16 @@ export const chunkCoordOf = (position: BlockPosition): ChunkCoord => ({
  *
  * TOTAL: a non-finite centre or radius yields no coordinates, so a window opened
  * on nonsense answers `UNREADABLE_BLOCK` everywhere rather than looping.
+ *
+ * `centre` takes the plain unbranded shape rather than kernel's `BlockPosition`
+ * on purpose: a caller may hand this an arithmetic midpoint (e.g. an arrow's
+ * hit point averaged with its origin) that is neither an integer nor, before
+ * the check above runs, guaranteed finite — exactly the input kernel's
+ * `blockPosition()` constructor would throw on. This function's job is to
+ * validate that input, not to receive it pre-validated.
  */
 export const chunkCoordsAround = (
-  centre: BlockPosition,
+  centre: { readonly x: number; readonly y: number; readonly z: number },
   radius: number,
 ): ReadonlyArray<ChunkCoord> => {
   if (!Number.isFinite(centre.x) || !Number.isFinite(centre.z) || !Number.isFinite(radius) || radius < 0) {
@@ -148,7 +151,7 @@ export const chunkCoordsAround = (
   const coords: Array<ChunkCoord> = []
   for (let cx = minCx; cx <= maxCx; cx += 1) {
     for (let cz = minCz; cz <= maxCz; cz += 1) {
-      coords.push({ cx, cz })
+      coords.push(chunkCoord(cx, cz))
     }
   }
   return coords
@@ -180,7 +183,7 @@ export const openChunkWindow = (
   coords: ReadonlyArray<ChunkCoord>,
 ): Effect.Effect<ChunkWindow> =>
   Effect.gen(function* () {
-    const chunks = new Map<string, WorldgenChunk>()
+    const chunks = new Map<string, Chunk>()
     for (const coord of coords) {
       const chunk = yield* store.peek(coord)
       if (chunk !== undefined) {
@@ -202,7 +205,7 @@ export const openChunkWindow = (
         return UNREADABLE_BLOCK
       }
 
-      const chunk = chunks.get(chunkKey(chunkCoordOf({ x, y, z })))
+      const chunk = chunks.get(chunkKey(chunkCoordOf(blockPosition(x, y, z))))
       if (chunk === undefined) {
         unreadable += 1
         return UNREADABLE_BLOCK

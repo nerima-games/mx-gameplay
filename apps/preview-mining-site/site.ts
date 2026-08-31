@@ -15,7 +15,7 @@
  * exported registrations — through a topological sort of their own `after`
  * edges, and every block that moves on screen moved because
  * `domain/entities/falling-block-move.ts` moved it through
- * `domain/chunk-store-port.ts`.
+ * `@nerima-games/mc-worldgen`'s `ChunkStore`.
  *
  * The consequences are worth stating in both directions:
  *
@@ -74,13 +74,14 @@ import {
   capabilityOfBlockId,
   DeltaTimeSecs,
   HARVEST_TIERS,
+  type BlockId,
+  type BlockPosition,
   type BlockPositionKey,
   type HarvestTier,
   type PlaceableItemType,
   type StageId,
   type StageRegistration,
 } from '@nerima-games/mc-kernel'
-import { type BlockId, type BlockPosition } from '../../src/domain/chunk-store-port'
 import { makeTimeService, type EntityManagerApi } from '@nerima-games/mc-sim'
 import { FALLING_BLOCK_MOVES_PER_TICK } from '../../src/domain/falling-block'
 import { NO_TOOL, type BlockLootContext, type MinedItem } from '../../src/domain/interactions/block-loot'
@@ -238,11 +239,8 @@ export const inventorySize = (site: Site): number =>
 /** How many of one item the host is holding. */
 export const inventoryCount = (site: Site, item: string): number => site.inventory.get(item) ?? 0
 
-export const positionAt = (site: Site, x: number, y: number): BlockPosition => ({
-  x,
-  y,
-  z: site.spec.z,
-})
+export const positionAt = (site: Site, x: number, y: number): BlockPosition =>
+  kernelBlockPosition(x, y, site.spec.z)
 
 const allCells = (site: Site): ReadonlyArray<BlockPosition> => {
   const cells: Array<BlockPosition> = []

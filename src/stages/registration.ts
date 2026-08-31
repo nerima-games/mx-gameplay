@@ -21,9 +21,9 @@
  * (plan.md §2.2) forbids. `RIn` stays `never`; this repository BUILDS nothing
  * that another has to supply, it CALLS what mc-worldgen supplies.
  *
- * Until mc-worldgen is published the tag comes from `domain/chunk-store-port.ts`,
- * a mirror with a deletion date; `test/chunk-store-mirror.test.ts` is what keeps
- * the mirror honest, and the repoint is three lines in that file's header.
+ * The tag comes from `@nerima-games/mc-worldgen` directly; the provisional local
+ * mirror this repository carried before worldgen published (`domain/chunk-store-port.ts`,
+ * kept honest by `test/chunk-store-mirror.test.ts`) is gone.
  *
  * ---------------------------------------------------------------------------
  * ...and the mobs through mc-sim's `EntityManager`
@@ -78,14 +78,17 @@
  */
 import {
   adjacentBlockPosition,
+  AIR_BLOCK_ID,
+  BlockId,
   blockIdOf,
-  blockPosition as kernelBlockPosition,
+  blockPosition,
   blockPositionKeyOf,
   blockPositionOfKey,
   blockTypeOfId,
   capabilityOfBlockId,
   decodeBlockPositionKey,
   horizontalBlockNeighbours,
+  type BlockPosition,
   type BlockPositionKey,
   type DeltaTimeSecs,
   type GameModule,
@@ -148,12 +151,7 @@ import {
   type BrewingTransferResult,
 } from '../domain/brewing.js'
 import { targetabilityFromStore } from '../domain/in-memory-world.js'
-import {
-  AIR_BLOCK_ID,
-  ChunkStore,
-  type BlockPosition,
-  type ChunkStoreApi,
-} from '../domain/chunk-store-port.js'
+import { ChunkStore, type ChunkStoreApi } from '@nerima-games/mc-worldgen'
 import {
   chunkCoordsAround,
   openChunkWindow,
@@ -348,16 +346,14 @@ import { GAMEPLAY_STAGE_IDS, UPSTREAM_STAGE_IDS } from './stage-ids.js'
 import { advanceVehicles, type VehicleFrameEnvironment } from '../domain/vehicle/vehicle-frame.js'
 
 /**
- * Lift this repository's local, unbranded `BlockPosition` (`domain/chunk-store-port.ts`)
- * into kernel's branded one, for the coordinate-vocabulary calls below.
- *
- * `chunk-store-port.ts`'s own header states the direction that is safe without a
- * lift: kernel's branded value is assignable to the local alias, never the
- * reverse. This is that lift, expressed with kernel's own validated
- * constructor rather than a type assertion.
+ * Historically a lift from `domain/chunk-store-port.ts`'s local, unbranded
+ * `BlockPosition` into kernel's branded one, for the coordinate-vocabulary
+ * calls below. Now that the mirror is deleted and `BlockPosition` throughout
+ * this file IS kernel's branded type, the lift is the identity — kept as a
+ * named function rather than removed, so the ~20 call sites below need no
+ * change.
  */
-const toKernelPosition = (position: BlockPosition) =>
-  kernelBlockPosition(position.x, position.y, position.z)
+const toKernelPosition = (position: BlockPosition) => position
 
 export const resolveArmoredPlayerDamages = (
   inventory: InventoryServiceApi,
@@ -679,7 +675,22 @@ const fluidRuntimeSemaphoreFor = (
   return semaphore
 }
 
-const validFluidPosition = (position: BlockPosition): boolean =>
+/**
+ * A TYPE PREDICATE, not a plain guard, so the caller's `position` narrows from
+ * the wider "maybe the NaN decode-failure sentinel" shape to kernel's branded
+ * `BlockPosition` without a second, redundant `blockPosition(...)` call.
+ *
+ * `Number.isFinite` rather than kernel's own `Number.isSafeInteger` (the
+ * actual `BlockAxis` refinement) is not a narrower check than the type it
+ * asserts — but every value that reaches here is either kernel's own
+ * `decodeBlockPositionKey` output (already integer, already branded) or the
+ * all-`NaN` sentinel two lines above, which fails `Number.isFinite` and never
+ * reaches a caller that trusts this predicate. There is no reachable
+ * finite-but-non-integer input for this predicate to mis-narrow.
+ */
+const validFluidPosition = (
+  position: { readonly x: number; readonly y: number; readonly z: number },
+): position is BlockPosition =>
   Number.isFinite(position.x) && Number.isFinite(position.y) && Number.isFinite(position.z)
 
 const fluidWorkItemOf = (cell: FluidCell, deferred?: number): FluidWorkItem => ({
@@ -747,7 +758,7 @@ const runFluidPropagation = (
       // `decodeBlockPositionKey` and an undecodable key becomes the same NaN
       // sentinel the old total function returned. They are still recorded as
       // evaluated work, but must never turn NaN into a world IO.
-      const position: BlockPosition =
+      const position: { readonly x: number; readonly y: number; readonly z: number } =
         decodeBlockPositionKey(item.key) ?? { x: Number.NaN, y: Number.NaN, z: Number.NaN }
       if (!validFluidPosition(position)) continue
 
@@ -824,13 +835,19 @@ const runFluidPropagation = (
           if (outcome._tag === 'Written' || outcome._tag === 'Unchanged') {
             cells.set(change.cell.key, change.cell)
             enqueue(fluidWorkItemOf(change.cell))
-          } else {
-            // `SetBlockOutcome` (chunk-store-port.ts) has exactly three tags —
-            // `Written`, `Unchanged`, `ChunkNotLoaded` — and the `if` above has
-            // already excluded the first two, so the compiler narrows `outcome`
-            // here to `ChunkNotLoaded` with no runtime check needed.
+          } else if (outcome._tag === 'ChunkNotLoaded') {
+            // Transient: the chunk may load before `MAX_FLUID_DEFERRED_ATTEMPTS`
+            // is spent, so retry.
             deferCurrent = true
           }
+          // `OutOfWorld` is left undeferred and undropped: `mc-worldgen`'s
+          // `BlockWriteOutcome` (`chunk-store-state.d.ts`) is a four-tag union,
+          // not the three-tag shape the deleted `chunk-store-port.ts` mirror
+          // carried, and a `y` outside the world will never become writable —
+          // deferring it would retry every tick until
+          // `MAX_FLUID_DEFERRED_ATTEMPTS` for no reason, same terminal
+          // treatment `OutOfWorld` gets everywhere else in this file (e.g. the
+          // `BlockUseOutcome`/`BreakOutcome` switches below).
           continue
         }
 
@@ -1698,11 +1715,11 @@ const stepPortalTravel = (
 ): Effect.Effect<void> =>
   Effect.gen(function* () {
     const pose = yield* player.pose
-    const cell = {
-      x: Math.floor(pose.feetPosition.x),
-      y: Math.floor(pose.feetPosition.y),
-      z: Math.floor(pose.feetPosition.z),
-    }
+    const cell = blockPosition(
+      Math.floor(pose.feetPosition.x),
+      Math.floor(pose.feetPosition.y),
+      Math.floor(pose.feetPosition.z),
+    )
 
     const reading = yield* store.getBlock(cell)
     const block = reading._tag === 'Block' ? reading.block : undefined
@@ -1802,7 +1819,7 @@ export const requestTargetedBlockBreak = (
     const pose = yield* player.pose
     const target = targetBlockFromPlayerPose(pose, maxDistance, targetabilityFromStore(store))
     if (Option.isSome(target)) {
-      yield* requestBlockBreak(state, target.value.position)
+      yield* requestBlockBreak(state, blockPosition(target.value.position.x, target.value.position.y, target.value.position.z))
     }
     return target
   })
@@ -2216,7 +2233,7 @@ export const requestTargetedPrimaryAttack = (
         yield* requestMeleeAttack(state, resolution.request)
         return { _tag: 'Melee' as const, target: resolution.target }
       case 'Block':
-        yield* requestBlockBreak(state, resolution.target.position)
+        yield* requestBlockBreak(state, blockPosition(resolution.target.position.x, resolution.target.position.y, resolution.target.position.z))
         return resolution
       case 'None':
         return resolution
@@ -2497,11 +2514,11 @@ export const requestFireExtinguish = (
     /* v8 ignore start */
     if (air === undefined) return false
     /* v8 ignore stop */
-    const outcome = yield* store.setBlock(position, air)
+    const outcome = yield* store.setBlock(blockPosition(position.x, position.y, position.z), air)
     if (outcome._tag !== 'Written' && outcome._tag !== 'Unchanged') return false
     yield* Ref.set(state.fireLifecycle, extinguishFire(current, position))
     if (outcome._tag === 'Written') {
-      yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, [blockPositionKeyOf(toKernelPosition(position))]))
+      yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, [blockPositionKeyOf(blockPosition(position.x, position.y, position.z))]))
     }
     return true
   })
@@ -2608,7 +2625,7 @@ const stepFireTick = (
     const weather = (yield* Ref.get(state.weather)).weather
     const cells: FireCell[] = []
     for (const position of positions.values()) {
-      const reading = yield* store.getBlock(position)
+      const reading = yield* store.getBlock(blockPosition(position.x, position.y, position.z))
       const block = reading._tag === 'Block'
         ? (blockTypeOfId(reading.block) ?? '__unknown_fire_block__')
         : reading._tag === 'ChunkNotLoaded'
@@ -2618,7 +2635,7 @@ const stepFireTick = (
       if (weather !== 'clear' &&
         (activeKeys.has(firePositionKey(position)) || contacts.some((contact) =>
           firePositionKey(contact.position) === firePositionKey(position)))) {
-        const light = yield* store.getLight(position)
+        const light = yield* store.getLight(blockPosition(position.x, position.y, position.z))
         exposedToSky = light._tag === 'Light' && light.sky === 15
       }
       cells.push({ position, block, exposedToSky })
@@ -2648,8 +2665,8 @@ const stepFireTick = (
     const disturbed: BlockPositionKey[] = []
     for (const mutation of step.mutations) {
       const mutationKey = firePositionKey(mutation.position)
-      const outcome = yield* store.setBlock(mutation.position, mutation.block === 'air' ? air : fire)
-      if (outcome._tag === 'Written') disturbed.push(blockPositionKeyOf(toKernelPosition(mutation.position)))
+      const outcome = yield* store.setBlock(blockPosition(mutation.position.x, mutation.position.y, mutation.position.z), mutation.block === 'air' ? air : fire)
+      if (outcome._tag === 'Written') disturbed.push(blockPositionKeyOf(blockPosition(mutation.position.x, mutation.position.y, mutation.position.z)))
       if (outcome._tag === 'Written' || outcome._tag === 'Unchanged') continue
       if (mutation.block === 'fire') {
         nextFires.delete(mutationKey)
@@ -2796,7 +2813,7 @@ export const requestTargetedBlockPlacement = (
     const target = targetBlockFromPlayerPose(pose, maxDistance, targetabilityFromStore(store))
     if (Option.isSome(target)) {
       yield* requestBlockPlacement(state, {
-        positionKey: blockPositionKeyOf(toKernelPosition(target.value.adjacentPosition)),
+        positionKey: blockPositionKeyOf(blockPosition(target.value.adjacentPosition.x, target.value.adjacentPosition.y, target.value.adjacentPosition.z)),
         heldItem,
       })
     }
@@ -2822,17 +2839,18 @@ export const requestTargetedBlockUse = (
       return target
     }
 
+    const targetPosition = blockPosition(target.value.position.x, target.value.position.y, target.value.position.z)
     const outcome = resolveBlockUse(
-      target.value.position,
-      yield* store.getBlock(target.value.position),
+      targetPosition,
+      yield* store.getBlock(targetPosition),
     )
     switch (outcome._tag) {
       case 'ToggleLever':
-        yield* requestBlockUse(state, requestId, target.value.position)
+        yield* requestBlockUse(state, requestId, targetPosition)
         break
       case 'NotLever':
         yield* requestBlockPlacement(state, {
-          positionKey: blockPositionKeyOf(toKernelPosition(target.value.adjacentPosition)),
+          positionKey: blockPositionKeyOf(blockPosition(target.value.adjacentPosition.x, target.value.adjacentPosition.y, target.value.adjacentPosition.z)),
           heldItem,
         })
         break
@@ -2876,7 +2894,7 @@ export const requestTargetedItemUse = (
   Effect.gen(function* () {
     const target = yield* resolveTargetedBlock(store, player, maxDistance)
     if (Option.isSome(target)) {
-      yield* requestItemUse(state, requestId, target.value.adjacentPosition, heldItem)
+      yield* requestItemUse(state, requestId, blockPosition(target.value.adjacentPosition.x, target.value.adjacentPosition.y, target.value.adjacentPosition.z), heldItem)
     }
     return target
   })
@@ -2894,7 +2912,7 @@ export const requestTargetedSoilTill = (
     const pose = yield* player.pose
     const target = targetBlockFromPlayerPose(pose, maxDistance, targetabilityFromStore(store))
     if (Option.isSome(target)) {
-      yield* requestSoilTill(state, requestId, target.value.position, heldItem)
+      yield* requestSoilTill(state, requestId, blockPosition(target.value.position.x, target.value.position.y, target.value.position.z), heldItem)
     }
     return target
   })
@@ -2911,7 +2929,7 @@ export const requestTargetedPotatoPlanting = (
     const pose = yield* player.pose
     const target = targetBlockFromPlayerPose(pose, maxDistance, targetabilityFromStore(store))
     if (Option.isSome(target)) {
-      yield* requestPotatoPlanting(state, requestId, target.value.position)
+      yield* requestPotatoPlanting(state, requestId, blockPosition(target.value.position.x, target.value.position.y, target.value.position.z))
     }
     return target
   })
@@ -2934,7 +2952,7 @@ export const requestTargetedBoneMeal = (
     const pose = yield* player.pose
     const target = targetBlockFromPlayerPose(pose, maxDistance, targetabilityFromStore(store))
     if (Option.isSome(target)) {
-      yield* requestBoneMeal(state, requestId, target.value.position)
+      yield* requestBoneMeal(state, requestId, blockPosition(target.value.position.x, target.value.position.y, target.value.position.z))
     }
     return target
   })
@@ -3474,7 +3492,7 @@ export const gameplayStages = (
                       Effect.map(store.getBlock(position), (reading) =>
                         reading._tag === 'Block' ? reading.block : undefined,
                       ),
-                    setBlock: store.setBlock,
+                    setBlock: (position, block) => store.setBlock(position, BlockId(block)),
                   },
                   { tills: true },
                   blockPositionOfKey(request.positionKey),
@@ -3497,7 +3515,7 @@ export const gameplayStages = (
                       Effect.map(store.getBlock(position), (reading) =>
                         reading._tag === 'Block' ? reading.block : undefined,
                       ),
-                    setBlock: store.setBlock,
+                    setBlock: (position, block) => store.setBlock(position, BlockId(block)),
                   },
                   { held: request.heldItem, soil: blockPositionOfKey(request.positionKey) },
                 )
@@ -3897,7 +3915,10 @@ export const gameplayStages = (
               y: shot.origin.y + (shot.dirY / directionLength) * hit.distance,
               z: shot.origin.z + (shot.dirZ / directionLength) * hit.distance,
             }
-            const centre: BlockPosition = {
+            // A fractional midpoint, not a cell — kernel's `blockPosition()`
+            // would throw on it. `chunkCoordsAround` takes the plain shape for
+            // exactly this reason; see its own header.
+            const centre = {
               x: (shot.origin.x + hitPoint.x) / 2,
               y: (shot.origin.y + hitPoint.y) / 2,
               z: (shot.origin.z + hitPoint.z) / 2,
@@ -4312,7 +4333,7 @@ export const gameplayStages = (
         //
         // ON A CADENCE, NOT EVERY FRAME. `domain/entities/mob-spawn-search.ts`
         // makes 256 store calls for a full ring — three blocks and a light per
-        // cell — and `domain/chunk-store-port.ts` records that a light read
+        // cell — and `@nerima-games/mc-worldgen` records that a light read
         // after a block write may relight a whole chunk. Running that at 20 Hz
         // is DN-GP-1 rebuilt: work proportional to the world on every frame
         // whether or not anything changed. The reference paces its spawner at

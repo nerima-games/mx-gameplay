@@ -38,7 +38,7 @@
  *   - THE REAL FIX IS ANOTHER REPOSITORY'S API. A compare-and-set —
  *     `setBlockIf(position, expected, block)` — closes it completely and belongs
  *     on mc-worldgen's `ChunkStore` beside `setBlock`, where the chunk buffer
- *     actually is. `./chunk-store-port` mirrors that service whole, so the day it
+ *     actually is. This file calls that service directly now, so the day it
  *     grows the method this file loses a read and a paragraph.
  *
  * ---------------------------------------------------------------------------
@@ -122,12 +122,12 @@ import { Effect } from 'effect'
 import {
   type BlockId,
   type BlockPosition,
-  type BlockReading,
   type ChunkCoord,
-  type ChunkStoreApi,
-} from '../chunk-store-port.js'
+} from '@nerima-games/mc-kernel'
+import type { BlockReading, ChunkStoreApi } from '@nerima-games/mc-worldgen'
 import {
   adjacentBlockPosition,
+  AIR_BLOCK_ID,
   blockIdOf,
   blockOfPlaceableItem,
   blockPosition,
@@ -372,7 +372,7 @@ export const placementVerdict = (
     // the answer that invents nothing is the refusal: a torch is not placed on
     // an unmeasured cell.
     if (supportBelow === undefined || supportBelow._tag !== 'Block') {
-      return { _tag: 'Unsupported', support: 0 }
+      return { _tag: 'Unsupported', support: AIR_BLOCK_ID }
     }
     // ONE CALL, NOT TWO PREDICATES ANDED, and the difference is F7. This used to
     // ask `canSupportAttachments` — the reference's FALLBACK arm — for every
@@ -510,7 +510,7 @@ export const placeBlock = (
       case 'OutOfWorld':
         return { _tag: 'OutOfWorld' }
       // exhaustiveness arm over `BlockWriteOutcome`, a closed four-tag union
-      // (chunk-store-port.ts): `Written`, `Unchanged`, `ChunkNotLoaded` and
+      // (mc-worldgen's chunk-store-state.d.ts): `Written`, `Unchanged`, `ChunkNotLoaded` and
       // `OutOfWorld` are all handled above, so no input can reach this arm.
       /* v8 ignore start */
       default: {

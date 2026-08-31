@@ -67,7 +67,7 @@ import {
   type BlockType,
   type HarvestContext,
 } from '@nerima-games/mc-kernel'
-import type { BlockId } from '../chunk-store-port.js'
+import type { BlockId } from '@nerima-games/mc-kernel'
 import type { ItemType } from '@nerima-games/mc-kernel'
 
 /**

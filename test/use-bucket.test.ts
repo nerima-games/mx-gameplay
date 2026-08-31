@@ -2,31 +2,33 @@ import { describe, expect, it } from '@effect/vitest'
 import type { InventoryServiceApi, Slot } from '@nerima-games/mc-sim'
 import { Effect, Ref } from 'effect'
 import {
+  AIR_BLOCK_ID,
+  BlockId,
   blockPosition,
   blockPositionKeyOf,
   BlockPositionKey as positionKey,
+  StackCount,
+  type BlockPosition,
 } from '@nerima-games/mc-kernel'
-import type { BlockId, BlockPosition, ChunkStoreApi } from '../src/domain/chunk-store-port'
+import type { ChunkStoreApi } from '@nerima-games/mc-worldgen'
 import {
   enqueueFluidDisturbance,
   type FluidKind,
   type FluidWorkItem,
 } from '../src/domain/fluid-frontier'
-import { StackCount } from '@nerima-games/mc-kernel'
 import {
   isBucketItem,
   useBucket,
   type BucketItemType,
   type BucketUseRequest,
 } from '../src/domain/interactions/use-bucket'
-import { AIR_BLOCK_ID } from '../src/domain/chunk-store-port'
 import { makeChunkStoreDouble, STONE, WATER, world } from './support/chunk-store-double'
 import { emptySlots, makeInventoryDouble } from './support/inventory-service-double'
 
 type ItemType = Parameters<InventoryServiceApi['add']>[0]
 
-const LAVA: BlockId = 11
-const POSITION: BlockPosition = { x: 1, y: 64, z: 1 }
+const LAVA: BlockId = BlockId(11)
+const POSITION: BlockPosition = blockPosition(1, 64, 1)
 const LOADED_CHUNKS = ['0,0']
 
 const stack = (item: ItemType, count: number): Slot => ({ item, count: StackCount(count) })

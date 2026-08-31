@@ -59,8 +59,8 @@
  * services own them and neither is published.
  */
 import { Effect } from 'effect'
-import { blockIdOf } from '@nerima-games/mc-kernel'
-import { AIR_BLOCK_ID, type BlockId, type BlockPosition, type ChunkStoreApi } from '../chunk-store-port.js'
+import { AIR_BLOCK_ID, blockIdOf, type BlockId, type BlockPosition } from '@nerima-games/mc-kernel'
+import type { ChunkStoreApi } from '@nerima-games/mc-worldgen'
 
 /**
  * TOTAL, mirroring `./place-block`'s `PlaceOutcome` and `./ignite-portal`'s.
@@ -144,7 +144,7 @@ export const igniteFire = (
       case 'OutOfWorld':
         return { _tag: 'OutOfWorld' }
       // exhaustiveness arm over BlockWriteOutcome, a closed four-tag union
-      // (chunk-store-port.ts's BlockWriteOutcome); 'Written', 'Unchanged',
+      // (mc-worldgen's chunk-store-state.d.ts's BlockWriteOutcome); 'Written', 'Unchanged',
       // 'ChunkNotLoaded' and 'OutOfWorld' are the only reachable tags and all
       // four are handled above, so no input can reach this arm.
       /* v8 ignore start */

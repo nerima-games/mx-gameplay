@@ -51,9 +51,16 @@
  * removes it. That keeps a malformed world from losing an unrelated block.
  */
 import { Effect } from 'effect'
-import { adjacentBlockPosition, blockPosition } from '@nerima-games/mc-kernel'
-import { blockIdOf, blockTypeOfId } from '@nerima-games/mc-kernel'
-import { AIR_BLOCK_ID, type BlockId, type BlockPosition, type ChunkStoreApi } from '../chunk-store-port.js'
+import {
+  adjacentBlockPosition,
+  AIR_BLOCK_ID,
+  blockIdOf,
+  blockPosition,
+  blockTypeOfId,
+  type BlockId,
+  type BlockPosition,
+} from '@nerima-games/mc-kernel'
+import type { ChunkStoreApi } from '@nerima-games/mc-worldgen'
 
 /**
  * Is this byte a door?

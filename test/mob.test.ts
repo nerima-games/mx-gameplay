@@ -37,7 +37,7 @@ import { Effect } from 'effect'
 import { readdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { AIR_BLOCK_ID, type BlockId } from '../src/domain/chunk-store-port'
+import { AIR_BLOCK_ID, BlockId } from '@nerima-games/mc-kernel'
 import { applyDamage, deathMessage, fullHealth, isDead, MAX_HEALTH_POINTS } from '../src/domain/death-cause'
 import { capabilityOfBlockId, DeltaTimeSecs, ITEM_TYPES } from '@nerima-games/mc-kernel'
 import {
@@ -116,10 +116,10 @@ import {
 } from '../src/domain/mob/hostile-despawn'
 
 /** Block ids, from kernel's registry. The RULES never name one; a test may. */
-const STONE: BlockId = 2
-const WATER: BlockId = 6
-const OAK_LEAVES: BlockId = 10
-const GLASS: BlockId = 13
+const STONE: BlockId = BlockId(2)
+const WATER: BlockId = BlockId(6)
+const OAK_LEAVES: BlockId = BlockId(10)
+const GLASS: BlockId = BlockId(13)
 
 const at = (distance: number | undefined) => ({ distanceToTargetBlocks: distance })
 const NO_TARGET = at(undefined)
@@ -476,10 +476,10 @@ describe('creeper: spawning is a rule about light and surface, never a block lis
   it.effect('a block id this build cannot name is ordinary ground, as kernel says', () =>
     Effect.sync(() => {
       // kernel's `capabilityOfBlockId` is total and falls back to the defaults
-      // for an unknown byte, and `validSpawnSurface` defaults to `true`. The
-      // negative-set transcription in domain/chunk-store-port.ts reproduces
+      // for an unknown byte, and `validSpawnSurface` defaults to `true`. Kernel's
+      // negative-set transcription (`NON_SPAWN_SURFACE_BLOCK_IDS`) reproduces
       // that for free — which is the reason it is a negative set.
-      expect(canHostileSpawnAt(candidate({ groundBlock: 200 }))).toStrictEqual({ _tag: 'Spawn' })
+      expect(canHostileSpawnAt(candidate({ groundBlock: BlockId(200) }))).toStrictEqual({ _tag: 'Spawn' })
     }),
   )
 

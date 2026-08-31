@@ -1,9 +1,9 @@
 import { describe, expect, it } from '@effect/vitest'
-import { blockIdOf } from '@nerima-games/mc-kernel'
-import type { BlockPosition, BlockReading } from '../src/domain/chunk-store-port'
+import { blockIdOf, blockPosition, type BlockPosition } from '@nerima-games/mc-kernel'
+import type { BlockReading } from '@nerima-games/mc-worldgen'
 import { isSuccessfulBlockUse, resolveBlockUse } from '../src/domain/interactions/use-block'
 
-const POSITION: BlockPosition = { x: 1, y: 64, z: 1 }
+const POSITION: BlockPosition = blockPosition(1, 64, 1)
 const LEVER_ID = blockIdOf('lever') ?? -1
 const DIRT_ID = blockIdOf('dirt') ?? -1
 
