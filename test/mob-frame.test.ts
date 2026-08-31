@@ -32,6 +32,7 @@ import {
   experienceOfCasualties,
   hostileMobSnapshot,
   HOSTILE_KINDS,
+  isDroppedItemBehaviour,
   PRIMED_TNT_KIND,
   repairMobBehaviour,
   resolveBlasts,
@@ -481,6 +482,56 @@ describe('repairMobBehaviour: the load path for every stored shape', () => {
       // VILLAGER again: no rule at all, so the load path LOSES the behaviour
       // rather than inventing one for a kind that carries none.
       expect(repairMobBehaviour(EntityKind('villager'), wellFormed)).toBeUndefined()
+    }),
+  )
+
+  it.effect('a dropped item: an anvil-rename and enchantments are optional facts, validated when present', () =>
+    Effect.sync(() => {
+      // No name, no enchantments: unchanged from the plain case above.
+      const bare: DroppedItemBehaviour = {
+        _tag: 'DroppedItem', item: 'gunpowder', count: 1, durability: null,
+      }
+      expect(isDroppedItemBehaviour(bare)).toBe(true)
+
+      // A non-empty custom name is a valid fact.
+      const named: DroppedItemBehaviour = { ...bare, customName: 'Boom' }
+      expect(isDroppedItemBehaviour(named)).toBe(true)
+      expect(repairMobBehaviour(DROPPED_ITEM_KIND, named)).toBe(named)
+
+      // Blank (whitespace-only) is not a name anyone typed — `hasDroppedItemFields`
+      // lets it through as a string, `isDroppedItemBehaviour` is where it is
+      // rejected, and rejection here has no legacy fallback (durability is
+      // already present) so the load path loses the whole behaviour rather than
+      // silently keeping a blank name.
+      const blankNamed = { ...bare, customName: '   ' }
+      expect(isDroppedItemBehaviour(blankNamed)).toBe(false)
+      expect(repairMobBehaviour(DROPPED_ITEM_KIND, blankNamed)).toBeUndefined()
+
+      // Empty enchantments is a known fact (dropped with zero), distinct from the
+      // field being absent, and it decodes.
+      const knownUnenchanted: DroppedItemBehaviour = { ...bare, enchantments: [] }
+      expect(isDroppedItemBehaviour(knownUnenchanted)).toBe(true)
+
+      // A real enchantment on a damageable item, with the durability
+      // `decodeEnchantedItem` requires alongside it.
+      const pickaxeDurability = durabilityForItem('wooden_pickaxe')
+      const enchanted: DroppedItemBehaviour = {
+        _tag: 'DroppedItem',
+        item: 'wooden_pickaxe',
+        count: 1,
+        durability: pickaxeDurability,
+        enchantments: [{ id: 'unbreaking', level: 1 }],
+      }
+      expect(isDroppedItemBehaviour(enchanted)).toBe(true)
+      expect(repairMobBehaviour(DROPPED_ITEM_KIND, enchanted)).toBe(enchanted)
+
+      // An enchantment `decodeEnchantedItem` would reject (unregistered id) makes
+      // the whole behaviour invalid, same as a malformed durability would.
+      const badEnchantment = {
+        ...enchanted,
+        enchantments: [{ id: 'not_a_real_enchantment', level: 1 }],
+      }
+      expect(isDroppedItemBehaviour(badEnchantment)).toBe(false)
     }),
   )
 

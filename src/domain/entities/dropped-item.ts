@@ -3,14 +3,17 @@ import {
   addStoredStack as addStorageStoredStack,
   durabilityForItem,
   emptyPlayerStorage,
+  EQUIPMENT_SLOTS,
   type AddStoredStackResult,
   type Durability,
   type InventoryServiceApi,
+  type PlayerStorage,
 } from '@nerima-games/mc-sim'
 import { Effect } from 'effect'
 import type { Position } from '@nerima-games/mc-kernel'
 import { changed, DESPAWNED, UNCHANGED, type Entity, type EntityManagerApi } from '@nerima-games/mc-sim'
 import { StackCount } from '@nerima-games/mc-kernel'
+import { decodeEnchantedItem, type Enchantment, type EnchantedItem } from '../enchantment.js'
 import {
   DROPPED_ITEM_KIND,
   isDroppedItemBehaviour,
@@ -26,6 +29,8 @@ export type DroppedItemSpawn = {
   readonly at: Position
   readonly durability?: Durability | null
   readonly eligibleFromFrame?: number
+  readonly customName?: string
+  readonly enchantments?: ReadonlyArray<Enchantment>
 }
 
 export type DroppedItemSpawnError = Extract<
@@ -62,6 +67,8 @@ export const spawnDroppedItem = (
       ...(drop.eligibleFromFrame === undefined
         ? {}
         : { eligibleFromFrame: drop.eligibleFromFrame }),
+      ...(drop.customName === undefined ? {} : { customName: drop.customName }),
+      ...(drop.enchantments === undefined ? {} : { enchantments: drop.enchantments.map((e) => ({ ...e })) }),
     },
   })
 }
@@ -103,6 +110,12 @@ const pickupLockFor = (roster: EntityManagerApi<MobBehaviour>): Effect.Semaphore
   return created
 }
 
+/** Has an item that landed on frame `eligibleFromFrame` sat long enough to be picked up on `currentFrame`? */
+export const isDroppedItemPickupEligible = (
+  currentFrame: number,
+  eligibleFromFrame: number | undefined,
+): boolean => eligibleFromFrame === undefined || currentFrame >= eligibleFromFrame
+
 export const pickupDroppedItems = (
   roster: EntityManagerApi<MobBehaviour>,
   inventory: InventoryServiceApi,
@@ -124,8 +137,7 @@ export const pickupDroppedItems = (
           entity.kind !== DROPPED_ITEM_KIND ||
           !isDroppedItemBehaviour(entity.behaviour) ||
           (currentFrame !== undefined &&
-            entity.behaviour.eligibleFromFrame !== undefined &&
-            currentFrame < entity.behaviour.eligibleFromFrame) ||
+            !isDroppedItemPickupEligible(currentFrame, entity.behaviour.eligibleFromFrame)) ||
           distanceSquared(entity.feetPosition, playerPosition) > radiusSquared
         ) continue
 
@@ -174,3 +186,163 @@ export const pickupDroppedItems = (
       })
     })
   )
+
+export type DroppedItemMetadata = {
+  readonly customName?: string
+  readonly enchantedItem?: EnchantedItem
+}
+
+/**
+ * The anvil-rename and enchantment facts an entity's `behaviour` carries once it
+ * passes `isDroppedItemBehaviour`. Re-decoded through `decodeEnchantedItem`
+ * rather than read off the trusted fields directly, so an item/durability/
+ * enchantment combination this repository's own rules could not have produced
+ * (a corrupt save, a hand-edited fixture) surfaces as "no enchantment metadata"
+ * instead of a value nothing validated. Absent `enchantments` (never dropped
+ * with any) and empty `enchantments` (dropped with zero, known) are different
+ * facts: only the latter decodes and appears as `enchantedItem`.
+ */
+export const droppedItemMetadataFromBehaviour = (behaviour: unknown): DroppedItemMetadata => {
+  if (!isDroppedItemBehaviour(behaviour)) return {}
+  const enchantedItem = decodeEnchantedItem({
+    item: behaviour.item,
+    durability: behaviour.durability,
+    enchantments: behaviour.enchantments,
+  })
+  return {
+    ...(behaviour.customName === undefined ? {} : { customName: behaviour.customName }),
+    ...(enchantedItem.ok ? { enchantedItem: enchantedItem.value } : {}),
+  }
+}
+
+/** How long a dropped item sits before despawning, absent a beacon or other rule that extends it. */
+export const DROPPED_ITEM_LIFETIME_SECS = 300
+
+export type DroppedItemLifetimeTracker = {
+  readonly elapsed: (dimension: string, entityId: string) => number
+  readonly restore: (
+    dimension: string,
+    entries: ReadonlyArray<{ readonly entityId: string; readonly elapsedSecs: number }>,
+  ) => void
+  readonly advance: (
+    dimension: string,
+    deltaSecs: number,
+    entityIds: ReadonlyArray<string>,
+  ) => ReadonlyArray<string>
+}
+
+/**
+ * Per-dimension elapsed-lifetime bookkeeping for dropped items, keyed by entity
+ * id rather than carried on `DroppedItemBehaviour` itself: the roster only ever
+ * holds the entities currently alive, so `advance` uses the frame's live id set
+ * to both age existing entries and drop stale ones (an id that despawned or was
+ * picked up by another path) in the same pass — a fact no per-entity field can
+ * express on its own.
+ */
+export const createDroppedItemLifetimeTracker = (
+  lifetimeSecs: number = DROPPED_ITEM_LIFETIME_SECS,
+): DroppedItemLifetimeTracker => {
+  const elapsedByDimension = new Map<string, Map<string, number>>()
+
+  return {
+    elapsed: (dimension, entityId) => elapsedByDimension.get(dimension)?.get(entityId) ?? 0,
+    restore: (dimension, entries) => {
+      elapsedByDimension.set(
+        dimension,
+        new Map(entries.map(({ entityId, elapsedSecs }) => [entityId, Math.max(0, elapsedSecs)])),
+      )
+    },
+    advance: (dimension, deltaSecs, entityIds) => {
+      const elapsedByEntity = elapsedByDimension.get(dimension) ?? new Map<string, number>()
+      elapsedByDimension.set(dimension, elapsedByEntity)
+      const present = new Set(entityIds)
+      for (const entityId of elapsedByEntity.keys()) {
+        if (!present.has(entityId)) elapsedByEntity.delete(entityId)
+      }
+
+      const expired: string[] = []
+      for (const entityId of present) {
+        const elapsedSecs = (elapsedByEntity.get(entityId) ?? 0) + deltaSecs
+        if (elapsedSecs >= lifetimeSecs) {
+          elapsedByEntity.delete(entityId)
+          expired.push(entityId)
+        } else {
+          elapsedByEntity.set(entityId, elapsedSecs)
+        }
+      }
+      return expired
+    },
+  }
+}
+
+/**
+ * A dying player's custom names and enchantments, keyed the way the caller's
+ * own metadata store keys them: an inventory slot by its index (as a string)
+ * and an equipment slot by `equipment:<slot>` — this file makes no claim
+ * about that store's shape beyond the two lookups it needs, so it takes them
+ * as a plain record rather than importing the store itself.
+ */
+export type PlayerSlotMetadata = {
+  readonly customNames: Readonly<Record<string, string>>
+  readonly enchantedItems: Readonly<Record<string, EnchantedItem>>
+}
+
+const deathDropMetadataForSlot = (
+  key: string,
+  item: ItemType,
+  metadata: PlayerSlotMetadata | undefined,
+): Pick<DroppedItemSpawn, 'customName' | 'enchantments'> => {
+  if (metadata === undefined) return {}
+  const customName = metadata.customNames[key]
+  const enchantedItem = metadata.enchantedItems[key]
+  // A metadata entry whose `item` no longer matches is stale (the slot was
+  // refilled with something else since the entry was recorded) and is
+  // dropped rather than attached to the wrong stack.
+  const enchantments = enchantedItem?.item === item
+    ? enchantedItem.enchantments.map((enchantment) => ({ ...enchantment }))
+    : undefined
+  return {
+    ...(customName === undefined ? {} : { customName }),
+    ...(enchantments === undefined ? {} : { enchantments }),
+  }
+}
+
+/**
+ * Everything a dying player's inventory and equipment spill onto the ground,
+ * as spawn requests ready for `spawnDroppedItems` — one per occupied slot,
+ * empty slots contributing nothing. `keepInventory` (whether to call this at
+ * all) is the caller's game-rule decision, not this rule's.
+ */
+export const deathDropsFromPlayerStorage = (
+  storage: PlayerStorage,
+  at: Position,
+  metadata?: PlayerSlotMetadata,
+): ReadonlyArray<DroppedItemSpawn> => {
+  const drops: Array<DroppedItemSpawn> = []
+
+  storage.inventory.slots.forEach((stack, index) => {
+    if (stack === undefined) return
+    const durability = storage.inventoryDurability[index] ?? null
+    drops.push({
+      item: stack.item,
+      count: stack.count,
+      at,
+      durability: copyDurability(durability),
+      ...deathDropMetadataForSlot(String(index), stack.item, metadata),
+    })
+  })
+
+  for (const slot of EQUIPMENT_SLOTS) {
+    const stack = storage.equipment.slots[slot]
+    if (stack === null) continue
+    drops.push({
+      item: stack.item,
+      count: stack.count,
+      at,
+      durability: copyDurability(stack.durability),
+      ...deathDropMetadataForSlot(`equipment:${slot}`, stack.item, metadata),
+    })
+  }
+
+  return drops
+}
