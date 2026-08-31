@@ -216,6 +216,7 @@ import {
 import { Effect } from 'effect'
 import { blockPosition, blockTypeOfId, capabilityOfBlockId, type Position } from '@nerima-games/mc-kernel'
 import { applyDamage, isDead, type Vitals } from '../death-cause.js'
+import { decodeEnchantedItem, type Enchantment } from '../enchantment.js'
 import {
   changed,
   DESPAWNED,
@@ -360,6 +361,10 @@ export type DroppedItemBehaviour = {
   readonly count: number
   readonly durability: Durability | null
   readonly eligibleFromFrame?: number
+  /** An anvil-renamed stack keeps its name after it hits the ground; see `../enchantment.js`. */
+  readonly customName?: string
+  /** Empty and absent are the same fact (no enchantments); `../enchantment.js` owns the shape. */
+  readonly enchantments?: ReadonlyArray<Enchantment>
 }
 
 export type HostileMobSnapshot = {
@@ -809,9 +814,17 @@ export const isHostileMobSnapshot = (value: unknown): value is HostileMobSnapsho
 
 export const isDroppedItemBehaviour = (value: unknown): value is DroppedItemBehaviour => {
   if (!hasDroppedItemFields(value)) return false
-  return isDamageableItemType(value.item)
+  const durabilityValid = isDamageableItemType(value.item)
     ? value.count === 1 && isValidDurabilityForItem(value.item, value.durability)
     : value.durability === null
+  if (!durabilityValid) return false
+  if (value.customName !== undefined && value.customName.trim().length === 0) return false
+  if (value.enchantments === undefined) return true
+  return decodeEnchantedItem({
+    item: value.item,
+    durability: value.durability,
+    enchantments: value.enchantments,
+  }).ok
 }
 
 const hasDroppedItemFields = (
@@ -822,6 +835,8 @@ const hasDroppedItemFields = (
   readonly count: number
   readonly durability?: unknown
   readonly eligibleFromFrame?: number
+  readonly customName?: string
+  readonly enchantments?: ReadonlyArray<Enchantment>
 } => {
   if (typeof value !== 'object' || value === null) return false
   const candidate = value as {
@@ -830,6 +845,8 @@ const hasDroppedItemFields = (
     readonly count?: unknown
     readonly durability?: unknown
     readonly eligibleFromFrame?: unknown
+    readonly customName?: unknown
+    readonly enchantments?: unknown
   }
   return candidate._tag === 'DroppedItem' &&
     typeof candidate.item === 'string' &&
@@ -840,7 +857,9 @@ const hasDroppedItemFields = (
     (candidate.eligibleFromFrame === undefined ||
       (typeof candidate.eligibleFromFrame === 'number' &&
         Number.isInteger(candidate.eligibleFromFrame) &&
-        candidate.eligibleFromFrame >= 0))
+        candidate.eligibleFromFrame >= 0)) &&
+    (candidate.customName === undefined || typeof candidate.customName === 'string') &&
+    (candidate.enchantments === undefined || Array.isArray(candidate.enchantments))
 }
 
 const isLegacyDroppedItemBehaviour = (

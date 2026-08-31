@@ -1,6 +1,7 @@
 import { describe, expect, it } from '@effect/vitest'
 import { emptyFurnaceState, itemStack } from '@nerima-games/mc-sim'
 import {
+  advanceFurnaceRuntime,
   applyFurnaceAdvance,
   MAX_FURNACE_ADVANCE_SECS,
   planFurnaceAdvance,
@@ -42,6 +43,54 @@ describe('furnace advance planning', () => {
       deferredSecs: 0,
       smelted: 0,
       fuelConsumed: 0,
+    })
+  })
+})
+
+describe('advanceFurnaceRuntime', () => {
+  const loaded = () => ({
+    ...emptyFurnaceState(),
+    input: itemStack('raw_iron', 2),
+    fuel: itemStack('coal', 1),
+  })
+
+  it('reports the plan applied, changed, and its own advanced/deferred split', () => {
+    const state = loaded()
+    const plan = planFurnaceAdvance(state, 25)
+
+    expect(advanceFurnaceRuntime(state, plan)).toStrictEqual({
+      _tag: 'Applied',
+      state: plan.after,
+      changed: true,
+      advancedSecs: plan.advancedSecs,
+      deferredSecs: plan.deferredSecs,
+    })
+  })
+
+  it('reports no change for a plan that advanced nothing', () => {
+    const state = loaded()
+    const plan = planFurnaceAdvance(state, 0)
+
+    expect(advanceFurnaceRuntime(state, plan)).toStrictEqual({
+      _tag: 'Applied',
+      state: plan.after,
+      changed: false,
+      advancedSecs: 0,
+      deferredSecs: 0,
+    })
+  })
+
+  it('folds a stale plan\'s ENTIRE time budget — advanced and already-deferred — into deferred, since none of it happened', () => {
+    const state = loaded()
+    const plan = planFurnaceAdvance(state, 25)
+    const driftedState = { ...state, cookElapsedSecs: 1 }
+
+    expect(advanceFurnaceRuntime(driftedState, plan)).toStrictEqual({
+      _tag: 'Stale',
+      state: driftedState,
+      changed: false,
+      advancedSecs: 0,
+      deferredSecs: plan.advancedSecs + plan.deferredSecs,
     })
   })
 })

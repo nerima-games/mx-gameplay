@@ -56,3 +56,37 @@ export const applyFurnaceAdvance = (
   sameFurnace(current, plan.before)
     ? { _tag: 'Applied', state: plan.after }
     : { _tag: 'Stale', state: current }
+
+export type FurnaceRuntimeOutcome = {
+  readonly _tag: FurnaceAdvanceApplyResult['_tag']
+  readonly state: FurnaceState
+  readonly changed: boolean
+  readonly advancedSecs: number
+  readonly deferredSecs: number
+}
+
+/**
+ * `applyFurnaceAdvance` alone answers whether a plan still matches its host's
+ * furnace; it says nothing about what to do with the plan's time budget when it
+ * does not. A stale plan means every second the plan accounted for — both what
+ * it thought it advanced and what it had already deferred — went into a
+ * simulation the host discarded, so none of it happened: all of it becomes
+ * deferred time for the caller to re-request, rather than the `advancedSecs`
+ * portion being silently lost.
+ */
+export const advanceFurnaceRuntime = (
+  current: FurnaceState,
+  plan: FurnaceAdvancePlan,
+): FurnaceRuntimeOutcome => {
+  const applied = applyFurnaceAdvance(current, plan)
+
+  return {
+    _tag: applied._tag,
+    state: applied.state,
+    changed: applied._tag === 'Applied' && furnaceAdvanceChanged(plan),
+    advancedSecs: applied._tag === 'Applied' ? plan.advancedSecs : 0,
+    deferredSecs: applied._tag === 'Applied'
+      ? plan.deferredSecs
+      : plan.advancedSecs + plan.deferredSecs,
+  }
+}
