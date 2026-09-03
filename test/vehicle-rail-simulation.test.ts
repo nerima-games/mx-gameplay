@@ -21,33 +21,47 @@
  * broken, because there is no "across many ticks" for it to be wrong over.
  *
  * ---------------------------------------------------------------------------
- * WHY THE LOOP IS OUT-AND-BACK, NOT A RECTANGLE WITH CORNERS
+ * THE LOOP WAS OUT-AND-BACK; IT IS NOW A RECTANGLE WITH FOUR CORNERS
  * ---------------------------------------------------------------------------
  *
  * `resolveRailShape` never reads `railKind`, so the rule is direction- and
  * kind-agnostic: running it backwards over the same cells is the same rule,
- * not a special case, which is what makes an out-and-back trip a legitimate
- * closed loop for this property (start state == end state) rather than a
- * weaker substitute for one.
+ * not a special case, which is what made an out-and-back trip a legitimate
+ * closed loop for this property (start state == end state), even before a
+ * true corner could be trusted.
  *
  * A true 90-degree corner was deliberately NOT used to close the loop the
- * other way (four straight legs joined by `'curve'` cells). Tracing it
- * through `projectMinecartVelocity` (`domain/vehicle/rail-shape.ts`) shows
- * why: at a grid corner the join cell always sees rail on BOTH axes, so it
- * always resolves to `'curve'`, and `projectMinecartVelocity('curve', vx,
- * vz)` keeps whichever axis already dominates the incoming velocity
- * (`towardX`) rather than steering onto the other one. A cart arriving
- * axis-aligned — which is the only way a preceding straight segment ever
- * hands one off, since `'ns'`/`'ew'` zero the other axis outright — carries
- * that same axis straight through the corner cell and off the end of the
- * track instead of turning. `test/rail.test.ts`'s pinned cases for `'curve'`
- * (`projectMinecartVelocity('curve', 3, 4)` etc.) only ever exercise inputs
- * that already have a large component on both axes, which never arises from
- * this physics, so the gap is invisible to that oracle. This is a real
- * finding, reported rather than silently patched: fixing it would mean
- * inventing corner-steering behaviour with no reference oracle behind it,
- * which is the opposite of this repository's "port the spec, do not
- * reinvent it" rule (docs/testing.md §2-2).
+ * other way, for a documented reason that no longer holds. At a grid corner
+ * the join cell sees rail on both axes; `resolveRailShape` used to collapse
+ * every such cell to one undirected `'curve'`, and `projectMinecartVelocity`
+ * had no orientation left to steer with, so it kept whichever axis already
+ * dominated the incoming velocity (`towardX`) instead of turning onto the
+ * other one. A cart arriving axis-aligned — the only way a preceding straight
+ * segment ever hands one off, since `'ns'`/`'ew'` zero the other axis
+ * outright — carried that same axis straight through the corner cell and off
+ * the end of the track instead of turning. The old pinned cases for `'curve'`
+ * (`projectMinecartVelocity('curve', 3, 4)` etc., in `test/rail.test.ts`)
+ * only ever exercised inputs with a large component on both axes, which never
+ * arises from this physics, so the gap was invisible to that oracle.
+ *
+ * THE FIX WAS UN-COLLAPSING, NOT INVENTING. `RailShape` gained four oriented
+ * curve values (`curve_north_east` / `_north_west` / `_south_east` /
+ * `_south_west`), computed in `resolveRailShape` from neighbour data the
+ * function already had and used to discard; `projectMinecartVelocity` now
+ * exits a curve on the leg the cart did NOT arrive from, in that leg's fixed
+ * compass direction. Neither symbol had a reference oracle to consult — see
+ * both doc comments in `domain/vehicle/rail-shape.ts` for how that was
+ * established and what settled the design instead (the game's own ten-shape
+ * rail model, checked against `mc-kernel`, which does not store per-block
+ * orientation, so this repository still derives it from neighbours rather
+ * than reading it). The undirected `'curve'` still exists, and
+ * `projectMinecartVelocity` still uses `towardX` for it, for the one case
+ * orientation cannot resolve: a T-junction or crossing, which has no single
+ * connected pair to name.
+ *
+ * The rectangle below is the proof this repairs the reachable case: a cart
+ * driven around a closed four-corner circuit through the real stepping path,
+ * never leaving the rails it was placed on.
  */
 import { describe, expect, it } from '@effect/vitest'
 import { Effect } from 'effect'
@@ -72,6 +86,40 @@ const straightPoweredTrack = (length: number, margin = 5): WorldContents => {
   for (let x = -margin; x <= length + margin; x += 1) {
     cells.push([blockPosition(x, 64, 0), POWERED_RAIL])
   }
+  return {
+    blocks: new Map(cells.map(([position, block]) => [cellKey(position), block])),
+    loaded: [...new Set(cells.map(([position]) => chunkKey(chunkOf(position))))],
+  }
+}
+
+/**
+ * The perimeter of a rectangle, as `(x, z)` cells: every point where `x` is
+ * `0` or `width` (the vertical edges) or `z` is `0` or `height` (the
+ * horizontal edges), each edge walked exactly once so the four corners are
+ * not duplicated.
+ */
+const rectanglePerimeterCells = (
+  width: number,
+  height: number,
+): ReadonlyArray<readonly [number, number]> => {
+  const cells: Array<readonly [number, number]> = []
+  for (let x = 0; x <= width; x += 1) {
+    cells.push([x, 0])
+    cells.push([x, height])
+  }
+  for (let z = 1; z < height; z += 1) {
+    cells.push([0, z])
+    cells.push([width, z])
+  }
+  return cells
+}
+
+/** A closed rectangular powered-rail loop at y=64, `width` × `height` blocks. */
+const rectangularPoweredTrack = (width: number, height: number): WorldContents => {
+  const cells: Array<readonly [BlockPosition, typeof POWERED_RAIL]> = rectanglePerimeterCells(
+    width,
+    height,
+  ).map(([x, z]) => [blockPosition(x, 64, z), POWERED_RAIL] as const)
   return {
     blocks: new Map(cells.map(([position, block]) => [cellKey(position), block])),
     loaded: [...new Set(cells.map(([position]) => chunkKey(chunkOf(position))))],
@@ -137,6 +185,72 @@ describe('vehicle rail simulation: multi-angle integration', () => {
       for (const x of returnedPositions) {
         expect(Math.abs(x - start.x)).toBeLessThan(1e-6)
       }
+    }))
+
+  it.effect('REGRESSION-GUARD: a minecart driven around a closed rectangular circuit turns all four corners and never leaves the rails', () =>
+    Effect.gen(function* () {
+      const width = 10
+      const height = 8
+      const { store, vehicles } = yield* makeRig(rectangularPoweredTrack(width, height))
+      const vehicle = yield* vehicles.spawn('minecart', 'overworld', { x: 1, y: 64, z: 0 }, 0)
+      yield* vehicles.updateVelocity(vehicle.id, { x: MINECART_MAX_SPEED, y: 0, z: 0 })
+
+      const trackCells = new Set(
+        rectanglePerimeterCells(width, height).map(([x, z]) => `${String(x)},${String(z)}`),
+      )
+
+      const dt = 0.1
+      // At MINECART_MAX_SPEED with dt = 0.1 the cart covers 0.8 blocks/tick;
+      // the 36-block perimeter (2 * (width + height)) closes in roughly 45
+      // ticks. Five laps' worth proves this holds under repetition, not once.
+      const steps = 230
+
+      let maxX = Number.NEGATIVE_INFINITY
+      let minX = Number.POSITIVE_INFINITY
+      let maxZ = Number.NEGATIVE_INFINITY
+      let minZ = Number.POSITIVE_INFINITY
+
+      for (let i = 0; i < steps; i += 1) {
+        yield* advanceVehicles(store, vehicles, dt, alwaysPowered)
+        const current = yield* soleVehicle(vehicles)
+        const cellX = Math.floor(current.position.x)
+        const cellZ = Math.floor(current.position.z)
+        // THE DEFECT THIS GUARDS, verified with a negative control (restoring
+        // only the pre-fix `projectMinecartVelocity` body against this exact
+        // track): the pre-fix cart does not fail at the FIRST corner it
+        // reaches — the old dominant-axis fallback structurally always
+        // redirects onto the z-axis when arriving on the x-axis, which
+        // happens to coincide with the correct exit here — but it fails at
+        // the SECOND corner, one tick after entering it, because the same
+        // fallback structurally NEVER redirects when arriving already on the
+        // z-axis (`Math.sign(vz)` short-circuits before the `vx` fallback
+        // ever runs). No straight edge in this rectangle continues past a
+        // corner in the direction the cart was already heading, so failing to
+        // turn — for any reason, not only this one — always leaves
+        // `trackCells` within a tick of the corner where it happens. A second
+        // negative control (flipping the fixed code's exit sign, so it still
+        // changes axis at every corner but toward the leg the curve does NOT
+        // connect to) fails the same way, immediately: a clean two-neighbour
+        // curve has exactly two directions with rail on them, so there is no
+        // "wrong but still on-track" exit to coincidentally land on. Checked
+        // on EVERY tick, not only at the end, so a cart that derails briefly
+        // and happens to coast back cannot hide behind a final-position
+        // assertion the way it could hide behind `maxX`/`maxZ` below alone.
+        expect(trackCells.has(`${String(cellX)},${String(cellZ)}`)).toBe(true)
+        maxX = Math.max(maxX, current.position.x)
+        minX = Math.min(minX, current.position.x)
+        maxZ = Math.max(maxZ, current.position.z)
+        minZ = Math.min(minZ, current.position.z)
+      }
+
+      // Reached near all four sides of the rectangle: proof the circuit was
+      // actually completed — all four corner orientations exercised — and
+      // not merely that the cart idled back and forth on its starting edge,
+      // which `trackCells` alone cannot distinguish from a real circuit.
+      expect(maxX).toBeGreaterThan(width - 1)
+      expect(minX).toBeLessThan(1)
+      expect(maxZ).toBeGreaterThan(height - 1)
+      expect(minZ).toBeLessThan(1)
     }))
 
   it.effect('the same elapsed time at three different frame rates lands at the same position', () =>

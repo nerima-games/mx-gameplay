@@ -5,6 +5,11 @@
  * oracle is `packages/game/test/rail-shape.test.ts:15-41`. docs/porting.md §4:
  * move the tests first, do not reinvent the specification.
  *
+ * CORNER TURNING WAS REPAIRED, NOT PORTED: `RailShape`'s curve orientation and
+ * `projectMinecartVelocity`'s use of it were not in the reference oracle this
+ * file was born from — see their own doc comments for what was wrong and why
+ * un-collapsing already-computed neighbour data, not new physics, was the fix.
+ *
  * plan.md §3.11 names 乗り物（ボート / トロッコ / レール）as the fifth of seven
  * responsibilities, and docs/responsibility.md §2 records that plan.md §7 assigns
  * it to `gameplay` 全部 — one of only two rows in that audit with a sole owner.
@@ -104,17 +109,51 @@
 /**
  * What a rail constrains a cart to.
  *
- * Four cases and no `undefined`: `'isolated'` IS the answer for a rail with no
- * neighbours, and it means "constrain nothing" rather than "I do not know". A
- * lone rail is a plain floor, which is the reference's comment
- * (`rail-shape.ts:12-13`) and the behaviour its oracle pins.
+ * `'isolated'` IS the answer for a rail with no neighbours, and it means
+ * "constrain nothing" rather than "I do not know". A lone rail is a plain
+ * floor, which is the reference's comment (`rail-shape.ts:12-13`) and the
+ * behaviour its oracle pins.
  *
  * There is no `'slope'`. An ascending rail still has a horizontal shape — it is
  * an `'ns'` or an `'ew'` that also climbs — and the climb is `./rail-ascent.ts`'s
  * separate question, asked of the same cell. Folding it in here would make the
  * shape depend on which way the cart happens to be pointing.
+ *
+ * FOUR CURVE ORIENTATIONS, NOT ONE — a repair, checked against the kernel
+ * rather than invented. `resolveRailShape` used to answer a single `'curve'`
+ * for every perpendicular pair, and `projectMinecartVelocity` had no way to
+ * turn a cart correctly as a result: see that function's doc comment for why a
+ * shape without an orientation cannot be steered, only continued. The game
+ * this is reproducing does not collapse those cases — its rail block state
+ * carries the connected pair directly (`north_east` / `north_west` /
+ * `south_east` / `south_west`, alongside the two straights and four ascending
+ * forms; ten shapes in total, none of them a bare `'curve'`). `mc-kernel`'s
+ * `RAIL_KINDS` (`block-property-data.ts:43`) was checked for this and does NOT
+ * store it — kernel only tracks whether a cell is a rail and which of
+ * `'none' | 'normal' | 'powered'` it is, not its placed orientation — so this
+ * repository cannot read a stored shape the way the real block state would.
+ * `resolveRailShape` derives one instead, from neighbour connectivity, the
+ * same way it already derives `'ns'` / `'ew'` / `'isolated'`; restoring the
+ * orientation is un-collapsing information the function already computes
+ * (`north` / `south` / `east` / `west` below) and used to discard, not adding
+ * a new observation.
+ *
+ * `'curve'` still exists, for the genuinely ambiguous case a 90-degree bend
+ * does not have: three or four neighbours present at once (a T-junction or a
+ * crossing). Those have no single connected pair to name, and nothing in this
+ * codebase's reach — not the kernel, not the reference — arbitrates which two
+ * legs such a junction should honour, so `projectMinecartVelocity` keeps its
+ * original dominant-axis behaviour there rather than inventing a switch rule.
  */
-export type RailShape = 'ns' | 'ew' | 'curve' | 'isolated'
+export type RailShape =
+  | 'ns'
+  | 'ew'
+  | 'curve_north_east'
+  | 'curve_north_west'
+  | 'curve_south_east'
+  | 'curve_south_west'
+  | 'curve'
+  | 'isolated'
 
 /**
  * "Is there a rail in this cell?", answered by somebody who can read blocks.
@@ -168,8 +207,15 @@ const hasRailNear = (isRailAt: IsRailAt, wx: number, wy: number, wz: number): bo
  * T-junction — north, south AND east — has `nsCount === 2`, so reading the
  * straight test first would answer `'ns'` and lock a cart out of the branch it
  * is aimed at. The reference tests the mixed case first (`rail-shape.ts:29`) and
- * this keeps that; `'curve'` is the permissive answer, because
+ * this keeps that; a curve is the permissive answer, because
  * `projectMinecartVelocity` lets a curve steer and a straight does not.
+ *
+ * ORIENTED WHEN IT CAN BE, GENERIC WHEN IT CANNOT. Exactly one of
+ * north/south present together with exactly one of east/west present is an
+ * unambiguous 90-degree bend — the `RailShape` doc comment records why that
+ * gets its own value instead of a bare `'curve'`. A T-junction or crossing has
+ * no single connected pair (`north && south` together, or `east && west`
+ * together, alongside the other axis) and keeps the old undirected answer.
  *
  * NON-FINITE COORDINATES ANSWER `'isolated'` WITHOUT PROBING. This is one guard
  * the reference does not have, and it is the same call `../interactions/
@@ -204,6 +250,16 @@ export const resolveRailShape = (
   const onEastWest = east || west
 
   if (onNorthSouth && onEastWest) {
+    // Un-collapsing: `north !== south` and `east !== west` is exactly "exactly
+    // one side present on each axis" — the case a real placed curve piece
+    // always is. Anything else (both sides of an axis, alongside the other
+    // axis) is the ambiguous junction case and keeps the undirected answer.
+    if (north !== south && east !== west) {
+      if (north && east) return 'curve_north_east'
+      if (north && west) return 'curve_north_west'
+      if (south && east) return 'curve_south_east'
+      return 'curve_south_west'
+    }
     return 'curve'
   }
   if (onNorthSouth) {
@@ -221,6 +277,31 @@ export const resolveRailShape = (
  * This preserves speed with `Math.hypot(vx, vz)` and rewrites only the
  * direction. `isolated` is the inert case: it constrains nothing, so the input
  * velocity is returned unchanged.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY A GENERIC 'curve' COULD NEVER BE STEERED, ONLY CONTINUED
+ * ---------------------------------------------------------------------------
+ *
+ * A straight rail zeros the perpendicular component outright (`'ns'` keeps
+ * only `vz`, `'ew'` keeps only `vx`), so a cart handed from a straight segment
+ * into a curve cell always arrives EXACTLY axis-aligned: one component is the
+ * full speed, the other is zero. `towardX` reads which axis that is, but a
+ * bare `'curve'` carries no memory of which TWO directions the bend actually
+ * connects — so the old code here had nothing left to do but keep going on
+ * whichever axis was already dominant, which is a straight-through, not a
+ * turn. That is why a cart arriving axis-aligned — the only way it is ever
+ * handed to a corner — ran through it instead of turning: the information a
+ * turn needs was discarded one function earlier, in `resolveRailShape`, not
+ * missing here.
+ *
+ * The four oriented shapes restore that information, so this function can now
+ * answer the question a curve actually poses: which of its two legs is the
+ * cart NOT already travelling along, and what is that leg's fixed compass
+ * direction. `towardX` still decides which axis the cart arrived on — that
+ * part was always correct — but the exit is now the curve's OTHER leg, in
+ * that leg's own direction (north is `-z`, east is `+x`, …), not a copy of
+ * the input's sign. Turning necessarily moves the sign from one axis to the
+ * other, which preserving the input sign can never do.
  */
 export const projectMinecartVelocity = (
   shape: RailShape,
@@ -241,6 +322,23 @@ export const projectMinecartVelocity = (
   }
 
   const towardX = Math.abs(vx) >= Math.abs(vz)
+
+  if (
+    shape === 'curve_north_east' ||
+    shape === 'curve_north_west' ||
+    shape === 'curve_south_east' ||
+    shape === 'curve_south_west'
+  ) {
+    const northLeg = shape === 'curve_north_east' || shape === 'curve_north_west'
+    const eastLeg = shape === 'curve_north_east' || shape === 'curve_south_east'
+    // Arriving on the x-axis (towardX) means the z-leg is the one not yet
+    // travelled — exit there, and vice versa. Direction comes from the leg's
+    // own compass sign (north/-z, south/+z, east/+x, west/-x), never from vx/vz.
+    return towardX
+      ? { vx: 0, vz: (northLeg ? -1 : 1) * speed }
+      : { vx: (eastLeg ? 1 : -1) * speed, vz: 0 }
+  }
+
   if (shape === 'ew' || (shape === 'curve' && towardX)) {
     return { vx: (Math.sign(vx) || Math.sign(vz)) * speed, vz: 0 }
   }

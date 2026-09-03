@@ -83,7 +83,12 @@ describe('resolveRailShape — `<reference-impl>/packages/game/test/rail-shape.t
         [0, 60, -1],
         [1, 60, 0],
       ])
-      expect(resolveRailShape(corner, 0, 60, 0)).toBe('curve')
+      // The reference's oracle asserts "this is a curve"; which curve is a
+      // question its collapsed shape could not even ask. North + east is the
+      // orientation this specific layout connects — see `rail-shape.ts`'s
+      // `RailShape` doc comment for why the answer is now this specific
+      // rather than the reference's undifferentiated one.
+      expect(resolveRailShape(corner, 0, 60, 0)).toBe('curve_north_east')
     }),
   )
 
@@ -136,9 +141,15 @@ describe('resolveRailShape: all sixteen neighbour combinations', () => {
    * sixteen cases, and the expected shape written out by hand.
    *
    * It is also where "a curve beats a straight" is pinned. The four T-junctions
-   * (three neighbours) and the crossroads (four) all answer `'curve'`, and a
+   * (three neighbours) and the crossroads (four) all answer the undirected
+   * `'curve'` — there is no single connected pair to name for those — and a
    * reader who reordered the tests in `resolveRailShape` so that the straight
    * case ran first would get `'ns'` for two of them.
+   *
+   * The four clean two-neighbour perpendicular cases answer an ORIENTED curve
+   * instead of the undirected one; `rail-shape.ts`'s `RailShape` doc comment
+   * has the reasoning. This table is what makes that repair checkable per
+   * input, the same way it already checks `north || south`.
    */
   const NEIGHBOURS = {
     north: [0, 60, -1],
@@ -155,10 +166,10 @@ describe('resolveRailShape: all sixteen neighbour combinations', () => {
     [['east'], 'ew'],
     [['west'], 'ew'],
     [['east', 'west'], 'ew'],
-    [['north', 'east'], 'curve'],
-    [['north', 'west'], 'curve'],
-    [['south', 'east'], 'curve'],
-    [['south', 'west'], 'curve'],
+    [['north', 'east'], 'curve_north_east'],
+    [['north', 'west'], 'curve_north_west'],
+    [['south', 'east'], 'curve_south_east'],
+    [['south', 'west'], 'curve_south_west'],
     [['north', 'south', 'east'], 'curve'],
     [['north', 'south', 'west'], 'curve'],
     [['north', 'east', 'west'], 'curve'],
@@ -451,6 +462,23 @@ describe('isAscendingAhead: a broken measurement does not climb (DIVERGENCE from
   )
 })
 
+/**
+ * `projectMinecartVelocity` has no reference oracle behind it — verified by
+ * absence, not by memory: every other symbol and `describe` block in this
+ * file and in `rail-shape.ts` cites an exact `<reference-impl>` `file:line`;
+ * this one never has, not in its doc comment, not in a single assertion
+ * below, and not in the commit that introduced it. `docs/testing.md` used to
+ * claim three of the reference's ten `rail-shape.test.ts` cases were
+ * transcribed here — that claim has been removed, being unbacked by any
+ * citation this repository can produce (see the changeset for this fix).
+ *
+ * The corner-turning cases below are therefore checked against the real
+ * stepping path instead: `test/vehicle-rail-simulation.test.ts`'s closed
+ * rectangular circuit is the actual proof that these are correct, the same
+ * way `test/rail.test.ts` treats the sixteen-neighbour table as the proof for
+ * `resolveRailShape`. These pinned cases are the fast, isolated half of that
+ * same claim.
+ */
 describe('projectMinecartVelocity', () => {
   it.effect('keeps speed while projecting onto a straight rail axis', () =>
     Effect.sync(() => {
@@ -459,10 +487,51 @@ describe('projectMinecartVelocity', () => {
     }),
   )
 
-  it.effect('uses the dominant axis to steer a curve', () =>
+  it.effect('uses the dominant axis to continue straight through an AMBIGUOUS junction', () =>
     Effect.sync(() => {
-      expect(projectMinecartVelocity('curve', 3, 4)).toStrictEqual({ vx: 0, vz: 5 })
-      expect(projectMinecartVelocity('curve', -4, 3)).toStrictEqual({ vx: -5, vz: 0 })
+      // `'curve'` (undirected) is only reachable from a T-junction or a
+      // crossing now — a clean two-neighbour bend gets an oriented shape
+      // instead (see the tests below). A junction has no single connected
+      // pair to steer onto, so this keeps the cart on the axis it already
+      // has, which is a pass-through rather than a turn.
+      //
+      // The inputs are axis-aligned, not diagonal: a straight rail zeros the
+      // perpendicular component before handing off (the test above), so a
+      // cart is NEVER handed to a junction cell with a large component on
+      // both axes. `projectMinecartVelocity('curve', 3, 4)` was pinned here
+      // before this fix and asserted a shape this physics cannot produce —
+      // corrected rather than kept, per the same rule that added the oriented
+      // cases below.
+      expect(projectMinecartVelocity('curve', 5, 0)).toStrictEqual({ vx: 5, vz: 0 })
+      expect(projectMinecartVelocity('curve', 0, 5)).toStrictEqual({ vx: 0, vz: 5 })
+    }),
+  )
+
+  it.effect('an oriented curve turns the cart onto its OTHER leg, not the one it arrived on', () =>
+    Effect.sync(() => {
+      // `curve_north_east` connects north and east. Arriving from the north
+      // (travelling south, vz > 0, vx == 0 — a straight rail's handoff) must
+      // exit east; arriving from the east (travelling west, vx < 0, vz == 0)
+      // must exit north. This is the case `test/vehicle-rail-simulation.test
+      // .ts`'s rectangle depends on: four corners, each turning exactly once.
+      expect(projectMinecartVelocity('curve_north_east', 0, 5)).toStrictEqual({ vx: 5, vz: 0 })
+      expect(projectMinecartVelocity('curve_north_east', -5, 0)).toStrictEqual({ vx: 0, vz: -5 })
+
+      expect(projectMinecartVelocity('curve_north_west', 0, 5)).toStrictEqual({ vx: -5, vz: 0 })
+      expect(projectMinecartVelocity('curve_north_west', 5, 0)).toStrictEqual({ vx: 0, vz: -5 })
+
+      expect(projectMinecartVelocity('curve_south_east', 0, -5)).toStrictEqual({ vx: 5, vz: 0 })
+      expect(projectMinecartVelocity('curve_south_east', -5, 0)).toStrictEqual({ vx: 0, vz: 5 })
+
+      expect(projectMinecartVelocity('curve_south_west', 0, -5)).toStrictEqual({ vx: -5, vz: 0 })
+      expect(projectMinecartVelocity('curve_south_west', 5, 0)).toStrictEqual({ vx: 0, vz: 5 })
+    }),
+  )
+
+  it.effect('an oriented curve preserves speed, not just direction', () =>
+    Effect.sync(() => {
+      expect(projectMinecartVelocity('curve_south_west', 0, -3)).toStrictEqual({ vx: -3, vz: 0 })
+      expect(projectMinecartVelocity('curve_south_west', 8, 0)).toStrictEqual({ vx: 0, vz: 8 })
     }),
   )
 
