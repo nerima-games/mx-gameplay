@@ -236,18 +236,33 @@ doc comment にあり、証拠は `test/vehicle-rail-simulation.test.ts` の閉�
 **転記であることが定数の doc comment に明記してある** —— これが本節の要求する最低条件で、
 `RAIL_CLIMB_SPEED` は消費者と一緒に、測定と一緒に来ればよい。
 
-### 5-5. 次のリポジトリが用意すべきもの（この 2 本はまだフレームに配線されていない）
+### 5-5. mc-sim の欠落は埋まり、フレームへの配線も済んだ
 
-`stages/registration.ts` の 4 stage のどこからも、この 2 本は呼ばれていない。
-**呼べないからであって、置き場が無いからではない。** 欠けているものを名指しで挙げる。
+**旧見出しの「まだフレームに配線されていない」は古い。** `mc-sim` は `Vehicle`
+（`velocity` / `position` / `dimension` / `occupant` / `yawRadians` を持つ）と
+`VehicleServiceApi`（`vehicles` / `updateState`）を用意した。`domain/vehicle/vehicle-frame.ts`
+の `advanceVehicles` がそれを消費し、`resolveRailShape` / `isAscendingAhead`（トポロジ）と
+`stepMinecart` / `stepBoat`（`vehicle-motion.ts`。`projectMinecartVelocity` もここで
+呼ばれる —— §5-3 の「消費者が無い」は解消した）を毎フレーム走らせる。
+`stages/registration.ts` は `advanceVehicles` を import し（:346）、
+`GAMEPLAY_STAGE_IDS.vehicles` stage の `run` から呼ぶ（:3135）。
+
+**`IsRailAt` を作る側も、ホスト待ちではなくなった。** `advanceVehicles` は自前の
+`railKindAt`（`vehicle-frame.ts`）で `ChunkStoreApi` の読みを `mc-kernel` の
+`railKind` プロパティ経由で `IsRailAt` へ変換する。**ブロック ID は名指さない**
+（plan.md §3.4）——参照実装の `isOnRail` はまさにそれをやっており、
+`domain/vehicle/rail-shape.ts` のヘッダがその行を引いている。
+
+**配線は条件つきである。** `gameplayStages` の `vehicleService` は 7 番目の**省略可能**
+引数で、渡されない呼び出しは stage が `Effect.void` になる
+（`stages/registration.ts:3133-3135`）。呼び出し側が `vehicleService` を渡してはじめて実働する。
+
+**残っている欠落は 2 つだけである。**
 
 | 欠けているもの | どこ | いま何があるか |
 | --- | --- | --- |
-| 実体の**速度** | `mc-sim` の `EntityState` | `feetPosition` / `healthPoints` / `behaviour` の 3 欄のみ。速度は `mc-physics` の `Body`（`domain/integrate.ts:62`）にあり、`mc-physics` の子は `mc-sim` だけなので、名簿へ載せられるのは `mc-sim` である |
-| 乗り物という**名簿の項目** | `mc-sim` | `minecart` / `boat` / `mount` / `ride` はどのファイルにも無い。`EntityKind` は非空文字列のブランド型なので**型の変更は要らない**が、実体を作るのは名簿の持ち主である |
-| 乗車状態（誰が何に乗っているか） | `mc-sim` | 参照実装では `Ref<boolean>`（`game-state-service.ts:76`）。状態なので `mc-sim` のもの |
-| 駐車した乗り物 | `mc-sim` | 参照実装の `packages/entity/application/parked-vehicle-service.ts` |
-| `IsRailAt` を作る側 | ホスト | `mc-kernel` の `railKind`（`'none'` / `'normal'` / `'powered'`、120/120 に既出）から作る。**ブロック ID を名指してはならない**（plan.md §3.4）—— 参照実装の `isOnRail` はまさにそれをやっており、`domain/vehicle/rail-shape.ts` のヘッダがその行を引いている |
+| 駐車した乗り物 | `mc-sim` | 参照実装の `packages/entity/application/parked-vehicle-service.ts` に相当するものはまだ無い |
+| `resolveMinecartMultiplier` / `RAIL_CLIMB_SPEED` | ここ（mx-gameplay） | §5-3 / §5-4 のとおり、消費者と測定を待って未転記のまま |
 
 **`rail`(31) と `powered_rail`(32) は既に揃っている。** `mc-kernel` の `BLOCK_REGISTRY` にあり、
 `domain/block-vocabulary.ts` にミラーされている（`test/block-vocabulary-mirror.test.ts` が固定）。
