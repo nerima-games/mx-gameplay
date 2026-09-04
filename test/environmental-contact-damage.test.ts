@@ -43,6 +43,27 @@ describe('environmental contact damage', () => {
     expect(result.damages).toStrictEqual([{ amount: 4, cause: 'lava' }])
   })
 
+  it('breaks an equal-damage tie in favour of lava, regardless of contact order', () => {
+    // Vanilla's own numbers (cactus 1, lava 4) never actually tie, so this
+    // exercises the tie-break with constructed contacts rather than
+    // `propertyOfBlockId` — the only way to reach the branch at all.
+    const tied = [
+      { block: 'cactus' as const, contactDamage: 2 },
+      { block: 'lava' as const, contactDamage: 2 },
+    ]
+
+    expect(
+      resolveEnvironmentalContactDamage(INITIAL_ENVIRONMENTAL_CONTACT_DAMAGE_STATE, tied, 0).damages,
+    ).toStrictEqual([{ amount: 2, cause: 'lava' }])
+    expect(
+      resolveEnvironmentalContactDamage(
+        INITIAL_ENVIRONMENTAL_CONTACT_DAMAGE_STATE,
+        [...tied].reverse(),
+        0,
+      ).damages,
+    ).toStrictEqual([{ amount: 2, cause: 'lava' }])
+  })
+
   it('emits at most once after a long clock jump instead of a catch-up burst', () => {
     const first = resolveEnvironmentalContactDamage(
       INITIAL_ENVIRONMENTAL_CONTACT_DAMAGE_STATE,

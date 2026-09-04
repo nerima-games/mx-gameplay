@@ -142,6 +142,22 @@ describe('armour mitigation by damage cause', () => {
   )
 })
 
+describe('armour mitigation is monotonic in armour points', () => {
+  it('resulting damage never increases as armour points increase, for every mitigated cause', () => {
+    // A property no fixed table of examples states: whatever the exact curve,
+    // more armour must never leave a player worse off. Swept across both the
+    // full valid range and past it, for every cause armour actually mitigates.
+    for (const cause of ['mob', 'projectile', 'explosion', 'fire', 'cactus', 'lava'] as const) {
+      let previous = applyArmorToDamage({ amount: 20, cause }, 0).amount
+      for (let points = 1; points <= 25; points += 1) {
+        const current = applyArmorToDamage({ amount: 20, cause }, points).amount
+        expect(current).toBeLessThanOrEqual(previous)
+        previous = current
+      }
+    }
+  })
+})
+
 describe('armour durability wear from pre-mitigation damage', () => {
   it.each([
     [0, 0],

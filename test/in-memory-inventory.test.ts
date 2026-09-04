@@ -166,6 +166,52 @@ describe('the two slot rules', () => {
     }),
   )
 
+  it.effect('add conserves items: total held after equals total before plus what was accepted', () =>
+    Effect.sync(() => {
+      // A conservation law, not a table of examples: whatever addToSlots does
+      // internally, it may neither manufacture nor destroy stone. Swept over
+      // several starting occupancies and amounts rather than asserted once.
+      const starts: ReadonlyArray<ReadonlyArray<Slot>> = [
+        emptySlots(),
+        [stack(STONE, 40), undefined, stack(DIRT, 10)],
+        Array.from({ length: INVENTORY_SLOT_COUNT }, (_, at) =>
+          at < INVENTORY_SLOT_COUNT - 1 ? stack(DIRT, MAX_STACK_COUNT) : undefined,
+        ),
+      ]
+
+      for (const start of starts) {
+        for (const amount of [0, 1, MAX_STACK_COUNT, MAX_STACK_COUNT * 3]) {
+          const before = totalOf(start, STONE)
+          const result = addToSlots(start, STONE, amount)
+
+          expect(result.accepted).toBeLessThanOrEqual(amount)
+          expect(totalOf(result.slots, STONE)).toBe(before + result.accepted)
+        }
+      }
+    }),
+  )
+
+  it.effect('remove conserves items: total held after equals total before minus what was removed', () =>
+    Effect.sync(() => {
+      const starts: ReadonlyArray<ReadonlyArray<Slot>> = [
+        emptySlots(),
+        [stack(STONE, 40), undefined, stack(DIRT, 10)],
+        [stack(STONE, MAX_STACK_COUNT), stack(STONE, 3)],
+      ]
+
+      for (const start of starts) {
+        for (const amount of [0, 1, 100]) {
+          const before = totalOf(start, STONE)
+          const result = removeFromSlots(start, STONE, amount)
+
+          expect(result.removed).toBeLessThanOrEqual(amount)
+          expect(result.removed).toBeLessThanOrEqual(before)
+          expect(totalOf(result.slots, STONE)).toBe(before - result.removed)
+        }
+      }
+    }),
+  )
+
   it.effect('totalOf sums across slots', () =>
     Effect.sync(() => {
       expect(totalOf([stack(STONE, 3), undefined, stack(STONE, 4)], STONE)).toBe(7)
