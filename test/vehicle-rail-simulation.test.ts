@@ -79,6 +79,7 @@ import { advanceVehicles, type VehicleFrameEnvironment } from '../src/domain/veh
 import { MINECART_MAX_SPEED } from '../src/domain/vehicle/vehicle-motion'
 
 const POWERED_RAIL = blockIdOf('powered_rail')
+const RAIL = blockIdOf('rail')
 
 /** A straight east-west powered-rail strip at y=64, z=0, covering `[-margin, length + margin]` on x. */
 const straightPoweredTrack = (length: number, margin = 5): WorldContents => {
@@ -112,6 +113,17 @@ const rectanglePerimeterCells = (
     cells.push([width, z])
   }
   return cells
+}
+
+/** A single 90-degree bend: a north-south leg joining an east-west leg at the origin, plain (unpowered) rail. */
+const singleCornerTrack = (legLength: number): WorldContents => {
+  const cells: Array<readonly [BlockPosition, typeof RAIL]> = []
+  for (let z = -legLength; z <= 0; z += 1) cells.push([blockPosition(0, 64, z), RAIL])
+  for (let x = 0; x <= legLength; x += 1) cells.push([blockPosition(x, 64, 0), RAIL])
+  return {
+    blocks: new Map(cells.map(([position, block]) => [cellKey(position), block])),
+    loaded: [...new Set(cells.map(([position]) => chunkKey(chunkOf(position))))],
+  }
 }
 
 /** A closed rectangular powered-rail loop at y=64, `width` × `height` blocks. */
@@ -251,6 +263,45 @@ describe('vehicle rail simulation: multi-angle integration', () => {
       expect(minX).toBeLessThan(1)
       expect(maxZ).toBeGreaterThan(height - 1)
       expect(minZ).toBeLessThan(1)
+    }))
+
+  it.effect('REGRESSION-GUARD: a cart slow enough to spend several ticks inside a curve cell still never steps backward', () =>
+    Effect.gen(function* () {
+      // The rectangle test above always covers 0.8 blocks/tick (unpowered
+      // acceleration to MINECART_MAX_SPEED at dt=0.1) — enough to clear an
+      // entire curve cell in one tick, so it can never observe
+      // `resolveRailShape` being re-read from the SAME cell on a later tick.
+      // Plain (unpowered) rail with a slow initial velocity keeps the
+      // per-tick displacement under the roughly-half-a-block threshold where
+      // that re-read happens — see `rail-shape.ts`'s `projectMinecartVelocity`
+      // doc comment for why a re-read used to turn the cart a second time.
+      const legLength = 5
+      const { store, vehicles } = yield* makeRig(singleCornerTrack(legLength))
+      const vehicle = yield* vehicles.spawn('minecart', 'overworld', { x: 0.5, y: 64, z: -legLength }, 0)
+      yield* vehicles.updateVelocity(vehicle.id, { x: 0, y: 0, z: 2 })
+
+      const dt = 0.05 // 0.1 blocks/tick: well under the half-block threshold
+      const steps = 160
+
+      let maxZ = Number.NEGATIVE_INFINITY
+      let maxX = Number.NEGATIVE_INFINITY
+
+      for (let i = 0; i < steps; i += 1) {
+        yield* advanceVehicles(store, vehicles, dt, {})
+        const current = yield* soleVehicle(vehicles)
+        // The only correct path here is strictly south then east; neither
+        // axis may ever regress below its own running maximum, on any tick.
+        expect(current.position.z).toBeGreaterThanOrEqual(maxZ - 1e-9)
+        expect(current.position.x).toBeGreaterThanOrEqual(maxX - 1e-9)
+        maxZ = Math.max(maxZ, current.position.z)
+        maxX = Math.max(maxX, current.position.x)
+      }
+
+      // Proof the corner was actually reached and left, not that the cart
+      // idled on the starting leg the whole time (which the monotonicity
+      // assertions alone cannot rule out).
+      expect(maxZ).toBeGreaterThan(-0.5)
+      expect(maxX).toBeGreaterThan(1)
     }))
 
   it.effect('the same elapsed time at three different frame rates lands at the same position', () =>
