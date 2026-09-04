@@ -1,8 +1,33 @@
 import type { Equipment, EquipmentSlot } from '@nerima-games/mc-sim'
-import type { Damage } from '../death-cause.js'
+import type { Damage, DeathCause } from '../death-cause.js'
 
 const MAX_ARMOR_POINTS = 20
 const DAMAGE_REDUCTION_PER_ARMOR_POINT = 0.04
+
+/**
+ * `DeathCause`s whose damage ignores armour's per-point mitigation entirely,
+ * matching vanilla's bypasses-armor damage-type tag. This is a narrower list
+ * than "environmental": touching a damaging block (lava, cactus) IS mitigated
+ * by armour, same as a sword hit — only these are the exception, and each was
+ * checked individually rather than inferred from a shared "not combat" theme.
+ *
+ * `fire` is deliberately absent, not omitted by oversight: this package's
+ * single `'fire'` cause is produced by both standing-in-the-fire-block contact
+ * (armour-mitigated in vanilla) and the burning-over-time tick after leaving
+ * it (armour-bypassing in vanilla — see `fire-lifecycle.ts`'s `fireDamageFor`
+ * vs. `FIRE_CONTACT_DAMAGE`). One `DeathCause` cannot correctly answer both
+ * questions; resolving it needs splitting the cause, not a table entry here.
+ */
+const CAUSES_BYPASSING_ARMOR: ReadonlySet<DeathCause> = new Set<DeathCause>([
+  'fall',
+  'drowning',
+  'suffocation',
+  'starvation',
+  'void',
+  'ender_pearl',
+  'poison',
+  'generic',
+])
 
 const WORN_ARMOR_SLOTS = ['head', 'chest', 'legs', 'feet'] as const
 // Compile-time-only validation, kept off the declaration above: line 54 below
@@ -32,6 +57,8 @@ export const armorPointsForEquipment = (equipment: Equipment): number => {
 
 /** Apply the vanilla-style four-percent reduction per armour point. */
 export const applyArmorToDamage = (damage: Damage, armorPoints: number): Damage => {
+  if (CAUSES_BYPASSING_ARMOR.has(damage.cause)) return damage
+
   const normalizedPoints = Number.isNaN(armorPoints)
     ? 0
     : Math.min(MAX_ARMOR_POINTS, Math.max(0, armorPoints))
