@@ -458,16 +458,65 @@ describe('fire lifecycle stage integration', () => {
 
       const damages = yield* drainPlayerDamages(state)
       expect(damages).toHaveLength(1)
-      expect(damages[0]?.damage.cause).toBe('fire')
-      // Unmitigated FIRE_CONTACT_DAMAGE is 1; a single iron_helmet is 2 armour
-      // points, an 8% reduction — 0.92. The unarmoured amount, 1, would be the
-      // value left behind by a stage that forgot to call
-      // `resolveArmoredPlayerDamages` at all.
+      expect(damages[0]?.damage.cause).toBe('in_fire')
+      // Unmitigated fire-tick damage on normal difficulty is 1; a single
+      // iron_helmet is 2 armour points, an 8% reduction — 0.92. The
+      // unarmoured amount, 1, would be the value left behind by a stage that
+      // forgot to call `resolveArmoredPlayerDamages` at all.
       expect(damages[0]?.damage.amount).toBeCloseTo(0.92)
 
       // `armorDurabilityWearFromPreMitigationDamage` is cause-independent
       // (armor.ts) and reads the PRE-mitigation amount (1), which floors to a
       // wear of exactly 1 point off the helmet's 165 maximum.
+      const equipment = yield* inventory.api.equipmentSnapshot
+      expect(equipment.slots.head?.durability?.current).toBe(164)
+    }),
+  )
+
+  it.effect('leaves burning-after-leaving-fire damage unmitigated by armour', () =>
+    Effect.gen(function* () {
+      // The negative control for the test above: a player who is still on
+      // the burn timer but is NOT standing in a fire cell right now takes
+      // `on_fire` damage, which `CAUSES_BYPASSING_ARMOR` (armor.ts) exempts
+      // from per-point mitigation entirely — unlike `in_fire` above, full
+      // iron armour must leave the amount untouched.
+      const { state, stages, inventory } = yield* builtStages
+      // The double player's default feet position (player-service-double.ts).
+      // No `FIRE` block is placed here: the player is not touching fire, only
+      // still burning from contact this test seeds directly via a due
+      // `burningActors` entry.
+      const position = blockPosition(0, 64, 0)
+      yield* Ref.set(state.fireLifecycle, {
+        fires: [],
+        seed: 1,
+        burningActors: [{
+          id: 'player',
+          kind: 'player',
+          position,
+          remainingTicks: 10,
+          damageCooldownTicks: 0,
+        }],
+      })
+
+      expect(yield* inventory.api.add('iron_helmet', 1)).toBe(0)
+      const equipped = yield* inventory.api.equipFromInventory(0, 'head')
+      expect(equipped._tag).toBe('Equipped')
+
+      const fireStage = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire)!
+      yield* fireStage.run(DeltaTimeSecs(FIRE_TICK_INTERVAL_SECS)).pipe(
+        Effect.provide(FrameServicesLayer),
+      )
+
+      const damages = yield* drainPlayerDamages(state)
+      expect(damages).toHaveLength(1)
+      expect(damages[0]?.damage.cause).toBe('on_fire')
+      // Full iron armour would reduce 1 to 0.92 (the sibling test above) if
+      // this cause were mitigated. It is not: the full unmitigated amount, 1,
+      // must survive `resolveArmoredPlayerDamages`.
+      expect(damages[0]?.damage.amount).toBe(1)
+
+      // Durability wear is cause-independent (armor.ts), so it wears the
+      // helmet the same one point as the mitigated in_fire case.
       const equipment = yield* inventory.api.equipmentSnapshot
       expect(equipment.slots.head?.durability?.current).toBe(164)
     }),

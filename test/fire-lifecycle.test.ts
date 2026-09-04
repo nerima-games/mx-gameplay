@@ -142,7 +142,7 @@ describe('fire lifecycle', () => {
       'hard',
     )
     expect(first.entityDamages).toStrictEqual([
-      { actorId: 'mob:1', at: fire.position, damage: { amount: 2, cause: 'fire' } },
+      { actorId: 'mob:1', at: fire.position, damage: { amount: 2, cause: 'in_fire' } },
     ])
     expect(first.state.burningActors).toStrictEqual([{
       id: 'mob:1',
@@ -160,6 +160,52 @@ describe('fire lifecycle', () => {
       remainingTicks: FIRE_BURN_DURATION_TICKS - 2,
       damageCooldownTicks: FIRE_DAMAGE_INTERVAL_TICKS - 2,
     })
+  })
+
+  it('a due damage tick after leaving the fire cell is caused by on_fire, not in_fire', () => {
+    // Distinct from the "applies difficulty damage on cadence" case above,
+    // where the actor is standing ON the fire cell at the moment of the tick
+    // (`in_fire`). Here `position` is nowhere in `cells`, so the actor is
+    // burning but not currently touching fire — the armour-bypassing case.
+    const state: FireLifecycleState = {
+      fires: [],
+      seed: 1,
+      burningActors: [{
+        id: 'mob:1',
+        kind: 'entity',
+        position: { x: 5, y: 1, z: 0 },
+        remainingTicks: 10,
+        damageCooldownTicks: 0,
+      }],
+    }
+    const contact = { id: 'mob:1', kind: 'entity' as const, position: { x: 5, y: 1, z: 0 }, alive: true }
+
+    const step = advanceFireLifecycle(state, [], 'clear', [contact], 'hard')
+
+    expect(step.entityDamages).toStrictEqual([
+      { actorId: 'mob:1', at: contact.position, damage: { amount: 2, cause: 'on_fire' } },
+    ])
+  })
+
+  it('a due damage tick while standing in the fire cell is caused by in_fire, not on_fire', () => {
+    const state: FireLifecycleState = {
+      fires: [{ position: fire.position, ageTicks: 0 }],
+      seed: 1,
+      burningActors: [{
+        id: 'mob:1',
+        kind: 'entity',
+        position: fire.position,
+        remainingTicks: 10,
+        damageCooldownTicks: 0,
+      }],
+    }
+    const contact = { id: 'mob:1', kind: 'entity' as const, position: fire.position, alive: true }
+
+    const step = advanceFireLifecycle(state, [coveredFire, stoneBelow], 'clear', [contact], 'hard')
+
+    expect(step.entityDamages).toStrictEqual([
+      { actorId: 'mob:1', at: contact.position, damage: { amount: 2, cause: 'in_fire' } },
+    ])
   })
 
   it('re-ignition refreshes duration while preserving a due damage tick', () => {
@@ -247,7 +293,7 @@ describe('fire lifecycle', () => {
   it('emits ordered legacy contact damage events for live fire', () => {
     const step = advanceFireLifecycle(makeFireLifecycleState([fire.position], 1), [fire], 'clear', [fire.position])
     expect(step.damages).toStrictEqual([
-      { _tag: 'FireContact', at: fire.position, damage: { amount: 1, cause: 'fire' } },
+      { _tag: 'FireContact', at: fire.position, damage: { amount: 1, cause: 'in_fire' } },
     ])
   })
 

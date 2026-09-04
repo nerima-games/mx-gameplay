@@ -2418,7 +2418,7 @@ describe('the ignition slice: an item use reaches the world', () => {
 
       expect(yield* store.blockAt(fuel)).toBe(FIRE)
       expect(yield* drainPlayerDamages(state)).toStrictEqual([
-        { _tag: 'FireContact', at: contactOrigin, damage: { amount: 1, cause: 'fire' } },
+        { _tag: 'FireContact', at: contactOrigin, damage: { amount: 1, cause: 'in_fire' } },
       ])
       expect((yield* snapshotFireLifecycle(state)).fires).toContainEqual({
         position: fuel,

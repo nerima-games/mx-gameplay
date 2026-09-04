@@ -64,7 +64,6 @@ export const FIRE_NATURAL_LIFETIME_TICKS = 8
 /** Fire simulation runs at 20 Hz independently of the host render cadence. */
 export const FIRE_TICK_INTERVAL_SECS: number = 1 / 20
 export const FIRE_SPREAD_CHANCE = 0.3
-export const FIRE_CONTACT_DAMAGE: Damage = { amount: 1, cause: 'fire' }
 export const FIRE_BURN_DURATION_TICKS = 80
 export const FIRE_DAMAGE_INTERVAL_TICKS = 20
 export const FIRE_UNLOADED_RETRY_LIMIT = 3
@@ -82,9 +81,9 @@ const key = (p: FirePosition): string => `${p.x},${p.y},${p.z}`
 const compare = (a: FirePosition, b: FirePosition): number => a.x - b.x || a.y - b.y || a.z - b.z
 const copyPosition = (position: FirePosition): FirePosition => ({ ...position })
 
-const fireDamageFor = (difficulty: SurvivalDifficulty): Damage | undefined => {
+const fireDamageAmountFor = (difficulty: SurvivalDifficulty): number | undefined => {
   if (difficulty === 'peaceful') return undefined
-  return { amount: difficulty === 'hard' ? 2 : 1, cause: 'fire' }
+  return difficulty === 'hard' ? 2 : 1
 }
 
 const actorInput = (
@@ -222,7 +221,7 @@ const advanceBurningActors = (
   const burningActors: BurningActor[] = []
   const damages: FireContactDamage[] = []
   const entityDamages: FireEntityDamage[] = []
-  const damage = fireDamageFor(difficulty)
+  const damageAmount = fireDamageAmountFor(difficulty)
   for (const actor of [...burningById.values()].sort((a, b) => a.id.localeCompare(b.id))) {
     const contact = contactById.get(actor.id)
     if (contact === undefined) {
@@ -234,8 +233,16 @@ const advanceBurningActors = (
     const remainingTicks = actor.remainingTicks - 1
     if (remainingTicks <= 0) continue
     const position = copyPosition(contact.position)
-    const shouldDamage = actor.damageCooldownTicks <= 0 && damage !== undefined
+    const shouldDamage = actor.damageCooldownTicks <= 0 && damageAmount !== undefined
     if (shouldDamage) {
+      // Armour mitigates contact with the fire block itself but not the burn
+      // that continues after leaving it (armor.ts's `CAUSES_BYPASSING_ARMOR`),
+      // so the cause is read from where the actor is THIS tick, not from
+      // whether it is still counting down a shared burn timer.
+      const damage: Damage = {
+        amount: damageAmount,
+        cause: fireKeys.has(key(contact.position)) ? 'in_fire' : 'on_fire',
+      }
       if (actor.kind === 'player') damages.push({ _tag: 'FireContact', at: position, damage })
       else entityDamages.push({ actorId: actor.id, at: position, damage })
     }

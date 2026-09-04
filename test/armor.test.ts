@@ -118,12 +118,13 @@ describe('armour mitigation by damage cause', () => {
     'void',
     'ender_pearl',
     'poison',
+    'on_fire',
     'generic',
   ] as const)('leaves %s damage unmitigated by full iron armour', (cause) => {
     expect(applyArmorToDamage({ amount: 10, cause }, 15)).toEqual({ amount: 10, cause })
   })
 
-  it.each(['mob', 'projectile', 'explosion', 'fire'] as const)(
+  it.each(['mob', 'projectile', 'explosion', 'in_fire'] as const)(
     'still mitigates %s damage with full iron armour',
     (cause) => {
       const result = applyArmorToDamage({ amount: 10, cause }, 15)
@@ -147,7 +148,7 @@ describe('armour mitigation is monotonic in armour points', () => {
     // A property no fixed table of examples states: whatever the exact curve,
     // more armour must never leave a player worse off. Swept across both the
     // full valid range and past it, for every cause armour actually mitigates.
-    for (const cause of ['mob', 'projectile', 'explosion', 'fire', 'cactus', 'lava'] as const) {
+    for (const cause of ['mob', 'projectile', 'explosion', 'in_fire', 'cactus', 'lava'] as const) {
       let previous = applyArmorToDamage({ amount: 20, cause }, 0).amount
       for (let points = 1; points <= 25; points += 1) {
         const current = applyArmorToDamage({ amount: 20, cause }, points).amount
