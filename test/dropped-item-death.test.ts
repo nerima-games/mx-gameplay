@@ -57,6 +57,26 @@ describe('deathDropsFromPlayerStorage', () => {
     expect(drops[0]?.durability).not.toBeNull()
   })
 
+  it('drops every occupied equipment slot, not only head', () => {
+    // The prior case only ever equips 'head', so a mutant that iterated a
+    // single slot (or the wrong subset of EQUIPMENT_SLOTS) still passed the
+    // whole suite — chest/legs/feet/offhand items would silently stay on the
+    // corpse. This fills all five and checks each survives to a drop.
+    let equipment = emptyEquipment()
+    equipment = equip(equipment, 'head', equipmentItem(itemStack('iron_helmet', 1))).equipment
+    equipment = equip(equipment, 'chest', equipmentItem(itemStack('iron_chestplate', 1))).equipment
+    equipment = equip(equipment, 'legs', equipmentItem(itemStack('iron_leggings', 1))).equipment
+    equipment = equip(equipment, 'feet', equipmentItem(itemStack('iron_boots', 1))).equipment
+    equipment = equip(equipment, 'offhand', equipmentItem(itemStack('shears', 1))).equipment
+    const storage: PlayerStorage = { ...emptyPlayerStorage(), equipment }
+
+    const drops = deathDropsFromPlayerStorage(storage, at)
+
+    expect(drops.map((drop) => drop.item).sort()).toStrictEqual(
+      ['iron_boots', 'iron_chestplate', 'iron_helmet', 'iron_leggings', 'shears'].sort(),
+    )
+  })
+
   it('attaches a matching custom name and enchantment from the slot metadata', () => {
     const slots: Inventory['slots'] = [itemStack('wooden_pickaxe', 1)]
     const metadata: PlayerSlotMetadata = {
