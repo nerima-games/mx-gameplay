@@ -316,6 +316,11 @@ describe('enchantment derivations', () => {
     expect(meleeDamageWithEnchantments(5, enchantedItem('diamond_sword'))).toBe(5)
     expect(bowDamageWithEnchantments(9, enchantedItem('bow', 'power', 5))).toBe(23)
     expect(bowDamageWithEnchantments(-10, enchantedItem('bow', 'power', 5))).toBe(0)
+    // An unenchanted bow must agree with the plain base damage — unlike
+    // sharpness and efficiency above, this had no test of its own, and a
+    // zero level being read as "at least level 1" (e.g. `level || 1`) would
+    // give every unenchanted bow shot a silent 1.5x Power I bonus.
+    expect(bowDamageWithEnchantments(9, enchantedItem('bow'))).toBe(9)
   })
 
   it('stacks armor then clamps protection to twenty levels', () => {
@@ -332,6 +337,15 @@ describe('enchantment derivations', () => {
     expect(
       armorDamageWithEnchantments({ amount: 10, cause: 'mob' }, 0, [...armor, ...armor]).amount,
     ).toBeCloseTo(2)
+    // Unenchanted armour must contribute zero protection each, not zero
+    // total by coincidence — every armour piece above carries protection 4,
+    // so a per-item fallback of "no protection reads as level 1" would still
+    // pass those two assertions. An unenchanted four-piece set isolates it:
+    // any positive contribution per unenchanted piece changes this amount.
+    const unenchantedArmor = armor.map((item) => ({ ...item, enchantments: [] }))
+    expect(
+      armorDamageWithEnchantments({ amount: 10, cause: 'mob' }, 15, unenchantedArmor),
+    ).toEqual({ amount: 4, cause: 'mob' })
   })
 
   it('applies efficiency and clamps invalid mining bases', () => {

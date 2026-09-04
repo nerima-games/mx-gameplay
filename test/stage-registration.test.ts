@@ -430,6 +430,48 @@ describe('fire lifecycle stage integration', () => {
       ])
     }),
   )
+
+  it.effect('routes player fire damage through armour mitigation and wears equipped armour', () =>
+    Effect.gen(function* () {
+      // `stepFireTick` is the only call site that turns a `FireContact` into a
+      // `PlayerDamageEvent`, and every OTHER source of player damage in this
+      // file (hostile contact, blasts) is wrapped in `resolveArmoredPlayerDamages`
+      // before it reaches `state.playerDamages` — see the `entities` stage.
+      // Nothing here previously asserted that fire follows the same rule, so a
+      // dropped `resolveArmoredPlayerDamages` call around fire specifically
+      // would leave every other test in this file green.
+      const { state, store, stages, inventory } = yield* builtStages
+      // The double player's default feet position (player-service-double.ts).
+      const position = blockPosition(0, 64, 0)
+      yield* store.api.setBlock(blockPosition(position.x, position.y - 1, position.z), STONE)
+      yield* store.api.setBlock(position, FIRE)
+      yield* Ref.set(state.fireLifecycle, makeFireLifecycleState([position], 29))
+
+      expect(yield* inventory.api.add('iron_helmet', 1)).toBe(0)
+      const equipped = yield* inventory.api.equipFromInventory(0, 'head')
+      expect(equipped._tag).toBe('Equipped')
+
+      const fireStage = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire)!
+      yield* fireStage.run(DeltaTimeSecs(FIRE_TICK_INTERVAL_SECS)).pipe(
+        Effect.provide(FrameServicesLayer),
+      )
+
+      const damages = yield* drainPlayerDamages(state)
+      expect(damages).toHaveLength(1)
+      expect(damages[0]?.damage.cause).toBe('fire')
+      // Unmitigated FIRE_CONTACT_DAMAGE is 1; a single iron_helmet is 2 armour
+      // points, an 8% reduction — 0.92. The unarmoured amount, 1, would be the
+      // value left behind by a stage that forgot to call
+      // `resolveArmoredPlayerDamages` at all.
+      expect(damages[0]?.damage.amount).toBeCloseTo(0.92)
+
+      // `armorDurabilityWearFromPreMitigationDamage` is cause-independent
+      // (armor.ts) and reads the PRE-mitigation amount (1), which floors to a
+      // wear of exactly 1 point off the helmet's 165 maximum.
+      const equipment = yield* inventory.api.equipmentSnapshot
+      expect(equipment.slots.head?.durability?.current).toBe(164)
+    }),
+  )
 })
 
 describe('Ender Dragon normal frame lifecycle', () => {
