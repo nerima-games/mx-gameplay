@@ -97,9 +97,9 @@ describe('iron armour damage reduction', () => {
   it.each([Number.NaN, -1, Number.NEGATIVE_INFINITY])(
     'treats invalid armour points %s as no protection',
     (points) => {
-      expect(applyArmorToDamage({ amount: 7, cause: 'fall' }, points)).toEqual({
+      expect(applyArmorToDamage({ amount: 7, cause: 'mob' }, points)).toEqual({
         amount: 7,
-        cause: 'fall',
+        cause: 'mob',
       })
     },
   )
@@ -107,6 +107,39 @@ describe('iron armour damage reduction', () => {
   it('preserves the damage cause', () => {
     expect(applyArmorToDamage({ amount: 5, cause: 'lava' }, 2).cause).toBe('lava')
   })
+})
+
+describe('armour mitigation by damage cause', () => {
+  it.each([
+    'fall',
+    'drowning',
+    'suffocation',
+    'starvation',
+    'void',
+    'ender_pearl',
+    'poison',
+    'generic',
+  ] as const)('leaves %s damage unmitigated by full iron armour', (cause) => {
+    expect(applyArmorToDamage({ amount: 10, cause }, 15)).toEqual({ amount: 10, cause })
+  })
+
+  it.each(['mob', 'projectile', 'explosion', 'fire'] as const)(
+    'still mitigates %s damage with full iron armour',
+    (cause) => {
+      const result = applyArmorToDamage({ amount: 10, cause }, 15)
+      expect(result.amount).toBeCloseTo(4)
+      expect(result.cause).toBe(cause)
+    },
+  )
+
+  it.each(['cactus', 'lava'] as const)(
+    'mitigates %s contact damage exactly like a combat hit, not exempted as environmental',
+    (cause) => {
+      const result = applyArmorToDamage({ amount: 10, cause }, 15)
+      expect(result.amount).toBeCloseTo(4)
+      expect(result.cause).toBe(cause)
+    },
+  )
 })
 
 describe('armour durability wear from pre-mitigation damage', () => {
