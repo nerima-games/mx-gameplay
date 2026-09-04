@@ -50,7 +50,8 @@ export type DeathCause =
   | 'fall'
   | 'lava'
   | 'cactus'
-  | 'fire'
+  | 'in_fire'
+  | 'on_fire'
   | 'drowning'
   | 'suffocation'
   | 'starvation'
@@ -79,6 +80,14 @@ export type DeathCause =
  * it would claim that this build can kill you that way, which is the direction
  * `./entities/mob-frame.ts`'s `HOSTILE_KINDS` refuses for the zombie.
  *
+ * `fire` was later split into `in_fire` and `on_fire`, matching vanilla's own
+ * `in_fire` / `on_fire` damage-type identifiers: one player-visible `'fire'`
+ * cause could not correctly answer whether armour applies, because standing in
+ * a fire block and burning after leaving it are armour-mitigated and
+ * armour-bypassing respectively (`./combat/armor.ts`'s `CAUSES_BYPASSING_ARMOR`).
+ * This is a rename plus a split, not a pure addition — a value this old that
+ * still reads `'fire'` will not resolve to either.
+ *
  * NOTE THAT THIS IS THIS REPOSITORY'S OWN VOCABULARY and not a mirror of somebody
  * else's: `DeathCause` is exported from `index.ts`, it is not one of the nine
  * provisional stand-ins listed there, and mc-dev-meta's `MIRROR_SPECS` has no row
@@ -90,7 +99,8 @@ export const DEATH_MESSAGES: Readonly<Record<DeathCause, string>> = {
   fall: 'You fell from a high place.',
   lava: 'You tried to swim in lava.',
   cactus: 'You were pricked to death.',
-  fire: 'You burned to death.',
+  in_fire: 'You went up in flames.',
+  on_fire: 'You burned to death.',
   drowning: 'You drowned.',
   suffocation: 'You suffocated in a wall.',
   starvation: 'You starved to death.',

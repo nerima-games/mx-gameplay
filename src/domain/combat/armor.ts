@@ -7,16 +7,17 @@ const DAMAGE_REDUCTION_PER_ARMOR_POINT = 0.04
 /**
  * `DeathCause`s whose damage ignores armour's per-point mitigation entirely,
  * matching vanilla's bypasses-armor damage-type tag. This is a narrower list
- * than "environmental": touching a damaging block (lava, cactus) IS mitigated
- * by armour, same as a sword hit — only these are the exception, and each was
- * checked individually rather than inferred from a shared "not combat" theme.
+ * than "environmental": touching a damaging block (lava, cactus, `in_fire`) IS
+ * mitigated by armour, same as a sword hit — only these are the exception, and
+ * each was checked individually rather than inferred from a shared "not
+ * combat" theme.
  *
- * `fire` is deliberately absent, not omitted by oversight: this package's
- * single `'fire'` cause is produced by both standing-in-the-fire-block contact
- * (armour-mitigated in vanilla) and the burning-over-time tick after leaving
- * it (armour-bypassing in vanilla — see `fire-lifecycle.ts`'s `fireDamageFor`
- * vs. `FIRE_CONTACT_DAMAGE`). One `DeathCause` cannot correctly answer both
- * questions; resolving it needs splitting the cause, not a table entry here.
+ * `in_fire` and `on_fire` used to be one undifferentiated `'fire'` cause,
+ * produced by both standing-in-the-fire-block contact (armour-mitigated in
+ * vanilla) and the burning-over-time tick after leaving it (armour-bypassing
+ * in vanilla). `fire-lifecycle.ts`'s `advanceBurningActors` now assigns the
+ * cause per tick from whether the actor is still inside a fire cell, so
+ * `on_fire` belongs here and `in_fire` does not.
  */
 const CAUSES_BYPASSING_ARMOR: ReadonlySet<DeathCause> = new Set<DeathCause>([
   'fall',
@@ -26,6 +27,7 @@ const CAUSES_BYPASSING_ARMOR: ReadonlySet<DeathCause> = new Set<DeathCause>([
   'void',
   'ender_pearl',
   'poison',
+  'on_fire',
   'generic',
 ])
 
