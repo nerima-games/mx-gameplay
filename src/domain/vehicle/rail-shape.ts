@@ -331,12 +331,41 @@ export const projectMinecartVelocity = (
   ) {
     const northLeg = shape === 'curve_north_east' || shape === 'curve_north_west'
     const eastLeg = shape === 'curve_north_east' || shape === 'curve_south_east'
+    const exitZ = (northLeg ? -1 : 1) * speed
+    const exitX = (eastLeg ? 1 : -1) * speed
+
+    // REPAIR, NOT A PORT (like the corner-turning fix above it, this has no
+    // reference oracle — see the module header): a cart takes MULTIPLE ticks
+    // to cross a curve cell whenever its per-tick displacement is under about
+    // half a block, because `resolveRailShape` is re-read from the SAME cell
+    // every tick until the cart's floored position finally crosses a
+    // boundary. `towardX` was being recomputed from THIS function's own prior
+    // output on every one of those re-reads: the tick after the cart turned
+    // onto (say) the east leg, `vx` is what makes it dominant, so `towardX`
+    // read the exit as if it were a fresh arrival and turned it AGAIN, back
+    // onto the north leg — undoing the turn. Because the cart's sub-cell
+    // offset past the entry boundary is always smaller than one tick's
+    // displacement (it is however far the previous tick's motion carried it
+    // past the boundary, on the very tick that boundary was first crossed),
+    // that undone step reliably overshoots back across the entry boundary
+    // too: not one cosmetic wobble but a full reversal that sends the cart
+    // back up the leg it arrived from, permanently, since a straight rail
+    // only ever preserves the sign of the velocity it is handed.
+    //
+    // The fix is to make the projection idempotent on its own output: once
+    // `vx`/`vz` already IS one of this curve's two exit vectors — same axis
+    // zero, same sign on the other — hold it there instead of re-deriving a
+    // turn from it. An arrival is always the OPPOSITE sign on that axis (it
+    // is heading INTO the cell along a leg, not out of it), so this cannot
+    // mask a genuine arrival; it only recognizes the function's own prior
+    // answer and leaves it alone.
+    if (vz === 0 && Math.sign(vx) === Math.sign(exitX)) return { vx: exitX, vz: 0 }
+    if (vx === 0 && Math.sign(vz) === Math.sign(exitZ)) return { vx: 0, vz: exitZ }
+
     // Arriving on the x-axis (towardX) means the z-leg is the one not yet
     // travelled — exit there, and vice versa. Direction comes from the leg's
     // own compass sign (north/-z, south/+z, east/+x, west/-x), never from vx/vz.
-    return towardX
-      ? { vx: 0, vz: (northLeg ? -1 : 1) * speed }
-      : { vx: (eastLeg ? 1 : -1) * speed, vz: 0 }
+    return towardX ? { vx: 0, vz: exitZ } : { vx: exitX, vz: 0 }
   }
 
   if (shape === 'ew' || (shape === 'curve' && towardX)) {

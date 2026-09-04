@@ -535,6 +535,35 @@ describe('projectMinecartVelocity', () => {
     }),
   )
 
+  /**
+   * REPAIR, NOT A PORT — see `rail-shape.ts`'s doc comment on this function
+   * for the mechanism and `test/vehicle-rail-simulation.test.ts`'s slow-cart
+   * test for the same defect caught across real ticks.
+   *
+   * `resolveRailShape` is re-read from the SAME curve cell on every tick
+   * until the cart's floored position finally crosses a boundary, which takes
+   * more than one tick whenever the per-tick displacement is under about half
+   * a block. Each re-read calls this function again with ITS OWN prior output
+   * as `vx`/`vz`. Feeding a curve's own exit vector back in must be a no-op:
+   * before the fix, `towardX` read that output as a fresh arrival and turned
+   * it a SECOND time, back onto the leg the cart had just left.
+   */
+  it.effect('REGRESSION-GUARD: an oriented curve does not re-turn a cart already exiting on one of its own legs', () =>
+    Effect.sync(() => {
+      expect(projectMinecartVelocity('curve_north_east', 5, 0)).toStrictEqual({ vx: 5, vz: 0 })
+      expect(projectMinecartVelocity('curve_north_east', 0, -5)).toStrictEqual({ vx: 0, vz: -5 })
+
+      expect(projectMinecartVelocity('curve_north_west', -5, 0)).toStrictEqual({ vx: -5, vz: 0 })
+      expect(projectMinecartVelocity('curve_north_west', 0, -5)).toStrictEqual({ vx: 0, vz: -5 })
+
+      expect(projectMinecartVelocity('curve_south_east', 5, 0)).toStrictEqual({ vx: 5, vz: 0 })
+      expect(projectMinecartVelocity('curve_south_east', 0, 5)).toStrictEqual({ vx: 0, vz: 5 })
+
+      expect(projectMinecartVelocity('curve_south_west', -5, 0)).toStrictEqual({ vx: -5, vz: 0 })
+      expect(projectMinecartVelocity('curve_south_west', 0, 5)).toStrictEqual({ vx: 0, vz: 5 })
+    }),
+  )
+
   it.effect('isolated track leaves the horizontal velocity untouched', () =>
     Effect.sync(() => {
       expect(projectMinecartVelocity('isolated', 3, 4)).toStrictEqual({ vx: 3, vz: 4 })
