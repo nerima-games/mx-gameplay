@@ -1,9 +1,0 @@
----
-"@nerima-games/mx-gameplay": minor
----
-
-Fix armour wrongly blunting sustained burn damage: a player already on fire but no longer standing in the fire block took less damage from a full iron set than they should have. With 15 armour points (60% reduction) a burning player was taking 0.4 instead of 1.0 damage per pulse on normal difficulty, 0.8 instead of 2.0 on hard — over a full 80-tick burn, roughly 1.6 instead of 4, more than half of sustained burn damage wrongly absorbed by armour that should have no effect on it.
-
-The single `'fire'` `DeathCause` (`src/domain/death-cause.ts`) covered two rules that vanilla treats oppositely: standing in the fire block (`in_fire`, armour-mitigated) and burning over time after leaving it (`on_fire`, armour-bypassing). One cause could not answer both, so the exemption in `CAUSES_BYPASSING_ARMOR` (`src/domain/combat/armor.ts`) could not be applied without also wrongly exempting fire-block contact. `fire-lifecycle.ts`'s `advanceBurningActors` now assigns the cause per damage tick from whether the actor is still inside a fire cell that tick, and `on_fire` is now in the bypass table.
-
-This is a breaking change to the public API: `DeathCause` no longer has a `'fire'` member (replaced by `'in_fire'` and `'on_fire'`), and the unused, never-wired `FIRE_CONTACT_DAMAGE` export has been removed. No consumer in this org currently imports either (checked via `git grep` across mx-multiplayer, mx-ui, mc-compose and mx-redstone), and no save format or wire protocol persists a `DeathCause` value (`mc-save` has no reference to `Vitals`; `mc-sim`'s own `Vitals.lastDamageCause` is a bare `string`, deliberately decoupled from this package's cause roster) — but the union member removal is still a source-breaking change for any future consumer matching on it.
