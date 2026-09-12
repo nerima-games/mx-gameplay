@@ -61,7 +61,7 @@
     "@nerima-games/mc-kernel": "0.7.0",
     "@nerima-games/mc-sim": "0.4.2",
     "@nerima-games/mc-worldgen": "0.3.2",
-    "effect": "3.22.1"
+    "effect": "3.22.2"
   },
   "devDependencies": {
     "@changesets/changelog-github": "1.0.0",
