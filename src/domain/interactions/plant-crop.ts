@@ -34,6 +34,7 @@ import {
   blockIdOf,
   blockPosition,
   blockTypeOfId,
+  isItemType,
   type BlockType,
   type ItemType,
 } from '@nerima-games/mc-kernel'
@@ -67,7 +68,7 @@ export const SOIL_OF_CROP: Readonly<Partial<Record<BlockType, BlockType>>> = {
 }
 
 /** Every item this rule will act on. Derived, so it cannot drift from the table. */
-export const PLANTABLE_SEEDS: ReadonlyArray<ItemType> = Object.keys(CROP_OF_SEED) as ReadonlyArray<ItemType>
+export const PLANTABLE_SEEDS: ReadonlyArray<ItemType> = Object.keys(CROP_OF_SEED).filter(isItemType)
 
 /** What the player is trying to do. */
 export type PlantRequest = {
@@ -182,7 +183,7 @@ export const plantCrop = (
            * defined but `SOIL_OF_CROP[crop]` is not, which the table-agreement
            * invariant `test/plant-crop.test.ts` asserts (`CROP_OF_SEED` and
            * `SOIL_OF_CROP` name the same crops) makes unreachable. */
-          { _tag: 'wrongSoil' as const, crop, needs: SOIL_OF_CROP[crop] ?? 'air', found: 'air' as BlockType }
+          { _tag: 'wrongSoil' as const, crop, needs: SOIL_OF_CROP[crop] ?? 'air', found: 'air' }
       /* v8 ignore stop */
     }
 
@@ -196,7 +197,8 @@ export const plantCrop = (
       // would be caught by kernel's own type declaration long before
       // this line ran, not by a runtime fallback that plants nothing and
       // reports success.
-      yield* port.setBlock(verdict.at, blockIdOf(verdict.crop)!)
+      const block = blockIdOf(verdict.crop)
+      if (block !== undefined) yield* port.setBlock(verdict.at, block)
     }
     return verdict
   })

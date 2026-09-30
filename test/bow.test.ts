@@ -1,3 +1,4 @@
+import { defined } from './support/assertions'
 /**
  * The bow: plan.md §3.11's first responsibility, the item-use half.
  *
@@ -783,7 +784,7 @@ inventory: { mode: 'creative', slotIndex: 0 },
   it.effect('a kill puts the mob\'s loot in the drops outbox', () =>
     Effect.gen(function* () {
       const { state, roster, stages } = yield* scene({
-        entities: [{ ...AHEAD.entities[0]!, healthPoints: 5 }],
+        entities: [{ ...defined(AHEAD.entities[0]), healthPoints: 5 }],
         nextSerial: 1,
       })
       yield* Ref.set(state.pendingBowShots, [

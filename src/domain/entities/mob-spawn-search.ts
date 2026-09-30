@@ -190,10 +190,10 @@ export const searchSpawnCandidates = (
   Effect.gen(function* () {
     const batch = drawRolls(seed, SPAWN_SEARCH_ROLLS)
     if (dimension === 'end') return { attempts: EMPTY_ATTEMPTS, unreadable: 0, seed: batch.seed }
-    const kinds: readonly [EntityKind, ...ReadonlyArray<EntityKind>] = dimension === 'nether'
+    const kinds: readonly EntityKind[] = dimension === 'nether'
       ? NETHER_HOSTILE_KINDS
       : hostileSpawnsAllowed(timeOfDay)
-        ? HOSTILE_KINDS.filter((kind) => ecosystemDimensionAllows(kind, dimension)) as [EntityKind, ...EntityKind[]]
+        ? HOSTILE_KINDS.filter((kind) => ecosystemDimensionAllows(kind, dimension))
         : PASSIVE_MOB_KINDS
     // `rollAt` and not `batch.rolls[0] ?? 0`: the fallback is a
     // `noUncheckedIndexedAccess` formality — `drawRolls` returns exactly the
@@ -332,12 +332,14 @@ const at = (x: number, y: number, z: number): BlockPosition => blockPosition(x, 
  * claim a future edit to the roster has to read. Two unreachable fallbacks for
  * one lookup is how a formality stops being examined.
  */
-const kindForRoll = (roll: number, kinds: readonly [EntityKind, ...ReadonlyArray<EntityKind>]): EntityKind => {
+const kindForRoll = (roll: number, kinds: readonly EntityKind[]): EntityKind => {
   const index = Math.min(kinds.length - 1, Math.floor(roll * kinds.length))
   /* v8 ignore start -- see the header immediately above: `?? kinds[0]` is the
    * ONE FALLBACK left, documented as unreachable rather than covered.
    * `docs/testing.md` §7 and `vitest.config.ts`'s coverage-threshold comment
    * both name it. */
-  return kinds[index] ?? kinds[0]
+  const kind = kinds[index] ?? kinds[0]
+  if (kind === undefined) throw new Error('mob spawn kind table is empty')
+  return kind
   /* v8 ignore stop */
 }

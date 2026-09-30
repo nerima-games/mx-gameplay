@@ -116,7 +116,8 @@ export const makeVillager = (id: string, profession: VillagerProfession): Villag
     id,
     profession,
     offers: templates.map((_, index) => {
-      const template = templates[(index + offset) % templates.length]!
+      const template = templates[(index + offset) % templates.length]
+      if (template === undefined) throw new Error('villager offer table is empty')
       return { ...template, id: `${id}:${index}`, uses: 0 }
     }),
   }

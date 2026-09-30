@@ -1,3 +1,4 @@
+import { defined } from './support/assertions'
 import { describe, expect, it } from 'vitest'
 import {
   FIRE_BURN_DURATION_TICKS,
@@ -333,8 +334,8 @@ describe('fire lifecycle', () => {
 
   it('validates unloadedRetries when present, and both burning-actor kinds', () => {
     const base = makeFireLifecycleSnapshot(makeFireLifecycleState([fire.position], 1), 0)
-    const validFire = { ...base.fires[0]!, unloadedRetries: 2 }
-    const invalidFire = { ...base.fires[0]!, unloadedRetries: -1 }
+    const validFire = { ...defined(base.fires[0]), unloadedRetries: 2 }
+    const invalidFire = { ...defined(base.fires[0]), unloadedRetries: -1 }
     const entityActor = {
       id: 'mob:1',
       kind: 'entity' as const,

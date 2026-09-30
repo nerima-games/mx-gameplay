@@ -1,3 +1,4 @@
+import { defined } from './support/assertions'
 import { describe, expect, it } from '@effect/vitest'
 import { emptyFurnaceState, makeTimeService } from '@nerima-games/mc-sim'
 import { Effect, Ref } from 'effect'
@@ -54,7 +55,7 @@ const scene = Effect.gen(function* () {
   const inventory = yield* makeInventoryDouble()
   const time = yield* makeTimeService()
   const stages = gameplayStages(state, store.api, roster.api, inventory.api, player.api, time)
-  const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+  const interactions = defined(stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions))
   const runInteractions = interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
   return { state, store, inventory, runInteractions }
 })

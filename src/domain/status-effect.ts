@@ -65,7 +65,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
 
 const isStatusEffectType = (value: unknown): value is StatusEffectType =>
-  typeof value === 'string' && STATUS_EFFECT_TYPES.includes(value as StatusEffectType)
+  typeof value === 'string' && STATUS_EFFECT_TYPES.some((effect) => effect === value)
 
 export const isValidStatusEffectState = (
   value: unknown,

@@ -47,7 +47,7 @@ const makeRecordingPlayer = (
     const switches = yield* Ref.make<ReadonlyArray<Dimension>>([])
 
     const unused = <A,>(): Effect.Effect<A> =>
-      Effect.die('portal travel must not touch this member') as Effect.Effect<A>
+      Effect.die('portal travel must not touch this member')
 
     const api: PlayerServiceApi = {
       pose: unused<PlayerPose>(),

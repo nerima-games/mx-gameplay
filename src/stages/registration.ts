@@ -594,7 +594,7 @@ class FluidStateRef extends Effectable.Class<ReadonlyArray<FluidWorkItem>>
   readonly [Readable.TypeId]: Readable.TypeId = Readable.TypeId
   readonly get: Effect.Effect<ReadonlyArray<FluidWorkItem>>
   // Explicit field declarations, not TypeScript parameter properties: the
-  // `erasableSyntaxOnly` flag (Wave 0 toolchain freeze) requires every
+  // `erasableSyntaxOnly` compiler option requires every
   // construct to erase to nothing but a type annotation, and a parameter
   // property emits an assignment statement the compiler would otherwise have
   // to synthesize.
@@ -1150,7 +1150,7 @@ HOE_ITEM_TYPES satisfies ReadonlyArray<ItemType>
 export type HoeItemType = (typeof HOE_ITEM_TYPES)[number]
 
 export const isHoeItem = (item: ItemType): item is HoeItemType =>
-  (HOE_ITEM_TYPES as ReadonlyArray<ItemType>).includes(item)
+  HOE_ITEM_TYPES.some((member) => member === item)
 
 export type FarmingItemUseRequest =
   | {
@@ -2783,7 +2783,7 @@ const stepFireLifecycle = (
       // is therefore never `undefined` at this point, and neither is `?.`'s or
       // `?? 0`'s fallback ever consulted. Asserted (`!`, `next.burningActors!`)
       // rather than kept as a branch a coverage gate cannot reach.
-      if (next.fires.length === 0 && next.burningActors!.length === 0) {
+      if (next.fires.length === 0 && (next.burningActors === undefined || next.burningActors.length === 0)) {
         yield* Ref.set(accumulator, 0)
         return
       }
@@ -3627,8 +3627,14 @@ export const gameplayStages = (
                 }
                 const rolls = yield* Ref.modify(state.rollSeed, (seed) => {
                   const drawn = drawRolls(seed, 3)
+                  const wait = drawn.rolls[0]
+                  const category = drawn.rolls[1]
+                  const item = drawn.rolls[2]
+                  if (wait === undefined || category === undefined || item === undefined) {
+                    throw new Error('fishing roll batch is incomplete')
+                  }
                   return [
-                    { wait: drawn.rolls[0]!, category: drawn.rolls[1]!, item: drawn.rolls[2]! },
+                    { wait, category, item },
                     drawn.seed,
                   ] as const
                 })
@@ -3966,7 +3972,8 @@ export const gameplayStages = (
             // removes a roster entry — terrain sampling and the damage/shove
             // math are both pure, and the roster is not touched again until
             // `resolveBowHits` runs after this loop. The lookup cannot miss.
-            const target = candidates.find((candidate) => candidate.id === hit.id)!
+            const target = candidates.find((candidate) => candidate.id === hit.id)
+            if (target === undefined) continue
             shoves.push({
               id: hit.id,
               direction: knockbackDirection(

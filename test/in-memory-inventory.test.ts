@@ -43,7 +43,7 @@ const stack = (item: ItemType, count: number): Slot => ({ item, count: StackCoun
  * from JSON is a plain object, and the brand is erased by then.
  */
 const savedStack = (item: ItemType, count: number): Slot =>
-  ({ item, count }) as unknown as Slot
+  Object.assign({ item, count: StackCount(0) }, { count })
 
 describe('add resolves to the LEFTOVER', () => {
   it.effect('a pickup that fits resolves to 0', () =>

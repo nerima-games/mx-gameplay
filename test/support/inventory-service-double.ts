@@ -464,8 +464,8 @@ export const makeInventoryDouble = (
           }),
 
         getSlot: () => refuse('getSlot'),
-        // mc-sim 0.2.1 (dist release, Wave 0 toolchain freeze). Not exercised by
-        // this repository's slice — same `refuse` convention as `getSlot`.
+        // This older mc-sim surface is not exercised by this repository's slice
+        // — same `refuse` convention as `getSlot`.
         getHotbarSlots: refuse('getHotbarSlots'),
         setSlot: () => refuse('setSlot'),
         moveStack: () => refuse('moveStack'),
@@ -518,8 +518,8 @@ export const makeInventoryDouble = (
             return [outcome.result, { ...doubles, storage: outcome.storage }] as const
           }),
         createContainer: () => refuse('createContainer'),
-        // mc-sim 0.2.1 (dist release, Wave 0 toolchain freeze). Same `refuse`
-        // convention as the world-container methods above and below it.
+        // This older mc-sim surface uses the same `refuse` convention as the
+        // world-container methods above and below it.
         createContainerAt: () => refuse('createContainerAt'),
         containerSnapshot: () => refuse('containerSnapshot'),
         containerSnapshotAt: () => refuse('containerSnapshotAt'),

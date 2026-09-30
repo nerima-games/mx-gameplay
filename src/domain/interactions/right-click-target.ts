@@ -80,7 +80,7 @@ export const ROUTED_BLOCKS: ReadonlyArray<BlockType> = [
 ]
 
 const isDoor = (block: BlockType): block is DoorBlock =>
-  (DOOR_BLOCKS as ReadonlyArray<BlockType>).includes(block)
+  DOOR_BLOCKS.some((member) => member === block)
 
 const isStorage = (block: BlockType): block is StorageBlock => STORAGE_BLOCKS.has(block)
 
@@ -113,7 +113,13 @@ export const rightClickRoute = (
   }
 
   const single = SINGLE_BLOCK_ROUTES.find(([routed]) => routed === block)
-  return single === undefined
-    ? undefined
-    : ({ kind: single[1], at } as RightClickRoute)
+  if (single === undefined) return undefined
+  switch (single[1]) {
+    case 'craftingTable': return { kind: 'craftingTable', at }
+    case 'furnace': return { kind: 'furnace', at }
+    case 'bed': return { kind: 'bed', at }
+    case 'enchantingTable': return { kind: 'enchantingTable', at }
+    case 'anvil': return { kind: 'anvil', at }
+    default: throw new Error(`unhandled right-click route: ${single[1]}`)
+  }
 }

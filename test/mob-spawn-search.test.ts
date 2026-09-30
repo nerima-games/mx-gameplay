@@ -770,7 +770,7 @@ describe('the search inside the frame', () => {
       expect(entries).toHaveLength(MAX_PASSIVE_COUNT)
       expect(
         entries.every(({ kind }) =>
-          PASSIVE_MOB_KINDS.includes(kind as (typeof PASSIVE_MOB_KINDS)[number]),
+          PASSIVE_MOB_KINDS.some((passiveKind) => passiveKind === kind),
         ),
       ).toBe(true)
 

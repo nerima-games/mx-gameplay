@@ -75,6 +75,8 @@ import {
   CHUNK_SIZE_XZ,
   ChunkStore,
   blockIndex,
+  emptyChunkStoreState,
+  subscribed,
   type BlockReading,
   type BlockWriteOutcome,
   type Chunk,
@@ -129,8 +131,8 @@ type State = {
   readonly blocks: Map<string, BlockId>
   readonly lights: Map<string, CellLight>
   readonly loaded: Set<string>
-  readonly subscribers: Map<number, Set<string>>
-  nextSubscriber: number
+  readonly subscribers: Map<SubscriberId, Set<string>>
+  readonly subscriberState: typeof emptyChunkStoreState
 }
 
 /**
@@ -150,7 +152,7 @@ export const makeInMemoryChunkStore = (
       lights: new Map(contents.lights ?? new Map()),
       loaded: new Set(contents.loaded),
       subscribers: new Map(),
-      nextSubscriber: 0,
+      subscriberState: emptyChunkStoreState,
     }),
     (state): ChunkStoreApi => {
       const markDirty = (current: State, coord: ChunkCoord): void => {
@@ -188,18 +190,11 @@ export const makeInMemoryChunkStore = (
         current.loaded.has(chunkKey(coord)) ? materialise(current, coord) : undefined
 
       const subscribe: Effect.Effect<ChunkDirtySubscription> = Ref.modify(state, (current) => {
-        const id = current.nextSubscriber
+        const [id, subscriberState] = subscribed(current.subscriberState)
         current.subscribers.set(id, new Set())
 
         const subscription: ChunkDirtySubscription = {
-          // `@nerima-games/mc-worldgen` exports no public constructor for
-          // `SubscriberId` — it is minted only inside the package's own
-          // `ChunkStoreState.subscribed`, which this file, as an independent
-          // reimplementation of `ChunkStoreApi`, has no way to call. This
-          // counter-derived id is a genuine, never-reused subscriber
-          // identity by construction; the cast asserts only that, not that
-          // an unchecked value has an unverified shape.
-          id: id as SubscriberId,
+          id,
           drain: Ref.modify(state, (now) => {
             const pending = now.subscribers.get(id) ?? new Set<string>()
             const batch: ChunkDirtyBatch = {
@@ -215,7 +210,7 @@ export const makeInMemoryChunkStore = (
           }),
         }
 
-        return [subscription, { ...current, nextSubscriber: id + 1 }] as const
+        return [subscription, { ...current, subscriberState }] as const
       })
 
       return {

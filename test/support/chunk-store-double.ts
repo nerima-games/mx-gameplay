@@ -41,6 +41,8 @@ import { AIR_BLOCK_ID, BlockId, chunkCoord, type BlockPosition } from '@nerima-g
 import {
   ChunkStore,
   blockIndex,
+  emptyChunkStoreState,
+  subscribed,
   type BlockReading,
   type BlockWriteOutcome,
   type Chunk,
@@ -129,8 +131,8 @@ type Doubles = {
   readonly blocks: Map<string, BlockId>
   readonly lights: Map<string, LightLevels>
   readonly loadedChunks: Set<string>
-  readonly subscribers: Map<number, Set<string>>
-  nextSubscriber: number
+  readonly subscribers: Map<SubscriberId, Set<string>>
+  readonly subscriberState: typeof emptyChunkStoreState
   reads: number
   writes: number
   peeks: number
@@ -163,7 +165,7 @@ export const makeChunkStoreDouble = (
       lights: new Map(lights),
       loadedChunks: new Set(loaded),
       subscribers: new Map(),
-      nextSubscriber: 0,
+      subscriberState: emptyChunkStoreState,
       reads: 0,
       writes: 0,
       peeks: 0,
@@ -178,18 +180,11 @@ export const makeChunkStoreDouble = (
       }
 
       const subscribe: Effect.Effect<ChunkDirtySubscription> = Ref.modify(state, (doubles) => {
-        const id = doubles.nextSubscriber
+        const [id, subscriberState] = subscribed(doubles.subscriberState)
         doubles.subscribers.set(id, new Set())
 
         const subscription: ChunkDirtySubscription = {
-          // `@nerima-games/mc-worldgen` exports no public constructor for
-          // `SubscriberId` — it is minted only inside the package's own
-          // `ChunkStoreState.subscribed`, which this double, as an independent
-          // reimplementation of `ChunkStoreApi`, has no way to call. This
-          // counter-derived id is a genuine, never-reused subscriber
-          // identity by construction; the cast asserts only that, not that
-          // an unchecked value has an unverified shape.
-          id: id as SubscriberId,
+          id,
           drain: Ref.modify(state, (current) => {
             const pending = current.subscribers.get(id) ?? new Set<string>()
             const batch: ChunkDirtyBatch = {
@@ -208,7 +203,7 @@ export const makeChunkStoreDouble = (
           }),
         }
 
-        return [subscription, { ...doubles, nextSubscriber: id + 1 }] as const
+        return [subscription, { ...doubles, subscriberState }] as const
       })
 
       const api: ChunkStoreApi = {

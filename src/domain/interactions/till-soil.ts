@@ -157,7 +157,7 @@ export const tillSoil = (
     const aboveBlock = aboveId === undefined ? undefined : blockTypeOfId(aboveId)
 
     if (groundBlock === undefined || aboveBlock === undefined) {
-      return { _tag: 'notTillable' as const, found: 'air' as BlockType }
+      return { _tag: 'notTillable' as const, found: 'air' }
     }
 
     const verdict = tillingVerdict(held, ground, groundBlock, aboveBlock)
@@ -169,7 +169,8 @@ export const tillSoil = (
       // three crop ids: a vocabulary defect that removed that row would be
       // caught by kernel's own type declaration, not by a runtime
       // fallback that tills nothing and reports success.
-      yield* port.setBlock(verdict.at, blockIdOf(TILLED_BLOCK)!)
+      const block = blockIdOf(TILLED_BLOCK)
+      if (block !== undefined) yield* port.setBlock(verdict.at, block)
     }
     return verdict
   })

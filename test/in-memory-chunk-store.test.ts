@@ -31,13 +31,13 @@ import {
   AIR_BLOCK_ID,
   blockPosition,
   chunkCoord,
-  type BlockId,
+  BlockId,
   type BlockPosition,
 } from '@nerima-games/mc-kernel'
 import { CHUNK_HEIGHT } from '@nerima-games/mc-worldgen'
 
-const STONE: BlockId = 2 as BlockId
-const DIRT: BlockId = 3 as BlockId
+const STONE = BlockId(2)
+const DIRT = BlockId(3)
 
 const AT: BlockPosition = blockPosition(5, 64, 9)
 

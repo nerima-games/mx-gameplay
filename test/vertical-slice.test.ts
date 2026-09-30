@@ -1,3 +1,4 @@
+import { defined } from './support/assertions'
 /**
  * THE SLICE, end to end. Two of them now.
  *
@@ -640,7 +641,7 @@ describe('the slice, through the stage registration', () => {
         { _tag: 'Unchanged', previous: SAND },
         { _tag: 'ChunkNotLoaded' },
         { _tag: 'OutOfWorld' },
-      ] as ReadonlyArray<BlockWriteOutcome>,
+      ] satisfies ReadonlyArray<BlockWriteOutcome>,
       (refusal) =>
         Effect.gen(function* () {
           const { store, roster, inventory, state, player, time } = yield* slice(world([[sandAt, SAND]]))
@@ -2606,7 +2607,7 @@ describe('the potato farming slice: host input reaches farming rules', () => {
       )
 
       for (const [index, hoe] of hoes.entries()) {
-        yield* requestSoilTill(state, `till-${hoe}`, cells[index]!, hoe)
+        yield* requestSoilTill(state, `till-${hoe}`, defined(cells[index]), hoe)
       }
       yield* runFrame(stages)
 
@@ -2724,7 +2725,7 @@ describe('the villager trading slice: host input reaches deterministic offers', 
     const villager = makeVillager('validation-farmer', 'farmer')
     expect(isValidVillagerTradeState({ villagers: [villager], restockElapsedSecs: 0 })).toBe(true)
     expect(isValidVillagerTradeState({
-      villagers: [{ ...villager, offers: [{ ...villager.offers[0]!, uses: 17 }] }],
+      villagers: [{ ...villager, offers: [{ ...defined(villager.offers[0]), uses: 17 }] }],
       restockElapsedSecs: 0,
     })).toBe(false)
     expect(isValidVillagerTradeState({
@@ -2740,7 +2741,7 @@ describe('the villager trading slice: host input reaches deterministic offers', 
       )
       const runtime = yield* slice(world([]), ['0,0'], slots)
       const villager = makeVillager('farmer-1', 'farmer')
-      const offer = villager.offers.find((candidate) => candidate.input.item === 'wheat')!
+      const offer = defined(villager.offers.find((candidate) => candidate.input.item === 'wheat'))
       yield* Ref.set(
         runtime.state.villagerTrades,
         addVillager(emptyVillagerTradeState(), villager),
@@ -2768,10 +2769,10 @@ describe('the villager trading slice: host input reaches deterministic offers', 
     Effect.gen(function* () {
       const runtime = yield* slice(world([]))
       const villager = makeVillager('farmer-stock', 'farmer')
-      const offer = villager.offers[0]!
+      const offer = defined(villager.offers[0])
       let exhausted = addVillager(emptyVillagerTradeState(), villager)
       for (let use = 0; use < offer.maxUses; use += 1) {
-        exhausted = useVillagerOffer(exhausted, villager.id, offer.id)!
+        exhausted = defined(useVillagerOffer(exhausted, villager.id, offer.id))
       }
       yield* Ref.set(runtime.state.villagerTrades, exhausted)
 

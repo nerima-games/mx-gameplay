@@ -195,12 +195,12 @@ describe('the cost of a throw', () => {
   })
 
   it('kills a player on four throws with no food, and says WHY', () => {
-    let vitals = { healthPoints: 20, lastDeathCause: undefined as never }
+    let vitals: Parameters<typeof applyDamage>[0] = { healthPoints: 20, lastDeathCause: undefined }
     for (let throwCount = 0; throwCount < 4; throwCount += 1) {
       vitals = applyDamage(vitals, {
         amount: ENDER_PEARL_DAMAGE,
         cause: ENDER_PEARL_DEATH_CAUSE,
-      }) as typeof vitals
+      })
     }
     expect(vitals.healthPoints).toBe(0)
     expect(deathMessage(vitals)).toBe(DEATH_MESSAGES.ender_pearl)

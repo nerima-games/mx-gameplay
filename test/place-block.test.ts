@@ -1,3 +1,4 @@
+import { defined } from './support/assertions'
 /**
  * `domain/interactions/place-block.ts` — the counterpart to `break-block`.
  *
@@ -639,7 +640,7 @@ describe('placeBlock — the four per-block rules, reached through a real held i
 
       expect(outcome).toStrictEqual({
         _tag: 'Placed',
-        block: blockIdOf('door')!,
+        block: defined(blockIdOf('door'), 'blockIdOf'),
         consumed: 'door',
         chunk: chunkCoord(0, 0),
         alsoPlaced: [upperCell],

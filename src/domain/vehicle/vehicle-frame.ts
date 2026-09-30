@@ -84,7 +84,10 @@ const neighbourhood = (position: BlockPosition): ReadonlyArray<BlockPosition> =>
 const readNeighbourhood = (store: ChunkStoreApi, position: BlockPosition): Effect.Effect<ReadonlyMap<string, BlockReading>> => {
   const cells = neighbourhood(position)
   return Effect.forEach(cells, (cell) => store.getBlock(cell)).pipe(
-    Effect.map((readings) => new Map(readings.map((reading, index) => [blockKey(cells[index]!), reading]))),
+    Effect.map((readings) => new Map(readings.map((reading, index) => {
+      const cell = cells[index]
+      return cell === undefined ? undefined : [blockKey(cell), reading] as const
+    }).filter((entry): entry is readonly [string, BlockReading] => entry !== undefined))),
   )
 }
 

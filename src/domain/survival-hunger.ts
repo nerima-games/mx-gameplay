@@ -115,13 +115,15 @@ const isDifficulty = (value: unknown): value is SurvivalDifficulty =>
   value === 'peaceful' || value === 'easy' || value === 'normal' || value === 'hard'
 
 export const isSurvivalHungerState = (value: unknown): value is SurvivalHungerState => {
-  if (typeof value !== 'object' || value === null) return false
-  const candidate = value as Partial<SurvivalHungerState>
-  return candidate.version === SURVIVAL_HUNGER_STATE_VERSION &&
-    isDifficulty(candidate.difficulty) &&
-    candidate.vitals !== undefined &&
-    isValidPlayerVitals(candidate.vitals)
+  if (!isRecord(value)) return false
+  const candidate = value
+  return candidate['version'] === SURVIVAL_HUNGER_STATE_VERSION &&
+    isDifficulty(candidate['difficulty']) &&
+    isValidPlayerVitals(candidate['vitals'])
 }
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null
 
 const runFoodTicks = (
   vitals: InMemoryVitalsApi,
@@ -134,7 +136,7 @@ const runFoodTicks = (
   readonly died: boolean
 }> =>
   Effect.gen(function* () {
-    let remaining = dt as number
+    let remaining: number = dt
     let foodTicks = 0
     let regeneratedHealth = 0
     let starvationDamage = 0

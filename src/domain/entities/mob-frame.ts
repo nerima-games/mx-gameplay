@@ -599,7 +599,7 @@ export const maxHealthOfKind = (kind: EntityKind): number => {
  * paragraph is about.
  */
 export const initialBehaviourOfKind = (kind: EntityKind): MobBehaviour => {
-  if (ECOSYSTEM_MOB_KINDS.includes(kind as (typeof ECOSYSTEM_MOB_KINDS)[number])) return hostileMobSnapshot(initialEcosystemMobState())
+  if (ECOSYSTEM_MOB_KINDS.some((member) => member === kind)) return hostileMobSnapshot(initialEcosystemMobState())
   if (kind === ENDERMAN_KIND) return hostileMobSnapshot(STEADY_ENDERMAN)
   if (kind === ZOMBIE_KIND) return hostileMobSnapshot(undefined)
   return hostileMobSnapshot(DORMANT_FUSE)
@@ -771,7 +771,7 @@ export const repairMobBehaviour = (kind: EntityKind, behaviour: unknown): MobBeh
 
   if (kind === ZOMBIE_KIND) return hostileMobSnapshot(undefined)
 
-  if (ECOSYSTEM_MOB_KINDS.includes(kind as (typeof ECOSYSTEM_MOB_KINDS)[number])) {
+  if (ECOSYSTEM_MOB_KINDS.some((member) => member === kind)) {
     return hostileMobSnapshot(repairEcosystemMobState(behaviour) ?? initialEcosystemMobState())
   }
 
@@ -794,21 +794,20 @@ const repairHostileInner = (
 ): HostileMobSnapshot['behaviour'] => {
   if (kind === CREEPER_KIND) return isCreeperFuse(behaviour) ? behaviour : DORMANT_FUSE
   if (kind === ENDERMAN_KIND) return isEndermanFlinch(behaviour) ? behaviour : STEADY_ENDERMAN
-  if (ECOSYSTEM_MOB_KINDS.includes(kind as (typeof ECOSYSTEM_MOB_KINDS)[number])) return repairEcosystemMobState(behaviour) ?? initialEcosystemMobState()
+  if (ECOSYSTEM_MOB_KINDS.some((member) => member === kind)) return repairEcosystemMobState(behaviour) ?? initialEcosystemMobState()
   return undefined
 }
 
 export const isHostileMobSnapshot = (value: unknown): value is HostileMobSnapshot => {
   if (typeof value !== 'object' || value === null) return false
-  const candidate = value as Partial<HostileMobSnapshot>
   return (
-    candidate._tag === 'HostileMob' &&
-    typeof candidate.ageTicks === 'number' &&
-    Number.isFinite(candidate.ageTicks) &&
-    candidate.ageTicks >= 0 &&
-    typeof candidate.persistent === 'boolean' &&
-    typeof candidate.named === 'boolean' &&
-    typeof candidate.tamed === 'boolean'
+    Reflect.get(value, '_tag') === 'HostileMob' &&
+    typeof Reflect.get(value, 'ageTicks') === 'number' &&
+    Number.isFinite(Reflect.get(value, 'ageTicks')) &&
+    Reflect.get(value, 'ageTicks') >= 0 &&
+    typeof Reflect.get(value, 'persistent') === 'boolean' &&
+    typeof Reflect.get(value, 'named') === 'boolean' &&
+    typeof Reflect.get(value, 'tamed') === 'boolean'
   )
 }
 
@@ -839,27 +838,22 @@ const hasDroppedItemFields = (
   readonly enchantments?: ReadonlyArray<Enchantment>
 } => {
   if (typeof value !== 'object' || value === null) return false
-  const candidate = value as {
-    readonly _tag?: unknown
-    readonly item?: unknown
-    readonly count?: unknown
-    readonly durability?: unknown
-    readonly eligibleFromFrame?: unknown
-    readonly customName?: unknown
-    readonly enchantments?: unknown
-  }
-  return candidate._tag === 'DroppedItem' &&
-    typeof candidate.item === 'string' &&
-    isItemType(candidate.item) &&
-    typeof candidate.count === 'number' &&
-    Number.isInteger(candidate.count) &&
-    candidate.count > 0 &&
-    (candidate.eligibleFromFrame === undefined ||
-      (typeof candidate.eligibleFromFrame === 'number' &&
-        Number.isInteger(candidate.eligibleFromFrame) &&
-        candidate.eligibleFromFrame >= 0)) &&
-    (candidate.customName === undefined || typeof candidate.customName === 'string') &&
-    (candidate.enchantments === undefined || Array.isArray(candidate.enchantments))
+  const tag = Reflect.get(value, '_tag')
+  const item = Reflect.get(value, 'item')
+  const count = Reflect.get(value, 'count')
+  const eligibleFromFrame = Reflect.get(value, 'eligibleFromFrame')
+  const customName = Reflect.get(value, 'customName')
+  const enchantments = Reflect.get(value, 'enchantments')
+  return tag === 'DroppedItem' &&
+    typeof item === 'string' &&
+    isItemType(item) &&
+    typeof count === 'number' &&
+    Number.isInteger(count) &&
+    count > 0 &&
+    (eligibleFromFrame === undefined ||
+      (typeof eligibleFromFrame === 'number' && Number.isInteger(eligibleFromFrame) && eligibleFromFrame >= 0)) &&
+    (customName === undefined || typeof customName === 'string') &&
+    (enchantments === undefined || Array.isArray(enchantments))
 }
 
 const isLegacyDroppedItemBehaviour = (
@@ -889,12 +883,12 @@ const isCreeperFuse = (value: unknown): value is CreeperFuse => {
     return false
   }
 
-  const tag = (value as { readonly _tag?: unknown })._tag
+  const tag = Reflect.get(value, '_tag')
   if (tag === 'Dormant' || tag === 'Detonated') {
     return true
   }
 
-  const burnedSecs = (value as { readonly burnedSecs?: unknown }).burnedSecs
+  const burnedSecs = Reflect.get(value, 'burnedSecs')
   return tag === 'Lit' && typeof burnedSecs === 'number' && Number.isFinite(burnedSecs) && burnedSecs >= 0
 }
 
@@ -913,7 +907,7 @@ const isEndermanFlinch = (value: unknown): value is EndermanFlinch => {
     return false
   }
 
-  const tag = (value as { readonly _tag?: unknown })._tag
+  const tag = Reflect.get(value, '_tag')
   return tag === 'Steady' || tag === 'Struck'
 }
 
@@ -936,7 +930,11 @@ const isFlinch = (behaviour: MobBehaviour): behaviour is EndermanFlinch =>
   behaviour !== undefined && (behaviour._tag === 'Steady' || behaviour._tag === 'Struck')
 
 const innerBehaviour = (behaviour: MobBehaviour): HostileMobSnapshot['behaviour'] =>
-  isHostileMobSnapshot(behaviour) ? behaviour.behaviour : behaviour as HostileMobSnapshot['behaviour']
+  isHostileMobSnapshot(behaviour)
+    ? behaviour.behaviour
+    : isCreeperFuse(behaviour) || isEndermanFlinch(behaviour)
+      ? behaviour
+      : repairEcosystemMobState(behaviour)
 
 /** What a creeper hands the rest of the frame on the one step it detonates. */
 export type Blast = {
@@ -1856,7 +1854,7 @@ export const rollSelfDestructDrops = (blast: Blast): ReadonlyArray<MobDropEvent>
   // per-element transform, and one that could never run is what the
   // structural proof above is naming.
   const drops = rollDropsOfKind(blast.kind, SELF_DESTRUCT, NO_DROPS)
-  return drops as unknown as ReadonlyArray<MobDropEvent>
+  return drops.map((drop) => ({ ...drop, source: blast.source, kind: blast.kind, at: blast.at }))
 }
 
 // ---------------------------------------------------------------------------

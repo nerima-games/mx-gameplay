@@ -49,7 +49,7 @@ export const spawnDroppedItem = (
     drop.durability === undefined ? durabilityForItem(drop.item) : drop.durability
   const stack = {
     item: drop.item,
-    count: drop.count as StackCount,
+    count: StackCount(drop.count),
     durability: copyDurability(durability),
   }
   const validation = addStorageStoredStack(emptyPlayerStorage(), stack).result
@@ -148,11 +148,12 @@ export const pickupDroppedItems = (
         // `isValidStoredStack`), and the `continue` guard above already ran
         // `isDroppedItemBehaviour` on this entity. A stack that failed here
         // would have failed there first.
-        const result = (yield* inventory.addStoredStack({
+        const result = yield* inventory.addStoredStack({
           item: entity.behaviour.item,
           count: StackCount(entity.behaviour.count),
           durability: copyDurability(entity.behaviour.durability),
-        })) as Extract<AddStoredStackResult, { readonly _tag: 'Added' }>
+        })
+        if (result._tag !== 'Added') continue
         leftovers.set(entity.id, result.leftover)
       }
 

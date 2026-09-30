@@ -1,5 +1,5 @@
 import type { Position } from '@nerima-games/mc-kernel'
-import type { EntityId, EntityKind } from '@nerima-games/mc-sim'
+import { EntityKind, type EntityId } from '@nerima-games/mc-sim'
 import type { Dimension } from '@nerima-games/mc-worldgen'
 import type { BlockPositionKey } from '@nerima-games/mc-kernel'
 import type { Weather } from './weather.js'
@@ -110,7 +110,8 @@ export const advanceWeatherGameplay = (
     const targets = entities.filter((entity) => entity.exposedToSky)
     if (targets.length > 0) {
       seed = nextSeed(seed ^ (tick >>> 0))
-      const target = targets[seed % targets.length]!
+      const target = targets[seed % targets.length]
+      if (target === undefined) throw new Error('weather target table is empty')
       events.push({ _tag: 'LightningStrike', position: target.position })
 
       const damage = LIGHTNING_DAMAGE[input.difficulty]
@@ -127,7 +128,7 @@ export const advanceWeatherGameplay = (
               _tag: 'EntityTransformationRequested',
               id: entity.id,
               from: entity.kind,
-              to: 'zombified_piglin' as EntityKind,
+              to: EntityKind('zombified_piglin'),
             })
           }
         }
@@ -140,7 +141,8 @@ export const advanceWeatherGameplay = (
     )
     if (ignitionTargets.length > 0 && entities.some((entity) => entity.exposedToSky)) {
       seed = nextSeed(seed)
-      events.push({ _tag: 'FireIgnited', position: ignitionTargets[seed % ignitionTargets.length]!.position })
+      const target = ignitionTargets[seed % ignitionTargets.length]
+      if (target !== undefined) events.push({ _tag: 'FireIgnited', position: target.position })
     }
   }
 

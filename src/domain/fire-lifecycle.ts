@@ -146,11 +146,11 @@ export const makeFireLifecycleSnapshot = (
 })
 
 export const isFireLifecycleSnapshot = (value: unknown): value is FireLifecycleSnapshot => {
-  if (typeof value !== 'object' || value === null) return false
-  const candidate = value as Partial<FireLifecycleSnapshot>
-  return candidate.version === FIRE_LIFECYCLE_SNAPSHOT_VERSION &&
-    Array.isArray(candidate.fires) &&
-    candidate.fires.every((fire) =>
+  if (!isRecord(value)) return false
+  const candidate = value
+  return candidate['version'] === FIRE_LIFECYCLE_SNAPSHOT_VERSION &&
+    Array.isArray(candidate['fires']) &&
+    candidate['fires'].every((fire) =>
       typeof fire === 'object' && fire !== null &&
       typeof fire.position === 'object' && fire.position !== null &&
       Number.isFinite(fire.position.x) && Number.isFinite(fire.position.y) &&
@@ -158,8 +158,8 @@ export const isFireLifecycleSnapshot = (value: unknown): value is FireLifecycleS
       (fire.unloadedRetries === undefined ||
         (Number.isInteger(fire.unloadedRetries) && fire.unloadedRetries >= 0)),
     ) &&
-    Array.isArray(candidate.burningActors) &&
-    candidate.burningActors.every((actor) =>
+    Array.isArray(candidate['burningActors']) &&
+    candidate['burningActors'].every((actor) =>
       typeof actor === 'object' && actor !== null && typeof actor.id === 'string' &&
       (actor.kind === 'player' || actor.kind === 'entity') &&
       typeof actor.position === 'object' && actor.position !== null &&
@@ -168,10 +168,13 @@ export const isFireLifecycleSnapshot = (value: unknown): value is FireLifecycleS
       actor.remainingTicks > 0 && Number.isInteger(actor.damageCooldownTicks) &&
       actor.damageCooldownTicks >= 0,
     ) &&
-    typeof candidate.seed === 'number' && Number.isFinite(candidate.seed) &&
-    typeof candidate.tickAccumulatorSecs === 'number' && Number.isFinite(candidate.tickAccumulatorSecs) &&
-    candidate.tickAccumulatorSecs >= 0
+    typeof candidate['seed'] === 'number' && Number.isFinite(candidate['seed']) &&
+    typeof candidate['tickAccumulatorSecs'] === 'number' && Number.isFinite(candidate['tickAccumulatorSecs']) &&
+    candidate['tickAccumulatorSecs'] >= 0
 }
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null
 
 export const restoreFireLifecycleSnapshot = (
   snapshot: FireLifecycleSnapshot,

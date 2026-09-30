@@ -289,13 +289,7 @@ describe('basic brewing runtime', () => {
     const idle = emptyBrewingStandState()
     expect(tickBrewingStand(idle, DeltaTimeSecs(1))).toStrictEqual(idle)
 
-    // DeltaTimeSecs' own smart constructor rejects non-finite input, so a non-finite delta can only
-    // reach the domain function past a validated boundary (e.g. a forged/decoded value). The cast
-    // stands in for that boundary, the same way test/placement-rules.test.ts casts around a missing
-    // registry row (see vitest.config.ts's coverage-gap note).
-    const started = tickBrewingStand(loadedStand('nether_wart'), DeltaTimeSecs(0))
-    const forgedDelta = Number.NaN as unknown as DeltaTimeSecs
-    expect(tickBrewingStand(started, forgedDelta)).toStrictEqual(started)
+    expect(() => DeltaTimeSecs(Number.NaN)).toThrow()
   })
 
   it('derives the status effect of a potion, or no effect for an awkward potion', () => {
