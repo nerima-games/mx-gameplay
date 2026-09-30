@@ -90,8 +90,8 @@ check-dependency-whitelist: OK — 13 file(s) scanned, allowed direct dependenci
 
 ### 壁時計直読み禁止の実装方法
 
-oxlint 0.12 は `no-restricted-syntax` も `no-restricted-properties` も実装しておらず、
-`no-restricted-globals` は `oxlint --rules` の一覧に出るが実装されていない（0.12.0 で実測確認済み）。
+現在の devShell が提供する oxlint は `no-restricted-syntax`、`no-restricted-properties`、
+`no-restricted-globals` を実装していない。
 そのため `Date.now()` / `new Date()` / `performance.now()` の禁止は
 **`scripts/check-dependency-whitelist.ts` 側で実装**している。
 コメント・文字列リテラル・正規表現リテラルの中身はマスクされるので誤検知しない。
@@ -142,19 +142,13 @@ Nix を使わない場合は `nix develop --command pnpm lint` のように `nix
 **掘る → 置く → 落ちる**、そしてスポーン → 導火線 → 爆発 → 死因 → ドロップ、
 がいずれも stage 登録経由で動く。
 
-**plan.md §3.11 の 7 責務のうち 3 つが実装済み、2 つが部分、2 つが未着手である**
+**plan.md §3.11 の 7 責務のうち 3 つが実装済み、4 つが部分、未着手はない**
 （内訳は [docs/testing.md](./docs/testing.md) §3-1）。
 
-- **実行時依存は `effect` のみ。** `mc-sim` / `mc-worldgen` / `mc-audio` / `mc-kernel` は
-  まだ GitHub Packages に 1 つも publish されていないため、`package.json` に書けない。
-  ボトムアップの publish-then-pin（plan.md §6 Step 2）なので、この repo の番は kit の後である。
-- **`domain/frame-contract.ts` と `domain/position-key.ts` は kernel 型のローカル再掲であり、削除日が決まっている。**
-  mc-kernel が publish された時点で `import type { StageRegistration } from '@nerima-games/mc-kernel'` に置き換えて消す。
-  `FrameServices` を `never` にしてあるのが唯一の意図的な乖離で、理由は当該ファイルのコメントにある
-  （kernel の `ClockPort` を再掲すると、同じ文字列 ID を持つ**別の** `Context.Tag` が 2 つできる）。
-  **この 2 ファイルは `index.ts` から re-export していない。** 所有していない語彙（`StageId` /
-  `DeltaTimeSecs` / `StageRegistration`）を公開 API に載せると、約束済みの削除が
-  すべての消費者にとっての破壊的変更になるためである。
+- **実行時依存は `package.json` の exact pin が正である。** 現在は `mc-sim`、`mc-worldgen`、
+  `mc-audio`、`mc-kernel` を利用し、版数は `package.json` を参照する。
+- **`domain/frame-contract.ts` と `domain/position-key.ts` の kernel 型ローカル再掲は削除済みである。**
+  `StageId` / `DeltaTimeSecs` / `StageRegistration` は所有者である kernel から利用する。
 - **時刻の状態は 1 つも持たない。** `timeOfDaySecs` / `dayLengthSecs` の `Ref` と
   `DEFAULT_DAY_LENGTH_SECS`（1200。mc-sim の 400 と食い違っていた）と `advanceTimeOfDay` は削除した。
   時刻はセーブファイルに要る = 名詞であり、`mc-sim` が所有する（plan.md §2.3-1）。

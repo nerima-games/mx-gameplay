@@ -599,7 +599,7 @@ plan.md §5.1-3（初日から焼き込むもの）:
 
 oxlint 0.12 は `no-restricted-syntax` も `no-restricted-properties` も実装していない。
 `no-restricted-globals` は `oxlint --rules` の一覧に出るが**実装されていない**
-（0.12.0 で実測確認済み。3 ルールすべてを設定した状態でも `Date.now()` を含むファイルの診断が 0 件）。
+（現行 devShell で実測確認済み。3 ルールすべてを設定した状態でも `Date.now()` を含むファイルの診断が 0 件）。
 
 そのため禁止は `scripts/check-dependency-whitelist.ts` 側で実装してある。
 コメント・文字列リテラル・正規表現リテラルの中身はマスクされるので誤検知しない。

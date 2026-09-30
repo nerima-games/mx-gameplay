@@ -10,7 +10,7 @@ plan.md §3.11:
 **テストだけでは完成にならない。** 各リポジトリが単独で正しさを閉じるという構成の前提が
 「テスト green + プレビューで目視確認済み」（plan.md §1）だからである。
 
-### 1-1. 3 つのゲート（Wave 0 でホワイトリスト境界ゲートを ast-grep 構造検査に置き換え）
+### 1-1. 3 つのゲート
 
 `pnpm verify` = `typecheck && lint && test`。CI（`.github/workflows/ci.yaml`）と同じ内容。
 
@@ -27,7 +27,7 @@ plan.md §3.11:
 `import … from '@nerima-games/mx-ui'` を単体では止められないが、`.oxlintrc.json` の
 `no-restricted-imports`（Tier3 許可リスト方式、org 共通 D.9 形式）が禁止パッケージの import に対して
 `error` を出す。旧 `pnpm check:deps`（`scripts/check-dependency-whitelist.ts`）と旧 `pnpm api:check`
-（`scripts/api-lock.ts`）は org 全体で廃止された（api-lock 機構の廃止、Wave 0 toolchain freeze）。
+（`scripts/api-lock.ts`）は org 共通の現行方針では使用しない。
 
 **oxlint がこのリポジトリ唯一の lint / format 設定である。**
 prettier も biome も `.editorconfig` も置かない。整形の権威が 2 つあると
@@ -39,7 +39,7 @@ prettier も biome も `.editorconfig` も置かない。整形の権威が 2 �
 統一することでこの drift を無くしている。CI（`.github/workflows/ci.yaml`）も
 `nix develop --command pnpm lint` で実行する。
 
-### 1-2. 型検査を 2 回走らせている理由
+### 1-2. 型検査を 3 回走らせている理由
 
 `tsconfig.build.json` は `test/**` と `scripts/**` を除外する。**除外はここにしかない。**
 これが「`mc-playground-kit` は devDependency である」に実効性を与えている —
@@ -51,17 +51,8 @@ prettier も biome も `.editorconfig` も置かない。整形の権威が 2 �
 
 ## 2. 現在のスイート
 
-**27 ファイル / 660 テスト、全 pass。**（`pnpm test` の出力。
-**この行は 19 / 440 と書かれたまま古くなっていた** —— 実測すると直前で既に 24 / 541 で、
-弓とエンダーパール（§3-1 の 1 行目）で 2 ファイル / 99 本が増えて 26 / 640 になり、
-`interaction-*` の**新規 4 本**（§2-2-1、porting.md §4-4）で 644、
-ポータルの滞留タイマー（`test/portal-dwell.test.ts`、別作業）で 1 ファイル / 16 本が増えて **660** である。
-状態表が実装より古くなるのはこの文書が自分で主要な失敗様式として挙げているもので、
-**この行自身がその 3 例目**である。以前この行は 16 / 373 と書いていた ——
-99% ゲートを入れるにあたって 2 ファイルと 36 本が増え、[porting.md](./porting.md) §4-3 の
-移植 2 回目でさらに 6 本増え、レールのトポロジ（§3-1 の 5 行目）で
-`test/rail.test.ts` 1 ファイル / 25 本が増えた。ゲート導入分の内訳と、そのうち何本が
-「数字のため」ではなかったかは §4 にある）
+**テスト件数は `pnpm test` の実行結果を正とする。** 固定した件数は更新漏れを起こすため、
+この一覧ではファイル別の代表例だけを記録する。
 
 | ファイル | 本数 | 内容 |
 | --- | ---: | --- |
