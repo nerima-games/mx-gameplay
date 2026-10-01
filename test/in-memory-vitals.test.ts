@@ -29,6 +29,7 @@ describe('in-memory vitals facade', () => {
       expect(isValidPlayerVitals(vitals({ healthPoints: 21 }))).toBe(false)
       expect(isValidPlayerVitals(vitals({ saturation: 6, hungerPoints: 5 }))).toBe(false)
       expect(isValidPlayerVitals(vitals({ foodTimerSecs: 4 }))).toBe(false)
+      expect(isValidPlayerVitals(undefined)).toBe(false)
     }),
   )
 

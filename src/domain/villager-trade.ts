@@ -23,7 +23,10 @@ export type VillagerTradeState = {
 
 export const VILLAGER_RESTOCK_INTERVAL_SECS = 300
 
-const OFFER_TABLE: Record<VillagerProfession, ReadonlyArray<Omit<VillagerTradeOffer, 'id' | 'uses'>>> = {
+type OfferTemplate = Omit<VillagerTradeOffer, 'id' | 'uses'>
+type NonEmptyOfferTable = readonly [OfferTemplate, ...OfferTemplate[]]
+
+const OFFER_TABLE: Record<VillagerProfession, NonEmptyOfferTable> = {
   farmer: [
     { input: { item: 'wheat', count: 20 }, output: { item: 'emerald', count: 1 }, maxUses: 16 },
     { input: { item: 'potato', count: 26 }, output: { item: 'emerald', count: 1 }, maxUses: 16 },
@@ -116,8 +119,10 @@ export const makeVillager = (id: string, profession: VillagerProfession): Villag
     id,
     profession,
     offers: templates.map((_, index) => {
-      const template = templates[(index + offset) % templates.length]
-      if (template === undefined) throw new Error('villager offer table is empty')
+      const targetIndex = (index + offset) % templates.length
+      const template = templates.reduce(
+        (selected, candidate, candidateIndex) => candidateIndex === targetIndex ? candidate : selected,
+      )
       return { ...template, id: `${id}:${index}`, uses: 0 }
     }),
   }
