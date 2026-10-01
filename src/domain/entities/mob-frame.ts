@@ -229,7 +229,7 @@ import {
 } from '@nerima-games/mc-sim'
 import type { ChunkStoreApi } from '@nerima-games/mc-worldgen'
 import type { BlockPosition, DeltaTimeSecs } from '@nerima-games/mc-kernel'
-import { drawRolls, nextRoll } from '../frame-rolls.js'
+import { drawRolls, nextRoll, rollAt } from '../frame-rolls.js'
 import { carveExplosionCrater } from '../interactions/explosion-crater.js'
 import type { BlockPositionKey } from '@nerima-games/mc-kernel'
 import { DORMANT_FUSE, stepCreeperFuse, type CreeperFuse, type CreeperSenses } from '../mob/creeper-fuse.js'
@@ -714,8 +714,8 @@ export const rollDropsOfKind = (
   rolls: ReadonlyArray<number>,
 ): ReadonlyArray<MobDrop> =>
   rollMobDrops(dropRulesOfKind(kind), kill, (index) => ({
-    chance: rolls[index * 2] ?? 0,
-    count: rolls[index * 2 + 1] ?? 0,
+    chance: rollAt({ rolls, seed: 0 }, index * 2),
+    count: rollAt({ rolls, seed: 0 }, index * 2 + 1),
   }))
 
 /**
