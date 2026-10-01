@@ -26,8 +26,10 @@ const position = (x: number, y: number, z: number): Position => ({ x, y, z })
  * kernel's own constructor is built on.
  */
 const key = Brand.nominal<BlockPositionKey>()
+const OVERWORLD: Dimension = 'overworld'
+const NETHER: Dimension = 'nether'
 const input = (overrides: Partial<WeatherGameplayInput> = {}): WeatherGameplayInput => ({
-  dimension: 'overworld' as Dimension,
+  dimension: OVERWORLD,
   difficulty: 'normal',
   blocks: [],
   entities: [],
@@ -61,7 +63,7 @@ describe('weather gameplay', () => {
       10,
       'rain',
       input({
-        dimension: 'nether' as Dimension,
+        dimension: NETHER,
         blocks: [{ position: key('0,0,0'), block: 'fire', exposedToSky: true }],
       }),
     )

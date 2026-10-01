@@ -1,6 +1,6 @@
 id: no-type-assertion
 language: TypeScript
-severity: warning
+severity: error
 files:
   - "src/**/*.ts"
   - "src/**/*.tsx"
@@ -18,9 +18,6 @@ note: >-
   `as const` is the only permitted assertion because it preserves literal
   information without claiming that an unchecked runtime value has another
   type. Runtime boundaries must use a guard or a validated constructor.
-
-  Wave 0 installs at warning; W3-mx-gameplay removes the assertions and
-  raises this to error (runbook §4 W0-<repo> row, appendix D.9).
 rule:
   any:
     - kind: type_assertion

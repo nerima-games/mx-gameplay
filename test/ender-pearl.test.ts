@@ -42,14 +42,14 @@ import { makeEntityManagerDouble } from './support/entity-manager-double'
 import { makePlayerServiceDouble } from './support/player-service-double'
 import { makeInventoryDouble } from './support/inventory-service-double'
 import { runFrame } from './support/frame-runner'
-import { StackCount, type BlockId } from '@nerima-games/mc-kernel'
+import { itemStack, type BlockId } from '@nerima-games/mc-kernel'
 
 const ORIGIN = { x: 10, y: 64, z: 10 }
 
 /** A frame with the shipped stages over the three doubles. */
 const inventoryWithPearl = (): ReadonlyArray<Slot> =>
   Array.from({ length: 36 }, (_, index) =>
-    index === 0 ? { item: 'ender_pearl' as const, count: StackCount(1) } : undefined,
+    index === 0 ? itemStack('ender_pearl', 1) : undefined,
   )
 
 const scene = (inventorySlots?: ReadonlyArray<Slot>) =>
@@ -195,12 +195,12 @@ describe('the cost of a throw', () => {
   })
 
   it('kills a player on four throws with no food, and says WHY', () => {
-    let vitals = { healthPoints: 20, lastDeathCause: undefined as never }
+    let vitals: Parameters<typeof applyDamage>[0] = { healthPoints: 20, lastDeathCause: undefined }
     for (let throwCount = 0; throwCount < 4; throwCount += 1) {
       vitals = applyDamage(vitals, {
         amount: ENDER_PEARL_DAMAGE,
         cause: ENDER_PEARL_DEATH_CAUSE,
-      }) as typeof vitals
+      })
     }
     expect(vitals.healthPoints).toBe(0)
     expect(deathMessage(vitals)).toBe(DEATH_MESSAGES.ender_pearl)
@@ -280,10 +280,9 @@ describe('gameplay:interactions — the pearl arm', () => {
 
       const outcomes = yield* Ref.get(state.enderPearlOutcomes)
       expect(outcomes[0]?.damage).toBeUndefined()
-      expect((yield* inventory.api.storageSnapshot).inventory.slots[0]).toStrictEqual({
-        item: 'ender_pearl',
-        count: StackCount(1),
-      })
+      expect((yield* inventory.api.storageSnapshot).inventory.slots[0]).toStrictEqual(
+        itemStack('ender_pearl', 1),
+      )
     }),
   )
 

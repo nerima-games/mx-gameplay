@@ -214,7 +214,7 @@ describe('status effects', () => {
       durationSecs: 5,
     })
 
-    const tick = tickStatusEffects(state, Number.NaN as unknown as DeltaTimeSecs)
+    const tick = Reflect.apply(tickStatusEffects, undefined, [state, Number.NaN])
 
     expect(tick.poisonPulses).toBe(0)
     expect(tick.state.effects).toStrictEqual(state.effects)

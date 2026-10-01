@@ -20,11 +20,11 @@ plan.md が実測知見として確定させたものである。
 | DN-GP-1 | 落下ブロックはイベント駆動 | `falling-block-maintenance.ts:9-15` | `test/rules.test.ts` / `test/stage-registration.test.ts` |
 | DN-GP-2 | 流体はフロンティア上限 | `fluid-tick-budget.ts:5-40` | `test/rules.test.ts` / `test/stage-registration.test.ts` |
 | DN-GP-3 | 死因を死亡メッセージまで運ぶ | `physics-stage-health.ts:32-34` | `test/rules.test.ts` |
-| DN-GP-4 | このリポジトリは分割しない | plan.md §3.11 / §5.3 | `test/check-dependency-whitelist.test.ts` |
+| DN-GP-4 | このリポジトリは分割しない | plan.md §3.11 / §5.3 | `test/stage-registration.test.ts` |
 | DN-GP-5 | `after` は制約のみ / 全順序は compose | plan.md §2.3-3 | `test/stage-registration.test.ts` / `test/public-api.test.ts` |
 | DN-GP-6 | 再入可能な初期化 | plan.md §3.8 | `test/stage-registration.test.ts` |
 | DN-GP-7 | `TimeService` の順序ハザード | plan.md §3.8 | `test/stage-registration.test.ts` |
-| DN-GP-8 | `Date.now()` 禁止 | plan.md §4.3 / §5.1-3 | `test/check-dependency-whitelist.test.ts` |
+| DN-GP-8 | `Date.now()` 禁止 | plan.md §4.3 / §5.1-3 | `.ast-grep/rules/no-wall-clock-read.yml` |
 | DN-GP-9 | 1 ルール 1 ファイル、しかし 1 stage | plan.md §3.11 | `test/stage-registration.test.ts` |
 | DN-GP-10 | `Ref.modify` で TOCTOU 回避 | plan.md §3.8 | （現状はコードレビュー規範。§DN-GP-10 参照） |
 | DN-GP-11 | ブロックの読み書きは全域。`ChunkNotLoaded` は air ではない | mc-worldgen `docs/public-api.md` §6-3 | `test/vertical-slice.test.ts` |
@@ -308,14 +308,14 @@ plan.md §5.3（採らない細分化の確定表）:
 ### 帰結
 
 分割で逃げられない以上、境界の維持は**ゲート**に任せるしかない。
-`test/check-dependency-whitelist.test.ts` の冒頭コメントがこう書いている。
+`test/stage-registration.test.ts` と lint 設定がこの境界を固定している。
 
 > A repository that changes constantly and is never allowed to split is precisely the one that
 > will grow an import it should not have, so these assertions matter more here than anywhere else.
 
 ### 回帰テスト
 
-`test/check-dependency-whitelist.test.ts` 全体（17 本）。特に:
+`test/stage-registration.test.ts` と `pnpm lint` の検査。特に:
 
 | describe | it |
 | --- | --- |
@@ -357,7 +357,7 @@ plan.md §2.3-3:
 after: [StageId('ui:hud-sync')]
 ```
 
-は **import を 1 つも作らない**。`pnpm check:deps` は通る。
+は **import を 1 つも作らない**。import 制限だけでは検出できない。
 それでいて `mx-gameplay` のフレーム位置は `mx-ui` の存在に結びついている。
 コンパイラにも import ゲートにも見えない依存が 1 本増えた状態である。
 
@@ -599,9 +599,9 @@ plan.md §5.1-3（初日から焼き込むもの）:
 
 oxlint 0.12 は `no-restricted-syntax` も `no-restricted-properties` も実装していない。
 `no-restricted-globals` は `oxlint --rules` の一覧に出るが**実装されていない**
-（0.12.0 で実測確認済み。3 ルールすべてを設定した状態でも `Date.now()` を含むファイルの診断が 0 件）。
+（現行 devShell で実測確認済み。3 ルールすべてを設定した状態でも `Date.now()` を含むファイルの診断が 0 件）。
 
-そのため禁止は `scripts/check-dependency-whitelist.ts` 側で実装してある。
+そのため禁止は `.ast-grep/rules/no-wall-clock-read.yml` 側で実装してある。
 コメント・文字列リテラル・正規表現リテラルの中身はマスクされるので誤検知しない。
 `.oxlintrc.json` にはこの経緯がコメントで残してあり、`no-restricted-globals` の行も
 「意図の表明として、かつ oxlint が実装した日のために」置いてある（0.12 では不活性）。
@@ -610,7 +610,7 @@ oxlint が該当ルールを実装したら `.oxlintrc.json` へ移し、スク�
 
 ### 回帰テスト
 
-`test/check-dependency-whitelist.test.ts`、describe:
+`pnpm lint` と ast-grep ルールで検査する:
 **`§4.3: the clock is injected, never read from a global`**
 
 | it |

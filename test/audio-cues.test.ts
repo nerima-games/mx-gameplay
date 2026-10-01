@@ -1,3 +1,4 @@
+import { defined } from './support/assertions'
 import { describe, expect, it, vi } from '@effect/vitest'
 import { blockIdOf } from '@nerima-games/mc-kernel'
 import type { CuePlayOptions, SoundCueId } from '@nerima-games/mc-audio'
@@ -102,10 +103,10 @@ describe('makePlacementAudioLatch', () => {
 })
 
 describe('advanceFootstepRuntime', () => {
-  const dirtId = blockIdOf('dirt')!
-  const stoneId = blockIdOf('stone')!
-  const oakPlanksId = blockIdOf('oak_planks')!
-  const airId = blockIdOf('air')!
+  const dirtId = defined(blockIdOf('dirt'), 'blockIdOf')
+  const stoneId = defined(blockIdOf('stone'), 'blockIdOf')
+  const oakPlanksId = defined(blockIdOf('oak_planks'), 'blockIdOf')
+  const airId = defined(blockIdOf('air'), 'blockIdOf')
 
   const footstepInput = (overrides: Partial<FootstepAdvanceInput> = {}): FootstepAdvanceInput => ({
     grounded: true,

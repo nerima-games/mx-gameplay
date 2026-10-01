@@ -2,13 +2,13 @@
 
 ## 1. 現状
 
-- **バージョン: `0.3.1`。**
-- **build / publish パイプラインが Wave 0（org 全体のツールチェーン凍結）で追加された。**
+- **現在のバージョンは `package.json` の `version` を正とする。**
+- **build / publish パイプラインが org 共通のツールチェーン方針に従っている。**
   `package.json` の `exports` は `dist/index.js` を指し、`tsc -p tsconfig.release.json` が
   `scripts/clean-dist.mjs` に続けて emit する。`.github/workflows/release.yaml` が
   `main` へのバージョン変化を検知して GitHub Packages へ publish し、tag を打つ。
 - **`@nerima-games/*` への実行時依存は `mc-kernel` / `mc-sim` / `mc-worldgen` / `mc-audio` の 4 本。**
-  4 リポジトリとも Wave 0 で dist 付き publish 済みになったため、`dependencies` に exact pin で書ける
+  4 リポジトリとも dist 付きで publish 済みになったため、`dependencies` に exact pin で書ける
   （§5 のボトムアップ publish-then-pin 順）。
 
 ## 2. 0.x に留める方針
@@ -47,9 +47,9 @@ plan.md §8 のリスク表も同じことを別角度から書いている。
 GitHub Packages に固定する。認証トークンは CI では `.github/workflows/ci.yaml` / `release.yaml` の
 「Configure GitHub Packages authentication」ステップが、手元では `NODE_AUTH_TOKEN=$(gh auth token)` が渡す。
 
-## 4. build / publish パイプライン（Wave 0 で追加済み）
+## 4. build / publish パイプライン
 
-`docs/testing.md` §3 の完成条件と独立に、org 全体のツールチェーン凍結（Wave 0）で以下が入った。
+`docs/testing.md` §3 の完成条件と独立に、org 共通のツールチェーン方針として以下を採用している。
 
 1. `tsconfig.release.json` を新設し、`node scripts/clean-dist.mjs && tsc -p tsconfig.release.json` で
    `dist/` を生成する（`tsconfig.build.json` / `tsconfig.test.json` / `tsconfig.preview.json` は
@@ -90,15 +90,9 @@ kernel の 1 行修正が 7 段の republish カスケードを引き起こす�
 
 ### 5-1. `domain/frame-contract.ts` と `domain/position-key.ts` の削除
 
-この 2 ファイルは `mc-kernel` の型（`StageRegistration` / `StageId` / `DeltaTimeSecs` / `FrameServices` / `Position` の鍵表現）の
-**ローカル再掲**であり、削除日が決まっている。
+この 2 ファイルは過去に `mc-kernel` の型をローカル再掲していたものだが、現在は削除済みである。
 
-```typescript
-// mc-kernel が publish されたら、これに置き換えて 2 ファイルを消す
-import type { StageRegistration } from '@nerima-games/mc-kernel'
-```
-
-**この削除自体は semver-MINOR の内部変更である。** 消えるのは型の**実装**であって、
+**この削除自体は semver-MINOR の内部変更である。** 消えたのは型の**実装**であって、
 `index.ts` から見える名前と形は変わらない（`FrameServices` が `never` から `ClockPort` に広がるだけで、
 stage 作者にとっては非破壊 — `Effect<void, never, never>` は
 `Effect<void, never, ClockPort>` が要る位置に代入できる）。
@@ -112,24 +106,21 @@ stage 作者にとっては非破壊 — `Effect<void, never, never>` は
 `REGRESSION: does not republish mc-kernel’s vocabulary as its own` が固定している）。
 mc-sim / mc-render / mc-playground-kit のバレル、および mx-redstone / mx-ui も同じ形である。
 
-**ただし、この瞬間から `mc-kernel` へのバージョンピンが意味を持ち始める。**
-今日この repo は kernel の変更に一切影響されない（依存していないので当然である）。
-削除の後は、kernel の major bump がこの repo の major bump を要求する。
-再掲を消すのは「独立を捨てて正しさを買う」取引であり、kernel が publish されるまでは
-そもそも取引が成立しない。
+`package.json` の `@nerima-games/mc-kernel` exact pin がこの依存関係を表し、kernel の互換性に
+影響する変更は本パッケージの changeset と追随 PR で扱う。
 
 ## 6. このリポジトリにとっての破壊的変更
 
 > **`0.x` の間の読み替え（全 16 リポジトリ共通の方針）**
 >
-> 本リポジトリは `0.1.0` であり、下流が契約を実際に消費して確認するまで `0.x` から出ない。
-> **semver では `0.x` の破壊的変更は major bump ではなく minor bump である**（`0.1.0` → `0.2.0`）。
+> 本リポジトリは `0.x` であり、下流が契約を実際に消費して確認するまで `0.x` から出ない。
+> **semver では `0.x` の破壊的変更は major bump ではなく minor bump である。**
 > したがって以下の MAJOR / MINOR / PATCH は **`1.0.0` 到達後の分類**であり、
 > `0.x` の間は次のように読み替える。
 >
-> | 分類 | `1.0.0` 到達後 | `0.x` の間（現在） |
+> | 分類 | `1.0.0` 到達後 | `0.x` の間 |
 > | --- | --- | --- |
-> | MAJOR | major bump | **minor bump**（`0.1.0` → `0.2.0`） |
+> | MAJOR | major bump | **minor bump** |
 > | MINOR | minor bump | patch bump |
 > | PATCH | patch bump | patch bump |
 >
@@ -149,7 +140,7 @@ mc-sim / mc-render / mc-playground-kit のバレル、および mx-redstone / mx
 | `domain/frame-contract.ts` / `position-key.ts` の削除（kernel 移行） | MINOR | §5-1 |
 | **新しい `StageId` を登録する** | **MAJOR** | `mc-compose` の順序表に新しい頂点が現れる。compose は必ず対応を要求される |
 | **`after` の集合を変える** | **MAJOR** | 全順序の解が変わる。他モジュールの位置が動きうる |
-| **stage の粒度を変える**（4 本を 3 本に統合、5 本に分割） | **MAJOR** | 上の 2 つの複合。compose 側の順序表を書き直させる |
+| **stage の粒度を変える** | **MAJOR** | 上の 2 つの複合。compose 側の順序表を書き直させる |
 | `GameModule` の `layers` を追加する | MAJOR | compose が Layer をマージする必要が生じる |
 | ドキュメント・コメントのみ | PATCH | |
 

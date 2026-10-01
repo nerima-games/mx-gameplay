@@ -65,13 +65,11 @@ plan.md §7 は「Minecraft クローンの全機能が 16 リポジトリで表
 | `mc-kernel` | 共有語彙（全リポジトリ共通。許可リストに書かずに import 可） |
 | `mc-playground-kit` | **devDependency のみ。** プレビュー 3 本の起動ハーネス |
 
-> **現状**: この表は**意図された最終形**であって、現在の `package.json` の内容ではない。
-> `dependencies` は `effect` のみで、`@nerima-games/*` は 1 つも宣言されていない
-> （どれもまだ publish されていないため。plan.md §6 Step 3 の bottom-up publish-then-pin）。
-> `mc-playground-kit` を `devDependencies` に書くのは、kit が publish され、
-> かつこのリポジトリに `apps/preview-*/` を作るときである（現在プレビューは 1 本も存在しない）。
-> 依存グラフの権威は `package.json` ではなく
-> `scripts/check-dependency-whitelist.ts` の roster であり、そちらは今日から実在する。
+> **現状**: この表は package manifest と lockfile の exact pin を正とする。
+> `dependencies` には `@nerima-games/mc-audio`、`mc-kernel`、`mc-sim`、`mc-worldgen`、`effect` が宣言されている。
+> `apps/preview-mining-site/` が存在し、`pnpm preview` で起動できる。
+> 依存グラフの権威は `package.json` と
+> `.oxlintrc.json` の import 許可リストであり、`pnpm lint` が検査する。
 
 ### 4-1. kit が devDependency **だけ**である理由（plan.md §2.3-2）
 
@@ -106,7 +104,7 @@ plan.md §3.11 と §5.3 の確定事項である。
    **多数のファイルと、1 つの stage 登録**が正しい形である（[public-api.md](./public-api.md) §4）。
 
 分割しないと決めた以上、境界の維持はゲートに任せるしかない。
-`test/check-dependency-whitelist.test.ts` の冒頭が書いているとおり、
+`test/stage-registration.test.ts` が固定しているとおり、
 「変更が絶えず、分割が禁じられているリポジトリ」は、まさに持ってはいけない import が生えるリポジトリである。
 
 ## 5. 乗り物（plan.md §3.11 の 5 番目）—— レールの記号ごとの行き先
@@ -278,7 +276,7 @@ kernel への追加要求は 1 つも無い。
 そこに属さないルールが 1 本混ざることになる。testing.md 側の記述はこの節に合わせて直してある。
 
 粒度の規則（DN-GP-9: 1 ルール 1 ファイル、stage 登録は増やさない）は守られている。
-2 ファイル、2 ルール、**stage 登録は 0 本増**（`test/stage-registration.test.ts` が 4 本ちょうどを固定）。
+2 ファイル、2 ルール、**stage 登録は 0 本増**（`test/stage-registration.test.ts` が現行の stage 集合を固定）。
 
 ## 6. ポータル（plan.md §3.11 の 6 番目）—— 3 ファイルの割れかたと、こちらの取り分
 
@@ -360,27 +358,24 @@ mc-worldgen が語を所有すると決めた以上、伏せておく理由は�
 
 **(c) 残る `moveTo` の呼び出しは 1 行ではなく、公開面の判断だった。支払い済。**
 以下の表は支払う前の見積りで、**判断が正しかったことの記録として残してある**。
-`makeGameplayStages` は `PlayerService` を名指し、`api-lock.md` は動いた
-（`pnpm api:update` 済み、`gameplayStages` は第 5 引数を、`makeGameplayStages` と
-`gameplayModule` は 4 つ目の要求サービスを得た）。
+`makeGameplayStages` は `PlayerService` を名指し、`src/index.ts` の export と
+`test/public-api.test.ts` の公開面検査が更新された。
 待つことの代償のほうが大きくなった時点で払う、というのがこの表の使い方である。実測:
 
-| 入れるもの | `api-lock.md` の差分 | supporting declarations | 何が公開面に入るか |
+| 入れるもの | 公開面への影響 | supporting declarations | 何が公開面に入るか |
 | --- | --- | --- | --- |
 | 滞留 `Ref` だけ（`moveTo` を呼ばない） | +17 / -1 | 66 → 67 | `PortalDwell` |
 | `PlayerService` を名指す | +97 / -4 | 66 → 78 | `PlayerService` / `PlayerService_base` / `PlayerServiceApi` / `PlayerPose` / `CameraPoseSnapshot` / `ClockPort` / `ClockPort_base` / `MonotonicTimeSecs` ほか |
 
-**下の行は `ClockPort` ごと引き込む。** `scripts/api-lock.ts` の冒頭が
-「`FrameServices = ClockPort` を 1.0.0 で凍結することがこの仕組みの要点である」と書いているものが、
-mx-gameplay の supporting declarations に載る。
+**下の行は `ClockPort` ごと引き込む。** `FrameServices = ClockPort` は
+`src/index.ts` の export と `test/public-api.test.ts` で公開面を検査する。
 
 **そして上の行も 0 ではない**、というのがこの表のいちばん効く部分である。
 `GameplayFrameState` / `gameplayStages` / `makeGameplayStages` / `gameplayModule` は
 **4 つとも `index.ts` から出ており、4 つとも lock に描画される**。
 フレームをまたぐ状態は `GameplayFrameState` の 1 フィールドとして持つほかなく、
 そのフィールドは lock に出る。**つまりこのリポジトリでは「状態を持つルールを stage に配線する」ことは、
-定義上 `api-lock.md` を動かす。**
-`git log -1 -- api-lock.md` が `3ebf903`（弓とエンダーパール）を指しているのはそのためで、
+定義上公開面の検査結果を動かす。
 あれが `Ref` を足した最後のラウンドである。以降の 2 ラウンド
 （`85c0da8` ポータル滞留 + ネザー連結、`ec888b8` `PlayerService` ミラー）が 0 日で通ったのは、
 **どちらもバレルに出ない `domain/` のモジュールしか足していない**からであって、

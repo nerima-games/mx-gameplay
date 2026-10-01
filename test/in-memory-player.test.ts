@@ -26,7 +26,7 @@ import {
   clampPitch,
   makeInMemoryPlayer,
 } from '../src/domain/in-memory-player'
-import { ClockPort, MonotonicTimeSecs } from '@nerima-games/mc-kernel'
+import { ClockPort, EpochMillis, MonotonicTimeSecs } from '@nerima-games/mc-kernel'
 import { PlayerService, type PlayerPose } from '@nerima-games/mc-sim'
 
 const pose = (overrides: Partial<PlayerPose> = {}): PlayerPose => ({
@@ -39,7 +39,7 @@ const pose = (overrides: Partial<PlayerPose> = {}): PlayerPose => ({
 /** A clock that always reads the same instant. */
 const fixedClock = Layer.succeed(ClockPort, {
   monotonicSecs: Effect.succeed(MonotonicTimeSecs(12.5)),
-  wallClockEpochMillis: Effect.succeed(0 as never),
+  wallClockEpochMillis: Effect.succeed(EpochMillis(0)),
 })
 
 describe('the pitch clamp the double does not have', () => {

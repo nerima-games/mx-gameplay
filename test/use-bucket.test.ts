@@ -7,7 +7,7 @@ import {
   blockPosition,
   blockPositionKeyOf,
   BlockPositionKey as positionKey,
-  StackCount,
+  itemStack,
   type BlockPosition,
 } from '@nerima-games/mc-kernel'
 import type { ChunkStoreApi } from '@nerima-games/mc-worldgen'
@@ -31,7 +31,7 @@ const LAVA: BlockId = BlockId(11)
 const POSITION: BlockPosition = blockPosition(1, 64, 1)
 const LOADED_CHUNKS = ['0,0']
 
-const stack = (item: ItemType, count: number): Slot => ({ item, count: StackCount(count) })
+const stack = (item: ItemType, count: number): Slot => itemStack(item, count)
 
 const inventoryWith = (...entries: ReadonlyArray<readonly [number, Slot]>): ReadonlyArray<Slot> => {
   const slots = [...emptySlots()]

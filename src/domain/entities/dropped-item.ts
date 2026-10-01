@@ -12,7 +12,7 @@ import {
 import { Effect } from 'effect'
 import type { Position } from '@nerima-games/mc-kernel'
 import { changed, DESPAWNED, UNCHANGED, type Entity, type EntityManagerApi } from '@nerima-games/mc-sim'
-import { StackCount } from '@nerima-games/mc-kernel'
+import { itemStack, StackCount } from '@nerima-games/mc-kernel'
 import { decodeEnchantedItem, type Enchantment, type EnchantedItem } from '../enchantment.js'
 import {
   DROPPED_ITEM_KIND,
@@ -49,7 +49,8 @@ export const spawnDroppedItem = (
     drop.durability === undefined ? durabilityForItem(drop.item) : drop.durability
   const stack = {
     item: drop.item,
-    count: drop.count as StackCount,
+    count: StackCount(drop.count),
+    components: itemStack(drop.item, 1).components,
     durability: copyDurability(durability),
   }
   const validation = addStorageStoredStack(emptyPlayerStorage(), stack).result
@@ -148,11 +149,13 @@ export const pickupDroppedItems = (
         // `isValidStoredStack`), and the `continue` guard above already ran
         // `isDroppedItemBehaviour` on this entity. A stack that failed here
         // would have failed there first.
-        const result = (yield* inventory.addStoredStack({
+        const result = yield* inventory.addStoredStack({
           item: entity.behaviour.item,
           count: StackCount(entity.behaviour.count),
+          components: itemStack(entity.behaviour.item, 1).components,
           durability: copyDurability(entity.behaviour.durability),
-        })) as Extract<AddStoredStackResult, { readonly _tag: 'Added' }>
+        })
+        if (result._tag !== 'Added') continue
         leftovers.set(entity.id, result.leftover)
       }
 

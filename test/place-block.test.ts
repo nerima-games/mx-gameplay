@@ -1,3 +1,4 @@
+import { defined } from './support/assertions'
 /**
  * `domain/interactions/place-block.ts` — the counterpart to `break-block`.
  *
@@ -49,7 +50,7 @@ import {
   chunkCoord,
   needsOneOf,
   PLACEABLE_ITEM_TYPES,
-  StackCount,
+  itemStack,
   supportRuleOfBlockId,
   type BlockPosition,
   type BlockType,
@@ -639,7 +640,7 @@ describe('placeBlock — the four per-block rules, reached through a real held i
 
       expect(outcome).toStrictEqual({
         _tag: 'Placed',
-        block: blockIdOf('door')!,
+        block: defined(blockIdOf('door'), 'blockIdOf'),
         consumed: 'door',
         chunk: chunkCoord(0, 0),
         alsoPlaced: [upperCell],
@@ -1014,9 +1015,9 @@ const stagedSlice = (
     const player = yield* makePlayerServiceDouble()
     const initialInventory = emptySlots().map((_, index) => {
       if (!stocked) return undefined
-      if (index === 0) return { item: 'sand' as const, count: StackCount(1) }
-      if (index === 1) return { item: 'stone' as const, count: StackCount(1) }
-      if (index === 2) return { item: 'redstone_dust' as const, count: StackCount(1) }
+      if (index === 0) return itemStack('sand', 1)
+      if (index === 1) return itemStack('stone', 1)
+      if (index === 2) return itemStack('redstone_dust', 1)
       return undefined
     })
     const inventory = yield* makeInventoryDouble(initialInventory)

@@ -1,5 +1,5 @@
 import type { Position } from '@nerima-games/mc-kernel'
-import type { EntityId, EntityKind } from '@nerima-games/mc-sim'
+import { EntityKind, type EntityId } from '@nerima-games/mc-sim'
 import type { Dimension } from '@nerima-games/mc-worldgen'
 import type { BlockPositionKey } from '@nerima-games/mc-kernel'
 import type { Weather } from './weather.js'
@@ -110,28 +110,30 @@ export const advanceWeatherGameplay = (
     const targets = entities.filter((entity) => entity.exposedToSky)
     if (targets.length > 0) {
       seed = nextSeed(seed ^ (tick >>> 0))
-      const target = targets[seed % targets.length]!
-      events.push({ _tag: 'LightningStrike', position: target.position })
+      const targetIndex = seed % targets.length
+      targets.slice(targetIndex, targetIndex + 1).forEach((target) => {
+        events.push({ _tag: 'LightningStrike', position: target.position })
 
-      const damage = LIGHTNING_DAMAGE[input.difficulty]
-      if (damage > 0) {
-        for (const entity of entities) {
-          if (!entity.exposedToSky || !isWithinLightningStrikeRadius(entity.position, target.position)) continue
-          events.push({ _tag: 'EntityLightningDamage', id: entity.id, amount: damage })
-          if (String(entity.kind) === 'creeper' && !chargedCreepers.includes(entity.id)) {
-            chargedCreepers = [...chargedCreepers, entity.id].sort((a, b) => String(a).localeCompare(String(b)))
-            events.push({ _tag: 'CreeperCharged', id: entity.id })
-          }
-          if (String(entity.kind) === 'pig') {
-            events.push({
-              _tag: 'EntityTransformationRequested',
-              id: entity.id,
-              from: entity.kind,
-              to: 'zombified_piglin' as EntityKind,
-            })
+        const damage = LIGHTNING_DAMAGE[input.difficulty]
+        if (damage > 0) {
+          for (const entity of entities) {
+            if (!entity.exposedToSky || !isWithinLightningStrikeRadius(entity.position, target.position)) continue
+            events.push({ _tag: 'EntityLightningDamage', id: entity.id, amount: damage })
+            if (String(entity.kind) === 'creeper' && !chargedCreepers.includes(entity.id)) {
+              chargedCreepers = [...chargedCreepers, entity.id].sort((a, b) => String(a).localeCompare(String(b)))
+              events.push({ _tag: 'CreeperCharged', id: entity.id })
+            }
+            if (String(entity.kind) === 'pig') {
+              events.push({
+                _tag: 'EntityTransformationRequested',
+                id: entity.id,
+                from: entity.kind,
+                to: EntityKind('zombified_piglin'),
+              })
+            }
           }
         }
-      }
+      })
     }
 
     // Thunder includes rain: only sheltered flammables can retain ignition.
@@ -140,7 +142,10 @@ export const advanceWeatherGameplay = (
     )
     if (ignitionTargets.length > 0 && entities.some((entity) => entity.exposedToSky)) {
       seed = nextSeed(seed)
-      events.push({ _tag: 'FireIgnited', position: ignitionTargets[seed % ignitionTargets.length]!.position })
+      const targetIndex = seed % ignitionTargets.length
+      ignitionTargets.slice(targetIndex, targetIndex + 1).forEach((target) => {
+        events.push({ _tag: 'FireIgnited', position: target.position })
+      })
     }
   }
 

@@ -128,8 +128,6 @@ const repairState = <S>(state: EntityState<S>): EntityState<S> => ({
 
 /** Shared, so that an empty roster and a swept-clean one are the SAME array. */
 const NO_ENTITIES: ReadonlyArray<never> = []
-const NO_EMISSIONS: ReadonlyArray<never> = []
-
 export const emptyRosterValue = <S>(): EntityRoster<S> => ({ entities: NO_ENTITIES, nextSerial: 0 })
 
 export const makeEntityManagerDouble = <S>(
@@ -235,8 +233,9 @@ export const makeEntityManagerDouble = <S>(
               }
             })
 
+            const emissions: ReadonlyArray<A> = emitted === undefined ? [] : emitted
             return [
-              (emitted ?? NO_EMISSIONS) as ReadonlyArray<A>,
+              emissions,
               {
                 ...doubles,
                 sweeps: doubles.sweeps + 1,

@@ -1,7 +1,7 @@
 import { describe, expect, it } from '@effect/vitest'
 import { durabilityForItem, type InventoryServiceApi } from '@nerima-games/mc-sim'
 import { Effect } from 'effect'
-import { StackCount } from '@nerima-games/mc-kernel'
+import { itemStack, StackCount } from '@nerima-games/mc-kernel'
 import { EntityId, EntityKind } from '@nerima-games/mc-sim'
 import {
   CREEPER_KIND,
@@ -78,10 +78,7 @@ describe('dropped item entities', () => {
   it.effect('leaves an overflowing stack on the ground with its full remaining count', () =>
     Effect.gen(function* () {
       const roster = yield* makeEntityManagerDouble<MobBehaviour>()
-      const fullInventory = emptySlots().map(() => ({
-        item: 'stone' as const,
-        count: StackCount(64),
-      }))
+      const fullInventory = emptySlots().map(() => itemStack('stone', 64))
       const inventory = yield* makeInventoryDouble(fullInventory)
       yield* spawnMobDrop(roster.api, {
         source: dropSource,
@@ -205,6 +202,27 @@ describe('dropped item entities', () => {
     }),
   )
 
+  it.effect('leaves a drop in place when inventory rejects a valid stack', () =>
+    Effect.gen(function* () {
+      const roster = yield* makeEntityManagerDouble<MobBehaviour>()
+      const inventory = yield* makeInventoryDouble()
+      const rejectingInventory: InventoryServiceApi = {
+        ...inventory.api,
+        addStoredStack: () => Effect.succeed({ _tag: 'InvalidStack' as const }),
+      }
+
+      yield* spawnDroppedItem(roster.api, {
+        item: 'gunpowder',
+        count: 1,
+        at: origin,
+      })
+      yield* pickupDroppedItems(roster.api, rejectingInventory, origin)
+
+      expect(yield* roster.api.count).toBe(1)
+      expect(yield* inventory.deposits).toStrictEqual([])
+    }),
+  )
+
   it.effect('preserves durable stacks through complete and refused pickups', () =>
     Effect.gen(function* () {
       const durability = { current: 12, max: 59 }
@@ -221,17 +239,11 @@ describe('dropped item entities', () => {
 
       expect(yield* acceptedRoster.api.count).toBe(0)
       const acceptedStorage = yield* acceptedInventory.api.storageSnapshot
-      expect(acceptedStorage.inventory.slots[0]).toStrictEqual({
-        item: 'wooden_pickaxe',
-        count: StackCount(1),
-      })
+      expect(acceptedStorage.inventory.slots[0]).toStrictEqual(itemStack('wooden_pickaxe', 1))
       expect(acceptedStorage.inventoryDurability[0]).toStrictEqual(durability)
       expect(acceptedStorage.inventoryDurability[0]).not.toBe(durability)
 
-      const fullInventory = emptySlots().map(() => ({
-        item: 'stone' as const,
-        count: StackCount(64),
-      }))
+      const fullInventory = emptySlots().map(() => itemStack('stone', 64))
       const refusedRoster = yield* makeEntityManagerDouble<MobBehaviour>()
       const refusedInventory = yield* makeInventoryDouble(fullInventory)
       yield* spawnDroppedItem(refusedRoster.api, {

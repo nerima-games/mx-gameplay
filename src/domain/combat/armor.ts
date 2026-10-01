@@ -48,7 +48,7 @@ const IRON_ARMOR_POINTS = {
 export const armorPointsForEquipment = (equipment: Equipment): number => {
   let points = 0
 
-  for (const slot of Object.keys(IRON_ARMOR_POINTS) as Array<keyof typeof IRON_ARMOR_POINTS>) {
+  for (const slot of WORN_ARMOR_SLOTS) {
     const equipped = equipment.slots[slot]
     const rule = IRON_ARMOR_POINTS[slot]
     if (equipped?.item === rule.item) points += rule.points

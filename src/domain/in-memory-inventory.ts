@@ -14,7 +14,7 @@ import {
   type Slot,
 } from '@nerima-games/mc-sim'
 import { Effect, Layer } from 'effect'
-import { MAX_STACK_COUNT, StackCount, type ItemType } from '@nerima-games/mc-kernel'
+import { itemStack, maxStackCountForStack, type ItemType } from '@nerima-games/mc-kernel'
 
 /**
  * mc-sim's `INVENTORY_SLOT_COUNT`, transcribed.
@@ -49,11 +49,11 @@ export const addToSlots = (
   // Pass one: top up what is already there. See the header.
   for (let at = 0; at < next.length && remaining > 0; at += 1) {
     const slot = next[at]
-    if (slot === undefined || slot.item !== item || slot.count >= MAX_STACK_COUNT) {
+    if (slot === undefined || slot.item !== item || slot.count >= slot.components.maxStackSize) {
       continue
     }
-    const accepted = Math.min(MAX_STACK_COUNT - slot.count, remaining)
-    next[at] = { item, count: StackCount(slot.count + accepted) }
+    const accepted = Math.min(slot.components.maxStackSize - slot.count, remaining)
+    next[at] = itemStack(slot.item, slot.count + accepted, { components: slot.components })
     remaining -= accepted
   }
 
@@ -62,8 +62,8 @@ export const addToSlots = (
     if (next[at] !== undefined) {
       continue
     }
-    const accepted = Math.min(MAX_STACK_COUNT, remaining)
-    next[at] = { item, count: StackCount(accepted) }
+    const accepted = Math.min(maxStackCountForStack({ item }), remaining)
+    next[at] = itemStack(item, accepted)
     remaining -= accepted
   }
 
@@ -87,7 +87,8 @@ export const removeFromSlots = (
     }
     const taken = Math.min(slot.count, remaining)
     const left = slot.count - taken
-    next[at] = left === 0 ? undefined : { item, count: StackCount(left) }
+    next[at] =
+      left === 0 ? undefined : itemStack(slot.item, left, { components: slot.components })
     remaining -= taken
   }
 
@@ -98,13 +99,14 @@ export const removeFromSlots = (
  * Re-establish the invariant a save file may not have.
  *
  * PADDED AND TRUNCATED TO EXACTLY `INVENTORY_SLOT_COUNT`, and stacks clamped
- * into `[0, MAX_STACK_COUNT]`. This exists because a two-slot save once turned
+ * into each item's resolved `components.maxStackSize`. This exists because a
+ * two-slot save once turned
  * a 36-slot player into a two-slot one, and
  * the next 872 mined blocks went on the floor with no symptom but a full
  * inventory.
  *
  * Returns how many ITEMS were discarded — slots past the count, and the excess
- * of any stack over `MAX_STACK_COUNT`. That is `add`'s currency, which is what
+ * of any stack over its resolved component limit. That is `add`'s currency, which is what
  * `restore` reports; a repair COUNT would be a different quantity in the same
  * `number`, which is the shape a caller cannot tell apart.
  */
@@ -116,8 +118,13 @@ export const normaliseInventory = (
     if (slot === undefined) {
       return undefined
     }
-    const clamped = Math.min(MAX_STACK_COUNT, Math.max(0, Math.floor(slot.count)))
-    return clamped === 0 ? undefined : { item: slot.item, count: StackCount(clamped) }
+    const clamped = Math.min(
+      slot.components.maxStackSize,
+      Math.max(0, Math.floor(slot.count)),
+    )
+    return clamped === 0
+      ? undefined
+      : itemStack(slot.item, clamped, { components: slot.components })
   })
 
   let discarded = 0

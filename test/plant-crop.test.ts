@@ -26,6 +26,7 @@ import {
 } from '../src/domain/interactions/plant-crop'
 import { blockIdOf, blockPosition, type BlockType } from '@nerima-games/mc-kernel'
 import type { BlockPosition } from '@nerima-games/mc-kernel'
+import { defined } from './support/assertions'
 
 const SOIL: BlockPosition = blockPosition(4, 63, -9)
 
@@ -65,7 +66,7 @@ describe('the two tables agree', () => {
       for (const seed of PLANTABLE_SEEDS) {
         const crop = CROP_OF_SEED[seed]
         expect(crop).toBeDefined()
-        expect(SOIL_OF_CROP[crop as BlockType]).toBeDefined()
+        expect(SOIL_OF_CROP[defined(crop)]).toBeDefined()
       }
     }),
   )
@@ -100,8 +101,8 @@ describe('plantingVerdict', () => {
       // Derived from the table rather than three hand-written cases, so a
       // fourth seed is covered the day it is added.
       for (const seed of PLANTABLE_SEEDS) {
-        const crop = CROP_OF_SEED[seed] as BlockType
-        const soil = SOIL_OF_CROP[crop] as BlockType
+        const crop = defined(CROP_OF_SEED[seed])
+        const soil = defined(SOIL_OF_CROP[crop])
         expect(plantingVerdict(request(seed), soil, 'air')._tag).toBe('planted')
       }
     }),

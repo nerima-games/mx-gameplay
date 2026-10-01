@@ -26,7 +26,7 @@ plan.md §3.11 の予測どおりなら**最も変更頻度が高いリポジト
 | [public-api.md](./public-api.md) | 契約は stage 登録だけ。`StageRegistration` の逐語再掲、`index.ts` の全 export の 契約 / 内部(可視) 分類 | mc-compose の実装者、および export を足す人 |
 | [design-notes.md](./design-notes.md) | **DN-GP-1〜10。** 参照実装で実測された失敗と、それを固定している回帰テストの名前 | ルールを実装する人（全員） |
 | [porting.md](./porting.md) | 移植元の**実測 LOC**、plan.md 見積との差分、境界の移動、移植順序 | 移植作業に着手する人 |
-| [testing.md](./testing.md) | 検証要件、プレビュー 3 本、99% カバレッジゲートの投入時期、決定論の作り方 | CI / テストを触る人 |
+| [testing.md](./testing.md) | 検証要件、プレビュー 3 本、100% カバレッジゲート、決定論の作り方 | CI / テストを触る人 |
 | [versioning.md](./versioning.md) | 0.x → 1.0.0 方針、GitHub Packages、**このリポジトリにとって破壊的変更とは何か** | リリース作業者 |
 
 ## どこから読むか

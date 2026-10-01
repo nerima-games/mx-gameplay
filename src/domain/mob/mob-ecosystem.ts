@@ -48,18 +48,21 @@ export const initialEcosystemMobState = (): EcosystemMobState => ({
 })
 
 export const repairEcosystemMobState = (value: unknown): EcosystemMobState | undefined => {
-  if (typeof value !== 'object' || value === null || (value as { _tag?: unknown })._tag !== 'EcosystemMob') return undefined
-  const state = value as Partial<EcosystemMobState>
+  if (!isRecord(value) || value['_tag'] !== 'EcosystemMob') return undefined
+  const state = value
   return {
     _tag: 'EcosystemMob',
-    attackCooldownSecs: Number.isFinite(state.attackCooldownSecs) ? Math.max(0, state.attackCooldownSecs!) : 0,
-    motionPhase: Number.isFinite(state.motionPhase) ? state.motionPhase! : 0,
-    provoked: state.provoked === true,
+    attackCooldownSecs: typeof state['attackCooldownSecs'] === 'number' && Number.isFinite(state['attackCooldownSecs']) ? Math.max(0, state['attackCooldownSecs']) : 0,
+    motionPhase: typeof state['motionPhase'] === 'number' && Number.isFinite(state['motionPhase']) ? state['motionPhase'] : 0,
+    provoked: state['provoked'] === true,
   }
 }
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null
+
 export const ecosystemDimensionAllows = (kind: EntityKind, dimension: Dimension): boolean =>
-  NETHER_HOSTILE_KINDS.includes(kind as (typeof NETHER_HOSTILE_KINDS)[number])
+  NETHER_HOSTILE_KINDS.some((member) => member === kind)
     ? dimension === 'nether'
     : dimension === 'overworld'
 
@@ -102,7 +105,7 @@ export const stepEcosystemMob = (
     attack: { _tag: 'MobAttack', attackerKind: kind, mode, damage },
   })
 
-  if (PASSIVE_MOB_KINDS.includes(kind as (typeof PASSIVE_MOB_KINDS)[number])) {
+  if (PASSIVE_MOB_KINDS.some((member) => member === kind)) {
     const feetPosition = target !== undefined && distance < 8
       ? move(self, { x: self.x * 2 - target.x, y: self.y, z: self.z * 2 - target.z }, dt * 3)
       : { ...self, x: self.x + Math.cos(phase) * dt, z: self.z + Math.sin(phase) * dt }

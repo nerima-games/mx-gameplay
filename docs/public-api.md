@@ -2,8 +2,8 @@
 
 ## 1. 公開 API は stage 登録だけである
 
-**`mx-gameplay` が他リポジトリに対して公開しているのは `StageRegistration` の配列 1 つだけで、
-サービスは 1 つも公開していない。**
+**`mx-gameplay` が他リポジトリから利用される主な入口は `makeGameplayStages` であり、
+サービスは 1 つも提供しない。**
 
 これは実装が未熟だからではなく、体験モジュールの定義そのものである。
 **ルールはサービスではない。** 他リポジトリが `mx-gameplay` に尋ねたくなることを列挙すると、
@@ -35,10 +35,7 @@ interface GameModule<ROut, E, RIn, RRegister = never> {
 }
 ```
 
-この型は本来 `mc-kernel` の資産である。`domain/frame-contract.ts` はそれを**ローカルに再掲**したもので、
-mc-kernel が publish された時点で削除される（[versioning.md](./versioning.md) §5）。
-**そのため `index.ts` はこのファイルを re-export しない** — 所有していない型を公開 API に載せると、
-約束済みの削除が消費者にとっての破壊的変更になる（§5）。
+この型は `mc-kernel` の資産であり、`index.ts` はローカル再掲を re-export しない。
 `interface` のまま写してあるのは仕様とコードを字面ごと一致させるためで、
 `@typescript-eslint/consistent-type-definitions` の例外を `.oxlintrc.json` に明記してある。
 
@@ -62,15 +59,17 @@ Layer は障害ではなかった。mx-gameplay は他リポジトリが呼ぶ�
 mc-sim が publish されても解決しない。縦切りスパイクが `frameStages` を Effect にしたことで解決した。
 
 ```typescript
-export const makeGameplayStages: Effect.Effect<ReadonlyArray<StageRegistration>, never, ChunkStore>
+export const makeGameplayStages: Effect.Effect<ReadonlyArray<StageRegistration>, never,
+  ChunkStore | EntityManager | InventoryService | PlayerService | TimeService>
 
-export const gameplayModule: GameModule<never, never, never, ChunkStore> = {
+export const gameplayModule: GameModule<never, never, never,
+  ChunkStore | EntityManager | InventoryService | PlayerService | TimeService> = {
   layers: Layer.empty,
   frameStages: makeGameplayStages,
 }
 ```
 
-### 2-2. `RRegister` は `ChunkStore | EntityManager | InventoryService` になった。`RIn` は `never` のままである
+### 2-2. `RRegister` は 5 サービスになった。`RIn` は `never` のままである
 
 ここには「mx-gameplay が他リポジトリのサービス越しに書き込みを始めるとき、それらは `frameStages` の中で
 — つまり `RRegister` パラメータで — 取得される」と**予告**が書いてあった。そのとおりになった。
@@ -91,16 +90,16 @@ mc-sim を import できない mc-compose がどう構築するのか」 —— 
 | | 値 | 意味 |
 | --- | --- | --- |
 | `RIn` | `never` | 本リポジトリが**構築**するのに要るもの。`layers` が空なので何も要らない |
-| `RRegister` | `ChunkStore \| EntityManager \| InventoryService` | 本リポジトリが stage を**登録**するのに要るもの |
+| `RRegister` | `ChunkStore \| EntityManager \| InventoryService \| PlayerService \| TimeService` | 本リポジトリが stage を**登録**するのに要るもの |
 
 本リポジトリは他リポジトリが供給しなければならないものを構築するのではなく、
 他リポジトリが供給するものを**呼ぶ**だけである。だから `RIn` は増えない。
 
 **`run` の側は増えてはならない。** `StageRegistration.run` の文脈は kernel の `FrameServices` であり、
 そこに `ChunkStore` を要求することは kernel に mc-worldgen のサービスを名指しさせることになる
-（階層モデル、plan.md §2.2 が禁じている）。だから 3 つとも登録時に 1 度だけ取得し、4 stage が共有する。
+（階層モデル、plan.md §2.2 が禁じている）。だから 5 つとも登録時に 1 度だけ取得し、stage が共有する。
 固定しているテスト: `` REGRESSION: the store is acquired at registration, never demanded by `run` ``、
-`acquires exactly three services to register — the store, the roster and the inventory`
+`acquires exactly five services to register`
 （`test/stage-registration.test.ts`）。この最後のテストは長く「exactly **two**」だったうえに、
 「3 本目の候補は mc-sim の `InventoryService` であり、丸ごと写せるようになるまでは送信箱で代用する」と
 **コメントで名指ししていた**。その予告も履行された。次の候補は `PlayerService` で、
@@ -110,7 +109,7 @@ mc-sim を import できない mc-compose がどう構築するのか」 —— 
 `ChunkStore` は mc-worldgen が publish されるまで `domain/chunk-store-port.ts` のミラーから来る。
 `EntityManager` と `InventoryService` は mc-sim の公開 API を直接利用する。
 どれも `index.ts` から re-export していないが、`makeGameplayStages` の型に現れる以上、
-消費者には見える —— `api-lock.md` の "Supporting declarations" に
+消費者には見える —— `src/index.ts` の export と `test/public-api.test.ts` に
 `ChunkStore` / `ChunkStoreApi` / `EntityManager` / `EntityManagerApi` /
 `InventoryService` / `InventoryServiceApi` などが載っているのはそのためである。
 タグキーの文字列リテラルまで載るので、キーが動けば API ロックの diff に出る。
@@ -243,7 +242,7 @@ plan.md §4.2 を素直に読むと `input` の後ろでもあり、`redstone` �
 
 - **`input` は冗長。** `input` は `sim:physics` に先行するので、`sim:physics` の後ろにいれば自動的に `input` の後ろにいる。
   冗長なエッジは**全順序についての主張**であり、このリポジトリにはそれを言う資格がない。
-- **`redstone` は書けない。** `after: [StageId('redstone:tick')]` は import を作らないので `pnpm check:deps` を通るが、
+- **`redstone` は書けない。** `after: [StageId('redstone:tick')]` は import を作らないので import 制限だけでは検出できないが、
   `mx-gameplay` のフレーム位置を `mx-redstone` の存在に結びつける（[architecture.md](./architecture.md) §4-3）。
   plan.md §4.2 が `fluids → redstone → time/weather` と並べているのは事実だが、
   **その順序は `mc-compose` が言うことであって、こちらが言うことではない。**
@@ -260,8 +259,7 @@ plan.md §4.2 を素直に読むと `input` の後ろでもあり、`redstone` �
 
 **契約** = 他リポジトリが import してよいもの。**内部(可視)** = テストとプレビューのために見えているだけのもの。
 
-`index.ts` は `export *` を **29 本**並べているので、内部(可視) も外から見える。
-（この数は長く「6 本」と書かれたまま古くなっていた。数え直したものである。）
+`index.ts` は複数のモジュールを `export *` で公開しているので、内部(可視) も外から見える。
 見えることと契約であることは別で、内部(可視) の変更は semver 上 minor 扱いになる（[versioning.md](./versioning.md) §6）。
 
 > **`domain/frame-contract.ts` と `domain/position-key.ts` は re-export していない。**
@@ -368,7 +366,7 @@ mc-sim が所有する値の規約であり、[mc-sim の public-api.md](https:/
 
 | export | 種別 | 備考 |
 | --- | --- | --- |
-| `GAMEPLAY_STAGE_IDS` | **契約** | 所有する 4 本の id。`mc-compose` が順序表を書くときに名指しする |
+| `GAMEPLAY_STAGE_IDS` | **契約** | 所有する 8 本の id。`mc-compose` が順序表を書くときに名指しする |
 | `UPSTREAM_STAGE_IDS` | 内部(可視) | 自分が名指しする他人の stage。レビュー対象として 1 箇所に集めてある |
 | `EXPERIENCE_MODULE_STAGE_PREFIXES` | 内部(可視) | 兄弟宛エッジ検査用。テストの資産 |
 | `OWN_STAGE_PREFIX` | 内部(可視) | 同上 |
@@ -601,7 +599,7 @@ outbox を空にする破壊的な読み出しで、同一プロセス内では 
 | `fallsWhenUnsupported` / `isReplaceable` / `AIR_BLOCK_ID` | 非公開（所有者は kernel） | 能力表の再掲。ルールは**ブロックを名指ししない** — バイトを読んで表に尋ねる |
 
 `makeGameplayStages` の型に `ChunkStore` が現れるため、このファイルは re-export していなくても
-`api-lock.md` の "Supporting declarations" には載る（§2-2）。
+`src/index.ts` の型 export として消費者に見える（§2-2）。
 
 ### domain/item-vocabulary.ts（**バレルから re-export しない**）
 

@@ -846,7 +846,7 @@ describe('creeper: kernel names the drop, this repository decides the count', ()
       // "mob drops", which is this rule. The RULE is ported unchanged and only
       // the noun moved; domain/mob/mob-drop.ts states what that costs.
       expect(ITEM_TYPES).toContain('blaze_powder')
-      expect(ITEM_TYPES as ReadonlyArray<string>).not.toContain('blaze_rod')
+      expect(ITEM_TYPES).not.toContain('blaze_rod')
       expect(BLAZE_DROPS[0]?.item).toBe('blaze_powder')
     }),
   )
@@ -860,7 +860,7 @@ describe('creeper: kernel names the drop, this repository decides the count', ()
       // a substitution kernel itself made, and these would be substitutions this
       // repository invented. So there is no ENDERMAN_DROPS and no SHULKER_DROPS,
       // and the arena's missing list says which kernel row would unblock them.
-      const names = ITEM_TYPES as ReadonlyArray<string>
+      const names: ReadonlyArray<string> = ITEM_TYPES
       expect(names).not.toContain('shulker_shell')
     }),
   )
