@@ -121,12 +121,8 @@ export const isWeather = (value: unknown): value is Weather =>
  * finite countdown. Expired states are advanced before they leave gameplay.
  */
 export const isWeatherState = (value: unknown): value is WeatherState => {
-  if (typeof value !== 'object' || value === null) {
-    return false
-  }
-
-  if (!isRecord(value)) return false
   const candidate = value
+  if (!isRecord(candidate)) return false
   return (
     isWeather(candidate['weather']) &&
     typeof candidate['remainingSecs'] === 'number' &&

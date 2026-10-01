@@ -1,7 +1,11 @@
 import { describe, expect, it } from '@effect/vitest'
 import { Effect } from 'effect'
 import { DeltaTimeSecs } from '@nerima-games/mc-kernel'
-import { makeInMemoryVitals, type PlayerVitals } from '../src/domain/in-memory-vitals'
+import {
+  isValidPlayerVitals as isValidPlayerVitalsDirect,
+  makeInMemoryVitals,
+  type PlayerVitals,
+} from '../src/domain/in-memory-vitals'
 import { makeGeneratedWorld } from '../src/domain/in-memory-world'
 import { isValidPlayerVitals, SPAWN_PLAYER_VITALS } from '../src/index'
 
@@ -30,6 +34,7 @@ describe('in-memory vitals facade', () => {
       expect(isValidPlayerVitals(vitals({ saturation: 6, hungerPoints: 5 }))).toBe(false)
       expect(isValidPlayerVitals(vitals({ foodTimerSecs: 4 }))).toBe(false)
       expect(isValidPlayerVitals(undefined)).toBe(false)
+      expect(isValidPlayerVitalsDirect(vitals())).toBe(true)
     }),
   )
 
