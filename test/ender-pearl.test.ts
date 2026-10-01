@@ -42,7 +42,7 @@ import { makeEntityManagerDouble } from './support/entity-manager-double'
 import { makePlayerServiceDouble } from './support/player-service-double'
 import { makeInventoryDouble } from './support/inventory-service-double'
 import { runFrame } from './support/frame-runner'
-import { itemStack, StackCount, type BlockId } from '@nerima-games/mc-kernel'
+import { itemStack, type BlockId } from '@nerima-games/mc-kernel'
 
 const ORIGIN = { x: 10, y: 64, z: 10 }
 

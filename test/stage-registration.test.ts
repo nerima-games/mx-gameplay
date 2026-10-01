@@ -62,7 +62,6 @@ import {
 } from '@nerima-games/mc-sim'
 import {
   DeltaTimeSecs,
-  MAX_STACK_COUNT,
   StageId,
   type BlockPositionKey,
   type FrameServices,
