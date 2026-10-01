@@ -169,8 +169,7 @@ export const tillSoil = (
       // three crop ids: a vocabulary defect that removed that row would be
       // caught by kernel's own type declaration, not by a runtime
       // fallback that tills nothing and reports success.
-      const block = blockIdOf(TILLED_BLOCK)
-      if (block !== undefined) yield* port.setBlock(verdict.at, block)
+      yield* port.setBlock(verdict.at, blockIdOf(TILLED_BLOCK))
     }
     return verdict
   })

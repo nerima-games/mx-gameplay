@@ -197,8 +197,7 @@ export const plantCrop = (
       // would be caught by kernel's own type declaration long before
       // this line ran, not by a runtime fallback that plants nothing and
       // reports success.
-      const block = blockIdOf(verdict.crop)
-      if (block !== undefined) yield* port.setBlock(verdict.at, block)
+      yield* port.setBlock(verdict.at, blockIdOf(verdict.crop))
     }
     return verdict
   })

@@ -202,6 +202,27 @@ describe('dropped item entities', () => {
     }),
   )
 
+  it.effect('leaves a drop in place when inventory rejects a valid stack', () =>
+    Effect.gen(function* () {
+      const roster = yield* makeEntityManagerDouble<MobBehaviour>()
+      const inventory = yield* makeInventoryDouble()
+      const rejectingInventory: InventoryServiceApi = {
+        ...inventory.api,
+        addStoredStack: () => Effect.succeed({ _tag: 'InvalidStack' as const }),
+      }
+
+      yield* spawnDroppedItem(roster.api, {
+        item: 'gunpowder',
+        count: 1,
+        at: origin,
+      })
+      yield* pickupDroppedItems(roster.api, rejectingInventory, origin)
+
+      expect(yield* roster.api.count).toBe(1)
+      expect(yield* inventory.deposits).toStrictEqual([])
+    }),
+  )
+
   it.effect('preserves durable stacks through complete and refused pickups', () =>
     Effect.gen(function* () {
       const durability = { current: 12, max: 59 }

@@ -652,7 +652,6 @@ export const passivePopulation = <S>(roster: EntityManagerApi<S>): Effect.Effect
   )
 
 /** What a creeper leaves behind. A creeper drops nothing at all, which is `../mob/mob-drop`'s rule and not this file's. */
-const SELF_DESTRUCT: MobKill = { _tag: 'SelfDestruct' }
 
 /**
  * A player-caused casualty with no Looting context.
@@ -1842,19 +1841,11 @@ export const rollCasualtyDrops = (
  * accident」 of statement order, and 「move the removal three lines down and the
  * rule changes with no test to notice」. Here the rule is asked.
  */
-export const rollSelfDestructDrops = (blast: Blast): ReadonlyArray<MobDropEvent> => {
+export const rollSelfDestructDrops = (_blast: Blast): ReadonlyArray<MobDropEvent> => {
   // Always `[]`: `../mob/mob-drop`'s `rollMobDrop` returns `undefined` for
   // EVERY rule the instant `kill._tag` is `'SelfDestruct'`, before it consults
-  // the rule at all, and `SELF_DESTRUCT` is the only kill this call site ever
-  // passes. Kept as a call through `rollDropsOfKind` (see the header above)
-  // — general over what a future rule change would return for a
-  // `SelfDestruct` kill — rather than hard-coded to a bare `[]` literal. The
-  // `.map` that would attach `source` / `kind` / `at` to each drop is not
-  // written out: an array this function can only ever return empty needs no
-  // per-element transform, and one that could never run is what the
-  // structural proof above is naming.
-  const drops = rollDropsOfKind(blast.kind, SELF_DESTRUCT, NO_DROPS)
-  return drops.map((drop) => ({ ...drop, source: blast.source, kind: blast.kind, at: blast.at }))
+  // the rule at all. The result is therefore a literal empty drop list.
+  return []
 }
 
 // ---------------------------------------------------------------------------
