@@ -1,5 +1,15 @@
 # @nerima-games/mx-gameplay
 
+## 0.8.0
+
+### Minor Changes
+
+- [#51](https://github.com/nerima-games/mx-gameplay/pull/51) [`4e970f6`](https://github.com/nerima-games/mx-gameplay/commit/4e970f681caeb54adb0d218f8e3663c2931d4fca) Thanks [@takeokunn](https://github.com/takeokunn)! - Upgrade the runtime dependencies to the Tier 3 0.8.0 release line.
+
+### Patch Changes
+
+- [#51](https://github.com/nerima-games/mx-gameplay/pull/51) [`f85f7c1`](https://github.com/nerima-games/mx-gameplay/commit/f85f7c17c0c520dd261c5efe45e8351a6ad4c8a2) Thanks [@takeokunn](https://github.com/takeokunn)! - Enforce the no-type-assertion lint rule and align the shared TypeScript compiler configuration with mc-kernel.
+
 ## 0.7.0
 
 ### Minor Changes
