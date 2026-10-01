@@ -1,3 +1,4 @@
+import { defined } from './support/assertions'
 import { describe, expect, it } from '@effect/vitest'
 import {
   advanceEyeOfEnder,
@@ -26,7 +27,7 @@ describe('launchEyeOfEnder', () => {
     const state = launchEyeOfEnder(initialEyeOfEnderRuntimeState(), {
       dimension: 'overworld', position: origin, target: { x: 1000, y: 64, z: 0 }, breaks: true,
     })
-    const eye = state.eyes[0]!
+    const eye = defined(state.eyes[0])
     expect(eye.destination.x).toBeCloseTo(EYE_OF_ENDER_MAX_HORIZONTAL_DISTANCE, 9)
     expect(eye.destination.z).toBeCloseTo(0, 9)
     expect(eye.destination.y).toBe(origin.y + EYE_OF_ENDER_ARC_HEIGHT)
@@ -36,7 +37,7 @@ describe('launchEyeOfEnder', () => {
     const state = launchEyeOfEnder(initialEyeOfEnderRuntimeState(), {
       dimension: 'overworld', position: origin, target: { x: 3, y: 64, z: 4 }, breaks: true,
     })
-    const eye = state.eyes[0]!
+    const eye = defined(state.eyes[0])
     expect(eye.destination.x).toBeCloseTo(3, 9)
     expect(eye.destination.z).toBeCloseTo(4, 9)
   })
@@ -45,7 +46,7 @@ describe('launchEyeOfEnder', () => {
     const state = launchEyeOfEnder(initialEyeOfEnderRuntimeState(), {
       dimension: 'overworld', position: origin, target: origin, breaks: true,
     })
-    const eye = state.eyes[0]!
+    const eye = defined(state.eyes[0])
     expect(eye.destination).toStrictEqual({ x: 0, y: origin.y + EYE_OF_ENDER_ARC_HEIGHT, z: 0 })
     expect(Number.isFinite(eye.destination.x)).toBe(true)
   })
@@ -100,7 +101,7 @@ describe('advanceEyeOfEnder', () => {
       'overworld',
       EYE_OF_ENDER_FLIGHT_SECS / 4,
     )
-    expect(twoFrames.state.eyes[0]?.position.x).toBeCloseTo(oneFrame.state.eyes[0]!.position.x, 9)
+    expect(twoFrames.state.eyes[0]?.position.x).toBeCloseTo(defined(oneFrame.state.eyes[0]).position.x, 9)
   })
 
   it('treats a non-finite or negative delta as no time passing', () => {

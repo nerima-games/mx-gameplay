@@ -284,7 +284,7 @@ describe('enchantment table offers and transaction', () => {
       lapis: 3,
       item: enchantedItem('diamond_sword'),
     }
-    const forgedSlotOffer = { ...swordOffer, slot: 5 } as unknown as EnchantmentOffer
+    const forgedSlotOffer = Object.assign(swordOffer, { slot: 5 })
     expect(applyEnchantmentOffer(base, forgedSlotOffer)).toEqual({
       ok: false,
       state: base,

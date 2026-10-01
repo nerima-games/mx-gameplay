@@ -262,8 +262,8 @@ $ ls packages/game/test/day-night-cycle*.test.ts | wc -l                        
 §1 が LOC について立てた規則（計数条件を書く）と §4-1 がテスト本数について直した規則が、
 **「追加」という語には及んでいなかった。** 本書で今後この語を使うときは
 「新規 `it` の本数」か「変更した `it` の本数」かを明記すること。
-なお 373 という当時の総数も現在は再現できない（**現在 660**、§4-3 と §4-4）。
-**この行は「現在 440」と書かれたまま古くなっていた** —— 実測は `pnpm test` の 644 で、
+なお過去の総数は現在のツリーを表さない。テスト件数は `pnpm test` の実行結果を正とする。
+**この行は固定件数を書かない形へ更新した** ——
 §4-4 が参照していた先はそもそも節として存在していなかった（同節をこの回に書いた）。
 総数を本文に直書きすると、増えるたびに 3 箇所が別々に古くなる。
 
@@ -298,7 +298,7 @@ $ ls packages/game/test/day-night-cycle*.test.ts | wc -l                        
 > kernel の表に `iron_ore` / `diamond_ore` / `obsidian` の行が無い
 
 **その 3 行は今ある。** kernel の roster 完成で `obsidian`(40) / `iron_ore`(51) /
-`diamond_ore`(53) が入り、`domain/block-vocabulary.ts` はそれを転記済みである。
+`diamond_ore`(53) が入り、kernel の公開能力表で利用可能になった。
 理由が境界でも乖離でもなく**他リポジトリの欠落**だった以上、これは最初から
 **終了条件つきの拒否**であり、条件は満たされた。上表の 4 がその移植である。
 
@@ -313,7 +313,7 @@ $ ls packages/game/test/day-night-cycle*.test.ts | wc -l                        
 と主張する。**この build は一致しない。**
 
 シルクタッチは**関門**（そもそも落ちるか）としてのみ実装されており、
-**置換**（何が落ちるか）ではない。`domain/block-vocabulary.ts` の `resolveDrop` は
+**置換**（何が落ちるか）ではない。`domain/interactions/block-loot.ts` の `resolveDrop` は
 kernel の 3 つの拒否を転記していて 4 つ目のアームが無いので、`item:` の上書きが勝つ:
 
 ```
@@ -353,8 +353,8 @@ kernel が `silkTouchItem` を生やした日にこのテストが赤くなり�
 - 境界のサトウキビは 1 セル隣の水が見えないので、実際には水辺なのに拒否される。
 
 どちらも**プレイヤーから見て「たまにしか効かない設置ルール」**になる。
-このリポジトリはセルを `domain/chunk-store-port.ts` の `ChunkStore` 越しに読むので制限が無く、
-`domain/block-position-key.ts` の `horizontalNeighbours` は常に 4 つ返す。
+このリポジトリは mc-worldgen の `ChunkStore` API 越しにセルを読むので制限が無く、
+上流の座標 API は常に 4 近傍を返す。
 読めなかった隣は `BlockReading` の 3 値目のまま渡り、**air とも water とも見なさない** ——
 サボテンは「全面が air」なので拒否に、サトウキビは「どれかが water」なので不成立に倒れる。
 どちらも拒否の向きで、これは `domain/interactions/place-block.ts` が
@@ -368,7 +368,7 @@ F8（§4-3-2）と**向きが逆**である点を明記しておく: F8 はこ�
 
 | 移植元 | 本数 | 断った理由 |
 | --- | ---: | --- |
-| ~~`world/domain/block-placement-rules.test.ts`~~ | ~~4~~ | **この行は履行された。** 「実装が着地した日に最初に移植すべき 4 本」と書いてあり、着地したので 4 本とも `test/placement-rules.test.ts` にある。移植先は `domain/interactions/place-mushroom-light.ts` / `place-sugar-cane-water.ts` / `place-cactus-sides.ts` の 3 ファイルと、1 本目の `localHorizontalNeighbors` に当たる `domain/block-position-key.ts` の `horizontalNeighbours`。値は変えず、**名前ではなくバイトで**問うている。1 本目だけは主張を**反転**させた —— 参照実装は「チャンク内の隣だけを作る」ことを確かめるが、それはルールではなく呼び手が `Chunk` を 1 枚しか持っていないことの副作用で、チャンク境界のサボテンを 3 面しか検査しない。§4-3 に食い違いとして 1 行足してある |
+| 参照実装のブロック設置ルール | - | **この行は履行された。** `test/placement-rules.test.ts` と `test/place-block.test.ts` が現行の設置条件を固定する。座標・チャンク API は上流サービスを利用する |
 | `world/test/block-service-place.test.ts` の `seedWater` / `seedLava` | 2 | **水と溶岩は置けない。** どちらも `UNITEMISED_BLOCK_TYPES` にあり `PlaceableItemType` ではないので、`placeBlock` に渡す道が型で無い。バケツ（アイテム使用）が来るまで待ち |
 | 同 の inventory rollback | 1 | インベントリは mc-sim の名詞。ルールは「何を消費するか」を**報告**するだけ |
 | `world/test/block-service-utils.test.ts` の `worldToBlockLocal` 4 本 | 4 | チャンク座標の算術は mc-worldgen の名詞。こちらの API に chunk-local 座標が存在しない |
@@ -401,9 +401,8 @@ F8（§4-3-2）と同じく参照実装と食い違うが、**向きが逆で、
 
 ### 4-4. この回に移植したもの（2026-07-28、`interaction-*` の 3 回目）
 
-対象は `interaction-*` の 33 ファイル / 402 本だけである。**新規 `it` を 4 本追加、640 → 644**
-（同じ作業日にポータルの滞留タイマーが別途 1 ファイル / 16 本を足しているので、
-`pnpm test` の総数は 660 である。**この節が主張するのは 4 本のほうだけ**）
+対象は `interaction-*` の 33 ファイル / 402 本だけである。**新規 `it` を 4 本追加した**
+（同じ作業日にポータルの滞留タイマーも追加された。総テスト件数は `pnpm test` の実行結果を正とする。）
 （「追加」＝新規 `it` の本数、§4-2-1 の規則。既存テストの書き換えは 0 本）。
 全件 `test/chunk-window.test.ts` に入り、**全件について反証を確認した**（下表）。
 
@@ -489,7 +488,7 @@ interaction 関連のテストファイルは実測 **38 ファイル**である
 | `interaction-bucket-handler.test.ts` | 2 | `bucket` / `water_bucket` / `lava_bucket`。§5-3 のこの行だけは**期限切れになっていない**（下記） |
 | `interaction-shear-animal.test.ts` | 8 | `shears` と `wool`。加えて `EntityState` に**種と刈り取り済み旗**が無い |
 | `interaction-feed-animal.test.ts` | 8 | `wheat` と、`EntityState` の**繁殖状態**（love mode / 成体か） |
-| `interaction-unequip-armor.test.ts` | 4 | **防具スロット**（`EquipmentSlot`）。`InventoryService` にも `domain/inventory-port.ts` にも無い |
+| `interaction-unequip-armor.test.ts` | - | **防具スロット**（`EquipmentSlot`）。現行の InventoryService 公開 API に無い |
 | `interaction-mob-drops.test.ts` | 12 | **落下アイテム実体の spawn**（`spawnItemEntity`）と `EntityState` の**速度場** —— `domain/interactions/knockback.ts` の「4. WHAT ARRIVES ON THE DAY THE IMPULSE CAN BE WRITTEN」が同じ 1 行を名指している。ルール（何が落ちるか）は `domain/mob/mob-drop.ts` に移植済みで、残りは**置き場と初速**だけである |
 | `interaction-mob-sound.test.ts` | 2 | **音のイベント型**。`mobHurt` / `mobDeath` は mx-audio の名詞で、`StageRegistration` の outbox に音の口が無い |
 | `interaction-stage-redstone.test.ts` | 12 | `RedstoneComponent` と `PistonFacing`。`domain/redstone` が無い。`pistonFacingFromDirection` の 3 本は純粋な規則だが、**基数方向へのスナップは `knockbackDirection` と別の関数**である（あちらは単位ベクトルを返す）ので、移植先は新設になる |
@@ -613,8 +612,8 @@ kernel の名簿（8 語）、こちらの `ExplosionSource`（1 語 + 威力）
 
 | 参照実装にあるもの | 理由 |
 | --- | --- |
-| ブロック名の名指し判定（`=== 'SAND'` / `blockTypeToIndex('SAND')`） | 挙動判定は `mc-kernel` の能力フラグ参照に統一する（plan.md §3.1、§5.1-1）。mc-kernel `docs/capability-flag-audit.md` §2-3 の実測で、名指し判定と membership テーブルの和集合は **78 ファイル**に散っていた |
-| `Date.now()` / `new Date()` / `performance.now()` | DN-GP-8。`pnpm check:deps` が落とす |
+| ブロック名の名指し判定（`=== 'SAND'` / `blockTypeToIndex('SAND')`） | 挙動判定は `mc-kernel` の能力フラグ参照に統一する（plan.md §3.1、§5.1-1）。詳細は [mc-kernel の capability flag audit](https://github.com/nerima-games/mc-kernel/blob/main/docs/capability-flag-audit.md) を参照 |
+| `Date.now()` / `new Date()` / `performance.now()` | DN-GP-8。`.ast-grep/rules/no-wall-clock-read.yml` が検査する |
 | 「全チャンク走査」の類 | DN-GP-1。API に存在しないので書けないが、移植中に足さないこと |
 | 右クリック UI ルーティング（`interaction-right-click-target-routing.ts:12-27`） | 画面の選択は `mx-ui` の意味論。ここが持つのは `interactionId` まで |
 | アプリスコープのシングルトン | DN-GP-6 |

@@ -79,8 +79,9 @@ describe('the rule holds no state of its own', () => {
       const constants = Object.entries(dayNight).filter(([, value]) => typeof value === 'number')
       expect(constants.length).toBeGreaterThan(0)
       for (const [name, value] of constants) {
-        expect(value as number, name).toBeGreaterThanOrEqual(0)
-        expect(value as number, name).toBeLessThanOrEqual(1)
+        if (typeof value !== 'number') throw new Error(`${name} was not a number`)
+        expect(value, name).toBeGreaterThanOrEqual(0)
+        expect(value, name).toBeLessThanOrEqual(1)
       }
     }),
   )

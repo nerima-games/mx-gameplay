@@ -25,7 +25,7 @@
  */
 import { describe, expect, it } from '@effect/vitest'
 import { Effect, Option, Ref } from 'effect'
-import { BlockPositionKey as positionKey } from '@nerima-games/mc-kernel'
+import { BlockPositionKey as positionKey, type StageRegistration } from '@nerima-games/mc-kernel'
 import {
   drainBlockUseResults,
   gameplayStages,
@@ -43,6 +43,7 @@ import type { BlockPosition } from '@nerima-games/mc-kernel'
 import type { MobBehaviour } from '../src/domain/entities/mob-frame'
 import { BlockId, blockIdOf, blockPosition } from '@nerima-games/mc-kernel'
 import { NO_TOOL } from '../src/domain/interactions/block-loot'
+import { FrameServicesLayer } from './support/frame-services'
 
 /**
  * DIRT, and the id took two corrections that are worth recording because both
@@ -110,13 +111,13 @@ const doorWorld = () =>
   })
 
 const runInteractions = (
-  stages: ReadonlyArray<{ readonly id: string; readonly run: (dt: DeltaTimeSecs) => Effect.Effect<void, never, never> }>,
+  stages: ReadonlyArray<StageRegistration>,
 ) => {
   const stage = stages.find((candidate) => candidate.id === GAMEPLAY_STAGE_IDS.interactions)
   if (stage === undefined) {
     throw new Error('the interactions stage is not registered')
   }
-  return stage.run(DeltaTimeSecs(0.016))
+  return stage.run(DeltaTimeSecs(0.016)).pipe(Effect.provide(FrameServicesLayer))
 }
 
 describe('the break loop', () => {
@@ -139,7 +140,7 @@ describe('the break loop', () => {
       ])
       expect(yield* Ref.get(state.pendingPlacements)).toStrictEqual([])
 
-      yield* runInteractions(stages as never)
+      yield* runInteractions(stages)
       expect(yield* drainBlockUseResults(state)).toStrictEqual([
         {
           requestId: 'lever-use-1',
@@ -188,7 +189,7 @@ describe('the break loop', () => {
         'sand',
       )
       yield* world.chunkStore.setBlock(IN_SIGHT, DIRT_ID)
-      yield* runInteractions(stages as never)
+      yield* runInteractions(stages)
 
       expect(yield* drainBlockUseResults(state)).toStrictEqual([
         {
@@ -230,7 +231,7 @@ describe('the break loop', () => {
       const target = yield* requestTargetedBlockBreak(state, world.chunkStore, world.player)
       expect(Option.getOrUndefined(target)?.position).toStrictEqual(IN_SIGHT)
 
-      yield* runInteractions(stages as never)
+      yield* runInteractions(stages)
       expect(yield* world.chunkStore.getBlock(IN_SIGHT)).toStrictEqual({ _tag: 'Block', block: 0 })
     }),
   )
@@ -256,7 +257,7 @@ describe('the break loop', () => {
       expect((yield* world.chunkStore.getBlock(AT))._tag).toBe('Block')
 
       yield* requestBlockBreak(state, AT)
-      yield* runInteractions(stages as never)
+      yield* runInteractions(stages)
 
       const after = yield* world.chunkStore.getBlock(AT)
       expect(after).toStrictEqual({ _tag: 'Block', block: 0 })
@@ -281,7 +282,7 @@ describe('the break loop', () => {
       // slot 0 than the one the request snapshot recorded.
       yield* Ref.set(state.pendingBreaks, [positionKey('99,64,99')])
 
-      yield* runInteractions(stages as never)
+      yield* runInteractions(stages)
 
       // The stale request was dropped rather than breaking the wrong (or any)
       // cell: the original block survives untouched.
@@ -296,7 +297,7 @@ describe('the break loop', () => {
       const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player, world.time)
 
       yield* requestBlockBreak(state, AT)
-      yield* runInteractions(stages as never)
+      yield* runInteractions(stages)
 
       expect(yield* world.chunkStore.getBlock(AT)).toStrictEqual({ _tag: 'Block', block: 0 })
       expect(yield* world.chunkStore.getBlock(ABOVE_AT)).toStrictEqual({ _tag: 'Block', block: 0 })
@@ -326,7 +327,7 @@ describe('the break loop', () => {
       const stages = gameplayStages(state, interceptedStore, world.entities, world.inventory, world.player, world.time)
 
       yield* requestBlockBreak(state, AT)
-      yield* runInteractions(stages as never)
+      yield* runInteractions(stages)
 
       // The lower half still broke; the upper-half write was intercepted as
       // `Unchanged`, so no disturbance was queued for it and nothing crashed.
@@ -342,7 +343,7 @@ describe('the break loop', () => {
 
       yield* requestBlockBreak(state, AT, { heldTier: 'wooden' })
       yield* Ref.set(state.heldTool, NO_TOOL)
-      yield* runInteractions(stages as never)
+      yield* runInteractions(stages)
 
       expect(yield* world.inventory.countOf('cobblestone')).toBe(1)
     }),
@@ -357,7 +358,7 @@ describe('the break loop', () => {
 
       yield* requestBlockBreak(state, AT, lootContext)
       lootContext.heldTier = 'none'
-      yield* runInteractions(stages as never)
+      yield* runInteractions(stages)
 
       expect(yield* world.inventory.countOf('cobblestone')).toBe(1)
     }),
@@ -371,7 +372,7 @@ describe('the break loop', () => {
 
       yield* requestBlockBreak(state, AT, NO_TOOL)
       yield* Ref.set(state.heldTool, { heldTier: 'wooden' })
-      yield* runInteractions(stages as never)
+      yield* runInteractions(stages)
 
       expect(yield* world.inventory.countOf('cobblestone')).toBe(0)
     }),
@@ -386,7 +387,7 @@ describe('the break loop', () => {
       yield* Ref.update(state.pendingBreaks, (pending) => [...pending, positionKey('3,64,7')])
       yield* requestBlockBreak(state, AT, { heldTier: 'wooden' })
       yield* Ref.set(state.heldTool, NO_TOOL)
-      yield* runInteractions(stages as never)
+      yield* runInteractions(stages)
 
       expect(yield* world.inventory.countOf('cobblestone')).toBe(0)
     }),
@@ -401,7 +402,7 @@ describe('the break loop', () => {
       yield* Ref.update(state.pendingBreaks, (pending) => [...pending, positionKey('3,64,7')])
       yield* requestBlockBreak(state, AT, NO_TOOL)
       yield* Ref.set(state.heldTool, { heldTier: 'wooden' })
-      yield* runInteractions(stages as never)
+      yield* runInteractions(stages)
 
       expect(yield* world.inventory.countOf('cobblestone')).toBe(1)
     }),
@@ -421,7 +422,7 @@ describe('the break loop', () => {
         { concurrency: 'unbounded' },
       )
       yield* Ref.set(state.heldTool, NO_TOOL)
-      yield* runInteractions(stages as never)
+      yield* runInteractions(stages)
 
       expect(yield* world.inventory.countOf('cobblestone')).toBe(1)
       expect(yield* Ref.get(state.pendingBreaks)).toStrictEqual([])
@@ -449,7 +450,7 @@ describe('the break loop', () => {
       const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player, world.time)
 
       yield* requestBlockBreak(state, AT)
-      yield* runInteractions(stages as never)
+      yield* runInteractions(stages)
 
       const inventory = yield* world.inventory.snapshot
       const carried = inventory.slots.filter((slot) => slot !== undefined)
@@ -464,7 +465,7 @@ describe('the break loop', () => {
       const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player, world.time)
 
       yield* requestBlockBreak(state, AT)
-      yield* runInteractions(stages as never)
+      yield* runInteractions(stages)
 
       expect(yield* world.inventory.countOf('redstone_dust')).toBe(1)
     }),
@@ -480,10 +481,10 @@ describe('the break loop', () => {
       const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player, world.time)
 
       yield* requestBlockBreak(state, AT)
-      yield* runInteractions(stages as never)
+      yield* runInteractions(stages)
       const afterFirst = yield* world.inventory.snapshot
 
-      yield* runInteractions(stages as never)
+      yield* runInteractions(stages)
       const afterSecond = yield* world.inventory.snapshot
 
       expect(afterSecond).toStrictEqual(afterFirst)
@@ -502,7 +503,7 @@ describe('the break loop', () => {
       const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player, world.time)
 
       yield* requestBlockBreak(state, AT)
-      yield* runInteractions(stages as never)
+      yield* runInteractions(stages)
 
       const inventory = yield* world.inventory.snapshot
       expect(inventory.slots.every((slot) => slot === undefined)).toBe(true)
@@ -521,7 +522,7 @@ describe('the break loop', () => {
       const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player, world.time)
 
       yield* requestBlockBreak(state, AT)
-      yield* runInteractions(stages as never)
+      yield* runInteractions(stages)
 
       expect((yield* world.chunkStore.getBlock(AT))._tag).toBe('ChunkNotLoaded')
     }),
@@ -538,7 +539,7 @@ describe('the break loop', () => {
       const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player, world.time)
 
       yield* requestBlockBreak(state, AT)
-      yield* runInteractions(stages as never)
+      yield* runInteractions(stages)
 
       expect((yield* subscription.drain).changed).toStrictEqual([chunkOf(AT)])
     }),

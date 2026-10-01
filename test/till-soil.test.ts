@@ -196,12 +196,12 @@ describe('the loop closes', () => {
       // own tests would pass and the game would have a step that cannot be
       // completed.
       const overworldCrops = Object.values(CROP_OF_SEED).filter(
-        (crop) => SOIL_OF_CROP[crop as BlockType] === TILLED_BLOCK,
+        (crop): crop is BlockType => SOIL_OF_CROP[crop] === TILLED_BLOCK,
       )
 
       expect(overworldCrops.length).toBeGreaterThan(0)
       for (const crop of overworldCrops) {
-        expect(SOIL_OF_CROP[crop as BlockType]).toBe(TILLED_BLOCK)
+        expect(SOIL_OF_CROP[crop]).toBe(TILLED_BLOCK)
       }
     }),
   )

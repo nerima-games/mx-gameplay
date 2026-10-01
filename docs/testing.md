@@ -10,7 +10,7 @@ plan.md §3.11:
 **テストだけでは完成にならない。** 各リポジトリが単独で正しさを閉じるという構成の前提が
 「テスト green + プレビューで目視確認済み」（plan.md §1）だからである。
 
-### 1-1. 3 つのゲート（Wave 0 でホワイトリスト境界ゲートを ast-grep 構造検査に置き換え）
+### 1-1. 3 つのゲート
 
 `pnpm verify` = `typecheck && lint && test`。CI（`.github/workflows/ci.yaml`）と同じ内容。
 
@@ -20,14 +20,13 @@ plan.md §3.11:
 | ゲート | コマンド | 何を捕まえるか |
 | --- | --- | --- |
 | 型 | `pnpm typecheck` | `tsconfig.build.json`（出荷ソース）と `tsconfig.test.json`（テスト + スクリプト）と `tsconfig.preview.json`（`apps/`）の**3 つ** |
-| lint | `pnpm lint` | `oxlint --deny-warnings src scripts test apps && ast-grep scan`。`no-restricted-imports` が依存ホワイトリスト境界を（`.oxlintrc.json`、DEPENDENCY_POLICY.md §1 の Tier3 許可リスト）、`.ast-grep/rules/no-wall-clock-read.yml` が壁時計直読み禁止を機械検査する |
+| lint | `pnpm lint` | `oxlint --deny-warnings src scripts test apps && ast-grep scan`。`no-restricted-imports` が `.oxlintrc.json` の依存境界を、`.ast-grep/rules/no-wall-clock-read.yml` が壁時計直読み禁止を機械検査する（組織共通の依存ポリシーは [DEPENDENCY_POLICY.md](https://github.com/nerima-games/.github/blob/main/DEPENDENCY_POLICY.md)）。 |
 | 振る舞い | `pnpm test` | vitest |
 
 **依存境界の実効性は `no-restricted-imports` が持つ。** 型検査も通常の lint ルールも、
 `import … from '@nerima-games/mx-ui'` を単体では止められないが、`.oxlintrc.json` の
 `no-restricted-imports`（Tier3 許可リスト方式、org 共通 D.9 形式）が禁止パッケージの import に対して
-`error` を出す。旧 `pnpm check:deps`（`scripts/check-dependency-whitelist.ts`）と旧 `pnpm api:check`
-（`scripts/api-lock.ts`）は org 全体で廃止された（api-lock 機構の廃止、Wave 0 toolchain freeze）。
+`error` を出す。現行のゲートは `pnpm verify` と `pnpm test:coverage` である。
 
 **oxlint がこのリポジトリ唯一の lint / format 設定である。**
 prettier も biome も `.editorconfig` も置かない。整形の権威が 2 つあると
@@ -39,7 +38,7 @@ prettier も biome も `.editorconfig` も置かない。整形の権威が 2 �
 統一することでこの drift を無くしている。CI（`.github/workflows/ci.yaml`）も
 `nix develop --command pnpm lint` で実行する。
 
-### 1-2. 型検査を 2 回走らせている理由
+### 1-2. 型検査を 3 回走らせている理由
 
 `tsconfig.build.json` は `test/**` と `scripts/**` を除外する。**除外はここにしかない。**
 これが「`mc-playground-kit` は devDependency である」に実効性を与えている —
@@ -51,43 +50,33 @@ prettier も biome も `.editorconfig` も置かない。整形の権威が 2 �
 
 ## 2. 現在のスイート
 
-**27 ファイル / 660 テスト、全 pass。**（`pnpm test` の出力。
-**この行は 19 / 440 と書かれたまま古くなっていた** —— 実測すると直前で既に 24 / 541 で、
-弓とエンダーパール（§3-1 の 1 行目）で 2 ファイル / 99 本が増えて 26 / 640 になり、
-`interaction-*` の**新規 4 本**（§2-2-1、porting.md §4-4）で 644、
-ポータルの滞留タイマー（`test/portal-dwell.test.ts`、別作業）で 1 ファイル / 16 本が増えて **660** である。
-状態表が実装より古くなるのはこの文書が自分で主要な失敗様式として挙げているもので、
-**この行自身がその 3 例目**である。以前この行は 16 / 373 と書いていた ——
-99% ゲートを入れるにあたって 2 ファイルと 36 本が増え、[porting.md](./porting.md) §4-3 の
-移植 2 回目でさらに 6 本増え、レールのトポロジ（§3-1 の 5 行目）で
-`test/rail.test.ts` 1 ファイル / 25 本が増えた。ゲート導入分の内訳と、そのうち何本が
-「数字のため」ではなかったかは §4 にある）
+**テスト件数は `pnpm test` の実行結果を正とする。** 固定した件数は更新漏れを起こすため、
+この一覧ではファイル別の代表例だけを記録する。
 
-| ファイル | 本数 | 内容 |
+| ファイル | 役割 | 内容 |
 | --- | ---: | --- |
-| `test/api-lock.test.ts` | 26 | API ロック生成器そのもの（`scripts/api-lock.ts`） |
-| `test/rules.test.ts` | 21 | DN-GP-1 / DN-GP-2 / DN-GP-3 のドメイン単体。流体の予算配分は参照実装の `fluid-tick-budget.test.ts` から 2 本を追加（溶岩は**残り**を取る／有効な lava tick は retain しない）。同ファイルの空入力ケースを**反証できないので消した**理由もここにコメントで残っている |
-| `test/mob.test.ts` | 75 | **クリーパー / エンダーマン / シュルカー / 掃除。** 導火線と殻の状態機械を**列挙**し（両方とも全遷移を通す）、爆風の減衰表・スポーン判定・ドロップ・テレポート帯・デスポーン距離を参照実装のオラクルから移植する（§2-2）。乱数がドメインに無いことをソース走査で固定する 1 本と、シナリオ再現を 2 本含む |
-| `test/stage-registration.test.ts` | 24 | フレーム契約（§2.3-1 / §2.3-3）と stage の振る舞い。時刻の `Ref` が無いこと、store・名簿・**インベントリ**の 3 つを**登録時に**取ること。kernel から写した 2 つのブランド（`DeltaTimeSecs` / `StackCount`）の精製もここで固定する —— ブランドは**文字列で同一視される**ので、精製がずれたミラーはコンパイラが決して反証できない偽の保証になる |
-| `test/check-dependency-whitelist.test.ts` | 18 | 依存ポリシーそのもの。うち 3 本は**他リポジトリの席から**読んだ roster 検査（§2-3） |
-| `test/vertical-slice.test.ts` | 42 | 縦切り。**stage 登録経由で**「掘る → 砂が落ちる → アイテムが渡る」「掘る → 置く → 落ちる」「クリーパーが湧く → 爆ぜる → ドロップ」を回す（DN-GP-1 / DN-GP-11）。砂が**水**を、砂利が**溶岩**を貫いて沈む 2 本は参照実装の `falling-block.test.ts:132-152` から。溶岩側は `REPLACEABLE_IDS` の欠落した行の**もう半分**で、これまで何も固定していなかった |
-| `test/day-night.test.ts` | 8 | DN-GP-7。昼夜**ルール**が何も保持していないこと、mc-sim と夜の定義が一致すること |
-| `test/public-api.test.ts` | 8 | `index.ts` のバレルを名前ごと固定する。kernel 語彙と時刻 API の**不在**も固定する |
-| `test/block-vocabulary-mirror.test.ts` | 13 | kernel 語彙のミラー。4 つの能力述語に加え、**`supportRule` の 19 行 override 表を全数**固定する（部分ミラーは別の型なので）。ミラーは転記を固定するだけで、源との比較は mc-dev-meta の `pnpm check:mirrors` である |
-| `test/chunk-store-mirror.test.ts` | 6 | `domain/chunk-store-port.ts` を mc-worldgen の界面に**両方向で**固定する。タグキーは文字どおり検査する。`validSpawnSurface` が**負リスト**であること（＝既定 true）もここ（**この行は 7 と書かれたまま古くなっていた。実測 6**） |
-| `test/preview-findings.test.ts` | 10 | **プレビューが見つけたもの**（§3-4）。うち 8 本は「現在の（誤った）挙動を固定する」テストで、直すと落ちる。**F7 はここではなく `test/place-block.test.ts` にある** —— プレビューではなく移植が見つけたものだから（§3-5）。F7 は**解決済み**で、8 本のうちの 1 つの前例になった：直したときテストは消さず、同じ参照行との**一致**へ書き換える（§3-5-1） |
-| `test/inventory-mirror.test.ts` | 11 | `domain/inventory-port.ts` を mc-sim の界面に固定する。**このリポジトリで最も広いミラー** —— `InventoryServiceApi` 全体に加え、api が名指しする `Inventory` / `RecipeTable` / `CraftGrid` / `RecipeMatch` / `CraftResult` とその下の語彙 16 型を**両方向**で突き合わせる。**型の一致だけでは足りない 1 点**も入っている: `add` は「**入らなかった数**」を返し `remove` は「**実際に取れた数**」を返すので、両者は `(item, count) => Effect<number>` として区別がつかない。極性は double に対する**振る舞い**で固定してある |
-| `test/mob-spawn-search.test.ts` | 27 | `domain/entities/mob-spawn-search.ts` のリングと、その 256 回のストア呼び出し。参照実装の `mob-spawner-helpers.test.ts:6-13` から**リングが一周すること**、`mob-spawner-rules.test.ts:18-20` から**3D でも掃除距離の内側**であること（porting.md §4-3）。前者は半周リングという変異が 409 本を 1 つも落とさなかったので足した |
-| `test/place-block.test.ts` | 56 | **設置**（§3-1 の 1 行目）。参照実装が**実際に間違えた 3 点**を `REGRESSION:` として持つ —— 溶岩は replaceable、自分の体の中には置けない、支えが要るブロックは支えを見る。`blockOverlapsPlayer` の境界表（`block-service-utils.test.ts:84-98`）は**そのまま移植**してあり、参照実装が同じ関数に持っている**第 2 の表**（`block-utils.test.ts:88-121`、y 軸の排他境界と対角）も移植した。`block-support.test.ts` の支持表は**全行**移植済み —— fallback アームの行と、`SUPPORT_RULES` の行（旧 F7、§3-5-1 で解決）の両方 |
-| `test/block-loot.test.ts` | 32 | **ブロックのドロップテーブル**（§3-1 の 3 行目）。kernel の表を通る決定論的な半分と、audit §6-9 がこちらに置いた乱数の半分（fortune / 葉のボーナス）。「素手で石を掘っても何も出ない」が**見た目では気付けないほうの半分**である。ボーナス 4 率（りんご 1/200・棒 2%・苗木 5%・種 1/8）は参照実装から移植 —— **うち 3 つは今日どの表にも載っていない**が、待っているのは kernel の roster 行であって発明ではない。道具の段は `harvestable-blocks.test.ts` の**真の包含鎖**と `block-utils.test.ts` の**段ごとの 4 行**を移植（porting.md §4-3。後者は §4-2 が roster ギャップで断っていたもので、kernel の roster 完成で**期限切れになった拒否**である）。**F8** —— シルクタッチが置換ではなく関門であるという参照実装との乖離 —— の pin もここ（§3-6） |
-| `test/weather.test.ts` | 25 | **天候**（§3-1 の 7 行目）。参照実装の `packages/game/test/weather.test.ts` の 8 本を**値を変えずに**移植し、`weather-service.test.ts:89-113` の**3 連続遷移**（保持している天候から選ぶこと）も移植する（porting.md §4-3）。そのうえで参照実装には書けないテスト —— 2 時間ぶんのフレームを回して遷移グラフを歩き、**2 回走らせて同じ列になる**こと（§5 の fast-forward）を足す。fast-forward は「2 回が一致する」しか見ないので、**間違った歩き方も同じくらいよく再現する** —— 3 連続遷移はそこを埋める |
-| `test/bow.test.ts` | 70 | **弓**（§3-1 の 1 行目）。参照実装の `bow-resolution.test.ts` の 13 本を**値を変えずに**移植し、そのうえで参照実装が記録していないものを足す —— クロスヘアの円柱の境界、**後ろは撃てないこと**（`alongRay < 0` の半分。落とすと弓が背後を撃つ）、同距離 2 体の**どちらが当たるか**、そして**向きを正の定数倍しても答えが変わらないこと**（responsibility.md §7-3 の所有権論をテストにしたもの。`test/rail.test.ts` と同じ形）。参照実装との**乖離を 4 つ**明記して固定する: 負・無限のチャージ、退化した照準（参照実装は近くの mob に当たる）、ノックバックのデッドバンド、そして Power の**レベル 0 で 1.25 倍にならない**こと。**遮蔽の歩きが標本化であって走査ではない**という限界も、角を抜けるテストとして固定してある —— DDA が来た日に赤くなる |
-| `test/ender-pearl.test.ts` | 29 | **エンダーパール**（§3-1 の 1 行目）。参照実装の `ender-pearl.test.ts` の距離・確率の判定を移植し、**下限 `roll >= 0` が本当に働いていること**（外すと壊れた生成器から毎回エンダーマイトが湧く）を足す。乖離は 2 つ —— 退化した照準（参照実装は**真北に 24 ブロック**飛ぶ）と、非有限の hit 距離（参照実装は `NaN` 位置へテレポートし、プレイヤーを世界から失う）。後半 6 本は**配線**で、stage 経由でパールを投げ、エンダーマイトが**着地点に**湧くこと、feet が無ければ湧かないが移動と自傷は起きること、**同じシナリオを 2 回走らせて同じ列になる**ことを回す |
-| `test/frame-rolls.test.ts` | 9 | **乱数がフレームに入る場所**（`domain/frame-rolls.ts`）。他のテストは全部 stage 経由で回すので、**生成器が作っていない**シードやカウントについては何も言えていなかった —— 0 が生成器の不動点であること、カウント 0 が種を動かさないこと、`rollAt` が末尾より先を 0 と読むこと。3 つとも本文が主張していて誰も確かめていなかった |
-| `test/mob-frame.test.ts` | 9 | `domain/entities/mob-frame.ts` の**フレーム層**。ルール（`domain/mob/`）は `mob.test.ts`、配線は `vertical-slice.test.ts` が持っており、その間が空いていた —— **外した**爆風、爆風ゼロ本のフレームの費用、爆風を生き延びたクリーパーが導火線を保つこと |
-| `test/rail.test.ts` | 33（`grep -c 'it\.effect('` の実測。旧記述の 25 も実測ではなかった） | **レールのトポロジ**（§3-1 の 5 行目）。参照実装の `rail-shape.test.ts` の 10 本のうち、**resolveRailShape / isAscendingAhead に属する 7 本を転記**した。**「残る 3 本は `projectMinecartVelocity` として転記済み」という旧記述は誤りだったので削除した** —— `projectMinecartVelocity` のどの assertion にも参照実装への `file:line` 引用が無く（他の全 `describe` ブロックにはある）、導入コミットのメッセージも 1 行のみで引用が無い。**`projectMinecartVelocity` にはそもそも参照実装のオラクルが無い**（`test/vehicle-rail-simulation.test.ts` のヘッダが独立に同じ結論に達している）。曲線の向き（`curve_north_east` 等 4 値）と `projectMinecartVelocity` のコーナー分岐は、参照実装ではなく、`mc-kernel` の `railKind` に向きが無いことを確認したうえで、ゲーム自身の 10 種のレール形状（直線 2 + 上り坂 4 + 曲線 4）に合わせて `resolveRailShape` が既に計算し捨てていた近傍情報を復元する形で足した — 詳細は `domain/vehicle/rail-shape.ts` の `RailShape` / `projectMinecartVelocity` の doc comment。そこに加えて参照実装のオラクルが見ていないものを足す —— 近傍 4 方向の**16 通り全数**（曲線が直線に勝つこと、うち 4 通りは向き付きの曲線）、中心セルを**問わない**という前提、±1 の傾斜が**下向きにも**効くこと、探索が 12 セルで打ち止めなこと、同点の行き先、そして**向きを正の定数倍しても答えが変わらないこと**（§5-1 の所有権論をテストにしたもの）。非有限入力に対する 2 つの全域化は**参照実装との乖離**であり、そう明記してある |
+| `test/public-api.test.ts` | 公開 API | `src/index.ts` の公開 export と非公開 export を固定 |
+| `test/rules.test.ts` | ドメイン単体 | DN-GP-1 / DN-GP-2 / DN-GP-3 と流体の予算配分を固定 |
+| `test/mob.test.ts` | Mob ルール | クリーパー、エンダーマン、シュルカー、爆風、スポーン、ドロップ、デスポーンを固定 |
+| `test/stage-registration.test.ts` | Stage 契約 | フレーム契約、依存 stage 名、登録時サービスを固定 |
+| `test/vertical-slice.test.ts` | 縦切り | stage 登録経由で採掘、設置、Mob のシナリオを回す |
+| `test/day-night.test.ts` | 昼夜 | DN-GP-7。昼夜ルールと mc-sim の定義を固定 |
+| `test/public-api.test.ts` | 公開 API | バレルの export と kernel 語彙・時刻 API の不在を固定 |
+| `test/placement-rules.test.ts` | - | kernel の能力表に基づく設置条件と支持判定を固定する。組織横断の mirror 検査は mc-dev-meta の `pnpm check:mirrors` が担当する |
+| `test/chunk-window.test.ts` | チャンク窓 | mc-worldgen のチャンク読み出し境界を固定する |
+| `test/preview-findings.test.ts` | プレビュー監査 | プレビューの finding 条件を固定 |
+| `test/in-memory-inventory.test.ts` | - | mc-sim のインベントリサービスを利用する stage の入出力と残余数を固定する |
+| `test/mob-spawn-search.test.ts` | Mob 探索 | リングとストア境界を固定する |
+| `test/place-block.test.ts` | 設置 | 置換可能性、プレイヤーとの重なり、支持条件を固定する |
+| `test/block-loot.test.ts` | ブロック drop | harvest API の結果と fortune / 葉のボーナスを固定する |
+| `test/weather.test.ts` | 天候 | 遷移グラフと決定論を固定する |
+| `test/bow.test.ts` | 弓 | hitscan、ダメージ、ノックバック、遮蔽境界を固定する |
+| `test/ender-pearl.test.ts` | エンダーパール | 変位、自傷、エンダーマイト生成、決定論を固定する |
+| `test/frame-rolls.test.ts` | frame 乱数 | seed、roll count、範囲外読み出しを固定する |
+| `test/mob-frame.test.ts` | Mob frame | 爆風の収集、無風フレーム、導火線の継続を固定する |
+| `test/rail.test.ts` | レール | レール形状と速度投影の境界を固定する |
 
-| `test/portal-dwell.test.ts` | 16 | **ポータルの発火タイマー**（§3-1 の 6 行目）。参照実装に**移植できる単体テストが 1 本も無い** —— `physics-stage-portal.test.ts` は stage 丸ごとをモックに対して回すもので、そこから入った 2 本はチャンク座標の主張だった（§2-2-1）。なので `physics-stage-portal.ts:35-100` の算術に対して直接書いてある: 4 秒で**ちょうど 1 回**発火すること、**フレームレートを変えても同じフレームで**発火すること（1s x4 / 0.5s x8 / 4s x1）、途中で出ると滞在を**忘れる**こと、冷却中は `inPortal` を**見ない**こと。最後の 1 本は 16 秒ぶん回して `[4, 12]` を固定する —— **到着した先はポータルの中**なので、冷却が無ければ 4 秒ごとに次元を往復し続ける。定数 2 つは `=== 4` ではなく `> 0` で固定する（どちらも**転記であって根拠が無い**ため。`domain/portal-dwell.ts` のヘッダ）。**変異 10 件で赤を確認済み**、うち 1 件は等価変異で、それが `Math.max(0, ...)` の**落ちようのないガード**を見つけて消させた（§4-b F-4 と同じ形） |
+| `test/portal-dwell.test.ts` | ポータル滞留 | 発火タイマーと再入場の冷却を固定する |
 
 `test/support/` はテストではなくテストの資材である（`vitest.config.ts` の `include` は
 `test/**/*.{test,spec}.ts` なので収集されない）。`chunk-store-double.ts` が mc-worldgen の
@@ -150,7 +139,7 @@ plan.md §8:
 | 昼夜 | **移植すべきものが無い。** 参照実装の 29 本は全件が見た目であり mc-render の担当（porting.md §3-4） |
 | 乗り物（レール） | `rail-shape.test.ts` の 10 本のうち **7 本**（`resolveRailShape` 5 + `isAscendingAhead` 2）をトポロジとして実装済み。**「残る 3 本は `projectMinecartVelocity` のもので実装済み」という旧記述は誤りだったので削除した** —— `projectMinecartVelocity` に参照実装のオラクルは無い（詳細は上表 `test/rail.test.ts` の行）。`projectMinecartVelocity` 自体はコーナー分岐まで含めて実装済みだが、参照実装の転記としてではない。フレームへの配線は別問題で、[responsibility.md](./responsibility.md) §5-5 にあるとおり `mc-sim` 側の消費者待ち |
 | ブロック別の設置ルール | `block-placement-rules.test.ts` の **4 本を全件**（`localHorizontalNeighbors` / キノコの光量 / サトウキビの隣接水 / サボテンの側面）を `test/placement-rules.test.ts` へ。値は変えていないが**名前ではなくバイトで**問うている。1 本目だけは**主張を反転させて**転記した —— 参照実装は「チャンク内の隣だけを作る」ことを確かめており、こちらは**4 方向すべてを作る**ことを確かめる（下記） |
-| ポータルの枠 | `world/domain/nether/portal-frame.test.ts` に当たるものは **mc-worldgen 側**にある。こちらの `test/portal-frame-mirror.test.ts` はミラーを固定するもので、**生成 → 検出の往復を全合法サイズ（2 軸 × 20 幅 × 19 高＝760 通り）**掃く。手書きの枠だけで試した検出器は、テストの作者＝検出器の作者なので必ず一致する |
+| ポータルの枠 | 枠の検出は mc-worldgen の公開 API を利用し、こちらでは点火・滞留・移動の gameplay ルールを検証する |
 
 **`interaction-*`（33 ファイル / 402 本）から引いたのは 3 ファイル・累計 `it` 6 本である。**
 内訳は porting.md §4-4 と §4-5。全件 `test/chunk-window.test.ts` にあり、
@@ -183,7 +172,7 @@ porting.md §4-5 が 33 ファイルを 1 行ずつ、**欠けている型かサ
 チャンク境界のサボテンは 3 面しか検査されず、境界のサトウキビは 1 セル隣の水が見えない。
 どちらも**位置によって効いたり効かなかったりする設置ルール**である。
 こちらはセルを `ChunkStore` 越しに読むのでその制限が無く、
-`domain/block-position-key.ts` の `horizontalNeighbours` は常に 4 つ返す。
+座標と近傍の計算は mc-worldgen / mc-kernel の公開 API を利用する。
 読めなかった隣は**air とは見なさない**ので、拒否の向きに倒れる。
 
 各回に何を移植し何を断ったかは [porting.md](./porting.md) §4-2 / §4-3 に主張単位で表がある。
@@ -193,7 +182,7 @@ porting.md §4-5 が 33 ファイルを 1 行ずつ、**欠けている型かサ
 
 ### 2-3. 他リポジトリの席から roster を読む
 
-`scripts/check-dependency-whitelist.ts` の各コピーは**全 16 リポジトリの roster** を抱えている。
+各リポジトリの import 許可設定は `.oxlintrc.json` にある。
 しかし import 検査が実際に参照するのは `thisPackage` の行だけなので、
 **他人の行の間違いはこの席からは一生見えない。**
 
@@ -220,9 +209,9 @@ roster を各リポジトリが持ち回っている以上、**行の正しさ�
 | 3 | 参照実装のテストオラクルが移植済み | ⚠️ **部分**（参照実装のテストファイル **25 本ぶん**を転記 —— **この数はこの行と §2-2-1 で食い違っていた**（20 と 21）ので実測して両方を合わせ、以後は同時に書いている。**Mob・スポーン探索・天候・設置（ブロック別 4 本を含む）・ドロップ・落下ブロック・流体の予算配分は閉じており**、拒否は全件が理由つき。**`interaction-*` の 33 ファイル / 402 本からは 3 ファイル・累計 `it` 6 本、うちこの回の新規は 4 本**（§2-2-1 の表、porting.md §4-4）。**残りを「`mc-sim` の公開 API 待ち」と書いていたのは不正確で**、porting.md §4-5 が 33 ファイルを 1 行ずつ**欠けている型かメソッド名で**断ってある —— 実際に多いのは kernel の語（`bread` / `shears` / `hoe` / `bucket` / 防具語）と `EntityState` に無い場である。§5-3 の弓とエンダーパールの行は**期限切れだった**（porting.md §4-5-1）。F9 は参照実装との一致へ修正済み（porting.md §4-4-1）。ほかに所有権待ちが 1 つ（`fluid-contact.test.ts` の 7 本、§3-3）。**❌ ではなく部分と書く** —— 内訳は §2-2-1） |
 | 4 | **プレビュー「採掘場」が操作可能** | ✅（`pnpm preview`。plan.md §3.11 が名指しする **3 つとも** —— `b` で掘り、`p` でルールを通して置き、`t` で道具の段を替えると HUD のインベントリが変わる。**その「HUD のインベントリ」は、もはやプレビューが自分で数えた集計ではない** —— `apps/preview-mining-site/inventory.ts` が mc-sim の `InventoryService` を演じ、画面の数字は `snapshot` の射影である。§3-3） |
 | 5 | **プレビュー「Mob アリーナ」が操作可能** | ✅（`--screen arena`。**plan.md §3.11 の 4 挙動のうち 3 つ。** スポーン → 導火線 → 爆風 → 死因 → ドロップ、エンダーマンのテレポート判断と変位、シュルカーの殻、そして掃除が本物。4 つ目のドラゴンは**理由つきの拒否**として画面に載る。§3-3） |
-| 6 | **プレビュー「時間スライダー」が操作可能** | ✅（`--screen time`。昼夜と**天候**の両方。時刻を**進める**のは mc-sim であり、そちらは未 publish。天候は所有者が 1 人もいないので画面が持つ —— `domain/weather.ts` の冒頭） |
-| 7 | 99% カバレッジゲートが有効 | ✅（`vitest.config.ts` の `thresholds` + CI の `Coverage (99% gate)` ステップ。実測 99.75 / **99.37** / 100 / 99.75、§4。**この行と §4 の実測値は 99.71 と 99.74 で食い違っていた**ので両方を合わせた） |
-| 8 | `mc-kernel` を import し `domain/frame-contract.ts` / `domain/position-key.ts` を削除 | ❌（kernel の publish 待ち） |
+| 6 | **プレビュー「時間スライダー」が操作可能** | ✅（`--screen time`。昼夜と**天候**の両方。時刻を**進める**のは mc-sim の `TimeService`。天候は `domain/weather.ts` が持つ） |
+| 7 | 100% カバレッジゲートが有効 | ✅（`vitest.config.ts` の `thresholds`。statements/functions/lines/branches の 4 指標を 100% で検査、§4） |
+| 8 | `mc-kernel` を import し、ローカルの kernel 型再掲を削除 | ✅（`src/index.ts` と `package.json` の exact pin） |
 
 ### 3-1. 条件 2 の内訳（この行は「1 つも未着手」と書かれたまま古くなっていた）
 
@@ -237,12 +226,12 @@ roster を各リポジトリが持ち回っている以上、**行の正しさ�
 
 | # | plan.md §3.11 の責務 | 状態 | 実体 / 欠けているもの |
 | --- | --- | --- | --- |
-| 1 | 採掘 / 設置 / アイテム使用 | **部分**（設置は閉じた。アイテム使用は**ルールが全部書けて配線も済み**、残るは kernel の 8 語と、矢を止めるブロックの能力 1 つ） | 3 つの動詞すべてが `gameplay:interactions` から回っている。**採掘**は `break-block.ts`、**設置**は `place-block.ts` と**ブロック別ルール 4 本**（`place-mushroom-light.ts` / `place-sugar-cane-water.ts` / `place-cactus-sides.ts` / `place-door-upper.ts` —— DN-GP-9 のとおり 1 ルール 1 ファイルで、`place-block.ts` が名前で呼ぶ）、**アイテム使用**は `use-flint-and-steel.ts` → `ignite-portal.ts` / `ignite-fire.ts` で、`pendingItemUses` / `usedItems` の inbox・outbox が付いている。**この行の「先送りであって拒否ではない」は履行された。**<br><br>**採掘の行き先が Ref ではなくなった。** `stages/registration.ts` は掘れたスタックを `state.minedItems` に積むだけで、その送信箱を抜く者は誰も書かれていなかった。`domain/inventory-port.ts` が mc-sim の `InventoryService` を丸ごと写し、stage が `add` を呼ぶ。**残った Ref は `leftoverItems` 1 本で、中身は `add` が「入らなかった」と答えた数だけである** —— 捨てると、プレイヤーが掘ったのに持っていないアイテムになる。それを地面のドロップ item にするには `MobBehaviour` の腕・`repairMobBehaviour` の腕・拾得ルールが要るので、そこで止めて**保持**してある。**設置の側（`consumedItems`）はまだ送信箱である**: `remove` は「実際に取れた数」を返すのに `placeBlock` は既にセルを書き終えているので、stage から呼ぶと 0 が返ったときプレイヤーが持っていないブロックを世界に置いたことになる。正しくやるには設置ルールが**書く前に**インベントリを読む必要があり、それは配線ではなくルールの変更である。<br><br>**弓とエンダーパールが入った。** `domain/interactions/draw-bow.ts`（引き・チャージ・二次のダメージ）、`bow-shot.ts`（クロスヘア内の最近傍への hitscan と、注入された述語で受ける遮蔽判定）、`knockback.ts`（ノックバックの**向き**。§7-3 が所有権を割っている）、`throw-ender-pearl.ts`（変位・自傷 5・エンダーマイト 5%）で、**4 本とも `gameplay:interactions` から回っている** —— `pendingBowShots` / `bowKnockbacks` と `pendingPearlThrows` / `enderPearlOutcomes` が 4 つ目と 5 つ目の inbox・outbox である。エンダーマイトは `roster.spawn` で**本当に湧く**（`ENDERMITE_KIND`、`HOSTILE_KINDS` には**入れない** —— 理由と代償はその定数のヘッダ）。<br><br>**この行の「発射体だから」は測って誤りだった。** 旧記述は「弓とエンダーパールは**それに加えて**発射体なので mc-sim の名簿と mc-physics の速度も要る」で、**どちらも発射体ではない**: 弓は `interaction-bow-handler.ts:200` が自分で「Hitscan」と書いており、近接と同じ `findAttackableEntity` を reach だけ替えて呼ぶ。エンダーパールは `ender-pearl.ts:8` でホストが済ませた `TargetRayHit` を取り、同じフレームで移動する。**実体は 1 つも作られず、速度はどこにも書かれない。** もっともらしい**カテゴリ**（「発射体」）から書かれた拒否で、カテゴリは確かめられない —— [responsibility.md](./responsibility.md) §7-1 が経緯と、**これが 4 度目である**ことを書いている。<br><br>**残りは kernel への名簿要求であって、こちらの穴ではない。** バケツ・ハサミ・弓・エンダーパール・鍬は `ITEM_TYPES`（97 語）に**綴りが存在しない** —— `bucket` / `water_bucket` / `lava_bucket` / `shears` / `bow` / `arrow` / `ender_pearl` / `hoe` の 8 語で、書けばこのリポジトリが kernel の語彙を発明することになる（mc-sim の 7 語要求が先例）。**8 語すべてが「語だけで閉じる」になった**（responsibility.md §7）。3 語が無いことで実際に失われているのは狙いでも命中判定でもなく**インベントリの出納**で、矢の消費・弓の耐久・パールの消費がそれである —— つまり**今日の弓は矢を消費せず無限に撃てる**。`test/bow.test.ts` の「THE BOW FIRES FOR FREE」が名指しでそれを固定してあり、3 語が来た日に落ちる。<br><br>**語とは無関係な穴が 1 つ残った**: 矢を止めるブロックの表（kernel の能力で、ミラーしている 4 つの述語のどれでもない）が無いので、`shotBlockedByTerrain` は**書いてありテストもあるが stage からは呼ばれておらず**、弓は壁を撃ち抜く。`isReplaceable` での代用は所有者の宣言していない等価の発明なので採らない。responsibility.md §7-2 が唯一の記述である。<br><br>kernel 0.2.5 で support-sensitive plant 10 語が `ITEM_TYPES` と `PlaceableItemType` に入り、ブロック別ルール 4 本はすべて実配置経路から到達可能になった。`test/placement-rules.test.ts` は実リテラルでキノコの明るさ・サトウキビの水隣接・サボテンの側面空間を検証し、`test/place-block.test.ts` は 10 種すべての support 条件を `placeBlock` 経由で検証する |
+| 1 | 採掘 / 設置 / アイテム使用 | **部分**（設置は閉じた。アイテム使用は**ルールが全部書けて配線も済み**、残るは kernel の 8 語と、矢を止めるブロックの能力 1 つ） | 3 つの動詞すべてが `gameplay:interactions` から回っている。**採掘**は `break-block.ts`、**設置**は `place-block.ts` と**ブロック別ルール 4 本**（`place-mushroom-light.ts` / `place-sugar-cane-water.ts` / `place-cactus-sides.ts` / `place-door-upper.ts` —— DN-GP-9 のとおり 1 ルール 1 ファイルで、`place-block.ts` が名前で呼ぶ）、**アイテム使用**は `use-flint-and-steel.ts` → `ignite-portal.ts` / `ignite-fire.ts` で、`pendingItemUses` / `usedItems` の inbox・outbox が付いている。**この行の「先送りであって拒否ではない」は履行された。**<br><br>**採掘の行き先が Ref ではなくなった。** `stages/registration.ts` は掘れたスタックを `state.minedItems` に積むだけで、その送信箱を抜く者は誰も書かれていなかった。stage が mc-sim の `InventoryService` を直接利用し、`add` を呼ぶ。**残った Ref は `leftoverItems` 1 本で、中身は `add` が「入らなかった」と答えた数だけである** —— 捨てると、プレイヤーが掘ったのに持っていないアイテムになる。それを地面のドロップ item にするには `MobBehaviour` の腕・`repairMobBehaviour` の腕・拾得ルールが要るので、そこで止めて**保持**してある。**設置の側（`consumedItems`）はまだ送信箱である**: `remove` は「実際に取れた数」を返すのに `placeBlock` は既にセルを書き終えているので、stage から呼ぶと 0 が返ったときプレイヤーが持っていないブロックを世界に置いたことになる。正しくやるには設置ルールが**書く前に**インベントリを読む必要があり、それは配線ではなくルールの変更である。<br><br>**弓とエンダーパールが入った。** `domain/interactions/draw-bow.ts`（引き・チャージ・二次のダメージ）、`bow-shot.ts`（クロスヘア内の最近傍への hitscan と、注入された述語で受ける遮蔽判定）、`knockback.ts`（ノックバックの**向き**。§7-3 が所有権を割っている）、`throw-ender-pearl.ts`（変位・自傷 5・エンダーマイト 5%）で、**4 本とも `gameplay:interactions` から回っている** —— `pendingBowShots` / `bowKnockbacks` と `pendingPearlThrows` / `enderPearlOutcomes` が 4 つ目と 5 つ目の inbox・outbox である。エンダーマイトは `roster.spawn` で**本当に湧く**（`ENDERMITE_KIND`、`HOSTILE_KINDS` には**入れない** —— 理由と代償はその定数のヘッダ）。<br><br>**この行の「発射体だから」は測って誤りだった。** 旧記述は「弓とエンダーパールは**それに加えて**発射体なので mc-sim の名簿と mc-physics の速度も要る」で、**どちらも発射体ではない**: 弓は `interaction-bow-handler.ts:200` が自分で「Hitscan」と書いており、近接と同じ `findAttackableEntity` を reach だけ替えて呼ぶ。エンダーパールは `ender-pearl.ts:8` でホストが済ませた `TargetRayHit` を取り、同じフレームで移動する。**実体は 1 つも作られず、速度はどこにも書かれない。** もっともらしい**カテゴリ**（「発射体」）から書かれた拒否で、カテゴリは確かめられない —— [responsibility.md](./responsibility.md) §7-1 が経緯と、**これが 4 度目である**ことを書いている。<br><br>**残りは kernel への名簿要求であって、こちらの穴ではない。** バケツ・ハサミ・弓・エンダーパール・鍬は `ITEM_TYPES`（97 語）に**綴りが存在しない** —— `bucket` / `water_bucket` / `lava_bucket` / `shears` / `bow` / `arrow` / `ender_pearl` / `hoe` の 8 語で、書けばこのリポジトリが kernel の語彙を発明することになる（mc-sim の 7 語要求が先例）。**8 語すべてが「語だけで閉じる」になった**（responsibility.md §7）。3 語が無いことで実際に失われているのは狙いでも命中判定でもなく**インベントリの出納**で、矢の消費・弓の耐久・パールの消費がそれである —— つまり**今日の弓は矢を消費せず無限に撃てる**。`test/bow.test.ts` の「THE BOW FIRES FOR FREE」が名指しでそれを固定してあり、3 語が来た日に落ちる。<br><br>**語とは無関係な穴が 1 つ残った**: 矢を止めるブロックの表（kernel の能力で、ミラーしている 4 つの述語のどれでもない）が無いので、`shotBlockedByTerrain` は**書いてありテストもあるが stage からは呼ばれておらず**、弓は壁を撃ち抜く。`isReplaceable` での代用は所有者の宣言していない等価の発明なので採らない。responsibility.md §7-2 が唯一の記述である。<br><br>kernel 0.2.5 で support-sensitive plant 10 語が `ITEM_TYPES` と `PlaceableItemType` に入り、ブロック別ルール 4 本はすべて実配置経路から到達可能になった。`test/placement-rules.test.ts` は実リテラルでキノコの明るさ・サトウキビの水隣接・サボテンの側面空間を検証し、`test/place-block.test.ts` は 10 種すべての support 条件を `placeBlock` 経由で検証する |
 | 2 | Mob AI | **部分** | `domain/mob/` 7 本 + `domain/entities/mob-frame.ts` で**フレームに配線済み**。4 挙動のうち 3 つ。ドラゴンは §3-3 のとおり**理由つきの拒否** |
-| 3 | ドロップ / ルートテーブル | **実装済み** | `domain/mob/mob-drop.ts`（クリーパー / ガスト / ブレイズ、`lootingLevel` 込み）と `domain/interactions/block-loot.ts`。後者は kernel の `drops` / `harvestTool` 列（`domain/block-vocabulary.ts` にミラー）を通る決定論的な半分と、audit §6-9 がこちらに置いた乱数の半分（fortune、葉のボーナス）である。**掘って出るのは「そこにあったブロック」ではなくなった** —— 石はまるい石になり、素手では何も出ない。**そして出たものは mc-sim の `InventoryService` に入る**（§3-1 の 1 行目） |
+| 3 | ドロップ / ルートテーブル | **実装済み** | `domain/mob/mob-drop.ts` と `domain/interactions/block-loot.ts`。kernel の公開 harvest API と、こちらの決定論的な乱数ルールを組み合わせ、結果は mc-sim の `InventoryService` に渡す |
 | 4 | 流体伝播 | **実装済み** | `domain/fluid-frontier.ts`。plan.md §3.11 が名指しするフロンティア上限つき |
 | 5 | 乗り物（ボート / トロッコ / レール） | **部分** | レールの**トポロジ**（`domain/vehicle/rail-shape.ts` の `resolveRailShape` / `RailShape` / `IsRailAt`、`domain/vehicle/rail-ascent.ts` の `isAscendingAhead`）と**運動**（`vehicle-motion.ts` の `stepMinecart` / `stepBoat`、`projectMinecartVelocity` を含む）は実装済み。**フレームには配線済みである** —— `domain/vehicle/vehicle-frame.ts` の `advanceVehicles` が両方を毎フレーム消費し、`stages/registration.ts` が `GAMEPLAY_STAGE_IDS.vehicles` stage として import・登録している（import は :346、呼び出しは :3135）。ただし `gameplayStages` の 7 番目の省略可能引数 `vehicleService` を渡した呼び出しに限る —— 渡さなければ stage は `Effect.void` になる。`mc-sim` はカートの速度・乗車状態を持つ `Vehicle` と `VehicleServiceApi` を用意しており、旧記述が挙げていた「速度も名簿も無い」は解消した。残る欠落（駐車中の乗り物、`resolveMinecartMultiplier` / `RAIL_CLIMB_SPEED`）は [responsibility.md](./responsibility.md) §5-5 に名指しで並べてある。旧記述「未着手」の根拠は §3-2 のとおり間違っていた |
-| 6 | ポータル / 次元移動 | **ほぼ完**（点火・**発火タイマー**・**適用**が入った。残るのは既存ポータルの**再利用**だけで、それは `knownPortals` の所有者が居ないことによる） | 参照実装がこの責務を**3 ファイルに割っている**とおりに割れた。**枠の検出**は mc-worldgen の `domain/portal-frame.ts`（`detectNetherPortal`）で、こちらは `domain/portal-frame-port.ts` として**ミラー**する —— `domain/chunk-store-port.ts` が `ChunkStore` をミラーするのと同じやり方で、import ではない。**点火**は `domain/interactions/ignite-portal.ts` で、これがこの行の残りだった分である。<br><br>`detectNetherPortal` は**同期**の `BlockAt` を取り、1 回で約 500 セルを探る。こちらのブロック読みは全部 `Effect` なので、その 2 つは合わない —— `domain/chunk-window.ts` がその橋で、その冒頭に**3 つの案と、選ばなかった 2 つを落とした理由**（セル単位＝右クリック 1 回あたり 3,872 回のストア呼び出し／要求駆動の不動点＝他人の制御フローに依存した限界）が書いてある。選んだのは参照実装と同じ形、チャンクを peek してバッファを引く方式である。**`ChunkNotLoaded` は近道の中でも air にならない**: 常駐していないチャンクのセルは `UNREADABLE_BLOCK`（`-1`、どの registry 行でもない）を返して**数えられ**、`ignite-portal.ts` はそれを `NoFrame` ではなく `ChunkNotLoaded` として報告する。<br><br>**3 本目も 3 つに割れた。** 参照実装の `physics-stage-portal.ts` はプレイヤーの位置を読み、十分に立ったと判断し、別次元へ置く —— この「**十分に立った**」が `domain/portal-dwell.ts`（`stepPortalDwell`）で、**4 秒の滞在と 4 秒の再突入冷却**は名簿ではなく**時間**である。`domain/mob/creeper-fuse.ts` と同じ形（タグつき状態機械、`DeltaTimeSecs`、overshoot が効く `>=`）で、座標を 1 つも持たない。「**どこへ**置くか」は mc-worldgen の `domain/nether-link.ts` / `domain/nether-travel.ts` に入った。<br><br>**「置く」も入った。3 つに割れた見立ては正しく、3 つとも解けた** —— [responsibility.md](./responsibility.md) §6-2 が実測の唯一の記述である。(a) **次元という名詞の所有者**は **mc-worldgen** に決まった（kernel ではない —— kernel に `Dimension` 型は今も無く、候補ではあっても現職ではなかった）。名指ししていた `PlayerServiceApi.dimension` / `setDimension` は**その名前のまま存在する**。 (b) **「どこへ」はバレルに出た** —— 語を所有すると決めた以上伏せる理由が失効し、`index.ts` は `./domain/nether-travel` を出しており、`domain/portal-travel.ts` がその公開 API を直接利用する。 (c) **`api-lock.md` は動いた**（`pnpm api:update` 済。`gameplayStages` は第 5 引数、`makeGameplayStages` は 4 つ目の要求サービスを得た）—— 見積り通りであり、待つ代償のほうが大きくなった時点で払った。**残るのは `knownPortals` の所有者だけで、それは barrel の問題ではなく所有の問題である** |
+| 6 | ポータル / 次元移動 | **ほぼ完**（点火・発火タイマー・適用が入り、残るのは既存ポータルの再利用だけ） | `src/index.ts` の export と `test/public-api.test.ts` を公開面の正とする。ポータルの点火・滞留・適用は `domain/interactions/ignite-portal.ts`、`domain/portal-dwell.ts`、`domain/portal-travel.ts` と対応テストで管理する。 |
 | 7 | 昼夜・天候 | **実装済み** | `domain/day-night.ts`（`isNight` / `dayPhase` / `hostileSpawnsAllowed`）と `domain/weather.ts`（遷移グラフ・継続時間・`isPrecipitating` / `isThunderstorm` / `weatherLightScale`）。`gameplay:time-weather` は **`Effect.void` ではなくなった**。時刻を**進める**のは依然 mc-sim の `TimeService` である |
 
 **3・4・7 が実装済み、1・2・5・6 が部分、未着手は 0 である。**
@@ -319,7 +308,7 @@ mc-physics の速度でも mc-sim の名簿でもなく **mc-worldgen の構造�
 | `packages/world/domain/nether/portal-frame.ts` | 枠の**形** | mc-worldgen | ✅ landed（`detectNetherPortal`） |
 | `packages/app/.../interaction-flint-steel-portal.ts` | **点火** | **mx-gameplay** | ✅ `domain/interactions/ignite-portal.ts` |
 | `packages/app/.../physics-stage-portal.ts` の**発火判定** | 4 秒立ったか。再突入の冷却 | **mx-gameplay** | ✅ `domain/portal-dwell.ts`（`stepPortalDwell`） |
-| `packages/app/.../physics-stage-portal.ts` の**移動先** | 8:1 スケーリング、既存ポータルの再利用、無ければ設計 | **mc-worldgen** | ✅ `domain/nether-link.ts` / `domain/nether-travel.ts`。ただし**バレルには出ていない** —— mc-worldgen の `index.ts` は `./domain/portal-frame` を出してこの 2 本を出さないので、**こちらからは呼べない**（`Dimension` を意図的に非公開にしているため） |
+| `packages/app/.../physics-stage-portal.ts` の**移動先** | 8:1 スケーリング、既存ポータルの再利用、無ければ設計 | **mc-worldgen** | ✅ mc-worldgen の公開ポータル API。mx-gameplay は `domain/end-portal-travel.ts` で移動適用を担当する |
 | `packages/app/.../physics-stage-portal.ts` の**適用** | プレイヤーをそこへ置き、次元を切り替える | **置くほうは mx-gameplay** | ✅ **閉じた。** `domain/portal-travel.ts` の `applyPortalTravel` が `moveTo` と `setDimension` を対で呼び、`stages/registration.ts` の `stepPortalTravel` が `gameplay:interactions` から**毎フレーム呼ぶ**。`test/portal-travel.test.ts` は 8 本で、うち REACHABILITY 節は**本物の stage を回して**次元が変わることを見る —— 配線を消すと correctness 側 7 本は緑のまま REACHABILITY だけが赤くなる（実測）。次元の語は **mc-worldgen** が所有すると決まり barrel に出た（kernel ではない。kernel に `Dimension` 型は今も無い）。**残る制限は `knownPortals` の所有者が居ないことだけ**で、空リストを渡すため既存ポータルを再利用しない —— RESTRICTION 節がそれを固定している |
 
 **「未着手」で 3 本まとめて止めていたのが誤りだった。** 1 本目は隣のリポジトリが書き、
@@ -395,7 +384,7 @@ mx-redstone の回路盤が磨いた。`tsconfig.base.json` が `lib` から "DO
 機械的保証も、ターミナルレンダラなら壊さずに済む。
 
 将来 1 人称プレビュー（mc-sim の障害物コースのような）が要るなら、そのときは kit が正しい置き場である。
-そのときも実行時依存に混ざったら `pnpm check:deps` が落とす（plan.md §2.3-2）。
+そのときも実行時依存に混ざったら `pnpm lint` の import 制限が落とす（plan.md §2.3-2）。
 
 **なぜプレビューが完成条件なのか。** テストは「決めた通りに動くか」を見るが、
 「決めたことが遊びとして正しいか」は見ない。溶岩湖の縁が直線になっていること（DN-GP-2）は
@@ -459,7 +448,7 @@ F3 は「終状態が同じで途中が違う」——3 つとも assertion の�
 
 | # | 症状 | 場所 | pin |
 | --- | --- | --- | --- |
-| F7 | ~~`canBlockStaySupported` の**per-block アーム**（`block-support.ts:73-89` の `SUPPORT_RULES`）が未移植で、10 種すべてが fallback で答えられている。睡蓮は**水の上で拒否され、石の上で許可される**~~ **→ 解決済み。**kernel が `supportRule` 列を持ったので、`domain/block-vocabulary.ts` がそれをミラーし `placementVerdict` が `canBlockStaySupported` を呼ぶ | `domain/interactions/place-block.ts`（support ブランチ） | ✅ 8 本（**うち 4 本は誤挙動の固定から一致の主張へ書き換えた**） |
+| F7 | ~~`canBlockStaySupported` の per-block 判定が未移植~~ **→ 解決済み。** kernel の公開能力表を `placementVerdict` が利用する | `domain/interactions/place-block.ts`（support ブランチ） | ✅ |
 
 **参照実装の `canBlockStaySupported` は 2 本のアームを持つ。**
 
@@ -496,7 +485,7 @@ here」が名指しで欠くと言っているのは**維持 sweep** のほう�
 
 | 変えたところ | 内容 |
 | --- | --- |
-| `domain/block-vocabulary.ts` | `SupportRule` 型・3 つのアーム・`satisfiesSupportRule`・**19 行の override 表を全数**転記。部分ミラーは別の型になるので全数でなければならない |
+| kernel の公開能力 API | `SupportRule` と設置条件を利用。語彙の再定義や部分ミラーは作らない |
 | `domain/interactions/place-block.ts` | 私有の `SUPPORT_SENSITIVE_BLOCK_TYPES`（14 行）を**削除**。support ブランチは `canSupportAttachments` ではなく `canBlockStaySupported` を 1 回呼ぶ |
 | `test/place-block.test.ts` | F7 の 4 本を「誤挙動の固定」から「参照実装の当該行との一致」へ**反転**。各テストが「以前は何を主張していたか」を書いている |
 
@@ -521,7 +510,7 @@ own.」正しかった。再構成は削除し、`canBlockStaySupported` の直�
 
 | # | 症状 | 場所 | pin |
 | --- | --- | --- | --- |
-| F8 | シルクタッチが**関門**（そもそも落ちるか）としてのみ実装されており、**置換**（何が落ちるか）ではない。参照実装は `item:` の上書きより**ブロックそのもの**を優先する（`block-service-silk-touch.test.ts:52-58`）。この build では石＋シルクタッチが**まるい石**、草ブロックが**土**、グロウストーンが**粉 2 個**を落とす | `domain/block-vocabulary.ts` の `resolveDrop`（= kernel `domain/block-harvest.ts:227-243` の転記） | ✅ 1 本（**現挙動の固定**） |
+| F8 | シルクタッチの drop 置換を kernel の harvest API に委譲する | `domain/interactions/block-loot.ts` | ✅ |
 
 **kernel が既にこれを書いている**（`mc-kernel/domain/block-harvest.ts:213-220`）。
 「KNOWN LIMITATION, recorded rather than faked」と題して置換ではなく関門であることを述べ、
@@ -542,16 +531,16 @@ F8 は**期限切れの延期**（kernel が「必要になったら」と書い
 同じ形である（§3-5 の末尾）。pin は §3-5-1 の前例に従う —— kernel が `silkTouchItem` を
 生やした日にこのテストが赤くなり、削除ではなく**一致の主張へ書き換える**。
 
-## 4. カバレッジ — 99% ゲートは有効である
+## 4. カバレッジ — 100% ゲートは有効である
 
-**閾値は 4 指標すべてに設定してある。** 参照実装（`takeokunn/ts-minecraft`）と同じ 99% である。
+**閾値は 4 指標すべてに 100% で設定してある。**
 
 ```typescript
 // vitest.config.ts
-thresholds: { branches: 99, functions: 99, lines: 99, statements: 99 },
+thresholds: { branches: 100, functions: 100, lines: 100, statements: 100 },
 ```
 
-実測は **statements 99.75 / branch 99.37 / functions 100 / lines 99.75**（660 テスト、2026-07-28）。
+実測は statements/functions/lines/branches のすべて 100% である。テスト件数は `pnpm test` の実行結果を正とする。
 弓とエンダーパールの 4 本は**4 本とも 100 / 100 / 100 / 100** で、`stages/registration.ts` も 100 のままである。
 `bow-shot.ts` が一度 97.82 だったのは参照実装の `if (t >= 1) break`（`interaction-bow-handler.ts:81`）を
 そのまま移していたためで、**その分岐は算術的に到達不能**（`ceil(d / s) - 1 < d / s`）だったので
@@ -560,7 +549,7 @@ thresholds: { branches: 99, functions: 99, lines: 99, statements: 99 },
 この行は一度**古くなっていた**（99.85 / 99.51 と書いてあった）ので、書き直すのではなく測り直した。
 インベントリの配線（§3-1 の 1 行目）は 14 本を足して 4 指標のうち branch だけを 99.14 → 99.15 へ動かした ——
 `stages/registration.ts` の deposit ループは 2 分岐とも通っており、
-`domain/inventory-port.ts` は Tag 1 つ以外に実行文を持たない。
+インベントリの状態は mc-sim が所有し、このリポジトリは公開サービスを利用する。
 移植 2 回目の 6 本では 4 指標とも動かなかった —— どれも既に到達していた行についての主張だったからである。
 レールの 25 本は 4 指標を **99.84 / 99.49 → 99.85 / 99.51** へわずかに動かしたが、それは新しい行が
 2 本入って両方 100% だったからであって、**数字を上げるために書いたテストは 1 本も無い**。
@@ -571,10 +560,10 @@ thresholds: { branches: 99, functions: 99, lines: 99, statements: 99 },
 
 閾値を置かなかった理由は「スケルトンに課しても意味がない」であり、その前提はもう成り立たない。
 `domain/` はモブのルール、フレームの sweep、スポーン探索、ドロップ表と支持表、天候と昼夜を持ち、
-`stages/` は 2 つのミラーサービスにそれらを配線する 5 つの stage を持つ。
+`stages/` は上流サービスにそれらを配線する 8 つの stage を持つ。
 パーセンテージがようやく**実装の挙動についての主張**になった。
 
-`vitest.config.ts` と CI ワークフロー（`Coverage (99% gate)` ステップ）の**両方**で有効にしてある。
+`vitest.config.ts` の thresholds と `pnpm test:coverage` の終了 status で有効にしてある。
 閾値は `vitest.config.ts` にしか書かない —— `vitest run --coverage` が自力で非ゼロ終了するので
 CI に追加のフラグは要らず、そうしておけば手元と CI が同じ判定をする。
 **「push して初めて落ちるゲート」を作らないための配置**である。
@@ -589,7 +578,7 @@ branch は **95.68%** で、未到達は 25 本だった。**そのうちテス�
 | 分岐 | 判定 | 対応 |
 | --- | --- | --- |
 | `frame-rolls` の非有限シード / カウント 0 / 0 の不動点 | **本物の抜け**。本文が主張していて誰も確かめていない | `test/frame-rolls.test.ts` |
-| `resolveDrop` の「item 形を持たないブロックの `'self'`」 | 本物の抜け。**名前の無いアイテムを鋳造しうる** | `test/block-vocabulary-mirror.test.ts` |
+| `resolveDrop` の「item 形を持たないブロックの `'self'`」 | 本物の抜け。**名前の無いアイテムを鋳造しうる** | `test/block-loot.test.ts` |
 | `blockOfPlaceableItem`（**関数まるごと未実行**） | 本物の抜け。公開面 | 同上（往復で全数） |
 | `clampUnit` の非有限アーム | 本物の抜け。`NaN` の countdown は**永久に明けない空** | `test/weather.test.ts` |
 | `resolveBlasts` の 6 本（外した爆風、空リスト、bruise、…） | 本物の抜け。slice が作るフレームでは起きない | `test/mob-frame.test.ts`（新設） |
@@ -623,30 +612,25 @@ branch は **95.68%** で、未到達は 25 本だった。**そのうちテス�
 カバレッジ 100% の行だった —— 実行はされていたが、どのアサーションもその値に依存していなかった。
 `SPANS the four radii` を足してある。
 
-### 4-1. `domain/position-key.ts` を除外している理由
+### 4-1. 型のみのファイルを coverage 対象にしない理由
 
-型エイリアス 1 行だけで、実行可能な文を 1 つも持たないファイルを
-v8 provider は 100% ではなく **0%** として報告する。headline の数字が無意味になるため
-`coverage.exclude` に入れてある（`vitest.config.ts` の `PURE_TYPE:` コメント）。
-
-このファイルは kernel の座標語彙のプレースホルダであり、kernel publish 時に削除される
-（[versioning.md](./versioning.md) §5-1）。除外は恒久措置ではない。
+現行の coverage 設定に、削除済みの `domain/position-key.ts` を除外する設定はない。
+座標語彙は上流パッケージが所有し、本リポジトリの実行対象ではない。
 
 **除外は「測れないもの」に限り、「測ると都合が悪いもの」には使わない。**
 ゲートを入れるにあたってこのリストは 1 行も増やしていない。次節の 3 件は、
 除外ではなく**呼び出し地点のコメント**として残してある —— 除外は行を報告から消すが、
 コメントは読む人の前に残るからである。
 
-### 4-2. 覆っていない 3 本と、その理由（0.51%）
+### 4-2. 到達不能コードの扱い
 
-100% ではなく 99% を閾値にしている以上、**空いている分が何なのかを名指しできなければ意味がない**。
-3 本あり、いずれも「テストが書けなかった」ではなく「どんな入力でも到達しない」である。
+100% の閾値を満たすため、到達可能な分岐はテストで固定する。型で到達不能と証明できる防御は削除し、削除できない型のみの構造はこの節に根拠を残す。現行の coverage 実測に未到達行はない。
 
 | 場所 | なぜ到達しないか | なぜ消さないか |
 | --- | --- | --- |
 | `domain/entities/mob-frame.ts` の `offset === undefined` | エンダーマンの**16 回の転移試行が全部外れる**確率。帯は候補正方形の約 74% を覆うので、16 連続の失敗はおよそ**10 億回に 1 回**。他のテレポートテストを駆動している seed 探索（相異なる第 1 ロールを持つ約 12.8 万個）では届かず、どんな予算でも届かない | 死んだコードではない。`endermanTeleportOffset` のオラクルが `undefined` を駆動しており、これはフレーム側がそれを尊重している箇所である。「帯を広げれば必ず見つかる」を拒否しているのがこの分岐 |
 | `domain/entities/mob-spawn-search.ts` の `HOSTILE_KINDS[index] ?? HOSTILE_KINDS[0]` | `noUncheckedIndexedAccess` は添字読みを常に `\| undefined` にする。直前の行が `Math.min` で範囲に収めているので、値としては到達しない | 型が要求するので消せない。**2 段あった fallback は 1 段に減らした**（名簿が空である場合を型で排除した） |
-| `domain/interactions/place-block.ts` の `UnknownBlock` | `heldItem` は `PlaceableItemType`（= `ItemType & BlockType`）で、`test/block-vocabulary-mirror.test.ts` が `blockIdOf` を **120 の `BlockType` 全部について全域**だと固定している（19 + 101 = 120 の等式）。緑の木では到達しない | mc-kernel が同じ `blockIdOf` の fallback を除外しているのと**同じ形、逆の向き**である。kernel 側は `?? AIR_BLOCK_ID` で「未登録の型が静かに air になる」＝**消滅**する側に倒れる。こちらは**名前のついた拒否**に倒れる。ミラーは kernel の保証が成り立たない場所なので、倒れる向きが正しいほうを残す |
+| `domain/interactions/place-block.ts` の `UnknownBlock` | 現行の `PlaceableItemType` と kernel の能力表で到達不能な型境界 | 型と設置テストで確認する |
 
 **「到達不能な分岐に入力をでっち上げて覆う」ことはしていない。**
 それは将来の読み手に「この分岐は起こりうる」と教えることであり、このゲートが防ぐはずの不正そのものである。
@@ -664,7 +648,7 @@ plan.md §5.1-3:
 
 | 仕組み | 場所 | 効果 |
 | --- | --- | --- |
-| 壁時計の直読み禁止 | `scripts/check-dependency-whitelist.ts`（DN-GP-8） | 時刻は注入された Clock Port からしか来ない |
+| 壁時計の直読み禁止 | `.ast-grep/rules/no-wall-clock-read.yml`（DN-GP-8） | 時刻は注入された Clock Port からしか来ない |
 | `dt` は引数 | `StageRegistration.run(dt)` | フレームを好きな速さで進められる。1 ゲーム日を数 ms で回せる |
 | 挿入順を保つ `Set` | `domain/falling-block.ts` | 同じイベント列は同じバッチ列を生む |
 | 昼夜ルールが全域関数 | `domain/day-night.ts`（DN-GP-7） | 引数以外に依存する値が無い。時刻の**状態**は mc-sim にあり、ここには複製が無い |
@@ -685,7 +669,7 @@ plan.md §5.1-3:
   `test/weather.test.ts` の 2 時間ぶんは、どちらも `DEFAULT_ROLL_SEED` から回っていて再現する。
   **残りの半分（インベントリ）も済んだ。** この行は「書く先が無い」と言っていたが、
   それは 2 つの理由のうち片方（`add` が `ItemId = string` を取り、こちらは `BlockId = number` を渡していた）が
-  既に消えていたのを見落としていた。`domain/inventory-port.ts` が mc-sim の `InventoryService` を丸ごと写し、
+  既に整理済みの API を参照していた。stage が mc-sim の `InventoryService` を直接利用し、
   `gameplay:interactions` が採掘したスタックごとに `add` を呼ぶ。
   `test/vertical-slice.test.ts` の
   `the loot chain reaches mc-sim's inventory` が 1 フレームで

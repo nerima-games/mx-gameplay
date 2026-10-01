@@ -49,15 +49,14 @@ const spawnRequest = (kind = ZOMBIE): SpawnRequest<Behaviour> => ({
 })
 
 /** An entity as an UNTRUSTED SAVE contains one — the brands are erased by JSON. */
-const saved = (fields: Partial<Entity<Behaviour>>): Entity<Behaviour> =>
-  ({
+const saved = (fields: Readonly<Record<string, unknown>>): Entity<Behaviour> =>
+  Object.assign({
     id: EntityId('zombie-0'),
     kind: ZOMBIE,
     feetPosition: position(0, 0, 0),
     healthPoints: 20,
     behaviour: { mood: 'idle' },
-    ...fields,
-  }) as Entity<Behaviour>
+  }, fields)
 
 describe('spawn and despawn', () => {
   it.effect('spawn mints an id and adds the entity', () =>
@@ -271,7 +270,7 @@ describe('restore repairs rather than validates', () => {
       // A kind is what the rules dispatch on. There is nothing to repair it to,
       // and inventing one would put a creeper in the world the save never had.
       const result = repairRoster<Behaviour>(
-        { entities: [saved({ kind: '' as never })], nextSerial: 0 },
+        { entities: [saved({ kind: '' })], nextSerial: 0 },
         (_kind, behaviour) => behaviour,
       )
 
@@ -301,7 +300,7 @@ describe('restore repairs rather than validates', () => {
   it.effect('a blank id is reidentified too', () =>
     Effect.sync(() => {
       const result = repairRoster<Behaviour>(
-        { entities: [saved({ id: '   ' as never })], nextSerial: 3 },
+        { entities: [saved({ id: '   ' })], nextSerial: 3 },
         (_kind, behaviour) => behaviour,
       )
 

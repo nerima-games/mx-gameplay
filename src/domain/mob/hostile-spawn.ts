@@ -219,12 +219,12 @@ export const canHostileSpawnAt = (candidate: SpawnCandidate): SpawnVerdict => {
 export const canMobSpawnAt = (kind: EntityKind, candidate: SpawnCandidate): SpawnVerdict => {
   const dimension = candidate.dimension ?? 'overworld'
   if (
-    ECOSYSTEM_MOB_KINDS.includes(kind as (typeof ECOSYSTEM_MOB_KINDS)[number]) &&
+    ECOSYSTEM_MOB_KINDS.some((member) => member === kind) &&
     !ecosystemDimensionAllows(kind, dimension)
   ) return REFUSED('wrong-dimension')
 
-  const passive = PASSIVE_MOB_KINDS.includes(kind as (typeof PASSIVE_MOB_KINDS)[number])
-  const nether = NETHER_HOSTILE_KINDS.includes(kind as (typeof NETHER_HOSTILE_KINDS)[number])
+  const passive = PASSIVE_MOB_KINDS.some((member) => member === kind)
+  const nether = NETHER_HOSTILE_KINDS.some((member) => member === kind)
   if (!passive && !nether) {
     if (dimension !== 'overworld') return REFUSED('wrong-dimension')
     return canHostileSpawnAt(candidate)

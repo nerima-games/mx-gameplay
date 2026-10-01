@@ -284,7 +284,11 @@ import {
   canFireBow,
   BOW_MAX_RANGE,
 } from '../domain/interactions/draw-bow.js'
-import { shotBlockedByTerrain, shotTarget, type ShotHit } from '../domain/interactions/bow-shot.js'
+import {
+  shotBlockedByTerrain,
+  shotTargetWithCandidate,
+  type ShotHit,
+} from '../domain/interactions/bow-shot.js'
 import { knockbackDirection, type KnockbackDirection } from '../domain/interactions/knockback.js'
 import {
   DEFAULT_MELEE_DAMAGE,
@@ -594,7 +598,7 @@ class FluidStateRef extends Effectable.Class<ReadonlyArray<FluidWorkItem>>
   readonly [Readable.TypeId]: Readable.TypeId = Readable.TypeId
   readonly get: Effect.Effect<ReadonlyArray<FluidWorkItem>>
   // Explicit field declarations, not TypeScript parameter properties: the
-  // `erasableSyntaxOnly` flag (Wave 0 toolchain freeze) requires every
+  // `erasableSyntaxOnly` compiler option requires every
   // construct to erase to nothing but a type annotation, and a parameter
   // property emits an assignment statement the compiler would otherwise have
   // to synthesize.
@@ -1150,7 +1154,7 @@ HOE_ITEM_TYPES satisfies ReadonlyArray<ItemType>
 export type HoeItemType = (typeof HOE_ITEM_TYPES)[number]
 
 export const isHoeItem = (item: ItemType): item is HoeItemType =>
-  (HOE_ITEM_TYPES as ReadonlyArray<ItemType>).includes(item)
+  HOE_ITEM_TYPES.some((member) => member === item)
 
 export type FarmingItemUseRequest =
   | {
@@ -2783,7 +2787,7 @@ const stepFireLifecycle = (
       // is therefore never `undefined` at this point, and neither is `?.`'s or
       // `?? 0`'s fallback ever consulted. Asserted (`!`, `next.burningActors!`)
       // rather than kept as a branch a coverage gate cannot reach.
-      if (next.fires.length === 0 && next.burningActors!.length === 0) {
+      if (next.fires.length === 0 && (next.burningActors === undefined || next.burningActors.length === 0)) {
         yield* Ref.set(accumulator, 0)
         return
       }
@@ -3627,8 +3631,11 @@ export const gameplayStages = (
                 }
                 const rolls = yield* Ref.modify(state.rollSeed, (seed) => {
                   const drawn = drawRolls(seed, 3)
+                  const wait = rollAt(drawn, 0)
+                  const category = rollAt(drawn, 1)
+                  const item = rollAt(drawn, 2)
                   return [
-                    { wait: drawn.rolls[0]!, category: drawn.rolls[1]!, item: drawn.rolls[2]! },
+                    { wait, category, item },
                     drawn.seed,
                   ] as const
                 })
@@ -3893,7 +3900,7 @@ export const gameplayStages = (
               })
             }
 
-            const hit = shotTarget(
+            const hit = shotTargetWithCandidate(
               candidates,
               shot.origin,
               shot.dirX,
@@ -3953,20 +3960,9 @@ export const gameplayStages = (
             bowHits.push({ id: hit.id, damage })
 
             // WHICH WAY IT SHOVES, computed from the shooter to the target and
-            // horizontal only. The target is looked up rather than carried out of
-            // `shotTarget`, which returns a distance ALONG THE RAY and not a
-            // position — and the shove is about where the mob stands, not about
-            // how far down the line it was found.
-            //
-            // NO `undefined` GUARD: `hit.id` is `candidate.id` for some
-            // `candidate` in this exact `candidates` array (`shotTarget`'s
-            // `nearest = { id: candidate.id, distance: alongRay }`, bow-shot.ts).
-            // `candidates` is read once for the whole batch (the comment above
-            // this loop) and nothing between that read and here reassigns it or
-            // removes a roster entry — terrain sampling and the damage/shove
-            // math are both pure, and the roster is not touched again until
-            // `resolveBowHits` runs after this loop. The lookup cannot miss.
-            const target = candidates.find((candidate) => candidate.id === hit.id)!
+            // horizontal only. `shotTarget` retains the selected candidate, so
+            // this uses the exact position that won the same scan as the hit.
+            const target = hit.candidate
             shoves.push({
               id: hit.id,
               direction: knockbackDirection(

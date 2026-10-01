@@ -1,3 +1,4 @@
+import { defined } from './support/assertions'
 import { describe, expect, it } from 'vitest'
 import {
   addVillager,
@@ -24,7 +25,7 @@ describe('villager trade state validation', () => {
       villagers: [{
         ...villager,
         offers: [{
-          ...villager.offers[0]!,
+          ...defined(villager.offers[0]),
           input: { item: 'not_an_item', count: 1 },
         }],
       }],
@@ -54,7 +55,7 @@ describe('villager trade state validation', () => {
 describe('useVillagerOffer', () => {
   it('refuses an unknown villager, an unknown offer, and an offer at max uses', () => {
     const villager = makeVillager('farmer-1', 'farmer')
-    const offer = villager.offers[0]!
+    const offer = defined(villager.offers[0])
     const state = addVillager(emptyVillagerTradeState(), villager)
 
     expect(useVillagerOffer(state, 'no-such-villager', offer.id)).toBeUndefined()
@@ -62,7 +63,7 @@ describe('useVillagerOffer', () => {
 
     let exhausted = state
     for (let used = 0; used < offer.maxUses; used += 1) {
-      exhausted = useVillagerOffer(exhausted, villager.id, offer.id)!
+      exhausted = defined(useVillagerOffer(exhausted, villager.id, offer.id))
     }
     expect(useVillagerOffer(exhausted, villager.id, offer.id)).toBeUndefined()
   })
@@ -72,10 +73,10 @@ describe('useVillagerOffer', () => {
     // update never fires. A second villager forces it.
     const traded = makeVillager('farmer-1', 'farmer')
     const bystander = makeVillager('farmer-2', 'farmer')
-    const offer = traded.offers[0]!
+    const offer = defined(traded.offers[0])
     const state = addVillager(addVillager(emptyVillagerTradeState(), traded), bystander)
 
-    const after = useVillagerOffer(state, traded.id, offer.id)!
+    const after = defined(useVillagerOffer(state, traded.id, offer.id))
 
     const untouched = after.villagers.find((candidate) => candidate.id === bystander.id)
     expect(untouched).toStrictEqual(bystander)

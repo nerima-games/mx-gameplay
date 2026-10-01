@@ -1,7 +1,6 @@
 import { describe, expect, it } from '@effect/vitest'
-import type { Slot } from '@nerima-games/mc-sim'
 import { Effect } from 'effect'
-import { StackCount } from '@nerima-games/mc-kernel'
+import { itemStack } from '@nerima-games/mc-kernel'
 import { EntityId } from '@nerima-games/mc-sim'
 import { ZOMBIE_KIND, type PlayerDamageEvent } from '../src/domain/mob/hostile-combat'
 import { resolveArmoredPlayerDamages } from '../src/stages/registration'
@@ -36,7 +35,7 @@ describe('player armour damage integration', () => {
   it.effect('uses the latest equipment after armour breaks between queued hits', () =>
     Effect.gen(function* () {
       const slots = [...emptySlots()]
-      slots[0] = { item: 'iron_helmet', count: StackCount(1) } satisfies Slot
+      slots[0] = itemStack('iron_helmet', 1)
       const inventory = yield* makeInventoryDouble(slots)
 
       yield* inventory.api.equipFromInventory(0, 'head')

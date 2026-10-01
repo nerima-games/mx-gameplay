@@ -1,6 +1,5 @@
 import { Effect } from 'effect'
 import {
-  isValidVitals as isValidSimVitals,
   makeVitalsService,
   SPAWN_VITALS,
   type Vitals as SimVitals,
@@ -15,8 +14,21 @@ export type PlayerVitalsView = SimVitalsView
 
 export const SPAWN_PLAYER_VITALS: PlayerVitals = SPAWN_VITALS
 
-export const isValidPlayerVitals = (vitals: PlayerVitals): boolean =>
-  isValidSimVitals(vitals)
+export const isValidPlayerVitals = (vitals: unknown): vitals is PlayerVitals => {
+  if (!isRecord(vitals)) return false
+  return typeof vitals['maxHealthPoints'] === 'number' && Number.isFinite(vitals['maxHealthPoints']) && vitals['maxHealthPoints'] > 0 &&
+    typeof vitals['healthPoints'] === 'number' && Number.isFinite(vitals['healthPoints']) && vitals['healthPoints'] >= 0 && vitals['healthPoints'] <= vitals['maxHealthPoints'] &&
+    typeof vitals['maxHungerPoints'] === 'number' && Number.isFinite(vitals['maxHungerPoints']) && vitals['maxHungerPoints'] >= 0 &&
+    typeof vitals['hungerPoints'] === 'number' && Number.isFinite(vitals['hungerPoints']) && vitals['hungerPoints'] >= 0 && vitals['hungerPoints'] <= vitals['maxHungerPoints'] &&
+    typeof vitals['saturation'] === 'number' && Number.isFinite(vitals['saturation']) && vitals['saturation'] >= 0 && vitals['saturation'] <= vitals['hungerPoints'] &&
+    typeof vitals['exhaustion'] === 'number' && Number.isFinite(vitals['exhaustion']) && vitals['exhaustion'] >= 0 && vitals['exhaustion'] < 4 &&
+    typeof vitals['foodTimerSecs'] === 'number' && Number.isFinite(vitals['foodTimerSecs']) && vitals['foodTimerSecs'] >= 0 && vitals['foodTimerSecs'] < 4 &&
+    typeof vitals['totalExperience'] === 'number' && Number.isFinite(vitals['totalExperience']) && vitals['totalExperience'] >= 0 &&
+    (vitals['lastDamageCause'] === undefined || typeof vitals['lastDamageCause'] === 'string')
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null
 
 export type VitalsDamageOutcome = {
   readonly vitals: PlayerVitals

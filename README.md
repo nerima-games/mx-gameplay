@@ -27,19 +27,16 @@ frontier上の作業identityは `(position key, fluid kind)` なので、水と�
 `mc-sim` / `mc-worldgen` / `mc-audio`。加えて `mc-kernel`（全リポジトリから import 可）。
 `mc-playground-kit` は **devDependency 専用**（plan.md §2.3-2）。
 
-これは設計上の制約であり、`pnpm check:deps` で機械的に強制されている
-（`scripts/check-dependency-whitelist.ts` の `REPOSITORY_POLICY`）。green のときの出力はこの形になる。
+これは設計上の制約であり、`pnpm lint` の import 制限と ast-grep ルール、stage 登録テストで機械的に検査されている。
 
 ```console
-$ pnpm check:deps
-check-dependency-whitelist: OK — 13 file(s) scanned, allowed direct dependencies:
-@nerima-games/mc-audio, @nerima-games/mc-sim, @nerima-games/mc-worldgen
-(plus @nerima-games/mc-kernel, which every repository may import).
+$ pnpm lint
+...
 ```
 
 強制は import だけでは足りない。`after` に書く `StageId` は**文字列**なので import ゲートからは見えず、
-`after: [StageId('ui:hud-sync')]` は `pnpm check:deps` を素通りする。この穴は
-`test/stage-registration.test.ts` が塞いでいる。2 つのゲートが別の穴を見ている
+`after: [StageId('ui:hud-sync')]` は import 制限だけでは検査できない。この穴は
+`test/stage-registration.test.ts` が塞いでいる。2 つの検査が別の穴を見ている
 （詳細は [docs/architecture.md](./docs/architecture.md) §4）。
 
 ## このリポジトリの位置づけ
@@ -66,9 +63,9 @@ check-dependency-whitelist: OK — 13 file(s) scanned, allowed direct dependenci
 | [docs/architecture.md](./docs/architecture.md) | 4 階層、全 16 リポジトリの依存グラフ、**名詞/動詞ルール**、体験モジュール間エッジがゼロである理由 |
 | [docs/responsibility.md](./docs/responsibility.md) | 責務と、**明示的な非スコープ**（どこに行くのかを全部書いてある） |
 | [docs/public-api.md](./docs/public-api.md) | 契約は stage 登録だけ。`index.ts` の全 export を 契約 / 内部(可視) に分類 |
-| [docs/design-notes.md](./docs/design-notes.md) | **DN-GP-1〜11。** 参照実装で実測された失敗と、それを固定している回帰テストの名前 |
+| [docs/design-notes.md](./docs/design-notes.md) | **DN-GP-1〜13。** 参照実装で実測された失敗と、それを固定している回帰テストの名前 |
 | [docs/porting.md](./docs/porting.md) | 移植元の**実測 LOC**（`wc -l`、2026-07-26 計測）と plan.md 見積との差分 |
-| [docs/testing.md](./docs/testing.md) | 検証要件、プレビュー 3 本、99% カバレッジゲートの投入時期 |
+| [docs/testing.md](./docs/testing.md) | 検証要件、プレビュー 3 本、100% カバレッジゲート、決定論の作り方 |
 | [docs/versioning.md](./docs/versioning.md) | 0.x → 1.0.0 方針、GitHub Packages、このリポジトリにとっての破壊的変更の定義 |
 
 ## 依存ルール（16 リポジトリ共通）
@@ -83,17 +80,15 @@ check-dependency-whitelist: OK — 13 file(s) scanned, allowed direct dependenci
 | mc-playground-kit は devDependency 専用 | `dependencies` に入れてはならない。実行時依存になると、出荷ビルドから入力処理が消える |
 | 壁時計の直読み禁止 | 時刻はすべて注入された Clock Port から取得する |
 
-`scripts/check-dependency-whitelist.ts` は 16 リポジトリ共通のテンプレートである。
-書き換えるのはファイル冒頭で囲ってある `REPOSITORY_POLICY` 定数だけで、それ以外はそのままコピーする。
-`dependencyGraph` には plan.md §2.1 の全 16 リポジトリが転記されており、
-`test/check-dependency-whitelist.test.ts` が roster の非循環性と各ルールを検査している。
+依存境界は `.oxlintrc.json` の `no-restricted-imports` と、`test/stage-registration.test.ts` で検査する。
+壁時計の直読みは `.ast-grep/rules/no-wall-clock-read.yml` で検査する。
 
 ### 壁時計直読み禁止の実装方法
 
-oxlint 0.12 は `no-restricted-syntax` も `no-restricted-properties` も実装しておらず、
-`no-restricted-globals` は `oxlint --rules` の一覧に出るが実装されていない（0.12.0 で実測確認済み）。
+現在の devShell が提供する oxlint は `no-restricted-syntax`、`no-restricted-properties`、
+`no-restricted-globals` を実装していない。
 そのため `Date.now()` / `new Date()` / `performance.now()` の禁止は
-**`scripts/check-dependency-whitelist.ts` 側で実装**している。
+**`.ast-grep/rules/no-wall-clock-read.yml` 側で実装**している。
 コメント・文字列リテラル・正規表現リテラルの中身はマスクされるので誤検知しない。
 oxlint が該当ルールを実装したら `.oxlintrc.json` 側へ移す。
 
@@ -130,31 +125,26 @@ Nix を使わない場合は `nix develop --command pnpm lint` のように `nix
 | `pnpm preview` | 内蔵プレビュー（採掘場 / 時間スライダー / Mob アリーナ）。**`pnpm verify` には入らない**。[apps/preview-mining-site/README.md](./apps/preview-mining-site/README.md) |
 | `pnpm test` | vitest（`@effect/vitest` の `it.effect` が主 API） |
 | `pnpm test:watch` | vitest watch |
-| `pnpm test:coverage` | カバレッジ計測（閾値は未設定。[docs/testing.md](./docs/testing.md) §4） |
-| `pnpm check:deps` | 依存ホワイトリスト + 循環検査 + 推移閉包検査 + 壁時計直読み禁止 |
-| `pnpm verify` | `typecheck && lint && check:deps && api:check && test`。CI と同じ内容。**`pnpm preview` は含まない** |
+| `pnpm test:coverage` | カバレッジ計測。statements/functions/lines/branches の閾値はすべて 100%。[docs/testing.md](./docs/testing.md) §4 |
+| `pnpm build` | `dist/` を生成するリリースビルド |
+| `pnpm package:verify` | ビルドした package tarball を consumer から検証 |
+| `pnpm verify` | `typecheck && lint && test`。CI と同じ内容。**`pnpm preview` と coverage は含まない** |
 
 ## 現状
 
-**実装前の叩き台（pre-implementation first cut）である。** 移植済みのルールは 12 本で、
-現在あるものの大半は、参照実装で実測された失敗を構造として固定した骨組みと、その回帰テストである。
+**現行実装である。** ルール、stage 配線、プレビュー、回帰テストをこのリポジトリで管理し、
+参照実装で実測された失敗は設計注意と回帰テストとして固定している。
 ただし**縦切りは 3 本通っている** — 掘る → 砂が落ちる → アイテムが渡る、
 **掘る → 置く → 落ちる**、そしてスポーン → 導火線 → 爆発 → 死因 → ドロップ、
 がいずれも stage 登録経由で動く。
 
-**plan.md §3.11 の 7 責務のうち 3 つが実装済み、2 つが部分、2 つが未着手である**
+**plan.md §3.11 の 7 責務のうち 3 つが実装済み、4 つが部分、未着手はない**
 （内訳は [docs/testing.md](./docs/testing.md) §3-1）。
 
-- **実行時依存は `effect` のみ。** `mc-sim` / `mc-worldgen` / `mc-audio` / `mc-kernel` は
-  まだ GitHub Packages に 1 つも publish されていないため、`package.json` に書けない。
-  ボトムアップの publish-then-pin（plan.md §6 Step 2）なので、この repo の番は kit の後である。
-- **`domain/frame-contract.ts` と `domain/position-key.ts` は kernel 型のローカル再掲であり、削除日が決まっている。**
-  mc-kernel が publish された時点で `import type { StageRegistration } from '@nerima-games/mc-kernel'` に置き換えて消す。
-  `FrameServices` を `never` にしてあるのが唯一の意図的な乖離で、理由は当該ファイルのコメントにある
-  （kernel の `ClockPort` を再掲すると、同じ文字列 ID を持つ**別の** `Context.Tag` が 2 つできる）。
-  **この 2 ファイルは `index.ts` から re-export していない。** 所有していない語彙（`StageId` /
-  `DeltaTimeSecs` / `StageRegistration`）を公開 API に載せると、約束済みの削除が
-  すべての消費者にとっての破壊的変更になるためである。
+- **実行時依存は `package.json` の exact pin が正である。** 現在は `mc-sim`、`mc-worldgen`、
+  `mc-audio`、`mc-kernel` を利用し、版数は `package.json` を参照する。
+- **`domain/frame-contract.ts` と `domain/position-key.ts` の kernel 型ローカル再掲は削除済みである。**
+  `StageId` / `DeltaTimeSecs` / `StageRegistration` は所有者である kernel から利用する。
 - **時刻の状態は 1 つも持たない。** `timeOfDaySecs` / `dayLengthSecs` の `Ref` と
   `DEFAULT_DAY_LENGTH_SECS`（1200。mc-sim の 400 と食い違っていた）と `advanceTimeOfDay` は削除した。
   時刻はセーブファイルに要る = 名詞であり、`mc-sim` が所有する（plan.md §2.3-1）。
@@ -171,7 +161,7 @@ Nix を使わない場合は `nix develop --command pnpm lint` のように `nix
   `gameplay:time-weather` はこれで `Effect.void` ではなくなった（DN-GP-7）。
 - **ブロックの読み書きは配線済み。** `gameplay:interactions` が破壊を、`gameplay:entities` が落下を、
   `gameplay:fire` が延焼と消火を、
-  mc-worldgen の `ChunkStore`（`domain/chunk-store-port.ts` のミラー越し）に対して実際に行う。
+  mc-worldgen が提供する `ChunkStore` API に対して実際に行う。
   「掘る → 砂が落ちる → アイテムが渡る」の縦切りは `test/vertical-slice.test.ts` が
   **stage 登録経由で**回している。`gameplay:fluids` はキューの出し入れだけである。
   ブロックに触るルールは 4 本（`break-block.ts` / `place-block.ts` / `explosion-crater.ts` /
@@ -203,7 +193,7 @@ Nix を使わない場合は `nix develop --command pnpm lint` のように `nix
   返るのは `{xBlocks, zBlocks}` という変位だけになる（docs/porting.md §5-2）。
   **乱数はドメインに 1 つも無い。** ロールは引数で渡す（mc-worldgen が seed を通すのと同じ形）。
   **4 つ目のドラゴンは「未着手」ではなく「拒否」である。** 位相機械が絶対ワールド Y
-  （`dragon-phase.ts:51-52`）で切り替わり速度を返す以上、それは mc-worldgen の構造と
+  （参照実装の `dragon-phase.ts`）で切り替わり速度を返す以上、それは mc-worldgen の構造と
   mc-physics の移動であって、ここに書けるルールではない。アリーナ画面が理由つきでそう書く。
 - **`gameplay:entities` はもう Mob を回している。** mc-sim が `EntityManager` を公開したので
   （公開 API を直接利用して）、この stage は毎フレーム 1 回の sweep で
@@ -224,10 +214,10 @@ Nix を使わない場合は `nix develop --command pnpm lint` のように `nix
   まだ来ていないのは**測定**のほう —— スポーン候補を探す輪はブロック光度を要求し
   `ChunkStoreApi` に光度クエリが無い、プレイヤー位置は `PlayerService` にあるが
   `cameraPose` が `ClockPort` を要求するのでミラーできない。両方ともアリーナの missing 一覧に行き先つきで載っている。
-- **`domain/chunk-store-port.ts` と `domain/block-position-key.ts` も削除日が決まっている。**
-  前者は mc-worldgen の `ChunkStore` の**全面**ミラーで、狭いミラーはタグキーが同じまま
-  メソッドが `undefined` になる静かな実行時ハザードになるため、`test/chunk-store-mirror.test.ts` が
-  両方向で固定する。後者は kernel の座標語彙との接続点である。どちらもバレルから re-export していない。
+- **状態サービスの API は上流パッケージを直接利用する。**
+  チャンク、座標、インベントリ、アイテム語彙などの名詞をこのリポジトリで再定義せず、
+  mc-worldgen / mc-sim / mc-kernel の公開 API を使う。公開バレルから再 export しない API は
+  `src/index.ts` と `test/public-api.test.ts` で明示的に区別している。
   **例外が 2 つあり、理由が逆である。** `MobBehaviour` と `repairMobBehaviour` は
   `index.ts` に載せている —— mc-sim の型引数 `S` を具体化できるのはルール層だけで、
   `EntityManagerLayer<S>()` の戻り値に `S` が現れない以上、
@@ -256,21 +246,13 @@ Nix を使わない場合は `nix develop --command pnpm lint` のように `nix
   Mob 用に 3 チェックを足したが、finding は 1 件も増えていない（1 件は `[note]`:
   導火線の長さはフレームレートに対して**1 フレーム以内**で一定 —— 60Hz だけ浮動小数の
   累積で 91 ステップになり 1.5167 秒になる）。
-- **ビルド / publish はまだない。** `tsconfig.base.json` は `noEmit: true`、`package.json#exports` は
-  TypeScript ソースを直接指している。`dist` は存在しない（[docs/versioning.md](./docs/versioning.md)）。
-- **カバレッジ閾値は未設定。** 計測とレポートは常に動かしており、99% ゲートは完成条件到達時に有効化する
-  （`vitest.config.ts` に有効化する行がコメントで置いてある）。
-- `pnpm verify` は green。tsc clean（3 プロジェクト）、oxlint 53 ファイル 0 warnings / 0 errors、
-  `check:deps` 53 ファイル走査、`api:check` 170 エントリ一致、vitest 11 ファイル 225 テスト pass。
-  公開 API が 125 → 170 に増えたのは Mob の配線 —— 接合部（`domain/entities/mob-frame.ts`）、
-  ロール源（`domain/frame-rolls.ts`）、クレーター（`domain/interactions/explosion-crater.ts`）を
-  `index.ts` に載せたためで（61 → 94 はクリーパーの 4 本、94 → 125 はエンダーマン / シュルカー / デスポーン）、
-  プレビューは相変わらず 1 つも export されない。
-  ミラー 2 本（`ChunkStore` / `EntityManager`）は re-export していないのに
-  `api-lock.md` の "Supporting declarations" には出る —— `makeGameplayStages` の型に現れるためで、
-  タグキーの文字列リテラルまで載るので、キーが動けば API ロックの diff になる。
-  `domain/item-vocabulary.ts`（kernel の `ItemType` のミラー）も**バレルに載せていない** ——
-  他の 3 つのミラーと同じ理由で、`test/public-api.test.ts` がその不在を固定している。
+- **ビルド / package 検証がある。** `pnpm build` が `dist/` を生成し、`pnpm package:verify` が packed tarball を検証する。
+  publish は release workflow が担当する（[docs/versioning.md](./docs/versioning.md)）。
+- **カバレッジ閾値は 4 指標すべて 100%。** `pnpm test:coverage` が statements/functions/lines/branches を検査する
+  （[docs/testing.md](./docs/testing.md) §4）。
+- `pnpm verify` は `typecheck`、`lint`、`test` を実行する。coverage は `pnpm test:coverage`、package は
+  `pnpm build` と `pnpm package:verify` で個別に検証する。公開 API の識別子は `src/index.ts` と
+  `test/public-api.test.ts` の実在する export を正とし、生成 API lock は使用しない。
 
 ## License
 

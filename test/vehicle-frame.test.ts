@@ -1,9 +1,50 @@
+import { defined } from './support/assertions'
 import { describe, expect, it } from '@effect/vitest'
 import { Effect, Exit } from 'effect'
-import { blockIdOf } from '@nerima-games/mc-kernel'
-import { VehicleId, type VehicleServiceApi } from '@nerima-games/mc-sim'
-import type { ChunkStoreApi } from '@nerima-games/mc-worldgen'
+import { blockIdOf, type BlockPosition } from '@nerima-games/mc-kernel'
+import { OccupantId, VehicleId, type VehicleServiceApi, type VehicleStateUpdate } from '@nerima-games/mc-sim'
+import type { BlockReading, ChunkStoreApi } from '@nerima-games/mc-worldgen'
 import { advanceVehicles } from '../src/domain/vehicle/vehicle-frame'
+
+const makeVehicleServiceDouble = (
+  vehicles: VehicleServiceApi['vehicles'],
+  updateState: VehicleServiceApi['updateState'],
+): VehicleServiceApi => {
+  const unavailable = Effect.dieMessage('not exercised by this test')
+  return {
+    vehicles,
+    spawn: () => unavailable,
+    despawn: () => unavailable,
+    mount: () => unavailable,
+    dismount: () => unavailable,
+    updateVelocity: () => unavailable,
+    updateTransform: () => unavailable,
+    updateState,
+    snapshot: unavailable,
+    restore: () => unavailable,
+  }
+}
+
+const makeChunkStoreDouble = (
+  getBlock: (position: BlockPosition) => Effect.Effect<BlockReading>,
+): ChunkStoreApi => {
+  const unavailable = Effect.dieMessage('not exercised by this test')
+  return {
+    load: () => unavailable,
+    peek: () => unavailable,
+    snapshot: () => unavailable,
+    isLoaded: () => unavailable,
+    loadedCoords: unavailable,
+    neighbours: () => unavailable,
+    unload: () => unavailable,
+    getBlock,
+    setBlock: () => unavailable,
+    getLight: () => unavailable,
+    subscribeDirty: unavailable,
+    subscribeDirtyScoped: unavailable,
+    reset: unavailable,
+  }
+}
 
 describe('vehicle frame', () => {
   it('integrates active vehicles and writes the result atomically', async () => {
@@ -16,16 +57,14 @@ describe('vehicle frame', () => {
       yawRadians: 0,
     }
     const updates: Array<{ id: string; x: number }> = []
-    const service = {
-      vehicles: Effect.succeed([vehicle]),
-      updateState: (id: VehicleId, state: { readonly position: { readonly x: number } }) =>
+    const service = makeVehicleServiceDouble(
+      Effect.succeed([vehicle]),
+      (id: VehicleId, state: VehicleStateUpdate) =>
         Effect.sync(() => {
           updates.push({ id: String(id), x: state.position.x })
         }),
-    } as unknown as VehicleServiceApi
-    const store = {
-      getBlock: () => Effect.succeed({ _tag: 'OutOfWorld' as const }),
-    } as unknown as ChunkStoreApi
+    )
+    const store = makeChunkStoreDouble(() => Effect.succeed({ _tag: 'OutOfWorld' as const }))
 
     const result = await Effect.runPromiseExit(advanceVehicles(store, service, 1))
 
@@ -43,15 +82,13 @@ describe('vehicle frame', () => {
       yawRadians: 0,
     }
     let updateCount = 0
-    const service = {
-      vehicles: Effect.succeed([vehicle]),
-      updateState: () => Effect.sync(() => {
+    const service = makeVehicleServiceDouble(
+      Effect.succeed([vehicle]),
+      () => Effect.sync(() => {
         updateCount += 1
       }),
-    } as unknown as VehicleServiceApi
-    const store = {
-      getBlock: () => Effect.succeed({ _tag: 'OutOfWorld' as const }),
-    } as unknown as ChunkStoreApi
+    )
+    const store = makeChunkStoreDouble(() => Effect.succeed({ _tag: 'OutOfWorld' as const }))
 
     await Effect.runPromise(advanceVehicles(store, service, 0.05, {
       isActiveDimension: (dimension) => dimension === 'overworld',
@@ -74,13 +111,11 @@ describe('vehicle frame', () => {
       velocity: { x: 2, y: 0, z: 0 },
       yawRadians: 0,
     }
-    const service = {
-      vehicles: Effect.succeed([vehicle]),
-      updateState: () => Effect.fail({ _tag: 'VehicleNotFound' as const, id: vehicle.id }),
-    } as unknown as VehicleServiceApi
-    const store = {
-      getBlock: () => Effect.succeed({ _tag: 'OutOfWorld' as const }),
-    } as unknown as ChunkStoreApi
+    const service = makeVehicleServiceDouble(
+      Effect.succeed([vehicle]),
+      () => Effect.fail({ _tag: 'VehicleOperationError' as const, reason: 'not-found' as const }),
+    )
+    const store = makeChunkStoreDouble(() => Effect.succeed({ _tag: 'OutOfWorld' as const }))
 
     const result = await Effect.runPromiseExit(advanceVehicles(store, service, 1))
 
@@ -95,24 +130,22 @@ describe('vehicle frame', () => {
       position: { x: 0, y: 64, z: 0 },
       velocity: { x: 0, y: 0, z: 0 },
       yawRadians: 0,
-      occupant: 'player:local',
+      occupant: OccupantId('player:local'),
     }
-    let next: Record<string, unknown> | undefined
-    const service = {
-      vehicles: Effect.succeed([vehicle]),
-      updateState: (_id: VehicleId, state: Record<string, unknown>) => Effect.sync(() => { next = state }),
-    } as unknown as VehicleServiceApi
-    const water = blockIdOf('water')!
-    const store = {
-      getBlock: () => Effect.succeed({ _tag: 'Block' as const, block: water }),
-    } as unknown as ChunkStoreApi
+    let next: VehicleStateUpdate | undefined
+    const service = makeVehicleServiceDouble(
+      Effect.succeed([vehicle]),
+      (_id: VehicleId, state: VehicleStateUpdate) => Effect.sync(() => { next = state }),
+    )
+    const water = defined(blockIdOf('water'), 'blockIdOf')
+    const store = makeChunkStoreDouble(() => Effect.succeed({ _tag: 'Block' as const, block: water }))
 
     await Effect.runPromise(advanceVehicles(store, service, 0.05, {
       controlsForVehicle: () => ({ throttle: 1, steering: 0 }),
     }))
 
-    expect(next?.['position']).toEqual({ x: 0, y: 64, z: -0.009000000000000001 })
-    expect(next?.['occupant']).toBe('player:local')
+    expect(next?.position).toEqual({ x: 0, y: 64, z: -0.009000000000000001 })
+    expect(next?.occupant).toBe('player:local')
   })
 
   it('stops a vehicle before a solid block and reports collision exits', async () => {
@@ -123,29 +156,27 @@ describe('vehicle frame', () => {
       position: { x: 0, y: 64, z: 0 },
       velocity: { x: 8, y: 0, z: 0 },
       yawRadians: 0,
-      occupant: 'player:local',
+      occupant: OccupantId('player:local'),
     }
-    let next: Record<string, unknown> | undefined
+    let next: VehicleStateUpdate | undefined
     let exit: string | undefined
-    const service = {
-      vehicles: Effect.succeed([vehicle]),
-      updateState: (_id: VehicleId, state: Record<string, unknown>) => Effect.sync(() => { next = state }),
-    } as unknown as VehicleServiceApi
-    const stone = blockIdOf('stone')!
-    const store = {
-      getBlock: (position: { x: number; y: number; z: number }) => Effect.succeed(
+    const service = makeVehicleServiceDouble(
+      Effect.succeed([vehicle]),
+      (_id: VehicleId, state: VehicleStateUpdate) => Effect.sync(() => { next = state }),
+    )
+    const stone = defined(blockIdOf('stone'), 'blockIdOf')
+    const store = makeChunkStoreDouble((position: BlockPosition) => Effect.succeed(
         position.x === 1 && position.y === 64 && position.z === 0
           ? { _tag: 'Block' as const, block: stone }
           : { _tag: 'OutOfWorld' as const },
-      ),
-    } as unknown as ChunkStoreApi
+      ))
 
     await Effect.runPromise(advanceVehicles(store, service, 0.1, {
       onVehicleExit: (_vehicle, reason) => { exit = reason },
     }))
 
-    expect(next?.['position']).toEqual({ x: 0, y: 64, z: 0 })
-    expect(next?.['occupant']).toBeUndefined()
+    expect(next?.position).toEqual({ x: 0, y: 64, z: 0 })
+    expect(next?.occupant).toBeUndefined()
     expect(exit).toBe('collision')
   })
 
@@ -157,30 +188,28 @@ describe('vehicle frame', () => {
       position: { x: 0, y: 64, z: 0 },
       velocity: { x: 8, y: 0, z: 0 },
       yawRadians: 0,
-      occupant: 'player:local',
+      occupant: OccupantId('player:local'),
     }
-    let next: Record<string, unknown> | undefined
+    let next: VehicleStateUpdate | undefined
     let exit: string | undefined
-    const service = {
-      vehicles: Effect.succeed([vehicle]),
-      updateState: (_id: VehicleId, state: Record<string, unknown>) => Effect.sync(() => { next = state }),
-    } as unknown as VehicleServiceApi
-    const stone = blockIdOf('stone')!
-    const water = blockIdOf('water')!
-    const store = {
-      getBlock: (position: { x: number; y: number; z: number }) => Effect.succeed(
+    const service = makeVehicleServiceDouble(
+      Effect.succeed([vehicle]),
+      (_id: VehicleId, state: VehicleStateUpdate) => Effect.sync(() => { next = state }),
+    )
+    const stone = defined(blockIdOf('stone'), 'blockIdOf')
+    const water = defined(blockIdOf('water'), 'blockIdOf')
+    const store = makeChunkStoreDouble((position: BlockPosition) => Effect.succeed(
         position.x === 1 && position.y === 64 && position.z === 0
           ? { _tag: 'Block' as const, block: stone }
           : { _tag: 'Block' as const, block: water },
-      ),
-    } as unknown as ChunkStoreApi
+      ))
 
     await Effect.runPromise(advanceVehicles(store, service, 0.1, {
       onVehicleExit: (_vehicle, reason) => { exit = reason },
     }))
 
-    expect(next?.['position']).toEqual({ x: 0, y: 64, z: 0 })
-    expect(next?.['occupant']).toBeUndefined()
+    expect(next?.position).toEqual({ x: 0, y: 64, z: 0 })
+    expect(next?.occupant).toBeUndefined()
     expect(exit).toBe('collision')
   })
 
@@ -202,28 +231,26 @@ describe('vehicle frame', () => {
       position: { x: 0.55, y: 64, z: 0 },
       velocity: { x: 0, y: 0, z: 0 },
       yawRadians: 0,
-      occupant: 'player:local',
+      occupant: OccupantId('player:local'),
     }
-    let next: Record<string, unknown> | undefined
+    let next: VehicleStateUpdate | undefined
     let exit: string | undefined
-    const service = {
-      vehicles: Effect.succeed([vehicle]),
-      updateState: (_id: VehicleId, state: Record<string, unknown>) => Effect.sync(() => { next = state }),
-    } as unknown as VehicleServiceApi
-    const stone = blockIdOf('stone')!
-    const store = {
-      getBlock: (position: { x: number; y: number; z: number }) => Effect.succeed(
+    const service = makeVehicleServiceDouble(
+      Effect.succeed([vehicle]),
+      (_id: VehicleId, state: VehicleStateUpdate) => Effect.sync(() => { next = state }),
+    )
+    const stone = defined(blockIdOf('stone'), 'blockIdOf')
+    const store = makeChunkStoreDouble((position: BlockPosition) => Effect.succeed(
         position.x === 1 && position.y === 64 && position.z === 0
           ? { _tag: 'Block' as const, block: stone }
           : { _tag: 'OutOfWorld' as const },
-      ),
-    } as unknown as ChunkStoreApi
+      ))
 
     return Effect.runPromise(advanceVehicles(store, service, 0.1, {
       onVehicleExit: (_vehicle, reason) => { exit = reason },
     })).then(() => {
-      expect(next?.['position']).toEqual({ x: 0.55, y: 64, z: 0 })
-      expect(next?.['occupant']).toBe('player:local')
+      expect(next?.position).toEqual({ x: 0.55, y: 64, z: 0 })
+      expect(next?.occupant).toBe('player:local')
       expect(exit).toBeUndefined()
     })
   })
@@ -237,22 +264,20 @@ describe('vehicle frame', () => {
       velocity: { x: 8, y: 0, z: 0 },
       yawRadians: 0,
     }
-    let next: Record<string, unknown> | undefined
-    const service = {
-      vehicles: Effect.succeed([vehicle]),
-      updateState: (_id: VehicleId, state: Record<string, unknown>) => Effect.sync(() => { next = state }),
-    } as unknown as VehicleServiceApi
-    const stone = blockIdOf('stone')!
-    const poweredRail = blockIdOf('powered_rail')!
-    const store = {
-      getBlock: (position: { x: number; y: number; z: number }) => Effect.succeed(
+    let next: VehicleStateUpdate | undefined
+    const service = makeVehicleServiceDouble(
+      Effect.succeed([vehicle]),
+      (_id: VehicleId, state: VehicleStateUpdate) => Effect.sync(() => { next = state }),
+    )
+    const stone = defined(blockIdOf('stone'), 'blockIdOf')
+    const poweredRail = defined(blockIdOf('powered_rail'), 'blockIdOf')
+    const store = makeChunkStoreDouble((position: BlockPosition) => Effect.succeed(
         position.x === 1 && position.y === 64 && position.z === 0
           ? { _tag: 'Block' as const, block: stone }
           : position.x === 0 && position.y === 64 && position.z === 0
             ? { _tag: 'Block' as const, block: poweredRail }
             : { _tag: 'OutOfWorld' as const },
-      ),
-    } as unknown as ChunkStoreApi
+      ))
     let poweredQueries = 0
 
     await Effect.runPromise(advanceVehicles(store, service, 0.1, {
@@ -265,7 +290,7 @@ describe('vehicle frame', () => {
     // Queried once building the track for the initial, uncollided step and once
     // more building the track the collision forces `stepVehicle` to re-run with.
     expect(poweredQueries).toBe(2)
-    expect(next?.['position']).toEqual({ x: 0, y: 64, z: 0 })
+    expect(next?.position).toEqual({ x: 0, y: 64, z: 0 })
   })
 
   it('falls back to unpowered on both steps when no isPoweredRailAt hook is provided', async () => {
@@ -281,28 +306,26 @@ describe('vehicle frame', () => {
       velocity: { x: 50, y: 0, z: 0 },
       yawRadians: 0,
     }
-    let next: Record<string, unknown> | undefined
-    const service = {
-      vehicles: Effect.succeed([vehicle]),
-      updateState: (_id: VehicleId, state: Record<string, unknown>) => Effect.sync(() => { next = state }),
-    } as unknown as VehicleServiceApi
-    const stone = blockIdOf('stone')!
-    const poweredRail = blockIdOf('powered_rail')!
-    const store = {
-      getBlock: (position: { x: number; y: number; z: number }) => Effect.succeed(
+    let next: VehicleStateUpdate | undefined
+    const service = makeVehicleServiceDouble(
+      Effect.succeed([vehicle]),
+      (_id: VehicleId, state: VehicleStateUpdate) => Effect.sync(() => { next = state }),
+    )
+    const stone = defined(blockIdOf('stone'), 'blockIdOf')
+    const poweredRail = defined(blockIdOf('powered_rail'), 'blockIdOf')
+    const store = makeChunkStoreDouble((position: BlockPosition) => Effect.succeed(
         position.x === 1 && position.y === 64 && position.z === 0
           ? { _tag: 'Block' as const, block: stone }
           : position.x === 0 && position.y === 64 && position.z === 0
             ? { _tag: 'Block' as const, block: poweredRail }
             : { _tag: 'OutOfWorld' as const },
-      ),
-    } as unknown as ChunkStoreApi
+      ))
 
     await Effect.runPromise(advanceVehicles(store, service, 0.1))
 
     // Braked (not accelerated) despite standing on a powered rail, because no
     // `isPoweredRailAt` hook means the track can never be reported "powered".
-    const velocity = next?.['velocity'] as { x: number; y: number; z: number }
+    const velocity = defined(next?.velocity, 'updated vehicle velocity')
     expect(velocity.x).toBeCloseTo(2)
     expect(velocity.y).toBe(0)
     expect(velocity.z).toBe(0)
@@ -318,15 +341,13 @@ describe('vehicle frame', () => {
       yawRadians: 0,
     }
     let updateCount = 0
-    const service = {
-      vehicles: Effect.succeed([vehicle]),
-      updateState: () => Effect.sync(() => {
+    const service = makeVehicleServiceDouble(
+      Effect.succeed([vehicle]),
+      () => Effect.sync(() => {
         updateCount += 1
       }),
-    } as unknown as VehicleServiceApi
-    const store = {
-      getBlock: () => Effect.succeed({ _tag: 'OutOfWorld' as const }),
-    } as unknown as ChunkStoreApi
+    )
+    const store = makeChunkStoreDouble(() => Effect.succeed({ _tag: 'OutOfWorld' as const }))
 
     await Effect.runPromise(advanceVehicles(store, service, Number.NaN))
 

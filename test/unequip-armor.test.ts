@@ -73,7 +73,8 @@ describe('firstWornSlot', () => {
   it.effect('finds each slot when it is the only one worn', () =>
     Effect.sync(() => {
       for (const slot of ARMOR_SLOTS) {
-        expect(firstWornSlot({ [slot]: WORN } as Equipment)).toBe(slot)
+        const equipment: Equipment = { [slot]: WORN }
+        expect(firstWornSlot(equipment)).toBe(slot)
       }
     }),
   )

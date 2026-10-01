@@ -1,7 +1,7 @@
 # アーキテクチャ
 
 出典: plan.md §2。本書は plan.md の構成を **mx-gameplay の席から**読み直し、
-`scripts/check-dependency-whitelist.ts` と `test/stage-registration.test.ts` が機械的に強制している内容と対応づけたもの。
+`.oxlintrc.json`、`.ast-grep/rules/no-wall-clock-read.yml`、`test/stage-registration.test.ts` が機械的に検査している内容と対応づけたもの。
 
 ## 1. 4 階層
 
@@ -90,16 +90,14 @@ graph BT
 エッジ集合は plan.md §2.1 の逐語再掲である。plan.md がそうしているとおり、
 kernel へのエッジは基盤の段までしか描かれていない。作図上の都合であり、依存規則としては
 **「kernel はどの行にも書かない」**が正しい — `mc-kernel` はどこからでも import 可なので、
-`REPOSITORY_POLICY.dependencyGraph` にも一切書かれていない
-（`checkPolicyConfiguration()` が kernel を含む行を設定エラーとして拒否する）。
+依存ポリシーの許可リストにも一切書かれていない
+（kernel は `.oxlintrc.json` で全リポジトリから許可される）。
 
 同じ理由で `mx-gameplay -.-> kit` の点線も `dependencyGraph` には存在しない。
 kit は実行時エッジではないため、載せてしまうと `kit → render → sim` と `gameplay → sim` により
 **循環に見えてしまう**。kit は `DEV_ONLY_PACKAGES` として別枠で扱う。
 
-`test/check-dependency-whitelist.test.ts` の
-`carries the complete 16-repository roster, so cycle detection can see the whole organisation` が
-「16 行あること」と `checkPolicyConfiguration()` が空を返すことを検査している。
+`test/stage-registration.test.ts` と lint の import 制限が、兄弟モジュールへの依存がないことを検査している。
 
 ## 3. 名詞/動詞ルール — このリポジトリの中心規則
 
@@ -128,7 +126,7 @@ kit は実行時エッジではないため、載せてしまうと `kit → ren
 置き場であり、どちらも同じ判定手順を通っている
 （セーブファイルは「ブロックが無い」ことを記録するが「ボタンが押されていた」ことは記録しない）。
 出口のほうは**縮んだ**: 掘れたものを 1 フレーム預かる `minedItems` だったが、
-`domain/inventory-port.ts` が mc-sim の `InventoryService` を写したので stage が直接 `add` を呼ぶ。
+mc-sim が公開する `InventoryService` を stage が直接利用して `add` を呼ぶ。
 この節の規則の観点で重要なのは、**それでもここにインベントリは無い**という点である ——
 stage は問うだけで、覚えるのは mc-sim である。
 **ブロックそのものは 1 つも持っていない。** 読み書きはすべて mc-worldgen の `ChunkStore` を通る —
@@ -236,15 +234,12 @@ mx-gameplay  --(write)-->  mc-sim: InventoryService  <--(read)--  mx-ui
 
 ### 4-3. ゲートは 2 つあり、別の穴を見ている
 
-**(a) import ゲート — `scripts/check-dependency-whitelist.ts`**
+**(a) import ゲート — `.oxlintrc.json`**
 
-`REPOSITORY_POLICY.dependencyGraph` の `mx-gameplay` 行に兄弟が書かれていないので、
+`.oxlintrc.json` の許可リストに兄弟が含まれていないので、
 `import … from '@nerima-games/mx-ui'` は `not-whitelisted` で落ちる。特別扱いは要らない。
 
-固定しているテスト:
-`REGRESSION: importing mx-redstone, mx-ui or mx-multiplayer is rejected outright`、
-`REGRESSION: no experience module names another experience module in the graph`
-（`test/check-dependency-whitelist.test.ts`）。
+固定しているテストは `test/stage-registration.test.ts` と `test/public-api.test.ts` である。
 
 規則は**対称**である。こちらが兄弟を import しないだけでは足りず、兄弟からこちらも import できてはならない。
 ただし import 検査が参照するのは `thisPackage` の行だけなので、自分の席からは自分の側しか見えない。
@@ -260,7 +255,7 @@ import ゲートには**見えない穴**がある。`StageId` は**文字列**�
 after: [StageId('ui:hud-sync')]
 ```
 
-は import を 1 つも作らない。`pnpm check:deps` は素通りする。にもかかわらず、これは
+は import を 1 つも作らない。import 制限だけでは検査できない。にもかかわらず、これは
 「`mx-ui` が存在し、その stage が存在する」ことに `mx-gameplay` のフレーム位置を結びつけている。
 コンパイラにも import ゲートにも見えない依存が 1 本増えた状態である。
 
@@ -281,10 +276,10 @@ kit は「ミニ平地ワールド + カメラ + レンダラ + 入力を 1 秒�
 このリポジトリが作る**予定の**プレビュー 3 本（採掘場 / Mob アリーナ / 時間スライダー、plan.md §3.11）は
 すべて kit の上に載ることになる。
 
-**現状、プレビューは 1 本も存在せず、kit への依存も宣言されていない。**
-`apps/` ディレクトリ自体がまだ無く、`package.json` の `dependencies` は `effect` のみである
-（kit を含めどの `@nerima-games/*` もまだ publish されていない。plan.md §6 Step 3）。
-プレビュー 3 本の完成条件と現況は [testing.md](./testing.md) §3-1 の表にある（3 本とも ❌）。
+**現状、プレビューは `apps/preview-mining-site/` に存在し、kit への依存は宣言されていない。**
+`package.json` の `dependencies` は `@nerima-games/*` の exact pin と `effect` である
+（依存する `@nerima-games/*` は package manifest と lockfile の exact pin を正とする。plan.md §6 Step 3）。
+プレビュー 3 本の完成条件と現況は [testing.md](./testing.md) §3-1 の表にある。採掘場、Mob アリーナ、時間スライダーはいずれも現行のプレビューから起動できる。
 **それでも以下のゲートは今日から効く。** 「まだ書いていないから守れない」ではなく、
 「書く前に守らせる」ためのものだからである。
 
@@ -353,7 +348,7 @@ import してよいが、その先の `mc-sim` には手を伸ばせない
 - **変更頻度が 16 リポジトリ中で最も高い**（参照実装で 200 commits / 3 ヶ月、plan.md §3.11）。
 - **それでも分割しない**（plan.md §3.11、§5.3）。理由は [responsibility.md](./responsibility.md) §5。
 - 「変更が速く、分割で逃げられない」の組み合わせが、このリポジトリの境界を他より壊れやすくしている。
-  `test/check-dependency-whitelist.test.ts` の冒頭コメントが書いているとおり、
+  `test/stage-registration.test.ts` が固定しているとおり、
   **これらの assertion はここで他のどこよりも重要**である。
 
 ## 8. リポジトリ / パッケージ / プレビューを混同しない（plan.md §2.4）

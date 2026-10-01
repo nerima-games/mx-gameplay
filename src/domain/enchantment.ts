@@ -10,14 +10,21 @@ import type { Damage } from './death-cause.js'
 import { rollFortuneExtraDrops } from './interactions/block-loot.js'
 import { bowPowerMultiplier } from './interactions/draw-bow.js'
 
-export const ENCHANTMENT_IDS = [
+export const ENCHANTMENT_IDS: readonly [
   'protection',
   'sharpness',
   'efficiency',
   'unbreaking',
   'fortune',
   'power',
-] as const
+] = [
+  'protection',
+  'sharpness',
+  'efficiency',
+  'unbreaking',
+  'fortune',
+  'power',
+]
 
 export type EnchantmentId = (typeof ENCHANTMENT_IDS)[number]
 export type EnchantmentTarget = 'armor' | 'melee_weapon' | 'mining_tool' | 'bow' | 'damageable'
@@ -85,7 +92,7 @@ const MINING_ITEMS = new Set<ItemType>([
 ])
 
 const isEnchantmentId = (value: unknown): value is EnchantmentId =>
-  typeof value === 'string' && ENCHANTMENT_IDS.includes(value as EnchantmentId)
+  typeof value === 'string' && ENCHANTMENT_IDS.some((id) => id === value)
 
 const itemMatchesTarget = (item: ItemType, target: EnchantmentTarget): boolean => {
   switch (target) {
@@ -255,7 +262,7 @@ export const encodeEnchantedItem = (item: EnchantedItem): EnchantedItemEncodingR
 
 export const decodeEnchantedItemSnapshot = (encoded: string): EnchantedItemResult => {
   try {
-    return decodeEnchantedItem(JSON.parse(encoded) as unknown)
+    return decodeEnchantedItem(JSON.parse(encoded))
   } catch {
     return { ok: false, issues: [{ path: '$', reason: 'must be valid JSON' }] }
   }
@@ -303,10 +310,9 @@ export const enchantmentOffer = (
         ? Math.max(1, Math.floor((base * 2) / 3) + 1)
         : Math.max(1, Math.min(30, Math.max(shelves * 2, base)))
   // Asserted, not defaulted: `mixSeed(...) % ENCHANTMENT_IDS.length` is a
-  // `noUncheckedIndexedAccess` formality — the modulus (6, `ENCHANTMENT_IDS`'s
-  // own length) guarantees an index in `0..5`, so the lookup is never
-  // `undefined`. Same shape as `mob-spawn-search.ts`'s `HOSTILE_KINDS[index]`.
-  const id = ENCHANTMENT_IDS[mixSeed(slotSeed + 1) % ENCHANTMENT_IDS.length]!
+  const id = ENCHANTMENT_IDS.reduce(
+    (selected, candidate, index) => index === mixSeed(slotSeed + 1) % ENCHANTMENT_IDS.length ? candidate : selected,
+  )
   const maxLevel = ENCHANTMENT_REGISTRY[id].maxLevel
   const level = Math.min(maxLevel, Math.max(1, 1 + Math.floor(requiredPlayerLevel / 6)))
 
@@ -316,7 +322,7 @@ export const enchantmentOffer = (
     slot,
     enchantment: { id, level },
     requiredPlayerLevel,
-    lapisCost: (slot + 1) as 1 | 2 | 3,
+    lapisCost: slot === 0 ? 1 : slot === 1 ? 2 : 3,
   }
 }
 
@@ -402,20 +408,6 @@ export const applyEnchantmentOffer = (
     ({ id }) => id !== offer.enchantment.id,
   )
   nextEnchantments.push(offer.enchantment)
-  // Asserted rather than branched on `.ok`, because the branch is provably
-  // unreachable and a coverage-gate-driven test cannot reach it either: item
-  // and durability are copied unchanged from the already-ok `itemSnapshot`,
-  // the retained enchantments were already valid on that snapshot, the added
-  // enchantment's id and level are guaranteed equal to the already-checked
-  // offer (`offersMatch` passed above), the filter above removes any existing
-  // entry with the same id before pushing (no duplicate), and no pairing can
-  // conflict, per the proof at the (now-deleted) `enchantmentsConflict` check
-  // above.
-  const nextItem = decodeEnchantedItem({
-    ...itemSnapshot.value,
-    enchantments: nextEnchantments,
-  }) as { readonly ok: true; readonly value: EnchantedItem }
-
   return {
     ok: true,
     state: {
@@ -423,7 +415,10 @@ export const applyEnchantmentOffer = (
       bookshelfCount: normalizeBookshelves(state.bookshelfCount),
       playerLevel: state.playerLevel - offer.lapisCost,
       lapis: state.lapis - offer.lapisCost,
-      item: nextItem.value,
+      item: {
+        ...itemSnapshot.value,
+        enchantments: canonicalEnchantments(nextEnchantments),
+      },
     },
   }
 }

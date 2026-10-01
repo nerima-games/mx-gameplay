@@ -59,19 +59,17 @@ plan.md §7 は「Minecraft クローンの全機能が 16 リポジトリで表
 
 | 親 | 何を借りるか |
 | --- | --- |
-| `mc-sim` | エンティティ / インベントリ / 体力 / XP / 時刻 の読み書き。**最重要の界面**（plan.md §3.8）。**チャンクダーティ通知はここではない** — `mc-worldgen` の `ChunkStore`（`domain/chunk-store-port.ts` のヘッダ参照） |
+| `mc-sim` | エンティティ / インベントリ / 体力 / XP / 時刻 の読み書き。**最重要の界面**（plan.md §3.8）。**チャンクダーティ通知はここではない** — チャンクは mc-worldgen の `ChunkStore` |
 | `mc-worldgen` | ブロックの読み書き、チャンクのロード状態 |
 | `mc-audio` | `SoundCuePort.play(cueId, options)`。字幕イベントは audio が発行し `mx-ui` が購読する |
 | `mc-kernel` | 共有語彙（全リポジトリ共通。許可リストに書かずに import 可） |
 | `mc-playground-kit` | **devDependency のみ。** プレビュー 3 本の起動ハーネス |
 
-> **現状**: この表は**意図された最終形**であって、現在の `package.json` の内容ではない。
-> `dependencies` は `effect` のみで、`@nerima-games/*` は 1 つも宣言されていない
-> （どれもまだ publish されていないため。plan.md §6 Step 3 の bottom-up publish-then-pin）。
-> `mc-playground-kit` を `devDependencies` に書くのは、kit が publish され、
-> かつこのリポジトリに `apps/preview-*/` を作るときである（現在プレビューは 1 本も存在しない）。
-> 依存グラフの権威は `package.json` ではなく
-> `scripts/check-dependency-whitelist.ts` の roster であり、そちらは今日から実在する。
+> **現状**: この表は package manifest と lockfile の exact pin を正とする。
+> `dependencies` には `@nerima-games/mc-audio`、`mc-kernel`、`mc-sim`、`mc-worldgen`、`effect` が宣言されている。
+> `apps/preview-mining-site/` が存在し、`pnpm preview` で起動できる。
+> 依存グラフの権威は `package.json` と
+> `.oxlintrc.json` の import 許可リストであり、`pnpm lint` が検査する。
 
 ### 4-1. kit が devDependency **だけ**である理由（plan.md §2.3-2）
 
@@ -106,7 +104,7 @@ plan.md §3.11 と §5.3 の確定事項である。
    **多数のファイルと、1 つの stage 登録**が正しい形である（[public-api.md](./public-api.md) §4）。
 
 分割しないと決めた以上、境界の維持はゲートに任せるしかない。
-`test/check-dependency-whitelist.test.ts` の冒頭が書いているとおり、
+`test/stage-registration.test.ts` が固定しているとおり、
 「変更が絶えず、分割が禁じられているリポジトリ」は、まさに持ってはいけない import が生えるリポジトリである。
 
 ## 5. 乗り物（plan.md §3.11 の 5 番目）—— レールの記号ごとの行き先
@@ -265,12 +263,12 @@ doc comment にあり、証拠は `test/vehicle-rail-simulation.test.ts` の閉�
 | `resolveMinecartMultiplier` / `RAIL_CLIMB_SPEED` | ここ（mx-gameplay） | §5-3 / §5-4 のとおり、消費者と測定を待って未転記のまま |
 
 **`rail`(31) と `powered_rail`(32) は既に揃っている。** `mc-kernel` の `BLOCK_REGISTRY` にあり、
-`domain/block-vocabulary.ts` にミラーされている（`test/block-vocabulary-mirror.test.ts` が固定）。
+kernel の公開能力 API を利用し、`test/placement-rules.test.ts` が設置結果を固定する。
 kernel への追加要求は 1 つも無い。
 
 ### 5-6. なぜ `domain/interactions/` ではなく `domain/vehicle/` なのか
 
-[testing.md](./testing.md) §3-2 は当初この規則の置き場を `domain/interactions/rail-shape.ts` と書いていた。
+[testing.md](./testing.md) §3-2 は当初この規則の置き場を `domain/vehicle/rail-shape.ts` と書いていた。
 **ディレクトリは plan.md §3.11 の責務に対応している** —— `domain/interactions/` は責務 1（採掘 / 設置 /
 アイテム使用）、`domain/mob/` は責務 2 で、レールは責務 5 である。
 `interactions/` に入れると、`stages/registration.ts` の `gameplay:interactions` に付いている
@@ -278,7 +276,7 @@ kernel への追加要求は 1 つも無い。
 そこに属さないルールが 1 本混ざることになる。testing.md 側の記述はこの節に合わせて直してある。
 
 粒度の規則（DN-GP-9: 1 ルール 1 ファイル、stage 登録は増やさない）は守られている。
-2 ファイル、2 ルール、**stage 登録は 0 本増**（`test/stage-registration.test.ts` が 4 本ちょうどを固定）。
+2 ファイル、2 ルール、**stage 登録は 0 本増**（`test/stage-registration.test.ts` が現行の stage 集合を固定）。
 
 ## 6. ポータル（plan.md §3.11 の 6 番目）—— 3 ファイルの割れかたと、こちらの取り分
 
@@ -296,11 +294,8 @@ kernel への追加要求は 1 つも無い。
 入力が全部ブロックデータで、実体を 1 つも知らない。plan.md §3.11 が 「ポータル / 次元移動ルール」 を
 gameplay に与えているのは**動詞**についてであり、形についてではない。
 
-**こちらはそれを import せず、ミラーする。** `domain/portal-frame-port.ts` が
-`domain/chunk-store-port.ts` と同じ体裁で、同じ削除期日を持つ。
-mc-worldgen のミラーが 2 本になったのは矛盾ではなく、`domain/chunk-store-port.ts` の冒頭が
-書いている規則（**1 ミラー 1 ソースモジュール**、置き場は「どのバレルが置き換えるか」で決まる）に従った結果で、
-mc-kernel に対する `domain/block-vocabulary.ts` と `domain/item-vocabulary.ts` が先例である。
+**こちらはそれを import せず、公開 API を利用する。** 枠の成立条件は mc-worldgen が所有し、
+mx-gameplay は点火・滞留・移動の動詞だけを担当する。
 
 ### 6-1. 同期の `BlockAt` と `Effect` のあいだ
 
@@ -344,12 +339,11 @@ mc-worldgen だった**。「全員が依存しているから」は所有の理
 「ネザーで取ったセーブがオーバーワールドで開く」という、報告の書けない欠陥だからである。
 
 **(b) 「どこへ」はバレルに出て、候補はホスト境界から届く。**
-この項は「mc-worldgen の `index.ts` は `./domain/nether-travel` を出していない」
+この項は「mc-worldgen の `index.ts` は過去に portal API を出していなかった」
 「ミラーすればまさにその綴りに依存することになる」と書いていた。**源流で解決された。**
 mc-worldgen が語を所有すると決めた以上、伏せておく理由は失効し、
-`index.ts` は `./domain/nether-travel` を出しているため、mx-gameplay はその公開 API を
-直接利用する。`domain/portal-frame-port.ts` だけが、まだ公開されていない形を隔離する
-ミラーとして残る。
+`index.ts` は portal API を出しているため、mx-gameplay はその公開 API を
+直接利用する。枠の形も mc-worldgen の公開 API が所有する。
 
 `from: Dimension` の出所は (a) で埋まった。`knownPortals` の永続的な台帳は引き続き
 セーブファイルを持つホストの名詞であり、mx-gameplay は所有しない。代わりに
@@ -360,27 +354,24 @@ mc-worldgen が語を所有すると決めた以上、伏せておく理由は�
 
 **(c) 残る `moveTo` の呼び出しは 1 行ではなく、公開面の判断だった。支払い済。**
 以下の表は支払う前の見積りで、**判断が正しかったことの記録として残してある**。
-`makeGameplayStages` は `PlayerService` を名指し、`api-lock.md` は動いた
-（`pnpm api:update` 済み、`gameplayStages` は第 5 引数を、`makeGameplayStages` と
-`gameplayModule` は 4 つ目の要求サービスを得た）。
+`makeGameplayStages` は `PlayerService` を名指し、`src/index.ts` の export と
+`test/public-api.test.ts` の公開面検査が更新された。
 待つことの代償のほうが大きくなった時点で払う、というのがこの表の使い方である。実測:
 
-| 入れるもの | `api-lock.md` の差分 | supporting declarations | 何が公開面に入るか |
+| 入れるもの | 公開面への影響 | supporting declarations | 何が公開面に入るか |
 | --- | --- | --- | --- |
 | 滞留 `Ref` だけ（`moveTo` を呼ばない） | +17 / -1 | 66 → 67 | `PortalDwell` |
 | `PlayerService` を名指す | +97 / -4 | 66 → 78 | `PlayerService` / `PlayerService_base` / `PlayerServiceApi` / `PlayerPose` / `CameraPoseSnapshot` / `ClockPort` / `ClockPort_base` / `MonotonicTimeSecs` ほか |
 
-**下の行は `ClockPort` ごと引き込む。** `scripts/api-lock.ts` の冒頭が
-「`FrameServices = ClockPort` を 1.0.0 で凍結することがこの仕組みの要点である」と書いているものが、
-mx-gameplay の supporting declarations に載る。
+**下の行は `ClockPort` ごと引き込む。** `FrameServices = ClockPort` は
+`src/index.ts` の export と `test/public-api.test.ts` で公開面を検査する。
 
 **そして上の行も 0 ではない**、というのがこの表のいちばん効く部分である。
 `GameplayFrameState` / `gameplayStages` / `makeGameplayStages` / `gameplayModule` は
 **4 つとも `index.ts` から出ており、4 つとも lock に描画される**。
 フレームをまたぐ状態は `GameplayFrameState` の 1 フィールドとして持つほかなく、
 そのフィールドは lock に出る。**つまりこのリポジトリでは「状態を持つルールを stage に配線する」ことは、
-定義上 `api-lock.md` を動かす。**
-`git log -1 -- api-lock.md` が `3ebf903`（弓とエンダーパール）を指しているのはそのためで、
+定義上公開面の検査結果を動かす。
 あれが `Ref` を足した最後のラウンドである。以降の 2 ラウンド
 （`85c0da8` ポータル滞留 + ネザー連結、`ec888b8` `PlayerService` ミラー）が 0 日で通ったのは、
 **どちらもバレルに出ない `domain/` のモジュールしか足していない**からであって、
@@ -416,7 +407,7 @@ mx-gameplay の supporting declarations に載る。
 **stage からは呼ばれていない。** 呼ぶには `IsArrowBlockedAt`、すなわち
 「このブロックは矢を止めるか」が要り、それは **kernel の能力（capability）** である。
 
-`domain/block-vocabulary.ts` がミラーしている能力述語は 4 つ ——
+kernel の公開能力 API で利用できる能力述語は 4 つ ——
 `fallsWhenUnsupported` / `isReplaceable` / `validSpawnSurface` / `canSupportAttachments` ——
 で、**どれも「発射体に対して固い」を意味しない。**
 参照実装には表がある（`block-collision-predicates.ts` の `PASSABLE_BLOCK_IDS`）が、

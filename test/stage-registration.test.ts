@@ -1,3 +1,4 @@
+import { defined, errorMessage } from './support/assertions'
 /**
  * Named regression tests for the frame contract.
  *
@@ -25,7 +26,6 @@ import {
   FIRE_DAMAGE_INTERVAL_TICKS,
   FIRE_TICK_INTERVAL_SECS,
   makeFireLifecycleState,
-  type FireLifecycleSnapshot,
 } from '../src/domain/fire-lifecycle'
 import type { WeatherState } from '../src/domain/weather'
 import { SKELETON_KIND, initialEcosystemMobState } from '../src/domain/mob/mob-ecosystem'
@@ -62,7 +62,6 @@ import {
 } from '@nerima-games/mc-sim'
 import {
   DeltaTimeSecs,
-  MAX_STACK_COUNT,
   StageId,
   type BlockPositionKey,
   type FrameServices,
@@ -152,7 +151,7 @@ import { runFrames } from './support/frame-runner'
 
 const stageIds = (stages: ReadonlyArray<StageRegistration>): ReadonlyArray<string> =>
   stages.map((stage) => stage.id)
-const OBSIDIAN = blockIdOf('obsidian')!
+const OBSIDIAN = defined(blockIdOf('obsidian'), 'blockIdOf')
 
 /**
  * These fixtures name cells `'a'`, `'lava-a'`, `'water-a'` — scenario-graph
@@ -355,7 +354,7 @@ describe('fire lifecycle stage integration', () => {
       const position = blockPosition(16, 64, 0)
       yield* Ref.set(state.fireLifecycle, makeFireLifecycleState([position], 7))
 
-      const fireStage = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire)!
+      const fireStage = defined(stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire))
       yield* fireStage.run(DeltaTimeSecs(FIRE_TICK_INTERVAL_SECS)).pipe(
         Effect.provide(FrameServicesLayer),
       )
@@ -401,7 +400,7 @@ describe('fire lifecycle stage integration', () => {
         { id: target.id, kind: target.kind, at: target.feetPosition },
       ], DEFAULT_ROLL_SEED)
 
-      const fireStage = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire)!
+      const fireStage = defined(stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire))
       yield* fireStage.run(DeltaTimeSecs(FIRE_TICK_INTERVAL_SECS)).pipe(
         Effect.provide(FrameServicesLayer),
       )
@@ -422,7 +421,7 @@ describe('fire lifecycle stage integration', () => {
       yield* store.api.setBlock(position, FIRE)
       yield* Ref.set(state.fireLifecycle, makeFireLifecycleState([position], 17))
 
-      const fireStage = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire)!
+      const fireStage = defined(stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire))
       yield* fireStage.run(DeltaTimeSecs(99)).pipe(Effect.provide(FrameServicesLayer))
 
       expect((yield* Ref.get(state.fireLifecycle)).fires).toStrictEqual([
@@ -451,7 +450,7 @@ describe('fire lifecycle stage integration', () => {
       const equipped = yield* inventory.api.equipFromInventory(0, 'head')
       expect(equipped._tag).toBe('Equipped')
 
-      const fireStage = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire)!
+      const fireStage = defined(stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire))
       yield* fireStage.run(DeltaTimeSecs(FIRE_TICK_INTERVAL_SECS)).pipe(
         Effect.provide(FrameServicesLayer),
       )
@@ -502,7 +501,7 @@ describe('fire lifecycle stage integration', () => {
       const equipped = yield* inventory.api.equipFromInventory(0, 'head')
       expect(equipped._tag).toBe('Equipped')
 
-      const fireStage = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire)!
+      const fireStage = defined(stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire))
       yield* fireStage.run(DeltaTimeSecs(FIRE_TICK_INTERVAL_SECS)).pipe(
         Effect.provide(FrameServicesLayer),
       )
@@ -528,8 +527,8 @@ describe('Ender Dragon normal frame lifecycle', () => {
     Effect.gen(function* () {
       const once = yield* builtStages
       const chunked = yield* builtStages
-      const onceStage = once.stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.enderDragon)!
-      const chunkedStage = chunked.stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.enderDragon)!
+      const onceStage = defined(once.stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.enderDragon))
+      const chunkedStage = defined(chunked.stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.enderDragon))
 
       const initial = yield* once.state.enderDragonEncounter.snapshot
       yield* onceStage.run(DeltaTimeSecs(14))
@@ -575,10 +574,9 @@ describe('stage behaviour', () => {
   it.effect('REGRESSION: an idle tick does no falling-block work at all (the O(chunks × blocks) scan is gone)', () =>
     Effect.gen(function* () {
       const { state, store, stages } = yield* builtStages
-      const entities = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.entities)
-      expect(entities).toBeDefined()
+      const entities = defined(stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.entities))
 
-      yield* entities?.run(DeltaTimeSecs(0.016)) ?? Effect.void
+      yield* entities.run(DeltaTimeSecs(0.016))
 
       // Nothing was disturbed, so nothing was looked at. The reference's
       // pre-fix behaviour read ~7M blocks here regardless
@@ -594,7 +592,7 @@ describe('stage behaviour', () => {
   it.effect('REGRESSION: a burst of disturbances is spread across ticks by the per-tick move budget', () =>
     Effect.gen(function* () {
       const { state, stages } = yield* builtStages
-      const entities = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.entities)
+      const entities = defined(stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.entities))
 
       // A TNT blast under a desert. The world is empty, so none of these
       // positions produces a move — the assertion is about the BUDGET, which
@@ -602,10 +600,10 @@ describe('stage behaviour', () => {
       const blast = Array.from({ length: 100 }, (_, index) => positionKey(`0,${String(index)},0`))
       yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, blast))
 
-      yield* entities?.run(DeltaTimeSecs(0.016)) ?? Effect.void
+      yield* entities.run(DeltaTimeSecs(0.016))
       expect((yield* Ref.get(state.fallingBlocks)).pending.size).toBe(100 - 32)
 
-      yield* entities?.run(DeltaTimeSecs(0.016)) ?? Effect.void
+      yield* entities.run(DeltaTimeSecs(0.016))
       expect((yield* Ref.get(state.fallingBlocks)).pending.size).toBe(100 - 64)
     }).pipe(Effect.provide(FrameServicesLayer)),
   )
@@ -687,7 +685,7 @@ describe('stage behaviour', () => {
   it.effect('deduplicates direct frontier writes by position before spending budget', () =>
     Effect.gen(function* () {
       const { state, stages } = yield* builtStages
-      const fluids = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids)!
+      const fluids = defined(stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids))
       const latest = { key: positionKey('water-a'), kind: 'water' as const, deferred: 2 }
 
       yield* Ref.set(state.fluidFrontier, [
@@ -705,7 +703,7 @@ describe('stage behaviour', () => {
     Effect.gen(function* () {
       const origin = blockPosition(0, 64, 0)
       const { state, store, stages } = yield* builtStagesInWorld(world([[origin, WATER]]))
-      const fluids = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids)!
+      const fluids = defined(stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids))
 
       yield* Ref.set(state.fluidFrontier, [{ key: positionKey('0,64,0'), kind: 'water' }])
       yield* fluids.run(DeltaTimeSecs(0.016))
@@ -734,7 +732,7 @@ describe('stage behaviour', () => {
         ]),
         ['0,0', '-1,0', '0,-1'],
       )
-      const fluids = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids)!
+      const fluids = defined(stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids))
 
       yield* Ref.set(state.fluidFrontier, [{ key: positionKey('0,64,0'), kind: 'water' }])
       yield* fluids.run(DeltaTimeSecs(0.016))
@@ -772,7 +770,7 @@ describe('stage behaviour', () => {
         ]),
         ['0,0', '-1,0', '0,-1'],
       )
-      const fluids = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids)!
+      const fluids = defined(stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids))
 
       yield* Ref.set(state.fluidFrontier, [{ key: positionKey('0,64,0'), kind: 'water' }])
       yield* fluids.run(DeltaTimeSecs(0.016))
@@ -790,7 +788,7 @@ describe('stage behaviour', () => {
 
   it.effect('water meeting a lava source materializes obsidian at the contact', () =>
     Effect.gen(function* () {
-      const lava = blockIdOf('lava')!
+      const lava = defined(blockIdOf('lava'), 'blockIdOf')
       const { state, store, stages } = yield* builtStagesInWorld(
         world([
           [blockPosition(0, 64, 0), WATER],
@@ -798,7 +796,7 @@ describe('stage behaviour', () => {
           [blockPosition(1, 64, 0), lava],
         ]),
       )
-      const fluids = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids)!
+      const fluids = defined(stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids))
 
       yield* Ref.set(state.fluidFrontier, [{ key: positionKey('0,64,0'), kind: 'water' }])
       yield* fluids.run(DeltaTimeSecs(0.016))
@@ -816,16 +814,17 @@ describe('stage behaviour', () => {
           [blockPosition(15, 63, 0), STONE],
         ]),
       )
-      const fluids = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids)!
+      const fluids = defined(stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids))
       let source: FluidWorkItem = { key: positionKey('15,64,0'), kind: 'water' }
 
       for (let attempt = 1; attempt <= 8; attempt += 1) {
         yield* Ref.set(state.fluidFrontier, [source])
         yield* fluids.run(DeltaTimeSecs(0.016))
         const sourceKey = source.key
-        const deferred = (yield* Ref.get(state.fluidFrontier)).find(
-          (item) => item.key === sourceKey,
-        )!
+        const deferred = defined(
+          (yield* Ref.get(state.fluidFrontier)).find((item) => item.key === sourceKey),
+          'deferred fluid work item',
+        )
         expect(deferred.deferred).toBe(attempt)
         source = deferred
       }
@@ -1028,8 +1027,8 @@ describe('stage behaviour', () => {
       yield* requestBowShot(state, 'duplicate', shot)
       yield* requestBowShot(state, 'duplicate', shot)
 
-      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)
-      yield* interactions!.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+      const interactions = defined(stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions))
+      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
 
       expect(yield* drainBowShotResults(state)).toStrictEqual([
         { requestId: 'fired', success: true, outcome: 'Fired' },
@@ -1041,7 +1040,7 @@ describe('stage behaviour', () => {
       expect(yield* inventory.withdrawals).toStrictEqual([])
 
       yield* requestBowShot(state, 'duplicate', shot)
-      yield* interactions!.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
       expect(yield* drainBowShotResults(state)).toStrictEqual([
         { requestId: 'duplicate', success: false, outcome: 'DuplicateRequest' },
       ])
@@ -1074,8 +1073,8 @@ describe('stage behaviour', () => {
         damage: 7,
       })
 
-      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)
-      yield* interactions!.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+      const interactions = defined(stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions))
+      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
 
       const results = yield* drainMeleeAttackResults(state)
       expect(results).toHaveLength(2)
@@ -1114,8 +1113,8 @@ describe('stage behaviour', () => {
         reach: 3,
         damage: 4,
       })
-      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)
-      yield* interactions!.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+      const interactions = defined(stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions))
+      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
 
       expect((yield* roster.api.snapshot).entities).toStrictEqual([])
       expect(yield* drainMobExperience(state)).toStrictEqual([])
@@ -1140,8 +1139,8 @@ describe('stage behaviour', () => {
         reach: 3,
         damage: 4,
       })
-      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)
-      yield* interactions!.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+      const interactions = defined(stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions))
+      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
 
       expect((yield* roster.api.snapshot).entities).toStrictEqual([])
       expect(yield* drainMobExperience(state)).toStrictEqual([
@@ -1183,8 +1182,8 @@ describe('stage behaviour', () => {
         chargeSecs: BOW_FULL_CHARGE_SECS,
         inventory: { mode: 'creative', slotIndex: 0 },
       })
-      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)
-      yield* interactions!.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+      const interactions = defined(stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions))
+      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
 
       expect(yield* drainBowShotResults(state)).toStrictEqual([
         { requestId: 'wall-shot', success: true, outcome: 'Fired' },
@@ -1262,8 +1261,8 @@ describe('stage behaviour', () => {
         undefined,
         { mobSimulation: false },
       )
-      const entities = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.entities)
-      yield* entities!.run(DeltaTimeSecs(1))
+      const entities = defined(stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.entities))
+      yield* entities.run(DeltaTimeSecs(1))
 
       expect(yield* Ref.get(state.spawnAttempts)).toStrictEqual([offered])
       expect(yield* Ref.get(state.spawnClockSecs)).toBe(0.2)
@@ -1302,8 +1301,8 @@ describe('stage behaviour', () => {
         undefined,
         { droppedItemPickup: false },
       )
-      const entities = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.entities)
-      yield* entities!.run(DeltaTimeSecs(1))
+      const entities = defined(stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.entities))
+      yield* entities.run(DeltaTimeSecs(1))
 
       expect(yield* roster.api.count).toBe(1)
       const [remaining] = yield* roster.api.entities
@@ -1589,7 +1588,7 @@ describe('the module contract has caught up with this file’s shape', () => {
   it.effect('routes status effect pulses and speed through host-facing frame contracts', () =>
     Effect.gen(function* () {
       const { state, stages } = yield* builtStages
-      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+      const interactions = defined(stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions))
 
       yield* requestStatusEffect(state, { type: 'poison', durationSecs: 1 })
       yield* requestStatusEffect(state, { type: 'regeneration', durationSecs: 2.5 })
@@ -1652,7 +1651,7 @@ describe('the module contract has caught up with this file’s shape', () => {
   it.effect('brews and uses a speed potion through the existing status-effect pipeline', () =>
     Effect.gen(function* () {
       const { state, stages } = yield* builtStages
-      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+      const interactions = defined(stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions))
 
       expect(yield* insertBrewingBottle(state, 'water_bottle')).toMatchObject({ _tag: 'Accepted' })
       expect(yield* insertBrewingFuel(state)).toMatchObject({ _tag: 'Accepted' })
@@ -1738,7 +1737,7 @@ describe('frame-state refs not produced by makeGameplayFrameState fail loudly', 
       const exit = yield* Effect.exit(snapshotFireLifecycle(foreign))
       expect(Exit.isFailure(exit)).toBe(true)
       if (Exit.isFailure(exit)) {
-        expect((Cause.squash(exit.cause) as Error).message).toBe(
+        expect(errorMessage(Cause.squash(exit.cause))).toBe(
           'fire lifecycle is not owned by a gameplay frame state',
         )
       }
@@ -1758,7 +1757,7 @@ describe('frame-state refs not produced by makeGameplayFrameState fail loudly', 
         fluidFrontier: Ref.unsafeMake<ReadonlyArray<FluidWorkItem>>([]),
       }
       const stages = gameplayStages(foreign, store.api, roster.api, inventory.api, player.api, time)
-      const fluids = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids)!
+      const fluids = defined(stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids))
 
       // `fluids.run(dt)` throws SYNCHRONOUSLY, while the closure is still being
       // evaluated to produce an Effect value — before `Effect.exit` has anything
@@ -1768,7 +1767,7 @@ describe('frame-state refs not produced by makeGameplayFrameState fail loudly', 
       const exit = yield* Effect.exit(Effect.suspend(() => fluids.run(DeltaTimeSecs(0.016))))
       expect(Exit.isFailure(exit)).toBe(true)
       if (Exit.isFailure(exit)) {
-        expect((Cause.squash(exit.cause) as Error).message).toBe(
+        expect(errorMessage(Cause.squash(exit.cause))).toBe(
           'fluid frontier is not owned by a gameplay frame state',
         )
       }
@@ -1790,7 +1789,7 @@ describe('frame-state refs not produced by makeGameplayFrameState fail loudly', 
       const inventory = yield* makeInventoryDouble()
       const time = yield* makeTimeService()
       const stages = gameplayStages(copy, store.api, roster.api, inventory.api, player.api, time)
-      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+      const interactions = defined(stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions))
 
       yield* Ref.set(copy.pendingBreaks, [positionKey('0,64,0')])
       yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
@@ -1829,7 +1828,7 @@ describe('fluid propagation defers when a write finds its chunk unloaded', () =>
         (yield* makePlayerServiceDouble()).api,
         yield* makeTimeService(),
       )
-      const fluids = rewiredStages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids)!
+      const fluids = defined(rewiredStages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids))
 
       yield* Ref.set(state.fluidFrontier, [{ key: positionKey('0,64,0'), kind: 'water' }])
       yield* fluids.run(DeltaTimeSecs(0.016))
@@ -1878,7 +1877,7 @@ describe('fluid propagation defers when a write finds its chunk unloaded', () =>
         (yield* makePlayerServiceDouble()).api,
         yield* makeTimeService(),
       )
-      const fluids = rewiredStages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids)!
+      const fluids = defined(rewiredStages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids))
 
       yield* Ref.set(state.fluidFrontier, [{ key: positionKey('0,64,0'), kind: 'water' }])
       yield* fluids.run(DeltaTimeSecs(0.016))
@@ -1908,7 +1907,7 @@ describe('fluid propagation defers when a write finds its chunk unloaded', () =>
         ]),
         ['0,0', '-1,0', '0,-1'],
       )
-      const fluids = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids)!
+      const fluids = defined(stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids))
 
       // Phase 1: spread water to the four horizontal neighbours, `stubborn`
       // among them.
@@ -1939,7 +1938,7 @@ describe('fluid propagation defers when a write finds its chunk unloaded', () =>
         (yield* makePlayerServiceDouble()).api,
         yield* makeTimeService(),
       )
-      const rewiredFluids = rewiredStages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids)!
+      const rewiredFluids = defined(rewiredStages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids))
       yield* rewiredFluids.run(DeltaTimeSecs(0.016))
 
       // The blocked cell is still water and still tracked for retry...
@@ -1955,7 +1954,7 @@ describe('fluid propagation defers when a write finds its chunk unloaded', () =>
 
   it.effect('a blocked Solidify write at a lava contact leaves the lava in place and retries the source', () =>
     Effect.gen(function* () {
-      const lava = blockIdOf('lava')!
+      const lava = defined(blockIdOf('lava'), 'blockIdOf')
       const contact = blockPosition(1, 64, 0)
       const { state, store } = yield* builtStagesInWorld(
         world([
@@ -1979,7 +1978,7 @@ describe('fluid propagation defers when a write finds its chunk unloaded', () =>
         (yield* makePlayerServiceDouble()).api,
         yield* makeTimeService(),
       )
-      const fluids = rewiredStages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids)!
+      const fluids = defined(rewiredStages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids))
 
       yield* Ref.set(state.fluidFrontier, [{ key: positionKey('0,64,0'), kind: 'water' }])
       yield* fluids.run(DeltaTimeSecs(0.016))
@@ -2041,7 +2040,7 @@ describe('weather gameplay input and events', () => {
   it.effect('an exposed fire block under active weather emits FireExtinguished through the time-weather stage', () =>
     Effect.gen(function* () {
       const { state, stages } = yield* builtStages
-      const timeWeather = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.timeWeather)!
+      const timeWeather = defined(stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.timeWeather))
       yield* Ref.set(state.weather, RAIN)
       yield* submitWeatherGameplayInput(state, {
         dimension: 'overworld',
@@ -2283,12 +2282,13 @@ describe('fire lifecycle: extinguish, restore, and burning-actor bookkeeping', (
   it.effect('restoreFireLifecycle dies on a snapshot that fails validation', () =>
     Effect.gen(function* () {
       const state = yield* makeGameplayFrameState
-      const invalid = { version: 999 } as unknown as FireLifecycleSnapshot
+      const invalid = yield* snapshotFireLifecycle(state)
+      Reflect.set(invalid, 'version', 999)
 
       const exit = yield* Effect.exit(restoreFireLifecycle(state, invalid))
       expect(Exit.isFailure(exit)).toBe(true)
       if (Exit.isFailure(exit)) {
-        expect((Cause.squash(exit.cause) as Error).message).toBe('Unsupported fire lifecycle snapshot')
+        expect(errorMessage(Cause.squash(exit.cause))).toBe('Unsupported fire lifecycle snapshot')
       }
     }),
   )
@@ -2313,7 +2313,7 @@ describe('fire lifecycle: extinguish, restore, and burning-actor bookkeeping', (
         behaviour: undefined,
       })
 
-      const fireStage = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire)!
+      const fireStage = defined(stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire))
       for (let tick = 0; tick <= FIRE_DAMAGE_INTERVAL_TICKS; tick += 1) {
         yield* fireStage.run(DeltaTimeSecs(FIRE_TICK_INTERVAL_SECS)).pipe(Effect.provide(FrameServicesLayer))
       }
@@ -2338,7 +2338,7 @@ describe('fire lifecycle: extinguish, restore, and burning-actor bookkeeping', (
         behaviour: undefined,
       })
 
-      const fireStage = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire)!
+      const fireStage = defined(stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire))
       // Tick 1: the entity is in the fire and becomes a burning actor.
       yield* fireStage.run(DeltaTimeSecs(FIRE_TICK_INTERVAL_SECS)).pipe(Effect.provide(FrameServicesLayer))
       expect((yield* Ref.get(state.fireLifecycle)).burningActors?.length).toBeGreaterThan(0)
@@ -2371,7 +2371,7 @@ describe('fire lifecycle: extinguish, restore, and burning-actor bookkeeping', (
       )
       yield* Ref.set(state.fireLifecycle, makeFireLifecycleState([firePosition], 19))
 
-      const fireStage = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire)!
+      const fireStage = defined(stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire))
       yield* fireStage.run(DeltaTimeSecs(FIRE_TICK_INTERVAL_SECS)).pipe(Effect.provide(FrameServicesLayer))
 
       // Nothing crashed reading past the loaded edge; the fire itself is
@@ -2391,7 +2391,7 @@ describe('fire lifecycle: extinguish, restore, and burning-actor bookkeeping', (
       // `blockTypeOfId(reading.block) ?? '__unknown_fire_block__'` fallback
       // had never fired.
       const firePosition = blockPosition(8, 64, 8)
-      const UNREGISTERED_BLOCK_ID = 999_999 as BlockId
+      const UNREGISTERED_BLOCK_ID = BlockId(65_535)
       const { state, stages } = yield* builtStagesInWorld(
         world([
           [firePosition, FIRE],
@@ -2402,7 +2402,7 @@ describe('fire lifecycle: extinguish, restore, and burning-actor bookkeeping', (
       )
       yield* Ref.set(state.fireLifecycle, makeFireLifecycleState([firePosition], 29))
 
-      const fireStage = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire)!
+      const fireStage = defined(stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire))
       yield* fireStage.run(DeltaTimeSecs(FIRE_TICK_INTERVAL_SECS)).pipe(Effect.provide(FrameServicesLayer))
 
       // Nothing crashed reading the unregistered neighbour; the fire itself
@@ -2451,7 +2451,7 @@ describe('fire lifecycle: extinguish, restore, and burning-actor bookkeeping', (
         behaviour: undefined,
       })
 
-      const fireStage = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire)!
+      const fireStage = defined(stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire))
       // Tick 1: both entities standing in the fire catch it.
       yield* fireStage.run(DeltaTimeSecs(FIRE_TICK_INTERVAL_SECS)).pipe(Effect.provide(FrameServicesLayer))
       expect((yield* Ref.get(state.fireLifecycle)).burningActors?.length).toBe(2)
@@ -2485,7 +2485,7 @@ describe('fire lifecycle: extinguish, restore, and burning-actor bookkeeping', (
         behaviour: undefined,
       })
 
-      const fireStage = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire)!
+      const fireStage = defined(stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire))
       // Several ticks: first ignites, later ticks damage without killing
       // (healthPoints is far above anything a handful of fire ticks can deal).
       for (let tick = 0; tick < 6; tick += 1) {
@@ -2507,7 +2507,7 @@ describe('fire lifecycle: extinguish, restore, and burning-actor bookkeeping', (
       const rain: WeatherState = { weather: 'rain', remainingSecs: 100 }
       yield* Ref.set(state.weather, rain)
 
-      const fireStage = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire)!
+      const fireStage = defined(stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire))
       yield* fireStage.run(DeltaTimeSecs(FIRE_TICK_INTERVAL_SECS)).pipe(Effect.provide(FrameServicesLayer))
 
       // Nothing crashed reading a cell one below the world floor, and the fire
@@ -2519,13 +2519,13 @@ describe('fire lifecycle: extinguish, restore, and burning-actor bookkeeping', (
 
 /** Every slot at a full stack of wheat — the only arrangement that leaves no room for a different item. */
 const brimmingWheat = (): ReadonlyArray<Slot> =>
-  emptySlots().map((): Slot => itemStack('wheat', MAX_STACK_COUNT))
+  emptySlots().map((): Slot => itemStack('wheat', 64))
 
 describe('villager trade rejection paths not reached by the vertical slice', () => {
   it.effect('rejects an offerId the villager does not carry', () =>
     Effect.gen(function* () {
       const { state, stages } = yield* builtStages
-      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+      const interactions = defined(stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions))
       const villager = makeVillager('unknown-offer-trader', 'farmer')
       yield* Ref.set(state.villagerTrades, addVillager(emptyVillagerTradeState(), villager))
 
@@ -2542,9 +2542,9 @@ describe('villager trade rejection paths not reached by the vertical slice', () 
   it.effect('rejects a trade the player cannot afford', () =>
     Effect.gen(function* () {
       const { state, stages } = yield* builtStages
-      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+      const interactions = defined(stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions))
       const villager = makeVillager('poor-player-trader', 'farmer')
-      const offer = villager.offers.find((candidate) => candidate.input.item === 'wheat')!
+      const offer = defined(villager.offers.find((candidate) => candidate.input.item === 'wheat'))
       yield* Ref.set(state.villagerTrades, addVillager(emptyVillagerTradeState(), villager))
 
       // `builtStages`' inventory is empty, so the wheat this offer needs is not there.
@@ -2570,10 +2570,10 @@ describe('villager trade rejection paths not reached by the vertical slice', () 
       const inventory = yield* makeInventoryDouble(brimmingWheat())
       const time = yield* makeTimeService()
       const stages = gameplayStages(state, store.api, roster.api, inventory.api, player.api, time)
-      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+      const interactions = defined(stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions))
 
       const villager = makeVillager('full-inventory-trader', 'farmer')
-      const offer = villager.offers.find((candidate) => candidate.input.item === 'wheat')!
+      const offer = defined(villager.offers.find((candidate) => candidate.input.item === 'wheat'))
       yield* Ref.set(state.villagerTrades, addVillager(emptyVillagerTradeState(), villager))
 
       const request = { requestId: 'no-room', villagerId: villager.id, offerId: offer.id }
@@ -2585,7 +2585,7 @@ describe('villager trade rejection paths not reached by the vertical slice', () 
       ])
       // Nothing was actually removed: the preflight check failed before any
       // real mutation.
-      expect(yield* inventory.api.countOf('wheat')).toBe(36 * MAX_STACK_COUNT)
+      expect(yield* inventory.api.countOf('wheat')).toBe(36 * 64)
     }),
   )
 
@@ -2618,10 +2618,10 @@ describe('villager trade rejection paths not reached by the vertical slice', () 
       }
       const time = yield* makeTimeService()
       const stages = gameplayStages(state, store.api, roster.api, racyInventory, player.api, time)
-      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+      const interactions = defined(stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions))
 
       const villager = makeVillager('racy-trader', 'farmer')
-      const offer = villager.offers.find((candidate) => candidate.input.item === 'wheat')!
+      const offer = defined(villager.offers.find((candidate) => candidate.input.item === 'wheat'))
       yield* Ref.set(state.villagerTrades, addVillager(emptyVillagerTradeState(), villager))
 
       const request = { requestId: 'raced', villagerId: villager.id, offerId: offer.id }
@@ -2641,7 +2641,7 @@ describe('the ender pearl arm refuses a survival throw with no pearl to spend', 
   it.effect('a survival throw with an empty held slot produces no outcome', () =>
     Effect.gen(function* () {
       const { state, stages } = yield* builtStages
-      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+      const interactions = defined(stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions))
       const throwRequest: EnderPearlThrowRequest = {
         origin: { x: 0, y: 64, z: 0 },
         dirX: 0,
@@ -2662,7 +2662,7 @@ describe('the ender pearl arm refuses a survival throw with no pearl to spend', 
 describe('flint and steel on TNT spawns a primed entity through the interactions stage', () => {
   it.effect('lighting TNT removes the block and spawns PRIMED_TNT_KIND', () =>
     Effect.gen(function* () {
-      const tnt = blockIdOf('tnt')!
+      const tnt = defined(blockIdOf('tnt'), 'blockIdOf')
       const position = blockPosition(2, 64, 2)
       const state = yield* makeGameplayFrameState
       const store = yield* makeChunkStoreDouble(world([[position, tnt]]), ['0,0'])
@@ -2671,7 +2671,7 @@ describe('flint and steel on TNT spawns a primed entity through the interactions
       const inventory = yield* makeInventoryDouble()
       const time = yield* makeTimeService()
       const stages = gameplayStages(state, store.api, roster.api, inventory.api, player.api, time)
-      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+      const interactions = defined(stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions))
 
       yield* Ref.update(state.pendingItemUses, (pending) => [
         ...pending,
@@ -2691,7 +2691,7 @@ describe('the entities stage resolves both ranged mob attacks and zombie contact
   it.effect('a skeleton in projectile range and a zombie in contact range both damage the player in one sweep', () =>
     Effect.gen(function* () {
       const { state, roster, stages } = yield* builtStages
-      const entities = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.entities)!
+      const entities = defined(stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.entities))
 
       // Skeleton: within the [6, 16] projectile band the ecosystem rule uses,
       // cooldown at zero so it fires immediately.
@@ -2723,7 +2723,7 @@ describe('CancelFishing with no active session', () => {
   it.effect('reports NoActiveFishingSession rather than cancelling nothing', () =>
     Effect.gen(function* () {
       const { state, stages } = yield* builtStages
-      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+      const interactions = defined(stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions))
 
       yield* requestFishingCancel(state, 'cancel-nothing')
       yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
@@ -2739,7 +2739,7 @@ describe('additional fluid propagation branches', () => {
   it.effect('a work item probing a position below the world is forgotten rather than crashing', () =>
     Effect.gen(function* () {
       const { state, stages } = yield* builtStages
-      const fluids = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids)!
+      const fluids = defined(stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids))
 
       yield* Ref.set(state.fluidFrontier, [{ key: positionKey('0,-1,0'), kind: 'water' }])
       yield* fluids.run(DeltaTimeSecs(0.016))
@@ -2750,7 +2750,7 @@ describe('additional fluid propagation branches', () => {
 
   it.effect('lava spreads within its own horizontal range and solidifies on contact with water', () =>
     Effect.gen(function* () {
-      const lava = blockIdOf('lava')!
+      const lava = defined(blockIdOf('lava'), 'blockIdOf')
       const origin = blockPosition(0, 64, 0)
       const waterNeighbour = blockPosition(1, 64, 0)
       const { state, store, stages } = yield* builtStagesInWorld(
@@ -2761,7 +2761,7 @@ describe('additional fluid propagation branches', () => {
         ]),
         ['0,0', '-1,0'],
       )
-      const fluids = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids)!
+      const fluids = defined(stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids))
 
       yield* Ref.set(state.fluidFrontier, [{ key: positionKey('0,64,0'), kind: 'lava' }])
       // Lava only ticks on every `LAVA_TICK_INTERVAL`th frame (REGRESSION:
@@ -2802,7 +2802,7 @@ describe('additional fluid propagation branches', () => {
           [grandchild, WATER],
         ]),
       )
-      const fluids = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids)!
+      const fluids = defined(stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids))
 
       // Tick 1: register `origin` (source) and `parent` (flowing, parented on
       // origin) in the runtime's `cells` map by actually propagating one step.
@@ -2842,7 +2842,7 @@ describe('fire tick budget, unregistered blocks and duplicate ignition', () => {
   it.effect('a fire tick with remaining budget exits early once nothing is left to burn', () =>
     Effect.gen(function* () {
       const { state, stages } = yield* builtStages
-      const fireStage = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire)!
+      const fireStage = defined(stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire))
 
       // No active fire blocks at all — only a burning "player" actor one tick
       // from finishing. The loop is handed enough delta time for three ticks;
@@ -2881,7 +2881,7 @@ describe('fire tick budget, unregistered blocks and duplicate ignition', () => {
           [strangeNeighbour, UNREGISTERED_BLOCK_ID],
         ]),
       )
-      const fireStage = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire)!
+      const fireStage = defined(stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire))
       yield* Ref.set(state.fireLifecycle, makeFireLifecycleState([position], 41))
 
       yield* fireStage.run(DeltaTimeSecs(FIRE_TICK_INTERVAL_SECS)).pipe(Effect.provide(FrameServicesLayer))
@@ -2909,7 +2909,7 @@ describe('fire tick budget, unregistered blocks and duplicate ignition', () => {
       }
       yield* Ref.set(state.fireLifecycle, makeFireLifecycleState([shared, sameXY, sameXOnly], 43))
 
-      const fireStage = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire)!
+      const fireStage = defined(stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire))
       yield* fireStage.run(DeltaTimeSecs(FIRE_TICK_INTERVAL_SECS)).pipe(Effect.provide(FrameServicesLayer))
 
       const sorted = (yield* Ref.get(state.fireLifecycle)).fires.map((fire) => fire.position)
@@ -2934,7 +2934,7 @@ describe('fire tick budget, unregistered blocks and duplicate ignition', () => {
         (coord) => `${String(coord.cx)},${String(coord.cz)}`,
       )
       const { state, stages } = yield* builtStagesInWorld(world([]), residentAround)
-      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+      const interactions = defined(stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions))
       const seeded = makeFireLifecycleState([position], 47)
       yield* Ref.set(state.fireLifecycle, seeded)
 
@@ -2960,7 +2960,7 @@ describe('fire tick budget, unregistered blocks and duplicate ignition', () => {
 
   it.effect('a mutation write that finds its chunk unloaded is retried; one that fails otherwise reverts', () =>
     Effect.gen(function* () {
-      const oakPlanks = blockIdOf('oak_planks')!
+      const oakPlanks = defined(blockIdOf('oak_planks'), 'blockIdOf')
       // Fire A spreads to a flammable neighbour (seed 1 makes the very first
       // spread roll succeed — `FIRE_SPREAD_CHANCE` is 0.3 and
       // `nextRoll(1).roll` is ~0.0000078). The write for that NEW ignition is
@@ -3018,7 +3018,7 @@ describe('fire tick budget, unregistered blocks and duplicate ignition', () => {
         player.api,
         time,
       )
-      const fireStage = rewiredStages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire)!
+      const fireStage = defined(rewiredStages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire))
 
       yield* Ref.set(
         state.fireLifecycle,
@@ -3057,14 +3057,17 @@ describe('requestBowShot dies when a correlated request is missing its shot geom
       // this defect. A caller that goes through a loosely-typed reference (a
       // JS caller, or a `.d.ts` mismatch) is not stopped, so this widens the
       // reference to the general implementation signature to reach it.
-      const loose = requestBowShot as unknown as (
-        state: GameplayFrameState,
-        requestId: string,
-      ) => Effect.Effect<void>
-      const exit = yield* Effect.exit(Effect.suspend(() => loose(state, 'geometry-missing')))
+      const isNoContextEffect = (value: unknown): value is Effect.Effect<void, never, never> =>
+        Effect.isEffect(value)
+      const exit = yield* Effect.exit(
+        Effect.suspend(() => {
+          const result = Reflect.apply(requestBowShot, undefined, [state, 'geometry-missing'])
+          return isNoContextEffect(result) ? result : Effect.dieMessage('requestBowShot returned a non-effect')
+        }),
+      )
       expect(Exit.isFailure(exit)).toBe(true)
       if (Exit.isFailure(exit)) {
-        expect((Cause.squash(exit.cause) as Error).message).toBe(
+        expect(errorMessage(Cause.squash(exit.cause))).toBe(
           'requestBowShot: a correlated request requires shot geometry',
         )
       }
@@ -3126,14 +3129,14 @@ describe('block placement rolls back and dies loudly when the compensating resto
       const jammedInventory: InventoryServiceApi = { ...inventory.api, add: () => Effect.succeed(1) }
       const state = yield* makeGameplayFrameState
       const stages = gameplayStages(state, store.api, roster.api, jammedInventory, player.api, time)
-      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+      const interactions = defined(stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions))
 
       yield* requestBlockPlacement(state, { positionKey: positionKey('3,64,3'), heldItem: 'sand' })
 
       const exit = yield* Effect.exit(interactions.run(DeltaTimeSecs(0)))
       expect(Exit.isFailure(exit)).toBe(true)
       if (Exit.isFailure(exit)) {
-        expect((Cause.squash(exit.cause) as Error).message).toBe(
+        expect(errorMessage(Cause.squash(exit.cause))).toBe(
           'placement rollback could not restore sand',
         )
       }
@@ -3160,7 +3163,7 @@ describe('the vehicles stage advances real vehicles when a vehicle service is re
         time,
         vehicleService,
       )
-      const vehicles = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.vehicles)!
+      const vehicles = defined(stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.vehicles))
 
       yield* vehicles.run(DeltaTimeSecs(0.016))
 
@@ -3194,10 +3197,10 @@ describe('villager trade: the real removal disagreeing with the preflight check 
       }
       const time = yield* makeTimeService()
       const stages = gameplayStages(state, store.api, roster.api, racyInventory, player.api, time)
-      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+      const interactions = defined(stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions))
 
       const villager = makeVillager('shortchanged-trader', 'farmer')
-      const offer = villager.offers.find((candidate) => candidate.input.item === 'wheat')!
+      const offer = defined(villager.offers.find((candidate) => candidate.input.item === 'wheat'))
       yield* Ref.set(state.villagerTrades, addVillager(emptyVillagerTradeState(), villager))
 
       const request = { requestId: 'shortchanged', villagerId: villager.id, offerId: offer.id }
@@ -3224,7 +3227,7 @@ describe('villager trade: the roster changing underneath an already-approved com
       )
       const inventory = yield* makeInventoryDouble(slots)
       const villager = makeVillager('vanishing-trader', 'farmer')
-      const offer = villager.offers.find((candidate) => candidate.input.item === 'wheat')!
+      const offer = defined(villager.offers.find((candidate) => candidate.input.item === 'wheat'))
       // The commit's own `add` (line 3253 of registration.ts, called only after
       // the preflight has already approved this trade) also empties the trade
       // roster as a side effect -- simulating the villager despawning in the
@@ -3242,7 +3245,7 @@ describe('villager trade: the roster changing underneath an already-approved com
       }
       const time = yield* makeTimeService()
       const stages = gameplayStages(state, store.api, roster.api, racyInventory, player.api, time)
-      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+      const interactions = defined(stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions))
 
       yield* Ref.set(state.villagerTrades, addVillager(emptyVillagerTradeState(), villager))
 
@@ -3263,7 +3266,7 @@ describe('farming and food item uses through the full interactions stage', () =>
     Effect.gen(function* () {
       const position = blockPosition(40, 64, 40)
       const { state, stages } = yield* builtStagesInWorld(world([[position, STONE]]))
-      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+      const interactions = defined(stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions))
 
       yield* requestBoneMeal(state, 'bone-meal-stage', position)
       yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
@@ -3275,10 +3278,10 @@ describe('farming and food item uses through the full interactions stage', () =>
 
   it.effect('bone meal against a real crop applies and consumes one', () =>
     Effect.gen(function* () {
-      const wheatCrop = blockIdOf('wheat_crop')!
+      const wheatCrop = defined(blockIdOf('wheat_crop'), 'blockIdOf')
       const position = blockPosition(0, 64, 0)
       const { state, stages } = yield* builtStagesInWorld(world([[position, wheatCrop]]))
-      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+      const interactions = defined(stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions))
 
       yield* requestBoneMeal(state, 'bone-meal-success', position)
       yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
@@ -3300,7 +3303,7 @@ describe('farming and food item uses through the full interactions stage', () =>
     Effect.gen(function* () {
       const position = blockPosition(42, 64, 42)
       const { state, stages } = yield* builtStagesInWorld(world([]), [])
-      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+      const interactions = defined(stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions))
 
       yield* requestBoneMeal(state, 'bone-meal-unloaded', position)
       yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
@@ -3322,7 +3325,7 @@ describe('farming and food item uses through the full interactions stage', () =>
     Effect.gen(function* () {
       const position = blockPosition(41, 64, 41)
       const { state, stages } = yield* builtStagesInWorld(world([[position, STONE]]))
-      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+      const interactions = defined(stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions))
 
       yield* requestSoilTill(state, 'till-fail', position, 'iron_hoe')
       yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
@@ -3343,7 +3346,7 @@ describe('farming and food item uses through the full interactions stage', () =>
     Effect.gen(function* () {
       const position = blockPosition(42, 64, 42)
       const { state, stages } = yield* builtStagesInWorld(world([[position, STONE]]))
-      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+      const interactions = defined(stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions))
 
       yield* requestPotatoPlanting(state, 'plant-fail', position)
       yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
@@ -3356,7 +3359,7 @@ describe('farming and food item uses through the full interactions stage', () =>
   it.effect('eating a potato while already full reports failure with nothing consumed', () =>
     Effect.gen(function* () {
       const { state, stages } = yield* builtStages
-      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+      const interactions = defined(stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions))
       const full = { healthPoints: 20, hungerPoints: 20, maxHungerPoints: 20 }
 
       yield* requestPotatoFoodUse(state, 'eat-potato-full', full)
@@ -3378,7 +3381,7 @@ describe('farming and food item uses through the full interactions stage', () =>
   it.effect('eating ordinary food while already full reports failure with nothing consumed', () =>
     Effect.gen(function* () {
       const { state, stages } = yield* builtStages
-      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+      const interactions = defined(stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions))
       const full = { healthPoints: 20, hungerPoints: 20, maxHungerPoints: 20 }
 
       yield* requestFoodUse(state, 'eat-food-full', 'cod', full)
@@ -3401,7 +3404,7 @@ describe('CastFishing fails without water rather than starting a session', () =>
   it.effect('casting with hasWater: false reports failure and starts no session', () =>
     Effect.gen(function* () {
       const { state, stages } = yield* builtStages
-      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+      const interactions = defined(stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions))
 
       yield* Ref.update(state.pendingItemUses, (pending) => [
         ...pending,
@@ -3431,7 +3434,7 @@ describe('AdvanceFishing rejects an invalid duration without discarding the acti
   it.effect('a negative duration reports InvalidDuration rather than Cancelled, and keeps the session', () =>
     Effect.gen(function* () {
       const { state, stages } = yield* builtStages
-      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+      const interactions = defined(stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions))
       const rod = equipmentItem(itemStack('fishing_rod', 1), durability(64, 64))
       const environment = { hasWater: true, hasSkyAccess: true, isRaining: false, isOpenWater: true }
 

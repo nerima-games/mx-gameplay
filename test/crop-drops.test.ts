@@ -16,11 +16,14 @@ import {
   cropDrops,
   ripeYieldRange,
 } from '../src/domain/interactions/crop-drops'
-import { CROP_OF_SEED } from '../src/domain/interactions/plant-crop'
+import { CROP_OF_SEED, PLANTABLE_SEEDS } from '../src/domain/interactions/plant-crop'
 import { ITEM_TYPES } from '@nerima-games/mc-kernel'
 import type { BlockType } from '@nerima-games/mc-kernel'
+import { defined } from './support/assertions'
 
-const CROPS = Object.keys(UNRIPE_CROP_DROP) as ReadonlyArray<BlockType>
+const CROPS: ReadonlyArray<BlockType> = Object.keys(UNRIPE_CROP_DROP).filter(
+  (crop): crop is BlockType => crop in UNRIPE_CROP_DROP,
+)
 
 describe('the table lines up with what can be planted', () => {
   it.effect('every crop that can be planted can also be broken', () =>
@@ -29,7 +32,7 @@ describe('the table lines up with what can be planted', () => {
       // planted and not broken would be a block the player can create and never
       // remove — and neither file alone can see that.
       for (const crop of Object.values(CROP_OF_SEED)) {
-        expect(UNRIPE_CROP_DROP[crop as BlockType]).toBeDefined()
+        expect(UNRIPE_CROP_DROP[crop]).toBeDefined()
       }
     }),
   )
@@ -38,8 +41,8 @@ describe('the table lines up with what can be planted', () => {
     Effect.sync(() => {
       // Vanilla returns the seed rather than punishing a mistimed break. This
       // is derived from `plant-crop`'s table so the two cannot disagree.
-      for (const [seed, crop] of Object.entries(CROP_OF_SEED)) {
-        const outcome = cropDrops(crop as BlockType, false, 0)
+      for (const seed of PLANTABLE_SEEDS) {
+        const outcome = cropDrops(defined(CROP_OF_SEED[seed]), false, 0)
         expect(outcome).toStrictEqual({ _tag: 'drops', drops: [{ item: seed, count: 1 }] })
       }
     }),
@@ -73,7 +76,7 @@ describe('ripe yields', () => {
       FastCheck.assert(
         FastCheck.property(
           FastCheck.double({ min: -2, max: 2, noNaN: false }),
-          FastCheck.constantFrom(...(Object.keys(RIPE_CROP_YIELD) as ReadonlyArray<BlockType>)),
+          FastCheck.constantFrom(...Object.keys(RIPE_CROP_YIELD).filter((crop): crop is BlockType => crop in RIPE_CROP_YIELD)),
           (roll, crop) => {
             const range = ripeYieldRange(crop)
             const outcome = cropDrops(crop, true, roll)
@@ -111,10 +114,10 @@ describe('ripe yields', () => {
 
   it.effect('the low roll is the floor and the high roll is the max', () =>
     Effect.sync(() => {
-      for (const crop of Object.keys(RIPE_CROP_YIELD) as ReadonlyArray<BlockType>) {
-        const range = ripeYieldRange(crop)
-        const low = cropDrops(crop, true, 0)
-        const high = cropDrops(crop, true, 0.999)
+      for (const cropName of Object.keys(RIPE_CROP_YIELD).filter((crop): crop is BlockType => crop in RIPE_CROP_YIELD)) {
+        const range = ripeYieldRange(cropName)
+        const low = cropDrops(cropName, true, 0)
+        const high = cropDrops(cropName, true, 0.999)
         expect(low._tag === 'drops' && low.drops.at(-1)?.count).toBe(range?.min)
         expect(high._tag === 'drops' && high.drops.at(-1)?.count).toBe(range?.max)
       }

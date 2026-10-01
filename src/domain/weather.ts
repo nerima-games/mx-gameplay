@@ -114,25 +114,25 @@ export type WeatherState = {
 
 /** Runtime validation for weather values crossing an untyped host boundary. */
 export const isWeather = (value: unknown): value is Weather =>
-  typeof value === 'string' && (WEATHERS as ReadonlyArray<string>).includes(value)
+  typeof value === 'string' && WEATHERS.some((weather) => weather === value)
 
 /**
  * A persisted weather state must name a known weather and contain a positive,
  * finite countdown. Expired states are advanced before they leave gameplay.
  */
 export const isWeatherState = (value: unknown): value is WeatherState => {
-  if (typeof value !== 'object' || value === null) {
-    return false
-  }
-
-  const candidate = value as { readonly weather?: unknown; readonly remainingSecs?: unknown }
+  const candidate = value
+  if (!isRecord(candidate)) return false
   return (
-    isWeather(candidate.weather) &&
-    typeof candidate.remainingSecs === 'number' &&
-    Number.isFinite(candidate.remainingSecs) &&
-    candidate.remainingSecs > 0
+    isWeather(candidate['weather']) &&
+    typeof candidate['remainingSecs'] === 'number' &&
+    Number.isFinite(candidate['remainingSecs']) &&
+    candidate['remainingSecs'] > 0
   )
 }
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null
 
 /**
  * Applies a host-provided state only when it satisfies the persisted boundary.

@@ -93,10 +93,10 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
 
 const isPotionType = (value: unknown): value is PotionType =>
-  typeof value === 'string' && POTION_TYPES.includes(value as PotionType)
+  typeof value === 'string' && POTION_TYPES.some((potion) => potion === value)
 
 const isBrewingIngredient = (value: unknown): value is BrewingIngredient =>
-  typeof value === 'string' && BREWING_INGREDIENTS.includes(value as BrewingIngredient)
+  typeof value === 'string' && BREWING_INGREDIENTS.some((ingredient) => ingredient === value)
 
 const isBrewingBottle = (value: unknown): value is BrewingBottle =>
   value === 'water_bottle' || (isRecord(value) && isPotionType(value['potion']))

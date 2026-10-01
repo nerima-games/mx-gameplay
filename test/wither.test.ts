@@ -1,3 +1,4 @@
+import { defined } from './support/assertions'
 import { describe, expect, it } from '@effect/vitest'
 import { WITHER_MAX_HEALTH, WITHER_SPAWN_CHARGE_SECS, type BlockCell } from '@nerima-games/mc-sim'
 import type { Position } from '@nerima-games/mc-kernel'
@@ -72,7 +73,7 @@ describe('damageRuntimeWither', () => {
 
   it('reduces health without removing the wither for a non-lethal hit', () => {
     const state = airborne()
-    const id = state.withers[0]!.id
+    const id = defined(state.withers[0]).id
     const result = damageRuntimeWither(state, id, 50, 'melee')
     expect(result.death).toBeUndefined()
     expect(result.state.withers).toHaveLength(1)
@@ -81,7 +82,7 @@ describe('damageRuntimeWither', () => {
 
   it('removes the wither and reports a death descriptor for a lethal hit', () => {
     const state = airborne()
-    const id = state.withers[0]!.id
+    const id = defined(state.withers[0]).id
     const result = damageRuntimeWither(state, id, WITHER_MAX_HEALTH, 'melee')
     expect(result.death).toBeDefined()
     expect(result.death?.drop).toStrictEqual({ item: 'nether_star', count: 1, position: expect.anything() })
@@ -305,8 +306,8 @@ describe('isValidWitherRuntimeSnapshot', () => {
       withers: [{
         ...snapshot.withers[0],
         snapshot: {
-          ...snapshot.withers[0]!.snapshot,
-          state: { ...snapshot.withers[0]!.snapshot.state, phase: 'not-a-phase' },
+          ...defined(snapshot.withers[0]).snapshot,
+          state: { ...defined(snapshot.withers[0]).snapshot.state, phase: 'not-a-phase' },
         },
       }],
     }
@@ -322,7 +323,7 @@ describe('isValidWitherRuntimeSnapshot', () => {
       neverHitsWorld,
     ).state
     const snapshot = snapshotWitherRuntime(withSkull)
-    const corrupted = { ...snapshot, skulls: [{ ...snapshot.skulls[0]!, id: '   ' }] }
+    const corrupted = { ...snapshot, skulls: [{ ...defined(snapshot.skulls[0]), id: '   ' }] }
     expect(isValidWitherRuntimeSnapshot(corrupted)).toBe(false)
   })
 })

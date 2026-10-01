@@ -30,10 +30,13 @@ export const stepPrimedTnt = (tnt: PrimedTnt, dt: DeltaTimeSecs): PrimedTntStep 
 }
 
 export const isPrimedTnt = (value: unknown): value is PrimedTnt => {
-  if (typeof value !== 'object' || value === null) return false
-  const candidate = value as { readonly _tag?: unknown; readonly burnedSecs?: unknown }
-  return candidate._tag === 'PrimedTnt' &&
-    typeof candidate.burnedSecs === 'number' &&
-    Number.isFinite(candidate.burnedSecs) &&
-    candidate.burnedSecs >= 0
+  if (!isRecord(value)) return false
+  const candidate = value
+  return candidate['_tag'] === 'PrimedTnt' &&
+    typeof candidate['burnedSecs'] === 'number' &&
+    Number.isFinite(candidate['burnedSecs']) &&
+    candidate['burnedSecs'] >= 0
 }
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null

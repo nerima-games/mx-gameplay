@@ -64,8 +64,8 @@ const applyCollision = (vehicle: Vehicle, collision: VehicleCollision): VehicleT
   // forbids `undefined` here (`Number.isFinite(undefined)` is `false`), so a
   // runtime fallback can never fire and would be dead code purely to satisfy
   // the type checker.
-  const impactSpeed = Number.isFinite(collision.impactSpeed)
-    ? Math.max(0, collision.impactSpeed!)
+  const impactSpeed = typeof collision.impactSpeed === 'number' && Number.isFinite(collision.impactSpeed)
+    ? Math.max(0, collision.impactSpeed)
     : speed(vehicle)
   const collided: Vehicle = {
     ...vehicle,

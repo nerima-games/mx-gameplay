@@ -141,6 +141,8 @@ export type ShotHit = {
   readonly distance: number
 }
 
+type ShotHitWithCandidate = ShotHit & { readonly candidate: ShotCandidate }
+
 /**
  * Returns where a moving arrow first reaches a point-sized target, or misses it.
  *
@@ -214,14 +216,14 @@ export const arrowHitProjection = (
  * hypothetical in a game with spawn stacks; the reference does not record which
  * wins and `test/bow.test.ts` pins it.
  */
-export const shotTarget = (
+export const shotTargetWithCandidate = (
   candidates: ReadonlyArray<ShotCandidate>,
   origin: Position,
   dirX: number,
   dirY: number,
   dirZ: number,
   reach: number = BOW_MAX_RANGE,
-): ShotHit | undefined => {
+): ShotHitWithCandidate | undefined => {
   if (
     !Number.isFinite(origin.x) ||
     !Number.isFinite(origin.y) ||
@@ -246,7 +248,7 @@ export const shotTarget = (
   const unitZ = dirZ / length
   const radiusSquared = BOW_TARGET_RADIUS * BOW_TARGET_RADIUS
 
-  let nearest: ShotHit | undefined
+  let nearest: ShotHitWithCandidate | undefined
   for (const candidate of candidates) {
     const toX = candidate.feetPosition.x - origin.x
     const toY = candidate.feetPosition.y + BOW_TARGET_CENTER_Y_OFFSET - origin.y
@@ -269,11 +271,24 @@ export const shotTarget = (
     }
 
     if (nearest === undefined || alongRay < nearest.distance) {
-      nearest = { id: candidate.id, distance: alongRay }
+      nearest = { id: candidate.id, distance: alongRay, candidate }
     }
   }
 
   return nearest
+}
+
+export const shotTarget = (
+  candidates: ReadonlyArray<ShotCandidate>,
+  origin: Position,
+  dirX: number,
+  dirY: number,
+  dirZ: number,
+  reach: number = BOW_MAX_RANGE,
+): ShotHit | undefined => {
+  const hit = shotTargetWithCandidate(candidates, origin, dirX, dirY, dirZ, reach)
+  if (hit === undefined) return undefined
+  return { id: hit.id, distance: hit.distance }
 }
 
 /**
