@@ -2520,7 +2520,7 @@ describe('fire lifecycle: extinguish, restore, and burning-actor bookkeeping', (
 
 /** Every slot at a full stack of wheat — the only arrangement that leaves no room for a different item. */
 const brimmingWheat = (): ReadonlyArray<Slot> =>
-  emptySlots().map((): Slot => itemStack('wheat', MAX_STACK_COUNT))
+  emptySlots().map((): Slot => itemStack('wheat', 64))
 
 describe('villager trade rejection paths not reached by the vertical slice', () => {
   it.effect('rejects an offerId the villager does not carry', () =>
@@ -2586,7 +2586,7 @@ describe('villager trade rejection paths not reached by the vertical slice', () 
       ])
       // Nothing was actually removed: the preflight check failed before any
       // real mutation.
-      expect(yield* inventory.api.countOf('wheat')).toBe(36 * MAX_STACK_COUNT)
+      expect(yield* inventory.api.countOf('wheat')).toBe(36 * 64)
     }),
   )
 

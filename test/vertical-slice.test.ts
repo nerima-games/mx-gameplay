@@ -119,7 +119,6 @@ import {
   blockPosition,
   blockPositionKeyOf,
   DeltaTimeSecs,
-  StackCount,
 } from '@nerima-games/mc-kernel'
 import { DEFAULT_ROLL_SEED, drawRolls, nextRoll } from '../src/domain/frame-rolls'
 import {
@@ -235,12 +234,12 @@ const slice = (
 
 const onePlacementItem = (item: PlacementRequest['heldItem']) =>
   emptySlots().map((_, index) =>
-    index === 0 ? { item, count: StackCount(1) } : undefined,
+    index === 0 ? itemStack(item, 1) : undefined,
   )
 
 const oneBucketItem = (item: 'bucket' | 'water_bucket' | 'lava_bucket') =>
   emptySlots().map((_, index) =>
-    index === 0 ? { item, count: StackCount(1) } : undefined,
+    index === 0 ? itemStack(item, 1) : undefined,
   )
 
 const fishingRod = (current = 64): EquipmentItem =>
@@ -1987,7 +1986,7 @@ describe('the mining site slice: dig, drop, place', () => {
     Effect.gen(function* () {
       const GLOWSTONE: BlockId = BlockId(15)
       const almostFull = brimming('glowstone_dust').map((slot, index) =>
-        index === 0 ? { item: 'glowstone_dust' as const, count: StackCount(63) } : slot,
+        index === 0 ? itemStack('glowstone_dust', 63) : slot,
       )
       const { inventory, roster, state, stages } = yield* slice(
         world([[cell, GLOWSTONE]]),

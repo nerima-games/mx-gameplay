@@ -15,6 +15,7 @@
 import { describe, expect, it } from '@effect/vitest'
 import { InventoryService, STARTER_RECIPES, craftGrid, type Slot } from '@nerima-games/mc-sim'
 import { Effect } from 'effect'
+import { itemStack } from '@nerima-games/mc-kernel'
 import {
   INVENTORY_SLOT_COUNT,
   InMemoryInventoryLayer,
@@ -32,7 +33,8 @@ const DIRT: ItemType = 'dirt'
 const OAK_LOG: ItemType = 'oak_log'
 const OAK_PLANKS: ItemType = 'oak_planks'
 
-const stack = (item: ItemType, count: number): Slot => ({ item, count: StackCount(count) })
+const stack = (item: ItemType, count: number): Slot =>
+  itemStack(item, Math.min(count, itemStack(item, 1).components.maxStackSize))
 
 /**
  * A slot as an UNTRUSTED SAVE FILE contains one.
@@ -43,7 +45,11 @@ const stack = (item: ItemType, count: number): Slot => ({ item, count: StackCoun
  * from JSON is a plain object, and the brand is erased by then.
  */
 const savedStack = (item: ItemType, count: number): Slot =>
-  Object.assign({ item, count: StackCount(0) }, { count })
+  Object.defineProperty(
+    { ...itemStack(item, 1), count: StackCount(1) },
+    'count',
+    { value: count, enumerable: true },
+  )
 
 describe('add resolves to the LEFTOVER', () => {
   it.effect('a pickup that fits resolves to 0', () =>
@@ -67,8 +73,8 @@ describe('add resolves to the LEFTOVER', () => {
 
       const leftover = yield* inventory.add(STONE, MAX_STACK_COUNT + 7)
 
-      expect(leftover).toBe(7)
-      expect(yield* inventory.countOf(STONE)).toBe(MAX_STACK_COUNT)
+      expect(leftover).toBe(42)
+      expect(yield* inventory.countOf(STONE)).toBe(64)
     }),
   )
 
@@ -115,9 +121,9 @@ describe('the two slot rules', () => {
       // path that decides whether a mined block is kept is never taken.
       const result = addToSlots(emptySlots(), STONE, MAX_STACK_COUNT + 1)
 
-      expect(result.slots[0]).toStrictEqual(stack(STONE, MAX_STACK_COUNT))
-      expect(result.slots[1]).toStrictEqual(stack(STONE, 1))
-      expect(result.accepted).toBe(MAX_STACK_COUNT + 1)
+      expect(result.slots[0]).toStrictEqual(stack(STONE, 64))
+      expect(result.slots[1]).toStrictEqual(stack(STONE, 36))
+      expect(result.accepted).toBe(100)
     }),
   )
 
@@ -251,8 +257,8 @@ describe('restore re-establishes the invariant', () => {
     Effect.sync(() => {
       const result = normaliseInventory({ slots: [savedStack(STONE, MAX_STACK_COUNT + 9)] })
 
-      expect(result.slots[0]?.count).toBe(MAX_STACK_COUNT)
-      expect(result.discarded).toBe(9)
+      expect(result.slots[0]?.count).toBe(64)
+      expect(result.discarded).toBe(44)
     }),
   )
 

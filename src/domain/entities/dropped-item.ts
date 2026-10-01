@@ -12,7 +12,7 @@ import {
 import { Effect } from 'effect'
 import type { Position } from '@nerima-games/mc-kernel'
 import { changed, DESPAWNED, UNCHANGED, type Entity, type EntityManagerApi } from '@nerima-games/mc-sim'
-import { StackCount } from '@nerima-games/mc-kernel'
+import { itemStack, StackCount } from '@nerima-games/mc-kernel'
 import { decodeEnchantedItem, type Enchantment, type EnchantedItem } from '../enchantment.js'
 import {
   DROPPED_ITEM_KIND,
@@ -50,6 +50,7 @@ export const spawnDroppedItem = (
   const stack = {
     item: drop.item,
     count: StackCount(drop.count),
+    components: itemStack(drop.item, 1).components,
     durability: copyDurability(durability),
   }
   const validation = addStorageStoredStack(emptyPlayerStorage(), stack).result
@@ -151,6 +152,7 @@ export const pickupDroppedItems = (
         const result = yield* inventory.addStoredStack({
           item: entity.behaviour.item,
           count: StackCount(entity.behaviour.count),
+          components: itemStack(entity.behaviour.item, 1).components,
           durability: copyDurability(entity.behaviour.durability),
         })
         if (result._tag !== 'Added') continue

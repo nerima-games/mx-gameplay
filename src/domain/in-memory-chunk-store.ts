@@ -162,16 +162,16 @@ export const makeInMemoryChunkStore = (
       }
 
       /**
-       * Build the `Uint8Array` mc-worldgen would hand back.
+       * Build the `Uint16Array` mc-worldgen would hand back.
        *
        * MATERIALISED FROM THE SPARSE MAP rather than stored as a buffer, so the
        * map stays the single source of truth and a cell written through
        * `setBlock` is visible to the next read with no bookkeeping to get
-       * wrong. It allocates 65,536 bytes per call, which is the wrong shape for
+       * wrong. It allocates 131,072 bytes per call, which is the wrong shape for
        * a hot path and the right shape for a store whose world fits in a Map.
        */
       const materialise = (current: State, coord: ChunkCoord): Chunk => {
-        const blocks = new Uint8Array(CHUNK_SIZE_XZ * CHUNK_SIZE_XZ * CHUNK_HEIGHT)
+        const blocks = new Uint16Array(CHUNK_SIZE_XZ * CHUNK_SIZE_XZ * CHUNK_HEIGHT)
         for (const [cell, block] of current.blocks) {
           const [x, y, z] = cell.split(',').map(Number)
           if (x === undefined || y === undefined || z === undefined) continue

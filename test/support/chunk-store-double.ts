@@ -233,7 +233,7 @@ export const makeChunkStoreDouble = (
               return [undefined, doubles] as const
             }
 
-            const blocks = new Uint8Array(CHUNK_SIDE * CHUNK_SIDE * WORLD_HEIGHT)
+            const blocks = new Uint16Array(CHUNK_SIDE * CHUNK_SIDE * WORLD_HEIGHT)
             for (const [cell, block] of doubles.blocks) {
               const [x, y, z] = cell.split(',').map(Number)
               if (x === undefined || y === undefined || z === undefined) continue

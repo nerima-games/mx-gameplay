@@ -65,7 +65,7 @@
  * transitions so inventory, equipment, and durability cannot drift apart.
  */
 import { Effect, Layer, Ref } from 'effect'
-import { MAX_STACK_COUNT, StackCount } from '@nerima-games/mc-kernel'
+import { itemStack, MAX_STACK_COUNT } from '@nerima-games/mc-kernel'
 import {
   addStoredStack as addStorageStoredStack,
   consumeAndDamageAt as consumeAndDamageStorageAt,
@@ -160,7 +160,7 @@ const addTo = (
       continue
     }
     const accepted = Math.min(maxStackCount - slot.count, remaining)
-    next[index] = { item, count: StackCount(slot.count + accepted) }
+    next[index] = itemStack(slot.item, slot.count + accepted, { components: slot.components })
     remaining -= accepted
   }
 
@@ -170,7 +170,7 @@ const addTo = (
       continue
     }
     const accepted = Math.min(maxStackCount, remaining)
-    next[index] = { item, count: StackCount(accepted) }
+    next[index] = itemStack(item, accepted)
     remaining -= accepted
   }
 
@@ -203,7 +203,7 @@ const removeFrom = (
     }
     const taken = Math.min(slot.count, remaining)
     const left = slot.count - taken
-    next[index] = left === 0 ? undefined : { item, count: StackCount(left) }
+    next[index] = left === 0 ? undefined : itemStack(slot.item, left, { components: slot.components })
     remaining -= taken
   }
 
@@ -254,12 +254,12 @@ const clickSlot = (slots: ReadonlyArray<Slot>, click: InventoryClick): ClickOutc
     }
     if (slot === undefined) {
       const next = [...slots]
-      next[click.slotIndex] = { item: click.carried.item, count: click.carried.count }
+      next[click.slotIndex] = click.carried
       return { slots: next, result: { _tag: 'Placed', carried: undefined } }
     }
     if (slot.item !== click.carried.item) {
       const next = [...slots]
-      next[click.slotIndex] = { item: click.carried.item, count: click.carried.count }
+      next[click.slotIndex] = click.carried
       return { slots: next, result: { _tag: 'Swapped', carried: slot } }
     }
 
@@ -268,10 +268,9 @@ const clickSlot = (slots: ReadonlyArray<Slot>, click: InventoryClick): ClickOutc
       return { slots, result: { _tag: 'NoChange', carried: click.carried } }
     }
     const next = [...slots]
-    next[click.slotIndex] = {
-      item: slot.item,
-      count: StackCount(slot.count + accepted),
-    }
+    next[click.slotIndex] = itemStack(slot.item, slot.count + accepted, {
+      components: slot.components,
+    })
     const remaining = click.carried.count - accepted
     return {
       slots: next,
@@ -280,7 +279,7 @@ const clickSlot = (slots: ReadonlyArray<Slot>, click: InventoryClick): ClickOutc
         carried:
           remaining === 0
             ? undefined
-            : { item: click.carried.item, count: StackCount(remaining) },
+            : itemStack(click.carried.item, remaining, { components: click.carried.components }),
       },
     }
   }
@@ -293,12 +292,12 @@ const clickSlot = (slots: ReadonlyArray<Slot>, click: InventoryClick): ClickOutc
     const remaining = slot.count - pickedUp
     const next = [...slots]
     next[click.slotIndex] =
-      remaining === 0 ? undefined : { item: slot.item, count: StackCount(remaining) }
+      remaining === 0 ? undefined : itemStack(slot.item, remaining, { components: slot.components })
     return {
       slots: next,
       result: {
         _tag: 'PickedUp',
-        carried: { item: slot.item, count: StackCount(pickedUp) },
+        carried: itemStack(slot.item, pickedUp, { components: slot.components }),
       },
     }
   }
@@ -307,17 +306,18 @@ const clickSlot = (slots: ReadonlyArray<Slot>, click: InventoryClick): ClickOutc
     return { slots, result: { _tag: 'NoChange', carried: click.carried } }
   }
   const next = [...slots]
-  next[click.slotIndex] = {
-    item: click.carried.item,
-    count: StackCount((slot?.count ?? 0) + 1),
-  }
+  next[click.slotIndex] = itemStack(click.carried.item, (slot?.count ?? 0) + 1, {
+    components: slot?.components ?? click.carried.components,
+  })
   const remaining = click.carried.count - 1
   return {
     slots: next,
     result: {
       _tag: slot === undefined ? 'Placed' : 'Merged',
       carried:
-        remaining === 0 ? undefined : { item: click.carried.item, count: StackCount(remaining) },
+        remaining === 0
+          ? undefined
+          : itemStack(click.carried.item, remaining, { components: click.carried.components }),
     },
   }
 }
@@ -413,7 +413,7 @@ export const makeInventoryDouble = (
             const slots = [...currentSlots]
             const remaining = slot.count - count
             slots[slotIndex] =
-              remaining === 0 ? undefined : { item: expectedItem, count: StackCount(remaining) }
+              remaining === 0 ? undefined : itemStack(expectedItem, remaining)
             return [
               { _tag: 'Removed', removed: count } as const,
               {

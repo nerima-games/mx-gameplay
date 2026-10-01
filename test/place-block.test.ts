@@ -50,7 +50,7 @@ import {
   chunkCoord,
   needsOneOf,
   PLACEABLE_ITEM_TYPES,
-  StackCount,
+  itemStack,
   supportRuleOfBlockId,
   type BlockPosition,
   type BlockType,
@@ -1015,9 +1015,9 @@ const stagedSlice = (
     const player = yield* makePlayerServiceDouble()
     const initialInventory = emptySlots().map((_, index) => {
       if (!stocked) return undefined
-      if (index === 0) return { item: 'sand' as const, count: StackCount(1) }
-      if (index === 1) return { item: 'stone' as const, count: StackCount(1) }
-      if (index === 2) return { item: 'redstone_dust' as const, count: StackCount(1) }
+      if (index === 0) return itemStack('sand', 1)
+      if (index === 1) return itemStack('stone', 1)
+      if (index === 2) return itemStack('redstone_dust', 1)
       return undefined
     })
     const inventory = yield* makeInventoryDouble(initialInventory)

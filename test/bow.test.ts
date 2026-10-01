@@ -51,7 +51,7 @@ import {
   makeGameplayFrameState,
   requestBowShot,
 } from '../src/stages/registration'
-import { StackCount, type BlockId } from '@nerima-games/mc-kernel'
+import { itemStack, type BlockId } from '@nerima-games/mc-kernel'
 import { makeChunkStoreDouble } from './support/chunk-store-double'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
 import { makePlayerServiceDouble } from './support/player-service-double'
@@ -660,8 +660,8 @@ describe('resolveBowHits', () => {
 /** A frame with the shipped stages over the three doubles and a given roster. */
 const inventoryWith = (bow: boolean, arrow: boolean): ReadonlyArray<Slot> =>
   Array.from({ length: 36 }, (_, index) => {
-    if (index === 0 && bow) return { item: 'bow' as const, count: StackCount(1) }
-    if (index === 1 && arrow) return { item: 'arrow' as const, count: StackCount(1) }
+    if (index === 0 && bow) return itemStack('bow', 1)
+    if (index === 1 && arrow) return itemStack('arrow', 1)
     return undefined
   })
 
@@ -891,7 +891,7 @@ inventory: { mode: 'creative', slotIndex: 0 },
       yield* runFrame(stages)
 
       const storage = yield* inventory.api.storageSnapshot
-      expect(storage.inventory.slots[0]).toStrictEqual({ item: 'bow', count: StackCount(1) })
+      expect(storage.inventory.slots[0]).toStrictEqual(itemStack('bow', 1))
       expect(storage.inventory.slots[1]).toBeUndefined()
       expect(storage.inventoryDurability[0]).toStrictEqual({ current: 383, max: 384 })
       expect(yield* drainBowShotResults(state)).toStrictEqual([
@@ -919,7 +919,7 @@ inventory: { mode: 'creative', slotIndex: 0 },
 
       expect((yield* roster.api.snapshot).entities[0]?.healthPoints).toBe(20)
       const storage = yield* inventory.api.storageSnapshot
-      expect(storage.inventory.slots[0]).toStrictEqual({ item: 'bow', count: StackCount(1) })
+      expect(storage.inventory.slots[0]).toStrictEqual(itemStack('bow', 1))
       expect(storage.inventory.slots[1]).toBeUndefined()
       expect(storage.inventoryDurability[0]).toStrictEqual({ current: 384, max: 384 })
       expect(yield* drainBowShotResults(state)).toStrictEqual([
