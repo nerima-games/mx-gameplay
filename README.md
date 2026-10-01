@@ -63,7 +63,7 @@ $ pnpm lint
 | [docs/architecture.md](./docs/architecture.md) | 4 階層、全 16 リポジトリの依存グラフ、**名詞/動詞ルール**、体験モジュール間エッジがゼロである理由 |
 | [docs/responsibility.md](./docs/responsibility.md) | 責務と、**明示的な非スコープ**（どこに行くのかを全部書いてある） |
 | [docs/public-api.md](./docs/public-api.md) | 契約は stage 登録だけ。`index.ts` の全 export を 契約 / 内部(可視) に分類 |
-| [docs/design-notes.md](./docs/design-notes.md) | **DN-GP-1〜11。** 参照実装で実測された失敗と、それを固定している回帰テストの名前 |
+| [docs/design-notes.md](./docs/design-notes.md) | **DN-GP-1〜13。** 参照実装で実測された失敗と、それを固定している回帰テストの名前 |
 | [docs/porting.md](./docs/porting.md) | 移植元の**実測 LOC**（`wc -l`、2026-07-26 計測）と plan.md 見積との差分 |
 | [docs/testing.md](./docs/testing.md) | 検証要件、プレビュー 3 本、100% カバレッジゲート、決定論の作り方 |
 | [docs/versioning.md](./docs/versioning.md) | 0.x → 1.0.0 方針、GitHub Packages、このリポジトリにとっての破壊的変更の定義 |

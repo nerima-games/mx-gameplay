@@ -24,7 +24,7 @@ plan.md §3.11 の予測どおりなら**最も変更頻度が高いリポジト
 | [architecture.md](./architecture.md) | 4 階層、全 16 リポジトリの依存グラフ、**名詞/動詞ルール**、体験モジュール間エッジがゼロである理由と 2 段のゲート | このリポジトリに import を足したくなった人 |
 | [responsibility.md](./responsibility.md) | 責務と、**明示的な非スコープ**（それぞれの行き先つき）、分割しない理由 | 「これはここに書くべきか」で迷った人 |
 | [public-api.md](./public-api.md) | 契約は stage 登録だけ。`StageRegistration` の逐語再掲、`index.ts` の全 export の 契約 / 内部(可視) 分類 | mc-compose の実装者、および export を足す人 |
-| [design-notes.md](./design-notes.md) | **DN-GP-1〜10。** 参照実装で実測された失敗と、それを固定している回帰テストの名前 | ルールを実装する人（全員） |
+| [design-notes.md](./design-notes.md) | **DN-GP-1〜13。** 参照実装で実測された失敗と、それを固定している回帰テストの名前 | ルールを実装する人（全員） |
 | [porting.md](./porting.md) | 移植元の**実測 LOC**、plan.md 見積との差分、境界の移動、移植順序 | 移植作業に着手する人 |
 | [testing.md](./testing.md) | 検証要件、プレビュー 3 本、100% カバレッジゲート、決定論の作り方 | CI / テストを触る人 |
 | [versioning.md](./versioning.md) | 0.x → 1.0.0 方針、GitHub Packages、**このリポジトリにとって破壊的変更とは何か** | リリース作業者 |
@@ -43,10 +43,10 @@ plan.md §3.11 の予測どおりなら**最も変更頻度が高いリポジト
 ## ドキュメントの位置づけ
 
 `design-notes.md` だけは性質が違う。あれは**設計方針ではなく事故報告**である。
-10 項目のうち想像で書かれたものは 1 つもなく、すべて参照実装の production で実際に起きたことか、
+13 項目のうち想像で書かれたものは 1 つもなく、すべて参照実装の production で実際に起きたことか、
 plan.md が実測知見として確定させたものである。
 
 各項目は **規則 / 根拠 / 回帰テスト** の 3 つを持つ。
-根拠は参照実装の `path:line`（DN-GP-1〜3）か plan.md の節番号（DN-GP-4〜10）。
+根拠は参照実装の `path:line`（DN-GP-1〜3）か plan.md / audit の節番号（DN-GP-4〜13）。
 回帰テストは**実在する describe / it のタイトル**で示してある。
-現在 3 つ目を欠いているのは DN-GP-10（`Ref.modify` / TOCTOU）だけで、その理由も当該節に書いてある。
+現行索引のうち、対応テストを持たずコードレビュー規範として扱うのは DN-GP-10（`Ref.modify` / TOCTOU）だけで、その理由も当該節に書いてある。DN-GP-11〜13 は対応テストを持つ。
