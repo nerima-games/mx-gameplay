@@ -63,8 +63,15 @@ export type RightClickRoute =
   /** The only route with a payload; see the header. */
   | { readonly kind: 'door'; readonly at: BlockPosition; readonly block: DoorBlock }
 
+type SingleBlockRouteKind =
+  | 'craftingTable'
+  | 'furnace'
+  | 'bed'
+  | 'enchantingTable'
+  | 'anvil'
+
 /** Single-literal routes, as data, so the dispatch below cannot drift from them. */
-const SINGLE_BLOCK_ROUTES: ReadonlyArray<readonly [BlockType, RightClickRoute['kind']]> = [
+const SINGLE_BLOCK_ROUTES: ReadonlyArray<readonly [BlockType, SingleBlockRouteKind]> = [
   ['crafting_table', 'craftingTable'],
   ['furnace', 'furnace'],
   ['bed', 'bed'],
@@ -114,12 +121,11 @@ export const rightClickRoute = (
 
   const single = SINGLE_BLOCK_ROUTES.find(([routed]) => routed === block)
   if (single === undefined) return undefined
-  switch (single[1]) {
-    case 'craftingTable': return { kind: 'craftingTable', at }
-    case 'furnace': return { kind: 'furnace', at }
-    case 'bed': return { kind: 'bed', at }
-    case 'enchantingTable': return { kind: 'enchantingTable', at }
-    case 'anvil': return { kind: 'anvil', at }
-    default: throw new Error(`unhandled right-click route: ${single[1]}`)
-  }
+  return ({
+    craftingTable: { kind: 'craftingTable', at },
+    furnace: { kind: 'furnace', at },
+    bed: { kind: 'bed', at },
+    enchantingTable: { kind: 'enchantingTable', at },
+    anvil: { kind: 'anvil', at },
+  } as const)[single[1]]
 }
