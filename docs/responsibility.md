@@ -59,7 +59,7 @@ plan.md §7 は「Minecraft クローンの全機能が 16 リポジトリで表
 
 | 親 | 何を借りるか |
 | --- | --- |
-| `mc-sim` | エンティティ / インベントリ / 体力 / XP / 時刻 の読み書き。**最重要の界面**（plan.md §3.8）。**チャンクダーティ通知はここではない** — `mc-worldgen` の `ChunkStore`（`domain/chunk-store-port.ts` のヘッダ参照） |
+| `mc-sim` | エンティティ / インベントリ / 体力 / XP / 時刻 の読み書き。**最重要の界面**（plan.md §3.8）。**チャンクダーティ通知はここではない** — チャンクは mc-worldgen の `ChunkStore` |
 | `mc-worldgen` | ブロックの読み書き、チャンクのロード状態 |
 | `mc-audio` | `SoundCuePort.play(cueId, options)`。字幕イベントは audio が発行し `mx-ui` が購読する |
 | `mc-kernel` | 共有語彙（全リポジトリ共通。許可リストに書かずに import 可） |
@@ -263,12 +263,12 @@ doc comment にあり、証拠は `test/vehicle-rail-simulation.test.ts` の閉�
 | `resolveMinecartMultiplier` / `RAIL_CLIMB_SPEED` | ここ（mx-gameplay） | §5-3 / §5-4 のとおり、消費者と測定を待って未転記のまま |
 
 **`rail`(31) と `powered_rail`(32) は既に揃っている。** `mc-kernel` の `BLOCK_REGISTRY` にあり、
-`domain/block-vocabulary.ts` にミラーされている（`test/block-vocabulary-mirror.test.ts` が固定）。
+kernel の公開能力 API を利用し、`test/placement-rules.test.ts` が設置結果を固定する。
 kernel への追加要求は 1 つも無い。
 
 ### 5-6. なぜ `domain/interactions/` ではなく `domain/vehicle/` なのか
 
-[testing.md](./testing.md) §3-2 は当初この規則の置き場を `domain/interactions/rail-shape.ts` と書いていた。
+[testing.md](./testing.md) §3-2 は当初この規則の置き場を `domain/vehicle/rail-shape.ts` と書いていた。
 **ディレクトリは plan.md §3.11 の責務に対応している** —— `domain/interactions/` は責務 1（採掘 / 設置 /
 アイテム使用）、`domain/mob/` は責務 2 で、レールは責務 5 である。
 `interactions/` に入れると、`stages/registration.ts` の `gameplay:interactions` に付いている
@@ -294,11 +294,8 @@ kernel への追加要求は 1 つも無い。
 入力が全部ブロックデータで、実体を 1 つも知らない。plan.md §3.11 が 「ポータル / 次元移動ルール」 を
 gameplay に与えているのは**動詞**についてであり、形についてではない。
 
-**こちらはそれを import せず、ミラーする。** `domain/portal-frame-port.ts` が
-`domain/chunk-store-port.ts` と同じ体裁で、同じ削除期日を持つ。
-mc-worldgen のミラーが 2 本になったのは矛盾ではなく、`domain/chunk-store-port.ts` の冒頭が
-書いている規則（**1 ミラー 1 ソースモジュール**、置き場は「どのバレルが置き換えるか」で決まる）に従った結果で、
-mc-kernel に対する `domain/block-vocabulary.ts` と `domain/item-vocabulary.ts` が先例である。
+**こちらはそれを import せず、公開 API を利用する。** 枠の成立条件は mc-worldgen が所有し、
+mx-gameplay は点火・滞留・移動の動詞だけを担当する。
 
 ### 6-1. 同期の `BlockAt` と `Effect` のあいだ
 
@@ -342,12 +339,11 @@ mc-worldgen だった**。「全員が依存しているから」は所有の理
 「ネザーで取ったセーブがオーバーワールドで開く」という、報告の書けない欠陥だからである。
 
 **(b) 「どこへ」はバレルに出て、候補はホスト境界から届く。**
-この項は「mc-worldgen の `index.ts` は `./domain/nether-travel` を出していない」
+この項は「mc-worldgen の `index.ts` は過去に portal API を出していなかった」
 「ミラーすればまさにその綴りに依存することになる」と書いていた。**源流で解決された。**
 mc-worldgen が語を所有すると決めた以上、伏せておく理由は失効し、
-`index.ts` は `./domain/nether-travel` を出しているため、mx-gameplay はその公開 API を
-直接利用する。`domain/portal-frame-port.ts` だけが、まだ公開されていない形を隔離する
-ミラーとして残る。
+`index.ts` は portal API を出しているため、mx-gameplay はその公開 API を
+直接利用する。枠の形も mc-worldgen の公開 API が所有する。
 
 `from: Dimension` の出所は (a) で埋まった。`knownPortals` の永続的な台帳は引き続き
 セーブファイルを持つホストの名詞であり、mx-gameplay は所有しない。代わりに
@@ -411,7 +407,7 @@ mc-worldgen が語を所有すると決めた以上、伏せておく理由は�
 **stage からは呼ばれていない。** 呼ぶには `IsArrowBlockedAt`、すなわち
 「このブロックは矢を止めるか」が要り、それは **kernel の能力（capability）** である。
 
-`domain/block-vocabulary.ts` がミラーしている能力述語は 4 つ ——
+kernel の公開能力 API で利用できる能力述語は 4 つ ——
 `fallsWhenUnsupported` / `isReplaceable` / `validSpawnSurface` / `canSupportAttachments` ——
 で、**どれも「発射体に対して固い」を意味しない。**
 参照実装には表がある（`block-collision-predicates.ts` の `PASSABLE_BLOCK_IDS`）が、

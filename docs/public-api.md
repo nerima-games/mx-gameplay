@@ -78,7 +78,7 @@ stage が Mob を反復するようになったので、mc-sim の `EntityManage
 そして stage が**採掘したアイテムを預ける**ようになったので、mc-sim の `InventoryService` も要る ——
 plan.md §2.3-1 の実例そのものであり、この 3 本目が入るまでは `Ref` で止まっていた。
 
-**3 本目は mc-compose が予告していたものでもある。** あちらの `docs/e2e-triage.md` §4.3 は
+**3 本目は mc-compose が予告していたものでもある。** mc-compose の E2E 設計でも
 「mx-gameplay は**登録時に**`InventoryService` を acquire するしかない。すると `registerModule` の
 `RRegister` に `InventoryService` が乗る」と書いており、そのとおりになった。
 そこに残る問い —— 「mx-gameplay が書き mx-ui が読む 1 つのインスタンスを、
@@ -106,8 +106,7 @@ mc-sim を import できない mc-compose がどう構築するのか」 —— 
 そちらは丸ごと写せない —— `cameraPose` が `ClockPort` を要求し、`ClockPort` をローカルに書き直すのは
 `domain/frame-contract.ts` の言う「狭い型より遥かに悪い失敗」だからである。
 
-`ChunkStore` は mc-worldgen が publish されるまで `domain/chunk-store-port.ts` のミラーから来る。
-`EntityManager` と `InventoryService` は mc-sim の公開 API を直接利用する。
+`ChunkStore`、`EntityManager`、`InventoryService` はそれぞれ mc-worldgen / mc-sim の公開 API を直接利用する。
 どれも `index.ts` から re-export していないが、`makeGameplayStages` の型に現れる以上、
 消費者には見える —— `src/index.ts` の export と `test/public-api.test.ts` に
 `ChunkStore` / `ChunkStoreApi` / `EntityManager` / `EntityManagerApi` /
@@ -312,7 +311,7 @@ plan.md §4.2 を素直に読むと `input` の後ろでもあり、`redstone` �
 | `portalCandidates` / `portalTravels` | 宛先次元別の既知ポータル snapshot / 成立した移動の送信箱 | 要らない。ポータル台帳と生成済み世界はホストが保存し、ここにはフレーム間の受け渡しだけを置く |
 
 受信箱は mc-render の入力イベントになる。**送信箱のうち採掘のぶんは消えた** ——
-`domain/inventory-port.ts` が mc-sim の `InventoryService` を丸ごと写し、
+mc-sim の `InventoryService` を直接利用し、
 `gameplay:interactions` が採掘したスタックごとに `add` をちょうど 1 回呼ぶ。
 `add` が返す「入らなかった数」が 0 より大きければ、stage は破壊前に保持したセル座標へ
 `spawnDroppedItems` で dropped-item entity を作る。全量を再度渡さず **leftover だけ**を spawn するので、
@@ -443,7 +442,7 @@ kernel の `StageRegistration` に対してそのまま代入できる。
 | `HOSTILE_SPAWN_MAX_BLOCK_LIGHT` | 内部(可視) | 7。判定は**厳密に大なり**（光度 7 はスポーンする） |
 | `MIN_SPAWN_DISTANCE_BLOCKS` / `MAX_SPAWN_DISTANCE_BLOCKS` | 内部(可視) | 16 / 40。**両端とも含む**（参照実装の比較子が非対称で、オラクルだけがそれを言う） |
 
-地面の判定は `domain/chunk-store-port.ts` の `validSpawnSurface`（kernel 能力表のミラー）であり、
+地面の判定は mc-worldgen / mc-kernel の公開能力 API であり、
 **ブロック名の列挙ではない**。参照実装の Mob スポーナはそもそも地面を検査しておらず
 （「上から最初の非 air」）、葉とガラスが地面として通っていた。
 kernel 監査 §4.9 が `solid` への統合を禁じている理由がその行である。
@@ -456,7 +455,7 @@ kernel 監査 §4.9 が `solid` への統合を禁じている理由がその行
 | `dropPasses` | 内部(可視) | 参照実装 `drop.ts:14-16` の逐語。比較は厳密 |
 | `mobXpReward` | 内部(可視) | XP の**量**はルール、XP の**残高**は mc-sim（plan.md §7） |
 | `MobDropRule` / `MobDrop` / `MobKill` / `DropRolls` / `LOWEST_ROLLS` | 内部(可視) | `MobKill` は `Slain{lootingLevel}` か `SelfDestruct` |
-| `CREEPER_DROPS` / `CREEPER_XP_REWARD` | 内部(可視) | 火薬 1 個 / 5。`item` の型は **kernel の `ItemType`**（`domain/item-vocabulary.ts` 経由） |
+| `CREEPER_DROPS` / `CREEPER_XP_REWARD` | 内部(可視) | 火薬 1 個 / 5。`item` の型は **kernel の `ItemType`** |
 | `GHAST_DROPS` / `GHAST_XP_REWARD` | 内部(可視) | 火薬 1 個 / 5。参照実装 `mobs/ghast.ts:16-17`。**同じ名前を 2 体が共有する**のが語彙の効いている証拠 |
 | `BLAZE_DROPS` / `BLAZE_XP_REWARD` | 内部(可視) | `blaze_powder` 1 個・**確率 0.5** / 10。参照実装 `mobs/blaze.ts:17-18`。実在の表で `chance` を使う最初の 1 本 |
 
@@ -466,7 +465,7 @@ kernel 監査 §4.9 が `solid` への統合を禁じている理由がその行
 
 **ブレイズだけ品目が参照実装と違う。** 参照実装は `BLAZE_ROD` を落とすが `blaze_rod` は kernel の
 `ItemType` に無く、`blaze_powder` は**「mob drops」という注記つきで kernel が追加したもの**である
-（`domain/item-vocabulary.ts` 冒頭が引用している）。**ルール（1 個・0.5）はそのまま、名詞だけが動いた**。
+（kernel の公開語彙が定義している）。**ルール（1 個・0.5）はそのまま、名詞だけが動いた**。
 逆に**エンダーマンとシュルカーのドロップ表はここに無い** —— `ender_pearl` / `shulker_shell` は
 `ItemType` に無く、綴れる名前で代用するのは別のルールを書くことだからである。kernel の表に 1 行増えれば
 このリポジトリの編集は 0 行で済む（`domain/mob/hostile-spawn.ts` がブロック名について言っているのと同じ話）。
@@ -573,7 +572,7 @@ outbox を空にする破壊的な読み出しで、同一プロセス内では 
 `RedstoneWorldRuntime.syncSnapshot` に渡し、通常どおり redstone stage を実行する。
 現行の `mx-redstone` 公開 API にレバー専用の toggle 関数はなく、この snapshot 同期が正確な結線点である。
 
-### domain/block-vocabulary.ts
+### ブロック語彙とドロップ
 
 | export | 種別 | 備考 |
 | --- | --- | --- |
@@ -585,27 +584,26 @@ outbox を空にする破壊的な読み出しで、同一プロセス内では 
 | --- | --- | --- |
 | `applyFallingBlocks` / `FallingBlockMoves` | 非公開 | `domain/falling-block.ts` が**予定**、こちらが**移動**。走査もダーティチャンネルの購読もしない（DN-GP-1 / DN-GP-11） |
 
-### domain/block-position-key.ts（**バレルから re-export しない**）
+### 座標語彙（上流 API を利用）
 
 | export | 種別 | 備考 |
 | --- | --- | --- |
-| `positionKeyOf` / `positionOfKey` / `above` / `below` | 非公開 | **プレースホルダ。** `PositionKey`（予定の語彙）と `BlockPosition`（世界の語彙）の唯一の接続点。エンコードを 1 箇所に閉じてあるのは、参照実装のように呼び出しごとに `${x},${y},${z}` と書くと、所有者のいないワイヤフォーマットができるからである |
+| 座標変換 | 非公開 | 座標語彙は mc-kernel / mc-worldgen の公開 API を利用する |
 
-### domain/chunk-store-port.ts（**バレルから re-export しない**）
+### チャンクサービス（上流 API を利用）
 
 | export | 種別 | 備考 |
 | --- | --- | --- |
-| `ChunkStore` / `ChunkStoreApi` / `BlockReading` / `BlockWriteOutcome` / … | 非公開（所有者は mc-worldgen） | mc-worldgen のサービスのミラー。**狭いミラーは静かな実行時ハザード**なので API 全体を写してある。`test/chunk-store-mirror.test.ts` がタグキーと形の両方を固定する |
+| `ChunkStore` / `ChunkStoreApi` / `BlockReading` / `BlockWriteOutcome` / … | 非公開（所有者は mc-worldgen） | mc-worldgen のサービスを直接利用する |
 | `fallsWhenUnsupported` / `isReplaceable` / `AIR_BLOCK_ID` | 非公開（所有者は kernel） | 能力表の再掲。ルールは**ブロックを名指ししない** — バイトを読んで表に尋ねる |
 
-`makeGameplayStages` の型に `ChunkStore` が現れるため、このファイルは re-export していなくても
-`src/index.ts` の型 export として消費者に見える（§2-2）。
+`makeGameplayStages` の登録時サービスとして `ChunkStore` が現れるが、公開バレルからは再 export しない。
 
-### domain/item-vocabulary.ts（**バレルから re-export しない**）
+### アイテム語彙（上流 API を利用）
 
 | export | 種別 | 備考 |
 | --- | --- | --- |
-| `ITEM_TYPES` / `ItemType` | 非公開（所有者は kernel） | kernel `domain/item-type.ts` のミラー。`gunpowder` / `blaze_powder` は「Mob ドロップ。**ルールは mx-gameplay、語彙は kernel**」という注記つきで kernel の名簿に入った literal である |
+| `ITEM_TYPES` / `ItemType` | 非公開（所有者は kernel） | kernel の語彙を直接利用する |
 
 ロスタ全体を写してあるのは、**部分ミラーは機械比較できない**からである
 （`mc-dev-meta` の `pnpm check:mirrors` が `REPLACEABLE_IDS` の `lava` 欠落を見つけたのは集合ごと差分を取ったため）。

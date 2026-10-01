@@ -126,7 +126,7 @@ kit は実行時エッジではないため、載せてしまうと `kit → ren
 置き場であり、どちらも同じ判定手順を通っている
 （セーブファイルは「ブロックが無い」ことを記録するが「ボタンが押されていた」ことは記録しない）。
 出口のほうは**縮んだ**: 掘れたものを 1 フレーム預かる `minedItems` だったが、
-`domain/inventory-port.ts` が mc-sim の `InventoryService` を写したので stage が直接 `add` を呼ぶ。
+mc-sim が公開する `InventoryService` を stage が直接利用して `add` を呼ぶ。
 この節の規則の観点で重要なのは、**それでもここにインベントリは無い**という点である ——
 stage は問うだけで、覚えるのは mc-sim である。
 **ブロックそのものは 1 つも持っていない。** 読み書きはすべて mc-worldgen の `ChunkStore` を通る —
@@ -279,7 +279,7 @@ kit は「ミニ平地ワールド + カメラ + レンダラ + 入力を 1 秒�
 **現状、プレビューは `apps/preview-mining-site/` に存在し、kit への依存は宣言されていない。**
 `package.json` の `dependencies` は `@nerima-games/*` の exact pin と `effect` である
 （依存する `@nerima-games/*` は package manifest と lockfile の exact pin を正とする。plan.md §6 Step 3）。
-プレビュー 3 本の完成条件と現況は [testing.md](./testing.md) §3-1 の表にある（3 本とも ❌）。
+プレビュー 3 本の完成条件と現況は [testing.md](./testing.md) §3-1 の表にある。採掘場、Mob アリーナ、時間スライダーはいずれも現行のプレビューから起動できる。
 **それでも以下のゲートは今日から効く。** 「まだ書いていないから守れない」ではなく、
 「書く前に守らせる」ためのものだからである。
 

@@ -132,8 +132,8 @@ Nix を使わない場合は `nix develop --command pnpm lint` のように `nix
 
 ## 現状
 
-**実装前の叩き台（pre-implementation first cut）である。** 移植済みのルールは 12 本で、
-現在あるものの大半は、参照実装で実測された失敗を構造として固定した骨組みと、その回帰テストである。
+**現行実装である。** ルール、stage 配線、プレビュー、回帰テストをこのリポジトリで管理し、
+参照実装で実測された失敗は設計注意と回帰テストとして固定している。
 ただし**縦切りは 3 本通っている** — 掘る → 砂が落ちる → アイテムが渡る、
 **掘る → 置く → 落ちる**、そしてスポーン → 導火線 → 爆発 → 死因 → ドロップ、
 がいずれも stage 登録経由で動く。
@@ -161,7 +161,7 @@ Nix を使わない場合は `nix develop --command pnpm lint` のように `nix
   `gameplay:time-weather` はこれで `Effect.void` ではなくなった（DN-GP-7）。
 - **ブロックの読み書きは配線済み。** `gameplay:interactions` が破壊を、`gameplay:entities` が落下を、
   `gameplay:fire` が延焼と消火を、
-  mc-worldgen の `ChunkStore`（`domain/chunk-store-port.ts` のミラー越し）に対して実際に行う。
+  mc-worldgen が提供する `ChunkStore` API に対して実際に行う。
   「掘る → 砂が落ちる → アイテムが渡る」の縦切りは `test/vertical-slice.test.ts` が
   **stage 登録経由で**回している。`gameplay:fluids` はキューの出し入れだけである。
   ブロックに触るルールは 4 本（`break-block.ts` / `place-block.ts` / `explosion-crater.ts` /
@@ -214,10 +214,10 @@ Nix を使わない場合は `nix develop --command pnpm lint` のように `nix
   まだ来ていないのは**測定**のほう —— スポーン候補を探す輪はブロック光度を要求し
   `ChunkStoreApi` に光度クエリが無い、プレイヤー位置は `PlayerService` にあるが
   `cameraPose` が `ClockPort` を要求するのでミラーできない。両方ともアリーナの missing 一覧に行き先つきで載っている。
-- **`domain/chunk-store-port.ts` と `domain/block-position-key.ts` も削除日が決まっている。**
-  前者は mc-worldgen の `ChunkStore` の**全面**ミラーで、狭いミラーはタグキーが同じまま
-  メソッドが `undefined` になる静かな実行時ハザードになるため、`test/chunk-store-mirror.test.ts` が
-  両方向で固定する。後者は kernel の座標語彙との接続点である。どちらもバレルから re-export していない。
+- **状態サービスの API は上流パッケージを直接利用する。**
+  チャンク、座標、インベントリ、アイテム語彙などの名詞をこのリポジトリで再定義せず、
+  mc-worldgen / mc-sim / mc-kernel の公開 API を使う。公開バレルから再 export しない API は
+  `src/index.ts` と `test/public-api.test.ts` で明示的に区別している。
   **例外が 2 つあり、理由が逆である。** `MobBehaviour` と `repairMobBehaviour` は
   `index.ts` に載せている —— mc-sim の型引数 `S` を具体化できるのはルール層だけで、
   `EntityManagerLayer<S>()` の戻り値に `S` が現れない以上、

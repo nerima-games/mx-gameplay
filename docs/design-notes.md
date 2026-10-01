@@ -128,7 +128,7 @@ plan.md §3.11:
 > 流体伝播はフロンティアサイズに上限（O(frontier)/tick が **37〜55倍**の性能改善をもたらした）
 
 参照実装は同じ数字を反対側から記録している。
-`docs/reference/shipping-readiness-2026-07-10.md:51`（2026-07-10 の CDP プロファイリング結果）:
+mc-compose の 2026-07-10 CDP プロファイリング結果（shipping readiness）:
 
 > Fluid simulation event-driven rework: **37–55× on its hot path**.
 
@@ -747,7 +747,7 @@ TOCTOU は単一 fiber のテストでは再現しない — 落ちるのは並�
 
 ### 根拠
 
-`mc-worldgen/docs/public-api.md` §6-3（本リポジトリのミラー `domain/chunk-store-port.ts` に逐語）:
+`mc-worldgen/docs/public-api.md` §6-3（mc-worldgen の公開 API を利用）:
 
 > `ChunkNotLoaded` を air と区別するのは必須である。ロード端の砂が「下は air」と教えられると、
 > 未生成空間に落ちる。mc-meshing は逆に**意図的に混同する**（未ロード隣接は黒い壁ではなく
@@ -825,7 +825,7 @@ existing === 'AIR' || existing === 'WATER'
 **溶岩がこのリストから抜けている。** 手書きの 2 要素リストで、コメントは水中建築のことしか言っていない。
 その結果、溶岩のセルへの設置は「すでにブロックがある」として拒否される。
 
-これは `domain/chunk-store-port.ts` の `REPLACEABLE_IDS` から溶岩が抜けていた事故と**同じ 1 つの事故**である。
+これは mc-worldgen の `REPLACEABLE_IDS` から溶岩が抜けていた事故と**同じ 1 つの事故**である。
 その行のコメントは帰結を 2 つ挙げていた ——
 「落下する砂と砂利が溶岩を押しのけなかった、**そして設置が溶岩セルを occupied として扱った**」。
 1 つ目はあの時点で直り、2 つ目はまだ書かれていないルールの話だった。これがその 2 つ目である。
@@ -849,7 +849,7 @@ existing === 'AIR' || existing === 'WATER'
   `gameplay:interactions` と `gameplay:entities` は `after` で順序付いており、どちらも fork しない。
 - **本当の修正は他リポジトリの API である。** compare-and-set —— `setBlockIf(position, expected, block)` ——
   が窓を完全に閉じ、それは mc-worldgen の `ChunkStore` の、`setBlock` の隣に属する。
-  `domain/chunk-store-port.ts` はそのサービスを丸ごとミラーしているので、
+  mc-worldgen の公開サービスを直接利用しているので、
   メソッドが生えた日にこのファイルは読みを 1 回と段落を 1 つ失う。
 
 ### 能力は 3 つとも別物である
@@ -917,10 +917,10 @@ capability-flag audit §6-9 は乱数ドロップ全般について同じこと�
 
 `breakBlock` は `BlockId`（`Uint8Array` から出た**数**）を返し、
 mc-sim の `InventoryService.add` は `ItemId`（**文字列**）を取る。
-mc-compose の `docs/e2e-triage.md` §4.3 はこの不一致を「1 リポジトリからは立てられない」問いとして記録した。
+mc-compose の E2E 設計はこの不一致を「1 リポジトリからは立てられない」問いとして記録した。
 
 kernel が答えを持っている: `blockTypeOfId` が数を名前にし、`itemOfBlock` が名前をアイテムにし、
-`dropOfBlockId` が道具のゲートと合わせて 1 回で答える。`domain/block-vocabulary.ts` がそのミラーである。
+`dropOfBlockId` が道具のゲートと合わせて 1 回で答える。kernel の公開能力表を利用する。
 **残っているのは呼び出しであって、変換ではない。**
 
 ### 回帰テスト
