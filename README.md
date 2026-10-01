@@ -193,7 +193,7 @@ Nix を使わない場合は `nix develop --command pnpm lint` のように `nix
   返るのは `{xBlocks, zBlocks}` という変位だけになる（docs/porting.md §5-2）。
   **乱数はドメインに 1 つも無い。** ロールは引数で渡す（mc-worldgen が seed を通すのと同じ形）。
   **4 つ目のドラゴンは「未着手」ではなく「拒否」である。** 位相機械が絶対ワールド Y
-  （`dragon-phase.ts:51-52`）で切り替わり速度を返す以上、それは mc-worldgen の構造と
+  （参照実装の `dragon-phase.ts`）で切り替わり速度を返す以上、それは mc-worldgen の構造と
   mc-physics の移動であって、ここに書けるルールではない。アリーナ画面が理由つきでそう書く。
 - **`gameplay:entities` はもう Mob を回している。** mc-sim が `EntityManager` を公開したので
   （公開 API を直接利用して）、この stage は毎フレーム 1 回の sweep で

@@ -1,9 +1,8 @@
 # 公開 API
 
-## 1. 公開 API は stage 登録だけである
+## 1. 主な公開入口は stage 登録である
 
-**`mx-gameplay` が他リポジトリから利用される主な入口は `makeGameplayStages` であり、
-サービスは 1 つも提供しない。**
+**`mx-gameplay` が他リポジトリから利用される主な入口は `makeGameplayStages` である。**
 
 これは実装が未熟だからではなく、体験モジュールの定義そのものである。
 **ルールはサービスではない。** 他リポジトリが `mx-gameplay` に尋ねたくなることを列挙すると、
@@ -16,9 +15,8 @@
 import { makeGameplayStages } from '@nerima-games/mx-gameplay'
 ```
 
-`index.ts` はこれ以外にも多くを export しているが、それらは**このリポジトリ自身のテストとプレビューが
-直接叩く単位**として見えているだけで、他リポジトリが import することを想定していない。
-どれがどちらかは §5 の表に全部書いてある。
+`index.ts` はこれ以外にも host-facing な入出力、ルール、型を export している。契約として扱う入口と
+内部可視の export の分類は §5 の表に示す。
 
 ## 2. 契約（plan.md §4.1 逐語）
 
@@ -261,8 +259,8 @@ plan.md §4.2 を素直に読むと `input` の後ろでもあり、`redstone` �
 `index.ts` は複数のモジュールを `export *` で公開しているので、内部(可視) も外から見える。
 見えることと契約であることは別で、内部(可視) の変更は semver 上 minor 扱いになる（[versioning.md](./versioning.md) §6）。
 
-> **`domain/frame-contract.ts` と `domain/position-key.ts` は re-export していない。**
-> どちらも mc-kernel の仮置きであり、削除日が決まっている。バレルから `export *` すると
+> **kernel 所有の型語彙は re-export していない。**
+> 過去のローカル再掲をバレルから `export *` すると
 > `StageId` / `DeltaTimeSecs` / `StageRegistration` が**所有していないパッケージの公開 API** になり、
 > 約束されている削除がすべての消費者にとって破壊的変更になってしまう。
 > 消費者はこの語彙を kernel から取る。型は構造的に同一なので、kernel から import した消費者は
@@ -281,7 +279,7 @@ plan.md §4.2 を素直に読むと `input` の後ろでもあり、`redstone` �
 | export | 種別 | 備考 |
 | --- | --- | --- |
 | `makeGameplayStages` | **契約** | `mc-compose` が消費する唯一の入口。`ChunkStore` を要求する（§2-2） |
-| `gameplayStages(state, store, entities, inventory, player, time)` | 内部(可視) | state と各サービスを外から渡す版。プレビューとテストが state を覗くために使う。プレイヤー位置と時刻はそれぞれ PlayerService と TimeService が権威であり、互換Refはステージから読まない |
+| `gameplayStages(state, store, roster, inventory, player, time, vehicleService?, vehicleEnvironment?, options?)` | 内部(可視) | state と各サービスを外から渡す版。車両サービス、車両環境、stage オプションは省略可能。 |
 | `makeGameplayFrameState` | 内部(可視) | 再入可能な初期化。テストが 2 つ作って独立性を検査する（DN-GP-6） |
 | `GameplayFrameState` | 内部(可視) | フレームローカルの作業メモ（`Ref` 群）。ゲーム状態ではない |
 | `setPortalCandidates` | **契約** | ホストが宛先次元ごとの既知ポータル snapshot を渡す。未設定の次元は空候補として扱い、新規ポータル設計になる |
@@ -370,15 +368,15 @@ mc-sim が所有する値の規約であり、[mc-sim の public-api.md](https:/
 | `EXPERIENCE_MODULE_STAGE_PREFIXES` | 内部(可視) | 兄弟宛エッジ検査用。テストの資産 |
 | `OWN_STAGE_PREFIX` | 内部(可視) | 同上 |
 
-### domain/frame-contract.ts（**kernel の資産のローカル再掲。バレルから re-export しない**）
+### kernel 所有の型語彙
 
 | export | 種別 | 備考 |
 | --- | --- | --- |
-| `StageRegistration` | 非公開（所有者は kernel） | plan.md §4.1 逐語。`makeGameplayStages` の**戻り値の形**としてだけ観測される |
-| `StageId` / `DeltaTimeSecs`（型 + Brand コンストラクタ） | 非公開（所有者は kernel） | kernel publish 時に import へ差し替え |
+| `StageRegistration` | 非公開（所有者は kernel） | `makeGameplayStages` の戻り値の形として観測される |
+| `StageId` / `DeltaTimeSecs`（型 + Brand コンストラクタ） | 非公開（所有者は kernel） | 現行の mc-kernel 公開 API から import |
 | `FrameServices` | 非公開（所有者は kernel） | ここでは `never`。§2 の意図的乖離 |
 
-**`index.ts` はこのファイルから 1 つも re-export しない。**
+**過去の `domain/frame-contract.ts` は現行 tree から削除済みである。**
 所有していない語彙を公開 API に載せると、約束済みの削除が破壊的変更に化けるためである（§5 冒頭）。
 消費者は同じ型を kernel から取る。構造的に同一なので、`makeGameplayStages` の戻り値は
 kernel の `StageRegistration` に対してそのまま代入できる。
@@ -611,11 +609,11 @@ kernel が literal を**足す**分にはこちらが stale になるだけで�
 こちらが名指ししている literal を kernel が**消した**ときだけ削除日に壊れる —— それは壊れるべき日である。
 固定しているテスト: `REGRESSION: does not republish mc-kernel’s vocabulary as its own`。
 
-### domain/position-key.ts（**バレルから re-export しない**）
+### 座標語彙
 
 | export | 種別 | 備考 |
 | --- | --- | --- |
-| `PositionKey` | 非公開 | **プレースホルダ。** 座標語彙は kernel の所有物なので、意図的に brand していない。`frame-contract.ts` と同じ理由でバレルには載せない |
+| 上流の座標 API | 非公開（所有者は上流） | 過去の `domain/position-key.ts` は削除済みで、現行 API ではない |
 
 ### domain/entities/mob-frame.ts（**接合部。`domain/mob/` は 1 行も変わっていない**）
 

@@ -59,7 +59,6 @@ prettier も biome も `.editorconfig` も置かない。整形の権威が 2 �
 | `test/rules.test.ts` | ドメイン単体 | DN-GP-1 / DN-GP-2 / DN-GP-3 と流体の予算配分を固定 |
 | `test/mob.test.ts` | Mob ルール | クリーパー、エンダーマン、シュルカー、爆風、スポーン、ドロップ、デスポーンを固定 |
 | `test/stage-registration.test.ts` | Stage 契約 | フレーム契約、依存 stage 名、登録時サービスを固定 |
-| `test/stage-registration.test.ts` | Stage 契約 | stage 契約、依存 stage 名、登録時サービスを固定 |
 | `test/vertical-slice.test.ts` | 縦切り | stage 登録経由で採掘、設置、Mob のシナリオを回す |
 | `test/day-night.test.ts` | 昼夜 | DN-GP-7。昼夜ルールと mc-sim の定義を固定 |
 | `test/public-api.test.ts` | 公開 API | バレルの export と kernel 語彙・時刻 API の不在を固定 |
@@ -561,7 +560,7 @@ thresholds: { branches: 100, functions: 100, lines: 100, statements: 100 },
 
 閾値を置かなかった理由は「スケルトンに課しても意味がない」であり、その前提はもう成り立たない。
 `domain/` はモブのルール、フレームの sweep、スポーン探索、ドロップ表と支持表、天候と昼夜を持ち、
-`stages/` は 2 つのミラーサービスにそれらを配線する 5 つの stage を持つ。
+`stages/` は上流サービスにそれらを配線する 8 つの stage を持つ。
 パーセンテージがようやく**実装の挙動についての主張**になった。
 
 `vitest.config.ts` の thresholds と `pnpm test:coverage` の終了 status で有効にしてある。
@@ -613,14 +612,10 @@ branch は **95.68%** で、未到達は 25 本だった。**そのうちテス�
 カバレッジ 100% の行だった —— 実行はされていたが、どのアサーションもその値に依存していなかった。
 `SPANS the four radii` を足してある。
 
-### 4-1. `domain/position-key.ts` を除外している理由
+### 4-1. 型のみのファイルを coverage 対象にしない理由
 
-型エイリアス 1 行だけで、実行可能な文を 1 つも持たないファイルを
-v8 provider は 100% ではなく **0%** として報告する。headline の数字が無意味になるため
-`coverage.exclude` に入れてある（`vitest.config.ts` の `PURE_TYPE:` コメント）。
-
-このファイルは kernel の座標語彙のプレースホルダであり、kernel publish 時に削除される
-（[versioning.md](./versioning.md) §5-1）。除外は恒久措置ではない。
+現行の coverage 設定に、削除済みの `domain/position-key.ts` を除外する設定はない。
+座標語彙は上流パッケージが所有し、本リポジトリの実行対象ではない。
 
 **除外は「測れないもの」に限り、「測ると都合が悪いもの」には使わない。**
 ゲートを入れるにあたってこのリストは 1 行も増やしていない。次節の 3 件は、
