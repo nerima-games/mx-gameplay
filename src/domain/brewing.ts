@@ -189,7 +189,7 @@ export const tickBrewingStand = (
   state: BrewingStandState,
   dt: DeltaTimeSecs,
 ): BrewingStandState => {
-  const elapsedSecs = Math.max(0, dt)
+  const elapsedSecs = Number.isFinite(dt) ? Math.max(0, dt) : 0
   let current = state
   if (current.brewing === undefined && current.fuelUnits > 0 && current.bottle !== undefined && current.ingredient !== undefined) {
     const output = brewingOutput(current.bottle, current.ingredient)

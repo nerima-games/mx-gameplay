@@ -109,7 +109,7 @@ mc-sim を import できない mc-compose がどう構築するのか」 —— 
 `ChunkStore` は mc-worldgen が publish されるまで `domain/chunk-store-port.ts` のミラーから来る。
 `EntityManager` と `InventoryService` は mc-sim の公開 API を直接利用する。
 どれも `index.ts` から re-export していないが、`makeGameplayStages` の型に現れる以上、
-消費者には見える —— `api-lock.md` の "Supporting declarations" に
+消費者には見える —— `src/index.ts` の export と `test/public-api.test.ts` に
 `ChunkStore` / `ChunkStoreApi` / `EntityManager` / `EntityManagerApi` /
 `InventoryService` / `InventoryServiceApi` などが載っているのはそのためである。
 タグキーの文字列リテラルまで載るので、キーが動けば API ロックの diff に出る。
@@ -242,7 +242,7 @@ plan.md §4.2 を素直に読むと `input` の後ろでもあり、`redstone` �
 
 - **`input` は冗長。** `input` は `sim:physics` に先行するので、`sim:physics` の後ろにいれば自動的に `input` の後ろにいる。
   冗長なエッジは**全順序についての主張**であり、このリポジトリにはそれを言う資格がない。
-- **`redstone` は書けない。** `after: [StageId('redstone:tick')]` は import を作らないので `pnpm check:deps` を通るが、
+- **`redstone` は書けない。** `after: [StageId('redstone:tick')]` は import を作らないので import 制限だけでは検出できないが、
   `mx-gameplay` のフレーム位置を `mx-redstone` の存在に結びつける（[architecture.md](./architecture.md) §4-3）。
   plan.md §4.2 が `fluids → redstone → time/weather` と並べているのは事実だが、
   **その順序は `mc-compose` が言うことであって、こちらが言うことではない。**
@@ -599,7 +599,7 @@ outbox を空にする破壊的な読み出しで、同一プロセス内では 
 | `fallsWhenUnsupported` / `isReplaceable` / `AIR_BLOCK_ID` | 非公開（所有者は kernel） | 能力表の再掲。ルールは**ブロックを名指ししない** — バイトを読んで表に尋ねる |
 
 `makeGameplayStages` の型に `ChunkStore` が現れるため、このファイルは re-export していなくても
-`api-lock.md` の "Supporting declarations" には載る（§2-2）。
+`src/index.ts` の型 export として消費者に見える（§2-2）。
 
 ### domain/item-vocabulary.ts（**バレルから re-export しない**）
 

@@ -613,7 +613,7 @@ kernel の名簿（8 語）、こちらの `ExplosionSource`（1 語 + 威力）
 | 参照実装にあるもの | 理由 |
 | --- | --- |
 | ブロック名の名指し判定（`=== 'SAND'` / `blockTypeToIndex('SAND')`） | 挙動判定は `mc-kernel` の能力フラグ参照に統一する（plan.md §3.1、§5.1-1）。mc-kernel `docs/capability-flag-audit.md` §2-3 の実測で、名指し判定と membership テーブルの和集合は **78 ファイル**に散っていた |
-| `Date.now()` / `new Date()` / `performance.now()` | DN-GP-8。`pnpm check:deps` が落とす |
+| `Date.now()` / `new Date()` / `performance.now()` | DN-GP-8。`.ast-grep/rules/no-wall-clock-read.yml` が検査する |
 | 「全チャンク走査」の類 | DN-GP-1。API に存在しないので書けないが、移植中に足さないこと |
 | 右クリック UI ルーティング（`interaction-right-click-target-routing.ts:12-27`） | 画面の選択は `mx-ui` の意味論。ここが持つのは `interactionId` まで |
 | アプリスコープのシングルトン | DN-GP-6 |

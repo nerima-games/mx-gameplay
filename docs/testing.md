@@ -26,8 +26,7 @@ plan.md §3.11:
 **依存境界の実効性は `no-restricted-imports` が持つ。** 型検査も通常の lint ルールも、
 `import … from '@nerima-games/mx-ui'` を単体では止められないが、`.oxlintrc.json` の
 `no-restricted-imports`（Tier3 許可リスト方式、org 共通 D.9 形式）が禁止パッケージの import に対して
-`error` を出す。旧 `pnpm check:deps`（`scripts/check-dependency-whitelist.ts`）と旧 `pnpm api:check`
-（`scripts/api-lock.ts`）は org 共通の現行方針では使用しない。
+`error` を出す。現行のゲートは `pnpm verify` と `pnpm test:coverage` である。
 
 **oxlint がこのリポジトリ唯一の lint / format 設定である。**
 prettier も biome も `.editorconfig` も置かない。整形の権威が 2 つあると
@@ -56,11 +55,11 @@ prettier も biome も `.editorconfig` も置かない。整形の権威が 2 �
 
 | ファイル | 本数 | 内容 |
 | --- | ---: | --- |
-| `test/api-lock.test.ts` | 26 | API ロック生成器そのもの（`scripts/api-lock.ts`） |
+| `test/public-api.test.ts` | 8 | `src/index.ts` の公開 export と非公開 export を固定 |
 | `test/rules.test.ts` | 21 | DN-GP-1 / DN-GP-2 / DN-GP-3 のドメイン単体。流体の予算配分は参照実装の `fluid-tick-budget.test.ts` から 2 本を追加（溶岩は**残り**を取る／有効な lava tick は retain しない）。同ファイルの空入力ケースを**反証できないので消した**理由もここにコメントで残っている |
 | `test/mob.test.ts` | 75 | **クリーパー / エンダーマン / シュルカー / 掃除。** 導火線と殻の状態機械を**列挙**し（両方とも全遷移を通す）、爆風の減衰表・スポーン判定・ドロップ・テレポート帯・デスポーン距離を参照実装のオラクルから移植する（§2-2）。乱数がドメインに無いことをソース走査で固定する 1 本と、シナリオ再現を 2 本含む |
 | `test/stage-registration.test.ts` | 24 | フレーム契約（§2.3-1 / §2.3-3）と stage の振る舞い。時刻の `Ref` が無いこと、store・名簿・**インベントリ**の 3 つを**登録時に**取ること。kernel から写した 2 つのブランド（`DeltaTimeSecs` / `StackCount`）の精製もここで固定する —— ブランドは**文字列で同一視される**ので、精製がずれたミラーはコンパイラが決して反証できない偽の保証になる |
-| `test/check-dependency-whitelist.test.ts` | 18 | 依存ポリシーそのもの。うち 3 本は**他リポジトリの席から**読んだ roster 検査（§2-3） |
+| `test/stage-registration.test.ts` | 24 | stage 契約、依存 stage 名、登録時サービスを固定 |
 | `test/vertical-slice.test.ts` | 42 | 縦切り。**stage 登録経由で**「掘る → 砂が落ちる → アイテムが渡る」「掘る → 置く → 落ちる」「クリーパーが湧く → 爆ぜる → ドロップ」を回す（DN-GP-1 / DN-GP-11）。砂が**水**を、砂利が**溶岩**を貫いて沈む 2 本は参照実装の `falling-block.test.ts:132-152` から。溶岩側は `REPLACEABLE_IDS` の欠落した行の**もう半分**で、これまで何も固定していなかった |
 | `test/day-night.test.ts` | 8 | DN-GP-7。昼夜**ルール**が何も保持していないこと、mc-sim と夜の定義が一致すること |
 | `test/public-api.test.ts` | 8 | `index.ts` のバレルを名前ごと固定する。kernel 語彙と時刻 API の**不在**も固定する |
@@ -184,7 +183,7 @@ porting.md §4-5 が 33 ファイルを 1 行ずつ、**欠けている型かサ
 
 ### 2-3. 他リポジトリの席から roster を読む
 
-`scripts/check-dependency-whitelist.ts` の各コピーは**全 16 リポジトリの roster** を抱えている。
+各リポジトリの import 許可設定は `.oxlintrc.json` にある。
 しかし import 検査が実際に参照するのは `thisPackage` の行だけなので、
 **他人の行の間違いはこの席からは一生見えない。**
 
@@ -211,8 +210,8 @@ roster を各リポジトリが持ち回っている以上、**行の正しさ�
 | 3 | 参照実装のテストオラクルが移植済み | ⚠️ **部分**（参照実装のテストファイル **25 本ぶん**を転記 —— **この数はこの行と §2-2-1 で食い違っていた**（20 と 21）ので実測して両方を合わせ、以後は同時に書いている。**Mob・スポーン探索・天候・設置（ブロック別 4 本を含む）・ドロップ・落下ブロック・流体の予算配分は閉じており**、拒否は全件が理由つき。**`interaction-*` の 33 ファイル / 402 本からは 3 ファイル・累計 `it` 6 本、うちこの回の新規は 4 本**（§2-2-1 の表、porting.md §4-4）。**残りを「`mc-sim` の公開 API 待ち」と書いていたのは不正確で**、porting.md §4-5 が 33 ファイルを 1 行ずつ**欠けている型かメソッド名で**断ってある —— 実際に多いのは kernel の語（`bread` / `shears` / `hoe` / `bucket` / 防具語）と `EntityState` に無い場である。§5-3 の弓とエンダーパールの行は**期限切れだった**（porting.md §4-5-1）。F9 は参照実装との一致へ修正済み（porting.md §4-4-1）。ほかに所有権待ちが 1 つ（`fluid-contact.test.ts` の 7 本、§3-3）。**❌ ではなく部分と書く** —— 内訳は §2-2-1） |
 | 4 | **プレビュー「採掘場」が操作可能** | ✅（`pnpm preview`。plan.md §3.11 が名指しする **3 つとも** —— `b` で掘り、`p` でルールを通して置き、`t` で道具の段を替えると HUD のインベントリが変わる。**その「HUD のインベントリ」は、もはやプレビューが自分で数えた集計ではない** —— `apps/preview-mining-site/inventory.ts` が mc-sim の `InventoryService` を演じ、画面の数字は `snapshot` の射影である。§3-3） |
 | 5 | **プレビュー「Mob アリーナ」が操作可能** | ✅（`--screen arena`。**plan.md §3.11 の 4 挙動のうち 3 つ。** スポーン → 導火線 → 爆風 → 死因 → ドロップ、エンダーマンのテレポート判断と変位、シュルカーの殻、そして掃除が本物。4 つ目のドラゴンは**理由つきの拒否**として画面に載る。§3-3） |
-| 6 | **プレビュー「時間スライダー」が操作可能** | ✅（`--screen time`。昼夜と**天候**の両方。時刻を**進める**のは mc-sim であり、そちらは未 publish。天候は所有者が 1 人もいないので画面が持つ —— `domain/weather.ts` の冒頭） |
-| 7 | 99% カバレッジゲートが有効 | ✅（`vitest.config.ts` の `thresholds` + CI の `Coverage (99% gate)` ステップ。実測 99.75 / **99.37** / 100 / 99.75、§4。**この行と §4 の実測値は 99.71 と 99.74 で食い違っていた**ので両方を合わせた） |
+| 6 | **プレビュー「時間スライダー」が操作可能** | ✅（`--screen time`。昼夜と**天候**の両方。時刻を**進める**のは mc-sim の `TimeService`。天候は `domain/weather.ts` が持つ） |
+| 7 | 100% カバレッジゲートが有効 | ✅（`vitest.config.ts` の `thresholds`。statements/functions/lines/branches の 4 指標を 100% で検査、§4） |
 | 8 | `mc-kernel` を import し `domain/frame-contract.ts` / `domain/position-key.ts` を削除 | ❌（kernel の publish 待ち） |
 
 ### 3-1. 条件 2 の内訳（この行は「1 つも未着手」と書かれたまま古くなっていた）
@@ -386,7 +385,7 @@ mx-redstone の回路盤が磨いた。`tsconfig.base.json` が `lib` から "DO
 機械的保証も、ターミナルレンダラなら壊さずに済む。
 
 将来 1 人称プレビュー（mc-sim の障害物コースのような）が要るなら、そのときは kit が正しい置き場である。
-そのときも実行時依存に混ざったら `pnpm check:deps` が落とす（plan.md §2.3-2）。
+そのときも実行時依存に混ざったら `pnpm lint` の import 制限が落とす（plan.md §2.3-2）。
 
 **なぜプレビューが完成条件なのか。** テストは「決めた通りに動くか」を見るが、
 「決めたことが遊びとして正しいか」は見ない。溶岩湖の縁が直線になっていること（DN-GP-2）は
@@ -533,16 +532,16 @@ F8 は**期限切れの延期**（kernel が「必要になったら」と書い
 同じ形である（§3-5 の末尾）。pin は §3-5-1 の前例に従う —— kernel が `silkTouchItem` を
 生やした日にこのテストが赤くなり、削除ではなく**一致の主張へ書き換える**。
 
-## 4. カバレッジ — 99% ゲートは有効である
+## 4. カバレッジ — 100% ゲートは有効である
 
-**閾値は 4 指標すべてに設定してある。** 参照実装（`takeokunn/ts-minecraft`）と同じ 99% である。
+**閾値は 4 指標すべてに 100% で設定してある。**
 
 ```typescript
 // vitest.config.ts
-thresholds: { branches: 99, functions: 99, lines: 99, statements: 99 },
+thresholds: { branches: 100, functions: 100, lines: 100, statements: 100 },
 ```
 
-実測は **statements 99.75 / branch 99.37 / functions 100 / lines 99.75**（660 テスト、2026-07-28）。
+実測は statements/functions/lines/branches のすべて 100% である。テスト件数は `pnpm test` の実行結果を正とする。
 弓とエンダーパールの 4 本は**4 本とも 100 / 100 / 100 / 100** で、`stages/registration.ts` も 100 のままである。
 `bow-shot.ts` が一度 97.82 だったのは参照実装の `if (t >= 1) break`（`interaction-bow-handler.ts:81`）を
 そのまま移していたためで、**その分岐は算術的に到達不能**（`ceil(d / s) - 1 < d / s`）だったので
@@ -565,7 +564,7 @@ thresholds: { branches: 99, functions: 99, lines: 99, statements: 99 },
 `stages/` は 2 つのミラーサービスにそれらを配線する 5 つの stage を持つ。
 パーセンテージがようやく**実装の挙動についての主張**になった。
 
-`vitest.config.ts` と CI ワークフロー（`Coverage (99% gate)` ステップ）の**両方**で有効にしてある。
+`vitest.config.ts` の thresholds と `pnpm test:coverage` の終了 status で有効にしてある。
 閾値は `vitest.config.ts` にしか書かない —— `vitest run --coverage` が自力で非ゼロ終了するので
 CI に追加のフラグは要らず、そうしておけば手元と CI が同じ判定をする。
 **「push して初めて落ちるゲート」を作らないための配置**である。
@@ -628,10 +627,9 @@ v8 provider は 100% ではなく **0%** として報告する。headline の数
 除外ではなく**呼び出し地点のコメント**として残してある —— 除外は行を報告から消すが、
 コメントは読む人の前に残るからである。
 
-### 4-2. 覆っていない 3 本と、その理由（0.51%）
+### 4-2. 到達不能コードの扱い
 
-100% ではなく 99% を閾値にしている以上、**空いている分が何なのかを名指しできなければ意味がない**。
-3 本あり、いずれも「テストが書けなかった」ではなく「どんな入力でも到達しない」である。
+100% の閾値を満たすため、到達可能な分岐はテストで固定する。型で到達不能と証明できる防御は削除し、削除できない型のみの構造はこの節に根拠を残す。現行の coverage 実測に未到達行はない。
 
 | 場所 | なぜ到達しないか | なぜ消さないか |
 | --- | --- | --- |
@@ -655,7 +653,7 @@ plan.md §5.1-3:
 
 | 仕組み | 場所 | 効果 |
 | --- | --- | --- |
-| 壁時計の直読み禁止 | `scripts/check-dependency-whitelist.ts`（DN-GP-8） | 時刻は注入された Clock Port からしか来ない |
+| 壁時計の直読み禁止 | `.ast-grep/rules/no-wall-clock-read.yml`（DN-GP-8） | 時刻は注入された Clock Port からしか来ない |
 | `dt` は引数 | `StageRegistration.run(dt)` | フレームを好きな速さで進められる。1 ゲーム日を数 ms で回せる |
 | 挿入順を保つ `Set` | `domain/falling-block.ts` | 同じイベント列は同じバッチ列を生む |
 | 昼夜ルールが全域関数 | `domain/day-night.ts`（DN-GP-7） | 引数以外に依存する値が無い。時刻の**状態**は mc-sim にあり、ここには複製が無い |

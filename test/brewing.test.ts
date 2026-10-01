@@ -289,6 +289,10 @@ describe('basic brewing runtime', () => {
     const idle = emptyBrewingStandState()
     expect(tickBrewingStand(idle, DeltaTimeSecs(1))).toStrictEqual(idle)
 
+    // A decoded or forged value can bypass DeltaTimeSecs' smart constructor.
+    const started = tickBrewingStand(loadedStand('nether_wart'), DeltaTimeSecs(0))
+    expect(Reflect.apply(tickBrewingStand, undefined, [started, Number.NaN])).toStrictEqual(started)
+
     expect(() => DeltaTimeSecs(Number.NaN)).toThrow()
   })
 
