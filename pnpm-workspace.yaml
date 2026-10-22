@@ -13,6 +13,9 @@ minimumReleaseAgeExclude:
 allowBuilds:
   esbuild: true
 
+# GHSA-2v37-7h3g-55p8: nanoid <3.3.18 loops indefinitely for a zero-size custom
+# generator. Transitive only (vitest > vite > postcss > nanoid); pinned here
+# rather than waiting on the toolchain to bump it upstream.
 # pnpm audit found vulnerable transitive packages in Vitest 4's dependency
 # tree: nanoid, source-map-js, vite, and @vitest/mocker. After upgrading
 # Vitest to 5 and @effect/vitest to 4, check whether these overrides are still
