@@ -175,8 +175,8 @@ importers:
   .:
     dependencies:
       '@nerima-games/mc-audio':
-        specifier: 0.2.8
-        version: 0.2.8
+        specifier: 0.3.0
+        version: 0.3.0
       '@nerima-games/mc-kernel':
         specifier: 0.7.1
         version: 0.7.1
@@ -518,8 +518,8 @@ packages:
       '@emnapi/core': ^1.7.1 || ^2.0.0-alpha.4
       '@emnapi/runtime': ^1.7.1 || ^2.0.0-alpha.4
 
-  '@nerima-games/mc-audio@0.2.8':
-    resolution: {integrity: sha512-adzpxclkSfJyxXPeHipIUZzmCEfH99aPiPI0ppYydpNJOKBjbFXr6isLdcV8Rp2YhYFfBNMR99QZ9HVc3qAPug==, tarball: https://npm.pkg.github.com/download/@nerima-games/mc-audio/0.2.8/2398224bf07a0ef74f8c5c42d9d9d2050c8d37f4}
+  '@nerima-games/mc-audio@0.3.0':
+    resolution: {integrity: sha512-u8R8NRqGLFMRWRB2bQgivYgm2wcjYWxtJrsfTb0Zmdh0uD/V+ksOJ/BJ9n+/sMF9X3v48XGq0wre9NrwdSumfQ==, tarball: https://npm.pkg.github.com/download/@nerima-games/mc-audio/0.3.0/322492514d7131a3a5382f7fc5074a56328404db}
     engines: {node: '>=24.0.0', pnpm: '>=11.24.0'}
 
   '@nerima-games/mc-kernel@0.7.0':
@@ -528,6 +528,10 @@ packages:
 
   '@nerima-games/mc-kernel@0.7.1':
     resolution: {integrity: sha512-98SZhObX1tx0ANkFodTM8EqhxXfzBEiVGa/00h1OXbWe7Jj3GTpn0uQfM9P7oLuJ9839ZW2yF/+WFxRCZWNYSQ==, tarball: https://npm.pkg.github.com/download/@nerima-games/mc-kernel/0.7.1/a98e434dd065182ab930808e286bac8d4bf33f0b}
+    engines: {node: '>=24.0.0', pnpm: '>=11.24.0'}
+
+  '@nerima-games/mc-kernel@0.8.0':
+    resolution: {integrity: sha512-qBokXIEUoxaIequphJ8XSzI3fDDGCHgbzbms8PyTucWQ45+DL5wA1FAPtIU0OHvVEU4Jf2JJngErf4hIrZbFsA==, tarball: https://npm.pkg.github.com/download/@nerima-games/mc-kernel/0.8.0/8b20dd2bef6e1ab2344ea3be1b1cc393114616c7}
     engines: {node: '>=24.0.0', pnpm: '>=11.24.0'}
 
   '@nerima-games/mc-noise@0.3.1':
@@ -1732,9 +1736,9 @@ snapshots:
       '@tybys/wasm-util': 0.10.3
     optional: true
 
-  '@nerima-games/mc-audio@0.2.8':
+  '@nerima-games/mc-audio@0.3.0':
     dependencies:
-      '@nerima-games/mc-kernel': 0.7.0
+      '@nerima-games/mc-kernel': 0.8.0
       effect: 3.22.1
 
   '@nerima-games/mc-kernel@0.7.0':
@@ -1742,6 +1746,10 @@ snapshots:
       effect: 3.22.1
 
   '@nerima-games/mc-kernel@0.7.1':
+    dependencies:
+      effect: 3.22.1
+
+  '@nerima-games/mc-kernel@0.8.0':
     dependencies:
       effect: 3.22.1
 
