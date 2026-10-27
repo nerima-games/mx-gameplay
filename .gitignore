@@ -1,4 +1,5 @@
 .claude/
+.mediator/
 .worktrees/
 
 # Tool caches

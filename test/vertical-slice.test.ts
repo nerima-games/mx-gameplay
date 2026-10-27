@@ -321,7 +321,28 @@ describe('the slice, through the stage registration', () => {
 
       yield* holdWoodenPickaxe(state)
       yield* requestBreak(state, support)
-      yield* runFrame(stages)
+      const snapshots: Array<{
+        support: BlockId | undefined
+        sand: BlockId | undefined
+        deposits: ReadonlyArray<MinedItem>
+      }> = []
+      for (let tick = 0; tick < 3; tick += 1) {
+        yield* runFrame(stages)
+        snapshots.push({
+          support: yield* store.blockAt(support),
+          sand: yield* store.blockAt(sandAt),
+          deposits: yield* deposited(inventory),
+        })
+        expect(yield* Ref.get(state.pendingBreaks)).toStrictEqual([])
+      }
+
+      expect(snapshots).toStrictEqual(
+        Array.from({ length: 3 }, () => ({
+          support: SAND,
+          sand: AIR_BLOCK_ID,
+          deposits: ONE_COBBLESTONE,
+        })),
+      )
 
       // ---- the block was mined, and the ITEM went to the inventory ---------
       // `previous` came back from the write itself, so there was no
@@ -332,8 +353,7 @@ describe('the slice, through the stage registration', () => {
       expect(yield* deposited(inventory)).toStrictEqual(ONE_COBBLESTONE)
 
       // ---- and the sand above it moved down, in the same frame -------------
-      expect(yield* store.blockAt(support)).toBe(SAND)
-      expect(yield* store.blockAt(sandAt)).toBe(AIR_BLOCK_ID)
+      expect(snapshots[0]).toMatchObject({ support: SAND, sand: AIR_BLOCK_ID })
 
       // ---- the renderer is told about the chunk once -----------------------
       // Three writes (the break, the clear, the place), one coordinate.
