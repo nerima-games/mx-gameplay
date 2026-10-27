@@ -102,12 +102,6 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
   return {
     id: GAMEPLAY_STAGE_IDS.interactions,
     after: [UPSTREAM_STAGE_IDS.simPhysics],
-    // TWO OF THE ~40 one-rule-per-file handlers of plan.md §3.11 (break, place,
-    // bucket, flint & steel, bow, farming, shears, ender pearl, feed, shear,
-    // melee, …) now run here. They are deliberately many small files and ONE
-    // stage: the granularity that matters for review is the rule, the
-    // granularity that matters for composition is the stage (DN-GP-9).
-    //
     // BREAKS ARE SERVICED BEFORE PLACEMENTS, and the order is a decision. A
     // player who breaks a cell and places into it in the same frame gets the
     // sequence they asked for; the other order silently drops the placement,
@@ -118,22 +112,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
       Effect.gen(function* () {
         const playerDead = yield* Ref.get(state.playerDead)
 
-        // ---------------------------------------------------------------
-        // PORTAL TRAVEL, and it runs BEFORE the inbox drain and its early
-        // return.
-        // ---------------------------------------------------------------
-        //
-        // THIS IS THE CALL THAT MAKES THE RULE REACHABLE. `domain/portal-dwell.ts`
-        // and `domain/portal-travel.ts` were both complete and callable while
-        // nothing called them, which is the 「callable but unreachable」 state
-        // this repository has had to correct more than once — a rule with a
-        // green test file and no call site passes every test that only checks
-        // the rule.
-        //
-        // It sits above the `return` below deliberately. That early return fires
-        // whenever all five inboxes are empty, which is MOST frames, and a
-        // dwell timer that only advanced on frames where somebody also broke a
-        // block would take four seconds of MINING to cross a portal.
+        // Advance portal dwell on idle frames, before the early return below.
         yield* stepPortalTravel(state, store, player, dt)
         yield* Ref.update(state.villagerTrades, (current) => advanceVillagerRestock(current, dt))
         yield* stepBrewing(state, dt)
@@ -866,10 +845,6 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
               shot.dirZ,
               BOW_MAX_RANGE,
             )
-            // A MISS IS ORDINARY AND SILENT. It is also where the arrow would
-            // have gone, which this repository cannot say: no arrow exists to
-            // land, and the reference's own miss draws a particle streak and
-            // nothing else.
             if (hit === undefined) {
               continue
             }
@@ -1043,11 +1018,6 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
               continue
             }
 
-            // WHERE THE ENDERMITE GOES IS WHERE THE PLAYER LANDS
-            // (`ender-pearl.ts:73` spawns it at `teleportTarget`), and that is an
-            // ABSOLUTE position, which this arm has only as the player's feet
-            // plus the displacement it just computed.
-            //
             // `behaviour: undefined`, which ticks nothing. `ENDERMITE_KIND`'s
             // header says at length what that means and why no rule is invented
             // to fill it.
@@ -1066,10 +1036,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
 
         // ---- THE DEPOSIT ---------------------------------------------------
         //
-        // plan.md §2.3-1's worked example, as one line of code and a great deal
-        // of argument that is in the registration-core.ts header rather than here. Each stack
-        // the loot table produced is offered to mc-sim, in the order it was
-        // mined.
+        // Deposit each mined stack into mc-sim's inventory in mining order.
         //
         // ONE `add` PER STACK, AND NOT ONE PER ITEM. `blockLoot` already folds
         // the base drop and its fortune bonus into a single `MinedItem`

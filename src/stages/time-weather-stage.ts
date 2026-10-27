@@ -20,9 +20,6 @@ export const makeTimeWeatherStage = (context: GameplayStageContext): StageRegist
   return {
     id: GAMEPLAY_STAGE_IDS.timeWeather,
     after: [GAMEPLAY_STAGE_IDS.fluids],
-    // NO LONGER EMPTY, and the half that filled it is the half that was always
-    // this repository's.
-    //
     // ADVANCING THE CLOCK IS STILL mc-sim's: `TimeService.advance(dt)` over
     // `mc-sim/domain/time-of-day.ts`, which owns the absolute tick counter, the
     // day-length denominator, the `setDayLength -> setTimeOfDay` ordering rule

@@ -38,22 +38,8 @@ export const makeEntitiesStage = (context: GameplayStageContext): StageRegistrat
     // last frame's block placement, which reads as lag rather than as a bug.
     // It is also what lets a block broken this frame start falling this frame.
     //
-    // THE CREEPER IS RUN HERE NOW, AND THE REASON IS STILL THE POINT. This
-    // comment used to say the opposite, at length: `domain/mob/` held finished
-    // rules that this stage called none of, because running them needs 「a roster
-    // of mobs with positions and health」, a roster is state, state survives a
-    // save/load round trip, and by the test in registration-core.ts's header it is therefore
-    // mc-sim's. The alternative on offer — a local `Ref<Map<MobId, CreeperFuse>>`
-    // — would have run that day and would have been the same mistake as the
-    // `timeOfDaySecs` and `dayLengthSecs` Refs registration.ts held before the
-    // split: a second owner of a noun,
-    // diverging from the one that gets saved.
-    //
-    // mc-sim built it (`domain/entity.ts`, `application/entity-manager.ts`, and
-    // §7 of that repository's `docs/public-api.md`, which quotes the paragraph
-    // back). The prediction that came with the refusal was that 「this stage
-    // grows a loop and nothing in `domain/mob/` changes」. The loop is
-    // `domain/entities/mob-frame.ts` and NOT ONE FILE IN `domain/mob/` CHANGED.
+    // Mob state lives in mc-sim's roster, so this stage sweeps it through
+    // `domain/entities/mob-frame.ts` rather than keeping a duplicate local Ref.
     //
     // The order below is the frame's, and the two halves are not independent: a
     // creeper's crater writes blocks, which `disturb`s them, which the
@@ -115,24 +101,7 @@ export const makeEntitiesStage = (context: GameplayStageContext): StageRegistrat
         if (blasts.length > 0) {
           const { casualties, disturbed } = yield* resolveBlasts(roster, store, blasts)
 
-          // What the creeper itself leaves: nothing, and the RULE says so rather
-          // than this stage assuming it (`domain/mob/mob-drop.ts` on why the
-          // reference gets the same answer by accident of statement order).
-          //
-          // No `playerDamages.length > 0` guard: every `Blast` in `blasts`
-          // comes from THIS stage's own `sweepMobs` result, gated by
-          // `stepCreeperFuse`'s `withinIgnitionRange`
-          // (`domain/mob/creeper-fuse.ts`) on both the `Lit` and the
-          // detonating step — so `blast.at` is always within
-          // `CREEPER_IGNITION_RANGE_BLOCKS` (3) of `targetPosition`, the same
-          // 3D `distanceBetween` metric `resolvePlayerBlastDamage` measures
-          // against. The smallest explosion radius this rule produces
-          // (`explosionRadius(CREEPER_EXPLOSION_POWER)`, power 3) is 6 blocks
-          // — strictly larger than the 3-block ignition gate — so the player
-          // is always inside blast range when a creeper the sweep itself lit
-          // detonates. `resolvePlayerBlastDamage`'s own filter can return
-          // empty (its unit test proves it, for a blast built independently
-          // of any ignition gate); this call site can never hand it one.
+          // Creeper drop behavior is defined by `domain/mob/mob-drop.ts`.
           const playerDamages = yield* resolveArmoredPlayerDamages(
             inventory,
             resolvePlayerBlastDamage(blasts, targetPosition),
@@ -218,19 +187,9 @@ export const makeEntitiesStage = (context: GameplayStageContext): StageRegistrat
         const hour = yield* time.timeOfDay
         const dimension = yield* player.dimension
 
-        // THREE GATES BEFORE THE 256 READS, and the third is the one that needs
-        // defending. In the Overworld, `hostileSpawnsAllowed` is CALLED here as well as inside
-        // `canHostileSpawnAt`, and `domain/mob/hostile-spawn.ts`'s header is
-        // emphatic that the night gate is the rule's and 「a third opinion in
-        // this file would be the second half of that bug」. This is not a third
-        // opinion: it is the SAME FUNCTION, short-circuiting a search whose every
-        // candidate the rule would refuse with `daylight`. The rule still runs
-        // and still decides; what is skipped is 256 store reads to be told so 64
-        // times. The Nether bypasses only this time gate because its hostile
-        // roster is valid at every hour. Reimplementing the comparison here — `hour > 0.25 && ...` —
-        // would be the failure that header describes, and is exactly what is not
-        // done.
-        //
+        // Reuse the time rule from `canHostileSpawnAt` to skip searches whose
+        // hostile candidates would all be rejected. Empty rosters still search
+        // for passive repopulation; the Nether bypasses this time gate.
         const hostileSearch = dimension === 'nether' || hostileSpawnsAllowed(hour)
         const passiveRepopulationSearch = !hostileSearch && (yield* roster.count) === 0
         if (searchDue && (hostileSearch || passiveRepopulationSearch)) {
@@ -260,14 +219,8 @@ export const makeEntitiesStage = (context: GameplayStageContext): StageRegistrat
           searched.length === 0 ? offered : offered.length === 0 ? searched : [...offered, ...searched]
 
         if (attempts.length > 0) {
-          // The outcomes — a `Refused` reason per cell, or `AtCapacity` — are
-          // returned by `applySpawnAttempts` and dropped HERE, because `run`
-          // returns void and there is nowhere in the frame to report a
-          // diagnostic to. They are not dropped by the rule: whoever offers
-          // candidates is who wants to know why they were refused, and when the
-          // search that offers them lands in this repository it will call this
-          // function directly and read them. `apps/preview-mining-site`'s arena
-          // screen already prints the word.
+          // `run` returns void, so refusal details from these attempts are not
+          // reported to a caller.
           yield* applySpawnAttempts(roster, attempts)
         }
         }
@@ -284,12 +237,8 @@ export const makeEntitiesStage = (context: GameplayStageContext): StageRegistrat
           return [taken, rest] as const
         })
 
-        // An idle tick stops HERE, without touching the store. This is the
-        // whole of DN-GP-1: the reference implementation read ~7M blocks at
-        // this point whether or not anything had moved. The mob half above is
-        // held to the same standard by the same test — an idle frame's sweep
-        // returns the roster it was given, hands every mob the SAME step object,
-        // and makes no store call at all.
+        // Keep this pass out of idle frames; the reference scanned about seven
+        // million blocks here regardless of whether anything had moved (DN-GP-1).
         if (batch.length === 0) {
           return
         }
