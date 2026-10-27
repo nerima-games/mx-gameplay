@@ -845,6 +845,10 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
               shot.dirZ,
               BOW_MAX_RANGE,
             )
+            // A MISS IS ORDINARY AND SILENT. It is also where the arrow would
+            // have gone, which this repository cannot say: no arrow exists to
+            // land, and the reference's own miss draws a particle streak and
+            // nothing else.
             if (hit === undefined) {
               continue
             }
@@ -1018,6 +1022,11 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
               continue
             }
 
+            // WHERE THE ENDERMITE GOES IS WHERE THE PLAYER LANDS
+            // (`ender-pearl.ts:73` spawns it at `teleportTarget`), and that is an
+            // ABSOLUTE position, which this arm has only as the player's feet
+            // plus the displacement it just computed.
+            //
             // `behaviour: undefined`, which ticks nothing. `ENDERMITE_KIND`'s
             // header says at length what that means and why no rule is invented
             // to fill it.

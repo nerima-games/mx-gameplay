@@ -102,6 +102,20 @@ export const makeEntitiesStage = (context: GameplayStageContext): StageRegistrat
           const { casualties, disturbed } = yield* resolveBlasts(roster, store, blasts)
 
           // Creeper drop behavior is defined by `domain/mob/mob-drop.ts`.
+          // No `playerDamages.length > 0` guard: every `Blast` in `blasts`
+          // comes from THIS stage's own creeper self-detonation in `sweepMobs`,
+          // gated by `stepCreeperFuse`'s `withinIgnitionRange`
+          // (`domain/mob/creeper-fuse.ts`) on both the `Lit` and the
+          // detonating step — so `blast.at` is always within
+          // `CREEPER_IGNITION_RANGE_BLOCKS` (3) of `targetPosition`, the same
+          // 3D `distanceBetween` metric `resolvePlayerBlastDamage` measures
+          // against. The smallest explosion radius this rule produces
+          // (`explosionRadius(CREEPER_EXPLOSION_POWER)`, power 3) is 6 blocks
+          // — strictly larger than the 3-block ignition gate — so the player
+          // is always inside blast range when a creeper the sweep itself lit
+          // detonates. `resolvePlayerBlastDamage`'s own filter can return
+          // empty (its unit test proves it, for a blast built independently
+          // of any ignition gate); this call site can never hand it one.
           const playerDamages = yield* resolveArmoredPlayerDamages(
             inventory,
             resolvePlayerBlastDamage(blasts, targetPosition),
@@ -237,8 +251,12 @@ export const makeEntitiesStage = (context: GameplayStageContext): StageRegistrat
           return [taken, rest] as const
         })
 
-        // Keep this pass out of idle frames; the reference scanned about seven
-        // million blocks here regardless of whether anything had moved (DN-GP-1).
+        // An idle tick stops HERE, without touching the store. This is the
+        // whole of DN-GP-1: the reference implementation read ~7M blocks at
+        // this point whether or not anything had moved. The mob half above is
+        // held to the same standard by the same test — an idle frame's sweep
+        // returns the roster it was given, hands every mob the SAME step object,
+        // and makes no store call at all.
         if (batch.length === 0) {
           return
         }
