@@ -70,6 +70,7 @@ import {
   emptyFurnaceState as makeEmptyFurnaceState,
   equipmentItem as makeEquipmentItem,
   itemStack as makeItemStack,
+  PlayerStorageSnapshotSchema,
   type EquipmentItem,
   makeTimeService,
   type TimeServiceApi,
@@ -2423,6 +2424,57 @@ describe('the ignition slice: an item use reaches the world', () => {
           outcome: { _tag: 'Fire', outcome: { _tag: 'Lit', position: origin } },
         },
       ])
+    }),
+  )
+
+  it.effect('breaks a synchronized flint and steel with one durability left when it lights fire', () =>
+    Effect.gen(function* () {
+      const { inventory, store, state, stages, commit } = yield* slice(
+        world([]),
+        residentAround(origin),
+        oneInventoryItem('flint_and_steel'),
+      )
+      const before = yield* inventory.api.storageSnapshot
+      const initialDurability = before.inventoryDurability[0]
+      if (initialDurability === null || initialDurability === undefined) {
+        throw new Error('expected inventory initialization to assign flint and steel durability')
+      }
+      const inventoryDurability = [...before.inventoryDurability]
+      inventoryDurability[0] = durability(1, initialDurability.max)
+      yield* inventory.api.restoreStorage({ ...before, inventoryDurability })
+      const synchronized = yield* inventory.api.storageSnapshot
+      const expectedRevision = yield* commit.coordinator.revision
+      yield* commit.coordinator.commit({
+        expectedRevision,
+        expectedDimensions: [],
+        changes: [{ ownerId: commit.playerStorageOwnerId, state: synchronized }],
+      })
+      const ownerBefore = yield* commit.coordinator.snapshot(
+        commit.playerStorageOwnerId,
+        PlayerStorageSnapshotSchema,
+      )
+
+      yield* requestItemUse(state, 'last-use-flint-and-steel', origin, 'flint_and_steel')
+      yield* runFrame(stages)
+
+      expect(yield* store.blockAt(origin)).toBe(FIRE)
+      expect(yield* inventory.api.countOf('flint_and_steel')).toBe(0)
+      expect(yield* drainItemUseResults(state)).toMatchObject([
+        {
+          requestId: 'last-use-flint-and-steel',
+          heldItem: 'flint_and_steel',
+          success: true,
+          outcome: { _tag: 'Fire', outcome: { _tag: 'Lit', position: origin } },
+        },
+      ])
+      const ownerAfter = yield* commit.coordinator.snapshot(
+        commit.playerStorageOwnerId,
+        PlayerStorageSnapshotSchema,
+      )
+      expect(ownerAfter.revision).toBe(ownerBefore.revision + 1)
+      expect(ownerAfter.state.inventory.slots[0]).toBeUndefined()
+      expect(ownerAfter.state.inventoryDurability[0]).toBeNull()
+      expect(ownerAfter.state).toStrictEqual(yield* inventory.api.storageSnapshot)
     }),
   )
 

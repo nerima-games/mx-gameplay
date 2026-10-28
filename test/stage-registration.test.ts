@@ -585,6 +585,62 @@ describe('fire lifecycle stage integration', () => {
     }),
   )
 
+  it.effect('breaks an iron helmet with one durability left and commits the fire result', () =>
+    Effect.gen(function* () {
+      const { state, store, stages, inventory, commit } = yield* builtStages
+      const position = fixtureBlockPosition(0, 64, 0)
+      yield* store.api.setBlock(position, FIRE)
+      yield* Ref.set(state.fireLifecycle, {
+        fires: [{ position, ageTicks: 0 }],
+        burningActors: [{
+          id: 'player',
+          kind: 'player',
+          position,
+          remainingTicks: 10,
+          damageCooldownTicks: 0,
+        }],
+        seed: 29,
+      })
+
+      const before = yield* inventory.api.storageSnapshot
+      const helmet = equipmentItem(itemStack('iron_helmet', 1), durability(1, 165))
+      yield* inventory.api.restoreStorage({
+        ...before,
+        equipment: {
+          ...before.equipment,
+          slots: { ...before.equipment.slots, head: helmet },
+        },
+      })
+      const synchronized = yield* inventory.api.storageSnapshot
+      const expectedRevision = yield* commit.coordinator.revision
+      yield* commit.coordinator.commit({
+        expectedRevision,
+        expectedDimensions: [],
+        changes: [{ ownerId: commit.playerStorageOwnerId, state: synchronized }],
+      })
+      const ownerBefore = yield* commit.coordinator.snapshot(
+        commit.playerStorageOwnerId,
+        PlayerStorageSnapshotSchema,
+      )
+
+      const fireStage = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire)!
+      yield* fireStage.run(DeltaTimeSecs(FIRE_TICK_INTERVAL_SECS)).pipe(
+        Effect.provide(FrameServicesLayer),
+      )
+
+      expect(yield* store.blockAt(position)).toBeUndefined()
+      expect((yield* drainPlayerDamages(state))[0]?.damage.cause).toBe('on_fire')
+      expect((yield* inventory.api.equipmentSnapshot).slots.head).toBeNull()
+      const ownerAfter = yield* commit.coordinator.snapshot(
+        commit.playerStorageOwnerId,
+        PlayerStorageSnapshotSchema,
+      )
+      expect(ownerAfter.revision).toBe(ownerBefore.revision + 1)
+      expect(ownerAfter.state).toStrictEqual(yield* inventory.api.storageSnapshot)
+      expect(ownerAfter.state.equipment.slots.head).toBeNull()
+    }),
+  )
+
   it.effect('leaves burning-after-leaving-fire damage unmitigated by armour', () =>
     Effect.gen(function* () {
       // The negative control for the test above: a player who is still on
