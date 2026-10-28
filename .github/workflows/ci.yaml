@@ -50,6 +50,9 @@ jobs:
       - name: Lint
         run: nix develop --command pnpm lint
 
+      - name: Shared conformance
+        uses: nerima-games/.github/conformance/ast-grep@26e3dde3909583648694adfc1579299445aced7d
+
       - name: Changeset status
         if: github.event_name == 'pull_request' && !startsWith(github.head_ref, 'release/')
         run: |
