@@ -2200,6 +2200,54 @@ describe('fluid propagation defers when a write finds its chunk unloaded', () =>
     }).pipe(Effect.provide(FrameServicesLayer)),
   )
 
+  it.effect('a permanently rejected RemoveFluid write drops the stale cell from the tracked frontier', () =>
+    Effect.gen(function* () {
+      const origin = fixtureBlockPosition(0, 64, 0)
+      const stubborn = fixtureBlockPosition(-1, 64, 0)
+      const { state, store, stages, roster, player, inventory, time, commit } = yield* builtStagesInWorld(
+        world([
+          [origin, WATER],
+          [fixtureBlockPosition(0, 63, 0), STONE],
+        ]),
+        ['0,0', '-1,0', '0,-1'],
+      )
+      const fluids = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids)!
+
+      yield* Ref.set(state.fluidFrontier, [{ key: positionKey('0,64,0'), kind: 'water' }])
+      yield* fluids.run(DeltaTimeSecs(0.016))
+      expect(yield* store.blockAt(stubborn)).toBe(WATER)
+
+      yield* store.api.setBlock(origin, AIR)
+      yield* Ref.set(state.fluidFrontier, [{ key: positionKey('0,64,0'), kind: 'water' }])
+      yield* fluids.run(DeltaTimeSecs(0.016))
+
+      const rejectingCoordinator = coordinatorRejectingBlock(
+        commit.coordinator,
+        stubborn,
+        AIR,
+        new WorldCommitEmptyRequest(),
+      )
+      const rewiredStages = gameplayStages(
+        state,
+        store.api,
+        roster.api,
+        inventory.api,
+        player.api,
+        time,
+        undefined,
+        undefined,
+        {},
+        { ...commit, coordinator: rejectingCoordinator },
+      )
+      const rewiredFluids = rewiredStages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids)!
+      yield* rewiredFluids.run(DeltaTimeSecs(0.016))
+
+      expect(yield* store.blockAt(stubborn)).toBe(WATER)
+      expect((yield* Ref.get(state.fluidFrontier)).some((item) => item.key === positionKey('-1,64,0')))
+        .toBe(false)
+    }).pipe(Effect.provide(FrameServicesLayer)),
+  )
+
   it.effect('a blocked Solidify write at a lava contact leaves the lava in place and retries the source', () =>
     Effect.gen(function* () {
       const lava = Option.getOrThrow(blockIdOf('lava'))
