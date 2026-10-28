@@ -660,9 +660,6 @@ export const passivePopulation = <S>(roster: EntityManagerApi<S>): Effect.Effect
     Effect.map(roster.countOfKind(kind), (count) => total + count),
   )
 
-/** What a creeper leaves behind. A creeper drops nothing at all, which is `../mob/mob-drop`'s rule and not this file's. */
-const SELF_DESTRUCT: MobKill = { _tag: 'SelfDestruct' }
-
 /**
  * A player-caused casualty with no Looting context.
  *
@@ -2072,29 +2069,8 @@ export const rollCasualtyDrops = (
   return { drops, seed: current }
 }
 
-/**
- * What the creeper that produced a blast leaves behind: nothing.
- *
- * Called rather than assumed. `../mob/mob-drop`'s `rollMobDrop` returns
- * `undefined` for a `SelfDestruct` before it looks at anything else, so this
- * consumes no rolls and yields no items — and the reason that is written as a
- * call is the header of that file: in the reference the same behaviour is 「an
- * accident」 of statement order, and 「move the removal three lines down and the
- * rule changes with no test to notice」. Here the rule is asked.
- */
-export const rollSelfDestructDrops = (blast: Blast): ReadonlyArray<MobDropEvent> => {
-  // Always `[]`: `../mob/mob-drop`'s `rollMobDrop` returns `undefined` for
-  // EVERY rule the instant `kill._tag` is `'SelfDestruct'`, before it consults
-  // the rule at all. Keep the result typed as events by attaching the blast
-  // facts to any drops the pure rule calculation returns.
-  const drops = rollDropsOfKind(blast.kind, SELF_DESTRUCT, NO_DROPS)
-  return drops.map((drop) => ({
-    ...drop,
-    source: blast.source,
-    kind: blast.kind,
-    at: blast.at,
-  }))
-}
+/** A self-destruct casualty never drops an item. */
+export const rollSelfDestructDrops = (_blast: Blast): ReadonlyArray<MobDropEvent> => []
 
 // ---------------------------------------------------------------------------
 // Spawning

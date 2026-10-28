@@ -46,6 +46,7 @@ import {
   resolveMeleeHits,
   rollSelfDestructDrops,
   rollCasualtyDrops,
+  rollDropsOfKind,
   STEADY_ENDERMAN,
   STRUCK_ENDERMAN,
   sweepMobs,
@@ -138,6 +139,12 @@ const SPAWN_CANDIDATE: SpawnCandidate = {
 }
 
 describe('the loot table is keyed by a kind that something actually spawns', () => {
+  it.effect('defaults absent chance and count rolls to zero', () =>
+    Effect.sync(() => {
+      expect(rollDropsOfKind(ZOMBIE_KIND, { _tag: 'Slain', lootingLevel: 0 }, [])).toStrictEqual([])
+    }),
+  )
+
   it.effect('every hostile kind has its drop table wired into the frame', () =>
     Effect.sync(() => {
       // The module header refuses a row for a kind nothing produces: 「a row
@@ -1120,15 +1127,20 @@ describe('owner-snapshot roster plans', () => {
       const noOp = planMobExplosionRoster(initial, [
         { id: entity.id, damage: { amount: 0, cause: 'explosion' }, knockback: atPosition(0, 0, 0) },
       ])
+      const belowPrecision = planMobExplosionRoster(initial, [
+        { id: entity.id, damage: { amount: Number.MIN_VALUE, cause: 'explosion' }, knockback: atPosition(0, 0, 0) },
+      ])
 
       expect(empty.roster).toBe(initial)
       expect(invalid.roster).toBe(initial)
       expect(noMatch.roster).toBe(initial)
       expect(noOp.roster).toBe(initial)
+      expect(belowPrecision.roster).toBe(initial)
       expect(empty.casualties).toStrictEqual([])
       expect(invalid.casualties).toStrictEqual([])
       expect(noMatch.casualties).toStrictEqual([])
       expect(noOp.casualties).toStrictEqual([])
+      expect(belowPrecision.casualties).toStrictEqual([])
     }),
   )
 })
