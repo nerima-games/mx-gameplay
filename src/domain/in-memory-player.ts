@@ -43,16 +43,33 @@
  * to be helpful, because fusing them would make "move without switching"
  * inexpressible, and that is the common case.
  */
-import { Effect, Layer, Ref } from 'effect'
-import { PlayerService, type PlayerPose, type PlayerServiceApi } from '@nerima-games/mc-sim'
-import { ClockPort, type CameraPoseSnapshot } from '@nerima-games/mc-kernel'
-import type { Position } from '@nerima-games/mc-kernel'
+import { Effect, Layer, Ref, Result, Schema } from 'effect'
+import {
+  PlayerService,
+  PLAYER_REPLICATED_OWNER_ID,
+  PlayerServiceSnapshotSchema,
+  WorldCommitCoordinator,
+  cameraPoseOf,
+  type PlayerPose,
+  type PlayerServiceApi,
+  type PlayerServiceInputError,
+} from '@nerima-games/mc-sim'
+import {
+  ClockPort,
+  DimensionIdSchema,
+  PositionAxis,
+  position,
+  type Position,
+  type WorldRevision,
+  type DimensionRevision,
+} from '@nerima-games/mc-kernel'
 import type { Dimension } from '@nerima-games/mc-worldgen'
 
 /**
  * How far the view may pitch, in radians.
  *
- * mc-sim's `PITCH_MAX_RADIANS`, transcribed: a right angle less an epsilon.
+ * This adapter retains the pitch limit it used before the released sim service
+ * added validation, so existing gameplay callers keep the same look behavior.
  * The epsilon is load-bearing rather than cosmetic — at exactly ±π/2 the
  * forward vector is parallel to the up axis and the yaw basis is undefined, so
  * the view's roll becomes whatever the arithmetic happens to produce.
@@ -85,7 +102,7 @@ export const applyLook = (
 
 /** Where a player starts when nobody says otherwise. */
 export const INITIAL_PLAYER_POSE: PlayerPose = {
-  feetPosition: { x: 0, y: 0, z: 0 },
+  feetPosition: position(PositionAxis(0), PositionAxis(0), PositionAxis(0)),
   yawRadians: 0,
   pitchRadians: 0,
 }
@@ -103,6 +120,52 @@ export const INITIAL_DIMENSION: Dimension = 'overworld'
  */
 export const EYE_LEVEL_OFFSET = 1.62
 
+const inputError = (
+  reason: PlayerServiceInputError['reason'],
+  field: PlayerServiceInputError['field'],
+): PlayerServiceInputError => ({ _tag: 'PlayerServiceInputError', reason, field })
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value)
+
+const invalidPositionField = (value: unknown): PlayerServiceInputError['field'] | undefined => {
+  if (!isRecord(value)) return 'feetPosition'
+  for (const axis of ['x', 'y', 'z'] as const) {
+    if (typeof value[axis] !== 'number' || !Number.isFinite(value[axis])) {
+      return `feetPosition.${axis}`
+    }
+  }
+  return undefined
+}
+
+const invalidPoseError = (
+  value: unknown,
+  reason: PlayerServiceInputError['reason'],
+): PlayerServiceInputError | undefined => {
+  if (!isRecord(value)) return inputError(reason, 'pose')
+  if (typeof value['yawRadians'] !== 'number' || !Number.isFinite(value['yawRadians'])) {
+    return inputError(reason, 'yawRadians')
+  }
+  if (typeof value['pitchRadians'] !== 'number' || !Number.isFinite(value['pitchRadians'])) {
+    return inputError(reason, 'pitchRadians')
+  }
+  const positionField = invalidPositionField(value['feetPosition'])
+  return positionField === undefined ? undefined : inputError(reason, positionField)
+}
+
+const playerReplicatedCandidateOf = (current: { readonly pose: PlayerPose; readonly dimension: Dimension }) => ({
+  pose: {
+    feetPosition: {
+      dimension: current.dimension,
+      x: current.pose.feetPosition.x,
+      y: current.pose.feetPosition.y,
+      z: current.pose.feetPosition.z,
+    },
+    yawRadians: current.pose.yawRadians,
+    pitchRadians: current.pose.pitchRadians,
+  },
+})
+
 /** Build a player. */
 export const makeInMemoryPlayer = (
   initialPose: PlayerPose = INITIAL_PLAYER_POSE,
@@ -119,20 +182,32 @@ export const makeInMemoryPlayer = (
       dimension: Effect.map(Ref.get(state), (current) => current.dimension),
 
       look: (deltaYaw, deltaPitch) =>
-        Ref.modify(state, (current) => {
+        Effect.flatMap(Ref.modify(state, (current): readonly [
+          Result.Result<PlayerPose, PlayerServiceInputError>,
+          { readonly pose: PlayerPose; readonly dimension: Dimension },
+        ] => {
           const pose = applyLook(current.pose, deltaYaw, deltaPitch)
-          return [pose, { ...current, pose }] as const
-        }),
+          const error = invalidPoseError(pose, 'invalid-look')
+          return error === undefined
+            ? [Result.succeed(pose), { ...current, pose }]
+            : [Result.fail(error), current]
+        }), Effect.fromResult),
 
       // POSITION ONLY. Pairing it with `setDimension` is the caller's, and the
       // mirror explains why fusing them here would be the wrong help.
-      moveTo: (feetPosition: Position) =>
-        Ref.update(state, (current) => ({
+      moveTo: (feetPosition: Position) => {
+        const errorField = invalidPositionField(feetPosition)
+        if (errorField !== undefined) return Effect.fail(inputError('invalid-position', errorField))
+        return Ref.update(state, (current) => ({
           ...current,
           pose: { ...current.pose, feetPosition },
-        })),
+        }))
+      },
 
-      setDimension: (dimension) => Ref.update(state, (current) => ({ ...current, dimension })),
+      setDimension: (dimension) =>
+        Schema.is(DimensionIdSchema)(dimension)
+          ? Ref.update(state, (current) => ({ ...current, dimension }))
+          : Effect.fail(inputError('invalid-dimension', 'dimension')),
 
       /**
        * The pose a renderer mirrors, with the eye offset applied and the
@@ -150,20 +225,53 @@ export const makeInMemoryPlayer = (
        * composes: the host's renderer is exactly who should call it.
        */
       cameraPose: Effect.flatMap(ClockPort, (clock) =>
-        Effect.map(
-          Effect.zip(Ref.get(state), clock.monotonicSecs),
-          ([current, capturedAtSecs]): CameraPoseSnapshot => ({
-            position: {
-              x: current.pose.feetPosition.x,
-              y: current.pose.feetPosition.y + EYE_LEVEL_OFFSET,
-              z: current.pose.feetPosition.z,
-            },
-            yawRadians: current.pose.yawRadians,
-            pitchRadians: current.pose.pitchRadians,
-            capturedAtSecs,
-          }),
+        Effect.flatMap(Effect.zip(Ref.get(state), clock.monotonicSecs), ([current, capturedAtSecs]) =>
+          Effect.fromResult(cameraPoseOf(current.pose, capturedAtSecs)),
         ),
       ),
+
+      snapshot: Effect.flatMap(WorldCommitCoordinator, (coordinator) =>
+        coordinator.snapshot(PLAYER_REPLICATED_OWNER_ID, PlayerServiceSnapshotSchema),
+      ),
+
+      replicatedCandidate: Effect.flatMap(Ref.get(state), (current) =>
+        Schema.decodeUnknownEffect(PlayerServiceSnapshotSchema)(playerReplicatedCandidateOf(current)),
+      ),
+
+      submitReplicatedCandidate: (expectedRevision: WorldRevision, expectedDimensionRevision: DimensionRevision) =>
+        Effect.flatMap(
+          Effect.flatMap(Ref.get(state), (current) =>
+            Schema.decodeUnknownEffect(PlayerServiceSnapshotSchema)(playerReplicatedCandidateOf(current)),
+          ),
+          (candidate) =>
+            Effect.flatMap(WorldCommitCoordinator, (coordinator) =>
+              Effect.flatMap(
+                coordinator.snapshot(PLAYER_REPLICATED_OWNER_ID, PlayerServiceSnapshotSchema),
+                (committed) => {
+                  const previousDimension = committed.state.pose.feetPosition.dimension
+                  const nextDimension = candidate.pose.feetPosition.dimension
+                  const changes = [{ ownerId: PLAYER_REPLICATED_OWNER_ID, state: candidate }]
+                  if (previousDimension === nextDimension) {
+                    return coordinator.commit({
+                      expectedRevision,
+                      expectedDimensions: [{ dimension: previousDimension, expectedRevision: expectedDimensionRevision }],
+                      changes,
+                    })
+                  }
+                  return Effect.flatMap(coordinator.dimensionRevision(nextDimension), (nextDimensionRevision) =>
+                    coordinator.commit({
+                      expectedRevision,
+                      expectedDimensions: [
+                        { dimension: previousDimension, expectedRevision: expectedDimensionRevision },
+                        { dimension: nextDimension, expectedRevision: nextDimensionRevision },
+                      ],
+                      changes,
+                    }),
+                  )
+                },
+              ),
+            ),
+        ),
 
       /**
        * Install a saved pose and dimension.
@@ -173,11 +281,15 @@ export const makeInMemoryPlayer = (
        * vertical pitch would reproduce the degenerate basis on the first frame
        * after a load, where it is hardest to attribute.
        */
-      restore: (pose, dimension) =>
-        Ref.set(state, {
-          pose: { ...pose, pitchRadians: clampPitch(pose.pitchRadians) },
-          dimension,
-        }),
+      restore: (pose, dimension) => {
+        const nextPose = { ...pose, pitchRadians: clampPitch(pose.pitchRadians) }
+        const poseError = invalidPoseError(nextPose, 'invalid-pose')
+        if (poseError !== undefined) return Effect.fail(poseError)
+        if (!Schema.is(DimensionIdSchema)(dimension)) {
+          return Effect.fail(inputError('invalid-dimension', 'dimension'))
+        }
+        return Ref.set(state, { pose: nextPose, dimension })
+      },
 
       // A NEW world, not a reloaded one — both halves back to spawn.
       reset: Ref.set(state, { pose: INITIAL_PLAYER_POSE, dimension: INITIAL_DIMENSION }),
