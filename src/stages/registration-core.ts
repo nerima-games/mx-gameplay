@@ -82,10 +82,8 @@ import {
   BlockAxis,
   BlockAddressSchema,
   BlockId,
-  DomainEventSchema,
   EntityIdSchema,
   blockIdOf,
-  ProjectileIdSchema,
   SimulationTickSchema,
   WorldWriteBatchSchema,
   type WorldWriteBatch,
@@ -127,7 +125,6 @@ import {
   type FurnaceState,
   type InventoryServiceApi,
   PlayerServiceSnapshotSchema,
-  FishingServiceCastSuccessSchema,
   FishingServiceReelSuccessSchema,
   FishingProgressOutcomeSchema,
   FishingCancelOutcomeSchema,
@@ -136,6 +133,9 @@ import {
   FishingApproachTicksSchema,
   FishingBiteWindowTicksSchema,
   type BrewingServiceApi,
+  PotionDrinkSlotIndexSchema,
+  PotionDrinkOutcomeSchema,
+  PotionDrinkFailureSchema,
   type FishingServiceApi,
   type DomainEventBusApi,
   type ProjectileServiceApi,
@@ -148,22 +148,13 @@ import {
   type FishingServiceError,
   type WorldCommitPlanConflict,
   type BrewingServiceError,
-  BrewingServicePlanSnapshotSchema,
-  PotionDrinkIntentSchema,
-  PotionDrinkPlanSchema,
-  PotionDrinkSlotIndexSchema,
-  PotionDrinkOutcomeSchema,
-  mergeWorldCommitPlans,
-  WorldCommitPlanMergeResultSchema,
-  WorldCommitPlanRequestSchema,
-  worldCommitPlanFragmentSchema,
-  worldCommitPlanSnapshotSchema,
-  addStoredStack,
-  removeItemAt,
+  type PotionDrinkOutcome,
+  type PrimedTntValidationFailure,
   DamageAmount,
   DamageCause,
   HealthAmount,
   ExhaustionAmount,
+  WorldRevisionConflict,
   addExhaustion as addVitalsExhaustion,
   applyDamage as applyVitalsDamage,
   heal as healVitals,
@@ -195,6 +186,7 @@ export {
   GAMEPLAY_STATUS_EFFECTS_OWNER_ID,
   GAMEPLAY_VILLAGER_TRADES_OWNER_ID,
 } from './gameplay-owner-registrations.js'
+import { GAMEPLAY_STATUS_EFFECTS_OWNER_ID } from './gameplay-owner-registrations.js'
 import { useVillagerOffer } from '../domain/villager-trade.js'
 import {
   PLAYER_MAXIMUM_HEALTH_POINTS,
@@ -210,7 +202,9 @@ import {
 } from '../domain/status-effect.js'
 import { targetabilityFromStore } from '../domain/in-memory-world.js'
 import {
+  BREWING_INGREDIENTS,
   BrewingBottleCollectionResultSchema,
+  POTION_TYPES,
   type BrewingBottle,
   type BrewingBottleCollectionResult,
   type BrewingIngredient,
@@ -242,6 +236,7 @@ import { applyFallingBlocks } from '../domain/entities/falling-block-move.js'
 import {
   applySpawnAttempts,
   experienceOfCasualties,
+  planMobDamageRoster,
   resolveBlasts,
   resolveBowHits,
   resolveEndermanTeleportProbes,
@@ -263,13 +258,17 @@ import {
   DROPPED_ITEM_PICKUP_RADIUS,
   pickupDroppedItems,
   spawnDroppedItems,
+  appendDroppedItemSpawns,
+  DroppedItemOwnerSnapshotSchema,
   type DroppedItemPickupFailure,
   type DroppedItemPickupRequest,
   type DroppedItemPickupResult,
   type DroppedItemSpawnError,
   type DroppedItemSpawn,
 } from '../domain/entities/dropped-item.js'
+import { GameplayEntityRosterSchema } from './gameplay-owner-registrations.js'
 import {
+  ExperienceOrbVitalsOwnerSnapshotSchema,
   type ExperienceOrbAbsorption,
   type ExperienceOrbAbsorptionContext,
   type ExperienceOrbAbsorptionError,
@@ -1425,7 +1424,28 @@ export type CollectBrewingBottleRequest = Readonly<{
   readonly bottleIndex: number
 }>
 
-export const CollectBrewingBottleRequestSchema = strictCodec(Schema.Struct({
+export type BrewingItemUseRequest =
+  | Readonly<{ action: 'InsertBrewingFuel'; requestId: ItemUseRequestId }>
+  | Readonly<{
+      action: 'InsertBrewingBottle'
+      requestId: ItemUseRequestId
+      bottleIndex: number
+      bottle: BrewingBottle
+    }>
+  | Readonly<{
+      action: 'InsertBrewingIngredient'
+      requestId: ItemUseRequestId
+      ingredient: BrewingIngredient
+    }>
+  | Readonly<{
+      action: 'DrinkPotion'
+      requestId: ItemUseRequestId
+      actor: EntityId
+      tick: SimulationTick
+      slotIndex: number
+    }>
+
+export const CollectBrewingBottleRequestSchema: Schema.ConstraintDecoder<CollectBrewingBottleRequest> = strictCodec(Schema.Struct({
   action: Schema.Literal('CollectBrewingBottle'),
   requestId: Schema.String,
   actor: EntityIdSchema,
@@ -1441,6 +1461,7 @@ export type ItemUseRequest =
   | BucketItemUseRequest
   | FishingItemUseRequest
   | CollectBrewingBottleRequest
+  | BrewingItemUseRequest
 
 /** Host-provided correlation key for one item-use request. */
 export type ItemUseRequestId = string
@@ -1542,8 +1563,8 @@ export type FishingItemUseResult =
   | { readonly action: 'CancelFishing'; readonly requestId: ItemUseRequestId; readonly success: true; readonly outcome: FishingCancelOutcome }
   | { readonly action: 'ReelFishing'; readonly requestId: ItemUseRequestId; readonly success: true; readonly outcome: FishingReelOutcome }
 
-function strictCodec<A, I>(schema: Schema.Codec<A, I>): Schema.Codec<A, I> {
-  return Schema.declareConstructor<A, I>()([schema], ([inner]) =>
+function strictCodec<A>(schema: Schema.ConstraintDecoder<A>): Schema.ConstraintDecoder<A> {
+  return Schema.declareConstructor<A, unknown>()([schema], ([inner]) =>
     (input, _ast, options) => SchemaParser.decodeUnknownEffect(inner)(input, {
       ...options,
       onExcessProperty: 'error',
@@ -1551,12 +1572,93 @@ function strictCodec<A, I>(schema: Schema.Codec<A, I>): Schema.Codec<A, I> {
   )
 }
 
-export const GameplayFishingItemUseResultSchema = strictCodec(Schema.Union([
+export const GameplayBrewingItemUseRequestSchema: Schema.ConstraintDecoder<BrewingItemUseRequest> = strictCodec(Schema.Union([
+  Schema.Struct({
+    action: Schema.Literal('InsertBrewingFuel'),
+    requestId: Schema.String,
+  }),
+  Schema.Struct({
+    action: Schema.Literal('InsertBrewingBottle'),
+    requestId: Schema.String,
+    bottleIndex: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 2 })),
+    bottle: Schema.Union([
+      Schema.Literal('water_bottle'),
+      Schema.Struct({ potion: Schema.Literals(POTION_TYPES) }),
+    ]),
+  }),
+  Schema.Struct({
+    action: Schema.Literal('InsertBrewingIngredient'),
+    requestId: Schema.String,
+    ingredient: Schema.Literals(BREWING_INGREDIENTS),
+  }),
+  Schema.Struct({
+    action: Schema.Literal('DrinkPotion'),
+    requestId: Schema.String,
+    actor: EntityIdSchema,
+    tick: SimulationTickSchema,
+    slotIndex: PotionDrinkSlotIndexSchema,
+  }),
+]))
+
+export type BrewingItemUseResult =
+  | Readonly<{
+      action: 'InsertBrewingFuel' | 'InsertBrewingBottle' | 'InsertBrewingIngredient'
+      requestId: ItemUseRequestId
+      success: true
+      outcome: undefined
+    }>
+  | Readonly<{
+      action: 'InsertBrewingFuel' | 'InsertBrewingBottle' | 'InsertBrewingIngredient'
+      requestId: ItemUseRequestId
+      success: false
+      failure: 'MissingItem' | 'Occupied' | 'InvalidRecipe' | 'Brewing' | 'FuelFull'
+    }>
+  | Readonly<{
+      action: 'DrinkPotion'
+      requestId: ItemUseRequestId
+      success: true
+      outcome: PotionDrinkOutcome
+    }>
+  | Readonly<{
+      action: 'DrinkPotion'
+      requestId: ItemUseRequestId
+      success: false
+      failure: Schema.Schema.Type<typeof PotionDrinkFailureSchema>
+    }>
+
+export const GameplayBrewingItemUseResultSchema: Schema.ConstraintDecoder<BrewingItemUseResult> = strictCodec(Schema.Union([
+  Schema.Struct({
+    action: Schema.Literals(['InsertBrewingFuel', 'InsertBrewingBottle', 'InsertBrewingIngredient']),
+    requestId: Schema.String,
+    success: Schema.Literal(true),
+    outcome: Schema.Undefined,
+  }),
+  Schema.Struct({
+    action: Schema.Literals(['InsertBrewingFuel', 'InsertBrewingBottle', 'InsertBrewingIngredient']),
+    requestId: Schema.String,
+    success: Schema.Literal(false),
+    failure: Schema.Literals(['MissingItem', 'Occupied', 'InvalidRecipe', 'Brewing', 'FuelFull']),
+  }),
+  Schema.Struct({
+    action: Schema.Literal('DrinkPotion'),
+    requestId: Schema.String,
+    success: Schema.Literal(true),
+    outcome: PotionDrinkOutcomeSchema,
+  }),
+  Schema.Struct({
+    action: Schema.Literal('DrinkPotion'),
+    requestId: Schema.String,
+    success: Schema.Literal(false),
+    failure: PotionDrinkFailureSchema,
+  }),
+]))
+
+export const GameplayFishingItemUseResultSchema: Schema.ConstraintDecoder<FishingItemUseResult> = strictCodec(Schema.Union([
   Schema.Struct({
     action: Schema.Literal('CastFishing'),
     requestId: Schema.String,
     success: Schema.Literal(true),
-    outcome: FishingServiceCastSuccessSchema,
+    outcome: Schema.Undefined,
   }),
   Schema.Struct({
     action: Schema.Literal('AdvanceFishing'),
@@ -1585,7 +1687,7 @@ export type BrewingBottleItemUseResult = Readonly<{
   outcome: BrewingBottleCollectionResult
 }>
 
-export const GameplayBrewingBottleItemUseResultSchema = strictCodec(Schema.Struct({
+export const GameplayBrewingBottleItemUseResultSchema: Schema.ConstraintDecoder<BrewingBottleItemUseResult> = strictCodec(Schema.Struct({
   action: Schema.Literal('CollectBrewingBottle'),
   requestId: Schema.String,
   success: Schema.Boolean,
@@ -1605,6 +1707,7 @@ export type ItemUseResult =
   | BucketItemUseResult
   | FishingItemUseResult
   | BrewingBottleItemUseResult
+  | BrewingItemUseResult
   | PlayerDeadItemUseResult
 
 /**
@@ -1688,12 +1791,12 @@ export type EnderPearlThrowRequest = {
   readonly inventory: InteractionInventoryContext
 }
 
-export const EnderPearlThrowRequestSchema = strictCodec(Schema.Struct({
+export const EnderPearlThrowRequestSchema: Schema.ConstraintDecoder<EnderPearlThrowRequest> = strictCodec(Schema.Struct({
   requestId: Schema.String,
   dirX: Schema.Finite,
   dirY: Schema.Finite,
   dirZ: Schema.Finite,
-  hitDistance: Schema.optional(Schema.Finite),
+  hitDistance: Schema.optionalKey(Schema.Finite),
   inventory: Schema.Struct({
     mode: Schema.Literals(['survival', 'creative']),
     slotIndex: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
@@ -1744,7 +1847,7 @@ export type EnderPearlOutcome = {
   readonly damage: Damage | undefined
 }
 
-export const EnderPearlOutcomeSchema = strictCodec(Schema.Struct({
+export const EnderPearlOutcomeSchema: Schema.ConstraintDecoder<EnderPearlOutcome> = strictCodec(Schema.Struct({
   displacement: Schema.Struct({
     x: Schema.Finite,
     y: Schema.Finite,
@@ -1817,8 +1920,6 @@ export type GameplayUnsupportedAction =
 export type GameplayUnsupportedReason =
   | 'WorldCommitCoordinatorUnavailable'
   | 'OwnerRegistrationUnavailable'
-  | 'CropOwnerStateUnavailable'
-  | 'McSimPlanFragmentUnavailable'
   | 'TntServiceUnavailable'
   | 'EntityRosterOwnerUnavailable'
 
@@ -1849,6 +1950,7 @@ export type GameplayStageOperationFailure = Readonly<{
     | FirePlayerDamagePreparationFailure
     | FishingServiceError
     | BrewingServiceError
+    | PrimedTntValidationFailure
 }>
 
 export const recordGameplayStageFailure = (
@@ -2024,7 +2126,7 @@ const makeGameplayFrameStateWithOptions = (
 })
 
 /** Test and standalone adapter entry point retained as an Effect value. */
-export const makeGameplayFrameState = makeGameplayFrameStateWithOptions()
+export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = makeGameplayFrameStateWithOptions()
 
 /** Production composition entry point; the supplied owner is the only vitals authority. */
 export const makeGameplayFrameStateForOwner = (
@@ -2293,6 +2395,28 @@ export const requestBlockBreak = (
     )
   })
 
+/** Put a drained break back without changing its request identity or inputs. */
+const requeueBlockBreak = (
+  state: GameplayFrameState,
+  request: PendingBlockBreakRequest,
+): Effect.Effect<void> => {
+  const queue = breakRequestQueueFor(state)
+  return queue.mutex.withPermits(1)(
+    Effect.uninterruptible(
+      Effect.gen(function* () {
+        const publicQueueIndex = yield* Ref.modify(state.pendingBreaks, (pending) => [
+          pending.length,
+          [...pending, request.positionKey],
+        ])
+        yield* Ref.update(queue.state, (pending) => ({
+          ...pending,
+          requests: [...pending.requests, { ...request, publicQueueIndex }],
+        }))
+      }),
+    ),
+  )
+}
+
 /** Vanilla-style survival reach, measured from the player's eye position. */
 export const DEFAULT_BLOCK_REACH = 5
 
@@ -2439,7 +2563,7 @@ export const requestEnderPearlThrow = (
   request: EnderPearlThrowRequest,
 ): Effect.Effect<void, Schema.SchemaError> =>
   Effect.gen(function* () {
-    const decoded = yield* Schema.decodeUnknown(EnderPearlThrowRequestSchema)(request)
+    const decoded = yield* Effect.fromResult(Schema.decodeUnknownResult(EnderPearlThrowRequestSchema)(request))
     yield* Ref.update(state.pendingPearlThrows, (pending) => [...pending, decoded])
   })
 
@@ -2816,45 +2940,64 @@ export const restoreStatusEffects = (
       : 1)
   })
 
-export type BrewingOperationUnsupported = Readonly<{
-  _tag: 'Unsupported'
-  action: 'Brewing'
-  reason: 'McSimPlanFragmentUnavailable'
-}>
-
-const unsupportedBrewingOperation = (
+const enqueueBrewingRequest = (
   state: GameplayFrameState,
-): Effect.Effect<BrewingOperationUnsupported> =>
-  Effect.as(
-    recordGameplayUnsupportedOperation(state, {
-      _tag: 'Unsupported',
-      action: 'Brewing',
-      reason: 'McSimPlanFragmentUnavailable',
-    }),
-    { _tag: 'Unsupported', action: 'Brewing', reason: 'McSimPlanFragmentUnavailable' },
-  )
+  request: BrewingItemUseRequest,
+): Effect.Effect<void, Schema.SchemaError> =>
+  Effect.gen(function* () {
+    const decoded = yield* Effect.fromResult(Schema.decodeUnknownResult(GameplayBrewingItemUseRequestSchema)(request))
+    yield* Ref.update(state.pendingItemUses, (pending) => [...pending, decoded])
+  })
 
 export const insertBrewingFuel = (
   state: GameplayFrameState,
-): Effect.Effect<BrewingOperationUnsupported> => unsupportedBrewingOperation(state)
+  requestId: ItemUseRequestId,
+): Effect.Effect<void, Schema.SchemaError> => enqueueBrewingRequest(state, {
+  action: 'InsertBrewingFuel',
+  requestId,
+})
 
 export const insertBrewingBottle = (
   state: GameplayFrameState,
-  _bottle: BrewingBottle,
-): Effect.Effect<BrewingOperationUnsupported> => unsupportedBrewingOperation(state)
+  requestId: ItemUseRequestId,
+  bottleIndex: number,
+  bottle: BrewingBottle,
+): Effect.Effect<void, Schema.SchemaError> => enqueueBrewingRequest(state, {
+  action: 'InsertBrewingBottle',
+  requestId,
+  bottleIndex,
+  bottle,
+})
 
 export const insertBrewingIngredient = (
   state: GameplayFrameState,
-  _ingredient: BrewingIngredient,
-): Effect.Effect<BrewingOperationUnsupported> => unsupportedBrewingOperation(state)
+  requestId: ItemUseRequestId,
+  ingredient: BrewingIngredient,
+): Effect.Effect<void, Schema.SchemaError> => enqueueBrewingRequest(state, {
+  action: 'InsertBrewingIngredient',
+  requestId,
+  ingredient,
+})
 
 export const collectBrewingPotion = (
   state: GameplayFrameState,
-): Effect.Effect<BrewingOperationUnsupported> => unsupportedBrewingOperation(state)
+  request: Omit<CollectBrewingBottleRequest, 'action'>,
+): Effect.Effect<void, Schema.SchemaError> =>
+  Effect.gen(function* () {
+    const decoded = yield* Effect.fromResult(Schema.decodeUnknownResult(CollectBrewingBottleRequestSchema)({
+      action: 'CollectBrewingBottle',
+      ...request,
+    }))
+    yield* Ref.update(state.pendingItemUses, (pending) => [...pending, decoded])
+  })
 
 export const useBrewingPotion = (
   state: GameplayFrameState,
-): Effect.Effect<BrewingOperationUnsupported> => unsupportedBrewingOperation(state)
+  request: Omit<Extract<BrewingItemUseRequest, { readonly action: 'DrinkPotion' }>, 'action'>,
+): Effect.Effect<void, Schema.SchemaError> => enqueueBrewingRequest(state, {
+  action: 'DrinkPotion',
+  ...request,
+})
 
 const stepStatusEffects = (
   state: GameplayFrameState,
@@ -2933,10 +3076,16 @@ const stepStatusEffects = (
       for (let index = 0; index < tick.poisonPulses; index += 1) {
         const amount = DamageAmount.result(POISON_DAMAGE_POINTS)
         const cause = DamageCause.result('poison')
-        if (Result.isFailure(amount) || Result.isFailure(cause)) {
+        if (Result.isFailure(amount)) {
           yield* recordGameplayStageFailure(state, {
             _tag: 'Failed', operation: 'CandidateBuild', subject: 'Vitals',
-            error: Result.isFailure(amount) ? amount.failure : cause.failure,
+            error: amount.failure,
+          })
+          return
+        }
+        if (Result.isFailure(cause)) {
+          yield* recordGameplayStageFailure(state, {
+            _tag: 'Failed', operation: 'CandidateBuild', subject: 'Vitals', error: cause.failure,
           })
           return
         }
@@ -3150,13 +3299,14 @@ export const requestFireExtinguish = (
 const stepFireTick = (
   state: GameplayFrameState,
   store: ChunkStoreApi,
-  roster: EntityManagerApi<MobBehaviour>,
   playerState: Schema.Schema.Type<typeof PlayerServiceSnapshotSchema>,
   context: Readonly<{
     coordinator: WorldCommitCoordinatorApi
     dimension: Dimension
     changes: ReadonlyArray<ReplicatedOwnerCandidate>
     playerStorageOwnerId: ReplicatedOwnerId
+    entitiesOwnerId: ReplicatedOwnerId | undefined
+    droppedItemsOwnerId: ReplicatedOwnerId | undefined
   }>,
 ): Effect.Effect<boolean> =>
   Effect.gen(function* () {
@@ -3197,13 +3347,54 @@ const stepFireTick = (
       return false
     }
     const survival = survivalResult.success
+    if (context.entitiesOwnerId === undefined) {
+      yield* recordGameplayUnsupportedOperation(state, {
+        _tag: 'Unsupported',
+        action: 'FireEntityDamage',
+        reason: 'OwnerRegistrationUnavailable',
+      })
+      return false
+    }
+    const entitySnapshotResult = yield* Effect.result(context.coordinator.snapshot(
+      context.entitiesOwnerId,
+      GameplayEntityRosterSchema,
+    ))
+    if (Result.isFailure(entitySnapshotResult)) {
+      if (entitySnapshotResult.failure._tag === 'ReplicatedOwnerUnknown') {
+        yield* recordGameplayUnsupportedOperation(state, {
+          _tag: 'Unsupported',
+          action: 'FireEntityDamage',
+          reason: 'OwnerRegistrationUnavailable',
+        })
+      } else {
+        yield* recordGameplayStageFailure(state, {
+          _tag: 'Failed',
+          operation: 'OwnerSnapshot',
+          subject: 'Fire',
+          error: entitySnapshotResult.failure,
+        })
+      }
+      return false
+    }
+    if (entitySnapshotResult.success.revision !== expectedRevision) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed',
+        operation: 'CandidateBuild',
+        subject: 'Fire',
+        error: new WorldRevisionConflict({
+          expected: expectedRevision,
+          actual: entitySnapshotResult.success.revision,
+        }),
+      })
+      return false
+    }
     const feet = playerState.pose.feetPosition
     const playerContactPosition = {
       x: Math.floor(feet.x),
       y: Math.floor(feet.y),
       z: Math.floor(feet.z),
     }
-    const rosterEntities = [...(yield* roster.entities)]
+    const rosterEntities = entitySnapshotResult.success.state.entities
     const entityById = new Map(rosterEntities.map((entity) => [String(entity.id), entity]))
     const burningEntityContacts = [...burningIds]
       .filter((id) => id !== 'player')
@@ -3304,13 +3495,95 @@ const stepFireTick = (
       }
     })
     const step = advanceFireLifecycle(current, cells, weather, hydratedContacts, survival.difficulty)
-    if (step.entityDamages.length > 0) {
-      yield* recordGameplayUnsupportedOperation(state, {
-        _tag: 'Unsupported',
-        action: 'FireEntityDamage',
-        reason: 'EntityRosterOwnerUnavailable',
+    const entityHits = step.entityDamages.map(({ actorId, damage }) => {
+      const id = Schema.decodeUnknownResult(EntityIdSchema)(actorId)
+      return Result.isFailure(id) ? Result.fail(id.failure) : Result.succeed({ id: id.success, damage })
+    })
+    const validEntityHits: Array<{ id: EntityId; damage: Damage }> = []
+    for (const hit of entityHits) {
+      if (Result.isFailure(hit)) {
+        yield* recordGameplayStageFailure(state, {
+          _tag: 'Failed', operation: 'CandidateBuild', subject: 'Fire', error: hit.failure,
+        })
+        return false
+      }
+      validEntityHits.push(hit.success)
+    }
+    const damagePlan = planMobDamageRoster(
+      entitySnapshotResult.success.state,
+      validEntityHits,
+    )
+    const entityCandidateResult = yield* Effect.result(
+      Schema.decodeUnknownEffect(GameplayEntityRosterSchema)(damagePlan.roster),
+    )
+    if (Result.isFailure(entityCandidateResult)) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed', operation: 'CandidateBuild', subject: 'Fire', error: entityCandidateResult.failure,
       })
       return false
+    }
+    const entityCandidate = entityCandidateResult.success
+    const seed = yield* Ref.get(state.rollSeed)
+    const casualtyDrops = rollCasualtyDrops(damagePlan.casualties, seed)
+    const experience = experienceOfCasualties(damagePlan.casualties)
+    let droppedItemsCandidate: Schema.Schema.Type<typeof DroppedItemOwnerSnapshotSchema> | undefined
+    if (casualtyDrops.drops.length > 0) {
+      if (context.droppedItemsOwnerId === undefined) {
+        yield* recordGameplayUnsupportedOperation(state, {
+          _tag: 'Unsupported',
+          action: 'FireEntityDamage',
+          reason: 'OwnerRegistrationUnavailable',
+        })
+        return false
+      }
+      const droppedSnapshot = yield* Effect.result(context.coordinator.snapshot(
+        context.droppedItemsOwnerId,
+        DroppedItemOwnerSnapshotSchema,
+      ))
+      if (Result.isFailure(droppedSnapshot)) {
+        if (droppedSnapshot.failure._tag === 'ReplicatedOwnerUnknown') {
+          yield* recordGameplayUnsupportedOperation(state, {
+            _tag: 'Unsupported',
+            action: 'FireEntityDamage',
+            reason: 'OwnerRegistrationUnavailable',
+          })
+        } else {
+          yield* recordGameplayStageFailure(state, {
+            _tag: 'Failed',
+            operation: 'OwnerSnapshot',
+            subject: 'Fire',
+            error: droppedSnapshot.failure,
+          })
+        }
+        return false
+      }
+      if (droppedSnapshot.success.revision !== expectedRevision) {
+        yield* recordGameplayStageFailure(state, {
+          _tag: 'Failed',
+          operation: 'CandidateBuild',
+          subject: 'Fire',
+          error: new WorldRevisionConflict({
+            expected: expectedRevision,
+            actual: droppedSnapshot.success.revision,
+          }),
+        })
+        return false
+      }
+      const appended = appendDroppedItemSpawns(
+        droppedSnapshot.success.state,
+        casualtyDrops.drops.map(({ item, count, at }) => ({ item, count, at })),
+        expectedRevision,
+      )
+      if (Result.isFailure(appended)) {
+        yield* recordGameplayStageFailure(state, {
+          _tag: 'Failed',
+          operation: 'CandidateBuild',
+          subject: 'Fire',
+          error: appended.failure,
+        })
+        return false
+      }
+      droppedItemsCandidate = appended.success
     }
     const air = blockIdOf('air')
     const fire = blockIdOf('fire')
@@ -3352,12 +3625,20 @@ const stepFireTick = (
     }
     const fireDamage = fireDamageResult.success
 
-    const changes = fireDamage.changes.length === 0
-      ? context.changes
-      : [
-          ...context.changes.filter((candidate) => candidate.ownerId !== context.playerStorageOwnerId),
-          ...fireDamage.changes,
-        ]
+    const changes: ReadonlyArray<ReplicatedOwnerCandidate> = [
+      ...context.changes.filter((candidate) =>
+        candidate.ownerId !== context.playerStorageOwnerId &&
+        candidate.ownerId !== context.entitiesOwnerId &&
+        candidate.ownerId !== context.droppedItemsOwnerId,
+      ),
+      ...fireDamage.changes,
+      ...(!Equal.equals(entitySnapshotResult.success.state, entityCandidate)
+        ? [{ ownerId: context.entitiesOwnerId, state: entityCandidate }]
+        : []),
+      ...(droppedItemsCandidate === undefined || context.droppedItemsOwnerId === undefined
+        ? []
+        : [{ ownerId: context.droppedItemsOwnerId, state: droppedItemsCandidate }]),
+    ]
     const fireCommitContext = { ...context, changes }
     const disturbed: BlockPositionKey[] = []
     let committed: GameplayBlockCommitResult | undefined
@@ -3399,6 +3680,13 @@ const stepFireTick = (
         a.position.x - b.position.x || a.position.y - b.position.y || a.position.z - b.position.z),
       burningActors: step.state.burningActors ?? [],
     })
+    yield* Ref.set(state.rollSeed, casualtyDrops.seed)
+    if (casualtyDrops.drops.length > 0) {
+      yield* Ref.update(state.mobDrops, (pending) => [...pending, ...casualtyDrops.drops])
+    }
+    if (experience.length > 0) {
+      yield* Ref.update(state.mobExperience, (pending) => [...pending, ...experience])
+    }
     if (fireDamage.damages.length > 0) {
       yield* Ref.update(state.playerDamages, (damages) => [...damages, ...fireDamage.damages])
     }
@@ -3411,7 +3699,6 @@ const stepFireTick = (
 const stepFireLifecycle = (
   state: GameplayFrameState,
   store: ChunkStoreApi,
-  roster: EntityManagerApi<MobBehaviour>,
   playerState: Schema.Schema.Type<typeof PlayerServiceSnapshotSchema>,
   dt: DeltaTimeSecs,
   context: Readonly<{
@@ -3419,6 +3706,8 @@ const stepFireLifecycle = (
     dimension: Dimension
     changes: ReadonlyArray<ReplicatedOwnerCandidate>
     playerStorageOwnerId: ReplicatedOwnerId
+    entitiesOwnerId: ReplicatedOwnerId | undefined
+    droppedItemsOwnerId: ReplicatedOwnerId | undefined
   }>,
 ): Effect.Effect<void> =>
   Effect.gen(function* () {
@@ -3437,7 +3726,7 @@ const stepFireLifecycle = (
     yield* Ref.set(accumulator, elapsed - ticks * FIRE_TICK_INTERVAL_SECS)
 
     for (let index = 0; index < ticks; index += 1) {
-      const advanced = yield* stepFireTick(state, store, roster, playerState, context)
+      const advanced = yield* stepFireTick(state, store, playerState, context)
       if (!advanced) {
         yield* Ref.update(accumulator, (remaining) => Math.min(
           FIRE_TICK_INTERVAL_SECS * FIRE_FRAME_TICK_BUDGET,
@@ -3857,6 +4146,7 @@ export {
   bowDamage,
   breakBlock,
   breakRequestQueueFor,
+  requeueBlockBreak,
   canFireBow,
   cancelFishing,
   capabilityOfBlockId,

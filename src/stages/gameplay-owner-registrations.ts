@@ -143,7 +143,8 @@ const isMobBehaviour = (value: unknown): value is MobBehaviour => {
   return isCreeperFuse(value) || isEndermanFlinch(value) || isEcosystemState(value) || isStrictDroppedItem(value)
 }
 
-export const GameplayMobBehaviourSchema = Schema.declare<MobBehaviour>(isMobBehaviour)
+export const GameplayMobBehaviourSchema: Schema.Codec<MobBehaviour, unknown> =
+  Schema.declare<MobBehaviour>(isMobBehaviour)
 
 export const GameplayEntityRosterSchema: Schema.Codec<EntityRoster<MobBehaviour>, unknown> = strictCodec(
   EntityRosterSchema(GameplayMobBehaviourSchema),

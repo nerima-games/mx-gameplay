@@ -52,6 +52,10 @@ export {
   CollectBrewingBottleRequestSchema,
   type BrewingBottleItemUseResult,
   GameplayBrewingBottleItemUseResultSchema,
+  type BrewingItemUseRequest,
+  GameplayBrewingItemUseRequestSchema,
+  type BrewingItemUseResult,
+  GameplayBrewingItemUseResultSchema,
   GameplayFishingItemUseResultSchema,
   setPlayerDead,
   requestBlockBreak,
@@ -134,7 +138,6 @@ import {
   TimeService,
   entityManagerTag,
   GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
-  makeGameplayFrameState,
   makeGameplayFrameStateForOwner,
 } from './registration-core.js'
 import type {

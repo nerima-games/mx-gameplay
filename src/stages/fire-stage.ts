@@ -10,7 +10,7 @@ import type {
 } from './registration-core.js'
 
 export const makeFireStage = (context: GameplayStageContext): StageRegistration => {
-  const { state, store, roster, commit } = context
+  const { state, store, commit } = context
   return {
     id: GAMEPLAY_STAGE_IDS.fire,
     after: [GAMEPLAY_STAGE_IDS.interactions],
@@ -19,11 +19,13 @@ export const makeFireStage = (context: GameplayStageContext): StageRegistration 
       return Effect.gen(function* () {
         const playerState = yield* gameplayPlayerStateForStage(state, commit)
         if (playerState === undefined) return
-        yield* stepFireLifecycle(state, store, roster, playerState, dt, {
+        yield* stepFireLifecycle(state, store, playerState, dt, {
           coordinator: commit.coordinator,
           dimension: playerState.pose.feetPosition.dimension,
           changes: [],
           playerStorageOwnerId: commit.playerStorageOwnerId,
+          entitiesOwnerId: commit.entitiesOwnerId,
+          droppedItemsOwnerId: commit.droppedItemsOwnerId,
         })
       })
     },

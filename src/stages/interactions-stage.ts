@@ -1,5 +1,6 @@
 import {
   GameplayBrewingBottleItemUseResultSchema,
+  GameplayBrewingItemUseResultSchema,
   GameplayFishingItemUseResultSchema,
   BLOCK_LOOT_ROLLS,
   Effect,
@@ -11,8 +12,8 @@ import {
   blockPositionKeyOf,
   blockPositionForKey,
   breakRequestQueueFor,
+  requeueBlockBreak,
   candidateForItemUse,
-  candidateForPlayerStorageItemUse,
   candidateForPlayerStorageItemUse,
   EnderPearlOutcomeSchema,
   disturb,
@@ -36,14 +37,14 @@ import {
 } from './registration-core.js'
 import { PositionAxis } from '@nerima-games/mc-kernel'
 import { position as kernelPosition } from '@nerima-games/mc-kernel'
-import type { BlockId, Position } from '@nerima-games/mc-kernel'
+import type { BlockId } from '@nerima-games/mc-kernel'
 import { Option, Result } from 'effect'
 import {
   DamageAmount,
   DamageCause,
-  EntitySerialSchema,
   PlayerServiceSnapshotSchema,
   applyDamage as applyVitalsDamage,
+  damageAt as damagePlayerStorageAt,
   removeItemAt,
   removeItem as removeInventoryItem,
   withInventory,
@@ -61,11 +62,12 @@ import type {
   BlockUseRequest,
   BlockLootContext,
   BlockUseResult,
-  BrewingBottleItemUseResult,
   CollectBrewingBottleRequest,
+  BrewingItemUseRequest,
   BowShotRequest,
   DroppedItemSpawn,
   GameplayStageContext,
+  BrewingItemUseResult,
   IgnitionItemType,
   ItemUseRequest,
   ItemUseResult,
@@ -76,23 +78,19 @@ import type {
   StageRegistration,
   VillagerTradeRequest,
   EnderPearlThrowRequest,
-  PortalTravelEvent,
-  EndPortalTravelEvent,
   BlockPlacementCommand,
 } from './registration-core.js'
 
 import {
   AIR_BLOCK_ID,
-  BlockAxis,
   BlockAddressSchema,
   EntityIdSchema,
-  blockPosition,
-  capabilityOfBlockId,
   DomainEventSchema,
-  ItemPickedUpEventSchema,
   SimulationTickSchema,
   WorldPositionSchema,
   StackCount,
+  itemStack,
+  type WorldWriteBatch,
   itemIdOf,
   WorldWriteBatchSchema,
   FoodNutrition,
@@ -100,17 +98,23 @@ import {
   blockTypeOfId,
 } from '@nerima-games/mc-kernel'
 import {
-  EntityId,
-  EntityHealthPoints,
-  PlayerServiceSnapshotSchema,
   PlayerStorageSnapshotSchema,
-  TNT_REPLICATED_OWNER_ID,
   TntServiceSnapshotSchema,
   BrewingServiceStateSchema,
   BrewingServicePlanSnapshotSchema,
   BrewingBottleIndexSchema,
+  PotionDrinkInventorySnapshotSchema,
+  PotionDrinkIntentSchema,
+  PotionDrinkSlotIndexSchema,
+  PotionDrinkPlanSchema,
+  PotionDrinkFailureSchema,
+  BREWING_FUEL_ITEM,
+  BREWING_MAX_FUEL_CHARGES,
   FishingStateSchema,
   FishingServicePlanSnapshotSchema,
+  FishingAdvanceIntentSchema,
+  FishingCancelIntentSchema,
+  FishingReelIntentSchema,
   FishingAdvancePlanSchema,
   FishingCancelPlanSchema,
   FishingServiceCastSuccessSchema,
@@ -141,6 +145,11 @@ import {
   spawnEntity,
 } from '@nerima-games/mc-sim'
 import { Schema } from 'effect'
+import {
+  applyStatusEffect,
+  SPEED_MOVEMENT_MULTIPLIER,
+  StatusEffectStateSchema,
+} from '../domain/status-effect.js'
 import { applyBoneMeal } from '../domain/interactions/bone-meal.js'
 import { cropDrops } from '../domain/interactions/crop-drops.js'
 import { resolveFoodUse } from '../domain/interactions/eat-food.js'
@@ -156,26 +165,25 @@ import { planPlaceBlock } from '../domain/interactions/place-block.js'
 import {
   shotBlockedByTerrain,
   shotTargetWithCandidate,
-  BOW_LINE_OF_SIGHT_EPSILON,
-  BOW_LINE_OF_SIGHT_STEP,
 } from '../domain/interactions/bow-shot.js'
 import { bowCharge, bowDamage, canFireBow } from '../domain/interactions/draw-bow.js'
 import { meleeTarget } from '../domain/interactions/melee-attack.js'
 import { knockbackDirection } from '../domain/interactions/knockback.js'
 import {
   ENDER_PEARL_DAMAGE,
-  ENDER_PEARL_DEATH_CAUSE,
   enderPearlDisplacement,
   shouldSpawnEndermite,
 } from '../domain/interactions/throw-ender-pearl.js'
 import {
   ENDERMITE_KIND,
-  HOSTILE_KINDS,
+  experienceOfCasualties,
   initialBehaviourOfKind,
   maxHealthOfKind,
   planMobDamageRoster,
-  type MobBehaviour,
+  rollCasualtyDrops,
 } from '../domain/entities/mob-frame.js'
+import type { Damage } from '../domain/death-cause.js'
+import { solidityFromStore } from '../domain/in-memory-world.js'
 
 const cropAt = (
   snapshot: CropSnapshot,
@@ -197,6 +205,473 @@ const cropCandidate = (
     Schema.decodeUnknownResult(CropSnapshotSchema)({ crops }),
     (state) => ({ ownerId, state }),
   )
+
+const commitMobDamage = (
+  state: GameplayStageContext['state'],
+  context: NonNullable<GameplayStageContext['commit']>,
+  entitySnapshot: Readonly<{
+    revision: WorldWriteBatch['expectedWorldRevision']
+    state: Schema.Schema.Type<typeof GameplayEntityRosterSchema>
+  }>,
+  hit: Readonly<{ id: import('@nerima-games/mc-kernel').EntityId; damage: Damage }> | undefined,
+  storageCandidate?: Schema.Schema.Type<typeof PlayerStorageSnapshotSchema>,
+  event?: Schema.Schema.Type<typeof DomainEventSchema>,
+): Effect.Effect<boolean> =>
+  Effect.gen(function* () {
+    const ownerId = context.entitiesOwnerId
+    if (ownerId === undefined) return false
+    const damage = planMobDamageRoster(
+      entitySnapshot.state,
+      hit === undefined ? [] : [{ id: hit.id, damage: hit.damage }],
+    )
+    const roster = Schema.decodeUnknownResult(GameplayEntityRosterSchema)(damage.roster)
+    if (Result.isFailure(roster)) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed', operation: 'CandidateBuild', subject: 'Player', error: roster.failure,
+      })
+      return false
+    }
+
+    const seed = yield* Ref.get(state.rollSeed)
+    const drops = rollCasualtyDrops(damage.casualties, seed)
+    const experience = experienceOfCasualties(damage.casualties)
+    const changes: Array<ReplicatedOwnerCandidate> = []
+    if (damage.roster !== entitySnapshot.state) {
+      changes.push({ ownerId, state: roster.success })
+    }
+    if (storageCandidate !== undefined && context.playerStorageOwnerId !== undefined) {
+      const storage = Schema.decodeUnknownResult(PlayerStorageSnapshotSchema)(storageCandidate)
+      if (Result.isFailure(storage)) {
+        yield* recordGameplayStageFailure(state, {
+          _tag: 'Failed', operation: 'CandidateBuild', subject: 'Player', error: storage.failure,
+        })
+        return false
+      }
+      changes.push({ ownerId: context.playerStorageOwnerId, state: storage.success })
+    }
+    if (drops.drops.length > 0) {
+      if (context.droppedItemsOwnerId === undefined) {
+        yield* recordGameplayUnsupportedOperation(state, {
+          _tag: 'Unsupported', action: 'MobDrop', reason: 'OwnerRegistrationUnavailable',
+        })
+        return false
+      }
+      const droppedSnapshot = yield* Effect.result(context.coordinator.snapshot(
+        context.droppedItemsOwnerId,
+        DroppedItemOwnerSnapshotSchema,
+      ))
+      if (Result.isFailure(droppedSnapshot)) {
+        yield* recordGameplayStageFailure(state, {
+          _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'ItemUse', error: droppedSnapshot.failure,
+        })
+        return false
+      }
+      if (droppedSnapshot.success.revision !== entitySnapshot.revision) {
+        yield* recordGameplayStageFailure(state, {
+          _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'ItemUse',
+          error: new WorldRevisionConflict({
+            expected: entitySnapshot.revision,
+            actual: droppedSnapshot.success.revision,
+          }),
+        })
+        return false
+      }
+      const appended = appendDroppedItemSpawns(
+        droppedSnapshot.success.state,
+        drops.drops.map(({ item, count, at }) => ({ item, count, at })),
+        entitySnapshot.revision,
+      )
+      if (Result.isFailure(appended)) {
+        yield* recordGameplayStageFailure(state, {
+          _tag: 'Failed', operation: 'CandidateBuild', subject: 'ItemUse', error: appended.failure,
+        })
+        return false
+      }
+      changes.push({ ownerId: context.droppedItemsOwnerId, state: appended.success })
+    }
+    if (changes.length === 0) return true
+
+    const committed = yield* Effect.result(context.coordinator.commit({
+      expectedRevision: entitySnapshot.revision,
+      expectedDimensions: [],
+      changes,
+    }))
+    if (Result.isFailure(committed)) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed', operation: 'WorldCommit', subject: 'Player', error: committed.failure,
+      })
+      return false
+    }
+    if (damage.casualties.length > 0) yield* Ref.set(state.rollSeed, drops.seed)
+    if (drops.drops.length > 0) {
+      yield* Ref.update(state.mobDrops, (pending) => [...pending, ...drops.drops])
+    }
+    if (experience.length > 0) {
+      yield* Ref.update(state.mobExperience, (pending) => [...pending, ...experience])
+    }
+    if (event !== undefined && context.eventBus !== undefined) {
+      const published = yield* Effect.result(context.eventBus.publish(event))
+      if (Result.isFailure(published)) {
+        yield* recordGameplayStageFailure(state, {
+          _tag: 'Failed', operation: 'EventPublish', subject: 'Player', error: published.failure,
+        })
+      }
+    }
+    return true
+  })
+
+const processBowShot = (
+  state: GameplayStageContext['state'],
+  context: GameplayStageContext['commit'],
+  store: GameplayStageContext['store'],
+  request: BowShotRequest,
+  playerDead: boolean,
+): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    const result = (outcome: 'Fired' | 'Undercharged' | 'DuplicateRequest' | 'PlayerDead' | 'InventoryUnavailable') => {
+      if (request.requestId === undefined) return Effect.void
+      const result: import('./registration-core.js').BowShotResult = outcome === 'Fired'
+        ? { requestId: request.requestId, success: true, outcome }
+        : { requestId: request.requestId, success: false, outcome }
+      return Ref.update(state.bowShotResults, (results) => [...results, result])
+    }
+    if (request.requestId !== undefined) {
+      const handled = yield* Ref.get(state.handledBowShotRequestIds)
+      if (handled.has(request.requestId)) {
+        yield* result('DuplicateRequest')
+        return
+      }
+    }
+    if (!canFireBow(request.chargeSecs)) {
+      yield* result('Undercharged')
+      return
+    }
+    if (playerDead) {
+      yield* result('PlayerDead')
+      return
+    }
+    if (context === undefined) {
+      yield* recordGameplayUnsupportedOperation(state, {
+        _tag: 'Unsupported', action: 'BowShot',
+        ...(request.requestId === undefined ? {} : { requestId: request.requestId }),
+        reason: 'WorldCommitCoordinatorUnavailable',
+      })
+      yield* Ref.update(state.pendingBowShots, (pending) => [request, ...pending])
+      return
+    }
+    if (context.entitiesOwnerId === undefined || context.playerOwnerId === undefined ||
+      (request.inventory.mode === 'survival' && context.playerStorageOwnerId === undefined)) {
+      yield* recordGameplayUnsupportedOperation(state, {
+        _tag: 'Unsupported', action: 'BowShot',
+        ...(request.requestId === undefined ? {} : { requestId: request.requestId }),
+        reason: 'OwnerRegistrationUnavailable',
+      })
+      yield* Ref.update(state.pendingBowShots, (pending) => [request, ...pending])
+      return
+    }
+    const player = yield* Effect.result(context.coordinator.snapshot(context.playerOwnerId, PlayerServiceSnapshotSchema))
+    if (Result.isFailure(player)) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'Player', error: player.failure,
+      })
+      yield* Ref.update(state.pendingBowShots, (pending) => [request, ...pending])
+      return
+    }
+    const entities = yield* Effect.result(context.coordinator.snapshot(context.entitiesOwnerId, GameplayEntityRosterSchema))
+    if (Result.isFailure(entities)) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'Player', error: entities.failure,
+      })
+      yield* Ref.update(state.pendingBowShots, (pending) => [request, ...pending])
+      return
+    }
+    if (player.success.revision !== entities.success.revision) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'Player',
+        error: new WorldRevisionConflict({ expected: player.success.revision, actual: entities.success.revision }),
+      })
+      yield* Ref.update(state.pendingBowShots, (pending) => [request, ...pending])
+      return
+    }
+
+    const target = shotTargetWithCandidate(
+      entities.success.state.entities,
+      request.origin,
+      request.dirX,
+      request.dirY,
+      request.dirZ,
+    )
+    let hit: Readonly<{ id: import('@nerima-games/mc-kernel').EntityId; damage: Damage }> | undefined
+    let knockback: ReturnType<typeof knockbackDirection> | undefined
+    if (target !== undefined) {
+      const aimLength = Math.hypot(request.dirX, request.dirY, request.dirZ)
+      const end = kernelPosition(
+        PositionAxis(request.origin.x + request.dirX / aimLength * target.hit.distance),
+        PositionAxis(request.origin.y + request.dirY / aimLength * target.hit.distance),
+        PositionAxis(request.origin.z + request.dirZ / aimLength * target.hit.distance),
+      )
+      const isBlockedAt = solidityFromStore(store)
+      if (!shotBlockedByTerrain((x, y, z) => isBlockedAt({ x, y, z }), request.origin, end)) {
+        const amount = DamageAmount.result(bowDamage(
+          bowCharge(request.chargeSecs),
+          request.powerLevel === undefined ? {} : { powerLevel: request.powerLevel },
+        ))
+        if (Result.isFailure(amount)) {
+          yield* recordGameplayStageFailure(state, {
+            _tag: 'Failed', operation: 'CandidateBuild', subject: 'Player', error: amount.failure,
+          })
+          yield* Ref.update(state.pendingBowShots, (pending) => [request, ...pending])
+          return
+        }
+        hit = { id: target.hit.id, damage: { amount: amount.success, cause: 'projectile' } }
+        const pose = player.success.state.pose.feetPosition
+        knockback = knockbackDirection(
+          target.candidate.feetPosition.x - pose.x,
+          target.candidate.feetPosition.z - pose.z,
+        )
+      }
+    }
+
+    let storageCandidate: Schema.Schema.Type<typeof PlayerStorageSnapshotSchema> | undefined
+    if (request.inventory.mode === 'survival') {
+      const storage = yield* Effect.result(context.coordinator.snapshot(
+        context.playerStorageOwnerId!, PlayerStorageSnapshotSchema,
+      ))
+      if (Result.isFailure(storage)) {
+        yield* recordGameplayStageFailure(state, {
+          _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'Player', error: storage.failure,
+        })
+        yield* Ref.update(state.pendingBowShots, (pending) => [request, ...pending])
+        return
+      }
+      if (storage.success.revision !== entities.success.revision) {
+        yield* recordGameplayStageFailure(state, {
+          _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'Player',
+          error: new WorldRevisionConflict({ expected: entities.success.revision, actual: storage.success.revision }),
+        })
+        yield* Ref.update(state.pendingBowShots, (pending) => [request, ...pending])
+        return
+      }
+      const consumed = removeInventoryItem(storage.success.state.inventory, 'arrow', 1)
+      if (Result.isFailure(consumed) || consumed.success.removed !== 1 ||
+        storage.success.state.inventory.slots[request.inventory.slotIndex]?.item !== 'bow') {
+        yield* result('InventoryUnavailable')
+        return
+      }
+      const inventory = withInventory(storage.success.state, consumed.success.inventory)
+      if (Result.isFailure(inventory)) {
+        yield* recordGameplayStageFailure(state, {
+          _tag: 'Failed', operation: 'CandidateBuild', subject: 'Player', error: inventory.failure,
+        })
+        yield* Ref.update(state.pendingBowShots, (pending) => [request, ...pending])
+        return
+      }
+      const damaged = damagePlayerStorageAt(inventory.success, {
+        _tag: 'Inventory', slotIndex: request.inventory.slotIndex,
+      }, 1)
+      if (damaged.result._tag !== 'Damaged' && damaged.result._tag !== 'Broken') {
+        yield* result('InventoryUnavailable')
+        return
+      }
+      storageCandidate = damaged.storage
+    }
+
+    let damageEvent: Schema.Schema.Type<typeof DomainEventSchema> | undefined
+    if (hit !== undefined && target !== undefined) {
+      const tick = Schema.decodeUnknownResult(SimulationTickSchema)(yield* Ref.get(state.tickCount))
+      const position = Schema.decodeUnknownResult(WorldPositionSchema)({
+        dimension: player.success.state.pose.feetPosition.dimension,
+        x: target.candidate.feetPosition.x,
+        y: target.candidate.feetPosition.y,
+        z: target.candidate.feetPosition.z,
+      })
+      const amount = DamageAmount.result(hit.damage.amount)
+      if (Result.isFailure(tick)) {
+        yield* recordGameplayStageFailure(state, {
+          _tag: 'Failed', operation: 'CandidateBuild', subject: 'Player', error: tick.failure,
+        })
+        yield* Ref.update(state.pendingBowShots, (pending) => [request, ...pending])
+        return
+      }
+      if (Result.isFailure(position)) {
+        yield* recordGameplayStageFailure(state, {
+          _tag: 'Failed', operation: 'CandidateBuild', subject: 'Player', error: position.failure,
+        })
+        yield* Ref.update(state.pendingBowShots, (pending) => [request, ...pending])
+        return
+      }
+      if (Result.isFailure(amount)) {
+        yield* recordGameplayStageFailure(state, {
+          _tag: 'Failed', operation: 'CandidateBuild', subject: 'Player', error: amount.failure,
+        })
+        yield* Ref.update(state.pendingBowShots, (pending) => [request, ...pending])
+        return
+      }
+      const event = Schema.decodeUnknownResult(DomainEventSchema)({
+        _tag: 'EntityDamaged', tick: tick.success, entity: hit.id,
+        position: position.success, amount: amount.success, cause: 'projectile',
+      })
+      if (Result.isFailure(event)) {
+        yield* recordGameplayStageFailure(state, {
+          _tag: 'Failed', operation: 'CandidateBuild', subject: 'Player', error: event.failure,
+        })
+        yield* Ref.update(state.pendingBowShots, (pending) => [request, ...pending])
+        return
+      }
+      damageEvent = event.success
+    }
+
+    const committed = yield* commitMobDamage(
+      state,
+      context,
+      entities.success,
+      hit,
+      storageCandidate,
+      damageEvent,
+    )
+    if (!committed) {
+      yield* Ref.update(state.pendingBowShots, (pending) => [request, ...pending])
+      return
+    }
+    if (hit !== undefined && knockback !== undefined) {
+      yield* Ref.update(state.bowKnockbacks, (pending) => [...pending, { id: hit.id, direction: knockback! }])
+    }
+    if (request.requestId !== undefined) {
+      yield* Ref.update(state.handledBowShotRequestIds, (handled) => new Set(handled).add(request.requestId!))
+    }
+    yield* result('Fired')
+  })
+
+const processMeleeAttack = (
+  state: GameplayStageContext['state'],
+  context: GameplayStageContext['commit'],
+  request: MeleeAttackRequest,
+  playerDead: boolean,
+): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    if (playerDead) {
+      if (request.requestId !== undefined) {
+        const result: import('./registration-core.js').GameplayMeleeAttackResult = {
+          requestId: request.requestId,
+          success: false,
+          outcome: 'PlayerDead',
+        }
+        yield* Ref.update(state.meleeAttackResults, (results) => [...results, result])
+      }
+      return
+    }
+    if (context === undefined || context.entitiesOwnerId === undefined || context.playerOwnerId === undefined) {
+      yield* recordGameplayUnsupportedOperation(state, {
+        _tag: 'Unsupported', action: 'MeleeAttack',
+        ...(request.requestId === undefined ? {} : { requestId: request.requestId }),
+        reason: context === undefined ? 'WorldCommitCoordinatorUnavailable' : 'OwnerRegistrationUnavailable',
+      })
+      yield* Ref.update(state.pendingMeleeAttacks, (pending) => [request, ...pending])
+      return
+    }
+    const entities = yield* Effect.result(context.coordinator.snapshot(context.entitiesOwnerId, GameplayEntityRosterSchema))
+    if (Result.isFailure(entities)) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'Player', error: entities.failure,
+      })
+      yield* Ref.update(state.pendingMeleeAttacks, (pending) => [request, ...pending])
+      return
+    }
+    const target = meleeTarget(entities.success.state.entities, request)
+    if (target === undefined) {
+      if (request.requestId !== undefined) {
+        const result: import('./registration-core.js').GameplayMeleeAttackResult = {
+          requestId: request.requestId,
+          success: false,
+        }
+        yield* Ref.update(state.meleeAttackResults, (results) => [...results, result])
+      }
+      return
+    }
+    const amount = DamageAmount.result(request.damage)
+    if (Result.isFailure(amount)) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed', operation: 'CandidateBuild', subject: 'Player', error: amount.failure,
+      })
+      yield* Ref.update(state.pendingMeleeAttacks, (pending) => [request, ...pending])
+      return
+    }
+    const player = yield* Effect.result(context.coordinator.snapshot(context.playerOwnerId, PlayerServiceSnapshotSchema))
+    if (Result.isFailure(player)) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'Player', error: player.failure,
+      })
+      yield* Ref.update(state.pendingMeleeAttacks, (pending) => [request, ...pending])
+      return
+    }
+    if (player.success.revision !== entities.success.revision) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'Player',
+        error: new WorldRevisionConflict({ expected: entities.success.revision, actual: player.success.revision }),
+      })
+      yield* Ref.update(state.pendingMeleeAttacks, (pending) => [request, ...pending])
+      return
+    }
+    const tick = Schema.decodeUnknownResult(SimulationTickSchema)(yield* Ref.get(state.tickCount))
+    const targetEntity = entities.success.state.entities.find(({ id }) => id === target.id)
+    if (targetEntity === undefined) {
+      if (request.requestId !== undefined) {
+        const result: import('./registration-core.js').GameplayMeleeAttackResult = {
+          requestId: request.requestId,
+          success: false,
+        }
+        yield* Ref.update(state.meleeAttackResults, (results) => [...results, result])
+      }
+      return
+    }
+    if (Result.isFailure(tick)) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed', operation: 'CandidateBuild', subject: 'Player', error: tick.failure,
+      })
+      yield* Ref.update(state.pendingMeleeAttacks, (pending) => [request, ...pending])
+      return
+    }
+    const targetPosition = Schema.decodeUnknownResult(WorldPositionSchema)({
+      dimension: player.success.state.pose.feetPosition.dimension,
+      x: targetEntity.feetPosition.x,
+      y: targetEntity.feetPosition.y,
+      z: targetEntity.feetPosition.z,
+    })
+    if (Result.isFailure(targetPosition)) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed', operation: 'CandidateBuild', subject: 'Player', error: targetPosition.failure,
+      })
+      yield* Ref.update(state.pendingMeleeAttacks, (pending) => [request, ...pending])
+      return
+    }
+    const event = Schema.decodeUnknownResult(DomainEventSchema)({
+          _tag: 'EntityDamaged', tick: tick.success, entity: target.id,
+          position: targetPosition.success, amount: amount.success, cause: 'mob',
+        })
+    if (Result.isFailure(event)) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed', operation: 'CandidateBuild', subject: 'Player', error: event.failure,
+      })
+      yield* Ref.update(state.pendingMeleeAttacks, (pending) => [request, ...pending])
+      return
+    }
+    const committed = yield* commitMobDamage(state, context, entities.success, {
+      id: target.id,
+      damage: { amount: amount.success, cause: 'mob' },
+    }, undefined, event.success)
+    if (!committed) {
+      yield* Ref.update(state.pendingMeleeAttacks, (pending) => [request, ...pending])
+      return
+    }
+    if (request.requestId !== undefined) {
+      const result: import('./registration-core.js').GameplayMeleeAttackResult = {
+        requestId: request.requestId,
+        success: true,
+        target,
+      }
+      yield* Ref.update(state.meleeAttackResults, (results) => [...results, result])
+    }
+  })
 
 const advanceCropLifecycle = (
   state: GameplayStageContext['state'],
@@ -377,7 +852,10 @@ const processFishingItemUse = (
     }
 
     let plans: Array<WorldCommitPlanFragment<unknown>> = []
-    let outcome: unknown
+    let outcome: import('@nerima-games/mc-sim').FishingProgressOutcome |
+      import('@nerima-games/mc-sim').FishingCancelOutcome |
+      import('@nerima-games/mc-sim').FishingReelOutcome |
+      undefined
     let nextSeed: number | undefined
     let projectilePlan: WorldCommitPlanFragment<unknown> | undefined
     const activeRod = snapshot.success.state.rods.find((rod) => rod.actor === request.actor)
@@ -410,7 +888,7 @@ const processFishingItemUse = (
           return
         }
         plans = [decodedCast.success]
-        outcome = decodedCast.success.result
+        outcome = undefined
 
         const projectileOwnerId = context.projectileOwnerId ?? PROJECTILE_REPLICATED_OWNER_ID
         const projectileObserved = yield* Effect.result(context.coordinator.observe(
@@ -594,16 +1072,19 @@ const processFishingItemUse = (
             })
             return
           }
+          const caughtStack = itemStack(decodedReel.success.result.item, StackCount(1))
+          if (Result.isFailure(caughtStack)) {
+            yield* recordGameplayStageFailure(state, {
+              _tag: 'Failed', operation: 'CandidateBuild', subject: 'Fishing', error: caughtStack.failure,
+            })
+            return
+          }
           const stored = addStoredStack(storageObserved.success.state, {
-            item: decodedReel.success.result.item,
-            count: 1,
+            ...caughtStack.success,
             durability: null,
           })
           if (stored.result._tag !== 'Added' || stored.result.added !== 1) {
-            yield* recordGameplayStageFailure(state, {
-              _tag: 'Failed', operation: 'CandidateBuild', subject: 'Fishing',
-              error: new Error('Caught fishing item cannot be stored in player storage'),
-            })
+            yield* Ref.update(state.pendingItemUses, (pending) => [request, ...pending])
             return
           }
           const storageSnapshot = Schema.decodeUnknownResult(worldCommitPlanSnapshotSchema(PlayerStorageSnapshotSchema))({
@@ -655,10 +1136,7 @@ const processFishingItemUse = (
       const before = projectiles.success.state.projectiles
       const after = before.filter((projectile) => projectile.id !== removeBobber)
       if (before.length === after.length) {
-        yield* recordGameplayStageFailure(state, {
-          _tag: 'Failed', operation: 'CandidateBuild', subject: 'Fishing',
-          error: new Error('Active fishing bobber is missing from projectile owner state'),
-        })
+        yield* Ref.update(state.pendingItemUses, (pending) => [request, ...pending])
         return
       }
       const candidate = Schema.decodeUnknownResult(ProjectileServiceSnapshotSchema)({ projectiles: after })
@@ -744,10 +1222,21 @@ const processBrewingBottleCollection = (
     const bottleIndex = Schema.decodeUnknownResult(BrewingBottleIndexSchema)(request.bottleIndex)
     const address = Schema.decodeUnknownResult(BlockAddressSchema)(request.address)
     const tick = Schema.decodeUnknownResult(SimulationTickSchema)(request.tick)
-    if (Result.isFailure(bottleIndex) || Result.isFailure(address) || Result.isFailure(tick)) {
-      const error = Result.isFailure(bottleIndex) ? bottleIndex.failure : Result.isFailure(address) ? address.failure : tick.failure
+    if (Result.isFailure(bottleIndex)) {
       yield* recordGameplayStageFailure(state, {
-        _tag: 'Failed', operation: 'PlanBuild', subject: 'Brewing', error,
+        _tag: 'Failed', operation: 'PlanBuild', subject: 'Brewing', error: bottleIndex.failure,
+      })
+      return
+    }
+    if (Result.isFailure(address)) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed', operation: 'PlanBuild', subject: 'Brewing', error: address.failure,
+      })
+      return
+    }
+    if (Result.isFailure(tick)) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed', operation: 'PlanBuild', subject: 'Brewing', error: tick.failure,
       })
       return
     }
@@ -839,7 +1328,7 @@ const processBrewingBottleCollection = (
       })
       return
     }
-    const event = Schema.decodeUnknownResult(ItemPickedUpEventSchema)({
+    const event = Schema.decodeUnknownResult(DomainEventSchema)({
       _tag: 'ItemPickedUp',
       tick: tick.success,
       actor: request.actor,
@@ -903,6 +1392,445 @@ const processBrewingBottleCollection = (
     }
     if (!(yield* commitPlanFragments(state, context, 'Brewing', [bottlePlanDecoded.success, storagePlan.success]))) {
       yield* Ref.update(state.pendingItemUses, (pending) => [request, ...pending])
+      return
+    }
+    yield* Ref.update(state.itemUseResults, (results) => [...results, result.success])
+  })
+
+const recordBrewingItemUseResult = (
+  state: GameplayStageContext['state'],
+  result: BrewingItemUseResult,
+): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    const decoded = Schema.decodeUnknownResult(GameplayBrewingItemUseResultSchema)(result)
+    if (Result.isFailure(decoded)) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed', operation: 'PlanBuild', subject: 'Brewing', error: decoded.failure,
+      })
+      return
+    }
+    yield* Ref.update(state.itemUseResults, (results) => [...results, decoded.success])
+  })
+
+const processBrewingItemUse = (
+  state: GameplayStageContext['state'],
+  context: GameplayStageContext['commit'],
+  request: BrewingItemUseRequest,
+): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    if (context === undefined) {
+      yield* recordGameplayUnsupportedOperation(state, {
+        _tag: 'Unsupported', action: 'Brewing', requestId: request.requestId,
+        reason: 'WorldCommitCoordinatorUnavailable',
+      })
+      return
+    }
+    if (context.brewingService === undefined || context.playerStorageOwnerId === undefined) {
+      yield* recordGameplayUnsupportedOperation(state, {
+        _tag: 'Unsupported', action: 'Brewing', requestId: request.requestId,
+        reason: 'OwnerRegistrationUnavailable',
+      })
+      return
+    }
+
+    const retry = () => Ref.update(state.pendingItemUses, (pending) => [request, ...pending])
+
+    if (request.action === 'DrinkPotion') {
+      const storageOwnerId = context.playerStorageOwnerId
+      const storage = yield* Effect.result(context.coordinator.observe(
+        storageOwnerId,
+        PlayerStorageSnapshotSchema,
+        [],
+      ))
+      if (Result.isFailure(storage)) {
+        yield* recordGameplayStageFailure(state, {
+          _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'Brewing', error: storage.failure,
+        })
+        return
+      }
+      const slotIndex = Schema.decodeUnknownResult(PotionDrinkSlotIndexSchema)(request.slotIndex)
+      const tick = Schema.decodeUnknownResult(SimulationTickSchema)(request.tick)
+      if (Result.isFailure(slotIndex)) {
+        yield* recordGameplayStageFailure(state, {
+          _tag: 'Failed', operation: 'PlanBuild', subject: 'Brewing', error: slotIndex.failure,
+        })
+        return
+      }
+      if (Result.isFailure(tick)) {
+        yield* recordGameplayStageFailure(state, {
+          _tag: 'Failed', operation: 'PlanBuild', subject: 'Brewing', error: tick.failure,
+        })
+        return
+      }
+      const planSnapshot = Schema.decodeUnknownResult(PotionDrinkInventorySnapshotSchema)({
+        world: storage.success.world,
+        expectedRevision: storage.success.revision,
+        expectedDimensions: [],
+        state: storage.success.state,
+      })
+      const intent = Schema.decodeUnknownResult(PotionDrinkIntentSchema)({
+        inventoryOwnerId: storageOwnerId,
+        actor: request.actor,
+        slotIndex: slotIndex.success,
+        tick: tick.success,
+      })
+      if (Result.isFailure(planSnapshot)) {
+        yield* recordGameplayStageFailure(state, {
+          _tag: 'Failed', operation: 'PlanBuild', subject: 'Brewing', error: planSnapshot.failure,
+        })
+        return
+      }
+      if (Result.isFailure(intent)) {
+        yield* recordGameplayStageFailure(state, {
+          _tag: 'Failed', operation: 'PlanBuild', subject: 'Brewing', error: intent.failure,
+        })
+        return
+      }
+      const planned = yield* Effect.result(context.brewingService.planDrinkPotion(
+        planSnapshot.success,
+        intent.success,
+      ))
+      if (Result.isFailure(planned)) {
+        const drinkFailure = Schema.decodeUnknownResult(PotionDrinkFailureSchema)(planned.failure)
+        if (Result.isSuccess(drinkFailure)) {
+          yield* recordBrewingItemUseResult(state, {
+            action: 'DrinkPotion', requestId: request.requestId,
+            success: false, failure: drinkFailure.success,
+          })
+        } else {
+          yield* recordGameplayStageFailure(state, {
+            _tag: 'Failed', operation: 'PlanBuild', subject: 'Brewing', error: planned.failure,
+          })
+        }
+        return
+      }
+      const drinkPlan = Schema.decodeUnknownResult(PotionDrinkPlanSchema)(planned.success)
+      if (Result.isFailure(drinkPlan)) {
+        yield* recordGameplayStageFailure(state, {
+          _tag: 'Failed', operation: 'PlanBuild', subject: 'Brewing', error: drinkPlan.failure,
+        })
+        return
+      }
+      const plans: Array<WorldCommitPlanFragment<unknown>> = [drinkPlan.success]
+      let statusCandidate: Schema.Schema.Type<typeof StatusEffectStateSchema> | undefined
+      if (drinkPlan.success.result._tag === 'Consumed') {
+        if (context.statusEffectsOwnerId === undefined) {
+          yield* recordGameplayUnsupportedOperation(state, {
+            _tag: 'Unsupported', action: 'Brewing', requestId: request.requestId,
+            reason: 'OwnerRegistrationUnavailable',
+          })
+          return
+        }
+        const observedEffects = yield* Effect.result(context.coordinator.observe(
+          context.statusEffectsOwnerId,
+          StatusEffectStateSchema,
+          [],
+        ))
+        if (Result.isFailure(observedEffects)) {
+          yield* recordGameplayStageFailure(state, {
+            _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'Brewing', error: observedEffects.failure,
+          })
+          return
+        }
+        const nextEffects = Schema.decodeUnknownResult(StatusEffectStateSchema)(
+          applyStatusEffect(observedEffects.success.state, drinkPlan.success.result.effect),
+        )
+        if (Result.isFailure(nextEffects)) {
+          yield* recordGameplayStageFailure(state, {
+            _tag: 'Failed', operation: 'CandidateBuild', subject: 'Brewing', error: nextEffects.failure,
+          })
+          return
+        }
+        const effectSnapshot = Schema.decodeUnknownResult(worldCommitPlanSnapshotSchema(StatusEffectStateSchema))({
+          world: observedEffects.success.world,
+          expectedRevision: observedEffects.success.revision,
+          expectedDimensions: [],
+          state: observedEffects.success.state,
+        })
+        if (Result.isFailure(effectSnapshot)) {
+          yield* recordGameplayStageFailure(state, {
+            _tag: 'Failed', operation: 'PlanBuild', subject: 'Brewing', error: effectSnapshot.failure,
+          })
+          return
+        }
+        const effectPlan = Schema.decodeUnknownResult(worldCommitPlanFragmentSchema(Schema.Undefined))({
+          world: effectSnapshot.success.world,
+          expectedRevision: effectSnapshot.success.expectedRevision,
+          expectedDimensions: effectSnapshot.success.expectedDimensions,
+          changes: [{ ownerId: context.statusEffectsOwnerId, state: nextEffects.success }],
+          result: undefined,
+          postCommitEvents: [],
+        })
+        if (Result.isFailure(effectPlan)) {
+          yield* recordGameplayStageFailure(state, {
+            _tag: 'Failed', operation: 'PlanBuild', subject: 'Brewing', error: effectPlan.failure,
+          })
+          return
+        }
+        statusCandidate = nextEffects.success
+        plans.push(effectPlan.success)
+      }
+      const result = Schema.decodeUnknownResult(GameplayBrewingItemUseResultSchema)({
+        action: 'DrinkPotion', requestId: request.requestId,
+        success: true, outcome: drinkPlan.success.result,
+      })
+      if (Result.isFailure(result)) {
+        yield* recordGameplayStageFailure(state, {
+          _tag: 'Failed', operation: 'PlanBuild', subject: 'Brewing', error: result.failure,
+        })
+        return
+      }
+      if (!(yield* commitPlanFragments(state, context, 'Brewing', plans))) {
+        yield* retry()
+        return
+      }
+      if (statusCandidate !== undefined) {
+        yield* Ref.set(state.playerMovementSpeedMultiplier,
+          statusCandidate.effects.some((effect) => effect.type === 'speed')
+            ? SPEED_MOVEMENT_MULTIPLIER
+            : 1,
+        )
+      }
+      yield* Ref.update(state.itemUseResults, (results) => [...results, result.success])
+      return
+    }
+
+    if (context.brewingOwnerId === undefined) {
+      yield* recordGameplayUnsupportedOperation(state, {
+        _tag: 'Unsupported', action: 'Brewing', requestId: request.requestId,
+        reason: 'OwnerRegistrationUnavailable',
+      })
+      return
+    }
+    const brewingOwnerId = context.brewingOwnerId
+    const [brewing, storage] = yield* Effect.all([
+      Effect.result(context.coordinator.observe(brewingOwnerId, BrewingServiceStateSchema, [])),
+      Effect.result(context.coordinator.observe(context.playerStorageOwnerId, PlayerStorageSnapshotSchema, [])),
+    ])
+    if (Result.isFailure(brewing)) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'Brewing', error: brewing.failure,
+      })
+      return
+    }
+    if (Result.isFailure(storage)) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'Brewing', error: storage.failure,
+      })
+      return
+    }
+    if (brewing.success.revision !== storage.success.revision) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'Brewing',
+        error: new WorldRevisionConflict({
+          expected: brewing.success.revision,
+          actual: storage.success.revision,
+        }),
+      })
+      yield* retry()
+      return
+    }
+    const brewingSnapshot = Schema.decodeUnknownResult(BrewingServicePlanSnapshotSchema)({
+      world: brewing.success.world,
+      expectedRevision: brewing.success.revision,
+      expectedDimensions: [],
+      state: brewing.success.state,
+    })
+    if (Result.isFailure(brewingSnapshot)) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed', operation: 'PlanBuild', subject: 'Brewing', error: brewingSnapshot.failure,
+      })
+      return
+    }
+
+    const recordRejected = (failure: 'MissingItem' | 'Occupied' | 'InvalidRecipe' | 'Brewing' | 'FuelFull') =>
+      recordBrewingItemUseResult(state, {
+        action: request.action,
+        requestId: request.requestId,
+        success: false,
+        failure,
+      })
+
+    let requestedItem: import('@nerima-games/mc-kernel').ItemType
+    let fragments: Array<WorldCommitPlanFragment<unknown>> = []
+    if (request.action === 'InsertBrewingFuel') {
+      if (brewing.success.state.fuelCharges >= BREWING_MAX_FUEL_CHARGES) {
+        yield* recordRejected('FuelFull')
+        return
+      }
+      if (brewing.success.state.fuel !== undefined && brewing.success.state.fuel.item !== BREWING_FUEL_ITEM) {
+        yield* recordRejected('Occupied')
+        return
+      }
+      requestedItem = BREWING_FUEL_ITEM
+      const fuelCount = (brewing.success.state.fuel?.count ?? 0) + 1
+      const fuel = itemStack(BREWING_FUEL_ITEM, StackCount(fuelCount))
+      if (Result.isFailure(fuel)) {
+        yield* recordGameplayStageFailure(state, {
+          _tag: 'Failed', operation: 'CandidateBuild', subject: 'Brewing', error: fuel.failure,
+        })
+        return
+      }
+      const setFuel = yield* Effect.result(context.brewingService.planSetFuel(brewingSnapshot.success, fuel.success))
+      if (Result.isFailure(setFuel)) {
+        yield* recordGameplayStageFailure(state, {
+          _tag: 'Failed', operation: 'PlanBuild', subject: 'Brewing', error: setFuel.failure,
+        })
+        return
+      }
+      const intermediate = Schema.decodeUnknownResult(worldCommitPlanSnapshotSchema(BrewingServiceStateSchema))({
+        world: setFuel.success.world,
+        expectedRevision: setFuel.success.expectedRevision,
+        expectedDimensions: setFuel.success.expectedDimensions,
+        state: setFuel.success.result,
+      })
+      if (Result.isFailure(intermediate)) {
+        yield* recordGameplayStageFailure(state, {
+          _tag: 'Failed', operation: 'PlanBuild', subject: 'Brewing', error: intermediate.failure,
+        })
+        return
+      }
+      const addFuel = yield* Effect.result(context.brewingService.planAddFuel(intermediate.success))
+      if (Result.isFailure(addFuel)) {
+        yield* recordGameplayStageFailure(state, {
+          _tag: 'Failed', operation: 'PlanBuild', subject: 'Brewing', error: addFuel.failure,
+        })
+        return
+      }
+      const decodedFuel = Schema.decodeUnknownResult(worldCommitPlanFragmentSchema(BrewingServiceStateSchema))(addFuel.success)
+      if (Result.isFailure(decodedFuel)) {
+        yield* recordGameplayStageFailure(state, {
+          _tag: 'Failed', operation: 'PlanBuild', subject: 'Brewing', error: decodedFuel.failure,
+        })
+        return
+      }
+      fragments.push(decodedFuel.success)
+    } else if (request.action === 'InsertBrewingBottle') {
+      const bottleIndex = Schema.decodeUnknownResult(BrewingBottleIndexSchema)(request.bottleIndex)
+      if (Result.isFailure(bottleIndex)) {
+        yield* recordGameplayStageFailure(state, {
+          _tag: 'Failed', operation: 'PlanBuild', subject: 'Brewing', error: bottleIndex.failure,
+        })
+        return
+      }
+      if (brewing.success.state.bottles[bottleIndex.success] !== undefined) {
+        yield* recordRejected('Occupied')
+        return
+      }
+      const potionItems = {
+        awkward: 'awkward_potion',
+        speed: 'potion_of_swiftness',
+        poison: 'potion_of_poison',
+        regeneration: 'potion_of_regeneration',
+      } as const
+      requestedItem = request.bottle === 'water_bottle'
+        ? request.bottle
+        : potionItems[request.bottle.potion]
+      const bottle = itemStack(requestedItem, StackCount(1))
+      if (Result.isFailure(bottle)) {
+        yield* recordGameplayStageFailure(state, {
+          _tag: 'Failed', operation: 'CandidateBuild', subject: 'Brewing', error: bottle.failure,
+        })
+        return
+      }
+      const plan = yield* Effect.result(context.brewingService.planSetBottle(
+        brewingSnapshot.success,
+        bottleIndex.success,
+        bottle.success,
+      ))
+      if (Result.isFailure(plan)) {
+        yield* recordGameplayStageFailure(state, {
+          _tag: 'Failed', operation: 'PlanBuild', subject: 'Brewing', error: plan.failure,
+        })
+        return
+      }
+      const decoded = Schema.decodeUnknownResult(worldCommitPlanFragmentSchema(BrewingServiceStateSchema))(plan.success)
+      if (Result.isFailure(decoded)) {
+        yield* recordGameplayStageFailure(state, {
+          _tag: 'Failed', operation: 'PlanBuild', subject: 'Brewing', error: decoded.failure,
+        })
+        return
+      }
+      fragments.push(decoded.success)
+    } else {
+      if (brewing.success.state.ingredient !== undefined) {
+        yield* recordRejected('Occupied')
+        return
+      }
+      if (brewing.success.state.brewProgressSecs > 0) {
+        yield* recordRejected('Brewing')
+        return
+      }
+      requestedItem = request.ingredient
+      const ingredient = itemStack(requestedItem, StackCount(1))
+      if (Result.isFailure(ingredient)) {
+        yield* recordGameplayStageFailure(state, {
+          _tag: 'Failed', operation: 'CandidateBuild', subject: 'Brewing', error: ingredient.failure,
+        })
+        return
+      }
+      const plan = yield* Effect.result(context.brewingService.planSetIngredient(
+        brewingSnapshot.success,
+        ingredient.success,
+      ))
+      if (Result.isFailure(plan)) {
+        yield* recordGameplayStageFailure(state, {
+          _tag: 'Failed', operation: 'PlanBuild', subject: 'Brewing', error: plan.failure,
+        })
+        return
+      }
+      const decoded = Schema.decodeUnknownResult(worldCommitPlanFragmentSchema(BrewingServiceStateSchema))(plan.success)
+      if (Result.isFailure(decoded)) {
+        yield* recordGameplayStageFailure(state, {
+          _tag: 'Failed', operation: 'PlanBuild', subject: 'Brewing', error: decoded.failure,
+        })
+        return
+      }
+      fragments.push(decoded.success)
+    }
+
+    const storageCandidate = candidateForPlayerStorageItemUse(
+      context.playerStorageOwnerId,
+      storage.success.state,
+      requestedItem,
+      'consume',
+    )
+    if (Result.isFailure(storageCandidate)) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed', operation: 'CandidateBuild', subject: 'Brewing', error: storageCandidate.failure,
+      })
+      return
+    }
+    if (storageCandidate.success === undefined) {
+      yield* recordRejected('MissingItem')
+      return
+    }
+    const storagePlan = Schema.decodeUnknownResult(worldCommitPlanFragmentSchema(Schema.Undefined))({
+      world: storage.success.world,
+      expectedRevision: storage.success.revision,
+      expectedDimensions: [],
+      changes: [storageCandidate.success],
+      result: undefined,
+      postCommitEvents: [],
+    })
+    if (Result.isFailure(storagePlan)) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed', operation: 'PlanBuild', subject: 'Brewing', error: storagePlan.failure,
+      })
+      return
+    }
+    fragments.push(storagePlan.success)
+    const result = Schema.decodeUnknownResult(GameplayBrewingItemUseResultSchema)({
+      action: request.action, requestId: request.requestId, success: true, outcome: undefined,
+    })
+    if (Result.isFailure(result)) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed', operation: 'PlanBuild', subject: 'Brewing', error: result.failure,
+      })
+      return
+    }
+    if (!(yield* commitPlanFragments(state, context, 'Brewing', fragments))) {
+      yield* retry()
       return
     }
     yield* Ref.update(state.itemUseResults, (results) => [...results, result.success])
@@ -998,7 +1926,11 @@ const processPlacement = (
             }
           }
           const removed = removeItemAt(observed.success.state.inventory, slotIndex, request.heldItem, 1)
-          if (Result.isFailure(removed) || removed.success.result.removed !== 1) {
+          if (
+            Result.isFailure(removed) ||
+            removed.success.result._tag !== 'Removed' ||
+            removed.success.result.removed !== 1
+          ) {
             return {
               requestId: command?.requestId ?? '',
               success: false,
@@ -1037,18 +1969,30 @@ const processPlacement = (
         }
 
         const expectedDimensionRevision = yield* context.coordinator.dimensionRevision(dimension)
-        const blockWrite = yield* Schema.decodeUnknownEffect(WorldWriteBatchSchema)({
+        const blockWriteResult = yield* Effect.result(Schema.decodeUnknownEffect(WorldWriteBatchSchema)({
           world: observed.success.world,
           expectedWorldRevision: observed.success.revision,
           dimension,
           expectedDimensionRevision,
           edits: planned.edits,
-        })
+        }))
+        if (Result.isFailure(blockWriteResult)) {
+          yield* recordGameplayStageFailure(state, {
+            _tag: 'Failed', operation: 'CandidateBuild', subject: 'ItemUse', error: blockWriteResult.failure,
+          })
+          return {
+            requestId: command?.requestId ?? '',
+            success: false,
+            consumed: false,
+            replayed: false,
+            outcome: { _tag: 'CommitFailed', error: blockWriteResult.failure },
+          }
+        }
         const committed = yield* Effect.result(context.coordinator.commit({
           expectedRevision: observed.success.revision,
           expectedDimensions: [{ dimension, expectedRevision: expectedDimensionRevision }],
           changes: storageCandidate === undefined ? [] : [storageCandidate],
-          blockWrite,
+          blockWrite: blockWriteResult.success,
         }))
         if (Result.isFailure(committed)) {
           yield* recordGameplayStageFailure(state, {
@@ -1076,7 +2020,7 @@ const processPlacement = (
 
     if (command === undefined) {
       const result = yield* execute()
-      if (!result.success && result.outcome._tag === 'Unsupported') {
+      if (!result.success && result.outcome._tag === 'Unsupported' && 'reason' in result.outcome) {
         yield* recordGameplayUnsupportedOperation(state, {
           _tag: 'Unsupported',
           action: 'PlaceBlock',
@@ -1127,26 +2071,30 @@ const processEnderPearlThrow = (
       return
     }
 
-    const [playerSnapshot, storageSnapshot, vitalsSnapshot] = yield* Effect.all([
-      Effect.result(context.coordinator.snapshot(context.playerOwnerId, PlayerServiceSnapshotSchema)),
-      Effect.result(context.coordinator.snapshot(context.playerStorageOwnerId, PlayerStorageSnapshotSchema)),
-      Effect.result(context.coordinator.snapshot(context.vitalsOwnerId, ExperienceOrbVitalsOwnerSnapshotSchema)),
-    ])
-    const failedSnapshot = [playerSnapshot, storageSnapshot, vitalsSnapshot].find(Result.isFailure)
-    if (failedSnapshot !== undefined && Result.isFailure(failedSnapshot)) {
+    const playerSnapshot = yield* Effect.result(context.coordinator.snapshot(context.playerOwnerId, PlayerServiceSnapshotSchema))
+    if (Result.isFailure(playerSnapshot)) {
       yield* recordGameplayStageFailure(state, {
         _tag: 'Failed',
         operation: 'OwnerSnapshot',
         subject: 'Player',
-        error: failedSnapshot.failure,
+        error: playerSnapshot.failure,
       })
       return
     }
-    if (
-      Result.isFailure(playerSnapshot) ||
-      Result.isFailure(storageSnapshot) ||
-      Result.isFailure(vitalsSnapshot)
-    ) return
+    const storageSnapshot = yield* Effect.result(context.coordinator.snapshot(context.playerStorageOwnerId, PlayerStorageSnapshotSchema))
+    if (Result.isFailure(storageSnapshot)) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'Player', error: storageSnapshot.failure,
+      })
+      return
+    }
+    const vitalsSnapshot = yield* Effect.result(context.coordinator.snapshot(context.vitalsOwnerId, ExperienceOrbVitalsOwnerSnapshotSchema))
+    if (Result.isFailure(vitalsSnapshot)) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'Vitals', error: vitalsSnapshot.failure,
+      })
+      return
+    }
     const revision = playerSnapshot.success.revision
     if (storageSnapshot.success.revision !== revision || vitalsSnapshot.success.revision !== revision) {
       yield* recordGameplayStageFailure(state, {
@@ -1171,7 +2119,11 @@ const processEnderPearlThrow = (
         'ender_pearl',
         1,
       )
-      if (Result.isFailure(removed) || removed.success.result.removed !== 1) return
+      if (
+        Result.isFailure(removed) ||
+        removed.success.result._tag !== 'Removed' ||
+        removed.success.result.removed !== 1
+      ) return
       const updated = withInventory(storageSnapshot.success.state, removed.success.inventory)
       if (Result.isFailure(updated)) {
         yield* recordGameplayStageFailure(state, {
@@ -1216,11 +2168,16 @@ const processEnderPearlThrow = (
     let damage: { readonly amount: number; readonly cause: 'ender_pearl' } | undefined
     if (request.inventory.mode === 'survival') {
       const amount = DamageAmount.result(ENDER_PEARL_DAMAGE)
-      const cause = DamageCause.result(ENDER_PEARL_DEATH_CAUSE)
-      if (Result.isFailure(amount) || Result.isFailure(cause)) {
-        const failure = Result.isFailure(amount) ? amount.failure : (cause as Result.Failure<never, Schema.SchemaError>).failure
+      const cause = DamageCause.result('ender_pearl')
+      if (Result.isFailure(amount)) {
         yield* recordGameplayStageFailure(state, {
-          _tag: 'Failed', operation: 'CandidateBuild', subject: 'Vitals', error: failure,
+          _tag: 'Failed', operation: 'CandidateBuild', subject: 'Vitals', error: amount.failure,
+        })
+        return
+      }
+      if (Result.isFailure(cause)) {
+        yield* recordGameplayStageFailure(state, {
+          _tag: 'Failed', operation: 'CandidateBuild', subject: 'Vitals', error: cause.failure,
         })
         return
       }
@@ -1238,7 +2195,7 @@ const processEnderPearlThrow = (
         return
       }
       changes.push({ ownerId: context.vitalsOwnerId, state: decodedVitals.success })
-      damage = { amount: ENDER_PEARL_DAMAGE, cause: ENDER_PEARL_DEATH_CAUSE }
+      damage = { amount: ENDER_PEARL_DAMAGE, cause: 'ender_pearl' }
     } else {
       changes.push({ ownerId: context.vitalsOwnerId, state: vitalsSnapshot.success.state })
     }
@@ -1342,7 +2299,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
         yield* advanceCropLifecycle(state, commit, dt)
 
         // Advance portal dwell on idle frames, before the early return below.
-        yield* stepPortalTravel(state, store, playerState, dt)
+        yield* stepPortalTravel(state, store, playerState, commit, dt)
         yield* stepStatusEffects(state, commit, dt)
 
         // `getAndSet` rather than get-then-set: whoever fills the inboxes is not
@@ -1697,6 +2654,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                   subject: 'Mining',
                   error: committed.failure,
                 })
+                yield* requeueBlockBreak(state, request)
                 continue
               }
               yield* Ref.set(state.rollSeed, plannedLoot.seed)
@@ -2085,7 +3043,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                       _tag: 'Unsupported',
                       action: 'PlantPotato',
                       requestId: request.requestId,
-                      reason: 'CropOwnerStateUnavailable',
+                      reason: 'OwnerRegistrationUnavailable',
                     })
                     break
                   }
@@ -2208,7 +3166,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                     _tag: 'Unsupported',
                     action: 'HarvestPotato',
                     requestId: request.requestId,
-                    reason: 'CropOwnerStateUnavailable',
+                    reason: 'OwnerRegistrationUnavailable',
                   })
                   break
                 }
@@ -2221,7 +3179,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                     _tag: 'Unsupported',
                     action: 'HarvestPotato',
                     requestId: request.requestId,
-                    reason: 'CropOwnerStateUnavailable',
+                    reason: 'OwnerRegistrationUnavailable',
                   })
                   break
                 }
@@ -2617,6 +3575,13 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                 yield* processBrewingBottleCollection(state, commit, request)
                 break
               }
+              case 'InsertBrewingFuel':
+              case 'InsertBrewingBottle':
+              case 'InsertBrewingIngredient':
+              case 'DrinkPotion': {
+                yield* processBrewingItemUse(state, commit, request)
+                break
+              }
               case 'AdvanceFurnace': {
                 const planned = planFurnaceAdvance(request.state, request.deltaTimeSecs)
                 if (Result.isFailure(planned)) {
@@ -2654,9 +3619,11 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
           const targetBlock = yield* store.getBlock(ignitionPosition)
           if (targetBlock._tag === 'Block' && targetBlock.block === TNT_BLOCK_ID) {
             const dimension = playerState?.pose.feetPosition.dimension
+            const tntOwnerId = commit.tntOwnerId
+            const playerStorageOwnerId = commit.playerStorageOwnerId
             if (
-              commit.tntOwnerId === undefined ||
-              commit.playerStorageOwnerId === undefined ||
+              tntOwnerId === undefined ||
+              playerStorageOwnerId === undefined ||
               dimension === undefined
             ) {
               yield* recordGameplayUnsupportedOperation(state, {
@@ -2668,19 +3635,24 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
               continue
             }
             const observedTnt = yield* Effect.result(commit.coordinator.observe(
-              commit.tntOwnerId,
+              tntOwnerId,
               TntServiceSnapshotSchema,
               [{ dimension, position: ignitionPosition }],
             ))
             const observedStorage = yield* Effect.result(commit.coordinator.observe(
-              commit.playerStorageOwnerId,
+              playerStorageOwnerId,
               PlayerStorageSnapshotSchema,
               [],
             ))
-            if (Result.isFailure(observedTnt) || Result.isFailure(observedStorage)) {
-              const error = Result.isFailure(observedTnt) ? observedTnt.failure : observedStorage.failure
+            if (Result.isFailure(observedTnt)) {
               yield* recordGameplayStageFailure(state, {
-                _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'ItemUse', error,
+                _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'ItemUse', error: observedTnt.failure,
+              })
+              continue
+            }
+            if (Result.isFailure(observedStorage)) {
+              yield* recordGameplayStageFailure(state, {
+                _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'ItemUse', error: observedStorage.failure,
               })
               continue
             }
@@ -2699,7 +3671,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
               continue
             }
             const storageCandidate = candidateForPlayerStorageItemUse(
-              commit.playerStorageOwnerId,
+              playerStorageOwnerId,
               observedStorage.success.state,
               request.heldItem,
               request.heldItem === 'fire_charge' ? 'consume' : 'damage',
@@ -2721,10 +3693,16 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
             }
             const tntId = Schema.decodeUnknownResult(EntityIdSchema)(`gameplay:tnt:${request.requestId}`)
             const primed = primeTnt()
-            if (Result.isFailure(tntId) || Result.isFailure(primed)) {
+            if (Result.isFailure(tntId)) {
               yield* recordGameplayStageFailure(state, {
                 _tag: 'Failed', operation: 'CandidateBuild', subject: 'ItemUse',
-                error: Result.isFailure(tntId) ? tntId.failure : primed.failure,
+                error: tntId.failure,
+              })
+              continue
+            }
+            if (Result.isFailure(primed)) {
+              yield* recordGameplayStageFailure(state, {
+                _tag: 'Failed', operation: 'CandidateBuild', subject: 'ItemUse', error: primed.failure,
               })
               continue
             }
@@ -2746,8 +3724,11 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
               })
               continue
             }
+            const storageChange = storageCandidate.success
+            const tntState = tntCandidate.success
+            const coordinator = commit.coordinator
             const committed = yield* Effect.result(Effect.gen(function* () {
-              const expectedDimensionRevision = yield* commit.coordinator.dimensionRevision(dimension)
+              const expectedDimensionRevision = yield* coordinator.dimensionRevision(dimension)
               const blockWrite = yield* Schema.decodeUnknownEffect(WorldWriteBatchSchema)({
                 world: observedTnt.success.world,
                 expectedWorldRevision: observedTnt.success.revision,
@@ -2759,8 +3740,8 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                 expectedRevision: observedTnt.success.revision,
                 expectedDimensions: [{ dimension, expectedRevision: expectedDimensionRevision }],
                 changes: [
-                  { ownerId: commit.tntOwnerId, state: tntCandidate.success },
-                  storageCandidate.success,
+                  { ownerId: tntOwnerId, state: tntState },
+                  storageChange,
                 ],
                 blockWrite,
               })
@@ -2858,23 +3839,11 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
           // cell they write was air, and filling a hole cannot start a fall.
         }
 
-        // mc-sim 0.6.0 has no owner-aware entity damage plan. Reject these
-        // cross-owner operations before reading or mutating the local roster.
         for (const shot of bowShots) {
-          yield* recordGameplayUnsupportedOperation(state, {
-            _tag: 'Unsupported',
-            action: 'BowShot',
-            ...(shot.requestId === undefined ? {} : { requestId: shot.requestId }),
-            reason: 'EntityRosterOwnerUnavailable',
-          })
+          yield* processBowShot(state, commit, store, shot, playerDead)
         }
         for (const attack of meleeAttacks) {
-          yield* recordGameplayUnsupportedOperation(state, {
-            _tag: 'Unsupported',
-            action: 'MeleeAttack',
-            ...(attack.requestId === undefined ? {} : { requestId: attack.requestId }),
-            reason: 'EntityRosterOwnerUnavailable',
-          })
+          yield* processMeleeAttack(state, commit, attack, playerDead)
         }
 
         // ---- THE ENDER PEARL -----------------------------------------------
