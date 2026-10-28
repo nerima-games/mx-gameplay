@@ -83,11 +83,11 @@ const makeWorld = (cells: Readonly<Record<string, BlockType>>) =>
     })
     const coordinator: WorldCommitCoordinatorApi = {
       ...baseCoordinator,
-      commit: (request) => Effect.tap(
-        baseCoordinator.commit(request),
+      commit: (commitInput) => Effect.tap(
+        baseCoordinator.commit(commitInput),
         () => Ref.update(written, (all) => [
           ...all,
-          ...(request.blockWrite?.edits.map(({ position, block }) => ({ at: position, block })) ?? []),
+          ...(commitInput.blockWrite?.edits.map(({ position, block }) => ({ at: position, block })) ?? []),
         ]),
       ),
     }
