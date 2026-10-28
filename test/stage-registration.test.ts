@@ -514,11 +514,12 @@ describe('fire lifecycle stage integration', () => {
       const damages = yield* drainPlayerDamages(state)
       expect(damages).toHaveLength(1)
       expect(damages[0]?.damage.cause).toBe('in_fire')
-      // Unmitigated fire-tick damage on normal difficulty is 1; a single
-      // iron_helmet is 2 armour points, an 8% reduction — 0.92. The
-      // unarmoured amount, 1, would be the value left behind by a stage that
-      // forgot to apply the armor rule.
-      expect(damages[0]?.damage.amount).toBeCloseTo(0.92)
+      // Unmitigated fire-tick damage on normal difficulty is 1. The iron
+      // helmet supplies 2 armor points and 0 toughness. Java's armor formula
+      // gives min(20, max(A/5, A - 4D/(min(T,20)+8)))/25; with A=2, T=0,
+      // and D=1, the reduction is 1.5/25, leaving 0.94 damage.
+      // Source: https://minecraft.wiki/w/Armor
+      expect(damages[0]?.damage.amount).toBeCloseTo(0.94)
 
       // `armorDurabilityWearFromPreMitigationDamage` is cause-independent
       // (armor.ts) and reads the PRE-mitigation amount (1), which floors to a
@@ -631,8 +632,8 @@ describe('fire lifecycle stage integration', () => {
       const damages = yield* drainPlayerDamages(state)
       expect(damages).toHaveLength(1)
       expect(damages[0]?.damage.cause).toBe('on_fire')
-      // Full iron armour would reduce 1 to 0.92 (the sibling test above) if
-      // this cause were mitigated. It is not: the full unmitigated amount, 1,
+      // The single iron helmet would reduce 1 to 0.94 (the sibling test above)
+      // if this cause were mitigated. It is not: the full unmitigated amount, 1,
       // must survive the fire stage's armor calculation unchanged.
       expect(damages[0]?.damage.amount).toBe(1)
 
