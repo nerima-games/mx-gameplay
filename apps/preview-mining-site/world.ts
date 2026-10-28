@@ -47,10 +47,12 @@
  * chunk arithmetic is real — `cx = floor(x / 16)`, which is what makes the
  * chunk-edge scenario show a genuine `ChunkNotLoaded`, not a drawn one.
  */
-import { Effect, Ref } from 'effect'
+import { Effect, Ref, Result } from 'effect'
 import {
   AIR_BLOCK_ID,
+  BlockAxis,
   BlockId,
+  ChunkAxis,
   blockPosition,
   blockTypeOfId,
   capabilityOfBlockId,
@@ -69,7 +71,6 @@ import type {
   ChunkDirtySubscription,
   ChunkStoreApi,
   ChunkNeighbours,
-  SubscriberId,
 } from '@nerima-games/mc-worldgen'
 
 /**
@@ -159,7 +160,7 @@ export const glyphOf = (id: BlockId): Glyph =>
  * are the reason this preview can name a held item at all.
  */
 export const placeableItemOf = (id: BlockId): PlaceableItemType | undefined => {
-  const type = blockTypeOfId(id)
+  const type = Result.getOrUndefined(blockTypeOfId(id))
   const item = type === undefined ? undefined : itemOfBlock(type)
   return item !== undefined && isPlaceableItem(item) ? item : undefined
 }
@@ -168,7 +169,7 @@ export const chunkKeyOf = (position: BlockPosition): string =>
   `${String(Math.floor(position.x / CHUNK_SIDE))},${String(Math.floor(position.z / CHUNK_SIDE))}`
 
 const chunkCoordOf = (position: BlockPosition): ChunkCoord =>
-  chunkCoord(Math.floor(position.x / CHUNK_SIDE), Math.floor(position.z / CHUNK_SIDE))
+  chunkCoord(ChunkAxis(Math.floor(position.x / CHUNK_SIDE)), ChunkAxis(Math.floor(position.z / CHUNK_SIDE)))
 
 const blockKey = (position: BlockPosition): string =>
   `${String(position.x)},${String(position.y)},${String(position.z)}`
@@ -239,7 +240,11 @@ export type WorldSpec = {
 export const makePreviewWorld = (spec: WorldSpec): Effect.Effect<PreviewWorld> =>
   Effect.map(
     Ref.make<Inner>({
-      blocks: new Map(spec.cells.map(([x, y, id]) => [blockKey(blockPosition(x, y, spec.z)), id] as const)),
+      blocks: new Map(
+        spec.cells.map(([x, y, id]) =>
+          [blockKey(blockPosition(BlockAxis(x), BlockAxis(y), BlockAxis(spec.z))), id] as const,
+        ),
+      ),
       loadedChunks: new Set(spec.loadedChunks),
       subscribers: new Map(),
       writeLog: [],
@@ -254,7 +259,7 @@ export const makePreviewWorld = (spec: WorldSpec): Effect.Effect<PreviewWorld> =
       const inner = (): Inner => Effect.runSync(Ref.get(state))
 
       const notImplemented = (name: string): Effect.Effect<never> =>
-        Effect.dieMessage(`preview-mining-site: ChunkStore.${name} is not exercised by this preview`)
+        Effect.die(`preview-mining-site: ChunkStore.${name} is not exercised by this preview`)
 
       const markDirty = (doubles: Inner, position: BlockPosition): void => {
         for (const pending of doubles.subscribers.values()) {
@@ -267,21 +272,13 @@ export const makePreviewWorld = (spec: WorldSpec): Effect.Effect<PreviewWorld> =
         doubles.subscribers.set(id, new Set())
 
         const subscription: ChunkDirtySubscription = {
-          // `@nerima-games/mc-worldgen` exports no public constructor for
-          // `SubscriberId` — it is minted only inside the package's own
-          // `ChunkStoreState.subscribed`, which this preview store, as an
-          // independent reimplementation of `ChunkStoreApi`, has no way to
-          // call. This counter-derived id is a genuine, never-reused
-          // subscriber identity by construction; the cast asserts only that,
-          // not that an unchecked value has an unverified shape. See
-          // `src/domain/in-memory-chunk-store.ts` for the same pattern.
-          id: id as SubscriberId,
+          id,
           drain: Ref.modify(state, (current) => {
             const pending = current.subscribers.get(id) ?? new Set<string>()
             const batch: ChunkDirtyBatch = {
               changed: [...pending].map((entry) => {
                 const [cx, cz] = entry.split(',')
-                return chunkCoord(Number(cx), Number(cz))
+                return chunkCoord(ChunkAxis(Number(cx)), ChunkAxis(Number(cz)))
               }),
               removed: [],
             }
@@ -298,6 +295,8 @@ export const makePreviewWorld = (spec: WorldSpec): Effect.Effect<PreviewWorld> =
       })
 
       const api: ChunkStoreApi = {
+        prepare: () => notImplemented('prepare'),
+        publish: () => notImplemented('publish'),
         load: () => notImplemented('load'),
         peek: () => notImplemented('peek'),
         snapshot: () => notImplemented('snapshot'),
@@ -306,7 +305,7 @@ export const makePreviewWorld = (spec: WorldSpec): Effect.Effect<PreviewWorld> =
         loadedCoords: Effect.sync(() =>
           [...inner().loadedChunks].map((entry): ChunkCoord => {
             const [cx, cz] = entry.split(',')
-            return chunkCoord(Number(cx), Number(cz))
+            return chunkCoord(ChunkAxis(Number(cx)), ChunkAxis(Number(cz)))
           }),
         ),
         neighbours: (): Effect.Effect<ChunkNeighbours> => notImplemented('neighbours'),
@@ -363,7 +362,7 @@ export const makePreviewWorld = (spec: WorldSpec): Effect.Effect<PreviewWorld> =
 
             let exposed = true
             for (let y = position.y + 1; y < WORLD_HEIGHT; y += 1) {
-              const above = doubles.blocks.get(blockKey(blockPosition(position.x, y, position.z)))
+              const above = doubles.blocks.get(blockKey(blockPosition(position.x, BlockAxis(y), position.z)))
               if (above !== undefined && above !== AIR_BLOCK_ID) {
                 exposed = false
                 break
@@ -459,7 +458,7 @@ export const makePreviewWorld = (spec: WorldSpec): Effect.Effect<PreviewWorld> =
  * built on it would report a bug that is not there.
  */
 export const restsOnSupport = (world: PreviewWorld, position: BlockPosition): boolean => {
-  const belowPosition = blockPosition(position.x, position.y - 1, position.z)
+  const belowPosition = blockPosition(position.x, BlockAxis(position.y - 1), position.z)
   if (belowPosition.y < 0 || belowPosition.y >= WORLD_HEIGHT) {
     return true
   }

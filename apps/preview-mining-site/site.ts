@@ -64,8 +64,9 @@
  * decision it cannot make correctly (`test/public-api.test.ts` asserts no such
  * export exists).
  */
-import { Effect, Ref } from 'effect'
+import { Effect, Option, Ref, Result } from 'effect'
 import {
+  BlockAxis,
   adjacentBlockPosition,
   blockIdOf,
   blockOfPlaceableItem,
@@ -240,7 +241,7 @@ export const inventorySize = (site: Site): number =>
 export const inventoryCount = (site: Site, item: string): number => site.inventory.get(item) ?? 0
 
 export const positionAt = (site: Site, x: number, y: number): BlockPosition =>
-  kernelBlockPosition(x, y, site.spec.z)
+  kernelBlockPosition(BlockAxis(x), BlockAxis(y), BlockAxis(site.spec.z))
 
 const allCells = (site: Site): ReadonlyArray<BlockPosition> => {
   const cells: Array<BlockPosition> = []
@@ -272,7 +273,7 @@ export const makeSite = (
     // entities. The roster is mc-sim's own in-memory service; `./roster.ts`
     // deliberately contains no second implementation.
     const previewPlayer = yield* makePreviewPlayer
-    const time = yield* makeTimeService()
+    const time = yield* Effect.orDie(makeTimeService())
     const stages = schedule(
       gameplayStages(state, world.api, roster, inventoryService.api, previewPlayer, time),
     )
@@ -436,10 +437,10 @@ export const previewPlacement = (
   Effect.gen(function* () {
     const request = { position, heldItem }
     const target = yield* site.world.api.getBlock(position)
-    const block = blockIdOf(blockOfPlaceableItem(heldItem))
+    const block = Option.getOrUndefined(blockIdOf(blockOfPlaceableItem(heldItem)))
     const supportBelow =
       block !== undefined && isSupportSensitiveOfBlock(block)
-        ? yield* site.world.api.getBlock(adjacentBlockPosition(kernelBlockPosition(position.x, position.y, position.z), 'down'))
+        ? yield* site.world.api.getBlock(Result.getOrThrow(adjacentBlockPosition(position, 'down')))
         : undefined
 
     return placementVerdict(request, target, supportBelow)

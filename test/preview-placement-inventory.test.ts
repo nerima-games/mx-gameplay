@@ -1,6 +1,6 @@
 import { describe, expect, it } from '@effect/vitest'
 import { Effect } from 'effect'
-import { blockPosition } from '@nerima-games/mc-kernel'
+import { blockPosition } from './support/coordinate-fixtures'
 import { makeSite, requestPlace, stepFrame } from '../apps/preview-mining-site/site'
 import { AIR, STONE } from '../apps/preview-mining-site/world'
 

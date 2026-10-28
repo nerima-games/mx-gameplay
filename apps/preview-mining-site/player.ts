@@ -16,17 +16,18 @@
  * scenario is a worse diagnostic than one that quietly walks through.
  */
 import { Effect, Ref } from 'effect'
+import { PositionAxis } from '@nerima-games/mc-kernel'
 import type { Dimension } from '@nerima-games/mc-worldgen'
 import type { PlayerPose, PlayerServiceApi } from '@nerima-games/mc-sim'
 
 const refuse = <A>(what: string): Effect.Effect<A> =>
-  Effect.dieMessage(
+  Effect.die(
     `preview-mining-site: ${what} — this preview does not own the player's camera, and mx-gameplay must not implement mc-sim's service. See apps/preview-mining-site/player.ts.`,
   )
 
 /** Standing at the origin at sea level, which is where the site is dug. */
 const STANDING_POSE: PlayerPose = {
-  feetPosition: { x: 0, y: 64, z: 0 },
+  feetPosition: { x: PositionAxis(0), y: PositionAxis(64), z: PositionAxis(0) },
   yawRadians: 0,
   pitchRadians: 0,
 }
@@ -43,7 +44,10 @@ export const makePreviewPlayer: Effect.Effect<PlayerServiceApi> = Effect.gen(fun
     setDimension: (next) => Ref.set(dimension, next),
     cameraPose: refuse('cameraPose'),
     restore: (next, nextDimension) =>
-      Effect.zipRight(Ref.set(pose, next), Ref.set(dimension, nextDimension)),
-    reset: Effect.zipRight(Ref.set(pose, STANDING_POSE), Ref.set(dimension, 'overworld')),
+      Effect.andThen(Ref.set(pose, next), Ref.set(dimension, nextDimension)),
+    snapshot: refuse('snapshot'),
+    replicatedCandidate: refuse('replicatedCandidate'),
+    submitReplicatedCandidate: () => refuse('submitReplicatedCandidate'),
+    reset: Effect.andThen(Ref.set(pose, STANDING_POSE), Ref.set(dimension, 'overworld')),
   }
 })

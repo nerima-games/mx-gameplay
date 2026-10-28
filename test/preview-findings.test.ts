@@ -26,7 +26,7 @@
  * driving this repository's own rules.
  */
 import { describe, expect, it } from '@effect/vitest'
-import { Effect } from 'effect'
+import { Effect, Result } from 'effect'
 import { dayPhase, hostileSpawnsAllowed, isNight } from '../src/domain/day-night'
 import { applyDamage, deathMessage, fullHealth, isDead } from '../src/domain/death-cause'
 import { carryOver, splitBudget, type FluidWorkItem } from '../src/domain/fluid-frontier'
@@ -108,8 +108,8 @@ describe('F6 regression — the day/night rules are periodic in the day', () => 
 
 describe('fluid frontier identity and carry-over contract', () => {
   const interfaceCell: ReadonlyArray<FluidWorkItem> = [
-    { key: positionKey('10,64,10'), kind: 'water' },
-    { key: positionKey('10,64,10'), kind: 'lava' },
+    { key: Result.getOrThrow(positionKey('10,64,10')), kind: 'water' },
+    { key: Result.getOrThrow(positionKey('10,64,10')), kind: 'lava' },
   ]
 
   it.effect('identifies work by position and kind so inactive lava survives a water evaluation', () =>
@@ -126,8 +126,8 @@ describe('fluid frontier identity and carry-over contract', () => {
   it.effect('with distinct keys the same call is correct, which is why no existing test caught it', () =>
     Effect.sync(() => {
       const distinct: ReadonlyArray<FluidWorkItem> = [
-        { key: positionKey('10,64,10'), kind: 'water' },
-        { key: positionKey('11,64,10'), kind: 'lava' },
+        { key: Result.getOrThrow(positionKey('10,64,10')), kind: 'water' },
+        { key: Result.getOrThrow(positionKey('11,64,10')), kind: 'lava' },
       ]
       const split = splitBudget(distinct, { lavaTickActive: false, budget: 64 })
       expect(carryOver(distinct, split)).toStrictEqual([{ key: '11,64,10', kind: 'lava' }])
