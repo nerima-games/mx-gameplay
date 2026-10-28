@@ -125,6 +125,41 @@ describe(`unequip candidate preparation (${ARMOR_PARITY_FIXTURE.source}, ${ARMOR
     expect(JSON.stringify(equipment)).toBe(snapshot)
   })
 
+  it('preserves every lower occupied slot when removing the topmost piece', () => {
+    const cases: ReadonlyArray<Readonly<{ equipment: Equipment; expected: Equipment }>> = [
+      {
+        equipment: {
+          helmet: 'iron_helmet',
+          chestplate: 'iron_chestplate',
+          leggings: 'iron_leggings',
+          boots: 'iron_boots',
+        },
+        expected: { chestplate: 'iron_chestplate', leggings: 'iron_leggings', boots: 'iron_boots' },
+      },
+      {
+        equipment: { chestplate: 'iron_chestplate', leggings: 'iron_leggings', boots: 'iron_boots' },
+        expected: { leggings: 'iron_leggings', boots: 'iron_boots' },
+      },
+      {
+        equipment: { leggings: 'iron_leggings', boots: 'iron_boots' },
+        expected: { boots: 'iron_boots' },
+      },
+      { equipment: { boots: 'iron_boots' }, expected: {} },
+    ]
+
+    for (const { equipment, expected } of cases) {
+      const result = prepareUnequipTopmost(equipment)
+
+      expect(Result.isSuccess(result)).toBe(true)
+      if (Result.isFailure(result)) continue
+      expect(result.success._tag).toBe('Unequip')
+      expect(result.success.nextEquipment).toStrictEqual(expected)
+      expect(Result.isSuccess(Schema.decodeUnknownResult(UnequipPreparationSchema, {
+        onExcessProperty: 'error',
+      })(result.success))).toBe(true)
+    }
+  })
+
   it('returns a typed failure without changing malformed equipment', () => {
     const equipment = { helmet: 'not-an-item' }
     const snapshot = JSON.stringify(equipment)

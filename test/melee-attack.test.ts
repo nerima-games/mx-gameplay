@@ -8,7 +8,10 @@ import { ZOMBIE_KIND } from '../src/domain/mob/hostile-combat'
 import {
   MeleeAttackPreparationSchema,
   meleeDamageForItem,
+  meleeTarget,
+  meleeTargetBeforeBlock,
   prepareMeleeAttack,
+  type MeleeAttackRequest,
 } from '../src/domain/interactions/melee-attack'
 import type { MobBehaviour } from '../src/domain/entities/mob-frame'
 
@@ -100,6 +103,38 @@ describe('C2 melee preparation', () => {
     const result = prepareMeleeAttack(intent, { ...input, entities: [] })
 
     expect(Result.isFailure(result) && result.failure).toBe('no-target')
+  })
+
+  it('returns a hostile target only when it is in reach and before the aimed block', () => {
+    const request: MeleeAttackRequest = {
+      origin: atPosition(0, 64 + 1.62, 0),
+      direction: atPosition(0, 0, 1),
+      reach: 3,
+      damage: 1,
+    }
+    const candidates = [zombie]
+    const target = meleeTarget(candidates, request)
+
+    expect(target).toMatchObject({ id: zombie.id })
+    if (target === undefined) return
+
+    expect(meleeTargetBeforeBlock(candidates, request, undefined)).toStrictEqual(target)
+    expect(meleeTargetBeforeBlock(candidates, request, target.distance)).toBeUndefined()
+    expect(meleeTargetBeforeBlock(candidates, request, target.distance + 0.01)).toStrictEqual(target)
+  })
+
+  it('rejects a negative or non-finite reach and invalid hit distance', () => {
+    const request: MeleeAttackRequest = {
+      origin: atPosition(0, 64 + 1.62, 0),
+      direction: atPosition(0, 0, 1),
+      reach: 3,
+      damage: 1,
+    }
+
+    expect(meleeTarget([zombie], { ...request, reach: -1 })).toBeUndefined()
+    expect(meleeTarget([zombie], { ...request, reach: Number.NaN })).toBeUndefined()
+    expect(meleeTarget([zombie], { ...request, hitDistance: -1 })).toBeUndefined()
+    expect(meleeTarget([zombie], { ...request, hitDistance: Number.NaN })).toBeUndefined()
   })
 
   it('keeps valid authoritative ticks in the emitted event', () => {

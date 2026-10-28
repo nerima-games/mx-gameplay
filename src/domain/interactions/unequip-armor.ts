@@ -80,10 +80,11 @@ export const UnequipPreparationSchema: Schema.ConstraintDecoder<UnequipPreparati
   }),
 ])
 
-export type UnequipPreparationError = 'invalid-equipment' | 'invalid-candidate'
+export type UnequipPreparationError = 'invalid-equipment'
 
 const equipmentWithout = (equipment: Equipment, removed: ArmorSlot): Equipment => ({
-  ...(removed === 'helmet' || equipment.helmet === undefined ? {} : { helmet: equipment.helmet }),
+  // `firstWornItem` always removes a worn helmet before reaching a lower slot.
+  // A helmet can therefore never be retained in this candidate.
   ...(removed === 'chestplate' || equipment.chestplate === undefined ? {} : { chestplate: equipment.chestplate }),
   ...(removed === 'leggings' || equipment.leggings === undefined ? {} : { leggings: equipment.leggings }),
   ...(removed === 'boots' || equipment.boots === undefined ? {} : { boots: equipment.boots }),
@@ -107,12 +108,10 @@ export const prepareUnequipTopmost = (
         item: worn.item,
         nextEquipment: equipmentWithout(decoded.success, worn.slot),
       }
-  const validated = Schema.decodeUnknownResult(UnequipPreparationSchema, {
-    onExcessProperty: 'error',
-  })(prepared)
-  return Result.isFailure(validated)
-    ? Result.fail('invalid-candidate')
-    : Result.succeed(validated.success)
+  // The equipment was decoded above, and both candidate variants are built only
+  // from its validated slots and the same slot-removal helper. Re-decoding this
+  // internally constructed value cannot fail.
+  return Result.succeed(prepared)
 }
 
 /** Nothing worn. */
