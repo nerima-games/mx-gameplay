@@ -7,7 +7,8 @@
  * this is a port rather than a transcription — see the implementation header.
  */
 import { describe, expect, it } from '@effect/vitest'
-import { Effect, FastCheck } from 'effect'
+import { Effect } from 'effect'
+import * as FastCheck from 'fast-check'
 import {
   advanceBreakProgress,
   breakProgressFraction,

@@ -60,6 +60,7 @@
  * budget makes the sequence depend only on HOW MANY blocks were broken, which is
  * `../frame-rolls`' rule that it depend on what happened.
  */
+import { Result } from 'effect'
 import {
   dropOfBlockId,
   blockTypeOfId,
@@ -343,8 +344,8 @@ export const blockLoot = (
   context: BlockLootContext = NO_TOOL,
   rolls: ReadonlyArray<number> = NO_LOOT,
 ): ReadonlyArray<MinedItem> => {
-  const drop = dropOfBlockId(block, context)
-  const type = blockTypeOfId(block)
+  const drop = Result.getOrUndefined(dropOfBlockId(block, context))
+  const type = Result.getOrUndefined(blockTypeOfId(block))
   const roll = rolls[0] ?? 0
 
   const items: Array<MinedItem> = []

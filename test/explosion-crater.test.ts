@@ -1,14 +1,14 @@
 import { describe, expect, it } from '@effect/vitest'
-import { Effect } from 'effect'
-import { blockIdOf, blockPosition, blockPositionKeyOf, type BlockType } from '@nerima-games/mc-kernel'
-import { AIR_BLOCK_ID, type BlockId, type BlockPosition } from '@nerima-games/mc-kernel'
+import { Effect, Option } from 'effect'
+import { AIR_BLOCK_ID, blockIdOf, blockPositionKeyOf, type BlockId, type BlockPosition, type BlockType } from '@nerima-games/mc-kernel'
 import { carveExplosionCrater, craterCells, craterRadius } from '../src/domain/interactions/explosion-crater'
 import { makeChunkStoreDouble, world } from './support/chunk-store-double'
+import { blockPosition as atBlockPosition } from './support/coordinate-fixtures'
 
 const registeredBlockId = (type: BlockType): BlockId => {
-  const id = blockIdOf(type)
-  if (id === undefined) throw new Error(`missing block registry entry: ${type}`)
-  return id
+  return Option.getOrElse(blockIdOf(type), () => {
+    throw new Error(`missing block registry entry: ${type}`)
+  })
 }
 
 const STONE = registeredBlockId('stone')
@@ -18,9 +18,9 @@ const OBSIDIAN = registeredBlockId('obsidian')
 describe('explosion crater', () => {
   it.effect('destroys stone but preserves normal-explosion-resistant blocks', () =>
     Effect.gen(function* () {
-      const centre: BlockPosition = blockPosition(8, 64, 8)
-      const bedrockAt: BlockPosition = blockPosition(9, 64, 8)
-      const obsidianAt: BlockPosition = blockPosition(8, 65, 8)
+      const centre: BlockPosition = atBlockPosition(8, 64, 8)
+      const bedrockAt: BlockPosition = atBlockPosition(9, 64, 8)
+      const obsidianAt: BlockPosition = atBlockPosition(8, 65, 8)
       const store = yield* makeChunkStoreDouble(
         world([
           [centre, STONE],
@@ -35,10 +35,10 @@ describe('explosion crater', () => {
       expect(yield* store.blockAt(centre)).toBe(AIR_BLOCK_ID)
       expect(yield* store.blockAt(bedrockAt)).toBe(BEDROCK)
       expect(yield* store.blockAt(obsidianAt)).toBe(OBSIDIAN)
-      expect(disturbed).toContain(blockPositionKeyOf(blockPosition(centre.x, centre.y, centre.z)))
-      expect(disturbed).not.toContain(blockPositionKeyOf(blockPosition(bedrockAt.x, bedrockAt.y, bedrockAt.z)))
+      expect(disturbed).toContain(blockPositionKeyOf(centre))
+      expect(disturbed).not.toContain(blockPositionKeyOf(bedrockAt))
       expect(disturbed).not.toContain(
-        blockPositionKeyOf(blockPosition(obsidianAt.x, obsidianAt.y, obsidianAt.z)),
+        blockPositionKeyOf(obsidianAt),
       )
       expect(yield* store.calls).toStrictEqual({
         reads: craterCells(centre, 1).length,
@@ -50,7 +50,7 @@ describe('explosion crater', () => {
 
   it.effect('does not write crater cells in unloaded chunks', () =>
     Effect.gen(function* () {
-      const centre: BlockPosition = blockPosition(8, 64, 8)
+      const centre: BlockPosition = atBlockPosition(8, 64, 8)
       const store = yield* makeChunkStoreDouble(world([[centre, STONE]]), [])
 
       const disturbed = yield* carveExplosionCrater(store.api, centre, 1)
@@ -71,7 +71,7 @@ describe('explosion crater', () => {
   })
 
   it('craterCells returns no cells for a non-positive power', () => {
-    const centre: BlockPosition = blockPosition(8, 64, 8)
+    const centre: BlockPosition = atBlockPosition(8, 64, 8)
 
     expect(craterCells(centre, 0)).toStrictEqual([])
     expect(craterCells(centre, -3)).toStrictEqual([])

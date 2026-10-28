@@ -7,8 +7,8 @@
  * a checkout of the frozen `takeokunn/ts-minecraft` — see docs/README.md.
  */
 import { describe, expect, it } from '@effect/vitest'
-import { Brand, Effect } from 'effect'
-import { blockIdOf, type BlockPositionKey } from '@nerima-games/mc-kernel'
+import { Brand, Effect, Option } from 'effect'
+import { blockIdOf, type BlockId, type BlockPositionKey, type BlockType } from '@nerima-games/mc-kernel'
 import {
   applyDamage,
   DEATH_MESSAGES,
@@ -44,6 +44,11 @@ import {
  * kernel's own constructor is built on.
  */
 const positionKey = Brand.nominal<BlockPositionKey>()
+
+const registeredBlockId = (type: BlockType): BlockId =>
+  Option.getOrElse(blockIdOf(type), () => {
+    throw new Error(`missing block registry entry: ${type}`)
+  })
 
 const ALL_CAUSES: ReadonlyArray<DeathCause> = [
   'fall',
@@ -121,11 +126,11 @@ describe('falling blocks: the O(chunks × blocks) full scan must not come back',
 
   it.effect('plans one-cell moves through a storage-free read boundary', () =>
     Effect.sync(() => {
-      const sand = blockIdOf('sand')
+      const sand = registeredBlockId('sand')
         for (const targetBlock of ['air', 'water', 'lava'] as const) {
           const blocks = new Map<string, number>([
             ['0,64,0', sand],
-            ['0,63,0', blockIdOf(targetBlock)],
+            ['0,63,0', registeredBlockId(targetBlock)],
           ])
           const moves = planFallingBlockMoves([{ x: 0, y: 63, z: 0 }], (at) => blocks.get(`${String(at.x)},${String(at.y)},${String(at.z)}`))
 
@@ -147,8 +152,8 @@ describe('falling blocks: the O(chunks × blocks) full scan must not come back',
   it.effect('does not move a block that lacks fallsWhenUnsupported', () =>
     Effect.sync(() => {
       // Stone above a clear target: a real material, but not a falling one.
-      const stone = blockIdOf('stone')
-      const air = blockIdOf('air')
+      const stone = registeredBlockId('stone')
+      const air = registeredBlockId('air')
       const blocks = new Map<string, number>([
         ['0,64,0', stone],
         ['0,63,0', air],
@@ -164,8 +169,8 @@ describe('falling blocks: the O(chunks × blocks) full scan must not come back',
 
   it.effect('does not move sand onto a destination that is not replaceable', () =>
     Effect.sync(() => {
-      const sand = blockIdOf('sand')
-      const stone = blockIdOf('stone')
+      const sand = registeredBlockId('sand')
+      const stone = registeredBlockId('stone')
       const blocks = new Map<string, number>([
         ['0,64,0', sand],
         ['0,63,0', stone],
