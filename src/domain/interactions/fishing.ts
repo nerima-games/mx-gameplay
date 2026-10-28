@@ -1,45 +1,15 @@
 import {
-  EntityIdSchema,
   type EntityId,
   type ItemType,
   type ProjectileId,
   type SimulationTick,
 } from '@nerima-games/mc-kernel'
-import { Effect, Schema } from 'effect'
 import {
-  FishingStateSchema,
-  ReplicatedOwnerIdSchema,
-  WorldCommitCoordinator,
   isValidDurabilityForItem,
   type Durability,
   type EquipmentItem,
   type FishingServiceApi,
-  type ReplicatedOwnerId,
-  type WorldCommitCoordinatorError,
 } from '@nerima-games/mc-sim'
-
-export type FishingServiceCancelRequest = Readonly<{
-  ownerId: ReplicatedOwnerId
-  actor: EntityId
-}>
-
-export const FishingServiceCancelRequestSchema: Schema.ConstraintDecoder<
-  FishingServiceCancelRequest
-> = Schema.Struct({
-  ownerId: ReplicatedOwnerIdSchema,
-  actor: EntityIdSchema,
-})
-
-export type FishingServiceCancelResult =
-  | { readonly _tag: 'Cancelled'; readonly actor: EntityId }
-  | { readonly _tag: 'NotActive'; readonly actor: EntityId }
-
-export const FishingServiceCancelResultSchema: Schema.ConstraintDecoder<
-  FishingServiceCancelResult
-> = Schema.Union([
-  Schema.Struct({ _tag: Schema.Literal('Cancelled'), actor: EntityIdSchema }),
-  Schema.Struct({ _tag: Schema.Literal('NotActive'), actor: EntityIdSchema }),
-])
 
 export const FISHING_ROD_ITEM = 'fishing_rod' as const
 export const FISHING_MIN_WAIT_SECS = 5
@@ -277,27 +247,3 @@ export const reelFishingWithService = (
   actor: EntityId,
   tick: SimulationTick,
 ): ReturnType<FishingServiceApi['reel']> => service.reel(actor, tick)
-
-export const cancelFishingWithService = (
-  request: FishingServiceCancelRequest,
-): Effect.Effect<
-  FishingServiceCancelResult,
-  WorldCommitCoordinatorError,
-  WorldCommitCoordinator
-> =>
-  Effect.gen(function* () {
-    const coordinator = yield* WorldCommitCoordinator
-    const snapshot = yield* coordinator.snapshot(request.ownerId, FishingStateSchema)
-    const rods = snapshot.state.rods.filter((rod) => rod.actor !== request.actor)
-    if (rods.length === snapshot.state.rods.length) {
-      return { _tag: 'NotActive' as const, actor: request.actor }
-    }
-
-    yield* coordinator.commit({
-      expectedRevision: snapshot.revision,
-      expectedDimensions: [],
-      changes: [{ ownerId: request.ownerId, state: { ...snapshot.state, rods } }],
-    })
-
-    return { _tag: 'Cancelled' as const, actor: request.actor }
-  })

@@ -4,7 +4,6 @@ import {
   EntityIdSchema,
   ProjectileIdSchema,
   SimulationTickSchema,
-  WorldIdSchema,
 } from '@nerima-games/mc-kernel'
 import {
   addItem,
@@ -16,24 +15,16 @@ import {
   FishingServiceBiteSuccessSchema,
   FishingServiceCastSuccessSchema,
   FishingServiceReelSuccessSchema,
-  FishingStateSchema,
-  WorldCommitCoordinator,
-  WorldCommitCoordinatorLayer,
-  fishingOwnerRegistration,
-  makeReplicatedOwnerId,
   type EquipmentItem,
   type FishingServiceApi,
 } from '@nerima-games/mc-sim'
 import {
   advanceFishing,
   biteFishingWithService,
-  cancelFishingWithService,
   castFishingWithService,
   cancelFishing,
   castFishing,
   fishingPhase,
-  FishingServiceCancelRequestSchema,
-  FishingServiceCancelResultSchema,
   reelFishingWithService,
   reelFishing,
   FISHING_BITE_WINDOW_SECS,
@@ -329,43 +320,4 @@ describe('FishingService adapters', () => {
     ])
   })
 
-  it.effect('cancels an actor rod with one registered fishing-state commit', () => {
-    const ownerId = makeReplicatedOwnerId('test-fishing-owner')
-    const actor = Schema.decodeUnknownSync(EntityIdSchema)('player-to-cancel')
-    const bobber = Schema.decodeUnknownSync(ProjectileIdSchema)('bobber-to-cancel')
-    const otherActor = Schema.decodeUnknownSync(EntityIdSchema)('player-to-keep')
-    const otherBobber = Schema.decodeUnknownSync(ProjectileIdSchema)('bobber-to-keep')
-    const initialState = Schema.decodeUnknownSync(FishingStateSchema)({
-      rods: [
-        { actor, bobber, phase: 'cast' },
-        { actor: otherActor, bobber: otherBobber, phase: 'bite' },
-      ],
-    })
-    const owner = { ...fishingOwnerRegistration(ownerId), initialState }
-    const layer = WorldCommitCoordinatorLayer({
-      world: Schema.decodeUnknownSync(WorldIdSchema)('fishing-cancel-tests'),
-      owners: [owner],
-    })
-    const request = Schema.decodeUnknownSync(FishingServiceCancelRequestSchema, {
-      onExcessProperty: 'error',
-    })({ ownerId, actor })
-    const decodeResult = Schema.decodeUnknownSync(FishingServiceCancelResultSchema, {
-      onExcessProperty: 'error',
-    })
-
-    return Effect.gen(function* () {
-      const coordinator = yield* WorldCommitCoordinator
-      const revisionBefore = yield* coordinator.revision
-      const result = yield* cancelFishingWithService(request)
-      const snapshot = yield* coordinator.snapshot(ownerId, FishingStateSchema)
-      const revisionAfter = yield* coordinator.revision
-
-      expect(decodeResult(result)).toStrictEqual({ _tag: 'Cancelled', actor })
-      expect(() => decodeResult({ ...result, extra: true })).toThrow()
-      expect(snapshot.state.rods).toStrictEqual([
-        { actor: otherActor, bobber: otherBobber, phase: 'bite' },
-      ])
-      expect(revisionAfter - revisionBefore).toBe(1)
-    }).pipe(Effect.provide(layer))
-  })
 })
