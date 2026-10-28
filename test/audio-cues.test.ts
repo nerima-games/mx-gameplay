@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from '@effect/vitest'
-import { blockIdOf } from '@nerima-games/mc-kernel'
+import { blockIdOf, PositionAxis, position } from '@nerima-games/mc-kernel'
 import type { CuePlayOptions, SoundCueId } from '@nerima-games/mc-audio'
+import { Option } from 'effect'
 import {
   advanceFootstepRuntime,
   announceConfirmedPlacements,
@@ -11,6 +12,9 @@ import {
   type AudioCuePort,
   type FootstepAdvanceInput,
 } from '../src/stages/audio-cues'
+
+const makePosition = (x: number, y: number, z: number) =>
+  position(PositionAxis(x), PositionAxis(y), PositionAxis(z))
 
 const makeAudio = (): { readonly audio: AudioCuePort; readonly play: ReturnType<typeof vi.fn> } => {
   const play = vi.fn<(cueId: SoundCueId, options?: CuePlayOptions) => void>()
@@ -41,7 +45,7 @@ describe('announceInventoryTransition', () => {
 describe('announceConfirmedPlacements', () => {
   it('plays blockPlace with a position when at least one placement is consumed', () => {
     const { audio, play } = makeAudio()
-    const position = { x: 1, y: 2, z: 3 }
+    const position = makePosition(1, 2, 3)
     expect(announceConfirmedPlacements(audio, [{}], position)).toBe(true)
     expect(play).toHaveBeenCalledExactlyOnceWith('blockPlace', { position })
   })
@@ -63,7 +67,7 @@ describe('makePlacementAudioLatch', () => {
   it('announces at the requested position once confirmed', () => {
     const { audio, play } = makeAudio()
     const latch = makePlacementAudioLatch(audio)
-    const position = { x: 5, y: 5, z: 5 }
+    const position = makePosition(5, 5, 5)
     latch.request(position)
     expect(latch.confirm([{}])).toBe(true)
     expect(play).toHaveBeenCalledExactlyOnceWith('blockPlace', { position })
@@ -72,16 +76,16 @@ describe('makePlacementAudioLatch', () => {
   it('a second request before confirm REPLACES the pending position rather than queuing both', () => {
     const { audio, play } = makeAudio()
     const latch = makePlacementAudioLatch(audio)
-    latch.request({ x: 1, y: 1, z: 1 })
-    latch.request({ x: 2, y: 2, z: 2 })
+    latch.request(makePosition(1, 1, 1))
+    latch.request(makePosition(2, 2, 2))
     latch.confirm([{}])
-    expect(play).toHaveBeenCalledExactlyOnceWith('blockPlace', { position: { x: 2, y: 2, z: 2 } })
+    expect(play).toHaveBeenCalledExactlyOnceWith('blockPlace', { position: makePosition(2, 2, 2) })
   })
 
   it('confirming with nothing consumed announces nothing and leaves the pending position untouched', () => {
     const { audio, play } = makeAudio()
     const latch = makePlacementAudioLatch(audio)
-    const position = { x: 1, y: 1, z: 1 }
+    const position = makePosition(1, 1, 1)
     latch.request(position)
     expect(latch.confirm([])).toBe(false)
     expect(play).not.toHaveBeenCalled()
@@ -102,10 +106,10 @@ describe('makePlacementAudioLatch', () => {
 })
 
 describe('advanceFootstepRuntime', () => {
-  const dirtId = blockIdOf('dirt')!
-  const stoneId = blockIdOf('stone')!
-  const oakPlanksId = blockIdOf('oak_planks')!
-  const airId = blockIdOf('air')!
+  const dirtId = Option.getOrThrow(blockIdOf('dirt'))
+  const stoneId = Option.getOrThrow(blockIdOf('stone'))
+  const oakPlanksId = Option.getOrThrow(blockIdOf('oak_planks'))
+  const airId = Option.getOrThrow(blockIdOf('air'))
 
   const footstepInput = (overrides: Partial<FootstepAdvanceInput> = {}): FootstepAdvanceInput => ({
     grounded: true,
@@ -114,7 +118,7 @@ describe('advanceFootstepRuntime', () => {
     sneaking: false,
     dead: false,
     dimensionChanged: false,
-    position: { x: 0, y: 64, z: 0 },
+    position: makePosition(0, 64, 0),
     ...overrides,
   })
 
