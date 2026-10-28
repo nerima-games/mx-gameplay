@@ -150,7 +150,7 @@ const portalEntries = (
 }
 
 describe('ignitePortal', () => {
-  it.effect('lights every interior cell of a valid frame, and reports them', () =>
+  it.effect('returns every interior cell of a valid frame as a commit candidate', () =>
     Effect.gen(function* () {
       const store = yield* makeChunkStoreDouble(
         world(portalEntries(ORIGIN, 2, 3)),
@@ -159,22 +159,20 @@ describe('ignitePortal', () => {
 
       const outcome = yield* ignitePortal(store.api, ORIGIN)
 
-      expect(outcome._tag).toBe('Lit')
-      if (outcome._tag !== 'Lit') return
+      expect(outcome._tag).toBe('Ready')
+      if (outcome._tag !== 'Ready') return
       expect(outcome.frame.width).toBe(2)
       expect(outcome.frame.height).toBe(3)
       expect(outcome.cells).toHaveLength(6)
 
-      // The world actually changed, and it changed to kernel's block rather
-      // than to a byte this test picked.
       for (const cell of outcome.cells) {
-        expect(yield* store.blockAt(cell)).toBe(NETHER_PORTAL)
+        expect(yield* store.blockAt(cell)).toBeUndefined()
       }
       expect(Option.getOrUndefined(blockIdOf('nether_portal'))).toBe(NETHER_PORTAL)
     }),
   )
 
-  it.effect('costs peeks and writes, and NOT a `getBlock` per probed cell', () =>
+  it.effect('costs peeks and NOT a `getBlock` per probed cell or a direct write', () =>
     Effect.gen(function* () {
       const store = yield* makeChunkStoreDouble(
         world(portalEntries(ORIGIN, 2, 3)),
@@ -183,13 +181,11 @@ describe('ignitePortal', () => {
 
       yield* ignitePortal(store.api, ORIGIN)
 
-      // THE COST ARGUMENT, ASSERTED. `domain/chunk-window.ts`'s header rejects
-      // the per-cell version at 3,872 store reads per right-click; this is the
-      // measurement that keeps the rejection true. Six writes, one per interior
-      // cell; zero cell reads.
+      // The frame search uses chunk peeks, then leaves all edits to the stage's
+      // atomic owner-and-world commit.
       const calls = yield* store.calls
       expect(calls.reads).toBe(0)
-      expect(calls.writes).toBe(6)
+      expect(calls.writes).toBe(0)
       expect(calls.peeks).toBe(chunkCoordsAround(ORIGIN, PORTAL_WINDOW_RADIUS).length)
     }),
   )
@@ -204,8 +200,8 @@ describe('ignitePortal', () => {
 
       const outcome = yield* ignitePortal(store.api, origin)
 
-      expect(outcome._tag).toBe('Lit')
-      if (outcome._tag !== 'Lit') return
+      expect(outcome._tag).toBe('Ready')
+      if (outcome._tag !== 'Ready') return
       expect(outcome.cells).toHaveLength(MAX_PORTAL_WIDTH * 3)
     }),
   )
@@ -236,8 +232,8 @@ describe('ignitePortal', () => {
 
       const outcome = yield* ignitePortal(store.api, ignition)
 
-      expect(outcome._tag).toBe('Lit')
-      if (outcome._tag !== 'Lit') return
+      expect(outcome._tag).toBe('Ready')
+      if (outcome._tag !== 'Ready') return
       expect(outcome.frame.width).toBe(MAX_PORTAL_WIDTH)
       expect(outcome.cells).toHaveLength(MAX_PORTAL_WIDTH * 3)
     }),
@@ -526,34 +522,23 @@ describe('igniteTnt', () => {
   })
 })
 
-describe('ignitePortal, when the store changes its mind mid-fill', () => {
-  const racedWrites: ReadonlyArray<{ readonly name: string; readonly outcome: BlockWriteOutcome }> = [
-    { name: 'Unchanged', outcome: { _tag: 'Unchanged', previous: NETHER_PORTAL } },
-    { name: 'ChunkNotLoaded', outcome: { _tag: 'ChunkNotLoaded' } },
-    { name: 'OutOfWorld', outcome: { _tag: 'OutOfWorld' } },
-  ]
-
-  for (const racedWrite of racedWrites) {
-    it.effect(`does not report portal cells when setBlock returns ${racedWrite.name}`, () =>
-      Effect.gen(function* () {
-        // The chunk window observed a valid frame, but another writer can change
-        // residency, bounds, or the target before each block write.
-        const store = yield* makeChunkStoreDouble(
-          world(portalEntries(ORIGIN, 2, 3)),
-          residentAround(ORIGIN),
-        )
-        const raced = storeThatChangesItsMind(store.api, racedWrite.outcome)
-
-        const outcome = yield* ignitePortal(raced, ORIGIN)
-
-        expect(outcome._tag).toBe('Lit')
-        if (outcome._tag !== 'Lit') return
-        expect(outcome.frame.interior).toHaveLength(6)
-        expect(outcome.cells).toStrictEqual([])
-      }),
+it.effect('portal detection leaves the commit to the caller', () =>
+  Effect.gen(function* () {
+    const store = yield* makeChunkStoreDouble(
+      world(portalEntries(ORIGIN, 2, 3)),
+      residentAround(ORIGIN),
     )
-  }
-})
+    const outcome = yield* ignitePortal(
+      storeThatChangesItsMind(store.api, { _tag: 'ChunkNotLoaded' }),
+      ORIGIN,
+    )
+
+    expect(outcome._tag).toBe('Ready')
+    if (outcome._tag !== 'Ready') return
+    expect(outcome.cells).toHaveLength(6)
+    expect((yield* store.calls).writes).toBe(0)
+  }),
+)
 
 describe('useFlintAndSteel — the order of the two arms', () => {
   it.effect('removes TNT before trying portal or fire', () =>
@@ -585,7 +570,7 @@ describe('useFlintAndSteel — the order of the two arms', () => {
     }),
   )
 
-  it.effect('tries the portal first: a finished frame lights instead of catching fire', () =>
+  it.effect('plans the portal first: the stage decides whether to commit it or fire', () =>
     Effect.gen(function* () {
       const store = yield* makeChunkStoreDouble(
         world(portalEntries(ORIGIN, 2, 3)),
@@ -595,10 +580,9 @@ describe('useFlintAndSteel — the order of the two arms', () => {
       const outcome = yield* useFlintAndSteel(store.api, ORIGIN, 'flint_and_steel')
 
       expect(outcome._tag).toBe('Portal')
-      // The failure this ordering prevents, asserted on the world rather than
-      // on the tag: fire-first puts a flame in the middle of a finished portal
-      // and the player never gets one.
-      expect(yield* store.blockAt(ORIGIN)).toBe(NETHER_PORTAL)
+      if (outcome._tag !== 'Portal') return
+      expect(outcome.outcome._tag).toBe('Ready')
+      expect(yield* store.blockAt(ORIGIN)).toBeUndefined()
     }),
   )
 
@@ -637,7 +621,7 @@ describe('useFlintAndSteel — the order of the two arms', () => {
       const lit = yield* useFlintAndSteel(portalStore.api, ORIGIN, 'flint_and_steel')
       const burned = yield* useFlintAndSteel(fireStore.api, ORIGIN, 'flint_and_steel')
 
-      expect(lit.outcome._tag).toBe('Lit')
+      expect(lit.outcome._tag).toBe('Ready')
       expect(burned.outcome._tag).toBe('CommitContextMissing')
     }),
   )

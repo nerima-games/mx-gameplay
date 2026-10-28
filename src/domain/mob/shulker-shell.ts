@@ -212,22 +212,21 @@ export const stepShulkerShell = (shell: ShulkerShell, senses: ShulkerSenses): Sh
     return { shell: CLOSED_SHELL, canFire: false }
   }
 
-  switch (shell._tag) {
+  if (shell._tag === 'Closed') {
     // `shulker-behavior.ts:57-60`. Opening starts on the frame the target
     // appears, at zero — the twenty frames are counted from here, so acquiring a
     // target costs a full window before a single shot.
-    case 'Closed': {
-      return senses.hasTarget
-        ? { shell: { _tag: 'Opening', openedTicks: 0 }, canFire: false }
-        : { shell, canFire: false }
-    }
+    return senses.hasTarget
+      ? { shell: { _tag: 'Opening', openedTicks: 0 }, canFire: false }
+      : { shell, canFire: false }
+  }
 
+  if (shell._tag === 'Opening') {
     // `shulker-behavior.ts:62-65`. NOTE what is missing: `hasTarget` is not
     // consulted, so a shulker whose target walks away mid-open finishes opening
     // and only then shuts. The reference does that and it is left alone —
     // twenty frames of commitment is a real, playable property, and removing it
     // would let a shulker abort an animation it is drawing.
-    case 'Opening': {
       // A counter that is not a number RESTARTS the window rather than
       // completing it. Both directions are recoverable; only this one cannot
       // make a shulker fire sooner than the rule allows, and `canFire` is the
@@ -238,18 +237,14 @@ export const stepShulkerShell = (shell: ShulkerShell, senses: ShulkerSenses): Sh
       return openedTicks >= SHULKER_OPENING_TICKS
         ? { shell: { _tag: 'Open' }, canFire: false }
         : { shell: { _tag: 'Opening', openedTicks }, canFire: false }
-    }
+  }
 
-    // `shulker-behavior.ts:67-68`. Losing the target shuts it in one frame —
+  // `shulker-behavior.ts:67-68`. Losing the target shuts it in one frame —
     // opening is slow and closing is instant, which is the asymmetry that makes
     // the shell worth having.
-    case 'Open': {
-      return senses.hasTarget
-        ? { shell, canFire: true }
-        : { shell: CLOSED_SHELL, canFire: false }
-    }
-
-  }
+  return senses.hasTarget
+    ? { shell, canFire: true }
+    : { shell: CLOSED_SHELL, canFire: false }
 }
 
 /**

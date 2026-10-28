@@ -65,37 +65,16 @@ export type FallingBlockMoves = {
 
 /** The block that would fall from `reading`, or `undefined` if none would. */
 const fallingMaterial = (reading: BlockReading): BlockId | undefined => {
-  switch (reading._tag) {
-    case 'Block':
-      return Result.getOrUndefined(capabilityOfBlockId(reading.block, 'fallsWhenUnsupported')) === true
-        ? reading.block
-        : undefined
-    // Unknown, not empty. Whatever is up there stays up there until the chunk
-    // is resident and something disturbs it again.
-    case 'ChunkNotLoaded':
-      return undefined
-    // Above the build limit there is nothing to fall.
-    case 'OutOfWorld':
-      return undefined
-  }
+  if (reading._tag !== 'Block') return undefined
+  return Result.getOrUndefined(capabilityOfBlockId(reading.block, 'fallsWhenUnsupported')) === true
+    ? reading.block
+    : undefined
 }
 
 /** Whether a falling block may occupy `reading`'s cell. */
-const canReceive = (reading: BlockReading): boolean => {
-  switch (reading._tag) {
-    // `replaceable`, from kernel's table: air and water, not "everything
-    // non-solid" — kernel's audit §4.9 spends a section on the difference.
-    case 'Block':
-      return Result.getOrUndefined(capabilityOfBlockId(reading.block, 'replaceable')) === true
-    // THE case this whole three-valued read exists for. Treating it as air
-    // drops the block out of the world at the edge of the loaded area.
-    case 'ChunkNotLoaded':
-      return false
-    // The floor of the world holds everything up.
-    case 'OutOfWorld':
-      return false
-  }
-}
+const canReceive = (reading: BlockReading): boolean =>
+  reading._tag === 'Block' &&
+  Result.getOrUndefined(capabilityOfBlockId(reading.block, 'replaceable')) === true
 
 /** Whether the source cell really was emptied by our write. */
 const vacated = (outcome: BlockWriteOutcome): boolean => outcome._tag === 'Written'

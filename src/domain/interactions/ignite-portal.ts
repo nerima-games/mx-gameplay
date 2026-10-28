@@ -45,14 +45,13 @@
  * `@nerima-games/mc-worldgen`'s `ChunkStore`.
  *
  * ---------------------------------------------------------------------------
- * READ EVERYTHING, THEN DECIDE, THEN WRITE — AND THE ORDER IS LOAD-BEARING
+ * READ EVERYTHING, THEN DECIDE — AND THE ORDER IS LOAD-BEARING
  * ---------------------------------------------------------------------------
  *
  * `../chunk-window` opens a synchronous view over the chunks around the ignition
- * cell, detection runs against that view, and only then does anything write. The
- * window holds the read-only chunks returned by `peek`. `setBlock` does not
- * mutate those published chunks, but `frame.interior` is still materialised by
- * detection before writes begin so the loop is independent of further reads.
+ * cell, detection runs against that view, and the materialised `frame.interior`
+ * is returned as a candidate. The stage commits those edits with the item-owner
+ * change in a single world request.
  *
  * ---------------------------------------------------------------------------
  * WHAT THIS RULE DOES NOT DO
@@ -64,23 +63,16 @@
  * `./break-block` and `./place-block` are.
  *
  * SPEND THE ITEM. The reference damages the held flint and steel by one point
- * (`interaction-flint-steel-handler.ts`'s `damageHeldFlintAndSteel`). Durability
- * is a property of an inventory SLOT and mc-sim's `InventoryService` owns slots;
- * `stages/registration.ts` parks the fact that an item was used, for the same
- * reason and in the same shape as `consumedItems`.
+ * (`interaction-flint-steel-handler.ts`'s `damageHeldFlintAndSteel`). The stage
+ * updates the storage owner in the same commit as the portal blocks.
  *
  * REGISTER THE PORTAL. The reference calls `netherService.registerPortal` so
  * that a return trip reuses the same portal. That is a persistent link between
  * two dimensions — state, and therefore mc-sim's or mc-save's by the test in
  * `stages/registration.ts`'s header. Nothing here holds it.
  *
- * DETONATE TNT. The reference's flint-and-steel handler tries three things in
- * order: TNT, then a portal, then fire. The TNT arm is absent here and the
- * missing piece is nameable — `../mob/explosion.ts`'s `ExplosionSource` is the
- * single literal `'creeper'` and its only power is `CREEPER_EXPLOSION_POWER`, so
- * a TNT blast has no power to be given and no source to be attributed to. It is
- * also the arm that needs the player's own health (`applyTntPlayerDamage`),
- * which is mc-sim's. Two missing things, both named, neither invented here.
+ * DETONATE TNT. `stages/interactions-stage.ts` handles the TNT-first case with
+ * the TNT owner, storage owner and block write in one coordinator request.
  *
  * SOUND. `soundManager.playEffect('blockPlace', ...)` is mc-audio's, and
  * mx-gameplay has no edge to it (plan.md §2.1). Whoever drains the outbox plays
@@ -95,6 +87,7 @@ import {
 } from '@nerima-games/mc-kernel'
 import { chunkCoordsAround, openChunkWindow, UNREADABLE_BLOCK } from '../chunk-window.js'
 import { detectNetherPortal, type ChunkStoreApi } from '@nerima-games/mc-worldgen'
+import type { WorldCommitCoordinatorError } from '@nerima-games/mc-sim'
 
 /**
  * How far from the ignition cell the chunk window must reach.
@@ -131,12 +124,20 @@ export const PORTAL_WINDOW_RADIUS: number = MAX_PORTAL_WIDTH + 1
  * `boolean` here, and its caller cannot tell a dirt wall from an unloaded chunk.
  */
 export type IgnitePortalOutcome =
-  /** The frame lit. `cells` are the interior cells whose write actually landed. */
+  /** A valid frame and the portal-block edits to commit atomically. */
+  | {
+      readonly _tag: 'Ready'
+      readonly frame: PortalFrame
+      readonly cells: ReadonlyArray<BlockPosition>
+    }
+  /** The stage committed the portal fill. */
   | {
       readonly _tag: 'Lit'
       readonly frame: PortalFrame
       readonly cells: ReadonlyArray<BlockPosition>
     }
+  /** The atomic world commit was rejected. */
+  | { readonly _tag: 'CommitFailed'; readonly error: WorldCommitCoordinatorError }
   /**
    * There is no valid frame around this cell.
    *
@@ -158,22 +159,22 @@ export type IgnitePortalOutcome =
   | { readonly _tag: 'ChunkNotLoaded' }
 
 /**
- * Light the portal around `ignition`, and report what happened.
+ * Plan the portal blocks around `ignition`.
  *
- * ONE `peek` PER CHUNK IN THE WINDOW, then pure reads, then one `setBlock` per
- * interior cell. The reads are why this is not `getBlock` in a loop; see
+ * ONE `peek` PER CHUNK IN THE WINDOW, then pure reads. The stage commits the
+ * portal edits with the held-item owner change in one world request.
+ *
+ * The reads are why this is not `getBlock` in a loop; see
  * `../chunk-window`'s header for the three ways to bridge a synchronous rule to
  * an `Effect`-shaped store and why this is the one chosen.
  *
  * NOTHING IS DISTURBED. `../falling-block`'s queue answers "does the block ABOVE
- * this cell now fall into it", and every cell written here was air a moment ago
+ * this cell now fall into it", and every cell planned here was air a moment ago
  * — filling a hole cannot start a fall, it can only stop one. A break disturbs
  * because it makes a hole; this makes the opposite of one.
  *
- * `Unchanged` cannot happen on a cell detection has just proved to be air, and
- * it is handled anyway: `run` has no error channel, so the four write outcomes
- * are enumerated rather than assumed, and a cell that did not change is a cell
- * that is not reported as lit.
+ * The caller owns the commit so the portal blocks and inventory change cannot
+ * become visible separately.
  */
 export const ignitePortal = (
   store: ChunkStoreApi,
@@ -197,27 +198,5 @@ export const ignitePortal = (
       return window.unreadableProbes() > 0 ? { _tag: 'ChunkNotLoaded' } : { _tag: 'NoFrame' }
     }
 
-    // FROM HERE ON `window.blockAt` IS STALE. `../chunk-window` peeks LIVE
-    // buffers, so the first write below changes what it would answer.
-    // `frame.interior` was materialised by detection and is iterated instead.
-    const cells: Array<BlockPosition> = []
-    for (const cell of frame.interior) {
-      const outcome = yield* store.setBlock(cell, portalBlock)
-      switch (outcome._tag) {
-        case 'Written': {
-          cells.push(cell)
-          break
-        }
-
-        // Another writer may change residency, bounds, or the target after the
-        // window read. Those cells are left out of the report.
-        case 'Unchanged':
-        case 'ChunkNotLoaded':
-        case 'OutOfWorld': {
-          break
-        }
-      }
-    }
-
-    return { _tag: 'Lit', frame, cells }
+    return { _tag: 'Ready', frame, cells: frame.interior }
   })

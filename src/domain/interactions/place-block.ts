@@ -443,50 +443,38 @@ export const placeBlock = (
 
     const outcome = yield* store.setBlock(request.position, verdict.block)
 
-    switch (outcome._tag) {
-      case 'Written': {
-        // The door's upper half. It is written AFTER the lower one and only
-        // when the lower one landed, so a refused placement cannot leave half a
-        // door standing in the world.
-        //
-        // A NON-`Written` ANSWER HERE IS REPORTED BY OMISSION rather than by
-        // undoing the lower cell. The cell was read as air one instruction ago,
-        // so reaching this needs the store to have changed underneath — the
-        // window this file's header is about — and the two available answers are
-        // a compensating write that can itself fail, or a door with no top. The
-        // second is visible, breakable and recorded in `alsoPlaced`; the first
-        // is a second failure mode with nowhere to report itself.
-        const alsoPlaced: Array<BlockPosition> = []
-        if (upper._tag === 'Clear') {
-          const upperOutcome = yield* store.setBlock(upper.cell, verdict.block)
-          if (upperOutcome._tag === 'Written') {
-            alsoPlaced.push(upper.cell)
-          }
-        }
-
-        return {
-          _tag: 'Placed',
-          block: verdict.block,
-          consumed: request.heldItem,
-          chunk: outcome.chunk,
-          alsoPlaced,
+    if (outcome._tag === 'Written') {
+      // The door's upper half. It is written AFTER the lower one and only
+      // when the lower one landed, so a refused placement cannot leave half a
+      // door standing in the world.
+      //
+      // A NON-`Written` ANSWER HERE IS REPORTED BY OMISSION rather than by
+      // undoing the lower cell. The cell was read as air one instruction ago,
+      // so reaching this needs the store to have changed underneath — the
+      // window this file's header is about — and the two available answers are
+      // a compensating write that can itself fail, or a door with no top. The
+      // second is visible, breakable and recorded in `alsoPlaced`; the first
+      // is a second failure mode with nowhere to report itself.
+      const alsoPlaced: Array<BlockPosition> = []
+      if (upper._tag === 'Clear') {
+        const upperOutcome = yield* store.setBlock(upper.cell, verdict.block)
+        if (upperOutcome._tag === 'Written') {
+          alsoPlaced.push(upper.cell)
         }
       }
 
-      // See the module header: the cell already held this exact block, so
-      // nothing was dirtied and nothing may be taken off the stack.
-      case 'Unchanged':
-        return { _tag: 'Occupied', existing: outcome.previous }
-
-      // The store changed its mind between the read and the write. That is the
-      // window this file's header is about, and it is DECIDED rather than
-      // asserted away: the answer is the same one the read would have given.
-      case 'ChunkNotLoaded':
-        return { _tag: 'ChunkNotLoaded' }
-
-      case 'OutOfWorld':
-        return { _tag: 'OutOfWorld' }
+      return {
+        _tag: 'Placed',
+        block: verdict.block,
+        consumed: request.heldItem,
+        chunk: outcome.chunk,
+        alsoPlaced,
+      }
     }
+
+    if (outcome._tag === 'Unchanged') return { _tag: 'Occupied', existing: outcome.previous }
+    if (outcome._tag === 'ChunkNotLoaded') return { _tag: 'ChunkNotLoaded' }
+    return { _tag: 'OutOfWorld' }
   })
 
 /** The world edits a placement would publish after all placement rules pass. */

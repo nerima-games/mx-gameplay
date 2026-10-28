@@ -244,16 +244,10 @@ export const planBreakBlock = (
     if (context.toolLocation !== undefined) {
       const damaged = damageAt(candidateStorage, context.toolLocation, 1)
       const damageResult = Schema.decodeUnknownSync(BreakToolDamageResultSchema)(damaged.result)
-      switch (damageResult._tag) {
-        case 'InvalidLocation':
-          return failure({ _tag: 'ToolDamageRejected', reason: 'InvalidLocation' })
-        case 'Damaged':
-        case 'Broken':
-        case 'Empty':
-        case 'NotDamageable':
-          candidateStorage = damaged.storage
-          break
+      if (damageResult._tag === 'InvalidLocation') {
+        return failure({ _tag: 'ToolDamageRejected', reason: 'InvalidLocation' })
       }
+      candidateStorage = damaged.storage
     }
 
     const removed: Array<BlockPosition> = [position]

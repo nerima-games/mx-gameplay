@@ -1281,7 +1281,7 @@ const makeMobFrameSweep = (senses: MobFrameSenses, seed: number): MobFrameSweep 
 
 
         if (ECOSYSTEM_MOB_KINDS.includes(entity.kind) && behaviour?._tag === 'EcosystemMob') {
-          const step = stepEcosystemMob(
+          const ecosystemStep = stepEcosystemMob(
             entity.kind,
             behaviour,
             entity.feetPosition,
@@ -1290,13 +1290,13 @@ const makeMobFrameSweep = (senses: MobFrameSenses, seed: number): MobFrameSweep 
           )
           return {
             transition: changed({
-              feetPosition: step.feetPosition,
+              feetPosition: ecosystemStep.feetPosition,
               healthPoints: entity.healthPoints,
-              behaviour: storedBehaviour(step.state),
+              behaviour: storedBehaviour(ecosystemStep.state),
             }),
-            emit: step.attack === undefined
+            emit: ecosystemStep.attack === undefined
               ? undefined
-              : { ...step.attack, source: entity.id, at: entity.feetPosition },
+              : { ...ecosystemStep.attack, source: entity.id, at: entity.feetPosition },
           }
         }
 
@@ -1314,9 +1314,9 @@ const makeMobFrameSweep = (senses: MobFrameSenses, seed: number): MobFrameSweep 
             CREEPER_LOCOMOTION,
           )
           creeperScratch.distanceToTargetBlocks = distance
-          const step = stepCreeperFuse(behaviour, creeperScratch, senses.dt)
+          const fuseStep = stepCreeperFuse(behaviour, creeperScratch, senses.dt)
 
-          if (step.explosion !== undefined) {
+          if (fuseStep.explosion !== undefined) {
             // DESPAWNED rather than stored as `Detonated`, and the two are not the
             // same frame's difference. `../mob/mob-drop`'s `MobKill` records that
             // the reference's detonating creeper drops nothing only because a
@@ -1332,7 +1332,7 @@ const makeMobFrameSweep = (senses: MobFrameSenses, seed: number): MobFrameSweep 
                 source: entity.id,
                 kind: entity.kind,
                 at: feetPosition,
-                explosion: step.explosion,
+                explosion: fuseStep.explosion,
               },
             }
           }
@@ -1341,13 +1341,13 @@ const makeMobFrameSweep = (senses: MobFrameSenses, seed: number): MobFrameSweep 
           // ARGUMENT fuse when nothing happened (a dormant creeper out of range, a
           // detonated one), so `===` is exact here and costs nothing — and it is
           // what lets an idle frame reach mc-sim's zero-allocation path.
-          return step.fuse === behaviour && feetPosition === entity.feetPosition && snapshot === undefined
+          return fuseStep.fuse === behaviour && feetPosition === entity.feetPosition && snapshot === undefined
             ? IGNORED
             : {
                 transition: changed({
                   feetPosition,
                   healthPoints: entity.healthPoints,
-                  behaviour: storedBehaviour(step.fuse),
+                  behaviour: storedBehaviour(fuseStep.fuse),
                 }),
                 emit: undefined,
               }
@@ -2242,7 +2242,10 @@ export const planSpawnAttemptsOnRoster = (
 
     const passive = PASSIVE_MOB_KINDS.includes(attempt.kind)
     const kinds = passive ? PASSIVE_MOB_KINDS : HOSTILE_KINDS
-    const population = kinds.reduce((total, kind) => total + countOfKind(roster, kind), 0)
+    let population = 0
+    for (const kind of kinds) {
+      population += countOfKind(roster, kind)
+    }
     if (population >= (passive ? MAX_PASSIVE_COUNT : MAX_HOSTILE_COUNT)) {
       outcomes.push({ _tag: 'AtCapacity', population })
       continue

@@ -4,7 +4,8 @@ import {
   InventoryService,
   makeBucketService,
   makeWorldCommitCoordinator,
-  playerStorageOwnerRegistration,
+  PROJECTILE_REPLICATED_OWNER_ID,
+  TNT_REPLICATED_OWNER_ID,
   WorldCommitCoordinator,
   type InventoryServiceApi,
   type WorldCommitCoordinatorError,
@@ -13,7 +14,22 @@ import { AIR_BLOCK_ID, WorldIdSchema, type BlockId, type BlockPosition } from '@
 import { ChunkStore, type ChunkStoreApi } from '@nerima-games/mc-worldgen'
 import { Effect, Layer, Ref, Schema } from 'effect'
 import { makeInMemoryWorld } from '../../src/domain/in-memory-world.js'
-import { GAMEPLAY_PLAYER_STORAGE_OWNER_ID, type GameplayStageCommitServices } from '../../src/stages/registration-core.js'
+import {
+  GAMEPLAY_BREWING_OWNER_ID,
+  GAMEPLAY_CROPS_OWNER_ID,
+  GAMEPLAY_DROPPED_ITEMS_OWNER_ID,
+  GAMEPLAY_ENTITIES_OWNER_ID,
+  GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
+  GAMEPLAY_FISHING_OWNER_ID,
+  GAMEPLAY_PLAYER_OWNER_ID,
+  GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+  GAMEPLAY_STATUS_EFFECTS_OWNER_ID,
+  GAMEPLAY_VITALS_OWNER_ID,
+  GAMEPLAY_VILLAGER_TRADES_OWNER_ID,
+  gameplayOwnerRegistrations,
+  type GameplayOwnerInitialState,
+} from '../../src/stages/gameplay-owner-registrations.js'
+import type { GameplayStageCommitServices } from '../../src/stages/registration-core.js'
 import type { ChunkStoreDouble, StoreCalls } from './chunk-store-double.js'
 
 const WORLD_ID = Schema.decodeUnknownSync(WorldIdSchema)('gameplay-stage-tests')
@@ -71,12 +87,16 @@ export const makeTransactionalChunkStoreDouble = (
 export const makeGameplayCommitServices = (
   store: ChunkStoreApi,
   inventory: InventoryServiceApi,
+  initial: GameplayOwnerInitialState = {},
 ): Effect.Effect<GameplayStageCommitServices, WorldCommitCoordinatorError> =>
   Effect.gen(function* () {
     const initialStorage = yield* inventory.storageSnapshot
     const coordinator = yield* makeWorldCommitCoordinator({
       world: WORLD_ID,
-      owners: [playerStorageOwnerRegistration(GAMEPLAY_PLAYER_STORAGE_OWNER_ID, initialStorage)],
+      owners: gameplayOwnerRegistrations({
+        ...initial,
+        playerStorage: initial.playerStorage ?? initialStorage,
+      }),
       chunkStores: { forDimension: () => store },
     })
     const bucketService = yield* makeBucketService().pipe(
@@ -85,7 +105,19 @@ export const makeGameplayCommitServices = (
     return {
       coordinator,
       bucketService,
+      playerOwnerId: GAMEPLAY_PLAYER_OWNER_ID,
       playerStorageOwnerId: GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+      cropOwnerId: GAMEPLAY_CROPS_OWNER_ID,
+      droppedItemsOwnerId: GAMEPLAY_DROPPED_ITEMS_OWNER_ID,
+      vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID,
+      experienceOrbsOwnerId: GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
+      villagerTradesOwnerId: GAMEPLAY_VILLAGER_TRADES_OWNER_ID,
+      brewingOwnerId: GAMEPLAY_BREWING_OWNER_ID,
+      fishingOwnerId: GAMEPLAY_FISHING_OWNER_ID,
+      entitiesOwnerId: GAMEPLAY_ENTITIES_OWNER_ID,
+      statusEffectsOwnerId: GAMEPLAY_STATUS_EFFECTS_OWNER_ID,
+      projectileOwnerId: PROJECTILE_REPLICATED_OWNER_ID,
+      tntOwnerId: TNT_REPLICATED_OWNER_ID,
     }
   })
 
@@ -104,7 +136,7 @@ export const gameplayCommitServicesLayer: Layer.Layer<
       const initialStorage = yield* inventory.storageSnapshot
       return yield* makeWorldCommitCoordinator({
         world: WORLD_ID,
-        owners: [playerStorageOwnerRegistration(GAMEPLAY_PLAYER_STORAGE_OWNER_ID, initialStorage)],
+        owners: gameplayOwnerRegistrations({ playerStorage: initialStorage }),
         chunkStores: { forDimension: () => store },
       })
     }),

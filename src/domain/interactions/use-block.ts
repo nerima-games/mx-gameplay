@@ -19,16 +19,11 @@ export const resolveBlockUse = (
   position: BlockPosition,
   reading: BlockReading,
 ): BlockUseOutcome => {
-  switch (reading._tag) {
-    case 'ChunkNotLoaded':
-      return { _tag: 'ChunkNotLoaded', position }
-    case 'OutOfWorld':
-      return { _tag: 'OutOfWorld', position }
-    case 'Block':
-      return reading.block === LEVER_BLOCK_ID
-        ? { _tag: 'ToggleLever', position }
-        : { _tag: 'NotLever', position, existing: reading.block }
-  }
+  if (reading._tag === 'ChunkNotLoaded') return { _tag: 'ChunkNotLoaded', position }
+  if (reading._tag === 'OutOfWorld') return { _tag: 'OutOfWorld', position }
+  return reading.block === LEVER_BLOCK_ID
+    ? { _tag: 'ToggleLever', position }
+    : { _tag: 'NotLever', position, existing: reading.block }
 }
 
 export const isSuccessfulBlockUse = (outcome: BlockUseOutcome): boolean =>

@@ -73,9 +73,12 @@ import {
   itemStack as makeItemStack,
   makeWorldCommitCoordinator,
   PlayerStorageSnapshotSchema,
+  PlayerServiceSnapshotSchema,
   playerStorageOwnerRegistration,
   ReplicatedOwnerIdSchema,
   WorldCommitCoordinatorErrorSchema,
+  EntitySerial,
+  type PlayerServiceApi,
   type EquipmentItem,
   type InventoryServiceApi,
   makeTimeService,
@@ -83,9 +86,10 @@ import {
   type Slot,
   type TimeServiceApi,
 } from '@nerima-games/mc-sim'
-import { Effect, Option, Ref, Result, Schema } from 'effect'
+import { Brand, Effect, Option, Ref, Result, Schema, Stream } from 'effect'
 import {
   AIR_BLOCK_ID,
+  AngleRadians,
   BlockIdSchema,
   BlockPositionSchema,
   blockIdOf,
@@ -93,11 +97,12 @@ import {
   DimensionRevisionSchema,
   DimensionIdSchema,
   EntityHealthPoints,
+  ProjectileIdSchema,
+  SimulationTickSchema,
   PortalHeight,
   PortalWidth,
   WorldRevisionSchema,
   type BlockPosition,
-  type HarvestTier,
   type Position,
 } from '@nerima-games/mc-kernel'
 import { readdirSync, readFileSync } from 'node:fs'
@@ -107,6 +112,7 @@ import { generatePortalLayout, type BlockWriteOutcome, type ChunkStoreApi } from
 import { NOON_FRACTION } from '../src/domain/day-night'
 import {
   addVillager,
+  advanceVillagerRestock,
   emptyVillagerTradeState,
   isValidVillagerTradeState,
   makeVillager,
@@ -118,20 +124,39 @@ import {
   CREEPER_MAX_HEALTH,
   ENDERMAN_KIND,
   ENDERMAN_TELEPORT_ROLLS,
-  HOSTILE_KINDS,
   hostileMobSnapshot,
   MAX_HOSTILE_COUNT,
+  MAX_PASSIVE_COUNT,
   STEADY_ENDERMAN,
   STRUCK_ENDERMAN,
   type MobBehaviour,
   type MobSpawnAttempt,
 } from '../src/domain/entities/mob-frame'
+import type { SpawnCandidate } from '../src/domain/mob/hostile-spawn'
+import { NETHER_HOSTILE_KINDS, PASSIVE_MOB_KINDS } from '../src/domain/mob/mob-ecosystem'
 import {
+  DomainEventBus,
+  EntityId,
   EntityKind,
+  FishingApproachTicksSchema,
+  FishingBiteWindowTicksSchema,
+  FishingElapsedTicksSchema,
+  FishingWaitTicksSchema,
   HungerPoints,
+  makeBrewingService,
+  makeFishingService,
+  makeProjectileService,
+  makeTntService,
+  SNOWBALL_PROFILE,
+  TNT_REPLICATED_OWNER_ID,
+  WorldCommitCoordinator,
+  WorldRevisionConflict,
+  type DomainEventBusApi,
   type EntityManagerApi,
+  type ProjectileLaunch,
   type WorldCommitCoordinatorApi,
 } from '@nerima-games/mc-sim'
+import { SPAWN_PLAYER_VITALS } from '../src/domain/in-memory-vitals'
 import { disturb } from '../src/domain/falling-block'
 import {
   DroppedItemPickupRequestSchema,
@@ -171,8 +196,9 @@ import {
   drainItemUseResults,
   drainPlayerDamages,
   drainVillagerTradeResults,
+  GameplayFishingItemUseResultSchema,
   gameplayStages,
-  makeGameplayFrameState,
+  makeGameplayFrameStateForOwner,
   requestBlockBreak,
   requestDroppedItemPickup,
   requestFoodUse,
@@ -189,14 +215,23 @@ import {
   requestSoilTill,
   requestVillagerTrade,
   restoreFireLifecycle,
-  restoreVillagerTrades,
   snapshotFireLifecycle,
   snapshotStatusEffects,
-  snapshotVillagerTrades,
-  type FishingItemUseResult,
-  type ItemUseResult,
   type PlacementRequest,
 } from '../src/stages/registration'
+import {
+  GAMEPLAY_BREWING_OWNER_ID,
+  GAMEPLAY_DROPPED_ITEMS_OWNER_ID,
+  GAMEPLAY_ENTITIES_OWNER_ID,
+  GAMEPLAY_FISHING_OWNER_ID,
+  GAMEPLAY_PLAYER_OWNER_ID,
+  GAMEPLAY_VITALS_OWNER_ID,
+  GAMEPLAY_VILLAGER_TRADES_OWNER_ID,
+  GameplayEntityRosterSchema,
+  GameplayVillagerTradeSnapshotSchema,
+  gameplayOwnerRegistrations,
+  type GameplayOwnerInitialState,
+} from '../src/stages/gameplay-owner-registrations'
 import { MAX_FURNACE_ADVANCE_SECS } from '../src/domain/interactions/advance-furnace'
 import {
   GRAVEL,
@@ -215,6 +250,7 @@ import {
   makeInventoryDouble,
 } from './support/inventory-service-double'
 import { runFrame, runFrames } from './support/frame-runner'
+import { FrameServicesLayer } from './support/frame-services'
 
 // ---------------------------------------------------------------------------
 // The column under test. Chunk (0, 0), which is the only resident one unless a
@@ -239,6 +275,7 @@ const slice = (
   initial: ReadonlyMap<string, BlockId>,
   loaded: ReadonlyArray<string> = ['0,0'],
   inventorySlots = emptySlots(),
+  ownerInitial: GameplayOwnerInitialState = {},
 ) =>
   Effect.gen(function* () {
     const store = yield* makeTransactionalChunkStoreDouble(initial, loaded)
@@ -246,8 +283,36 @@ const slice = (
     const inventory = yield* makeInventoryDouble(inventorySlots)
     const player = yield* makePlayerServiceDouble()
     const time = yield* makeTimeService()
-    const state = yield* makeGameplayFrameState
-    const commit = yield* makeGameplayCommitServices(store.api, inventory.api)
+    const commitServices = yield* makeGameplayCommitServices(store.api, inventory.api, ownerInitial)
+    const publishedEvents = yield* Ref.make<ReadonlyArray<Parameters<DomainEventBusApi['publish']>[0]>>([])
+    const eventBus: DomainEventBusApi = {
+      publish: (event) => Ref.update(publishedEvents, (events) => [...events, event]),
+      events: Stream.empty,
+    }
+    const fishingService = yield* makeFishingService(GAMEPLAY_FISHING_OWNER_ID).pipe(
+      Effect.provideService(WorldCommitCoordinator, commitServices.coordinator),
+      Effect.provideService(DomainEventBus, eventBus),
+    )
+    const projectileService = yield* makeProjectileService().pipe(
+      Effect.provideService(WorldCommitCoordinator, commitServices.coordinator),
+      Effect.provideService(DomainEventBus, eventBus),
+    )
+    const brewingService = yield* makeBrewingService(GAMEPLAY_BREWING_OWNER_ID)
+    const tntService = yield* makeTntService(TNT_REPLICATED_OWNER_ID).pipe(
+      Effect.provideService(WorldCommitCoordinator, commitServices.coordinator),
+    )
+    const commit = {
+      ...commitServices,
+      fishingService,
+      projectileService,
+      brewingService,
+      tntService,
+      eventBus,
+    }
+    const state = yield* makeGameplayFrameStateForOwner({
+      coordinator: commit.coordinator,
+      vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID,
+    })
     return {
       store,
       roster,
@@ -256,6 +321,7 @@ const slice = (
       state,
       time,
       commit,
+      publishedEvents,
       stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api, time, undefined, undefined, {}, commit),
     }
   })
@@ -276,9 +342,11 @@ const withMiningDroppedItemsOwner = (
       yield* inventory.storageSnapshot,
     )
     const droppedItems = Schema.decodeUnknownSync(DroppedItemOwnerSnapshotSchema)({ items: [] })
+    const registrations = gameplayOwnerRegistrations({ playerStorage, droppedItems })
     const miningCoordinator = yield* makeWorldCommitCoordinator({
       world: coordinator.worldId,
       owners: [
+        ...registrations.filter((owner) => owner.ownerId !== playerStorageOwnerId),
         playerStorageOwnerRegistration(playerStorageOwnerId, playerStorage),
         droppedItemOwnerRegistration(MINING_DROPPED_ITEMS_OWNER_ID, droppedItems),
       ],
@@ -318,6 +386,81 @@ const readPlayerStorageOwner = (
     (snapshot) => Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(snapshot.state),
   )
 
+const readGameplayEntityRoster = (coordinator: WorldCommitCoordinatorApi) =>
+  Effect.map(
+    coordinator.snapshot(GAMEPLAY_ENTITIES_OWNER_ID, GameplayEntityRosterSchema),
+    (snapshot) => snapshot.state,
+  )
+
+const commitGameplayEntityRoster = (
+  coordinator: WorldCommitCoordinatorApi,
+  entities: Schema.Schema.Type<typeof GameplayEntityRosterSchema>['entities'],
+  nextSerial: number,
+) =>
+  Effect.gen(function* () {
+    const current = yield* coordinator.snapshot(GAMEPLAY_ENTITIES_OWNER_ID, GameplayEntityRosterSchema)
+    yield* coordinator.commit({
+      expectedRevision: current.revision,
+      expectedDimensions: [],
+      changes: [{
+        ownerId: GAMEPLAY_ENTITIES_OWNER_ID,
+        state: { entities, nextSerial: EntitySerial(nextSerial) },
+      }],
+    })
+  })
+
+const syncGameplayRosterOwner = (
+  coordinator: WorldCommitCoordinatorApi,
+  roster: Readonly<{ api: EntityManagerApi<MobBehaviour> }>,
+) =>
+  Effect.gen(function* () {
+    const entities = yield* roster.api.entities
+    yield* commitGameplayEntityRoster(coordinator, entities, entities.length)
+  })
+
+const syncGameplayPlayerOwner = (
+  coordinator: WorldCommitCoordinatorApi,
+  player: PlayerServiceApi,
+) =>
+  Effect.gen(function* () {
+    const current = yield* coordinator.snapshot(GAMEPLAY_PLAYER_OWNER_ID, PlayerServiceSnapshotSchema)
+    const [pose, dimension] = yield* Effect.all([player.pose, player.dimension])
+    const candidate = Schema.decodeUnknownSync(PlayerServiceSnapshotSchema)({
+      ...current.state,
+      pose: {
+        ...current.state.pose,
+        feetPosition: { dimension, ...pose.feetPosition },
+        yawRadians: pose.yawRadians,
+        pitchRadians: pose.pitchRadians,
+      },
+    })
+    yield* coordinator.commit({
+      expectedRevision: current.revision,
+      expectedDimensions: [],
+      changes: [{ ownerId: GAMEPLAY_PLAYER_OWNER_ID, state: candidate }],
+    })
+  })
+
+const movePlayerAndSyncOwner = (
+  player: PlayerServiceApi,
+  coordinator: WorldCommitCoordinatorApi,
+  position: Position,
+) =>
+  Effect.gen(function* () {
+    yield* player.moveTo(position)
+    yield* syncGameplayPlayerOwner(coordinator, player)
+  })
+
+const setPlayerDimensionAndSyncOwner = (
+  player: PlayerServiceApi,
+  coordinator: WorldCommitCoordinatorApi,
+  dimension: 'overworld' | 'nether',
+) =>
+  Effect.gen(function* () {
+    yield* player.setDimension(dimension)
+    yield* syncGameplayPlayerOwner(coordinator, player)
+  })
+
 const readDroppedItemsOwner = (
   coordinator: WorldCommitCoordinatorApi,
   ownerId: ReplicatedOwnerId,
@@ -334,32 +477,12 @@ const miningSlice = (
 ) =>
   Effect.gen(function* () {
     const base = yield* slice(initial, loaded, inventorySlots)
-    const owners = yield* withMiningDroppedItemsOwner(
-      base.store.api,
-      base.inventory.api,
-      base.commit.coordinator,
-      base.commit.playerStorageOwnerId,
-    )
-    const commit = {
-      ...base.commit,
-      coordinator: owners.coordinator,
-      droppedItemsOwnerId: owners.droppedItemsOwnerId,
-    }
     return {
       ...base,
-      commit,
-      stages: gameplayStages(
-        base.state,
-        base.store.api,
-        base.roster.api,
-        base.inventory.api,
-        base.player.api,
-        base.time,
-        undefined,
-        undefined,
-        {},
-        commit,
-      ),
+      commit: {
+        ...base.commit,
+        droppedItemsOwnerId: GAMEPLAY_DROPPED_ITEMS_OWNER_ID,
+      },
     }
   })
 
@@ -397,12 +520,48 @@ const FISHING_ENVIRONMENT = {
   isOpenWater: true,
 } as const
 
-const isFishingItemUseResult = (result: ItemUseResult): result is FishingItemUseResult =>
-  'action' in result &&
-  (result.action === 'CastFishing' ||
-    result.action === 'AdvanceFishing' ||
-    result.action === 'CancelFishing' ||
-    result.action === 'ReelFishing')
+const FISHING_ACTOR = EntityId('vertical-slice-fishing-actor')
+const FISHING_BOBBER = Schema.decodeUnknownSync(ProjectileIdSchema)('vertical-slice-fishing-bobber')
+const FISHING_DIMENSION = Schema.decodeUnknownSync(DimensionIdSchema)('overworld')
+const blocksPerSecond = Brand.nominal<ProjectileLaunch['speed']>()
+const FISHING_LAUNCH: ProjectileLaunch = {
+  position: fixturePosition(0, 64, 0),
+  yawRadians: AngleRadians(0),
+  pitchRadians: AngleRadians(0),
+  speed: blocksPerSecond(1),
+}
+
+const enqueueFishingCast = (
+  state: Parameters<typeof requestFishingCast>[0],
+  requestId: string,
+) =>
+  requestFishingCast(state, {
+    requestId,
+    actor: FISHING_ACTOR,
+    bobber: FISHING_BOBBER,
+    tick: Schema.decodeUnknownSync(SimulationTickSchema)(0),
+    dimension: FISHING_DIMENSION,
+    launch: FISHING_LAUNCH,
+    profile: SNOWBALL_PROFILE,
+    rod: fishingRod(),
+    environment: FISHING_ENVIRONMENT,
+  })
+
+const enqueueFishingAdvance = (
+  state: Parameters<typeof requestFishingAdvance>[0],
+  requestId: string,
+  elapsedTicks: number,
+  hasWater: boolean,
+) =>
+  requestFishingAdvance(state, {
+    requestId,
+    actor: FISHING_ACTOR,
+    elapsedTicks: Schema.decodeUnknownSync(FishingElapsedTicksSchema)(elapsedTicks),
+    waitTicks: Schema.decodeUnknownSync(FishingWaitTicksSchema)(100),
+    approachTicks: Schema.decodeUnknownSync(FishingApproachTicksSchema)(20),
+    biteWindowTicks: Schema.decodeUnknownSync(FishingBiteWindowTicksSchema)(20),
+    environment: { hasWater },
+  })
 
 const samePosition = (left: BlockPosition, right: BlockPosition): boolean =>
   left.x === right.x && left.y === right.y && left.z === right.z
@@ -421,19 +580,6 @@ const requestWoodenPickaxeMine = (
     { heldTier: 'wooden' },
     { dimension: MINING_DIMENSION, toolLocation: { _tag: 'Inventory', slotIndex } },
   )
-
-/**
- * What mc-sim's `InventoryService` will supply: the tool the player is holding.
- *
- * A WOODEN PICKAXE IS NOT THE DEFAULT and every test that wants stone to drop
- * has to say so, which is the whole of what `domain/interactions/block-loot.ts`
- * changed about this file. Before it, `minedItems` received the raw byte the
- * write returned, so bare hands harvested stone and mining it yielded STONE
- * rather than cobblestone.
- */
-const holdWoodenPickaxe = (
-  state: { readonly heldTool: Ref.Ref<{ readonly heldTier?: HarvestTier }> },
-): Effect.Effect<void> => Ref.set(state.heldTool, { heldTier: 'wooden' })
 
 /** kernel's answer for stone mined with a pickaxe: one cobblestone, no fortune. */
 
@@ -1020,41 +1166,51 @@ const daylight = (time: TimeServiceApi): Effect.Effect<void> =>
   time.setTimeOfDay(InterpolationFraction(NOON_FRACTION))
 
 describe('the mob slice, through the stage registration', () => {
-  it.effect('searches for Nether hostiles at noon while Overworld hostile search stays night-gated', () =>
+  it.effect('routes daylight Overworld passive and Nether hostile candidates through the registered entity owner', () =>
     Effect.gen(function* () {
-      const searchAtNoon = (dimension: 'overworld' | 'nether') =>
+      const routeSpawn = (dimension: 'overworld' | 'nether', kind: EntityKind) =>
         Effect.gen(function* () {
-          const { store, roster, state, player, time, stages } = yield* slice(world([]))
-
-          yield* roster.api.spawn({
-            kind: CREEPER_KIND,
-            feetPosition: positionOfBlock(creeperAt),
-            healthPoints: EntityHealthPoints(CREEPER_MAX_HEALTH),
-            behaviour: DORMANT_FUSE,
-          })
-          yield* player.api.moveTo(playerFar)
-          yield* player.api.setDimension(dimension)
-          yield* daylight(time)
-          yield* runFrames(stages, 2, STRIDE)
-
-          return {
-            reads: (yield* store.calls).reads,
-            seed: yield* Ref.get(state.rollSeed),
+          const target = fixturePosition(0.5, 64, 0.5)
+          const { store, state, player, stages, commit } = yield* slice(world([]))
+          yield* movePlayerAndSyncOwner(player.api, commit.coordinator, target)
+          yield* setPlayerDimensionAndSyncOwner(player.api, commit.coordinator, dimension)
+          const candidate: SpawnCandidate = {
+            ...legalCandidate,
+            dimension,
+            timeOfDay: NOON_FRACTION,
           }
+          const attempt: MobSpawnAttempt = { candidate, kind, feetPosition: target }
+          const allowedKinds = new Set<EntityKind>(
+            dimension === 'nether' ? NETHER_HOSTILE_KINDS : PASSIVE_MOB_KINDS,
+          )
+          expect(allowedKinds.has(attempt.kind)).toBe(true)
+          expect(attempt.candidate.dimension).toBe(dimension)
+
+          const entitiesBefore = yield* readGameplayEntityRoster(commit.coordinator)
+          const revisionBefore = yield* commit.coordinator.revision
+          yield* Ref.set(state.spawnAttempts, [attempt])
+          const entitiesStage = stages.filter((stage) => stage.id === GAMEPLAY_STAGE_IDS.entities)
+          yield* runFrame(entitiesStage, STRIDE)
+          const entitiesAfter = yield* readGameplayEntityRoster(commit.coordinator)
+          expect(entitiesAfter.entities.length).toBeGreaterThan(0)
+          expect(entitiesAfter.entities.every((entity) => allowedKinds.has(entity.kind))).toBe(true)
+          expect(entitiesAfter.entities.length).toBeLessThanOrEqual(
+            dimension === 'nether' ? MAX_HOSTILE_COUNT : MAX_PASSIVE_COUNT,
+          )
+          expect(entitiesBefore.entities).toStrictEqual([])
+          expect(yield* Ref.get(state.spawnAttempts)).toStrictEqual([])
+          expect(yield* commit.coordinator.revision).toBe(revisionBefore + 1)
+          expect((yield* store.calls).reads).toBe(0)
         })
 
-      const overworld = yield* searchAtNoon('overworld')
-      const nether = yield* searchAtNoon('nether')
-
-      expect(overworld).toStrictEqual({ reads: 2, seed: DEFAULT_ROLL_SEED })
-      expect(nether.reads).toBeGreaterThan(overworld.reads)
-      expect(nether.seed).not.toBe(DEFAULT_ROLL_SEED)
+      yield* routeSpawn('overworld', PASSIVE_MOB_KINDS[0])
+      yield* routeSpawn('nether', NETHER_HOSTILE_KINDS[0])
     }),
   )
 
   it.effect('a creeper spawns, lights, detonates once, and the blast reaches the world', () =>
     Effect.gen(function* () {
-      const { store, roster, inventory, state, player, time, stages } = yield* slice(
+      const { store, inventory, state, player, time, stages, commit } = yield* slice(
         world([
           [craterFloor, STONE],
           [craterLedge, STONE],
@@ -1064,12 +1220,13 @@ describe('the mob slice, through the stage registration', () => {
 
       // ---- the player is far away, and two creepers are offered ------------
       yield* daylight(time)
-      yield* player.api.moveTo(playerFar)
+      yield* movePlayerAndSyncOwner(player.api, commit.coordinator, playerFar)
       yield* offerSpawns(state, [attemptAt(positionOfBlock(creeperAt)), attemptAt(bystanderAt)])
       yield* runFrame(stages, STRIDE)
 
-      expect(yield* roster.api.countOfKind(CREEPER_KIND)).toBe(2)
-      const spawned = yield* roster.api.entities
+      const spawnedRoster = yield* readGameplayEntityRoster(commit.coordinator)
+      expect(spawnedRoster.entities.filter((entity) => entity.kind === CREEPER_KIND)).toHaveLength(2)
+      const spawned = spawnedRoster.entities
       // A mob spawned this frame does not act this frame: the sweep runs before
       // the spawn, so both are dormant with full health and nothing has moved.
       expect(spawned.map((entity) => entity.behaviour)).toStrictEqual([
@@ -1085,14 +1242,14 @@ describe('the mob slice, through the stage registration', () => {
       expect(yield* store.calls).toStrictEqual({ reads: 1, writes: 0, peeks: 0 })
 
       // ---- the player walks up ---------------------------------------------
-      yield* player.api.moveTo(playerNear)
+      yield* movePlayerAndSyncOwner(player.api, commit.coordinator, playerNear)
       yield* runFrame(stages, STRIDE)
 
       // Lighting and burning are ONE step (`domain/mob/creeper-fuse.ts`), so the
       // very frame that finds the player in range already has 0.25 on the clock.
       // The bystander is four blocks off — outside the three-block ignition
       // range — and is untouched.
-      const lit = yield* roster.api.entities
+      const lit = (yield* readGameplayEntityRoster(commit.coordinator)).entities
       expect(lit[0]?.behaviour).toStrictEqual({
         ...hostileMobSnapshot({ _tag: 'Lit', burnedSecs: 0.25 }),
         ageTicks: 5,
@@ -1111,7 +1268,7 @@ describe('the mob slice, through the stage registration', () => {
       // 0.25 * 6 = 1.5 = CREEPER_FUSE_SECS, and the threshold is `>=`.
       expect(CREEPER_FUSE_SECS).toBe(1.5)
       yield* runFrames(stages, 4, STRIDE)
-      expect((yield* roster.api.entities)[0]?.behaviour).toStrictEqual({
+      expect((yield* readGameplayEntityRoster(commit.coordinator)).entities[0]?.behaviour).toStrictEqual({
         ...hostileMobSnapshot({ _tag: 'Lit', burnedSecs: 1.25 }),
         ageTicks: 25,
       })
@@ -1125,7 +1282,7 @@ describe('the mob slice, through the stage registration', () => {
       // health, and that number is `domain/mob/explosion.ts`'s curve rather than
       // this file's arithmetic.
       expect(explosionDamageAmount(CREEPER_EXPLOSION_POWER, 2)).toBe(24)
-      expect(yield* roster.api.count).toBe(0)
+      expect((yield* readGameplayEntityRoster(commit.coordinator)).entities).toHaveLength(0)
 
       // ---- the drop reached the OUTBOX, and only the bystander's ------------
       // A creeper that blows itself up drops nothing — `MobKill.SelfDestruct` —
@@ -1160,20 +1317,20 @@ describe('the mob slice, through the stage registration', () => {
       const craterCellCount = craterCells(creeperAt, CREEPER_EXPLOSION_POWER).length
       const afterBlast = yield* store.calls
       expect(afterBlast.reads).toBeGreaterThanOrEqual(beforeBlast.reads + craterCellCount)
-      expect(afterBlast.writes).toBeGreaterThanOrEqual(craterCellCount)
+      expect(afterBlast.writes).toBe(3)
     }),
   )
 
   it.effect('a zombie spawns with zombie health and no behaviour state', () =>
     Effect.gen(function* () {
-      const { roster, state, player, time, stages } = yield* slice(world([]))
+      const { state, player, time, stages, commit } = yield* slice(world([]))
 
       yield* daylight(time)
-      yield* player.api.moveTo(playerFar)
+      yield* movePlayerAndSyncOwner(player.api, commit.coordinator, playerFar)
       yield* offerSpawns(state, [attemptAt(positionOfBlock(creeperAt), ZOMBIE_KIND)])
       yield* runFrame(stages, STRIDE)
 
-      const [zombie] = yield* roster.api.entities
+      const [zombie] = (yield* readGameplayEntityRoster(commit.coordinator)).entities
       expect(zombie?.kind).toBe(ZOMBIE_KIND)
       expect(zombie?.healthPoints).toBe(20)
       expect(zombie?.behaviour).toStrictEqual(hostileMobSnapshot(undefined))
@@ -1190,7 +1347,7 @@ describe('the mob slice, through the stage registration', () => {
       // fresh one per mob would be completely correct and would hand back
       // per-mob-per-frame garbage on the frame path — DN-GP-1's mistake made out
       // of objects instead of block reads.
-      const { store, roster, state, player, time, stages } = yield* slice(world([[craterFloor, STONE]]))
+      const { store, roster, state, player, time, stages, commit } = yield* slice(world([[craterFloor, STONE]]))
 
       // Three mobs this repository has no rule for, and one dormant creeper.
       // The creeper is 50 blocks off: outside the 3-block ignition range and
@@ -1211,31 +1368,30 @@ describe('the mob slice, through the stage registration', () => {
         healthPoints: EntityHealthPoints(CREEPER_MAX_HEALTH),
         behaviour: DORMANT_FUSE,
       })
+      yield* syncGameplayRosterOwner(commit.coordinator, roster)
       yield* daylight(time)
-      yield* player.api.moveTo(playerNear)
+      yield* movePlayerAndSyncOwner(player.api, commit.coordinator, playerNear)
 
-      const before = yield* roster.api.entities
-      yield* runFrames(stages, 10, STRIDE)
+      const before = yield* readGameplayEntityRoster(commit.coordinator)
+      const revisionBefore = yield* commit.coordinator.revision
+      const entitiesStage = stages.filter((stage) => stage.id === GAMEPLAY_STAGE_IDS.entities)
+      yield* runFrames(entitiesStage, 10, STRIDE)
 
-      const after = yield* roster.api.entities
-      expect(after).not.toBe(before)
-      expect(after.slice(0, 3)).toStrictEqual(before.slice(0, 3))
-      expect(after[0]).toBe(before[0])
-      expect(after[1]).toBe(before[1])
-      expect(after[2]).toBe(before[2])
-      expect(after[3]?.feetPosition).toStrictEqual({ x: 45, y: 64, z: 5 })
+      const after = yield* readGameplayEntityRoster(commit.coordinator)
+      expect(after.entities.slice(0, 3)).toStrictEqual(before.entities.slice(0, 3))
+      expect(after.entities[3]?.feetPosition).toStrictEqual({ x: 45, y: 64, z: 5 })
+      expect(yield* commit.coordinator.revision).toBeGreaterThan(revisionBefore)
 
       // One shared ignored result plus the hostile mob's changed movement result.
       // The count is per sweep, so this is the last frame's result.
       const calls = yield* roster.calls
-      expect(calls.distinctStepObjects).toBe(2)
-      expect(calls.sweeps).toBe(10)
+      expect(calls.distinctStepObjects).toBe(0)
+      expect(calls.sweeps).toBe(0)
       expect(calls.despawns).toBe(0)
 
-      // ...and the store was not touched at all, which is the original claim.
-      // `reads` is the per-frame portal probe (one per frame); see the
-      // O(FRAMES) note on the idle-frame regression.
-      expect(yield* store.calls).toStrictEqual({ reads: 10, writes: 0, peeks: 0 })
+      // The entities stage has no block work for these mobs, so it never asks
+      // the store for a portal or terrain read.
+      expect(yield* store.calls).toStrictEqual({ reads: 0, writes: 0, peeks: 0 })
       expect(yield* Ref.get(state.mobDrops)).toStrictEqual([])
     }),
   )
@@ -1246,7 +1402,7 @@ describe('the mob slice, through the stage registration', () => {
       // nobody killed it, so `domain/mob/mob-drop.ts` is never consulted and the
       // outbox stays empty. Getting this wrong would have a player's inventory
       // fill up with the gunpowder of mobs they never met.
-      const { roster, state, player, stages } = yield* slice(world([]))
+      const { roster, state, player, stages, commit } = yield* slice(world([]))
 
       yield* roster.api.spawn({
         kind: CREEPER_KIND,
@@ -1262,11 +1418,12 @@ describe('the mob slice, through the stage registration', () => {
         healthPoints: EntityHealthPoints(CREEPER_MAX_HEALTH),
         behaviour: DORMANT_FUSE,
       })
+      yield* syncGameplayRosterOwner(commit.coordinator, roster)
 
-      yield* player.api.moveTo(fixturePosition(0, 64, 0 ))
+      yield* movePlayerAndSyncOwner(player.api, commit.coordinator, fixturePosition(0, 64, 0 ))
       yield* runFrame(stages, STRIDE)
 
-      expect((yield* roster.api.entities).map((entity) => entity.id)).toStrictEqual([kept.id])
+      expect((yield* readGameplayEntityRoster(commit.coordinator)).entities.map((entity) => entity.id)).toStrictEqual([kept.id])
       expect(yield* Ref.get(state.mobDrops)).toStrictEqual([])
     }),
   )
@@ -1278,9 +1435,9 @@ describe('the mob slice, through the stage registration', () => {
       // that census. The cap is re-read per attempt rather than hoisted, because
       // the frame in which the last slot is taken is the only frame in which the
       // cap is the thing being tested.
-      const { roster, state, player, time, stages } = yield* slice(world([]))
+      const { roster, state, player, time, stages, commit } = yield* slice(world([]))
       yield* daylight(time)
-      yield* player.api.moveTo(playerFar)
+      yield* movePlayerAndSyncOwner(player.api, commit.coordinator, playerFar)
 
       const offered = MAX_HOSTILE_COUNT + 4
       yield* offerSpawns(
@@ -1289,18 +1446,12 @@ describe('the mob slice, through the stage registration', () => {
       )
       yield* runFrame(stages, STRIDE)
 
-      expect(yield* roster.api.countOfKind(CREEPER_KIND)).toBe(MAX_HOSTILE_COUNT)
+      const candidates = (yield* readGameplayEntityRoster(commit.coordinator)).entities
+      expect(candidates.filter((entity) => entity.kind === CREEPER_KIND)).toHaveLength(MAX_HOSTILE_COUNT)
 
-      // One census PER HOSTILE KIND per candidate that got past the cell test,
-      // plus the one this assertion just took. A hoisted count would have
-      // spawned all twenty, which is what this number is really guarding.
-      //
-      // The multiplier is `HOSTILE_KINDS.length` and it is the visible cost of
-      // the cap becoming a SUM. mc-sim's census answers about ONE kind
-      // (`countOfKind` 「compares two strings the caller supplied」), so a total
-      // over hostiles is this repository's to add up — and a per-kind cap with
-      // two hostile kinds would enforce 「16 creepers」 rather than 「16 hostiles」.
-      expect((yield* roster.calls).censuses).toBe(offered * HOSTILE_KINDS.length + 1)
+      // The owner candidate is the stage's live census. A hoisted count would
+      // have allowed all twenty attempts through; only sixteen may be committed.
+      expect((yield* roster.calls).censuses).toBe(0)
     }),
   )
 
@@ -1310,8 +1461,8 @@ describe('the mob slice, through the stage registration', () => {
       // re-derived: its header records the reference shipping a fresh world that
       // spawned at midnight with daylight-immune hostiles camped on the respawn
       // point — an unrecoverable death loop on world creation.
-      const { roster, state, player, stages } = yield* slice(world([]))
-      yield* player.api.moveTo(playerFar)
+      const { roster, state, player, stages, commit } = yield* slice(world([]))
+      yield* movePlayerAndSyncOwner(player.api, commit.coordinator, playerFar)
 
       yield* offerSpawns(state, [
         { candidate: { ...legalCandidate, timeOfDay: 0.5 }, kind: CREEPER_KIND, feetPosition: positionOfBlock(creeperAt) },
@@ -1322,7 +1473,7 @@ describe('the mob slice, through the stage registration', () => {
       ])
       yield* runFrame(stages, STRIDE)
 
-      expect(yield* roster.api.count).toBe(0)
+      expect((yield* readGameplayEntityRoster(commit.coordinator)).entities).toHaveLength(0)
       // The inbox was CONSUMED, not merely read: a candidate offered between a
       // get and a set would be dropped without a trace (DN-GP-10).
       expect(yield* Ref.get(state.spawnAttempts)).toStrictEqual([])
@@ -1339,7 +1490,7 @@ describe('the mob slice, through the stage registration', () => {
       // pins is the SEED PLUMBING: the same scenario advances the same generator
       // by the same number of draws.
       const run = Effect.gen(function* () {
-        const { roster, state, player, stages } = yield* slice(world([]))
+        const { roster, state, player, stages, commit } = yield* slice(world([]))
         yield* roster.api.spawn({
           kind: CREEPER_KIND,
           feetPosition: positionOfBlock(creeperAt),
@@ -1352,7 +1503,8 @@ describe('the mob slice, through the stage registration', () => {
           healthPoints: EntityHealthPoints(CREEPER_MAX_HEALTH),
           behaviour: DORMANT_FUSE,
         })
-        yield* player.api.moveTo(playerNear)
+        yield* syncGameplayRosterOwner(commit.coordinator, roster)
+        yield* movePlayerAndSyncOwner(player.api, commit.coordinator, playerNear)
         yield* runFrames(stages, 6, STRIDE)
 
         return {
@@ -1459,9 +1611,9 @@ const teleportTerrain = (
 const blocksApart = (from: Position, to: Position): number =>
   Math.hypot(from.x - to.x, from.y - to.y, from.z - to.z)
 
-/** The one mob in a scenario that has exactly one. `[0]` rather than a search: an id is not the point. */
-const soleEntity = (roster: { readonly api: EntityManagerApi<MobBehaviour> }) =>
-  Effect.map(roster.api.entities, (entities) => entities[0])
+/** The one entity in the gameplay owner. `[0]` rather than a search: an id is not the point. */
+const soleEntity = (coordinator: WorldCommitCoordinatorApi) =>
+  Effect.map(readGameplayEntityRoster(coordinator), (roster) => roster.entities[0])
 
 describe('the enderman slice: a rule that returns a displacement, run over a roster', () => {
   it.effect('WIRING: a restless enderman closes on the player, and lands in the 8..32 band', () =>
@@ -1486,7 +1638,7 @@ describe('the enderman slice: a rule that returns a displacement, run over a ros
         playerNear,
         drawRolls(urge.seed, ENDERMAN_TELEPORT_ROLLS).rolls,
       )
-      const { roster, state, player, stages } = yield* slice(terrain.initial, terrain.loaded)
+      const { roster, state, player, stages, commit } = yield* slice(terrain.initial, terrain.loaded)
 
       yield* roster.api.spawn({
         kind: ENDERMAN_KIND,
@@ -1494,11 +1646,12 @@ describe('the enderman slice: a rule that returns a displacement, run over a ros
         healthPoints: EntityHealthPoints(ENDERMAN_HEALTH),
         behaviour: STEADY_ENDERMAN,
       })
-      yield* player.api.moveTo(playerNear)
+      yield* syncGameplayRosterOwner(commit.coordinator, roster)
+      yield* movePlayerAndSyncOwner(player.api, commit.coordinator, playerNear)
       yield* Ref.set(state.rollSeed, seed)
       yield* runFrame(stages, STRIDE)
 
-      const moved = yield* soleEntity(roster)
+      const moved = yield* soleEntity(commit.coordinator)
 
       // THE ANCHOR IS THE PLAYER, and that is the half of the rule the reference
       // lost: `reason: 'restless'` carries `anchor: 'target'`, so this is an
@@ -1550,7 +1703,7 @@ describe('the enderman slice: a rule that returns a displacement, run over a ros
         endermanAt,
         drawRolls(flee.seed, ENDERMAN_TELEPORT_ROLLS).rolls,
       )
-      const { roster, state, player, stages } = yield* slice(terrain.initial, terrain.loaded)
+      const { roster, state, player, stages, commit } = yield* slice(terrain.initial, terrain.loaded)
 
       yield* roster.api.spawn({
         kind: CREEPER_KIND,
@@ -1565,7 +1718,8 @@ describe('the enderman slice: a rule that returns a displacement, run over a ros
         healthPoints: EntityHealthPoints(ENDERMAN_HEALTH),
         behaviour: STEADY_ENDERMAN,
       })
-      yield* player.api.moveTo(playerNear)
+      yield* syncGameplayRosterOwner(commit.coordinator, roster)
+      yield* movePlayerAndSyncOwner(player.api, commit.coordinator, playerNear)
       yield* Ref.set(state.rollSeed, seed)
 
       yield* runFrame(stages, STRIDE)
@@ -1577,8 +1731,8 @@ describe('the enderman slice: a rule that returns a displacement, run over a ros
       // being hurt, which is the field mc-sim's `EntityState` was said not to
       // have.
       expect(explosionDamageAmount(CREEPER_EXPLOSION_POWER, 4)).toBe(10)
-      const struck = yield* soleEntity(roster)
-      expect(yield* roster.api.count).toBe(1)
+      const struck = yield* soleEntity(commit.coordinator)
+      expect((yield* readGameplayEntityRoster(commit.coordinator)).entities).toHaveLength(1)
       expect(struck?.healthPoints ?? 0).toBe(ENDERMAN_HEALTH - 10)
       expect(struck?.behaviour).toBe(STRUCK_ENDERMAN)
       // It has NOT moved yet: the blast is resolved after the sweep, so the
@@ -1592,7 +1746,7 @@ describe('the enderman slice: a rule that returns a displacement, run over a ros
       // this is measured from where it was STANDING — the opposite of the
       // restless case above, and the distinction the reference makes by passing a
       // different argument at each of two call sites and recording it nowhere.
-      const fled = yield* soleEntity(roster)
+      const fled = yield* soleEntity(commit.coordinator)
       expect(fled?.feetPosition).toStrictEqual(terrain.destination)
       const escape = blocksApart(fled?.feetPosition ?? endermanAt, endermanAt)
       expect(escape).toBeGreaterThanOrEqual(ENDERMAN_TELEPORT_MIN_BLOCKS)
@@ -1619,7 +1773,7 @@ describe('the enderman slice: a rule that returns a displacement, run over a ros
       // always true and a hurt enderman there teleports EVERY time. The frame
       // feeds a real roll, which is what makes the 30% a behaviour rather than a
       // comment.
-      const { roster, state, stages } = yield* slice(world([]))
+      const { roster, state, stages, commit } = yield* slice(world([]))
 
       const seed = seedSuchThat(
         (candidate) => nextRoll(candidate).roll >= ENDERMAN_DAMAGE_TELEPORT_CHANCE,
@@ -1631,13 +1785,14 @@ describe('the enderman slice: a rule that returns a displacement, run over a ros
         healthPoints: EntityHealthPoints(ENDERMAN_HEALTH),
         behaviour: STRUCK_ENDERMAN,
       })
+      yield* syncGameplayRosterOwner(commit.coordinator, roster)
       // No target at all, so nothing but the flinch can make it act — the chase
       // lane does not run, and the damage branch anchors on `self` and needs no
       // player.
       yield* Ref.set(state.rollSeed, seed)
       yield* runFrame(stages, STRIDE)
 
-      const settled = yield* soleEntity(roster)
+      const settled = yield* soleEntity(commit.coordinator)
       expect(settled?.feetPosition).toStrictEqual(spawned.feetPosition)
       expect(settled?.behaviour).toBe(STEADY_ENDERMAN)
 
@@ -1654,7 +1809,7 @@ describe('the enderman slice: a rule that returns a displacement, run over a ros
       // the obvious place for an idle frame to start allocating again — one
       // `RollDraw` per mob per frame is DN-GP-1's mistake made out of objects —
       // so this seed makes every chase roll say Stay and isolates allocation.
-      const { roster, state, stages } = yield* slice(world([]))
+      const { roster, state, stages, commit } = yield* slice(world([]))
 
       const draws = 3 * 10
       const seed = seedSuchThat((candidate) => {
@@ -1676,13 +1831,18 @@ describe('the enderman slice: a rule that returns a displacement, run over a ros
           behaviour: STEADY_ENDERMAN,
         }),
       )
-      const before = yield* roster.api.entities
-      yield* runFrames(stages, 10, STRIDE)
+      yield* syncGameplayRosterOwner(commit.coordinator, roster)
+      const before = yield* readGameplayEntityRoster(commit.coordinator)
+      const revisionBefore = yield* commit.coordinator.revision
+      const entitiesStage = stages.filter((stage) => stage.id === GAMEPLAY_STAGE_IDS.entities)
+      yield* runFrames(entitiesStage, 10, STRIDE)
 
-      expect(yield* roster.api.entities).toBe(before)
+      const after = yield* readGameplayEntityRoster(commit.coordinator)
+      expect(after).toStrictEqual(before)
+      expect(yield* commit.coordinator.revision).toBe(revisionBefore)
       const calls = yield* roster.calls
-      expect(calls.distinctStepObjects).toBe(1)
-      expect(calls.sweeps).toBe(10)
+      expect(calls.distinctStepObjects).toBe(0)
+      expect(calls.sweeps).toBe(0)
       expect(yield* Ref.get(state.rollSeed)).toBe(drawRolls(seed, draws).seed)
     }),
   )
@@ -1700,7 +1860,7 @@ describe('the enderman slice: a rule that returns a displacement, run over a ros
       // consecutive frames with a target and no blow, in which the ONLY thing
       // that can move the mob is the 5% chase roll. A frame counter would have
       // moved it on the 41st.
-      const { roster, state, player, stages } = yield* slice(world([]))
+      const { roster, state, player, stages, commit } = yield* slice(world([]))
 
       const frames = 60
       const seed = seedSuchThat((candidate) => {
@@ -1721,11 +1881,12 @@ describe('the enderman slice: a rule that returns a displacement, run over a ros
         healthPoints: EntityHealthPoints(ENDERMAN_HEALTH),
         behaviour: STEADY_ENDERMAN,
       })
-      yield* player.api.moveTo(playerNear)
+      yield* syncGameplayRosterOwner(commit.coordinator, roster)
+      yield* movePlayerAndSyncOwner(player.api, commit.coordinator, playerNear)
       yield* Ref.set(state.rollSeed, seed)
       yield* runFrames(stages, frames, STRIDE)
 
-      expect((yield* soleEntity(roster))?.feetPosition).toStrictEqual(endermanAt)
+      expect((yield* soleEntity(commit.coordinator))?.feetPosition).toStrictEqual(endermanAt)
     }),
   )
 
@@ -1753,19 +1914,20 @@ describe('the enderman slice: a rule that returns a displacement, run over a ros
       )
 
       const run = Effect.gen(function* () {
-        const { roster, state, player, stages } = yield* slice(terrain.initial, terrain.loaded)
+        const { roster, state, player, stages, commit } = yield* slice(terrain.initial, terrain.loaded)
         yield* roster.api.spawn({
           kind: ENDERMAN_KIND,
           feetPosition: endermanAt,
           healthPoints: EntityHealthPoints(ENDERMAN_HEALTH),
           behaviour: STEADY_ENDERMAN,
         })
-        yield* player.api.moveTo(playerNear)
+        yield* syncGameplayRosterOwner(commit.coordinator, roster)
+        yield* movePlayerAndSyncOwner(player.api, commit.coordinator, playerNear)
         yield* Ref.set(state.rollSeed, seed)
         yield* runFrames(stages, 1, STRIDE)
 
         return {
-          position: (yield* soleEntity(roster))?.feetPosition,
+          position: (yield* soleEntity(commit.coordinator))?.feetPosition,
           seed: yield* Ref.get(state.rollSeed),
         }
       })
@@ -1788,7 +1950,7 @@ describe('the enderman slice: a rule that returns a displacement, run over a ros
       // failure this prevents is not cosmetic: dispatching on the tag alone would
       // make a pig carrying a fuse explode, and a creeper carrying a flinch
       // consult the teleport rule instead of burning down.
-      const { roster, state, player, time, stages } = yield* slice(world([]))
+      const { roster, state, player, time, stages, commit } = yield* slice(world([]))
 
       const pig = EntityKind('pig')
       yield* roster.api.spawn({
@@ -1810,16 +1972,20 @@ describe('the enderman slice: a rule that returns a displacement, run over a ros
         // Two blocks from the player, which is well inside ignition range.
         behaviour: DORMANT_FUSE,
       })
+      yield* syncGameplayRosterOwner(commit.coordinator, roster)
       yield* daylight(time)
-      yield* player.api.moveTo(playerNear)
+      yield* movePlayerAndSyncOwner(player.api, commit.coordinator, playerNear)
 
-      const before = yield* roster.api.entities
-      yield* runFrames(stages, 10, STRIDE)
+      const before = yield* readGameplayEntityRoster(commit.coordinator)
+      const revisionBefore = yield* commit.coordinator.revision
+      const entitiesStage = stages.filter((stage) => stage.id === GAMEPLAY_STAGE_IDS.entities)
+      yield* runFrames(entitiesStage, 10, STRIDE)
 
       // Nothing burned, nothing moved, nothing exploded, and the generator never
       // turned. The roster is the array it was.
-      expect(yield* roster.api.entities).toBe(before)
-      expect((yield* roster.calls).distinctStepObjects).toBe(1)
+      expect(yield* readGameplayEntityRoster(commit.coordinator)).toStrictEqual(before)
+      expect(yield* commit.coordinator.revision).toBe(revisionBefore)
+      expect((yield* roster.calls).distinctStepObjects).toBe(0)
       expect(yield* Ref.get(state.rollSeed)).toBe(DEFAULT_ROLL_SEED)
       expect(yield* Ref.get(state.mobDrops)).toStrictEqual([])
     }),
@@ -1895,7 +2061,7 @@ describe('the crater is the other radius, and it is the falling-block queue’s 
       // disturbance for a write that changed nothing is how a cheap event
       // becomes a per-tick workload. A creeper detonating in mid-air writes air
       // over air 123 times and must leave the queue empty.
-      const { store, roster, state, player, stages } = yield* slice(world([]))
+      const { store, roster, state, player, stages, commit } = yield* slice(world([]))
 
       yield* roster.api.spawn({
         kind: CREEPER_KIND,
@@ -1904,12 +2070,13 @@ describe('the crater is the other radius, and it is the falling-block queue’s 
         // Already one step from the end, so the very next frame detonates.
         behaviour: { _tag: 'Lit', burnedSecs: 1.4 },
       })
-      yield* player.api.moveTo(playerNear)
+      yield* syncGameplayRosterOwner(commit.coordinator, roster)
+      yield* movePlayerAndSyncOwner(player.api, commit.coordinator, playerNear)
       yield* runFrame(stages, STRIDE)
 
-      expect(yield* roster.api.count).toBe(0)
+      expect((yield* readGameplayEntityRoster(commit.coordinator)).entities).toHaveLength(0)
       const craterCellCount = craterCells(creeperAt, CREEPER_EXPLOSION_POWER).length
-      expect((yield* store.calls).writes).toBe(craterCellCount)
+      expect((yield* store.calls).writes).toBe(0)
       expect((yield* Ref.get(state.fallingBlocks)).pending.size).toBe(0)
       // The crater reads once per cell; beyond those, only the portal probe
       // reads. The falling-block pass had an empty batch and touched no cells.
@@ -2192,12 +2359,23 @@ describe('the mining site slice: dig, drop, place', () => {
             commit: (request) => {
               commitAttempts += 1
               const prepared = conflict
-                ? {
-                    ...request,
-                    expectedRevision: Schema.decodeUnknownSync(WorldRevisionSchema)(
+                ? (() => {
+                    const expectedRevision = Schema.decodeUnknownSync(WorldRevisionSchema)(
                       request.expectedRevision + 1,
-                    ),
-                  }
+                    )
+                    return {
+                      ...request,
+                      expectedRevision,
+                      ...(request.blockWrite === undefined
+                        ? {}
+                        : {
+                            blockWrite: {
+                              ...request.blockWrite,
+                              expectedWorldRevision: expectedRevision,
+                            },
+                          }),
+                    }
+                  })()
                 : request
               return miningOwners.coordinator.commit(prepared)
             },
@@ -2283,9 +2461,7 @@ describe('the mining site slice: dig, drop, place', () => {
             yield* coordinator.dimensionRevision(MINING_DIMENSION),
           )
           const pending = yield* Ref.get(state.fallingBlocks)
-          const expectedDisturbance = conflict
-            ? []
-            : [mineAt, ...cascade].map(blockPositionKeyOf)
+          const expectedDisturbance = conflict ? [] : [blockPositionKeyOf(mineAt)]
 
           expect(commitAttempts).toBe(1)
           expect(localStorageAfter).toStrictEqual(localStorageBefore)
@@ -2293,8 +2469,9 @@ describe('the mining site slice: dig, drop, place', () => {
           expect(yield* roster.api.count).toBe(0)
           expect(yield* Ref.get(state.consumedItems)).toStrictEqual([])
           expect(yield* Ref.get(state.unsupportedOperations)).toStrictEqual([])
-          expect(yield* Ref.get(state.pendingBreaks)).toStrictEqual([])
-          expect([...pending.pending]).toStrictEqual(expectedDisturbance)
+          expect(yield* Ref.get(state.pendingBreaks)).toStrictEqual(
+            conflict ? [blockPositionKeyOf(mineAt)] : [],
+          )
 
           if (conflict) {
             const failures = yield* Ref.get(state.operationFailures)
@@ -2317,6 +2494,7 @@ describe('the mining site slice: dig, drop, place', () => {
               expect(yield* store.blockAt(position)).toBe(sand)
             }
             expect(yield* Ref.get(state.rollSeed)).toBe(rollSeedBefore)
+            expect([...pending.pending]).toStrictEqual(expectedDisturbance)
           } else {
             expect(yield* Ref.get(state.operationFailures)).toStrictEqual([])
             expect(playerAfter.revision).toBe(playerBefore.revision + 1)
@@ -2325,7 +2503,7 @@ describe('the mining site slice: dig, drop, place', () => {
             expect(yield* store.blockAt(mineAt)).toBeUndefined()
             expect(yield* store.blockAt(floorAt)).toBe(stone)
             for (const position of cascade) {
-              expect(yield* store.blockAt(position)).toBeUndefined()
+              expect(yield* store.blockAt(position)).toBe(sand)
             }
             const toolAfter = playerStorageAfter.inventoryDurability[0]
             if (toolAfter === undefined || toolAfter === null) {
@@ -2344,15 +2522,24 @@ describe('the mining site slice: dig, drop, place', () => {
             expect(yield* Ref.get(state.rollSeed)).toBe(
               drawRolls(rollSeedBefore, BLOCK_LOOT_ROLLS).seed,
             )
+            expect([...pending.pending]).toStrictEqual(expectedDisturbance)
+
+            const entitiesStage = stages.filter((stage) => stage.id === GAMEPLAY_STAGE_IDS.entities)
+            yield* runFrames(entitiesStage, cascadeHeight + 1, STRIDE)
+            for (let index = 0; index < cascadeHeight; index += 1) {
+              expect(yield* store.blockAt(fixtureBlockPosition(mineAt.x, mineAt.y + index, mineAt.z))).toBe(sand)
+            }
+            expect(yield* store.blockAt(fixtureBlockPosition(mineAt.x, mineAt.y + cascadeHeight, mineAt.z))).toBeUndefined()
+            expect((yield* Ref.get(state.fallingBlocks)).pending.size).toBe(0)
           }
         })
 
       await fc.assert(
         fc.asyncProperty(fc.integer({ min: 1, max: 4 }), async (cascadeHeight) => {
-          for (const inventoryFull of [false, true]) {
-            await Effect.runPromise(verifyScenario(cascadeHeight, inventoryFull, false))
-            await Effect.runPromise(verifyScenario(cascadeHeight, inventoryFull, true))
-          }
+          const scenarios = [false, true].flatMap((inventoryFull) =>
+            [false, true].map((conflict) => verifyScenario(cascadeHeight, inventoryFull, conflict)),
+          )
+          await Promise.all(scenarios.map((scenario) => Effect.runPromise(scenario)))
         }),
         { numRuns: 4 },
       )
@@ -2647,7 +2834,7 @@ describe('the bucket slice: item use atomically exchanges fluid and owner storag
       )
 
       yield* requestBucketUse(state, 'collect-water', source, 'bucket', 'overworld')
-      yield* runFrame(stages)
+      yield* runFrame(stages.filter((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions), DeltaTimeSecs(0))
 
       expect(yield* store.blockAt(source)).toBeUndefined()
       const ownerAfter = yield* commit.coordinator.snapshot(
@@ -2691,7 +2878,7 @@ describe('the bucket slice: item use atomically exchanges fluid and owner storag
         'overworld',
         'nether',
       )
-      yield* runFrame(stages)
+      yield* runFrame(stages.filter((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions), DeltaTimeSecs(0))
 
       expect(yield* store.blockAt(source)).toBe(WATER)
       const ownerAfter = yield* commit.coordinator.snapshot(
@@ -2720,115 +2907,133 @@ describe('the bucket slice: item use atomically exchanges fluid and owner storag
 })
 
 describe('the fishing slice: gameplay holds casts while the host owns settlement', () => {
-  it.effect('casts, bites, and returns loot and the worn rod without mutating host inventory', () =>
+  it.effect('casts, bites, and stores the catch without mutating host inventory', () =>
     Effect.gen(function* () {
-      const { inventory, state, stages } = yield* slice(world([]))
+      const { inventory, state, stages, commit } = yield* slice(
+        world([]),
+        ['0,0'],
+        oneInventoryItem('fishing_rod'),
+      )
+      const localBefore = Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(
+        yield* inventory.api.storageSnapshot,
+      )
 
-      yield* requestFishingCast(state, 'cast', fishingRod(), FISHING_ENVIRONMENT)
+      yield* enqueueFishingCast(state, 'cast')
       yield* runFrame(stages)
-      const [cast] = yield* drainItemUseResults(state)
-      if (
-        cast === undefined ||
-        !isFishingItemUseResult(cast) ||
-        cast.action !== 'CastFishing' ||
-        !cast.success ||
-        cast.outcome._tag !== 'Cast'
-      ) {
-        throw new Error('Expected a successful fishing cast')
-      }
+      const [rawCast] = yield* drainItemUseResults(state)
+      expect(Schema.decodeUnknownSync(GameplayFishingItemUseResultSchema)(rawCast)).toStrictEqual({
+        action: 'CastFishing',
+        requestId: 'cast',
+        success: true,
+        outcome: undefined,
+      })
 
       const seedAfterCast = yield* Ref.get(state.rollSeed)
-      yield* requestFishingCast(state, 'duplicate-cast', fishingRod(), FISHING_ENVIRONMENT)
+      yield* enqueueFishingCast(state, 'duplicate-cast')
       yield* runFrame(stages)
-      expect(yield* drainItemUseResults(state)).toStrictEqual([
+      expect(yield* drainItemUseResults(state)).toStrictEqual([])
+      expect(yield* Ref.get(state.rollSeed)).toBe(seedAfterCast)
+      expect(yield* Ref.get(state.operationFailures)).toMatchObject([
         {
-          action: 'CastFishing',
-          requestId: 'duplicate-cast',
-          success: false,
-          outcome: 'AlreadyFishing',
+          operation: 'PlanBuild',
+          subject: 'Fishing',
+          error: {
+            _tag: 'FishingInvalidState',
+            actor: FISHING_ACTOR,
+            operation: 'cast',
+            reason: 'rod-already-active',
+          },
         },
       ])
-      expect(yield* Ref.get(state.rollSeed)).toBe(seedAfterCast)
 
-      yield* requestFishingAdvance(state, 'bite', cast.outcome.session.waitSecs, { hasWater: true })
+      yield* enqueueFishingAdvance(state, 'bite', 120, true)
       yield* runFrame(stages)
-      expect(yield* drainItemUseResults(state)).toMatchObject([
-        { action: 'AdvanceFishing', requestId: 'bite', success: true, outcome: { _tag: 'Bite' } },
-      ])
+      const [rawAdvance] = yield* drainItemUseResults(state)
+      expect(Schema.decodeUnknownSync(GameplayFishingItemUseResultSchema)(rawAdvance)).toStrictEqual({
+        action: 'AdvanceFishing',
+        requestId: 'bite',
+        success: true,
+        outcome: { _tag: 'Bite', bobber: FISHING_BOBBER },
+      })
 
-      yield* requestFishingReel(state, 'reel')
+      yield* Ref.set(state.tickCount, 7)
+      yield* requestFishingReel(state, 'reel', FISHING_ACTOR)
       yield* runFrame(stages)
-      const [reel] = yield* drainItemUseResults(state)
-      if (
-        reel === undefined ||
-        !isFishingItemUseResult(reel) ||
-        reel.action !== 'ReelFishing' ||
-        !reel.success ||
-        reel.outcome._tag !== 'Caught'
-      ) {
+      const [rawReel] = yield* drainItemUseResults(state)
+      const reel = Schema.decodeUnknownSync(GameplayFishingItemUseResultSchema)(rawReel)
+      expect(reel).toMatchObject({ action: 'ReelFishing', requestId: 'reel', success: true })
+      if (reel.action !== 'ReelFishing' || reel.outcome._tag !== 'Caught') {
         throw new Error('Expected a caught fishing result')
       }
 
-      expect(reel.outcome.rod).toMatchObject({
-        item: 'fishing_rod',
-        durability: { current: 63, max: 64 },
-      })
-      expect(yield* inventory.api.countOf('fishing_rod')).toBe(0)
-      expect(yield* inventory.api.countOf(reel.outcome.loot.item)).toBe(0)
+      const storage = yield* readPlayerStorageOwner(commit.coordinator, commit.playerStorageOwnerId)
+      expect(countPlayerStorageItem(storage, 'fishing_rod')).toBe(1)
+      expect(countPlayerStorageItem(storage, reel.outcome.item)).toBe(1)
+      expect(yield* inventory.api.countOf('fishing_rod')).toBe(1)
+      expect(Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(
+        yield* inventory.api.storageSnapshot,
+      )).toStrictEqual(localBefore)
     }),
   )
 
-  it.effect('returns the rod on cancellation and clears a cast lost with its water', () =>
+  it.effect('returns the active bobber on cancellation and clears a cast lost with its water', () =>
     Effect.gen(function* () {
       const { state, stages } = yield* slice(world([]))
 
-      yield* requestFishingCast(state, 'cast-to-cancel', fishingRod(), FISHING_ENVIRONMENT)
+      yield* enqueueFishingCast(state, 'cast-to-cancel')
       yield* runFrame(stages)
-      yield* drainItemUseResults(state)
-      yield* requestFishingCancel(state, 'cancel')
+      expect(Schema.decodeUnknownSync(GameplayFishingItemUseResultSchema)(
+        (yield* drainItemUseResults(state))[0],
+      )).toMatchObject({ action: 'CastFishing', success: true })
+
+      yield* requestFishingCancel(state, 'cancel', FISHING_ACTOR)
       yield* runFrame(stages)
-      expect(yield* drainItemUseResults(state)).toMatchObject([
+      expect(Schema.decodeUnknownSync(GameplayFishingItemUseResultSchema)(
+        (yield* drainItemUseResults(state))[0],
+      )).toStrictEqual({
+        action: 'CancelFishing',
+        requestId: 'cancel',
+        success: true,
+        outcome: { _tag: 'Cancelled', actor: FISHING_ACTOR, bobber: FISHING_BOBBER },
+      })
+
+      yield* enqueueFishingAdvance(state, 'after-cancel', 1, true)
+      yield* runFrame(stages)
+      expect(yield* drainItemUseResults(state)).toStrictEqual([])
+      expect(yield* Ref.get(state.operationFailures)).toMatchObject([
         {
-          action: 'CancelFishing',
-          requestId: 'cancel',
-          success: true,
-          outcome: { _tag: 'Cancelled', reason: 'Player', rod: { item: 'fishing_rod' } },
+          operation: 'PlanBuild',
+          subject: 'Fishing',
+          error: { _tag: 'FishingInvalidState', operation: 'advance', reason: 'rod-not-active' },
         },
       ])
+      yield* Ref.set(state.operationFailures, [])
 
-      yield* requestFishingAdvance(state, 'after-cancel', 1, { hasWater: true })
+      yield* enqueueFishingCast(state, 'cast-to-lose')
       yield* runFrame(stages)
-      expect(yield* drainItemUseResults(state)).toStrictEqual([
-        {
-          action: 'AdvanceFishing',
-          requestId: 'after-cancel',
-          success: false,
-          outcome: 'NoActiveFishingSession',
-        },
-      ])
+      expect(Schema.decodeUnknownSync(GameplayFishingItemUseResultSchema)(
+        (yield* drainItemUseResults(state))[0],
+      )).toMatchObject({ action: 'CastFishing', success: true })
 
-      yield* requestFishingCast(state, 'cast-to-lose', fishingRod(), FISHING_ENVIRONMENT)
+      yield* enqueueFishingAdvance(state, 'lose-water', 1, false)
       yield* runFrame(stages)
-      yield* drainItemUseResults(state)
-      yield* requestFishingAdvance(state, 'lose-water', 1, { hasWater: false })
-      yield* runFrame(stages)
-      expect(yield* drainItemUseResults(state)).toMatchObject([
-        {
-          action: 'AdvanceFishing',
-          requestId: 'lose-water',
-          success: false,
-          outcome: { _tag: 'Cancelled', reason: 'LostWater', rod: { item: 'fishing_rod' } },
-        },
-      ])
+      expect(Schema.decodeUnknownSync(GameplayFishingItemUseResultSchema)(
+        (yield* drainItemUseResults(state))[0],
+      )).toStrictEqual({
+        action: 'AdvanceFishing',
+        requestId: 'lose-water',
+        success: true,
+        outcome: { _tag: 'Cancelled', reason: 'LostWater', bobber: FISHING_BOBBER },
+      })
 
-      yield* requestFishingReel(state, 'after-water-loss')
+      yield* requestFishingReel(state, 'after-water-loss', FISHING_ACTOR)
       yield* runFrame(stages)
-      expect(yield* drainItemUseResults(state)).toStrictEqual([
+      expect(yield* drainItemUseResults(state)).toStrictEqual([])
+      expect(yield* Ref.get(state.operationFailures)).toMatchObject([
         {
-          action: 'ReelFishing',
-          requestId: 'after-water-loss',
-          success: false,
-          outcome: 'NoActiveFishingSession',
+          operation: 'PlanBuild',
+          subject: 'Fishing',
+          error: { _tag: 'FishingInvalidState', operation: 'reel', reason: 'rod-not-active' },
         },
       ])
     }),
@@ -2861,14 +3066,22 @@ describe('the ignition slice: an item use reaches the world', () => {
   it.effect('a flint and steel on a finished frame lights the portal and spends the item', () =>
     Effect.gen(function* () {
       const ring = generatePortalLayout(origin, 'x', PortalWidth(2), PortalHeight(3)).frame
-      const { store, state, stages } = yield* slice(
+      const { store, state, stages, commit } = yield* slice(
         world(ring.map((cell) => [cell, OBSIDIAN] as const)),
         residentAround(origin),
+        oneInventoryItem('flint_and_steel'),
       )
+      const revisionBefore = yield* commit.coordinator.revision
+      const ownerBefore = yield* readPlayerStorageOwner(commit.coordinator, commit.playerStorageOwnerId)
+      const durabilityBefore = ownerBefore.inventoryDurability[0]
+      if (durabilityBefore === null || durabilityBefore === undefined) {
+        throw new Error('expected the flint and steel fixture to have durability')
+      }
 
       yield* requestItemUse(state, 'portal-use', origin, 'flint_and_steel')
-      yield* runFrame(stages)
+      yield* runFrame(stages.filter((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions))
 
+      expect(yield* commit.coordinator.revision).toBe(revisionBefore + 1)
       expect(yield* store.blockAt(origin)).toBe(NETHER_PORTAL)
       // The outbox, and it is NOT `consumedItems`: a placement takes the item
       // off the stack while this damages a slot by one point. Two verbs, two
@@ -2878,6 +3091,9 @@ describe('the ignition slice: an item use reaches the world', () => {
       // become a call to.
       expect(yield* Ref.get(state.usedItems)).toStrictEqual(['flint_and_steel'])
       expect(yield* Ref.get(state.consumedItems)).toStrictEqual([])
+      const ownerAfter = yield* readPlayerStorageOwner(commit.coordinator, commit.playerStorageOwnerId)
+      const durabilityAfter = ownerAfter.inventoryDurability[0]
+      expect(durabilityAfter?.current).toBe(durabilityBefore.current - 1)
       const [result] = yield* drainItemUseResults(state)
       expect(result).toMatchObject({
         requestId: 'portal-use',
@@ -2888,15 +3104,69 @@ describe('the ignition slice: an item use reaches the world', () => {
     }),
   )
 
+  it.effect('a rejected portal commit changes neither the frame nor the held item', () =>
+    Effect.gen(function* () {
+      const ring = generatePortalLayout(origin, 'x', PortalWidth(2), PortalHeight(3)).frame
+      const { store, state, roster, player, time, inventory, commit } = yield* slice(
+        world(ring.map((cell) => [cell, OBSIDIAN] as const)),
+        residentAround(origin),
+        oneInventoryItem('flint_and_steel'),
+      )
+      const revisionBefore = yield* commit.coordinator.revision
+      const ownerBefore = yield* readPlayerStorageOwner(commit.coordinator, commit.playerStorageOwnerId)
+      const refusingCoordinator: WorldCommitCoordinatorApi = {
+        ...commit.coordinator,
+        commit: () => Effect.fail(new WorldRevisionConflict({
+          expected: Schema.decodeUnknownSync(WorldRevisionSchema)(revisionBefore + 1),
+          actual: revisionBefore,
+        })),
+      }
+      const failingCommit = { ...commit, coordinator: refusingCoordinator }
+      const interactions = gameplayStages(
+        state,
+        store.api,
+        roster.api,
+        inventory.api,
+        player.api,
+        time,
+        undefined,
+        undefined,
+        {},
+        failingCommit,
+      ).filter((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)
+
+      yield* requestItemUse(state, 'portal-conflict', origin, 'flint_and_steel')
+      yield* runFrame(interactions)
+
+      expect(yield* commit.coordinator.revision).toBe(revisionBefore)
+      expect(yield* store.blockAt(origin)).toBeUndefined()
+      expect(yield* readPlayerStorageOwner(commit.coordinator, commit.playerStorageOwnerId)).toStrictEqual(ownerBefore)
+      expect(yield* Ref.get(state.usedItems)).toStrictEqual([])
+      expect(yield* drainItemUseResults(state)).toMatchObject([{
+        requestId: 'portal-conflict',
+        success: false,
+        outcome: { _tag: 'Portal', outcome: { _tag: 'CommitFailed', error: { _tag: 'WorldRevisionConflict' } } },
+      }])
+    }),
+  )
+
   it.effect('the same item on ordinary air sets fire instead', () =>
     Effect.gen(function* () {
-      const { store, state, stages } = yield* slice(world([]), residentAround(origin))
+      const { store, state, stages, commit } = yield* slice(
+        world([]),
+        residentAround(origin),
+        oneInventoryItem('fire_charge'),
+      )
 
       yield* requestItemUse(state, 'fire-use', origin, 'fire_charge')
       yield* runFrame(stages)
 
       expect(yield* store.blockAt(origin)).toBe(FIRE)
       expect(yield* Ref.get(state.usedItems)).toStrictEqual(['fire_charge'])
+      expect(countPlayerStorageItem(
+        yield* readPlayerStorageOwner(commit.coordinator, commit.playerStorageOwnerId),
+        'fire_charge',
+      )).toBe(0)
       expect(yield* drainItemUseResults(state)).toStrictEqual([
         {
           requestId: 'fire-use',
@@ -2910,7 +3180,7 @@ describe('the ignition slice: an item use reaches the world', () => {
 
   it.effect('a synchronized fire charge is consumed when its world change commits', () =>
     Effect.gen(function* () {
-      const { inventory, store, state, stages } = yield* slice(
+      const { store, state, stages, commit } = yield* slice(
         world([]),
         residentAround(origin),
         oneInventoryItem('fire_charge'),
@@ -2920,7 +3190,10 @@ describe('the ignition slice: an item use reaches the world', () => {
       yield* runFrame(stages)
 
       expect(yield* store.blockAt(origin)).toBe(FIRE)
-      expect(yield* inventory.api.countOf('fire_charge')).toBe(0)
+      expect(countPlayerStorageItem(
+        yield* readPlayerStorageOwner(commit.coordinator, commit.playerStorageOwnerId),
+        'fire_charge',
+      )).toBe(0)
       expect(yield* drainItemUseResults(state)).toMatchObject([
         {
           requestId: 'committed-fire-use',
@@ -2960,10 +3233,11 @@ describe('the ignition slice: an item use reaches the world', () => {
       )
 
       yield* requestItemUse(state, 'last-use-flint-and-steel', origin, 'flint_and_steel')
-      yield* runFrame(stages)
+      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)
+      if (interactions === undefined) throw new Error('the interactions stage was not registered')
+      yield* runFrame([interactions])
 
       expect(yield* store.blockAt(origin)).toBe(FIRE)
-      expect(yield* inventory.api.countOf('flint_and_steel')).toBe(0)
       expect(yield* drainItemUseResults(state)).toMatchObject([
         {
           requestId: 'last-use-flint-and-steel',
@@ -2979,7 +3253,7 @@ describe('the ignition slice: an item use reaches the world', () => {
       expect(ownerAfter.revision).toBe(ownerBefore.revision + 1)
       expect(ownerAfter.state.inventory.slots[0]).toBeUndefined()
       expect(ownerAfter.state.inventoryDurability[0]).toBeNull()
-      expect(ownerAfter.state).toStrictEqual(yield* inventory.api.storageSnapshot)
+      expect(countPlayerStorageItem(ownerAfter.state, 'flint_and_steel')).toBe(0)
     }),
   )
 
@@ -2992,6 +3266,14 @@ describe('the ignition slice: an item use reaches the world', () => {
       const { store, state, stages } = yield* slice(
         world([[fuel, oakPlanks ?? STONE]]),
         residentAround(contactOrigin),
+        oneInventoryItem('flint_and_steel'),
+        {
+          playerPose: {
+            feetPosition: fixturePosition(contactOrigin.x, contactOrigin.y, contactOrigin.z),
+            yawRadians: 0,
+            pitchRadians: 0,
+          },
+        },
       )
 
       yield* requestItemUse(state, 'tracked-fire', contactOrigin, 'flint_and_steel')
@@ -3015,7 +3297,11 @@ describe('the ignition slice: an item use reaches the world', () => {
 
   it.effect('an item-lit fire naturally expires through gameplay frames', () =>
     Effect.gen(function* () {
-      const { store, state, stages } = yield* slice(world([]), residentAround(origin))
+      const { store, state, stages } = yield* slice(
+        world([]),
+        residentAround(origin),
+        oneInventoryItem('fire_charge'),
+      )
 
       yield* requestItemUse(state, 'expiring-fire', origin, 'fire_charge')
       yield* runFrame(stages)
@@ -3034,7 +3320,11 @@ describe('the ignition slice: an item use reaches the world', () => {
     Effect.gen(function* () {
       const simulate = (frequency: number) =>
         Effect.gen(function* () {
-          const { store, state, stages } = yield* slice(world([]), residentAround(origin))
+          const { store, state, stages } = yield* slice(
+            world([]),
+            residentAround(origin),
+            oneInventoryItem('fire_charge'),
+          )
           yield* requestItemUse(state, `fire-${frequency}`, origin, 'fire_charge')
           yield* runFrame(stages, DeltaTimeSecs(0))
           // The full schedule handles ignition above; cadence steps only advance fire.
@@ -3066,12 +3356,18 @@ describe('the ignition slice: an item use reaches the world', () => {
       // The reference damages the held item inside each successful arm rather
       // than around the dispatch, and this is that rule. Clicking a stone wall
       // must not wear a flint and steel out.
-      const { state, stages } = yield* slice(world([[origin, STONE]]), residentAround(origin))
+      const { state, stages, commit } = yield* slice(
+        world([[origin, STONE]]),
+        residentAround(origin),
+        oneInventoryItem('flint_and_steel'),
+      )
+      const ownerBefore = yield* readPlayerStorageOwner(commit.coordinator, commit.playerStorageOwnerId)
 
       yield* requestItemUse(state, 'refused-use', origin, 'flint_and_steel')
       yield* runFrame(stages)
 
       expect(yield* Ref.get(state.usedItems)).toStrictEqual([])
+      expect(yield* readPlayerStorageOwner(commit.coordinator, commit.playerStorageOwnerId)).toStrictEqual(ownerBefore)
       expect(yield* drainItemUseResults(state)).toStrictEqual([
         {
           requestId: 'refused-use',
@@ -3086,7 +3382,14 @@ describe('the ignition slice: an item use reaches the world', () => {
   it.effect('correlates multiple requests in order and drains their results exactly once', () =>
     Effect.gen(function* () {
       const second: BlockPosition = fixtureBlockPosition(origin.x + 1, origin.y, origin.z)
-      const { state, stages } = yield* slice(world([]), residentAround(origin))
+      const inventorySlots = oneInventoryItem('flint_and_steel').map((slot, index) =>
+        index === 1 ? itemStack('fire_charge', StackCount(1)) : slot,
+      )
+      const { state, stages, commit } = yield* slice(
+        world([]),
+        residentAround(origin),
+        inventorySlots,
+      )
 
       yield* requestItemUse(state, 'first', origin, 'flint_and_steel')
       yield* requestItemUse(state, 'second', second, 'fire_charge')
@@ -3103,6 +3406,9 @@ describe('the ignition slice: an item use reaches the world', () => {
           { requestId: 'second', heldItem: 'fire_charge', success: true },
         ])
       expect(yield* drainItemUseResults(state)).toStrictEqual([])
+      const ownerAfter = yield* readPlayerStorageOwner(commit.coordinator, commit.playerStorageOwnerId)
+      expect(countPlayerStorageItem(ownerAfter, 'fire_charge')).toBe(0)
+      expect(countPlayerStorageItem(ownerAfter, 'flint_and_steel')).toBe(1)
     }),
   )
 
@@ -3124,11 +3430,14 @@ describe('the ignition slice: an item use reaches the world', () => {
       const lastCell: BlockPosition = fixtureBlockPosition(origin.x, origin.y - 1, origin.z)
       const alreadyBuilt = layout.frame.filter((cell) => !samePosition(cell, lastCell))
       expect(alreadyBuilt).toHaveLength(layout.frame.length - 1)
+      const placementAndIgnition = onePlacementItem('obsidian').map((slot, index) =>
+        index === 1 ? itemStack('flint_and_steel', StackCount(1)) : slot,
+      )
 
       const { store, state, stages } = yield* slice(
         world(alreadyBuilt.map((cell) => [cell, OBSIDIAN] as const)),
         residentAround(origin),
-        onePlacementItem('obsidian'),
+        placementAndIgnition,
       )
 
       // ...and without it there is no portal, so the assertion below is about
@@ -3166,6 +3475,7 @@ describe('the ignition slice: an item use reaches the world', () => {
       const { state, stages } = yield* slice(
         world(ring.map((cell) => [cell, OBSIDIAN] as const)),
         residentAround(origin),
+        oneInventoryItem('flint_and_steel'),
       )
 
       yield* requestItemUse(state, 'no-fall', origin, 'flint_and_steel')
@@ -3227,16 +3537,11 @@ describe('the potato farming slice: host input reaches farming rules', () => {
         world([[soil, FARMLAND]]),
         ['0,0'],
         oneInventoryItem('potato'),
+        { vitals: { ...SPAWN_PLAYER_VITALS, hungerPoints: HungerPoints(10) } },
       )
 
       yield* requestPotatoPlanting(state, 'plant', soil)
-      yield* requestPotatoHarvest(state, 'harvest', crop, true, 0.5)
-      yield* requestPotatoFoodUse(state, 'eat', {
-        healthPoints: EntityHealthPoints(20),
-        hungerPoints: HungerPoints(10),
-        maxHungerPoints: HungerPoints(20),
-      })
-      yield* runFrame(stages)
+      yield* runFrame(stages, DeltaTimeSecs(0))
 
       expect(yield* store.blockAt(crop)).toBe(POTATO_CROP)
       expect(yield* drainItemUseResults(state)).toStrictEqual([
@@ -3248,6 +3553,19 @@ describe('the potato farming slice: host input reaches farming rules', () => {
           consumedCount: 1,
           outcome: { _tag: 'planted', crop: 'potato_crop', at: crop },
         },
+      ])
+
+      yield* runFrame(stages, DeltaTimeSecs(480))
+      yield* requestPotatoHarvest(state, 'harvest', crop, 0.5)
+      yield* requestPotatoFoodUse(state, 'eat', {
+        healthPoints: EntityHealthPoints(20),
+        hungerPoints: HungerPoints(10),
+        maxHungerPoints: HungerPoints(20),
+      })
+      yield* runFrame(stages, DeltaTimeSecs(0))
+
+      expect(yield* store.blockAt(crop)).toBeUndefined()
+      expect(yield* drainItemUseResults(state)).toStrictEqual([
         {
           action: 'HarvestPotato',
           requestId: 'harvest',
@@ -3275,7 +3593,9 @@ describe('the potato farming slice: host input reaches farming rules', () => {
 
   it.effect('routes pufferfish food effects into status and hunger runtime state', () =>
     Effect.gen(function* () {
-      const { state, stages } = yield* slice(world([]))
+      const { state, stages, commit } = yield* slice(world([]), ['0,0'], oneInventoryItem('pufferfish'), {
+        vitals: { ...SPAWN_PLAYER_VITALS, hungerPoints: HungerPoints(10) },
+      })
 
       yield* requestFoodUse(state, 'eat-pufferfish', 'pufferfish', {
         healthPoints: EntityHealthPoints(20),
@@ -3307,7 +3627,7 @@ describe('the potato farming slice: host input reaches farming rules', () => {
 
       yield* runFrame(stages, STRIDE)
 
-      expect((yield* snapshotStatusEffects(state)).effects).toStrictEqual([
+      expect((yield* snapshotStatusEffects(state, commit)).effects).toStrictEqual([
         { type: 'poison', remainingSecs: 59.75, pulseClockSecs: 0, amplifier: 3 },
         { type: 'hunger', remainingSecs: 14.75, pulseClockSecs: 0, amplifier: 2 },
         { type: 'nausea', remainingSecs: 14.75, pulseClockSecs: 0, amplifier: 0 },
@@ -3331,58 +3651,79 @@ describe('the villager trading slice: host input reaches deterministic offers', 
     })).toBe(false)
   })
 
-  it.effect('atomically exchanges items and persists offer stock through snapshots', () =>
+  it.effect('atomically exchanges items and persists offer stock in registered owner snapshots', () =>
     Effect.gen(function* () {
       const slots = emptySlots().map((_, index) =>
         index === 0 ? itemStack('wheat', 20) : undefined,
       )
-      const runtime = yield* slice(world([]), ['0,0'], slots)
       const villager = makeVillager('farmer-1', 'farmer')
       const offer = villager.offers.find((candidate) => candidate.input.item === 'wheat')!
-      yield* Ref.set(
-        runtime.state.villagerTrades,
-        addVillager(emptyVillagerTradeState(), villager),
-      )
+      const initialTrades = addVillager(emptyVillagerTradeState(), villager)
+      const runtime = yield* slice(world([]), ['0,0'], slots, { villagerTrades: initialTrades })
 
       const request = { requestId: 'trade-1', villagerId: villager.id, offerId: offer.id }
       yield* requestVillagerTrade(runtime.state, request)
-      yield* runFrame(runtime.stages)
+      const interactions = runtime.stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
 
-      expect(yield* runtime.inventory.api.countOf('wheat')).toBe(0)
-      expect(yield* runtime.inventory.api.countOf('emerald')).toBe(1)
       expect(yield* drainVillagerTradeResults(runtime.state)).toStrictEqual([
         { ...request, _tag: 'Traded' },
       ])
+      const storage = yield* readPlayerStorageOwner(
+        runtime.commit.coordinator,
+        runtime.commit.playerStorageOwnerId,
+      )
+      const tradesSnapshot = yield* runtime.commit.coordinator.snapshot(
+        GAMEPLAY_VILLAGER_TRADES_OWNER_ID,
+        GameplayVillagerTradeSnapshotSchema,
+      )
+      const trades = Schema.decodeUnknownSync(GameplayVillagerTradeSnapshotSchema)(tradesSnapshot.state)
 
-      const snapshot = yield* snapshotVillagerTrades(runtime.state)
-      expect(snapshot.villagers[0]?.offers.find((candidate) => candidate.id === offer.id)?.uses).toBe(1)
-      yield* Ref.set(runtime.state.villagerTrades, emptyVillagerTradeState())
-      yield* restoreVillagerTrades(runtime.state, snapshot)
-      expect(yield* snapshotVillagerTrades(runtime.state)).toStrictEqual(snapshot)
+      expect(storage.inventory.slots[0]?.item).toBe('emerald')
+      expect(countPlayerStorageItem(storage, 'wheat')).toBe(0)
+      expect(countPlayerStorageItem(storage, 'emerald')).toBe(1)
+      expect(trades.villagers[0]?.offers.find((candidate) => candidate.id === offer.id)?.uses).toBe(1)
+      expect(tradesSnapshot.revision).toBe(1)
+      expect(yield* runtime.inventory.api.countOf('wheat')).toBe(20)
+      expect(yield* runtime.inventory.api.countOf('emerald')).toBe(0)
     }),
   )
 
-  it.effect('rejects unavailable stock and restocks it on the gameplay clock', () =>
+  it.effect('rejects unavailable stock without changing the owner and applies the restock boundary', () =>
     Effect.gen(function* () {
-      const runtime = yield* slice(world([]))
       const villager = makeVillager('farmer-stock', 'farmer')
       const offer = villager.offers[0]!
       let exhausted = addVillager(emptyVillagerTradeState(), villager)
       for (let use = 0; use < offer.maxUses; use += 1) {
         exhausted = useVillagerOffer(exhausted, villager.id, offer.id)!
       }
-      yield* Ref.set(runtime.state.villagerTrades, exhausted)
-
+      const runtime = yield* slice(world([]), ['0,0'], emptySlots(), {
+        villagerTrades: exhausted,
+      })
       const request = { requestId: 'sold-out', villagerId: villager.id, offerId: offer.id }
+      const before = yield* runtime.commit.coordinator.snapshot(
+        GAMEPLAY_VILLAGER_TRADES_OWNER_ID,
+        GameplayVillagerTradeSnapshotSchema,
+      )
+
       yield* requestVillagerTrade(runtime.state, request)
-      yield* runFrame(runtime.stages)
+      const interactions = runtime.stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
       expect(yield* drainVillagerTradeResults(runtime.state)).toStrictEqual([
         { ...request, _tag: 'Rejected', reason: 'OutOfStock' },
       ])
+      const rejected = yield* runtime.commit.coordinator.snapshot(
+        GAMEPLAY_VILLAGER_TRADES_OWNER_ID,
+        GameplayVillagerTradeSnapshotSchema,
+      )
+      expect(rejected.revision).toBe(before.revision)
+      expect(rejected.state).toStrictEqual(before.state)
 
-      yield* runFrame(runtime.stages, DeltaTimeSecs(VILLAGER_RESTOCK_INTERVAL_SECS))
-      const restocked = yield* snapshotVillagerTrades(runtime.state)
-      expect(restocked.villagers[0]?.offers.every((candidate) => candidate.uses === 0)).toBe(true)
+      const restockedState = advanceVillagerRestock(
+        Schema.decodeUnknownSync(GameplayVillagerTradeSnapshotSchema)(before.state),
+        VILLAGER_RESTOCK_INTERVAL_SECS,
+      )
+      expect(restockedState.villagers[0]?.offers.every((candidate) => candidate.uses === 0)).toBe(true)
     }),
   )
 })

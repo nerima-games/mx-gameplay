@@ -2243,6 +2243,14 @@ const stepPortalTravel = (
       BlockAxis(Math.floor(currentPose.feetPosition.y)),
       BlockAxis(Math.floor(currentPose.feetPosition.z)),
     )
+    const currentLocationMatches = currentPose.feetPosition.dimension === pose.feetPosition.dimension &&
+      currentCell.x === cell.x &&
+      currentCell.y === cell.y &&
+      currentCell.z === cell.z
+    if (!currentLocationMatches) {
+      yield* Ref.set(state.portalDwell, OUTSIDE_PORTAL)
+      return
+    }
     const currentReading = yield* store.getBlock(currentCell)
     const currentBlockId = currentReading._tag === 'Block' ? currentReading.block : undefined
     const currentBlock = currentBlockId === undefined
@@ -2250,9 +2258,11 @@ const stepPortalTravel = (
       : Result.getOrUndefined(blockTypeOfId(currentBlockId))
     const stillInPortal = currentBlock === 'nether_portal' ||
       (currentBlockId !== undefined && isEndPortalBlock(currentBlockId))
-    const currentStep = stepPortalDwell(yield* Ref.get(state.portalDwell), stillInPortal, dt)
-    if (!currentStep.travels || !stillInPortal) {
-      yield* Ref.set(state.portalDwell, currentStep.dwell)
+    if (!stillInPortal) {
+      yield* Ref.set(state.portalDwell, OUTSIDE_PORTAL)
+      return
+    }
+    if (!step.travels) {
       return
     }
 
@@ -2333,7 +2343,7 @@ const stepPortalTravel = (
       return
     }
 
-    yield* Ref.set(state.portalDwell, currentStep.dwell)
+    yield* Ref.set(state.portalDwell, step.dwell)
     if (portalPlan !== undefined) {
       yield* Ref.update(state.portalTravels, (travels) => [
         ...travels,

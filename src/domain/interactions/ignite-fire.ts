@@ -18,7 +18,8 @@
  * makes an item USE a different verb from a placement rather than a special case
  * of one: the item consumed and the block written are two different things.
  *
- * The same fact is why `./ignite-portal` writes `nether_portal` directly.
+ * `./ignite-portal` returns a portal-block candidate so the stage can commit it
+ * together with the held-item owner change.
  *
  * ---------------------------------------------------------------------------
  * AIR, NOT REPLACEABLE, AND THE DIFFERENCE IS DELIBERATE
@@ -64,6 +65,8 @@ import {
   type BlockId,
   type BlockPosition,
   type Dimension,
+  type DimensionRevision,
+  type WorldRevision,
 } from '@nerima-games/mc-kernel'
 import type {
   ReplicatedOwnerCandidate,
@@ -76,6 +79,8 @@ export type IgniteFireCommitContext = {
   readonly coordinator: WorldCommitCoordinatorApi
   readonly dimension: Dimension
   readonly changes: ReadonlyArray<ReplicatedOwnerCandidate>
+  readonly expectedRevision?: WorldRevision
+  readonly expectedDimensionRevision?: DimensionRevision
 }
 
 /**
@@ -117,10 +122,10 @@ export const igniteFire = (
 
     const expectedRevision = commitContext === undefined
       ? undefined
-      : yield* commitContext.coordinator.revision
+      : commitContext.expectedRevision ?? (yield* commitContext.coordinator.revision)
     const expectedDimensionRevision = commitContext === undefined
       ? undefined
-      : yield* commitContext.coordinator.dimensionRevision(commitContext.dimension)
+      : commitContext.expectedDimensionRevision ?? (yield* commitContext.coordinator.dimensionRevision(commitContext.dimension))
 
     const target = yield* store.getBlock(position)
     if (target._tag === 'ChunkNotLoaded') {

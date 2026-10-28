@@ -180,39 +180,23 @@ export const tickStatusEffects = (
     const amplifier = finiteAmplifier(effect.amplifier)
     const activeElapsedSecs = Math.min(effect.remainingSecs, elapsedSecs)
 
-    switch (effect.type) {
-      case 'poison': {
-        const advanced = advancePulsingEffect(
-          effect,
-          elapsedSecs,
-          POISON_INTERVAL_SECS / 2 ** amplifier,
-        )
-        if (advanced.effect !== undefined) effects.push(advanced.effect)
-        poisonPulses += advanced.pulses
-        break
+    if (effect.type === 'poison') {
+      const advanced = advancePulsingEffect(effect, elapsedSecs, POISON_INTERVAL_SECS / 2 ** amplifier)
+      if (advanced.effect !== undefined) effects.push(advanced.effect)
+      poisonPulses += advanced.pulses
+    } else if (effect.type === 'regeneration') {
+      const advanced = advancePulsingEffect(effect, elapsedSecs, REGENERATION_INTERVAL_SECS / 2 ** amplifier)
+      if (advanced.effect !== undefined) effects.push(advanced.effect)
+      regenerationPulses += advanced.pulses
+    } else if (effect.type === 'hunger') {
+      hungerExhaustion += activeElapsedSecs * 0.1 * (amplifier + 1)
+      if (effect.remainingSecs > elapsedSecs) {
+        effects.push({ ...effect, remainingSecs: effect.remainingSecs - elapsedSecs })
       }
-      case 'regeneration': {
-        const advanced = advancePulsingEffect(
-          effect,
-          elapsedSecs,
-          REGENERATION_INTERVAL_SECS / 2 ** amplifier,
-        )
-        if (advanced.effect !== undefined) effects.push(advanced.effect)
-        regenerationPulses += advanced.pulses
-        break
+    } else if (effect.type === 'nausea' || effect.type === 'speed') {
+      if (effect.remainingSecs > elapsedSecs) {
+        effects.push({ ...effect, remainingSecs: effect.remainingSecs - elapsedSecs })
       }
-      case 'hunger':
-        hungerExhaustion += activeElapsedSecs * 0.1 * (amplifier + 1)
-        if (effect.remainingSecs > elapsedSecs) {
-          effects.push({ ...effect, remainingSecs: effect.remainingSecs - elapsedSecs })
-        }
-        break
-      case 'nausea':
-      case 'speed':
-        if (effect.remainingSecs > elapsedSecs) {
-          effects.push({ ...effect, remainingSecs: effect.remainingSecs - elapsedSecs })
-        }
-        break
     }
   }
 

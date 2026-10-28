@@ -257,32 +257,26 @@ export const stepCreeperFuse = (
   senses: CreeperSenses,
   dt: DeltaTimeSecs,
 ): CreeperStep => {
-  switch (fuse._tag) {
+  if (fuse._tag === 'Dormant') {
     // Lighting and burning are ONE step, not two. The reference's tick adds
     // `dtSecs` to a fuse of zero on the very step that finds the player in range
     // (`creeper-fuse.ts:50`) and its oracle asserts the 0.05 that results
     // (`test/mob/creeper-fuse.test.ts:22-28`). Splitting them would cost a frame
     // of hiss on ignition — invisible, unjustifiable, and a gratuitous
     // divergence from the numbers this file is ported from.
-    case 'Dormant': {
-      return withinIgnitionRange(senses) ? burn(0, dt, senses.charged === true) : { fuse, explosion: undefined }
-    }
+    return withinIgnitionRange(senses) ? burn(0, dt, senses.charged === true) : { fuse, explosion: undefined }
+  }
 
-    case 'Lit': {
+  if (fuse._tag === 'Lit') {
       // Out of range: the fuse goes out and keeps no memory of how far it had
       // burned (`creeper-fuse.ts:49`). See the module header — a decision, not
       // an omission.
-      return withinIgnitionRange(senses)
-        ? burn(fuse.burnedSecs, dt, senses.charged === true)
-        : { fuse: DORMANT_FUSE, explosion: undefined }
-    }
-
-    // Terminal. What becomes of the creeper afterwards — removed from the
-    // roster, dropped, despawned — is the host's business; what matters here is
-    // that no input can produce a second explosion.
-    case 'Detonated': {
-      return { fuse, explosion: undefined }
-    }
-
+    return withinIgnitionRange(senses)
+      ? burn(fuse.burnedSecs, dt, senses.charged === true)
+      : { fuse: DORMANT_FUSE, explosion: undefined }
   }
+
+  // Terminal. What becomes of the creeper afterwards — removed from the roster,
+  // dropped, despawned — is the host's business; this state cannot explode again.
+  return { fuse, explosion: undefined }
 }

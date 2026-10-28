@@ -1,6 +1,6 @@
 import { describe, expect, it } from '@effect/vitest'
 import { END_PORTAL_BLOCK, type Dimension } from '@nerima-games/mc-worldgen'
-import { makeTimeService } from '@nerima-games/mc-sim'
+import { makeTimeService, PlayerServiceSnapshotSchema } from '@nerima-games/mc-sim'
 import { Effect, Option, Ref } from 'effect'
 import { BlockAxis, BlockId, blockPosition as makeBlockPosition, type BlockPosition, type Position } from '@nerima-games/mc-kernel'
 import {
@@ -19,10 +19,11 @@ import {
   makeGameplayFrameState,
   setPortalCandidates,
 } from '../src/stages/registration'
-import { makeChunkStoreDouble, world } from './support/chunk-store-double'
+import { makeGameplayCommitServices, makeTransactionalChunkStoreDouble } from './support/transactional-stage-doubles'
+import { world } from './support/chunk-store-double'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
 import { makeInventoryDouble } from './support/inventory-service-double'
-import { makePlayerServiceDouble } from './support/player-service-double'
+import { SPAWN_POSE } from './support/player-service-double'
 import { runFrames } from './support/frame-runner'
 
 const atBlockPosition = (x: number, y: number, z: number): BlockPosition =>
@@ -193,6 +194,20 @@ describe('applyEndPortalTravel, called directly', () => {
       expect(yield* api.dimension).toBe('overworld')
     }),
   )
+
+  it.effect('the overworld sends a player to the deterministic End arrival', () =>
+    Effect.gen(function* () {
+      const { api, moves, switches } = yield* makeRecordingPlayer('overworld')
+
+      const event = yield* applyEndPortalTravel(api, atBlockPosition(8, 64, 8))
+
+      expect(event.toDimension).toBe('end')
+      expect(event.arrival?.spawn).toStrictEqual(event.destination)
+      expect(yield* Ref.get(moves)).toStrictEqual([event.destination])
+      expect(yield* Ref.get(switches)).toStrictEqual(['end'])
+      expect(yield* api.dimension).toBe('end')
+    }),
+  )
 })
 
 describe('portal candidate defaults', () => {
@@ -248,24 +263,28 @@ describe('REACHABILITY: the interactions stage performs the crossing', () => {
   const NETHER_PORTAL = Option.getOrElse(blockIdOf('nether_portal'), () => BlockId(118))
 
   const portalWorld = Effect.gen(function* () {
-    const store = yield* makeChunkStoreDouble(world([[spawnCell, NETHER_PORTAL]]), ['0,0'])
+    const store = yield* makeTransactionalChunkStoreDouble(world([[spawnCell, NETHER_PORTAL]]), ['0,0'])
     const roster = yield* makeEntityManagerDouble<MobBehaviour>()
     const inventory = yield* makeInventoryDouble()
-    const player = yield* makePlayerServiceDouble()
+    const commit = yield* makeGameplayCommitServices(store.api, inventory.api, {
+      playerPose: SPAWN_POSE,
+      dimension: 'overworld',
+    })
     const time = yield* makeTimeService()
     const state = yield* makeGameplayFrameState
     return {
-      player,
+      commit,
       state,
-      stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api, time),
+      stages: gameplayStages(state, store.api, roster.api, inventory.api, undefined, time, undefined, undefined, {}, commit),
     }
   })
 
   it.effect('four seconds of standing in a portal block moves the player to the nether', () =>
     Effect.gen(function* () {
-      const { player, state, stages } = yield* portalWorld
+      const { commit, state, stages } = yield* portalWorld
+      const before = yield* commit.coordinator.snapshot(commit.playerOwnerId, PlayerServiceSnapshotSchema)
 
-      expect(yield* player.api.dimension).toBe('overworld')
+      expect(before.state.pose.feetPosition.dimension).toBe('overworld')
       expect(yield* Ref.get(state.portalCandidates)).toStrictEqual(new Map())
       expect(yield* drainPortalTravels(state)).toStrictEqual([])
 
@@ -273,15 +292,15 @@ describe('REACHABILITY: the interactions stage performs the crossing', () => {
       // makes the assertion after it about the DWELL rather than about the very
       // first frame.
       yield* runFrames(stages, 200, DeltaTimeSecs(0.016))
-      expect(yield* player.api.dimension).toBe('overworld')
+      expect((yield* commit.coordinator.snapshot(commit.playerOwnerId, PlayerServiceSnapshotSchema)).state.pose.feetPosition.dimension).toBe('overworld')
       expect(yield* drainPortalTravels(state)).toStrictEqual([])
 
       // Past four seconds.
       yield* runFrames(stages, 100, DeltaTimeSecs(0.016))
 
-      expect(yield* player.api.dimension).toBe('nether')
-      // And the placement half ran too, through the same stage.
-      expect((yield* Ref.get(player.moves)).length).toBeGreaterThan(0)
+      const after = yield* commit.coordinator.snapshot(commit.playerOwnerId, PlayerServiceSnapshotSchema)
+      expect(after.state.pose.feetPosition).toStrictEqual({ dimension: 'nether', x: 0, y: 64, z: 0 })
+      expect(after.revision).toBe(before.revision + 1)
 
       const completed = yield* drainPortalTravels(state)
       expect(completed).toHaveLength(1)
@@ -298,7 +317,7 @@ describe('REACHABILITY: the interactions stage performs the crossing', () => {
 
   it.effect('uses only the destination dimension candidate snapshot', () =>
     Effect.gen(function* () {
-      const { player, state, stages } = yield* portalWorld
+      const { commit, state, stages } = yield* portalWorld
       const wrongDimensionCandidate: BlockPosition = atBlockPosition(1, 64, 1)
       const netherCandidate: BlockPosition = atBlockPosition(2, 64, 2)
 
@@ -309,42 +328,54 @@ describe('REACHABILITY: the interactions stage performs the crossing', () => {
       const [completed] = yield* drainPortalTravels(state)
       expect(completed?.plan.destination).toStrictEqual(netherCandidate)
       expect(Option.isNone(completed?.plan.portalToCreate ?? Option.some(undefined))).toBe(true)
-      expect(yield* Ref.get(player.moves)).toStrictEqual([netherCandidate])
+      const after = yield* commit.coordinator.snapshot(commit.playerOwnerId, PlayerServiceSnapshotSchema)
+      expect(after.state.pose.feetPosition).toStrictEqual({
+        dimension: 'nether',
+        ...netherCandidate,
+      })
     }),
   )
 
   it.effect('standing outside a portal never fires, however long the frame runs', () =>
     Effect.gen(function* () {
-      const store = yield* makeChunkStoreDouble(world([]), ['0,0'])
+      const store = yield* makeTransactionalChunkStoreDouble(world([]), ['0,0'])
       const roster = yield* makeEntityManagerDouble<MobBehaviour>()
       const inventory = yield* makeInventoryDouble()
-      const player = yield* makePlayerServiceDouble()
+      const commit = yield* makeGameplayCommitServices(store.api, inventory.api, {
+        playerPose: SPAWN_POSE,
+        dimension: 'overworld',
+      })
       const time = yield* makeTimeService()
       const state = yield* makeGameplayFrameState
-      const stages = gameplayStages(state, store.api, roster.api, inventory.api, player.api, time)
+      const stages = gameplayStages(state, store.api, roster.api, inventory.api, undefined, time, undefined, undefined, {}, commit)
+      const before = yield* commit.coordinator.snapshot(commit.playerOwnerId, PlayerServiceSnapshotSchema)
 
       yield* runFrames(stages, 600, DeltaTimeSecs(0.016))
 
-      expect(yield* player.api.dimension).toBe('overworld')
-      expect(yield* Ref.get(player.switches)).toStrictEqual([])
+      const after = yield* commit.coordinator.snapshot(commit.playerOwnerId, PlayerServiceSnapshotSchema)
+      expect(after.state).toStrictEqual(before.state)
+      expect(after.revision).toBe(before.revision)
       expect(yield* drainPortalTravels(state)).toStrictEqual([])
     }),
   )
 
   it.effect('an End portal moves the player and emits the worldgen arrival plan', () =>
     Effect.gen(function* () {
-      const store = yield* makeChunkStoreDouble(world([[spawnCell, END_PORTAL_BLOCK.PORTAL]]), ['0,0'])
       const roster = yield* makeEntityManagerDouble<MobBehaviour>()
       const inventory = yield* makeInventoryDouble()
-      const player = yield* makePlayerServiceDouble()
+      const store = yield* makeTransactionalChunkStoreDouble(world([[spawnCell, END_PORTAL_BLOCK.PORTAL]]), ['0,0'])
+      const commit = yield* makeGameplayCommitServices(store.api, inventory.api, {
+        playerPose: SPAWN_POSE,
+        dimension: 'overworld',
+      })
       const time = yield* makeTimeService()
       const state = yield* makeGameplayFrameState
-      const stages = gameplayStages(state, store.api, roster.api, inventory.api, player.api, time)
+      const stages = gameplayStages(state, store.api, roster.api, inventory.api, undefined, time, undefined, undefined, {}, commit)
 
       yield* runFrames(stages, 300, DeltaTimeSecs(0.016))
 
-      expect(yield* player.api.dimension).toBe('end')
-      expect(yield* Ref.get(player.moves)).toStrictEqual([{ x: 0, y: 61, z: 0 }])
+      const player = yield* commit.coordinator.snapshot(commit.playerOwnerId, PlayerServiceSnapshotSchema)
+      expect(player.state.pose.feetPosition).toStrictEqual({ dimension: 'end', x: 0, y: 61, z: 0 })
 
       const [completed] = yield* drainEndPortalTravels(state)
       expect(completed?.sourceDimension).toBe('overworld')

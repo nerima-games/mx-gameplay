@@ -114,7 +114,8 @@ describe('the two tables agree', () => {
       for (const seed of PLANTABLE_SEEDS) {
         const crop = CROP_OF_SEED[seed]
         expect(crop).toBeDefined()
-        expect(SOIL_OF_CROP[crop as BlockType]).toBeDefined()
+        if (crop === undefined) throw new Error(`Missing crop mapping for ${seed}`)
+        expect(SOIL_OF_CROP[crop]).toBeDefined()
       }
     }),
   )
@@ -149,8 +150,9 @@ describe('plantingVerdict', () => {
       // Derived from the table rather than three hand-written cases, so a
       // fourth seed is covered the day it is added.
       for (const seed of PLANTABLE_SEEDS) {
-        const crop = CROP_OF_SEED[seed] as BlockType
-        const soil = SOIL_OF_CROP[crop] as BlockType
+        const crop = CROP_OF_SEED[seed]
+        if (crop === undefined) throw new Error(`Missing crop mapping for ${seed}`)
+        const soil = SOIL_OF_CROP[crop]
         expect(plantingVerdict(request(seed), soil, 'air')._tag).toBe('planted')
       }
     }),

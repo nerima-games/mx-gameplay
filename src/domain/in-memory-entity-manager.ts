@@ -191,13 +191,12 @@ export const makeInMemoryEntityManager = <S>(
             emitted.push(outcome.emit)
           }
 
-          switch (outcome.transition._tag) {
-            case 'Unchanged':
-              // The SAME object, not a copy. See the header.
-              next.push(entity)
-              break
-            case 'Changed':
-              mutated = true
+          if (outcome.transition._tag === 'Unchanged') {
+            // The SAME object, not a copy. See the header.
+            next.push(entity)
+          } else {
+            mutated = true
+            if (outcome.transition._tag === 'Changed') {
               next.push({
                 id: entity.id,
                 kind: entity.kind,
@@ -205,10 +204,7 @@ export const makeInMemoryEntityManager = <S>(
                 healthPoints: outcome.transition.state.healthPoints,
                 behaviour: outcome.transition.state.behaviour,
               })
-              break
-            case 'Despawned':
-              mutated = true
-              break
+            }
           }
         }
 

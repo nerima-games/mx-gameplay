@@ -35,8 +35,8 @@
  * off the stack.
  */
 import { describe, expect, it } from '@effect/vitest'
-import { makeTimeService } from '@nerima-games/mc-sim'
-import { Effect, Option, Ref, Result } from 'effect'
+import { makeTimeService, PlayerStorageSnapshotSchema, type PlayerPose } from '@nerima-games/mc-sim'
+import { Effect, Option, Ref, Result, Schema } from 'effect'
 import {
   AIR_BLOCK_ID,
   blockIdOf,
@@ -58,6 +58,7 @@ import type { BlockWriteOutcome, ChunkStoreApi } from '@nerima-games/mc-worldgen
 import {
   blockOverlapsPlayer,
   isSupportSensitiveOfBlock,
+  planPlaceBlock,
   placeBlock,
   PLAYER_HALF_HEIGHT,
   PLAYER_HALF_WIDTH,
@@ -70,6 +71,7 @@ import {
   drainBlockPlacementResults,
   gameplayStages,
   makeGameplayFrameState,
+  requestBlockBreak,
   requestBlockPlacementCommand,
 } from '../src/stages/registration'
 import { lightWorld, makeChunkStoreDouble, SAND, STONE, WATER, world } from './support/chunk-store-double'
@@ -79,6 +81,11 @@ import { emptySlots, makeInventoryDouble } from './support/inventory-service-dou
 import { blockPosition, chunkCoord, position as fixturePosition } from './support/coordinate-fixtures'
 import type { MobBehaviour } from '../src/domain/entities/mob-frame'
 import { runFrame } from './support/frame-runner'
+import {
+  makeGameplayCommitServices,
+  makeTransactionalChunkStoreDouble,
+} from './support/transactional-stage-doubles'
+import type { GameplayStageCommitServices } from '../src/stages/registration-core'
 
 const blockIdOrThrow = (name: Parameters<typeof blockIdOf>[0]): BlockId =>
   Option.getOrThrow(blockIdOf(name))
@@ -665,6 +672,57 @@ describe('placeBlock — the four per-block rules, reached through a real held i
   )
 })
 
+describe('planPlaceBlock per-block verdicts', () => {
+  it.effect('returns no edits for a bright mushroom, a dry sugar cane, and a blocked cactus', () =>
+    Effect.gen(function* () {
+      const bright = yield* makeChunkStoreDouble(
+        world([[below, BlockId(DIRT)]]),
+        ['0,0'],
+        lightWorld([[target, { sky: 13, block: 0 }]]),
+      )
+      const dry = yield* storeWith([[below, SAND]])
+      const blockedCactus = yield* storeWith([
+        [below, SAND],
+        [blockPosition(target.x + 1, target.y, target.z), STONE],
+      ])
+
+      const mushroomPlan = yield* planPlaceBlock(bright.api, { position: target, heldItem: 'brown_mushroom' })
+      const sugarCanePlan = yield* planPlaceBlock(dry.api, { position: target, heldItem: 'sugar_cane' })
+      const cactusPlan = yield* planPlaceBlock(blockedCactus.api, { position: target, heldItem: 'cactus' })
+
+      expect(mushroomPlan.outcome).toStrictEqual({ _tag: 'TooBright', light: 13 })
+      expect(sugarCanePlan.outcome).toStrictEqual({ _tag: 'NoAdjacentWater' })
+      expect(cactusPlan.outcome).toStrictEqual({ _tag: 'SidesBlocked' })
+      expect(mushroomPlan.edits).toStrictEqual([])
+      expect(sugarCanePlan.edits).toStrictEqual([])
+      expect(cactusPlan.edits).toStrictEqual([])
+    }),
+  )
+
+  it.effect('refuses a door without room above and plans both cells when clear', () =>
+    Effect.gen(function* () {
+      const upper = blockPosition(target.x, target.y + 1, target.z)
+      const occupied = yield* storeWith([
+        [below, STONE],
+        [upper, STONE],
+      ])
+      const clear = yield* storeWith([[below, STONE]])
+      const door = blockIdOrThrow('door')
+
+      const refused = yield* planPlaceBlock(occupied.api, { position: target, heldItem: 'door' })
+      const planned = yield* planPlaceBlock(clear.api, { position: target, heldItem: 'door' })
+
+      expect(refused.outcome).toStrictEqual({ _tag: 'NoRoomAbove' })
+      expect(refused.edits).toStrictEqual([])
+      expect(planned.outcome).toMatchObject({ _tag: 'Placed', block: door, consumed: 'door', alsoPlaced: [upper] })
+      expect(planned.edits).toStrictEqual([
+        { position: target, block: door },
+        { position: upper, block: door },
+      ])
+    }),
+  )
+})
+
 describe('placement rule coordinate boundaries', () => {
   it.effect('refuses side checks whose neighbours overflow the block-coordinate range', () =>
     Effect.gen(function* () {
@@ -1068,11 +1126,15 @@ describe('F7 — CLOSED: per-block support rules are reachable through placeBloc
 const stagedSlice = (
   entries: ReadonlyArray<readonly [BlockPosition, number]>,
   stocked = true,
+  initialPlayerPose?: PlayerPose,
 ) =>
   Effect.gen(function* () {
-    const store = yield* storeWith(entries)
+    const store = yield* makeTransactionalChunkStoreDouble(
+      world(entries.map(([position, id]) => [position, BlockId(id)] as const)),
+      ['0,0'],
+    )
     const roster = yield* makeEntityManagerDouble<MobBehaviour>()
-    const player = yield* makePlayerServiceDouble()
+    const player = yield* makePlayerServiceDouble(initialPlayerPose)
     const initialInventory = [...emptySlots()]
     if (stocked) {
       initialInventory[0] = Result.getOrThrow(itemStack('sand', StackCount(1)))
@@ -1082,19 +1144,50 @@ const stagedSlice = (
     const inventory = yield* makeInventoryDouble(initialInventory)
     const time = yield* makeTimeService()
     const state = yield* makeGameplayFrameState
+    const commit = yield* makeGameplayCommitServices(store.api, inventory.api, {
+      playerPose: yield* player.api.pose,
+      dimension: yield* player.api.dimension,
+    })
     return {
       store,
       state,
       inventory,
       player,
-      stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api, time),
+      commit,
+      stages: gameplayStages(
+        state,
+        store.api,
+        roster.api,
+        inventory.api,
+        player.api,
+        time,
+        undefined,
+        undefined,
+        {},
+        commit,
+      ),
     }
   })
+
+const playerStorage = (commit: GameplayStageCommitServices) =>
+  Effect.map(
+    commit.coordinator.snapshot(commit.playerStorageOwnerId, PlayerStorageSnapshotSchema),
+    (snapshot) => Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(snapshot.state),
+  )
+
+const countOwnerItem = (
+  storage: Schema.Schema.Type<typeof PlayerStorageSnapshotSchema>,
+  item: string,
+): number =>
+  storage.inventory.slots.reduce(
+    (total, slot) => total + (slot?.item === item ? slot.count : 0),
+    0,
+  )
 
 describe('placement through gameplay:interactions', () => {
   it.effect('a queued placement is serviced and the item is reported as spent', () =>
     Effect.gen(function* () {
-      const { store, state, inventory, stages } = yield* stagedSlice([[below, STONE]])
+      const { store, state, inventory, commit, stages } = yield* stagedSlice([[below, STONE]])
       const before = yield* inventory.api.countOf('sand')
 
       yield* Ref.update(state.pendingPlacements, (queue) => [
@@ -1105,13 +1198,14 @@ describe('placement through gameplay:interactions', () => {
 
       expect(yield* store.blockAt(target)).toBe(blockIdOrThrow('sand'))
       expect(yield* Ref.get(state.consumedItems)).toStrictEqual(['sand'])
-      expect(yield* inventory.api.countOf('sand')).toBe(before - 1)
+      expect(yield* inventory.api.countOf('sand')).toBe(before)
+      expect(countOwnerItem(yield* playerStorage(commit), 'sand')).toBe(before - 1)
     }),
   )
 
   it.effect('redstone dust places wire and consumes dust', () =>
     Effect.gen(function* () {
-      const { store, state, inventory, stages } = yield* stagedSlice([[below, STONE]])
+      const { store, state, inventory, commit, stages } = yield* stagedSlice([[below, STONE]])
 
       yield* Ref.set(state.pendingPlacements, [
         { positionKey: blockPositionKeyOf(blockPosition(target.x, target.y, target.z)), heldItem: 'redstone_dust' as const },
@@ -1120,7 +1214,8 @@ describe('placement through gameplay:interactions', () => {
 
       expect(yield* store.blockAt(target)).toBe(blockIdOrThrow('redstone_wire'))
       expect(yield* Ref.get(state.consumedItems)).toStrictEqual(['redstone_dust'])
-      expect(yield* inventory.api.countOf('redstone_dust')).toBe(0)
+      expect(yield* inventory.api.countOf('redstone_dust')).toBe(1)
+      expect(countOwnerItem(yield* playerStorage(commit), 'redstone_dust')).toBe(0)
     }),
   )
 
@@ -1128,7 +1223,7 @@ describe('placement through gameplay:interactions', () => {
     Effect.gen(function* () {
       const competingTarget: BlockPosition = blockPosition(3, 64, 3)
       const competingBelow: BlockPosition = blockPosition(3, 63, 3)
-      const { store, state, inventory, stages } = yield* stagedSlice([
+      const { store, state, inventory, commit, stages } = yield* stagedSlice([
         [below, STONE],
         [competingBelow, STONE],
       ])
@@ -1141,7 +1236,8 @@ describe('placement through gameplay:interactions', () => {
 
       const placements = [yield* store.blockAt(target), yield* store.blockAt(competingTarget)]
       expect(placements.filter((block) => block === blockIdOrThrow('sand'))).toHaveLength(1)
-      expect(yield* inventory.api.countOf('sand')).toBe(0)
+      expect(yield* inventory.api.countOf('sand')).toBe(1)
+      expect(countOwnerItem(yield* playerStorage(commit), 'sand')).toBe(0)
       expect(yield* Ref.get(state.consumedItems)).toStrictEqual(['sand'])
     }),
   )
@@ -1162,7 +1258,7 @@ describe('placement through gameplay:interactions', () => {
 
   it.effect('a correlated empty-hand placement reports failure without changing the world', () =>
     Effect.gen(function* () {
-      const { store, state, inventory, stages } = yield* stagedSlice([[below, STONE]], false)
+      const { store, state, inventory, commit, stages } = yield* stagedSlice([[below, STONE]], false)
 
       yield* requestBlockPlacementCommand(state, {
         requestId: 'empty-hand',
@@ -1172,9 +1268,8 @@ describe('placement through gameplay:interactions', () => {
       yield* runFrame(stages)
 
       expect(yield* store.blockAt(target)).toBeUndefined()
-      expect(yield* inventory.withdrawals).toStrictEqual([
-        { item: 'sand', count: 1, removed: 0 },
-      ])
+      expect(yield* inventory.withdrawals).toStrictEqual([])
+      expect(countOwnerItem(yield* playerStorage(commit), 'sand')).toBe(0)
       expect(yield* drainBlockPlacementResults(state)).toStrictEqual([
         {
           requestId: 'empty-hand',
@@ -1189,7 +1284,7 @@ describe('placement through gameplay:interactions', () => {
 
   it.effect('the last held item is consumed exactly once when placement succeeds', () =>
     Effect.gen(function* () {
-      const { store, state, inventory, stages } = yield* stagedSlice([[below, STONE]])
+      const { store, state, inventory, commit, stages } = yield* stagedSlice([[below, STONE]])
 
       yield* requestBlockPlacementCommand(state, {
         requestId: 'last-item',
@@ -1199,10 +1294,9 @@ describe('placement through gameplay:interactions', () => {
       yield* runFrame(stages)
 
       expect(yield* store.blockAt(target)).toBe(blockIdOrThrow('sand'))
-      expect(yield* inventory.api.countOf('sand')).toBe(0)
-      expect(yield* inventory.withdrawals).toStrictEqual([
-        { item: 'sand', count: 1, removed: 1 },
-      ])
+      expect(yield* inventory.api.countOf('sand')).toBe(1)
+      expect(yield* inventory.withdrawals).toStrictEqual([])
+      expect(countOwnerItem(yield* playerStorage(commit), 'sand')).toBe(0)
       const [result] = yield* drainBlockPlacementResults(state)
       expect(result).toMatchObject({
         requestId: 'last-item',
@@ -1216,7 +1310,7 @@ describe('placement through gameplay:interactions', () => {
 
   it.effect('a refused correlated placement restores the reservation and reports the reason', () =>
     Effect.gen(function* () {
-      const { store, state, inventory, stages } = yield* stagedSlice([[target, STONE]])
+      const { store, state, inventory, commit, stages } = yield* stagedSlice([[target, STONE]])
 
       yield* requestBlockPlacementCommand(state, {
         requestId: 'occupied',
@@ -1227,6 +1321,7 @@ describe('placement through gameplay:interactions', () => {
 
       expect(yield* store.blockAt(target)).toBe(STONE)
       expect(yield* inventory.api.countOf('sand')).toBe(1)
+      expect(countOwnerItem(yield* playerStorage(commit), 'sand')).toBe(1)
       expect(yield* drainBlockPlacementResults(state)).toStrictEqual([
         {
           requestId: 'occupied',
@@ -1241,7 +1336,7 @@ describe('placement through gameplay:interactions', () => {
 
   it.effect('creative placement changes the world without touching inventory', () =>
     Effect.gen(function* () {
-      const { store, state, inventory, stages } = yield* stagedSlice([[below, STONE]], false)
+      const { store, state, inventory, commit, stages } = yield* stagedSlice([[below, STONE]], false)
 
       yield* requestBlockPlacementCommand(state, {
         requestId: 'creative',
@@ -1253,6 +1348,7 @@ describe('placement through gameplay:interactions', () => {
 
       expect(yield* store.blockAt(target)).toBe(blockIdOrThrow('sand'))
       expect(yield* inventory.withdrawals).toStrictEqual([])
+      expect(countOwnerItem(yield* playerStorage(commit), 'sand')).toBe(0)
       const [result] = yield* drainBlockPlacementResults(state)
       expect(result).toMatchObject({
         requestId: 'creative',
@@ -1266,7 +1362,7 @@ describe('placement through gameplay:interactions', () => {
 
   it.effect('replaying the same command id returns its result without a second mutation', () =>
     Effect.gen(function* () {
-      const { store, state, inventory, stages } = yield* stagedSlice([[below, STONE]])
+      const { store, state, inventory, commit, stages } = yield* stagedSlice([[below, STONE]])
       const command = {
         requestId: 'retry',
         positionKey: blockPositionKeyOf(blockPosition(target.x, target.y, target.z)),
@@ -1280,9 +1376,8 @@ describe('placement through gameplay:interactions', () => {
       yield* runFrame(stages)
 
       expect(yield* store.blockAt(target)).toBe(blockIdOrThrow('sand'))
-      expect(yield* inventory.withdrawals).toStrictEqual([
-        { item: 'sand', count: 1, removed: 1 },
-      ])
+      expect(yield* inventory.withdrawals).toStrictEqual([])
+      expect(countOwnerItem(yield* playerStorage(commit), 'sand')).toBe(0)
       const [result] = yield* drainBlockPlacementResults(state)
       expect(result).toMatchObject({
         requestId: 'retry',
@@ -1298,7 +1393,7 @@ describe('placement through gameplay:interactions', () => {
     Effect.gen(function* () {
       const secondTarget: BlockPosition = blockPosition(3, 64, 3)
       const secondBelow: BlockPosition = blockPosition(3, 63, 3)
-      const { store, state, inventory, stages } = yield* stagedSlice([
+      const { store, state, inventory, commit, stages } = yield* stagedSlice([
         [below, STONE],
         [secondBelow, STONE],
       ])
@@ -1318,7 +1413,8 @@ describe('placement through gameplay:interactions', () => {
       yield* runFrame(stages)
 
       expect(yield* store.blockAt(secondTarget)).toBeUndefined()
-      expect(yield* inventory.withdrawals).toHaveLength(1)
+      expect(yield* inventory.withdrawals).toHaveLength(0)
+      expect(countOwnerItem(yield* playerStorage(commit), 'sand')).toBe(0)
       expect(yield* drainBlockPlacementResults(state)).toStrictEqual([
         {
           requestId: 'conflict',
@@ -1354,7 +1450,7 @@ describe('placement through gameplay:interactions', () => {
       // sinks one cell per tick, because `settled` re-enqueues the destination
       // rather than looping to the floor inside one tick.
       yield* runFrame(stages)
-      expect(yield* store.blockAt(target)).toBe(AIR_BLOCK_ID)
+      expect(yield* store.blockAt(target)).toBeUndefined()
       expect(yield* store.blockAt(blockPosition(2, 63, 3))).toBe(blockIdOrThrow('sand'))
 
       for (let frame = 0; frame < 8; frame += 1) {
@@ -1372,7 +1468,7 @@ describe('placement through gameplay:interactions', () => {
   // is that a refused placement spends an item anyway.
   it.effect('a refused placement spends nothing and disturbs nothing', () =>
     Effect.gen(function* () {
-      const { store, state, inventory, stages } = yield* stagedSlice([[target, STONE]])
+      const { store, state, inventory, commit, stages } = yield* stagedSlice([[target, STONE]])
       const before = yield* inventory.api.countOf('sand')
 
       yield* Ref.update(state.pendingPlacements, (queue) => [
@@ -1385,6 +1481,7 @@ describe('placement through gameplay:interactions', () => {
       expect(yield* Ref.get(state.consumedItems)).toStrictEqual([])
       expect((yield* Ref.get(state.fallingBlocks)).pending.size).toBe(0)
       expect(yield* inventory.api.countOf('sand')).toBe(before)
+      expect(countOwnerItem(yield* playerStorage(commit), 'sand')).toBe(before)
     }),
   )
 
@@ -1394,12 +1491,12 @@ describe('placement through gameplay:interactions', () => {
   // placement as `Occupied` by a block that is about to stop existing.
   it.effect('a break and a placement of the same cell in one frame do both, in that order', () =>
     Effect.gen(function* () {
-      const { store, state, stages } = yield* stagedSlice([
+      const { store, state, inventory, commit, stages } = yield* stagedSlice([
         [below, STONE],
         [target, STONE],
       ])
 
-      yield* Ref.set(state.pendingBreaks, [blockPositionKeyOf(blockPosition(target.x, target.y, target.z))])
+      yield* requestBlockBreak(state, target)
       yield* Ref.set(state.pendingPlacements, [
         { positionKey: blockPositionKeyOf(blockPosition(target.x, target.y, target.z)), heldItem: 'sand' as const },
       ])
@@ -1407,17 +1504,24 @@ describe('placement through gameplay:interactions', () => {
 
       expect(yield* store.blockAt(target)).toBe(blockIdOrThrow('sand'))
       expect(yield* Ref.get(state.consumedItems)).toStrictEqual(['sand'])
+      expect(yield* inventory.api.countOf('sand')).toBe(1)
+      expect(countOwnerItem(yield* playerStorage(commit), 'sand')).toBe(0)
     }),
   )
 
   // PlayerService is authoritative. Keep the compatibility Ref deliberately
   // stale so this also detects any accidental fallback to the old inbox.
-  it.effect('REGRESSION: the stage reads the latest PlayerService pose, so the body guard is live', () =>
+  it.effect('the placement body guard reads the registered player owner, not the local PlayerService mirror', () =>
     Effect.gen(function* () {
-      const { store, state, player, stages } = yield* stagedSlice([[below, STONE]])
+      const poseNearTarget: PlayerPose = {
+        feetPosition: fixturePosition(target.x + 0.5, target.y, target.z + 0.5),
+        yawRadians: 0,
+        pitchRadians: 0,
+      }
+      const { store, state, player, stages } = yield* stagedSlice([[below, STONE]], true, poseNearTarget)
 
       yield* Ref.set(state.targetPosition, fixturePosition(target.x + 20.5, target.y, target.z + 20.5))
-      yield* player.api.moveTo(fixturePosition(target.x + 0.5, target.y, target.z + 0.5))
+      yield* player.api.moveTo(fixturePosition(target.x + 20.5, target.y, target.z + 20.5))
       yield* Ref.set(state.pendingPlacements, [
         { positionKey: blockPositionKeyOf(blockPosition(target.x, target.y, target.z)), heldItem: 'stone' as const },
       ])

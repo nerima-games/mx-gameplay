@@ -13,7 +13,7 @@ import {
   blockPositionForKey,
   breakRequestQueueFor,
   requeueBlockBreak,
-  candidateForItemUse,
+  requestBlockBreak,
   candidateForPlayerStorageItemUse,
   EnderPearlOutcomeSchema,
   disturb,
@@ -26,14 +26,12 @@ import {
   rollAt,
   requestStatusEffect,
   isSuccessfulBlockUse,
-  NO_TOOL,
   planFurnaceAdvance,
   processBlockPlacementCommand,
   resolveBlockUse,
   stepPortalTravel,
   stepStatusEffects,
   useBucket,
-  useFlintAndSteel,
 } from './registration-core.js'
 import { EntityHealthPoints, PositionAxis } from '@nerima-games/mc-kernel'
 import { position as kernelPosition } from '@nerima-games/mc-kernel'
@@ -53,6 +51,9 @@ import {
 import type { BlockPosition } from '@nerima-games/mc-kernel'
 import { planBreakBlock } from '../domain/interactions/break-block.js'
 import { TNT_BLOCK_ID } from '../domain/interactions/ignite-tnt.js'
+import { igniteFire } from '../domain/interactions/ignite-fire.js'
+import { ignitePortal } from '../domain/interactions/ignite-portal.js'
+import type { IgnitionOutcome } from '../domain/interactions/use-flint-and-steel.js'
 import {
   DroppedItemOwnerSnapshotSchema,
   appendDroppedItemSpawns,
@@ -83,6 +84,7 @@ import type {
 
 import {
   AIR_BLOCK_ID,
+  adjacentBlockPosition,
   BlockAddressSchema,
   EntityIdSchema,
   DomainEventSchema,
@@ -330,10 +332,10 @@ const processBowShot = (
   Effect.gen(function* () {
     const result = (outcome: 'Fired' | 'Undercharged' | 'DuplicateRequest' | 'PlayerDead' | 'InventoryUnavailable') => {
       if (request.requestId === undefined) return Effect.void
-      const result: import('./registration-core.js').BowShotResult = outcome === 'Fired'
+      const entry: import('./registration-core.js').BowShotResult = outcome === 'Fired'
         ? { requestId: request.requestId, success: true, outcome }
         : { requestId: request.requestId, success: false, outcome }
-      return Ref.update(state.bowShotResults, (results) => [...results, result])
+      return Ref.update(state.bowShotResults, (results) => [...results, entry])
     }
     if (request.requestId !== undefined) {
       const handled = yield* Ref.get(state.handledBowShotRequestIds)
@@ -860,8 +862,7 @@ const processFishingItemUse = (
     let projectilePlan: WorldCommitPlanFragment<unknown> | undefined
     const activeRod = snapshot.success.state.rods.find((rod) => rod.actor === request.actor)
     let removeBobber: import('@nerima-games/mc-kernel').ProjectileId | undefined
-    switch (request.action) {
-      case 'CastFishing': {
+    if (request.action === 'CastFishing') {
         const tick = Schema.decodeUnknownResult(SimulationTickSchema)(request.tick)
         if (Result.isFailure(tick)) {
           yield* recordGameplayStageFailure(state, {
@@ -952,9 +953,7 @@ const processFishingItemUse = (
         }
         projectilePlan = projectileFragment.success
         plans.push(projectilePlan)
-        break
-      }
-      case 'AdvanceFishing': {
+    } else if (request.action === 'AdvanceFishing') {
         const intent = Schema.decodeUnknownResult(FishingAdvanceIntentSchema)({
           actor: request.actor,
           elapsedTicks: request.elapsedTicks,
@@ -986,9 +985,7 @@ const processFishingItemUse = (
         plans = [decodedAdvance.success]
         outcome = decodedAdvance.success.result
         if (outcome._tag === 'Cancelled') removeBobber = outcome.bobber
-        break
-      }
-      case 'CancelFishing': {
+    } else if (request.action === 'CancelFishing') {
         const intent = Schema.decodeUnknownResult(FishingCancelIntentSchema)({ actor: request.actor })
         if (Result.isFailure(intent)) {
           yield* recordGameplayStageFailure(state, {
@@ -1013,9 +1010,7 @@ const processFishingItemUse = (
         plans = [decodedCancel.success]
         outcome = decodedCancel.success.result
         removeBobber = decodedCancel.success.result.bobber
-        break
-      }
-      case 'ReelFishing': {
+    } else {
         const tick = Schema.decodeUnknownResult(SimulationTickSchema)(yield* Ref.get(state.tickCount))
         if (Result.isFailure(tick)) {
           yield* recordGameplayStageFailure(state, {
@@ -1116,8 +1111,6 @@ const processFishingItemUse = (
           plans.push(storagePlan.success)
         }
         nextSeed = batch.seed
-        break
-      }
     }
 
     if (removeBobber !== undefined) {
@@ -1843,6 +1836,7 @@ const processPlacement = (
   playerState: Schema.Schema.Type<typeof PlayerServiceSnapshotSchema> | undefined,
   playerDead: boolean,
   request: PlacementRequest | BlockPlacementCommand,
+  disturbed: Array<BlockPositionKey>,
 ): Effect.Effect<void> =>
   Effect.gen(function* () {
     const command = 'requestId' in request ? request : undefined
@@ -2004,6 +1998,12 @@ const processPlacement = (
             consumed: false,
             replayed: false,
             outcome: { _tag: 'CommitFailed', error: committed.failure },
+          }
+        }
+        for (const edit of planned.edits) {
+          const below = Result.getOrUndefined(adjacentBlockPosition(edit.position, 'down'))
+          if (below !== undefined) {
+            disturbed.push(blockPositionKeyOf(below))
           }
         }
         if (storageCandidate !== undefined) {
@@ -2534,28 +2534,27 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
           }
         }
 
+        const batchHeldTool = yield* Ref.get(state.heldTool)
         for (const [index, positionKey] of breaks.entries()) {
           if (playerDead) continue
           const request = snapshots.get(index)
-          const tool = request?.lootContext ?? NO_TOOL
+          const tool = request?.lootContext ?? batchHeldTool
           const breakPosition = yield* blockPositionForKey(positionKey)
-          if (request === undefined || commit === undefined) {
+          if (commit === undefined) {
             yield* recordGameplayUnsupportedOperation(state, {
               _tag: 'Unsupported',
               action: 'MineBlock',
               ...(request === undefined ? {} : { requestId: String(request.requestId) }),
-              reason: commit === undefined
-                ? 'WorldCommitCoordinatorUnavailable'
-                : 'OwnerRegistrationUnavailable',
+              reason: 'WorldCommitCoordinatorUnavailable',
             })
             continue
           }
-          const miningDimension = request.dimension ?? playerState?.pose.feetPosition.dimension
+          const miningDimension = request?.dimension ?? playerState?.pose.feetPosition.dimension
           if (miningDimension === undefined) {
             yield* recordGameplayUnsupportedOperation(state, {
               _tag: 'Unsupported',
               action: 'MineBlock',
-              requestId: String(request.requestId),
+              ...(request === undefined ? {} : { requestId: String(request.requestId) }),
               reason: 'OwnerRegistrationUnavailable',
             })
             continue
@@ -2565,7 +2564,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
               coordinator: commit.coordinator,
               dimension: miningDimension,
               ownerId: commit.playerStorageOwnerId,
-              toolLocation: request.toolLocation,
+              toolLocation: request?.toolLocation,
             })
             if (plan._tag === 'PlannedCascade') {
               const seed = yield* Ref.get(state.rollSeed)
@@ -2601,7 +2600,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                   yield* recordGameplayUnsupportedOperation(state, {
                     _tag: 'Unsupported',
                     action: 'MineBlock',
-                    requestId: String(request.requestId),
+                    ...(request === undefined ? {} : { requestId: String(request.requestId) }),
                     reason: 'OwnerRegistrationUnavailable',
                   })
                   continue
@@ -2654,7 +2653,14 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                   subject: 'Mining',
                   error: committed.failure,
                 })
-                yield* requeueBlockBreak(state, request)
+                if (request === undefined) {
+                  yield* requestBlockBreak(state, breakPosition, tool, {
+                    dimension: miningDimension,
+                    toolLocation: undefined,
+                  })
+                } else {
+                  yield* requeueBlockBreak(state, request)
+                }
                 continue
               }
               yield* Ref.set(state.rollSeed, plannedLoot.seed)
@@ -2692,7 +2698,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
         }
 
         for (const request of placements) {
-          yield* processPlacement(state, commit, store, playerState, playerDead, request)
+          yield* processPlacement(state, commit, store, playerState, playerDead, request, disturbed)
         }
 
         // ITEM USES ARE SERVICED LAST, after breaks and placements, and the
@@ -2710,8 +2716,8 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
             continue
           }
           if ('action' in request) {
-            switch (request.action) {
-              case 'ApplyBoneMeal': {
+            itemUseAction: {
+              if (request.action === 'ApplyBoneMeal') {
                 if (commit === undefined || commit.cropOwnerId === undefined) {
                   yield* recordGameplayUnsupportedOperation(state, {
                     _tag: 'Unsupported',
@@ -2721,7 +2727,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                       ? 'WorldCommitCoordinatorUnavailable'
                       : 'OwnerRegistrationUnavailable',
                   })
-                  break
+                  break itemUseAction
                 }
                 const position = yield* blockPositionForKey(request.positionKey)
                 const dimension = playerState?.pose.feetPosition.dimension
@@ -2732,7 +2738,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                     requestId: request.requestId,
                     reason: 'OwnerRegistrationUnavailable',
                   })
-                  break
+                  break itemUseAction
                 }
                 const observed = yield* Effect.result(commit.coordinator.observe(
                   commit.playerStorageOwnerId,
@@ -2746,7 +2752,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                     subject: 'ItemUse',
                     error: observed.failure,
                   })
-                  break
+                  break itemUseAction
                 }
                 const reading = observed.success.blocks[0]?.reading
                 const blockType = reading?._tag === 'Block'
@@ -2765,7 +2771,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                     consumedCount: 0,
                     outcome,
                   })
-                  break
+                  break itemUseAction
                 }
                 const cropSnapshot = yield* Effect.result(commit.coordinator.snapshot(
                   commit.cropOwnerId,
@@ -2778,7 +2784,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                     subject: 'ItemUse',
                     error: cropSnapshot.failure,
                   })
-                  break
+                  break itemUseAction
                 }
                 if (cropSnapshot.success.revision !== observed.success.revision) {
                   yield* recordGameplayStageFailure(state, {
@@ -2790,7 +2796,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                       actual: cropSnapshot.success.revision,
                     }),
                   })
-                  break
+                  break itemUseAction
                 }
                 const crop = cropAt(cropSnapshot.success.state, dimension, position)
                 if (crop === undefined || crop.crop !== blockType) {
@@ -2800,7 +2806,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                     requestId: request.requestId,
                     reason: 'OwnerRegistrationUnavailable',
                   })
-                  break
+                  break itemUseAction
                 }
                 const candidate = candidateForPlayerStorageItemUse(
                   commit.playerStorageOwnerId,
@@ -2815,7 +2821,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                     subject: 'ItemUse',
                     error: candidate.failure,
                   })
-                  break
+                  break itemUseAction
                 }
                 const nextCrops = cropSnapshot.success.state.crops.map((entry) =>
                   entry === crop ? advanceCropByBoneMeal(entry) : entry,
@@ -2828,7 +2834,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                     subject: 'ItemUse',
                     error: cropChange.failure,
                   })
-                  break
+                  break itemUseAction
                 }
                 const success = candidate.success !== undefined
                 if (success) {
@@ -2844,7 +2850,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                       subject: 'ItemUse',
                       error: committed.failure,
                     })
-                    break
+                    break itemUseAction
                   }
                 }
                 itemUseResults.push({
@@ -2855,9 +2861,9 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                   consumedCount: success ? 1 : 0,
                   outcome,
                 })
-                break
+                break itemUseAction
               }
-              case 'TillSoil': {
+              else if (request.action === 'TillSoil') {
                 const ground = yield* blockPositionForKey(request.positionKey)
                 const above = Result.getOrUndefined(cellAbove(ground))
                 const dimension = playerState?.pose.feetPosition.dimension
@@ -2870,7 +2876,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                       ? 'WorldCommitCoordinatorUnavailable'
                       : 'OwnerRegistrationUnavailable',
                   })
-                  break
+                  break itemUseAction
                 }
                 const observed = yield* Effect.result(commit.coordinator.observe(
                   commit.playerStorageOwnerId,
@@ -2884,7 +2890,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                     subject: 'ItemUse',
                     error: observed.failure,
                   })
-                  break
+                  break itemUseAction
                 }
                 const groundRead = observed.success.blocks[0]?.reading
                 const aboveRead = observed.success.blocks[1]?.reading
@@ -2907,7 +2913,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                     subject: 'ItemUse',
                     error: candidate.failure,
                   })
-                  break
+                  break itemUseAction
                 }
                 const outcome = tillingVerdict(
                   { tills: candidate.success !== undefined },
@@ -2942,7 +2948,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                       subject: 'ItemUse',
                       error: committed.failure,
                     })
-                    break
+                    break itemUseAction
                   }
                   disturbed.push(request.positionKey)
                 }
@@ -2954,9 +2960,9 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                   durabilityDamage: success ? 1 : 0,
                   outcome,
                 })
-                break
+                break itemUseAction
               }
-              case 'PlantPotato': {
+              else if (request.action === 'PlantPotato') {
                 const soil = yield* blockPositionForKey(request.positionKey)
                 const above = Result.getOrUndefined(cropCellAbove(soil))
                 const dimension = playerState?.pose.feetPosition.dimension
@@ -2969,7 +2975,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                       ? 'WorldCommitCoordinatorUnavailable'
                       : 'OwnerRegistrationUnavailable',
                   })
-                  break
+                  break itemUseAction
                 }
                 const observed = yield* Effect.result(commit.coordinator.observe(
                   commit.playerStorageOwnerId,
@@ -2983,7 +2989,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                     subject: 'ItemUse',
                     error: observed.failure,
                   })
-                  break
+                  break itemUseAction
                 }
                 const cropSnapshot = yield* Effect.result(commit.coordinator.snapshot(
                   commit.cropOwnerId,
@@ -2996,7 +3002,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                     subject: 'ItemUse',
                     error: cropSnapshot.failure,
                   })
-                  break
+                  break itemUseAction
                 }
                 if (cropSnapshot.success.revision !== observed.success.revision) {
                   yield* recordGameplayStageFailure(state, {
@@ -3008,7 +3014,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                       actual: cropSnapshot.success.revision,
                     }),
                   })
-                  break
+                  break itemUseAction
                 }
                 const soilRead = observed.success.blocks[0]?.reading
                 const aboveRead = observed.success.blocks[1]?.reading
@@ -3031,7 +3037,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                     subject: 'ItemUse',
                     error: candidate.failure,
                   })
-                  break
+                  break itemUseAction
                 }
                 const outcome = candidate.success === undefined
                   ? { _tag: 'notASeed' as const, held: request.heldItem }
@@ -3045,7 +3051,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                       requestId: request.requestId,
                       reason: 'OwnerRegistrationUnavailable',
                     })
-                    break
+                    break itemUseAction
                   }
                   const cropChange = cropCandidate(commit.cropOwnerId, [
                     ...cropSnapshot.success.state.crops,
@@ -3058,7 +3064,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                       subject: 'ItemUse',
                       error: cropChange.failure,
                     })
-                    break
+                    break itemUseAction
                   }
                   const candidateChange = candidate.success
                   const committed = yield* Effect.result(Effect.gen(function* () {
@@ -3085,7 +3091,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                       subject: 'ItemUse',
                       error: committed.failure,
                     })
-                    break
+                    break itemUseAction
                   }
                 }
                 itemUseResults.push({
@@ -3096,9 +3102,9 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                   consumedCount: success ? 1 : 0,
                   outcome,
                 })
-                break
+                break itemUseAction
               }
-              case 'HarvestPotato': {
+              else if (request.action === 'HarvestPotato') {
                 if (commit === undefined || commit.cropOwnerId === undefined) {
                   yield* recordGameplayUnsupportedOperation(state, {
                     _tag: 'Unsupported',
@@ -3108,7 +3114,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                       ? 'WorldCommitCoordinatorUnavailable'
                       : 'OwnerRegistrationUnavailable',
                   })
-                  break
+                  break itemUseAction
                 }
                 const position = yield* blockPositionForKey(request.positionKey)
                 const dimension = playerState?.pose.feetPosition.dimension
@@ -3119,7 +3125,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                     requestId: request.requestId,
                     reason: 'OwnerRegistrationUnavailable',
                   })
-                  break
+                  break itemUseAction
                 }
                 const observed = yield* Effect.result(commit.coordinator.observe(
                   commit.playerStorageOwnerId,
@@ -3133,7 +3139,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                     subject: 'ItemUse',
                     error: observed.failure,
                   })
-                  break
+                  break itemUseAction
                 }
                 const cropSnapshot = yield* Effect.result(commit.coordinator.snapshot(
                   commit.cropOwnerId,
@@ -3146,7 +3152,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                     subject: 'ItemUse',
                     error: cropSnapshot.failure,
                   })
-                  break
+                  break itemUseAction
                 }
                 if (cropSnapshot.success.revision !== observed.success.revision) {
                   yield* recordGameplayStageFailure(state, {
@@ -3158,7 +3164,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                       actual: cropSnapshot.success.revision,
                     }),
                   })
-                  break
+                  break itemUseAction
                 }
                 const crop = cropAt(cropSnapshot.success.state, dimension, position)
                 if (crop === undefined) {
@@ -3168,7 +3174,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                     requestId: request.requestId,
                     reason: 'OwnerRegistrationUnavailable',
                   })
-                  break
+                  break itemUseAction
                 }
                 const reading = observed.success.blocks[0]?.reading
                 const cropType = reading?._tag === 'Block'
@@ -3181,7 +3187,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                     requestId: request.requestId,
                     reason: 'OwnerRegistrationUnavailable',
                   })
-                  break
+                  break itemUseAction
                 }
                 const outcome = cropDrops(cropType, isMatureCrop(crop), request.roll)
                 if (outcome._tag !== 'drops') {
@@ -3192,7 +3198,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                     success: false,
                     outcome,
                   })
-                  break
+                  break itemUseAction
                 }
                 let storage = observed.success.state
                 const leftovers: Array<DroppedItemSpawn> = []
@@ -3245,7 +3251,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                     subject: 'ItemUse',
                     error: cropChange.failure,
                   })
-                  break
+                  break itemUseAction
                 }
                 let changes: Array<ReplicatedOwnerCandidate> = [
                   { ownerId: commit.playerStorageOwnerId, state: storage },
@@ -3260,7 +3266,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                       requestId: request.requestId,
                       reason: 'OwnerRegistrationUnavailable',
                     })
-                    break
+                    break itemUseAction
                   }
                   const droppedSnapshot = yield* Effect.result(commit.coordinator.snapshot(
                     droppedItemsOwnerId,
@@ -3273,7 +3279,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                       subject: 'ItemUse',
                       error: droppedSnapshot.failure,
                     })
-                    break
+                    break itemUseAction
                   }
                   if (droppedSnapshot.success.revision !== observed.success.revision) {
                     yield* recordGameplayStageFailure(state, {
@@ -3285,7 +3291,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                         actual: droppedSnapshot.success.revision,
                       }),
                     })
-                    break
+                    break itemUseAction
                   }
                   const eligibleFromFrame = (yield* Ref.get(state.tickCount)) + 1
                   const droppedItems = appendDroppedItemSpawns(
@@ -3300,7 +3306,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                       subject: 'ItemUse',
                       error: droppedItems.failure,
                     })
-                    break
+                    break itemUseAction
                   }
                   changes = [
                     ...changes,
@@ -3330,7 +3336,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                     subject: 'ItemUse',
                     error: committed.failure,
                   })
-                  break
+                  break itemUseAction
                 }
                 itemUseResults.push({
                   action: request.action,
@@ -3340,10 +3346,9 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                   outcome,
                 })
                 disturbed.push(request.positionKey)
-                break
+                break itemUseAction
               }
-              case 'EatPotato':
-              case 'EatFood': {
+              else if (request.action === 'EatPotato' || request.action === 'EatFood') {
                 if (commit === undefined || commit.vitalsOwnerId === undefined) {
                   yield* recordGameplayUnsupportedOperation(state, {
                     _tag: 'Unsupported',
@@ -3353,7 +3358,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                       ? 'WorldCommitCoordinatorUnavailable'
                       : 'OwnerRegistrationUnavailable',
                   })
-                  break
+                  break itemUseAction
                 }
                 const heldItem = request.action === 'EatPotato' ? 'potato' : request.heldItem
                 const effectRoll = request.action === 'EatPotato' ? 1 : request.effectRoll
@@ -3368,34 +3373,34 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                     subject: 'ItemUse',
                     error: storageSnapshot.failure,
                   })
-                  break
+                  break itemUseAction
                 }
-                const vitalsSnapshot = yield* Effect.result(commit.coordinator.snapshot(
+                const eatenVitalsSnapshot = yield* Effect.result(commit.coordinator.snapshot(
                   commit.vitalsOwnerId,
                   ExperienceOrbVitalsOwnerSnapshotSchema,
                 ))
-                if (Result.isFailure(vitalsSnapshot)) {
+                if (Result.isFailure(eatenVitalsSnapshot)) {
                   yield* recordGameplayStageFailure(state, {
                     _tag: 'Failed',
                     operation: 'OwnerSnapshot',
                     subject: 'Vitals',
-                    error: vitalsSnapshot.failure,
+                    error: eatenVitalsSnapshot.failure,
                   })
-                  break
+                  break itemUseAction
                 }
-                if (storageSnapshot.success.revision !== vitalsSnapshot.success.revision) {
+                if (storageSnapshot.success.revision !== eatenVitalsSnapshot.success.revision) {
                   yield* recordGameplayStageFailure(state, {
                     _tag: 'Failed',
                     operation: 'OwnerSnapshot',
                     subject: 'Vitals',
                     error: new WorldRevisionConflict({
                       expected: storageSnapshot.success.revision,
-                      actual: vitalsSnapshot.success.revision,
+                      actual: eatenVitalsSnapshot.success.revision,
                     }),
                   })
-                  break
+                  break itemUseAction
                 }
-                const vitals = vitalsSnapshot.success.state.vitals
+                const vitals = eatenVitalsSnapshot.success.state.vitals
                 const outcome = resolveFoodUse({
                   held: heldItem,
                   vitals: {
@@ -3432,7 +3437,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                 }
                 if (outcome._tag !== 'consume') {
                   publishFoodResult(false, 0, outcome)
-                  break
+                  break itemUseAction
                 }
                 const storageCandidate = candidateForPlayerStorageItemUse(
                   commit.playerStorageOwnerId,
@@ -3447,11 +3452,11 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                     subject: 'ItemUse',
                     error: storageCandidate.failure,
                   })
-                  break
+                  break itemUseAction
                 }
                 if (storageCandidate.success === undefined) {
                   publishFoodResult(false, 0, { _tag: 'missingItem' })
-                  break
+                  break itemUseAction
                 }
                 const nutrition = FoodNutrition.result(outcome.foodPoints)
                 const saturation = SaturationModifier.result(outcome.saturationModifier)
@@ -3462,7 +3467,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                     subject: 'Vitals',
                     error: nutrition.failure,
                   })
-                  break
+                  break itemUseAction
                 }
                 if (Result.isFailure(saturation)) {
                   yield* recordGameplayStageFailure(state, {
@@ -3471,7 +3476,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                     subject: 'Vitals',
                     error: saturation.failure,
                   })
-                  break
+                  break itemUseAction
                 }
                 const nextVitals = eatVitals(vitals, nutrition.success, saturation.success)
                 const validatedVitals = yield* Effect.result(
@@ -3486,7 +3491,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                     subject: 'Vitals',
                     error: validatedVitals.failure,
                   })
-                  break
+                  break itemUseAction
                 }
                 const committed = yield* Effect.result(commit.coordinator.commit({
                   expectedRevision: storageSnapshot.success.revision,
@@ -3506,15 +3511,15 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                     subject: 'Vitals',
                     error: committed.failure,
                   })
-                  break
+                  break itemUseAction
                 }
                 for (const effect of outcome.effects) {
                   yield* requestStatusEffect(state, effect)
                 }
                 publishFoodResult(true, 1, outcome)
-                break
+                break itemUseAction
               }
-              case 'UseBucket': {
+              else if (request.action === 'UseBucket') {
                 if (commit === undefined) {
                   yield* recordGameplayUnsupportedOperation(state, {
                     _tag: 'Unsupported',
@@ -3522,7 +3527,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                     requestId: request.requestId,
                     reason: 'WorldCommitCoordinatorUnavailable',
                   })
-                  break
+                  break itemUseAction
                 }
                 if (commit.playerStorageOwnerId === undefined) {
                   yield* recordGameplayUnsupportedOperation(state, {
@@ -3531,7 +3536,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                     requestId: request.requestId,
                     reason: 'OwnerRegistrationUnavailable',
                   })
-                  break
+                  break itemUseAction
                 }
                 const position = yield* blockPositionForKey(request.positionKey)
                 const outcome = yield* useBucket(
@@ -3562,27 +3567,21 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                     outcome,
                   })
                 }
-                break
+                break itemUseAction
               }
-              case 'CastFishing':
-              case 'AdvanceFishing':
-              case 'CancelFishing':
-              case 'ReelFishing': {
+              else if (request.action === 'CastFishing' || request.action === 'AdvanceFishing' || request.action === 'CancelFishing' || request.action === 'ReelFishing') {
                 yield* processFishingItemUse(state, commit, request)
-                break
+                break itemUseAction
               }
-              case 'CollectBrewingBottle': {
+              else if (request.action === 'CollectBrewingBottle') {
                 yield* processBrewingBottleCollection(state, commit, request)
-                break
+                break itemUseAction
               }
-              case 'InsertBrewingFuel':
-              case 'InsertBrewingBottle':
-              case 'InsertBrewingIngredient':
-              case 'DrinkPotion': {
+              else if (request.action === 'InsertBrewingFuel' || request.action === 'InsertBrewingBottle' || request.action === 'InsertBrewingIngredient' || request.action === 'DrinkPotion') {
                 yield* processBrewingItemUse(state, commit, request)
-                break
+                break itemUseAction
               }
-              case 'AdvanceFurnace': {
+              else {
                 const planned = planFurnaceAdvance(request.state, request.deltaTimeSecs)
                 if (Result.isFailure(planned)) {
                   itemUseResults.push({
@@ -3600,7 +3599,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                     plan,
                   })
                 }
-                break
+                break itemUseAction
               }
             }
             continue
@@ -3763,23 +3762,43 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
             continue
           }
           const ignitionDimension = playerState?.pose.feetPosition.dimension
-          const ignitionCandidateResult = ignitionDimension === undefined
-            ? Result.succeed(undefined)
-            : yield* candidateForItemUse(
-              commit.coordinator,
-              commit.playerStorageOwnerId,
-              request.heldItem,
-              request.heldItem === 'fire_charge' ? 'consume' : 'damage',
-            )
-          if (Result.isFailure(ignitionCandidateResult)) {
+          if (ignitionDimension === undefined) {
+            yield* recordGameplayUnsupportedOperation(state, {
+              _tag: 'Unsupported',
+              action: 'IgniteTnt',
+              requestId: String(request.requestId),
+              reason: 'OwnerRegistrationUnavailable',
+            })
+            continue
+          }
+          const storageSnapshot = yield* Effect.result(
+            commit.coordinator.snapshot(commit.playerStorageOwnerId, PlayerStorageSnapshotSchema),
+          )
+          if (Result.isFailure(storageSnapshot)) {
             yield* recordGameplayStageFailure(state, {
               _tag: 'Failed',
               operation: 'OwnerSnapshot',
               subject: 'ItemUse',
+              error: storageSnapshot.failure,
+            })
+            continue
+          }
+          const ignitionCandidateResult = candidateForPlayerStorageItemUse(
+            commit.playerStorageOwnerId,
+            storageSnapshot.success.state,
+            request.heldItem,
+            request.heldItem === 'fire_charge' ? 'consume' : 'damage',
+          )
+          if (Result.isFailure(ignitionCandidateResult)) {
+            yield* recordGameplayStageFailure(state, {
+              _tag: 'Failed',
+              operation: 'CandidateBuild',
+              subject: 'ItemUse',
               error: ignitionCandidateResult.failure,
             })
+            continue
           }
-          const ignitionCandidate = Result.getOrUndefined(ignitionCandidateResult)
+          const ignitionCandidate = ignitionCandidateResult.success
           if (ignitionCandidate === undefined) {
             yield* recordGameplayUnsupportedOperation(state, {
               _tag: 'Unsupported',
@@ -3789,18 +3808,67 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
             })
             continue
           }
-          const ignition = yield* useFlintAndSteel(
-            store,
-            ignitionPosition,
-            request.heldItem,
-            ignitionDimension === undefined
-              ? undefined
-              : {
+          const expectedDimensionRevision = yield* commit.coordinator.dimensionRevision(ignitionDimension)
+          const portal = yield* ignitePortal(store, ignitionPosition)
+          let ignition: IgnitionOutcome
+          if (portal._tag === 'Ready') {
+            const portalBlock = Option.getOrThrow(blockIdOf('nether_portal'))
+            const blockWrite = Schema.decodeUnknownResult(WorldWriteBatchSchema)({
+              world: commit.coordinator.worldId,
+              expectedWorldRevision: storageSnapshot.success.revision,
+              dimension: ignitionDimension,
+              expectedDimensionRevision,
+              edits: portal.cells.map((position) => ({ position, block: portalBlock })),
+            })
+            if (Result.isFailure(blockWrite)) {
+              yield* recordGameplayStageFailure(state, {
+                _tag: 'Failed',
+                operation: 'CandidateBuild',
+                subject: 'ItemUse',
+                error: blockWrite.failure,
+              })
+              continue
+            }
+            const committed = yield* Effect.result(commit.coordinator.commit({
+              expectedRevision: storageSnapshot.success.revision,
+              expectedDimensions: [{
+                dimension: ignitionDimension,
+                expectedRevision: expectedDimensionRevision,
+              }],
+              changes: [ignitionCandidate],
+              blockWrite: blockWrite.success,
+            }))
+            if (Result.isFailure(committed)) {
+              yield* recordGameplayStageFailure(state, {
+                _tag: 'Failed',
+                operation: 'WorldCommit',
+                subject: 'ItemUse',
+                error: committed.failure,
+              })
+              ignition = {
+                _tag: 'Portal',
+                outcome: { _tag: 'CommitFailed', error: committed.failure },
+              }
+            } else {
+              ignition = {
+                _tag: 'Portal',
+                outcome: { _tag: 'Lit', frame: portal.frame, cells: portal.cells },
+              }
+            }
+          } else if (portal._tag === 'ChunkNotLoaded') {
+            ignition = { _tag: 'Portal', outcome: portal }
+          } else {
+            ignition = {
+              _tag: 'Fire',
+              outcome: yield* igniteFire(store, ignitionPosition, {
                 coordinator: commit.coordinator,
                 dimension: ignitionDimension,
-                changes: ignitionCandidate === undefined ? [] : [ignitionCandidate],
-              },
-          )
+                changes: [ignitionCandidate],
+                expectedRevision: storageSnapshot.success.revision,
+                expectedDimensionRevision,
+              }),
+            }
+          }
           const success = ignition.outcome._tag === 'Lit'
           if (ignition._tag === 'Fire' && ignition.outcome._tag === 'Lit') {
             const position = ignition.outcome.position

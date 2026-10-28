@@ -9,12 +9,11 @@
 import { describe, expect, it } from '@effect/vitest'
 import * as FastCheck from 'fast-check'
 import { Brand, Cause, Effect, Exit, Layer, Option, Ref, Result, Schema, Stream } from 'effect'
-import { AIR_BLOCK_ID, AngleRadians, BlockId, DimensionIdSchema, EntityHealthPoints, EntitySerial, PositionAxis, ProjectileIdSchema, SimulationTickSchema, WorldIdSchema, blockIdOf, position, type BlockPosition } from '@nerima-games/mc-kernel'
+import { AIR_BLOCK_ID, AngleRadians, BlockId, DimensionIdSchema, EntityHealthPoints, EntitySerial, PositionAxis, ProjectileIdSchema, SimulationTickSchema, WorldIdSchema, blockIdOf, position as kernelPosition, type BlockPosition } from '@nerima-games/mc-kernel'
 import type { BlockReading, ChunkStore, ChunkStoreApi } from '@nerima-games/mc-worldgen'
 import {
   CREEPER_KIND,
   DROPPED_ITEM_KIND,
-  rollCasualtyDrops,
   type MobBehaviour,
   type MobDropEvent,
   type MobExperienceEvent,
@@ -37,6 +36,8 @@ import {
   EntityId,
   EntityKind,
   HungerPoints,
+  POTATO_MATURITY_SECS,
+  SPAWN_VITALS,
   type EntityManager,
   type EntityRoster,
   type PlayerPose,
@@ -74,8 +75,6 @@ import {
   type FishingState,
   type ProjectileServiceSnapshot,
   type ProjectileLaunch,
-  type InventoryService,
-  type InventoryServiceApi,
   TNT_REPLICATED_OWNER_ID,
   INITIAL_TNT_SERVICE_SNAPSHOT,
   makeTntService,
@@ -84,7 +83,6 @@ import {
 } from '@nerima-games/mc-sim'
 import {
   DeltaTimeSecs,
-  maxStackCountForItem,
   StageId,
   type BlockPositionKey,
   type FrameServices,
@@ -107,6 +105,7 @@ import {
   drainMeleeAttackResults,
   drainMobDrops,
   drainMobExperience,
+  drainBlockPlacementResults,
   drainVillagerTradeResults,
   drainWeatherGameplayEvents,
   isHoeItem,
@@ -122,7 +121,8 @@ import {
   insertBrewingBottle,
   insertBrewingFuel,
   insertBrewingIngredient,
-  requestBlockPlacement,
+  requestBlockPlacementCommand,
+  requestBlockBreak,
   requestBucketUse,
   requestBoneMeal,
   requestBowShot,
@@ -131,15 +131,18 @@ import {
   requestFishingCancel,
   requestFishingCast,
   requestFishingReel,
+  requestCollectBrewingBottle,
+  collectBrewingPotion,
   requestEnderPearlThrow,
   requestFoodUse,
+  requestItemUse,
   requestMeleeAttack,
   requestMobSpawn,
   requestPotatoFoodUse,
+  requestPotatoHarvest,
   requestPotatoPlanting,
   requestSoilTill,
   requestStatusEffect,
-  requestTargetedBoneMeal,
   requestTargetedItemUse,
   requestTargetedBlockPlacement,
   requestTargetedBlockUse,
@@ -157,6 +160,7 @@ import {
   type EnderPearlThrowRequest,
   type GameplayFrameState,
 } from '../src/stages/registration'
+import type { GameplayStageCommitServices } from '../src/stages/registration-core'
 import {
   EXPERIENCE_MODULE_STAGE_PREFIXES,
   GAMEPLAY_STAGE_IDS,
@@ -172,12 +176,12 @@ import {
   world,
 } from './support/chunk-store-double'
 import { emptyRosterLayer, makeEntityManagerDouble } from './support/entity-manager-double'
-import { makePlayerServiceDouble } from './support/player-service-double'
+import { makePlayerServiceDouble, SPAWN_POSE } from './support/player-service-double'
 import {
-  BucketService,
   BrewingServiceStateSchema,
   WorldCommitChunkStoreUnavailable,
   WorldCommitCoordinator,
+  ReplicatedOwnerUnknown,
   WorldCommitEmptyRequest,
   CropSnapshotSchema,
   PlayerStorageSnapshotSchema,
@@ -185,7 +189,7 @@ import {
   makeWorldCommitCoordinator,
   type WorldCommitCoordinatorApi,
 } from '@nerima-games/mc-sim'
-import { emptySlots, makeInventoryDouble } from './support/inventory-service-double'
+import { emptyInventoryLayer, emptySlots, makeInventoryDouble } from './support/inventory-service-double'
 import { gameplayCommitServicesLayer, makeGameplayCommitServices, makeTransactionalChunkStoreDouble } from './support/transactional-stage-doubles'
 import { FrameServicesLayer } from './support/frame-services'
 import { runFrames } from './support/frame-runner'
@@ -215,9 +219,16 @@ const equipmentItem = (...args: Parameters<typeof makeEquipmentItem>) =>
 const durability = (...args: Parameters<typeof makeDurability>) =>
   Result.getOrThrow(makeDurability(...args))
 const positionOfBlock = (value: BlockPosition) => fixturePosition(value.x, value.y, value.z)
+const countStoredItem = (
+  storage: Schema.Schema.Type<typeof PlayerStorageSnapshotSchema>,
+  item: string,
+): number => storage.inventory.slots.reduce(
+  (count, slot) => count + (slot?.item === item ? slot.count : 0),
+  0,
+)
 const fixtureFishingActor = EntityId('stage-fishing-actor')
 const fixtureFishingBobber = Schema.decodeUnknownSync(ProjectileIdSchema)('stage-fishing-bobber')
-const fixtureFishingPosition = position(PositionAxis(0), PositionAxis(64), PositionAxis(0))
+const fixtureFishingPosition = kernelPosition(PositionAxis(0), PositionAxis(64), PositionAxis(0))
 const blocksPerSecond = Brand.nominal<ProjectileLaunch['speed']>()
 const fixtureFishingLaunch = {
   position: fixtureFishingPosition,
@@ -248,9 +259,8 @@ const enqueueFishingAction = (
   action: FishingAction,
   elapsedTicks = 120,
 ): Effect.Effect<void> => {
-  switch (action) {
-    case 'CastFishing':
-      return requestFishingCast(state, {
+  if (action === 'CastFishing') {
+    return requestFishingCast(state, {
         requestId: 'registered-fishing-cast',
         actor: fixtureFishingActor,
         bobber: fixtureFishingBobber,
@@ -260,9 +270,9 @@ const enqueueFishingAction = (
         profile: SNOWBALL_PROFILE,
         rod: null,
         environment: { hasWater: true, hasSkyAccess: true, isRaining: false, isOpenWater: true },
-      })
-    case 'AdvanceFishing':
-      return requestFishingAdvance(state, {
+    })
+  } else if (action === 'AdvanceFishing') {
+    return requestFishingAdvance(state, {
         requestId: 'registered-fishing-advance',
         actor: fixtureFishingActor,
         elapsedTicks: Schema.decodeUnknownSync(FishingElapsedTicksSchema)(elapsedTicks),
@@ -270,11 +280,11 @@ const enqueueFishingAction = (
         approachTicks: Schema.decodeUnknownSync(FishingApproachTicksSchema)(20),
         biteWindowTicks: Schema.decodeUnknownSync(FishingBiteWindowTicksSchema)(20),
         environment: { hasWater: true },
-      })
-    case 'CancelFishing':
-      return requestFishingCancel(state, 'registered-fishing-cancel', fixtureFishingActor)
-    case 'ReelFishing':
-      return Effect.gen(function* () {
+    })
+  } else if (action === 'CancelFishing') {
+    return requestFishingCancel(state, 'registered-fishing-cancel', fixtureFishingActor)
+  } else {
+    return Effect.gen(function* () {
         yield* Ref.set(state.tickCount, 7)
         yield* requestFishingReel(state, 'registered-fishing-reel', fixtureFishingActor)
       })
@@ -310,18 +320,24 @@ const OBSIDIAN = Option.getOrThrow(blockIdOf('obsidian'))
 const positionKey = Brand.nominal<BlockPositionKey>()
 
 /**
- * The stages read and write blocks and iterate mobs, so building them takes
- * mc-worldgen's `ChunkStore`, mc-sim's `EntityManager` and `TimeService`, and
- * the `WorldCommitCoordinator` for replicated owner writes (in `frameStages` — see
- * kernel's `domain/frame.ts` on `RRegister`). Tests about the SHAPE of the
- * registration provide an empty resident world, an empty roster and an empty
- * inventory: these assertions are about ordering and contract, and the
- * behaviour over a real world is `test/vertical-slice.test.ts`.
+ * The registration effect takes mc-worldgen's `ChunkStore`, mc-sim's
+ * `EntityManager`, `TimeService`, `WorldCommitCoordinator` and `DomainEventBus`
+ * (kernel's `domain/frame.ts` on `RRegister`). The coordinator fixture also
+ * needs an empty inventory to seed the registered player-storage owner. Tests
+ * about the SHAPE of registration use these empty host services; behaviour over
+ * a real world is covered in `test/vertical-slice.test.ts`.
  */
+const registrationEventBus: DomainEventBusApi = {
+  publish: () => Effect.void,
+  events: Stream.empty,
+}
+
 const emptyWorldBase = Layer.mergeAll(
   emptyWorldStoreLayer,
   emptyRosterLayer,
   TimeServiceLayer(),
+  emptyInventoryLayer,
+  Layer.succeed(DomainEventBus, registrationEventBus),
 )
 const emptyWorld = Layer.provideMerge(gameplayCommitServicesLayer, emptyWorldBase)
 const registeredStages = Effect.provide(makeGameplayStages, Layer.orDie(emptyWorld))
@@ -333,7 +349,7 @@ const builtStages = Effect.gen(function* () {
   const player = yield* makePlayerServiceDouble()
   const inventory = yield* makeInventoryDouble()
   const time = yield* makeTimeService()
-  const commit = yield* makeGameplayCommitServices(store.api, inventory.api)
+  const commit = yield* makeGameplayCommitServices(store.api, inventory.api, { playerPose: SPAWN_POSE })
   return {
     state,
     store,
@@ -355,6 +371,21 @@ const builtStagesInWorld = (
   fishing: GameplayOwnerInitialState['fishing'] = emptyFishingState(),
   projectiles: GameplayOwnerInitialState['projectiles'] = INITIAL_PROJECTILE_SERVICE_SNAPSHOT,
   tnt: GameplayOwnerInitialState['tnt'] = undefined,
+  ownerOverrides: Pick<GameplayOwnerInitialState, 'dimension' | 'vitals'> = {},
+  commitOverrides: {
+    readonly cropOwnerId?: GameplayStageCommitServices['cropOwnerId'] | undefined
+    readonly droppedItemsOwnerId?: GameplayStageCommitServices['droppedItemsOwnerId'] | undefined
+    readonly vitalsOwnerId?: GameplayStageCommitServices['vitalsOwnerId'] | undefined
+    readonly statusEffectsOwnerId?: GameplayStageCommitServices['statusEffectsOwnerId'] | undefined
+    readonly experienceOrbsOwnerId?: GameplayStageCommitServices['experienceOrbsOwnerId'] | undefined
+    readonly villagerTradesOwnerId?: GameplayStageCommitServices['villagerTradesOwnerId'] | undefined
+    readonly brewingOwnerId?: GameplayStageCommitServices['brewingOwnerId'] | undefined
+    readonly fishingOwnerId?: GameplayStageCommitServices['fishingOwnerId'] | undefined
+    readonly entitiesOwnerId?: GameplayStageCommitServices['entitiesOwnerId'] | undefined
+    readonly projectileOwnerId?: GameplayStageCommitServices['projectileOwnerId'] | undefined
+    readonly tntOwnerId?: GameplayStageCommitServices['tntOwnerId'] | undefined
+  } = {},
+  includeCommit = true,
 ) =>
   Effect.gen(function* () {
     const store = yield* makeTransactionalChunkStoreDouble(initial, loadedChunks)
@@ -366,7 +397,9 @@ const builtStagesInWorld = (
     const coordinator = yield* makeWorldCommitCoordinator({
       world: Schema.decodeUnknownSync(WorldIdSchema)('gameplay-stage-tests'),
       owners: gameplayOwnerRegistrations({
+        ...ownerOverrides,
         playerStorage: initialStorage,
+        playerPose: SPAWN_POSE,
         crops,
         villagerTrades,
         entities,
@@ -378,8 +411,22 @@ const builtStagesInWorld = (
     })
     const commitCalls = yield* Ref.make(0)
     const rejectCommits = yield* Ref.make(false)
+    const failSnapshotOwnerId = yield* Ref.make<GameplayStageCommitServices['playerStorageOwnerId'] | undefined>(undefined)
+    const failObserveOwnerId = yield* Ref.make<GameplayStageCommitServices['playerStorageOwnerId'] | undefined>(undefined)
     const controlledCoordinator: WorldCommitCoordinatorApi = {
       ...coordinator,
+      snapshot: (ownerId, schema) => Effect.gen(function* () {
+        if (ownerId === (yield* Ref.get(failSnapshotOwnerId))) {
+          return yield* Effect.fail(new ReplicatedOwnerUnknown({ ownerId }))
+        }
+        return yield* coordinator.snapshot(ownerId, schema)
+      }),
+      observe: (ownerId, schema, reads) => Effect.gen(function* () {
+        if (ownerId === (yield* Ref.get(failObserveOwnerId))) {
+          return yield* Effect.fail(new ReplicatedOwnerUnknown({ ownerId }))
+        }
+        return yield* coordinator.observe(ownerId, schema, reads)
+      }),
       commit: (request) => Effect.gen(function* () {
         yield* Ref.update(commitCalls, (count) => count + 1)
         if (yield* Ref.get(rejectCommits)) return yield* Effect.fail(new WorldCommitEmptyRequest())
@@ -403,7 +450,7 @@ const builtStagesInWorld = (
     const tntService = yield* makeTntService(TNT_REPLICATED_OWNER_ID).pipe(
       Effect.provideService(WorldCommitCoordinator, controlledCoordinator),
     )
-    const commit = {
+    const commit: GameplayStageCommitServices = {
       coordinator: controlledCoordinator,
       playerOwnerId: GAMEPLAY_PLAYER_OWNER_ID,
       playerStorageOwnerId: GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
@@ -426,6 +473,10 @@ const builtStagesInWorld = (
       }),
       eventBus,
     }
+    // These overrides model a compose host that has not registered an optional owner.
+    const stageCommit = includeCommit
+      ? { ...commit, ...commitOverrides } as GameplayStageCommitServices
+      : undefined
     const state = yield* makeGameplayFrameStateForOwner({
       coordinator: controlledCoordinator,
       vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID,
@@ -440,8 +491,10 @@ const builtStagesInWorld = (
       commit,
       commitCalls,
       rejectCommits,
+      failSnapshotOwnerId,
+      failObserveOwnerId,
       publishedEvents,
-      stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api, time, undefined, undefined, {}, commit),
+      stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api, time, undefined, undefined, {}, stageCommit),
     }
   })
 
@@ -810,14 +863,12 @@ describe('fire lifecycle stage integration', () => {
       // `armorDurabilityWearFromPreMitigationDamage` is cause-independent
       // (armor.ts) and reads the PRE-mitigation amount (1), which floors to a
       // wear of exactly 1 point off the helmet's 165 maximum.
-      const equipment = yield* inventory.api.equipmentSnapshot
-      expect(equipment.slots.head?.durability?.current).toBe(164)
       const ownerAfter = yield* commit.coordinator.snapshot(
         commit.playerStorageOwnerId,
         PlayerStorageSnapshotSchema,
       )
       expect(ownerAfter.revision).toBe(ownerBefore.revision + 1)
-      expect(ownerAfter.state).toStrictEqual(yield* inventory.api.storageSnapshot)
+      expect(ownerAfter.state.equipment.slots.head?.durability?.current).toBe(164)
     }),
   )
 
@@ -865,8 +916,7 @@ describe('fire lifecycle stage integration', () => {
         PlayerStorageSnapshotSchema,
       )
       expect(ownerAfter.revision).toBe(ownerBefore.revision + 1)
-      expect(ownerAfter.state).toStrictEqual(yield* inventory.api.storageSnapshot)
-      expect((yield* inventory.api.equipmentSnapshot).slots.head?.durability?.current).toBe(164)
+      expect(ownerAfter.state.equipment.slots.head?.durability?.current).toBe(164)
     }),
   )
 
@@ -915,13 +965,11 @@ describe('fire lifecycle stage integration', () => {
 
       expect(yield* store.blockAt(position)).toBeUndefined()
       expect((yield* drainPlayerDamages(state))[0]?.damage.cause).toBe('on_fire')
-      expect((yield* inventory.api.equipmentSnapshot).slots.head).toBeNull()
       const ownerAfter = yield* commit.coordinator.snapshot(
         commit.playerStorageOwnerId,
         PlayerStorageSnapshotSchema,
       )
       expect(ownerAfter.revision).toBe(ownerBefore.revision + 1)
-      expect(ownerAfter.state).toStrictEqual(yield* inventory.api.storageSnapshot)
       expect(ownerAfter.state.equipment.slots.head).toBeNull()
     }),
   )
@@ -981,14 +1029,12 @@ describe('fire lifecycle stage integration', () => {
 
       // Durability wear is cause-independent (armor.ts), so it wears the
       // helmet the same one point as the mitigated in_fire case.
-      const equipment = yield* inventory.api.equipmentSnapshot
-      expect(equipment.slots.head?.durability?.current).toBe(164)
       const ownerAfter = yield* commit.coordinator.snapshot(
         commit.playerStorageOwnerId,
         PlayerStorageSnapshotSchema,
       )
       expect(ownerAfter.revision).toBe(ownerBefore.revision + 1)
-      expect(ownerAfter.state).toStrictEqual(yield* inventory.api.storageSnapshot)
+      expect(ownerAfter.state.equipment.slots.head?.durability?.current).toBe(164)
     }),
   )
 })
@@ -1522,13 +1568,17 @@ describe('stage behaviour', () => {
 
   it.effect('melee results reflect actual stage hits and misses in request order and drain once', () =>
     Effect.gen(function* () {
-      const { state, roster, stages } = yield* builtStages
-      const target = yield* roster.api.spawn({
+      const target = {
+        id: EntityId('e:0'),
         kind: CREEPER_KIND,
-        feetPosition: fixturePosition(0, 64 - BOW_TARGET_CENTER_Y_OFFSET, 2 ),
+        feetPosition: fixturePosition(0, 64 - BOW_TARGET_CENTER_Y_OFFSET, 2),
         healthPoints: EntityHealthPoints(20),
         behaviour: undefined,
-      })
+      }
+      const { state, commit, stages } = yield* builtStagesInWorld(
+        world([]), ['0,0'], undefined, undefined, undefined,
+        { entities: [target], nextSerial: EntitySerial(1) },
+      )
 
       yield* requestMeleeAttack(state, {
         requestId: 'hit',
@@ -1557,7 +1607,8 @@ describe('stage behaviour', () => {
       })
       expect(results[1]).toStrictEqual({ requestId: 'miss', success: false })
       expect(yield* drainMeleeAttackResults(state)).toStrictEqual([])
-      expect((yield* roster.api.snapshot).entities[0]?.healthPoints).toBe(16)
+      const entityOwner = yield* commit.coordinator.snapshot(GAMEPLAY_ENTITIES_OWNER_ID, GameplayEntityRosterSchema)
+      expect(entityOwner.state.entities[0]?.healthPoints).toBe(16)
       expect(yield* drainMobExperience(state)).toStrictEqual([])
     }),
   )
@@ -1570,14 +1621,18 @@ describe('stage behaviour', () => {
       // `HOSTILE_KINDS` member (melee can target it) for which
       // `xpRewardOfKind` and `dropRulesOfKind` both fall through to their
       // zero/empty default, so a lethal hit on it takes neither.
-      const { state, roster, stages } = yield* builtStages
       const feetPosition = fixturePosition(0, 64 - BOW_TARGET_CENTER_Y_OFFSET, 2)
-      yield* roster.api.spawn({
+      const entity = {
+        id: EntityId('e:0'),
         kind: EntityKind('skeleton'),
         feetPosition,
         healthPoints: EntityHealthPoints(4),
         behaviour: undefined,
-      })
+      }
+      const { state, commit, stages } = yield* builtStagesInWorld(
+        world([]), ['0,0'], undefined, undefined, undefined,
+        { entities: [entity], nextSerial: EntitySerial(1) },
+      )
 
       yield* requestMeleeAttack(state, {
         origin: fixturePosition(0, 64, 0 ),
@@ -1588,7 +1643,8 @@ describe('stage behaviour', () => {
       const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)
       yield* interactions!.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
 
-      expect((yield* roster.api.snapshot).entities).toStrictEqual([])
+      const entityOwner = yield* commit.coordinator.snapshot(GAMEPLAY_ENTITIES_OWNER_ID, GameplayEntityRosterSchema)
+      expect(entityOwner.state.entities).toStrictEqual([])
       expect(yield* drainMobExperience(state)).toStrictEqual([])
       expect(yield* drainMobDrops(state)).toStrictEqual([])
     }),
@@ -1596,14 +1652,18 @@ describe('stage behaviour', () => {
 
   it.effect('a lethal player melee hit emits mob experience exactly once', () =>
     Effect.gen(function* () {
-      const { state, roster, stages } = yield* builtStages
       const feetPosition = fixturePosition(0, 64 - BOW_TARGET_CENTER_Y_OFFSET, 2)
-      const target = yield* roster.api.spawn({
+      const target = {
+        id: EntityId('e:0'),
         kind: CREEPER_KIND,
         feetPosition,
         healthPoints: EntityHealthPoints(4),
         behaviour: undefined,
-      })
+      }
+      const { state, commit, stages } = yield* builtStagesInWorld(
+        world([]), ['0,0'], undefined, undefined, undefined,
+        { entities: [target], nextSerial: EntitySerial(1) },
+      )
 
       yield* requestMeleeAttack(state, {
         origin: fixturePosition(0, 64, 0 ),
@@ -1614,7 +1674,8 @@ describe('stage behaviour', () => {
       const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)
       yield* interactions!.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
 
-      expect((yield* roster.api.snapshot).entities).toStrictEqual([])
+      const entityOwner = yield* commit.coordinator.snapshot(GAMEPLAY_ENTITIES_OWNER_ID, GameplayEntityRosterSchema)
+      expect(entityOwner.state.entities).toStrictEqual([])
       expect(yield* drainMobExperience(state)).toStrictEqual([
         { source: target.id, kind: CREEPER_KIND, at: feetPosition, amount: 5 },
       ])
@@ -1644,15 +1705,9 @@ describe('stage behaviour', () => {
         0,
         1,
       )).toBeDefined()
-      const state = yield* makeGameplayFrameState
-      const store = yield* makeChunkStoreDouble(world([[fixtureBlockPosition(0, 64, 5), STONE]]), [
-        '0,0',
-      ])
-      const roster = yield* makeEntityManagerDouble<MobBehaviour>(target)
-      const player = yield* makePlayerServiceDouble()
-      const inventory = yield* makeInventoryDouble()
-      const time = yield* makeTimeService()
-      const stages = gameplayStages(state, store.api, roster.api, inventory.api, player.api, time)
+      const { state, commit, stages } = yield* builtStagesInWorld(
+        world([[fixtureBlockPosition(0, 64, 5), STONE]]), ['0,0'], undefined, undefined, undefined, target,
+      )
 
       yield* requestBowShot(state, 'wall-shot', {
         origin: fixturePosition(0, 64, 0 ),
@@ -1668,7 +1723,8 @@ describe('stage behaviour', () => {
       expect(yield* drainBowShotResults(state)).toStrictEqual([
         { requestId: 'wall-shot', success: true, outcome: 'Fired' },
       ])
-      expect((yield* roster.api.snapshot).entities[0]?.healthPoints).toBe(20)
+      const entityOwner = yield* commit.coordinator.snapshot(GAMEPLAY_ENTITIES_OWNER_ID, GameplayEntityRosterSchema)
+      expect(entityOwner.state.entities[0]?.healthPoints).toBe(20)
       expect(yield* Ref.get(state.bowKnockbacks)).toStrictEqual([])
     }),
   )
@@ -1695,16 +1751,12 @@ describe('stage behaviour', () => {
         0,
         1,
       )).toBeDefined()
-      const state = yield* makeGameplayFrameState
       // The target is in chunk 0,1 while only chunk 0,0 is resident. The
       // terrain window can see the start of the ray but must treat the missing
       // portion as blocked rather than as air.
-      const store = yield* makeChunkStoreDouble(world([]), ['0,0'])
-      const roster = yield* makeEntityManagerDouble<MobBehaviour>(target)
-      const player = yield* makePlayerServiceDouble()
-      const inventory = yield* makeInventoryDouble()
-      const time = yield* makeTimeService()
-      const stages = gameplayStages(state, store.api, roster.api, inventory.api, player.api, time)
+      const { state, commit, stages } = yield* builtStagesInWorld(
+        world([]), ['0,0'], undefined, undefined, undefined, target,
+      )
 
       yield* requestBowShot(state, 'unreadable-shot', {
         origin: fixturePosition(0, 64, 0),
@@ -1720,7 +1772,8 @@ describe('stage behaviour', () => {
       expect(yield* drainBowShotResults(state)).toStrictEqual([
         { requestId: 'unreadable-shot', success: true, outcome: 'Fired' },
       ])
-      expect((yield* roster.api.snapshot).entities[0]?.healthPoints).toBe(20)
+      const entityOwner = yield* commit.coordinator.snapshot(GAMEPLAY_ENTITIES_OWNER_ID, GameplayEntityRosterSchema)
+      expect(entityOwner.state.entities[0]?.healthPoints).toBe(20)
       expect(yield* Ref.get(state.bowKnockbacks)).toStrictEqual([])
     }),
   )
@@ -2011,7 +2064,7 @@ describe('the module contract has caught up with this file’s shape', () => {
         never,
         never,
         never,
-        ChunkStore | EntityManager | TimeService | WorldCommitCoordinator
+        ChunkStore | EntityManager | TimeService | WorldCommitCoordinator | DomainEventBus
       > = gameplayModule
       const stages = yield* Effect.provide(module.frameStages, emptyWorld)
 
@@ -2033,16 +2086,16 @@ describe('the module contract has caught up with this file’s shape', () => {
 
   // Player pose, inventory and vitals are read from registered WCC owners; the
   // registration effect must not acquire local mirrors of those fields.
-  it.effect('acquires four non-replicated services to register and exposes eight stages', () =>
+  it.effect('acquires five host services to register and exposes eight stages', () =>
     Effect.gen(function* () {
       const registration: Effect.Effect<
         ReadonlyArray<StageRegistration>,
         never,
-        ChunkStore | EntityManager | TimeService | WorldCommitCoordinator
+        ChunkStore | EntityManager | TimeService | WorldCommitCoordinator | DomainEventBus
       > = gameplayModule.frameStages
 
-      // Providing those four — and no local player or inventory services —
-      // discharges the whole context.
+      // Providing those five — and no local player or inventory services —
+      // discharges the whole registration context.
       // If a stage started demanding an EIGHTH service at REGISTRATION time, this
       // assignment would stop compiling, which is the point. Any new service
       // would need an explicit owner and belongs in this contract, rather than
@@ -2064,7 +2117,7 @@ describe('the module contract has caught up with this file’s shape', () => {
       const unparameterised: Effect.Effect<
         ReadonlyArray<StageRegistration>,
         never,
-        ChunkStore | EntityManager | TimeService | WorldCommitCoordinator
+        ChunkStore | EntityManager | TimeService | WorldCommitCoordinator | DomainEventBus
       > = makeGameplayStages
 
       expect(typeof unparameterised).toBe('object')
@@ -2095,7 +2148,7 @@ describe('the module contract has caught up with this file’s shape', () => {
 
   it.effect('routes status effect pulses and speed through host-facing frame contracts', () =>
     Effect.gen(function* () {
-      const { state, stages } = yield* builtStages
+      const { state, stages, commit } = yield* builtStagesInWorld(world([]))
       const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
 
       yield* requestStatusEffect(state, { type: 'poison', durationSecs: 1 })
@@ -2103,14 +2156,12 @@ describe('the module contract has caught up with this file’s shape', () => {
       yield* requestStatusEffect(state, { type: 'speed', durationSecs: 2 })
       yield* interactions.run(DeltaTimeSecs(1)).pipe(Effect.provide(FrameServicesLayer))
 
-      expect(yield* drainPlayerDamages(state)).toStrictEqual([
-        {
-          _tag: 'StatusEffect',
-          effect: 'poison',
-          damage: { amount: 1, cause: 'poison' },
-          minimumHealthPoints: 1,
-        },
-      ])
+      expect(yield* drainPlayerDamages(state)).toStrictEqual([])
+      const vitalsAfterPoison = yield* commit.coordinator.snapshot(
+        GAMEPLAY_VITALS_OWNER_ID,
+        ExperienceOrbVitalsOwnerSnapshotSchema,
+      )
+      expect(vitalsAfterPoison.state.vitals.healthPoints).toBe(19)
       expect(yield* drainPlayerHeals(state)).toStrictEqual([])
       expect(yield* getPlayerMovementSpeedMultiplier(state)).toBe(1.2)
 
@@ -2181,6 +2232,83 @@ describe('the module contract has caught up with this file’s shape', () => {
         .toStrictEqual([undefined, undefined, undefined])
       expect(yield* harness.commit.coordinator.revision).toBe(initialRevision + 3)
       expect(yield* Ref.get(harness.commitCalls)).toBe(3)
+    }),
+  )
+
+  it.effect('brewing bottle pickup commits the stand and storage owners once and reports its source', () =>
+    Effect.gen(function* () {
+      const slots = [...emptySlots()]
+      slots[0] = itemStack('water_bottle', 1)
+      const harness = yield* builtStagesInWorld(world([]), ['0,0'], undefined, slots)
+      const interactions = harness.stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+      const address = { dimension: Schema.decodeUnknownSync(DimensionIdSchema)('overworld'), position: fixtureBlockPosition(1, 64, 1) }
+      const tick = Schema.decodeUnknownSync(SimulationTickSchema)(9)
+
+      yield* insertBrewingBottle(harness.state, 'bottle-for-pickup', 0, 'water_bottle')
+      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+      expect((yield* drainItemUseResults(harness.state))[0]).toMatchObject({
+        action: 'InsertBrewingBottle',
+        requestId: 'bottle-for-pickup',
+        success: true,
+      })
+
+      yield* requestCollectBrewingBottle(harness.state, {
+        requestId: 'collect-water-bottle',
+        actor: EntityId('brewer'),
+        tick,
+        address,
+        bottleIndex: 0,
+      })
+      const revisionBeforePickup = yield* harness.commit.coordinator.revision
+      const commitCallsBeforePickup = yield* Ref.get(harness.commitCalls)
+      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect((yield* drainItemUseResults(harness.state))[0]).toMatchObject({
+        action: 'CollectBrewingBottle',
+        requestId: 'collect-water-bottle',
+        success: true,
+        outcome: {
+          _tag: 'Collected',
+          item: 'water_bottle',
+          count: 1,
+          remainingCount: 0,
+        },
+      })
+      const brewing = yield* harness.commit.coordinator.snapshot(GAMEPLAY_BREWING_OWNER_ID, BrewingServiceStateSchema)
+      const storage = yield* harness.commit.coordinator.snapshot(
+        GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+        PlayerStorageSnapshotSchema,
+      )
+      expect(brewing.state.bottles[0]).toBeUndefined()
+      expect(storage.state.inventory.slots[0]).toMatchObject({ item: 'water_bottle', count: 1 })
+      expect(yield* harness.commit.coordinator.revision).toBe(revisionBeforePickup + 1)
+      expect(yield* Ref.get(harness.commitCalls)).toBe(commitCallsBeforePickup + 1)
+      expect(yield* Ref.get(harness.publishedEvents)).toMatchObject([
+        {
+          _tag: 'ItemPickedUp',
+          tick,
+          actor: EntityId('brewer'),
+          source: { _tag: 'BrewingStand', address },
+        },
+      ])
+
+      yield* collectBrewingPotion(harness.state, {
+        requestId: 'collect-empty-bottle',
+        actor: EntityId('brewer'),
+        tick,
+        address,
+        bottleIndex: 1,
+      })
+      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect((yield* drainItemUseResults(harness.state))[0]).toMatchObject({
+        action: 'CollectBrewingBottle',
+        requestId: 'collect-empty-bottle',
+        success: false,
+        outcome: { _tag: 'Empty' },
+      })
+      expect(yield* harness.commit.coordinator.revision).toBe(revisionBeforePickup + 1)
+      expect(yield* Ref.get(harness.commitCalls)).toBe(commitCallsBeforePickup + 1)
     }),
   )
 
@@ -2333,25 +2461,34 @@ describe('frame-state refs not produced by makeGameplayFrameState fail loudly', 
 
   it.effect('a structurally-copied frame state gets its own lazily-created break-request queue', () =>
     Effect.gen(function* () {
-      const original = yield* makeGameplayFrameState
+      const harness = yield* builtStagesInWorld(world([[fixtureBlockPosition(0, 64, 0), STONE]]))
       // `{ ...state }` is a NEW object identity holding the SAME Refs. The
       // WeakMap that backs `pendingBlockBreakRequests` is keyed on object
       // identity and only the factory's own `original` was registered, so this
       // copy is exactly the 「structurally-created frame state」 the source
       // comment names as the reason the lazy-create branch exists at all.
-      const copy: GameplayFrameState = { ...original }
-      const store = yield* makeChunkStoreDouble(world([[fixtureBlockPosition(0, 64, 0), STONE]]), ['0,0'])
-      const roster = yield* makeEntityManagerDouble<MobBehaviour>()
-      const player = yield* makePlayerServiceDouble()
-      const inventory = yield* makeInventoryDouble()
-      const time = yield* makeTimeService()
-      const stages = gameplayStages(copy, store.api, roster.api, inventory.api, player.api, time)
+      const copy: GameplayFrameState = { ...harness.state }
+      const stages = gameplayStages(
+        copy,
+        harness.store.api,
+        harness.roster.api,
+        harness.inventory.api,
+        harness.player.api,
+        harness.time,
+        undefined,
+        undefined,
+        {},
+        harness.commit,
+      )
       const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
 
-      yield* Ref.set(copy.pendingBreaks, [positionKey('0,64,0')])
+      yield* requestBlockBreak(copy, fixtureBlockPosition(0, 64, 0), undefined, {
+        dimension: 'overworld',
+        toolLocation: undefined,
+      })
       yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
 
-      expect(yield* store.blockAt(fixtureBlockPosition(0, 64, 0))).toBe(AIR_BLOCK_ID)
+      expect(yield* harness.store.blockAt(fixtureBlockPosition(0, 64, 0))).toBeUndefined()
     }),
   )
 })
@@ -2728,11 +2865,14 @@ describe('the targeted-block family resolves through the same raycast as placeme
       const itemUse = yield* requestTargetedItemUse(state, store.api, player.api, 'miss-ignite', 'fire_charge')
       expect(Option.isNone(itemUse)).toBe(true)
 
+      const blockUse = yield* requestTargetedBlockUse(state, store.api, player.api, 'miss-block-use', 'redstone_dust')
+      expect(Option.isNone(blockUse)).toBe(true)
+
       yield* requestTargetedSoilTill(state, store.api, player.api, 'miss-till', 'iron_hoe')
       yield* requestTargetedPotatoPlanting(state, store.api, player.api, 'miss-plant')
-      yield* requestTargetedBoneMeal(state, store.api, player.api, 'miss-bonemeal')
 
       expect(yield* Ref.get(state.pendingItemUses)).toStrictEqual([])
+      expect(yield* Ref.get(state.pendingBlockUses)).toStrictEqual([])
     }),
   )
 
@@ -2781,10 +2921,17 @@ describe('the targeted-block family resolves through the same raycast as placeme
     }),
   )
 
-  it.effect('requestTargetedBoneMeal enqueues bone meal against the targeted cell', () =>
+  it.effect('resolving the aimed block lets the caller enqueue bone meal against that cell', () =>
     Effect.gen(function* () {
       const { state, store, player } = yield* aimingAt(STONE)
-      yield* requestTargetedBoneMeal(state, store.api, player.api, 'bonemeal-1')
+      const target = yield* resolveTargetedBlock(store.api, player.api)
+      const aimed = Option.getOrThrow(target).position
+      const aimedBlock = fixtureBlockPosition(
+        Math.floor(aimed.x),
+        Math.floor(aimed.y),
+        Math.floor(aimed.z),
+      )
+      yield* requestBoneMeal(state, 'bonemeal-1', aimedBlock)
       expect(yield* Ref.get(state.pendingItemUses)).toStrictEqual([
         {
           action: 'ApplyBoneMeal',
@@ -2928,24 +3075,31 @@ describe('fire lifecycle: extinguish, restore, and burning-actor bookkeeping', (
       // `xpRewardOfKind` / `dropRulesOfKind` (see the melee equivalent above),
       // so a fire death yields empty drops the same way a fire death yields
       // no mob-frame test's `MobDropRule` output.
-      const { state, store, roster, stages } = yield* builtStages
       const position = fixtureBlockPosition(7, 64, 7)
-      yield* store.api.setBlock(fixtureBlockPosition(position.x, position.y - 1, position.z), STONE)
-      yield* store.api.setBlock(position, FIRE)
-      yield* Ref.set(state.fireLifecycle, makeFireLifecycleState([position], 23))
-      yield* roster.api.spawn({
+      const entity = {
+        id: EntityId('e:0'),
         kind: EntityKind('skeleton'),
         feetPosition: positionOfBlock(position),
         healthPoints: EntityHealthPoints(1),
         behaviour: undefined,
-      })
+      }
+      const { state, commit, stages } = yield* builtStagesInWorld(
+        world([
+          [fixtureBlockPosition(position.x, position.y - 1, position.z), STONE],
+          [position, FIRE],
+        ]),
+        ['0,0'], undefined, undefined, undefined,
+        { entities: [entity], nextSerial: EntitySerial(1) },
+      )
+      yield* Ref.set(state.fireLifecycle, makeFireLifecycleState([position], 23))
 
       const fireStage = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire)!
       for (let tick = 0; tick <= FIRE_DAMAGE_INTERVAL_TICKS; tick += 1) {
         yield* fireStage.run(DeltaTimeSecs(FIRE_TICK_INTERVAL_SECS)).pipe(Effect.provide(FrameServicesLayer))
       }
 
-      expect((yield* roster.api.snapshot).entities).toStrictEqual([])
+      const entityOwner = yield* commit.coordinator.snapshot(GAMEPLAY_ENTITIES_OWNER_ID, GameplayEntityRosterSchema)
+      expect(entityOwner.state.entities).toStrictEqual([])
       expect(yield* drainMobExperience(state)).toStrictEqual([])
       expect(yield* drainMobDrops(state)).toStrictEqual([])
     }),
@@ -2953,17 +3107,23 @@ describe('fire lifecycle: extinguish, restore, and burning-actor bookkeeping', (
 
   it.effect('a despawned burning actor is reported not-alive from its last known position', () =>
     Effect.gen(function* () {
-      const { state, store, roster, stages } = yield* builtStages
       const position = fixtureBlockPosition(6, 64, 6)
-      yield* store.api.setBlock(fixtureBlockPosition(position.x, position.y - 1, position.z), STONE)
-      yield* store.api.setBlock(position, FIRE)
-      yield* Ref.set(state.fireLifecycle, makeFireLifecycleState([position], 19))
-      const target = yield* roster.api.spawn({
+      const target = {
+        id: EntityId('e:0'),
         kind: CREEPER_KIND,
         feetPosition: positionOfBlock(position),
         healthPoints: EntityHealthPoints(100),
         behaviour: undefined,
-      })
+      }
+      const { state, commit, stages } = yield* builtStagesInWorld(
+        world([
+          [fixtureBlockPosition(position.x, position.y - 1, position.z), STONE],
+          [position, FIRE],
+        ]),
+        ['0,0'], undefined, undefined, undefined,
+        { entities: [target], nextSerial: EntitySerial(1) },
+      )
+      yield* Ref.set(state.fireLifecycle, makeFireLifecycleState([position], 19))
 
       const fireStage = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire)!
       // Tick 1: the entity is in the fire and becomes a burning actor.
@@ -2971,7 +3131,18 @@ describe('fire lifecycle: extinguish, restore, and burning-actor bookkeeping', (
       expect((yield* Ref.get(state.fireLifecycle)).burningActors?.length).toBeGreaterThan(0)
 
       // The roster forgets it without going through the fire-casualty path.
-      yield* roster.api.despawn(target.id)
+      const ownerBeforeDespawn = yield* commit.coordinator.snapshot(
+        GAMEPLAY_ENTITIES_OWNER_ID,
+        GameplayEntityRosterSchema,
+      )
+      yield* commit.coordinator.commit({
+        expectedRevision: ownerBeforeDespawn.revision,
+        expectedDimensions: [],
+        changes: [{
+          ownerId: GAMEPLAY_ENTITIES_OWNER_ID,
+          state: { entities: [], nextSerial: EntitySerial(1) },
+        }],
+      })
 
       // Tick 2: the id is still remembered as burning, but the roster no
       // longer has it — the `entity === undefined` bookkeeping branch.
@@ -3047,36 +3218,32 @@ describe('fire lifecycle: extinguish, restore, and burning-actor bookkeeping', (
       // callbacks that order `burningEntityContacts` and `newEntityContacts`
       // had never actually been invoked — `Array.prototype.sort` never calls
       // its comparator for an array of 0 or 1 elements.
-      const { state, store, roster, stages } = yield* builtStages
       const firePosition = fixtureBlockPosition(6, 64, 6)
-      yield* store.api.setBlock(fixtureBlockPosition(firePosition.x, firePosition.y - 1, firePosition.z), STONE)
-      yield* store.api.setBlock(firePosition, FIRE)
+      const burningA = {
+        id: EntityId('e:0'), kind: CREEPER_KIND, feetPosition: positionOfBlock(firePosition),
+        healthPoints: EntityHealthPoints(100), behaviour: undefined,
+      }
+      const burningB = {
+        id: EntityId('e:1'), kind: CREEPER_KIND, feetPosition: positionOfBlock(firePosition),
+        healthPoints: EntityHealthPoints(100), behaviour: undefined,
+      }
+      const safeA = {
+        id: EntityId('e:2'), kind: CREEPER_KIND, feetPosition: fixturePosition(20, 64, 20),
+        healthPoints: EntityHealthPoints(100), behaviour: undefined,
+      }
+      const safeB = {
+        id: EntityId('e:3'), kind: CREEPER_KIND, feetPosition: fixturePosition(21, 64, 21),
+        healthPoints: EntityHealthPoints(100), behaviour: undefined,
+      }
+      const { state, stages } = yield* builtStagesInWorld(
+        world([
+          [fixtureBlockPosition(firePosition.x, firePosition.y - 1, firePosition.z), STONE],
+          [firePosition, FIRE],
+        ]),
+        ['0,0'], undefined, undefined, undefined,
+        { entities: [burningA, burningB, safeA, safeB], nextSerial: EntitySerial(4) },
+      )
       yield* Ref.set(state.fireLifecycle, makeFireLifecycleState([firePosition], 19))
-
-      const burningA = yield* roster.api.spawn({
-        kind: CREEPER_KIND,
-        feetPosition: positionOfBlock(firePosition),
-        healthPoints: EntityHealthPoints(100),
-        behaviour: undefined,
-      })
-      const burningB = yield* roster.api.spawn({
-        kind: CREEPER_KIND,
-        feetPosition: positionOfBlock(firePosition),
-        healthPoints: EntityHealthPoints(100),
-        behaviour: undefined,
-      })
-      const safeA = yield* roster.api.spawn({
-        kind: CREEPER_KIND,
-        feetPosition: fixturePosition(20, 64, 20 ),
-        healthPoints: EntityHealthPoints(100),
-        behaviour: undefined,
-      })
-      const safeB = yield* roster.api.spawn({
-        kind: CREEPER_KIND,
-        feetPosition: fixturePosition(21, 64, 21 ),
-        healthPoints: EntityHealthPoints(100),
-        behaviour: undefined,
-      })
 
       const fireStage = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire)!
       // Tick 1: both entities standing in the fire catch it.
@@ -3100,17 +3267,23 @@ describe('fire lifecycle: extinguish, restore, and burning-actor bookkeeping', (
 
   it.effect('a survivable fire tick damages a burning entity without killing it', () =>
     Effect.gen(function* () {
-      const { state, store, roster, stages } = yield* builtStages
       const position = fixtureBlockPosition(7, 64, 7)
-      yield* store.api.setBlock(fixtureBlockPosition(position.x, position.y - 1, position.z), STONE)
-      yield* store.api.setBlock(position, FIRE)
-      yield* Ref.set(state.fireLifecycle, makeFireLifecycleState([position], 23))
-      const target = yield* roster.api.spawn({
+      const target = {
+        id: EntityId('e:0'),
         kind: CREEPER_KIND,
         feetPosition: positionOfBlock(position),
         healthPoints: EntityHealthPoints(1000),
         behaviour: undefined,
-      })
+      }
+      const { state, commit, stages } = yield* builtStagesInWorld(
+        world([
+          [fixtureBlockPosition(position.x, position.y - 1, position.z), STONE],
+          [position, FIRE],
+        ]),
+        ['0,0'], undefined, undefined, undefined,
+        { entities: [target], nextSerial: EntitySerial(1) },
+      )
+      yield* Ref.set(state.fireLifecycle, makeFireLifecycleState([position], 23))
 
       const fireStage = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire)!
       // Several ticks: first ignites, later ticks damage without killing
@@ -3119,15 +3292,16 @@ describe('fire lifecycle: extinguish, restore, and burning-actor bookkeeping', (
         yield* fireStage.run(DeltaTimeSecs(FIRE_TICK_INTERVAL_SECS)).pipe(Effect.provide(FrameServicesLayer))
       }
 
-      const survivor = (yield* roster.api.snapshot).entities.find((entity) => entity.id === target.id)
+      const entityOwner = yield* commit.coordinator.snapshot(GAMEPLAY_ENTITIES_OWNER_ID, GameplayEntityRosterSchema)
+      const survivor = entityOwner.state.entities.find((entity) => entity.id === target.id)
       expect(survivor).toBeDefined()
       expect(survivor?.healthPoints).toBeLessThan(1000)
     }),
   )
 
-  it.effect('a stale local player-storage snapshot leaves fire damage pending for a consistent retry', () =>
+  it.effect('fire damage uses authoritative storage after an unsynchronized local inventory change', () =>
     Effect.gen(function* () {
-      const { state, stages, inventory } = yield* builtStagesInWorld(world([]))
+      const { state, stages, inventory, commit } = yield* builtStagesInWorld(world([]))
       const burning = {
         fires: [],
         burningActors: [
@@ -3142,15 +3316,32 @@ describe('fire lifecycle: extinguish, restore, and burning-actor bookkeeping', (
         seed: 1,
       } as const
       yield* Ref.set(state.fireLifecycle, burning)
+      const ownerBefore = yield* commit.coordinator.snapshot(
+        GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+        PlayerStorageSnapshotSchema,
+      )
 
-      // The replicated player-storage owner still has its original empty
-      // snapshot. A local inventory mutation makes damage preparation stale.
+      // This local service is not the authority used by the stage. Its change
+      // must not make the replicated owner snapshot appear stale.
       expect(yield* inventory.api.add('iron_helmet', 1)).toBe(0)
       const fireStage = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire)!
       yield* fireStage.run(DeltaTimeSecs(FIRE_TICK_INTERVAL_SECS)).pipe(Effect.provide(FrameServicesLayer))
 
-      expect(yield* Ref.get(state.fireLifecycle)).toStrictEqual(burning)
-      expect(yield* drainPlayerDamages(state)).toStrictEqual([])
+      expect(yield* Ref.get(state.fireLifecycle)).toStrictEqual({
+        ...burning,
+        burningActors: [{
+          ...burning.burningActors[0]!,
+          remainingTicks: 4,
+          damageCooldownTicks: 19,
+        }],
+      })
+      expect((yield* drainPlayerDamages(state)).map((event) => event.damage.cause)).toStrictEqual(['on_fire'])
+      const ownerAfter = yield* commit.coordinator.snapshot(
+        GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+        PlayerStorageSnapshotSchema,
+      )
+      expect(ownerAfter.revision).toBe(ownerBefore.revision)
+      expect(ownerAfter.state).toStrictEqual(ownerBefore.state)
     }),
   )
 
@@ -3374,25 +3565,29 @@ describe('TNT ignition commits its TNT, storage, and block changes together', ()
 describe('the entities stage resolves both ranged mob attacks and zombie contact damage', () => {
   it.effect('a skeleton in projectile range and a zombie in contact range both damage the player in one sweep', () =>
     Effect.gen(function* () {
-      const { state, roster, stages } = yield* builtStages
-      const entities = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.entities)!
-
       // Skeleton: within the [6, 16] projectile band the ecosystem rule uses,
       // cooldown at zero so it fires immediately.
-      yield* roster.api.spawn({
+      const skeleton = {
+        id: EntityId('e:0'),
         kind: SKELETON_KIND,
-        feetPosition: fixturePosition(10, 64, 0 ),
+        feetPosition: fixturePosition(10, 64, 0),
         healthPoints: EntityHealthPoints(20),
         behaviour: initialEcosystemMobState(),
-      })
+      }
       // Zombie: not an ecosystem-mob kind, resolved separately by
       // `resolveHostileContacts` purely on distance to the player.
-      yield* roster.api.spawn({
+      const zombie = {
+        id: EntityId('e:1'),
         kind: ZOMBIE_KIND,
-        feetPosition: fixturePosition(0, 64, 0 ),
+        feetPosition: fixturePosition(0, 64, 0),
         healthPoints: EntityHealthPoints(20),
         behaviour: undefined,
-      })
+      }
+      const { state, stages } = yield* builtStagesInWorld(
+        world([]), ['0,0'], undefined, undefined, undefined,
+        { entities: [skeleton, zombie], nextSerial: EntitySerial(2) },
+      )
+      const entities = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.entities)!
 
       yield* entities.run(DeltaTimeSecs(0.05)).pipe(Effect.provide(FrameServicesLayer))
 
@@ -3857,7 +4052,9 @@ describe('fire tick budget, unregistered blocks and duplicate ignition', () => {
       const residentAround = chunkCoordsAround(position, PORTAL_WINDOW_RADIUS).map(
         (coord) => `${String(coord.cx)},${String(coord.cz)}`,
       )
-      const { state, stages } = yield* builtStagesInWorld(world([]), residentAround)
+      const slots = [...emptySlots()]
+      slots[0] = itemStack('fire_charge', 1)
+      const { state, stages } = yield* builtStagesInWorld(world([]), residentAround, undefined, slots)
       const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
       const seeded = makeFireLifecycleState([position], 47)
       yield* Ref.set(state.fireLifecycle, seeded)
@@ -3976,15 +4173,27 @@ describe('restoreStatusEffects resets movement speed when the restored snapshot 
   it.effect('restoring a non-speed snapshot after a speed one resets the multiplier to 1', () =>
     Effect.gen(function* () {
       const state = yield* makeGameplayFrameState
+      const store = yield* makeTransactionalChunkStoreDouble(world([]), ['0,0'])
+      const inventory = yield* makeInventoryDouble()
+      const commit = yield* makeGameplayCommitServices(store.api, inventory.api)
+
       yield* restoreStatusEffects(state, {
         effects: [{ type: 'speed', remainingSecs: 4, pulseClockSecs: 0 }],
-      })
+      }, commit)
       expect(yield* getPlayerMovementSpeedMultiplier(state)).toBe(1.2)
 
       yield* restoreStatusEffects(state, {
         effects: [{ type: 'regeneration', remainingSecs: 2, pulseClockSecs: 0 }],
-      })
+      }, commit)
       expect(yield* getPlayerMovementSpeedMultiplier(state)).toBe(1)
+
+      const ownerSnapshot = yield* commit.coordinator.snapshot(
+        GAMEPLAY_STATUS_EFFECTS_OWNER_ID,
+        StatusEffectStateSchema,
+      )
+      expect(ownerSnapshot.state.effects).toStrictEqual([
+        { type: 'regeneration', remainingSecs: 2, pulseClockSecs: 0 },
+      ])
     }),
   )
 })
@@ -3994,49 +4203,73 @@ describe('a portal crossing from the nether returns the player to the overworld'
     Effect.gen(function* () {
       const NETHER_PORTAL = Option.getOrUndefined(blockIdOf('nether_portal')) ?? BlockId(118)
       const spawnCell = fixtureBlockPosition(0, 64, 0)
-      const store = yield* makeChunkStoreDouble(world([[spawnCell, NETHER_PORTAL]]), ['0,0'])
-      const roster = yield* makeEntityManagerDouble<MobBehaviour>()
-      const inventory = yield* makeInventoryDouble()
-      const player = yield* makePlayerServiceDouble(undefined, 'nether')
-      const time = yield* makeTimeService()
-      const state = yield* makeGameplayFrameState
-      const stages = gameplayStages(state, store.api, roster.api, inventory.api, player.api, time)
-
-      expect(yield* player.api.dimension).toBe('nether')
+      const { commit, stages } = yield* builtStagesInWorld(
+        world([[spawnCell, NETHER_PORTAL]]), ['0,0'],
+        undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+        { dimension: 'nether' },
+      )
+      const before = yield* commit.coordinator.snapshot(GAMEPLAY_PLAYER_OWNER_ID, PlayerServiceSnapshotSchema)
+      expect(before.state.pose.feetPosition.dimension).toBe('nether')
       yield* runFrames(stages, 300, DeltaTimeSecs(0.016))
 
-      expect(yield* player.api.dimension).toBe('overworld')
+      const after = yield* commit.coordinator.snapshot(GAMEPLAY_PLAYER_OWNER_ID, PlayerServiceSnapshotSchema)
+      expect(after.state.pose.feetPosition.dimension).toBe('overworld')
     }),
   )
 })
 
-describe('block placement rolls back and dies loudly when the compensating restore cannot succeed', () => {
-  it.effect('a failed placement whose reservation cannot be returned is a defect, not a silent loss', () =>
+describe('block placement commit rejection preserves the registered owner and world', () => {
+  it.effect('a rejected placement returns its correlated failure without consuming the item', () =>
     Effect.gen(function* () {
       const target = fixtureBlockPosition(3, 64, 3)
-      // Already occupied, so `placeBlock` refuses and the rollback path runs.
-      const store = yield* makeChunkStoreDouble(world([[target, STONE]]), ['0,0'])
-      const roster = yield* makeEntityManagerDouble<MobBehaviour>()
-      const player = yield* makePlayerServiceDouble()
-      const inventory = yield* makeInventoryDouble([itemStack('sand', 1)])
-      const time = yield* makeTimeService()
-      // The reservation succeeds (real `remove`), but the compensating `add`
-      // that should return it is intercepted to report it could not fit —
-      // the invariant violation this defect exists to catch.
-      const jammedInventory: InventoryServiceApi = { ...inventory.api, add: () => Effect.succeed(1) }
-      const state = yield* makeGameplayFrameState
-      const stages = gameplayStages(state, store.api, roster.api, jammedInventory, player.api, time)
+      const slots = [...emptySlots()]
+      slots[0] = itemStack('sand', 1)
+      const harness = yield* builtStagesInWorld(world([]), ['0,0'], undefined, slots)
+      const stages = gameplayStages(
+        harness.state,
+        harness.store.api,
+        harness.roster.api,
+        harness.inventory.api,
+        harness.player.api,
+        harness.time,
+        undefined,
+        undefined,
+        {},
+        harness.commit,
+      )
       const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+      const storageBefore = yield* harness.commit.coordinator.snapshot(
+        GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+        PlayerStorageSnapshotSchema,
+      )
+      const revisionBefore = yield* harness.commit.coordinator.revision
+      yield* Ref.set(harness.rejectCommits, true)
 
-      yield* requestBlockPlacement(state, { positionKey: positionKey('3,64,3'), heldItem: 'sand' })
+      yield* requestBlockPlacementCommand(harness.state, {
+        requestId: 'rejected-sand-placement',
+        positionKey: positionKey('3,64,3'),
+        heldItem: 'sand',
+      })
+      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
 
-      const exit = yield* Effect.exit(interactions.run(DeltaTimeSecs(0)))
-      expect(Exit.isFailure(exit)).toBe(true)
-      if (Exit.isFailure(exit)) {
-        expect((Cause.squash(exit.cause) as Error).message).toBe(
-          'placement rollback could not restore sand',
-        )
-      }
+      expect(yield* drainBlockPlacementResults(harness.state)).toMatchObject([
+        {
+          requestId: 'rejected-sand-placement',
+          success: false,
+          consumed: false,
+          replayed: false,
+          outcome: { _tag: 'CommitFailed', error: expect.any(WorldCommitEmptyRequest) },
+        },
+      ])
+      const storageAfter = yield* harness.commit.coordinator.snapshot(
+        GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+        PlayerStorageSnapshotSchema,
+      )
+      expect(storageAfter.state).toStrictEqual(storageBefore.state)
+      expect(storageAfter.revision).toBe(storageBefore.revision)
+      expect(yield* harness.commit.coordinator.revision).toBe(revisionBefore)
+      expect(yield* harness.store.blockAt(target)).toBeUndefined()
+      expect(yield* Ref.get(harness.commitCalls)).toBe(1)
     }).pipe(Effect.provide(FrameServicesLayer)),
   )
 })
@@ -4070,6 +4303,70 @@ describe('the vehicles stage advances real vehicles when a vehicle service is re
 })
 
 describe('farming and food item uses through the full interactions stage', () => {
+  it.effect('crop growth advances through the registered crop owner with one world commit', () =>
+    Effect.gen(function* () {
+      const position = fixtureBlockPosition(39, 64, 39)
+      const { state, stages, commit, commitCalls } = yield* builtStagesInWorld(
+        world([]),
+        ['2,2'],
+        { crops: [{ dimension: 'overworld', position, crop: 'wheat_crop', growthSecs: 0 }] },
+      )
+      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+
+      yield* interactions.run(DeltaTimeSecs(2)).pipe(Effect.provide(FrameServicesLayer))
+
+      const crops = yield* commit.coordinator.snapshot(GAMEPLAY_CROPS_OWNER_ID, CropSnapshotSchema)
+      const commits = yield* Ref.get(commitCalls)
+      const revision = yield* commit.coordinator.revision
+      expect(crops.state.crops[0]?.growthSecs).toBe(2)
+      expect(commits).toBe(1)
+      expect(revision).toBe(1)
+      expect(yield* drainItemUseResults(state)).toStrictEqual([])
+    }),
+  )
+
+  it.effect('harvesting a mature potato commits storage, crop removal, and its block write once', () =>
+    Effect.gen(function* () {
+      const position = fixtureBlockPosition(38, 64, 38)
+      const potatoCrop = Option.getOrThrow(blockIdOf('potato_crop'))
+      const { state, stages, commit, commitCalls, store } = yield* builtStagesInWorld(
+        world([[position, potatoCrop]]),
+        ['2,2'],
+        { crops: [{ dimension: 'overworld', position, crop: 'potato_crop', growthSecs: POTATO_MATURITY_SECS }] },
+      )
+      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+
+      yield* requestPotatoHarvest(state, 'harvest-ripe-potato', position, 0.5)
+      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* drainItemUseResults(state)).toMatchObject([
+        {
+          action: 'HarvestPotato',
+          requestId: 'harvest-ripe-potato',
+          success: true,
+          outcome: { _tag: 'drops', drops: [{ item: 'potato', count: 4 }] },
+        },
+      ])
+      const storage = yield* commit.coordinator.snapshot(GAMEPLAY_PLAYER_STORAGE_OWNER_ID, PlayerStorageSnapshotSchema)
+      const crops = yield* commit.coordinator.snapshot(GAMEPLAY_CROPS_OWNER_ID, CropSnapshotSchema)
+      expect(countStoredItem(storage.state, 'potato')).toBe(4)
+      expect(crops.state.crops).toStrictEqual([])
+      expect(yield* store.api.getBlock(position)).toStrictEqual({ _tag: 'Block', block: AIR_BLOCK_ID })
+      expect(yield* Ref.get(commitCalls)).toBe(1)
+      expect(yield* commit.coordinator.revision).toBe(1)
+
+      yield* requestPotatoHarvest(state, 'harvest-already-removed', position, 0.5)
+      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+      expect(yield* Ref.get(commitCalls)).toBe(1)
+      expect(yield* Ref.get(state.unsupportedOperations)).toContainEqual({
+        _tag: 'Unsupported',
+        action: 'HarvestPotato',
+        requestId: 'harvest-already-removed',
+        reason: 'OwnerRegistrationUnavailable',
+      })
+    }),
+  )
+
   it.effect('bone meal against a non-crop cell still reaches the ApplyBoneMeal arm', () =>
     Effect.gen(function* () {
       const position = fixtureBlockPosition(40, 64, 40)
@@ -4148,7 +4445,9 @@ describe('farming and food item uses through the full interactions stage', () =>
   it.effect('tilling a non-tillable cell reports failure with no durability spent', () =>
     Effect.gen(function* () {
       const position = fixtureBlockPosition(41, 64, 41)
-      const { state, stages } = yield* builtStagesInWorld(world([[position, STONE]]))
+      const slots = [...emptySlots()]
+      slots[0] = itemStack('iron_hoe', 1)
+      const { state, stages } = yield* builtStagesInWorld(world([[position, STONE]]), ['0,0'], undefined, slots)
       const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
 
       yield* requestSoilTill(state, 'till-fail', position, 'iron_hoe')
@@ -4166,7 +4465,7 @@ describe('farming and food item uses through the full interactions stage', () =>
     }),
   )
 
-  it.effect('successful tilling and planting remain uncommitted when stage commit services are absent', () =>
+  it.effect('tilling and planting report typed owner-unavailable failures without commit services', () =>
     Effect.gen(function* () {
       const tillPosition = fixtureBlockPosition(10, 64, 10)
       const plantPosition = fixtureBlockPosition(12, 64, 12)
@@ -4188,18 +4487,19 @@ describe('farming and food item uses through the full interactions stage', () =>
       yield* requestPotatoPlanting(state, 'plant-without-commit', plantPosition)
       yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
 
-      expect(yield* drainItemUseResults(state)).toMatchObject([
+      expect(yield* drainItemUseResults(state)).toStrictEqual([])
+      expect(yield* Ref.get(state.unsupportedOperations)).toMatchObject([
         {
+          _tag: 'Unsupported',
           action: 'TillSoil',
           requestId: 'till-without-commit',
-          success: false,
-          outcome: { _tag: 'commitContextMissing' },
+          reason: 'WorldCommitCoordinatorUnavailable',
         },
         {
+          _tag: 'Unsupported',
           action: 'PlantPotato',
           requestId: 'plant-without-commit',
-          success: false,
-          outcome: { _tag: 'commitContextMissing' },
+          reason: 'WorldCommitCoordinatorUnavailable',
         },
       ])
       expect(yield* store.api.getBlock(tillPosition)).toStrictEqual({ _tag: 'Block', block: dirt })
@@ -4259,7 +4559,11 @@ describe('farming and food item uses through the full interactions stage', () =>
         _tag: 'Block',
         block: Option.getOrThrow(blockIdOf('potato_crop')),
       })
-      expect(yield* inventory.api.countOf('potato')).toBe(0)
+      const storageOwner = yield* commit.coordinator.snapshot(
+        GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+        PlayerStorageSnapshotSchema,
+      )
+      expect(countStoredItem(storageOwner.state, 'potato')).toBe(0)
       expect(yield* commit.coordinator.revision).toBe(1)
     }),
   )
@@ -4343,8 +4647,12 @@ describe('farming and food item uses through the full interactions stage', () =>
           outcome: { _tag: 'Collected', fluid: 'water', position: source },
         },
       ])
-      expect(yield* inventory.api.countOf('bucket')).toBe(0)
-      expect(yield* inventory.api.countOf('water_bucket')).toBe(1)
+      const storageOwner = yield* commit.coordinator.snapshot(
+        GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+        PlayerStorageSnapshotSchema,
+      )
+      expect(countStoredItem(storageOwner.state, 'bucket')).toBe(0)
+      expect(countStoredItem(storageOwner.state, 'water_bucket')).toBe(1)
       expect(yield* store.api.getBlock(source)).toStrictEqual({ _tag: 'Block', block: AIR_BLOCK_ID })
       expect(yield* commit.coordinator.revision).toBe(1)
     }),
@@ -4392,10 +4700,77 @@ describe('farming and food item uses through the full interactions stage', () =>
       })
     }),
   )
+
+  it.effect('registered potato and ordinary food requests each commit inventory and vitals once', () =>
+    Effect.gen(function* () {
+      const lowVitals = { ...SPAWN_VITALS, hungerPoints: HungerPoints(10) }
+      const potatoSlots = [...emptySlots()]
+      potatoSlots[0] = itemStack('potato', 1)
+      const potatoHarness = yield* builtStagesInWorld(
+        world([]), ['0,0'], undefined, potatoSlots, undefined, undefined, undefined, undefined, undefined,
+        { vitals: lowVitals },
+      )
+      const potatoInteractions = potatoHarness.stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+
+      yield* requestPotatoFoodUse(potatoHarness.state, 'eat-potato-owner-backed', {
+        healthPoints: lowVitals.healthPoints,
+        hungerPoints: lowVitals.hungerPoints,
+        maxHungerPoints: lowVitals.maxHungerPoints,
+      })
+      yield* potatoInteractions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* drainItemUseResults(potatoHarness.state)).toMatchObject([
+        { action: 'EatPotato', requestId: 'eat-potato-owner-backed', success: true, consumedCount: 1, outcome: { _tag: 'consume' } },
+      ])
+      const potatoStorage = yield* potatoHarness.commit.coordinator.snapshot(
+        GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+        PlayerStorageSnapshotSchema,
+      )
+      const potatoVitals = yield* potatoHarness.commit.coordinator.snapshot(
+        GAMEPLAY_VITALS_OWNER_ID,
+        ExperienceOrbVitalsOwnerSnapshotSchema,
+      )
+      expect(countStoredItem(potatoStorage.state, 'potato')).toBe(0)
+      expect(potatoVitals.state.vitals.hungerPoints).toBe(11)
+      expect(yield* Ref.get(potatoHarness.commitCalls)).toBe(1)
+      expect(yield* potatoHarness.commit.coordinator.revision).toBe(1)
+
+      const codSlots = [...emptySlots()]
+      codSlots[0] = itemStack('cod', 1)
+      const codHarness = yield* builtStagesInWorld(
+        world([]), ['0,0'], undefined, codSlots, undefined, undefined, undefined, undefined, undefined,
+        { vitals: lowVitals },
+      )
+      const codInteractions = codHarness.stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+
+      yield* requestFoodUse(codHarness.state, 'eat-cod-owner-backed', 'cod', {
+        healthPoints: lowVitals.healthPoints,
+        hungerPoints: lowVitals.hungerPoints,
+        maxHungerPoints: lowVitals.maxHungerPoints,
+      })
+      yield* codInteractions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* drainItemUseResults(codHarness.state)).toMatchObject([
+        { action: 'EatFood', requestId: 'eat-cod-owner-backed', success: true, consumedCount: 1, outcome: { _tag: 'consume' } },
+      ])
+      const codStorage = yield* codHarness.commit.coordinator.snapshot(
+        GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+        PlayerStorageSnapshotSchema,
+      )
+      const codVitals = yield* codHarness.commit.coordinator.snapshot(
+        GAMEPLAY_VITALS_OWNER_ID,
+        ExperienceOrbVitalsOwnerSnapshotSchema,
+      )
+      expect(countStoredItem(codStorage.state, 'cod')).toBe(0)
+      expect(codVitals.state.vitals.hungerPoints).toBe(12)
+      expect(yield* Ref.get(codHarness.commitCalls)).toBe(1)
+      expect(yield* codHarness.commit.coordinator.revision).toBe(1)
+    }),
+  )
 })
 
 describe('bucket interaction through a stage without commit services', () => {
-  it.effect('reports missing commit context and preserves the bucket and world state', () =>
+  it.effect('reports an owner-unavailable failure and preserves the bucket and world state', () =>
     Effect.gen(function* () {
       const source = fixtureBlockPosition(12, 64, 12)
       const state = yield* makeGameplayFrameState
@@ -4412,17 +4787,318 @@ describe('bucket interaction through a stage without commit services', () => {
       yield* requestBucketUse(state, 'bucket-without-commit', source, 'bucket', 'overworld')
       yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
 
-      expect(yield* drainItemUseResults(state)).toMatchObject([
+      expect(yield* drainItemUseResults(state)).toStrictEqual([])
+      expect(yield* Ref.get(state.unsupportedOperations)).toMatchObject([
         {
+          _tag: 'Unsupported',
           action: 'UseBucket',
           requestId: 'bucket-without-commit',
-          success: false,
-          outcome: { _tag: 'CommitContextMissing' },
+          reason: 'WorldCommitCoordinatorUnavailable',
         },
       ])
       expect(yield* inventory.api.countOf('bucket')).toBe(1)
       expect(yield* store.calls).toMatchObject({ writes: 0 })
       expect(yield* store.api.getBlock(source)).toStrictEqual({ _tag: 'Block', block: WATER })
+    }),
+  )
+})
+
+describe('interaction requests retain typed failures when no commit coordinator is registered', () => {
+  it.effect('routes every owner-backed request through the unavailable-coordinator result', () =>
+    Effect.gen(function* () {
+      const harness = yield* builtStagesInWorld(
+        world([]), ['0,0'], undefined, emptySlots(), undefined, undefined, undefined, undefined, undefined,
+        {}, {}, false,
+      )
+      const interactions = harness.stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+      const target = fixtureBlockPosition(0, 64, 0)
+      const tick = Schema.decodeUnknownSync(SimulationTickSchema)(0)
+      const dimension = Schema.decodeUnknownSync(DimensionIdSchema)('overworld')
+      const full = {
+        healthPoints: EntityHealthPoints(10),
+        hungerPoints: HungerPoints(10),
+        maxHungerPoints: HungerPoints(20),
+      }
+
+      yield* requestBlockBreak(harness.state, target)
+      yield* requestBlockPlacementCommand(harness.state, {
+        requestId: 'place-without-coordinator',
+        positionKey: positionKey('0,64,0'),
+        heldItem: 'stone',
+      })
+      yield* requestVillagerTrade(harness.state, {
+        requestId: 'trade-without-coordinator',
+        villagerId: 'villager',
+        offerId: 'offer',
+      })
+      yield* requestBoneMeal(harness.state, 'bone-meal-without-coordinator', target)
+      yield* requestSoilTill(harness.state, 'till-without-coordinator', target, 'wooden_hoe')
+      yield* requestPotatoPlanting(harness.state, 'plant-without-coordinator', target)
+      yield* requestPotatoHarvest(harness.state, 'harvest-without-coordinator', target, 0.5)
+      yield* requestPotatoFoodUse(harness.state, 'eat-potato-without-coordinator', full)
+      yield* requestFoodUse(harness.state, 'eat-food-without-coordinator', 'cod', full)
+      yield* requestBucketUse(harness.state, 'bucket-without-coordinator', target, 'bucket', dimension)
+      yield* requestItemUse(harness.state, 'tnt-without-coordinator', target, 'fire_charge')
+      yield* requestBowShot(harness.state, 'bow-without-coordinator', {
+        origin: fixturePosition(0, 64, 0),
+        dirX: 0,
+        dirY: 1,
+        dirZ: 0,
+        chargeSecs: BOW_FULL_CHARGE_SECS,
+        inventory: { mode: 'creative', slotIndex: 0 },
+      })
+      yield* requestMeleeAttack(harness.state, {
+        requestId: 'melee-without-coordinator',
+        origin: fixturePosition(0, 64, 0),
+        direction: fixturePosition(0, 0, 1),
+        reach: 3,
+        damage: 4,
+      })
+      yield* requestEnderPearlThrow(harness.state, {
+        requestId: 'pearl-without-coordinator',
+        dirX: 0,
+        dirY: 1,
+        dirZ: 0,
+        inventory: { mode: 'creative', slotIndex: 0 },
+      })
+      for (const action of ['CastFishing', 'AdvanceFishing', 'CancelFishing', 'ReelFishing'] as const) {
+        yield* enqueueFishingAction(harness.state, action)
+      }
+      yield* requestCollectBrewingBottle(harness.state, {
+        requestId: 'collect-bottle-without-coordinator',
+        actor: EntityId('brewer'),
+        tick,
+        address: { dimension, position: target },
+        bottleIndex: 0,
+      })
+      yield* insertBrewingFuel(harness.state, 'fuel-without-coordinator')
+      yield* insertBrewingBottle(harness.state, 'bottle-without-coordinator', 0, 'water_bottle')
+      yield* insertBrewingIngredient(harness.state, 'ingredient-without-coordinator', 'nether_wart')
+      yield* useBrewingPotion(harness.state, {
+        requestId: 'potion-without-coordinator',
+        actor: EntityId('brewer'),
+        tick,
+        slotIndex: 0,
+      })
+      yield* requestStatusEffect(harness.state, { type: 'speed', durationSecs: 2 })
+
+      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+
+      const unsupported = yield* Ref.get(harness.state.unsupportedOperations)
+      expect(unsupported.length).toBeGreaterThanOrEqual(19)
+      expect(new Set(unsupported.map(({ action }) => action))).toEqual(new Set([
+        'MineBlock',
+        'VillagerTrade',
+        'ApplyBoneMeal',
+        'TillSoil',
+        'PlantPotato',
+        'HarvestPotato',
+        'EatFood',
+        'UseBucket',
+        'IgniteTnt',
+        'BowShot',
+        'MeleeAttack',
+        'EnderPearl',
+        'Fishing',
+        'CollectBrewingBottle',
+        'Brewing',
+      ]))
+      expect(unsupported.every(({ reason }) => reason === 'WorldCommitCoordinatorUnavailable' ||
+        reason === 'OwnerRegistrationUnavailable')).toBe(true)
+      expect(yield* drainBlockPlacementResults(harness.state)).toMatchObject([
+        {
+          requestId: 'place-without-coordinator',
+          outcome: { _tag: 'Unsupported', reason: 'WorldCommitCoordinatorUnavailable' },
+        },
+      ])
+      expect(yield* Ref.get(harness.commitCalls)).toBe(0)
+    }),
+  )
+})
+
+describe('interaction requests retain typed failures when their owner is not registered', () => {
+  it.effect('reports the missing owner for farming, vitals, entity, brewing, fishing and TNT requests', () =>
+    Effect.gen(function* () {
+      const target = fixtureBlockPosition(0, 64, 0)
+      const harness = yield* builtStagesInWorld(
+        world([[target, Option.getOrThrow(blockIdOf('tnt'))]]),
+        ['0,0'],
+        undefined,
+        emptySlots(),
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        {},
+        {
+          cropOwnerId: undefined,
+          entitiesOwnerId: undefined,
+          vitalsOwnerId: undefined,
+          fishingOwnerId: undefined,
+          brewingOwnerId: undefined,
+          tntOwnerId: undefined,
+          statusEffectsOwnerId: undefined,
+        },
+      )
+      const interactions = harness.stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+      const tick = Schema.decodeUnknownSync(SimulationTickSchema)(0)
+      const dimension = Schema.decodeUnknownSync(DimensionIdSchema)('overworld')
+      const full = {
+        healthPoints: EntityHealthPoints(10),
+        hungerPoints: HungerPoints(10),
+        maxHungerPoints: HungerPoints(20),
+      }
+
+      yield* requestBoneMeal(harness.state, 'bone-meal-no-owner', target)
+      yield* requestPotatoPlanting(harness.state, 'plant-no-owner', target)
+      yield* requestPotatoHarvest(harness.state, 'harvest-no-owner', target, 0.5)
+      yield* requestPotatoFoodUse(harness.state, 'eat-no-vitals-owner', full)
+      yield* requestFoodUse(harness.state, 'food-no-vitals-owner', 'cod', full)
+      yield* requestBowShot(harness.state, 'bow-no-entity-owner', {
+        origin: fixturePosition(0, 64, 0),
+        dirX: 0,
+        dirY: 1,
+        dirZ: 0,
+        chargeSecs: BOW_FULL_CHARGE_SECS,
+        inventory: { mode: 'creative', slotIndex: 0 },
+      })
+      yield* requestMeleeAttack(harness.state, {
+        requestId: 'melee-no-entity-owner',
+        origin: fixturePosition(0, 64, 0),
+        direction: fixturePosition(0, 0, 1),
+        reach: 3,
+        damage: 4,
+      })
+      yield* requestEnderPearlThrow(harness.state, {
+        requestId: 'pearl-no-vitals-owner',
+        dirX: 0,
+        dirY: 1,
+        dirZ: 0,
+        inventory: { mode: 'creative', slotIndex: 0 },
+      })
+      for (const action of ['CastFishing', 'AdvanceFishing', 'CancelFishing', 'ReelFishing'] as const) {
+        yield* enqueueFishingAction(harness.state, action)
+      }
+      yield* requestCollectBrewingBottle(harness.state, {
+        requestId: 'collect-no-brewing-owner',
+        actor: EntityId('brewer'),
+        tick,
+        address: { dimension, position: target },
+        bottleIndex: 0,
+      })
+      yield* insertBrewingFuel(harness.state, 'fuel-no-brewing-owner')
+      yield* insertBrewingBottle(harness.state, 'bottle-no-brewing-owner', 0, 'water_bottle')
+      yield* insertBrewingIngredient(harness.state, 'ingredient-no-brewing-owner', 'nether_wart')
+      yield* useBrewingPotion(harness.state, {
+        requestId: 'potion-no-brewing-owner',
+        actor: EntityId('brewer'),
+        tick,
+        slotIndex: 0,
+      })
+      yield* requestItemUse(harness.state, 'tnt-no-owner', target, 'fire_charge')
+      yield* requestStatusEffect(harness.state, { type: 'speed', durationSecs: 2 })
+
+      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+
+      const unsupported = yield* Ref.get(harness.state.unsupportedOperations)
+      expect(new Set(unsupported.map(({ action }) => action))).toEqual(new Set([
+        'ApplyBoneMeal',
+        'PlantPotato',
+        'HarvestPotato',
+        'EatFood',
+        'BowShot',
+        'MeleeAttack',
+        'EnderPearl',
+        'Fishing',
+        'CollectBrewingBottle',
+        'Brewing',
+        'IgniteTnt',
+      ]))
+      expect(unsupported.every(({ reason }) => reason === 'OwnerRegistrationUnavailable')).toBe(true)
+      expect(yield* Ref.get(harness.commitCalls)).toBe(0)
+    }),
+  )
+})
+
+describe('interaction stages surface owner snapshot failures and preserve retryable requests', () => {
+  it.effect('records failures from entity, storage, crop, fishing and brewing snapshots', () =>
+    Effect.gen(function* () {
+      const target = fixtureBlockPosition(0, 64, 0)
+      const harness = yield* builtStagesInWorld(world([]))
+      const interactions = harness.stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+      const run = () => interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+      const latestFailure = () => Ref.get(harness.state.operationFailures).pipe(
+        Effect.map((failures) => failures.at(-1)),
+      )
+
+      yield* Ref.set(harness.failSnapshotOwnerId, GAMEPLAY_ENTITIES_OWNER_ID)
+      yield* requestMeleeAttack(harness.state, {
+        requestId: 'melee-owner-snapshot-failure',
+        origin: fixturePosition(0, 64, 0),
+        direction: fixturePosition(0, 0, 1),
+        reach: 3,
+        damage: 4,
+      })
+      yield* run()
+      expect(yield* latestFailure()).toMatchObject({
+        _tag: 'Failed',
+        operation: 'OwnerSnapshot',
+        subject: 'Player',
+        error: { _tag: 'ReplicatedOwnerUnknown' },
+      })
+      expect(yield* Ref.get(harness.state.pendingMeleeAttacks)).toHaveLength(1)
+      yield* Ref.set(harness.state.pendingMeleeAttacks, [])
+
+      yield* Ref.set(harness.failSnapshotOwnerId, GAMEPLAY_PLAYER_STORAGE_OWNER_ID)
+      yield* requestBowShot(harness.state, 'bow-storage-snapshot-failure', {
+        origin: fixturePosition(0, 64, 0),
+        dirX: 0,
+        dirY: 1,
+        dirZ: 0,
+        chargeSecs: BOW_FULL_CHARGE_SECS,
+        inventory: { mode: 'survival', slotIndex: 0 },
+      })
+      yield* run()
+      expect(yield* latestFailure()).toMatchObject({
+        _tag: 'Failed',
+        operation: 'OwnerSnapshot',
+        subject: 'Player',
+        error: { _tag: 'ReplicatedOwnerUnknown' },
+      })
+      expect(yield* Ref.get(harness.state.pendingBowShots)).toHaveLength(1)
+      yield* Ref.set(harness.state.pendingBowShots, [])
+
+      yield* Ref.set(harness.failSnapshotOwnerId, GAMEPLAY_CROPS_OWNER_ID)
+      yield* requestPotatoHarvest(harness.state, 'harvest-crop-snapshot-failure', target, 0.5)
+      yield* run()
+      expect(yield* latestFailure()).toMatchObject({
+        _tag: 'Failed',
+        operation: 'OwnerSnapshot',
+        subject: 'ItemUse',
+        error: { _tag: 'ReplicatedOwnerUnknown' },
+      })
+
+      yield* Ref.set(harness.failObserveOwnerId, GAMEPLAY_FISHING_OWNER_ID)
+      yield* requestFishingCancel(harness.state, 'cancel-fishing-snapshot-failure', fixtureFishingActor)
+      yield* run()
+      expect(yield* latestFailure()).toMatchObject({
+        _tag: 'Failed',
+        operation: 'OwnerSnapshot',
+        subject: 'Fishing',
+        error: { _tag: 'ReplicatedOwnerUnknown' },
+      })
+
+      yield* Ref.set(harness.failObserveOwnerId, GAMEPLAY_BREWING_OWNER_ID)
+      yield* insertBrewingFuel(harness.state, 'fuel-brewing-snapshot-failure')
+      yield* run()
+      expect(yield* latestFailure()).toMatchObject({
+        _tag: 'Failed',
+        operation: 'OwnerSnapshot',
+        subject: 'Brewing',
+        error: { _tag: 'ReplicatedOwnerUnknown' },
+      })
+      expect(yield* Ref.get(harness.commitCalls)).toBe(0)
     }),
   )
 })

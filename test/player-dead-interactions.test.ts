@@ -17,6 +17,7 @@ import {
   requestBlockPlacementCommand,
   requestBlockUse,
   requestBowShot,
+  requestEnderPearlThrow,
   requestFurnaceAdvance,
   requestItemUse,
   requestMeleeAttack,
@@ -86,7 +87,13 @@ describe('dead-player interaction boundary', () => {
       yield* requestBowShot(state, shot)
       yield* requestMeleeAttack(state, { requestId: 'melee', ...melee })
       yield* requestMeleeAttack(state, melee)
-      yield* Ref.set(state.pendingPearlThrows, [{ ...shot }])
+      yield* requestEnderPearlThrow(state, {
+        requestId: 'pearl',
+        dirX: 0,
+        dirY: 0,
+        dirZ: 1,
+        inventory: { mode: 'creative', slotIndex: 0 },
+      })
       yield* requestVillagerTrade(state, {
         requestId: 'trade',
         villagerId: 'villager',
@@ -150,10 +157,11 @@ describe('dead-player interaction boundary', () => {
     }),
   )
 
-  it.effect('preserves placement replay and bow duplicate request contracts while dead', () =>
+  it.effect('preserves placement replay and rejects an already-handled bow request as duplicate while dead', () =>
     Effect.gen(function* () {
       const { state, runInteractions } = yield* scene
       yield* setPlayerDead(state, true)
+      yield* Ref.set(state.handledBowShotRequestIds, new Set(['same-bow']))
       const placement = {
         requestId: 'same-placement',
         positionKey: blockPositionKeyOf(blockAt(2, 64, 1)),
@@ -167,7 +175,7 @@ describe('dead-player interaction boundary', () => {
         { requestId: 'same-placement', replayed: false, outcome: { _tag: 'PlayerDead' } },
       ])
       expect(yield* drainBowShotResults(state)).toStrictEqual([
-        { requestId: 'same-bow', success: false, outcome: 'PlayerDead' },
+        { requestId: 'same-bow', success: false, outcome: 'DuplicateRequest' },
       ])
 
       yield* requestBlockPlacementCommand(state, placement)

@@ -81,6 +81,13 @@ const fishingServiceDouble = () => {
         calls.push(['reel', String(actor), String(tick)])
         return { _tag: 'Caught', item: 'cod' }
       }),
+    cancel: () => Effect.die(new Error('Unexpected fishing cancel call in this test')),
+    advance: () => Effect.die(new Error('Unexpected fishing advance call in this test')),
+    planCast: () => Effect.die(new Error('Unexpected fishing planCast call in this test')),
+    planBite: () => Effect.die(new Error('Unexpected fishing planBite call in this test')),
+    planReel: () => Effect.die(new Error('Unexpected fishing planReel call in this test')),
+    planCancel: () => Effect.die(new Error('Unexpected fishing planCancel call in this test')),
+    planAdvance: () => Effect.die(new Error('Unexpected fishing planAdvance call in this test')),
   }
   return { service, calls }
 }

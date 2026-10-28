@@ -9,6 +9,10 @@ import {
 } from '../src/domain/mob/primed-tnt'
 
 describe('primed TNT', () => {
+  it('returns the same fuse object when no elapsed time changes it', () => {
+    expect(stepPrimedTnt(FRESH_PRIMED_TNT, DeltaTimeSecs(0))).toStrictEqual({ tnt: FRESH_PRIMED_TNT })
+  })
+
   it('preserves the fuse until four seconds have elapsed', () => {
     const waiting = stepPrimedTnt(FRESH_PRIMED_TNT, DeltaTimeSecs(PRIMED_TNT_FUSE_SECS - 0.01))
     expect(waiting.explosion).toBeUndefined()

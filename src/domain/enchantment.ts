@@ -95,18 +95,11 @@ const isEnchantmentId = (value: unknown): value is EnchantmentId =>
   typeof value === 'string' && ENCHANTMENT_IDS.includes(value as EnchantmentId)
 
 const itemMatchesTarget = (item: ItemType, target: EnchantmentTarget): boolean => {
-  switch (target) {
-    case 'armor':
-      return ARMOR_ITEMS.has(item)
-    case 'melee_weapon':
-      return MELEE_ITEMS.has(item)
-    case 'mining_tool':
-      return MINING_ITEMS.has(item)
-    case 'bow':
-      return item === 'bow'
-    case 'damageable':
-      return isDamageableItemType(item)
-  }
+  if (target === 'armor') return ARMOR_ITEMS.has(item)
+  if (target === 'melee_weapon') return MELEE_ITEMS.has(item)
+  if (target === 'mining_tool') return MINING_ITEMS.has(item)
+  if (target === 'bow') return item === 'bow'
+  return isDamageableItemType(item)
 }
 
 export const enchantmentAppliesTo = (id: EnchantmentId, item: ItemType): boolean =>

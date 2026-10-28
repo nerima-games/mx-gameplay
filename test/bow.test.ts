@@ -15,7 +15,7 @@
  */
 import { describe, expect, it } from '@effect/vitest'
 import { position as atPosition } from './support/coordinate-fixtures'
-import { makeTimeService, type Slot } from '@nerima-games/mc-sim'
+import { makeTimeService, PlayerStorageSnapshotSchema, type PlayerPose, type Slot } from '@nerima-games/mc-sim'
 import { Effect, Result, Schema } from 'effect'
 import * as FastCheck from 'fast-check'
 import {
@@ -55,10 +55,18 @@ import {
 import { resolveBowHits, type MobBehaviour } from '../src/domain/entities/mob-frame'
 import { EntityId, EntityKind, EntitySerial, type EntityRoster } from '@nerima-games/mc-sim'
 import {
+  GAMEPLAY_ENTITIES_OWNER_ID,
+  GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+  GAMEPLAY_VITALS_OWNER_ID,
+  GameplayEntityRosterSchema,
+  type GameplayOwnerInitialState,
+} from '../src/stages/gameplay-owner-registrations'
+import type { GameplayStageCommitServices } from '../src/stages/registration-core'
+import {
   drainBowKnockbacks,
   drainBowShotResults,
   gameplayStages,
-  makeGameplayFrameState,
+  makeGameplayFrameStateForOwner,
   requestBowShot,
 } from '../src/stages/registration'
 import { DimensionIdSchema, EntityHealthPoints, SimulationTickSchema, itemStack, StackCount, type BlockId, type Position } from '@nerima-games/mc-kernel'
@@ -66,6 +74,7 @@ import { makeChunkStoreDouble } from './support/chunk-store-double'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
 import { makePlayerServiceDouble } from './support/player-service-double'
 import { makeInventoryDouble } from './support/inventory-service-double'
+import { makeGameplayCommitServices } from './support/transactional-stage-doubles'
 import { runFrame } from './support/frame-runner'
 import { Ref } from 'effect'
 
@@ -410,7 +419,8 @@ describe(`C2 bow charge uses simulation ticks (${BOW_PARITY_FIXTURE.source}; ${B
       tick,
       { actor, startedAt: Schema.decodeUnknownSync(SimulationTickSchema)(19) },
     ))
-    const invalidChargeShape = prepare(action, { ...charge, stale: true } as typeof charge)
+    const malformedCharge = { ...charge, stale: true }
+    const invalidChargeShape = prepare(action, malformedCharge)
     const noTarget = prepare(action, charge, pose, dimension, tick, [])
     const notFired = prepare(action, unfiredCharge)
 
@@ -987,22 +997,46 @@ const inventoryWith = (bow: boolean, arrow: boolean): ReadonlyArray<Slot> =>
     return undefined
   })
 
-const scene = (initial: EntityRoster<MobBehaviour>, inventorySlots?: ReadonlyArray<Slot>) =>
+const scene = (
+  initial: EntityRoster<MobBehaviour>,
+  inventorySlots?: ReadonlyArray<Slot>,
+  ownerInitial: GameplayOwnerInitialState = {},
+) =>
   Effect.gen(function* () {
     const store = yield* makeChunkStoreDouble(new Map<string, BlockId>(), ['0,0'])
     const roster = yield* makeEntityManagerDouble<MobBehaviour>(initial)
     const player = yield* makePlayerServiceDouble()
     const inventory = yield* makeInventoryDouble(inventorySlots)
     const time = yield* makeTimeService()
-    const state = yield* makeGameplayFrameState
+    const commit = yield* makeGameplayCommitServices(store.api, inventory.api, {
+      ...ownerInitial,
+      entities: ownerInitial.entities ?? initial,
+    })
+    const state = yield* makeGameplayFrameStateForOwner({
+      coordinator: commit.coordinator,
+      vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID,
+    })
     return {
       roster,
       state,
       inventory,
       player,
-      stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api, time),
+      commit,
+      stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api, time, undefined, undefined, {}, commit),
     }
   })
+
+const ownerRoster = (commit: GameplayStageCommitServices) =>
+  Effect.map(
+    commit.coordinator.snapshot(GAMEPLAY_ENTITIES_OWNER_ID, GameplayEntityRosterSchema),
+    ({ state }) => state,
+  )
+
+const ownerStorage = (commit: GameplayStageCommitServices) =>
+  Effect.map(
+    commit.coordinator.snapshot(GAMEPLAY_PLAYER_STORAGE_OWNER_ID, PlayerStorageSnapshotSchema),
+    ({ state }) => state,
+  )
 
 /** A mob standing dead ahead of `EYE`, at the centre of the crosshair. */
 const AHEAD: EntityRoster<MobBehaviour> = {
@@ -1043,34 +1077,34 @@ inventory: { mode: 'creative', slotIndex: 0 },
       // reachable-in-principle before it and unreachable in fact, which
       // docs/testing.md records as a state this repository has repeatedly had
       // to fix.
-      const { state, roster, stages } = yield* scene(AHEAD)
+      const { state, commit, stages } = yield* scene(AHEAD)
       yield* Ref.set(state.pendingBowShots, [
         { origin: EYE, dirX: 0, dirY: 0, dirZ: 1, chargeSecs: BOW_FULL_CHARGE_SECS , inventory: { mode: 'creative', slotIndex: 0 }},
       ])
 
       yield* runFrame(stages)
 
-      expect((yield* roster.api.snapshot).entities[0]?.healthPoints).toBe(20 - BOW_MAX_DAMAGE)
+      expect((yield* ownerRoster(commit)).entities[0]?.healthPoints).toBe(20 - BOW_MAX_DAMAGE)
     }),
   )
 
   it.effect('A TAP IS NOT A SHOT: a hold below the minimum leaves the roster untouched', () =>
     Effect.gen(function* () {
-      const { state, roster, stages } = yield* scene(AHEAD)
+      const { state, commit, stages } = yield* scene(AHEAD)
       yield* Ref.set(state.pendingBowShots, [
         { origin: EYE, dirX: 0, dirY: 0, dirZ: 1, chargeSecs: BOW_MIN_CHARGE_SECS / 2 , inventory: { mode: 'creative', slotIndex: 0 }},
       ])
 
       yield* runFrame(stages)
 
-      expect((yield* roster.api.snapshot).entities[0]?.healthPoints).toBe(20)
+      expect((yield* ownerRoster(commit)).entities[0]?.healthPoints).toBe(20)
       expect(yield* Ref.get(state.bowKnockbacks)).toStrictEqual([])
     }),
   )
 
   it.effect('a medium charge uses the vanilla damage band, not the critical-charge damage', () =>
     Effect.gen(function* () {
-      const { state, roster, stages } = yield* scene(AHEAD)
+      const { state, commit, stages } = yield* scene(AHEAD)
       yield* Ref.set(state.pendingBowShots, [
         { origin: EYE, dirX: 0, dirY: 0, dirZ: 1, chargeSecs: BOW_FULL_CHARGE_SECS / 2 , inventory: { mode: 'creative', slotIndex: 0 }},
       ])
@@ -1078,13 +1112,13 @@ inventory: { mode: 'creative', slotIndex: 0 },
       yield* runFrame(stages)
 
       // Medium charge deals 5 damage, not the critical-charge 9.
-      expect((yield* roster.api.snapshot).entities[0]?.healthPoints).toBe(15)
+      expect((yield* ownerRoster(commit)).entities[0]?.healthPoints).toBe(15)
     }),
   )
 
   it.effect('Power on the bow travels from the request to the damage', () =>
     Effect.gen(function* () {
-      const { state, roster, stages } = yield* scene(AHEAD)
+      const { state, commit, stages } = yield* scene(AHEAD)
       yield* Ref.set(state.pendingBowShots, [
         {
           origin: EYE,
@@ -1100,13 +1134,13 @@ inventory: { mode: 'creative', slotIndex: 0 },
       yield* runFrame(stages)
 
       // round(9 * 1.5) = 14, so 20 - 14 = 6.
-      expect((yield* roster.api.snapshot).entities[0]?.healthPoints).toBe(6)
+      expect((yield* ownerRoster(commit)).entities[0]?.healthPoints).toBe(6)
     }),
   )
 
   it.effect('a kill puts the mob\'s loot in the drops outbox', () =>
     Effect.gen(function* () {
-      const { state, roster, stages } = yield* scene({
+      const { state, commit, stages } = yield* scene({
         entities: [{ ...AHEAD.entities[0]!, healthPoints: EntityHealthPoints(5) }],
         nextSerial: EntitySerial(1),
       })
@@ -1116,7 +1150,7 @@ inventory: { mode: 'creative', slotIndex: 0 },
 
       yield* runFrame(stages)
 
-      expect((yield* roster.api.snapshot).entities).toStrictEqual([])
+      expect((yield* ownerRoster(commit)).entities).toStrictEqual([])
       // A creeper's gunpowder goes through the same outbox a blast kill uses.
       expect(yield* Ref.get(state.mobDrops)).not.toStrictEqual([])
     }),
@@ -1124,8 +1158,13 @@ inventory: { mode: 'creative', slotIndex: 0 },
 
   it.effect('the shove is computed and parked, because nothing here can deliver it', () =>
     Effect.gen(function* () {
-      const { state, stages, player } = yield* scene(AHEAD)
-      yield* player.api.moveTo(atPosition(5, 64, 5))
+      const { state, stages } = yield* scene(AHEAD, undefined, {
+        playerPose: {
+          feetPosition: atPosition(5, 64, 5),
+          yawRadians: 0,
+          pitchRadians: 0,
+        } satisfies PlayerPose,
+      })
       yield* Ref.set(state.pendingBowShots, [
         { origin: EYE, dirX: 0, dirY: 0, dirZ: 1, chargeSecs: BOW_FULL_CHARGE_SECS , inventory: { mode: 'creative', slotIndex: 0 }},
       ])
@@ -1164,7 +1203,7 @@ inventory: { mode: 'creative', slotIndex: 0 },
 
   it.effect('a miss changes nothing and parks nothing', () =>
     Effect.gen(function* () {
-      const { state, roster, stages } = yield* scene(AHEAD)
+      const { state, commit, stages } = yield* scene(AHEAD)
       yield* Ref.set(state.pendingBowShots, [
         // Aimed straight up, at nothing.
         { origin: EYE, dirX: 0, dirY: 1, dirZ: 0, chargeSecs: BOW_FULL_CHARGE_SECS , inventory: { mode: 'creative', slotIndex: 0 }},
@@ -1172,14 +1211,14 @@ inventory: { mode: 'creative', slotIndex: 0 },
 
       yield* runFrame(stages)
 
-      expect((yield* roster.api.snapshot).entities[0]?.healthPoints).toBe(20)
+      expect((yield* ownerRoster(commit)).entities[0]?.healthPoints).toBe(20)
       expect(yield* Ref.get(state.bowKnockbacks)).toStrictEqual([])
     }),
   )
 
   it.effect('THE INBOX IS DRAINED, so one shot is serviced once', () =>
     Effect.gen(function* () {
-      const { state, roster, stages } = yield* scene(AHEAD)
+      const { state, commit, stages } = yield* scene(AHEAD)
       yield* Ref.set(state.pendingBowShots, [
         { origin: EYE, dirX: 0, dirY: 0, dirZ: 1, chargeSecs: BOW_FULL_CHARGE_SECS , inventory: { mode: 'creative', slotIndex: 0 }},
       ])
@@ -1188,24 +1227,24 @@ inventory: { mode: 'creative', slotIndex: 0 },
       yield* runFrame(stages)
 
       expect(yield* Ref.get(state.pendingBowShots)).toStrictEqual([])
-      expect((yield* roster.api.snapshot).entities[0]?.healthPoints).toBe(20 - BOW_MAX_DAMAGE)
+      expect((yield* ownerRoster(commit)).entities[0]?.healthPoints).toBe(20 - BOW_MAX_DAMAGE)
     }),
   )
 
   it.effect('an idle frame parks nothing and leaves the roster alone', () =>
     Effect.gen(function* () {
-      const { state, roster, stages } = yield* scene(AHEAD)
+      const { state, commit, stages } = yield* scene(AHEAD)
 
       yield* runFrame(stages)
 
-      expect((yield* roster.api.snapshot).entities[0]?.healthPoints).toBe(20)
+      expect((yield* ownerRoster(commit)).entities[0]?.healthPoints).toBe(20)
       expect(yield* Ref.get(state.bowKnockbacks)).toStrictEqual([])
     }),
   )
 
   it.effect('settles survival bow ammo and durability atomically', () =>
     Effect.gen(function* () {
-      const { state, inventory, stages } = yield* scene(AHEAD, inventoryWith(true, true))
+      const { state, commit, inventory, stages } = yield* scene(AHEAD, inventoryWith(true, true))
       yield* Ref.set(state.pendingBowShots, [
         {
           requestId: 'survival-shot',
@@ -1220,19 +1259,22 @@ inventory: { mode: 'creative', slotIndex: 0 },
 
       yield* runFrame(stages)
 
-      const storage = yield* inventory.api.storageSnapshot
+      const storage = yield* ownerStorage(commit)
       expect(storage.inventory.slots[0]).toStrictEqual(Result.getOrThrow(itemStack('bow', StackCount(1))))
       expect(storage.inventory.slots[1]).toBeUndefined()
       expect(storage.inventoryDurability[0]).toStrictEqual({ current: 383, max: 384 })
       expect(yield* drainBowShotResults(state)).toStrictEqual([
         { requestId: 'survival-shot', success: true, outcome: 'Fired' },
       ])
+      expect((yield* inventory.api.storageSnapshot).inventory.slots[1]).toStrictEqual(
+        Result.getOrThrow(itemStack('arrow', StackCount(1))),
+      )
     }),
   )
 
   it.effect('rejects a survival shot without an arrow before combat', () =>
     Effect.gen(function* () {
-      const { state, roster, inventory, stages } = yield* scene(AHEAD, inventoryWith(true, false))
+      const { state, commit, stages } = yield* scene(AHEAD, inventoryWith(true, false))
       yield* Ref.set(state.pendingBowShots, [
         {
           requestId: 'missing-arrow',
@@ -1247,8 +1289,8 @@ inventory: { mode: 'creative', slotIndex: 0 },
 
       yield* runFrame(stages)
 
-      expect((yield* roster.api.snapshot).entities[0]?.healthPoints).toBe(20)
-      const storage = yield* inventory.api.storageSnapshot
+      expect((yield* ownerRoster(commit)).entities[0]?.healthPoints).toBe(20)
+      const storage = yield* ownerStorage(commit)
       expect(storage.inventory.slots[0]).toStrictEqual(Result.getOrThrow(itemStack('bow', StackCount(1))))
       expect(storage.inventory.slots[1]).toBeUndefined()
       expect(storage.inventoryDurability[0]).toStrictEqual({ current: 384, max: 384 })
@@ -1267,7 +1309,7 @@ inventory: { mode: 'creative', slotIndex: 0 },
       // already exercise for an uncorrelated request; this proves it holds
       // for the InventoryUnavailable arm too, reached only in survival mode
       // when the atomic ammo+durability settlement does not apply.
-      const { state, roster, inventory, stages } = yield* scene(AHEAD, inventoryWith(true, false))
+      const { state, commit, stages } = yield* scene(AHEAD, inventoryWith(true, false))
       yield* Ref.set(state.pendingBowShots, [
         {
           origin: EYE,
@@ -1281,8 +1323,8 @@ inventory: { mode: 'creative', slotIndex: 0 },
 
       yield* runFrame(stages)
 
-      expect((yield* roster.api.snapshot).entities[0]?.healthPoints).toBe(20)
-      const storage = yield* inventory.api.storageSnapshot
+      expect((yield* ownerRoster(commit)).entities[0]?.healthPoints).toBe(20)
+      const storage = yield* ownerStorage(commit)
       expect(storage.inventoryDurability[0]).toStrictEqual({ current: 384, max: 384 })
       expect(yield* drainBowShotResults(state)).toStrictEqual([])
     }),

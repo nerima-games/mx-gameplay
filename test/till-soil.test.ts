@@ -39,6 +39,7 @@ import { cellKey, chunkKey, chunkOf, makeInMemoryWorld } from '../src/domain/in-
 const HOE: TillingCapability = { tills: true }
 const GROUND: BlockPosition = blockPosition(-2, 61, 7)
 const TOP_GROUND: BlockPosition = blockPosition(-2, Number.MAX_SAFE_INTEGER, 7)
+type CropBlockType = keyof typeof SOIL_OF_CROP
 
 const keyOf = (p: BlockPosition): string => `${String(p.x)},${String(p.y)},${String(p.z)}`
 const WORLD_ID = Schema.decodeUnknownSync(WorldIdSchema)('gameplay-till-tests')
@@ -313,12 +314,13 @@ describe('the loop closes', () => {
       // own tests would pass and the game would have a step that cannot be
       // completed.
       const overworldCrops = Object.values(CROP_OF_SEED).filter(
-        (crop) => SOIL_OF_CROP[crop as BlockType] === TILLED_BLOCK,
+        (crop): crop is CropBlockType =>
+          crop !== undefined && SOIL_OF_CROP[crop] === TILLED_BLOCK,
       )
 
       expect(overworldCrops.length).toBeGreaterThan(0)
       for (const crop of overworldCrops) {
-        expect(SOIL_OF_CROP[crop as BlockType]).toBe(TILLED_BLOCK)
+        expect(SOIL_OF_CROP[crop]).toBe(TILLED_BLOCK)
       }
     }),
   )

@@ -95,35 +95,26 @@ const finiteNonNegative = (value: number): number =>
   Number.isFinite(value) && value > 0 ? value : 0
 
 export const exhaustionForSurvivalActivity = (input: SurvivalActivityInput): number => {
-  switch (input._tag) {
-    case 'walk':
-      return finiteNonNegative(input.distance) * SURVIVAL_EXHAUSTION.walkPerBlock
-    case 'sprint':
-      return finiteNonNegative(input.distance) * SURVIVAL_EXHAUSTION.sprintPerBlock
-    case 'jump':
-      return finiteNonNegative(input.count) *
-        (input.sprinting ? SURVIVAL_EXHAUSTION.sprintJump : SURVIVAL_EXHAUSTION.jump)
-    case 'swim':
-      return finiteNonNegative(input.distance) * SURVIVAL_EXHAUSTION.swimPerBlock
-    case 'mine':
-      return finiteNonNegative(input.blocks) * SURVIVAL_EXHAUSTION.minePerBlock
-    case 'attack':
-      return finiteNonNegative(input.count) * SURVIVAL_EXHAUSTION.attack
+  if (input._tag === 'walk') return finiteNonNegative(input.distance) * SURVIVAL_EXHAUSTION.walkPerBlock
+  if (input._tag === 'sprint') return finiteNonNegative(input.distance) * SURVIVAL_EXHAUSTION.sprintPerBlock
+  if (input._tag === 'jump') {
+    return finiteNonNegative(input.count) *
+      (input.sprinting ? SURVIVAL_EXHAUSTION.sprintJump : SURVIVAL_EXHAUSTION.jump)
   }
+  if (input._tag === 'swim') return finiteNonNegative(input.distance) * SURVIVAL_EXHAUSTION.swimPerBlock
+  if (input._tag === 'mine') return finiteNonNegative(input.blocks) * SURVIVAL_EXHAUSTION.minePerBlock
+  return finiteNonNegative(input.count) * SURVIVAL_EXHAUSTION.attack
 }
 
-export const starvationHealthFloor = (difficulty: SurvivalDifficulty): number => {
-  switch (difficulty) {
-    case 'peaceful':
-      return 20
-    case 'easy':
-      return 10
-    case 'normal':
-      return 1
-    case 'hard':
-      return 0
-  }
+const STARVATION_HEALTH_FLOOR: Readonly<Record<SurvivalDifficulty, number>> = {
+  peaceful: 20,
+  easy: 10,
+  normal: 1,
+  hard: 0,
 }
+
+export const starvationHealthFloor = (difficulty: SurvivalDifficulty): number =>
+  STARVATION_HEALTH_FLOOR[difficulty]
 
 const isDifficulty = (value: unknown): value is SurvivalDifficulty =>
   value === 'peaceful' || value === 'easy' || value === 'normal' || value === 'hard'
@@ -271,7 +262,7 @@ export const makeReplicatedSurvivalHungerRuntime = (
         return planned.result
       })
 
-    const runFoodTicks = (
+    const simulateFoodTicks = (
       initial: PlayerVitals,
       currentDifficulty: SurvivalDifficulty,
       dt: DeltaTimeSecs,
@@ -334,7 +325,7 @@ export const makeReplicatedSurvivalHungerRuntime = (
                 yield* Effect.fromResult(ExhaustionAmount.result(exhaustionAdded)),
               )
             : before
-          const food = yield* runFoodTicks(exhausted, currentDifficulty, elapsed)
+          const food = yield* simulateFoodTicks(exhausted, currentDifficulty, elapsed)
           return {
             vitals: food.vitals,
             result: {

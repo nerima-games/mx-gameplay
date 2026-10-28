@@ -20,7 +20,7 @@
  */
 import { describe, expect, it } from '@effect/vitest'
 import { position as atPosition } from './support/coordinate-fixtures'
-import { Effect } from 'effect'
+import { Effect, Result } from 'effect'
 import type { Position } from '@nerima-games/mc-kernel'
 import {
   CREEPER_KIND,
@@ -34,20 +34,28 @@ import {
   hostileMobSnapshot,
   HOSTILE_KINDS,
   isDroppedItemBehaviour,
+  planEndermanTeleportRoster,
+  planMobBlastRoster,
+  planMobDamageRoster,
+  planMobExplosionRoster,
+  planSpawnAttemptsOnRoster,
   PRIMED_TNT_KIND,
   repairMobBehaviour,
   resolveBlasts,
   resolveEndermanTeleportProbes,
   resolveMeleeHits,
+  rollSelfDestructDrops,
   rollCasualtyDrops,
   STEADY_ENDERMAN,
   STRUCK_ENDERMAN,
   sweepMobs,
+  applySpawnAttempts,
   type Blast,
   type DroppedItemBehaviour,
   type EndermanTeleportProbe,
   type MobBehaviour,
   type MobCasualty,
+  type MobSpawnAttempt,
   xpRewardOfKind,
 } from '../src/domain/entities/mob-frame'
 import {
@@ -59,13 +67,14 @@ import {
   ZOMBIE_DROPS,
   ZOMBIE_XP_REWARD,
 } from '../src/domain/mob/mob-drop'
-import { BLAZE_KIND, initialEcosystemMobState } from '../src/domain/mob/mob-ecosystem'
-import { CREEPER_EXPLOSION_POWER, explosionDamageAmount, TNT_EXPLOSION_POWER } from '../src/domain/mob/explosion'
+import { BLAZE_KIND, COW_KIND, initialEcosystemMobState } from '../src/domain/mob/mob-ecosystem'
+import { CREEPER_EXPLOSION_POWER, explosionDamageAmount } from '../src/domain/mob/explosion'
 import { ZOMBIE_KIND } from '../src/domain/mob/hostile-combat'
+import type { SpawnCandidate } from '../src/domain/mob/hostile-spawn'
 import { DORMANT_FUSE } from '../src/domain/mob/creeper-fuse'
 import { FRESH_PRIMED_TNT } from '../src/domain/mob/primed-tnt'
-import { BlockAxis, BlockId, blockPosition as makeBlockPosition, DeltaTimeSecs, EntityHealthPoints } from '@nerima-games/mc-kernel'
-import { durabilityForItem, EntityId, EntityKind } from '@nerima-games/mc-sim'
+import { AIR_BLOCK_ID, BlockAxis, BlockId, blockPosition as makeBlockPosition, DeltaTimeSecs, EntityHealthPoints, EntitySerial } from '@nerima-games/mc-kernel'
+import { durabilityForItem, EntityId, EntityKind, type Entity, type EntityRoster } from '@nerima-games/mc-sim'
 import { makeChunkStoreDouble, STONE, world } from './support/chunk-store-double'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
 
@@ -98,6 +107,35 @@ const OUT_OF_RANGE_BLOCKS = 7
 const GRAZING_BLOCKS = 5
 
 const emptyStore = makeChunkStoreDouble(world([]), ['0,0'])
+
+const mobRoster = (
+  entities: ReadonlyArray<Entity<MobBehaviour>>,
+  nextSerial = entities.length,
+): EntityRoster<MobBehaviour> => ({ entities, nextSerial: EntitySerial(nextSerial) })
+
+const mobEntity = (
+  id: string,
+  kind: EntityKind,
+  healthPoints: number,
+  behaviour: MobBehaviour,
+  feetPosition: Position = ORIGIN,
+): Entity<MobBehaviour> => ({
+  id: EntityId(id),
+  kind,
+  feetPosition,
+  healthPoints: EntityHealthPoints(healthPoints),
+  behaviour,
+})
+
+const SPAWN_CANDIDATE: SpawnCandidate = {
+  dimension: 'overworld',
+  groundBlock: STONE,
+  footBlock: AIR_BLOCK_ID,
+  headBlock: AIR_BLOCK_ID,
+  blockLight: 0,
+  timeOfDay: 0,
+  distanceToPlayerBlocksXZ: 16,
+}
 
 describe('the loot table is keyed by a kind that something actually spawns', () => {
   it.effect('every hostile kind has its drop table wired into the frame', () =>
@@ -591,17 +629,19 @@ describe('repairMobBehaviour: the load path for every stored shape', () => {
   )
 })
 
-describe('sweepMobs: primed TNT', () => {
-  it.effect('a fresh fuse below the threshold advances and is stored, not detonated', () =>
+describe('sweepMobs: TNT belongs to its replicated owner', () => {
+  it.effect('leaves a fresh fuse for the TNT owner to advance', () =>
     Effect.gen(function* () {
       const roster = yield* makeEntityManagerDouble<MobBehaviour>()
-      yield* roster.api.spawn({
+      const tnt = yield* roster.api.spawn({
         kind: PRIMED_TNT_KIND, feetPosition: ORIGIN, healthPoints: EntityHealthPoints(20), behaviour: FRESH_PRIMED_TNT,
       })
       const swept = yield* sweepMobs(roster.api, { target: undefined, dt: DeltaTimeSecs(1) }, 1)
       expect(swept.blasts).toStrictEqual([])
       const after = yield* roster.api.entities
-      expect(after[0]?.behaviour).toStrictEqual({ _tag: 'PrimedTnt', burnedSecs: 1 })
+      expect(after).toHaveLength(1)
+      expect(after[0]).toBe(tnt)
+      expect(after[0]?.behaviour).toBe(FRESH_PRIMED_TNT)
     }),
   )
 
@@ -617,22 +657,15 @@ describe('sweepMobs: primed TNT', () => {
     }),
   )
 
-  it.effect('a fuse that reaches its threshold detonates and leaves the roster', () =>
+  it.effect('does not detonate a fuse that reaches its threshold', () =>
     Effect.gen(function* () {
       const roster = yield* makeEntityManagerDouble<MobBehaviour>()
       const tnt = yield* roster.api.spawn({
         kind: PRIMED_TNT_KIND, feetPosition: ORIGIN, healthPoints: EntityHealthPoints(20), behaviour: FRESH_PRIMED_TNT,
       })
       const swept = yield* sweepMobs(roster.api, { target: undefined, dt: DeltaTimeSecs(5) }, 1)
-      expect(swept.blasts).toStrictEqual([
-        {
-          source: tnt.id,
-          kind: PRIMED_TNT_KIND,
-          at: ORIGIN,
-          explosion: { source: 'tnt', power: TNT_EXPLOSION_POWER },
-        },
-      ])
-      expect(yield* roster.api.count).toBe(0)
+      expect(swept.blasts).toStrictEqual([])
+      expect(yield* roster.api.entities).toStrictEqual([tnt])
     }),
   )
 
@@ -934,6 +967,377 @@ describe('experienceOfCasualties: a kind with no reward yields nothing', () => {
       expect(experienceOfCasualties([noReward, rewarded])).toStrictEqual([
         { source: rewarded.id, kind: ZOMBIE_KIND, at: ORIGIN, amount: ZOMBIE_XP_REWARD },
       ])
+    }),
+  )
+})
+
+describe('owner-snapshot roster plans', () => {
+  it.effect('a blast miss reuses the roster without producing a candidate damage value', () =>
+    Effect.sync(() => {
+      const outside = mobEntity('e:0', ZOMBIE_KIND, 20, undefined, away(OUT_OF_RANGE_BLOCKS))
+      const initial = mobRoster([outside], 1)
+
+      const resolution = planMobBlastRoster(initial, [CREEPER_BLAST])
+
+      expect(resolution.roster).toBe(initial)
+      expect(resolution.casualties).toStrictEqual([])
+    }),
+  )
+
+  it.effect('the blast candidate kills a mob, bruises a survivor, and leaves a dropped item alone', () =>
+    Effect.sync(() => {
+      const dead = mobEntity('e:0', ZOMBIE_KIND, 1, undefined)
+      const survivor = mobEntity(
+        'e:1',
+        ENDERMAN_KIND,
+        ENDERMAN_MAX_HEALTH,
+        hostileMobSnapshot(STEADY_ENDERMAN),
+        away(GRAZING_BLOCKS),
+      )
+      const dropped = mobEntity('e:2', DROPPED_ITEM_KIND, 1, {
+        _tag: 'DroppedItem', item: 'gunpowder', count: 1, durability: null,
+      })
+      const initial = mobRoster([dead, survivor, dropped], 3)
+
+      const resolution = planMobBlastRoster(initial, [CREEPER_BLAST])
+
+      expect(resolution.casualties).toStrictEqual([
+        { id: dead.id, kind: dead.kind, at: dead.feetPosition },
+      ])
+      expect(resolution.roster.entities.map((entity) => entity.id)).toStrictEqual([survivor.id, dropped.id])
+      expect(resolution.roster.entities[0]).toMatchObject({
+        healthPoints: EntityHealthPoints(ENDERMAN_MAX_HEALTH - explosionDamageAmount(CREEPER_EXPLOSION_POWER, GRAZING_BLOCKS)),
+        behaviour: hostileMobSnapshot(STRUCK_ENDERMAN),
+      })
+      expect(resolution.roster.entities[1]).toBe(dropped)
+      expect(resolution.roster.nextSerial).toBe(initial.nextSerial)
+    }),
+  )
+
+  it.effect('damage hits are filtered, combined per entity, and ignore dropped items', () =>
+    Effect.sync(() => {
+      const fatal = mobEntity('e:0', CREEPER_KIND, 5, hostileMobSnapshot(DORMANT_FUSE))
+      const survivor = mobEntity('e:1', ENDERMAN_KIND, 5, STEADY_ENDERMAN)
+      const dropped = mobEntity('e:2', DROPPED_ITEM_KIND, 1, {
+        _tag: 'DroppedItem', item: 'gunpowder', count: 1, durability: null,
+      })
+      const initial = mobRoster([fatal, survivor, dropped], 3)
+      const damage = (amount: number) => ({ amount, cause: 'mob' as const })
+
+      const resolution = planMobDamageRoster(initial, [
+        { id: fatal.id, damage: damage(2) },
+        { id: fatal.id, damage: damage(3) },
+        { id: survivor.id, damage: damage(1) },
+        { id: dropped.id, damage: damage(1) },
+        { id: EntityId('e:missing'), damage: damage(1) },
+        { id: EntityId('e:invalid'), damage: damage(Number.NaN) },
+        { id: EntityId('e:zero'), damage: damage(0) },
+      ])
+
+      expect(resolution.casualties).toStrictEqual([
+        { id: fatal.id, kind: fatal.kind, at: fatal.feetPosition },
+      ])
+      expect(resolution.roster.entities).toHaveLength(2)
+      expect(resolution.roster.entities[0]).toMatchObject({
+        id: survivor.id,
+        healthPoints: EntityHealthPoints(4),
+        behaviour: STRUCK_ENDERMAN,
+      })
+      expect(resolution.roster.entities[1]).toBe(dropped)
+      expect(resolution.roster.nextSerial).toBe(initial.nextSerial)
+    }),
+  )
+
+  it.effect('empty or invalid damage batches preserve the input roster by identity', () =>
+    Effect.sync(() => {
+      const entity = mobEntity('e:0', CREEPER_KIND, CREEPER_MAX_HEALTH, DORMANT_FUSE)
+      const initial = mobRoster([entity], 1)
+      const empty = planMobDamageRoster(initial, [])
+      const invalid = planMobDamageRoster(initial, [
+        { id: entity.id, damage: { amount: -1, cause: 'mob' } },
+        { id: entity.id, damage: { amount: Number.NaN, cause: 'mob' } },
+      ])
+
+      expect(empty.roster).toBe(initial)
+      expect(empty.casualties).toStrictEqual([])
+      expect(invalid.roster).toBe(initial)
+      expect(invalid.casualties).toStrictEqual([])
+    }),
+  )
+
+  it.effect('explosion candidates combine movement and damage, remove casualties, and ignore invalid hits', () =>
+    Effect.sync(() => {
+      const enderman = mobEntity('e:0', ENDERMAN_KIND, 5, STEADY_ENDERMAN)
+      const moving = mobEntity('e:1', CREEPER_KIND, 5, DORMANT_FUSE)
+      const dead = mobEntity('e:2', ZOMBIE_KIND, 1, undefined)
+      const dropped = mobEntity('e:3', DROPPED_ITEM_KIND, 1, {
+        _tag: 'DroppedItem', item: 'gunpowder', count: 1, durability: null,
+      })
+      const initial = mobRoster([enderman, moving, dead, dropped], 4)
+      const damage = (amount: number) => ({ amount, cause: 'explosion' as const })
+      const zero = atPosition(1, 0, -1)
+
+      const resolution = planMobExplosionRoster(initial, [
+        { id: enderman.id, damage: damage(1), knockback: atPosition(2, 0, 1) },
+        { id: moving.id, damage: damage(0), knockback: zero },
+        { id: dead.id, damage: damage(1), knockback: atPosition(0, 0, 0) },
+        { id: dropped.id, damage: damage(10), knockback: atPosition(10, 0, 0) },
+        { id: EntityId('e:missing'), damage: damage(1), knockback: atPosition(1, 0, 0) },
+        { id: EntityId('e:invalid'), damage: damage(-1), knockback: atPosition(1, 0, 0) },
+      ])
+
+      expect(resolution.casualties).toStrictEqual([
+        { id: dead.id, kind: dead.kind, at: dead.feetPosition },
+      ])
+      expect(resolution.roster.entities).toHaveLength(3)
+      expect(resolution.roster.entities[0]).toMatchObject({
+        id: enderman.id,
+        feetPosition: atPosition(2, 64, 1),
+        healthPoints: EntityHealthPoints(4),
+        behaviour: STRUCK_ENDERMAN,
+      })
+      expect(resolution.roster.entities[1]).toMatchObject({
+        id: moving.id,
+        feetPosition: atPosition(1, 64, -1),
+        healthPoints: moving.healthPoints,
+        behaviour: moving.behaviour,
+      })
+      expect(resolution.roster.entities[2]).toBe(dropped)
+    }),
+  )
+
+  it.effect('empty, invalid, and no-match explosion batches preserve roster identity', () =>
+    Effect.sync(() => {
+      const entity = mobEntity('e:0', CREEPER_KIND, CREEPER_MAX_HEALTH, DORMANT_FUSE)
+      const initial = mobRoster([entity], 1)
+      const empty = planMobExplosionRoster(initial, [])
+      const invalid = planMobExplosionRoster(initial, [
+        { id: entity.id, damage: { amount: -1, cause: 'explosion' }, knockback: atPosition(0, 0, 0) },
+      ])
+      const noMatch = planMobExplosionRoster(initial, [
+        { id: EntityId('e:missing'), damage: { amount: 1, cause: 'explosion' }, knockback: atPosition(0, 0, 0) },
+      ])
+      const noOp = planMobExplosionRoster(initial, [
+        { id: entity.id, damage: { amount: 0, cause: 'explosion' }, knockback: atPosition(0, 0, 0) },
+      ])
+
+      expect(empty.roster).toBe(initial)
+      expect(invalid.roster).toBe(initial)
+      expect(noMatch.roster).toBe(initial)
+      expect(noOp.roster).toBe(initial)
+      expect(empty.casualties).toStrictEqual([])
+      expect(invalid.casualties).toStrictEqual([])
+      expect(noMatch.casualties).toStrictEqual([])
+      expect(noOp.casualties).toStrictEqual([])
+    }),
+  )
+})
+
+describe('planEndermanTeleportRoster', () => {
+  it.effect('keeps candidates in unloaded chunks inert', () =>
+    Effect.gen(function* () {
+      const current = atPosition(0, 64, 0)
+      const anchor = atPosition(100, 70, 100)
+      const store = yield* makeChunkStoreDouble(world([]), [])
+      const entity = mobEntity('e:0', ENDERMAN_KIND, ENDERMAN_MAX_HEALTH, STEADY_ENDERMAN, current)
+      const initial = mobRoster([entity], 1)
+      const probe: EndermanTeleportProbe = {
+        _tag: 'EndermanTeleport',
+        entityId: entity.id,
+        current,
+        anchor,
+        rolls: [0.75, 0.5],
+      }
+
+      const planned = yield* planEndermanTeleportRoster(initial, store.api, [probe])
+
+      expect(planned).toBe(initial)
+      expect((yield* store.calls).reads).toBeGreaterThan(0)
+    }),
+  )
+
+  it.effect('uses a later safe registered floor and keeps unrelated roster entries', () =>
+    Effect.gen(function* () {
+      const current = atPosition(0, 64, 0)
+      const anchor = atPosition(100, 70, 100)
+      const first = atPosition(116, 64, 100)
+      const second = atPosition(100, 64, 116)
+      const unregisteredBlock = BlockId(60_000)
+      const store = yield* makeChunkStoreDouble(
+        world([
+          [blockPosition(first.x, first.y - 1, first.z), unregisteredBlock],
+          [blockPosition(second.x, second.y - 1, second.z), STONE],
+        ]),
+        ['7,6', '6,7'],
+      )
+      const teleporting = mobEntity('e:0', ENDERMAN_KIND, ENDERMAN_MAX_HEALTH, STEADY_ENDERMAN, current)
+      const bystander = mobEntity('e:1', ENDERMAN_KIND, ENDERMAN_MAX_HEALTH, STEADY_ENDERMAN, away(1))
+      const initial = mobRoster([teleporting, bystander], 2)
+      const probe: EndermanTeleportProbe = {
+        _tag: 'EndermanTeleport',
+        entityId: teleporting.id,
+        current,
+        anchor,
+        rolls: [0.75, 0.5, 0.5, 0.75],
+      }
+
+      const planned = yield* planEndermanTeleportRoster(initial, store.api, [probe])
+
+      expect(planned.entities[0]).toMatchObject({ id: teleporting.id, feetPosition: second })
+      expect(planned.entities[1]).toBe(bystander)
+      expect(planned.nextSerial).toBe(initial.nextSerial)
+    }),
+  )
+
+  it.effect('empty probes and unsafe candidate coordinates leave the owner snapshot untouched', () =>
+    Effect.gen(function* () {
+      const store = yield* makeChunkStoreDouble(world([]), ['0,0'])
+      const entity = mobEntity('e:0', ENDERMAN_KIND, ENDERMAN_MAX_HEALTH, STEADY_ENDERMAN)
+      const initial = mobRoster([entity], 1)
+      const current = atPosition(0, 64, 0)
+      const probe: EndermanTeleportProbe = {
+        _tag: 'EndermanTeleport',
+        entityId: entity.id,
+        current,
+        anchor: atPosition(Number.MAX_SAFE_INTEGER * 4, 70, Number.MAX_SAFE_INTEGER * 4),
+        rolls: [0.75, 0.5],
+      }
+
+      const empty = yield* planEndermanTeleportRoster(initial, store.api, [])
+      const unsafe = yield* planEndermanTeleportRoster(initial, store.api, [probe])
+
+      expect(empty).toBe(initial)
+      expect(unsafe).toBe(initial)
+      expect(yield* store.calls).toMatchObject({ reads: 0, writes: 0 })
+    }),
+  )
+})
+
+describe('mob spawn application and owner roster planning', () => {
+  it.effect('refuses daylight, then re-counts all hostile kinds between accepted attempts', () =>
+    Effect.gen(function* () {
+      const fullExceptOne = Array.from({ length: 15 }, (_, index) =>
+        mobEntity(`e:${String(index)}`, CREEPER_KIND, CREEPER_MAX_HEALTH, hostileMobSnapshot(DORMANT_FUSE)),
+      )
+      const manager = yield* makeEntityManagerDouble<MobBehaviour>(mobRoster(fullExceptOne, fullExceptOne.length))
+      const attempt = (candidate: SpawnCandidate): MobSpawnAttempt => ({
+        candidate,
+        kind: CREEPER_KIND,
+        feetPosition: away(16),
+      })
+
+      const outcomes = yield* applySpawnAttempts(manager.api, [
+        attempt({ ...SPAWN_CANDIDATE, timeOfDay: 0.5 }),
+        attempt(SPAWN_CANDIDATE),
+        attempt(SPAWN_CANDIDATE),
+      ])
+
+      expect(outcomes).toStrictEqual([
+        { _tag: 'Refused', reason: 'daylight' },
+        { _tag: 'Spawned', id: EntityId('e:15') },
+        { _tag: 'AtCapacity', population: 16 },
+      ])
+      expect(yield* manager.api.count).toBe(16)
+      expect(yield* manager.calls).toMatchObject({ censuses: HOSTILE_KINDS.length * 2 })
+    }),
+  )
+
+  it.effect('applies the passive census cap to a registered passive kind', () =>
+    Effect.gen(function* () {
+      // The passive kind comes from the domain catalog; its vanilla entity is documented at https://minecraft.wiki/w/Cow.
+      const fullPassive = Array.from({ length: 16 }, (_, index) =>
+        mobEntity(`e:${String(index)}`, COW_KIND, 10, initialEcosystemMobState()),
+      )
+      const manager = yield* makeEntityManagerDouble<MobBehaviour>(mobRoster(fullPassive, fullPassive.length))
+
+      const outcomes = yield* applySpawnAttempts(manager.api, [
+        { candidate: SPAWN_CANDIDATE, kind: COW_KIND, feetPosition: ORIGIN },
+      ])
+
+      expect(outcomes).toStrictEqual([{ _tag: 'AtCapacity', population: 16 }])
+      expect(yield* manager.calls).toMatchObject({ censuses: 4 })
+      expect(yield* manager.api.count).toBe(16)
+    }),
+  )
+
+  it.effect('plans refused and successful attempts without mutating the supplied roster', () =>
+    Effect.sync(() => {
+      const initial = mobRoster([], 0)
+      const attempts: ReadonlyArray<MobSpawnAttempt> = [
+        { candidate: { ...SPAWN_CANDIDATE, timeOfDay: 0.5 }, kind: CREEPER_KIND, feetPosition: ORIGIN },
+        { candidate: SPAWN_CANDIDATE, kind: CREEPER_KIND, feetPosition: ORIGIN },
+      ]
+
+      const result = planSpawnAttemptsOnRoster(initial, attempts)
+
+      expect(Result.isSuccess(result)).toBe(true)
+      if (Result.isSuccess(result)) {
+        expect(result.success.outcomes).toHaveLength(2)
+        expect(result.success.outcomes[0]).toStrictEqual({ _tag: 'Refused', reason: 'daylight' })
+        expect(result.success.outcomes[1]?._tag).toBe('Spawned')
+        expect(result.success.roster.entities).toHaveLength(1)
+        expect(initial.entities).toHaveLength(0)
+      }
+    }),
+  )
+
+  it.effect('returns the passive population cap without adding a second entity', () =>
+    Effect.sync(() => {
+      const fullPassive = Array.from({ length: 16 }, (_, index) =>
+        mobEntity(`e:${String(index)}`, COW_KIND, 10, initialEcosystemMobState()),
+      )
+      const initial = mobRoster(fullPassive, fullPassive.length)
+
+      const result = planSpawnAttemptsOnRoster(initial, [
+        { candidate: SPAWN_CANDIDATE, kind: COW_KIND, feetPosition: ORIGIN },
+      ])
+
+      expect(Result.isSuccess(result)).toBe(true)
+      if (Result.isSuccess(result)) {
+        expect(result.success.outcomes).toStrictEqual([{ _tag: 'AtCapacity', population: 16 }])
+        expect(result.success.roster).toBe(initial)
+      }
+      // The mob kind is named through the catalog; vanilla cow behavior is described at https://minecraft.wiki/w/Cow.
+    }),
+  )
+
+  it.effect('reports exhausted entity serials as a typed result', () =>
+    Effect.sync(() => {
+      const initial = mobRoster([], Number.MAX_SAFE_INTEGER)
+      const result = planSpawnAttemptsOnRoster(initial, [
+        { candidate: SPAWN_CANDIDATE, kind: CREEPER_KIND, feetPosition: ORIGIN },
+      ])
+
+      expect(Result.isFailure(result)).toBe(true)
+      if (Result.isFailure(result)) {
+        expect(result.failure).toStrictEqual({ _tag: 'EntitySerialExhausted' })
+      }
+      expect(initial.entities).toHaveLength(0)
+    }),
+  )
+})
+
+describe('self-destruct drops and non-AI roster entries', () => {
+  it.effect('a self-destruct blast consumes no drop rolls and returns no drops', () =>
+    Effect.sync(() => {
+      expect(rollSelfDestructDrops(CREEPER_BLAST)).toStrictEqual([])
+    }),
+  )
+
+  it.effect('a dropped item is ignored by the mob frame and retains its reference', () =>
+    Effect.gen(function* () {
+      const manager = yield* makeEntityManagerDouble<MobBehaviour>()
+      const dropped = yield* manager.api.spawn({
+        kind: DROPPED_ITEM_KIND,
+        feetPosition: ORIGIN,
+        healthPoints: EntityHealthPoints(1),
+        behaviour: { _tag: 'DroppedItem', item: 'gunpowder', count: 1, durability: null },
+      })
+
+      const swept = yield* sweepMobs(manager.api, { target: ORIGIN, dt: DeltaTimeSecs(0.05) }, 42)
+
+      expect(swept.seed).toBe(42)
+      expect((yield* manager.api.entities)[0]).toBe(dropped)
     }),
   )
 })

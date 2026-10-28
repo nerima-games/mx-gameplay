@@ -1,9 +1,13 @@
 import {
   Effect,
   GAMEPLAY_STAGE_IDS,
+  HOSTILE_SPAWN_INTERVAL_SECS,
+  NO_ATTEMPTS,
   Ref,
   applyFallingBlocks,
+  hostileSpawnsAllowed,
   recordGameplayUnsupportedOperation,
+  searchSpawnCandidates,
   settled,
   takeBatch,
 } from './registration-core.js'
@@ -67,6 +71,7 @@ import {
   planSpawnAttemptsOnRoster,
   rollCasualtyDrops,
   type MobExperienceEvent,
+  type MobSpawnAttempt,
 } from '../domain/entities/mob-frame.js'
 import type { Damage } from '../domain/death-cause.js'
 import type { MobBehaviour } from '../domain/entities/mob-frame.js'
@@ -466,7 +471,40 @@ const runMobSimulation = (
     sweep.teleports,
   )
   const blast = planMobBlastRoster(teleported, sweep.blasts)
-  const attempts = yield* Ref.get(state.spawnAttempts)
+  const offeredAttempts = yield* Ref.get(state.spawnAttempts)
+  const spawnElapsed = (yield* Ref.get(state.spawnClockSecs)) + dt
+  const searchDue = spawnElapsed >= HOSTILE_SPAWN_INTERVAL_SECS
+  const nextSpawnClockSecs = searchDue
+    ? spawnElapsed - HOSTILE_SPAWN_INTERVAL_SECS
+    : spawnElapsed
+  const casualtyDrops = rollCasualtyDrops(blast.casualties, sweep.seed)
+  let searchedAttempts: ReadonlyArray<MobSpawnAttempt> = NO_ATTEMPTS
+  let nextRollSeed = casualtyDrops.seed
+  if (searchDue) {
+    const timeOfDay = yield* context.time.timeOfDay
+    const dimension = playerSnapshot.state.pose.feetPosition.dimension
+    const hostileSearch = dimension === 'nether' || hostileSpawnsAllowed(timeOfDay)
+    const passiveRepopulationSearch = !hostileSearch && entitySnapshot.state.entities.length === 0
+    if (hostileSearch || passiveRepopulationSearch) {
+      const found = yield* searchSpawnCandidates(
+        store,
+        playerPosition,
+        timeOfDay,
+        casualtyDrops.seed,
+        dimension,
+      )
+      searchedAttempts = found.attempts
+      // Daylight passive repopulation does not perturb the shared combat/drop
+      // sequence. It only runs while the roster is empty, so if it succeeds the
+      // next cadence is gated until hostile spawning is allowed again.
+      if (hostileSearch) nextRollSeed = found.seed
+    }
+  }
+  const attempts = offeredAttempts.length === 0
+    ? searchedAttempts
+    : searchedAttempts.length === 0
+      ? offeredAttempts
+      : [...offeredAttempts, ...searchedAttempts]
   const spawned = planSpawnAttemptsOnRoster(blast.roster, attempts)
   if (Result.isFailure(spawned)) return yield* Effect.fail(spawned.failure)
 
@@ -485,7 +523,6 @@ const runMobSimulation = (
     damage: { amount: attack.damage, cause: 'mob' },
   }))
   const damages = [...attacks, ...contact.damages, ...playerBlasts]
-  const casualtyDrops = rollCasualtyDrops(blast.casualties, sweep.seed)
   const experience = experienceOfCasualties(blast.casualties)
 
   let storageCandidate: PlayerStorage | undefined
@@ -619,10 +656,11 @@ const runMobSimulation = (
 
   // Local cursors and output queues move only after the replicated candidate
   // has committed. Ref updates are synchronous and append to any newly queued work.
-  yield* Ref.set(state.rollSeed, casualtyDrops.seed)
+  yield* Ref.set(state.rollSeed, nextRollSeed)
+  yield* Ref.set(state.spawnClockSecs, nextSpawnClockSecs)
   yield* Ref.set(state.hostileContactCooldowns, contact.cooldowns)
-  if (attempts.length > 0) {
-    yield* Ref.update(state.spawnAttempts, (pending) => pending.slice(attempts.length))
+  if (offeredAttempts.length > 0) {
+    yield* Ref.update(state.spawnAttempts, (pending) => pending.slice(offeredAttempts.length))
   }
   if (casualtyDrops.drops.length > 0) {
     yield* Ref.update(state.mobDrops, (pending) => [...pending, ...casualtyDrops.drops])

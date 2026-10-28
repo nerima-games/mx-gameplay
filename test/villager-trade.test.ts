@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import {
   addVillager,
+  advanceVillagerRestock,
+  copyVillagerTradeState,
   emptyVillagerTradeState,
   isValidVillagerTradeState,
   makeVillager,
+  VILLAGER_RESTOCK_INTERVAL_SECS,
   useVillagerOffer,
 } from '../src/domain/villager-trade'
 
@@ -79,5 +82,45 @@ describe('useVillagerOffer', () => {
 
     const untouched = after.villagers.find((candidate) => candidate.id === bystander.id)
     expect(untouched).toStrictEqual(bystander)
+  })
+})
+
+describe('villager restocking and snapshots', () => {
+  it('waits for the restock interval, then resets every offer and keeps the remainder', () => {
+    const first = makeVillager('farmer-1', 'farmer')
+    const second = makeVillager('toolsmith-1', 'toolsmith')
+    const firstOffer = first.offers[0]!
+    const secondOffer = second.offers[0]!
+    const tradedFirst = useVillagerOffer(
+      { villagers: [first, second], restockElapsedSecs: 250 },
+      first.id,
+      firstOffer.id,
+    )!
+    const tradedBoth = useVillagerOffer(tradedFirst, second.id, secondOffer.id)!
+
+    const waiting = advanceVillagerRestock(tradedBoth, 49)
+    expect(waiting.restockElapsedSecs).toBe(299)
+    expect(waiting.villagers[0]?.offers[0]?.uses).toBe(1)
+    expect(waiting.villagers[1]?.offers[0]?.uses).toBe(1)
+
+    const restocked = advanceVillagerRestock(tradedBoth, 55)
+    expect(restocked.restockElapsedSecs).toBe(5)
+    expect(restocked.villagers.flatMap((villager) => villager.offers).every((offer) => offer.uses === 0)).toBe(true)
+    expect(tradedBoth.villagers[0]?.offers[0]?.uses).toBe(1)
+  })
+
+  it('copies the nested offers and their stacks without sharing references', () => {
+    const villager = makeVillager('farmer-1', 'farmer')
+    const state = { villagers: [villager], restockElapsedSecs: 20 }
+
+    const copied = copyVillagerTradeState(state)
+
+    expect(copied).not.toBe(state)
+    expect(copied.villagers).not.toBe(state.villagers)
+    expect(copied.villagers[0]).not.toBe(villager)
+    expect(copied.villagers[0]?.offers).not.toBe(villager.offers)
+    expect(copied.villagers[0]?.offers[0]?.input).not.toBe(villager.offers[0]?.input)
+    expect(copied.villagers[0]?.offers[0]?.output).not.toBe(villager.offers[0]?.output)
+    expect(copied.restockElapsedSecs).toBe(VILLAGER_RESTOCK_INTERVAL_SECS - 280)
   })
 })

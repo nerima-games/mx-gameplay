@@ -225,14 +225,13 @@ export const stepPortalDwell = (
   inPortal: boolean,
   dt: DeltaTimeSecs,
 ): PortalDwellStep => {
-  switch (current._tag) {
+  if (current._tag === 'Cooling') {
     // The cooldown is checked FIRST and does not consult `inPortal`, which is
     // the reference's early return (`physics-stage-portal.ts:36-40`) and not an
     // omission: a traveller arrives standing inside the destination portal, so a
     // cooldown that let a dwell accrue underneath it would fire again the
     // instant it expired. The frame on which the cooldown reaches zero accrues
     // nothing; the next one may begin a dwell.
-    case 'Cooling': {
       // ONE guard and not two. This read `Math.max(0, ...)` and then asked
       // `> 0` below, which is the same question twice: a clamped zero and a
       // negative both leave through the same arm, so no input could tell the
@@ -241,24 +240,20 @@ export const stepPortalDwell = (
       // than left as unfalsifiable reassurance.
       const remainingSecs = current.remainingSecs - dt
 
-      return { dwell: remainingSecs > 0 ? { _tag: 'Cooling', remainingSecs } : OUTSIDE_PORTAL, travels: false }
-    }
+    return { dwell: remainingSecs > 0 ? { _tag: 'Cooling', remainingSecs } : OUTSIDE_PORTAL, travels: false }
+  }
 
+  if (current._tag === 'Outside') {
     // Entering and dwelling are ONE step, not two. The reference adds `deltaTime`
     // to a dwell of zero on the very frame it finds the traveller in the block
     // (`physics-stage-portal.ts:47-49`); splitting them would cost a frame on
     // every crossing and diverge from the numbers this file is ported from.
-    case 'Outside': {
-      return inPortal ? dwell(dt) : { dwell: current, travels: false }
-    }
+    return inPortal ? dwell(dt) : { dwell: current, travels: false }
+  }
 
-    // Stepping out FORGETS the wait entirely rather than draining it —
+  // Stepping out FORGETS the wait entirely rather than draining it —
     // `physics-stage-portal.ts:99` sets the ref to 0. The same shape as a
     // creeper's fuse going out, and a decision rather than an omission: a
     // traveller who steps out at 3.9 seconds starts again from zero.
-    case 'Standing': {
-      return inPortal ? dwell(current.dwelledSecs + dt) : { dwell: OUTSIDE_PORTAL, travels: false }
-    }
-
-  }
+  return inPortal ? dwell(current.dwelledSecs + dt) : { dwell: OUTSIDE_PORTAL, travels: false }
 }

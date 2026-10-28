@@ -25,6 +25,7 @@
  */
 import { describe, expect, it } from '@effect/vitest'
 import { Effect, Option, Ref, Result, Schema } from 'effect'
+import * as FastCheck from 'fast-check'
 import {
   drainBlockUseResults,
   gameplayStages,
@@ -35,7 +36,7 @@ import {
   requestTargetedBlockUse,
 } from '../src/stages/registration'
 import { GAMEPLAY_STAGE_IDS } from '../src/stages/stage-ids'
-import { cellKey, chunkKey, chunkOf, makeInMemoryWorld } from '../src/domain/in-memory-world.js'
+import { cellKey, chunkKey, chunkOf, makeInMemoryWorld, type InMemoryWorld } from '../src/domain/in-memory-world.js'
 import {
   BlockIdSchema,
   BlockPositionSchema,
@@ -45,7 +46,8 @@ import {
   itemStack,
 } from '@nerima-games/mc-kernel'
 import type { BlockPosition, Dimension } from '@nerima-games/mc-kernel'
-import { DROPPED_ITEM_KIND, type MobBehaviour } from '../src/domain/entities/mob-frame'
+import type { MobBehaviour } from '../src/domain/entities/mob-frame'
+import { DroppedItemOwnerSnapshotSchema } from '../src/domain/entities/dropped-item.js'
 import { BlockId, blockIdOf, blockPositionKeyOf } from '@nerima-games/mc-kernel'
 import { NO_TOOL } from '../src/domain/interactions/block-loot'
 import {
@@ -60,6 +62,7 @@ import { BreakTransactionResultSchema, breakBlock } from '../src/domain/interact
 import { makeGameplayCommitServices } from './support/transactional-stage-doubles.js'
 import { blockPosition, position as fixturePosition } from './support/coordinate-fixtures.js'
 import {
+  GAMEPLAY_DROPPED_ITEMS_OWNER_ID,
   GAMEPLAY_PLAYER_OWNER_ID,
   gameplayOwnerRegistrations,
 } from '../src/stages/gameplay-owner-registrations.js'
@@ -139,6 +142,38 @@ const runInteractions = (
   }
   return stage.run(DeltaTimeSecs(0.016))
 }
+
+const gameplayStagesWithOwners = (
+  state: Parameters<typeof gameplayStages>[0],
+  world: InMemoryWorld<MobBehaviour>,
+  store = world.chunkStore,
+) =>
+  Effect.gen(function* () {
+    const commit = yield* makeGameplayCommitServices(store, world.inventory)
+    return {
+      stages: gameplayStages(
+        state,
+        store,
+        world.entities,
+        world.inventory,
+        world.player,
+        world.time,
+        undefined,
+        undefined,
+        {},
+        commit,
+      ),
+      commit,
+    }
+  })
+
+const storedItemCount = (
+  storage: Schema.Schema.Type<typeof PlayerStorageSnapshotSchema>,
+  item: string,
+): number => storage.inventory.slots.reduce(
+  (count, slot) => count + (slot?.item === item ? slot.count : 0),
+  0,
+)
 
 describe('the break loop', () => {
   it.effect('keeps the two-argument rule call compatible with BreakOutcome', () =>
@@ -528,7 +563,7 @@ describe('the break loop', () => {
     Effect.gen(function* () {
       const world = yield* lookingAtBlockWorld(true, LEVER_ID)
       const state = yield* makeGameplayFrameState
-      const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player, world.time)
+      const { stages } = yield* gameplayStagesWithOwners(state, world)
 
       yield* requestTargetedBlockUse(
         state,
@@ -582,7 +617,7 @@ describe('the break loop', () => {
     Effect.gen(function* () {
       const world = yield* lookingAtBlockWorld(true, LEVER_ID)
       const state = yield* makeGameplayFrameState
-      const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player, world.time)
+      const { stages } = yield* gameplayStagesWithOwners(state, world)
 
       yield* requestTargetedBlockUse(
         state,
@@ -629,7 +664,7 @@ describe('the break loop', () => {
     Effect.gen(function* () {
       const world = yield* lookingAtBlockWorld(true)
       const state = yield* makeGameplayFrameState
-      const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player, world.time)
+      const { stages } = yield* gameplayStagesWithOwners(state, world)
 
       const target = yield* requestTargetedBlockBreak(state, world.chunkStore, world.player)
       expect(Option.getOrUndefined(target)?.position).toStrictEqual(IN_SIGHT)
@@ -784,7 +819,7 @@ describe('the break loop', () => {
     Effect.gen(function* () {
       const world = yield* oneBlockWorld()
       const state = yield* makeGameplayFrameState
-      const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player, world.time)
+      const { stages } = yield* gameplayStagesWithOwners(state, world)
 
       expect((yield* world.chunkStore.getBlock(AT))._tag).toBe('Block')
 
@@ -807,7 +842,7 @@ describe('the break loop', () => {
       // request.positionKey` had only ever been true.
       const world = yield* oneBlockWorld()
       const state = yield* makeGameplayFrameState
-      const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player, world.time)
+      const { stages } = yield* gameplayStagesWithOwners(state, world)
 
       yield* requestBlockBreak(state, AT)
       // Simulate the drift: the public inbox now names a different cell at
@@ -826,7 +861,7 @@ describe('the break loop', () => {
     Effect.gen(function* () {
       const world = yield* doorWorld()
       const state = yield* makeGameplayFrameState
-      const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player, world.time)
+      const { stages } = yield* gameplayStagesWithOwners(state, world)
 
       yield* requestBlockBreak(state, AT)
       yield* runInteractions(stages as never)
@@ -856,7 +891,7 @@ describe('the break loop', () => {
             ? Effect.succeed({ _tag: 'Unchanged' as const, previous: BlockId(0) })
             : world.chunkStore.setBlock(position, block),
       }
-      const stages = gameplayStages(state, interceptedStore, world.entities, world.inventory, world.player, world.time)
+      const { stages } = yield* gameplayStagesWithOwners(state, world, interceptedStore)
 
       yield* requestBlockBreak(state, AT)
       yield* runInteractions(stages as never)
@@ -871,13 +906,14 @@ describe('the break loop', () => {
     Effect.gen(function* () {
       const world = yield* oneBlockWorld(Option.getOrThrow(blockIdOf('stone')))
       const state = yield* makeGameplayFrameState
-      const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player, world.time)
+      const { stages, commit } = yield* gameplayStagesWithOwners(state, world)
 
       yield* requestBlockBreak(state, AT, { heldTier: 'wooden' })
       yield* Ref.set(state.heldTool, NO_TOOL)
       yield* runInteractions(stages as never)
 
-      expect(yield* world.inventory.countOf('cobblestone')).toBe(1)
+      const storage = yield* commit.coordinator.snapshot(commit.playerStorageOwnerId, PlayerStorageSnapshotSchema)
+      expect(storedItemCount(storage.state, 'cobblestone')).toBe(1)
     }),
   )
 
@@ -885,14 +921,15 @@ describe('the break loop', () => {
     Effect.gen(function* () {
       const world = yield* oneBlockWorld(Option.getOrThrow(blockIdOf('stone')))
       const state = yield* makeGameplayFrameState
-      const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player, world.time)
+      const { stages, commit } = yield* gameplayStagesWithOwners(state, world)
       const lootContext: { heldTier: 'wooden' | 'none' } = { heldTier: 'wooden' }
 
       yield* requestBlockBreak(state, AT, lootContext)
       lootContext.heldTier = 'none'
       yield* runInteractions(stages as never)
 
-      expect(yield* world.inventory.countOf('cobblestone')).toBe(1)
+      const storage = yield* commit.coordinator.snapshot(commit.playerStorageOwnerId, PlayerStorageSnapshotSchema)
+      expect(storedItemCount(storage.state, 'cobblestone')).toBe(1)
     }),
   )
 
@@ -900,13 +937,14 @@ describe('the break loop', () => {
     Effect.gen(function* () {
       const world = yield* oneBlockWorld(Option.getOrThrow(blockIdOf('stone')))
       const state = yield* makeGameplayFrameState
-      const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player, world.time)
+      const { stages, commit } = yield* gameplayStagesWithOwners(state, world)
 
       yield* requestBlockBreak(state, AT, NO_TOOL)
       yield* Ref.set(state.heldTool, { heldTier: 'wooden' })
       yield* runInteractions(stages as never)
 
-      expect(yield* world.inventory.countOf('cobblestone')).toBe(0)
+      const storage = yield* commit.coordinator.snapshot(commit.playerStorageOwnerId, PlayerStorageSnapshotSchema)
+      expect(storedItemCount(storage.state, 'cobblestone')).toBe(0)
     }),
   )
 
@@ -914,14 +952,15 @@ describe('the break loop', () => {
     Effect.gen(function* () {
       const world = yield* oneBlockWorld(Option.getOrThrow(blockIdOf('stone')))
       const state = yield* makeGameplayFrameState
-      const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player, world.time)
+      const { stages, commit } = yield* gameplayStagesWithOwners(state, world)
 
       yield* Ref.update(state.pendingBreaks, (pending) => [...pending, blockPositionKeyOf(AT)])
       yield* requestBlockBreak(state, AT, { heldTier: 'wooden' })
       yield* Ref.set(state.heldTool, NO_TOOL)
       yield* runInteractions(stages as never)
 
-      expect(yield* world.inventory.countOf('cobblestone')).toBe(0)
+      const storage = yield* commit.coordinator.snapshot(commit.playerStorageOwnerId, PlayerStorageSnapshotSchema)
+      expect(storedItemCount(storage.state, 'cobblestone')).toBe(0)
     }),
   )
 
@@ -929,14 +968,15 @@ describe('the break loop', () => {
     Effect.gen(function* () {
       const world = yield* oneBlockWorld(Option.getOrThrow(blockIdOf('stone')))
       const state = yield* makeGameplayFrameState
-      const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player, world.time)
+      const { stages, commit } = yield* gameplayStagesWithOwners(state, world)
 
       yield* Ref.update(state.pendingBreaks, (pending) => [...pending, blockPositionKeyOf(AT)])
       yield* requestBlockBreak(state, AT, NO_TOOL)
       yield* Ref.set(state.heldTool, { heldTier: 'wooden' })
       yield* runInteractions(stages as never)
 
-      expect(yield* world.inventory.countOf('cobblestone')).toBe(1)
+      const storage = yield* commit.coordinator.snapshot(commit.playerStorageOwnerId, PlayerStorageSnapshotSchema)
+      expect(storedItemCount(storage.state, 'cobblestone')).toBe(1)
     }),
   )
 
@@ -944,7 +984,7 @@ describe('the break loop', () => {
     Effect.gen(function* () {
       const world = yield* twoBlockWorld(Option.getOrThrow(blockIdOf('stone')))
       const state = yield* makeGameplayFrameState
-      const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player, world.time)
+      const { stages, commit } = yield* gameplayStagesWithOwners(state, world)
 
       yield* Effect.all(
         [
@@ -956,7 +996,8 @@ describe('the break loop', () => {
       yield* Ref.set(state.heldTool, NO_TOOL)
       yield* runInteractions(stages as never)
 
-      expect(yield* world.inventory.countOf('cobblestone')).toBe(1)
+      const storage = yield* commit.coordinator.snapshot(commit.playerStorageOwnerId, PlayerStorageSnapshotSchema)
+      expect(storedItemCount(storage.state, 'cobblestone')).toBe(1)
       expect(yield* Ref.get(state.pendingBreaks)).toStrictEqual([])
     }),
   )
@@ -979,13 +1020,13 @@ describe('the break loop', () => {
       // rather than a boolean.
       const world = yield* oneBlockWorld()
       const state = yield* makeGameplayFrameState
-      const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player, world.time)
+      const { stages, commit } = yield* gameplayStagesWithOwners(state, world)
 
       yield* requestBlockBreak(state, AT)
       yield* runInteractions(stages as never)
 
-      const inventory = yield* world.inventory.snapshot
-      const carried = inventory.slots.filter((slot) => slot !== undefined)
+      const inventory = yield* commit.coordinator.snapshot(commit.playerStorageOwnerId, PlayerStorageSnapshotSchema)
+      const carried = inventory.state.inventory.slots.filter((slot) => slot !== undefined)
       expect(carried.length).toBeGreaterThan(0)
     }),
   )
@@ -1004,18 +1045,196 @@ describe('the break loop', () => {
         },
       })
       const state = yield* makeGameplayFrameState
-      const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player, world.time)
+      const { stages, commit } = yield* gameplayStagesWithOwners(state, world)
 
       yield* requestBlockBreak(state, AT)
       yield* runInteractions(stages as never)
 
-      expect(yield* world.inventory.countOf('dirt')).toBe(0)
+      const storage = yield* commit.coordinator.snapshot(commit.playerStorageOwnerId, PlayerStorageSnapshotSchema)
+      expect(storedItemCount(storage.state, 'dirt')).toBe(0)
       expect(yield* world.chunkStore.getBlock(AT)).toStrictEqual({ _tag: 'Block', block: 0 })
-      const roster = yield* world.entities.snapshot
-      expect(roster.entities).toHaveLength(1)
-      expect(roster.entities[0]?.kind).toBe(DROPPED_ITEM_KIND)
+      const droppedItems = yield* commit.coordinator.snapshot(GAMEPLAY_DROPPED_ITEMS_OWNER_ID, DroppedItemOwnerSnapshotSchema)
+      expect(droppedItems.state.items).toHaveLength(1)
+      expect(droppedItems.state.items[0]?.behaviour._tag).toBe('DroppedItem')
     }),
   )
+
+  it('keeps mined loot as a world drop when the owner snapshot changes before deposit', async () => {
+    await FastCheck.assert(
+      FastCheck.asyncProperty(FastCheck.integer({ min: 0, max: 35 }), async (changedSlot) => {
+        const fullInventory = Array.from(
+          { length: 36 },
+          () => Result.getOrThrow(itemStack('stone', StackCount(64))),
+        )
+        const world = await Effect.runPromise(makeInMemoryWorld<MobBehaviour>({
+          inventory: fullInventory,
+          world: {
+            blocks: new Map([[cellKey(AT), DIRT_ID]]),
+            loaded: [chunkKey(chunkOf(AT))],
+          },
+        }))
+        const commit = await Effect.runPromise(
+          makeGameplayCommitServices(world.chunkStore, world.inventory),
+        )
+        const initialStorage = Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(
+          await Effect.runPromise(world.inventory.storageSnapshot),
+        )
+        const registeredCoordinator = commit.coordinator
+        const stageRequests: Array<Parameters<WorldCommitCoordinatorApi['commit']>[0]> = []
+        const stageCommitResults: Array<'Rejected' | 'Committed'> = []
+        let injectedOwnerChange = false
+        const coordinator: WorldCommitCoordinatorApi = {
+          ...registeredCoordinator,
+          commit: (request) =>
+            Effect.gen(function* () {
+              stageRequests.push(request)
+              if (!injectedOwnerChange) {
+                injectedOwnerChange = true
+                const beforeChange = yield* registeredCoordinator.snapshot(
+                  commit.playerStorageOwnerId,
+                  PlayerStorageSnapshotSchema,
+                )
+                const replacement = Result.getOrThrow(itemStack('cobblestone', StackCount(64)))
+                const changedStorage = Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)({
+                  ...beforeChange.state,
+                  inventory: {
+                    slots: beforeChange.state.inventory.slots.map((slot, index) =>
+                      index === changedSlot ? replacement : slot,
+                    ),
+                  },
+                })
+                const ownerChange = yield* Effect.result(registeredCoordinator.commit({
+                  expectedRevision: beforeChange.revision,
+                  expectedDimensions: [],
+                  changes: [{
+                    ownerId: commit.playerStorageOwnerId,
+                    state: changedStorage,
+                  }],
+                }))
+                if (Result.isFailure(ownerChange)) {
+                  throw new Error('the concurrent player-storage update was rejected')
+                }
+              }
+
+              const attempt = yield* Effect.result(registeredCoordinator.commit(request))
+              if (Result.isFailure(attempt)) {
+                stageCommitResults.push('Rejected')
+                return yield* Effect.fail(attempt.failure)
+              }
+              stageCommitResults.push('Committed')
+              return attempt.success
+            }),
+        }
+        const state = await Effect.runPromise(makeGameplayFrameState)
+        const stages = gameplayStages(
+          state,
+          world.chunkStore,
+          world.entities,
+          world.inventory,
+          world.player,
+          world.time,
+          undefined,
+          undefined,
+          {},
+          { ...commit, coordinator },
+        )
+        const initialRollSeed = await Effect.runPromise(Ref.get(state.rollSeed))
+
+        await Effect.runPromise(requestBlockBreak(state, AT, NO_TOOL, {
+          dimension: OVERWORLD,
+          toolLocation: undefined,
+        }))
+        await Effect.runPromise(runInteractions(stages as never))
+
+        expect(injectedOwnerChange).toBe(true)
+        expect(stageRequests).toHaveLength(1)
+        expect(stageCommitResults).toStrictEqual(['Rejected'])
+        expect(stageRequests[0]?.expectedRevision).toBe(0)
+        expect(stageRequests[0]?.blockWrite).toBeDefined()
+        expect(stageRequests[0]?.changes.map(({ ownerId }) => ownerId)).toEqual(
+          expect.arrayContaining([
+            commit.playerStorageOwnerId,
+            GAMEPLAY_DROPPED_ITEMS_OWNER_ID,
+          ]),
+        )
+
+        const miningFailure = (await Effect.runPromise(Ref.get(state.operationFailures))).find(
+          (failure) => failure.operation === 'WorldCommit' && failure.subject === 'Mining',
+        )
+        if (miningFailure === undefined) throw new Error('the conflicting mining commit was not recorded')
+        expect(Schema.decodeUnknownSync(WorldCommitCoordinatorErrorSchema)(miningFailure.error)).toMatchObject({
+          _tag: 'WorldRevisionConflict',
+          expected: 0,
+          actual: 1,
+        })
+        expect(await Effect.runPromise(Ref.get(state.pendingBreaks))).toStrictEqual([blockPositionKeyOf(AT)])
+        expect(await Effect.runPromise(Ref.get(state.rollSeed))).toBe(initialRollSeed)
+        expect(await Effect.runPromise(world.chunkStore.getBlock(AT))).toStrictEqual({
+          _tag: 'Block',
+          block: DIRT_ID,
+        })
+
+        const storageAfterRejection = await Effect.runPromise(registeredCoordinator.snapshot(
+          commit.playerStorageOwnerId,
+          PlayerStorageSnapshotSchema,
+        ))
+        const decodedStorageAfterRejection = Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(
+          storageAfterRejection.state,
+        )
+        expect(storageAfterRejection.revision).toBe(1)
+        expect(decodedStorageAfterRejection.inventory.slots[changedSlot]).toMatchObject({
+          item: 'cobblestone',
+          count: 64,
+        })
+        const droppedAfterRejection = await Effect.runPromise(registeredCoordinator.snapshot(
+          GAMEPLAY_DROPPED_ITEMS_OWNER_ID,
+          DroppedItemOwnerSnapshotSchema,
+        ))
+        expect(droppedAfterRejection.revision).toBe(1)
+        expect(Schema.decodeUnknownSync(DroppedItemOwnerSnapshotSchema)(
+          droppedAfterRejection.state,
+        ).items).toStrictEqual([])
+        expect(await Effect.runPromise(registeredCoordinator.revision)).toBe(1)
+        expect(await Effect.runPromise(registeredCoordinator.dimensionRevision(OVERWORLD))).toBe(0)
+
+        await Effect.runPromise(runInteractions(stages as never))
+
+        expect(await Effect.runPromise(Ref.get(state.pendingBreaks))).toStrictEqual([])
+        expect(stageRequests).toHaveLength(2)
+        expect(stageCommitResults).toStrictEqual(['Rejected', 'Committed'])
+        expect(stageRequests[1]?.expectedRevision).toBe(1)
+        expect(stageRequests[1]?.blockWrite).toBeDefined()
+        expect(stageRequests[1]?.changes.map(({ ownerId }) => ownerId)).toEqual(
+          expect.arrayContaining([
+            commit.playerStorageOwnerId,
+            GAMEPLAY_DROPPED_ITEMS_OWNER_ID,
+          ]),
+        )
+        expect(await Effect.runPromise(Ref.get(state.rollSeed))).not.toBe(initialRollSeed)
+        expect(await Effect.runPromise(world.chunkStore.getBlock(AT))).toStrictEqual({
+          _tag: 'Block',
+          block: 0,
+        })
+        expect(await Effect.runPromise(world.inventory.storageSnapshot)).toStrictEqual(initialStorage)
+
+        const finalDrops = await Effect.runPromise(registeredCoordinator.snapshot(
+          GAMEPLAY_DROPPED_ITEMS_OWNER_ID,
+          DroppedItemOwnerSnapshotSchema,
+        ))
+        const decodedDrops = Schema.decodeUnknownSync(DroppedItemOwnerSnapshotSchema)(finalDrops.state)
+        expect(finalDrops.revision).toBe(2)
+        expect(decodedDrops.items).toHaveLength(1)
+        const drop = decodedDrops.items[0]
+        if (drop === undefined) throw new Error('the mined stack was not committed to the dropped-item owner')
+        expect(drop.behaviour).toMatchObject({ _tag: 'DroppedItem', item: 'dirt', count: 1 })
+        expect(drop.feetPosition).toMatchObject({ x: AT.x, y: AT.y, z: AT.z })
+        expect(await Effect.runPromise(registeredCoordinator.revision)).toBe(2)
+        expect(await Effect.runPromise(registeredCoordinator.dimensionRevision(OVERWORLD))).toBe(1)
+        expect((await Effect.runPromise(world.entities.snapshot)).entities).toHaveLength(0)
+      }),
+      { numRuns: 4, seed: 41821, examples: [[0], [35]] },
+    )
+  })
 
   it.effect('keeps a block untouched when its owner changes before the atomic break commit', () =>
     Effect.gen(function* () {
@@ -1164,12 +1383,13 @@ describe('the break loop', () => {
     Effect.gen(function* () {
       const world = yield* oneBlockWorld(Option.getOrThrow(blockIdOf('redstone_wire')))
       const state = yield* makeGameplayFrameState
-      const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player, world.time)
+      const { stages, commit } = yield* gameplayStagesWithOwners(state, world)
 
       yield* requestBlockBreak(state, AT)
       yield* runInteractions(stages as never)
 
-      expect(yield* world.inventory.countOf('redstone_dust')).toBe(1)
+      const storage = yield* commit.coordinator.snapshot(commit.playerStorageOwnerId, PlayerStorageSnapshotSchema)
+      expect(storedItemCount(storage.state, 'redstone_dust')).toBe(1)
     }),
   )
 
@@ -1180,14 +1400,14 @@ describe('the break loop', () => {
       // once the cell is air, and a duplicate drop every frame until it is.
       const world = yield* oneBlockWorld()
       const state = yield* makeGameplayFrameState
-      const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player, world.time)
+      const { stages, commit } = yield* gameplayStagesWithOwners(state, world)
 
       yield* requestBlockBreak(state, AT)
       yield* runInteractions(stages as never)
-      const afterFirst = yield* world.inventory.snapshot
+      const afterFirst = yield* commit.coordinator.snapshot(commit.playerStorageOwnerId, PlayerStorageSnapshotSchema)
 
       yield* runInteractions(stages as never)
-      const afterSecond = yield* world.inventory.snapshot
+      const afterSecond = yield* commit.coordinator.snapshot(commit.playerStorageOwnerId, PlayerStorageSnapshotSchema)
 
       expect(afterSecond).toStrictEqual(afterFirst)
     }),
@@ -1202,13 +1422,13 @@ describe('the break loop', () => {
         world: { blocks: new Map(), loaded: [chunkKey(chunkOf(AT))] },
       })
       const state = yield* makeGameplayFrameState
-      const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player, world.time)
+      const { stages, commit } = yield* gameplayStagesWithOwners(state, world)
 
       yield* requestBlockBreak(state, AT)
       yield* runInteractions(stages as never)
 
-      const inventory = yield* world.inventory.snapshot
-      expect(inventory.slots.every((slot) => slot === undefined)).toBe(true)
+      const inventory = yield* commit.coordinator.snapshot(commit.playerStorageOwnerId, PlayerStorageSnapshotSchema)
+      expect(inventory.state.inventory.slots.every((slot) => slot === undefined)).toBe(true)
     }),
   )
 
@@ -1221,7 +1441,7 @@ describe('the break loop', () => {
         world: { blocks: new Map(), loaded: [] },
       })
       const state = yield* makeGameplayFrameState
-      const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player, world.time)
+      const { stages } = yield* gameplayStagesWithOwners(state, world)
 
       yield* requestBlockBreak(state, AT)
       yield* runInteractions(stages as never)
@@ -1238,7 +1458,7 @@ describe('the break loop', () => {
       const world = yield* oneBlockWorld()
       const subscription = yield* world.chunkStore.subscribeDirty
       const state = yield* makeGameplayFrameState
-      const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player, world.time)
+      const { stages } = yield* gameplayStagesWithOwners(state, world)
 
       yield* requestBlockBreak(state, AT)
       yield* runInteractions(stages as never)

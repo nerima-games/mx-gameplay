@@ -185,24 +185,7 @@ export const carveExplosionCrater = (
 
       const outcome = yield* store.setBlock(cell, AIR_BLOCK_ID)
 
-      switch (outcome._tag) {
-        case 'Written': {
-          disturbed.push(blockPositionKeyOf(cell))
-          break
-        }
-
-        // The cell was already air: the write did not dirty the chunk, so it
-        // must not enter the falling-block queue either.
-        case 'Unchanged':
-        // Not this session's to touch. Not an error — the blast reached the
-        // edge of the resident area, or the bottom of the world — and `run`
-        // has no error channel to put one in anyway.
-        // falls through
-        case 'ChunkNotLoaded':
-        case 'OutOfWorld': {
-          break
-        }
-      }
+      if (outcome._tag === 'Written') disturbed.push(blockPositionKeyOf(cell))
     }
 
     return disturbed

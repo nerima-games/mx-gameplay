@@ -18,6 +18,8 @@ import {
   chunkOf,
   isInWorld,
   makeInMemoryWorld,
+  solidityFromStore,
+  targetabilityFromStore,
   type WorldContents,
 } from '../src/domain/in-memory-world.js'
 
@@ -170,8 +172,14 @@ describe('makeInMemoryWorld ChunkStore', () => {
             [cellKey(AT), STONE],
             ['not,a,cell,key', DIRT],
             ['5,999,5', DIRT],
+            ['9007199254740992,5,5', DIRT],
           ]),
-          loaded: [chunkKey(chunkOf(AT)), 'malformed'],
+          loaded: [
+            chunkKey(chunkOf(AT)),
+            'malformed',
+            '9007199254740992,0',
+            '0,9007199254740992',
+          ],
         },
       })
 
@@ -186,6 +194,24 @@ describe('makeInMemoryWorld ChunkStore', () => {
       expect((yield* world.chunkStore.getBlock(blockPosition(5, CHUNK_HEIGHT, 5)))._tag).toBe(
         'OutOfWorld',
       )
+    }),
+  )
+
+  it.effect('treats non-finite collision and target coordinates as unavailable', () =>
+    Effect.gen(function* () {
+      const world = yield* makeInMemoryWorld({ world: worldWith([[AT, STONE]]) })
+      const isSolid = solidityFromStore(world.chunkStore)
+      const isTargetable = targetabilityFromStore(world.chunkStore)
+      const invalidPositions = [
+        { x: Number.NaN, y: 5, z: 5 },
+        { x: 5, y: Number.NaN, z: 5 },
+        { x: 5, y: 5, z: Number.NaN },
+      ] as const
+
+      for (const point of invalidPositions) {
+        expect(isSolid(point)).toBe(true)
+        expect(isTargetable(point.x, point.y, point.z)).toBe(false)
+      }
     }),
   )
 })

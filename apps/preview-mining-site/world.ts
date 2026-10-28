@@ -52,6 +52,7 @@ import {
   AIR_BLOCK_ID,
   BlockAxis,
   BlockId,
+  ChunkKey,
   ChunkAxis,
   blockPosition,
   blockTypeOfId,
@@ -67,10 +68,15 @@ import type {
   BlockReading,
   LightReading,
   BlockWriteOutcome,
+  ChunkBlockChange,
+  ChunkBlockEdit,
   ChunkDirtyBatch,
   ChunkDirtySubscription,
   ChunkStoreApi,
   ChunkNeighbours,
+  ChunkWritePrepareError,
+  ChunkWritePublishError,
+  PreparedChunkWrite,
 } from '@nerima-games/mc-worldgen'
 
 /**
@@ -198,12 +204,30 @@ export type WriteRecord = {
 type Inner = {
   readonly blocks: Map<string, BlockId>
   readonly loadedChunks: Set<string>
+  readonly chunkRevisions: Map<string, number>
   readonly subscribers: Map<number, Set<string>>
+  readonly preparedWrites: Map<PreparedChunkWrite, PreparedPreviewWrite>
+  readonly publishedWrites: WeakSet<PreparedChunkWrite>
   writeLog: Array<WriteRecord>
   nextSubscriber: number
   reads: number
   writes: number
 }
+
+type PreparedPreviewWrite = Readonly<{
+  readonly changes: ReadonlyArray<ChunkBlockChange>
+  readonly revisions: ReadonlyMap<string, number>
+}>
+
+type PrepareAttempt =
+  | { readonly _tag: 'Prepared'; readonly prepared: PreparedChunkWrite }
+  | { readonly _tag: 'Rejected'; readonly error: ChunkWritePrepareError }
+
+type PublishAttempt =
+  | { readonly _tag: 'Published' }
+  | { readonly _tag: 'Rejected'; readonly error: ChunkWritePublishError }
+
+const PREVIEW_STORE_ID = Symbol('preview-mining-site-store')
 
 export type PreviewWorld = {
   readonly api: ChunkStoreApi
@@ -246,7 +270,10 @@ export const makePreviewWorld = (spec: WorldSpec): Effect.Effect<PreviewWorld> =
         ),
       ),
       loadedChunks: new Set(spec.loadedChunks),
+      chunkRevisions: new Map([...new Set(spec.loadedChunks)].map((key) => [key, 0] as const)),
       subscribers: new Map(),
+      preparedWrites: new Map(),
+      publishedWrites: new WeakSet(),
       writeLog: [],
       nextSubscriber: 0,
       reads: 0,
@@ -260,6 +287,8 @@ export const makePreviewWorld = (spec: WorldSpec): Effect.Effect<PreviewWorld> =
 
       const notImplemented = (name: string): Effect.Effect<never> =>
         Effect.die(`preview-mining-site: ChunkStore.${name} is not exercised by this preview`)
+
+      const storeIdentity = {}
 
       const markDirty = (doubles: Inner, position: BlockPosition): void => {
         for (const pending of doubles.subscribers.values()) {
@@ -294,9 +323,139 @@ export const makePreviewWorld = (spec: WorldSpec): Effect.Effect<PreviewWorld> =
         return [subscription, { ...doubles, nextSubscriber: id + 1 }] as const
       })
 
+      const prepare = (edits: ReadonlyArray<ChunkBlockEdit>) =>
+        Effect.flatMap(
+          Ref.modify(state, (doubles): readonly [PrepareAttempt, Inner] => {
+            const invalid = (reason: Extract<ChunkWritePrepareError, { _tag: 'ChunkWriteInvalidBatch' }>['reason']) => ({
+              _tag: 'Rejected' as const,
+              error: { _tag: 'ChunkWriteInvalidBatch' as const, reason },
+            })
+            if (!Array.isArray(edits)) return [invalid('not-array'), doubles] as const
+            if (edits.length === 0) return [invalid('empty'), doubles] as const
+
+            const positions = new Set<string>()
+            for (const edit of edits as ReadonlyArray<unknown>) {
+              if (typeof edit !== 'object' || edit === null) return [invalid('invalid-edit'), doubles] as const
+              const candidate = edit as { readonly position?: unknown; readonly block?: unknown }
+              if (typeof candidate.position !== 'object' || candidate.position === null) {
+                return [invalid('invalid-position'), doubles] as const
+              }
+              const position = candidate.position as { readonly x?: unknown; readonly y?: unknown; readonly z?: unknown }
+              if (
+                typeof position.x !== 'number' || !Number.isSafeInteger(position.x) ||
+                typeof position.y !== 'number' || !Number.isSafeInteger(position.y) ||
+                typeof position.z !== 'number' || !Number.isSafeInteger(position.z)
+              ) {
+                return [invalid('invalid-position'), doubles] as const
+              }
+              if (typeof candidate.block !== 'number' || !BlockId.is(candidate.block)) {
+                return [invalid('invalid-block-id'), doubles] as const
+              }
+              const validatedPosition = candidate.position as BlockPosition
+              const key = blockKey(validatedPosition)
+              if (positions.has(key)) return [invalid('duplicate-position'), doubles] as const
+              positions.add(key)
+              if (validatedPosition.y < 0 || validatedPosition.y >= WORLD_HEIGHT) {
+                return [invalid('out-of-world'), doubles] as const
+              }
+            }
+
+            const changes: Array<ChunkBlockChange> = []
+            const revisions = new Map<string, number>()
+            for (const edit of edits) {
+              if (!doubles.loadedChunks.has(chunkKeyOf(edit.position))) {
+                return [{
+                  _tag: 'Rejected' as const,
+                  error: { _tag: 'ChunkWriteChunkUnavailable' as const, position: edit.position },
+                }, doubles] as const
+              }
+              const previous = doubles.blocks.get(blockKey(edit.position)) ?? AIR_BLOCK_ID
+              if (previous === edit.block) continue
+              const chunkKey = chunkKeyOf(edit.position)
+              if (!revisions.has(chunkKey)) {
+                revisions.set(chunkKey, doubles.chunkRevisions.get(chunkKey) ?? 0)
+              }
+              changes.push(Object.freeze({
+                position: Object.freeze({ ...edit.position }),
+                previous,
+                next: edit.block,
+              }))
+            }
+
+            // The brand is private to mc-worldgen, so this store supplies the
+            // opaque token and validates it against its own identity on publish.
+            const prepared = Object.freeze({
+              changes: Object.freeze(changes),
+              [PREVIEW_STORE_ID]: storeIdentity,
+            }) as unknown as PreparedChunkWrite
+            doubles.preparedWrites.set(prepared, { changes, revisions })
+            return [{ _tag: 'Prepared' as const, prepared }, doubles] as const
+          }),
+          (result) => result._tag === 'Rejected'
+            ? Effect.fail(result.error)
+            : Effect.succeed(result.prepared),
+        )
+
+      const publish = (prepared: PreparedChunkWrite) =>
+        Effect.flatMap(
+          Ref.modify(state, (doubles): readonly [PublishAttempt, Inner] => {
+            const invalid = (reason: 'foreign_store' | 'already_published' | 'unknown_token') => ({
+              _tag: 'Rejected' as const,
+              error: { _tag: 'ChunkWriteTokenInvalid' as const, reason },
+            })
+            const token = prepared as object & {
+              readonly [PREVIEW_STORE_ID]?: unknown
+              readonly changes?: unknown
+            }
+            if (token === null || typeof token !== 'object') return [invalid('unknown_token'), doubles] as const
+            if (token[PREVIEW_STORE_ID] !== storeIdentity) {
+              const hasChanges = token.changes !== undefined
+              return [invalid(hasChanges ? 'foreign_store' : 'unknown_token'), doubles] as const
+            }
+            if (doubles.publishedWrites.has(prepared)) return [invalid('already_published'), doubles] as const
+            const record = doubles.preparedWrites.get(prepared)
+            if (record === undefined) return [invalid('unknown_token'), doubles] as const
+
+            for (const [key, expectedRevision] of record.revisions) {
+              const actualRevision = doubles.chunkRevisions.get(key)
+              if (actualRevision !== expectedRevision) {
+                return [{
+                  _tag: 'Rejected' as const,
+                  error: {
+                    _tag: 'ChunkWriteStale' as const,
+                    key: Result.getOrThrow(ChunkKey(key)),
+                    expectedRevision,
+                    ...(actualRevision === undefined ? {} : { actualRevision }),
+                  },
+                }, doubles] as const
+              }
+            }
+
+            for (const change of record.changes) {
+              doubles.blocks.set(blockKey(change.position), change.next)
+              doubles.writes += 1
+              doubles.writeLog.push({
+                position: change.position,
+                block: change.next,
+                outcome: 'Written',
+              })
+              markDirty(doubles, change.position)
+            }
+            for (const [key, revision] of record.revisions) {
+              doubles.chunkRevisions.set(key, revision + 1)
+            }
+            doubles.preparedWrites.delete(prepared)
+            doubles.publishedWrites.add(prepared)
+            return [{ _tag: 'Published' as const }, doubles] as const
+          }),
+          (result) => result._tag === 'Rejected'
+            ? Effect.fail(result.error)
+            : Effect.void,
+        )
+
       const api: ChunkStoreApi = {
-        prepare: () => notImplemented('prepare'),
-        publish: () => notImplemented('publish'),
+        prepare,
+        publish,
         load: () => notImplemented('load'),
         peek: () => notImplemented('peek'),
         snapshot: () => notImplemented('snapshot'),
@@ -394,6 +553,8 @@ export const makePreviewWorld = (spec: WorldSpec): Effect.Effect<PreviewWorld> =
             }
 
             doubles.blocks.set(blockKey(position), block)
+            const chunkKey = chunkKeyOf(position)
+            doubles.chunkRevisions.set(chunkKey, (doubles.chunkRevisions.get(chunkKey) ?? 0) + 1)
             markDirty(doubles, position)
 
             return record({ _tag: 'Written', previous, chunk: chunkCoordOf(position) })
@@ -403,6 +564,9 @@ export const makePreviewWorld = (spec: WorldSpec): Effect.Effect<PreviewWorld> =
         subscribeDirtyScoped: Effect.acquireRelease(subscribe, (s) => s.unsubscribe),
         reset: Ref.update(state, (doubles) => {
           doubles.blocks.clear()
+          for (const [key, revision] of doubles.chunkRevisions) {
+            doubles.chunkRevisions.set(key, revision + 1)
+          }
           return doubles
         }),
       }

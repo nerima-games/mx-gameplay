@@ -6,11 +6,14 @@ import {
   EntityHealthPoints,
   FoodSaturation,
   type DeltaTimeSecs as DeltaTimeSecsValue,
+  WorldId,
 } from '@nerima-games/mc-kernel'
 import {
   ExhaustionAmount,
   FoodTimerSecs,
   HungerPoints,
+  makeReplicatedOwnerId,
+  makeWorldCommitCoordinator,
   TotalExperience,
   VitalsSchema,
 } from '@nerima-games/mc-sim'
@@ -24,9 +27,14 @@ import {
   exhaustionForSurvivalActivity,
   isSurvivalHungerState,
   makeSurvivalHungerRuntime,
+  makeReplicatedSurvivalHungerRuntime,
   starvationHealthFloor,
   type SurvivalDifficulty,
 } from '../src/domain/survival-hunger'
+import {
+  ExperienceOrbVitalsOwnerSnapshotSchema,
+  vitalsOwnerRegistration,
+} from '../src/domain/entities/xp-orb'
 
 const vitals = (overrides: Partial<PlayerVitals> = {}): PlayerVitals => ({
   healthPoints: EntityHealthPoints(20),
@@ -62,6 +70,25 @@ const isNonNegativeFinite = (values: ReadonlyArray<number>): boolean =>
 const decodeVitals = Schema.decodeUnknownResult(
   VitalsSchema as unknown as Schema.ConstraintDecoder<PlayerVitals>,
 )
+
+const REPLICATED_VITALS_OWNER = makeReplicatedOwnerId('survival-hunger-test-vitals')
+
+const makeReplicatedRuntime = (
+  playerVitals: PlayerVitals = SPAWN_PLAYER_VITALS,
+  difficulty: SurvivalDifficulty = DEFAULT_SURVIVAL_DIFFICULTY,
+) =>
+  Effect.gen(function* () {
+    const coordinator = yield* makeWorldCommitCoordinator({
+      world: WorldId('survival-hunger-test-world'),
+      owners: [vitalsOwnerRegistration(REPLICATED_VITALS_OWNER, { vitals: playerVitals })],
+    })
+    const runtime = yield* makeReplicatedSurvivalHungerRuntime(
+      coordinator,
+      REPLICATED_VITALS_OWNER,
+      difficulty,
+    )
+    return { coordinator, runtime }
+  })
 
 describe('survival hunger', () => {
   it('maps player activity to deterministic exhaustion and rejects invalid magnitudes', () => {
@@ -360,6 +387,170 @@ describe('survival hunger', () => {
         }),
         { numRuns: 100 },
       )
+    }),
+  )
+
+  it.effect('replicated food ticks regenerate, starve, respect floors, and stop when dead', () =>
+    Effect.gen(function* () {
+      const regen = yield* makeReplicatedRuntime(vitals({
+        healthPoints: EntityHealthPoints(19),
+        saturation: FoodSaturation(0),
+      }))
+      yield* regen.runtime.submit({ _tag: 'walk', distance: 1 })
+      const regeneration = yield* regen.runtime.tick(DeltaTimeSecs(4))
+      expect(regeneration).toMatchObject({
+        difficulty: 'normal',
+        exhaustionAdded: 0.01,
+        foodTicks: 1,
+        regeneratedHealth: 1,
+        starvationDamage: 0,
+        died: false,
+        vitals: { healthPoints: 20, hungerPoints: 19, exhaustion: 2.01 },
+      })
+      const regeneratedOwner = yield* regen.coordinator.snapshot(
+        REPLICATED_VITALS_OWNER,
+        ExperienceOrbVitalsOwnerSnapshotSchema,
+      )
+      expect(regeneratedOwner.state.vitals).toStrictEqual(regeneration.vitals)
+      expect((yield* regen.runtime.tick(DeltaTimeSecs(0))).foodTicks).toBe(0)
+
+      const starved = yield* makeReplicatedRuntime(vitals({
+        healthPoints: EntityHealthPoints(1),
+        hungerPoints: HungerPoints(0),
+        saturation: FoodSaturation(0),
+      }), 'hard')
+      const starvation = yield* starved.runtime.tick(DeltaTimeSecs(8))
+      expect(starvation).toMatchObject({
+        difficulty: 'hard',
+        foodTicks: 1,
+        regeneratedHealth: 0,
+        starvationDamage: 1,
+        died: true,
+        vitals: { healthPoints: 0, lastDamageCause: 'starvation' },
+      })
+      expect((yield* starved.coordinator.snapshot(
+        REPLICATED_VITALS_OWNER,
+        ExperienceOrbVitalsOwnerSnapshotSchema,
+      )).state.vitals).toStrictEqual(starvation.vitals)
+
+      const floor = yield* makeReplicatedRuntime(vitals({
+        healthPoints: EntityHealthPoints(10),
+        hungerPoints: HungerPoints(0),
+        saturation: FoodSaturation(0),
+      }), 'easy')
+      const floorTick = yield* floor.runtime.tick(DeltaTimeSecs(4))
+      expect(floorTick).toMatchObject({
+        difficulty: 'easy',
+        foodTicks: 1,
+        starvationDamage: 0,
+        died: false,
+        vitals: { healthPoints: 10, hungerPoints: 0 },
+      })
+
+      const dead = yield* makeReplicatedRuntime(vitals({
+        healthPoints: EntityHealthPoints(0),
+        hungerPoints: HungerPoints(0),
+        saturation: FoodSaturation(0),
+      }), 'hard')
+      yield* dead.runtime.submit({ _tag: 'sprint', distance: 10 })
+      const deadTick = yield* dead.runtime.tick(DeltaTimeSecs(4))
+      expect(deadTick).toMatchObject({
+        exhaustionAdded: 0,
+        foodTicks: 0,
+        regeneratedHealth: 0,
+        starvationDamage: 0,
+        died: false,
+        vitals: { healthPoints: 0 },
+      })
+    }),
+  )
+
+  it.effect('replicated mutations commit owner vitals and do not revive a dead player', () =>
+    Effect.gen(function* () {
+      const { coordinator, runtime } = yield* makeReplicatedRuntime(vitals({
+        healthPoints: EntityHealthPoints(10),
+        hungerPoints: HungerPoints(19),
+        saturation: FoodSaturation(0),
+      }))
+
+      yield* runtime.addExhaustion(0.25)
+      expect((yield* runtime.snapshot).vitals.exhaustion).toBe(0.25)
+      expect(yield* runtime.eat(1, 0.6)).toMatchObject({
+        hungerPoints: 20,
+        saturation: 1.2,
+      })
+      expect(yield* runtime.damage({ amount: 3, cause: 'fall' })).toMatchObject({
+        died: false,
+        vitals: { healthPoints: 7, lastDamageCause: undefined },
+      })
+      expect(yield* runtime.heal(2)).toMatchObject({
+        healthPoints: 9,
+        lastDamageCause: undefined,
+      })
+      expect(yield* runtime.damage({ amount: 20, cause: 'explosion' })).toMatchObject({
+        died: true,
+        vitals: { healthPoints: 0, lastDamageCause: 'explosion' },
+      })
+
+      const deadBefore = yield* runtime.snapshot
+      yield* runtime.addExhaustion(4)
+      expect(yield* runtime.eat(4, 0.8)).toStrictEqual(deadBefore.vitals)
+      expect(yield* runtime.heal(5)).toMatchObject({
+        healthPoints: 0,
+        lastDamageCause: 'explosion',
+      })
+      expect(yield* runtime.damage({ amount: 1, cause: 'mob' })).toMatchObject({
+        died: false,
+        vitals: { healthPoints: 0, lastDamageCause: 'explosion' },
+      })
+      expect((yield* coordinator.snapshot(
+        REPLICATED_VITALS_OWNER,
+        ExperienceOrbVitalsOwnerSnapshotSchema,
+      )).state.vitals).toStrictEqual(deadBefore.vitals)
+    }),
+  )
+
+  it.effect('replicated restore, respawn, and reset clear pending activity at their boundaries', () =>
+    Effect.gen(function* () {
+      const { coordinator, runtime } = yield* makeReplicatedRuntime(vitals({
+        healthPoints: EntityHealthPoints(8),
+        hungerPoints: HungerPoints(11),
+        saturation: FoodSaturation(1),
+      }), 'hard')
+      const restored = initial('easy', {
+        healthPoints: EntityHealthPoints(12),
+        hungerPoints: HungerPoints(10),
+        saturation: FoodSaturation(2),
+      })
+
+      yield* runtime.submit({ _tag: 'sprint', distance: 20 })
+      yield* runtime.restore(restored)
+      expect(yield* runtime.snapshot).toStrictEqual(restored)
+      expect((yield* runtime.tick(DeltaTimeSecs(0))).exhaustionAdded).toBe(0)
+      expect((yield* coordinator.snapshot(
+        REPLICATED_VITALS_OWNER,
+        ExperienceOrbVitalsOwnerSnapshotSchema,
+      )).state.vitals).toStrictEqual(restored.vitals)
+
+      yield* runtime.setDifficulty('peaceful')
+      yield* runtime.submit({ _tag: 'attack', count: 10 })
+      yield* runtime.respawn
+      expect(yield* runtime.snapshot).toStrictEqual({
+        version: SURVIVAL_HUNGER_STATE_VERSION,
+        difficulty: 'peaceful',
+        vitals: SPAWN_PLAYER_VITALS,
+      })
+      expect((yield* runtime.tick(DeltaTimeSecs(0))).exhaustionAdded).toBe(0)
+
+      yield* runtime.setDifficulty('hard')
+      yield* runtime.submit({ _tag: 'mine', blocks: 4 })
+      yield* runtime.reset
+      expect(yield* runtime.snapshot).toStrictEqual({
+        version: SURVIVAL_HUNGER_STATE_VERSION,
+        difficulty: DEFAULT_SURVIVAL_DIFFICULTY,
+        vitals: SPAWN_PLAYER_VITALS,
+      })
+      expect((yield* runtime.tick(DeltaTimeSecs(0))).exhaustionAdded).toBe(0)
     }),
   )
 })

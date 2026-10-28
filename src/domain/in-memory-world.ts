@@ -341,16 +341,8 @@ export const solidityFromStore =
     const z = Result.getOrUndefined(BlockAxis.result(Math.floor(position.z)))
     if (x === undefined || y === undefined || z === undefined) return true
     const reading = Effect.runSync(store.getBlock(blockPosition(x, y, z)))
-    switch (reading._tag) {
-      case 'Block':
-        return Result.getOrUndefined(capabilityOfBlockId(reading.block, 'passable')) !== true
-      case 'ChunkNotLoaded':
-        return true
-      case 'OutOfWorld':
-        // Below bedrock or above the build limit. Solid at the bottom stops a
-        // fall; solid at the top is harmless because nothing reaches it.
-        return true
-    }
+    if (reading._tag !== 'Block') return true
+    return Result.getOrUndefined(capabilityOfBlockId(reading.block, 'passable')) !== true
   }
 
 /** Only loaded, non-air cells can be selected by a player interaction ray. */
