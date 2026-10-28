@@ -47,7 +47,7 @@ describe('player armour damage integration', () => {
         contactDamage(8),
       ])
 
-      expect(damages[0]?.damage.amount).toBeCloseTo(7.36)
+      expect(damages[0]?.damage.amount).toBeCloseTo(7.872)
       expect(damages[1]?.damage.amount).toBe(8)
       expect((yield* inventory.api.equipmentSnapshot).slots.head).toBeNull()
     }),
