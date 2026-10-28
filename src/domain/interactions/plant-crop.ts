@@ -55,7 +55,8 @@ import { Schema } from 'effect'
  * are checked against `ItemType` at compile time — a typo in a seed name is a
  * type error rather than a rule that silently never fires.
  */
-export const CROP_OF_SEED: Readonly<Partial<Record<ItemType, BlockType>>> = {
+type CropBlock = 'wheat_crop' | 'potato_crop' | 'nether_wart_crop'
+export const CROP_OF_SEED: Readonly<Partial<Record<ItemType, CropBlock>>> = {
   wheat_seeds: 'wheat_crop',
   potato: 'potato_crop',
   nether_wart: 'nether_wart_crop',
@@ -68,10 +69,17 @@ export const CROP_OF_SEED: Readonly<Partial<Record<ItemType, BlockType>>> = {
  * wart takes `soul_sand` and refuses farmland, and collapsing this to one
  * predicate is the mistake that reads as a design choice.
  */
-export const SOIL_OF_CROP: Readonly<Partial<Record<BlockType, BlockType>>> = {
+export const SOIL_OF_CROP: Readonly<Record<CropBlock, BlockType>> = {
   wheat_crop: 'farmland',
   potato_crop: 'farmland',
   nether_wart_crop: 'soul_sand',
+}
+
+// A missing id for these fixed BlockTypes means the kernel registry is inconsistent.
+const CROP_BLOCK_IDS: Readonly<Record<CropBlock, BlockId>> = {
+  wheat_crop: Option.getOrThrow(blockIdOf('wheat_crop')),
+  potato_crop: Option.getOrThrow(blockIdOf('potato_crop')),
+  nether_wart_crop: Option.getOrThrow(blockIdOf('nether_wart_crop')),
 }
 
 /** Every item this rule will act on. Derived, so it cannot drift from the table. */
@@ -102,7 +110,6 @@ export type PlantOutcome =
   /** The cell above the soil is occupied; a crop cannot share it. */
   | { readonly _tag: 'occupied'; readonly crop: BlockType; readonly blockedBy: BlockType }
   | { readonly _tag: 'invalidPosition' }
-  | { readonly _tag: 'unknownBlock' }
   | { readonly _tag: 'commitContextMissing' }
   | { readonly _tag: 'commitFailed'; readonly error: Schema.SchemaError | WorldCommitCoordinatorError }
 
@@ -129,18 +136,8 @@ export const plantingVerdict = (
   }
 
   const needs = SOIL_OF_CROP[crop]
-  if (needs === undefined || soilBlock !== needs) {
-    // `needs === undefined` is unreachable while the two tables agree, and
-    // `test/plant-crop.test.ts` asserts that they do rather than leaving this
-    // branch to be argued about. Reported as `wrongSoil` because that is what a
-    // caller can act on; there is no outcome for "the table is inconsistent".
-    /* v8 ignore start -- the `?? 'air'` fallback only fires when `needs` is
-     * undefined, which the table-agreement invariant above makes unreachable on
-     * every path that reaches this line: `needs === undefined` is itself the
-     * documented-unreachable disjunct, and the other disjunct (`soilBlock !==
-     * needs`) requires `needs` to already be defined. */
-    return { _tag: 'wrongSoil', crop, needs: needs ?? 'air', found: soilBlock }
-    /* v8 ignore stop */
+  if (soilBlock !== needs) {
+    return { _tag: 'wrongSoil', crop, needs, found: soilBlock }
   }
 
   if (blockAbove !== 'air') {
@@ -197,12 +194,13 @@ export const plantCrop = (
       return { _tag: 'notASeed' as const, held: request.held }
     }
 
-    const expectedRevision = commitContext === undefined
+    const commit = commitContext === undefined
       ? undefined
-      : yield* commitContext.coordinator.revision
-    const expectedDimensionRevision = commitContext === undefined
-      ? undefined
-      : yield* commitContext.coordinator.dimensionRevision(commitContext.dimension)
+      : {
+          ...commitContext,
+          expectedRevision: yield* commitContext.coordinator.revision,
+          expectedDimensionRevision: yield* commitContext.coordinator.dimensionRevision(commitContext.dimension),
+        }
 
     const soilId = yield* port.blockAt(request.soil)
     const aboveId = yield* port.blockAt(abovePosition)
@@ -213,54 +211,34 @@ export const plantCrop = (
     const aboveBlock = aboveBlockId === undefined ? undefined : Result.getOrUndefined(blockTypeOfId(aboveBlockId))
 
     if (soilBlock === undefined || aboveBlock === undefined) {
-      // Not loaded, or an id this vocabulary does not know. Either way the rule
-      // declines rather than guessing; see the header.
-      const crop = CROP_OF_SEED[request.held]
-      return crop === undefined
-        ? { _tag: 'notASeed' as const, held: request.held }
-        : /* v8 ignore start -- the `?? 'air'` fallback only fires when `crop` is
-           * defined but `SOIL_OF_CROP[crop]` is not, which the table-agreement
-           * invariant `test/plant-crop.test.ts` asserts (`CROP_OF_SEED` and
-           * `SOIL_OF_CROP` name the same crops) makes unreachable. */
-          { _tag: 'wrongSoil' as const, crop, needs: SOIL_OF_CROP[crop] ?? 'air', found: 'air' as BlockType }
-      /* v8 ignore stop */
+      return {
+        _tag: 'wrongSoil' as const,
+        crop: heldCrop,
+        needs: SOIL_OF_CROP[heldCrop],
+        found: 'air' as BlockType,
+      }
     }
 
     const verdict = plantingVerdict(request, soilBlock, aboveBlock)
     if (verdict._tag === 'planted') {
-      // `verdict.crop` is drawn only from `CROP_OF_SEED`'s three values
-      // (`wheat_crop` / `potato_crop` / `nether_wart_crop`), and all three carry
-      // a row in kernel's own registry (ids 71-73), so
-      // `blockIdOf` cannot return `undefined` here. Asserted rather than
-      // branched on, since a vocabulary defect that removed one of those rows
-      // would be caught by kernel's own type declaration long before
-      // this line ran, not by a runtime fallback that plants nothing and
-      // reports success.
-      const cropBlock = Option.getOrUndefined(blockIdOf(verdict.crop))
-      if (cropBlock === undefined) {
-        return { _tag: 'unknownBlock' }
-      }
-      if (
-        commitContext === undefined ||
-        expectedRevision === undefined ||
-        expectedDimensionRevision === undefined
-      ) return { _tag: 'commitContextMissing' }
+      const cropBlock = CROP_BLOCK_IDS[verdict.crop]
+      if (commit === undefined) return { _tag: 'commitContextMissing' }
 
       const committed = Effect.gen(function* () {
         const blockWrite = yield* Schema.decodeUnknownEffect(WorldWriteBatchSchema)({
-          world: commitContext.coordinator.worldId,
-          expectedWorldRevision: expectedRevision,
-          dimension: commitContext.dimension,
-          expectedDimensionRevision,
+          world: commit.coordinator.worldId,
+          expectedWorldRevision: commit.expectedRevision,
+          dimension: commit.dimension,
+          expectedDimensionRevision: commit.expectedDimensionRevision,
           edits: [{ position: verdict.at, block: cropBlock }],
         })
-        yield* commitContext.coordinator.commit({
-          expectedRevision,
+        yield* commit.coordinator.commit({
+          expectedRevision: commit.expectedRevision,
           expectedDimensions: [{
-            dimension: commitContext.dimension,
-            expectedRevision: expectedDimensionRevision,
+            dimension: commit.dimension,
+            expectedRevision: commit.expectedDimensionRevision,
           }],
-          changes: commitContext.changes,
+          changes: commit.changes,
           blockWrite,
         })
         return verdict

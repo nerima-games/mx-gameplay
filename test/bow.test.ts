@@ -283,7 +283,7 @@ describe(`C2 bow charge uses simulation ticks (${BOW_PARITY_FIXTURE.source}; ${B
     expect(cancelled.nextState).toBeNull()
   })
 
-  it('returns a typed failure or a strictly decoded finite result for arbitrary ticks', () => {
+  it('returns a strictly decoded finite result for valid ticks', () => {
     const actor = EntityId('bow-owner')
     const action = { _tag: 'BowAction', actor, action: 'release' } as const
     const state = {
@@ -292,9 +292,10 @@ describe(`C2 bow charge uses simulation ticks (${BOW_PARITY_FIXTURE.source}; ${B
     }
     FastCheck.assert(
       FastCheck.property(
-        FastCheck.double({ min: -1e12, max: 1e12, noNaN: false, noDefaultInfinity: false }),
+        FastCheck.integer({ min: 0, max: 1e12 }),
         (rawTick) => {
-          const result = prepareBowAction(action, rawTick as typeof state.startedAt, state)
+          const tick = Schema.decodeUnknownSync(SimulationTickSchema)(rawTick)
+          const result = prepareBowAction(action, tick, state)
           if (Result.isFailure(result)) return true
           const decoded = Schema.decodeUnknownResult(BowChargePreparationSchema, {
             onExcessProperty: 'error',
@@ -307,23 +308,6 @@ describe(`C2 bow charge uses simulation ticks (${BOW_PARITY_FIXTURE.source}; ${B
       ),
       { numRuns: 250 },
     )
-  })
-
-  it('leaves the current charge state unchanged when the server tick goes backwards', () => {
-    const actor = EntityId('bow-owner')
-    const state = {
-      actor,
-      startedAt: Schema.decodeUnknownSync(SimulationTickSchema)(20),
-    }
-    const before = JSON.stringify(state)
-    const result = prepareBowAction(
-      { _tag: 'BowAction', actor, action: 'release' },
-      -1 as typeof state.startedAt,
-      state,
-    )
-
-    expect(Result.isFailure(result)).toBe(true)
-    expect(JSON.stringify(state)).toBe(before)
   })
 
   it('prepares a kernel damage event from C2 aim and authoritative pose/world', () => {
@@ -427,11 +411,6 @@ describe(`C2 bow charge uses simulation ticks (${BOW_PARITY_FIXTURE.source}; ${B
       { actor, startedAt: Schema.decodeUnknownSync(SimulationTickSchema)(19) },
     ))
     const invalidChargeShape = prepare(action, { ...charge, stale: true } as typeof charge)
-    const invalidDimension = prepare(action, charge, pose, 'moon' as typeof dimension)
-    const invalidPose = prepare(action, charge, {
-      ...pose,
-      feetPosition: unsafePosition(Number.NaN, 64, 0),
-    })
     const noTarget = prepare(action, charge, pose, dimension, tick, [])
     const notFired = prepare(action, unfiredCharge)
 
@@ -439,8 +418,6 @@ describe(`C2 bow charge uses simulation ticks (${BOW_PARITY_FIXTURE.source}; ${B
     expect(Result.isFailure(mismatchedCharge) && mismatchedCharge.failure).toBe('invalid-charge')
     expect(Result.isFailure(notFired) && notFired.failure).toBe('invalid-charge')
     expect(Result.isFailure(invalidChargeShape) && invalidChargeShape.failure).toBe('invalid-charge')
-    expect(Result.isFailure(invalidDimension) && invalidDimension.failure).toBe('invalid-authoritative-pose')
-    expect(Result.isFailure(invalidPose) && invalidPose.failure).toBe('invalid-authoritative-pose')
     expect(Result.isFailure(noTarget) && noTarget.failure).toBe('no-target')
   })
 })

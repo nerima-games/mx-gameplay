@@ -77,7 +77,6 @@ export type ShieldBlockingPreparationError =
   | 'invalid-tick-order'
   | 'shield-not-equipped'
   | 'invalid-attack'
-  | 'invalid-event'
 
 /** Prepare the C2 shield owner candidate and optional post-commit block event. */
 export const prepareShieldBlocking = (
@@ -162,37 +161,28 @@ export const prepareShieldBlocking = (
       horizontalAngle <= SHIELD_HORIZONTAL_BLOCKING_HALF_ANGLE_DEGREES * Math.PI / 180
     ) {
       blocked = true
-      blockedAmount = attack.success.amount
-      durabilityDamage = blockedAmount >= SHIELD_DURABILITY_DAMAGE_THRESHOLD ? Math.ceil(blockedAmount) : 0
-      if (blockedAmount > 0) {
-        const defenderPosition = Schema.decodeUnknownResult(WorldPositionSchema)({
-          dimension: dimension.success,
-          x: input.pose.feetPosition.x,
-          y: input.pose.feetPosition.y,
-          z: input.pose.feetPosition.z,
-        })
-        if (Result.isFailure(defenderPosition)) return Result.fail('invalid-authoritative-state')
-        const domainEvent = Schema.decodeUnknownResult(DomainEventSchema, {
-          onExcessProperty: 'error',
-        })({
-          _tag: 'ShieldBlocked',
-          tick: tick.success,
-          attacker: attack.success.attacker,
-          defender: decodedIntent.success.actor,
-          position: defenderPosition.success,
-          blockedAmount,
-        })
-        if (Result.isFailure(domainEvent) || domainEvent.success._tag !== 'ShieldBlocked') {
-          return Result.fail('invalid-event')
-        }
-        event = domainEvent.success
+      const amount = attack.success.amount
+      blockedAmount = amount
+      durabilityDamage = amount >= SHIELD_DURABILITY_DAMAGE_THRESHOLD ? Math.ceil(amount) : 0
+      const defenderPosition = Result.getOrThrow(Schema.decodeUnknownResult(WorldPositionSchema)({
+        dimension: dimension.success,
+        x: input.pose.feetPosition.x,
+        y: input.pose.feetPosition.y,
+        z: input.pose.feetPosition.z,
+      }))
+      const domainEvent: DomainEvent = {
+        _tag: 'ShieldBlocked',
+        tick: tick.success,
+        attacker: attack.success.attacker,
+        defender: decodedIntent.success.actor,
+        position: defenderPosition,
+        blockedAmount: amount,
       }
+      event = domainEvent
     }
   }
 
-  const preparation = Schema.decodeUnknownResult(ShieldBlockingPreparationSchema, {
-    onExcessProperty: 'error',
-  })({
+  const preparation: ShieldBlockingPreparation = {
     actor: decodedIntent.success.actor,
     blocking: decodedIntent.success.blocking,
     raisedAt,
@@ -200,10 +190,8 @@ export const prepareShieldBlocking = (
     blockedAmount,
     durabilityDamage,
     event,
-  })
-  return Result.isFailure(preparation)
-    ? Result.fail('invalid-event')
-    : Result.succeed(preparation.success)
+  }
+  return Result.succeed(preparation)
 }
 
 export const ZOMBIE_KIND: EntityKind = EntityKind('zombie')

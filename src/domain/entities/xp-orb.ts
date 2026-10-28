@@ -163,6 +163,13 @@ export const createExperienceOrbValue = (
 ): Result.Result<ExperienceOrbValue, Schema.SchemaError> =>
   Schema.decodeUnknownResult(ExperienceOrbValueSchema)(value)
 
+export type ExperienceOrbAbsorptionError =
+  | Brand.BrandError
+  | ExperienceOrbAbsorptionFailure
+  | ExperienceOrbAbsorptionCommitResultInvalid
+  | Schema.SchemaError
+  | WorldCommitCoordinatorError
+
 /**
  * Commits against host-registered WCC owners. This does not synchronize the
  * existing VitalsService or EntityManager Ref state.
@@ -173,8 +180,7 @@ export const absorbExperienceOrb: (
   context: ExperienceOrbAbsorptionContext,
 ) => Effect.Effect<
   ExperienceOrbAbsorption,
-  Brand.BrandError | ExperienceOrbAbsorptionFailure | ExperienceOrbAbsorptionCommitResultInvalid |
-    Schema.SchemaError | WorldCommitCoordinatorError
+  ExperienceOrbAbsorptionError
 > = (coordinator, owners, context) =>
   Effect.gen(function* () {
     const decodedContext = yield* Schema.decodeUnknownEffect(ExperienceOrbAbsorptionContextSchema)(context)

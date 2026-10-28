@@ -33,6 +33,7 @@ import {
   DimensionIdSchema,
   WorldRevisionSchema,
   adjacentBlockPosition,
+  chunkOf,
   canBlockStaySupported,
   type BlockId,
   type BlockPosition,
@@ -44,15 +45,17 @@ import {
 import { isDoorBlock } from './place-door-upper.js'
 import {
   PlayerStorageSnapshotSchema,
+  EquipmentItemSchema,
   WorldCommitChunkStoreUnavailable,
   WorldCommitCoordinatorErrorSchema,
   WorldCommitCoordinatorSnapshotErrorSchema,
   damageAt,
-  type InventoryServiceApi,
   type WorldCommitCoordinatorError,
   type ReplicatedOwnerId,
   type StorageLocation,
   type WorldCommitCoordinatorApi,
+  type WorldCommitRequest,
+  type WorldReadSnapshot,
 } from '@nerima-games/mc-sim'
 import type { ChunkStoreApi } from '@nerima-games/mc-worldgen'
 
@@ -71,14 +74,42 @@ export type BreakOutcome =
   /** Below bedrock or above the build limit. */
   | { readonly _tag: 'OutOfWorld' }
 
-export type BreakTransactionContext = Readonly<{
+export type BreakBlockPlanContext = Readonly<{
   readonly coordinator: WorldCommitCoordinatorApi
   readonly dimension: Dimension
   readonly ownerId: ReplicatedOwnerId
-  readonly inventory: Pick<InventoryServiceApi, 'restoreStorage'>
   /** Captured when the mining action starts. `undefined` means the player used a hand. */
   readonly toolLocation: StorageLocation | undefined
 }>
+
+export type BreakTransactionContext = BreakBlockPlanContext
+
+type BreakBlockPlanRequest = WorldCommitRequest & Readonly<{
+  readonly blockWrite: NonNullable<WorldCommitRequest['blockWrite']>
+}>
+
+export type PlannedCascade = Readonly<{
+  readonly _tag: 'PlannedCascade'
+  readonly request: BreakBlockPlanRequest
+  readonly ownerSnapshot: WorldReadSnapshot<typeof PlayerStorageSnapshotSchema>
+  readonly candidateStorage: Schema.Schema.Type<typeof PlayerStorageSnapshotSchema>
+  readonly outcome: Extract<BreakOutcome, { readonly _tag: 'Broken' }>
+  readonly primary: BlockPosition
+  readonly yielded: BlockId
+  readonly removed: ReadonlyArray<BlockPosition>
+}>
+
+export type BreakBlockPlanResult =
+  | PlannedCascade
+  | { readonly _tag: 'TransactionFailure'; readonly failure: BreakTransactionFailure }
+
+const BreakToolDamageResultSchema = Schema.Union([
+  Schema.TaggedStruct('InvalidLocation', {}),
+  Schema.TaggedStruct('Empty', {}),
+  Schema.TaggedStruct('NotDamageable', { item: EquipmentItemSchema }),
+  Schema.TaggedStruct('Damaged', { item: EquipmentItemSchema, applied: Schema.Int }),
+  Schema.TaggedStruct('Broken', { item: EquipmentItemSchema, applied: Schema.Int }),
+])
 
 type ObservationFailure =
   | Schema.Schema.Type<typeof WorldCommitCoordinatorSnapshotErrorSchema>
@@ -96,8 +127,7 @@ export type BreakTransactionFailure =
   | { readonly _tag: 'ObservationIncomplete'; readonly position: BlockPosition }
   | { readonly _tag: 'ObservationFailed'; readonly error: ObservationFailure }
   | { readonly _tag: 'ObservationChanged'; readonly expectedWorldRevision: WorldRevision; readonly actualWorldRevision: WorldRevision }
-  | { readonly _tag: 'ToolDamageRejected'; readonly reason: 'InvalidLocation' | 'InvalidDurability' }
-  | { readonly _tag: 'SupportRuleFailed'; readonly position: BlockPosition }
+  | { readonly _tag: 'ToolDamageRejected'; readonly reason: 'InvalidLocation' }
   | { readonly _tag: 'CommitFailed'; readonly error: WorldCommitCoordinatorError }
 
 export const BreakTransactionFailureSchema: Schema.Codec<BreakTransactionFailure, unknown> = Schema.Union([
@@ -113,9 +143,8 @@ export const BreakTransactionFailureSchema: Schema.Codec<BreakTransactionFailure
     actualWorldRevision: WorldRevisionSchema,
   }),
   Schema.TaggedStruct('ToolDamageRejected', {
-    reason: Schema.Literals(['InvalidLocation', 'InvalidDurability']),
+    reason: Schema.Literal('InvalidLocation'),
   }),
-  Schema.TaggedStruct('SupportRuleFailed', { position: BlockPositionSchema }),
   Schema.TaggedStruct('CommitFailed', { error: WorldCommitCoordinatorErrorSchema }),
 ])
 
@@ -142,16 +171,15 @@ export const BreakTransactionResultSchema: Schema.Codec<BreakTransactionResult, 
   Schema.TaggedStruct('TransactionFailure', { failure: BreakTransactionFailureSchema }),
 ])
 
-const failure = (reason: BreakTransactionFailure): BreakTransactionResult => ({
+type BreakFailure = Extract<BreakTransactionResult, { readonly _tag: 'TransactionFailure' }>
+
+const failure = (reason: BreakTransactionFailure): BreakFailure => ({
   _tag: 'TransactionFailure',
   failure: reason,
 })
 
 const positionKey = (position: BlockPosition): string =>
   `${String(position.x)},${String(position.y)},${String(position.z)}`
-
-const comparePosition = (left: BlockPosition, right: BlockPosition): number =>
-  left.x - right.x || left.y - right.y || left.z - right.z
 
 const breakBlockLegacy = (
   store: ChunkStoreApi,
@@ -178,22 +206,17 @@ const breakBlockLegacy = (
 
       case 'OutOfWorld':
         return { _tag: 'OutOfWorld' }
-      // exhaustiveness arm over BlockWriteOutcome, a closed four-tag union
-      // (mc-worldgen's chunk-store-state.d.ts): 'Written', 'Unchanged', 'ChunkNotLoaded' and
-      // 'OutOfWorld' are all handled above, so no input can reach this arm.
-      /* v8 ignore start */
       default: {
         const exhaustive: never = outcome
         return exhaustive
       }
-      /* v8 ignore stop */
     }
   })
 
-const transactionBreakBlock = (
+export const planBreakBlock = (
   position: BlockPosition,
-  context: BreakTransactionContext,
-): Effect.Effect<BreakTransactionResult> =>
+  context: BreakBlockPlanContext,
+): Effect.Effect<BreakBlockPlanResult> =>
   Effect.gen(function* () {
     const decodedDimension = Schema.decodeUnknownResult(DimensionIdSchema)(context.dimension)
     if (Result.isFailure(decodedDimension)) {
@@ -230,45 +253,28 @@ const transactionBreakBlock = (
     let candidateStorage = initial.state
     if (context.toolLocation !== undefined) {
       const damaged = damageAt(candidateStorage, context.toolLocation, 1)
-      switch (damaged.result._tag) {
+      const damageResult = Schema.decodeUnknownSync(BreakToolDamageResultSchema)(damaged.result)
+      switch (damageResult._tag) {
         case 'InvalidLocation':
           return failure({ _tag: 'ToolDamageRejected', reason: 'InvalidLocation' })
-        case 'InvalidDurability':
-        case 'EquipmentFailure':
-        case 'InvalidAmount':
-          return failure({ _tag: 'ToolDamageRejected', reason: 'InvalidDurability' })
         case 'Damaged':
         case 'Broken':
         case 'Empty':
         case 'NotDamageable':
           candidateStorage = damaged.storage
           break
-        default: {
-          const exhaustive: never = damaged.result
-          return exhaustive
-        }
       }
     }
 
     const removed: Array<BlockPosition> = [position]
-    const removedBlocks = new Map([[positionKey(position), primaryRead.reading.block]])
-    let wave: ReadonlyArray<BlockPosition> = [position]
+    let parent: Readonly<{ position: BlockPosition; block: BlockId }> = {
+      position,
+      block: primaryRead.reading.block,
+    }
 
-    while (wave.length > 0) {
-      const parents = wave
-      const candidates = new Map<string, Readonly<{ position: BlockPosition; parent: BlockPosition }>>()
-      for (const parent of parents) {
-        const above = Result.getOrUndefined(adjacentBlockPosition(parent, 'up'))
-        if (above === undefined || removedBlocks.has(positionKey(above))) continue
-        const key = positionKey(above)
-        if (!candidates.has(key)) candidates.set(key, { position: above, parent })
-      }
-      const orderedCandidates = [...candidates.values()].sort((left, right) =>
-        comparePosition(left.position, right.position),
-      )
-      if (orderedCandidates.length === 0) break
-
-      const snapshotResult = yield* observe(orderedCandidates.map((candidate) => candidate.position))
+    while (true) {
+      const above = Result.getOrThrow(adjacentBlockPosition(parent.position, 'up'))
+      const snapshotResult = yield* observe([above])
       if (Result.isFailure(snapshotResult)) {
         return failure({ _tag: 'ObservationFailed', error: snapshotResult.failure })
       }
@@ -281,37 +287,26 @@ const transactionBreakBlock = (
         })
       }
 
-      const reads = new Map(snapshot.blocks.map((block) => [positionKey(block.position), block.reading]))
-      const nextWave: Array<BlockPosition> = []
-      for (const candidate of orderedCandidates) {
-        const reading = reads.get(positionKey(candidate.position))
-        if (reading === undefined) {
-          return failure({ _tag: 'ObservationIncomplete', position: candidate.position })
-        }
-        if (reading._tag === 'ChunkNotLoaded') {
-          return failure({ _tag: 'BlockUnavailable', reason: 'chunk-not-loaded' })
-        }
-        if (reading._tag === 'OutOfWorld' || reading.block === AIR_BLOCK_ID) continue
-
-        const parentBlock = removedBlocks.get(positionKey(candidate.parent))
-        const pairedDoor =
-          parentBlock !== undefined && isDoorBlock(parentBlock) && isDoorBlock(reading.block)
-        const support = canBlockStaySupported(reading.block, AIR_BLOCK_ID)
-        if (Result.isFailure(support)) {
-          return failure({ _tag: 'SupportRuleFailed', position: candidate.position })
-        }
-        const lacksSupport = !support.success
-        if (!pairedDoor && !lacksSupport) continue
-
-        removedBlocks.set(positionKey(candidate.position), reading.block)
-        removed.push(candidate.position)
-        nextWave.push(candidate.position)
+      const read = snapshot.blocks.find((block) => positionKey(block.position) === positionKey(above))
+      if (read === undefined) {
+        return failure({ _tag: 'ObservationIncomplete', position: above })
       }
-      wave = nextWave
+      const reading = read.reading
+      if (reading._tag === 'ChunkNotLoaded') {
+        return failure({ _tag: 'BlockUnavailable', reason: 'chunk-not-loaded' })
+      }
+      if (reading._tag === 'OutOfWorld' || reading.block === AIR_BLOCK_ID) break
+
+      const pairedDoor = isDoorBlock(parent.block) && isDoorBlock(reading.block)
+      const isSupported = Result.getOrThrow(canBlockStaySupported(reading.block, AIR_BLOCK_ID))
+      if (!pairedDoor && isSupported) break
+
+      removed.push(above)
+      parent = { position: above, block: reading.block }
     }
 
     const expectedDimensionRevision = yield* context.coordinator.dimensionRevision(dimension)
-    const commitResult = yield* Effect.result(context.coordinator.commit({
+    const request: BreakBlockPlanRequest = {
       expectedRevision: initial.revision,
       expectedDimensions: [{ dimension, expectedRevision: expectedDimensionRevision }],
       changes: [{ ownerId: context.ownerId, state: candidateStorage }],
@@ -322,29 +317,42 @@ const transactionBreakBlock = (
         expectedDimensionRevision,
         edits: removed.map((removedPosition) => ({ position: removedPosition, block: AIR_BLOCK_ID })),
       },
-    }))
+    }
+
+    const yielded = primaryRead.reading.block
+    return {
+      _tag: 'PlannedCascade',
+      request,
+      ownerSnapshot: initial,
+      candidateStorage,
+      outcome: { _tag: 'Broken', yielded, chunk: chunkOf(position) },
+      primary: position,
+      yielded,
+      removed,
+    }
+  })
+
+const transactionBreakBlock = (
+  position: BlockPosition,
+  context: BreakTransactionContext,
+): Effect.Effect<BreakTransactionResult> =>
+  Effect.gen(function* () {
+    const plan = yield* planBreakBlock(position, context)
+    if (plan._tag === 'TransactionFailure') return plan
+
+    const commitResult = yield* Effect.result(context.coordinator.commit(plan.request))
     if (Result.isFailure(commitResult)) {
       return failure({ _tag: 'CommitFailed', error: commitResult.failure })
     }
 
-    // A successful C7 commit increments each affected dimension once. Derive
-    // this commit's revision from its accepted precondition instead of reading
-    // again after the coordinator gate, where another commit could intervene.
     const committedDimensionRevision = Schema.decodeUnknownSync(DimensionRevisionSchema)(
-      expectedDimensionRevision + 1,
+      plan.request.blockWrite.expectedDimensionRevision + 1,
     )
-
-    // The successful commit decoded this candidate with PlayerStorageSnapshotSchema.
-    // restoreStorage validates the same player-storage invariants before updating
-    // its Ref, so rejection here would mean that the committed candidate and the
-    // local mirror disagree about the shared schema. Surface that invariant break
-    // as a defect rather than returning a failure after the world already committed.
-    yield* Effect.orDie(context.inventory.restoreStorage(candidateStorage))
     return {
       _tag: 'CommittedCascade',
-      primary: position,
-      yielded: primaryRead.reading.block,
-      removed,
+      primary: plan.primary,
+      yielded: plan.yielded,
+      removed: plan.removed,
       worldRevision: commitResult.success.revision,
       dimensionRevision: committedDimensionRevision,
     }
@@ -354,6 +362,11 @@ export function breakBlock(
   store: ChunkStoreApi,
   position: BlockPosition,
 ): Effect.Effect<BreakOutcome>
+export function breakBlock(
+  store: ChunkStoreApi,
+  position: BlockPosition,
+  context: undefined,
+): Effect.Effect<BreakTransactionResult>
 export function breakBlock(
   store: ChunkStoreApi,
   position: BlockPosition,

@@ -1,6 +1,6 @@
 import {
-  BlockId,
   blockPositionKeyOf,
+  type BlockId,
   propertyOfBlockId,
   type BlockPosition,
   type HarvestToolCategory,
@@ -44,17 +44,12 @@ export const DIAMOND_PICKAXE_MINING_TOOL: MiningToolProfile = {
   speedMultiplier: 8,
 }
 
-const NO_HARVEST_TOOL_REQUIREMENT: HarvestToolRequirement = {
-  category: 'none',
-  minTier: 'none',
-}
-
 const normaliseEfficiencyLevel = (level: number | undefined): number =>
   level !== undefined && Number.isFinite(level) ? Math.max(0, Math.floor(level)) : 0
 
 export type MiningProgressState = {
   readonly blockKey: string
-  readonly blockId: number
+  readonly blockId: BlockId
   readonly elapsedSecs: number
   readonly requiredSecs: number
   readonly accumulatedWork: number
@@ -63,7 +58,7 @@ export type MiningProgressState = {
 
 export type MiningTarget = {
   readonly position: BlockPosition
-  readonly blockId: number
+  readonly blockId: BlockId
 }
 
 export type AdvanceMiningProgressInput = {
@@ -116,50 +111,42 @@ export const effectiveMiningSpeed = (
   return tool.speedMultiplier + efficiencyBonus
 }
 
-const hardnessOfBlockId = (value: number): number | undefined => {
-  const id = BlockId.result(value)
-  if (Result.isFailure(id)) return undefined
-  const hardness = propertyOfBlockId(id.success, 'hardness')
-  return Result.isFailure(hardness) ? undefined : hardness.success
-}
+const hardnessOfBlockId = (blockId: BlockId): number =>
+  Result.getOrThrow(propertyOfBlockId(blockId, 'hardness'))
 
-const harvestToolRequirementOfBlockId = (value: number): HarvestToolRequirement | undefined => {
-  const id = BlockId.result(value)
-  if (Result.isFailure(id)) return undefined
-  const requirement = propertyOfBlockId(id.success, 'harvestTool')
-  return Result.isFailure(requirement) ? undefined : requirement.success
-}
+const harvestToolRequirementOfBlockId = (blockId: BlockId): HarvestToolRequirement =>
+  Result.getOrThrow(propertyOfBlockId(blockId, 'harvestTool'))
 
 export const miningDurationSecsForBlock = (
-  blockId: number,
+  blockId: BlockId,
   item: ItemType | null,
   efficiencyLevel: number = 0,
 ): number => {
   const hardness = hardnessOfBlockId(blockId)
-  if (hardness === undefined || !Number.isFinite(hardness) || hardness <= 0) {
+  if (!Number.isFinite(hardness) || hardness <= 0) {
     return 0
   }
 
-  const requirement = harvestToolRequirementOfBlockId(blockId) ?? NO_HARVEST_TOOL_REQUIREMENT
+  const requirement = harvestToolRequirementOfBlockId(blockId)
   const speed = effectiveMiningSpeed(miningToolForItem(item, efficiencyLevel), requirement)
   return hardness / (MINING_TICKS_PER_SECOND * speed)
 }
 
-const miningWorkRequiredForBlock = (blockId: number): number => {
+const miningWorkRequiredForBlock = (blockId: BlockId): number => {
   const hardness = hardnessOfBlockId(blockId)
-  return hardness !== undefined && Number.isFinite(hardness) && hardness > 0
+  return Number.isFinite(hardness) && hardness > 0
     ? hardness / MINING_TICKS_PER_SECOND
     : 0
 }
 
 const miningSpeedForBlock = (
-  blockId: number,
+  blockId: BlockId,
   item: ItemType | null,
   efficiencyLevel: number,
 ): number =>
   effectiveMiningSpeed(
     miningToolForItem(item, efficiencyLevel),
-    harvestToolRequirementOfBlockId(blockId) ?? NO_HARVEST_TOOL_REQUIREMENT,
+    harvestToolRequirementOfBlockId(blockId),
   )
 
 const normaliseDeltaSecs = (deltaSecs: number): number =>

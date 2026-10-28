@@ -25,19 +25,22 @@ const DIRT_ID = Option.getOrThrow(blockIdOf('dirt'))
 const UNKNOWN_BLOCK_ID = 60_000
 
 const makeTargetedWorld = (block: number, loaded: boolean = true) =>
-  makeInMemoryWorld({
-    world: {
-      blocks: new Map([[cellKey(TARGET), BlockId(block)]]),
-      loaded: loaded ? [chunkKey(chunkOf(TARGET))] : [],
-    },
-    spawnPose: SPAWN_POSE,
+  Effect.gen(function* () {
+    const world = yield* makeInMemoryWorld({
+      world: {
+        blocks: new Map([[cellKey(TARGET), BlockId(block)]]),
+        loaded: loaded ? [chunkKey(chunkOf(TARGET))] : [],
+      },
+      spawnPose: SPAWN_POSE,
+    })
+    return { ...world, pose: yield* world.player.pose }
   })
 
 describe('targetedRightClickRoute', () => {
   it.effect('resolves a crafting-table route from player targeting state', () =>
     Effect.gen(function* () {
       const world = yield* makeTargetedWorld(CRAFTING_TABLE_ID)
-      const route = yield* targetedRightClickRoute(world.chunkStore, world.player)
+      const route = yield* targetedRightClickRoute(world.chunkStore, world.pose)
 
       expect(route).toEqual({ kind: 'craftingTable', at: TARGET })
     }),
@@ -47,7 +50,7 @@ describe('targetedRightClickRoute', () => {
     Effect.gen(function* () {
       const world = yield* makeTargetedWorld(CHEST_ID)
 
-      expect(yield* targetedRightClickRoute(world.chunkStore, world.player)).toEqual({
+      expect(yield* targetedRightClickRoute(world.chunkStore, world.pose)).toEqual({
         kind: 'storage',
         at: TARGET,
         block: 'chest',
@@ -59,7 +62,7 @@ describe('targetedRightClickRoute', () => {
     Effect.gen(function* () {
       const world = yield* makeTargetedWorld(SHULKER_BOX_ID)
 
-      expect(yield* targetedRightClickRoute(world.chunkStore, world.player)).toEqual({
+      expect(yield* targetedRightClickRoute(world.chunkStore, world.pose)).toEqual({
         kind: 'storage',
         at: TARGET,
         block: 'shulker_box',
@@ -70,7 +73,7 @@ describe('targetedRightClickRoute', () => {
   it.effect('returns undefined when the targeted block has no right-click route', () =>
     Effect.gen(function* () {
       const world = yield* makeTargetedWorld(DIRT_ID)
-      const route = yield* targetedRightClickRoute(world.chunkStore, world.player)
+      const route = yield* targetedRightClickRoute(world.chunkStore, world.pose)
 
       expect(route).toBeUndefined()
     }),
@@ -81,7 +84,7 @@ describe('targetedRightClickRoute', () => {
       const world = yield* makeTargetedWorld(CRAFTING_TABLE_ID)
       const route = yield* targetedRightClickRoute(
         world.chunkStore,
-        world.player,
+        world.pose,
         0.5,
       )
 
@@ -103,7 +106,7 @@ describe('targetedRightClickRoute', () => {
           }),
       }
 
-      const route = yield* targetedRightClickRoute(store, world.player)
+      const route = yield* targetedRightClickRoute(store, world.pose)
 
       expect(route).toEqual({ kind: 'craftingTable', at: TARGET })
       expect(readCounts.get(cellKey(TARGET))).toBe(1)
@@ -117,7 +120,7 @@ describe('targetedRightClickRoute', () => {
       const world = yield* makeTargetedWorld(0)
 
       expect(
-        yield* targetedRightClickRoute(world.chunkStore, world.player),
+        yield* targetedRightClickRoute(world.chunkStore, world.pose),
       ).toBeUndefined()
     }),
   )
@@ -127,7 +130,7 @@ describe('targetedRightClickRoute', () => {
       const world = yield* makeTargetedWorld(CRAFTING_TABLE_ID, false)
 
       expect(
-        yield* targetedRightClickRoute(world.chunkStore, world.player),
+        yield* targetedRightClickRoute(world.chunkStore, world.pose),
       ).toBeUndefined()
     }),
   )
@@ -137,7 +140,7 @@ describe('targetedRightClickRoute', () => {
       const world = yield* makeTargetedWorld(UNKNOWN_BLOCK_ID)
 
       expect(
-        yield* targetedRightClickRoute(world.chunkStore, world.player),
+        yield* targetedRightClickRoute(world.chunkStore, world.pose),
       ).toBeUndefined()
     }),
   )

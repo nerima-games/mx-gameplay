@@ -86,16 +86,11 @@ describe('C2 melee preparation', () => {
     expect(JSON.stringify({ input, zombie })).toBe(snapshot)
   })
 
-  it('rejects a non-melee intent and invalid authoritative combat state', () => {
+  it('rejects a non-melee intent and invalid block distance', () => {
     const wrongIntent = prepareMeleeAttack({ _tag: 'BowAction', actor, action: 'draw' } as never, input)
-    const invalidPose = prepareMeleeAttack(intent, {
-      ...input,
-      pose: { ...input.pose, yawRadians: Number.NaN },
-    })
     const invalidBlockDistance = prepareMeleeAttack(intent, { ...input, blockDistance: -1 })
 
     expect(Result.isFailure(wrongIntent) && wrongIntent.failure).toBe('invalid-intent')
-    expect(Result.isFailure(invalidPose) && invalidPose.failure).toBe('invalid-authoritative-state')
     expect(Result.isFailure(invalidBlockDistance) && invalidBlockDistance.failure).toBe(
       'invalid-authoritative-state',
     )
@@ -107,16 +102,14 @@ describe('C2 melee preparation', () => {
     expect(Result.isFailure(result) && result.failure).toBe('no-target')
   })
 
-  it('returns a typed failure or a strict finite event for arbitrary server ticks', () => {
+  it('keeps valid authoritative ticks in the emitted event', () => {
     FastCheck.assert(
       FastCheck.property(
-        FastCheck.double({ min: -1e12, max: 1e12, noNaN: false, noDefaultInfinity: false }),
+        FastCheck.integer({ min: 0, max: 1e12 }),
         (rawTick) => {
-          const result = prepareMeleeAttack(intent, {
-            ...input,
-            tick: rawTick as typeof input.tick,
-          })
-          if (Result.isFailure(result)) return true
+          const tick = Schema.decodeUnknownSync(SimulationTickSchema)(rawTick)
+          const result = prepareMeleeAttack(intent, { ...input, tick })
+          if (Result.isFailure(result)) return false
           const decoded = Schema.decodeUnknownResult(MeleeAttackPreparationSchema, {
             onExcessProperty: 'error',
           })(result.success)

@@ -32,7 +32,7 @@ import {
   ReplicatedOwnerIdSchema,
   WorldCommitCoordinator,
   WorldCommitCoordinatorLayer,
-  type InventoryServiceApi,
+  makeInventoryService,
   type StorageLocation
 } from "@nerima-games/mc-sim"
 import {
@@ -91,18 +91,12 @@ const makeFixture = async () => {
   )
   const store = registry.forDimension(dimension)
   await Effect.runPromise(store.load(chunk))
-
-  let restoredStorage = initialStorage
-  const inventory: Pick<InventoryServiceApi, "restoreStorage"> = {
-    restoreStorage: (snapshot) => Effect.sync(() => {
-      restoredStorage = decode(PlayerStorageSnapshotSchema)(snapshot)
-    })
-  }
+  const localInventory = await Effect.runPromise(makeInventoryService(initialStorage.inventory))
+  const initialLocalStorage = await Effect.runPromise(localInventory.storageSnapshot)
   const context: BreakTransactionContext = {
     coordinator,
     dimension,
     ownerId,
-    inventory,
     toolLocation: { _tag: "Inventory", slotIndex: 0 }
   }
 
@@ -110,7 +104,8 @@ const makeFixture = async () => {
     coordinator,
     context,
     initialStorage,
-    readRestoredStorage: () => restoredStorage,
+    localInventory,
+    initialLocalStorage,
     store
   }
 }
@@ -182,6 +177,9 @@ describe("breakBlock support cascade transaction", () => {
         const firstStorage = await readOwnerStorage(first.coordinator, first.context.ownerId)
         const secondStorage = await readOwnerStorage(second.coordinator, second.context.ownerId)
         expect(firstStorage.state).toEqual(secondStorage.state)
+        expect(firstStorage.revision).toBe(firstResult.worldRevision)
+        expect(firstStorage.revision).toBe(1)
+        expect(firstResult.dimensionRevision).toBe(1)
         const beforeDurability = first.initialStorage.inventoryDurability[0]
         const afterDurability = firstStorage.state.inventoryDurability[0]
         if (
@@ -191,7 +189,8 @@ describe("breakBlock support cascade transaction", () => {
           afterDurability === null
         ) throw new Error("the generated pickaxe has no durability")
         expect(afterDurability.current).toBe(beforeDurability.current - 1)
-        expect(first.readRestoredStorage()).toEqual(firstStorage.state)
+        expect(firstStorage.state.inventory.slots[0]?.item).toBe("iron_pickaxe")
+        expect(await first.localInventory.storageSnapshot).toEqual(first.initialLocalStorage)
       }),
       { numRuns: 20, seed: 742019 }
     )
@@ -220,7 +219,7 @@ describe("breakBlock support cascade transaction", () => {
     const afterStorage = await readOwnerStorage(fixture.coordinator, fixture.context.ownerId)
     expect(afterBlocks).toEqual(beforeBlocks)
     expect(afterStorage.state).toEqual(beforeStorage.state)
-    expect(fixture.readRestoredStorage()).toEqual(fixture.initialStorage)
+    expect(await fixture.localInventory.storageSnapshot).toEqual(fixture.initialLocalStorage)
   })
 
   it("removes the matching upper door half with the lower half", async () => {
@@ -240,6 +239,20 @@ describe("breakBlock support cascade transaction", () => {
       { _tag: "Block", block: AIR_BLOCK_ID },
       { _tag: "Block", block: AIR_BLOCK_ID },
     ])
+    const ownerAfter = await readOwnerStorage(fixture.coordinator, fixture.context.ownerId)
+    const beforeDurability = fixture.initialStorage.inventoryDurability[0]
+    const afterDurability = ownerAfter.state.inventoryDurability[0]
+    if (
+      beforeDurability === undefined ||
+      beforeDurability === null ||
+      afterDurability === undefined ||
+      afterDurability === null
+    ) {
+      throw new Error("the iron pickaxe has no durability")
+    }
+    expect(afterDurability.current).toBe(beforeDurability.current - 1)
+    expect(ownerAfter.revision).toBe(1)
+    expect(await fixture.localInventory.storageSnapshot).toEqual(fixture.initialLocalStorage)
   })
 
   it("rejects a support cascade when the world revision changes after its primary observation", async () => {
@@ -268,6 +281,7 @@ describe("breakBlock support cascade transaction", () => {
         ),
     }
     const beforeBlocks = await readBlocks(fixture.store, positions)
+    const beforeOwner = await readOwnerStorage(fixture.coordinator, fixture.context.ownerId)
 
     const raw = await Effect.runPromise(breakBlock(fixture.store, primary, {
       ...fixture.context,
@@ -281,6 +295,8 @@ describe("breakBlock support cascade transaction", () => {
     })
     expect(observations).toBe(2)
     expect(await readBlocks(fixture.store, positions)).toEqual(beforeBlocks)
-    expect(fixture.readRestoredStorage()).toEqual(fixture.initialStorage)
+    const afterOwner = await readOwnerStorage(fixture.coordinator, fixture.context.ownerId)
+    expect(afterOwner.state).toEqual(beforeOwner.state)
+    expect(await fixture.localInventory.storageSnapshot).toEqual(fixture.initialLocalStorage)
   })
 })

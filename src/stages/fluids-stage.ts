@@ -7,6 +7,7 @@ import {
   enqueueFluidDisturbance,
   fluidRuntimeSemaphoreFor,
   fluidRuntimeStateFor,
+  gameplayPlayerStateForStage,
   runFluidPropagation,
   splitBudget,
 } from './registration-core.js'
@@ -17,7 +18,7 @@ import type {
 } from './registration-core.js'
 
 export const makeFluidsStage = (context: GameplayStageContext): StageRegistration => {
-  const { state, store, player, commit } = context
+  const { state, store, commit } = context
   return {
     id: GAMEPLAY_STAGE_IDS.fluids,
     after: [GAMEPLAY_STAGE_IDS.enderDragon],
@@ -26,6 +27,8 @@ export const makeFluidsStage = (context: GameplayStageContext): StageRegistratio
         const runtime = yield* fluidRuntimeStateFor(state.fluidFrontier)
         const semaphore = yield* fluidRuntimeSemaphoreFor(state.fluidFrontier)
         if (commit === undefined) return
+        const playerState = yield* gameplayPlayerStateForStage(state, commit)
+        if (playerState === undefined) return
         yield* semaphore.withPermits(1)(
           Effect.gen(function* () {
             const tick = yield* Ref.updateAndGet(state.tickCount, (value) => value + 1)
@@ -49,7 +52,7 @@ export const makeFluidsStage = (context: GameplayStageContext): StageRegistratio
 
             if (work.length === 0) return
 
-            const dimension = yield* player.dimension
+            const dimension = playerState.pose.feetPosition.dimension
             yield* runFluidPropagation(store, runtime, work, {
               coordinator: commit.coordinator,
               dimension,

@@ -222,8 +222,5 @@ export const prepareKnockbackDirection = (
     direction,
     horizontalMagnitude: direction._tag === 'Away' ? Math.hypot(direction.x, direction.z) : 0,
   }
-  const decoded = Schema.decodeUnknownResult(KnockbackPreparationSchema, {
-    onExcessProperty: 'error',
-  })(prepared)
-  return Result.isFailure(decoded) ? Result.fail('invalid-offset') : Result.succeed(decoded.success)
+  return Result.succeed(prepared)
 }

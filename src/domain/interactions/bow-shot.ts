@@ -56,9 +56,7 @@ import type { Dimension, Position, SimulationTick } from '@nerima-games/mc-kerne
 import type { EntityId } from '@nerima-games/mc-sim'
 import {
   EntityIdSchema,
-  DimensionIdSchema,
   DomainEventSchema,
-  SimulationTickSchema,
   WorldPositionSchema,
   type DomainEvent,
 } from '@nerima-games/mc-kernel'
@@ -226,14 +224,14 @@ export const arrowHitProjection = (
  * hypothetical in a game with spawn stacks; the reference does not record which
  * wins and `test/bow.test.ts` pins it.
  */
-export const shotTarget = (
-  candidates: ReadonlyArray<ShotCandidate>,
+export const shotTargetWithCandidate = <Candidate extends ShotCandidate>(
+  candidates: ReadonlyArray<Candidate>,
   origin: Position,
   dirX: number,
   dirY: number,
   dirZ: number,
   reach: number = BOW_MAX_RANGE,
-): ShotHit | undefined => {
+): Readonly<{ candidate: Candidate; hit: ShotHit }> | undefined => {
   if (
     !Number.isFinite(origin.x) ||
     !Number.isFinite(origin.y) ||
@@ -258,7 +256,7 @@ export const shotTarget = (
   const unitZ = dirZ / length
   const radiusSquared = BOW_TARGET_RADIUS * BOW_TARGET_RADIUS
 
-  let nearest: ShotHit | undefined
+  let nearest: Readonly<{ candidate: Candidate; hit: ShotHit }> | undefined
   for (const candidate of candidates) {
     const toX = candidate.feetPosition.x - origin.x
     const toY = candidate.feetPosition.y + BOW_TARGET_CENTER_Y_OFFSET - origin.y
@@ -280,13 +278,23 @@ export const shotTarget = (
       continue
     }
 
-    if (nearest === undefined || alongRay < nearest.distance) {
-      nearest = { id: candidate.id, distance: alongRay }
+    if (nearest === undefined || alongRay < nearest.hit.distance) {
+      nearest = { candidate, hit: { id: candidate.id, distance: alongRay } }
     }
   }
 
   return nearest
 }
+
+export const shotTarget = (
+  candidates: ReadonlyArray<ShotCandidate>,
+  origin: Position,
+  dirX: number,
+  dirY: number,
+  dirZ: number,
+  reach: number = BOW_MAX_RANGE,
+): ShotHit | undefined =>
+  shotTargetWithCandidate(candidates, origin, dirX, dirY, dirZ, reach)?.hit
 
 /**
  * How finely the terrain between shooter and target is sampled, in blocks.
@@ -418,11 +426,8 @@ export const BowShotPreparationSchema: Schema.ConstraintDecoder<BowShotPreparati
 export type BowShotPreparationError =
   | 'invalid-intent'
   | 'invalid-charge'
-  | 'invalid-authoritative-pose'
-  | 'invalid-aim'
   | 'no-target'
   | 'blocked-by-terrain'
-  | 'invalid-event'
 
 /**
  * Prepare a hitscan bow hit from C2 intent and authoritative player/world state.
@@ -442,75 +447,58 @@ export const prepareBowShot = (
     Result.isFailure(decodedIntent) || decodedIntent.success._tag !== 'BowAction' ||
     decodedIntent.success.action !== 'release'
   ) return Result.fail('invalid-intent')
-  if (charge.actor !== decodedIntent.success.actor || !charge.fired) return Result.fail('invalid-charge')
+  if (charge.actor !== decodedIntent.success.actor) return Result.fail('invalid-charge')
   const decodedCharge = Schema.decodeUnknownResult(BowChargePreparationSchema, {
     onExcessProperty: 'error',
   })(charge)
-  if (Result.isFailure(decodedCharge)) return Result.fail('invalid-charge')
+  if (Result.isFailure(decodedCharge) || !decodedCharge.success.fired) return Result.fail('invalid-charge')
 
-  const decodedTick = Schema.decodeUnknownResult(SimulationTickSchema)(tick)
-  const decodedDimension = Schema.decodeUnknownResult(DimensionIdSchema)(dimension)
-  if (Result.isFailure(decodedTick) || Result.isFailure(decodedDimension)) {
-    return Result.fail('invalid-authoritative-pose')
-  }
-  if (
-    !Number.isFinite(pose.feetPosition.x) || !Number.isFinite(pose.feetPosition.y) ||
-    !Number.isFinite(pose.feetPosition.z) || !Number.isFinite(pose.yawRadians) ||
-    !Number.isFinite(pose.pitchRadians)
-  ) return Result.fail('invalid-authoritative-pose')
 
   const aim = decodedIntent.success.aimDirection ?? {
     x: -Math.sin(pose.yawRadians) * Math.cos(pose.pitchRadians),
     y: -Math.sin(pose.pitchRadians),
     z: Math.cos(pose.yawRadians) * Math.cos(pose.pitchRadians),
   }
-  if (!Number.isFinite(aim.x) || !Number.isFinite(aim.y) || !Number.isFinite(aim.z)) {
-    return Result.fail('invalid-aim')
-  }
-  const originDecoded = Schema.decodeUnknownResult(WorldPositionSchema)({
-    dimension: decodedDimension.success,
+  const origin = Result.getOrThrow(Schema.decodeUnknownResult(WorldPositionSchema)({
+    dimension,
     x: pose.feetPosition.x,
     y: pose.feetPosition.y + EYE_LEVEL_OFFSET,
     z: pose.feetPosition.z,
-  })
-  if (Result.isFailure(originDecoded)) return Result.fail('invalid-authoritative-pose')
+  }))
 
-  const target = shotTarget(candidates, originDecoded.success, aim.x, aim.y, aim.z, BOW_MAX_RANGE)
-  if (target === undefined) return Result.fail('no-target')
-  const length = Math.hypot(aim.x, aim.y, aim.z)
-  if (!Number.isFinite(length) || length === 0) return Result.fail('invalid-aim')
-  const end = position(
-    PositionAxis(originDecoded.success.x + aim.x / length * target.distance),
-    PositionAxis(originDecoded.success.y + aim.y / length * target.distance),
-    PositionAxis(originDecoded.success.z + aim.z / length * target.distance),
+  const targetMatch = shotTargetWithCandidate(
+    candidates,
+    origin,
+    aim.x,
+    aim.y,
+    aim.z,
+    BOW_MAX_RANGE,
   )
-  if (shotBlockedByTerrain(isBlockedAt, originDecoded.success, end)) {
+  if (targetMatch === undefined) return Result.fail('no-target')
+  const { hit: target, candidate: targetCandidate } = targetMatch
+  const length = Math.hypot(aim.x, aim.y, aim.z)
+  const end = position(
+    PositionAxis(origin.x + aim.x / length * target.distance),
+    PositionAxis(origin.y + aim.y / length * target.distance),
+    PositionAxis(origin.z + aim.z / length * target.distance),
+  )
+  if (shotBlockedByTerrain(isBlockedAt, origin, end)) {
     return Result.fail('blocked-by-terrain')
   }
 
-  const targetCandidate = candidates.find((candidate) => candidate.id === target.id)
-  if (targetCandidate === undefined) return Result.fail('no-target')
-  const event = Schema.decodeUnknownResult(DomainEventSchema, {
-    onExcessProperty: 'error',
-  })({
+  const targetPosition = Result.getOrThrow(Schema.decodeUnknownResult(WorldPositionSchema)({
+    dimension: dimension,
+    x: targetCandidate.feetPosition.x,
+    y: targetCandidate.feetPosition.y,
+    z: targetCandidate.feetPosition.z,
+  }))
+  const event: DomainEvent = {
     _tag: 'EntityDamaged',
-    tick: decodedTick.success,
+    tick: tick,
     entity: target.id,
-    position: {
-      dimension: decodedDimension.success,
-      x: targetCandidate.feetPosition.x,
-      y: targetCandidate.feetPosition.y,
-      z: targetCandidate.feetPosition.z,
-    },
+    position: targetPosition,
     amount: decodedCharge.success.damage,
     cause: 'projectile',
-  })
-  if (Result.isFailure(event) || event.success._tag !== 'EntityDamaged') {
-    return Result.fail('invalid-event')
   }
-  const prepared = { target, event: event.success }
-  const decoded = Schema.decodeUnknownResult(BowShotPreparationSchema, {
-    onExcessProperty: 'error',
-  })(prepared)
-  return Result.isFailure(decoded) ? Result.fail('invalid-event') : Result.succeed(decoded.success)
+  return Result.succeed({ target, event })
 }

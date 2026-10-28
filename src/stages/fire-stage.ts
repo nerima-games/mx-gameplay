@@ -1,5 +1,6 @@
 import {
   GAMEPLAY_STAGE_IDS,
+  gameplayPlayerStateForStage,
   stepFireLifecycle,
 } from './registration-core.js'
 import { Effect } from 'effect'
@@ -9,20 +10,22 @@ import type {
 } from './registration-core.js'
 
 export const makeFireStage = (context: GameplayStageContext): StageRegistration => {
-  const { state, store, roster, inventory, player, commit } = context
+  const { state, store, roster, commit } = context
   return {
     id: GAMEPLAY_STAGE_IDS.fire,
     after: [GAMEPLAY_STAGE_IDS.interactions],
     run: (dt) => {
       if (commit === undefined) return Effect.void
-      return Effect.flatMap(player.dimension, (dimension) =>
-        stepFireLifecycle(state, store, roster, inventory, player, dt, {
+      return Effect.gen(function* () {
+        const playerState = yield* gameplayPlayerStateForStage(state, commit)
+        if (playerState === undefined) return
+        yield* stepFireLifecycle(state, store, roster, playerState, dt, {
           coordinator: commit.coordinator,
-          dimension,
+          dimension: playerState.pose.feetPosition.dimension,
           changes: [],
           playerStorageOwnerId: commit.playerStorageOwnerId,
-        }),
-      )
+        })
+      })
     },
   }
 }

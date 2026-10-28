@@ -108,7 +108,6 @@ export type TillOutcome =
    */
   | { readonly _tag: 'obstructed'; readonly blockedBy: BlockType }
   | { readonly _tag: 'invalidPosition' }
-  | { readonly _tag: 'unknownBlock' }
   | { readonly _tag: 'commitContextMissing' }
   | { readonly _tag: 'commitFailed'; readonly error: Schema.SchemaError | WorldCommitCoordinatorError }
 
@@ -181,12 +180,13 @@ export const tillSoil = (
       return { _tag: 'invalidPosition' }
     }
 
-    const expectedRevision = commitContext === undefined
+    const commit = commitContext === undefined
       ? undefined
-      : yield* commitContext.coordinator.revision
-    const expectedDimensionRevision = commitContext === undefined
-      ? undefined
-      : yield* commitContext.coordinator.dimensionRevision(commitContext.dimension)
+      : {
+          ...commitContext,
+          expectedRevision: yield* commitContext.coordinator.revision,
+          expectedDimensionRevision: yield* commitContext.coordinator.dimensionRevision(commitContext.dimension),
+        }
 
     const groundId = yield* port.blockAt(ground)
     const aboveId = yield* port.blockAt(abovePosition)
@@ -202,38 +202,25 @@ export const tillSoil = (
 
     const verdict = tillingVerdict(held, ground, groundBlock, aboveBlock)
     if (verdict._tag === 'tilled') {
-      // `TILLED_BLOCK` is the literal `'farmland'`, which carries a row in
-      // kernel's own registry, so `blockIdOf` cannot return `undefined` here.
-      // Asserted rather than
-      // branched on, for the same reason `./plant-crop.ts` asserts its own
-      // three crop ids: a vocabulary defect that removed that row would be
-      // caught by kernel's own type declaration, not by a runtime
-      // fallback that tills nothing and reports success.
-      const farmlandBlock = Option.getOrUndefined(blockIdOf(TILLED_BLOCK))
-      if (farmlandBlock === undefined) {
-        return { _tag: 'unknownBlock' }
-      }
-      if (
-        commitContext === undefined ||
-        expectedRevision === undefined ||
-        expectedDimensionRevision === undefined
-      ) return { _tag: 'commitContextMissing' }
+      // A missing id for this fixed BlockType means the kernel registry is inconsistent.
+      const farmlandBlock = Option.getOrThrow(blockIdOf(TILLED_BLOCK))
+      if (commit === undefined) return { _tag: 'commitContextMissing' }
 
       const committed = Effect.gen(function* () {
         const blockWrite = yield* Schema.decodeUnknownEffect(WorldWriteBatchSchema)({
-          world: commitContext.coordinator.worldId,
-          expectedWorldRevision: expectedRevision,
-          dimension: commitContext.dimension,
-          expectedDimensionRevision,
+          world: commit.coordinator.worldId,
+          expectedWorldRevision: commit.expectedRevision,
+          dimension: commit.dimension,
+          expectedDimensionRevision: commit.expectedDimensionRevision,
           edits: [{ position: verdict.at, block: farmlandBlock }],
         })
-        yield* commitContext.coordinator.commit({
-          expectedRevision,
+        yield* commit.coordinator.commit({
+          expectedRevision: commit.expectedRevision,
           expectedDimensions: [{
-            dimension: commitContext.dimension,
-            expectedRevision: expectedDimensionRevision,
+            dimension: commit.dimension,
+            expectedRevision: commit.expectedDimensionRevision,
           }],
-          changes: commitContext.changes,
+          changes: commit.changes,
           blockWrite,
         })
         return verdict

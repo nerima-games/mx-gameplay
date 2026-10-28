@@ -1031,12 +1031,12 @@ const teleportCellOf = (position: EndermanTeleportPosition): BlockPosition | und
   return x === undefined || y === undefined || z === undefined ? undefined : blockPosition(x, y, z)
 }
 
-const teleportPositionOf = (value: EndermanTeleportPosition): Position | undefined => {
-  const x = Result.getOrUndefined(PositionAxis.result(value.x))
-  const y = Result.getOrUndefined(PositionAxis.result(value.y))
-  const z = Result.getOrUndefined(PositionAxis.result(value.z))
-  return x === undefined || y === undefined || z === undefined ? undefined : kernelPosition(x, y, z)
-}
+const teleportPositionOf = (value: EndermanTeleportPosition): Position =>
+  kernelPosition(
+    Result.getOrThrow(PositionAxis.result(value.x)),
+    Result.getOrThrow(PositionAxis.result(value.y)),
+    Result.getOrThrow(PositionAxis.result(value.z)),
+  )
 
 // ---------------------------------------------------------------------------
 // The sweep
@@ -1279,16 +1279,7 @@ export const sweepMobs = (
           : {
               ...snapshot,
               behaviour: next,
-              /* v8 ignore next 9 -- `ageTicks` (just above) is `undefined` if and
-               * only if `snapshot` is, and both are `const`s read from the same
-               * `entity.behaviour` with no reassignment between their
-               * definition and this closure, so whenever THIS branch runs
-               * `ageTicks` is always a number. TypeScript cannot see that two
-               * independently-typed consts stay in lockstep, so the fallback is
-               * a type-checker formality the arithmetic forbids — the same
-               * shape as `mob-spawn-search.ts`'s clamped-index fallback
-               * (vitest.config.ts's coverage-gate comment). */
-              ageTicks: ageTicks ?? snapshot.ageTicks,
+              ageTicks: snapshot.ageTicks + senses.dt * 20,
             }
         if (entity.kind === ZOMBIE_KIND) {
           const feetPosition = pursueHorizontally(
@@ -1537,8 +1528,8 @@ export const resolveEndermanTeleportProbes = (
         cells.filter((cell): cell is EndermanTeleportCell => cell !== undefined),
       )
       if (destination !== probe.current) {
-        const position = teleportPositionOf(destination)
-        if (position !== undefined) destinations.set(probe.entityId, position)
+        // Changed destinations came from candidate cells that passed BlockAxis validation above.
+        destinations.set(probe.entityId, teleportPositionOf(destination))
       }
     }
 

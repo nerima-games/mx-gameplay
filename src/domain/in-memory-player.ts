@@ -1,10 +1,14 @@
 /**
- * A COMPLETE in-memory `PlayerService`, typed by this repository's mirror.
+ * A standalone in-memory `PlayerService`, typed by this repository's mirror.
  *
- * The FOURTH service `gameplayModule` requires — `./in-memory-world`,
- * `./in-memory-inventory` and `./in-memory-entity-manager` are the other three,
- * and the first of them carries the argument for why these exist and when they
- * are deleted.
+ * `gameplayModule` does not require or use this adapter: composed gameplay reads
+ * pose and dimension only from the registered WCC player owner. This local Ref
+ * exists for direct rule tests and hosts that explicitly choose the standalone
+ * service, so its candidate/submission helpers must not be used as gameplay
+ * authority.
+ *
+ * `./in-memory-world` exposes this service for standalone simulation helpers.
+ * Gameplay stage registration does not acquire it.
  *
  * ---------------------------------------------------------------------------
  * IT CLAMPS PITCH, AND THE TEST DOUBLE DOES NOT

@@ -12,7 +12,7 @@ import {
   rightClickRoute,
   type RightClickRoute,
 } from '../domain/interactions/right-click-target.js'
-import type { PlayerServiceApi } from '@nerima-games/mc-sim'
+import type { PlayerPose } from '@nerima-games/mc-sim'
 import { DEFAULT_BLOCK_REACH } from './registration.js'
 
 const coordinateKey = (x: number, y: number, z: number): string => `${x},${y},${z}`
@@ -20,14 +20,13 @@ const coordinateKey = (x: number, y: number, z: number): string => `${x},${y},${
 const blockPositionAt = (x: number, y: number, z: number): BlockPosition =>
   blockPosition(BlockAxis(x + 0), BlockAxis(y + 0), BlockAxis(z + 0))
 
-/** Resolve the right-click route for the block currently targeted by the player. */
+/** Resolve the route from a pose read from the authoritative gameplay player owner. */
 export const targetedRightClickRoute = (
   store: ChunkStoreApi,
-  player: PlayerServiceApi,
+  pose: PlayerPose,
   maxDistance: number = DEFAULT_BLOCK_REACH,
 ): Effect.Effect<RightClickRoute | undefined> =>
   Effect.gen(function* () {
-    const pose = yield* player.pose
     const candidates: Array<BlockPosition> = []
     // No dedup Set: `@nerima-games/mc-physics`'s `voxelRaycast` DDA walk
     // (`domain/dda.js`) advances exactly one axis by exactly one cell per

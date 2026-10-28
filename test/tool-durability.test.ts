@@ -62,7 +62,6 @@ const makeDurabilityFixture = Effect.gen(function* () {
     coordinator,
     dimension,
     ownerId,
-    inventory: world.inventory,
     toolLocation: { _tag: 'Inventory', slotIndex: 0 },
   }
   return { world, coordinator, context, initialStorage }
@@ -106,11 +105,12 @@ describe('mining tool durability transaction', () => {
       expect(yield* fixture.coordinator.dimensionRevision(dimension)).toBe(beforeDimensionRevision + 2)
 
       const owner = yield* fixture.coordinator.snapshot(ownerId, PlayerStorageSnapshotSchema)
-      const mirrored = yield* fixture.world.inventory.storageSnapshot
+      const localStorage = yield* fixture.world.inventory.storageSnapshot
       const afterDurability = owner.state.inventoryDurability[0]
       if (afterDurability === undefined || afterDurability === null) throw new Error('the iron pickaxe disappeared')
       expect(afterDurability.current).toBe(beforeDurability.current - 1)
-      expect(mirrored).toEqual(owner.state)
+      expect(owner.state.inventory.slots[0]?.item).toBe('iron_pickaxe')
+      expect(localStorage).toEqual(fixture.initialStorage)
       expect(yield* getBlocks(fixture.world.chunkStore)).toEqual(cascade.map(() => ({ _tag: 'Block', block: 0 })))
     }),
   )
@@ -120,7 +120,7 @@ describe('mining tool durability transaction', () => {
       const fixture = yield* makeDurabilityFixture
       const beforeBlocks = yield* getBlocks(fixture.world.chunkStore)
       const beforeOwner = yield* fixture.coordinator.snapshot(ownerId, PlayerStorageSnapshotSchema)
-      const beforeMirror = yield* fixture.world.inventory.storageSnapshot
+      const beforeLocalStorage = yield* fixture.world.inventory.storageSnapshot
       const beforeWorldRevision = yield* fixture.coordinator.revision
       const beforeDimensionRevision = yield* fixture.coordinator.dimensionRevision(dimension)
       const coordinator: WorldCommitCoordinatorApi = {
@@ -151,7 +151,7 @@ describe('mining tool durability transaction', () => {
 
       expect(yield* getBlocks(fixture.world.chunkStore)).toEqual(beforeBlocks)
       expect((yield* fixture.coordinator.snapshot(ownerId, PlayerStorageSnapshotSchema)).state).toEqual(beforeOwner.state)
-      expect(yield* fixture.world.inventory.storageSnapshot).toEqual(beforeMirror)
+      expect(yield* fixture.world.inventory.storageSnapshot).toEqual(beforeLocalStorage)
       expect(yield* fixture.coordinator.revision).toBe(beforeWorldRevision)
       expect(yield* fixture.coordinator.dimensionRevision(dimension)).toBe(beforeDimensionRevision)
     }),
@@ -162,7 +162,7 @@ describe('mining tool durability transaction', () => {
       const fixture = yield* makeDurabilityFixture
       const beforeBlocks = yield* getBlocks(fixture.world.chunkStore)
       const beforeOwner = yield* fixture.coordinator.snapshot(ownerId, PlayerStorageSnapshotSchema)
-      const beforeMirror = yield* fixture.world.inventory.storageSnapshot
+      const beforeLocalStorage = yield* fixture.world.inventory.storageSnapshot
       const beforeWorldRevision = yield* fixture.coordinator.revision
       const beforeDimensionRevision = yield* fixture.coordinator.dimensionRevision(dimension)
       const runtimeBreakBlock: Function = breakBlock
@@ -180,7 +180,7 @@ describe('mining tool durability transaction', () => {
 
       expect(yield* getBlocks(fixture.world.chunkStore)).toEqual(beforeBlocks)
       expect((yield* fixture.coordinator.snapshot(ownerId, PlayerStorageSnapshotSchema)).state).toEqual(beforeOwner.state)
-      expect(yield* fixture.world.inventory.storageSnapshot).toEqual(beforeMirror)
+      expect(yield* fixture.world.inventory.storageSnapshot).toEqual(beforeLocalStorage)
       expect(yield* fixture.coordinator.revision).toBe(beforeWorldRevision)
       expect(yield* fixture.coordinator.dimensionRevision(dimension)).toBe(beforeDimensionRevision)
     }),

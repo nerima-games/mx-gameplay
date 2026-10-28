@@ -1,5 +1,6 @@
 import {
   EntityHealthPoints,
+  EntityId,
   EntityIdSchema,
   DomainEventSchema,
   ITEM_TYPES,
@@ -314,6 +315,53 @@ export const droppedItemOwnerRegistration = (
   schema: DroppedItemOwnerSnapshotSchema,
   initialState,
 })
+
+export const appendDroppedItemSpawns = (
+  snapshot: DroppedItemOwnerSnapshot,
+  drops: ReadonlyArray<DroppedItemSpawn>,
+  expectedRevision: number,
+): Result.Result<DroppedItemOwnerSnapshot, Schema.SchemaError | DroppedItemSpawnError> => {
+  const items = [...snapshot.items]
+  const ids = new Set(items.map(({ id }) => id))
+  let serial = 0
+
+  for (const drop of drops) {
+    const requested = StackCount.result(drop.count)
+    if (Result.isFailure(requested)) return Result.fail({ _tag: 'InvalidStack' })
+    let remaining = requested.success
+    while (remaining > 0) {
+      const count = Math.min(maxStackCountForItem(drop.item), remaining)
+      const stackCount = StackCount.result(count)
+      if (Result.isFailure(stackCount)) return Result.fail({ _tag: 'InvalidStack' })
+      const id = EntityId(`mx-gameplay-drop:${String(expectedRevision)}:${String(serial)}`)
+      serial += 1
+      if (ids.has(id)) continue
+      ids.add(id)
+      items.push({
+        id,
+        feetPosition: drop.at,
+        behaviour: {
+          _tag: 'DroppedItem',
+          item: drop.item,
+          count: stackCount.success,
+          durability: copyDurability(
+            drop.durability === undefined ? durabilityForItem(drop.item) : drop.durability,
+          ),
+          ...(drop.eligibleFromFrame === undefined
+            ? {}
+            : { eligibleFromFrame: drop.eligibleFromFrame }),
+          ...(drop.customName === undefined ? {} : { customName: drop.customName }),
+          ...(drop.enchantments === undefined
+            ? {}
+            : { enchantments: drop.enchantments.map((enchantment) => ({ ...enchantment })) }),
+        },
+      })
+      remaining -= count
+    }
+  }
+
+  return Schema.decodeUnknownResult(DroppedItemOwnerSnapshotSchema)({ items })
+}
 
 export const droppedItemPickupOwnerRegistrations = (
   owners: DroppedItemPickupOwners,

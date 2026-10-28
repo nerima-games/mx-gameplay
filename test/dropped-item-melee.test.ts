@@ -13,8 +13,8 @@ import {
   type WorldCommitCoordinatorApi,
 } from '@nerima-games/mc-sim'
 import { Effect, Result, Schema } from 'effect'
-import { DomainEventSchema, EntityHealthPoints, itemStack, StackCount, WorldIdSchema } from '@nerima-games/mc-kernel'
-import { EntityId, EntityKind } from '@nerima-games/mc-sim'
+import { DomainEventSchema, EntityHealthPoints, itemIdOf, itemStack, StackCount, WorldIdSchema, WorldRevisionSchema } from '@nerima-games/mc-kernel'
+import { EntityId, EntityKind, WorldRevisionConflict } from '@nerima-games/mc-sim'
 import {
   CREEPER_KIND,
   DROPPED_ITEM_KIND,
@@ -23,6 +23,9 @@ import {
 } from '../src/domain/entities/mob-frame'
 import {
   DroppedItemOwnerSnapshotSchema,
+  DroppedItemPickupCommitIncompleteSchema,
+  DroppedItemPickupRequestSchema,
+  DroppedItemPickupSchema,
   DroppedItemPickupResultSchema,
   droppedItemPickupOwnerRegistrations,
   pickupDroppedItemsCommitted,
@@ -683,7 +686,7 @@ describe('dropped item entities', () => {
   )
 
   for (const seed of [70301, 70302]) {
-    it(`conserves item counts across partial committed pickups (seed ${seed})`, () => {
+    it(`commits a successful pickup once and conserves item counts (seed ${seed})`, () => {
       FastCheck.assert(
         FastCheck.property(
           FastCheck.integer({ min: 1, max: 64 }),
@@ -698,7 +701,19 @@ describe('dropped item entities', () => {
               [committedDroppedItem(count)],
             ))
 
-            const pickups = Effect.runSync(pickupDroppedItemsCommitted(coordinator, committedPickupOwners, {
+            let commitCalls = 0
+            let committedOwnerCount = 0
+            let requestHasBlockWrite = true
+            const countingCoordinator: WorldCommitCoordinatorApi = {
+              ...coordinator,
+              commit: (request) => {
+                commitCalls += 1
+                committedOwnerCount = request.changes.length
+                requestHasBlockWrite = request.blockWrite !== undefined
+                return coordinator.commit(request)
+              },
+            }
+            const pickups = Effect.runSync(pickupDroppedItemsCommitted(countingCoordinator, committedPickupOwners, {
               actor: pickupActor,
               tick: 5,
               position: origin,
@@ -719,13 +734,75 @@ describe('dropped item entities', () => {
               .reduce((total, { behaviour }) => total + behaviour.count, 0)
             const accepted = pickups.reduce((total, pickup) => total + pickup.accepted, 0)
 
-            return storedAfter - 63 + remaining === count && accepted === storedAfter - 63
+            return storedAfter - 63 + remaining === count &&
+              accepted === storedAfter - 63 &&
+              commitCalls === 1 &&
+              committedOwnerCount === 2 &&
+              !requestHasBlockWrite &&
+              playerSnapshot.revision === 1 &&
+              droppedItemsSnapshot.revision === 1
           },
         ),
         { numRuns: 50, seed },
       )
     })
   }
+
+  it('keeps both owners and revision unchanged when a pickup commit fails', () => {
+    FastCheck.assert(
+      FastCheck.property(
+        FastCheck.integer({ min: 1, max: 64 }),
+        (count) => {
+          const coordinator = Effect.runSync(makePickupCoordinator(emptyPlayerStorage(), [
+            committedDroppedItem(count),
+          ]))
+          let commitCalls = 0
+          let requestHasBlockWrite = true
+          const rejectingCoordinator: WorldCommitCoordinatorApi = {
+            ...coordinator,
+            commit: (request) => {
+              commitCalls += 1
+              requestHasBlockWrite = request.blockWrite !== undefined
+              return Effect.fail(new WorldRevisionConflict({
+                expected: Schema.decodeUnknownSync(WorldRevisionSchema)(0),
+                actual: Schema.decodeUnknownSync(WorldRevisionSchema)(1),
+              }))
+            },
+          }
+          const playerBefore = Effect.runSync(coordinator.snapshot(
+            committedPickupOwners.playerStorage,
+            PlayerStorageSnapshotSchema,
+          ))
+          const itemsBefore = Effect.runSync(coordinator.snapshot(
+            committedPickupOwners.droppedItems,
+            DroppedItemOwnerSnapshotSchema,
+          ))
+          const outcome = Effect.runSync(Effect.result(pickupDroppedItemsCommitted(
+            rejectingCoordinator,
+            committedPickupOwners,
+            { actor: pickupActor, tick: 5, position: origin },
+          )))
+          const playerAfter = Effect.runSync(coordinator.snapshot(
+            committedPickupOwners.playerStorage,
+            PlayerStorageSnapshotSchema,
+          ))
+          const itemsAfter = Effect.runSync(coordinator.snapshot(
+            committedPickupOwners.droppedItems,
+            DroppedItemOwnerSnapshotSchema,
+          ))
+
+          return Result.isFailure(outcome) &&
+            commitCalls === 1 &&
+            !requestHasBlockWrite &&
+            playerAfter.revision === playerBefore.revision &&
+            itemsAfter.revision === itemsBefore.revision &&
+            JSON.stringify(playerAfter.state) === JSON.stringify(playerBefore.state) &&
+            JSON.stringify(itemsAfter.state) === JSON.stringify(itemsBefore.state)
+        },
+      ),
+      { numRuns: 50, seed: 70303 },
+    )
+  })
 
   it('strictly validates the replicated dropped-item owner with its public schema', () => {
     const validSnapshot = { items: [committedDroppedItem(1)] }
@@ -762,6 +839,61 @@ describe('dropped item entities', () => {
         }],
       }),
     )).toBe(true)
+  })
+
+  it('rejects missing required owner and result fields and null for every public pickup schema', () => {
+    const pickupEvent = {
+      _tag: 'ItemPickedUp' as const,
+      tick: 4,
+      actor: pickupActor,
+      source: { _tag: 'DroppedItem' as const, id: dropSource },
+      item: itemIdOf('gunpowder'),
+      count: 1,
+    }
+    const validPickup = {
+      actor: pickupActor,
+      source: dropSource,
+      item: 'gunpowder' as const,
+      accepted: StackCount(1),
+      event: pickupEvent,
+    }
+    const cases = [
+      {
+        schema: DroppedItemOwnerSnapshotSchema,
+        valid: { items: [committedDroppedItem(1)] },
+        missing: 'items',
+      },
+      {
+        schema: DroppedItemPickupRequestSchema,
+        valid: { actor: pickupActor, tick: 4, position: origin },
+        missing: 'actor',
+      },
+      {
+        schema: DroppedItemPickupCommitIncompleteSchema,
+        valid: { _tag: 'DroppedItemPickupCommitIncomplete', missingOwners: [committedPickupOwners.droppedItems] },
+        missing: 'missingOwners',
+      },
+      {
+        schema: DroppedItemPickupSchema,
+        valid: validPickup,
+        missing: 'actor',
+      },
+      {
+        schema: DroppedItemPickupResultSchema,
+        valid: [validPickup],
+        missing: undefined,
+      },
+    ] as const
+
+    for (const { schema, valid, missing } of cases) {
+      expect(Result.isFailure(Schema.decodeUnknownResult(schema)(null))).toBe(true)
+      if (missing !== undefined) {
+        const partial = Object.fromEntries(
+          Object.entries(valid).filter(([key]) => key !== missing),
+        )
+        expect(Result.isFailure(Schema.decodeUnknownResult(schema)(partial))).toBe(true)
+      }
+    }
   })
 })
 

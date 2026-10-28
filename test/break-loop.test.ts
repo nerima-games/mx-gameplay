@@ -36,7 +36,14 @@ import {
 } from '../src/stages/registration'
 import { GAMEPLAY_STAGE_IDS } from '../src/stages/stage-ids'
 import { cellKey, chunkKey, chunkOf, makeInMemoryWorld } from '../src/domain/in-memory-world.js'
-import { DeltaTimeSecs, StackCount, itemStack } from '@nerima-games/mc-kernel'
+import {
+  BlockIdSchema,
+  BlockPositionSchema,
+  DeltaTimeSecs,
+  DimensionIdSchema,
+  StackCount,
+  itemStack,
+} from '@nerima-games/mc-kernel'
 import type { BlockPosition, Dimension } from '@nerima-games/mc-kernel'
 import { DROPPED_ITEM_KIND, type MobBehaviour } from '../src/domain/entities/mob-frame'
 import { BlockId, blockIdOf, blockPositionKeyOf } from '@nerima-games/mc-kernel'
@@ -44,12 +51,11 @@ import { NO_TOOL } from '../src/domain/interactions/block-loot'
 import {
   PlayerStorageSnapshotSchema,
   type ReplicatedOwnerId,
-  type ReplicatedSnapshot,
   WorldCommitChunkStoreUnavailable,
-  type WorldCommitRequest,
+  WorldCommitCoordinatorErrorSchema,
   type WorldCommitCoordinatorApi,
 } from '@nerima-games/mc-sim'
-import { breakBlock } from '../src/domain/interactions/break-block.js'
+import { BreakTransactionResultSchema, breakBlock } from '../src/domain/interactions/break-block.js'
 import { makeGameplayCommitServices } from './support/transactional-stage-doubles.js'
 import { blockPosition, position as fixturePosition } from './support/coordinate-fixtures.js'
 
@@ -67,6 +73,7 @@ import { blockPosition, position as fixturePosition } from './support/coordinate
  * would have made the loop untestable while looking like a bug.
  */
 const DIRT_ID = BlockId(3)
+const OVERWORLD = Schema.decodeUnknownSync(DimensionIdSchema)('overworld')
 const LEVER_ID = Option.getOrThrow(blockIdOf('lever'))
 const DOOR_ID = Option.getOrThrow(blockIdOf('door'))
 const AT: BlockPosition = blockPosition(3, 64, 7)
@@ -159,34 +166,133 @@ describe('the break loop', () => {
     }),
   )
 
-  it.effect('transactional breaks reject invalid dimensions and captured tool locations', () =>
+  it.effect('transactional breaks reject invalid captured tool locations', () =>
     Effect.gen(function* () {
       const world = yield* oneBlockWorld()
       const commit = yield* makeGameplayCommitServices(world.chunkStore, world.inventory)
       const context = {
         coordinator: commit.coordinator,
-        dimension: 'moon' as never,
+        dimension: OVERWORLD,
         ownerId: commit.playerStorageOwnerId,
-        inventory: world.inventory,
         toolLocation: { _tag: 'Inventory' as const, slotIndex: -1 },
       }
 
-      const invalidDimension = yield* breakBlock(world.chunkStore, AT, context)
       const invalidToolLocation = yield* breakBlock(world.chunkStore, AT, {
         ...context,
-        dimension: 'overworld',
       })
 
-      expect(invalidDimension).toStrictEqual({
-        _tag: 'TransactionFailure',
-        failure: { _tag: 'InvalidDimension' },
-      })
       expect(invalidToolLocation).toStrictEqual({
         _tag: 'TransactionFailure',
         failure: { _tag: 'ToolDamageRejected', reason: 'InvalidLocation' },
       })
       expect(yield* world.chunkStore.getBlock(AT)).toStrictEqual({ _tag: 'Block', block: DIRT_ID })
       expect(yield* commit.coordinator.revision).toBe(0)
+    }),
+  )
+
+  it.effect('accepts empty and non-damageable slots and breaks a tool on its last use', () =>
+    Effect.gen(function* () {
+      const position = Schema.decodeUnknownSync(BlockPositionSchema)({
+        x: AT.x,
+        y: AT.y,
+        z: AT.z,
+      })
+      const dirt = Schema.decodeUnknownSync(BlockIdSchema)(DIRT_ID)
+      // Dirt drops itself when broken: https://minecraft.wiki/w/Dirt
+      // Iron pickaxes lose one durability point per block: https://minecraft.wiki/w/Iron_Pickaxe
+      const emptyWorld = yield* makeInMemoryWorld<MobBehaviour>({
+        world: {
+          blocks: new Map([[cellKey(position), dirt]]),
+          loaded: [chunkKey(chunkOf(position))],
+        },
+      })
+      const emptyCommit = yield* makeGameplayCommitServices(emptyWorld.chunkStore, emptyWorld.inventory)
+      const emptyBefore = yield* emptyCommit.coordinator.snapshot(
+        emptyCommit.playerStorageOwnerId,
+        PlayerStorageSnapshotSchema,
+      )
+      const emptyResult = Schema.decodeUnknownSync(BreakTransactionResultSchema)(
+        yield* breakBlock(emptyWorld.chunkStore, position, {
+          coordinator: emptyCommit.coordinator,
+          dimension: OVERWORLD,
+          ownerId: emptyCommit.playerStorageOwnerId,
+          toolLocation: { _tag: 'Inventory', slotIndex: 0 },
+        }),
+      )
+      const emptyAfter = yield* emptyCommit.coordinator.snapshot(
+        emptyCommit.playerStorageOwnerId,
+        PlayerStorageSnapshotSchema,
+      )
+      expect(emptyResult._tag).toBe('CommittedCascade')
+      expect(emptyAfter.state).toEqual(emptyBefore.state)
+
+      const dirtStack = Result.getOrThrow(itemStack('dirt', StackCount(1)))
+      const nonDamageableWorld = yield* makeInMemoryWorld<MobBehaviour>({
+        inventory: [dirtStack],
+        world: {
+          blocks: new Map([[cellKey(position), dirt]]),
+          loaded: [chunkKey(chunkOf(position))],
+        },
+      })
+      const nonDamageableCommit = yield* makeGameplayCommitServices(
+        nonDamageableWorld.chunkStore,
+        nonDamageableWorld.inventory,
+      )
+      const nonDamageableBefore = yield* nonDamageableCommit.coordinator.snapshot(
+        nonDamageableCommit.playerStorageOwnerId,
+        PlayerStorageSnapshotSchema,
+      )
+      const nonDamageableResult = Schema.decodeUnknownSync(BreakTransactionResultSchema)(
+        yield* breakBlock(nonDamageableWorld.chunkStore, position, {
+          coordinator: nonDamageableCommit.coordinator,
+          dimension: OVERWORLD,
+          ownerId: nonDamageableCommit.playerStorageOwnerId,
+          toolLocation: { _tag: 'Inventory', slotIndex: 0 },
+        }),
+      )
+      const nonDamageableAfter = yield* nonDamageableCommit.coordinator.snapshot(
+        nonDamageableCommit.playerStorageOwnerId,
+        PlayerStorageSnapshotSchema,
+      )
+      expect(nonDamageableResult._tag).toBe('CommittedCascade')
+      expect(nonDamageableAfter.state).toEqual(nonDamageableBefore.state)
+
+      const ironPickaxe = Result.getOrThrow(itemStack('iron_pickaxe', StackCount(1)))
+      const lastUseWorld = yield* makeInMemoryWorld<MobBehaviour>({
+        inventory: [ironPickaxe],
+        world: {
+          blocks: new Map([[cellKey(position), dirt]]),
+          loaded: [chunkKey(chunkOf(position))],
+        },
+      })
+      const initialStorage = yield* lastUseWorld.inventory.storageSnapshot
+      const durability = initialStorage.inventoryDurability[0]
+      if (durability === undefined || durability === null) throw new Error('the iron pickaxe has no durability')
+      const lastUseStorage = Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)({
+        ...initialStorage,
+        inventoryDurability: initialStorage.inventoryDurability.map((current, index) =>
+          index === 0 ? { current: 1, max: durability.max } : current,
+        ),
+      })
+      yield* lastUseWorld.inventory.restoreStorage(lastUseStorage)
+      const lastUseCommit = yield* makeGameplayCommitServices(lastUseWorld.chunkStore, lastUseWorld.inventory)
+      const lastUseResult = Schema.decodeUnknownSync(BreakTransactionResultSchema)(
+        yield* breakBlock(lastUseWorld.chunkStore, position, {
+          coordinator: lastUseCommit.coordinator,
+          dimension: OVERWORLD,
+          ownerId: lastUseCommit.playerStorageOwnerId,
+          toolLocation: { _tag: 'Inventory', slotIndex: 0 },
+        }),
+      )
+      const lastUseOwner = yield* lastUseCommit.coordinator.snapshot(
+        lastUseCommit.playerStorageOwnerId,
+        PlayerStorageSnapshotSchema,
+      )
+
+      expect(lastUseResult._tag).toBe('CommittedCascade')
+      expect(lastUseOwner.state.inventory.slots[0]).toBeUndefined()
+      expect(lastUseOwner.state.inventoryDurability[0]).toBeNull()
+      expect(yield* lastUseWorld.inventory.storageSnapshot).toEqual(lastUseStorage)
     }),
   )
 
@@ -203,9 +309,8 @@ describe('the break loop', () => {
       }
       const context = {
         coordinator,
-        dimension: 'overworld' as const,
+        dimension: OVERWORLD,
         ownerId: commit.playerStorageOwnerId,
-        inventory: world.inventory,
         toolLocation: undefined,
       }
 
@@ -213,7 +318,7 @@ describe('the break loop', () => {
         _tag: 'TransactionFailure',
         failure: { _tag: 'ObservationIncomplete', position: AT },
       })
-      expect(yield* breakBlock(world.chunkStore, AT, undefined as never)).toStrictEqual({
+      expect(yield* breakBlock(world.chunkStore, AT, undefined)).toStrictEqual({
         _tag: 'TransactionFailure',
         failure: { _tag: 'MissingTransactionContext' },
       })
@@ -240,9 +345,8 @@ describe('the break loop', () => {
 
       expect(yield* breakBlock(world.chunkStore, AT, {
         coordinator,
-        dimension: 'overworld',
+        dimension: OVERWORLD,
         ownerId: commit.playerStorageOwnerId,
-        inventory: world.inventory,
         toolLocation: undefined,
       })).toStrictEqual({
         _tag: 'TransactionFailure',
@@ -269,9 +373,8 @@ describe('the break loop', () => {
       }
       const context = {
         coordinator,
-        dimension: 'overworld' as const,
+        dimension: OVERWORLD,
         ownerId: commit.playerStorageOwnerId,
-        inventory: world.inventory,
         toolLocation: undefined,
       }
 
@@ -306,9 +409,8 @@ describe('the break loop', () => {
 
       expect(yield* breakBlock(world.chunkStore, AT, {
         coordinator,
-        dimension: 'overworld',
+        dimension: OVERWORLD,
         ownerId: commit.playerStorageOwnerId,
-        inventory: world.inventory,
         toolLocation: undefined,
       })).toMatchObject({
         _tag: 'TransactionFailure',
@@ -336,23 +438,23 @@ describe('the break loop', () => {
           reads: ReadonlyArray<Readonly<{ dimension: Dimension; position: BlockPosition }>>,
         ) => Effect.map(commit.coordinator.observe(ownerId, schema, reads), (snapshot) => {
           observations += 1
-          return observations === 1
-            ? snapshot
-            : {
-                ...snapshot,
-                blocks: snapshot.blocks.map((block) => ({
-                  ...block,
-                  reading: { _tag: 'ChunkNotLoaded' as const },
-                })),
-              }
+          if (observations === 1 || !('blocks' in snapshot)) {
+            return snapshot
+          }
+          return {
+            ...snapshot,
+            blocks: snapshot.blocks.map((block) => ({
+              ...block,
+              reading: { _tag: 'ChunkNotLoaded' as const },
+            })),
+          }
         }),
       }
 
       expect(yield* breakBlock(world.chunkStore, AT, {
         coordinator,
-        dimension: 'overworld',
+        dimension: OVERWORLD,
         ownerId: commit.playerStorageOwnerId,
-        inventory: world.inventory,
         toolLocation: undefined,
       })).toStrictEqual({
         _tag: 'TransactionFailure',
@@ -372,9 +474,8 @@ describe('the break loop', () => {
       const airCommit = yield* makeGameplayCommitServices(airWorld.chunkStore, airWorld.inventory)
       const context = {
         coordinator: airCommit.coordinator,
-        dimension: 'overworld' as const,
+        dimension: OVERWORLD,
         ownerId: airCommit.playerStorageOwnerId,
-        inventory: airWorld.inventory,
         toolLocation: undefined,
       }
       const unloadedWorld = yield* makeInMemoryWorld<MobBehaviour>({
@@ -383,9 +484,8 @@ describe('the break loop', () => {
       const unloadedCommit = yield* makeGameplayCommitServices(unloadedWorld.chunkStore, unloadedWorld.inventory)
       const unloadedContext = {
         coordinator: unloadedCommit.coordinator,
-        dimension: 'overworld' as const,
+        dimension: OVERWORLD,
         ownerId: unloadedCommit.playerStorageOwnerId,
-        inventory: unloadedWorld.inventory,
         toolLocation: undefined,
       }
 
@@ -602,7 +702,7 @@ describe('the break loop', () => {
       if (diamondAfter === undefined || diamondAfter === null) throw new Error('the diamond pickaxe disappeared')
       expect(ironAfter).toEqual(initialIron)
       expect(diamondAfter.current).toBe(initialDiamond.current - 1)
-      expect(local).toEqual(owner.state)
+      expect(local).toEqual(initial)
     }),
   )
 
@@ -648,7 +748,6 @@ describe('the break loop', () => {
       })
       yield* runInteractions(stages as never)
 
-      expect(yield* world.inventory.countOf('dirt')).toBe(2)
       expect(yield* commit.coordinator.dimensionRevision('overworld')).toBe(2)
       const local = yield* world.inventory.storageSnapshot
       const owner = yield* commit.coordinator.snapshot(
@@ -658,7 +757,12 @@ describe('the break loop', () => {
       const diamondAfter = owner.state.inventoryDurability[1]
       if (diamondAfter === undefined || diamondAfter === null) throw new Error('the diamond pickaxe disappeared')
       expect(diamondAfter.current).toBe(initialDiamond.current - 2)
-      expect(local).toEqual(owner.state)
+      const dirtCount = owner.state.inventory.slots.reduce(
+        (count, slot) => count + (slot?.item === 'dirt' ? slot.count : 0),
+        0,
+      )
+      expect(dirtCount).toBe(2)
+      expect(local).toEqual(initial)
     }),
   )
 
@@ -899,33 +1003,47 @@ describe('the break loop', () => {
     }),
   )
 
-  it.effect('keeps mined loot as a world drop when the owner snapshot changes before deposit', () =>
+  it.effect('keeps a block untouched when its owner changes before the atomic break commit', () =>
     Effect.gen(function* () {
       const world = yield* oneBlockWorld()
       const commit = yield* makeGameplayCommitServices(world.chunkStore, world.inventory)
+      let injected = false
+      let commitFailure: unknown
       const coordinator: WorldCommitCoordinatorApi = {
         ...commit.coordinator,
-        commitFromSnapshot: <
-          Codec extends Schema.Codec<any, any>,
-          BuildError = never,
-          BuildServices = never,
-        >(
-          ownerId: ReplicatedOwnerId,
-          schema: Codec,
-          buildRequest: (snapshot: ReplicatedSnapshot<Codec>) =>
-            Effect.Effect<WorldCommitRequest, BuildError, BuildServices>,
-        ) => commit.coordinator.commitFromSnapshot(ownerId, schema, (snapshot) =>
-        Effect.flatMap(buildRequest(snapshot), (request) =>
-          Effect.map(
-            commit.coordinator.commit({
-              expectedRevision: snapshot.revision,
-              expectedDimensions: [],
-              changes: [{ ownerId, state: snapshot.state }],
-            }),
-            () => request,
-          ),
-        ),
-        ),
+        commit: (request) =>
+          Effect.gen(function* () {
+            if (!injected) {
+              injected = true
+              const snapshot = yield* commit.coordinator.snapshot(
+                commit.playerStorageOwnerId,
+                PlayerStorageSnapshotSchema,
+              )
+              // Dirt drops itself when broken in vanilla: https://minecraft.wiki/w/Dirt
+              const dirtStack = Result.getOrThrow(itemStack('dirt', StackCount(1)))
+              const changedStorage = Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)({
+                ...snapshot.state,
+                inventory: {
+                  slots: snapshot.state.inventory.slots.map((slot, index) => index === 0 ? dirtStack : slot),
+                },
+                inventoryDurability: snapshot.state.inventoryDurability.map((durability, index) =>
+                  index === 0 ? null : durability,
+                ),
+              })
+              yield* commit.coordinator.commit({
+                expectedRevision: snapshot.revision,
+                expectedDimensions: [],
+                changes: [{ ownerId: commit.playerStorageOwnerId, state: changedStorage }],
+              })
+            }
+
+            const result = yield* Effect.result(commit.coordinator.commit(request))
+            if (Result.isFailure(result)) {
+              commitFailure = result.failure
+              return yield* Effect.fail(result.failure)
+            }
+            return result.success
+          }),
       }
       const state = yield* makeGameplayFrameState
       const stages = gameplayStages(
@@ -944,12 +1062,21 @@ describe('the break loop', () => {
       yield* requestBlockBreak(state, AT)
       yield* runInteractions(stages as never)
 
-      expect(yield* world.chunkStore.getBlock(AT)).toStrictEqual({ _tag: 'Block', block: 0 })
+      expect(injected).toBe(true)
+      expect(Schema.decodeUnknownSync(WorldCommitCoordinatorErrorSchema)(commitFailure)._tag).toBe(
+        'WorldRevisionConflict',
+      )
+      expect(yield* world.chunkStore.getBlock(AT)).toStrictEqual({ _tag: 'Block', block: DIRT_ID })
       expect(yield* world.inventory.countOf('dirt')).toBe(0)
       const roster = yield* world.entities.snapshot
-      expect(roster.entities).toHaveLength(1)
-      expect(roster.entities[0]?.kind).toBe(DROPPED_ITEM_KIND)
+      expect(roster.entities).toHaveLength(0)
+      const owner = yield* commit.coordinator.snapshot(
+        commit.playerStorageOwnerId,
+        PlayerStorageSnapshotSchema,
+      )
+      expect(owner.state.inventory.slots[0]).toMatchObject({ item: 'dirt', count: 1 })
       expect(yield* commit.coordinator.revision).toBe(1)
+      expect(yield* commit.coordinator.dimensionRevision('overworld')).toBe(0)
     }),
   )
 

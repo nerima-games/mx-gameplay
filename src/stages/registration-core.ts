@@ -90,7 +90,6 @@ import {
   blockTypeOfId,
   capabilityOfBlockId,
   decodeBlockPositionKey,
-  EntityHealthPoints,
   horizontalBlockNeighbours,
   PositionAxis,
   position as kernelPosition,
@@ -120,6 +119,7 @@ import {
   type FurnaceState,
   type InventoryServiceApi,
   type PlayerServiceInputError,
+  PlayerServiceSnapshotSchema,
   type TimeServiceApi,
   type VehicleServiceApi,
 } from '@nerima-games/mc-sim'
@@ -127,10 +127,8 @@ import { Brand, Effect, Equal, Option, Ref, Result, Schema, Semaphore } from 'ef
 import {
   PlayerStorageSnapshotSchema,
   damageAt as damagePlayerStorageAt,
-  makeReplicatedOwnerId,
   validatePlayerStorageSnapshot,
   withInventory,
-  type BucketServiceApi,
   type PlayerStorage,
   type ReplicatedOwnerCandidate,
   type ReplicatedOwnerId,
@@ -139,7 +137,12 @@ import {
   type StorageLocation,
   type WorldCommitCoordinatorApi,
   type WorldCommitCoordinatorError,
+  type WorldReadSnapshot,
 } from '@nerima-games/mc-sim'
+import {
+  GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+} from './gameplay-owner-registrations.js'
+export { GAMEPLAY_PLAYER_STORAGE_OWNER_ID } from './gameplay-owner-registrations.js'
 import {
   advanceVillagerRestock,
   copyVillagerTradeState,
@@ -161,23 +164,8 @@ import {
   type StatusEffectApplication,
   type StatusEffectState,
 } from '../domain/status-effect.js'
-import {
-  collectBrewingBottle as collectBottle,
-  copyBrewingStandState,
-  drinkBrewingPotion as drinkPotion,
-  emptyBrewingStandState,
-  acceptBrewingBottle as insertBottle,
-  acceptBrewingFuel as insertFuel,
-  acceptBrewingIngredient as insertIngredient,
-  tickBrewingStand,
-  type BrewingBottle,
-  type BrewingCollectionResult,
-  type BrewingDrinkResult,
-  type BrewingIngredient,
-  type BrewingStandState,
-  type BrewingTransferResult,
-} from '../domain/brewing.js'
 import { targetabilityFromStore } from '../domain/in-memory-world.js'
+import type { BrewingBottle, BrewingIngredient } from '../domain/brewing.js'
 import { ChunkStore, type ChunkStoreApi } from '@nerima-games/mc-worldgen'
 import {
   chunkCoordsAround,
@@ -197,7 +185,6 @@ import {
   restoreFireLifecycleSnapshot,
   type FireActorContact,
   type FireCell,
-  type FireEntityDamage,
   type FireLifecycleSnapshot,
   type FireLifecycleState,
   type FirePosition,
@@ -220,23 +207,30 @@ import {
   type MobDropEvent,
   type MobExperienceEvent,
   type MobBehaviour,
-  type MobCasualty,
   type MobSpawnAttempt,
 } from '../domain/entities/mob-frame.js'
 import { FRESH_PRIMED_TNT } from '../domain/mob/primed-tnt.js'
 import {
   DROPPED_ITEM_PICKUP_RADIUS,
   pickupDroppedItems,
+  pickupDroppedItemsCommitted,
   spawnDroppedItems,
+  type DroppedItemPickupFailure,
+  type DroppedItemPickupRequest,
+  type DroppedItemPickupResult,
+  type DroppedItemSpawnError,
   type DroppedItemSpawn,
 } from '../domain/entities/dropped-item.js'
+import {
+  absorbExperienceOrb,
+  type ExperienceOrbAbsorption,
+  type ExperienceOrbAbsorptionContext,
+  type ExperienceOrbAbsorptionError,
+} from '../domain/entities/xp-orb.js'
 import { searchSpawnCandidates } from '../domain/entities/mob-spawn-search.js'
 import { hostileSpawnsAllowed } from '../domain/day-night.js'
 import {
-  changed,
-  DESPAWNED,
   entityManagerTag,
-  UNCHANGED,
   type EntityId,
   type EntityManager,
   type EntityManagerApi,
@@ -269,14 +263,14 @@ import {
 import { DEFAULT_ROLL_SEED, drawRolls, rollAt } from '../domain/frame-rolls.js'
 import type { Dimension, PortalTravelPlan } from '@nerima-games/mc-worldgen'
 import { OUTSIDE_PORTAL, type PortalDwell, stepPortalDwell } from '../domain/portal-dwell.js'
-import { applyPortalTravel, NO_KNOWN_PORTALS } from '../domain/portal-travel.js'
+import { NO_KNOWN_PORTALS } from '../domain/portal-travel.js'
 import { PlayerService, type PlayerServiceApi } from '@nerima-games/mc-sim'
 import {
-  applyEndPortalTravel,
   isEndPortalBlock,
   type EndPortalTravelEvent,
 } from '../domain/end-portal-travel.js'
 import { breakBlock } from '../domain/interactions/break-block.js'
+import type { BreakTransactionFailure } from '../domain/interactions/break-block.js'
 import { doorUpperBreakCell } from '../domain/interactions/place-door-upper.js'
 import {
   BLOCK_LOOT_ROLLS,
@@ -284,12 +278,14 @@ import {
   NO_TOOL,
   type BlockLootContext,
 } from '../domain/interactions/block-loot.js'
-import { placeBlock, type PlaceOutcome } from '../domain/interactions/place-block.js'
+import type { PlaceOutcome } from '../domain/interactions/place-block.js'
 import { cropDrops, type CropDropOutcome } from '../domain/interactions/crop-drops.js'
 import { applyBoneMeal, type BoneMealOutcome } from '../domain/interactions/bone-meal.js'
 import { resolveFoodUse, type FoodUseOutcome, type FoodUseRequest } from '../domain/interactions/eat-food.js'
 import {
   makeSurvivalHungerRuntime,
+  makeReplicatedSurvivalHungerRuntime,
+  type SurvivalHungerError,
   type SurvivalHungerRuntimeApi,
 } from '../domain/survival-hunger.js'
 import {
@@ -415,27 +411,42 @@ export const resolveArmoredPlayerDamages = (
 type PreparedFirePlayerDamage = Readonly<{
   readonly damages: ReadonlyArray<PlayerDamageEvent>
   readonly changes: ReadonlyArray<ReplicatedOwnerCandidate>
-  readonly storageAfterCommit: PlayerStorage | undefined
 }>
 
+type FirePlayerDamagePreparationFailure =
+  | Readonly<{
+      _tag: 'OwnerSnapshotFailed'
+      error: WorldCommitCoordinatorError | Schema.SchemaError
+    }>
+  | Readonly<{
+      _tag: 'OwnerRevisionChanged'
+      expectedRevision: WorldWriteBatch['expectedWorldRevision']
+      observedRevision: WorldWriteBatch['expectedWorldRevision']
+    }>
+  | Readonly<{
+      _tag: 'InvalidStorageCandidate'
+      validation: Exclude<ReturnType<typeof validatePlayerStorageSnapshot>, { _tag: 'Valid' }>
+    }>
+
 const prepareFirePlayerDamage = (
-  inventory: InventoryServiceApi,
   coordinator: WorldCommitCoordinatorApi,
   ownerId: ReplicatedOwnerId,
   expectedRevision: WorldWriteBatch['expectedWorldRevision'],
   damages: ReadonlyArray<PlayerDamageEvent>,
-): Effect.Effect<PreparedFirePlayerDamage | undefined> => Effect.gen(function* () {
-  const local = yield* inventory.storageSnapshot
+): Effect.Effect<Result.Result<PreparedFirePlayerDamage, FirePlayerDamagePreparationFailure>> => Effect.gen(function* () {
   const observed = yield* Effect.result(coordinator.snapshot(ownerId, PlayerStorageSnapshotSchema))
-  if (
-    Result.isFailure(observed) ||
-    observed.success.revision !== expectedRevision ||
-    !Equal.equals(local, observed.success.state)
-  ) {
-    return undefined
+  if (Result.isFailure(observed)) {
+    return Result.fail({ _tag: 'OwnerSnapshotFailed', error: observed.failure })
+  }
+  if (observed.success.revision !== expectedRevision) {
+    return Result.fail({
+      _tag: 'OwnerRevisionChanged',
+      expectedRevision,
+      observedRevision: observed.success.revision,
+    })
   }
 
-  let storage = local
+  let storage = observed.success.state
   const resolvedDamages: PlayerDamageEvent[] = []
   for (const event of damages) {
     if (event.damage.amount === 0) {
@@ -455,13 +466,15 @@ const prepareFirePlayerDamage = (
   }
 
   const validation = validatePlayerStorageSnapshot(storage)
-  if (validation._tag !== 'Valid') return undefined
-  const storageChanged = !Equal.equals(local, validation.storage)
-  return {
-    damages: resolvedDamages,
-    changes: storageChanged ? [{ ownerId, state: validation.storage }] : [],
-    storageAfterCommit: storageChanged ? validation.storage : undefined,
+  if (validation._tag !== 'Valid') {
+    return Result.fail({ _tag: 'InvalidStorageCandidate', validation })
   }
+  return Result.succeed({
+    damages: resolvedDamages,
+    changes: Equal.equals(observed.success.state, validation.storage)
+      ? []
+      : [{ ownerId, state: validation.storage }],
+  })
 })
 
 /**
@@ -1011,7 +1024,7 @@ const runFluidPropagation = (
 export type GameplayFrameState = {
   readonly enderDragonEncounter: EnderDragonEncounterStageApi
   readonly survivalHunger: SurvivalHungerRuntimeApi
-  readonly playerDead: Ref.Ref<boolean>
+  readonly operationFailures: Ref.Ref<ReadonlyArray<GameplayStageOperationFailure>>
   readonly pendingBreaks: Ref.Ref<ReadonlyArray<BlockPositionKey>>
   readonly pendingPlacements: Ref.Ref<ReadonlyArray<PlacementRequest>>
   readonly pendingBlockUses: Ref.Ref<ReadonlyArray<BlockUseRequest>>
@@ -1019,6 +1032,11 @@ export type GameplayFrameState = {
   readonly pendingBowShots: Ref.Ref<ReadonlyArray<BowShotRequest>>
   readonly pendingMeleeAttacks: Ref.Ref<ReadonlyArray<MeleeAttackRequest>>
   readonly pendingPearlThrows: Ref.Ref<ReadonlyArray<EnderPearlThrowRequest>>
+  readonly pendingDroppedItemPickups: Ref.Ref<ReadonlyArray<DroppedItemPickupRequest>>
+  readonly droppedItemPickupExecutions: Ref.Ref<ReadonlyArray<DroppedItemPickupExecution>>
+  readonly pendingExperienceOrbAbsorptions: Ref.Ref<ReadonlyArray<ExperienceOrbAbsorptionContext>>
+  readonly experienceOrbAbsorptionExecutions: Ref.Ref<ReadonlyArray<ExperienceOrbAbsorptionExecution>>
+  readonly unsupportedOperations: Ref.Ref<ReadonlyArray<GameplayUnsupportedOperation>>
   readonly pendingVillagerTrades: Ref.Ref<ReadonlyArray<VillagerTradeRequest>>
   readonly pendingStatusEffects: Ref.Ref<ReadonlyArray<StatusEffectApplication>>
   readonly consumedItems: Ref.Ref<ReadonlyArray<PlaceableItemType>>
@@ -1036,7 +1054,6 @@ export type GameplayFrameState = {
   readonly playerHeals: Ref.Ref<ReadonlyArray<PlayerHealingEvent>>
   readonly playerMovementSpeedMultiplier: Ref.Ref<number>
   readonly statusEffects: Ref.Ref<StatusEffectState>
-  readonly brewingStand: Ref.Ref<BrewingStandState>
   readonly fireLifecycle: Ref.Ref<FireLifecycleState>
   readonly hostileContactCooldowns: Ref.Ref<ReadonlyMap<EntityId, number>>
   readonly mobDrops: Ref.Ref<ReadonlyArray<MobDropEvent>>
@@ -1170,6 +1187,10 @@ export type BlockPlacementCommandOutcome =
   | { readonly _tag: 'InventoryUnavailable' }
   | { readonly _tag: 'RequestIdConflict' }
   | { readonly _tag: 'PlayerDead' }
+  | {
+      readonly _tag: 'Unsupported'
+      readonly reason: 'WorldCommitCoordinatorUnavailable' | 'McSimPlanFragmentUnavailable'
+    }
 
 /** One drainable answer for a correlated placement command. */
 export type BlockPlacementResult = {
@@ -1630,10 +1651,112 @@ export type EnderPearlOutcome = {
   readonly damage: Damage | undefined
 }
 
-export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.gen(function* () {
+export type DroppedItemPickupExecution = Readonly<{
+  request: DroppedItemPickupRequest
+  outcome:
+    | Readonly<{ _tag: 'Completed'; result: DroppedItemPickupResult }>
+    | Readonly<{ _tag: 'Failed'; error: DroppedItemPickupFailure }>
+    | Readonly<{
+        _tag: 'Unsupported'
+        reason: 'WorldCommitCoordinatorUnavailable'
+      }>
+    | Readonly<{
+        _tag: 'Unsupported'
+        reason: 'OwnerRegistrationUnavailable'
+      }>
+}>
+
+export type ExperienceOrbAbsorptionExecution = Readonly<{
+  request: ExperienceOrbAbsorptionContext
+  outcome:
+    | Readonly<{ _tag: 'Completed'; result: ExperienceOrbAbsorption }>
+    | Readonly<{ _tag: 'Failed'; error: ExperienceOrbAbsorptionError }>
+    | Readonly<{
+        _tag: 'Unsupported'
+        reason: 'WorldCommitCoordinatorUnavailable'
+      }>
+    | Readonly<{
+        _tag: 'Unsupported'
+        reason: 'OwnerRegistrationUnavailable'
+      }>
+}>
+
+export type GameplayUnsupportedAction =
+  | 'MineBlock'
+  | 'PlaceBlock'
+  | 'VillagerTrade'
+  | 'UseBucket'
+  | 'Fishing'
+  | 'ApplyBoneMeal'
+  | 'HarvestPotato'
+  | 'Brewing'
+  | 'EnchantItem'
+  | 'PlayerDamage'
+  | 'MobDrop'
+  | 'ExperienceOrbCreation'
+  | 'PortalTravel'
+  | 'MobSimulation'
+  | 'FireEntityDamage'
+  | 'EatFood'
+  | 'BowShot'
+  | 'EnderPearl'
+  | 'IgniteTnt'
+  | 'MeleeAttack'
+
+export type GameplayUnsupportedReason =
+  | 'WorldCommitCoordinatorUnavailable'
+  | 'OwnerRegistrationUnavailable'
+  | 'McSimPlanFragmentUnavailable'
+  | 'EntityRosterOwnerUnavailable'
+
+export type GameplayUnsupportedOperation = Readonly<{
+  _tag: 'Unsupported'
+  action: GameplayUnsupportedAction
+  requestId?: string
+  reason: GameplayUnsupportedReason
+}>
+
+export type GameplayFrameStateOptions = Readonly<{
+  coordinator: WorldCommitCoordinatorApi
+  vitalsOwnerId: ReplicatedOwnerId
+}>
+
+export type GameplayStageOperationFailure = Readonly<{
+  _tag: 'Failed'
+  operation: 'OwnerSnapshot' | 'WorldCommit' | 'VitalsOperation' | 'CandidateBuild'
+  subject: 'Player' | 'Vitals' | 'Mining' | 'ItemUse' | 'Fire'
+  error:
+    | WorldCommitCoordinatorError
+    | Schema.SchemaError
+    | SurvivalHungerError
+    | DroppedItemSpawnError
+    | BreakTransactionFailure
+    | FirePlayerDamagePreparationFailure
+}>
+
+export const recordGameplayStageFailure = (
+  state: GameplayFrameState,
+  failure: GameplayStageOperationFailure,
+): Effect.Effect<void> =>
+  Ref.update(state.operationFailures, (failures) => [...failures, failure])
+
+export const readGameplayPlayer = (
+  coordinator: WorldCommitCoordinatorApi,
+  ownerId: ReplicatedOwnerId,
+): Effect.Effect<
+  WorldReadSnapshot<typeof PlayerServiceSnapshotSchema>,
+  WorldCommitCoordinatorError | Schema.SchemaError
+> =>
+  coordinator.snapshot(ownerId, PlayerServiceSnapshotSchema)
+
+export const makeGameplayFrameState = (
+  options?: GameplayFrameStateOptions,
+): Effect.Effect<GameplayFrameState> => Effect.gen(function* () {
   const enderDragonEncounter = yield* makeEnderDragonEncounterRuntime
-  const survivalHunger = yield* makeSurvivalHungerRuntime()
-  const playerDead = yield* Ref.make(false)
+  const survivalHunger = options === undefined
+    ? yield* makeSurvivalHungerRuntime()
+    : yield* makeReplicatedSurvivalHungerRuntime(options.coordinator, options.vitalsOwnerId)
+  const operationFailures = yield* Ref.make<ReadonlyArray<GameplayStageOperationFailure>>([])
   const pendingBreaks = yield* Ref.make<ReadonlyArray<BlockPositionKey>>([])
   const breakRequests = yield* Ref.make<PendingBlockBreakRequestState>({
     nextRequestId: 0,
@@ -1646,6 +1769,11 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
   const pendingBowShots = yield* Ref.make<ReadonlyArray<BowShotRequest>>([])
   const pendingMeleeAttacks = yield* Ref.make<ReadonlyArray<MeleeAttackRequest>>([])
   const pendingPearlThrows = yield* Ref.make<ReadonlyArray<EnderPearlThrowRequest>>([])
+  const pendingDroppedItemPickups = yield* Ref.make<ReadonlyArray<DroppedItemPickupRequest>>([])
+  const droppedItemPickupExecutions = yield* Ref.make<ReadonlyArray<DroppedItemPickupExecution>>([])
+  const pendingExperienceOrbAbsorptions = yield* Ref.make<ReadonlyArray<ExperienceOrbAbsorptionContext>>([])
+  const experienceOrbAbsorptionExecutions = yield* Ref.make<ReadonlyArray<ExperienceOrbAbsorptionExecution>>([])
+  const unsupportedOperations = yield* Ref.make<ReadonlyArray<GameplayUnsupportedOperation>>([])
   const pendingVillagerTrades = yield* Ref.make<ReadonlyArray<VillagerTradeRequest>>([])
   const pendingStatusEffects = yield* Ref.make<ReadonlyArray<StatusEffectApplication>>([])
   const consumedItems = yield* Ref.make<ReadonlyArray<PlaceableItemType>>([])
@@ -1665,7 +1793,6 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
   const playerHeals = yield* Ref.make<ReadonlyArray<PlayerHealingEvent>>([])
   const playerMovementSpeedMultiplier = yield* Ref.make(1)
   const statusEffects = yield* Ref.make<StatusEffectState>(emptyStatusEffectState())
-  const brewingStand = yield* Ref.make<BrewingStandState>(emptyBrewingStandState())
   const fireLifecycle = yield* Ref.make<FireLifecycleState>(makeFireLifecycleState([], DEFAULT_ROLL_SEED))
   const fireTickAccumulator = yield* Ref.make(0)
   fireTickAccumulators.set(fireLifecycle, fireTickAccumulator)
@@ -1723,7 +1850,7 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
   const state: GameplayFrameState = {
     enderDragonEncounter,
     survivalHunger,
-    playerDead,
+    operationFailures,
     pendingBreaks,
     pendingPlacements,
     pendingBlockUses,
@@ -1731,6 +1858,11 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
     pendingBowShots,
     pendingMeleeAttacks,
     pendingPearlThrows,
+    pendingDroppedItemPickups,
+    droppedItemPickupExecutions,
+    pendingExperienceOrbAbsorptions,
+    experienceOrbAbsorptionExecutions,
+    unsupportedOperations,
     pendingVillagerTrades,
     pendingStatusEffects,
     consumedItems,
@@ -1747,7 +1879,6 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
     playerHeals,
     playerMovementSpeedMultiplier,
     statusEffects,
-    brewingStand,
     fireLifecycle,
     hostileContactCooldowns,
     mobDrops,
@@ -1781,11 +1912,18 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
   return state
 })
 
-/** Set the host-derived death snapshot consumed by the next interaction stage run. */
+/** Set death by changing authoritative vitals, without a second frame-owned flag. */
 export const setPlayerDead = (
   state: GameplayFrameState,
   playerDead: boolean,
-): Effect.Effect<void> => Ref.set(state.playerDead, playerDead)
+): Effect.Effect<void, SurvivalHungerError> =>
+  Effect.gen(function* () {
+    if (!playerDead) return
+    const vitals = (yield* state.survivalHunger.snapshot).vitals
+    if (vitals.healthPoints > 0) {
+      yield* state.survivalHunger.damage({ amount: vitals.healthPoints, cause: 'generic' })
+    }
+  })
 
 /**
  * The stages mx-gameplay registers.
@@ -1826,11 +1964,12 @@ export const setPlayerDead = (
 const stepPortalTravel = (
   state: GameplayFrameState,
   store: ChunkStoreApi,
-  player: PlayerServiceApi,
+  playerState: Schema.Schema.Type<typeof PlayerServiceSnapshotSchema> | undefined,
   dt: DeltaTimeSecs,
-): Effect.Effect<void, PlayerServiceInputError> =>
+): Effect.Effect<void> =>
   Effect.gen(function* () {
-    const pose = yield* player.pose
+    if (playerState === undefined) return
+    const pose = playerState.pose
     const cell = blockPosition(
       Math.floor(pose.feetPosition.x),
       Math.floor(pose.feetPosition.y),
@@ -1853,28 +1992,11 @@ const stepPortalTravel = (
       return
     }
 
-    const sourceDimension = yield* player.dimension
-    if (blockId !== undefined && isEndPortalBlock(blockId)) {
-      const event = yield* applyEndPortalTravel(player, cell)
-      yield* Ref.update(state.endPortalTravels, (completed) => [...completed, event])
-      return
-    }
-
-    const destinationDimension: Dimension =
-      sourceDimension === 'overworld' ? 'nether' : 'overworld'
-    const snapshots = yield* Ref.get(state.portalCandidates)
-    const candidates = snapshots.get(destinationDimension) ?? NO_KNOWN_PORTALS
-    const plan = yield* applyPortalTravel(player, cell, candidates)
-
-    // No `plan.toDimension !== sourceDimension` guard: mc-worldgen's
-    // `resolveNetherTravel` maps `'overworld' -> 'nether'` and anything else
-    // (`'nether'` or `'end'`) `-> 'overworld'` — for all three of `Dimension`'s
-    // values, `toDimension` is never the input `from`, so the plan built from
-    // `sourceDimension` here can never equal it.
-    yield* Ref.update(state.portalTravels, (completed) => [
-      ...completed,
-      { sourceDimension, sourcePosition: cell, plan },
-    ])
+    yield* recordGameplayUnsupportedOperation(state, {
+      _tag: 'Unsupported',
+      action: 'PortalTravel',
+      reason: 'McSimPlanFragmentUnavailable',
+    })
   })
 
 /**
@@ -2444,66 +2566,45 @@ export const restoreStatusEffects = (
     )
   })
 
+export type BrewingOperationUnsupported = Readonly<{
+  _tag: 'Unsupported'
+  action: 'Brewing'
+  reason: 'McSimPlanFragmentUnavailable'
+}>
+
+const unsupportedBrewingOperation = (
+  state: GameplayFrameState,
+): Effect.Effect<BrewingOperationUnsupported> =>
+  Effect.as(
+    recordGameplayUnsupportedOperation(state, {
+      _tag: 'Unsupported',
+      action: 'Brewing',
+      reason: 'McSimPlanFragmentUnavailable',
+    }),
+    { _tag: 'Unsupported', action: 'Brewing', reason: 'McSimPlanFragmentUnavailable' },
+  )
+
 export const insertBrewingFuel = (
   state: GameplayFrameState,
-): Effect.Effect<BrewingTransferResult> =>
-  Ref.modify(state.brewingStand, (current) => {
-    const [next, result] = insertFuel(current)
-    return [result, next]
-  })
+): Effect.Effect<BrewingOperationUnsupported> => unsupportedBrewingOperation(state)
 
 export const insertBrewingBottle = (
   state: GameplayFrameState,
-  bottle: BrewingBottle,
-): Effect.Effect<BrewingTransferResult> =>
-  Ref.modify(state.brewingStand, (current) => {
-    const [next, result] = insertBottle(current, bottle)
-    return [result, next]
-  })
+  _bottle: BrewingBottle,
+): Effect.Effect<BrewingOperationUnsupported> => unsupportedBrewingOperation(state)
 
 export const insertBrewingIngredient = (
   state: GameplayFrameState,
-  ingredient: BrewingIngredient,
-): Effect.Effect<BrewingTransferResult> =>
-  Ref.modify(state.brewingStand, (current) => {
-    const [next, result] = insertIngredient(current, ingredient)
-    return [result, next]
-  })
+  _ingredient: BrewingIngredient,
+): Effect.Effect<BrewingOperationUnsupported> => unsupportedBrewingOperation(state)
 
 export const collectBrewingPotion = (
   state: GameplayFrameState,
-): Effect.Effect<BrewingCollectionResult> =>
-  Ref.modify(state.brewingStand, (current) => {
-    const [next, result] = collectBottle(current)
-    return [result, next]
-  })
+): Effect.Effect<BrewingOperationUnsupported> => unsupportedBrewingOperation(state)
 
 export const useBrewingPotion = (
   state: GameplayFrameState,
-): Effect.Effect<BrewingDrinkResult> =>
-  Effect.gen(function* () {
-    const result = yield* Ref.modify(state.brewingStand, (current) => {
-      const [next, outcome] = drinkPotion(current)
-      return [outcome, next]
-    })
-    if (result._tag === 'Consumed') yield* requestStatusEffect(state, result.effect)
-    return result
-  })
-
-export const snapshotBrewingStand = (
-  state: GameplayFrameState,
-): Effect.Effect<BrewingStandState> =>
-  Ref.get(state.brewingStand).pipe(Effect.map(copyBrewingStandState))
-
-export const restoreBrewingStand = (
-  state: GameplayFrameState,
-  snapshot: BrewingStandState,
-): Effect.Effect<void> => Ref.set(state.brewingStand, copyBrewingStandState(snapshot))
-
-const stepBrewing = (
-  state: GameplayFrameState,
-  dt: DeltaTimeSecs,
-): Effect.Effect<void> => Ref.update(state.brewingStand, (current) => tickBrewingStand(current, dt))
+): Effect.Effect<BrewingOperationUnsupported> => unsupportedBrewingOperation(state)
 
 const stepStatusEffects = (
   state: GameplayFrameState,
@@ -2668,15 +2769,35 @@ export const requestFireExtinguish = (
     if (Option.isNone(air)) return false
     /* v8 ignore stop */
 
-    const expectedRevision = yield* context.coordinator.revision
-    const expectedDimensionRevision = yield* context.coordinator.dimensionRevision(context.dimension)
+    const revisionResult = yield* Effect.result(Effect.all([
+      context.coordinator.revision,
+      context.coordinator.dimensionRevision(context.dimension),
+    ]))
+    if (Result.isFailure(revisionResult)) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed',
+        operation: 'WorldCommit',
+        subject: 'Fire',
+        error: revisionResult.failure,
+      })
+      return false
+    }
+    const [expectedRevision, expectedDimensionRevision] = revisionResult.success
     const committed = yield* commitBlockEdits(
       context,
       expectedRevision,
       expectedDimensionRevision,
       [{ position: blockPosition(position.x, position.y, position.z), block: air.value }],
     )
-    if (Result.isFailure(committed)) return false
+    if (Result.isFailure(committed)) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed',
+        operation: 'WorldCommit',
+        subject: 'Fire',
+        error: committed.failure,
+      })
+      return false
+    }
 
     yield* Ref.set(state.fireLifecycle, extinguishFire(current, position))
     const disturbed = committed.success.blockChanges.map((change) =>
@@ -2692,15 +2813,14 @@ const stepFireTick = (
   state: GameplayFrameState,
   store: ChunkStoreApi,
   roster: EntityManagerApi<MobBehaviour>,
-  inventory: InventoryServiceApi,
-  player: PlayerServiceApi,
+  playerState: Schema.Schema.Type<typeof PlayerServiceSnapshotSchema>,
   context: Readonly<{
     coordinator: WorldCommitCoordinatorApi
     dimension: Dimension
     changes: ReadonlyArray<ReplicatedOwnerCandidate>
     playerStorageOwnerId: ReplicatedOwnerId
   }>,
-): Effect.Effect<void> =>
+): Effect.Effect<boolean> =>
   Effect.gen(function* () {
     const current = yield* Ref.get(state.fireLifecycle)
     // Redundant with the caller's own gate: `stepFireLifecycle` (below) checks
@@ -2709,15 +2829,37 @@ const stepFireTick = (
     // every call this function receives already has at least one of
     // `fires`/`burningActors` non-empty. `stepFireTick` has no other caller.
     /* v8 ignore start */
-    if (current.fires.length === 0 && (current.burningActors?.length ?? 0) === 0) return
+    if (current.fires.length === 0 && (current.burningActors?.length ?? 0) === 0) return true
     /* v8 ignore stop */
 
-    const expectedRevision = yield* context.coordinator.revision
-    const expectedDimensionRevision = yield* context.coordinator.dimensionRevision(context.dimension)
+    const revisionResult = yield* Effect.result(Effect.all([
+      context.coordinator.revision,
+      context.coordinator.dimensionRevision(context.dimension),
+    ]))
+    if (Result.isFailure(revisionResult)) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed',
+        operation: 'WorldCommit',
+        subject: 'Fire',
+        error: revisionResult.failure,
+      })
+      return false
+    }
+    const [expectedRevision, expectedDimensionRevision] = revisionResult.success
     const activeKeys = new Set(current.fires.map((fire) => firePositionKey(fire.position)))
     const burningIds = new Set((current.burningActors ?? []).map((actor) => actor.id))
-    const survival = yield* state.survivalHunger.snapshot
-    const feet = (yield* player.pose).feetPosition
+    const survivalResult = yield* Effect.result(state.survivalHunger.snapshot)
+    if (Result.isFailure(survivalResult)) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed',
+        operation: 'OwnerSnapshot',
+        subject: 'Vitals',
+        error: survivalResult.failure,
+      })
+      return false
+    }
+    const survival = survivalResult.success
+    const feet = playerState.pose.feetPosition
     const playerContactPosition = {
       x: Math.floor(feet.x),
       y: Math.floor(feet.y),
@@ -2824,13 +2966,21 @@ const stepFireTick = (
       }
     })
     const step = advanceFireLifecycle(current, cells, weather, hydratedContacts, survival.difficulty)
+    if (step.entityDamages.length > 0) {
+      yield* recordGameplayUnsupportedOperation(state, {
+        _tag: 'Unsupported',
+        action: 'FireEntityDamage',
+        reason: 'EntityRosterOwnerUnavailable',
+      })
+      return false
+    }
     const air = blockIdOf('air')
     const fire = blockIdOf('fire')
     // Same totality argument as `requestFireExtinguish`'s `air` check above:
     // `'air'` and `'fire'` are both registered BlockTypes, so `blockIdOf`
     // returns `Some` for both registered types.
     /* v8 ignore start */
-    if (Option.isNone(air) || Option.isNone(fire)) return
+    if (Option.isNone(air) || Option.isNone(fire)) return true
     /* v8 ignore stop */
     const airBlock = air.value
     const fireBlock = fire.value
@@ -2843,16 +2993,26 @@ const stepFireTick = (
           PositionAxis(damage.at.z),
         ),
       }))
-    const fireDamage = playerDamages.length === 0
-      ? { damages: playerDamages, changes: [], storageAfterCommit: undefined }
+    const fireDamageResult = playerDamages.length === 0
+      ? Result.succeed({ damages: playerDamages, changes: [] } satisfies PreparedFirePlayerDamage)
       : yield* prepareFirePlayerDamage(
-        inventory,
         context.coordinator,
         context.playerStorageOwnerId,
         expectedRevision,
         playerDamages,
       )
-    if (fireDamage === undefined) return
+    if (Result.isFailure(fireDamageResult)) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed',
+        operation: fireDamageResult.failure._tag === 'OwnerSnapshotFailed'
+          ? 'OwnerSnapshot'
+          : 'CandidateBuild',
+        subject: 'Fire',
+        error: fireDamageResult.failure,
+      })
+      return false
+    }
+    const fireDamage = fireDamageResult.success
 
     const changes = fireDamage.changes.length === 0
       ? context.changes
@@ -2881,54 +3041,25 @@ const stepFireTick = (
       }))
     }
     if (committed !== undefined) {
-      if (Result.isFailure(committed)) return
+      if (Result.isFailure(committed)) {
+        yield* recordGameplayStageFailure(state, {
+          _tag: 'Failed',
+          operation: 'WorldCommit',
+          subject: 'Fire',
+          error: committed.failure,
+        })
+        return false
+      }
       disturbed.push(...committed.success.blockChanges.map((change) =>
         blockPositionKeyOf(change.position),
       ))
-      if (fireDamage.storageAfterCommit !== undefined) {
-        yield* inventory.restoreStorage(fireDamage.storageAfterCommit).pipe(Effect.orDie)
-      }
-    }
-
-    let burningActors = step.state.burningActors ?? []
-    const entityDamages: ReadonlyArray<FireEntityDamage> = step.entityDamages
-
-    const damageByEntity = new Map(entityDamages.map((damage) => [damage.actorId, damage]))
-    const casualties = yield* roster.sweep<MobCasualty>((entity) => {
-      const damage = damageByEntity.get(String(entity.id))
-      if (damage === undefined) return { transition: UNCHANGED, emit: undefined }
-      if (entity.healthPoints <= damage.damage.amount) {
-        return {
-          transition: DESPAWNED,
-          emit: { id: entity.id, kind: entity.kind, at: entity.feetPosition },
-        }
-      }
-      return {
-        transition: changed({
-          feetPosition: entity.feetPosition,
-          healthPoints: EntityHealthPoints(entity.healthPoints - damage.damage.amount),
-          behaviour: entity.behaviour,
-        }),
-        emit: undefined,
-      }
-    })
-    if (casualties.length > 0) {
-      const casualtyIds = new Set(casualties.map((casualty) => String(casualty.id)))
-      burningActors = burningActors.filter((actor) => !casualtyIds.has(actor.id))
-      const drops = yield* Ref.modify(state.rollSeed, (seed) => {
-        const rolled = rollCasualtyDrops(casualties, seed)
-        return [rolled.drops, rolled.seed] as const
-      })
-      if (drops.length > 0) {
-        yield* Ref.update(state.mobDrops, (items) => [...items, ...drops])
-      }
     }
 
     yield* Ref.set(state.fireLifecycle, {
       ...step.state,
       fires: [...step.state.fires].sort((a, b) =>
         a.position.x - b.position.x || a.position.y - b.position.y || a.position.z - b.position.z),
-      burningActors,
+      burningActors: step.state.burningActors ?? [],
     })
     if (fireDamage.damages.length > 0) {
       yield* Ref.update(state.playerDamages, (damages) => [...damages, ...fireDamage.damages])
@@ -2936,14 +3067,14 @@ const stepFireTick = (
     if (disturbed.length > 0) {
       yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, disturbed))
     }
+    return true
   })
 
 const stepFireLifecycle = (
   state: GameplayFrameState,
   store: ChunkStoreApi,
   roster: EntityManagerApi<MobBehaviour>,
-  inventory: InventoryServiceApi,
-  player: PlayerServiceApi,
+  playerState: Schema.Schema.Type<typeof PlayerServiceSnapshotSchema>,
   dt: DeltaTimeSecs,
   context: Readonly<{
     coordinator: WorldCommitCoordinatorApi
@@ -2968,7 +3099,14 @@ const stepFireLifecycle = (
     yield* Ref.set(accumulator, elapsed - ticks * FIRE_TICK_INTERVAL_SECS)
 
     for (let index = 0; index < ticks; index += 1) {
-      yield* stepFireTick(state, store, roster, inventory, player, context)
+      const advanced = yield* stepFireTick(state, store, roster, playerState, context)
+      if (!advanced) {
+        yield* Ref.update(accumulator, (remaining) => Math.min(
+          FIRE_TICK_INTERVAL_SECS * FIRE_FRAME_TICK_BUDGET,
+          remaining + (ticks - index) * FIRE_TICK_INTERVAL_SECS,
+        ))
+        return
+      }
       const next = yield* Ref.get(state.fireLifecycle)
       // `stepFireTick`'s only early returns are the two proven-dead guards
       // above (both pragma'd), so any call that reaches back here ran all the
@@ -2993,6 +3131,39 @@ export const drainMobDrops = (
 export const drainMobExperience = (
   state: GameplayFrameState,
 ): Effect.Effect<ReadonlyArray<MobExperienceEvent>> => Ref.getAndSet(state.mobExperience, [])
+
+export const requestDroppedItemPickup = (
+  state: GameplayFrameState,
+  request: DroppedItemPickupRequest,
+): Effect.Effect<void> =>
+  Ref.update(state.pendingDroppedItemPickups, (pending) => [...pending, request])
+
+export const drainDroppedItemPickupExecutions = (
+  state: GameplayFrameState,
+): Effect.Effect<ReadonlyArray<DroppedItemPickupExecution>> =>
+  Ref.getAndSet(state.droppedItemPickupExecutions, [])
+
+export const requestExperienceOrbAbsorption = (
+  state: GameplayFrameState,
+  request: ExperienceOrbAbsorptionContext,
+): Effect.Effect<void> =>
+  Ref.update(state.pendingExperienceOrbAbsorptions, (pending) => [...pending, request])
+
+export const drainExperienceOrbAbsorptionExecutions = (
+  state: GameplayFrameState,
+): Effect.Effect<ReadonlyArray<ExperienceOrbAbsorptionExecution>> =>
+  Ref.getAndSet(state.experienceOrbAbsorptionExecutions, [])
+
+export const drainGameplayUnsupportedOperations = (
+  state: GameplayFrameState,
+): Effect.Effect<ReadonlyArray<GameplayUnsupportedOperation>> =>
+  Ref.getAndSet(state.unsupportedOperations, [])
+
+export const recordGameplayUnsupportedOperation = (
+  state: GameplayFrameState,
+  operation: GameplayUnsupportedOperation,
+): Effect.Effect<void> =>
+  Ref.update(state.unsupportedOperations, (current) => [...current, operation])
 
 /** Resolve the block under the crosshair and enqueue placement in its adjacent cell. */
 export const requestTargetedBlockPlacement = (
@@ -3138,35 +3309,6 @@ export const requestTargetedPotatoPlanting = (
     return target
   })
 
-type BlockPlacementExecution = {
-  readonly outcome: BlockPlacementCommandOutcome
-  readonly consumed: boolean
-  readonly mutated: boolean
-}
-
-/** Resolve the block under the crosshair and enqueue bone meal against it. */
-export const requestTargetedBoneMeal = (
-  state: GameplayFrameState,
-  store: ChunkStoreApi,
-  player: PlayerServiceApi,
-  requestId: ItemUseRequestId,
-  maxDistance: number = DEFAULT_BLOCK_REACH,
-): Effect.Effect<Option.Option<BlockTarget>> =>
-  Effect.gen(function* () {
-    const pose = yield* player.pose
-    const target = yield* resultOrDie(
-      targetBlockFromPlayerPose(pose, maxDistance, targetabilityFromStore(store)),
-    )
-    if (Option.isSome(target)) {
-      yield* requestBoneMeal(state, requestId, blockPosition(target.value.position.x, target.value.position.y, target.value.position.z))
-    }
-    return target
-  })
-
-const isBlockPlacementCommand = (
-  request: PlacementRequest,
-): request is BlockPlacementCommand => 'requestId' in request
-
 const normalizedBlockPlacementCommand = (
   command: BlockPlacementCommand,
 ): NormalizedBlockPlacementCommand => ({ ...command, mode: command.mode ?? 'survival' })
@@ -3179,133 +3321,42 @@ const sameBlockPlacementCommand = (
   left.heldItem === right.heldItem &&
   left.mode === right.mode
 
-const executeBlockPlacementAtomically = (
-  request: PlacementRequest,
-  mode: BlockPlacementMode,
-  store: ChunkStoreApi,
-  inventory: InventoryServiceApi,
-  playerFeet: Position,
-): Effect.Effect<BlockPlacementExecution> =>
-  Effect.uninterruptible(
-    Effect.gen(function* () {
-      if (mode === 'creative') {
-        const position = yield* resultOrDie(blockPositionOfKey(request.positionKey))
-        const outcome = yield* placeBlock(store, {
-          position,
-          heldItem: request.heldItem,
-          playerFeet,
-        })
-        return { outcome, consumed: false, mutated: outcome._tag === 'Placed' }
-      }
-
-      const reserved = yield* Effect.orDie(inventory.remove(request.heldItem, 1))
-      if (reserved === 0) {
-        return {
-          outcome: { _tag: 'InventoryUnavailable' } as const,
-          consumed: false,
-          mutated: false,
-        }
-      }
-
-      const position = yield* resultOrDie(blockPositionOfKey(request.positionKey))
-      const outcome = yield* placeBlock(store, {
-        position,
-        heldItem: request.heldItem,
-        playerFeet,
-      })
-      if (outcome._tag === 'Placed') {
-        return { outcome, consumed: true, mutated: true }
-      }
-
-      const leftover = yield* Effect.orDie(inventory.add(request.heldItem, reserved))
-      if (leftover !== 0) {
-        return yield* Effect.die(
-          new Error(`placement rollback could not restore ${String(request.heldItem)}`),
-        )
-      }
-      return { outcome, consumed: false, mutated: false }
-    }),
-  )
-
-const executeBlockPlacementCommand = (
+export const recordUnsupportedBlockPlacement = (
   state: GameplayFrameState,
   command: BlockPlacementCommand,
-  store: ChunkStoreApi,
-  inventory: InventoryServiceApi,
-  playerFeet: Position,
-  playerDead: boolean,
-): Effect.Effect<BlockPlacementExecution> => {
+  reason: 'WorldCommitCoordinatorUnavailable' | 'McSimPlanFragmentUnavailable',
+): Effect.Effect<BlockPlacementResult> => {
   const runtime = blockPlacementRuntimeFor(state)
   const normalized = normalizedBlockPlacementCommand(command)
-
   return runtime.mutex.withPermits(1)(
-    Effect.uninterruptible(
-      Effect.gen(function* () {
-        const current = yield* Ref.get(runtime.state)
-        const previous = current.handled.get(normalized.requestId)
-        if (previous !== undefined) {
-          const replayed: BlockPlacementResult = sameBlockPlacementCommand(
-            previous.command,
-            normalized,
-          )
-            ? { ...previous.result, replayed: true }
-            : {
-                requestId: normalized.requestId,
-                success: false,
-                consumed: false,
-                replayed: true,
-                outcome: { _tag: 'RequestIdConflict' },
-              }
-          yield* Ref.update(runtime.state, (latest) => ({
-            ...latest,
-            results: [...latest.results, replayed],
-          }))
-          return { outcome: replayed.outcome, consumed: false, mutated: false }
-        }
-
-        if (playerDead) {
-          const outcome = { _tag: 'PlayerDead' } as const
-          const result: BlockPlacementResult = {
+    Effect.gen(function* () {
+      const current = yield* Ref.get(runtime.state)
+      const previous = current.handled.get(normalized.requestId)
+      const result: BlockPlacementResult = previous === undefined
+        ? {
             requestId: normalized.requestId,
             success: false,
             consumed: false,
             replayed: false,
-            outcome,
+            outcome: { _tag: 'Unsupported', reason },
           }
-          yield* Ref.update(runtime.state, (latest) => ({
-            handled: new Map(latest.handled).set(normalized.requestId, {
-              command: normalized,
-              result,
-            }),
-            results: [...latest.results, result],
-          }))
-          return { outcome, consumed: false, mutated: false }
-        }
-
-        const execution = yield* executeBlockPlacementAtomically(
-          normalized,
-          normalized.mode,
-          store,
-          inventory,
-          playerFeet,
-        )
-        const result: BlockPlacementResult = {
-          requestId: normalized.requestId,
-          success: execution.outcome._tag === 'Placed',
-          consumed: execution.consumed,
-          replayed: false,
-          outcome: execution.outcome,
-        }
-        yield* Ref.update(runtime.state, (latest) => ({
-          handled: new Map(latest.handled).set(normalized.requestId, {
-            command: normalized,
-            result,
-          }),
-          results: [...latest.results, result],
-        }))
-        return execution
-      }),
-    ),
+        : sameBlockPlacementCommand(previous.command, normalized)
+          ? { ...previous.result, replayed: true }
+          : {
+              requestId: normalized.requestId,
+              success: false,
+              consumed: false,
+              replayed: true,
+              outcome: { _tag: 'RequestIdConflict' },
+            }
+      yield* Ref.update(runtime.state, (latest) => ({
+        handled: previous === undefined
+          ? new Map(latest.handled).set(normalized.requestId, { command: normalized, result })
+          : latest.handled,
+        results: [...latest.results, result],
+      }))
+      return result
+    }),
   )
 }
 
@@ -3322,58 +3373,75 @@ export interface GameplayStageOptions {
    */
   readonly droppedItemPickup?: boolean
 }
-export const GAMEPLAY_PLAYER_STORAGE_OWNER_ID: ReplicatedOwnerId = makeReplicatedOwnerId('mx-gameplay-player-storage')
-
 export type GameplayStageCommitServices = Readonly<{
   readonly coordinator: WorldCommitCoordinatorApi
-  readonly bucketService: BucketServiceApi
+  readonly playerOwnerId: ReplicatedOwnerId
   readonly playerStorageOwnerId: ReplicatedOwnerId
+  readonly droppedItemsOwnerId?: ReplicatedOwnerId
+  readonly vitalsOwnerId?: ReplicatedOwnerId
+  readonly experienceOrbsOwnerId?: ReplicatedOwnerId
 }>
 
+export const gameplayPlayerStateForStage = (
+  state: GameplayFrameState,
+  commit: GameplayStageCommitServices | undefined,
+): Effect.Effect<Schema.Schema.Type<typeof PlayerServiceSnapshotSchema> | undefined> =>
+  Effect.gen(function* () {
+    if (commit === undefined) return undefined
+    const observed = yield* Effect.result(readGameplayPlayer(commit.coordinator, commit.playerOwnerId))
+    if (Result.isFailure(observed)) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed',
+        operation: 'OwnerSnapshot',
+        subject: 'Player',
+        error: observed.failure,
+      })
+      return undefined
+    }
+    return observed.success.state
+  })
+
 export const candidateForItemUse: (
-  inventory: InventoryServiceApi,
   coordinator: WorldCommitCoordinatorApi,
   ownerId: ReplicatedOwnerId,
   item: ItemType,
   operation: 'consume' | 'damage',
-) => Effect.Effect<ReplicatedOwnerCandidate | undefined> = (
-  inventory,
+) => Effect.Effect<
+  Result.Result<ReplicatedOwnerCandidate | undefined, WorldCommitCoordinatorError | Schema.SchemaError>
+> = (
   coordinator,
   ownerId,
   item,
   operation,
 ) => Effect.gen(function* () {
-    const local = yield* inventory.storageSnapshot
     const committed = yield* Effect.result(coordinator.snapshot(ownerId, PlayerStorageSnapshotSchema))
-    if (Result.isFailure(committed)) return undefined
-    if (!Equal.equals(local, committed.success.state)) return undefined
+    if (Result.isFailure(committed)) return Result.fail(committed.failure)
+    const storage = committed.success.state
 
     let candidate: PlayerStorage | undefined
     if (operation === 'consume') {
-      const removed = Result.getOrUndefined(removeInventoryItem(local.inventory, item, 1))
-      if (removed === undefined || removed.removed !== 1) return undefined
-      const updated = Result.getOrUndefined(withInventory(local, removed.inventory))
-      if (updated === undefined) return undefined
+      const removed = Result.getOrUndefined(removeInventoryItem(storage.inventory, item, 1))
+      if (removed === undefined || removed.removed !== 1) return Result.succeed(undefined)
+      const updated = Result.getOrUndefined(withInventory(storage, removed.inventory))
+      if (updated === undefined) return Result.succeed(undefined)
       candidate = updated
     } else {
-      const slotIndex = local.inventory.slots.findIndex((slot) => slot?.item === item)
-      if (slotIndex < 0) return undefined
-      const damaged = damagePlayerStorageAt(local, { _tag: 'Inventory', slotIndex }, 1)
-      if (damaged.result._tag !== 'Damaged' && damaged.result._tag !== 'Broken') return undefined
+      const slotIndex = storage.inventory.slots.findIndex((slot) => slot?.item === item)
+      if (slotIndex < 0) return Result.succeed(undefined)
+      const damaged = damagePlayerStorageAt(storage, { _tag: 'Inventory', slotIndex }, 1)
+      if (damaged.result._tag !== 'Damaged' && damaged.result._tag !== 'Broken') return Result.succeed(undefined)
       candidate = damaged.storage
     }
 
     const validation = validatePlayerStorageSnapshot(candidate)
-    if (validation._tag !== 'Valid') return undefined
-    return { ownerId, state: validation.storage }
+    if (validation._tag !== 'Valid') return Result.succeed(undefined)
+    return Result.succeed({ ownerId, state: validation.storage })
   })
 
 export interface GameplayStageContext {
   readonly state: GameplayFrameState
   readonly store: ChunkStoreApi
   readonly roster: EntityManagerApi<MobBehaviour>
-  readonly inventory: InventoryServiceApi
-  readonly player: PlayerServiceApi
   readonly time: TimeServiceApi
   readonly vehicleService: VehicleServiceApi | undefined
   readonly vehicleEnvironment: VehicleFrameEnvironment | undefined
@@ -3437,15 +3505,12 @@ export {
   enderPearlDisplacement,
   enqueueFluidDisturbance,
   entityManagerTag,
-  executeBlockPlacementAtomically,
-  executeBlockPlacementCommand,
   experienceOfCasualties,
   firePositionKey,
   fluidRuntimeSemaphoreFor,
   fluidRuntimeStateFor,
   furnaceAdvanceChanged,
   hostileSpawnsAllowed,
-  isBlockPlacementCommand,
   isSuccessfulBlockUse,
   knockbackDirection,
   meleeTarget,
@@ -3454,6 +3519,7 @@ export {
   planFurnaceAdvance,
   plantCrop,
   recordVillagerTradeResult,
+  recordUnsupportedBlockPlacement,
   reelFishing,
   removeInventoryItem,
   resolveBlasts,
@@ -3475,7 +3541,6 @@ export {
   shouldSpawnEndermite,
   spawnDroppedItems,
   splitBudget,
-  stepBrewing,
   stepFireLifecycle,
   stepPortalTravel,
   stepStatusEffects,

@@ -105,6 +105,7 @@ export {
 export * from './domain/interactions/use-block.js'
 export * from './domain/interactions/use-eye-of-ender.js'
 export * from './stages/registration.js'
+export * from './stages/gameplay-owner-registrations.js'
 export * from './stages/ender-dragon-encounter-stage.js'
 export * from './stages/stage-ids.js'
 export * from './stages/targeted-right-click-route.js'

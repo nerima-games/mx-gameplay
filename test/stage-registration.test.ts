@@ -146,17 +146,16 @@ import {
   world,
 } from './support/chunk-store-double'
 import { emptyRosterLayer, makeEntityManagerDouble } from './support/entity-manager-double'
-import { makePlayerServiceDouble, playerDoubleLayer } from './support/player-service-double'
+import { makePlayerServiceDouble } from './support/player-service-double'
 import {
   BucketService,
-  PlayerService,
   WorldCommitChunkStoreUnavailable,
   WorldCommitCoordinator,
   WorldCommitEmptyRequest,
   PlayerStorageSnapshotSchema,
   type WorldCommitCoordinatorApi,
 } from '@nerima-games/mc-sim'
-import { emptySlots, emptyInventoryLayer, makeInventoryDouble } from './support/inventory-service-double'
+import { emptySlots, makeInventoryDouble } from './support/inventory-service-double'
 import { gameplayCommitServicesLayer, makeGameplayCommitServices, makeTransactionalChunkStoreDouble } from './support/transactional-stage-doubles'
 import { FrameServicesLayer } from './support/frame-services'
 import { runFrames } from './support/frame-runner'
@@ -199,10 +198,9 @@ const OBSIDIAN = Option.getOrThrow(blockIdOf('obsidian'))
 const positionKey = Brand.nominal<BlockPositionKey>()
 
 /**
- * The stages read and write blocks, iterate mobs and deposit mined items, so
- * building them takes mc-worldgen's `ChunkStore`, mc-sim's `EntityManager`,
- * `InventoryService`, `PlayerService`, `TimeService`, `BucketService`, and the
- * `WorldCommitCoordinator` (in `frameStages` — see
+ * The stages read and write blocks and iterate mobs, so building them takes
+ * mc-worldgen's `ChunkStore`, mc-sim's `EntityManager` and `TimeService`, and
+ * the `WorldCommitCoordinator` for replicated owner writes (in `frameStages` — see
  * kernel's `domain/frame.ts` on `RRegister`). Tests about the SHAPE of the
  * registration provide an empty resident world, an empty roster and an empty
  * inventory: these assertions are about ordering and contract, and the
@@ -211,9 +209,6 @@ const positionKey = Brand.nominal<BlockPositionKey>()
 const emptyWorldBase = Layer.mergeAll(
   emptyWorldStoreLayer,
   emptyRosterLayer,
-  emptyInventoryLayer,
-  // mc-sim's PlayerService, which `stepPortalTravel` reads every frame.
-  playerDoubleLayer,
   TimeServiceLayer(),
 )
 const emptyWorld = Layer.provideMerge(gameplayCommitServicesLayer, emptyWorldBase)
@@ -427,10 +422,18 @@ describe('fire lifecycle stage integration', () => {
       })).toBe(false)
       expect(yield* store.blockAt(position)).toBe(FIRE)
       expect(yield* Ref.get(state.fireLifecycle)).toStrictEqual(initial)
+      expect(yield* Ref.get(state.operationFailures)).toStrictEqual([
+        expect.objectContaining({
+          _tag: 'Failed',
+          operation: 'WorldCommit',
+          subject: 'Fire',
+          error: expect.any(WorldCommitEmptyRequest),
+        }),
+      ])
     }),
   )
 
-  it.effect('routes lethal entity fire damage through the existing casualty and drop path', () =>
+  it.effect('keeps fire entity damage unsupported until roster and world changes can commit together', () =>
     Effect.gen(function* () {
       const { state, store, roster, stages } = yield* builtStages
       const position = fixtureBlockPosition(2, 64, 0)
@@ -443,20 +446,24 @@ describe('fire lifecycle stage integration', () => {
         healthPoints: EntityHealthPoints(1),
         behaviour: undefined,
       })
-      const expected = rollCasualtyDrops([
-        { id: target.id, kind: target.kind, at: target.feetPosition },
-      ], DEFAULT_ROLL_SEED)
+      const rosterBefore = yield* roster.api.snapshot
+      const fireBefore = yield* Ref.get(state.fireLifecycle)
 
       const fireStage = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire)!
       yield* fireStage.run(DeltaTimeSecs(FIRE_TICK_INTERVAL_SECS)).pipe(
         Effect.provide(FrameServicesLayer),
       )
 
-      expect((yield* roster.api.snapshot).entities).toStrictEqual([])
-      expect(yield* drainMobDrops(state)).toStrictEqual(expected.drops)
+      expect(yield* roster.api.snapshot).toStrictEqual(rosterBefore)
       expect(yield* drainMobDrops(state)).toStrictEqual([])
-      expect(yield* Ref.get(state.rollSeed)).toBe(expected.seed)
-      expect((yield* Ref.get(state.fireLifecycle)).burningActors).toStrictEqual([])
+      expect(yield* Ref.get(state.rollSeed)).toBe(DEFAULT_ROLL_SEED)
+      expect(yield* Ref.get(state.fireLifecycle)).toStrictEqual(fireBefore)
+      expect(yield* Ref.get(state.unsupportedOperations)).toContainEqual({
+        _tag: 'Unsupported',
+        action: 'FireEntityDamage',
+        reason: 'EntityRosterOwnerUnavailable',
+      })
+      expect((yield* roster.api.snapshot).entities[0]?.id).toBe(target.id)
     }),
   )
 
@@ -1725,7 +1732,7 @@ describe('the module contract has caught up with this file’s shape', () => {
         never,
         never,
         never,
-        ChunkStore | EntityManager | InventoryService | PlayerService | TimeService | BucketService | WorldCommitCoordinator
+        ChunkStore | EntityManager | TimeService | WorldCommitCoordinator
       > = gameplayModule
       const stages = yield* Effect.provide(module.frameStages, emptyWorld)
 
@@ -1745,42 +1752,18 @@ describe('the module contract has caught up with this file’s shape', () => {
     }),
   )
 
-  // This has now read TWO, then THREE, then FOUR, and reads FIVE. Each step discharged a
-  // prediction the previous comment had written down by name, which is why the
-  // history is kept rather than overwritten:
-  //
-  //   TWO   -> THREE: 「The candidate for the third is mc-sim's
-  //          `InventoryService`, and until it can be mirrored whole the mob
-  //          drops go to an outbox instead」. Integrated whole from mc-sim; the
-  //          stage deposits through it.
-  //   THREE -> FOUR:  「The candidate for the fourth is mc-sim's
-  //          `PlayerService`, and it cannot be mirrored whole … `cameraPose`
-  //          requires `ClockPort`, and restating `ClockPort` locally is 『a far
-  //          worse failure than a narrower type』」.
-  //   FOUR  -> FIVE:  `TimeService` became the authoritative clock so gameplay
-  //          consumes the time advanced by mc-sim earlier in the same frame.
-  //
-  // THAT SECOND PREDICTION WAS RIGHT ABOUT THE CANDIDATE AND WRONG ABOUT THE
-  // OBSTACLE. `ClockPort` is kernel's own (`domain/clock.ts`), so `cameraPose`
-  // is transcribed whole WITH its requirement and nothing was narrowed. What actually blocked
-  // the fourth service was a noun with no owner — `Dimension` — and mc-worldgen
-  // taking the word is what let `stepPortalTravel` call `PlayerService` every
-  // frame.
-  //
-  // `RIn` is still `never` and that is the distinction `RRegister` exists for.
-  // This repository BUILDS nothing another repository has to supply; it CALLS
-  // what mc-worldgen and mc-sim supply. Any registration service leaking into `RIn`
-  // would be mx-gameplay claiming to construct part of somebody else's
-  // repository.
-  it.effect('acquires exactly seven services to register and exposes eight stages', () =>
+  // Player pose, inventory and vitals are read from registered WCC owners; the
+  // registration effect must not acquire local mirrors of those fields.
+  it.effect('acquires four non-replicated services to register and exposes eight stages', () =>
     Effect.gen(function* () {
       const registration: Effect.Effect<
         ReadonlyArray<StageRegistration>,
         never,
-        ChunkStore | EntityManager | InventoryService | PlayerService | TimeService | BucketService | WorldCommitCoordinator
+        ChunkStore | EntityManager | TimeService | WorldCommitCoordinator
       > = gameplayModule.frameStages
 
-      // Providing those seven — and nothing else — discharges the whole context.
+      // Providing those four — and no local player or inventory services —
+      // discharges the whole context.
       // If a stage started demanding an EIGHTH service at REGISTRATION time, this
       // assignment would stop compiling, which is the point. Any new service
       // would need an explicit owner and belongs in this contract, rather than
@@ -1802,7 +1785,7 @@ describe('the module contract has caught up with this file’s shape', () => {
       const unparameterised: Effect.Effect<
         ReadonlyArray<StageRegistration>,
         never,
-        ChunkStore | EntityManager | InventoryService | PlayerService | TimeService | BucketService | WorldCommitCoordinator
+        ChunkStore | EntityManager | TimeService | WorldCommitCoordinator
       > = makeGameplayStages
 
       expect(typeof unparameterised).toBe('object')

@@ -48,7 +48,8 @@ const railKindAt = (readings: ReadonlyMap<string, BlockReading>, position: Block
   const reading = blockAt(readings, position)
   if (reading === undefined || !isBlock(reading)) return 'none'
   const railKind = propertyOfBlockId(reading.block, 'railKind')
-  return Result.isFailure(railKind) ? 'none' : railKind.success
+  // `isBlock` narrows `reading.block` to a valid BlockId.
+  return Result.getOrThrow(railKind)
 }
 
 const waterAt = (readings: ReadonlyMap<string, BlockReading>, position: BlockPosition): boolean => {

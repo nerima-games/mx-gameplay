@@ -1,7 +1,9 @@
 import {
   Effect,
   GAMEPLAY_STAGE_IDS,
+  recordGameplayStageFailure,
 } from './registration-core.js'
+import { Result } from 'effect'
 import type {
   GameplayStageContext,
   StageRegistration,
@@ -12,6 +14,17 @@ export const makeSurvivalHungerStage = (context: GameplayStageContext): StageReg
   return {
     id: GAMEPLAY_STAGE_IDS.survivalHunger,
     after: [GAMEPLAY_STAGE_IDS.fire],
-    run: (dt) => Effect.asVoid(state.survivalHunger.tick(dt)).pipe(Effect.orDie),
+    run: (dt) =>
+      Effect.gen(function* () {
+        const tick = yield* Effect.result(state.survivalHunger.tick(dt))
+        if (Result.isFailure(tick)) {
+          yield* recordGameplayStageFailure(state, {
+            _tag: 'Failed',
+            operation: 'VitalsOperation',
+            subject: 'Vitals',
+            error: tick.failure,
+          })
+        }
+      }),
   }
 }

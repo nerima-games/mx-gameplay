@@ -1,6 +1,19 @@
-import { Brand, Effect, Ref } from 'effect'
+import { Brand, Effect, Ref, Schema } from 'effect'
 import type { Damage } from './death-cause.js'
 import { DeltaTimeSecs } from '@nerima-games/mc-kernel'
+import {
+  DamageAmount,
+  DamageCause as SimDamageCause,
+  ExhaustionAmount,
+  HealthAmount,
+  SaturationModifier,
+  addExhaustion as addVitalsExhaustion,
+  advanceFoodTimer as advanceVitalsFoodTimer,
+  applyDamage as applyVitalsDamage,
+  eat as eatVitals,
+  heal as healVitals,
+  respawn as respawnVitals,
+} from '@nerima-games/mc-sim'
 import {
   SPAWN_PLAYER_VITALS,
   isValidPlayerVitals,
@@ -9,6 +22,14 @@ import {
   type PlayerVitals,
   type VitalsDamageOutcome,
 } from './in-memory-vitals.js'
+import {
+  ExperienceOrbVitalsOwnerSnapshotSchema,
+} from './entities/xp-orb.js'
+import type {
+  ReplicatedOwnerId,
+  WorldCommitCoordinatorApi,
+  WorldCommitCoordinatorError,
+} from '@nerima-games/mc-sim'
 
 export const SURVIVAL_HUNGER_STATE_VERSION = 1 as const
 export const DEFAULT_SURVIVAL_DIFFICULTY = 'normal' as const
@@ -53,17 +74,22 @@ export type SurvivalHungerTickOutcome = {
 
 export type SurvivalHungerRuntimeApi = {
   readonly submit: (input: SurvivalActivityInput) => Effect.Effect<void>
-  readonly addExhaustion: (amount: number) => Effect.Effect<void, Brand.BrandError>
-  readonly tick: (dt: DeltaTimeSecs) => Effect.Effect<SurvivalHungerTickOutcome, Brand.BrandError>
-  readonly eat: (foodPoints: number, saturationModifier: number) => Effect.Effect<PlayerVitals, Brand.BrandError>
-  readonly damage: (damage: Damage) => Effect.Effect<VitalsDamageOutcome, Brand.BrandError>
-  readonly heal: (amount: number) => Effect.Effect<PlayerVitals, Brand.BrandError>
+  readonly addExhaustion: (amount: number) => Effect.Effect<void, SurvivalHungerError>
+  readonly tick: (dt: DeltaTimeSecs) => Effect.Effect<SurvivalHungerTickOutcome, SurvivalHungerError>
+  readonly eat: (foodPoints: number, saturationModifier: number) => Effect.Effect<PlayerVitals, SurvivalHungerError>
+  readonly damage: (damage: Damage) => Effect.Effect<VitalsDamageOutcome, SurvivalHungerError>
+  readonly heal: (amount: number) => Effect.Effect<PlayerVitals, SurvivalHungerError>
   readonly setDifficulty: (difficulty: SurvivalDifficulty) => Effect.Effect<void>
-  readonly snapshot: Effect.Effect<SurvivalHungerState>
-  readonly restore: (state: SurvivalHungerState) => Effect.Effect<void>
-  readonly respawn: Effect.Effect<void>
-  readonly reset: Effect.Effect<void>
+  readonly snapshot: Effect.Effect<SurvivalHungerState, SurvivalHungerError>
+  readonly restore: (state: SurvivalHungerState) => Effect.Effect<void, SurvivalHungerError>
+  readonly respawn: Effect.Effect<void, SurvivalHungerError>
+  readonly reset: Effect.Effect<void, SurvivalHungerError>
 }
+
+export type SurvivalHungerError =
+  | Brand.BrandError
+  | Schema.SchemaError
+  | WorldCommitCoordinatorError
 
 const finiteNonNegative = (value: number): number =>
   Number.isFinite(value) && value > 0 ? value : 0
@@ -226,6 +252,167 @@ export const makeSurvivalHungerRuntime = (
         yield* Ref.set(pending, [])
         yield* Ref.set(difficulty, DEFAULT_SURVIVAL_DIFFICULTY)
         yield* vitals.reset
+      }),
+    }
+  })
+
+/** Build the gameplay runtime against the registered WCC vitals owner. */
+export const makeReplicatedSurvivalHungerRuntime = (
+  coordinator: WorldCommitCoordinatorApi,
+  ownerId: ReplicatedOwnerId,
+  initialDifficulty: SurvivalDifficulty = DEFAULT_SURVIVAL_DIFFICULTY,
+): Effect.Effect<SurvivalHungerRuntimeApi> =>
+  Effect.gen(function* () {
+    const difficulty = yield* Ref.make<SurvivalDifficulty>(initialDifficulty)
+    const pending = yield* Ref.make<ReadonlyArray<SurvivalActivityInput>>([])
+
+    const transact = <A>(
+      operation: (vitals: PlayerVitals) => Effect.Effect<Readonly<{ vitals: PlayerVitals; result: A }>, Brand.BrandError>,
+    ): Effect.Effect<A, SurvivalHungerError> =>
+      Effect.gen(function* () {
+        const observed = yield* coordinator.snapshot(ownerId, ExperienceOrbVitalsOwnerSnapshotSchema)
+        const planned = yield* operation(observed.state.vitals)
+        const candidate = yield* Schema.decodeUnknownEffect(ExperienceOrbVitalsOwnerSnapshotSchema)({
+          vitals: planned.vitals,
+        })
+        yield* coordinator.commit({
+          expectedRevision: observed.revision,
+          changes: [{ ownerId, state: candidate }],
+        })
+        return planned.result
+      })
+
+    const runFoodTicks = (
+      initial: PlayerVitals,
+      currentDifficulty: SurvivalDifficulty,
+      dt: DeltaTimeSecs,
+    ): Effect.Effect<Readonly<{
+      vitals: PlayerVitals
+      foodTicks: number
+      regeneratedHealth: number
+      starvationDamage: number
+      died: boolean
+    }>, Brand.BrandError> => Effect.gen(function* () {
+      let vitals = initial
+      let remaining = dt as number
+      let foodTicks = 0
+      let regeneratedHealth = 0
+      let starvationDamage = 0
+      let died = false
+
+      while (remaining > 0 && vitals.healthPoints > 0) {
+        const untilFoodTick = 4 - vitals.foodTimerSecs
+        const slice = Math.min(remaining, untilFoodTick)
+        const elapsed = yield* Effect.fromResult(DeltaTimeSecs.result(slice))
+        const [signal, ticked] = advanceVitalsFoodTimer(vitals, elapsed)
+        vitals = ticked
+        remaining -= slice
+        if (slice === untilFoodTick) foodTicks += 1
+
+        if (signal === 'regen') {
+          const amount = yield* Effect.fromResult(HealthAmount.result(1))
+          const before = vitals.healthPoints
+          vitals = healVitals(vitals, amount)
+          regeneratedHealth += vitals.healthPoints - before
+        } else if (signal === 'starve') {
+          const damageAmount = Math.min(1, Math.max(0, vitals.healthPoints - starvationHealthFloor(currentDifficulty)))
+          starvationDamage += damageAmount
+          if (damageAmount > 0) {
+            const amount = yield* Effect.fromResult(DamageAmount.result(damageAmount))
+            const cause = yield* Effect.fromResult(SimDamageCause.result('starvation'))
+            const before = vitals.healthPoints
+            vitals = applyVitalsDamage(vitals, { amount, cause })
+            died ||= before > 0 && vitals.healthPoints <= 0
+          }
+        }
+      }
+
+      return { vitals, foodTicks, regeneratedHealth, starvationDamage, died }
+    })
+
+    const tick = (dt: DeltaTimeSecs): Effect.Effect<SurvivalHungerTickOutcome, SurvivalHungerError> =>
+      Effect.gen(function* () {
+        const elapsed = yield* Effect.fromResult(DeltaTimeSecs.result(dt))
+        const currentDifficulty = yield* Ref.get(difficulty)
+        const inputs = yield* Ref.getAndSet(pending, [])
+        return yield* transact((before) => Effect.gen(function* () {
+          const exhaustionAdded = currentDifficulty === 'peaceful' || before.healthPoints <= 0
+            ? 0
+            : inputs.reduce((total, input) => total + exhaustionForSurvivalActivity(input), 0)
+          const exhausted = exhaustionAdded > 0
+            ? addVitalsExhaustion(
+                before,
+                yield* Effect.fromResult(ExhaustionAmount.result(exhaustionAdded)),
+              )
+            : before
+          const food = yield* runFoodTicks(exhausted, currentDifficulty, elapsed)
+          return {
+            vitals: food.vitals,
+            result: {
+              difficulty: currentDifficulty,
+              exhaustionAdded,
+              foodTicks: food.foodTicks,
+              regeneratedHealth: food.regeneratedHealth,
+              starvationDamage: food.starvationDamage,
+              died: food.died,
+              vitals: food.vitals,
+            },
+          }
+        }))
+      })
+
+    return {
+      submit: (input) => Ref.update(pending, (inputs) => [...inputs, input]),
+      addExhaustion: (amount) => transact((vitals) => Effect.gen(function* () {
+        const exhaustion = yield* Effect.fromResult(ExhaustionAmount.result(amount))
+        const candidate = vitals.healthPoints > 0 ? addVitalsExhaustion(vitals, exhaustion) : vitals
+        return { vitals: candidate, result: undefined }
+      })),
+      tick,
+      eat: (foodPoints, saturationModifier) =>
+        transact((vitals) => Effect.gen(function* () {
+          const food = yield* Effect.fromResult(FoodNutrition.result(foodPoints))
+          const saturation = yield* Effect.fromResult(SaturationModifier.result(saturationModifier))
+          const candidate = vitals.healthPoints > 0 ? eatVitals(vitals, food, saturation) : vitals
+          return { vitals: candidate, result: candidate }
+        })),
+      damage: (damage) => transact((vitals) => Effect.gen(function* () {
+        const amount = yield* Effect.fromResult(DamageAmount.result(damage.amount))
+        const cause = yield* Effect.fromResult(SimDamageCause.result(damage.cause))
+        const candidate = applyVitalsDamage(vitals, { amount, cause })
+        return {
+          vitals: candidate,
+          result: { vitals: candidate, died: vitals.healthPoints > 0 && candidate.healthPoints <= 0 },
+        }
+      })),
+      heal: (amount) => transact((vitals) => Effect.gen(function* () {
+        const health = yield* Effect.fromResult(HealthAmount.result(amount))
+        const candidate = healVitals(vitals, health)
+        return { vitals: candidate, result: candidate }
+      })),
+      setDifficulty: (next) => Ref.set(difficulty, next),
+      snapshot: Effect.gen(function* () {
+        const current = yield* coordinator.snapshot(ownerId, ExperienceOrbVitalsOwnerSnapshotSchema)
+        return {
+          version: SURVIVAL_HUNGER_STATE_VERSION,
+          difficulty: yield* Ref.get(difficulty),
+          vitals: current.state.vitals,
+        }
+      }),
+      restore: (state) =>
+        Effect.gen(function* () {
+          yield* Ref.set(pending, [])
+          yield* Ref.set(difficulty, state.difficulty)
+          yield* transact((vitals) => Effect.succeed({ vitals: state.vitals, result: undefined }))
+        }),
+      respawn: Effect.andThen(Ref.set(pending, []), transact((vitals) => {
+        const candidate = respawnVitals(vitals)
+        return Effect.succeed({ vitals: candidate, result: undefined })
+      })),
+      reset: Effect.gen(function* () {
+        yield* Ref.set(pending, [])
+        yield* Ref.set(difficulty, DEFAULT_SURVIVAL_DIFFICULTY)
+        yield* transact(() => Effect.succeed({ vitals: SPAWN_PLAYER_VITALS, result: undefined }))
       }),
     }
   })

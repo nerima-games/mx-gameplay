@@ -97,11 +97,16 @@ export const prepareUnequipTopmost = (
     onExcessProperty: 'error',
   })(equipment)
   if (Result.isFailure(decoded)) return Result.fail('invalid-equipment')
-  const slot = firstWornSlot(decoded.success)
-  const item = slot === undefined ? undefined : decoded.success[slot]
-  const prepared: UnequipPreparation = slot === undefined || item === undefined
+
+  const worn = firstWornItem(decoded.success)
+  const prepared: UnequipPreparation = worn === undefined
     ? { _tag: 'NothingWorn', nextEquipment: decoded.success }
-    : { _tag: 'Unequip', slot, item, nextEquipment: equipmentWithout(decoded.success, slot) }
+    : {
+        _tag: 'Unequip',
+        slot: worn.slot,
+        item: worn.item,
+        nextEquipment: equipmentWithout(decoded.success, worn.slot),
+      }
   const validated = Schema.decodeUnknownResult(UnequipPreparationSchema, {
     onExcessProperty: 'error',
   })(prepared)
@@ -129,6 +134,14 @@ export type UnequipOutcome =
    */
   | { readonly _tag: 'inventoryFull'; readonly slot: ArmorSlot; readonly item: ItemType }
 
+const firstWornItem = (equipment: Equipment): Readonly<{ slot: ArmorSlot; item: ItemType }> | undefined => {
+  for (const slot of ARMOR_SLOTS) {
+    const item = equipment[slot]
+    if (item !== undefined) return { slot, item }
+  }
+  return undefined
+}
+
 /**
  * The first occupied slot, in `ARMOR_SLOTS` order.
  *
@@ -136,7 +149,7 @@ export type UnequipOutcome =
  * for a bare player.
  */
 export const firstWornSlot = (equipment: Equipment): ArmorSlot | undefined =>
-  ARMOR_SLOTS.find((slot) => equipment[slot] !== undefined)
+  firstWornItem(equipment)?.slot
 
 /** What the rule needs of an inventory and a body. */
 export type UnequipPort = {
@@ -175,20 +188,11 @@ export const unequipTopmost = (
   equipment: Equipment,
 ): Effect.Effect<UnequipOutcome> =>
   Effect.gen(function* () {
-    const slot = firstWornSlot(equipment)
-    if (slot === undefined) {
+    const worn = firstWornItem(equipment)
+    if (worn === undefined) {
       return { _tag: 'nothingWorn' as const }
     }
-
-    const item = equipment[slot]
-    /* v8 ignore start -- unreachable while `firstWornSlot` is the only way in: it
-     * finds `slot` by testing `equipment[slot] !== undefined`, so `item` here is
-     * always defined. Narrowed rather than asserted: a non-null assertion here
-     * would be the one place in this file a future change could make lie. */
-    if (item === undefined) {
-      return { _tag: 'nothingWorn' as const }
-    }
-    /* v8 ignore stop */
+    const { slot, item } = worn
 
     yield* port.unequip(slot)
     const leftover = yield* port.add(item, 1)

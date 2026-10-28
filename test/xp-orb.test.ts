@@ -22,9 +22,12 @@ import {
   type ReplicatedSnapshot,
   type Vitals,
   type WorldCommitCoordinatorApi,
+  WorldRevisionConflict,
 } from '@nerima-games/mc-sim'
 import {
   ExperienceOrbAbsorptionSchema,
+  ExperienceOrbAbsorptionCommitResultInvalidSchema,
+  ExperienceOrbAbsorptionFailureSchema,
   ExperienceOrbOwnerSnapshotSchema,
   ExperienceOrbValueSchema,
   ExperienceOrbVitalsOwnerSnapshotSchema,
@@ -143,6 +146,53 @@ describe('experience orb values', () => {
       orbs: [],
       unexpected: true,
     }))).toBe(true)
+  })
+
+  it('rejects missing required fields and null for every public XP result and owner schema', () => {
+    const validOwner = { orbs: [{ id: PICKUP_CONTEXT.orb, value: 1 }] }
+    const validVitals = { vitals: SPAWN_VITALS }
+    const validFailure = {
+      _tag: 'ExperienceOrbUnavailable' as const,
+      orb: PICKUP_CONTEXT.orb,
+      reason: 'missing-orb' as const,
+    }
+    const validCommitFailure = {
+      _tag: 'ExperienceOrbAbsorptionCommitResultInvalid' as const,
+      reason: 'missing-owner-change' as const,
+      owners: [OWNER_IDS.vitals],
+    }
+    const validEvent = [{
+      _tag: 'ExperienceCollected' as const,
+      tick: PICKUP_CONTEXT.tick,
+      player: PICKUP_CONTEXT.actor,
+      orb: PICKUP_CONTEXT.orb,
+      amount: 1,
+    }]
+    const schemas = [
+      ExperienceOrbValueSchema,
+      ExperienceOrbAbsorptionSchema,
+      ExperienceOrbOwnerSnapshotSchema,
+      ExperienceOrbVitalsOwnerSnapshotSchema,
+      ExperienceOrbAbsorptionFailureSchema,
+      ExperienceOrbAbsorptionCommitResultInvalidSchema,
+    ] as const
+
+    for (const schema of schemas) {
+      expect(Result.isFailure(Schema.decodeUnknownResult(schema)(null))).toBe(true)
+    }
+    expect(Result.isFailure(Schema.decodeUnknownResult(ExperienceOrbOwnerSnapshotSchema)({}))).toBe(true)
+    expect(Result.isFailure(Schema.decodeUnknownResult(ExperienceOrbVitalsOwnerSnapshotSchema)({}))).toBe(true)
+    expect(Result.isFailure(Schema.decodeUnknownResult(ExperienceOrbAbsorptionFailureSchema)({
+      _tag: validFailure._tag,
+      orb: validFailure.orb,
+    }))).toBe(true)
+    expect(Result.isFailure(Schema.decodeUnknownResult(ExperienceOrbAbsorptionCommitResultInvalidSchema)({
+      _tag: validCommitFailure._tag,
+      reason: validCommitFailure.reason,
+    }))).toBe(true)
+    expect(Result.isSuccess(Schema.decodeUnknownResult(ExperienceOrbAbsorptionSchema)(validEvent))).toBe(true)
+    expect(Result.isSuccess(Schema.decodeUnknownResult(ExperienceOrbOwnerSnapshotSchema)(validOwner))).toBe(true)
+    expect(Result.isSuccess(Schema.decodeUnknownResult(ExperienceOrbVitalsOwnerSnapshotSchema)(validVitals))).toBe(true)
   })
 
   it.effect('commits vitals and orb consumption together before returning strict event candidates', () =>
@@ -369,4 +419,112 @@ describe('experience orb values', () => {
       })
     }),
   )
+
+  it('commits successful absorption once for generated XP values', () => {
+    FastCheck.assert(
+      FastCheck.property(
+        FastCheck.integer({ min: 1, max: 1000 }),
+        (points) => {
+          const value = createExperienceOrbValue(points)
+          if (Result.isFailure(value)) return false
+          const coordinator = Effect.runSync(makeCoordinator(SPAWN_VITALS, {
+            orbs: [{ id: PICKUP_CONTEXT.orb, value: value.success }],
+          }))
+          let commitCalls = 0
+          let ownerChanges = 0
+          let requestHasBlockWrite = true
+          const countingCoordinator: WorldCommitCoordinatorApi = {
+            ...coordinator,
+            commit: (request) => {
+              commitCalls += 1
+              ownerChanges = request.changes.length
+              requestHasBlockWrite = request.blockWrite !== undefined
+              return coordinator.commit(request)
+            },
+          }
+          const outcome = Effect.runSync(Effect.result(
+            absorbExperienceOrb(countingCoordinator, OWNER_IDS, PICKUP_CONTEXT),
+          ))
+          const vitals = Effect.runSync(coordinator.snapshot(
+            OWNER_IDS.vitals,
+            ExperienceOrbVitalsOwnerSnapshotSchema,
+          ))
+          const orbs = Effect.runSync(coordinator.snapshot(
+            OWNER_IDS.orbs,
+            ExperienceOrbOwnerSnapshotSchema,
+          ))
+
+          return Result.isSuccess(outcome) &&
+            Result.isSuccess(Schema.decodeUnknownResult(ExperienceOrbAbsorptionSchema)(outcome.success)) &&
+            commitCalls === 1 &&
+            ownerChanges === 2 &&
+            !requestHasBlockWrite &&
+            vitals.revision === 1 &&
+            orbs.revision === 1 &&
+            vitals.state.vitals.totalExperience === points &&
+            orbs.state.orbs.length === 0
+        },
+      ),
+      { numRuns: 100, seed: 90101 },
+    )
+  })
+
+  it('keeps both owners and revision unchanged when absorption commit fails', () => {
+    FastCheck.assert(
+      FastCheck.property(
+        FastCheck.integer({ min: 1, max: 1000 }),
+        (points) => {
+          const value = createExperienceOrbValue(points)
+          if (Result.isFailure(value)) return false
+          const coordinator = Effect.runSync(makeCoordinator(SPAWN_VITALS, {
+            orbs: [{ id: PICKUP_CONTEXT.orb, value: value.success }],
+          }))
+          const vitalsBefore = Effect.runSync(coordinator.snapshot(
+            OWNER_IDS.vitals,
+            ExperienceOrbVitalsOwnerSnapshotSchema,
+          ))
+          const orbsBefore = Effect.runSync(coordinator.snapshot(
+            OWNER_IDS.orbs,
+            ExperienceOrbOwnerSnapshotSchema,
+          ))
+          let commitCalls = 0
+          let ownerChanges = 0
+          let requestHasBlockWrite = true
+          const rejectingCoordinator: WorldCommitCoordinatorApi = {
+            ...coordinator,
+            commit: (request) => {
+              commitCalls += 1
+              ownerChanges = request.changes.length
+              requestHasBlockWrite = request.blockWrite !== undefined
+              return Effect.fail(new WorldRevisionConflict({
+                expected: Schema.decodeUnknownSync(WorldRevisionSchema)(0),
+                actual: Schema.decodeUnknownSync(WorldRevisionSchema)(1),
+              }))
+            },
+          }
+          const outcome = Effect.runSync(Effect.result(
+            absorbExperienceOrb(rejectingCoordinator, OWNER_IDS, PICKUP_CONTEXT),
+          ))
+          const vitalsAfter = Effect.runSync(coordinator.snapshot(
+            OWNER_IDS.vitals,
+            ExperienceOrbVitalsOwnerSnapshotSchema,
+          ))
+          const orbsAfter = Effect.runSync(coordinator.snapshot(
+            OWNER_IDS.orbs,
+            ExperienceOrbOwnerSnapshotSchema,
+          ))
+
+          return Result.isFailure(outcome) &&
+            commitCalls === 1 &&
+            ownerChanges === 2 &&
+            !requestHasBlockWrite &&
+            vitalsAfter.revision === vitalsBefore.revision &&
+            orbsAfter.revision === orbsBefore.revision &&
+            JSON.stringify(vitalsAfter.state) === JSON.stringify(vitalsBefore.state) &&
+            JSON.stringify(orbsAfter.state) === JSON.stringify(orbsBefore.state)
+        },
+      ),
+      { numRuns: 100, seed: 90102 },
+    )
+  })
 })

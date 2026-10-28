@@ -1,15 +1,12 @@
 import { describe, expect, it } from '@effect/vitest'
 import * as FastCheck from 'fast-check'
 import {
-  BucketServiceErrorSchema,
-  makeBucketService,
   makeReplicatedOwnerId,
   makeWorldCommitCoordinator,
   playerStorageOwnerRegistration,
   PlayerStorageSnapshotSchema,
-  WorldCommitCoordinator,
+  WorldCommitCoordinatorErrorSchema,
   WorldRevisionConflict,
-  type BucketServiceApi,
   type InventoryServiceApi,
   type PlayerStorage,
   type ReplicatedOwnerId,
@@ -89,7 +86,6 @@ type BucketHarness = {
   readonly world: InMemoryWorld<unknown>
   readonly inventory: InventoryServiceApi
   readonly coordinator: WorldCommitCoordinatorApi
-  readonly bucketService: BucketServiceApi
   readonly ownerId: ReplicatedOwnerId
   readonly initialStorage: PlayerStorage
 }
@@ -116,15 +112,10 @@ const makeBucketHarness = (
       owners: [playerStorageOwnerRegistration(PLAYER_STORAGE_OWNER_ID, initialStorage)],
       chunkStores,
     })
-    const bucketService = yield* makeBucketService().pipe(
-      Effect.provideService(WorldCommitCoordinator, coordinator),
-    )
-
     return {
       world,
       inventory: inventory.api,
       coordinator,
-      bucketService,
       ownerId: PLAYER_STORAGE_OWNER_ID,
       initialStorage,
     }
@@ -163,21 +154,22 @@ const assertUnchangedAfterFailure = (
       kind,
     }))
     const frontier = yield* Ref.make<ReadonlyArray<FluidWorkItem>>(initialFrontier)
-    const failingService: BucketServiceApi = {
-      commitUse: () =>
-        Effect.fail(
-          new WorldRevisionConflict({
-            expected: Schema.decodeUnknownSync(WorldRevisionSchema)(1),
-            actual: Schema.decodeUnknownSync(WorldRevisionSchema)(0),
-          }),
-        ),
+    let commitCount = 0
+    const coordinator: WorldCommitCoordinatorApi = {
+      ...harness.coordinator,
+      commit: (...args) => {
+        commitCount += 1
+        return scenario === 'commit-failed'
+          ? Effect.fail(new WorldRevisionConflict({
+              expected: Schema.decodeUnknownSync(WorldRevisionSchema)(1),
+              actual: Schema.decodeUnknownSync(WorldRevisionSchema)(0),
+            }))
+          : harness.coordinator.commit(...args)
+      },
     }
-    const service = scenario === 'commit-failed' ? failingService : harness.bucketService
     const outcome = yield* Effect.result(
       useBucket(
-        harness.inventory,
-        service,
-        harness.coordinator,
+        coordinator,
         frontier,
         request(scenario === 'occupied' ? 'water_bucket' : 'bucket', {
           targetDimension: scenario === 'wrong-dimension' ? 'nether' : 'overworld',
@@ -188,7 +180,7 @@ const assertUnchangedAfterFailure = (
     if (scenario === 'commit-failed') {
       expect(Result.isFailure(outcome)).toBe(true)
       if (Result.isFailure(outcome)) {
-        expect(Schema.decodeUnknownSync(BucketServiceErrorSchema)(outcome.failure)._tag).toBe(
+        expect(Schema.decodeUnknownSync(WorldCommitCoordinatorErrorSchema)(outcome.failure)._tag).toBe(
           'WorldRevisionConflict',
         )
       }
@@ -199,6 +191,7 @@ const assertUnchangedAfterFailure = (
         expect(outcome.success._tag).not.toBe('Placed')
       }
     }
+    expect(commitCount).toBe(scenario === 'commit-failed' ? 1 : 0)
 
     const blockAfter = yield* harness.world.chunkStore.getBlock(POSITION)
     expect(blockAfter).toStrictEqual(
@@ -209,6 +202,7 @@ const assertUnchangedAfterFailure = (
       harness.ownerId,
       PlayerStorageSnapshotSchema,
     )
+    expect(ownerAfter.revision).toBe(0)
     expect(Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(ownerAfter.state)).toStrictEqual(
       harness.initialStorage,
     )
@@ -234,8 +228,6 @@ describe('bucket interaction', () => {
         ])
 
         const outcome = yield* useBucket(
-          harness.inventory,
-          harness.bucketService,
           harness.coordinator,
           frontier,
           request('bucket'),
@@ -250,16 +242,15 @@ describe('bucket interaction', () => {
           _tag: 'Block',
           block: AIR_BLOCK_ID,
         })
-        const expectedStorage = yield* harness.inventory.storageSnapshot
-        expect(expectedStorage.inventory.slots).toStrictEqual(
-          inventoryWith([0, stack(scenario.filled, 1)]),
-        )
+        const localStorage = yield* harness.inventory.storageSnapshot
+        expect(localStorage).toStrictEqual(harness.initialStorage)
         const owner = yield* harness.coordinator.snapshot(
           harness.ownerId,
           PlayerStorageSnapshotSchema,
         )
-        expect(Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(owner.state)).toStrictEqual(
-          expectedStorage,
+        const committedStorage = Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(owner.state)
+        expect(committedStorage.inventory.slots).toStrictEqual(
+          inventoryWith([0, stack(scenario.filled, 1)]),
         )
         expect(owner.revision).toBe(1)
         expect(yield* Ref.get(frontier)).toStrictEqual([
@@ -282,8 +273,6 @@ describe('bucket interaction', () => {
         const frontier = yield* Ref.make<ReadonlyArray<FluidWorkItem>>([])
 
         const outcome = yield* useBucket(
-          harness.inventory,
-          harness.bucketService,
           harness.coordinator,
           frontier,
           request(scenario.filled),
@@ -298,14 +287,15 @@ describe('bucket interaction', () => {
           _tag: 'Block',
           block: scenario.source,
         })
-        const expectedStorage = yield* harness.inventory.storageSnapshot
-        expect(expectedStorage.inventory.slots).toStrictEqual(inventoryWith([0, stack('bucket', 1)]))
+        const localStorage = yield* harness.inventory.storageSnapshot
+        expect(localStorage).toStrictEqual(harness.initialStorage)
         const owner = yield* harness.coordinator.snapshot(
           harness.ownerId,
           PlayerStorageSnapshotSchema,
         )
-        expect(Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(owner.state)).toStrictEqual(
-          expectedStorage,
+        const committedStorage = Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(owner.state)
+        expect(committedStorage.inventory.slots).toStrictEqual(
+          inventoryWith([0, stack('bucket', 1)]),
         )
         expect(yield* Ref.get(frontier)).toStrictEqual([
           {
@@ -317,6 +307,67 @@ describe('bucket interaction', () => {
     )
   }
 
+  it.effect(
+    'property: each successful bucket operation commits once without updating the local inventory mirror',
+    () =>
+      Effect.sync(() => {
+        FastCheck.assert(
+          FastCheck.property(
+            FastCheck.constantFrom<FluidKind>('water', 'lava'),
+            FastCheck.boolean(),
+            (fluid, collecting) => {
+              const source = fluid === 'water' ? WATER : LAVA
+              const heldItem: BucketItemType = collecting ? 'bucket' : `${fluid}_bucket`
+              const nextItem: BucketItemType = collecting ? `${fluid}_bucket` : 'bucket'
+              let commitCount = 0
+
+              return Effect.runSync(Effect.orDie(Effect.gen(function* () {
+                const harness = yield* makeBucketHarness(
+                  collecting ? source : undefined,
+                  true,
+                  inventoryWith([0, stack(heldItem, 1)]),
+                )
+                const frontier = yield* Ref.make<ReadonlyArray<FluidWorkItem>>([])
+                const coordinator: WorldCommitCoordinatorApi = {
+                  ...harness.coordinator,
+                  commit: (...args) => {
+                    commitCount += 1
+                    return harness.coordinator.commit(...args)
+                  },
+                }
+                const outcome = yield* useBucket(
+                  coordinator,
+                  frontier,
+                  request(heldItem),
+                )
+                const localStorage = yield* harness.inventory.storageSnapshot
+                const owner = yield* harness.coordinator.snapshot(
+                  harness.ownerId,
+                  PlayerStorageSnapshotSchema,
+                )
+                const committedStorage = Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(owner.state)
+                const world = yield* harness.world.chunkStore.getBlock(POSITION)
+                const expectedBlock = collecting ? AIR_BLOCK_ID : source
+                const frontierAfter = yield* Ref.get(frontier)
+
+                return outcome._tag === (collecting ? 'Collected' : 'Placed') &&
+                  commitCount === 1 &&
+                  owner.revision === 1 &&
+                  JSON.stringify(localStorage) === JSON.stringify(harness.initialStorage) &&
+                  JSON.stringify(committedStorage.inventory.slots) ===
+                    JSON.stringify(inventoryWith([0, stack(nextItem, 1)])) &&
+                  world._tag === 'Block' && world.block === expectedBlock &&
+                  frontierAfter.length === 1 &&
+                  frontierAfter[0]?.key === blockPositionKeyOf(atBlockPosition(POSITION.x, POSITION.y, POSITION.z)) &&
+                  frontierAfter[0]?.kind === fluid
+              })))
+            },
+          ),
+          { numRuns: 35 },
+        )
+      }),
+  )
+
   it.effect('rejects a target in another dimension without mutation', () =>
     Effect.gen(function* () {
       expect(
@@ -325,7 +376,7 @@ describe('bucket interaction', () => {
     }),
   )
 
-  it.effect('rejects a missing bucket before observing the world', () =>
+  it.effect('rejects a missing bucket from the observed owner storage', () =>
     Effect.gen(function* () {
       expect(yield* assertUnchangedAfterFailure('missing-item', 3, [[9, 'water']])).toBe(true)
     }),
@@ -350,7 +401,7 @@ describe('bucket interaction', () => {
     }),
   )
 
-  it.effect('refuses a bucket operation when local storage differs from its registered owner', () =>
+  it.effect('uses registered owner storage when the local inventory mirror differs', () =>
     Effect.gen(function* () {
       const harness = yield* makeBucketHarness(
         WATER,
@@ -365,65 +416,26 @@ describe('bucket interaction', () => {
       expect(localStorageAfterChange).not.toStrictEqual(initialOwnerStorage)
 
       expect(yield* useBucket(
-        harness.inventory,
-        harness.bucketService,
         harness.coordinator,
         frontier,
         request('bucket'),
-      )).toStrictEqual({ _tag: 'InventoryOutOfSync' })
+      )).toMatchObject({ _tag: 'Collected', fluid: 'water' })
 
       expect(yield* harness.world.chunkStore.getBlock(POSITION)).toStrictEqual({
         _tag: 'Block',
-        block: WATER,
+        block: AIR_BLOCK_ID,
       })
       expect(yield* harness.inventory.storageSnapshot).toStrictEqual(localStorageAfterChange)
       const owner = yield* harness.coordinator.snapshot(
         harness.ownerId,
         PlayerStorageSnapshotSchema,
       )
-      expect(Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(owner.state)).toStrictEqual(
-        initialOwnerStorage,
-      )
-      expect(yield* Ref.get(frontier)).toStrictEqual([])
-    }),
-  )
-
-  it.effect('treats a NoChanges bucket-service response as an uncommitted operation', () =>
-    Effect.gen(function* () {
-      const harness = yield* makeBucketHarness(
-        WATER,
-        true,
-        inventoryWith([0, stack('bucket', 1)]),
-      )
-      const frontier = yield* Ref.make<ReadonlyArray<FluidWorkItem>>([
-        { key: positionKey('9,64,9'), kind: 'lava' },
-      ])
-      const initialFrontier = yield* Ref.get(frontier)
-      const noChangesService: BucketServiceApi = {
-        commitUse: () => Effect.succeed({ _tag: 'NoChanges' }),
-      }
-
-      expect(yield* useBucket(
-        harness.inventory,
-        noChangesService,
-        harness.coordinator,
-        frontier,
-        request('bucket'),
-      )).toStrictEqual({ _tag: 'WorldChanged' })
-
-      expect(yield* harness.world.chunkStore.getBlock(POSITION)).toStrictEqual({
-        _tag: 'Block',
-        block: WATER,
-      })
-      expect(yield* harness.inventory.storageSnapshot).toStrictEqual(harness.initialStorage)
-      const owner = yield* harness.coordinator.snapshot(
-        harness.ownerId,
-        PlayerStorageSnapshotSchema,
-      )
-      expect(Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(owner.state)).toStrictEqual(
-        harness.initialStorage,
-      )
-      expect(yield* Ref.get(frontier)).toStrictEqual(initialFrontier)
+      const ownerStorage = Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(owner.state)
+      expect(ownerStorage.inventory.slots).toStrictEqual(inventoryWith([0, stack('water_bucket', 1)]))
+      expect(yield* Ref.get(frontier)).toStrictEqual([{
+        key: blockPositionKeyOf(atBlockPosition(POSITION.x, POSITION.y, POSITION.z)),
+        kind: 'water',
+      }])
     }),
   )
 
@@ -444,8 +456,6 @@ describe('bucket interaction', () => {
       }
 
       expect(yield* useBucket(
-        harness.inventory,
-        harness.bucketService,
         coordinator,
         frontier,
         request('bucket'),

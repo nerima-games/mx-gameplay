@@ -65,24 +65,38 @@
  *     reads, and it is the one the whole `EntityManager` design exists for.
  */
 import { describe, expect, it } from '@effect/vitest'
+import fc from 'fast-check'
 import {
+  addInventoryItem,
   durability as makeDurability,
   emptyFurnaceState as makeEmptyFurnaceState,
   equipmentItem as makeEquipmentItem,
   itemStack as makeItemStack,
+  makeWorldCommitCoordinator,
   PlayerStorageSnapshotSchema,
+  playerStorageOwnerRegistration,
+  ReplicatedOwnerIdSchema,
+  WorldCommitCoordinatorErrorSchema,
+  withInventory,
   type EquipmentItem,
+  type InventoryServiceApi,
   makeTimeService,
+  type ReplicatedOwnerId,
   type TimeServiceApi,
 } from '@nerima-games/mc-sim'
-import { Effect, Option, Ref, Result } from 'effect'
+import { Effect, Option, Ref, Result, Schema } from 'effect'
 import {
   AIR_BLOCK_ID,
+  BlockIdSchema,
+  BlockPositionSchema,
   blockIdOf,
   capabilityOfBlockId,
+  DimensionRevisionSchema,
+  DimensionIdSchema,
   EntityHealthPoints,
   PortalHeight,
   PortalWidth,
+  WorldRevisionSchema,
   type BlockPosition,
   type HarvestTier,
   type Position,
@@ -122,6 +136,10 @@ import {
   type WorldCommitCoordinatorApi,
 } from '@nerima-games/mc-sim'
 import { disturb } from '../src/domain/falling-block'
+import {
+  DroppedItemOwnerSnapshotSchema,
+  droppedItemOwnerRegistration,
+} from '../src/domain/entities/dropped-item'
 import {
   BlockId,
   blockPositionKeyOf,
@@ -241,6 +259,55 @@ const slice = (
       stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api, time, undefined, undefined, {}, commit),
     }
   })
+
+const MINING_DIMENSION = Schema.decodeUnknownSync(DimensionIdSchema)('overworld')
+const MINING_DROPPED_ITEMS_OWNER_ID = Schema.decodeUnknownSync(ReplicatedOwnerIdSchema)(
+  'vertical-slice-mining-dropped-items',
+)
+
+const withMiningDroppedItemsOwner = (
+  store: ChunkStoreApi,
+  inventory: InventoryServiceApi,
+  coordinator: WorldCommitCoordinatorApi,
+  playerStorageOwnerId: ReplicatedOwnerId,
+) =>
+  Effect.gen(function* () {
+    const playerStorage = Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(
+      yield* inventory.storageSnapshot,
+    )
+    const droppedItems = Schema.decodeUnknownSync(DroppedItemOwnerSnapshotSchema)({ items: [] })
+    const miningCoordinator = yield* makeWorldCommitCoordinator({
+      world: coordinator.worldId,
+      owners: [
+        playerStorageOwnerRegistration(playerStorageOwnerId, playerStorage),
+        droppedItemOwnerRegistration(MINING_DROPPED_ITEMS_OWNER_ID, droppedItems),
+      ],
+      dimensions: [MINING_DIMENSION],
+      chunkStores: { forDimension: () => store },
+    })
+    return {
+      coordinator: miningCoordinator,
+      droppedItemsOwnerId: MINING_DROPPED_ITEMS_OWNER_ID,
+    }
+  })
+
+const countPlayerStorageItem = (
+  storage: Schema.Schema.Type<typeof PlayerStorageSnapshotSchema>,
+  item: string,
+): number =>
+  storage.inventory.slots.reduce(
+    (count, slot) => count + (slot?.item === item ? slot.count : 0),
+    0,
+  )
+
+const countDroppedOwnerItem = (
+  snapshot: Schema.Schema.Type<typeof DroppedItemOwnerSnapshotSchema>,
+  item: string,
+): number =>
+  snapshot.items.reduce(
+    (count, dropped) => count + (dropped.behaviour.item === item ? dropped.behaviour.count : 0),
+    0,
+  )
 
 const onePlacementItem = (item: PlacementRequest['heldItem']) =>
   emptySlots().map((_, index) =>
@@ -2146,23 +2213,33 @@ describe('the furnace slice: host-owned state crosses the interaction stage', ()
   )
 })
 
-describe('the bucket slice: item use atomically exchanges fluid and inventory', () => {
+describe('the bucket slice: item use atomically exchanges fluid and owner storage', () => {
   const source: BlockPosition = fixtureBlockPosition(12, 64, 12)
 
-  it.effect('collects water, updates the inventory, and reports the completed use', () =>
+  it.effect('collects water in one owner and block commit before reporting completion', () =>
     Effect.gen(function* () {
-      const { store, inventory, state, stages } = yield* slice(
+      const { store, inventory, state, stages, commit } = yield* slice(
         world([[source, WATER]]),
         ['0,0'],
         oneBucketItem('bucket'),
+      )
+      const ownerBefore = yield* commit.coordinator.snapshot(
+        commit.playerStorageOwnerId,
+        PlayerStorageSnapshotSchema,
       )
 
       yield* requestBucketUse(state, 'collect-water', source, 'bucket', 'overworld')
       yield* runFrame(stages)
 
       expect(yield* store.blockAt(source)).toBeUndefined()
-      expect(yield* inventory.api.countOf('bucket')).toBe(0)
-      expect(yield* inventory.api.countOf('water_bucket')).toBe(1)
+      const ownerAfter = yield* commit.coordinator.snapshot(
+        commit.playerStorageOwnerId,
+        PlayerStorageSnapshotSchema,
+      )
+      expect(ownerAfter.revision).toBe(ownerBefore.revision + 1)
+      expect(ownerAfter.state.inventory.slots).toStrictEqual(oneBucketItem('water_bucket'))
+      expect(yield* inventory.api.countOf('bucket')).toBe(1)
+      expect(yield* inventory.api.countOf('water_bucket')).toBe(0)
       expect(yield* drainItemUseResults(state)).toMatchObject([
         {
           action: 'UseBucket',
@@ -2176,12 +2253,16 @@ describe('the bucket slice: item use atomically exchanges fluid and inventory', 
     }),
   )
 
-  it.effect('rejects a cross-dimension request without mutating world or inventory', () =>
+  it.effect('rejects a cross-dimension request without mutating world or owner state', () =>
     Effect.gen(function* () {
-      const { store, inventory, state, stages } = yield* slice(
+      const { store, inventory, state, stages, commit } = yield* slice(
         world([[source, WATER]]),
         ['0,0'],
         oneBucketItem('bucket'),
+      )
+      const ownerBefore = yield* commit.coordinator.snapshot(
+        commit.playerStorageOwnerId,
+        PlayerStorageSnapshotSchema,
       )
 
       yield* requestBucketUse(
@@ -2195,6 +2276,12 @@ describe('the bucket slice: item use atomically exchanges fluid and inventory', 
       yield* runFrame(stages)
 
       expect(yield* store.blockAt(source)).toBe(WATER)
+      const ownerAfter = yield* commit.coordinator.snapshot(
+        commit.playerStorageOwnerId,
+        PlayerStorageSnapshotSchema,
+      )
+      expect(ownerAfter.revision).toBe(ownerBefore.revision)
+      expect(ownerAfter.state).toStrictEqual(ownerBefore.state)
       expect(yield* inventory.api.countOf('bucket')).toBe(1)
       expect(yield* inventory.api.countOf('water_bucket')).toBe(0)
       expect(yield* drainItemUseResults(state)).toStrictEqual([

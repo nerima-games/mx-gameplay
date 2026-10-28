@@ -45,7 +45,7 @@
  * needed no such apology and did not earn one: the reference already measured the
  * draw in seconds (`interaction-bow-handler.ts:172`, `nowSecs - chargeStartSecs`).
  */
-import { EntityIdSchema, SimulationTickSchema } from '@nerima-games/mc-kernel'
+import { DamageAmountSchema, EntityIdSchema, SimulationTickSchema } from '@nerima-games/mc-kernel'
 import type { EntityId, SimulationTick } from '@nerima-games/mc-kernel'
 import { IntentPayloadSchema, type IntentPayload } from '@nerima-games/mc-sim'
 import { Result, Schema } from 'effect'
@@ -202,36 +202,48 @@ export type BowChargeState = Readonly<{
   startedAt: SimulationTick
 }>
 
-export type BowChargePreparation = Readonly<{
-  actor: EntityId
-  nextState: BowChargeState | null
-  charge: number
-  damage: number
-  fired: boolean
-}>
+export type BowChargePreparation =
+  | Readonly<{
+      actor: EntityId
+      nextState: BowChargeState | null
+      charge: number
+      damage: 0
+      fired: false
+    }>
+  | Readonly<{
+      actor: EntityId
+      nextState: null
+      charge: number
+      damage: Schema.Schema.Type<typeof DamageAmountSchema>
+      fired: true
+    }>
 
-export const BowChargePreparationSchema: Schema.ConstraintDecoder<BowChargePreparation> = Schema.Struct({
-  actor: EntityIdSchema,
-  nextState: Schema.Union([
-    Schema.Struct({ actor: EntityIdSchema, startedAt: SimulationTickSchema }),
-    Schema.Null,
-  ]),
-  charge: Schema.Finite.check(Schema.isBetween({ minimum: 0, maximum: 1 })),
-  damage: Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)),
-  fired: Schema.Boolean,
-})
+const BowChargeSchema = Schema.Finite.check(Schema.isBetween({ minimum: 0, maximum: 1 }))
+
+export const BowChargePreparationSchema: Schema.ConstraintDecoder<BowChargePreparation> = Schema.Union([
+  Schema.Struct({
+    actor: EntityIdSchema,
+    nextState: Schema.Union([
+      Schema.Struct({ actor: EntityIdSchema, startedAt: SimulationTickSchema }),
+      Schema.Null,
+    ]),
+    charge: BowChargeSchema,
+    damage: Schema.Literal(0),
+    fired: Schema.Literal(false),
+  }),
+  Schema.Struct({
+    actor: EntityIdSchema,
+    nextState: Schema.Null,
+    charge: BowChargeSchema,
+    damage: DamageAmountSchema,
+    fired: Schema.Literal(true),
+  }),
+])
 
 export type BowActionPreparation = Result.Result<
   BowChargePreparation,
   'invalid-bow-action' | 'invalid-bow-context' | 'invalid-tick' | 'not-drawing'
 >
-
-const decodeBowChargePreparation = (prepared: BowChargePreparation): BowActionPreparation => {
-  const decoded = Schema.decodeUnknownResult(BowChargePreparationSchema, {
-    onExcessProperty: 'error',
-  })(prepared)
-  return Result.isFailure(decoded) ? Result.fail('invalid-tick') : Result.succeed(decoded.success)
-}
 
 /** Prepare the C2 bow action from the authoritative simulation tick and held bow. */
 export const prepareBowAction = (
@@ -244,8 +256,6 @@ export const prepareBowAction = (
   if (Result.isFailure(decodedIntent) || decodedIntent.success._tag !== 'BowAction') {
     return Result.fail('invalid-bow-action')
   }
-  const decodedTick = Schema.decodeUnknownResult(SimulationTickSchema)(tick)
-  if (Result.isFailure(decodedTick)) return Result.fail('invalid-tick')
   if (
     context.powerLevel !== undefined &&
     (!Number.isSafeInteger(context.powerLevel) || context.powerLevel < 0)
@@ -253,31 +263,30 @@ export const prepareBowAction = (
 
   const actor = decodedIntent.success.actor
   if (decodedIntent.success.action === 'draw') {
-    return decodeBowChargePreparation({
+    return Result.succeed({
       actor,
-      nextState: { actor, startedAt: decodedTick.success },
+      nextState: { actor, startedAt: tick },
       charge: 0,
       damage: 0,
       fired: false,
     })
   }
   if (decodedIntent.success.action === 'cancel') {
-    return decodeBowChargePreparation({ actor, nextState: null, charge: 0, damage: 0, fired: false })
+    return Result.succeed({ actor, nextState: null, charge: 0, damage: 0, fired: false })
   }
   if (previous === null || previous.actor !== actor) return Result.fail('not-drawing')
 
-  const elapsedTicks = Number(decodedTick.success) - Number(previous.startedAt)
+  const elapsedTicks = Number(tick) - Number(previous.startedAt)
   if (!Number.isSafeInteger(elapsedTicks) || elapsedTicks < 0) return Result.fail('invalid-tick')
 
   const heldSeconds = elapsedTicks / 20
   const charge = bowCharge(heldSeconds)
-  const fired = canFireBow(heldSeconds)
-  const prepared = {
-    actor,
-    nextState: null,
-    charge,
-    damage: fired ? bowDamage(charge, context) : 0,
-    fired,
+  if (!canFireBow(heldSeconds)) {
+    return Result.succeed({ actor, nextState: null, charge, damage: 0, fired: false })
   }
-  return decodeBowChargePreparation(prepared)
+
+  const damage = Result.getOrThrow(
+    Schema.decodeUnknownResult(DamageAmountSchema)(bowDamage(charge, context)),
+  )
+  return Result.succeed({ actor, nextState: null, charge, damage, fired: true })
 }

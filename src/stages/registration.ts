@@ -92,8 +92,6 @@ export {
   insertBrewingIngredient,
   collectBrewingPotion,
   useBrewingPotion,
-  snapshotBrewingStand,
-  restoreBrewingStand,
   requestVillagerTrade,
   drainVillagerTradeResults,
   snapshotVillagerTrades,
@@ -107,6 +105,12 @@ export {
   requestFireExtinguish,
   drainMobDrops,
   drainMobExperience,
+  requestDroppedItemPickup,
+  drainDroppedItemPickupExecutions,
+  requestExperienceOrbAbsorption,
+  drainExperienceOrbAbsorptionExecutions,
+  type DroppedItemPickupExecution,
+  type ExperienceOrbAbsorptionExecution,
   requestTargetedBlockPlacement,
   requestTargetedBlockUse,
   resolveTargetedBlock,
@@ -119,8 +123,6 @@ export {
 
 import {
   ChunkStore,
-  InventoryService,
-  PlayerService,
   TimeService,
   entityManagerTag,
   GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
@@ -141,7 +143,7 @@ import type {
   VehicleFrameEnvironment,
   VehicleServiceApi,
 } from './registration-core.js'
-import { BucketService, WorldCommitCoordinator } from '@nerima-games/mc-sim'
+import { WorldCommitCoordinator } from '@nerima-games/mc-sim'
 import type { GameModule, StageRegistration } from '@nerima-games/mc-kernel'
 import { Effect, Layer } from 'effect'
 import { makeVehiclesStage } from './vehicles-stage.js'
@@ -152,13 +154,19 @@ import { makeEntitiesStage } from './entities-stage.js'
 import { makeEnderDragonStage } from './ender-dragon-stage.js'
 import { makeFluidsStage } from './fluids-stage.js'
 import { makeTimeWeatherStage } from './time-weather-stage.js'
+import {
+  GAMEPLAY_PLAYER_OWNER_ID,
+  GAMEPLAY_DROPPED_ITEMS_OWNER_ID,
+  GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
+  GAMEPLAY_VITALS_OWNER_ID,
+} from './gameplay-owner-registrations.js'
 
 export const gameplayStages = (
   state: GameplayFrameState,
   store: ChunkStoreApi,
   roster: EntityManagerApi<MobBehaviour>,
-  inventory: InventoryServiceApi,
-  player: PlayerServiceApi,
+  _inventory: InventoryServiceApi | undefined,
+  _player: PlayerServiceApi | undefined,
   time: TimeServiceApi,
   vehicleService?: VehicleServiceApi,
   vehicleEnvironment?: VehicleFrameEnvironment,
@@ -169,8 +177,6 @@ export const gameplayStages = (
     state,
     store,
     roster,
-    inventory,
-    player,
     time,
     vehicleService,
     vehicleEnvironment,
@@ -227,21 +233,24 @@ export const gameplayStages = (
 export const makeGameplayStages: Effect.Effect<
   ReadonlyArray<StageRegistration>,
   never,
-  ChunkStore | EntityManager | InventoryService | PlayerService | TimeService | BucketService | WorldCommitCoordinator
+  ChunkStore | EntityManager | TimeService | WorldCommitCoordinator
 > = Effect.gen(function* () {
   const store = yield* ChunkStore
   const roster = yield* entityManagerTag<MobBehaviour>()
-  const inventory = yield* InventoryService
-  const player = yield* PlayerService
   const time = yield* TimeService
-  const bucketService = yield* BucketService
   const coordinator = yield* WorldCommitCoordinator
-  const state = yield* makeGameplayFrameState
-
-  return gameplayStages(state, store, roster, inventory, player, time, undefined, undefined, {}, {
+  const state = yield* makeGameplayFrameState({
     coordinator,
-    bucketService,
+    vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID,
+  })
+
+  return gameplayStages(state, store, roster, undefined, undefined, time, undefined, undefined, {}, {
+    coordinator,
+    playerOwnerId: GAMEPLAY_PLAYER_OWNER_ID,
     playerStorageOwnerId: GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+    droppedItemsOwnerId: GAMEPLAY_DROPPED_ITEMS_OWNER_ID,
+    vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID,
+    experienceOrbsOwnerId: GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
   })
 })
 
@@ -268,28 +277,26 @@ export const makeGameplayStages: Effect.Effect<
  * The vertical-slice spike changed `frameStages` to an Effect, and the shape
  * this repository had already been forced into became the contract.
  *
- * `RRegister` is now `ChunkStore | EntityManager | InventoryService |
- * PlayerService | TimeService | BucketService | WorldCommitCoordinator` and
+ * `RRegister` is now `ChunkStore | EntityManager | TimeService |
+ * WorldCommitCoordinator` and
  * `RIn`
  * is still `never`, which is the distinction that parameter was added for: this
  * repository needs mc-worldgen's store in order to REGISTER stages that write
  * blocks, mc-sim's roster in order to register the stage that iterates mobs,
- * its inventory in order to register the stage that mines, and its bucket and
- * commit services for atomic C4/C7 writes. It needs nothing to build a Layer.
+ * and a commit coordinator for atomic owner and block writes. Player pose and
+ * inventory are read from gameplay owner snapshots on supported paths. It
+ * needs nothing to build a Layer.
  *
- * The registration contract has seven services. `RIn` remains `never`, so
+ * The registration contract has four services. `RIn` remains `never`, so
  * mx-gameplay still BUILDS nothing another repository has to supply. A host
- * must provide the bucket service and a coordinator registered with the
- * gameplay player-storage owner before it can build the stages.
+ * must provide a coordinator registered with the published gameplay owners
+ * before it can build the stages.
  *
- * A host supplies mc-sim's entity, inventory, player, and time layers. The
- * latter three have no behaviour type parameter, so the `MobBehaviour` hazard
- * does not repeat. The host's line is
+ * A host supplies mc-sim's entity and time layers. The host's line is
  *
  *     Layer.mergeAll(
  *       simModule.layers,
  *       EntityManagerLayer<MobBehaviour>(undefined, repairMobBehaviour),
- *       InventoryServiceLayer(),
  *     )
  */
 
@@ -297,7 +304,7 @@ export const gameplayModule: GameModule<
   never,
   never,
   never,
-  ChunkStore | EntityManager | InventoryService | PlayerService | TimeService | BucketService | WorldCommitCoordinator
+  ChunkStore | EntityManager | TimeService | WorldCommitCoordinator
 > = {
   layers: Layer.empty,
   frameStages: makeGameplayStages,
