@@ -28,11 +28,11 @@
  * failure mode this project's notes call the expensive one: it looks like a
  * design choice rather than a defect.
  */
-import { Effect } from 'effect'
+import { Effect, Option, Result } from 'effect'
 import {
+  BlockId,
   adjacentBlockPosition,
   blockIdOf,
-  blockPosition,
   blockTypeOfId,
   type BlockType,
   type ItemType,
@@ -93,10 +93,12 @@ export type PlantOutcome =
   | { readonly _tag: 'wrongSoil'; readonly crop: BlockType; readonly needs: BlockType; readonly found: BlockType }
   /** The cell above the soil is occupied; a crop cannot share it. */
   | { readonly _tag: 'occupied'; readonly crop: BlockType; readonly blockedBy: BlockType }
+  | { readonly _tag: 'invalidPosition' }
+  | { readonly _tag: 'unknownBlock' }
 
 /** Where the crop goes: directly above the soil. */
-export const cropCellAbove = (soil: BlockPosition): BlockPosition =>
-  adjacentBlockPosition(blockPosition(soil.x, soil.y, soil.z), 'up')
+export const cropCellAbove = (soil: BlockPosition): ReturnType<typeof adjacentBlockPosition> =>
+  adjacentBlockPosition(soil, 'up')
 
 /**
  * Decide, given what is already known about the two cells.
@@ -135,13 +137,14 @@ export const plantingVerdict = (
     return { _tag: 'occupied', crop, blockedBy: blockAbove }
   }
 
-  return { _tag: 'planted', crop, at: cropCellAbove(request.soil) }
+  const at = Result.getOrUndefined(cropCellAbove(request.soil))
+  return at === undefined ? { _tag: 'invalidPosition' } : { _tag: 'planted', crop, at }
 }
 
 /** The two reads and one write this rule needs of a world. */
 export type PlantPort = {
   readonly blockAt: (position: BlockPosition) => Effect.Effect<number | undefined>
-  readonly setBlock: (position: BlockPosition, block: number) => Effect.Effect<unknown>
+  readonly setBlock: (position: BlockPosition, block: BlockId) => Effect.Effect<unknown>
 }
 
 /**
@@ -166,11 +169,18 @@ export const plantCrop = (
   request: PlantRequest,
 ): Effect.Effect<PlantOutcome> =>
   Effect.gen(function* () {
-    const soilId = yield* port.blockAt(request.soil)
-    const aboveId = yield* port.blockAt(cropCellAbove(request.soil))
+    const abovePosition = Result.getOrUndefined(cropCellAbove(request.soil))
+    if (abovePosition === undefined) {
+      return { _tag: 'invalidPosition' }
+    }
 
-    const soilBlock = soilId === undefined ? undefined : blockTypeOfId(soilId)
-    const aboveBlock = aboveId === undefined ? undefined : blockTypeOfId(aboveId)
+    const soilId = yield* port.blockAt(request.soil)
+    const aboveId = yield* port.blockAt(abovePosition)
+
+    const soilBlockId = soilId === undefined ? undefined : Result.getOrUndefined(BlockId.result(soilId))
+    const aboveBlockId = aboveId === undefined ? undefined : Result.getOrUndefined(BlockId.result(aboveId))
+    const soilBlock = soilBlockId === undefined ? undefined : Result.getOrUndefined(blockTypeOfId(soilBlockId))
+    const aboveBlock = aboveBlockId === undefined ? undefined : Result.getOrUndefined(blockTypeOfId(aboveBlockId))
 
     if (soilBlock === undefined || aboveBlock === undefined) {
       // Not loaded, or an id this vocabulary does not know. Either way the rule
@@ -196,7 +206,11 @@ export const plantCrop = (
       // would be caught by kernel's own type declaration long before
       // this line ran, not by a runtime fallback that plants nothing and
       // reports success.
-      yield* port.setBlock(verdict.at, blockIdOf(verdict.crop)!)
+      const cropBlock = Option.getOrUndefined(blockIdOf(verdict.crop))
+      if (cropBlock === undefined) {
+        return { _tag: 'unknownBlock' }
+      }
+      yield* port.setBlock(verdict.at, cropBlock)
     }
     return verdict
   })

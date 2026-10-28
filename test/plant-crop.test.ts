@@ -13,7 +13,7 @@
  * silently gets wrong, and both produce a world that looks deliberate.
  */
 import { describe, expect, it } from '@effect/vitest'
-import { Effect, Ref } from 'effect'
+import { Effect, Option, Ref, Result } from 'effect'
 import {
   CROP_OF_SEED,
   PLANTABLE_SEEDS,
@@ -24,15 +24,22 @@ import {
   type PlantPort,
   type PlantRequest,
 } from '../src/domain/interactions/plant-crop'
-import { blockIdOf, blockPosition, type BlockType } from '@nerima-games/mc-kernel'
+import { BlockAxis, blockIdOf, blockPosition, type BlockType } from '@nerima-games/mc-kernel'
 import type { BlockPosition } from '@nerima-games/mc-kernel'
 
-const SOIL: BlockPosition = blockPosition(4, 63, -9)
+const SOIL: BlockPosition = blockPosition(BlockAxis(4), BlockAxis(63), BlockAxis(-9))
+const TOP_SOIL: BlockPosition = blockPosition(BlockAxis(4), BlockAxis(Number.MAX_SAFE_INTEGER), BlockAxis(-9))
 
 const request = (held: PlantRequest['held']): PlantRequest => ({ held, soil: SOIL })
 
 const keyOf = (position: BlockPosition): string =>
   `${String(position.x)},${String(position.y)},${String(position.z)}`
+
+const positionAbove = (soil: BlockPosition): BlockPosition => {
+  const result = cropCellAbove(soil)
+  if (Result.isSuccess(result)) return result.success
+  throw new Error(`Expected a cell above ${keyOf(soil)}: ${result.failure.message}`)
+}
 
 /**
  * A world of exactly two cells, plus whatever a test adds.
@@ -44,15 +51,17 @@ const keyOf = (position: BlockPosition): string =>
 const makeWorld = (cells: Readonly<Record<string, BlockType>>) =>
   Effect.gen(function* () {
     const written = yield* Ref.make<ReadonlyArray<{ at: BlockPosition; block: number }>>([])
+    const reads = yield* Ref.make(0)
     const port: PlantPort = {
       blockAt: (position) =>
-        Effect.sync(() => {
+        Effect.gen(function* () {
+          yield* Ref.update(reads, (n) => n + 1)
           const block = cells[keyOf(position)]
-          return block === undefined ? undefined : blockIdOf(block)
+          return block === undefined ? undefined : Option.getOrUndefined(blockIdOf(block))
         }),
       setBlock: (at, block) => Ref.update(written, (all) => [...all, { at, block }]),
     }
-    return { port, written }
+    return { port, written, reads }
   })
 
 describe('the two tables agree', () => {
@@ -90,7 +99,7 @@ describe('plantingVerdict', () => {
       expect(plantingVerdict(request('wheat_seeds'), 'farmland', 'air')).toStrictEqual({
         _tag: 'planted',
         crop: 'wheat_crop',
-        at: cropCellAbove(SOIL),
+        at: positionAbove(SOIL),
       })
     }),
   )
@@ -164,8 +173,22 @@ describe('plantingVerdict', () => {
     Effect.sync(() => {
       // An off-by-one here replaces the farmland with the crop: the crop
       // appears, and the soil it needs is gone underneath it.
-      expect(cropCellAbove(SOIL)).toStrictEqual({ x: SOIL.x, y: SOIL.y + 1, z: SOIL.z })
-      expect(cropCellAbove(SOIL).y).not.toBe(SOIL.y)
+      expect(positionAbove(SOIL)).toStrictEqual({ x: SOIL.x, y: SOIL.y + 1, z: SOIL.z })
+      expect(positionAbove(SOIL).y).not.toBe(SOIL.y)
+    }),
+  )
+
+  it.effect('coordinate overflow is reported as an invalid position', () =>
+    Effect.sync(() => {
+      expect(cropCellAbove(TOP_SOIL)).toStrictEqual(Result.fail({
+        _tag: 'BlockNeighbourFailure',
+        kind: 'RangeError',
+        reason: 'coordinate-overflow',
+        message: `Block coordinate exceeds the safe integer range: ${Number.MAX_SAFE_INTEGER + 1}`,
+      }))
+      expect(plantingVerdict({ held: 'wheat_seeds', soil: TOP_SOIL }, 'farmland', 'air')).toStrictEqual({
+        _tag: 'invalidPosition',
+      })
     }),
   )
 })
@@ -173,7 +196,7 @@ describe('plantingVerdict', () => {
 describe('plantCrop', () => {
   it.effect('writes the crop above the soil, and nothing else', () =>
     Effect.gen(function* () {
-      const above = cropCellAbove(SOIL)
+      const above = positionAbove(SOIL)
       const { port, written } = yield* makeWorld({
         [keyOf(SOIL)]: 'farmland',
         [keyOf(above)]: 'air',
@@ -183,7 +206,7 @@ describe('plantCrop', () => {
 
       expect(outcome._tag).toBe('planted')
       expect(yield* Ref.get(written)).toStrictEqual([
-        { at: above, block: blockIdOf('wheat_crop') },
+        { at: above, block: Option.getOrUndefined(blockIdOf('wheat_crop')) },
       ])
     }),
   )
@@ -195,7 +218,7 @@ describe('plantCrop', () => {
       // untouched either way.
       const { port, written } = yield* makeWorld({
         [keyOf(SOIL)]: 'dirt',
-        [keyOf(cropCellAbove(SOIL))]: 'air',
+        [keyOf(positionAbove(SOIL))]: 'air',
       })
 
       const outcome = yield* plantCrop(port, request('wheat_seeds'))
@@ -212,7 +235,7 @@ describe('plantCrop', () => {
       // chunk that eventually loads would overwrite it — a plant that silently
       // disappears some seconds later.
       const { port, written } = yield* makeWorld({
-        [keyOf(cropCellAbove(SOIL))]: 'air',
+        [keyOf(positionAbove(SOIL))]: 'air',
       })
 
       const outcome = yield* plantCrop(port, request('wheat_seeds'))
@@ -251,7 +274,7 @@ describe('plantCrop', () => {
     Effect.gen(function* () {
       const { port, written } = yield* makeWorld({
         [keyOf(SOIL)]: 'farmland',
-        [keyOf(cropCellAbove(SOIL))]: 'air',
+        [keyOf(positionAbove(SOIL))]: 'air',
       })
 
       const outcome = yield* plantCrop(port, request('stone'))
@@ -265,7 +288,7 @@ describe('plantCrop', () => {
     Effect.gen(function* () {
       // The end-to-end form of the refusal above: the same seed that was
       // refused on farmland succeeds on its own soil.
-      const above = cropCellAbove(SOIL)
+      const above = positionAbove(SOIL)
       const { port, written } = yield* makeWorld({
         [keyOf(SOIL)]: 'soul_sand',
         [keyOf(above)]: 'air',
@@ -275,8 +298,20 @@ describe('plantCrop', () => {
 
       expect(outcome._tag).toBe('planted')
       expect(yield* Ref.get(written)).toStrictEqual([
-        { at: above, block: blockIdOf('nether_wart_crop') },
+        { at: above, block: Option.getOrUndefined(blockIdOf('nether_wart_crop')) },
       ])
+    }),
+  )
+
+  it.effect('coordinate overflow refuses before reading or writing', () =>
+    Effect.gen(function* () {
+      const { port, reads, written } = yield* makeWorld({})
+
+      const outcome = yield* plantCrop(port, { held: 'wheat_seeds', soil: TOP_SOIL })
+
+      expect(outcome).toStrictEqual({ _tag: 'invalidPosition' })
+      expect(yield* Ref.get(reads)).toBe(0)
+      expect(yield* Ref.get(written)).toStrictEqual([])
     }),
   )
 })
