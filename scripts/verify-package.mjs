@@ -245,6 +245,48 @@ try {
     if (typeof rootModule.breakBlock !== 'function') {
       throw new Error('The root export does not expose breakBlock');
     }
+    for (const name of [
+      'generateEnchantmentTableOffersForItem',
+      'enchantmentTableResultItemOf',
+      'droppedItemOwnerRegistration',
+      'droppedItemPickupOwnerRegistrations',
+      'pickupDroppedItemsCommitted',
+      'vitalsOwnerRegistration',
+      'experienceOrbOwnerRegistration',
+      'createExperienceOrbValue',
+      'absorbExperienceOrb',
+      'collectBrewingBottleWithStorage',
+      'castFishingWithService',
+      'biteFishingWithService',
+      'reelFishingWithService',
+      'requestFurnaceAdvance',
+      'planFurnaceAdvance',
+      'applyFurnaceAdvance',
+      'advanceFurnaceRuntime',
+    ]) {
+      if (typeof rootModule[name] !== 'function') {
+        throw new Error('The root export does not expose ' + name);
+      }
+    }
+    for (const name of [
+      'DroppedItemOwnerSnapshotSchema',
+      'DroppedItemPickupRequestSchema',
+      'DroppedItemPickupCommitIncompleteSchema',
+      'DroppedItemPickupSchema',
+      'DroppedItemPickupResultSchema',
+      'ExperienceOrbValueSchema',
+      'ExperienceOrbAbsorptionSchema',
+      'ExperienceOrbVitalsOwnerSnapshotSchema',
+      'ExperienceOrbOwnerSnapshotSchema',
+      'ExperienceOrbAbsorptionFailureSchema',
+      'ExperienceOrbAbsorptionCommitResultInvalidSchema',
+      'BrewingBottleCollectionRequestSchema',
+      'BrewingBottleCollectionResultSchema',
+    ]) {
+      if (rootModule[name] === undefined) {
+        throw new Error('The root export does not expose ' + name);
+      }
+    }
     if (typeof rootModule.makeProjectileRuntime !== 'function') {
       throw new Error('The root export does not expose makeProjectileRuntime');
     }
@@ -274,6 +316,45 @@ import {
   type BreakOutcome,
   type BreakTransactionContext,
   type BreakTransactionResult,
+  generateEnchantmentTableOffersForItem,
+  enchantmentTableResultItemOf,
+  droppedItemOwnerRegistration,
+  droppedItemPickupOwnerRegistrations,
+  DroppedItemOwnerSnapshotSchema,
+  DroppedItemPickupRequestSchema,
+  DroppedItemPickupCommitIncompleteSchema,
+  DroppedItemPickupSchema,
+  DroppedItemPickupResultSchema,
+  pickupDroppedItemsCommitted,
+  ExperienceOrbValueSchema,
+  ExperienceOrbAbsorptionSchema,
+  ExperienceOrbVitalsOwnerSnapshotSchema,
+  ExperienceOrbOwnerSnapshotSchema,
+  ExperienceOrbAbsorptionFailureSchema,
+  ExperienceOrbAbsorptionCommitResultInvalidSchema,
+  vitalsOwnerRegistration,
+  experienceOrbOwnerRegistration,
+  createExperienceOrbValue,
+  absorbExperienceOrb,
+  BrewingBottleCollectionRequestSchema,
+  BrewingBottleCollectionResultSchema,
+  collectBrewingBottleWithStorage,
+  castFishingWithService,
+  biteFishingWithService,
+  reelFishingWithService,
+  requestFurnaceAdvance,
+  planFurnaceAdvance,
+  applyFurnaceAdvance,
+  advanceFurnaceRuntime,
+  type DroppedItemPickupRequest,
+  type DroppedItemPickupResult,
+  type ExperienceOrbAbsorption,
+  type ExperienceOrbValue,
+  type ExperienceOrbVitalsOwnerSnapshot,
+  type BrewingBottleCollectionRequest,
+  type BrewingBottleCollectionResult,
+  type FurnaceAdvancePlan,
+  type FurnaceRuntimeOutcome,
 } from ${JSON.stringify(packageName)}
 import { Effect } from "effect"
 
@@ -298,6 +379,56 @@ const projectileRuntime: ProjectileRuntime = makeProjectileRuntime(projectileSer
 void projectileRuntime
 const ownerId: string = GAMEPLAY_PLAYER_STORAGE_OWNER_ID
 void ownerId
+
+void generateEnchantmentTableOffersForItem
+void enchantmentTableResultItemOf
+void droppedItemOwnerRegistration
+void droppedItemPickupOwnerRegistrations
+void DroppedItemOwnerSnapshotSchema
+void DroppedItemPickupRequestSchema
+void DroppedItemPickupCommitIncompleteSchema
+void DroppedItemPickupSchema
+void DroppedItemPickupResultSchema
+void pickupDroppedItemsCommitted
+void ExperienceOrbValueSchema
+void ExperienceOrbAbsorptionSchema
+void ExperienceOrbVitalsOwnerSnapshotSchema
+void ExperienceOrbOwnerSnapshotSchema
+void ExperienceOrbAbsorptionFailureSchema
+void ExperienceOrbAbsorptionCommitResultInvalidSchema
+void vitalsOwnerRegistration
+void experienceOrbOwnerRegistration
+void createExperienceOrbValue
+void absorbExperienceOrb
+void BrewingBottleCollectionRequestSchema
+void BrewingBottleCollectionResultSchema
+void collectBrewingBottleWithStorage
+void castFishingWithService
+void biteFishingWithService
+void reelFishingWithService
+void requestFurnaceAdvance
+void planFurnaceAdvance
+void applyFurnaceAdvance
+void advanceFurnaceRuntime
+
+declare const pickupRequest: DroppedItemPickupRequest
+declare const pickupResult: DroppedItemPickupResult
+declare const orbAbsorption: ExperienceOrbAbsorption
+declare const orbValue: ExperienceOrbValue
+declare const orbVitals: ExperienceOrbVitalsOwnerSnapshot
+declare const bottleCollectionRequest: BrewingBottleCollectionRequest
+declare const bottleCollectionResult: BrewingBottleCollectionResult
+declare const furnacePlan: FurnaceAdvancePlan
+declare const furnaceOutcome: FurnaceRuntimeOutcome
+void pickupRequest
+void pickupResult
+void orbAbsorption
+void orbValue
+void orbVitals
+void bottleCollectionRequest
+void bottleCollectionResult
+void furnacePlan
+void furnaceOutcome
 
 declare const blockStore: Parameters<typeof breakBlock>[0]
 declare const blockPosition: Parameters<typeof breakBlock>[1]

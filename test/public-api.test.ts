@@ -53,6 +53,7 @@ describe('public API surface', () => {
         'spawnDroppedItem',
         'spawnDroppedItems',
         'requestBucketUse',
+        'requestFurnaceAdvance',
         'requestFishingCast',
         'requestFishingAdvance',
         'requestFishingCancel',
@@ -390,6 +391,48 @@ describe('public API surface', () => {
       ]
 
       for (const name of internal) {
+        expect(Object.keys(gameplay)).toContain(name)
+      }
+    }),
+  )
+
+  it.effect('re-exports item and entity service adapters with their schemas', () =>
+    Effect.sync(() => {
+      const d7AdaptersAndSchemas = [
+        'generateEnchantmentTableOffersForItem',
+        'enchantmentTableResultItemOf',
+        'droppedItemOwnerRegistration',
+        'droppedItemPickupOwnerRegistrations',
+        'DroppedItemOwnerSnapshotSchema',
+        'DroppedItemPickupRequestSchema',
+        'DroppedItemPickupCommitIncompleteSchema',
+        'DroppedItemPickupSchema',
+        'DroppedItemPickupResultSchema',
+        'pickupDroppedItemsCommitted',
+        'ExperienceOrbValueSchema',
+        'ExperienceOrbAbsorptionSchema',
+        'ExperienceOrbVitalsOwnerSnapshotSchema',
+        'ExperienceOrbOwnerSnapshotSchema',
+        'ExperienceOrbAbsorptionFailureSchema',
+        'ExperienceOrbAbsorptionCommitResultInvalidSchema',
+        'vitalsOwnerRegistration',
+        'experienceOrbOwnerRegistration',
+        'createExperienceOrbValue',
+        'absorbExperienceOrb',
+        'BrewingBottleCollectionRequestSchema',
+        'BrewingBottleCollectionResultSchema',
+        'collectBrewingBottleWithStorage',
+        'castFishingWithService',
+        'biteFishingWithService',
+        'reelFishingWithService',
+        'MAX_FURNACE_ADVANCE_SECS',
+        'furnaceAdvanceChanged',
+        'planFurnaceAdvance',
+        'applyFurnaceAdvance',
+        'advanceFurnaceRuntime',
+      ]
+
+      for (const name of d7AdaptersAndSchemas) {
         expect(Object.keys(gameplay)).toContain(name)
       }
     }),
