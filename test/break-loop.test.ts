@@ -1019,18 +1019,38 @@ describe('the break loop', () => {
 
   it.effect('keeps a block untouched when its owner changes before the atomic break commit', () =>
     Effect.gen(function* () {
-      const world = yield* oneBlockWorld()
+      const ironPickaxe = Result.getOrThrow(itemStack('iron_pickaxe', StackCount(1)))
+      const stone = Option.getOrThrow(blockIdOf('stone'))
+      // Stone drops cobblestone with a pickaxe: https://minecraft.wiki/w/Stone
+      // Iron pickaxes lose one durability point per block: https://minecraft.wiki/w/Iron_Pickaxe
+      const world = yield* makeInMemoryWorld<MobBehaviour>({
+        inventory: [ironPickaxe],
+        world: {
+          blocks: new Map([[cellKey(AT), stone]]),
+          loaded: [chunkKey(chunkOf(AT))],
+        },
+      })
       const commit = yield* makeGameplayCommitServices(world.chunkStore, world.inventory)
       let injected = false
-      const localStorage = yield* world.inventory.storageSnapshot
-      const localStorageBefore = Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(localStorage)
+      const localStorageBefore = Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(
+        yield* world.inventory.storageSnapshot,
+      )
+      const initialDurability = localStorageBefore.inventoryDurability[0]
+      if (initialDurability === undefined || initialDurability === null) {
+        throw new Error('the iron pickaxe has no durability')
+      }
       const registeredCoordinator = yield* makeWorldCommitCoordinator({
         world: commit.coordinator.worldId,
         owners: gameplayOwnerRegistrations({ playerStorage: localStorageBefore }),
         chunkStores: { forDimension: () => world.chunkStore },
       })
+      const stageRequests: Array<Parameters<WorldCommitCoordinatorApi['commit']>[0]> = []
       const coordinator: WorldCommitCoordinatorApi = {
         ...registeredCoordinator,
+        commit: (request) => {
+          stageRequests.push(request)
+          return registeredCoordinator.commit(request)
+        },
         dimensionRevision: (dimension) =>
           Effect.gen(function* () {
             const dimensionRevision = yield* Effect.orDie(registeredCoordinator.dimensionRevision(dimension))
@@ -1039,12 +1059,11 @@ describe('the break loop', () => {
               const snapshot = yield* Effect.orDie(
                 registeredCoordinator.snapshot(commit.playerStorageOwnerId, PlayerStorageSnapshotSchema),
               )
-              // Dirt drops itself when broken in vanilla: https://minecraft.wiki/w/Dirt
               const dirtStack = Result.getOrThrow(itemStack('dirt', StackCount(1)))
               const changedStorage = Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)({
                 ...snapshot.state,
                 inventory: {
-                  slots: snapshot.state.inventory.slots.map((slot, index) => index === 0 ? dirtStack : slot),
+                  slots: snapshot.state.inventory.slots.map((slot, index) => index === 1 ? dirtStack : slot),
                 },
               })
               yield* Effect.orDie(
@@ -1072,10 +1091,14 @@ describe('the break loop', () => {
         { ...commit, coordinator, playerOwnerId: GAMEPLAY_PLAYER_OWNER_ID },
       )
 
-      yield* requestBlockBreak(state, AT)
+      yield* requestBlockBreak(state, AT, { heldTier: 'iron' }, {
+        dimension: 'overworld',
+        toolLocation: { _tag: 'Inventory', slotIndex: 0 },
+      })
       yield* runInteractions(stages as never)
 
       expect(injected).toBe(true)
+      expect(stageRequests).toHaveLength(1)
       const miningFailure = (yield* Ref.get(state.operationFailures)).find(
         (failure) => failure.operation === 'WorldCommit' && failure.subject === 'Mining',
       )
@@ -1085,18 +1108,55 @@ describe('the break loop', () => {
         expected: 0,
         actual: 1,
       })
-      expect(yield* world.chunkStore.getBlock(AT)).toStrictEqual({ _tag: 'Block', block: DIRT_ID })
-      expect(yield* world.inventory.countOf('dirt')).toBe(0)
+      expect(yield* Ref.get(state.pendingBreaks)).toStrictEqual([blockPositionKeyOf(AT)])
+      expect(yield* world.chunkStore.getBlock(AT)).toStrictEqual({ _tag: 'Block', block: stone })
       expect(yield* world.inventory.storageSnapshot).toEqual(localStorageBefore)
-      const roster = yield* world.entities.snapshot
-      expect(roster.entities).toHaveLength(0)
-      const owner = yield* registeredCoordinator.snapshot(
+      const ownerAfterConflict = yield* registeredCoordinator.snapshot(
         commit.playerStorageOwnerId,
         PlayerStorageSnapshotSchema,
       )
-      expect(owner.state.inventory.slots[0]).toMatchObject({ item: 'dirt', count: 1 })
+      expect(ownerAfterConflict.state.inventory.slots[0]).toMatchObject({ item: 'iron_pickaxe', count: 1 })
+      expect(ownerAfterConflict.state.inventory.slots[1]).toMatchObject({ item: 'dirt', count: 1 })
       expect(yield* registeredCoordinator.revision).toBe(1)
       expect(yield* registeredCoordinator.dimensionRevision('overworld')).toBe(0)
+
+      yield* Ref.set(state.heldTool, NO_TOOL)
+      yield* runInteractions(stages as never)
+
+      expect(yield* Ref.get(state.pendingBreaks)).toStrictEqual([])
+      expect(stageRequests).toHaveLength(2)
+      const retriedRequest = stageRequests[1]
+      if (retriedRequest === undefined) throw new Error('the queued mining request was not retried')
+      expect(retriedRequest.expectedRevision).toBe(1)
+      expect(retriedRequest.blockWrite).toBeDefined()
+      expect(retriedRequest.changes).toEqual(
+        expect.arrayContaining([expect.objectContaining({ ownerId: commit.playerStorageOwnerId })]),
+      )
+      expect(yield* world.chunkStore.getBlock(AT)).toStrictEqual({ _tag: 'Block', block: 0 })
+      const finalStorage = yield* registeredCoordinator.snapshot(
+        commit.playerStorageOwnerId,
+        PlayerStorageSnapshotSchema,
+      )
+      const finalDurability = finalStorage.state.inventoryDurability[0]
+      if (finalDurability === undefined || finalDurability === null) {
+        throw new Error('the iron pickaxe disappeared after retry')
+      }
+      expect(finalDurability.current).toBe(initialDurability.current - 1)
+      const dirtCount = finalStorage.state.inventory.slots.reduce(
+        (count, slot) => count + (slot?.item === 'dirt' ? slot.count : 0),
+        0,
+      )
+      const cobblestoneCount = finalStorage.state.inventory.slots.reduce(
+        (count, slot) => count + (slot?.item === 'cobblestone' ? slot.count : 0),
+        0,
+      )
+      expect(dirtCount).toBe(1)
+      expect(cobblestoneCount).toBe(1)
+      expect(yield* world.inventory.storageSnapshot).toEqual(localStorageBefore)
+      expect(yield* registeredCoordinator.revision).toBe(2)
+      expect(yield* registeredCoordinator.dimensionRevision('overworld')).toBe(1)
+      const roster = yield* world.entities.snapshot
+      expect(roster.entities).toHaveLength(0)
     }),
   )
 
