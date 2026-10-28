@@ -2,13 +2,14 @@ import { describe, expect, it } from '@effect/vitest'
 import {
   DeltaTimeSecs,
   PositionAxis,
+  StackCount,
   blockIdOf,
   position,
   type DeltaTimeSecs as DeltaTimeSecsValue,
   type StageRegistration,
 } from '@nerima-games/mc-kernel'
-import { EntityId, WorldCommitEmptyRequest, makeTimeService } from '@nerima-games/mc-sim'
-import { Effect, Option, Ref } from 'effect'
+import { EntityId, WorldCommitEmptyRequest, itemStack as makeItemStack, makeTimeService } from '@nerima-games/mc-sim'
+import { Effect, Option, Ref, Result, Schema } from 'effect'
 import {
   drainDroppedItemPickupExecutions,
   drainExperienceOrbAbsorptionExecutions,
@@ -21,7 +22,10 @@ import {
   requestPotatoPlanting,
   requestSoilTill,
   requestStatusEffect,
+  setPlayerDead,
 } from '../src/stages/registration'
+import { candidateForPlayerStorageItemUse } from '../src/stages/registration-core'
+import { PlayerStorageSnapshotSchema } from '@nerima-games/mc-sim'
 import type { MobBehaviour } from '../src/domain/entities/mob-frame'
 import { GAMEPLAY_STAGE_IDS } from '../src/stages/stage-ids'
 import { StatusEffectStateSchema } from '../src/domain/status-effect'
@@ -34,7 +38,10 @@ import { FrameServicesLayer } from './support/frame-services'
 import { makeGameplayCommitServices, makeTransactionalChunkStoreDouble } from './support/transactional-stage-doubles'
 import { world } from './support/chunk-store-double'
 import { blockPosition as fixtureBlockPosition } from './support/coordinate-fixtures'
-import { GAMEPLAY_VITALS_OWNER_ID } from '../src/stages/gameplay-owner-registrations'
+import {
+  GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+  GAMEPLAY_VITALS_OWNER_ID,
+} from '../src/stages/gameplay-owner-registrations'
 
 const makeHarness = (
   initial: ReturnType<typeof world>,
@@ -92,6 +99,62 @@ const runInteractions = (interactions: StageRegistration, dt: number) =>
   interactions.run(DeltaTimeSecs(dt)).pipe(Effect.provide(FrameServicesLayer))
 
 describe('registration-core public paths omitted from focused coverage', () => {
+  it.effect('does not read or mutate vitals when setting an already-living player alive', () =>
+    Effect.gen(function* () {
+      const state = yield* makeGameplayFrameState
+      const before = yield* state.survivalHunger.snapshot
+
+      yield* setPlayerDead(state, false)
+
+      expect(yield* state.survivalHunger.snapshot).toStrictEqual(before)
+    }),
+  )
+
+  it.effect('only creates storage candidates when the requested transition changes an item', () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness(world([]), true)
+      const storage = yield* harness.inventory.api.storageSnapshot
+      const stone = Result.getOrThrow(makeItemStack('stone', StackCount(1)))
+      const withStone = {
+        ...storage,
+        inventory: {
+          ...storage.inventory,
+          slots: storage.inventory.slots.map((slot, index) => index === 0 ? stone : slot),
+        },
+      }
+
+      const consumed = candidateForPlayerStorageItemUse(
+        GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+        withStone,
+        'stone',
+        'consume',
+      )
+      const missing = candidateForPlayerStorageItemUse(
+        GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+        storage,
+        'stone',
+        'consume',
+      )
+      const notDurable = candidateForPlayerStorageItemUse(
+        GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+        withStone,
+        'stone',
+        'damage',
+      )
+
+      expect(Result.isSuccess(consumed)).toBe(true)
+      if (Result.isSuccess(consumed)) {
+        expect(consumed.success).toBeDefined()
+        if (consumed.success !== undefined) {
+          const decoded = Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(consumed.success.state)
+          expect(decoded.inventory.slots[0]).toBeUndefined()
+        }
+      }
+      expect(missing).toStrictEqual(Result.succeed(undefined))
+      expect(notDurable).toStrictEqual(Result.succeed(undefined))
+    }),
+  )
+
   it.effect('keeps status-effect requests pending and reports the missing owner when no commit service is registered', () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness(world([]), false)

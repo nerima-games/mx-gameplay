@@ -1613,6 +1613,45 @@ describe('stage behaviour', () => {
     }),
   )
 
+  it.effect('rejects zero melee damage without committing or dropping the retryable intent', () =>
+    Effect.gen(function* () {
+      const target = {
+        id: EntityId('melee-zero-damage-target'),
+        kind: CREEPER_KIND,
+        feetPosition: fixturePosition(0, 64 - BOW_TARGET_CENTER_Y_OFFSET, 2),
+        healthPoints: EntityHealthPoints(20),
+        behaviour: undefined,
+      }
+      const harness = yield* builtStagesInWorld(
+        world([]), ['0,0'], undefined, undefined, undefined,
+        { entities: [target], nextSerial: EntitySerial(1) },
+      )
+      const before = yield* harness.commit.coordinator.snapshot(GAMEPLAY_ENTITIES_OWNER_ID, GameplayEntityRosterSchema)
+      const revision = yield* harness.commit.coordinator.revision
+
+      yield* requestMeleeAttack(harness.state, {
+        requestId: 'melee-zero-damage',
+        origin: fixturePosition(0, 64, 0),
+        direction: fixturePosition(0, 0, 1),
+        reach: 3,
+        damage: 0,
+      })
+      const interactions = harness.stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* Ref.get(harness.commitCalls)).toBe(0)
+      expect(yield* harness.commit.coordinator.revision).toBe(revision)
+      expect(yield* harness.commit.coordinator.snapshot(GAMEPLAY_ENTITIES_OWNER_ID, GameplayEntityRosterSchema))
+        .toStrictEqual(before)
+      expect(yield* Ref.get(harness.state.pendingMeleeAttacks)).toHaveLength(1)
+      expect(yield* drainMeleeAttackResults(harness.state)).toStrictEqual([])
+      expect(yield* Ref.get(harness.publishedEvents)).toStrictEqual([])
+      expect(yield* Ref.get(harness.state.operationFailures)).toMatchObject([
+        { _tag: 'Failed', operation: 'CandidateBuild', subject: 'Player' },
+      ])
+    }),
+  )
+
   it.effect('a rejected melee commit requeues the request without changing its owners or outputs', () =>
     Effect.gen(function* () {
       const target = {
@@ -1894,6 +1933,47 @@ describe('stage behaviour', () => {
       const entityOwner = yield* commit.coordinator.snapshot(GAMEPLAY_ENTITIES_OWNER_ID, GameplayEntityRosterSchema)
       expect(entityOwner.state.entities[0]?.healthPoints).toBe(20)
       expect(yield* Ref.get(state.bowKnockbacks)).toStrictEqual([])
+    }),
+  )
+
+  it.effect('rejects an overflowing enchantment damage candidate without committing the shot', () =>
+    Effect.gen(function* () {
+      const target = {
+        id: EntityId('bow-overflow-target'),
+        kind: CREEPER_KIND,
+        feetPosition: fixturePosition(0, 64 - BOW_TARGET_CENTER_Y_OFFSET, 2),
+        healthPoints: EntityHealthPoints(20),
+        behaviour: undefined,
+      }
+      const harness = yield* builtStagesInWorld(
+        world([]), ['0,0'], undefined, undefined, undefined,
+        { entities: [target], nextSerial: EntitySerial(1) },
+      )
+      const before = yield* harness.commit.coordinator.snapshot(GAMEPLAY_ENTITIES_OWNER_ID, GameplayEntityRosterSchema)
+      const revision = yield* harness.commit.coordinator.revision
+
+      yield* requestBowShot(harness.state, 'bow-overflow', {
+        origin: fixturePosition(0, 64, 0),
+        dirX: 0,
+        dirY: 0,
+        dirZ: 1,
+        chargeSecs: BOW_FULL_CHARGE_SECS,
+        inventory: { mode: 'creative', slotIndex: 0 },
+        powerLevel: Number.MAX_VALUE,
+      })
+      const interactions = harness.stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* Ref.get(harness.commitCalls)).toBe(0)
+      expect(yield* harness.commit.coordinator.revision).toBe(revision)
+      expect(yield* harness.commit.coordinator.snapshot(GAMEPLAY_ENTITIES_OWNER_ID, GameplayEntityRosterSchema))
+        .toStrictEqual(before)
+      expect(yield* Ref.get(harness.state.pendingBowShots)).toHaveLength(1)
+      expect(yield* drainBowShotResults(harness.state)).toStrictEqual([])
+      expect(yield* Ref.get(harness.publishedEvents)).toStrictEqual([])
+      expect(yield* Ref.get(harness.state.operationFailures)).toMatchObject([
+        { _tag: 'Failed', operation: 'CandidateBuild', subject: 'Player' },
+      ])
     }),
   )
 
@@ -4435,6 +4515,60 @@ describe('a portal crossing from the nether returns the player to the overworld'
 
       const after = yield* commit.coordinator.snapshot(GAMEPLAY_PLAYER_OWNER_ID, PlayerServiceSnapshotSchema)
       expect(after.state.pose.feetPosition.dimension).toBe('overworld')
+    }),
+  )
+})
+
+describe('End portal travel commits the player owner from either source dimension', () => {
+  it.effect('publishes the matching arrival event after each registered-owner transfer', () =>
+    Effect.gen(function* () {
+      const endPortal = Option.getOrThrow(blockIdOf('end_portal'))
+      for (const scenario of [
+        { source: 'overworld', destination: 'end' },
+        { source: 'end', destination: 'overworld' },
+      ] as const) {
+        const cell = fixtureBlockPosition(0, 64, 0)
+        const harness = yield* builtStagesInWorld(
+          world([[cell, endPortal]]), ['0,0'],
+          undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+          { dimension: scenario.source },
+        )
+        yield* runFrames(harness.stages, 300, DeltaTimeSecs(0.016))
+
+        const player = yield* harness.commit.coordinator.snapshot(GAMEPLAY_PLAYER_OWNER_ID, PlayerServiceSnapshotSchema)
+        expect(player.state.pose.feetPosition.dimension).toBe(scenario.destination)
+        expect(yield* Ref.get(harness.state.endPortalTravels)).toMatchObject([{
+          sourceDimension: scenario.source,
+          toDimension: scenario.destination,
+          sourcePosition: cell,
+        }])
+      }
+    }),
+  )
+
+  it.effect('keeps the player owner and travel outbox unchanged when the destination commit fails', () =>
+    Effect.gen(function* () {
+      const endPortal = Option.getOrThrow(blockIdOf('end_portal'))
+      const cell = fixtureBlockPosition(0, 64, 0)
+      const harness = yield* builtStagesInWorld(
+        world([[cell, endPortal]]), ['0,0'],
+        undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+        { dimension: 'overworld' },
+      )
+      const playerBefore = yield* harness.commit.coordinator.snapshot(GAMEPLAY_PLAYER_OWNER_ID, PlayerServiceSnapshotSchema)
+      const revision = yield* harness.commit.coordinator.revision
+      yield* Ref.set(harness.rejectCommits, true)
+
+      yield* runFrames(harness.stages, 255, DeltaTimeSecs(0.016))
+
+      expect(yield* Ref.get(harness.commitCalls)).toBeGreaterThan(0)
+      expect(yield* harness.commit.coordinator.revision).toBe(revision)
+      expect(yield* harness.commit.coordinator.snapshot(GAMEPLAY_PLAYER_OWNER_ID, PlayerServiceSnapshotSchema))
+        .toStrictEqual(playerBefore)
+      expect(yield* Ref.get(harness.state.endPortalTravels)).toStrictEqual([])
+      expect(yield* Ref.get(harness.state.operationFailures)).toContainEqual(
+        expect.objectContaining({ _tag: 'Failed', operation: 'WorldCommit', subject: 'Player' }),
+      )
     }),
   )
 })
