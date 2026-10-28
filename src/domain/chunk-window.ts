@@ -5,7 +5,7 @@
  * The one problem this file exists to solve
  * ---------------------------------------------------------------------------
  *
- * `@nerima-games/mc-kernel`'s `detectNetherPortal` takes a SYNCHRONOUS accessor
+ * `@nerima-games/mc-worldgen`'s `detectNetherPortal` takes a SYNCHRONOUS accessor
  * and probes on the order of five hundred cells. Every block read in this repository
  * is an `Effect`. Those two facts do not compose, and there are exactly three
  * ways to make them:
@@ -75,20 +75,22 @@
  */
 import { Effect } from 'effect'
 import {
+  BlockAxis,
+  BlockId,
+  ChunkAxis,
   blockPosition,
   chunkCoord,
   CHUNK_SIZE_XZ,
-  type BlockAt,
   type BlockPosition,
   type ChunkCoord,
 } from '@nerima-games/mc-kernel'
-import { CHUNK_HEIGHT, blockIndex, readBlock, type Chunk, type ChunkStoreApi } from '@nerima-games/mc-worldgen'
+import { CHUNK_HEIGHT, blockIndex, readBlock, type ChunkStoreApi, type ReadonlyChunk } from '@nerima-games/mc-worldgen'
 
 /**
  * The answer for a cell this window cannot speak for.
  *
- * NOT a `BlockId`. Kernel's registry runs 0..119 and every id is a
- * `Uint8Array` element, so a negative number cannot collide with a row now or
+ * NOT a `BlockId`. Kernel's registry runs 0..119 and every id fits a
+ * `Uint16Array` element, so a negative number cannot collide with a row now or
  * after any number of additions. See the header on why the inert answer is a
  * value rather than a throw: the consumers are pure predicates over a byte, and
  * every one of them answers "no" to a byte it cannot name.
@@ -96,8 +98,8 @@ import { CHUNK_HEIGHT, blockIndex, readBlock, type Chunk, type ChunkStoreApi } f
 export const UNREADABLE_BLOCK = -1
 
 export type ChunkWindow = {
-  /** The synchronous accessor `@nerima-games/mc-kernel`'s portal rule wants. */
-  readonly blockAt: BlockAt
+  /** Synchronous reads include the local unreadable sentinel used by gameplay. */
+  readonly blockAt: (x: number, y: number, z: number) => BlockId | typeof UNREADABLE_BLOCK
   /**
    * How many probes fell on a cell this window could not answer — an absent
    * chunk, a cell missing from its buffer, or a `y` outside the world.
@@ -112,7 +114,10 @@ export type ChunkWindow = {
 
 /** The chunk a world position lives in. `Math.floor`, so negative x works. */
 export const chunkCoordOf = (position: BlockPosition): ChunkCoord =>
-  chunkCoord(Math.floor(position.x / CHUNK_SIZE_XZ), Math.floor(position.z / CHUNK_SIZE_XZ))
+  chunkCoord(
+    ChunkAxis(Math.floor(position.x / CHUNK_SIZE_XZ)),
+    ChunkAxis(Math.floor(position.z / CHUNK_SIZE_XZ)),
+  )
 
 /**
  * Every chunk coordinate covering the square `[x-radius, x+radius]` by
@@ -147,11 +152,12 @@ export const chunkCoordsAround = (
   const maxCx = Math.floor((centre.x + radius) / CHUNK_SIZE_XZ)
   const minCz = Math.floor((centre.z - radius) / CHUNK_SIZE_XZ)
   const maxCz = Math.floor((centre.z + radius) / CHUNK_SIZE_XZ)
+  if (![minCx, maxCx, minCz, maxCz].every(Number.isSafeInteger)) return []
 
   const coords: Array<ChunkCoord> = []
   for (let cx = minCx; cx <= maxCx; cx += 1) {
     for (let cz = minCz; cz <= maxCz; cz += 1) {
-      coords.push(chunkCoord(cx, cz))
+      coords.push(chunkCoord(ChunkAxis(cx), ChunkAxis(cz)))
     }
   }
   return coords
@@ -183,7 +189,7 @@ export const openChunkWindow = (
   coords: ReadonlyArray<ChunkCoord>,
 ): Effect.Effect<ChunkWindow> =>
   Effect.gen(function* () {
-    const chunks = new Map<string, Chunk>()
+    const chunks = new Map<string, ReadonlyChunk>()
     for (const coord of coords) {
       const chunk = yield* store.peek(coord)
       if (chunk !== undefined) {
@@ -193,19 +199,20 @@ export const openChunkWindow = (
 
     let unreadable = 0
 
-    const blockAt: BlockAt = (x, y, z) => {
+    const blockAt: ChunkWindow['blockAt'] = (x, y, z) => {
       // The world bound first, because it is the one `readBlock` would answer
       // with fabricated air. See the header.
       if (!Number.isInteger(y) || y < 0 || y >= CHUNK_HEIGHT) {
         unreadable += 1
         return UNREADABLE_BLOCK
       }
-      if (!Number.isInteger(x) || !Number.isInteger(z)) {
+      if (!Number.isSafeInteger(x) || !Number.isSafeInteger(z)) {
         unreadable += 1
         return UNREADABLE_BLOCK
       }
 
-      const chunk = chunks.get(chunkKey(chunkCoordOf(blockPosition(x, y, z))))
+      const coordinate = blockPosition(BlockAxis(x), BlockAxis(y), BlockAxis(z))
+      const chunk = chunks.get(chunkKey(chunkCoordOf(coordinate)))
       if (chunk === undefined) {
         unreadable += 1
         return UNREADABLE_BLOCK
@@ -217,7 +224,7 @@ export const openChunkWindow = (
         return UNREADABLE_BLOCK
       }
 
-      return readBlock(chunk.blocks, index)
+      return BlockId(readBlock(chunk.blocks, index))
     }
 
     return { blockAt, unreadableProbes: () => unreadable }

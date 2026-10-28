@@ -38,7 +38,8 @@ import {
   chunkCoordsAround,
   openChunkWindow,
 } from '../src/domain/chunk-window'
-import { AIR_BLOCK_ID, blockPosition, chunkCoord, CHUNK_SIZE_XZ } from '@nerima-games/mc-kernel'
+import { AIR_BLOCK_ID, CHUNK_SIZE_XZ } from '@nerima-games/mc-kernel'
+import { blockPosition, chunkCoord } from './support/coordinate-fixtures.js'
 import {
   CHUNK_HEIGHT,
   blockIndex,
@@ -59,9 +60,9 @@ import { makeChunkStoreDouble, world, CHUNK_SIDE, STONE } from './support/chunk-
 const notAStore: ChunkStoreApi = new Proxy({} as ChunkStoreApi, {
   get: (_target, property) => {
     if (property === 'peek') {
-      return () => Effect.dieMessage('peek must be overridden')
+      return () => Effect.die('peek must be overridden')
     }
-    return Effect.dieMessage(`chunk-window reached ChunkStoreApi.${String(property)}`)
+    return Effect.die(`chunk-window reached ChunkStoreApi.${String(property)}`)
   },
 })
 
@@ -81,7 +82,7 @@ describe('the buffer layout, transcribed', () => {
     // guards y at the call site, per the header above `readBlock` itself — so
     // this is the one place that exercises `readBlock`'s own totality directly,
     // against a buffer too short for the index it is asked to read.
-    const shortBuffer = new Uint8Array(1)
+    const shortBuffer = new Uint16Array(1)
     expect(readBlock(shortBuffer, 5)).toBe(AIR_BLOCK_ID)
     expect(readBlock(shortBuffer, -1)).toBe(AIR_BLOCK_ID)
   })
@@ -248,7 +249,7 @@ describe('openChunkWindow', () => {
   // `<reference-impl>/…/interaction-block-access.test.ts` —
   //
   //   :78  「rejects incomplete chunk storage instead of converting missing
-  //         cells to air」   (`blocks: new Uint8Array(0)`)
+  //         cells to air」   (`blocks: new Uint16Array(0)`)
   //   :93  「rejects chunk block indexes outside the fixed storage range」
   //   :104 「rejects fixed-length chunk storage with a missing cell」
   //   :170 「fails when a cached chunk has incomplete storage」
@@ -262,7 +263,7 @@ describe('openChunkWindow', () => {
         peek: (coord) =>
           Effect.succeed({
             coord,
-            blocks: new Uint8Array(0),
+            blocks: new Uint16Array(0),
             biomes: [],
           }),
       }
