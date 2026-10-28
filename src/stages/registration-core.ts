@@ -451,11 +451,11 @@ const prepareFirePlayerDamage = (
 
   const validation = validatePlayerStorageSnapshot(storage)
   if (validation._tag !== 'Valid') return undefined
-  const changed = !Equal.equals(local, validation.storage)
+  const storageChanged = !Equal.equals(local, validation.storage)
   return {
     damages: resolvedDamages,
-    changes: changed ? [{ ownerId, state: validation.storage }] : [],
-    storageAfterCommit: changed ? validation.storage : undefined,
+    changes: storageChanged ? [{ ownerId, state: validation.storage }] : [],
+    storageAfterCommit: storageChanged ? validation.storage : undefined,
   }
 })
 
@@ -955,7 +955,7 @@ const runFluidPropagation = (
           context,
           expectedRevision,
           expectedDimensionRevision,
-          operations.map(({ position, block }) => ({ position, block })),
+          operations.map(({ position: operationPosition, block }) => ({ position: operationPosition, block })),
         )
         if (Result.isFailure(committed)) {
           const tag = committed.failure._tag
