@@ -1613,6 +1613,125 @@ describe('stage behaviour', () => {
     }),
   )
 
+  it.effect('a rejected melee commit requeues the request without changing its owners or outputs', () =>
+    Effect.gen(function* () {
+      const target = {
+        id: EntityId('melee-rejected-target'),
+        kind: CREEPER_KIND,
+        feetPosition: fixturePosition(0, 64 - BOW_TARGET_CENTER_Y_OFFSET, 2),
+        healthPoints: EntityHealthPoints(20),
+        behaviour: undefined,
+      }
+      const harness = yield* builtStagesInWorld(
+        world([]), ['0,0'], undefined, undefined, undefined,
+        { entities: [target], nextSerial: EntitySerial(1) },
+      )
+      const interactions = harness.stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+      const before = yield* harness.commit.coordinator.snapshot(GAMEPLAY_ENTITIES_OWNER_ID, GameplayEntityRosterSchema)
+      const request = {
+        requestId: 'melee-rejected',
+        origin: fixturePosition(0, 64, 0),
+        direction: fixturePosition(0, 0, 1),
+        reach: 3,
+        damage: 4,
+      } as const
+
+      yield* Ref.set(harness.rejectCommits, true)
+      yield* requestMeleeAttack(harness.state, request)
+      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* Ref.get(harness.state.pendingMeleeAttacks)).toStrictEqual([request])
+      expect(yield* drainMeleeAttackResults(harness.state)).toStrictEqual([])
+      expect((yield* harness.commit.coordinator.snapshot(
+        GAMEPLAY_ENTITIES_OWNER_ID,
+        GameplayEntityRosterSchema,
+      )).state).toStrictEqual(before.state)
+      expect(yield* harness.commit.coordinator.revision).toBe(before.revision)
+      expect(yield* Ref.get(harness.commitCalls)).toBe(1)
+    }),
+  )
+
+  it.effect('a lethal melee hit remains retryable when its dropped-item owner is unavailable', () =>
+    Effect.gen(function* () {
+      const target = {
+        id: EntityId('melee-drop-owner-target'),
+        kind: CREEPER_KIND,
+        feetPosition: fixturePosition(0, 64 - BOW_TARGET_CENTER_Y_OFFSET, 2),
+        healthPoints: EntityHealthPoints(4),
+        behaviour: undefined,
+      }
+      const harness = yield* builtStagesInWorld(
+        world([]), ['0,0'], undefined, undefined, undefined,
+        { entities: [target], nextSerial: EntitySerial(1) },
+        undefined, undefined, undefined, {}, { droppedItemsOwnerId: undefined },
+      )
+      const interactions = harness.stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+      const before = yield* harness.commit.coordinator.snapshot(GAMEPLAY_ENTITIES_OWNER_ID, GameplayEntityRosterSchema)
+      const request = {
+        requestId: 'melee-drop-owner-unavailable',
+        origin: fixturePosition(0, 64, 0),
+        direction: fixturePosition(0, 0, 1),
+        reach: 3,
+        damage: 4,
+      } as const
+
+      yield* requestMeleeAttack(harness.state, request)
+      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* Ref.get(harness.state.unsupportedOperations)).toContainEqual({
+        _tag: 'Unsupported', action: 'MobDrop', reason: 'OwnerRegistrationUnavailable',
+      })
+      expect(yield* Ref.get(harness.state.pendingMeleeAttacks)).toStrictEqual([request])
+      expect((yield* harness.commit.coordinator.snapshot(
+        GAMEPLAY_ENTITIES_OWNER_ID,
+        GameplayEntityRosterSchema,
+      )).state).toStrictEqual(before.state)
+      expect(yield* harness.commit.coordinator.revision).toBe(before.revision)
+      expect(yield* Ref.get(harness.commitCalls)).toBe(0)
+    }),
+  )
+
+  it.effect('a lethal melee hit requeues unchanged when the dropped-item snapshot fails', () =>
+    Effect.gen(function* () {
+      const target = {
+        id: EntityId('melee-drop-snapshot-target'),
+        kind: CREEPER_KIND,
+        feetPosition: fixturePosition(0, 64 - BOW_TARGET_CENTER_Y_OFFSET, 2),
+        healthPoints: EntityHealthPoints(4),
+        behaviour: undefined,
+      }
+      const harness = yield* builtStagesInWorld(
+        world([]), ['0,0'], undefined, undefined, undefined,
+        { entities: [target], nextSerial: EntitySerial(1) },
+      )
+      const interactions = harness.stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+      const before = yield* harness.commit.coordinator.snapshot(GAMEPLAY_ENTITIES_OWNER_ID, GameplayEntityRosterSchema)
+      yield* Ref.set(harness.failSnapshotOwnerId, GAMEPLAY_DROPPED_ITEMS_OWNER_ID)
+      const request = {
+        requestId: 'melee-drop-snapshot-failure',
+        origin: fixturePosition(0, 64, 0),
+        direction: fixturePosition(0, 0, 1),
+        reach: 3,
+        damage: 4,
+      } as const
+
+      yield* requestMeleeAttack(harness.state, request)
+      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* Ref.get(harness.state.operationFailures)).toContainEqual(expect.objectContaining({
+        _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'ItemUse',
+        error: expect.objectContaining({ _tag: 'ReplicatedOwnerUnknown' }),
+      }))
+      expect(yield* Ref.get(harness.state.pendingMeleeAttacks)).toStrictEqual([request])
+      expect((yield* harness.commit.coordinator.snapshot(
+        GAMEPLAY_ENTITIES_OWNER_ID,
+        GameplayEntityRosterSchema,
+      )).state).toStrictEqual(before.state)
+      expect(yield* harness.commit.coordinator.revision).toBe(before.revision)
+      expect(yield* Ref.get(harness.commitCalls)).toBe(0)
+    }),
+  )
+
   it.effect('a lethal melee hit on a kind with no XP reward or drop table emits neither', () =>
     Effect.gen(function* () {
       // Every other lethal-hit test in this file kills a `CREEPER_KIND`, which
@@ -2232,6 +2351,108 @@ describe('the module contract has caught up with this file’s shape', () => {
         .toStrictEqual([undefined, undefined, undefined])
       expect(yield* harness.commit.coordinator.revision).toBe(initialRevision + 3)
       expect(yield* Ref.get(harness.commitCalls)).toBe(3)
+    }),
+  )
+
+  it.effect('brewing insert rejections leave registered owners and revision unchanged', () =>
+    Effect.gen(function* () {
+      const emptyState = () => Schema.decodeUnknownSync(BrewingServiceStateSchema)({
+        bottles: [undefined, undefined, undefined],
+        ingredient: undefined,
+        fuel: undefined,
+        fuelCharges: 0,
+        brewProgressSecs: 0,
+      })
+      const withSlot = (item?: 'blaze_powder' | 'water_bottle' | 'nether_wart') =>
+        emptySlots().map((slot, index) => index === 0 && item !== undefined ? itemStack(item, 1) : slot)
+      const scenarios = [
+        {
+          name: 'fuel-full',
+          action: 'fuel' as const,
+          failure: 'FuelFull',
+          storage: withSlot('blaze_powder'),
+          brewing: { ...emptyState(), fuel: itemStack('blaze_powder', 1), fuelCharges: 20 },
+        },
+        {
+          name: 'fuel-occupied',
+          action: 'fuel' as const,
+          failure: 'Occupied',
+          storage: withSlot('blaze_powder'),
+          brewing: { ...emptyState(), fuel: itemStack('water_bottle', 1) },
+        },
+        {
+          name: 'bottle-occupied',
+          action: 'bottle' as const,
+          failure: 'Occupied',
+          storage: withSlot('water_bottle'),
+          brewing: { ...emptyState(), bottles: [itemStack('water_bottle', 1), undefined, undefined] },
+        },
+        {
+          name: 'ingredient-occupied',
+          action: 'ingredient' as const,
+          failure: 'Occupied',
+          storage: withSlot('nether_wart'),
+          brewing: { ...emptyState(), ingredient: itemStack('nether_wart', 1) },
+        },
+        {
+          name: 'ingredient-while-brewing',
+          action: 'ingredient' as const,
+          failure: 'Brewing',
+          storage: withSlot('nether_wart'),
+          brewing: { ...emptyState(), brewProgressSecs: 1 },
+        },
+        {
+          name: 'ingredient-missing',
+          action: 'ingredient' as const,
+          failure: 'MissingItem',
+          storage: withSlot(),
+          brewing: emptyState(),
+        },
+      ]
+
+      for (const scenario of scenarios) {
+        const harness = yield* builtStagesInWorld(world([]), ['0,0'], undefined, scenario.storage)
+        const initial = yield* harness.commit.coordinator.snapshot(
+          GAMEPLAY_BREWING_OWNER_ID,
+          BrewingServiceStateSchema,
+        )
+        yield* harness.commit.coordinator.commit({
+          expectedRevision: initial.revision,
+          expectedDimensions: [],
+          changes: [{ ownerId: GAMEPLAY_BREWING_OWNER_ID, state: scenario.brewing }],
+        })
+        const revision = yield* harness.commit.coordinator.revision
+        const storage = yield* harness.commit.coordinator.snapshot(
+          GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+          PlayerStorageSnapshotSchema,
+        )
+        const interactions = harness.stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+
+        if (scenario.action === 'fuel') {
+          yield* insertBrewingFuel(harness.state, scenario.name)
+        } else if (scenario.action === 'bottle') {
+          yield* insertBrewingBottle(harness.state, scenario.name, 0, 'water_bottle')
+        } else {
+          yield* insertBrewingIngredient(harness.state, scenario.name, 'nether_wart')
+        }
+        yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+
+        expect((yield* drainItemUseResults(harness.state))[0]).toMatchObject({
+          requestId: scenario.name,
+          success: false,
+          failure: scenario.failure,
+        })
+        expect((yield* harness.commit.coordinator.snapshot(
+          GAMEPLAY_BREWING_OWNER_ID,
+          BrewingServiceStateSchema,
+        )).state).toStrictEqual(scenario.brewing)
+        expect((yield* harness.commit.coordinator.snapshot(
+          GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+          PlayerStorageSnapshotSchema,
+        )).state).toStrictEqual(storage.state)
+        expect(yield* harness.commit.coordinator.revision).toBe(revision)
+        expect(yield* Ref.get(harness.commitCalls)).toBe(1)
+      }
     }),
   )
 
@@ -4367,6 +4588,41 @@ describe('farming and food item uses through the full interactions stage', () =>
     }),
   )
 
+  it.effect('preserves a mature crop and storage when the harvest commit is rejected', () =>
+    Effect.gen(function* () {
+      const position = fixtureBlockPosition(47, 64, 47)
+      const potatoCrop = Option.getOrThrow(blockIdOf('potato_crop'))
+      const harness = yield* builtStagesInWorld(
+        world([[position, potatoCrop]]),
+        ['2,2'],
+        { crops: [{ dimension: 'overworld', position, crop: 'potato_crop', growthSecs: POTATO_MATURITY_SECS }] },
+      )
+      const interactions = harness.stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+      const cropBefore = yield* harness.commit.coordinator.snapshot(GAMEPLAY_CROPS_OWNER_ID, CropSnapshotSchema)
+      const storageBefore = yield* harness.commit.coordinator.snapshot(
+        GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+        PlayerStorageSnapshotSchema,
+      )
+      yield* Ref.set(harness.rejectCommits, true)
+
+      yield* requestPotatoHarvest(harness.state, 'harvest-potato-rejected', position, 0.5)
+      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* Ref.get(harness.commitCalls)).toBe(1)
+      expect(yield* harness.commit.coordinator.revision).toBe(cropBefore.revision)
+      expect(yield* harness.commit.coordinator.snapshot(GAMEPLAY_CROPS_OWNER_ID, CropSnapshotSchema))
+        .toStrictEqual(cropBefore)
+      expect(yield* harness.commit.coordinator.snapshot(
+        GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+        PlayerStorageSnapshotSchema,
+      )).toStrictEqual(storageBefore)
+      expect(yield* harness.store.api.getBlock(position)).toStrictEqual({ _tag: 'Block', block: potatoCrop })
+      expect(yield* Ref.get(harness.state.operationFailures)).toMatchObject([
+        { _tag: 'Failed', operation: 'WorldCommit', subject: 'ItemUse' },
+      ])
+    }),
+  )
+
   it.effect('bone meal against a non-crop cell still reaches the ApplyBoneMeal arm', () =>
     Effect.gen(function* () {
       const position = fixtureBlockPosition(40, 64, 40)
@@ -4417,6 +4673,45 @@ describe('farming and food item uses through the full interactions stage', () =>
       expect(storageOwner.state.inventory.slots[0]).toBeUndefined()
       expect(yield* inventory.api.countOf('bone_meal')).toBe(1)
       expect(yield* commit.coordinator.revision).toBe(1)
+    }),
+  )
+
+  it.effect('preserves crop and storage when the bone meal owner commit is rejected', () =>
+    Effect.gen(function* () {
+      const wheatCrop = Option.getOrThrow(blockIdOf('wheat_crop'))
+      const position = fixtureBlockPosition(0, 64, 0)
+      const slots = [...emptySlots()]
+      slots[0] = itemStack('bone_meal', 1)
+      const harness = yield* builtStagesInWorld(
+        world([[position, wheatCrop]]),
+        ['0,0'],
+        { crops: [{ dimension: 'overworld', position, crop: 'wheat_crop', growthSecs: 0 }] },
+        slots,
+      )
+      const interactions = harness.stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+      const cropBefore = yield* harness.commit.coordinator.snapshot(GAMEPLAY_CROPS_OWNER_ID, CropSnapshotSchema)
+      const storageBefore = yield* harness.commit.coordinator.snapshot(
+        GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+        PlayerStorageSnapshotSchema,
+      )
+      yield* Ref.set(harness.rejectCommits, true)
+
+      yield* requestBoneMeal(harness.state, 'bone-meal-rejected', position)
+      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* Ref.get(harness.commitCalls)).toBe(1)
+      expect(yield* harness.commit.coordinator.revision).toBe(cropBefore.revision)
+      expect(yield* harness.commit.coordinator.snapshot(GAMEPLAY_CROPS_OWNER_ID, CropSnapshotSchema))
+        .toStrictEqual(cropBefore)
+      expect(yield* harness.commit.coordinator.snapshot(
+        GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+        PlayerStorageSnapshotSchema,
+      )).toStrictEqual(storageBefore)
+      expect(yield* harness.store.api.getBlock(position)).toStrictEqual({ _tag: 'Block', block: wheatCrop })
+      expect(yield* Ref.get(harness.state.operationFailures)).toMatchObject([
+        { _tag: 'Failed', operation: 'WorldCommit', subject: 'ItemUse' },
+      ])
+      expect(yield* drainItemUseResults(harness.state)).toStrictEqual([])
     }),
   )
 
@@ -4568,6 +4863,39 @@ describe('farming and food item uses through the full interactions stage', () =>
     }),
   )
 
+  it.effect('preserves farmland, crop roster, and potato storage when planting commit is rejected', () =>
+    Effect.gen(function* () {
+      const soil = fixtureBlockPosition(45, 64, 45)
+      const farmland = Option.getOrThrow(blockIdOf('farmland'))
+      const potatoSlots = [...emptySlots()]
+      potatoSlots[0] = itemStack('potato', 1)
+      const harness = yield* builtStagesInWorld(world([[soil, farmland]]), ['2,2'], undefined, potatoSlots)
+      const interactions = harness.stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+      const cropBefore = yield* harness.commit.coordinator.snapshot(GAMEPLAY_CROPS_OWNER_ID, CropSnapshotSchema)
+      const storageBefore = yield* harness.commit.coordinator.snapshot(
+        GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+        PlayerStorageSnapshotSchema,
+      )
+      yield* Ref.set(harness.rejectCommits, true)
+
+      yield* requestPotatoPlanting(harness.state, 'plant-potato-rejected', soil)
+      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* Ref.get(harness.commitCalls)).toBe(1)
+      expect(yield* harness.commit.coordinator.revision).toBe(cropBefore.revision)
+      expect(yield* harness.commit.coordinator.snapshot(GAMEPLAY_CROPS_OWNER_ID, CropSnapshotSchema))
+        .toStrictEqual(cropBefore)
+      expect(yield* harness.commit.coordinator.snapshot(
+        GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+        PlayerStorageSnapshotSchema,
+      )).toStrictEqual(storageBefore)
+      expect(yield* harness.store.api.getBlock(soil)).toStrictEqual({ _tag: 'Block', block: farmland })
+      expect(yield* Ref.get(harness.state.operationFailures)).toMatchObject([
+        { _tag: 'Failed', operation: 'WorldCommit', subject: 'ItemUse' },
+      ])
+    }),
+  )
+
   it.effect('tilling dirt with a synchronized hoe commits the block and its wear', () =>
     Effect.gen(function* () {
       const soil = fixtureBlockPosition(44, 64, 44)
@@ -4607,6 +4935,36 @@ describe('farming and food item uses through the full interactions stage', () =>
       })
       expect(yield* inventory.api.countOf('iron_hoe')).toBe(1)
       expect(yield* commit.coordinator.revision).toBe(1)
+    }),
+  )
+
+  it.effect('preserves dirt and hoe storage when the soil-till commit is rejected', () =>
+    Effect.gen(function* () {
+      const soil = fixtureBlockPosition(46, 64, 46)
+      const dirt = Option.getOrThrow(blockIdOf('dirt'))
+      const hoeSlots = [...emptySlots()]
+      hoeSlots[0] = itemStack('iron_hoe', 1)
+      const harness = yield* builtStagesInWorld(world([[soil, dirt]]), ['2,2'], undefined, hoeSlots)
+      const interactions = harness.stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+      const storageBefore = yield* harness.commit.coordinator.snapshot(
+        GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+        PlayerStorageSnapshotSchema,
+      )
+      yield* Ref.set(harness.rejectCommits, true)
+
+      yield* requestSoilTill(harness.state, 'till-soil-rejected', soil, 'iron_hoe')
+      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* Ref.get(harness.commitCalls)).toBe(1)
+      expect(yield* harness.commit.coordinator.revision).toBe(storageBefore.revision)
+      expect(yield* harness.commit.coordinator.snapshot(
+        GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+        PlayerStorageSnapshotSchema,
+      )).toStrictEqual(storageBefore)
+      expect(yield* harness.store.api.getBlock(soil)).toStrictEqual({ _tag: 'Block', block: dirt })
+      expect(yield* Ref.get(harness.state.operationFailures)).toMatchObject([
+        { _tag: 'Failed', operation: 'WorldCommit', subject: 'ItemUse' },
+      ])
     }),
   )
 
@@ -4765,6 +5123,57 @@ describe('farming and food item uses through the full interactions stage', () =>
       expect(codVitals.state.vitals.hungerPoints).toBe(12)
       expect(yield* Ref.get(codHarness.commitCalls)).toBe(1)
       expect(yield* codHarness.commit.coordinator.revision).toBe(1)
+    }),
+  )
+
+  it.effect('preserves food and vitals when the owner commit for eating is rejected', () =>
+    Effect.gen(function* () {
+      const lowVitals = { ...SPAWN_VITALS, hungerPoints: HungerPoints(10) }
+      const slots = [...emptySlots()]
+      slots[0] = itemStack('cod', 1)
+      const harness = yield* builtStagesInWorld(
+        world([]),
+        ['0,0'],
+        undefined,
+        slots,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { vitals: lowVitals },
+      )
+      const interactions = harness.stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+      const storageBefore = yield* harness.commit.coordinator.snapshot(
+        GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+        PlayerStorageSnapshotSchema,
+      )
+      const vitalsBefore = yield* harness.commit.coordinator.snapshot(
+        GAMEPLAY_VITALS_OWNER_ID,
+        ExperienceOrbVitalsOwnerSnapshotSchema,
+      )
+      yield* Ref.set(harness.rejectCommits, true)
+
+      yield* requestFoodUse(harness.state, 'eat-food-rejected', 'cod', {
+        healthPoints: lowVitals.healthPoints,
+        hungerPoints: lowVitals.hungerPoints,
+        maxHungerPoints: lowVitals.maxHungerPoints,
+      })
+      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* Ref.get(harness.commitCalls)).toBe(1)
+      expect(yield* harness.commit.coordinator.revision).toBe(storageBefore.revision)
+      expect(yield* harness.commit.coordinator.snapshot(
+        GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+        PlayerStorageSnapshotSchema,
+      )).toStrictEqual(storageBefore)
+      expect(yield* harness.commit.coordinator.snapshot(
+        GAMEPLAY_VITALS_OWNER_ID,
+        ExperienceOrbVitalsOwnerSnapshotSchema,
+      )).toStrictEqual(vitalsBefore)
+      expect(yield* Ref.get(harness.state.operationFailures)).toMatchObject([
+        { _tag: 'Failed', operation: 'WorldCommit', subject: 'Vitals' },
+      ])
     }),
   )
 })
@@ -5050,6 +5459,24 @@ describe('interaction stages surface owner snapshot failures and preserve retrya
       expect(yield* Ref.get(harness.state.pendingMeleeAttacks)).toHaveLength(1)
       yield* Ref.set(harness.state.pendingMeleeAttacks, [])
 
+      yield* requestBowShot(harness.state, 'bow-entity-snapshot-failure', {
+        origin: fixturePosition(0, 64, 0),
+        dirX: 0,
+        dirY: 1,
+        dirZ: 0,
+        chargeSecs: BOW_FULL_CHARGE_SECS,
+        inventory: { mode: 'creative', slotIndex: 0 },
+      })
+      yield* run()
+      expect(yield* latestFailure()).toMatchObject({
+        _tag: 'Failed',
+        operation: 'OwnerSnapshot',
+        subject: 'Player',
+        error: { _tag: 'ReplicatedOwnerUnknown' },
+      })
+      expect(yield* Ref.get(harness.state.pendingBowShots)).toHaveLength(1)
+      yield* Ref.set(harness.state.pendingBowShots, [])
+
       yield* Ref.set(harness.failSnapshotOwnerId, GAMEPLAY_PLAYER_STORAGE_OWNER_ID)
       yield* requestBowShot(harness.state, 'bow-storage-snapshot-failure', {
         origin: fixturePosition(0, 64, 0),
@@ -5098,6 +5525,131 @@ describe('interaction stages surface owner snapshot failures and preserve retrya
         subject: 'Brewing',
         error: { _tag: 'ReplicatedOwnerUnknown' },
       })
+      yield* Ref.set(harness.failObserveOwnerId, GAMEPLAY_STATUS_EFFECTS_OWNER_ID)
+      yield* run()
+      expect(yield* latestFailure()).toMatchObject({
+        _tag: 'Failed',
+        operation: 'OwnerSnapshot',
+        subject: 'Brewing',
+        error: { _tag: 'ReplicatedOwnerUnknown' },
+      })
+      expect(yield* Ref.get(harness.commitCalls)).toBe(0)
+    }),
+  )
+
+  it.effect('EnderPearl preserves its candidates when a storage or vitals snapshot fails', () =>
+    Effect.gen(function* () {
+      for (const ownerId of [GAMEPLAY_PLAYER_STORAGE_OWNER_ID, GAMEPLAY_VITALS_OWNER_ID]) {
+        const harness = yield* builtStagesInWorld(world([]))
+        const interactions = harness.stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+        const storageBefore = yield* harness.commit.coordinator.snapshot(
+          GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+          PlayerStorageSnapshotSchema,
+        )
+        const vitalsBefore = yield* harness.commit.coordinator.snapshot(
+          GAMEPLAY_VITALS_OWNER_ID,
+          ExperienceOrbVitalsOwnerSnapshotSchema,
+        )
+        const revision = yield* harness.commit.coordinator.revision
+        yield* Ref.set(harness.failSnapshotOwnerId, ownerId)
+        yield* requestEnderPearlThrow(harness.state, {
+          requestId: `pearl-${ownerId}-snapshot-failure`,
+          dirX: 1,
+          dirY: 0,
+          dirZ: 0,
+          inventory: { mode: 'creative', slotIndex: 0 },
+        })
+        yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+
+        expect((yield* Ref.get(harness.state.operationFailures)).at(-1)).toMatchObject({
+          _tag: 'Failed', operation: 'OwnerSnapshot',
+          subject: ownerId === GAMEPLAY_PLAYER_STORAGE_OWNER_ID ? 'Player' : 'Vitals',
+          error: { _tag: 'ReplicatedOwnerUnknown' },
+        })
+        expect(yield* Ref.get(harness.state.enderPearlOutcomes)).toStrictEqual([])
+        expect(yield* Ref.get(harness.commitCalls)).toBe(0)
+        expect(yield* harness.commit.coordinator.revision).toBe(revision)
+        yield* Ref.set(harness.failSnapshotOwnerId, undefined)
+        expect((yield* harness.commit.coordinator.snapshot(
+          GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+          PlayerStorageSnapshotSchema,
+        )).state).toStrictEqual(storageBefore.state)
+        expect((yield* harness.commit.coordinator.snapshot(
+          GAMEPLAY_VITALS_OWNER_ID,
+          ExperienceOrbVitalsOwnerSnapshotSchema,
+        )).state).toStrictEqual(vitalsBefore.state)
+      }
+    }),
+  )
+
+  it.effect('requeues bow and melee when their operation-specific player snapshot fails', () =>
+    Effect.gen(function* () {
+      const target = {
+        id: EntityId('melee-player-snapshot-target'),
+        kind: CREEPER_KIND,
+        feetPosition: fixturePosition(0, 64 - BOW_TARGET_CENTER_Y_OFFSET, 2),
+        healthPoints: EntityHealthPoints(20),
+        behaviour: undefined,
+      }
+      const harness = yield* builtStagesInWorld(
+        world([]), ['0,0'], undefined, undefined, undefined,
+        { entities: [target], nextSerial: EntitySerial(1) },
+      )
+      let playerSnapshotCalls = 0
+      const baseCoordinator = harness.commit.coordinator
+      const coordinator: WorldCommitCoordinatorApi = {
+        ...baseCoordinator,
+        snapshot: (ownerId, schema) => Effect.gen(function* () {
+          if (ownerId === GAMEPLAY_PLAYER_OWNER_ID) {
+            playerSnapshotCalls += 1
+            if (playerSnapshotCalls % 2 === 0) {
+              return yield* Effect.fail(new ReplicatedOwnerUnknown({ ownerId }))
+            }
+          }
+          return yield* baseCoordinator.snapshot(ownerId, schema)
+        }),
+      }
+      const commit: GameplayStageCommitServices = { ...harness.commit, coordinator }
+      const interactions = gameplayStages(
+        harness.state,
+        harness.store.api,
+        harness.roster.api,
+        harness.inventory.api,
+        harness.player.api,
+        harness.time,
+        undefined,
+        undefined,
+        {},
+        commit,
+      ).find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+      const run = () => interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+
+      yield* requestBowShot(harness.state, 'bow-player-snapshot-failure', {
+        origin: fixturePosition(0, 64, 0),
+        dirX: 0,
+        dirY: 1,
+        dirZ: 0,
+        chargeSecs: BOW_FULL_CHARGE_SECS,
+        inventory: { mode: 'creative', slotIndex: 0 },
+      })
+      yield* run()
+      expect(yield* Ref.get(harness.state.pendingBowShots)).toHaveLength(1)
+      yield* Ref.set(harness.state.pendingBowShots, [])
+
+      yield* requestMeleeAttack(harness.state, {
+        requestId: 'melee-player-snapshot-failure',
+        origin: fixturePosition(0, 64, 0),
+        direction: fixturePosition(0, 0, 1),
+        reach: 3,
+        damage: 4,
+      })
+      yield* run()
+
+      expect(yield* Ref.get(harness.state.pendingMeleeAttacks)).toHaveLength(1)
+      expect(yield* Ref.get(harness.state.operationFailures)).toMatchObject([
+        { operation: 'OwnerSnapshot', error: { _tag: 'ReplicatedOwnerUnknown' } },
+        { operation: 'OwnerSnapshot', error: { _tag: 'ReplicatedOwnerUnknown' } },
+      ])
       expect(yield* Ref.get(harness.commitCalls)).toBe(0)
     }),
   )

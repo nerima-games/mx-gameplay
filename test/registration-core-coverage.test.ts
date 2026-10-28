@@ -1,5 +1,12 @@
 import { describe, expect, it } from '@effect/vitest'
-import { DeltaTimeSecs, PositionAxis, blockIdOf, position, type StageRegistration } from '@nerima-games/mc-kernel'
+import {
+  DeltaTimeSecs,
+  PositionAxis,
+  blockIdOf,
+  position,
+  type DeltaTimeSecs as DeltaTimeSecsValue,
+  type StageRegistration,
+} from '@nerima-games/mc-kernel'
 import { EntityId, WorldCommitEmptyRequest, makeTimeService } from '@nerima-games/mc-sim'
 import { Effect, Option, Ref } from 'effect'
 import {
@@ -333,6 +340,91 @@ describe('registration-core public paths omitted from focused coverage', () => {
       expect(yield* getPlayerMovementSpeedMultiplier(harness.state)).toBe(1)
       expect((yield* commit.coordinator.snapshot(commit.statusEffectsOwnerId!, StatusEffectStateSchema)).state.effects)
         .toStrictEqual([])
+    }),
+  )
+
+  it.effect('leaves the fire and fluids stages idle when no commit coordinator is registered', () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness(world([]), false)
+      const stages = gameplayStages(
+        harness.state,
+        harness.store.api,
+        harness.roster.api,
+        harness.inventory.api,
+        harness.player.api,
+        harness.time,
+        undefined,
+        undefined,
+        {},
+        undefined,
+      )
+      const fire = stages.find(({ id }) => id === GAMEPLAY_STAGE_IDS.fire)
+      const fluids = stages.find(({ id }) => id === GAMEPLAY_STAGE_IDS.fluids)
+      if (fire === undefined || fluids === undefined) throw new Error('world stages were not registered')
+
+      yield* fire.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+      yield* fluids.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* Ref.get(harness.state.operationFailures)).toStrictEqual([])
+      expect(yield* Ref.get(harness.state.unsupportedOperations)).toStrictEqual([])
+
+      const registered = yield* makeHarness(world([]), true)
+      const commit = registered.commit
+      if (commit?.playerStorageOwnerId === undefined) throw new Error('player storage owner was not registered')
+      const mismatched: GameplayStageCommitServices = {
+        ...commit,
+        playerOwnerId: commit.playerStorageOwnerId,
+      }
+      const registeredStages = gameplayStages(
+        registered.state,
+        registered.store.api,
+        registered.roster.api,
+        registered.inventory.api,
+        registered.player.api,
+        registered.time,
+        undefined,
+        undefined,
+        {},
+        mismatched,
+      )
+      const registeredFire = registeredStages.find(({ id }) => id === GAMEPLAY_STAGE_IDS.fire)
+      const registeredFluids = registeredStages.find(({ id }) => id === GAMEPLAY_STAGE_IDS.fluids)
+      if (registeredFire === undefined || registeredFluids === undefined) {
+        throw new Error('registered world stages were not registered')
+      }
+
+      yield* registeredFire.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+      yield* registeredFluids.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* Ref.get(registered.state.operationFailures)).toContainEqual(
+        expect.objectContaining({ _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'Player' }),
+      )
+    }),
+  )
+
+  it.effect('records a rejected survival-hunger tick as a vitals stage failure', () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness(world([]), false)
+      const stages = gameplayStages(
+        harness.state,
+        harness.store.api,
+        harness.roster.api,
+        harness.inventory.api,
+        harness.player.api,
+        harness.time,
+        undefined,
+        undefined,
+        {},
+        undefined,
+      )
+      const hunger = stages.find(({ id }) => id === GAMEPLAY_STAGE_IDS.survivalHunger)
+      if (hunger === undefined) throw new Error('survival-hunger stage was not registered')
+
+      yield* hunger.run(Number.NaN as DeltaTimeSecsValue).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* Ref.get(harness.state.operationFailures)).toMatchObject([
+        { _tag: 'Failed', operation: 'VitalsOperation', subject: 'Vitals' },
+      ])
     }),
   )
 })

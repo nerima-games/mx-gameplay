@@ -17,6 +17,7 @@ import {
   GAMEPLAY_FISHING_OWNER_ID,
   GAMEPLAY_OWNER_REGISTRATIONS,
   GameplayEntityRosterSchema,
+  GameplayMobBehaviourSchema,
 } from '../src/stages/gameplay-owner-registrations.js'
 
 describe('gameplay replicated owner registrations', () => {
@@ -121,6 +122,54 @@ describe('gameplay replicated owner registrations', () => {
         }],
         nextSerial: 1,
       }))).toBe(true)
+    }),
+  )
+
+  it.effect('strictly decodes every gameplay mob-behaviour family', () =>
+    Effect.sync(() => {
+      const valid = [
+        undefined,
+        { _tag: 'Dormant' },
+        { _tag: 'Detonated' },
+        { _tag: 'Lit', burnedSecs: 0.5 },
+        { _tag: 'Steady' },
+        { _tag: 'Struck' },
+        { _tag: 'EcosystemMob', attackCooldownSecs: 0, motionPhase: 0.25, provoked: false },
+        {
+          _tag: 'DroppedItem', item: 'stone', count: 2, durability: null,
+          eligibleFromFrame: 3, customName: 'Stone',
+        },
+        {
+          _tag: 'DroppedItem', item: 'bow', count: 1, durability: { current: 384, max: 384 },
+          enchantments: [{ id: 'power', level: 1 }],
+        },
+        { _tag: 'PrimedTnt', burnedSecs: 0 },
+        {
+          _tag: 'HostileMob', behaviour: { _tag: 'EcosystemMob', attackCooldownSecs: 0, motionPhase: 0, provoked: true },
+          ageTicks: 0, persistent: false, named: false, tamed: false,
+        },
+      ]
+      for (const behaviour of valid) {
+        expect(Result.isSuccess(Schema.decodeUnknownResult(GameplayMobBehaviourSchema)(behaviour))).toBe(true)
+      }
+
+      const invalid = [
+        0,
+        { _tag: 'Lit', burnedSecs: -1 },
+        { _tag: 'Steady', extra: true },
+        { _tag: 'EcosystemMob', attackCooldownSecs: 0, motionPhase: 0, provoked: false, extra: true },
+        { _tag: 'DroppedItem', item: 'stone', count: 1, durability: null, extra: true },
+        {
+          _tag: 'DroppedItem', item: 'bow', count: 1, durability: { current: 384, max: 384 },
+          enchantments: [{ id: 'invalid', level: 1 }],
+        },
+        { _tag: 'PrimedTnt', burnedSecs: -1 },
+        { _tag: 'HostileMob', behaviour: { _tag: 'Dormant', extra: true }, ageTicks: 0, persistent: false, named: false, tamed: false },
+        { _tag: 'HostileMob', behaviour: 0, ageTicks: 0, persistent: false, named: false, tamed: false },
+      ]
+      for (const behaviour of invalid) {
+        expect(Result.isFailure(Schema.decodeUnknownResult(GameplayMobBehaviourSchema)(behaviour))).toBe(true)
+      }
     }),
   )
 })

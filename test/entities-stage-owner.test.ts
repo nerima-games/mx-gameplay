@@ -424,6 +424,56 @@ describe('entities stage owner-backed MobSimulation', () => {
     )
   })
 
+  it('commits blast knockback, experience, and generated loot for a slain hostile mob', async () => {
+    const centre = blockPosition(BlockAxis(0), BlockAxis(64), BlockAxis(0))
+    const tntId = EntityId('test:tnt-with-loot')
+    const zombie = { ...zombieAt(1, 64), healthPoints: EntityHealthPoints(1) }
+    const playerPose = {
+      ...INITIAL_PLAYER_POSE,
+      feetPosition: position(PositionAxis(2), PositionAxis(64), PositionAxis(0)),
+    }
+    const harness = await Effect.runPromise(makeHarness({
+      entity: zombie,
+      playerPose,
+      block: { position: centre, id: STONE },
+      tnt: {
+        tnts: [{
+          id: tntId,
+          dimension: INITIAL_DIMENSION,
+          center: { x: 0, y: 64, z: 0 },
+          state: { kind: 'primed', remainingFuseSecs: 0.01 },
+        }],
+      },
+    }))
+    await Effect.runPromise(Ref.set(harness.state.rollSeed, 3))
+
+    await harness.run(0.02 as DeltaTimeSecs)
+
+    const entities = await Effect.runPromise(strictRoster(harness.coordinator))
+    const droppedItems = await Effect.runPromise(
+      harness.coordinator.snapshot(GAMEPLAY_DROPPED_ITEMS_OWNER_ID, DroppedItemOwnerSnapshotSchema),
+    )
+    const player = await Effect.runPromise(
+      harness.coordinator.snapshot(GAMEPLAY_PLAYER_OWNER_ID, PlayerServiceSnapshotSchema),
+    )
+    const outputs = await Effect.runPromise(Effect.all({
+      drops: Ref.get(harness.state.mobDrops),
+      experience: Ref.get(harness.state.mobExperience),
+    }))
+
+    expect(harness.tntCommits()).toBe(1)
+    expect(entities.state.entities).toStrictEqual([])
+    expect(droppedItems.state.items).toHaveLength(1)
+    expect(droppedItems.state.items[0]?.behaviour).toMatchObject({
+      _tag: 'DroppedItem',
+      item: 'rotten_flesh',
+      count: 1,
+    })
+    expect(player.state.pose.feetPosition.x).not.toBe(playerPose.feetPosition.x)
+    expect(outputs.drops).toMatchObject([{ item: 'rotten_flesh', count: 1 }])
+    expect(outputs.experience).toMatchObject([{ amount: 5, source: zombie.id }])
+  })
+
   it('advances a live TNT fuse with the service-owned single commit', async () => {
     const tntId = EntityId('test:tnt')
     const harness = await Effect.runPromise(makeHarness({
