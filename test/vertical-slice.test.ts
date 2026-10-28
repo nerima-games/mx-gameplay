@@ -2,8 +2,8 @@
  * THE SLICE, end to end. Two of them now.
  *
  * BLOCKS: the player breaks a block in `gameplay:interactions`, the sand above
- * it falls in `gameplay:entities` on a later tick, and the mined block goes to
- * the inventory.
+ * it falls in `gameplay:entities` on a later tick, and the mined loot goes to
+ * the player-storage owner.
  *
  * MOBS: a creeper spawns through the spawn rule in `gameplay:entities`, lights
  * its fuse as the player walks up, detonates exactly once, the blast kills the
@@ -67,7 +67,6 @@
 import { describe, expect, it } from '@effect/vitest'
 import fc from 'fast-check'
 import {
-  addInventoryItem,
   durability as makeDurability,
   emptyFurnaceState as makeEmptyFurnaceState,
   equipmentItem as makeEquipmentItem,
@@ -77,11 +76,11 @@ import {
   playerStorageOwnerRegistration,
   ReplicatedOwnerIdSchema,
   WorldCommitCoordinatorErrorSchema,
-  withInventory,
   type EquipmentItem,
   type InventoryServiceApi,
   makeTimeService,
   type ReplicatedOwnerId,
+  type Slot,
   type TimeServiceApi,
 } from '@nerima-games/mc-sim'
 import { Effect, Option, Ref, Result, Schema } from 'effect'
@@ -116,13 +115,11 @@ import {
 } from '../src/domain/villager-trade'
 import {
   CREEPER_KIND,
-  DROPPED_ITEM_KIND,
   CREEPER_MAX_HEALTH,
   ENDERMAN_KIND,
   ENDERMAN_TELEPORT_ROLLS,
   HOSTILE_KINDS,
   hostileMobSnapshot,
-  isDroppedItemBehaviour,
   MAX_HOSTILE_COUNT,
   STEADY_ENDERMAN,
   STRUCK_ENDERMAN,
@@ -137,6 +134,7 @@ import {
 } from '@nerima-games/mc-sim'
 import { disturb } from '../src/domain/falling-block'
 import {
+  DroppedItemPickupRequestSchema,
   DroppedItemOwnerSnapshotSchema,
   droppedItemOwnerRegistration,
 } from '../src/domain/entities/dropped-item'
@@ -154,6 +152,7 @@ import {
   FIRE_TICK_INTERVAL_SECS,
 } from '../src/domain/fire-lifecycle'
 import { craterCells, craterRadius } from '../src/domain/interactions/explosion-crater'
+import { BLOCK_LOOT_ROLLS } from '../src/domain/interactions/block-loot'
 import { CREEPER_FUSE_SECS, DORMANT_FUSE } from '../src/domain/mob/creeper-fuse'
 import {
   ENDERMAN_CHASE_TELEPORT_CHANCE,
@@ -175,6 +174,7 @@ import {
   gameplayStages,
   makeGameplayFrameState,
   requestBlockBreak,
+  requestDroppedItemPickup,
   requestFoodUse,
   requestFurnaceAdvance,
   requestFishingAdvance,
@@ -309,6 +309,60 @@ const countDroppedOwnerItem = (
     0,
   )
 
+const readPlayerStorageOwner = (
+  coordinator: WorldCommitCoordinatorApi,
+  ownerId: ReplicatedOwnerId,
+) =>
+  Effect.map(
+    coordinator.snapshot(ownerId, PlayerStorageSnapshotSchema),
+    (snapshot) => Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(snapshot.state),
+  )
+
+const readDroppedItemsOwner = (
+  coordinator: WorldCommitCoordinatorApi,
+  ownerId: ReplicatedOwnerId,
+) =>
+  Effect.map(
+    coordinator.snapshot(ownerId, DroppedItemOwnerSnapshotSchema),
+    (snapshot) => Schema.decodeUnknownSync(DroppedItemOwnerSnapshotSchema)(snapshot.state),
+  )
+
+const miningSlice = (
+  initial: ReadonlyMap<string, BlockId>,
+  loaded: ReadonlyArray<string> = ['0,0'],
+  inventorySlots: ReadonlyArray<Slot> = emptySlots(),
+) =>
+  Effect.gen(function* () {
+    const base = yield* slice(initial, loaded, inventorySlots)
+    const owners = yield* withMiningDroppedItemsOwner(
+      base.store.api,
+      base.inventory.api,
+      base.commit.coordinator,
+      base.commit.playerStorageOwnerId,
+    )
+    const commit = {
+      ...base.commit,
+      coordinator: owners.coordinator,
+      droppedItemsOwnerId: owners.droppedItemsOwnerId,
+    }
+    return {
+      ...base,
+      commit,
+      stages: gameplayStages(
+        base.state,
+        base.store.api,
+        base.roster.api,
+        base.inventory.api,
+        base.player.api,
+        base.time,
+        undefined,
+        undefined,
+        {},
+        commit,
+      ),
+    }
+  })
+
 const onePlacementItem = (item: PlacementRequest['heldItem']) =>
   emptySlots().map((_, index) =>
     index === 0 ? itemStack(item, StackCount(1)) : undefined,
@@ -356,6 +410,18 @@ const samePosition = (left: BlockPosition, right: BlockPosition): boolean =>
 /** What mc-render's input stage will do, once mc-render is published. */
 const requestBreak = requestBlockBreak
 
+const requestWoodenPickaxeMine = (
+  state: Parameters<typeof requestBlockBreak>[0],
+  position: BlockPosition,
+  slotIndex = 0,
+): Effect.Effect<void> =>
+  requestBlockBreak(
+    state,
+    position,
+    { heldTier: 'wooden' },
+    { dimension: MINING_DIMENSION, toolLocation: { _tag: 'Inventory', slotIndex } },
+  )
+
 /**
  * What mc-sim's `InventoryService` will supply: the tool the player is holding.
  *
@@ -374,20 +440,24 @@ const holdWoodenPickaxe = (
 describe('the slice, through the stage registration', () => {
   it.effect('breaks a block in interactions and moves the sand in entities', () =>
     Effect.gen(function* () {
-      const { store, inventory, state, stages } = yield* slice(
+      const { store, inventory, roster, state, stages, commit } = yield* miningSlice(
         world([
           [floor, STONE],
           [support, STONE],
           [sandAt, SAND],
         ]),
+        ['0,0'],
+        oneInventoryItem('wooden_pickaxe'),
+      )
+      const localBefore = Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(
+        yield* inventory.api.storageSnapshot,
       )
       // mc-render's chunk-sync stage will hold one of these. Nothing in
       // mx-gameplay subscribes: a chunk coordinate cannot tell a rule WHICH
       // cell moved, so a stage that worked from it would have to scan.
       const renderer = yield* store.api.subscribeDirty
 
-      yield* holdWoodenPickaxe(state)
-      yield* requestBreak(state, support)
+      yield* requestWoodenPickaxeMine(state, support)
       const snapshots: Array<{
         support: BlockId | undefined
         sand: BlockId | undefined
@@ -395,11 +465,17 @@ describe('the slice, through the stage registration', () => {
       }> = []
       for (let tick = 0; tick < 3; tick += 1) {
         yield* runFrame(stages)
+        const owner = yield* commit.coordinator.snapshot(
+          commit.playerStorageOwnerId,
+          PlayerStorageSnapshotSchema,
+        )
+        const ownerStorage = Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(owner.state)
         snapshots.push({
           support: yield* store.blockAt(support),
           sand: yield* store.blockAt(sandAt),
-          cobblestoneCount: yield* inventory.api.countOf('cobblestone'),
+          cobblestoneCount: countPlayerStorageItem(ownerStorage, 'cobblestone'),
         })
+        expect(yield* inventory.api.countOf('cobblestone')).toBe(0)
         expect(yield* Ref.get(state.pendingBreaks)).toStrictEqual([])
       }
 
@@ -411,13 +487,23 @@ describe('the slice, through the stage registration', () => {
         })),
       )
 
-      // ---- the block was mined, and the ITEM went to the inventory ---------
-      // `previous` came back from the write itself, so there was no
-      // read-then-write race for it (mc-worldgen §6-3) — and it is a BYTE, so
-      // `domain/interactions/block-loot.ts` is what turns it into an item. The
-      // assertion is `cobblestone` and not `stone`, which is kernel's drop row
-      // (`{ ...DEFAULT_BLOCK_DROP, item: 'cobblestone' }`) reaching the outbox.
-      expect(yield* inventory.api.countOf('cobblestone')).toBe(1)
+      // The owner snapshot is authoritative; InventoryService remains a local
+      // input service and receives no mirror write from the mining stage.
+      const miningOwner = yield* commit.coordinator.snapshot(
+        commit.playerStorageOwnerId,
+        PlayerStorageSnapshotSchema,
+      )
+      expect(
+        countPlayerStorageItem(
+          Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(miningOwner.state),
+          'cobblestone',
+        ),
+      ).toBe(1)
+      expect(yield* inventory.api.countOf('cobblestone')).toBe(0)
+      expect(yield* roster.api.count).toBe(0)
+      expect(
+        Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(yield* inventory.api.storageSnapshot),
+      ).toStrictEqual(localBefore)
 
       // ---- and the sand above it moved down, in the same frame -------------
       expect(snapshots[0]).toMatchObject({ support: SAND, sand: undefined })
@@ -510,23 +596,41 @@ describe('the slice, through the stage registration', () => {
 
   it.effect('adding a falling block is a row in kernel’s table, not a change here', () =>
     Effect.gen(function* () {
-      const { store, inventory, state, stages } = yield* slice(
+      const { store, inventory, roster, state, stages, commit } = yield* miningSlice(
         world([
           [floor, STONE],
           [support, STONE],
           [sandAt, GRAVEL],
         ]),
+        ['0,0'],
+        oneInventoryItem('wooden_pickaxe'),
+      )
+      const localBefore = Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(
+        yield* inventory.api.storageSnapshot,
       )
 
-      yield* holdWoodenPickaxe(state)
-      yield* requestBreak(state, support)
+      yield* requestWoodenPickaxeMine(state, support)
       yield* runFrame(stages)
 
       // Identical stages, identical rules, different block. Neither file was
       // told that gravel exists — the reference implementation asked
       // `blockTypeToIndex('SAND')` in 229 places across 51 files (plan.md §3.1).
       expect(yield* store.blockAt(support)).toBe(GRAVEL)
-      expect(yield* inventory.api.countOf('cobblestone')).toBe(1)
+      const owner = yield* commit.coordinator.snapshot(
+        commit.playerStorageOwnerId,
+        PlayerStorageSnapshotSchema,
+      )
+      expect(
+        countPlayerStorageItem(
+          Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(owner.state),
+          'cobblestone',
+        ),
+      ).toBe(1)
+      expect(yield* inventory.api.countOf('cobblestone')).toBe(0)
+      expect(
+        Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(yield* inventory.api.storageSnapshot),
+      ).toStrictEqual(localBefore)
+      expect(yield* roster.api.count).toBe(0)
     }),
   )
 
@@ -776,7 +880,14 @@ describe('the slice, through the stage registration', () => {
 
   it.effect('REGRESSION: a break below the world is `OutOfWorld`, and the frame carries on', () =>
     Effect.gen(function* () {
-      const { store, inventory, state, stages } = yield* slice(world([[floor, STONE]]))
+      const { store, inventory, roster, state, stages, commit } = yield* miningSlice(
+        world([[floor, STONE]]),
+        ['0,0'],
+        oneInventoryItem('wooden_pickaxe'),
+      )
+      const localBefore = Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(
+        yield* inventory.api.storageSnapshot,
+      )
 
       // `run` has no error channel, so "the player aimed at nothing" has to be
       // an ordinary outcome rather than a failure. The frame must complete and
@@ -785,11 +896,24 @@ describe('the slice, through the stage registration', () => {
       yield* runFrame(stages)
       expect(yield* inventory.api.countOf('cobblestone')).toBe(0)
 
-      yield* holdWoodenPickaxe(state)
-      yield* requestBreak(state, floor)
+      yield* requestWoodenPickaxeMine(state, floor)
       yield* runFrame(stages)
-      expect(yield* inventory.api.countOf('cobblestone')).toBe(1)
+      expect(yield* inventory.api.countOf('cobblestone')).toBe(0)
+      const owner = yield* commit.coordinator.snapshot(
+        commit.playerStorageOwnerId,
+        PlayerStorageSnapshotSchema,
+      )
+      expect(
+        countPlayerStorageItem(
+          Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(owner.state),
+          'cobblestone',
+        ),
+      ).toBe(1)
       expect(yield* store.blockAt(floor)).toBeUndefined()
+      expect(
+        Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(yield* inventory.api.storageSnapshot),
+      ).toStrictEqual(localBefore)
+      expect(yield* roster.api.count).toBe(0)
     }),
   )
 })
@@ -1861,6 +1985,10 @@ describe('the stage supplies its rolls from a seed', () => {
 describe('the mining site slice: dig, drop, place', () => {
   const cell: BlockPosition = fixtureBlockPosition(4, 64, 3)
   const under: BlockPosition = fixtureBlockPosition(4, 63, 3)
+  const fullCobblestoneWithPickaxe = () =>
+    brimming('cobblestone').map((slot, index) =>
+      index === 0 ? itemStack('wooden_pickaxe', StackCount(1)) : slot,
+    )
 
   const requestPlace = (
     state: { readonly pendingPlacements: Ref.Ref<ReadonlyArray<PlacementRequest>> },
@@ -1874,11 +2002,16 @@ describe('the mining site slice: dig, drop, place', () => {
 
   it.effect('a pickaxe turns a stone block into cobblestone in the outbox', () =>
     Effect.gen(function* () {
-      const { store, inventory, state, stages } = yield* slice(
+      const { store, inventory, roster, state, stages, commit } = yield* miningSlice(
         world([
           [under, STONE],
           [cell, STONE],
         ]),
+        ['0,0'],
+        oneInventoryItem('wooden_pickaxe'),
+      )
+      const localBefore = Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(
+        yield* inventory.api.storageSnapshot,
       )
 
       // Bare-handed first: the swing lands, the block goes, and NOTHING is
@@ -1888,12 +2021,27 @@ describe('the mining site slice: dig, drop, place', () => {
       yield* runFrame(stages)
       expect(yield* store.blockAt(cell)).toBeUndefined()
       expect(yield* inventory.api.countOf('cobblestone')).toBe(0)
+      expect(
+        countPlayerStorageItem(
+          yield* readPlayerStorageOwner(commit.coordinator, commit.playerStorageOwnerId),
+          'cobblestone',
+        ),
+      ).toBe(0)
 
       // ...and with a pickaxe, against the block below.
-      yield* holdWoodenPickaxe(state)
-      yield* requestBreak(state, under)
+      yield* requestWoodenPickaxeMine(state, under)
       yield* runFrame(stages)
-      expect(yield* inventory.api.countOf('cobblestone')).toBe(1)
+      expect(yield* inventory.api.countOf('cobblestone')).toBe(0)
+      expect(
+        countPlayerStorageItem(
+          yield* readPlayerStorageOwner(commit.coordinator, commit.playerStorageOwnerId),
+          'cobblestone',
+        ),
+      ).toBe(1)
+      expect(yield* roster.api.count).toBe(0)
+      expect(
+        Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(yield* inventory.api.storageSnapshot),
+      ).toStrictEqual(localBefore)
     }),
   )
 
@@ -1925,21 +2073,36 @@ describe('the mining site slice: dig, drop, place', () => {
   // this is evidence about the edges.
   it.effect('dig then place, in one frame, with both outboxes correct', () =>
     Effect.gen(function* () {
-      const { store, inventory, state, stages } = yield* slice(
+      const placementAndPickaxe = onePlacementItem('sand').map((slot, index) =>
+        index === 1 ? itemStack('wooden_pickaxe', StackCount(1)) : slot,
+      )
+      const { store, inventory, roster, state, stages, commit } = yield* miningSlice(
         world([
           [under, STONE],
           [cell, STONE],
         ]),
         ['0,0'],
-        onePlacementItem('sand'),
+        placementAndPickaxe,
+      )
+      const localBefore = Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(
+        yield* inventory.api.storageSnapshot,
       )
 
-      yield* holdWoodenPickaxe(state)
-      yield* requestBreak(state, cell)
+      yield* requestWoodenPickaxeMine(state, cell, 1)
       yield* requestPlace(state, cell, 'sand')
       yield* runFrame(stages)
 
-      expect(yield* inventory.api.countOf('cobblestone')).toBe(1)
+      expect(yield* inventory.api.countOf('cobblestone')).toBe(0)
+      expect(
+        countPlayerStorageItem(
+          yield* readPlayerStorageOwner(commit.coordinator, commit.playerStorageOwnerId),
+          'cobblestone',
+        ),
+      ).toBe(1)
+      expect(yield* roster.api.count).toBe(0)
+      expect(
+        Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(yield* inventory.api.storageSnapshot),
+      ).toStrictEqual(localBefore)
       expect(yield* Ref.get(state.consumedItems)).toStrictEqual(['sand'])
       // The sand rests on the stone that was already under the cell, so nothing
       // cascades and the queue is empty again.
@@ -1948,76 +2111,251 @@ describe('the mining site slice: dig, drop, place', () => {
     }),
   )
 
-  /* The committed mining result reaches the player inventory without a drop entity. */
-  it.effect('the loot chain reaches mc-sim’s inventory — the §2.3-1 worked example, end to end', () =>
+  /* The committed mining result reaches the player-storage owner without a local mirror. */
+  it.effect('the loot chain reaches the player-storage owner — the §2.3-1 worked example, end to end', () =>
     Effect.gen(function* () {
-      const { inventory, roster, state, stages } = yield* slice(world([[cell, STONE]]))
+      const { inventory, roster, state, stages, commit } = yield* miningSlice(
+        world([[cell, STONE]]),
+        ['0,0'],
+        oneInventoryItem('wooden_pickaxe'),
+      )
+      const localBefore = Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(
+        yield* inventory.api.storageSnapshot,
+      )
 
-      yield* holdWoodenPickaxe(state)
-      yield* requestBreak(state, cell)
+      yield* requestWoodenPickaxeMine(state, cell)
       yield* runFrame(stages)
 
-      // The accepted stack is present in the inventory after the coordinator commit.
-      expect(yield* inventory.api.countOf('cobblestone')).toBe(1)
+      const ownerStorage = yield* readPlayerStorageOwner(commit.coordinator, commit.playerStorageOwnerId)
+      expect(countPlayerStorageItem(ownerStorage, 'cobblestone')).toBe(1)
+      expect(
+        Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(yield* inventory.api.storageSnapshot),
+      ).toStrictEqual(localBefore)
+      expect(yield* inventory.api.countOf('cobblestone')).toBe(0)
 
       // Nothing in this repository holds the total. The frame state has no
       // inventory; `test/stage-registration.test.ts` pins the whole key list.
       expect(Object.keys(state)).not.toContain('inventory')
 
-      // The inventory accepted the whole stack, so no dropped entity exists.
+      // The owner accepted the whole stack, so no dropped-item owner record exists.
+      const droppedStorage = yield* readDroppedItemsOwner(
+        commit.coordinator,
+        commit.droppedItemsOwnerId,
+      )
+      expect(droppedStorage.items).toStrictEqual([])
       expect(yield* roster.api.count).toBe(0)
     }),
   )
 
-  it.effect('keeps mined loot as a world drop when the owner changes before deposit commit', () =>
-    Effect.gen(function* () {
-      const { inventory, player, roster, state, store, time, commit } = yield* slice(world([[cell, STONE]]))
-      const racingCoordinator: WorldCommitCoordinatorApi = {
-        ...commit.coordinator,
-        commitFromSnapshot: (ownerId, schema, buildRequest) =>
-          Effect.gen(function* () {
-            if (ownerId === commit.playerStorageOwnerId) {
-              // Model a concurrent, valid inventory update in the narrow
-              // interval between the block commit and its loot deposit.
-              expect(yield* inventory.api.add('iron_helmet', 1).pipe(Effect.orDie)).toBe(0)
-              const expectedRevision = yield* commit.coordinator.revision
-              const state = yield* inventory.api.storageSnapshot
-              yield* commit.coordinator.commit({
-                expectedRevision,
-                expectedDimensions: [],
-                changes: [{ ownerId, state }],
-              }).pipe(Effect.orDie)
+  it.effect('commits mining, tool wear, and inventory or drop output atomically (fast-check)', () =>
+    Effect.promise(async () => {
+      const verifyScenario = (cascadeHeight: number, inventoryFull: boolean, conflict: boolean) =>
+        Effect.gen(function* () {
+          // Vanilla fixture: stone mined with a wooden pickaxe yields cobblestone,
+          // and unsupported sand falls. https://minecraft.wiki/w/Stone
+          // https://minecraft.wiki/w/Sand https://minecraft.wiki/w/Wooden_Pickaxe
+          const mineAt = Schema.decodeUnknownSync(BlockPositionSchema)(cell)
+          const floorAt = Schema.decodeUnknownSync(BlockPositionSchema)(under)
+          const stone = Schema.decodeUnknownSync(BlockIdSchema)(STONE)
+          const sand = Schema.decodeUnknownSync(BlockIdSchema)(SAND)
+          const cascade = Array.from({ length: cascadeHeight }, (_, index) =>
+            Schema.decodeUnknownSync(BlockPositionSchema)({
+              x: mineAt.x,
+              y: mineAt.y + index + 1,
+              z: mineAt.z,
+            }),
+          )
+          const initialBlocks = new Map<string, BlockId>([
+            [blockPositionKeyOf(mineAt), stone],
+            [blockPositionKeyOf(floorAt), stone],
+            ...cascade.map((position) => [blockPositionKeyOf(position), sand] as const),
+          ])
+          const inventorySlots = inventoryFull
+            ? brimming('cobblestone').map((slot, index) =>
+                index === 0 ? itemStack('wooden_pickaxe', StackCount(1)) : slot,
+              )
+            : oneInventoryItem('wooden_pickaxe')
+          const { store, roster, player, time, state, inventory, commit } = yield* slice(
+            initialBlocks,
+            ['0,0'],
+            inventorySlots,
+          )
+          const miningOwners = yield* withMiningDroppedItemsOwner(
+            store.api,
+            inventory.api,
+            commit.coordinator,
+            commit.playerStorageOwnerId,
+          )
+          let commitAttempts = 0
+          const coordinator: WorldCommitCoordinatorApi = {
+            ...miningOwners.coordinator,
+            commit: (request) => {
+              commitAttempts += 1
+              const prepared = conflict
+                ? {
+                    ...request,
+                    expectedRevision: Schema.decodeUnknownSync(WorldRevisionSchema)(
+                      request.expectedRevision + 1,
+                    ),
+                  }
+                : request
+              return miningOwners.coordinator.commit(prepared)
+            },
+          }
+          const stageCommit = {
+            ...commit,
+            coordinator,
+            droppedItemsOwnerId: miningOwners.droppedItemsOwnerId,
+          }
+          const stages = gameplayStages(
+            state,
+            store.api,
+            roster.api,
+            inventory.api,
+            player.api,
+            time,
+            undefined,
+            undefined,
+            {},
+            stageCommit,
+          )
+          const playerBefore = yield* coordinator.snapshot(
+            commit.playerStorageOwnerId,
+            PlayerStorageSnapshotSchema,
+          )
+          const droppedBefore = yield* coordinator.snapshot(
+            miningOwners.droppedItemsOwnerId,
+            DroppedItemOwnerSnapshotSchema,
+          )
+          const playerStorageBefore = Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(
+            playerBefore.state,
+          )
+          const droppedStorageBefore = Schema.decodeUnknownSync(DroppedItemOwnerSnapshotSchema)(
+            droppedBefore.state,
+          )
+          const localStorageBefore = Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(
+            yield* inventory.api.storageSnapshot,
+          )
+          expect(playerStorageBefore).toStrictEqual(localStorageBefore)
+          const toolBefore = playerStorageBefore.inventoryDurability[0]
+          if (toolBefore === undefined || toolBefore === null) {
+            throw new Error('the wooden pickaxe fixture has no durability')
+          }
+          const worldRevisionBefore = Schema.decodeUnknownSync(WorldRevisionSchema)(
+            yield* coordinator.revision,
+          )
+          const dimensionRevisionBefore = Schema.decodeUnknownSync(DimensionRevisionSchema)(
+            yield* coordinator.dimensionRevision(MINING_DIMENSION),
+          )
+          const rollSeedBefore = yield* Ref.get(state.rollSeed)
+
+          yield* requestBlockBreak(
+            state,
+            mineAt,
+            { heldTier: 'wooden' },
+            { dimension: MINING_DIMENSION, toolLocation: { _tag: 'Inventory', slotIndex: 0 } },
+          )
+          const interactions = stages.find(({ id }) => id === GAMEPLAY_STAGE_IDS.interactions)
+          if (interactions === undefined) throw new Error('the interactions stage was not registered')
+          yield* runFrame([interactions])
+
+          const playerAfter = yield* coordinator.snapshot(
+            commit.playerStorageOwnerId,
+            PlayerStorageSnapshotSchema,
+          )
+          const droppedAfter = yield* coordinator.snapshot(
+            miningOwners.droppedItemsOwnerId,
+            DroppedItemOwnerSnapshotSchema,
+          )
+          const playerStorageAfter = Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(
+            playerAfter.state,
+          )
+          const droppedStorageAfter = Schema.decodeUnknownSync(DroppedItemOwnerSnapshotSchema)(
+            droppedAfter.state,
+          )
+          const localStorageAfter = Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(
+            yield* inventory.api.storageSnapshot,
+          )
+          const worldRevisionAfter = Schema.decodeUnknownSync(WorldRevisionSchema)(
+            yield* coordinator.revision,
+          )
+          const dimensionRevisionAfter = Schema.decodeUnknownSync(DimensionRevisionSchema)(
+            yield* coordinator.dimensionRevision(MINING_DIMENSION),
+          )
+          const pending = yield* Ref.get(state.fallingBlocks)
+          const expectedDisturbance = conflict
+            ? []
+            : [mineAt, ...cascade].map(blockPositionKeyOf)
+
+          expect(commitAttempts).toBe(1)
+          expect(localStorageAfter).toStrictEqual(localStorageBefore)
+          expect(yield* inventory.deposits).toStrictEqual([])
+          expect(yield* roster.api.count).toBe(0)
+          expect(yield* Ref.get(state.consumedItems)).toStrictEqual([])
+          expect(yield* Ref.get(state.unsupportedOperations)).toStrictEqual([])
+          expect(yield* Ref.get(state.pendingBreaks)).toStrictEqual([])
+          expect([...pending.pending]).toStrictEqual(expectedDisturbance)
+
+          if (conflict) {
+            const failures = yield* Ref.get(state.operationFailures)
+            expect(failures).toHaveLength(1)
+            const miningFailure = failures[0]
+            if (miningFailure === undefined) throw new Error('the failed mining commit was not recorded')
+            expect(miningFailure).toMatchObject({ operation: 'WorldCommit', subject: 'Mining' })
+            const error = Schema.decodeUnknownSync(WorldCommitCoordinatorErrorSchema)(
+              miningFailure.error,
+            )
+            expect(error._tag).toBe('WorldRevisionConflict')
+            expect(playerStorageAfter).toStrictEqual(playerStorageBefore)
+            expect(droppedStorageAfter).toStrictEqual(droppedStorageBefore)
+            expect(worldRevisionAfter).toBe(worldRevisionBefore)
+            expect(playerAfter.revision).toBe(playerBefore.revision)
+            expect(dimensionRevisionAfter).toBe(dimensionRevisionBefore)
+            expect(yield* store.blockAt(mineAt)).toBe(stone)
+            expect(yield* store.blockAt(floorAt)).toBe(stone)
+            for (const position of cascade) {
+              expect(yield* store.blockAt(position)).toBe(sand)
             }
-            return yield* commit.coordinator.commitFromSnapshot(ownerId, schema, buildRequest)
-          }),
-      }
-      const stages = gameplayStages(
-        state,
-        store.api,
-        roster.api,
-        inventory.api,
-        player.api,
-        time,
-        undefined,
-        undefined,
-        {},
-        { ...commit, coordinator: racingCoordinator },
+            expect(yield* Ref.get(state.rollSeed)).toBe(rollSeedBefore)
+          } else {
+            expect(yield* Ref.get(state.operationFailures)).toStrictEqual([])
+            expect(playerAfter.revision).toBe(playerBefore.revision + 1)
+            expect(worldRevisionAfter).toBe(worldRevisionBefore + 1)
+            expect(dimensionRevisionAfter).toBe(dimensionRevisionBefore + 1)
+            expect(yield* store.blockAt(mineAt)).toBeUndefined()
+            expect(yield* store.blockAt(floorAt)).toBe(stone)
+            for (const position of cascade) {
+              expect(yield* store.blockAt(position)).toBeUndefined()
+            }
+            const toolAfter = playerStorageAfter.inventoryDurability[0]
+            if (toolAfter === undefined || toolAfter === null) {
+              throw new Error('the wooden pickaxe disappeared from the player owner')
+            }
+            expect(toolAfter.current).toBe(toolBefore.current - 1)
+            const inventoryAdded =
+              countPlayerStorageItem(playerStorageAfter, 'cobblestone') -
+              countPlayerStorageItem(playerStorageBefore, 'cobblestone')
+            const droppedAdded =
+              countDroppedOwnerItem(droppedStorageAfter, 'cobblestone') -
+              countDroppedOwnerItem(droppedStorageBefore, 'cobblestone')
+            expect(inventoryAdded + droppedAdded).toBe(1)
+            expect(inventoryAdded).toBe(inventoryFull ? 0 : 1)
+            expect(droppedAdded).toBe(inventoryFull ? 1 : 0)
+            expect(yield* Ref.get(state.rollSeed)).toBe(
+              drawRolls(rollSeedBefore, BLOCK_LOOT_ROLLS).seed,
+            )
+          }
+        })
+
+      await fc.assert(
+        fc.asyncProperty(fc.integer({ min: 1, max: 4 }), async (cascadeHeight) => {
+          for (const inventoryFull of [false, true]) {
+            await Effect.runPromise(verifyScenario(cascadeHeight, inventoryFull, false))
+            await Effect.runPromise(verifyScenario(cascadeHeight, inventoryFull, true))
+          }
+        }),
+        { numRuns: 4 },
       )
-
-      yield* holdWoodenPickaxe(state)
-      yield* requestBreak(state, cell)
-      yield* runFrame(stages)
-
-      expect(yield* store.blockAt(cell)).toBeUndefined()
-      expect(yield* inventory.api.countOf('iron_helmet')).toBe(1)
-      expect(yield* inventory.api.countOf('cobblestone')).toBe(0)
-      const dropped = yield* soleEntity(roster)
-      expect(dropped?.feetPosition).toStrictEqual(cell)
-      if (dropped !== undefined && isDroppedItemBehaviour(dropped.behaviour)) {
-        expect(dropped.behaviour).toMatchObject({ item: 'cobblestone', count: 1 })
-      } else {
-        expect.fail('expected a dropped cobblestone entity')
-      }
     }),
   )
 
@@ -2025,7 +2363,13 @@ describe('the mining site slice: dig, drop, place', () => {
   it.effect('preserves the loot table count for glowstone', () =>
     Effect.gen(function* () {
       const GLOWSTONE: BlockId = BlockId(15)
-      const { inventory, state, stages } = yield* slice(world([[cell, GLOWSTONE]]))
+      // https://minecraft.wiki/w/Glowstone
+      const { inventory, roster, state, stages, commit } = yield* miningSlice(
+        world([[cell, GLOWSTONE]]),
+      )
+      const localBefore = Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(
+        yield* inventory.api.storageSnapshot,
+      )
 
       // Bare hands: glowstone needs no tool, so this is the loot table's count
       // and nothing else. No fortune either — the roll budget is drawn, and
@@ -2033,126 +2377,200 @@ describe('the mining site slice: dig, drop, place', () => {
       yield* requestBreak(state, cell)
       yield* runFrame(stages)
 
-      expect(yield* inventory.api.countOf('glowstone_dust')).toBe(2)
+      expect(yield* inventory.api.countOf('glowstone_dust')).toBe(0)
+      expect(
+        countPlayerStorageItem(
+          yield* readPlayerStorageOwner(commit.coordinator, commit.playerStorageOwnerId),
+          'glowstone_dust',
+        ),
+      ).toBe(2)
+      expect(
+        Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(yield* inventory.api.storageSnapshot),
+      ).toStrictEqual(localBefore)
+      expect(yield* roster.api.count).toBe(0)
     }),
   )
 
-  it.effect('spawns the full refused stack at the broken block', () =>
+  it.effect('stores the full refused stack at the broken block', () =>
     Effect.gen(function* () {
-      const { inventory, roster, state, stages, store } = yield* slice(
+      // https://minecraft.wiki/w/Stone https://minecraft.wiki/w/Wooden_Pickaxe
+      const { inventory, roster, state, stages, store, commit } = yield* miningSlice(
         world([[cell, STONE]]),
         ['0,0'],
-        brimming('cobblestone'),
+        fullCobblestoneWithPickaxe(),
+      )
+      const localBefore = Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(
+        yield* inventory.api.storageSnapshot,
       )
 
-      yield* holdWoodenPickaxe(state)
-      yield* requestBreak(state, cell)
+      yield* requestWoodenPickaxeMine(state, cell)
       yield* runFrame(stages)
 
       expect(yield* store.blockAt(cell)).toBeUndefined()
-      expect(yield* inventory.api.countOf('cobblestone')).toBe(36 * 64)
-
-      const dropped = yield* soleEntity(roster)
-      expect(dropped?.kind).toBe(DROPPED_ITEM_KIND)
-      expect(dropped?.feetPosition).toStrictEqual(cell)
-      expect(isDroppedItemBehaviour(dropped?.behaviour)).toBe(true)
-      if (dropped !== undefined && isDroppedItemBehaviour(dropped.behaviour)) {
-        expect(dropped.behaviour.item).toBe('cobblestone')
-        expect(dropped.behaviour.count).toBe(1)
-        expect(dropped.behaviour.durability).toBeNull()
-      }
+      expect(yield* inventory.api.countOf('cobblestone')).toBe(35 * 64)
+      expect(
+        countPlayerStorageItem(
+          yield* readPlayerStorageOwner(commit.coordinator, commit.playerStorageOwnerId),
+          'cobblestone',
+        ),
+      ).toBe(35 * 64)
+      expect(
+        yield* readDroppedItemsOwner(commit.coordinator, commit.droppedItemsOwnerId),
+      ).toMatchObject({
+        items: [{
+          feetPosition: cell,
+          behaviour: { _tag: 'DroppedItem', item: 'cobblestone', count: 1, durability: null },
+        }],
+      })
+      expect(
+        Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(yield* inventory.api.storageSnapshot),
+      ).toStrictEqual(localBefore)
+      expect(yield* roster.api.count).toBe(0)
     }),
   )
 
-  it.effect('spawns only the part of a mined stack that the inventory refused', () =>
+  it.effect('stores only the part of a mined stack that the inventory refused', () =>
     Effect.gen(function* () {
       const GLOWSTONE: BlockId = BlockId(15)
+      // https://minecraft.wiki/w/Glowstone
       const almostFull = brimming('glowstone_dust').map((slot, index) =>
         index === 0 ? itemStack('glowstone_dust', StackCount(63)) : slot,
       )
-      const { inventory, roster, state, stages } = yield* slice(
+      const { inventory, roster, state, stages, commit } = yield* miningSlice(
         world([[cell, GLOWSTONE]]),
         ['0,0'],
         almostFull,
       )
+      const localBefore = Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(
+        yield* inventory.api.storageSnapshot,
+      )
 
       yield* requestBreak(state, cell)
       yield* runFrame(stages)
 
-      expect(yield* inventory.api.countOf('glowstone_dust')).toBe(36 * 64)
-
-      const dropped = yield* soleEntity(roster)
-      expect(dropped?.feetPosition).toStrictEqual(cell)
-      if (dropped !== undefined && isDroppedItemBehaviour(dropped.behaviour)) {
-        expect(dropped.behaviour.item).toBe('glowstone_dust')
-        expect(dropped.behaviour.count).toBe(1)
-        expect(dropped.behaviour.durability).toBeNull()
-      } else {
-        expect.fail('expected a dropped-item entity')
-      }
+      expect(yield* inventory.api.countOf('glowstone_dust')).toBe(36 * 64 - 1)
+      expect(
+        countPlayerStorageItem(
+          yield* readPlayerStorageOwner(commit.coordinator, commit.playerStorageOwnerId),
+          'glowstone_dust',
+        ),
+      ).toBe(36 * 64)
+      expect(
+        yield* readDroppedItemsOwner(commit.coordinator, commit.droppedItemsOwnerId),
+      ).toMatchObject({
+        items: [{
+          feetPosition: cell,
+          behaviour: { _tag: 'DroppedItem', item: 'glowstone_dust', count: 1, durability: null },
+        }],
+      })
+      expect(
+        Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(yield* inventory.api.storageSnapshot),
+      ).toStrictEqual(localBefore)
+      expect(yield* roster.api.count).toBe(0)
     }),
   )
 
-  it.effect('keeps each refused drop at its own break position in one frame', () =>
+  it.effect('commits each refused drop at its own break position in one frame', () =>
     Effect.gen(function* () {
-      const { inventory, roster, state, stages } = yield* slice(
+      // https://minecraft.wiki/w/Stone https://minecraft.wiki/w/Wooden_Pickaxe
+      const { inventory, roster, state, stages, commit } = yield* miningSlice(
         world([
           [cell, STONE],
           [under, STONE],
         ]),
         ['0,0'],
-        brimming('cobblestone'),
+        fullCobblestoneWithPickaxe(),
+      )
+      const localBefore = Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(
+        yield* inventory.api.storageSnapshot,
       )
 
-      yield* holdWoodenPickaxe(state)
-      yield* requestBreak(state, cell)
-      yield* requestBreak(state, under)
+      yield* requestWoodenPickaxeMine(state, cell)
+      yield* requestWoodenPickaxeMine(state, under)
       yield* runFrame(stages)
 
-      expect(yield* inventory.api.countOf('cobblestone')).toBe(36 * 64)
+      expect(yield* inventory.api.countOf('cobblestone')).toBe(35 * 64)
       expect(
-        (yield* roster.api.entities).map((entity) => ({
-          at: entity.feetPosition,
-          drop: isDroppedItemBehaviour(entity.behaviour)
-            ? {
-                item: entity.behaviour.item,
-                count: entity.behaviour.count,
-                durability: entity.behaviour.durability,
-              }
-            : undefined,
-        })),
-      ).toStrictEqual([
-        { at: cell, drop: { item: 'cobblestone', count: 1, durability: null } },
-        { at: under, drop: { item: 'cobblestone', count: 1, durability: null } },
+        countPlayerStorageItem(
+          yield* readPlayerStorageOwner(commit.coordinator, commit.playerStorageOwnerId),
+          'cobblestone',
+        ),
+      ).toBe(35 * 64)
+      const dropped = yield* readDroppedItemsOwner(commit.coordinator, commit.droppedItemsOwnerId)
+      expect(dropped.items.map(({ feetPosition, behaviour }) => ({
+        at: feetPosition,
+        item: behaviour.item,
+        count: behaviour.count,
+        durability: behaviour.durability,
+      }))).toStrictEqual([
+        { at: cell, item: 'cobblestone', count: 1, durability: null },
+        { at: under, item: 'cobblestone', count: 1, durability: null },
       ])
+      expect(
+        Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(yield* inventory.api.storageSnapshot),
+      ).toStrictEqual(localBefore)
+      expect(yield* roster.api.count).toBe(0)
     }),
   )
 
-  it.effect('picks the refused drop up on the next frame and despawns it', () =>
+  it.effect('picks the refused owner drop up without a local inventory or roster mirror', () =>
     Effect.gen(function* () {
-      const { inventory, roster, state, player, stages } = yield* slice(
+      // https://minecraft.wiki/w/Stone https://minecraft.wiki/w/Wooden_Pickaxe
+      const { inventory, roster, state, stages, commit } = yield* miningSlice(
         world([[cell, STONE]]),
         ['0,0'],
-        brimming('cobblestone'),
+        fullCobblestoneWithPickaxe(),
+      )
+      const localBefore = Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(
+        yield* inventory.api.storageSnapshot,
       )
 
-      yield* holdWoodenPickaxe(state)
-      yield* requestBreak(state, cell)
-      yield* player.api.moveTo(fixturePosition(cell.x + 0.5, cell.y, cell.z ))
+      yield* requestWoodenPickaxeMine(state, cell)
       yield* runFrame(stages)
 
-      expect(yield* roster.api.count).toBe(1)
-      expect(yield* inventory.api.countOf('cobblestone')).toBe(36 * 64)
-
-      yield* inventory.api.remove('cobblestone', 1)
-      const beforePickup = yield* inventory.api.countOf('cobblestone')
+      const minedStorage = yield* readPlayerStorageOwner(
+        commit.coordinator,
+        commit.playerStorageOwnerId,
+      )
+      const storageWithRoom = Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)({
+        ...minedStorage,
+        inventory: {
+          ...minedStorage.inventory,
+          slots: minedStorage.inventory.slots.map((slot, index) =>
+            index === 1 ? itemStack('cobblestone', StackCount(63)) : slot,
+          ),
+        },
+      })
+      yield* commit.coordinator.commit({
+        expectedRevision: Schema.decodeUnknownSync(WorldRevisionSchema)(
+          yield* commit.coordinator.revision,
+        ),
+        expectedDimensions: [],
+        changes: [{ ownerId: commit.playerStorageOwnerId, state: storageWithRoom }],
+      }).pipe(Effect.orDie)
+      const pickup = Schema.decodeUnknownSync(DroppedItemPickupRequestSchema)({
+        actor: 'vertical-slice-player',
+        tick: 0,
+        position: fixturePosition(cell.x + 0.5, cell.y, cell.z),
+      })
+      yield* requestDroppedItemPickup(state, pickup)
       yield* runFrame(stages)
 
+      expect(
+        countPlayerStorageItem(
+          yield* readPlayerStorageOwner(commit.coordinator, commit.playerStorageOwnerId),
+          'cobblestone',
+        ),
+      ).toBe(35 * 64)
+      expect(
+        (yield* readDroppedItemsOwner(commit.coordinator, commit.droppedItemsOwnerId)).items,
+      ).toStrictEqual([])
+      expect(
+        Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(yield* inventory.api.storageSnapshot),
+      ).toStrictEqual(localBefore)
+      expect(yield* inventory.api.countOf('cobblestone')).toBe(35 * 64)
+      expect(yield* inventory.deposits).toStrictEqual([])
       expect(yield* roster.api.count).toBe(0)
-      expect(yield* inventory.api.countOf('cobblestone')).toBe(beforePickup + 1)
-      expect(yield* inventory.deposits).toStrictEqual([
-        { item: 'cobblestone', count: 1, leftover: 0 },
-      ])
     }),
   )
 })

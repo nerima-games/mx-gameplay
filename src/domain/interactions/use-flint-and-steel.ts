@@ -112,9 +112,7 @@ export type IgnitionOutcome =
  * FALLS THROUGH ON `NoFrame` AND ON NOTHING ELSE. `ChunkNotLoaded` from the
  * portal arm is reported as-is rather than retried as fire: the window could not
  * be read, so the fire arm would be asked about a cell nobody could see, and it
- * would answer `ChunkNotLoaded` a second time after another store call. An
- * `UnknownBlock` is likewise a fact about this build's registry and trying the
- * other arm cannot change it.
+ * would answer `ChunkNotLoaded` a second time after another store call.
  */
 export const useFlintAndSteel = (
   store: ChunkStoreApi,

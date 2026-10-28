@@ -31,9 +31,8 @@
  * items. A ripe wheat crop therefore drops one wheat plus 1-4 wheat seeds. The
  * injected roll controls only the seed count; the produce count stays fixed.
  *
- * The tagged `unavailable` outcome remains the explicit fallback for a known
- * crop whose ripe rule is missing, so an incomplete table cannot silently
- * under-drop.
+ * The unripe and ripe tables share a required crop-key type, so a known crop
+ * cannot be added to one table without its counterpart.
  */
 import type { ItemType } from '@nerima-games/mc-kernel'
 import type { BlockType } from '@nerima-games/mc-kernel'
@@ -44,6 +43,17 @@ export type CropDrop = {
   readonly count: number
 }
 
+type CropBlockType = 'wheat_crop' | 'potato_crop' | 'nether_wart_crop'
+
+const CROP_BLOCK_TYPES: ReadonlyArray<CropBlockType> = [
+  'wheat_crop',
+  'potato_crop',
+  'nether_wart_crop',
+]
+
+const isCropBlockType = (block: BlockType): block is CropBlockType =>
+  CROP_BLOCK_TYPES.some((crop) => crop === block)
+
 /**
  * Every crop this rule knows, and what an UNRIPE one drops.
  *
@@ -51,7 +61,7 @@ export type CropDrop = {
  * planted, back. Breaking an immature crop is a mistake the player made, and
  * vanilla returns the seed rather than punishing it.
  */
-export const UNRIPE_CROP_DROP: Readonly<Partial<Record<BlockType, CropDrop>>> = {
+export const UNRIPE_CROP_DROP: Readonly<Record<CropBlockType, CropDrop>> = {
   wheat_crop: { item: 'wheat_seeds', count: 1 },
   potato_crop: { item: 'potato', count: 1 },
   nether_wart_crop: { item: 'nether_wart', count: 1 },
@@ -68,19 +78,14 @@ export const UNRIPE_CROP_DROP: Readonly<Partial<Record<BlockType, CropDrop>>> = 
  *
  * Wheat uses `fixedDrops` for its produce because only its seed count is rolled.
  */
-export const RIPE_CROP_YIELD: Readonly<
-  Partial<
-    Record<
-      BlockType,
-      {
-        readonly item: ItemType
-        readonly span: number
-        readonly floor: number
-        readonly fixedDrops?: ReadonlyArray<CropDrop>
-      }
-    >
-  >
-> = {
+type CropYieldRule = {
+  readonly item: ItemType
+  readonly span: number
+  readonly floor: number
+  readonly fixedDrops?: ReadonlyArray<CropDrop>
+}
+
+export const RIPE_CROP_YIELD: Readonly<Record<CropBlockType, CropYieldRule>> = {
   wheat_crop: {
     item: 'wheat_seeds',
     span: 4,
@@ -91,21 +96,11 @@ export const RIPE_CROP_YIELD: Readonly<
   nether_wart_crop: { item: 'nether_wart', span: 3, floor: 2 },
 }
 
-/**
- * Reserved for known crops whose ripe rule may later need a non-registry
- * produce name.
- *
- * Kept as strings so the `unavailable` fallback remains explicit.
- */
-export const MISSING_RIPE_PRODUCE: Readonly<Partial<Record<BlockType, string>>> = {}
-
 /** What breaking a crop yields. */
 export type CropDropOutcome =
   | { readonly _tag: 'drops'; readonly drops: ReadonlyArray<CropDrop> }
   /** Not a crop this rule knows. The caller falls through to the block's own loot. */
   | { readonly _tag: 'notACrop'; readonly block: BlockType }
-  /** A known crop whose ripe yield rule is incomplete. See the header. */
-  | { readonly _tag: 'unavailable'; readonly block: BlockType; readonly missingItem: string }
 
 /**
  * Break a crop.
@@ -120,27 +115,16 @@ export type CropDropOutcome =
  * off-by-ones in a drop count, which is the kind of thing that reads as luck.
  */
 export const cropDrops = (block: BlockType, ripe: boolean, roll: number): CropDropOutcome => {
-  const unripe = UNRIPE_CROP_DROP[block]
-  if (unripe === undefined) {
+  if (!isCropBlockType(block)) {
     return { _tag: 'notACrop', block }
   }
 
+  const unripe = UNRIPE_CROP_DROP[block]
   if (!ripe) {
     return { _tag: 'drops', drops: [unripe] }
   }
 
   const yieldRule = RIPE_CROP_YIELD[block]
-  /* v8 ignore start -- `unavailable` is the defensive fallback for a crop present in
-   * `UNRIPE_CROP_DROP` but missing from `RIPE_CROP_YIELD`. The two tables currently
-   * name the exact same three crops, so no `BlockType` a real caller can pass reaches
-   * this arm; it exists so a future crop added to one table without the other fails
-   * toward a named `unavailable` outcome instead of an under-drop. */
-  if (yieldRule === undefined) {
-    const missingItem = MISSING_RIPE_PRODUCE[block]
-    return { _tag: 'unavailable', block, missingItem: missingItem ?? 'unknown' }
-  }
-  /* v8 ignore stop */
-
   const safeRoll = Number.isFinite(roll) ? Math.min(0.999_999, Math.max(0, roll)) : 0
   const rolledDrop = {
     item: yieldRule.item,
@@ -157,13 +141,13 @@ export const cropDrops = (block: BlockType, ripe: boolean, roll: number): CropDr
  *
  * Derived from the same two numbers the rule uses, so a test can assert
  * "nether wart yields 2-4" without sampling — and so the reference's prose
- * comment becomes arithmetic. Returns `undefined` for a crop with no ripe rule.
+ * comment becomes arithmetic. Returns `undefined` for a block outside this crop
+ * rule.
  */
 export const ripeYieldRange = (
   block: BlockType,
 ): { readonly min: number; readonly max: number } | undefined => {
+  if (!isCropBlockType(block)) return undefined
   const yieldRule = RIPE_CROP_YIELD[block]
-  return yieldRule === undefined
-    ? undefined
-    : { min: yieldRule.floor, max: yieldRule.floor + yieldRule.span - 1 }
+  return { min: yieldRule.floor, max: yieldRule.floor + yieldRule.span - 1 }
 }

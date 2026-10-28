@@ -492,13 +492,13 @@ export const prepareBowShot = (
     y: targetCandidate.feetPosition.y,
     z: targetCandidate.feetPosition.z,
   }))
-  const event: DomainEvent = {
+  const event: DomainEvent = Result.getOrThrow(Schema.decodeUnknownResult(DomainEventSchema)({
     _tag: 'EntityDamaged',
     tick: tick,
     entity: target.id,
     position: targetPosition,
     amount: decodedCharge.success.damage,
     cause: 'projectile',
-  }
+  }))
   return Result.succeed({ target, event })
 }

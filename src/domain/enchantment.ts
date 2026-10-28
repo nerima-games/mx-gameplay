@@ -106,11 +106,6 @@ const itemMatchesTarget = (item: ItemType, target: EnchantmentTarget): boolean =
       return item === 'bow'
     case 'damageable':
       return isDamageableItemType(item)
-    /* v8 ignore next 4 -- EnchantmentTarget is a closed union; the five cases above are exhaustive, so this arm can never execute. */
-    default: {
-      const exhaustive: never = target
-      return exhaustive
-    }
   }
 }
 

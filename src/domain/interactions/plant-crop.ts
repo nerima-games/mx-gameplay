@@ -221,7 +221,7 @@ export const plantCrop = (
 
     const verdict = plantingVerdict(request, soilBlock, aboveBlock)
     if (verdict._tag === 'planted') {
-      const cropBlock = CROP_BLOCK_IDS[verdict.crop]
+      const cropBlock = CROP_BLOCK_IDS[heldCrop]
       if (commit === undefined) return { _tag: 'commitContextMissing' }
 
       const committed = Effect.gen(function* () {

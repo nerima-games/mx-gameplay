@@ -1,4 +1,5 @@
 export {
+  GAMEPLAY_CROPS_OWNER_ID,
   GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
   resolveArmoredPlayerDamages,
   LAVA_TICK_INTERVAL,
@@ -94,8 +95,6 @@ export {
   useBrewingPotion,
   requestVillagerTrade,
   drainVillagerTradeResults,
-  snapshotVillagerTrades,
-  restoreVillagerTrades,
   snapshotFireLifecycle,
   restoreFireLifecycle,
   submitWeatherGameplayInput,
@@ -117,7 +116,6 @@ export {
   requestTargetedItemUse,
   requestTargetedSoilTill,
   requestTargetedPotatoPlanting,
-  requestTargetedBoneMeal,
   type GameplayStageOptions,
 } from './registration-core.js'
 
@@ -156,9 +154,11 @@ import { makeFluidsStage } from './fluids-stage.js'
 import { makeTimeWeatherStage } from './time-weather-stage.js'
 import {
   GAMEPLAY_PLAYER_OWNER_ID,
+  GAMEPLAY_CROPS_OWNER_ID,
   GAMEPLAY_DROPPED_ITEMS_OWNER_ID,
   GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
   GAMEPLAY_VITALS_OWNER_ID,
+  GAMEPLAY_VILLAGER_TRADES_OWNER_ID,
 } from './gameplay-owner-registrations.js'
 
 export const gameplayStages = (
@@ -248,9 +248,11 @@ export const makeGameplayStages: Effect.Effect<
     coordinator,
     playerOwnerId: GAMEPLAY_PLAYER_OWNER_ID,
     playerStorageOwnerId: GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+    cropOwnerId: GAMEPLAY_CROPS_OWNER_ID,
     droppedItemsOwnerId: GAMEPLAY_DROPPED_ITEMS_OWNER_ID,
     vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID,
     experienceOrbsOwnerId: GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
+    villagerTradesOwnerId: GAMEPLAY_VILLAGER_TRADES_OWNER_ID,
   })
 })
 

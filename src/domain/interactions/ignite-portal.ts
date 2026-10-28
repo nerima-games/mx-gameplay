@@ -90,7 +90,6 @@ import { Effect, Option } from 'effect'
 import {
   blockIdOf,
   MAX_PORTAL_WIDTH,
-  type BlockId,
   type BlockPosition,
   type PortalFrame,
 } from '@nerima-games/mc-kernel'
@@ -157,15 +156,6 @@ export type IgnitePortalOutcome =
    * retrying.
    */
   | { readonly _tag: 'ChunkNotLoaded' }
-  /**
-   * This build has no id for `nether_portal`.
-   *
-   * UNREACHABLE TODAY and kept for `./place-block`'s `UnknownBlock` reason:
-   * kernel's registry carries the row, kernel's own type declaration
-   * pins `blockIdOf` total over all 120 block types, and a named refusal is the
-   * only answer that does not write a byte nobody chose into the world.
-   */
-  | { readonly _tag: 'UnknownBlock' }
 
 /**
  * Light the portal around `ignition`, and report what happened.
@@ -190,18 +180,7 @@ export const ignitePortal = (
   ignition: BlockPosition,
 ): Effect.Effect<IgnitePortalOutcome> =>
   Effect.gen(function* () {
-    const portalBlock: BlockId | undefined = Option.getOrUndefined(blockIdOf('nether_portal'))
-    /* v8 ignore start -- UnknownBlock is unreachable in a green tree: `nether_portal`
-     * is one of the 120 `BlockType`s kernel's own type declaration pins
-     * `blockIdOf` total over, so `blockIdOf('nether_portal')` never returns
-     * `undefined`. Kept for the reason `./place-block.ts`'s own `UnknownBlock` arm
-     * is: it fails toward a NAMED refusal rather than a portal silently vanishing.
-     * Named in `vitest.config.ts`'s coverage-threshold comment as one of the five
-     * documented-unreachable branches the 99% gate accounts for. */
-    if (portalBlock === undefined) {
-      return { _tag: 'UnknownBlock' }
-    }
-    /* v8 ignore stop */
+    const portalBlock = Option.getOrThrow(blockIdOf('nether_portal'))
 
     const window = yield* openChunkWindow(store, chunkCoordsAround(ignition, PORTAL_WINDOW_RADIUS))
     const frame = detectNetherPortal((x, y, z) => {
@@ -230,29 +209,13 @@ export const ignitePortal = (
           break
         }
 
-        // Detection proved every one of these cells was air a moment ago, so
-        // none of the three is reachable from a green tree. They are decided
-        // rather than asserted away, for `./place-block`'s reason: the window
-        // between a read and a write is real, and the answer that invents
-        // nothing is to leave the cell out of the report.
-        /* v8 ignore start */
+        // Another writer may change residency, bounds, or the target after the
+        // window read. Those cells are left out of the report.
         case 'Unchanged':
         case 'ChunkNotLoaded':
         case 'OutOfWorld': {
           break
         }
-        /* v8 ignore stop */
-        // exhaustiveness arm over BlockWriteOutcome, a closed four-tag union
-        // (mc-worldgen's chunk-store-state.d.ts's BlockWriteOutcome); 'Written', 'Unchanged',
-        // 'ChunkNotLoaded' and 'OutOfWorld' are the only reachable tags and
-        // all four are handled above, so no input can reach this arm.
-        /* v8 ignore start */
-        default: {
-          const exhaustive: never = outcome
-          void exhaustive
-          break
-        }
-        /* v8 ignore stop */
       }
     }
 

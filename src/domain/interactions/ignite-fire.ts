@@ -92,12 +92,6 @@ export type IgniteFireOutcome =
   | { readonly _tag: 'ChunkNotLoaded' }
   /** Below bedrock or above the build limit. */
   | { readonly _tag: 'OutOfWorld' }
-  /**
-   * This build has no id for `fire`.
-   *
-   * UNREACHABLE TODAY, and kept for `./place-block`'s `UnknownBlock` reason.
-   */
-  | { readonly _tag: 'UnknownBlock' }
   /** The host did not provide the coordinator and dimension required for C4. */
   | { readonly _tag: 'CommitContextMissing' }
   /** The atomic C4 block commit was rejected or could not be validated. */
@@ -119,18 +113,7 @@ export const igniteFire = (
   commitContext?: IgniteFireCommitContext,
 ): Effect.Effect<IgniteFireOutcome> =>
   Effect.gen(function* () {
-    const fireBlock = Option.getOrUndefined(blockIdOf('fire'))
-    /* v8 ignore start -- UnknownBlock is unreachable in a green tree: `fire` is one
-     * of the 120 `BlockType`s kernel's own type declaration pins `blockIdOf`
-     * total over, so `blockIdOf('fire')` never returns `undefined`. Kept for the
-     * reason `./place-block.ts`'s own `UnknownBlock` arm is: it fails toward a NAMED
-     * refusal rather than a fire block silently vanishing. Named in
-     * `vitest.config.ts`'s coverage-threshold comment as one of the five
-     * documented-unreachable branches the 99% gate accounts for. */
-    if (fireBlock === undefined) {
-      return { _tag: 'UnknownBlock' }
-    }
-    /* v8 ignore stop */
+    const fireBlock = Option.getOrThrow(blockIdOf('fire'))
 
     const expectedRevision = commitContext === undefined
       ? undefined

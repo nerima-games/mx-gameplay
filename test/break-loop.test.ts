@@ -54,10 +54,15 @@ import {
   WorldCommitChunkStoreUnavailable,
   WorldCommitCoordinatorErrorSchema,
   type WorldCommitCoordinatorApi,
+  makeWorldCommitCoordinator,
 } from '@nerima-games/mc-sim'
 import { BreakTransactionResultSchema, breakBlock } from '../src/domain/interactions/break-block.js'
 import { makeGameplayCommitServices } from './support/transactional-stage-doubles.js'
 import { blockPosition, position as fixturePosition } from './support/coordinate-fixtures.js'
+import {
+  GAMEPLAY_PLAYER_OWNER_ID,
+  gameplayOwnerRegistrations,
+} from '../src/stages/gameplay-owner-registrations.js'
 
 /**
  * DIRT, and the id took two corrections that are worth recording because both
@@ -302,9 +307,13 @@ describe('the break loop', () => {
       const commit = yield* makeGameplayCommitServices(world.chunkStore, world.inventory)
       const coordinator: WorldCommitCoordinatorApi = {
         ...commit.coordinator,
-        observe: (...args) => Effect.map(
-          commit.coordinator.observe(...args),
-          (snapshot) => ({ ...snapshot, blocks: [] }),
+        observe: <Codec extends Schema.Codec<any, any>>(
+          ownerId: ReplicatedOwnerId,
+          schema: Codec,
+          reads: ReadonlyArray<Readonly<{ dimension: Dimension; position: BlockPosition }>>,
+        ) => Effect.map(
+          commit.coordinator.observe(ownerId, schema, reads),
+          (snapshot) => 'blocks' in snapshot ? { ...snapshot, blocks: [] } : snapshot,
         ),
       }
       const context = {
@@ -334,11 +343,16 @@ describe('the break loop', () => {
       let observations = 0
       const coordinator: WorldCommitCoordinatorApi = {
         ...commit.coordinator,
-        observe: (...args) => Effect.map(
-          commit.coordinator.observe(...args),
+        observe: <Codec extends Schema.Codec<any, any>>(
+          ownerId: ReplicatedOwnerId,
+          schema: Codec,
+          reads: ReadonlyArray<Readonly<{ dimension: Dimension; position: BlockPosition }>>,
+        ) => Effect.map(
+          commit.coordinator.observe(ownerId, schema, reads),
           (snapshot) => {
             observations += 1
-            return observations === 1 ? snapshot : { ...snapshot, blocks: [] }
+            if (observations === 1 || !('blocks' in snapshot)) return snapshot
+            return { ...snapshot, blocks: [] }
           },
         ),
       }
@@ -1008,14 +1022,21 @@ describe('the break loop', () => {
       const world = yield* oneBlockWorld()
       const commit = yield* makeGameplayCommitServices(world.chunkStore, world.inventory)
       let injected = false
-      let commitFailure: unknown
+      const localStorage = yield* world.inventory.storageSnapshot
+      const localStorageBefore = Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(localStorage)
+      const registeredCoordinator = yield* makeWorldCommitCoordinator({
+        world: commit.coordinator.worldId,
+        owners: gameplayOwnerRegistrations({ playerStorage: localStorageBefore }),
+        chunkStores: { forDimension: () => world.chunkStore },
+      })
       const coordinator: WorldCommitCoordinatorApi = {
-        ...commit.coordinator,
-        commit: (request) =>
+        ...registeredCoordinator,
+        dimensionRevision: (dimension) =>
           Effect.gen(function* () {
+            const dimensionRevision = yield* registeredCoordinator.dimensionRevision(dimension)
             if (!injected) {
               injected = true
-              const snapshot = yield* commit.coordinator.snapshot(
+              const snapshot = yield* registeredCoordinator.snapshot(
                 commit.playerStorageOwnerId,
                 PlayerStorageSnapshotSchema,
               )
@@ -1026,26 +1047,17 @@ describe('the break loop', () => {
                 inventory: {
                   slots: snapshot.state.inventory.slots.map((slot, index) => index === 0 ? dirtStack : slot),
                 },
-                inventoryDurability: snapshot.state.inventoryDurability.map((durability, index) =>
-                  index === 0 ? null : durability,
-                ),
               })
-              yield* commit.coordinator.commit({
+              yield* registeredCoordinator.commit({
                 expectedRevision: snapshot.revision,
                 expectedDimensions: [],
                 changes: [{ ownerId: commit.playerStorageOwnerId, state: changedStorage }],
               })
             }
-
-            const result = yield* Effect.result(commit.coordinator.commit(request))
-            if (Result.isFailure(result)) {
-              commitFailure = result.failure
-              return yield* Effect.fail(result.failure)
-            }
-            return result.success
+            return dimensionRevision
           }),
       }
-      const state = yield* makeGameplayFrameState
+      const state = yield* makeGameplayFrameState()
       const stages = gameplayStages(
         state,
         world.chunkStore,
@@ -1056,27 +1068,34 @@ describe('the break loop', () => {
         undefined,
         undefined,
         {},
-        { ...commit, coordinator },
+        { ...commit, coordinator, playerOwnerId: GAMEPLAY_PLAYER_OWNER_ID },
       )
 
       yield* requestBlockBreak(state, AT)
       yield* runInteractions(stages as never)
 
       expect(injected).toBe(true)
-      expect(Schema.decodeUnknownSync(WorldCommitCoordinatorErrorSchema)(commitFailure)._tag).toBe(
-        'WorldRevisionConflict',
+      const miningFailure = (yield* Ref.get(state.operationFailures)).find(
+        (failure) => failure.operation === 'WorldCommit' && failure.subject === 'Mining',
       )
+      if (miningFailure === undefined) throw new Error('the conflicting mining commit was not recorded')
+      expect(Schema.decodeUnknownSync(WorldCommitCoordinatorErrorSchema)(miningFailure.error)).toMatchObject({
+        _tag: 'WorldRevisionConflict',
+        expected: 0,
+        actual: 1,
+      })
       expect(yield* world.chunkStore.getBlock(AT)).toStrictEqual({ _tag: 'Block', block: DIRT_ID })
       expect(yield* world.inventory.countOf('dirt')).toBe(0)
+      expect(yield* world.inventory.storageSnapshot).toEqual(localStorageBefore)
       const roster = yield* world.entities.snapshot
       expect(roster.entities).toHaveLength(0)
-      const owner = yield* commit.coordinator.snapshot(
+      const owner = yield* registeredCoordinator.snapshot(
         commit.playerStorageOwnerId,
         PlayerStorageSnapshotSchema,
       )
       expect(owner.state.inventory.slots[0]).toMatchObject({ item: 'dirt', count: 1 })
-      expect(yield* commit.coordinator.revision).toBe(1)
-      expect(yield* commit.coordinator.dimensionRevision('overworld')).toBe(0)
+      expect(yield* registeredCoordinator.revision).toBe(1)
+      expect(yield* registeredCoordinator.dimensionRevision('overworld')).toBe(0)
     }),
   )
 

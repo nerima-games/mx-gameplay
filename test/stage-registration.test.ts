@@ -7,8 +7,8 @@
  * violated with STRINGS rather than with imports.
  */
 import { describe, expect, it } from '@effect/vitest'
-import { Brand, Cause, Effect, Exit, Layer, Option, Ref, Result } from 'effect'
-import { AIR_BLOCK_ID, BlockId, EntityHealthPoints, EntitySerial, blockIdOf, type BlockPosition } from '@nerima-games/mc-kernel'
+import { Brand, Cause, Effect, Exit, Layer, Option, Ref, Result, Schema } from 'effect'
+import { AIR_BLOCK_ID, BlockId, EntityHealthPoints, EntitySerial, WorldIdSchema, blockIdOf, type BlockPosition } from '@nerima-games/mc-kernel'
 import type { BlockReading, ChunkStore, ChunkStoreApi } from '@nerima-games/mc-worldgen'
 import {
   CREEPER_KIND,
@@ -30,11 +30,8 @@ import {
 import type { WeatherState } from '../src/domain/weather'
 import { SKELETON_KIND, initialEcosystemMobState } from '../src/domain/mob/mob-ecosystem'
 import { ZOMBIE_KIND } from '../src/domain/mob/hostile-combat'
-import {
-  addVillager,
-  emptyVillagerTradeState,
-  makeVillager,
-} from '../src/domain/villager-trade'
+import { makeVillager } from '../src/domain/villager-trade'
+import { GameplayVillagerTradeSnapshotSchema } from '../src/stages/gameplay-owner-registrations.js'
 import {
   EntityId,
   EntityKind,
@@ -152,7 +149,9 @@ import {
   WorldCommitChunkStoreUnavailable,
   WorldCommitCoordinator,
   WorldCommitEmptyRequest,
+  CropSnapshotSchema,
   PlayerStorageSnapshotSchema,
+  makeWorldCommitCoordinator,
   type WorldCommitCoordinatorApi,
 } from '@nerima-games/mc-sim'
 import { emptySlots, makeInventoryDouble } from './support/inventory-service-double'
@@ -160,6 +159,18 @@ import { gameplayCommitServicesLayer, makeGameplayCommitServices, makeTransactio
 import { FrameServicesLayer } from './support/frame-services'
 import { runFrames } from './support/frame-runner'
 import { blockPosition as fixtureBlockPosition, position as fixturePosition } from './support/coordinate-fixtures'
+import {
+  GAMEPLAY_CROPS_OWNER_ID,
+  GAMEPLAY_DROPPED_ITEMS_OWNER_ID,
+  GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
+  GAMEPLAY_PLAYER_OWNER_ID,
+  GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+  GAMEPLAY_VITALS_OWNER_ID,
+  GAMEPLAY_VILLAGER_TRADES_OWNER_ID,
+  gameplayOwnerRegistrations,
+  type GameplayOwnerInitialState,
+} from '../src/stages/gameplay-owner-registrations.js'
+import type { CropSnapshot } from '@nerima-games/mc-sim'
 
 const itemStack = (item: Parameters<typeof makeItemStack>[0], count: Parameters<typeof makeItemStack>[1]) =>
   Result.getOrThrow(makeItemStack(item, count))
@@ -236,15 +247,36 @@ const builtStages = Effect.gen(function* () {
 const builtStagesInWorld = (
   initial: ReadonlyMap<string, BlockId>,
   loadedChunks: ReadonlyArray<string> = ['0,0'],
+  crops: CropSnapshot = { crops: [] },
+  initialSlots: ReadonlyArray<Slot | undefined> = emptySlots(),
+  villagerTrades: NonNullable<GameplayOwnerInitialState['villagerTrades']> = { villagers: [], restockElapsedSecs: 0 },
 ) =>
   Effect.gen(function* () {
-    const state = yield* makeGameplayFrameState
     const store = yield* makeTransactionalChunkStoreDouble(initial, loadedChunks)
     const roster = yield* makeEntityManagerDouble<MobBehaviour>()
     const player = yield* makePlayerServiceDouble()
-    const inventory = yield* makeInventoryDouble()
+    const inventory = yield* makeInventoryDouble(initialSlots)
     const time = yield* makeTimeService()
-    const commit = yield* makeGameplayCommitServices(store.api, inventory.api)
+    const initialStorage = yield* inventory.api.storageSnapshot
+    const coordinator = yield* makeWorldCommitCoordinator({
+      world: Schema.decodeUnknownSync(WorldIdSchema)('gameplay-stage-tests'),
+      owners: gameplayOwnerRegistrations({ playerStorage: initialStorage, crops, villagerTrades }),
+      chunkStores: { forDimension: () => store.api },
+    })
+    const commit = {
+      coordinator,
+      playerOwnerId: GAMEPLAY_PLAYER_OWNER_ID,
+      playerStorageOwnerId: GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+      cropOwnerId: GAMEPLAY_CROPS_OWNER_ID,
+      droppedItemsOwnerId: GAMEPLAY_DROPPED_ITEMS_OWNER_ID,
+      vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID,
+      experienceOrbsOwnerId: GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
+      villagerTradesOwnerId: GAMEPLAY_VILLAGER_TRADES_OWNER_ID,
+    }
+    const state = yield* makeGameplayFrameState({
+      coordinator,
+      vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID,
+    })
     return {
       state,
       store,
@@ -1170,7 +1202,6 @@ describe('stage behaviour', () => {
         'timeOfDay',
         'usedItems',
         'villagerTradeResults',
-        'villagerTrades',
         'weather',
         'weatherAdvanced',
         'weatherGameplay',
@@ -2839,122 +2870,67 @@ describe('fire lifecycle: extinguish, restore, and burning-actor bookkeeping', (
   )
 })
 
-/** Every slot at a full stack of wheat — the only arrangement that leaves no room for a different item. */
-const brimmingWheat = (): ReadonlyArray<Slot> =>
-  emptySlots().map((): Slot => itemStack('wheat', maxStackCountForItem('wheat')))
-
-describe('villager trade rejection paths not reached by the vertical slice', () => {
-  it.effect('rejects an offerId the villager does not carry', () =>
+describe('villager trades commit gameplay owners atomically', () => {
+  it.effect('updates storage and offer use in one registered-owner commit', () =>
     Effect.gen(function* () {
-      const { state, stages } = yield* builtStages
+      const villager = makeVillager('owner-backed-trader', 'farmer')
+      const offer = villager.offers.find((candidate) => candidate.input.item === 'wheat')!
+      const initialTrades = { villagers: [villager], restockElapsedSecs: 0 }
+      const initialSlots = emptySlots().map((slot, index) =>
+        index === 0 ? itemStack('wheat', offer.input.count) : slot,
+      )
+      const { state, stages, commit, inventory } = yield* builtStagesInWorld(
+        world([]), ['0,0'], { crops: [] }, initialSlots, initialTrades,
+      )
       const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
-      const villager = makeVillager('unknown-offer-trader', 'farmer')
-      yield* Ref.set(state.villagerTrades, addVillager(emptyVillagerTradeState(), villager))
-
-      const request = { requestId: 'bogus', villagerId: villager.id, offerId: 'not-a-real-offer' }
+      const request = { requestId: 'trade-once', villagerId: villager.id, offerId: offer.id }
       yield* requestVillagerTrade(state, request)
       yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
 
-      expect(yield* drainVillagerTradeResults(state)).toStrictEqual([
-        { ...request, _tag: 'Rejected', reason: 'UnknownOffer' },
-      ])
+      expect(yield* drainVillagerTradeResults(state)).toStrictEqual([{ ...request, _tag: 'Traded' }])
+      const storage = yield* commit.coordinator.snapshot(commit.playerStorageOwnerId, PlayerStorageSnapshotSchema)
+      const trades = yield* commit.coordinator.snapshot(
+        GAMEPLAY_VILLAGER_TRADES_OWNER_ID,
+        GameplayVillagerTradeSnapshotSchema,
+      )
+      expect(storage.revision).toBe(1)
+      expect(trades.revision).toBe(1)
+      expect(storage.state.inventory.slots[0]?.item).toBe('emerald')
+      expect(trades.state.villagers[0]?.offers.find((entry) => entry.id === offer.id)?.uses).toBe(1)
+      expect(yield* inventory.api.countOf('wheat')).toBe(offer.input.count)
     }),
   )
 
-  it.effect('rejects a trade the player cannot afford', () =>
+  it.effect('rejects before commit when storage lacks the offer input', () =>
     Effect.gen(function* () {
-      const { state, stages } = yield* builtStages
-      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
-      const villager = makeVillager('poor-player-trader', 'farmer')
+      const villager = makeVillager('poor-owner-backed-trader', 'farmer')
       const offer = villager.offers.find((candidate) => candidate.input.item === 'wheat')!
-      yield* Ref.set(state.villagerTrades, addVillager(emptyVillagerTradeState(), villager))
-
-      // `builtStages`' inventory is empty, so the wheat this offer needs is not there.
-      const request = { requestId: 'broke', villagerId: villager.id, offerId: offer.id }
+      const { state, stages, commit } = yield* builtStagesInWorld(
+        world([]), ['0,0'], { crops: [] }, emptySlots(),
+        { villagers: [villager], restockElapsedSecs: 0 },
+      )
+      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+      const request = { requestId: 'trade-insufficient', villagerId: villager.id, offerId: offer.id }
+      const beforeStorage = yield* commit.coordinator.snapshot(commit.playerStorageOwnerId, PlayerStorageSnapshotSchema)
+      const beforeTrades = yield* commit.coordinator.snapshot(
+        GAMEPLAY_VILLAGER_TRADES_OWNER_ID,
+        GameplayVillagerTradeSnapshotSchema,
+      )
       yield* requestVillagerTrade(state, request)
       yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
 
       expect(yield* drainVillagerTradeResults(state)).toStrictEqual([
         { ...request, _tag: 'Rejected', reason: 'InsufficientItems' },
       ])
-    }),
-  )
-
-  it.effect('rejects a trade whose reward cannot fit before touching the inventory', () =>
-    Effect.gen(function* () {
-      const state = yield* makeGameplayFrameState
-      const store = yield* makeChunkStoreDouble(world([]), ['0,0'])
-      const roster = yield* makeEntityManagerDouble<MobBehaviour>()
-      const player = yield* makePlayerServiceDouble()
-      // Every slot is a full stack of wheat: removing the offer's 20 leaves
-      // every slot still occupied (one slot drops from 64 to 44), so there is
-      // no empty slot and no existing emerald stack for the reward to land in.
-      const inventory = yield* makeInventoryDouble(brimmingWheat())
-      const time = yield* makeTimeService()
-      const stages = gameplayStages(state, store.api, roster.api, inventory.api, player.api, time)
-      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
-
-      const villager = makeVillager('full-inventory-trader', 'farmer')
-      const offer = villager.offers.find((candidate) => candidate.input.item === 'wheat')!
-      yield* Ref.set(state.villagerTrades, addVillager(emptyVillagerTradeState(), villager))
-
-      const request = { requestId: 'no-room', villagerId: villager.id, offerId: offer.id }
-      yield* requestVillagerTrade(state, request)
-      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
-
-      expect(yield* drainVillagerTradeResults(state)).toStrictEqual([
-        { ...request, _tag: 'Rejected', reason: 'InventoryFull' },
-      ])
-      // Nothing was actually removed: the preflight check failed before any
-      // real mutation.
-      expect(yield* inventory.api.countOf('wheat')).toBe(36 * maxStackCountForItem('wheat'))
-    }),
-  )
-
-  it.effect('rolls back and reports the real mismatch when the actual mutation disagrees with the preflight check', () =>
-    Effect.gen(function* () {
-      const state = yield* makeGameplayFrameState
-      const store = yield* makeChunkStoreDouble(world([]), ['0,0'])
-      const roster = yield* makeEntityManagerDouble<MobBehaviour>()
-      const player = yield* makePlayerServiceDouble()
-      const slots: Array<Slot> = emptySlots().map((slot, index) =>
-        index === 0 ? itemStack('wheat', 20) : slot,
+      const afterStorage = yield* commit.coordinator.snapshot(commit.playerStorageOwnerId, PlayerStorageSnapshotSchema)
+      const afterTrades = yield* commit.coordinator.snapshot(
+        GAMEPLAY_VILLAGER_TRADES_OWNER_ID,
+        GameplayVillagerTradeSnapshotSchema,
       )
-      const inventory = yield* makeInventoryDouble(slots)
-      // The preflight computation (pure, over a snapshot) says the emerald
-      // reward fits — plenty of empty slots remain. The REAL `add` disagrees,
-      // simulating a mutation that raced the preflight check. The double's own
-      // `restore` permanently refuses (test/support/inventory-service-double.ts
-      // says why: it never expected a legitimate caller), but the villager-trade
-      // rollback this test is proving IS a legitimate caller, so this wrapper
-      // gives it a working `restore` built from the double's own `restoreStorage`.
-      const racyInventory: InventoryServiceApi = {
-        ...inventory.api,
-        add: () => Effect.succeed(1),
-        restore: (snapshot) =>
-          Effect.gen(function* () {
-            const current = yield* inventory.api.storageSnapshot
-            yield* inventory.api.restoreStorage({ ...current, inventory: snapshot })
-            return 0
-          }).pipe(Effect.orDie),
-      }
-      const time = yield* makeTimeService()
-      const stages = gameplayStages(state, store.api, roster.api, racyInventory, player.api, time)
-      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
-
-      const villager = makeVillager('racy-trader', 'farmer')
-      const offer = villager.offers.find((candidate) => candidate.input.item === 'wheat')!
-      yield* Ref.set(state.villagerTrades, addVillager(emptyVillagerTradeState(), villager))
-
-      const request = { requestId: 'raced', villagerId: villager.id, offerId: offer.id }
-      yield* requestVillagerTrade(state, request)
-      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
-
-      expect(yield* drainVillagerTradeResults(state)).toStrictEqual([
-        { ...request, _tag: 'Rejected', reason: 'InventoryFull' },
-      ])
-      // The rollback restored what the real (successful) removal took.
-      expect(yield* inventory.api.countOf('wheat')).toBe(20)
+      expect(afterStorage.revision).toBe(beforeStorage.revision)
+      expect(afterTrades.revision).toBe(beforeTrades.revision)
+      expect(afterStorage.state).toStrictEqual(beforeStorage.state)
+      expect(afterTrades.state).toStrictEqual(beforeTrades.state)
     }),
   )
 })
@@ -3468,95 +3444,6 @@ describe('the vehicles stage advances real vehicles when a vehicle service is re
   )
 })
 
-describe('villager trade: the real removal disagreeing with the preflight check reports InsufficientItems', () => {
-  it.effect('rolls back and reports InsufficientItems when the real remove takes less than the preflight promised', () =>
-    Effect.gen(function* () {
-      const state = yield* makeGameplayFrameState
-      const store = yield* makeChunkStoreDouble(world([]), ['0,0'])
-      const roster = yield* makeEntityManagerDouble<MobBehaviour>()
-      const player = yield* makePlayerServiceDouble()
-      const slots: Array<Slot> = emptySlots().map((slot, index) =>
-        index === 0 ? itemStack('wheat', 20) : slot,
-      )
-      const inventory = yield* makeInventoryDouble(slots)
-      const racyInventory: InventoryServiceApi = {
-        ...inventory.api,
-        // The preflight (pure, over a snapshot) sees 20 wheat and approves.
-        // The REAL removal takes only 5 — a race the rollback must catch.
-        remove: () => Effect.succeed(5),
-        restore: (snapshot) =>
-          Effect.gen(function* () {
-            const current = yield* inventory.api.storageSnapshot
-            yield* inventory.api.restoreStorage({ ...current, inventory: snapshot })
-            return 0
-          }).pipe(Effect.orDie),
-      }
-      const time = yield* makeTimeService()
-      const stages = gameplayStages(state, store.api, roster.api, racyInventory, player.api, time)
-      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
-
-      const villager = makeVillager('shortchanged-trader', 'farmer')
-      const offer = villager.offers.find((candidate) => candidate.input.item === 'wheat')!
-      yield* Ref.set(state.villagerTrades, addVillager(emptyVillagerTradeState(), villager))
-
-      const request = { requestId: 'shortchanged', villagerId: villager.id, offerId: offer.id }
-      yield* requestVillagerTrade(state, request)
-      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
-
-      expect(yield* drainVillagerTradeResults(state)).toStrictEqual([
-        { ...request, _tag: 'Rejected', reason: 'InsufficientItems' },
-      ])
-      expect(yield* inventory.api.countOf('wheat')).toBe(20)
-    }),
-  )
-})
-
-describe('villager trade: the roster changing underneath an already-approved commit', () => {
-  it.effect('still reports Traded when the commit finds no villager left to record the use against', () =>
-    Effect.gen(function* () {
-      const state = yield* makeGameplayFrameState
-      const store = yield* makeChunkStoreDouble(world([]), ['0,0'])
-      const roster = yield* makeEntityManagerDouble<MobBehaviour>()
-      const player = yield* makePlayerServiceDouble()
-      const slots: Array<Slot> = emptySlots().map((slot, index) =>
-        index === 0 ? itemStack('wheat', 20) : slot,
-      )
-      const inventory = yield* makeInventoryDouble(slots)
-      const villager = makeVillager('vanishing-trader', 'farmer')
-      const offer = villager.offers.find((candidate) => candidate.input.item === 'wheat')!
-      // The commit's own `add` (line 3253 of registration.ts, called only after
-      // the preflight has already approved this trade) also empties the trade
-      // roster as a side effect -- simulating the villager despawning in the
-      // window between the preflight's lookup (line 3210-3212) and the commit
-      // at line 3266. `useVillagerOffer` then finds no matching villager and
-      // returns undefined; the `?? current` fallback must keep the roster as
-      // the racy `add` left it rather than throwing or resurrecting the
-      // villager.
-      const racyInventory: InventoryServiceApi = {
-        ...inventory.api,
-        add: (item, count) =>
-          Ref.set(state.villagerTrades, emptyVillagerTradeState()).pipe(
-            Effect.andThen(inventory.api.add(item, count)),
-          ),
-      }
-      const time = yield* makeTimeService()
-      const stages = gameplayStages(state, store.api, roster.api, racyInventory, player.api, time)
-      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
-
-      yield* Ref.set(state.villagerTrades, addVillager(emptyVillagerTradeState(), villager))
-
-      const request = { requestId: 'vanishing', villagerId: villager.id, offerId: offer.id }
-      yield* requestVillagerTrade(state, request)
-      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
-
-      expect(yield* drainVillagerTradeResults(state)).toStrictEqual([{ ...request, _tag: 'Traded' }])
-      // The fallback kept the racy `add`'s empty roster rather than crashing
-      // or reintroducing a villager `useVillagerOffer` could not find.
-      expect((yield* Ref.get(state.villagerTrades)).villagers).toStrictEqual([])
-    }),
-  )
-})
-
 describe('farming and food item uses through the full interactions stage', () => {
   it.effect('bone meal against a non-crop cell still reaches the ApplyBoneMeal arm', () =>
     Effect.gen(function* () {
@@ -3576,7 +3463,14 @@ describe('farming and food item uses through the full interactions stage', () =>
     Effect.gen(function* () {
       const wheatCrop = Option.getOrThrow(blockIdOf('wheat_crop'))
       const position = fixtureBlockPosition(0, 64, 0)
-      const { state, stages } = yield* builtStagesInWorld(world([[position, wheatCrop]]))
+      const slots = [...emptySlots()]
+      slots[0] = itemStack('bone_meal', 1)
+      const { state, stages, commit, inventory } = yield* builtStagesInWorld(
+        world([[position, wheatCrop]]),
+        ['0,0'],
+        { crops: [{ dimension: 'overworld', position, crop: 'wheat_crop', growthSecs: 0 }] },
+        slots,
+      )
       const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
 
       yield* requestBoneMeal(state, 'bone-meal-success', position)
@@ -3592,6 +3486,15 @@ describe('farming and food item uses through the full interactions stage', () =>
           outcome: { _tag: 'applied', at: position },
         },
       ])
+      const cropOwner = yield* commit.coordinator.snapshot(GAMEPLAY_CROPS_OWNER_ID, CropSnapshotSchema)
+      const storageOwner = yield* commit.coordinator.snapshot(
+        GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+        PlayerStorageSnapshotSchema,
+      )
+      expect(cropOwner.state.crops[0]?.growthSecs).toBeGreaterThan(0)
+      expect(storageOwner.state.inventory.slots[0]).toBeUndefined()
+      expect(yield* inventory.api.countOf('bone_meal')).toBe(1)
+      expect(yield* commit.coordinator.revision).toBe(1)
     }),
   )
 

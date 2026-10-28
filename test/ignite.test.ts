@@ -81,7 +81,7 @@ const storeThatChangesItsMind = (honest: ChunkStoreApi, onWrite: BlockWriteOutco
 const OBSIDIAN = Option.getOrUndefined(blockIdOf('obsidian')) ?? BlockId(40)
 const NETHER_PORTAL = Option.getOrUndefined(blockIdOf('nether_portal')) ?? BlockId(118)
 const FIRE = Option.getOrUndefined(blockIdOf('fire')) ?? BlockId(119)
-const TNT = TNT_BLOCK_ID ?? BlockId(46)
+const TNT = TNT_BLOCK_ID
 
 const airChunkSource: ChunkSource = (coord) =>
   Effect.sync(() => ({
@@ -527,28 +527,32 @@ describe('igniteTnt', () => {
 })
 
 describe('ignitePortal, when the store changes its mind mid-fill', () => {
-  it.effect('reports only the cells whose write actually landed', () =>
-    Effect.gen(function* () {
-      // Detection proved all six cells were air, so none of the three
-      // non-`Written` arms is reachable from a green tree — they are DECIDED
-      // rather than asserted away because the window is real, and this is the
-      // evidence that the decision is the one written down. A `Lit` with six
-      // cells here would mean the rule reports what it INTENDED rather than
-      // what it did.
-      const store = yield* makeChunkStoreDouble(
-        world(portalEntries(ORIGIN, 2, 3)),
-        residentAround(ORIGIN),
-      )
-      const raced = storeThatChangesItsMind(store.api, { _tag: 'ChunkNotLoaded' })
+  const racedWrites: ReadonlyArray<{ readonly name: string; readonly outcome: BlockWriteOutcome }> = [
+    { name: 'Unchanged', outcome: { _tag: 'Unchanged', previous: NETHER_PORTAL } },
+    { name: 'ChunkNotLoaded', outcome: { _tag: 'ChunkNotLoaded' } },
+    { name: 'OutOfWorld', outcome: { _tag: 'OutOfWorld' } },
+  ]
 
-      const outcome = yield* ignitePortal(raced, ORIGIN)
+  for (const racedWrite of racedWrites) {
+    it.effect(`does not report portal cells when setBlock returns ${racedWrite.name}`, () =>
+      Effect.gen(function* () {
+        // The chunk window observed a valid frame, but another writer can change
+        // residency, bounds, or the target before each block write.
+        const store = yield* makeChunkStoreDouble(
+          world(portalEntries(ORIGIN, 2, 3)),
+          residentAround(ORIGIN),
+        )
+        const raced = storeThatChangesItsMind(store.api, racedWrite.outcome)
 
-      expect(outcome._tag).toBe('Lit')
-      if (outcome._tag !== 'Lit') return
-      expect(outcome.frame.interior).toHaveLength(6)
-      expect(outcome.cells).toStrictEqual([])
-    }),
-  )
+        const outcome = yield* ignitePortal(raced, ORIGIN)
+
+        expect(outcome._tag).toBe('Lit')
+        if (outcome._tag !== 'Lit') return
+        expect(outcome.frame.interior).toHaveLength(6)
+        expect(outcome.cells).toStrictEqual([])
+      }),
+    )
+  }
 })
 
 describe('useFlintAndSteel — the order of the two arms', () => {

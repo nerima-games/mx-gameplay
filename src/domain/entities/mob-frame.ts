@@ -530,15 +530,10 @@ export const ENDERMITE_MAX_HEALTH = 8
  * agreement」 shape `../mob/hostile-spawn`'s header measures in the reference's
  * surface tables.
  */
-// NON-EMPTY IN THE TYPE, not merely in the literal. `./mob-spawn-search` picks a
-// member by a computed index, which `noUncheckedIndexedAccess` types
-// `EntityKind | undefined` however the index was derived; it therefore needs
-// somewhere total to land, and it used to land on `HOSTILE_KINDS[0] ??
-// EntityKind('creeper')` — a SECOND fallback whose only job was to cover the
-// possibility that this line is `[]`. Saying non-empty here deletes that layer
-// and, more usefully, moves the claim to where a future edit to the roster would
-// have to read it. A build with no hostiles is a decision, not an accident to be
-// absorbed three files away.
+// NON-EMPTY IN THE TYPE, not merely in the literal. `./mob-spawn-search` seeds
+// its reduction from the first member, so an empty roster cannot reach it and no
+// lookup fallback is needed. A build with no hostiles is a decision, not an
+// accident to be absorbed three files away.
 export const HOSTILE_KINDS: readonly [EntityKind, ...ReadonlyArray<EntityKind>] = [
   CREEPER_KIND,
   ENDERMAN_KIND,

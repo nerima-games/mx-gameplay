@@ -80,8 +80,13 @@ import {
   adjacentBlockPosition,
   AIR_BLOCK_ID,
   BlockAxis,
+  BlockAddressSchema,
   BlockId,
+  DomainEventSchema,
+  EntityIdSchema,
   blockIdOf,
+  ProjectileIdSchema,
+  SimulationTickSchema,
   WorldWriteBatchSchema,
   type WorldWriteBatch,
   blockPosition as kernelBlockPosition,
@@ -95,12 +100,15 @@ import {
   position as kernelPosition,
   type BlockPosition,
   type BlockPositionKey,
+  type BlockAddress,
   type BlockType,
   type DeltaTimeSecs,
   type GameModule,
   type ItemType,
   type PlaceableItemType,
   type Position,
+  type ProjectileId,
+  type SimulationTick,
   type StageRegistration,
 } from '@nerima-games/mc-kernel'
 import {
@@ -118,8 +126,33 @@ import {
   type FurnaceFailure,
   type FurnaceState,
   type InventoryServiceApi,
-  type PlayerServiceInputError,
   PlayerServiceSnapshotSchema,
+  BrewingServiceStateSchema,
+  BrewingServicePlanSnapshotSchema,
+  BrewingBottleIndexSchema,
+  FishingStateSchema,
+  FishingServicePlanSnapshotSchema,
+  FishingCastIntentSchema,
+  FishingAdvanceIntentSchema,
+  FishingCancelIntentSchema,
+  FishingReelIntentSchema,
+  FishingServiceReelSuccessSchema,
+  FishingProgressOutcomeSchema,
+  FishingCancelOutcomeSchema,
+  FishingLootSampleSchema,
+  ProjectileServiceSnapshotSchema,
+  PROJECTILE_REPLICATED_OWNER_ID,
+  launchProjectile,
+  mergeWorldCommitPlans,
+  WorldCommitPlanMergeResultSchema,
+  WorldCommitPlanRequestSchema,
+  worldCommitPlanFragmentSchema,
+  worldCommitPlanSnapshotSchema,
+  type BrewingServiceApi,
+  type FishingServiceApi,
+  type DomainEventBusApi,
+  type ProjectileProfile,
+  type WorldCommitPlanFragment,
   type TimeServiceApi,
   type VehicleServiceApi,
 } from '@nerima-games/mc-sim'
@@ -135,21 +168,17 @@ import {
   type ReplicatedWorldDelta,
   type ReplicatedOwnerChange,
   type StorageLocation,
+  type ReplicatedSnapshot,
   type WorldCommitCoordinatorApi,
   type WorldCommitCoordinatorError,
-  type WorldReadSnapshot,
 } from '@nerima-games/mc-sim'
-import {
+export {
+  GAMEPLAY_BREWING_OWNER_ID,
+  GAMEPLAY_CROPS_OWNER_ID,
   GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+  GAMEPLAY_VILLAGER_TRADES_OWNER_ID,
 } from './gameplay-owner-registrations.js'
-export { GAMEPLAY_PLAYER_STORAGE_OWNER_ID } from './gameplay-owner-registrations.js'
-import {
-  advanceVillagerRestock,
-  copyVillagerTradeState,
-  emptyVillagerTradeState,
-  useVillagerOffer,
-  type VillagerTradeState,
-} from '../domain/villager-trade.js'
+import { useVillagerOffer } from '../domain/villager-trade.js'
 import {
   PLAYER_MAXIMUM_HEALTH_POINTS,
   POISON_DAMAGE_POINTS,
@@ -213,7 +242,6 @@ import { FRESH_PRIMED_TNT } from '../domain/mob/primed-tnt.js'
 import {
   DROPPED_ITEM_PICKUP_RADIUS,
   pickupDroppedItems,
-  pickupDroppedItemsCommitted,
   spawnDroppedItems,
   type DroppedItemPickupFailure,
   type DroppedItemPickupRequest,
@@ -222,7 +250,6 @@ import {
   type DroppedItemSpawn,
 } from '../domain/entities/dropped-item.js'
 import {
-  absorbExperienceOrb,
   type ExperienceOrbAbsorption,
   type ExperienceOrbAbsorptionContext,
   type ExperienceOrbAbsorptionError,
@@ -263,7 +290,6 @@ import {
 import { DEFAULT_ROLL_SEED, drawRolls, rollAt } from '../domain/frame-rolls.js'
 import type { Dimension, PortalTravelPlan } from '@nerima-games/mc-worldgen'
 import { OUTSIDE_PORTAL, type PortalDwell, stepPortalDwell } from '../domain/portal-dwell.js'
-import { NO_KNOWN_PORTALS } from '../domain/portal-travel.js'
 import { PlayerService, type PlayerServiceApi } from '@nerima-games/mc-sim'
 import {
   isEndPortalBlock,
@@ -1059,7 +1085,6 @@ export type GameplayFrameState = {
   readonly mobDrops: Ref.Ref<ReadonlyArray<MobDropEvent>>
   readonly mobExperience: Ref.Ref<ReadonlyArray<MobExperienceEvent>>
   readonly villagerTradeResults: Ref.Ref<ReadonlyArray<VillagerTradeResult>>
-  readonly villagerTrades: Ref.Ref<VillagerTradeState>
   readonly spawnAttempts: Ref.Ref<ReadonlyArray<MobSpawnAttempt>>
   readonly targetPosition: Ref.Ref<Position | undefined>
   readonly timeOfDay: Ref.Ref<number>
@@ -1187,9 +1212,10 @@ export type BlockPlacementCommandOutcome =
   | { readonly _tag: 'InventoryUnavailable' }
   | { readonly _tag: 'RequestIdConflict' }
   | { readonly _tag: 'PlayerDead' }
+  | { readonly _tag: 'CommitFailed'; readonly error: WorldCommitCoordinatorError | Schema.SchemaError }
   | {
       readonly _tag: 'Unsupported'
-      readonly reason: 'WorldCommitCoordinatorUnavailable' | 'McSimPlanFragmentUnavailable'
+      readonly reason: 'WorldCommitCoordinatorUnavailable' | 'OwnerRegistrationUnavailable'
     }
 
 /** One drainable answer for a correlated placement command. */
@@ -1305,7 +1331,6 @@ export type FarmingItemUseRequest =
       readonly action: 'HarvestPotato'
       readonly requestId: ItemUseRequestId
       readonly positionKey: BlockPositionKey
-      readonly ripe: boolean
       readonly roll: number
     }
   | {
@@ -1412,7 +1437,7 @@ export type FarmingItemUseResult =
       readonly heldItem: 'potato'
       readonly success: boolean
       readonly consumedCount: 0 | 1
-      readonly outcome: FoodUseOutcome
+      readonly outcome: FoodUseOutcome | { readonly _tag: 'missingItem' }
     }
   | {
       readonly action: 'EatFood'
@@ -1420,7 +1445,7 @@ export type FarmingItemUseResult =
       readonly heldItem: ItemType
       readonly success: boolean
       readonly consumedCount: 0 | 1
-      readonly outcome: FoodUseOutcome
+      readonly outcome: FoodUseOutcome | { readonly _tag: 'missingItem' }
     }
 
 export type FurnaceItemUseResult =
@@ -1688,6 +1713,8 @@ export type GameplayUnsupportedAction =
   | 'UseBucket'
   | 'Fishing'
   | 'ApplyBoneMeal'
+  | 'TillSoil'
+  | 'PlantPotato'
   | 'HarvestPotato'
   | 'Brewing'
   | 'EnchantItem'
@@ -1706,6 +1733,7 @@ export type GameplayUnsupportedAction =
 export type GameplayUnsupportedReason =
   | 'WorldCommitCoordinatorUnavailable'
   | 'OwnerRegistrationUnavailable'
+  | 'CropOwnerStateUnavailable'
   | 'McSimPlanFragmentUnavailable'
   | 'EntityRosterOwnerUnavailable'
 
@@ -1728,6 +1756,7 @@ export type GameplayStageOperationFailure = Readonly<{
   error:
     | WorldCommitCoordinatorError
     | Schema.SchemaError
+    | Brand.BrandError
     | SurvivalHungerError
     | DroppedItemSpawnError
     | BreakTransactionFailure
@@ -1744,7 +1773,7 @@ export const readGameplayPlayer = (
   coordinator: WorldCommitCoordinatorApi,
   ownerId: ReplicatedOwnerId,
 ): Effect.Effect<
-  WorldReadSnapshot<typeof PlayerServiceSnapshotSchema>,
+  ReplicatedSnapshot<typeof PlayerServiceSnapshotSchema>,
   WorldCommitCoordinatorError | Schema.SchemaError
 > =>
   coordinator.snapshot(ownerId, PlayerServiceSnapshotSchema)
@@ -1800,7 +1829,6 @@ export const makeGameplayFrameState = (
   const mobDrops = yield* Ref.make<ReadonlyArray<MobDropEvent>>([])
   const mobExperience = yield* Ref.make<ReadonlyArray<MobExperienceEvent>>([])
   const villagerTradeResults = yield* Ref.make<ReadonlyArray<VillagerTradeResult>>([])
-  const villagerTrades = yield* Ref.make<VillagerTradeState>(emptyVillagerTradeState())
   const spawnAttempts = yield* Ref.make<ReadonlyArray<MobSpawnAttempt>>([])
   const targetPosition = yield* Ref.make<Position | undefined>(undefined)
   // Midnight, which `domain/day-night.ts` reads as night. See the module header
@@ -1884,7 +1912,6 @@ export const makeGameplayFrameState = (
     mobDrops,
     mobExperience,
     villagerTradeResults,
-    villagerTrades,
     spawnAttempts,
     targetPosition,
     timeOfDay,
@@ -2250,14 +2277,12 @@ export const requestPotatoHarvest = (
   state: GameplayFrameState,
   requestId: ItemUseRequestId,
   position: BlockPosition,
-  ripe: boolean,
   roll: number,
 ): Effect.Effect<void> => {
   const request: FarmingItemUseRequest = {
     action: 'HarvestPotato',
     requestId,
     positionKey: blockPositionKeyOf(toKernelPosition(position)),
-    ripe,
     roll,
   }
   return Ref.update(state.pendingItemUses, (pending) => [...pending, request])
@@ -2609,7 +2634,7 @@ export const useBrewingPotion = (
 const stepStatusEffects = (
   state: GameplayFrameState,
   dt: DeltaTimeSecs,
-): Effect.Effect<void, Brand.BrandError> =>
+): Effect.Effect<void, Brand.BrandError | SurvivalHungerError> =>
   Effect.gen(function* () {
     const applications = yield* Ref.getAndSet(state.pendingStatusEffects, [])
     const current = yield* Ref.get(state.statusEffects)
@@ -2663,16 +2688,6 @@ const recordVillagerTradeResult = (
   result: VillagerTradeResult,
 ): Effect.Effect<void> =>
   Ref.update(state.villagerTradeResults, (results) => [...results, result])
-
-export const snapshotVillagerTrades = (
-  state: GameplayFrameState,
-): Effect.Effect<VillagerTradeState> =>
-  Ref.get(state.villagerTrades).pipe(Effect.map(copyVillagerTradeState))
-
-export const restoreVillagerTrades = (
-  state: GameplayFrameState,
-  snapshot: VillagerTradeState,
-): Effect.Effect<void> => Ref.set(state.villagerTrades, copyVillagerTradeState(snapshot))
 
 /** Snapshot the deterministic fire state for host persistence. */
 export const snapshotFireLifecycle = (
@@ -3321,10 +3336,10 @@ const sameBlockPlacementCommand = (
   left.heldItem === right.heldItem &&
   left.mode === right.mode
 
-export const recordUnsupportedBlockPlacement = (
+export const processBlockPlacementCommand = (
   state: GameplayFrameState,
   command: BlockPlacementCommand,
-  reason: 'WorldCommitCoordinatorUnavailable' | 'McSimPlanFragmentUnavailable',
+  execute: () => Effect.Effect<BlockPlacementResult>,
 ): Effect.Effect<BlockPlacementResult> => {
   const runtime = blockPlacementRuntimeFor(state)
   const normalized = normalizedBlockPlacementCommand(command)
@@ -3333,13 +3348,7 @@ export const recordUnsupportedBlockPlacement = (
       const current = yield* Ref.get(runtime.state)
       const previous = current.handled.get(normalized.requestId)
       const result: BlockPlacementResult = previous === undefined
-        ? {
-            requestId: normalized.requestId,
-            success: false,
-            consumed: false,
-            replayed: false,
-            outcome: { _tag: 'Unsupported', reason },
-          }
+        ? yield* execute()
         : sameBlockPlacementCommand(previous.command, normalized)
           ? { ...previous.result, replayed: true }
           : {
@@ -3360,6 +3369,19 @@ export const recordUnsupportedBlockPlacement = (
   )
 }
 
+export const recordUnsupportedBlockPlacement = (
+  state: GameplayFrameState,
+  command: BlockPlacementCommand,
+  reason: 'WorldCommitCoordinatorUnavailable' | 'OwnerRegistrationUnavailable',
+): Effect.Effect<BlockPlacementResult> =>
+  processBlockPlacementCommand(state, command, () => Effect.succeed({
+    requestId: command.requestId,
+    success: false,
+    consumed: false,
+    replayed: false,
+    outcome: { _tag: 'Unsupported', reason },
+  }))
+
 export interface GameplayStageOptions {
   /** Whether this frame owns local Mob simulation and spawning. */
   readonly mobSimulation?: boolean
@@ -3377,9 +3399,11 @@ export type GameplayStageCommitServices = Readonly<{
   readonly coordinator: WorldCommitCoordinatorApi
   readonly playerOwnerId: ReplicatedOwnerId
   readonly playerStorageOwnerId: ReplicatedOwnerId
+  readonly cropOwnerId?: ReplicatedOwnerId
   readonly droppedItemsOwnerId?: ReplicatedOwnerId
   readonly vitalsOwnerId?: ReplicatedOwnerId
   readonly experienceOrbsOwnerId?: ReplicatedOwnerId
+  readonly villagerTradesOwnerId?: ReplicatedOwnerId
 }>
 
 export const gameplayPlayerStateForStage = (
@@ -3401,6 +3425,32 @@ export const gameplayPlayerStateForStage = (
     return observed.success.state
   })
 
+export const candidateForPlayerStorageItemUse = (
+  ownerId: ReplicatedOwnerId,
+  storage: PlayerStorage,
+  item: ItemType,
+  operation: 'consume' | 'damage',
+): Result.Result<ReplicatedOwnerCandidate | undefined, Schema.SchemaError> => {
+  let candidate: PlayerStorage | undefined
+  if (operation === 'consume') {
+    const removed = Result.getOrUndefined(removeInventoryItem(storage.inventory, item, 1))
+    if (removed === undefined || removed.removed !== 1) return Result.succeed(undefined)
+    const updated = Result.getOrUndefined(withInventory(storage, removed.inventory))
+    if (updated === undefined) return Result.succeed(undefined)
+    candidate = updated
+  } else {
+    const slotIndex = storage.inventory.slots.findIndex((slot) => slot?.item === item)
+    if (slotIndex < 0) return Result.succeed(undefined)
+    const damaged = damagePlayerStorageAt(storage, { _tag: 'Inventory', slotIndex }, 1)
+    if (damaged.result._tag !== 'Damaged' && damaged.result._tag !== 'Broken') return Result.succeed(undefined)
+    candidate = damaged.storage
+  }
+
+  const validation = validatePlayerStorageSnapshot(candidate)
+  if (validation._tag !== 'Valid') return Result.succeed(undefined)
+  return Result.succeed({ ownerId, state: validation.storage })
+}
+
 export const candidateForItemUse: (
   coordinator: WorldCommitCoordinatorApi,
   ownerId: ReplicatedOwnerId,
@@ -3416,26 +3466,7 @@ export const candidateForItemUse: (
 ) => Effect.gen(function* () {
     const committed = yield* Effect.result(coordinator.snapshot(ownerId, PlayerStorageSnapshotSchema))
     if (Result.isFailure(committed)) return Result.fail(committed.failure)
-    const storage = committed.success.state
-
-    let candidate: PlayerStorage | undefined
-    if (operation === 'consume') {
-      const removed = Result.getOrUndefined(removeInventoryItem(storage.inventory, item, 1))
-      if (removed === undefined || removed.removed !== 1) return Result.succeed(undefined)
-      const updated = Result.getOrUndefined(withInventory(storage, removed.inventory))
-      if (updated === undefined) return Result.succeed(undefined)
-      candidate = updated
-    } else {
-      const slotIndex = storage.inventory.slots.findIndex((slot) => slot?.item === item)
-      if (slotIndex < 0) return Result.succeed(undefined)
-      const damaged = damagePlayerStorageAt(storage, { _tag: 'Inventory', slotIndex }, 1)
-      if (damaged.result._tag !== 'Damaged' && damaged.result._tag !== 'Broken') return Result.succeed(undefined)
-      candidate = damaged.storage
-    }
-
-    const validation = validatePlayerStorageSnapshot(candidate)
-    if (validation._tag !== 'Valid') return Result.succeed(undefined)
-    return Result.succeed({ ownerId, state: validation.storage })
+    return candidateForPlayerStorageItemUse(ownerId, committed.success.state, item, operation)
   })
 
 export interface GameplayStageContext {
@@ -3466,6 +3497,7 @@ export {
   InventoryService,
   LOWEST_WEATHER_ROLLS,
   NO_ATTEMPTS,
+  NO_TOOL,
   PRIMED_TNT_KIND,
   PlayerService,
   Ref,
@@ -3477,7 +3509,6 @@ export {
   adjacentBlockPosition,
   advanceFishing,
   advanceVehicles,
-  advanceVillagerRestock,
   advanceWeather,
   advanceWeatherGameplay,
   applyBoneMeal,
@@ -3519,7 +3550,6 @@ export {
   planFurnaceAdvance,
   plantCrop,
   recordVillagerTradeResult,
-  recordUnsupportedBlockPlacement,
   reelFishing,
   removeInventoryItem,
   resolveBlasts,

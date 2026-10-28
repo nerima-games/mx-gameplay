@@ -2,12 +2,12 @@ import {
   Effect,
   GAMEPLAY_STAGE_IDS,
   Ref,
-  Result,
   applyFallingBlocks,
   recordGameplayUnsupportedOperation,
   settled,
   takeBatch,
 } from './registration-core.js'
+import { Result } from 'effect'
 import { pickupDroppedItemsCommitted } from '../domain/entities/dropped-item.js'
 import { absorbExperienceOrb } from '../domain/entities/xp-orb.js'
 import type {
@@ -52,11 +52,11 @@ export const makeEntitiesStage = (context: GameplayStageContext): StageRegistrat
             },
             request,
           ))
-          pickupExecutions.push(
-            Result.isFailure(result)
-              ? { request, outcome: { _tag: 'Failed', error: result.failure } as const }
-              : { request, outcome: { _tag: 'Completed', result: result.success } as const },
-          )
+          if (Result.isFailure(result)) {
+            pickupExecutions.push({ request, outcome: { _tag: 'Failed', error: result.failure } as const })
+          } else {
+            pickupExecutions.push({ request, outcome: { _tag: 'Completed', result: result.success } as const })
+          }
         }
         if (pickupExecutions.length > 0) {
           yield* Ref.update(state.droppedItemPickupExecutions, (items) => [
@@ -90,11 +90,11 @@ export const makeEntitiesStage = (context: GameplayStageContext): StageRegistrat
             },
             request,
           ))
-          absorptionExecutions.push(
-            Result.isFailure(result)
-              ? { request, outcome: { _tag: 'Failed', error: result.failure } as const }
-              : { request, outcome: { _tag: 'Completed', result: result.success } as const },
-          )
+          if (Result.isFailure(result)) {
+            absorptionExecutions.push({ request, outcome: { _tag: 'Failed', error: result.failure } as const })
+          } else {
+            absorptionExecutions.push({ request, outcome: { _tag: 'Completed', result: result.success } as const })
+          }
         }
         if (absorptionExecutions.length > 0) {
           yield* Ref.update(state.experienceOrbAbsorptionExecutions, (items) => [

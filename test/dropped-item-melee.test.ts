@@ -4,6 +4,7 @@ import * as FastCheck from 'fast-check'
 import {
   durabilityForItem,
   emptyPlayerStorage,
+  makeEntityManager,
   makeReplicatedOwnerId,
   makeWorldCommitCoordinator,
   PlayerStorageSnapshotSchema,
@@ -19,6 +20,7 @@ import {
   CREEPER_KIND,
   DROPPED_ITEM_KIND,
   isDroppedItemBehaviour,
+  repairMobBehaviour,
   type MobBehaviour,
 } from '../src/domain/entities/mob-frame'
 import {
@@ -144,6 +146,52 @@ describe('dropped item entities', () => {
         count: 5,
         durability: null,
       })
+    }),
+  )
+
+  it.effect('preserves a restored non-dropped entity after inventory leaves a stack over', () =>
+    Effect.gen(function* () {
+      const roster = yield* Effect.orDie(
+        makeEntityManager<MobBehaviour>(undefined, repairMobBehaviour),
+      )
+      const spawned = yield* spawnDroppedItem(roster, {
+        item: 'gunpowder',
+        count: 1,
+        at: origin,
+      })
+      const fullInventory = emptySlots().map(() =>
+        Result.getOrThrow(itemStack('stone', StackCount(64))),
+      )
+      const inventory = yield* makeInventoryDouble(fullInventory)
+      const restoringInventory: InventoryServiceApi = {
+        ...inventory.api,
+        addStoredStack: (stack) =>
+          Effect.gen(function* () {
+            const result = yield* inventory.api.addStoredStack(stack)
+            const snapshot = yield* roster.snapshot
+            yield* Effect.orDie(
+              roster.restore({
+                ...snapshot,
+                entities: snapshot.entities.map((entity) =>
+                  entity.id === spawned.id
+                    ? { ...entity, behaviour: undefined }
+                    : entity,
+                ),
+              }),
+            )
+            return result
+          }),
+      }
+
+      yield* pickupDroppedItems(roster, restoringInventory, origin)
+
+      expect(yield* roster.find(spawned.id)).toStrictEqual({
+        ...spawned,
+        behaviour: undefined,
+      })
+      expect(yield* inventory.deposits).toStrictEqual([
+        { item: 'gunpowder', count: 1, leftover: 1 },
+      ])
     }),
   )
 

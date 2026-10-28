@@ -171,13 +171,13 @@ export const prepareMeleeAttack = (
     y: match.entity.feetPosition.y,
     z: match.entity.feetPosition.z,
   }))
-  const event: DomainEvent = {
+  const event: DomainEvent = Result.getOrThrow(Schema.decodeUnknownResult(DomainEventSchema)({
     _tag: 'EntityDamaged',
     tick,
     entity: match.target.id,
     position: targetPosition,
     amount,
     cause: 'mob',
-  }
+  }))
   return Result.succeed({ target: match.target, event })
 }

@@ -202,16 +202,6 @@ export const carveExplosionCrater = (
         case 'OutOfWorld': {
           break
         }
-        /* v8 ignore start -- BlockWriteOutcome's `_tag` union is exhaustively
-         * handled above; this arm only exists so a fifth outcome added later
-         * fails typecheck (`never`) instead of falling through silently. It
-         * cannot be reached by any value the union currently admits. */
-        default: {
-          const exhaustive: never = outcome
-          void exhaustive
-          break
-        }
-        /* v8 ignore stop */
       }
     }
 

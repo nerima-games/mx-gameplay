@@ -77,16 +77,6 @@ const fallingMaterial = (reading: BlockReading): BlockId | undefined => {
     // Above the build limit there is nothing to fall.
     case 'OutOfWorld':
       return undefined
-    // exhaustiveness arm over BlockReading, a closed three-tag union
-    // (mc-worldgen's chunk-store-state.d.ts's BlockReading); 'Block', 'ChunkNotLoaded' and
-    // 'OutOfWorld' are the only reachable tags and all three are covered
-    // above, so no input can reach this arm.
-    /* v8 ignore start */
-    default: {
-      const exhaustive: never = reading
-      return exhaustive
-    }
-    /* v8 ignore stop */
   }
 }
 
@@ -104,16 +94,6 @@ const canReceive = (reading: BlockReading): boolean => {
     // The floor of the world holds everything up.
     case 'OutOfWorld':
       return false
-    // exhaustiveness arm over BlockReading, a closed three-tag union
-    // (mc-worldgen's chunk-store-state.d.ts's BlockReading); 'Block', 'ChunkNotLoaded' and
-    // 'OutOfWorld' are the only reachable tags and all three are covered
-    // above, so no input can reach this arm.
-    /* v8 ignore start */
-    default: {
-      const exhaustive: never = reading
-      return exhaustive
-    }
-    /* v8 ignore stop */
   }
 }
 
@@ -130,16 +110,6 @@ const vacated = (outcome: BlockWriteOutcome): boolean => {
       return false
     case 'OutOfWorld':
       return false
-    // exhaustiveness arm over BlockWriteOutcome, a closed four-tag union
-    // (mc-worldgen's chunk-store-state.d.ts's BlockWriteOutcome); 'Written', 'Unchanged',
-    // 'ChunkNotLoaded' and 'OutOfWorld' are the only reachable tags and all
-    // four are covered above, so no input can reach this arm.
-    /* v8 ignore start */
-    default: {
-      const exhaustive: never = outcome
-      return exhaustive
-    }
-    /* v8 ignore stop */
   }
 }
 
@@ -217,17 +187,6 @@ export const applyFallingBlocks = (
           yield* store.setBlock(source, material)
           break
         }
-        // exhaustiveness arm over BlockWriteOutcome, a closed four-tag union
-        // (mc-worldgen's chunk-store-state.d.ts's BlockWriteOutcome); 'Written', 'Unchanged',
-        // 'ChunkNotLoaded' and 'OutOfWorld' are the only reachable tags and
-        // all four are covered above, so no input can reach this arm.
-        /* v8 ignore start */
-        default: {
-          const exhaustive: never = placed
-          void exhaustive
-          break
-        }
-        /* v8 ignore stop */
       }
     }
 

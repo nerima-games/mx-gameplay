@@ -186,15 +186,10 @@ export const pickupDroppedItems = (
         if (leftover === undefined) return { transition: UNCHANGED, emit: undefined }
         if (leftover === null) return { transition: DESPAWNED, emit: undefined }
         const behaviour = entity.behaviour
-        /* v8 ignore start -- unreachable while entity ids are unique for a
-         * roster's lifetime, which `spawn`'s ever-incrementing serial guarantees
-         * (see `test/support/entity-manager-double.ts`'s header) and no caller in
-         * this repository's slice violates: `leftover` is only set, above, for an
-         * id whose entity already passed `isDroppedItemBehaviour`, and the same
-         * id cannot name a second, differently-shaped entity by the time this
-         * sweep runs. */
+        // Inventory storage is effectful, so a roster restore can replace this
+        // entity between enumeration and this sweep. Do not apply a stale pickup
+        // result to a restored entity whose behaviour is no longer a dropped item.
         if (!isDroppedItemBehaviour(behaviour)) return { transition: UNCHANGED, emit: undefined }
-        /* v8 ignore stop */
         return {
           transition: changed({
             feetPosition: entity.feetPosition,
@@ -328,7 +323,7 @@ export const appendDroppedItemSpawns = (
   for (const drop of drops) {
     const requested = StackCount.result(drop.count)
     if (Result.isFailure(requested)) return Result.fail({ _tag: 'InvalidStack' })
-    let remaining = requested.success
+    let remaining: number = requested.success
     while (remaining > 0) {
       const count = Math.min(maxStackCountForItem(drop.item), remaining)
       const stackCount = StackCount.result(count)

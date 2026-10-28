@@ -11,7 +11,6 @@ import { describe, expect, it } from '@effect/vitest'
 import { Effect } from 'effect'
 import * as FastCheck from 'fast-check'
 import {
-  MISSING_RIPE_PRODUCE,
   RIPE_CROP_YIELD,
   UNRIPE_CROP_DROP,
   cropDrops,
@@ -152,10 +151,9 @@ describe('wheat yields', () => {
     }),
   )
 
-  it.effect('the ripe produce is part of the item vocabulary', () =>
+  it.effect('ripe wheat is part of the item vocabulary', () =>
     Effect.sync(() => {
       expect(ITEM_TYPES).toContain('wheat')
-      expect(MISSING_RIPE_PRODUCE).not.toHaveProperty('wheat_crop')
     }),
   )
 })

@@ -345,31 +345,15 @@ const at = (x: number, y: number, z: number): BlockPosition | undefined => {
  * mc-sim's. A uniform roll is the choice that needs nothing remembered.
  *
  * The clamp on the last index is for a roll of exactly 1.0, which
- * `../frame-rolls` does not produce but which a caller passing its own array
- * could; landing outside the roster would be an `undefined` kind reaching
- * `roster.spawn`.
- *
- * ONE FALLBACK, AND IT IS UNREACHABLE — recorded rather than covered.
- * `HOSTILE_KINDS[index]` is `EntityKind | undefined` under
- * `noUncheckedIndexedAccess` no matter how the index was derived, so a total
- * function has to answer for the `undefined` that the clamp above has already
- * made impossible. That arm cannot be tested without contriving a roll no caller
- * produces, and contriving one would teach the next reader that the roster can
- * be missed. It is left uncovered on purpose; `docs/testing.md` §7 carries the
- * argument and the coverage budget it spends.
- *
- * There used to be a SECOND fallback here — `?? EntityKind('creeper')` behind
- * `?? HOSTILE_KINDS[0]` — covering the case where the roster is empty. That one
- * was deleted by saying non-empty in `./mob-frame`'s type instead, which is a
- * claim a future edit to the roster has to read. Two unreachable fallbacks for
- * one lookup is how a formality stops being examined.
+ * `../frame-rolls` does not produce but which keeps this selection within the
+ * roster's upper bound. The non-empty tuple supplies the initial selection, and
+ * the reduction replaces it when the target index is visited; it does not need
+ * an unchecked indexed read or an empty-roster fallback.
  */
 const kindForRoll = (roll: number, kinds: readonly [EntityKind, ...ReadonlyArray<EntityKind>]): EntityKind => {
   const index = Math.min(kinds.length - 1, Math.floor(roll * kinds.length))
-  /* v8 ignore start -- see the header immediately above: `?? kinds[0]` is the
-   * ONE FALLBACK left, documented as unreachable rather than covered.
-   * `docs/testing.md` §7 and `vitest.config.ts`'s coverage-threshold comment
-   * both name it. */
-  return kinds[index] ?? kinds[0]
-  /* v8 ignore stop */
+  return kinds.reduce(
+    (selected, kind, candidateIndex) => candidateIndex === index ? kind : selected,
+    kinds[0],
+  )
 }

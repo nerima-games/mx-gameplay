@@ -41,6 +41,16 @@ describe('status effects', () => {
     expect(tick.state.effects[0]?.remainingSecs).toBe(1.75)
   })
 
+  it('normalizes a non-finite amplifier to zero', () => {
+    const state = applyStatusEffect(emptyStatusEffectState(), {
+      type: 'poison',
+      durationSecs: 2,
+      amplifier: Number.NaN,
+    })
+
+    expect(state.effects[0]?.amplifier).toBe(0)
+  })
+
   it('keeps the stronger effect and the longer duration at equal strength', () => {
     const strong = applyStatusEffect(emptyStatusEffectState(), {
       type: 'poison',
