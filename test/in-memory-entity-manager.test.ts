@@ -14,8 +14,8 @@
  * a GC sawtooth nobody attributes to the roster.
  */
 import { describe, expect, it } from '@effect/vitest'
-import { Effect } from 'effect'
-import type { Position } from '@nerima-games/mc-kernel'
+import { Effect, Result } from 'effect'
+import { EntityHealthPoints, EntitySerial, PositionAxis, position as makePosition, type Position } from '@nerima-games/mc-kernel'
 import {
   InMemoryEntityManagerLayer,
   emptyRoster,
@@ -34,17 +34,23 @@ import {
   type SpawnRequest,
 } from '@nerima-games/mc-sim'
 
-const position = (x: number, y: number, z: number): Position => ({ x, y, z })
+const position = (x: number, y: number, z: number): Position =>
+  makePosition(PositionAxis(x), PositionAxis(y), PositionAxis(z))
 
 type Behaviour = { readonly mood: string }
 
 const ZOMBIE = EntityKind('zombie')
 const CREEPER = EntityKind('creeper')
+const serial = (value: number): EntitySerial => EntitySerial(value)
+const success = <A, E>(result: Result.Result<A, E>): A => {
+  if (Result.isFailure(result)) throw result.failure
+  return result.success
+}
 
 const spawnRequest = (kind = ZOMBIE): SpawnRequest<Behaviour> => ({
   kind,
   feetPosition: position(1, 64, 2),
-  healthPoints: 20,
+  healthPoints: EntityHealthPoints(20),
   behaviour: { mood: 'idle' },
 })
 
@@ -54,7 +60,7 @@ const saved = (fields: Partial<Entity<Behaviour>>): Entity<Behaviour> =>
     id: EntityId('zombie-0'),
     kind: ZOMBIE,
     feetPosition: position(0, 0, 0),
-    healthPoints: 20,
+    healthPoints: EntityHealthPoints(20),
     behaviour: { mood: 'idle' },
     ...fields,
   }) as Entity<Behaviour>
@@ -193,7 +199,7 @@ describe('sweep is the only write path', () => {
           _tag: 'Changed',
           state: {
             feetPosition: position(9, 9, 9),
-            healthPoints: entity.healthPoints - 5,
+            healthPoints: EntityHealthPoints(entity.healthPoints - 5),
             behaviour: { mood: 'angry' },
           },
         },
@@ -236,7 +242,7 @@ describe('sweep is the only write path', () => {
           return {
             transition: {
               _tag: 'Changed',
-              state: { ...entity, healthPoints: 1 },
+              state: { ...entity, healthPoints: EntityHealthPoints(1) },
             },
             emit: undefined,
           }
@@ -258,7 +264,7 @@ describe('restore repairs rather than validates', () => {
       const roster = yield* makeInMemoryEntityManager<Behaviour>()
       const clean: EntityRoster<Behaviour> = {
         entities: [saved({ id: EntityId('zombie-7') })],
-        nextSerial: 8,
+        nextSerial: serial(8),
       }
 
       expect(yield* roster.restore(clean)).toStrictEqual({ discarded: 0, reidentified: 0 })
@@ -270,10 +276,10 @@ describe('restore repairs rather than validates', () => {
     Effect.sync(() => {
       // A kind is what the rules dispatch on. There is nothing to repair it to,
       // and inventing one would put a creeper in the world the save never had.
-      const result = repairRoster<Behaviour>(
-        { entities: [saved({ kind: '' as never })], nextSerial: 0 },
+      const result = success(repairRoster<Behaviour>(
+        { entities: [saved({ kind: '' as never })], nextSerial: serial(0) },
         (_kind, behaviour) => behaviour,
-      )
+      ))
 
       expect(result.repair.discarded).toBe(1)
       expect(result.roster.entities).toStrictEqual([])
@@ -284,13 +290,13 @@ describe('restore repairs rather than validates', () => {
     Effect.sync(() => {
       // Dropping would lose an entity the save legitimately had. A new id makes
       // a stale reference stale, which is the honest outcome and is counted.
-      const result = repairRoster<Behaviour>(
+      const result = success(repairRoster<Behaviour>(
         {
           entities: [saved({ id: EntityId('same') }), saved({ id: EntityId('same') })],
-          nextSerial: 0,
+          nextSerial: serial(0),
         },
         (_kind, behaviour) => behaviour,
-      )
+      ))
 
       expect(result.repair.reidentified).toBe(1)
       expect(result.roster.entities).toHaveLength(2)
@@ -300,10 +306,10 @@ describe('restore repairs rather than validates', () => {
 
   it.effect('a blank id is reidentified too', () =>
     Effect.sync(() => {
-      const result = repairRoster<Behaviour>(
-        { entities: [saved({ id: '   ' as never })], nextSerial: 3 },
+      const result = success(repairRoster<Behaviour>(
+        { entities: [saved({ id: '   ' as never })], nextSerial: serial(3) },
         (_kind, behaviour) => behaviour,
-      )
+      ))
 
       expect(result.repair.reidentified).toBe(1)
       expect(result.roster.entities[0]?.id).toBe(mintEntityId(ZOMBIE, 3))
@@ -315,15 +321,38 @@ describe('restore repairs rather than validates', () => {
       // The one field mc-sim cannot check, delegated to the party that
       // instantiated `S`. Required to be TOTAL: a throw here is a Cause.Die on
       // the world-load path that the frame loop swallows.
-      const result = repairRoster<Behaviour>(
-        { entities: [saved({}), saved({ id: EntityId('other') })], nextSerial: 0 },
+      const result = success(repairRoster<Behaviour>(
+        { entities: [saved({}), saved({ id: EntityId('other') })], nextSerial: serial(0) },
         () => ({ mood: 'repaired' }),
-      )
+      ))
 
       expect(result.roster.entities.map((entity) => entity.behaviour)).toStrictEqual([
         { mood: 'repaired' },
         { mood: 'repaired' },
       ])
+    }),
+  )
+
+  it.effect('reports serial exhaustion from repair, spawn, and restore without changing the roster', () =>
+    Effect.gen(function* () {
+      const exhaustedSerial = serial(Number.MAX_SAFE_INTEGER)
+      const exhaustedRoster: EntityRoster<Behaviour> = {
+        entities: [saved({ id: EntityId('same') }), saved({ id: EntityId('same') })],
+        nextSerial: exhaustedSerial,
+      }
+      const exhausted = { _tag: 'EntitySerialExhausted' as const }
+
+      expect(repairRoster(exhaustedRoster, (_kind, behaviour) => behaviour)).toStrictEqual(
+        Result.fail(exhausted),
+      )
+
+      const manager = yield* makeInMemoryEntityManager<Behaviour>({
+        entities: [],
+        nextSerial: exhaustedSerial,
+      })
+      expect(yield* Effect.result(manager.spawn(spawnRequest()))).toStrictEqual(Result.fail(exhausted))
+      expect(yield* Effect.result(manager.restore(exhaustedRoster))).toStrictEqual(Result.fail(exhausted))
+      expect(yield* manager.snapshot).toStrictEqual({ entities: [], nextSerial: exhaustedSerial })
     }),
   )
 
@@ -361,7 +390,7 @@ describe('InMemoryEntityManagerLayer, for a host that composes gameplayModule', 
     Effect.gen(function* () {
       const initial: EntityRoster<Behaviour> = {
         entities: [saved({ id: EntityId('zombie-9') })],
-        nextSerial: 10,
+        nextSerial: serial(10),
       }
       const manager = yield* entityManagerTag<Behaviour>().pipe(
         Effect.provide(InMemoryEntityManagerLayer<Behaviour>(initial)),
@@ -388,7 +417,7 @@ describe('InMemoryEntityManagerLayer, for a host that composes gameplayModule', 
       )
       const seeded = saved({ id: EntityId('zombie-9') })
 
-      yield* manager.restore({ entities: [seeded], nextSerial: 10 })
+      yield* manager.restore({ entities: [seeded], nextSerial: serial(10) })
 
       expect((yield* manager.find(EntityId('zombie-9')))?.behaviour).toStrictEqual(seeded.behaviour)
     }),
@@ -404,7 +433,7 @@ describe('InMemoryEntityManagerLayer, for a host that composes gameplayModule', 
         ),
       )
 
-      yield* manager.restore({ entities: [saved({ id: EntityId('zombie-9') })], nextSerial: 10 })
+      yield* manager.restore({ entities: [saved({ id: EntityId('zombie-9') })], nextSerial: serial(10) })
 
       expect((yield* manager.find(EntityId('zombie-9')))?.behaviour).toStrictEqual({
         mood: 'reincarnated',
