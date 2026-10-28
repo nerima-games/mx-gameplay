@@ -11,7 +11,7 @@
  * above, and vanilla refuses to till under a solid block.
  */
 import { describe, expect, it } from '@effect/vitest'
-import { Effect, Ref } from 'effect'
+import { Effect, Option, Ref, Result } from 'effect'
 import {
   CANNOT_TILL,
   TILLABLE_BLOCKS,
@@ -23,13 +23,21 @@ import {
   type TillingCapability,
 } from '../src/domain/interactions/till-soil'
 import { CROP_OF_SEED, SOIL_OF_CROP } from '../src/domain/interactions/plant-crop'
-import { blockIdOf, blockPosition, type BlockType } from '@nerima-games/mc-kernel'
+import { blockIdOf, type BlockType } from '@nerima-games/mc-kernel'
 import type { BlockPosition } from '@nerima-games/mc-kernel'
+import { blockPosition } from './support/coordinate-fixtures'
 
 const HOE: TillingCapability = { tills: true }
 const GROUND: BlockPosition = blockPosition(-2, 61, 7)
+const TOP_GROUND: BlockPosition = blockPosition(-2, Number.MAX_SAFE_INTEGER, 7)
 
 const keyOf = (p: BlockPosition): string => `${String(p.x)},${String(p.y)},${String(p.z)}`
+
+const positionAbove = (ground: BlockPosition): BlockPosition => {
+  const result = cellAbove(ground)
+  if (Result.isSuccess(result)) return result.success
+  throw new Error(`Expected a cell above ${keyOf(ground)}: ${result.failure.message}`)
+}
 
 const makeWorld = (cells: Readonly<Record<string, BlockType>>) =>
   Effect.gen(function* () {
@@ -40,7 +48,7 @@ const makeWorld = (cells: Readonly<Record<string, BlockType>>) =>
         Effect.gen(function* () {
           yield* Ref.update(reads, (n) => n + 1)
           const block = cells[keyOf(position)]
-          return block === undefined ? undefined : blockIdOf(block)
+          return block === undefined ? undefined : Option.getOrUndefined(blockIdOf(block))
         }),
       setBlock: (at, block) => Ref.update(written, (all) => [...all, { at, block }]),
     }
@@ -121,6 +129,18 @@ describe('the check the reference does not make', () => {
       expect(tillingVerdict(HOE, GROUND, 'stone', 'stone')._tag).toBe('notTillable')
     }),
   )
+
+  it.effect('coordinate overflow is reported as an invalid position', () =>
+    Effect.sync(() => {
+      expect(cellAbove(TOP_GROUND)).toStrictEqual(Result.fail({
+        _tag: 'BlockNeighbourFailure',
+        kind: 'RangeError',
+        reason: 'coordinate-overflow',
+        message: `Block coordinate exceeds the safe integer range: ${Number.MAX_SAFE_INTEGER + 1}`,
+      }))
+      expect(tillingVerdict(HOE, TOP_GROUND, 'dirt', 'air')).toStrictEqual({ _tag: 'invalidPosition' })
+    }),
+  )
 })
 
 describe('tillSoil', () => {
@@ -129,14 +149,14 @@ describe('tillSoil', () => {
       // The off-by-one that would put farmland where the crop goes.
       const { port, written } = yield* makeWorld({
         [keyOf(GROUND)]: 'dirt',
-        [keyOf(cellAbove(GROUND))]: 'air',
+        [keyOf(positionAbove(GROUND))]: 'air',
       })
 
       const outcome = yield* tillSoil(port, HOE, GROUND)
 
       expect(outcome._tag).toBe('tilled')
       expect(yield* Ref.get(written)).toStrictEqual([
-        { at: GROUND, block: blockIdOf(TILLED_BLOCK) },
+        { at: GROUND, block: Option.getOrThrow(blockIdOf(TILLED_BLOCK)) },
       ])
     }),
   )
@@ -159,7 +179,7 @@ describe('tillSoil', () => {
     Effect.gen(function* () {
       const { port, written } = yield* makeWorld({
         [keyOf(GROUND)]: 'dirt',
-        [keyOf(cellAbove(GROUND))]: 'stone',
+        [keyOf(positionAbove(GROUND))]: 'stone',
       })
 
       expect((yield* tillSoil(port, HOE, GROUND))._tag).toBe('obstructed')
@@ -169,7 +189,7 @@ describe('tillSoil', () => {
 
   it.effect('an unloaded cell refuses rather than defaulting to air', () =>
     Effect.gen(function* () {
-      const { port, written } = yield* makeWorld({ [keyOf(cellAbove(GROUND))]: 'air' })
+      const { port, written } = yield* makeWorld({ [keyOf(positionAbove(GROUND))]: 'air' })
 
       expect((yield* tillSoil(port, HOE, GROUND))._tag).not.toBe('tilled')
       expect(yield* Ref.get(written)).toStrictEqual([])
@@ -183,6 +203,18 @@ describe('tillSoil', () => {
       const { port, written } = yield* makeWorld({ [keyOf(GROUND)]: 'dirt' })
 
       expect((yield* tillSoil(port, HOE, GROUND))._tag).not.toBe('tilled')
+      expect(yield* Ref.get(written)).toStrictEqual([])
+    }),
+  )
+
+  it.effect('coordinate overflow refuses before reading or writing', () =>
+    Effect.gen(function* () {
+      const { port, reads, written } = yield* makeWorld({})
+
+      const outcome = yield* tillSoil(port, HOE, TOP_GROUND)
+
+      expect(outcome).toStrictEqual({ _tag: 'invalidPosition' })
+      expect(yield* Ref.get(reads)).toBe(0)
       expect(yield* Ref.get(written)).toStrictEqual([])
     }),
   )

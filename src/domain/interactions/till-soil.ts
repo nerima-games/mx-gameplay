@@ -49,9 +49,8 @@
  * DIVERGENCE FROM THE REFERENCE, stated rather than silent, and the test that
  * pins it says which behaviour is vanilla's.
  */
-import { Effect } from 'effect'
-import { blockIdOf, blockTypeOfId, type BlockType } from '@nerima-games/mc-kernel'
-import { adjacentBlockPosition, blockPosition } from '@nerima-games/mc-kernel'
+import { Effect, Option, Result } from 'effect'
+import { BlockId, adjacentBlockPosition, blockIdOf, blockTypeOfId, type BlockType } from '@nerima-games/mc-kernel'
 import type { BlockPosition } from '@nerima-games/mc-kernel'
 
 /**
@@ -95,10 +94,12 @@ export type TillOutcome =
    * produces farmland nothing can ever be planted on.
    */
   | { readonly _tag: 'obstructed'; readonly blockedBy: BlockType }
+  | { readonly _tag: 'invalidPosition' }
+  | { readonly _tag: 'unknownBlock' }
 
 /** The cell a hoe must find clear. */
-export const cellAbove = (ground: BlockPosition): BlockPosition =>
-  adjacentBlockPosition(blockPosition(ground.x, ground.y, ground.z), 'up')
+export const cellAbove = (ground: BlockPosition): ReturnType<typeof adjacentBlockPosition> =>
+  adjacentBlockPosition(ground, 'up')
 
 /**
  * Decide, given what is already known about the two cells.
@@ -122,13 +123,15 @@ export const tillingVerdict = (
   if (blockAbove !== 'air') {
     return { _tag: 'obstructed', blockedBy: blockAbove }
   }
-  return { _tag: 'tilled', at: ground }
+  return Result.isSuccess(cellAbove(ground))
+    ? { _tag: 'tilled', at: ground }
+    : { _tag: 'invalidPosition' }
 }
 
 /** The two reads and one write this rule needs of a world. */
 export type TillPort = {
   readonly blockAt: (position: BlockPosition) => Effect.Effect<number | undefined>
-  readonly setBlock: (position: BlockPosition, block: number) => Effect.Effect<unknown>
+  readonly setBlock: (position: BlockPosition, block: BlockId) => Effect.Effect<unknown>
 }
 
 /**
@@ -150,11 +153,17 @@ export const tillSoil = (
       return { _tag: 'noHoe' as const }
     }
 
+    const abovePosition = Result.getOrUndefined(cellAbove(ground))
+    if (abovePosition === undefined) {
+      return { _tag: 'invalidPosition' }
+    }
     const groundId = yield* port.blockAt(ground)
-    const aboveId = yield* port.blockAt(cellAbove(ground))
+    const aboveId = yield* port.blockAt(abovePosition)
 
-    const groundBlock = groundId === undefined ? undefined : blockTypeOfId(groundId)
-    const aboveBlock = aboveId === undefined ? undefined : blockTypeOfId(aboveId)
+    const groundBlockId = groundId === undefined ? undefined : Result.getOrUndefined(BlockId.result(groundId))
+    const aboveBlockId = aboveId === undefined ? undefined : Result.getOrUndefined(BlockId.result(aboveId))
+    const groundBlock = groundBlockId === undefined ? undefined : Result.getOrUndefined(blockTypeOfId(groundBlockId))
+    const aboveBlock = aboveBlockId === undefined ? undefined : Result.getOrUndefined(blockTypeOfId(aboveBlockId))
 
     if (groundBlock === undefined || aboveBlock === undefined) {
       return { _tag: 'notTillable' as const, found: 'air' as BlockType }
@@ -169,7 +178,11 @@ export const tillSoil = (
       // three crop ids: a vocabulary defect that removed that row would be
       // caught by kernel's own type declaration, not by a runtime
       // fallback that tills nothing and reports success.
-      yield* port.setBlock(verdict.at, blockIdOf(TILLED_BLOCK)!)
+      const farmlandBlock = Option.getOrUndefined(blockIdOf(TILLED_BLOCK))
+      if (farmlandBlock === undefined) {
+        return { _tag: 'unknownBlock' }
+      }
+      yield* port.setBlock(verdict.at, farmlandBlock)
     }
     return verdict
   })
