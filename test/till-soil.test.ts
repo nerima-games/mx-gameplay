@@ -11,7 +11,7 @@
  * above, and vanilla refuses to till under a solid block.
  */
 import { describe, expect, it } from '@effect/vitest'
-import { Effect, Option, Ref, Result } from 'effect'
+import { Effect, Option, Ref, Result, Schema } from 'effect'
 import {
   CANNOT_TILL,
   TILLABLE_BLOCKS,
@@ -20,18 +20,30 @@ import {
   tillSoil,
   tillingVerdict,
   type TillPort,
+  type TillCommitContext,
   type TillingCapability,
 } from '../src/domain/interactions/till-soil'
+import {
+  makeReplicatedOwnerId,
+  makeWorldCommitCoordinator,
+  type WorldCommitCoordinatorApi,
+} from '@nerima-games/mc-sim'
 import { CROP_OF_SEED, SOIL_OF_CROP } from '../src/domain/interactions/plant-crop'
-import { blockIdOf, type BlockType } from '@nerima-games/mc-kernel'
+import { blockIdOf, WorldIdSchema, type BlockType } from '@nerima-games/mc-kernel'
+import type { ChunkStoreRegistryApi } from '@nerima-games/mc-worldgen'
 import type { BlockPosition } from '@nerima-games/mc-kernel'
 import { blockPosition } from './support/coordinate-fixtures'
+import { cellKey, chunkKey, chunkOf, makeInMemoryWorld } from '../src/domain/in-memory-world'
 
 const HOE: TillingCapability = { tills: true }
 const GROUND: BlockPosition = blockPosition(-2, 61, 7)
 const TOP_GROUND: BlockPosition = blockPosition(-2, Number.MAX_SAFE_INTEGER, 7)
 
 const keyOf = (p: BlockPosition): string => `${String(p.x)},${String(p.y)},${String(p.z)}`
+const WORLD_ID = Schema.decodeUnknownSync(WorldIdSchema)('gameplay-till-tests')
+const OWNER_ID = makeReplicatedOwnerId('till-test-owner')
+const OWNER_SCHEMA = Schema.Struct({ durability: Schema.Number })
+const INITIAL_OWNER_STATE = { durability: 10 }
 
 const positionAbove = (ground: BlockPosition): BlockPosition => {
   const result = cellAbove(ground)
@@ -43,6 +55,33 @@ const makeWorld = (cells: Readonly<Record<string, BlockType>>) =>
   Effect.gen(function* () {
     const written = yield* Ref.make<ReadonlyArray<{ at: BlockPosition; block: number }>>([])
     const reads = yield* Ref.make(0)
+    const entries = Object.entries(cells).map(([key, block]) => {
+      const [x, y, z] = key.split(',')
+      const position = blockPosition(Number(x), Number(y), Number(z))
+      return [position, Option.getOrThrow(blockIdOf(block))] as const
+    })
+    const world = yield* makeInMemoryWorld<unknown>({
+      world: {
+        blocks: new Map(entries.map(([position, block]) => [cellKey(position), block])),
+        loaded: [...new Set(entries.map(([position]) => chunkKey(chunkOf(position))))],
+      },
+    })
+    const baseCoordinator = yield* makeWorldCommitCoordinator({
+      world: WORLD_ID,
+      owners: [{ ownerId: OWNER_ID, schema: OWNER_SCHEMA, initialState: INITIAL_OWNER_STATE }],
+      chunkStores: { forDimension: () => world.chunkStore } satisfies ChunkStoreRegistryApi,
+    })
+    const coordinator: WorldCommitCoordinatorApi = {
+      ...baseCoordinator,
+      commit: (request) => Effect.tap(
+        baseCoordinator.commit(request),
+        () => Ref.update(written, (all) => [
+          ...all,
+          ...(request.blockWrite?.edits.map(({ position, block }) => ({ at: position, block })) ?? []),
+        ]),
+      ),
+    }
+    const context: TillCommitContext = { coordinator, dimension: 'overworld', changes: [] }
     const port: TillPort = {
       blockAt: (position) =>
         Effect.gen(function* () {
@@ -50,9 +89,8 @@ const makeWorld = (cells: Readonly<Record<string, BlockType>>) =>
           const block = cells[keyOf(position)]
           return block === undefined ? undefined : Option.getOrUndefined(blockIdOf(block))
         }),
-      setBlock: (at, block) => Ref.update(written, (all) => [...all, { at, block }]),
     }
-    return { port, written, reads }
+    return { port, written, reads, world, coordinator, context }
   })
 
 describe('tillingVerdict', () => {
@@ -147,17 +185,36 @@ describe('tillSoil', () => {
   it.effect('writes farmland into the ground cell, not above it', () =>
     Effect.gen(function* () {
       // The off-by-one that would put farmland where the crop goes.
-      const { port, written } = yield* makeWorld({
+      const { port, written, context, coordinator } = yield* makeWorld({
         [keyOf(GROUND)]: 'dirt',
         [keyOf(positionAbove(GROUND))]: 'air',
       })
 
-      const outcome = yield* tillSoil(port, HOE, GROUND)
+      const outcome = yield* tillSoil(port, HOE, GROUND, {
+        ...context,
+        changes: [{ ownerId: OWNER_ID, state: { durability: 9 } }],
+      })
 
       expect(outcome._tag).toBe('tilled')
       expect(yield* Ref.get(written)).toStrictEqual([
         { at: GROUND, block: Option.getOrThrow(blockIdOf(TILLED_BLOCK)) },
       ])
+      const committedOwner = yield* coordinator.snapshot(OWNER_ID, OWNER_SCHEMA)
+      expect(Schema.decodeUnknownSync(OWNER_SCHEMA)(committedOwner.state)).toStrictEqual({ durability: 9 })
+      expect(yield* coordinator.revision).toBe(1)
+    }),
+  )
+
+  it.effect('refuses a successful till when C4/C7 commit context is missing', () =>
+    Effect.gen(function* () {
+      const { port, written, coordinator } = yield* makeWorld({
+        [keyOf(GROUND)]: 'dirt',
+        [keyOf(positionAbove(GROUND))]: 'air',
+      })
+
+      expect((yield* tillSoil(port, HOE, GROUND))._tag).toBe('commitContextMissing')
+      expect(yield* Ref.get(written)).toStrictEqual([])
+      expect(yield* coordinator.revision).toBe(0)
     }),
   )
 
@@ -177,21 +234,21 @@ describe('tillSoil', () => {
 
   it.effect('a refusal writes nothing', () =>
     Effect.gen(function* () {
-      const { port, written } = yield* makeWorld({
+      const { port, written, context } = yield* makeWorld({
         [keyOf(GROUND)]: 'dirt',
         [keyOf(positionAbove(GROUND))]: 'stone',
       })
 
-      expect((yield* tillSoil(port, HOE, GROUND))._tag).toBe('obstructed')
+      expect((yield* tillSoil(port, HOE, GROUND, context))._tag).toBe('obstructed')
       expect(yield* Ref.get(written)).toStrictEqual([])
     }),
   )
 
   it.effect('an unloaded cell refuses rather than defaulting to air', () =>
     Effect.gen(function* () {
-      const { port, written } = yield* makeWorld({ [keyOf(positionAbove(GROUND))]: 'air' })
+      const { port, written, context } = yield* makeWorld({ [keyOf(positionAbove(GROUND))]: 'air' })
 
-      expect((yield* tillSoil(port, HOE, GROUND))._tag).not.toBe('tilled')
+      expect((yield* tillSoil(port, HOE, GROUND, context))._tag).not.toBe('tilled')
       expect(yield* Ref.get(written)).toStrictEqual([])
     }),
   )
@@ -200,9 +257,9 @@ describe('tillSoil', () => {
     Effect.gen(function* () {
       // The case above always left GROUND unloaded; this is the mirror where
       // the ground reads fine and only the cell above is not resident.
-      const { port, written } = yield* makeWorld({ [keyOf(GROUND)]: 'dirt' })
+      const { port, written, context } = yield* makeWorld({ [keyOf(GROUND)]: 'dirt' })
 
-      expect((yield* tillSoil(port, HOE, GROUND))._tag).not.toBe('tilled')
+      expect((yield* tillSoil(port, HOE, GROUND, context))._tag).not.toBe('tilled')
       expect(yield* Ref.get(written)).toStrictEqual([])
     }),
   )

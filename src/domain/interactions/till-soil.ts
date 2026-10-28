@@ -49,9 +49,22 @@
  * DIVERGENCE FROM THE REFERENCE, stated rather than silent, and the test that
  * pins it says which behaviour is vanilla's.
  */
-import { Effect, Option, Result } from 'effect'
-import { BlockId, adjacentBlockPosition, blockIdOf, blockTypeOfId, type BlockType } from '@nerima-games/mc-kernel'
+import { Effect, Option, Result, Schema } from 'effect'
+import {
+  BlockId,
+  WorldWriteBatchSchema,
+  adjacentBlockPosition,
+  blockIdOf,
+  blockTypeOfId,
+  type BlockType,
+  type Dimension,
+} from '@nerima-games/mc-kernel'
 import type { BlockPosition } from '@nerima-games/mc-kernel'
+import type {
+  ReplicatedOwnerCandidate,
+  WorldCommitCoordinatorApi,
+  WorldCommitCoordinatorError,
+} from '@nerima-games/mc-sim'
 
 /**
  * Ground that a hoe turns into farmland.
@@ -96,6 +109,8 @@ export type TillOutcome =
   | { readonly _tag: 'obstructed'; readonly blockedBy: BlockType }
   | { readonly _tag: 'invalidPosition' }
   | { readonly _tag: 'unknownBlock' }
+  | { readonly _tag: 'commitContextMissing' }
+  | { readonly _tag: 'commitFailed'; readonly error: Schema.SchemaError | WorldCommitCoordinatorError }
 
 /** The cell a hoe must find clear. */
 export const cellAbove = (ground: BlockPosition): ReturnType<typeof adjacentBlockPosition> =>
@@ -131,8 +146,15 @@ export const tillingVerdict = (
 /** The two reads and one write this rule needs of a world. */
 export type TillPort = {
   readonly blockAt: (position: BlockPosition) => Effect.Effect<number | undefined>
-  readonly setBlock: (position: BlockPosition, block: BlockId) => Effect.Effect<unknown>
+  /** Accepted for the current stage call shape; never used for block writes. */
+  readonly setBlock?: (position: BlockPosition, block: BlockId) => Effect.Effect<unknown>
 }
+
+export type TillCommitContext = Readonly<{
+  coordinator: WorldCommitCoordinatorApi
+  dimension: Dimension
+  changes: ReadonlyArray<ReplicatedOwnerCandidate>
+}>
 
 /**
  * Read the two cells, decide, and write farmland if the decision says so.
@@ -145,6 +167,7 @@ export const tillSoil = (
   port: TillPort,
   held: TillingCapability,
   ground: BlockPosition,
+  commitContext?: TillCommitContext,
 ): Effect.Effect<TillOutcome> =>
   Effect.gen(function* () {
     if (!held.tills) {
@@ -157,6 +180,14 @@ export const tillSoil = (
     if (abovePosition === undefined) {
       return { _tag: 'invalidPosition' }
     }
+
+    const expectedRevision = commitContext === undefined
+      ? undefined
+      : yield* commitContext.coordinator.revision
+    const expectedDimensionRevision = commitContext === undefined
+      ? undefined
+      : yield* commitContext.coordinator.dimensionRevision(commitContext.dimension)
+
     const groundId = yield* port.blockAt(ground)
     const aboveId = yield* port.blockAt(abovePosition)
 
@@ -182,7 +213,36 @@ export const tillSoil = (
       if (farmlandBlock === undefined) {
         return { _tag: 'unknownBlock' }
       }
-      yield* port.setBlock(verdict.at, farmlandBlock)
+      if (
+        commitContext === undefined ||
+        expectedRevision === undefined ||
+        expectedDimensionRevision === undefined
+      ) return { _tag: 'commitContextMissing' }
+
+      const committed = Effect.gen(function* () {
+        const blockWrite = yield* Schema.decodeUnknownEffect(WorldWriteBatchSchema)({
+          world: commitContext.coordinator.worldId,
+          expectedWorldRevision: expectedRevision,
+          dimension: commitContext.dimension,
+          expectedDimensionRevision,
+          edits: [{ position: verdict.at, block: farmlandBlock }],
+        })
+        yield* commitContext.coordinator.commit({
+          expectedRevision,
+          expectedDimensions: [{
+            dimension: commitContext.dimension,
+            expectedRevision: expectedDimensionRevision,
+          }],
+          changes: commitContext.changes,
+          blockWrite,
+        })
+        return verdict
+      })
+
+      return yield* Effect.matchEffect(committed, {
+        onFailure: (error) => Effect.succeed({ _tag: 'commitFailed' as const, error }),
+        onSuccess: (outcome) => Effect.succeed(outcome),
+      })
     }
     return verdict
   })
