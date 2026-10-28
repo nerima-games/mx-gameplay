@@ -82,6 +82,8 @@ import {
   BlockAxis,
   BlockId,
   blockIdOf,
+  WorldWriteBatchSchema,
+  type WorldWriteBatch,
   blockPosition as kernelBlockPosition,
   blockPositionKeyOf,
   blockPositionOfKey,
@@ -121,7 +123,22 @@ import {
   type TimeServiceApi,
   type VehicleServiceApi,
 } from '@nerima-games/mc-sim'
-import { Brand, Effect, Option, Ref, Result, Semaphore } from 'effect'
+import { Brand, Effect, Equal, Option, Ref, Result, Schema, Semaphore } from 'effect'
+import {
+  PlayerStorageSnapshotSchema,
+  damageAt as damagePlayerStorageAt,
+  makeReplicatedOwnerId,
+  validatePlayerStorageSnapshot,
+  withInventory,
+  type BucketServiceApi,
+  type PlayerStorage,
+  type ReplicatedOwnerCandidate,
+  type ReplicatedOwnerId,
+  type ReplicatedWorldDelta,
+  type ReplicatedOwnerChange,
+  type WorldCommitCoordinatorApi,
+  type WorldCommitCoordinatorError,
+} from '@nerima-games/mc-sim'
 import {
   advanceVillagerRestock,
   copyVillagerTradeState,
@@ -171,7 +188,6 @@ import {
   FIRE_FRAME_TICK_BUDGET,
   FIRE_TICK_INTERVAL_SECS,
   FIRE_UNAVAILABLE_BLOCK,
-  FIRE_UNLOADED_RETRY_LIMIT,
   FIRE_WORK_BUDGET,
   extinguishFire,
   isFireLifecycleSnapshot,
@@ -393,6 +409,54 @@ export const resolveArmoredPlayerDamages = (
       return { ...event, damage: resolved.damage }
     }),
   )
+
+type PreparedFirePlayerDamage = Readonly<{
+  readonly damages: ReadonlyArray<PlayerDamageEvent>
+  readonly changes: ReadonlyArray<ReplicatedOwnerCandidate>
+  readonly storageAfterCommit: PlayerStorage | undefined
+}>
+
+const prepareFirePlayerDamage = (
+  inventory: InventoryServiceApi,
+  coordinator: WorldCommitCoordinatorApi,
+  ownerId: ReplicatedOwnerId,
+  expectedRevision: WorldWriteBatch['expectedWorldRevision'],
+  damages: ReadonlyArray<PlayerDamageEvent>,
+): Effect.Effect<PreparedFirePlayerDamage | undefined> => Effect.gen(function* () {
+  const local = yield* inventory.storageSnapshot
+  const observed = yield* Effect.result(coordinator.snapshot(ownerId, PlayerStorageSnapshotSchema))
+  if (
+    Result.isFailure(observed) ||
+    observed.success.revision !== expectedRevision ||
+    !Equal.equals(local, observed.success.state)
+  ) {
+    return undefined
+  }
+
+  let storage = local
+  const resolvedDamages: PlayerDamageEvent[] = []
+  for (const event of damages) {
+    const resolved = resolveArmorHit(storage.equipment, event.damage)
+    resolvedDamages.push({ ...event, damage: resolved.damage })
+    if (resolved.durabilityWear === 0) continue
+
+    for (const slot of resolved.wornSlots) {
+      const damaged = damagePlayerStorageAt(storage, { _tag: 'Equipment', slot }, resolved.durabilityWear)
+      if (damaged.result._tag === 'Damaged' || damaged.result._tag === 'Broken') {
+        storage = damaged.storage
+      }
+    }
+  }
+
+  const validation = validatePlayerStorageSnapshot(storage)
+  if (validation._tag !== 'Valid') return undefined
+  const changed = !Equal.equals(local, validation.storage)
+  return {
+    damages: resolvedDamages,
+    changes: changed ? [{ ownerId, state: validation.storage }] : [],
+    storageAfterCommit: changed ? validation.storage : undefined,
+  }
+})
 
 /**
  * How many gameplay ticks pass between two active lava ticks.
@@ -736,11 +800,50 @@ const maximumFluidLevel = (kind: FluidCell['kind'], dimension: Dimension): numbe
     ? DEFAULT_FLUID_HORIZONTAL_RANGE.water
     : DEFAULT_FLUID_HORIZONTAL_RANGE.lava[dimension]
 
+type GameplayBlockCommitResult = Result.Result<
+  ReplicatedWorldDelta<ReplicatedOwnerChange>,
+  WorldCommitCoordinatorError
+>
+
+const commitBlockEdits: (
+  context: Readonly<{
+    coordinator: WorldCommitCoordinatorApi
+    dimension: Dimension
+    changes: ReadonlyArray<ReplicatedOwnerCandidate>
+  }>,
+  expectedRevision: WorldWriteBatch['expectedWorldRevision'],
+  expectedDimensionRevision: WorldWriteBatch['expectedDimensionRevision'],
+  edits: WorldWriteBatch['edits'],
+) => Effect.Effect<GameplayBlockCommitResult> = (
+  context,
+  expectedRevision,
+  expectedDimensionRevision,
+  edits,
+) => Effect.gen(function* () {
+    const blockWrite = yield* Schema.decodeUnknownEffect(WorldWriteBatchSchema)({
+      world: context.coordinator.worldId,
+      expectedWorldRevision: expectedRevision,
+      dimension: context.dimension,
+      expectedDimensionRevision,
+      edits,
+    }).pipe(Effect.orDie)
+    return yield* Effect.result(context.coordinator.commit({
+      expectedRevision,
+      expectedDimensions: [{ dimension: context.dimension, expectedRevision: expectedDimensionRevision }],
+      changes: context.changes,
+      blockWrite,
+    }))
+  })
+
 const runFluidPropagation = (
   store: ChunkStoreApi,
   runtime: Ref.Ref<FluidRuntimeState>,
   work: ReadonlyArray<FluidWorkItem>,
-  dimension: Dimension,
+  context: Readonly<{
+    coordinator: WorldCommitCoordinatorApi
+    dimension: Dimension
+    changes: ReadonlyArray<ReplicatedOwnerCandidate>
+  }>,
 ): Effect.Effect<void> =>
   Effect.gen(function* () {
     const snapshot = yield* Ref.get(runtime)
@@ -764,6 +867,8 @@ const runFluidPropagation = (
         decodeBlockPositionKey(item.key) ?? { x: Number.NaN, y: Number.NaN, z: Number.NaN }
       if (!validFluidPosition(position)) continue
 
+      const expectedRevision = yield* context.coordinator.revision
+      const expectedDimensionRevision = yield* context.coordinator.dimensionRevision(context.dimension)
       const cell: FluidCell = cells.get(item.key) ?? {
         key: item.key,
         kind: item.kind,
@@ -801,9 +906,14 @@ const runFluidPropagation = (
         supported:
           cell.source ||
           (cell.parent !== undefined && cells.get(cell.parent)?.kind === cell.kind),
-        maximumHorizontalLevel: maximumFluidLevel(cell.kind, dimension),
+        maximumHorizontalLevel: maximumFluidLevel(cell.kind, context.dimension),
       })
       let deferCurrent = transition.defer
+      const pending = new Map<string, {
+        readonly change: (typeof transition.changes)[number]
+        readonly position: BlockPosition
+        readonly block: BlockId
+      }>()
 
       for (const change of transition.changes) {
         if (change._tag === 'ForgetFluid') {
@@ -815,72 +925,50 @@ const runFluidPropagation = (
         const changePosition = yield* resultOrDie(
           blockPositionOfKey(change._tag === 'PlaceFluid' ? change.cell.key : change.key),
         )
-        /* v8 ignore start -- `changePosition` is always `adjacentBlockPosition(toKernelPosition(position), 'down')`,
-         * `horizontalBlockNeighbours(toKernelPosition(position))[i]` or a probe key already computed
-         * from `position`, and `position` was already proven finite by the
-         * `validFluidPosition(position)` check above (the "opaque diagnostic
-         * keys" guard this comment references). +-1 arithmetic on a finite
-         * number is always finite, so this second check can never see a
-         * non-finite `changePosition`; it is defence-in-depth for a future
-         * caller that derives positions differently, not a reachable path
-         * today. */
+        /* v8 ignore start -- derived positions are adjacent neighbours of a validated finite input. */
         if (!validFluidPosition(changePosition)) continue
         /* v8 ignore stop */
 
-        if (change._tag === 'PlaceFluid') {
-          const fluidBlock = blockIdOf(change.cell.kind)
-          // `change.cell.kind` is `FluidCell['kind']`, `'water' | 'lava'`, and
-          // both are registered blocks (kernel's own `BLOCK_REGISTRY`,
-          // pinned total over BlockType by kernel's own type declaration
-          // the same way the five branches vitest.config.ts names are pinned);
-          // `blockIdOf` returns `Some` for both registered block types.
-          /* v8 ignore start */
-          if (Option.isNone(fluidBlock)) continue
-          /* v8 ignore stop */
-          const outcome = yield* store.setBlock(changePosition, fluidBlock.value)
-          if (outcome._tag === 'Written' || outcome._tag === 'Unchanged') {
-            cells.set(change.cell.key, change.cell)
-            enqueue(fluidWorkItemOf(change.cell))
-          } else if (outcome._tag === 'ChunkNotLoaded') {
-            // Transient: the chunk may load before `MAX_FLUID_DEFERRED_ATTEMPTS`
-            // is spent, so retry.
-            deferCurrent = true
-          }
-          // `OutOfWorld` is left undeferred and undropped: `mc-worldgen`'s
-          // `BlockWriteOutcome` (`chunk-store-state.d.ts`) is a four-tag union,
-          // not the three-tag shape the deleted `chunk-store-port.ts` mirror
-          // carried, and a `y` outside the world will never become writable —
-          // deferring it would retry every tick until
-          // `MAX_FLUID_DEFERRED_ATTEMPTS` for no reason, same terminal
-          // treatment `OutOfWorld` gets everywhere else in this file (e.g. the
-          // `BlockUseOutcome`/`BreakOutcome` switches below).
-          continue
-        }
+        const block = change._tag === 'PlaceFluid'
+          ? Option.getOrUndefined(blockIdOf(change.cell.kind))
+          : change._tag === 'RemoveFluid'
+            ? AIR_BLOCK_ID
+            : Option.getOrUndefined(blockIdOf(change.block))
+        if (block === undefined) continue
+        const key = blockPositionKeyOf(toKernelPosition(changePosition))
+        pending.set(key, { change, position: changePosition, block })
+      }
 
-        if (change._tag === 'RemoveFluid') {
-          const outcome = yield* store.setBlock(changePosition, AIR_BLOCK_ID)
-          if (outcome._tag === 'ChunkNotLoaded') {
-            deferCurrent = true
-          } else {
-            cells.delete(change.key)
-            enqueueDependents(change.key)
+      if (pending.size > 0) {
+        const operations = [...pending.values()]
+        const committed = yield* commitBlockEdits(
+          context,
+          expectedRevision,
+          expectedDimensionRevision,
+          operations.map(({ position, block }) => ({ position, block })),
+        )
+        if (Result.isFailure(committed)) {
+          const tag = committed.failure._tag
+          deferCurrent = deferCurrent || tag === 'WorldWriteChunkUnavailable' ||
+            tag === 'WorldWriteStale' || tag === 'WorldRevisionConflict' ||
+            tag === 'DimensionRevisionConflict' || tag === 'WorldCommitChunkStoreUnavailable'
+          if (!deferCurrent) {
+            for (const { change } of operations) {
+              if (change._tag === 'PlaceFluid') continue
+              cells.delete(change.key)
+              enqueueDependents(change.key)
+            }
           }
-          continue
-        }
-
-        const solidBlock = blockIdOf(change.block)
-        // `change.block` is the Solidify member's `'obsidian' | 'cobblestone'`,
-        // both registered blocks; same totality argument as the `fluidBlock`
-        // check above.
-        /* v8 ignore start */
-        if (Option.isNone(solidBlock)) continue
-        /* v8 ignore stop */
-        const outcome = yield* store.setBlock(changePosition, solidBlock.value)
-        if (outcome._tag === 'ChunkNotLoaded') {
-          deferCurrent = true
         } else {
-          cells.delete(change.key)
-          enqueueDependents(change.key)
+          for (const { change } of operations) {
+            if (change._tag === 'PlaceFluid') {
+              cells.set(change.cell.key, change.cell)
+              enqueue(fluidWorkItemOf(change.cell))
+            } else {
+              cells.delete(change.key)
+              enqueueDependents(change.key)
+            }
+          }
         }
       }
 
@@ -2528,8 +2616,12 @@ const FIRE_SNAPSHOT_OFFSETS = [
 /** Extinguish a loaded fire cell, committing logical state only after the world write succeeds. */
 export const requestFireExtinguish = (
   state: GameplayFrameState,
-  store: ChunkStoreApi,
   position: FirePosition,
+  context: Readonly<{
+    coordinator: WorldCommitCoordinatorApi
+    dimension: Dimension
+    changes: ReadonlyArray<ReplicatedOwnerCandidate>
+  }>,
 ): Effect.Effect<boolean> =>
   Effect.gen(function* () {
     const current = yield* Ref.get(state.fireLifecycle)
@@ -2537,16 +2629,26 @@ export const requestFireExtinguish = (
       return false
     }
     const air = blockIdOf('air')
-    // `'air'` is BlockType's own zero-arg member (kernel's own type declaration
-    // guarantees `Some` for the registered `'air'` type).
-    /* v8 ignore start */
+    /* v8 ignore start -- `air` is a registered BlockType. */
     if (Option.isNone(air)) return false
     /* v8 ignore stop */
-    const outcome = yield* store.setBlock(blockPosition(position.x, position.y, position.z), air.value)
-    if (outcome._tag !== 'Written' && outcome._tag !== 'Unchanged') return false
+
+    const expectedRevision = yield* context.coordinator.revision
+    const expectedDimensionRevision = yield* context.coordinator.dimensionRevision(context.dimension)
+    const committed = yield* commitBlockEdits(
+      context,
+      expectedRevision,
+      expectedDimensionRevision,
+      [{ position: blockPosition(position.x, position.y, position.z), block: air.value }],
+    )
+    if (Result.isFailure(committed)) return false
+
     yield* Ref.set(state.fireLifecycle, extinguishFire(current, position))
-    if (outcome._tag === 'Written') {
-      yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, [blockPositionKeyOf(blockPosition(position.x, position.y, position.z))]))
+    const disturbed = committed.success.blockChanges.map((change) =>
+      blockPositionKeyOf(change.position),
+    )
+    if (disturbed.length > 0) {
+      yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, disturbed))
     }
     return true
   })
@@ -2557,6 +2659,12 @@ const stepFireTick = (
   roster: EntityManagerApi<MobBehaviour>,
   inventory: InventoryServiceApi,
   player: PlayerServiceApi,
+  context: Readonly<{
+    coordinator: WorldCommitCoordinatorApi
+    dimension: Dimension
+    changes: ReadonlyArray<ReplicatedOwnerCandidate>
+    playerStorageOwnerId: ReplicatedOwnerId
+  }>,
 ): Effect.Effect<void> =>
   Effect.gen(function* () {
     const current = yield* Ref.get(state.fireLifecycle)
@@ -2569,6 +2677,8 @@ const stepFireTick = (
     if (current.fires.length === 0 && (current.burningActors?.length ?? 0) === 0) return
     /* v8 ignore stop */
 
+    const expectedRevision = yield* context.coordinator.revision
+    const expectedDimensionRevision = yield* context.coordinator.dimensionRevision(context.dimension)
     const activeKeys = new Set(current.fires.map((fire) => firePositionKey(fire.position)))
     const burningIds = new Set((current.burningActors ?? []).map((actor) => actor.id))
     const survival = yield* state.survivalHunger.snapshot
@@ -2689,51 +2799,7 @@ const stepFireTick = (
     /* v8 ignore stop */
     const airBlock = air.value
     const fireBlock = fire.value
-    const nextFires = new Map(step.state.fires.map((active) => [firePositionKey(active.position), active]))
-    const previousFires = new Map(current.fires.map((active) => [firePositionKey(active.position), active]))
-    const failedIgnitions = new Set<string>()
-    const disturbed: BlockPositionKey[] = []
-    for (const mutation of step.mutations) {
-      const mutationKey = firePositionKey(mutation.position)
-      const outcome = yield* store.setBlock(blockPosition(mutation.position.x, mutation.position.y, mutation.position.z), mutation.block === 'air' ? airBlock : fireBlock)
-      if (outcome._tag === 'Written') disturbed.push(blockPositionKeyOf(blockPosition(mutation.position.x, mutation.position.y, mutation.position.z)))
-      if (outcome._tag === 'Written' || outcome._tag === 'Unchanged') continue
-      if (mutation.block === 'fire') {
-        nextFires.delete(mutationKey)
-        failedIgnitions.add(mutationKey)
-        continue
-      }
-      const previous = previousFires.get(mutationKey)
-      // Every 'air' mutation `advanceFireLifecycle` emits names the position
-      // of a fire it read from `state.fires` (fire-lifecycle.ts's
-      // `advanceBurningActors`-adjacent extinguish arms, both keyed by
-      // `fire.position`) — the exact same `state.fires` this function passed
-      // in as `current`, which `previousFires` is built from with the same
-      // key function. No input reaches this arm with a miss.
-      /* v8 ignore start */
-      if (previous === undefined) continue
-      /* v8 ignore stop */
-      if (outcome._tag !== 'ChunkNotLoaded') {
-        nextFires.set(mutationKey, previous)
-        continue
-      }
-      const unloadedRetries = (previous.unloadedRetries ?? 0) + 1
-      if (unloadedRetries <= FIRE_UNLOADED_RETRY_LIMIT) {
-        nextFires.set(mutationKey, { ...previous, unloadedRetries })
-      }
-    }
-
-    const previouslyBurningIds = new Set((current.burningActors ?? []).map((actor) => actor.id))
-    let burningActors = (step.state.burningActors ?? []).filter(
-      (actor) => previouslyBurningIds.has(actor.id) || !failedIgnitions.has(firePositionKey(actor.position)),
-    )
-    const entityDamages: ReadonlyArray<FireEntityDamage> = step.entityDamages.filter(
-      (damage) => previouslyBurningIds.has(damage.actorId) || !failedIgnitions.has(firePositionKey(damage.at)),
-    )
     const playerDamages: ReadonlyArray<PlayerDamageEvent> = step.damages
-      .filter(
-        (damage) => previouslyBurningIds.has('player') || !failedIgnitions.has(firePositionKey(damage.at)),
-      )
       .map((damage) => ({
         ...damage,
         at: kernelPosition(
@@ -2742,6 +2808,55 @@ const stepFireTick = (
           PositionAxis(damage.at.z),
         ),
       }))
+    const fireDamage = playerDamages.length === 0
+      ? { damages: playerDamages, changes: [], storageAfterCommit: undefined }
+      : yield* prepareFirePlayerDamage(
+        inventory,
+        context.coordinator,
+        context.playerStorageOwnerId,
+        expectedRevision,
+        playerDamages,
+      )
+    if (fireDamage === undefined) return
+
+    const changes = fireDamage.changes.length === 0
+      ? context.changes
+      : [
+          ...context.changes.filter((candidate) => candidate.ownerId !== context.playerStorageOwnerId),
+          ...fireDamage.changes,
+        ]
+    const fireCommitContext = { ...context, changes }
+    const disturbed: BlockPositionKey[] = []
+    let committed: GameplayBlockCommitResult | undefined
+    if (step.mutations.length > 0) {
+      committed = yield* commitBlockEdits(
+        fireCommitContext,
+        expectedRevision,
+        expectedDimensionRevision,
+        step.mutations.map((mutation) => ({
+          position: blockPosition(mutation.position.x, mutation.position.y, mutation.position.z),
+          block: mutation.block === 'air' ? airBlock : fireBlock,
+        })),
+      )
+    } else if (changes.length > 0) {
+      committed = yield* Effect.result(context.coordinator.commit({
+        expectedRevision,
+        expectedDimensions: [{ dimension: context.dimension, expectedRevision: expectedDimensionRevision }],
+        changes,
+      }))
+    }
+    if (committed !== undefined) {
+      if (Result.isFailure(committed)) return
+      disturbed.push(...committed.success.blockChanges.map((change) =>
+        blockPositionKeyOf(change.position),
+      ))
+      if (fireDamage.storageAfterCommit !== undefined) {
+        yield* inventory.restoreStorage(fireDamage.storageAfterCommit).pipe(Effect.orDie)
+      }
+    }
+
+    let burningActors = step.state.burningActors ?? []
+    const entityDamages: ReadonlyArray<FireEntityDamage> = step.entityDamages
 
     const damageByEntity = new Map(entityDamages.map((damage) => [damage.actorId, damage]))
     const casualties = yield* roster.sweep<MobCasualty>((entity) => {
@@ -2776,13 +2891,12 @@ const stepFireTick = (
 
     yield* Ref.set(state.fireLifecycle, {
       ...step.state,
-      fires: [...nextFires.values()].sort((a, b) =>
+      fires: [...step.state.fires].sort((a, b) =>
         a.position.x - b.position.x || a.position.y - b.position.y || a.position.z - b.position.z),
       burningActors,
     })
-    if (playerDamages.length > 0) {
-      const armored = yield* resolveArmoredPlayerDamages(inventory, playerDamages)
-      yield* Ref.update(state.playerDamages, (damages) => [...damages, ...armored])
+    if (fireDamage.damages.length > 0) {
+      yield* Ref.update(state.playerDamages, (damages) => [...damages, ...fireDamage.damages])
     }
     if (disturbed.length > 0) {
       yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, disturbed))
@@ -2796,6 +2910,12 @@ const stepFireLifecycle = (
   inventory: InventoryServiceApi,
   player: PlayerServiceApi,
   dt: DeltaTimeSecs,
+  context: Readonly<{
+    coordinator: WorldCommitCoordinatorApi
+    dimension: Dimension
+    changes: ReadonlyArray<ReplicatedOwnerCandidate>
+    playerStorageOwnerId: ReplicatedOwnerId
+  }>,
 ): Effect.Effect<void> =>
   Effect.gen(function* () {
     const current = yield* Ref.get(state.fireLifecycle)
@@ -2813,7 +2933,7 @@ const stepFireLifecycle = (
     yield* Ref.set(accumulator, elapsed - ticks * FIRE_TICK_INTERVAL_SECS)
 
     for (let index = 0; index < ticks; index += 1) {
-      yield* stepFireTick(state, store, roster, inventory, player)
+      yield* stepFireTick(state, store, roster, inventory, player, context)
       const next = yield* Ref.get(state.fireLifecycle)
       // `stepFireTick`'s only early returns are the two proven-dead guards
       // above (both pragma'd), so any call that reaches back here ran all the
@@ -3167,6 +3287,52 @@ export interface GameplayStageOptions {
    */
   readonly droppedItemPickup?: boolean
 }
+export const GAMEPLAY_PLAYER_STORAGE_OWNER_ID: ReplicatedOwnerId = makeReplicatedOwnerId('mx-gameplay-player-storage')
+
+export type GameplayStageCommitServices = Readonly<{
+  readonly coordinator: WorldCommitCoordinatorApi
+  readonly bucketService: BucketServiceApi
+  readonly playerStorageOwnerId: ReplicatedOwnerId
+}>
+
+export const candidateForItemUse: (
+  inventory: InventoryServiceApi,
+  coordinator: WorldCommitCoordinatorApi,
+  ownerId: ReplicatedOwnerId,
+  item: ItemType,
+  operation: 'consume' | 'damage',
+) => Effect.Effect<ReplicatedOwnerCandidate | undefined> = (
+  inventory,
+  coordinator,
+  ownerId,
+  item,
+  operation,
+) => Effect.gen(function* () {
+    const local = yield* inventory.storageSnapshot
+    const committed = yield* Effect.result(coordinator.snapshot(ownerId, PlayerStorageSnapshotSchema))
+    if (Result.isFailure(committed)) return undefined
+    if (!Equal.equals(local, committed.success.state)) return undefined
+
+    let candidate: PlayerStorage | undefined
+    if (operation === 'consume') {
+      const removed = Result.getOrUndefined(removeInventoryItem(local.inventory, item, 1))
+      if (removed === undefined || removed.removed !== 1) return undefined
+      const updated = Result.getOrUndefined(withInventory(local, removed.inventory))
+      if (updated === undefined) return undefined
+      candidate = updated
+    } else {
+      const slotIndex = local.inventory.slots.findIndex((slot) => slot?.item === item)
+      if (slotIndex < 0) return undefined
+      const damaged = damagePlayerStorageAt(local, { _tag: 'Inventory', slotIndex }, 1)
+      if (damaged.result._tag !== 'Damaged' && damaged.result._tag !== 'Broken') return undefined
+      candidate = damaged.storage
+    }
+
+    const validation = validatePlayerStorageSnapshot(candidate)
+    if (validation._tag !== 'Valid') return undefined
+    return { ownerId, state: validation.storage }
+  })
+
 export interface GameplayStageContext {
   readonly state: GameplayFrameState
   readonly store: ChunkStoreApi
@@ -3177,6 +3343,7 @@ export interface GameplayStageContext {
   readonly vehicleService: VehicleServiceApi | undefined
   readonly vehicleEnvironment: VehicleFrameEnvironment | undefined
   readonly options: GameplayStageOptions
+  readonly commit: GameplayStageCommitServices | undefined
 }
 // Internal dependencies for the stage adapters. The public facade re-exports only the package API.
 export {

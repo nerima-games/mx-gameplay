@@ -17,7 +17,7 @@ import type {
 } from './registration-core.js'
 
 export const makeFluidsStage = (context: GameplayStageContext): StageRegistration => {
-  const { state, store, player } = context
+  const { state, store, player, commit } = context
   return {
     id: GAMEPLAY_STAGE_IDS.fluids,
     after: [GAMEPLAY_STAGE_IDS.enderDragon],
@@ -25,6 +25,7 @@ export const makeFluidsStage = (context: GameplayStageContext): StageRegistratio
       Effect.gen(function* () {
         const runtime = yield* fluidRuntimeStateFor(state.fluidFrontier)
         const semaphore = yield* fluidRuntimeSemaphoreFor(state.fluidFrontier)
+        if (commit === undefined) return
         yield* semaphore.withPermits(1)(
           Effect.gen(function* () {
             const tick = yield* Ref.updateAndGet(state.tickCount, (value) => value + 1)
@@ -39,8 +40,8 @@ export const makeFluidsStage = (context: GameplayStageContext): StageRegistratio
                 split.work,
                 {
                   ...fluidState,
-                  // Reserve work before any asynchronous store access. New
-                  // disturbances can still append to the remaining frontier.
+                  // Reserve work before asynchronous store access. New
+                  // disturbances can append to the remaining frontier.
                   frontier: carryOver(uniqueFrontier, split),
                 },
               ] as const
@@ -49,7 +50,11 @@ export const makeFluidsStage = (context: GameplayStageContext): StageRegistratio
             if (work.length === 0) return
 
             const dimension = yield* player.dimension
-            yield* runFluidPropagation(store, runtime, work, dimension)
+            yield* runFluidPropagation(store, runtime, work, {
+              coordinator: commit.coordinator,
+              dimension,
+              changes: [],
+            })
           }),
         )
       }),

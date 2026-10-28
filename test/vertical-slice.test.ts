@@ -177,13 +177,13 @@ import { MAX_FURNACE_ADVANCE_SECS } from '../src/domain/interactions/advance-fur
 import {
   GRAVEL,
   chunkKeyOf,
-  makeChunkStoreDouble,
   SAND,
   STONE,
   WATER,
   world,
 } from './support/chunk-store-double'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
+import { makeGameplayCommitServices, makeTransactionalChunkStoreDouble } from './support/transactional-stage-doubles'
 import { makePlayerServiceDouble } from './support/player-service-double'
 import {
   brimming,
@@ -218,12 +218,13 @@ const slice = (
   inventorySlots = emptySlots(),
 ) =>
   Effect.gen(function* () {
-    const store = yield* makeChunkStoreDouble(initial, loaded)
+    const store = yield* makeTransactionalChunkStoreDouble(initial, loaded)
     const roster = yield* makeEntityManagerDouble<MobBehaviour>()
     const inventory = yield* makeInventoryDouble(inventorySlots)
     const player = yield* makePlayerServiceDouble()
     const time = yield* makeTimeService()
     const state = yield* makeGameplayFrameState
+    const commit = yield* makeGameplayCommitServices(store.api, inventory.api)
     return {
       store,
       roster,
@@ -231,7 +232,8 @@ const slice = (
       inventory,
       state,
       time,
-      stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api, time),
+      commit,
+      stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api, time, undefined, undefined, {}, commit),
     }
   })
 
@@ -241,6 +243,11 @@ const onePlacementItem = (item: PlacementRequest['heldItem']) =>
   )
 
 const oneBucketItem = (item: 'bucket' | 'water_bucket' | 'lava_bucket') =>
+  emptySlots().map((_, index) =>
+    index === 0 ? itemStack(item, StackCount(1)) : undefined,
+  )
+
+const oneInventoryItem = (item: Parameters<typeof makeItemStack>[0]) =>
   emptySlots().map((_, index) =>
     index === 0 ? itemStack(item, StackCount(1)) : undefined,
   )
@@ -351,7 +358,7 @@ describe('the slice, through the stage registration', () => {
       expect(snapshots).toStrictEqual(
         Array.from({ length: 3 }, () => ({
           support: SAND,
-          sand: AIR_BLOCK_ID,
+          sand: undefined,
           deposits: ONE_COBBLESTONE,
         })),
       )
@@ -365,7 +372,7 @@ describe('the slice, through the stage registration', () => {
       expect(yield* deposited(inventory)).toStrictEqual(ONE_COBBLESTONE)
 
       // ---- and the sand above it moved down, in the same frame -------------
-      expect(snapshots[0]).toMatchObject({ support: SAND, sand: AIR_BLOCK_ID })
+      expect(snapshots[0]).toMatchObject({ support: SAND, sand: undefined })
 
       // ---- the renderer is told about the chunk once -----------------------
       // Three writes (the break, the clear, the place), one coordinate.
@@ -398,7 +405,7 @@ describe('the slice, through the stage registration', () => {
       expect(yield* store.blockAt(support)).toBe(SAND)
       expect(yield* store.blockAt(sandAt)).toBe(SAND)
       expect(yield* store.blockAt(aboveSand)).toBe(SAND)
-      expect(yield* store.blockAt(topOfColumn)).toBe(AIR_BLOCK_ID)
+      expect(yield* store.blockAt(topOfColumn)).toBeUndefined()
 
       // ---- seven writes, ONE dirty coordinate ------------------------------
       // The break plus three moves of two writes each. A stream or a PubSub
@@ -512,7 +519,7 @@ describe('the slice, through the stage registration', () => {
       yield* runFrame(stages)
 
       expect(yield* store.blockAt(support)).toBe(SAND)
-      expect(yield* store.blockAt(sandAt)).toBe(AIR_BLOCK_ID)
+      expect(yield* store.blockAt(sandAt)).toBeUndefined()
     }),
   )
 
@@ -532,7 +539,7 @@ describe('the slice, through the stage registration', () => {
       yield* runFrame(stages)
 
       expect(yield* store.blockAt(support)).toBe(GRAVEL)
-      expect(yield* store.blockAt(sandAt)).toBe(AIR_BLOCK_ID)
+      expect(yield* store.blockAt(sandAt)).toBeUndefined()
     }),
   )
 
@@ -741,7 +748,7 @@ describe('the slice, through the stage registration', () => {
       yield* requestBreak(state, floor)
       yield* runFrame(stages)
       expect(yield* deposited(inventory)).toStrictEqual(ONE_COBBLESTONE)
-      expect(yield* store.blockAt(floor)).toBe(AIR_BLOCK_ID)
+      expect(yield* store.blockAt(floor)).toBeUndefined()
     }),
   )
 })
@@ -971,13 +978,13 @@ describe('the mob slice, through the stage registration', () => {
       expect(yield* deposited(inventory)).toStrictEqual([])
 
       // ---- the crater emptied its cells, and only those --------------------
-      expect(yield* store.blockAt(craterFloor)).toBe(AIR_BLOCK_ID)
+      expect(yield* store.blockAt(craterFloor)).toBeUndefined()
       // The ledge went too, and the sand that was resting on it FELL — in the
       // same frame, through the falling-block queue, because `disturb` is the
       // only way block work enters and the crater fed it. This is the property
       // `domain/mob/explosion.ts` predicted: 「a blast under a desert leaves the
       // sand hanging」 unless the crater disturbs.
-      expect(yield* store.blockAt(ledgeSand)).toBe(AIR_BLOCK_ID)
+      expect(yield* store.blockAt(ledgeSand)).toBeUndefined()
       expect(yield* store.blockAt(craterLedge)).toBe(SAND)
 
       // The store was untouched until the blast. The crater reads each cell to
@@ -1838,7 +1845,7 @@ describe('the mining site slice: dig, drop, place', () => {
       // is invisible from a screenshot.
       yield* requestBreak(state, cell)
       yield* runFrame(stages)
-      expect(yield* store.blockAt(cell)).toBe(AIR_BLOCK_ID)
+      expect(yield* store.blockAt(cell)).toBeUndefined()
       expect(yield* deposited(inventory)).toStrictEqual([])
 
       // ...and with a pickaxe, against the block below.
@@ -1866,7 +1873,7 @@ describe('the mining site slice: dig, drop, place', () => {
       // ...and the sand is already one cell lower, because `gameplay:entities`
       // runs `after` `gameplay:interactions` and the placement disturbed the
       // cell UNDER what it wrote.
-      expect(yield* store.blockAt(cell)).toBe(AIR_BLOCK_ID)
+      expect(yield* store.blockAt(cell)).toBeUndefined()
       expect(yield* store.blockAt(fixtureBlockPosition(4, 63, 3))).toBe(SAND)
     }),
   )
@@ -1997,7 +2004,7 @@ describe('the mining site slice: dig, drop, place', () => {
       yield* requestBreak(state, cell)
       yield* runFrame(stages)
 
-      expect(yield* store.blockAt(cell)).toBe(AIR_BLOCK_ID)
+      expect(yield* store.blockAt(cell)).toBeUndefined()
       expect(yield* inventory.deposits).toStrictEqual([
         { item: 'cobblestone', count: 1, leftover: 1 },
       ])
@@ -2186,7 +2193,7 @@ describe('the bucket slice: item use atomically exchanges fluid and inventory', 
       yield* requestBucketUse(state, 'collect-water', source, 'bucket', 'overworld')
       yield* runFrame(stages)
 
-      expect(yield* store.blockAt(source)).toBe(AIR_BLOCK_ID)
+      expect(yield* store.blockAt(source)).toBeUndefined()
       expect(yield* inventory.api.countOf('bucket')).toBe(0)
       expect(yield* inventory.api.countOf('water_bucket')).toBe(1)
       expect(yield* drainItemUseResults(state)).toMatchObject([
@@ -2471,7 +2478,7 @@ describe('the ignition slice: an item use reaches the world', () => {
         DeltaTimeSecs(FIRE_TICK_INTERVAL_SECS),
       )
 
-      expect(yield* store.blockAt(origin)).toBe(AIR_BLOCK_ID)
+      expect(yield* store.blockAt(origin)).toBeUndefined()
       expect((yield* snapshotFireLifecycle(state)).fires).toStrictEqual([])
     }),
   )
@@ -2500,7 +2507,7 @@ describe('the ignition slice: an item use reaches the world', () => {
 
       expect(at20Hz).toStrictEqual(at60Hz)
       expect(at60Hz).toStrictEqual(at120Hz)
-      expect(at120Hz.block).toBe(AIR_BLOCK_ID)
+      expect(at120Hz.block).toBeUndefined()
       expect(at120Hz.snapshot.fires).toStrictEqual([])
     }),
   )
@@ -2633,8 +2640,14 @@ describe('the potato farming slice: host input reaches farming rules', () => {
     Effect.gen(function* () {
       const hoes = ['wooden_hoe', 'stone_hoe', 'iron_hoe', 'diamond_hoe'] as const
       const cells = hoes.map((_, index): BlockPosition => fixtureBlockPosition(soil.x + index, soil.y, soil.z))
+      const hoeSlots = emptySlots().map((_, index) => {
+        const hoe = hoes[index]
+        return hoe === undefined ? undefined : itemStack(hoe, StackCount(1))
+      })
       const { store, state, stages } = yield* slice(
         world(cells.map((cell) => [cell, DIRT] as const)),
+        ['0,0'],
+        hoeSlots,
       )
 
       for (const [index, hoe] of hoes.entries()) {
@@ -2661,7 +2674,11 @@ describe('the potato farming slice: host input reaches farming rules', () => {
   it.effect('plants, exposes mature harvest drops, and exposes potato food use', () =>
     Effect.gen(function* () {
       const crop: BlockPosition = fixtureBlockPosition(soil.x, soil.y + 1, soil.z)
-      const { store, state, stages } = yield* slice(world([[soil, FARMLAND]]))
+      const { store, state, stages } = yield* slice(
+        world([[soil, FARMLAND]]),
+        ['0,0'],
+        oneInventoryItem('potato'),
+      )
 
       yield* requestPotatoPlanting(state, 'plant', soil)
       yield* requestPotatoHarvest(state, 'harvest', crop, true, 0.5)

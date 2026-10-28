@@ -2,7 +2,6 @@ import {
   AIR_BLOCK_ID,
   BLOCK_LOOT_ROLLS,
   BOW_MAX_RANGE,
-  BlockId,
   ENDERMITE_KIND,
   ENDERMITE_MAX_HEALTH,
   ENDER_PEARL_DAMAGE,
@@ -31,6 +30,7 @@ import {
   canFireBow,
   cancelFishing,
   capabilityOfBlockId,
+  candidateForItemUse,
   castFishing,
   chunkCoordsAround,
   cropDrops,
@@ -75,6 +75,7 @@ import {
 } from './registration-core.js'
 import { BlockAxis, EntityHealthPoints, PositionAxis } from '@nerima-games/mc-kernel'
 import { Result } from 'effect'
+import type { BlockPosition } from '@nerima-games/mc-kernel'
 import type {
   BlockPositionKey,
   BlockUseRequest,
@@ -101,7 +102,7 @@ import type {
 } from './registration-core.js'
 
 export const makeInteractionsStage = (context: GameplayStageContext): StageRegistration => {
-  const { state, store, roster, inventory, player } = context
+  const { state, store, roster, inventory, player, commit } = context
   return {
     id: GAMEPLAY_STAGE_IDS.interactions,
     after: [UPSTREAM_STAGE_IDS.simPhysics],
@@ -450,17 +451,33 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
               }
               case 'TillSoil': {
                 const ground = yield* blockPositionForKey(request.positionKey)
+                const tillPort = {
+                  blockAt: (position: BlockPosition) =>
+                    Effect.map(store.getBlock(position), (reading) =>
+                      reading._tag === 'Block' ? reading.block : undefined,
+                    ),
+                }
+                const dimension = commit === undefined ? undefined : yield* player.dimension
+                const candidate = commit === undefined || dimension === undefined
+                  ? undefined
+                  : yield* candidateForItemUse(
+                    inventory,
+                    commit.coordinator,
+                    commit.playerStorageOwnerId,
+                    request.heldItem,
+                    'damage',
+                  )
                 const outcome = yield* tillSoil(
-                  {
-                    blockAt: (position) =>
-                      Effect.map(store.getBlock(position), (reading) =>
-                        reading._tag === 'Block' ? reading.block : undefined,
-                      ),
-                    setBlock: (position, block) => store.setBlock(position, BlockId(block)),
-                  },
+                  tillPort,
                   { tills: true },
                   ground,
+                  commit === undefined || dimension === undefined || candidate === undefined
+                    ? undefined
+                    : { coordinator: commit.coordinator, dimension, changes: [candidate] },
                 )
+                if (outcome._tag === 'tilled' && candidate !== undefined) {
+                  yield* inventory.restoreStorage(candidate.state).pipe(Effect.orDie)
+                }
                 const success = outcome._tag === 'tilled'
                 itemUseResults.push({
                   action: request.action,
@@ -474,16 +491,32 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
               }
               case 'PlantPotato': {
                 const soil = yield* blockPositionForKey(request.positionKey)
+                const plantPort = {
+                  blockAt: (position: BlockPosition) =>
+                    Effect.map(store.getBlock(position), (reading) =>
+                      reading._tag === 'Block' ? reading.block : undefined,
+                    ),
+                }
+                const dimension = commit === undefined ? undefined : yield* player.dimension
+                const candidate = commit === undefined || dimension === undefined
+                  ? undefined
+                  : yield* candidateForItemUse(
+                    inventory,
+                    commit.coordinator,
+                    commit.playerStorageOwnerId,
+                    request.heldItem,
+                    'consume',
+                  )
                 const outcome = yield* plantCrop(
-                  {
-                    blockAt: (position) =>
-                      Effect.map(store.getBlock(position), (reading) =>
-                        reading._tag === 'Block' ? reading.block : undefined,
-                      ),
-                    setBlock: (position, block) => store.setBlock(position, BlockId(block)),
-                  },
+                  plantPort,
                   { held: request.heldItem, soil },
+                  commit === undefined || dimension === undefined || candidate === undefined
+                    ? undefined
+                    : { coordinator: commit.coordinator, dimension, changes: [candidate] },
                 )
+                if (outcome._tag === 'planted' && candidate !== undefined) {
+                  yield* inventory.restoreStorage(candidate.state).pipe(Effect.orDie)
+                }
                 const success = outcome._tag === 'planted'
                 itemUseResults.push({
                   action: request.action,
@@ -555,12 +588,20 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
               }
               case 'UseBucket': {
                 const position = yield* blockPositionForKey(request.positionKey)
-                const outcome = yield* useBucket(store, inventory, state.fluidFrontier, {
-                  activeDimension: request.activeDimension,
-                  targetDimension: request.targetDimension,
-                  position,
-                  heldItem: request.heldItem,
-                })
+                const outcome = commit === undefined
+                  ? yield* useBucket(store, inventory, state.fluidFrontier, {
+                    activeDimension: request.activeDimension,
+                    targetDimension: request.targetDimension,
+                    position,
+                    heldItem: request.heldItem,
+                  })
+                  : yield* useBucket(inventory, commit.bucketService, commit.coordinator, state.fluidFrontier, {
+                    activeDimension: request.activeDimension,
+                    targetDimension: request.targetDimension,
+                    position,
+                    heldItem: request.heldItem,
+                    playerStorageOwnerId: commit.playerStorageOwnerId,
+                  })
                 if (outcome._tag === 'Collected' || outcome._tag === 'Placed') {
                   itemUseResults.push({
                     action: request.action,
@@ -733,12 +774,32 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
             continue
           }
 
+          const ignitionDimension = commit === undefined ? undefined : yield* player.dimension
+          const ignitionCandidate = commit === undefined || ignitionDimension === undefined
+            ? undefined
+            : yield* candidateForItemUse(
+              inventory,
+              commit.coordinator,
+              commit.playerStorageOwnerId,
+              request.heldItem,
+              request.heldItem === 'fire_charge' ? 'consume' : 'damage',
+            )
           const ignition = yield* useFlintAndSteel(
             store,
             yield* blockPositionForKey(request.positionKey),
             request.heldItem,
+            commit === undefined || ignitionDimension === undefined
+              ? undefined
+              : {
+                coordinator: commit.coordinator,
+                dimension: ignitionDimension,
+                changes: ignitionCandidate === undefined ? [] : [ignitionCandidate],
+              },
           )
           const success = ignition.outcome._tag === 'Lit'
+          if (ignition._tag === 'Fire' && success && ignitionCandidate !== undefined) {
+            yield* inventory.restoreStorage(ignitionCandidate.state).pipe(Effect.orDie)
+          }
           if (ignition._tag === 'Tnt' && success) {
             const position = yield* blockPositionForKey(request.positionKey)
             yield* roster.spawn({

@@ -1,4 +1,5 @@
 export {
+  GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
   resolveArmoredPlayerDamages,
   LAVA_TICK_INTERVAL,
   HOSTILE_SPAWN_INTERVAL_SECS,
@@ -121,6 +122,7 @@ import {
   PlayerService,
   TimeService,
   entityManagerTag,
+  GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
   makeGameplayFrameState,
 } from './registration-core.js'
 import type {
@@ -129,6 +131,7 @@ import type {
   EntityManagerApi,
   GameplayFrameState,
   GameplayStageContext,
+  GameplayStageCommitServices,
   GameplayStageOptions,
   InventoryServiceApi,
   MobBehaviour,
@@ -137,6 +140,7 @@ import type {
   VehicleFrameEnvironment,
   VehicleServiceApi,
 } from './registration-core.js'
+import { BucketService, WorldCommitCoordinator } from '@nerima-games/mc-sim'
 import type { GameModule, StageRegistration } from '@nerima-games/mc-kernel'
 import { Effect, Layer } from 'effect'
 import { makeVehiclesStage } from './vehicles-stage.js'
@@ -158,6 +162,7 @@ export const gameplayStages = (
   vehicleService?: VehicleServiceApi,
   vehicleEnvironment?: VehicleFrameEnvironment,
   options: GameplayStageOptions = {},
+  commit?: GameplayStageCommitServices,
 ): ReadonlyArray<StageRegistration> => {
   const context: GameplayStageContext = {
     state,
@@ -169,6 +174,7 @@ export const gameplayStages = (
     vehicleService,
     vehicleEnvironment,
     options,
+    commit,
   }
   return [
     makeVehiclesStage(context),
@@ -185,10 +191,10 @@ export const gameplayStages = (
 /**
  * Build the module's state and its stages together.
  *
- * This is exactly `GameModule.frameStages` — see `gameplayModule` below. The two
- * services in the context are the whole reason that field is an Effect: this is
- * the one moment at which a module may acquire a service in order to BUILD a
- * stage, rather than in order to run one.
+ * This is exactly `GameModule.frameStages` — see `gameplayModule` below. The
+ * registration services are the reason that field is an Effect: this is the
+ * one moment at which a module may acquire services in order to BUILD stages,
+ * rather than in order to run them.
  *
  * ---------------------------------------------------------------------------
  * `MobBehaviour` IS NAMED HERE, AND THAT IS THE POINT OF FAILURE TO KNOW ABOUT
@@ -220,16 +226,22 @@ export const gameplayStages = (
 export const makeGameplayStages: Effect.Effect<
   ReadonlyArray<StageRegistration>,
   never,
-  ChunkStore | EntityManager | InventoryService | PlayerService | TimeService
+  ChunkStore | EntityManager | InventoryService | PlayerService | TimeService | BucketService | WorldCommitCoordinator
 > = Effect.gen(function* () {
   const store = yield* ChunkStore
   const roster = yield* entityManagerTag<MobBehaviour>()
   const inventory = yield* InventoryService
   const player = yield* PlayerService
   const time = yield* TimeService
+  const bucketService = yield* BucketService
+  const coordinator = yield* WorldCommitCoordinator
   const state = yield* makeGameplayFrameState
 
-  return gameplayStages(state, store, roster, inventory, player, time)
+  return gameplayStages(state, store, roster, inventory, player, time, undefined, undefined, {}, {
+    coordinator,
+    bucketService,
+    playerStorageOwnerId: GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+  })
 })
 
 /**
@@ -256,19 +268,18 @@ export const makeGameplayStages: Effect.Effect<
  * this repository had already been forced into became the contract.
  *
  * `RRegister` is now `ChunkStore | EntityManager | InventoryService |
- * PlayerService | TimeService` and `RIn`
+ * PlayerService | TimeService | BucketService | WorldCommitCoordinator` and
+ * `RIn`
  * is still `never`, which is the distinction that parameter was added for: this
  * repository needs mc-worldgen's store in order to REGISTER stages that write
- * blocks, mc-sim's roster in order to register the stage that iterates mobs and
- * mc-sim's inventory in order to register the stage that mines, and needs
- * nothing at all in order to build a Layer it does not have.
+ * blocks, mc-sim's roster in order to register the stage that iterates mobs,
+ * its inventory in order to register the stage that mines, and its bucket and
+ * commit services for atomic C4/C7 writes. It needs nothing to build a Layer.
  *
- * The union growing to five services is the shape `RRegister`
- * predicted and is not a widening of anything a consumer relies on: `RIn` is
- * untouched, so mx-gameplay still BUILDS nothing another repository has to
- * supply. What it does mean is that a host which was providing only the store
- * and the roster now fails to compile, which is the correct failure — the
- * alternative is a stage that deposits into an inventory nobody built.
+ * The registration contract has seven services. `RIn` remains `never`, so
+ * mx-gameplay still BUILDS nothing another repository has to supply. A host
+ * must provide the bucket service and a coordinator registered with the
+ * gameplay player-storage owner before it can build the stages.
  *
  * A host supplies mc-sim's entity, inventory, player, and time layers. The
  * latter three have no behaviour type parameter, so the `MobBehaviour` hazard
@@ -285,7 +296,7 @@ export const gameplayModule: GameModule<
   never,
   never,
   never,
-  ChunkStore | EntityManager | InventoryService | PlayerService | TimeService
+  ChunkStore | EntityManager | InventoryService | PlayerService | TimeService | BucketService | WorldCommitCoordinator
 > = {
   layers: Layer.empty,
   frameStages: makeGameplayStages,

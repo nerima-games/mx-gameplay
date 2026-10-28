@@ -146,8 +146,17 @@ import {
 } from './support/chunk-store-double'
 import { emptyRosterLayer, makeEntityManagerDouble } from './support/entity-manager-double'
 import { makePlayerServiceDouble, playerDoubleLayer } from './support/player-service-double'
-import { PlayerService } from '@nerima-games/mc-sim'
+import {
+  BucketService,
+  PlayerService,
+  WorldCommitChunkStoreUnavailable,
+  WorldCommitCoordinator,
+  WorldCommitEmptyRequest,
+  PlayerStorageSnapshotSchema,
+  type WorldCommitCoordinatorApi,
+} from '@nerima-games/mc-sim'
 import { emptySlots, emptyInventoryLayer, makeInventoryDouble } from './support/inventory-service-double'
+import { gameplayCommitServicesLayer, makeGameplayCommitServices, makeTransactionalChunkStoreDouble } from './support/transactional-stage-doubles'
 import { FrameServicesLayer } from './support/frame-services'
 import { runFrames } from './support/frame-runner'
 import { blockPosition as fixtureBlockPosition, position as fixturePosition } from './support/coordinate-fixtures'
@@ -159,6 +168,21 @@ const equipmentItem = (...args: Parameters<typeof makeEquipmentItem>) =>
 const durability = (...args: Parameters<typeof makeDurability>) =>
   Result.getOrThrow(makeDurability(...args))
 const positionOfBlock = (value: BlockPosition) => fixturePosition(value.x, value.y, value.z)
+
+const coordinatorRejectingBlock = (
+  coordinator: WorldCommitCoordinatorApi,
+  position: BlockPosition,
+  block: BlockId,
+  error: WorldCommitChunkStoreUnavailable | WorldCommitEmptyRequest,
+): WorldCommitCoordinatorApi => ({
+  ...coordinator,
+  commit: (request) =>
+    request.blockWrite?.edits.some(
+      (edit) => blockKey(edit.position) === blockKey(position) && edit.block === block,
+    )
+      ? Effect.fail(error)
+      : coordinator.commit(request),
+})
 
 const stageIds = (stages: ReadonlyArray<StageRegistration>): ReadonlyArray<string> =>
   stages.map((stage) => stage.id)
@@ -175,14 +199,15 @@ const positionKey = Brand.nominal<BlockPositionKey>()
 
 /**
  * The stages read and write blocks, iterate mobs and deposit mined items, so
- * building them takes mc-worldgen's `ChunkStore` AND mc-sim's `EntityManager`
- * AND mc-sim's `InventoryService` (in `frameStages` — see
+ * building them takes mc-worldgen's `ChunkStore`, mc-sim's `EntityManager`,
+ * `InventoryService`, `PlayerService`, `TimeService`, `BucketService`, and the
+ * `WorldCommitCoordinator` (in `frameStages` — see
  * kernel's `domain/frame.ts` on `RRegister`). Tests about the SHAPE of the
  * registration provide an empty resident world, an empty roster and an empty
  * inventory: these assertions are about ordering and contract, and the
  * behaviour over a real world is `test/vertical-slice.test.ts`.
  */
-const emptyWorld = Layer.mergeAll(
+const emptyWorldBase = Layer.mergeAll(
   emptyWorldStoreLayer,
   emptyRosterLayer,
   emptyInventoryLayer,
@@ -190,24 +215,25 @@ const emptyWorld = Layer.mergeAll(
   playerDoubleLayer,
   TimeServiceLayer(),
 )
+const emptyWorld = Layer.provideMerge(gameplayCommitServicesLayer, emptyWorldBase)
+const registeredStages = Effect.provide(makeGameplayStages, Layer.orDie(emptyWorld))
 
-const registeredStages = Effect.provide(makeGameplayStages, emptyWorld)
-
-/** The same, for the tests that need to reach into the frame state. */
 const builtStages = Effect.gen(function* () {
   const state = yield* makeGameplayFrameState
-  const store = yield* makeChunkStoreDouble(world([]), ['0,0'])
+  const store = yield* makeTransactionalChunkStoreDouble(world([]), ['0,0'])
   const roster = yield* makeEntityManagerDouble<MobBehaviour>()
   const player = yield* makePlayerServiceDouble()
   const inventory = yield* makeInventoryDouble()
   const time = yield* makeTimeService()
+  const commit = yield* makeGameplayCommitServices(store.api, inventory.api)
   return {
     state,
     store,
     roster,
     inventory,
     player,
-    stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api, time),
+    commit,
+    stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api, time, undefined, undefined, {}, commit),
   }
 })
 
@@ -217,16 +243,21 @@ const builtStagesInWorld = (
 ) =>
   Effect.gen(function* () {
     const state = yield* makeGameplayFrameState
-    const store = yield* makeChunkStoreDouble(initial, loadedChunks)
+    const store = yield* makeTransactionalChunkStoreDouble(initial, loadedChunks)
     const roster = yield* makeEntityManagerDouble<MobBehaviour>()
     const player = yield* makePlayerServiceDouble()
     const inventory = yield* makeInventoryDouble()
     const time = yield* makeTimeService()
+    const commit = yield* makeGameplayCommitServices(store.api, inventory.api)
     return {
       state,
       store,
+      roster,
       player,
-      stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api, time),
+      inventory,
+      time,
+      commit,
+      stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api, time, undefined, undefined, {}, commit),
     }
   })
 
@@ -378,17 +409,21 @@ describe('fire lifecycle stage integration', () => {
 
   it.effect('does not drift logical or world state when a manual extinguish write fails', () =>
     Effect.gen(function* () {
-      const { state, store } = yield* builtStages
+      const { state, store, commit } = yield* builtStages
       const position = fixtureBlockPosition(1, 64, 0)
       yield* store.api.setBlock(position, FIRE)
       const initial = makeFireLifecycleState([position], 11)
       yield* Ref.set(state.fireLifecycle, initial)
-      const refusingStore: ChunkStoreApi = {
-        ...store.api,
-        setBlock: () => Effect.succeed({ _tag: 'OutOfWorld' }),
+      const refusingCoordinator = {
+        ...commit.coordinator,
+        commit: () => Effect.fail(new WorldCommitEmptyRequest()),
       }
 
-      expect(yield* requestFireExtinguish(state, refusingStore, position)).toBe(false)
+      expect(yield* requestFireExtinguish(state, position, {
+        coordinator: refusingCoordinator,
+        dimension: 'overworld',
+        changes: [],
+      })).toBe(false)
       expect(yield* store.blockAt(position)).toBe(FIRE)
       expect(yield* Ref.get(state.fireLifecycle)).toStrictEqual(initial)
     }),
@@ -447,10 +482,9 @@ describe('fire lifecycle stage integration', () => {
       // `PlayerDamageEvent`, and every OTHER source of player damage in this
       // file (hostile contact, blasts) is wrapped in `resolveArmoredPlayerDamages`
       // before it reaches `state.playerDamages` — see the `entities` stage.
-      // Nothing here previously asserted that fire follows the same rule, so a
-      // dropped `resolveArmoredPlayerDamages` call around fire specifically
-      // would leave every other test in this file green.
-      const { state, store, stages, inventory } = yield* builtStages
+      // This pins the fire stage's armor result and its replicated durability
+      // update, which the other damage-source tests do not exercise.
+      const { state, store, stages, inventory, commit } = yield* builtStages
       // The double player's default feet position (player-service-double.ts).
       const position = fixtureBlockPosition(0, 64, 0)
       yield* store.api.setBlock(fixtureBlockPosition(position.x, position.y - 1, position.z), STONE)
@@ -460,6 +494,17 @@ describe('fire lifecycle stage integration', () => {
       expect(yield* inventory.api.add('iron_helmet', 1)).toBe(0)
       const equipped = yield* inventory.api.equipFromInventory(0, 'head')
       expect(equipped._tag).toBe('Equipped')
+      const expectedRevision = yield* commit.coordinator.revision
+      const storage = yield* inventory.api.storageSnapshot
+      yield* commit.coordinator.commit({
+        expectedRevision,
+        expectedDimensions: [],
+        changes: [{ ownerId: commit.playerStorageOwnerId, state: storage }],
+      })
+      const ownerBefore = yield* commit.coordinator.snapshot(
+        commit.playerStorageOwnerId,
+        PlayerStorageSnapshotSchema,
+      )
 
       const fireStage = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire)!
       yield* fireStage.run(DeltaTimeSecs(FIRE_TICK_INTERVAL_SECS)).pipe(
@@ -472,7 +517,7 @@ describe('fire lifecycle stage integration', () => {
       // Unmitigated fire-tick damage on normal difficulty is 1; a single
       // iron_helmet is 2 armour points, an 8% reduction — 0.92. The
       // unarmoured amount, 1, would be the value left behind by a stage that
-      // forgot to call `resolveArmoredPlayerDamages` at all.
+      // forgot to apply the armor rule.
       expect(damages[0]?.damage.amount).toBeCloseTo(0.92)
 
       // `armorDurabilityWearFromPreMitigationDamage` is cause-independent
@@ -480,6 +525,61 @@ describe('fire lifecycle stage integration', () => {
       // wear of exactly 1 point off the helmet's 165 maximum.
       const equipment = yield* inventory.api.equipmentSnapshot
       expect(equipment.slots.head?.durability?.current).toBe(164)
+      const ownerAfter = yield* commit.coordinator.snapshot(
+        commit.playerStorageOwnerId,
+        PlayerStorageSnapshotSchema,
+      )
+      expect(ownerAfter.revision).toBe(ownerBefore.revision + 1)
+      expect(ownerAfter.state).toStrictEqual(yield* inventory.api.storageSnapshot)
+    }),
+  )
+
+  it.effect('commits fire removal and player storage in one coordinator revision', () =>
+    Effect.gen(function* () {
+      const { state, store, stages, inventory, commit } = yield* builtStages
+      const position = fixtureBlockPosition(0, 64, 0)
+      yield* store.api.setBlock(position, FIRE)
+      yield* Ref.set(state.fireLifecycle, {
+        fires: [{ position, ageTicks: 0 }],
+        burningActors: [{
+          id: 'player',
+          kind: 'player',
+          position,
+          remainingTicks: 10,
+          damageCooldownTicks: 0,
+        }],
+        seed: 29,
+      })
+
+      expect(yield* inventory.api.add('iron_helmet', 1)).toBe(0)
+      const equipped = yield* inventory.api.equipFromInventory(0, 'head')
+      expect(equipped._tag).toBe('Equipped')
+      const expectedRevision = yield* commit.coordinator.revision
+      const storage = yield* inventory.api.storageSnapshot
+      yield* commit.coordinator.commit({
+        expectedRevision,
+        expectedDimensions: [],
+        changes: [{ ownerId: commit.playerStorageOwnerId, state: storage }],
+      })
+      const ownerBefore = yield* commit.coordinator.snapshot(
+        commit.playerStorageOwnerId,
+        PlayerStorageSnapshotSchema,
+      )
+
+      const fireStage = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire)!
+      yield* fireStage.run(DeltaTimeSecs(FIRE_TICK_INTERVAL_SECS)).pipe(
+        Effect.provide(FrameServicesLayer),
+      )
+
+      expect(yield* store.blockAt(position)).toBeUndefined()
+      expect((yield* drainPlayerDamages(state))[0]?.damage.cause).toBe('on_fire')
+      const ownerAfter = yield* commit.coordinator.snapshot(
+        commit.playerStorageOwnerId,
+        PlayerStorageSnapshotSchema,
+      )
+      expect(ownerAfter.revision).toBe(ownerBefore.revision + 1)
+      expect(ownerAfter.state).toStrictEqual(yield* inventory.api.storageSnapshot)
+      expect((yield* inventory.api.equipmentSnapshot).slots.head?.durability?.current).toBe(164)
     }),
   )
 
@@ -490,7 +590,7 @@ describe('fire lifecycle stage integration', () => {
       // `on_fire` damage, which `CAUSES_BYPASSING_ARMOR` (armor.ts) exempts
       // from per-point mitigation entirely — unlike `in_fire` above, full
       // iron armour must leave the amount untouched.
-      const { state, stages, inventory } = yield* builtStages
+      const { state, stages, inventory, commit } = yield* builtStages
       // The double player's default feet position (player-service-double.ts).
       // No `FIRE` block is placed here: the player is not touching fire, only
       // still burning from contact this test seeds directly via a due
@@ -511,6 +611,17 @@ describe('fire lifecycle stage integration', () => {
       expect(yield* inventory.api.add('iron_helmet', 1)).toBe(0)
       const equipped = yield* inventory.api.equipFromInventory(0, 'head')
       expect(equipped._tag).toBe('Equipped')
+      const expectedRevision = yield* commit.coordinator.revision
+      const storage = yield* inventory.api.storageSnapshot
+      yield* commit.coordinator.commit({
+        expectedRevision,
+        expectedDimensions: [],
+        changes: [{ ownerId: commit.playerStorageOwnerId, state: storage }],
+      })
+      const ownerBefore = yield* commit.coordinator.snapshot(
+        commit.playerStorageOwnerId,
+        PlayerStorageSnapshotSchema,
+      )
 
       const fireStage = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire)!
       yield* fireStage.run(DeltaTimeSecs(FIRE_TICK_INTERVAL_SECS)).pipe(
@@ -522,13 +633,19 @@ describe('fire lifecycle stage integration', () => {
       expect(damages[0]?.damage.cause).toBe('on_fire')
       // Full iron armour would reduce 1 to 0.92 (the sibling test above) if
       // this cause were mitigated. It is not: the full unmitigated amount, 1,
-      // must survive `resolveArmoredPlayerDamages`.
+      // must survive the fire stage's armor calculation unchanged.
       expect(damages[0]?.damage.amount).toBe(1)
 
       // Durability wear is cause-independent (armor.ts), so it wears the
       // helmet the same one point as the mitigated in_fire case.
       const equipment = yield* inventory.api.equipmentSnapshot
       expect(equipment.slots.head?.durability?.current).toBe(164)
+      const ownerAfter = yield* commit.coordinator.snapshot(
+        commit.playerStorageOwnerId,
+        PlayerStorageSnapshotSchema,
+      )
+      expect(ownerAfter.revision).toBe(ownerBefore.revision + 1)
+      expect(ownerAfter.state).toStrictEqual(yield* inventory.api.storageSnapshot)
     }),
   )
 })
@@ -792,7 +909,7 @@ describe('stage behaviour', () => {
       yield* fluids.run(DeltaTimeSecs(0.016))
 
       for (const position of neighbours) {
-        expect(yield* store.blockAt(position)).toBe(AIR_BLOCK_ID)
+        expect(yield* store.blockAt(position)).toBeUndefined()
       }
       expect(yield* Ref.get(state.fluidFrontier)).toStrictEqual([])
     }).pipe(Effect.provide(FrameServicesLayer)),
@@ -1490,7 +1607,7 @@ describe('the module contract has caught up with this file’s shape', () => {
         never,
         never,
         never,
-        ChunkStore | EntityManager | InventoryService | PlayerService | TimeService
+        ChunkStore | EntityManager | InventoryService | PlayerService | TimeService | BucketService | WorldCommitCoordinator
       > = gameplayModule
       const stages = yield* Effect.provide(module.frameStages, emptyWorld)
 
@@ -1537,18 +1654,18 @@ describe('the module contract has caught up with this file’s shape', () => {
   // what mc-worldgen and mc-sim supply. Any registration service leaking into `RIn`
   // would be mx-gameplay claiming to construct part of somebody else's
   // repository.
-  it.effect('acquires exactly five services to register and exposes eight stages', () =>
+  it.effect('acquires exactly seven services to register and exposes eight stages', () =>
     Effect.gen(function* () {
       const registration: Effect.Effect<
         ReadonlyArray<StageRegistration>,
         never,
-        ChunkStore | EntityManager | InventoryService | PlayerService | TimeService
+        ChunkStore | EntityManager | InventoryService | PlayerService | TimeService | BucketService | WorldCommitCoordinator
       > = gameplayModule.frameStages
 
-      // Providing those five — and nothing else — discharges the whole context.
-      // If a stage started demanding a SIXTH service at REGISTRATION time, this
-      // assignment would stop compiling, which is the point. There is no named
-      // candidate for a sixth today, and inventing one here would be the
+      // Providing those seven — and nothing else — discharges the whole context.
+      // If a stage started demanding an EIGHTH service at REGISTRATION time, this
+      // assignment would stop compiling, which is the point. Any new service
+      // would need an explicit owner and belongs in this contract, rather than
       // speculation this file's history is a record of NOT doing.
       const satisfied: Effect.Effect<ReadonlyArray<StageRegistration>, never, never> =
         Effect.provide(registration, Layer.orDie(emptyWorld))
@@ -1567,7 +1684,7 @@ describe('the module contract has caught up with this file’s shape', () => {
       const unparameterised: Effect.Effect<
         ReadonlyArray<StageRegistration>,
         never,
-        ChunkStore | EntityManager | InventoryService | PlayerService | TimeService
+        ChunkStore | EntityManager | InventoryService | PlayerService | TimeService | BucketService | WorldCommitCoordinator
       > = makeGameplayStages
 
       expect(typeof unparameterised).toBe('object')
@@ -1811,27 +1928,30 @@ describe('fluid propagation defers when a write finds its chunk unloaded', () =>
     Effect.gen(function* () {
       const origin = fixtureBlockPosition(0, 64, 0)
       const blocked = fixtureBlockPosition(1, 64, 0)
-      const { state, store } = yield* builtStagesInWorld(
+      const { state, store, roster, player, inventory, time, commit } = yield* builtStagesInWorld(
         world([
           [origin, WATER],
           [fixtureBlockPosition(0, 63, 0), STONE],
         ]),
         ['0,0', '-1,0', '0,-1'],
       )
-      const blockedStore: ChunkStoreApi = {
-        ...store.api,
-        setBlock: (position, block) =>
-          blockKey(position) === blockKey(blocked) && block === WATER
-            ? Effect.succeed({ _tag: 'ChunkNotLoaded' } as const)
-            : store.api.setBlock(position, block),
-      }
+      const blockedCoordinator = coordinatorRejectingBlock(
+        commit.coordinator,
+        blocked,
+        WATER,
+        new WorldCommitChunkStoreUnavailable({ dimension: 'overworld' }),
+      )
       const rewiredStages = gameplayStages(
         state,
-        blockedStore,
-        (yield* makeEntityManagerDouble<MobBehaviour>()).api,
-        (yield* makeInventoryDouble()).api,
-        (yield* makePlayerServiceDouble()).api,
-        yield* makeTimeService(),
+        store.api,
+        roster.api,
+        inventory.api,
+        player.api,
+        time,
+        undefined,
+        undefined,
+        {},
+        { ...commit, coordinator: blockedCoordinator },
       )
       const fluids = rewiredStages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids)!
 
@@ -1840,8 +1960,8 @@ describe('fluid propagation defers when a write finds its chunk unloaded', () =>
 
       // The blocked neighbour never got written...
       expect(yield* store.blockAt(blocked)).toBeUndefined()
-      // ...while an unblocked one did, proving only the intercepted write failed.
-      expect(yield* store.blockAt(fixtureBlockPosition(-1, 64, 0))).toBe(WATER)
+      // The transaction includes that neighbour, so the refusal leaves it unchanged too.
+      expect(yield* store.blockAt(fixtureBlockPosition(-1, 64, 0))).toBeUndefined()
       // ...and the source cell was requeued rather than dropped.
       const source = (yield* Ref.get(state.fluidFrontier)).find(
         (item) => item.key === positionKey('0,64,0'),
@@ -1860,27 +1980,30 @@ describe('fluid propagation defers when a write finds its chunk unloaded', () =>
       // retry every tick until `MAX_FLUID_DEFERRED_ATTEMPTS` for no reason.
       const origin = fixtureBlockPosition(0, 64, 0)
       const blocked = fixtureBlockPosition(1, 64, 0)
-      const { state, store } = yield* builtStagesInWorld(
+      const { state, store, roster, player, inventory, time, commit } = yield* builtStagesInWorld(
         world([
           [origin, WATER],
           [fixtureBlockPosition(0, 63, 0), STONE],
         ]),
         ['0,0', '-1,0', '0,-1'],
       )
-      const outOfWorldStore: ChunkStoreApi = {
-        ...store.api,
-        setBlock: (position, block) =>
-          blockKey(position) === blockKey(blocked) && block === WATER
-            ? Effect.succeed({ _tag: 'OutOfWorld' } as const)
-            : store.api.setBlock(position, block),
-      }
+      const blockedCoordinator = coordinatorRejectingBlock(
+        commit.coordinator,
+        blocked,
+        WATER,
+        new WorldCommitEmptyRequest(),
+      )
       const rewiredStages = gameplayStages(
         state,
-        outOfWorldStore,
-        (yield* makeEntityManagerDouble<MobBehaviour>()).api,
-        (yield* makeInventoryDouble()).api,
-        (yield* makePlayerServiceDouble()).api,
-        yield* makeTimeService(),
+        store.api,
+        roster.api,
+        inventory.api,
+        player.api,
+        time,
+        undefined,
+        undefined,
+        {},
+        { ...commit, coordinator: blockedCoordinator },
       )
       const fluids = rewiredStages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids)!
 
@@ -1889,8 +2012,8 @@ describe('fluid propagation defers when a write finds its chunk unloaded', () =>
 
       // The out-of-world neighbour never got written...
       expect(yield* store.blockAt(blocked)).toBeUndefined()
-      // ...while an in-world one did, proving only the intercepted write failed.
-      expect(yield* store.blockAt(fixtureBlockPosition(-1, 64, 0))).toBe(WATER)
+      // The transaction includes that neighbour, so a terminal refusal leaves it unchanged too.
+      expect(yield* store.blockAt(fixtureBlockPosition(-1, 64, 0))).toBeUndefined()
       // ...and — unlike the `ChunkNotLoaded` case — the source was NOT
       // requeued with an incremented `deferred` count on account of THIS
       // write: an out-of-world failure carries no retry.
@@ -1905,7 +2028,7 @@ describe('fluid propagation defers when a write finds its chunk unloaded', () =>
     Effect.gen(function* () {
       const origin = fixtureBlockPosition(0, 64, 0)
       const stubborn = fixtureBlockPosition(-1, 64, 0)
-      const { state, store, stages } = yield* builtStagesInWorld(
+      const { state, store, stages, roster, player, inventory, time, commit } = yield* builtStagesInWorld(
         world([
           [origin, WATER],
           [fixtureBlockPosition(0, 63, 0), STONE],
@@ -1926,22 +2049,24 @@ describe('fluid propagation defers when a write finds its chunk unloaded', () =>
       yield* Ref.set(state.fluidFrontier, [{ key: positionKey('0,64,0'), kind: 'water' }])
       yield* fluids.run(DeltaTimeSecs(0.016))
 
-      // Phase 3: `stubborn`'s removal write is intercepted; the other three
-      // neighbours are not.
-      const blockedStore: ChunkStoreApi = {
-        ...store.api,
-        setBlock: (position, block) =>
-          blockKey(position) === blockKey(stubborn) && block === AIR
-            ? Effect.succeed({ _tag: 'ChunkNotLoaded' } as const)
-            : store.api.setBlock(position, block),
-      }
+      // Phase 3: rejecting `stubborn`'s removal aborts the entire batch.
+      const blockedCoordinator = coordinatorRejectingBlock(
+        commit.coordinator,
+        stubborn,
+        AIR,
+        new WorldCommitChunkStoreUnavailable({ dimension: 'overworld' }),
+      )
       const rewiredStages = gameplayStages(
         state,
-        blockedStore,
-        (yield* makeEntityManagerDouble<MobBehaviour>()).api,
-        (yield* makeInventoryDouble()).api,
-        (yield* makePlayerServiceDouble()).api,
-        yield* makeTimeService(),
+        store.api,
+        roster.api,
+        inventory.api,
+        player.api,
+        time,
+        undefined,
+        undefined,
+        {},
+        { ...commit, coordinator: blockedCoordinator },
       )
       const rewiredFluids = rewiredStages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids)!
       yield* rewiredFluids.run(DeltaTimeSecs(0.016))
@@ -1952,8 +2077,8 @@ describe('fluid propagation defers when a write finds its chunk unloaded', () =>
         (item) => item.key === positionKey('-1,64,0'),
       )
       expect(retried?.deferred).toBe(1)
-      // ...while an unblocked sibling was actually retracted to air.
-      expect(yield* store.blockAt(fixtureBlockPosition(1, 64, 0))).toBe(AIR)
+      // The sibling's separate work item committed its removal successfully.
+      expect(yield* store.blockAt(fixtureBlockPosition(1, 64, 0))).toBeUndefined()
     }).pipe(Effect.provide(FrameServicesLayer)),
   )
 
@@ -1961,27 +2086,30 @@ describe('fluid propagation defers when a write finds its chunk unloaded', () =>
     Effect.gen(function* () {
       const lava = Option.getOrThrow(blockIdOf('lava'))
       const contact = fixtureBlockPosition(1, 64, 0)
-      const { state, store } = yield* builtStagesInWorld(
+      const { state, store, roster, player, inventory, time, commit } = yield* builtStagesInWorld(
         world([
           [fixtureBlockPosition(0, 64, 0), WATER],
           [fixtureBlockPosition(0, 63, 0), STONE],
           [contact, lava],
         ]),
       )
-      const blockedStore: ChunkStoreApi = {
-        ...store.api,
-        setBlock: (position, block) =>
-          blockKey(position) === blockKey(contact) && block === OBSIDIAN
-            ? Effect.succeed({ _tag: 'ChunkNotLoaded' } as const)
-            : store.api.setBlock(position, block),
-      }
+      const blockedCoordinator = coordinatorRejectingBlock(
+        commit.coordinator,
+        contact,
+        OBSIDIAN,
+        new WorldCommitChunkStoreUnavailable({ dimension: 'overworld' }),
+      )
       const rewiredStages = gameplayStages(
         state,
-        blockedStore,
-        (yield* makeEntityManagerDouble<MobBehaviour>()).api,
-        (yield* makeInventoryDouble()).api,
-        (yield* makePlayerServiceDouble()).api,
-        yield* makeTimeService(),
+        store.api,
+        roster.api,
+        inventory.api,
+        player.api,
+        time,
+        undefined,
+        undefined,
+        {},
+        { ...commit, coordinator: blockedCoordinator },
       )
       const fluids = rewiredStages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids)!
 
@@ -2244,20 +2372,28 @@ describe('fire lifecycle: extinguish, restore, and burning-actor bookkeeping', (
 
   it.effect('requestFireExtinguish is a no-op when nothing is burning at the position', () =>
     Effect.gen(function* () {
-      const { state, store } = yield* builtStages
-      expect(yield* requestFireExtinguish(state, store.api, { x: 9, y: 64, z: 9 })).toBe(false)
+      const { state, commit } = yield* builtStages
+      expect(yield* requestFireExtinguish(state, { x: 9, y: 64, z: 9 }, {
+        coordinator: commit.coordinator,
+        dimension: 'overworld',
+        changes: [],
+      })).toBe(false)
     }),
   )
 
   it.effect('requestFireExtinguish extinguishes a real fire and disturbs the cell', () =>
     Effect.gen(function* () {
-      const { state, store } = yield* builtStages
+      const { state, store, commit } = yield* builtStages
       const position = fixtureBlockPosition(4, 64, 4)
       yield* store.api.setBlock(position, FIRE)
       yield* Ref.set(state.fireLifecycle, makeFireLifecycleState([position], 3))
 
-      expect(yield* requestFireExtinguish(state, store.api, position)).toBe(true)
-      expect(yield* store.blockAt(position)).toBe(AIR_BLOCK_ID)
+      expect(yield* requestFireExtinguish(state, position, {
+        coordinator: commit.coordinator,
+        dimension: 'overworld',
+        changes: [],
+      })).toBe(true)
+      expect(yield* store.blockAt(position)).toBeUndefined()
       expect((yield* Ref.get(state.fireLifecycle)).fires).toStrictEqual([])
       expect((yield* Ref.get(state.fallingBlocks)).pending.size).toBe(1)
     }),
@@ -2269,11 +2405,15 @@ describe('fire lifecycle: extinguish, restore, and burning-actor bookkeeping', (
       // there always returns `'Written'` — its `'Unchanged'` sibling (the
       // fireLifecycle Ref tracks a position the world already reads as air)
       // had never fired.
-      const { state, store } = yield* builtStages
+      const { state, store, commit } = yield* builtStages
       const position = fixtureBlockPosition(5, 64, 5)
       yield* Ref.set(state.fireLifecycle, makeFireLifecycleState([position], 3))
 
-      expect(yield* requestFireExtinguish(state, store.api, position)).toBe(true)
+      expect(yield* requestFireExtinguish(state, position, {
+        coordinator: commit.coordinator,
+        dimension: 'overworld',
+        changes: [],
+      })).toBe(true)
       // Sparse storage: a cell nobody ever wrote reads `undefined`, the same
       // "air" answer as an explicit `AIR_BLOCK_ID` write — see "writing air
       // deletes the cell rather than storing it" in
@@ -2884,6 +3024,7 @@ describe('fire tick budget, unregistered blocks and duplicate ignition', () => {
           [position, FIRE],
           [strangeNeighbour, UNREGISTERED_BLOCK_ID],
         ]),
+        ['0,0', '1,1'],
       )
       const fireStage = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire)!
       yield* Ref.set(state.fireLifecycle, makeFireLifecycleState([position], 41))
@@ -2962,7 +3103,7 @@ describe('fire tick budget, unregistered blocks and duplicate ignition', () => {
     }),
   )
 
-  it.effect('a mutation write that finds its chunk unloaded is retried; one that fails otherwise reverts', () =>
+  it.effect('a failed fire mutation batch leaves the world and lifecycle unchanged', () =>
     Effect.gen(function* () {
       const oakPlanks = Option.getOrThrow(blockIdOf('oak_planks'))
       // Fire A spreads to a flammable neighbour (seed 1 makes the very first
@@ -2981,7 +3122,7 @@ describe('fire tick budget, unregistered blocks and duplicate ignition', () => {
       // with `ChunkNotLoaded` specifically, exercising the retry-counter arm.
       const unsupportedRetries = fixtureBlockPosition(40, 64, 40)
 
-      const { state, store } = yield* builtStagesInWorld(
+      const { state, store, roster, player, inventory, time, commit } = yield* builtStagesInWorld(
         world([
           [spreadSource, Option.getOrUndefined(blockIdOf('fire')) ?? BlockId(119)],
           [fixtureBlockPosition(0, 63, 0), STONE],
@@ -2995,59 +3136,35 @@ describe('fire tick budget, unregistered blocks and duplicate ignition', () => {
         // the write-failure paths this test targets.
         ['0,0', '1,1', '2,2'],
       )
-      const blockedStore: ChunkStoreApi = {
-        ...store.api,
-        setBlock: (position, block) => {
-          if (blockKey(position) === blockKey(ignitionTarget)) {
-            return Effect.succeed({ _tag: 'ChunkNotLoaded' } as const)
-          }
-          if (blockKey(position) === blockKey(unsupportedReverts)) {
-            return Effect.succeed({ _tag: 'OutOfWorld' } as const)
-          }
-          if (blockKey(position) === blockKey(unsupportedRetries)) {
-            return Effect.succeed({ _tag: 'ChunkNotLoaded' } as const)
-          }
-          return store.api.setBlock(position, block)
-        },
-      }
-      const roster = yield* makeEntityManagerDouble<MobBehaviour>()
-      const player = yield* makePlayerServiceDouble()
-      const inventory = yield* makeInventoryDouble()
-      const time = yield* makeTimeService()
+      const fireBlock = Option.getOrThrow(blockIdOf('fire'))
+      const blockedCoordinator = coordinatorRejectingBlock(
+        commit.coordinator,
+        ignitionTarget,
+        fireBlock,
+        new WorldCommitChunkStoreUnavailable({ dimension: 'overworld' }),
+      )
       const rewiredStages = gameplayStages(
         state,
-        blockedStore,
+        store.api,
         roster.api,
         inventory.api,
         player.api,
         time,
+        undefined,
+        undefined,
+        {},
+        { ...commit, coordinator: blockedCoordinator },
       )
       const fireStage = rewiredStages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire)!
 
-      yield* Ref.set(
-        state.fireLifecycle,
-        makeFireLifecycleState([spreadSource, unsupportedReverts, unsupportedRetries], 1),
-      )
+      const initial = makeFireLifecycleState([spreadSource, unsupportedReverts, unsupportedRetries], 1)
+      yield* Ref.set(state.fireLifecycle, initial)
       yield* fireStage.run(DeltaTimeSecs(FIRE_TICK_INTERVAL_SECS)).pipe(Effect.provide(FrameServicesLayer))
 
-      const fires = (yield* Ref.get(state.fireLifecycle)).fires
-      // The failed ignition never became a tracked fire, and the world write
-      // never landed.
-      expect(fires.some((fire) => fire.position.x === 1 && fire.position.z === 0)).toBe(false)
+      expect((yield* Ref.get(state.fireLifecycle)).fires).toStrictEqual(initial.fires)
       expect(yield* store.blockAt(ignitionTarget)).toBe(oakPlanks)
-
-      // The OutOfWorld failure reverted to the PREVIOUS fire entry
-      // unconditionally — still tracked, no retry counter attached.
-      const reverted = fires.find(
-        (fire) => fire.position.x === 20 && fire.position.y === 64 && fire.position.z === 20,
-      )
-      expect(reverted).toStrictEqual({ position: unsupportedReverts, ageTicks: 0 })
-
-      // The ChunkNotLoaded failure kept the fire AND recorded a retry.
-      const retried = fires.find(
-        (fire) => fire.position.x === 40 && fire.position.y === 64 && fire.position.z === 40,
-      )
-      expect(retried).toStrictEqual({ position: unsupportedRetries, ageTicks: 0, unloadedRetries: 1 })
+      expect(yield* store.blockAt(unsupportedReverts)).toBe(fireBlock)
+      expect(yield* store.blockAt(unsupportedRetries)).toBe(fireBlock)
     }),
   )
 })
