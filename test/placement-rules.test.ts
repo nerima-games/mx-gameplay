@@ -18,7 +18,7 @@
  * reach the mushroom, sugar-cane and cactus gates through real held items.
  */
 import { describe, expect, it } from '@effect/vitest'
-import { Effect, Option } from 'effect'
+import { Effect, Option, Result } from 'effect'
 import {
   AIR_BLOCK_ID,
   BLOCK_TYPES,
@@ -76,13 +76,13 @@ describe('horizontalBlockNeighbours', () => {
     // THE REFERENCE'S DEFECT, NOT REPRODUCED. `localHorizontalNeighbors` drops
     // any neighbour outside the chunk it holds, so a cactus at x = 15 is checked
     // on three sides and a sugar cane at x = 0 cannot see water one cell west.
-    expect(horizontalBlockNeighbours(blockPosition(0, 64, 0))).toStrictEqual([
+    expect(Result.getOrThrow(horizontalBlockNeighbours(blockPosition(0, 64, 0)))).toStrictEqual([
       { x: -1, y: 64, z: 0 },
       { x: 1, y: 64, z: 0 },
       { x: 0, y: 64, z: -1 },
       { x: 0, y: 64, z: 1 },
     ])
-    expect(horizontalBlockNeighbours(blockPosition(15, 64, 15))).toHaveLength(4)
+    expect(Result.getOrThrow(horizontalBlockNeighbours(blockPosition(15, 64, 15)))).toHaveLength(4)
   })
 })
 

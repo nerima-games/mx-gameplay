@@ -762,7 +762,7 @@ describe('the reference\u2019s support table, on the rows whose rule IS the fall
         // function `placementVerdict` actually calls — and these six rows are
         // the ones where the two spellings agree, which is what makes them a
         // safe place to check that the composition did not change their answers.
-        expect(canBlockStaySupported(held, support)).toBe(stays)
+        expect(Result.getOrThrow(canBlockStaySupported(held, support))).toBe(stays)
         expect(capability(support, 'canSupportAttachments')).toBe(stays)
       }),
     )
@@ -883,9 +883,8 @@ describe('F7 — CLOSED: per-block support rules are reachable through placeBloc
         for (const support of [STONE, WATER, SNOW, DIRT, SAND, AIR_BLOCK_ID, RAIL, LAVA]) {
           const store = yield* storeWith([[below, support]])
           const outcome = yield* placeBlock(store.api, { position: target, heldItem: item })
-          const stays = canBlockStaySupported(
-            blockIdOrThrow(blockOfPlaceableItem(item)),
-            support,
+          const stays = Result.getOrThrow(
+            canBlockStaySupported(blockIdOrThrow(blockOfPlaceableItem(item)), support),
           )
 
           expect({ item, support, refused: outcome._tag === 'Unsupported' }).toStrictEqual({
@@ -902,7 +901,7 @@ describe('F7 — CLOSED: per-block support rules are reachable through placeBloc
     Effect.sync(() => {
       // The F7 row itself. If these two ever stop disagreeing, the test above
       // has become vacuous for a second reason and somebody should know.
-      expect(canBlockStaySupported(blockIdOrThrow('lily_pad'), WATER)).toBe(true)
+      expect(Result.getOrThrow(canBlockStaySupported(blockIdOrThrow('lily_pad'), WATER))).toBe(true)
       expect(capability(WATER, 'canSupportAttachments')).toBe(false)
 
       const reachable = PLACEABLE_ITEM_TYPES.filter(
