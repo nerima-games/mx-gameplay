@@ -1,26 +1,38 @@
 import {
   addItem,
+  BucketUseOutcomeSchema as BucketServiceOutcomeSchema,
   removeItem,
   withInventory,
+  validatePlayerStorageSnapshot,
+  PlayerStorageSnapshotSchema,
   type InventoryServiceApi,
   type ItemStackFailure,
+  type PlayerStorage,
+  type PlayerStorageFailure,
+  type PlayerStorageValidationError,
+  type BucketServiceApi,
+  type BucketServiceError,
+  type ReplicatedOwnerId,
+  type WorldCommitCoordinatorApi,
 } from '@nerima-games/mc-sim'
-import { Effect, Exit, Option, Ref, Result } from 'effect'
+import { Effect, Equal, Option, Ref, Result, Schema } from 'effect'
 import { blockIdOf } from '@nerima-games/mc-kernel'
 import {
   AIR_BLOCK_ID,
+  DimensionIdSchema,
   type BlockId,
   type BlockPosition,
   type ChunkCoord,
+  type WorldWriteBatch,
 } from '@nerima-games/mc-kernel'
-import type { ChunkStoreApi } from '@nerima-games/mc-worldgen'
 import { blockPosition, blockPositionKeyOf, type ItemType } from '@nerima-games/mc-kernel'
+import { chunkCoordOf } from '../chunk-window.js'
 import {
   enqueueFluidDisturbance,
   type FluidKind,
   type FluidWorkItem,
 } from '../fluid-frontier.js'
-import type { Dimension } from '@nerima-games/mc-worldgen'
+import type { ChunkStoreApi, Dimension } from '@nerima-games/mc-worldgen'
 
 export const BUCKET_ITEM_TYPES = ['bucket', 'water_bucket', 'lava_bucket'] as const
 export type BucketItemType = (typeof BUCKET_ITEM_TYPES)[number]
@@ -35,6 +47,7 @@ export type BucketUseRequest = {
   readonly targetDimension: Dimension
   readonly position: BlockPosition
   readonly heldItem: BucketItemType
+  readonly playerStorageOwnerId: ReplicatedOwnerId
 }
 
 export type BucketUseOutcome =
@@ -60,21 +73,19 @@ export type BucketUseOutcome =
   | { readonly _tag: 'MissingItem'; readonly item: BucketItemType }
   | { readonly _tag: 'InventoryFull'; readonly item: BucketItemType }
   | { readonly _tag: 'InventoryOperationFailed'; readonly failure: ItemStackFailure }
+  | {
+      readonly _tag: 'StorageOperationFailed'
+      readonly failure: PlayerStorageFailure | PlayerStorageValidationError | ItemStackFailure
+    }
+  | { readonly _tag: 'InventoryOutOfSync' }
   | { readonly _tag: 'ChunkNotLoaded' }
   | { readonly _tag: 'OutOfWorld' }
   | { readonly _tag: 'WorldChanged' }
-  | { readonly _tag: 'InventoryUpdateFailed' }
-  | {
-      readonly _tag: 'RollbackFailed'
-      readonly trigger: 'WorldChanged' | 'InventoryUpdateFailed'
-      readonly world: 'Restored' | 'ChunkNotLoaded' | 'OutOfWorld'
-      readonly inventory: 'Unchanged' | 'Restored' | 'RestoreFailed'
-    }
+  | { readonly _tag: 'CommitContextMissing' }
 
 type BucketPlan = {
   readonly action: 'collect' | 'place'
   readonly fluid: FluidKind
-  readonly expectedBlock: BlockId
   readonly nextBlock: BlockId
   readonly nextItem: BucketItemType
 }
@@ -90,7 +101,6 @@ const planBucketUse = (heldItem: BucketItemType, block: BlockId): BucketPlan | u
       return {
         action: 'collect',
         fluid: 'water',
-        expectedBlock: waterBlock,
         nextBlock: AIR_BLOCK_ID,
         nextItem: 'water_bucket',
       }
@@ -99,7 +109,6 @@ const planBucketUse = (heldItem: BucketItemType, block: BlockId): BucketPlan | u
       return {
         action: 'collect',
         fluid: 'lava',
-        expectedBlock: lavaBlock,
         nextBlock: AIR_BLOCK_ID,
         nextItem: 'lava_bucket',
       }
@@ -126,39 +135,49 @@ const planBucketUse = (heldItem: BucketItemType, block: BlockId): BucketPlan | u
   return {
     action: 'place',
     fluid,
-    expectedBlock: AIR_BLOCK_ID,
     nextBlock,
     nextItem: 'bucket',
   }
 }
 
-type WorldRollback = 'Restored' | 'ChunkNotLoaded' | 'OutOfWorld'
-
-const rollbackWorld = (
-  store: ChunkStoreApi,
-  position: BlockPosition,
-  block: BlockId,
-): Effect.Effect<WorldRollback> =>
-  Effect.map(store.setBlock(position, block), (outcome) => {
-    if (outcome._tag === 'ChunkNotLoaded' || outcome._tag === 'OutOfWorld') {
-      return outcome._tag
-    }
-    return 'Restored'
-  })
-
 /**
- * Exchange one bucket item and one world cell as one interaction.
+ * Exchange one bucket item and one world cell through mc-sim's C4/C7 commit.
  *
- * Inventory capacity is proven against a snapshot before the world write. The
- * snapshot is installed only after a successful write, so ordinary refusals do
- * not need compensating mutations.
+ * The coordinator observation supplies both the replicated storage owner and
+ * the target block at one world revision. The inventory service must match that
+ * owner state before a candidate is built; the bucket service then commits the
+ * candidate and block edit together. The local inventory mirror and fluid
+ * frontier are updated only after that commit succeeds.
  */
-export const useBucket = (
+type LegacyBucketUseRequest = Omit<BucketUseRequest, 'playerStorageOwnerId'>
+
+type LegacyBucketUseArguments = readonly [
   store: ChunkStoreApi,
   inventory: InventoryServiceApi,
   fluidFrontier: Ref.Ref<ReadonlyArray<FluidWorkItem>>,
+  request: LegacyBucketUseRequest,
+]
+
+type CoordinatedBucketUseArguments = readonly [
+  inventory: InventoryServiceApi,
+  bucketService: BucketServiceApi,
+  coordinator: WorldCommitCoordinatorApi,
+  fluidFrontier: Ref.Ref<ReadonlyArray<FluidWorkItem>>,
   request: BucketUseRequest,
-): Effect.Effect<BucketUseOutcome> =>
+]
+
+const useBucketWithCommit = (
+  inventory: InventoryServiceApi,
+  bucketService: BucketServiceApi,
+  coordinator: WorldCommitCoordinatorApi,
+  fluidFrontier: Ref.Ref<ReadonlyArray<FluidWorkItem>>,
+  request: BucketUseRequest,
+): Effect.Effect<
+  BucketUseOutcome,
+  | BucketServiceError
+  | PlayerStorageValidationError
+  | ItemStackFailure
+> =>
   Effect.gen(function* () {
     if (request.activeDimension !== request.targetDimension) {
       return {
@@ -168,8 +187,8 @@ export const useBucket = (
       }
     }
 
-    const storage = yield* inventory.storageSnapshot
-    const removal = removeItem(storage.inventory, request.heldItem, 1)
+    const localStorage = yield* inventory.storageSnapshot
+    const removal = removeItem(localStorage.inventory, request.heldItem, 1)
     if (Result.isFailure(removal)) {
       return { _tag: 'InventoryOperationFailed', failure: removal.failure }
     }
@@ -178,16 +197,29 @@ export const useBucket = (
       return { _tag: 'MissingItem', item: request.heldItem }
     }
 
-    const reading = yield* store.getBlock(request.position)
-    if (reading._tag !== 'Block') {
-      return reading
+    const dimension = yield* Schema.decodeUnknownEffect(DimensionIdSchema)(request.targetDimension)
+    const observation = yield* coordinator.observe(
+      request.playerStorageOwnerId,
+      PlayerStorageSnapshotSchema,
+      [{ dimension, position: request.position }],
+    )
+    if (!Equal.equals(localStorage, observation.state)) {
+      return { _tag: 'InventoryOutOfSync' }
     }
 
-    const plan = planBucketUse(request.heldItem, reading.block)
+    const target = observation.blocks[0]
+    if (target === undefined) {
+      return { _tag: 'WorldChanged' }
+    }
+    if (target.reading._tag !== 'Block') {
+      return target.reading
+    }
+
+    const plan = planBucketUse(request.heldItem, target.reading.block)
     if (plan === undefined) {
       return request.heldItem === 'bucket'
-        ? { _tag: 'WrongTarget', block: reading.block }
-        : { _tag: 'Occupied', block: reading.block }
+        ? { _tag: 'WrongTarget', block: target.reading.block }
+        : { _tag: 'Occupied', block: target.reading.block }
     }
 
     const addition = addItem(removed.inventory, plan.nextItem, 1)
@@ -199,44 +231,36 @@ export const useBucket = (
       return { _tag: 'InventoryFull', item: plan.nextItem }
     }
 
-    const written = yield* store.setBlock(request.position, plan.nextBlock)
-    if (written._tag === 'ChunkNotLoaded' || written._tag === 'OutOfWorld') {
-      return written
+    const candidateResult = withInventory(observation.state, added.inventory)
+    if (Result.isFailure(candidateResult)) {
+      return { _tag: 'StorageOperationFailed', failure: candidateResult.failure }
     }
-    if (written._tag === 'Written' && written.previous !== plan.expectedBlock) {
-      const world = yield* rollbackWorld(store, request.position, written.previous)
-      if (world !== 'Restored') {
-        return {
-          _tag: 'RollbackFailed',
-          trigger: 'WorldChanged',
-          world,
-          inventory: 'Unchanged',
-        }
-      }
-      return { _tag: 'WorldChanged' }
+    const candidate: PlayerStorage = candidateResult.success
+    const validation = validatePlayerStorageSnapshot(candidate)
+    if (validation._tag === 'Invalid' || validation._tag === 'ItemStackFailure') {
+      return { _tag: 'StorageOperationFailed', failure: validation.error }
     }
-    if (written._tag !== 'Written') {
+
+    const expectedDimensionRevision = yield* coordinator.dimensionRevision(dimension)
+    const blockWrite: WorldWriteBatch = {
+      world: observation.world,
+      expectedWorldRevision: observation.revision,
+      dimension,
+      expectedDimensionRevision,
+      edits: [{ position: request.position, block: plan.nextBlock }],
+    }
+
+    const commitResult = yield* bucketService.commitUse({
+      playerOwnerId: request.playerStorageOwnerId,
+      playerStorage: candidate,
+      blockWrite,
+    })
+    const committed = yield* Schema.decodeUnknownEffect(BucketServiceOutcomeSchema)(commitResult)
+    if (committed._tag !== 'Committed') {
       return { _tag: 'WorldChanged' }
     }
 
-    const inventoryUpdate = yield* Effect.exit(
-      inventory.restoreStorage(withInventory(storage, added.inventory)),
-    )
-    if (Exit.isFailure(inventoryUpdate)) {
-      const inventoryRollback = yield* Effect.exit(inventory.restoreStorage(storage))
-      const world = yield* rollbackWorld(store, request.position, plan.expectedBlock)
-      const inventoryState = Exit.isSuccess(inventoryRollback) ? 'Restored' : 'RestoreFailed'
-
-      if (world !== 'Restored' || inventoryState === 'RestoreFailed') {
-        return {
-          _tag: 'RollbackFailed',
-          trigger: 'InventoryUpdateFailed',
-          world,
-          inventory: inventoryState,
-        }
-      }
-      return { _tag: 'InventoryUpdateFailed' }
-    }
+    yield* inventory.restoreStorage(candidate)
     yield* Ref.update(fluidFrontier, (frontier) =>
       enqueueFluidDisturbance(frontier, {
         key: blockPositionKeyOf(
@@ -250,6 +274,25 @@ export const useBucket = (
       _tag: plan.action === 'collect' ? 'Collected' : 'Placed',
       fluid: plan.fluid,
       position: request.position,
-      chunk: written.chunk,
+      chunk: chunkCoordOf(request.position),
     }
   })
+
+export function useBucket(...args: LegacyBucketUseArguments): Effect.Effect<BucketUseOutcome>
+export function useBucket(
+  ...args: CoordinatedBucketUseArguments
+): Effect.Effect<
+  BucketUseOutcome,
+  BucketServiceError | PlayerStorageValidationError | ItemStackFailure
+>
+export function useBucket(
+  ...args: LegacyBucketUseArguments | CoordinatedBucketUseArguments
+): Effect.Effect<
+  BucketUseOutcome,
+  BucketServiceError | PlayerStorageValidationError | ItemStackFailure
+> {
+  if (args.length === 4) {
+    return Effect.succeed({ _tag: 'CommitContextMissing' })
+  }
+  return useBucketWithCommit(...args)
+}
