@@ -41,6 +41,7 @@ import type { BlockPosition } from '@nerima-games/mc-kernel'
 import type { MobBehaviour } from '../src/domain/entities/mob-frame'
 import { BlockId, blockIdOf, blockPositionKeyOf } from '@nerima-games/mc-kernel'
 import { NO_TOOL } from '../src/domain/interactions/block-loot'
+import { breakBlock } from '../src/domain/interactions/break-block.js'
 import { blockPosition, position as fixturePosition } from './support/coordinate-fixtures.js'
 
 /**
@@ -119,6 +120,19 @@ const runInteractions = (
 }
 
 describe('the break loop', () => {
+  it.effect('keeps the two-argument rule call compatible with BreakOutcome', () =>
+    Effect.gen(function* () {
+      const world = yield* oneBlockWorld()
+
+      expect(yield* breakBlock(world.chunkStore, AT)).toStrictEqual({
+        _tag: 'Broken',
+        yielded: DIRT_ID,
+        chunk: chunkOf(AT),
+      })
+      expect(yield* world.chunkStore.getBlock(AT)).toStrictEqual({ _tag: 'Block', block: 0 })
+    }),
+  )
+
   it.effect('uses a targeted lever instead of placing the held item', () =>
     Effect.gen(function* () {
       const world = yield* lookingAtBlockWorld(true, LEVER_ID)
