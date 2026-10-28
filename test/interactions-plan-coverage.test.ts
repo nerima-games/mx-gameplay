@@ -332,6 +332,37 @@ describe('registered Fishing plans in the interactions stage', () => {
     expect(await Effect.runPromise(harness.coordinator.revision)).toBe(revisionBefore + 1)
   })
 
+  it('requeues Cancel when the active rod has no projectile entry', async () => {
+    const harness = await Effect.runPromise(makeHarness({ fishing: fishingStateWithRod() }))
+    const fishingBefore = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_FISHING_OWNER_ID,
+      FishingStateSchema,
+    ))
+    const projectilesBefore = await Effect.runPromise(harness.coordinator.snapshot(
+      PROJECTILE_REPLICATED_OWNER_ID,
+      ProjectileServiceSnapshotSchema,
+    ))
+    const revisionBefore = await Effect.runPromise(harness.coordinator.revision)
+    await Effect.runPromise(requestFishingCancel(harness.state, 'cancel-missing-projectile', FISHER))
+
+    await harness.run()
+
+    expect(harness.commitCalls()).toBe(0)
+    expect(await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_FISHING_OWNER_ID,
+      FishingStateSchema,
+    ))).toStrictEqual(fishingBefore)
+    expect(await Effect.runPromise(harness.coordinator.snapshot(
+      PROJECTILE_REPLICATED_OWNER_ID,
+      ProjectileServiceSnapshotSchema,
+    ))).toStrictEqual(projectilesBefore)
+    expect(await Effect.runPromise(harness.coordinator.revision)).toBe(revisionBefore)
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingItemUses))).toMatchObject([
+      { action: 'CancelFishing', requestId: 'cancel-missing-projectile', actor: FISHER },
+    ])
+    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toStrictEqual([])
+  })
+
   it('requeues a caught Reel when the registered player inventory has no capacity', async () => {
     const harness = await Effect.runPromise(makeHarness({
       fishing: fishingStateWithRod('bite'),
