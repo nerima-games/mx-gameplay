@@ -37,18 +37,17 @@
  * test suite would not notice.
  */
 import { Effect, Layer, Ref } from 'effect'
-import { AIR_BLOCK_ID, BlockId, chunkCoord, type BlockPosition } from '@nerima-games/mc-kernel'
+import { AIR_BLOCK_ID, BlockId, ChunkAxis, chunkCoord, type BlockPosition } from '@nerima-games/mc-kernel'
 import {
   ChunkStore,
   blockIndex,
   type BlockReading,
   type BlockWriteOutcome,
-  type Chunk,
   type ChunkDirtyBatch,
   type ChunkDirtySubscription,
   type ChunkStoreApi,
   type LightReading,
-  type SubscriberId,
+  type ReadonlyChunk,
 } from '@nerima-games/mc-worldgen'
 
 /** Block ids, transcribed from kernel's `BLOCK_REGISTRY`. */
@@ -74,7 +73,10 @@ export const chunkKeyOf = (position: BlockPosition): string =>
   `${String(Math.floor(position.x / CHUNK_SIDE))},${String(Math.floor(position.z / CHUNK_SIDE))}`
 
 const chunkCoordOf = (position: BlockPosition) =>
-  chunkCoord(Math.floor(position.x / CHUNK_SIDE), Math.floor(position.z / CHUNK_SIDE))
+  chunkCoord(
+    ChunkAxis(Math.floor(position.x / CHUNK_SIDE)),
+    ChunkAxis(Math.floor(position.z / CHUNK_SIDE)),
+  )
 
 export const world = (
   entries: ReadonlyArray<readonly [BlockPosition, BlockId]>,
@@ -169,7 +171,7 @@ export const makeChunkStoreDouble = (
       peeks: 0,
     }),
     (state) => {
-      const notImplemented = Effect.dieMessage('not exercised by this test')
+      const notImplemented = Effect.die('not exercised by this test')
 
       const markDirty = (doubles: Doubles, position: BlockPosition): void => {
         for (const pending of doubles.subscribers.values()) {
@@ -189,13 +191,13 @@ export const makeChunkStoreDouble = (
           // counter-derived id is a genuine, never-reused subscriber
           // identity by construction; the cast asserts only that, not that
           // an unchecked value has an unverified shape.
-          id: id as SubscriberId,
+          id: id as ChunkDirtySubscription['id'],
           drain: Ref.modify(state, (current) => {
             const pending = current.subscribers.get(id) ?? new Set<string>()
             const batch: ChunkDirtyBatch = {
               changed: [...pending].map((entry) => {
                 const [cx, cz] = entry.split(',')
-                return chunkCoord(Number(cx), Number(cz))
+                return chunkCoord(ChunkAxis(Number(cx)), ChunkAxis(Number(cz)))
               }),
               removed: [],
             }
@@ -212,6 +214,8 @@ export const makeChunkStoreDouble = (
       })
 
       const api: ChunkStoreApi = {
+        prepare: () => notImplemented,
+        publish: () => notImplemented,
         load: () => notImplemented,
 
         /**
@@ -219,7 +223,7 @@ export const makeChunkStoreDouble = (
          *
          * The double keeps a `Map` from a cell key to a block because every rule
          * before `domain/interactions/ignite-portal.ts` read cells. That rule
-         * reads a chunk, so this builds the `Uint8Array` mc-worldgen would have
+         * reads a chunk, so this builds the `Uint16Array` mc-worldgen would have
          * handed back — 65,536 bytes per call, which is the wrong shape for a
          * hot path and exactly the right shape for a test: it means the double's
          * one source of truth stays the map, and a cell written through
@@ -231,14 +235,14 @@ export const makeChunkStoreDouble = (
          * `domain/chunk-window.ts`'s `UNREADABLE_BLOCK` reachable.
          */
         peek: (coord) =>
-          Ref.modify(state, (doubles): readonly [Chunk | undefined, Doubles] => {
+          Ref.modify(state, (doubles): readonly [ReadonlyChunk | undefined, Doubles] => {
             doubles.peeks += 1
             const key = `${String(coord.cx)},${String(coord.cz)}`
             if (!doubles.loadedChunks.has(key)) {
               return [undefined, doubles] as const
             }
 
-            const blocks = new Uint8Array(CHUNK_SIDE * CHUNK_SIDE * WORLD_HEIGHT)
+            const blocks = new Uint16Array(CHUNK_SIDE * CHUNK_SIDE * WORLD_HEIGHT)
             for (const [cell, block] of doubles.blocks) {
               const [x, y, z] = cell.split(',').map(Number)
               if (x === undefined || y === undefined || z === undefined) continue
