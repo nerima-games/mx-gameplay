@@ -80,6 +80,13 @@ describe('armor damage reduction', () => {
     expect(armorToughnessForEquipment(equipment)).toBe(0)
   })
 
+  it('ignores a non-armour item with no supported armor tier in a worn slot', () => {
+    const equipment = equipmentWith({ head: armourItem('bow') })
+
+    expect(armorPointsForEquipment(equipment)).toBe(0)
+    expect(armorToughnessForEquipment(equipment)).toBe(0)
+  })
+
   it.each([
     ['head', 'iron_boots'],
     ['chest', 'iron_helmet'],

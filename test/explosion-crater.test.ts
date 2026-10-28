@@ -78,6 +78,23 @@ describe('explosion crater', () => {
     }),
   )
 
+  it.effect('skips out-of-world cells at the bottom boundary', () =>
+    Effect.gen(function* () {
+      const centre: BlockPosition = atBlockPosition(8, 0, 8)
+      const store = yield* makeChunkStoreDouble(world([[centre, STONE]]), ['0,0'])
+
+      const disturbed = yield* carveExplosionCrater(store.api, centre, 1)
+
+      expect(disturbed).toStrictEqual([blockPositionKeyOf(centre)])
+      expect(yield* store.blockAt(centre)).toBe(AIR_BLOCK_ID)
+      expect(yield* store.calls).toStrictEqual({
+        reads: craterCells(centre, 1).length,
+        writes: craterCells(centre, 1).length - 1,
+        peeks: 0,
+      })
+    }),
+  )
+
   it('craterRadius is 0 for a non-finite power, rather than propagating NaN', () => {
     expect(craterRadius(Number.NaN)).toBe(0)
     expect(craterRadius(Number.POSITIVE_INFINITY)).toBe(0)

@@ -427,6 +427,38 @@ describe('bucket interaction', () => {
     }),
   )
 
+  it.effect('treats an observation that omits the requested cell as a changed world', () =>
+    Effect.gen(function* () {
+      const harness = yield* makeBucketHarness(
+        WATER,
+        true,
+        inventoryWith([0, stack('bucket', 1)]),
+      )
+      const frontier = yield* Ref.make<ReadonlyArray<FluidWorkItem>>([])
+      const coordinator: WorldCommitCoordinatorApi = {
+        ...harness.coordinator,
+        observe: (...args) => Effect.map(
+          harness.coordinator.observe(...args),
+          (snapshot) => ({ ...snapshot, blocks: [] }),
+        ),
+      }
+
+      expect(yield* useBucket(
+        harness.inventory,
+        harness.bucketService,
+        coordinator,
+        frontier,
+        request('bucket'),
+      )).toStrictEqual({ _tag: 'WorldChanged' })
+      expect(yield* harness.world.chunkStore.getBlock(POSITION)).toStrictEqual({
+        _tag: 'Block',
+        block: WATER,
+      })
+      expect(yield* harness.inventory.storageSnapshot).toStrictEqual(harness.initialStorage)
+      expect(yield* Ref.get(frontier)).toStrictEqual([])
+    }),
+  )
+
   it.effect('leaves world, owner, local inventory, and frontier unchanged when commit fails', () =>
     Effect.gen(function* () {
       expect(yield* assertUnchangedAfterFailure('commit-failed', 1, [[9, 'lava']])).toBe(true)

@@ -140,6 +140,16 @@ describe('the two slot rules', () => {
     }),
   )
 
+  it.effect('rejects an item outside the runtime catalogue without changing slots', () =>
+    Effect.sync(() => {
+      const slots = emptySlots()
+      const result = addToSlots(slots, 'not_a_registered_item' as ItemType, 3)
+
+      expect(result.slots).toBe(slots)
+      expect(result.accepted).toBe(0)
+    }),
+  )
+
   it.effect('removing skips slots holding a different item', () =>
     Effect.sync(() => {
       const result = removeFromSlots([stack(DIRT, 3), stack(STONE, 2)], STONE, 2)
@@ -147,6 +157,16 @@ describe('the two slot rules', () => {
       expect(result.slots[0]).toStrictEqual(stack(DIRT, 3))
       expect(result.slots[1]).toBeUndefined()
       expect(result.removed).toBe(2)
+    }),
+  )
+
+  it.effect('does not partially remove from an over-full malformed saved stack', () =>
+    Effect.sync(() => {
+      const malformed = savedStack(STONE, STONE_STACK_LIMIT + 2)
+      const result = removeFromSlots([malformed], STONE, 1)
+
+      expect(result.slots[0]).toBe(malformed)
+      expect(result.removed).toBe(0)
     }),
   )
 

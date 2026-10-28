@@ -41,7 +41,7 @@ import type { BlockPosition } from '@nerima-games/mc-kernel'
 import type { MobBehaviour } from '../src/domain/entities/mob-frame'
 import { BlockId, blockIdOf, blockPositionKeyOf } from '@nerima-games/mc-kernel'
 import { NO_TOOL } from '../src/domain/interactions/block-loot'
-import { PlayerStorageSnapshotSchema } from '@nerima-games/mc-sim'
+import { PlayerStorageSnapshotSchema, type WorldCommitCoordinatorApi } from '@nerima-games/mc-sim'
 import { breakBlock } from '../src/domain/interactions/break-block.js'
 import { makeGameplayCommitServices } from './support/transactional-stage-doubles.js'
 import { blockPosition, position as fixturePosition } from './support/coordinate-fixtures.js'
@@ -132,6 +132,132 @@ describe('the break loop', () => {
         chunk: chunkOf(AT),
       })
       expect(yield* world.chunkStore.getBlock(AT)).toStrictEqual({ _tag: 'Block', block: 0 })
+    }),
+  )
+
+  it.effect('keeps unreadable legacy break results distinct from empty air', () =>
+    Effect.gen(function* () {
+      const loadedAir = yield* makeInMemoryWorld<MobBehaviour>({
+        world: { blocks: new Map(), loaded: [chunkKey(chunkOf(AT))] },
+      })
+      const unloaded = yield* makeInMemoryWorld<MobBehaviour>({
+        world: { blocks: new Map(), loaded: [] },
+      })
+
+      expect(yield* breakBlock(loadedAir.chunkStore, AT)).toStrictEqual({ _tag: 'NothingThere' })
+      expect(yield* breakBlock(unloaded.chunkStore, AT)).toStrictEqual({ _tag: 'ChunkNotLoaded' })
+      expect(yield* breakBlock(loadedAir.chunkStore, blockPosition(AT.x, -1, AT.z))).toStrictEqual({
+        _tag: 'OutOfWorld',
+      })
+    }),
+  )
+
+  it.effect('transactional breaks reject invalid dimensions and captured tool locations', () =>
+    Effect.gen(function* () {
+      const world = yield* oneBlockWorld()
+      const commit = yield* makeGameplayCommitServices(world.chunkStore, world.inventory)
+      const context = {
+        coordinator: commit.coordinator,
+        dimension: 'moon' as never,
+        ownerId: commit.playerStorageOwnerId,
+        inventory: world.inventory,
+        toolLocation: { _tag: 'Inventory' as const, slotIndex: -1 },
+      }
+
+      const invalidDimension = yield* breakBlock(world.chunkStore, AT, context)
+      const invalidToolLocation = yield* breakBlock(world.chunkStore, AT, {
+        ...context,
+        dimension: 'overworld',
+      })
+
+      expect(invalidDimension).toStrictEqual({
+        _tag: 'TransactionFailure',
+        failure: { _tag: 'InvalidDimension' },
+      })
+      expect(invalidToolLocation).toStrictEqual({
+        _tag: 'TransactionFailure',
+        failure: { _tag: 'ToolDamageRejected', reason: 'InvalidLocation' },
+      })
+      expect(yield* world.chunkStore.getBlock(AT)).toStrictEqual({ _tag: 'Block', block: DIRT_ID })
+      expect(yield* commit.coordinator.revision).toBe(0)
+    }),
+  )
+
+  it.effect('transactional breaks reject incomplete observations and missing contexts', () =>
+    Effect.gen(function* () {
+      const world = yield* oneBlockWorld()
+      const commit = yield* makeGameplayCommitServices(world.chunkStore, world.inventory)
+      const coordinator: WorldCommitCoordinatorApi = {
+        ...commit.coordinator,
+        observe: (...args) => Effect.map(
+          commit.coordinator.observe(...args),
+          (snapshot) => ({ ...snapshot, blocks: [] }),
+        ),
+      }
+      const context = {
+        coordinator,
+        dimension: 'overworld' as const,
+        ownerId: commit.playerStorageOwnerId,
+        inventory: world.inventory,
+        toolLocation: undefined,
+      }
+
+      expect(yield* breakBlock(world.chunkStore, AT, context)).toStrictEqual({
+        _tag: 'TransactionFailure',
+        failure: { _tag: 'ObservationIncomplete', position: AT },
+      })
+      expect(yield* breakBlock(world.chunkStore, AT, undefined as never)).toStrictEqual({
+        _tag: 'TransactionFailure',
+        failure: { _tag: 'MissingTransactionContext' },
+      })
+      expect(yield* world.chunkStore.getBlock(AT)).toStrictEqual({ _tag: 'Block', block: DIRT_ID })
+      expect(yield* commit.coordinator.revision).toBe(0)
+    }),
+  )
+
+  it.effect('transactional breaks preserve air, unloaded, and out-of-world refusals', () =>
+    Effect.gen(function* () {
+      const airWorld = yield* makeInMemoryWorld<MobBehaviour>({
+        world: { blocks: new Map(), loaded: [chunkKey(chunkOf(AT))] },
+      })
+      const airCommit = yield* makeGameplayCommitServices(airWorld.chunkStore, airWorld.inventory)
+      const context = {
+        coordinator: airCommit.coordinator,
+        dimension: 'overworld' as const,
+        ownerId: airCommit.playerStorageOwnerId,
+        inventory: airWorld.inventory,
+        toolLocation: undefined,
+      }
+      const unloadedWorld = yield* makeInMemoryWorld<MobBehaviour>({
+        world: { blocks: new Map(), loaded: [] },
+      })
+      const unloadedCommit = yield* makeGameplayCommitServices(unloadedWorld.chunkStore, unloadedWorld.inventory)
+      const unloadedContext = {
+        coordinator: unloadedCommit.coordinator,
+        dimension: 'overworld' as const,
+        ownerId: unloadedCommit.playerStorageOwnerId,
+        inventory: unloadedWorld.inventory,
+        toolLocation: undefined,
+      }
+
+      expect((yield* breakBlock(airWorld.chunkStore, AT, context))).toStrictEqual({
+        _tag: 'TransactionFailure',
+        failure: { _tag: 'BlockUnavailable', reason: 'air' },
+      })
+      expect((yield* breakBlock(unloadedWorld.chunkStore, AT, unloadedContext))).toStrictEqual({
+        _tag: 'TransactionFailure',
+        failure: { _tag: 'BlockUnavailable', reason: 'chunk-not-loaded' },
+      })
+      expect((yield* breakBlock(
+        unloadedWorld.chunkStore,
+        blockPosition(AT.x, -1, AT.z),
+        unloadedContext,
+      ))).toStrictEqual({
+        _tag: 'TransactionFailure',
+        failure: { _tag: 'BlockUnavailable', reason: 'out-of-world' },
+      })
+      expect(yield* airCommit.coordinator.revision).toBe(0)
+      expect(yield* unloadedCommit.coordinator.revision).toBe(0)
     }),
   )
 

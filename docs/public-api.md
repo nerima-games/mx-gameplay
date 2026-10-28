@@ -1,9 +1,8 @@
 # 公開 API
 
-## 1. 公開 API は stage 登録だけである
+## 1. ホスト連携で中心となるのは stage 登録である
 
-**`mx-gameplay` が他リポジトリに対して公開しているのは `StageRegistration` の配列 1 つだけで、
-サービスは 1 つも公開していない。**
+**ホスト連携の中心となる契約は `StageRegistration` の配列で、状態サービスは公開しない。**
 
 これは実装が未熟だからではなく、体験モジュールの定義そのものである。
 **ルールはサービスではない。** 他リポジトリが `mx-gameplay` に尋ねたくなることを列挙すると、
@@ -16,9 +15,7 @@
 import { makeGameplayStages } from '@nerima-games/mx-gameplay'
 ```
 
-`index.ts` はこれ以外にも多くを export しているが、それらは**このリポジトリ自身のテストとプレビューが
-直接叩く単位**として見えているだけで、他リポジトリが import することを想定していない。
-どれがどちらかは §5 の表に全部書いてある。
+`index.ts` はほかの要素も export する。`makeProjectileRuntime` は、mc-sim の `ProjectileServiceApi` を使う gameplay の呼び出し側に、`launch` と `step` だけを型付きで提供する。projectile の状態、物理計算、commit、event は mc-sim が所有する。この adapter は domain 間の連携向けに見える export で、ホスト連携の契約には含めない。ほかの export の分類は §5 に記す。
 
 ## 2. 契約（plan.md §4.1 逐語）
 
@@ -258,9 +255,9 @@ plan.md §4.2 を素直に読むと `input` の後ろでもあり、`redstone` �
 
 ## 5. `index.ts` の全 export
 
-**契約** = 他リポジトリが import してよいもの。**内部(可視)** = テストとプレビューのために見えているだけのもの。
+**契約** = ホストが import してよいもの。**内部(可視)** = root export から参照できるが、ホスト連携の契約ではないもの。テスト、プレビュー、domain 間連携向けの export もここに含む。
 
-`index.ts` は `export *` を **29 本**並べているので、内部(可視) も外から見える。
+`index.ts` は `export *` を **83 本**並べているので、内部(可視) も外から見える。
 （この数は長く「6 本」と書かれたまま古くなっていた。数え直したものである。）
 見えることと契約であることは別で、内部(可視) の変更は semver 上 minor 扱いになる（[versioning.md](./versioning.md) §6）。
 
@@ -278,6 +275,12 @@ plan.md §4.2 を素直に読むと `input` の後ろでもあり、`redstone` �
 1 つも落ちない — それでいて唯一の消費者である `mc-compose` は壊れる。
 ただしそのテストは「列挙されているものが全部契約だ」とは言っていない。
 バレルを正直に保っているだけで、API を凍結してはいない。
+
+### domain/entities/projectile-runtime.ts
+
+| export | 種別 | 備考 |
+| --- | --- | --- |
+| `ProjectileRuntime` / `makeProjectileRuntime` | 内部(可視) | `mc-sim` の `ProjectileServiceApi` から `launch` と `step` を委譲する。projectile の識別子、物理、commit、event は mc-sim が所有する |
 
 ### stages/registration.ts
 

@@ -213,6 +213,21 @@ describe('advancePlayerSwimming: oxygen and drowning boundaries', () => {
     }),
   )
 
+  it.effect('resets a non-finite saved drowning clock before counting a full interval', () =>
+    Effect.sync(() => {
+      const corruptedState = {
+        ...initialPlayerSwimmingState(),
+        oxygenSecs: 0,
+        drowningElapsedSecs: Number.NaN,
+      }
+
+      const result = advancePlayerSwimming(corruptedState, advanceInput({ deltaSecs: DROWNING_DAMAGE_INTERVAL_SECS }))
+
+      expect(result.drowningDamagePoints).toBe(DROWNING_DAMAGE_POINTS)
+      expect(result.state.drowningElapsedSecs).toBe(0)
+    }),
+  )
+
   it.effect('dying mid-drown resets to the initial state rather than leaving stale oxygen debt', () =>
     Effect.sync(() => {
       const drowning = advancePlayerSwimming(

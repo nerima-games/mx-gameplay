@@ -172,6 +172,12 @@ describe('mining duration', () => {
       expect(miningDurationSecsForBlock(registeredBlockId('dandelion'), null)).toBe(0)
     }),
   )
+
+  it.effect('does not assign mining time to an invalid block id', () =>
+    Effect.sync(() => {
+      expect(miningDurationSecsForBlock(-1 as BlockId, null)).toBe(0)
+    }),
+  )
 })
 
 describe('delta-time progress', () => {

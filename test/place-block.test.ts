@@ -63,6 +63,9 @@ import {
   PLAYER_HALF_WIDTH,
   type PlaceOutcome,
 } from '../src/domain/interactions/place-block'
+import { cactusSidesObjection } from '../src/domain/interactions/place-cactus-sides'
+import { doorUpperBreakCell, doorUpperCell } from '../src/domain/interactions/place-door-upper'
+import { sugarCaneWaterObjection } from '../src/domain/interactions/place-sugar-cane-water'
 import {
   drainBlockPlacementResults,
   gameplayStages,
@@ -658,6 +661,53 @@ describe('placeBlock — the four per-block rules, reached through a real held i
       } satisfies PlaceOutcome)
       expect(yield* store.blockAt(target)).toBe(blockIdOrThrow('door'))
       expect(yield* store.blockAt(upperCell)).toBe(blockIdOrThrow('door'))
+    }),
+  )
+})
+
+describe('placement rule coordinate boundaries', () => {
+  it.effect('refuses side checks whose neighbours overflow the block-coordinate range', () =>
+    Effect.gen(function* () {
+      const store = yield* makeChunkStoreDouble(world([]), [])
+      const edge = blockPosition(Number.MAX_SAFE_INTEGER, 64, 8)
+
+      expect(yield* cactusSidesObjection(store.api, blockIdOrThrow('cactus'), edge)).toStrictEqual({
+        _tag: 'SidesBlocked',
+      })
+      expect(yield* sugarCaneWaterObjection(
+        store.api,
+        blockIdOrThrow('sugar_cane'),
+        edge,
+        { _tag: 'Block', block: SAND },
+      )).toStrictEqual({ _tag: 'NoAdjacentWater' })
+      expect((yield* store.calls).reads).toBe(0)
+    }),
+  )
+
+  it.effect('refuses door halves when the cell above overflows the block-coordinate range', () =>
+    Effect.gen(function* () {
+      const store = yield* makeChunkStoreDouble(world([]), [])
+      const top = blockPosition(8, Number.MAX_SAFE_INTEGER, 8)
+      const door = blockIdOrThrow('door')
+
+      expect(yield* doorUpperCell(store.api, door, top)).toStrictEqual({ _tag: 'NoRoomAbove' })
+      expect(yield* doorUpperBreakCell(store.api, door, top)).toStrictEqual({ _tag: 'NoDoorAbove' })
+      expect((yield* store.calls).reads).toBe(0)
+    }),
+  )
+
+  it.effect('refuses sugar cane when its support would be below the coordinate range', () =>
+    Effect.gen(function* () {
+      const store = yield* makeChunkStoreDouble(world([]), [])
+      const bottom = blockPosition(8, Number.MIN_SAFE_INTEGER, 8)
+
+      expect(yield* sugarCaneWaterObjection(
+        store.api,
+        blockIdOrThrow('sugar_cane'),
+        bottom,
+        { _tag: 'Block', block: SAND },
+      )).toStrictEqual({ _tag: 'NoAdjacentWater' })
+      expect((yield* store.calls).reads).toBe(0)
     }),
   )
 })

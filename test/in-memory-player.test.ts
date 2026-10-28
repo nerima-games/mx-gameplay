@@ -342,6 +342,11 @@ describe('invalid runtime input', () => {
         reason: 'invalid-position',
         field: 'feetPosition.x',
       })
+      expect(yield* Effect.flip(player.moveTo(null as unknown as Position))).toStrictEqual({
+        _tag: 'PlayerServiceInputError',
+        reason: 'invalid-position',
+        field: 'feetPosition',
+      })
       expect(yield* Effect.flip(player.setDimension('void' as Parameters<typeof player.setDimension>[0]))).toStrictEqual({
         _tag: 'PlayerServiceInputError',
         reason: 'invalid-dimension',
@@ -354,8 +359,36 @@ describe('invalid runtime input', () => {
         reason: 'invalid-pose',
         field: 'yawRadians',
       })
+      expect(
+        yield* Effect.flip(player.restore(pose({ feetPosition: null as unknown as Position }), 'end')),
+      ).toStrictEqual({
+        _tag: 'PlayerServiceInputError',
+        reason: 'invalid-pose',
+        field: 'feetPosition',
+      })
+      expect(
+        yield* Effect.flip(player.restore(pose(), 'void' as Parameters<typeof player.restore>[1])),
+      ).toStrictEqual({
+        _tag: 'PlayerServiceInputError',
+        reason: 'invalid-dimension',
+        field: 'dimension',
+      })
       expect(yield* player.pose).toStrictEqual(initialPose)
       expect(yield* player.dimension).toBe('nether')
+    }),
+  )
+
+  it.effect('does not install a look derived from an invalid starting position', () =>
+    Effect.gen(function* () {
+      const invalidPose = pose({ feetPosition: null as unknown as Position })
+      const player = yield* makeInMemoryPlayer(invalidPose)
+
+      expect(yield* Effect.flip(player.look(0, 0))).toStrictEqual({
+        _tag: 'PlayerServiceInputError',
+        reason: 'invalid-look',
+        field: 'feetPosition',
+      })
+      expect(yield* player.pose).toStrictEqual(invalidPose)
     }),
   )
 })
