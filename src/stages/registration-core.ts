@@ -79,17 +79,22 @@
 import {
   adjacentBlockPosition,
   AIR_BLOCK_ID,
+  BlockAxis,
   BlockId,
   blockIdOf,
-  blockPosition,
+  blockPosition as kernelBlockPosition,
   blockPositionKeyOf,
   blockPositionOfKey,
   blockTypeOfId,
   capabilityOfBlockId,
   decodeBlockPositionKey,
+  EntityHealthPoints,
   horizontalBlockNeighbours,
+  PositionAxis,
+  position,
   type BlockPosition,
   type BlockPositionKey,
+  type BlockType,
   type DeltaTimeSecs,
   type GameModule,
   type ItemType,
@@ -106,13 +111,17 @@ import {
   removeItem as removeInventoryItem,
   targetBlockFromPlayerPose,
   type BlockTarget,
+  type BlockTargetInputError,
+  type CameraPoseError,
   type EquipmentItem,
+  type FurnaceFailure,
   type FurnaceState,
   type InventoryServiceApi,
+  type PlayerServiceInputError,
   type TimeServiceApi,
   type VehicleServiceApi,
 } from '@nerima-games/mc-sim'
-import { Effect, Effectable, Option, Readable, Ref } from 'effect'
+import { Brand, Effect, Option, Ref, Result, Semaphore } from 'effect'
 import {
   advanceVillagerRestock,
   copyVillagerTradeState,
@@ -355,6 +364,20 @@ import { advanceVehicles, type VehicleFrameEnvironment } from '../domain/vehicle
  */
 const toKernelPosition = (position: BlockPosition): BlockPosition => position
 
+// Stage algorithms use plain numbers; kernel requires each coordinate to pass BlockAxis validation.
+const blockPosition = (x: number, y: number, z: number): BlockPosition =>
+  kernelBlockPosition(BlockAxis(x + 0), BlockAxis(y + 0), BlockAxis(z + 0))
+
+/** Preserve the stage's infallible interface while keeping validation failures as defects. */
+export const resultOrDie = <A, E>(result: Result.Result<A, E>): Effect.Effect<A> =>
+  Effect.orDie(Effect.fromResult(result))
+
+export const blockTypeOrDie = (id: BlockId): Effect.Effect<BlockType | undefined> =>
+  resultOrDie(blockTypeOfId(id))
+
+export const blockPositionForKey = (key: BlockPositionKey): Effect.Effect<BlockPosition> =>
+  resultOrDie(blockPositionOfKey(key))
+
 export const resolveArmoredPlayerDamages = (
   inventory: InventoryServiceApi,
   damages: ReadonlyArray<PlayerDamageEvent>,
@@ -570,7 +593,7 @@ type PendingBlockBreakRequestState = {
 
 type PendingBlockBreakRequestQueue = {
   readonly state: Ref.Ref<PendingBlockBreakRequestState>
-  readonly mutex: Effect.Semaphore
+  readonly mutex: Semaphore.Semaphore
 }
 
 type FluidRuntimeState = {
@@ -579,47 +602,24 @@ type FluidRuntimeState = {
   readonly cells: ReadonlyMap<BlockPositionKey, FluidCell>
 }
 
-class FluidStateRef extends Effectable.Class<ReadonlyArray<FluidWorkItem>>
-  implements Ref.Ref<ReadonlyArray<FluidWorkItem>>
-{
-  readonly [Ref.RefTypeId] = {
-    /* v8 ignore start -- `_A` is `Ref.RefTypeId`'s phantom variance witness, the
-     * same shape as effect's own internal `effectVariance._A: _ => _` (see
-     * `effect/src/internal/effectable.ts`). It exists so `Ref.Ref<A>`'s type
-     * parameter carries the right variance at compile time; nothing calls it at
-     * runtime, on this class or on effect's own. */
-    _A: (value: ReadonlyArray<FluidWorkItem>) => value,
-    /* v8 ignore stop */
-  }
-  readonly [Readable.TypeId]: Readable.TypeId = Readable.TypeId
-  readonly get: Effect.Effect<ReadonlyArray<FluidWorkItem>>
-  // Explicit field declarations, not TypeScript parameter properties: the
-  // `erasableSyntaxOnly` flag (Wave 0 toolchain freeze) requires every
-  // construct to erase to nothing but a type annotation, and a parameter
-  // property emits an assignment statement the compiler would otherwise have
-  // to synthesize.
-  readonly state: Ref.Ref<FluidRuntimeState>
-  readonly field: 'frontier' | 'updates'
-
-  constructor(state: Ref.Ref<FluidRuntimeState>, field: 'frontier' | 'updates') {
-    super()
-    this.state = state
-    this.field = field
-    this.get = Ref.get(state).pipe(Effect.map((current) => current[field]))
-  }
-
-  commit(): Effect.Effect<ReadonlyArray<FluidWorkItem>> {
-    return this.get
-  }
-
-  modify<B>(
-    f: (value: ReadonlyArray<FluidWorkItem>) => readonly [B, ReadonlyArray<FluidWorkItem>],
-  ): Effect.Effect<B> {
-    return Ref.modify(this.state, (current) => {
-      const [result, value] = f(current[this.field])
-      return [result, { ...current, [this.field]: value }]
-    })
-  }
+const makeFluidStateRef = (
+  state: Ref.Ref<FluidRuntimeState>,
+  field: 'frontier' | 'updates',
+): Ref.Ref<ReadonlyArray<FluidWorkItem>> => {
+  const ref = Ref.makeUnsafe(state.ref.current[field])
+  // `Ref.makeUnsafe` supplies the Effect 4 identity and variance witness. The
+  // accessor keeps both projections backed by the same runtime state.
+  // The factory keeps state and field in a closure rather than parameter
+  // properties, which would emit assignments under `erasableSyntaxOnly`.
+  Object.defineProperty(ref.ref, 'current', {
+    configurable: true,
+    enumerable: true,
+    get: () => state.ref.current[field],
+    set: (value: ReadonlyArray<FluidWorkItem>) => {
+      state.ref.current = { ...state.ref.current, [field]: value }
+    },
+  })
+  return ref
 }
 
 const fluidRuntimeStates = new WeakMap<
@@ -629,7 +629,7 @@ const fluidRuntimeStates = new WeakMap<
 
 const fluidRuntimeSemaphores = new WeakMap<
   Ref.Ref<ReadonlyArray<FluidWorkItem>>,
-  Effect.Semaphore
+  Semaphore.Semaphore
 >()
 
 const fireTickAccumulators = new WeakMap<Ref.Ref<FireLifecycleState>, Ref.Ref<number>>()
@@ -656,7 +656,7 @@ const fluidRuntimeStateFor = (
 
 const fluidRuntimeSemaphoreFor = (
   frontier: Ref.Ref<ReadonlyArray<FluidWorkItem>>,
-): Effect.Semaphore => {
+): Semaphore.Semaphore => {
   const semaphore = fluidRuntimeSemaphores.get(frontier)
   /* v8 ignore start -- `fluidRuntimeStates` and `fluidRuntimeSemaphores` are
    * populated together, in the same synchronous step of `makeGameplayFrameState`
@@ -675,23 +675,13 @@ const fluidRuntimeSemaphoreFor = (
   return semaphore
 }
 
-/**
- * A TYPE PREDICATE, not a plain guard, so the caller's `position` narrows from
- * the wider "maybe the NaN decode-failure sentinel" shape to kernel's branded
- * `BlockPosition` without a second, redundant `blockPosition(...)` call.
- *
- * `Number.isFinite` rather than kernel's own `Number.isSafeInteger` (the
- * actual `BlockAxis` refinement) is not a narrower check than the type it
- * asserts — but every value that reaches here is either kernel's own
- * `decodeBlockPositionKey` output (already integer, already branded) or the
- * all-`NaN` sentinel two lines above, which fails `Number.isFinite` and never
- * reaches a caller that trusts this predicate. There is no reachable
- * finite-but-non-integer input for this predicate to mis-narrow.
- */
+/** Narrow decoded fluid work positions to values accepted by kernel's BlockAxis. */
 const validFluidPosition = (
   position: { readonly x: number; readonly y: number; readonly z: number },
 ): position is BlockPosition =>
-  Number.isFinite(position.x) && Number.isFinite(position.y) && Number.isFinite(position.z)
+  Number.isSafeInteger(position.x) &&
+  Number.isSafeInteger(position.y) &&
+  Number.isSafeInteger(position.z)
 
 const fluidWorkItemOf = (cell: FluidCell, deferred?: number): FluidWorkItem => ({
   key: cell.key,
@@ -710,19 +700,34 @@ const fluidProbeAt = (
   cells: ReadonlyMap<BlockPositionKey, FluidCell>,
 ): Effect.Effect<FluidProbe> => {
   const key = blockPositionKeyOf(toKernelPosition(position))
-  return Effect.map(store.getBlock(position), (reading): FluidProbe => {
-    if (reading._tag === 'ChunkNotLoaded') return { key, state: 'unloaded' }
-    if (reading._tag === 'OutOfWorld') return { key, state: 'out-of-world' }
+  return Effect.gen(function* () {
+    const reading = yield* store.getBlock(position)
+    if (reading._tag === 'ChunkNotLoaded') {
+      return { key, state: 'unloaded' } satisfies FluidProbe
+    }
+    if (reading._tag === 'OutOfWorld') {
+      return { key, state: 'out-of-world' } satisfies FluidProbe
+    }
 
-    const block = blockTypeOfId(reading.block)
-    if (block === 'air') return { key, state: 'air' }
+    const block = yield* blockTypeOrDie(reading.block)
+    if (block === 'air') {
+      return { key, state: 'air' } satisfies FluidProbe
+    }
     if (block === kind) {
-      return { key, state: 'same-fluid', source: cells.get(key)?.source ?? true }
+      return {
+        key,
+        state: 'same-fluid',
+        source: cells.get(key)?.source ?? true,
+      } satisfies FluidProbe
     }
     if (block === (kind === 'water' ? 'lava' : 'water')) {
-      return { key, state: 'opposite-fluid', source: cells.get(key)?.source ?? true }
+      return {
+        key,
+        state: 'opposite-fluid',
+        source: cells.get(key)?.source ?? true,
+      } satisfies FluidProbe
     }
-    return { key, state: 'blocked' }
+    return { key, state: 'blocked' } satisfies FluidProbe
   })
 }
 
@@ -752,12 +757,9 @@ const runFluidPropagation = (
     }
 
     for (const item of work) {
-      // Legacy callers have historically used opaque diagnostic keys — kernel's
-      // `blockPositionOfKey` throws on those, unlike this repository's former
-      // `positionOfKey`, so decoding goes through the non-throwing
-      // `decodeBlockPositionKey` and an undecodable key becomes the same NaN
-      // sentinel the old total function returned. They are still recorded as
-      // evaluated work, but must never turn NaN into a world IO.
+      // Legacy callers have historically used opaque diagnostic keys. Decode
+      // through the non-throwing API so malformed work is still recorded as
+      // evaluated without turning an invalid position into world IO.
       const position: { readonly x: number; readonly y: number; readonly z: number } =
         decodeBlockPositionKey(item.key) ?? { x: Number.NaN, y: Number.NaN, z: Number.NaN }
       if (!validFluidPosition(position)) continue
@@ -771,8 +773,12 @@ const runFluidPropagation = (
         falling: item.falling ?? false,
       }
       const current = yield* fluidProbeAt(store, position, cell.kind, cells)
-      const belowPosition = adjacentBlockPosition(toKernelPosition(position), 'down')
-      const horizontalPositions = horizontalBlockNeighbours(toKernelPosition(position))
+      const belowPosition = yield* resultOrDie(
+        adjacentBlockPosition(toKernelPosition(position), 'down'),
+      )
+      const horizontalPositions = yield* resultOrDie(
+        horizontalBlockNeighbours(toKernelPosition(position)),
+      )
       let belowProbe: FluidProbe = { key: blockPositionKeyOf(toKernelPosition(belowPosition)), state: 'blocked' }
       let horizontalProbes: ReadonlyArray<FluidProbe> = horizontalPositions.map((candidate) => ({
         key: blockPositionKeyOf(toKernelPosition(candidate)),
@@ -806,8 +812,8 @@ const runFluidPropagation = (
           continue
         }
 
-        const changePosition = blockPositionOfKey(
-          change._tag === 'PlaceFluid' ? change.cell.key : change.key,
+        const changePosition = yield* resultOrDie(
+          blockPositionOfKey(change._tag === 'PlaceFluid' ? change.cell.key : change.key),
         )
         /* v8 ignore start -- `changePosition` is always `adjacentBlockPosition(toKernelPosition(position), 'down')`,
          * `horizontalBlockNeighbours(toKernelPosition(position))[i]` or a probe key already computed
@@ -827,11 +833,11 @@ const runFluidPropagation = (
           // both are registered blocks (kernel's own `BLOCK_REGISTRY`,
           // pinned total over BlockType by kernel's own type declaration
           // the same way the five branches vitest.config.ts names are pinned);
-          // `blockIdOf` cannot return `undefined` for either.
+          // `blockIdOf` returns `Some` for both registered block types.
           /* v8 ignore start */
-          if (fluidBlock === undefined) continue
+          if (Option.isNone(fluidBlock)) continue
           /* v8 ignore stop */
-          const outcome = yield* store.setBlock(changePosition, fluidBlock)
+          const outcome = yield* store.setBlock(changePosition, fluidBlock.value)
           if (outcome._tag === 'Written' || outcome._tag === 'Unchanged') {
             cells.set(change.cell.key, change.cell)
             enqueue(fluidWorkItemOf(change.cell))
@@ -867,9 +873,9 @@ const runFluidPropagation = (
         // both registered blocks; same totality argument as the `fluidBlock`
         // check above.
         /* v8 ignore start */
-        if (solidBlock === undefined) continue
+        if (Option.isNone(solidBlock)) continue
         /* v8 ignore stop */
-        const outcome = yield* store.setBlock(changePosition, solidBlock)
+        const outcome = yield* store.setBlock(changePosition, solidBlock.value)
         if (outcome._tag === 'ChunkNotLoaded') {
           deferCurrent = true
         } else {
@@ -1006,8 +1012,8 @@ const breakRequestQueueFor = (state: GameplayFrameState): PendingBlockBreakReque
   // Compatibility for structurally-created frame states. WeakMap creation is
   // synchronous, so concurrent callers cannot observe two different queues.
   const created: PendingBlockBreakRequestQueue = {
-    state: Ref.unsafeMake<PendingBlockBreakRequestState>({ nextRequestId: 0, requests: [] }),
-    mutex: Effect.unsafeMakeSemaphore(1),
+    state: Ref.makeUnsafe<PendingBlockBreakRequestState>({ nextRequestId: 0, requests: [] }),
+    mutex: Semaphore.makeUnsafe(1),
   }
   pendingBlockBreakRequests.set(state, created)
   return created
@@ -1020,8 +1026,8 @@ const blockPlacementRuntimeFor = (state: GameplayFrameState): BlockPlacementRunt
   }
 
   const created: BlockPlacementRuntime = {
-    state: Ref.unsafeMake<BlockPlacementRuntimeState>({ handled: new Map(), results: [] }),
-    mutex: Effect.unsafeMakeSemaphore(1),
+    state: Ref.makeUnsafe<BlockPlacementRuntimeState>({ handled: new Map(), results: [] }),
+    mutex: Semaphore.makeUnsafe(1),
   }
   blockPlacementRuntimes.set(state, created)
   return created
@@ -1088,7 +1094,7 @@ type BlockPlacementRuntimeState = {
 
 type BlockPlacementRuntime = {
   readonly state: Ref.Ref<BlockPlacementRuntimeState>
-  readonly mutex: Effect.Semaphore
+  readonly mutex: Semaphore.Semaphore
 }
 
 /** Host-provided correlation key for one targeted block-use request. */
@@ -1293,12 +1299,19 @@ export type FarmingItemUseResult =
       readonly outcome: FoodUseOutcome
     }
 
-export type FurnaceItemUseResult = {
-  readonly action: 'AdvanceFurnace'
-  readonly requestId: ItemUseRequestId
-  readonly success: boolean
-  readonly plan: FurnaceAdvancePlan
-}
+export type FurnaceItemUseResult =
+  | {
+      readonly action: 'AdvanceFurnace'
+      readonly requestId: ItemUseRequestId
+      readonly success: boolean
+      readonly plan: FurnaceAdvancePlan
+    }
+  | {
+      readonly action: 'AdvanceFurnace'
+      readonly requestId: ItemUseRequestId
+      readonly success: false
+      readonly failure: FurnaceFailure
+    }
 
 type SuccessfulBucketUseOutcome = Extract<BucketUseOutcome, { readonly _tag: 'Collected' | 'Placed' }>
 type FailedBucketUseOutcome = Exclude<BucketUseOutcome, SuccessfulBucketUseOutcome>
@@ -1523,7 +1536,7 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
     nextRequestId: 0,
     requests: [],
   })
-  const breakRequestMutex = yield* Effect.makeSemaphore(1)
+  const breakRequestMutex = yield* Semaphore.make(1)
   const pendingPlacements = yield* Ref.make<ReadonlyArray<PlacementRequest>>([])
   const pendingBlockUses = yield* Ref.make<ReadonlyArray<BlockUseRequest>>([])
   const pendingItemUses = yield* Ref.make<ReadonlyArray<ItemUseRequest>>([])
@@ -1589,10 +1602,10 @@ export const makeGameplayFrameState: Effect.Effect<GameplayFrameState> = Effect.
     updates: [],
     cells: new Map(),
   })
-  const fluidFrontier = new FluidStateRef(fluidState, 'frontier')
-  const fluidUpdates = new FluidStateRef(fluidState, 'updates')
+  const fluidFrontier = makeFluidStateRef(fluidState, 'frontier')
+  const fluidUpdates = makeFluidStateRef(fluidState, 'updates')
   fluidRuntimeStates.set(fluidFrontier, fluidState)
-  fluidRuntimeSemaphores.set(fluidFrontier, yield* Effect.makeSemaphore(1))
+  fluidRuntimeSemaphores.set(fluidFrontier, yield* Semaphore.make(1))
   const tickCount = yield* Ref.make(0)
   const portalCandidates = yield* Ref.make<
     ReadonlyMap<Dimension, ReadonlyArray<BlockPosition>>
@@ -1712,7 +1725,7 @@ const stepPortalTravel = (
   store: ChunkStoreApi,
   player: PlayerServiceApi,
   dt: DeltaTimeSecs,
-): Effect.Effect<void> =>
+): Effect.Effect<void, PlayerServiceInputError> =>
   Effect.gen(function* () {
     const pose = yield* player.pose
     const cell = blockPosition(
@@ -1722,10 +1735,13 @@ const stepPortalTravel = (
     )
 
     const reading = yield* store.getBlock(cell)
-    const block = reading._tag === 'Block' ? reading.block : undefined
+    const blockId = reading._tag === 'Block' ? reading.block : undefined
+    const block = blockId !== undefined
+      ? yield* resultOrDie(blockTypeOfId(blockId))
+      : undefined
     const inPortal =
       block !== undefined &&
-      (blockTypeOfId(block) === 'nether_portal' || isEndPortalBlock(block))
+      (block === 'nether_portal' || (blockId !== undefined && isEndPortalBlock(blockId)))
 
     const step = stepPortalDwell(yield* Ref.get(state.portalDwell), inPortal, dt)
     yield* Ref.set(state.portalDwell, step.dwell)
@@ -1735,7 +1751,7 @@ const stepPortalTravel = (
     }
 
     const sourceDimension = yield* player.dimension
-    if (block !== undefined && isEndPortalBlock(block)) {
+    if (blockId !== undefined && isEndPortalBlock(blockId)) {
       const event = yield* applyEndPortalTravel(player, cell)
       yield* Ref.update(state.endPortalTravels, (completed) => [...completed, event])
       return
@@ -1817,7 +1833,9 @@ export const requestTargetedBlockBreak = (
 ): Effect.Effect<Option.Option<BlockTarget>> =>
   Effect.gen(function* () {
     const pose = yield* player.pose
-    const target = targetBlockFromPlayerPose(pose, maxDistance, targetabilityFromStore(store))
+    const target = yield* resultOrDie(
+      targetBlockFromPlayerPose(pose, maxDistance, targetabilityFromStore(store)),
+    )
     if (Option.isSome(target)) {
       yield* requestBlockBreak(state, blockPosition(target.value.position.x, target.value.position.y, target.value.position.z))
     }
@@ -2125,7 +2143,7 @@ export function requestBowShot(
     return Ref.update(state.pendingBowShots, (pending) => [...pending, requestOrId])
   }
   if (correlatedRequest === undefined) {
-    return Effect.dieMessage('requestBowShot: a correlated request requires shot geometry')
+    return Effect.die(new Error('requestBowShot: a correlated request requires shot geometry'))
   }
 
   const request: BowShotRequest = { ...correlatedRequest, requestId: requestOrId }
@@ -2182,20 +2200,25 @@ export const resolveTargetedPrimaryAttack = (
   roster: EntityManagerApi<MobBehaviour>,
   player: PlayerServiceApi,
   options: TargetedPrimaryAttackOptions = {},
-): Effect.Effect<TargetedPrimaryAttackResolution> =>
+): Effect.Effect<
+  TargetedPrimaryAttackResolution,
+  CameraPoseError | RangeError | BlockTargetInputError
+> =>
   Effect.gen(function* () {
     const pose = yield* player.pose
-    const blockTarget = targetBlockFromPlayerPose(
-      pose,
-      options.blockReach ?? DEFAULT_BLOCK_REACH,
-      targetabilityFromStore(store),
+    const blockTarget = yield* Effect.fromResult(
+      targetBlockFromPlayerPose(
+        pose,
+        options.blockReach ?? DEFAULT_BLOCK_REACH,
+        targetabilityFromStore(store),
+      ),
     )
     const snapshot = yield* roster.snapshot
-    const direction = forwardVector(pose)
+    const direction = yield* Effect.fromResult(forwardVector(pose))
     const request: MeleeAttackRequest = {
       origin: {
         ...pose.feetPosition,
-        y: pose.feetPosition.y + EYE_LEVEL_OFFSET,
+        y: PositionAxis(pose.feetPosition.y + EYE_LEVEL_OFFSET),
       },
       direction,
       reach: options.meleeReach ?? DEFAULT_MELEE_REACH,
@@ -2224,7 +2247,10 @@ export const requestTargetedPrimaryAttack = (
   roster: EntityManagerApi<MobBehaviour>,
   player: PlayerServiceApi,
   options: TargetedPrimaryAttackOptions = {},
-): Effect.Effect<TargetedPrimaryAttackResult> =>
+): Effect.Effect<
+  TargetedPrimaryAttackResult,
+  CameraPoseError | RangeError | BlockTargetInputError
+> =>
   Effect.gen(function* () {
     const resolution = yield* resolveTargetedPrimaryAttack(store, roster, player, options)
 
@@ -2359,7 +2385,7 @@ const stepBrewing = (
 const stepStatusEffects = (
   state: GameplayFrameState,
   dt: DeltaTimeSecs,
-): Effect.Effect<void> =>
+): Effect.Effect<void, Brand.BrandError> =>
   Effect.gen(function* () {
     const applications = yield* Ref.getAndSet(state.pendingStatusEffects, [])
     const current = yield* Ref.get(state.statusEffects)
@@ -2510,11 +2536,11 @@ export const requestFireExtinguish = (
     }
     const air = blockIdOf('air')
     // `'air'` is BlockType's own zero-arg member (kernel's own type declaration
-    // pins `blockIdOf` total over every BlockType, `'air'` included).
+    // guarantees `Some` for the registered `'air'` type).
     /* v8 ignore start */
-    if (air === undefined) return false
+    if (Option.isNone(air)) return false
     /* v8 ignore stop */
-    const outcome = yield* store.setBlock(blockPosition(position.x, position.y, position.z), air)
+    const outcome = yield* store.setBlock(blockPosition(position.x, position.y, position.z), air.value)
     if (outcome._tag !== 'Written' && outcome._tag !== 'Unchanged') return false
     yield* Ref.set(state.fireLifecycle, extinguishFire(current, position))
     if (outcome._tag === 'Written') {
@@ -2627,7 +2653,7 @@ const stepFireTick = (
     for (const position of positions.values()) {
       const reading = yield* store.getBlock(blockPosition(position.x, position.y, position.z))
       const block = reading._tag === 'Block'
-        ? (blockTypeOfId(reading.block) ?? '__unknown_fire_block__')
+        ? (yield* resultOrDie(blockTypeOfId(reading.block))) ?? '__unknown_fire_block__'
         : reading._tag === 'ChunkNotLoaded'
           ? FIRE_UNAVAILABLE_BLOCK
           : 'air'
@@ -2655,17 +2681,19 @@ const stepFireTick = (
     const fire = blockIdOf('fire')
     // Same totality argument as `requestFireExtinguish`'s `air` check above:
     // `'air'` and `'fire'` are both registered BlockTypes, so `blockIdOf`
-    // cannot return `undefined` for either.
+    // returns `Some` for both registered types.
     /* v8 ignore start */
-    if (air === undefined || fire === undefined) return
+    if (Option.isNone(air) || Option.isNone(fire)) return
     /* v8 ignore stop */
+    const airBlock = air.value
+    const fireBlock = fire.value
     const nextFires = new Map(step.state.fires.map((active) => [firePositionKey(active.position), active]))
     const previousFires = new Map(current.fires.map((active) => [firePositionKey(active.position), active]))
     const failedIgnitions = new Set<string>()
     const disturbed: BlockPositionKey[] = []
     for (const mutation of step.mutations) {
       const mutationKey = firePositionKey(mutation.position)
-      const outcome = yield* store.setBlock(blockPosition(mutation.position.x, mutation.position.y, mutation.position.z), mutation.block === 'air' ? air : fire)
+      const outcome = yield* store.setBlock(blockPosition(mutation.position.x, mutation.position.y, mutation.position.z), mutation.block === 'air' ? airBlock : fireBlock)
       if (outcome._tag === 'Written') disturbed.push(blockPositionKeyOf(blockPosition(mutation.position.x, mutation.position.y, mutation.position.z)))
       if (outcome._tag === 'Written' || outcome._tag === 'Unchanged') continue
       if (mutation.block === 'fire') {
@@ -2700,9 +2728,18 @@ const stepFireTick = (
     const entityDamages: ReadonlyArray<FireEntityDamage> = step.entityDamages.filter(
       (damage) => previouslyBurningIds.has(damage.actorId) || !failedIgnitions.has(firePositionKey(damage.at)),
     )
-    const playerDamages = step.damages.filter(
-      (damage) => previouslyBurningIds.has('player') || !failedIgnitions.has(firePositionKey(damage.at)),
-    )
+    const playerDamages: ReadonlyArray<PlayerDamageEvent> = step.damages
+      .filter(
+        (damage) => previouslyBurningIds.has('player') || !failedIgnitions.has(firePositionKey(damage.at)),
+      )
+      .map((damage) => ({
+        ...damage,
+        at: position(
+          PositionAxis(damage.at.x),
+          PositionAxis(damage.at.y),
+          PositionAxis(damage.at.z),
+        ),
+      }))
 
     const damageByEntity = new Map(entityDamages.map((damage) => [damage.actorId, damage]))
     const casualties = yield* roster.sweep<MobCasualty>((entity) => {
@@ -2717,7 +2754,7 @@ const stepFireTick = (
       return {
         transition: changed({
           feetPosition: entity.feetPosition,
-          healthPoints: entity.healthPoints - damage.damage.amount,
+          healthPoints: EntityHealthPoints(entity.healthPoints - damage.damage.amount),
           behaviour: entity.behaviour,
         }),
         emit: undefined,
@@ -2810,7 +2847,9 @@ export const requestTargetedBlockPlacement = (
 ): Effect.Effect<Option.Option<BlockTarget>> =>
   Effect.gen(function* () {
     const pose = yield* player.pose
-    const target = targetBlockFromPlayerPose(pose, maxDistance, targetabilityFromStore(store))
+    const target = yield* resultOrDie(
+      targetBlockFromPlayerPose(pose, maxDistance, targetabilityFromStore(store)),
+    )
     if (Option.isSome(target)) {
       yield* requestBlockPlacement(state, {
         positionKey: blockPositionKeyOf(blockPosition(target.value.adjacentPosition.x, target.value.adjacentPosition.y, target.value.adjacentPosition.z)),
@@ -2834,7 +2873,9 @@ export const requestTargetedBlockUse = (
 ): Effect.Effect<Option.Option<BlockTarget>> =>
   Effect.gen(function* () {
     const pose = yield* player.pose
-    const target = targetBlockFromPlayerPose(pose, maxDistance, targetabilityFromStore(store))
+    const target = yield* resultOrDie(
+      targetBlockFromPlayerPose(pose, maxDistance, targetabilityFromStore(store)),
+    )
     if (Option.isNone(target)) {
       return target
     }
@@ -2879,7 +2920,9 @@ export const resolveTargetedBlock = (
 ): Effect.Effect<Option.Option<BlockTarget>> =>
   Effect.gen(function* () {
     const pose = yield* player.pose
-    return targetBlockFromPlayerPose(pose, maxDistance, targetabilityFromStore(store))
+    return yield* resultOrDie(
+      targetBlockFromPlayerPose(pose, maxDistance, targetabilityFromStore(store)),
+    )
   })
 
 /** Resolve the block under the crosshair and enqueue an item use in its adjacent cell. */
@@ -2910,7 +2953,9 @@ export const requestTargetedSoilTill = (
 ): Effect.Effect<Option.Option<BlockTarget>> =>
   Effect.gen(function* () {
     const pose = yield* player.pose
-    const target = targetBlockFromPlayerPose(pose, maxDistance, targetabilityFromStore(store))
+    const target = yield* resultOrDie(
+      targetBlockFromPlayerPose(pose, maxDistance, targetabilityFromStore(store)),
+    )
     if (Option.isSome(target)) {
       yield* requestSoilTill(state, requestId, blockPosition(target.value.position.x, target.value.position.y, target.value.position.z), heldItem)
     }
@@ -2927,7 +2972,9 @@ export const requestTargetedPotatoPlanting = (
 ): Effect.Effect<Option.Option<BlockTarget>> =>
   Effect.gen(function* () {
     const pose = yield* player.pose
-    const target = targetBlockFromPlayerPose(pose, maxDistance, targetabilityFromStore(store))
+    const target = yield* resultOrDie(
+      targetBlockFromPlayerPose(pose, maxDistance, targetabilityFromStore(store)),
+    )
     if (Option.isSome(target)) {
       yield* requestPotatoPlanting(state, requestId, blockPosition(target.value.position.x, target.value.position.y, target.value.position.z))
     }
@@ -2950,7 +2997,9 @@ export const requestTargetedBoneMeal = (
 ): Effect.Effect<Option.Option<BlockTarget>> =>
   Effect.gen(function* () {
     const pose = yield* player.pose
-    const target = targetBlockFromPlayerPose(pose, maxDistance, targetabilityFromStore(store))
+    const target = yield* resultOrDie(
+      targetBlockFromPlayerPose(pose, maxDistance, targetabilityFromStore(store)),
+    )
     if (Option.isSome(target)) {
       yield* requestBoneMeal(state, requestId, blockPosition(target.value.position.x, target.value.position.y, target.value.position.z))
     }
@@ -2983,15 +3032,16 @@ const executeBlockPlacementAtomically = (
   Effect.uninterruptible(
     Effect.gen(function* () {
       if (mode === 'creative') {
+        const position = yield* resultOrDie(blockPositionOfKey(request.positionKey))
         const outcome = yield* placeBlock(store, {
-          position: blockPositionOfKey(request.positionKey),
+          position,
           heldItem: request.heldItem,
           playerFeet,
         })
         return { outcome, consumed: false, mutated: outcome._tag === 'Placed' }
       }
 
-      const reserved = yield* inventory.remove(request.heldItem, 1)
+      const reserved = yield* Effect.orDie(inventory.remove(request.heldItem, 1))
       if (reserved === 0) {
         return {
           outcome: { _tag: 'InventoryUnavailable' } as const,
@@ -3000,8 +3050,9 @@ const executeBlockPlacementAtomically = (
         }
       }
 
+      const position = yield* resultOrDie(blockPositionOfKey(request.positionKey))
       const outcome = yield* placeBlock(store, {
-        position: blockPositionOfKey(request.positionKey),
+        position,
         heldItem: request.heldItem,
         playerFeet,
       })
@@ -3009,10 +3060,10 @@ const executeBlockPlacementAtomically = (
         return { outcome, consumed: true, mutated: true }
       }
 
-      const leftover = yield* inventory.add(request.heldItem, reserved)
+      const leftover = yield* Effect.orDie(inventory.add(request.heldItem, reserved))
       if (leftover !== 0) {
-        return yield* Effect.dieMessage(
-          `placement rollback could not restore ${String(request.heldItem)}`,
+        return yield* Effect.die(
+          new Error(`placement rollback could not restore ${String(request.heldItem)}`),
         )
       }
       return { outcome, consumed: false, mutated: false }

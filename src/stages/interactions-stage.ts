@@ -22,8 +22,8 @@ import {
   blockLoot,
   blockPlacementRuntimeFor,
   blockPositionKeyOf,
-  blockPositionOfKey,
-  blockTypeOfId,
+  blockPositionForKey,
+  blockTypeOrDie,
   bowCharge,
   bowDamage,
   breakBlock,
@@ -43,6 +43,7 @@ import {
   experienceOfCasualties,
   firePositionKey,
   furnaceAdvanceChanged,
+  resultOrDie,
   isBlockPlacementCommand,
   isSuccessfulBlockUse,
   knockbackDirection,
@@ -72,6 +73,8 @@ import {
   useFlintAndSteel,
   useVillagerOffer,
 } from './registration-core.js'
+import { BlockAxis, EntityHealthPoints, PositionAxis } from '@nerima-games/mc-kernel'
+import { Result } from 'effect'
 import type {
   BlockPositionKey,
   BlockUseRequest,
@@ -225,7 +228,9 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
           }
 
           const before = yield* inventory.snapshot
-          const removed = removeInventoryItem(before, offer.input.item, offer.input.count)
+          const removed = yield* resultOrDie(
+            removeInventoryItem(before, offer.input.item, offer.input.count),
+          )
           if (removed.removed !== offer.input.count) {
             yield* recordVillagerTradeResult(state, {
               ...request,
@@ -234,7 +239,9 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
             })
             continue
           }
-          const added = addInventoryItem(removed.inventory, offer.output.item, offer.output.count)
+          const added = yield* resultOrDie(
+            addInventoryItem(removed.inventory, offer.output.item, offer.output.count),
+          )
           if (added.leftover !== 0) {
             yield* recordVillagerTradeResult(state, {
               ...request,
@@ -275,7 +282,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
         for (const [index, positionKey] of breaks.entries()) {
           if (playerDead) continue
           const tool = snapshots.get(index)?.lootContext ?? fallbackTool
-          const breakPosition = blockPositionOfKey(positionKey)
+          const breakPosition = yield* blockPositionForKey(positionKey)
           const outcome = yield* breakBlock(store, breakPosition)
           switch (outcome._tag) {
             case 'Broken': {
@@ -304,7 +311,16 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                 const batch = drawRolls(seed, BLOCK_LOOT_ROLLS)
                 return [blockLoot(outcome.yielded, tool, batch.rolls), batch.seed] as const
               })
-              gained.push(...loot.map((item) => ({ ...item, at: breakPosition })))
+              gained.push(
+                ...loot.map((item) => ({
+                  ...item,
+                  at: {
+                    x: PositionAxis(breakPosition.x),
+                    y: PositionAxis(breakPosition.y),
+                    z: PositionAxis(breakPosition.z),
+                  },
+                })),
+              )
 
               // The ONLY entry point for falling-block work. Whatever rested on
               // the block just removed may now be unsupported. It is enqueued
@@ -350,7 +366,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
             })
             continue
           }
-          const position = blockPositionOfKey(request.positionKey)
+          const position = yield* blockPositionForKey(request.positionKey)
           const outcome = resolveBlockUse(position, yield* store.getBlock(position))
           blockUseResults.push({
             requestId: request.requestId,
@@ -386,10 +402,10 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
             spent.push(execution.outcome.consumed)
           }
           if (execution.mutated) {
+            const position = yield* blockPositionForKey(request.positionKey)
+            const below = yield* resultOrDie(adjacentBlockPosition(position, 'down'))
             disturbed.push(
-              blockPositionKeyOf(
-                adjacentBlockPosition(blockPositionOfKey(request.positionKey), 'down'),
-              ),
+              blockPositionKeyOf(below),
             )
           }
         }
@@ -411,12 +427,15 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
           if ('action' in request) {
             switch (request.action) {
               case 'ApplyBoneMeal': {
+                const position = yield* blockPositionForKey(request.positionKey)
                 const outcome = yield* applyBoneMeal(
                   (position) =>
-                    Effect.map(store.getBlock(position), (reading) =>
-                      reading._tag === 'Block' ? blockTypeOfId(reading.block) : undefined,
+                    Effect.flatMap(store.getBlock(position), (reading) =>
+                      reading._tag === 'Block'
+                        ? blockTypeOrDie(reading.block)
+                        : Effect.succeed(undefined),
                     ),
-                  blockPositionOfKey(request.positionKey),
+                  position,
                 )
                 const success = outcome._tag === 'applied'
                 itemUseResults.push({
@@ -430,6 +449,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                 break
               }
               case 'TillSoil': {
+                const ground = yield* blockPositionForKey(request.positionKey)
                 const outcome = yield* tillSoil(
                   {
                     blockAt: (position) =>
@@ -439,7 +459,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                     setBlock: (position, block) => store.setBlock(position, BlockId(block)),
                   },
                   { tills: true },
-                  blockPositionOfKey(request.positionKey),
+                  ground,
                 )
                 const success = outcome._tag === 'tilled'
                 itemUseResults.push({
@@ -453,6 +473,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                 break
               }
               case 'PlantPotato': {
+                const soil = yield* blockPositionForKey(request.positionKey)
                 const outcome = yield* plantCrop(
                   {
                     blockAt: (position) =>
@@ -461,7 +482,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                       ),
                     setBlock: (position, block) => store.setBlock(position, BlockId(block)),
                   },
-                  { held: request.heldItem, soil: blockPositionOfKey(request.positionKey) },
+                  { held: request.heldItem, soil },
                 )
                 const success = outcome._tag === 'planted'
                 itemUseResults.push({
@@ -533,10 +554,11 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                 break
               }
               case 'UseBucket': {
+                const position = yield* blockPositionForKey(request.positionKey)
                 const outcome = yield* useBucket(store, inventory, state.fluidFrontier, {
                   activeDimension: request.activeDimension,
                   targetDimension: request.targetDimension,
-                  position: blockPositionOfKey(request.positionKey),
+                  position,
                   heldItem: request.heldItem,
                 })
                 if (outcome._tag === 'Collected' || outcome._tag === 'Placed') {
@@ -675,13 +697,23 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                 break
               }
               case 'AdvanceFurnace': {
-                const plan = planFurnaceAdvance(request.state, request.deltaTimeSecs)
-                itemUseResults.push({
-                  action: request.action,
-                  requestId: request.requestId,
-                  success: furnaceAdvanceChanged(plan),
-                  plan,
-                })
+                const planned = planFurnaceAdvance(request.state, request.deltaTimeSecs)
+                if (Result.isFailure(planned)) {
+                  itemUseResults.push({
+                    action: request.action,
+                    requestId: request.requestId,
+                    success: false,
+                    failure: planned.failure,
+                  })
+                } else {
+                  const plan = planned.success
+                  itemUseResults.push({
+                    action: request.action,
+                    requestId: request.requestId,
+                    success: furnaceAdvanceChanged(plan),
+                    plan,
+                  })
+                }
                 break
               }
               // exhaustiveness arm over ItemUseRequest's `action`, a closed
@@ -703,16 +735,20 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
 
           const ignition = yield* useFlintAndSteel(
             store,
-            blockPositionOfKey(request.positionKey),
+            yield* blockPositionForKey(request.positionKey),
             request.heldItem,
           )
           const success = ignition.outcome._tag === 'Lit'
           if (ignition._tag === 'Tnt' && success) {
-            const position = blockPositionOfKey(request.positionKey)
+            const position = yield* blockPositionForKey(request.positionKey)
             yield* roster.spawn({
               kind: PRIMED_TNT_KIND,
-              feetPosition: { x: position.x + 0.5, y: position.y, z: position.z + 0.5 },
-              healthPoints: 1,
+              feetPosition: {
+                x: PositionAxis(position.x + 0.5),
+                y: PositionAxis(position.y),
+                z: PositionAxis(position.z + 0.5),
+              },
+              healthPoints: EntityHealthPoints(1),
               behaviour: FRESH_PRIMED_TNT,
             })
           }
@@ -855,9 +891,9 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
 
             const directionLength = Math.hypot(shot.dirX, shot.dirY, shot.dirZ)
             const hitPoint: Position = {
-              x: shot.origin.x + (shot.dirX / directionLength) * hit.distance,
-              y: shot.origin.y + (shot.dirY / directionLength) * hit.distance,
-              z: shot.origin.z + (shot.dirZ / directionLength) * hit.distance,
+              x: PositionAxis(shot.origin.x + (shot.dirX / directionLength) * hit.distance),
+              y: PositionAxis(shot.origin.y + (shot.dirY / directionLength) * hit.distance),
+              z: PositionAxis(shot.origin.z + (shot.dirZ / directionLength) * hit.distance),
             }
             // A fractional midpoint, not a cell — kernel's `blockPosition()`
             // would throw on it. `chunkCoordsAround` takes the plain shape for
@@ -877,8 +913,10 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
             const terrain = yield* openChunkWindow(store, chunkCoordsAround(centre, radius))
             const blocked = shotBlockedByTerrain(
               (x, y, z) => {
-                const block = terrain.blockAt(x, y, z)
-                return block === UNREADABLE_BLOCK || !capabilityOfBlockId(block, 'passable')
+                const block = terrain.blockAt(BlockAxis(x), BlockAxis(y), BlockAxis(z))
+                if (block === UNREADABLE_BLOCK) return true
+                const passable = capabilityOfBlockId(block, 'passable')
+                return Result.isFailure(passable) || !passable.success
               },
               shot.origin,
               hitPoint,
@@ -1033,11 +1071,11 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
             yield* roster.spawn({
               kind: ENDERMITE_KIND,
               feetPosition: {
-                x: playerFeet.x + displacement.x,
-                y: playerFeet.y + displacement.y,
-                z: playerFeet.z + displacement.z,
+                x: PositionAxis(playerFeet.x + displacement.x),
+                y: PositionAxis(playerFeet.y + displacement.y),
+                z: PositionAxis(playerFeet.z + displacement.z),
               },
-              healthPoints: ENDERMITE_MAX_HEALTH,
+              healthPoints: EntityHealthPoints(ENDERMITE_MAX_HEALTH),
               behaviour: undefined,
             })
           }
@@ -1104,6 +1142,6 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
         if (disturbed.length > 0) {
           yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, disturbed))
         }
-      }),
+      }).pipe(Effect.orDie),
   }
 }

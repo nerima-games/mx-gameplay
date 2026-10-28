@@ -48,7 +48,7 @@ export const makeEntitiesStage = (context: GameplayStageContext): StageRegistrat
     // new direction — the blast never scans, it reports the cells it actually
     // emptied.
     run: (dt) =>
-      Effect.gen(function* () {
+      Effect.orDie(Effect.gen(function* () {
         if (options.mobSimulation !== false) {
         // ---- mobs ----------------------------------------------------------
         //
@@ -235,7 +235,7 @@ export const makeEntitiesStage = (context: GameplayStageContext): StageRegistrat
         if (attempts.length > 0) {
           // `run` returns void, so refusal details from these attempts are not
           // reported to a caller.
-          yield* applySpawnAttempts(roster, attempts)
+          yield* Effect.orDie(applySpawnAttempts(roster, attempts))
         }
         }
 
@@ -269,6 +269,6 @@ export const makeEntitiesStage = (context: GameplayStageContext): StageRegistrat
         if (destinations.length > 0) {
           yield* Ref.update(state.fallingBlocks, (queue) => settled(queue, destinations))
         }
-      }),
+      })),
   }
 }

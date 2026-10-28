@@ -7,8 +7,8 @@
  * violated with STRINGS rather than with imports.
  */
 import { describe, expect, it } from '@effect/vitest'
-import { Brand, Cause, Effect, Exit, Layer, Option, Ref } from 'effect'
-import { AIR_BLOCK_ID, BlockId, blockIdOf, blockPosition, type BlockPosition } from '@nerima-games/mc-kernel'
+import { Brand, Cause, Effect, Exit, Layer, Option, Ref, Result } from 'effect'
+import { AIR_BLOCK_ID, BlockId, EntityHealthPoints, EntitySerial, blockIdOf, type BlockPosition } from '@nerima-games/mc-kernel'
 import type { BlockReading, ChunkStore, ChunkStoreApi } from '@nerima-games/mc-worldgen'
 import {
   CREEPER_KIND,
@@ -38,6 +38,7 @@ import {
 import {
   EntityId,
   EntityKind,
+  HungerPoints,
   type EntityManager,
   type EntityRoster,
   type PlayerPose,
@@ -52,9 +53,9 @@ import {
 import {
   TimeService,
   TimeServiceLayer,
-  durability,
-  equipmentItem,
-  itemStack,
+  durability as makeDurability,
+  equipmentItem as makeEquipmentItem,
+  itemStack as makeItemStack,
   makeTimeService,
   makeVehicleService,
   type InventoryService,
@@ -62,7 +63,7 @@ import {
 } from '@nerima-games/mc-sim'
 import {
   DeltaTimeSecs,
-  MAX_STACK_COUNT,
+  maxStackCountForItem,
   StageId,
   type BlockPositionKey,
   type FrameServices,
@@ -149,10 +150,19 @@ import { PlayerService } from '@nerima-games/mc-sim'
 import { emptySlots, emptyInventoryLayer, makeInventoryDouble } from './support/inventory-service-double'
 import { FrameServicesLayer } from './support/frame-services'
 import { runFrames } from './support/frame-runner'
+import { blockPosition as fixtureBlockPosition, position as fixturePosition } from './support/coordinate-fixtures'
+
+const itemStack = (item: Parameters<typeof makeItemStack>[0], count: Parameters<typeof makeItemStack>[1]) =>
+  Result.getOrThrow(makeItemStack(item, count))
+const equipmentItem = (...args: Parameters<typeof makeEquipmentItem>) =>
+  Result.getOrThrow(makeEquipmentItem(...args))
+const durability = (...args: Parameters<typeof makeDurability>) =>
+  Result.getOrThrow(makeDurability(...args))
+const positionOfBlock = (value: BlockPosition) => fixturePosition(value.x, value.y, value.z)
 
 const stageIds = (stages: ReadonlyArray<StageRegistration>): ReadonlyArray<string> =>
   stages.map((stage) => stage.id)
-const OBSIDIAN = blockIdOf('obsidian')!
+const OBSIDIAN = Option.getOrThrow(blockIdOf('obsidian'))
 
 /**
  * These fixtures name cells `'a'`, `'lava-a'`, `'water-a'` — scenario-graph
@@ -347,12 +357,12 @@ describe('§2.3-3 the total order belongs to mc-compose', () => {
 })
 
 describe('fire lifecycle stage integration', () => {
-  const FIRE = blockIdOf('fire') ?? 119
+  const FIRE = Option.getOrUndefined(blockIdOf('fire')) ?? BlockId(119)
 
   it.effect('retains an active fire while its chunk is temporarily unavailable', () =>
     Effect.gen(function* () {
       const { state, stages } = yield* builtStages
-      const position = blockPosition(16, 64, 0)
+      const position = fixtureBlockPosition(16, 64, 0)
       yield* Ref.set(state.fireLifecycle, makeFireLifecycleState([position], 7))
 
       const fireStage = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire)!
@@ -369,7 +379,7 @@ describe('fire lifecycle stage integration', () => {
   it.effect('does not drift logical or world state when a manual extinguish write fails', () =>
     Effect.gen(function* () {
       const { state, store } = yield* builtStages
-      const position = blockPosition(1, 64, 0)
+      const position = fixtureBlockPosition(1, 64, 0)
       yield* store.api.setBlock(position, FIRE)
       const initial = makeFireLifecycleState([position], 11)
       yield* Ref.set(state.fireLifecycle, initial)
@@ -387,14 +397,14 @@ describe('fire lifecycle stage integration', () => {
   it.effect('routes lethal entity fire damage through the existing casualty and drop path', () =>
     Effect.gen(function* () {
       const { state, store, roster, stages } = yield* builtStages
-      const position = blockPosition(2, 64, 0)
-      yield* store.api.setBlock(blockPosition(position.x, position.y - 1, position.z), STONE)
+      const position = fixtureBlockPosition(2, 64, 0)
+      yield* store.api.setBlock(fixtureBlockPosition(position.x, position.y - 1, position.z), STONE)
       yield* store.api.setBlock(position, FIRE)
       yield* Ref.set(state.fireLifecycle, makeFireLifecycleState([position], 13))
       const target = yield* roster.api.spawn({
         kind: CREEPER_KIND,
-        feetPosition: position,
-        healthPoints: 1,
+        feetPosition: positionOfBlock(position),
+        healthPoints: EntityHealthPoints(1),
         behaviour: undefined,
       })
       const expected = rollCasualtyDrops([
@@ -417,8 +427,8 @@ describe('fire lifecycle stage integration', () => {
   it.effect('caps a large frame to four fire ticks', () =>
     Effect.gen(function* () {
       const { state, store, stages } = yield* builtStages
-      const position = blockPosition(3, 64, 0)
-      yield* store.api.setBlock(blockPosition(position.x, position.y - 1, position.z), STONE)
+      const position = fixtureBlockPosition(3, 64, 0)
+      yield* store.api.setBlock(fixtureBlockPosition(position.x, position.y - 1, position.z), STONE)
       yield* store.api.setBlock(position, FIRE)
       yield* Ref.set(state.fireLifecycle, makeFireLifecycleState([position], 17))
 
@@ -442,8 +452,8 @@ describe('fire lifecycle stage integration', () => {
       // would leave every other test in this file green.
       const { state, store, stages, inventory } = yield* builtStages
       // The double player's default feet position (player-service-double.ts).
-      const position = blockPosition(0, 64, 0)
-      yield* store.api.setBlock(blockPosition(position.x, position.y - 1, position.z), STONE)
+      const position = fixtureBlockPosition(0, 64, 0)
+      yield* store.api.setBlock(fixtureBlockPosition(position.x, position.y - 1, position.z), STONE)
       yield* store.api.setBlock(position, FIRE)
       yield* Ref.set(state.fireLifecycle, makeFireLifecycleState([position], 29))
 
@@ -485,7 +495,7 @@ describe('fire lifecycle stage integration', () => {
       // No `FIRE` block is placed here: the player is not touching fire, only
       // still burning from contact this test seeds directly via a due
       // `burningActors` entry.
-      const position = blockPosition(0, 64, 0)
+      const position = fixtureBlockPosition(0, 64, 0)
       yield* Ref.set(state.fireLifecycle, {
         fires: [],
         seed: 1,
@@ -703,16 +713,16 @@ describe('stage behaviour', () => {
 
   it.effect('fluid propagation writes downward before considering horizontal air', () =>
     Effect.gen(function* () {
-      const origin = blockPosition(0, 64, 0)
+      const origin = fixtureBlockPosition(0, 64, 0)
       const { state, store, stages } = yield* builtStagesInWorld(world([[origin, WATER]]))
       const fluids = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids)!
 
       yield* Ref.set(state.fluidFrontier, [{ key: positionKey('0,64,0'), kind: 'water' }])
       yield* fluids.run(DeltaTimeSecs(0.016))
 
-      expect(yield* store.blockAt(blockPosition(0, 63, 0))).toBe(WATER)
-      expect(yield* store.blockAt(blockPosition(-1, 64, 0))).toBeUndefined()
-      expect(yield* store.blockAt(blockPosition(1, 64, 0))).toBeUndefined()
+      expect(yield* store.blockAt(fixtureBlockPosition(0, 63, 0))).toBe(WATER)
+      expect(yield* store.blockAt(fixtureBlockPosition(-1, 64, 0))).toBeUndefined()
+      expect(yield* store.blockAt(fixtureBlockPosition(1, 64, 0))).toBeUndefined()
       expect(yield* Ref.get(state.fluidFrontier)).toContainEqual({
         key: '0,63,0',
         kind: 'water',
@@ -726,11 +736,11 @@ describe('stage behaviour', () => {
 
   it.effect('blocked fluid spreads to the four horizontal neighbours in deterministic order', () =>
     Effect.gen(function* () {
-      const origin = blockPosition(0, 64, 0)
+      const origin = fixtureBlockPosition(0, 64, 0)
       const { state, store, stages } = yield* builtStagesInWorld(
         world([
           [origin, WATER],
-          [blockPosition(0, 63, 0), STONE],
+          [fixtureBlockPosition(0, 63, 0), STONE],
         ]),
         ['0,0', '-1,0', '0,-1'],
       )
@@ -746,10 +756,10 @@ describe('stage behaviour', () => {
         '0,64,1',
       ])
       for (const position of [
-        blockPosition(-1, 64, 0),
-        blockPosition(1, 64, 0),
-        blockPosition(0, 64, -1),
-        blockPosition(0, 64, 1),
+        fixtureBlockPosition(-1, 64, 0),
+        fixtureBlockPosition(1, 64, 0),
+        fixtureBlockPosition(0, 64, -1),
+        fixtureBlockPosition(0, 64, 1),
       ]) {
         expect(yield* store.blockAt(position)).toBe(WATER)
       }
@@ -758,17 +768,17 @@ describe('stage behaviour', () => {
 
   it.effect('removing a source retracts the flowing cells that depended on it', () =>
     Effect.gen(function* () {
-      const origin = blockPosition(0, 64, 0)
+      const origin = fixtureBlockPosition(0, 64, 0)
       const neighbours = [
-        blockPosition(-1, 64, 0),
-        blockPosition(1, 64, 0),
-        blockPosition(0, 64, -1),
-        blockPosition(0, 64, 1),
+        fixtureBlockPosition(-1, 64, 0),
+        fixtureBlockPosition(1, 64, 0),
+        fixtureBlockPosition(0, 64, -1),
+        fixtureBlockPosition(0, 64, 1),
       ] as const
       const { state, store, stages } = yield* builtStagesInWorld(
         world([
           [origin, WATER],
-          [blockPosition(0, 63, 0), STONE],
+          [fixtureBlockPosition(0, 63, 0), STONE],
         ]),
         ['0,0', '-1,0', '0,-1'],
       )
@@ -790,12 +800,12 @@ describe('stage behaviour', () => {
 
   it.effect('water meeting a lava source materializes obsidian at the contact', () =>
     Effect.gen(function* () {
-      const lava = blockIdOf('lava')!
+      const lava = Option.getOrThrow(blockIdOf('lava'))
       const { state, store, stages } = yield* builtStagesInWorld(
         world([
-          [blockPosition(0, 64, 0), WATER],
-          [blockPosition(0, 63, 0), STONE],
-          [blockPosition(1, 64, 0), lava],
+          [fixtureBlockPosition(0, 64, 0), WATER],
+          [fixtureBlockPosition(0, 63, 0), STONE],
+          [fixtureBlockPosition(1, 64, 0), lava],
         ]),
       )
       const fluids = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids)!
@@ -803,17 +813,17 @@ describe('stage behaviour', () => {
       yield* Ref.set(state.fluidFrontier, [{ key: positionKey('0,64,0'), kind: 'water' }])
       yield* fluids.run(DeltaTimeSecs(0.016))
 
-      expect(yield* store.blockAt(blockPosition(1, 64, 0))).toBe(OBSIDIAN)
+      expect(yield* store.blockAt(fixtureBlockPosition(1, 64, 0))).toBe(OBSIDIAN)
     }).pipe(Effect.provide(FrameServicesLayer)),
   )
 
   it.effect('an unloaded chunk boundary defers a source finitely and never writes outside the loaded set', () =>
     Effect.gen(function* () {
-      const origin = blockPosition(15, 64, 0)
+      const origin = fixtureBlockPosition(15, 64, 0)
       const { state, store, stages } = yield* builtStagesInWorld(
         world([
           [origin, WATER],
-          [blockPosition(15, 63, 0), STONE],
+          [fixtureBlockPosition(15, 63, 0), STONE],
         ]),
       )
       const fluids = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids)!
@@ -835,7 +845,7 @@ describe('stage behaviour', () => {
       expect((yield* Ref.get(state.fluidFrontier)).some((item) => item.key === source.key)).toBe(
         false,
       )
-      expect(yield* store.blockAt(blockPosition(16, 64, 0))).toBeUndefined()
+      expect(yield* store.blockAt(fixtureBlockPosition(16, 64, 0))).toBeUndefined()
     }).pipe(Effect.provide(FrameServicesLayer)),
   )
 
@@ -1011,7 +1021,7 @@ describe('stage behaviour', () => {
     Effect.gen(function* () {
       const { state, inventory, stages } = yield* builtStages
       const shot = {
-        origin: { x: 0, y: 64, z: 0 },
+        origin: fixturePosition(0, 64, 0 ),
         dirX: 0,
         dirY: 1,
         dirZ: 0,
@@ -1054,22 +1064,22 @@ describe('stage behaviour', () => {
       const { state, roster, stages } = yield* builtStages
       const target = yield* roster.api.spawn({
         kind: CREEPER_KIND,
-        feetPosition: { x: 0, y: 64 - BOW_TARGET_CENTER_Y_OFFSET, z: 2 },
-        healthPoints: 20,
+        feetPosition: fixturePosition(0, 64 - BOW_TARGET_CENTER_Y_OFFSET, 2 ),
+        healthPoints: EntityHealthPoints(20),
         behaviour: undefined,
       })
 
       yield* requestMeleeAttack(state, {
         requestId: 'hit',
-        origin: { x: 0, y: 64, z: 0 },
-        direction: { x: 0, y: 0, z: 1 },
+        origin: fixturePosition(0, 64, 0 ),
+        direction: fixturePosition(0, 0, 1),
         reach: 3,
         damage: 4,
       })
       yield* requestMeleeAttack(state, {
         requestId: 'miss',
-        origin: { x: 0, y: 64, z: 0 },
-        direction: { x: 1, y: 0, z: 0 },
+        origin: fixturePosition(0, 64, 0 ),
+        direction: fixturePosition(1, 0, 0),
         reach: 3,
         damage: 7,
       })
@@ -1100,17 +1110,17 @@ describe('stage behaviour', () => {
       // `xpRewardOfKind` and `dropRulesOfKind` both fall through to their
       // zero/empty default, so a lethal hit on it takes neither.
       const { state, roster, stages } = yield* builtStages
-      const feetPosition = { x: 0, y: 64 - BOW_TARGET_CENTER_Y_OFFSET, z: 2 }
+      const feetPosition = fixturePosition(0, 64 - BOW_TARGET_CENTER_Y_OFFSET, 2)
       yield* roster.api.spawn({
         kind: EntityKind('skeleton'),
         feetPosition,
-        healthPoints: 4,
+        healthPoints: EntityHealthPoints(4),
         behaviour: undefined,
       })
 
       yield* requestMeleeAttack(state, {
-        origin: { x: 0, y: 64, z: 0 },
-        direction: { x: 0, y: 0, z: 1 },
+        origin: fixturePosition(0, 64, 0 ),
+        direction: fixturePosition(0, 0, 1),
         reach: 3,
         damage: 4,
       })
@@ -1126,17 +1136,17 @@ describe('stage behaviour', () => {
   it.effect('a lethal player melee hit emits mob experience exactly once', () =>
     Effect.gen(function* () {
       const { state, roster, stages } = yield* builtStages
-      const feetPosition = { x: 0, y: 64 - BOW_TARGET_CENTER_Y_OFFSET, z: 2 }
+      const feetPosition = fixturePosition(0, 64 - BOW_TARGET_CENTER_Y_OFFSET, 2)
       const target = yield* roster.api.spawn({
         kind: CREEPER_KIND,
         feetPosition,
-        healthPoints: 4,
+        healthPoints: EntityHealthPoints(4),
         behaviour: undefined,
       })
 
       yield* requestMeleeAttack(state, {
-        origin: { x: 0, y: 64, z: 0 },
-        direction: { x: 0, y: 0, z: 1 },
+        origin: fixturePosition(0, 64, 0 ),
+        direction: fixturePosition(0, 0, 1),
         reach: 3,
         damage: 4,
       })
@@ -1158,15 +1168,15 @@ describe('stage behaviour', () => {
           {
             id: EntityId('target-behind-wall'),
             kind: EntityKind('creeper'),
-            feetPosition: { x: 0, y: 64 - BOW_TARGET_CENTER_Y_OFFSET, z: 10 },
-            healthPoints: 20,
+            feetPosition: fixturePosition(0, 64 - BOW_TARGET_CENTER_Y_OFFSET, 10 ),
+            healthPoints: EntityHealthPoints(20),
             behaviour: undefined,
           },
         ],
-        nextSerial: 1,
+        nextSerial: EntitySerial(1),
       }
       const state = yield* makeGameplayFrameState
-      const store = yield* makeChunkStoreDouble(world([[blockPosition(0, 64, 5), STONE]]), [
+      const store = yield* makeChunkStoreDouble(world([[fixtureBlockPosition(0, 64, 5), STONE]]), [
         '0,0',
       ])
       const roster = yield* makeEntityManagerDouble<MobBehaviour>(target)
@@ -1176,7 +1186,7 @@ describe('stage behaviour', () => {
       const stages = gameplayStages(state, store.api, roster.api, inventory.api, player.api, time)
 
       yield* requestBowShot(state, 'wall-shot', {
-        origin: { x: 0, y: 64, z: 0 },
+        origin: fixturePosition(0, 64, 0 ),
         dirX: 0,
         dirY: 0,
         dirZ: 1,
@@ -1246,7 +1256,7 @@ describe('stage behaviour', () => {
           distanceToPlayerBlocksXZ: 24,
         },
         kind: CREEPER_KIND,
-        feetPosition: { x: 1, y: 64, z: 0 },
+        feetPosition: fixturePosition(1, 64, 0 ),
       }
       yield* Ref.set(state.spawnAttempts, [offered])
       yield* Ref.set(state.spawnClockSecs, 0.2)
@@ -1288,7 +1298,7 @@ describe('stage behaviour', () => {
       const spawned = yield* spawnDroppedItem(roster.api, {
         item: 'gunpowder',
         count: 1,
-        at: { x: 0, y: 64, z: 0 },
+        at: fixturePosition(0, 64, 0 ),
       })
 
       const stages = gameplayStages(
@@ -1346,7 +1356,7 @@ describe('stage behaviour', () => {
           distanceToPlayerBlocksXZ: 24,
         },
         kind: CREEPER_KIND,
-        feetPosition: { x, y: 64, z: 0 },
+        feetPosition: fixturePosition(x, 64, 0),
       })
       const first = spawn(1)
       const second = spawn(2)
@@ -1360,12 +1370,12 @@ describe('stage behaviour', () => {
         count: 1,
         source: EntityId('qa-creeper'),
         kind: CREEPER_KIND,
-        at: { x: 1, y: 64, z: 0 },
+        at: fixturePosition(1, 64, 0 ),
       }
       const experience: MobExperienceEvent = {
         source: EntityId('qa-creeper'),
         kind: CREEPER_KIND,
-        at: { x: 1, y: 64, z: 0 },
+        at: fixturePosition(1, 64, 0 ),
         amount: 5,
       }
       yield* Ref.set(state.mobDrops, [drop])
@@ -1541,14 +1551,14 @@ describe('the module contract has caught up with this file’s shape', () => {
       // candidate for a sixth today, and inventing one here would be the
       // speculation this file's history is a record of NOT doing.
       const satisfied: Effect.Effect<ReadonlyArray<StageRegistration>, never, never> =
-        Effect.provide(registration, emptyWorld)
+        Effect.provide(registration, Layer.orDie(emptyWorld))
 
       expect(yield* satisfied).toHaveLength(8)
     }),
   )
 
   // REGRESSION-SHAPED, and it is the property mc-sim's §7-1 buys with
-  // `Context.GenericTag`: `EntityManager` appears ONCE in the requirement,
+  // `Context.Service`: `EntityManager` appears ONCE in the requirement,
   // without a parameter, however the behaviour type is instantiated. If mc-sim
   // had used a Tag class per behaviour, this union would have grown a member per
   // consumer and mc-compose would have had to name mx-gameplay's `MobBehaviour`.
@@ -1705,20 +1715,14 @@ describe('the module contract has caught up with this file’s shape', () => {
 // untested, not a new requirement.
 // ---------------------------------------------------------------------------
 
-describe('FluidStateRef is a real Ref.Ref, including the Effect protocol it inherits', () => {
-  it.effect('yielding the frontier ref directly (not through Ref.get) reads the same value', () =>
+describe('FluidStateRef is a real Effect 4 Ref.Ref', () => {
+  it.effect('reads the frontier through Ref.get after Ref.set', () =>
     Effect.gen(function* () {
       const { state } = yield* builtStages
-      yield* Ref.set(state.fluidFrontier, [{ key: positionKey('0,64,0'), kind: 'water' }])
+      const frontier = [{ key: positionKey('0,64,0'), kind: 'water' }] as const
+      yield* Ref.set(state.fluidFrontier, frontier)
 
-      // `Ref.Ref<A>` extends `Effect.Effect<A>`, so a caller holding the ref may
-      // `yield*` it directly instead of going through `Ref.get`. That path
-      // dispatches through `Effectable.Class`'s `commit()`, which `Ref.get`
-      // itself never touches (`Ref.get = self => self.get`). Both must answer
-      // the same question.
-      const direct = yield* state.fluidFrontier
-      const throughRefGet = yield* Ref.get(state.fluidFrontier)
-      expect(direct).toStrictEqual(throughRefGet)
+      expect(yield* Ref.get(state.fluidFrontier)).toStrictEqual(frontier)
     }),
   )
 })
@@ -1732,7 +1736,7 @@ describe('frame-state refs not produced by makeGameplayFrameState fail loudly', 
       // object (or a copy that swapped one field) would have.
       const foreign: GameplayFrameState = {
         ...state,
-        fireLifecycle: Ref.unsafeMake(makeFireLifecycleState([], 0)),
+        fireLifecycle: Ref.makeUnsafe(makeFireLifecycleState([], 0)),
       }
 
       const exit = yield* Effect.exit(snapshotFireLifecycle(foreign))
@@ -1755,7 +1759,7 @@ describe('frame-state refs not produced by makeGameplayFrameState fail loudly', 
       const time = yield* makeTimeService()
       const foreign: GameplayFrameState = {
         ...state,
-        fluidFrontier: Ref.unsafeMake<ReadonlyArray<FluidWorkItem>>([]),
+        fluidFrontier: Ref.makeUnsafe<ReadonlyArray<FluidWorkItem>>([]),
       }
       const stages = gameplayStages(foreign, store.api, roster.api, inventory.api, player.api, time)
       const fluids = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fluids)!
@@ -1784,7 +1788,7 @@ describe('frame-state refs not produced by makeGameplayFrameState fail loudly', 
       // copy is exactly the 「structurally-created frame state」 the source
       // comment names as the reason the lazy-create branch exists at all.
       const copy: GameplayFrameState = { ...original }
-      const store = yield* makeChunkStoreDouble(world([[blockPosition(0, 64, 0), STONE]]), ['0,0'])
+      const store = yield* makeChunkStoreDouble(world([[fixtureBlockPosition(0, 64, 0), STONE]]), ['0,0'])
       const roster = yield* makeEntityManagerDouble<MobBehaviour>()
       const player = yield* makePlayerServiceDouble()
       const inventory = yield* makeInventoryDouble()
@@ -1795,7 +1799,7 @@ describe('frame-state refs not produced by makeGameplayFrameState fail loudly', 
       yield* Ref.set(copy.pendingBreaks, [positionKey('0,64,0')])
       yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
 
-      expect(yield* store.blockAt(blockPosition(0, 64, 0))).toBe(AIR_BLOCK_ID)
+      expect(yield* store.blockAt(fixtureBlockPosition(0, 64, 0))).toBe(AIR_BLOCK_ID)
     }),
   )
 })
@@ -1805,12 +1809,12 @@ describe('fluid propagation defers when a write finds its chunk unloaded', () =>
 
   it.effect('a blocked horizontal PlaceFluid write is deferred without touching the world', () =>
     Effect.gen(function* () {
-      const origin = blockPosition(0, 64, 0)
-      const blocked = blockPosition(1, 64, 0)
+      const origin = fixtureBlockPosition(0, 64, 0)
+      const blocked = fixtureBlockPosition(1, 64, 0)
       const { state, store } = yield* builtStagesInWorld(
         world([
           [origin, WATER],
-          [blockPosition(0, 63, 0), STONE],
+          [fixtureBlockPosition(0, 63, 0), STONE],
         ]),
         ['0,0', '-1,0', '0,-1'],
       )
@@ -1837,7 +1841,7 @@ describe('fluid propagation defers when a write finds its chunk unloaded', () =>
       // The blocked neighbour never got written...
       expect(yield* store.blockAt(blocked)).toBeUndefined()
       // ...while an unblocked one did, proving only the intercepted write failed.
-      expect(yield* store.blockAt(blockPosition(-1, 64, 0))).toBe(WATER)
+      expect(yield* store.blockAt(fixtureBlockPosition(-1, 64, 0))).toBe(WATER)
       // ...and the source cell was requeued rather than dropped.
       const source = (yield* Ref.get(state.fluidFrontier)).find(
         (item) => item.key === positionKey('0,64,0'),
@@ -1854,12 +1858,12 @@ describe('fluid propagation defers when a write finds its chunk unloaded', () =>
       // `OutOfWorld` is permanent (that `y` will never become writable) and
       // must NOT defer, or a fluid spreading toward the world's edge would
       // retry every tick until `MAX_FLUID_DEFERRED_ATTEMPTS` for no reason.
-      const origin = blockPosition(0, 64, 0)
-      const blocked = blockPosition(1, 64, 0)
+      const origin = fixtureBlockPosition(0, 64, 0)
+      const blocked = fixtureBlockPosition(1, 64, 0)
       const { state, store } = yield* builtStagesInWorld(
         world([
           [origin, WATER],
-          [blockPosition(0, 63, 0), STONE],
+          [fixtureBlockPosition(0, 63, 0), STONE],
         ]),
         ['0,0', '-1,0', '0,-1'],
       )
@@ -1886,7 +1890,7 @@ describe('fluid propagation defers when a write finds its chunk unloaded', () =>
       // The out-of-world neighbour never got written...
       expect(yield* store.blockAt(blocked)).toBeUndefined()
       // ...while an in-world one did, proving only the intercepted write failed.
-      expect(yield* store.blockAt(blockPosition(-1, 64, 0))).toBe(WATER)
+      expect(yield* store.blockAt(fixtureBlockPosition(-1, 64, 0))).toBe(WATER)
       // ...and — unlike the `ChunkNotLoaded` case — the source was NOT
       // requeued with an incremented `deferred` count on account of THIS
       // write: an out-of-world failure carries no retry.
@@ -1899,12 +1903,12 @@ describe('fluid propagation defers when a write finds its chunk unloaded', () =>
 
   it.effect('a blocked RemoveFluid write leaves the stale flowing cell in place and retries it', () =>
     Effect.gen(function* () {
-      const origin = blockPosition(0, 64, 0)
-      const stubborn = blockPosition(-1, 64, 0)
+      const origin = fixtureBlockPosition(0, 64, 0)
+      const stubborn = fixtureBlockPosition(-1, 64, 0)
       const { state, store, stages } = yield* builtStagesInWorld(
         world([
           [origin, WATER],
-          [blockPosition(0, 63, 0), STONE],
+          [fixtureBlockPosition(0, 63, 0), STONE],
         ]),
         ['0,0', '-1,0', '0,-1'],
       )
@@ -1949,18 +1953,18 @@ describe('fluid propagation defers when a write finds its chunk unloaded', () =>
       )
       expect(retried?.deferred).toBe(1)
       // ...while an unblocked sibling was actually retracted to air.
-      expect(yield* store.blockAt(blockPosition(1, 64, 0))).toBe(AIR)
+      expect(yield* store.blockAt(fixtureBlockPosition(1, 64, 0))).toBe(AIR)
     }).pipe(Effect.provide(FrameServicesLayer)),
   )
 
   it.effect('a blocked Solidify write at a lava contact leaves the lava in place and retries the source', () =>
     Effect.gen(function* () {
-      const lava = blockIdOf('lava')!
-      const contact = blockPosition(1, 64, 0)
+      const lava = Option.getOrThrow(blockIdOf('lava'))
+      const contact = fixtureBlockPosition(1, 64, 0)
       const { state, store } = yield* builtStagesInWorld(
         world([
-          [blockPosition(0, 64, 0), WATER],
-          [blockPosition(0, 63, 0), STONE],
+          [fixtureBlockPosition(0, 64, 0), WATER],
+          [fixtureBlockPosition(0, 63, 0), STONE],
           [contact, lava],
         ]),
       )
@@ -2007,7 +2011,7 @@ describe('requestBoneMeal enqueues a farming item use directly', () => {
   it.effect('queues an ApplyBoneMeal request at the given position', () =>
     Effect.gen(function* () {
       const state = yield* makeGameplayFrameState
-      yield* requestBoneMeal(state, 'bone-meal-1', blockPosition(3, 64, 3))
+      yield* requestBoneMeal(state, 'bone-meal-1', fixtureBlockPosition(3, 64, 3))
 
       expect(yield* Ref.get(state.pendingItemUses)).toStrictEqual([
         {
@@ -2060,10 +2064,10 @@ describe('weather gameplay input and events', () => {
 })
 
 describe('the targeted-block family resolves through the same raycast as placement and use', () => {
-  const AIMED_AT: BlockPosition = blockPosition(0, 1, 0)
-  const AIMED_ADJACENT: BlockPosition = blockPosition(0, 1, 1)
+  const AIMED_AT: BlockPosition = fixtureBlockPosition(0, 1, 0)
+  const AIMED_ADJACENT: BlockPosition = fixtureBlockPosition(0, 1, 1)
   const AIMING_POSE: PlayerPose = {
-    feetPosition: { x: 0.5, y: 0, z: 2.5 },
+    feetPosition: fixturePosition(0.5, 0, 2.5 ),
     yawRadians: 0,
     pitchRadians: 0,
   }
@@ -2236,7 +2240,7 @@ describe('the targeted-block family resolves through the same raycast as placeme
 })
 
 describe('fire lifecycle: extinguish, restore, and burning-actor bookkeeping', () => {
-  const FIRE = blockIdOf('fire') ?? 119
+  const FIRE = Option.getOrUndefined(blockIdOf('fire')) ?? BlockId(119)
 
   it.effect('requestFireExtinguish is a no-op when nothing is burning at the position', () =>
     Effect.gen(function* () {
@@ -2248,7 +2252,7 @@ describe('fire lifecycle: extinguish, restore, and burning-actor bookkeeping', (
   it.effect('requestFireExtinguish extinguishes a real fire and disturbs the cell', () =>
     Effect.gen(function* () {
       const { state, store } = yield* builtStages
-      const position = blockPosition(4, 64, 4)
+      const position = fixtureBlockPosition(4, 64, 4)
       yield* store.api.setBlock(position, FIRE)
       yield* Ref.set(state.fireLifecycle, makeFireLifecycleState([position], 3))
 
@@ -2266,7 +2270,7 @@ describe('fire lifecycle: extinguish, restore, and burning-actor bookkeeping', (
       // fireLifecycle Ref tracks a position the world already reads as air)
       // had never fired.
       const { state, store } = yield* builtStages
-      const position = blockPosition(5, 64, 5)
+      const position = fixtureBlockPosition(5, 64, 5)
       yield* Ref.set(state.fireLifecycle, makeFireLifecycleState([position], 3))
 
       expect(yield* requestFireExtinguish(state, store.api, position)).toBe(true)
@@ -2302,14 +2306,14 @@ describe('fire lifecycle: extinguish, restore, and burning-actor bookkeeping', (
       // so a fire death yields empty drops the same way a fire death yields
       // no mob-frame test's `MobDropRule` output.
       const { state, store, roster, stages } = yield* builtStages
-      const position = blockPosition(7, 64, 7)
-      yield* store.api.setBlock(blockPosition(position.x, position.y - 1, position.z), STONE)
+      const position = fixtureBlockPosition(7, 64, 7)
+      yield* store.api.setBlock(fixtureBlockPosition(position.x, position.y - 1, position.z), STONE)
       yield* store.api.setBlock(position, FIRE)
       yield* Ref.set(state.fireLifecycle, makeFireLifecycleState([position], 23))
       yield* roster.api.spawn({
         kind: EntityKind('skeleton'),
-        feetPosition: position,
-        healthPoints: 1,
+        feetPosition: positionOfBlock(position),
+        healthPoints: EntityHealthPoints(1),
         behaviour: undefined,
       })
 
@@ -2327,14 +2331,14 @@ describe('fire lifecycle: extinguish, restore, and burning-actor bookkeeping', (
   it.effect('a despawned burning actor is reported not-alive from its last known position', () =>
     Effect.gen(function* () {
       const { state, store, roster, stages } = yield* builtStages
-      const position = blockPosition(6, 64, 6)
-      yield* store.api.setBlock(blockPosition(position.x, position.y - 1, position.z), STONE)
+      const position = fixtureBlockPosition(6, 64, 6)
+      yield* store.api.setBlock(fixtureBlockPosition(position.x, position.y - 1, position.z), STONE)
       yield* store.api.setBlock(position, FIRE)
       yield* Ref.set(state.fireLifecycle, makeFireLifecycleState([position], 19))
       const target = yield* roster.api.spawn({
         kind: CREEPER_KIND,
-        feetPosition: position,
-        healthPoints: 100,
+        feetPosition: positionOfBlock(position),
+        healthPoints: EntityHealthPoints(100),
         behaviour: undefined,
       })
 
@@ -2364,9 +2368,9 @@ describe('fire lifecycle: extinguish, restore, and burning-actor bookkeeping', (
       // classification ternary's `reading._tag === 'ChunkNotLoaded'` arm had
       // never fired. A fire at the x=15 edge of the only loaded chunk has an
       // x+1 snapshot neighbour in chunk `1,0`, which is not loaded.
-      const firePosition = blockPosition(15, 64, 0)
+      const firePosition = fixtureBlockPosition(15, 64, 0)
       const { state, stages } = yield* builtStagesInWorld(
-        world([[firePosition, FIRE], [blockPosition(15, 63, 0), STONE]]),
+        world([[firePosition, FIRE], [fixtureBlockPosition(15, 63, 0), STONE]]),
         ['0,0'],
       )
       yield* Ref.set(state.fireLifecycle, makeFireLifecycleState([firePosition], 19))
@@ -2390,13 +2394,13 @@ describe('fire lifecycle: extinguish, restore, and burning-actor bookkeeping', (
       // other fire test only ever reads registered blocks, so the
       // `blockTypeOfId(reading.block) ?? '__unknown_fire_block__'` fallback
       // had never fired.
-      const firePosition = blockPosition(8, 64, 8)
-      const UNREGISTERED_BLOCK_ID = 999_999 as BlockId
+      const firePosition = fixtureBlockPosition(8, 64, 8)
+      const UNREGISTERED_BLOCK_ID = BlockId(250)
       const { state, stages } = yield* builtStagesInWorld(
         world([
           [firePosition, FIRE],
-          [blockPosition(8, 63, 8), STONE],
-          [blockPosition(9, 64, 8), UNREGISTERED_BLOCK_ID],
+          [fixtureBlockPosition(8, 63, 8), STONE],
+          [fixtureBlockPosition(9, 64, 8), UNREGISTERED_BLOCK_ID],
         ]),
         ['0,0'],
       )
@@ -2421,33 +2425,33 @@ describe('fire lifecycle: extinguish, restore, and burning-actor bookkeeping', (
       // had never actually been invoked — `Array.prototype.sort` never calls
       // its comparator for an array of 0 or 1 elements.
       const { state, store, roster, stages } = yield* builtStages
-      const firePosition = blockPosition(6, 64, 6)
-      yield* store.api.setBlock(blockPosition(firePosition.x, firePosition.y - 1, firePosition.z), STONE)
+      const firePosition = fixtureBlockPosition(6, 64, 6)
+      yield* store.api.setBlock(fixtureBlockPosition(firePosition.x, firePosition.y - 1, firePosition.z), STONE)
       yield* store.api.setBlock(firePosition, FIRE)
       yield* Ref.set(state.fireLifecycle, makeFireLifecycleState([firePosition], 19))
 
       const burningA = yield* roster.api.spawn({
         kind: CREEPER_KIND,
-        feetPosition: firePosition,
-        healthPoints: 100,
+        feetPosition: positionOfBlock(firePosition),
+        healthPoints: EntityHealthPoints(100),
         behaviour: undefined,
       })
       const burningB = yield* roster.api.spawn({
         kind: CREEPER_KIND,
-        feetPosition: firePosition,
-        healthPoints: 100,
+        feetPosition: positionOfBlock(firePosition),
+        healthPoints: EntityHealthPoints(100),
         behaviour: undefined,
       })
       const safeA = yield* roster.api.spawn({
         kind: CREEPER_KIND,
-        feetPosition: { x: 20, y: 64, z: 20 },
-        healthPoints: 100,
+        feetPosition: fixturePosition(20, 64, 20 ),
+        healthPoints: EntityHealthPoints(100),
         behaviour: undefined,
       })
       const safeB = yield* roster.api.spawn({
         kind: CREEPER_KIND,
-        feetPosition: { x: 21, y: 64, z: 21 },
-        healthPoints: 100,
+        feetPosition: fixturePosition(21, 64, 21 ),
+        healthPoints: EntityHealthPoints(100),
         behaviour: undefined,
       })
 
@@ -2474,14 +2478,14 @@ describe('fire lifecycle: extinguish, restore, and burning-actor bookkeeping', (
   it.effect('a survivable fire tick damages a burning entity without killing it', () =>
     Effect.gen(function* () {
       const { state, store, roster, stages } = yield* builtStages
-      const position = blockPosition(7, 64, 7)
-      yield* store.api.setBlock(blockPosition(position.x, position.y - 1, position.z), STONE)
+      const position = fixtureBlockPosition(7, 64, 7)
+      yield* store.api.setBlock(fixtureBlockPosition(position.x, position.y - 1, position.z), STONE)
       yield* store.api.setBlock(position, FIRE)
       yield* Ref.set(state.fireLifecycle, makeFireLifecycleState([position], 23))
       const target = yield* roster.api.spawn({
         kind: CREEPER_KIND,
-        feetPosition: position,
-        healthPoints: 1000,
+        feetPosition: positionOfBlock(position),
+        healthPoints: EntityHealthPoints(1000),
         behaviour: undefined,
       })
 
@@ -2501,7 +2505,7 @@ describe('fire lifecycle: extinguish, restore, and burning-actor bookkeeping', (
   it.effect('a fire near the world floor reads its out-of-world neighbour as air and still checks sky exposure under weather', () =>
     Effect.gen(function* () {
       const { state, store, stages } = yield* builtStages
-      const position = blockPosition(8, 0, 8)
+      const position = fixtureBlockPosition(8, 0, 8)
       yield* store.api.setBlock(position, FIRE)
       yield* Ref.set(state.fireLifecycle, makeFireLifecycleState([position], 29))
       const rain: WeatherState = { weather: 'rain', remainingSecs: 100 }
@@ -2519,7 +2523,7 @@ describe('fire lifecycle: extinguish, restore, and burning-actor bookkeeping', (
 
 /** Every slot at a full stack of wheat — the only arrangement that leaves no room for a different item. */
 const brimmingWheat = (): ReadonlyArray<Slot> =>
-  emptySlots().map((): Slot => itemStack('wheat', MAX_STACK_COUNT))
+  emptySlots().map((): Slot => itemStack('wheat', maxStackCountForItem('wheat')))
 
 describe('villager trade rejection paths not reached by the vertical slice', () => {
   it.effect('rejects an offerId the villager does not carry', () =>
@@ -2585,7 +2589,7 @@ describe('villager trade rejection paths not reached by the vertical slice', () 
       ])
       // Nothing was actually removed: the preflight check failed before any
       // real mutation.
-      expect(yield* inventory.api.countOf('wheat')).toBe(36 * MAX_STACK_COUNT)
+      expect(yield* inventory.api.countOf('wheat')).toBe(36 * maxStackCountForItem('wheat'))
     }),
   )
 
@@ -2643,7 +2647,7 @@ describe('the ender pearl arm refuses a survival throw with no pearl to spend', 
       const { state, stages } = yield* builtStages
       const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
       const throwRequest: EnderPearlThrowRequest = {
-        origin: { x: 0, y: 64, z: 0 },
+        origin: fixturePosition(0, 64, 0 ),
         dirX: 0,
         dirY: 0,
         dirZ: 1,
@@ -2662,8 +2666,8 @@ describe('the ender pearl arm refuses a survival throw with no pearl to spend', 
 describe('flint and steel on TNT spawns a primed entity through the interactions stage', () => {
   it.effect('lighting TNT removes the block and spawns PRIMED_TNT_KIND', () =>
     Effect.gen(function* () {
-      const tnt = blockIdOf('tnt')!
-      const position = blockPosition(2, 64, 2)
+      const tnt = Option.getOrThrow(blockIdOf('tnt'))
+      const position = fixtureBlockPosition(2, 64, 2)
       const state = yield* makeGameplayFrameState
       const store = yield* makeChunkStoreDouble(world([[position, tnt]]), ['0,0'])
       const roster = yield* makeEntityManagerDouble<MobBehaviour>()
@@ -2697,16 +2701,16 @@ describe('the entities stage resolves both ranged mob attacks and zombie contact
       // cooldown at zero so it fires immediately.
       yield* roster.api.spawn({
         kind: SKELETON_KIND,
-        feetPosition: { x: 10, y: 64, z: 0 },
-        healthPoints: 20,
+        feetPosition: fixturePosition(10, 64, 0 ),
+        healthPoints: EntityHealthPoints(20),
         behaviour: initialEcosystemMobState(),
       })
       // Zombie: not an ecosystem-mob kind, resolved separately by
       // `resolveHostileContacts` purely on distance to the player.
       yield* roster.api.spawn({
         kind: ZOMBIE_KIND,
-        feetPosition: { x: 0, y: 64, z: 0 },
-        healthPoints: 20,
+        feetPosition: fixturePosition(0, 64, 0 ),
+        healthPoints: EntityHealthPoints(20),
         behaviour: undefined,
       })
 
@@ -2750,13 +2754,13 @@ describe('additional fluid propagation branches', () => {
 
   it.effect('lava spreads within its own horizontal range and solidifies on contact with water', () =>
     Effect.gen(function* () {
-      const lava = blockIdOf('lava')!
-      const origin = blockPosition(0, 64, 0)
-      const waterNeighbour = blockPosition(1, 64, 0)
+      const lava = Option.getOrThrow(blockIdOf('lava'))
+      const origin = fixtureBlockPosition(0, 64, 0)
+      const waterNeighbour = fixtureBlockPosition(1, 64, 0)
       const { state, store, stages } = yield* builtStagesInWorld(
         world([
           [origin, lava],
-          [blockPosition(0, 63, 0), STONE],
+          [fixtureBlockPosition(0, 63, 0), STONE],
           [waterNeighbour, WATER],
         ]),
         ['0,0', '-1,0'],
@@ -2783,18 +2787,18 @@ describe('additional fluid propagation branches', () => {
       // `transitionFluidCell`'s early return once `contacts.length > 0` for a
       // lava cell.
       expect(yield* store.blockAt(waterNeighbour)).toBe(WATER)
-      expect(yield* store.blockAt(blockPosition(-1, 64, 0))).toBeUndefined()
+      expect(yield* store.blockAt(fixtureBlockPosition(-1, 64, 0))).toBeUndefined()
     }).pipe(Effect.provide(FrameServicesLayer)),
   )
 
   it.effect('a freshly-arrived non-source item stays supported by a live parent already in the runtime', () =>
     Effect.gen(function* () {
-      const origin = blockPosition(0, 64, 0)
-      const grandchild = blockPosition(2, 64, 0)
+      const origin = fixtureBlockPosition(0, 64, 0)
+      const grandchild = fixtureBlockPosition(2, 64, 0)
       const { state, store, stages } = yield* builtStagesInWorld(
         world([
           [origin, WATER],
-          [blockPosition(0, 63, 0), STONE],
+          [fixtureBlockPosition(0, 63, 0), STONE],
           // `parent` ({1,64,0}) starts as air, so tick 1's ordinary spread
           // places real water there and registers it in the runtime's
           // `cells` map. `grandchild` starts as real water so its own probe
@@ -2832,7 +2836,7 @@ describe('additional fluid propagation branches', () => {
 })
 
 describe('fire tick budget, unregistered blocks and duplicate ignition', () => {
-  const FIRE = blockIdOf('fire') ?? 119
+  const FIRE = Option.getOrUndefined(blockIdOf('fire')) ?? BlockId(119)
   // Deliberately outside kernel's registered id range (its
   // highest registered id is in the 120s), so `blockTypeOfId` returns
   // `undefined` for it — a block this vocabulary does not know, exactly the
@@ -2855,7 +2859,7 @@ describe('fire tick budget, unregistered blocks and duplicate ignition', () => {
           {
             id: 'player',
             kind: 'player',
-            position: { x: 0, y: 64, z: 0 },
+            position: fixturePosition(0, 64, 0 ),
             remainingTicks: 1,
             damageCooldownTicks: 0,
           },
@@ -2873,8 +2877,8 @@ describe('fire tick budget, unregistered blocks and duplicate ignition', () => {
 
   it.effect('an unregistered neighbouring block reads as an unknown fire block rather than crashing', () =>
     Effect.gen(function* () {
-      const position = blockPosition(30, 64, 30)
-      const strangeNeighbour = blockPosition(31, 64, 30)
+      const position = fixtureBlockPosition(30, 64, 30)
+      const strangeNeighbour = fixtureBlockPosition(31, 64, 30)
       const { state, store, stages } = yield* builtStagesInWorld(
         world([
           [position, FIRE],
@@ -2900,11 +2904,11 @@ describe('fire tick budget, unregistered blocks and duplicate ignition', () => {
       // so the three fires cannot interact with (ignite, extinguish, or
       // otherwise perturb) one another — this test is only about the final
       // sort's tie-break, not about fire-to-fire spread.
-      const shared = blockPosition(5, 64, 5)
-      const sameXY = blockPosition(5, 64, 15)
-      const sameXOnly = blockPosition(5, 75, 5)
+      const shared = fixtureBlockPosition(5, 64, 5)
+      const sameXY = fixtureBlockPosition(5, 64, 15)
+      const sameXOnly = fixtureBlockPosition(5, 75, 5)
       for (const position of [shared, sameXY, sameXOnly]) {
-        yield* store.api.setBlock(blockPosition(position.x, position.y - 1, position.z), STONE)
+        yield* store.api.setBlock(fixtureBlockPosition(position.x, position.y - 1, position.z), STONE)
         yield* store.api.setBlock(position, FIRE)
       }
       yield* Ref.set(state.fireLifecycle, makeFireLifecycleState([shared, sameXY, sameXOnly], 43))
@@ -2960,30 +2964,30 @@ describe('fire tick budget, unregistered blocks and duplicate ignition', () => {
 
   it.effect('a mutation write that finds its chunk unloaded is retried; one that fails otherwise reverts', () =>
     Effect.gen(function* () {
-      const oakPlanks = blockIdOf('oak_planks')!
+      const oakPlanks = Option.getOrThrow(blockIdOf('oak_planks'))
       // Fire A spreads to a flammable neighbour (seed 1 makes the very first
       // spread roll succeed — `FIRE_SPREAD_CHANCE` is 0.3 and
       // `nextRoll(1).roll` is ~0.0000078). The write for that NEW ignition is
       // intercepted to fail, exercising the `mutation.block === 'fire'`
       // failure arm.
-      const spreadSource = blockPosition(0, 64, 0)
-      const ignitionTarget = blockPosition(1, 64, 0)
+      const spreadSource = fixtureBlockPosition(0, 64, 0)
+      const ignitionTarget = fixtureBlockPosition(1, 64, 0)
       // Fire B has air below and no flammable neighbour, so it is
       // `!supported` and this tick tries to extinguish it (an `'air'`
       // mutation at its own position). Its write is intercepted to fail with
       // a non-`ChunkNotLoaded` reason, exercising the unconditional-revert arm.
-      const unsupportedReverts = blockPosition(20, 64, 20)
+      const unsupportedReverts = fixtureBlockPosition(20, 64, 20)
       // Fire C is the same shape as B, but its write is intercepted to fail
       // with `ChunkNotLoaded` specifically, exercising the retry-counter arm.
-      const unsupportedRetries = blockPosition(40, 64, 40)
+      const unsupportedRetries = fixtureBlockPosition(40, 64, 40)
 
       const { state, store } = yield* builtStagesInWorld(
         world([
-          [spreadSource, blockIdOf('fire') ?? 119],
-          [blockPosition(0, 63, 0), STONE],
+          [spreadSource, Option.getOrUndefined(blockIdOf('fire')) ?? BlockId(119)],
+          [fixtureBlockPosition(0, 63, 0), STONE],
           [ignitionTarget, oakPlanks],
-          [unsupportedReverts, blockIdOf('fire') ?? 119],
-          [unsupportedRetries, blockIdOf('fire') ?? 119],
+          [unsupportedReverts, Option.getOrUndefined(blockIdOf('fire')) ?? BlockId(119)],
+          [unsupportedRetries, Option.getOrUndefined(blockIdOf('fire')) ?? BlockId(119)],
         ]),
         // Every one of the three fires' own chunks must be resident, or the
         // DOMAIN layer's own read-side retry (fire-lifecycle.ts's
@@ -3092,8 +3096,8 @@ describe('restoreStatusEffects resets movement speed when the restored snapshot 
 describe('a portal crossing from the nether returns the player to the overworld', () => {
   it.effect('four seconds of standing in a portal from the nether side switches back to overworld', () =>
     Effect.gen(function* () {
-      const NETHER_PORTAL = blockIdOf('nether_portal') ?? 118
-      const spawnCell = blockPosition(0, 64, 0)
+      const NETHER_PORTAL = Option.getOrUndefined(blockIdOf('nether_portal')) ?? BlockId(118)
+      const spawnCell = fixtureBlockPosition(0, 64, 0)
       const store = yield* makeChunkStoreDouble(world([[spawnCell, NETHER_PORTAL]]), ['0,0'])
       const roster = yield* makeEntityManagerDouble<MobBehaviour>()
       const inventory = yield* makeInventoryDouble()
@@ -3113,7 +3117,7 @@ describe('a portal crossing from the nether returns the player to the overworld'
 describe('block placement rolls back and dies loudly when the compensating restore cannot succeed', () => {
   it.effect('a failed placement whose reservation cannot be returned is a defect, not a silent loss', () =>
     Effect.gen(function* () {
-      const target = blockPosition(3, 64, 3)
+      const target = fixtureBlockPosition(3, 64, 3)
       // Already occupied, so `placeBlock` refuses and the rollback path runs.
       const store = yield* makeChunkStoreDouble(world([[target, STONE]]), ['0,0'])
       const roster = yield* makeEntityManagerDouble<MobBehaviour>()
@@ -3261,7 +3265,7 @@ describe('villager trade: the roster changing underneath an already-approved com
 describe('farming and food item uses through the full interactions stage', () => {
   it.effect('bone meal against a non-crop cell still reaches the ApplyBoneMeal arm', () =>
     Effect.gen(function* () {
-      const position = blockPosition(40, 64, 40)
+      const position = fixtureBlockPosition(40, 64, 40)
       const { state, stages } = yield* builtStagesInWorld(world([[position, STONE]]))
       const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
 
@@ -3275,8 +3279,8 @@ describe('farming and food item uses through the full interactions stage', () =>
 
   it.effect('bone meal against a real crop applies and consumes one', () =>
     Effect.gen(function* () {
-      const wheatCrop = blockIdOf('wheat_crop')!
-      const position = blockPosition(0, 64, 0)
+      const wheatCrop = Option.getOrThrow(blockIdOf('wheat_crop'))
+      const position = fixtureBlockPosition(0, 64, 0)
       const { state, stages } = yield* builtStagesInWorld(world([[position, wheatCrop]]))
       const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
 
@@ -3298,7 +3302,7 @@ describe('farming and food item uses through the full interactions stage', () =>
 
   it.effect('bone meal against an unloaded cell reports not-a-crop without a block reading', () =>
     Effect.gen(function* () {
-      const position = blockPosition(42, 64, 42)
+      const position = fixtureBlockPosition(42, 64, 42)
       const { state, stages } = yield* builtStagesInWorld(world([]), [])
       const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
 
@@ -3320,7 +3324,7 @@ describe('farming and food item uses through the full interactions stage', () =>
 
   it.effect('tilling a non-tillable cell reports failure with no durability spent', () =>
     Effect.gen(function* () {
-      const position = blockPosition(41, 64, 41)
+      const position = fixtureBlockPosition(41, 64, 41)
       const { state, stages } = yield* builtStagesInWorld(world([[position, STONE]]))
       const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
 
@@ -3341,7 +3345,7 @@ describe('farming and food item uses through the full interactions stage', () =>
 
   it.effect('planting a potato on non-farmland reports failure with nothing consumed', () =>
     Effect.gen(function* () {
-      const position = blockPosition(42, 64, 42)
+      const position = fixtureBlockPosition(42, 64, 42)
       const { state, stages } = yield* builtStagesInWorld(world([[position, STONE]]))
       const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
 
@@ -3357,7 +3361,7 @@ describe('farming and food item uses through the full interactions stage', () =>
     Effect.gen(function* () {
       const { state, stages } = yield* builtStages
       const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
-      const full = { healthPoints: 20, hungerPoints: 20, maxHungerPoints: 20 }
+      const full = { healthPoints: EntityHealthPoints(20), hungerPoints: HungerPoints(20), maxHungerPoints: HungerPoints(20) }
 
       yield* requestPotatoFoodUse(state, 'eat-potato-full', full)
       yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
@@ -3379,7 +3383,7 @@ describe('farming and food item uses through the full interactions stage', () =>
     Effect.gen(function* () {
       const { state, stages } = yield* builtStages
       const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
-      const full = { healthPoints: 20, hungerPoints: 20, maxHungerPoints: 20 }
+      const full = { healthPoints: EntityHealthPoints(20), hungerPoints: HungerPoints(20), maxHungerPoints: HungerPoints(20) }
 
       yield* requestFoodUse(state, 'eat-food-full', 'cod', full)
       yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))

@@ -66,19 +66,22 @@
  */
 import { describe, expect, it } from '@effect/vitest'
 import {
-  durability,
-  emptyFurnaceState,
-  equipmentItem,
-  itemStack,
+  durability as makeDurability,
+  emptyFurnaceState as makeEmptyFurnaceState,
+  equipmentItem as makeEquipmentItem,
+  itemStack as makeItemStack,
   type EquipmentItem,
   makeTimeService,
   type TimeServiceApi,
 } from '@nerima-games/mc-sim'
-import { Effect, Ref } from 'effect'
+import { Effect, Option, Ref, Result } from 'effect'
 import {
   AIR_BLOCK_ID,
   blockIdOf,
   capabilityOfBlockId,
+  EntityHealthPoints,
+  PortalHeight,
+  PortalWidth,
   type BlockPosition,
   type HarvestTier,
   type Position,
@@ -86,7 +89,7 @@ import {
 import { readdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import type { BlockWriteOutcome, ChunkStoreApi } from '@nerima-games/mc-worldgen'
+import { generatePortalLayout, type BlockWriteOutcome, type ChunkStoreApi } from '@nerima-games/mc-worldgen'
 import { NOON_FRACTION } from '../src/domain/day-night'
 import {
   addVillager,
@@ -111,15 +114,16 @@ import {
   type MobBehaviour,
   type MobSpawnAttempt,
 } from '../src/domain/entities/mob-frame'
-import { EntityKind, type EntityManagerApi } from '@nerima-games/mc-sim'
+import { EntityKind, HungerPoints, type EntityManagerApi } from '@nerima-games/mc-sim'
 import { disturb } from '../src/domain/falling-block'
 import {
   BlockId,
-  blockPosition,
   blockPositionKeyOf,
   DeltaTimeSecs,
+  InterpolationFraction,
   StackCount,
 } from '@nerima-games/mc-kernel'
+import { blockPosition as fixtureBlockPosition, position as fixturePosition } from './support/coordinate-fixtures'
 import { DEFAULT_ROLL_SEED, drawRolls, nextRoll } from '../src/domain/frame-rolls'
 import {
   FIRE_NATURAL_LIFETIME_TICKS,
@@ -140,7 +144,6 @@ import { ZOMBIE_KIND } from '../src/domain/mob/hostile-combat'
 import type { MinedItem } from '../src/domain/interactions/block-loot'
 import { chunkCoordsAround } from '../src/domain/chunk-window'
 import { PORTAL_WINDOW_RADIUS, ignitePortal } from '../src/domain/interactions/ignite-portal'
-import { generatePortalLayout } from '@nerima-games/mc-kernel'
 import {
   drainItemUseResults,
   drainPlayerDamages,
@@ -203,11 +206,11 @@ import { runFrame, runFrames } from './support/frame-runner'
  */
 const LAVA: BlockId = BlockId(11)
 
-const support: BlockPosition = blockPosition(2, 64, 3)
-const floor: BlockPosition = blockPosition(2, 63, 3)
-const sandAt: BlockPosition = blockPosition(2, 65, 3)
-const aboveSand: BlockPosition = blockPosition(2, 66, 3)
-const topOfColumn: BlockPosition = blockPosition(2, 67, 3)
+const support: BlockPosition = fixtureBlockPosition(2, 64, 3)
+const floor: BlockPosition = fixtureBlockPosition(2, 63, 3)
+const sandAt: BlockPosition = fixtureBlockPosition(2, 65, 3)
+const aboveSand: BlockPosition = fixtureBlockPosition(2, 66, 3)
+const topOfColumn: BlockPosition = fixtureBlockPosition(2, 67, 3)
 
 const slice = (
   initial: ReadonlyMap<string, BlockId>,
@@ -234,13 +237,22 @@ const slice = (
 
 const onePlacementItem = (item: PlacementRequest['heldItem']) =>
   emptySlots().map((_, index) =>
-    index === 0 ? { item, count: StackCount(1) } : undefined,
+    index === 0 ? itemStack(item, StackCount(1)) : undefined,
   )
 
 const oneBucketItem = (item: 'bucket' | 'water_bucket' | 'lava_bucket') =>
   emptySlots().map((_, index) =>
-    index === 0 ? { item, count: StackCount(1) } : undefined,
+    index === 0 ? itemStack(item, StackCount(1)) : undefined,
   )
+
+const itemStack = (item: Parameters<typeof makeItemStack>[0], count: Parameters<typeof makeItemStack>[1]) =>
+  Result.getOrThrow(makeItemStack(item, count))
+const equipmentItem = (...args: Parameters<typeof makeEquipmentItem>) =>
+  Result.getOrThrow(makeEquipmentItem(...args))
+const durability = (...args: Parameters<typeof makeDurability>) =>
+  Result.getOrThrow(makeDurability(...args))
+const emptyFurnaceState = () => Result.getOrThrow(makeEmptyFurnaceState())
+const positionOfBlock = (value: BlockPosition) => fixturePosition(value.x, value.y, value.z)
 
 const fishingRod = (current = 64): EquipmentItem =>
   equipmentItem(itemStack('fishing_rod', 1), durability(current, 64))
@@ -496,7 +508,7 @@ describe('the slice, through the stage registration', () => {
         ]),
       )
 
-      yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, [blockPositionKeyOf(blockPosition(support.x, support.y, support.z))]))
+      yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, [blockPositionKeyOf(fixtureBlockPosition(support.x, support.y, support.z))]))
       yield* runFrame(stages)
 
       expect(yield* store.blockAt(support)).toBe(SAND)
@@ -514,9 +526,9 @@ describe('the slice, through the stage registration', () => {
         ]),
       )
 
-      expect(capabilityOfBlockId(LAVA, 'replaceable')).toBe(true)
+      expect(Result.getOrThrow(capabilityOfBlockId(LAVA, 'replaceable'))).toBe(true)
 
-      yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, [blockPositionKeyOf(blockPosition(support.x, support.y, support.z))]))
+      yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, [blockPositionKeyOf(fixtureBlockPosition(support.x, support.y, support.z))]))
       yield* runFrame(stages)
 
       expect(yield* store.blockAt(support)).toBe(GRAVEL)
@@ -529,14 +541,14 @@ describe('the slice, through the stage registration', () => {
       // Chunk (-1, 0) is not resident. Whatever is in it is UNKNOWN, and a rule
       // that read "air" there would clear a cell it cannot see and drop the
       // block into ungenerated space.
-      const edge: BlockPosition = blockPosition(-1, 64, 3)
+      const edge: BlockPosition = fixtureBlockPosition(-1, 64, 3)
       const { store, inventory, state, stages } = yield* slice(world([[floor, STONE]]), ['0,0'])
 
       // Both entry points are exercised: a break request at the edge...
       yield* requestBreak(state, edge)
       // ...and a position that reached the queue some other way (an explosion
       // in a chunk that has since been unloaded, say).
-      yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, [blockPositionKeyOf(blockPosition(edge.x, edge.y, edge.z))]))
+      yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, [blockPositionKeyOf(fixtureBlockPosition(edge.x, edge.y, edge.z))]))
       yield* runFrames(stages, 3)
 
       const calls = yield* store.calls
@@ -616,7 +628,7 @@ describe('the slice, through the stage registration', () => {
       }
 
       const stages = gameplayStages(state, hidesTheDestination, roster.api, inventory.api, player.api, time)
-      yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, [blockPositionKeyOf(blockPosition(support.x, support.y, support.z))]))
+      yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, [blockPositionKeyOf(fixtureBlockPosition(support.x, support.y, support.z))]))
       yield* runFrames(stages, 3)
 
       // Unknown is not empty: the sand stays where it is rather than being
@@ -641,7 +653,7 @@ describe('the slice, through the stage registration', () => {
       }
 
       const stages = gameplayStages(state, refusesTheDestination, roster.api, inventory.api, player.api, time)
-      yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, [blockPositionKeyOf(blockPosition(support.x, support.y, support.z))]))
+      yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, [blockPositionKeyOf(fixtureBlockPosition(support.x, support.y, support.z))]))
       yield* runFrame(stages)
 
       // The sand is still sand. A rule that trusted its own read would have
@@ -674,7 +686,7 @@ describe('the slice, through the stage registration', () => {
           }
 
           const stages = gameplayStages(state, refusesTheSource, roster.api, inventory.api, player.api, time)
-          yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, [blockPositionKeyOf(blockPosition(support.x, support.y, support.z))]))
+          yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, [blockPositionKeyOf(fixtureBlockPosition(support.x, support.y, support.z))]))
           yield* runFrame(stages)
 
           expect(yield* store.blockAt(support)).toBeUndefined()
@@ -685,12 +697,12 @@ describe('the slice, through the stage registration', () => {
 
   it.effect('REGRESSION: the floor of the world holds a block up — `OutOfWorld` is not a free cell', () =>
     Effect.gen(function* () {
-      const bottom: BlockPosition = blockPosition(2, 0, 3)
-      const belowTheWorld: BlockPosition = blockPosition(2, -1, 3)
+      const bottom: BlockPosition = fixtureBlockPosition(2, 0, 3)
+      const belowTheWorld: BlockPosition = fixtureBlockPosition(2, -1, 3)
       const { store, state, stages } = yield* slice(world([[bottom, SAND]]))
 
       yield* Ref.update(state.fallingBlocks, (queue) =>
-        disturb(queue, [blockPositionKeyOf(blockPosition(belowTheWorld.x, belowTheWorld.y, belowTheWorld.z))]),
+        disturb(queue, [blockPositionKeyOf(fixtureBlockPosition(belowTheWorld.x, belowTheWorld.y, belowTheWorld.z))]),
       )
       yield* runFrames(stages, 2)
 
@@ -701,13 +713,13 @@ describe('the slice, through the stage registration', () => {
 
   it.effect('nothing falls from above the build limit', () =>
     Effect.gen(function* () {
-      const ceiling: BlockPosition = blockPosition(2, 255, 3)
+      const ceiling: BlockPosition = fixtureBlockPosition(2, 255, 3)
       const { store, state, stages } = yield* slice(world([]))
 
       // The cell examined is the one ABOVE the disturbance, and at y = 256 that
       // is outside the world rather than empty. Reading it as air would be
       // harmless; asking for it and then acting on the answer would not.
-      yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, [blockPositionKeyOf(blockPosition(ceiling.x, ceiling.y, ceiling.z))]))
+      yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, [blockPositionKeyOf(fixtureBlockPosition(ceiling.x, ceiling.y, ceiling.z))]))
       yield* runFrames(stages, 2)
 
       expect((yield* store.calls).writes).toBe(0)
@@ -721,7 +733,7 @@ describe('the slice, through the stage registration', () => {
       // `run` has no error channel, so "the player aimed at nothing" has to be
       // an ordinary outcome rather than a failure. The frame must complete and
       // the next request must still be serviced.
-      yield* requestBreak(state, blockPosition(2, -1, 3))
+      yield* requestBreak(state, fixtureBlockPosition(2, -1, 3))
       yield* runFrame(stages)
       expect(yield* deposited(inventory)).toStrictEqual([])
 
@@ -754,19 +766,19 @@ describe('the slice, through the stage registration', () => {
 // ---------------------------------------------------------------------------
 
 /** Chunk (0, 0), so that a creeper's whole 3-block crater is resident. */
-const creeperAt: BlockPosition = blockPosition(5, 64, 5)
-const bystanderAt: Position = { x: 7, y: 64, z: 5 }
+const creeperAt: BlockPosition = fixtureBlockPosition(5, 64, 5)
+const bystanderAt: Position = fixturePosition(7, 64, 5)
 /** 20 blocks off in XZ, which is inside `hostile-spawn`'s 16..40 band. */
-const playerFar: Position = { x: 25, y: 64, z: 5 }
+const playerFar: Position = fixturePosition(25, 64, 5)
 /** Two blocks from the creeper and four from the bystander: one lights, one does not. */
-const playerNear: Position = { x: 3, y: 64, z: 5 }
+const playerNear: Position = fixturePosition(3, 64, 5)
 
 /** In the crater (distance 1), and the creeper's floor. */
-const craterFloor: BlockPosition = blockPosition(5, 63, 5)
+const craterFloor: BlockPosition = fixtureBlockPosition(5, 63, 5)
 /** In the crater at exactly the radius (distance 3), and it is holding sand up. */
-const craterLedge: BlockPosition = blockPosition(5, 67, 5)
+const craterLedge: BlockPosition = fixtureBlockPosition(5, 67, 5)
 /** Outside the crater (distance 4), resting on the ledge. */
-const ledgeSand: BlockPosition = blockPosition(5, 68, 5)
+const ledgeSand: BlockPosition = fixtureBlockPosition(5, 68, 5)
 
 /**
  * A candidate cell that `canHostileSpawnAt` says yes to.
@@ -833,7 +845,7 @@ const STRIDE = DeltaTimeSecs(0.25)
  * would make both unfalsifiable.
  */
 const daylight = (time: TimeServiceApi): Effect.Effect<void> =>
-  time.setTimeOfDay(NOON_FRACTION)
+  time.setTimeOfDay(InterpolationFraction(NOON_FRACTION))
 
 describe('the mob slice, through the stage registration', () => {
   it.effect('searches for Nether hostiles at noon while Overworld hostile search stays night-gated', () =>
@@ -844,8 +856,8 @@ describe('the mob slice, through the stage registration', () => {
 
           yield* roster.api.spawn({
             kind: CREEPER_KIND,
-            feetPosition: creeperAt,
-            healthPoints: CREEPER_MAX_HEALTH,
+            feetPosition: positionOfBlock(creeperAt),
+            healthPoints: EntityHealthPoints(CREEPER_MAX_HEALTH),
             behaviour: DORMANT_FUSE,
           })
           yield* player.api.moveTo(playerFar)
@@ -881,7 +893,7 @@ describe('the mob slice, through the stage registration', () => {
       // ---- the player is far away, and two creepers are offered ------------
       yield* daylight(time)
       yield* player.api.moveTo(playerFar)
-      yield* offerSpawns(state, [attemptAt(creeperAt), attemptAt(bystanderAt)])
+      yield* offerSpawns(state, [attemptAt(positionOfBlock(creeperAt)), attemptAt(bystanderAt)])
       yield* runFrame(stages, STRIDE)
 
       expect(yield* roster.api.countOfKind(CREEPER_KIND)).toBe(2)
@@ -953,7 +965,7 @@ describe('the mob slice, through the stage registration', () => {
           count: 1,
           source: spawned[1]?.id,
           kind: CREEPER_KIND,
-          at: { x: 6, y: 64, z: 5 },
+          at: fixturePosition(6, 64, 5 ),
         },
       ])
       expect(yield* deposited(inventory)).toStrictEqual([])
@@ -986,7 +998,7 @@ describe('the mob slice, through the stage registration', () => {
 
       yield* daylight(time)
       yield* player.api.moveTo(playerFar)
-      yield* offerSpawns(state, [attemptAt(creeperAt, ZOMBIE_KIND)])
+      yield* offerSpawns(state, [attemptAt(positionOfBlock(creeperAt), ZOMBIE_KIND)])
       yield* runFrame(stages, STRIDE)
 
       const [zombie] = yield* roster.api.entities
@@ -1016,15 +1028,15 @@ describe('the mob slice, through the stage registration', () => {
       yield* Effect.forEach([0, 1, 2], (index) =>
         roster.api.spawn({
           kind: pig,
-          feetPosition: { x: index, y: 64, z: 0 },
-          healthPoints: 10,
+          feetPosition: fixturePosition(index, 64, 0 ),
+          healthPoints: EntityHealthPoints(10),
           behaviour: undefined,
         }),
       )
       yield* roster.api.spawn({
         kind: CREEPER_KIND,
-        feetPosition: { x: 50, y: 64, z: 5 },
-        healthPoints: CREEPER_MAX_HEALTH,
+        feetPosition: fixturePosition(50, 64, 5 ),
+        healthPoints: EntityHealthPoints(CREEPER_MAX_HEALTH),
         behaviour: DORMANT_FUSE,
       })
       yield* daylight(time)
@@ -1066,20 +1078,20 @@ describe('the mob slice, through the stage registration', () => {
 
       yield* roster.api.spawn({
         kind: CREEPER_KIND,
-        feetPosition: { x: DESPAWN_DISTANCE_BLOCKS + 1, y: 64, z: 0 },
-        healthPoints: CREEPER_MAX_HEALTH,
+        feetPosition: fixturePosition(DESPAWN_DISTANCE_BLOCKS + 1, 64, 0 ),
+        healthPoints: EntityHealthPoints(CREEPER_MAX_HEALTH),
         behaviour: DORMANT_FUSE,
       })
       const kept = yield* roster.api.spawn({
         kind: CREEPER_KIND,
         // Exactly at the boundary. The comparison is STRICTLY GREATER, which the
         // reference's oracle pins and `domain/mob/hostile-despawn.ts` ports.
-        feetPosition: { x: DESPAWN_DISTANCE_BLOCKS, y: 64, z: 0 },
-        healthPoints: CREEPER_MAX_HEALTH,
+        feetPosition: fixturePosition(DESPAWN_DISTANCE_BLOCKS, 64, 0 ),
+        healthPoints: EntityHealthPoints(CREEPER_MAX_HEALTH),
         behaviour: DORMANT_FUSE,
       })
 
-      yield* player.api.moveTo({ x: 0, y: 64, z: 0 })
+      yield* player.api.moveTo(fixturePosition(0, 64, 0 ))
       yield* runFrame(stages, STRIDE)
 
       expect((yield* roster.api.entities).map((entity) => entity.id)).toStrictEqual([kept.id])
@@ -1101,7 +1113,7 @@ describe('the mob slice, through the stage registration', () => {
       const offered = MAX_HOSTILE_COUNT + 4
       yield* offerSpawns(
         state,
-        Array.from({ length: offered }, (_, index) => attemptAt({ x: index, y: 64, z: 5 })),
+        Array.from({ length: offered }, (_, index) => attemptAt(fixturePosition(index, 64, 5))),
       )
       yield* runFrame(stages, STRIDE)
 
@@ -1130,11 +1142,11 @@ describe('the mob slice, through the stage registration', () => {
       yield* player.api.moveTo(playerFar)
 
       yield* offerSpawns(state, [
-        { candidate: { ...legalCandidate, timeOfDay: 0.5 }, kind: CREEPER_KIND, feetPosition: creeperAt },
-        { candidate: { ...legalCandidate, blockLight: 8 }, kind: CREEPER_KIND, feetPosition: creeperAt },
-        { candidate: { ...legalCandidate, distanceToPlayerBlocksXZ: 4 }, kind: CREEPER_KIND, feetPosition: creeperAt },
-        { candidate: { ...legalCandidate, groundBlock: AIR_BLOCK_ID }, kind: CREEPER_KIND, feetPosition: creeperAt },
-        { candidate: { ...legalCandidate, blockLight: Number.NaN }, kind: CREEPER_KIND, feetPosition: creeperAt },
+        { candidate: { ...legalCandidate, timeOfDay: 0.5 }, kind: CREEPER_KIND, feetPosition: positionOfBlock(creeperAt) },
+        { candidate: { ...legalCandidate, blockLight: 8 }, kind: CREEPER_KIND, feetPosition: positionOfBlock(creeperAt) },
+        { candidate: { ...legalCandidate, distanceToPlayerBlocksXZ: 4 }, kind: CREEPER_KIND, feetPosition: positionOfBlock(creeperAt) },
+        { candidate: { ...legalCandidate, groundBlock: AIR_BLOCK_ID }, kind: CREEPER_KIND, feetPosition: positionOfBlock(creeperAt) },
+        { candidate: { ...legalCandidate, blockLight: Number.NaN }, kind: CREEPER_KIND, feetPosition: positionOfBlock(creeperAt) },
       ])
       yield* runFrame(stages, STRIDE)
 
@@ -1158,14 +1170,14 @@ describe('the mob slice, through the stage registration', () => {
         const { roster, state, player, stages } = yield* slice(world([]))
         yield* roster.api.spawn({
           kind: CREEPER_KIND,
-          feetPosition: creeperAt,
-          healthPoints: CREEPER_MAX_HEALTH,
+          feetPosition: positionOfBlock(creeperAt),
+          healthPoints: EntityHealthPoints(CREEPER_MAX_HEALTH),
           behaviour: DORMANT_FUSE,
         })
         yield* roster.api.spawn({
           kind: CREEPER_KIND,
           feetPosition: bystanderAt,
-          healthPoints: CREEPER_MAX_HEALTH,
+          healthPoints: EntityHealthPoints(CREEPER_MAX_HEALTH),
           behaviour: DORMANT_FUSE,
         })
         yield* player.api.moveTo(playerNear)
@@ -1186,7 +1198,7 @@ describe('the mob slice, through the stage registration', () => {
           count: 1,
           source: 'e:1',
           kind: CREEPER_KIND,
-          at: { x: 6, y: 64, z: 5 },
+          at: fixturePosition(6, 64, 5 ),
         },
       ])
       expect(second).toStrictEqual(first)
@@ -1212,7 +1224,7 @@ describe('the mob slice, through the stage registration', () => {
 // ---------------------------------------------------------------------------
 
 /** Four blocks from the creeper: inside the blast, and a long way from killed. */
-const endermanAt: Position = { x: 9, y: 64, z: 5 }
+const endermanAt: Position = fixturePosition(9, 64, 5)
 
 /**
  * An enderman's health at spawn.
@@ -1263,11 +1275,11 @@ const teleportTerrain = (
   if (destination === undefined) throw new Error('scenario needs two teleport candidates')
   return {
     destination,
-    initial: world([[blockPosition(destination.x, destination.y - 1, destination.z), STONE]]),
+    initial: world([[fixtureBlockPosition(destination.x, destination.y - 1, destination.z), STONE]]),
     loaded: [...new Set(candidates.flatMap((candidate) => [
-      chunkKeyOf(blockPosition(candidate.x, candidate.y - 1, candidate.z)),
-      chunkKeyOf(blockPosition(candidate.x, candidate.y, candidate.z)),
-      chunkKeyOf(blockPosition(candidate.x, candidate.y + 1, candidate.z)),
+      chunkKeyOf(fixtureBlockPosition(candidate.x, candidate.y - 1, candidate.z)),
+      chunkKeyOf(fixtureBlockPosition(candidate.x, candidate.y, candidate.z)),
+      chunkKeyOf(fixtureBlockPosition(candidate.x, candidate.y + 1, candidate.z)),
     ]))],
   }
 }
@@ -1307,7 +1319,7 @@ describe('the enderman slice: a rule that returns a displacement, run over a ros
       yield* roster.api.spawn({
         kind: ENDERMAN_KIND,
         feetPosition: endermanAt,
-        healthPoints: ENDERMAN_HEALTH,
+        healthPoints: EntityHealthPoints(ENDERMAN_HEALTH),
         behaviour: STEADY_ENDERMAN,
       })
       yield* player.api.moveTo(playerNear)
@@ -1370,15 +1382,15 @@ describe('the enderman slice: a rule that returns a displacement, run over a ros
 
       yield* roster.api.spawn({
         kind: CREEPER_KIND,
-        feetPosition: creeperAt,
+        feetPosition: positionOfBlock(creeperAt),
         // One step from the end, so the very next frame detonates.
-        healthPoints: CREEPER_MAX_HEALTH,
+        healthPoints: EntityHealthPoints(CREEPER_MAX_HEALTH),
         behaviour: { _tag: 'Lit', burnedSecs: 1.4 },
       })
       yield* roster.api.spawn({
         kind: ENDERMAN_KIND,
         feetPosition: endermanAt,
-        healthPoints: ENDERMAN_HEALTH,
+        healthPoints: EntityHealthPoints(ENDERMAN_HEALTH),
         behaviour: STEADY_ENDERMAN,
       })
       yield* player.api.moveTo(playerNear)
@@ -1444,7 +1456,7 @@ describe('the enderman slice: a rule that returns a displacement, run over a ros
       const spawned = yield* roster.api.spawn({
         kind: ENDERMAN_KIND,
         feetPosition: endermanAt,
-        healthPoints: ENDERMAN_HEALTH,
+        healthPoints: EntityHealthPoints(ENDERMAN_HEALTH),
         behaviour: STRUCK_ENDERMAN,
       })
       // No target at all, so nothing but the flinch can make it act — the chase
@@ -1487,8 +1499,8 @@ describe('the enderman slice: a rule that returns a displacement, run over a ros
       yield* Effect.forEach([0, 1, 2], (index) =>
         roster.api.spawn({
           kind: ENDERMAN_KIND,
-          feetPosition: { x: index, y: 64, z: 0 },
-          healthPoints: ENDERMAN_HEALTH,
+          feetPosition: fixturePosition(index, 64, 0 ),
+          healthPoints: EntityHealthPoints(ENDERMAN_HEALTH),
           behaviour: STEADY_ENDERMAN,
         }),
       )
@@ -1534,7 +1546,7 @@ describe('the enderman slice: a rule that returns a displacement, run over a ros
       yield* roster.api.spawn({
         kind: ENDERMAN_KIND,
         feetPosition: endermanAt,
-        healthPoints: ENDERMAN_HEALTH,
+        healthPoints: EntityHealthPoints(ENDERMAN_HEALTH),
         behaviour: STEADY_ENDERMAN,
       })
       yield* player.api.moveTo(playerNear)
@@ -1573,7 +1585,7 @@ describe('the enderman slice: a rule that returns a displacement, run over a ros
         yield* roster.api.spawn({
           kind: ENDERMAN_KIND,
           feetPosition: endermanAt,
-          healthPoints: ENDERMAN_HEALTH,
+          healthPoints: EntityHealthPoints(ENDERMAN_HEALTH),
           behaviour: STEADY_ENDERMAN,
         })
         yield* player.api.moveTo(playerNear)
@@ -1610,19 +1622,19 @@ describe('the enderman slice: a rule that returns a displacement, run over a ros
       yield* roster.api.spawn({
         kind: pig,
         feetPosition: endermanAt,
-        healthPoints: 10,
+        healthPoints: EntityHealthPoints(10),
         behaviour: STRUCK_ENDERMAN,
       })
       yield* roster.api.spawn({
         kind: CREEPER_KIND,
-        feetPosition: creeperAt,
-        healthPoints: CREEPER_MAX_HEALTH,
+        feetPosition: positionOfBlock(creeperAt),
+        healthPoints: EntityHealthPoints(CREEPER_MAX_HEALTH),
         behaviour: STRUCK_ENDERMAN,
       })
       yield* roster.api.spawn({
         kind: ENDERMAN_KIND,
         feetPosition: bystanderAt,
-        healthPoints: ENDERMAN_HEALTH,
+        healthPoints: EntityHealthPoints(ENDERMAN_HEALTH),
         // Two blocks from the player, which is well inside ignition range.
         behaviour: DORMANT_FUSE,
       })
@@ -1715,8 +1727,8 @@ describe('the crater is the other radius, and it is the falling-block queue’s 
 
       yield* roster.api.spawn({
         kind: CREEPER_KIND,
-        feetPosition: creeperAt,
-        healthPoints: CREEPER_MAX_HEALTH,
+        feetPosition: positionOfBlock(creeperAt),
+        healthPoints: EntityHealthPoints(CREEPER_MAX_HEALTH),
         // Already one step from the end, so the very next frame detonates.
         behaviour: { _tag: 'Lit', burnedSecs: 1.4 },
       })
@@ -1799,8 +1811,8 @@ describe('the stage supplies its rolls from a seed', () => {
  * All three run here, through the shipped registrations, in one frame each.
  */
 describe('the mining site slice: dig, drop, place', () => {
-  const cell: BlockPosition = blockPosition(4, 64, 3)
-  const under: BlockPosition = blockPosition(4, 63, 3)
+  const cell: BlockPosition = fixtureBlockPosition(4, 64, 3)
+  const under: BlockPosition = fixtureBlockPosition(4, 63, 3)
 
   const requestPlace = (
     state: { readonly pendingPlacements: Ref.Ref<ReadonlyArray<PlacementRequest>> },
@@ -1809,7 +1821,7 @@ describe('the mining site slice: dig, drop, place', () => {
   ): Effect.Effect<void> =>
     Ref.update(state.pendingPlacements, (queue): ReadonlyArray<PlacementRequest> => [
       ...queue,
-      { positionKey: blockPositionKeyOf(blockPosition(position.x, position.y, position.z)), heldItem },
+      { positionKey: blockPositionKeyOf(fixtureBlockPosition(position.x, position.y, position.z)), heldItem },
     ])
 
   it.effect('a pickaxe turns a stone block into cobblestone in the outbox', () =>
@@ -1839,7 +1851,7 @@ describe('the mining site slice: dig, drop, place', () => {
 
   it.effect('places a block back, spends the item, and the cascade picks it up', () =>
     Effect.gen(function* () {
-      const floorLevel: BlockPosition = blockPosition(4, 60, 3)
+      const floorLevel: BlockPosition = fixtureBlockPosition(4, 60, 3)
       const { store, state, stages } = yield* slice(
         world([[floorLevel, STONE]]),
         ['0,0'],
@@ -1855,7 +1867,7 @@ describe('the mining site slice: dig, drop, place', () => {
       // runs `after` `gameplay:interactions` and the placement disturbed the
       // cell UNDER what it wrote.
       expect(yield* store.blockAt(cell)).toBe(AIR_BLOCK_ID)
-      expect(yield* store.blockAt(blockPosition(4, 63, 3))).toBe(SAND)
+      expect(yield* store.blockAt(fixtureBlockPosition(4, 63, 3))).toBe(SAND)
     }),
   )
 
@@ -2006,7 +2018,7 @@ describe('the mining site slice: dig, drop, place', () => {
     Effect.gen(function* () {
       const GLOWSTONE: BlockId = BlockId(15)
       const almostFull = brimming('glowstone_dust').map((slot, index) =>
-        index === 0 ? { item: 'glowstone_dust' as const, count: StackCount(63) } : slot,
+        index === 0 ? itemStack('glowstone_dust', StackCount(63)) : slot,
       )
       const { inventory, roster, state, stages } = yield* slice(
         world([[cell, GLOWSTONE]]),
@@ -2082,7 +2094,7 @@ describe('the mining site slice: dig, drop, place', () => {
 
       yield* holdWoodenPickaxe(state)
       yield* requestBreak(state, cell)
-      yield* player.api.moveTo({ x: cell.x + 0.5, y: cell.y, z: cell.z })
+      yield* player.api.moveTo(fixturePosition(cell.x + 0.5, cell.y, cell.z ))
       yield* runFrame(stages)
 
       expect(yield* roster.api.count).toBe(1)
@@ -2138,7 +2150,7 @@ describe('the furnace slice: host-owned state crosses the interaction stage', ()
         plan: {
           advancedSecs: MAX_FURNACE_ADVANCE_SECS,
           deferredSecs: 15,
-          smelted: 1,
+          smeltedCount: 1,
           after: { output: itemStack('iron_ingot', 1) },
         },
       })
@@ -2161,7 +2173,7 @@ describe('the furnace slice: host-owned state crosses the interaction stage', ()
 })
 
 describe('the bucket slice: item use atomically exchanges fluid and inventory', () => {
-  const source: BlockPosition = blockPosition(12, 64, 12)
+  const source: BlockPosition = fixtureBlockPosition(12, 64, 12)
 
   it.effect('collects water, updates the inventory, and reports the completed use', () =>
     Effect.gen(function* () {
@@ -2345,11 +2357,11 @@ describe('the fishing slice: gameplay holds casts while the host owns settlement
 })
 
 describe('the ignition slice: an item use reaches the world', () => {
-  const origin: BlockPosition = blockPosition(4, 64, 3)
+  const origin: BlockPosition = fixtureBlockPosition(4, 64, 3)
 
-  const NETHER_PORTAL = blockIdOf('nether_portal') ?? 118
-  const FIRE = blockIdOf('fire') ?? 119
-  const OBSIDIAN = blockIdOf('obsidian') ?? 40
+  const NETHER_PORTAL = Option.getOrUndefined(blockIdOf('nether_portal')) ?? BlockId(118)
+  const FIRE = Option.getOrUndefined(blockIdOf('fire')) ?? BlockId(119)
+  const OBSIDIAN = Option.getOrUndefined(blockIdOf('obsidian')) ?? BlockId(40)
 
   /** Every chunk the portal window peeks, so nothing is unreadable by accident. */
   const residentAround = (centre: BlockPosition): ReadonlyArray<string> =>
@@ -2364,12 +2376,12 @@ describe('the ignition slice: an item use reaches the world', () => {
   ): Effect.Effect<void> =>
     Ref.update(state.pendingPlacements, (queue): ReadonlyArray<PlacementRequest> => [
       ...queue,
-      { positionKey: blockPositionKeyOf(blockPosition(position.x, position.y, position.z)), heldItem },
+      { positionKey: blockPositionKeyOf(fixtureBlockPosition(position.x, position.y, position.z)), heldItem },
     ])
 
   it.effect('a flint and steel on a finished frame lights the portal and spends the item', () =>
     Effect.gen(function* () {
-      const ring = generatePortalLayout(origin, 'x', 2, 3).frame
+      const ring = generatePortalLayout(origin, 'x', PortalWidth(2), PortalHeight(3)).frame
       const { store, state, stages } = yield* slice(
         world(ring.map((cell) => [cell, OBSIDIAN] as const)),
         residentAround(origin),
@@ -2419,9 +2431,9 @@ describe('the ignition slice: an item use reaches the world', () => {
 
   it.effect('a lit fire advances through the stage into spread and contact damage', () =>
     Effect.gen(function* () {
-      const contactOrigin: BlockPosition = blockPosition(0, 64, 0)
-      const fuel: BlockPosition = blockPosition(1, 64, 0)
-      const oakPlanks = blockIdOf('oak_planks')
+      const contactOrigin: BlockPosition = fixtureBlockPosition(0, 64, 0)
+      const fuel: BlockPosition = fixtureBlockPosition(1, 64, 0)
+      const oakPlanks = Option.getOrUndefined(blockIdOf('oak_planks'))
       expect(oakPlanks).toBeDefined()
       const { store, state, stages } = yield* slice(
         world([[fuel, oakPlanks ?? STONE]]),
@@ -2517,7 +2529,7 @@ describe('the ignition slice: an item use reaches the world', () => {
 
   it.effect('correlates multiple requests in order and drains their results exactly once', () =>
     Effect.gen(function* () {
-      const second: BlockPosition = blockPosition(origin.x + 1, origin.y, origin.z)
+      const second: BlockPosition = fixtureBlockPosition(origin.x + 1, origin.y, origin.z)
       const { state, stages } = yield* slice(world([]), residentAround(origin))
 
       yield* requestItemUse(state, 'first', origin, 'flint_and_steel')
@@ -2552,8 +2564,8 @@ describe('the ignition slice: an item use reaches the world', () => {
       //
       // The middle of the bottom edge is the cell mc-worldgen's own preview
       // knocks out for the same reason.
-      const layout = generatePortalLayout(origin, 'x', 2, 3)
-      const lastCell: BlockPosition = blockPosition(origin.x, origin.y - 1, origin.z)
+      const layout = generatePortalLayout(origin, 'x', PortalWidth(2), PortalHeight(3))
+      const lastCell: BlockPosition = fixtureBlockPosition(origin.x, origin.y - 1, origin.z)
       const alreadyBuilt = layout.frame.filter((cell) => !samePosition(cell, lastCell))
       expect(alreadyBuilt).toHaveLength(layout.frame.length - 1)
 
@@ -2594,7 +2606,7 @@ describe('the ignition slice: an item use reaches the world', () => {
 
   it.effect('nothing enters the falling-block queue: filling a hole cannot start a fall', () =>
     Effect.gen(function* () {
-      const ring = generatePortalLayout(origin, 'x', 2, 3).frame
+      const ring = generatePortalLayout(origin, 'x', PortalWidth(2), PortalHeight(3)).frame
       const { state, stages } = yield* slice(
         world(ring.map((cell) => [cell, OBSIDIAN] as const)),
         residentAround(origin),
@@ -2612,15 +2624,15 @@ describe('the ignition slice: an item use reaches the world', () => {
 })
 
 describe('the potato farming slice: host input reaches farming rules', () => {
-  const DIRT = blockIdOf('dirt') ?? 3
-  const FARMLAND = blockIdOf('farmland') ?? 49
-  const POTATO_CROP = blockIdOf('potato_crop') ?? 72
-  const soil: BlockPosition = blockPosition(8, 64, 8)
+  const DIRT = Option.getOrUndefined(blockIdOf('dirt')) ?? BlockId(3)
+  const FARMLAND = Option.getOrUndefined(blockIdOf('farmland')) ?? BlockId(49)
+  const POTATO_CROP = Option.getOrUndefined(blockIdOf('potato_crop')) ?? BlockId(72)
+  const soil: BlockPosition = fixtureBlockPosition(8, 64, 8)
 
   it.effect('all published hoe tiers till soil and report one durability point', () =>
     Effect.gen(function* () {
       const hoes = ['wooden_hoe', 'stone_hoe', 'iron_hoe', 'diamond_hoe'] as const
-      const cells = hoes.map((_, index): BlockPosition => blockPosition(soil.x + index, soil.y, soil.z))
+      const cells = hoes.map((_, index): BlockPosition => fixtureBlockPosition(soil.x + index, soil.y, soil.z))
       const { store, state, stages } = yield* slice(
         world(cells.map((cell) => [cell, DIRT] as const)),
       )
@@ -2648,15 +2660,15 @@ describe('the potato farming slice: host input reaches farming rules', () => {
 
   it.effect('plants, exposes mature harvest drops, and exposes potato food use', () =>
     Effect.gen(function* () {
-      const crop: BlockPosition = blockPosition(soil.x, soil.y + 1, soil.z)
+      const crop: BlockPosition = fixtureBlockPosition(soil.x, soil.y + 1, soil.z)
       const { store, state, stages } = yield* slice(world([[soil, FARMLAND]]))
 
       yield* requestPotatoPlanting(state, 'plant', soil)
       yield* requestPotatoHarvest(state, 'harvest', crop, true, 0.5)
       yield* requestPotatoFoodUse(state, 'eat', {
-        healthPoints: 20,
-        hungerPoints: 10,
-        maxHungerPoints: 20,
+        healthPoints: EntityHealthPoints(20),
+        hungerPoints: HungerPoints(10),
+        maxHungerPoints: HungerPoints(20),
       })
       yield* runFrame(stages)
 
@@ -2673,7 +2685,7 @@ describe('the potato farming slice: host input reaches farming rules', () => {
         {
           action: 'HarvestPotato',
           requestId: 'harvest',
-          positionKey: blockPositionKeyOf(blockPosition(crop.x, crop.y, crop.z)),
+          positionKey: blockPositionKeyOf(fixtureBlockPosition(crop.x, crop.y, crop.z)),
           success: true,
           outcome: { _tag: 'drops', drops: [{ item: 'potato', count: 4 }] },
         },
@@ -2700,9 +2712,9 @@ describe('the potato farming slice: host input reaches farming rules', () => {
       const { state, stages } = yield* slice(world([]))
 
       yield* requestFoodUse(state, 'eat-pufferfish', 'pufferfish', {
-        healthPoints: 20,
-        hungerPoints: 10,
-        maxHungerPoints: 20,
+        healthPoints: EntityHealthPoints(20),
+        hungerPoints: HungerPoints(10),
+        maxHungerPoints: HungerPoints(20),
       })
       yield* runFrame(stages, STRIDE)
 
