@@ -116,10 +116,13 @@ const makeFixture = async () => {
 
 const seedCactusColumn = async (store: ChunkStoreApi, baseY: number, height: number) => {
   const positions = Array.from({ length: height + 1 }, (_, offset) => positionAt(baseY + offset))
-  const outcomes: Array<BlockWriteOutcome> = []
-  for (const [index, position] of positions.entries()) {
-    outcomes.push(await Effect.runPromise(store.setBlock(position, index === 0 ? sand : cactus)))
-  }
+  const outcomes: Array<BlockWriteOutcome> = await Effect.runPromise(
+    Effect.forEach(
+      positions,
+      (position, index) => store.setBlock(position, index === 0 ? sand : cactus),
+      { concurrency: 1 },
+    ),
+  )
   expect(outcomes.map(({ _tag }) => _tag)).toEqual(Array.from({ length: height + 1 }, () => "Written"))
   return positions
 }
@@ -180,7 +183,12 @@ describe("breakBlock support cascade transaction", () => {
         expect(firstStorage.state).toEqual(secondStorage.state)
         const beforeDurability = first.initialStorage.inventoryDurability[0]
         const afterDurability = firstStorage.state.inventoryDurability[0]
-        if (beforeDurability == null || afterDurability == null) throw new Error("the generated pickaxe has no durability")
+        if (
+          beforeDurability === undefined ||
+          beforeDurability === null ||
+          afterDurability === undefined ||
+          afterDurability === null
+        ) throw new Error("the generated pickaxe has no durability")
         expect(afterDurability.current).toBe(beforeDurability.current - 1)
         expect(first.readRestoredStorage()).toEqual(firstStorage.state)
       }),
