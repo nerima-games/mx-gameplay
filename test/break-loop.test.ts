@@ -24,7 +24,7 @@
  * test that only checks the rule.
  */
 import { describe, expect, it } from '@effect/vitest'
-import { Effect, Option, Ref } from 'effect'
+import { Effect, Option, Ref, Result } from 'effect'
 import {
   drainBlockUseResults,
   gameplayStages,
@@ -36,12 +36,14 @@ import {
 } from '../src/stages/registration'
 import { GAMEPLAY_STAGE_IDS } from '../src/stages/stage-ids'
 import { cellKey, chunkKey, chunkOf, makeInMemoryWorld } from '../src/domain/in-memory-world.js'
-import { DeltaTimeSecs } from '@nerima-games/mc-kernel'
+import { DeltaTimeSecs, StackCount, itemStack } from '@nerima-games/mc-kernel'
 import type { BlockPosition } from '@nerima-games/mc-kernel'
 import type { MobBehaviour } from '../src/domain/entities/mob-frame'
 import { BlockId, blockIdOf, blockPositionKeyOf } from '@nerima-games/mc-kernel'
 import { NO_TOOL } from '../src/domain/interactions/block-loot'
+import { PlayerStorageSnapshotSchema } from '@nerima-games/mc-sim'
 import { breakBlock } from '../src/domain/interactions/break-block.js'
+import { makeGameplayCommitServices } from './support/transactional-stage-doubles.js'
 import { blockPosition, position as fixturePosition } from './support/coordinate-fixtures.js'
 
 /**
@@ -257,6 +259,131 @@ describe('the break loop', () => {
 
       expect(Option.isNone(target)).toBe(true)
       expect(yield* Ref.get(state.pendingBreaks)).toStrictEqual([])
+    }),
+  )
+
+  it.effect('commits the captured tool wear and both door halves through one coordinator write', () =>
+    Effect.gen(function* () {
+      const ironPickaxe = Result.getOrThrow(itemStack('iron_pickaxe', StackCount(1)))
+      const diamondPickaxe = Result.getOrThrow(itemStack('diamond_pickaxe', StackCount(1)))
+      const world = yield* makeInMemoryWorld<MobBehaviour>({
+        inventory: [ironPickaxe, diamondPickaxe],
+        world: {
+          blocks: new Map([
+            [cellKey(AT), DOOR_ID],
+            [cellKey(ABOVE_AT), DOOR_ID],
+          ]),
+          loaded: [chunkKey(chunkOf(AT))],
+        },
+      })
+      let directWrites = 0
+      const store = {
+        ...world.chunkStore,
+        setBlock: (position: BlockPosition, block: BlockId) => {
+          directWrites += 1
+          return world.chunkStore.setBlock(position, block)
+        },
+      }
+      const commit = yield* makeGameplayCommitServices(store, world.inventory)
+      const state = yield* makeGameplayFrameState
+      const stages = gameplayStages(
+        state,
+        store,
+        world.entities,
+        world.inventory,
+        world.player,
+        world.time,
+        undefined,
+        undefined,
+        {},
+        commit,
+      )
+      const initial = yield* world.inventory.storageSnapshot
+      const initialIron = initial.inventoryDurability[0]
+      const initialDiamond = initial.inventoryDurability[1]
+      if (initialIron === undefined || initialIron === null) throw new Error('the iron pickaxe has no durability')
+      if (initialDiamond === undefined || initialDiamond === null) throw new Error('the diamond pickaxe has no durability')
+      const dimensionRevision = yield* commit.coordinator.dimensionRevision('overworld')
+
+      yield* requestBlockBreak(state, AT, NO_TOOL, {
+        dimension: 'overworld',
+        toolLocation: { _tag: 'Inventory', slotIndex: 1 },
+      })
+      yield* runInteractions(stages as never)
+
+      expect(yield* world.chunkStore.getBlock(AT)).toStrictEqual({ _tag: 'Block', block: 0 })
+      expect(yield* world.chunkStore.getBlock(ABOVE_AT)).toStrictEqual({ _tag: 'Block', block: 0 })
+      expect(yield* commit.coordinator.dimensionRevision('overworld')).toBe(dimensionRevision + 1)
+      expect(directWrites).toBe(0)
+
+      const local = yield* world.inventory.storageSnapshot
+      const owner = yield* commit.coordinator.snapshot(
+        commit.playerStorageOwnerId,
+        PlayerStorageSnapshotSchema,
+      )
+      const ironAfter = owner.state.inventoryDurability[0]
+      const diamondAfter = owner.state.inventoryDurability[1]
+      if (ironAfter === undefined || ironAfter === null) throw new Error('the iron pickaxe disappeared')
+      if (diamondAfter === undefined || diamondAfter === null) throw new Error('the diamond pickaxe disappeared')
+      expect(ironAfter).toEqual(initialIron)
+      expect(diamondAfter.current).toBe(initialDiamond.current - 1)
+      expect(local).toEqual(owner.state)
+    }),
+  )
+
+  it.effect('keeps loot in the coordinator owner across consecutive transactional breaks', () =>
+    Effect.gen(function* () {
+      const ironPickaxe = Result.getOrThrow(itemStack('iron_pickaxe', StackCount(1)))
+      const diamondPickaxe = Result.getOrThrow(itemStack('diamond_pickaxe', StackCount(1)))
+      const world = yield* makeInMemoryWorld<MobBehaviour>({
+        inventory: [ironPickaxe, diamondPickaxe],
+        world: {
+          blocks: new Map([
+            [cellKey(AT), DIRT_ID],
+            [cellKey(BESIDE_AT), DIRT_ID],
+          ]),
+          loaded: [chunkKey(chunkOf(AT))],
+        },
+      })
+      const commit = yield* makeGameplayCommitServices(world.chunkStore, world.inventory)
+      const state = yield* makeGameplayFrameState
+      const stages = gameplayStages(
+        state,
+        world.chunkStore,
+        world.entities,
+        world.inventory,
+        world.player,
+        world.time,
+        undefined,
+        undefined,
+        {},
+        commit,
+      )
+      const initial = yield* world.inventory.storageSnapshot
+      const initialDiamond = initial.inventoryDurability[1]
+      if (initialDiamond === undefined || initialDiamond === null) throw new Error('the diamond pickaxe has no durability')
+
+      yield* requestBlockBreak(state, AT, NO_TOOL, {
+        dimension: 'overworld',
+        toolLocation: { _tag: 'Inventory', slotIndex: 1 },
+      })
+      yield* requestBlockBreak(state, BESIDE_AT, NO_TOOL, {
+        dimension: 'overworld',
+        toolLocation: { _tag: 'Inventory', slotIndex: 1 },
+      })
+      yield* runInteractions(stages as never)
+
+      expect(yield* world.inventory.countOf('dirt')).toBe(2)
+      expect(yield* commit.coordinator.dimensionRevision('overworld')).toBe(2)
+      const local = yield* world.inventory.storageSnapshot
+      const owner = yield* commit.coordinator.snapshot(
+        commit.playerStorageOwnerId,
+        PlayerStorageSnapshotSchema,
+      )
+      const diamondAfter = owner.state.inventoryDurability[1]
+      if (diamondAfter === undefined || diamondAfter === null) throw new Error('the diamond pickaxe disappeared')
+      expect(diamondAfter.current).toBe(initialDiamond.current - 2)
+      expect(local).toEqual(owner.state)
     }),
   )
 

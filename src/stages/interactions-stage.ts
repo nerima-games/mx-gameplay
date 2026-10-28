@@ -74,11 +74,14 @@ import {
   useVillagerOffer,
 } from './registration-core.js'
 import { BlockAxis, EntityHealthPoints, PositionAxis } from '@nerima-games/mc-kernel'
-import { Result } from 'effect'
+import type { BlockId } from '@nerima-games/mc-kernel'
+import { Equal, Result } from 'effect'
+import { PlayerStorageSnapshotSchema, withInventory, type PlayerStorage } from '@nerima-games/mc-sim'
 import type { BlockPosition } from '@nerima-games/mc-kernel'
 import type {
   BlockPositionKey,
   BlockUseRequest,
+  BlockLootContext,
   BlockUseResult,
   BowHit,
   BowKnockback,
@@ -191,6 +194,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
         }
 
         const gained: Array<DroppedItemSpawn> = []
+        const spilled: Array<DroppedItemSpawn> = []
         const spent: Array<PlaceableItemType> = []
         const used: Array<IgnitionItemType> = []
         const blockUseResults: Array<BlockUseResult> = []
@@ -280,10 +284,114 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
         const fallbackTool = yield* Ref.get(state.heldTool)
         const playerFeet = (yield* player.pose).feetPosition
 
+        const dropsForBrokenBlock = (
+          yielded: BlockId,
+          tool: BlockLootContext,
+          breakPosition: BlockPosition,
+        ): Effect.Effect<ReadonlyArray<DroppedItemSpawn>> =>
+          Effect.gen(function* () {
+            // THE LOOT TABLE, and this is the line the mining path was missing.
+            // `outcome.yielded` is a chunk buffer BYTE and used to be pushed into
+            // the outbox as-is, so breaking stone gave you stone and bare hands
+            // harvested it; `domain/interactions/block-loot.ts` is what turns it
+            // into kernel's items, and it is asked even when it will answer with
+            // nothing.
+            //
+            // The seed is read, advanced and written in ONE step. A split
+            // read/write here would let two frames draw the same rolls, which is
+            // worse than a non-deterministic generator: it is a deterministic
+            // wrong one. `BLOCK_LOOT_ROLLS` is drawn per broken block whether or
+            // not the block has anything to roll for — see that file's header on
+            // why the budget is fixed.
+            const loot = yield* Ref.modify(state.rollSeed, (seed) => {
+              const batch = drawRolls(seed, BLOCK_LOOT_ROLLS)
+              return [blockLoot(yielded, tool, batch.rolls), batch.seed] as const
+            })
+            return loot.map((item) => ({
+              ...item,
+              at: {
+                x: PositionAxis(breakPosition.x),
+                y: PositionAxis(breakPosition.y),
+                z: PositionAxis(breakPosition.z),
+              },
+            }))
+          })
+
+        const depositMinedItems = (items: ReadonlyArray<DroppedItemSpawn>) =>
+          Effect.gen(function* () {
+            if (items.length === 0) return []
+            if (commit === undefined) {
+              const leftovers: Array<DroppedItemSpawn> = []
+              for (const item of items) {
+                const leftover = yield* inventory.add(item.item, item.count)
+                if (leftover > 0) leftovers.push({ ...item, count: leftover })
+              }
+              return leftovers
+            }
+
+            const local = yield* inventory.storageSnapshot
+            let candidate: PlayerStorage = local
+            const leftovers: Array<DroppedItemSpawn> = []
+            for (const item of items) {
+              const added = addInventoryItem(candidate.inventory, item.item, item.count)
+              if (Result.isFailure(added)) {
+                leftovers.push(item)
+                continue
+              }
+              const updated = withInventory(candidate, added.success.inventory)
+              if (Result.isFailure(updated)) {
+                leftovers.push(item)
+                continue
+              }
+              candidate = updated.success
+              if (added.success.leftover > 0) {
+                leftovers.push({ ...item, count: added.success.leftover })
+              }
+            }
+            if (Equal.equals(candidate, local)) return leftovers
+
+            // Loot follows the mining block commit. Keep the replicated owner
+            // and its local mirror aligned before the next queued break observes
+            // that owner; a conflict leaves the loot as a world drop.
+            const committed = yield* Effect.result(
+              commit.coordinator.commitFromSnapshot(
+                commit.playerStorageOwnerId,
+                PlayerStorageSnapshotSchema,
+                (snapshot) =>
+                  Equal.equals(snapshot.state, local)
+                    ? Effect.succeed({
+                        expectedRevision: snapshot.revision,
+                        expectedDimensions: [],
+                        changes: [{ ownerId: commit.playerStorageOwnerId, state: candidate }],
+                      })
+                    : Effect.fail({ _tag: 'MiningInventoryChanged' as const }),
+              ),
+            )
+            if (Result.isFailure(committed)) return items
+            yield* Effect.orDie(inventory.restoreStorage(candidate))
+            return leftovers
+          })
+
         for (const [index, positionKey] of breaks.entries()) {
           if (playerDead) continue
-          const tool = snapshots.get(index)?.lootContext ?? fallbackTool
+          const request = snapshots.get(index)
+          const tool = request?.lootContext ?? fallbackTool
           const breakPosition = yield* blockPositionForKey(positionKey)
+          if (request !== undefined && commit !== undefined) {
+            const result = yield* breakBlock(store, breakPosition, {
+              coordinator: commit.coordinator,
+              dimension: request.dimension ?? (yield* player.dimension),
+              ownerId: commit.playerStorageOwnerId,
+              inventory,
+              toolLocation: request.toolLocation,
+            })
+            if (result._tag === 'CommittedCascade') {
+              const drops = yield* dropsForBrokenBlock(result.yielded, tool, breakPosition)
+              spilled.push(...(yield* depositMinedItems(drops)))
+              disturbed.push(positionKey)
+            }
+            continue
+          }
           const outcome = yield* breakBlock(store, breakPosition)
           switch (outcome._tag) {
             case 'Broken': {
@@ -295,33 +403,9 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                 }
               }
 
-              // THE LOOT TABLE, and this is the line the mining path was
-              // missing. `outcome.yielded` is a chunk buffer BYTE and used to be
-              // pushed into the outbox as-is, so breaking stone gave you stone
-              // and bare hands harvested it; `domain/interactions/block-loot.ts`
-              // is what turns it into kernel's items, and it is asked even when
-              // it will answer with nothing.
-              //
-              // The seed is read, advanced and written in ONE step. A split
-              // read/write here would let two frames draw the same rolls, which
-              // is worse than a non-deterministic generator: it is a
-              // deterministic wrong one. `BLOCK_LOOT_ROLLS` is drawn per broken
-              // block whether or not the block has anything to roll for — see
-              // that file's header on why the budget is fixed.
-              const loot = yield* Ref.modify(state.rollSeed, (seed) => {
-                const batch = drawRolls(seed, BLOCK_LOOT_ROLLS)
-                return [blockLoot(outcome.yielded, tool, batch.rolls), batch.seed] as const
-              })
-              gained.push(
-                ...loot.map((item) => ({
-                  ...item,
-                  at: {
-                    x: PositionAxis(breakPosition.x),
-                    y: PositionAxis(breakPosition.y),
-                    z: PositionAxis(breakPosition.z),
-                  },
-                })),
-              )
+              const drops = yield* dropsForBrokenBlock(outcome.yielded, tool, breakPosition)
+              gained.push(...drops)
+
 
               // The ONLY entry point for falling-block work. Whatever rested on
               // the block just removed may now be unsupported. It is enqueued
@@ -1159,13 +1243,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
         // and `0` is the ordinary answer. Ignoring it would be an item the
         // player watched disappear, which is the failure mc-sim's own comment
         // on `add` names this repository as responsible for avoiding.
-        const spilled: Array<DroppedItemSpawn> = []
-        for (const item of gained) {
-          const leftover = yield* inventory.add(item.item, item.count)
-          if (leftover > 0) {
-            spilled.push({ item: item.item, count: leftover, at: item.at })
-          }
-        }
+        spilled.push(...(yield* depositMinedItems(gained)))
 
         if (spilled.length > 0) {
           const eligibleFromFrame = (yield* Ref.get(state.tickCount)) + 1

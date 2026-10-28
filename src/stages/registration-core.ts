@@ -136,6 +136,7 @@ import {
   type ReplicatedOwnerId,
   type ReplicatedWorldDelta,
   type ReplicatedOwnerChange,
+  type StorageLocation,
   type WorldCommitCoordinatorApi,
   type WorldCommitCoordinatorError,
 } from '@nerima-games/mc-sim'
@@ -643,11 +644,20 @@ const NO_ATTEMPTS: ReadonlyArray<never> = []
  * asserts that there is no key called `inventory`. The stage ASKS; mc-sim
  * answers and remembers.
  */
+export type BlockBreakRequestContext = Readonly<{
+  /** Dimension captured when the mining action is requested. */
+  readonly dimension: Dimension
+  /** Exact storage slot captured when the mining action is requested. */
+  readonly toolLocation: StorageLocation | undefined
+}>
+
 type PendingBlockBreakRequest = {
   readonly requestId: number
   readonly publicQueueIndex: number
   readonly positionKey: BlockPositionKey
   readonly lootContext: BlockLootContext | undefined
+  readonly dimension: Dimension | undefined
+  readonly toolLocation: StorageLocation | undefined
 }
 
 type PendingBlockBreakRequestState = {
@@ -1881,6 +1891,7 @@ export const requestBlockBreak = (
   state: GameplayFrameState,
   position: BlockPosition,
   lootContext?: BlockLootContext,
+  context?: BlockBreakRequestContext,
 ): Effect.Effect<void> =>
   Effect.suspend(() => {
     const queue = breakRequestQueueFor(state)
@@ -1901,6 +1912,8 @@ export const requestBlockBreak = (
                 publicQueueIndex,
                 positionKey,
                 lootContext: lootContext === undefined ? undefined : { ...lootContext },
+                dimension: context?.dimension,
+                toolLocation: context?.toolLocation === undefined ? undefined : { ...context.toolLocation },
               },
             ],
           }))
@@ -1918,6 +1931,7 @@ export const requestTargetedBlockBreak = (
   store: ChunkStoreApi,
   player: PlayerServiceApi,
   maxDistance: number = DEFAULT_BLOCK_REACH,
+  toolLocation?: StorageLocation,
 ): Effect.Effect<Option.Option<BlockTarget>> =>
   Effect.gen(function* () {
     const pose = yield* player.pose
@@ -1925,7 +1939,14 @@ export const requestTargetedBlockBreak = (
       targetBlockFromPlayerPose(pose, maxDistance, targetabilityFromStore(store)),
     )
     if (Option.isSome(target)) {
-      yield* requestBlockBreak(state, blockPosition(target.value.position.x, target.value.position.y, target.value.position.z))
+      const dimension = yield* player.dimension
+      const lootContext = yield* Ref.get(state.heldTool)
+      yield* requestBlockBreak(
+        state,
+        blockPosition(target.value.position.x, target.value.position.y, target.value.position.z),
+        lootContext,
+        { dimension, toolLocation },
+      )
     }
     return target
   })
@@ -2280,6 +2301,7 @@ export type TargetedPrimaryAttackOptions = {
   readonly meleeReach?: number
   readonly meleeDamage?: number
   readonly blockReach?: number
+  readonly toolLocation?: StorageLocation
 }
 
 /** Resolve one primary click without mutating either gameplay inbox. */
@@ -2346,9 +2368,17 @@ export const requestTargetedPrimaryAttack = (
       case 'Melee':
         yield* requestMeleeAttack(state, resolution.request)
         return { _tag: 'Melee' as const, target: resolution.target }
-      case 'Block':
-        yield* requestBlockBreak(state, blockPosition(resolution.target.position.x, resolution.target.position.y, resolution.target.position.z))
+      case 'Block': {
+        const dimension = yield* player.dimension
+        const lootContext = yield* Ref.get(state.heldTool)
+        yield* requestBlockBreak(
+          state,
+          blockPosition(resolution.target.position.x, resolution.target.position.y, resolution.target.position.z),
+          lootContext,
+          { dimension, toolLocation: options.toolLocation },
+        )
         return resolution
+      }
       case 'None':
         return resolution
       // exhaustiveness arm over TargetedPrimaryAttackResult's `_tag`, a closed
@@ -3453,6 +3483,7 @@ export {
   useVillagerOffer,
   weatherExpires,
   type BlockPositionKey,
+  type BlockLootContext,
   type BowHit,
   type ChunkStoreApi,
   type DroppedItemSpawn,

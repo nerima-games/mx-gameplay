@@ -8,6 +8,7 @@ export {
   type VillagerTradeRequest,
   type VillagerTradeResult,
   type PlacementRequest,
+  type BlockBreakRequestContext,
   type BlockPlacementRequestId,
   type BlockPlacementMode,
   type BlockPlacementCommand,

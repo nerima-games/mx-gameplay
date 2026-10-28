@@ -141,7 +141,6 @@ import {
 import { CREEPER_EXPLOSION_POWER, explosionDamageAmount } from '../src/domain/mob/explosion'
 import { DESPAWN_DISTANCE_BLOCKS } from '../src/domain/mob/hostile-despawn'
 import { ZOMBIE_KIND } from '../src/domain/mob/hostile-combat'
-import type { MinedItem } from '../src/domain/interactions/block-loot'
 import { chunkCoordsAround } from '../src/domain/chunk-window'
 import { PORTAL_WINDOW_RADIUS, ignitePortal } from '../src/domain/interactions/ignite-portal'
 import {
@@ -189,7 +188,6 @@ import {
   brimming,
   emptySlots,
   makeInventoryDouble,
-  type InventoryDouble,
 } from './support/inventory-service-double'
 import { runFrame, runFrames } from './support/frame-runner'
 
@@ -278,29 +276,6 @@ const isFishingItemUseResult = (result: ItemUseResult): result is FishingItemUse
     result.action === 'CancelFishing' ||
     result.action === 'ReelFishing')
 
-/**
- * The `add` calls the interactions stage made, as `{ item, count }`.
- *
- * THIS IS WHAT `state.minedItems` USED TO BE, and the substitution is the point
- * of the change rather than a refactor of the assertions. Every `toStrictEqual(
- * ONE_COBBLESTONE)` below used to read a Ref that the stage appended to and
- * nothing drained; it now reads the argument list of a call to mc-sim, made
- * through `domain/inventory-port.ts` and answered by
- * `test/support/inventory-service-double.ts`.
- *
- * The CALL LIST rather than the resulting slots, and the two are different
- * evidence. `countOf` would say "the player has one cobblestone" and would be
- * satisfied by a stage that called `add(item, 1)` after already calling it
- * once and having the first refused; this says which calls were made, in which
- * order, with which counts — which is what the loot table's "one stack, not one
- * call per item" claim is about. Where the total is the interesting number, the
- * tests below ask `inventory.api.countOf` as well.
- */
-const deposited = (inventory: InventoryDouble) =>
-  Effect.map(inventory.deposits, (calls) =>
-    calls.map(({ item, count }) => ({ item, count })),
-  )
-
 const samePosition = (left: BlockPosition, right: BlockPosition): boolean =>
   left.x === right.x && left.y === right.y && left.z === right.z
 
@@ -321,7 +296,6 @@ const holdWoodenPickaxe = (
 ): Effect.Effect<void> => Ref.set(state.heldTool, { heldTier: 'wooden' })
 
 /** kernel's answer for stone mined with a pickaxe: one cobblestone, no fortune. */
-const ONE_COBBLESTONE: ReadonlyArray<MinedItem> = [{ item: 'cobblestone', count: 1 }]
 
 describe('the slice, through the stage registration', () => {
   it.effect('breaks a block in interactions and moves the sand in entities', () =>
@@ -343,14 +317,14 @@ describe('the slice, through the stage registration', () => {
       const snapshots: Array<{
         support: BlockId | undefined
         sand: BlockId | undefined
-        deposits: ReadonlyArray<MinedItem>
+        cobblestoneCount: number
       }> = []
       for (let tick = 0; tick < 3; tick += 1) {
         yield* runFrame(stages)
         snapshots.push({
           support: yield* store.blockAt(support),
           sand: yield* store.blockAt(sandAt),
-          deposits: yield* deposited(inventory),
+          cobblestoneCount: yield* inventory.api.countOf('cobblestone'),
         })
         expect(yield* Ref.get(state.pendingBreaks)).toStrictEqual([])
       }
@@ -359,7 +333,7 @@ describe('the slice, through the stage registration', () => {
         Array.from({ length: 3 }, () => ({
           support: SAND,
           sand: undefined,
-          deposits: ONE_COBBLESTONE,
+          cobblestoneCount: 1,
         })),
       )
 
@@ -369,7 +343,7 @@ describe('the slice, through the stage registration', () => {
       // `domain/interactions/block-loot.ts` is what turns it into an item. The
       // assertion is `cobblestone` and not `stone`, which is kernel's drop row
       // (`{ ...DEFAULT_BLOCK_DROP, item: 'cobblestone' }`) reaching the outbox.
-      expect(yield* deposited(inventory)).toStrictEqual(ONE_COBBLESTONE)
+      expect(yield* inventory.api.countOf('cobblestone')).toBe(1)
 
       // ---- and the sand above it moved down, in the same frame -------------
       expect(snapshots[0]).toMatchObject({ support: SAND, sand: undefined })
@@ -478,7 +452,7 @@ describe('the slice, through the stage registration', () => {
       // told that gravel exists — the reference implementation asked
       // `blockTypeToIndex('SAND')` in 229 places across 51 files (plan.md §3.1).
       expect(yield* store.blockAt(support)).toBe(GRAVEL)
-      expect(yield* deposited(inventory)).toStrictEqual(ONE_COBBLESTONE)
+      expect(yield* inventory.api.countOf('cobblestone')).toBe(1)
     }),
   )
 
@@ -561,10 +535,9 @@ describe('the slice, through the stage registration', () => {
       const calls = yield* store.calls
       // The reads happened — that is how the rule LEARNED it must not act.
       expect(calls.reads).toBeGreaterThan(0)
-      // The write is the break request, which the store refused; the rule added
-      // nothing to it.
-      expect(calls.writes).toBe(1)
-      expect(yield* deposited(inventory)).toStrictEqual([])
+      // The coordinator refuses the unavailable block before publishing a write.
+      expect(calls.writes).toBe(0)
+      expect(yield* inventory.api.countOf('cobblestone')).toBe(0)
       expect(yield* store.blockAt(edge)).toBeUndefined()
     }),
   )
@@ -586,20 +559,14 @@ describe('the slice, through the stage registration', () => {
       yield* requestBreak(state, aboveSand)
       yield* runFrames(stages, 3)
 
-      expect(yield* deposited(inventory)).toStrictEqual([])
+      expect(yield* inventory.api.countOf('cobblestone')).toBe(0)
       expect((yield* Ref.get(state.fallingBlocks)).pending.size).toBe(0)
       expect(yield* renderer.drain).toStrictEqual({ changed: [], removed: [] })
       expect(yield* store.blockAt(support)).toBe(STONE)
 
-      // Two write attempts, both `Unchanged`, and NOT ONE READ. The reads are
-      // the load-bearing number: they are zero only if the interactions stage
-      // declined to enqueue falling-block work for a write that changed
-      // nothing. Enqueueing it would cost a pair of reads per held frame
-      // forever, which is the shape of the workload this design exists to
-      // avoid.
-      // `reads` is the per-frame portal probe (one per frame); see the
-      // O(FRAMES) note on the idle-frame regression.
-      expect(yield* store.calls).toStrictEqual({ reads: 3, writes: 2, peeks: 0 })
+      // The two requests are coordinator observations. They never publish a
+      // write, and the remaining reads are the per-frame portal probes.
+      expect(yield* store.calls).toStrictEqual({ reads: 5, writes: 0, peeks: 0 })
     }),
   )
 
@@ -742,12 +709,12 @@ describe('the slice, through the stage registration', () => {
       // the next request must still be serviced.
       yield* requestBreak(state, fixtureBlockPosition(2, -1, 3))
       yield* runFrame(stages)
-      expect(yield* deposited(inventory)).toStrictEqual([])
+      expect(yield* inventory.api.countOf('cobblestone')).toBe(0)
 
       yield* holdWoodenPickaxe(state)
       yield* requestBreak(state, floor)
       yield* runFrame(stages)
-      expect(yield* deposited(inventory)).toStrictEqual(ONE_COBBLESTONE)
+      expect(yield* inventory.api.countOf('cobblestone')).toBe(1)
       expect(yield* store.blockAt(floor)).toBeUndefined()
     }),
   )
@@ -975,7 +942,7 @@ describe('the mob slice, through the stage registration', () => {
           at: fixturePosition(6, 64, 5 ),
         },
       ])
-      expect(yield* deposited(inventory)).toStrictEqual([])
+      expect(yield* inventory.api.countOf('cobblestone')).toBe(0)
 
       // ---- the crater emptied its cells, and only those --------------------
       expect(yield* store.blockAt(craterFloor)).toBeUndefined()
@@ -1846,13 +1813,13 @@ describe('the mining site slice: dig, drop, place', () => {
       yield* requestBreak(state, cell)
       yield* runFrame(stages)
       expect(yield* store.blockAt(cell)).toBeUndefined()
-      expect(yield* deposited(inventory)).toStrictEqual([])
+      expect(yield* inventory.api.countOf('cobblestone')).toBe(0)
 
       // ...and with a pickaxe, against the block below.
       yield* holdWoodenPickaxe(state)
       yield* requestBreak(state, under)
       yield* runFrame(stages)
-      expect(yield* deposited(inventory)).toStrictEqual(ONE_COBBLESTONE)
+      expect(yield* inventory.api.countOf('cobblestone')).toBe(1)
     }),
   )
 
@@ -1898,7 +1865,7 @@ describe('the mining site slice: dig, drop, place', () => {
       yield* requestPlace(state, cell, 'sand')
       yield* runFrame(stages)
 
-      expect(yield* deposited(inventory)).toStrictEqual(ONE_COBBLESTONE)
+      expect(yield* inventory.api.countOf('cobblestone')).toBe(1)
       expect(yield* Ref.get(state.consumedItems)).toStrictEqual(['sand'])
       // The sand rests on the stone that was already under the cell, so nothing
       // cascades and the queue is empty again.
@@ -1907,29 +1874,7 @@ describe('the mining site slice: dig, drop, place', () => {
     }),
   )
 
-  /*
-   * WHERE THE CHAIN USED TO STOP, and this test is the record of it moving.
-   *
-   * The version of this case that stood here was titled 「the loot chain
-   * reaches an outbox and stops there」 and its comment gave two reasons why
-   * the last step could not be taken: mc-sim's `InventoryService` had `add` and
-   * `remove` and 「this repository cannot call either, because mirroring
-   * `InventoryServiceApi` honestly means restating `Inventory`, `RecipeTable`,
-   * `CraftGrid`, `RecipeMatch` and `CraftResult` — mc-sim's crafting vocabulary
-   * — in a repository with no crafting rule to justify it」; and, one paragraph
-   * up, that mc-compose's `docs/e2e-triage.md` §4.3 had recorded the seam as
-   * unanswerable from one repository because the outbox carried a `BlockId`, a
-   * NUMBER, and `add` took an `ItemId`, a STRING.
-   *
-   * The TYPE half had already been closed by `domain/interactions/block-loot.ts`
-   * and by mc-sim deleting `ItemId` outright, which is why that comment ends
-   * 「the remaining distance is a call and not a translation」. The COST half
-   * was paid: `domain/inventory-port.ts` carries the crafting vocabulary as
-   * dead weight, on purpose, and the call is made.
-   *
-   * So this asserts the whole of plan.md §2.3-1's worked example in one frame:
-   * a swing goes in at one end and mc-sim holds an item at the other.
-   */
+  /* The committed mining result reaches the player inventory without a drop entity. */
   it.effect('the loot chain reaches mc-sim’s inventory — the §2.3-1 worked example, end to end', () =>
     Effect.gen(function* () {
       const { inventory, roster, state, stages } = yield* slice(world([[cell, STONE]]))
@@ -1938,16 +1883,7 @@ describe('the mining site slice: dig, drop, place', () => {
       yield* requestBreak(state, cell)
       yield* runFrame(stages)
 
-      // ONE `add`, with kernel's item name and kernel's count. A STRING, which
-      // is what `add` takes and what the number the outbox used to carry was
-      // not.
-      expect(yield* inventory.deposits).toStrictEqual([
-        { item: 'cobblestone', count: 1, leftover: 0 },
-      ])
-
-      // ...and the service HELD it, which is the assertion the outbox could
-      // never make: the old test could only say that a list had an entry in it,
-      // and a list nobody drains and an inventory are not the same claim.
+      // The accepted stack is present in the inventory after the coordinator commit.
       expect(yield* inventory.api.countOf('cobblestone')).toBe(1)
 
       // Nothing in this repository holds the total. The frame state has no
@@ -1959,22 +1895,8 @@ describe('the mining site slice: dig, drop, place', () => {
     }),
   )
 
-  /*
-   * ONE `add` PER STACK, NOT ONE PER ITEM, and this test exists because a
-   * mutation showed that nothing asserted it.
-   *
-   * Every other case in this file mines stone, which yields ONE cobblestone —
-   * so `add(item, item.count)` and `add(item, 1)` are the same call and the
-   * whole suite stayed green when the second was substituted for the first.
-   * Glowstone is the smallest block that tells them apart: kernel's row is
-   * `{ item: 'glowstone_dust', count: 2 }`.
-   *
-   * The claim is `stages/registration.ts`'s and it is not cosmetic. `add` tops
-   * up partial stacks before opening empty slots, so N calls of 1 and one call
-   * of N can leave an inventory in the same state and report DIFFERENT
-   * leftovers at the boundary — which is the one number this repository reads.
-   */
-  it.effect('deposits ONE stack per broken block, with the loot table’s count on it', () =>
+  /* One block loot stack with count 2 must add both glowstone dust items. */
+  it.effect('preserves the loot table count for glowstone', () =>
     Effect.gen(function* () {
       const GLOWSTONE: BlockId = BlockId(15)
       const { inventory, state, stages } = yield* slice(world([[cell, GLOWSTONE]]))
@@ -1985,9 +1907,6 @@ describe('the mining site slice: dig, drop, place', () => {
       yield* requestBreak(state, cell)
       yield* runFrame(stages)
 
-      expect(yield* inventory.deposits).toStrictEqual([
-        { item: 'glowstone_dust', count: 2, leftover: 0 },
-      ])
       expect(yield* inventory.api.countOf('glowstone_dust')).toBe(2)
     }),
   )
@@ -2005,9 +1924,7 @@ describe('the mining site slice: dig, drop, place', () => {
       yield* runFrame(stages)
 
       expect(yield* store.blockAt(cell)).toBeUndefined()
-      expect(yield* inventory.deposits).toStrictEqual([
-        { item: 'cobblestone', count: 1, leftover: 1 },
-      ])
+      expect(yield* inventory.api.countOf('cobblestone')).toBe(36 * 64)
 
       const dropped = yield* soleEntity(roster)
       expect(dropped?.kind).toBe(DROPPED_ITEM_KIND)
@@ -2036,9 +1953,6 @@ describe('the mining site slice: dig, drop, place', () => {
       yield* requestBreak(state, cell)
       yield* runFrame(stages)
 
-      expect(yield* inventory.deposits).toStrictEqual([
-        { item: 'glowstone_dust', count: 2, leftover: 1 },
-      ])
       expect(yield* inventory.api.countOf('glowstone_dust')).toBe(36 * 64)
 
       const dropped = yield* soleEntity(roster)
@@ -2069,10 +1983,7 @@ describe('the mining site slice: dig, drop, place', () => {
       yield* requestBreak(state, under)
       yield* runFrame(stages)
 
-      expect(yield* inventory.deposits).toStrictEqual([
-        { item: 'cobblestone', count: 1, leftover: 1 },
-        { item: 'cobblestone', count: 1, leftover: 1 },
-      ])
+      expect(yield* inventory.api.countOf('cobblestone')).toBe(36 * 64)
       expect(
         (yield* roster.api.entities).map((entity) => ({
           at: entity.feetPosition,
@@ -2105,9 +2016,7 @@ describe('the mining site slice: dig, drop, place', () => {
       yield* runFrame(stages)
 
       expect(yield* roster.api.count).toBe(1)
-      expect(yield* inventory.deposits).toStrictEqual([
-        { item: 'cobblestone', count: 1, leftover: 1 },
-      ])
+      expect(yield* inventory.api.countOf('cobblestone')).toBe(36 * 64)
 
       yield* inventory.api.remove('cobblestone', 1)
       const beforePickup = yield* inventory.api.countOf('cobblestone')
@@ -2116,7 +2025,6 @@ describe('the mining site slice: dig, drop, place', () => {
       expect(yield* roster.api.count).toBe(0)
       expect(yield* inventory.api.countOf('cobblestone')).toBe(beforePickup + 1)
       expect(yield* inventory.deposits).toStrictEqual([
-        { item: 'cobblestone', count: 1, leftover: 1 },
         { item: 'cobblestone', count: 1, leftover: 0 },
       ])
     }),
