@@ -292,7 +292,16 @@ export function useBucket(
   BucketServiceError | PlayerStorageValidationError | ItemStackFailure
 > {
   if (args.length === 4) {
-    return Effect.succeed({ _tag: 'CommitContextMissing' })
+    const request = args[3]
+    return Effect.succeed(
+      request.activeDimension !== request.targetDimension
+        ? {
+            _tag: 'WrongDimension' as const,
+            activeDimension: request.activeDimension,
+            targetDimension: request.targetDimension,
+          }
+        : { _tag: 'CommitContextMissing' as const },
+    )
   }
   return useBucketWithCommit(...args)
 }
