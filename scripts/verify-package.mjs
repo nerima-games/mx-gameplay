@@ -242,6 +242,12 @@ try {
     if (typeof rootModule.planFallingBlockMoves !== 'function') {
       throw new Error('The root export does not expose planFallingBlockMoves');
     }
+    if (typeof rootModule.breakBlock !== 'function') {
+      throw new Error('The root export does not expose breakBlock');
+    }
+    if (typeof rootModule.GAMEPLAY_PLAYER_STORAGE_OWNER_ID !== 'string') {
+      throw new Error('The root export does not expose GAMEPLAY_PLAYER_STORAGE_OWNER_ID');
+    }
     console.log('verified ' + packageName + ' exports');
   `;
   run("node", ["--input-type=module", "--eval", probe], {
@@ -256,9 +262,15 @@ import {
   isPlaceableItem,
   makeGameplayStages,
   gameplayModule,
+  GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
   GAMEPLAY_STAGE_IDS,
   type PlaceableItemType,
+  breakBlock,
+  type BreakOutcome,
+  type BreakTransactionContext,
+  type BreakTransactionResult,
 } from ${JSON.stringify(packageName)}
+import { Effect } from "effect"
 
 const item: PlaceableItemType = 'redstone_dust'
 const block = blockOfPlaceableItem(item)
@@ -276,6 +288,16 @@ if (declaredStageOrder.length === 0) {
 
 void makeGameplayStages
 void gameplayModule
+const ownerId: string = GAMEPLAY_PLAYER_STORAGE_OWNER_ID
+void ownerId
+
+declare const blockStore: Parameters<typeof breakBlock>[0]
+declare const blockPosition: Parameters<typeof breakBlock>[1]
+declare const transactionContext: BreakTransactionContext
+const legacyBreak: Effect.Effect<BreakOutcome> = breakBlock(blockStore, blockPosition)
+const transactionBreak: Effect.Effect<BreakTransactionResult> = breakBlock(blockStore, blockPosition, transactionContext)
+void legacyBreak
+void transactionBreak
 `;
   if (typeConsumerSource.trim().length === 0) {
     throw new Error("TypeScript consumer source must not be empty");

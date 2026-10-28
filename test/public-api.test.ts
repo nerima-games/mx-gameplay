@@ -34,6 +34,7 @@ describe('public API surface', () => {
         // `frameStages`. Expressible only since the vertical-slice spike; see
         // `stages/registration.ts` on why the array was the obstacle.
         'gameplayModule',
+        'GAMEPLAY_PLAYER_STORAGE_OWNER_ID',
         'makeGameplayFrameState',
         'setPlayerDead',
         'setPortalCandidates',
@@ -336,6 +337,7 @@ describe('public API surface', () => {
         'carveExplosionCrater',
         // placement — the counterpart to break-block
         'placeBlock',
+        'breakBlock',
         'placementVerdict',
         'blockOverlapsPlayer',
         'isSupportSensitiveOfBlock',
