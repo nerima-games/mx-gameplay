@@ -44,6 +44,10 @@ export const applyPlayerSwimming = (input: PlayerSwimmingInput): SwimmingVelocit
 
   const deltaSeconds = Number.isFinite(input.deltaSeconds) ? Math.max(0, input.deltaSeconds) : 0
   const drag = Math.max(0, 1 - SWIMMING_DRAG_PER_SECOND * deltaSeconds)
+  if (drag === 0) {
+    return { x: 0, y: 0, z: 0 }
+  }
+
   const horizontalX = unitInput(input.horizontalInput.x)
   const horizontalZ = unitInput(input.horizontalInput.z)
   const vertical = unitInput(input.verticalInput)
@@ -130,10 +134,20 @@ export const advancePlayerSwimming = (
   const oxygenSecs = fullySubmerged
     ? Math.max(0, state.oxygenSecs - deltaSecs)
     : Math.min(MAX_SWIMMING_OXYGEN_SECS, state.oxygenSecs + SWIMMING_OXYGEN_RECOVERY_PER_SEC * deltaSecs)
-  const drowningElapsedSecs = oxygenSecs === 0 && fullySubmerged
-    ? state.drowningElapsedSecs + deltaSecs
+  const shouldDrown = oxygenSecs === 0 && fullySubmerged
+  const previousDrowningElapsedSecs = Number.isFinite(state.drowningElapsedSecs)
+    ? Math.max(0, state.drowningElapsedSecs)
     : 0
-  const damageTicks = Math.floor(drowningElapsedSecs / DROWNING_DAMAGE_INTERVAL_SECS)
+  const elapsedBeforeDamage = previousDrowningElapsedSecs + deltaSecs
+  const damageTicks = shouldDrown
+    ? Math.floor(elapsedBeforeDamage / DROWNING_DAMAGE_INTERVAL_SECS)
+    : 0
+  const drowningElapsedSecs = shouldDrown
+    ? (previousDrowningElapsedSecs % DROWNING_DAMAGE_INTERVAL_SECS +
+        deltaSecs % DROWNING_DAMAGE_INTERVAL_SECS) %
+      DROWNING_DAMAGE_INTERVAL_SECS
+    : 0
+  const damageTickLimit = Number.MAX_VALUE / DROWNING_DAMAGE_POINTS
   const velocity = applyPlayerSwimming({
     velocity: active ? state.velocity : { x: 0, y: 0, z: 0 },
     verticalInput: input.verticalInput,
@@ -147,9 +161,9 @@ export const advancePlayerSwimming = (
       active,
       fullySubmerged,
       oxygenSecs,
-      drowningElapsedSecs: drowningElapsedSecs - damageTicks * DROWNING_DAMAGE_INTERVAL_SECS,
+      drowningElapsedSecs,
       velocity: active ? velocity : { x: 0, y: 0, z: 0 },
     },
-    drowningDamagePoints: damageTicks * DROWNING_DAMAGE_POINTS,
+    drowningDamagePoints: Math.min(damageTickLimit, damageTicks) * DROWNING_DAMAGE_POINTS,
   }
 }

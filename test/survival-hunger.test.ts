@@ -1,12 +1,19 @@
 import { describe, expect, it } from '@effect/vitest'
-import { Effect } from 'effect'
+import { Effect, Result, Schema } from 'effect'
+import * as FastCheck from 'fast-check'
 import {
   DeltaTimeSecs,
   EntityHealthPoints,
   FoodSaturation,
   type DeltaTimeSecs as DeltaTimeSecsValue,
 } from '@nerima-games/mc-kernel'
-import { ExhaustionAmount, FoodTimerSecs, HungerPoints, TotalExperience } from '@nerima-games/mc-sim'
+import {
+  ExhaustionAmount,
+  FoodTimerSecs,
+  HungerPoints,
+  TotalExperience,
+  VitalsSchema,
+} from '@nerima-games/mc-sim'
 import {
   SPAWN_PLAYER_VITALS,
   type PlayerVitals,
@@ -42,6 +49,19 @@ const initial = (
   difficulty,
   vitals: vitals(overrides),
 }) as const
+
+const numericInputs = FastCheck.oneof(
+  FastCheck.double({ min: -Number.MAX_VALUE, max: Number.MAX_VALUE }),
+  FastCheck.constantFrom(Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY),
+)
+
+const isNonNegativeFinite = (values: ReadonlyArray<number>): boolean =>
+  values.every((value) => Number.isFinite(value) && value >= 0)
+
+// The published `Schema<T>` type erases the pure decoder's services to `unknown`.
+const decodeVitals = Schema.decodeUnknownResult(
+  VitalsSchema as unknown as Schema.ConstraintDecoder<PlayerVitals>,
+)
 
 describe('survival hunger', () => {
   it('maps player activity to deterministic exhaustion and rejects invalid magnitudes', () => {
@@ -283,6 +303,63 @@ describe('survival hunger', () => {
 
       yield* runtime.reset
       expect((yield* runtime.snapshot).difficulty).toBe(DEFAULT_SURVIVAL_DIFFICULTY)
+    }),
+  )
+
+  it.effect('property: invalid exhaustion updates fail without changing decoded vitals', () =>
+    Effect.sync(() => {
+      FastCheck.assert(
+        FastCheck.property(numericInputs, (amount) => {
+          const runtime = Effect.runSync(makeSurvivalHungerRuntime(initial('hard')))
+          const before = Effect.runSync(runtime.snapshot)
+          const update = Effect.runSync(Effect.result(runtime.addExhaustion(amount)))
+          const after = Effect.runSync(runtime.snapshot)
+          const decoded = decodeVitals(after.vitals)
+
+          if (Result.isFailure(update)) {
+            return update.failure._tag === 'BrandError' &&
+              JSON.stringify(after) === JSON.stringify(before) &&
+              Result.isSuccess(decoded)
+          }
+
+          return Result.isSuccess(decoded) &&
+            isNonNegativeFinite([
+              decoded.success.exhaustion,
+              decoded.success.hungerPoints,
+              decoded.success.saturation,
+            ])
+        }),
+        { numRuns: 200 },
+      )
+    }),
+  )
+
+  it.effect('property: hunger damage and resulting vitals stay finite and non-negative', () =>
+    Effect.sync(() => {
+      FastCheck.assert(
+        FastCheck.property(FastCheck.double({ min: 0, max: 10_000 }), (rawDelta) => {
+          const delta = DeltaTimeSecs.result(rawDelta)
+          if (Result.isFailure(delta)) return delta.failure._tag === 'BrandError'
+
+          const runtime = Effect.runSync(makeSurvivalHungerRuntime(initial('hard', {
+            hungerPoints: HungerPoints(0),
+            saturation: FoodSaturation(0),
+          })))
+          const outcome = Effect.runSync(runtime.tick(delta.success))
+          const decoded = decodeVitals(outcome.vitals)
+
+          return Result.isSuccess(decoded) &&
+            isNonNegativeFinite([
+              outcome.starvationDamage,
+              outcome.exhaustionAdded,
+              outcome.regeneratedHealth,
+              decoded.success.healthPoints,
+              decoded.success.hungerPoints,
+              decoded.success.saturation,
+            ])
+        }),
+        { numRuns: 100 },
+      )
     }),
   )
 })
