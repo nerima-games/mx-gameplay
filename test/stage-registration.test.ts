@@ -44,7 +44,7 @@ import {
   type PlayerPose,
   type Slot,
 } from '@nerima-games/mc-sim'
-import { BOW_TARGET_CENTER_Y_OFFSET } from '../src/domain/interactions/bow-shot'
+import { BOW_TARGET_CENTER_Y_OFFSET, shotTarget } from '../src/domain/interactions/bow-shot'
 import { BOW_FULL_CHARGE_SECS, BOW_MIN_CHARGE_SECS } from '../src/domain/interactions/draw-bow'
 import {
   ENDER_DRAGON_DEATH_XP,
@@ -1294,6 +1294,14 @@ describe('stage behaviour', () => {
         ],
         nextSerial: EntitySerial(1),
       }
+      const targetEntity = target.entities[0]!
+      expect(shotTarget(
+        [{ id: targetEntity.id, feetPosition: targetEntity.feetPosition }],
+        fixturePosition(0, 64, 0),
+        0,
+        0,
+        1,
+      )).toBeDefined()
       const state = yield* makeGameplayFrameState
       const store = yield* makeChunkStoreDouble(world([[fixtureBlockPosition(0, 64, 5), STONE]]), [
         '0,0',
@@ -1317,6 +1325,58 @@ describe('stage behaviour', () => {
 
       expect(yield* drainBowShotResults(state)).toStrictEqual([
         { requestId: 'wall-shot', success: true, outcome: 'Fired' },
+      ])
+      expect((yield* roster.api.snapshot).entities[0]?.healthPoints).toBe(20)
+      expect(yield* Ref.get(state.bowKnockbacks)).toStrictEqual([])
+    }),
+  )
+
+  it.effect('an unreadable chunk in the arrow path blocks the hit before damage reaches the roster', () =>
+    Effect.gen(function* () {
+      const target: EntityRoster<MobBehaviour> = {
+        entities: [
+          {
+            id: EntityId('target-beyond-resident-chunk'),
+            kind: EntityKind('creeper'),
+            feetPosition: fixturePosition(0, 64 - BOW_TARGET_CENTER_Y_OFFSET, 20),
+            healthPoints: EntityHealthPoints(20),
+            behaviour: undefined,
+          },
+        ],
+        nextSerial: EntitySerial(1),
+      }
+      const targetEntity = target.entities[0]!
+      expect(shotTarget(
+        [{ id: targetEntity.id, feetPosition: targetEntity.feetPosition }],
+        fixturePosition(0, 64, 0),
+        0,
+        0,
+        1,
+      )).toBeDefined()
+      const state = yield* makeGameplayFrameState
+      // The target is in chunk 0,1 while only chunk 0,0 is resident. The
+      // terrain window can see the start of the ray but must treat the missing
+      // portion as blocked rather than as air.
+      const store = yield* makeChunkStoreDouble(world([]), ['0,0'])
+      const roster = yield* makeEntityManagerDouble<MobBehaviour>(target)
+      const player = yield* makePlayerServiceDouble()
+      const inventory = yield* makeInventoryDouble()
+      const time = yield* makeTimeService()
+      const stages = gameplayStages(state, store.api, roster.api, inventory.api, player.api, time)
+
+      yield* requestBowShot(state, 'unreadable-shot', {
+        origin: fixturePosition(0, 64, 0),
+        dirX: 0,
+        dirY: 0,
+        dirZ: 1,
+        chargeSecs: BOW_FULL_CHARGE_SECS,
+        inventory: { mode: 'creative', slotIndex: 0 },
+      })
+      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)
+      yield* interactions!.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* drainBowShotResults(state)).toStrictEqual([
+        { requestId: 'unreadable-shot', success: true, outcome: 'Fired' },
       ])
       expect((yield* roster.api.snapshot).entities[0]?.healthPoints).toBe(20)
       expect(yield* Ref.get(state.bowKnockbacks)).toStrictEqual([])
@@ -2641,6 +2701,35 @@ describe('fire lifecycle: extinguish, restore, and burning-actor bookkeeping', (
       const survivor = (yield* roster.api.snapshot).entities.find((entity) => entity.id === target.id)
       expect(survivor).toBeDefined()
       expect(survivor?.healthPoints).toBeLessThan(1000)
+    }),
+  )
+
+  it.effect('a stale local player-storage snapshot leaves fire damage pending for a consistent retry', () =>
+    Effect.gen(function* () {
+      const { state, stages, inventory } = yield* builtStagesInWorld(world([]))
+      const burning = {
+        fires: [],
+        burningActors: [
+          {
+            id: 'player',
+            kind: 'player',
+            position: fixturePosition(0, 64, 0),
+            remainingTicks: 5,
+            damageCooldownTicks: 0,
+          },
+        ],
+        seed: 1,
+      } as const
+      yield* Ref.set(state.fireLifecycle, burning)
+
+      // The replicated player-storage owner still has its original empty
+      // snapshot. A local inventory mutation makes damage preparation stale.
+      expect(yield* inventory.api.add('iron_helmet', 1)).toBe(0)
+      const fireStage = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire)!
+      yield* fireStage.run(DeltaTimeSecs(FIRE_TICK_INTERVAL_SECS)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* Ref.get(state.fireLifecycle)).toStrictEqual(burning)
+      expect(yield* drainPlayerDamages(state)).toStrictEqual([])
     }),
   )
 
