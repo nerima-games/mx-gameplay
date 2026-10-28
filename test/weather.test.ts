@@ -30,10 +30,25 @@
  * assert する。実時間 20 分待つテストは書かない」.
  */
 import { describe, expect, it } from '@effect/vitest'
-import { makeTimeService } from '@nerima-games/mc-sim'
+import { EntityKind, makeTimeService } from '@nerima-games/mc-sim'
 import { Effect, Ref } from 'effect'
 import { hostileSpawnsAllowed, NOON_FRACTION } from '../src/domain/day-night'
-import { DeltaTimeSecs } from '@nerima-games/mc-kernel'
+import {
+  BlockId,
+  DeltaTimeSecs,
+  EntityHealthPoints,
+  blockPositionKeyOf,
+  blockTypeOfId,
+  capabilityOfBlockId,
+} from '@nerima-games/mc-kernel'
+import {
+  ChunkCapacity,
+  NoiseSeed,
+  generatedDimensionChunkSource,
+  makeChunkStore,
+  blockIndex,
+  type Dimension,
+} from '@nerima-games/mc-worldgen'
 import { DEFAULT_ROLL_SEED } from '../src/domain/frame-rolls'
 import {
   advanceWeather,
@@ -58,8 +73,14 @@ import {
   type WeatherState,
 } from '../src/domain/weather'
 import type { MobBehaviour } from '../src/domain/entities/mob-frame'
+import {
+  advanceWeatherGameplay,
+  makeWeatherGameplayState,
+  type WeatherGameplayInput,
+} from '../src/domain/weather-gameplay'
 import { gameplayStages, makeGameplayFrameState } from '../src/stages/registration'
 import { makeChunkStoreDouble, world } from './support/chunk-store-double'
+import { blockPosition, chunkCoord, position } from './support/coordinate-fixtures'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
 import { makePlayerServiceDouble } from './support/player-service-double'
 import { makeInventoryDouble } from './support/inventory-service-double'
@@ -383,6 +404,76 @@ describe('what the world does about the weather', () => {
       // Noon in a thunderstorm is still noon, and still no hostiles. The rule
       // takes one argument and there is nowhere for a weather to enter it.
       expect(hostileSpawnsAllowed.length).toBe(1)
+    }),
+  )
+})
+
+describe('weather gameplay fixture from generated terrain', () => {
+  it.effect('builds the oracle input from a fixed-seed chunk and a gameplay entity fixture', () =>
+    Effect.gen(function* () {
+      const seed = NoiseSeed(1)
+      const dimension: Dimension = 'overworld'
+      const chunkCoordinate = chunkCoord(0, 0)
+      const store = yield* makeChunkStore(
+        generatedDimensionChunkSource(seed, dimension),
+        ChunkCapacity(1),
+      )
+      const chunk = yield* store.load(chunkCoordinate)
+      const candidatePosition = blockPosition(10, 75, 0)
+      const candidateId = yield* Effect.fromResult(
+        BlockId.result(chunk.blocks[blockIndex(10, 75, 0)] ?? 0),
+      )
+      const candidateType = yield* Effect.fromResult(blockTypeOfId(candidateId))
+      const flammable = yield* Effect.fromResult(capabilityOfBlockId(candidateId, 'flammable'))
+      const light = yield* store.getLight(candidatePosition)
+      const exposedToSky = light._tag === 'Light' && light.sky === 15
+      const block = candidateType === 'fire'
+        ? 'fire'
+        : candidateType === 'farmland'
+          ? 'farmland'
+          : flammable
+            ? 'flammable'
+            : 'other'
+      const roster = yield* makeEntityManagerDouble<MobBehaviour>()
+      yield* roster.api.spawn({
+        kind: EntityKind('creeper'),
+        feetPosition: position(10.5, 75, 0.5),
+        healthPoints: EntityHealthPoints(20),
+        behaviour: undefined,
+      })
+      const gameplayEntities = yield* roster.api.entities
+      const input: WeatherGameplayInput = {
+        dimension,
+        difficulty: 'normal',
+        blocks: [{
+          position: blockPositionKeyOf(candidatePosition),
+          block,
+          exposedToSky,
+        }],
+        entities: gameplayEntities.map((entity) => ({
+          id: entity.id,
+          kind: entity.kind,
+          position: entity.feetPosition,
+          exposedToSky: true,
+        })),
+      }
+
+      expect(candidateType).toBe('oak_leaves')
+      expect(flammable).toBe(true)
+      expect(input.blocks).toStrictEqual([{
+        position: '10,75,0',
+        block: 'flammable',
+        exposedToSky: true,
+      }])
+
+      const step = advanceWeatherGameplay(makeWeatherGameplayState(1), 1, 'thunder', input)
+      expect(step.events).toContainEqual({ _tag: 'LightningStrike', position: input.entities[0]?.position })
+      expect(step.events).toContainEqual({
+        _tag: 'EntityLightningDamage',
+        id: input.entities[0]?.id,
+        amount: 5,
+      })
+      expect(step.events.some((event) => event._tag === 'FireIgnited')).toBe(false)
     }),
   )
 })
