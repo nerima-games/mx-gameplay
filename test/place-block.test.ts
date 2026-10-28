@@ -670,9 +670,50 @@ describe('placeBlock — the four per-block rules, reached through a real held i
       expect(yield* store.blockAt(upperCell)).toBe(blockIdOrThrow('door'))
     }),
   )
+
+  it.effect('does not report the upper half as written by this placement when another write wins', () =>
+    Effect.gen(function* () {
+      const upperCell = blockPosition(target.x, target.y + 1, target.z)
+      const store = yield* storeWith([[below, STONE]])
+      const raced: ChunkStoreApi = {
+        ...store.api,
+        setBlock: (position, block) =>
+          position.x === upperCell.x && position.y === upperCell.y && position.z === upperCell.z
+            ? Effect.flatMap(store.api.setBlock(position, block), () =>
+                Effect.succeed({ _tag: 'Unchanged', previous: block } as const),
+              )
+            : store.api.setBlock(position, block),
+      }
+
+      const outcome = yield* placeBlock(raced, { position: target, heldItem: 'door' })
+
+      expect(outcome).toStrictEqual({
+        _tag: 'Placed',
+        block: blockIdOrThrow('door'),
+        consumed: 'door',
+        chunk: chunkCoord(0, 0),
+        alsoPlaced: [],
+      } satisfies PlaceOutcome)
+      expect(yield* store.blockAt(target)).toBe(blockIdOrThrow('door'))
+      expect(yield* store.blockAt(upperCell)).toBe(blockIdOrThrow('door'))
+    }),
+  )
 })
 
 describe('planPlaceBlock per-block verdicts', () => {
+  it.effect('returns a refused placement verdict without planning edits', () =>
+    Effect.gen(function* () {
+      const occupied = yield* storeWith([[target, STONE], [below, STONE]])
+
+      const plan = yield* planPlaceBlock(occupied.api, { position: target, heldItem: 'sand' })
+
+      expect(plan).toStrictEqual({
+        outcome: { _tag: 'Occupied', existing: STONE },
+        edits: [],
+      })
+    }),
+  )
+
   it.effect('returns no edits for a bright mushroom, a dry sugar cane, and a blocked cactus', () =>
     Effect.gen(function* () {
       const bright = yield* makeChunkStoreDouble(

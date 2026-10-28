@@ -501,7 +501,12 @@ export const planPlaceBlock = (
       : undefined
     const supportBelow = supportPosition === undefined ? undefined : yield* store.getBlock(supportPosition)
     const verdict = placementVerdict(request, target, supportBelow)
-    if (verdict._tag !== 'Allowed') return { outcome: verdict, edits: [] }
+    switch (verdict._tag) {
+      case 'Allowed':
+        break
+      default:
+        return { outcome: verdict, edits: [] }
+    }
 
     const tooBright = yield* mushroomLightObjection(store, verdict.block, request.position)
     if (tooBright !== undefined) return { outcome: tooBright, edits: [] }
