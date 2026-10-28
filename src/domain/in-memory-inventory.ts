@@ -8,13 +8,23 @@
 import {
   InventoryService,
   makeInventoryService,
+  type ItemStackFailure,
+  type PlayerStorageFailure,
+  type RecipeFailure,
   type Inventory,
   type InventoryServiceApi,
   type RecipeTable,
   type Slot,
 } from '@nerima-games/mc-sim'
-import { Effect, Layer } from 'effect'
-import { MAX_STACK_COUNT, StackCount, type ItemType } from '@nerima-games/mc-kernel'
+import { Effect, Layer, Result } from 'effect'
+import {
+  itemStack,
+  itemStacksCanMerge,
+  maxStackCountForItem,
+  StackCount,
+  type ItemStack,
+  type ItemType,
+} from '@nerima-games/mc-kernel'
 
 /**
  * mc-sim's `INVENTORY_SLOT_COUNT`, transcribed.
@@ -31,6 +41,17 @@ export const emptySlots = (): ReadonlyArray<Slot> =>
 export const totalOf = (slots: ReadonlyArray<Slot>, item: ItemType): number =>
   slots.reduce((running, slot: Slot) => (slot?.item === item ? running + slot.count : running), 0)
 
+const stackOf = (
+  item: ItemType,
+  count: number,
+  components?: ItemStack['components'],
+): ItemStack | undefined => {
+  const stackCount = Result.getOrUndefined(StackCount.result(count))
+  return stackCount === undefined
+    ? undefined
+    : Result.getOrUndefined(itemStack(item, stackCount, components === undefined ? undefined : { components }))
+}
+
 /**
  * Put items in, topping up partial stacks first.
  *
@@ -45,15 +66,24 @@ export const addToSlots = (
   const next = [...slots]
   let remaining = Math.max(0, Math.floor(count))
   const requested = remaining
+  const incoming = stackOf(item, 1)
+  if (incoming === undefined) {
+    return { slots, accepted: 0 }
+  }
+  const stackLimit = maxStackCountForItem(item)
 
   // Pass one: top up what is already there. See the header.
   for (let at = 0; at < next.length && remaining > 0; at += 1) {
     const slot = next[at]
-    if (slot === undefined || slot.item !== item || slot.count >= MAX_STACK_COUNT) {
+    if (slot === undefined || slot.count >= stackLimit || !itemStacksCanMerge(slot, incoming)) {
       continue
     }
-    const accepted = Math.min(MAX_STACK_COUNT - slot.count, remaining)
-    next[at] = { item, count: StackCount(slot.count + accepted) }
+    const accepted = Math.min(stackLimit - slot.count, remaining)
+    const updated = stackOf(item, slot.count + accepted, slot.components)
+    if (updated === undefined) {
+      continue
+    }
+    next[at] = updated
     remaining -= accepted
   }
 
@@ -62,8 +92,12 @@ export const addToSlots = (
     if (next[at] !== undefined) {
       continue
     }
-    const accepted = Math.min(MAX_STACK_COUNT, remaining)
-    next[at] = { item, count: StackCount(accepted) }
+    const accepted = Math.min(stackLimit, remaining)
+    const stack = stackOf(item, accepted)
+    if (stack === undefined) {
+      continue
+    }
+    next[at] = stack
     remaining -= accepted
   }
 
@@ -87,7 +121,11 @@ export const removeFromSlots = (
     }
     const taken = Math.min(slot.count, remaining)
     const left = slot.count - taken
-    next[at] = left === 0 ? undefined : { item, count: StackCount(left) }
+    const stack = left === 0 ? undefined : stackOf(item, left, slot.components)
+    if (left > 0 && stack === undefined) {
+      continue
+    }
+    next[at] = stack
     remaining -= taken
   }
 
@@ -116,8 +154,8 @@ export const normaliseInventory = (
     if (slot === undefined) {
       return undefined
     }
-    const clamped = Math.min(MAX_STACK_COUNT, Math.max(0, Math.floor(slot.count)))
-    return clamped === 0 ? undefined : { item: slot.item, count: StackCount(clamped) }
+    const clamped = Math.min(maxStackCountForItem(slot.item), Math.max(0, Math.floor(slot.count)))
+    return clamped === 0 ? undefined : stackOf(slot.item, clamped, slot.components)
   })
 
   let discarded = 0
@@ -143,11 +181,11 @@ export const NO_RECIPES: RecipeTable = []
 /** Build mc-sim's recipe-enabled inventory over the given slots. */
 export const makeInMemoryInventory = (
   initial: ReadonlyArray<Slot> = emptySlots(),
-): Effect.Effect<InventoryServiceApi> =>
+): Effect.Effect<InventoryServiceApi, ItemStackFailure | RecipeFailure | PlayerStorageFailure> =>
   makeInventoryService({ slots: initial })
 
 /** The inventory as a Layer, for a host that composes `gameplayModule`. */
 export const InMemoryInventoryLayer = (
   initial: ReadonlyArray<Slot> = emptySlots(),
-): Layer.Layer<InventoryService> =>
+): Layer.Layer<InventoryService, ItemStackFailure | RecipeFailure | PlayerStorageFailure> =>
   Layer.effect(InventoryService, makeInMemoryInventory(initial))

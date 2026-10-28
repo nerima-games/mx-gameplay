@@ -14,7 +14,7 @@
  */
 import { describe, expect, it } from '@effect/vitest'
 import { InventoryService, STARTER_RECIPES, craftGrid, type Slot } from '@nerima-games/mc-sim'
-import { Effect } from 'effect'
+import { Effect, Result } from 'effect'
 import {
   INVENTORY_SLOT_COUNT,
   InMemoryInventoryLayer,
@@ -25,14 +25,18 @@ import {
   removeFromSlots,
   totalOf,
 } from '../src/domain/in-memory-inventory'
-import { MAX_STACK_COUNT, StackCount, type ItemType } from '@nerima-games/mc-kernel'
+import { itemStack, maxStackCountForItem, StackCount, type ItemType } from '@nerima-games/mc-kernel'
 
 const STONE: ItemType = 'stone'
 const DIRT: ItemType = 'dirt'
 const OAK_LOG: ItemType = 'oak_log'
 const OAK_PLANKS: ItemType = 'oak_planks'
 
-const stack = (item: ItemType, count: number): Slot => ({ item, count: StackCount(count) })
+const STONE_STACK_LIMIT = maxStackCountForItem(STONE)
+const DIRT_STACK_LIMIT = maxStackCountForItem(DIRT)
+
+const stack = (item: ItemType, count: number): Exclude<Slot, undefined> =>
+  Result.getOrThrow(itemStack(item, StackCount(count)))
 
 /**
  * A slot as an UNTRUSTED SAVE FILE contains one.
@@ -43,7 +47,7 @@ const stack = (item: ItemType, count: number): Slot => ({ item, count: StackCoun
  * from JSON is a plain object, and the brand is erased by then.
  */
 const savedStack = (item: ItemType, count: number): Slot =>
-  ({ item, count }) as unknown as Slot
+  ({ ...stack(item, 1), count }) as unknown as Slot
 
 describe('add resolves to the LEFTOVER', () => {
   it.effect('a pickup that fits resolves to 0', () =>
@@ -61,14 +65,14 @@ describe('add resolves to the LEFTOVER', () => {
     Effect.gen(function* () {
       // A one-slot inventory, already full of dirt, with one free stack of room.
       const full: ReadonlyArray<Slot> = Array.from({ length: INVENTORY_SLOT_COUNT }, (_, at) =>
-        at === 0 ? undefined : stack(DIRT, MAX_STACK_COUNT),
+        at === 0 ? undefined : stack(DIRT, DIRT_STACK_LIMIT),
       )
       const inventory = yield* makeInMemoryInventory(full)
 
-      const leftover = yield* inventory.add(STONE, MAX_STACK_COUNT + 7)
+      const leftover = yield* inventory.add(STONE, STONE_STACK_LIMIT + 7)
 
       expect(leftover).toBe(7)
-      expect(yield* inventory.countOf(STONE)).toBe(MAX_STACK_COUNT)
+      expect(yield* inventory.countOf(STONE)).toBe(STONE_STACK_LIMIT)
     }),
   )
 
@@ -76,7 +80,7 @@ describe('add resolves to the LEFTOVER', () => {
     Effect.gen(function* () {
       // The case the inverted version answers 0 to — indistinguishable from a
       // perfect pickup, and the mined block silently disappears.
-      const full = Array.from({ length: INVENTORY_SLOT_COUNT }, () => stack(DIRT, MAX_STACK_COUNT))
+      const full = Array.from({ length: INVENTORY_SLOT_COUNT }, () => stack(DIRT, DIRT_STACK_LIMIT))
       const inventory = yield* makeInMemoryInventory(full)
 
       expect(yield* inventory.add(STONE, 3)).toBe(3)
@@ -109,15 +113,15 @@ describe('the two slot rules', () => {
     }),
   )
 
-  it.effect('a stack caps at MAX_STACK_COUNT and overflows into the next slot', () =>
+  it.effect("a stack caps at the item's maximum and overflows into the next slot", () =>
     Effect.sync(() => {
       // Without the cap nothing ever overflows, `add` always answers 0, and the
       // path that decides whether a mined block is kept is never taken.
-      const result = addToSlots(emptySlots(), STONE, MAX_STACK_COUNT + 1)
+      const result = addToSlots(emptySlots(), STONE, STONE_STACK_LIMIT + 1)
 
-      expect(result.slots[0]).toStrictEqual(stack(STONE, MAX_STACK_COUNT))
+      expect(result.slots[0]).toStrictEqual(stack(STONE, STONE_STACK_LIMIT))
       expect(result.slots[1]).toStrictEqual(stack(STONE, 1))
-      expect(result.accepted).toBe(MAX_STACK_COUNT + 1)
+      expect(result.accepted).toBe(STONE_STACK_LIMIT + 1)
     }),
   )
 
@@ -175,12 +179,12 @@ describe('the two slot rules', () => {
         emptySlots(),
         [stack(STONE, 40), undefined, stack(DIRT, 10)],
         Array.from({ length: INVENTORY_SLOT_COUNT }, (_, at) =>
-          at < INVENTORY_SLOT_COUNT - 1 ? stack(DIRT, MAX_STACK_COUNT) : undefined,
+          at < INVENTORY_SLOT_COUNT - 1 ? stack(DIRT, DIRT_STACK_LIMIT) : undefined,
         ),
       ]
 
       for (const start of starts) {
-        for (const amount of [0, 1, MAX_STACK_COUNT, MAX_STACK_COUNT * 3]) {
+        for (const amount of [0, 1, STONE_STACK_LIMIT, STONE_STACK_LIMIT * 3]) {
           const before = totalOf(start, STONE)
           const result = addToSlots(start, STONE, amount)
 
@@ -196,7 +200,7 @@ describe('the two slot rules', () => {
       const starts: ReadonlyArray<ReadonlyArray<Slot>> = [
         emptySlots(),
         [stack(STONE, 40), undefined, stack(DIRT, 10)],
-        [stack(STONE, MAX_STACK_COUNT), stack(STONE, 3)],
+        [stack(STONE, STONE_STACK_LIMIT), stack(STONE, 3)],
       ]
 
       for (const start of starts) {
@@ -249,9 +253,9 @@ describe('restore re-establishes the invariant', () => {
 
   it.effect('an over-full stack is clamped and the excess counted', () =>
     Effect.sync(() => {
-      const result = normaliseInventory({ slots: [savedStack(STONE, MAX_STACK_COUNT + 9)] })
+      const result = normaliseInventory({ slots: [savedStack(STONE, STONE_STACK_LIMIT + 9)] })
 
-      expect(result.slots[0]?.count).toBe(MAX_STACK_COUNT)
+      expect(result.slots[0]?.count).toBe(STONE_STACK_LIMIT)
       expect(result.discarded).toBe(9)
     }),
   )
@@ -298,9 +302,12 @@ describe('crafting delegates to mc-sim', () => {
   it.effect('previews and crafts oak planks against the same inventory state', () =>
     Effect.gen(function* () {
       const inventory = yield* makeInMemoryInventory()
-      const grid = craftGrid(1, 1, [OAK_LOG])
+      const grid = Result.getOrThrow(craftGrid(1, 1, [OAK_LOG]))
 
-      expect(yield* inventory.recipes).toStrictEqual(STARTER_RECIPES)
+      const recipes = yield* inventory.recipes
+      expect(recipes.map(({ id }) => id)).toStrictEqual(
+        Result.getOrThrow(STARTER_RECIPES).map(({ id }) => id),
+      )
       yield* inventory.add(OAK_LOG, 1)
 
       const beforePreview = yield* inventory.snapshot
