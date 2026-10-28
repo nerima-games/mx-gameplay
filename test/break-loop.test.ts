@@ -149,7 +149,16 @@ const gameplayStagesWithOwners = (
   store = world.chunkStore,
 ) =>
   Effect.gen(function* () {
-    const commit = yield* makeGameplayCommitServices(store, world.inventory)
+    const services = yield* makeGameplayCommitServices(store, world.inventory)
+    const commitRequests: Array<Parameters<WorldCommitCoordinatorApi['commit']>[0]> = []
+    const coordinator: WorldCommitCoordinatorApi = {
+      ...services.coordinator,
+      commit: (request) => {
+        commitRequests.push(request)
+        return services.coordinator.commit(request)
+      },
+    }
+    const commit = { ...services, coordinator }
     return {
       stages: gameplayStages(
         state,
@@ -164,6 +173,7 @@ const gameplayStagesWithOwners = (
         commit,
       ),
       commit,
+      commitRequests,
     }
   })
 
@@ -1045,7 +1055,7 @@ describe('the break loop', () => {
         },
       })
       const state = yield* makeGameplayFrameState
-      const { stages, commit } = yield* gameplayStagesWithOwners(state, world)
+      const { stages, commit, commitRequests } = yield* gameplayStagesWithOwners(state, world)
 
       yield* requestBlockBreak(state, AT)
       yield* runInteractions(stages as never)
@@ -1056,6 +1066,14 @@ describe('the break loop', () => {
       const droppedItems = yield* commit.coordinator.snapshot(GAMEPLAY_DROPPED_ITEMS_OWNER_ID, DroppedItemOwnerSnapshotSchema)
       expect(droppedItems.state.items).toHaveLength(1)
       expect(droppedItems.state.items[0]?.behaviour._tag).toBe('DroppedItem')
+      expect(commitRequests).toHaveLength(1)
+      expect(commitRequests[0]?.blockWrite).toBeDefined()
+      expect(commitRequests[0]?.changes.map(({ ownerId }) => ownerId)).toEqual(
+        expect.arrayContaining([
+          commit.playerStorageOwnerId,
+          GAMEPLAY_DROPPED_ITEMS_OWNER_ID,
+        ]),
+      )
     }),
   )
 
