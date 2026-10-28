@@ -350,6 +350,83 @@ describe('bucket interaction', () => {
     }),
   )
 
+  it.effect('refuses a bucket operation when local storage differs from its registered owner', () =>
+    Effect.gen(function* () {
+      const harness = yield* makeBucketHarness(
+        WATER,
+        true,
+        inventoryWith([0, stack('bucket', 1)]),
+      )
+      const frontier = yield* Ref.make<ReadonlyArray<FluidWorkItem>>([])
+      const initialOwnerStorage = harness.initialStorage
+
+      expect(yield* harness.inventory.add('stone', 1)).toBe(0)
+      const localStorageAfterChange = yield* harness.inventory.storageSnapshot
+      expect(localStorageAfterChange).not.toStrictEqual(initialOwnerStorage)
+
+      expect(yield* useBucket(
+        harness.inventory,
+        harness.bucketService,
+        harness.coordinator,
+        frontier,
+        request('bucket'),
+      )).toStrictEqual({ _tag: 'InventoryOutOfSync' })
+
+      expect(yield* harness.world.chunkStore.getBlock(POSITION)).toStrictEqual({
+        _tag: 'Block',
+        block: WATER,
+      })
+      expect(yield* harness.inventory.storageSnapshot).toStrictEqual(localStorageAfterChange)
+      const owner = yield* harness.coordinator.snapshot(
+        harness.ownerId,
+        PlayerStorageSnapshotSchema,
+      )
+      expect(Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(owner.state)).toStrictEqual(
+        initialOwnerStorage,
+      )
+      expect(yield* Ref.get(frontier)).toStrictEqual([])
+    }),
+  )
+
+  it.effect('treats a NoChanges bucket-service response as an uncommitted operation', () =>
+    Effect.gen(function* () {
+      const harness = yield* makeBucketHarness(
+        WATER,
+        true,
+        inventoryWith([0, stack('bucket', 1)]),
+      )
+      const frontier = yield* Ref.make<ReadonlyArray<FluidWorkItem>>([
+        { key: positionKey('9,64,9'), kind: 'lava' },
+      ])
+      const initialFrontier = yield* Ref.get(frontier)
+      const noChangesService: BucketServiceApi = {
+        commitUse: () => Effect.succeed({ _tag: 'NoChanges' }),
+      }
+
+      expect(yield* useBucket(
+        harness.inventory,
+        noChangesService,
+        harness.coordinator,
+        frontier,
+        request('bucket'),
+      )).toStrictEqual({ _tag: 'WorldChanged' })
+
+      expect(yield* harness.world.chunkStore.getBlock(POSITION)).toStrictEqual({
+        _tag: 'Block',
+        block: WATER,
+      })
+      expect(yield* harness.inventory.storageSnapshot).toStrictEqual(harness.initialStorage)
+      const owner = yield* harness.coordinator.snapshot(
+        harness.ownerId,
+        PlayerStorageSnapshotSchema,
+      )
+      expect(Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(owner.state)).toStrictEqual(
+        harness.initialStorage,
+      )
+      expect(yield* Ref.get(frontier)).toStrictEqual(initialFrontier)
+    }),
+  )
+
   it.effect('leaves world, owner, local inventory, and frontier unchanged when commit fails', () =>
     Effect.gen(function* () {
       expect(yield* assertUnchangedAfterFailure('commit-failed', 1, [[9, 'lava']])).toBe(true)

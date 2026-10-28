@@ -28,9 +28,10 @@ import {
 import {
   makeReplicatedOwnerId,
   makeWorldCommitCoordinator,
+  WorldRevisionConflict,
   type WorldCommitCoordinatorApi,
 } from '@nerima-games/mc-sim'
-import { BlockAxis, blockIdOf, blockPosition, WorldIdSchema, type BlockType } from '@nerima-games/mc-kernel'
+import { BlockAxis, blockIdOf, blockPosition, WorldIdSchema, WorldRevisionSchema, type BlockType } from '@nerima-games/mc-kernel'
 import type { ChunkStoreRegistryApi } from '@nerima-games/mc-worldgen'
 import type { BlockPosition } from '@nerima-games/mc-kernel'
 import { cellKey, chunkKey, chunkOf, makeInMemoryWorld } from '../src/domain/in-memory-world'
@@ -265,6 +266,34 @@ describe('plantCrop', () => {
       })
 
       expect((yield* plantCrop(port, request('wheat_seeds')))._tag).toBe('commitContextMissing')
+      expect(yield* Ref.get(written)).toStrictEqual([])
+      expect(yield* coordinator.revision).toBe(0)
+    }),
+  )
+
+  it.effect('reports a coordinator conflict without planting a crop', () =>
+    Effect.gen(function* () {
+      const above = positionAbove(SOIL)
+      const { port, written, context, coordinator } = yield* makeWorld({
+        [keyOf(SOIL)]: 'farmland',
+        [keyOf(above)]: 'air',
+      })
+      const refusingContext: PlantCommitContext = {
+        ...context,
+        coordinator: {
+          ...context.coordinator,
+          commit: () => Effect.fail(new WorldRevisionConflict({
+            expected: Schema.decodeUnknownSync(WorldRevisionSchema)(1),
+            actual: Schema.decodeUnknownSync(WorldRevisionSchema)(0),
+          })),
+        },
+      }
+
+      const outcome = yield* plantCrop(port, request('wheat_seeds'), refusingContext)
+
+      expect(outcome._tag).toBe('commitFailed')
+      if (outcome._tag !== 'commitFailed') return
+      expect(outcome.error._tag).toBe('WorldRevisionConflict')
       expect(yield* Ref.get(written)).toStrictEqual([])
       expect(yield* coordinator.revision).toBe(0)
     }),

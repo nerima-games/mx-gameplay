@@ -31,6 +31,7 @@ import {
   PortalWidth,
   CHUNK_SIZE_XZ,
   WorldIdSchema,
+  WorldRevisionSchema,
   type BlockPosition,
 } from '@nerima-games/mc-kernel'
 import { generatePortalLayout } from '@nerima-games/mc-worldgen'
@@ -42,6 +43,7 @@ import {
 import { emptyBlocks } from '@nerima-games/mc-worldgen/testing'
 import {
   makeWorldCommitCoordinator,
+  WorldRevisionConflict,
   type WorldCommitCoordinatorApi,
   type WorldCommitRequest,
 } from '@nerima-games/mc-sim'
@@ -361,6 +363,34 @@ describe('igniteFire', () => {
       expect(yield* ignition.coordinator.revision).toBe(expectedRevision + 1)
       expect(yield* ignition.coordinator.dimensionRevision('overworld'))
         .toBe(expectedDimensionRevision + 1)
+      expect(yield* Ref.get(ignition.directWrites)).toBe(0)
+    }),
+  )
+
+  it.effect('reports a coordinator conflict without direct-writing fire', () =>
+    Effect.gen(function* () {
+      const ignition = yield* makeIgnitionWorld()
+      const refusingCoordinator: WorldCommitCoordinatorApi = {
+        ...ignition.coordinator,
+        commit: () => Effect.fail(new WorldRevisionConflict({
+          expected: Schema.decodeUnknownSync(WorldRevisionSchema)(1),
+          actual: Schema.decodeUnknownSync(WorldRevisionSchema)(0),
+        })),
+      }
+
+      const outcome = yield* igniteFire(ignition.store, target, {
+        ...ignition.commitContext,
+        coordinator: refusingCoordinator,
+      })
+
+      expect(outcome._tag).toBe('CommitFailed')
+      if (outcome._tag !== 'CommitFailed') return
+      expect(outcome.error._tag).toBe('WorldRevisionConflict')
+      expect(yield* ignition.store.getBlock(target)).toStrictEqual({
+        _tag: 'Block',
+        block: AIR_BLOCK_ID,
+      })
+      expect(yield* Ref.get(ignition.requests)).toStrictEqual([])
       expect(yield* Ref.get(ignition.directWrites)).toBe(0)
     }),
   )
