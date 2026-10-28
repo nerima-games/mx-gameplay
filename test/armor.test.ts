@@ -1,4 +1,5 @@
 import { describe, expect, it } from '@effect/vitest'
+import { Result } from 'effect'
 import {
   equipmentItem,
   itemStack,
@@ -14,7 +15,7 @@ import {
 } from '../src/domain/combat/armor'
 
 const armourItem = (item: EquipmentItem['item']): EquipmentItem =>
-  equipmentItem(itemStack(item, 1))
+  Result.getOrThrow(equipmentItem(Result.getOrThrow(itemStack(item, 1))))
 
 const equipmentWith = (
   items: Partial<Record<EquipmentSlot, EquipmentItem>> = {},

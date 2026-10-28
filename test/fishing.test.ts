@@ -1,4 +1,5 @@
 import { describe, expect, it } from '@effect/vitest'
+import { Result } from 'effect'
 import {
   addItem,
   countOf,
@@ -36,7 +37,10 @@ const DEFAULT_ROLLS: FishingRolls = {
 }
 
 const fishingRod = (current = 64): EquipmentItem =>
-  equipmentItem(itemStack('fishing_rod', 1), durability(current, 64))
+  Result.getOrThrow(equipmentItem(
+    Result.getOrThrow(itemStack('fishing_rod', 1)),
+    Result.getOrThrow(durability(current, 64)),
+  ))
 
 const castSession = (
   environment: FishingEnvironment = CLEAR_OPEN_WATER,
@@ -52,7 +56,11 @@ describe('castFishing', () => {
   it('requires a valid fishing rod and water', () => {
     expect(castFishing(null, CLEAR_OPEN_WATER, DEFAULT_ROLLS)).toEqual({ _tag: 'InvalidRod' })
     expect(
-      castFishing(equipmentItem(itemStack('bow', 1)), CLEAR_OPEN_WATER, DEFAULT_ROLLS),
+      castFishing(
+        Result.getOrThrow(equipmentItem(Result.getOrThrow(itemStack('bow', 1)))),
+        CLEAR_OPEN_WATER,
+        DEFAULT_ROLLS,
+      ),
     ).toEqual({ _tag: 'InvalidRod' })
     expect(
       castFishing(fishingRod(), { ...CLEAR_OPEN_WATER, hasWater: false }, DEFAULT_ROLLS),
@@ -243,7 +251,7 @@ describe('reelFishing', () => {
     const result = reelFishing({ ...session, elapsedSecs: session.waitSecs })
     if (result._tag !== 'Caught') throw new Error('Expected Caught')
 
-    const added = addItem(emptyInventory(), result.loot.item, result.loot.count)
+    const added = Result.getOrThrow(addItem(emptyInventory(), result.loot.item, result.loot.count))
     expect(added.leftover).toBe(0)
     expect(countOf(added.inventory, result.loot.item)).toBe(1)
   })
