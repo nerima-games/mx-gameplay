@@ -246,7 +246,7 @@ export const BowChargePreparationSchema: Schema.ConstraintDecoder<BowChargePrepa
 
 export type BowActionPreparation = Result.Result<
   BowChargePreparation,
-  'invalid-bow-action' | 'invalid-tick' | 'not-drawing'
+  'invalid-bow-action' | 'invalid-bow-context' | 'invalid-tick' | 'not-drawing'
 >
 
 const decodeBowChargePreparation = (prepared: BowChargePreparation): BowActionPreparation => {
@@ -256,11 +256,12 @@ const decodeBowChargePreparation = (prepared: BowChargePreparation): BowActionPr
   return Result.isFailure(decoded) ? Result.fail('invalid-tick') : Result.succeed(decoded.success)
 }
 
-/** Prepare the C2 bow action using only the authoritative simulation tick. */
+/** Prepare the C2 bow action from the authoritative simulation tick and held bow. */
 export const prepareBowAction = (
   action: BowAction,
   tick: SimulationTick,
   previous: BowChargeState | null,
+  context: BowDrawContext = PLAIN_BOW,
 ): BowActionPreparation => {
   const decodedIntent = Schema.decodeUnknownResult(IntentPayloadSchema)(action)
   if (Result.isFailure(decodedIntent) || decodedIntent.success._tag !== 'BowAction') {
@@ -268,6 +269,10 @@ export const prepareBowAction = (
   }
   const decodedTick = Schema.decodeUnknownResult(SimulationTickSchema)(tick)
   if (Result.isFailure(decodedTick)) return Result.fail('invalid-tick')
+  if (
+    context.powerLevel !== undefined &&
+    (!Number.isSafeInteger(context.powerLevel) || context.powerLevel < 0)
+  ) return Result.fail('invalid-bow-context')
 
   const actor = decodedIntent.success.actor
   if (decodedIntent.success.action === 'draw') {
@@ -294,7 +299,7 @@ export const prepareBowAction = (
     actor,
     nextState: null,
     charge,
-    damage: fired ? bowDamage(charge) : 0,
+    damage: fired ? bowDamage(charge, context) : 0,
     fired,
   }
   return decodeBowChargePreparation(prepared)

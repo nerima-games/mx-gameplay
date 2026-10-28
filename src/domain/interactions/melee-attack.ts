@@ -26,9 +26,11 @@ export const DEFAULT_MELEE_DAMAGE = 1
 
 const SWORD_MELEE_DAMAGE: Readonly<Partial<Record<ItemType, number>>> = {
   wooden_sword: 4,
+  gold_sword: 4,
   stone_sword: 5,
   iron_sword: 6,
   diamond_sword: 7,
+  netherite_sword: 8,
 }
 
 /** Damage for the held item; bare hands and non-swords use the unarmed value. */

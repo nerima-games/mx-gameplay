@@ -182,6 +182,34 @@ describe(`C2 bow charge uses simulation ticks (${BOW_PARITY_FIXTURE.source}, ${B
     })
   })
 
+  it('applies the held bow Power level to a full-charge release', () => {
+    const actor = EntityId('bow-owner')
+    const startedAt = Schema.decodeUnknownSync(SimulationTickSchema)(100)
+    const tick = Schema.decodeUnknownSync(SimulationTickSchema)(120)
+    const result = prepareBowAction(
+      { _tag: 'BowAction', actor, action: 'release' },
+      tick,
+      { actor, startedAt },
+      { powerLevel: 1 },
+    )
+
+    expect(Result.isSuccess(result) && result.success.damage).toBe(14)
+  })
+
+  it('rejects an invalid authoritative Power level', () => {
+    const actor = EntityId('bow-owner')
+    const startedAt = Schema.decodeUnknownSync(SimulationTickSchema)(100)
+    const tick = Schema.decodeUnknownSync(SimulationTickSchema)(120)
+    const result = prepareBowAction(
+      { _tag: 'BowAction', actor, action: 'release' },
+      tick,
+      { actor, startedAt },
+      { powerLevel: Number.NaN },
+    )
+
+    expect(Result.isFailure(result) && result.failure).toBe('invalid-bow-context')
+  })
+
   it('strictly decodes draw and cancel owner candidates', () => {
     const actor = EntityId('bow-owner')
     const tick = Schema.decodeUnknownSync(SimulationTickSchema)(50)

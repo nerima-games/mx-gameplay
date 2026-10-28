@@ -35,9 +35,11 @@ describe('melee attack damage', () => {
 
   it('maps each sword tier to its melee damage', () => {
     expect(meleeDamageForItem('wooden_sword')).toBe(4)
+    expect(meleeDamageForItem('gold_sword')).toBe(4)
     expect(meleeDamageForItem('stone_sword')).toBe(5)
     expect(meleeDamageForItem('iron_sword')).toBe(6)
     expect(meleeDamageForItem('diamond_sword')).toBe(7)
+    expect(meleeDamageForItem('netherite_sword')).toBe(8)
   })
 
   it(`applies the parity critical multiplier (${MELEE_PARITY_FIXTURE.source}, ${MELEE_PARITY_FIXTURE.edition})`, () => {
