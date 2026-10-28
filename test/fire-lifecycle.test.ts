@@ -130,18 +130,21 @@ describe('fire lifecycle', () => {
   })
 
   it('uses kernel flammable capabilities for spread fuel', () => {
-    // These values pin kernel 0.11.0's public capability table. The vanilla
-    // audit found disagreements for door, bed, door_open, tall_grass and fern;
-    // gameplay follows the kernel table until those rows are reconciled there.
+    // Vanilla Java Edition fuel values: https://minecraft.wiki/w/Fire#Spread
     const cases = [
       { block: 'oak_planks', flammable: true },
-      { block: 'door', flammable: true },
-      { block: 'bed', flammable: true },
-      { block: 'door_open', flammable: true },
       { block: 'tnt', flammable: true },
+      { block: 'tall_grass', flammable: true },
+      { block: 'fern', flammable: true },
+      { block: 'dandelion', flammable: true },
+      { block: 'poppy', flammable: true },
+      { block: 'coal_block', flammable: true },
+      { block: 'door', flammable: false },
+      { block: 'door_open', flammable: false },
+      { block: 'bed', flammable: false },
+      { block: 'crafting_table', flammable: false },
+      { block: 'ladder', flammable: false },
       { block: 'sapling', flammable: false },
-      { block: 'tall_grass', flammable: false },
-      { block: 'fern', flammable: false },
       { block: 'wheat_crop', flammable: false },
       { block: 'potato_crop', flammable: false },
       { block: 'stone', flammable: false },
@@ -170,7 +173,7 @@ describe('fire lifecycle', () => {
     const withoutFuel = advanceFireLifecycle(
       makeFireLifecycleState([fire.position], 1),
       [fire, { position: { x: 0, y: 0, z: 0 }, block: 'air' },
-        { position: { x: 1, y: 1, z: 0 }, block: 'fern' }],
+        { position: { x: 1, y: 1, z: 0 }, block: 'door' }],
       'clear',
     )
     expect(withoutFuel.mutations).toContainEqual({ position: fire.position, block: 'air' })
@@ -178,7 +181,7 @@ describe('fire lifecycle', () => {
     const withFuel = advanceFireLifecycle(
       makeFireLifecycleState([fire.position], 1),
       [fire, { position: { x: 0, y: 0, z: 0 }, block: 'air' },
-        { position: { x: 1, y: 1, z: 0 }, block: 'bed' }],
+        { position: { x: 1, y: 1, z: 0 }, block: 'tall_grass' }],
       'clear',
     )
     expect(withFuel.mutations).not.toContainEqual({ position: fire.position, block: 'air' })
