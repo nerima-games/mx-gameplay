@@ -41,11 +41,10 @@
  * permissive reading would put a cactus against unloaded space and let the wall
  * turn out to be there.
  */
-import { Effect } from 'effect'
+import { Effect, Option, Result } from 'effect'
 import {
   AIR_BLOCK_ID,
   blockIdOf,
-  blockPosition,
   blockTypeOfId,
   horizontalBlockNeighbours,
   type BlockId,
@@ -54,7 +53,7 @@ import {
 import type { BlockReading, ChunkStoreApi } from '@nerima-games/mc-worldgen'
 
 /** Is this byte a cactus? Asked of kernel's registry; see `./place-mushroom-light`. */
-export const isCactusBlock = (block: BlockId): boolean => blockTypeOfId(block) === 'cactus'
+export const isCactusBlock = (block: BlockId): boolean => Result.getOrUndefined(blockTypeOfId(block)) === 'cactus'
 
 /**
  * The reference's `hasClearCactusHorizontalSides`, over three-valued readings.
@@ -92,7 +91,12 @@ export const cactusSidesObjection = (
     }
 
     const sides: Array<BlockReading> = []
-    for (const neighbour of horizontalBlockNeighbours(blockPosition(position.x, position.y, position.z))) {
+    const neighbours = Result.getOrUndefined(horizontalBlockNeighbours(position))
+    if (neighbours === undefined) {
+      return { _tag: 'SidesBlocked' }
+    }
+
+    for (const neighbour of neighbours) {
       sides.push(yield* store.getBlock(neighbour))
     }
 
@@ -100,4 +104,4 @@ export const cactusSidesObjection = (
   })
 
 /** The id this rule is about, for a caller that wants to demonstrate it. */
-export const CACTUS_BLOCK_ID: BlockId | undefined = blockIdOf('cactus')
+export const CACTUS_BLOCK_ID: BlockId | undefined = Option.getOrUndefined(blockIdOf('cactus'))

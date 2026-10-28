@@ -118,7 +118,7 @@
  * cactus requires four clear horizontal sides. `test/placement-rules.test.ts`
  * exercises those combinations through `placeBlock` with real item literals.
  */
-import { Effect } from 'effect'
+import { Effect, Option, Result } from 'effect'
 import {
   type BlockId,
   type BlockPosition,
@@ -130,7 +130,6 @@ import {
   AIR_BLOCK_ID,
   blockIdOf,
   blockOfPlaceableItem,
-  blockPosition,
   canBlockStaySupported,
   capabilityOfBlockId,
   isSupportSensitiveBlockId,
@@ -220,7 +219,8 @@ export const blockOverlapsPlayer = (block: BlockPosition, playerFeet: Position):
  * NOT support-sensitive, which is the inert direction — it places, rather than
  * being refused for a reason nobody can name.
  */
-export const isSupportSensitiveOfBlock = (block: BlockId): boolean => isSupportSensitiveBlockId(block)
+export const isSupportSensitiveOfBlock = (block: BlockId): boolean =>
+  Result.getOrUndefined(isSupportSensitiveBlockId(block)) !== false
 
 /**
  * What the player is trying to put down, and where.
@@ -346,11 +346,11 @@ export const placementVerdict = (
   if (target._tag === 'OutOfWorld') {
     return { _tag: 'OutOfWorld' }
   }
-  if (!capabilityOfBlockId(target.block, 'replaceable')) {
+  if (Result.getOrUndefined(capabilityOfBlockId(target.block, 'replaceable')) !== true) {
     return { _tag: 'Occupied', existing: target.block }
   }
 
-  const block = blockIdOf(blockOfPlaceableItem(request.heldItem))
+  const block = Option.getOrUndefined(blockIdOf(blockOfPlaceableItem(request.heldItem)))
   /* v8 ignore start -- UnknownBlock is unreachable in a green tree: PlaceableItemType
    * is exactly the roster `blockIdOf` is pinned total over
    * (kernel's own type declaration), so `blockIdOf(blockOfPlaceableItem(x))`
@@ -381,7 +381,7 @@ export const placementVerdict = (
     // the set first refuses a lily pad on water (water is non-supporting) and
     // allows it on stone: wrong in both directions on the only cell it belongs
     // on. `canBlockStaySupported` is the composition in the reference's order.
-    if (!canBlockStaySupported(block, supportBelow.block)) {
+    if (Result.getOrUndefined(canBlockStaySupported(block, supportBelow.block)) !== true) {
       return { _tag: 'Unsupported', support: supportBelow.block }
     }
   }
@@ -415,16 +415,12 @@ export const placeBlock = (
     // target read is interpreted, because it depends only on the held item. It
     // is issued after the target read rather than beside it so that a placement
     // into an occupied cell costs one call and not two.
-    const block = blockIdOf(blockOfPlaceableItem(request.heldItem))
-    const supportBelow =
-      block !== undefined && isSupportSensitiveOfBlock(block)
-        ? yield* store.getBlock(
-            adjacentBlockPosition(
-              blockPosition(request.position.x, request.position.y, request.position.z),
-              'down',
-            ),
-          )
-        : undefined
+    const block = Option.getOrUndefined(blockIdOf(blockOfPlaceableItem(request.heldItem)))
+    const supportSensitive = block !== undefined && isSupportSensitiveOfBlock(block)
+    const supportPosition = supportSensitive
+      ? Result.getOrUndefined(adjacentBlockPosition(request.position, 'down'))
+      : undefined
+    const supportBelow = supportPosition === undefined ? undefined : yield* store.getBlock(supportPosition)
 
     const verdict = placementVerdict(request, target, supportBelow)
     if (verdict._tag !== 'Allowed') {

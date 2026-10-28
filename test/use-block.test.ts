@@ -1,11 +1,13 @@
 import { describe, expect, it } from '@effect/vitest'
-import { blockIdOf, blockPosition, type BlockPosition } from '@nerima-games/mc-kernel'
+import { Option } from 'effect'
+import { blockIdOf, type BlockPosition } from '@nerima-games/mc-kernel'
 import type { BlockReading } from '@nerima-games/mc-worldgen'
 import { isSuccessfulBlockUse, resolveBlockUse } from '../src/domain/interactions/use-block'
+import { blockPosition } from './support/coordinate-fixtures'
 
 const POSITION: BlockPosition = blockPosition(1, 64, 1)
-const LEVER_ID = blockIdOf('lever') ?? -1
-const DIRT_ID = blockIdOf('dirt') ?? -1
+const LEVER_ID = Option.getOrThrow(blockIdOf('lever'))
+const DIRT_ID = Option.getOrThrow(blockIdOf('dirt'))
 
 describe('resolveBlockUse', () => {
   it('toggles a lever', () => {

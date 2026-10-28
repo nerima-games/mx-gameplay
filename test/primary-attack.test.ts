@@ -1,6 +1,6 @@
 import { describe, expect, it } from '@effect/vitest'
-import { Effect, Ref } from 'effect'
-import { blockPosition } from '@nerima-games/mc-kernel'
+import { Brand, Effect, Ref } from 'effect'
+import { EntityHealthPoints } from '@nerima-games/mc-kernel'
 import { CREEPER_KIND, type MobBehaviour } from '../src/domain/entities/mob-frame'
 import { meleeDamageForItem } from '../src/domain/interactions/melee-attack'
 import {
@@ -15,9 +15,10 @@ import {
   type EntityManagerDouble,
 } from './support/entity-manager-double'
 import { makePlayerServiceDouble } from './support/player-service-double'
+import { blockPosition, position } from './support/coordinate-fixtures'
 
 const PLAYER_POSE = {
-  feetPosition: { x: 0.5, y: 64, z: 5.5 },
+  feetPosition: position(0.5, 64, 5.5),
   yawRadians: 0,
   pitchRadians: 0,
 }
@@ -37,8 +38,8 @@ const makeContext = (blockZ?: number) =>
 const spawnHostile = (roster: EntityManagerDouble<MobBehaviour>, z: number) =>
   roster.api.spawn({
     kind: CREEPER_KIND,
-    feetPosition: { x: 0.5, y: 64.72, z },
-    healthPoints: 20,
+    feetPosition: position(0.5, 64.72, z),
+    healthPoints: EntityHealthPoints(20),
     behaviour: undefined,
   })
 
@@ -54,11 +55,11 @@ describe('targeted primary attack', () => {
       const context = yield* makeContext()
       const enemy = yield* spawnHostile(context.roster, 4)
 
-      const resolution = yield* resolveTargetedPrimaryAttack(
+      const resolution = yield* Effect.orDie(resolveTargetedPrimaryAttack(
         context.store.api,
         context.roster.api,
         context.player.api,
-      )
+      ))
 
       expect(resolution._tag).toBe('Melee')
       if (resolution._tag === 'Melee') {
@@ -81,12 +82,12 @@ describe('targeted primary attack', () => {
       const context = yield* makeContext()
       yield* spawnHostile(context.roster, 4)
 
-      const resolution = yield* resolveTargetedPrimaryAttack(
+      const resolution = yield* Effect.orDie(resolveTargetedPrimaryAttack(
         context.store.api,
         context.roster.api,
         context.player.api,
         { meleeDamage: meleeDamageForItem('diamond_sword') },
-      )
+      ))
 
       expect(resolution._tag).toBe('Melee')
       if (resolution._tag === 'Melee') expect(resolution.request.damage).toBe(7)
@@ -99,11 +100,11 @@ describe('targeted primary attack', () => {
       const context = yield* makeContext(4)
       yield* spawnHostile(context.roster, 5)
 
-      const resolution = yield* resolveTargetedPrimaryAttack(
+      const resolution = yield* Effect.orDie(resolveTargetedPrimaryAttack(
         context.store.api,
         context.roster.api,
         context.player.api,
-      )
+      ))
 
       expect(resolution._tag).toBe('Block')
       if (resolution._tag === 'Block') {
@@ -113,17 +114,45 @@ describe('targeted primary attack', () => {
     }),
   )
 
+  it.effect('preserves invalid block reach as a typed failure', () =>
+    Effect.gen(function* () {
+      const context = yield* makeContext()
+
+      const resolutionFailure = yield* Effect.flip(
+        resolveTargetedPrimaryAttack(
+          context.store.api,
+          context.roster.api,
+          context.player.api,
+          { blockReach: Number.NaN },
+        ),
+      )
+      expect(resolutionFailure).toBeInstanceOf(Brand.BrandError)
+
+      const requestFailure = yield* Effect.flip(
+        requestTargetedPrimaryAttack(
+          context.state,
+          context.store.api,
+          context.roster.api,
+          context.player.api,
+          { blockReach: Number.NaN },
+        ),
+      )
+      expect(requestFailure).toBeInstanceOf(Brand.BrandError)
+      expect(yield* inboxSizes(context.state)).toStrictEqual({ breaks: 0, melee: 0 })
+    }),
+  )
+
   it.effect('wraps a melee resolution with exactly one enqueue and hides its request', () =>
     Effect.gen(function* () {
       const context = yield* makeContext()
       const enemy = yield* spawnHostile(context.roster, 4)
 
-      const result = yield* requestTargetedPrimaryAttack(
+      const result = yield* Effect.orDie(requestTargetedPrimaryAttack(
         context.state,
         context.store.api,
         context.roster.api,
         context.player.api,
-      )
+      ))
 
       expect(result._tag).toBe('Melee')
       if (result._tag === 'Melee') expect(result.target.id).toBe(enemy.id)
@@ -137,12 +166,12 @@ describe('targeted primary attack', () => {
       const context = yield* makeContext(2)
       const enemy = yield* spawnHostile(context.roster, 4)
 
-      const result = yield* requestTargetedPrimaryAttack(
+      const result = yield* Effect.orDie(requestTargetedPrimaryAttack(
         context.state,
         context.store.api,
         context.roster.api,
         context.player.api,
-      )
+      ))
 
       expect(result._tag).toBe('Melee')
       if (result._tag === 'Melee') expect(result.target.id).toBe(enemy.id)
@@ -155,12 +184,12 @@ describe('targeted primary attack', () => {
       const context = yield* makeContext(4)
       yield* spawnHostile(context.roster, 3.5)
 
-      const result = yield* requestTargetedPrimaryAttack(
+      const result = yield* Effect.orDie(requestTargetedPrimaryAttack(
         context.state,
         context.store.api,
         context.roster.api,
         context.player.api,
-      )
+      ))
 
       expect(result._tag).toBe('Block')
       if (result._tag === 'Block') expect(result.target.position).toStrictEqual({ x: 0, y: 65, z: 4 })
@@ -173,12 +202,12 @@ describe('targeted primary attack', () => {
       const context = yield* makeContext(4)
       yield* spawnHostile(context.roster, 5)
 
-      const result = yield* requestTargetedPrimaryAttack(
+      const result = yield* Effect.orDie(requestTargetedPrimaryAttack(
         context.state,
         context.store.api,
         context.roster.api,
         context.player.api,
-      )
+      ))
 
       expect(result._tag).toBe('Block')
       expect(yield* inboxSizes(context.state)).toStrictEqual({ breaks: 1, melee: 0 })
@@ -191,12 +220,12 @@ describe('targeted primary attack', () => {
       yield* spawnHostile(context.roster, 3)
       const nearest = yield* spawnHostile(context.roster, 4)
 
-      const result = yield* requestTargetedPrimaryAttack(
+      const result = yield* Effect.orDie(requestTargetedPrimaryAttack(
         context.state,
         context.store.api,
         context.roster.api,
         context.player.api,
-      )
+      ))
 
       expect(result._tag).toBe('Melee')
       if (result._tag === 'Melee') expect(result.target.id).toBe(nearest.id)
@@ -208,12 +237,12 @@ describe('targeted primary attack', () => {
     Effect.gen(function* () {
       const context = yield* makeContext()
 
-      const result = yield* requestTargetedPrimaryAttack(
+      const result = yield* Effect.orDie(requestTargetedPrimaryAttack(
         context.state,
         context.store.api,
         context.roster.api,
         context.player.api,
-      )
+      ))
 
       expect(result).toStrictEqual({ _tag: 'None' })
       expect(yield* inboxSizes(context.state)).toStrictEqual({ breaks: 0, melee: 0 })
@@ -225,13 +254,13 @@ describe('targeted primary attack', () => {
       const context = yield* makeContext()
       yield* spawnHostile(context.roster, 4)
 
-      const result = yield* requestTargetedPrimaryAttack(
+      const result = yield* Effect.orDie(requestTargetedPrimaryAttack(
         context.state,
         context.store.api,
         context.roster.api,
         context.player.api,
         { meleeReach: Number.NaN },
-      )
+      ))
 
       expect(result).toStrictEqual({ _tag: 'None' })
       expect(yield* inboxSizes(context.state)).toStrictEqual({ breaks: 0, melee: 0 })

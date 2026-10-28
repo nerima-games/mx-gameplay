@@ -1,7 +1,12 @@
 import { targetBlockFromPlayerPose } from '@nerima-games/mc-sim'
 import { Effect, Option } from 'effect'
 
-import { blockPosition, blockTypeOfId, type BlockPosition } from '@nerima-games/mc-kernel'
+import {
+  BlockAxis,
+  blockPosition,
+  blockTypeOfId,
+  type BlockPosition,
+} from '@nerima-games/mc-kernel'
 import type { BlockReading, ChunkStoreApi } from '@nerima-games/mc-worldgen'
 import {
   rightClickRoute,
@@ -11,6 +16,9 @@ import type { PlayerServiceApi } from '@nerima-games/mc-sim'
 import { DEFAULT_BLOCK_REACH } from './registration.js'
 
 const coordinateKey = (x: number, y: number, z: number): string => `${x},${y},${z}`
+
+const blockPositionAt = (x: number, y: number, z: number): BlockPosition =>
+  blockPosition(BlockAxis(x + 0), BlockAxis(y + 0), BlockAxis(z + 0))
 
 /** Resolve the right-click route for the block currently targeted by the player. */
 export const targetedRightClickRoute = (
@@ -25,10 +33,14 @@ export const targetedRightClickRoute = (
     // (`domain/dda.js`) advances exactly one axis by exactly one cell per
     // step, so no two steps of one walk ever produce the same `(x, y, z)` —
     // there is no candidate here to deduplicate.
-    targetBlockFromPlayerPose(pose, maxDistance, (x, y, z) => {
-      candidates.push(blockPosition(x, y, z))
-      return false
-    })
+    yield* Effect.orDie(
+      Effect.fromResult(
+        targetBlockFromPlayerPose(pose, maxDistance, (x, y, z) => {
+          candidates.push(blockPositionAt(x, y, z))
+          return false
+        }),
+      ),
+    )
 
     const readings = new Map<string, BlockReading>()
     for (const position of candidates) {
@@ -39,13 +51,17 @@ export const targetedRightClickRoute = (
       )
       if (reading._tag === 'Block' && reading.block !== 0) break
     }
-    const target = targetBlockFromPlayerPose(
-      pose,
-      maxDistance,
-      (x, y, z) => {
-        const reading = readings.get(coordinateKey(x, y, z))
-        return reading?._tag === 'Block' && reading.block !== 0
-      },
+    const target = yield* Effect.orDie(
+      Effect.fromResult(
+        targetBlockFromPlayerPose(
+          pose,
+          maxDistance,
+          (x, y, z) => {
+            const reading = readings.get(coordinateKey(x, y, z))
+            return reading?._tag === 'Block' && reading.block !== 0
+          },
+        ),
+      ),
     )
     if (Option.isNone(target)) return undefined
 
@@ -67,8 +83,17 @@ export const targetedRightClickRoute = (
     if (reading?._tag !== 'Block') return undefined
     /* v8 ignore stop */
 
+    const blockType = yield* Effect.orDie(
+      Effect.fromResult(blockTypeOfId(reading.block)),
+    )
+    if (blockType === undefined) return undefined
+
     return rightClickRoute(
-      blockPosition(target.value.position.x, target.value.position.y, target.value.position.z),
-      blockTypeOfId(reading.block),
+      blockPositionAt(
+        target.value.position.x,
+        target.value.position.y,
+        target.value.position.z,
+      ),
+      blockType,
     )
   })
