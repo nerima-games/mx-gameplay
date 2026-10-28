@@ -39,13 +39,19 @@
  * this rule still owns neither the portal ledger nor world generation.
  */
 import { Effect } from 'effect'
-import { blockPosition, type BlockPosition } from '@nerima-games/mc-kernel'
+import {
+  PositionAxis,
+  blockPosition,
+  position,
+  type BlockPosition,
+  type Position,
+} from '@nerima-games/mc-kernel'
 import {
   type Dimension,
   type PortalTravelPlan,
   resolveNetherTravel,
 } from '@nerima-games/mc-worldgen'
-import { type PlayerServiceApi } from '@nerima-games/mc-sim'
+import type { PlayerServiceApi, PlayerServiceInputError } from '@nerima-games/mc-sim'
 
 /**
  * Stable empty default for direct callers and frame states without a supplied
@@ -55,6 +61,12 @@ export const NO_KNOWN_PORTALS: ReadonlyArray<BlockPosition> = []
 
 const asWorldgenPosition = (position: BlockPosition) =>
   blockPosition(position.x, position.y, position.z)
+
+const asPlayerPosition = (positionValue: BlockPosition): Position => position(
+  PositionAxis(positionValue.x),
+  PositionAxis(positionValue.y),
+  PositionAxis(positionValue.z),
+)
 
 /**
  * Perform a crossing: resolve the plan, move, and switch.
@@ -79,7 +91,7 @@ export const applyPortalTravel = (
   player: PlayerServiceApi,
   playerCell: BlockPosition,
   candidates: ReadonlyArray<BlockPosition> = NO_KNOWN_PORTALS,
-): Effect.Effect<PortalTravelPlan> =>
+): Effect.Effect<PortalTravelPlan, PlayerServiceInputError> =>
   Effect.gen(function* () {
     const from: Dimension = yield* player.dimension
     const plan = resolveNetherTravel(
@@ -88,7 +100,7 @@ export const applyPortalTravel = (
       candidates.map(asWorldgenPosition),
     )
 
-    yield* player.moveTo({ x: plan.destination.x, y: plan.destination.y, z: plan.destination.z })
+    yield* player.moveTo(asPlayerPosition(plan.destination))
     yield* player.setDimension(plan.toDimension)
 
     return plan

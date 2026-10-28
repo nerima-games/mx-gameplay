@@ -15,7 +15,7 @@
  */
 import { describe, expect, it } from '@effect/vitest'
 import { makeTimeService, type Slot } from '@nerima-games/mc-sim'
-import { Effect, Ref } from 'effect'
+import { Effect, Ref, Result } from 'effect'
 import {
   enderPearlDisplacement,
   enderPearlDistance,
@@ -42,14 +42,15 @@ import { makeEntityManagerDouble } from './support/entity-manager-double'
 import { makePlayerServiceDouble } from './support/player-service-double'
 import { makeInventoryDouble } from './support/inventory-service-double'
 import { runFrame } from './support/frame-runner'
-import { StackCount, type BlockId } from '@nerima-games/mc-kernel'
+import { itemStack, position, PositionAxis, StackCount, type BlockId } from '@nerima-games/mc-kernel'
 
-const ORIGIN = { x: 10, y: 64, z: 10 }
+const ORIGIN = position(PositionAxis(10), PositionAxis(64), PositionAxis(10))
+const PEARL_STACK = Result.getOrThrow(itemStack('ender_pearl', StackCount(1)))
 
 /** A frame with the shipped stages over the three doubles. */
 const inventoryWithPearl = (): ReadonlyArray<Slot> =>
   Array.from({ length: 36 }, (_, index) =>
-    index === 0 ? { item: 'ender_pearl' as const, count: StackCount(1) } : undefined,
+    index === 0 ? PEARL_STACK : undefined,
   )
 
 const scene = (inventorySlots?: ReadonlyArray<Slot>) =>
@@ -280,10 +281,7 @@ describe('gameplay:interactions — the pearl arm', () => {
 
       const outcomes = yield* Ref.get(state.enderPearlOutcomes)
       expect(outcomes[0]?.damage).toBeUndefined()
-      expect((yield* inventory.api.storageSnapshot).inventory.slots[0]).toStrictEqual({
-        item: 'ender_pearl',
-        count: StackCount(1),
-      })
+      expect((yield* inventory.api.storageSnapshot).inventory.slots[0]).toStrictEqual(PEARL_STACK)
     }),
   )
 

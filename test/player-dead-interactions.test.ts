@@ -1,7 +1,7 @@
 import { describe, expect, it } from '@effect/vitest'
 import { emptyFurnaceState, makeTimeService } from '@nerima-games/mc-sim'
-import { Effect, Ref } from 'effect'
-import { blockPosition, blockPositionKeyOf, DeltaTimeSecs } from '@nerima-games/mc-kernel'
+import { Effect, Ref, Result } from 'effect'
+import { BlockAxis, blockPosition, blockPositionKeyOf, DeltaTimeSecs, PositionAxis, position } from '@nerima-games/mc-kernel'
 import { type MobBehaviour } from '../src/domain/entities/mob-frame'
 import {
   drainBlockPlacementResults,
@@ -30,9 +30,14 @@ import { FrameServicesLayer } from './support/frame-services'
 import { makeInventoryDouble } from './support/inventory-service-double'
 import { makePlayerServiceDouble } from './support/player-service-double'
 
-const cell = blockPosition(1, 64, 1)
+const blockAt = (x: number, y: number, z: number) =>
+  blockPosition(BlockAxis(x), BlockAxis(y), BlockAxis(z))
+const playerAt = (x: number, y: number, z: number) =>
+  position(PositionAxis(x), PositionAxis(y), PositionAxis(z))
+
+const cell = blockAt(1, 64, 1)
 const shot = {
-  origin: { x: 0, y: 64, z: 0 },
+  origin: playerAt(0, 64, 0),
   dirX: 0,
   dirY: 0,
   dirZ: 1,
@@ -40,8 +45,8 @@ const shot = {
   inventory: { mode: 'creative', slotIndex: 0 },
 } as const
 const melee = {
-  origin: { x: 0, y: 64, z: 0 },
-  direction: { x: 0, y: 0, z: 1 },
+  origin: playerAt(0, 64, 0),
+  direction: playerAt(0, 0, 1),
   reach: 3,
   damage: 4,
 }
@@ -68,11 +73,11 @@ describe('dead-player interaction boundary', () => {
       yield* requestBlockBreak(state, cell)
       yield* requestBlockPlacementCommand(state, {
         requestId: 'place',
-        positionKey: blockPositionKeyOf(blockPosition(2, 64, 1)),
+        positionKey: blockPositionKeyOf(blockAt(2, 64, 1)),
         heldItem: 'sand',
       })
       yield* requestBlockPlacement(state, {
-        positionKey: blockPositionKeyOf(blockPosition(3, 64, 1)),
+        positionKey: blockPositionKeyOf(blockAt(3, 64, 1)),
         heldItem: 'sand',
       })
       yield* requestBlockUse(state, 'use-block', cell)
@@ -151,7 +156,7 @@ describe('dead-player interaction boundary', () => {
       yield* setPlayerDead(state, true)
       const placement = {
         requestId: 'same-placement',
-        positionKey: blockPositionKeyOf(blockPosition(2, 64, 1)),
+        positionKey: blockPositionKeyOf(blockAt(2, 64, 1)),
         heldItem: 'sand' as const,
       } as const
 
@@ -168,7 +173,7 @@ describe('dead-player interaction boundary', () => {
       yield* requestBlockPlacementCommand(state, placement)
       yield* requestBlockPlacementCommand(state, {
         ...placement,
-        positionKey: blockPositionKeyOf(blockPosition(4, 64, 1)),
+        positionKey: blockPositionKeyOf(blockAt(4, 64, 1)),
       })
       yield* requestBowShot(state, 'same-bow', shot)
       yield* runInteractions
@@ -187,7 +192,7 @@ describe('dead-player interaction boundary', () => {
       const { state, runInteractions } = yield* scene
       yield* setPlayerDead(state, true)
       yield* requestItemUse(state, 'player-use', cell, 'flint_and_steel')
-      yield* requestFurnaceAdvance(state, 'furnace', emptyFurnaceState(), 10)
+      yield* requestFurnaceAdvance(state, 'furnace', Result.getOrThrow(emptyFurnaceState()), 10)
 
       yield* runInteractions
 
