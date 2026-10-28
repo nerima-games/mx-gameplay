@@ -46,7 +46,6 @@ import {
   resultOrDie,
   isBlockPlacementCommand,
   isSuccessfulBlockUse,
-  knockbackDirection,
   meleeTarget,
   openChunkWindow,
   planFurnaceAdvance,
@@ -78,6 +77,7 @@ import type { BlockId } from '@nerima-games/mc-kernel'
 import { Equal, Result } from 'effect'
 import { PlayerStorageSnapshotSchema, withInventory, type PlayerStorage } from '@nerima-games/mc-sim'
 import type { BlockPosition } from '@nerima-games/mc-kernel'
+import { prepareKnockbackDirection } from '../domain/interactions/knockback.js'
 import type {
   BlockPositionKey,
   BlockUseRequest,
@@ -948,6 +948,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
         const shoves: Array<BowKnockback> = []
         const bowHits: Array<BowHit> = []
         if (bowShots.length > 0) {
+          const shooterPose = yield* player.pose
           const candidates = playerDead ? [] : yield* roster.entities
           const handledRequestIds = new Set(yield* Ref.get(state.handledBowShotRequestIds))
 
@@ -1094,13 +1095,11 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
             // math are both pure, and the roster is not touched again until
             // `resolveBowHits` runs after this loop. The lookup cannot miss.
             const target = candidates.find((candidate) => candidate.id === hit.id)!
-            shoves.push({
-              id: hit.id,
-              direction: knockbackDirection(
-                target.feetPosition.x - shot.origin.x,
-                target.feetPosition.z - shot.origin.z,
-              ),
-            })
+            const knockback = yield* resultOrDie(prepareKnockbackDirection(
+              target.feetPosition.x - shooterPose.feetPosition.x,
+              target.feetPosition.z - shooterPose.feetPosition.z,
+            ))
+            shoves.push({ id: hit.id, direction: knockback.direction })
           }
 
           yield* Ref.set(state.handledBowShotRequestIds, handledRequestIds)

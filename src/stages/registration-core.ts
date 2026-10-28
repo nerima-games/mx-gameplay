@@ -242,7 +242,7 @@ import {
   type EntityManagerApi,
 } from '@nerima-games/mc-sim'
 import type { Damage } from '../domain/death-cause.js'
-import { resolveArmorHit } from '../domain/combat/armor.js'
+import { prepareArmorHit } from '../domain/combat/armor.js'
 import {
   resolveHostileContacts,
   resolvePlayerBlastDamage,
@@ -401,7 +401,7 @@ export const resolveArmoredPlayerDamages = (
 ): Effect.Effect<ReadonlyArray<PlayerDamageEvent>> =>
   Effect.forEach(damages, (event) =>
     Effect.gen(function* () {
-      const resolved = resolveArmorHit(yield* inventory.equipmentSnapshot, event.damage)
+      const resolved = yield* resultOrDie(prepareArmorHit(yield* inventory.equipmentSnapshot, event.damage))
       if (resolved.durabilityWear > 0) {
         yield* Effect.forEach(resolved.wornSlots, (slot) =>
           inventory.damageAt({ _tag: 'Equipment', slot }, resolved.durabilityWear),
@@ -437,7 +437,7 @@ const prepareFirePlayerDamage = (
   let storage = local
   const resolvedDamages: PlayerDamageEvent[] = []
   for (const event of damages) {
-    const resolved = resolveArmorHit(storage.equipment, event.damage)
+    const resolved = yield* resultOrDie(prepareArmorHit(storage.equipment, event.damage))
     resolvedDamages.push({ ...event, damage: resolved.damage })
     if (resolved.durabilityWear === 0) continue
 

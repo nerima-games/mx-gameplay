@@ -929,6 +929,7 @@ const scene = (initial: EntityRoster<MobBehaviour>, inventorySlots?: ReadonlyArr
       roster,
       state,
       inventory,
+      player,
       stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api, time),
     }
   })
@@ -1053,7 +1054,8 @@ inventory: { mode: 'creative', slotIndex: 0 },
 
   it.effect('the shove is computed and parked, because nothing here can deliver it', () =>
     Effect.gen(function* () {
-      const { state, stages } = yield* scene(AHEAD)
+      const { state, stages, player } = yield* scene(AHEAD)
+      yield* player.api.moveTo(atPosition(5, 64, 5))
       yield* Ref.set(state.pendingBowShots, [
         { origin: EYE, dirX: 0, dirY: 0, dirZ: 1, chargeSecs: BOW_FULL_CHARGE_SECS , inventory: { mode: 'creative', slotIndex: 0 }},
       ])
@@ -1063,8 +1065,14 @@ inventory: { mode: 'creative', slotIndex: 0 },
       const shoves = yield* Ref.get(state.bowKnockbacks)
       expect(shoves).toHaveLength(1)
       expect(shoves[0]?.id).toBe('target')
-      // Straight ahead of the shooter, so straight away from them on +z.
-      expect(shoves[0]?.direction).toStrictEqual({ _tag: 'Away', x: 0, z: 1 })
+      // This legacy request starts at the fixture origin, but the server pose
+      // is (5, 5) on x/z; the knockback direction uses that authoritative pose.
+      const direction = shoves[0]?.direction
+      expect(direction?._tag).toBe('Away')
+      if (direction?._tag === 'Away') {
+        expect(direction.x).toBeCloseTo(-Math.SQRT1_2)
+        expect(direction.z).toBeCloseTo(Math.SQRT1_2)
+      }
     }),
   )
 
