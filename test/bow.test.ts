@@ -75,6 +75,8 @@ const unsafePosition = (x: number, y: number, z: number): Position => ({ x, y, z
 const EYE = atPosition(0, 64, 0 )
 const BOW_PARITY_FIXTURE = {
   source: 'https://minecraft.wiki/w/Bow',
+  powerSource: 'https://minecraft.wiki/w/Power',
+  paritySource: 'https://github.com/takeokunn/ts-minecraft/blob/main/docs/reference/vanilla-parity.md',
   edition: 'Java Edition 26.3',
 } as const
 const KNOCKBACK_PARITY_FIXTURE = {
@@ -124,12 +126,20 @@ describe('bowCharge — <reference-impl>/packages/entity/test/bow-resolution.tes
   })
 })
 
-describe('bowDamage — the reference oracle', () => {
-  it('returns BOW_MIN_DAMAGE at charge = 0 (:40-42)', () => {
+describe(`bowDamage — Java Edition charge bands (${BOW_PARITY_FIXTURE.source}; ${BOW_PARITY_FIXTURE.powerSource}; ${BOW_PARITY_FIXTURE.paritySource}, ${BOW_PARITY_FIXTURE.edition})`, () => {
+  it('returns BOW_MIN_DAMAGE below medium charge', () => {
     expect(bowDamage(0)).toBe(BOW_MIN_DAMAGE)
+    expect(bowDamage(0.1)).toBe(BOW_MIN_DAMAGE)
   })
 
-  it('returns BOW_MAX_DAMAGE at charge = 1 (:44-46)', () => {
+  it('uses the vanilla medium and full-charge damage bands', () => {
+    expect(bowDamage(0.2)).toBe(5)
+    expect(bowDamage(0.5)).toBe(5)
+    expect(bowDamage(0.8)).toBe(5)
+    expect(bowDamage(0.9)).toBe(6)
+  })
+
+  it('uses the parity fixed damage at critical charge', () => {
     expect(bowDamage(1)).toBe(BOW_MAX_DAMAGE)
   })
 
@@ -141,10 +151,11 @@ describe('bowDamage — the reference oracle', () => {
     expect(bowDamage(2)).toBe(BOW_MAX_DAMAGE)
   })
 
-  it('uses quadratic scaling: half charge is well below half max damage (:56-60)', () => {
-    // c=0.5 -> c^2=0.25 -> 1 + 0.25*8 = 3, not 5.
-    expect(bowDamage(0.5)).toBe(3)
-    expect(bowDamage(0.5)).toBeLessThan((BOW_MIN_DAMAGE + BOW_MAX_DAMAGE) / 2)
+  it('applies Power after selecting the medium-charge damage band', () => {
+    expect(bowDamage(0.5, { powerLevel: 1 })).toBe(8)
+    expect(bowDamage(0.5, { powerLevel: 4 })).toBe(12)
+    expect(bowDamage(0.5, { powerLevel: 5 })).toBe(13)
+    expect(bowDamage(0.1, { powerLevel: 4 })).toBe(3)
   })
 })
 
@@ -162,7 +173,7 @@ describe('canFireBow — the reference oracle', () => {
   })
 })
 
-describe(`C2 bow charge uses simulation ticks (${BOW_PARITY_FIXTURE.source}, ${BOW_PARITY_FIXTURE.edition})`, () => {
+describe(`C2 bow charge uses simulation ticks (${BOW_PARITY_FIXTURE.source}; ${BOW_PARITY_FIXTURE.powerSource}; ${BOW_PARITY_FIXTURE.paritySource}, ${BOW_PARITY_FIXTURE.edition})`, () => {
   it('counts one second as 20 server ticks and prepares the fixed full-charge damage', () => {
     const actor = EntityId('bow-owner')
     const startedAt = Schema.decodeUnknownSync(SimulationTickSchema)(100)
@@ -180,6 +191,25 @@ describe(`C2 bow charge uses simulation ticks (${BOW_PARITY_FIXTURE.source}, ${B
       damage: 9,
       fired: true,
     })
+  })
+
+  it('fires a no-charge shot after two server ticks and rejects one tick', () => {
+    const actor = EntityId('bow-owner')
+    const startedAt = Schema.decodeUnknownSync(SimulationTickSchema)(100)
+    const state = { actor, startedAt }
+    const oneTick = prepareBowAction(
+      { _tag: 'BowAction', actor, action: 'release' },
+      Schema.decodeUnknownSync(SimulationTickSchema)(101),
+      state,
+    )
+    const twoTicks = prepareBowAction(
+      { _tag: 'BowAction', actor, action: 'release' },
+      Schema.decodeUnknownSync(SimulationTickSchema)(102),
+      state,
+    )
+
+    expect(Result.isSuccess(oneTick) && oneTick.success.fired).toBe(false)
+    expect(Result.isSuccess(twoTicks) && twoTicks.success).toMatchObject({ charge: 0.1, damage: 1, fired: true })
   })
 
   it('applies the held bow Power level to a full-charge release', () => {
@@ -967,7 +997,7 @@ inventory: { mode: 'creative', slotIndex: 0 },
     }),
   )
 
-  it.effect('a partial draw does the quadratic damage, not the full one', () =>
+  it.effect('a medium charge uses the vanilla damage band, not the critical-charge damage', () =>
     Effect.gen(function* () {
       const { state, roster, stages } = yield* scene(AHEAD)
       yield* Ref.set(state.pendingBowShots, [
@@ -976,8 +1006,8 @@ inventory: { mode: 'creative', slotIndex: 0 },
 
       yield* runFrame(stages)
 
-      // charge 0.5 -> 3 damage, and NOT 5.
-      expect((yield* roster.api.snapshot).entities[0]?.healthPoints).toBe(17)
+      // Medium charge deals 5 damage, not the critical-charge 9.
+      expect((yield* roster.api.snapshot).entities[0]?.healthPoints).toBe(15)
     }),
   )
 
