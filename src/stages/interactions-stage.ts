@@ -35,7 +35,7 @@ import {
   useBucket,
   useFlintAndSteel,
 } from './registration-core.js'
-import { PositionAxis } from '@nerima-games/mc-kernel'
+import { EntityHealthPoints, PositionAxis } from '@nerima-games/mc-kernel'
 import { position as kernelPosition } from '@nerima-games/mc-kernel'
 import type { BlockId } from '@nerima-games/mc-kernel'
 import { Option, Result } from 'effect'
@@ -176,9 +176,9 @@ import {
 } from '../domain/interactions/throw-ender-pearl.js'
 import {
   ENDERMITE_KIND,
+  ENDERMITE_MAX_HEALTH,
   experienceOfCasualties,
   initialBehaviourOfKind,
-  maxHealthOfKind,
   planMobDamageRoster,
   rollCasualtyDrops,
 } from '../domain/entities/mob-frame.js'
@@ -2227,7 +2227,7 @@ const processEnderPearlThrow = (
           PositionAxis(destination.success.y),
           PositionAxis(destination.success.z),
         ),
-        healthPoints: maxHealthOfKind(ENDERMITE_KIND),
+        healthPoints: EntityHealthPoints(ENDERMITE_MAX_HEALTH),
         behaviour: initialBehaviourOfKind(ENDERMITE_KIND),
       })
       if (Result.isFailure(spawned)) {
