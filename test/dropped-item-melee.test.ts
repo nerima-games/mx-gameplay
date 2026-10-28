@@ -568,43 +568,41 @@ describe('dropped item entities', () => {
   )
 
   it('conserves item counts across partial committed pickups', () => {
-    FastCheck.assert(
-      FastCheck.property(FastCheck.integer({ min: 1, max: 64 }), (count) => {
-        const storage = emptyPlayerStorage()
-        const slots = emptySlots().map(() =>
-          Result.getOrThrow(itemStack('stone', StackCount(64))),
-        )
-        slots[0] = Result.getOrThrow(itemStack('gunpowder', StackCount(63)))
-        const coordinator = Effect.runSync(makePickupCoordinator(
-          { ...storage, inventory: { slots } },
-          [committedDroppedItem(count)],
-        ))
+    for (let count = 1; count <= 64; count += 1) {
+      const storage = emptyPlayerStorage()
+      const slots = emptySlots().map(() =>
+        Result.getOrThrow(itemStack('stone', StackCount(64))),
+      )
+      slots[0] = Result.getOrThrow(itemStack('gunpowder', StackCount(63)))
+      const coordinator = Effect.runSync(makePickupCoordinator(
+        { ...storage, inventory: { slots } },
+        [committedDroppedItem(count)],
+      ))
 
-        const pickups = Effect.runSync(pickupDroppedItemsCommitted(coordinator, committedPickupOwners, {
-          actor: pickupActor,
-          tick: 5,
-          position: origin,
-        }))
-        const playerSnapshot = Effect.runSync(coordinator.snapshot(
-          committedPickupOwners.playerStorage,
-          PlayerStorageSnapshotSchema,
-        ))
-        const droppedItemsSnapshot = Effect.runSync(coordinator.snapshot(
-          committedPickupOwners.droppedItems,
-          DroppedItemOwnerSnapshotSchema,
-        ))
-        const storedAfter = playerSnapshot.state.inventory.slots
-          .filter((slot) => slot?.item === 'gunpowder')
-          .reduce((total, slot) => total + (slot?.count ?? 0), 0)
-        const remaining = droppedItemsSnapshot.state.items
-          .filter(({ behaviour }) => behaviour.item === 'gunpowder')
-          .reduce((total, { behaviour }) => total + behaviour.count, 0)
-        const accepted = pickups.reduce((total, pickup) => total + pickup.accepted, 0)
+      const pickups = Effect.runSync(pickupDroppedItemsCommitted(coordinator, committedPickupOwners, {
+        actor: pickupActor,
+        tick: 5,
+        position: origin,
+      }))
+      const playerSnapshot = Effect.runSync(coordinator.snapshot(
+        committedPickupOwners.playerStorage,
+        PlayerStorageSnapshotSchema,
+      ))
+      const droppedItemsSnapshot = Effect.runSync(coordinator.snapshot(
+        committedPickupOwners.droppedItems,
+        DroppedItemOwnerSnapshotSchema,
+      ))
+      const storedAfter = playerSnapshot.state.inventory.slots
+        .filter((slot) => slot?.item === 'gunpowder')
+        .reduce((total, slot) => total + (slot?.count ?? 0), 0)
+      const remaining = droppedItemsSnapshot.state.items
+        .filter(({ behaviour }) => behaviour.item === 'gunpowder')
+        .reduce((total, { behaviour }) => total + behaviour.count, 0)
+      const accepted = pickups.reduce((total, pickup) => total + pickup.accepted, 0)
 
-        return storedAfter - 63 + remaining === count && accepted === storedAfter - 63
-      }),
-      { numRuns: 100 },
-    )
+      expect(storedAfter - 63 + remaining).toBe(count)
+      expect(accepted).toBe(storedAfter - 63)
+    }
   })
 
   it('strictly validates the replicated dropped-item owner with its public schema', () => {
