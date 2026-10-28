@@ -669,7 +669,7 @@ const fluidRuntimeSemaphoreFor = (
    * with it unregistered while `fluidRuntimeStateFor`'s twin registration is not
    * also missing. */
   if (semaphore === undefined) {
-    throw new Error('fluid frontier is not owned by a gameplay frame state')
+    return Effect.die(new Error('fluid frontier is not owned by a gameplay frame state'))
   }
   /* v8 ignore stop */
   return Effect.succeed(semaphore)
