@@ -1,9 +1,15 @@
 import { Result, Schema } from 'effect'
 import { isItemType, type ItemType } from '@nerima-games/mc-kernel'
 import {
+  enchantmentTableOutputItemOf as simEnchantmentTableOutputItemOf,
+  generateEnchantmentTableOffers as generateEnchantmentTableOffersWithSim,
   isDamageableItemType,
   isValidDurabilityForItem,
   type Durability,
+  type EnchantmentTableError,
+  type EnchantmentTableItem,
+  type EnchantmentTableOffers,
+  type EnchantmentTableRandom,
 } from '@nerima-games/mc-sim'
 
 import { applyArmorToDamage } from './combat/armor.js'
@@ -328,6 +334,33 @@ export const enchantmentOffers = (
   enchantmentOffer(seed, bookshelfCount, 1),
   enchantmentOffer(seed, bookshelfCount, 2),
 ]
+
+const enchantmentTableRandomForSeed = (seed: number): EnchantmentTableRandom => {
+  let state = normalizeSeed(seed)
+  const next = (): number => {
+    state = mixSeed((state + 0x9e3779b9) >>> 0)
+    return state / 0x1_0000_0000
+  }
+
+  return {
+    nextInt: (bound) => Math.floor(next() * bound),
+    nextFloat: next,
+  }
+}
+
+export const generateEnchantmentTableOffersForItem = (
+  item: EnchantmentTableItem,
+  seed: number,
+  bookshelfCount: number,
+): Result.Result<EnchantmentTableOffers, EnchantmentTableError> =>
+  generateEnchantmentTableOffersWithSim({
+    item,
+    bookshelfCount,
+    random: enchantmentTableRandomForSeed(seed),
+  })
+
+export const enchantmentTableResultItemOf = (item: EnchantmentTableItem): ItemType =>
+  simEnchantmentTableOutputItemOf(item)
 
 export type EnchantmentTableState = {
   readonly seed: number
