@@ -172,6 +172,85 @@ export type ExperienceOrbAbsorptionError =
   | Schema.SchemaError
   | WorldCommitCoordinatorError
 
+export type ExperienceOrbAbsorptionPlan = Readonly<{
+  context: DecodedExperienceOrbAbsorptionContext
+  vitals: ExperienceOrbVitalsOwnerSnapshot
+  orbs: ExperienceOrbOwnerSnapshot
+  experience: ExperienceOrbValue
+  levelBefore: number
+}>
+
+/** Calculates the vitals and orb owner candidates without committing them. */
+export const planExperienceOrbAbsorption = (
+  context: ExperienceOrbAbsorptionContext,
+  vitals: ExperienceOrbVitalsOwnerSnapshot,
+  orbs: ExperienceOrbOwnerSnapshot,
+): Effect.Effect<ExperienceOrbAbsorptionPlan, ExperienceOrbAbsorptionError> =>
+  Effect.gen(function* () {
+    const decodedContext = yield* Schema.decodeUnknownEffect(ExperienceOrbAbsorptionContextSchema)(context)
+    const matchingOrbs = orbs.orbs.filter(({ id }) => id === decodedContext.orb)
+    if (!isSingleElement(matchingOrbs)) {
+      const failure = yield* Schema.decodeUnknownEffect(ExperienceOrbAbsorptionFailureSchema)({
+        _tag: 'ExperienceOrbUnavailable',
+        orb: decodedContext.orb,
+        reason: matchingOrbs.length === 0 ? 'missing-orb' : 'duplicate-orb-id',
+      })
+      return yield* Effect.fail(failure)
+    }
+
+    const [orb] = matchingOrbs
+    const experience = yield* Schema.decodeUnknownEffect(ExperienceOrbValueSchema)(orb.value)
+    const experienceDelta = yield* Effect.fromResult(ExperienceDelta.result(experience))
+    const levelBefore = experienceLevel(vitals.vitals)
+    return {
+      context: decodedContext,
+      vitals: { vitals: addExperience(vitals.vitals, experienceDelta) },
+      orbs: { orbs: orbs.orbs.filter(({ id }) => id !== decodedContext.orb) },
+      experience,
+      levelBefore,
+    }
+  })
+
+export const experienceOrbAbsorptionResultAfterCommit = (
+  plan: ExperienceOrbAbsorptionPlan,
+  committedVitals: ExperienceOrbVitalsOwnerSnapshot,
+  committedOrbs: ExperienceOrbOwnerSnapshot,
+  owners: ExperienceOrbAbsorptionOwners,
+): Effect.Effect<ExperienceOrbAbsorption, ExperienceOrbAbsorptionError> =>
+  Effect.gen(function* () {
+    if (committedOrbs.orbs.some(({ id }) => id === plan.context.orb)) {
+      const failure = yield* Schema.decodeUnknownEffect(ExperienceOrbAbsorptionCommitResultInvalidSchema)({
+        _tag: 'ExperienceOrbAbsorptionCommitResultInvalid',
+        reason: 'orb-not-consumed',
+        owners: [owners.orbs],
+      })
+      return yield* Effect.fail(failure)
+    }
+
+    const committedLevel = experienceLevel(committedVitals.vitals)
+    const events: Array<DomainEvent> = [
+      yield* Schema.decodeUnknownEffect(DomainEventSchema)({
+        _tag: 'ExperienceCollected',
+        tick: plan.context.tick,
+        player: plan.context.actor,
+        orb: plan.context.orb,
+        amount: plan.experience,
+      }),
+    ]
+
+    if (committedLevel > plan.levelBefore) {
+      events.push(yield* Schema.decodeUnknownEffect(DomainEventSchema)({
+        _tag: 'LevelUp',
+        tick: plan.context.tick,
+        entity: plan.context.actor,
+        position: plan.context.position,
+        level: committedLevel,
+      }))
+    }
+
+    return yield* Schema.decodeUnknownEffect(ExperienceOrbAbsorptionSchema)(events)
+  })
+
 /**
  * Commits against host-registered WCC owners. This does not synchronize the
  * existing VitalsService or EntityManager Ref state.
@@ -185,7 +264,6 @@ export const absorbExperienceOrb: (
   ExperienceOrbAbsorptionError
 > = (coordinator, owners, context) =>
   Effect.gen(function* () {
-    const decodedContext = yield* Schema.decodeUnknownEffect(ExperienceOrbAbsorptionContextSchema)(context)
     const vitalsSnapshot = yield* coordinator.snapshot(
       owners.vitals,
       ExperienceOrbVitalsOwnerSnapshotSchema,
@@ -202,33 +280,18 @@ export const absorbExperienceOrb: (
       }))
     }
 
-    const matchingOrbs = orbsSnapshot.state.orbs.filter(({ id }) => id === decodedContext.orb)
-    if (!isSingleElement(matchingOrbs)) {
-      const failure = yield* Schema.decodeUnknownEffect(ExperienceOrbAbsorptionFailureSchema)({
-        _tag: 'ExperienceOrbUnavailable',
-        orb: decodedContext.orb,
-        reason: matchingOrbs.length === 0 ? 'missing-orb' : 'duplicate-orb-id',
-      })
-      return yield* Effect.fail(failure)
-    }
-
-    const [orb] = matchingOrbs
-
-    const experience = yield* Schema.decodeUnknownEffect(ExperienceOrbValueSchema)(orb.value)
-    const experienceDelta = yield* Effect.fromResult(ExperienceDelta.result(experience))
-    const before = vitalsSnapshot.state.vitals
-    const after = addExperience(before, experienceDelta)
-    const levelBefore = experienceLevel(before)
-    const nextOrbs: ExperienceOrbOwnerSnapshot = {
-      orbs: orbsSnapshot.state.orbs.filter(({ id }) => id !== decodedContext.orb),
-    }
+    const plan = yield* planExperienceOrbAbsorption(
+      context,
+      vitalsSnapshot.state,
+      orbsSnapshot.state,
+    )
 
     const delta = yield* coordinator.commit({
       expectedRevision: vitalsSnapshot.revision,
       expectedDimensions: [],
       changes: [
-        { ownerId: owners.vitals, state: { vitals: after } },
-        { ownerId: owners.orbs, state: nextOrbs },
+        { ownerId: owners.vitals, state: plan.vitals },
+        { ownerId: owners.orbs, state: plan.orbs },
       ],
     })
     const committedVitalsChange = delta.changes.find(({ owner }) => owner === owners.vitals)
@@ -251,35 +314,5 @@ export const absorbExperienceOrb: (
     const committedOrbs = yield* Schema.decodeUnknownEffect(
       ExperienceOrbOwnerSnapshotSchema,
     )(committedOrbChange.state)
-    const committedLevel = experienceLevel(committedVitals.vitals)
-    if (committedOrbs.orbs.some(({ id }) => id === decodedContext.orb)) {
-      const failure = yield* Schema.decodeUnknownEffect(ExperienceOrbAbsorptionCommitResultInvalidSchema)({
-        _tag: 'ExperienceOrbAbsorptionCommitResultInvalid',
-        reason: 'orb-not-consumed',
-        owners: [owners.orbs],
-      })
-      return yield* Effect.fail(failure)
-    }
-
-    const events: Array<DomainEvent> = [
-      yield* Schema.decodeUnknownEffect(DomainEventSchema)({
-        _tag: 'ExperienceCollected',
-        tick: decodedContext.tick,
-        player: decodedContext.actor,
-        orb: decodedContext.orb,
-        amount: experience,
-      }),
-    ]
-
-    if (committedLevel > levelBefore) {
-      events.push(yield* Schema.decodeUnknownEffect(DomainEventSchema)({
-        _tag: 'LevelUp',
-        tick: decodedContext.tick,
-        entity: decodedContext.actor,
-        position: decodedContext.position,
-        level: committedLevel,
-      }))
-    }
-
-    return yield* Schema.decodeUnknownEffect(ExperienceOrbAbsorptionSchema)(events)
+    return yield* experienceOrbAbsorptionResultAfterCommit(plan, committedVitals, committedOrbs, owners)
   })

@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import * as fc from 'fast-check'
-import { Effect, Ref, Schema } from 'effect'
+import { Effect, Ref, Result, Schema } from 'effect'
 import {
   BlockAxis,
   EntityHealthPoints,
   EntitySerial,
   PositionAxis,
+  StackCount,
   WorldIdSchema,
   blockPosition,
   position,
@@ -26,16 +27,31 @@ import {
   WorldRevisionConflict,
   type Entity,
   type PlayerPose,
+  type PlayerStorage,
   type TntServiceSnapshot,
+  type Vitals,
   type WorldCommitCoordinatorApi,
   type WorldCommitRequest,
 } from '@nerima-games/mc-sim'
 import { makeTransactionalChunkStoreDouble } from './support/transactional-stage-doubles.js'
 import { STONE, world } from './support/chunk-store-double.js'
-import { drainGameplayUnsupportedOperations, makeGameplayFrameState } from '../src/stages/registration-core.js'
+import {
+  drainGameplayUnsupportedOperations,
+  makeGameplayFrameState,
+  requestDroppedItemPickup,
+  requestExperienceOrbAbsorption,
+} from '../src/stages/registration-core.js'
 import { INITIAL_DIMENSION, INITIAL_PLAYER_POSE } from '../src/domain/in-memory-player.js'
-import { DroppedItemOwnerSnapshotSchema } from '../src/domain/entities/dropped-item.js'
-import { ExperienceOrbVitalsOwnerSnapshotSchema } from '../src/domain/entities/xp-orb.js'
+import {
+  DroppedItemOwnerSnapshotSchema,
+  type DroppedItemOwnerSnapshot,
+} from '../src/domain/entities/dropped-item.js'
+import {
+  ExperienceOrbOwnerSnapshotSchema,
+  ExperienceOrbVitalsOwnerSnapshotSchema,
+  createExperienceOrbValue,
+  type ExperienceOrbOwnerSnapshot,
+} from '../src/domain/entities/xp-orb.js'
 import { makeEntitiesStage } from '../src/stages/entities-stage.js'
 import { CREEPER_KIND, hostileMobSnapshot, type MobBehaviour } from '../src/domain/entities/mob-frame.js'
 import { ZOMBIE_KIND } from '../src/domain/mob/hostile-combat.js'
@@ -77,6 +93,10 @@ const makeHarness = (options: Readonly<{
   readonly rejectTntSnapshotCommit?: boolean
   readonly provideTntService?: boolean
   readonly playerPose?: PlayerPose
+  readonly playerStorage?: PlayerStorage
+  readonly droppedItems?: DroppedItemOwnerSnapshot
+  readonly vitals?: Vitals
+  readonly experienceOrbs?: ExperienceOrbOwnerSnapshot
   readonly tnt?: TntServiceSnapshot
 }> = {}) => Effect.gen(function* () {
   const entities = options.entity === null ? [] : [options.entity ?? creeperAt(3)]
@@ -89,12 +109,17 @@ const makeHarness = (options: Readonly<{
     world: worldId,
     owners: gameplayOwnerRegistrations({
       playerPose,
+      ...(options.playerStorage === undefined ? {} : { playerStorage: options.playerStorage }),
+      ...(options.droppedItems === undefined ? {} : { droppedItems: options.droppedItems }),
+      ...(options.vitals === undefined ? {} : { vitals: options.vitals }),
+      ...(options.experienceOrbs === undefined ? {} : { experienceOrbs: options.experienceOrbs }),
       entities: { entities, nextSerial: EntitySerial(entities.length) },
       ...(options.tnt === undefined ? {} : { tnt: options.tnt }),
     }),
     chunkStores: { forDimension: () => store.api },
   })
   let commits = 0
+  let rejectCommits = options.rejectCommit === true
   let tntCommits = 0
   let tntSnapshotCommits = 0
   let lastRequest: WorldCommitRequest | undefined
@@ -103,7 +128,7 @@ const makeHarness = (options: Readonly<{
     commit: (request) => {
       commits += 1
       lastRequest = request
-      return options.rejectCommit === true
+      return rejectCommits
         ? Effect.fail(new WorldRevisionConflict({
             expected: request.expectedRevision,
             actual: request.expectedRevision,
@@ -161,6 +186,7 @@ const makeHarness = (options: Readonly<{
     coordinator,
     stage: makeEntitiesStage(context),
     commits: () => commits,
+    rejectCommits: (reject: boolean) => { rejectCommits = reject },
     tntCommits: () => tntCommits,
     tntSnapshotCommits: () => tntSnapshotCommits,
     lastRequest: () => lastRequest,
@@ -501,5 +527,223 @@ describe('entities stage owner-backed MobSimulation', () => {
     expect(revisionAfter).toBe(revisionBefore)
     expect(await Effect.runPromise(harness.store.blockAt(centre))).toBe(STONE)
     expect(outputsAfter).toStrictEqual(outputsBefore)
+  })
+
+  it('commits registered dropped-item pickup owners once and publishes its event afterward', async () => {
+    const droppedItem = {
+      id: EntityId('test:dropped-item'),
+      feetPosition: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
+      behaviour: {
+        _tag: 'DroppedItem' as const,
+        item: 'gunpowder' as const,
+        count: StackCount(3),
+        durability: null,
+      },
+    }
+    const harness = await Effect.runPromise(makeHarness({
+      entity: null,
+      droppedItems: { items: [droppedItem] },
+    }))
+    const request = {
+      actor: EntityId('test:player'),
+      tick: 1,
+      position: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
+    }
+    await Effect.runPromise(requestDroppedItemPickup(harness.state, request))
+    const beforeStorage = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+      PlayerStorageSnapshotSchema,
+    ))
+    const beforeDropped = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_DROPPED_ITEMS_OWNER_ID,
+      DroppedItemOwnerSnapshotSchema,
+    ))
+
+    await harness.run(0 as DeltaTimeSecs)
+
+    const afterStorage = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+      PlayerStorageSnapshotSchema,
+    ))
+    const afterDropped = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_DROPPED_ITEMS_OWNER_ID,
+      DroppedItemOwnerSnapshotSchema,
+    ))
+    const executions = await Effect.runPromise(Ref.get(harness.state.droppedItemPickupExecutions))
+
+    expect(harness.commits()).toBe(1)
+    expect(harness.lastRequest()?.changes.map(({ ownerId }) => ownerId)).toStrictEqual([
+      GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+      GAMEPLAY_DROPPED_ITEMS_OWNER_ID,
+    ])
+    expect(harness.lastRequest()?.blockWrite).toBeUndefined()
+    expect(afterStorage.revision).toBe(beforeStorage.revision + 1)
+    expect(afterDropped.revision).toBe(beforeDropped.revision + 1)
+    expect(afterStorage.state.inventory.slots.some(
+      (slot) => slot?.item === 'gunpowder' && slot.count === 3,
+    )).toBe(true)
+    expect(afterDropped.state.items).toStrictEqual([])
+    expect(executions).toHaveLength(1)
+    expect(executions[0]?.outcome).toMatchObject({
+      _tag: 'Completed',
+      result: [{
+        event: {
+          _tag: 'ItemPickedUp',
+          source: { _tag: 'DroppedItem', id: droppedItem.id },
+          count: 3,
+        },
+      }],
+    })
+  })
+
+  it('keeps dropped-item pickup typed when its host owner is not registered', async () => {
+    const harness = await Effect.runPromise(makeHarness({ entity: null }))
+    const request = {
+      actor: EntityId('test:player'),
+      tick: 1,
+      position: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
+    }
+    await Effect.runPromise(requestDroppedItemPickup(harness.state, request))
+    const { droppedItemsOwnerId: omittedOwner, ...commitWithoutDroppedOwner } = harness.context.commit!
+    void omittedOwner
+    const context: GameplayStageContext = {
+      ...harness.context,
+      commit: commitWithoutDroppedOwner,
+    }
+
+    await Effect.runPromise(makeEntitiesStage(context).run(0 as DeltaTimeSecs).pipe(
+      Effect.provide(FrameServicesLayer),
+    ))
+
+    expect(harness.commits()).toBe(0)
+    expect(await Effect.runPromise(Ref.get(harness.state.droppedItemPickupExecutions))).toMatchObject([
+      { request, outcome: { _tag: 'Unsupported', reason: 'OwnerRegistrationUnavailable' } },
+    ])
+  })
+
+  it('requeues the complete dropped-item pickup after commit rejection without changing owners or output', async () => {
+    const droppedItem = {
+      id: EntityId('test:dropped-item-retry'),
+      feetPosition: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
+      behaviour: {
+        _tag: 'DroppedItem' as const,
+        item: 'gunpowder' as const,
+        count: StackCount(2),
+        durability: null,
+      },
+    }
+    const harness = await Effect.runPromise(makeHarness({
+      entity: null,
+      rejectCommit: true,
+      droppedItems: { items: [droppedItem] },
+    }))
+    const request = {
+      actor: EntityId('test:player'),
+      tick: 2,
+      position: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
+    }
+    await Effect.runPromise(requestDroppedItemPickup(harness.state, request))
+    const storageBefore = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+      PlayerStorageSnapshotSchema,
+    ))
+    const droppedBefore = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_DROPPED_ITEMS_OWNER_ID,
+      DroppedItemOwnerSnapshotSchema,
+    ))
+    const revisionBefore = await Effect.runPromise(harness.coordinator.revision)
+
+    await harness.run(0 as DeltaTimeSecs)
+
+    const storageAfterFailure = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+      PlayerStorageSnapshotSchema,
+    ))
+    const droppedAfterFailure = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_DROPPED_ITEMS_OWNER_ID,
+      DroppedItemOwnerSnapshotSchema,
+    ))
+    expect(harness.commits()).toBe(1)
+    expect(storageAfterFailure).toStrictEqual(storageBefore)
+    expect(droppedAfterFailure).toStrictEqual(droppedBefore)
+    expect(await Effect.runPromise(harness.coordinator.revision)).toBe(revisionBefore)
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingDroppedItemPickups))).toHaveLength(1)
+    expect((await Effect.runPromise(Ref.get(harness.state.pendingDroppedItemPickups)))[0]).toBe(request)
+    expect(await Effect.runPromise(Ref.get(harness.state.droppedItemPickupExecutions))).toStrictEqual([])
+
+    harness.rejectCommits(false)
+    await harness.run(0 as DeltaTimeSecs)
+
+    expect(harness.commits()).toBe(2)
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingDroppedItemPickups))).toStrictEqual([])
+    expect(await Effect.runPromise(Ref.get(harness.state.droppedItemPickupExecutions))).toMatchObject([
+      { request, outcome: { _tag: 'Completed' } },
+    ])
+  })
+
+  it('commits registered XP-orb absorption once and requeues after an atomic rejection', async () => {
+    const orbId = EntityId('test:xp-orb')
+    const orbValue = Result.getOrThrow(createExperienceOrbValue(5))
+    const harness = await Effect.runPromise(makeHarness({
+      entity: null,
+      rejectCommit: true,
+      experienceOrbs: { orbs: [{ id: orbId, value: orbValue }] },
+    }))
+    const request = {
+      actor: EntityId('test:player'),
+      orb: orbId,
+      tick: 3,
+      position: { dimension: INITIAL_DIMENSION, x: 0, y: 64, z: 0 },
+    }
+    await Effect.runPromise(requestExperienceOrbAbsorption(harness.state, request))
+    const vitalsBefore = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_VITALS_OWNER_ID,
+      ExperienceOrbVitalsOwnerSnapshotSchema,
+    ))
+    const orbsBefore = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
+      ExperienceOrbOwnerSnapshotSchema,
+    ))
+    const revisionBefore = await Effect.runPromise(harness.coordinator.revision)
+
+    await harness.run(0 as DeltaTimeSecs)
+
+    expect(harness.commits()).toBe(1)
+    expect(await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_VITALS_OWNER_ID,
+      ExperienceOrbVitalsOwnerSnapshotSchema,
+    ))).toStrictEqual(vitalsBefore)
+    expect(await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
+      ExperienceOrbOwnerSnapshotSchema,
+    ))).toStrictEqual(orbsBefore)
+    expect(await Effect.runPromise(harness.coordinator.revision)).toBe(revisionBefore)
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingExperienceOrbAbsorptions))).toEqual([request])
+    expect(await Effect.runPromise(Ref.get(harness.state.experienceOrbAbsorptionExecutions))).toStrictEqual([])
+
+    harness.rejectCommits(false)
+    await harness.run(0 as DeltaTimeSecs)
+
+    const vitalsAfter = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_VITALS_OWNER_ID,
+      ExperienceOrbVitalsOwnerSnapshotSchema,
+    ))
+    const orbsAfter = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
+      ExperienceOrbOwnerSnapshotSchema,
+    ))
+    const executions = await Effect.runPromise(Ref.get(harness.state.experienceOrbAbsorptionExecutions))
+    expect(harness.commits()).toBe(2)
+    expect(vitalsAfter.state.vitals.totalExperience).toBe(5)
+    expect(orbsAfter.state.orbs).toStrictEqual([])
+    expect(vitalsAfter.revision).toBe(revisionBefore + 1)
+    expect(orbsAfter.revision).toBe(revisionBefore + 1)
+    expect(executions).toMatchObject([{
+      request,
+      outcome: {
+        _tag: 'Completed',
+        result: [{ _tag: 'ExperienceCollected', amount: 5, orb: orbId }],
+      },
+    }])
   })
 })

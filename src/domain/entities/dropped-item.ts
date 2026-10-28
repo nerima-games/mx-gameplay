@@ -463,49 +463,46 @@ export type DroppedItemPickupFailure =
   | WorldCommitCoordinatorError
   | Schema.Schema.Type<typeof DroppedItemPickupCommitIncompleteSchema>
 
-type PlannedDroppedItemPickup = Readonly<{
+export type PlannedDroppedItemPickup = Readonly<{
   source: Schema.Schema.Type<typeof EntityIdSchema>
   item: ItemType
   countBefore: number
 }>
 
+export type DroppedItemPickupPlan = Readonly<{
+  request: Schema.Schema.Type<typeof DroppedItemPickupRequestSchema>
+  playerStorage: PlayerStorage
+  droppedItems: DroppedItemOwnerSnapshot
+  planned: ReadonlyArray<PlannedDroppedItemPickup>
+}>
+
 /**
- * Atomically applies a host-owned pickup candidate to replicated player and
- * dropped-item owners. EntityManager integration remains the host's Stage 8 task.
+ * Builds an owner candidate without committing it. The stage owns the snapshot
+ * and atomic commit boundary.
  */
-export const pickupDroppedItemsCommitted = (
-  coordinator: WorldCommitCoordinatorApi,
-  owners: DroppedItemPickupOwners,
+export const planDroppedItemPickup = (
   input: DroppedItemPickupRequest,
-): Effect.Effect<DroppedItemPickupResult, DroppedItemPickupFailure> =>
+  playerStorage: PlayerStorage,
+  droppedItems: DroppedItemOwnerSnapshot,
+): Effect.Effect<DroppedItemPickupPlan, DroppedItemPickupFailure> =>
   Effect.gen(function* () {
     const request = yield* Schema.decodeUnknownEffect(DroppedItemPickupRequestSchema)(input)
     if (request.position === undefined) {
-      return yield* Schema.decodeUnknownEffect(DroppedItemPickupResultSchema)([])
-    }
-
-    const playerSnapshot = yield* coordinator.snapshot(
-      owners.playerStorage,
-      PlayerStorageSnapshotSchema,
-    )
-    const droppedItemsSnapshot = yield* coordinator.snapshot(
-      owners.droppedItems,
-      DroppedItemOwnerSnapshotSchema,
-    )
-    if (playerSnapshot.revision !== droppedItemsSnapshot.revision) {
-      return yield* Effect.fail(new WorldRevisionConflict({
-        expected: playerSnapshot.revision,
-        actual: droppedItemsSnapshot.revision,
-      }))
+      return {
+        request,
+        playerStorage,
+        droppedItems,
+        planned: [],
+      }
     }
 
     const radius = request.radius ?? DROPPED_ITEM_PICKUP_RADIUS
     const radiusSquared = radius * radius
-    let storage = playerSnapshot.state
+    let storage = playerStorage
     const nextItems: Array<DroppedItemOwnerSnapshot['items'][number]> = []
     const planned: Array<PlannedDroppedItemPickup> = []
 
-    for (const droppedItem of droppedItemsSnapshot.state.items) {
+    for (const droppedItem of droppedItems.items) {
       if (
         (request.currentFrame !== undefined &&
           !isDroppedItemPickupEligible(
@@ -549,16 +546,88 @@ export const pickupDroppedItemsCommitted = (
       }
     }
 
-    if (planned.length === 0) {
+    const candidate = yield* Schema.decodeUnknownEffect(DroppedItemOwnerSnapshotSchema)({
+      items: nextItems,
+    })
+    const decodedStorage = yield* Schema.decodeUnknownEffect(PlayerStorageSnapshotSchema)(storage)
+    return {
+      request,
+      playerStorage: decodedStorage,
+      droppedItems: candidate,
+      planned,
+    }
+  })
+
+export const droppedItemPickupResultAfterCommit = (
+  plan: DroppedItemPickupPlan,
+  committedDroppedItems: DroppedItemOwnerSnapshot,
+): Effect.Effect<DroppedItemPickupResult, DroppedItemPickupFailure> =>
+  Effect.gen(function* () {
+    const committedCounts = new Map(
+      committedDroppedItems.items.map(({ id, behaviour }) => [id, behaviour.count]),
+    )
+    const pickups: Array<DroppedItemPickup> = []
+    for (const pickup of plan.planned) {
+      const acceptedCount = pickup.countBefore - (committedCounts.get(pickup.source) ?? 0)
+      const accepted = Result.getOrUndefined(
+        Schema.decodeUnknownResult(DroppedItemStackCountSchema)(acceptedCount),
+      )
+      if (accepted === undefined) continue
+      const event = yield* Schema.decodeUnknownEffect(DomainEventSchema)({
+        _tag: 'ItemPickedUp',
+        tick: plan.request.tick,
+        actor: plan.request.actor,
+        source: { _tag: 'DroppedItem', id: pickup.source },
+        item: itemIdOf(pickup.item),
+        count: accepted,
+      })
+      pickups.push({
+        actor: plan.request.actor,
+        source: pickup.source,
+        item: pickup.item,
+        accepted,
+        event,
+      })
+    }
+    return yield* Schema.decodeUnknownEffect(DroppedItemPickupResultSchema)(pickups)
+  })
+
+/** Convenience adapter for domain callers that own the WCC boundary themselves. */
+export const pickupDroppedItemsCommitted = (
+  coordinator: WorldCommitCoordinatorApi,
+  owners: DroppedItemPickupOwners,
+  input: DroppedItemPickupRequest,
+): Effect.Effect<DroppedItemPickupResult, DroppedItemPickupFailure> =>
+  Effect.gen(function* () {
+    const request = yield* Schema.decodeUnknownEffect(DroppedItemPickupRequestSchema)(input)
+    const playerSnapshot = yield* coordinator.snapshot(
+      owners.playerStorage,
+      PlayerStorageSnapshotSchema,
+    )
+    const droppedItemsSnapshot = yield* coordinator.snapshot(
+      owners.droppedItems,
+      DroppedItemOwnerSnapshotSchema,
+    )
+    if (playerSnapshot.revision !== droppedItemsSnapshot.revision) {
+      return yield* Effect.fail(new WorldRevisionConflict({
+        expected: playerSnapshot.revision,
+        actual: droppedItemsSnapshot.revision,
+      }))
+    }
+    const plan = yield* planDroppedItemPickup(
+      request,
+      playerSnapshot.state,
+      droppedItemsSnapshot.state,
+    )
+    if (plan.planned.length === 0) {
       return yield* Schema.decodeUnknownEffect(DroppedItemPickupResultSchema)([])
     }
-
     const delta = yield* coordinator.commit({
       expectedRevision: playerSnapshot.revision,
       expectedDimensions: [],
       changes: [
-        { ownerId: owners.playerStorage, state: storage },
-        { ownerId: owners.droppedItems, state: { items: nextItems } },
+        { ownerId: owners.playerStorage, state: plan.playerStorage },
+        { ownerId: owners.droppedItems, state: plan.droppedItems },
       ],
     })
     const committedPlayerState = delta.changes.find(({ owner }) => owner === owners.playerStorage)
@@ -575,37 +644,10 @@ export const pickupDroppedItemsCommitted = (
         missingOwners,
       }))
     }
-
     const committedDroppedItems = yield* Schema.decodeUnknownEffect(
       DroppedItemOwnerSnapshotSchema,
     )(committedDroppedItemsState.state)
-    const committedCounts = new Map(
-      committedDroppedItems.items.map(({ id, behaviour }) => [id, behaviour.count]),
-    )
-    const pickups: Array<DroppedItemPickup> = []
-
-    for (const pickup of planned) {
-      const acceptedCount = pickup.countBefore - (committedCounts.get(pickup.source) ?? 0)
-      const accepted = Result.getOrUndefined(Schema.decodeUnknownResult(DroppedItemStackCountSchema)(acceptedCount))
-      if (accepted === undefined) continue
-      const event = yield* Schema.decodeUnknownEffect(DomainEventSchema)({
-        _tag: 'ItemPickedUp',
-        tick: request.tick,
-        actor: request.actor,
-        source: { _tag: 'DroppedItem', id: pickup.source },
-        item: itemIdOf(pickup.item),
-        count: accepted,
-      })
-      pickups.push({
-        actor: request.actor,
-        source: pickup.source,
-        item: pickup.item,
-        accepted,
-        event,
-      })
-    }
-
-    return yield* Schema.decodeUnknownEffect(DroppedItemPickupResultSchema)(pickups)
+    return yield* droppedItemPickupResultAfterCommit(plan, committedDroppedItems)
   })
 
 export type DroppedItemMetadata = {

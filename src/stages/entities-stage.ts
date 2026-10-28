@@ -45,13 +45,18 @@ import { craterCells } from '../domain/interactions/explosion-crater.js'
 import {
   appendDroppedItemSpawns,
   DroppedItemOwnerSnapshotSchema,
-  pickupDroppedItemsCommitted,
+  DroppedItemPickupCommitIncompleteSchema,
+  droppedItemPickupResultAfterCommit,
+  planDroppedItemPickup,
   type DroppedItemSpawn,
   type DroppedItemOwnerSnapshot,
 } from '../domain/entities/dropped-item.js'
 import {
+  ExperienceOrbAbsorptionCommitResultInvalidSchema,
+  ExperienceOrbOwnerSnapshotSchema,
   ExperienceOrbVitalsOwnerSnapshotSchema,
-  absorbExperienceOrb,
+  experienceOrbAbsorptionResultAfterCommit,
+  planExperienceOrbAbsorption,
 } from '../domain/entities/xp-orb.js'
 import {
   experienceOfCasualties,
@@ -644,6 +649,7 @@ export const makeEntitiesStage = (context: GameplayStageContext): StageRegistrat
       Effect.orDie(Effect.gen(function* () {
         const pickupRequests = yield* Ref.getAndSet(state.pendingDroppedItemPickups, [])
         const pickupExecutions: Array<DroppedItemPickupExecution> = []
+        const retryPickups: Array<(typeof pickupRequests)[number]> = []
         for (const request of pickupRequests) {
           if (commit === undefined) {
             pickupExecutions.push({
@@ -659,19 +665,86 @@ export const makeEntitiesStage = (context: GameplayStageContext): StageRegistrat
             } as const)
             continue
           }
-          const result = yield* Effect.result(pickupDroppedItemsCommitted(
-            commit.coordinator,
-            {
-              playerStorage: commit.playerStorageOwnerId,
-              droppedItems: commit.droppedItemsOwnerId,
-            },
+          const owners = {
+            playerStorage: commit.playerStorageOwnerId,
+            droppedItems: commit.droppedItemsOwnerId,
+          }
+          const snapshots = yield* Effect.result(Effect.all([
+            commit.coordinator.snapshot(owners.playerStorage, PlayerStorageSnapshotSchema),
+            commit.coordinator.snapshot(owners.droppedItems, DroppedItemOwnerSnapshotSchema),
+          ]))
+          if (Result.isFailure(snapshots)) {
+            pickupExecutions.push({ request, outcome: { _tag: 'Failed', error: snapshots.failure } as const })
+            continue
+          }
+          const [storageSnapshot, droppedItemsSnapshot] = snapshots.success
+          if (storageSnapshot.revision !== droppedItemsSnapshot.revision) {
+            retryPickups.push(request)
+            continue
+          }
+          const planned = yield* Effect.result(planDroppedItemPickup(
             request,
+            storageSnapshot.state,
+            droppedItemsSnapshot.state,
+          ))
+          if (Result.isFailure(planned)) {
+            pickupExecutions.push({ request, outcome: { _tag: 'Failed', error: planned.failure } as const })
+            continue
+          }
+          if (planned.success.planned.length === 0) {
+            pickupExecutions.push({
+              request,
+              outcome: { _tag: 'Completed', result: [] } as const,
+            })
+            continue
+          }
+          const committed = yield* Effect.result(commit.coordinator.commit({
+            expectedRevision: storageSnapshot.revision,
+            expectedDimensions: [],
+            changes: [
+              { ownerId: owners.playerStorage, state: planned.success.playerStorage },
+              { ownerId: owners.droppedItems, state: planned.success.droppedItems },
+            ],
+          }))
+          if (Result.isFailure(committed)) {
+            retryPickups.push(request)
+            continue
+          }
+          const committedStorage = committed.success.changes.find(({ owner }) => owner === owners.playerStorage)
+          const committedDroppedItems = committed.success.changes.find(({ owner }) => owner === owners.droppedItems)
+          if (committedStorage === undefined || committedDroppedItems === undefined) {
+            const failure = yield* Schema.decodeUnknownEffect(DroppedItemPickupCommitIncompleteSchema)({
+              _tag: 'DroppedItemPickupCommitIncomplete',
+              missingOwners: [
+                ...(committedStorage === undefined ? [owners.playerStorage] : []),
+                ...(committedDroppedItems === undefined ? [owners.droppedItems] : []),
+              ],
+            })
+            pickupExecutions.push({ request, outcome: { _tag: 'Failed', error: failure } as const })
+            continue
+          }
+          const committedDroppedSnapshot = yield* Effect.result(Schema.decodeUnknownEffect(
+            DroppedItemOwnerSnapshotSchema,
+          )(committedDroppedItems.state))
+          if (Result.isFailure(committedDroppedSnapshot)) {
+            pickupExecutions.push({ request, outcome: { _tag: 'Failed', error: committedDroppedSnapshot.failure } as const })
+            continue
+          }
+          const result = yield* Effect.result(droppedItemPickupResultAfterCommit(
+            planned.success,
+            committedDroppedSnapshot.success,
           ))
           if (Result.isFailure(result)) {
             pickupExecutions.push({ request, outcome: { _tag: 'Failed', error: result.failure } as const })
           } else {
             pickupExecutions.push({ request, outcome: { _tag: 'Completed', result: result.success } as const })
           }
+        }
+        if (retryPickups.length > 0) {
+          yield* Ref.update(state.pendingDroppedItemPickups, (pending) => [
+            ...retryPickups,
+            ...pending,
+          ])
         }
         if (pickupExecutions.length > 0) {
           yield* Ref.update(state.droppedItemPickupExecutions, (items) => [
@@ -682,6 +755,7 @@ export const makeEntitiesStage = (context: GameplayStageContext): StageRegistrat
 
         const absorptionRequests = yield* Ref.getAndSet(state.pendingExperienceOrbAbsorptions, [])
         const absorptionExecutions: Array<ExperienceOrbAbsorptionExecution> = []
+        const retryAbsorptions: Array<(typeof absorptionRequests)[number]> = []
         for (const request of absorptionRequests) {
           if (commit === undefined) {
             absorptionExecutions.push({
@@ -697,19 +771,83 @@ export const makeEntitiesStage = (context: GameplayStageContext): StageRegistrat
             } as const)
             continue
           }
-          const result = yield* Effect.result(absorbExperienceOrb(
-            commit.coordinator,
-            {
-              vitals: commit.vitalsOwnerId,
-              orbs: commit.experienceOrbsOwnerId,
-            },
+          const owners = {
+            vitals: commit.vitalsOwnerId,
+            orbs: commit.experienceOrbsOwnerId,
+          }
+          const snapshots = yield* Effect.result(Effect.all([
+            commit.coordinator.snapshot(owners.vitals, ExperienceOrbVitalsOwnerSnapshotSchema),
+            commit.coordinator.snapshot(owners.orbs, ExperienceOrbOwnerSnapshotSchema),
+          ]))
+          if (Result.isFailure(snapshots)) {
+            absorptionExecutions.push({ request, outcome: { _tag: 'Failed', error: snapshots.failure } as const })
+            continue
+          }
+          const [vitalsSnapshot, orbsSnapshot] = snapshots.success
+          if (vitalsSnapshot.revision !== orbsSnapshot.revision) {
+            retryAbsorptions.push(request)
+            continue
+          }
+          const planned = yield* Effect.result(planExperienceOrbAbsorption(
             request,
+            vitalsSnapshot.state,
+            orbsSnapshot.state,
+          ))
+          if (Result.isFailure(planned)) {
+            absorptionExecutions.push({ request, outcome: { _tag: 'Failed', error: planned.failure } as const })
+            continue
+          }
+          const committed = yield* Effect.result(commit.coordinator.commit({
+            expectedRevision: vitalsSnapshot.revision,
+            expectedDimensions: [],
+            changes: [
+              { ownerId: owners.vitals, state: planned.success.vitals },
+              { ownerId: owners.orbs, state: planned.success.orbs },
+            ],
+          }))
+          if (Result.isFailure(committed)) {
+            retryAbsorptions.push(request)
+            continue
+          }
+          const committedVitals = committed.success.changes.find(({ owner }) => owner === owners.vitals)
+          const committedOrbs = committed.success.changes.find(({ owner }) => owner === owners.orbs)
+          if (committedVitals === undefined || committedOrbs === undefined) {
+            const failure = yield* Schema.decodeUnknownEffect(ExperienceOrbAbsorptionCommitResultInvalidSchema)({
+              _tag: 'ExperienceOrbAbsorptionCommitResultInvalid',
+              reason: 'missing-owner-change',
+              owners: [
+                ...(committedVitals === undefined ? [owners.vitals] : []),
+                ...(committedOrbs === undefined ? [owners.orbs] : []),
+              ],
+            })
+            absorptionExecutions.push({ request, outcome: { _tag: 'Failed', error: failure } as const })
+            continue
+          }
+          const finalSnapshots = yield* Effect.result(Effect.all([
+            Schema.decodeUnknownEffect(ExperienceOrbVitalsOwnerSnapshotSchema)(committedVitals.state),
+            Schema.decodeUnknownEffect(ExperienceOrbOwnerSnapshotSchema)(committedOrbs.state),
+          ]))
+          if (Result.isFailure(finalSnapshots)) {
+            absorptionExecutions.push({ request, outcome: { _tag: 'Failed', error: finalSnapshots.failure } as const })
+            continue
+          }
+          const result = yield* Effect.result(experienceOrbAbsorptionResultAfterCommit(
+            planned.success,
+            finalSnapshots.success[0],
+            finalSnapshots.success[1],
+            owners,
           ))
           if (Result.isFailure(result)) {
             absorptionExecutions.push({ request, outcome: { _tag: 'Failed', error: result.failure } as const })
           } else {
             absorptionExecutions.push({ request, outcome: { _tag: 'Completed', result: result.success } as const })
           }
+        }
+        if (retryAbsorptions.length > 0) {
+          yield* Ref.update(state.pendingExperienceOrbAbsorptions, (pending) => [
+            ...retryAbsorptions,
+            ...pending,
+          ])
         }
         if (absorptionExecutions.length > 0) {
           yield* Ref.update(state.experienceOrbAbsorptionExecutions, (items) => [
