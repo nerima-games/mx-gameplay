@@ -127,36 +127,50 @@ import {
   type FurnaceState,
   type InventoryServiceApi,
   PlayerServiceSnapshotSchema,
-  BrewingServiceStateSchema,
-  BrewingServicePlanSnapshotSchema,
-  BrewingBottleIndexSchema,
-  FishingStateSchema,
-  FishingServicePlanSnapshotSchema,
-  FishingCastIntentSchema,
-  FishingAdvanceIntentSchema,
-  FishingCancelIntentSchema,
-  FishingReelIntentSchema,
+  FishingServiceCastSuccessSchema,
   FishingServiceReelSuccessSchema,
   FishingProgressOutcomeSchema,
   FishingCancelOutcomeSchema,
-  FishingLootSampleSchema,
-  ProjectileServiceSnapshotSchema,
-  PROJECTILE_REPLICATED_OWNER_ID,
-  launchProjectile,
+  FishingElapsedTicksSchema,
+  FishingWaitTicksSchema,
+  FishingApproachTicksSchema,
+  FishingBiteWindowTicksSchema,
+  type BrewingServiceApi,
+  type FishingServiceApi,
+  type DomainEventBusApi,
+  type ProjectileServiceApi,
+  type TntServiceApi,
+  type ProjectileProfile,
+  type ProjectileLaunch,
+  type FishingProgressOutcome,
+  type FishingCancelOutcome,
+  type FishingReelOutcome,
+  type FishingServiceError,
+  type WorldCommitPlanConflict,
+  type BrewingServiceError,
+  BrewingServicePlanSnapshotSchema,
+  PotionDrinkIntentSchema,
+  PotionDrinkPlanSchema,
+  PotionDrinkSlotIndexSchema,
+  PotionDrinkOutcomeSchema,
   mergeWorldCommitPlans,
   WorldCommitPlanMergeResultSchema,
   WorldCommitPlanRequestSchema,
   worldCommitPlanFragmentSchema,
   worldCommitPlanSnapshotSchema,
-  type BrewingServiceApi,
-  type FishingServiceApi,
-  type DomainEventBusApi,
-  type ProjectileProfile,
-  type WorldCommitPlanFragment,
+  addStoredStack,
+  removeItemAt,
+  DamageAmount,
+  DamageCause,
+  HealthAmount,
+  ExhaustionAmount,
+  addExhaustion as addVitalsExhaustion,
+  applyDamage as applyVitalsDamage,
+  heal as healVitals,
   type TimeServiceApi,
   type VehicleServiceApi,
 } from '@nerima-games/mc-sim'
-import { Brand, Effect, Equal, Option, Ref, Result, Schema, Semaphore } from 'effect'
+import { Brand, Effect, Equal, Option, Ref, Result, Schema, SchemaParser, Semaphore } from 'effect'
 import {
   PlayerStorageSnapshotSchema,
   damageAt as damagePlayerStorageAt,
@@ -175,26 +189,32 @@ import {
 export {
   GAMEPLAY_BREWING_OWNER_ID,
   GAMEPLAY_CROPS_OWNER_ID,
+  GAMEPLAY_ENTITIES_OWNER_ID,
+  GAMEPLAY_FISHING_OWNER_ID,
   GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+  GAMEPLAY_STATUS_EFFECTS_OWNER_ID,
   GAMEPLAY_VILLAGER_TRADES_OWNER_ID,
 } from './gameplay-owner-registrations.js'
 import { useVillagerOffer } from '../domain/villager-trade.js'
 import {
   PLAYER_MAXIMUM_HEALTH_POINTS,
   POISON_DAMAGE_POINTS,
-  POISON_MINIMUM_HEALTH_POINTS,
   REGENERATION_HEAL_POINTS,
   SPEED_MOVEMENT_MULTIPLIER,
   applyStatusEffect,
-  copyStatusEffectState,
-  emptyStatusEffectState,
+  StatusEffectStateSchema,
   tickStatusEffects,
   type PlayerHealingEvent,
   type StatusEffectApplication,
   type StatusEffectState,
 } from '../domain/status-effect.js'
 import { targetabilityFromStore } from '../domain/in-memory-world.js'
-import type { BrewingBottle, BrewingIngredient } from '../domain/brewing.js'
+import {
+  BrewingBottleCollectionResultSchema,
+  type BrewingBottle,
+  type BrewingBottleCollectionResult,
+  type BrewingIngredient,
+} from '../domain/brewing.js'
 import { ChunkStore, type ChunkStoreApi } from '@nerima-games/mc-worldgen'
 import {
   chunkCoordsAround,
@@ -288,10 +308,17 @@ import {
   type FluidWorkItem,
 } from '../domain/fluid-frontier.js'
 import { DEFAULT_ROLL_SEED, drawRolls, rollAt } from '../domain/frame-rolls.js'
-import type { Dimension, PortalTravelPlan } from '@nerima-games/mc-worldgen'
+import {
+  endArrivalDescriptor,
+  resolveNetherTravel,
+  type Dimension,
+  type PortalTravelPlan,
+} from '@nerima-games/mc-worldgen'
 import { OUTSIDE_PORTAL, type PortalDwell, stepPortalDwell } from '../domain/portal-dwell.js'
 import { PlayerService, type PlayerServiceApi } from '@nerima-games/mc-sim'
 import {
+  END_ARRIVAL_ORIGIN,
+  OVERWORLD_RETURN_POSITION,
   isEndPortalBlock,
   type EndPortalTravelEvent,
 } from '../domain/end-portal-travel.js'
@@ -364,12 +391,7 @@ import {
   cancelFishing,
   castFishing,
   reelFishing,
-  type AdvanceFishingResult,
-  type CancelFishingResult,
-  type CastFishingResult,
   type FishingEnvironment,
-  type FishingSession,
-  type ReelFishingResult,
 } from '../domain/interactions/fishing.js'
 import {
   advanceWeather,
@@ -1052,7 +1074,7 @@ export type GameplayFrameState = {
   readonly survivalHunger: SurvivalHungerRuntimeApi
   readonly operationFailures: Ref.Ref<ReadonlyArray<GameplayStageOperationFailure>>
   readonly pendingBreaks: Ref.Ref<ReadonlyArray<BlockPositionKey>>
-  readonly pendingPlacements: Ref.Ref<ReadonlyArray<PlacementRequest>>
+  readonly pendingPlacements: Ref.Ref<ReadonlyArray<PlacementRequest | BlockPlacementCommand>>
   readonly pendingBlockUses: Ref.Ref<ReadonlyArray<BlockUseRequest>>
   readonly pendingItemUses: Ref.Ref<ReadonlyArray<ItemUseRequest>>
   readonly pendingBowShots: Ref.Ref<ReadonlyArray<BowShotRequest>>
@@ -1069,8 +1091,6 @@ export type GameplayFrameState = {
   readonly usedItems: Ref.Ref<ReadonlyArray<IgnitionItemType>>
   readonly blockUseResults: Ref.Ref<ReadonlyArray<BlockUseResult>>
   readonly itemUseResults: Ref.Ref<ReadonlyArray<ItemUseResult>>
-  /** Live cast state only; the host owns the rod and any awarded loot. */
-  readonly fishingSession: Ref.Ref<FishingSession | undefined>
   readonly bowShotResults: Ref.Ref<ReadonlyArray<BowShotResult>>
   readonly meleeAttackResults: Ref.Ref<ReadonlyArray<GameplayMeleeAttackResult>>
   readonly handledBowShotRequestIds: Ref.Ref<ReadonlySet<BowShotRequestId>>
@@ -1079,7 +1099,6 @@ export type GameplayFrameState = {
   readonly playerDamages: Ref.Ref<ReadonlyArray<PlayerDamageEvent>>
   readonly playerHeals: Ref.Ref<ReadonlyArray<PlayerHealingEvent>>
   readonly playerMovementSpeedMultiplier: Ref.Ref<number>
-  readonly statusEffects: Ref.Ref<StatusEffectState>
   readonly fireLifecycle: Ref.Ref<FireLifecycleState>
   readonly hostileContactCooldowns: Ref.Ref<ReadonlyMap<EntityId, number>>
   readonly mobDrops: Ref.Ref<ReadonlyArray<MobDropEvent>>
@@ -1367,19 +1386,53 @@ export type FishingItemUseRequest =
   | {
       readonly action: 'CastFishing'
       readonly requestId: ItemUseRequestId
+      readonly actor: EntityId
+      readonly bobber: ProjectileId
+      readonly tick: SimulationTick
+      readonly dimension: Dimension
+      readonly launch: ProjectileLaunch
+      readonly profile: ProjectileProfile
       readonly rod: EquipmentItem | null
       readonly environment: FishingEnvironment
     }
   | {
       readonly action: 'AdvanceFishing'
       readonly requestId: ItemUseRequestId
-      readonly deltaTimeSecs: number
+      readonly actor: EntityId
+      readonly elapsedTicks: Schema.Schema.Type<typeof FishingElapsedTicksSchema>
+      readonly waitTicks: Schema.Schema.Type<typeof FishingWaitTicksSchema>
+      readonly approachTicks: Schema.Schema.Type<typeof FishingApproachTicksSchema>
+      readonly biteWindowTicks: Schema.Schema.Type<typeof FishingBiteWindowTicksSchema>
       readonly environment: Pick<FishingEnvironment, 'hasWater'>
     }
   | {
-      readonly action: 'CancelFishing' | 'ReelFishing'
+      readonly action: 'CancelFishing'
       readonly requestId: ItemUseRequestId
+      readonly actor: EntityId
     }
+  | {
+      readonly action: 'ReelFishing'
+      readonly requestId: ItemUseRequestId
+      readonly actor: EntityId
+    }
+
+export type CollectBrewingBottleRequest = Readonly<{
+  readonly action: 'CollectBrewingBottle'
+  readonly requestId: ItemUseRequestId
+  readonly actor: EntityId
+  readonly tick: SimulationTick
+  readonly address: BlockAddress
+  readonly bottleIndex: number
+}>
+
+export const CollectBrewingBottleRequestSchema = strictCodec(Schema.Struct({
+  action: Schema.Literal('CollectBrewingBottle'),
+  requestId: Schema.String,
+  actor: EntityIdSchema,
+  tick: SimulationTickSchema,
+  address: BlockAddressSchema,
+  bottleIndex: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 2 })),
+}))
 
 export type ItemUseRequest =
   | IgnitionItemUseRequest
@@ -1387,6 +1440,7 @@ export type ItemUseRequest =
   | FurnaceItemUseRequest
   | BucketItemUseRequest
   | FishingItemUseRequest
+  | CollectBrewingBottleRequest
 
 /** Host-provided correlation key for one item-use request. */
 export type ItemUseRequestId = string
@@ -1481,61 +1535,62 @@ export type BucketItemUseResult =
       readonly outcome: FailedBucketUseOutcome
     }
 
-type SuccessfulFishingCast = Extract<CastFishingResult, { readonly _tag: 'Cast' }>
-type FailedFishingCast = Exclude<CastFishingResult, SuccessfulFishingCast>
-type AdvancedFishingResult = Extract<
-  AdvanceFishingResult,
-  { readonly _tag: 'Waiting' | 'Bite' | 'Escaped' }
->
-type FailedFishingAdvance = Exclude<AdvanceFishingResult, AdvancedFishingResult>
-
-/**
- * Correlated fishing outcomes. The host applies returned rod/loot changes to
- * its inventory atomically; gameplay only owns the active cast between frames.
- */
+/** Correlated owner-plan outcome; the owner snapshot is authoritative between frames. */
 export type FishingItemUseResult =
-  | {
-      readonly action: 'CastFishing'
-      readonly requestId: ItemUseRequestId
-      readonly success: true
-      readonly outcome: SuccessfulFishingCast
-    }
-  | {
-      readonly action: 'CastFishing'
-      readonly requestId: ItemUseRequestId
-      readonly success: false
-      readonly outcome: FailedFishingCast | 'AlreadyFishing'
-    }
-  | {
-      readonly action: 'AdvanceFishing'
-      readonly requestId: ItemUseRequestId
-      readonly success: true
-      readonly outcome: AdvancedFishingResult
-    }
-  | {
-      readonly action: 'AdvanceFishing'
-      readonly requestId: ItemUseRequestId
-      readonly success: false
-      readonly outcome: FailedFishingAdvance | 'NoActiveFishingSession'
-    }
-  | {
-      readonly action: 'CancelFishing'
-      readonly requestId: ItemUseRequestId
-      readonly success: true
-      readonly outcome: CancelFishingResult
-    }
-  | {
-      readonly action: 'ReelFishing'
-      readonly requestId: ItemUseRequestId
-      readonly success: true
-      readonly outcome: ReelFishingResult
-    }
-  | {
-      readonly action: 'CancelFishing' | 'ReelFishing'
-      readonly requestId: ItemUseRequestId
-      readonly success: false
-      readonly outcome: 'NoActiveFishingSession'
-    }
+  | { readonly action: 'CastFishing'; readonly requestId: ItemUseRequestId; readonly success: true; readonly outcome: undefined }
+  | { readonly action: 'AdvanceFishing'; readonly requestId: ItemUseRequestId; readonly success: true; readonly outcome: FishingProgressOutcome }
+  | { readonly action: 'CancelFishing'; readonly requestId: ItemUseRequestId; readonly success: true; readonly outcome: FishingCancelOutcome }
+  | { readonly action: 'ReelFishing'; readonly requestId: ItemUseRequestId; readonly success: true; readonly outcome: FishingReelOutcome }
+
+function strictCodec<A, I>(schema: Schema.Codec<A, I>): Schema.Codec<A, I> {
+  return Schema.declareConstructor<A, I>()([schema], ([inner]) =>
+    (input, _ast, options) => SchemaParser.decodeUnknownEffect(inner)(input, {
+      ...options,
+      onExcessProperty: 'error',
+    }),
+  )
+}
+
+export const GameplayFishingItemUseResultSchema = strictCodec(Schema.Union([
+  Schema.Struct({
+    action: Schema.Literal('CastFishing'),
+    requestId: Schema.String,
+    success: Schema.Literal(true),
+    outcome: FishingServiceCastSuccessSchema,
+  }),
+  Schema.Struct({
+    action: Schema.Literal('AdvanceFishing'),
+    requestId: Schema.String,
+    success: Schema.Literal(true),
+    outcome: FishingProgressOutcomeSchema,
+  }),
+  Schema.Struct({
+    action: Schema.Literal('CancelFishing'),
+    requestId: Schema.String,
+    success: Schema.Literal(true),
+    outcome: FishingCancelOutcomeSchema,
+  }),
+  Schema.Struct({
+    action: Schema.Literal('ReelFishing'),
+    requestId: Schema.String,
+    success: Schema.Literal(true),
+    outcome: FishingServiceReelSuccessSchema,
+  }),
+]))
+
+export type BrewingBottleItemUseResult = Readonly<{
+  action: 'CollectBrewingBottle'
+  requestId: ItemUseRequestId
+  success: boolean
+  outcome: BrewingBottleCollectionResult
+}>
+
+export const GameplayBrewingBottleItemUseResultSchema = strictCodec(Schema.Struct({
+  action: Schema.Literal('CollectBrewingBottle'),
+  requestId: Schema.String,
+  success: Schema.Boolean,
+  outcome: BrewingBottleCollectionResultSchema,
+}))
 
 export type PlayerDeadItemUseResult = {
   readonly requestId: ItemUseRequestId
@@ -1549,6 +1604,7 @@ export type ItemUseResult =
   | FurnaceItemUseResult
   | BucketItemUseResult
   | FishingItemUseResult
+  | BrewingBottleItemUseResult
   | PlayerDeadItemUseResult
 
 /**
@@ -1621,8 +1677,8 @@ export type GameplayMeleeAttackResult =
  * parameter (`ender-pearl.ts:8,45`).
  */
 export type EnderPearlThrowRequest = {
-  /** Where the throw starts. The eye, in world space. */
-  readonly origin: Position
+  /** Host correlation key for this throw. */
+  readonly requestId: ItemUseRequestId
   readonly dirX: number
   readonly dirY: number
   readonly dirZ: number
@@ -1631,6 +1687,18 @@ export type EnderPearlThrowRequest = {
   /** The held slot and game mode used for pearl consumption. */
   readonly inventory: InteractionInventoryContext
 }
+
+export const EnderPearlThrowRequestSchema = strictCodec(Schema.Struct({
+  requestId: Schema.String,
+  dirX: Schema.Finite,
+  dirY: Schema.Finite,
+  dirZ: Schema.Finite,
+  hitDistance: Schema.optional(Schema.Finite),
+  inventory: Schema.Struct({
+    mode: Schema.Literals(['survival', 'creative']),
+    slotIndex: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  }),
+}))
 
 /**
  * Which way one bow hit shoved what it struck.
@@ -1676,6 +1744,21 @@ export type EnderPearlOutcome = {
   readonly damage: Damage | undefined
 }
 
+export const EnderPearlOutcomeSchema = strictCodec(Schema.Struct({
+  displacement: Schema.Struct({
+    x: Schema.Finite,
+    y: Schema.Finite,
+    z: Schema.Finite,
+  }),
+  damage: Schema.Union([
+    Schema.Undefined,
+    Schema.Struct({
+      amount: Schema.Finite,
+      cause: Schema.Literal('ender_pearl'),
+    }),
+  ]),
+}))
+
 export type DroppedItemPickupExecution = Readonly<{
   request: DroppedItemPickupRequest
   outcome:
@@ -1712,6 +1795,7 @@ export type GameplayUnsupportedAction =
   | 'VillagerTrade'
   | 'UseBucket'
   | 'Fishing'
+  | 'CollectBrewingBottle'
   | 'ApplyBoneMeal'
   | 'TillSoil'
   | 'PlantPotato'
@@ -1735,6 +1819,7 @@ export type GameplayUnsupportedReason =
   | 'OwnerRegistrationUnavailable'
   | 'CropOwnerStateUnavailable'
   | 'McSimPlanFragmentUnavailable'
+  | 'TntServiceUnavailable'
   | 'EntityRosterOwnerUnavailable'
 
 export type GameplayUnsupportedOperation = Readonly<{
@@ -1751,16 +1836,19 @@ export type GameplayFrameStateOptions = Readonly<{
 
 export type GameplayStageOperationFailure = Readonly<{
   _tag: 'Failed'
-  operation: 'OwnerSnapshot' | 'WorldCommit' | 'VitalsOperation' | 'CandidateBuild'
-  subject: 'Player' | 'Vitals' | 'Mining' | 'ItemUse' | 'Fire'
+  operation: 'OwnerSnapshot' | 'WorldCommit' | 'VitalsOperation' | 'CandidateBuild' | 'PlanBuild' | 'EventPublish'
+  subject: 'Player' | 'Vitals' | 'Mining' | 'ItemUse' | 'Fire' | 'Fishing' | 'Brewing'
   error:
     | WorldCommitCoordinatorError
+    | WorldCommitPlanConflict
     | Schema.SchemaError
     | Brand.BrandError
     | SurvivalHungerError
     | DroppedItemSpawnError
     | BreakTransactionFailure
     | FirePlayerDamagePreparationFailure
+    | FishingServiceError
+    | BrewingServiceError
 }>
 
 export const recordGameplayStageFailure = (
@@ -1778,7 +1866,7 @@ export const readGameplayPlayer = (
 > =>
   coordinator.snapshot(ownerId, PlayerServiceSnapshotSchema)
 
-export const makeGameplayFrameState = (
+const makeGameplayFrameStateWithOptions = (
   options?: GameplayFrameStateOptions,
 ): Effect.Effect<GameplayFrameState> => Effect.gen(function* () {
   const enderDragonEncounter = yield* makeEnderDragonEncounterRuntime
@@ -1792,7 +1880,7 @@ export const makeGameplayFrameState = (
     requests: [],
   })
   const breakRequestMutex = yield* Semaphore.make(1)
-  const pendingPlacements = yield* Ref.make<ReadonlyArray<PlacementRequest>>([])
+  const pendingPlacements = yield* Ref.make<ReadonlyArray<PlacementRequest | BlockPlacementCommand>>([])
   const pendingBlockUses = yield* Ref.make<ReadonlyArray<BlockUseRequest>>([])
   const pendingItemUses = yield* Ref.make<ReadonlyArray<ItemUseRequest>>([])
   const pendingBowShots = yield* Ref.make<ReadonlyArray<BowShotRequest>>([])
@@ -1809,7 +1897,6 @@ export const makeGameplayFrameState = (
   const usedItems = yield* Ref.make<ReadonlyArray<IgnitionItemType>>([])
   const blockUseResults = yield* Ref.make<ReadonlyArray<BlockUseResult>>([])
   const itemUseResults = yield* Ref.make<ReadonlyArray<ItemUseResult>>([])
-  const fishingSession = yield* Ref.make<FishingSession | undefined>(undefined)
   const bowShotResults = yield* Ref.make<ReadonlyArray<BowShotResult>>([])
   const meleeAttackResults = yield* Ref.make<ReadonlyArray<GameplayMeleeAttackResult>>([])
   const handledBowShotRequestIds = yield* Ref.make<ReadonlySet<BowShotRequestId>>(new Set())
@@ -1821,7 +1908,6 @@ export const makeGameplayFrameState = (
   const playerDamages = yield* Ref.make<ReadonlyArray<PlayerDamageEvent>>([])
   const playerHeals = yield* Ref.make<ReadonlyArray<PlayerHealingEvent>>([])
   const playerMovementSpeedMultiplier = yield* Ref.make(1)
-  const statusEffects = yield* Ref.make<StatusEffectState>(emptyStatusEffectState())
   const fireLifecycle = yield* Ref.make<FireLifecycleState>(makeFireLifecycleState([], DEFAULT_ROLL_SEED))
   const fireTickAccumulator = yield* Ref.make(0)
   fireTickAccumulators.set(fireLifecycle, fireTickAccumulator)
@@ -1897,7 +1983,6 @@ export const makeGameplayFrameState = (
     usedItems,
     blockUseResults,
     itemUseResults,
-    fishingSession,
     bowShotResults,
     meleeAttackResults,
     handledBowShotRequestIds,
@@ -1906,7 +1991,6 @@ export const makeGameplayFrameState = (
     playerDamages,
     playerHeals,
     playerMovementSpeedMultiplier,
-    statusEffects,
     fireLifecycle,
     hostileContactCooldowns,
     mobDrops,
@@ -1938,6 +2022,14 @@ export const makeGameplayFrameState = (
   })
   return state
 })
+
+/** Test and standalone adapter entry point retained as an Effect value. */
+export const makeGameplayFrameState = makeGameplayFrameStateWithOptions()
+
+/** Production composition entry point; the supplied owner is the only vitals authority. */
+export const makeGameplayFrameStateForOwner = (
+  options: GameplayFrameStateOptions,
+): Effect.Effect<GameplayFrameState> => makeGameplayFrameStateWithOptions(options)
 
 /** Set death by changing authoritative vitals, without a second frame-owned flag. */
 export const setPlayerDead = (
@@ -1992,6 +2084,7 @@ const stepPortalTravel = (
   state: GameplayFrameState,
   store: ChunkStoreApi,
   playerState: Schema.Schema.Type<typeof PlayerServiceSnapshotSchema> | undefined,
+  commit: GameplayStageCommitServices | undefined,
   dt: DeltaTimeSecs,
 ): Effect.Effect<void> =>
   Effect.gen(function* () {
@@ -2016,14 +2109,138 @@ const stepPortalTravel = (
     yield* Ref.set(state.portalDwell, step.dwell)
 
     if (!step.travels) {
+      yield* Ref.set(state.portalDwell, step.dwell)
       return
     }
 
-    yield* recordGameplayUnsupportedOperation(state, {
-      _tag: 'Unsupported',
-      action: 'PortalTravel',
-      reason: 'McSimPlanFragmentUnavailable',
+    if (commit === undefined) {
+      yield* recordGameplayUnsupportedOperation(state, {
+        _tag: 'Unsupported',
+        action: 'PortalTravel',
+        reason: 'WorldCommitCoordinatorUnavailable',
+      })
+      return
+    }
+
+    const snapshot = yield* Effect.result(
+      commit.coordinator.snapshot(commit.playerOwnerId, PlayerServiceSnapshotSchema),
+    )
+    if (Result.isFailure(snapshot)) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed',
+        operation: 'OwnerSnapshot',
+        subject: 'Player',
+        error: snapshot.failure,
+      })
+      return
+    }
+
+    const currentPose = snapshot.success.state.pose
+    const currentCell = kernelBlockPosition(
+      BlockAxis(Math.floor(currentPose.feetPosition.x)),
+      BlockAxis(Math.floor(currentPose.feetPosition.y)),
+      BlockAxis(Math.floor(currentPose.feetPosition.z)),
+    )
+    const currentReading = yield* store.getBlock(currentCell)
+    const currentBlockId = currentReading._tag === 'Block' ? currentReading.block : undefined
+    const currentBlock = currentBlockId === undefined
+      ? undefined
+      : Result.getOrUndefined(blockTypeOfId(currentBlockId))
+    const stillInPortal = currentBlock === 'nether_portal' ||
+      (currentBlockId !== undefined && isEndPortalBlock(currentBlockId))
+    const currentStep = stepPortalDwell(yield* Ref.get(state.portalDwell), stillInPortal, dt)
+    if (!currentStep.travels || !stillInPortal) {
+      yield* Ref.set(state.portalDwell, currentStep.dwell)
+      return
+    }
+
+    const sourceDimension = currentPose.feetPosition.dimension
+    const isEndPortal = currentBlockId !== undefined && isEndPortalBlock(currentBlockId)
+    let destinationDimension: Dimension
+    let destination: BlockPosition
+    let portalPlan: PortalTravelPlan | undefined
+    let endPortalEvent: EndPortalTravelEvent | undefined
+
+    if (isEndPortal) {
+      if (sourceDimension === 'overworld') {
+        const arrival = endArrivalDescriptor(END_ARRIVAL_ORIGIN)
+        destinationDimension = 'end'
+        destination = arrival.spawn
+        endPortalEvent = {
+          sourceDimension,
+          sourcePosition: currentCell,
+          toDimension: destinationDimension,
+          destination,
+          arrival,
+        }
+      } else {
+        destinationDimension = 'overworld'
+        destination = OVERWORLD_RETURN_POSITION
+        endPortalEvent = {
+          sourceDimension,
+          sourcePosition: currentCell,
+          toDimension: destinationDimension,
+          destination,
+          arrival: undefined,
+        }
+      }
+    } else {
+      const candidates = yield* Ref.get(state.portalCandidates)
+      portalPlan = resolveNetherTravel(
+        sourceDimension,
+        currentCell,
+        candidates.get(sourceDimension === 'overworld' ? 'nether' : 'overworld') ?? [],
+      )
+      destinationDimension = portalPlan.toDimension
+      destination = portalPlan.destination
+    }
+
+    const nextPlayer = Schema.decodeUnknownResult(PlayerServiceSnapshotSchema)({
+      pose: {
+        ...currentPose,
+        feetPosition: {
+          dimension: destinationDimension,
+          x: destination.x,
+          y: destination.y,
+          z: destination.z,
+        },
+      },
     })
+    if (Result.isFailure(nextPlayer)) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed',
+        operation: 'CandidateBuild',
+        subject: 'Player',
+        error: nextPlayer.failure,
+      })
+      return
+    }
+
+    const committed = yield* Effect.result(commit.coordinator.commit({
+      expectedRevision: snapshot.success.revision,
+      expectedDimensions: [],
+      changes: [{ ownerId: commit.playerOwnerId, state: nextPlayer.success }],
+    }))
+    if (Result.isFailure(committed)) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed',
+        operation: 'WorldCommit',
+        subject: 'Player',
+        error: committed.failure,
+      })
+      return
+    }
+
+    yield* Ref.set(state.portalDwell, currentStep.dwell)
+    if (portalPlan !== undefined) {
+      yield* Ref.update(state.portalTravels, (travels) => [
+        ...travels,
+        { sourceDimension, sourcePosition: currentCell, plan: portalPlan },
+      ])
+    }
+    if (endPortalEvent !== undefined) {
+      yield* Ref.update(state.endPortalTravels, (travels) => [...travels, endPortalEvent])
+    }
   })
 
 /**
@@ -2176,55 +2393,55 @@ export const requestBucketUse = (
   return Ref.update(state.pendingItemUses, (pending) => [...pending, request])
 }
 
-/** Start a cast; the caller retains ownership of the supplied equipment item. */
+/** Queue a fully specified cast intent; actor, bobber and launch state come from the host. */
 export const requestFishingCast = (
   state: GameplayFrameState,
-  requestId: ItemUseRequestId,
-  rod: EquipmentItem | null,
-  environment: FishingEnvironment,
-): Effect.Effect<void> => {
-  const request: FishingItemUseRequest = {
-    action: 'CastFishing',
-    requestId,
-    rod,
-    environment: { ...environment },
-  }
-  return Ref.update(state.pendingItemUses, (pending) => [...pending, request])
-}
+  intent: Omit<Extract<FishingItemUseRequest, { readonly action: 'CastFishing' }>, 'action'>,
+): Effect.Effect<void> =>
+  Ref.update(state.pendingItemUses, (pending) => [
+    ...pending,
+    { action: 'CastFishing' as const, ...intent, environment: { ...intent.environment } },
+  ])
 
-/** Advance the active cast by host-measured time without transferring inventory ownership. */
+/** Queue explicit progression ticks; the plan API owns Bite, escape and loss-of-water transitions. */
 export const requestFishingAdvance = (
   state: GameplayFrameState,
-  requestId: ItemUseRequestId,
-  deltaTimeSecs: number,
-  environment: Pick<FishingEnvironment, 'hasWater'>,
-): Effect.Effect<void> => {
-  const request: FishingItemUseRequest = {
-    action: 'AdvanceFishing',
-    requestId,
-    deltaTimeSecs,
-    environment: { ...environment },
-  }
-  return Ref.update(state.pendingItemUses, (pending) => [...pending, request])
-}
+  intent: Omit<Extract<FishingItemUseRequest, { readonly action: 'AdvanceFishing' }>, 'action'>,
+): Effect.Effect<void> =>
+  Ref.update(state.pendingItemUses, (pending) => [
+    ...pending,
+    { action: 'AdvanceFishing' as const, ...intent, environment: { ...intent.environment } },
+  ])
 
-/** Cancel the active cast and return its unchanged rod through the result inbox. */
 export const requestFishingCancel = (
   state: GameplayFrameState,
   requestId: ItemUseRequestId,
-): Effect.Effect<void> => {
-  const request: FishingItemUseRequest = { action: 'CancelFishing', requestId }
-  return Ref.update(state.pendingItemUses, (pending) => [...pending, request])
-}
+  actor: EntityId,
+): Effect.Effect<void> =>
+  Ref.update(state.pendingItemUses, (pending) => [...pending, { action: 'CancelFishing' as const, requestId, actor }])
 
-/** Reel the active cast; the result carries any loot and durability update for the host to settle. */
 export const requestFishingReel = (
   state: GameplayFrameState,
   requestId: ItemUseRequestId,
-): Effect.Effect<void> => {
-  const request: FishingItemUseRequest = { action: 'ReelFishing', requestId }
-  return Ref.update(state.pendingItemUses, (pending) => [...pending, request])
-}
+  actor: EntityId,
+): Effect.Effect<void> =>
+  Ref.update(state.pendingItemUses, (pending) => [...pending, { action: 'ReelFishing' as const, requestId, actor }])
+
+export const requestCollectBrewingBottle = (
+  state: GameplayFrameState,
+  request: Omit<CollectBrewingBottleRequest, 'action'>,
+): Effect.Effect<void> =>
+  Ref.update(state.pendingItemUses, (pending) => [...pending, { action: 'CollectBrewingBottle' as const, ...request }])
+
+/** Queue a validated pearl throw for atomic settlement by the interaction stage. */
+export const requestEnderPearlThrow = (
+  state: GameplayFrameState,
+  request: EnderPearlThrowRequest,
+): Effect.Effect<void, Schema.SchemaError> =>
+  Effect.gen(function* () {
+    const decoded = yield* Schema.decodeUnknown(EnderPearlThrowRequestSchema)(request)
+    yield* Ref.update(state.pendingPearlThrows, (pending) => [...pending, decoded])
+  })
 
 /** Enqueue a hoe use against the targeted ground cell. */
 export const requestSoilTill = (
@@ -2572,23 +2789,31 @@ export const getPlayerMovementSpeedMultiplier = (
 ): Effect.Effect<number> => Ref.get(state.playerMovementSpeedMultiplier)
 
 export const snapshotStatusEffects = (
-  state: GameplayFrameState,
-): Effect.Effect<StatusEffectState> =>
-  Ref.get(state.statusEffects).pipe(Effect.map(copyStatusEffectState))
+  _state: GameplayFrameState,
+  commit: GameplayStageCommitServices,
+): Effect.Effect<StatusEffectState, WorldCommitCoordinatorError | Schema.SchemaError> =>
+  Effect.map(
+    commit.coordinator.snapshot(commit.statusEffectsOwnerId ?? GAMEPLAY_STATUS_EFFECTS_OWNER_ID, StatusEffectStateSchema),
+    ({ state }) => state,
+  )
 
 export const restoreStatusEffects = (
   state: GameplayFrameState,
   snapshot: StatusEffectState,
-): Effect.Effect<void> =>
+  commit: GameplayStageCommitServices,
+): Effect.Effect<void, WorldCommitCoordinatorError | Schema.SchemaError> =>
   Effect.gen(function* () {
-    const restored = copyStatusEffectState(snapshot)
-    yield* Ref.set(state.statusEffects, restored)
-    yield* Ref.set(
-      state.playerMovementSpeedMultiplier,
-      restored.effects.some((effect) => effect.type === 'speed')
-        ? SPEED_MOVEMENT_MULTIPLIER
-        : 1,
-    )
+    const ownerId = commit.statusEffectsOwnerId ?? GAMEPLAY_STATUS_EFFECTS_OWNER_ID
+    const decoded = yield* Effect.fromResult(Schema.decodeUnknownResult(StatusEffectStateSchema)(snapshot))
+    const observed = yield* commit.coordinator.observe(ownerId, StatusEffectStateSchema, [])
+    yield* commit.coordinator.commit({
+      expectedRevision: observed.revision,
+      expectedDimensions: [],
+      changes: [{ ownerId, state: decoded }],
+    })
+    yield* Ref.set(state.playerMovementSpeedMultiplier, decoded.effects.some((effect) => effect.type === 'speed')
+      ? SPEED_MOVEMENT_MULTIPLIER
+      : 1)
   })
 
 export type BrewingOperationUnsupported = Readonly<{
@@ -2633,43 +2858,141 @@ export const useBrewingPotion = (
 
 const stepStatusEffects = (
   state: GameplayFrameState,
+  commit: GameplayStageCommitServices | undefined,
   dt: DeltaTimeSecs,
-): Effect.Effect<void, Brand.BrandError | SurvivalHungerError> =>
+): Effect.Effect<void> =>
   Effect.gen(function* () {
-    const applications = yield* Ref.getAndSet(state.pendingStatusEffects, [])
-    const current = yield* Ref.get(state.statusEffects)
+    const applications = yield* Ref.get(state.pendingStatusEffects)
+    if (commit === undefined || commit.statusEffectsOwnerId === undefined) {
+      if (applications.length > 0) {
+        yield* recordGameplayUnsupportedOperation(state, {
+          _tag: 'Unsupported', action: 'Brewing', reason: 'OwnerRegistrationUnavailable',
+        })
+      }
+      return
+    }
+    const observed = yield* Effect.result(commit.coordinator.observe(
+      commit.statusEffectsOwnerId,
+      StatusEffectStateSchema,
+      [],
+    ))
+    if (Result.isFailure(observed)) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'Brewing', error: observed.failure,
+      })
+      return
+    }
+    const current = observed.success.state
+    if (applications.length === 0 && current.effects.length === 0) {
+      yield* Ref.set(state.playerMovementSpeedMultiplier, 1)
+      return
+    }
     const applied = applications.reduce(applyStatusEffect, current)
     const tick = tickStatusEffects(applied, dt)
-
-    yield* Ref.set(state.statusEffects, tick.state)
+    const status = Schema.decodeUnknownResult(StatusEffectStateSchema)(tick.state)
+    if (Result.isFailure(status)) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed', operation: 'CandidateBuild', subject: 'Brewing', error: status.failure,
+      })
+      return
+    }
+    const changes: Array<ReplicatedOwnerCandidate> = [{
+      ownerId: commit.statusEffectsOwnerId,
+      state: status.success,
+    }]
+    let heals: ReadonlyArray<PlayerHealingEvent> = []
+    if (tick.poisonPulses > 0 || tick.regenerationPulses > 0 || tick.hungerExhaustion > 0) {
+      if (commit.vitalsOwnerId === undefined) {
+        yield* recordGameplayUnsupportedOperation(state, {
+          _tag: 'Unsupported', action: 'PlayerDamage', reason: 'OwnerRegistrationUnavailable',
+        })
+        return
+      }
+      const vitalsObserved = yield* Effect.result(commit.coordinator.observe(
+        commit.vitalsOwnerId,
+        ExperienceOrbVitalsOwnerSnapshotSchema,
+        [],
+      ))
+      if (Result.isFailure(vitalsObserved)) {
+        yield* recordGameplayStageFailure(state, {
+          _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'Vitals', error: vitalsObserved.failure,
+        })
+        return
+      }
+      if (vitalsObserved.success.revision !== observed.success.revision) {
+        yield* recordGameplayStageFailure(state, {
+          _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'Vitals',
+          error: new WorldRevisionConflict({
+            expected: observed.success.revision,
+            actual: vitalsObserved.success.revision,
+          }),
+        })
+        return
+      }
+      let vitals = vitalsObserved.success.state.vitals
+      for (let index = 0; index < tick.poisonPulses; index += 1) {
+        const amount = DamageAmount.result(POISON_DAMAGE_POINTS)
+        const cause = DamageCause.result('poison')
+        if (Result.isFailure(amount) || Result.isFailure(cause)) {
+          yield* recordGameplayStageFailure(state, {
+            _tag: 'Failed', operation: 'CandidateBuild', subject: 'Vitals',
+            error: Result.isFailure(amount) ? amount.failure : cause.failure,
+          })
+          return
+        }
+        vitals = applyVitalsDamage(vitals, { amount: amount.success, cause: cause.success })
+      }
+      for (let index = 0; index < tick.regenerationPulses; index += 1) {
+        const amount = HealthAmount.result(REGENERATION_HEAL_POINTS)
+        if (Result.isFailure(amount)) {
+          yield* recordGameplayStageFailure(state, {
+            _tag: 'Failed', operation: 'CandidateBuild', subject: 'Vitals', error: amount.failure,
+          })
+          return
+        }
+        vitals = healVitals(vitals, amount.success)
+      }
+      if (tick.hungerExhaustion > 0) {
+        const amount = ExhaustionAmount.result(tick.hungerExhaustion)
+        if (Result.isFailure(amount)) {
+          yield* recordGameplayStageFailure(state, {
+            _tag: 'Failed', operation: 'CandidateBuild', subject: 'Vitals', error: amount.failure,
+          })
+          return
+        }
+        vitals = addVitalsExhaustion(vitals, amount.success)
+      }
+      const vitalsCandidate = Schema.decodeUnknownResult(ExperienceOrbVitalsOwnerSnapshotSchema)({ vitals })
+      if (Result.isFailure(vitalsCandidate)) {
+        yield* recordGameplayStageFailure(state, {
+          _tag: 'Failed', operation: 'CandidateBuild', subject: 'Vitals', error: vitalsCandidate.failure,
+        })
+        return
+      }
+      changes.push({ ownerId: commit.vitalsOwnerId, state: vitalsCandidate.success })
+      heals = Array.from({ length: tick.regenerationPulses }, () => ({
+        _tag: 'StatusEffect' as const,
+        effect: 'regeneration' as const,
+        amount: REGENERATION_HEAL_POINTS,
+        maximumHealthPoints: PLAYER_MAXIMUM_HEALTH_POINTS,
+      }))
+    }
+    const committed = yield* Effect.result(commit.coordinator.commit({
+      expectedRevision: observed.success.revision,
+      expectedDimensions: [],
+      changes,
+    }))
+    if (Result.isFailure(committed)) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed', operation: 'WorldCommit', subject: 'Brewing', error: committed.failure,
+      })
+      return
+    }
+    if (applications.length > 0) {
+      yield* Ref.update(state.pendingStatusEffects, (pending) => pending.slice(applications.length))
+    }
     yield* Ref.set(state.playerMovementSpeedMultiplier, tick.movementSpeedMultiplier)
-    if (tick.hungerExhaustion > 0) {
-      yield* state.survivalHunger.addExhaustion(tick.hungerExhaustion)
-    }
-    if (tick.poisonPulses > 0) {
-      const damages: ReadonlyArray<PlayerDamageEvent> = Array.from(
-        { length: tick.poisonPulses },
-        () => ({
-          _tag: 'StatusEffect' as const,
-          effect: 'poison' as const,
-          damage: { amount: POISON_DAMAGE_POINTS, cause: 'poison' as const },
-          minimumHealthPoints: POISON_MINIMUM_HEALTH_POINTS,
-        }),
-      )
-      yield* Ref.update(state.playerDamages, (pending) => [...pending, ...damages])
-    }
-    if (tick.regenerationPulses > 0) {
-      const heals: ReadonlyArray<PlayerHealingEvent> = Array.from(
-        { length: tick.regenerationPulses },
-        () => ({
-          _tag: 'StatusEffect' as const,
-          effect: 'regeneration' as const,
-          amount: REGENERATION_HEAL_POINTS,
-          maximumHealthPoints: PLAYER_MAXIMUM_HEALTH_POINTS,
-        }),
-      )
-      yield* Ref.update(state.playerHeals, (pending) => [...pending, ...heals])
-    }
+    if (heals.length > 0) yield* Ref.update(state.playerHeals, (pending) => [...pending, ...heals])
   })
 
 export const requestVillagerTrade = (
@@ -3402,8 +3725,19 @@ export type GameplayStageCommitServices = Readonly<{
   readonly cropOwnerId?: ReplicatedOwnerId
   readonly droppedItemsOwnerId?: ReplicatedOwnerId
   readonly vitalsOwnerId?: ReplicatedOwnerId
+  readonly statusEffectsOwnerId?: ReplicatedOwnerId
   readonly experienceOrbsOwnerId?: ReplicatedOwnerId
   readonly villagerTradesOwnerId?: ReplicatedOwnerId
+  readonly brewingOwnerId?: ReplicatedOwnerId
+  readonly fishingOwnerId?: ReplicatedOwnerId
+  readonly entitiesOwnerId?: ReplicatedOwnerId
+  readonly projectileOwnerId?: ReplicatedOwnerId
+  readonly tntOwnerId?: ReplicatedOwnerId
+  readonly brewingService?: BrewingServiceApi
+  readonly fishingService?: FishingServiceApi
+  readonly projectileService?: ProjectileServiceApi
+  readonly tntService?: TntServiceApi
+  readonly eventBus?: DomainEventBusApi
 }>
 
 export const gameplayPlayerStateForStage = (

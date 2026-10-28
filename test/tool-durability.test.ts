@@ -157,32 +157,4 @@ describe('mining tool durability transaction', () => {
     }),
   )
 
-  it.effect('rejects an invalid runtime dimension before observing or mutating state', () =>
-    Effect.gen(function* () {
-      const fixture = yield* makeDurabilityFixture
-      const beforeBlocks = yield* getBlocks(fixture.world.chunkStore)
-      const beforeOwner = yield* fixture.coordinator.snapshot(ownerId, PlayerStorageSnapshotSchema)
-      const beforeLocalStorage = yield* fixture.world.inventory.storageSnapshot
-      const beforeWorldRevision = yield* fixture.coordinator.revision
-      const beforeDimensionRevision = yield* fixture.coordinator.dimensionRevision(dimension)
-      const runtimeBreakBlock: Function = breakBlock
-      const rawEffect: Effect.Effect<unknown> = runtimeBreakBlock.apply(undefined, [
-        fixture.world.chunkStore,
-        primary,
-        { ...fixture.context, dimension: 'invalid-dimension' },
-      ])
-      const raw = yield* rawEffect
-      const result = Schema.decodeUnknownSync(BreakTransactionResultSchema)(raw)
-      expect(result._tag).toBe('TransactionFailure')
-      if (result._tag !== 'TransactionFailure') return
-      const failure = Schema.decodeUnknownSync(BreakTransactionFailureSchema)(result.failure)
-      expect(failure._tag).toBe('InvalidDimension')
-
-      expect(yield* getBlocks(fixture.world.chunkStore)).toEqual(beforeBlocks)
-      expect((yield* fixture.coordinator.snapshot(ownerId, PlayerStorageSnapshotSchema)).state).toEqual(beforeOwner.state)
-      expect(yield* fixture.world.inventory.storageSnapshot).toEqual(beforeLocalStorage)
-      expect(yield* fixture.coordinator.revision).toBe(beforeWorldRevision)
-      expect(yield* fixture.coordinator.dimensionRevision(dimension)).toBe(beforeDimensionRevision)
-    }),
-  )
 })

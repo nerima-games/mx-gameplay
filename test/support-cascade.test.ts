@@ -22,6 +22,7 @@ import {
   type ChunkStoreApi
 } from "@nerima-games/mc-worldgen"
 import { emptyBlocks } from "@nerima-games/mc-worldgen/testing"
+import { WORLD_HEIGHT } from "./support/chunk-store-double"
 import {
   emptyPlayerStorage,
   itemStack,
@@ -190,7 +191,7 @@ describe("breakBlock support cascade transaction", () => {
         ) throw new Error("the generated pickaxe has no durability")
         expect(afterDurability.current).toBe(beforeDurability.current - 1)
         expect(firstStorage.state.inventory.slots[0]?.item).toBe("iron_pickaxe")
-        expect(await first.localInventory.storageSnapshot).toEqual(first.initialLocalStorage)
+        expect(await Effect.runPromise(first.localInventory.storageSnapshot)).toEqual(first.initialLocalStorage)
       }),
       { numRuns: 20, seed: 742019 }
     )
@@ -219,7 +220,7 @@ describe("breakBlock support cascade transaction", () => {
     const afterStorage = await readOwnerStorage(fixture.coordinator, fixture.context.ownerId)
     expect(afterBlocks).toEqual(beforeBlocks)
     expect(afterStorage.state).toEqual(beforeStorage.state)
-    expect(await fixture.localInventory.storageSnapshot).toEqual(fixture.initialLocalStorage)
+    expect(await Effect.runPromise(fixture.localInventory.storageSnapshot)).toEqual(fixture.initialLocalStorage)
   })
 
   it("removes the matching upper door half with the lower half", async () => {
@@ -252,7 +253,41 @@ describe("breakBlock support cascade transaction", () => {
     }
     expect(afterDurability.current).toBe(beforeDurability.current - 1)
     expect(ownerAfter.revision).toBe(1)
-    expect(await fixture.localInventory.storageSnapshot).toEqual(fixture.initialLocalStorage)
+    expect(await Effect.runPromise(fixture.localInventory.storageSnapshot)).toEqual(fixture.initialLocalStorage)
+  })
+
+  it("breaks a block at the world ceiling when the above observation is out of world", async () => {
+    const fixture = await makeFixture()
+    const primary = positionAt(WORLD_HEIGHT - 1)
+    expect((await Effect.runPromise(fixture.store.setBlock(primary, blockId("dirt"))))._tag).toBe("Written")
+
+    const raw = await Effect.runPromise(breakBlock(fixture.store, primary, fixture.context))
+    const result = decode(BreakTransactionResultSchema)(raw)
+
+    expect(result._tag).toBe("CommittedCascade")
+    if (result._tag !== "CommittedCascade") return
+    expect(result.primary).toEqual(primary)
+    expect(result.removed).toEqual([primary])
+    expect(await readBlocks(fixture.store, [primary])).toEqual([{ _tag: "Block", block: AIR_BLOCK_ID }])
+  })
+
+  it("keeps a supported block above the primary break target", async () => {
+    const fixture = await makeFixture()
+    const primary = positionAt(60)
+    const supportedAbove = positionAt(61)
+    expect((await Effect.runPromise(fixture.store.setBlock(primary, blockId("dirt"))))._tag).toBe("Written")
+    expect((await Effect.runPromise(fixture.store.setBlock(supportedAbove, blockId("stone"))))._tag).toBe("Written")
+
+    const raw = await Effect.runPromise(breakBlock(fixture.store, primary, fixture.context))
+    const result = decode(BreakTransactionResultSchema)(raw)
+
+    expect(result._tag).toBe("CommittedCascade")
+    if (result._tag !== "CommittedCascade") return
+    expect(result.removed).toEqual([primary])
+    expect(await readBlocks(fixture.store, [primary, supportedAbove])).toEqual([
+      { _tag: "Block", block: AIR_BLOCK_ID },
+      { _tag: "Block", block: blockId("stone") },
+    ])
   })
 
   it("rejects a support cascade when the world revision changes after its primary observation", async () => {
@@ -297,6 +332,6 @@ describe("breakBlock support cascade transaction", () => {
     expect(await readBlocks(fixture.store, positions)).toEqual(beforeBlocks)
     const afterOwner = await readOwnerStorage(fixture.coordinator, fixture.context.ownerId)
     expect(afterOwner.state).toEqual(beforeOwner.state)
-    expect(await fixture.localInventory.storageSnapshot).toEqual(fixture.initialLocalStorage)
+    expect(await Effect.runPromise(fixture.localInventory.storageSnapshot)).toEqual(fixture.initialLocalStorage)
   })
 })

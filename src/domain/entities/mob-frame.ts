@@ -224,7 +224,7 @@ import {
   position as kernelPosition,
   type Position,
 } from '@nerima-games/mc-kernel'
-import { applyDamage, isDead, type Vitals } from '../death-cause.js'
+import { applyDamage, isDead, type Damage, type Vitals } from '../death-cause.js'
 import { decodeEnchantedItem, type Enchantment } from '../enchantment.js'
 import {
   changed,
@@ -235,7 +235,11 @@ import {
   type Entity,
   type EntityId,
   type EntityManagerApi,
+  type EntityRoster,
   type EntityStep,
+  countOfKind,
+  spawnEntity,
+  sweepRoster,
 } from '@nerima-games/mc-sim'
 import type { ChunkStoreApi } from '@nerima-games/mc-worldgen'
 import type { BlockPosition, DeltaTimeSecs } from '@nerima-games/mc-kernel'
@@ -253,7 +257,7 @@ import {
   type EndermanTeleportPosition,
 } from '../mob/enderman-teleport.js'
 import { explosionDamageAt, type Explosion } from '../mob/explosion.js'
-import { FRESH_PRIMED_TNT, isPrimedTnt, stepPrimedTnt, type PrimedTnt } from '../mob/primed-tnt.js'
+import { FRESH_PRIMED_TNT, isPrimedTnt, type PrimedTnt } from '../mob/primed-tnt.js'
 import {
   DESPAWN_DISTANCE_BLOCKS,
   despawnVerdict,
@@ -1147,12 +1151,14 @@ export type EndermanTeleportProbe = {
  * DORMANT_FUSE })` from producing an exploding pig. `repairMobBehaviour` enforces
  * the same agreement on the load path; this is the frame path's half of it.
  */
-export const sweepMobs = (
-  roster: EntityManagerApi<MobBehaviour>,
-  senses: MobFrameSenses,
-  seed: number,
-): Effect.Effect<MobSweep> =>
-  Effect.suspend(() => {
+type MobFrameEvent = Blast | MobAttackEvent | EndermanTeleportProbe
+
+type MobFrameSweep = Readonly<{
+  step: (entity: Entity<MobBehaviour>) => EntityStep<MobBehaviour, MobFrameEvent>
+  finish: (events: ReadonlyArray<MobFrameEvent>) => MobSweep
+}>
+
+const makeMobFrameSweep = (senses: MobFrameSenses, seed: number): MobFrameSweep => {
     // Allocated once per sweep, refilled once per entity. See the module header
     // for why that is worth the mutation, and why it is safe.
     const despawnScratch: Mutable<DespawnCandidate> = {
@@ -1195,36 +1201,14 @@ export const sweepMobs = (
     // rule asks for a roll, and handed back beside the blasts.
     let cursor = seed
 
-    return Effect.map(
-      roster.sweep<Blast | MobAttackEvent | EndermanTeleportProbe>((entity) => {
+    const step = (entity: Entity<MobBehaviour>): EntityStep<MobBehaviour, MobFrameEvent> => {
         if (entity.kind === DROPPED_ITEM_KIND && isDroppedItemBehaviour(entity.behaviour)) {
           return IGNORED
         }
 
-        if (entity.kind === PRIMED_TNT_KIND && isPrimedTnt(entity.behaviour)) {
-          const step = stepPrimedTnt(entity.behaviour, senses.dt)
-          if (step.explosion !== undefined) {
-            return {
-              transition: DESPAWNED,
-              emit: {
-                source: entity.id,
-                kind: entity.kind,
-                at: entity.feetPosition,
-                explosion: step.explosion,
-              },
-            }
-          }
-          return step.tnt === entity.behaviour
-            ? IGNORED
-            : {
-                transition: changed({
-                  feetPosition: entity.feetPosition,
-                  healthPoints: entity.healthPoints,
-                  behaviour: step.tnt,
-                }),
-                emit: undefined,
-              }
-        }
+        // Primed TNT is advanced through mc-sim's TntService owner. Keeping a
+        // second fuse lane here would let the roster and TNT owner diverge.
+        if (entity.kind === PRIMED_TNT_KIND && isPrimedTnt(entity.behaviour)) return IGNORED
 
         const distance =
           senses.target === undefined ? undefined : distanceBetween(entity.feetPosition, senses.target)
@@ -1472,8 +1456,8 @@ export const sweepMobs = (
         // replaces these on the load path; a host that spawns one directly gets
         // the same answer as a pig, which is the inert one.
         return IGNORED
-      }),
-      (events) => {
+      }
+    const finish = (events: ReadonlyArray<MobFrameEvent>): MobSweep => {
         const blasts: Blast[] = []
         const attacks: MobAttackEvent[] = []
         const teleports: EndermanTeleportProbe[] = []
@@ -1485,9 +1469,32 @@ export const sweepMobs = (
         }
 
         return { blasts, attacks, teleports, seed: cursor }
-      },
-    )
-  })
+      }
+    return { step, finish }
+}
+
+export type MobRosterSweep = MobSweep & Readonly<{ roster: EntityRoster<MobBehaviour> }>
+
+/** Calculate one mob frame over an owner snapshot without writing through a service. */
+export const planMobRosterSweep = (
+  roster: EntityRoster<MobBehaviour>,
+  senses: MobFrameSenses,
+  seed: number,
+): MobRosterSweep => {
+  const frame = makeMobFrameSweep(senses, seed)
+  const swept = sweepRoster(roster, frame.step)
+  return { roster: swept.roster, ...frame.finish(swept.emitted) }
+}
+
+/** Compatibility adapter for callers which still use the local EntityManager. */
+export const sweepMobs = (
+  roster: EntityManagerApi<MobBehaviour>,
+  senses: MobFrameSenses,
+  seed: number,
+): Effect.Effect<MobSweep> => Effect.suspend(() => {
+  const frame = makeMobFrameSweep(senses, seed)
+  return Effect.map(roster.sweep(frame.step), frame.finish)
+})
 
 /** Resolves planned teleports against loaded terrain, then applies only safe landings. */
 export const resolveEndermanTeleportProbes = (
@@ -1544,6 +1551,60 @@ export const resolveEndermanTeleportProbes = (
           }
     })
   })
+
+/** Resolve teleport probes against the world, then return a roster candidate. */
+export const planEndermanTeleportRoster = (
+  roster: EntityRoster<MobBehaviour>,
+  store: ChunkStoreApi,
+  probes: ReadonlyArray<EndermanTeleportProbe>,
+): Effect.Effect<EntityRoster<MobBehaviour>> => Effect.gen(function* () {
+  if (probes.length === 0) return roster
+
+  const destinations = new Map<EntityId, Position>()
+  for (const probe of probes) {
+    const cells = yield* Effect.forEach(
+      endermanTeleportCandidateCells(probe.current, probe.anchor, probe.rolls),
+      (position) => {
+        const cell = teleportCellOf(position)
+        if (cell === undefined) return Effect.succeed(undefined)
+        return Effect.map(store.getBlock(cell), (reading): EndermanTeleportCell | undefined => {
+          if (reading._tag !== 'Block') return undefined
+          const block = Result.getOrUndefined(blockTypeOfId(reading.block))
+          if (block === undefined) return undefined
+          return {
+            position,
+            block,
+            solid: Result.getOrUndefined(capabilityOfBlockId(reading.block, 'validSpawnSurface')) === true,
+          }
+        })
+      },
+    )
+    const destination = resolveSafeEndermanTeleport(
+      probe.current,
+      probe.anchor,
+      probe.rolls,
+      cells.filter((cell): cell is EndermanTeleportCell => cell !== undefined),
+    )
+    if (destination !== probe.current) {
+      destinations.set(probe.entityId, teleportPositionOf(destination))
+    }
+  }
+
+  if (destinations.size === 0) return roster
+  return sweepRoster(roster, (entity) => {
+    const destination = destinations.get(entity.id)
+    return destination === undefined
+      ? IGNORED
+      : {
+          transition: changed({
+            feetPosition: destination,
+            healthPoints: entity.healthPoints,
+            behaviour: entity.behaviour,
+          }),
+          emit: undefined,
+        }
+  }).roster
+})
 
 // ---------------------------------------------------------------------------
 // Resolving a blast
@@ -1631,6 +1692,156 @@ export const resolveBlasts = (
 
     return { casualties, disturbed }
   })
+
+export type MobBlastRosterResolution = Readonly<{
+  roster: EntityRoster<MobBehaviour>
+  casualties: ReadonlyArray<MobCasualty>
+}>
+
+/** Apply blast damage to a roster snapshot without writing through EntityManager. */
+export const planMobBlastRoster = (
+  roster: EntityRoster<MobBehaviour>,
+  blasts: ReadonlyArray<Blast>,
+): MobBlastRosterResolution => {
+  if (blasts.length === 0) return { roster, casualties: NO_CASUALTIES }
+
+  const swept = sweepRoster(roster, (entity) => {
+    if (entity.kind === DROPPED_ITEM_KIND && isDroppedItemBehaviour(entity.behaviour)) {
+      return IGNORED
+    }
+
+    const vitals = damageFrom(blasts, entity)
+    if (vitals === undefined) return IGNORED
+    if (isDead(vitals)) {
+      return {
+        transition: DESPAWNED,
+        emit: { id: entity.id, kind: entity.kind, at: entity.feetPosition },
+      }
+    }
+    return {
+      transition: changed({
+        feetPosition: entity.feetPosition,
+        healthPoints: EntityHealthPoints(vitals.healthPoints),
+        behaviour: bruise(entity.behaviour),
+      }),
+      emit: undefined,
+    }
+  })
+
+  return { roster: swept.roster, casualties: swept.emitted }
+}
+
+export type MobDamageHit = Readonly<{ id: EntityId; damage: Damage }>
+
+export type MobExplosionHit = Readonly<{
+  id: EntityId
+  damage: Damage
+  knockback: Position
+}>
+
+/** Apply one explosion's owner-snapshot damage and knockback in a pure pass. */
+export const planMobExplosionRoster = (
+  roster: EntityRoster<MobBehaviour>,
+  hits: ReadonlyArray<MobExplosionHit>,
+): MobBlastRosterResolution => {
+  if (hits.length === 0) return { roster, casualties: NO_CASUALTIES }
+
+  const byEntity = new Map<EntityId, MobExplosionHit>()
+  for (const hit of hits) {
+    if (
+      !Number.isFinite(hit.damage.amount) || hit.damage.amount < 0 ||
+      !Number.isFinite(hit.knockback.x) ||
+      !Number.isFinite(hit.knockback.y) ||
+      !Number.isFinite(hit.knockback.z)
+    ) continue
+    byEntity.set(hit.id, hit)
+  }
+  if (byEntity.size === 0) return { roster, casualties: NO_CASUALTIES }
+
+  const swept = sweepRoster(roster, (entity) => {
+    if (entity.kind === DROPPED_ITEM_KIND && isDroppedItemBehaviour(entity.behaviour)) return IGNORED
+    const hit = byEntity.get(entity.id)
+    if (hit === undefined) return IGNORED
+
+    const takesDamage = hit.damage.amount > 0
+    const vitals = takesDamage
+      ? applyDamage({ healthPoints: entity.healthPoints, lastDeathCause: undefined }, hit.damage)
+      : undefined
+    if (vitals !== undefined && isDead(vitals)) {
+      return {
+        transition: DESPAWNED,
+        emit: { id: entity.id, kind: entity.kind, at: entity.feetPosition },
+      }
+    }
+
+    const feetPosition = kernelPosition(
+      PositionAxis(entity.feetPosition.x + hit.knockback.x),
+      PositionAxis(entity.feetPosition.y + hit.knockback.y),
+      PositionAxis(entity.feetPosition.z + hit.knockback.z),
+    )
+    const behaviour = takesDamage ? bruise(entity.behaviour) : entity.behaviour
+    if (
+      feetPosition.x === entity.feetPosition.x &&
+      feetPosition.y === entity.feetPosition.y &&
+      feetPosition.z === entity.feetPosition.z &&
+      behaviour === entity.behaviour &&
+      (vitals === undefined || vitals.healthPoints === entity.healthPoints)
+    ) return IGNORED
+
+    return {
+      transition: changed({
+        feetPosition,
+        healthPoints: vitals === undefined
+          ? entity.healthPoints
+          : EntityHealthPoints(vitals.healthPoints),
+        behaviour,
+      }),
+      emit: undefined,
+    }
+  })
+
+  return { roster: swept.roster, casualties: swept.emitted }
+}
+
+/** Apply owner-snapshot damage in one pure roster pass. */
+export const planMobDamageRoster = (
+  roster: EntityRoster<MobBehaviour>,
+  hits: ReadonlyArray<MobDamageHit>,
+): MobBlastRosterResolution => {
+  if (hits.length === 0) return { roster, casualties: NO_CASUALTIES }
+
+  const byEntity = new Map<EntityId, ReadonlyArray<Damage>>()
+  for (const hit of hits) {
+    if (!Number.isFinite(hit.damage.amount) || hit.damage.amount <= 0) continue
+    byEntity.set(hit.id, [...(byEntity.get(hit.id) ?? []), hit.damage])
+  }
+  if (byEntity.size === 0) return { roster, casualties: NO_CASUALTIES }
+
+  const swept = sweepRoster(roster, (entity) => {
+    if (entity.kind === DROPPED_ITEM_KIND && isDroppedItemBehaviour(entity.behaviour)) return IGNORED
+    const damages = byEntity.get(entity.id)
+    if (damages === undefined) return IGNORED
+
+    let vitals: Vitals = { healthPoints: entity.healthPoints, lastDeathCause: undefined }
+    for (const damage of damages) vitals = applyDamage(vitals, damage)
+    if (isDead(vitals)) {
+      return {
+        transition: DESPAWNED,
+        emit: { id: entity.id, kind: entity.kind, at: entity.feetPosition },
+      }
+    }
+    return {
+      transition: changed({
+        feetPosition: entity.feetPosition,
+        healthPoints: EntityHealthPoints(vitals.healthPoints),
+        behaviour: bruise(entity.behaviour),
+      }),
+      emit: undefined,
+    }
+  })
+
+  return { roster: swept.roster, casualties: swept.emitted }
+}
 
 /**
  * Turn bow hits into damage.
@@ -1874,16 +2085,15 @@ export const rollCasualtyDrops = (
 export const rollSelfDestructDrops = (blast: Blast): ReadonlyArray<MobDropEvent> => {
   // Always `[]`: `../mob/mob-drop`'s `rollMobDrop` returns `undefined` for
   // EVERY rule the instant `kill._tag` is `'SelfDestruct'`, before it consults
-  // the rule at all, and `SELF_DESTRUCT` is the only kill this call site ever
-  // passes. Kept as a call through `rollDropsOfKind` (see the header above)
-  // — general over what a future rule change would return for a
-  // `SelfDestruct` kill — rather than hard-coded to a bare `[]` literal. The
-  // `.map` that would attach `source` / `kind` / `at` to each drop is not
-  // written out: an array this function can only ever return empty needs no
-  // per-element transform, and one that could never run is what the
-  // structural proof above is naming.
+  // the rule at all. Keep the result typed as events by attaching the blast
+  // facts to any drops the pure rule calculation returns.
   const drops = rollDropsOfKind(blast.kind, SELF_DESTRUCT, NO_DROPS)
-  return drops as unknown as ReadonlyArray<MobDropEvent>
+  return drops.map((drop) => ({
+    ...drop,
+    source: blast.source,
+    kind: blast.kind,
+    at: blast.at,
+  }))
 }
 
 // ---------------------------------------------------------------------------
@@ -2009,3 +2219,45 @@ export const applySpawnAttempts = (
 
     return outcomes
   })
+
+export type MobSpawnRosterResolution = Readonly<{
+  roster: EntityRoster<MobBehaviour>
+  outcomes: ReadonlyArray<MobSpawnOutcome>
+}>
+
+/** Apply validated spawn attempts to a roster snapshot without a stateful service. */
+export const planSpawnAttemptsOnRoster = (
+  initial: EntityRoster<MobBehaviour>,
+  attempts: ReadonlyArray<MobSpawnAttempt>,
+): Result.Result<MobSpawnRosterResolution, EntitySerialExhausted> => {
+  let roster = initial
+  const outcomes: Array<MobSpawnOutcome> = []
+
+  for (const attempt of attempts) {
+    const verdict = canMobSpawnAt(attempt.kind, attempt.candidate)
+    if (verdict._tag === 'Refused') {
+      outcomes.push({ _tag: 'Refused', reason: verdict.reason })
+      continue
+    }
+
+    const passive = PASSIVE_MOB_KINDS.includes(attempt.kind)
+    const kinds = passive ? PASSIVE_MOB_KINDS : HOSTILE_KINDS
+    const population = kinds.reduce((total, kind) => total + countOfKind(roster, kind), 0)
+    if (population >= (passive ? MAX_PASSIVE_COUNT : MAX_HOSTILE_COUNT)) {
+      outcomes.push({ _tag: 'AtCapacity', population })
+      continue
+    }
+
+    const spawned = spawnEntity(roster, {
+      kind: attempt.kind,
+      feetPosition: attempt.feetPosition,
+      healthPoints: maxHealthOfKind(attempt.kind),
+      behaviour: initialBehaviourOfKind(attempt.kind),
+    })
+    if (Result.isFailure(spawned)) return Result.fail(spawned.failure)
+    roster = spawned.success.roster
+    outcomes.push({ _tag: 'Spawned', id: spawned.success.entity.id })
+  }
+
+  return Result.succeed({ roster, outcomes })
+}

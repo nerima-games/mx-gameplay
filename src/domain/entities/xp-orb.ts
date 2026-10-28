@@ -30,6 +30,8 @@ const strictCodec = <A, I>(schema: Schema.Codec<A, I>): Schema.Codec<A, I> =>
       }),
   )
 
+const isSingleElement = <A>(values: ReadonlyArray<A>): values is readonly [A] => values.length === 1
+
 export const ExperienceOrbValueSchema: typeof ExperienceAmountSchema = ExperienceAmountSchema
 export type ExperienceOrbValue = Schema.Schema.Type<typeof ExperienceOrbValueSchema>
 
@@ -201,7 +203,7 @@ export const absorbExperienceOrb: (
     }
 
     const matchingOrbs = orbsSnapshot.state.orbs.filter(({ id }) => id === decodedContext.orb)
-    if (matchingOrbs.length !== 1) {
+    if (!isSingleElement(matchingOrbs)) {
       const failure = yield* Schema.decodeUnknownEffect(ExperienceOrbAbsorptionFailureSchema)({
         _tag: 'ExperienceOrbUnavailable',
         orb: decodedContext.orb,
@@ -210,15 +212,7 @@ export const absorbExperienceOrb: (
       return yield* Effect.fail(failure)
     }
 
-    const orb = matchingOrbs[0]
-    if (orb === undefined) {
-      const failure = yield* Schema.decodeUnknownEffect(ExperienceOrbAbsorptionFailureSchema)({
-        _tag: 'ExperienceOrbUnavailable',
-        orb: decodedContext.orb,
-        reason: 'missing-orb',
-      })
-      return yield* Effect.fail(failure)
-    }
+    const [orb] = matchingOrbs
 
     const experience = yield* Schema.decodeUnknownEffect(ExperienceOrbValueSchema)(orb.value)
     const experienceDelta = yield* Effect.fromResult(ExperienceDelta.result(experience))

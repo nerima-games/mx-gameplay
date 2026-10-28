@@ -29,8 +29,8 @@ import {
   AIR_BLOCK_ID,
   BlockIdSchema,
   BlockPositionSchema,
-  DimensionRevisionSchema,
   DimensionIdSchema,
+  DimensionRevisionSchema,
   WorldRevisionSchema,
   adjacentBlockPosition,
   chunkCoordOfBlock,
@@ -122,7 +122,6 @@ const ObservationFailureSchema: Schema.Codec<ObservationFailure, unknown> = Sche
 
 export type BreakTransactionFailure =
   | { readonly _tag: 'MissingTransactionContext' }
-  | { readonly _tag: 'InvalidDimension' }
   | { readonly _tag: 'BlockUnavailable'; readonly reason: 'air' | 'chunk-not-loaded' | 'out-of-world' }
   | { readonly _tag: 'ObservationIncomplete'; readonly position: BlockPosition }
   | { readonly _tag: 'ObservationFailed'; readonly error: ObservationFailure }
@@ -132,7 +131,6 @@ export type BreakTransactionFailure =
 
 export const BreakTransactionFailureSchema: Schema.Codec<BreakTransactionFailure, unknown> = Schema.Union([
   Schema.TaggedStruct('MissingTransactionContext', {}),
-  Schema.TaggedStruct('InvalidDimension', {}),
   Schema.TaggedStruct('BlockUnavailable', {
     reason: Schema.Literals(['air', 'chunk-not-loaded', 'out-of-world']),
   }),
@@ -186,31 +184,27 @@ const breakBlockLegacy = (
   position: BlockPosition,
 ): Effect.Effect<BreakOutcome> =>
   Effect.map(store.setBlock(position, AIR_BLOCK_ID), (outcome): BreakOutcome => {
-    switch (outcome._tag) {
-      case 'Written':
-        return { _tag: 'Broken', yielded: outcome.previous, chunk: outcome.chunk }
-
-      // `Unchanged` means air was already there: the write did not dirty the
-      // chunk, and this rule must not invent an item or a disturbance out of
-      // it. A player swinging at empty space is a legal thing to do, and
-      // treating it as a break would drop air into the inventory and re-mesh
-      // the chunk on every frame the button is held.
-      case 'Unchanged':
-        return { _tag: 'NothingThere' }
-
-      // The store refused because it does not know that cell. Answering "there
-      // was air there" would be the two-valued read that drops sand out of the
-      // world one file over.
-      case 'ChunkNotLoaded':
-        return { _tag: 'ChunkNotLoaded' }
-
-      case 'OutOfWorld':
-        return { _tag: 'OutOfWorld' }
-      default: {
-        const exhaustive: never = outcome
-        return exhaustive
-      }
+    if (outcome._tag === 'Written') {
+      return { _tag: 'Broken', yielded: outcome.previous, chunk: outcome.chunk }
     }
+
+    // `Unchanged` means air was already there: the write did not dirty the
+    // chunk, and this rule must not invent an item or a disturbance out of
+    // it. A player swinging at empty space is a legal thing to do, and
+    // treating it as a break would drop air into the inventory and re-mesh
+    // the chunk on every frame the button is held.
+    if (outcome._tag === 'Unchanged') {
+      return { _tag: 'NothingThere' }
+    }
+
+    // The store refused because it does not know that cell. Answering "there
+    // was air there" would be the two-valued read that drops sand out of the
+    // world one file over.
+    if (outcome._tag === 'ChunkNotLoaded') {
+      return { _tag: 'ChunkNotLoaded' }
+    }
+
+    return { _tag: 'OutOfWorld' }
   })
 
 export const planBreakBlock = (
@@ -218,11 +212,7 @@ export const planBreakBlock = (
   context: BreakBlockPlanContext,
 ): Effect.Effect<BreakBlockPlanResult> =>
   Effect.gen(function* () {
-    const decodedDimension = Schema.decodeUnknownResult(DimensionIdSchema)(context.dimension)
-    if (Result.isFailure(decodedDimension)) {
-      return failure({ _tag: 'InvalidDimension' })
-    }
-    const dimension = decodedDimension.success
+    const dimension = Schema.decodeUnknownSync(DimensionIdSchema)(context.dimension)
 
     const observe = (positions: ReadonlyArray<BlockPosition>) =>
       Effect.result(context.coordinator.observe(

@@ -41,9 +41,18 @@ export {
   type BowShotResult,
   type GameplayMeleeAttackResult,
   type EnderPearlThrowRequest,
+  EnderPearlThrowRequestSchema,
   type BowKnockback,
   type EnderPearlOutcome,
+  EnderPearlOutcomeSchema,
   makeGameplayFrameState,
+  makeGameplayFrameStateForOwner,
+  requestCollectBrewingBottle,
+  type CollectBrewingBottleRequest,
+  CollectBrewingBottleRequestSchema,
+  type BrewingBottleItemUseResult,
+  GameplayBrewingBottleItemUseResultSchema,
+  GameplayFishingItemUseResultSchema,
   setPlayerDead,
   requestBlockBreak,
   DEFAULT_BLOCK_REACH,
@@ -76,6 +85,7 @@ export {
   drainBowKnockbacks,
   drainMeleeAttackResults,
   requestMeleeAttack,
+  requestEnderPearlThrow,
   type TargetedPrimaryAttackResult,
   type TargetedPrimaryAttackResolution,
   type TargetedPrimaryAttackOptions,
@@ -125,6 +135,7 @@ import {
   entityManagerTag,
   GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
   makeGameplayFrameState,
+  makeGameplayFrameStateForOwner,
 } from './registration-core.js'
 import type {
   ChunkStoreApi,
@@ -141,7 +152,16 @@ import type {
   VehicleFrameEnvironment,
   VehicleServiceApi,
 } from './registration-core.js'
-import { WorldCommitCoordinator } from '@nerima-games/mc-sim'
+import {
+  DomainEventBus,
+  WorldCommitCoordinator,
+  makeBrewingService,
+  makeFishingService,
+  makeProjectileService,
+  makeTntService,
+  PROJECTILE_REPLICATED_OWNER_ID,
+  TNT_REPLICATED_OWNER_ID,
+} from '@nerima-games/mc-sim'
 import type { GameModule, StageRegistration } from '@nerima-games/mc-kernel'
 import { Effect, Layer } from 'effect'
 import { makeVehiclesStage } from './vehicles-stage.js'
@@ -155,6 +175,9 @@ import { makeTimeWeatherStage } from './time-weather-stage.js'
 import {
   GAMEPLAY_PLAYER_OWNER_ID,
   GAMEPLAY_CROPS_OWNER_ID,
+  GAMEPLAY_BREWING_OWNER_ID,
+  GAMEPLAY_ENTITIES_OWNER_ID,
+  GAMEPLAY_FISHING_OWNER_ID,
   GAMEPLAY_DROPPED_ITEMS_OWNER_ID,
   GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
   GAMEPLAY_VITALS_OWNER_ID,
@@ -233,13 +256,18 @@ export const gameplayStages = (
 export const makeGameplayStages: Effect.Effect<
   ReadonlyArray<StageRegistration>,
   never,
-  ChunkStore | EntityManager | TimeService | WorldCommitCoordinator
+  ChunkStore | EntityManager | TimeService | WorldCommitCoordinator | DomainEventBus
 > = Effect.gen(function* () {
   const store = yield* ChunkStore
   const roster = yield* entityManagerTag<MobBehaviour>()
   const time = yield* TimeService
   const coordinator = yield* WorldCommitCoordinator
-  const state = yield* makeGameplayFrameState({
+  const eventBus = yield* DomainEventBus
+  const brewingService = yield* makeBrewingService(GAMEPLAY_BREWING_OWNER_ID)
+  const fishingService = yield* makeFishingService(GAMEPLAY_FISHING_OWNER_ID)
+  const projectileService = yield* makeProjectileService()
+  const tntService = yield* makeTntService(TNT_REPLICATED_OWNER_ID)
+  const state = yield* makeGameplayFrameStateForOwner({
     coordinator,
     vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID,
   })
@@ -253,6 +281,16 @@ export const makeGameplayStages: Effect.Effect<
     vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID,
     experienceOrbsOwnerId: GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
     villagerTradesOwnerId: GAMEPLAY_VILLAGER_TRADES_OWNER_ID,
+    brewingOwnerId: GAMEPLAY_BREWING_OWNER_ID,
+    fishingOwnerId: GAMEPLAY_FISHING_OWNER_ID,
+    entitiesOwnerId: GAMEPLAY_ENTITIES_OWNER_ID,
+    projectileOwnerId: PROJECTILE_REPLICATED_OWNER_ID,
+    tntOwnerId: TNT_REPLICATED_OWNER_ID,
+    brewingService,
+    fishingService,
+    projectileService,
+    tntService,
+    eventBus,
   })
 })
 
@@ -280,19 +318,20 @@ export const makeGameplayStages: Effect.Effect<
  * this repository had already been forced into became the contract.
  *
  * `RRegister` is now `ChunkStore | EntityManager | TimeService |
- * WorldCommitCoordinator` and
+ * WorldCommitCoordinator | DomainEventBus` and
  * `RIn`
  * is still `never`, which is the distinction that parameter was added for: this
  * repository needs mc-worldgen's store in order to REGISTER stages that write
  * blocks, mc-sim's roster in order to register the stage that iterates mobs,
- * and a commit coordinator for atomic owner and block writes. Player pose and
- * inventory are read from gameplay owner snapshots on supported paths. It
+ * a commit coordinator for atomic owner and block writes, and an event bus for
+ * post-commit plan events. Player pose and inventory are read from gameplay
+ * owner snapshots. It
  * needs nothing to build a Layer.
  *
- * The registration contract has four services. `RIn` remains `never`, so
+ * The registration contract has five services. `RIn` remains `never`, so
  * mx-gameplay still BUILDS nothing another repository has to supply. A host
- * must provide a coordinator registered with the published gameplay owners
- * before it can build the stages.
+ * must provide a coordinator registered with the published gameplay and
+ * simulation owners before it can build the stages.
  *
  * A host supplies mc-sim's entity and time layers. The host's line is
  *
@@ -306,7 +345,7 @@ export const gameplayModule: GameModule<
   never,
   never,
   never,
-  ChunkStore | EntityManager | TimeService | WorldCommitCoordinator
+  ChunkStore | EntityManager | TimeService | WorldCommitCoordinator | DomainEventBus
 > = {
   layers: Layer.empty,
   frameStages: makeGameplayStages,

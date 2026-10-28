@@ -3,9 +3,14 @@ import {
   CropSnapshotSchema,
   PlayerServiceSnapshotSchema,
   BrewingServiceStateSchema,
+  INITIAL_PROJECTILE_SERVICE_SNAPSHOT,
+  PROJECTILE_REPLICATED_OWNER_ID,
+  ProjectileServiceSnapshotSchema,
+  TNT_REPLICATED_OWNER_ID,
+  INITIAL_TNT_SERVICE_SNAPSHOT,
+  tntOwnerRegistration,
   EntityRosterSchema,
   EntitySerial,
-  FishingStateSchema,
   emptyBrewingState,
   emptyFishingState,
   emptyPlayerStorage,
@@ -18,6 +23,8 @@ import {
   type EntityRoster,
   type FishingState,
   type PlayerStorage,
+  type ProjectileServiceSnapshot,
+  type TntServiceSnapshot,
   type ReplicatedOwnerId,
   type ReplicatedOwnerRegistration,
   type Vitals,
@@ -42,6 +49,11 @@ import {
   type VillagerTradeState,
 } from '../domain/villager-trade.js'
 import {
+  emptyStatusEffectState,
+  StatusEffectStateSchema,
+  type StatusEffectState,
+} from '../domain/status-effect.js'
+import {
   isDroppedItemBehaviour,
   isHostileMobSnapshot,
   type MobBehaviour,
@@ -59,6 +71,7 @@ export const GAMEPLAY_BREWING_OWNER_ID: ReplicatedOwnerId = makeReplicatedOwnerI
 export const GAMEPLAY_VILLAGER_TRADES_OWNER_ID: ReplicatedOwnerId = makeReplicatedOwnerId('mx-gameplay-villager-trades')
 export const GAMEPLAY_FISHING_OWNER_ID: ReplicatedOwnerId = makeReplicatedOwnerId('mx-gameplay-fishing')
 export const GAMEPLAY_ENTITIES_OWNER_ID: ReplicatedOwnerId = makeReplicatedOwnerId('mx-gameplay-entities')
+export const GAMEPLAY_STATUS_EFFECTS_OWNER_ID: ReplicatedOwnerId = makeReplicatedOwnerId('mx-gameplay-status-effects')
 
 const strictCodec = <A, I>(schema: Schema.Codec<A, I>): Schema.Codec<A, I> =>
   Schema.declareConstructor<A, I>()([schema], ([inner]) =>
@@ -77,31 +90,31 @@ const hasOnlyKeys = (value: unknown, allowed: ReadonlyArray<string>): boolean =>
 
 const isCreeperFuse = (value: unknown): boolean => {
   if (!isRecord(value)) return false
-  if (value._tag === 'Dormant' || value._tag === 'Detonated') {
+  if (value['_tag'] === 'Dormant' || value['_tag'] === 'Detonated') {
     return hasOnlyKeys(value, ['_tag'])
   }
-  return value._tag === 'Lit' &&
+  return value['_tag'] === 'Lit' &&
     hasOnlyKeys(value, ['_tag', 'burnedSecs']) &&
-    typeof value.burnedSecs === 'number' &&
-    Number.isFinite(value.burnedSecs) &&
-    value.burnedSecs >= 0
+    typeof value['burnedSecs'] === 'number' &&
+    Number.isFinite(value['burnedSecs']) &&
+    value['burnedSecs'] >= 0
 }
 
 const isEndermanFlinch = (value: unknown): boolean =>
   isRecord(value) &&
     hasOnlyKeys(value, ['_tag']) &&
-    (value._tag === 'Steady' || value._tag === 'Struck')
+    (value['_tag'] === 'Steady' || value['_tag'] === 'Struck')
 
 const isEcosystemState = (value: unknown): boolean =>
   isRecord(value) &&
     hasOnlyKeys(value, ['_tag', 'attackCooldownSecs', 'motionPhase', 'provoked']) &&
-    value._tag === 'EcosystemMob' &&
-    typeof value.attackCooldownSecs === 'number' &&
-    Number.isFinite(value.attackCooldownSecs) &&
-    value.attackCooldownSecs >= 0 &&
-    typeof value.motionPhase === 'number' &&
-    Number.isFinite(value.motionPhase) &&
-    typeof value.provoked === 'boolean' &&
+    value['_tag'] === 'EcosystemMob' &&
+    typeof value['attackCooldownSecs'] === 'number' &&
+    Number.isFinite(value['attackCooldownSecs']) &&
+    value['attackCooldownSecs'] >= 0 &&
+    typeof value['motionPhase'] === 'number' &&
+    Number.isFinite(value['motionPhase']) &&
+    typeof value['provoked'] === 'boolean' &&
     repairEcosystemMobState(value) !== undefined
 
 const isStrictDroppedItem = (value: unknown): boolean => {
@@ -116,22 +129,21 @@ const isStrictDroppedItem = (value: unknown): boolean => {
 const isMobBehaviour = (value: unknown): value is MobBehaviour => {
   if (value === undefined) return true
   if (!isRecord(value)) return false
-  if (value._tag === 'HostileMob') {
+  if (value['_tag'] === 'HostileMob') {
     return isHostileMobSnapshot(value) &&
       hasOnlyKeys(value, ['_tag', 'behaviour', 'ageTicks', 'persistent', 'named', 'tamed']) &&
-      (value.behaviour === undefined ||
-        isCreeperFuse(value.behaviour) ||
-        isEndermanFlinch(value.behaviour) ||
-        isEcosystemState(value.behaviour))
+      (value['behaviour'] === undefined ||
+        isCreeperFuse(value['behaviour']) ||
+        isEndermanFlinch(value['behaviour']) ||
+        isEcosystemState(value['behaviour']))
   }
-  if (value._tag === 'PrimedTnt') {
+  if (value['_tag'] === 'PrimedTnt') {
     return isPrimedTnt(value) && hasOnlyKeys(value, ['_tag', 'burnedSecs'])
   }
   return isCreeperFuse(value) || isEndermanFlinch(value) || isEcosystemState(value) || isStrictDroppedItem(value)
 }
 
-export const GameplayMobBehaviourSchema: Schema.ConstraintDecoder<MobBehaviour> =
-  Schema.declare<MobBehaviour>(isMobBehaviour)
+export const GameplayMobBehaviourSchema = Schema.declare<MobBehaviour>(isMobBehaviour)
 
 export const GameplayEntityRosterSchema: Schema.Codec<EntityRoster<MobBehaviour>, unknown> = strictCodec(
   EntityRosterSchema(GameplayMobBehaviourSchema),
@@ -166,6 +178,9 @@ export type GameplayOwnerInitialState = Readonly<{
   villagerTrades?: VillagerTradeState
   fishing?: FishingState
   entities?: EntityRoster<MobBehaviour>
+  statusEffects?: StatusEffectState
+  projectiles?: ProjectileServiceSnapshot
+  tnt?: TntServiceSnapshot
 }>
 
 const playerOwnerState = (
@@ -221,6 +236,17 @@ export const gameplayOwnerRegistrations = (
     schema: GameplayEntityRosterSchema,
     initialState: initial.entities ?? { entities: [], nextSerial: EntitySerial(0) },
   },
+  {
+    ownerId: GAMEPLAY_STATUS_EFFECTS_OWNER_ID,
+    schema: strictCodec(StatusEffectStateSchema),
+    initialState: initial.statusEffects ?? emptyStatusEffectState(),
+  },
+  {
+    ownerId: PROJECTILE_REPLICATED_OWNER_ID,
+    schema: ProjectileServiceSnapshotSchema,
+    initialState: initial.projectiles ?? INITIAL_PROJECTILE_SERVICE_SNAPSHOT,
+  },
+  tntOwnerRegistration(TNT_REPLICATED_OWNER_ID, initial.tnt ?? INITIAL_TNT_SERVICE_SNAPSHOT),
 ]
 
 export const GAMEPLAY_OWNER_REGISTRATIONS: ReadonlyArray<ReplicatedOwnerRegistration> =

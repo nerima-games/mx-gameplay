@@ -12,7 +12,8 @@
  * here keeps the barrel honest, not the API frozen.
  */
 import { describe, expect, it } from '@effect/vitest'
-import { Effect } from 'effect'
+import { Effect, Result, Schema } from 'effect'
+import { EntityId } from '@nerima-games/mc-sim'
 import * as gameplay from '../src/index'
 import {
   applyArmorToDamage,
@@ -23,6 +24,9 @@ import { applyDamage } from '../src/domain/death-cause'
 import { planFallingBlockMoves, takeBatch } from '../src/domain/falling-block'
 import { resolveFoodUse } from '../src/domain/interactions/eat-food'
 import { GAMEPLAY_STAGE_IDS } from '../src/stages/stage-ids'
+
+const withoutKey = (record: Readonly<Record<string, unknown>>, key: string): Record<string, unknown> =>
+  Object.fromEntries(Object.entries(record).filter(([candidate]) => candidate !== key))
 
 describe('public API surface', () => {
   it.effect('re-exports the stage registration contract — the part mc-compose actually consumes', () =>
@@ -41,9 +45,15 @@ describe('public API surface', () => {
         'GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID',
         'GAMEPLAY_ENTITIES_OWNER_ID',
         'GAMEPLAY_FISHING_OWNER_ID',
+        'GAMEPLAY_BREWING_OWNER_ID',
         'GAMEPLAY_OWNER_REGISTRATIONS',
         'GameplayEntityRosterSchema',
         'makeGameplayFrameState',
+        'makeGameplayFrameStateForOwner',
+        'CollectBrewingBottleRequestSchema',
+        'GameplayBrewingBottleItemUseResultSchema',
+        'GameplayFishingItemUseResultSchema',
+        'requestCollectBrewingBottle',
         'setPlayerDead',
         'setPortalCandidates',
         'drainPortalTravels',
@@ -79,6 +89,51 @@ describe('public API surface', () => {
   it.effect('re-exports host-facing targeted right-click routing', () =>
     Effect.sync(() => {
       expect(Object.keys(gameplay)).toContain('targetedRightClickRoute')
+    }),
+  )
+
+  it.effect('decodes the public strict brewing request and item-use result schemas', () =>
+    Effect.sync(() => {
+      const request = {
+        action: 'CollectBrewingBottle',
+        requestId: 'bottle-0',
+        actor: EntityId('player-0'),
+        tick: 1,
+        address: { dimension: 'overworld', position: { x: 0, y: 64, z: 0 } },
+        bottleIndex: 0,
+      }
+      const result = {
+        action: 'CollectBrewingBottle',
+        requestId: 'bottle-0',
+        success: true,
+        outcome: { _tag: 'Empty' },
+      }
+
+      expect(Result.isSuccess(Schema.decodeUnknownResult(gameplay.CollectBrewingBottleRequestSchema)(request))).toBe(true)
+      expect(Result.isFailure(Schema.decodeUnknownResult(gameplay.CollectBrewingBottleRequestSchema)(withoutKey(request, 'bottleIndex')))).toBe(true)
+      expect(Result.isFailure(Schema.decodeUnknownResult(gameplay.CollectBrewingBottleRequestSchema)({ ...request, actor: null }))).toBe(true)
+      expect(Result.isFailure(Schema.decodeUnknownResult(gameplay.CollectBrewingBottleRequestSchema)({ ...request, extra: true }))).toBe(true)
+
+      expect(Result.isSuccess(Schema.decodeUnknownResult(gameplay.GameplayBrewingBottleItemUseResultSchema)(result))).toBe(true)
+      expect(Result.isFailure(Schema.decodeUnknownResult(gameplay.GameplayBrewingBottleItemUseResultSchema)(withoutKey(result, 'outcome')))).toBe(true)
+      expect(Result.isFailure(Schema.decodeUnknownResult(gameplay.GameplayBrewingBottleItemUseResultSchema)({ ...result, outcome: null }))).toBe(true)
+      expect(Result.isFailure(Schema.decodeUnknownResult(gameplay.GameplayBrewingBottleItemUseResultSchema)({ ...result, extra: true }))).toBe(true)
+    }),
+  )
+
+  it.effect('decodes the public strict fishing item-use result schema', () =>
+    Effect.sync(() => {
+      const result = {
+        action: 'CastFishing',
+        requestId: 'cast-0',
+        success: true,
+        outcome: undefined,
+      }
+
+      expect(Result.isSuccess(Schema.decodeUnknownResult(gameplay.GameplayFishingItemUseResultSchema)(result))).toBe(true)
+      expect(Result.isFailure(Schema.decodeUnknownResult(gameplay.GameplayFishingItemUseResultSchema)(withoutKey(result, 'requestId')))).toBe(true)
+      expect(Result.isFailure(Schema.decodeUnknownResult(gameplay.GameplayFishingItemUseResultSchema)({ ...result, outcome: null }))).toBe(true)
+      expect(Result.isFailure(Schema.decodeUnknownResult(gameplay.GameplayFishingItemUseResultSchema)({ ...result, extra: true }))).toBe(true)
     }),
   )
 

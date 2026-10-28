@@ -98,20 +98,7 @@ const canReceive = (reading: BlockReading): boolean => {
 }
 
 /** Whether the source cell really was emptied by our write. */
-const vacated = (outcome: BlockWriteOutcome): boolean => {
-  switch (outcome._tag) {
-    case 'Written':
-      return true
-    // Air was already there, so something else moved this block between the
-    // read and the write. Placing it below anyway would duplicate matter.
-    case 'Unchanged':
-      return false
-    case 'ChunkNotLoaded':
-      return false
-    case 'OutOfWorld':
-      return false
-  }
-}
+const vacated = (outcome: BlockWriteOutcome): boolean => outcome._tag === 'Written'
 
 /**
  * Apply one tick's worth of falling-block moves.
@@ -158,36 +145,25 @@ export const applyFallingBlocks = (
       }
 
       const placed = yield* store.setBlock(target, material)
-      switch (placed._tag) {
-        case 'Written':
-        // `Unchanged` here means the destination already held this very
-        // block, which the capability table makes unreachable (nothing is
-        // both `replaceable` and `fallsWhenUnsupported`). If it ever happens
-        // the world is already in the state this move wanted, so it counts
-        // as the move rather than as a failure.
-        // falls through
-        case 'Unchanged': {
-          moved += 1
-          // The cell BELOW the new resting place, so the column keeps sinking,
-          // and the cell it came FROM, because whatever was above that is now
-          // unsupported in its turn.
-          const below = Result.getOrUndefined(adjacentBlockPosition(target, 'down'))
-          if (below !== undefined) {
-            destinations.push(blockPositionKeyOf(below))
-          }
-          destinations.push(blockPositionKeyOf(source))
-          break
-        }
-
-        // Unreachable for the same reason: the read two lines up said this cell
-        // was resident and inside the world. Restore rather than assume, since
-        // the alternative is a block that silently ceases to exist.
-        case 'ChunkNotLoaded':
-        case 'OutOfWorld': {
-          yield* store.setBlock(source, material)
-          break
-        }
+      if (placed._tag !== 'Written' && placed._tag !== 'Unchanged') {
+        // The destination can become unavailable between its read and write.
+        // Restore the source rather than silently losing the falling block.
+        yield* store.setBlock(source, material)
+        continue
       }
+
+      moved += 1
+      // The cell BELOW the new resting place, so the column keeps sinking,
+      // and the cell it came FROM, because whatever was above that is now
+      // unsupported in its turn.
+      // `target` was just read as a replaceable block, so it is in-world and
+      // one step down remains representable even at the world floor.
+      const below = Result.getOrThrow(adjacentBlockPosition(target, 'down'))
+      const belowReading = yield* store.getBlock(below)
+      if (belowReading._tag !== 'OutOfWorld') {
+        destinations.push(blockPositionKeyOf(below))
+      }
+      destinations.push(blockPositionKeyOf(source))
     }
 
     return { moved, destinations }

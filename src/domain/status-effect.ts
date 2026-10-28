@@ -1,4 +1,5 @@
 import type { DeltaTimeSecs } from '@nerima-games/mc-kernel'
+import { Schema } from 'effect'
 
 export const STATUS_EFFECT_TYPES = [
   'poison',
@@ -52,6 +53,20 @@ export const REGENERATION_HEAL_POINTS = 1
 export const PLAYER_MAXIMUM_HEALTH_POINTS = 20
 
 export const emptyStatusEffectState = (): StatusEffectState => ({ effects: [] })
+
+const StatusEffectTypeSchema = Schema.Literals(STATUS_EFFECT_TYPES)
+const StatusEffectSecondsSchema = Schema.Finite.check(Schema.isGreaterThan(0))
+const StatusEffectClockSchema = Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0))
+const StatusEffectAmplifierSchema = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))
+
+export const StatusEffectStateSchema: Schema.Codec<StatusEffectState, unknown> = Schema.Struct({
+  effects: Schema.Array(Schema.Struct({
+    type: StatusEffectTypeSchema,
+    remainingSecs: StatusEffectSecondsSchema,
+    pulseClockSecs: StatusEffectClockSchema,
+    amplifier: Schema.optionalKey(StatusEffectAmplifierSchema),
+  })),
+}).check(Schema.makeFilter((state) => isValidStatusEffectState(state)))
 
 const finiteDuration = (durationSecs: number): number =>
   Number.isFinite(durationSecs) ? Math.max(0, durationSecs) : 0

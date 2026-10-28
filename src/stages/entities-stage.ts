@@ -7,9 +7,74 @@ import {
   settled,
   takeBatch,
 } from './registration-core.js'
-import { Result } from 'effect'
-import { pickupDroppedItemsCommitted } from '../domain/entities/dropped-item.js'
-import { absorbExperienceOrb } from '../domain/entities/xp-orb.js'
+import { Equal, Result, Schema } from 'effect'
+import {
+  AIR_BLOCK_ID,
+  BlockAxis,
+  BlockBlastResistance,
+  PositionAxis,
+  WorldWriteBatchSchema,
+  blockPosition,
+  blockPositionKeyOf,
+  propertyOfBlockId,
+  position,
+  resistsExplosion,
+  type BlockRegistryResolutionFailure,
+  type BlockPosition,
+  type DeltaTimeSecs,
+  type BlockPositionKey,
+  type Position,
+  type WorldWriteBatch,
+} from '@nerima-games/mc-kernel'
+import {
+  DamageAmount,
+  DamageCause,
+  EntityId,
+  PlayerServiceSnapshotSchema,
+  PlayerStorageSnapshotSchema,
+  TntServiceSnapshotSchema,
+  WorldRevisionConflict,
+  applyDamage as applyVitalsDamage,
+  damageAt,
+  type ReplicatedOwnerCandidate,
+  type EntityRoster,
+  type PlayerStorage,
+} from '@nerima-games/mc-sim'
+import type { ExplosionBlock, ExplosionBlockReader } from '@nerima-games/mc-sim'
+import { craterCells } from '../domain/interactions/explosion-crater.js'
+import {
+  appendDroppedItemSpawns,
+  DroppedItemOwnerSnapshotSchema,
+  pickupDroppedItemsCommitted,
+  type DroppedItemSpawn,
+  type DroppedItemOwnerSnapshot,
+} from '../domain/entities/dropped-item.js'
+import {
+  ExperienceOrbVitalsOwnerSnapshotSchema,
+  absorbExperienceOrb,
+} from '../domain/entities/xp-orb.js'
+import {
+  experienceOfCasualties,
+  planEndermanTeleportRoster,
+  planMobBlastRoster,
+  planMobExplosionRoster,
+  planMobRosterSweep,
+  planSpawnAttemptsOnRoster,
+  rollCasualtyDrops,
+  type MobExperienceEvent,
+} from '../domain/entities/mob-frame.js'
+import type { Damage } from '../domain/death-cause.js'
+import type { MobBehaviour } from '../domain/entities/mob-frame.js'
+import {
+  resolveHostileContacts,
+  resolvePlayerBlastDamage,
+  type PlayerDamageEvent,
+} from '../domain/mob/hostile-combat.js'
+import { prepareArmorHit } from '../domain/combat/armor.js'
+import { disturb } from '../domain/falling-block.js'
+import { TNT_EXPLOSION_POWER, type Explosion } from '../domain/mob/explosion.js'
+import { PRIMED_TNT_KIND } from '../domain/entities/mob-frame.js'
+import { GameplayEntityRosterSchema } from './gameplay-owner-registrations.js'
 import type {
   DroppedItemPickupExecution,
   ExperienceOrbAbsorptionExecution,
@@ -17,15 +82,565 @@ import type {
   StageRegistration,
 } from './registration-core.js'
 
+type PlayerServiceSnapshot = Schema.Schema.Type<typeof PlayerServiceSnapshotSchema>
+
+const unsupportedMobSimulation = (
+  state: GameplayStageContext['state'],
+  reason:
+    | 'WorldCommitCoordinatorUnavailable'
+    | 'OwnerRegistrationUnavailable'
+    | 'EntityRosterOwnerUnavailable'
+    | 'TntServiceUnavailable',
+) => recordGameplayUnsupportedOperation(state, {
+  _tag: 'Unsupported',
+  action: 'MobSimulation',
+  reason,
+})
+
+const explosionReadPositions = (
+  center: Readonly<{ x: number; y: number; z: number }>,
+): Effect.Effect<ReadonlyArray<BlockPosition>, unknown> => Effect.gen(function* () {
+  const axisRange = (coordinate: number) => Effect.gen(function* () {
+    const first = BlockAxis.result(Math.floor(coordinate - TNT_EXPLOSION_POWER))
+    const last = BlockAxis.result(Math.floor(coordinate + TNT_EXPLOSION_POWER))
+    if (Result.isFailure(first)) return yield* Effect.fail(first.failure)
+    if (Result.isFailure(last)) return yield* Effect.fail(last.failure)
+    const values: Array<BlockPosition['x']> = []
+    for (let index = 0; index <= last.success - first.success; index += 1) {
+      const axis = BlockAxis.result(first.success + index)
+      if (Result.isFailure(axis)) return yield* Effect.fail(axis.failure)
+      values.push(axis.success)
+    }
+    return values
+  })
+  const [xs, ys, zs] = yield* Effect.all([
+    axisRange(center.x),
+    axisRange(center.y),
+    axisRange(center.z),
+  ])
+  const positions: BlockPosition[] = []
+  for (const x of xs) {
+    for (const y of ys) {
+      for (const z of zs) positions.push(blockPosition(x, y, z))
+    }
+  }
+  return positions
+})
+
+const explosionBlockReader = (
+  blocks: ReadonlyArray<Readonly<{
+    position: BlockPosition
+    reading: Readonly<{ _tag: 'Block'; block: import('@nerima-games/mc-kernel').BlockId }>
+      | Readonly<{ _tag: 'ChunkNotLoaded' }>
+      | Readonly<{ _tag: 'OutOfWorld' }>
+  }>>,
+): Result.Result<ExplosionBlockReader, BlockRegistryResolutionFailure> => {
+  const byPosition = new Map<string, ExplosionBlock>()
+  for (const { position: cell, reading } of blocks) {
+    if (reading._tag !== 'Block') continue
+    const resistance = propertyOfBlockId(reading.block, 'blastResistance')
+    if (Result.isFailure(resistance)) return Result.fail(resistance.failure)
+    byPosition.set(blockPositionKeyOf(cell), {
+      resistance: Number.isFinite(resistance.success)
+        ? Math.min(resistance.success, Number.MAX_SAFE_INTEGER)
+        : Number.MAX_SAFE_INTEGER,
+      destructible: Number.isFinite(resistance.success),
+    })
+  }
+  return Result.succeed(({ x, y, z }) => {
+    const blockX = BlockAxis.result(x)
+    const blockY = BlockAxis.result(y)
+    const blockZ = BlockAxis.result(z)
+    if (Result.isFailure(blockX) || Result.isFailure(blockY) || Result.isFailure(blockZ)) return undefined
+    return byPosition.get(blockPositionKeyOf(blockPosition(
+      blockX.success,
+      blockY.success,
+      blockZ.success,
+    )))
+  })
+}
+
+const PLAYER_BLAST_ENTITY_ID = EntityId('mx-gameplay:player-avatar')
+
+const runTntSimulation = (
+  context: GameplayStageContext,
+  dt: DeltaTimeSecs,
+): Effect.Effect<undefined, unknown> => Effect.gen(function* () {
+  if (context.options.mobSimulation === false) return
+  const { commit, state } = context
+  if (commit === undefined) return
+
+  if (commit.tntService === undefined) {
+    if (commit.tntOwnerId === undefined) return
+    const tntSnapshot = yield* Effect.result(commit.coordinator.snapshot(
+      commit.tntOwnerId,
+      TntServiceSnapshotSchema,
+    ))
+    if (Result.isFailure(tntSnapshot)) {
+      if (tntSnapshot.failure._tag === 'ReplicatedOwnerUnknown') {
+        yield* unsupportedMobSimulation(state, 'OwnerRegistrationUnavailable')
+        return
+      }
+      return yield* Effect.fail(tntSnapshot.failure)
+    }
+    if (tntSnapshot.success.state.tnts.some(({ state: tntState }) => tntState.kind === 'primed')) {
+      yield* unsupportedMobSimulation(state, 'TntServiceUnavailable')
+    }
+    return
+  }
+
+  const initial = yield* Effect.result(commit.tntService.snapshot)
+  if (Result.isFailure(initial)) {
+    if (initial.failure._tag === 'ReplicatedOwnerUnknown') {
+      yield* unsupportedMobSimulation(state, 'OwnerRegistrationUnavailable')
+      return
+    }
+    return yield* Effect.fail(initial.failure)
+  }
+  const primedIds = initial.success.state.tnts
+    .filter(({ state: tntState }) => tntState.kind === 'primed')
+    .map(({ id }) => id)
+  if (primedIds.length === 0) return
+  if (commit.tntOwnerId === undefined) {
+    yield* unsupportedMobSimulation(state, 'OwnerRegistrationUnavailable')
+    return
+  }
+  const entityOwnerId = commit.entitiesOwnerId
+
+  for (const id of primedIds) {
+    const current = yield* commit.tntService.snapshot
+    const record = current.state.tnts.find((candidate) => candidate.id === id)
+    if (record === undefined || record.state.kind !== 'primed') continue
+    const expectedDimensionRevision = yield* commit.coordinator.dimensionRevision(record.dimension)
+    const willDetonate = record.state.remainingFuseSecs <= dt
+    const seed = yield* Ref.get(state.rollSeed)
+    let entityRoster: EntityRoster<MobBehaviour> | undefined
+    let playerState: PlayerServiceSnapshot | undefined
+    let blocks: ExplosionBlockReader = () => undefined
+    let explosionEntities: ReadonlyArray<{ readonly id: import('@nerima-games/mc-kernel').EntityId; readonly feetPosition: Position }> = []
+
+    if (willDetonate) {
+      if (entityOwnerId === undefined) {
+        yield* unsupportedMobSimulation(state, 'EntityRosterOwnerUnavailable')
+        return
+      }
+      const reads = yield* explosionReadPositions(record.center)
+      const observed = yield* commit.coordinator.observe(
+        entityOwnerId,
+        GameplayEntityRosterSchema,
+        reads.map((readPosition) => ({ dimension: record.dimension, position: readPosition })),
+      )
+      const player = yield* commit.coordinator.snapshot(commit.playerOwnerId, PlayerServiceSnapshotSchema)
+      if (observed.revision !== current.revision || player.revision !== current.revision) {
+        return yield* Effect.fail(new WorldRevisionConflict({
+          expected: current.revision,
+          actual: observed.revision !== current.revision ? observed.revision : player.revision,
+        }))
+      }
+      entityRoster = observed.state
+      playerState = player.state
+      const blockReader = explosionBlockReader(observed.blocks)
+      if (Result.isFailure(blockReader)) return yield* Effect.fail(blockReader.failure)
+      blocks = blockReader.success
+      const mobEntities = observed.state.entities.map(({ id: entityId, feetPosition }) => ({
+        id: entityId,
+        feetPosition,
+      }))
+      const playerPosition = player.state.pose.feetPosition
+      explosionEntities = playerPosition.dimension === record.dimension
+        ? [...mobEntities, {
+            id: PLAYER_BLAST_ENTITY_ID,
+            feetPosition: position(
+              PositionAxis(playerPosition.x),
+              PositionAxis(playerPosition.y),
+              PositionAxis(playerPosition.z),
+            ),
+          }]
+        : mobEntities
+    }
+
+    const outcome = yield* commit.tntService.advance({
+      id,
+      deltaTimeSecs: dt,
+      expectedRevision: current.revision,
+      expectedDimensionRevision,
+      radius: TNT_EXPLOSION_POWER,
+      seed,
+      blocks,
+      entities: explosionEntities,
+    })
+    if (outcome._tag !== 'DetonationPlanned') continue
+    if (entityRoster === undefined || playerState === undefined) {
+      return yield* Effect.fail(new Error('TNT detonation planned without its owner snapshots'))
+    }
+
+    const roster = entityRoster
+    const player = playerState
+    const effects = outcome.explosion.entityEffects
+    const mobHits = effects.flatMap((effect) => {
+      if (!roster.entities.some(({ id: entityId }) => entityId === effect.id)) return []
+      return [{
+        id: effect.id,
+        damage: { amount: effect.damage, cause: 'explosion' as const },
+        knockback: effect.knockback,
+      }]
+    })
+    const mobBlast = planMobExplosionRoster(roster, mobHits)
+    const loot = rollCasualtyDrops(mobBlast.casualties, seed)
+    const experience: ReadonlyArray<MobExperienceEvent> = experienceOfCasualties(mobBlast.casualties)
+    const explosion: Explosion = { source: 'tnt', power: TNT_EXPLOSION_POWER }
+    const playerEffect = player.pose.feetPosition.dimension === record.dimension
+      ? effects.find(({ id: effectId }) => effectId === PLAYER_BLAST_ENTITY_ID)
+      : undefined
+    const playerDamage: PlayerDamageEvent | undefined = playerEffect !== undefined && playerEffect.damage > 0
+      ? {
+          _tag: 'Explosion',
+          source: id,
+          kind: PRIMED_TNT_KIND,
+          at: outcome.explosion.center,
+          explosion,
+          damage: { amount: playerEffect.damage, cause: 'explosion' },
+        }
+      : undefined
+
+    let playerCandidate: PlayerServiceSnapshot | undefined
+    let storageCandidate: PlayerStorage | undefined
+    let vitalsCandidate: { readonly vitals: import('@nerima-games/mc-sim').Vitals } | undefined
+    if (playerEffect !== undefined) {
+      const playerOwnerId = commit.playerOwnerId
+      const playerStorageOwnerId = commit.playerStorageOwnerId
+      const vitalsOwnerId = commit.vitalsOwnerId
+      if (playerOwnerId === undefined || playerStorageOwnerId === undefined || vitalsOwnerId === undefined) {
+        yield* unsupportedMobSimulation(state, 'OwnerRegistrationUnavailable')
+        return
+      }
+      const [storageSnapshot, vitalsSnapshot] = yield* Effect.all([
+        commit.coordinator.snapshot(playerStorageOwnerId, PlayerStorageSnapshotSchema),
+        commit.coordinator.snapshot(vitalsOwnerId, ExperienceOrbVitalsOwnerSnapshotSchema),
+      ])
+      if (storageSnapshot.revision !== outcome.expectedRevision || vitalsSnapshot.revision !== outcome.expectedRevision) {
+        return yield* Effect.fail(new WorldRevisionConflict({
+          expected: outcome.expectedRevision,
+          actual: storageSnapshot.revision !== outcome.expectedRevision
+            ? storageSnapshot.revision
+            : vitalsSnapshot.revision,
+        }))
+      }
+      if (playerDamage !== undefined) {
+        let storage = storageSnapshot.state
+        let vitals = vitalsSnapshot.state.vitals
+        const armor = prepareArmorHit(storage.equipment, playerDamage.damage)
+        if (Result.isFailure(armor)) return yield* Effect.fail(armor.failure)
+        const amount = DamageAmount.result(armor.success.damage.amount)
+        const cause = DamageCause.result(armor.success.damage.cause)
+        if (Result.isFailure(amount)) return yield* Effect.fail(amount.failure)
+        if (Result.isFailure(cause)) return yield* Effect.fail(cause.failure)
+        vitals = applyVitalsDamage(vitals, { amount: amount.success, cause: cause.success })
+        for (const slot of armor.success.wornSlots) {
+          const worn = damageAt(storage, { _tag: 'Equipment', slot }, armor.success.durabilityWear)
+          if (worn.result._tag === 'Damaged' || worn.result._tag === 'Broken') storage = worn.storage
+        }
+        if (!Equal.equals(storageSnapshot.state, storage)) storageCandidate = storage
+        if (!Equal.equals(vitalsSnapshot.state.vitals, vitals)) vitalsCandidate = { vitals }
+      }
+      const moved = playerEffect.knockback
+      const positionAfterBlast = {
+        ...player.pose.feetPosition,
+        x: player.pose.feetPosition.x + moved.x,
+        y: player.pose.feetPosition.y + moved.y,
+        z: player.pose.feetPosition.z + moved.z,
+      }
+      if (
+        positionAfterBlast.x !== player.pose.feetPosition.x ||
+        positionAfterBlast.y !== player.pose.feetPosition.y ||
+        positionAfterBlast.z !== player.pose.feetPosition.z
+      ) {
+        playerCandidate = yield* Schema.decodeUnknownEffect(PlayerServiceSnapshotSchema)({
+          ...player,
+          pose: { ...player.pose, feetPosition: positionAfterBlast },
+        })
+      }
+    }
+
+    let droppedCandidate: DroppedItemOwnerSnapshot | undefined
+    if (loot.drops.length > 0) {
+      const droppedItemsOwnerId = commit.droppedItemsOwnerId
+      if (droppedItemsOwnerId === undefined) {
+        yield* unsupportedMobSimulation(state, 'OwnerRegistrationUnavailable')
+        return
+      }
+      const droppedSnapshot = yield* commit.coordinator.snapshot(
+        droppedItemsOwnerId,
+        DroppedItemOwnerSnapshotSchema,
+      )
+      if (droppedSnapshot.revision !== outcome.expectedRevision) {
+        return yield* Effect.fail(new WorldRevisionConflict({
+          expected: outcome.expectedRevision,
+          actual: droppedSnapshot.revision,
+        }))
+      }
+      const drops: ReadonlyArray<DroppedItemSpawn> = loot.drops.map(({ item, count, at }) => ({ item, count, at }))
+      const appended = appendDroppedItemSpawns(droppedSnapshot.state, drops, outcome.expectedRevision)
+      if (Result.isFailure(appended)) return yield* Effect.fail(appended.failure)
+      if (!Equal.equals(droppedSnapshot.state, appended.success)) droppedCandidate = appended.success
+    }
+
+    const changes: ReplicatedOwnerCandidate[] = []
+    if (!Equal.equals(roster, mobBlast.roster)) {
+      if (entityOwnerId !== undefined) changes.push({ ownerId: entityOwnerId, state: mobBlast.roster })
+    }
+    if (playerCandidate !== undefined) changes.push({ ownerId: commit.playerOwnerId, state: playerCandidate })
+    if (storageCandidate !== undefined && commit.playerStorageOwnerId !== undefined) {
+      changes.push({ ownerId: commit.playerStorageOwnerId, state: storageCandidate })
+    }
+    if (vitalsCandidate !== undefined && commit.vitalsOwnerId !== undefined) {
+      changes.push({ ownerId: commit.vitalsOwnerId, state: vitalsCandidate })
+    }
+    if (droppedCandidate !== undefined && commit.droppedItemsOwnerId !== undefined) {
+      changes.push({ ownerId: commit.droppedItemsOwnerId, state: droppedCandidate })
+    }
+
+    yield* commit.tntService.commitDetonation({ id: outcome.id, planRevision: outcome.planRevision }, changes)
+
+    yield* Ref.set(state.rollSeed, loot.seed)
+    if (loot.drops.length > 0) yield* Ref.update(state.mobDrops, (pending) => [...pending, ...loot.drops])
+    if (experience.length > 0) yield* Ref.update(state.mobExperience, (pending) => [...pending, ...experience])
+    if (playerDamage !== undefined) yield* Ref.update(state.playerDamages, (pending) => [...pending, playerDamage])
+    const disturbed = outcome.explosion.destroyedBlocks.map(({ x, y, z }) => blockPositionKeyOf(blockPosition(
+      Result.getOrThrow(BlockAxis.result(x)),
+      Result.getOrThrow(BlockAxis.result(y)),
+      Result.getOrThrow(BlockAxis.result(z)),
+    )))
+    if (disturbed.length > 0) yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, disturbed))
+  }
+})
+
+const runMobSimulation = (
+  context: GameplayStageContext,
+  dt: DeltaTimeSecs,
+): Effect.Effect<undefined, unknown> => Effect.gen(function* () {
+  const { state, store, commit } = context
+  if (context.options.mobSimulation === false) return
+  if (commit === undefined) {
+    yield* unsupportedMobSimulation(state, 'WorldCommitCoordinatorUnavailable')
+    return
+  }
+  if (commit.entitiesOwnerId === undefined) {
+    yield* unsupportedMobSimulation(state, 'EntityRosterOwnerUnavailable')
+    return
+  }
+
+  const entitySnapshot = yield* commit.coordinator.snapshot(
+    commit.entitiesOwnerId,
+    GameplayEntityRosterSchema,
+  )
+  const playerSnapshot = yield* commit.coordinator.snapshot(
+    commit.playerOwnerId,
+    PlayerServiceSnapshotSchema,
+  )
+  if (entitySnapshot.revision !== playerSnapshot.revision) {
+    return yield* Effect.fail(new WorldRevisionConflict({
+      expected: entitySnapshot.revision,
+      actual: playerSnapshot.revision,
+    }))
+  }
+  const expectedRevision = entitySnapshot.revision
+  const playerPosition = position(
+    PositionAxis(playerSnapshot.state.pose.feetPosition.x),
+    PositionAxis(playerSnapshot.state.pose.feetPosition.y),
+    PositionAxis(playerSnapshot.state.pose.feetPosition.z),
+  )
+  const seed = yield* Ref.get(state.rollSeed)
+  const sweep = planMobRosterSweep(entitySnapshot.state, {
+    target: playerPosition,
+    dt,
+  }, seed)
+  const teleported = yield* planEndermanTeleportRoster(
+    sweep.roster,
+    store,
+    sweep.teleports,
+  )
+  const blast = planMobBlastRoster(teleported, sweep.blasts)
+  const attempts = yield* Ref.get(state.spawnAttempts)
+  const spawned = planSpawnAttemptsOnRoster(blast.roster, attempts)
+  if (Result.isFailure(spawned)) return yield* Effect.fail(spawned.failure)
+
+  const contact = resolveHostileContacts(
+    spawned.success.roster.entities,
+    playerPosition,
+    dt,
+    yield* Ref.get(state.hostileContactCooldowns),
+  )
+  const playerBlasts = resolvePlayerBlastDamage(sweep.blasts, playerPosition)
+  const attacks: ReadonlyArray<PlayerDamageEvent> = sweep.attacks.map((attack) => ({
+    _tag: 'HostileContact',
+    source: attack.source,
+    kind: attack.attackerKind,
+    at: attack.at,
+    damage: { amount: attack.damage, cause: 'mob' },
+  }))
+  const damages = [...attacks, ...contact.damages, ...playerBlasts]
+  const casualtyDrops = rollCasualtyDrops(blast.casualties, sweep.seed)
+  const experience = experienceOfCasualties(blast.casualties)
+
+  let storageCandidate: PlayerStorage | undefined
+  let vitalsCandidate: { readonly vitals: import('@nerima-games/mc-sim').Vitals } | undefined
+  let resolvedDamages: ReadonlyArray<PlayerDamageEvent> = damages
+  if (damages.length > 0) {
+    if (commit.playerStorageOwnerId === undefined || commit.vitalsOwnerId === undefined) {
+      yield* unsupportedMobSimulation(state, 'OwnerRegistrationUnavailable')
+      return
+    }
+    const [storageSnapshot, vitalsSnapshot] = yield* Effect.all([
+      commit.coordinator.snapshot(commit.playerStorageOwnerId, PlayerStorageSnapshotSchema),
+      commit.coordinator.snapshot(commit.vitalsOwnerId, ExperienceOrbVitalsOwnerSnapshotSchema),
+    ])
+    if (storageSnapshot.revision !== expectedRevision || vitalsSnapshot.revision !== expectedRevision) {
+      return yield* Effect.fail(new WorldRevisionConflict({
+        expected: expectedRevision,
+        actual: storageSnapshot.revision !== expectedRevision
+          ? storageSnapshot.revision
+          : vitalsSnapshot.revision,
+      }))
+    }
+    let storage = storageSnapshot.state
+    let vitals = vitalsSnapshot.state.vitals
+    const applied: PlayerDamageEvent[] = []
+    for (const event of damages) {
+      if (event.damage.amount <= 0) continue
+      const armor = prepareArmorHit(storage.equipment, event.damage)
+      if (Result.isFailure(armor)) return yield* Effect.fail(armor.failure)
+      const damage: Damage = armor.success.damage
+      const amount = DamageAmount.result(damage.amount)
+      const cause = DamageCause.result(damage.cause)
+      if (Result.isFailure(amount)) return yield* Effect.fail(amount.failure)
+      if (Result.isFailure(cause)) return yield* Effect.fail(cause.failure)
+      vitals = applyVitalsDamage(vitals, { amount: amount.success, cause: cause.success })
+      for (const slot of armor.success.wornSlots) {
+        const worn = damageAt(storage, { _tag: 'Equipment', slot }, armor.success.durabilityWear)
+        if (worn.result._tag === 'Damaged' || worn.result._tag === 'Broken') storage = worn.storage
+      }
+      applied.push({ ...event, damage })
+    }
+    resolvedDamages = applied
+    if (!Equal.equals(storageSnapshot.state, storage)) storageCandidate = storage
+    if (!Equal.equals(vitalsSnapshot.state.vitals, vitals)) vitalsCandidate = { vitals }
+  }
+
+  let droppedCandidate: DroppedItemOwnerSnapshot | undefined
+  if (casualtyDrops.drops.length > 0) {
+    if (commit.droppedItemsOwnerId === undefined) {
+      yield* unsupportedMobSimulation(state, 'OwnerRegistrationUnavailable')
+      return
+    }
+    const droppedSnapshot = yield* commit.coordinator.snapshot(
+      commit.droppedItemsOwnerId,
+      DroppedItemOwnerSnapshotSchema,
+    )
+    if (droppedSnapshot.revision !== expectedRevision) {
+      return yield* Effect.fail(new WorldRevisionConflict({
+        expected: expectedRevision,
+        actual: droppedSnapshot.revision,
+      }))
+    }
+    const drops: ReadonlyArray<DroppedItemSpawn> = casualtyDrops.drops.map(({ item, count, at }) => ({ item, count, at }))
+    const appended = appendDroppedItemSpawns(droppedSnapshot.state, drops, expectedRevision)
+    if (Result.isFailure(appended)) return yield* Effect.fail(appended.failure)
+    if (!Equal.equals(droppedSnapshot.state, appended.success)) droppedCandidate = appended.success
+  }
+
+  const blockEdits = new Map<string, { readonly position: ReturnType<typeof blockPosition>; readonly block: typeof AIR_BLOCK_ID }>()
+  const disturbedKeys: BlockPositionKey[] = []
+  for (const blastEvent of sweep.blasts) {
+    const power = Result.getOrUndefined(BlockBlastResistance.result(blastEvent.explosion.power))
+    const x = Result.getOrUndefined(BlockAxis.result(Math.floor(blastEvent.at.x)))
+    const y = Result.getOrUndefined(BlockAxis.result(Math.floor(blastEvent.at.y)))
+    const z = Result.getOrUndefined(BlockAxis.result(Math.floor(blastEvent.at.z)))
+    if (power === undefined || x === undefined || y === undefined || z === undefined) continue
+    for (const cell of craterCells(blockPosition(x, y, z), blastEvent.explosion.power)) {
+      const reading = yield* store.getBlock(cell)
+      if (
+        reading._tag !== 'Block' ||
+        reading.block === AIR_BLOCK_ID ||
+        Result.getOrUndefined(resistsExplosion(reading.block, power)) !== false
+      ) continue
+      const key = blockPositionKeyOf(cell)
+      if (blockEdits.has(key)) continue
+      blockEdits.set(key, { position: cell, block: AIR_BLOCK_ID })
+      disturbedKeys.push(key)
+    }
+  }
+  const edits = [...blockEdits.values()]
+  const dimension = playerSnapshot.state.pose.feetPosition.dimension
+  const dimensionRevision = yield* commit.coordinator.dimensionRevision(dimension)
+  const expectedDimensions = edits.length === 0
+    ? []
+    : [{ dimension, expectedRevision: dimensionRevision }]
+  const entityCandidate = spawned.success.roster
+  const changes: ReplicatedOwnerCandidate[] = []
+  if (!Equal.equals(entitySnapshot.state, entityCandidate)) {
+    changes.push({ ownerId: commit.entitiesOwnerId, state: entityCandidate })
+  }
+  if (droppedCandidate !== undefined) {
+    const droppedItemsOwnerId = commit.droppedItemsOwnerId
+    if (droppedItemsOwnerId !== undefined) changes.push({ ownerId: droppedItemsOwnerId, state: droppedCandidate })
+  }
+  if (storageCandidate !== undefined) {
+    changes.push({ ownerId: commit.playerStorageOwnerId, state: storageCandidate })
+  }
+  if (vitalsCandidate !== undefined) {
+    const vitalsOwnerId = commit.vitalsOwnerId
+    if (vitalsOwnerId !== undefined) changes.push({ ownerId: vitalsOwnerId, state: vitalsCandidate })
+  }
+  let blockWrite: WorldWriteBatch | undefined
+  if (edits.length > 0) {
+    blockWrite = yield* Schema.decodeUnknownEffect(WorldWriteBatchSchema)({
+      world: commit.coordinator.worldId,
+      expectedWorldRevision: expectedRevision,
+      dimension,
+      expectedDimensionRevision: dimensionRevision,
+      edits,
+    })
+  }
+  if (changes.length > 0 || blockWrite !== undefined) {
+    const request = {
+      expectedRevision,
+      expectedDimensions,
+      changes,
+      ...(blockWrite === undefined ? {} : { blockWrite }),
+    }
+    yield* commit.coordinator.commit(request)
+  }
+
+  // Local cursors and output queues move only after the replicated candidate
+  // has committed. Ref updates are synchronous and append to any newly queued work.
+  yield* Ref.set(state.rollSeed, casualtyDrops.seed)
+  yield* Ref.set(state.hostileContactCooldowns, contact.cooldowns)
+  if (attempts.length > 0) {
+    yield* Ref.update(state.spawnAttempts, (pending) => pending.slice(attempts.length))
+  }
+  if (casualtyDrops.drops.length > 0) {
+    yield* Ref.update(state.mobDrops, (pending) => [...pending, ...casualtyDrops.drops])
+  }
+  if (experience.length > 0) {
+    yield* Ref.update(state.mobExperience, (pending) => [...pending, ...experience])
+  }
+  if (resolvedDamages.length > 0) {
+    yield* Ref.update(state.playerDamages, (pending) => [...pending, ...resolvedDamages])
+  }
+  if (disturbedKeys.length > 0) {
+    yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, disturbedKeys))
+  }
+})
+
 export const makeEntitiesStage = (context: GameplayStageContext): StageRegistration => {
-  const { state, store, options, commit } = context
+  const { state, store, commit } = context
   return {
     id: GAMEPLAY_STAGE_IDS.entities,
     after: [GAMEPLAY_STAGE_IDS.survivalHunger],
-    // Owner-backed item pickup and XP absorption run here before the deferred
-    // falling-block work. Mob simulation remains Unsupported until mc-sim can
-    // return plan fragments that join roster and world changes atomically.
-    run: () =>
+    // Owner-backed pickups, mob simulation, and TNT detonation run before the
+    // deferred falling-block work.
+    run: (dt) =>
       Effect.orDie(Effect.gen(function* () {
         const pickupRequests = yield* Ref.getAndSet(state.pendingDroppedItemPickups, [])
         const pickupExecutions: Array<DroppedItemPickupExecution> = []
@@ -103,15 +718,8 @@ export const makeEntitiesStage = (context: GameplayStageContext): StageRegistrat
           ])
         }
 
-        if (options.mobSimulation !== false) {
-          yield* recordGameplayUnsupportedOperation(state, {
-            _tag: 'Unsupported',
-            action: 'MobSimulation',
-            reason: commit === undefined
-              ? 'WorldCommitCoordinatorUnavailable'
-              : 'McSimPlanFragmentUnavailable',
-          })
-        }
+        yield* runTntSimulation(context, dt)
+        yield* runMobSimulation(context, dt)
 
         // ---- falling blocks ------------------------------------------------
         //

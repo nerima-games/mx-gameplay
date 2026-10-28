@@ -15,6 +15,7 @@ import {
 } from '@nerima-games/mc-kernel'
 import {
   addStoredStack as addStorageStoredStack,
+  ContainerStoredStackSchema,
   durabilityForItem,
   DurabilitySchema,
   emptyPlayerStorage,
@@ -224,6 +225,14 @@ const NonNegativeFiniteSchema: Schema.Codec<number, number> = Schema.Finite.chec
 const DroppedItemStackCountSchema: Schema.Codec<StackCount, number> = Schema.Int.check(
   Schema.isBetween({ minimum: 1, maximum: MAX_STACK_COUNT }),
 ).pipe(Schema.brand('StackCount'))
+type AddedStoredStackResult = Extract<AddStoredStackResult, { readonly _tag: 'Added' }>
+const AddedStoredStackResultSchema: Schema.Codec<AddedStoredStackResult, unknown> = strictCodec(
+  Schema.Struct({
+    _tag: Schema.Literal('Added'),
+    added: NonNegativeIntegerSchema,
+    leftover: Schema.NullOr(ContainerStoredStackSchema),
+  }),
+)
 
 type DroppedItemPositionEncoded = Readonly<{ x: number; y: number; z: number }>
 const DroppedItemPositionSchema: Schema.Codec<Position, DroppedItemPositionEncoded> = strictCodec(
@@ -326,8 +335,8 @@ export const appendDroppedItemSpawns = (
     let remaining: number = requested.success
     while (remaining > 0) {
       const count = Math.min(maxStackCountForItem(drop.item), remaining)
-      const stackCount = StackCount.result(count)
-      if (Result.isFailure(stackCount)) return Result.fail({ _tag: 'InvalidStack' })
+      // Kernel item stack limits are 1, 16, or 64, so this is always a valid StackCount.
+      const stackCount = StackCount(count)
       const id = EntityId(`mx-gameplay-drop:${String(expectedRevision)}:${String(serial)}`)
       serial += 1
       if (ids.has(id)) continue
@@ -338,7 +347,7 @@ export const appendDroppedItemSpawns = (
         behaviour: {
           _tag: 'DroppedItem',
           item: drop.item,
-          count: stackCount.success,
+          count: stackCount,
           durability: copyDurability(
             drop.durability === undefined ? durabilityForItem(drop.item) : drop.durability,
           ),
@@ -447,15 +456,9 @@ export const DroppedItemPickupResultSchema: Schema.Codec<
   unknown
 > = strictCodec(Schema.Array(DroppedItemPickupSchema))
 
-type DroppedItemPickupStorageFailure = Extract<
-  AddStoredStackResult,
-  { readonly _tag: 'InvalidStack' | 'ItemStackFailure' }
->
-
 export type DroppedItemPickupFailure =
   | Brand.BrandError
   | ItemStackFailure
-  | DroppedItemPickupStorageFailure
   | Schema.SchemaError
   | WorldCommitCoordinatorError
   | Schema.Schema.Type<typeof DroppedItemPickupCommitIncompleteSchema>
@@ -522,8 +525,8 @@ export const pickupDroppedItemsCommitted = (
         ...stack,
         durability: copyDurability(droppedItem.behaviour.durability),
       })
-      if (outcome.result._tag !== 'Added') return yield* Effect.fail(outcome.result)
-      if (outcome.result.added === 0) {
+      const result = yield* Schema.decodeUnknownEffect(AddedStoredStackResultSchema)(outcome.result)
+      if (result.added === 0) {
         nextItems.push(droppedItem)
         continue
       }
@@ -534,13 +537,13 @@ export const pickupDroppedItemsCommitted = (
         item: droppedItem.behaviour.item,
         countBefore: droppedItem.behaviour.count,
       })
-      if (outcome.result.leftover !== null) {
+      if (result.leftover !== null) {
         nextItems.push({
           ...droppedItem,
           behaviour: {
             ...droppedItem.behaviour,
-            count: outcome.result.leftover.count,
-            durability: copyDurability(outcome.result.leftover.durability),
+            count: result.leftover.count,
+            durability: copyDurability(result.leftover.durability),
           },
         })
       }

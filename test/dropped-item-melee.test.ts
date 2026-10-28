@@ -24,6 +24,7 @@ import {
   type MobBehaviour,
 } from '../src/domain/entities/mob-frame'
 import {
+  appendDroppedItemSpawns,
   DroppedItemOwnerSnapshotSchema,
   DroppedItemPickupCommitIncompleteSchema,
   DroppedItemPickupRequestSchema,
@@ -32,7 +33,9 @@ import {
   droppedItemPickupOwnerRegistrations,
   pickupDroppedItemsCommitted,
   pickupDroppedItems,
+  spawnDroppedItems,
   spawnDroppedItem,
+  spawnMobDrops,
   spawnMobDrop,
 } from '../src/domain/entities/dropped-item'
 import { meleeTarget, meleeTargetBeforeBlock } from '../src/domain/interactions/melee-attack'
@@ -92,6 +95,76 @@ describe('dropped item entities', () => {
       })
     }),
   )
+
+  it.effect('spawns direct and mob drop batches', () =>
+    Effect.gen(function* () {
+      const roster = yield* makeEntityManagerDouble<MobBehaviour>()
+      const direct = yield* spawnDroppedItems(roster.api, [
+        { item: 'gunpowder', count: 2, at: origin },
+        { item: 'stick', count: 1, at: origin },
+      ])
+      const mob = yield* spawnMobDrops(roster.api, [{
+        source: dropSource,
+        kind: CREEPER_KIND,
+        item: 'gunpowder',
+        count: 1,
+        at: origin,
+      }])
+
+      expect(direct).toHaveLength(2)
+      expect(mob.map(({ behaviour }) => behaviour)).toStrictEqual([
+        { _tag: 'DroppedItem', item: 'gunpowder', count: 1, durability: null },
+      ])
+    }),
+  )
+
+  it('appends strict owner snapshots with split stacks, metadata, and collision skipping', () => {
+    const collidingId = EntityId('mx-gameplay-drop:12:1')
+    const existing = { ...committedDroppedItem(1), id: collidingId }
+    const outcome = appendDroppedItemSpawns({ items: [existing] }, [
+      { item: 'gunpowder', count: 65, at: origin },
+      {
+        item: 'wooden_pickaxe',
+        count: 1,
+        at: origin,
+        durability: durabilityForItem('wooden_pickaxe'),
+        eligibleFromFrame: 10,
+        customName: 'Field pickaxe',
+        enchantments: [{ id: 'unbreaking', level: 1 }],
+      },
+    ], 12)
+    expect(Result.isSuccess(outcome)).toBe(true)
+
+    const snapshot = Result.getOrThrow(outcome)
+    expect(Result.isSuccess(Schema.decodeUnknownResult(DroppedItemOwnerSnapshotSchema)(snapshot))).toBe(true)
+    expect(snapshot.items.map(({ id }) => id)).toStrictEqual([
+      collidingId,
+      EntityId('mx-gameplay-drop:12:0'),
+      EntityId('mx-gameplay-drop:12:2'),
+      EntityId('mx-gameplay-drop:12:3'),
+    ])
+    expect(snapshot.items.map(({ behaviour: { item, count } }) => ({ item, count }))).toStrictEqual([
+      { item: 'gunpowder', count: 1 },
+      { item: 'gunpowder', count: 64 },
+      { item: 'gunpowder', count: 1 },
+      { item: 'wooden_pickaxe', count: 1 },
+    ])
+    expect(snapshot.items[3]?.behaviour).toMatchObject({
+      durability: durabilityForItem('wooden_pickaxe'),
+      eligibleFromFrame: 10,
+      customName: 'Field pickaxe',
+      enchantments: [{ id: 'unbreaking', level: 1 }],
+    })
+  })
+
+  it('returns a typed InvalidStack failure for a zero-count request', () => {
+    const outcome = appendDroppedItemSpawns({ items: [] }, [
+      { item: 'gunpowder', count: 0, at: origin },
+    ], 12)
+
+    expect(Result.isFailure(outcome)).toBe(true)
+    if (Result.isFailure(outcome)) expect(outcome.failure).toStrictEqual({ _tag: 'InvalidStack' })
+  })
 
   it.effect('preserves the item stack in snapshots and despawns it after a full pickup', () =>
     Effect.gen(function* () {

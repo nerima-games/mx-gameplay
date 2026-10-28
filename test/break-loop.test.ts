@@ -1033,12 +1033,11 @@ describe('the break loop', () => {
         ...registeredCoordinator,
         dimensionRevision: (dimension) =>
           Effect.gen(function* () {
-            const dimensionRevision = yield* registeredCoordinator.dimensionRevision(dimension)
+            const dimensionRevision = yield* Effect.orDie(registeredCoordinator.dimensionRevision(dimension))
             if (!injected) {
               injected = true
-              const snapshot = yield* registeredCoordinator.snapshot(
-                commit.playerStorageOwnerId,
-                PlayerStorageSnapshotSchema,
+              const snapshot = yield* Effect.orDie(
+                registeredCoordinator.snapshot(commit.playerStorageOwnerId, PlayerStorageSnapshotSchema),
               )
               // Dirt drops itself when broken in vanilla: https://minecraft.wiki/w/Dirt
               const dirtStack = Result.getOrThrow(itemStack('dirt', StackCount(1)))
@@ -1048,16 +1047,18 @@ describe('the break loop', () => {
                   slots: snapshot.state.inventory.slots.map((slot, index) => index === 0 ? dirtStack : slot),
                 },
               })
-              yield* registeredCoordinator.commit({
-                expectedRevision: snapshot.revision,
-                expectedDimensions: [],
-                changes: [{ ownerId: commit.playerStorageOwnerId, state: changedStorage }],
-              })
+              yield* Effect.orDie(
+                registeredCoordinator.commit({
+                  expectedRevision: snapshot.revision,
+                  expectedDimensions: [],
+                  changes: [{ ownerId: commit.playerStorageOwnerId, state: changedStorage }],
+                }),
+              )
             }
             return dimensionRevision
           }),
       }
-      const state = yield* makeGameplayFrameState()
+      const state = yield* makeGameplayFrameState
       const stages = gameplayStages(
         state,
         world.chunkStore,

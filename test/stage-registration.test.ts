@@ -7,13 +7,13 @@
  * violated with STRINGS rather than with imports.
  */
 import { describe, expect, it } from '@effect/vitest'
-import { Brand, Cause, Effect, Exit, Layer, Option, Ref, Result, Schema } from 'effect'
+import * as FastCheck from 'fast-check'
+import { Brand, Cause, Effect, Exit, Layer, Option, Ref, Result, Schema, Stream } from 'effect'
 import { AIR_BLOCK_ID, BlockId, EntityHealthPoints, EntitySerial, WorldIdSchema, blockIdOf, type BlockPosition } from '@nerima-games/mc-kernel'
 import type { BlockReading, ChunkStore, ChunkStoreApi } from '@nerima-games/mc-worldgen'
 import {
   CREEPER_KIND,
   DROPPED_ITEM_KIND,
-  PRIMED_TNT_KIND,
   rollCasualtyDrops,
   type MobBehaviour,
   type MobDropEvent,
@@ -57,6 +57,9 @@ import {
   makeVehicleService,
   type InventoryService,
   type InventoryServiceApi,
+  TNT_REPLICATED_OWNER_ID,
+  TntServiceSnapshotSchema,
+  type DomainEventBusApi,
 } from '@nerima-games/mc-sim'
 import {
   DeltaTimeSecs,
@@ -88,6 +91,7 @@ import {
   isHoeItem,
   LAVA_TICK_INTERVAL,
   makeGameplayFrameState,
+  makeGameplayFrameStateForOwner,
   makeGameplayStages,
   gameplayModule,
   insertBrewingBottle,
@@ -162,11 +166,13 @@ import { blockPosition as fixtureBlockPosition, position as fixturePosition } fr
 import {
   GAMEPLAY_CROPS_OWNER_ID,
   GAMEPLAY_DROPPED_ITEMS_OWNER_ID,
+  GAMEPLAY_ENTITIES_OWNER_ID,
   GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
   GAMEPLAY_PLAYER_OWNER_ID,
   GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
   GAMEPLAY_VITALS_OWNER_ID,
   GAMEPLAY_VILLAGER_TRADES_OWNER_ID,
+  GameplayEntityRosterSchema,
   gameplayOwnerRegistrations,
   type GameplayOwnerInitialState,
 } from '../src/stages/gameplay-owner-registrations.js'
@@ -273,7 +279,7 @@ const builtStagesInWorld = (
       experienceOrbsOwnerId: GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
       villagerTradesOwnerId: GAMEPLAY_VILLAGER_TRADES_OWNER_ID,
     }
-    const state = yield* makeGameplayFrameState({
+    const state = yield* makeGameplayFrameStateForOwner({
       coordinator,
       vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID,
     })
@@ -2957,32 +2963,108 @@ describe('the ender pearl arm refuses a survival throw with no pearl to spend', 
   )
 })
 
-describe('flint and steel on TNT spawns a primed entity through the interactions stage', () => {
-  it.effect('lighting TNT removes the block and spawns PRIMED_TNT_KIND', () =>
-    Effect.gen(function* () {
-      const tnt = Option.getOrThrow(blockIdOf('tnt'))
-      const position = fixtureBlockPosition(2, 64, 2)
-      const state = yield* makeGameplayFrameState
-      const store = yield* makeChunkStoreDouble(world([[position, tnt]]), ['0,0'])
-      const roster = yield* makeEntityManagerDouble<MobBehaviour>()
-      const player = yield* makePlayerServiceDouble()
-      const inventory = yield* makeInventoryDouble()
-      const time = yield* makeTimeService()
-      const stages = gameplayStages(state, store.api, roster.api, inventory.api, player.api, time)
-      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+describe('TNT ignition waits for a merged TNT, storage, and block plan', () => {
+  const tnt = Option.getOrThrow(blockIdOf('tnt'))
+  const position = fixtureBlockPosition(2, 64, 2)
 
-      yield* Ref.update(state.pendingItemUses, (pending) => [
-        ...pending,
-        { requestId: 'light-tnt', positionKey: positionKey('2,64,2'), heldItem: 'flint_and_steel' as const },
-      ])
-      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+  for (const heldItem of ['flint_and_steel', 'fire_charge'] as const) {
+    it.effect(`keeps ${heldItem} and TNT state unchanged when the merged plan is unavailable (fast-check)`, () =>
+      Effect.promise(async () => {
+        await FastCheck.assert(
+          FastCheck.asyncProperty(FastCheck.integer({ min: 0, max: 3 }), async (suffix) => {
+            const initialSlots = [...emptySlots()]
+            initialSlots[0] = itemStack(heldItem, 1)
+            const harness = await Effect.runPromise(
+              builtStagesInWorld(world([[position, tnt]]), ['0,0'], { crops: [] }, initialSlots),
+            )
+            let commits = 0
+            let publishedEvents = 0
+            const coordinator: WorldCommitCoordinatorApi = {
+              ...harness.commit.coordinator,
+              commit: (request) => {
+                commits += 1
+                return harness.commit.coordinator.commit(request)
+              },
+            }
+            const eventBus: DomainEventBusApi = {
+              publish: () => Effect.sync(() => { publishedEvents += 1 }),
+              events: Stream.empty,
+            }
+            const commit = { ...harness.commit, coordinator, eventBus }
+            const stages = gameplayStages(
+              harness.state,
+              harness.store.api,
+              harness.roster.api,
+              harness.inventory.api,
+              harness.player.api,
+              harness.time,
+              undefined,
+              undefined,
+              {},
+              commit,
+            )
+            const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+            const storageBefore = await Effect.runPromise(
+              coordinator.snapshot(GAMEPLAY_PLAYER_STORAGE_OWNER_ID, PlayerStorageSnapshotSchema),
+            )
+            const entitiesBefore = await Effect.runPromise(
+              coordinator.snapshot(GAMEPLAY_ENTITIES_OWNER_ID, GameplayEntityRosterSchema),
+            )
+            const tntBefore = await Effect.runPromise(
+              coordinator.snapshot(TNT_REPLICATED_OWNER_ID, TntServiceSnapshotSchema),
+            )
+            const localStorageBefore = await Effect.runPromise(harness.inventory.api.storageSnapshot)
+            const revisionBefore = await Effect.runPromise(coordinator.revision)
+            const dimensionRevisionBefore = await Effect.runPromise(coordinator.dimensionRevision('overworld'))
 
-      expect(yield* store.blockAt(position)).toBe(AIR_BLOCK_ID)
-      const spawned = (yield* roster.api.entities).find((entity) => entity.kind === PRIMED_TNT_KIND)
-      expect(spawned).toBeDefined()
-      expect(spawned?.feetPosition).toStrictEqual({ x: 2.5, y: 64, z: 2.5 })
-    }),
-  )
+            await Effect.runPromise(Ref.update(harness.state.pendingItemUses, (pending) => [
+              ...pending,
+              {
+                requestId: `light-tnt-${suffix}`,
+                positionKey: positionKey('2,64,2'),
+                heldItem,
+              },
+            ]))
+            await Effect.runPromise(
+              interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer)),
+            )
+
+            const storageAfter = await Effect.runPromise(
+              coordinator.snapshot(GAMEPLAY_PLAYER_STORAGE_OWNER_ID, PlayerStorageSnapshotSchema),
+            )
+            const entitiesAfter = await Effect.runPromise(
+              coordinator.snapshot(GAMEPLAY_ENTITIES_OWNER_ID, GameplayEntityRosterSchema),
+            )
+            const tntAfter = await Effect.runPromise(
+              coordinator.snapshot(TNT_REPLICATED_OWNER_ID, TntServiceSnapshotSchema),
+            )
+            const localStorageAfter = await Effect.runPromise(harness.inventory.api.storageSnapshot)
+
+            expect(commits).toBe(0)
+            expect(await Effect.runPromise(coordinator.revision)).toBe(revisionBefore)
+            expect(await Effect.runPromise(coordinator.dimensionRevision('overworld'))).toBe(dimensionRevisionBefore)
+            expect(Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(storageAfter.state)).toStrictEqual(storageBefore.state)
+            expect(Schema.decodeUnknownSync(GameplayEntityRosterSchema)(entitiesAfter.state)).toStrictEqual(entitiesBefore.state)
+            expect(Schema.decodeUnknownSync(TntServiceSnapshotSchema)(tntAfter.state)).toStrictEqual(tntBefore.state)
+            expect(localStorageAfter).toStrictEqual(localStorageBefore)
+            expect(await Effect.runPromise(harness.store.blockAt(position))).toBe(tnt)
+            expect(await Effect.runPromise(Ref.get(harness.state.itemUseResults))).toStrictEqual([])
+            expect(await Effect.runPromise(Ref.get(harness.state.usedItems))).toStrictEqual([])
+            expect(await Effect.runPromise(Ref.get(harness.state.unsupportedOperations))).toStrictEqual([
+              {
+                _tag: 'Unsupported',
+                action: 'IgniteTnt',
+                requestId: `light-tnt-${suffix}`,
+                reason: 'TntPrimeCannotMergePlayerStorageAndSourceBlock',
+              },
+            ])
+            expect(publishedEvents).toBe(0)
+          }),
+          { numRuns: 4 },
+        )
+      }),
+    )
+  }
 })
 
 describe('the entities stage resolves both ranged mob attacks and zombie contact damage', () => {
