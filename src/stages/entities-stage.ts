@@ -49,14 +49,12 @@ import { craterCells } from '../domain/interactions/explosion-crater.js'
 import {
   appendDroppedItemSpawns,
   DroppedItemOwnerSnapshotSchema,
-  DroppedItemPickupCommitIncompleteSchema,
   droppedItemPickupResultAfterCommit,
   planDroppedItemPickup,
   type DroppedItemSpawn,
   type DroppedItemOwnerSnapshot,
 } from '../domain/entities/dropped-item.js'
 import {
-  ExperienceOrbAbsorptionCommitResultInvalidSchema,
   ExperienceOrbOwnerSnapshotSchema,
   ExperienceOrbVitalsOwnerSnapshotSchema,
   experienceOrbAbsorptionResultAfterCommit,
@@ -748,29 +746,9 @@ export const makeEntitiesStage = (context: GameplayStageContext): StageRegistrat
             retryPickups.push(request)
             continue
           }
-          const committedStorage = committed.success.changes.find(({ owner }) => owner === owners.playerStorage)
-          const committedDroppedItems = committed.success.changes.find(({ owner }) => owner === owners.droppedItems)
-          if (committedStorage === undefined || committedDroppedItems === undefined) {
-            const failure = yield* Schema.decodeUnknownEffect(DroppedItemPickupCommitIncompleteSchema)({
-              _tag: 'DroppedItemPickupCommitIncomplete',
-              missingOwners: [
-                ...(committedStorage === undefined ? [owners.playerStorage] : []),
-                ...(committedDroppedItems === undefined ? [owners.droppedItems] : []),
-              ],
-            })
-            pickupExecutions.push({ request, outcome: { _tag: 'Failed', error: failure } as const })
-            continue
-          }
-          const committedDroppedSnapshot = yield* Effect.result(Schema.decodeUnknownEffect(
-            DroppedItemOwnerSnapshotSchema,
-          )(committedDroppedItems.state))
-          if (Result.isFailure(committedDroppedSnapshot)) {
-            pickupExecutions.push({ request, outcome: { _tag: 'Failed', error: committedDroppedSnapshot.failure } as const })
-            continue
-          }
           const result = yield* Effect.result(droppedItemPickupResultAfterCommit(
             planned.success,
-            committedDroppedSnapshot.success,
+            planned.success.droppedItems,
           ))
           if (Result.isFailure(result)) {
             pickupExecutions.push({ request, outcome: { _tag: 'Failed', error: result.failure } as const })
@@ -847,32 +825,10 @@ export const makeEntitiesStage = (context: GameplayStageContext): StageRegistrat
             retryAbsorptions.push(request)
             continue
           }
-          const committedVitals = committed.success.changes.find(({ owner }) => owner === owners.vitals)
-          const committedOrbs = committed.success.changes.find(({ owner }) => owner === owners.orbs)
-          if (committedVitals === undefined || committedOrbs === undefined) {
-            const failure = yield* Schema.decodeUnknownEffect(ExperienceOrbAbsorptionCommitResultInvalidSchema)({
-              _tag: 'ExperienceOrbAbsorptionCommitResultInvalid',
-              reason: 'missing-owner-change',
-              owners: [
-                ...(committedVitals === undefined ? [owners.vitals] : []),
-                ...(committedOrbs === undefined ? [owners.orbs] : []),
-              ],
-            })
-            absorptionExecutions.push({ request, outcome: { _tag: 'Failed', error: failure } as const })
-            continue
-          }
-          const finalSnapshots = yield* Effect.result(Effect.all([
-            Schema.decodeUnknownEffect(ExperienceOrbVitalsOwnerSnapshotSchema)(committedVitals.state),
-            Schema.decodeUnknownEffect(ExperienceOrbOwnerSnapshotSchema)(committedOrbs.state),
-          ]))
-          if (Result.isFailure(finalSnapshots)) {
-            absorptionExecutions.push({ request, outcome: { _tag: 'Failed', error: finalSnapshots.failure } as const })
-            continue
-          }
           const result = yield* Effect.result(experienceOrbAbsorptionResultAfterCommit(
             planned.success,
-            finalSnapshots.success[0],
-            finalSnapshots.success[1],
+            planned.success.vitals,
+            planned.success.orbs,
             owners,
           ))
           if (Result.isFailure(result)) {

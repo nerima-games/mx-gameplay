@@ -202,11 +202,7 @@ const cropAt = (
 const cropCandidate = (
   ownerId: import('@nerima-games/mc-sim').ReplicatedOwnerId,
   crops: ReadonlyArray<CropState>,
-): Result.Result<ReplicatedOwnerCandidate, Schema.SchemaError> =>
-  Result.map(
-    Schema.decodeUnknownResult(CropSnapshotSchema)({ crops }),
-    (state) => ({ ownerId, state }),
-  )
+): ReplicatedOwnerCandidate => ({ ownerId, state: { crops } })
 
 const commitMobDamage = (
   state: GameplayStageContext['state'],
@@ -695,19 +691,10 @@ const advanceCropLifecycle = (
     const crops = snapshot.success.state.crops.map((crop) => advanceCrop(crop, dt))
     if (crops.every((crop, index) => crop.growthSecs === snapshot.success.state.crops[index]?.growthSecs)) return
     const candidate = cropCandidate(commit.cropOwnerId, crops)
-    if (Result.isFailure(candidate)) {
-      yield* recordGameplayStageFailure(state, {
-        _tag: 'Failed',
-        operation: 'CandidateBuild',
-        subject: 'ItemUse',
-        error: candidate.failure,
-      })
-      return
-    }
     const committed = yield* Effect.result(commit.coordinator.commit({
       expectedRevision: snapshot.success.revision,
       expectedDimensions: [],
-      changes: [candidate.success],
+      changes: [candidate],
     }))
     if (Result.isFailure(committed)) {
       yield* recordGameplayStageFailure(state, {
@@ -2827,21 +2814,12 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                   entry === crop ? advanceCropByBoneMeal(entry) : entry,
                 )
                 const cropChange = cropCandidate(commit.cropOwnerId, nextCrops)
-                if (Result.isFailure(cropChange)) {
-                  yield* recordGameplayStageFailure(state, {
-                    _tag: 'Failed',
-                    operation: 'CandidateBuild',
-                    subject: 'ItemUse',
-                    error: cropChange.failure,
-                  })
-                  break itemUseAction
-                }
                 const success = candidate.success !== undefined
                 if (success) {
                   const committed = yield* Effect.result(commit.coordinator.commit({
                     expectedRevision: observed.success.revision,
                     expectedDimensions: [],
-                    changes: [candidate.success, cropChange.success],
+                    changes: [candidate.success, cropChange],
                   }))
                   if (Result.isFailure(committed)) {
                     yield* recordGameplayStageFailure(state, {
@@ -3057,15 +3035,6 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                     ...cropSnapshot.success.state.crops,
                     { dimension, position: outcome.at, crop: outcome.crop, growthSecs: 0 },
                   ])
-                  if (Result.isFailure(cropChange)) {
-                    yield* recordGameplayStageFailure(state, {
-                      _tag: 'Failed',
-                      operation: 'CandidateBuild',
-                      subject: 'ItemUse',
-                      error: cropChange.failure,
-                    })
-                    break itemUseAction
-                  }
                   const candidateChange = candidate.success
                   const committed = yield* Effect.result(Effect.gen(function* () {
                     const expectedDimensionRevision = yield* commit.coordinator.dimensionRevision(dimension)
@@ -3080,7 +3049,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                     return yield* commit.coordinator.commit({
                       expectedRevision: observed.success.revision,
                       expectedDimensions: [{ dimension, expectedRevision: expectedDimensionRevision }],
-                      changes: [candidateChange, cropChange.success],
+                      changes: [candidateChange, cropChange],
                       blockWrite,
                     })
                   }))
@@ -3244,18 +3213,9 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                   commit.cropOwnerId,
                   cropSnapshot.success.state.crops.filter((entry) => entry !== crop),
                 )
-                if (Result.isFailure(cropChange)) {
-                  yield* recordGameplayStageFailure(state, {
-                    _tag: 'Failed',
-                    operation: 'CandidateBuild',
-                    subject: 'ItemUse',
-                    error: cropChange.failure,
-                  })
-                  break itemUseAction
-                }
                 let changes: Array<ReplicatedOwnerCandidate> = [
                   { ownerId: commit.playerStorageOwnerId, state: storage },
-                  cropChange.success,
+                  cropChange,
                 ]
                 if (leftovers.length > 0) {
                   const droppedItemsOwnerId = commit.droppedItemsOwnerId

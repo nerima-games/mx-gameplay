@@ -4680,6 +4680,67 @@ describe('farming and food item uses through the full interactions stage', () =>
     }),
   )
 
+  it.effect('reports a crop lifecycle snapshot failure without committing or changing the crop owner', () =>
+    Effect.gen(function* () {
+      const position = fixtureBlockPosition(39, 64, 39)
+      const harness = yield* builtStagesInWorld(
+        world([]),
+        ['2,2'],
+        { crops: [{ dimension: 'overworld', position, crop: 'wheat_crop', growthSecs: 0 }] },
+      )
+      const interactions = harness.stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+      const before = yield* harness.commit.coordinator.snapshot(GAMEPLAY_CROPS_OWNER_ID, CropSnapshotSchema)
+      yield* Ref.set(harness.failSnapshotOwnerId, GAMEPLAY_CROPS_OWNER_ID)
+
+      yield* interactions.run(DeltaTimeSecs(2)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* Ref.get(harness.commitCalls)).toBe(0)
+      expect(yield* Ref.get(harness.state.operationFailures)).toContainEqual(
+        expect.objectContaining({
+          _tag: 'Failed',
+          operation: 'OwnerSnapshot',
+          subject: 'ItemUse',
+          error: expect.objectContaining({ _tag: 'ReplicatedOwnerUnknown' }),
+        }),
+      )
+      yield* Ref.set(harness.failSnapshotOwnerId, undefined)
+      const after = Schema.decodeUnknownSync(CropSnapshotSchema)(
+        (yield* harness.commit.coordinator.snapshot(GAMEPLAY_CROPS_OWNER_ID, CropSnapshotSchema)).state,
+      )
+      expect(after).toStrictEqual(before.state)
+      expect(yield* harness.commit.coordinator.revision).toBe(before.revision)
+    }),
+  )
+
+  it.effect('preserves crop growth when the lifecycle owner commit is rejected', () =>
+    Effect.gen(function* () {
+      const position = fixtureBlockPosition(39, 64, 39)
+      const harness = yield* builtStagesInWorld(
+        world([]),
+        ['2,2'],
+        { crops: [{ dimension: 'overworld', position, crop: 'wheat_crop', growthSecs: 0 }] },
+      )
+      const interactions = harness.stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+      const before = yield* harness.commit.coordinator.snapshot(GAMEPLAY_CROPS_OWNER_ID, CropSnapshotSchema)
+      yield* Ref.set(harness.rejectCommits, true)
+
+      yield* interactions.run(DeltaTimeSecs(2)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* Ref.get(harness.commitCalls)).toBe(1)
+      expect(yield* Ref.get(harness.state.operationFailures)).toContainEqual(
+        expect.objectContaining({
+          _tag: 'Failed',
+          operation: 'WorldCommit',
+          subject: 'ItemUse',
+          error: expect.objectContaining({ _tag: 'WorldCommitEmptyRequest' }),
+        }),
+      )
+      expect(yield* harness.commit.coordinator.snapshot(GAMEPLAY_CROPS_OWNER_ID, CropSnapshotSchema))
+        .toStrictEqual(before)
+      expect(yield* harness.commit.coordinator.revision).toBe(before.revision)
+    }),
+  )
+
   it.effect('harvesting a mature potato commits storage, crop removal, and its block write once', () =>
     Effect.gen(function* () {
       const position = fixtureBlockPosition(38, 64, 38)
