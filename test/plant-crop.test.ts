@@ -13,7 +13,7 @@
  * silently gets wrong, and both produce a world that looks deliberate.
  */
 import { describe, expect, it } from '@effect/vitest'
-import { Effect, Option, Ref, Result } from 'effect'
+import { Effect, Option, Ref, Result, Schema } from 'effect'
 import {
   CROP_OF_SEED,
   PLANTABLE_SEEDS,
@@ -23,9 +23,17 @@ import {
   plantingVerdict,
   type PlantPort,
   type PlantRequest,
+  type PlantCommitContext,
 } from '../src/domain/interactions/plant-crop'
-import { BlockAxis, blockIdOf, blockPosition, type BlockType } from '@nerima-games/mc-kernel'
+import {
+  makeReplicatedOwnerId,
+  makeWorldCommitCoordinator,
+  type WorldCommitCoordinatorApi,
+} from '@nerima-games/mc-sim'
+import { BlockAxis, blockIdOf, blockPosition, WorldIdSchema, type BlockType } from '@nerima-games/mc-kernel'
+import type { ChunkStoreRegistryApi } from '@nerima-games/mc-worldgen'
 import type { BlockPosition } from '@nerima-games/mc-kernel'
+import { cellKey, chunkKey, chunkOf, makeInMemoryWorld } from '../src/domain/in-memory-world'
 
 const SOIL: BlockPosition = blockPosition(BlockAxis(4), BlockAxis(63), BlockAxis(-9))
 const TOP_SOIL: BlockPosition = blockPosition(BlockAxis(4), BlockAxis(Number.MAX_SAFE_INTEGER), BlockAxis(-9))
@@ -34,6 +42,11 @@ const request = (held: PlantRequest['held']): PlantRequest => ({ held, soil: SOI
 
 const keyOf = (position: BlockPosition): string =>
   `${String(position.x)},${String(position.y)},${String(position.z)}`
+
+const WORLD_ID = Schema.decodeUnknownSync(WorldIdSchema)('gameplay-plant-tests')
+const OWNER_ID = makeReplicatedOwnerId('plant-test-owner')
+const OWNER_SCHEMA = Schema.Struct({ durability: Schema.Number })
+const INITIAL_OWNER_STATE = { durability: 10 }
 
 const positionAbove = (soil: BlockPosition): BlockPosition => {
   const result = cropCellAbove(soil)
@@ -52,6 +65,33 @@ const makeWorld = (cells: Readonly<Record<string, BlockType>>) =>
   Effect.gen(function* () {
     const written = yield* Ref.make<ReadonlyArray<{ at: BlockPosition; block: number }>>([])
     const reads = yield* Ref.make(0)
+    const entries = Object.entries(cells).map(([key, block]) => {
+      const [x, y, z] = key.split(',')
+      const position = blockPosition(BlockAxis(Number(x)), BlockAxis(Number(y)), BlockAxis(Number(z)))
+      return [position, Option.getOrThrow(blockIdOf(block))] as const
+    })
+    const world = yield* makeInMemoryWorld<unknown>({
+      world: {
+        blocks: new Map(entries.map(([position, block]) => [cellKey(position), block])),
+        loaded: [...new Set(entries.map(([position]) => chunkKey(chunkOf(position))))],
+      },
+    })
+    const baseCoordinator = yield* makeWorldCommitCoordinator({
+      world: WORLD_ID,
+      owners: [{ ownerId: OWNER_ID, schema: OWNER_SCHEMA, initialState: INITIAL_OWNER_STATE }],
+      chunkStores: { forDimension: () => world.chunkStore } satisfies ChunkStoreRegistryApi,
+    })
+    const coordinator: WorldCommitCoordinatorApi = {
+      ...baseCoordinator,
+      commit: (request) => Effect.tap(
+        baseCoordinator.commit(request),
+        () => Ref.update(written, (all) => [
+          ...all,
+          ...(request.blockWrite?.edits.map(({ position, block }) => ({ at: position, block })) ?? []),
+        ]),
+      ),
+    }
+    const context: PlantCommitContext = { coordinator, dimension: 'overworld', changes: [] }
     const port: PlantPort = {
       blockAt: (position) =>
         Effect.gen(function* () {
@@ -59,9 +99,8 @@ const makeWorld = (cells: Readonly<Record<string, BlockType>>) =>
           const block = cells[keyOf(position)]
           return block === undefined ? undefined : Option.getOrUndefined(blockIdOf(block))
         }),
-      setBlock: (at, block) => Ref.update(written, (all) => [...all, { at, block }]),
     }
-    return { port, written, reads }
+    return { port, written, reads, world, coordinator, context }
   })
 
 describe('the two tables agree', () => {
@@ -197,17 +236,37 @@ describe('plantCrop', () => {
   it.effect('writes the crop above the soil, and nothing else', () =>
     Effect.gen(function* () {
       const above = positionAbove(SOIL)
-      const { port, written } = yield* makeWorld({
+      const { port, written, context, coordinator } = yield* makeWorld({
         [keyOf(SOIL)]: 'farmland',
         [keyOf(above)]: 'air',
       })
 
-      const outcome = yield* plantCrop(port, request('wheat_seeds'))
+      const outcome = yield* plantCrop(port, request('wheat_seeds'), {
+        ...context,
+        changes: [{ ownerId: OWNER_ID, state: { durability: 9 } }],
+      })
 
       expect(outcome._tag).toBe('planted')
       expect(yield* Ref.get(written)).toStrictEqual([
         { at: above, block: Option.getOrUndefined(blockIdOf('wheat_crop')) },
       ])
+      const committedOwner = yield* coordinator.snapshot(OWNER_ID, OWNER_SCHEMA)
+      expect(Schema.decodeUnknownSync(OWNER_SCHEMA)(committedOwner.state)).toStrictEqual({ durability: 9 })
+      expect(yield* coordinator.revision).toBe(1)
+    }),
+  )
+
+  it.effect('refuses a successful plant when C4/C7 commit context is missing', () =>
+    Effect.gen(function* () {
+      const above = positionAbove(SOIL)
+      const { port, written, coordinator } = yield* makeWorld({
+        [keyOf(SOIL)]: 'farmland',
+        [keyOf(above)]: 'air',
+      })
+
+      expect((yield* plantCrop(port, request('wheat_seeds')))._tag).toBe('commitContextMissing')
+      expect(yield* Ref.get(written)).toStrictEqual([])
+      expect(yield* coordinator.revision).toBe(0)
     }),
   )
 
@@ -216,12 +275,12 @@ describe('plantCrop', () => {
       // The property that makes the outcome union worth having: a caller can
       // consume the seed on `planted` and keep it otherwise, and the world is
       // untouched either way.
-      const { port, written } = yield* makeWorld({
+      const { port, written, context } = yield* makeWorld({
         [keyOf(SOIL)]: 'dirt',
         [keyOf(positionAbove(SOIL))]: 'air',
       })
 
-      const outcome = yield* plantCrop(port, request('wheat_seeds'))
+      const outcome = yield* plantCrop(port, request('wheat_seeds'), context)
 
       expect(outcome._tag).toBe('wrongSoil')
       expect(yield* Ref.get(written)).toStrictEqual([])
@@ -234,11 +293,11 @@ describe('plantCrop', () => {
       // it as air would let the write land in a chunk nobody has loaded, and the
       // chunk that eventually loads would overwrite it — a plant that silently
       // disappears some seconds later.
-      const { port, written } = yield* makeWorld({
+      const { port, written, context } = yield* makeWorld({
         [keyOf(positionAbove(SOIL))]: 'air',
       })
 
-      const outcome = yield* plantCrop(port, request('wheat_seeds'))
+      const outcome = yield* plantCrop(port, request('wheat_seeds'), context)
 
       expect(outcome._tag).not.toBe('planted')
       expect(yield* Ref.get(written)).toStrictEqual([])
@@ -247,9 +306,9 @@ describe('plantCrop', () => {
 
   it.effect('an unloaded cell ABOVE refuses too', () =>
     Effect.gen(function* () {
-      const { port, written } = yield* makeWorld({ [keyOf(SOIL)]: 'farmland' })
+      const { port, written, context } = yield* makeWorld({ [keyOf(SOIL)]: 'farmland' })
 
-      const outcome = yield* plantCrop(port, request('wheat_seeds'))
+      const outcome = yield* plantCrop(port, request('wheat_seeds'), context)
 
       expect(outcome._tag).not.toBe('planted')
       expect(yield* Ref.get(written)).toStrictEqual([])
@@ -261,9 +320,9 @@ describe('plantCrop', () => {
       // The unloaded-cell refusal above always held a real seed, so it only
       // ever reached the `wrongSoil` arm of the inner ternary. An unloaded
       // cell with a non-seed in hand is the case that reaches the other arm.
-      const { port, written } = yield* makeWorld({})
+      const { port, written, context } = yield* makeWorld({})
 
-      const outcome = yield* plantCrop(port, request('stone'))
+      const outcome = yield* plantCrop(port, request('stone'), context)
 
       expect(outcome).toStrictEqual({ _tag: 'notASeed', held: 'stone' })
       expect(yield* Ref.get(written)).toStrictEqual([])
@@ -272,12 +331,12 @@ describe('plantCrop', () => {
 
   it.effect('a non-seed still reads nothing and writes nothing', () =>
     Effect.gen(function* () {
-      const { port, written } = yield* makeWorld({
+      const { port, written, context } = yield* makeWorld({
         [keyOf(SOIL)]: 'farmland',
         [keyOf(positionAbove(SOIL))]: 'air',
       })
 
-      const outcome = yield* plantCrop(port, request('stone'))
+      const outcome = yield* plantCrop(port, request('stone'), context)
 
       expect(outcome).toStrictEqual({ _tag: 'notASeed', held: 'stone' })
       expect(yield* Ref.get(written)).toStrictEqual([])
@@ -289,12 +348,12 @@ describe('plantCrop', () => {
       // The end-to-end form of the refusal above: the same seed that was
       // refused on farmland succeeds on its own soil.
       const above = positionAbove(SOIL)
-      const { port, written } = yield* makeWorld({
+      const { port, written, context } = yield* makeWorld({
         [keyOf(SOIL)]: 'soul_sand',
         [keyOf(above)]: 'air',
       })
 
-      const outcome = yield* plantCrop(port, request('nether_wart'))
+      const outcome = yield* plantCrop(port, request('nether_wart'), context)
 
       expect(outcome._tag).toBe('planted')
       expect(yield* Ref.get(written)).toStrictEqual([

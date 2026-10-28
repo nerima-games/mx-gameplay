@@ -31,13 +31,21 @@
 import { Effect, Option, Result } from 'effect'
 import {
   BlockId,
+  WorldWriteBatchSchema,
   adjacentBlockPosition,
   blockIdOf,
   blockTypeOfId,
   type BlockType,
+  type Dimension,
   type ItemType,
 } from '@nerima-games/mc-kernel'
 import type { BlockPosition } from '@nerima-games/mc-kernel'
+import type {
+  ReplicatedOwnerCandidate,
+  WorldCommitCoordinatorApi,
+  WorldCommitCoordinatorError,
+} from '@nerima-games/mc-sim'
+import { Schema } from 'effect'
 
 /**
  * Which crop each seed item becomes.
@@ -95,6 +103,8 @@ export type PlantOutcome =
   | { readonly _tag: 'occupied'; readonly crop: BlockType; readonly blockedBy: BlockType }
   | { readonly _tag: 'invalidPosition' }
   | { readonly _tag: 'unknownBlock' }
+  | { readonly _tag: 'commitContextMissing' }
+  | { readonly _tag: 'commitFailed'; readonly error: Schema.SchemaError | WorldCommitCoordinatorError }
 
 /** Where the crop goes: directly above the soil. */
 export const cropCellAbove = (soil: BlockPosition): ReturnType<typeof adjacentBlockPosition> =>
@@ -144,8 +154,15 @@ export const plantingVerdict = (
 /** The two reads and one write this rule needs of a world. */
 export type PlantPort = {
   readonly blockAt: (position: BlockPosition) => Effect.Effect<number | undefined>
-  readonly setBlock: (position: BlockPosition, block: BlockId) => Effect.Effect<unknown>
+  /** Accepted for the current stage call shape; never used for block writes. */
+  readonly setBlock?: (position: BlockPosition, block: BlockId) => Effect.Effect<unknown>
 }
+
+export type PlantCommitContext = Readonly<{
+  coordinator: WorldCommitCoordinatorApi
+  dimension: Dimension
+  changes: ReadonlyArray<ReplicatedOwnerCandidate>
+}>
 
 /**
  * Read the two cells, decide, and write if the decision says so.
@@ -167,12 +184,25 @@ export type PlantPort = {
 export const plantCrop = (
   port: PlantPort,
   request: PlantRequest,
+  commitContext?: PlantCommitContext,
 ): Effect.Effect<PlantOutcome> =>
   Effect.gen(function* () {
     const abovePosition = Result.getOrUndefined(cropCellAbove(request.soil))
     if (abovePosition === undefined) {
       return { _tag: 'invalidPosition' }
     }
+
+    const heldCrop = CROP_OF_SEED[request.held]
+    if (heldCrop === undefined) {
+      return { _tag: 'notASeed' as const, held: request.held }
+    }
+
+    const expectedRevision = commitContext === undefined
+      ? undefined
+      : yield* commitContext.coordinator.revision
+    const expectedDimensionRevision = commitContext === undefined
+      ? undefined
+      : yield* commitContext.coordinator.dimensionRevision(commitContext.dimension)
 
     const soilId = yield* port.blockAt(request.soil)
     const aboveId = yield* port.blockAt(abovePosition)
@@ -210,7 +240,36 @@ export const plantCrop = (
       if (cropBlock === undefined) {
         return { _tag: 'unknownBlock' }
       }
-      yield* port.setBlock(verdict.at, cropBlock)
+      if (
+        commitContext === undefined ||
+        expectedRevision === undefined ||
+        expectedDimensionRevision === undefined
+      ) return { _tag: 'commitContextMissing' }
+
+      const committed = Effect.gen(function* () {
+        const blockWrite = yield* Schema.decodeUnknownEffect(WorldWriteBatchSchema)({
+          world: commitContext.coordinator.worldId,
+          expectedWorldRevision: expectedRevision,
+          dimension: commitContext.dimension,
+          expectedDimensionRevision,
+          edits: [{ position: verdict.at, block: cropBlock }],
+        })
+        yield* commitContext.coordinator.commit({
+          expectedRevision,
+          expectedDimensions: [{
+            dimension: commitContext.dimension,
+            expectedRevision: expectedDimensionRevision,
+          }],
+          changes: commitContext.changes,
+          blockWrite,
+        })
+        return verdict
+      })
+
+      return yield* Effect.matchEffect(committed, {
+        onFailure: (error) => Effect.succeed({ _tag: 'commitFailed' as const, error }),
+        onSuccess: (outcome) => Effect.succeed(outcome),
+      })
     }
     return verdict
   })
