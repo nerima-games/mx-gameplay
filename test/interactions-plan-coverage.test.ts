@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { Brand, Effect, Ref, Result, Schema, Stream } from 'effect'
+import * as FastCheck from 'fast-check'
 import {
   AngleRadians,
   BlockAxis,
@@ -100,9 +101,11 @@ const projectileStateWithBobber = () =>
     }],
   })
 
-const brewingStateWithBottle = () =>
+const brewingStateWithBottle = (bottleIndex = 0) =>
   Schema.decodeUnknownSync(BrewingServiceStateSchema)({
-    bottles: [Result.getOrThrow(makeItemStack('water_bottle', StackCount(1))), undefined, undefined],
+    bottles: Array.from({ length: 3 }, (_, index) =>
+      index === bottleIndex ? Result.getOrThrow(makeItemStack('water_bottle', StackCount(1))) : undefined,
+    ),
     ingredient: undefined,
     fuel: undefined,
     fuelCharges: 0,
@@ -377,15 +380,15 @@ describe('registered Fishing plans in the interactions stage', () => {
 })
 
 describe('registered Brewing bottle collection in the interactions stage', () => {
-  const collectBottle = (state: GameplayFrameState) => requestCollectBrewingBottle(state, {
-    requestId: 'collect-brewing-bottle',
+  const collectBottle = (state: GameplayFrameState, bottleIndex = 0) => requestCollectBrewingBottle(state, {
+    requestId: bottleIndex === 0 ? 'collect-brewing-bottle' : `collect-brewing-bottle-${String(bottleIndex)}`,
     actor: FISHER,
     tick: Schema.decodeUnknownSync(SimulationTickSchema)(12),
     address: {
       dimension: DIMENSION,
       position: blockPosition(BlockAxis(1), BlockAxis(64), BlockAxis(1)),
     },
-    bottleIndex: 0,
+    bottleIndex,
   })
 
   it('returns InventoryFull without committing or changing the stand and storage owners', async () => {
@@ -496,5 +499,51 @@ describe('registered Brewing bottle collection in the interactions stage', () =>
         position: blockPosition(BlockAxis(1), BlockAxis(64), BlockAxis(1)),
       } },
     }])
+  })
+
+  it('collects from each bottle slot with one atomic owner commit (fast-check)', async () => {
+    await FastCheck.assert(
+      FastCheck.asyncProperty(FastCheck.integer({ min: 0, max: 2 }), async (bottleIndex) => {
+        const harness = await Effect.runPromise(makeHarness({ brewing: brewingStateWithBottle(bottleIndex) }))
+        const revisionBefore = await Effect.runPromise(harness.coordinator.revision)
+        await Effect.runPromise(collectBottle(harness.state, bottleIndex))
+
+        await harness.run()
+
+        const brewing = await Effect.runPromise(harness.coordinator.snapshot(
+          GAMEPLAY_BREWING_OWNER_ID,
+          BrewingServiceStateSchema,
+        ))
+        const storage = await Effect.runPromise(harness.coordinator.snapshot(
+          GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+          PlayerStorageSnapshotSchema,
+        ))
+        expect(await Effect.runPromise(drainItemUseResults(harness.state))).toMatchObject([{
+          action: 'CollectBrewingBottle',
+          requestId: bottleIndex === 0 ? 'collect-brewing-bottle' : `collect-brewing-bottle-${String(bottleIndex)}`,
+          success: true,
+          outcome: { _tag: 'Collected', item: 'water_bottle', count: 1, remainingCount: 0 },
+        }])
+        expect(brewing.state.bottles[bottleIndex]).toBeUndefined()
+        expect(storage.state.inventory.slots.some((slot) => slot?.item === 'water_bottle')).toBe(true)
+        expect(harness.commitCalls()).toBe(1)
+        expect(harness.lastRequest()?.changes.map(({ ownerId }) => ownerId)).toStrictEqual([
+          GAMEPLAY_BREWING_OWNER_ID,
+          GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+        ])
+        expect(harness.lastRequest()?.blockWrite).toBeUndefined()
+        expect(brewing.revision).toBe(revisionBefore + 1)
+        expect(storage.revision).toBe(revisionBefore + 1)
+        expect(await Effect.runPromise(harness.coordinator.revision)).toBe(revisionBefore + 1)
+        expect(await Effect.runPromise(Ref.get(harness.publishedEvents))).toMatchObject([{
+          _tag: 'ItemPickedUp',
+          source: { _tag: 'BrewingStand', address: {
+            dimension: DIMENSION,
+            position: blockPosition(BlockAxis(1), BlockAxis(64), BlockAxis(1)),
+          } },
+        }])
+      }),
+      { numRuns: 24 },
+    )
   })
 })
