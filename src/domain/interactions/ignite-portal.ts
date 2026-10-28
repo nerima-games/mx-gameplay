@@ -40,7 +40,7 @@
  * them somewhere else in another dimension. That needs mc-sim's roster and a
  * dimension service, and neither exists.
  *
- * So this rule consumes the shape directly from `@nerima-games/mc-kernel`'s
+ * So this rule consumes the shape directly from `@nerima-games/mc-worldgen`'s
  * `detectNetherPortal`/`generatePortalLayout`, and the chunk buffer through
  * `@nerima-games/mc-worldgen`'s `ChunkStore`.
  *
@@ -50,11 +50,9 @@
  *
  * `../chunk-window` opens a synchronous view over the chunks around the ignition
  * cell, detection runs against that view, and only then does anything write. The
- * window is a LIVE view of mc-worldgen's buffers, so the first `setBlock` below
- * invalidates it — which is why `frame.interior` is materialised by detection
- * and iterated afterwards, and why nothing calls `blockAt` again once the loop
- * has started. That constraint is stated in `../chunk-window`'s header and this
- * is the call site it is about.
+ * window holds the read-only chunks returned by `peek`. `setBlock` does not
+ * mutate those published chunks, but `frame.interior` is still materialised by
+ * detection before writes begin so the loop is independent of further reads.
  *
  * ---------------------------------------------------------------------------
  * WHAT THIS RULE DOES NOT DO
@@ -88,17 +86,16 @@
  * mx-gameplay has no edge to it (plan.md §2.1). Whoever drains the outbox plays
  * the sound.
  */
-import { Effect } from 'effect'
+import { Effect, Option } from 'effect'
 import {
   blockIdOf,
-  detectNetherPortal,
   MAX_PORTAL_WIDTH,
   type BlockId,
   type BlockPosition,
   type PortalFrame,
 } from '@nerima-games/mc-kernel'
-import { chunkCoordsAround, openChunkWindow } from '../chunk-window.js'
-import type { ChunkStoreApi } from '@nerima-games/mc-worldgen'
+import { chunkCoordsAround, openChunkWindow, UNREADABLE_BLOCK } from '../chunk-window.js'
+import { detectNetherPortal, type ChunkStoreApi } from '@nerima-games/mc-worldgen'
 
 /**
  * How far from the ignition cell the chunk window must reach.
@@ -193,7 +190,7 @@ export const ignitePortal = (
   ignition: BlockPosition,
 ): Effect.Effect<IgnitePortalOutcome> =>
   Effect.gen(function* () {
-    const portalBlock: BlockId | undefined = blockIdOf('nether_portal')
+    const portalBlock: BlockId | undefined = Option.getOrUndefined(blockIdOf('nether_portal'))
     /* v8 ignore start -- UnknownBlock is unreachable in a green tree: `nether_portal`
      * is one of the 120 `BlockType`s kernel's own type declaration pins
      * `blockIdOf` total over, so `blockIdOf('nether_portal')` never returns
@@ -207,7 +204,10 @@ export const ignitePortal = (
     /* v8 ignore stop */
 
     const window = yield* openChunkWindow(store, chunkCoordsAround(ignition, PORTAL_WINDOW_RADIUS))
-    const frame = detectNetherPortal(window.blockAt, ignition)
+    const frame = detectNetherPortal((x, y, z) => {
+      const block = window.blockAt(x, y, z)
+      return block === UNREADABLE_BLOCK ? portalBlock : block
+    }, ignition)
 
     if (frame === undefined) {
       // The ORDER of these two answers is a decision. A window with an absent

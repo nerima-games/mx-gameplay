@@ -16,22 +16,23 @@
  * reports `ChunkNotLoaded` rather than `NoFrame`; a fall-through to fire AND the
  * two answers that must NOT fall through.
  *
- * `detectNetherPortal` and `generatePortalLayout` are `@nerima-games/mc-kernel`'s
- * own, tested there. Nothing here re-tests them.
+ * `detectNetherPortal` and `generatePortalLayout` are `@nerima-games/mc-worldgen`'s
+ * tested portal geometry API. Nothing here re-tests the geometry.
  */
 import { describe, expect, it } from '@effect/vitest'
-import { Effect } from 'effect'
+import { Effect, Option } from 'effect'
 import {
   AIR_BLOCK_ID,
   BlockId,
   blockIdOf,
-  blockPosition,
-  chunkCoord,
-  generatePortalLayout,
   ITEM_TYPES,
   MAX_PORTAL_WIDTH,
+  PortalHeight,
+  PortalWidth,
   type BlockPosition,
 } from '@nerima-games/mc-kernel'
+import { generatePortalLayout } from '@nerima-games/mc-worldgen'
+import { blockPosition, chunkCoord } from './support/coordinate-fixtures'
 import { igniteFire } from '../src/domain/interactions/ignite-fire'
 import { PORTAL_WINDOW_RADIUS, ignitePortal } from '../src/domain/interactions/ignite-portal'
 import { TNT_BLOCK_ID, igniteTnt } from '../src/domain/interactions/ignite-tnt'
@@ -62,9 +63,9 @@ const storeThatChangesItsMind = (honest: ChunkStoreApi, onWrite: BlockWriteOutco
   setBlock: () => Effect.succeed(onWrite),
 })
 
-const OBSIDIAN = blockIdOf('obsidian') ?? BlockId(40)
-const NETHER_PORTAL = blockIdOf('nether_portal') ?? BlockId(118)
-const FIRE = blockIdOf('fire') ?? BlockId(119)
+const OBSIDIAN = Option.getOrUndefined(blockIdOf('obsidian')) ?? BlockId(40)
+const NETHER_PORTAL = Option.getOrUndefined(blockIdOf('nether_portal')) ?? BlockId(118)
+const FIRE = Option.getOrUndefined(blockIdOf('fire')) ?? BlockId(119)
 const TNT = TNT_BLOCK_ID ?? BlockId(46)
 
 /** Bottom-left interior cell of the test portal. Chunk (0, 1) of the double. */
@@ -81,7 +82,7 @@ const portalEntries = (
   width: number,
   height: number,
 ): ReadonlyArray<readonly [BlockPosition, BlockId]> => {
-  const layout = generatePortalLayout(origin, 'x', width, height)
+  const layout = generatePortalLayout(origin, 'x', PortalWidth(width), PortalHeight(height))
   return layout.frame.map((cell) => [cell, OBSIDIAN] as const)
 }
 
@@ -106,7 +107,7 @@ describe('ignitePortal', () => {
       for (const cell of outcome.cells) {
         expect(yield* store.blockAt(cell)).toBe(NETHER_PORTAL)
       }
-      expect(blockIdOf('nether_portal')).toBe(NETHER_PORTAL)
+      expect(Option.getOrUndefined(blockIdOf('nether_portal'))).toBe(NETHER_PORTAL)
     }),
   )
 
@@ -192,7 +193,7 @@ describe('ignitePortal', () => {
 
   it.effect('answers NoFrame for a portal that is ALREADY lit', () =>
     Effect.gen(function* () {
-      const layout = generatePortalLayout(ORIGIN, 'x', 2, 3)
+      const layout = generatePortalLayout(ORIGIN, 'x', PortalWidth(2), PortalHeight(3))
       const store = yield* makeChunkStoreDouble(
         world([
           ...portalEntries(ORIGIN, 2, 3),
@@ -278,7 +279,7 @@ describe('igniteFire', () => {
 
       expect(yield* igniteFire(store.api, target)).toStrictEqual({ _tag: 'Lit', position: target })
       expect(yield* store.blockAt(target)).toBe(FIRE)
-      expect(blockIdOf('fire')).toBe(FIRE)
+      expect(Option.getOrUndefined(blockIdOf('fire'))).toBe(FIRE)
     }),
   )
 
@@ -298,9 +299,9 @@ describe('igniteFire', () => {
       // keystroke that deletes a source block. `domain/interactions/ignite-fire.ts`
       // asks for AIR and nothing else, which is the reference's own test.
       for (const fluid of ['water', 'lava'] as const) {
-        const id = blockIdOf(fluid)
+        const id = Option.getOrUndefined(blockIdOf(fluid))
         expect(id).toBeDefined()
-        const store = yield* makeChunkStoreDouble(world([[target, id ?? 0]]), ['0,0'])
+        const store = yield* makeChunkStoreDouble(world([[target, id ?? AIR_BLOCK_ID]]), ['0,0'])
 
         expect(yield* igniteFire(store.api, target)).toStrictEqual({
           _tag: 'Occupied',

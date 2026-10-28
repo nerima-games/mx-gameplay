@@ -1,8 +1,8 @@
-import { Effect } from 'effect'
+import { Effect, Option } from 'effect'
 import { AIR_BLOCK_ID, blockIdOf, type BlockId, type BlockPosition } from '@nerima-games/mc-kernel'
 import type { ChunkStoreApi } from '@nerima-games/mc-worldgen'
 
-export const TNT_BLOCK_ID: BlockId | undefined = blockIdOf('tnt')
+export const TNT_BLOCK_ID: BlockId | undefined = Option.getOrUndefined(blockIdOf('tnt'))
 
 export type IgniteTntOutcome =
   | { readonly _tag: 'Lit' }

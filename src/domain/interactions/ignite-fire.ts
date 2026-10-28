@@ -58,7 +58,7 @@
  * SPEND THE ITEM or PLAY THE SOUND. See `./ignite-portal`'s header; the same two
  * services own them and neither is published.
  */
-import { Effect } from 'effect'
+import { Effect, Option } from 'effect'
 import { AIR_BLOCK_ID, blockIdOf, type BlockId, type BlockPosition } from '@nerima-games/mc-kernel'
 import type { ChunkStoreApi } from '@nerima-games/mc-worldgen'
 
@@ -102,7 +102,7 @@ export const igniteFire = (
   position: BlockPosition,
 ): Effect.Effect<IgniteFireOutcome> =>
   Effect.gen(function* () {
-    const fireBlock = blockIdOf('fire')
+    const fireBlock = Option.getOrUndefined(blockIdOf('fire'))
     /* v8 ignore start -- UnknownBlock is unreachable in a green tree: `fire` is one
      * of the 120 `BlockType`s kernel's own type declaration pins `blockIdOf`
      * total over, so `blockIdOf('fire')` never returns `undefined`. Kept for the

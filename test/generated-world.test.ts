@@ -3,23 +3,25 @@ import { InventoryService, craftGrid } from '@nerima-games/mc-sim'
 import {
   CHUNK_HEIGHT,
   CHUNK_SIZE_XZ,
-  emptyBlocks,
+  NoiseSeed,
   surfaceHeightAt,
   type ChunkSource,
 } from '@nerima-games/mc-worldgen'
-import { Effect } from 'effect'
-import { BlockId, blockPosition, chunkCoord } from '@nerima-games/mc-kernel'
+import { emptyBlocks } from '@nerima-games/mc-worldgen/testing'
+import { Effect, Result } from 'effect'
+import { BlockAxis, BlockId } from '@nerima-games/mc-kernel'
+import { blockPosition, chunkCoord } from './support/coordinate-fixtures'
 import { makeGeneratedWorld, solidityFromStore } from '../src/domain/in-memory-world'
 import type { MobBehaviour } from '../src/domain/entities/mob-frame'
 
-const SEED = 424242
+const SEED = NoiseSeed(424242)
 
 describe('generated world composition', () => {
   it.effect('uses generated chunks by default and shares writes and dirty notifications', () =>
     Effect.gen(function* () {
       const world = yield* makeGeneratedWorld<MobBehaviour>({ seed: SEED, spawnX: 0.5, spawnZ: 0.5 })
       const dirty = yield* world.chunkStore.subscribeDirty
-      const surfaceY = surfaceHeightAt(SEED, 0, 0)
+      const surfaceY = surfaceHeightAt(SEED, BlockAxis(0), BlockAxis(0))
 
       expect((yield* world.player.pose).feetPosition).toStrictEqual({ x: 0.5, y: surfaceY + 1, z: 0.5 })
 
@@ -75,7 +77,7 @@ describe('generated world composition', () => {
   it.effect('defaults to seed 8675309 when none is provided', () =>
     Effect.gen(function* () {
       const world = yield* makeGeneratedWorld<MobBehaviour>({})
-      const defaultSurfaceY = surfaceHeightAt(8675309, 0, 0)
+      const defaultSurfaceY = surfaceHeightAt(NoiseSeed(8675309), BlockAxis(0), BlockAxis(0))
 
       expect((yield* world.player.pose).feetPosition).toStrictEqual({
         x: 0.5,
@@ -148,7 +150,7 @@ describe('generated world composition', () => {
     Effect.gen(function* () {
       const world = yield* makeGeneratedWorld<MobBehaviour>({ seed: SEED })
       const inventoryFromLayer = yield* InventoryService.pipe(Effect.provide(world.layer))
-      const grid = craftGrid(1, 1, ['oak_log'])
+      const grid = Result.getOrThrow(craftGrid(1, 1, ['oak_log']))
 
       expect(inventoryFromLayer).toBe(world.inventory)
       yield* world.inventory.add('oak_log', 1)
