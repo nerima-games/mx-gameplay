@@ -401,6 +401,7 @@ export const resolveArmoredPlayerDamages = (
 ): Effect.Effect<ReadonlyArray<PlayerDamageEvent>> =>
   Effect.forEach(damages, (event) =>
     Effect.gen(function* () {
+      if (event.damage.amount === 0) return event
       const resolved = yield* resultOrDie(prepareArmorHit(yield* inventory.equipmentSnapshot, event.damage))
       if (resolved.durabilityWear > 0) {
         yield* Effect.forEach(resolved.wornSlots, (slot) =>
@@ -437,6 +438,10 @@ const prepareFirePlayerDamage = (
   let storage = local
   const resolvedDamages: PlayerDamageEvent[] = []
   for (const event of damages) {
+    if (event.damage.amount === 0) {
+      resolvedDamages.push(event)
+      continue
+    }
     const resolved = yield* resultOrDie(prepareArmorHit(storage.equipment, event.damage))
     resolvedDamages.push({ ...event, damage: resolved.damage })
     if (resolved.durabilityWear === 0) continue
