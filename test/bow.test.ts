@@ -46,7 +46,12 @@ import {
   type IsArrowBlockedAt,
   type ShotCandidate,
 } from '../src/domain/interactions/bow-shot'
-import { knockbackDirection, KNOCKBACK_EPSILON } from '../src/domain/interactions/knockback'
+import {
+  KnockbackPreparationSchema,
+  knockbackDirection,
+  KNOCKBACK_EPSILON,
+  prepareKnockbackDirection,
+} from '../src/domain/interactions/knockback'
 import { resolveBowHits, type MobBehaviour } from '../src/domain/entities/mob-frame'
 import { EntityId, EntityKind, EntitySerial, type EntityRoster } from '@nerima-games/mc-sim'
 import {
@@ -70,6 +75,10 @@ const unsafePosition = (x: number, y: number, z: number): Position => ({ x, y, z
 const EYE = atPosition(0, 64, 0 )
 const BOW_PARITY_FIXTURE = {
   source: 'https://minecraft.wiki/w/Bow',
+  edition: 'Java Edition 26.3',
+} as const
+const KNOCKBACK_PARITY_FIXTURE = {
+  source: 'https://raw.githubusercontent.com/takeokunn/ts-minecraft/main/docs/reference/vanilla-parity.md',
   edition: 'Java Edition 26.3',
 } as const
 
@@ -662,6 +671,38 @@ describe('knockbackDirection', () => {
     // so a target to the +x of the shooter is shoved further +x.
     const direction = knockbackDirection(1, 0)
     expect(direction._tag === 'Away' && direction.x).toBe(1)
+  })
+})
+
+describe(`checked knockback preparation (${KNOCKBACK_PARITY_FIXTURE.source}, ${KNOCKBACK_PARITY_FIXTURE.edition})`, () => {
+  it('returns a typed failure or a strict finite direction with nonnegative horizontal magnitude', () => {
+    FastCheck.assert(
+      FastCheck.property(
+        FastCheck.double({ min: -1e308, max: 1e308, noNaN: false, noDefaultInfinity: false }),
+        FastCheck.double({ min: -1e308, max: 1e308, noNaN: false, noDefaultInfinity: false }),
+        (dx, dz) => {
+          const result = prepareKnockbackDirection(dx, dz)
+          if (Result.isFailure(result)) return true
+          const decoded = Schema.decodeUnknownResult(KnockbackPreparationSchema, {
+            onExcessProperty: 'error',
+          })(result.success)
+          return Result.isSuccess(decoded) &&
+            Number.isFinite(decoded.success.horizontalMagnitude) &&
+            decoded.success.horizontalMagnitude >= 0 &&
+            (decoded.success.direction._tag === 'StraightUp' ||
+              (Number.isFinite(decoded.success.direction.x) && Number.isFinite(decoded.success.direction.z)))
+        },
+      ),
+      { numRuns: 250 },
+    )
+  })
+
+  it('keeps caller input unchanged when a non-finite offset fails', () => {
+    const offset = { dx: Number.NaN, dz: 4 }
+    const snapshot = JSON.stringify(offset)
+
+    expect(Result.isFailure(prepareKnockbackDirection(offset.dx, offset.dz))).toBe(true)
+    expect(JSON.stringify(offset)).toBe(snapshot)
   })
 })
 
