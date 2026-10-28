@@ -76,7 +76,7 @@ describe('mining tool durability transaction', () => {
     Effect.gen(function* () {
       const fixture = yield* makeDurabilityFixture
       const beforeDurability = fixture.initialStorage.inventoryDurability[0]
-      if (beforeDurability == null) throw new Error('the iron pickaxe has no durability')
+      if (beforeDurability === undefined || beforeDurability === null) throw new Error('the iron pickaxe has no durability')
       const beforeDimensionRevision = yield* fixture.coordinator.dimensionRevision(dimension)
       const coordinator: WorldCommitCoordinatorApi = {
         ...fixture.coordinator,
@@ -108,7 +108,7 @@ describe('mining tool durability transaction', () => {
       const owner = yield* fixture.coordinator.snapshot(ownerId, PlayerStorageSnapshotSchema)
       const mirrored = yield* fixture.world.inventory.storageSnapshot
       const afterDurability = owner.state.inventoryDurability[0]
-      if (afterDurability == null) throw new Error('the iron pickaxe disappeared')
+      if (afterDurability === undefined || afterDurability === null) throw new Error('the iron pickaxe disappeared')
       expect(afterDurability.current).toBe(beforeDurability.current - 1)
       expect(mirrored).toEqual(owner.state)
       expect(yield* getBlocks(fixture.world.chunkStore)).toEqual(cascade.map(() => ({ _tag: 'Block', block: 0 })))
