@@ -381,6 +381,16 @@ describe('bucket interaction', () => {
       })
 
       expect(outcome).toStrictEqual({ _tag: 'CommitContextMissing' })
+      expect(yield* useBucket(unreadableStore, unreadableInventory, frontier, {
+        activeDimension: 'overworld',
+        targetDimension: 'nether',
+        position: POSITION,
+        heldItem: 'bucket',
+      })).toStrictEqual({
+        _tag: 'WrongDimension',
+        activeDimension: 'overworld',
+        targetDimension: 'nether',
+      })
       expect(yield* store.blockAt(POSITION)).toBe(WATER)
       expect((yield* inventory.api.storageSnapshot).inventory.slots).toStrictEqual(initialInventory)
       expect(yield* Ref.get(frontier)).toStrictEqual(initialFrontier)
