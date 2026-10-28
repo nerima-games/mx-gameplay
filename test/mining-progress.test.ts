@@ -227,6 +227,35 @@ describe('delta-time progress', () => {
     }),
   )
 
+  it.effect('completes a zero-hardness block immediately and keeps it complete', () =>
+    Effect.sync(() => {
+      const dandelion = {
+        position: atBlockPosition(1, 64, 2),
+        blockId: registeredBlockId('dandelion'),
+      }
+      const first = advanceMiningProgress({
+        current: null,
+        target: dandelion,
+        isMining: true,
+        selectedItem: null,
+        deltaSecs: 0,
+      })
+
+      expect(first.shouldBreak).toBe(true)
+      expect(first.nextProgress).toMatchObject({ completed: true, elapsedSecs: 0, requiredSecs: 0 })
+
+      const repeated = advanceMiningProgress({
+        current: first.nextProgress,
+        target: dandelion,
+        isMining: true,
+        selectedItem: null,
+        deltaSecs: 1,
+      })
+      expect(repeated.shouldBreak).toBe(false)
+      expect(repeated.nextProgress).toStrictEqual(first.nextProgress)
+    }),
+  )
+
   it.effect('resets in-progress work when the block changes at the same position', () =>
     Effect.sync(() => {
       const stoneProgress = advanceMiningProgress({

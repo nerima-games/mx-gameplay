@@ -86,6 +86,13 @@ describe('matchRuntimeWitherSummon', () => {
     expect(matchRuntimeWitherSummon(blockCellAt(0, 6, 0), () => 'air')).toBeUndefined()
   })
 
+  it('treats unavailable block readings as no match', () => {
+    const result = matchRuntimeWitherSummonResult(blockCellAt(0, 6, 0), () => undefined)
+
+    expect(Result.isSuccess(result)).toBe(true)
+    if (Result.isSuccess(result)) expect(result.success).toBeUndefined()
+  })
+
   it('returns a successful Result for a structure that does not match', () => {
     const result = matchRuntimeWitherSummonResult(blockCellAt(0, 6, 0), () => 'air')
     expect(Result.isSuccess(result)).toBe(true)

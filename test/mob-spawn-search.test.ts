@@ -389,6 +389,19 @@ describe('the spawn ring', () => {
 })
 
 describe('what the search reads', () => {
+  it.effect('counts ring cells beyond the safe block grid as unreadable', () =>
+    Effect.gen(function* () {
+      const store = yield* makeChunkStoreDouble(FLOORED_WORLD, RESIDENT_CHUNKS)
+      const farTarget = atPosition(Number.MAX_SAFE_INTEGER * 4, PLAYER.y, PLAYER.z)
+
+      const found = yield* searchSpawnCandidates(store.api, farTarget, MIDNIGHT, 7)
+
+      expect(found.attempts).toStrictEqual([])
+      expect(found.unreadable).toBe(SPAWN_RING_CELLS)
+      expect(yield* store.calls).toMatchObject({ reads: 0, writes: 0 })
+    }),
+  )
+
   it.effect('reports BLOCK light, and is not fooled by a bright sky', () =>
     Effect.gen(function* () {
       // THE DISTINCTION THE TWO GRIDS EXIST FOR. At night the sky grid still

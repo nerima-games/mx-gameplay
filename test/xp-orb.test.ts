@@ -4,6 +4,7 @@ import * as FastCheck from 'fast-check'
 import {
   DomainEventSchema,
   EntityId,
+  WorldRevisionSchema,
   WorldId,
 } from '@nerima-games/mc-kernel'
 import {
@@ -17,6 +18,8 @@ import {
   makeReplicatedOwnerId,
   makeWorldCommitCoordinator,
   totalExperienceAtLevel,
+  type ReplicatedOwnerUnknown,
+  type ReplicatedSnapshot,
   type Vitals,
   type WorldCommitCoordinatorApi,
 } from '@nerima-games/mc-sim'
@@ -252,6 +255,118 @@ describe('experience orb values', () => {
 
       expect(failure._tag).toBe('ExperienceOrbUnavailable')
       expect(failure).toMatchObject({ reason: 'missing-orb' })
+    }),
+  )
+
+  it.effect('rejects duplicate ids instead of choosing one XP value', () =>
+    Effect.gen(function* () {
+      const firstValue = yield* Effect.fromResult(createExperienceOrbValue(1))
+      const secondValue = yield* Effect.fromResult(createExperienceOrbValue(2))
+      const coordinator = yield* makeCoordinator(SPAWN_VITALS, {
+        orbs: [
+          { id: PICKUP_CONTEXT.orb, value: firstValue },
+          { id: PICKUP_CONTEXT.orb, value: secondValue },
+        ],
+      })
+
+      const failure = yield* Effect.flip(
+        absorbExperienceOrb(coordinator, OWNER_IDS, PICKUP_CONTEXT),
+      )
+
+      expect(failure).toMatchObject({
+        _tag: 'ExperienceOrbUnavailable',
+        orb: PICKUP_CONTEXT.orb,
+        reason: 'duplicate-orb-id',
+      })
+    }),
+  )
+
+  it.effect('refuses to combine owner snapshots from different revisions', () =>
+    Effect.gen(function* () {
+      const value = yield* Effect.fromResult(createExperienceOrbValue(1))
+      const coordinator = yield* makeCoordinator(SPAWN_VITALS, {
+        orbs: [{ id: PICKUP_CONTEXT.orb, value }],
+      })
+      type SnapshotCodec = Parameters<WorldCommitCoordinatorApi['snapshot']>[1]
+      type SnapshotOwnerId = Parameters<WorldCommitCoordinatorApi['snapshot']>[0]
+      const mismatchedCoordinator: WorldCommitCoordinatorApi = {
+        ...coordinator,
+        snapshot: <Codec extends SnapshotCodec>(
+          ownerId: SnapshotOwnerId,
+          schema: Codec,
+        ): Effect.Effect<
+          ReplicatedSnapshot<Codec>,
+          Schema.SchemaError | ReplicatedOwnerUnknown,
+          Schema.Codec.DecodingServices<Codec>
+        > => Effect.map(coordinator.snapshot(ownerId, schema), (snapshot) =>
+          ownerId === OWNER_IDS.orbs
+            ? { ...snapshot, revision: Schema.decodeUnknownSync(WorldRevisionSchema)(1) }
+            : snapshot,
+        ),
+      }
+
+      const failure = yield* Effect.flip(
+        absorbExperienceOrb(mismatchedCoordinator, OWNER_IDS, PICKUP_CONTEXT),
+      )
+
+      expect(failure._tag).toBe('WorldRevisionConflict')
+    }),
+  )
+
+  it.effect('reports whichever owner change the commit response omitted', () =>
+    Effect.gen(function* () {
+      const value = yield* Effect.fromResult(createExperienceOrbValue(1))
+
+      for (const omittedOwner of [OWNER_IDS.vitals, OWNER_IDS.orbs]) {
+        const coordinator = yield* makeCoordinator(SPAWN_VITALS, {
+          orbs: [{ id: PICKUP_CONTEXT.orb, value }],
+        })
+        const incompleteCoordinator: WorldCommitCoordinatorApi = {
+          ...coordinator,
+          commit: (request) => Effect.map(coordinator.commit(request), (delta) => ({
+            ...delta,
+            changes: delta.changes.filter((change) => change.owner !== omittedOwner),
+          })),
+        }
+
+        const failure = yield* Effect.flip(
+          absorbExperienceOrb(incompleteCoordinator, OWNER_IDS, PICKUP_CONTEXT),
+        )
+
+        expect(failure).toMatchObject({
+          _tag: 'ExperienceOrbAbsorptionCommitResultInvalid',
+          reason: 'missing-owner-change',
+          owners: [omittedOwner],
+        })
+      }
+    }),
+  )
+
+  it.effect('reports when the committed owner state still contains the absorbed orb', () =>
+    Effect.gen(function* () {
+      const value = yield* Effect.fromResult(createExperienceOrbValue(1))
+      const coordinator = yield* makeCoordinator(SPAWN_VITALS, {
+        orbs: [{ id: PICKUP_CONTEXT.orb, value }],
+      })
+      const incompleteCoordinator: WorldCommitCoordinatorApi = {
+        ...coordinator,
+        commit: (request) => Effect.map(coordinator.commit(request), (delta) => ({
+          ...delta,
+          changes: delta.changes.map((change) => change.owner === OWNER_IDS.orbs
+            ? { ...change, state: { orbs: [{ id: PICKUP_CONTEXT.orb, value }] } }
+            : change),
+        })),
+      }
+
+      const failure = yield* Effect.flip(
+        absorbExperienceOrb(incompleteCoordinator, OWNER_IDS, PICKUP_CONTEXT),
+      )
+
+      expect(failure).toMatchObject({
+        _tag: 'ExperienceOrbAbsorptionCommitResultInvalid',
+        reason: 'orb-not-consumed',
+        owners: [OWNER_IDS.orbs],
+      })
     }),
   )
 })

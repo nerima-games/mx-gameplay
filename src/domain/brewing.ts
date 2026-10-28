@@ -306,17 +306,9 @@ export const collectBrewingBottleWithStorage = (
       }
     }
 
-    const leftover = storageCandidate.result.leftover
-    const remainingBottle =
-      leftover === null
-        ? undefined
-        : {
-            item: leftover.item,
-            count: leftover.count,
-            components: leftover.components,
-          }
+    // Brewing bottles have a stack limit of one, so any accepted amount consumes the slot.
     const brewingCandidate = yield* Effect.fromResult(
-      setBrewingBottle(brewingSnapshot.state, request.bottleIndex, remainingBottle),
+      setBrewingBottle(brewingSnapshot.state, request.bottleIndex, undefined),
     )
 
     yield* coordinator.commit({
@@ -332,7 +324,7 @@ export const collectBrewingBottleWithStorage = (
       _tag: 'Collected' as const,
       item: bottle.item,
       count: storageCandidate.result.added,
-      remainingCount: leftover?.count ?? 0,
+      remainingCount: 0,
     }
   })
 

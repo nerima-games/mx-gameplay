@@ -97,6 +97,7 @@ import {
   insertBrewingFuel,
   insertBrewingIngredient,
   requestBlockPlacement,
+  requestBucketUse,
   requestBoneMeal,
   requestBowShot,
   requestFireExtinguish,
@@ -3461,6 +3462,48 @@ describe('farming and food item uses through the full interactions stage', () =>
     }),
   )
 
+  it.effect('successful tilling and planting remain uncommitted when stage commit services are absent', () =>
+    Effect.gen(function* () {
+      const tillPosition = fixtureBlockPosition(10, 64, 10)
+      const plantPosition = fixtureBlockPosition(12, 64, 12)
+      const dirt = Option.getOrThrow(blockIdOf('dirt'))
+      const farmland = Option.getOrThrow(blockIdOf('farmland'))
+      const state = yield* makeGameplayFrameState
+      const store = yield* makeChunkStoreDouble(world([
+        [tillPosition, dirt],
+        [plantPosition, farmland],
+      ]), ['0,0'])
+      const roster = yield* makeEntityManagerDouble<MobBehaviour>()
+      const inventory = yield* makeInventoryDouble()
+      const player = yield* makePlayerServiceDouble()
+      const time = yield* makeTimeService()
+      const stages = gameplayStages(state, store.api, roster.api, inventory.api, player.api, time)
+      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+
+      yield* requestSoilTill(state, 'till-without-commit', tillPosition, 'iron_hoe')
+      yield* requestPotatoPlanting(state, 'plant-without-commit', plantPosition)
+      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* drainItemUseResults(state)).toMatchObject([
+        {
+          action: 'TillSoil',
+          requestId: 'till-without-commit',
+          success: false,
+          outcome: { _tag: 'commitContextMissing' },
+        },
+        {
+          action: 'PlantPotato',
+          requestId: 'plant-without-commit',
+          success: false,
+          outcome: { _tag: 'commitContextMissing' },
+        },
+      ])
+      expect(yield* store.api.getBlock(tillPosition)).toStrictEqual({ _tag: 'Block', block: dirt })
+      expect(yield* store.api.getBlock(plantPosition)).toStrictEqual({ _tag: 'Block', block: farmland })
+      expect(yield* inventory.api.countOf('potato')).toBe(0)
+    }),
+  )
+
   it.effect('planting a potato on non-farmland reports failure with nothing consumed', () =>
     Effect.gen(function* () {
       const position = fixtureBlockPosition(42, 64, 42)
@@ -3472,6 +3515,134 @@ describe('farming and food item uses through the full interactions stage', () =>
 
       const [result] = yield* drainItemUseResults(state)
       expect(result).toMatchObject({ action: 'PlantPotato', requestId: 'plant-fail', success: false, consumedCount: 0 })
+    }),
+  )
+
+  it.effect('planting a potato with a synchronized inventory commits and consumes it once', () =>
+    Effect.gen(function* () {
+      const soil = fixtureBlockPosition(43, 64, 43)
+      const farmland = Option.getOrThrow(blockIdOf('farmland'))
+      const state = yield* makeGameplayFrameState
+      const store = yield* makeTransactionalChunkStoreDouble(world([[soil, farmland]]), ['2,2'])
+      const roster = yield* makeEntityManagerDouble<MobBehaviour>()
+      const slots = [...emptySlots()]
+      slots[0] = itemStack('potato', 1)
+      const inventory = yield* makeInventoryDouble(slots)
+      const player = yield* makePlayerServiceDouble()
+      const time = yield* makeTimeService()
+      const commit = yield* makeGameplayCommitServices(store.api, inventory.api)
+      const stages = gameplayStages(
+        state,
+        store.api,
+        roster.api,
+        inventory.api,
+        player.api,
+        time,
+        undefined,
+        undefined,
+        {},
+        commit,
+      )
+      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+
+      yield* requestPotatoPlanting(state, 'plant-potato-commit', soil)
+      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* drainItemUseResults(state)).toMatchObject([
+        { action: 'PlantPotato', requestId: 'plant-potato-commit', success: true, consumedCount: 1 },
+      ])
+      expect(yield* store.api.getBlock(fixtureBlockPosition(soil.x, soil.y + 1, soil.z))).toStrictEqual({
+        _tag: 'Block',
+        block: Option.getOrThrow(blockIdOf('potato_crop')),
+      })
+      expect(yield* inventory.api.countOf('potato')).toBe(0)
+      expect(yield* commit.coordinator.revision).toBe(1)
+    }),
+  )
+
+  it.effect('tilling dirt with a synchronized hoe commits the block and its wear', () =>
+    Effect.gen(function* () {
+      const soil = fixtureBlockPosition(44, 64, 44)
+      const state = yield* makeGameplayFrameState
+      const dirt = Option.getOrThrow(blockIdOf('dirt'))
+      const store = yield* makeTransactionalChunkStoreDouble(world([[soil, dirt]]), ['2,2'])
+      const roster = yield* makeEntityManagerDouble<MobBehaviour>()
+      const slots = [...emptySlots()]
+      slots[0] = itemStack('iron_hoe', 1)
+      const inventory = yield* makeInventoryDouble(slots)
+      const player = yield* makePlayerServiceDouble()
+      const time = yield* makeTimeService()
+      const commit = yield* makeGameplayCommitServices(store.api, inventory.api)
+      const stages = gameplayStages(
+        state,
+        store.api,
+        roster.api,
+        inventory.api,
+        player.api,
+        time,
+        undefined,
+        undefined,
+        {},
+        commit,
+      )
+      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+
+      yield* requestSoilTill(state, 'till-soil-commit', soil, 'iron_hoe')
+      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* drainItemUseResults(state)).toMatchObject([
+        { action: 'TillSoil', requestId: 'till-soil-commit', success: true, durabilityDamage: 1 },
+      ])
+      expect(yield* store.api.getBlock(soil)).toStrictEqual({
+        _tag: 'Block',
+        block: Option.getOrThrow(blockIdOf('farmland')),
+      })
+      expect(yield* inventory.api.countOf('iron_hoe')).toBe(1)
+      expect(yield* commit.coordinator.revision).toBe(1)
+    }),
+  )
+
+  it.effect('collecting a bucket through interactions commits its inventory and world changes', () =>
+    Effect.gen(function* () {
+      const source = fixtureBlockPosition(12, 64, 12)
+      const state = yield* makeGameplayFrameState
+      const store = yield* makeTransactionalChunkStoreDouble(world([[source, WATER]]), ['0,0'])
+      const roster = yield* makeEntityManagerDouble<MobBehaviour>()
+      const slots = [...emptySlots()]
+      slots[0] = itemStack('bucket', 1)
+      const inventory = yield* makeInventoryDouble(slots)
+      const player = yield* makePlayerServiceDouble()
+      const time = yield* makeTimeService()
+      const commit = yield* makeGameplayCommitServices(store.api, inventory.api)
+      const stages = gameplayStages(
+        state,
+        store.api,
+        roster.api,
+        inventory.api,
+        player.api,
+        time,
+        undefined,
+        undefined,
+        {},
+        commit,
+      )
+      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+
+      yield* requestBucketUse(state, 'collect-water-commit', source, 'bucket', 'overworld')
+      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* drainItemUseResults(state)).toMatchObject([
+        {
+          action: 'UseBucket',
+          requestId: 'collect-water-commit',
+          success: true,
+          outcome: { _tag: 'Collected', fluid: 'water', position: source },
+        },
+      ])
+      expect(yield* inventory.api.countOf('bucket')).toBe(0)
+      expect(yield* inventory.api.countOf('water_bucket')).toBe(1)
+      expect(yield* store.api.getBlock(source)).toStrictEqual({ _tag: 'Block', block: AIR_BLOCK_ID })
+      expect(yield* commit.coordinator.revision).toBe(1)
     }),
   )
 
@@ -3545,6 +3716,39 @@ describe('CastFishing fails without water rather than starting a session', () =>
         },
       ])
       expect(yield* Ref.get(state.fishingSession)).toBeUndefined()
+    }),
+  )
+})
+
+describe('bucket interaction through a stage without commit services', () => {
+  it.effect('reports missing commit context and preserves the bucket and world state', () =>
+    Effect.gen(function* () {
+      const source = fixtureBlockPosition(12, 64, 12)
+      const state = yield* makeGameplayFrameState
+      const store = yield* makeChunkStoreDouble(world([[source, WATER]]), ['0,0'])
+      const roster = yield* makeEntityManagerDouble<MobBehaviour>()
+      const slots = [...emptySlots()]
+      slots[0] = itemStack('bucket', 1)
+      const inventory = yield* makeInventoryDouble(slots)
+      const player = yield* makePlayerServiceDouble()
+      const time = yield* makeTimeService()
+      const stages = gameplayStages(state, store.api, roster.api, inventory.api, player.api, time)
+      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+
+      yield* requestBucketUse(state, 'bucket-without-commit', source, 'bucket', 'overworld')
+      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* drainItemUseResults(state)).toMatchObject([
+        {
+          action: 'UseBucket',
+          requestId: 'bucket-without-commit',
+          success: false,
+          outcome: { _tag: 'CommitContextMissing' },
+        },
+      ])
+      expect(yield* inventory.api.countOf('bucket')).toBe(1)
+      expect(yield* store.calls).toMatchObject({ writes: 0 })
+      expect(yield* store.api.getBlock(source)).toStrictEqual({ _tag: 'Block', block: WATER })
     }),
   )
 })

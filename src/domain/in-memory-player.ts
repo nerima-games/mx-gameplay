@@ -138,16 +138,13 @@ const invalidPositionField = (value: unknown): PlayerServiceInputError['field'] 
   return undefined
 }
 
+// Both callers build a record and clamp pitch before checking the remaining fields.
 const invalidPoseError = (
-  value: unknown,
+  value: { readonly yawRadians: unknown; readonly feetPosition: unknown },
   reason: PlayerServiceInputError['reason'],
 ): PlayerServiceInputError | undefined => {
-  if (!isRecord(value)) return inputError(reason, 'pose')
   if (typeof value['yawRadians'] !== 'number' || !Number.isFinite(value['yawRadians'])) {
     return inputError(reason, 'yawRadians')
-  }
-  if (typeof value['pitchRadians'] !== 'number' || !Number.isFinite(value['pitchRadians'])) {
-    return inputError(reason, 'pitchRadians')
   }
   const positionField = invalidPositionField(value['feetPosition'])
   return positionField === undefined ? undefined : inputError(reason, positionField)

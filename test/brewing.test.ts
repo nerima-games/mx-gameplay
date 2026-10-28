@@ -19,7 +19,13 @@ import {
   type BrewingIngredient,
   type BrewingStandState,
 } from '../src/domain/brewing'
-import { DeltaTimeSecs, StackCount, WorldIdSchema, itemStack } from '@nerima-games/mc-kernel'
+import {
+  DeltaTimeSecs,
+  StackCount,
+  WorldIdSchema,
+  WorldRevisionSchema,
+  itemStack,
+} from '@nerima-games/mc-kernel'
 import {
   BrewingServiceStateSchema,
   PlayerStorageSnapshotSchema,
@@ -29,6 +35,10 @@ import {
   makeBrewingServiceRegistration,
   makeReplicatedOwnerId,
   playerStorageOwnerRegistration,
+  replicatedSnapshotSchema,
+  type ReplicatedOwnerUnknown,
+  type ReplicatedSnapshot,
+  type WorldCommitCoordinatorApi,
 } from '@nerima-games/mc-sim'
 
 const loadedStand = (ingredient: BrewingIngredient): BrewingStandState => {
@@ -459,4 +469,142 @@ describe('basic brewing runtime', () => {
       expect(revisionAfter).toBe(revisionBefore)
     }).pipe(Effect.provide(setup.layer))
   })
+
+  it.effect('rejects aliased owners and bottle indices outside the three slots', () => {
+    const setup = collectionTestSetup()
+    return Effect.gen(function* () {
+      const aliasedOwners = yield* collectBrewingBottleWithStorage({
+        brewingOwnerId: setup.brewingOwnerId,
+        playerStorageOwnerId: setup.brewingOwnerId,
+        bottleIndex: 0,
+      })
+      const invalidIndices = yield* Effect.all([
+        collectBrewingBottleWithStorage({
+          brewingOwnerId: setup.brewingOwnerId,
+          playerStorageOwnerId: setup.playerStorageOwnerId,
+          bottleIndex: 1.5,
+        }),
+        collectBrewingBottleWithStorage({
+          brewingOwnerId: setup.brewingOwnerId,
+          playerStorageOwnerId: setup.playerStorageOwnerId,
+          bottleIndex: -1,
+        }),
+        collectBrewingBottleWithStorage({
+          brewingOwnerId: setup.brewingOwnerId,
+          playerStorageOwnerId: setup.playerStorageOwnerId,
+          bottleIndex: 3,
+        }),
+      ])
+
+      expect(aliasedOwners).toStrictEqual({ _tag: 'InvalidOwners' })
+      expect(invalidIndices).toStrictEqual([
+        { _tag: 'InvalidSlot' },
+        { _tag: 'InvalidSlot' },
+        { _tag: 'InvalidSlot' },
+      ])
+    }).pipe(Effect.provide(setup.layer))
+  })
+
+  it.effect('returns Empty for a valid bottle slot with no bottle', () => {
+    const setup = collectionTestSetup()
+    return collectBrewingBottleWithStorage({
+      brewingOwnerId: setup.brewingOwnerId,
+      playerStorageOwnerId: setup.playerStorageOwnerId,
+      bottleIndex: 1,
+    }).pipe(
+      Effect.provide(setup.layer),
+      Effect.tap((result) => Effect.sync(() => expect(result).toStrictEqual({ _tag: 'Empty' }))),
+    )
+  })
+
+  it.effect('returns StaleSnapshot when the owner revisions differ', () => {
+    const bottle = Result.getOrThrow(itemStack('water_bottle', StackCount(1)))
+    const setup = collectionTestSetup([bottle, undefined, undefined])
+    return Effect.gen(function* () {
+      const coordinator = yield* WorldCommitCoordinator
+      type SnapshotCodec = Parameters<WorldCommitCoordinatorApi['snapshot']>[1]
+      type SnapshotOwnerId = Parameters<WorldCommitCoordinatorApi['snapshot']>[0]
+      const staleCoordinator: WorldCommitCoordinatorApi = {
+        ...coordinator,
+        snapshot: <Codec extends SnapshotCodec>(
+          ownerId: SnapshotOwnerId,
+          schema: Codec,
+        ): Effect.Effect<
+          ReplicatedSnapshot<Codec>,
+          Schema.SchemaError | ReplicatedOwnerUnknown,
+          Schema.Codec.DecodingServices<Codec>
+        > => Effect.map(coordinator.snapshot<Codec>(ownerId, schema), (snapshot) => {
+          const fields = {
+            world: Object.getOwnPropertyDescriptor(snapshot, 'world')?.value,
+            revision: Object.getOwnPropertyDescriptor(snapshot, 'revision')?.value,
+            state: Object.getOwnPropertyDescriptor(snapshot, 'state')?.value,
+          }
+          const currentRevision = Schema.decodeUnknownSync(WorldRevisionSchema)(fields.revision)
+          const revision = ownerId === setup.playerStorageOwnerId
+            ? Schema.decodeUnknownSync(WorldRevisionSchema)(currentRevision + 1)
+            : currentRevision
+          return Schema.decodeUnknownSync(replicatedSnapshotSchema(schema))({ ...fields, revision })
+        }),
+      }
+
+      const result = yield* collectBrewingBottleWithStorage({
+        brewingOwnerId: setup.brewingOwnerId,
+        playerStorageOwnerId: setup.playerStorageOwnerId,
+        bottleIndex: 0,
+      }).pipe(Effect.provideService(WorldCommitCoordinator, staleCoordinator))
+
+      expect(result).toStrictEqual({ _tag: 'StaleSnapshot' })
+      expect(yield* coordinator.revision).toBe(0)
+    }).pipe(Effect.provide(setup.layer))
+  })
+
+  it.effect('rejects a malformed bottle stack returned by a coordinator', () => {
+    const bottle = Result.getOrThrow(itemStack('water_bottle', StackCount(1)))
+    const setup = collectionTestSetup([bottle, undefined, undefined])
+    return Effect.gen(function* () {
+      const coordinator = yield* WorldCommitCoordinator
+      type SnapshotCodec = Parameters<WorldCommitCoordinatorApi['snapshot']>[1]
+      type SnapshotOwnerId = Parameters<WorldCommitCoordinatorApi['snapshot']>[0]
+      const invalidStackCoordinator: WorldCommitCoordinatorApi = {
+        ...coordinator,
+        snapshot: <Codec extends SnapshotCodec>(
+          ownerId: SnapshotOwnerId,
+          schema: Codec,
+        ): Effect.Effect<
+          ReplicatedSnapshot<Codec>,
+          Schema.SchemaError | ReplicatedOwnerUnknown,
+          Schema.Codec.DecodingServices<Codec>
+        > => Effect.map(coordinator.snapshot<Codec>(ownerId, schema), (snapshot) => {
+          if (ownerId !== setup.brewingOwnerId) return snapshot
+          const malformedSnapshot = {
+            world: coordinator.worldId,
+            revision: Schema.decodeUnknownSync(WorldRevisionSchema)(0),
+            state: {
+              bottles: [{
+                ...bottle,
+                item: 'not_a_registered_item' as typeof bottle.item,
+                components: undefined,
+              }, undefined, undefined],
+              ingredient: undefined,
+              fuel: undefined,
+              fuelCharges: 0,
+              brewProgressSecs: 0,
+            },
+          }
+          // Deliberately bypass the schema-validating coordinator to exercise the defensive stack check.
+          return malformedSnapshot as ReplicatedSnapshot<Codec>
+        }),
+      }
+
+      const result = yield* collectBrewingBottleWithStorage({
+        brewingOwnerId: setup.brewingOwnerId,
+        playerStorageOwnerId: setup.playerStorageOwnerId,
+        bottleIndex: 0,
+      }).pipe(Effect.provideService(WorldCommitCoordinator, invalidStackCoordinator))
+
+      expect(result).toStrictEqual({ _tag: 'InvalidStack' })
+      expect(yield* coordinator.revision).toBe(0)
+    }).pipe(Effect.provide(setup.layer))
+  })
+
 })

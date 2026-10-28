@@ -9,7 +9,50 @@
  * carries no residual state.
  */
 import { describe, expect, it } from '@effect/vitest'
-import { createDroppedItemLifetimeTracker } from '../src/domain/entities/dropped-item'
+import { Effect } from 'effect'
+import { position as atPosition } from './support/coordinate-fixtures'
+import { StackCount, WorldId, type Position } from '@nerima-games/mc-kernel'
+import {
+  EntityId,
+  emptyPlayerStorage,
+  makeReplicatedOwnerId,
+  makeWorldCommitCoordinator,
+  type InventoryServiceApi,
+  type WorldCommitCoordinatorApi,
+} from '@nerima-games/mc-sim'
+import {
+  createDroppedItemLifetimeTracker,
+  droppedItemPickupOwnerRegistrations,
+  pickupDroppedItems,
+  pickupDroppedItemsCommitted,
+  spawnDroppedItem,
+} from '../src/domain/entities/dropped-item'
+import type { MobBehaviour } from '../src/domain/entities/mob-frame'
+import { makeEntityManagerDouble } from './support/entity-manager-double'
+import { makeInventoryDouble } from './support/inventory-service-double'
+
+const origin: Position = atPosition(0, 64, 0)
+const PICKUP_OWNERS = {
+  playerStorage: makeReplicatedOwnerId('lifetime-test-player-storage'),
+  droppedItems: makeReplicatedOwnerId('lifetime-test-dropped-items'),
+}
+const COMMITTED_DROP = {
+  id: EntityId('lifetime-test-drop'),
+  feetPosition: origin,
+  behaviour: {
+    _tag: 'DroppedItem' as const,
+    item: 'gunpowder' as const,
+    count: StackCount(2),
+    durability: null,
+  },
+}
+const makePickupCoordinator = () =>
+  makeWorldCommitCoordinator({
+    world: WorldId('dropped-item-lifetime-tests'),
+    owners: droppedItemPickupOwnerRegistrations(PICKUP_OWNERS, emptyPlayerStorage(), {
+      items: [COMMITTED_DROP],
+    }),
+  })
 
 describe('createDroppedItemLifetimeTracker: scenarios', () => {
   it('tracks elapsed time per dimension and entity independently', () => {
@@ -128,4 +171,61 @@ describe('createDroppedItemLifetimeTracker: tick-sequence invariant', () => {
     expect(tracker.advance('overworld', 10, [])).toStrictEqual([])
     expect(tracker.elapsed('overworld', 'item')).toBe(0)
   })
+})
+
+describe('dropped-item pickup settlement', () => {
+  it.effect('keeps a dropped stack when the inventory rejects the validated candidate', () =>
+    Effect.gen(function* () {
+      const roster = yield* makeEntityManagerDouble<MobBehaviour>()
+      const inventory = yield* makeInventoryDouble()
+      const dropped = yield* spawnDroppedItem(roster.api, {
+        item: 'gunpowder',
+        count: 1,
+        at: origin,
+      })
+      let attempts = 0
+      const rejectingInventory: InventoryServiceApi = {
+        ...inventory.api,
+        addStoredStack: () => Effect.sync(() => {
+          attempts += 1
+          return { _tag: 'InvalidStack' as const }
+        }),
+      }
+
+      yield* pickupDroppedItems(roster.api, rejectingInventory, origin)
+
+      expect(attempts).toBe(1)
+      expect(yield* roster.api.entities).toStrictEqual([dropped])
+    }),
+  )
+
+  it.effect('names either owner omitted from a committed pickup delta', () =>
+    Effect.gen(function* () {
+      for (const omittedOwner of [PICKUP_OWNERS.playerStorage, PICKUP_OWNERS.droppedItems]) {
+        const coordinator = yield* makePickupCoordinator()
+        const incompleteCoordinator: WorldCommitCoordinatorApi = {
+          ...coordinator,
+          commit: (request) => Effect.map(coordinator.commit(request), (delta) => ({
+            ...delta,
+            changes: delta.changes.filter((change) => change.owner !== omittedOwner),
+          })),
+        }
+
+        const failure = yield* Effect.flip(pickupDroppedItemsCommitted(
+          incompleteCoordinator,
+          PICKUP_OWNERS,
+          {
+            actor: EntityId('lifetime-test-player'),
+            tick: 1,
+            position: origin,
+          },
+        ))
+
+        expect(failure).toMatchObject({
+          _tag: 'DroppedItemPickupCommitIncomplete',
+          missingOwners: [omittedOwner],
+        })
+      }
+    }),
+  )
 })

@@ -223,6 +223,24 @@ describe('resolveBlasts: the frame with no explosion in it', () => {
   )
 })
 
+describe('resolveBlasts: block coordinates must be safely addressable', () => {
+  it.effect('does not carve a crater when the blast center cannot become a BlockPosition', () =>
+    Effect.gen(function* () {
+      const roster = yield* makeEntityManagerDouble<MobBehaviour>()
+      const store = yield* emptyStore
+      const blast: Blast = {
+        ...CREEPER_BLAST,
+        at: atPosition(Number.MAX_SAFE_INTEGER * 4, ORIGIN.y, ORIGIN.z),
+      }
+
+      const result = yield* resolveBlasts(roster.api, store.api, [blast])
+
+      expect(result.disturbed).toStrictEqual([])
+      expect(yield* store.calls).toMatchObject({ reads: 0, writes: 0 })
+    }),
+  )
+})
+
 describe('resolveBlasts: the mobs a blast does not reach', () => {
   it.effect('a mob outside every radius is left alone — same object, no transition', () =>
     Effect.gen(function* () {
@@ -756,6 +774,34 @@ describe('resolveEndermanTeleportProbes: validating a candidate against the stor
       expect(after.sweeps).toBe(before.sweeps)
       const entities = yield* roster.api.entities
       expect(entities[0]).toBe(spawned)
+    }),
+  )
+
+  it.effect('skips candidates outside the safe BlockAxis range without reading or sweeping', () =>
+    Effect.gen(function* () {
+      const roster = yield* makeEntityManagerDouble<MobBehaviour>()
+      const store = yield* makeChunkStoreDouble(world([]), ['0,0'])
+      const current: Position = atPosition(0, 64, 0)
+      const spawned = yield* roster.api.spawn({
+        kind: ENDERMAN_KIND,
+        feetPosition: current,
+        healthPoints: EntityHealthPoints(ENDERMAN_MAX_HEALTH),
+        behaviour: STEADY_ENDERMAN,
+      })
+      const probe: EndermanTeleportProbe = {
+        _tag: 'EndermanTeleport',
+        entityId: spawned.id,
+        current,
+        anchor: atPosition(Number.MAX_SAFE_INTEGER * 4, 70, Number.MAX_SAFE_INTEGER * 4),
+        rolls: [0.75, 0.5],
+      }
+      const before = yield* roster.calls
+
+      yield* resolveEndermanTeleportProbes(roster.api, store.api, [probe])
+
+      expect(yield* roster.calls).toMatchObject({ sweeps: before.sweeps })
+      expect(yield* store.calls).toMatchObject({ reads: 0, writes: 0 })
+      expect((yield* roster.api.entities)[0]).toBe(spawned)
     }),
   )
 

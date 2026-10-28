@@ -162,9 +162,9 @@ export const planFallingBlockMoves = (
 ): ReadonlyArray<PlannedFallingBlockMove> => {
   const overlay = new Map<string, number>()
   const read = (at: FallingBlockPosition): number | undefined => overlay.get(fallingPositionKey(at)) ?? readBlock(at)
-  const air = Option.getOrUndefined(blockIdOf('air'))
+  // `air` is a required entry in the kernel's canonical block registry.
+  const air = Option.getOrThrow(blockIdOf('air'))
   const moves: Array<PlannedFallingBlockMove> = []
-  if (air === undefined) return moves
 
   for (const target of targets) {
     const source = { x: target.x, y: target.y + 1, z: target.z }

@@ -93,10 +93,9 @@ export const addToSlots = (
       continue
     }
     const accepted = Math.min(stackLimit, remaining)
-    const stack = stackOf(item, accepted)
-    if (stack === undefined) {
-      continue
-    }
+    // `incoming` proved that the item is registered; this count is an integer
+    // in [1, stackLimit], the same positive per-item limit used by itemStack.
+    const stack = Result.getOrThrow(itemStack(item, StackCount(accepted)))
     next[at] = stack
     remaining -= accepted
   }

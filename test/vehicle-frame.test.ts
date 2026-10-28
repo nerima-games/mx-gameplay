@@ -115,6 +115,58 @@ describe('vehicle frame', () => {
     expect(next?.['occupant']).toBe('player:local')
   })
 
+  it('does not treat an unloaded cell as water for boat movement', async () => {
+    const vehicle = {
+      id: VehicleId('v:boat-unloaded-water'),
+      type: 'boat' as const,
+      dimension: 'overworld' as const,
+      position: { x: 0, y: 64, z: 0 },
+      velocity: { x: 0, y: 0, z: 0 },
+      yawRadians: 0,
+      occupant: 'player:local',
+    }
+    let next: Record<string, unknown> | undefined
+    const service = {
+      vehicles: Effect.succeed([vehicle]),
+      updateState: (_id: VehicleId, state: Record<string, unknown>) => Effect.sync(() => { next = state }),
+    } as unknown as VehicleServiceApi
+    const store = {
+      getBlock: () => Effect.succeed({ _tag: 'ChunkNotLoaded' as const }),
+    } as unknown as ChunkStoreApi
+
+    await Effect.runPromise(advanceVehicles(store, service, 0.05, {
+      controlsForVehicle: () => ({ throttle: 1, steering: 0 }),
+    }))
+
+    const velocity = next?.['velocity'] as { x: number; y: number; z: number }
+    expect(velocity.z).toBeCloseTo(-0.0165, 12)
+  })
+
+  it('preserves minecart momentum on a block without rail metadata', async () => {
+    const vehicle = {
+      id: VehicleId('v:non-rail-block'),
+      type: 'minecart' as const,
+      dimension: 'overworld' as const,
+      position: { x: 0, y: 64, z: 0 },
+      velocity: { x: 2, y: 0, z: 0 },
+      yawRadians: 0,
+    }
+    let next: Record<string, unknown> | undefined
+    const service = {
+      vehicles: Effect.succeed([vehicle]),
+      updateState: (_id: VehicleId, state: Record<string, unknown>) => Effect.sync(() => { next = state }),
+    } as unknown as VehicleServiceApi
+    const air = Option.getOrThrow(blockIdOf('air'))
+    const store = {
+      getBlock: () => Effect.succeed({ _tag: 'Block' as const, block: air }),
+    } as unknown as ChunkStoreApi
+
+    await Effect.runPromise(advanceVehicles(store, service, 0.1))
+
+    const velocity = next?.['velocity'] as { x: number; y: number; z: number }
+    expect(velocity.x).toBeCloseTo(2, 12)
+  })
+
   it('stops a vehicle before a solid block and reports collision exits', async () => {
     const vehicle = {
       id: VehicleId('v:collision'),

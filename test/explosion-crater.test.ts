@@ -78,6 +78,17 @@ describe('explosion crater', () => {
     }),
   )
 
+  it.effect('rejects NaN blast power before reading the world', () =>
+    Effect.gen(function* () {
+      const centre: BlockPosition = atBlockPosition(8, 64, 8)
+      const store = yield* makeChunkStoreDouble(world([[centre, STONE]]), ['0,0'])
+
+      expect(yield* carveExplosionCrater(store.api, centre, Number.NaN)).toStrictEqual([])
+      expect(yield* store.blockAt(centre)).toBe(STONE)
+      expect(yield* store.calls).toStrictEqual({ reads: 0, writes: 0, peeks: 0 })
+    }),
+  )
+
   it.effect('skips out-of-world cells at the bottom boundary', () =>
     Effect.gen(function* () {
       const centre: BlockPosition = atBlockPosition(8, 0, 8)
@@ -111,5 +122,16 @@ describe('explosion crater', () => {
     expect(craterCells({ x: Number.NaN, y: 64, z: 8 }, 1)).toStrictEqual([])
     expect(craterCells({ x: 8, y: Number.POSITIVE_INFINITY, z: 8 }, 1)).toStrictEqual([])
     expect(craterCells({ x: 8, y: 64, z: Number.NaN }, 1)).toStrictEqual([])
+  })
+
+  it('clips crater cells that exceed the safe block-coordinate range', () => {
+    const centre = atBlockPosition(Number.MAX_SAFE_INTEGER, 64, 8)
+    const cells = craterCells(centre, 1)
+
+    expect(cells).toContainEqual(centre)
+    expect(cells).toHaveLength(6)
+    expect(cells.every(({ x, y, z }) =>
+      Number.isSafeInteger(x) && Number.isSafeInteger(y) && Number.isSafeInteger(z),
+    )).toBe(true)
   })
 })

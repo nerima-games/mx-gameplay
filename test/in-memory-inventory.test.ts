@@ -41,10 +41,11 @@ const stack = (item: ItemType, count: number): Exclude<Slot, undefined> =>
 /**
  * A slot as an UNTRUSTED SAVE FILE contains one.
  *
- * `StackCount` is a refined brand and refuses anything outside [0, 64] — so a
- * malformed stack cannot be built through it, and that is the point: `restore`
- * exists for values that never went through the constructor. A save read back
- * from JSON is a plain object, and the brand is erased by then.
+ * `StackCount` is a refined brand and refuses anything outside [1, 99], while
+ * item stacks also enforce their item-specific limit — so a malformed stack
+ * cannot be built through the constructors, and that is the point: `restore`
+ * exists for values that never went through them. A save read back from JSON
+ * is a plain object, and the brand is erased by then.
  */
 const savedStack = (item: ItemType, count: number): Slot =>
   ({ ...stack(item, 1), count }) as unknown as Slot
@@ -140,6 +141,27 @@ describe('the two slot rules', () => {
     }),
   )
 
+  it.effect('does not replace a runtime-invalidated stack during pass one', () =>
+    Effect.sync(() => {
+      const validComponents = stack(STONE, 1).components
+      let componentReads = 0
+      const malformed = {
+        item: STONE,
+        count: 1,
+        get components() {
+          componentReads += 1
+          return componentReads === 1 ? validComponents : {}
+        },
+      } as unknown as Exclude<Slot, undefined>
+
+      const result = addToSlots([malformed], STONE, 1)
+
+      expect(result.slots[0]).toBe(malformed)
+      expect(result.accepted).toBe(0)
+      expect(componentReads).toBe(2)
+    }),
+  )
+
   it.effect('rejects an item outside the runtime catalogue without changing slots', () =>
     Effect.sync(() => {
       const slots = emptySlots()
@@ -163,6 +185,16 @@ describe('the two slot rules', () => {
   it.effect('does not partially remove from an over-full malformed saved stack', () =>
     Effect.sync(() => {
       const malformed = savedStack(STONE, STONE_STACK_LIMIT + 2)
+      const result = removeFromSlots([malformed], STONE, 1)
+
+      expect(result.slots[0]).toBe(malformed)
+      expect(result.removed).toBe(0)
+    }),
+  )
+
+  it.effect('does not remove from a saved stack whose remainder is outside StackCount', () =>
+    Effect.sync(() => {
+      const malformed = savedStack(STONE, Number.MAX_SAFE_INTEGER)
       const result = removeFromSlots([malformed], STONE, 1)
 
       expect(result.slots[0]).toBe(malformed)

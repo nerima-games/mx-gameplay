@@ -268,6 +268,16 @@ describe('reelFishing', () => {
     })
   })
 
+  it('reports InvalidLoot when a malformed session cannot resolve its item roll', () => {
+    const session = castSession()
+
+    expect(reelFishing({
+      ...session,
+      elapsedSecs: session.waitSecs,
+      rolls: { ...session.rolls, item: -0.01 },
+    })).toStrictEqual({ _tag: 'InvalidLoot' })
+  })
+
   it('falls back from treasure to fish outside open water using the same item roll', () => {
     const session = castSession(
       { ...CLEAR_OPEN_WATER, isOpenWater: false },
