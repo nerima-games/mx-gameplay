@@ -636,33 +636,33 @@ const fireTickAccumulators = new WeakMap<Ref.Ref<FireLifecycleState>, Ref.Ref<nu
 
 const fireTickAccumulatorFor = (
   fireLifecycle: Ref.Ref<FireLifecycleState>,
-): Ref.Ref<number> => {
+): Effect.Effect<Ref.Ref<number>> => {
   const accumulator = fireTickAccumulators.get(fireLifecycle)
   if (accumulator === undefined) {
-    throw new Error('fire lifecycle is not owned by a gameplay frame state')
+    return Effect.die(new Error('fire lifecycle is not owned by a gameplay frame state'))
   }
-  return accumulator
+  return Effect.succeed(accumulator)
 }
 
 const fluidRuntimeStateFor = (
   frontier: Ref.Ref<ReadonlyArray<FluidWorkItem>>,
-): Ref.Ref<FluidRuntimeState> => {
+): Effect.Effect<Ref.Ref<FluidRuntimeState>> => {
   const state = fluidRuntimeStates.get(frontier)
   if (state === undefined) {
-    throw new Error('fluid frontier is not owned by a gameplay frame state')
+    return Effect.die(new Error('fluid frontier is not owned by a gameplay frame state'))
   }
-  return state
+  return Effect.succeed(state)
 }
 
 const fluidRuntimeSemaphoreFor = (
   frontier: Ref.Ref<ReadonlyArray<FluidWorkItem>>,
-): Semaphore.Semaphore => {
+): Effect.Effect<Semaphore.Semaphore> => {
   const semaphore = fluidRuntimeSemaphores.get(frontier)
   /* v8 ignore start -- `fluidRuntimeStates` and `fluidRuntimeSemaphores` are
    * populated together, in the same synchronous step of `makeGameplayFrameState`
    * (see below), for every `fluidFrontier` ref that exists. The one call site
    * that reaches this function — the fluids stage's `run` — always calls
-   * `fluidRuntimeStateFor` on the same ref FIRST, and that throws before this
+   * `fluidRuntimeStateFor` on the same ref FIRST, and that dies before this
    * function is ever reached whenever the ref is foreign. Test coverage of the
    * "foreign ref" case lives on `fluidRuntimeStateFor`, in
    * `test/stage-registration.test.ts`; there is no path that reaches this guard
@@ -672,7 +672,7 @@ const fluidRuntimeSemaphoreFor = (
     throw new Error('fluid frontier is not owned by a gameplay frame state')
   }
   /* v8 ignore stop */
-  return semaphore
+  return Effect.succeed(semaphore)
 }
 
 /** Narrow decoded fluid work positions to values accepted by kernel's BlockAxis. */
@@ -2456,7 +2456,8 @@ export const snapshotFireLifecycle = (
 ): Effect.Effect<FireLifecycleSnapshot> =>
   Effect.gen(function* () {
     const current = yield* Ref.get(state.fireLifecycle)
-    const accumulator = yield* Ref.get(fireTickAccumulatorFor(state.fireLifecycle))
+    const accumulatorRef = yield* fireTickAccumulatorFor(state.fireLifecycle)
+    const accumulator = yield* Ref.get(accumulatorRef)
     return makeFireLifecycleSnapshot(current, accumulator)
   })
 
@@ -2471,8 +2472,9 @@ export const restoreFireLifecycle = (
     }
     const restored = restoreFireLifecycleSnapshot(snapshot)
     yield* Ref.set(state.fireLifecycle, restored.state)
+    const accumulatorRef = yield* fireTickAccumulatorFor(state.fireLifecycle)
     yield* Ref.set(
-      fireTickAccumulatorFor(state.fireLifecycle),
+      accumulatorRef,
       restored.tickAccumulatorSecs,
     )
   })
@@ -2797,7 +2799,7 @@ const stepFireLifecycle = (
 ): Effect.Effect<void> =>
   Effect.gen(function* () {
     const current = yield* Ref.get(state.fireLifecycle)
-    const accumulator = fireTickAccumulatorFor(state.fireLifecycle)
+    const accumulator = yield* fireTickAccumulatorFor(state.fireLifecycle)
     if (current.fires.length === 0 && (current.burningActors?.length ?? 0) === 0) {
       yield* Ref.set(accumulator, 0)
       return
