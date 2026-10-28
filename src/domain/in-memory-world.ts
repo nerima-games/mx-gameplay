@@ -43,7 +43,7 @@ import {
   type ChunkCoord,
   blockPosition,
   capabilityOfBlockId,
-  position,
+  position as worldPosition,
 } from '@nerima-games/mc-kernel'
 import {
   InventoryService,
@@ -304,7 +304,7 @@ export const makeGeneratedWorld = <S>(
     )
     const chunkStore = adaptGeneratedChunkStore(worldgenStore)
     const spawnPose: PlayerPose = {
-      feetPosition: position(spawnX, spawnY, spawnZ),
+      feetPosition: worldPosition(spawnX, spawnY, spawnZ),
       yawRadians: options.yawRadians ?? 0,
       pitchRadians: options.pitchRadians ?? 0,
     }

@@ -221,7 +221,7 @@ import {
   blockPosition,
   blockTypeOfId,
   capabilityOfBlockId,
-  position,
+  position as kernelPosition,
   type Position,
 } from '@nerima-games/mc-kernel'
 import { applyDamage, isDead, type Vitals } from '../death-cause.js'
@@ -1035,7 +1035,7 @@ const teleportPositionOf = (value: EndermanTeleportPosition): Position | undefin
   const x = Result.getOrUndefined(PositionAxis.result(value.x))
   const y = Result.getOrUndefined(PositionAxis.result(value.y))
   const z = Result.getOrUndefined(PositionAxis.result(value.z))
-  return x === undefined || y === undefined || z === undefined ? undefined : position(x, y, z)
+  return x === undefined || y === undefined || z === undefined ? undefined : kernelPosition(x, y, z)
 }
 
 // ---------------------------------------------------------------------------

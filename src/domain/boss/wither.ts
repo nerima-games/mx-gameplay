@@ -37,7 +37,7 @@ import {
   type WitherSnapshot,
   type WitherState,
 } from '@nerima-games/mc-sim'
-import { PositionAxis, position, type Position } from '@nerima-games/mc-kernel'
+import { PositionAxis, position as kernelPosition, type Position } from '@nerima-games/mc-kernel'
 import { Brand, Result } from 'effect'
 
 export type RuntimeWither = Readonly<{
@@ -124,7 +124,7 @@ const asPosition = (
   y: number,
   z: number,
 ): Result.Result<Position, Brand.BrandError> => Result.gen(function* () {
-  return position(
+  return kernelPosition(
     yield* PositionAxis.result(x),
     yield* PositionAxis.result(y),
     yield* PositionAxis.result(z),

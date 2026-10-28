@@ -429,8 +429,8 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
               case 'ApplyBoneMeal': {
                 const position = yield* blockPositionForKey(request.positionKey)
                 const outcome = yield* applyBoneMeal(
-                  (position) =>
-                    Effect.flatMap(store.getBlock(position), (reading) =>
+                  (candidatePosition) =>
+                    Effect.flatMap(store.getBlock(candidatePosition), (reading) =>
                       reading._tag === 'Block'
                         ? blockTypeOrDie(reading.block)
                         : Effect.succeed(undefined),

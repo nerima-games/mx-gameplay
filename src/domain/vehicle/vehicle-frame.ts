@@ -2,7 +2,7 @@ import {
   BlockAxis,
   PositionAxis,
   blockPosition,
-  position,
+  position as kernelPosition,
   propertyOfBlockId,
   type BlockPosition,
   type Position,
@@ -31,7 +31,7 @@ const blockKey = (position: BlockPosition): string => `${position.x},${position.
 const blockPositionAt = (x: number, y: number, z: number): BlockPosition =>
   blockPosition(BlockAxis(x), BlockAxis(y), BlockAxis(z))
 const positionAt = (x: number, y: number, z: number): Position =>
-  position(PositionAxis(x), PositionAxis(y), PositionAxis(z))
+  kernelPosition(PositionAxis(x), PositionAxis(y), PositionAxis(z))
 const elapsedFor = (dt: number): number => Math.min(0.1, Math.max(0, Number.isFinite(dt) ? dt : 0))
 const speedOf = (vehicle: Vehicle): number => Math.hypot(
   vehicle.velocity.x,

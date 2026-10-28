@@ -4,12 +4,12 @@ import { Effect, Option } from 'effect'
 import { BlockId, blockIdOf, type BlockPosition } from '@nerima-games/mc-kernel'
 import { cellKey, chunkKey, chunkOf, makeInMemoryWorld } from '../src/domain/in-memory-world.js'
 import { targetedRightClickRoute } from '../src/stages/targeted-right-click-route'
-import { blockPosition, position } from './support/coordinate-fixtures.js'
+import { blockPosition, position as fixturePosition } from './support/coordinate-fixtures.js'
 
 const TARGET = blockPosition(0, 1, 0)
 const BEHIND_TARGET = blockPosition(0, 1, -1)
 const SPAWN_POSE = {
-  feetPosition: position(0.5, 0, 2.5),
+  feetPosition: fixturePosition(0.5, 0, 2.5),
   yawRadians: 0,
   pitchRadians: 0,
 }

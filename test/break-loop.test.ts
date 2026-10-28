@@ -41,7 +41,7 @@ import type { BlockPosition } from '@nerima-games/mc-kernel'
 import type { MobBehaviour } from '../src/domain/entities/mob-frame'
 import { BlockId, blockIdOf, blockPositionKeyOf } from '@nerima-games/mc-kernel'
 import { NO_TOOL } from '../src/domain/interactions/block-loot'
-import { blockPosition, position } from './support/coordinate-fixtures.js'
+import { blockPosition, position as fixturePosition } from './support/coordinate-fixtures.js'
 
 /**
  * DIRT, and the id took two corrections that are worth recording because both
@@ -67,7 +67,7 @@ const IN_SIGHT: BlockPosition = blockPosition(0, 1, 0)
 const lookingAtBlockWorld = (loaded: boolean, block: BlockId = DIRT_ID) =>
   makeInMemoryWorld<MobBehaviour>({
     spawnPose: {
-      feetPosition: position(0.5, 0, 2.5),
+      feetPosition: fixturePosition(0.5, 0, 2.5),
       yawRadians: 0,
       pitchRadians: 0,
     },

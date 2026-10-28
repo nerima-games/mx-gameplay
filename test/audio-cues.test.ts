@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from '@effect/vitest'
-import { blockIdOf, PositionAxis, position } from '@nerima-games/mc-kernel'
+import { blockIdOf, PositionAxis, position as kernelPosition } from '@nerima-games/mc-kernel'
 import type { CuePlayOptions, SoundCueId } from '@nerima-games/mc-audio'
 import { Option } from 'effect'
 import {
@@ -14,7 +14,7 @@ import {
 } from '../src/stages/audio-cues'
 
 const makePosition = (x: number, y: number, z: number) =>
-  position(PositionAxis(x), PositionAxis(y), PositionAxis(z))
+  kernelPosition(PositionAxis(x), PositionAxis(y), PositionAxis(z))
 
 const makeAudio = (): { readonly audio: AudioCuePort; readonly play: ReturnType<typeof vi.fn> } => {
   const play = vi.fn<(cueId: SoundCueId, options?: CuePlayOptions) => void>()

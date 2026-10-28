@@ -75,7 +75,7 @@ import {
   makeInMemoryWorld,
   type WorldContents,
 } from '../src/domain/in-memory-world.js'
-import { blockPosition, position } from './support/coordinate-fixtures.js'
+import { blockPosition, position as fixturePosition } from './support/coordinate-fixtures.js'
 import { advanceVehicles, type VehicleFrameEnvironment } from '../src/domain/vehicle/vehicle-frame'
 import { MINECART_MAX_SPEED } from '../src/domain/vehicle/vehicle-motion'
 
@@ -169,7 +169,7 @@ describe('vehicle rail simulation: multi-angle integration', () => {
   it.effect('REGRESSION-GUARD: a powered-rail out-and-back returns to its start position across repeated round trips', () =>
     Effect.gen(function* () {
       const { store, vehicles } = yield* makeRig(straightPoweredTrack(30))
-      const start = position(1, 64, 0)
+      const start = fixturePosition(1, 64, 0)
       const vehicle = yield* vehicles.spawn('minecart', 'overworld', start, AngleRadians(0))
       yield* vehicles.updateVelocity(vehicle.id, velocity(MINECART_MAX_SPEED, 0, 0))
 
@@ -208,7 +208,7 @@ describe('vehicle rail simulation: multi-angle integration', () => {
       const width = 10
       const height = 8
       const { store, vehicles } = yield* makeRig(rectangularPoweredTrack(width, height))
-      const vehicle = yield* vehicles.spawn('minecart', 'overworld', position(1, 64, 0), AngleRadians(0))
+      const vehicle = yield* vehicles.spawn('minecart', 'overworld', fixturePosition(1, 64, 0), AngleRadians(0))
       yield* vehicles.updateVelocity(vehicle.id, velocity(MINECART_MAX_SPEED, 0, 0))
 
       const trackCells = new Set(
@@ -281,7 +281,7 @@ describe('vehicle rail simulation: multi-angle integration', () => {
       // doc comment for why a re-read used to turn the cart a second time.
       const legLength = 5
       const { store, vehicles } = yield* makeRig(singleCornerTrack(legLength))
-      const vehicle = yield* vehicles.spawn('minecart', 'overworld', position(0.5, 64, -legLength), AngleRadians(0))
+      const vehicle = yield* vehicles.spawn('minecart', 'overworld', fixturePosition(0.5, 64, -legLength), AngleRadians(0))
       yield* vehicles.updateVelocity(vehicle.id, velocity(0, 0, 2))
 
       const dt = 0.05 // 0.1 blocks/tick: well under the half-block threshold
@@ -319,7 +319,7 @@ describe('vehicle rail simulation: multi-angle integration', () => {
       const finalPositions: number[] = []
       for (const dt of rates) {
         const { store, vehicles } = yield* makeRig(straightPoweredTrack(40))
-        const vehicle = yield* vehicles.spawn('minecart', 'overworld', position(1, 64, 0), AngleRadians(0))
+        const vehicle = yield* vehicles.spawn('minecart', 'overworld', fixturePosition(1, 64, 0), AngleRadians(0))
         yield* vehicles.updateVelocity(vehicle.id, velocity(MINECART_MAX_SPEED, 0, 0))
 
         let elapsed = 0
@@ -349,13 +349,13 @@ describe('vehicle rail simulation: multi-angle integration', () => {
       // frame-rate-independence claim at the one boundary a family of small,
       // evenly-divided dt values (0.1 / 0.05 / 0.025 …) can never reach.
       const atClampRig = yield* makeRig(straightPoweredTrack(10))
-      const atClampVehicle = yield* atClampRig.vehicles.spawn('minecart', 'overworld', position(1, 64, 0), AngleRadians(0))
+      const atClampVehicle = yield* atClampRig.vehicles.spawn('minecart', 'overworld', fixturePosition(1, 64, 0), AngleRadians(0))
       yield* atClampRig.vehicles.updateVelocity(atClampVehicle.id, velocity(0, 0, 0))
       yield* advanceVehicles(atClampRig.store, atClampRig.vehicles, 0.1, alwaysPowered)
       const atClamp = yield* soleVehicle(atClampRig.vehicles)
 
       const overLongRig = yield* makeRig(straightPoweredTrack(10))
-      const overLongVehicle = yield* overLongRig.vehicles.spawn('minecart', 'overworld', position(1, 64, 0), AngleRadians(0))
+      const overLongVehicle = yield* overLongRig.vehicles.spawn('minecart', 'overworld', fixturePosition(1, 64, 0), AngleRadians(0))
       yield* overLongRig.vehicles.updateVelocity(overLongVehicle.id, velocity(0, 0, 0))
       yield* advanceVehicles(overLongRig.store, overLongRig.vehicles, 0.2, alwaysPowered)
       const overLong = yield* soleVehicle(overLongRig.vehicles)
@@ -367,7 +367,7 @@ describe('vehicle rail simulation: multi-angle integration', () => {
   it.effect('speed on a powered rail stays bounded at MINECART_MAX_SPEED over a long run', () =>
     Effect.gen(function* () {
       const { store, vehicles } = yield* makeRig(straightPoweredTrack(2500))
-      const vehicle = yield* vehicles.spawn('minecart', 'overworld', position(1, 64, 0), AngleRadians(0))
+      const vehicle = yield* vehicles.spawn('minecart', 'overworld', fixturePosition(1, 64, 0), AngleRadians(0))
       yield* vehicles.updateVelocity(vehicle.id, velocity(1, 0, 0))
 
       const dt = 0.1

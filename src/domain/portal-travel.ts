@@ -42,7 +42,7 @@ import { Effect } from 'effect'
 import {
   PositionAxis,
   blockPosition,
-  position,
+  position as kernelPosition,
   type BlockPosition,
   type Position,
 } from '@nerima-games/mc-kernel'
@@ -62,7 +62,7 @@ export const NO_KNOWN_PORTALS: ReadonlyArray<BlockPosition> = []
 const asWorldgenPosition = (position: BlockPosition) =>
   blockPosition(position.x, position.y, position.z)
 
-const asPlayerPosition = (positionValue: BlockPosition): Position => position(
+const asPlayerPosition = (positionValue: BlockPosition): Position => kernelPosition(
   PositionAxis(positionValue.x),
   PositionAxis(positionValue.y),
   PositionAxis(positionValue.z),

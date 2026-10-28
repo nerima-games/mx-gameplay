@@ -73,11 +73,11 @@ import { lightWorld, makeChunkStoreDouble, SAND, STONE, WATER, world } from './s
 import { makeEntityManagerDouble } from './support/entity-manager-double'
 import { makePlayerServiceDouble } from './support/player-service-double'
 import { emptySlots, makeInventoryDouble } from './support/inventory-service-double'
-import { blockPosition, chunkCoord, position } from './support/coordinate-fixtures'
+import { blockPosition, chunkCoord, position as fixturePosition } from './support/coordinate-fixtures'
 import type { MobBehaviour } from '../src/domain/entities/mob-frame'
 import { runFrame } from './support/frame-runner'
 
-const id = (name: Parameters<typeof blockIdOf>[0]): BlockId =>
+const blockIdOrThrow = (name: Parameters<typeof blockIdOf>[0]): BlockId =>
   Option.getOrThrow(blockIdOf(name))
 
 const capability = (
@@ -148,7 +148,7 @@ describe('placeBlock — the target cell', () => {
       // ...and the id the rule chose came out of kernel's table rather than out
       // of this test: `stone` the item names `stone` the block, which is
       // kernel's own name-identity bridge (`PlaceableItemType`).
-      expect(id('stone')).toBe(STONE)
+      expect(blockIdOrThrow('stone')).toBe(STONE)
       expect(yield* store.blockAt(target)).toBe(STONE)
     }),
   )
@@ -338,13 +338,13 @@ describe('blockOverlapsPlayer — the suffocation guard', () => {
   // 0.8 = blockHalf + PLAYER_HALF_WIDTH, so a change to either half-extent moves
   // one of them and fails. A single "far away is false" row would not.
   const oracle: ReadonlyArray<readonly [string, BlockPosition, Position, boolean]> = [
-    ['overlap on all 3 axes', blockPosition(0, 0, 0), position(0, 0, 0), true],
-    ['separated on X', blockPosition(2, 0, 0), position(0, 0, 0), false],
-    ['separated on Z', blockPosition(0, 0, 2), position(0, 0, 0), false],
-    ['separated on Y (block above player)', blockPosition(0, 3, 0), position(0, 0, 0), false],
-    ['overlap away from the origin', blockPosition(5, 0, 5), position(5, 0, 5), true],
-    ['X just beyond the threshold (player at 1.31) — placeable', blockPosition(0, 0, 0), position(1.31, 0, 0), false],
-    ['X just inside the threshold (player at 1.29) — blocked', blockPosition(0, 0, 0), position(1.29, 0, 0), true],
+    ['overlap on all 3 axes', blockPosition(0, 0, 0), fixturePosition(0, 0, 0), true],
+    ['separated on X', blockPosition(2, 0, 0), fixturePosition(0, 0, 0), false],
+    ['separated on Z', blockPosition(0, 0, 2), fixturePosition(0, 0, 0), false],
+    ['separated on Y (block above player)', blockPosition(0, 3, 0), fixturePosition(0, 0, 0), false],
+    ['overlap away from the origin', blockPosition(5, 0, 5), fixturePosition(5, 0, 5), true],
+    ['X just beyond the threshold (player at 1.31) — placeable', blockPosition(0, 0, 0), fixturePosition(1.31, 0, 0), false],
+    ['X just inside the threshold (player at 1.29) — blocked', blockPosition(0, 0, 0), fixturePosition(1.29, 0, 0), true],
   ]
 
   for (const [name, block, player, expected] of oracle) {
@@ -387,21 +387,21 @@ describe('blockOverlapsPlayer — the suffocation guard', () => {
   const secondOracle: ReadonlyArray<readonly [string, BlockPosition, Position, boolean]> = [
     // `:92-95`. Block (-1, 0, -1) spans [-1,0]×[0,1]×[-1,0]; its + faces touch
     // the player's box on both horizontal axes at once.
-    ['the block the player is standing inside — a corner touch still overlaps', blockPosition(-1, 0, -1), position(0, 0, 0), true],
+    ['the block the player is standing inside — a corner touch still overlaps', blockPosition(-1, 0, -1), fixturePosition(0, 0, 0), true],
     // `:106-108`. The cell the feet are in.
-    ['a block at the player’s feet level overlaps', blockPosition(0, 0, 0), position(0, 0, 0), true],
+    ['a block at the player’s feet level overlaps', blockPosition(0, 0, 0), fixturePosition(0, 0, 0), true],
     // `:110-113`. The NEAREST side cell that clears: block centre 1.5 against a
     // threshold of 0.8. (The reference's comment on this row says the gap is
     // 1.2; the arithmetic its own code does gives 1.5. What is ported is the
     // EXPECTATION, not the annotation.) The table above only has x = 2.
-    ['the nearest side block that clears the horizontal half-extent', blockPosition(1, 0, 0), position(0, 0, 0), false],
+    ['the nearest side block that clears the horizontal half-extent', blockPosition(1, 0, 0), fixturePosition(0, 0, 0), false],
     // `:115-118`. THE VERTICAL BRACKET — it pins the `<` and not the 0.9, for
     // the reason measured in the note above.
-    ['one cube below just clears, because the y comparison is exclusive', blockPosition(0, -1, 0), position(0, 0, 0), false],
+    ['one cube below just clears, because the y comparison is exclusive', blockPosition(0, -1, 0), fixturePosition(0, 0, 0), false],
     // `:119-121`. The other side of the same threshold.
-    ['lowering the player a tenth brings that same cube into reach', blockPosition(0, -1, 0), position(0, -0.1, 0), true],
+    ['lowering the player a tenth brings that same cube into reach', blockPosition(0, -1, 0), fixturePosition(0, -0.1, 0), true],
     // `:97-99`. Well outside on both horizontal axes.
-    ['a block well outside the footprint does not overlap', blockPosition(5, 0, 5), position(0, 0, 0), false],
+    ['a block well outside the footprint does not overlap', blockPosition(5, 0, 5), fixturePosition(0, 0, 0), false],
   ]
 
   for (const [name, block, player, expected] of secondOracle) {
@@ -431,7 +431,7 @@ describe('placeBlock — the player’s body', () => {
     Effect.gen(function* () {
       const store = yield* storeWith([[below, STONE]])
       // Feet in the very cell being filled.
-      const feet: Position = position(target.x + 0.5, target.y, target.z + 0.5)
+      const feet: Position = fixturePosition(target.x + 0.5, target.y, target.z + 0.5)
 
       expect(
         yield* placeBlock(store.api, { position: target, heldItem: 'stone', playerFeet: feet }),
@@ -443,7 +443,7 @@ describe('placeBlock — the player’s body', () => {
   it.effect('a player standing well clear does not block it', () =>
     Effect.gen(function* () {
       const store = yield* storeWith([[below, STONE]])
-      const feet: Position = position(target.x + 8, target.y, target.z)
+      const feet: Position = fixturePosition(target.x + 8, target.y, target.z)
 
       expect(
         (yield* placeBlock(store.api, { position: target, heldItem: 'stone', playerFeet: feet }))._tag,
@@ -651,13 +651,13 @@ describe('placeBlock — the four per-block rules, reached through a real held i
 
       expect(outcome).toStrictEqual({
         _tag: 'Placed',
-        block: id('door'),
+        block: blockIdOrThrow('door'),
         consumed: 'door',
         chunk: chunkCoord(0, 0),
         alsoPlaced: [upperCell],
       } satisfies PlaceOutcome)
-      expect(yield* store.blockAt(target)).toBe(id('door'))
-      expect(yield* store.blockAt(upperCell)).toBe(id('door'))
+      expect(yield* store.blockAt(target)).toBe(blockIdOrThrow('door'))
+      expect(yield* store.blockAt(upperCell)).toBe(blockIdOrThrow('door'))
     }),
   )
 })
@@ -730,7 +730,7 @@ describe('the reference\u2019s support table, on the rows whose rule IS the fall
       // take is written rather than absent. This half is unchanged and is what
       // the whole file's support coverage rests on.
       for (const type of SUPPORT_SENSITIVE_TYPES) {
-        expect(isSupportSensitiveOfBlock(id(type))).toBe(true)
+        expect(isSupportSensitiveOfBlock(blockIdOrThrow(type))).toBe(true)
       }
     }),
   )
@@ -857,7 +857,7 @@ describe('F7 — CLOSED: per-block support rules are reachable through placeBloc
    * is provided separately by the coupling test.
    */
   const wouldStay = (held: BlockType, support: BlockId): boolean =>
-    Result.getOrThrow(canBlockStaySupported(id(held), support))
+    Result.getOrThrow(canBlockStaySupported(blockIdOrThrow(held), support))
 
   /*
    * THE COUPLING TEST, DRIVEN BY `PLACEABLE_ITEM_TYPES` RATHER THAN BY A LIST.
@@ -874,7 +874,7 @@ describe('F7 — CLOSED: per-block support rules are reachable through placeBloc
   it.effect('the support branch agrees with the rule on every pair it can be handed', () =>
     Effect.gen(function* () {
       const heldable = PLACEABLE_ITEM_TYPES.filter((item) =>
-        isSupportSensitiveOfBlock(id(blockOfPlaceableItem(item))),
+        isSupportSensitiveOfBlock(blockIdOrThrow(blockOfPlaceableItem(item))),
       )
       const heldableSet = new Set<string>(heldable)
       expect(SUPPORT_SENSITIVE_TYPES.filter((type) => !heldableSet.has(type))).toStrictEqual([])
@@ -884,7 +884,7 @@ describe('F7 — CLOSED: per-block support rules are reachable through placeBloc
           const store = yield* storeWith([[below, support]])
           const outcome = yield* placeBlock(store.api, { position: target, heldItem: item })
           const stays = canBlockStaySupported(
-            id(blockOfPlaceableItem(item)),
+            blockIdOrThrow(blockOfPlaceableItem(item)),
             support,
           )
 
@@ -902,12 +902,12 @@ describe('F7 — CLOSED: per-block support rules are reachable through placeBloc
     Effect.sync(() => {
       // The F7 row itself. If these two ever stop disagreeing, the test above
       // has become vacuous for a second reason and somebody should know.
-      expect(canBlockStaySupported(id('lily_pad'), WATER)).toBe(true)
+      expect(canBlockStaySupported(blockIdOrThrow('lily_pad'), WATER)).toBe(true)
       expect(capability(WATER, 'canSupportAttachments')).toBe(false)
 
       const reachable = PLACEABLE_ITEM_TYPES.filter(
         (item) =>
-          supportRule(id(blockOfPlaceableItem(item))).kind === 'oneOf',
+          supportRule(blockIdOrThrow(blockOfPlaceableItem(item))).kind === 'oneOf',
       )
       expect(reachable).toStrictEqual(SUPPORT_SENSITIVE_PLANT_TYPES)
     }),
@@ -965,7 +965,7 @@ describe('F7 — CLOSED: per-block support rules are reachable through placeBloc
       // ...and the rows the reference DOES allow, so the fix is not "refuse
       // everything": `SAND | CACTUS` (`block-support.ts:69`).
       expect(wouldStay('cactus', SAND)).toBe(true)
-      expect(wouldStay('cactus', id('cactus'))).toBe(true)
+      expect(wouldStay('cactus', blockIdOrThrow('cactus'))).toBe(true)
     }),
   )
 
@@ -975,12 +975,12 @@ describe('F7 — CLOSED: per-block support rules are reachable through placeBloc
   it.effect('AGREES with block-support.ts:85-88 — a sapling does NOT grow on stone', () =>
     Effect.sync(() => {
       expect(wouldStay('sapling', STONE)).toBe(false)
-      expect(wouldStay('sapling', id('grass_block'))).toBe(true)
-      expect(wouldStay('sapling', id('farmland'))).toBe(true)
+      expect(wouldStay('sapling', blockIdOrThrow('grass_block'))).toBe(true)
+      expect(wouldStay('sapling', blockIdOrThrow('farmland'))).toBe(true)
       // All seven share ONE rule in the reference, so they share one here.
       for (const plant of ['dandelion', 'poppy', 'brown_mushroom', 'red_mushroom', 'tall_grass', 'fern'] as const) {
-        expect(supportRule(id(plant))).toStrictEqual(
-          supportRule(id('sapling')),
+        expect(supportRule(blockIdOrThrow(plant))).toStrictEqual(
+          supportRule(blockIdOrThrow('sapling')),
         )
       }
     }),
@@ -998,16 +998,16 @@ describe('F7 — CLOSED: per-block support rules are reachable through placeBloc
 
       // The proof that the coincidence is over: both are answered by a per-block
       // list now, not by the negative set.
-      expect(supportRule(id('sugar_cane'))).toStrictEqual(
+      expect(supportRule(blockIdOrThrow('sugar_cane'))).toStrictEqual(
         needsOneOf('dirt', 'grass_block', 'sand', 'sugar_cane'),
       )
-      expect(supportRule(id('sapling'))).toStrictEqual(
+      expect(supportRule(blockIdOrThrow('sapling'))).toStrictEqual(
         needsOneOf('dirt', 'grass_block', 'farmland'),
       )
       // ...and sugar cane stacks on itself, a row the fallback could never have
       // got right: sugar cane is in `NON_SUPPORTING_IDS`.
-      expect(capability(id('sugar_cane'), 'canSupportAttachments')).toBe(false)
-      expect(wouldStay('sugar_cane', id('sugar_cane'))).toBe(true)
+      expect(capability(blockIdOrThrow('sugar_cane'), 'canSupportAttachments')).toBe(false)
+      expect(wouldStay('sugar_cane', blockIdOrThrow('sugar_cane'))).toBe(true)
     }),
   )
 })
@@ -1054,7 +1054,7 @@ describe('placement through gameplay:interactions', () => {
       ])
       yield* runFrame(stages)
 
-      expect(yield* store.blockAt(target)).toBe(id('sand'))
+      expect(yield* store.blockAt(target)).toBe(blockIdOrThrow('sand'))
       expect(yield* Ref.get(state.consumedItems)).toStrictEqual(['sand'])
       expect(yield* inventory.api.countOf('sand')).toBe(before - 1)
     }),
@@ -1069,7 +1069,7 @@ describe('placement through gameplay:interactions', () => {
       ])
       yield* runFrame(stages)
 
-      expect(yield* store.blockAt(target)).toBe(id('redstone_wire'))
+      expect(yield* store.blockAt(target)).toBe(blockIdOrThrow('redstone_wire'))
       expect(yield* Ref.get(state.consumedItems)).toStrictEqual(['redstone_dust'])
       expect(yield* inventory.api.countOf('redstone_dust')).toBe(0)
     }),
@@ -1091,7 +1091,7 @@ describe('placement through gameplay:interactions', () => {
       yield* runFrame(stages)
 
       const placements = [yield* store.blockAt(target), yield* store.blockAt(competingTarget)]
-      expect(placements.filter((block) => block === id('sand'))).toHaveLength(1)
+      expect(placements.filter((block) => block === blockIdOrThrow('sand'))).toHaveLength(1)
       expect(yield* inventory.api.countOf('sand')).toBe(0)
       expect(yield* Ref.get(state.consumedItems)).toStrictEqual(['sand'])
     }),
@@ -1149,7 +1149,7 @@ describe('placement through gameplay:interactions', () => {
       })
       yield* runFrame(stages)
 
-      expect(yield* store.blockAt(target)).toBe(id('sand'))
+      expect(yield* store.blockAt(target)).toBe(blockIdOrThrow('sand'))
       expect(yield* inventory.api.countOf('sand')).toBe(0)
       expect(yield* inventory.withdrawals).toStrictEqual([
         { item: 'sand', count: 1, removed: 1 },
@@ -1202,7 +1202,7 @@ describe('placement through gameplay:interactions', () => {
       })
       yield* runFrame(stages)
 
-      expect(yield* store.blockAt(target)).toBe(id('sand'))
+      expect(yield* store.blockAt(target)).toBe(blockIdOrThrow('sand'))
       expect(yield* inventory.withdrawals).toStrictEqual([])
       const [result] = yield* drainBlockPlacementResults(state)
       expect(result).toMatchObject({
@@ -1230,7 +1230,7 @@ describe('placement through gameplay:interactions', () => {
       yield* requestBlockPlacementCommand(state, command)
       yield* runFrame(stages)
 
-      expect(yield* store.blockAt(target)).toBe(id('sand'))
+      expect(yield* store.blockAt(target)).toBe(blockIdOrThrow('sand'))
       expect(yield* inventory.withdrawals).toStrictEqual([
         { item: 'sand', count: 1, removed: 1 },
       ])
@@ -1306,14 +1306,14 @@ describe('placement through gameplay:interactions', () => {
       // rather than looping to the floor inside one tick.
       yield* runFrame(stages)
       expect(yield* store.blockAt(target)).toBe(AIR_BLOCK_ID)
-      expect(yield* store.blockAt(blockPosition(2, 63, 3))).toBe(id('sand'))
+      expect(yield* store.blockAt(blockPosition(2, 63, 3))).toBe(blockIdOrThrow('sand'))
 
       for (let frame = 0; frame < 8; frame += 1) {
         yield* runFrame(stages)
       }
 
       // Resting on the floor at y = 60, and the queue is empty again.
-      expect(yield* store.blockAt(blockPosition(2, 61, 3))).toBe(id('sand'))
+      expect(yield* store.blockAt(blockPosition(2, 61, 3))).toBe(blockIdOrThrow('sand'))
       expect((yield* Ref.get(state.fallingBlocks)).pending.size).toBe(0)
     }),
   )
@@ -1356,7 +1356,7 @@ describe('placement through gameplay:interactions', () => {
       ])
       yield* runFrame(stages)
 
-      expect(yield* store.blockAt(target)).toBe(id('sand'))
+      expect(yield* store.blockAt(target)).toBe(blockIdOrThrow('sand'))
       expect(yield* Ref.get(state.consumedItems)).toStrictEqual(['sand'])
     }),
   )
@@ -1367,8 +1367,8 @@ describe('placement through gameplay:interactions', () => {
     Effect.gen(function* () {
       const { store, state, player, stages } = yield* stagedSlice([[below, STONE]])
 
-      yield* Ref.set(state.targetPosition, position(target.x + 20.5, target.y, target.z + 20.5))
-      yield* player.api.moveTo(position(target.x + 0.5, target.y, target.z + 0.5))
+      yield* Ref.set(state.targetPosition, fixturePosition(target.x + 20.5, target.y, target.z + 20.5))
+      yield* player.api.moveTo(fixturePosition(target.x + 0.5, target.y, target.z + 0.5))
       yield* Ref.set(state.pendingPlacements, [
         { positionKey: blockPositionKeyOf(blockPosition(target.x, target.y, target.z)), heldItem: 'stone' as const },
       ])

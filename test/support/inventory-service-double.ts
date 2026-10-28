@@ -471,6 +471,10 @@ export const makeInventoryDouble = (
             case 'Invalid':
             case 'ItemStackFailure':
               return Effect.fail(validated.error)
+            default: {
+              const exhaustive: never = validated
+              return Effect.die(exhaustive)
+            }
           }
         },
 

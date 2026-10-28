@@ -91,7 +91,7 @@ import {
   EntityHealthPoints,
   horizontalBlockNeighbours,
   PositionAxis,
-  position,
+  position as kernelPosition,
   type BlockPosition,
   type BlockPositionKey,
   type BlockType,
@@ -2734,7 +2734,7 @@ const stepFireTick = (
       )
       .map((damage) => ({
         ...damage,
-        at: position(
+        at: kernelPosition(
           PositionAxis(damage.at.x),
           PositionAxis(damage.at.y),
           PositionAxis(damage.at.z),
