@@ -1,5 +1,11 @@
 import { describe, expect, it } from '@effect/vitest'
-import { Result } from 'effect'
+import { Effect, Result, Schema } from 'effect'
+import {
+  EntityIdSchema,
+  ProjectileIdSchema,
+  SimulationTickSchema,
+  WorldIdSchema,
+} from '@nerima-games/mc-kernel'
 import {
   addItem,
   countOf,
@@ -7,13 +13,28 @@ import {
   emptyInventory,
   equipmentItem,
   itemStack,
+  FishingServiceBiteSuccessSchema,
+  FishingServiceCastSuccessSchema,
+  FishingServiceReelSuccessSchema,
+  FishingStateSchema,
+  WorldCommitCoordinator,
+  WorldCommitCoordinatorLayer,
+  fishingOwnerRegistration,
+  makeReplicatedOwnerId,
   type EquipmentItem,
+  type FishingServiceApi,
 } from '@nerima-games/mc-sim'
 import {
   advanceFishing,
+  biteFishingWithService,
+  cancelFishingWithService,
+  castFishingWithService,
   cancelFishing,
   castFishing,
   fishingPhase,
+  FishingServiceCancelRequestSchema,
+  FishingServiceCancelResultSchema,
+  reelFishingWithService,
   reelFishing,
   FISHING_BITE_WINDOW_SECS,
   FISHING_MAX_WAIT_SECS,
@@ -50,6 +71,27 @@ const castSession = (
   const result = castFishing(fishingRod(currentDurability), environment, rolls)
   if (result._tag !== 'Cast') throw new Error(`Expected Cast, received ${result._tag}`)
   return result.session
+}
+
+const fishingServiceDouble = () => {
+  const calls: Array<ReadonlyArray<string>> = []
+  const service: FishingServiceApi = {
+    snapshot: Effect.succeed({ rods: [] }),
+    cast: (actor, bobber) =>
+      Effect.sync(() => {
+        calls.push(['cast', String(actor), String(bobber)])
+      }),
+    bite: (actor) =>
+      Effect.sync(() => {
+        calls.push(['bite', String(actor)])
+      }),
+    reel: (actor, tick) =>
+      Effect.sync(() => {
+        calls.push(['reel', String(actor), String(tick)])
+        return { _tag: 'Caught', item: 'cod' }
+      }),
+  }
+  return { service, calls }
 }
 
 describe('castFishing', () => {
@@ -254,5 +296,76 @@ describe('reelFishing', () => {
     const added = Result.getOrThrow(addItem(emptyInventory(), result.loot.item, result.loot.count))
     expect(added.leftover).toBe(0)
     expect(countOf(added.inventory, result.loot.item)).toBe(1)
+  })
+})
+
+describe('FishingService adapters', () => {
+  it('forwards cast, bite, and reel inputs directly to mc-sim', () => {
+    const actor = Schema.decodeUnknownSync(EntityIdSchema)('player-fishing-adapter')
+    const bobber = Schema.decodeUnknownSync(ProjectileIdSchema)('bobber-fishing-adapter')
+    const tick = Schema.decodeUnknownSync(SimulationTickSchema)(17)
+    const { service, calls } = fishingServiceDouble()
+
+    const cast = Effect.runSync(castFishingWithService(service, actor, bobber))
+    const bite = Effect.runSync(biteFishingWithService(service, actor))
+    const reel = Effect.runSync(reelFishingWithService(service, actor, tick))
+
+    expect(Schema.decodeUnknownSync(FishingServiceCastSuccessSchema)(cast)).toBeUndefined()
+    expect(Schema.decodeUnknownSync(FishingServiceBiteSuccessSchema)(bite)).toBeUndefined()
+    expect(
+      Schema.decodeUnknownSync(FishingServiceReelSuccessSchema, {
+        onExcessProperty: 'error',
+      })(reel),
+    ).toStrictEqual({ _tag: 'Caught', item: 'cod' })
+    expect(() =>
+      Schema.decodeUnknownSync(FishingServiceReelSuccessSchema, {
+        onExcessProperty: 'error',
+      })({ ...reel, extra: true }),
+    ).toThrow()
+    expect(calls).toStrictEqual([
+      ['cast', String(actor), String(bobber)],
+      ['bite', String(actor)],
+      ['reel', String(actor), String(tick)],
+    ])
+  })
+
+  it.effect('cancels an actor rod with one registered fishing-state commit', () => {
+    const ownerId = makeReplicatedOwnerId('test-fishing-owner')
+    const actor = Schema.decodeUnknownSync(EntityIdSchema)('player-to-cancel')
+    const bobber = Schema.decodeUnknownSync(ProjectileIdSchema)('bobber-to-cancel')
+    const otherActor = Schema.decodeUnknownSync(EntityIdSchema)('player-to-keep')
+    const otherBobber = Schema.decodeUnknownSync(ProjectileIdSchema)('bobber-to-keep')
+    const initialState = Schema.decodeUnknownSync(FishingStateSchema)({
+      rods: [
+        { actor, bobber, phase: 'cast' },
+        { actor: otherActor, bobber: otherBobber, phase: 'bite' },
+      ],
+    })
+    const owner = { ...fishingOwnerRegistration(ownerId), initialState }
+    const layer = WorldCommitCoordinatorLayer({
+      world: Schema.decodeUnknownSync(WorldIdSchema)('fishing-cancel-tests'),
+      owners: [owner],
+    })
+    const request = Schema.decodeUnknownSync(FishingServiceCancelRequestSchema, {
+      onExcessProperty: 'error',
+    })({ ownerId, actor })
+    const decodeResult = Schema.decodeUnknownSync(FishingServiceCancelResultSchema, {
+      onExcessProperty: 'error',
+    })
+
+    return Effect.gen(function* () {
+      const coordinator = yield* WorldCommitCoordinator
+      const revisionBefore = yield* coordinator.revision
+      const result = yield* cancelFishingWithService(request)
+      const snapshot = yield* coordinator.snapshot(ownerId, FishingStateSchema)
+      const revisionAfter = yield* coordinator.revision
+
+      expect(decodeResult(result)).toStrictEqual({ _tag: 'Cancelled', actor })
+      expect(() => decodeResult({ ...result, extra: true })).toThrow()
+      expect(snapshot.state.rods).toStrictEqual([
+        { actor: otherActor, bobber: otherBobber, phase: 'bite' },
+      ])
+      expect(revisionAfter - revisionBefore).toBe(1)
+    }).pipe(Effect.provide(layer))
   })
 })

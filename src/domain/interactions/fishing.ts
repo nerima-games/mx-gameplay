@@ -1,9 +1,45 @@
-import type { ItemType } from '@nerima-games/mc-kernel'
 import {
+  EntityIdSchema,
+  type EntityId,
+  type ItemType,
+  type ProjectileId,
+  type SimulationTick,
+} from '@nerima-games/mc-kernel'
+import { Effect, Schema } from 'effect'
+import {
+  FishingStateSchema,
+  ReplicatedOwnerIdSchema,
+  WorldCommitCoordinator,
   isValidDurabilityForItem,
   type Durability,
   type EquipmentItem,
+  type FishingServiceApi,
+  type ReplicatedOwnerId,
+  type WorldCommitCoordinatorError,
 } from '@nerima-games/mc-sim'
+
+export type FishingServiceCancelRequest = Readonly<{
+  ownerId: ReplicatedOwnerId
+  actor: EntityId
+}>
+
+export const FishingServiceCancelRequestSchema: Schema.ConstraintDecoder<
+  FishingServiceCancelRequest
+> = Schema.Struct({
+  ownerId: ReplicatedOwnerIdSchema,
+  actor: EntityIdSchema,
+})
+
+export type FishingServiceCancelResult =
+  | { readonly _tag: 'Cancelled'; readonly actor: EntityId }
+  | { readonly _tag: 'NotActive'; readonly actor: EntityId }
+
+export const FishingServiceCancelResultSchema: Schema.ConstraintDecoder<
+  FishingServiceCancelResult
+> = Schema.Union([
+  Schema.Struct({ _tag: Schema.Literal('Cancelled'), actor: EntityIdSchema }),
+  Schema.Struct({ _tag: Schema.Literal('NotActive'), actor: EntityIdSchema }),
+])
 
 export const FISHING_ROD_ITEM = 'fishing_rod' as const
 export const FISHING_MIN_WAIT_SECS = 5
@@ -96,6 +132,7 @@ export type ReelFishingResult =
   | { readonly _tag: 'Caught'; readonly loot: FishingLoot; readonly rod: FishingRod | null }
   | { readonly _tag: 'ReeledTooEarly'; readonly rod: FishingRod | null }
   | { readonly _tag: 'ReeledTooLate'; readonly rod: FishingRod | null }
+  | { readonly _tag: 'InvalidLoot' }
 
 const isNormalisedRoll = (value: number): boolean =>
   Number.isFinite(value) && value >= 0 && value <= 1
@@ -124,7 +161,7 @@ const categoryFor = (roll: number, openWater: boolean): FishingCategory => {
   return openWater ? 'treasure' : 'fish'
 }
 
-const itemFor = (category: FishingCategory, roll: number): ItemType => {
+const itemFor = (category: FishingCategory, roll: number): ItemType | undefined => {
   const items: ReadonlyArray<ItemType> =
     category === 'fish'
       ? FISHING_FISH_LOOT
@@ -132,23 +169,16 @@ const itemFor = (category: FishingCategory, roll: number): ItemType => {
         ? FISHING_JUNK_LOOT
         : FISHING_TREASURE_LOOT
   const index = Math.min(items.length - 1, Math.floor(roll * items.length))
-  const selected = items[index]
-  /* v8 ignore start -- unreachable while every session's rolls pass
-   * `isNormalisedRoll` (`0 <= value <= 1`) at `castFishing`, and all three loot
-   * tables are fixed non-empty arrays: `index` is always in `[0, items.length -
-   * 1]`, so `items[index]` is never `undefined`. `noUncheckedIndexedAccess`
-   * still demands the guard; the throw names the invariant rather than
-   * asserting past it. */
-  if (selected === undefined) throw new Error('Fishing loot tables must not be empty')
-  /* v8 ignore stop */
-  return selected
+  return items[index]
 }
 
-const lootFor = (session: FishingSession): FishingLoot => {
+const lootFor = (session: FishingSession): FishingLoot | undefined => {
   const category = categoryFor(session.rolls.category, session.openWater)
+  const item = itemFor(category, session.rolls.item)
+  if (item === undefined) return undefined
   return {
     category,
-    item: itemFor(category, session.rolls.item),
+    item,
     count: 1,
   }
 }
@@ -227,5 +257,47 @@ export const reelFishing = (session: FishingSession): ReelFishingResult => {
   const phase = fishingPhase(session)
   if (phase === 'waiting') return { _tag: 'ReeledTooEarly', rod }
   if (phase === 'escaped') return { _tag: 'ReeledTooLate', rod }
-  return { _tag: 'Caught', loot: lootFor(session), rod }
+  const loot = lootFor(session)
+  return loot === undefined ? { _tag: 'InvalidLoot' } : { _tag: 'Caught', loot, rod }
 }
+
+export const castFishingWithService = (
+  service: FishingServiceApi,
+  actor: EntityId,
+  bobber: ProjectileId,
+): ReturnType<FishingServiceApi['cast']> => service.cast(actor, bobber)
+
+export const biteFishingWithService = (
+  service: FishingServiceApi,
+  actor: EntityId,
+): ReturnType<FishingServiceApi['bite']> => service.bite(actor)
+
+export const reelFishingWithService = (
+  service: FishingServiceApi,
+  actor: EntityId,
+  tick: SimulationTick,
+): ReturnType<FishingServiceApi['reel']> => service.reel(actor, tick)
+
+export const cancelFishingWithService = (
+  request: FishingServiceCancelRequest,
+): Effect.Effect<
+  FishingServiceCancelResult,
+  WorldCommitCoordinatorError,
+  WorldCommitCoordinator
+> =>
+  Effect.gen(function* () {
+    const coordinator = yield* WorldCommitCoordinator
+    const snapshot = yield* coordinator.snapshot(request.ownerId, FishingStateSchema)
+    const rods = snapshot.state.rods.filter((rod) => rod.actor !== request.actor)
+    if (rods.length === snapshot.state.rods.length) {
+      return { _tag: 'NotActive' as const, actor: request.actor }
+    }
+
+    yield* coordinator.commit({
+      expectedRevision: snapshot.revision,
+      expectedDimensions: [],
+      changes: [{ ownerId: request.ownerId, state: { ...snapshot.state, rods } }],
+    })
+
+    return { _tag: 'Cancelled' as const, actor: request.actor }
+  })
