@@ -7,16 +7,24 @@
  * own outcome rather than left as a boolean.
  */
 import { describe, expect, it } from '@effect/vitest'
-import { Effect, Ref } from 'effect'
+import { Effect, Ref, Result, Schema } from 'effect'
+import * as FastCheck from 'fast-check'
 import {
   ARMOR_SLOTS,
   NO_ARMOR,
   firstWornSlot,
+  prepareUnequipTopmost,
+  UnequipPreparationSchema,
   unequipTopmost,
   type Equipment,
   type UnequipPort,
 } from '../src/domain/interactions/unequip-armor'
-import type { ItemType } from '@nerima-games/mc-kernel'
+import { ITEM_TYPES, type ItemType } from '@nerima-games/mc-kernel'
+
+const ARMOR_PARITY_FIXTURE = {
+  source: 'https://raw.githubusercontent.com/takeokunn/ts-minecraft/main/docs/reference/vanilla-parity.md',
+  edition: 'Java Edition 26.3',
+} as const
 
 /**
  * A body and an inventory, recording every call.
@@ -83,6 +91,58 @@ describe('firstWornSlot', () => {
       expect([...ARMOR_SLOTS]).toStrictEqual(['helmet', 'chestplate', 'leggings', 'boots'])
     }),
   )
+})
+
+describe(`unequip candidate preparation (${ARMOR_PARITY_FIXTURE.source}, ${ARMOR_PARITY_FIXTURE.edition})`, () => {
+  it('strictly decodes the next equipment state without mutating the input', () => {
+    const equipment: Equipment = { helmet: 'iron_helmet', chestplate: 'iron_chestplate', boots: 'iron_boots' }
+    const snapshot = JSON.stringify(equipment)
+    const result = prepareUnequipTopmost(equipment)
+
+    expect(Result.isSuccess(result)).toBe(true)
+    if (Result.isFailure(result)) return
+    const decoded = Schema.decodeUnknownResult(UnequipPreparationSchema, {
+      onExcessProperty: 'error',
+    })(result.success)
+    expect(Result.isSuccess(decoded)).toBe(true)
+    expect(result.success).toStrictEqual({
+      _tag: 'Unequip',
+      slot: 'helmet',
+      item: 'iron_helmet',
+      nextEquipment: { chestplate: 'iron_chestplate', boots: 'iron_boots' },
+    })
+    expect(JSON.stringify(equipment)).toBe(snapshot)
+  })
+
+  it('returns a typed failure without changing malformed equipment', () => {
+    const equipment = { helmet: 'not-an-item' }
+    const snapshot = JSON.stringify(equipment)
+
+    expect(Result.isFailure(prepareUnequipTopmost(equipment))).toBe(true)
+    expect(JSON.stringify(equipment)).toBe(snapshot)
+  })
+
+  it('strictly decodes each generated slot and item candidate', () => {
+    FastCheck.assert(
+      FastCheck.property(
+        FastCheck.constantFrom(...ARMOR_SLOTS),
+        FastCheck.constantFrom(...ITEM_TYPES),
+        (slot, item) => {
+          const equipment = { [slot]: item } as Equipment
+          const result = prepareUnequipTopmost(equipment)
+          if (Result.isFailure(result)) return false
+          const decoded = Schema.decodeUnknownResult(UnequipPreparationSchema, {
+            onExcessProperty: 'error',
+          })(result.success)
+          return Result.isSuccess(decoded) &&
+            decoded.success._tag === 'Unequip' &&
+            decoded.success.slot === slot &&
+            decoded.success.item === item
+        },
+      ),
+      { numRuns: 250 },
+    )
+  })
 })
 
 describe('unequipTopmost', () => {
