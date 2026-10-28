@@ -58,7 +58,7 @@
   },
   "dependencies": {
     "@nerima-games/mc-audio": "0.4.0",
-    "@nerima-games/mc-kernel": "0.12.0",
+    "@nerima-games/mc-kernel": "0.14.0",
     "@nerima-games/mc-sim": "0.7.0",
     "@nerima-games/mc-worldgen": "0.7.0",
     "effect": "4.0.5"
