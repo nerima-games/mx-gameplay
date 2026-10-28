@@ -14,9 +14,9 @@
  * mx-ui reading that same service — not an edge between the two.
  *
  * Its public surface is stage registration (`stages/registration.ts`). The
- * domain modules below are exported because they are the units the tests and the
- * previews drive directly, not because another repository is expected to import
- * them; see docs/public-api.md for what is contract and what is merely visible.
+ * domain modules below are visible to tests and previews; the projectile runtime
+ * adapter is also exported for gameplay callers that use mc-sim's service. See
+ * docs/public-api.md for what is contract and what is merely visible.
  */
 
 export * from './domain/day-night.js'
@@ -26,6 +26,7 @@ export * from './domain/environmental-contact-damage.js'
 export * from './domain/enchantment.js'
 export * from './domain/fall-damage.js'
 export * from './domain/entities/mob-frame.js'
+export * from './domain/entities/projectile-runtime.js'
 export * from './domain/falling-block.js'
 export * from './domain/fluid-frontier.js'
 export * from './domain/frame-rolls.js'

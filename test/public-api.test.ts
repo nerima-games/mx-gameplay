@@ -34,6 +34,7 @@ describe('public API surface', () => {
         // `frameStages`. Expressible only since the vertical-slice spike; see
         // `stages/registration.ts` on why the array was the obstacle.
         'gameplayModule',
+        'makeProjectileRuntime',
         'GAMEPLAY_PLAYER_STORAGE_OWNER_ID',
         'makeGameplayFrameState',
         'setPlayerDead',

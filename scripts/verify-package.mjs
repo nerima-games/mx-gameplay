@@ -245,6 +245,9 @@ try {
     if (typeof rootModule.breakBlock !== 'function') {
       throw new Error('The root export does not expose breakBlock');
     }
+    if (typeof rootModule.makeProjectileRuntime !== 'function') {
+      throw new Error('The root export does not expose makeProjectileRuntime');
+    }
     if (typeof rootModule.GAMEPLAY_PLAYER_STORAGE_OWNER_ID !== 'string') {
       throw new Error('The root export does not expose GAMEPLAY_PLAYER_STORAGE_OWNER_ID');
     }
@@ -266,6 +269,8 @@ import {
   GAMEPLAY_STAGE_IDS,
   type PlaceableItemType,
   breakBlock,
+  makeProjectileRuntime,
+  type ProjectileRuntime,
   type BreakOutcome,
   type BreakTransactionContext,
   type BreakTransactionResult,
@@ -288,6 +293,9 @@ if (declaredStageOrder.length === 0) {
 
 void makeGameplayStages
 void gameplayModule
+declare const projectileService: ProjectileRuntime
+const projectileRuntime: ProjectileRuntime = makeProjectileRuntime(projectileService)
+void projectileRuntime
 const ownerId: string = GAMEPLAY_PLAYER_STORAGE_OWNER_ID
 void ownerId
 
