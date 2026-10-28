@@ -1,8 +1,9 @@
 import { Brand, Effect, Ref } from 'effect'
-import { type BlockPositionKey, type Position } from '@nerima-games/mc-kernel'
+import type { BlockPositionKey } from '@nerima-games/mc-kernel'
 import { describe, expect, it } from 'vitest'
 import { EntityId, EntityKind } from '@nerima-games/mc-sim'
 import type { Dimension } from '@nerima-games/mc-worldgen'
+import { position } from './support/coordinate-fixtures'
 import {
   advanceWeatherGameplay,
   isWithinLightningStrikeRadius,
@@ -17,7 +18,6 @@ import {
   snapshotWeatherGameplay,
 } from '../src/stages/registration'
 
-const position = (x: number, y: number, z: number): Position => ({ x, y, z })
 /**
  * These fixtures name cells `'open'`, `'sheltered'`, `'farm'` — scenario-graph
  * identifiers, not coordinates — so they cannot go through kernel's

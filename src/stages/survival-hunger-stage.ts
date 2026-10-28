@@ -12,6 +12,6 @@ export const makeSurvivalHungerStage = (context: GameplayStageContext): StageReg
   return {
     id: GAMEPLAY_STAGE_IDS.survivalHunger,
     after: [GAMEPLAY_STAGE_IDS.fire],
-    run: (dt) => Effect.asVoid(state.survivalHunger.tick(dt)),
+    run: (dt) => Effect.asVoid(state.survivalHunger.tick(dt)).pipe(Effect.orDie),
   }
 }
