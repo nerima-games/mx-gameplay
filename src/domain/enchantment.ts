@@ -1,3 +1,4 @@
+import { Result, Schema } from 'effect'
 import { isItemType, type ItemType } from '@nerima-games/mc-kernel'
 import {
   isDamageableItemType,
@@ -254,11 +255,10 @@ export const encodeEnchantedItem = (item: EnchantedItem): EnchantedItemEncodingR
 }
 
 export const decodeEnchantedItemSnapshot = (encoded: string): EnchantedItemResult => {
-  try {
-    return decodeEnchantedItem(JSON.parse(encoded) as unknown)
-  } catch {
-    return { ok: false, issues: [{ path: '$', reason: 'must be valid JSON' }] }
-  }
+  const parsed = Schema.decodeUnknownResult(Schema.fromJsonString(Schema.Unknown))(encoded)
+  return Result.isFailure(parsed)
+    ? { ok: false, issues: [{ path: '$', reason: 'must be valid JSON' }] }
+    : decodeEnchantedItem(parsed.success)
 }
 
 export type EnchantmentTableSlot = 0 | 1 | 2
