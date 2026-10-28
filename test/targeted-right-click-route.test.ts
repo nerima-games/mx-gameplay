@@ -1,22 +1,22 @@
 import { describe, expect, it } from '@effect/vitest'
-import { Effect } from 'effect'
+import { Effect, Option } from 'effect'
 
-import { BlockId, blockIdOf, blockPosition, type BlockPosition } from '@nerima-games/mc-kernel'
-import { cellKey, chunkKey, chunkOf } from '../src/domain/in-memory-chunk-store'
-import { makeInMemoryWorld } from '../src/domain/in-memory-world'
+import { BlockId, blockIdOf, type BlockPosition } from '@nerima-games/mc-kernel'
+import { cellKey, chunkKey, chunkOf, makeInMemoryWorld } from '../src/domain/in-memory-world.js'
 import { targetedRightClickRoute } from '../src/stages/targeted-right-click-route'
+import { blockPosition, position } from './support/coordinate-fixtures.js'
 
 const TARGET = blockPosition(0, 1, 0)
 const BEHIND_TARGET = blockPosition(0, 1, -1)
 const SPAWN_POSE = {
-  feetPosition: { x: 0.5, y: 0, z: 2.5 },
+  feetPosition: position(0.5, 0, 2.5),
   yawRadians: 0,
   pitchRadians: 0,
 }
-const CRAFTING_TABLE_ID = blockIdOf('crafting_table') ?? -1
-const CHEST_ID = blockIdOf('chest') ?? -1
-const SHULKER_BOX_ID = blockIdOf('shulker_box') ?? -1
-const DIRT_ID = blockIdOf('dirt') ?? -1
+const CRAFTING_TABLE_ID = Option.getOrThrow(blockIdOf('crafting_table'))
+const CHEST_ID = Option.getOrThrow(blockIdOf('chest'))
+const SHULKER_BOX_ID = Option.getOrThrow(blockIdOf('shulker_box'))
+const DIRT_ID = Option.getOrThrow(blockIdOf('dirt'))
 // 60_000: inside kernel's `BlockId` brand range ([0, 65535], a storage bound)
 // but far outside its registry (~120 rows), so it is genuinely unregistered
 // rather than out-of-range-invalid — `999_999` used to stand in for this

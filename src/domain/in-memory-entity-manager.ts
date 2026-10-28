@@ -2,7 +2,7 @@
  * A COMPLETE in-memory `EntityManager`, typed by this repository's mirror.
  *
  * The third and last of the services `gameplayModule` requires.
- * `./in-memory-chunk-store`'s header carries the argument for why these exist,
+ * `./in-memory-world`'s header carries the argument for why these exist,
  * why they are not test doubles, and when they are deleted.
  *
  * ---------------------------------------------------------------------------

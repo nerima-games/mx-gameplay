@@ -1,7 +1,7 @@
 /**
  * A COMPLETE in-memory `PlayerService`, typed by this repository's mirror.
  *
- * The FOURTH service `gameplayModule` requires — `./in-memory-chunk-store`,
+ * The FOURTH service `gameplayModule` requires — `./in-memory-world`,
  * `./in-memory-inventory` and `./in-memory-entity-manager` are the other three,
  * and the first of them carries the argument for why these exist and when they
  * are deleted.

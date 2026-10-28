@@ -25,7 +25,6 @@
  */
 import { describe, expect, it } from '@effect/vitest'
 import { Effect, Option, Ref } from 'effect'
-import { BlockPositionKey as positionKey } from '@nerima-games/mc-kernel'
 import {
   drainBlockUseResults,
   gameplayStages,
@@ -36,13 +35,13 @@ import {
   requestTargetedBlockUse,
 } from '../src/stages/registration'
 import { GAMEPLAY_STAGE_IDS } from '../src/stages/stage-ids'
-import { makeInMemoryWorld } from '../src/domain/in-memory-world'
-import { cellKey, chunkKey, chunkOf } from '../src/domain/in-memory-chunk-store'
+import { cellKey, chunkKey, chunkOf, makeInMemoryWorld } from '../src/domain/in-memory-world.js'
 import { DeltaTimeSecs } from '@nerima-games/mc-kernel'
 import type { BlockPosition } from '@nerima-games/mc-kernel'
 import type { MobBehaviour } from '../src/domain/entities/mob-frame'
-import { BlockId, blockIdOf, blockPosition } from '@nerima-games/mc-kernel'
+import { BlockId, blockIdOf, blockPositionKeyOf } from '@nerima-games/mc-kernel'
 import { NO_TOOL } from '../src/domain/interactions/block-loot'
+import { blockPosition, position } from './support/coordinate-fixtures.js'
 
 /**
  * DIRT, and the id took two corrections that are worth recording because both
@@ -58,8 +57,8 @@ import { NO_TOOL } from '../src/domain/interactions/block-loot'
  * would have made the loop untestable while looking like a bug.
  */
 const DIRT_ID = BlockId(3)
-const LEVER_ID = blockIdOf('lever') ?? BlockId(-1)
-const DOOR_ID = blockIdOf('door') ?? BlockId(-1)
+const LEVER_ID = Option.getOrThrow(blockIdOf('lever'))
+const DOOR_ID = Option.getOrThrow(blockIdOf('door'))
 const AT: BlockPosition = blockPosition(3, 64, 7)
 const ABOVE_AT: BlockPosition = blockPosition(3, 65, 7)
 const BESIDE_AT: BlockPosition = blockPosition(4, 64, 7)
@@ -68,7 +67,7 @@ const IN_SIGHT: BlockPosition = blockPosition(0, 1, 0)
 const lookingAtBlockWorld = (loaded: boolean, block: BlockId = DIRT_ID) =>
   makeInMemoryWorld<MobBehaviour>({
     spawnPose: {
-      feetPosition: { x: 0.5, y: 0, z: 2.5 },
+      feetPosition: position(0.5, 0, 2.5),
       yawRadians: 0,
       pitchRadians: 0,
     },
@@ -279,7 +278,7 @@ describe('the break loop', () => {
       yield* requestBlockBreak(state, AT)
       // Simulate the drift: the public inbox now names a different cell at
       // slot 0 than the one the request snapshot recorded.
-      yield* Ref.set(state.pendingBreaks, [positionKey('99,64,99')])
+      yield* Ref.set(state.pendingBreaks, [blockPositionKeyOf(blockPosition(99, 64, 99))])
 
       yield* runInteractions(stages as never)
 
@@ -336,7 +335,7 @@ describe('the break loop', () => {
 
   it.effect('keeps the wooden tool context captured when the break was requested', () =>
     Effect.gen(function* () {
-      const world = yield* oneBlockWorld(blockIdOf('stone'))
+      const world = yield* oneBlockWorld(Option.getOrThrow(blockIdOf('stone')))
       const state = yield* makeGameplayFrameState
       const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player, world.time)
 
@@ -350,7 +349,7 @@ describe('the break loop', () => {
 
   it.effect('copies the tool context when the break was requested', () =>
     Effect.gen(function* () {
-      const world = yield* oneBlockWorld(blockIdOf('stone'))
+      const world = yield* oneBlockWorld(Option.getOrThrow(blockIdOf('stone')))
       const state = yield* makeGameplayFrameState
       const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player, world.time)
       const lootContext: { heldTier: 'wooden' | 'none' } = { heldTier: 'wooden' }
@@ -365,7 +364,7 @@ describe('the break loop', () => {
 
   it.effect('keeps the bare-hand context captured when the break was requested', () =>
     Effect.gen(function* () {
-      const world = yield* oneBlockWorld(blockIdOf('stone'))
+      const world = yield* oneBlockWorld(Option.getOrThrow(blockIdOf('stone')))
       const state = yield* makeGameplayFrameState
       const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player, world.time)
 
@@ -379,11 +378,11 @@ describe('the break loop', () => {
 
   it.effect('does not let a legacy break steal a later wooden snapshot at the same position', () =>
     Effect.gen(function* () {
-      const world = yield* oneBlockWorld(blockIdOf('stone'))
+      const world = yield* oneBlockWorld(Option.getOrThrow(blockIdOf('stone')))
       const state = yield* makeGameplayFrameState
       const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player, world.time)
 
-      yield* Ref.update(state.pendingBreaks, (pending) => [...pending, positionKey('3,64,7')])
+      yield* Ref.update(state.pendingBreaks, (pending) => [...pending, blockPositionKeyOf(AT)])
       yield* requestBlockBreak(state, AT, { heldTier: 'wooden' })
       yield* Ref.set(state.heldTool, NO_TOOL)
       yield* runInteractions(stages as never)
@@ -394,11 +393,11 @@ describe('the break loop', () => {
 
   it.effect('does not let a legacy break lose its wooden fallback to a later bare-hand snapshot', () =>
     Effect.gen(function* () {
-      const world = yield* oneBlockWorld(blockIdOf('stone'))
+      const world = yield* oneBlockWorld(Option.getOrThrow(blockIdOf('stone')))
       const state = yield* makeGameplayFrameState
       const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player, world.time)
 
-      yield* Ref.update(state.pendingBreaks, (pending) => [...pending, positionKey('3,64,7')])
+      yield* Ref.update(state.pendingBreaks, (pending) => [...pending, blockPositionKeyOf(AT)])
       yield* requestBlockBreak(state, AT, NO_TOOL)
       yield* Ref.set(state.heldTool, { heldTier: 'wooden' })
       yield* runInteractions(stages as never)
@@ -409,7 +408,7 @@ describe('the break loop', () => {
 
   it.effect('keeps request and snapshot paired across concurrent helper fibers', () =>
     Effect.gen(function* () {
-      const world = yield* twoBlockWorld(blockIdOf('stone') ?? BlockId(-1))
+      const world = yield* twoBlockWorld(Option.getOrThrow(blockIdOf('stone')))
       const state = yield* makeGameplayFrameState
       const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player, world.time)
 
@@ -459,7 +458,7 @@ describe('the break loop', () => {
 
   it.effect('breaking redstone wire drops redstone dust', () =>
     Effect.gen(function* () {
-      const world = yield* oneBlockWorld(blockIdOf('redstone_wire') ?? BlockId(-1))
+      const world = yield* oneBlockWorld(Option.getOrThrow(blockIdOf('redstone_wire')))
       const state = yield* makeGameplayFrameState
       const stages = gameplayStages(state, world.chunkStore, world.entities, world.inventory, world.player, world.time)
 
