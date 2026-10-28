@@ -21,11 +21,11 @@
 import { Effect, Layer, Ref } from 'effect'
 import type { Dimension } from '@nerima-games/mc-worldgen'
 import { PlayerService, type PlayerPose, type PlayerServiceApi } from '@nerima-games/mc-sim'
-import type { Position } from '@nerima-games/mc-kernel'
+import { PositionAxis, type Position } from '@nerima-games/mc-kernel'
 
 /** mc-sim's `INITIAL_PLAYER_POSE`, restated. */
 export const SPAWN_POSE: PlayerPose = {
-  feetPosition: { x: 0, y: 64, z: 0 },
+  feetPosition: { x: PositionAxis(0), y: PositionAxis(64), z: PositionAxis(0) },
   yawRadians: 0,
   pitchRadians: 0,
 }
@@ -58,19 +58,23 @@ export const makePlayerServiceDouble = (
           pitchRadians: current.pitchRadians + deltaPitch,
         })),
       moveTo: (feetPosition) =>
-        Effect.zipRight(
+        Effect.andThen(
           Ref.update(pose, (current) => ({ ...current, feetPosition })),
           Ref.update(moves, (seen) => [...seen, feetPosition]),
         ),
       setDimension: (next) =>
-        Effect.zipRight(
+        Effect.andThen(
           Ref.set(dimension, next),
           Ref.update(switches, (seen) => [...seen, next]),
         ),
       cameraPose: Effect.die('cameraPose is mc-render’s; mx-gameplay must not read a clock'),
       restore: (next, nextDimension) =>
-        Effect.zipRight(Ref.set(pose, next), Ref.set(dimension, nextDimension)),
-      reset: Effect.zipRight(Ref.set(pose, SPAWN_POSE), Ref.set(dimension, 'overworld')),
+        Effect.andThen(Ref.set(pose, next), Ref.set(dimension, nextDimension)),
+      snapshot: Effect.die('snapshot requires the world commit coordinator'),
+      replicatedCandidate: Effect.die('replicatedCandidate is not exercised by this double'),
+      submitReplicatedCandidate: () =>
+        Effect.die('submitReplicatedCandidate requires the world commit coordinator'),
+      reset: Effect.andThen(Ref.set(pose, SPAWN_POSE), Ref.set(dimension, 'overworld')),
     }
 
     return { api, moves, switches }
