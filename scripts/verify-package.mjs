@@ -289,14 +289,16 @@ void gameplayModule
     `${JSON.stringify(
       {
         compilerOptions: {
-          strict: true,
-          target: "ES2022",
+          target: "ES2024",
           module: "NodeNext",
           moduleResolution: "NodeNext",
-          noEmit: true,
+          lib: ["ES2024", "ESNext.Disposable", "DOM"],
+          types: [],
+          strict: true,
           skipLibCheck: false,
+          noEmit: true,
         },
-        files: ["consumer.ts"],
+        include: ["consumer.ts"],
       },
       null,
       2,
