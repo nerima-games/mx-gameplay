@@ -114,7 +114,12 @@ import {
   type MobBehaviour,
   type MobSpawnAttempt,
 } from '../src/domain/entities/mob-frame'
-import { EntityKind, HungerPoints, type EntityManagerApi } from '@nerima-games/mc-sim'
+import {
+  EntityKind,
+  HungerPoints,
+  type EntityManagerApi,
+  type WorldCommitCoordinatorApi,
+} from '@nerima-games/mc-sim'
 import { disturb } from '../src/domain/falling-block'
 import {
   BlockId,
@@ -1896,6 +1901,58 @@ describe('the mining site slice: dig, drop, place', () => {
     }),
   )
 
+  it.effect('keeps mined loot as a world drop when the owner changes before deposit commit', () =>
+    Effect.gen(function* () {
+      const { inventory, player, roster, state, store, time, commit } = yield* slice(world([[cell, STONE]]))
+      const racingCoordinator: WorldCommitCoordinatorApi = {
+        ...commit.coordinator,
+        commitFromSnapshot: (ownerId, schema, buildRequest) =>
+          Effect.gen(function* () {
+            if (ownerId === commit.playerStorageOwnerId) {
+              // Model a concurrent, valid inventory update in the narrow
+              // interval between the block commit and its loot deposit.
+              expect(yield* inventory.api.add('iron_helmet', 1).pipe(Effect.orDie)).toBe(0)
+              const expectedRevision = yield* commit.coordinator.revision
+              const state = yield* inventory.api.storageSnapshot
+              yield* commit.coordinator.commit({
+                expectedRevision,
+                expectedDimensions: [],
+                changes: [{ ownerId, state }],
+              }).pipe(Effect.orDie)
+            }
+            return yield* commit.coordinator.commitFromSnapshot(ownerId, schema, buildRequest)
+          }),
+      }
+      const stages = gameplayStages(
+        state,
+        store.api,
+        roster.api,
+        inventory.api,
+        player.api,
+        time,
+        undefined,
+        undefined,
+        {},
+        { ...commit, coordinator: racingCoordinator },
+      )
+
+      yield* holdWoodenPickaxe(state)
+      yield* requestBreak(state, cell)
+      yield* runFrame(stages)
+
+      expect(yield* store.blockAt(cell)).toBeUndefined()
+      expect(yield* inventory.api.countOf('iron_helmet')).toBe(1)
+      expect(yield* inventory.api.countOf('cobblestone')).toBe(0)
+      const dropped = yield* soleEntity(roster)
+      expect(dropped?.feetPosition).toStrictEqual(cell)
+      if (dropped !== undefined && isDroppedItemBehaviour(dropped.behaviour)) {
+        expect(dropped.behaviour).toMatchObject({ item: 'cobblestone', count: 1 })
+      } else {
+        expect.fail('expected a dropped cobblestone entity')
+      }
+    }),
+  )
+
   /* One block loot stack with count 2 must add both glowstone dust items. */
   it.effect('preserves the loot table count for glowstone', () =>
     Effect.gen(function* () {
@@ -2337,6 +2394,30 @@ describe('the ignition slice: an item use reaches the world', () => {
       expect(yield* drainItemUseResults(state)).toStrictEqual([
         {
           requestId: 'fire-use',
+          heldItem: 'fire_charge',
+          success: true,
+          outcome: { _tag: 'Fire', outcome: { _tag: 'Lit', position: origin } },
+        },
+      ])
+    }),
+  )
+
+  it.effect('a synchronized fire charge is consumed when its world change commits', () =>
+    Effect.gen(function* () {
+      const { inventory, store, state, stages } = yield* slice(
+        world([]),
+        residentAround(origin),
+        oneInventoryItem('fire_charge'),
+      )
+
+      yield* requestItemUse(state, 'committed-fire-use', origin, 'fire_charge')
+      yield* runFrame(stages)
+
+      expect(yield* store.blockAt(origin)).toBe(FIRE)
+      expect(yield* inventory.api.countOf('fire_charge')).toBe(0)
+      expect(yield* drainItemUseResults(state)).toMatchObject([
+        {
+          requestId: 'committed-fire-use',
           heldItem: 'fire_charge',
           success: true,
           outcome: { _tag: 'Fire', outcome: { _tag: 'Lit', position: origin } },
