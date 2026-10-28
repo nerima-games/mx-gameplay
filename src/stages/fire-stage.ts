@@ -22,7 +22,6 @@ export const makeFireStage = (context: GameplayStageContext): StageRegistration 
         yield* stepFireLifecycle(state, store, playerState, dt, {
           coordinator: commit.coordinator,
           dimension: playerState.pose.feetPosition.dimension,
-          changes: [],
           playerStorageOwnerId: commit.playerStorageOwnerId,
           entitiesOwnerId: commit.entitiesOwnerId,
           droppedItemsOwnerId: commit.droppedItemsOwnerId,

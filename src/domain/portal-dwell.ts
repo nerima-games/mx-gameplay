@@ -121,25 +121,16 @@ export type PortalDwell =
 /** The state a traveller who has never been near a portal is in. */
 export const OUTSIDE_PORTAL: PortalDwell = { _tag: 'Outside' }
 
-/** One frame of the wait. */
-export type PortalDwellStep = {
-  readonly dwell: PortalDwell
-  /**
-   * Did the portal fire on this frame?
-   *
-   * A BOOLEAN AND NOT A DESTINATION, deliberately. Nothing in this file knows
-   * where the traveller is, so it cannot say where they come out — that is
-   * mc-worldgen's `resolveNetherTravel`, and the caller that owns a position
-   * calls it. Returning a coordinate here would mean this rule had acquired one,
-   * which is the boundary the whole file is arranged around.
-   *
-   * True on EXACTLY ONE frame per crossing: the step that produces it also moves
-   * the state to `Cooling`, and `Cooling` cannot produce another. That is the
-   * same 「exactly once」 property `./mob/creeper-fuse.ts` gets from making
-   * `Detonated` terminal.
-   */
-  readonly travels: boolean
-}
+/**
+ * One frame of the wait. The literal result records whether this frame fires.
+ *
+ * The portal rule reports only whether travel occurred, not a destination.
+ * A crossing fires on exactly one frame because that step moves the state to
+ * `Cooling`, which cannot produce another crossing.
+ */
+export type PortalDwellStep =
+  | { readonly dwell: PortalDwell; readonly travels: true }
+  | { readonly dwell: PortalDwell; readonly travels: false }
 
 /**
  * Begin or continue a dwell, and fire if it has reached the threshold.

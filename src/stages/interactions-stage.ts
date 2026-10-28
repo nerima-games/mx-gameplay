@@ -85,7 +85,6 @@ import type {
 import {
   AIR_BLOCK_ID,
   adjacentBlockPosition,
-  BlockAddressSchema,
   EntityIdSchema,
   DomainEventSchema,
   SimulationTickSchema,
@@ -103,33 +102,17 @@ import {
   PlayerStorageSnapshotSchema,
   TntServiceSnapshotSchema,
   BrewingServiceStateSchema,
-  BrewingServicePlanSnapshotSchema,
   BrewingBottleIndexSchema,
-  PotionDrinkInventorySnapshotSchema,
-  PotionDrinkIntentSchema,
-  PotionDrinkSlotIndexSchema,
-  PotionDrinkPlanSchema,
   PotionDrinkFailureSchema,
+  PotionDrinkSlotIndexSchema,
   BREWING_FUEL_ITEM,
   BREWING_MAX_FUEL_CHARGES,
   FishingStateSchema,
-  FishingServicePlanSnapshotSchema,
-  FishingAdvanceIntentSchema,
-  FishingCancelIntentSchema,
-  FishingReelIntentSchema,
-  FishingAdvancePlanSchema,
-  FishingCancelPlanSchema,
-  FishingServiceCastSuccessSchema,
-  FishingServiceReelSuccessSchema,
   FishingLootSampleSchema,
   ProjectileServiceSnapshotSchema,
   PROJECTILE_REPLICATED_OWNER_ID,
   launchProjectile,
   mergeWorldCommitPlans,
-  WorldCommitPlanMergeResultSchema,
-  WorldCommitPlanRequestSchema,
-  worldCommitPlanFragmentSchema,
-  worldCommitPlanSnapshotSchema,
   addStoredStack,
   type WorldCommitPlanFragment,
   CropSnapshotSchema,
@@ -222,30 +205,17 @@ const commitMobDamage = (
       entitySnapshot.state,
       hit === undefined ? [] : [{ id: hit.id, damage: hit.damage }],
     )
-    const roster = Schema.decodeUnknownResult(GameplayEntityRosterSchema)(damage.roster)
-    if (Result.isFailure(roster)) {
-      yield* recordGameplayStageFailure(state, {
-        _tag: 'Failed', operation: 'CandidateBuild', subject: 'Player', error: roster.failure,
-      })
-      return false
-    }
+    const roster = Schema.decodeUnknownSync(GameplayEntityRosterSchema)(damage.roster)
 
     const seed = yield* Ref.get(state.rollSeed)
     const drops = rollCasualtyDrops(damage.casualties, seed)
     const experience = experienceOfCasualties(damage.casualties)
     const changes: Array<ReplicatedOwnerCandidate> = []
     if (damage.roster !== entitySnapshot.state) {
-      changes.push({ ownerId, state: roster.success })
+      changes.push({ ownerId, state: roster })
     }
     if (storageCandidate !== undefined && context.playerStorageOwnerId !== undefined) {
-      const storage = Schema.decodeUnknownResult(PlayerStorageSnapshotSchema)(storageCandidate)
-      if (Result.isFailure(storage)) {
-        yield* recordGameplayStageFailure(state, {
-          _tag: 'Failed', operation: 'CandidateBuild', subject: 'Player', error: storage.failure,
-        })
-        return false
-      }
-      changes.push({ ownerId: context.playerStorageOwnerId, state: storage.success })
+      changes.push({ ownerId: context.playerStorageOwnerId, state: storageCandidate })
     }
     if (drops.drops.length > 0) {
       if (context.droppedItemsOwnerId === undefined) {
@@ -456,15 +426,8 @@ const processBowShot = (
         yield* result('InventoryUnavailable')
         return
       }
-      const inventory = withInventory(storage.success.state, consumed.success.inventory)
-      if (Result.isFailure(inventory)) {
-        yield* recordGameplayStageFailure(state, {
-          _tag: 'Failed', operation: 'CandidateBuild', subject: 'Player', error: inventory.failure,
-        })
-        yield* Ref.update(state.pendingBowShots, (pending) => [request, ...pending])
-        return
-      }
-      const damaged = damagePlayerStorageAt(inventory.success, {
+      const inventory = Result.getOrThrow(withInventory(storage.success.state, consumed.success.inventory))
+      const damaged = damagePlayerStorageAt(inventory, {
         _tag: 'Inventory', slotIndex: request.inventory.slotIndex,
       }, 1)
       if (damaged.result._tag !== 'Damaged' && damaged.result._tag !== 'Broken') {
@@ -476,47 +439,18 @@ const processBowShot = (
 
     let damageEvent: Schema.Schema.Type<typeof DomainEventSchema> | undefined
     if (hit !== undefined && target !== undefined) {
-      const tick = Schema.decodeUnknownResult(SimulationTickSchema)(yield* Ref.get(state.tickCount))
-      const position = Schema.decodeUnknownResult(WorldPositionSchema)({
+      const tick = yield* Ref.get(state.tickCount)
+      const position = Schema.decodeUnknownSync(WorldPositionSchema)({
         dimension: player.success.state.pose.feetPosition.dimension,
         x: target.candidate.feetPosition.x,
         y: target.candidate.feetPosition.y,
         z: target.candidate.feetPosition.z,
       })
-      const amount = DamageAmount.result(hit.damage.amount)
-      if (Result.isFailure(tick)) {
-        yield* recordGameplayStageFailure(state, {
-          _tag: 'Failed', operation: 'CandidateBuild', subject: 'Player', error: tick.failure,
-        })
-        yield* Ref.update(state.pendingBowShots, (pending) => [request, ...pending])
-        return
-      }
-      if (Result.isFailure(position)) {
-        yield* recordGameplayStageFailure(state, {
-          _tag: 'Failed', operation: 'CandidateBuild', subject: 'Player', error: position.failure,
-        })
-        yield* Ref.update(state.pendingBowShots, (pending) => [request, ...pending])
-        return
-      }
-      if (Result.isFailure(amount)) {
-        yield* recordGameplayStageFailure(state, {
-          _tag: 'Failed', operation: 'CandidateBuild', subject: 'Player', error: amount.failure,
-        })
-        yield* Ref.update(state.pendingBowShots, (pending) => [request, ...pending])
-        return
-      }
-      const event = Schema.decodeUnknownResult(DomainEventSchema)({
-        _tag: 'EntityDamaged', tick: tick.success, entity: hit.id,
-        position: position.success, amount: amount.success, cause: 'projectile',
+      const event = Schema.decodeUnknownSync(DomainEventSchema)({
+        _tag: 'EntityDamaged', tick, entity: hit.id,
+        position, amount: hit.damage.amount, cause: 'projectile',
       })
-      if (Result.isFailure(event)) {
-        yield* recordGameplayStageFailure(state, {
-          _tag: 'Failed', operation: 'CandidateBuild', subject: 'Player', error: event.failure,
-        })
-        yield* Ref.update(state.pendingBowShots, (pending) => [request, ...pending])
-        return
-      }
-      damageEvent = event.success
+      damageEvent = event
     }
 
     const committed = yield* commitMobDamage(
@@ -610,7 +544,7 @@ const processMeleeAttack = (
       yield* Ref.update(state.pendingMeleeAttacks, (pending) => [request, ...pending])
       return
     }
-    const tick = Schema.decodeUnknownResult(SimulationTickSchema)(yield* Ref.get(state.tickCount))
+    const tick = yield* Ref.get(state.tickCount)
     const targetEntity = entities.success.state.entities.find(({ id }) => id === target.id)
     if (targetEntity === undefined) {
       if (request.requestId !== undefined) {
@@ -622,41 +556,20 @@ const processMeleeAttack = (
       }
       return
     }
-    if (Result.isFailure(tick)) {
-      yield* recordGameplayStageFailure(state, {
-        _tag: 'Failed', operation: 'CandidateBuild', subject: 'Player', error: tick.failure,
-      })
-      yield* Ref.update(state.pendingMeleeAttacks, (pending) => [request, ...pending])
-      return
-    }
-    const targetPosition = Schema.decodeUnknownResult(WorldPositionSchema)({
+    const targetPosition = Schema.decodeUnknownSync(WorldPositionSchema)({
       dimension: player.success.state.pose.feetPosition.dimension,
       x: targetEntity.feetPosition.x,
       y: targetEntity.feetPosition.y,
       z: targetEntity.feetPosition.z,
     })
-    if (Result.isFailure(targetPosition)) {
-      yield* recordGameplayStageFailure(state, {
-        _tag: 'Failed', operation: 'CandidateBuild', subject: 'Player', error: targetPosition.failure,
-      })
-      yield* Ref.update(state.pendingMeleeAttacks, (pending) => [request, ...pending])
-      return
-    }
-    const event = Schema.decodeUnknownResult(DomainEventSchema)({
-          _tag: 'EntityDamaged', tick: tick.success, entity: target.id,
-          position: targetPosition.success, amount: amount.success, cause: 'mob',
-        })
-    if (Result.isFailure(event)) {
-      yield* recordGameplayStageFailure(state, {
-        _tag: 'Failed', operation: 'CandidateBuild', subject: 'Player', error: event.failure,
-      })
-      yield* Ref.update(state.pendingMeleeAttacks, (pending) => [request, ...pending])
-      return
-    }
+    const event = Schema.decodeUnknownSync(DomainEventSchema)({
+      _tag: 'EntityDamaged', tick, entity: target.id,
+      position: targetPosition, amount: amount.success, cause: 'mob',
+    })
     const committed = yield* commitMobDamage(state, context, entities.success, {
       id: target.id,
       damage: { amount: amount.success, cause: 'mob' },
-    }, undefined, event.success)
+    }, undefined, event)
     if (!committed) {
       yield* Ref.update(state.pendingMeleeAttacks, (pending) => [request, ...pending])
       return
@@ -714,9 +627,7 @@ const commitPlanFragments = (
 ): Effect.Effect<boolean> =>
   Effect.gen(function* () {
     if (context === undefined) return false
-    const merged = Schema.decodeUnknownResult(WorldCommitPlanMergeResultSchema)(
-      mergeWorldCommitPlans(plans),
-    )
+    const merged = mergeWorldCommitPlans(plans)
     if (Result.isFailure(merged)) {
       yield* recordGameplayStageFailure(state, {
         _tag: 'Failed',
@@ -726,37 +637,7 @@ const commitPlanFragments = (
       })
       return false
     }
-    if (Result.isFailure(merged.success)) {
-      yield* recordGameplayStageFailure(state, {
-        _tag: 'Failed',
-        operation: 'PlanBuild',
-        subject,
-        error: merged.success.failure,
-      })
-      return false
-    }
-    const request = Schema.decodeUnknownResult(WorldCommitPlanRequestSchema)(merged.success.success)
-    if (Result.isFailure(request)) {
-      yield* recordGameplayStageFailure(state, {
-        _tag: 'Failed',
-        operation: 'PlanBuild',
-        subject,
-        error: request.failure,
-      })
-      return false
-    }
     const events = plans.flatMap((plan) => plan.postCommitEvents)
-    const decodedEvents = events.map((event) => Schema.decodeUnknownResult(DomainEventSchema)(event))
-    const invalidEvent = decodedEvents.find(Result.isFailure)
-    if (invalidEvent !== undefined && Result.isFailure(invalidEvent)) {
-      yield* recordGameplayStageFailure(state, {
-        _tag: 'Failed',
-        operation: 'PlanBuild',
-        subject,
-        error: invalidEvent.failure,
-      })
-      return false
-    }
     if (events.length > 0 && context.eventBus === undefined) {
       yield* recordGameplayUnsupportedOperation(state, {
         _tag: 'Unsupported',
@@ -765,7 +646,7 @@ const commitPlanFragments = (
       })
       return false
     }
-    const committed = yield* Effect.result(context.coordinator.commit(request.success))
+    const committed = yield* Effect.result(context.coordinator.commit(merged.success))
     if (Result.isFailure(committed)) {
       yield* recordGameplayStageFailure(state, {
         _tag: 'Failed',
@@ -776,9 +657,8 @@ const commitPlanFragments = (
       return false
     }
     if (context.eventBus !== undefined) {
-      for (const event of decodedEvents) {
-        if (Result.isFailure(event)) continue
-        const published = yield* Effect.result(context.eventBus.publish(event.success))
+      for (const event of events) {
+        const published = yield* Effect.result(context.eventBus.publish(event))
         if (Result.isFailure(published)) {
           yield* recordGameplayStageFailure(state, {
             _tag: 'Failed',
@@ -827,17 +707,11 @@ const processFishingItemUse = (
       })
       return
     }
-    const snapshot = Schema.decodeUnknownResult(FishingServicePlanSnapshotSchema)({
+    const snapshot = {
       world: observed.success.world,
       expectedRevision: observed.success.revision,
       expectedDimensions: [],
       state: observed.success.state,
-    })
-    if (Result.isFailure(snapshot)) {
-      yield* recordGameplayStageFailure(state, {
-        _tag: 'Failed', operation: 'PlanBuild', subject: 'Fishing', error: snapshot.failure,
-      })
-      return
     }
 
     let plans: Array<WorldCommitPlanFragment<unknown>> = []
@@ -847,17 +721,10 @@ const processFishingItemUse = (
       undefined
     let nextSeed: number | undefined
     let projectilePlan: WorldCommitPlanFragment<unknown> | undefined
-    const activeRod = snapshot.success.state.rods.find((rod) => rod.actor === request.actor)
+    const activeRod = snapshot.state.rods.find((rod) => rod.actor === request.actor)
     let removeBobber: import('@nerima-games/mc-kernel').ProjectileId | undefined
     if (request.action === 'CastFishing') {
-        const tick = Schema.decodeUnknownResult(SimulationTickSchema)(request.tick)
-        if (Result.isFailure(tick)) {
-          yield* recordGameplayStageFailure(state, {
-            _tag: 'Failed', operation: 'PlanBuild', subject: 'Fishing', error: tick.failure,
-          })
-          return
-        }
-        const cast = yield* Effect.result(context.fishingService.planCast(snapshot.success, {
+        const cast = yield* Effect.result(context.fishingService.planCast(snapshot, {
           actor: request.actor,
           bobber: request.bobber,
         }))
@@ -867,15 +734,7 @@ const processFishingItemUse = (
           })
           return
         }
-        const castSchema = worldCommitPlanFragmentSchema(FishingServiceCastSuccessSchema)
-        const decodedCast = Schema.decodeUnknownResult(castSchema)(cast.success)
-        if (Result.isFailure(decodedCast)) {
-          yield* recordGameplayStageFailure(state, {
-            _tag: 'Failed', operation: 'PlanBuild', subject: 'Fishing', error: decodedCast.failure,
-          })
-          return
-        }
-        plans = [decodedCast.success]
+        plans = [cast.success]
         outcome = undefined
 
         const projectileOwnerId = context.projectileOwnerId ?? PROJECTILE_REPLICATED_OWNER_ID
@@ -912,137 +771,73 @@ const processFishingItemUse = (
           })
           return
         }
-        const projectileSnapshot = Schema.decodeUnknownResult(worldCommitPlanSnapshotSchema(ProjectileServiceSnapshotSchema))({
+        const projectileSnapshot = {
           world: projectileObserved.success.world,
           expectedRevision: projectileObserved.success.revision,
           expectedDimensions: [],
           state: projectileObserved.success.state,
-        })
-        if (Result.isFailure(projectileSnapshot)) {
-          yield* recordGameplayStageFailure(state, {
-            _tag: 'Failed', operation: 'PlanBuild', subject: 'Fishing', error: projectileSnapshot.failure,
-          })
-          return
         }
-        const projectileFragment = Schema.decodeUnknownResult(worldCommitPlanFragmentSchema(Schema.Undefined))({
-          world: projectileSnapshot.success.world,
-          expectedRevision: projectileSnapshot.success.expectedRevision,
-          expectedDimensions: projectileSnapshot.success.expectedDimensions,
+        const projectileFragment = {
+          world: projectileSnapshot.world,
+          expectedRevision: projectileSnapshot.expectedRevision,
+          expectedDimensions: projectileSnapshot.expectedDimensions,
           changes: [{ ownerId: projectileOwnerId, state: projectileCandidate.success }],
           result: undefined,
           postCommitEvents: [],
-        })
-        if (Result.isFailure(projectileFragment)) {
-          yield* recordGameplayStageFailure(state, {
-            _tag: 'Failed', operation: 'PlanBuild', subject: 'Fishing', error: projectileFragment.failure,
-          })
-          return
         }
-        projectilePlan = projectileFragment.success
+        projectilePlan = projectileFragment
         plans.push(projectilePlan)
     } else if (request.action === 'AdvanceFishing') {
-        const intent = Schema.decodeUnknownResult(FishingAdvanceIntentSchema)({
+        const intent = {
           actor: request.actor,
           elapsedTicks: request.elapsedTicks,
           waitTicks: request.waitTicks,
           approachTicks: request.approachTicks,
           biteWindowTicks: request.biteWindowTicks,
           hasWater: request.environment.hasWater,
-        })
-        if (Result.isFailure(intent)) {
-          yield* recordGameplayStageFailure(state, {
-            _tag: 'Failed', operation: 'PlanBuild', subject: 'Fishing', error: intent.failure,
-          })
-          return
         }
-        const advance = yield* Effect.result(context.fishingService.planAdvance(snapshot.success, intent.success))
+        const advance = yield* Effect.result(context.fishingService.planAdvance(snapshot, intent))
         if (Result.isFailure(advance)) {
           yield* recordGameplayStageFailure(state, {
             _tag: 'Failed', operation: 'PlanBuild', subject: 'Fishing', error: advance.failure,
           })
           return
         }
-        const decodedAdvance = Schema.decodeUnknownResult(FishingAdvancePlanSchema)(advance.success)
-        if (Result.isFailure(decodedAdvance)) {
-          yield* recordGameplayStageFailure(state, {
-            _tag: 'Failed', operation: 'PlanBuild', subject: 'Fishing', error: decodedAdvance.failure,
-          })
-          return
-        }
-        plans = [decodedAdvance.success]
-        outcome = decodedAdvance.success.result
+        plans = [advance.success]
+        outcome = advance.success.result
         if (outcome._tag === 'Cancelled') removeBobber = outcome.bobber
     } else if (request.action === 'CancelFishing') {
-        const intent = Schema.decodeUnknownResult(FishingCancelIntentSchema)({ actor: request.actor })
-        if (Result.isFailure(intent)) {
-          yield* recordGameplayStageFailure(state, {
-            _tag: 'Failed', operation: 'PlanBuild', subject: 'Fishing', error: intent.failure,
-          })
-          return
-        }
-        const cancel = yield* Effect.result(context.fishingService.planCancel(snapshot.success, intent.success))
+        const cancel = yield* Effect.result(context.fishingService.planCancel(snapshot, { actor: request.actor }))
         if (Result.isFailure(cancel)) {
           yield* recordGameplayStageFailure(state, {
             _tag: 'Failed', operation: 'PlanBuild', subject: 'Fishing', error: cancel.failure,
           })
           return
         }
-        const decodedCancel = Schema.decodeUnknownResult(FishingCancelPlanSchema)(cancel.success)
-        if (Result.isFailure(decodedCancel)) {
-          yield* recordGameplayStageFailure(state, {
-            _tag: 'Failed', operation: 'PlanBuild', subject: 'Fishing', error: decodedCancel.failure,
-          })
-          return
-        }
-        plans = [decodedCancel.success]
-        outcome = decodedCancel.success.result
-        removeBobber = decodedCancel.success.result.bobber
+        plans = [cancel.success]
+        outcome = cancel.success.result
+        removeBobber = cancel.success.result.bobber
     } else {
-        const tick = Schema.decodeUnknownResult(SimulationTickSchema)(yield* Ref.get(state.tickCount))
-        if (Result.isFailure(tick)) {
-          yield* recordGameplayStageFailure(state, {
-            _tag: 'Failed', operation: 'PlanBuild', subject: 'Fishing', error: tick.failure,
-          })
-          return
-        }
+        const tick = Schema.decodeUnknownSync(SimulationTickSchema)(yield* Ref.get(state.tickCount))
         const seed = yield* Ref.get(state.rollSeed)
         const batch = drawRolls(seed, 1)
-        const sample = Schema.decodeUnknownResult(FishingLootSampleSchema)(rollAt(batch, 0))
-        if (Result.isFailure(sample)) {
-          yield* recordGameplayStageFailure(state, {
-            _tag: 'Failed', operation: 'PlanBuild', subject: 'Fishing', error: sample.failure,
-          })
-          return
-        }
-        const intent = Schema.decodeUnknownResult(FishingReelIntentSchema)({
+        const sample = Schema.decodeUnknownSync(FishingLootSampleSchema)(rollAt(batch, 0))
+        const intent = {
           actor: request.actor,
-          tick: tick.success,
-          sample: sample.success,
-        })
-        if (Result.isFailure(intent)) {
-          yield* recordGameplayStageFailure(state, {
-            _tag: 'Failed', operation: 'PlanBuild', subject: 'Fishing', error: intent.failure,
-          })
-          return
+          tick,
+          sample,
         }
-        const reel = yield* Effect.result(context.fishingService.planReel(snapshot.success, intent.success))
+        const reel = yield* Effect.result(context.fishingService.planReel(snapshot, intent))
         if (Result.isFailure(reel)) {
           yield* recordGameplayStageFailure(state, {
             _tag: 'Failed', operation: 'PlanBuild', subject: 'Fishing', error: reel.failure,
           })
           return
         }
-        const decodedReel = Schema.decodeUnknownResult(worldCommitPlanFragmentSchema(FishingServiceReelSuccessSchema))(reel.success)
-        if (Result.isFailure(decodedReel)) {
-          yield* recordGameplayStageFailure(state, {
-            _tag: 'Failed', operation: 'PlanBuild', subject: 'Fishing', error: decodedReel.failure,
-          })
-          return
-        }
-        plans = [decodedReel.success]
-        outcome = decodedReel.success.result
+        plans = [reel.success]
+        outcome = reel.success.result
         removeBobber = activeRod?.bobber
-        if (decodedReel.success.result._tag === 'Caught') {
+        if (reel.success.result._tag === 'Caught') {
           const storageObserved = yield* Effect.result(context.coordinator.observe(
             context.playerStorageOwnerId,
             PlayerStorageSnapshotSchema,
@@ -1054,7 +849,7 @@ const processFishingItemUse = (
             })
             return
           }
-          const caughtStack = itemStack(decodedReel.success.result.item, StackCount(1))
+          const caughtStack = itemStack(reel.success.result.item, StackCount(1))
           if (Result.isFailure(caughtStack)) {
             yield* recordGameplayStageFailure(state, {
               _tag: 'Failed', operation: 'CandidateBuild', subject: 'Fishing', error: caughtStack.failure,
@@ -1069,33 +864,21 @@ const processFishingItemUse = (
             yield* Ref.update(state.pendingItemUses, (pending) => [request, ...pending])
             return
           }
-          const storageSnapshot = Schema.decodeUnknownResult(worldCommitPlanSnapshotSchema(PlayerStorageSnapshotSchema))({
+          const storageSnapshot = {
             world: storageObserved.success.world,
             expectedRevision: storageObserved.success.revision,
             expectedDimensions: [],
             state: storageObserved.success.state,
-          })
-          if (Result.isFailure(storageSnapshot)) {
-            yield* recordGameplayStageFailure(state, {
-              _tag: 'Failed', operation: 'PlanBuild', subject: 'Fishing', error: storageSnapshot.failure,
-            })
-            return
           }
-          const storagePlan = Schema.decodeUnknownResult(worldCommitPlanFragmentSchema(Schema.Undefined))({
-            world: storageSnapshot.success.world,
-            expectedRevision: storageSnapshot.success.expectedRevision,
-            expectedDimensions: storageSnapshot.success.expectedDimensions,
+          const storagePlan = {
+            world: storageSnapshot.world,
+            expectedRevision: storageSnapshot.expectedRevision,
+            expectedDimensions: storageSnapshot.expectedDimensions,
             changes: [{ ownerId: context.playerStorageOwnerId, state: stored.storage }],
             result: undefined,
             postCommitEvents: [],
-          })
-          if (Result.isFailure(storagePlan)) {
-            yield* recordGameplayStageFailure(state, {
-              _tag: 'Failed', operation: 'PlanBuild', subject: 'Fishing', error: storagePlan.failure,
-            })
-            return
           }
-          plans.push(storagePlan.success)
+          plans.push(storagePlan)
         }
         nextSeed = batch.seed
     }
@@ -1119,60 +902,36 @@ const processFishingItemUse = (
         yield* Ref.update(state.pendingItemUses, (pending) => [request, ...pending])
         return
       }
-      const candidate = Schema.decodeUnknownResult(ProjectileServiceSnapshotSchema)({ projectiles: after })
-      if (Result.isFailure(candidate)) {
-        yield* recordGameplayStageFailure(state, {
-          _tag: 'Failed', operation: 'CandidateBuild', subject: 'Fishing', error: candidate.failure,
-        })
-        return
-      }
-      const projectileSnapshot = Schema.decodeUnknownResult(worldCommitPlanSnapshotSchema(ProjectileServiceSnapshotSchema))({
+      const candidate = { projectiles: after }
+      const projectileSnapshot = {
         world: projectiles.success.world,
         expectedRevision: projectiles.success.revision,
         expectedDimensions: [],
         state: projectiles.success.state,
-      })
-      if (Result.isFailure(projectileSnapshot)) {
-        yield* recordGameplayStageFailure(state, {
-          _tag: 'Failed', operation: 'PlanBuild', subject: 'Fishing', error: projectileSnapshot.failure,
-        })
-        return
       }
-      const fragment = Schema.decodeUnknownResult(worldCommitPlanFragmentSchema(Schema.Undefined))({
-        world: projectileSnapshot.success.world,
-        expectedRevision: projectileSnapshot.success.expectedRevision,
-        expectedDimensions: projectileSnapshot.success.expectedDimensions,
-        changes: [{ ownerId: projectileOwnerId, state: candidate.success }],
+      const fragment = {
+        world: projectileSnapshot.world,
+        expectedRevision: projectileSnapshot.expectedRevision,
+        expectedDimensions: projectileSnapshot.expectedDimensions,
+        changes: [{ ownerId: projectileOwnerId, state: candidate }],
         result: undefined,
         postCommitEvents: [],
-      })
-      if (Result.isFailure(fragment)) {
-        yield* recordGameplayStageFailure(state, {
-          _tag: 'Failed', operation: 'PlanBuild', subject: 'Fishing', error: fragment.failure,
-        })
-        return
       }
-      plans.push(fragment.success)
+      plans.push(fragment)
     }
 
-    const result = Schema.decodeUnknownResult(GameplayFishingItemUseResultSchema)({
+    const result = Schema.decodeUnknownSync(GameplayFishingItemUseResultSchema)({
       action: request.action,
       requestId: request.requestId,
       success: true,
       outcome,
     })
-    if (Result.isFailure(result)) {
-      yield* recordGameplayStageFailure(state, {
-        _tag: 'Failed', operation: 'PlanBuild', subject: 'Fishing', error: result.failure,
-      })
-      return
-    }
     if (!(yield* commitPlanFragments(state, context, 'Fishing', plans))) {
       yield* Ref.update(state.pendingItemUses, (pending) => [request, ...pending])
       return
     }
     if (nextSeed !== undefined) yield* Ref.set(state.rollSeed, nextSeed)
-    yield* Ref.update(state.itemUseResults, (results) => [...results, result.success])
+    yield* Ref.update(state.itemUseResults, (results) => [...results, result])
   })
 
 const processBrewingBottleCollection = (
@@ -1199,27 +958,6 @@ const processBrewingBottleCollection = (
       })
       return
     }
-    const bottleIndex = Schema.decodeUnknownResult(BrewingBottleIndexSchema)(request.bottleIndex)
-    const address = Schema.decodeUnknownResult(BlockAddressSchema)(request.address)
-    const tick = Schema.decodeUnknownResult(SimulationTickSchema)(request.tick)
-    if (Result.isFailure(bottleIndex)) {
-      yield* recordGameplayStageFailure(state, {
-        _tag: 'Failed', operation: 'PlanBuild', subject: 'Brewing', error: bottleIndex.failure,
-      })
-      return
-    }
-    if (Result.isFailure(address)) {
-      yield* recordGameplayStageFailure(state, {
-        _tag: 'Failed', operation: 'PlanBuild', subject: 'Brewing', error: address.failure,
-      })
-      return
-    }
-    if (Result.isFailure(tick)) {
-      yield* recordGameplayStageFailure(state, {
-        _tag: 'Failed', operation: 'PlanBuild', subject: 'Brewing', error: tick.failure,
-      })
-      return
-    }
     const brewingObserved = yield* Effect.result(context.coordinator.observe(
       context.brewingOwnerId,
       BrewingServiceStateSchema,
@@ -1242,31 +980,20 @@ const processBrewingBottleCollection = (
       })
       return
     }
-    const brewingSnapshot = Schema.decodeUnknownResult(BrewingServicePlanSnapshotSchema)({
+    const brewingSnapshot = {
       world: brewingObserved.success.world,
       expectedRevision: brewingObserved.success.revision,
       expectedDimensions: [],
       state: brewingObserved.success.state,
-    })
-    if (Result.isFailure(brewingSnapshot)) {
-      yield* recordGameplayStageFailure(state, {
-        _tag: 'Failed', operation: 'PlanBuild', subject: 'Brewing', error: brewingSnapshot.failure,
-      })
-      return
     }
-    const bottle = brewingSnapshot.success.state.bottles[bottleIndex.success]
+    const bottleIndex = Schema.decodeUnknownSync(BrewingBottleIndexSchema)(request.bottleIndex)
+    const bottle = brewingSnapshot.state.bottles[bottleIndex]
     if (bottle === undefined) {
-      const emptyResult = Schema.decodeUnknownResult(GameplayBrewingBottleItemUseResultSchema)({
+      const emptyResult = Schema.decodeUnknownSync(GameplayBrewingBottleItemUseResultSchema)({
         action: 'CollectBrewingBottle', requestId: request.requestId, success: false,
         outcome: { _tag: 'Empty' },
       })
-      if (Result.isFailure(emptyResult)) {
-        yield* recordGameplayStageFailure(state, {
-          _tag: 'Failed', operation: 'PlanBuild', subject: 'Brewing', error: emptyResult.failure,
-        })
-      } else {
-        yield* Ref.update(state.itemUseResults, (results) => [...results, emptyResult.success])
-      }
+      yield* Ref.update(state.itemUseResults, (results) => [...results, emptyResult])
       return
     }
     const inserted = addStoredStack(storageObserved.success.state, {
@@ -1274,58 +1001,34 @@ const processBrewingBottleCollection = (
       durability: null,
     })
     if (inserted.result._tag === 'InvalidStack' || inserted.result._tag === 'ItemStackFailure') {
-      const invalidResult = Schema.decodeUnknownResult(GameplayBrewingBottleItemUseResultSchema)({
+      const invalidResult = Schema.decodeUnknownSync(GameplayBrewingBottleItemUseResultSchema)({
         action: 'CollectBrewingBottle', requestId: request.requestId, success: false,
         outcome: { _tag: 'InvalidStack' },
       })
-      if (Result.isFailure(invalidResult)) {
-        yield* recordGameplayStageFailure(state, {
-          _tag: 'Failed', operation: 'PlanBuild', subject: 'Brewing', error: invalidResult.failure,
-        })
-      } else {
-        yield* Ref.update(state.itemUseResults, (results) => [...results, invalidResult.success])
-      }
+      yield* Ref.update(state.itemUseResults, (results) => [...results, invalidResult])
       return
     }
     if (inserted.result.added === 0) {
-      const fullResult = Schema.decodeUnknownResult(GameplayBrewingBottleItemUseResultSchema)({
+      const fullResult = Schema.decodeUnknownSync(GameplayBrewingBottleItemUseResultSchema)({
         action: 'CollectBrewingBottle', requestId: request.requestId, success: false,
         outcome: { _tag: 'InventoryFull', item: bottle.item, count: bottle.count },
       })
-      if (Result.isFailure(fullResult)) {
-        yield* recordGameplayStageFailure(state, {
-          _tag: 'Failed', operation: 'PlanBuild', subject: 'Brewing', error: fullResult.failure,
-        })
-      } else {
-        yield* Ref.update(state.itemUseResults, (results) => [...results, fullResult.success])
-      }
+      yield* Ref.update(state.itemUseResults, (results) => [...results, fullResult])
       return
     }
-    const pickupCount = StackCount.result(inserted.result.added)
-    if (Result.isFailure(pickupCount)) {
-      yield* recordGameplayStageFailure(state, {
-        _tag: 'Failed', operation: 'PlanBuild', subject: 'Brewing', error: pickupCount.failure,
-      })
-      return
-    }
-    const event = Schema.decodeUnknownResult(DomainEventSchema)({
+    const pickupCount = Result.getOrThrow(StackCount.result(inserted.result.added))
+    const event = Schema.decodeUnknownSync(DomainEventSchema)({
       _tag: 'ItemPickedUp',
-      tick: tick.success,
+      tick: request.tick,
       actor: request.actor,
-      source: { _tag: 'BrewingStand', address: address.success },
+      source: { _tag: 'BrewingStand', address: request.address },
       item: itemIdOf(bottle.item),
-      count: pickupCount.success,
+      count: pickupCount,
     })
-    if (Result.isFailure(event)) {
-      yield* recordGameplayStageFailure(state, {
-        _tag: 'Failed', operation: 'PlanBuild', subject: 'Brewing', error: event.failure,
-      })
-      return
-    }
     const remaining = inserted.result.leftover
     const bottlePlan = yield* Effect.result(context.brewingService.planSetBottle(
-      brewingSnapshot.success,
-      bottleIndex.success,
+      brewingSnapshot,
+      bottleIndex,
       remaining ?? undefined,
     ))
     if (Result.isFailure(bottlePlan)) {
@@ -1334,28 +1037,15 @@ const processBrewingBottleCollection = (
       })
       return
     }
-    const bottlePlanDecoded = Schema.decodeUnknownResult(worldCommitPlanFragmentSchema(BrewingServiceStateSchema))(bottlePlan.success)
-    if (Result.isFailure(bottlePlanDecoded)) {
-      yield* recordGameplayStageFailure(state, {
-        _tag: 'Failed', operation: 'PlanBuild', subject: 'Brewing', error: bottlePlanDecoded.failure,
-      })
-      return
-    }
-    const storagePlan = Schema.decodeUnknownResult(worldCommitPlanFragmentSchema(Schema.Undefined))({
+    const storagePlan = {
       world: storageObserved.success.world,
       expectedRevision: storageObserved.success.revision,
       expectedDimensions: [],
       changes: [{ ownerId: context.playerStorageOwnerId, state: inserted.storage }],
       result: undefined,
-      postCommitEvents: [event.success],
-    })
-    if (Result.isFailure(storagePlan)) {
-      yield* recordGameplayStageFailure(state, {
-        _tag: 'Failed', operation: 'PlanBuild', subject: 'Brewing', error: storagePlan.failure,
-      })
-      return
+      postCommitEvents: [event],
     }
-    const result = Schema.decodeUnknownResult(GameplayBrewingBottleItemUseResultSchema)({
+    const result = Schema.decodeUnknownSync(GameplayBrewingBottleItemUseResultSchema)({
       action: 'CollectBrewingBottle', requestId: request.requestId, success: true,
       outcome: {
         _tag: 'Collected',
@@ -1364,33 +1054,18 @@ const processBrewingBottleCollection = (
         remainingCount: remaining?.count ?? 0,
       },
     })
-    if (Result.isFailure(result)) {
-      yield* recordGameplayStageFailure(state, {
-        _tag: 'Failed', operation: 'PlanBuild', subject: 'Brewing', error: result.failure,
-      })
-      return
-    }
-    if (!(yield* commitPlanFragments(state, context, 'Brewing', [bottlePlanDecoded.success, storagePlan.success]))) {
+    if (!(yield* commitPlanFragments(state, context, 'Brewing', [bottlePlan.success, storagePlan]))) {
       yield* Ref.update(state.pendingItemUses, (pending) => [request, ...pending])
       return
     }
-    yield* Ref.update(state.itemUseResults, (results) => [...results, result.success])
+    yield* Ref.update(state.itemUseResults, (results) => [...results, result])
   })
 
 const recordBrewingItemUseResult = (
   state: GameplayStageContext['state'],
   result: BrewingItemUseResult,
 ): Effect.Effect<void> =>
-  Effect.gen(function* () {
-    const decoded = Schema.decodeUnknownResult(GameplayBrewingItemUseResultSchema)(result)
-    if (Result.isFailure(decoded)) {
-      yield* recordGameplayStageFailure(state, {
-        _tag: 'Failed', operation: 'PlanBuild', subject: 'Brewing', error: decoded.failure,
-      })
-      return
-    }
-    yield* Ref.update(state.itemUseResults, (results) => [...results, decoded.success])
-  })
+  Ref.update(state.itemUseResults, (results) => [...results, result])
 
 const processBrewingItemUse = (
   state: GameplayStageContext['state'],
@@ -1428,47 +1103,22 @@ const processBrewingItemUse = (
         })
         return
       }
-      const slotIndex = Schema.decodeUnknownResult(PotionDrinkSlotIndexSchema)(request.slotIndex)
-      const tick = Schema.decodeUnknownResult(SimulationTickSchema)(request.tick)
-      if (Result.isFailure(slotIndex)) {
-        yield* recordGameplayStageFailure(state, {
-          _tag: 'Failed', operation: 'PlanBuild', subject: 'Brewing', error: slotIndex.failure,
-        })
-        return
-      }
-      if (Result.isFailure(tick)) {
-        yield* recordGameplayStageFailure(state, {
-          _tag: 'Failed', operation: 'PlanBuild', subject: 'Brewing', error: tick.failure,
-        })
-        return
-      }
-      const planSnapshot = Schema.decodeUnknownResult(PotionDrinkInventorySnapshotSchema)({
+      const planSnapshot = {
         world: storage.success.world,
         expectedRevision: storage.success.revision,
         expectedDimensions: [],
         state: storage.success.state,
-      })
-      const intent = Schema.decodeUnknownResult(PotionDrinkIntentSchema)({
+      }
+      const slotIndex = Schema.decodeUnknownSync(PotionDrinkSlotIndexSchema)(request.slotIndex)
+      const intent = {
         inventoryOwnerId: storageOwnerId,
         actor: request.actor,
-        slotIndex: slotIndex.success,
-        tick: tick.success,
-      })
-      if (Result.isFailure(planSnapshot)) {
-        yield* recordGameplayStageFailure(state, {
-          _tag: 'Failed', operation: 'PlanBuild', subject: 'Brewing', error: planSnapshot.failure,
-        })
-        return
-      }
-      if (Result.isFailure(intent)) {
-        yield* recordGameplayStageFailure(state, {
-          _tag: 'Failed', operation: 'PlanBuild', subject: 'Brewing', error: intent.failure,
-        })
-        return
+        slotIndex,
+        tick: request.tick,
       }
       const planned = yield* Effect.result(context.brewingService.planDrinkPotion(
-        planSnapshot.success,
-        intent.success,
+        planSnapshot,
+        intent,
       ))
       if (Result.isFailure(planned)) {
         const drinkFailure = Schema.decodeUnknownResult(PotionDrinkFailureSchema)(planned.failure)
@@ -1484,16 +1134,10 @@ const processBrewingItemUse = (
         }
         return
       }
-      const drinkPlan = Schema.decodeUnknownResult(PotionDrinkPlanSchema)(planned.success)
-      if (Result.isFailure(drinkPlan)) {
-        yield* recordGameplayStageFailure(state, {
-          _tag: 'Failed', operation: 'PlanBuild', subject: 'Brewing', error: drinkPlan.failure,
-        })
-        return
-      }
-      const plans: Array<WorldCommitPlanFragment<unknown>> = [drinkPlan.success]
+      const drinkPlan = planned.success
+      const plans: Array<WorldCommitPlanFragment<unknown>> = [drinkPlan]
       let statusCandidate: Schema.Schema.Type<typeof StatusEffectStateSchema> | undefined
-      if (drinkPlan.success.result._tag === 'Consumed') {
+      if (drinkPlan.result._tag === 'Consumed') {
         if (context.statusEffectsOwnerId === undefined) {
           yield* recordGameplayUnsupportedOperation(state, {
             _tag: 'Unsupported', action: 'Brewing', requestId: request.requestId,
@@ -1512,54 +1156,28 @@ const processBrewingItemUse = (
           })
           return
         }
-        const nextEffects = Schema.decodeUnknownResult(StatusEffectStateSchema)(
-          applyStatusEffect(observedEffects.success.state, drinkPlan.success.result.effect),
-        )
-        if (Result.isFailure(nextEffects)) {
-          yield* recordGameplayStageFailure(state, {
-            _tag: 'Failed', operation: 'CandidateBuild', subject: 'Brewing', error: nextEffects.failure,
-          })
-          return
-        }
-        const effectSnapshot = Schema.decodeUnknownResult(worldCommitPlanSnapshotSchema(StatusEffectStateSchema))({
+        const nextEffects = applyStatusEffect(observedEffects.success.state, drinkPlan.result.effect)
+        const effectSnapshot = {
           world: observedEffects.success.world,
           expectedRevision: observedEffects.success.revision,
           expectedDimensions: [],
           state: observedEffects.success.state,
-        })
-        if (Result.isFailure(effectSnapshot)) {
-          yield* recordGameplayStageFailure(state, {
-            _tag: 'Failed', operation: 'PlanBuild', subject: 'Brewing', error: effectSnapshot.failure,
-          })
-          return
         }
-        const effectPlan = Schema.decodeUnknownResult(worldCommitPlanFragmentSchema(Schema.Undefined))({
-          world: effectSnapshot.success.world,
-          expectedRevision: effectSnapshot.success.expectedRevision,
-          expectedDimensions: effectSnapshot.success.expectedDimensions,
-          changes: [{ ownerId: context.statusEffectsOwnerId, state: nextEffects.success }],
+        const effectPlan = {
+          world: effectSnapshot.world,
+          expectedRevision: effectSnapshot.expectedRevision,
+          expectedDimensions: effectSnapshot.expectedDimensions,
+          changes: [{ ownerId: context.statusEffectsOwnerId, state: nextEffects }],
           result: undefined,
           postCommitEvents: [],
-        })
-        if (Result.isFailure(effectPlan)) {
-          yield* recordGameplayStageFailure(state, {
-            _tag: 'Failed', operation: 'PlanBuild', subject: 'Brewing', error: effectPlan.failure,
-          })
-          return
         }
-        statusCandidate = nextEffects.success
-        plans.push(effectPlan.success)
+        statusCandidate = nextEffects
+        plans.push(effectPlan)
       }
-      const result = Schema.decodeUnknownResult(GameplayBrewingItemUseResultSchema)({
+      const result = Schema.decodeUnknownSync(GameplayBrewingItemUseResultSchema)({
         action: 'DrinkPotion', requestId: request.requestId,
-        success: true, outcome: drinkPlan.success.result,
+        success: true, outcome: drinkPlan.result,
       })
-      if (Result.isFailure(result)) {
-        yield* recordGameplayStageFailure(state, {
-          _tag: 'Failed', operation: 'PlanBuild', subject: 'Brewing', error: result.failure,
-        })
-        return
-      }
       if (!(yield* commitPlanFragments(state, context, 'Brewing', plans))) {
         yield* retry()
         return
@@ -1571,7 +1189,7 @@ const processBrewingItemUse = (
             : 1,
         )
       }
-      yield* Ref.update(state.itemUseResults, (results) => [...results, result.success])
+      yield* Ref.update(state.itemUseResults, (results) => [...results, result])
       return
     }
 
@@ -1610,17 +1228,11 @@ const processBrewingItemUse = (
       yield* retry()
       return
     }
-    const brewingSnapshot = Schema.decodeUnknownResult(BrewingServicePlanSnapshotSchema)({
+    const brewingSnapshot = {
       world: brewing.success.world,
       expectedRevision: brewing.success.revision,
       expectedDimensions: [],
       state: brewing.success.state,
-    })
-    if (Result.isFailure(brewingSnapshot)) {
-      yield* recordGameplayStageFailure(state, {
-        _tag: 'Failed', operation: 'PlanBuild', subject: 'Brewing', error: brewingSnapshot.failure,
-      })
-      return
     }
 
     const recordRejected = (failure: 'MissingItem' | 'Occupied' | 'InvalidRecipe' | 'Brewing' | 'FuelFull') =>
@@ -1651,49 +1263,30 @@ const processBrewingItemUse = (
         })
         return
       }
-      const setFuel = yield* Effect.result(context.brewingService.planSetFuel(brewingSnapshot.success, fuel.success))
+      const setFuel = yield* Effect.result(context.brewingService.planSetFuel(brewingSnapshot, fuel.success))
       if (Result.isFailure(setFuel)) {
         yield* recordGameplayStageFailure(state, {
           _tag: 'Failed', operation: 'PlanBuild', subject: 'Brewing', error: setFuel.failure,
         })
         return
       }
-      const intermediate = Schema.decodeUnknownResult(worldCommitPlanSnapshotSchema(BrewingServiceStateSchema))({
+      const intermediate = {
         world: setFuel.success.world,
         expectedRevision: setFuel.success.expectedRevision,
         expectedDimensions: setFuel.success.expectedDimensions,
         state: setFuel.success.result,
-      })
-      if (Result.isFailure(intermediate)) {
-        yield* recordGameplayStageFailure(state, {
-          _tag: 'Failed', operation: 'PlanBuild', subject: 'Brewing', error: intermediate.failure,
-        })
-        return
       }
-      const addFuel = yield* Effect.result(context.brewingService.planAddFuel(intermediate.success))
+      const addFuel = yield* Effect.result(context.brewingService.planAddFuel(intermediate))
       if (Result.isFailure(addFuel)) {
         yield* recordGameplayStageFailure(state, {
           _tag: 'Failed', operation: 'PlanBuild', subject: 'Brewing', error: addFuel.failure,
         })
         return
       }
-      const decodedFuel = Schema.decodeUnknownResult(worldCommitPlanFragmentSchema(BrewingServiceStateSchema))(addFuel.success)
-      if (Result.isFailure(decodedFuel)) {
-        yield* recordGameplayStageFailure(state, {
-          _tag: 'Failed', operation: 'PlanBuild', subject: 'Brewing', error: decodedFuel.failure,
-        })
-        return
-      }
-      fragments.push(decodedFuel.success)
+      fragments.push(addFuel.success)
     } else if (request.action === 'InsertBrewingBottle') {
-      const bottleIndex = Schema.decodeUnknownResult(BrewingBottleIndexSchema)(request.bottleIndex)
-      if (Result.isFailure(bottleIndex)) {
-        yield* recordGameplayStageFailure(state, {
-          _tag: 'Failed', operation: 'PlanBuild', subject: 'Brewing', error: bottleIndex.failure,
-        })
-        return
-      }
-      if (brewing.success.state.bottles[bottleIndex.success] !== undefined) {
+      const bottleIndex = Schema.decodeUnknownSync(BrewingBottleIndexSchema)(request.bottleIndex)
+      if (brewing.success.state.bottles[bottleIndex] !== undefined) {
         yield* recordRejected('Occupied')
         return
       }
@@ -1714,8 +1307,8 @@ const processBrewingItemUse = (
         return
       }
       const plan = yield* Effect.result(context.brewingService.planSetBottle(
-        brewingSnapshot.success,
-        bottleIndex.success,
+        brewingSnapshot,
+        bottleIndex,
         bottle.success,
       ))
       if (Result.isFailure(plan)) {
@@ -1724,14 +1317,7 @@ const processBrewingItemUse = (
         })
         return
       }
-      const decoded = Schema.decodeUnknownResult(worldCommitPlanFragmentSchema(BrewingServiceStateSchema))(plan.success)
-      if (Result.isFailure(decoded)) {
-        yield* recordGameplayStageFailure(state, {
-          _tag: 'Failed', operation: 'PlanBuild', subject: 'Brewing', error: decoded.failure,
-        })
-        return
-      }
-      fragments.push(decoded.success)
+      fragments.push(plan.success)
     } else {
       if (brewing.success.state.ingredient !== undefined) {
         yield* recordRejected('Occupied')
@@ -1750,7 +1336,7 @@ const processBrewingItemUse = (
         return
       }
       const plan = yield* Effect.result(context.brewingService.planSetIngredient(
-        brewingSnapshot.success,
+        brewingSnapshot,
         ingredient.success,
       ))
       if (Result.isFailure(plan)) {
@@ -1759,14 +1345,7 @@ const processBrewingItemUse = (
         })
         return
       }
-      const decoded = Schema.decodeUnknownResult(worldCommitPlanFragmentSchema(BrewingServiceStateSchema))(plan.success)
-      if (Result.isFailure(decoded)) {
-        yield* recordGameplayStageFailure(state, {
-          _tag: 'Failed', operation: 'PlanBuild', subject: 'Brewing', error: decoded.failure,
-        })
-        return
-      }
-      fragments.push(decoded.success)
+      fragments.push(plan.success)
     }
 
     const storageCandidate = candidateForPlayerStorageItemUse(
@@ -1779,35 +1358,23 @@ const processBrewingItemUse = (
       yield* recordRejected('MissingItem')
       return
     }
-    const storagePlan = Schema.decodeUnknownResult(worldCommitPlanFragmentSchema(Schema.Undefined))({
+    const storagePlan = {
       world: storage.success.world,
       expectedRevision: storage.success.revision,
       expectedDimensions: [],
       changes: [storageCandidate],
       result: undefined,
       postCommitEvents: [],
-    })
-    if (Result.isFailure(storagePlan)) {
-      yield* recordGameplayStageFailure(state, {
-        _tag: 'Failed', operation: 'PlanBuild', subject: 'Brewing', error: storagePlan.failure,
-      })
-      return
     }
-    fragments.push(storagePlan.success)
-    const result = Schema.decodeUnknownResult(GameplayBrewingItemUseResultSchema)({
+    fragments.push(storagePlan)
+    const result = Schema.decodeUnknownSync(GameplayBrewingItemUseResultSchema)({
       action: request.action, requestId: request.requestId, success: true, outcome: undefined,
     })
-    if (Result.isFailure(result)) {
-      yield* recordGameplayStageFailure(state, {
-        _tag: 'Failed', operation: 'PlanBuild', subject: 'Brewing', error: result.failure,
-      })
-      return
-    }
     if (!(yield* commitPlanFragments(state, context, 'Brewing', fragments))) {
       yield* retry()
       return
     }
-    yield* Ref.update(state.itemUseResults, (results) => [...results, result.success])
+    yield* Ref.update(state.itemUseResults, (results) => [...results, result])
   })
 
 const processPlacement = (
@@ -2047,7 +1614,8 @@ const processEnderPearlThrow = (
     const seed = yield* Ref.get(state.rollSeed)
     const roll = drawRolls(seed, 1)
     const spawnEndermite = shouldSpawnEndermite(roll.rolls[0] ?? 1)
-    if (spawnEndermite && context.entitiesOwnerId === undefined) {
+    const entitiesOwnerId = spawnEndermite ? context.entitiesOwnerId : undefined
+    if (spawnEndermite && entitiesOwnerId === undefined) {
       yield* unsupported('OwnerRegistrationUnavailable')
       return
     }
@@ -2181,9 +1749,9 @@ const processEnderPearlThrow = (
       changes.push({ ownerId: context.vitalsOwnerId, state: vitalsSnapshot.success.state })
     }
 
-    if (spawnEndermite) {
+    if (entitiesOwnerId !== undefined) {
       const entities = yield* Effect.result(context.coordinator.snapshot(
-        context.entitiesOwnerId!,
+        entitiesOwnerId,
         GameplayEntityRosterSchema,
       ))
       if (Result.isFailure(entities)) {
@@ -2224,7 +1792,7 @@ const processEnderPearlThrow = (
         })
         return
       }
-      changes.push({ ownerId: context.entitiesOwnerId!, state: decodedEntities.success })
+      changes.push({ ownerId: entitiesOwnerId, state: decodedEntities.success })
     }
 
     const outcome = Schema.decodeUnknownResult(EnderPearlOutcomeSchema)({ displacement, damage })
@@ -2275,12 +1843,23 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
         }
         const playerDead = vitalsSnapshot.success.vitals.healthPoints <= 0
         const playerState = yield* gameplayPlayerStateForStage(state, commit)
-        if (commit !== undefined && playerState === undefined) return
+        const portalTravel = commit !== undefined && playerState !== undefined
+          ? { commit, playerState }
+          : undefined
+        if (commit !== undefined && portalTravel === undefined) return
 
         yield* advanceCropLifecycle(state, commit, dt)
 
         // Advance portal dwell on idle frames, before the early return below.
-        yield* stepPortalTravel(state, store, playerState, commit, dt)
+        if (portalTravel !== undefined) {
+          yield* stepPortalTravel(
+            state,
+            store,
+            portalTravel.playerState,
+            portalTravel.commit,
+            dt,
+          )
+        }
         yield* stepStatusEffects(state, commit, dt)
 
         // `getAndSet` rather than get-then-set: whoever fills the inboxes is not

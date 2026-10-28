@@ -125,6 +125,7 @@ import {
   insertBrewingIngredient,
   requestBlockPlacementCommand,
   requestBlockBreak,
+  requestTargetedBlockBreak,
   requestBucketUse,
   requestBoneMeal,
   requestBowShot,
@@ -157,11 +158,16 @@ import {
   restoreStatusEffects,
   snapshotFireLifecycle,
   snapshotStatusEffects,
+  setPlayerDead,
   submitWeatherGameplayInput,
   useBrewingPotion,
   type EnderPearlThrowRequest,
   type GameplayFrameState,
 } from '../src/stages/registration'
+import {
+  candidateForItemUse,
+  candidateForPlayerStorageItemUse,
+} from '../src/stages/registration-core.js'
 import type { GameplayStageCommitServices } from '../src/stages/registration-core'
 import {
   EXPERIENCE_MODULE_STAGE_PREFIXES,
@@ -2379,6 +2385,89 @@ describe('the module contract has caught up with this file’s shape', () => {
     }),
   )
 
+  it.effect('does not commit status effects or vitals across a concurrent owner revision', () =>
+    Effect.gen(function* () {
+      const harness = yield* builtStagesInWorld(world([]))
+      const baseCoordinator = harness.commit.coordinator
+      const statusBefore = yield* baseCoordinator.snapshot(GAMEPLAY_STATUS_EFFECTS_OWNER_ID, StatusEffectStateSchema)
+      const vitalsBefore = yield* baseCoordinator.snapshot(
+        GAMEPLAY_VITALS_OWNER_ID,
+        ExperienceOrbVitalsOwnerSnapshotSchema,
+      )
+      const revisionBefore = yield* baseCoordinator.revision
+      let injected = false
+      const coordinator: WorldCommitCoordinatorApi = {
+        ...baseCoordinator,
+        observe: (ownerId, schema, reads) => Effect.gen(function* () {
+          if (ownerId === GAMEPLAY_VITALS_OWNER_ID && !injected) {
+            injected = true
+            const player = yield* baseCoordinator.snapshot(GAMEPLAY_PLAYER_OWNER_ID, PlayerServiceSnapshotSchema)
+            const moved = Schema.decodeUnknownSync(PlayerServiceSnapshotSchema)({
+              pose: {
+                ...player.state.pose,
+                feetPosition: { ...player.state.pose.feetPosition, x: player.state.pose.feetPosition.x + 1 },
+              },
+            })
+            yield* baseCoordinator.commit({
+              expectedRevision: player.revision,
+              expectedDimensions: [],
+              changes: [{ ownerId: GAMEPLAY_PLAYER_OWNER_ID, state: moved }],
+            }).pipe(Effect.orDie)
+          }
+          return yield* baseCoordinator.observe(ownerId, schema, reads)
+        }),
+      }
+      const commit = { ...harness.commit, coordinator }
+      const stages = gameplayStages(
+        harness.state,
+        harness.store.api,
+        harness.roster.api,
+        harness.inventory.api,
+        harness.player.api,
+        harness.time,
+        undefined,
+        undefined,
+        {},
+        commit,
+      )
+      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+
+      yield* requestStatusEffect(harness.state, { type: 'poison', durationSecs: 1 })
+      yield* interactions.run(DeltaTimeSecs(1)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(injected).toBe(true)
+      expect(yield* Ref.get(harness.commitCalls)).toBe(1)
+      expect(yield* coordinator.revision).toBe(revisionBefore + 1)
+      expect((yield* coordinator.snapshot(GAMEPLAY_STATUS_EFFECTS_OWNER_ID, StatusEffectStateSchema)).state)
+        .toStrictEqual(statusBefore.state)
+      expect((yield* coordinator.snapshot(GAMEPLAY_VITALS_OWNER_ID, ExperienceOrbVitalsOwnerSnapshotSchema)).state)
+        .toStrictEqual(vitalsBefore.state)
+      expect(yield* Ref.get(harness.state.pendingStatusEffects)).toHaveLength(1)
+      expect((yield* Ref.get(harness.state.operationFailures)).at(-1)).toMatchObject({
+        _tag: 'Failed',
+        operation: 'OwnerSnapshot',
+        subject: 'Vitals',
+        error: { _tag: 'WorldRevisionConflict', expected: revisionBefore, actual: revisionBefore + 1 },
+      })
+    }),
+  )
+
+  it.effect('setPlayerDead leaves already-zero authoritative health unchanged', () =>
+    Effect.gen(function* () {
+      const state = yield* makeGameplayFrameState
+      yield* setPlayerDead(state, false)
+      const alive = yield* state.survivalHunger.snapshot
+      yield* setPlayerDead(state, true)
+      const first = yield* state.survivalHunger.snapshot
+      yield* setPlayerDead(state, true)
+      const second = yield* state.survivalHunger.snapshot
+
+      expect(alive.vitals.healthPoints).toBeGreaterThan(0)
+      expect(first.vitals.healthPoints).toBe(0)
+      expect(second.vitals).toStrictEqual(first.vitals)
+    }),
+  )
+
   it.effect('snapshots and restores status effects without retaining host references', () =>
     Effect.gen(function* () {
       const source = yield* builtStagesInWorld(world([]))
@@ -2392,6 +2481,25 @@ describe('the module contract has caught up with this file’s shape', () => {
       expect(yield* snapshotStatusEffects(restored.state, restored.commit)).toStrictEqual(snapshot)
       expect(yield* getPlayerMovementSpeedMultiplier(restored.state)).toBe(1.2)
       expect((yield* snapshotStatusEffects(restored.state, restored.commit)).effects).not.toBe(snapshot.effects)
+    }),
+  )
+
+  it.effect('status snapshot helpers use the registered default owner when the host omits its id', () =>
+    Effect.gen(function* () {
+      const harness = yield* builtStagesInWorld(world([]))
+      const { statusEffectsOwnerId, ...commitWithoutStatusOwnerId } = harness.commit
+      expect(statusEffectsOwnerId).toBe(GAMEPLAY_STATUS_EFFECTS_OWNER_ID)
+      const initial = yield* snapshotStatusEffects(harness.state, commitWithoutStatusOwnerId)
+      expect(initial.effects).toStrictEqual([])
+
+      yield* restoreStatusEffects(harness.state, {
+        effects: [{ type: 'speed', remainingSecs: 2, pulseClockSecs: 0 }],
+      }, commitWithoutStatusOwnerId)
+
+      expect((yield* snapshotStatusEffects(harness.state, commitWithoutStatusOwnerId)).effects).toStrictEqual([
+        { type: 'speed', remainingSecs: 2, pulseClockSecs: 0 },
+      ])
+      expect(yield* getPlayerMovementSpeedMultiplier(harness.state)).toBe(1.2)
     }),
   )
 
@@ -2794,6 +2902,38 @@ describe('frame-state refs not produced by makeGameplayFrameState fail loudly', 
       expect(yield* harness.store.blockAt(fixtureBlockPosition(0, 64, 0))).toBeUndefined()
     }),
   )
+
+  it.effect('requeues a block-break request after commit rejection and completes it on retry', () =>
+    Effect.gen(function* () {
+      const target = fixtureBlockPosition(0, 64, 0)
+      const harness = yield* builtStagesInWorld(world([[target, STONE]]))
+      const interactions = harness.stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+      yield* requestBlockBreak(harness.state, target, undefined, {
+        dimension: 'overworld',
+        toolLocation: undefined,
+      })
+      yield* Ref.set(harness.rejectCommits, true)
+
+      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* Ref.get(harness.commitCalls)).toBe(1)
+      expect(yield* harness.store.blockAt(target)).toBe(STONE)
+      expect(yield* Ref.get(harness.state.pendingBreaks)).toHaveLength(1)
+      expect(yield* Ref.get(harness.state.operationFailures)).toContainEqual(expect.objectContaining({
+        _tag: 'Failed',
+        operation: 'WorldCommit',
+        subject: 'Mining',
+        error: expect.any(WorldCommitEmptyRequest),
+      }))
+
+      yield* Ref.set(harness.rejectCommits, false)
+      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* Ref.get(harness.commitCalls)).toBe(2)
+      expect(yield* harness.store.blockAt(target)).toBeUndefined()
+      expect(yield* Ref.get(harness.state.pendingBreaks)).toStrictEqual([])
+    }),
+  )
 })
 
 describe('fluid propagation defers when a write finds its chunk unloaded', () => {
@@ -3150,6 +3290,21 @@ describe('the targeted-block family resolves through the same raycast as placeme
     }),
   )
 
+  it.effect('requestTargetedBlockBreak enqueues the aimed block and does nothing when the aim is empty', () =>
+    Effect.gen(function* () {
+      const { state, store, player } = yield* aimingAt(STONE)
+      const target = yield* requestTargetedBlockBreak(state, store.api, player.api)
+      expect(Option.getOrUndefined(target)?.position).toStrictEqual(AIMED_AT)
+      expect(yield* Ref.get(state.pendingBreaks)).toStrictEqual([positionKey('0,1,0')])
+
+      const emptyState = yield* makeGameplayFrameState
+      const emptyStore = yield* makeChunkStoreDouble(world([]), ['0,0'])
+      const emptyPlayer = yield* makePlayerServiceDouble()
+      expect(Option.isNone(yield* requestTargetedBlockBreak(emptyState, emptyStore.api, emptyPlayer.api))).toBe(true)
+      expect(yield* Ref.get(emptyState.pendingBreaks)).toStrictEqual([])
+    }),
+  )
+
   it.effect('the Targeted* request family enqueues nothing when nothing is within reach', () =>
     Effect.gen(function* () {
       // Every other test in this describe block aims at a real block, so each
@@ -3191,6 +3346,18 @@ describe('the targeted-block family resolves through the same raycast as placeme
           heldItem: 'fire_charge',
         },
       ])
+    }),
+  )
+
+  it.effect('requestTargetedBlockPlacement enqueues its item at the adjacent cell', () =>
+    Effect.gen(function* () {
+      const { state, store, player } = yield* aimingAt(STONE)
+      const target = yield* requestTargetedBlockPlacement(state, store.api, player.api, 'sand')
+      expect(Option.getOrUndefined(target)?.adjacentPosition).toStrictEqual(AIMED_ADJACENT)
+      expect(yield* Ref.get(state.pendingPlacements)).toStrictEqual([{
+        positionKey: positionKey('0,1,1'),
+        heldItem: 'sand',
+      }])
     }),
   )
 
@@ -3591,6 +3758,163 @@ describe('fire lifecycle: extinguish, restore, and burning-actor bookkeeping', (
         GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
         PlayerStorageSnapshotSchema,
       )).state).toStrictEqual(storageBefore.state)
+    }),
+  )
+
+  it.effect('rejects fire damage when the player storage snapshot observes a newer owner revision', () =>
+    Effect.gen(function* () {
+      const harness = yield* builtStagesInWorld(world([]))
+      const { state, commit: baseCommit, commitCalls } = harness
+      const original = makeFireLifecycleState([], 31)
+      const burning = {
+        ...original,
+        burningActors: [{
+          id: 'player',
+          kind: 'player' as const,
+          position: fixturePosition(0, 64, 0),
+          remainingTicks: 5,
+          damageCooldownTicks: 0,
+        }],
+      }
+      yield* Ref.set(state.fireLifecycle, burning)
+
+      const storageBefore = yield* baseCommit.coordinator.snapshot(
+        GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+        PlayerStorageSnapshotSchema,
+      )
+      const baseCoordinator = baseCommit.coordinator
+      let advanced = false
+      const coordinator: WorldCommitCoordinatorApi = {
+        ...baseCoordinator,
+        snapshot: (ownerId, schema) => Effect.gen(function* () {
+          if (ownerId === GAMEPLAY_PLAYER_STORAGE_OWNER_ID && !advanced) {
+            advanced = true
+            const player = yield* baseCoordinator.snapshot(GAMEPLAY_PLAYER_OWNER_ID, PlayerServiceSnapshotSchema)
+            const moved = Schema.decodeUnknownSync(PlayerServiceSnapshotSchema)({
+              pose: {
+                ...player.state.pose,
+                feetPosition: {
+                  ...player.state.pose.feetPosition,
+                  x: player.state.pose.feetPosition.x + 1,
+                },
+              },
+            })
+            yield* baseCoordinator.commit({
+              expectedRevision: player.revision,
+              expectedDimensions: [],
+              changes: [{ ownerId: GAMEPLAY_PLAYER_OWNER_ID, state: moved }],
+            }).pipe(Effect.orDie)
+          }
+          return yield* baseCoordinator.snapshot(ownerId, schema)
+        }),
+        commit: (request) => Effect.gen(function* () {
+          yield* Ref.update(commitCalls, (count) => count + 1)
+          return yield* baseCoordinator.commit(request)
+        }),
+      }
+      const commit = { ...baseCommit, coordinator }
+      const fireStage = gameplayStages(
+        state,
+        harness.store.api,
+        harness.roster.api,
+        harness.inventory.api,
+        harness.player.api,
+        harness.time,
+        undefined,
+        undefined,
+        {},
+        commit,
+      ).find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire)!
+
+      yield* fireStage.run(DeltaTimeSecs(FIRE_TICK_INTERVAL_SECS)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(advanced).toBe(true)
+      expect(yield* Ref.get(commitCalls)).toBe(1)
+      expect((yield* coordinator.snapshot(
+        GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+        PlayerStorageSnapshotSchema,
+      )).state).toStrictEqual(storageBefore.state)
+      expect(yield* Ref.get(state.fireLifecycle)).toStrictEqual(burning)
+      expect(yield* drainPlayerDamages(state)).toStrictEqual([])
+      expect((yield* Ref.get(state.operationFailures)).at(-1)).toMatchObject({
+        _tag: 'Failed',
+        operation: 'CandidateBuild',
+        subject: 'Fire',
+        error: {
+          _tag: 'OwnerRevisionChanged',
+          expectedRevision: storageBefore.revision,
+          observedRevision: storageBefore.revision + 1,
+        },
+      })
+    }),
+  )
+
+  it.effect('drops a fire damage candidate when player storage changes after the world revision snapshot', () =>
+    Effect.gen(function* () {
+      const { state, store, roster, player, inventory, commit } = yield* builtStages
+      const time = yield* makeTimeService()
+      const position = fixtureBlockPosition(0, 64, 0)
+      yield* store.api.setBlock(fixtureBlockPosition(position.x, position.y - 1, position.z), STONE)
+      yield* store.api.setBlock(position, FIRE)
+      const initialLifecycle = makeFireLifecycleState([position], 29)
+      yield* Ref.set(state.fireLifecycle, initialLifecycle)
+
+      const baseCoordinator = commit.coordinator
+      let injected = false
+      const racyCoordinator: WorldCommitCoordinatorApi = {
+        ...baseCoordinator,
+        snapshot: (ownerId, schema) => Effect.gen(function* () {
+          if (ownerId === commit.playerStorageOwnerId && !injected) {
+            injected = true
+            expect(yield* inventory.api.add('iron_helmet', 1).pipe(Effect.orDie)).toBe(0)
+            const racedStorage = yield* inventory.api.storageSnapshot
+            const expectedRevision = yield* baseCoordinator.revision
+            yield* baseCoordinator.commit({
+              expectedRevision,
+              expectedDimensions: [],
+              changes: [{ ownerId: commit.playerStorageOwnerId, state: racedStorage }],
+            }).pipe(Effect.orDie)
+          }
+          return yield* baseCoordinator.snapshot(ownerId, schema)
+        }),
+      }
+      const racyCommit = { ...commit, coordinator: racyCoordinator }
+      const racyStages = gameplayStages(
+        state,
+        store.api,
+        roster.api,
+        inventory.api,
+        player.api,
+        time,
+        undefined,
+        undefined,
+        {},
+        racyCommit,
+      )
+      const fireStage = racyStages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire)!
+      const revisionBefore = yield* commit.coordinator.revision
+
+      yield* fireStage.run(DeltaTimeSecs(FIRE_TICK_INTERVAL_SECS)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(injected).toBe(true)
+      expect(yield* drainPlayerDamages(state)).toStrictEqual([])
+      expect(yield* Ref.get(state.fireLifecycle)).toStrictEqual(initialLifecycle)
+      expect(yield* Ref.get(state.operationFailures)).toContainEqual(expect.objectContaining({
+        _tag: 'Failed',
+        operation: 'CandidateBuild',
+        subject: 'Fire',
+        error: {
+          _tag: 'OwnerRevisionChanged',
+          expectedRevision: revisionBefore,
+          observedRevision: revisionBefore + 1,
+        },
+      }))
+      const committedStorage = yield* commit.coordinator.snapshot(
+        commit.playerStorageOwnerId,
+        PlayerStorageSnapshotSchema,
+      )
+      expect(committedStorage.revision).toBeGreaterThan(revisionBefore)
+      expect(committedStorage.state).toStrictEqual(yield* inventory.api.storageSnapshot)
     }),
   )
 
@@ -5006,6 +5330,154 @@ describe('End portal travel commits the player owner from either source dimensio
   )
 })
 
+describe('portal rechecks cancel travel after the player moves or the chunk unloads', () => {
+  it.effect('keeps the travel pending when the recheck cannot snapshot the player owner', () =>
+    Effect.gen(function* () {
+      const netherPortal = Option.getOrThrow(blockIdOf('nether_portal'))
+      const cell = fixtureBlockPosition(0, 64, 0)
+      const harness = yield* builtStagesInWorld(world([[cell, netherPortal]]), ['0,0'])
+      const baseCoordinator = harness.commit.coordinator
+      let playerSnapshots = 0
+      const coordinator: WorldCommitCoordinatorApi = {
+        ...baseCoordinator,
+        snapshot: (ownerId, schema) => Effect.gen(function* () {
+          if (ownerId === GAMEPLAY_PLAYER_OWNER_ID) {
+            playerSnapshots += 1
+            if (playerSnapshots === 2) {
+              return yield* Effect.fail(new ReplicatedOwnerUnknown({ ownerId }))
+            }
+          }
+          return yield* baseCoordinator.snapshot(ownerId, schema)
+        }),
+      }
+      const stages = gameplayStages(
+        harness.state,
+        harness.store.api,
+        harness.roster.api,
+        harness.inventory.api,
+        harness.player.api,
+        harness.time,
+        undefined,
+        undefined,
+        {},
+        { ...harness.commit, coordinator },
+      )
+      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+
+      yield* interactions.run(DeltaTimeSecs(4)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(playerSnapshots).toBe(2)
+      expect(yield* Ref.get(harness.commitCalls)).toBe(0)
+      expect(yield* Ref.get(harness.state.portalTravels)).toStrictEqual([])
+      expect((yield* Ref.get(harness.state.operationFailures)).at(-1)).toMatchObject({
+        _tag: 'Failed',
+        operation: 'OwnerSnapshot',
+        subject: 'Player',
+        error: { _tag: 'ReplicatedOwnerUnknown', ownerId: GAMEPLAY_PLAYER_OWNER_ID },
+      })
+    }),
+  )
+
+  it.effect('resets dwell when the player owner moves between the initial read and travel commit', () =>
+    Effect.gen(function* () {
+      const netherPortal = Option.getOrThrow(blockIdOf('nether_portal'))
+      const cell = fixtureBlockPosition(0, 64, 0)
+      const harness = yield* builtStagesInWorld(world([[cell, netherPortal]]), ['0,0'])
+      const baseCoordinator = harness.commit.coordinator
+      let playerSnapshots = 0
+      let moved = false
+      const coordinator: WorldCommitCoordinatorApi = {
+        ...baseCoordinator,
+        snapshot: (ownerId, schema) => Effect.gen(function* () {
+          if (ownerId === GAMEPLAY_PLAYER_OWNER_ID) {
+            playerSnapshots += 1
+            if (playerSnapshots === 2 && !moved) {
+              moved = true
+              const player = yield* baseCoordinator.snapshot(GAMEPLAY_PLAYER_OWNER_ID, PlayerServiceSnapshotSchema)
+              const next = Schema.decodeUnknownSync(PlayerServiceSnapshotSchema)({
+                pose: {
+                  ...player.state.pose,
+                  feetPosition: { ...player.state.pose.feetPosition, x: player.state.pose.feetPosition.x + 1 },
+                },
+              })
+              yield* baseCoordinator.commit({
+                expectedRevision: player.revision,
+                expectedDimensions: [],
+                changes: [{ ownerId: GAMEPLAY_PLAYER_OWNER_ID, state: next }],
+              }).pipe(Effect.orDie)
+            }
+          }
+          return yield* baseCoordinator.snapshot(ownerId, schema)
+        }),
+      }
+      const commit = { ...harness.commit, coordinator }
+      const stages = gameplayStages(
+        harness.state,
+        harness.store.api,
+        harness.roster.api,
+        harness.inventory.api,
+        harness.player.api,
+        harness.time,
+        undefined,
+        undefined,
+        {},
+        commit,
+      )
+      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+
+      yield* interactions.run(DeltaTimeSecs(4)).pipe(Effect.provide(FrameServicesLayer))
+
+      const player = yield* coordinator.snapshot(GAMEPLAY_PLAYER_OWNER_ID, PlayerServiceSnapshotSchema)
+      expect(moved).toBe(true)
+      expect(player.state.pose.feetPosition.x).toBe(1)
+      expect(yield* Ref.get(harness.commitCalls)).toBe(1)
+      expect(yield* Ref.get(harness.state.portalTravels)).toStrictEqual([])
+      expect(yield* Ref.get(harness.state.portalDwell)).toStrictEqual({ _tag: 'Outside' })
+    }),
+  )
+
+  it.effect('resets dwell when the second portal read reports a concurrent chunk unload', () =>
+    Effect.gen(function* () {
+      const netherPortal = Option.getOrThrow(blockIdOf('nether_portal'))
+      const cell = fixtureBlockPosition(0, 64, 0)
+      const harness = yield* builtStagesInWorld(world([[cell, netherPortal]]), ['0,0'])
+      const portalReads = yield* Ref.make(0)
+      const store: ChunkStoreApi = {
+        ...harness.store.api,
+        getBlock: (position) => {
+          if (blockKey(position) !== blockKey(cell)) return harness.store.api.getBlock(position)
+          return Effect.gen(function* () {
+            const readIndex = yield* Ref.modify(portalReads, (count) => [count, count + 1] as const)
+            if (readIndex === 1) return { _tag: 'ChunkNotLoaded' } satisfies BlockReading
+            return yield* harness.store.api.getBlock(position)
+          })
+        },
+      }
+      const stages = gameplayStages(
+        harness.state,
+        store,
+        harness.roster.api,
+        harness.inventory.api,
+        harness.player.api,
+        harness.time,
+        undefined,
+        undefined,
+        {},
+        harness.commit,
+      )
+      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+
+      yield* interactions.run(DeltaTimeSecs(4)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* Ref.get(portalReads)).toBe(2)
+      expect(yield* Ref.get(harness.commitCalls)).toBe(0)
+      expect(yield* Ref.get(harness.state.portalTravels)).toStrictEqual([])
+      expect(yield* Ref.get(harness.state.portalDwell)).toStrictEqual({ _tag: 'Outside' })
+      expect(yield* harness.store.blockAt(cell)).toBe(netherPortal)
+    }),
+  )
+})
+
 describe('block placement commit rejection preserves the registered owner and world', () => {
   it.effect('a rejected placement returns its correlated failure without consuming the item', () =>
     Effect.gen(function* () {
@@ -5057,6 +5529,56 @@ describe('block placement commit rejection preserves the registered owner and wo
       expect(storageAfter.revision).toBe(storageBefore.revision)
       expect(yield* harness.commit.coordinator.revision).toBe(revisionBefore)
       expect(yield* harness.store.blockAt(target)).toBeUndefined()
+      expect(yield* Ref.get(harness.commitCalls)).toBe(1)
+    }).pipe(Effect.provide(FrameServicesLayer)),
+  )
+
+  it.effect('replays an identical placement request and rejects reuse of its id with different input', () =>
+    Effect.gen(function* () {
+      const target = fixtureBlockPosition(3, 64, 3)
+      const support = fixtureBlockPosition(target.x, target.y - 1, target.z)
+      const slots = [...emptySlots()]
+      slots[0] = itemStack('sand', 1)
+      const harness = yield* builtStagesInWorld(world([[support, STONE]]), ['0,0'], undefined, slots)
+      const interactions = harness.stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+      const request = {
+        requestId: 'sand-placement-once',
+        positionKey: positionKey('3,64,3'),
+        heldItem: 'sand',
+      } as const
+
+      yield* requestBlockPlacementCommand(harness.state, request)
+      yield* requestBlockPlacementCommand(harness.state, request)
+      yield* requestBlockPlacementCommand(harness.state, {
+        ...request,
+        positionKey: positionKey('4,64,3'),
+      })
+      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+
+      const results = yield* drainBlockPlacementResults(harness.state)
+      expect(results).toHaveLength(3)
+      expect(results[0]).toMatchObject({
+        requestId: request.requestId,
+        success: true,
+        consumed: true,
+        replayed: false,
+        outcome: { _tag: 'Placed', block: Option.getOrThrow(blockIdOf('sand')) },
+      })
+      expect(results[1]).toStrictEqual({ ...results[0], replayed: true })
+      expect(results[2]).toMatchObject({
+        requestId: request.requestId,
+        success: false,
+        consumed: false,
+        replayed: true,
+        outcome: { _tag: 'RequestIdConflict' },
+      })
+      expect(yield* harness.store.blockAt(target)).toBe(Option.getOrThrow(blockIdOf('sand')))
+      expect(yield* harness.store.blockAt(fixtureBlockPosition(4, 64, 3))).toBeUndefined()
+      const storage = yield* harness.commit.coordinator.snapshot(
+        GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+        PlayerStorageSnapshotSchema,
+      )
+      expect(countStoredItem(Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(storage.state), 'sand')).toBe(0)
       expect(yield* Ref.get(harness.commitCalls)).toBe(1)
     }).pipe(Effect.provide(FrameServicesLayer)),
   )
@@ -5519,6 +6041,98 @@ describe('farming and food item uses through the full interactions stage', () =>
         durabilityDamage: 0,
         outcome: { _tag: 'notTillable' },
       })
+    }),
+  )
+
+  it.effect('does not till or spend storage when the requested hoe is absent', () =>
+    Effect.gen(function* () {
+      const dirt = Option.getOrThrow(blockIdOf('dirt'))
+      const soil = fixtureBlockPosition(46, 64, 46)
+      const harness = yield* builtStagesInWorld(world([[soil, dirt]]), ['2,2'])
+      const interactions = harness.stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+      const storageBefore = yield* harness.commit.coordinator.snapshot(
+        GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+        PlayerStorageSnapshotSchema,
+      )
+
+      yield* requestSoilTill(harness.state, 'missing-hoe', soil, 'iron_hoe')
+      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* drainItemUseResults(harness.state)).toStrictEqual([{
+        action: 'TillSoil',
+        requestId: 'missing-hoe',
+        heldItem: 'iron_hoe',
+        success: false,
+        durabilityDamage: 0,
+        outcome: { _tag: 'noHoe' },
+      }])
+      expect(yield* Ref.get(harness.commitCalls)).toBe(0)
+      expect(yield* harness.commit.coordinator.snapshot(
+        GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+        PlayerStorageSnapshotSchema,
+      )).toStrictEqual(storageBefore)
+      expect(yield* harness.store.api.getBlock(soil)).toStrictEqual({ _tag: 'Block', block: dirt })
+    }),
+  )
+
+  it.effect('does not build a durability candidate for a stored item that has no durability', () =>
+    Effect.gen(function* () {
+      const slots = [...emptySlots()]
+      slots[0] = itemStack('stone', 1)
+      const harness = yield* builtStagesInWorld(world([]), ['0,0'], undefined, slots)
+      const storage = yield* harness.commit.coordinator.snapshot(
+        GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+        PlayerStorageSnapshotSchema,
+      )
+
+      expect(candidateForPlayerStorageItemUse(
+        GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+        storage.state,
+        'stone',
+        'damage',
+      )).toBeUndefined()
+      expect(yield* Ref.get(harness.commitCalls)).toBe(0)
+    }),
+  )
+
+  it.effect('candidateForItemUse derives from a registered snapshot and returns snapshot failures', () =>
+    Effect.gen(function* () {
+      const slots = [...emptySlots()]
+      slots[0] = itemStack('potato', 2)
+      const harness = yield* builtStagesInWorld(world([]), ['0,0'], undefined, slots)
+      const before = yield* harness.commit.coordinator.snapshot(
+        GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+        PlayerStorageSnapshotSchema,
+      )
+
+      const candidateResult = yield* candidateForItemUse(
+        harness.commit.coordinator,
+        GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+        'potato',
+        'consume',
+      )
+      const candidate = Result.getOrThrow(candidateResult)
+      if (candidate === undefined) throw new Error('Expected a candidate from the registered player-storage snapshot')
+      const candidateState = Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(candidate.state)
+      expect(candidate.ownerId).toBe(GAMEPLAY_PLAYER_STORAGE_OWNER_ID)
+      expect(candidateState.inventory.slots[0]).toMatchObject({ item: 'potato', count: 1 })
+      expect(yield* harness.commit.coordinator.snapshot(
+        GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+        PlayerStorageSnapshotSchema,
+      )).toStrictEqual(before)
+
+      yield* Ref.set(harness.failSnapshotOwnerId, GAMEPLAY_PLAYER_STORAGE_OWNER_ID)
+      const failedResult = yield* candidateForItemUse(
+        harness.commit.coordinator,
+        GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+        'potato',
+        'consume',
+      )
+      expect(Result.isFailure(failedResult)).toBe(true)
+      if (Result.isFailure(failedResult)) {
+        expect(failedResult.failure).toBeInstanceOf(ReplicatedOwnerUnknown)
+      }
+      expect(yield* Ref.get(harness.commitCalls)).toBe(0)
     }),
   )
 
