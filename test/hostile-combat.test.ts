@@ -283,6 +283,111 @@ describe(`C2 shield blocking (${SHIELD_FIXTURE.source}, ${SHIELD_FIXTURE.edition
     expect(JSON.stringify(malformed)).toBe(snapshot)
   })
 
+  it('starts the delay on the first blocking intent and clears state when lowered', () => {
+    const noCurrentAttack = {
+      tick: tick(20),
+      dimension,
+      pose,
+      hasShield: true,
+      current: null,
+    }
+    const raised = prepareShieldBlocking(intent, noCurrentAttack)
+    const lowered = prepareShieldBlocking({ ...intent, blocking: false }, noCurrentAttack)
+
+    expect(Result.isSuccess(raised) && raised.success).toMatchObject({
+      blocking: true,
+      raisedAt: tick(20),
+      blocked: false,
+      event: null,
+    })
+    expect(Result.isSuccess(lowered) && lowered.success).toMatchObject({
+      blocking: false,
+      raisedAt: null,
+      blocked: false,
+      event: null,
+    })
+  })
+
+  it('rejects malformed intent/state, actor changes, earlier ticks, and a missing shield', () => {
+    const malformedIntent = prepareShieldBlocking({ _tag: 'MeleeAttack', actor } as never, input)
+    const malformedState = prepareShieldBlocking(intent, {
+      ...input,
+      current: { actor, raisedAt: -1 as ReturnType<typeof tick> },
+    })
+    const actorChanged = prepareShieldBlocking(intent, {
+      ...input,
+      current: { actor: EntityId('another-player'), raisedAt: tick(10) },
+    })
+    const earlierTick = prepareShieldBlocking(intent, { ...input, tick: tick(9) })
+    const noShield = prepareShieldBlocking(intent, { ...input, current: null, hasShield: false })
+
+    expect(Result.isFailure(malformedIntent) && malformedIntent.failure).toBe('invalid-intent')
+    expect(Result.isFailure(malformedState) && malformedState.failure).toBe('invalid-authoritative-state')
+    expect(Result.isFailure(actorChanged) && actorChanged.failure).toBe('invalid-authoritative-state')
+    expect(Result.isFailure(earlierTick) && earlierTick.failure).toBe('invalid-tick-order')
+    expect(Result.isFailure(noShield) && noShield.failure).toBe('shield-not-equipped')
+  })
+
+  it('rejects self and cross-dimension attacks, and refuses overflowing geometry', () => {
+    const selfAttack = prepareShieldBlocking(intent, {
+      ...input,
+      incoming: { ...input.incoming, attacker: actor },
+    })
+    const crossDimension = prepareShieldBlocking(intent, {
+      ...input,
+      incoming: {
+        ...input.incoming,
+        attackerPosition: Schema.decodeUnknownSync(WorldPositionSchema)({
+          dimension: Schema.decodeUnknownSync(DimensionIdSchema)('nether'),
+          x: 0,
+          y: 64,
+          z: 2,
+        }),
+      },
+    })
+    const overflow = prepareShieldBlocking(intent, {
+      ...input,
+      pose: {
+        ...pose,
+        feetPosition: { x: -Number.MAX_VALUE, y: 64, z: 0 } as typeof pose.feetPosition,
+      },
+      incoming: {
+        ...input.incoming,
+        attackerPosition: Schema.decodeUnknownSync(WorldPositionSchema)({
+          dimension,
+          x: Number.MAX_VALUE,
+          y: 64,
+          z: 2,
+        }),
+      },
+    })
+
+    expect(Result.isFailure(selfAttack) && selfAttack.failure).toBe('invalid-attack')
+    expect(Result.isFailure(crossDimension) && crossDimension.failure).toBe('invalid-attack')
+    expect(Result.isFailure(overflow) && overflow.failure).toBe('invalid-attack')
+  })
+
+  it('does not treat a coincident attacker as a front-facing block', () => {
+    const coincident = prepareShieldBlocking(intent, {
+      ...input,
+      incoming: {
+        ...input.incoming,
+        attackerPosition: Schema.decodeUnknownSync(WorldPositionSchema)({
+          dimension,
+          x: 0,
+          y: 64,
+          z: 0,
+        }),
+      },
+    })
+
+    expect(Result.isSuccess(coincident) && coincident.success).toMatchObject({
+      blocked: false,
+      blockedAmount: 0,
+      event: null,
+    })
+  })
+
   it('returns a typed failure or a strict finite result with nonnegative damage fields', () => {
     FastCheck.assert(
       FastCheck.property(

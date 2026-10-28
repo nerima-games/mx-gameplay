@@ -240,6 +240,35 @@ describe(`C2 bow charge uses simulation ticks (${BOW_PARITY_FIXTURE.source}; ${B
     expect(Result.isFailure(result) && result.failure).toBe('invalid-bow-context')
   })
 
+  it('rejects non-bow intents and releases without a matching draw state', () => {
+    const actor = EntityId('bow-owner')
+    const otherActor = EntityId('another-player')
+    const tick = Schema.decodeUnknownSync(SimulationTickSchema)(20)
+
+    const wrongIntent = prepareBowAction({ _tag: 'MeleeAttack', actor } as never, tick, null)
+    const noDraw = prepareBowAction({ _tag: 'BowAction', actor, action: 'release' }, tick, null)
+    const anotherPlayersDraw = prepareBowAction(
+      { _tag: 'BowAction', actor, action: 'release' },
+      tick,
+      { actor: otherActor, startedAt: Schema.decodeUnknownSync(SimulationTickSchema)(0) },
+    )
+
+    expect(Result.isFailure(wrongIntent) && wrongIntent.failure).toBe('invalid-bow-action')
+    expect(Result.isFailure(noDraw) && noDraw.failure).toBe('not-drawing')
+    expect(Result.isFailure(anotherPlayersDraw) && anotherPlayersDraw.failure).toBe('not-drawing')
+  })
+
+  it('rejects a valid tick that predates the authoritative draw tick', () => {
+    const actor = EntityId('bow-owner')
+    const result = prepareBowAction(
+      { _tag: 'BowAction', actor, action: 'release' },
+      Schema.decodeUnknownSync(SimulationTickSchema)(19),
+      { actor, startedAt: Schema.decodeUnknownSync(SimulationTickSchema)(20) },
+    )
+
+    expect(Result.isFailure(result) && result.failure).toBe('invalid-tick')
+  })
+
   it('strictly decodes draw and cancel owner candidates', () => {
     const actor = EntityId('bow-owner')
     const tick = Schema.decodeUnknownSync(SimulationTickSchema)(50)
@@ -357,6 +386,62 @@ describe(`C2 bow charge uses simulation ticks (${BOW_PARITY_FIXTURE.source}; ${B
 
     expect(Result.isFailure(result)).toBe(true)
     expect(JSON.stringify({ charge, pose, candidates })).toBe(before)
+  })
+
+  it('rejects invalid intent, charge, authoritative state, and an empty target roster', () => {
+    const actor = EntityId('bow-owner')
+    const action = { _tag: 'BowAction', actor, action: 'release' } as const
+    const tick = Schema.decodeUnknownSync(SimulationTickSchema)(20)
+    const charge = Result.getOrThrow(prepareBowAction(
+      action,
+      tick,
+      { actor, startedAt: Schema.decodeUnknownSync(SimulationTickSchema)(0) },
+    ))
+    const pose = { feetPosition: atPosition(0, 64, 0), yawRadians: 0, pitchRadians: 0 }
+    const dimension = Schema.decodeUnknownSync(DimensionIdSchema)('overworld')
+    const prepare = (
+      intent: typeof action,
+      candidateCharge: typeof charge,
+      candidatePose = pose,
+      candidateDimension = dimension,
+      candidateTick = tick,
+      candidates: ReadonlyArray<ShotCandidate> = [standing('target', 0, 64, 3)],
+    ) => prepareBowShot(
+      intent,
+      candidateCharge,
+      candidatePose,
+      candidateDimension,
+      candidateTick,
+      candidates,
+      NOTHING_BLOCKS,
+    )
+
+    const invalidIntent = prepare({ _tag: 'MeleeAttack', actor } as never, charge)
+    const mismatchedCharge = prepare(action, {
+      ...charge,
+      actor: EntityId('another-player'),
+    } as typeof charge)
+    const unfiredCharge = Result.getOrThrow(prepareBowAction(
+      action,
+      tick,
+      { actor, startedAt: Schema.decodeUnknownSync(SimulationTickSchema)(19) },
+    ))
+    const invalidChargeShape = prepare(action, { ...charge, stale: true } as typeof charge)
+    const invalidDimension = prepare(action, charge, pose, 'moon' as typeof dimension)
+    const invalidPose = prepare(action, charge, {
+      ...pose,
+      feetPosition: unsafePosition(Number.NaN, 64, 0),
+    })
+    const noTarget = prepare(action, charge, pose, dimension, tick, [])
+    const notFired = prepare(action, unfiredCharge)
+
+    expect(Result.isFailure(invalidIntent) && invalidIntent.failure).toBe('invalid-intent')
+    expect(Result.isFailure(mismatchedCharge) && mismatchedCharge.failure).toBe('invalid-charge')
+    expect(Result.isFailure(notFired) && notFired.failure).toBe('invalid-charge')
+    expect(Result.isFailure(invalidChargeShape) && invalidChargeShape.failure).toBe('invalid-charge')
+    expect(Result.isFailure(invalidDimension) && invalidDimension.failure).toBe('invalid-authoritative-pose')
+    expect(Result.isFailure(invalidPose) && invalidPose.failure).toBe('invalid-authoritative-pose')
+    expect(Result.isFailure(noTarget) && noTarget.failure).toBe('no-target')
   })
 })
 
@@ -733,6 +818,14 @@ describe('knockbackDirection', () => {
 })
 
 describe(`checked knockback preparation (${KNOCKBACK_PARITY_FIXTURE.source}, ${KNOCKBACK_PARITY_FIXTURE.edition})`, () => {
+  it('rejects non-finite offsets and a finite offset whose magnitude overflows', () => {
+    const nonFinite = prepareKnockbackDirection(Number.NaN, 1)
+    const infiniteMagnitude = prepareKnockbackDirection(Number.MAX_VALUE, Number.MAX_VALUE)
+
+    expect(Result.isFailure(nonFinite) && nonFinite.failure).toBe('invalid-offset')
+    expect(Result.isFailure(infiniteMagnitude) && infiniteMagnitude.failure).toBe('invalid-offset')
+  })
+
   it('returns a typed failure or a strict finite direction with nonnegative horizontal magnitude', () => {
     FastCheck.assert(
       FastCheck.property(

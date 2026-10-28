@@ -73,6 +73,13 @@ describe('armor damage reduction', () => {
     expect(armorPointsForEquipment(equipmentWithInvalidOffhand)).toBe(0)
   })
 
+  it('ignores an item without a supported armour tier in a worn slot', () => {
+    const equipment = equipmentWith({ head: armourItem('diamond_sword') })
+
+    expect(armorPointsForEquipment(equipment)).toBe(0)
+    expect(armorToughnessForEquipment(equipment)).toBe(0)
+  })
+
   it.each([
     ['head', 'iron_boots'],
     ['chest', 'iron_helmet'],
@@ -114,6 +121,13 @@ describe('armor damage reduction', () => {
 
   it('preserves the damage cause', () => {
     expect(applyArmorToDamage({ amount: 5, cause: 'lava' }, 2).cause).toBe('lava')
+  })
+
+  it('treats an invalid toughness value as zero', () => {
+    expect(applyArmorToDamage({ amount: 10, cause: 'mob' }, 15, Number.NaN)).toEqual({
+      amount: 6,
+      cause: 'mob',
+    })
   })
 })
 
@@ -276,5 +290,11 @@ describe('validated armor hit preparation', () => {
 
     expect(Result.isFailure(result)).toBe(true)
     expect(JSON.stringify(equipment)).toBe(before)
+  })
+
+  it('returns a typed failure for a damage cause outside the runtime vocabulary', () => {
+    const result = prepareArmorHit(equipmentWith(), { amount: 1, cause: 'unknown' } as never)
+
+    expect(Result.isFailure(result) && result.failure).toBe('invalid-armor')
   })
 })

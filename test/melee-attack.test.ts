@@ -86,6 +86,27 @@ describe('C2 melee preparation', () => {
     expect(JSON.stringify({ input, zombie })).toBe(snapshot)
   })
 
+  it('rejects a non-melee intent and invalid authoritative combat state', () => {
+    const wrongIntent = prepareMeleeAttack({ _tag: 'BowAction', actor, action: 'draw' } as never, input)
+    const invalidPose = prepareMeleeAttack(intent, {
+      ...input,
+      pose: { ...input.pose, yawRadians: Number.NaN },
+    })
+    const invalidBlockDistance = prepareMeleeAttack(intent, { ...input, blockDistance: -1 })
+
+    expect(Result.isFailure(wrongIntent) && wrongIntent.failure).toBe('invalid-intent')
+    expect(Result.isFailure(invalidPose) && invalidPose.failure).toBe('invalid-authoritative-state')
+    expect(Result.isFailure(invalidBlockDistance) && invalidBlockDistance.failure).toBe(
+      'invalid-authoritative-state',
+    )
+  })
+
+  it('returns no-target when no hostile entities are in the authoritative roster', () => {
+    const result = prepareMeleeAttack(intent, { ...input, entities: [] })
+
+    expect(Result.isFailure(result) && result.failure).toBe('no-target')
+  })
+
   it('returns a typed failure or a strict finite event for arbitrary server ticks', () => {
     FastCheck.assert(
       FastCheck.property(

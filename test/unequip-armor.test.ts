@@ -94,6 +94,17 @@ describe('firstWornSlot', () => {
 })
 
 describe(`unequip candidate preparation (${ARMOR_PARITY_FIXTURE.source}, ${ARMOR_PARITY_FIXTURE.edition})`, () => {
+  it('prepares a no-op candidate when no armour is worn', () => {
+    const equipment = NO_ARMOR
+    const snapshot = JSON.stringify(equipment)
+    const result = prepareUnequipTopmost(equipment)
+
+    expect(Result.isSuccess(result)).toBe(true)
+    if (Result.isFailure(result)) return
+    expect(result.success).toStrictEqual({ _tag: 'NothingWorn', nextEquipment: equipment })
+    expect(JSON.stringify(equipment)).toBe(snapshot)
+  })
+
   it('strictly decodes the next equipment state without mutating the input', () => {
     const equipment: Equipment = { helmet: 'iron_helmet', chestplate: 'iron_chestplate', boots: 'iron_boots' }
     const snapshot = JSON.stringify(equipment)
