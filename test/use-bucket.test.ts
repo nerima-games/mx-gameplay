@@ -1,13 +1,14 @@
 import { describe, expect, it } from '@effect/vitest'
 import type { InventoryServiceApi, Slot } from '@nerima-games/mc-sim'
-import { Effect, Ref } from 'effect'
+import { Effect, Ref, Result } from 'effect'
 import {
   AIR_BLOCK_ID,
   BlockId,
-  blockPosition,
   blockPositionKeyOf,
-  BlockPositionKey as positionKey,
+  BlockPositionKey as makeBlockPositionKey,
+  itemStack,
   StackCount,
+  type BlockPositionKey,
   type BlockPosition,
 } from '@nerima-games/mc-kernel'
 import type { ChunkStoreApi } from '@nerima-games/mc-worldgen'
@@ -24,14 +25,17 @@ import {
 } from '../src/domain/interactions/use-bucket'
 import { makeChunkStoreDouble, STONE, WATER, world } from './support/chunk-store-double'
 import { emptySlots, makeInventoryDouble } from './support/inventory-service-double'
+import { blockPosition as atBlockPosition } from './support/coordinate-fixtures'
 
 type ItemType = Parameters<InventoryServiceApi['add']>[0]
 
 const LAVA: BlockId = BlockId(11)
-const POSITION: BlockPosition = blockPosition(1, 64, 1)
+const POSITION: BlockPosition = atBlockPosition(1, 64, 1)
 const LOADED_CHUNKS = ['0,0']
 
-const stack = (item: ItemType, count: number): Slot => ({ item, count: StackCount(count) })
+const positionKey = (value: string): BlockPositionKey => Result.getOrThrow(makeBlockPositionKey(value))
+const stack = (item: ItemType, count: number): Slot =>
+  Result.getOrThrow(itemStack(item, StackCount(count)))
 
 const inventoryWith = (...entries: ReadonlyArray<readonly [number, Slot]>): ReadonlyArray<Slot> => {
   const slots = [...emptySlots()]
@@ -79,7 +83,7 @@ describe('bucket interaction', () => {
         )
         expect(yield* Ref.get(frontier)).toStrictEqual([
           { key: '9,64,9', kind: 'water' },
-          { key: blockPositionKeyOf(blockPosition(POSITION.x, POSITION.y, POSITION.z)), kind: scenario.fluid },
+          { key: blockPositionKeyOf(atBlockPosition(POSITION.x, POSITION.y, POSITION.z)), kind: scenario.fluid },
         ])
         expect(yield* store.calls).toMatchObject({ reads: 1, writes: 1 })
       }),
@@ -110,7 +114,7 @@ describe('bucket interaction', () => {
           inventoryWith([0, stack('bucket', 1)]),
         )
         expect(yield* Ref.get(frontier)).toStrictEqual([
-          { key: blockPositionKeyOf(blockPosition(POSITION.x, POSITION.y, POSITION.z)), kind: scenario.fluid },
+          { key: blockPositionKeyOf(atBlockPosition(POSITION.x, POSITION.y, POSITION.z)), kind: scenario.fluid },
         ])
         expect(yield* store.calls).toMatchObject({ reads: 1, writes: 1 })
       }),
@@ -292,7 +296,7 @@ describe('bucket interaction', () => {
         restoreStorage: (snapshot) => {
           restores += 1
           return restores === 1
-            ? Effect.dieMessage('injected inventory update failure')
+            ? Effect.die('injected inventory update failure')
             : inventory.api.restoreStorage(snapshot)
         },
       }
@@ -364,7 +368,7 @@ describe('bucket interaction', () => {
         ...inventory.api,
         // Both the initial install AND the compensating rollback die, so
         // neither half of the recovery succeeds.
-        restoreStorage: () => Effect.dieMessage('injected inventory update failure'),
+        restoreStorage: () => Effect.die('injected inventory update failure'),
       }
       const frontier = yield* Ref.make<ReadonlyArray<FluidWorkItem>>([])
 

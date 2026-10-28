@@ -3,8 +3,9 @@ import {
   removeItem,
   withInventory,
   type InventoryServiceApi,
+  type ItemStackFailure,
 } from '@nerima-games/mc-sim'
-import { Effect, Exit, Ref } from 'effect'
+import { Effect, Exit, Option, Ref, Result } from 'effect'
 import { blockIdOf } from '@nerima-games/mc-kernel'
 import {
   AIR_BLOCK_ID,
@@ -58,6 +59,7 @@ export type BucketUseOutcome =
   | { readonly _tag: 'Occupied'; readonly block: BlockId }
   | { readonly _tag: 'MissingItem'; readonly item: BucketItemType }
   | { readonly _tag: 'InventoryFull'; readonly item: BucketItemType }
+  | { readonly _tag: 'InventoryOperationFailed'; readonly failure: ItemStackFailure }
   | { readonly _tag: 'ChunkNotLoaded' }
   | { readonly _tag: 'OutOfWorld' }
   | { readonly _tag: 'WorldChanged' }
@@ -77,7 +79,7 @@ type BucketPlan = {
   readonly nextItem: BucketItemType
 }
 
-const fluidBlockId = (fluid: FluidKind): BlockId | undefined => blockIdOf(fluid)
+const fluidBlockId = (fluid: FluidKind): BlockId | undefined => Option.getOrUndefined(blockIdOf(fluid))
 
 const planBucketUse = (heldItem: BucketItemType, block: BlockId): BucketPlan | undefined => {
   const waterBlock = fluidBlockId('water')
@@ -167,7 +169,11 @@ export const useBucket = (
     }
 
     const storage = yield* inventory.storageSnapshot
-    const removed = removeItem(storage.inventory, request.heldItem, 1)
+    const removal = removeItem(storage.inventory, request.heldItem, 1)
+    if (Result.isFailure(removal)) {
+      return { _tag: 'InventoryOperationFailed', failure: removal.failure }
+    }
+    const removed = removal.success
     if (removed.removed !== 1) {
       return { _tag: 'MissingItem', item: request.heldItem }
     }
@@ -184,7 +190,11 @@ export const useBucket = (
         : { _tag: 'Occupied', block: reading.block }
     }
 
-    const added = addItem(removed.inventory, plan.nextItem, 1)
+    const addition = addItem(removed.inventory, plan.nextItem, 1)
+    if (Result.isFailure(addition)) {
+      return { _tag: 'InventoryOperationFailed', failure: addition.failure }
+    }
+    const added = addition.success
     if (added.leftover !== 0) {
       return { _tag: 'InventoryFull', item: plan.nextItem }
     }
