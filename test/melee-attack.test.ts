@@ -13,7 +13,8 @@ import {
 import type { MobBehaviour } from '../src/domain/entities/mob-frame'
 
 const MELEE_PARITY_FIXTURE = {
-  source: 'https://raw.githubusercontent.com/takeokunn/ts-minecraft/main/docs/reference/vanilla-parity.md',
+  source: 'https://minecraft.wiki/w/Attack_cooldown',
+  parity: 'https://raw.githubusercontent.com/takeokunn/ts-minecraft/main/docs/reference/vanilla-parity.md',
   edition: 'Java Edition 26.3',
 } as const
 
@@ -33,7 +34,7 @@ describe('melee attack damage', () => {
     expect(meleeDamageForItem('diamond_pickaxe')).toBe(1)
   })
 
-  it('maps each sword tier to its melee damage', () => {
+  it(`maps each supported sword to its melee damage (${MELEE_PARITY_FIXTURE.source}, ${MELEE_PARITY_FIXTURE.edition})`, () => {
     expect(meleeDamageForItem('wooden_sword')).toBe(4)
     expect(meleeDamageForItem('gold_sword')).toBe(4)
     expect(meleeDamageForItem('stone_sword')).toBe(5)
@@ -42,7 +43,7 @@ describe('melee attack damage', () => {
     expect(meleeDamageForItem('netherite_sword')).toBe(8)
   })
 
-  it(`applies the parity critical multiplier (${MELEE_PARITY_FIXTURE.source}, ${MELEE_PARITY_FIXTURE.edition})`, () => {
+  it(`applies the parity critical multiplier (${MELEE_PARITY_FIXTURE.parity}, ${MELEE_PARITY_FIXTURE.edition})`, () => {
     expect(meleeDamageForItem('iron_sword', true)).toBe(9)
     expect(meleeDamageForItem(undefined, true)).toBe(1.5)
   })
