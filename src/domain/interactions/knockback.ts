@@ -1,3 +1,5 @@
+import { Result, Schema } from 'effect'
+
 /**
  * ONE RULE, ONE FILE (DN-GP-9): which way a blow shoves what it hit.
  *
@@ -150,6 +152,26 @@ export type KnockbackDirection =
 
 const STRAIGHT_UP: KnockbackDirection = { _tag: 'StraightUp' }
 
+export const KnockbackDirectionSchema: Schema.ConstraintDecoder<KnockbackDirection> = Schema.Union([
+  Schema.TaggedStruct('Away', {
+    x: Schema.Finite,
+    z: Schema.Finite,
+  }),
+  Schema.TaggedStruct('StraightUp', {}),
+])
+
+export type KnockbackPreparation = Readonly<{
+  direction: KnockbackDirection
+  horizontalMagnitude: number
+}>
+
+export const KnockbackPreparationSchema: Schema.ConstraintDecoder<KnockbackPreparation> = Schema.Struct({
+  direction: KnockbackDirectionSchema,
+  horizontalMagnitude: Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)),
+})
+
+export type KnockbackPreparationError = 'invalid-offset'
+
 /**
  * Which way to shove a target that was hit from `(dx, dz)` away.
  *
@@ -185,4 +207,23 @@ export const knockbackDirection = (dx: number, dz: number): KnockbackDirection =
   }
 
   return { _tag: 'Away', x: dx / magnitude, z: dz / magnitude }
+}
+
+/** Prepare a finite direction candidate. Velocity and impulse belong to mc-sim's missing velocity owner. */
+export const prepareKnockbackDirection = (
+  dx: number,
+  dz: number,
+): Result.Result<KnockbackPreparation, KnockbackPreparationError> => {
+  if (!Number.isFinite(dx) || !Number.isFinite(dz)) return Result.fail('invalid-offset')
+  const magnitude = Math.hypot(dx, dz)
+  if (!Number.isFinite(magnitude)) return Result.fail('invalid-offset')
+  const direction = knockbackDirection(dx, dz)
+  const prepared = {
+    direction,
+    horizontalMagnitude: direction._tag === 'Away' ? Math.hypot(direction.x, direction.z) : 0,
+  }
+  const decoded = Schema.decodeUnknownResult(KnockbackPreparationSchema, {
+    onExcessProperty: 'error',
+  })(prepared)
+  return Result.isFailure(decoded) ? Result.fail('invalid-offset') : Result.succeed(decoded.success)
 }
