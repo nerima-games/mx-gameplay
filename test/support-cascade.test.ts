@@ -48,6 +48,7 @@ const positionAt = (y: number) => Schema.decodeUnknownSync(BlockPositionSchema)(
 const blockId = (type: BlockType) => Option.getOrThrow(blockIdOf(type))
 const sand = blockId("sand")
 const cactus = blockId("cactus")
+const door = blockId("door")
 
 const source: ChunkSource = (coord) =>
   Effect.succeed({
@@ -219,6 +220,67 @@ describe("breakBlock support cascade transaction", () => {
     const afterStorage = await readOwnerStorage(fixture.coordinator, fixture.context.ownerId)
     expect(afterBlocks).toEqual(beforeBlocks)
     expect(afterStorage.state).toEqual(beforeStorage.state)
+    expect(fixture.readRestoredStorage()).toEqual(fixture.initialStorage)
+  })
+
+  it("removes the matching upper door half with the lower half", async () => {
+    const fixture = await makeFixture()
+    const lower = positionAt(60)
+    const upper = positionAt(61)
+    expect((await Effect.runPromise(fixture.store.setBlock(lower, door)))._tag).toBe("Written")
+    expect((await Effect.runPromise(fixture.store.setBlock(upper, door)))._tag).toBe("Written")
+
+    const raw = await Effect.runPromise(breakBlock(fixture.store, lower, fixture.context))
+    const result = decode(BreakTransactionResultSchema)(raw)
+
+    expect(result._tag).toBe("CommittedCascade")
+    if (result._tag !== "CommittedCascade") return
+    expect(result.removed).toEqual([lower, upper])
+    expect(await readBlocks(fixture.store, [lower, upper])).toEqual([
+      { _tag: "Block", block: AIR_BLOCK_ID },
+      { _tag: "Block", block: AIR_BLOCK_ID },
+    ])
+  })
+
+  it("rejects a support cascade when the world revision changes after its primary observation", async () => {
+    const fixture = await makeFixture()
+    const positions = await seedCactusColumn(fixture.store, 60, 1)
+    const primary = positions[0]
+    if (primary === undefined) throw new Error("the support position was not generated")
+    let observations = 0
+    const coordinator: BreakTransactionContext["coordinator"] = {
+      ...fixture.coordinator,
+      observe: (requestedOwnerId, schema, reads) =>
+        fixture.coordinator.observe(requestedOwnerId, schema, reads).pipe(
+          Effect.tap(() => {
+            observations += 1
+            if (observations !== 1) return Effect.void
+            return Effect.gen(function* () {
+              const expectedRevision = yield* fixture.coordinator.revision
+              const expectedDimensionRevision = yield* fixture.coordinator.dimensionRevision(dimension)
+              yield* Effect.orDie(fixture.coordinator.commit({
+                expectedRevision,
+                expectedDimensions: [{ dimension, expectedRevision: expectedDimensionRevision }],
+                changes: [{ ownerId: fixture.context.ownerId, state: fixture.initialStorage }],
+              }))
+            })
+          }),
+        ),
+    }
+    const beforeBlocks = await readBlocks(fixture.store, positions)
+
+    const raw = await Effect.runPromise(breakBlock(fixture.store, primary, {
+      ...fixture.context,
+      coordinator,
+    }))
+    const result = decode(BreakTransactionResultSchema)(raw)
+
+    expect(result).toMatchObject({
+      _tag: "TransactionFailure",
+      failure: { _tag: "ObservationChanged", expectedWorldRevision: 0, actualWorldRevision: 1 },
+    })
+    expect(observations).toBe(2)
+    expect(await readBlocks(fixture.store, positions)).toEqual(beforeBlocks)
     expect(fixture.readRestoredStorage()).toEqual(fixture.initialStorage)
   })
 })

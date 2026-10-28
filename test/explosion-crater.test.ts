@@ -65,6 +65,19 @@ describe('explosion crater', () => {
     }),
   )
 
+  it.effect('does not read or write the world when blast power is non-finite', () =>
+    Effect.gen(function* () {
+      const centre: BlockPosition = atBlockPosition(8, 64, 8)
+      const store = yield* makeChunkStoreDouble(world([[centre, STONE]]), ['0,0'])
+
+      const disturbed = yield* carveExplosionCrater(store.api, centre, Number.POSITIVE_INFINITY)
+
+      expect(disturbed).toStrictEqual([])
+      expect(yield* store.blockAt(centre)).toBe(STONE)
+      expect(yield* store.calls).toStrictEqual({ reads: 0, writes: 0, peeks: 0 })
+    }),
+  )
+
   it('craterRadius is 0 for a non-finite power, rather than propagating NaN', () => {
     expect(craterRadius(Number.NaN)).toBe(0)
     expect(craterRadius(Number.POSITIVE_INFINITY)).toBe(0)
