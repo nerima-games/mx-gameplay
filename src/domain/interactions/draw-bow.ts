@@ -50,24 +50,12 @@ import type { EntityId, SimulationTick } from '@nerima-games/mc-kernel'
 import { IntentPayloadSchema, type IntentPayload } from '@nerima-games/mc-sim'
 import { Result, Schema } from 'effect'
 
-/**
- * Shortest hold that fires at all, in seconds.
- *
- * `<reference-impl>/packages/entity/domain/bow.config.ts:3`, and the comparison
- * is INCLUSIVE — `canFireBow` is `secsHeld >= BOW_MIN_CHARGE_SECS`
- * (`bow-resolution.ts:19`).
- *
- * TRANSCRIBED, NOT JUSTIFIED. The reference's comment is 「must hold at least
- * this long to fire」, which restates the code rather than measuring anything.
- * Named here rather than inlined so that the label is visible instead of a bare
- * literal that reads as considered — `../vehicle/rail-ascent.ts`'s
- * `RAIL_HEADING_EPSILON` carries the same disclosure for the same reason
- * (docs/responsibility.md §5-4 requires it).
- */
-export const BOW_MIN_CHARGE_SECS = 0.2
+/** Minimum hold for a bow shot, in seconds. Java Edition's no-charge shot starts at 0.1 seconds. */
+export const BOW_MIN_CHARGE_SECS = 0.1
 
 /**
- * Hold at least this long and the bow is fully drawn. `bow.config.ts:4`.
+ * The parity charge scale reaches 1 at the Java critical-charge threshold.
+ * Java's ordinary full-charge band starts at 0.9 seconds.
  *
  * TRANSCRIBED, NOT JUSTIFIED, though the reference's comment 「full charge at 1
  * second (vanilla ~1s draw)」 at least names an external source. This repository
@@ -127,7 +115,7 @@ export const bowCharge = (secsHeld: number): number => {
 /**
  * Has it been held long enough to loose at all? `bow-resolution.ts:18-19`.
  *
- * INCLUSIVE at `BOW_MIN_CHARGE_SECS`, and TOTAL: `NaN >= 0.2` is `false`, so a
+ * INCLUSIVE at `BOW_MIN_CHARGE_SECS`, and TOTAL: `NaN >= 0.1` is `false`, so a
  * broken clock does not fire.
  *
  * Note that this is NOT `bowCharge(secsHeld) > 0`. The minimum hold and the full
@@ -190,33 +178,22 @@ export const bowPowerMultiplier = (powerLevel: number | undefined): number => {
 }
 
 /**
- * What a shot at this draw takes off, in health points.
- *
- * QUADRATIC IN THE CHARGE (`bow-resolution.ts:14`):
- * `round(MIN + charge² · (MAX − MIN))`. Half a draw is a quarter of the way from
- * 1 to 9, which is 3 — not 5 — and that is the whole point of charging a bow. Its
- * oracle pins the arithmetic (`test/bow-resolution.test.ts:57-60`).
- *
- * ROUNDED, AND ROUNDED LAST. The reference rounds the base damage before applying
- * Power (`interaction-bow-handler.ts:58` rounds `computeBowDamage`'s result, then
- * rounds the product again), so a full-draw Power I shot there is
- * `round(round(9) * 1.5)` = 14. Rounding once at the end gives the same 14 here,
- * and differs from the reference only where the base damage is fractional before
- * rounding — which the quadratic makes possible at partial draws. The divergence
- * is at most one point and it is in the direction of the arithmetic the reference
- * meant; `test/bow.test.ts` pins the full-draw agreement rather than papering over
- * the partial-draw difference.
- *
- * TOTAL: a charge that is not a number is no charge, so a broken draw does
- * minimum damage rather than `NaN` damage. `../death-cause.ts`'s `applyDamage`
- * would turn a `NaN` into a health of `NaN`, which `isDead` reads as ALIVE — an
- * immortal mob, and the least debuggable outcome available.
+ * Select the deterministic damage for a bow charge band. Java Edition uses 1, 5,
+ * and 6 damage for no-charge, medium, and full charge. The parity matrix fixes
+ * critical charge at 9 instead of using vanilla's random 6–11 range. Power is
+ * applied after selecting the band damage.
  */
 export const bowDamage = (charge: number, context: BowDrawContext = PLAIN_BOW): number => {
   const clamped = Number.isFinite(charge) ? Math.max(0, Math.min(1, charge)) : 0
-  const base = BOW_MIN_DAMAGE + clamped * clamped * (BOW_MAX_DAMAGE - BOW_MIN_DAMAGE)
+  const base = clamped >= 1
+    ? BOW_MAX_DAMAGE
+    : clamped >= 0.9
+    ? 6
+    : clamped >= 0.2
+    ? 5
+    : BOW_MIN_DAMAGE
 
-  return Math.round(base * bowPowerMultiplier(context.powerLevel))
+  return Math.ceil(base * bowPowerMultiplier(context.powerLevel))
 }
 export type BowAction = Extract<IntentPayload, { readonly _tag: 'BowAction' }>
 
