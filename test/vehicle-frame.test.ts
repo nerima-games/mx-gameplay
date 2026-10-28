@@ -1,5 +1,5 @@
 import { describe, expect, it } from '@effect/vitest'
-import { Effect, Exit } from 'effect'
+import { Effect, Exit, Option } from 'effect'
 import { blockIdOf } from '@nerima-games/mc-kernel'
 import { VehicleId, type VehicleServiceApi } from '@nerima-games/mc-sim'
 import type { ChunkStoreApi } from '@nerima-games/mc-worldgen'
@@ -61,7 +61,7 @@ describe('vehicle frame', () => {
   })
 
   it('swallows a per-vehicle update failure rather than failing the whole frame', async () => {
-    // Every other test's `updateState` succeeds, so the `Effect.catchAll(() =>
+    // Every other test's `updateState` succeeds, so the `Effect.catch(() =>
     // Effect.void)` at the end of the per-vehicle pipe had never actually
     // caught anything — one bad vehicle write must not stop the rest of the
     // frame, or a roster of ten carts becomes a roster of one bad write away
@@ -102,7 +102,7 @@ describe('vehicle frame', () => {
       vehicles: Effect.succeed([vehicle]),
       updateState: (_id: VehicleId, state: Record<string, unknown>) => Effect.sync(() => { next = state }),
     } as unknown as VehicleServiceApi
-    const water = blockIdOf('water')!
+    const water = Option.getOrThrow(blockIdOf('water'))
     const store = {
       getBlock: () => Effect.succeed({ _tag: 'Block' as const, block: water }),
     } as unknown as ChunkStoreApi
@@ -131,7 +131,7 @@ describe('vehicle frame', () => {
       vehicles: Effect.succeed([vehicle]),
       updateState: (_id: VehicleId, state: Record<string, unknown>) => Effect.sync(() => { next = state }),
     } as unknown as VehicleServiceApi
-    const stone = blockIdOf('stone')!
+    const stone = Option.getOrThrow(blockIdOf('stone'))
     const store = {
       getBlock: (position: { x: number; y: number; z: number }) => Effect.succeed(
         position.x === 1 && position.y === 64 && position.z === 0
@@ -165,8 +165,8 @@ describe('vehicle frame', () => {
       vehicles: Effect.succeed([vehicle]),
       updateState: (_id: VehicleId, state: Record<string, unknown>) => Effect.sync(() => { next = state }),
     } as unknown as VehicleServiceApi
-    const stone = blockIdOf('stone')!
-    const water = blockIdOf('water')!
+    const stone = Option.getOrThrow(blockIdOf('stone'))
+    const water = Option.getOrThrow(blockIdOf('water'))
     const store = {
       getBlock: (position: { x: number; y: number; z: number }) => Effect.succeed(
         position.x === 1 && position.y === 64 && position.z === 0
@@ -210,7 +210,7 @@ describe('vehicle frame', () => {
       vehicles: Effect.succeed([vehicle]),
       updateState: (_id: VehicleId, state: Record<string, unknown>) => Effect.sync(() => { next = state }),
     } as unknown as VehicleServiceApi
-    const stone = blockIdOf('stone')!
+    const stone = Option.getOrThrow(blockIdOf('stone'))
     const store = {
       getBlock: (position: { x: number; y: number; z: number }) => Effect.succeed(
         position.x === 1 && position.y === 64 && position.z === 0
@@ -242,8 +242,8 @@ describe('vehicle frame', () => {
       vehicles: Effect.succeed([vehicle]),
       updateState: (_id: VehicleId, state: Record<string, unknown>) => Effect.sync(() => { next = state }),
     } as unknown as VehicleServiceApi
-    const stone = blockIdOf('stone')!
-    const poweredRail = blockIdOf('powered_rail')!
+    const stone = Option.getOrThrow(blockIdOf('stone'))
+    const poweredRail = Option.getOrThrow(blockIdOf('powered_rail'))
     const store = {
       getBlock: (position: { x: number; y: number; z: number }) => Effect.succeed(
         position.x === 1 && position.y === 64 && position.z === 0
@@ -286,8 +286,8 @@ describe('vehicle frame', () => {
       vehicles: Effect.succeed([vehicle]),
       updateState: (_id: VehicleId, state: Record<string, unknown>) => Effect.sync(() => { next = state }),
     } as unknown as VehicleServiceApi
-    const stone = blockIdOf('stone')!
-    const poweredRail = blockIdOf('powered_rail')!
+    const stone = Option.getOrThrow(blockIdOf('stone'))
+    const poweredRail = Option.getOrThrow(blockIdOf('powered_rail'))
     const store = {
       getBlock: (position: { x: number; y: number; z: number }) => Effect.succeed(
         position.x === 1 && position.y === 64 && position.z === 0
