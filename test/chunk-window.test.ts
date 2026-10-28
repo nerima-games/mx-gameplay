@@ -200,6 +200,12 @@ describe('chunkCoordOf and chunkCoordsAround', () => {
     expect(chunkCoordsAround({ x: 0, y: 64, z: 0 }, Number.POSITIVE_INFINITY)).toStrictEqual([])
     expect(chunkCoordsAround({ x: 0, y: 64, z: 0 }, -1)).toStrictEqual([])
   })
+
+  it('yields nothing when finite inputs resolve outside the safe chunk-coordinate range', () => {
+    // Finite world coordinates can still exceed the integer range ChunkAxis can
+    // represent exactly. The window must refuse before constructing chunk ids.
+    expect(chunkCoordsAround({ x: Number.MAX_VALUE, y: 64, z: 0 }, 0)).toStrictEqual([])
+  })
 })
 
 describe('openChunkWindow', () => {

@@ -143,6 +143,7 @@ import { DESPAWN_DISTANCE_BLOCKS } from '../src/domain/mob/hostile-despawn'
 import { ZOMBIE_KIND } from '../src/domain/mob/hostile-combat'
 import { chunkCoordsAround } from '../src/domain/chunk-window'
 import { PORTAL_WINDOW_RADIUS, ignitePortal } from '../src/domain/interactions/ignite-portal'
+import { GAMEPLAY_STAGE_IDS } from '../src/stages/stage-ids'
 import {
   drainItemUseResults,
   drainPlayerDamages,
@@ -2398,8 +2399,10 @@ describe('the ignition slice: an item use reaches the world', () => {
           const { store, state, stages } = yield* slice(world([]), residentAround(origin))
           yield* requestItemUse(state, `fire-${frequency}`, origin, 'fire_charge')
           yield* runFrame(stages, DeltaTimeSecs(0))
+          // The full schedule handles ignition above; cadence steps only advance fire.
+          const fireStages = stages.filter((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire)
           yield* runFrames(
-            stages,
+            fireStages,
             (FIRE_NATURAL_LIFETIME_TICKS * frequency) / 20,
             DeltaTimeSecs(1 / frequency),
           )

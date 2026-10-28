@@ -167,6 +167,25 @@ describe('advanceFootstepRuntime', () => {
     expect(state.distanceSinceLastStep).toBeCloseTo(FOOTSTEP_DISTANCE * 3, 9)
   })
 
+  it('keeps accumulated distance when the standing block id is not registered', () => {
+    const { audio, play } = makeAudio()
+    const unresolved = advanceFootstepRuntime(
+      initialFootstepRuntimeState(),
+      footstepInput({ standingOnBlockId: Number.NaN, horizontalDistance: FOOTSTEP_DISTANCE }),
+      audio,
+    )
+    expect(unresolved.distanceSinceLastStep).toBe(FOOTSTEP_DISTANCE)
+    expect(play).not.toHaveBeenCalled()
+
+    const resolved = advanceFootstepRuntime(
+      unresolved,
+      footstepInput({ horizontalDistance: 0 }),
+      audio,
+    )
+    expect(resolved.distanceSinceLastStep).toBe(0)
+    expect(play).toHaveBeenCalledExactlyOnceWith('footstepGrass', expect.anything())
+  })
+
   it('fires multiple cues in one frame that crosses more than one FOOTSTEP_DISTANCE', () => {
     const { audio, play } = makeAudio()
     const state = advanceFootstepRuntime(
