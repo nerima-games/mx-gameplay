@@ -20,7 +20,7 @@
  * tested portal geometry API. Nothing here re-tests the geometry.
  */
 import { describe, expect, it } from '@effect/vitest'
-import { Effect, Option } from 'effect'
+import { Effect, Option, Ref, Schema } from 'effect'
 import {
   AIR_BLOCK_ID,
   BlockId,
@@ -29,9 +29,22 @@ import {
   MAX_PORTAL_WIDTH,
   PortalHeight,
   PortalWidth,
+  CHUNK_SIZE_XZ,
+  WorldIdSchema,
   type BlockPosition,
 } from '@nerima-games/mc-kernel'
 import { generatePortalLayout } from '@nerima-games/mc-worldgen'
+import {
+  ChunkCapacity,
+  makeChunkStore,
+  type ChunkSource,
+} from '@nerima-games/mc-worldgen'
+import { emptyBlocks } from '@nerima-games/mc-worldgen/testing'
+import {
+  makeWorldCommitCoordinator,
+  type WorldCommitCoordinatorApi,
+  type WorldCommitRequest,
+} from '@nerima-games/mc-sim'
 import { blockPosition, chunkCoord } from './support/coordinate-fixtures'
 import { igniteFire } from '../src/domain/interactions/ignite-fire'
 import { PORTAL_WINDOW_RADIUS, ignitePortal } from '../src/domain/interactions/ignite-portal'
@@ -67,6 +80,54 @@ const OBSIDIAN = Option.getOrUndefined(blockIdOf('obsidian')) ?? BlockId(40)
 const NETHER_PORTAL = Option.getOrUndefined(blockIdOf('nether_portal')) ?? BlockId(118)
 const FIRE = Option.getOrUndefined(blockIdOf('fire')) ?? BlockId(119)
 const TNT = TNT_BLOCK_ID ?? BlockId(46)
+
+const airChunkSource: ChunkSource = (coord) =>
+  Effect.sync(() => ({
+    coord,
+    blocks: emptyBlocks(),
+    biomes: Array.from({ length: CHUNK_SIZE_XZ * CHUNK_SIZE_XZ }, () => 'PLAINS' as const),
+  }))
+
+const makeIgnitionWorld = () =>
+  Effect.gen(function* () {
+    const backingStore = yield* makeChunkStore(airChunkSource, ChunkCapacity(4))
+    yield* backingStore.load(chunkCoord(0, 0))
+    const requests = yield* Ref.make<ReadonlyArray<WorldCommitRequest>>([])
+    const directWrites = yield* Ref.make(0)
+    const store: ChunkStoreApi = {
+      ...backingStore,
+      setBlock: (position, block) =>
+        Effect.flatMap(
+          Ref.update(directWrites, (count) => count + 1),
+          () => backingStore.setBlock(position, block),
+        ),
+    }
+    const coordinator = yield* makeWorldCommitCoordinator({
+      world: Schema.decodeUnknownSync(WorldIdSchema)('ignite-tests'),
+      owners: [],
+      chunkStores: { forDimension: () => backingStore },
+    })
+    const recordingCoordinator: WorldCommitCoordinatorApi = {
+      ...coordinator,
+      commit: (request) =>
+        Effect.tap(
+          coordinator.commit(request),
+          () => Ref.update(requests, (current) => [...current, request]),
+        ),
+    }
+
+    return {
+      store,
+      requests,
+      directWrites,
+      coordinator: recordingCoordinator,
+      commitContext: {
+        coordinator: recordingCoordinator,
+        dimension: 'overworld' as const,
+        changes: [],
+      },
+    }
+  })
 
 /** Bottom-left interior cell of the test portal. Chunk (0, 1) of the double. */
 const ORIGIN: BlockPosition = blockPosition(4, 64, 20)
@@ -273,13 +334,34 @@ describe('ignitePortal', () => {
 describe('igniteFire', () => {
   const target: BlockPosition = blockPosition(2, 64, 3)
 
-  it.effect('puts kernel’s fire block into an air cell', () =>
+  it.effect('commits kernel’s fire block as one C4/C7 write', () =>
     Effect.gen(function* () {
-      const store = yield* makeChunkStoreDouble(world([]), ['0,0'])
+      const ignition = yield* makeIgnitionWorld()
+      const expectedRevision = yield* ignition.coordinator.revision
+      const expectedDimensionRevision = yield* ignition.coordinator.dimensionRevision('overworld')
 
-      expect(yield* igniteFire(store.api, target)).toStrictEqual({ _tag: 'Lit', position: target })
-      expect(yield* store.blockAt(target)).toBe(FIRE)
+      expect(yield* igniteFire(ignition.store, target, ignition.commitContext)).toStrictEqual({
+        _tag: 'Lit',
+        position: target,
+      })
+      expect(yield* ignition.store.getBlock(target)).toStrictEqual({ _tag: 'Block', block: FIRE })
       expect(Option.getOrUndefined(blockIdOf('fire'))).toBe(FIRE)
+      expect(yield* Ref.get(ignition.requests)).toStrictEqual([{
+        expectedRevision,
+        expectedDimensions: [{ dimension: 'overworld', expectedRevision: expectedDimensionRevision }],
+        changes: [],
+        blockWrite: {
+          world: ignition.coordinator.worldId,
+          expectedWorldRevision: expectedRevision,
+          dimension: 'overworld',
+          expectedDimensionRevision,
+          edits: [{ position: target, block: FIRE }],
+        },
+      }])
+      expect(yield* ignition.coordinator.revision).toBe(expectedRevision + 1)
+      expect(yield* ignition.coordinator.dimensionRevision('overworld'))
+        .toBe(expectedDimensionRevision + 1)
+      expect(yield* Ref.get(ignition.directWrites)).toBe(0)
     }),
   )
 
@@ -325,35 +407,15 @@ describe('igniteFire', () => {
     }),
   )
 
-  describe('the window between the read and the write', () => {
-    it.effect('a write that comes back `Unchanged` is Occupied — the read’s answer, one instruction late', () =>
-      Effect.gen(function* () {
-        const store = yield* makeChunkStoreDouble(world([]), ['0,0'])
-        const raced = storeThatChangesItsMind(store.api, { _tag: 'Unchanged', previous: FIRE })
+  it.effect('refuses an air cell when C4 context is absent, without direct-writing it', () =>
+    Effect.gen(function* () {
+      const store = yield* makeChunkStoreDouble(world([]), ['0,0'])
 
-        // `existing` comes from the STORE's `previous` rather than from the
-        // rule's own idea of what is there, which is what makes the answer a
-        // report instead of a restatement of an expired reading.
-        expect(yield* igniteFire(raced, target)).toStrictEqual({ _tag: 'Occupied', existing: FIRE })
-      }),
-    )
-
-    it.effect('a write that comes back ChunkNotLoaded or OutOfWorld keeps the two apart', () =>
-      Effect.gen(function* () {
-        // Two tags rather than one shared "it did not happen":
-        // `ChunkNotLoaded` is temporary and a caller may retry it, `OutOfWorld`
-        // never becomes true and a caller that retried would spin.
-        const store = yield* makeChunkStoreDouble(world([]), ['0,0'])
-
-        expect(
-          yield* igniteFire(storeThatChangesItsMind(store.api, { _tag: 'ChunkNotLoaded' }), target),
-        ).toStrictEqual({ _tag: 'ChunkNotLoaded' })
-        expect(
-          yield* igniteFire(storeThatChangesItsMind(store.api, { _tag: 'OutOfWorld' }), target),
-        ).toStrictEqual({ _tag: 'OutOfWorld' })
-      }),
-    )
-  })
+      expect(yield* igniteFire(store.api, target)).toStrictEqual({ _tag: 'CommitContextMissing' })
+      expect((yield* store.calls).writes).toBe(0)
+      expect(yield* store.blockAt(target)).toBeUndefined()
+    }),
+  )
 })
 
 describe('igniteTnt', () => {
@@ -506,14 +568,14 @@ describe('useFlintAndSteel — the order of the two arms', () => {
     }),
   )
 
-  it.effect('falls through to fire when there is no frame', () =>
+  it.effect('falls through to a typed refusal when the fire arm lacks C4 context', () =>
     Effect.gen(function* () {
       const store = yield* makeChunkStoreDouble(world([]), residentAround(ORIGIN))
 
       const outcome = yield* useFlintAndSteel(store.api, ORIGIN, 'fire_charge')
 
-      expect(outcome).toStrictEqual({ _tag: 'Fire', outcome: { _tag: 'Lit', position: ORIGIN } })
-      expect(yield* store.blockAt(ORIGIN)).toBe(FIRE)
+      expect(outcome).toStrictEqual({ _tag: 'Fire', outcome: { _tag: 'CommitContextMissing' } })
+      expect(yield* store.blockAt(ORIGIN)).toBeUndefined()
     }),
   )
 
@@ -530,7 +592,7 @@ describe('useFlintAndSteel — the order of the two arms', () => {
     }),
   )
 
-  it.effect('both arms spell success `Lit`, which is what lets the stage test one tag', () =>
+  it.effect('portal success remains available while fire requires its C4 context', () =>
     Effect.gen(function* () {
       const portalStore = yield* makeChunkStoreDouble(
         world(portalEntries(ORIGIN, 2, 3)),
@@ -542,7 +604,7 @@ describe('useFlintAndSteel — the order of the two arms', () => {
       const burned = yield* useFlintAndSteel(fireStore.api, ORIGIN, 'flint_and_steel')
 
       expect(lit.outcome._tag).toBe('Lit')
-      expect(burned.outcome._tag).toBe('Lit')
+      expect(burned.outcome._tag).toBe('CommitContextMissing')
     }),
   )
 
