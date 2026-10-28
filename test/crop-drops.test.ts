@@ -8,7 +8,8 @@
  * 2-4 warts」 becomes arithmetic instead of a claim.
  */
 import { describe, expect, it } from '@effect/vitest'
-import { Effect, FastCheck } from 'effect'
+import { Effect } from 'effect'
+import * as FastCheck from 'fast-check'
 import {
   MISSING_RIPE_PRODUCE,
   RIPE_CROP_YIELD,
