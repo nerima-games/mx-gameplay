@@ -1,5 +1,76 @@
-import type { DeltaTimeSecs, ItemType } from '@nerima-games/mc-kernel'
+import { ITEM_TYPES, type DeltaTimeSecs, type ItemType } from '@nerima-games/mc-kernel'
+import { Effect, Schema } from 'effect'
+import {
+  addStoredStack,
+  BrewingServiceStateSchema,
+  durabilityForItem,
+  PlayerStorageSnapshotSchema,
+  ReplicatedOwnerIdSchema,
+  setBrewingBottle,
+  WorldCommitCoordinator,
+  type ReplicatedOwnerId,
+  type BrewingServiceError,
+} from '@nerima-games/mc-sim'
 import type { StatusEffectApplication } from './status-effect.js'
+
+const BrewingBottleIndexSchema = Schema.Int.check(
+  Schema.isBetween({ minimum: 0, maximum: 2 }),
+)
+const PositiveStackCountSchema = Schema.Int.check(
+  Schema.isBetween({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
+)
+const NonNegativeStackCountSchema = Schema.Int.check(
+  Schema.isBetween({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER }),
+)
+
+export type BrewingBottleCollectionRequest = Readonly<{
+  brewingOwnerId: ReplicatedOwnerId
+  playerStorageOwnerId: ReplicatedOwnerId
+  bottleIndex: number
+}>
+
+export const BrewingBottleCollectionRequestSchema: Schema.ConstraintDecoder<
+  BrewingBottleCollectionRequest
+> = Schema.Struct({
+  brewingOwnerId: ReplicatedOwnerIdSchema,
+  playerStorageOwnerId: ReplicatedOwnerIdSchema,
+  bottleIndex: BrewingBottleIndexSchema,
+})
+
+export type BrewingBottleCollectionResult =
+  | {
+      readonly _tag: 'Collected'
+      readonly item: ItemType
+      readonly count: number
+      readonly remainingCount: number
+    }
+  | { readonly _tag: 'Empty' }
+  | { readonly _tag: 'InvalidOwners' }
+  | { readonly _tag: 'InvalidSlot' }
+  | { readonly _tag: 'StaleSnapshot' }
+  | { readonly _tag: 'InventoryFull'; readonly item: ItemType; readonly count: number }
+  | { readonly _tag: 'InvalidStack' }
+
+export const BrewingBottleCollectionResultSchema: Schema.ConstraintDecoder<
+  BrewingBottleCollectionResult
+> = Schema.Union([
+  Schema.Struct({
+    _tag: Schema.Literal('Collected'),
+    item: Schema.Literals(ITEM_TYPES),
+    count: PositiveStackCountSchema,
+    remainingCount: NonNegativeStackCountSchema,
+  }),
+  Schema.Struct({ _tag: Schema.Literal('Empty') }),
+  Schema.Struct({ _tag: Schema.Literal('InvalidOwners') }),
+  Schema.Struct({ _tag: Schema.Literal('InvalidSlot') }),
+  Schema.Struct({ _tag: Schema.Literal('StaleSnapshot') }),
+  Schema.Struct({
+    _tag: Schema.Literal('InventoryFull'),
+    item: Schema.Literals(ITEM_TYPES),
+    count: PositiveStackCountSchema,
+  }),
+  Schema.Struct({ _tag: Schema.Literal('InvalidStack') }),
+])
 
 export const BREWING_INGREDIENTS = ['nether_wart', 'sugar', 'spider_eye', 'ghast_tear'] as const
 export type BrewingIngredient = (typeof BREWING_INGREDIENTS)[number]
@@ -184,6 +255,86 @@ export const collectBrewingBottle = (
   const item = state.bottle === 'water_bottle' ? state.bottle : potionItem(state.bottle.potion)
   return [{ ...state, bottle: undefined }, { _tag: 'Collected', returned: { item, count: 1 } }]
 }
+
+export const collectBrewingBottleWithStorage = (
+  request: BrewingBottleCollectionRequest,
+): Effect.Effect<
+  BrewingBottleCollectionResult,
+  BrewingServiceError,
+  WorldCommitCoordinator
+> =>
+  Effect.gen(function* () {
+    const coordinator = yield* WorldCommitCoordinator
+    if (request.brewingOwnerId === request.playerStorageOwnerId) {
+      return { _tag: 'InvalidOwners' as const }
+    }
+    if (
+      !Number.isSafeInteger(request.bottleIndex) ||
+      request.bottleIndex < 0 ||
+      request.bottleIndex > 2
+    ) {
+      return { _tag: 'InvalidSlot' as const }
+    }
+
+    const brewingSnapshot = yield* coordinator.snapshot(
+      request.brewingOwnerId,
+      BrewingServiceStateSchema,
+    )
+    const storageSnapshot = yield* coordinator.snapshot(
+      request.playerStorageOwnerId,
+      PlayerStorageSnapshotSchema,
+    )
+    if (brewingSnapshot.revision !== storageSnapshot.revision) {
+      return { _tag: 'StaleSnapshot' as const }
+    }
+
+    const bottle = brewingSnapshot.state.bottles[request.bottleIndex]
+    if (bottle === undefined) return { _tag: 'Empty' as const }
+
+    const storageCandidate = addStoredStack(storageSnapshot.state, {
+      ...bottle,
+      durability: durabilityForItem(bottle.item),
+    })
+    if (storageCandidate.result._tag !== 'Added') {
+      return { _tag: 'InvalidStack' as const }
+    }
+    if (storageCandidate.result.added === 0) {
+      return {
+        _tag: 'InventoryFull' as const,
+        item: bottle.item,
+        count: bottle.count,
+      }
+    }
+
+    const leftover = storageCandidate.result.leftover
+    const remainingBottle =
+      leftover === null
+        ? undefined
+        : {
+            item: leftover.item,
+            count: leftover.count,
+            components: leftover.components,
+          }
+    const brewingCandidate = yield* Effect.fromResult(
+      setBrewingBottle(brewingSnapshot.state, request.bottleIndex, remainingBottle),
+    )
+
+    yield* coordinator.commit({
+      expectedRevision: brewingSnapshot.revision,
+      expectedDimensions: [],
+      changes: [
+        { ownerId: request.brewingOwnerId, state: brewingCandidate },
+        { ownerId: request.playerStorageOwnerId, state: storageCandidate.storage },
+      ],
+    })
+
+    return {
+      _tag: 'Collected' as const,
+      item: bottle.item,
+      count: storageCandidate.result.added,
+      remainingCount: leftover?.count ?? 0,
+    }
+  })
 
 export const tickBrewingStand = (
   state: BrewingStandState,

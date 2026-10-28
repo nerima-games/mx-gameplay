@@ -1,5 +1,10 @@
 import { describe, expect, it } from '@effect/vitest'
-import { Result } from 'effect'
+import { Effect, Result, Schema } from 'effect'
+import {
+  EntityIdSchema,
+  ProjectileIdSchema,
+  SimulationTickSchema,
+} from '@nerima-games/mc-kernel'
 import {
   addItem,
   countOf,
@@ -7,13 +12,20 @@ import {
   emptyInventory,
   equipmentItem,
   itemStack,
+  FishingServiceBiteSuccessSchema,
+  FishingServiceCastSuccessSchema,
+  FishingServiceReelSuccessSchema,
   type EquipmentItem,
+  type FishingServiceApi,
 } from '@nerima-games/mc-sim'
 import {
   advanceFishing,
+  biteFishingWithService,
+  castFishingWithService,
   cancelFishing,
   castFishing,
   fishingPhase,
+  reelFishingWithService,
   reelFishing,
   FISHING_BITE_WINDOW_SECS,
   FISHING_MAX_WAIT_SECS,
@@ -50,6 +62,27 @@ const castSession = (
   const result = castFishing(fishingRod(currentDurability), environment, rolls)
   if (result._tag !== 'Cast') throw new Error(`Expected Cast, received ${result._tag}`)
   return result.session
+}
+
+const fishingServiceDouble = () => {
+  const calls: Array<ReadonlyArray<string>> = []
+  const service: FishingServiceApi = {
+    snapshot: Effect.succeed({ rods: [] }),
+    cast: (actor, bobber) =>
+      Effect.sync(() => {
+        calls.push(['cast', String(actor), String(bobber)])
+      }),
+    bite: (actor) =>
+      Effect.sync(() => {
+        calls.push(['bite', String(actor)])
+      }),
+    reel: (actor, tick) =>
+      Effect.sync(() => {
+        calls.push(['reel', String(actor), String(tick)])
+        return { _tag: 'Caught', item: 'cod' }
+      }),
+  }
+  return { service, calls }
 }
 
 describe('castFishing', () => {
@@ -255,4 +288,36 @@ describe('reelFishing', () => {
     expect(added.leftover).toBe(0)
     expect(countOf(added.inventory, result.loot.item)).toBe(1)
   })
+})
+
+describe('FishingService adapters', () => {
+  it('forwards cast, bite, and reel inputs directly to mc-sim', () => {
+    const actor = Schema.decodeUnknownSync(EntityIdSchema)('player-fishing-adapter')
+    const bobber = Schema.decodeUnknownSync(ProjectileIdSchema)('bobber-fishing-adapter')
+    const tick = Schema.decodeUnknownSync(SimulationTickSchema)(17)
+    const { service, calls } = fishingServiceDouble()
+
+    const cast = Effect.runSync(castFishingWithService(service, actor, bobber))
+    const bite = Effect.runSync(biteFishingWithService(service, actor))
+    const reel = Effect.runSync(reelFishingWithService(service, actor, tick))
+
+    expect(Schema.decodeUnknownSync(FishingServiceCastSuccessSchema)(cast)).toBeUndefined()
+    expect(Schema.decodeUnknownSync(FishingServiceBiteSuccessSchema)(bite)).toBeUndefined()
+    expect(
+      Schema.decodeUnknownSync(FishingServiceReelSuccessSchema, {
+        onExcessProperty: 'error',
+      })(reel),
+    ).toStrictEqual({ _tag: 'Caught', item: 'cod' })
+    expect(() =>
+      Schema.decodeUnknownSync(FishingServiceReelSuccessSchema, {
+        onExcessProperty: 'error',
+      })({ ...reel, extra: true }),
+    ).toThrow()
+    expect(calls).toStrictEqual([
+      ['cast', String(actor), String(bobber)],
+      ['bite', String(actor)],
+      ['reel', String(actor), String(tick)],
+    ])
+  })
+
 })

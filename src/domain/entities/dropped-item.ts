@@ -1,17 +1,38 @@
-import { EntityHealthPoints, itemStack, type ItemType } from '@nerima-games/mc-kernel'
+import {
+  EntityHealthPoints,
+  EntityIdSchema,
+  DomainEventSchema,
+  ITEM_TYPES,
+  MAX_STACK_COUNT,
+  maxStackCountForItem,
+  SimulationTickSchema,
+  itemIdOf,
+  itemStack,
+  type ItemStackFailure,
+  type ItemType,
+  type Position,
+} from '@nerima-games/mc-kernel'
 import {
   addStoredStack as addStorageStoredStack,
   durabilityForItem,
+  DurabilitySchema,
   emptyPlayerStorage,
   EQUIPMENT_SLOTS,
+  PlayerStorageSnapshotSchema,
+  playerStorageOwnerRegistration,
+  ReplicatedOwnerIdSchema,
+  WorldRevisionConflict,
   type AddStoredStackResult,
   type EntitySerialExhausted,
   type Durability,
   type InventoryServiceApi,
   type PlayerStorage,
+  type ReplicatedOwnerId,
+  type ReplicatedOwnerRegistration,
+  type WorldCommitCoordinatorApi,
+  type WorldCommitCoordinatorError,
 } from '@nerima-games/mc-sim'
-import { Effect, Result, Semaphore } from 'effect'
-import type { Position } from '@nerima-games/mc-kernel'
+import { Brand, Effect, Result, Schema, SchemaParser, Semaphore } from 'effect'
 import { changed, DESPAWNED, UNCHANGED, type Entity, type EntityManagerApi } from '@nerima-games/mc-sim'
 import { StackCount } from '@nerima-games/mc-kernel'
 import { decodeEnchantedItem, type Enchantment, type EnchantedItem } from '../enchantment.js'
@@ -91,7 +112,9 @@ export const spawnMobDrops = (
 ): Effect.Effect<ReadonlyArray<Entity<MobBehaviour>>, DroppedItemSpawnError> =>
   spawnDroppedItems(roster, drops)
 
-const distanceSquared = (left: Position, right: Position): number => {
+type PickupCoordinates = Readonly<{ x: number; y: number; z: number }>
+
+const distanceSquared = (left: PickupCoordinates, right: PickupCoordinates): number => {
   const dx = left.x - right.x
   const dy = left.y - right.y
   const dz = left.z - right.z
@@ -186,6 +209,358 @@ export const pickupDroppedItems = (
       })
     })
   )
+
+const strictCodec = <A, I>(schema: Schema.Codec<A, I>): Schema.Codec<A, I> =>
+  Schema.declareConstructor<A, I>()([schema], ([inner]) =>
+    (input, _ast, options) =>
+      SchemaParser.decodeUnknownEffect(inner)(input, {
+        ...options,
+        onExcessProperty: 'error',
+      }),
+  )
+
+const NonNegativeIntegerSchema: Schema.Codec<number, number> = Schema.Int.check(
+  Schema.isGreaterThanOrEqualTo(0),
+)
+const NonNegativeFiniteSchema: Schema.Codec<number, number> = Schema.Finite.check(
+  Schema.isGreaterThanOrEqualTo(0),
+)
+const DroppedItemStackCountSchema: Schema.Codec<StackCount, number> = Schema.Int.check(
+  Schema.isBetween({ minimum: 1, maximum: MAX_STACK_COUNT }),
+).pipe(Schema.brand('StackCount'))
+
+type DroppedItemPositionEncoded = Readonly<{ x: number; y: number; z: number }>
+const DroppedItemPositionSchema: Schema.Codec<Position, DroppedItemPositionEncoded> = strictCodec(
+  Schema.Struct({
+    x: Schema.Finite.pipe(Schema.brand('PositionAxis')),
+    y: Schema.Finite.pipe(Schema.brand('PositionAxis')),
+    z: Schema.Finite.pipe(Schema.brand('PositionAxis')),
+  }),
+)
+
+type DroppedItemEnchantmentEncoded = Readonly<{ id: Enchantment['id']; level: number }>
+const DroppedItemEnchantmentSchema: Schema.Codec<Enchantment, DroppedItemEnchantmentEncoded> = strictCodec(
+  Schema.Struct({
+    id: Schema.Literals(['protection', 'sharpness', 'efficiency', 'unbreaking', 'fortune', 'power']),
+    level: Schema.Int,
+  }),
+)
+
+type DroppedItemSnapshotBehaviour = Readonly<{
+  _tag: 'DroppedItem'
+  item: ItemType
+  count: StackCount
+  durability: Durability | null
+  eligibleFromFrame?: number | undefined
+  customName?: string | undefined
+  enchantments?: ReadonlyArray<Enchantment> | undefined
+}>
+const DroppedItemBehaviourSnapshotSchema: Schema.Codec<DroppedItemSnapshotBehaviour, unknown> = strictCodec(
+  Schema.Struct({
+    _tag: Schema.Literal('DroppedItem'),
+    item: Schema.Literals(ITEM_TYPES),
+    count: DroppedItemStackCountSchema,
+    durability: strictCodec(Schema.NullOr(DurabilitySchema)),
+    eligibleFromFrame: Schema.optional(NonNegativeIntegerSchema),
+    customName: Schema.optional(Schema.String),
+    enchantments: Schema.optional(Schema.Array(DroppedItemEnchantmentSchema)),
+  }),
+).check(Schema.makeFilter((value) =>
+  isDroppedItemBehaviour(value) &&
+  value.count <= maxStackCountForItem(value.item),
+))
+
+type DroppedItemRecord = Readonly<{
+  id: Schema.Schema.Type<typeof EntityIdSchema>
+  feetPosition: Position
+  behaviour: DroppedItemSnapshotBehaviour
+}>
+const DroppedItemRecordSchema: Schema.Codec<DroppedItemRecord, unknown> = strictCodec(
+  Schema.Struct({
+    id: EntityIdSchema,
+    feetPosition: DroppedItemPositionSchema,
+    behaviour: DroppedItemBehaviourSnapshotSchema,
+  }),
+)
+
+const DroppedItemOwnerSnapshotFields: {
+  readonly items: Schema.$Array<typeof DroppedItemRecordSchema>
+} = {
+  items: Schema.Array(DroppedItemRecordSchema),
+}
+export type DroppedItemOwnerSnapshot = Schema.Struct.Type<
+  typeof DroppedItemOwnerSnapshotFields
+>
+export const DroppedItemOwnerSnapshotSchema: Schema.Codec<
+  DroppedItemOwnerSnapshot,
+  unknown
+> = strictCodec(Schema.Struct(DroppedItemOwnerSnapshotFields)).check(
+  Schema.makeFilter(({ items }) => {
+    const ids = new Set(items.map(({ id }) => id))
+    return ids.size === items.length
+  }),
+)
+
+export type DroppedItemPickupOwners = Readonly<{
+  playerStorage: ReplicatedOwnerId
+  droppedItems: ReplicatedOwnerId
+}>
+
+export const droppedItemOwnerRegistration = (
+  ownerId: ReplicatedOwnerId,
+  initialState: DroppedItemOwnerSnapshot = { items: [] },
+): ReplicatedOwnerRegistration<typeof DroppedItemOwnerSnapshotSchema> => ({
+  ownerId,
+  schema: DroppedItemOwnerSnapshotSchema,
+  initialState,
+})
+
+export const droppedItemPickupOwnerRegistrations = (
+  owners: DroppedItemPickupOwners,
+  playerStorage: PlayerStorage,
+  droppedItems: DroppedItemOwnerSnapshot = { items: [] },
+): readonly [
+  ReplicatedOwnerRegistration<typeof PlayerStorageSnapshotSchema>,
+  ReplicatedOwnerRegistration<typeof DroppedItemOwnerSnapshotSchema>,
+] => [
+  playerStorageOwnerRegistration(owners.playerStorage, playerStorage),
+  droppedItemOwnerRegistration(owners.droppedItems, droppedItems),
+]
+
+const DroppedItemPickupRequestFields: {
+  readonly actor: typeof EntityIdSchema
+  readonly tick: typeof SimulationTickSchema
+  readonly position: Schema.optional<typeof DroppedItemPositionSchema>
+  readonly radius: Schema.optional<typeof NonNegativeFiniteSchema>
+  readonly currentFrame: Schema.optional<typeof NonNegativeIntegerSchema>
+} = {
+  actor: EntityIdSchema,
+  tick: SimulationTickSchema,
+  position: Schema.optional(DroppedItemPositionSchema),
+  radius: Schema.optional(NonNegativeFiniteSchema),
+  currentFrame: Schema.optional(NonNegativeIntegerSchema),
+}
+export const DroppedItemPickupRequestSchema: Schema.Codec<
+  Schema.Struct.Type<typeof DroppedItemPickupRequestFields>,
+  unknown
+> = strictCodec(Schema.Struct(DroppedItemPickupRequestFields))
+
+export type DroppedItemPickupRequest = Readonly<{
+  actor: Schema.Codec.Encoded<typeof EntityIdSchema>
+  tick: Schema.Codec.Encoded<typeof SimulationTickSchema>
+  position?: Schema.Codec.Encoded<typeof DroppedItemPositionSchema> | undefined
+  radius?: Schema.Codec.Encoded<typeof NonNegativeFiniteSchema> | undefined
+  currentFrame?: Schema.Codec.Encoded<typeof NonNegativeIntegerSchema> | undefined
+}>
+
+const DroppedItemPickupCommitIncompleteFields: {
+  readonly _tag: Schema.Literal<'DroppedItemPickupCommitIncomplete'>
+  readonly missingOwners: Schema.$Array<typeof ReplicatedOwnerIdSchema>
+} = {
+  _tag: Schema.Literal('DroppedItemPickupCommitIncomplete'),
+  missingOwners: Schema.Array(ReplicatedOwnerIdSchema),
+}
+export type DroppedItemPickupCommitIncomplete = Schema.Struct.Type<
+  typeof DroppedItemPickupCommitIncompleteFields
+>
+export const DroppedItemPickupCommitIncompleteSchema: Schema.Codec<
+  DroppedItemPickupCommitIncomplete,
+  unknown
+> = strictCodec(Schema.Struct(DroppedItemPickupCommitIncompleteFields))
+
+const DroppedItemPickupFields: {
+  readonly actor: typeof EntityIdSchema
+  readonly source: typeof EntityIdSchema
+  readonly item: Schema.Literals<typeof ITEM_TYPES>
+  readonly accepted: typeof DroppedItemStackCountSchema
+  readonly event: typeof DomainEventSchema
+} = {
+  actor: EntityIdSchema,
+  source: EntityIdSchema,
+  item: Schema.Literals(ITEM_TYPES),
+  accepted: DroppedItemStackCountSchema,
+  event: DomainEventSchema,
+}
+export const DroppedItemPickupSchema: Schema.Codec<
+  Schema.Struct.Type<typeof DroppedItemPickupFields>,
+  unknown
+> = strictCodec(Schema.Struct(DroppedItemPickupFields)).check(
+  Schema.makeFilter(({ actor, source, item, accepted, event }) =>
+    event._tag === 'ItemPickedUp' &&
+    event.actor === actor &&
+    event.source._tag === 'DroppedItem' &&
+    event.source.id === source &&
+    event.item === itemIdOf(item) &&
+    event.count === accepted &&
+    accepted <= maxStackCountForItem(item),
+  ),
+)
+
+export type DroppedItemPickup = Schema.Struct.Type<typeof DroppedItemPickupFields>
+
+export type DroppedItemPickupResult = ReadonlyArray<DroppedItemPickup>
+export const DroppedItemPickupResultSchema: Schema.Codec<
+  DroppedItemPickupResult,
+  unknown
+> = strictCodec(Schema.Array(DroppedItemPickupSchema))
+
+type DroppedItemPickupStorageFailure = Extract<
+  AddStoredStackResult,
+  { readonly _tag: 'InvalidStack' | 'ItemStackFailure' }
+>
+
+export type DroppedItemPickupFailure =
+  | Brand.BrandError
+  | ItemStackFailure
+  | DroppedItemPickupStorageFailure
+  | Schema.SchemaError
+  | WorldCommitCoordinatorError
+  | Schema.Schema.Type<typeof DroppedItemPickupCommitIncompleteSchema>
+
+type PlannedDroppedItemPickup = Readonly<{
+  source: Schema.Schema.Type<typeof EntityIdSchema>
+  item: ItemType
+  countBefore: number
+}>
+
+/**
+ * Atomically applies a host-owned pickup candidate to replicated player and
+ * dropped-item owners. EntityManager integration remains the host's Stage 8 task.
+ */
+export const pickupDroppedItemsCommitted = (
+  coordinator: WorldCommitCoordinatorApi,
+  owners: DroppedItemPickupOwners,
+  input: DroppedItemPickupRequest,
+): Effect.Effect<DroppedItemPickupResult, DroppedItemPickupFailure> =>
+  Effect.gen(function* () {
+    const request = yield* Schema.decodeUnknownEffect(DroppedItemPickupRequestSchema)(input)
+    if (request.position === undefined) {
+      return yield* Schema.decodeUnknownEffect(DroppedItemPickupResultSchema)([])
+    }
+
+    const playerSnapshot = yield* coordinator.snapshot(
+      owners.playerStorage,
+      PlayerStorageSnapshotSchema,
+    )
+    const droppedItemsSnapshot = yield* coordinator.snapshot(
+      owners.droppedItems,
+      DroppedItemOwnerSnapshotSchema,
+    )
+    if (playerSnapshot.revision !== droppedItemsSnapshot.revision) {
+      return yield* Effect.fail(new WorldRevisionConflict({
+        expected: playerSnapshot.revision,
+        actual: droppedItemsSnapshot.revision,
+      }))
+    }
+
+    const radius = request.radius ?? DROPPED_ITEM_PICKUP_RADIUS
+    const radiusSquared = radius * radius
+    let storage = playerSnapshot.state
+    const nextItems: Array<DroppedItemOwnerSnapshot['items'][number]> = []
+    const planned: Array<PlannedDroppedItemPickup> = []
+
+    for (const droppedItem of droppedItemsSnapshot.state.items) {
+      if (
+        (request.currentFrame !== undefined &&
+          !isDroppedItemPickupEligible(
+            request.currentFrame,
+            droppedItem.behaviour.eligibleFromFrame,
+          )) ||
+        distanceSquared(droppedItem.feetPosition, request.position) > radiusSquared
+      ) {
+        nextItems.push(droppedItem)
+        continue
+      }
+
+      const stack = yield* Effect.fromResult(
+        itemStack(droppedItem.behaviour.item, droppedItem.behaviour.count),
+      )
+      const outcome = addStorageStoredStack(storage, {
+        ...stack,
+        durability: copyDurability(droppedItem.behaviour.durability),
+      })
+      if (outcome.result._tag !== 'Added') return yield* Effect.fail(outcome.result)
+      if (outcome.result.added === 0) {
+        nextItems.push(droppedItem)
+        continue
+      }
+
+      storage = outcome.storage
+      planned.push({
+        source: droppedItem.id,
+        item: droppedItem.behaviour.item,
+        countBefore: droppedItem.behaviour.count,
+      })
+      if (outcome.result.leftover !== null) {
+        nextItems.push({
+          ...droppedItem,
+          behaviour: {
+            ...droppedItem.behaviour,
+            count: outcome.result.leftover.count,
+            durability: copyDurability(outcome.result.leftover.durability),
+          },
+        })
+      }
+    }
+
+    if (planned.length === 0) {
+      return yield* Schema.decodeUnknownEffect(DroppedItemPickupResultSchema)([])
+    }
+
+    const delta = yield* coordinator.commit({
+      expectedRevision: playerSnapshot.revision,
+      expectedDimensions: [],
+      changes: [
+        { ownerId: owners.playerStorage, state: storage },
+        { ownerId: owners.droppedItems, state: { items: nextItems } },
+      ],
+    })
+    const committedPlayerState = delta.changes.find(({ owner }) => owner === owners.playerStorage)
+    const committedDroppedItemsState = delta.changes.find(({ owner }) => owner === owners.droppedItems)
+    if (committedPlayerState === undefined || committedDroppedItemsState === undefined) {
+      const missingOwners = [
+        ...(committedPlayerState === undefined ? [owners.playerStorage] : []),
+        ...(committedDroppedItemsState === undefined ? [owners.droppedItems] : []),
+      ]
+      return yield* Effect.fail(yield* Schema.decodeUnknownEffect(
+        DroppedItemPickupCommitIncompleteSchema,
+      )({
+        _tag: 'DroppedItemPickupCommitIncomplete',
+        missingOwners,
+      }))
+    }
+
+    const committedDroppedItems = yield* Schema.decodeUnknownEffect(
+      DroppedItemOwnerSnapshotSchema,
+    )(committedDroppedItemsState.state)
+    const committedCounts = new Map(
+      committedDroppedItems.items.map(({ id, behaviour }) => [id, behaviour.count]),
+    )
+    const pickups: Array<DroppedItemPickup> = []
+
+    for (const pickup of planned) {
+      const acceptedCount = pickup.countBefore - (committedCounts.get(pickup.source) ?? 0)
+      const accepted = Result.getOrUndefined(Schema.decodeUnknownResult(DroppedItemStackCountSchema)(acceptedCount))
+      if (accepted === undefined) continue
+      const event = yield* Schema.decodeUnknownEffect(DomainEventSchema)({
+        _tag: 'ItemPickedUp',
+        tick: request.tick,
+        actor: request.actor,
+        source: { _tag: 'DroppedItem', id: pickup.source },
+        item: itemIdOf(pickup.item),
+        count: accepted,
+      })
+      pickups.push({
+        actor: request.actor,
+        source: pickup.source,
+        item: pickup.item,
+        accepted,
+        event,
+      })
+    }
+
+    return yield* Schema.decodeUnknownEffect(DroppedItemPickupResultSchema)(pickups)
+  })
 
 export type DroppedItemMetadata = {
   readonly customName?: string

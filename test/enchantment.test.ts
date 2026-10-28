@@ -12,9 +12,11 @@ import {
   enchantmentAppliesTo,
   enchantmentOffer,
   enchantmentOffers,
+  enchantmentTableResultItemOf,
   enchantmentsConflict,
   encodeEnchantedItem,
   fortuneDropCountWithEnchantments,
+  generateEnchantmentTableOffersForItem,
   meleeDamageWithEnchantments,
   miningSpeedWithEnchantments,
   rerollEnchantmentSeed,
@@ -193,6 +195,19 @@ describe('enchanted item codec', () => {
 })
 
 describe('enchantment table offers and transaction', () => {
+  it('uses mc-sim enchantment-table rules with a repeatable gameplay seed', () => {
+    const offers = generateEnchantmentTableOffersForItem('diamond_pickaxe', 1234, 15)
+    const repeated = generateEnchantmentTableOffersForItem('diamond_pickaxe', 1234, 15)
+
+    expect(offers._tag).toBe('Success')
+    expect(repeated).toEqual(offers)
+    if (offers._tag !== 'Success') return
+
+    expect(offers.success.map((offer) => offer?.lapisCost)).toEqual([1, 2, 3])
+    expect(offers.success.every((offer) => offer !== undefined)).toBe(true)
+    expect(enchantmentTableResultItemOf('book')).toBe('enchanted_book')
+  })
+
   it('derives deterministic offers from normalized seed, shelves and slot', () => {
     expect(enchantmentOffers(1234, 15)).toEqual(enchantmentOffers(1234, 15))
     expect(enchantmentOffer(1234, 99, 2)).toEqual(enchantmentOffer(1234, 15, 2))

@@ -1,8 +1,19 @@
 import { describe, expect, it } from '@effect/vitest'
 import { position as atPosition } from './support/coordinate-fixtures'
-import { durabilityForItem, type InventoryServiceApi } from '@nerima-games/mc-sim'
-import { Effect, Result } from 'effect'
-import { EntityHealthPoints, itemStack, StackCount } from '@nerima-games/mc-kernel'
+import * as FastCheck from 'fast-check'
+import {
+  durabilityForItem,
+  emptyPlayerStorage,
+  makeReplicatedOwnerId,
+  makeWorldCommitCoordinator,
+  PlayerStorageSnapshotSchema,
+  type InventoryServiceApi,
+  type ReplicatedOwnerUnknown,
+  type ReplicatedSnapshot,
+  type WorldCommitCoordinatorApi,
+} from '@nerima-games/mc-sim'
+import { Effect, Result, Schema } from 'effect'
+import { DomainEventSchema, EntityHealthPoints, itemStack, StackCount, WorldIdSchema } from '@nerima-games/mc-kernel'
 import { EntityId, EntityKind } from '@nerima-games/mc-sim'
 import {
   CREEPER_KIND,
@@ -11,6 +22,10 @@ import {
   type MobBehaviour,
 } from '../src/domain/entities/mob-frame'
 import {
+  DroppedItemOwnerSnapshotSchema,
+  DroppedItemPickupResultSchema,
+  droppedItemPickupOwnerRegistrations,
+  pickupDroppedItemsCommitted,
   pickupDroppedItems,
   spawnDroppedItem,
   spawnMobDrop,
@@ -24,6 +39,33 @@ import {
 
 const origin = atPosition(0, 0, 0 )
 const dropSource = EntityId('source')
+const pickupActor = EntityId('player:pickup')
+const committedPickupOwners = {
+  playerStorage: makeReplicatedOwnerId('player-storage:pickup-test'),
+  droppedItems: makeReplicatedOwnerId('dropped-items:pickup-test'),
+}
+
+const committedDroppedItem = (count: number) => ({
+  id: dropSource,
+  feetPosition: atPosition(0, 0, 0),
+  behaviour: {
+    _tag: 'DroppedItem' as const,
+    item: 'gunpowder' as const,
+    count: StackCount(count),
+    durability: null,
+  },
+})
+
+const makePickupCoordinator = (
+  playerStorage: ReturnType<typeof emptyPlayerStorage>,
+  droppedItems: ReturnType<typeof committedDroppedItem>[],
+) =>
+  makeWorldCommitCoordinator({
+    world: Schema.decodeUnknownSync(WorldIdSchema)('dropped-item-pickup-tests'),
+    owners: droppedItemPickupOwnerRegistrations(committedPickupOwners, playerStorage, {
+      items: droppedItems,
+    }),
+  })
 
 describe('dropped item entities', () => {
   it.effect('spawns and recognises plant items added by the kernel vocabulary', () =>
@@ -336,6 +378,276 @@ describe('dropped item entities', () => {
       expect(yield* roster.api.count).toBe(0)
     }),
   )
+
+  it.effect('commits player storage and dropped items together before emitting pickup events', () =>
+    Effect.gen(function* () {
+      const coordinator = yield* makePickupCoordinator(emptyPlayerStorage(), [
+        committedDroppedItem(3),
+      ])
+
+      const pickups = yield* pickupDroppedItemsCommitted(coordinator, committedPickupOwners, {
+        actor: pickupActor,
+        tick: 4,
+        position: origin,
+      })
+      const playerSnapshot = yield* coordinator.snapshot(
+        committedPickupOwners.playerStorage,
+        PlayerStorageSnapshotSchema,
+      )
+      const droppedItemsSnapshot = yield* coordinator.snapshot(
+        committedPickupOwners.droppedItems,
+        DroppedItemOwnerSnapshotSchema,
+      )
+
+      expect(pickups).toHaveLength(1)
+      expect(pickups[0]).toMatchObject({
+        actor: pickupActor,
+        source: dropSource,
+        item: 'gunpowder',
+        accepted: 3,
+        event: {
+          _tag: 'ItemPickedUp',
+          tick: 4,
+          actor: pickupActor,
+          source: { _tag: 'DroppedItem', id: dropSource },
+          count: 3,
+        },
+      })
+      expect(Result.isSuccess(Schema.decodeUnknownResult(DomainEventSchema)(pickups[0]?.event))).toBe(true)
+      expect(Result.isSuccess(Schema.decodeUnknownResult(DroppedItemPickupResultSchema)(pickups))).toBe(true)
+      expect(Result.isFailure(
+        Schema.decodeUnknownResult(DroppedItemPickupResultSchema)([
+          { ...pickups[0], unexpected: true },
+        ]),
+      )).toBe(true)
+      expect(playerSnapshot.revision).toBe(1)
+      expect(droppedItemsSnapshot.revision).toBe(1)
+      expect(playerSnapshot.state.inventory.slots.some(
+        (slot) => slot?.item === 'gunpowder' && slot.count === 3,
+      )).toBe(true)
+      expect(droppedItemsSnapshot.state.items).toStrictEqual([])
+    }),
+  )
+
+  it.effect('reports only the amount accepted by the committed inventory', () =>
+    Effect.gen(function* () {
+      const emptyStorage = emptyPlayerStorage()
+      const slots = emptySlots().map(() =>
+        Result.getOrThrow(itemStack('stone', StackCount(64))),
+      )
+      slots[0] = Result.getOrThrow(itemStack('gunpowder', StackCount(63)))
+      const almostFullStorage = {
+        ...emptyStorage,
+        inventory: { slots },
+      }
+      const coordinator = yield* makePickupCoordinator(almostFullStorage, [
+        committedDroppedItem(5),
+      ])
+
+      const pickups = yield* pickupDroppedItemsCommitted(coordinator, committedPickupOwners, {
+        actor: pickupActor,
+        tick: 5,
+        position: origin,
+      })
+      const playerSnapshot = yield* coordinator.snapshot(
+        committedPickupOwners.playerStorage,
+        PlayerStorageSnapshotSchema,
+      )
+      const droppedItemsSnapshot = yield* coordinator.snapshot(
+        committedPickupOwners.droppedItems,
+        DroppedItemOwnerSnapshotSchema,
+      )
+
+      expect(pickups).toHaveLength(1)
+      expect(pickups[0]?.accepted).toBe(1)
+      expect(pickups[0]?.event).toMatchObject({ _tag: 'ItemPickedUp', count: 1 })
+      expect(playerSnapshot.state.inventory.slots[0]?.count).toBe(64)
+      expect(droppedItemsSnapshot.state.items[0]?.behaviour.count).toBe(4)
+      expect(playerSnapshot.revision).toBe(1)
+      expect(droppedItemsSnapshot.revision).toBe(1)
+    }),
+  )
+
+  it.effect('does not commit or emit when the inventory accepts nothing', () =>
+    Effect.gen(function* () {
+      const emptyStorage = emptyPlayerStorage()
+      const fullStorage = {
+        ...emptyStorage,
+        inventory: {
+          slots: emptySlots().map(() =>
+            Result.getOrThrow(itemStack('stone', StackCount(64))),
+          ),
+        },
+      }
+      const coordinator = yield* makePickupCoordinator(fullStorage, [committedDroppedItem(2)])
+
+      const pickups = yield* pickupDroppedItemsCommitted(coordinator, committedPickupOwners, {
+        actor: pickupActor,
+        tick: 6,
+        position: origin,
+      })
+      const playerSnapshot = yield* coordinator.snapshot(
+        committedPickupOwners.playerStorage,
+        PlayerStorageSnapshotSchema,
+      )
+      const droppedItemsSnapshot = yield* coordinator.snapshot(
+        committedPickupOwners.droppedItems,
+        DroppedItemOwnerSnapshotSchema,
+      )
+
+      expect(pickups).toStrictEqual([])
+      expect(playerSnapshot.revision).toBe(0)
+      expect(droppedItemsSnapshot.revision).toBe(0)
+      expect(droppedItemsSnapshot.state.items[0]?.behaviour.count).toBe(2)
+    }),
+  )
+
+  it.effect('rejects mixed owner snapshots before committing either pickup candidate', () =>
+    Effect.gen(function* () {
+      const coordinator = yield* makePickupCoordinator(emptyPlayerStorage(), [
+        committedDroppedItem(2),
+      ])
+      type SnapshotCodec = Parameters<WorldCommitCoordinatorApi['snapshot']>[1]
+      type SnapshotOwnerId = Parameters<WorldCommitCoordinatorApi['snapshot']>[0]
+      let injectedConcurrentCommit = false
+      const interleavingCoordinator: WorldCommitCoordinatorApi = {
+        ...coordinator,
+        snapshot: <Codec extends SnapshotCodec>(
+          ownerId: SnapshotOwnerId,
+          schema: Codec,
+        ): Effect.Effect<
+          ReplicatedSnapshot<Codec>,
+          Schema.SchemaError | ReplicatedOwnerUnknown,
+          Schema.Codec.DecodingServices<Codec>
+        > =>
+          Effect.gen(function* () {
+            const snapshot = yield* coordinator.snapshot(ownerId, schema)
+            if (!injectedConcurrentCommit) {
+              injectedConcurrentCommit = true
+              const playerSnapshot = yield* coordinator.snapshot(
+                committedPickupOwners.playerStorage,
+                PlayerStorageSnapshotSchema,
+              )
+              const concurrentCommit = yield* Effect.result(coordinator.commit({
+                expectedRevision: playerSnapshot.revision,
+                expectedDimensions: [],
+                changes: [{
+                  ownerId: committedPickupOwners.playerStorage,
+                  state: playerSnapshot.state,
+                }],
+              }))
+              if (Result.isFailure(concurrentCommit)) return snapshot
+            }
+            return snapshot
+          }),
+      }
+
+      const outcome = yield* Effect.result(pickupDroppedItemsCommitted(
+        interleavingCoordinator,
+        committedPickupOwners,
+        { actor: pickupActor, tick: 7, position: origin },
+      ))
+      const playerSnapshot = yield* coordinator.snapshot(
+        committedPickupOwners.playerStorage,
+        PlayerStorageSnapshotSchema,
+      )
+      const droppedItemsSnapshot = yield* coordinator.snapshot(
+        committedPickupOwners.droppedItems,
+        DroppedItemOwnerSnapshotSchema,
+      )
+
+      expect(Result.isFailure(outcome)).toBe(true)
+      if (Result.isFailure(outcome)) {
+        expect(outcome.failure).toMatchObject({ _tag: 'WorldRevisionConflict' })
+      }
+      expect(playerSnapshot.revision).toBe(1)
+      expect(droppedItemsSnapshot.revision).toBe(1)
+      expect(playerSnapshot.state.inventory.slots.every((slot) => slot === undefined)).toBe(true)
+      expect(droppedItemsSnapshot.state.items[0]?.behaviour.count).toBe(2)
+    }),
+  )
+
+  for (const seed of [70301, 70302]) {
+    it(`conserves item counts across partial committed pickups (seed ${seed})`, () => {
+      FastCheck.assert(
+        FastCheck.property(
+          FastCheck.integer({ min: 1, max: 64 }),
+          (count) => {
+            const storage = emptyPlayerStorage()
+            const slots = emptySlots().map(() =>
+              Result.getOrThrow(itemStack('stone', StackCount(64))),
+            )
+            slots[0] = Result.getOrThrow(itemStack('gunpowder', StackCount(63)))
+            const coordinator = Effect.runSync(makePickupCoordinator(
+              { ...storage, inventory: { slots } },
+              [committedDroppedItem(count)],
+            ))
+
+            const pickups = Effect.runSync(pickupDroppedItemsCommitted(coordinator, committedPickupOwners, {
+              actor: pickupActor,
+              tick: 5,
+              position: origin,
+            }))
+            const playerSnapshot = Effect.runSync(coordinator.snapshot(
+              committedPickupOwners.playerStorage,
+              PlayerStorageSnapshotSchema,
+            ))
+            const droppedItemsSnapshot = Effect.runSync(coordinator.snapshot(
+              committedPickupOwners.droppedItems,
+              DroppedItemOwnerSnapshotSchema,
+            ))
+            const storedAfter = playerSnapshot.state.inventory.slots
+              .filter((slot) => slot?.item === 'gunpowder')
+              .reduce((total, slot) => total + (slot?.count ?? 0), 0)
+            const remaining = droppedItemsSnapshot.state.items
+              .filter(({ behaviour }) => behaviour.item === 'gunpowder')
+              .reduce((total, { behaviour }) => total + behaviour.count, 0)
+            const accepted = pickups.reduce((total, pickup) => total + pickup.accepted, 0)
+
+            return storedAfter - 63 + remaining === count && accepted === storedAfter - 63
+          },
+        ),
+        { numRuns: 50, seed },
+      )
+    })
+  }
+
+  it('strictly validates the replicated dropped-item owner with its public schema', () => {
+    const validSnapshot = { items: [committedDroppedItem(1)] }
+
+    FastCheck.assert(
+      FastCheck.property(
+        FastCheck.integer({ min: 1, max: 64 }),
+        (count) => Result.isSuccess(Schema.decodeUnknownResult(DroppedItemOwnerSnapshotSchema)({
+          items: [committedDroppedItem(count)],
+        })),
+      ),
+      { numRuns: 100 },
+    )
+    expect(Result.isSuccess(
+      Schema.decodeUnknownResult(DroppedItemOwnerSnapshotSchema)(validSnapshot),
+    )).toBe(true)
+    expect(Result.isFailure(
+      Schema.decodeUnknownResult(DroppedItemOwnerSnapshotSchema)({
+        ...validSnapshot,
+        unexpected: true,
+      }),
+    )).toBe(true)
+    expect(Result.isFailure(
+      Schema.decodeUnknownResult(DroppedItemOwnerSnapshotSchema)({
+        items: [{ ...committedDroppedItem(1), unexpected: true }],
+      }),
+    )).toBe(true)
+    const invalidUnstackableDrop = committedDroppedItem(2)
+    expect(Result.isFailure(
+      Schema.decodeUnknownResult(DroppedItemOwnerSnapshotSchema)({
+        items: [{
+          ...invalidUnstackableDrop,
+          behaviour: { ...invalidUnstackableDrop.behaviour, item: 'iron_sword' },
+        }],
+      }),
+    )).toBe(true)
+  })
 })
 
 describe('melee targeting', () => {
