@@ -330,8 +330,10 @@ describe('enchantment derivations', () => {
       enchantedItem('iron_leggings', 'protection', 4),
       enchantedItem('iron_boots', 'protection', 4),
     ]
+    // At ten damage, fifteen armor points with zero toughness leave six
+    // damage; Protection IV on four pieces then reduces that by 64%.
     expect(armorDamageWithEnchantments({ amount: 10, cause: 'mob' }, 15, armor)).toEqual({
-      amount: 1.44,
+      amount: 2.16,
       cause: 'mob',
     })
     expect(
@@ -345,7 +347,7 @@ describe('enchantment derivations', () => {
     const unenchantedArmor = armor.map((item) => ({ ...item, enchantments: [] }))
     expect(
       armorDamageWithEnchantments({ amount: 10, cause: 'mob' }, 15, unenchantedArmor),
-    ).toEqual({ amount: 4, cause: 'mob' })
+    ).toEqual({ amount: 6, cause: 'mob' })
   })
 
   it('applies efficiency and clamps invalid mining bases', () => {
