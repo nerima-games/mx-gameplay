@@ -16,7 +16,8 @@
 import { describe, expect, it } from '@effect/vitest'
 import { position as atPosition } from './support/coordinate-fixtures'
 import { makeTimeService, type Slot } from '@nerima-games/mc-sim'
-import { Effect, Result } from 'effect'
+import { Effect, Result, Schema } from 'effect'
+import * as FastCheck from 'fast-check'
 import {
   bowCharge,
   bowDamage,
@@ -28,6 +29,8 @@ import {
   BOW_MIN_CHARGE_SECS,
   BOW_MIN_DAMAGE,
   PLAIN_BOW,
+  BowChargePreparationSchema,
+  prepareBowAction,
 } from '../src/domain/interactions/draw-bow'
 import {
   arrowHitProjection,
@@ -38,6 +41,8 @@ import {
   BOW_LINE_OF_SIGHT_STEP,
   BOW_TARGET_CENTER_Y_OFFSET,
   BOW_TARGET_RADIUS,
+  BowShotPreparationSchema,
+  prepareBowShot,
   type IsArrowBlockedAt,
   type ShotCandidate,
 } from '../src/domain/interactions/bow-shot'
@@ -51,7 +56,7 @@ import {
   makeGameplayFrameState,
   requestBowShot,
 } from '../src/stages/registration'
-import { EntityHealthPoints, itemStack, StackCount, type BlockId, type Position } from '@nerima-games/mc-kernel'
+import { DimensionIdSchema, EntityHealthPoints, SimulationTickSchema, itemStack, StackCount, type BlockId, type Position } from '@nerima-games/mc-kernel'
 import { makeChunkStoreDouble } from './support/chunk-store-double'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
 import { makePlayerServiceDouble } from './support/player-service-double'
@@ -63,6 +68,10 @@ import { Ref } from 'effect'
 const unsafePosition = (x: number, y: number, z: number): Position => ({ x, y, z }) as unknown as Position
 
 const EYE = atPosition(0, 64, 0 )
+const BOW_PARITY_FIXTURE = {
+  source: 'https://minecraft.wiki/w/Bow',
+  edition: 'Java Edition 26.3',
+} as const
 
 /** A candidate standing at `(x, y, z)`, feet origin. */
 const standing = (id: string, x: number, y: number, z: number): ShotCandidate => ({
@@ -141,6 +150,146 @@ describe('canFireBow — the reference oracle', () => {
 
   it('fires for any longer hold', () => {
     expect(canFireBow(BOW_FULL_CHARGE_SECS * 10)).toBe(true)
+  })
+})
+
+describe(`C2 bow charge uses simulation ticks (${BOW_PARITY_FIXTURE.source}, ${BOW_PARITY_FIXTURE.edition})`, () => {
+  it('counts one second as 20 server ticks and prepares the fixed full-charge damage', () => {
+    const actor = EntityId('bow-owner')
+    const startedAt = Schema.decodeUnknownSync(SimulationTickSchema)(100)
+    const tick = Schema.decodeUnknownSync(SimulationTickSchema)(120)
+    const result = prepareBowAction(
+      { _tag: 'BowAction', actor, action: 'release' },
+      tick,
+      { actor, startedAt },
+    )
+
+    expect(Result.isSuccess(result) && result.success).toMatchObject({
+      actor,
+      nextState: null,
+      charge: 1,
+      damage: 9,
+      fired: true,
+    })
+  })
+
+  it('strictly decodes draw and cancel owner candidates', () => {
+    const actor = EntityId('bow-owner')
+    const tick = Schema.decodeUnknownSync(SimulationTickSchema)(50)
+    const drawn = Result.getOrThrow(prepareBowAction({ _tag: 'BowAction', actor, action: 'draw' }, tick, null))
+    const cancelled = Result.getOrThrow(prepareBowAction({ _tag: 'BowAction', actor, action: 'cancel' }, tick, drawn.nextState))
+    const decoded = Schema.decodeUnknownResult(BowChargePreparationSchema, {
+      onExcessProperty: 'error',
+    })(drawn)
+
+    expect(Result.isSuccess(decoded)).toBe(true)
+    expect(drawn.nextState).toStrictEqual({ actor, startedAt: tick })
+    expect(cancelled.nextState).toBeNull()
+  })
+
+  it('returns a typed failure or a strictly decoded finite result for arbitrary ticks', () => {
+    const actor = EntityId('bow-owner')
+    const action = { _tag: 'BowAction', actor, action: 'release' } as const
+    const state = {
+      actor,
+      startedAt: Schema.decodeUnknownSync(SimulationTickSchema)(0),
+    }
+    FastCheck.assert(
+      FastCheck.property(
+        FastCheck.double({ min: -1e12, max: 1e12, noNaN: false, noDefaultInfinity: false }),
+        (rawTick) => {
+          const result = prepareBowAction(action, rawTick as typeof state.startedAt, state)
+          if (Result.isFailure(result)) return true
+          const decoded = Schema.decodeUnknownResult(BowChargePreparationSchema, {
+            onExcessProperty: 'error',
+          })(result.success)
+          return Result.isSuccess(decoded) &&
+            Number.isFinite(decoded.success.charge) &&
+            Number.isFinite(decoded.success.damage) &&
+            decoded.success.charge >= 0 && decoded.success.damage >= 0
+        },
+      ),
+      { numRuns: 250 },
+    )
+  })
+
+  it('leaves the current charge state unchanged when the server tick goes backwards', () => {
+    const actor = EntityId('bow-owner')
+    const state = {
+      actor,
+      startedAt: Schema.decodeUnknownSync(SimulationTickSchema)(20),
+    }
+    const before = JSON.stringify(state)
+    const result = prepareBowAction(
+      { _tag: 'BowAction', actor, action: 'release' },
+      -1 as typeof state.startedAt,
+      state,
+    )
+
+    expect(Result.isFailure(result)).toBe(true)
+    expect(JSON.stringify(state)).toBe(before)
+  })
+
+  it('prepares a kernel damage event from C2 aim and authoritative pose/world', () => {
+    const actor = EntityId('bow-owner')
+    const action = {
+      _tag: 'BowAction',
+      actor,
+      action: 'release',
+      aimDirection: { x: 0, y: 0, z: 1 },
+    } as const
+    const charge = Result.getOrThrow(prepareBowAction(
+      { _tag: 'BowAction', actor, action: 'release' },
+      Schema.decodeUnknownSync(SimulationTickSchema)(20),
+      { actor, startedAt: Schema.decodeUnknownSync(SimulationTickSchema)(0) },
+    ))
+    const result = prepareBowShot(
+      action,
+      charge,
+      { feetPosition: atPosition(0, 64, 0), yawRadians: 0, pitchRadians: 0 },
+      Schema.decodeUnknownSync(DimensionIdSchema)('overworld'),
+      Schema.decodeUnknownSync(SimulationTickSchema)(20),
+      [standing('target', 0, 64, 3)],
+      NOTHING_BLOCKS,
+    )
+
+    expect(Result.isSuccess(result)).toBe(true)
+    if (Result.isFailure(result)) return
+    const decoded = Schema.decodeUnknownResult(BowShotPreparationSchema, {
+      onExcessProperty: 'error',
+    })(result.success)
+    expect(Result.isSuccess(decoded)).toBe(true)
+    expect(result.success.event).toMatchObject({
+      _tag: 'EntityDamaged',
+      entity: EntityId('target'),
+      amount: 9,
+      cause: 'projectile',
+    })
+  })
+
+  it('fails without changing inputs when authoritative terrain blocks the shot', () => {
+    const actor = EntityId('bow-owner')
+    const action = { _tag: 'BowAction', actor, action: 'release' } as const
+    const charge = Result.getOrThrow(prepareBowAction(
+      action,
+      Schema.decodeUnknownSync(SimulationTickSchema)(20),
+      { actor, startedAt: Schema.decodeUnknownSync(SimulationTickSchema)(0) },
+    ))
+    const pose = { feetPosition: atPosition(0, 64, 0), yawRadians: 0, pitchRadians: 0 }
+    const candidates = [standing('target', 0, 64, 3)]
+    const before = JSON.stringify({ charge, pose, candidates })
+    const result = prepareBowShot(
+      action,
+      charge,
+      pose,
+      Schema.decodeUnknownSync(DimensionIdSchema)('overworld'),
+      Schema.decodeUnknownSync(SimulationTickSchema)(20),
+      candidates,
+      (_x, _y, z) => z === 1,
+    )
+
+    expect(Result.isFailure(result)).toBe(true)
+    expect(JSON.stringify({ charge, pose, candidates })).toBe(before)
   })
 })
 

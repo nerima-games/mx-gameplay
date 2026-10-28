@@ -45,6 +45,10 @@
  * needed no such apology and did not earn one: the reference already measured the
  * draw in seconds (`interaction-bow-handler.ts:172`, `nowSecs - chargeStartSecs`).
  */
+import { EntityIdSchema, SimulationTickSchema } from '@nerima-games/mc-kernel'
+import type { EntityId, SimulationTick } from '@nerima-games/mc-kernel'
+import { IntentPayloadSchema, type IntentPayload } from '@nerima-games/mc-sim'
+import { Result, Schema } from 'effect'
 
 /**
  * Shortest hold that fires at all, in seconds.
@@ -213,4 +217,85 @@ export const bowDamage = (charge: number, context: BowDrawContext = PLAIN_BOW): 
   const base = BOW_MIN_DAMAGE + clamped * clamped * (BOW_MAX_DAMAGE - BOW_MIN_DAMAGE)
 
   return Math.round(base * bowPowerMultiplier(context.powerLevel))
+}
+export type BowAction = Extract<IntentPayload, { readonly _tag: 'BowAction' }>
+
+export type BowChargeState = Readonly<{
+  actor: EntityId
+  startedAt: SimulationTick
+}>
+
+export type BowChargePreparation = Readonly<{
+  actor: EntityId
+  nextState: BowChargeState | null
+  charge: number
+  damage: number
+  fired: boolean
+}>
+
+export const BowChargePreparationSchema: Schema.ConstraintDecoder<BowChargePreparation> = Schema.Struct({
+  actor: EntityIdSchema,
+  nextState: Schema.Union([
+    Schema.Struct({ actor: EntityIdSchema, startedAt: SimulationTickSchema }),
+    Schema.Null,
+  ]),
+  charge: Schema.Finite.check(Schema.isBetween({ minimum: 0, maximum: 1 })),
+  damage: Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)),
+  fired: Schema.Boolean,
+})
+
+export type BowActionPreparation = Result.Result<
+  BowChargePreparation,
+  'invalid-bow-action' | 'invalid-tick' | 'not-drawing'
+>
+
+const decodeBowChargePreparation = (prepared: BowChargePreparation): BowActionPreparation => {
+  const decoded = Schema.decodeUnknownResult(BowChargePreparationSchema, {
+    onExcessProperty: 'error',
+  })(prepared)
+  return Result.isFailure(decoded) ? Result.fail('invalid-tick') : Result.succeed(decoded.success)
+}
+
+/** Prepare the C2 bow action using only the authoritative simulation tick. */
+export const prepareBowAction = (
+  action: BowAction,
+  tick: SimulationTick,
+  previous: BowChargeState | null,
+): BowActionPreparation => {
+  const decodedIntent = Schema.decodeUnknownResult(IntentPayloadSchema)(action)
+  if (Result.isFailure(decodedIntent) || decodedIntent.success._tag !== 'BowAction') {
+    return Result.fail('invalid-bow-action')
+  }
+  const decodedTick = Schema.decodeUnknownResult(SimulationTickSchema)(tick)
+  if (Result.isFailure(decodedTick)) return Result.fail('invalid-tick')
+
+  const actor = decodedIntent.success.actor
+  if (decodedIntent.success.action === 'draw') {
+    return decodeBowChargePreparation({
+      actor,
+      nextState: { actor, startedAt: decodedTick.success },
+      charge: 0,
+      damage: 0,
+      fired: false,
+    })
+  }
+  if (decodedIntent.success.action === 'cancel') {
+    return decodeBowChargePreparation({ actor, nextState: null, charge: 0, damage: 0, fired: false })
+  }
+  if (previous === null || previous.actor !== actor) return Result.fail('not-drawing')
+
+  const elapsedTicks = Number(decodedTick.success) - Number(previous.startedAt)
+  if (!Number.isSafeInteger(elapsedTicks) || elapsedTicks < 0) return Result.fail('invalid-tick')
+
+  const heldSeconds = elapsedTicks / 20
+  const charge = bowCharge(heldSeconds)
+  const fired = canFireBow(heldSeconds)
+  const prepared = {
+    actor,
+    nextState: null,
+    charge,
+    damage: fired ? bowDamage(charge) : 0,
+    fired,
+  }
+  return decodeBowChargePreparation(prepared)
 }

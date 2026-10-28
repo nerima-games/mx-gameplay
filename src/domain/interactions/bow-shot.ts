@@ -51,8 +51,20 @@
  * the bow ACTUALLY uses, cited to the line that supplies it, and `test/bow.test.ts`
  * pins that this repository's bow and melee radii are free to differ.
  */
-import type { Position } from '@nerima-games/mc-kernel'
+import { PositionAxis, position } from '@nerima-games/mc-kernel'
+import type { Dimension, Position, SimulationTick } from '@nerima-games/mc-kernel'
 import type { EntityId } from '@nerima-games/mc-sim'
+import {
+  EntityIdSchema,
+  DimensionIdSchema,
+  DomainEventSchema,
+  SimulationTickSchema,
+  WorldPositionSchema,
+  type DomainEvent,
+} from '@nerima-games/mc-kernel'
+import { EYE_LEVEL_OFFSET, IntentPayloadSchema, type IntentPayload, type PlayerPose } from '@nerima-games/mc-sim'
+import { Result, Schema } from 'effect'
+import { BowChargePreparationSchema, type BowChargePreparation } from './draw-bow.js'
 import { BOW_MAX_RANGE } from './draw-bow.js'
 
 /**
@@ -390,4 +402,115 @@ export const shotBlockedByTerrain = (
   }
 
   return false
+}
+
+export type BowActionIntent = Extract<IntentPayload, { readonly _tag: 'BowAction' }>
+export type BowShotPreparation = Readonly<{
+  target: ShotHit
+  event: DomainEvent
+}>
+
+export const BowShotPreparationSchema: Schema.ConstraintDecoder<BowShotPreparation> = Schema.Struct({
+  target: Schema.Struct({ id: EntityIdSchema, distance: Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)) }),
+  event: DomainEventSchema,
+})
+
+export type BowShotPreparationError =
+  | 'invalid-intent'
+  | 'invalid-charge'
+  | 'invalid-authoritative-pose'
+  | 'invalid-aim'
+  | 'no-target'
+  | 'blocked-by-terrain'
+  | 'invalid-event'
+
+/**
+ * Prepare a hitscan bow hit from C2 intent and authoritative player/world state.
+ * The returned kernel event is only a candidate; the owner must commit before publishing it.
+ */
+export const prepareBowShot = (
+  intent: BowActionIntent,
+  charge: BowChargePreparation,
+  pose: PlayerPose,
+  dimension: Dimension,
+  tick: SimulationTick,
+  candidates: ReadonlyArray<ShotCandidate>,
+  isBlockedAt: IsArrowBlockedAt,
+): Result.Result<BowShotPreparation, BowShotPreparationError> => {
+  const decodedIntent = Schema.decodeUnknownResult(IntentPayloadSchema)(intent)
+  if (
+    Result.isFailure(decodedIntent) || decodedIntent.success._tag !== 'BowAction' ||
+    decodedIntent.success.action !== 'release'
+  ) return Result.fail('invalid-intent')
+  if (charge.actor !== decodedIntent.success.actor || !charge.fired) return Result.fail('invalid-charge')
+  const decodedCharge = Schema.decodeUnknownResult(BowChargePreparationSchema, {
+    onExcessProperty: 'error',
+  })(charge)
+  if (Result.isFailure(decodedCharge)) return Result.fail('invalid-charge')
+
+  const decodedTick = Schema.decodeUnknownResult(SimulationTickSchema)(tick)
+  const decodedDimension = Schema.decodeUnknownResult(DimensionIdSchema)(dimension)
+  if (Result.isFailure(decodedTick) || Result.isFailure(decodedDimension)) {
+    return Result.fail('invalid-authoritative-pose')
+  }
+  if (
+    !Number.isFinite(pose.feetPosition.x) || !Number.isFinite(pose.feetPosition.y) ||
+    !Number.isFinite(pose.feetPosition.z) || !Number.isFinite(pose.yawRadians) ||
+    !Number.isFinite(pose.pitchRadians)
+  ) return Result.fail('invalid-authoritative-pose')
+
+  const aim = decodedIntent.success.aimDirection ?? {
+    x: -Math.sin(pose.yawRadians) * Math.cos(pose.pitchRadians),
+    y: -Math.sin(pose.pitchRadians),
+    z: Math.cos(pose.yawRadians) * Math.cos(pose.pitchRadians),
+  }
+  if (!Number.isFinite(aim.x) || !Number.isFinite(aim.y) || !Number.isFinite(aim.z)) {
+    return Result.fail('invalid-aim')
+  }
+  const originDecoded = Schema.decodeUnknownResult(WorldPositionSchema)({
+    dimension: decodedDimension.success,
+    x: pose.feetPosition.x,
+    y: pose.feetPosition.y + EYE_LEVEL_OFFSET,
+    z: pose.feetPosition.z,
+  })
+  if (Result.isFailure(originDecoded)) return Result.fail('invalid-authoritative-pose')
+
+  const target = shotTarget(candidates, originDecoded.success, aim.x, aim.y, aim.z, BOW_MAX_RANGE)
+  if (target === undefined) return Result.fail('no-target')
+  const length = Math.hypot(aim.x, aim.y, aim.z)
+  if (!Number.isFinite(length) || length === 0) return Result.fail('invalid-aim')
+  const end = position(
+    PositionAxis(originDecoded.success.x + aim.x / length * target.distance),
+    PositionAxis(originDecoded.success.y + aim.y / length * target.distance),
+    PositionAxis(originDecoded.success.z + aim.z / length * target.distance),
+  )
+  if (shotBlockedByTerrain(isBlockedAt, originDecoded.success, end)) {
+    return Result.fail('blocked-by-terrain')
+  }
+
+  const targetCandidate = candidates.find((candidate) => candidate.id === target.id)
+  if (targetCandidate === undefined) return Result.fail('no-target')
+  const event = Schema.decodeUnknownResult(DomainEventSchema, {
+    onExcessProperty: 'error',
+  })({
+    _tag: 'EntityDamaged',
+    tick: decodedTick.success,
+    entity: target.id,
+    position: {
+      dimension: decodedDimension.success,
+      x: targetCandidate.feetPosition.x,
+      y: targetCandidate.feetPosition.y,
+      z: targetCandidate.feetPosition.z,
+    },
+    amount: decodedCharge.success.damage,
+    cause: 'projectile',
+  })
+  if (Result.isFailure(event) || event.success._tag !== 'EntityDamaged') {
+    return Result.fail('invalid-event')
+  }
+  const prepared = { target, event: event.success }
+  const decoded = Schema.decodeUnknownResult(BowShotPreparationSchema, {
+    onExcessProperty: 'error',
+  })(prepared)
+  return Result.isFailure(decoded) ? Result.fail('invalid-event') : Result.succeed(decoded.success)
 }
