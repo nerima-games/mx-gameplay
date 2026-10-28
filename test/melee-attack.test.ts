@@ -13,7 +13,7 @@ import {
 import type { MobBehaviour } from '../src/domain/entities/mob-frame'
 
 const MELEE_PARITY_FIXTURE = {
-  source: 'https://minecraft.wiki/w/Attack_cooldown',
+  source: 'https://minecraft.wiki/w/Melee_attack',
   parity: 'https://raw.githubusercontent.com/takeokunn/ts-minecraft/main/docs/reference/vanilla-parity.md',
   edition: 'Java Edition 26.3',
 } as const
