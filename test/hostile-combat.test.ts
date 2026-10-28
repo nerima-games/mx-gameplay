@@ -1,5 +1,7 @@
 import { describe, expect, it } from '@effect/vitest'
+import { position as atPosition } from './support/coordinate-fixtures'
 import { EntityId, EntityKind, type Entity } from '@nerima-games/mc-sim'
+import { EntityHealthPoints } from '@nerima-games/mc-kernel'
 import {
   CREEPER_LOCOMOTION,
   pursueHorizontally,
@@ -13,8 +15,8 @@ import {
 const zombie = (x: number): Entity<undefined> => ({
   id: EntityId('zombie:1'),
   kind: ZOMBIE_KIND,
-  feetPosition: { x, y: 64, z: 0 },
-  healthPoints: 20,
+  feetPosition: atPosition(x, 64, 0),
+  healthPoints: EntityHealthPoints(20),
   behaviour: undefined,
 })
 
@@ -22,17 +24,17 @@ describe('hostile locomotion', () => {
   it('moves horizontally by at most speed * dt and preserves altitude', () => {
     expect(
       pursueHorizontally(
-        { x: 10, y: 70, z: 0 },
-        { x: 0, y: 20, z: 0 },
+        atPosition(10, 70, 0 ),
+        atPosition(0, 20, 0 ),
         0.5,
         ZOMBIE_LOCOMOTION,
       ),
-    ).toStrictEqual({ x: 8.85, y: 70, z: 0 })
+    ).toStrictEqual(atPosition(8.85, 70, 0 ))
   })
 
   it('stops at the kind-specific engagement distance', () => {
-    const target = { x: 0, y: 64, z: 0 }
-    expect(pursueHorizontally({ x: 2, y: 64, z: 0 }, target, 1, CREEPER_LOCOMOTION)).toStrictEqual({
+    const target = atPosition(0, 64, 0 )
+    expect(pursueHorizontally(atPosition(2, 64, 0 ), target, 1, CREEPER_LOCOMOTION)).toStrictEqual({
       x: 2,
       y: 64,
       z: 0,
@@ -40,8 +42,8 @@ describe('hostile locomotion', () => {
   })
 
   it('does not move without a target, with a non-finite dt, or with a non-positive dt', () => {
-    const from = { x: 5, y: 10, z: 5 }
-    const target = { x: 20, y: 10, z: 5 }
+    const from = atPosition(5, 10, 5 )
+    const target = atPosition(20, 10, 5 )
     expect(pursueHorizontally(from, undefined, 1, ZOMBIE_LOCOMOTION)).toStrictEqual(from)
     expect(pursueHorizontally(from, target, Number.NaN, ZOMBIE_LOCOMOTION)).toStrictEqual(from)
     expect(pursueHorizontally(from, target, 0, ZOMBIE_LOCOMOTION)).toStrictEqual(from)
@@ -53,14 +55,14 @@ describe('hostile locomotion', () => {
     // numbers — `dt` and `distance` are already positive by this point — so a
     // stalled mob (speed zero) is the one caller that can produce it.
     const stalled: HostileLocomotion = { speedBlocksPerSecond: 0, stoppingDistanceBlocks: 1 }
-    const from = { x: 0, y: 10, z: 0 }
-    expect(pursueHorizontally(from, { x: 10, y: 10, z: 0 }, 1, stalled)).toStrictEqual(from)
+    const from = atPosition(0, 10, 0 )
+    expect(pursueHorizontally(from, atPosition(10, 10, 0 ), 1, stalled)).toStrictEqual(from)
   })
 })
 
 describe('player damage resolution', () => {
   it('emits zombie contact damage once per cooldown interval', () => {
-    const target = { x: 0, y: 64, z: 0 }
+    const target = atPosition(0, 64, 0 )
     const first = resolveHostileContacts([zombie(1)], target, 0.25, new Map())
     expect(first.damages).toHaveLength(1)
     expect(first.damages[0]).toMatchObject({
@@ -92,18 +94,18 @@ describe('player damage resolution', () => {
           {
             source: EntityId('creeper:1'),
             kind: EntityKind('creeper'),
-            at: { x: 0, y: 64, z: 0 },
+            at: atPosition(0, 64, 0 ),
             explosion: { source: 'creeper', power: 3 },
           },
         ],
-        { x: 2, y: 64, z: 0 },
+        atPosition(2, 64, 0 ),
       ),
     ).toStrictEqual([
       {
         _tag: 'Explosion',
         source: 'creeper:1',
         kind: 'creeper',
-        at: { x: 0, y: 64, z: 0 },
+        at: atPosition(0, 64, 0 ),
         explosion: { source: 'creeper', power: 3 },
         damage: { amount: 24, cause: 'explosion' },
       },
@@ -120,11 +122,11 @@ describe('player damage resolution', () => {
           {
             source: EntityId('creeper:3'),
             kind: EntityKind('creeper'),
-            at: { x: 0, y: 64, z: 0 },
+            at: atPosition(0, 64, 0 ),
             explosion: { source: 'creeper', power: 3 },
           },
         ],
-        { x: 100, y: 64, z: 0 },
+        atPosition(100, 64, 0 ),
       ),
     ).toStrictEqual([])
   })
@@ -136,7 +138,7 @@ describe('player damage resolution', () => {
           {
             source: EntityId('creeper:2'),
             kind: EntityKind('creeper'),
-            at: { x: 0, y: 64, z: 0 },
+            at: atPosition(0, 64, 0 ),
             explosion: { source: 'creeper', power: 3 },
           },
         ],

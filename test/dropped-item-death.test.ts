@@ -6,6 +6,8 @@
  * dropped-item-metadata tests for where those two joined).
  */
 import { describe, expect, it } from '@effect/vitest'
+import { Result } from 'effect'
+import { position as atPosition } from './support/coordinate-fixtures'
 import {
   emptyEquipment,
   emptyPlayerStorage,
@@ -19,16 +21,21 @@ import {
 } from '@nerima-games/mc-sim'
 import { deathDropsFromPlayerStorage, type PlayerSlotMetadata } from '../src/domain/entities/dropped-item'
 
-const at = { x: 1, y: 2, z: 3 }
+const stack = (item: Parameters<typeof itemStack>[0], count: number): ItemStack =>
+  Result.getOrThrow(itemStack(item, count))
+const equipmentItemOrThrow = (stack: ItemStack) => Result.getOrThrow(equipmentItem(stack))
+const equipState = (...args: Parameters<typeof equip>) => equip(...args).equipment
+
+const at = atPosition(1, 2, 3 )
 
 const storageWith = (
   slots: Inventory['slots'],
   equipItem?: { readonly slot: 'head'; readonly item: ItemStack },
 ): PlayerStorage => {
-  const base = withInventory(emptyPlayerStorage(), { slots })
+  const base = Result.getOrThrow(withInventory(emptyPlayerStorage(), { slots }))
   if (equipItem === undefined) return base
-  const equipped = equip(emptyEquipment(), equipItem.slot, equipmentItem(equipItem.item))
-  return { ...base, equipment: equipped.equipment }
+  const equipment = equipState(emptyEquipment(), equipItem.slot, equipmentItemOrThrow(equipItem.item))
+  return { ...base, equipment }
 }
 
 describe('deathDropsFromPlayerStorage', () => {
@@ -37,7 +44,7 @@ describe('deathDropsFromPlayerStorage', () => {
   })
 
   it('drops one entry per occupied inventory slot, skipping empty ones', () => {
-    const slots: Inventory['slots'] = [itemStack('gunpowder', 3), undefined, itemStack('stick', 1)]
+    const slots: Inventory['slots'] = [stack('gunpowder', 3), undefined, stack('stick', 1)]
     const drops = deathDropsFromPlayerStorage(storageWith(slots), at)
 
     expect(drops).toStrictEqual([
@@ -48,7 +55,7 @@ describe('deathDropsFromPlayerStorage', () => {
 
   it('drops equipped items, and leaves an empty equipment slot uncounted', () => {
     const drops = deathDropsFromPlayerStorage(
-      storageWith([], { slot: 'head', item: itemStack('iron_helmet', 1) }),
+      storageWith([], { slot: 'head', item: stack('iron_helmet', 1) }),
       at,
     )
 
@@ -63,11 +70,11 @@ describe('deathDropsFromPlayerStorage', () => {
     // whole suite — chest/legs/feet/offhand items would silently stay on the
     // corpse. This fills all five and checks each survives to a drop.
     let equipment = emptyEquipment()
-    equipment = equip(equipment, 'head', equipmentItem(itemStack('iron_helmet', 1))).equipment
-    equipment = equip(equipment, 'chest', equipmentItem(itemStack('iron_chestplate', 1))).equipment
-    equipment = equip(equipment, 'legs', equipmentItem(itemStack('iron_leggings', 1))).equipment
-    equipment = equip(equipment, 'feet', equipmentItem(itemStack('iron_boots', 1))).equipment
-    equipment = equip(equipment, 'offhand', equipmentItem(itemStack('shears', 1))).equipment
+    equipment = equipState(equipment, 'head', equipmentItemOrThrow(stack('iron_helmet', 1)))
+    equipment = equipState(equipment, 'chest', equipmentItemOrThrow(stack('iron_chestplate', 1)))
+    equipment = equipState(equipment, 'legs', equipmentItemOrThrow(stack('iron_leggings', 1)))
+    equipment = equipState(equipment, 'feet', equipmentItemOrThrow(stack('iron_boots', 1)))
+    equipment = equipState(equipment, 'offhand', equipmentItemOrThrow(stack('shears', 1)))
     const storage: PlayerStorage = { ...emptyPlayerStorage(), equipment }
 
     const drops = deathDropsFromPlayerStorage(storage, at)
@@ -78,7 +85,7 @@ describe('deathDropsFromPlayerStorage', () => {
   })
 
   it('attaches a matching custom name and enchantment from the slot metadata', () => {
-    const slots: Inventory['slots'] = [itemStack('wooden_pickaxe', 1)]
+    const slots: Inventory['slots'] = [stack('wooden_pickaxe', 1)]
     const metadata: PlayerSlotMetadata = {
       customNames: { '0': 'Old Faithful' },
       enchantedItems: {
@@ -95,7 +102,7 @@ describe('deathDropsFromPlayerStorage', () => {
   })
 
   it('drops stale metadata whose recorded item no longer matches the slot', () => {
-    const slots: Inventory['slots'] = [itemStack('stick', 1)]
+    const slots: Inventory['slots'] = [stack('stick', 1)]
     const metadata: PlayerSlotMetadata = {
       customNames: {},
       enchantedItems: {
@@ -115,7 +122,7 @@ describe('deathDropsFromPlayerStorage', () => {
     }
 
     const drops = deathDropsFromPlayerStorage(
-      storageWith([], { slot: 'head', item: itemStack('iron_helmet', 1) }),
+      storageWith([], { slot: 'head', item: stack('iron_helmet', 1) }),
       at,
       metadata,
     )

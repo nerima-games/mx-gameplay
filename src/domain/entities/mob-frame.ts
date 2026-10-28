@@ -213,14 +213,24 @@ import {
   isValidDurabilityForItem,
   type Durability,
 } from '@nerima-games/mc-sim'
-import { Effect } from 'effect'
-import { blockPosition, blockTypeOfId, capabilityOfBlockId, type Position } from '@nerima-games/mc-kernel'
+import { Effect, Result } from 'effect'
+import {
+  BlockAxis,
+  EntityHealthPoints,
+  PositionAxis,
+  blockPosition,
+  blockTypeOfId,
+  capabilityOfBlockId,
+  position,
+  type Position,
+} from '@nerima-games/mc-kernel'
 import { applyDamage, isDead, type Vitals } from '../death-cause.js'
 import { decodeEnchantedItem, type Enchantment } from '../enchantment.js'
 import {
   changed,
   DESPAWNED,
   EntityKind,
+  type EntitySerialExhausted,
   UNCHANGED,
   type Entity,
   type EntityId,
@@ -576,14 +586,14 @@ export const ENDERMAN_MAX_HEALTH = 40
  * total function anyway so that adding a kind to that list produces a mob with
  * plausible health rather than a `NaN`-healthed one that is instantly dead.
  */
-export const maxHealthOfKind = (kind: EntityKind): number => {
-  if (kind === ENDERMAN_KIND) return ENDERMAN_MAX_HEALTH
-  if (kind === ZOMBIE_KIND) return ZOMBIE_MAX_HEALTH
-  if (kind === EntityKind('spider')) return 16
-  if (kind === EntityKind('cow') || kind === EntityKind('pig')) return 10
-  if (kind === EntityKind('sheep')) return 8
-  if (kind === EntityKind('chicken')) return 4
-  return CREEPER_MAX_HEALTH
+export const maxHealthOfKind = (kind: EntityKind): EntityHealthPoints => {
+  if (kind === ENDERMAN_KIND) return EntityHealthPoints(ENDERMAN_MAX_HEALTH)
+  if (kind === ZOMBIE_KIND) return EntityHealthPoints(ZOMBIE_MAX_HEALTH)
+  if (kind === EntityKind('spider')) return EntityHealthPoints(16)
+  if (kind === EntityKind('cow') || kind === EntityKind('pig')) return EntityHealthPoints(10)
+  if (kind === EntityKind('sheep')) return EntityHealthPoints(8)
+  if (kind === EntityKind('chicken')) return EntityHealthPoints(4)
+  return EntityHealthPoints(CREEPER_MAX_HEALTH)
 }
 
 /**
@@ -640,14 +650,14 @@ export const MAX_HOSTILE_COUNT = 16
  * tested.
  */
 export const hostilePopulation = <S>(roster: EntityManagerApi<S>): Effect.Effect<number> =>
-  Effect.reduce(HOSTILE_KINDS, 0, (total, kind) =>
+  Effect.reduce(HOSTILE_KINDS, () => 0, (total, kind) =>
     Effect.map(roster.countOfKind(kind), (count) => total + count),
   )
 
 export const MAX_PASSIVE_COUNT = 16
 
 export const passivePopulation = <S>(roster: EntityManagerApi<S>): Effect.Effect<number> =>
-  Effect.reduce(PASSIVE_MOB_KINDS, 0, (total, kind) =>
+  Effect.reduce(PASSIVE_MOB_KINDS, () => 0, (total, kind) =>
     Effect.map(roster.countOfKind(kind), (count) => total + count),
   )
 
@@ -1007,8 +1017,26 @@ export const distanceBetween = (from: Position, to: Position): number =>
  * creeper standing on the floor of a room one cell above it and blow the roof
  * off instead of the floor.
  */
-export const cellOf = (position: Position): BlockPosition =>
-  blockPosition(Math.floor(position.x), Math.floor(position.y), Math.floor(position.z))
+export const cellOf = (position: Position): BlockPosition | undefined => {
+  const x = Result.getOrUndefined(BlockAxis.result(Math.floor(position.x)))
+  const y = Result.getOrUndefined(BlockAxis.result(Math.floor(position.y)))
+  const z = Result.getOrUndefined(BlockAxis.result(Math.floor(position.z)))
+  return x === undefined || y === undefined || z === undefined ? undefined : blockPosition(x, y, z)
+}
+
+const teleportCellOf = (position: EndermanTeleportPosition): BlockPosition | undefined => {
+  const x = Result.getOrUndefined(BlockAxis.result(position.x))
+  const y = Result.getOrUndefined(BlockAxis.result(position.y))
+  const z = Result.getOrUndefined(BlockAxis.result(position.z))
+  return x === undefined || y === undefined || z === undefined ? undefined : blockPosition(x, y, z)
+}
+
+const teleportPositionOf = (value: EndermanTeleportPosition): Position | undefined => {
+  const x = Result.getOrUndefined(PositionAxis.result(value.x))
+  const y = Result.getOrUndefined(PositionAxis.result(value.y))
+  const z = Result.getOrUndefined(PositionAxis.result(value.z))
+  return x === undefined || y === undefined || z === undefined ? undefined : position(x, y, z)
+}
 
 // ---------------------------------------------------------------------------
 // The sweep
@@ -1482,18 +1510,25 @@ export const resolveEndermanTeleportProbes = (
   probes: ReadonlyArray<EndermanTeleportProbe>,
 ): Effect.Effect<void> =>
   Effect.gen(function* () {
-    const destinations = new Map<EntityId, EndermanTeleportPosition>()
+    const destinations = new Map<EntityId, Position>()
 
     for (const probe of probes) {
       const cells = yield* Effect.forEach(
         endermanTeleportCandidateCells(probe.current, probe.anchor, probe.rolls),
-        (position) =>
-          Effect.map(store.getBlock(blockPosition(position.x, position.y, position.z)), (reading): EndermanTeleportCell | undefined => {
+        (position) => {
+          const cell = teleportCellOf(position)
+          if (cell === undefined) return Effect.succeed(undefined)
+          return Effect.map(store.getBlock(cell), (reading): EndermanTeleportCell | undefined => {
             if (reading._tag !== 'Block') return undefined
-            const block = blockTypeOfId(reading.block)
+            const block = Result.getOrUndefined(blockTypeOfId(reading.block))
             if (block === undefined) return undefined
-            return { position, block, solid: capabilityOfBlockId(reading.block, 'validSpawnSurface') }
-          }),
+            return {
+              position,
+              block,
+              solid: Result.getOrUndefined(capabilityOfBlockId(reading.block, 'validSpawnSurface')) === true,
+            }
+          })
+        },
       )
       const destination = resolveSafeEndermanTeleport(
         probe.current,
@@ -1501,7 +1536,10 @@ export const resolveEndermanTeleportProbes = (
         probe.rolls,
         cells.filter((cell): cell is EndermanTeleportCell => cell !== undefined),
       )
-      if (destination !== probe.current) destinations.set(probe.entityId, destination)
+      if (destination !== probe.current) {
+        const position = teleportPositionOf(destination)
+        if (position !== undefined) destinations.set(probe.entityId, position)
+      }
     }
 
     if (destinations.size === 0) return
@@ -1582,7 +1620,7 @@ export const resolveBlasts = (
       return {
         transition: changed({
           feetPosition: entity.feetPosition,
-          healthPoints: vitals.healthPoints,
+          healthPoints: EntityHealthPoints(vitals.healthPoints),
           // THE ONLY BLOW THIS REPOSITORY CAN MEASURE. `endermanTeleportUrge`'s
           // `damagedThisStep` is 「mc-sim's combat lane」 and there is no combat
           // lane here: melee belongs in a `domain/combat/` that does not exist
@@ -1599,7 +1637,10 @@ export const resolveBlasts = (
 
     const disturbed: Array<BlockPositionKey> = []
     for (const blast of blasts) {
-      disturbed.push(...(yield* carveExplosionCrater(store, cellOf(blast.at), blast.explosion.power)))
+      const center = cellOf(blast.at)
+      if (center !== undefined) {
+        disturbed.push(...(yield* carveExplosionCrater(store, center, blast.explosion.power)))
+      }
     }
 
     return { casualties, disturbed }
@@ -1698,7 +1739,7 @@ export const resolveBowHits = (
       return {
         transition: changed({
           feetPosition: entity.feetPosition,
-          healthPoints: vitals.healthPoints,
+          healthPoints: EntityHealthPoints(vitals.healthPoints),
           behaviour: bruise(entity.behaviour),
         }),
         emit: undefined,
@@ -1947,7 +1988,7 @@ export type MobSpawnOutcome =
 export const applySpawnAttempts = (
   roster: EntityManagerApi<MobBehaviour>,
   attempts: ReadonlyArray<MobSpawnAttempt>,
-): Effect.Effect<ReadonlyArray<MobSpawnOutcome>> =>
+): Effect.Effect<ReadonlyArray<MobSpawnOutcome>, EntitySerialExhausted> =>
   Effect.gen(function* () {
     const outcomes: Array<MobSpawnOutcome> = []
 

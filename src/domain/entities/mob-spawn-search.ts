@@ -88,9 +88,16 @@
  * which is `ChunkStoreApi`'s to grow and is the same shape of request as this
  * light query was.
  */
-import { Effect } from 'effect'
+import { Effect, Result } from 'effect'
 import type { ChunkStoreApi } from '@nerima-games/mc-worldgen'
-import { blockPosition, type BlockPosition, type Position } from '@nerima-games/mc-kernel'
+import {
+  BlockAxis,
+  PositionAxis,
+  blockPosition,
+  position,
+  type BlockPosition,
+  type Position,
+} from '@nerima-games/mc-kernel'
 import { EntityKind } from '@nerima-games/mc-sim'
 import { drawRolls, rollAt } from '../frame-rolls.js'
 import { hostileSpawnsAllowed } from '../day-night.js'
@@ -231,9 +238,27 @@ export const searchSpawnCandidates = (
         const x = Math.floor(target.x + radius * Math.cos(angle))
         const z = Math.floor(target.z + radius * Math.sin(angle))
 
-        const ground = yield* store.getBlock(at(x, footY - 1, z))
-        const foot = yield* store.getBlock(at(x, footY, z))
-        const head = yield* store.getBlock(at(x, footY + 1, z))
+        const groundAt = at(x, footY - 1, z)
+        const footAt = at(x, footY, z)
+        const headAt = at(x, footY + 1, z)
+        const positionX = Result.getOrUndefined(PositionAxis.result(x))
+        const positionY = Result.getOrUndefined(PositionAxis.result(footY))
+        const positionZ = Result.getOrUndefined(PositionAxis.result(z))
+        if (
+          groundAt === undefined ||
+          footAt === undefined ||
+          headAt === undefined ||
+          positionX === undefined ||
+          positionY === undefined ||
+          positionZ === undefined
+        ) {
+          unreadable += 1
+          continue
+        }
+
+        const ground = yield* store.getBlock(groundAt)
+        const foot = yield* store.getBlock(footAt)
+        const head = yield* store.getBlock(headAt)
 
         if (ground._tag !== 'Block' || foot._tag !== 'Block' || head._tag !== 'Block') {
           // NOT offered as air. `@nerima-games/mc-worldgen`'s `BlockReading`
@@ -244,7 +269,7 @@ export const searchSpawnCandidates = (
           continue
         }
 
-        const light = yield* store.getLight(at(x, footY, z))
+        const light = yield* store.getLight(footAt)
         if (light._tag !== 'Light') {
           unreadable += 1
           continue
@@ -274,7 +299,7 @@ export const searchSpawnCandidates = (
         attempts.push({
           candidate,
           kind: kindForRoll(rollAt(batch, 1 + cellIndex), kinds),
-          feetPosition: { x, y: footY, z },
+          feetPosition: position(positionX, positionY, positionZ),
         })
       }
     }
@@ -297,7 +322,14 @@ export const searchSpawnCandidates = (
  * else」. A search that pre-filtered on air would be a second, unnamed and
  * untested copy of the `obstructed` test.
  */
-const at = (x: number, y: number, z: number): BlockPosition => blockPosition(x, y, z)
+const at = (x: number, y: number, z: number): BlockPosition | undefined => {
+  const blockX = Result.getOrUndefined(BlockAxis.result(x))
+  const blockY = Result.getOrUndefined(BlockAxis.result(y))
+  const blockZ = Result.getOrUndefined(BlockAxis.result(z))
+  return blockX === undefined || blockY === undefined || blockZ === undefined
+    ? undefined
+    : blockPosition(blockX, blockY, blockZ)
+}
 
 /**
  * Which hostile a cell would produce.

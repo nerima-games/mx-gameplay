@@ -33,7 +33,7 @@
  * shape checks that keep a whole class out.
  */
 import { describe, expect, it } from '@effect/vitest'
-import { Effect } from 'effect'
+import { Effect, Result } from 'effect'
 import { readdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -214,7 +214,7 @@ describe('creeper: the fuse is a state machine with a timer and an irreversible 
   it.effect('a non-finite or negative delta cannot even be constructed', () =>
     Effect.sync(() => {
       // The structural half of the finding F5 argument: `DeltaTimeSecs` is
-      // `Brand.refined` on `Number.isFinite(value) && value >= 0`
+      // `Brand.make` on `Number.isFinite(value) && value >= 0`
       // (kernel's domain/quantities.ts), so a fuse cannot be advanced by a
       // non-number and cannot be wound backwards. There is no overload here
       // that takes a bare number.
@@ -461,8 +461,8 @@ describe('creeper: spawning is a rule about light and surface, never a block lis
       // separately from `solid`. A rule that tested solidity would spawn mobs in
       // the canopy — and the reference's mob spawner, which tested nothing at
       // all beyond "first non-air block from the top", did.
-      expect(capabilityOfBlockId(OAK_LEAVES, 'validSpawnSurface')).toBe(false)
-      expect(capabilityOfBlockId(GLASS, 'validSpawnSurface')).toBe(false)
+      expect(capabilityOfBlockId(OAK_LEAVES, 'validSpawnSurface')).toStrictEqual(Result.succeed(false))
+      expect(capabilityOfBlockId(GLASS, 'validSpawnSurface')).toStrictEqual(Result.succeed(false))
 
       for (const ground of [OAK_LEAVES, GLASS, WATER, AIR_BLOCK_ID]) {
         expect(canHostileSpawnAt(candidate({ groundBlock: ground }))).toStrictEqual({
@@ -475,11 +475,10 @@ describe('creeper: spawning is a rule about light and surface, never a block lis
 
   it.effect('a block id this build cannot name is ordinary ground, as kernel says', () =>
     Effect.sync(() => {
-      // kernel's `capabilityOfBlockId` is total and falls back to the defaults
-      // for an unknown byte, and `validSpawnSurface` defaults to `true`. Kernel's
-      // negative-set transcription (`NON_SPAWN_SURFACE_BLOCK_IDS`) reproduces
-      // that for free — which is the reason it is a negative set.
-      expect(canHostileSpawnAt(candidate({ groundBlock: BlockId(200) }))).toStrictEqual({ _tag: 'Spawn' })
+      // Valid but unregistered ids use kernel's default capability values.
+      const unknownBlock = BlockId(60_000)
+      expect(capabilityOfBlockId(unknownBlock, 'validSpawnSurface')).toStrictEqual(Result.succeed(true))
+      expect(canHostileSpawnAt(candidate({ groundBlock: unknownBlock }))).toStrictEqual({ _tag: 'Spawn' })
     }),
   )
 

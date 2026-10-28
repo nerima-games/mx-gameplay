@@ -69,6 +69,7 @@
  * roster. They arrive with mc-sim, and until then a rule that pretended to make
  * them would be a second owner of the mob population.
  */
+import { Result } from 'effect'
 import { AIR_BLOCK_ID, capabilityOfBlockId, type BlockId } from '@nerima-games/mc-kernel'
 import { hostileSpawnsAllowed } from '../day-night.js'
 import type { EntityKind } from '@nerima-games/mc-sim'
@@ -160,6 +161,10 @@ export type SpawnVerdict =
 
 const REFUSED = (reason: SpawnRefusal): SpawnVerdict => ({ _tag: 'Refused', reason })
 
+// Valid but unregistered ids retain kernel's default capability values.
+const isSpawnSurface = (block: BlockId): boolean =>
+  Result.getOrUndefined(capabilityOfBlockId(block, 'validSpawnSurface')) === true
+
 /**
  * May a hostile spawn here?
  *
@@ -194,7 +199,7 @@ export const canHostileSpawnAt = (candidate: SpawnCandidate): SpawnVerdict => {
     return REFUSED('too-far')
   }
 
-  if (!capabilityOfBlockId(candidate.groundBlock, 'validSpawnSurface')) {
+  if (!isSpawnSurface(candidate.groundBlock)) {
     return REFUSED('not-a-surface')
   }
 
@@ -233,7 +238,7 @@ export const canMobSpawnAt = (kind: EntityKind, candidate: SpawnCandidate): Spaw
   if (!Number.isFinite(candidate.distanceToPlayerBlocksXZ) || !Number.isFinite(candidate.blockLight)) return REFUSED('unmeasurable')
   if (candidate.distanceToPlayerBlocksXZ < MIN_SPAWN_DISTANCE_BLOCKS) return REFUSED('too-close')
   if (candidate.distanceToPlayerBlocksXZ > MAX_SPAWN_DISTANCE_BLOCKS) return REFUSED('too-far')
-  if (!capabilityOfBlockId(candidate.groundBlock, 'validSpawnSurface')) return REFUSED('not-a-surface')
+  if (!isSpawnSurface(candidate.groundBlock)) return REFUSED('not-a-surface')
   if (candidate.footBlock !== AIR_BLOCK_ID || candidate.headBlock !== AIR_BLOCK_ID) return REFUSED('obstructed')
   if (nether && candidate.blockLight > HOSTILE_SPAWN_MAX_BLOCK_LIGHT) return REFUSED('too-bright')
   return { _tag: 'Spawn' }

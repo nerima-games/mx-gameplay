@@ -39,7 +39,7 @@
  * neighbour should draw as open sky rather than as a black wall — which is
  * right for drawing and wrong for simulating.
  */
-import { Effect } from 'effect'
+import { Effect, Result } from 'effect'
 import {
   adjacentBlockPosition,
   blockPositionKeyOf,
@@ -67,7 +67,9 @@ export type FallingBlockMoves = {
 const fallingMaterial = (reading: BlockReading): BlockId | undefined => {
   switch (reading._tag) {
     case 'Block':
-      return capabilityOfBlockId(reading.block, 'fallsWhenUnsupported') ? reading.block : undefined
+      return Result.getOrUndefined(capabilityOfBlockId(reading.block, 'fallsWhenUnsupported')) === true
+        ? reading.block
+        : undefined
     // Unknown, not empty. Whatever is up there stays up there until the chunk
     // is resident and something disturbs it again.
     case 'ChunkNotLoaded':
@@ -94,7 +96,7 @@ const canReceive = (reading: BlockReading): boolean => {
     // `replaceable`, from kernel's table: air and water, not "everything
     // non-solid" — kernel's audit §4.9 spends a section on the difference.
     case 'Block':
-      return capabilityOfBlockId(reading.block, 'replaceable')
+      return Result.getOrUndefined(capabilityOfBlockId(reading.block, 'replaceable')) === true
     // THE case this whole three-valued read exists for. Treating it as air
     // drops the block out of the world at the edge of the loaded area.
     case 'ChunkNotLoaded':
@@ -160,8 +162,14 @@ export const applyFallingBlocks = (
     let moved = 0
 
     for (const positionKey of batch) {
-      const target = blockPositionOfKey(positionKey)
-      const source = adjacentBlockPosition(target, 'up')
+      const target = Result.getOrUndefined(blockPositionOfKey(positionKey))
+      if (target === undefined) {
+        continue
+      }
+      const source = Result.getOrUndefined(adjacentBlockPosition(target, 'up'))
+      if (source === undefined) {
+        continue
+      }
 
       const material = fallingMaterial(yield* store.getBlock(source))
       if (material === undefined) {
@@ -193,10 +201,11 @@ export const applyFallingBlocks = (
           // The cell BELOW the new resting place, so the column keeps sinking,
           // and the cell it came FROM, because whatever was above that is now
           // unsupported in its turn.
-          destinations.push(
-            blockPositionKeyOf(adjacentBlockPosition(target, 'down')),
-            blockPositionKeyOf(source),
-          )
+          const below = Result.getOrUndefined(adjacentBlockPosition(target, 'down'))
+          if (below !== undefined) {
+            destinations.push(blockPositionKeyOf(below))
+          }
+          destinations.push(blockPositionKeyOf(source))
           break
         }
 

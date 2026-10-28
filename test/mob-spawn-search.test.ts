@@ -12,9 +12,10 @@
  * at a cost that can be stated.
  */
 import { describe, expect, it } from '@effect/vitest'
+import { position as atPosition } from './support/coordinate-fixtures'
 import { makeTimeService } from '@nerima-games/mc-sim'
 import { Effect, Ref } from 'effect'
-import { AIR_BLOCK_ID, BlockId, blockPosition, type BlockPosition, type Position } from '@nerima-games/mc-kernel'
+import { AIR_BLOCK_ID, BlockAxis, BlockId, DeltaTimeSecs, InterpolationFraction, blockPosition as makeBlockPosition, type BlockPosition, type Position } from '@nerima-games/mc-kernel'
 import type { ChunkStoreApi } from '@nerima-games/mc-worldgen'
 import {
   CREEPER_KIND,
@@ -42,7 +43,6 @@ import {
   MAX_SPAWN_DISTANCE_BLOCKS,
   MIN_SPAWN_DISTANCE_BLOCKS,
 } from '../src/domain/mob/hostile-spawn'
-import { DeltaTimeSecs } from '@nerima-games/mc-kernel'
 import { GAMEPLAY_STAGE_IDS } from '../src/stages/stage-ids'
 import {
   gameplayStages,
@@ -70,9 +70,12 @@ import { makeInventoryDouble } from './support/inventory-service-double'
 // is — separately, below.
 // ---------------------------------------------------------------------------
 
-const PLAYER = { x: 0.5, y: 64, z: 0.5 }
+const blockPosition = (x: number, y: number, z: number): BlockPosition =>
+  makeBlockPosition(BlockAxis(x), BlockAxis(y), BlockAxis(z))
+
+const PLAYER = atPosition(0.5, 64, 0.5 )
 const FLOOR_Y = 63
-const MIDNIGHT = 0
+const MIDNIGHT = InterpolationFraction(0)
 
 /** Chunk keys covering -48..47 on both axes, which contains the whole ring. */
 const RESIDENT_CHUNKS: ReadonlyArray<string> = (() => {
@@ -375,7 +378,7 @@ describe('the spawn ring', () => {
       // `domain/mob/hostile-spawn.ts`'s header is emphatic that a second opinion
       // here would be half of the reference's death-loop bug. So a daytime hour
       // still produces candidates; they are refused one layer up.
-      const { found } = yield* searchIn(FLOORED_WORLD, RESIDENT_CHUNKS, new Map(), 1, 0.5)
+      const { found } = yield* searchIn(FLOORED_WORLD, RESIDENT_CHUNKS, new Map(), 1, InterpolationFraction(0.5))
 
       expect(found.attempts.length).toBe(SPAWN_RING_CELLS)
       for (const attempt of found.attempts) {
@@ -714,7 +717,7 @@ describe('the search inside the frame', () => {
       const state = yield* makeGameplayFrameState
       const stages = gameplayStages(state, store.api, roster.api, inventory.api, player.api, time)
 
-      const offeredAt: Position = { x: -20, y: 64, z: -20 }
+      const offeredAt: Position = atPosition(-20, 64, -20 )
       yield* player.api.moveTo(PLAYER)
       yield* time.setTimeOfDay(MIDNIGHT)
       yield* Ref.set(state.spawnAttempts, [
@@ -759,7 +762,7 @@ describe('the search inside the frame', () => {
 
       yield* player.api.moveTo(PLAYER)
       yield* Ref.set(state.timeOfDay, MIDNIGHT)
-      yield* time.setTimeOfDay(0.5)
+      yield* time.setTimeOfDay(InterpolationFraction(0.5))
 
       const entities = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.entities)
       for (let frame = 0; frame < 10; frame += 1) {

@@ -1,7 +1,8 @@
 import { describe, expect, it } from '@effect/vitest'
+import { position as atPosition } from './support/coordinate-fixtures'
 import { durabilityForItem, type InventoryServiceApi } from '@nerima-games/mc-sim'
-import { Effect } from 'effect'
-import { StackCount } from '@nerima-games/mc-kernel'
+import { Effect, Result } from 'effect'
+import { EntityHealthPoints, itemStack, StackCount } from '@nerima-games/mc-kernel'
 import { EntityId, EntityKind } from '@nerima-games/mc-sim'
 import {
   CREEPER_KIND,
@@ -21,7 +22,7 @@ import {
   makeInventoryDouble,
 } from './support/inventory-service-double'
 
-const origin = { x: 0, y: 0, z: 0 }
+const origin = atPosition(0, 0, 0 )
 const dropSource = EntityId('source')
 
 describe('dropped item entities', () => {
@@ -78,10 +79,7 @@ describe('dropped item entities', () => {
   it.effect('leaves an overflowing stack on the ground with its full remaining count', () =>
     Effect.gen(function* () {
       const roster = yield* makeEntityManagerDouble<MobBehaviour>()
-      const fullInventory = emptySlots().map(() => ({
-        item: 'stone' as const,
-        count: StackCount(64),
-      }))
+      const fullInventory = emptySlots().map(() => Result.getOrThrow(itemStack('stone', StackCount(64))))
       const inventory = yield* makeInventoryDouble(fullInventory)
       yield* spawnMobDrop(roster.api, {
         source: dropSource,
@@ -130,7 +128,7 @@ describe('dropped item entities', () => {
       const far = yield* spawnDroppedItem(roster.api, {
         item: 'stick',
         count: 1,
-        at: { x: 100, y: 0, z: 100 },
+        at: atPosition(100, 0, 100 ),
       })
 
       yield* pickupDroppedItems(roster.api, inventory.api, origin)
@@ -221,17 +219,13 @@ describe('dropped item entities', () => {
 
       expect(yield* acceptedRoster.api.count).toBe(0)
       const acceptedStorage = yield* acceptedInventory.api.storageSnapshot
-      expect(acceptedStorage.inventory.slots[0]).toStrictEqual({
-        item: 'wooden_pickaxe',
-        count: StackCount(1),
-      })
+      expect(acceptedStorage.inventory.slots[0]).toStrictEqual(
+        Result.getOrThrow(itemStack('wooden_pickaxe', StackCount(1))),
+      )
       expect(acceptedStorage.inventoryDurability[0]).toStrictEqual(durability)
       expect(acceptedStorage.inventoryDurability[0]).not.toBe(durability)
 
-      const fullInventory = emptySlots().map(() => ({
-        item: 'stone' as const,
-        count: StackCount(64),
-      }))
+      const fullInventory = emptySlots().map(() => Result.getOrThrow(itemStack('stone', StackCount(64))))
       const refusedRoster = yield* makeEntityManagerDouble<MobBehaviour>()
       const refusedInventory = yield* makeInventoryDouble(fullInventory)
       yield* spawnDroppedItem(refusedRoster.api, {
@@ -269,7 +263,7 @@ describe('dropped item entities', () => {
       const spawned = yield* roster.api.spawn({
         kind: DROPPED_ITEM_KIND,
         feetPosition: origin,
-        healthPoints: 1,
+        healthPoints: EntityHealthPoints(1),
         behaviour: {
           _tag: 'DroppedItem',
           item: 'wooden_pickaxe',
@@ -324,7 +318,7 @@ describe('dropped item entities', () => {
       const delayedInventory = {
         ...inventory.api,
         addStoredStack: (stack) =>
-          Effect.zipRight(Effect.yieldNow(), inventory.api.addStoredStack(stack)),
+          Effect.andThen(Effect.yieldNow, inventory.api.addStoredStack(stack)),
       } satisfies InventoryServiceApi
 
       yield* Effect.all(
@@ -350,26 +344,26 @@ describe('melee targeting', () => {
       const roster = yield* makeEntityManagerDouble<MobBehaviour>()
       yield* roster.api.spawn({
         kind: EntityKind('pig'),
-        feetPosition: { x: 1, y: 0, z: 0 },
-        healthPoints: 10,
+        feetPosition: atPosition(1, 0, 0 ),
+        healthPoints: EntityHealthPoints(10),
         behaviour: undefined,
       })
       const near = yield* roster.api.spawn({
         kind: CREEPER_KIND,
-        feetPosition: { x: 2, y: 0, z: 0 },
-        healthPoints: 10,
+        feetPosition: atPosition(2, 0, 0 ),
+        healthPoints: EntityHealthPoints(10),
         behaviour: undefined,
       })
       yield* roster.api.spawn({
         kind: CREEPER_KIND,
-        feetPosition: { x: 3, y: 0, z: 0 },
-        healthPoints: 10,
+        feetPosition: atPosition(3, 0, 0 ),
+        healthPoints: EntityHealthPoints(10),
         behaviour: undefined,
       })
       const candidates = yield* roster.api.entities
       const request = {
-        origin: { x: 0, y: 0.9, z: 0 },
-        direction: { x: 1, y: 0, z: 0 },
+        origin: atPosition(0, 0.9, 0 ),
+        direction: atPosition(1, 0, 0 ),
         reach: 4,
         damage: 4,
       }
@@ -385,14 +379,14 @@ describe('melee targeting', () => {
       const roster = yield* makeEntityManagerDouble<MobBehaviour>()
       yield* roster.api.spawn({
         kind: CREEPER_KIND,
-        feetPosition: { x: 2, y: 0, z: 0 },
-        healthPoints: 10,
+        feetPosition: atPosition(2, 0, 0 ),
+        healthPoints: EntityHealthPoints(10),
         behaviour: undefined,
       })
       const candidates = yield* roster.api.entities
       const request = {
-        origin: { x: 0, y: 0.9, z: 0 },
-        direction: { x: 1, y: 0, z: 0 },
+        origin: atPosition(0, 0.9, 0 ),
+        direction: atPosition(1, 0, 0 ),
         reach: 4,
         damage: 4,
       }

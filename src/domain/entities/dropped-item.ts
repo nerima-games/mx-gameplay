@@ -1,15 +1,16 @@
-import type { ItemType } from '@nerima-games/mc-kernel'
+import { EntityHealthPoints, itemStack, type ItemType } from '@nerima-games/mc-kernel'
 import {
   addStoredStack as addStorageStoredStack,
   durabilityForItem,
   emptyPlayerStorage,
   EQUIPMENT_SLOTS,
   type AddStoredStackResult,
+  type EntitySerialExhausted,
   type Durability,
   type InventoryServiceApi,
   type PlayerStorage,
 } from '@nerima-games/mc-sim'
-import { Effect } from 'effect'
+import { Effect, Result, Semaphore } from 'effect'
 import type { Position } from '@nerima-games/mc-kernel'
 import { changed, DESPAWNED, UNCHANGED, type Entity, type EntityManagerApi } from '@nerima-games/mc-sim'
 import { StackCount } from '@nerima-games/mc-kernel'
@@ -35,8 +36,8 @@ export type DroppedItemSpawn = {
 
 export type DroppedItemSpawnError = Extract<
   AddStoredStackResult,
-  { readonly _tag: 'InvalidStack' }
->
+  { readonly _tag: 'InvalidStack' | 'ItemStackFailure' }
+> | EntitySerialExhausted
 
 const copyDurability = (durability: Durability | null): Durability | null =>
   durability === null ? null : { ...durability }
@@ -47,18 +48,18 @@ export const spawnDroppedItem = (
 ): Effect.Effect<Entity<MobBehaviour>, DroppedItemSpawnError> => {
   const durability =
     drop.durability === undefined ? durabilityForItem(drop.item) : drop.durability
-  const stack = {
-    item: drop.item,
-    count: drop.count as StackCount,
-    durability: copyDurability(durability),
-  }
+  const count = Result.getOrUndefined(StackCount.result(drop.count))
+  if (count === undefined) return Effect.fail({ _tag: 'InvalidStack' })
+  const stackItem = Result.getOrUndefined(itemStack(drop.item, count))
+  if (stackItem === undefined) return Effect.fail({ _tag: 'InvalidStack' })
+  const stack = { ...stackItem, durability: copyDurability(durability) }
   const validation = addStorageStoredStack(emptyPlayerStorage(), stack).result
-  if (validation._tag === 'InvalidStack') return Effect.fail(validation)
+  if (validation._tag !== 'Added') return Effect.fail(validation)
 
   return roster.spawn({
     kind: DROPPED_ITEM_KIND,
     feetPosition: drop.at,
-    healthPoints: 1,
+    healthPoints: EntityHealthPoints(1),
     behaviour: {
       _tag: 'DroppedItem',
       item: stack.item,
@@ -99,13 +100,13 @@ const distanceSquared = (left: Position, right: Position): number => {
 
 const pickupLocks = new WeakMap<
   EntityManagerApi<MobBehaviour>,
-  Effect.Semaphore
+  Semaphore.Semaphore
 >()
 
-const pickupLockFor = (roster: EntityManagerApi<MobBehaviour>): Effect.Semaphore => {
+const pickupLockFor = (roster: EntityManagerApi<MobBehaviour>): Semaphore.Semaphore => {
   const existing = pickupLocks.get(roster)
   if (existing !== undefined) return existing
-  const created = Effect.unsafeMakeSemaphore(1)
+  const created = Semaphore.makeUnsafe(1)
   pickupLocks.set(roster, created)
   return created
 }
@@ -141,19 +142,18 @@ export const pickupDroppedItems = (
           distanceSquared(entity.feetPosition, playerPosition) > radiusSquared
         ) continue
 
-        // `result._tag` is always `'Added'`, never asserted on: mc-sim's
-        // `addStoredStack` and this file's own `isDroppedItemBehaviour` run the
-        // IDENTICAL validation (damageable: count === 1 and a valid durability;
-        // otherwise durability === null — `player-storage.js`'s
-        // `isValidStoredStack`), and the `continue` guard above already ran
-        // `isDroppedItemBehaviour` on this entity. A stack that failed here
-        // would have failed there first.
-        const result = (yield* inventory.addStoredStack({
-          item: entity.behaviour.item,
-          count: StackCount(entity.behaviour.count),
+        const count = Result.getOrUndefined(StackCount.result(entity.behaviour.count))
+        if (count === undefined) continue
+        const stack = Result.getOrUndefined(itemStack(entity.behaviour.item, count))
+        if (stack === undefined) continue
+        // The prefilter and constructors validate the same item/count/durability
+        // shape as mc-sim storage. If that validation diverges, leave the entity
+        // unchanged so an unexpected result cannot silently consume the dropped stack.
+        const result = yield* inventory.addStoredStack({
+          ...stack,
           durability: copyDurability(entity.behaviour.durability),
-        })) as Extract<AddStoredStackResult, { readonly _tag: 'Added' }>
-        leftovers.set(entity.id, result.leftover)
+        })
+        if (result._tag === 'Added') leftovers.set(entity.id, result.leftover)
       }
 
       if (leftovers.size === 0) return

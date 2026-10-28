@@ -1,5 +1,5 @@
 import type { Damage } from '../death-cause.js'
-import type { Position } from '@nerima-games/mc-kernel'
+import { PositionAxis, position, type Position } from '@nerima-games/mc-kernel'
 import {
   EntityKind,
   type Entity,
@@ -47,11 +47,11 @@ export const pursueHorizontally = (
     return from
   }
 
-  return {
-    x: from.x + (dx / distance) * distanceMoved,
-    y: from.y,
-    z: from.z + (dz / distance) * distanceMoved,
-  }
+  return position(
+    PositionAxis(from.x + (dx / distance) * distanceMoved),
+    from.y,
+    PositionAxis(from.z + (dz / distance) * distanceMoved),
+  )
 }
 
 export type PlayerDamageEvent =

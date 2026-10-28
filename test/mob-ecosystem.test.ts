@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import type { Position } from '@nerima-games/mc-kernel'
+import { position as atPosition } from './support/coordinate-fixtures'
+import { EntityHealthPoints, type Position } from '@nerima-games/mc-kernel'
 import { EntityId, type Entity } from '@nerima-games/mc-sim'
 import {
   BLAZE_KIND,
@@ -15,7 +16,7 @@ import {
 } from '../src/domain/mob/mob-ecosystem'
 import { ZOMBIE_KIND } from '../src/domain/mob/hostile-combat'
 
-const position = (x: number, z = 0): Position => ({ x, y: 64, z })
+const position = (x: number, z = 0): Position => atPosition(x, 64, z)
 
 describe('mob ecosystem', () => {
   it('restricts overworld and nether mobs to their dimensions', () => {
@@ -67,9 +68,9 @@ describe('mob ecosystem', () => {
     const nearbyId = EntityId('piglin-nearby')
     const distantId = EntityId('piglin-distant')
     const entities: ReadonlyArray<Entity<undefined>> = [
-      { id: attackedId, kind: ZOMBIFIED_PIGLIN_KIND, feetPosition: position(0), healthPoints: 20, behaviour: undefined },
-      { id: nearbyId, kind: ZOMBIFIED_PIGLIN_KIND, feetPosition: position(8), healthPoints: 20, behaviour: undefined },
-      { id: distantId, kind: ZOMBIFIED_PIGLIN_KIND, feetPosition: position(20), healthPoints: 20, behaviour: undefined },
+      { id: attackedId, kind: ZOMBIFIED_PIGLIN_KIND, feetPosition: position(0), healthPoints: EntityHealthPoints(20), behaviour: undefined },
+      { id: nearbyId, kind: ZOMBIFIED_PIGLIN_KIND, feetPosition: position(8), healthPoints: EntityHealthPoints(20), behaviour: undefined },
+      { id: distantId, kind: ZOMBIFIED_PIGLIN_KIND, feetPosition: position(20), healthPoints: EntityHealthPoints(20), behaviour: undefined },
     ]
 
     expect(propagatedPiglinProvocation(entities, new Set([attackedId]))).toEqual(

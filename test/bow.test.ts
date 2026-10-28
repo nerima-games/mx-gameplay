@@ -14,8 +14,9 @@
  * here. `domain/interactions/draw-bow.ts`'s header carries the measurement.
  */
 import { describe, expect, it } from '@effect/vitest'
+import { position as atPosition } from './support/coordinate-fixtures'
 import { makeTimeService, type Slot } from '@nerima-games/mc-sim'
-import { Effect } from 'effect'
+import { Effect, Result } from 'effect'
 import {
   bowCharge,
   bowDamage,
@@ -42,7 +43,7 @@ import {
 } from '../src/domain/interactions/bow-shot'
 import { knockbackDirection, KNOCKBACK_EPSILON } from '../src/domain/interactions/knockback'
 import { resolveBowHits, type MobBehaviour } from '../src/domain/entities/mob-frame'
-import { EntityId, EntityKind, type EntityRoster } from '@nerima-games/mc-sim'
+import { EntityId, EntityKind, EntitySerial, type EntityRoster } from '@nerima-games/mc-sim'
 import {
   drainBowKnockbacks,
   drainBowShotResults,
@@ -50,7 +51,7 @@ import {
   makeGameplayFrameState,
   requestBowShot,
 } from '../src/stages/registration'
-import { StackCount, type BlockId } from '@nerima-games/mc-kernel'
+import { EntityHealthPoints, itemStack, StackCount, type BlockId, type Position } from '@nerima-games/mc-kernel'
 import { makeChunkStoreDouble } from './support/chunk-store-double'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
 import { makePlayerServiceDouble } from './support/player-service-double'
@@ -58,12 +59,15 @@ import { makeInventoryDouble } from './support/inventory-service-double'
 import { runFrame } from './support/frame-runner'
 import { Ref } from 'effect'
 
-const EYE = { x: 0, y: 64, z: 0 }
+// Deliberately malformed positions exercise runtime rejection paths.
+const unsafePosition = (x: number, y: number, z: number): Position => ({ x, y, z }) as unknown as Position
+
+const EYE = atPosition(0, 64, 0 )
 
 /** A candidate standing at `(x, y, z)`, feet origin. */
 const standing = (id: string, x: number, y: number, z: number): ShotCandidate => ({
   id: EntityId(id),
-  feetPosition: { x, y, z },
+  feetPosition: atPosition(x, y, z),
 })
 
 /** A world in which the listed cells stop an arrow. */
@@ -308,7 +312,7 @@ describe('shotTarget — the ownership argument, executable', () => {
   it('scaling the aim direction by any positive factor cannot change the answer', () => {
     // A genuinely three-component aim, so that every axis is scaled and none of
     // the multiplications is a no-op.
-    const aim = { x: 0.2, y: 0.1, z: 1 }
+    const aim = atPosition(0.2, 0.1, 1 )
     const length = Math.hypot(aim.x, aim.y, aim.z)
     const along = (id: string, t: number): ShotCandidate =>
       standing(
@@ -351,14 +355,15 @@ describe('shotTarget — the ownership argument, executable', () => {
     const y = 64 - BOW_TARGET_CENTER_Y_OFFSET
     const candidates = [standing('a', 0, y, 10)]
     expect(shotTarget(candidates, EYE, Number.NaN, 0, 1)).toBeUndefined()
-    expect(shotTarget(candidates, { x: Number.NaN, y: 64, z: 0 }, 0, 0, 1)).toBeUndefined()
+    expect(shotTarget(candidates, unsafePosition(Number.NaN, 64, 0), 0, 0, 1)).toBeUndefined()
     expect(shotTarget(candidates, EYE, 0, 0, 1, Number.NaN)).toBeUndefined()
   })
 
   it('a candidate with a non-finite position is never nearest', () => {
     const y = 64 - BOW_TARGET_CENTER_Y_OFFSET
+    const broken = standing('broken', 0, y, 1)
     const hit = shotTarget(
-      [standing('broken', Number.NaN, y, 1), standing('real', 0, y, 10)],
+      [{ ...broken, feetPosition: unsafePosition(Number.NaN, y, 1) }, standing('real', 0, y, 10)],
       EYE,
       0,
       0,
@@ -370,25 +375,25 @@ describe('shotTarget — the ownership argument, executable', () => {
 
 describe('arrowHitProjection', () => {
   it('returns the normalized nearest position for a target inside the arrow cylinder', () => {
-    expect(arrowHitProjection({ x: 0, y: 64, z: 0 }, { x: 0, y: 64, z: 10 }, { x: 0.5, y: 64, z: 4 })).toBeCloseTo(0.4)
+    expect(arrowHitProjection(atPosition(0, 64, 0 ), atPosition(0, 64, 10 ), atPosition(0.5, 64, 4 ))).toBeCloseTo(0.4)
   })
 
   it('clamps targets beyond either segment end', () => {
-    expect(arrowHitProjection({ x: 0, y: 64, z: 0 }, { x: 0, y: 64, z: 10 }, { x: 0, y: 64, z: -0.5 })).toBe(0)
-    expect(arrowHitProjection({ x: 0, y: 64, z: 0 }, { x: 0, y: 64, z: 10 }, { x: 0, y: 64, z: 10.5 })).toBe(1)
+    expect(arrowHitProjection(atPosition(0, 64, 0 ), atPosition(0, 64, 10 ), atPosition(0, 64, -0.5 ))).toBe(0)
+    expect(arrowHitProjection(atPosition(0, 64, 0 ), atPosition(0, 64, 10 ), atPosition(0, 64, 10.5 ))).toBe(1)
   })
 
   it('misses targets outside BOW_TARGET_RADIUS and non-finite positions', () => {
-    expect(arrowHitProjection({ x: 0, y: 64, z: 0 }, { x: 0, y: 64, z: 10 }, { x: BOW_TARGET_RADIUS + 0.01, y: 64, z: 4 })).toBeUndefined()
-    expect(arrowHitProjection({ x: 0, y: 64, z: 0 }, { x: Number.NaN, y: 64, z: 10 }, { x: 0, y: 64, z: 4 })).toBeUndefined()
+    expect(arrowHitProjection(atPosition(0, 64, 0 ), atPosition(0, 64, 10 ), atPosition(BOW_TARGET_RADIUS + 0.01, 64, 4 ))).toBeUndefined()
+    expect(arrowHitProjection(atPosition(0, 64, 0 ), unsafePosition(Number.NaN, 64, 10), atPosition(0, 64, 4 ))).toBeUndefined()
   })
 
   it('a zero-length segment projects to its own single point rather than dividing by zero', () => {
     // `from` and `to` coincide, so `lengthSquared` is 0 and the projection
     // formula's division is skipped rather than producing NaN.
-    const point = { x: 3, y: 64, z: 3 }
-    expect(arrowHitProjection(point, point, { x: 3, y: 64, z: 3.5 })).toBe(0)
-    expect(arrowHitProjection(point, point, { x: 3, y: 64, z: 3 + BOW_TARGET_RADIUS + 0.01 })).toBeUndefined()
+    const point = atPosition(3, 64, 3 )
+    expect(arrowHitProjection(point, point, atPosition(3, 64, 3.5 ))).toBe(0)
+    expect(arrowHitProjection(point, point, atPosition(3, 64, 3 + BOW_TARGET_RADIUS + 0.01 ))).toBeUndefined()
   })
 })
 
@@ -398,12 +403,12 @@ describe('arrowHitProjection', () => {
 
 describe('shotBlockedByTerrain', () => {
   it('an open line is not blocked', () => {
-    expect(shotBlockedByTerrain(NOTHING_BLOCKS, EYE, { x: 0, y: 64, z: 10 })).toBe(false)
+    expect(shotBlockedByTerrain(NOTHING_BLOCKS, EYE, atPosition(0, 64, 10 ))).toBe(false)
   })
 
   it('a wall between the two blocks the shot', () => {
     const wall = blockedAt([[0, 64, 5]])
-    expect(shotBlockedByTerrain(wall, EYE, { x: 0, y: 64, z: 10 })).toBe(true)
+    expect(shotBlockedByTerrain(wall, EYE, atPosition(0, 64, 10 ))).toBe(true)
   })
 
   it("THE SHOOTER'S OWN CELL DOES BLOCK, and the endpoint exclusion does not save it", () => {
@@ -414,12 +419,12 @@ describe('shotBlockedByTerrain', () => {
     // behaviour as well as this one's, and it is pinned rather than repaired;
     // see `shotBlockedByTerrain`'s doc comment on why.
     const ownCell = blockedAt([[0, 64, 0]])
-    expect(shotBlockedByTerrain(ownCell, EYE, { x: 0, y: 64, z: 10 })).toBe(true)
+    expect(shotBlockedByTerrain(ownCell, EYE, atPosition(0, 64, 10 ))).toBe(true)
   })
 
   it("THE TARGET'S CELL DOES NOT BLOCK, because the walk stops before t reaches 1 (:81-82)", () => {
     const targetCell = blockedAt([[0, 64, 10]])
-    expect(shotBlockedByTerrain(targetCell, EYE, { x: 0, y: 64, z: 10 })).toBe(false)
+    expect(shotBlockedByTerrain(targetCell, EYE, atPosition(0, 64, 10 ))).toBe(false)
   })
 
   it('a zero-length shot is not blocked (:77)', () => {
@@ -427,7 +432,7 @@ describe('shotBlockedByTerrain', () => {
   })
 
   it('non-finite endpoints are NOT blocked — the permissive direction, argued in the doc comment', () => {
-    expect(shotBlockedByTerrain(blockedAt([[0, 64, 5]]), EYE, { x: Number.NaN, y: 64, z: 10 })).toBe(
+    expect(shotBlockedByTerrain(blockedAt([[0, 64, 5]]), EYE, unsafePosition(Number.NaN, 64, 10))).toBe(
       false,
     )
   })
@@ -442,7 +447,7 @@ describe('shotBlockedByTerrain', () => {
     const corner = blockedAt([[1, 64, 1]])
     // A line from (0.95, 64, 0) to (0.95, 64, 10) clips x=1 nowhere; a line
     // grazing the corner of the cell below does the same at this resolution.
-    expect(shotBlockedByTerrain(corner, { x: 0.95, y: 64.5, z: 0 }, { x: 0.95, y: 64.5, z: 10 })).toBe(
+    expect(shotBlockedByTerrain(corner, atPosition(0.95, 64.5, 0 ), atPosition(0.95, 64.5, 10 ))).toBe(
       false,
     )
   })
@@ -455,7 +460,7 @@ describe('shotBlockedByTerrain', () => {
       probed.push(wx)
       return false
     }
-    shotBlockedByTerrain(recorder, { x: 1, y: 64.5, z: 0 }, { x: 1, y: 64.5, z: 3 })
+    shotBlockedByTerrain(recorder, atPosition(1, 64.5, 0 ), atPosition(1, 64.5, 3 ))
     expect(probed.every((x) => x === 1)).toBe(true)
   })
 })
@@ -521,11 +526,11 @@ const rosterOf = (
   entities: entities.map((entity) => ({
     id: EntityId(entity.id),
     kind: EntityKind(entity.kind),
-    feetPosition: { x: 0, y: 64, z: 0 },
-    healthPoints: entity.health,
+    feetPosition: atPosition(0, 64, 0 ),
+    healthPoints: EntityHealthPoints(entity.health),
     behaviour: undefined,
   })),
-  nextSerial: entities.length,
+  nextSerial: EntitySerial(entities.length),
 })
 
 describe('resolveBowHits', () => {
@@ -556,7 +561,7 @@ describe('resolveBowHits', () => {
       const casualties = yield* resolveBowHits(roster.api, [{ id: EntityId('doomed'), damage: 9 }])
 
       expect(casualties).toStrictEqual([
-        { id: 'doomed', kind: 'creeper', at: { x: 0, y: 64, z: 0 } },
+        { id: 'doomed', kind: 'creeper', at: atPosition(0, 64, 0 ) },
       ])
       expect((yield* roster.api.snapshot).entities).toStrictEqual([])
     }),
@@ -577,7 +582,7 @@ describe('resolveBowHits', () => {
       ])
 
       expect(casualties).toStrictEqual([
-        { id: 'target', kind: 'creeper', at: { x: 0, y: 64, z: 0 } },
+        { id: 'target', kind: 'creeper', at: atPosition(0, 64, 0 ) },
       ])
       expect((yield* roster.calls).sweeps).toBe(1)
     }),
@@ -635,12 +640,12 @@ describe('resolveBowHits', () => {
           {
             id: EntityId('ender'),
             kind: EntityKind('enderman'),
-            feetPosition: { x: 0, y: 64, z: 0 },
-            healthPoints: 40,
+            feetPosition: atPosition(0, 64, 0 ),
+            healthPoints: EntityHealthPoints(40),
             behaviour: { _tag: 'Steady' },
           },
         ],
-        nextSerial: 1,
+        nextSerial: EntitySerial(1),
       })
 
       yield* resolveBowHits(roster.api, [{ id: EntityId('ender'), damage: 9 }])
@@ -659,8 +664,8 @@ describe('resolveBowHits', () => {
 /** A frame with the shipped stages over the three doubles and a given roster. */
 const inventoryWith = (bow: boolean, arrow: boolean): ReadonlyArray<Slot> =>
   Array.from({ length: 36 }, (_, index) => {
-    if (index === 0 && bow) return { item: 'bow' as const, count: StackCount(1) }
-    if (index === 1 && arrow) return { item: 'arrow' as const, count: StackCount(1) }
+    if (index === 0 && bow) return Result.getOrThrow(itemStack('bow', StackCount(1)))
+    if (index === 1 && arrow) return Result.getOrThrow(itemStack('arrow', StackCount(1)))
     return undefined
   })
 
@@ -686,12 +691,12 @@ const AHEAD: EntityRoster<MobBehaviour> = {
     {
       id: EntityId('target'),
       kind: EntityKind('creeper'),
-      feetPosition: { x: 0, y: 64 - BOW_TARGET_CENTER_Y_OFFSET, z: 10 },
-      healthPoints: 20,
+      feetPosition: atPosition(0, 64 - BOW_TARGET_CENTER_Y_OFFSET, 10 ),
+      healthPoints: EntityHealthPoints(20),
       behaviour: undefined,
     },
   ],
-  nextSerial: 1,
+  nextSerial: EntitySerial(1),
 }
 
 describe('gameplay:interactions — the bow arm', () => {
@@ -783,8 +788,8 @@ inventory: { mode: 'creative', slotIndex: 0 },
   it.effect('a kill puts the mob\'s loot in the drops outbox', () =>
     Effect.gen(function* () {
       const { state, roster, stages } = yield* scene({
-        entities: [{ ...AHEAD.entities[0]!, healthPoints: 5 }],
-        nextSerial: 1,
+        entities: [{ ...AHEAD.entities[0]!, healthPoints: EntityHealthPoints(5) }],
+        nextSerial: EntitySerial(1),
       })
       yield* Ref.set(state.pendingBowShots, [
         { origin: EYE, dirX: 0, dirY: 0, dirZ: 1, chargeSecs: BOW_FULL_CHARGE_SECS , inventory: { mode: 'creative', slotIndex: 0 }},
@@ -890,7 +895,7 @@ inventory: { mode: 'creative', slotIndex: 0 },
       yield* runFrame(stages)
 
       const storage = yield* inventory.api.storageSnapshot
-      expect(storage.inventory.slots[0]).toStrictEqual({ item: 'bow', count: StackCount(1) })
+      expect(storage.inventory.slots[0]).toStrictEqual(Result.getOrThrow(itemStack('bow', StackCount(1))))
       expect(storage.inventory.slots[1]).toBeUndefined()
       expect(storage.inventoryDurability[0]).toStrictEqual({ current: 383, max: 384 })
       expect(yield* drainBowShotResults(state)).toStrictEqual([
@@ -918,7 +923,7 @@ inventory: { mode: 'creative', slotIndex: 0 },
 
       expect((yield* roster.api.snapshot).entities[0]?.healthPoints).toBe(20)
       const storage = yield* inventory.api.storageSnapshot
-      expect(storage.inventory.slots[0]).toStrictEqual({ item: 'bow', count: StackCount(1) })
+      expect(storage.inventory.slots[0]).toStrictEqual(Result.getOrThrow(itemStack('bow', StackCount(1))))
       expect(storage.inventory.slots[1]).toBeUndefined()
       expect(storage.inventoryDurability[0]).toStrictEqual({ current: 384, max: 384 })
       expect(yield* drainBowShotResults(state)).toStrictEqual([
@@ -970,7 +975,7 @@ describe('shotBlockedByTerrain — the walk never oversteps the target', () => {
         seen.push(wz)
         return false
       }
-      shotBlockedByTerrain(recorder, { x: 0.5, y: 64.5, z: 0.5 }, { x: 0.5, y: 64.5, z: distance + 0.5 })
+      shotBlockedByTerrain(recorder, atPosition(0.5, 64.5, 0.5 ), atPosition(0.5, 64.5, distance + 0.5 ))
       for (const z of seen) {
         // Floored cell indices, so the last one must be below the target cell.
         expect(z).toBeLessThanOrEqual(Math.floor(distance + 0.5))

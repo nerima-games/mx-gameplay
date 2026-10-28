@@ -19,6 +19,7 @@
  * makes explicitly and none of them had an assertion.
  */
 import { describe, expect, it } from '@effect/vitest'
+import { position as atPosition } from './support/coordinate-fixtures'
 import { Effect } from 'effect'
 import type { Position } from '@nerima-games/mc-kernel'
 import {
@@ -63,13 +64,15 @@ import { CREEPER_EXPLOSION_POWER, explosionDamageAmount, TNT_EXPLOSION_POWER } f
 import { ZOMBIE_KIND } from '../src/domain/mob/hostile-combat'
 import { DORMANT_FUSE } from '../src/domain/mob/creeper-fuse'
 import { FRESH_PRIMED_TNT } from '../src/domain/mob/primed-tnt'
-import type { EndermanTeleportPosition } from '../src/domain/mob/enderman-teleport'
-import { BlockId, blockPosition, DeltaTimeSecs } from '@nerima-games/mc-kernel'
+import { BlockAxis, BlockId, blockPosition as makeBlockPosition, DeltaTimeSecs, EntityHealthPoints } from '@nerima-games/mc-kernel'
 import { durabilityForItem, EntityId, EntityKind } from '@nerima-games/mc-sim'
 import { makeChunkStoreDouble, STONE, world } from './support/chunk-store-double'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
 
-const ORIGIN: Position = { x: 0, y: 64, z: 0 }
+const blockPosition = (x: number, y: number, z: number) =>
+  makeBlockPosition(BlockAxis(x), BlockAxis(y), BlockAxis(z))
+
+const ORIGIN: Position = atPosition(0, 64, 0 )
 
 /** A creeper's blast, at the origin. The only explosion source this build has. */
 const CREEPER_BLAST: Blast = {
@@ -79,7 +82,7 @@ const CREEPER_BLAST: Blast = {
   explosion: { source: 'creeper', power: CREEPER_EXPLOSION_POWER },
 }
 
-const away = (blocks: number): Position => ({ x: blocks, y: ORIGIN.y, z: ORIGIN.z })
+const away = (blocks: number): Position => (atPosition(blocks, ORIGIN.y, ORIGIN.z ))
 
 /**
  * A distance the curve answers zero at, derived rather than guessed.
@@ -137,10 +140,10 @@ describe('mob drops through frame death paths', () => {
     Effect.gen(function* () {
       const roster = yield* makeEntityManagerDouble<MobBehaviour>()
       const zombie = yield* roster.api.spawn({
-        kind: ZOMBIE_KIND, feetPosition: ORIGIN, healthPoints: 1, behaviour: undefined,
+        kind: ZOMBIE_KIND, feetPosition: ORIGIN, healthPoints: EntityHealthPoints(1), behaviour: undefined,
       })
       const enderman = yield* roster.api.spawn({
-        kind: ENDERMAN_KIND, feetPosition: ORIGIN, healthPoints: 1, behaviour: STEADY_ENDERMAN,
+        kind: ENDERMAN_KIND, feetPosition: ORIGIN, healthPoints: EntityHealthPoints(1), behaviour: STEADY_ENDERMAN,
       })
       const casualties = yield* resolveMeleeHits(roster.api, [
         { id: zombie.id, damage: 1 }, { id: enderman.id, damage: 1 },
@@ -156,10 +159,10 @@ describe('mob drops through frame death paths', () => {
       const roster = yield* makeEntityManagerDouble<MobBehaviour>()
       const store = yield* makeChunkStoreDouble(world([]), ['0,0'])
       yield* roster.api.spawn({
-        kind: ZOMBIE_KIND, feetPosition: ORIGIN, healthPoints: 1, behaviour: undefined,
+        kind: ZOMBIE_KIND, feetPosition: ORIGIN, healthPoints: EntityHealthPoints(1), behaviour: undefined,
       })
       yield* roster.api.spawn({
-        kind: ENDERMAN_KIND, feetPosition: ORIGIN, healthPoints: 1, behaviour: STEADY_ENDERMAN,
+        kind: ENDERMAN_KIND, feetPosition: ORIGIN, healthPoints: EntityHealthPoints(1), behaviour: STEADY_ENDERMAN,
       })
       const resolution = yield* resolveBlasts(roster.api, store.api, [CREEPER_BLAST])
       const { drops } = rollCasualtyDrops(resolution.casualties, 4)
@@ -187,7 +190,7 @@ describe('resolveBlasts: the frame with no explosion in it', () => {
       yield* roster.api.spawn({
         kind: CREEPER_KIND,
         feetPosition: ORIGIN,
-        healthPoints: CREEPER_MAX_HEALTH,
+        healthPoints: EntityHealthPoints(CREEPER_MAX_HEALTH),
         behaviour: { _tag: 'Dormant' },
       })
 
@@ -242,7 +245,7 @@ describe('resolveBlasts: the mobs a blast does not reach', () => {
       const spawned = yield* roster.api.spawn({
         kind: ENDERMAN_KIND,
         feetPosition: away(OUT_OF_RANGE_BLOCKS),
-        healthPoints: ENDERMAN_MAX_HEALTH,
+        healthPoints: EntityHealthPoints(ENDERMAN_MAX_HEALTH),
         behaviour: STEADY_ENDERMAN,
       })
 
@@ -276,7 +279,7 @@ describe('resolveBlasts: the mobs a blast does not reach', () => {
       yield* roster.api.spawn({
         kind: ENDERMAN_KIND,
         feetPosition: away(GRAZING_BLOCKS),
-        healthPoints: ENDERMAN_MAX_HEALTH,
+        healthPoints: EntityHealthPoints(ENDERMAN_MAX_HEALTH),
         behaviour: STEADY_ENDERMAN,
       })
 
@@ -304,7 +307,7 @@ describe('resolveBlasts: what a survivor remembers', () => {
       yield* roster.api.spawn({
         kind: ENDERMAN_KIND,
         feetPosition: away(GRAZING_BLOCKS),
-        healthPoints: ENDERMAN_MAX_HEALTH,
+        healthPoints: EntityHealthPoints(ENDERMAN_MAX_HEALTH),
         behaviour: STEADY_ENDERMAN,
       })
 
@@ -334,7 +337,7 @@ describe('resolveBlasts: what a survivor remembers', () => {
       yield* roster.api.spawn({
         kind: CREEPER_KIND,
         feetPosition: away(GRAZING_BLOCKS),
-        healthPoints: CREEPER_MAX_HEALTH,
+        healthPoints: EntityHealthPoints(CREEPER_MAX_HEALTH),
         behaviour: fuse,
       })
 
@@ -575,7 +578,7 @@ describe('sweepMobs: primed TNT', () => {
     Effect.gen(function* () {
       const roster = yield* makeEntityManagerDouble<MobBehaviour>()
       yield* roster.api.spawn({
-        kind: PRIMED_TNT_KIND, feetPosition: ORIGIN, healthPoints: 20, behaviour: FRESH_PRIMED_TNT,
+        kind: PRIMED_TNT_KIND, feetPosition: ORIGIN, healthPoints: EntityHealthPoints(20), behaviour: FRESH_PRIMED_TNT,
       })
       const swept = yield* sweepMobs(roster.api, { target: undefined, dt: DeltaTimeSecs(1) }, 1)
       expect(swept.blasts).toStrictEqual([])
@@ -588,7 +591,7 @@ describe('sweepMobs: primed TNT', () => {
     Effect.gen(function* () {
       const roster = yield* makeEntityManagerDouble<MobBehaviour>()
       yield* roster.api.spawn({
-        kind: PRIMED_TNT_KIND, feetPosition: ORIGIN, healthPoints: 20, behaviour: FRESH_PRIMED_TNT,
+        kind: PRIMED_TNT_KIND, feetPosition: ORIGIN, healthPoints: EntityHealthPoints(20), behaviour: FRESH_PRIMED_TNT,
       })
       yield* sweepMobs(roster.api, { target: undefined, dt: DeltaTimeSecs(0) }, 1)
       const after = yield* roster.api.entities
@@ -600,7 +603,7 @@ describe('sweepMobs: primed TNT', () => {
     Effect.gen(function* () {
       const roster = yield* makeEntityManagerDouble<MobBehaviour>()
       const tnt = yield* roster.api.spawn({
-        kind: PRIMED_TNT_KIND, feetPosition: ORIGIN, healthPoints: 20, behaviour: FRESH_PRIMED_TNT,
+        kind: PRIMED_TNT_KIND, feetPosition: ORIGIN, healthPoints: EntityHealthPoints(20), behaviour: FRESH_PRIMED_TNT,
       })
       const swept = yield* sweepMobs(roster.api, { target: undefined, dt: DeltaTimeSecs(5) }, 1)
       expect(swept.blasts).toStrictEqual([
@@ -619,7 +622,7 @@ describe('sweepMobs: primed TNT', () => {
     Effect.gen(function* () {
       const roster = yield* makeEntityManagerDouble<MobBehaviour>()
       yield* roster.api.spawn({
-        kind: PRIMED_TNT_KIND, feetPosition: ORIGIN, healthPoints: 20, behaviour: undefined,
+        kind: PRIMED_TNT_KIND, feetPosition: ORIGIN, healthPoints: EntityHealthPoints(20), behaviour: undefined,
       })
       const swept = yield* sweepMobs(roster.api, { target: undefined, dt: DeltaTimeSecs(1) }, 1)
       expect(swept.blasts).toStrictEqual([])
@@ -634,7 +637,7 @@ describe('sweepMobs: the zombie that has nothing to chase', () => {
     Effect.gen(function* () {
       const roster = yield* makeEntityManagerDouble<MobBehaviour>()
       const zombie = yield* roster.api.spawn({
-        kind: ZOMBIE_KIND, feetPosition: ORIGIN, healthPoints: 20, behaviour: undefined,
+        kind: ZOMBIE_KIND, feetPosition: ORIGIN, healthPoints: EntityHealthPoints(20), behaviour: undefined,
       })
       yield* sweepMobs(roster.api, { target: undefined, dt: DeltaTimeSecs(0.05) }, 1)
       const after = yield* roster.api.entities
@@ -646,7 +649,7 @@ describe('sweepMobs: the zombie that has nothing to chase', () => {
     Effect.gen(function* () {
       const roster = yield* makeEntityManagerDouble<MobBehaviour>()
       yield* roster.api.spawn({
-        kind: ZOMBIE_KIND, feetPosition: ORIGIN, healthPoints: 20, behaviour: undefined,
+        kind: ZOMBIE_KIND, feetPosition: ORIGIN, healthPoints: EntityHealthPoints(20), behaviour: undefined,
       })
       yield* sweepMobs(roster.api, { target: away(10), dt: DeltaTimeSecs(0.05) }, 1)
       const after = yield* roster.api.entities
@@ -663,7 +666,7 @@ describe('sweepMobs: an ecosystem hostile close enough to attack', () => {
       const blaze = yield* roster.api.spawn({
         kind: BLAZE_KIND,
         feetPosition: ORIGIN,
-        healthPoints: 20,
+        healthPoints: EntityHealthPoints(20),
         behaviour: hostileMobSnapshot(initialEcosystemMobState()),
       })
       // 10 blocks: inside the blaze's [8, 24] projectile band.
@@ -688,7 +691,7 @@ describe('sweepMobs: a dormant creeper truly idle', () => {
     Effect.gen(function* () {
       const roster = yield* makeEntityManagerDouble<MobBehaviour>()
       const creeper = yield* roster.api.spawn({
-        kind: CREEPER_KIND, feetPosition: ORIGIN, healthPoints: CREEPER_MAX_HEALTH, behaviour: DORMANT_FUSE,
+        kind: CREEPER_KIND, feetPosition: ORIGIN, healthPoints: EntityHealthPoints(CREEPER_MAX_HEALTH), behaviour: DORMANT_FUSE,
       })
       yield* sweepMobs(roster.api, { target: undefined, dt: DeltaTimeSecs(0.05) }, 1)
       const after = yield* roster.api.entities
@@ -702,7 +705,7 @@ describe('sweepMobs: an enderman with nothing to chase and no blow to answer', (
     Effect.gen(function* () {
       const roster = yield* makeEntityManagerDouble<MobBehaviour>()
       const enderman = yield* roster.api.spawn({
-        kind: ENDERMAN_KIND, feetPosition: ORIGIN, healthPoints: ENDERMAN_MAX_HEALTH, behaviour: STEADY_ENDERMAN,
+        kind: ENDERMAN_KIND, feetPosition: ORIGIN, healthPoints: EntityHealthPoints(ENDERMAN_MAX_HEALTH), behaviour: STEADY_ENDERMAN,
       })
       yield* sweepMobs(roster.api, { target: undefined, dt: DeltaTimeSecs(0.05) }, 1)
       const after = yield* roster.api.entities
@@ -716,7 +719,7 @@ describe('sweepMobs: an enderman with nothing to chase and no blow to answer', (
       yield* roster.api.spawn({
         kind: ENDERMAN_KIND,
         feetPosition: ORIGIN,
-        healthPoints: ENDERMAN_MAX_HEALTH,
+        healthPoints: EntityHealthPoints(ENDERMAN_MAX_HEALTH),
         behaviour: hostileMobSnapshot(STEADY_ENDERMAN, { ageTicks: 3 }),
       })
       const seed = 1
@@ -736,15 +739,15 @@ describe('resolveEndermanTeleportProbes: validating a candidate against the stor
     Effect.gen(function* () {
       const roster = yield* makeEntityManagerDouble<MobBehaviour>()
       const store = yield* makeChunkStoreDouble(world([]), [])
-      const current: EndermanTeleportPosition = { x: 0, y: 64, z: 0 }
+      const current: Position = atPosition(0, 64, 0 )
       const spawned = yield* roster.api.spawn({
-        kind: ENDERMAN_KIND, feetPosition: current, healthPoints: ENDERMAN_MAX_HEALTH, behaviour: STEADY_ENDERMAN,
+        kind: ENDERMAN_KIND, feetPosition: current, healthPoints: EntityHealthPoints(ENDERMAN_MAX_HEALTH), behaviour: STEADY_ENDERMAN,
       })
       const probe: EndermanTeleportProbe = {
         _tag: 'EndermanTeleport',
         entityId: spawned.id,
         current,
-        anchor: { x: 100, y: 70, z: 100 },
+        anchor: atPosition(100, 70, 100 ),
         rolls: [0.75, 0.5],
       }
       const before = yield* roster.calls
@@ -759,12 +762,12 @@ describe('resolveEndermanTeleportProbes: validating a candidate against the stor
   it.effect('an unregistered block is refused like an unsafe one, and a later candidate still lands — the miss stays IGNORED for a bystander', () =>
     Effect.gen(function* () {
       const roster = yield* makeEntityManagerDouble<MobBehaviour>()
-      const current: EndermanTeleportPosition = { x: 0, y: 64, z: 0 }
-      const anchor: EndermanTeleportPosition = { x: 100, y: 70, z: 100 }
+      const current: Position = atPosition(0, 64, 0 )
+      const anchor: Position = atPosition(100, 70, 100 )
       // `test/enderman-safe-teleport.test.ts`'s own two-candidate rolls: attempt
       // 0 lands at `first`, attempt 1 at `second`.
-      const first = { x: 116, y: 64, z: 100 }
-      const second = { x: 100, y: 64, z: 116 }
+      const first = atPosition(116, 64, 100 )
+      const second = atPosition(100, 64, 116 )
       // 60_000: inside kernel's `BlockId` brand range ([0, 65535], a storage
       // bound) but far outside its registry (~120 rows), so it is genuinely
       // unregistered rather than out-of-range-invalid — `999_999` used to
@@ -782,10 +785,10 @@ describe('resolveEndermanTeleportProbes: validating a candidate against the stor
         ['7,6', '6,7'],
       )
       const teleporting = yield* roster.api.spawn({
-        kind: ENDERMAN_KIND, feetPosition: current, healthPoints: ENDERMAN_MAX_HEALTH, behaviour: STEADY_ENDERMAN,
+        kind: ENDERMAN_KIND, feetPosition: current, healthPoints: EntityHealthPoints(ENDERMAN_MAX_HEALTH), behaviour: STEADY_ENDERMAN,
       })
       const bystander = yield* roster.api.spawn({
-        kind: ENDERMAN_KIND, feetPosition: away(1), healthPoints: ENDERMAN_MAX_HEALTH, behaviour: STEADY_ENDERMAN,
+        kind: ENDERMAN_KIND, feetPosition: away(1), healthPoints: EntityHealthPoints(ENDERMAN_MAX_HEALTH), behaviour: STEADY_ENDERMAN,
       })
       const probe: EndermanTeleportProbe = {
         _tag: 'EndermanTeleport',
@@ -815,7 +818,7 @@ describe('resolveBlasts and resolveMeleeHits: a dropped item on the ground is ne
         _tag: 'DroppedItem', item: 'gunpowder', count: 1, durability: null,
       }
       const item = yield* roster.api.spawn({
-        kind: DROPPED_ITEM_KIND, feetPosition: ORIGIN, healthPoints: 1, behaviour: droppedItem,
+        kind: DROPPED_ITEM_KIND, feetPosition: ORIGIN, healthPoints: EntityHealthPoints(1), behaviour: droppedItem,
       })
       const resolution = yield* resolveBlasts(roster.api, store.api, [CREEPER_BLAST])
       expect(resolution.casualties).toStrictEqual([])
@@ -831,7 +834,7 @@ describe('resolveBlasts and resolveMeleeHits: a dropped item on the ground is ne
         _tag: 'DroppedItem', item: 'gunpowder', count: 1, durability: null,
       }
       const item = yield* roster.api.spawn({
-        kind: DROPPED_ITEM_KIND, feetPosition: ORIGIN, healthPoints: 1, behaviour: droppedItem,
+        kind: DROPPED_ITEM_KIND, feetPosition: ORIGIN, healthPoints: EntityHealthPoints(1), behaviour: droppedItem,
       })
       const casualties = yield* resolveMeleeHits(roster.api, [{ id: item.id, damage: 5 }])
       expect(casualties).toStrictEqual([])
@@ -854,7 +857,7 @@ describe('bruise: a hostile snapshot survives a non-lethal blast with its outer 
       yield* roster.api.spawn({
         kind: ENDERMAN_KIND,
         feetPosition: away(GRAZING_BLOCKS),
-        healthPoints: ENDERMAN_MAX_HEALTH,
+        healthPoints: EntityHealthPoints(ENDERMAN_MAX_HEALTH),
         behaviour: endermanSnapshot,
       })
 
@@ -862,7 +865,7 @@ describe('bruise: a hostile snapshot survives a non-lethal blast with its outer 
       yield* roster.api.spawn({
         kind: CREEPER_KIND,
         feetPosition: away(GRAZING_BLOCKS),
-        healthPoints: CREEPER_MAX_HEALTH,
+        healthPoints: EntityHealthPoints(CREEPER_MAX_HEALTH),
         behaviour: creeperSnapshot,
       })
 
