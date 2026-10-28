@@ -1,6 +1,12 @@
 import { describe, expect, it } from '@effect/vitest'
 import { Effect } from 'effect'
-import { DeltaTimeSecs } from '@nerima-games/mc-kernel'
+import {
+  DeltaTimeSecs,
+  EntityHealthPoints,
+  FoodSaturation,
+  type DeltaTimeSecs as DeltaTimeSecsValue,
+} from '@nerima-games/mc-kernel'
+import { ExhaustionAmount, FoodTimerSecs, HungerPoints, TotalExperience } from '@nerima-games/mc-sim'
 import {
   SPAWN_PLAYER_VITALS,
   type PlayerVitals,
@@ -16,14 +22,14 @@ import {
 } from '../src/domain/survival-hunger'
 
 const vitals = (overrides: Partial<PlayerVitals> = {}): PlayerVitals => ({
-  healthPoints: 20,
-  maxHealthPoints: 20,
-  hungerPoints: 20,
-  maxHungerPoints: 20,
-  saturation: 5,
-  exhaustion: 0,
-  foodTimerSecs: 0,
-  totalExperience: 0,
+  healthPoints: EntityHealthPoints(20),
+  maxHealthPoints: EntityHealthPoints(20),
+  hungerPoints: HungerPoints(20),
+  maxHungerPoints: HungerPoints(20),
+  saturation: FoodSaturation(5),
+  exhaustion: ExhaustionAmount(0),
+  foodTimerSecs: FoodTimerSecs(0),
+  totalExperience: TotalExperience(0),
   lastDamageCause: undefined,
   ...overrides,
 })
@@ -52,7 +58,7 @@ describe('survival hunger', () => {
 
   it.effect('consumes saturation before hunger and applies food recovery', () =>
     Effect.gen(function* () {
-      const runtime = yield* makeSurvivalHungerRuntime(initial('normal', { saturation: 1 }))
+      const runtime = yield* makeSurvivalHungerRuntime(initial('normal', { saturation: FoodSaturation(1) }))
       yield* runtime.submit({ _tag: 'walk', distance: 400 })
       expect((yield* runtime.tick(DeltaTimeSecs(0))).vitals).toMatchObject({
         hungerPoints: 20,
@@ -72,9 +78,9 @@ describe('survival hunger', () => {
     }),
   )
 
-  it.effect('adds explicit exhaustion directly and preserves vitals numeric guards', () =>
+  it.effect('adds explicit exhaustion directly and propagates vitals validation failures', () =>
     Effect.gen(function* () {
-      const runtime = yield* makeSurvivalHungerRuntime(initial('peaceful', { saturation: 2 }))
+      const runtime = yield* makeSurvivalHungerRuntime(initial('peaceful', { saturation: FoodSaturation(2) }))
 
       expect(yield* runtime.addExhaustion(4.5)).toBeUndefined()
       expect((yield* runtime.snapshot).vitals).toMatchObject({
@@ -90,27 +96,38 @@ describe('survival hunger', () => {
         exhaustion: 0.5,
       })
 
-      yield* runtime.addExhaustion(Number.NaN)
-      yield* runtime.addExhaustion(Number.NEGATIVE_INFINITY)
+      // Exercise runtime validation with a malformed value crossing the branded type boundary.
+      const invalidTickDuration = Number.NaN as DeltaTimeSecsValue
+      const validationErrors = [
+        yield* Effect.flip(runtime.addExhaustion(Number.NaN)),
+        yield* Effect.flip(runtime.addExhaustion(Number.NEGATIVE_INFINITY)),
+        yield* Effect.flip(runtime.addExhaustion(Number.POSITIVE_INFINITY)),
+        yield* Effect.flip(runtime.eat(Number.NaN, 0)),
+        yield* Effect.flip(runtime.damage({ amount: Number.NaN, cause: 'fall' })),
+        yield* Effect.flip(runtime.heal(Number.NaN)),
+        yield* Effect.flip(runtime.tick(invalidTickDuration)),
+      ]
+      expect(validationErrors.map((error) => error._tag)).toEqual([
+        'BrandError',
+        'BrandError',
+        'BrandError',
+        'BrandError',
+        'BrandError',
+        'BrandError',
+        'BrandError',
+      ])
       expect((yield* runtime.snapshot).vitals).toMatchObject({
         hungerPoints: 19,
         saturation: 0,
         exhaustion: 0.5,
-      })
-
-      yield* runtime.addExhaustion(Number.POSITIVE_INFINITY)
-      expect((yield* runtime.snapshot).vitals).toMatchObject({
-        hungerPoints: 9,
-        saturation: 0,
-        exhaustion: 0,
       })
     }))
 
   it.effect('regenerates health, adds exhaustion, and counts every elapsed food tick', () =>
     Effect.gen(function* () {
       const runtime = yield* makeSurvivalHungerRuntime(initial('normal', {
-        healthPoints: 19,
-        saturation: 0,
+        healthPoints: EntityHealthPoints(19),
+        saturation: FoodSaturation(0),
       }))
       const outcome = yield* runtime.tick(DeltaTimeSecs(8))
 
@@ -136,9 +153,9 @@ describe('survival hunger', () => {
       expect(starvationHealthFloor('peaceful')).toBe(20)
       for (const [difficulty, healthPoints, expected] of cases) {
         const runtime = yield* makeSurvivalHungerRuntime(initial(difficulty, {
-          healthPoints,
-          hungerPoints: 0,
-          saturation: 0,
+          healthPoints: EntityHealthPoints(healthPoints),
+          hungerPoints: HungerPoints(0),
+          saturation: FoodSaturation(0),
         }))
         const outcome = yield* runtime.tick(DeltaTimeSecs(4))
         expect(outcome.vitals.healthPoints).toBe(expected)
@@ -149,7 +166,11 @@ describe('survival hunger', () => {
 
   it.effect('partitions long frames identically to consecutive food ticks', () =>
     Effect.gen(function* () {
-      const state = initial('hard', { healthPoints: 3, hungerPoints: 0, saturation: 0 })
+      const state = initial('hard', {
+        healthPoints: EntityHealthPoints(3),
+        hungerPoints: HungerPoints(0),
+        saturation: FoodSaturation(0),
+      })
       const longFrame = yield* makeSurvivalHungerRuntime(state)
       const splitFrames = yield* makeSurvivalHungerRuntime(state)
 
@@ -165,7 +186,7 @@ describe('survival hunger', () => {
 
   it.effect('round-trips versioned state and clears transient input on restore', () =>
     Effect.gen(function* () {
-      const source = yield* makeSurvivalHungerRuntime(initial('easy', { hungerPoints: 12 }))
+      const source = yield* makeSurvivalHungerRuntime(initial('easy', { hungerPoints: HungerPoints(12) }))
       yield* source.submit({ _tag: 'sprint', distance: 10 })
       const snapshot = yield* source.snapshot
       const decoded: unknown = JSON.parse(JSON.stringify(snapshot))
@@ -183,7 +204,7 @@ describe('survival hunger', () => {
   it.effect('applies damage and healing while alive and reports death only once', () =>
     Effect.gen(function* () {
       const runtime = yield* makeSurvivalHungerRuntime(initial('normal', {
-        healthPoints: 10,
+        healthPoints: EntityHealthPoints(10),
       }))
 
       expect(yield* runtime.damage({ amount: 3, cause: 'fall' })).toMatchObject({
@@ -215,9 +236,9 @@ describe('survival hunger', () => {
   it.effect('setDifficulty changes which starvation floor a later tick enforces', () =>
     Effect.gen(function* () {
       const runtime = yield* makeSurvivalHungerRuntime(initial('peaceful', {
-        healthPoints: 1,
-        hungerPoints: 0,
-        saturation: 0,
+        healthPoints: EntityHealthPoints(1),
+        hungerPoints: HungerPoints(0),
+        saturation: FoodSaturation(0),
       }))
 
       yield* runtime.setDifficulty('hard')
@@ -248,9 +269,9 @@ describe('survival hunger', () => {
   it.effect('stops processing while dead and restores spawn vitals on respawn', () =>
     Effect.gen(function* () {
       const runtime = yield* makeSurvivalHungerRuntime(initial('hard', {
-        healthPoints: 1,
-        hungerPoints: 0,
-        saturation: 0,
+        healthPoints: EntityHealthPoints(1),
+        hungerPoints: HungerPoints(0),
+        saturation: FoodSaturation(0),
       }))
       expect((yield* runtime.tick(DeltaTimeSecs(4))).died).toBe(true)
       yield* runtime.submit({ _tag: 'sprint', distance: 10 })

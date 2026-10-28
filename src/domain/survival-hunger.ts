@@ -1,4 +1,4 @@
-import { Effect, Ref } from 'effect'
+import { Brand, Effect, Ref } from 'effect'
 import type { Damage } from './death-cause.js'
 import { DeltaTimeSecs } from '@nerima-games/mc-kernel'
 import {
@@ -53,11 +53,11 @@ export type SurvivalHungerTickOutcome = {
 
 export type SurvivalHungerRuntimeApi = {
   readonly submit: (input: SurvivalActivityInput) => Effect.Effect<void>
-  readonly addExhaustion: (amount: number) => Effect.Effect<void>
-  readonly tick: (dt: DeltaTimeSecs) => Effect.Effect<SurvivalHungerTickOutcome>
-  readonly eat: (foodPoints: number, saturationModifier: number) => Effect.Effect<PlayerVitals>
-  readonly damage: (damage: Damage) => Effect.Effect<VitalsDamageOutcome>
-  readonly heal: (amount: number) => Effect.Effect<PlayerVitals>
+  readonly addExhaustion: (amount: number) => Effect.Effect<void, Brand.BrandError>
+  readonly tick: (dt: DeltaTimeSecs) => Effect.Effect<SurvivalHungerTickOutcome, Brand.BrandError>
+  readonly eat: (foodPoints: number, saturationModifier: number) => Effect.Effect<PlayerVitals, Brand.BrandError>
+  readonly damage: (damage: Damage) => Effect.Effect<VitalsDamageOutcome, Brand.BrandError>
+  readonly heal: (amount: number) => Effect.Effect<PlayerVitals, Brand.BrandError>
   readonly setDifficulty: (difficulty: SurvivalDifficulty) => Effect.Effect<void>
   readonly snapshot: Effect.Effect<SurvivalHungerState>
   readonly restore: (state: SurvivalHungerState) => Effect.Effect<void>
@@ -132,7 +132,7 @@ const runFoodTicks = (
   readonly regeneratedHealth: number
   readonly starvationDamage: number
   readonly died: boolean
-}> =>
+}, Brand.BrandError> =>
   Effect.gen(function* () {
     let remaining = dt as number
     let foodTicks = 0
@@ -146,8 +146,9 @@ const runFoodTicks = (
 
       const untilFoodTick = 4 - before.foodTimerSecs
       const slice = Math.min(remaining, untilFoodTick)
+      const elapsed = yield* Effect.fromResult(DeltaTimeSecs.result(slice))
       const outcome = yield* vitals.advanceFoodTimer(
-        DeltaTimeSecs(slice),
+        elapsed,
         starvationHealthFloor(difficulty),
       )
       remaining -= slice
@@ -176,8 +177,9 @@ export const makeSurvivalHungerRuntime = (
     const difficulty = yield* Ref.make<SurvivalDifficulty>(initial.difficulty)
     const pending = yield* Ref.make<ReadonlyArray<SurvivalActivityInput>>([])
 
-    const tick = (dt: DeltaTimeSecs): Effect.Effect<SurvivalHungerTickOutcome> =>
+    const tick = (dt: DeltaTimeSecs): Effect.Effect<SurvivalHungerTickOutcome, Brand.BrandError> =>
       Effect.gen(function* () {
+        const elapsed = yield* Effect.fromResult(DeltaTimeSecs.result(dt))
         const currentDifficulty = yield* Ref.get(difficulty)
         const inputs = yield* Ref.getAndSet(pending, [])
         const before = yield* vitals.snapshot
@@ -186,7 +188,7 @@ export const makeSurvivalHungerRuntime = (
           : inputs.reduce((total, input) => total + exhaustionForSurvivalActivity(input), 0)
 
         if (exhaustionAdded > 0) yield* vitals.addExhaustion(exhaustionAdded)
-        const food = yield* runFoodTicks(vitals, currentDifficulty, dt)
+        const food = yield* runFoodTicks(vitals, currentDifficulty, elapsed)
         const snapshot = yield* vitals.snapshot
 
         return {
@@ -202,7 +204,7 @@ export const makeSurvivalHungerRuntime = (
       addExhaustion: (amount) => vitals.addExhaustion(amount),
       tick,
       eat: (foodPoints, saturationModifier) =>
-        Effect.zipRight(vitals.eat(foodPoints, saturationModifier), vitals.snapshot),
+        Effect.andThen(vitals.eat(foodPoints, saturationModifier), vitals.snapshot),
       damage: (damage) => vitals.damage(damage),
       heal: (amount) => vitals.heal(amount),
       setDifficulty: (next) => Ref.set(difficulty, next),
@@ -219,7 +221,7 @@ export const makeSurvivalHungerRuntime = (
           yield* Ref.set(difficulty, state.difficulty)
           yield* vitals.restore(state.vitals)
         }),
-      respawn: Effect.zipRight(Ref.set(pending, []), vitals.respawn),
+      respawn: Effect.andThen(Ref.set(pending, []), vitals.respawn),
       reset: Effect.gen(function* () {
         yield* Ref.set(pending, [])
         yield* Ref.set(difficulty, DEFAULT_SURVIVAL_DIFFICULTY)
