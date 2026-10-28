@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from '@effect/vitest'
 import { Effect } from 'effect'
-import { blockPosition } from '@nerima-games/mc-kernel'
+import {
+  BlockAxis,
+  blockPosition,
+  InterpolationFraction,
+  PositionAxis,
+  position,
+} from '@nerima-games/mc-kernel'
 import {
   advanceSleep,
   attemptBedSleep,
@@ -18,16 +24,19 @@ import {
   type SleepLocation,
 } from '../src/domain/bed-sleep'
 
-const bedPosition = blockPosition(5, 64, -3)
+const makePosition = (x: number, y: number, z: number) =>
+  position(PositionAxis(x), PositionAxis(y), PositionAxis(z))
+
+const bedPosition = blockPosition(BlockAxis(5), BlockAxis(64), BlockAxis(-3))
 
 const makePlayer = (dimension: 'overworld' | 'nether' | 'end'): BedSleepPlayer => ({
   dimension: Effect.succeed(dimension),
 })
 
 const makeTime = (timeOfDay: number) => {
-  const setTimeOfDay = vi.fn((_fraction: number) => Effect.void)
+  const setTimeOfDay = vi.fn((_fraction: InterpolationFraction) => Effect.void)
   const time: BedSleepTime = {
-    timeOfDay: Effect.succeed(timeOfDay),
+    timeOfDay: Effect.succeed(InterpolationFraction(timeOfDay)),
     setTimeOfDay,
   }
   return { setTimeOfDay, time }
@@ -122,8 +131,8 @@ describe('bed sleep', () => {
 
 const location = (playerBedX = 0): SleepLocation => ({
   dimension: 'overworld',
-  position: { x: playerBedX, y: 65, z: 0 },
-  bedPosition: blockPosition(playerBedX, 64, 0),
+  position: makePosition(playerBedX, 65, 0),
+  bedPosition: blockPosition(BlockAxis(playerBedX), BlockAxis(64), BlockAxis(0)),
 })
 
 describe('multiplayer sleep roster', () => {
@@ -207,22 +216,22 @@ describe('multiplayer sleep roster', () => {
   })
 
   describe('isDangerNearby', () => {
-    const dangerBedPosition = { x: 0, y: 64, z: 0 }
+    const dangerBedPosition = makePosition(0, 64, 0)
 
     it('is true for a hostile within both the horizontal and vertical radius', () => {
-      expect(isDangerNearby(dangerBedPosition, [{ x: 6, y: 66, z: 0 }])).toBe(true)
+      expect(isDangerNearby(dangerBedPosition, [makePosition(6, 66, 0)])).toBe(true)
     })
 
     it('is true exactly on the horizontal and vertical boundary', () => {
-      expect(isDangerNearby(dangerBedPosition, [{ x: 8, y: 69, z: 0 }])).toBe(true)
+      expect(isDangerNearby(dangerBedPosition, [makePosition(8, 69, 0)])).toBe(true)
     })
 
     it('is false one step beyond the horizontal radius', () => {
-      expect(isDangerNearby(dangerBedPosition, [{ x: 8.01, y: 64, z: 0 }])).toBe(false)
+      expect(isDangerNearby(dangerBedPosition, [makePosition(8.01, 64, 0)])).toBe(false)
     })
 
     it('is false one step beyond the vertical radius', () => {
-      expect(isDangerNearby(dangerBedPosition, [{ x: 0, y: 69.01, z: 0 }])).toBe(false)
+      expect(isDangerNearby(dangerBedPosition, [makePosition(0, 69.01, 0)])).toBe(false)
     })
 
     it('is false with no hostiles at all', () => {
@@ -230,7 +239,7 @@ describe('multiplayer sleep roster', () => {
     })
 
     it('honours custom radii', () => {
-      expect(isDangerNearby(dangerBedPosition, [{ x: 3, y: 64, z: 0 }], 2, 2)).toBe(false)
+      expect(isDangerNearby(dangerBedPosition, [makePosition(3, 64, 0)], 2, 2)).toBe(false)
     })
   })
 })
