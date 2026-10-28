@@ -4063,25 +4063,25 @@ export const candidateForPlayerStorageItemUse = (
   storage: PlayerStorage,
   item: ItemType,
   operation: 'consume' | 'damage',
-): Result.Result<ReplicatedOwnerCandidate | undefined, Schema.SchemaError> => {
+): ReplicatedOwnerCandidate | undefined => {
   let candidate: PlayerStorage | undefined
   if (operation === 'consume') {
     const removed = Result.getOrUndefined(removeInventoryItem(storage.inventory, item, 1))
-    if (removed === undefined || removed.removed !== 1) return Result.succeed(undefined)
+    if (removed === undefined || removed.removed !== 1) return undefined
     const updated = Result.getOrUndefined(withInventory(storage, removed.inventory))
-    if (updated === undefined) return Result.succeed(undefined)
+    if (updated === undefined) return undefined
     candidate = updated
   } else {
     const slotIndex = storage.inventory.slots.findIndex((slot) => slot?.item === item)
-    if (slotIndex < 0) return Result.succeed(undefined)
+    if (slotIndex < 0) return undefined
     const damaged = damagePlayerStorageAt(storage, { _tag: 'Inventory', slotIndex }, 1)
-    if (damaged.result._tag !== 'Damaged' && damaged.result._tag !== 'Broken') return Result.succeed(undefined)
+    if (damaged.result._tag !== 'Damaged' && damaged.result._tag !== 'Broken') return undefined
     candidate = damaged.storage
   }
 
   const validation = validatePlayerStorageSnapshot(candidate)
-  if (validation._tag !== 'Valid') return Result.succeed(undefined)
-  return Result.succeed({ ownerId, state: validation.storage })
+  if (validation._tag !== 'Valid') return undefined
+  return { ownerId, state: validation.storage }
 }
 
 export const candidateForItemUse: (
@@ -4099,7 +4099,7 @@ export const candidateForItemUse: (
 ) => Effect.gen(function* () {
     const committed = yield* Effect.result(coordinator.snapshot(ownerId, PlayerStorageSnapshotSchema))
     if (Result.isFailure(committed)) return Result.fail(committed.failure)
-    return candidateForPlayerStorageItemUse(ownerId, committed.success.state, item, operation)
+    return Result.succeed(candidateForPlayerStorageItemUse(ownerId, committed.success.state, item, operation))
   })
 
 export interface GameplayStageContext {

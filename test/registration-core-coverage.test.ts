@@ -142,16 +142,14 @@ describe('registration-core public paths omitted from focused coverage', () => {
         'damage',
       )
 
-      expect(Result.isSuccess(consumed)).toBe(true)
-      if (Result.isSuccess(consumed)) {
-        expect(consumed.success).toBeDefined()
-        if (consumed.success !== undefined) {
-          const decoded = Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(consumed.success.state)
-          expect(decoded.inventory.slots[0]).toBeUndefined()
-        }
+      expect(consumed).toBeDefined()
+      if (consumed !== undefined) {
+        expect(consumed.ownerId).toBe(GAMEPLAY_PLAYER_STORAGE_OWNER_ID)
+        const decoded = Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(consumed.state)
+        expect(decoded.inventory.slots[0]).toBeUndefined()
       }
-      expect(missing).toStrictEqual(Result.succeed(undefined))
-      expect(notDurable).toStrictEqual(Result.succeed(undefined))
+      expect(missing).toBeUndefined()
+      expect(notDurable).toBeUndefined()
     }),
   )
 

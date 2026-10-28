@@ -19,7 +19,7 @@ import {
   type MobExperienceEvent,
   type MobSpawnAttempt,
 } from '../src/domain/entities/mob-frame'
-import { spawnDroppedItem } from '../src/domain/entities/dropped-item'
+import { DroppedItemOwnerSnapshotSchema, spawnDroppedItem } from '../src/domain/entities/dropped-item'
 import { ExperienceOrbVitalsOwnerSnapshotSchema } from '../src/domain/entities/xp-orb'
 import {
   FIRE_DAMAGE_INTERVAL_TICKS,
@@ -189,7 +189,7 @@ import {
   makeWorldCommitCoordinator,
   type WorldCommitCoordinatorApi,
 } from '@nerima-games/mc-sim'
-import { emptyInventoryLayer, emptySlots, makeInventoryDouble } from './support/inventory-service-double'
+import { brimming, emptyInventoryLayer, emptySlots, makeInventoryDouble } from './support/inventory-service-double'
 import { gameplayCommitServicesLayer, makeGameplayCommitServices, makeTransactionalChunkStoreDouble } from './support/transactional-stage-doubles'
 import { FrameServicesLayer } from './support/frame-services'
 import { runFrames } from './support/frame-runner'
@@ -4783,6 +4783,95 @@ describe('farming and food item uses through the full interactions stage', () =>
     }),
   )
 
+  it.effect('harvesting a mature potato with full storage commits overflow, crop removal, and block write once', () =>
+    Effect.gen(function* () {
+      const position = fixtureBlockPosition(39, 64, 39)
+      const potatoCrop = Option.getOrThrow(blockIdOf('potato_crop'))
+      const { state, store, roster, player, inventory, time, commit, commitCalls } = yield* builtStagesInWorld(
+        world([[position, potatoCrop]]),
+        ['2,2'],
+        { crops: [{ dimension: 'overworld', position, crop: 'potato_crop', growthSecs: POTATO_MATURITY_SECS }] },
+        brimming('potato'),
+      )
+      const storageBefore = yield* commit.coordinator.snapshot(
+        GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+        PlayerStorageSnapshotSchema,
+      )
+      const requests = yield* Ref.make<ReadonlyArray<Parameters<WorldCommitCoordinatorApi['commit']>[0]>>([])
+      const capturingCoordinator: WorldCommitCoordinatorApi = {
+        ...commit.coordinator,
+        commit: (request) => Effect.gen(function* () {
+          yield* Ref.update(requests, (captured) => [...captured, request])
+          return yield* commit.coordinator.commit(request)
+        }),
+      }
+      const stages = gameplayStages(
+        state,
+        store.api,
+        roster.api,
+        inventory.api,
+        player.api,
+        time,
+        undefined,
+        undefined,
+        {},
+        { ...commit, coordinator: capturingCoordinator },
+      )
+      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+
+      expect(storageBefore.state.inventory.slots.every((slot) => slot?.item === 'potato')).toBe(true)
+      yield* requestPotatoHarvest(state, 'harvest-full-potato-storage', position, 0.5)
+      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* drainItemUseResults(state)).toMatchObject([
+        {
+          action: 'HarvestPotato',
+          requestId: 'harvest-full-potato-storage',
+          success: true,
+          outcome: { _tag: 'drops', drops: [{ item: 'potato', count: 4 }] },
+        },
+      ])
+
+      const captured = yield* Ref.get(requests)
+      expect(captured).toHaveLength(1)
+      expect(yield* Ref.get(commitCalls)).toBe(1)
+      const request = captured[0]
+      if (request === undefined) throw new Error('harvesting full storage did not submit a commit request')
+      expect(request.changes).toHaveLength(3)
+      expect(request.changes).toContainEqual({
+        ownerId: GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+        state: storageBefore.state,
+      })
+      expect(request.changes).toContainEqual({ ownerId: GAMEPLAY_CROPS_OWNER_ID, state: { crops: [] } })
+      const droppedItemsChange = request.changes.find(({ ownerId }) => ownerId === GAMEPLAY_DROPPED_ITEMS_OWNER_ID)
+      if (droppedItemsChange === undefined) throw new Error('harvest commit did not include the dropped-items owner')
+      const droppedItemsCandidate = Schema.decodeUnknownSync(DroppedItemOwnerSnapshotSchema)(droppedItemsChange.state)
+      expect(droppedItemsCandidate.items).toHaveLength(1)
+      expect(droppedItemsCandidate.items[0]).toMatchObject({
+        feetPosition: { x: position.x, y: position.y, z: position.z },
+        behaviour: { _tag: 'DroppedItem', item: 'potato', count: 4 },
+      })
+      expect(request.blockWrite).toMatchObject({
+        edits: [{ position, block: AIR_BLOCK_ID }],
+      })
+
+      const storageAfter = yield* commit.coordinator.snapshot(
+        GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+        PlayerStorageSnapshotSchema,
+      )
+      const cropsAfter = yield* commit.coordinator.snapshot(GAMEPLAY_CROPS_OWNER_ID, CropSnapshotSchema)
+      const droppedItemsAfter = yield* commit.coordinator.snapshot(
+        GAMEPLAY_DROPPED_ITEMS_OWNER_ID,
+        DroppedItemOwnerSnapshotSchema,
+      )
+      expect(storageAfter.state).toStrictEqual(storageBefore.state)
+      expect(cropsAfter.state.crops).toStrictEqual([])
+      expect(droppedItemsAfter.state).toStrictEqual(droppedItemsCandidate)
+      expect(yield* store.api.getBlock(position)).toStrictEqual({ _tag: 'Block', block: AIR_BLOCK_ID })
+      expect(yield* commit.coordinator.revision).toBe(1)
+    }),
+  )
+
   it.effect('preserves a mature crop and storage when the harvest commit is rejected', () =>
     Effect.gen(function* () {
       const position = fixtureBlockPosition(47, 64, 47)
@@ -4868,6 +4957,51 @@ describe('farming and food item uses through the full interactions stage', () =>
       expect(storageOwner.state.inventory.slots[0]).toBeUndefined()
       expect(yield* inventory.api.countOf('bone_meal')).toBe(1)
       expect(yield* commit.coordinator.revision).toBe(1)
+    }),
+  )
+
+  it.effect('bone meal on a crop without bone meal reports the current typed result without committing', () =>
+    Effect.gen(function* () {
+      const wheatCrop = Option.getOrThrow(blockIdOf('wheat_crop'))
+      const position = fixtureBlockPosition(0, 64, 0)
+      const harness = yield* builtStagesInWorld(
+        world([[position, wheatCrop]]),
+        ['0,0'],
+        { crops: [{ dimension: 'overworld', position, crop: 'wheat_crop', growthSecs: 0 }] },
+      )
+      const interactions = harness.stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+      const cropBefore = yield* harness.commit.coordinator.snapshot(GAMEPLAY_CROPS_OWNER_ID, CropSnapshotSchema)
+      const storageBefore = yield* harness.commit.coordinator.snapshot(
+        GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+        PlayerStorageSnapshotSchema,
+      )
+      const revisionBefore = yield* harness.commit.coordinator.revision
+      const dimensionRevisionBefore = yield* harness.commit.coordinator.dimensionRevision('overworld')
+
+      expect(countStoredItem(storageBefore.state, 'bone_meal')).toBe(0)
+      yield* requestBoneMeal(harness.state, 'bone-meal-crop-without-item', position)
+      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* drainItemUseResults(harness.state)).toStrictEqual([
+        {
+          action: 'ApplyBoneMeal',
+          requestId: 'bone-meal-crop-without-item',
+          heldItem: 'bone_meal',
+          success: false,
+          consumedCount: 0,
+          outcome: { _tag: 'applied', at: position },
+        },
+      ])
+      expect(yield* Ref.get(harness.commitCalls)).toBe(0)
+      expect(yield* harness.commit.coordinator.snapshot(GAMEPLAY_CROPS_OWNER_ID, CropSnapshotSchema))
+        .toStrictEqual(cropBefore)
+      expect(yield* harness.commit.coordinator.snapshot(
+        GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+        PlayerStorageSnapshotSchema,
+      )).toStrictEqual(storageBefore)
+      expect(yield* harness.commit.coordinator.revision).toBe(revisionBefore)
+      expect(yield* harness.commit.coordinator.dimensionRevision('overworld')).toBe(dimensionRevisionBefore)
+      expect(yield* harness.store.api.getBlock(position)).toStrictEqual({ _tag: 'Block', block: wheatCrop })
     }),
   )
 
@@ -5318,6 +5452,68 @@ describe('farming and food item uses through the full interactions stage', () =>
       expect(codVitals.state.vitals.hungerPoints).toBe(12)
       expect(yield* Ref.get(codHarness.commitCalls)).toBe(1)
       expect(yield* codHarness.commit.coordinator.revision).toBe(1)
+    }),
+  )
+
+  it.effect('hungry food use with no matching storage item reports missingItem without committing', () =>
+    Effect.gen(function* () {
+      const position = fixtureBlockPosition(1, 64, 1)
+      const lowVitals = { ...SPAWN_VITALS, hungerPoints: HungerPoints(10) }
+      const slots = [...emptySlots()]
+      slots[0] = itemStack('potato', 1)
+      const harness = yield* builtStagesInWorld(
+        world([[position, STONE]]),
+        ['0,0'],
+        undefined,
+        slots,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { vitals: lowVitals },
+      )
+      const interactions = harness.stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+      const storageBefore = yield* harness.commit.coordinator.snapshot(
+        GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+        PlayerStorageSnapshotSchema,
+      )
+      const vitalsBefore = yield* harness.commit.coordinator.snapshot(
+        GAMEPLAY_VITALS_OWNER_ID,
+        ExperienceOrbVitalsOwnerSnapshotSchema,
+      )
+      const revisionBefore = yield* harness.commit.coordinator.revision
+      const dimensionRevisionBefore = yield* harness.commit.coordinator.dimensionRevision('overworld')
+
+      yield* requestFoodUse(harness.state, 'hungry-food-no-matching-item', 'cod', {
+        healthPoints: lowVitals.healthPoints,
+        hungerPoints: lowVitals.hungerPoints,
+        maxHungerPoints: lowVitals.maxHungerPoints,
+      })
+      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* drainItemUseResults(harness.state)).toStrictEqual([
+        {
+          action: 'EatFood',
+          requestId: 'hungry-food-no-matching-item',
+          heldItem: 'cod',
+          success: false,
+          consumedCount: 0,
+          outcome: { _tag: 'missingItem' },
+        },
+      ])
+      expect(yield* Ref.get(harness.commitCalls)).toBe(0)
+      expect(yield* harness.commit.coordinator.snapshot(
+        GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+        PlayerStorageSnapshotSchema,
+      )).toStrictEqual(storageBefore)
+      expect(yield* harness.commit.coordinator.snapshot(
+        GAMEPLAY_VITALS_OWNER_ID,
+        ExperienceOrbVitalsOwnerSnapshotSchema,
+      )).toStrictEqual(vitalsBefore)
+      expect(yield* harness.commit.coordinator.revision).toBe(revisionBefore)
+      expect(yield* harness.commit.coordinator.dimensionRevision('overworld')).toBe(dimensionRevisionBefore)
+      expect(yield* harness.store.api.getBlock(position)).toStrictEqual({ _tag: 'Block', block: STONE })
     }),
   )
 
