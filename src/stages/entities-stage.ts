@@ -11,7 +11,7 @@ import {
   settled,
   takeBatch,
 } from './registration-core.js'
-import { Equal, Result, Schema } from 'effect'
+import { Equal, Option, Result, Schema } from 'effect'
 import {
   AIR_BLOCK_ID,
   BlockAxis,
@@ -23,7 +23,6 @@ import {
   propertyOfBlockId,
   position,
   resistsExplosion,
-  type BlockRegistryResolutionFailure,
   type BlockPosition,
   type DeltaTimeSecs,
   type BlockPositionKey,
@@ -115,9 +114,7 @@ const explosionReadPositions = (
     if (Result.isFailure(last)) return yield* Effect.fail(last.failure)
     const values: Array<BlockPosition['x']> = []
     for (let index = 0; index <= last.success - first.success; index += 1) {
-      const axis = BlockAxis.result(first.success + index)
-      if (Result.isFailure(axis)) return yield* Effect.fail(axis.failure)
-      values.push(axis.success)
+      values.push(Result.getOrThrow(BlockAxis.result(first.success + index)))
     }
     return values
   })
@@ -142,30 +139,23 @@ const explosionBlockReader = (
       | Readonly<{ _tag: 'ChunkNotLoaded' }>
       | Readonly<{ _tag: 'OutOfWorld' }>
   }>>,
-): Result.Result<ExplosionBlockReader, BlockRegistryResolutionFailure> => {
+): ExplosionBlockReader => {
   const byPosition = new Map<string, ExplosionBlock>()
   for (const { position: cell, reading } of blocks) {
     if (reading._tag !== 'Block') continue
-    const resistance = propertyOfBlockId(reading.block, 'blastResistance')
-    if (Result.isFailure(resistance)) return Result.fail(resistance.failure)
+    const resistance = Result.getOrThrow(propertyOfBlockId(reading.block, 'blastResistance'))
     byPosition.set(blockPositionKeyOf(cell), {
-      resistance: Number.isFinite(resistance.success)
-        ? Math.min(resistance.success, Number.MAX_SAFE_INTEGER)
+      resistance: Number.isFinite(resistance)
+        ? Math.min(resistance, Number.MAX_SAFE_INTEGER)
         : Number.MAX_SAFE_INTEGER,
-      destructible: Number.isFinite(resistance.success),
+      destructible: Number.isFinite(resistance),
     })
   }
-  return Result.succeed(({ x, y, z }) => {
-    const blockX = BlockAxis.result(x)
-    const blockY = BlockAxis.result(y)
-    const blockZ = BlockAxis.result(z)
-    if (Result.isFailure(blockX) || Result.isFailure(blockY) || Result.isFailure(blockZ)) return undefined
-    return byPosition.get(blockPositionKeyOf(blockPosition(
-      blockX.success,
-      blockY.success,
-      blockZ.success,
-    )))
-  })
+  return ({ x, y, z }) => byPosition.get(blockPositionKeyOf(blockPosition(
+    Result.getOrThrow(BlockAxis.result(x)),
+    Result.getOrThrow(BlockAxis.result(y)),
+    Result.getOrThrow(BlockAxis.result(z)),
+  )))
 }
 
 const PLAYER_BLAST_ENTITY_ID = EntityId('mx-gameplay:player-avatar')
@@ -224,7 +214,7 @@ const runTntSimulation = (
     const seed = yield* Ref.get(state.rollSeed)
     let entityRoster: EntityRoster<MobBehaviour> | undefined
     let playerState: PlayerServiceSnapshot | undefined
-    let blocks: ExplosionBlockReader = () => undefined
+    let blocks = explosionBlockReader([])
     let explosionEntities: ReadonlyArray<{ readonly id: import('@nerima-games/mc-kernel').EntityId; readonly feetPosition: Position }> = []
 
     if (willDetonate) {
@@ -247,9 +237,7 @@ const runTntSimulation = (
       }
       entityRoster = observed.state
       playerState = player.state
-      const blockReader = explosionBlockReader(observed.blocks)
-      if (Result.isFailure(blockReader)) return yield* Effect.fail(blockReader.failure)
-      blocks = blockReader.success
+      blocks = explosionBlockReader(observed.blocks)
       const mobEntities = observed.state.entities.map(({ id: entityId, feetPosition }) => ({
         id: entityId,
         feetPosition,
@@ -278,12 +266,9 @@ const runTntSimulation = (
       entities: explosionEntities,
     })
     if (outcome._tag !== 'DetonationPlanned') continue
-    if (entityRoster === undefined || playerState === undefined) {
-      return yield* Effect.fail(new Error('TNT detonation planned without its owner snapshots'))
-    }
-
-    const roster = entityRoster
-    const player = playerState
+    // The TNT service can plan detonation only after the fuse-due snapshot path above.
+    const roster = Option.getOrThrow(Option.fromNullishOr(entityRoster))
+    const player = Option.getOrThrow(Option.fromNullishOr(playerState))
     const effects = outcome.explosion.entityEffects
     const mobHits = effects.flatMap((effect) => {
       if (!roster.entities.some(({ id: entityId }) => entityId === effect.id)) return []
@@ -337,15 +322,12 @@ const runTntSimulation = (
       if (playerDamage !== undefined) {
         let storage = storageSnapshot.state
         let vitals = vitalsSnapshot.state.vitals
-        const armor = prepareArmorHit(storage.equipment, playerDamage.damage)
-        if (Result.isFailure(armor)) return yield* Effect.fail(armor.failure)
-        const amount = DamageAmount.result(armor.success.damage.amount)
-        const cause = DamageCause.result(armor.success.damage.cause)
-        if (Result.isFailure(amount)) return yield* Effect.fail(amount.failure)
-        if (Result.isFailure(cause)) return yield* Effect.fail(cause.failure)
-        vitals = applyVitalsDamage(vitals, { amount: amount.success, cause: cause.success })
-        for (const slot of armor.success.wornSlots) {
-          const worn = damageAt(storage, { _tag: 'Equipment', slot }, armor.success.durabilityWear)
+        const armor = yield* Effect.fromResult(prepareArmorHit(storage.equipment, playerDamage.damage))
+        const amount = yield* Effect.fromResult(DamageAmount.result(armor.damage.amount))
+        const cause = yield* Effect.fromResult(DamageCause.result(armor.damage.cause))
+        vitals = applyVitalsDamage(vitals, { amount, cause })
+        for (const slot of armor.wornSlots) {
+          const worn = damageAt(storage, { _tag: 'Equipment', slot }, armor.durabilityWear)
           if (worn.result._tag === 'Damaged' || worn.result._tag === 'Broken') storage = worn.storage
         }
         if (!Equal.equals(storageSnapshot.state, storage)) storageCandidate = storage
@@ -388,9 +370,9 @@ const runTntSimulation = (
         }))
       }
       const drops: ReadonlyArray<DroppedItemSpawn> = loot.drops.map(({ item, count, at }) => ({ item, count, at }))
-      const appended = appendDroppedItemSpawns(droppedSnapshot.state, drops, outcome.expectedRevision)
-      if (Result.isFailure(appended)) return yield* Effect.fail(appended.failure)
-      if (!Equal.equals(droppedSnapshot.state, appended.success)) droppedCandidate = appended.success
+      droppedCandidate = yield* Effect.fromResult(
+        appendDroppedItemSpawns(droppedSnapshot.state, drops, outcome.expectedRevision),
+      )
     }
 
     const changes: ReplicatedOwnerCandidate[] = []
@@ -547,17 +529,13 @@ const runMobSimulation = (
     let vitals = vitalsSnapshot.state.vitals
     const applied: PlayerDamageEvent[] = []
     for (const event of damages) {
-      if (event.damage.amount <= 0) continue
-      const armor = prepareArmorHit(storage.equipment, event.damage)
-      if (Result.isFailure(armor)) return yield* Effect.fail(armor.failure)
-      const damage: Damage = armor.success.damage
-      const amount = DamageAmount.result(damage.amount)
-      const cause = DamageCause.result(damage.cause)
-      if (Result.isFailure(amount)) return yield* Effect.fail(amount.failure)
-      if (Result.isFailure(cause)) return yield* Effect.fail(cause.failure)
-      vitals = applyVitalsDamage(vitals, { amount: amount.success, cause: cause.success })
-      for (const slot of armor.success.wornSlots) {
-        const worn = damageAt(storage, { _tag: 'Equipment', slot }, armor.success.durabilityWear)
+      const armor = yield* Effect.fromResult(prepareArmorHit(storage.equipment, event.damage))
+      const damage: Damage = armor.damage
+      const amount = yield* Effect.fromResult(DamageAmount.result(damage.amount))
+      const cause = yield* Effect.fromResult(DamageCause.result(damage.cause))
+      vitals = applyVitalsDamage(vitals, { amount, cause })
+      for (const slot of armor.wornSlots) {
+        const worn = damageAt(storage, { _tag: 'Equipment', slot }, armor.durabilityWear)
         if (worn.result._tag === 'Damaged' || worn.result._tag === 'Broken') storage = worn.storage
       }
       applied.push({ ...event, damage })
@@ -584,9 +562,9 @@ const runMobSimulation = (
       }))
     }
     const drops: ReadonlyArray<DroppedItemSpawn> = casualtyDrops.drops.map(({ item, count, at }) => ({ item, count, at }))
-    const appended = appendDroppedItemSpawns(droppedSnapshot.state, drops, expectedRevision)
-    if (Result.isFailure(appended)) return yield* Effect.fail(appended.failure)
-    if (!Equal.equals(droppedSnapshot.state, appended.success)) droppedCandidate = appended.success
+    droppedCandidate = yield* Effect.fromResult(
+      appendDroppedItemSpawns(droppedSnapshot.state, drops, expectedRevision),
+    )
   }
 
   const blockEdits = new Map<string, { readonly position: ReturnType<typeof blockPosition>; readonly block: typeof AIR_BLOCK_ID }>()
@@ -619,18 +597,27 @@ const runMobSimulation = (
   const entityCandidate = spawned.success.roster
   const changes: ReplicatedOwnerCandidate[] = []
   if (!Equal.equals(entitySnapshot.state, entityCandidate)) {
-    changes.push({ ownerId: commit.entitiesOwnerId, state: entityCandidate })
+    changes.push({
+      ownerId: Option.getOrThrow(Option.fromNullishOr(commit.entitiesOwnerId)),
+      state: entityCandidate,
+    })
   }
   if (droppedCandidate !== undefined) {
     const droppedItemsOwnerId = commit.droppedItemsOwnerId
-    if (droppedItemsOwnerId !== undefined) changes.push({ ownerId: droppedItemsOwnerId, state: droppedCandidate })
+    changes.push({
+      ownerId: Option.getOrThrow(Option.fromNullishOr(droppedItemsOwnerId)),
+      state: droppedCandidate,
+    })
   }
   if (storageCandidate !== undefined) {
     changes.push({ ownerId: commit.playerStorageOwnerId, state: storageCandidate })
   }
   if (vitalsCandidate !== undefined) {
     const vitalsOwnerId = commit.vitalsOwnerId
-    if (vitalsOwnerId !== undefined) changes.push({ ownerId: vitalsOwnerId, state: vitalsCandidate })
+    changes.push({
+      ownerId: Option.getOrThrow(Option.fromNullishOr(vitalsOwnerId)),
+      state: vitalsCandidate,
+    })
   }
   let blockWrite: WorldWriteBatch | undefined
   if (edits.length > 0) {
@@ -718,16 +705,12 @@ export const makeEntitiesStage = (context: GameplayStageContext): StageRegistrat
             retryPickups.push(request)
             continue
           }
-          const planned = yield* Effect.result(planDroppedItemPickup(
+          const planned = yield* planDroppedItemPickup(
             request,
             storageSnapshot.state,
             droppedItemsSnapshot.state,
-          ))
-          if (Result.isFailure(planned)) {
-            pickupExecutions.push({ request, outcome: { _tag: 'Failed', error: planned.failure } as const })
-            continue
-          }
-          if (planned.success.planned.length === 0) {
+          )
+          if (planned.planned.length === 0) {
             pickupExecutions.push({
               request,
               outcome: { _tag: 'Completed', result: [] } as const,
@@ -738,23 +721,16 @@ export const makeEntitiesStage = (context: GameplayStageContext): StageRegistrat
             expectedRevision: storageSnapshot.revision,
             expectedDimensions: [],
             changes: [
-              { ownerId: owners.playerStorage, state: planned.success.playerStorage },
-              { ownerId: owners.droppedItems, state: planned.success.droppedItems },
+              { ownerId: owners.playerStorage, state: planned.playerStorage },
+              { ownerId: owners.droppedItems, state: planned.droppedItems },
             ],
           }))
           if (Result.isFailure(committed)) {
             retryPickups.push(request)
             continue
           }
-          const result = yield* Effect.result(droppedItemPickupResultAfterCommit(
-            planned.success,
-            planned.success.droppedItems,
-          ))
-          if (Result.isFailure(result)) {
-            pickupExecutions.push({ request, outcome: { _tag: 'Failed', error: result.failure } as const })
-          } else {
-            pickupExecutions.push({ request, outcome: { _tag: 'Completed', result: result.success } as const })
-          }
+          const result = yield* droppedItemPickupResultAfterCommit(planned, planned.droppedItems)
+          pickupExecutions.push({ request, outcome: { _tag: 'Completed', result } as const })
         }
         if (retryPickups.length > 0) {
           yield* Ref.update(state.pendingDroppedItemPickups, (pending) => [
@@ -825,17 +801,13 @@ export const makeEntitiesStage = (context: GameplayStageContext): StageRegistrat
             retryAbsorptions.push(request)
             continue
           }
-          const result = yield* Effect.result(experienceOrbAbsorptionResultAfterCommit(
+          const result = yield* experienceOrbAbsorptionResultAfterCommit(
             planned.success,
             planned.success.vitals,
             planned.success.orbs,
             owners,
-          ))
-          if (Result.isFailure(result)) {
-            absorptionExecutions.push({ request, outcome: { _tag: 'Failed', error: result.failure } as const })
-          } else {
-            absorptionExecutions.push({ request, outcome: { _tag: 'Completed', result: result.success } as const })
-          }
+          )
+          absorptionExecutions.push({ request, outcome: { _tag: 'Completed', result } as const })
         }
         if (retryAbsorptions.length > 0) {
           yield* Ref.update(state.pendingExperienceOrbAbsorptions, (pending) => [

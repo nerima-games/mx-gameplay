@@ -187,6 +187,36 @@ const coordinatorWithInterveningStatusCommit = (
   return { ...coordinator, revision }
 })
 
+const coordinatorWithCommitOnDroppedItemsSnapshot = (
+  coordinator: WorldCommitCoordinatorApi,
+  droppedItemsOwnerId: ReplicatedOwnerId,
+  statusEffectsOwnerId: ReplicatedOwnerId,
+): Effect.Effect<WorldCommitCoordinatorApi> => Effect.gen(function* () {
+  const committed = yield* Ref.make(false)
+  const snapshot = <Codec extends Schema.Codec<any, any>>(
+    ownerId: ReplicatedOwnerId,
+    schema: Codec,
+  ) => Effect.gen(function* () {
+    if (ownerId === droppedItemsOwnerId && !(yield* Ref.get(committed))) {
+      yield* Ref.set(committed, true)
+      const expectedRevision = yield* coordinator.revision
+      yield* Effect.orDie(coordinator.snapshot(statusEffectsOwnerId, StatusEffectStateSchema))
+      yield* Effect.orDie(coordinator.commit({
+        expectedRevision,
+        expectedDimensions: [],
+        changes: [{
+          ownerId: statusEffectsOwnerId,
+          state: {
+            effects: [{ type: 'speed', remainingSecs: 1, pulseClockSecs: 0, amplifier: 0 }],
+          },
+        }],
+      }))
+    }
+    return yield* coordinator.snapshot(ownerId, schema)
+  })
+  return { ...coordinator, snapshot }
+})
+
 const runInteractions = (interactions: StageRegistration, dt: number) =>
   interactions.run(DeltaTimeSecs(dt)).pipe(Effect.provide(FrameServicesLayer))
 
@@ -1044,7 +1074,12 @@ describe('registration-core public paths omitted from focused coverage', () => {
       yield* fire.run(DeltaTimeSecs(FIRE_TICK_INTERVAL_SECS)).pipe(Effect.provide(FrameServicesLayer))
 
       expect(yield* Ref.get(harness.state.operationFailures)).toContainEqual(
-        expect.objectContaining({ _tag: 'Failed', operation: 'CandidateBuild', subject: 'Fire' }),
+        expect.objectContaining({
+          _tag: 'Failed',
+          operation: 'CandidateBuild',
+          subject: 'Fire',
+          error: expect.objectContaining({ _tag: 'WorldRevisionConflict', expected: 0, actual: 1 }),
+        }),
       )
       expect(yield* racingCommit.coordinator.revision).toBe(1)
       expect((yield* Ref.get(harness.state.fireLifecycle)).fires).toContainEqual(
@@ -1061,7 +1096,11 @@ describe('registration-core public paths omitted from focused coverage', () => {
       if (commit?.droppedItemsOwnerId === undefined || commit.statusEffectsOwnerId === undefined) {
         throw new Error('dropped-item and status-effect owners were not registered')
       }
-      const coordinator = yield* coordinatorWithInterveningStatusCommit(commit.coordinator, commit.statusEffectsOwnerId)
+      const coordinator = yield* coordinatorWithCommitOnDroppedItemsSnapshot(
+        commit.coordinator,
+        commit.droppedItemsOwnerId,
+        commit.statusEffectsOwnerId,
+      )
       const racingCommit: GameplayStageCommitServices = { ...commit, coordinator }
       const fire = fireStageWithCommit(harness, racingCommit)
       if (fire === undefined) throw new Error('fire stage was not registered')
@@ -1074,7 +1113,12 @@ describe('registration-core public paths omitted from focused coverage', () => {
       }
 
       expect(yield* Ref.get(harness.state.operationFailures)).toContainEqual(
-        expect.objectContaining({ _tag: 'Failed', operation: 'CandidateBuild', subject: 'Fire' }),
+        expect.objectContaining({
+          _tag: 'Failed',
+          operation: 'CandidateBuild',
+          subject: 'Fire',
+          error: expect.objectContaining({ _tag: 'WorldRevisionConflict', expected: 0, actual: 1 }),
+        }),
       )
       expect(yield* racingCommit.coordinator.revision).toBe(1)
       expect((yield* Ref.get(harness.state.fireLifecycle)).fires).toContainEqual(

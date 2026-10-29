@@ -199,8 +199,7 @@ const commitMobDamage = (
   event?: Schema.Schema.Type<typeof DomainEventSchema>,
 ): Effect.Effect<boolean> =>
   Effect.gen(function* () {
-    const ownerId = context.entitiesOwnerId
-    if (ownerId === undefined) return false
+    const ownerId = Option.getOrThrow(Option.fromNullishOr(context.entitiesOwnerId))
     const damage = planMobDamageRoster(
       entitySnapshot.state,
       hit === undefined ? [] : [{ id: hit.id, damage: hit.damage }],
@@ -218,14 +217,15 @@ const commitMobDamage = (
       changes.push({ ownerId: context.playerStorageOwnerId, state: storageCandidate })
     }
     if (drops.drops.length > 0) {
-      if (context.droppedItemsOwnerId === undefined) {
+      const droppedItemsOwnerId = context.droppedItemsOwnerId
+      if (droppedItemsOwnerId === undefined) {
         yield* recordGameplayUnsupportedOperation(state, {
           _tag: 'Unsupported', action: 'MobDrop', reason: 'OwnerRegistrationUnavailable',
         })
         return false
       }
       const droppedSnapshot = yield* Effect.result(context.coordinator.snapshot(
-        context.droppedItemsOwnerId,
+        droppedItemsOwnerId,
         DroppedItemOwnerSnapshotSchema,
       ))
       if (Result.isFailure(droppedSnapshot)) {
@@ -244,18 +244,12 @@ const commitMobDamage = (
         })
         return false
       }
-      const appended = appendDroppedItemSpawns(
+      const appended = Result.getOrThrow(appendDroppedItemSpawns(
         droppedSnapshot.success.state,
         drops.drops.map(({ item, count, at }) => ({ item, count, at })),
         entitySnapshot.revision,
-      )
-      if (Result.isFailure(appended)) {
-        yield* recordGameplayStageFailure(state, {
-          _tag: 'Failed', operation: 'CandidateBuild', subject: 'ItemUse', error: appended.failure,
-        })
-        return false
-      }
-      changes.push({ ownerId: context.droppedItemsOwnerId, state: appended.success })
+      ))
+      changes.push({ ownerId: droppedItemsOwnerId, state: appended })
     }
     if (changes.length === 0) return true
 
@@ -545,17 +539,9 @@ const processMeleeAttack = (
       return
     }
     const tick = yield* Ref.get(state.tickCount)
-    const targetEntity = entities.success.state.entities.find(({ id }) => id === target.id)
-    if (targetEntity === undefined) {
-      if (request.requestId !== undefined) {
-        const result: import('./registration-core.js').GameplayMeleeAttackResult = {
-          requestId: request.requestId,
-          success: false,
-        }
-        yield* Ref.update(state.meleeAttackResults, (results) => [...results, result])
-      }
-      return
-    }
+    const targetEntity = Option.getOrThrow(Option.fromNullishOr(
+      entities.success.state.entities.find(({ id }) => id === target.id),
+    ))
     const targetPosition = Schema.decodeUnknownSync(WorldPositionSchema)({
       dimension: player.success.state.pose.feetPosition.dimension,
       x: targetEntity.feetPosition.x,
@@ -1481,33 +1467,8 @@ const processPlacement = (
               outcome: { _tag: 'InventoryUnavailable' },
             }
           }
-          const updated = withInventory(observed.success.state, removed.success.inventory)
-          if (Result.isFailure(updated)) {
-            yield* recordGameplayStageFailure(state, {
-              _tag: 'Failed', operation: 'CandidateBuild', subject: 'ItemUse', error: updated.failure,
-            })
-            return {
-              requestId: command?.requestId ?? '',
-              success: false,
-              consumed: false,
-              replayed: false,
-              outcome: { _tag: 'InventoryUnavailable' },
-            }
-          }
-          const decoded = Schema.decodeUnknownResult(PlayerStorageSnapshotSchema)(updated.success)
-          if (Result.isFailure(decoded)) {
-            yield* recordGameplayStageFailure(state, {
-              _tag: 'Failed', operation: 'CandidateBuild', subject: 'ItemUse', error: decoded.failure,
-            })
-            return {
-              requestId: command?.requestId ?? '',
-              success: false,
-              consumed: false,
-              replayed: false,
-              outcome: { _tag: 'InventoryUnavailable' },
-            }
-          }
-          storageCandidate = { ownerId: context.playerStorageOwnerId, state: decoded.success }
+          const updated = Result.getOrThrow(withInventory(observed.success.state, removed.success.inventory))
+          storageCandidate = { ownerId: context.playerStorageOwnerId, state: updated }
         }
 
         const expectedDimensionRevision = yield* context.coordinator.dimensionRevision(dimension)
@@ -1673,21 +1634,8 @@ const processEnderPearlThrow = (
         removed.success.result._tag !== 'Removed' ||
         removed.success.result.removed !== 1
       ) return
-      const updated = withInventory(storageSnapshot.success.state, removed.success.inventory)
-      if (Result.isFailure(updated)) {
-        yield* recordGameplayStageFailure(state, {
-          _tag: 'Failed', operation: 'CandidateBuild', subject: 'Player', error: updated.failure,
-        })
-        return
-      }
-      const decodedStorage = Schema.decodeUnknownResult(PlayerStorageSnapshotSchema)(updated.success)
-      if (Result.isFailure(decodedStorage)) {
-        yield* recordGameplayStageFailure(state, {
-          _tag: 'Failed', operation: 'CandidateBuild', subject: 'Player', error: decodedStorage.failure,
-        })
-        return
-      }
-      changes.push({ ownerId: context.playerStorageOwnerId, state: decodedStorage.success })
+      const updated = Result.getOrThrow(withInventory(storageSnapshot.success.state, removed.success.inventory))
+      changes.push({ ownerId: context.playerStorageOwnerId, state: updated })
     }
 
     const currentPose = playerSnapshot.success.state.pose
@@ -1703,47 +1651,23 @@ const processEnderPearlThrow = (
       })
       return
     }
-    const playerCandidate = Schema.decodeUnknownResult(PlayerServiceSnapshotSchema)({
+    const playerCandidate = Schema.decodeUnknownSync(PlayerServiceSnapshotSchema)({
       pose: { ...currentPose, feetPosition: destination.success },
     })
-    if (Result.isFailure(playerCandidate)) {
-      yield* recordGameplayStageFailure(state, {
-        _tag: 'Failed', operation: 'CandidateBuild', subject: 'Player', error: playerCandidate.failure,
-      })
-      return
-    }
-    changes.push({ ownerId: context.playerOwnerId, state: playerCandidate.success })
+    changes.push({ ownerId: context.playerOwnerId, state: playerCandidate })
 
     let damage: { readonly amount: number; readonly cause: 'ender_pearl' } | undefined
     if (request.inventory.mode === 'survival') {
-      const amount = DamageAmount.result(ENDER_PEARL_DAMAGE)
-      const cause = DamageCause.result('ender_pearl')
-      if (Result.isFailure(amount)) {
-        yield* recordGameplayStageFailure(state, {
-          _tag: 'Failed', operation: 'CandidateBuild', subject: 'Vitals', error: amount.failure,
-        })
-        return
-      }
-      if (Result.isFailure(cause)) {
-        yield* recordGameplayStageFailure(state, {
-          _tag: 'Failed', operation: 'CandidateBuild', subject: 'Vitals', error: cause.failure,
-        })
-        return
-      }
+      const amount = Result.getOrThrow(DamageAmount.result(ENDER_PEARL_DAMAGE))
+      const cause = Result.getOrThrow(DamageCause.result('ender_pearl'))
       const nextVitals = applyVitalsDamage(vitalsSnapshot.success.state.vitals, {
-        amount: amount.success,
-        cause: cause.success,
+        amount,
+        cause,
       })
-      const decodedVitals = Schema.decodeUnknownResult(ExperienceOrbVitalsOwnerSnapshotSchema)({
+      const decodedVitals = Schema.decodeUnknownSync(ExperienceOrbVitalsOwnerSnapshotSchema)({
         vitals: nextVitals,
       })
-      if (Result.isFailure(decodedVitals)) {
-        yield* recordGameplayStageFailure(state, {
-          _tag: 'Failed', operation: 'CandidateBuild', subject: 'Vitals', error: decodedVitals.failure,
-        })
-        return
-      }
-      changes.push({ ownerId: context.vitalsOwnerId, state: decodedVitals.success })
+      changes.push({ ownerId: context.vitalsOwnerId, state: decodedVitals })
       damage = { amount: ENDER_PEARL_DAMAGE, cause: 'ender_pearl' }
     } else {
       changes.push({ ownerId: context.vitalsOwnerId, state: vitalsSnapshot.success.state })
@@ -1785,23 +1709,10 @@ const processEnderPearlThrow = (
         })
         return
       }
-      const decodedEntities = Schema.decodeUnknownResult(GameplayEntityRosterSchema)(spawned.success.roster)
-      if (Result.isFailure(decodedEntities)) {
-        yield* recordGameplayStageFailure(state, {
-          _tag: 'Failed', operation: 'CandidateBuild', subject: 'Player', error: decodedEntities.failure,
-        })
-        return
-      }
-      changes.push({ ownerId: entitiesOwnerId, state: decodedEntities.success })
+      changes.push({ ownerId: entitiesOwnerId, state: spawned.success.roster })
     }
 
-    const outcome = Schema.decodeUnknownResult(EnderPearlOutcomeSchema)({ displacement, damage })
-    if (Result.isFailure(outcome)) {
-      yield* recordGameplayStageFailure(state, {
-        _tag: 'Failed', operation: 'CandidateBuild', subject: 'Player', error: outcome.failure,
-      })
-      return
-    }
+    const outcome = Schema.decodeUnknownSync(EnderPearlOutcomeSchema)({ displacement, damage })
     const committed = yield* Effect.result(context.coordinator.commit({
       expectedRevision: revision,
       expectedDimensions: [],
@@ -1815,7 +1726,7 @@ const processEnderPearlThrow = (
       return
     }
     yield* Ref.set(state.rollSeed, roll.seed)
-    yield* Ref.update(state.enderPearlOutcomes, (outcomes) => [...outcomes, outcome.success])
+    yield* Ref.update(state.enderPearlOutcomes, (outcomes) => [...outcomes, outcome])
   })
 
 export const makeInteractionsStage = (context: GameplayStageContext): StageRegistration => {

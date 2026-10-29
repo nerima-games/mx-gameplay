@@ -220,10 +220,14 @@ const makeHarness = (options: Readonly<{
   readonly entities?: EntityRoster<MobBehaviour>
   readonly blocks?: ReadonlyArray<readonly [BlockPosition, BlockId]>
   readonly omitProjectileOwnerId?: boolean
+  readonly omitProjectileRegistration?: boolean
   readonly omitDroppedItemsOwnerId?: boolean
   readonly omitDroppedItemsRegistration?: boolean
   readonly omitInteractionEventBus?: boolean
+  readonly omitBrewingRegistration?: boolean
   readonly omitPlayerStorageRegistration?: boolean
+  readonly omitStatusEffectsOwnerId?: boolean
+  readonly omitStatusEffectsRegistration?: boolean
   readonly omitVillagerTradesRegistration?: boolean
 }> = {}) => Effect.gen(function* () {
   const store = yield* makeTransactionalChunkStoreDouble(world(options.blocks ?? []), ['0,0'])
@@ -240,7 +244,10 @@ const makeHarness = (options: Readonly<{
   const owners = registrations.filter(({ ownerId }) =>
     !(options.omitVillagerTradesRegistration && ownerId === GAMEPLAY_VILLAGER_TRADES_OWNER_ID) &&
     !(options.omitDroppedItemsRegistration && ownerId === GAMEPLAY_DROPPED_ITEMS_OWNER_ID) &&
-    !(options.omitPlayerStorageRegistration && ownerId === GAMEPLAY_PLAYER_STORAGE_OWNER_ID),
+    !(options.omitPlayerStorageRegistration && ownerId === GAMEPLAY_PLAYER_STORAGE_OWNER_ID) &&
+    !(options.omitBrewingRegistration && ownerId === GAMEPLAY_BREWING_OWNER_ID) &&
+    !(options.omitStatusEffectsRegistration && ownerId === GAMEPLAY_STATUS_EFFECTS_OWNER_ID) &&
+    !(options.omitProjectileRegistration && ownerId === PROJECTILE_REPLICATED_OWNER_ID),
   )
   const baseCoordinator = yield* makeWorldCommitCoordinator({
     world: WORLD_ID,
@@ -297,7 +304,7 @@ const makeHarness = (options: Readonly<{
     villagerTradesOwnerId: GAMEPLAY_VILLAGER_TRADES_OWNER_ID,
     entitiesOwnerId: GAMEPLAY_ENTITIES_OWNER_ID,
     brewingOwnerId: GAMEPLAY_BREWING_OWNER_ID,
-    statusEffectsOwnerId: GAMEPLAY_STATUS_EFFECTS_OWNER_ID,
+    ...(options.omitStatusEffectsOwnerId ? {} : { statusEffectsOwnerId: GAMEPLAY_STATUS_EFFECTS_OWNER_ID }),
     fishingOwnerId: GAMEPLAY_FISHING_OWNER_ID,
     ...(options.omitProjectileOwnerId ? {} : { projectileOwnerId: PROJECTILE_REPLICATED_OWNER_ID }),
     fishingService,
@@ -590,10 +597,12 @@ describe('registered Fishing plans in the interactions stage', () => {
         GAMEPLAY_FISHING_OWNER_ID,
         FishingStateSchema,
       ))).state.rods).toStrictEqual([{ actor: FISHER, bobber: BOBBER, phase: scenario.phase }])
-      expect(await Effect.runPromise(harness.coordinator.snapshot(
+      const projectileAfter = await Effect.runPromise(harness.coordinator.snapshot(
         PROJECTILE_REPLICATED_OWNER_ID,
         ProjectileServiceSnapshotSchema,
-      ))).toStrictEqual(projectileBefore)
+      ))
+      expect(projectileAfter.state).toStrictEqual(projectileBefore.state)
+      expect(projectileAfter.revision).toBe(revisionBefore + 1)
       expect(harness.lastRequest()?.changes.map(({ ownerId }) => ownerId)).toStrictEqual([
         GAMEPLAY_FISHING_OWNER_ID,
       ])
@@ -937,6 +946,88 @@ describe('registered Fishing plans in the interactions stage', () => {
     }])
     expect(harness.commitCalls()).toBe(0)
   })
+
+  it('reports missing projectile registration for Cast and Reel without changing the active rod', async () => {
+    const harness = await Effect.runPromise(makeHarness({
+      fishing: fishingStateWithRod(),
+      omitProjectileOwnerId: true,
+      omitProjectileRegistration: true,
+    }))
+    const fishingBefore = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_FISHING_OWNER_ID,
+      FishingStateSchema,
+    ))
+    const revisionBefore = await Effect.runPromise(harness.coordinator.revision)
+    await Effect.runPromise(requestFishingCast(harness.state, {
+      requestId: 'cast-without-projectile-registration',
+      actor: OTHER_FISHER,
+      bobber: NEXT_BOBBER,
+      tick: Schema.decodeUnknownSync(SimulationTickSchema)(2),
+      dimension: DIMENSION,
+      launch: FISHING_LAUNCH,
+      profile: SNOWBALL_PROFILE,
+      rod: null,
+      environment: { hasWater: true, hasSkyAccess: true, isRaining: false, isOpenWater: true },
+    }))
+    await Effect.runPromise(requestFishingReel(
+      harness.state,
+      'reel-without-projectile-registration',
+      FISHER,
+    ))
+
+    await harness.run()
+
+    expect(await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_FISHING_OWNER_ID,
+      FishingStateSchema,
+    ))).toStrictEqual(fishingBefore)
+    expect(await Effect.runPromise(harness.coordinator.revision)).toBe(revisionBefore)
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingItemUses))).toStrictEqual([])
+    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toStrictEqual([])
+    expect(await Effect.runPromise(Ref.get(harness.state.operationFailures))).toMatchObject([
+      { _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'Fishing', error: { _tag: 'ReplicatedOwnerUnknown' } },
+      { _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'Fishing', error: { _tag: 'ReplicatedOwnerUnknown' } },
+    ])
+    expect(harness.commitCalls()).toBe(0)
+  })
+
+  it('does not reel a caught item when player storage owner observation fails', async () => {
+    const harness = await Effect.runPromise(makeHarness({
+      fishing: fishingStateWithRod('bite'),
+      projectiles: projectileStateWithBobber(),
+      omitPlayerStorageRegistration: true,
+    }))
+    const fishingBefore = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_FISHING_OWNER_ID,
+      FishingStateSchema,
+    ))
+    const projectilesBefore = await Effect.runPromise(harness.coordinator.snapshot(
+      PROJECTILE_REPLICATED_OWNER_ID,
+      ProjectileServiceSnapshotSchema,
+    ))
+    const revisionBefore = await Effect.runPromise(harness.coordinator.revision)
+    const seedBefore = await Effect.runPromise(Ref.get(harness.state.rollSeed))
+    await Effect.runPromise(requestFishingReel(harness.state, 'reel-without-storage-owner', FISHER))
+
+    await harness.run()
+
+    expect(await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_FISHING_OWNER_ID,
+      FishingStateSchema,
+    ))).toStrictEqual(fishingBefore)
+    expect(await Effect.runPromise(harness.coordinator.snapshot(
+      PROJECTILE_REPLICATED_OWNER_ID,
+      ProjectileServiceSnapshotSchema,
+    ))).toMatchObject({ state: projectilesBefore.state, revision: projectilesBefore.revision })
+    expect(await Effect.runPromise(harness.coordinator.revision)).toBe(revisionBefore)
+    expect(await Effect.runPromise(Ref.get(harness.state.rollSeed))).toBe(seedBefore)
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingItemUses))).toStrictEqual([])
+    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toStrictEqual([])
+    expect(await Effect.runPromise(Ref.get(harness.state.operationFailures))).toMatchObject([{
+      _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'Fishing', error: { _tag: 'ReplicatedOwnerUnknown' },
+    }])
+    expect(harness.commitCalls()).toBe(0)
+  })
 })
 
 describe('registered Brewing bottle collection in the interactions stage', () => {
@@ -1211,6 +1302,51 @@ describe('registered Brewing bottle collection in the interactions stage', () =>
     expect(await Effect.runPromise(harness.coordinator.revision)).toBe(revisionBefore)
     expect(await Effect.runPromise(Ref.get(harness.publishedEvents))).toStrictEqual([])
   })
+
+  it('records owner snapshot failures when either collection owner is unregistered', async () => {
+    const scenarios: ReadonlyArray<{
+      readonly requestId: string
+      readonly options: Readonly<{
+        readonly omitBrewingRegistration?: boolean
+        readonly omitPlayerStorageRegistration?: boolean
+      }>
+    }> = [
+      {
+        requestId: 'collect-without-brewing-owner',
+        options: { omitBrewingRegistration: true },
+      },
+      {
+        requestId: 'collect-without-storage-owner',
+        options: { omitPlayerStorageRegistration: true },
+      },
+    ]
+
+    for (const scenario of scenarios) {
+      const harness = await Effect.runPromise(makeHarness({
+        brewing: brewingStateWithBottle(),
+        ...scenario.options,
+      }))
+      const revisionBefore = await Effect.runPromise(harness.coordinator.revision)
+      await Effect.runPromise(requestCollectBrewingBottle(harness.state, {
+        requestId: scenario.requestId,
+        actor: FISHER,
+        tick: Schema.decodeUnknownSync(SimulationTickSchema)(13),
+        address: { dimension: DIMENSION, position: blockPosition(BlockAxis(1), BlockAxis(64), BlockAxis(1)) },
+        bottleIndex: 0,
+      }))
+
+      await harness.run()
+
+      expect(await Effect.runPromise(Ref.get(harness.state.operationFailures))).toMatchObject([{
+        _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'Brewing', error: { _tag: 'ReplicatedOwnerUnknown' },
+      }])
+      expect(await Effect.runPromise(Ref.get(harness.state.pendingItemUses))).toStrictEqual([])
+      expect(await Effect.runPromise(drainItemUseResults(harness.state))).toStrictEqual([])
+      expect(await Effect.runPromise(Ref.get(harness.publishedEvents))).toStrictEqual([])
+      expect(await Effect.runPromise(harness.coordinator.revision)).toBe(revisionBefore)
+      expect(harness.commitCalls()).toBe(0)
+    }
+  })
 })
 
 describe('registered Brewing item plans in the interactions stage', () => {
@@ -1315,6 +1451,85 @@ describe('registered Brewing item plans in the interactions stage', () => {
       expect(await Effect.runPromise(harness.coordinator.revision)).toBe(revisionBefore)
       expect(await Effect.runPromise(Ref.get(harness.state.pendingItemUses))).toStrictEqual([])
     }))
+  })
+
+  it('preserves a valid poison potion when its storage or status-effect owner is unavailable', async () => {
+    const scenarios: ReadonlyArray<{
+      readonly requestId: string
+      readonly options: Readonly<{
+        readonly omitPlayerStorageRegistration?: boolean
+        readonly omitStatusEffectsOwnerId?: boolean
+        readonly omitStatusEffectsRegistration?: boolean
+      }>
+      readonly failure: 'OwnerSnapshot' | 'Unsupported'
+      readonly failureCount: number
+    }> = [
+      {
+        requestId: 'drink-without-storage-registration',
+        options: { omitPlayerStorageRegistration: true },
+        failure: 'OwnerSnapshot',
+        failureCount: 1,
+      },
+      {
+        requestId: 'drink-without-status-owner-id',
+        options: { omitStatusEffectsOwnerId: true },
+        failure: 'Unsupported',
+        failureCount: 0,
+      },
+      {
+        requestId: 'drink-without-status-registration',
+        options: { omitStatusEffectsRegistration: true },
+        failure: 'OwnerSnapshot',
+        failureCount: 2,
+      },
+    ]
+
+    for (const scenario of scenarios) {
+      const harness = await Effect.runPromise(makeHarness({
+        playerStorage: playerStorageWithItem('potion_of_poison', 1),
+        ...scenario.options,
+      }))
+      const revisionBefore = await Effect.runPromise(harness.coordinator.revision)
+      const storageBefore = scenario.options.omitPlayerStorageRegistration
+        ? undefined
+        : await Effect.runPromise(harness.coordinator.snapshot(
+          GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+          PlayerStorageSnapshotSchema,
+        ))
+      await Effect.runPromise(useBrewingPotion(harness.state, {
+        requestId: scenario.requestId,
+        actor: FISHER,
+        tick: Schema.decodeUnknownSync(SimulationTickSchema)(14),
+        slotIndex: 0,
+      }))
+
+      await harness.run()
+
+      if (scenario.failure === 'Unsupported') {
+        expect(await Effect.runPromise(Ref.get(harness.state.unsupportedOperations))).toMatchObject([{
+          _tag: 'Unsupported', action: 'Brewing', requestId: scenario.requestId,
+          reason: 'OwnerRegistrationUnavailable',
+        }])
+      } else {
+        expect(await Effect.runPromise(Ref.get(harness.state.operationFailures))).toMatchObject(
+          Array.from({ length: scenario.failureCount }, () => ({
+            _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'Brewing',
+            error: { _tag: 'ReplicatedOwnerUnknown' },
+          })),
+        )
+      }
+      expect(await Effect.runPromise(drainItemUseResults(harness.state))).toStrictEqual([])
+      expect(await Effect.runPromise(Ref.get(harness.state.pendingItemUses))).toStrictEqual([])
+      expect(await Effect.runPromise(Ref.get(harness.state.playerMovementSpeedMultiplier))).toBe(1)
+      if (storageBefore !== undefined) {
+        expect(await Effect.runPromise(harness.coordinator.snapshot(
+          GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+          PlayerStorageSnapshotSchema,
+        ))).toStrictEqual(storageBefore)
+      }
+      expect(await Effect.runPromise(harness.coordinator.revision)).toBe(revisionBefore)
+      expect(harness.commitCalls()).toBe(0)
+    }
   })
 
   it('records typed unsupported outcomes when the interaction stage has no commit context', async () => {
@@ -1542,7 +1757,6 @@ describe('registered Brewing item plans in the interactions stage', () => {
       readonly item: ItemType
       readonly outcome: Readonly<Record<string, unknown>>
       readonly statusEffects: ReadonlyArray<Readonly<Record<string, unknown>>>
-      readonly hasEffect: boolean
       readonly changedOwners: ReadonlyArray<ReplicatedOwnerId>
     }> = [
       {
@@ -1550,7 +1764,6 @@ describe('registered Brewing item plans in the interactions stage', () => {
         item: 'water_bottle',
         outcome: { _tag: 'ConsumedWithoutEffect', item: 'water_bottle' },
         statusEffects: [],
-        hasEffect: false,
         changedOwners: [GAMEPLAY_PLAYER_STORAGE_OWNER_ID],
       },
       {
@@ -1562,7 +1775,6 @@ describe('registered Brewing item plans in the interactions stage', () => {
           effect: { type: 'poison', durationSecs: 45, amplifier: 0 },
         },
         statusEffects: [{ type: 'poison', remainingSecs: 45, pulseClockSecs: 0, amplifier: 0 }],
-        hasEffect: true,
         changedOwners: [GAMEPLAY_PLAYER_STORAGE_OWNER_ID, GAMEPLAY_STATUS_EFFECTS_OWNER_ID],
       },
     ]
@@ -1572,10 +1784,6 @@ describe('registered Brewing item plans in the interactions stage', () => {
         playerStorage: playerStorageWithItem(scenario.item, 1),
       }))
       const revisionBefore = await Effect.runPromise(harness.coordinator.revision)
-      const statusBefore = await Effect.runPromise(harness.coordinator.snapshot(
-        GAMEPLAY_STATUS_EFFECTS_OWNER_ID,
-        StatusEffectStateSchema,
-      ))
       await Effect.runPromise(useBrewingPotion(harness.state, {
         requestId: scenario.requestId,
         actor: FISHER,
@@ -1601,7 +1809,7 @@ describe('registered Brewing item plans in the interactions stage', () => {
       ))
       expect(storage.state.inventory.slots[0]).toMatchObject({ item: 'glass_bottle', count: 1 })
       expect(status.state.effects).toStrictEqual(scenario.statusEffects)
-      expect(status.revision).toBe(statusBefore.revision + Number(scenario.hasEffect))
+      expect(status.revision).toBe(revisionBefore + 1)
       expect(await Effect.runPromise(Ref.get(harness.state.playerMovementSpeedMultiplier))).toBe(1)
       expect(harness.lastRequest()?.changes.map(({ ownerId }) => ownerId)).toStrictEqual(scenario.changedOwners)
       expect(harness.commitCalls()).toBe(1)
