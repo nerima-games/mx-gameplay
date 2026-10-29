@@ -35,6 +35,10 @@ import {
   requestTargetedBlockPlacement,
   requestTargetedBlockUse,
 } from '../src/stages/registration'
+import type {
+  GameplayStageCommitServices,
+  GameplayTargetingSnapshotContext,
+} from '../src/stages/registration-core.js'
 import { GAMEPLAY_STAGE_IDS } from '../src/stages/stage-ids'
 import { cellKey, chunkKey, chunkOf, makeInMemoryWorld, type InMemoryWorld } from '../src/domain/in-memory-world.js'
 import {
@@ -143,13 +147,18 @@ const runInteractions = (
   return stage.run(DeltaTimeSecs(0.016))
 }
 
-const gameplayStagesWithOwners = (
+const const gameplayStagesWithOwners = (
   state: Parameters<typeof gameplayStages>[0],
   world: InMemoryWorld<MobBehaviour>,
   store = world.chunkStore,
 ) =>
   Effect.gen(function* () {
-    const services = yield* makeGameplayCommitServices(store, world.inventory)
+    const playerPose = yield* world.player.pose
+    const dimension = yield* world.player.dimension
+    const services = yield* makeGameplayCommitServices(store, world.inventory, {
+      playerPose,
+      dimension,
+    })
     const commitRequests: Array<Parameters<WorldCommitCoordinatorApi['commit']>[0]> = []
     const coordinator: WorldCommitCoordinatorApi = {
       ...services.coordinator,
@@ -176,6 +185,18 @@ const gameplayStagesWithOwners = (
       commitRequests,
     }
   })
+
+const targetingContextFor = (
+  commit: GameplayStageCommitServices,
+): GameplayTargetingSnapshotContext => {
+  const entitiesOwnerId = commit.entitiesOwnerId
+  if (entitiesOwnerId === undefined) throw new Error('the entity owner must be registered for targeting')
+  return {
+    coordinator: commit.coordinator,
+    playerOwnerId: commit.playerOwnerId,
+    entitiesOwnerId,
+  }
+}
 
 const storedItemCount = (
   storage: Schema.Schema.Type<typeof PlayerStorageSnapshotSchema>,
@@ -674,9 +695,13 @@ describe('the break loop', () => {
     Effect.gen(function* () {
       const world = yield* lookingAtBlockWorld(true)
       const state = yield* makeGameplayFrameState
-      const { stages } = yield* gameplayStagesWithOwners(state, world)
+      const { stages, commit } = yield* gameplayStagesWithOwners(state, world)
 
-      const target = yield* requestTargetedBlockBreak(state, world.chunkStore, world.player)
+      const target = yield* requestTargetedBlockBreak(
+        state,
+        world.chunkStore,
+        targetingContextFor(commit),
+      )
       expect(Option.getOrUndefined(target)?.position).toStrictEqual(IN_SIGHT)
 
       yield* runInteractions(stages as never)
@@ -688,8 +713,13 @@ describe('the break loop', () => {
     Effect.gen(function* () {
       const world = yield* lookingAtBlockWorld(false)
       const state = yield* makeGameplayFrameState
+      const { commit } = yield* gameplayStagesWithOwners(state, world)
 
-      const target = yield* requestTargetedBlockBreak(state, world.chunkStore, world.player)
+      const target = yield* requestTargetedBlockBreak(
+        state,
+        world.chunkStore,
+        targetingContextFor(commit),
+      )
 
       expect(Option.isNone(target)).toBe(true)
       expect(yield* Ref.get(state.pendingBreaks)).toStrictEqual([])

@@ -101,6 +101,11 @@ export type CropDropOutcome =
   | { readonly _tag: 'drops'; readonly drops: ReadonlyArray<CropDrop> }
   /** Not a crop this rule knows. The caller falls through to the block's own loot. */
   | { readonly _tag: 'notACrop'; readonly block: BlockType }
+  | {
+      readonly _tag: 'cropOwnerMismatch'
+      readonly block: BlockType
+      readonly registeredCrop: BlockType | undefined
+    }
 
 /**
  * Break a crop.

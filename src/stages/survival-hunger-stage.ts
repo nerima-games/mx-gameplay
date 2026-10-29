@@ -4,6 +4,7 @@ import {
   recordGameplayStageFailure,
 } from './registration-core.js'
 import { Result } from 'effect'
+import { WorldRevisionConflict } from '@nerima-games/mc-sim'
 import type {
   GameplayStageContext,
   StageRegistration,
@@ -17,7 +18,7 @@ export const makeSurvivalHungerStage = (context: GameplayStageContext): StageReg
     run: (dt) =>
       Effect.gen(function* () {
         const tick = yield* Effect.result(state.survivalHunger.tick(dt))
-        if (Result.isFailure(tick)) {
+        if (Result.isFailure(tick) && !(tick.failure instanceof WorldRevisionConflict)) {
           yield* recordGameplayStageFailure(state, {
             _tag: 'Failed',
             operation: 'VitalsOperation',

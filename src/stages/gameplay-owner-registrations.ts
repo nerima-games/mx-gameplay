@@ -10,6 +10,7 @@ import {
   INITIAL_TNT_SERVICE_SNAPSHOT,
   tntOwnerRegistration,
   EntityRosterSchema,
+  EntitySchema,
   EntitySerial,
   emptyBrewingState,
   emptyFishingState,
@@ -31,7 +32,14 @@ import {
 } from '@nerima-games/mc-sim'
 import { Schema, SchemaParser } from 'effect'
 import { Result } from 'effect'
-import { ITEM_TYPES } from '@nerima-games/mc-kernel'
+import {
+  DimensionIdSchema,
+  EntityIdSchema,
+  ITEM_TYPES,
+  SimulationTickSchema,
+  type Dimension,
+  type EntityId,
+} from '@nerima-games/mc-kernel'
 import {
   droppedItemOwnerRegistration,
   type DroppedItemOwnerSnapshot,
@@ -42,7 +50,7 @@ import {
   type ExperienceOrbOwnerSnapshot,
 } from '../domain/entities/xp-orb.js'
 import { INITIAL_DIMENSION, INITIAL_PLAYER_POSE } from '../domain/in-memory-player.js'
-import type { Dimension } from '@nerima-games/mc-worldgen'
+
 import type { PlayerPose } from '@nerima-games/mc-sim'
 import {
   isValidVillagerTradeState,
@@ -57,6 +65,9 @@ import {
   isDroppedItemBehaviour,
   isHostileMobSnapshot,
   type MobBehaviour,
+  type MobEntity,
+  type MobKillCredit,
+  type MobRoster,
 } from '../domain/entities/mob-frame.js'
 import { repairEcosystemMobState } from '../domain/mob/mob-ecosystem.js'
 import { isPrimedTnt } from '../domain/mob/primed-tnt.js'
@@ -71,6 +82,7 @@ export const GAMEPLAY_BREWING_OWNER_ID: ReplicatedOwnerId = makeReplicatedOwnerI
 export const GAMEPLAY_VILLAGER_TRADES_OWNER_ID: ReplicatedOwnerId = makeReplicatedOwnerId('mx-gameplay-villager-trades')
 export const GAMEPLAY_FISHING_OWNER_ID: ReplicatedOwnerId = makeReplicatedOwnerId('mx-gameplay-fishing')
 export const GAMEPLAY_ENTITIES_OWNER_ID: ReplicatedOwnerId = makeReplicatedOwnerId('mx-gameplay-entities')
+export const GAMEPLAY_TNT_SOURCES_OWNER_ID: ReplicatedOwnerId = makeReplicatedOwnerId('mx-gameplay-tnt-sources')
 export const GAMEPLAY_STATUS_EFFECTS_OWNER_ID: ReplicatedOwnerId = makeReplicatedOwnerId('mx-gameplay-status-effects')
 
 const strictCodec = <A, I>(schema: Schema.Codec<A, I>): Schema.Codec<A, I> =>
@@ -146,9 +158,63 @@ const isMobBehaviour = (value: unknown): value is MobBehaviour => {
 export const GameplayMobBehaviourSchema: Schema.Codec<MobBehaviour, unknown> =
   Schema.declare<MobBehaviour>(isMobBehaviour)
 
-export const GameplayEntityRosterSchema: Schema.Codec<EntityRoster<MobBehaviour>, unknown> = strictCodec(
-  EntityRosterSchema(GameplayMobBehaviourSchema),
+export type GameplayEntity = MobEntity & Readonly<{ dimension: Dimension }>
+export type GameplayEntityRoster = Omit<EntityRoster<MobBehaviour>, 'entities'> & Readonly<{
+  entities: ReadonlyArray<GameplayEntity>
+}>
+
+const GameplayMobEntityBaseSchema = EntitySchema(GameplayMobBehaviourSchema)
+const GameplayMobRosterBaseSchema = EntityRosterSchema(GameplayMobBehaviourSchema)
+
+export const GameplayEntityRosterSchema: Schema.Codec<GameplayEntityRoster, unknown> = strictCodec(
+  Schema.Struct({
+    entities: Schema.Array(Schema.Struct({
+      ...GameplayMobEntityBaseSchema.fields,
+      dimension: DimensionIdSchema,
+      killCredit: Schema.optionalKey(Schema.Literals(['player', 'tamed-wolf', 'player-triggered-tnt'])),
+      lastHitTick: Schema.optionalKey(SimulationTickSchema),
+    })),
+    nextSerial: GameplayMobRosterBaseSchema.fields.nextSerial,
+  }),
 )
+
+export const restoreGameplayEntityMetadata = (
+  roster: MobRoster,
+  previous: MobRoster,
+  fallbackDimension: Dimension,
+): GameplayEntityRoster => {
+  const previousById = new Map(previous.entities.map((entity) => [entity.id, entity]))
+  return Schema.decodeUnknownSync(GameplayEntityRosterSchema)({
+    ...roster,
+    entities: roster.entities.map((entity) => {
+      const prior = previousById.get(entity.id)
+      const dimension = entity.dimension ?? prior?.dimension ?? fallbackDimension
+      const killCredit = entity.killCredit ?? prior?.killCredit
+      const lastHitTick = entity.lastHitTick ?? prior?.lastHitTick
+      return {
+        ...entity,
+        dimension,
+        ...(killCredit === undefined ? {} : { killCredit }),
+        ...(lastHitTick === undefined ? {} : { lastHitTick }),
+      }
+    }),
+  })
+}
+
+export type GameplayTntSource = Readonly<{
+  tntId: EntityId
+  killCredit: Extract<MobKillCredit, 'player-triggered-tnt'>
+}>
+export type GameplayTntSourcesSnapshot = Readonly<{
+  sources: ReadonlyArray<GameplayTntSource>
+}>
+export const GameplayTntSourcesSnapshotSchema: Schema.Codec<GameplayTntSourcesSnapshot, unknown> =
+  strictCodec(Schema.Struct({
+    sources: Schema.Array(Schema.Struct({
+      tntId: EntityIdSchema,
+      killCredit: Schema.Literals(['player-triggered-tnt']),
+    })),
+  }))
 
 const positiveCount: Schema.Codec<number, number> = Schema.Int.check(Schema.isGreaterThan(0))
 
@@ -178,7 +244,8 @@ export type GameplayOwnerInitialState = Readonly<{
   brewing?: BrewingState
   villagerTrades?: VillagerTradeState
   fishing?: FishingState
-  entities?: EntityRoster<MobBehaviour>
+  entities?: MobRoster
+  tntSources?: GameplayTntSourcesSnapshot
   statusEffects?: StatusEffectState
   projectiles?: ProjectileServiceSnapshot
   tnt?: TntServiceSnapshot
@@ -235,7 +302,16 @@ export const gameplayOwnerRegistrations = (
   {
     ownerId: GAMEPLAY_ENTITIES_OWNER_ID,
     schema: GameplayEntityRosterSchema,
-    initialState: initial.entities ?? { entities: [], nextSerial: EntitySerial(0) },
+    initialState: restoreGameplayEntityMetadata(
+      initial.entities ?? { entities: [], nextSerial: EntitySerial(0) },
+      { entities: [], nextSerial: EntitySerial(0) },
+      initial.dimension ?? INITIAL_DIMENSION,
+    ),
+  },
+  {
+    ownerId: GAMEPLAY_TNT_SOURCES_OWNER_ID,
+    schema: GameplayTntSourcesSnapshotSchema,
+    initialState: initial.tntSources ?? { sources: [] },
   },
   {
     ownerId: GAMEPLAY_STATUS_EFFECTS_OWNER_ID,

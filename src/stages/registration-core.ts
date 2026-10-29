@@ -2389,26 +2389,56 @@ const requeueBlockBreak = (
 export const DEFAULT_BLOCK_REACH = 5
 
 /** Resolve the block under the crosshair and enqueue its break for the interaction stage. */
+/** WCC owners used for host-facing targeting, read from one shared world revision. */
+export type GameplayTargetingSnapshotContext = Readonly<{
+  coordinator: WorldCommitCoordinatorApi
+  playerOwnerId: ReplicatedOwnerId
+  entitiesOwnerId: ReplicatedOwnerId
+}>
+
+type GameplayTargetingSnapshots = Readonly<{
+  player: ReplicatedSnapshot<typeof PlayerServiceSnapshotSchema>
+  entities: ReplicatedSnapshot<typeof GameplayEntityRosterSchema>
+}>
+
+const readGameplayTargetingSnapshots = (
+  context: GameplayTargetingSnapshotContext,
+): Effect.Effect<GameplayTargetingSnapshots, WorldCommitCoordinatorError | Schema.SchemaError> =>
+  Effect.gen(function* () {
+    const player = yield* readGameplayPlayer(context.coordinator, context.playerOwnerId)
+    const entities = yield* context.coordinator.snapshot(
+      context.entitiesOwnerId,
+      GameplayEntityRosterSchema,
+    )
+    if (player.revision !== entities.revision) {
+      return yield* Effect.suspend(() => readGameplayTargetingSnapshots(context))
+    }
+    return { player, entities }
+  })
+
 export const requestTargetedBlockBreak = (
   state: GameplayFrameState,
   store: ChunkStoreApi,
-  player: PlayerServiceApi,
+  context: GameplayTargetingSnapshotContext,
   maxDistance: number = DEFAULT_BLOCK_REACH,
   toolLocation?: StorageLocation,
-): Effect.Effect<Option.Option<BlockTarget>> =>
+): Effect.Effect<
+  Option.Option<BlockTarget>,
+  CameraPoseError | RangeError | BlockTargetInputError | WorldCommitCoordinatorError | Schema.SchemaError
+> =>
   Effect.gen(function* () {
-    const pose = yield* player.pose
-    const target = yield* resultOrDie(
+    const snapshot = yield* readGameplayPlayer(context.coordinator, context.playerOwnerId)
+    const pose = snapshot.state.pose
+    const target = yield* Effect.fromResult(
       targetBlockFromPlayerPose(pose, maxDistance, targetabilityFromStore(store)),
     )
     if (Option.isSome(target)) {
-      const dimension = yield* player.dimension
       const lootContext = yield* Ref.get(state.heldTool)
       yield* requestBlockBreak(
         state,
         blockPosition(target.value.position.x, target.value.position.y, target.value.position.z),
         lootContext,
-        { dimension, toolLocation },
+        { dimension: pose.feetPosition.dimension, toolLocation },
       )
     }
     return target
@@ -2766,17 +2796,14 @@ export type TargetedPrimaryAttackOptions = {
 }
 
 /** Resolve one primary click without mutating either gameplay inbox. */
-export const resolveTargetedPrimaryAttack = (
+const resolveTargetedPrimaryAttackWithSnapshots = (
   store: ChunkStoreApi,
-  roster: EntityManagerApi<MobBehaviour>,
-  player: PlayerServiceApi,
-  options: TargetedPrimaryAttackOptions = {},
-): Effect.Effect<
-  TargetedPrimaryAttackResolution,
-  CameraPoseError | RangeError | BlockTargetInputError
-> =>
+  context: GameplayTargetingSnapshotContext,
+  options: TargetedPrimaryAttackOptions,
+) =>
   Effect.gen(function* () {
-    const pose = yield* player.pose
+    const snapshots = yield* readGameplayTargetingSnapshots(context)
+    const pose = snapshots.player.state.pose
     const blockTarget = yield* Effect.fromResult(
       targetBlockFromPlayerPose(
         pose,
@@ -2784,7 +2811,6 @@ export const resolveTargetedPrimaryAttack = (
         targetabilityFromStore(store),
       ),
     )
-    const snapshot = yield* roster.snapshot
     const direction = yield* Effect.fromResult(forwardVector(pose))
     const request: MeleeAttackRequest = {
       origin: {
@@ -2797,40 +2823,54 @@ export const resolveTargetedPrimaryAttack = (
       ...(Option.isSome(blockTarget) ? { hitDistance: blockTarget.value.distance } : {}),
     }
     const meleeHit = meleeTargetBeforeBlock(
-      snapshot.entities,
+      snapshots.entities.state.entities,
       request,
       Option.isSome(blockTarget) ? blockTarget.value.distance : undefined,
     )
 
-    if (meleeHit !== undefined) {
-      return { _tag: 'Melee' as const, target: meleeHit, request }
-    }
-    if (Option.isSome(blockTarget)) {
-      return { _tag: 'Block' as const, target: blockTarget.value }
-    }
-    return { _tag: 'None' as const }
+    const resolution: TargetedPrimaryAttackResolution = meleeHit !== undefined
+      ? { _tag: 'Melee', target: meleeHit, request }
+      : Option.isSome(blockTarget)
+        ? { _tag: 'Block', target: blockTarget.value }
+        : { _tag: 'None' }
+    return { resolution, dimension: pose.feetPosition.dimension }
   })
+
+export const resolveTargetedPrimaryAttack = (
+  store: ChunkStoreApi,
+  context: GameplayTargetingSnapshotContext,
+  options: TargetedPrimaryAttackOptions = {},
+): Effect.Effect<
+  TargetedPrimaryAttackResolution,
+  CameraPoseError | RangeError | BlockTargetInputError | WorldCommitCoordinatorError | Schema.SchemaError
+> =>
+  Effect.map(
+    resolveTargetedPrimaryAttackWithSnapshots(store, context, options),
+    ({ resolution }) => resolution,
+  )
 
 /** Resolve one primary click and enqueue exactly one kind of interaction, if any. */
 export const requestTargetedPrimaryAttack = (
   state: GameplayFrameState,
   store: ChunkStoreApi,
-  roster: EntityManagerApi<MobBehaviour>,
-  player: PlayerServiceApi,
+  context: GameplayTargetingSnapshotContext,
   options: TargetedPrimaryAttackOptions = {},
 ): Effect.Effect<
   TargetedPrimaryAttackResult,
-  CameraPoseError | RangeError | BlockTargetInputError
+  CameraPoseError | RangeError | BlockTargetInputError | WorldCommitCoordinatorError | Schema.SchemaError
 > =>
   Effect.gen(function* () {
-    const resolution = yield* resolveTargetedPrimaryAttack(store, roster, player, options)
+    const { resolution, dimension } = yield* resolveTargetedPrimaryAttackWithSnapshots(
+      store,
+      context,
+      options,
+    )
 
     switch (resolution._tag) {
       case 'Melee':
         yield* requestMeleeAttack(state, resolution.request)
         return { _tag: 'Melee' as const, target: resolution.target }
       case 'Block': {
-        const dimension = yield* player.dimension
         const lootContext = yield* Ref.get(state.heldTool)
         yield* requestBlockBreak(
           state,
@@ -2842,15 +2882,10 @@ export const requestTargetedPrimaryAttack = (
       }
       case 'None':
         return resolution
-      // exhaustiveness arm over TargetedPrimaryAttackResult's `_tag`, a closed
-      // three-tag union; all three tags are handled above, so no input can
-      // reach this arm.
-      /* v8 ignore start */
       default: {
         const exhaustive: never = resolution
         return exhaustive
       }
-      /* v8 ignore stop */
     }
   })
 
@@ -3830,6 +3865,22 @@ const sameBlockPlacementCommand = (
   left.heldItem === right.heldItem &&
   left.mode === right.mode
 
+export const isRetryableWorldCommitFailure = (
+  error: WorldCommitCoordinatorError | Schema.SchemaError,
+): boolean => {
+  switch (error._tag) {
+    case 'WorldRevisionConflict':
+    case 'DimensionRevisionConflict':
+    case 'WorldWriteChunkUnavailable':
+    case 'WorldWriteStale':
+      return true
+    case 'WorldCommitBlockWriteMismatch':
+      return error.reason === 'world-revision' || error.reason === 'dimension-revision'
+    default:
+      return false
+  }
+}
+
 export const processBlockPlacementCommand = (
   state: GameplayFrameState,
   command: BlockPlacementCommand,
@@ -3852,11 +3903,13 @@ export const processBlockPlacementCommand = (
               replayed: true,
               outcome: { _tag: 'RequestIdConflict' },
             }
+      const retryable = result.outcome._tag === 'CommitFailed' &&
+        isRetryableWorldCommitFailure(result.outcome.error)
       yield* Ref.update(runtime.state, (latest) => ({
-        handled: previous === undefined
+        handled: previous === undefined && !retryable
           ? new Map(latest.handled).set(normalized.requestId, { command: normalized, result })
           : latest.handled,
-        results: [...latest.results, result],
+        results: retryable ? latest.results : [...latest.results, result],
       }))
       return result
     }),

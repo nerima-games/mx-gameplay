@@ -44,6 +44,16 @@ export type SurvivalActivityInput =
   | { readonly _tag: 'mine'; readonly blocks: number }
   | { readonly _tag: 'attack'; readonly count: number }
 
+type QueuedSurvivalActivity = {
+  readonly sequence: number
+  readonly input: SurvivalActivityInput
+}
+
+type PendingSurvivalActivities = {
+  readonly nextSequence: number
+  readonly queue: ReadonlyArray<QueuedSurvivalActivity>
+}
+
 export const SURVIVAL_EXHAUSTION = {
   walkPerBlock: 0.01,
   sprintPerBlock: 0.1,
@@ -243,7 +253,7 @@ export const makeReplicatedSurvivalHungerRuntime = (
 ): Effect.Effect<SurvivalHungerRuntimeApi> =>
   Effect.gen(function* () {
     const difficulty = yield* Ref.make<SurvivalDifficulty>(initialDifficulty)
-    const pending = yield* Ref.make<ReadonlyArray<SurvivalActivityInput>>([])
+    const pending = yield* Ref.make<PendingSurvivalActivities>({ nextSequence: 0, queue: [] })
 
     const transact = <A>(
       operation: (vitals: PlayerVitals) => Effect.Effect<Readonly<{ vitals: PlayerVitals; result: A }>, Brand.BrandError>,
@@ -314,11 +324,12 @@ export const makeReplicatedSurvivalHungerRuntime = (
       Effect.gen(function* () {
         const elapsed = yield* Effect.fromResult(DeltaTimeSecs.result(dt))
         const currentDifficulty = yield* Ref.get(difficulty)
-        const inputs = yield* Ref.getAndSet(pending, [])
-        return yield* transact((before) => Effect.gen(function* () {
+        const batch = (yield* Ref.get(pending)).queue
+        const activities = batch.map((entry) => entry.input)
+        const outcome = yield* transact((before) => Effect.gen(function* () {
           const exhaustionAdded = currentDifficulty === 'peaceful' || before.healthPoints <= 0
             ? 0
-            : inputs.reduce((total, input) => total + exhaustionForSurvivalActivity(input), 0)
+            : activities.reduce((total, input) => total + exhaustionForSurvivalActivity(input), 0)
           const exhausted = exhaustionAdded > 0
             ? addVitalsExhaustion(
                 before,
@@ -339,10 +350,21 @@ export const makeReplicatedSurvivalHungerRuntime = (
             },
           }
         }))
+        const completedSequences = new Set(batch.map((entry) => entry.sequence))
+        yield* Ref.update(pending, (current) => ({
+          ...current,
+          queue: current.queue.filter((entry) => !completedSequences.has(entry.sequence)),
+        }))
+        return outcome
       })
 
+    const clearPending = Ref.update(pending, (current) => ({ ...current, queue: [] }))
+
     return {
-      submit: (input) => Ref.update(pending, (inputs) => [...inputs, input]),
+      submit: (input) => Ref.update(pending, (current) => ({
+        nextSequence: current.nextSequence + 1,
+        queue: [...current.queue, { sequence: current.nextSequence, input }],
+      })),
       addExhaustion: (amount) => transact((vitals) => Effect.gen(function* () {
         const exhaustion = yield* Effect.fromResult(ExhaustionAmount.result(amount))
         const candidate = vitals.healthPoints > 0 ? addVitalsExhaustion(vitals, exhaustion) : vitals
@@ -381,16 +403,16 @@ export const makeReplicatedSurvivalHungerRuntime = (
       }),
       restore: (state) =>
         Effect.gen(function* () {
-          yield* Ref.set(pending, [])
+          yield* clearPending
           yield* Ref.set(difficulty, state.difficulty)
           yield* transact(() => Effect.succeed({ vitals: state.vitals, result: undefined }))
         }),
-      respawn: Effect.andThen(Ref.set(pending, []), transact((vitals) => {
+      respawn: Effect.andThen(clearPending, transact((vitals) => {
         const candidate = respawnVitals(vitals)
         return Effect.succeed({ vitals: candidate, result: undefined })
       })),
       reset: Effect.gen(function* () {
-        yield* Ref.set(pending, [])
+        yield* clearPending
         yield* Ref.set(difficulty, DEFAULT_SURVIVAL_DIFFICULTY)
         yield* transact(() => Effect.succeed({ vitals: SPAWN_PLAYER_VITALS, result: undefined }))
       }),

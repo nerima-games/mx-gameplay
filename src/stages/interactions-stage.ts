@@ -24,10 +24,10 @@ import {
   recordGameplayStageFailure,
   recordGameplayUnsupportedOperation,
   rollAt,
-  requestStatusEffect,
   isSuccessfulBlockUse,
   planFurnaceAdvance,
   processBlockPlacementCommand,
+  isRetryableWorldCommitFailure,
   resolveBlockUse,
   stepPortalTravel,
   stepStatusEffects,
@@ -1481,6 +1481,9 @@ const processPlacement = (
 
     if (command === undefined) {
       const result = yield* execute()
+      if (result.outcome._tag === 'CommitFailed' && isRetryableWorldCommitFailure(result.outcome.error)) {
+        yield* Ref.update(state.pendingPlacements, (pending) => [request, ...pending])
+      }
       if (!result.success && result.outcome._tag === 'Unsupported' && 'reason' in result.outcome) {
         yield* recordGameplayUnsupportedOperation(state, {
           _tag: 'Unsupported',
@@ -1490,7 +1493,10 @@ const processPlacement = (
       }
       return
     }
-    yield* processBlockPlacementCommand(state, command, execute)
+    const result = yield* processBlockPlacementCommand(state, command, execute)
+    if (result.outcome._tag === 'CommitFailed' && isRetryableWorldCommitFailure(result.outcome.error)) {
+      yield* Ref.update(state.pendingPlacements, (pending) => [request, ...pending])
+    }
   })
 
 const processEnderPearlThrow = (
@@ -1768,6 +1774,8 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
           state.pendingItemUses,
           [],
         )
+        const requeueItemUsesFrom = (start: number) =>
+          Ref.update(state.pendingItemUses, (pending) => [...itemUses.slice(start), ...pending])
         const bowShots = yield* Ref.getAndSet<ReadonlyArray<BowShotRequest>>(
           state.pendingBowShots,
           [],
@@ -1802,7 +1810,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
         const itemUseResults: Array<ItemUseResult> = []
         const disturbed: Array<BlockPositionKey> = []
 
-        for (const request of villagerTrades) {
+        villagerTradeRequests: for (const [index, request] of villagerTrades.entries()) {
           if (playerDead) {
             yield* Ref.update(state.villagerTradeResults, (results) => [
               ...results,
@@ -1859,7 +1867,11 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                 actual: tradesSnapshot.success.revision,
               }),
             })
-            continue
+            yield* Ref.update(state.pendingVillagerTrades, (pending) => [
+              ...villagerTrades.slice(index),
+              ...pending,
+            ])
+            break villagerTradeRequests
           }
           const villager = tradesSnapshot.success.state.villagers.find((entry) => entry.id === request.villagerId)
           const offer = villager?.offers.find((entry) => entry.id === request.offerId)
@@ -1925,7 +1937,11 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
             yield* recordGameplayStageFailure(state, {
               _tag: 'Failed', operation: 'WorldCommit', subject: 'ItemUse', error: committed.failure,
             })
-            continue
+            yield* Ref.update(state.pendingVillagerTrades, (pending) => [
+              ...villagerTrades.slice(index),
+              ...pending,
+            ])
+            break villagerTradeRequests
           }
           yield* Ref.update(state.villagerTradeResults, (results) => [
             ...results,
@@ -2077,6 +2093,16 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                 subject: 'Mining',
                 error: plan.failure,
               })
+              if (plan.failure._tag === 'ObservationChanged') {
+                if (request === undefined) {
+                  yield* requestBlockBreak(state, breakPosition, tool, {
+                    dimension: miningDimension,
+                    toolLocation: undefined,
+                  })
+                } else {
+                  yield* requeueBlockBreak(state, request)
+                }
+              }
             }
             continue
           }
@@ -2109,7 +2135,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
         // builds the last block of an obsidian frame and lights it in the same
         // frame gets the sequence they asked for. The other order asks
         // `detectNetherPortal` about a ring that is one block short.
-        for (const request of itemUses) {
+        itemUseRequests: for (const [itemUseIndex, request] of itemUses.entries()) {
           if (playerDead && (!('action' in request) || request.action !== 'AdvanceFurnace')) {
             itemUseResults.push({
               requestId: request.requestId,
@@ -2191,15 +2217,23 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                       actual: cropSnapshot.success.revision,
                     }),
                   })
-                  break itemUseAction
+                  yield* requeueItemUsesFrom(itemUseIndex)
+                  break itemUseRequests
                 }
                 const crop = cropAt(cropSnapshot.success.state, dimension, position)
                 if (crop === undefined || crop.crop !== blockType) {
-                  yield* recordGameplayUnsupportedOperation(state, {
-                    _tag: 'Unsupported',
-                    action: 'ApplyBoneMeal',
+                  itemUseResults.push({
+                    action: request.action,
                     requestId: request.requestId,
-                    reason: 'OwnerRegistrationUnavailable',
+                    heldItem: request.heldItem,
+                    success: false,
+                    consumedCount: 0,
+                    outcome: {
+                      _tag: 'cropOwnerMismatch',
+                      at: position,
+                      block: blockType,
+                      registeredCrop: crop?.crop,
+                    },
                   })
                   break itemUseAction
                 }
@@ -2227,7 +2261,8 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                       subject: 'ItemUse',
                       error: committed.failure,
                     })
-                    break itemUseAction
+                    yield* requeueItemUsesFrom(itemUseIndex)
+                    break itemUseRequests
                   }
                 }
                 itemUseResults.push({
@@ -2317,7 +2352,8 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                       subject: 'ItemUse',
                       error: committed.failure,
                     })
-                    break itemUseAction
+                    yield* requeueItemUsesFrom(itemUseIndex)
+                    break itemUseRequests
                   }
                   disturbed.push(request.positionKey)
                 }
@@ -2384,7 +2420,8 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                       actual: cropSnapshot.success.revision,
                     }),
                   })
-                  break itemUseAction
+                  yield* requeueItemUsesFrom(itemUseIndex)
+                  break itemUseRequests
                 }
                 const soilRead = observed.success.blocks[0]?.reading
                 const aboveRead = observed.success.blocks[1]?.reading
@@ -2405,12 +2442,19 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                   : plantingVerdict({ held: request.heldItem, soil }, soilBlock, aboveBlock)
                 const success = outcome._tag === 'planted' && candidate !== undefined
                 if (outcome._tag === 'planted' && candidate !== undefined) {
-                  if (!isCropType(outcome.crop) || cropAt(cropSnapshot.success.state, dimension, outcome.at) !== undefined) {
-                    yield* recordGameplayUnsupportedOperation(state, {
-                      _tag: 'Unsupported',
-                      action: 'PlantPotato',
+                  const existingCrop = cropAt(cropSnapshot.success.state, dimension, outcome.at)
+                  if (existingCrop !== undefined) {
+                    itemUseResults.push({
+                      action: request.action,
                       requestId: request.requestId,
-                      reason: 'OwnerRegistrationUnavailable',
+                      heldItem: request.heldItem,
+                      success: false,
+                      consumedCount: 0,
+                      outcome: {
+                        _tag: 'cropOwnerMismatch',
+                        crop: outcome.crop,
+                        at: outcome.at,
+                      },
                     })
                     break itemUseAction
                   }
@@ -2443,7 +2487,8 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                       subject: 'ItemUse',
                       error: committed.failure,
                     })
-                    break itemUseAction
+                    yield* requeueItemUsesFrom(itemUseIndex)
+                    break itemUseRequests
                   }
                 }
                 itemUseResults.push({
@@ -2508,28 +2553,28 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                       actual: cropSnapshot.success.revision,
                     }),
                   })
-                  break itemUseAction
+                  yield* requeueItemUsesFrom(itemUseIndex)
+                  break itemUseRequests
                 }
                 const crop = cropAt(cropSnapshot.success.state, dimension, position)
-                if (crop === undefined) {
-                  yield* recordGameplayUnsupportedOperation(state, {
-                    _tag: 'Unsupported',
-                    action: 'HarvestPotato',
-                    requestId: request.requestId,
-                    reason: 'OwnerRegistrationUnavailable',
-                  })
-                  break itemUseAction
-                }
                 const reading = observed.success.blocks[0]?.reading
                 const cropType = reading?._tag === 'Block'
                   ? Result.getOrUndefined(blockTypeOfId(reading.block)) ?? 'air'
                   : 'air'
-                if (crop.crop !== cropType) {
-                  yield* recordGameplayUnsupportedOperation(state, {
-                    _tag: 'Unsupported',
-                    action: 'HarvestPotato',
+                if (crop === undefined || crop.crop !== cropType) {
+                  const outcome = crop === undefined && !isCropType(cropType)
+                    ? cropDrops(cropType, false, request.roll)
+                    : {
+                        _tag: 'cropOwnerMismatch' as const,
+                        block: cropType,
+                        registeredCrop: crop?.crop,
+                      }
+                  itemUseResults.push({
+                    action: request.action,
                     requestId: request.requestId,
-                    reason: 'OwnerRegistrationUnavailable',
+                    positionKey: request.positionKey,
+                    success: false,
+                    outcome,
                   })
                   break itemUseAction
                 }
@@ -2594,7 +2639,8 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                         actual: droppedSnapshot.success.revision,
                       }),
                     })
-                    break itemUseAction
+                    yield* requeueItemUsesFrom(itemUseIndex)
+                    break itemUseRequests
                   }
                   const eligibleFromFrame = (yield* Ref.get(state.tickCount)) + 1
                   const droppedItems = appendDroppedItemSpawns(
@@ -2639,7 +2685,8 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                     subject: 'ItemUse',
                     error: committed.failure,
                   })
-                  break itemUseAction
+                  yield* requeueItemUsesFrom(itemUseIndex)
+                  break itemUseRequests
                 }
                 itemUseResults.push({
                   action: request.action,
@@ -2701,7 +2748,8 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                       actual: eatenVitalsSnapshot.success.revision,
                     }),
                   })
-                  break itemUseAction
+                  yield* requeueItemUsesFrom(itemUseIndex)
+                  break itemUseRequests
                 }
                 const vitals = eatenVitalsSnapshot.success.state.vitals
                 const outcome = resolveFoodUse({
@@ -2752,6 +2800,53 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                   publishFoodResult(false, 0, { _tag: 'missingItem' })
                   break itemUseAction
                 }
+                let statusEffectCandidate: ReplicatedOwnerCandidate | undefined
+                if (outcome.effects.length > 0) {
+                  const statusEffectsOwnerId = commit.statusEffectsOwnerId
+                  if (statusEffectsOwnerId === undefined) {
+                    yield* recordGameplayUnsupportedOperation(state, {
+                      _tag: 'Unsupported',
+                      action: 'EatFood',
+                      requestId: request.requestId,
+                      reason: 'OwnerRegistrationUnavailable',
+                    })
+                    break itemUseAction
+                  }
+                  const statusEffectsSnapshot = yield* Effect.result(commit.coordinator.snapshot(
+                    statusEffectsOwnerId,
+                    StatusEffectStateSchema,
+                  ))
+                  if (Result.isFailure(statusEffectsSnapshot)) {
+                    yield* recordGameplayStageFailure(state, {
+                      _tag: 'Failed',
+                      operation: 'OwnerSnapshot',
+                      subject: 'ItemUse',
+                      error: statusEffectsSnapshot.failure,
+                    })
+                    break itemUseAction
+                  }
+                  if (statusEffectsSnapshot.success.revision !== storageSnapshot.success.revision) {
+                    yield* recordGameplayStageFailure(state, {
+                      _tag: 'Failed',
+                      operation: 'OwnerSnapshot',
+                      subject: 'ItemUse',
+                      error: new WorldRevisionConflict({
+                        expected: storageSnapshot.success.revision,
+                        actual: statusEffectsSnapshot.success.revision,
+                      }),
+                    })
+                    yield* requeueItemUsesFrom(itemUseIndex)
+                    break itemUseRequests
+                  }
+                  let nextStatusEffects = statusEffectsSnapshot.success.state
+                  for (const effect of outcome.effects) {
+                    nextStatusEffects = applyStatusEffect(nextStatusEffects, effect)
+                  }
+                  statusEffectCandidate = {
+                    ownerId: statusEffectsOwnerId,
+                    state: nextStatusEffects,
+                  }
+                }
                 const nutrition = Result.getOrThrow(FoodNutrition.result(outcome.foodPoints))
                 const saturation = Result.getOrThrow(SaturationModifier.result(outcome.saturationModifier))
                 const nextVitals = eatVitals(vitals, nutrition, saturation)
@@ -2767,6 +2862,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                       ownerId: commit.vitalsOwnerId,
                       state: validatedVitals,
                     },
+                    ...(statusEffectCandidate === undefined ? [] : [statusEffectCandidate]),
                   ],
                 }))
                 if (Result.isFailure(committed)) {
@@ -2776,10 +2872,8 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                     subject: 'Vitals',
                     error: committed.failure,
                   })
-                  break itemUseAction
-                }
-                for (const effect of outcome.effects) {
-                  yield* requestStatusEffect(state, effect)
+                  yield* requeueItemUsesFrom(itemUseIndex)
+                  break itemUseRequests
                 }
                 publishFoodResult(true, 1, outcome)
                 break itemUseAction
@@ -2795,7 +2889,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                   break itemUseAction
                 }
                 const position = yield* blockPositionForKey(request.positionKey)
-                const outcome = yield* useBucket(
+                const bucketResult = yield* Effect.result(useBucket(
                   commit.coordinator,
                   state.fluidFrontier,
                   {
@@ -2805,7 +2899,21 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                     heldItem: request.heldItem,
                     playerStorageOwnerId: commit.playerStorageOwnerId,
                   },
-                )
+                ))
+                if (Result.isFailure(bucketResult)) {
+                  yield* recordGameplayStageFailure(state, {
+                    _tag: 'Failed',
+                    operation: 'WorldCommit',
+                    subject: 'ItemUse',
+                    error: bucketResult.failure,
+                  })
+                  if (isRetryableWorldCommitFailure(bucketResult.failure)) {
+                    yield* requeueItemUsesFrom(itemUseIndex)
+                    break itemUseRequests
+                  }
+                  break itemUseAction
+                }
+                const outcome = bucketResult.success
                 if (outcome._tag === 'Collected' || outcome._tag === 'Placed') {
                   itemUseResults.push({
                     action: request.action,
@@ -2916,7 +3024,8 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                   actual: observedStorage.success.revision,
                 }),
               })
-              continue
+              yield* requeueItemUsesFrom(itemUseIndex)
+              break itemUseRequests
             }
             if (observedTnt.success.blocks[0]?.reading._tag !== 'Block' ||
               observedTnt.success.blocks[0].reading.block !== TNT_BLOCK_ID) {
@@ -2977,8 +3086,8 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
               yield* recordGameplayStageFailure(state, {
                 _tag: 'Failed', operation: 'WorldCommit', subject: 'ItemUse', error: committed.failure,
               })
-              yield* Ref.update(state.pendingItemUses, (pending) => [request, ...pending])
-              continue
+              yield* requeueItemUsesFrom(itemUseIndex)
+              break itemUseRequests
             }
             used.push(request.heldItem)
             itemUseResults.push({
@@ -3046,10 +3155,8 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                 subject: 'ItemUse',
                 error: committed.failure,
               })
-              ignition = {
-                _tag: 'Portal',
-                outcome: { _tag: 'CommitFailed', error: committed.failure },
-              }
+              yield* requeueItemUsesFrom(itemUseIndex)
+              break itemUseRequests
             } else {
               ignition = {
                 _tag: 'Portal',
@@ -3071,6 +3178,19 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
             }
           }
           const success = ignition.outcome._tag === 'Lit'
+          if (ignition.outcome._tag === 'CommitFailed') {
+            yield* recordGameplayStageFailure(state, {
+              _tag: 'Failed',
+              operation: 'WorldCommit',
+              subject: 'ItemUse',
+              error: ignition.outcome.error,
+            })
+            if (isRetryableWorldCommitFailure(ignition.outcome.error)) {
+              yield* requeueItemUsesFrom(itemUseIndex)
+              break itemUseRequests
+            }
+            continue itemUseRequests
+          }
           if (ignition._tag === 'Fire' && ignition.outcome._tag === 'Lit') {
             const position = ignition.outcome.position
             yield* Ref.update(state.fireLifecycle, (current) => {

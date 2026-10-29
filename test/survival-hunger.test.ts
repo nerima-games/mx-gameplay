@@ -1,5 +1,5 @@
 import { describe, expect, it } from '@effect/vitest'
-import { Effect, Result, Schema } from 'effect'
+import { Effect, Ref, Result, Schema } from 'effect'
 import * as FastCheck from 'fast-check'
 import {
   DeltaTimeSecs,
@@ -7,6 +7,7 @@ import {
   FoodSaturation,
   type DeltaTimeSecs as DeltaTimeSecsValue,
   WorldId,
+  WorldRevisionSchema,
 } from '@nerima-games/mc-kernel'
 import {
   ExhaustionAmount,
@@ -16,6 +17,9 @@ import {
   makeWorldCommitCoordinator,
   TotalExperience,
   VitalsSchema,
+  WorldRevisionConflict,
+  type WorldCommitCoordinatorApi,
+  makeTimeService,
 } from '@nerima-games/mc-sim'
 import {
   SPAWN_PLAYER_VITALS,
@@ -35,6 +39,12 @@ import {
   ExperienceOrbVitalsOwnerSnapshotSchema,
   vitalsOwnerRegistration,
 } from '../src/domain/entities/xp-orb'
+import type { MobBehaviour } from '../src/domain/entities/mob-frame'
+import { makeGameplayFrameState } from '../src/stages/registration'
+import type { GameplayStageContext } from '../src/stages/registration-core'
+import { makeSurvivalHungerStage } from '../src/stages/survival-hunger-stage'
+import { makeChunkStoreDouble } from './support/chunk-store-double'
+import { makeEntityManagerDouble } from './support/entity-manager-double'
 
 const vitals = (overrides: Partial<PlayerVitals> = {}): PlayerVitals => ({
   healthPoints: EntityHealthPoints(20),
@@ -462,6 +472,125 @@ describe('survival hunger', () => {
         died: false,
         vitals: { healthPoints: 0 },
       })
+    }),
+  )
+
+  it.effect('requeues replicated activity after a revision conflict and retries it on a later tick', () =>
+    Effect.gen(function* () {
+      const coordinator = yield* makeWorldCommitCoordinator({
+        world: WorldId('survival-hunger-test-world'),
+        owners: [vitalsOwnerRegistration(REPLICATED_VITALS_OWNER, { vitals: SPAWN_PLAYER_VITALS })],
+      })
+      let concurrentCommitPending = true
+      let beforeNextCommit: Effect.Effect<void> = Effect.void
+      const racingCoordinator: WorldCommitCoordinatorApi = {
+        ...coordinator,
+        commit: (...args) => Effect.gen(function* () {
+          if (concurrentCommitPending) {
+            concurrentCommitPending = false
+            const current = yield* coordinator.snapshot(
+              REPLICATED_VITALS_OWNER,
+              ExperienceOrbVitalsOwnerSnapshotSchema,
+            )
+            yield* coordinator.commit({
+              expectedRevision: current.revision,
+              expectedDimensions: [],
+              changes: [{ ownerId: REPLICATED_VITALS_OWNER, state: current.state }],
+            })
+          } else {
+            const hook = beforeNextCommit
+            beforeNextCommit = Effect.void
+            yield* hook
+          }
+          return yield* coordinator.commit(...args)
+        }),
+      }
+      const runtime = yield* makeReplicatedSurvivalHungerRuntime(
+        racingCoordinator,
+        REPLICATED_VITALS_OWNER,
+      )
+      yield* runtime.submit({ _tag: 'sprint', distance: 10 })
+
+      const firstFrame = yield* Effect.result(runtime.tick(DeltaTimeSecs(4)))
+      expect(Result.isFailure(firstFrame)).toBe(true)
+      if (Result.isFailure(firstFrame)) {
+        expect(firstFrame.failure).toBeInstanceOf(WorldRevisionConflict)
+      }
+      const afterConflict = yield* coordinator.snapshot(
+        REPLICATED_VITALS_OWNER,
+        ExperienceOrbVitalsOwnerSnapshotSchema,
+      )
+      expect(afterConflict.revision).toBe(1)
+      expect(afterConflict.state.vitals).toStrictEqual(SPAWN_PLAYER_VITALS)
+
+      beforeNextCommit = runtime.submit({ _tag: 'walk', distance: 1 })
+      const retry = yield* runtime.tick(DeltaTimeSecs(4))
+      expect(retry.exhaustionAdded).toBe(1)
+      expect((yield* coordinator.snapshot(
+        REPLICATED_VITALS_OWNER,
+        ExperienceOrbVitalsOwnerSnapshotSchema,
+      )).state.vitals).toStrictEqual(retry.vitals)
+
+      const queuedDuringCommit = yield* runtime.tick(DeltaTimeSecs(0))
+      expect(queuedDuringCommit.exhaustionAdded).toBe(0.01)
+      expect((yield* coordinator.snapshot(
+        REPLICATED_VITALS_OWNER,
+        ExperienceOrbVitalsOwnerSnapshotSchema,
+      )).state.vitals).toStrictEqual(queuedDuringCommit.vitals)
+    }),
+  )
+
+  it.effect('the survival hunger stage ignores a transient world revision conflict', () =>
+    Effect.gen(function* () {
+      const frameState = yield* makeGameplayFrameState
+      const conflict = new WorldRevisionConflict({
+        expected: Schema.decodeUnknownSync(WorldRevisionSchema)(0),
+        actual: Schema.decodeUnknownSync(WorldRevisionSchema)(1),
+      })
+      let conflictPending = true
+      const state = {
+        ...frameState,
+        survivalHunger: {
+          ...frameState.survivalHunger,
+          tick: (_dt: DeltaTimeSecsValue) => {
+            if (conflictPending) {
+              conflictPending = false
+              return Effect.fail(conflict)
+            }
+            return Effect.andThen(
+              Effect.fromResult(DeltaTimeSecs.result(Number.NaN)),
+              () => Effect.fail(conflict),
+            )
+          },
+        },
+      }
+      const store = yield* makeChunkStoreDouble(new Map(), ['0,0'])
+      const roster = yield* makeEntityManagerDouble<MobBehaviour>()
+      const time = yield* makeTimeService()
+      const context: GameplayStageContext = {
+        state,
+        store: store.api,
+        roster: roster.api,
+        time,
+        vehicleService: undefined,
+        vehicleEnvironment: undefined,
+        options: {},
+        commit: undefined,
+      }
+      const hungerStage = makeSurvivalHungerStage(context)
+
+      yield* hungerStage.run(DeltaTimeSecs(4))
+
+      expect(yield* Ref.get(frameState.operationFailures)).toStrictEqual([])
+
+      yield* hungerStage.run(DeltaTimeSecs(4))
+
+      expect(yield* Ref.get(frameState.operationFailures)).toMatchObject([{
+        _tag: 'Failed',
+        operation: 'VitalsOperation',
+        subject: 'Vitals',
+        error: { _tag: 'BrandError' },
+      }])
     }),
   )
 

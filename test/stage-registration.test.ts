@@ -168,7 +168,10 @@ import {
   candidateForItemUse,
   candidateForPlayerStorageItemUse,
 } from '../src/stages/registration-core.js'
-import type { GameplayStageCommitServices } from '../src/stages/registration-core'
+import type {
+  GameplayStageCommitServices,
+  GameplayTargetingSnapshotContext,
+} from '../src/stages/registration-core'
 import {
   EXPERIENCE_MODULE_STAGE_PREFIXES,
   GAMEPLAY_STAGE_IDS,
@@ -3265,11 +3268,33 @@ describe('the targeted-block family resolves through the same raycast as placeme
 
   const aimingAt = (block: BlockId) =>
     Effect.gen(function* () {
-      const state = yield* makeGameplayFrameState
-      const store = yield* makeChunkStoreDouble(world([[AIMED_AT, block]]), ['0,0'])
+      const harness = yield* builtStagesInWorld(
+        world([[AIMED_AT, block]]),
+        ['0,0'],
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { playerPose: AIMING_POSE },
+      )
       const player = yield* makePlayerServiceDouble(AIMING_POSE)
-      return { state, store, player }
+      return { ...harness, player }
     })
+
+  const targetingContextFor = (
+    commit: GameplayStageCommitServices,
+  ): GameplayTargetingSnapshotContext => {
+    const entitiesOwnerId = commit.entitiesOwnerId
+    if (entitiesOwnerId === undefined) throw new Error('the entity owner must be registered for targeting')
+    return {
+      coordinator: commit.coordinator,
+      playerOwnerId: commit.playerOwnerId,
+      entitiesOwnerId,
+    }
+  }
 
   it.effect('resolveTargetedBlock finds the block under the crosshair', () =>
     Effect.gen(function* () {
@@ -3290,18 +3315,32 @@ describe('the targeted-block family resolves through the same raycast as placeme
     }),
   )
 
-  it.effect('requestTargetedBlockBreak enqueues the aimed block and does nothing when the aim is empty', () =>
+  it.effect('requestTargetedBlockBreak uses the committed player pose and does nothing when the aim is empty', () =>
     Effect.gen(function* () {
-      const { state, store, player } = yield* aimingAt(STONE)
-      const target = yield* requestTargetedBlockBreak(state, store.api, player.api)
+      const { state, store, player, commit } = yield* aimingAt(STONE)
+      yield* player.api.moveTo(fixturePosition(100, 0, 100))
+      const target = yield* requestTargetedBlockBreak(state, store.api, targetingContextFor(commit))
       expect(Option.getOrUndefined(target)?.position).toStrictEqual(AIMED_AT)
       expect(yield* Ref.get(state.pendingBreaks)).toStrictEqual([positionKey('0,1,0')])
 
-      const emptyState = yield* makeGameplayFrameState
-      const emptyStore = yield* makeChunkStoreDouble(world([]), ['0,0'])
-      const emptyPlayer = yield* makePlayerServiceDouble()
-      expect(Option.isNone(yield* requestTargetedBlockBreak(emptyState, emptyStore.api, emptyPlayer.api))).toBe(true)
-      expect(yield* Ref.get(emptyState.pendingBreaks)).toStrictEqual([])
+      const emptyHarness = yield* builtStagesInWorld(
+        world([]),
+        ['0,0'],
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { playerPose: AIMING_POSE },
+      )
+      expect(Option.isNone(yield* requestTargetedBlockBreak(
+        emptyHarness.state,
+        emptyHarness.store.api,
+        targetingContextFor(emptyHarness.commit),
+      ))).toBe(true)
+      expect(yield* Ref.get(emptyHarness.state.pendingBreaks)).toStrictEqual([])
     }),
   )
 
@@ -5530,6 +5569,103 @@ describe('block placement commit rejection preserves the registered owner and wo
       expect(yield* harness.commit.coordinator.revision).toBe(revisionBefore)
       expect(yield* harness.store.blockAt(target)).toBeUndefined()
       expect(yield* Ref.get(harness.commitCalls)).toBe(1)
+    }).pipe(Effect.provide(FrameServicesLayer)),
+  )
+
+  it.effect('replans a correlated placement after a concurrent revision advances', () =>
+    Effect.gen(function* () {
+      const target = fixtureBlockPosition(3, 64, 3)
+      const slots = [...emptySlots()]
+      slots[0] = itemStack('sand', 1)
+      const harness = yield* builtStagesInWorld(world([]), ['0,0'], undefined, slots)
+      const coordinator = harness.commit.coordinator
+      let injectConcurrentCommit = true
+      let placementAttempts = 0
+      const racingCoordinator: WorldCommitCoordinatorApi = {
+        ...coordinator,
+        commit: (request) => Effect.gen(function* () {
+          placementAttempts += 1
+          if (injectConcurrentCommit) {
+            injectConcurrentCommit = false
+            const player = yield* coordinator.snapshot(
+              GAMEPLAY_PLAYER_OWNER_ID,
+              PlayerServiceSnapshotSchema,
+            )
+            const moved = Schema.decodeUnknownSync(PlayerServiceSnapshotSchema)({
+              pose: {
+                ...player.state.pose,
+                feetPosition: {
+                  ...player.state.pose.feetPosition,
+                  x: player.state.pose.feetPosition.x + 1,
+                },
+              },
+            })
+            yield* coordinator.commit({
+              expectedRevision: player.revision,
+              expectedDimensions: [],
+              changes: [{ ownerId: GAMEPLAY_PLAYER_OWNER_ID, state: moved }],
+            })
+          }
+          return yield* coordinator.commit(request)
+        }),
+      }
+      const stages = gameplayStages(
+        harness.state,
+        harness.store.api,
+        harness.roster.api,
+        harness.inventory.api,
+        harness.player.api,
+        harness.time,
+        undefined,
+        undefined,
+        {},
+        { ...harness.commit, coordinator: racingCoordinator },
+      )
+      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+      const storageBefore = yield* coordinator.snapshot(
+        GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+        PlayerStorageSnapshotSchema,
+      )
+
+      yield* requestBlockPlacementCommand(harness.state, {
+        requestId: 'raced-sand-placement',
+        positionKey: positionKey('3,64,3'),
+        heldItem: 'sand',
+      })
+      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* drainBlockPlacementResults(harness.state)).toStrictEqual([])
+      expect(yield* harness.store.blockAt(target)).toBeUndefined()
+      expect(yield* Ref.get(harness.publishedEvents)).toStrictEqual([])
+      const storageAfterConflict = yield* coordinator.snapshot(
+        GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+        PlayerStorageSnapshotSchema,
+      )
+      expect(storageAfterConflict.state).toStrictEqual(storageBefore.state)
+      expect(placementAttempts).toBe(1)
+
+      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* drainBlockPlacementResults(harness.state)).toMatchObject([
+        {
+          requestId: 'raced-sand-placement',
+          success: true,
+          consumed: true,
+          replayed: false,
+          outcome: { _tag: 'Placed', block: Option.getOrThrow(blockIdOf('sand')) },
+        },
+      ])
+      expect(yield* harness.store.blockAt(target)).toBe(Option.getOrThrow(blockIdOf('sand')))
+      const storageAfterRetry = yield* coordinator.snapshot(
+        GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+        PlayerStorageSnapshotSchema,
+      )
+      expect(countStoredItem(
+        Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(storageAfterRetry.state),
+        'sand',
+      )).toBe(0)
+      expect(placementAttempts).toBe(2)
+      expect(yield* Ref.get(harness.publishedEvents)).toStrictEqual([])
     }).pipe(Effect.provide(FrameServicesLayer)),
   )
 

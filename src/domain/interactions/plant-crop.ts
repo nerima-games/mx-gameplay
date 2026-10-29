@@ -102,7 +102,8 @@ export type PlantRequest = {
  * makes those the same answer.
  */
 export type PlantOutcome =
-  | { readonly _tag: 'planted'; readonly crop: BlockType; readonly at: BlockPosition }
+  | { readonly _tag: 'planted'; readonly crop: CropBlock; readonly at: BlockPosition }
+  | { readonly _tag: 'cropOwnerMismatch'; readonly crop: CropBlock; readonly at: BlockPosition }
   /** The held item is not a seed. Nothing was read. */
   | { readonly _tag: 'notASeed'; readonly held: ItemType }
   /** A seed, but this soil is not the one it grows on. */

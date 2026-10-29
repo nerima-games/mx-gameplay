@@ -469,6 +469,76 @@ describe('bucket interaction', () => {
     }),
   )
 
+  it.effect('replans a bucket intent on the next call after a concurrent commit advances the revision', () =>
+    Effect.gen(function* () {
+      const harness = yield* makeBucketHarness(
+        WATER,
+        true,
+        inventoryWith([0, stack('bucket', 1)]),
+      )
+      const frontier = yield* Ref.make<ReadonlyArray<FluidWorkItem>>([])
+      let concurrentCommitPending = true
+      const coordinator: WorldCommitCoordinatorApi = {
+        ...harness.coordinator,
+        commit: (...args) => Effect.gen(function* () {
+          if (concurrentCommitPending) {
+            concurrentCommitPending = false
+            const current = yield* harness.coordinator.snapshot(
+              harness.ownerId,
+              PlayerStorageSnapshotSchema,
+            )
+            yield* harness.coordinator.commit({
+              expectedRevision: current.revision,
+              expectedDimensions: [],
+              changes: [{ ownerId: harness.ownerId, state: current.state }],
+            })
+          }
+          return yield* harness.coordinator.commit(...args)
+        }),
+      }
+
+      const firstFrame = yield* Effect.result(useBucket(
+        coordinator,
+        frontier,
+        request('bucket'),
+      ))
+      expect(Result.isFailure(firstFrame)).toBe(true)
+      if (Result.isFailure(firstFrame)) {
+        expect(firstFrame.failure._tag).toBe('WorldRevisionConflict')
+      }
+      expect(yield* Ref.get(frontier)).toStrictEqual([])
+      expect(yield* harness.world.chunkStore.getBlock(POSITION)).toStrictEqual({
+        _tag: 'Block',
+        block: WATER,
+      })
+      const afterConcurrentCommit = yield* harness.coordinator.snapshot(
+        harness.ownerId,
+        PlayerStorageSnapshotSchema,
+      )
+      expect(afterConcurrentCommit.revision).toBe(1)
+      expect(afterConcurrentCommit.state).toStrictEqual(harness.initialStorage)
+
+      const nextFrame = yield* useBucket(
+        coordinator,
+        frontier,
+        request('bucket'),
+      )
+      expect(nextFrame._tag).toBe('Collected')
+      expect(yield* harness.world.chunkStore.getBlock(POSITION)).toStrictEqual({
+        _tag: 'Block',
+        block: AIR_BLOCK_ID,
+      })
+      expect(yield* Ref.get(frontier)).toHaveLength(1)
+      const afterRetry = yield* harness.coordinator.snapshot(
+        harness.ownerId,
+        PlayerStorageSnapshotSchema,
+      )
+      expect(afterRetry.revision).toBe(2)
+      expect(Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(afterRetry.state).inventory.slots)
+        .toStrictEqual(inventoryWith([0, stack('water_bucket', 1)]))
+    }),
+  )
+
   it.effect('leaves world, owner, local inventory, and frontier unchanged when commit fails', () =>
     Effect.gen(function* () {
       expect(yield* assertUnchangedAfterFailure('commit-failed', 1, [[9, 'lava']])).toBe(true)

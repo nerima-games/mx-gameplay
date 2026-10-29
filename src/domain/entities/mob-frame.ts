@@ -206,7 +206,7 @@
  * that the sequence must depend on what happened rather than on how many mobs
  * existed.
  */
-import { isItemType, type ItemType, type RandomSeed } from '@nerima-games/mc-kernel'
+import { isItemType, SimulationTick, type ItemType, type RandomSeed, type SimulationTick as SimulationTickValue } from '@nerima-games/mc-kernel'
 import {
   durabilityForItem,
   isDamageableItemType,
@@ -223,6 +223,7 @@ import {
   capabilityOfBlockId,
   position as kernelPosition,
   type Position,
+  type Dimension,
 } from '@nerima-games/mc-kernel'
 import { applyDamage, isDead, type Damage, type Vitals } from '../death-cause.js'
 import { decodeEnchantedItem, type Enchantment } from '../enchantment.js'
@@ -961,24 +962,101 @@ export type Blast = {
   readonly explosion: Explosion
 }
 
-/**
- * A mob that died to a blow, for the drop roll that happens outside the sweep.
- *
- * TWO PRODUCERS NOW, not one: `resolveBlasts` and `resolveBowHits`. The name was
- * always about what a casualty IS rather than what killed it, and the drop roll
- * downstream (`rollCasualtyDrops`) has never asked.
- */
-export type MobCasualty = {
-  readonly id: EntityId
-  readonly kind: EntityKind
-  readonly at: Position
+/** The causes that permit experience for a mob casualty. */
+export type MobKillCredit = 'player' | 'tamed-wolf' | 'player-triggered-tnt'
+
+/** WCC metadata carried beside the behavior that mc-sim owns. */
+export type MobEntity = Entity<MobBehaviour> & Readonly<{
+  dimension?: Dimension
+  killCredit?: MobKillCredit
+  lastHitTick?: SimulationTickValue
+}>
+
+export type MobRoster = Omit<EntityRoster<MobBehaviour>, 'entities'> & Readonly<{
+  entities: ReadonlyArray<MobEntity>
+}>
+
+/** A mob that died to a blow, for drop and experience resolution outside the sweep. */
+export type MobCasualty = Readonly<{
+  id: EntityId
+  kind: EntityKind
+  at: Position
+  killCredit?: MobKillCredit
+  lastHitTick?: SimulationTickValue
+  deathTick?: SimulationTickValue
+}>
+
+export const MOB_EXPERIENCE_CREDIT_WINDOW_TICKS = 100
+
+type RecentMobHit = Readonly<{
+  killCredit: Exclude<MobKillCredit, 'player-triggered-tnt'>
+  lastHitTick: SimulationTickValue
+}>
+
+const recentMobHit = (
+  killCredit: Exclude<MobKillCredit, 'player-triggered-tnt'> | undefined,
+  lastHitTick: SimulationTickValue | undefined,
+): RecentMobHit | undefined =>
+  killCredit === undefined || lastHitTick === undefined
+    ? undefined
+    : { killCredit, lastHitTick }
+
+const latestMobHit = (
+  previous: RecentMobHit | undefined,
+  next: RecentMobHit | undefined,
+): RecentMobHit | undefined =>
+  next === undefined || (previous !== undefined && next.lastHitTick < previous.lastHitTick)
+    ? previous
+    : next
+
+const mobCasualty = (
+  entity: MobEntity,
+  deathTick: SimulationTickValue | undefined,
+  latestHit?: RecentMobHit,
+  killCredit = latestHit?.killCredit ?? entity.killCredit,
+  lastHitTick = latestHit?.lastHitTick ?? entity.lastHitTick,
+): MobCasualty => ({
+  id: entity.id,
+  kind: entity.kind,
+  at: entity.feetPosition,
+  ...(killCredit === undefined ? {} : { killCredit }),
+  ...(lastHitTick === undefined ? {} : { lastHitTick }),
+  ...(deathTick === undefined ? {} : { deathTick }),
+})
+
+const retainMobMetadata = (
+  candidate: EntityRoster<MobBehaviour>,
+  previous: MobRoster,
+  recentHits: ReadonlyMap<EntityId, RecentMobHit> = new Map(),
+): MobRoster => {
+  if (candidate === previous && recentHits.size === 0) return previous
+  const previousById = new Map(previous.entities.map((entity) => [entity.id, entity]))
+  return {
+    ...candidate,
+    entities: candidate.entities.map((entity) => {
+      const prior = previousById.get(entity.id)
+      const recent = recentHits.get(entity.id)
+      const dimension = prior?.dimension
+      const killCredit = recent?.killCredit ?? prior?.killCredit
+      const lastHitTick = recent?.lastHitTick ?? prior?.lastHitTick
+      return {
+        ...entity,
+        ...(dimension === undefined ? {} : { dimension }),
+        ...(killCredit === undefined ? {} : { killCredit }),
+        ...(lastHitTick === undefined ? {} : { lastHitTick }),
+      }
+    }),
+  }
 }
+
 
 /** One entity, and what a shot took off it. See `resolveBowHits`. */
 export type BowHit = {
   readonly id: EntityId
   /** Health points, already scaled by charge and Power (`../interactions/draw-bow.ts`). */
   readonly damage: number
+  readonly killCredit?: Exclude<MobKillCredit, 'player-triggered-tnt'>
+  readonly lastHitTick?: SimulationTickValue
 }
 
 // ---------------------------------------------------------------------------
@@ -1470,7 +1548,7 @@ const makeMobFrameSweep = (senses: MobFrameSenses, seed: number): MobFrameSweep 
     return { step, finish }
 }
 
-export type MobRosterSweep = MobSweep & Readonly<{ roster: EntityRoster<MobBehaviour> }>
+export type MobRosterSweep = MobSweep & Readonly<{ roster: MobRoster }>
 
 /** Calculate one mob frame over an owner snapshot without writing through a service. */
 export const planMobRosterSweep = (
@@ -1480,7 +1558,7 @@ export const planMobRosterSweep = (
 ): MobRosterSweep => {
   const frame = makeMobFrameSweep(senses, seed)
   const swept = sweepRoster(roster, frame.step)
-  return { roster: swept.roster, ...frame.finish(swept.emitted) }
+  return { roster: retainMobMetadata(swept.roster, roster), ...frame.finish(swept.emitted) }
 }
 
 /** Compatibility adapter for callers which still use the local EntityManager. */
@@ -1551,10 +1629,10 @@ export const resolveEndermanTeleportProbes = (
 
 /** Resolve teleport probes against the world, then return a roster candidate. */
 export const planEndermanTeleportRoster = (
-  roster: EntityRoster<MobBehaviour>,
+  roster: MobRoster,
   store: ChunkStoreApi,
   probes: ReadonlyArray<EndermanTeleportProbe>,
-): Effect.Effect<EntityRoster<MobBehaviour>> => Effect.gen(function* () {
+): Effect.Effect<MobRoster> => Effect.gen(function* () {
   if (probes.length === 0) return roster
 
   const destinations = new Map<EntityId, Position>()
@@ -1588,7 +1666,7 @@ export const planEndermanTeleportRoster = (
   }
 
   if (destinations.size === 0) return roster
-  return sweepRoster(roster, (entity) => {
+  const swept = sweepRoster(roster, (entity) => {
     const destination = destinations.get(entity.id)
     return destination === undefined
       ? IGNORED
@@ -1600,7 +1678,8 @@ export const planEndermanTeleportRoster = (
           }),
           emit: undefined,
         }
-  }).roster
+  })
+  return retainMobMetadata(swept.roster, roster)
 })
 
 // ---------------------------------------------------------------------------
@@ -1691,14 +1770,15 @@ export const resolveBlasts = (
   })
 
 export type MobBlastRosterResolution = Readonly<{
-  roster: EntityRoster<MobBehaviour>
+  roster: MobRoster
   casualties: ReadonlyArray<MobCasualty>
 }>
 
 /** Apply blast damage to a roster snapshot without writing through EntityManager. */
 export const planMobBlastRoster = (
-  roster: EntityRoster<MobBehaviour>,
+  roster: MobRoster,
   blasts: ReadonlyArray<Blast>,
+  deathTick: SimulationTickValue,
 ): MobBlastRosterResolution => {
   if (blasts.length === 0) return { roster, casualties: NO_CASUALTIES }
 
@@ -1728,18 +1808,25 @@ export const planMobBlastRoster = (
   return { roster: swept.roster, casualties: swept.emitted }
 }
 
-export type MobDamageHit = Readonly<{ id: EntityId; damage: Damage }>
+export type MobDamageHit = Readonly<{
+  id: EntityId
+  damage: Damage
+  killCredit?: Exclude<MobKillCredit, 'player-triggered-tnt'>
+  lastHitTick?: SimulationTickValue
+}>
 
 export type MobExplosionHit = Readonly<{
   id: EntityId
   damage: Damage
   knockback: Position
+  killCredit?: 'player-triggered-tnt'
 }>
 
 /** Apply one explosion's owner-snapshot damage and knockback in a pure pass. */
 export const planMobExplosionRoster = (
-  roster: EntityRoster<MobBehaviour>,
+  roster: MobRoster,
   hits: ReadonlyArray<MobExplosionHit>,
+  deathTick: SimulationTickValue,
 ): MobBlastRosterResolution => {
   if (hits.length === 0) return { roster, casualties: NO_CASUALTIES }
 
@@ -1802,8 +1889,9 @@ export const planMobExplosionRoster = (
 
 /** Apply owner-snapshot damage in one pure roster pass. */
 export const planMobDamageRoster = (
-  roster: EntityRoster<MobBehaviour>,
+  roster: MobRoster,
   hits: ReadonlyArray<MobDamageHit>,
+  deathTick: SimulationTickValue,
 ): MobBlastRosterResolution => {
   if (hits.length === 0) return { roster, casualties: NO_CASUALTIES }
 

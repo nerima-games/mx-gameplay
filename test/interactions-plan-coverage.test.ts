@@ -67,6 +67,7 @@ import {
   type WorldCommitRequest,
   type BrewingServiceApi,
   SPAWN_VITALS,
+  HungerPoints,
   POTATO_MATURITY_SECS,
   type Vitals,
 } from '@nerima-games/mc-sim'
@@ -2275,7 +2276,7 @@ describe('owner-backed mining and villager trade coverage in the interactions st
     }])
   })
 
-  it('rejects a trade when storage and trade snapshots span a concurrent owner revision', async () => {
+  it('requeues a trade when storage and trade snapshots span a concurrent owner revision', async () => {
     const villager = makeVillager('revision-coverage-trader', 'farmer')
     const offer = villager.offers.find(({ input }) => input.item === 'wheat')!
     const harness = await Effect.runPromise(makeHarness({
@@ -2283,6 +2284,10 @@ describe('owner-backed mining and villager trade coverage in the interactions st
       villagerTrades: { villagers: [villager], restockElapsedSecs: 0 },
     }))
     const baseCoordinator = harness.baseCoordinator
+    const storageBefore = await Effect.runPromise(baseCoordinator.snapshot(
+      GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+      PlayerStorageSnapshotSchema,
+    ))
     let injected = false
     const coordinator: WorldCommitCoordinatorApi = {
       ...baseCoordinator,
@@ -2306,11 +2311,12 @@ describe('owner-backed mining and villager trade coverage in the interactions st
     }
     const interactions = harness.interactionsWithCoordinator(coordinator)
     const revisionBefore = await Effect.runPromise(baseCoordinator.revision)
-    await Effect.runPromise(requestVillagerTrade(harness.state, {
+    const request = {
       requestId: 'trade-revision-conflict',
       villagerId: villager.id,
       offerId: offer.id,
-    }))
+    }
+    await Effect.runPromise(requestVillagerTrade(harness.state, request))
 
     await Effect.runPromise(interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer)))
 
@@ -2321,6 +2327,7 @@ describe('owner-backed mining and villager trade coverage in the interactions st
     expect(injected).toBe(true)
     expect(harness.commitCalls()).toBe(0)
     expect(await Effect.runPromise(drainVillagerTradeResults(harness.state))).toStrictEqual([])
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingVillagerTrades))).toStrictEqual([request])
     expect(tradesAfter.state.restockElapsedSecs).toBe(1)
     expect(await Effect.runPromise(baseCoordinator.revision)).toBe(revisionBefore + 1)
     expect(await Effect.runPromise(Ref.get(harness.state.operationFailures))).toMatchObject([{
@@ -2333,6 +2340,24 @@ describe('owner-backed mining and villager trade coverage in the interactions st
         actual: revisionBefore + 1,
       },
     }])
+
+    await Effect.runPromise(interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer)))
+
+    const storageAfterRetry = await Effect.runPromise(baseCoordinator.snapshot(
+      GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+      PlayerStorageSnapshotSchema,
+    ))
+    const tradesAfterRetry = await Effect.runPromise(baseCoordinator.snapshot(
+      GAMEPLAY_VILLAGER_TRADES_OWNER_ID,
+      GameplayVillagerTradeSnapshotSchema,
+    ))
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingVillagerTrades))).toStrictEqual([])
+    expect(await Effect.runPromise(drainVillagerTradeResults(harness.state))).toStrictEqual([
+      { ...request, _tag: 'Traded' },
+    ])
+    expect(storageAfterRetry.state.inventory).not.toStrictEqual(storageBefore.state.inventory)
+    expect(tradesAfterRetry.state.villagers[0]?.offers.find(({ id }) => id === offer.id)?.uses).toBe(1)
+    expect(await Effect.runPromise(baseCoordinator.revision)).toBe(revisionBefore + 2)
   })
 
   it('preserves unrelated villagers in the committed trade candidate', async () => {
@@ -2391,6 +2416,70 @@ describe('owner-backed mining and villager trade coverage in the interactions st
       { ...request, _tag: 'Rejected', reason: 'UnknownOffer' },
     ])
     expect(harness.commitCalls()).toBe(0)
+  })
+})
+
+describe('retrying item-use intents after owner revision conflicts', () => {
+  it('replans food consumption after a concurrent commit advances the owner revision', async () => {
+    const vitals = { ...SPAWN_VITALS, hungerPoints: HungerPoints(10) }
+    const foodVitals = {
+      healthPoints: vitals.healthPoints,
+      hungerPoints: vitals.hungerPoints,
+      maxHungerPoints: vitals.maxHungerPoints,
+    }
+    const harness = await Effect.runPromise(makeHarness({
+      playerStorage: playerStorageWithItem('cod', 1),
+      vitals,
+    }))
+    const coordinator = coordinatorWithRevisionBump(
+      harness.baseCoordinator,
+      GAMEPLAY_VITALS_OWNER_ID,
+    )
+    const interactions = harness.interactionsWithCoordinator(coordinator)
+    const revisionBefore = await Effect.runPromise(harness.baseCoordinator.revision)
+    await Effect.runPromise(requestFoodUse(
+      harness.state,
+      'food-revision-conflict-retry',
+      'cod',
+      foodVitals,
+    ))
+
+    await Effect.runPromise(interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer)))
+
+    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toStrictEqual([])
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingItemUses))).toMatchObject([{
+      action: 'EatFood',
+      requestId: 'food-revision-conflict-retry',
+      heldItem: 'cod',
+    }])
+    expect(await Effect.runPromise(harness.baseCoordinator.revision)).toBe(revisionBefore + 1)
+    expect(await Effect.runPromise(Ref.get(harness.state.operationFailures))).toMatchObject([{
+      _tag: 'Failed',
+      operation: 'OwnerSnapshot',
+      subject: 'Vitals',
+      error: { _tag: 'WorldRevisionConflict', expected: revisionBefore, actual: revisionBefore + 1 },
+    }])
+
+    await Effect.runPromise(interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer)))
+
+    const storageAfter = await Effect.runPromise(harness.baseCoordinator.snapshot(
+      GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+      PlayerStorageSnapshotSchema,
+    ))
+    const vitalsAfter = await Effect.runPromise(harness.baseCoordinator.snapshot(
+      GAMEPLAY_VITALS_OWNER_ID,
+      ExperienceOrbVitalsOwnerSnapshotSchema,
+    ))
+    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toMatchObject([{
+      action: 'EatFood',
+      requestId: 'food-revision-conflict-retry',
+      success: true,
+      consumedCount: 1,
+    }])
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingItemUses))).toStrictEqual([])
+    expect(storageAfter.state.inventory.slots[0]).toBeUndefined()
+    expect(vitalsAfter.state.vitals.hungerPoints).toBeGreaterThan(vitals.hungerPoints)
+    expect(await Effect.runPromise(harness.baseCoordinator.revision)).toBe(revisionBefore + 2)
   })
 })
 

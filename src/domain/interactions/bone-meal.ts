@@ -7,6 +7,12 @@ export const BONE_MEAL_CROPS: ReadonlyArray<BlockType> = ['wheat_crop', 'potato_
 export type BoneMealOutcome =
   | { readonly _tag: 'applied'; readonly at: BlockPosition }
   | { readonly _tag: 'notCrop'; readonly at: BlockPosition; readonly block: BlockType | undefined }
+  | {
+      readonly _tag: 'cropOwnerMismatch'
+      readonly at: BlockPosition
+      readonly block: BlockType | undefined
+      readonly registeredCrop: BlockType | undefined
+    }
 
 export const applyBoneMeal = (
   blockAt: (position: BlockPosition) => Effect.Effect<BlockType | undefined>,
