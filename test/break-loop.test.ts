@@ -594,12 +594,12 @@ describe('the break loop', () => {
     Effect.gen(function* () {
       const world = yield* lookingAtBlockWorld(true, LEVER_ID)
       const state = yield* makeGameplayFrameState
-      const { stages } = yield* gameplayStagesWithOwners(state, world)
+      const { stages, commit } = yield* gameplayStagesWithOwners(state, world)
 
       yield* requestTargetedBlockUse(
         state,
         world.chunkStore,
-        world.player,
+        targetingContextFor(commit),
         'lever-use-1',
         'redstone_dust',
       )
@@ -628,11 +628,12 @@ describe('the break loop', () => {
     Effect.gen(function* () {
       const world = yield* lookingAtBlockWorld(true)
       const state = yield* makeGameplayFrameState
+      const { commit } = yield* gameplayStagesWithOwners(state, world)
 
       yield* requestTargetedBlockUse(
         state,
         world.chunkStore,
-        world.player,
+        targetingContextFor(commit),
         'ordinary-use',
         'redstone_dust',
       )
@@ -648,12 +649,12 @@ describe('the break loop', () => {
     Effect.gen(function* () {
       const world = yield* lookingAtBlockWorld(true, LEVER_ID)
       const state = yield* makeGameplayFrameState
-      const { stages } = yield* gameplayStagesWithOwners(state, world)
+      const { stages, commit } = yield* gameplayStagesWithOwners(state, world)
 
       yield* requestTargetedBlockUse(
         state,
         world.chunkStore,
-        world.player,
+        targetingContextFor(commit),
         'stale-lever-use',
         'sand',
       )
@@ -675,11 +676,12 @@ describe('the break loop', () => {
     Effect.gen(function* () {
       const world = yield* lookingAtBlockWorld(true)
       const state = yield* makeGameplayFrameState
+      const { commit } = yield* gameplayStagesWithOwners(state, world)
 
       const target = yield* requestTargetedBlockPlacement(
         state,
         world.chunkStore,
-        world.player,
+        targetingContextFor(commit),
         'sand',
       )
 

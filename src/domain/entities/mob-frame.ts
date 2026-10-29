@@ -963,7 +963,7 @@ export type Blast = {
 }
 
 /** The causes that permit experience for a mob casualty. */
-export type MobKillCredit = 'player' | 'tamed-wolf' | 'player-triggered-tnt'
+export type MobKillCredit = 'player' | 'player-triggered-tnt'
 
 /** WCC metadata carried beside the behavior that mc-sim owns. */
 export type MobEntity = Entity<MobBehaviour> & Readonly<{
@@ -1933,7 +1933,7 @@ export const planMobDamageRoster = (
   for (const [id, batch] of byEntity) {
     const entity = entityById.get(id)
     if (entity === undefined) continue
-    const previousHit = entity.killCredit === 'player' || entity.killCredit === 'tamed-wolf'
+    const previousHit = entity.killCredit === 'player'
       ? recentMobHit(entity.killCredit, entity.lastHitTick)
       : undefined
     const latestHit = latestMobHit(previousHit, batch.latestHit)
@@ -2156,7 +2156,7 @@ export const experienceOfCasualties = (
     const hasRecentCredit =
       casualty.killCredit === 'player-triggered-tnt' ||
       (
-        (casualty.killCredit === 'player' || casualty.killCredit === 'tamed-wolf') &&
+        casualty.killCredit === 'player' &&
         casualty.lastHitTick !== undefined &&
         casualty.deathTick !== undefined &&
         casualty.deathTick >= casualty.lastHitTick &&

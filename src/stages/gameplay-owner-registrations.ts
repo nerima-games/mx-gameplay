@@ -171,7 +171,7 @@ export const GameplayEntityRosterSchema: Schema.Codec<GameplayEntityRoster, unkn
     entities: Schema.Array(Schema.Struct({
       ...GameplayMobEntityBaseSchema.fields,
       dimension: DimensionIdSchema,
-      killCredit: Schema.optionalKey(Schema.Literals(['player', 'tamed-wolf', 'player-triggered-tnt'])),
+      killCredit: Schema.optionalKey(Schema.Literals(['player', 'player-triggered-tnt'])),
       lastHitTick: Schema.optionalKey(SimulationTickSchema),
     })),
     nextSerial: GameplayMobRosterBaseSchema.fields.nextSerial,

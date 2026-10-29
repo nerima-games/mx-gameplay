@@ -3270,11 +3270,35 @@ describe('the targeted-block family resolves through the same raycast as placeme
     yawRadians: 0,
     pitchRadians: 0,
   }
+  const MOVED_AIM = fixtureBlockPosition(0, 1, 9)
+  const MOVED_AIMING_POSE: PlayerPose = {
+    feetPosition: fixturePosition(0.5, 0, 10.5),
+    yawRadians: 0,
+    pitchRadians: 0,
+  }
 
   const aimingAt = (block: BlockId) =>
     Effect.gen(function* () {
       const harness = yield* builtStagesInWorld(
         world([[AIMED_AT, block]]),
+        ['0,0'],
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { playerPose: AIMING_POSE },
+      )
+      const player = yield* makePlayerServiceDouble(AIMING_POSE)
+      return { ...harness, player }
+    })
+
+  const aimingAtOldAndMovedBlocks = (block: BlockId) =>
+    Effect.gen(function* () {
+      const harness = yield* builtStagesInWorld(
+        world([[AIMED_AT, block], [MOVED_AIM, block]]),
         ['0,0'],
         undefined,
         undefined,
@@ -3301,21 +3325,56 @@ describe('the targeted-block family resolves through the same raycast as placeme
     }
   }
 
+  const commitPlayerPose = (
+    context: GameplayTargetingSnapshotContext,
+    pose: PlayerPose,
+    dimension = Schema.decodeUnknownSync(DimensionIdSchema)('overworld'),
+  ) =>
+    Effect.gen(function* () {
+      const current = yield* context.coordinator.snapshot(
+        context.playerOwnerId,
+        PlayerServiceSnapshotSchema,
+      )
+      const moved = Schema.decodeUnknownSync(PlayerServiceSnapshotSchema)({
+        pose: {
+          feetPosition: { dimension, ...pose.feetPosition },
+          yawRadians: pose.yawRadians,
+          pitchRadians: pose.pitchRadians,
+        },
+      })
+      yield* context.coordinator.commit({
+        expectedRevision: current.revision,
+        expectedDimensions: [],
+        changes: [{ ownerId: context.playerOwnerId, state: moved }],
+      }).pipe(Effect.orDie)
+    })
+
   it.effect('resolveTargetedBlock finds the block under the crosshair', () =>
     Effect.gen(function* () {
-      const { store, player } = yield* aimingAt(STONE)
-      const target = yield* resolveTargetedBlock(store.api, player.api)
+      const { store, commit } = yield* aimingAt(STONE)
+      const target = yield* resolveTargetedBlock(store.api, targetingContextFor(commit))
       expect(Option.getOrUndefined(target)?.position).toStrictEqual(AIMED_AT)
     }),
   )
 
   it.effect('resolveTargetedBlock is None when nothing is within reach', () =>
     Effect.gen(function* () {
-      const state = yield* makeGameplayFrameState
-      const store = yield* makeChunkStoreDouble(world([]), ['0,0'])
-      const player = yield* makePlayerServiceDouble()
-      void state
-      const target = yield* resolveTargetedBlock(store.api, player.api)
+      const harness = yield* builtStagesInWorld(
+        world([]),
+        ['0,0'],
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { playerPose: AIMING_POSE },
+      )
+      const target = yield* resolveTargetedBlock(
+        harness.store.api,
+        targetingContextFor(harness.commit),
+      )
       expect(Option.isNone(target)).toBe(true)
     }),
   )
@@ -3425,29 +3484,228 @@ describe('the targeted-block family resolves through the same raycast as placeme
     }).pipe(Effect.provide(FrameServicesLayer)),
   )
 
+  it.effect('target snapshot conflicts stop at the retry limit with a typed error', () =>
+    Effect.gen(function* () {
+      const harness = yield* aimingAt(STONE)
+      const coordinator = harness.commit.coordinator
+      let entitySnapshotCount = 0
+      type SnapshotCodec = Parameters<WorldCommitCoordinatorApi['snapshot']>[1]
+      type SnapshotOwnerId = Parameters<WorldCommitCoordinatorApi['snapshot']>[0]
+      const conflictingCoordinator: WorldCommitCoordinatorApi = {
+        ...coordinator,
+        snapshot: <Codec extends SnapshotCodec>(
+          ownerId: SnapshotOwnerId,
+          schema: Codec,
+        ): Effect.Effect<
+          ReplicatedSnapshot<Codec>,
+          Schema.SchemaError | ReplicatedOwnerUnknown,
+          Schema.Codec.DecodingServices<Codec>
+        > => Effect.gen(function* () {
+          if (ownerId === GAMEPLAY_ENTITIES_OWNER_ID) {
+            entitySnapshotCount += 1
+            const trades = yield* coordinator.snapshot(
+              GAMEPLAY_VILLAGER_TRADES_OWNER_ID,
+              GameplayVillagerTradeSnapshotSchema,
+            )
+            const updatedTrades = Schema.decodeUnknownSync(GameplayVillagerTradeSnapshotSchema)({
+              ...trades.state,
+              restockElapsedSecs: trades.state.restockElapsedSecs + 1,
+            })
+            yield* coordinator.commit({
+              expectedRevision: trades.revision,
+              expectedDimensions: [],
+              changes: [{
+                ownerId: GAMEPLAY_VILLAGER_TRADES_OWNER_ID,
+                state: updatedTrades,
+              }],
+            }).pipe(Effect.orDie)
+          }
+          return yield* coordinator.snapshot(ownerId, schema)
+        }),
+      }
+      const targeting = {
+        ...targetingContextFor(harness.commit),
+        coordinator: conflictingCoordinator,
+      }
+
+      const result = yield* Effect.result(requestTargetedBlockBreak(
+        harness.state,
+        harness.store.api,
+        targeting,
+      ))
+
+      expect(result).toMatchObject({ _tag: 'Failure', failure: { _tag: 'WorldRevisionConflict' } })
+      expect(entitySnapshotCount).toBe(3)
+      expect(yield* Ref.get(harness.state.pendingBreaks)).toStrictEqual([])
+    }).pipe(Effect.provide(FrameServicesLayer)),
+  )
+
+  it.effect('resolveTargetedBlock uses the moved WCC pose after a dimension change', () =>
+    Effect.gen(function* () {
+      const { store, commit, player } = yield* aimingAtOldAndMovedBlocks(STONE)
+      const targeting = targetingContextFor(commit)
+      yield* commitPlayerPose(
+        targeting,
+        MOVED_AIMING_POSE,
+        Schema.decodeUnknownSync(DimensionIdSchema)('nether'),
+      )
+
+      const currentPlayer = yield* commit.coordinator.snapshot(
+        commit.playerOwnerId,
+        PlayerServiceSnapshotSchema,
+      )
+      const target = yield* resolveTargetedBlock(store.api, targeting)
+
+      expect(currentPlayer.state.pose.feetPosition.dimension).toBe('nether')
+      expect(yield* player.api.pose).toStrictEqual(AIMING_POSE)
+      expect(Option.getOrUndefined(target)?.position).toStrictEqual(MOVED_AIM)
+    }),
+  )
+
+  it.effect('requestTargetedBlockPlacement uses the moved WCC pose', () =>
+    Effect.gen(function* () {
+      const { state, store, commit, player } = yield* aimingAtOldAndMovedBlocks(STONE)
+      const targeting = targetingContextFor(commit)
+      yield* commitPlayerPose(targeting, MOVED_AIMING_POSE)
+
+      const target = yield* requestTargetedBlockPlacement(state, store.api, targeting, 'sand')
+
+      expect(yield* player.api.pose).toStrictEqual(AIMING_POSE)
+      expect(Option.getOrUndefined(target)?.position).toStrictEqual(MOVED_AIM)
+      expect(Option.getOrUndefined(target)?.adjacentPosition).toStrictEqual(fixtureBlockPosition(0, 1, 10))
+      expect(yield* Ref.get(state.pendingPlacements)).toStrictEqual([{
+        positionKey: positionKey('0,1,10'),
+        heldItem: 'sand',
+      }])
+    }),
+  )
+
+  it.effect('requestTargetedBlockUse uses the moved WCC pose', () =>
+    Effect.gen(function* () {
+      const lever = Option.getOrThrow(blockIdOf('lever'))
+      const { state, store, commit, player } = yield* aimingAtOldAndMovedBlocks(lever)
+      const targeting = targetingContextFor(commit)
+      yield* commitPlayerPose(targeting, MOVED_AIMING_POSE)
+
+      const target = yield* requestTargetedBlockUse(
+        state,
+        store.api,
+        targeting,
+        'moved-lever-use',
+        'redstone_dust',
+      )
+
+      expect(yield* player.api.pose).toStrictEqual(AIMING_POSE)
+      expect(Option.getOrUndefined(target)?.position).toStrictEqual(MOVED_AIM)
+      expect(yield* Ref.get(state.pendingBlockUses)).toStrictEqual([{
+        requestId: 'moved-lever-use',
+        positionKey: positionKey('0,1,9'),
+      }])
+    }),
+  )
+
+  it.effect('requestTargetedItemUse uses the moved WCC pose', () =>
+    Effect.gen(function* () {
+      const { state, store, commit, player } = yield* aimingAtOldAndMovedBlocks(STONE)
+      const targeting = targetingContextFor(commit)
+      yield* commitPlayerPose(targeting, MOVED_AIMING_POSE)
+
+      const target = yield* requestTargetedItemUse(
+        state,
+        store.api,
+        targeting,
+        'moved-ignite',
+        'fire_charge',
+      )
+
+      expect(yield* player.api.pose).toStrictEqual(AIMING_POSE)
+      expect(Option.getOrUndefined(target)?.position).toStrictEqual(MOVED_AIM)
+      expect(yield* Ref.get(state.pendingItemUses)).toStrictEqual([{
+        requestId: 'moved-ignite',
+        positionKey: positionKey('0,1,10'),
+        heldItem: 'fire_charge',
+      }])
+    }),
+  )
+
+  it.effect('requestTargetedSoilTill uses the moved WCC pose', () =>
+    Effect.gen(function* () {
+      const { state, store, commit, player } = yield* aimingAtOldAndMovedBlocks(STONE)
+      const targeting = targetingContextFor(commit)
+      yield* commitPlayerPose(targeting, MOVED_AIMING_POSE)
+
+      const target = yield* requestTargetedSoilTill(
+        state,
+        store.api,
+        targeting,
+        'moved-till',
+        'iron_hoe',
+      )
+
+      expect(yield* player.api.pose).toStrictEqual(AIMING_POSE)
+      expect(Option.getOrUndefined(target)?.position).toStrictEqual(MOVED_AIM)
+      expect(yield* Ref.get(state.pendingItemUses)).toStrictEqual([{
+        action: 'TillSoil',
+        requestId: 'moved-till',
+        positionKey: positionKey('0,1,9'),
+        heldItem: 'iron_hoe',
+      }])
+    }),
+  )
+
+  it.effect('requestTargetedPotatoPlanting uses the moved WCC pose', () =>
+    Effect.gen(function* () {
+      const { state, store, commit, player } = yield* aimingAtOldAndMovedBlocks(STONE)
+      const targeting = targetingContextFor(commit)
+      yield* commitPlayerPose(targeting, MOVED_AIMING_POSE)
+
+      const target = yield* requestTargetedPotatoPlanting(
+        state,
+        store.api,
+        targeting,
+        'moved-plant',
+      )
+
+      expect(yield* player.api.pose).toStrictEqual(AIMING_POSE)
+      expect(Option.getOrUndefined(target)?.position).toStrictEqual(MOVED_AIM)
+      expect(yield* Ref.get(state.pendingItemUses)).toStrictEqual([{
+        action: 'PlantPotato',
+        requestId: 'moved-plant',
+        positionKey: positionKey('0,1,9'),
+        heldItem: 'potato',
+      }])
+    }),
+  )
+
   it.effect('the Targeted* request family enqueues nothing when nothing is within reach', () =>
     Effect.gen(function* () {
-      // Every other test in this describe block aims at a real block, so each
-      // Targeted* wrapper's `if (Option.isSome(target))` guard had only ever
-      // seen `Some`. An empty, loaded world and the default spawn pose (the
-      // same setup `resolveTargetedBlock is None...` above uses) reaches None
-      // for all five wrappers at once.
-      const state = yield* makeGameplayFrameState
-      const store = yield* makeChunkStoreDouble(world([]), ['0,0'])
-      const player = yield* makePlayerServiceDouble()
+      const harness = yield* builtStagesInWorld(
+        world([]),
+        ['0,0'],
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { playerPose: AIMING_POSE },
+      )
+      const { state, store, commit } = harness
+      const targeting = targetingContextFor(commit)
 
-      const placement = yield* requestTargetedBlockPlacement(state, store.api, player.api, 'sand')
+      const placement = yield* requestTargetedBlockPlacement(state, store.api, targeting, 'sand')
       expect(Option.isNone(placement)).toBe(true)
       expect(yield* Ref.get(state.pendingItemUses)).toStrictEqual([])
 
-      const itemUse = yield* requestTargetedItemUse(state, store.api, player.api, 'miss-ignite', 'fire_charge')
+      const itemUse = yield* requestTargetedItemUse(state, store.api, targeting, 'miss-ignite', 'fire_charge')
       expect(Option.isNone(itemUse)).toBe(true)
 
-      const blockUse = yield* requestTargetedBlockUse(state, store.api, player.api, 'miss-block-use', 'redstone_dust')
+      const blockUse = yield* requestTargetedBlockUse(state, store.api, targeting, 'miss-block-use', 'redstone_dust')
       expect(Option.isNone(blockUse)).toBe(true)
 
-      yield* requestTargetedSoilTill(state, store.api, player.api, 'miss-till', 'iron_hoe')
-      yield* requestTargetedPotatoPlanting(state, store.api, player.api, 'miss-plant')
+      yield* requestTargetedSoilTill(state, store.api, targeting, 'miss-till', 'iron_hoe')
+      yield* requestTargetedPotatoPlanting(state, store.api, targeting, 'miss-plant')
 
       expect(yield* Ref.get(state.pendingItemUses)).toStrictEqual([])
       expect(yield* Ref.get(state.pendingBlockUses)).toStrictEqual([])
@@ -3456,8 +3714,14 @@ describe('the targeted-block family resolves through the same raycast as placeme
 
   it.effect('requestTargetedItemUse enqueues an ignition use against the adjacent cell', () =>
     Effect.gen(function* () {
-      const { state, store, player } = yield* aimingAt(STONE)
-      const target = yield* requestTargetedItemUse(state, store.api, player.api, 'ignite-1', 'fire_charge')
+      const { state, store, commit } = yield* aimingAt(STONE)
+      const target = yield* requestTargetedItemUse(
+        state,
+        store.api,
+        targetingContextFor(commit),
+        'ignite-1',
+        'fire_charge',
+      )
       expect(Option.getOrUndefined(target)?.adjacentPosition).toStrictEqual(AIMED_ADJACENT)
       expect(yield* Ref.get(state.pendingItemUses)).toStrictEqual([
         {
@@ -3471,8 +3735,13 @@ describe('the targeted-block family resolves through the same raycast as placeme
 
   it.effect('requestTargetedBlockPlacement enqueues its item at the adjacent cell', () =>
     Effect.gen(function* () {
-      const { state, store, player } = yield* aimingAt(STONE)
-      const target = yield* requestTargetedBlockPlacement(state, store.api, player.api, 'sand')
+      const { state, store, commit } = yield* aimingAt(STONE)
+      const target = yield* requestTargetedBlockPlacement(
+        state,
+        store.api,
+        targetingContextFor(commit),
+        'sand',
+      )
       expect(Option.getOrUndefined(target)?.adjacentPosition).toStrictEqual(AIMED_ADJACENT)
       expect(yield* Ref.get(state.pendingPlacements)).toStrictEqual([{
         positionKey: positionKey('0,1,1'),
@@ -3483,8 +3752,14 @@ describe('the targeted-block family resolves through the same raycast as placeme
 
   it.effect('requestTargetedSoilTill enqueues a hoe use against the targeted cell itself', () =>
     Effect.gen(function* () {
-      const { state, store, player } = yield* aimingAt(STONE)
-      yield* requestTargetedSoilTill(state, store.api, player.api, 'till-1', 'iron_hoe')
+      const { state, store, commit } = yield* aimingAt(STONE)
+      yield* requestTargetedSoilTill(
+        state,
+        store.api,
+        targetingContextFor(commit),
+        'till-1',
+        'iron_hoe',
+      )
       expect(yield* Ref.get(state.pendingItemUses)).toStrictEqual([
         {
           action: 'TillSoil',
@@ -3498,8 +3773,13 @@ describe('the targeted-block family resolves through the same raycast as placeme
 
   it.effect('requestTargetedPotatoPlanting enqueues planting against the targeted cell', () =>
     Effect.gen(function* () {
-      const { state, store, player } = yield* aimingAt(STONE)
-      yield* requestTargetedPotatoPlanting(state, store.api, player.api, 'plant-1')
+      const { state, store, commit } = yield* aimingAt(STONE)
+      yield* requestTargetedPotatoPlanting(
+        state,
+        store.api,
+        targetingContextFor(commit),
+        'plant-1',
+      )
       expect(yield* Ref.get(state.pendingItemUses)).toStrictEqual([
         {
           action: 'PlantPotato',
@@ -3513,8 +3793,8 @@ describe('the targeted-block family resolves through the same raycast as placeme
 
   it.effect('resolving the aimed block lets the caller enqueue bone meal against that cell', () =>
     Effect.gen(function* () {
-      const { state, store, player } = yield* aimingAt(STONE)
-      const target = yield* resolveTargetedBlock(store.api, player.api)
+      const { state, store, commit } = yield* aimingAt(STONE)
+      const target = yield* resolveTargetedBlock(store.api, targetingContextFor(commit))
       const aimed = Option.getOrThrow(target).position
       const aimedBlock = fixtureBlockPosition(
         Math.floor(aimed.x),
@@ -3535,11 +3815,27 @@ describe('the targeted-block family resolves through the same raycast as placeme
 
   it.effect('requestTargetedBlockUse resolves to None and enqueues nothing when nothing is aimed at', () =>
     Effect.gen(function* () {
-      const state = yield* makeGameplayFrameState
-      const store = yield* makeChunkStoreDouble(world([]), ['0,0'])
-      const player = yield* makePlayerServiceDouble()
+      const harness = yield* builtStagesInWorld(
+        world([]),
+        ['0,0'],
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { playerPose: AIMING_POSE },
+      )
+      const { state, store, commit } = harness
 
-      const target = yield* requestTargetedBlockUse(state, store.api, player.api, 'nothing', 'redstone_dust')
+      const target = yield* requestTargetedBlockUse(
+        state,
+        store.api,
+        targetingContextFor(commit),
+        'nothing',
+        'redstone_dust',
+      )
 
       expect(Option.isNone(target)).toBe(true)
       expect(yield* Ref.get(state.pendingBlockUses)).toStrictEqual([])
@@ -3562,10 +3858,16 @@ describe('the targeted-block family resolves through the same raycast as placeme
 
   it.effect('requestTargetedBlockUse takes no action when the target chunk unloaded between aim and use', () =>
     Effect.gen(function* () {
-      const { state, store, player } = yield* aimingAt(STONE)
+      const { state, store, commit } = yield* aimingAt(STONE)
       const racy = secondReadOf(store.api, AIMED_AT, { _tag: 'ChunkNotLoaded' })
 
-      const target = yield* requestTargetedBlockUse(state, racy, player.api, 'raced-use', 'redstone_dust')
+      const target = yield* requestTargetedBlockUse(
+        state,
+        racy,
+        targetingContextFor(commit),
+        'raced-use',
+        'redstone_dust',
+      )
 
       expect(Option.getOrUndefined(target)?.position).toStrictEqual(AIMED_AT)
       expect(yield* Ref.get(state.pendingBlockUses)).toStrictEqual([])
@@ -3575,10 +3877,16 @@ describe('the targeted-block family resolves through the same raycast as placeme
 
   it.effect('requestTargetedBlockUse takes no action when the target reads out of world between aim and use', () =>
     Effect.gen(function* () {
-      const { state, store, player } = yield* aimingAt(STONE)
+      const { state, store, commit } = yield* aimingAt(STONE)
       const racy = secondReadOf(store.api, AIMED_AT, { _tag: 'OutOfWorld' })
 
-      const target = yield* requestTargetedBlockUse(state, racy, player.api, 'raced-use-2', 'redstone_dust')
+      const target = yield* requestTargetedBlockUse(
+        state,
+        racy,
+        targetingContextFor(commit),
+        'raced-use-2',
+        'redstone_dust',
+      )
 
       expect(Option.getOrUndefined(target)?.position).toStrictEqual(AIMED_AT)
       expect(yield* Ref.get(state.pendingBlockUses)).toStrictEqual([])

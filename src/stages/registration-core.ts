@@ -2405,8 +2405,11 @@ type GameplayTargetingSnapshots = Readonly<{
   entities: ReplicatedSnapshot<typeof GameplayEntityRosterSchema>
 }>
 
+const TARGETING_SNAPSHOT_ATTEMPT_LIMIT = 3
+
 const readGameplayTargetingSnapshots = (
   context: GameplayTargetingSnapshotContext,
+  attemptsRemaining: number = TARGETING_SNAPSHOT_ATTEMPT_LIMIT,
 ): Effect.Effect<GameplayTargetingSnapshots, WorldCommitCoordinatorError | Schema.SchemaError> =>
   Effect.gen(function* () {
     const player = yield* readGameplayPlayer(context.coordinator, context.playerOwnerId)
@@ -2415,7 +2418,15 @@ const readGameplayTargetingSnapshots = (
       GameplayEntityRosterSchema,
     )
     if (player.revision !== entities.revision) {
-      return yield* Effect.suspend(() => readGameplayTargetingSnapshots(context))
+      if (attemptsRemaining <= 1) {
+        return yield* Effect.fail(new WorldRevisionConflict({
+          expected: player.revision,
+          actual: entities.revision,
+        }))
+      }
+      return yield* Effect.suspend(() =>
+        readGameplayTargetingSnapshots(context, attemptsRemaining - 1),
+      )
     }
     return { player, entities }
   })
@@ -3719,12 +3730,16 @@ export const recordGameplayUnsupportedOperation = (
 export const requestTargetedBlockPlacement = (
   state: GameplayFrameState,
   store: ChunkStoreApi,
-  player: PlayerServiceApi,
+  context: GameplayTargetingSnapshotContext,
   heldItem: PlaceableItemType,
   maxDistance: number = DEFAULT_BLOCK_REACH,
-): Effect.Effect<Option.Option<BlockTarget>> =>
+): Effect.Effect<
+  Option.Option<BlockTarget>,
+  WorldCommitCoordinatorError | Schema.SchemaError
+> =>
   Effect.gen(function* () {
-    const pose = yield* player.pose
+    const snapshots = yield* readGameplayTargetingSnapshots(context)
+    const pose = snapshots.player.state.pose
     const target = yield* resultOrDie(
       targetBlockFromPlayerPose(pose, maxDistance, targetabilityFromStore(store)),
     )
@@ -3744,13 +3759,17 @@ export const requestTargetedBlockPlacement = (
 export const requestTargetedBlockUse = (
   state: GameplayFrameState,
   store: ChunkStoreApi,
-  player: PlayerServiceApi,
+  context: GameplayTargetingSnapshotContext,
   requestId: BlockUseRequestId,
   heldItem: PlaceableItemType,
   maxDistance: number = DEFAULT_BLOCK_REACH,
-): Effect.Effect<Option.Option<BlockTarget>> =>
+): Effect.Effect<
+  Option.Option<BlockTarget>,
+  WorldCommitCoordinatorError | Schema.SchemaError
+> =>
   Effect.gen(function* () {
-    const pose = yield* player.pose
+    const snapshots = yield* readGameplayTargetingSnapshots(context)
+    const pose = snapshots.player.state.pose
     const target = yield* resultOrDie(
       targetBlockFromPlayerPose(pose, maxDistance, targetabilityFromStore(store)),
     )
@@ -3793,13 +3812,20 @@ export const requestTargetedBlockUse = (
 /** Resolve the block currently under the crosshair. */
 export const resolveTargetedBlock = (
   store: ChunkStoreApi,
-  player: PlayerServiceApi,
+  context: GameplayTargetingSnapshotContext,
   maxDistance: number = DEFAULT_BLOCK_REACH,
-): Effect.Effect<Option.Option<BlockTarget>> =>
+): Effect.Effect<
+  Option.Option<BlockTarget>,
+  WorldCommitCoordinatorError | Schema.SchemaError
+> =>
   Effect.gen(function* () {
-    const pose = yield* player.pose
+    const snapshots = yield* readGameplayTargetingSnapshots(context)
     return yield* resultOrDie(
-      targetBlockFromPlayerPose(pose, maxDistance, targetabilityFromStore(store)),
+      targetBlockFromPlayerPose(
+        snapshots.player.state.pose,
+        maxDistance,
+        targetabilityFromStore(store),
+      ),
     )
   })
 
@@ -3807,13 +3833,16 @@ export const resolveTargetedBlock = (
 export const requestTargetedItemUse = (
   state: GameplayFrameState,
   store: ChunkStoreApi,
-  player: PlayerServiceApi,
+  context: GameplayTargetingSnapshotContext,
   requestId: ItemUseRequestId,
   heldItem: IgnitionItemType,
   maxDistance: number = DEFAULT_BLOCK_REACH,
-): Effect.Effect<Option.Option<BlockTarget>> =>
+): Effect.Effect<
+  Option.Option<BlockTarget>,
+  WorldCommitCoordinatorError | Schema.SchemaError
+> =>
   Effect.gen(function* () {
-    const target = yield* resolveTargetedBlock(store, player, maxDistance)
+    const target = yield* resolveTargetedBlock(store, context, maxDistance)
     if (Option.isSome(target)) {
       yield* requestItemUse(state, requestId, blockPosition(target.value.adjacentPosition.x, target.value.adjacentPosition.y, target.value.adjacentPosition.z), heldItem)
     }
@@ -3824,15 +3853,22 @@ export const requestTargetedItemUse = (
 export const requestTargetedSoilTill = (
   state: GameplayFrameState,
   store: ChunkStoreApi,
-  player: PlayerServiceApi,
+  context: GameplayTargetingSnapshotContext,
   requestId: ItemUseRequestId,
   heldItem: HoeItemType,
   maxDistance: number = DEFAULT_BLOCK_REACH,
-): Effect.Effect<Option.Option<BlockTarget>> =>
+): Effect.Effect<
+  Option.Option<BlockTarget>,
+  WorldCommitCoordinatorError | Schema.SchemaError
+> =>
   Effect.gen(function* () {
-    const pose = yield* player.pose
+    const snapshots = yield* readGameplayTargetingSnapshots(context)
     const target = yield* resultOrDie(
-      targetBlockFromPlayerPose(pose, maxDistance, targetabilityFromStore(store)),
+      targetBlockFromPlayerPose(
+        snapshots.player.state.pose,
+        maxDistance,
+        targetabilityFromStore(store),
+      ),
     )
     if (Option.isSome(target)) {
       yield* requestSoilTill(state, requestId, blockPosition(target.value.position.x, target.value.position.y, target.value.position.z), heldItem)
@@ -3844,14 +3880,21 @@ export const requestTargetedSoilTill = (
 export const requestTargetedPotatoPlanting = (
   state: GameplayFrameState,
   store: ChunkStoreApi,
-  player: PlayerServiceApi,
+  context: GameplayTargetingSnapshotContext,
   requestId: ItemUseRequestId,
   maxDistance: number = DEFAULT_BLOCK_REACH,
-): Effect.Effect<Option.Option<BlockTarget>> =>
+): Effect.Effect<
+  Option.Option<BlockTarget>,
+  WorldCommitCoordinatorError | Schema.SchemaError
+> =>
   Effect.gen(function* () {
-    const pose = yield* player.pose
+    const snapshots = yield* readGameplayTargetingSnapshots(context)
     const target = yield* resultOrDie(
-      targetBlockFromPlayerPose(pose, maxDistance, targetabilityFromStore(store)),
+      targetBlockFromPlayerPose(
+        snapshots.player.state.pose,
+        maxDistance,
+        targetabilityFromStore(store),
+      ),
     )
     if (Option.isSome(target)) {
       yield* requestPotatoPlanting(state, requestId, blockPosition(target.value.position.x, target.value.position.y, target.value.position.z))

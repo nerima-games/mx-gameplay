@@ -1067,7 +1067,7 @@ describe('registered Fishing plans in the interactions stage', () => {
     expect(await Effect.runPromise(Ref.get(harness.publishedEvents))).toHaveLength(1)
   })
 
-  it('requeues a caught Reel when its post-commit event has no interaction event bus', async () => {
+  it('reports a caught Reel as unsupported when its required event bus is unavailable', async () => {
     const harness = await Effect.runPromise(makeHarness({
       fishing: fishingStateWithRod('bite'),
       projectiles: projectileStateWithBobber(),
@@ -1105,11 +1105,12 @@ describe('registered Fishing plans in the interactions stage', () => {
     ))).toStrictEqual(storageBefore)
     expect(await Effect.runPromise(harness.coordinator.revision)).toBe(revisionBefore)
     expect(await Effect.runPromise(Ref.get(harness.state.rollSeed))).toBe(seedBefore)
-    expect(await Effect.runPromise(Ref.get(harness.state.pendingItemUses))).toMatchObject([
-      { action: 'ReelFishing', requestId: 'reel-without-event-bus' },
-    ])
-    expect(await Effect.runPromise(Ref.get(harness.state.unsupportedOperations))).toMatchObject([{
-      _tag: 'Unsupported', action: 'Fishing', reason: 'OwnerRegistrationUnavailable',
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingItemUses))).toStrictEqual([])
+    expect(await Effect.runPromise(Ref.get(harness.state.unsupportedOperations))).toStrictEqual([{
+      _tag: 'Unsupported',
+      action: 'Fishing',
+      requestId: 'reel-without-event-bus',
+      reason: 'OwnerRegistrationUnavailable',
     }])
     expect(await Effect.runPromise(drainItemUseResults(harness.state))).toStrictEqual([])
     expect(await Effect.runPromise(Ref.get(harness.publishedEvents))).toStrictEqual([])
@@ -1311,7 +1312,7 @@ describe('registered Brewing bottle collection in the interactions stage', () =>
     expect(await Effect.runPromise(Ref.get(harness.publishedEvents))).toStrictEqual([])
   })
 
-  it('keeps a bottle collection pending when the post-commit event bus is unavailable', async () => {
+  it('reports bottle collection as unsupported and removes it when its event bus is unavailable', async () => {
     const harness = await Effect.runPromise(makeHarness({
       brewing: brewingStateWithBottle(),
       omitInteractionEventBus: true,
@@ -1338,11 +1339,12 @@ describe('registered Brewing bottle collection in the interactions stage', () =>
       PlayerStorageSnapshotSchema,
     ))).toStrictEqual(storageBefore)
     expect(await Effect.runPromise(harness.coordinator.revision)).toBe(revisionBefore)
-    expect(await Effect.runPromise(Ref.get(harness.state.pendingItemUses))).toMatchObject([
-      { action: 'CollectBrewingBottle', requestId: 'collect-brewing-bottle' },
-    ])
-    expect(await Effect.runPromise(Ref.get(harness.state.unsupportedOperations))).toMatchObject([{
-      _tag: 'Unsupported', action: 'CollectBrewingBottle', reason: 'OwnerRegistrationUnavailable',
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingItemUses))).toStrictEqual([])
+    expect(await Effect.runPromise(Ref.get(harness.state.unsupportedOperations))).toStrictEqual([{
+      _tag: 'Unsupported',
+      action: 'CollectBrewingBottle',
+      requestId: 'collect-brewing-bottle',
+      reason: 'OwnerRegistrationUnavailable',
     }])
     expect(await Effect.runPromise(drainItemUseResults(harness.state))).toStrictEqual([])
     expect(await Effect.runPromise(Ref.get(harness.publishedEvents))).toStrictEqual([])
@@ -1949,6 +1951,51 @@ describe('registered Brewing item plans in the interactions stage', () => {
     expect(await Effect.runPromise(Ref.get(harness.state.operationFailures))).toStrictEqual([])
     expect(harness.commitCalls()).toBe(0)
     expect(await Effect.runPromise(harness.coordinator.revision)).toBe(revisionBefore)
+  })
+
+  it('reports a potion use as unsupported and removes it when its post-commit event bus is unavailable', async () => {
+    const harness = await Effect.runPromise(makeHarness({
+      playerStorage: playerStorageWithItem('potion_of_poison', 1),
+      omitInteractionEventBus: true,
+    }))
+    const storageBefore = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+      PlayerStorageSnapshotSchema,
+    ))
+    const effectsBefore = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_STATUS_EFFECTS_OWNER_ID,
+      StatusEffectStateSchema,
+    ))
+    const revisionBefore = await Effect.runPromise(harness.coordinator.revision)
+    const request = {
+      requestId: 'drink-poison-without-event-bus',
+      actor: FISHER,
+      tick: Schema.decodeUnknownSync(SimulationTickSchema)(6),
+      slotIndex: 0,
+    }
+    await Effect.runPromise(useBrewingPotion(harness.state, request))
+
+    await harness.run()
+
+    expect(await Effect.runPromise(Ref.get(harness.state.unsupportedOperations))).toStrictEqual([{
+      _tag: 'Unsupported',
+      action: 'Brewing',
+      requestId: request.requestId,
+      reason: 'OwnerRegistrationUnavailable',
+    }])
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingItemUses))).toStrictEqual([])
+    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toStrictEqual([])
+    expect(await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+      PlayerStorageSnapshotSchema,
+    ))).toStrictEqual(storageBefore)
+    expect(await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_STATUS_EFFECTS_OWNER_ID,
+      StatusEffectStateSchema,
+    ))).toStrictEqual(effectsBefore)
+    expect(await Effect.runPromise(harness.coordinator.revision)).toBe(revisionBefore)
+    expect(await Effect.runPromise(Ref.get(harness.publishedEvents))).toStrictEqual([])
+    expect(harness.commitCalls()).toBe(0)
   })
 
   it('requeues a potion plan after its owner commit is rejected and applies it on retry', async () => {
@@ -4260,6 +4307,66 @@ describe('schema-valid interaction edge paths', () => {
     expect(harness.commitCalls()).toBe(0)
   })
 
+
+  it('requeues a brewing insertion after a rejected commit and succeeds on the next frame', async () => {
+    const harness = await Effect.runPromise(makeHarness({
+      playerStorage: playerStorageWithItem('blaze_powder', 1),
+    }))
+    const brewingBefore = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_BREWING_OWNER_ID,
+      BrewingServiceStateSchema,
+    ))
+    const storageBefore = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+      PlayerStorageSnapshotSchema,
+    ))
+    const revisionBefore = await Effect.runPromise(harness.coordinator.revision)
+    await Effect.runPromise(insertBrewingFuel(harness.state, 'brewing-commit-retry'))
+    harness.rejectCommits(true)
+
+    await harness.run()
+
+    expect(await Effect.runPromise(Ref.get(harness.state.operationFailures))).toMatchObject([{
+      _tag: 'Failed', operation: 'WorldCommit', subject: 'Brewing',
+      error: { _tag: 'WorldCommitEmptyRequest' },
+    }])
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingItemUses))).toMatchObject([{
+      action: 'InsertBrewingFuel', requestId: 'brewing-commit-retry',
+    }])
+    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toStrictEqual([])
+    expect(await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_BREWING_OWNER_ID,
+      BrewingServiceStateSchema,
+    ))).toStrictEqual(brewingBefore)
+    expect(await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+      PlayerStorageSnapshotSchema,
+    ))).toStrictEqual(storageBefore)
+    expect(await Effect.runPromise(harness.coordinator.revision)).toBe(revisionBefore)
+    expect(harness.commitCalls()).toBe(1)
+
+    harness.rejectCommits(false)
+    await harness.run()
+
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingItemUses))).toStrictEqual([])
+    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toStrictEqual([{
+      action: 'InsertBrewingFuel',
+      requestId: 'brewing-commit-retry',
+      success: true,
+      outcome: undefined,
+    }])
+    expect((await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_BREWING_OWNER_ID,
+      BrewingServiceStateSchema,
+    ))).state.fuelCharges).toBeGreaterThan(0)
+    expect((await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+      PlayerStorageSnapshotSchema,
+    ))).state.inventory.slots.some((slot) => slot?.item === 'blaze_powder')).toBe(false)
+    expect(await Effect.runPromise(harness.coordinator.revision)).toBe(revisionBefore + 1)
+    expect(harness.commitCalls()).toBe(2)
+  })
+
   it('rejects a fuel increment that exceeds the valid item stack limit', async () => {
     const maxFuel = Result.getOrThrow(makeItemStack('blaze_powder', StackCount(64)))
     const harness = await Effect.runPromise(makeHarness({
@@ -4607,6 +4714,11 @@ describe('schema-valid interaction edge paths', () => {
     const scenarios = [
       {
         name: 'bone meal',
+        action: 'ApplyBoneMeal',
+        requestId: 'crop-revision-bone-meal',
+        worldPosition: wheatPosition,
+        initialBlock: wheat,
+        expectedBlock: wheat,
         options: {
           blocks: [[wheatPosition, wheat]] as const,
           playerStorage: playerStorageWithItem('bone_meal', 1),
@@ -4616,6 +4728,11 @@ describe('schema-valid interaction edge paths', () => {
       },
       {
         name: 'planting',
+        action: 'PlantPotato',
+        requestId: 'crop-revision-plant',
+        worldPosition: blockPosition(BlockAxis(6), BlockAxis(65), BlockAxis(1)),
+        initialBlock: undefined,
+        expectedBlock: potato,
         options: {
           blocks: [[plantPosition, farmland]] as const,
           playerStorage: playerStorageWithItem('potato', 1),
@@ -4625,6 +4742,11 @@ describe('schema-valid interaction edge paths', () => {
       },
       {
         name: 'harvesting',
+        action: 'HarvestPotato',
+        requestId: 'crop-revision-harvest',
+        worldPosition: harvestPosition,
+        initialBlock: potato,
+        expectedBlock: undefined,
         options: {
           blocks: [[harvestPosition, potato]] as const,
           crops: { crops: [{ dimension: DIMENSION, position: harvestPosition, crop: 'potato_crop' as const, growthSecs: POTATO_MATURITY_SECS }] },
@@ -4637,10 +4759,20 @@ describe('schema-valid interaction edge paths', () => {
       const harness = await Effect.runPromise(makeHarness(scenario.options))
       const revisionBefore = await Effect.runPromise(harness.coordinator.revision)
       const interactions = harness.interactionsWithCoordinator(coordinatorWithRevisionBump(
-        harness.baseCoordinator,
+        harness.coordinator,
         GAMEPLAY_CROPS_OWNER_ID,
       ))
+      const storageBefore = await Effect.runPromise(harness.coordinator.snapshot(
+        GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+        PlayerStorageSnapshotSchema,
+      ))
+      const cropsBefore = await Effect.runPromise(harness.coordinator.snapshot(
+        GAMEPLAY_CROPS_OWNER_ID,
+        CropSnapshotSchema,
+      ))
       await Effect.runPromise(scenario.enqueue(harness.state))
+      const queuedIntent = await Effect.runPromise(Ref.get(harness.state.pendingItemUses))
+      const worldBlockBefore = await Effect.runPromise(harness.store.blockAt(scenario.worldPosition))
       await Effect.runPromise(interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer)))
 
       expect(await Effect.runPromise(Ref.get(harness.state.operationFailures)), scenario.name).toMatchObject([{
@@ -4648,7 +4780,41 @@ describe('schema-valid interaction edge paths', () => {
         error: { _tag: 'WorldRevisionConflict', expected: revisionBefore, actual: revisionBefore + 1 },
       }])
       expect(await Effect.runPromise(drainItemUseResults(harness.state)), scenario.name).toStrictEqual([])
-      expect(harness.commitCalls(), scenario.name).toBe(0)
+      expect(await Effect.runPromise(Ref.get(harness.state.pendingItemUses)), scenario.name).toStrictEqual(queuedIntent)
+      expect(queuedIntent, scenario.name).toHaveLength(1)
+      expect((await Effect.runPromise(harness.coordinator.snapshot(
+        GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+        PlayerStorageSnapshotSchema,
+      ))).state, scenario.name).toStrictEqual(storageBefore.state)
+      expect((await Effect.runPromise(harness.coordinator.snapshot(
+        GAMEPLAY_CROPS_OWNER_ID,
+        CropSnapshotSchema,
+      ))).state, scenario.name).toStrictEqual(cropsBefore.state)
+      expect(await Effect.runPromise(harness.store.blockAt(scenario.worldPosition)), scenario.name).toBe(worldBlockBefore)
+      expect(await Effect.runPromise(Ref.get(harness.publishedEvents)), scenario.name).toStrictEqual([])
+      expect(harness.commitCalls(), scenario.name).toBe(1)
+      expect(await Effect.runPromise(harness.coordinator.revision), scenario.name).toBe(revisionBefore + 1)
+
+      await Effect.runPromise(interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer)))
+
+      expect(await Effect.runPromise(drainItemUseResults(harness.state)), scenario.name).toMatchObject([{
+        action: scenario.action,
+        requestId: scenario.requestId,
+        success: true,
+      }])
+      expect(await Effect.runPromise(Ref.get(harness.state.pendingItemUses)), scenario.name).toStrictEqual([])
+      expect(harness.commitCalls(), scenario.name).toBe(2)
+      expect(await Effect.runPromise(harness.coordinator.revision), scenario.name).toBe(revisionBefore + 2)
+      expect((await Effect.runPromise(harness.coordinator.snapshot(
+        GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+        PlayerStorageSnapshotSchema,
+      ))).state).not.toStrictEqual(storageBefore.state)
+      expect((await Effect.runPromise(harness.coordinator.snapshot(
+        GAMEPLAY_CROPS_OWNER_ID,
+        CropSnapshotSchema,
+      ))).state).not.toStrictEqual(cropsBefore.state)
+      expect(await Effect.runPromise(harness.store.blockAt(scenario.worldPosition)), scenario.name)
+        .toBe(scenario.expectedBlock)
     }))
   })
 

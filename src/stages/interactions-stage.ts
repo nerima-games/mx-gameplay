@@ -639,8 +639,12 @@ const commitPlanFragments = (
   state: GameplayStageContext['state'],
   context: NonNullable<GameplayStageContext['commit']>,
   subject: 'Fishing' | 'Brewing',
+  action: 'Fishing' | 'Brewing' | 'CollectBrewingBottle',
+  requestId: string,
   plans: ReadonlyArray<WorldCommitPlanFragment<unknown>>,
-): Effect.Effect<boolean> =>
+  onCommitted: () => Effect.Effect<void>,
+  onRetry: () => Effect.Effect<void>,
+): Effect.Effect<void> =>
   Effect.gen(function* () {
     const merged = mergeWorldCommitPlans(plans)
     if (Result.isFailure(merged)) {
@@ -650,16 +654,18 @@ const commitPlanFragments = (
         subject,
         error: merged.failure,
       })
-      return false
+      yield* onRetry()
+      return
     }
     const events = plans.flatMap((plan) => plan.postCommitEvents)
     if (events.length > 0 && context.eventBus === undefined) {
       yield* recordGameplayUnsupportedOperation(state, {
         _tag: 'Unsupported',
-        action: subject === 'Fishing' ? 'Fishing' : 'CollectBrewingBottle',
+        action,
+        requestId,
         reason: 'OwnerRegistrationUnavailable',
       })
-      return false
+      return
     }
     const committed = yield* Effect.result(context.coordinator.commit(merged.success))
     if (Result.isFailure(committed)) {
@@ -669,7 +675,8 @@ const commitPlanFragments = (
         subject,
         error: committed.failure,
       })
-      return false
+      yield* onRetry()
+      return
     }
     if (context.eventBus !== undefined) {
       for (const event of events) {
@@ -684,7 +691,7 @@ const commitPlanFragments = (
         }
       }
     }
-    return true
+    yield* onCommitted()
   })
 
 const processFishingItemUse = (
@@ -935,12 +942,19 @@ const processFishingItemUse = (
       success: true,
       outcome,
     })
-    if (!(yield* commitPlanFragments(state, context, 'Fishing', plans))) {
-      yield* Ref.update(state.pendingItemUses, (pending) => [request, ...pending])
-      return
-    }
-    if (nextSeed !== undefined) yield* Ref.set(state.rollSeed, nextSeed)
-    yield* Ref.update(state.itemUseResults, (results) => [...results, result])
+    yield* commitPlanFragments(
+      state,
+      context,
+      'Fishing',
+      'Fishing',
+      request.requestId,
+      plans,
+      () => Effect.gen(function* () {
+        if (nextSeed !== undefined) yield* Ref.set(state.rollSeed, nextSeed)
+        yield* Ref.update(state.itemUseResults, (results) => [...results, result])
+      }),
+      () => Ref.update(state.pendingItemUses, (pending) => [request, ...pending]),
+    )
   })
 
 const processBrewingBottleCollection = (
@@ -1063,11 +1077,16 @@ const processBrewingBottleCollection = (
         remainingCount: remaining?.count ?? 0,
       },
     })
-    if (!(yield* commitPlanFragments(state, context, 'Brewing', [bottlePlan.success, storagePlan]))) {
-      yield* Ref.update(state.pendingItemUses, (pending) => [request, ...pending])
-      return
-    }
-    yield* Ref.update(state.itemUseResults, (results) => [...results, result])
+    yield* commitPlanFragments(
+      state,
+      context,
+      'Brewing',
+      'CollectBrewingBottle',
+      request.requestId,
+      [bottlePlan.success, storagePlan],
+      () => Ref.update(state.itemUseResults, (results) => [...results, result]),
+      () => Ref.update(state.pendingItemUses, (pending) => [request, ...pending]),
+    )
   })
 
 const recordBrewingItemUseResult = (
@@ -1187,18 +1206,25 @@ const processBrewingItemUse = (
         action: 'DrinkPotion', requestId: request.requestId,
         success: true, outcome: drinkPlan.result,
       })
-      if (!(yield* commitPlanFragments(state, context, 'Brewing', plans))) {
-        yield* retry()
-        return
-      }
-      if (statusCandidate !== undefined) {
-        yield* Ref.set(state.playerMovementSpeedMultiplier,
-          statusCandidate.effects.some((effect) => effect.type === 'speed')
-            ? SPEED_MOVEMENT_MULTIPLIER
-            : 1,
-        )
-      }
-      yield* Ref.update(state.itemUseResults, (results) => [...results, result])
+      yield* commitPlanFragments(
+        state,
+        context,
+        'Brewing',
+        'Brewing',
+        request.requestId,
+        plans,
+        () => Effect.gen(function* () {
+          if (statusCandidate !== undefined) {
+            yield* Ref.set(state.playerMovementSpeedMultiplier,
+              statusCandidate.effects.some((effect) => effect.type === 'speed')
+                ? SPEED_MOVEMENT_MULTIPLIER
+                : 1,
+            )
+          }
+          yield* Ref.update(state.itemUseResults, (results) => [...results, result])
+        }),
+        retry,
+      )
       return
     }
 
@@ -1367,11 +1393,16 @@ const processBrewingItemUse = (
     const result = Schema.decodeUnknownSync(GameplayBrewingItemUseResultSchema)({
       action: request.action, requestId: request.requestId, success: true, outcome: undefined,
     })
-    if (!(yield* commitPlanFragments(state, context, 'Brewing', fragments))) {
-      yield* retry()
-      return
-    }
-    yield* Ref.update(state.itemUseResults, (results) => [...results, result])
+    yield* commitPlanFragments(
+      state,
+      context,
+      'Brewing',
+      'Brewing',
+      request.requestId,
+      fragments,
+      () => Ref.update(state.itemUseResults, (results) => [...results, result]),
+      retry,
+    )
   })
 
 const processPlacement = (

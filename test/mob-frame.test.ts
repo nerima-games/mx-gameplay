@@ -968,7 +968,7 @@ describe('bruise: a hostile snapshot survives a non-lethal blast with its outer 
 })
 
 describe('experienceOfCasualties', () => {
-  it.effect('requires a player or tamed-wolf hit in the last 100 ticks, or player-triggered TNT', () =>
+  it.effect('requires a player hit in the last 100 ticks or player-triggered TNT', () =>
     Effect.sync(() => {
       const atTick = SimulationTick(200)
       const noReward: MobCasualty = {
@@ -991,14 +991,6 @@ describe('experienceOfCasualties', () => {
         at: ORIGIN,
         killCredit: 'player',
         lastHitTick: SimulationTick(100),
-        deathTick: atTick,
-      }
-      const recentWolf: MobCasualty = {
-        id: EntityId('e:wolf'),
-        kind: ZOMBIE_KIND,
-        at: ORIGIN,
-        killCredit: 'tamed-wolf',
-        lastHitTick: SimulationTick(101),
         deathTick: atTick,
       }
       const staleHit: MobCasualty = {
@@ -1026,10 +1018,9 @@ describe('experienceOfCasualties', () => {
       }
 
       expect(experienceOfCasualties([
-        noReward, noCredit, recentPlayer, recentWolf, staleHit, futureHit, playerTnt,
+        noReward, noCredit, recentPlayer, staleHit, futureHit, playerTnt,
       ])).toStrictEqual([
         { source: recentPlayer.id, kind: ZOMBIE_KIND, at: ORIGIN, amount: ZOMBIE_XP_REWARD },
-        { source: recentWolf.id, kind: ZOMBIE_KIND, at: ORIGIN, amount: ZOMBIE_XP_REWARD },
         { source: playerTnt.id, kind: ZOMBIE_KIND, at: ORIGIN, amount: ZOMBIE_XP_REWARD },
       ])
     }),
@@ -1095,7 +1086,7 @@ describe('owner-snapshot roster plans', () => {
         {
           id: survivor.id,
           damage: damage(1),
-          killCredit: 'tamed-wolf',
+          killCredit: 'player',
           lastHitTick: SimulationTick(20),
         },
         { id: dropped.id, damage: damage(1) },
@@ -1112,7 +1103,7 @@ describe('owner-snapshot roster plans', () => {
         id: survivor.id,
         healthPoints: EntityHealthPoints(4),
         behaviour: STRUCK_ENDERMAN,
-        killCredit: 'tamed-wolf',
+        killCredit: 'player',
         lastHitTick: SimulationTick(20),
       })
       expect(resolution.roster.entities[1]).toBe(dropped)
@@ -1128,7 +1119,7 @@ describe('owner-snapshot roster plans', () => {
           id: survivor.id,
           kind: survivor.kind,
           at: survivor.feetPosition,
-          killCredit: 'tamed-wolf',
+          killCredit: 'player',
           lastHitTick: SimulationTick(20),
           deathTick: SimulationTick(120),
         },
@@ -1153,7 +1144,7 @@ describe('owner-snapshot roster plans', () => {
       const olderDeath = planMobDamageRoster(withPriorCredit, [{
         id: olderTarget.id,
         damage: { amount: 5, cause: 'mob' },
-        killCredit: 'tamed-wolf',
+        killCredit: 'player',
         lastHitTick: SimulationTick(9),
       }], SimulationTick(20))
 
@@ -1173,7 +1164,7 @@ describe('owner-snapshot roster plans', () => {
         {
           id: batchedTarget.id,
           damage: { amount: 2, cause: 'mob' },
-          killCredit: 'tamed-wolf',
+          killCredit: 'player',
           lastHitTick: SimulationTick(20),
         },
         {
@@ -1186,7 +1177,7 @@ describe('owner-snapshot roster plans', () => {
 
       expect(batchedDeath.casualties).toMatchObject([{
         id: batchedTarget.id,
-        killCredit: 'tamed-wolf',
+        killCredit: 'player',
         lastHitTick: SimulationTick(20),
         deathTick: SimulationTick(21),
       }])
