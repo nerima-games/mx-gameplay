@@ -2427,8 +2427,8 @@ export const requestTargetedBlockBreak = (
   CameraPoseError | RangeError | BlockTargetInputError | WorldCommitCoordinatorError | Schema.SchemaError
 > =>
   Effect.gen(function* () {
-    const snapshot = yield* readGameplayPlayer(context.coordinator, context.playerOwnerId)
-    const pose = snapshot.state.pose
+    const snapshots = yield* readGameplayTargetingSnapshots(context)
+    const pose = snapshots.player.state.pose
     const target = yield* Effect.fromResult(
       targetBlockFromPlayerPose(pose, maxDistance, targetabilityFromStore(store)),
     )

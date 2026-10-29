@@ -147,7 +147,7 @@ const runInteractions = (
   return stage.run(DeltaTimeSecs(0.016))
 }
 
-const const gameplayStagesWithOwners = (
+const gameplayStagesWithOwners = (
   state: Parameters<typeof gameplayStages>[0],
   world: InMemoryWorld<MobBehaviour>,
   store = world.chunkStore,

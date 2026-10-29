@@ -382,7 +382,7 @@ const builtStagesInWorld = (
   fishing: GameplayOwnerInitialState['fishing'] = emptyFishingState(),
   projectiles: GameplayOwnerInitialState['projectiles'] = INITIAL_PROJECTILE_SERVICE_SNAPSHOT,
   tnt: GameplayOwnerInitialState['tnt'] = undefined,
-  ownerOverrides: Pick<GameplayOwnerInitialState, 'dimension' | 'vitals'> = {},
+  ownerOverrides: Pick<GameplayOwnerInitialState, 'dimension' | 'vitals' | 'playerPose'> = {},
   commitOverrides: {
     readonly cropOwnerId?: GameplayStageCommitServices['cropOwnerId'] | undefined
     readonly droppedItemsOwnerId?: GameplayStageCommitServices['droppedItemsOwnerId'] | undefined
@@ -410,7 +410,7 @@ const builtStagesInWorld = (
       owners: gameplayOwnerRegistrations({
         ...ownerOverrides,
         playerStorage: initialStorage,
-        playerPose: SPAWN_POSE,
+        playerPose: ownerOverrides.playerPose ?? SPAWN_POSE,
         crops,
         villagerTrades,
         entities,
@@ -3342,6 +3342,82 @@ describe('the targeted-block family resolves through the same raycast as placeme
       ))).toBe(true)
       expect(yield* Ref.get(emptyHarness.state.pendingBreaks)).toStrictEqual([])
     }),
+  )
+
+  it.effect('requestTargetedBlockBreak retries when its owner snapshots span revisions', () =>
+    Effect.gen(function* () {
+      const movedAim = fixtureBlockPosition(0, 1, 9)
+      const harness = yield* builtStagesInWorld(
+        world([[AIMED_AT, STONE], [movedAim, STONE]]),
+        ['0,0'],
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { playerPose: AIMING_POSE },
+      )
+      const coordinator = harness.commit.coordinator
+      let injectConcurrentCommit = true
+      let playerSnapshotCount = 0
+      let entitySnapshotCount = 0
+      type SnapshotCodec = Parameters<WorldCommitCoordinatorApi['snapshot']>[1]
+      type SnapshotOwnerId = Parameters<WorldCommitCoordinatorApi['snapshot']>[0]
+      const racingCoordinator: WorldCommitCoordinatorApi = {
+        ...coordinator,
+        snapshot: <Codec extends SnapshotCodec>(
+          ownerId: SnapshotOwnerId,
+          schema: Codec,
+        ): Effect.Effect<
+          ReplicatedSnapshot<Codec>,
+          Schema.SchemaError | ReplicatedOwnerUnknown,
+          Schema.Codec.DecodingServices<Codec>
+        > => Effect.gen(function* () {
+          const snapshot = yield* coordinator.snapshot(ownerId, schema)
+          if (ownerId === GAMEPLAY_PLAYER_OWNER_ID) playerSnapshotCount += 1
+          if (ownerId === GAMEPLAY_ENTITIES_OWNER_ID) entitySnapshotCount += 1
+          if (ownerId === GAMEPLAY_PLAYER_OWNER_ID && injectConcurrentCommit) {
+            injectConcurrentCommit = false
+            const player = yield* coordinator.snapshot(
+              GAMEPLAY_PLAYER_OWNER_ID,
+              PlayerServiceSnapshotSchema,
+            )
+            const moved = Schema.decodeUnknownSync(PlayerServiceSnapshotSchema)({
+              pose: {
+                ...player.state.pose,
+                feetPosition: {
+                  ...player.state.pose.feetPosition,
+                  ...fixturePosition(0.5, 0, 10.5),
+                },
+              },
+            })
+            yield* coordinator.commit({
+              expectedRevision: player.revision,
+              expectedDimensions: [],
+              changes: [{ ownerId: GAMEPLAY_PLAYER_OWNER_ID, state: moved }],
+            })
+          }
+          return snapshot
+        }),
+      }
+      const targeting = {
+        ...targetingContextFor(harness.commit),
+        coordinator: racingCoordinator,
+      }
+
+      const target = yield* Effect.orDie(requestTargetedBlockBreak(
+        harness.state,
+        harness.store.api,
+        targeting,
+      ))
+
+      expect(Option.getOrUndefined(target)?.position).toStrictEqual(movedAim)
+      expect(yield* Ref.get(harness.state.pendingBreaks)).toStrictEqual([positionKey('0,1,9')])
+      expect(playerSnapshotCount).toBe(2)
+      expect(entitySnapshotCount).toBe(2)
+    }).pipe(Effect.provide(FrameServicesLayer)),
   )
 
   it.effect('the Targeted* request family enqueues nothing when nothing is within reach', () =>

@@ -68,7 +68,18 @@ const spawnHostile = (
       healthPoints: EntityHealthPoints(20),
       behaviour: undefined,
     })
-    const state = yield* roster.api.snapshot
+    const localRoster = yield* roster.api.snapshot
+    const player = yield* targeting.coordinator.snapshot(
+      targeting.playerOwnerId,
+      PlayerServiceSnapshotSchema,
+    )
+    const state = Schema.decodeUnknownSync(GameplayEntityRosterSchema)({
+      ...localRoster,
+      entities: localRoster.entities.map((entity) => ({
+        ...entity,
+        dimension: player.state.pose.feetPosition.dimension,
+      })),
+    })
     const expectedRevision = yield* targeting.coordinator.revision
     yield* targeting.coordinator.commit({
       expectedRevision,
@@ -98,7 +109,7 @@ describe('targeted primary attack', () => {
       expect(resolution._tag).toBe('Melee')
       if (resolution._tag === 'Melee') {
         expect(resolution.target.id).toBe(enemy.id)
-        expect(resolution.request.origin).toStrictEqual({ x: 0.5, y: 65.62, z: 5.5 })
+        expect(resolution.request.origin).toStrictEqual({ dimension: 'overworld', x: 0.5, y: 65.62, z: 5.5 })
         expect(resolution.request.direction.x).toBeCloseTo(0)
         expect(resolution.request.direction.y).toBeCloseTo(0)
         expect(resolution.request.direction.z).toBeCloseTo(-1)

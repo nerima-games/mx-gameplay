@@ -74,7 +74,7 @@ import { ZOMBIE_KIND } from '../src/domain/mob/hostile-combat'
 import type { SpawnCandidate } from '../src/domain/mob/hostile-spawn'
 import { DORMANT_FUSE } from '../src/domain/mob/creeper-fuse'
 import { FRESH_PRIMED_TNT } from '../src/domain/mob/primed-tnt'
-import { AIR_BLOCK_ID, BlockAxis, BlockId, blockPosition as makeBlockPosition, DeltaTimeSecs, EntityHealthPoints, EntitySerial } from '@nerima-games/mc-kernel'
+import { AIR_BLOCK_ID, BlockAxis, BlockId, blockPosition as makeBlockPosition, DeltaTimeSecs, EntityHealthPoints, EntitySerial, SimulationTick } from '@nerima-games/mc-kernel'
 import { durabilityForItem, EntityId, EntityKind, type Entity, type EntityRoster } from '@nerima-games/mc-sim'
 import { makeChunkStoreDouble, STONE, world } from './support/chunk-store-double'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
@@ -966,13 +966,70 @@ describe('bruise: a hostile snapshot survives a non-lethal blast with its outer 
   )
 })
 
-describe('experienceOfCasualties: a kind with no reward yields nothing', () => {
-  it.effect('an unrewarded kind contributes no event, and a rewarded one still does', () =>
+describe('experienceOfCasualties', () => {
+  it.effect('requires a player or tamed-wolf hit in the last 100 ticks, or player-triggered TNT', () =>
     Effect.sync(() => {
-      const noReward: MobCasualty = { id: EntityId('e:0'), kind: EntityKind('villager'), at: ORIGIN }
-      const rewarded: MobCasualty = { id: EntityId('e:1'), kind: ZOMBIE_KIND, at: ORIGIN }
-      expect(experienceOfCasualties([noReward, rewarded])).toStrictEqual([
-        { source: rewarded.id, kind: ZOMBIE_KIND, at: ORIGIN, amount: ZOMBIE_XP_REWARD },
+      const atTick = SimulationTick(200)
+      const noReward: MobCasualty = {
+        id: EntityId('e:no-reward'),
+        kind: EntityKind('villager'),
+        at: ORIGIN,
+        killCredit: 'player',
+        lastHitTick: atTick,
+        deathTick: atTick,
+      }
+      const noCredit: MobCasualty = {
+        id: EntityId('e:no-credit'),
+        kind: ZOMBIE_KIND,
+        at: ORIGIN,
+        deathTick: atTick,
+      }
+      const recentPlayer: MobCasualty = {
+        id: EntityId('e:player'),
+        kind: ZOMBIE_KIND,
+        at: ORIGIN,
+        killCredit: 'player',
+        lastHitTick: SimulationTick(100),
+        deathTick: atTick,
+      }
+      const recentWolf: MobCasualty = {
+        id: EntityId('e:wolf'),
+        kind: ZOMBIE_KIND,
+        at: ORIGIN,
+        killCredit: 'tamed-wolf',
+        lastHitTick: SimulationTick(101),
+        deathTick: atTick,
+      }
+      const staleHit: MobCasualty = {
+        id: EntityId('e:stale'),
+        kind: ZOMBIE_KIND,
+        at: ORIGIN,
+        killCredit: 'player',
+        lastHitTick: SimulationTick(99),
+        deathTick: atTick,
+      }
+      const futureHit: MobCasualty = {
+        id: EntityId('e:future'),
+        kind: ZOMBIE_KIND,
+        at: ORIGIN,
+        killCredit: 'player',
+        lastHitTick: SimulationTick(201),
+        deathTick: atTick,
+      }
+      const playerTnt: MobCasualty = {
+        id: EntityId('e:tnt'),
+        kind: ZOMBIE_KIND,
+        at: ORIGIN,
+        killCredit: 'player-triggered-tnt',
+        deathTick: atTick,
+      }
+
+      expect(experienceOfCasualties([
+        noReward, noCredit, recentPlayer, recentWolf, staleHit, futureHit, playerTnt,
+      ])).toStrictEqual([
+        { source: recentPlayer.id, kind: ZOMBIE_KIND, at: ORIGIN, amount: ZOMBIE_XP_REWARD },
+        { source: recentWolf.id, kind: ZOMBIE_KIND, at: ORIGIN, amount: ZOMBIE_XP_REWARD },
+        { source: playerTnt.id, kind: ZOMBIE_KIND, at: ORIGIN, amount: ZOMBIE_XP_REWARD },
       ])
     }),
   )
@@ -984,7 +1041,7 @@ describe('owner-snapshot roster plans', () => {
       const outside = mobEntity('e:0', ZOMBIE_KIND, 20, undefined, away(OUT_OF_RANGE_BLOCKS))
       const initial = mobRoster([outside], 1)
 
-      const resolution = planMobBlastRoster(initial, [CREEPER_BLAST])
+      const resolution = planMobBlastRoster(initial, [CREEPER_BLAST], SimulationTick(0))
 
       expect(resolution.roster).toBe(initial)
       expect(resolution.casualties).toStrictEqual([])
@@ -1006,7 +1063,7 @@ describe('owner-snapshot roster plans', () => {
       })
       const initial = mobRoster([dead, survivor, dropped], 3)
 
-      const resolution = planMobBlastRoster(initial, [CREEPER_BLAST])
+      const resolution = planMobBlastRoster(initial, [CREEPER_BLAST], SimulationTick(0))
 
       expect(resolution.casualties).toStrictEqual([
         { id: dead.id, kind: dead.kind, at: dead.feetPosition },

@@ -1552,7 +1552,7 @@ export type MobRosterSweep = MobSweep & Readonly<{ roster: MobRoster }>
 
 /** Calculate one mob frame over an owner snapshot without writing through a service. */
 export const planMobRosterSweep = (
-  roster: EntityRoster<MobBehaviour>,
+  roster: MobRoster,
   senses: MobFrameSenses,
   seed: RandomSeed,
 ): MobRosterSweep => {
@@ -1736,7 +1736,7 @@ export const resolveBlasts = (
       if (isDead(vitals)) {
         return {
           transition: DESPAWNED,
-          emit: { id: entity.id, kind: entity.kind, at: entity.feetPosition },
+          emit: mobCasualty(entity, undefined),
         }
       }
 
@@ -1792,7 +1792,7 @@ export const planMobBlastRoster = (
     if (isDead(vitals)) {
       return {
         transition: DESPAWNED,
-        emit: { id: entity.id, kind: entity.kind, at: entity.feetPosition },
+        emit: mobCasualty(entity, deathTick),
       }
     }
     return {
@@ -1805,7 +1805,10 @@ export const planMobBlastRoster = (
     }
   })
 
-  return { roster: swept.roster, casualties: swept.emitted }
+  return {
+    roster: retainMobMetadata(swept.roster, roster),
+    casualties: swept.emitted,
+  }
 }
 
 export type MobDamageHit = Readonly<{
@@ -1854,7 +1857,13 @@ export const planMobExplosionRoster = (
     if (vitals !== undefined && isDead(vitals)) {
       return {
         transition: DESPAWNED,
-        emit: { id: entity.id, kind: entity.kind, at: entity.feetPosition },
+        emit: mobCasualty(
+          entity,
+          deathTick,
+          undefined,
+          hit.killCredit ?? entity.killCredit,
+          entity.lastHitTick,
+        ),
       }
     }
 
@@ -1884,7 +1893,10 @@ export const planMobExplosionRoster = (
     }
   })
 
-  return { roster: swept.roster, casualties: swept.emitted }
+  return {
+    roster: retainMobMetadata(swept.roster, roster),
+    casualties: swept.emitted,
+  }
 }
 
 /** Apply owner-snapshot damage in one pure roster pass. */
@@ -1895,24 +1907,43 @@ export const planMobDamageRoster = (
 ): MobBlastRosterResolution => {
   if (hits.length === 0) return { roster, casualties: NO_CASUALTIES }
 
-  const byEntity = new Map<EntityId, ReadonlyArray<Damage>>()
+  type DamageBatch = { damages: Array<Damage>; latestHit?: RecentMobHit }
+  const byEntity = new Map<EntityId, DamageBatch>()
   for (const hit of hits) {
     if (!Number.isFinite(hit.damage.amount) || hit.damage.amount <= 0) continue
-    byEntity.set(hit.id, [...(byEntity.get(hit.id) ?? []), hit.damage])
+    const batch = byEntity.get(hit.id) ?? { damages: [] }
+    batch.damages.push(hit.damage)
+    batch.latestHit = latestMobHit(
+      batch.latestHit,
+      recentMobHit(hit.killCredit, hit.lastHitTick),
+    )
+    byEntity.set(hit.id, batch)
   }
   if (byEntity.size === 0) return { roster, casualties: NO_CASUALTIES }
 
+  const entityById = new Map(roster.entities.map((entity) => [entity.id, entity]))
+  const recentHits = new Map<EntityId, RecentMobHit>()
+  for (const [id, batch] of byEntity) {
+    const entity = entityById.get(id)
+    if (entity === undefined) continue
+    const previousHit = entity.killCredit === 'player' || entity.killCredit === 'tamed-wolf'
+      ? recentMobHit(entity.killCredit, entity.lastHitTick)
+      : undefined
+    const latestHit = latestMobHit(previousHit, batch.latestHit)
+    if (latestHit !== undefined) recentHits.set(id, latestHit)
+  }
+
   const swept = sweepRoster(roster, (entity) => {
     if (entity.kind === DROPPED_ITEM_KIND && isDroppedItemBehaviour(entity.behaviour)) return IGNORED
-    const damages = byEntity.get(entity.id)
-    if (damages === undefined) return IGNORED
+    const batch = byEntity.get(entity.id)
+    if (batch === undefined) return IGNORED
 
     let vitals: Vitals = { healthPoints: entity.healthPoints, lastDeathCause: undefined }
-    for (const damage of damages) vitals = applyDamage(vitals, damage)
+    for (const damage of batch.damages) vitals = applyDamage(vitals, damage)
     if (isDead(vitals)) {
       return {
         transition: DESPAWNED,
-        emit: { id: entity.id, kind: entity.kind, at: entity.feetPosition },
+        emit: mobCasualty(entity, deathTick, recentHits.get(entity.id)),
       }
     }
     return {
@@ -1925,7 +1956,10 @@ export const planMobDamageRoster = (
     }
   })
 
-  return { roster: swept.roster, casualties: swept.emitted }
+  return {
+    roster: retainMobMetadata(swept.roster, roster, recentHits),
+    casualties: swept.emitted,
+  }
 }
 
 /**
@@ -2014,7 +2048,7 @@ export const resolveBowHits = (
       if (isDead(vitals)) {
         return {
           transition: DESPAWNED,
-          emit: { id: entity.id, kind: entity.kind, at: entity.feetPosition },
+          emit: mobCasualty(entity, undefined),
         }
       }
 
@@ -2112,6 +2146,16 @@ export const experienceOfCasualties = (
   casualties: ReadonlyArray<MobCasualty>,
 ): ReadonlyArray<MobExperienceEvent> =>
   casualties.flatMap((casualty) => {
+    const hasRecentCredit =
+      casualty.killCredit === 'player-triggered-tnt' ||
+      (
+        (casualty.killCredit === 'player' || casualty.killCredit === 'tamed-wolf') &&
+        casualty.lastHitTick !== undefined &&
+        casualty.deathTick !== undefined &&
+        casualty.deathTick >= casualty.lastHitTick &&
+        casualty.deathTick - casualty.lastHitTick <= MOB_EXPERIENCE_CREDIT_WINDOW_TICKS
+      )
+    if (!hasRecentCredit) return []
     const amount = mobXpReward(SLAIN_WITHOUT_LOOTING, xpRewardOfKind(casualty.kind))
     return amount <= 0
       ? []

@@ -18,6 +18,7 @@ import {
   BlockBlastResistance,
   PositionAxis,
   RandomSeed,
+  SimulationTickSchema,
   WorldWriteBatchSchema,
   blockPosition,
   blockPositionKeyOf,
@@ -41,7 +42,6 @@ import {
   applyDamage as applyVitalsDamage,
   damageAt,
   type ReplicatedOwnerCandidate,
-  type EntityRoster,
   type PlayerStorage,
 } from '@nerima-games/mc-sim'
 import type { ExplosionBlock, ExplosionBlockReader } from '@nerima-games/mc-sim'
@@ -69,10 +69,10 @@ import {
   planSpawnAttemptsOnRoster,
   rollCasualtyDrops,
   type MobExperienceEvent,
+  type MobExplosionHit,
   type MobSpawnAttempt,
 } from '../domain/entities/mob-frame.js'
 import type { Damage } from '../domain/death-cause.js'
-import type { MobBehaviour } from '../domain/entities/mob-frame.js'
 import {
   resolveHostileContacts,
   resolvePlayerBlastDamage,
@@ -82,7 +82,13 @@ import { prepareArmorHit } from '../domain/combat/armor.js'
 import { disturb } from '../domain/falling-block.js'
 import { TNT_EXPLOSION_POWER, type Explosion } from '../domain/mob/explosion.js'
 import { PRIMED_TNT_KIND } from '../domain/entities/mob-frame.js'
-import { GameplayEntityRosterSchema } from './gameplay-owner-registrations.js'
+import {
+  GameplayEntityRosterSchema,
+  GameplayTntSourcesSnapshotSchema,
+  restoreGameplayEntityMetadata,
+  type GameplayEntityRoster,
+  type GameplayTntSourcesSnapshot,
+} from './gameplay-owner-registrations.js'
 import type {
   DroppedItemPickupExecution,
   ExperienceOrbAbsorptionExecution,
@@ -213,12 +219,29 @@ const runTntSimulation = (
     const expectedDimensionRevision = yield* commit.coordinator.dimensionRevision(record.dimension)
     const willDetonate = record.state.remainingFuseSecs <= dt
     const seed = yield* Ref.get(state.rollSeed)
-    let entityRoster: EntityRoster<MobBehaviour> | undefined
+    let entityRoster: GameplayEntityRoster | undefined
     let playerState: PlayerServiceSnapshot | undefined
+    let tntSourcesSnapshot: GameplayTntSourcesSnapshot | undefined
     let blocks = explosionBlockReader([])
     let explosionEntities: ReadonlyArray<{ readonly id: import('@nerima-games/mc-kernel').EntityId; readonly feetPosition: Position }> = []
 
     if (willDetonate) {
+      const tntSourcesOwnerId = commit.tntSourcesOwnerId
+      if (tntSourcesOwnerId === undefined) {
+        yield* unsupportedMobSimulation(state, 'OwnerRegistrationUnavailable')
+        return
+      }
+      const tntSourcesSnapshotResult = yield* commit.coordinator.snapshot(
+        tntSourcesOwnerId,
+        GameplayTntSourcesSnapshotSchema,
+      )
+      if (tntSourcesSnapshotResult.revision !== current.revision) {
+        return yield* Effect.fail(new WorldRevisionConflict({
+          expected: current.revision,
+          actual: tntSourcesSnapshotResult.revision,
+        }))
+      }
+      tntSourcesSnapshot = tntSourcesSnapshotResult.state
       if (entityOwnerId === undefined) {
         yield* unsupportedMobSimulation(state, 'EntityRosterOwnerUnavailable')
         return
@@ -239,10 +262,12 @@ const runTntSimulation = (
       entityRoster = observed.state
       playerState = player.state
       blocks = explosionBlockReader(observed.blocks)
-      const mobEntities = observed.state.entities.map(({ id: entityId, feetPosition }) => ({
-        id: entityId,
-        feetPosition,
-      }))
+      const mobEntities = observed.state.entities
+        .filter(({ dimension }) => dimension === record.dimension)
+        .map(({ id: entityId, feetPosition }) => ({
+          id: entityId,
+          feetPosition,
+        }))
       const playerPosition = player.state.pose.feetPosition
       explosionEntities = playerPosition.dimension === record.dimension
         ? [...mobEntities, {
@@ -271,15 +296,21 @@ const runTntSimulation = (
     const roster = Option.getOrThrow(Option.fromNullishOr(entityRoster))
     const player = Option.getOrThrow(Option.fromNullishOr(playerState))
     const effects = outcome.explosion.entityEffects
-    const mobHits = effects.flatMap((effect) => {
-      if (!roster.entities.some(({ id: entityId }) => entityId === effect.id)) return []
-      return [{
+    const sources = Option.getOrThrow(Option.fromNullishOr(tntSourcesSnapshot))
+    const playerTriggeredTnt = sources.sources.some((source) => source.tntId === id)
+    const mobHits = effects.flatMap((effect): ReadonlyArray<MobExplosionHit> => {
+      if (!roster.entities.some(({ id: entityId, dimension }) =>
+        entityId === effect.id && dimension === record.dimension)) return []
+      const hit: MobExplosionHit = {
         id: effect.id,
-        damage: { amount: effect.damage, cause: 'explosion' as const },
+        damage: { amount: effect.damage, cause: 'explosion' },
         knockback: effect.knockback,
-      }]
+        ...(playerTriggeredTnt ? { killCredit: 'player-triggered-tnt' } : {}),
+      }
+      return [hit]
     })
-    const mobBlast = planMobExplosionRoster(roster, mobHits)
+    const deathTick = Schema.decodeUnknownSync(SimulationTickSchema)(yield* Ref.get(state.tickCount))
+    const mobBlast = planMobExplosionRoster(roster, mobHits, deathTick)
     const loot = rollCasualtyDrops(mobBlast.casualties, seed)
     const experience: ReadonlyArray<MobExperienceEvent> = experienceOfCasualties(mobBlast.casualties)
     const explosion: Explosion = { source: 'tnt', power: TNT_EXPLOSION_POWER }
@@ -352,6 +383,13 @@ const runTntSimulation = (
       }
     }
 
+    const tntSourcesOwnerId = commit.tntSourcesOwnerId
+    const tntSourcesCandidate = sources.sources.some((source) => source.tntId === id)
+      ? Schema.decodeUnknownSync(GameplayTntSourcesSnapshotSchema)({
+          sources: sources.sources.filter((source) => source.tntId !== id),
+        })
+      : undefined
+
     let droppedCandidate: DroppedItemOwnerSnapshot | undefined
     if (loot.drops.length > 0) {
       const droppedItemsOwnerId = commit.droppedItemsOwnerId
@@ -391,6 +429,9 @@ const runTntSimulation = (
     }
     if (droppedCandidate !== undefined && commit.droppedItemsOwnerId !== undefined) {
       changes.push({ ownerId: commit.droppedItemsOwnerId, state: droppedCandidate })
+    }
+    if (tntSourcesCandidate !== undefined && tntSourcesOwnerId !== undefined) {
+      changes.push({ ownerId: tntSourcesOwnerId, state: tntSourcesCandidate })
     }
 
     yield* commit.tntService.commitDetonation({ id: outcome.id, planRevision: outcome.planRevision }, changes)
@@ -444,6 +485,7 @@ const runMobSimulation = (
     PositionAxis(playerSnapshot.state.pose.feetPosition.z),
   )
   const seed = yield* Ref.get(state.rollSeed)
+  const deathTick = Schema.decodeUnknownSync(SimulationTickSchema)(yield* Ref.get(state.tickCount))
   const sweep = planMobRosterSweep(entitySnapshot.state, {
     target: playerPosition,
     dt,
@@ -453,7 +495,7 @@ const runMobSimulation = (
     store,
     sweep.teleports,
   )
-  const blast = planMobBlastRoster(teleported, sweep.blasts)
+  const blast = planMobBlastRoster(teleported, sweep.blasts, deathTick)
   const offeredAttempts = yield* Ref.get(state.spawnAttempts)
   const spawnElapsed = (yield* Ref.get(state.spawnClockSecs)) + dt
   const searchDue = spawnElapsed >= HOSTILE_SPAWN_INTERVAL_SECS
@@ -597,7 +639,11 @@ const runMobSimulation = (
   const expectedDimensions = edits.length === 0
     ? []
     : [{ dimension, expectedRevision: dimensionRevision }]
-  const entityCandidate = spawned.success.roster
+  const entityCandidate = restoreGameplayEntityMetadata(
+    spawned.success.roster,
+    blast.roster,
+    playerSnapshot.state.pose.feetPosition.dimension,
+  )
   const changes: ReplicatedOwnerCandidate[] = []
   if (!Equal.equals(entitySnapshot.state, entityCandidate)) {
     changes.push({

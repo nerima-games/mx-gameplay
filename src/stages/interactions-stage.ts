@@ -48,7 +48,7 @@ import {
   withInventory,
   type PlayerStorage,
 } from '@nerima-games/mc-sim'
-import type { BlockPosition } from '@nerima-games/mc-kernel'
+import type { BlockPosition, Dimension } from '@nerima-games/mc-kernel'
 import { planBreakBlock } from '../domain/interactions/break-block.js'
 import { TNT_BLOCK_ID } from '../domain/interactions/ignite-tnt.js'
 import { igniteFire } from '../domain/interactions/ignite-fire.js'
@@ -144,6 +144,7 @@ import { ExperienceOrbVitalsOwnerSnapshotSchema } from '../domain/entities/xp-or
 import {
   GameplayEntityRosterSchema,
   GameplayVillagerTradeSnapshotSchema,
+  restoreGameplayEntityMetadata,
 } from './gameplay-owner-registrations.js'
 import { planPlaceBlock } from '../domain/interactions/place-block.js'
 import {
@@ -165,6 +166,7 @@ import {
   initialBehaviourOfKind,
   planMobDamageRoster,
   rollCasualtyDrops,
+  type MobKillCredit,
 } from '../domain/entities/mob-frame.js'
 import type { Damage } from '../domain/death-cause.js'
 import { solidityFromStore } from '../domain/in-memory-world.js'
@@ -197,17 +199,32 @@ const commitMobDamage = (
     revision: WorldWriteBatch['expectedWorldRevision']
     state: Schema.Schema.Type<typeof GameplayEntityRosterSchema>
   }>,
-  hit: Readonly<{ id: import('@nerima-games/mc-kernel').EntityId; damage: Damage }> | undefined,
+  dimension: Dimension,
+  hit: Readonly<{
+    id: import('@nerima-games/mc-kernel').EntityId
+    damage: Damage
+    killCredit?: Exclude<MobKillCredit, 'player-triggered-tnt'>
+  }> | undefined,
   storageCandidate?: Schema.Schema.Type<typeof PlayerStorageSnapshotSchema>,
   event?: Schema.Schema.Type<typeof DomainEventSchema>,
 ): Effect.Effect<boolean> =>
   Effect.gen(function* () {
     const ownerId = Option.getOrThrow(Option.fromNullishOr(context.entitiesOwnerId))
+    const tick = Schema.decodeUnknownSync(SimulationTickSchema)(yield* Ref.get(state.tickCount))
     const damage = planMobDamageRoster(
       entitySnapshot.state,
-      hit === undefined ? [] : [{ id: hit.id, damage: hit.damage }],
+      hit === undefined ? [] : [{
+        id: hit.id,
+        damage: hit.damage,
+        ...(hit.killCredit === undefined ? {} : { killCredit: hit.killCredit, lastHitTick: tick }),
+      }],
+      tick,
     )
-    const roster = Schema.decodeUnknownSync(GameplayEntityRosterSchema)(damage.roster)
+    const roster = Schema.decodeUnknownSync(GameplayEntityRosterSchema)(restoreGameplayEntityMetadata(
+      damage.roster,
+      entitySnapshot.state,
+      dimension,
+    ))
 
     const seed = yield* Ref.get(state.rollSeed)
     const drops = rollCasualtyDrops(damage.casualties, seed)
@@ -452,7 +469,8 @@ const processBowShot = (
       state,
       context,
       entities.success,
-      hit,
+      player.success.state.pose.feetPosition.dimension,
+      hit === undefined ? undefined : { ...hit, killCredit: 'player' },
       storageCandidate,
       damageEvent,
     )
@@ -553,10 +571,19 @@ const processMeleeAttack = (
       _tag: 'EntityDamaged', tick, entity: target.id,
       position: targetPosition, amount: amount.success, cause: 'mob',
     })
-    const committed = yield* commitMobDamage(state, context, entities.success, {
-      id: target.id,
-      damage: { amount: amount.success, cause: 'mob' },
-    }, undefined, event)
+    const committed = yield* commitMobDamage(
+      state,
+      context,
+      entities.success,
+      player.success.state.pose.feetPosition.dimension,
+      {
+        id: target.id,
+        damage: { amount: amount.success, cause: 'mob' },
+        killCredit: 'player',
+      },
+      undefined,
+      event,
+    )
     if (!committed) {
       yield* Ref.update(state.pendingMeleeAttacks, (pending) => [request, ...pending])
       return
