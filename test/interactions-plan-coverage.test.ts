@@ -229,6 +229,8 @@ const makeHarness = (options: Readonly<{
   readonly omitStatusEffectsOwnerId?: boolean
   readonly omitStatusEffectsRegistration?: boolean
   readonly omitVillagerTradesRegistration?: boolean
+  readonly omitEntitiesOwnerId?: boolean
+  readonly omitEntitiesRegistration?: boolean
 }> = {}) => Effect.gen(function* () {
   const store = yield* makeTransactionalChunkStoreDouble(world(options.blocks ?? []), ['0,0'])
   const registrations = gameplayOwnerRegistrations({
@@ -247,6 +249,7 @@ const makeHarness = (options: Readonly<{
     !(options.omitPlayerStorageRegistration && ownerId === GAMEPLAY_PLAYER_STORAGE_OWNER_ID) &&
     !(options.omitBrewingRegistration && ownerId === GAMEPLAY_BREWING_OWNER_ID) &&
     !(options.omitStatusEffectsRegistration && ownerId === GAMEPLAY_STATUS_EFFECTS_OWNER_ID) &&
+    !(options.omitEntitiesRegistration && ownerId === GAMEPLAY_ENTITIES_OWNER_ID) &&
     !(options.omitProjectileRegistration && ownerId === PROJECTILE_REPLICATED_OWNER_ID),
   )
   const baseCoordinator = yield* makeWorldCommitCoordinator({
@@ -302,7 +305,7 @@ const makeHarness = (options: Readonly<{
     vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID,
     experienceOrbsOwnerId: GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
     villagerTradesOwnerId: GAMEPLAY_VILLAGER_TRADES_OWNER_ID,
-    entitiesOwnerId: GAMEPLAY_ENTITIES_OWNER_ID,
+    ...(options.omitEntitiesOwnerId ? {} : { entitiesOwnerId: GAMEPLAY_ENTITIES_OWNER_ID }),
     brewingOwnerId: GAMEPLAY_BREWING_OWNER_ID,
     ...(options.omitStatusEffectsOwnerId ? {} : { statusEffectsOwnerId: GAMEPLAY_STATUS_EFFECTS_OWNER_ID }),
     fishingOwnerId: GAMEPLAY_FISHING_OWNER_ID,
@@ -418,6 +421,25 @@ const coordinatorWithRevisionBump = (
   }
 }
 
+const coordinatorWithObserveRevisionBump = (
+  coordinator: WorldCommitCoordinatorApi,
+  bumpBeforeOwner: ReplicatedOwnerId,
+): WorldCommitCoordinatorApi => {
+  let injected = false
+  const observe: WorldCommitCoordinatorApi['observe'] = <Codec extends Schema.Codec<any, any>>(
+    ownerId,
+    schema,
+    reads,
+  ) => Effect.gen(function* () {
+    if (ownerId === bumpBeforeOwner && !injected) {
+      injected = true
+      yield* bumpVillagerTradeRevision(coordinator).pipe(Effect.orDie)
+    }
+    return yield* coordinator.observe(ownerId, schema, reads)
+  })
+  return { ...coordinator, observe }
+}
+
 describe('registered Fishing plans in the interactions stage', () => {
   it('uses the registered projectile owner default for Cast and commits both plans once', async () => {
     const harness = await Effect.runPromise(makeHarness({ omitProjectileOwnerId: true }))
@@ -454,6 +476,49 @@ describe('registered Fishing plans in the interactions stage', () => {
       PROJECTILE_REPLICATED_OWNER_ID,
     ])
     expect(await Effect.runPromise(harness.coordinator.revision)).toBe(revisionBefore + 1)
+  })
+
+  it('requeues a Cast when its fishing and projectile plans observe different owner revisions', async () => {
+    const harness = await Effect.runPromise(makeHarness())
+    const coordinator = coordinatorWithObserveRevisionBump(
+      harness.baseCoordinator,
+      PROJECTILE_REPLICATED_OWNER_ID,
+    )
+    const interactions = harness.interactionsWithCoordinator(coordinator)
+    const revisionBefore = await Effect.runPromise(harness.baseCoordinator.revision)
+    const request = {
+      requestId: 'cast-plan-revision-conflict',
+      actor: FISHER,
+      bobber: NEXT_BOBBER,
+      tick: Schema.decodeUnknownSync(SimulationTickSchema)(1),
+      dimension: INITIAL_DIMENSION,
+      launch: FISHING_LAUNCH,
+      profile: SNOWBALL_PROFILE,
+      rod: null,
+      environment: { hasWater: true, hasSkyAccess: true, isRaining: false, isOpenWater: true },
+    }
+    await Effect.runPromise(requestFishingCast(harness.state, request))
+
+    await Effect.runPromise(interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer)))
+
+    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toStrictEqual([])
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingItemUses))).toStrictEqual([
+      { action: 'CastFishing', ...request },
+    ])
+    expect(await Effect.runPromise(Ref.get(harness.state.operationFailures))).toMatchObject([{
+      _tag: 'Failed', operation: 'PlanBuild', subject: 'Fishing',
+      error: { _tag: 'WorldCommitPlanRevisionConflict', expected: revisionBefore, actual: revisionBefore + 1 },
+    }])
+    expect((await Effect.runPromise(harness.baseCoordinator.snapshot(
+      GAMEPLAY_FISHING_OWNER_ID,
+      FishingStateSchema,
+    ))).state.rods).toStrictEqual([])
+    expect((await Effect.runPromise(harness.baseCoordinator.snapshot(
+      PROJECTILE_REPLICATED_OWNER_ID,
+      ProjectileServiceSnapshotSchema,
+    ))).state.projectiles).toStrictEqual([])
+    expect(await Effect.runPromise(harness.baseCoordinator.revision)).toBe(revisionBefore + 1)
+    expect(harness.commitCalls()).toBe(0)
   })
 
   it('reports cancellation of an inactive actor as a plan failure without changing either owner', async () => {
@@ -609,6 +674,38 @@ describe('registered Fishing plans in the interactions stage', () => {
       expect(harness.commitCalls()).toBe(1)
       expect(await Effect.runPromise(harness.coordinator.revision)).toBe(revisionBefore + 1)
     }
+  })
+
+  it('commits an event-free fishing advance when no interaction event bus is registered', async () => {
+    const harness = await Effect.runPromise(makeHarness({
+      fishing: fishingStateWithRod(),
+      projectiles: projectileStateWithBobber(),
+      omitInteractionEventBus: true,
+    }))
+    const revisionBefore = await Effect.runPromise(harness.coordinator.revision)
+    await Effect.runPromise(requestFishingAdvance(harness.state, {
+      requestId: 'advance-without-event-bus',
+      actor: FISHER,
+      elapsedTicks: Schema.decodeUnknownSync(FishingElapsedTicksSchema)(20),
+      waitTicks: Schema.decodeUnknownSync(FishingWaitTicksSchema)(100),
+      approachTicks: Schema.decodeUnknownSync(FishingApproachTicksSchema)(20),
+      biteWindowTicks: Schema.decodeUnknownSync(FishingBiteWindowTicksSchema)(20),
+      environment: { hasWater: true },
+    }))
+
+    await harness.run()
+
+    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toStrictEqual([{
+      action: 'AdvanceFishing',
+      requestId: 'advance-without-event-bus',
+      success: true,
+      outcome: { _tag: 'Waiting', remainingTicks: 80 },
+    }])
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingItemUses))).toStrictEqual([])
+    expect(await Effect.runPromise(Ref.get(harness.state.unsupportedOperations))).toStrictEqual([])
+    expect(await Effect.runPromise(Ref.get(harness.state.operationFailures))).toStrictEqual([])
+    expect(harness.commitCalls()).toBe(1)
+    expect(await Effect.runPromise(harness.coordinator.revision)).toBe(revisionBefore + 1)
   })
 
   it('clears a cast when reeling before a bite without adding a catch to storage', async () => {
@@ -1400,6 +1497,34 @@ describe('registered Brewing item plans in the interactions stage', () => {
       expect(harness.commitCalls()).toBe(0)
       expect(await Effect.runPromise(harness.coordinator.revision)).toBe(revisionBefore)
     }))
+  })
+
+  it('reports the storage snapshot failure for a valid brewing fuel request', async () => {
+    const harness = await Effect.runPromise(makeHarness({
+      playerStorage: playerStorageWithItem('blaze_powder', 1),
+      omitPlayerStorageRegistration: true,
+    }))
+    const brewingBefore = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_BREWING_OWNER_ID,
+      BrewingServiceStateSchema,
+    ))
+    const revisionBefore = await Effect.runPromise(harness.coordinator.revision)
+    await Effect.runPromise(insertBrewingFuel(harness.state, 'fuel-storage-snapshot-failure'))
+
+    await harness.run()
+
+    expect(await Effect.runPromise(Ref.get(harness.state.operationFailures))).toMatchObject([{
+      _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'Brewing',
+      error: { _tag: 'ReplicatedOwnerUnknown' },
+    }])
+    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toStrictEqual([])
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingItemUses))).toStrictEqual([])
+    expect(await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_BREWING_OWNER_ID,
+      BrewingServiceStateSchema,
+    ))).toStrictEqual(brewingBefore)
+    expect(await Effect.runPromise(harness.coordinator.revision)).toBe(revisionBefore)
+    expect(harness.commitCalls()).toBe(0)
   })
 
   it('returns typed drink failures for an empty slot and a valid non-potion item', async () => {
@@ -2346,9 +2471,44 @@ describe('registered block-use and placement requests in the interactions stage'
       error: { _tag: 'WorldCommitEmptyRequest' },
     }])
   })
+
 })
 
 describe('registered combat and teleport requests in the interactions stage', () => {
+  it('keeps legacy uncorrelated bow and melee requests pending without synthetic results', async () => {
+    const harness = await Effect.runPromise(makeHarness())
+    const bowRequest = {
+      origin: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
+      dirX: 0,
+      dirY: 1,
+      dirZ: 0,
+      chargeSecs: BOW_FULL_CHARGE_SECS,
+      inventory: { mode: 'creative' as const, slotIndex: 0 },
+    }
+    const meleeRequest = {
+      origin: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
+      direction: position(PositionAxis(0), PositionAxis(0), PositionAxis(1)),
+      reach: 3,
+      damage: 4,
+    }
+    await Effect.runPromise(requestBowShot(harness.state, bowRequest))
+    await Effect.runPromise(requestMeleeAttack(harness.state, meleeRequest))
+
+    await Effect.runPromise(harness.interactionsWithoutCommit.run(DeltaTimeSecs(0)).pipe(
+      Effect.provide(FrameServicesLayer),
+    ))
+
+    expect(await Effect.runPromise(Ref.get(harness.state.unsupportedOperations))).toMatchObject([
+      { _tag: 'Unsupported', action: 'BowShot', reason: 'WorldCommitCoordinatorUnavailable' },
+      { _tag: 'Unsupported', action: 'MeleeAttack', reason: 'WorldCommitCoordinatorUnavailable' },
+    ])
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingBowShots))).toStrictEqual([bowRequest])
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingMeleeAttacks))).toStrictEqual([meleeRequest])
+    expect(await Effect.runPromise(drainBowShotResults(harness.state))).toStrictEqual([])
+    expect(await Effect.runPromise(drainMeleeAttackResults(harness.state))).toStrictEqual([])
+    expect(harness.commitCalls()).toBe(0)
+  })
+
   it('commits a melee damage owner update once and requeues it after commit rejection', async () => {
     const target = combatTarget('coverage-melee-target')
     const harness = await Effect.runPromise(makeHarness({
@@ -3017,6 +3177,35 @@ describe('registered combat and teleport requests in the interactions stage', ()
     expect(await Effect.runPromise(Ref.get(harness.publishedEvents))).toStrictEqual([])
   })
 
+  it('consumes an uncorrelated melee miss without creating a host result', async () => {
+    const target = combatTarget('coverage-legacy-melee-miss-target')
+    const harness = await Effect.runPromise(makeHarness({
+      entities: { entities: [target], nextSerial: EntitySerial(1) },
+    }))
+    const entitiesBefore = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_ENTITIES_OWNER_ID,
+      GameplayEntityRosterSchema,
+    ))
+    await Effect.runPromise(requestMeleeAttack(harness.state, {
+      origin: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
+      direction: position(PositionAxis(1), PositionAxis(0), PositionAxis(0)),
+      reach: 3,
+      damage: 4,
+    }))
+
+    await harness.run()
+
+    expect(await Effect.runPromise(drainMeleeAttackResults(harness.state))).toStrictEqual([])
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingMeleeAttacks))).toStrictEqual([])
+    expect(await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_ENTITIES_OWNER_ID,
+      GameplayEntityRosterSchema,
+    ))).toStrictEqual(entitiesBefore)
+    expect(await Effect.runPromise(Ref.get(harness.state.operationFailures))).toStrictEqual([])
+    expect(await Effect.runPromise(Ref.get(harness.publishedEvents))).toStrictEqual([])
+    expect(harness.commitCalls()).toBe(0)
+  })
+
   it('requeues a melee attack when the player snapshot observes a newer owner revision', async () => {
     const target = combatTarget('coverage-melee-player-revision-target')
     const harness = await Effect.runPromise(makeHarness({
@@ -3136,6 +3325,115 @@ describe('registered combat and teleport requests in the interactions stage', ()
     expect(harness.lastRequest()?.changes.map(({ ownerId }) => ownerId)).toContain(GAMEPLAY_VITALS_OWNER_ID)
     expect(harness.lastRequest()?.changes.map(({ ownerId }) => ownerId)).not.toContain(GAMEPLAY_PLAYER_STORAGE_OWNER_ID)
     expect(harness.commitCalls()).toBe(1)
+  })
+
+  it('reports an unsupported pearl throw when its endermite owner ID is unavailable', async () => {
+    const harness = await Effect.runPromise(makeHarness({
+      playerStorage: playerStorageWithItem('ender_pearl', 1),
+      omitEntitiesOwnerId: true,
+    }))
+    await Effect.runPromise(Ref.set(harness.state.rollSeed, 1))
+    const revisionBefore = await Effect.runPromise(harness.coordinator.revision)
+    const seedBefore = await Effect.runPromise(Ref.get(harness.state.rollSeed))
+    await Effect.runPromise(requestEnderPearlThrow(harness.state, {
+      requestId: 'pearl-without-endermite-owner-id',
+      dirX: 1,
+      dirY: 0,
+      dirZ: 0,
+      hitDistance: 2,
+      inventory: { mode: 'survival', slotIndex: 0 },
+    }))
+
+    await harness.run()
+
+    expect(await Effect.runPromise(Ref.get(harness.state.unsupportedOperations))).toMatchObject([{
+      _tag: 'Unsupported', action: 'EnderPearl', reason: 'OwnerRegistrationUnavailable',
+    }])
+    expect(await Effect.runPromise(Ref.get(harness.state.enderPearlOutcomes))).toStrictEqual([])
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingPearlThrows))).toStrictEqual([])
+    expect(await Effect.runPromise(Ref.get(harness.state.rollSeed))).toBe(seedBefore)
+    expect(await Effect.runPromise(harness.coordinator.revision)).toBe(revisionBefore)
+    expect(harness.commitCalls()).toBe(0)
+  })
+
+  it('records a typed owner snapshot failure when the endermite entity owner is unregistered', async () => {
+    const harness = await Effect.runPromise(makeHarness({
+      playerStorage: playerStorageWithItem('ender_pearl', 1),
+      omitEntitiesRegistration: true,
+    }))
+    await Effect.runPromise(Ref.set(harness.state.rollSeed, 1))
+    const storageBefore = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+      PlayerStorageSnapshotSchema,
+    ))
+    const revisionBefore = await Effect.runPromise(harness.coordinator.revision)
+    const seedBefore = await Effect.runPromise(Ref.get(harness.state.rollSeed))
+    await Effect.runPromise(requestEnderPearlThrow(harness.state, {
+      requestId: 'pearl-unregistered-endermite-owner',
+      dirX: 1,
+      dirY: 0,
+      dirZ: 0,
+      hitDistance: 2,
+      inventory: { mode: 'survival', slotIndex: 0 },
+    }))
+
+    await harness.run()
+
+    expect(await Effect.runPromise(Ref.get(harness.state.operationFailures))).toMatchObject([{
+      _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'Player',
+      error: { _tag: 'ReplicatedOwnerUnknown' },
+    }])
+    expect(await Effect.runPromise(Ref.get(harness.state.enderPearlOutcomes))).toStrictEqual([])
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingPearlThrows))).toStrictEqual([])
+    expect(await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+      PlayerStorageSnapshotSchema,
+    ))).toStrictEqual(storageBefore)
+    expect(await Effect.runPromise(Ref.get(harness.state.rollSeed))).toBe(seedBefore)
+    expect(await Effect.runPromise(harness.coordinator.revision)).toBe(revisionBefore)
+    expect(harness.commitCalls()).toBe(0)
+  })
+
+  it('rejects an endermite pearl plan when the entity snapshot races a newer owner revision', async () => {
+    const harness = await Effect.runPromise(makeHarness({
+      playerStorage: playerStorageWithItem('ender_pearl', 1),
+    }))
+    const coordinator = coordinatorWithRevisionBump(
+      harness.baseCoordinator,
+      GAMEPLAY_ENTITIES_OWNER_ID,
+    )
+    const interactions = harness.interactionsWithCoordinator(coordinator)
+    await Effect.runPromise(Ref.set(harness.state.rollSeed, 1))
+    const storageBefore = await Effect.runPromise(harness.baseCoordinator.snapshot(
+      GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+      PlayerStorageSnapshotSchema,
+    ))
+    const revisionBefore = await Effect.runPromise(harness.baseCoordinator.revision)
+    const seedBefore = await Effect.runPromise(Ref.get(harness.state.rollSeed))
+    await Effect.runPromise(requestEnderPearlThrow(harness.state, {
+      requestId: 'pearl-entity-revision-conflict',
+      dirX: 1,
+      dirY: 0,
+      dirZ: 0,
+      hitDistance: 2,
+      inventory: { mode: 'survival', slotIndex: 0 },
+    }))
+
+    await Effect.runPromise(interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer)))
+
+    expect(await Effect.runPromise(Ref.get(harness.state.operationFailures))).toMatchObject([{
+      _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'Player',
+      error: { _tag: 'WorldRevisionConflict', expected: revisionBefore, actual: revisionBefore + 1 },
+    }])
+    expect(await Effect.runPromise(Ref.get(harness.state.enderPearlOutcomes))).toStrictEqual([])
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingPearlThrows))).toStrictEqual([])
+    expect(await Effect.runPromise(harness.baseCoordinator.snapshot(
+      GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+      PlayerStorageSnapshotSchema,
+    ))).toMatchObject({ state: storageBefore.state })
+    expect(await Effect.runPromise(Ref.get(harness.state.rollSeed))).toBe(seedBefore)
+    expect(await Effect.runPromise(harness.baseCoordinator.revision)).toBe(revisionBefore + 1)
+    expect(harness.commitCalls()).toBe(0)
   })
 
   it('keeps a rejected pearl throw unchanged and retries its queued owner commit', async () => {

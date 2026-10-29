@@ -5915,6 +5915,37 @@ describe('farming and food item uses through the full interactions stage', () =>
     }),
   )
 
+  it.effect('bone meal advances only its matching crop when the owner contains several crops', () =>
+    Effect.gen(function* () {
+      const wheatBlock = Option.getOrThrow(blockIdOf('wheat_crop'))
+      const potatoBlock = Option.getOrThrow(blockIdOf('potato_crop'))
+      const wheatPosition = fixtureBlockPosition(0, 64, 0)
+      const potatoPosition = fixtureBlockPosition(1, 64, 0)
+      const slots = [...emptySlots()]
+      slots[0] = itemStack('bone_meal', 1)
+      const { state, stages, commit } = yield* builtStagesInWorld(
+        world([[wheatPosition, wheatBlock], [potatoPosition, potatoBlock]]),
+        ['0,0'],
+        { crops: [
+          { dimension: 'overworld', position: wheatPosition, crop: 'wheat_crop', growthSecs: 0 },
+          { dimension: 'overworld', position: potatoPosition, crop: 'potato_crop', growthSecs: 0 },
+        ] },
+        slots,
+      )
+      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+
+      yield* requestBoneMeal(state, 'bone-meal-one-of-two', wheatPosition)
+      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+
+      const crops = yield* commit.coordinator.snapshot(GAMEPLAY_CROPS_OWNER_ID, CropSnapshotSchema)
+      expect(crops.state.crops[0]?.growthSecs).toBeGreaterThan(0)
+      expect(crops.state.crops[1]?.growthSecs).toBe(0)
+      expect(yield* drainItemUseResults(state)).toMatchObject([
+        { action: 'ApplyBoneMeal', requestId: 'bone-meal-one-of-two', success: true },
+      ])
+    }),
+  )
+
   it.effect('bone meal on a crop without bone meal reports the current typed result without committing', () =>
     Effect.gen(function* () {
       const wheatCrop = Option.getOrThrow(blockIdOf('wheat_crop'))
@@ -6021,6 +6052,148 @@ describe('farming and food item uses through the full interactions stage', () =>
     }),
   )
 
+  it.effect('returns owner snapshot failures for bone meal, tilling, planting, and harvesting', () =>
+    Effect.gen(function* () {
+      const boneMealPosition = fixtureBlockPosition(0, 64, 0)
+      const tillPosition = fixtureBlockPosition(1, 64, 0)
+      const plantPosition = fixtureBlockPosition(2, 64, 0)
+      const harvestPosition = fixtureBlockPosition(3, 64, 0)
+      const wheatBlock = Option.getOrThrow(blockIdOf('wheat_crop'))
+      const dirt = Option.getOrThrow(blockIdOf('dirt'))
+      const farmland = Option.getOrThrow(blockIdOf('farmland'))
+      const potatoBlock = Option.getOrThrow(blockIdOf('potato_crop'))
+      const slots = [...emptySlots()]
+      slots[0] = itemStack('bone_meal', 1)
+      slots[1] = itemStack('iron_hoe', 1)
+      slots[2] = itemStack('potato', 1)
+      const harness = yield* builtStagesInWorld(
+        world([
+          [boneMealPosition, wheatBlock],
+          [tillPosition, dirt],
+          [plantPosition, farmland],
+          [harvestPosition, potatoBlock],
+        ]),
+        ['0,0'],
+        { crops: [
+          { dimension: 'overworld', position: boneMealPosition, crop: 'wheat_crop', growthSecs: 0 },
+          { dimension: 'overworld', position: harvestPosition, crop: 'potato_crop', growthSecs: POTATO_MATURITY_SECS },
+        ] },
+        slots,
+      )
+      const interactions = harness.stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+      yield* Ref.set(harness.failObserveOwnerId, GAMEPLAY_PLAYER_STORAGE_OWNER_ID)
+
+      yield* requestBoneMeal(harness.state, 'bone-meal-observe-failure', boneMealPosition)
+      yield* requestSoilTill(harness.state, 'till-observe-failure', tillPosition, 'iron_hoe')
+      yield* requestPotatoPlanting(harness.state, 'plant-observe-failure', plantPosition)
+      yield* requestPotatoHarvest(harness.state, 'harvest-observe-failure', harvestPosition, 0.5)
+      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+
+      const failures = yield* Ref.get(harness.state.operationFailures)
+      expect(failures).toHaveLength(4)
+      expect(failures).toMatchObject(Array.from({ length: 4 }, () => ({
+        _tag: 'Failed',
+        operation: 'OwnerSnapshot',
+        subject: 'ItemUse',
+        error: { _tag: 'ReplicatedOwnerUnknown' },
+      })))
+      expect(yield* drainItemUseResults(harness.state)).toStrictEqual([])
+      expect(yield* Ref.get(harness.commitCalls)).toBe(0)
+    }),
+  )
+
+  it.effect('detects a crop owner revision change between bone meal observation and snapshot', () =>
+    Effect.gen(function* () {
+      const wheatBlock = Option.getOrThrow(blockIdOf('wheat_crop'))
+      const position = fixtureBlockPosition(0, 64, 0)
+      const slots = [...emptySlots()]
+      slots[0] = itemStack('bone_meal', 1)
+      const harness = yield* builtStagesInWorld(
+        world([[position, wheatBlock]]),
+        ['0,0'],
+        { crops: [{ dimension: 'overworld', position, crop: 'wheat_crop', growthSecs: 0 }] },
+        slots,
+      )
+      const baseCoordinator = harness.commit.coordinator
+      const before = yield* baseCoordinator.snapshot(GAMEPLAY_CROPS_OWNER_ID, CropSnapshotSchema)
+      let injected = false
+      const coordinator: WorldCommitCoordinatorApi = {
+        ...baseCoordinator,
+        observe: (ownerId, schema, reads) => Effect.gen(function* () {
+          const observed = yield* baseCoordinator.observe(ownerId, schema, reads)
+          if (ownerId === GAMEPLAY_PLAYER_STORAGE_OWNER_ID && !injected) {
+            injected = true
+            const nextCrops = Schema.decodeUnknownSync(CropSnapshotSchema)({
+              crops: before.state.crops.map((crop) => ({ ...crop, growthSecs: crop.growthSecs + 1 })),
+            })
+            yield* baseCoordinator.commit({
+              expectedRevision: observed.revision,
+              expectedDimensions: [],
+              changes: [{ ownerId: GAMEPLAY_CROPS_OWNER_ID, state: nextCrops }],
+            }).pipe(Effect.orDie)
+          }
+          return observed
+        }),
+      }
+      const commit = { ...harness.commit, coordinator }
+      const stages = gameplayStages(
+        harness.state,
+        harness.store.api,
+        harness.roster.api,
+        harness.inventory.api,
+        harness.player.api,
+        harness.time,
+        undefined,
+        undefined,
+        {},
+        commit,
+      )
+      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+
+      yield* requestBoneMeal(harness.state, 'bone-meal-revision-race', position)
+      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+
+      const after = yield* baseCoordinator.snapshot(GAMEPLAY_CROPS_OWNER_ID, CropSnapshotSchema)
+      expect(injected).toBe(true)
+      expect(after.revision).toBe(before.revision + 1)
+      expect(after.state.crops[0]?.growthSecs).toBe(1)
+      expect((yield* Ref.get(harness.state.operationFailures)).at(-1)).toMatchObject({
+        _tag: 'Failed',
+        operation: 'OwnerSnapshot',
+        subject: 'ItemUse',
+        error: {
+          _tag: 'WorldRevisionConflict',
+          expected: before.revision,
+          actual: before.revision + 1,
+        },
+      })
+      expect(yield* drainItemUseResults(harness.state)).toStrictEqual([])
+    }),
+  )
+
+  it.effect('reports a registered crop as unavailable when its world chunk is not loaded for harvest', () =>
+    Effect.gen(function* () {
+      const position = fixtureBlockPosition(42, 64, 42)
+      const { state, stages } = yield* builtStagesInWorld(
+        world([]),
+        [],
+        { crops: [{ dimension: 'overworld', position, crop: 'potato_crop', growthSecs: POTATO_MATURITY_SECS }] },
+      )
+      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+
+      yield* requestPotatoHarvest(state, 'harvest-unloaded-crop', position, 0.5)
+      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* Ref.get(state.unsupportedOperations)).toContainEqual({
+        _tag: 'Unsupported',
+        action: 'HarvestPotato',
+        requestId: 'harvest-unloaded-crop',
+        reason: 'OwnerRegistrationUnavailable',
+      })
+      expect(yield* drainItemUseResults(state)).toStrictEqual([])
+    }),
+  )
+
   it.effect('tilling a non-tillable cell reports failure with no durability spent', () =>
     Effect.gen(function* () {
       const position = fixtureBlockPosition(41, 64, 41)
@@ -6072,6 +6245,26 @@ describe('farming and food item uses through the full interactions stage', () =>
         PlayerStorageSnapshotSchema,
       )).toStrictEqual(storageBefore)
       expect(yield* harness.store.api.getBlock(soil)).toStrictEqual({ _tag: 'Block', block: dirt })
+    }),
+  )
+
+  it.effect('reports the typed owner-unavailable result when a valid soil position has no representable cell above', () =>
+    Effect.gen(function* () {
+      const soil = fixtureBlockPosition(0, Number.MAX_SAFE_INTEGER, 0)
+      const harness = yield* builtStagesInWorld(world([]))
+      const interactions = harness.stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+
+      yield* requestSoilTill(harness.state, 'till-at-coordinate-limit', soil, 'iron_hoe')
+      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* Ref.get(harness.state.unsupportedOperations)).toContainEqual({
+        _tag: 'Unsupported',
+        action: 'TillSoil',
+        requestId: 'till-at-coordinate-limit',
+        reason: 'OwnerRegistrationUnavailable',
+      })
+      expect(yield* drainItemUseResults(harness.state)).toStrictEqual([])
+      expect(yield* Ref.get(harness.commitCalls)).toBe(0)
     }),
   )
 
