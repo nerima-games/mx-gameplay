@@ -7067,6 +7067,113 @@ describe('farming and food item uses through the full interactions stage', () =>
     }),
   )
 
+  it.effect('requeues an item-use intent after a concurrent revision advances and retries the same request', () =>
+    Effect.gen(function* () {
+      const lowVitals = { ...SPAWN_VITALS, hungerPoints: HungerPoints(10) }
+      const slots = [...emptySlots()]
+      slots[0] = itemStack('potato', 1)
+      const harness = yield* builtStagesInWorld(
+        world([]), ['0,0'], undefined, slots, undefined, undefined, undefined, undefined, undefined,
+        { vitals: lowVitals },
+      )
+      const baseCoordinator = harness.commit.coordinator
+      const revisionBefore = yield* baseCoordinator.revision
+      let injected = false
+      let itemUseCommitAttempts = 0
+      let plannedRevision: typeof revisionBefore | undefined
+      const racingCoordinator: WorldCommitCoordinatorApi = {
+        ...baseCoordinator,
+        commit: (request) => Effect.gen(function* () {
+          itemUseCommitAttempts += 1
+          if (!injected) {
+            injected = true
+            plannedRevision = request.expectedRevision
+            const player = yield* baseCoordinator.snapshot(
+              GAMEPLAY_PLAYER_OWNER_ID,
+              PlayerServiceSnapshotSchema,
+            )
+            const movedPlayer = Schema.decodeUnknownSync(PlayerServiceSnapshotSchema)({
+              pose: {
+                ...player.state.pose,
+                feetPosition: {
+                  ...player.state.pose.feetPosition,
+                  x: player.state.pose.feetPosition.x + 1,
+                },
+              },
+            })
+            yield* baseCoordinator.commit({
+              expectedRevision: player.revision,
+              expectedDimensions: [],
+              changes: [{ ownerId: GAMEPLAY_PLAYER_OWNER_ID, state: movedPlayer }],
+            }).pipe(Effect.orDie)
+          }
+          return yield* baseCoordinator.commit(request)
+        }),
+      }
+      const stages = gameplayStages(
+        harness.state,
+        harness.store.api,
+        harness.roster.api,
+        harness.inventory.api,
+        harness.player.api,
+        harness.time,
+        undefined,
+        undefined,
+        {},
+        { ...harness.commit, coordinator: racingCoordinator },
+      )
+      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+
+      yield* requestPotatoFoodUse(harness.state, 'eat-potato-after-revision-race', {
+        healthPoints: lowVitals.healthPoints,
+        hungerPoints: lowVitals.hungerPoints,
+        maxHungerPoints: lowVitals.maxHungerPoints,
+      })
+      const queuedIntent = yield* Ref.get(harness.state.pendingItemUses)
+
+      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(injected).toBe(true)
+      expect(itemUseCommitAttempts).toBe(1)
+      expect(plannedRevision).toBe(revisionBefore)
+      expect(yield* Ref.get(harness.commitCalls)).toBe(2)
+      expect(yield* racingCoordinator.revision).toBe(revisionBefore + 1)
+      expect(yield* Ref.get(harness.state.pendingItemUses)).toStrictEqual(queuedIntent)
+      expect(yield* drainItemUseResults(harness.state)).toStrictEqual([])
+      expect(yield* Ref.get(harness.publishedEvents)).toStrictEqual([])
+      expect(yield* Ref.get(harness.state.operationFailures)).toMatchObject([{
+        _tag: 'Failed',
+        operation: 'WorldCommit',
+        subject: 'Vitals',
+        error: { _tag: 'WorldRevisionConflict' },
+      }])
+
+      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(itemUseCommitAttempts).toBe(2)
+      expect(yield* Ref.get(harness.commitCalls)).toBe(3)
+      expect(yield* Ref.get(harness.state.pendingItemUses)).toStrictEqual([])
+      expect(yield* drainItemUseResults(harness.state)).toMatchObject([
+        {
+          action: 'EatPotato',
+          requestId: 'eat-potato-after-revision-race',
+          success: true,
+          consumedCount: 1,
+          outcome: { _tag: 'consume' },
+        },
+      ])
+      const storage = yield* racingCoordinator.snapshot(GAMEPLAY_PLAYER_STORAGE_OWNER_ID, PlayerStorageSnapshotSchema)
+      const vitals = yield* racingCoordinator.snapshot(
+        GAMEPLAY_VITALS_OWNER_ID,
+        ExperienceOrbVitalsOwnerSnapshotSchema,
+      )
+      expect(countStoredItem(storage.state, 'potato')).toBe(0)
+      expect(vitals.state.vitals.hungerPoints).toBe(11)
+      expect(yield* racingCoordinator.revision).toBe(revisionBefore + 2)
+      expect(yield* Ref.get(harness.publishedEvents)).toStrictEqual([])
+    }).pipe(Effect.provide(FrameServicesLayer)),
+  )
+
   it.effect('hungry food use with no matching storage item reports missingItem without committing', () =>
     Effect.gen(function* () {
       const position = fixtureBlockPosition(1, 64, 1)

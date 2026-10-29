@@ -204,7 +204,7 @@ const commitMobDamage = (
   hit: Readonly<{
     id: import('@nerima-games/mc-kernel').EntityId
     damage: Damage
-    killCredit?: Exclude<MobKillCredit, 'player-triggered-tnt'>
+    killCredit: Exclude<MobKillCredit, 'player-triggered-tnt'>
   }> | undefined,
   storageCandidate?: Schema.Schema.Type<typeof PlayerStorageSnapshotSchema>,
   event?: Schema.Schema.Type<typeof DomainEventSchema>,
@@ -217,7 +217,8 @@ const commitMobDamage = (
       hit === undefined ? [] : [{
         id: hit.id,
         damage: hit.damage,
-        ...(hit.killCredit === undefined ? {} : { killCredit: hit.killCredit, lastHitTick: tick }),
+        killCredit: hit.killCredit,
+        lastHitTick: tick,
       }],
       tick,
     )

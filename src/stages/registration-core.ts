@@ -2873,23 +2873,21 @@ export const requestTargetedPrimaryAttack = (
       options,
     )
 
-    switch (resolution._tag) {
-      case 'Melee':
-        yield* requestMeleeAttack(state, resolution.request)
-        return { _tag: 'Melee' as const, target: resolution.target }
-      case 'Block': {
-        const lootContext = yield* Ref.get(state.heldTool)
-        yield* requestBlockBreak(
-          state,
-          blockPosition(resolution.target.position.x, resolution.target.position.y, resolution.target.position.z),
-          lootContext,
-          { dimension, toolLocation: options.toolLocation },
-        )
-        return resolution
-      }
-      case 'None':
-        return resolution
+    if (resolution._tag === 'Melee') {
+      yield* requestMeleeAttack(state, resolution.request)
+      return { _tag: 'Melee', target: resolution.target } satisfies TargetedPrimaryAttackResult
     }
+    if (resolution._tag === 'Block') {
+      const lootContext = yield* Ref.get(state.heldTool)
+      yield* requestBlockBreak(
+        state,
+        blockPosition(resolution.target.position.x, resolution.target.position.y, resolution.target.position.z),
+        lootContext,
+        { dimension, toolLocation: options.toolLocation },
+      )
+      return resolution
+    }
+    return resolution
   })
 
 /** Enqueue one deterministic mob spawn candidate for the entities stage. */

@@ -40,6 +40,7 @@ import {
   PlayerServiceSnapshotSchema,
   ProjectileServiceSnapshotSchema,
   PROJECTILE_REPLICATED_OWNER_ID,
+  TNT_REPLICATED_OWNER_ID,
   SNOWBALL_PROFILE,
   WorldCommitCoordinator,
   WorldCommitEmptyRequest,
@@ -99,6 +100,7 @@ import {
   requestFishingCast,
   requestFishingReel,
   requestBlockPlacement,
+  requestBucketUse,
   insertBrewingBottle,
   insertBrewingFuel,
   insertBrewingIngredient,
@@ -138,6 +140,7 @@ import { world } from './support/chunk-store-double.js'
 
 const WORLD_ID = Schema.decodeUnknownSync(WorldIdSchema)('interaction-plan-coverage')
 const DIMENSION = Schema.decodeUnknownSync(DimensionIdSchema)('overworld')
+const PORTAL_WINDOW_CHUNKS = [-1, 0, 1].flatMap((x) => [-1, 0, 1].map((z) => `${x},${z}`))
 const FISHER = EntityId('plan-coverage:fisher')
 const OTHER_FISHER = EntityId('plan-coverage:other-fisher')
 const BOBBER = Schema.decodeUnknownSync(ProjectileIdSchema)('plan-coverage:bobber')
@@ -238,6 +241,7 @@ const makeHarness = (options: Readonly<{
   readonly villagerTrades?: VillagerTradeState
   readonly entities?: EntityRoster<MobBehaviour>
   readonly blocks?: ReadonlyArray<readonly [BlockPosition, BlockId]>
+  readonly loadedChunks?: ReadonlyArray<string>
   readonly omitProjectileOwnerId?: boolean
   readonly omitProjectileRegistration?: boolean
   readonly omitDroppedItemsOwnerId?: boolean
@@ -261,8 +265,12 @@ const makeHarness = (options: Readonly<{
   readonly droppedItems?: GameplayOwnerInitialState['droppedItems']
   readonly vitalsOwnerIdOverride?: ReplicatedOwnerId
   readonly commitVitalsOwnerIdOverride?: ReplicatedOwnerId
+  readonly tntOwnerId?: ReplicatedOwnerId
 }> = {}) => Effect.gen(function* () {
-  const store = yield* makeTransactionalChunkStoreDouble(world(options.blocks ?? []), ['0,0'])
+  const store = yield* makeTransactionalChunkStoreDouble(
+    world(options.blocks ?? []),
+    options.loadedChunks ?? ['0,0'],
+  )
   const chunkStore = store.api
   const registrations = gameplayOwnerRegistrations({
     playerPose: options.playerPose ?? INITIAL_PLAYER_POSE,
@@ -341,6 +349,7 @@ const makeHarness = (options: Readonly<{
     ...(options.omitDroppedItemsOwnerId ? {} : { droppedItemsOwnerId: GAMEPLAY_DROPPED_ITEMS_OWNER_ID }),
     vitalsOwnerId: options.commitVitalsOwnerIdOverride ?? GAMEPLAY_VITALS_OWNER_ID,
     experienceOrbsOwnerId: GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
+    ...(options.tntOwnerId === undefined ? {} : { tntOwnerId: options.tntOwnerId }),
     ...(options.omitVillagerTradesOwnerId ? {} : { villagerTradesOwnerId: GAMEPLAY_VILLAGER_TRADES_OWNER_ID }),
     ...(options.omitEntitiesOwnerId ? {} : { entitiesOwnerId: GAMEPLAY_ENTITIES_OWNER_ID }),
     tntSourcesOwnerId: GAMEPLAY_TNT_SOURCES_OWNER_ID,
@@ -462,6 +471,7 @@ const coordinatorWithRevisionBump = (
 const coordinatorWithObserveRevisionBump = (
   coordinator: WorldCommitCoordinatorApi,
   bumpBeforeOwner: ReplicatedOwnerId,
+  timing: 'before' | 'after' = 'before',
 ): WorldCommitCoordinatorApi => {
   let injected = false
   const observe: WorldCommitCoordinatorApi['observe'] = <Codec extends Schema.Codec<any, any>>(
@@ -475,11 +485,47 @@ const coordinatorWithObserveRevisionBump = (
   > => Effect.gen(function* () {
     if (ownerId === bumpBeforeOwner && !injected) {
       injected = true
+      if (timing === 'after') {
+        const snapshot = yield* coordinator.observe(ownerId, schema, reads)
+        yield* bumpVillagerTradeRevision(coordinator).pipe(Effect.orDie)
+        return snapshot
+      }
       yield* bumpVillagerTradeRevision(coordinator).pipe(Effect.orDie)
     }
     return yield* coordinator.observe(ownerId, schema, reads)
   })
   return { ...coordinator, observe }
+}
+
+const coordinatorWithCommitRevisionBump = (
+  coordinator: WorldCommitCoordinatorApi,
+  revisionCoordinator: WorldCommitCoordinatorApi,
+): WorldCommitCoordinatorApi => {
+  let injected = false
+  return {
+    ...coordinator,
+    commit: (request) => Effect.gen(function* () {
+      if (!injected) {
+        injected = true
+        yield* bumpVillagerTradeRevision(revisionCoordinator).pipe(Effect.orDie)
+      }
+      return yield* coordinator.commit(request)
+    }),
+  }
+}
+
+const coordinatorWithFirstCommitFailure = (
+  coordinator: WorldCommitCoordinatorApi,
+): WorldCommitCoordinatorApi => {
+  let injected = false
+  return {
+    ...coordinator,
+    commit: (request) => {
+      if (injected) return coordinator.commit(request)
+      injected = true
+      return Effect.fail(new WorldCommitEmptyRequest())
+    },
+  }
 }
 
 const coordinatorWithSnapshotFailure = (
@@ -2473,6 +2519,239 @@ describe('retrying item-use intents after owner revision conflicts', () => {
     expect(harness.commitCalls()).toBe(1)
   })
 
+  it('does not consume effectful food when its status-effect owner is unavailable', async () => {
+    const vitals = { ...SPAWN_VITALS, hungerPoints: HungerPoints(10) }
+    const requestVitals = {
+      healthPoints: vitals.healthPoints,
+      hungerPoints: vitals.hungerPoints,
+      maxHungerPoints: vitals.maxHungerPoints,
+    }
+    const missingId = await Effect.runPromise(makeHarness({
+      playerStorage: playerStorageWithItem('pufferfish', 1),
+      vitals,
+      omitStatusEffectsOwnerId: true,
+    }))
+    const storageBefore = await Effect.runPromise(missingId.coordinator.snapshot(
+      GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+      PlayerStorageSnapshotSchema,
+    ))
+    const vitalsBefore = await Effect.runPromise(missingId.coordinator.snapshot(
+      GAMEPLAY_VITALS_OWNER_ID,
+      ExperienceOrbVitalsOwnerSnapshotSchema,
+    ))
+    await Effect.runPromise(requestFoodUse(missingId.state, 'food-status-owner-id-missing', 'pufferfish', requestVitals))
+
+    await missingId.run()
+
+    expect(await Effect.runPromise(Ref.get(missingId.state.unsupportedOperations))).toContainEqual({
+      _tag: 'Unsupported',
+      action: 'EatFood',
+      requestId: 'food-status-owner-id-missing',
+      reason: 'OwnerRegistrationUnavailable',
+    })
+    expect(await Effect.runPromise(drainItemUseResults(missingId.state))).toStrictEqual([])
+    expect((await Effect.runPromise(missingId.coordinator.snapshot(
+      GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+      PlayerStorageSnapshotSchema,
+    ))).state).toStrictEqual(storageBefore.state)
+    expect((await Effect.runPromise(missingId.coordinator.snapshot(
+      GAMEPLAY_VITALS_OWNER_ID,
+      ExperienceOrbVitalsOwnerSnapshotSchema,
+    ))).state).toStrictEqual(vitalsBefore.state)
+    expect(missingId.commitCalls()).toBe(0)
+
+    const missingSnapshot = await Effect.runPromise(makeHarness({
+      playerStorage: playerStorageWithItem('pufferfish', 1),
+      vitals,
+    }))
+    const failedSnapshotInteractions = missingSnapshot.interactionsWithCoordinator(
+      coordinatorWithSnapshotFailure(missingSnapshot.baseCoordinator, GAMEPLAY_STATUS_EFFECTS_OWNER_ID),
+    )
+    const failedStorageBefore = await Effect.runPromise(missingSnapshot.baseCoordinator.snapshot(
+      GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+      PlayerStorageSnapshotSchema,
+    ))
+    await Effect.runPromise(requestFoodUse(
+      missingSnapshot.state,
+      'food-status-owner-snapshot-failed',
+      'pufferfish',
+      requestVitals,
+    ))
+
+    await Effect.runPromise(failedSnapshotInteractions.run(DeltaTimeSecs(0)).pipe(
+      Effect.provide(FrameServicesLayer),
+    ))
+
+    expect(await Effect.runPromise(Ref.get(missingSnapshot.state.operationFailures))).toMatchObject([{
+      _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'ItemUse',
+      error: { _tag: 'ReplicatedOwnerUnknown' },
+    }])
+    expect(await Effect.runPromise(drainItemUseResults(missingSnapshot.state))).toStrictEqual([])
+    expect((await Effect.runPromise(missingSnapshot.baseCoordinator.snapshot(
+      GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+      PlayerStorageSnapshotSchema,
+    ))).state).toStrictEqual(failedStorageBefore.state)
+    expect(missingSnapshot.commitCalls()).toBe(0)
+  })
+
+  it('requeues effectful food when the status snapshot sees a newer owner revision', async () => {
+    const vitals = { ...SPAWN_VITALS, hungerPoints: HungerPoints(10) }
+    const requestVitals = {
+      healthPoints: vitals.healthPoints,
+      hungerPoints: vitals.hungerPoints,
+      maxHungerPoints: vitals.maxHungerPoints,
+    }
+    const harness = await Effect.runPromise(makeHarness({
+      playerStorage: playerStorageWithItem('pufferfish', 1),
+      vitals,
+    }))
+    const coordinator = coordinatorWithRevisionBump(
+      harness.baseCoordinator,
+      GAMEPLAY_STATUS_EFFECTS_OWNER_ID,
+    )
+    const interactions = harness.interactionsWithCoordinator(coordinator)
+    const revisionBefore = await Effect.runPromise(harness.baseCoordinator.revision)
+    const storageBefore = await Effect.runPromise(harness.baseCoordinator.snapshot(
+      GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+      PlayerStorageSnapshotSchema,
+    ))
+    await Effect.runPromise(requestFoodUse(
+      harness.state,
+      'food-status-revision-conflict',
+      'pufferfish',
+      requestVitals,
+    ))
+
+    await Effect.runPromise(interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer)))
+
+    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toStrictEqual([])
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingItemUses))).toMatchObject([{
+      action: 'EatFood', requestId: 'food-status-revision-conflict', heldItem: 'pufferfish',
+    }])
+    expect(await Effect.runPromise(Ref.get(harness.state.operationFailures))).toMatchObject([{
+      _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'ItemUse',
+      error: { _tag: 'WorldRevisionConflict', expected: revisionBefore, actual: revisionBefore + 1 },
+    }])
+    expect(await Effect.runPromise(harness.baseCoordinator.revision)).toBe(revisionBefore + 1)
+    expect((await Effect.runPromise(harness.baseCoordinator.snapshot(
+      GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+      PlayerStorageSnapshotSchema,
+    ))).state).toStrictEqual(storageBefore.state)
+    expect(harness.commitCalls()).toBe(0)
+
+    await Effect.runPromise(interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer)))
+
+    const storageAfter = await Effect.runPromise(harness.baseCoordinator.snapshot(
+      GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+      PlayerStorageSnapshotSchema,
+    ))
+    const statusAfter = await Effect.runPromise(harness.baseCoordinator.snapshot(
+      GAMEPLAY_STATUS_EFFECTS_OWNER_ID,
+      StatusEffectStateSchema,
+    ))
+    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toMatchObject([{
+      action: 'EatFood', requestId: 'food-status-revision-conflict', success: true, consumedCount: 1,
+    }])
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingItemUses))).toStrictEqual([])
+    expect(storageAfter.state.inventory.slots[0]).toBeUndefined()
+    expect(statusAfter.state.effects.map(({ type }) => type)).toStrictEqual(['poison', 'hunger', 'nausea'])
+    expect(await Effect.runPromise(harness.baseCoordinator.revision)).toBe(revisionBefore + 2)
+  })
+
+  it('requeues the current and remaining bucket requests after a concurrent owner commit', async () => {
+    const firstTarget = blockPosition(BlockAxis(1), BlockAxis(64), BlockAxis(1))
+    const secondTarget = blockPosition(BlockAxis(2), BlockAxis(64), BlockAxis(1))
+    const water = Option.getOrThrow(blockIdOf('water'))
+    const harness = await Effect.runPromise(makeHarness({
+      blocks: [[firstTarget, water], [secondTarget, water]],
+      playerStorage: playerStorageWithItems([['bucket', 1], ['bucket', 1]]),
+    }))
+    const storageBefore = await Effect.runPromise(harness.baseCoordinator.snapshot(
+      GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+      PlayerStorageSnapshotSchema,
+    ))
+    const revisionBefore = await Effect.runPromise(harness.baseCoordinator.revision)
+    const interactions = harness.interactionsWithCoordinator(coordinatorWithCommitRevisionBump(
+      harness.coordinator,
+      harness.baseCoordinator,
+    ))
+    await Effect.runPromise(requestBucketUse(
+      harness.state, 'bucket-revision-conflict-first', firstTarget, 'bucket', DIMENSION,
+    ))
+    await Effect.runPromise(requestBucketUse(
+      harness.state, 'bucket-revision-conflict-second', secondTarget, 'bucket', DIMENSION,
+    ))
+
+    await Effect.runPromise(interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer)))
+
+    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toStrictEqual([])
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingItemUses))).toMatchObject([
+      { action: 'UseBucket', requestId: 'bucket-revision-conflict-first' },
+      { action: 'UseBucket', requestId: 'bucket-revision-conflict-second' },
+    ])
+    expect(await Effect.runPromise(Ref.get(harness.state.operationFailures))).toMatchObject([{
+      _tag: 'Failed', operation: 'WorldCommit', subject: 'ItemUse',
+      error: { _tag: 'WorldRevisionConflict' },
+    }])
+    expect((await Effect.runPromise(harness.baseCoordinator.snapshot(
+      GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+      PlayerStorageSnapshotSchema,
+    ))).state).toStrictEqual(storageBefore.state)
+    expect(await Effect.runPromise(harness.store.blockAt(firstTarget))).toBe(water)
+    expect(await Effect.runPromise(harness.store.blockAt(secondTarget))).toBe(water)
+    expect(await Effect.runPromise(harness.baseCoordinator.revision)).toBe(revisionBefore + 1)
+
+    await Effect.runPromise(interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer)))
+
+    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toMatchObject([
+      { action: 'UseBucket', requestId: 'bucket-revision-conflict-first', success: true, outcome: { _tag: 'Collected' } },
+      { action: 'UseBucket', requestId: 'bucket-revision-conflict-second', success: true, outcome: { _tag: 'Collected' } },
+    ])
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingItemUses))).toStrictEqual([])
+    expect(await Effect.runPromise(harness.store.blockAt(firstTarget))).toBeUndefined()
+    expect(await Effect.runPromise(harness.store.blockAt(secondTarget))).toBeUndefined()
+    const storageAfter = await Effect.runPromise(harness.baseCoordinator.snapshot(
+      GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+      PlayerStorageSnapshotSchema,
+    ))
+    expect(storageAfter.state.inventory.slots.slice(0, 2)).toMatchObject([
+      { item: 'water_bucket', count: 1 },
+      { item: 'water_bucket', count: 1 },
+    ])
+    expect(harness.commitCalls()).toBe(3)
+    expect(await Effect.runPromise(harness.baseCoordinator.revision)).toBe(revisionBefore + 3)
+  })
+
+  it('continues after a nonretryable bucket commit failure without publishing its result', async () => {
+    const firstTarget = blockPosition(BlockAxis(3), BlockAxis(64), BlockAxis(1))
+    const secondTarget = blockPosition(BlockAxis(4), BlockAxis(64), BlockAxis(1))
+    const water = Option.getOrThrow(blockIdOf('water'))
+    const harness = await Effect.runPromise(makeHarness({
+      blocks: [[firstTarget, water], [secondTarget, water]],
+      playerStorage: playerStorageWithItems([['bucket', 1], ['bucket', 1]]),
+    }))
+    const interactions = harness.interactionsWithCoordinator(
+      coordinatorWithFirstCommitFailure(harness.coordinator),
+    )
+    await Effect.runPromise(requestBucketUse(harness.state, 'bucket-permanent-failure', firstTarget, 'bucket', DIMENSION))
+    await Effect.runPromise(requestBucketUse(harness.state, 'bucket-after-permanent-failure', secondTarget, 'bucket', DIMENSION))
+
+    await Effect.runPromise(interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer)))
+
+    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toMatchObject([{
+      action: 'UseBucket', requestId: 'bucket-after-permanent-failure', success: true,
+      outcome: { _tag: 'Collected' },
+    }])
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingItemUses))).toStrictEqual([])
+    expect(await Effect.runPromise(Ref.get(harness.state.operationFailures))).toMatchObject([{
+      _tag: 'Failed', operation: 'WorldCommit', subject: 'ItemUse',
+      error: { _tag: 'WorldCommitEmptyRequest' },
+    }])
+    expect(await Effect.runPromise(harness.store.blockAt(firstTarget))).toBe(water)
+    expect(await Effect.runPromise(harness.store.blockAt(secondTarget))).toBeUndefined()
+    expect(harness.commitCalls()).toBe(1)
+  })
+
   it('replans food consumption after a concurrent commit advances the owner revision', async () => {
     const vitals = { ...SPAWN_VITALS, hungerPoints: HungerPoints(10) }
     const foodVitals = {
@@ -4240,6 +4519,35 @@ describe('schema-valid interaction edge paths', () => {
     expect(harness.commitCalls()).toBe(0)
   })
 
+  it('rejects planting at an unrepresentable crop cell as an invalid target', async () => {
+    const soil = blockPosition(BlockAxis(0), BlockAxis(Number.MAX_SAFE_INTEGER), BlockAxis(0))
+    const harness = await Effect.runPromise(makeHarness({
+      playerStorage: playerStorageWithItem('potato', 1),
+    }))
+    const storageBefore = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+      PlayerStorageSnapshotSchema,
+    ))
+    await Effect.runPromise(requestPotatoPlanting(harness.state, 'plant-invalid-crop-cell', soil))
+
+    await harness.run()
+
+    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toStrictEqual([{
+      action: 'PlantPotato',
+      requestId: 'plant-invalid-crop-cell',
+      heldItem: 'potato',
+      success: false,
+      consumedCount: 0,
+      outcome: { _tag: 'invalidPosition' },
+    }])
+    expect(await Effect.runPromise(Ref.get(harness.state.unsupportedOperations))).toStrictEqual([])
+    expect((await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+      PlayerStorageSnapshotSchema,
+    ))).state).toStrictEqual(storageBefore.state)
+    expect(harness.commitCalls()).toBe(0)
+  })
+
   it('handles bone meal crop-owner absence and stale crop registration', async () => {
     const boneMealPosition = blockPosition(BlockAxis(4), BlockAxis(64), BlockAxis(1))
     const plantingPosition = blockPosition(BlockAxis(5), BlockAxis(64), BlockAxis(1))
@@ -4459,6 +4767,54 @@ describe('schema-valid interaction edge paths', () => {
     expect(legacyRetry.commitCalls()).toBe(1)
   })
 
+  it('requeues correlated and legacy breaks when their follow-up observation sees a newer revision', async () => {
+    const target = blockPosition(BlockAxis(15), BlockAxis(64), BlockAxis(1))
+    const dirt = Option.getOrThrow(blockIdOf('dirt'))
+    const assertRevisionRetry = async (requestId: string, correlated: boolean) => {
+      const harness = await Effect.runPromise(makeHarness({ blocks: [[target, dirt]] }))
+      const revisionBefore = await Effect.runPromise(harness.baseCoordinator.revision)
+      const interactions = harness.interactionsWithCoordinator(coordinatorWithObserveRevisionBump(
+        harness.baseCoordinator,
+        GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+        'after',
+      ))
+      if (correlated) {
+        await Effect.runPromise(requestBlockBreak(harness.state, target, undefined, {
+          dimension: DIMENSION,
+          toolLocation: undefined,
+        }))
+      } else {
+        await Effect.runPromise(Ref.update(harness.state.pendingBreaks, (pending) => [
+          ...pending,
+          blockPositionKeyOf(target),
+        ]))
+      }
+
+      await Effect.runPromise(interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer)))
+
+      expect(await Effect.runPromise(harness.store.blockAt(target)), requestId).toBe(dirt)
+      expect(await Effect.runPromise(Ref.get(harness.state.pendingBreaks)), requestId).toStrictEqual([
+        blockPositionKeyOf(target),
+      ])
+      expect(await Effect.runPromise(Ref.get(harness.state.operationFailures)), requestId).toMatchObject([{
+        _tag: 'Failed', operation: 'CandidateBuild', subject: 'Mining',
+        error: { _tag: 'ObservationChanged', expectedWorldRevision: revisionBefore, actualWorldRevision: revisionBefore + 1 },
+      }])
+      expect(await Effect.runPromise(harness.baseCoordinator.revision), requestId).toBe(revisionBefore + 1)
+      expect(harness.commitCalls(), requestId).toBe(0)
+
+      await harness.run()
+
+      expect(await Effect.runPromise(harness.store.blockAt(target)), requestId).toBeUndefined()
+      expect(await Effect.runPromise(Ref.get(harness.state.pendingBreaks)), requestId).toStrictEqual([])
+      expect(harness.commitCalls(), requestId).toBe(1)
+      expect(await Effect.runPromise(harness.baseCoordinator.revision), requestId).toBe(revisionBefore + 2)
+    }
+
+    await assertRevisionRetry('break-observation-changed-correlated', true)
+    await assertRevisionRetry('break-observation-changed-legacy', false)
+  })
+
   it('records food storage and vitals owner snapshot failures', async () => {
     const requestVitals = {
       healthPoints: SPAWN_VITALS.healthPoints,
@@ -4525,6 +4881,189 @@ describe('schema-valid interaction edge paths', () => {
     expect(missingItem.commitCalls()).toBe(0)
     expect(unloaded.commitCalls()).toBe(0)
   })
+
+  it('records a TNT-source owner snapshot failure without publishing an ignition result', async () => {
+    const target = blockPosition(BlockAxis(0), BlockAxis(64), BlockAxis(0))
+    const tnt = Option.getOrThrow(blockIdOf('tnt'))
+    const harness = await Effect.runPromise(makeHarness({
+      blocks: [[target, tnt]],
+      playerStorage: playerStorageWithItems([['flint_and_steel', 1]]),
+      tntOwnerId: TNT_REPLICATED_OWNER_ID,
+    }))
+    const interactions = harness.interactionsWithCoordinator(coordinatorWithSnapshotFailure(
+      harness.baseCoordinator,
+      GAMEPLAY_TNT_SOURCES_OWNER_ID,
+    ))
+    const storageBefore = await Effect.runPromise(harness.baseCoordinator.snapshot(
+      GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+      PlayerStorageSnapshotSchema,
+    ))
+    await Effect.runPromise(requestItemUse(harness.state, 'ignite-tnt-sources-snapshot-failed', target, 'flint_and_steel'))
+
+    await Effect.runPromise(interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer)))
+
+    expect(await Effect.runPromise(Ref.get(harness.state.operationFailures))).toMatchObject([{
+      _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'ItemUse',
+      error: { _tag: 'ReplicatedOwnerUnknown' },
+    }])
+    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toStrictEqual([])
+    expect(await Effect.runPromise(harness.store.blockAt(target))).toBe(tnt)
+    expect((await Effect.runPromise(harness.baseCoordinator.snapshot(
+      GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+      PlayerStorageSnapshotSchema,
+    ))).state).toStrictEqual(storageBefore.state)
+    expect(harness.commitCalls()).toBe(0)
+  })
+
+  it('requeues TNT ignition when the source snapshot advances the owner revision', async () => {
+    const target = blockPosition(BlockAxis(0), BlockAxis(64), BlockAxis(0))
+    const tnt = Option.getOrThrow(blockIdOf('tnt'))
+    const harness = await Effect.runPromise(makeHarness({
+      blocks: [[target, tnt]],
+      playerStorage: playerStorageWithItems([['flint_and_steel', 1]]),
+      tntOwnerId: TNT_REPLICATED_OWNER_ID,
+    }))
+    const coordinator = coordinatorWithRevisionBump(
+      harness.coordinator,
+      GAMEPLAY_TNT_SOURCES_OWNER_ID,
+    )
+    const interactions = harness.interactionsWithCoordinator(coordinator)
+    const revisionBefore = await Effect.runPromise(harness.baseCoordinator.revision)
+    const storageBefore = await Effect.runPromise(harness.baseCoordinator.snapshot(
+      GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+      PlayerStorageSnapshotSchema,
+    ))
+    await Effect.runPromise(requestItemUse(
+      harness.state,
+      'ignite-tnt-source-revision-conflict',
+      target,
+      'flint_and_steel',
+    ))
+
+    await Effect.runPromise(interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer)))
+
+    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toStrictEqual([])
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingItemUses))).toMatchObject([{
+      requestId: 'ignite-tnt-source-revision-conflict',
+      heldItem: 'flint_and_steel',
+    }])
+    expect(await Effect.runPromise(Ref.get(harness.publishedEvents))).toStrictEqual([])
+    expect(await Effect.runPromise(Ref.get(harness.state.operationFailures))).toMatchObject([{
+      _tag: 'Failed',
+      operation: 'OwnerSnapshot',
+      subject: 'ItemUse',
+      error: {
+        _tag: 'WorldRevisionConflict',
+        expected: revisionBefore,
+        actual: revisionBefore + 1,
+      },
+    }])
+    expect(await Effect.runPromise(harness.baseCoordinator.revision)).toBe(revisionBefore + 1)
+    expect(await Effect.runPromise(harness.store.blockAt(target))).toBe(tnt)
+    expect((await Effect.runPromise(harness.baseCoordinator.snapshot(
+      GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+      PlayerStorageSnapshotSchema,
+    ))).state).toStrictEqual(storageBefore.state)
+    expect(harness.commitCalls()).toBe(1)
+
+    await Effect.runPromise(interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer)))
+
+    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toMatchObject([{
+      requestId: 'ignite-tnt-source-revision-conflict',
+      heldItem: 'flint_and_steel',
+      success: true,
+      outcome: { _tag: 'Tnt', outcome: { _tag: 'Lit' } },
+    }])
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingItemUses))).toStrictEqual([])
+    expect(await Effect.runPromise(Ref.get(harness.publishedEvents))).toStrictEqual([])
+    expect(await Effect.runPromise(harness.store.blockAt(target))).toBeUndefined()
+    const storageAfter = await Effect.runPromise(harness.baseCoordinator.snapshot(
+      GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+      PlayerStorageSnapshotSchema,
+    ))
+    expect(storageAfter.state.inventoryDurability[0]).not.toStrictEqual(storageBefore.state.inventoryDurability[0])
+    expect(await Effect.runPromise(harness.baseCoordinator.revision)).toBe(revisionBefore + 2)
+    expect(harness.commitCalls()).toBe(2)
+  })
+
+  it('requeues a fire ignition after a concurrent commit and succeeds on the next frame', async () => {
+    const target = blockPosition(BlockAxis(8), BlockAxis(64), BlockAxis(8))
+    const harness = await Effect.runPromise(makeHarness({
+      playerStorage: playerStorageWithItems([['flint_and_steel', 1]]),
+      loadedChunks: PORTAL_WINDOW_CHUNKS,
+    }))
+    const interactions = harness.interactionsWithCoordinator(coordinatorWithCommitRevisionBump(
+      harness.coordinator,
+      harness.baseCoordinator,
+    ))
+    const storageBefore = await Effect.runPromise(harness.baseCoordinator.snapshot(
+      GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+      PlayerStorageSnapshotSchema,
+    ))
+    const revisionBefore = await Effect.runPromise(harness.baseCoordinator.revision)
+    const fire = Option.getOrThrow(blockIdOf('fire'))
+    await Effect.runPromise(requestItemUse(harness.state, 'fire-revision-conflict', target, 'flint_and_steel'))
+
+    await Effect.runPromise(interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer)))
+
+    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toStrictEqual([])
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingItemUses))).toMatchObject([{
+      requestId: 'fire-revision-conflict', heldItem: 'flint_and_steel',
+    }])
+    expect(await Effect.runPromise(Ref.get(harness.state.operationFailures))).toMatchObject([{
+      _tag: 'Failed', operation: 'WorldCommit', subject: 'ItemUse',
+      error: { _tag: 'WorldRevisionConflict' },
+    }])
+    expect(await Effect.runPromise(harness.baseCoordinator.revision)).toBe(revisionBefore + 1)
+    expect(await Effect.runPromise(harness.store.blockAt(target))).toBeUndefined()
+    expect((await Effect.runPromise(harness.baseCoordinator.snapshot(
+      GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+      PlayerStorageSnapshotSchema,
+    ))).state).toStrictEqual(storageBefore.state)
+    expect(harness.commitCalls()).toBe(1)
+
+    await harness.run()
+
+    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toMatchObject([{
+      requestId: 'fire-revision-conflict',
+      success: true,
+      outcome: { _tag: 'Fire', outcome: { _tag: 'Lit', position: target } },
+    }])
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingItemUses))).toStrictEqual([])
+    expect(await Effect.runPromise(harness.store.blockAt(target))).toBe(fire)
+    expect(await Effect.runPromise(harness.baseCoordinator.revision)).toBe(revisionBefore + 2)
+    expect(harness.commitCalls()).toBe(2)
+  })
+
+  it('continues to the next ignition after a nonretryable fire commit failure', async () => {
+    const firstTarget = blockPosition(BlockAxis(8), BlockAxis(64), BlockAxis(8))
+    const secondTarget = blockPosition(BlockAxis(9), BlockAxis(64), BlockAxis(8))
+    const harness = await Effect.runPromise(makeHarness({
+      playerStorage: playerStorageWithItems([['flint_and_steel', 1]]),
+      loadedChunks: PORTAL_WINDOW_CHUNKS,
+    }))
+    const interactions = harness.interactionsWithCoordinator(coordinatorWithFirstCommitFailure(harness.coordinator))
+    const fire = Option.getOrThrow(blockIdOf('fire'))
+    await Effect.runPromise(requestItemUse(harness.state, 'fire-nonretryable-failure', firstTarget, 'flint_and_steel'))
+    await Effect.runPromise(requestItemUse(harness.state, 'fire-after-nonretryable-failure', secondTarget, 'flint_and_steel'))
+
+    await Effect.runPromise(interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer)))
+
+    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toMatchObject([{
+      requestId: 'fire-after-nonretryable-failure',
+      success: true,
+      outcome: { _tag: 'Fire', outcome: { _tag: 'Lit', position: secondTarget } },
+    }])
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingItemUses))).toStrictEqual([])
+    expect(await Effect.runPromise(Ref.get(harness.state.operationFailures))).toMatchObject([{
+      _tag: 'Failed', operation: 'WorldCommit', subject: 'ItemUse',
+      error: { _tag: 'WorldCommitEmptyRequest' },
+    }])
+    expect(await Effect.runPromise(harness.store.blockAt(firstTarget))).toBeUndefined()
+    expect(await Effect.runPromise(harness.store.blockAt(secondTarget))).toBe(fire)
+    expect(harness.commitCalls()).toBe(1)
+  })
+
   it('maps a potion bottle selection to the registered brewing item', async () => {
     const harness = await Effect.runPromise(makeHarness({
       playerStorage: playerStorageWithItem('potion_of_swiftness', 1),
@@ -4594,6 +5133,56 @@ describe('schema-valid interaction edge paths', () => {
       error: { _tag: 'WorldCommitEmptyRequest' },
     }])
     expect(harness.commitCalls()).toBe(1)
+  })
+
+  it('requeues a legacy placement after a concurrent commit advances the owner revision', async () => {
+    const placementTarget = blockPosition(BlockAxis(6), BlockAxis(64), BlockAxis(7))
+    const harness = await Effect.runPromise(makeHarness({
+      playerStorage: playerStorageWithItem('stone', 1),
+    }))
+    const storageBefore = await Effect.runPromise(harness.baseCoordinator.snapshot(
+      GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+      PlayerStorageSnapshotSchema,
+    ))
+    const revisionBefore = await Effect.runPromise(harness.baseCoordinator.revision)
+    const interactions = harness.interactionsWithCoordinator(coordinatorWithCommitRevisionBump(
+      harness.coordinator,
+      harness.baseCoordinator,
+    ))
+    await Effect.runPromise(requestBlockPlacement(harness.state, {
+      positionKey: blockPositionKeyOf(placementTarget),
+      heldItem: 'stone',
+    }))
+
+    await Effect.runPromise(interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer)))
+
+    expect(await Effect.runPromise(drainBlockPlacementResults(harness.state))).toStrictEqual([])
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingPlacements))).toMatchObject([{
+      positionKey: blockPositionKeyOf(placementTarget),
+      heldItem: 'stone',
+    }])
+    expect(await Effect.runPromise(harness.store.blockAt(placementTarget))).toBeUndefined()
+    expect((await Effect.runPromise(harness.baseCoordinator.snapshot(
+      GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+      PlayerStorageSnapshotSchema,
+    ))).state).toStrictEqual(storageBefore.state)
+    expect(await Effect.runPromise(Ref.get(harness.state.operationFailures))).toMatchObject([{
+      _tag: 'Failed', operation: 'WorldCommit', subject: 'ItemUse',
+      error: { _tag: 'WorldRevisionConflict' },
+    }])
+    expect(await Effect.runPromise(harness.baseCoordinator.revision)).toBe(revisionBefore + 1)
+    expect(harness.commitCalls()).toBe(1)
+
+    await harness.run()
+
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingPlacements))).toStrictEqual([])
+    expect(await Effect.runPromise(harness.store.blockAt(placementTarget))).toBe(Option.getOrThrow(blockIdOf('stone')))
+    expect((await Effect.runPromise(harness.baseCoordinator.snapshot(
+      GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+      PlayerStorageSnapshotSchema,
+    ))).state.inventory.slots[0]).toBeUndefined()
+    expect(await Effect.runPromise(harness.baseCoordinator.revision)).toBe(revisionBefore + 2)
+    expect(harness.commitCalls()).toBe(2)
   })
 
   it('keeps a mature crop when its full inventory has no registered drop owner ID', async () => {
