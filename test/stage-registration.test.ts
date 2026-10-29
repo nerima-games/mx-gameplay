@@ -6123,11 +6123,15 @@ describe('farming and food item uses through the full interactions stage', () =>
           const observed = yield* baseCoordinator.observe(ownerId, schema, reads)
           if (ownerId === GAMEPLAY_PLAYER_STORAGE_OWNER_ID && !injected) {
             injected = true
+            const observedStorage = yield* baseCoordinator.snapshot(
+              GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+              PlayerStorageSnapshotSchema,
+            )
             const nextCrops = Schema.decodeUnknownSync(CropSnapshotSchema)({
               crops: before.state.crops.map((crop) => ({ ...crop, growthSecs: crop.growthSecs + 1 })),
             })
             yield* baseCoordinator.commit({
-              expectedRevision: observed.revision,
+              expectedRevision: observedStorage.revision,
               expectedDimensions: [],
               changes: [{ ownerId: GAMEPLAY_CROPS_OWNER_ID, state: nextCrops }],
             }).pipe(Effect.orDie)

@@ -6,6 +6,7 @@ import {
   BlockAxis,
   BlockId,
   DimensionIdSchema,
+  type Dimension,
   EntityHealthPoints,
   EntitySerial,
   PositionAxis,
@@ -56,6 +57,8 @@ import {
   type ReplicatedOwnerId,
   type ReplicatedOwnerUnknown,
   type ReplicatedSnapshot,
+  type WorldReadSnapshot,
+  type WorldCommitChunkStoreUnavailable,
   type WorldCommitCoordinatorApi,
   type WorldCommitRequest,
   SPAWN_VITALS,
@@ -427,10 +430,14 @@ const coordinatorWithObserveRevisionBump = (
 ): WorldCommitCoordinatorApi => {
   let injected = false
   const observe: WorldCommitCoordinatorApi['observe'] = <Codec extends Schema.Codec<any, any>>(
-    ownerId,
-    schema,
-    reads,
-  ) => Effect.gen(function* () {
+    ownerId: ReplicatedOwnerId,
+    schema: Codec,
+    reads: ReadonlyArray<Readonly<{ dimension: Dimension; position: BlockPosition }>>,
+  ): Effect.Effect<
+    WorldReadSnapshot<Codec>,
+    Schema.SchemaError | ReplicatedOwnerUnknown | WorldCommitChunkStoreUnavailable,
+    Schema.Codec.DecodingServices<Codec>
+  > => Effect.gen(function* () {
     if (ownerId === bumpBeforeOwner && !injected) {
       injected = true
       yield* bumpVillagerTradeRevision(coordinator).pipe(Effect.orDie)
@@ -629,7 +636,7 @@ describe('registered Fishing plans in the interactions stage', () => {
       },
     ]
 
-    for (const scenario of scenarios) {
+    await Promise.all(scenarios.map(async (scenario) => {
       const harness = await Effect.runPromise(makeHarness({
         fishing: fishingStateWithRod(),
         projectiles: projectileStateWithBobber(),
@@ -673,7 +680,7 @@ describe('registered Fishing plans in the interactions stage', () => {
       ])
       expect(harness.commitCalls()).toBe(1)
       expect(await Effect.runPromise(harness.coordinator.revision)).toBe(revisionBefore + 1)
-    }
+    }))
   })
 
   it('commits an event-free fishing advance when no interaction event bus is registered', async () => {
@@ -1139,6 +1146,28 @@ describe('registered Brewing bottle collection in the interactions stage', () =>
     bottleIndex,
   })
 
+  it('rejects a schema-valid damageable bottle stack without committing', async () => {
+    const brewing = Schema.decodeUnknownSync(BrewingServiceStateSchema)({
+      bottles: [Result.getOrThrow(makeItemStack('wooden_sword', StackCount(1))), undefined, undefined],
+      ingredient: undefined,
+      fuel: undefined,
+      fuelCharges: 0,
+      brewProgressSecs: 0,
+    })
+    const harness = await Effect.runPromise(makeHarness({ brewing }))
+
+    await Effect.runPromise(collectBottle(harness.state))
+    await harness.run()
+
+    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toStrictEqual([{
+      action: 'CollectBrewingBottle',
+      requestId: 'collect-brewing-bottle',
+      success: false,
+      outcome: { _tag: 'InvalidStack' },
+    }])
+    expect(harness.commitCalls()).toBe(0)
+  })
+
   it('returns InventoryFull without committing or changing the stand and storage owners', async () => {
     const harness = await Effect.runPromise(makeHarness({
       brewing: brewingStateWithBottle(),
@@ -1418,7 +1447,7 @@ describe('registered Brewing bottle collection in the interactions stage', () =>
       },
     ]
 
-    for (const scenario of scenarios) {
+    await Promise.all(scenarios.map(async (scenario) => {
       const harness = await Effect.runPromise(makeHarness({
         brewing: brewingStateWithBottle(),
         ...scenario.options,
@@ -1442,7 +1471,7 @@ describe('registered Brewing bottle collection in the interactions stage', () =>
       expect(await Effect.runPromise(Ref.get(harness.publishedEvents))).toStrictEqual([])
       expect(await Effect.runPromise(harness.coordinator.revision)).toBe(revisionBefore)
       expect(harness.commitCalls()).toBe(0)
-    }
+    }))
   })
 })
 
@@ -1609,7 +1638,7 @@ describe('registered Brewing item plans in the interactions stage', () => {
       },
     ]
 
-    for (const scenario of scenarios) {
+    await Promise.all(scenarios.map(async (scenario) => {
       const harness = await Effect.runPromise(makeHarness({
         playerStorage: playerStorageWithItem('potion_of_poison', 1),
         ...scenario.options,
@@ -1654,7 +1683,7 @@ describe('registered Brewing item plans in the interactions stage', () => {
       }
       expect(await Effect.runPromise(harness.coordinator.revision)).toBe(revisionBefore)
       expect(harness.commitCalls()).toBe(0)
-    }
+    }))
   })
 
   it('records typed unsupported outcomes when the interaction stage has no commit context', async () => {
@@ -1904,7 +1933,7 @@ describe('registered Brewing item plans in the interactions stage', () => {
       },
     ]
 
-    for (const scenario of scenarios) {
+    await Promise.all(scenarios.map(async (scenario) => {
       const harness = await Effect.runPromise(makeHarness({
         playerStorage: playerStorageWithItem(scenario.item, 1),
       }))
@@ -1946,7 +1975,7 @@ describe('registered Brewing item plans in the interactions stage', () => {
         tick: 7,
         use: 'potion',
       }])
-    }
+    }))
   })
 
   it('commits fuel, bottle, ingredient, and potion effects with their registered owner candidates', async () => {

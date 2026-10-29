@@ -22,6 +22,7 @@ import {
   makeVillager,
   VILLAGER_RESTOCK_INTERVAL_SECS,
   useVillagerOffer,
+  type VillagerTradeState,
 } from '../src/domain/villager-trade'
 import {
   drainVillagerTradeResults,

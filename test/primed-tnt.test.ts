@@ -52,7 +52,7 @@ const makeTntItemUseHarness = (
   inventoryItem: 'empty' | 'fire_charge' | 'flint_and_steel' = 'fire_charge',
 ) =>
   Effect.gen(function* () {
-    const slots = emptySlots()
+    const slots = [...emptySlots()]
     if (inventoryItem !== 'empty') {
       slots[0] = Result.getOrThrow(itemStack(inventoryItem, StackCount(1)))
     }
@@ -201,7 +201,7 @@ describe('TNT item use through the interactions stage', () => {
                   }],
                 },
               }],
-            })
+            }).pipe(Effect.orDie)
           }
           return observed
         }),
@@ -254,7 +254,7 @@ describe('TNT item use through the interactions stage', () => {
               expectedDimensions: [{ dimension, expectedRevision: expectedDimensionRevision }],
               changes: [],
               blockWrite,
-            })
+            }).pipe(Effect.orDie)
           }
           return yield* base.observe(ownerId, schema, reads)
         }),
