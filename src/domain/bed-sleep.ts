@@ -1,10 +1,10 @@
 import type { TimeServiceApi } from '@nerima-games/mc-sim'
-import { Effect } from 'effect'
-import type { BlockPosition } from '@nerima-games/mc-kernel'
-import { DAWN_FRACTION, isNight } from './day-night.js'
-import type { Position } from '@nerima-games/mc-kernel'
-import type { Dimension } from '@nerima-games/mc-worldgen'
+import { InterpolationFraction, PositionAxis, position } from '@nerima-games/mc-kernel'
+import type { BlockPosition, Position } from '@nerima-games/mc-kernel'
 import type { PlayerServiceApi } from '@nerima-games/mc-sim'
+import type { Dimension } from '@nerima-games/mc-worldgen'
+import { Brand, Effect } from 'effect'
+import { DAWN_FRACTION, isNight } from './day-night.js'
 import type { Weather } from './weather.js'
 
 export type SleepRejectionReason =
@@ -58,11 +58,11 @@ export const resolveBedSleep = (input: BedSleepInput): BedSleepDecision => {
     morningTimeOfDay: DAWN_FRACTION,
     respawnLocation: {
       dimension: 'overworld',
-      position: {
-        x: input.bedPosition.x,
-        y: input.bedPosition.y + 1,
-        z: input.bedPosition.z,
-      },
+      position: position(
+        PositionAxis(input.bedPosition.x),
+        PositionAxis(input.bedPosition.y + 1),
+        PositionAxis(input.bedPosition.z),
+      ),
     },
   }
 }
@@ -72,13 +72,13 @@ export const attemptBedSleep = (
   player: BedSleepPlayer,
   time: BedSleepTime,
   request: BedSleepRequest,
-): Effect.Effect<BedSleepDecision> =>
+): Effect.Effect<BedSleepDecision, Brand.BrandError> =>
   Effect.gen(function* () {
     const [dimension, timeOfDay] = yield* Effect.all([player.dimension, time.timeOfDay])
     const decision = resolveBedSleep({ ...request, dimension, timeOfDay })
 
     if (decision._tag === 'SleepAccepted') {
-      yield* time.setTimeOfDay(decision.morningTimeOfDay)
+      yield* time.setTimeOfDay(InterpolationFraction(decision.morningTimeOfDay))
     }
 
     return decision

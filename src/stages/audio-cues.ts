@@ -21,12 +21,17 @@
  * re-deriving a surface from a block-name string list that would drift from
  * the registry the moment either changes.
  */
-import { footstepCueFor, type CuePlayOptions, type SoundCueId } from '@nerima-games/mc-audio'
-import { propertyOfBlockId, type Position } from '@nerima-games/mc-kernel'
+import { AudioGain, footstepCueFor, SoundCueId, type CuePlayOptions, type SoundCueId as SoundCueIdType } from '@nerima-games/mc-audio'
+import { BlockId, propertyOfBlockId, type Position } from '@nerima-games/mc-kernel'
+import { Result } from 'effect'
+
+const INVENTORY_OPEN_CUE = SoundCueId('inventoryOpen')
+const INVENTORY_CLOSE_CUE = SoundCueId('inventoryClose')
+const BLOCK_PLACE_CUE = SoundCueId('blockPlace')
 
 /** The one capability every rule in this file needs from a host's audio runtime. */
 export type AudioCuePort = {
-  readonly play: (cueId: SoundCueId, options?: CuePlayOptions) => void
+  readonly play: (cueId: SoundCueIdType, options?: CuePlayOptions) => void
 }
 
 export type PlacementAudioLatch = {
@@ -64,7 +69,7 @@ export const announceInventoryTransition = (
   nextOpen: boolean,
 ): boolean => {
   if (previousOpen === nextOpen) return false
-  audio.play(nextOpen ? 'inventoryOpen' : 'inventoryClose')
+  audio.play(nextOpen ? INVENTORY_OPEN_CUE : INVENTORY_CLOSE_CUE)
   return true
 }
 
@@ -74,7 +79,7 @@ export const announceConfirmedPlacements = (
   position?: Position,
 ): boolean => {
   if (consumedPlacements.length === 0) return false
-  audio.play('blockPlace', position === undefined ? undefined : { position })
+  audio.play(BLOCK_PLACE_CUE, position === undefined ? undefined : { position })
   return true
 }
 
@@ -126,15 +131,19 @@ export const advanceFootstepRuntime = (
   if (input.dead || input.dimensionChanged || !input.grounded) return initialFootstepRuntimeState()
 
   const distance = state.distanceSinceLastStep + Math.max(0, input.horizontalDistance)
-  const surface = propertyOfBlockId(input.standingOnBlockId, 'footstepMaterial')
-  const cueId = footstepCueFor(surface)
-  if (cueId === undefined || distance < FOOTSTEP_DISTANCE) {
+  const blockId = Result.getOrUndefined(BlockId.result(input.standingOnBlockId))
+  const surface = blockId === undefined
+    ? undefined
+    : Result.getOrUndefined(propertyOfBlockId(blockId, 'footstepMaterial'))
+  const cueId = surface === undefined ? undefined : footstepCueFor(surface)
+  const gainScale = Result.getOrUndefined(AudioGain.result(input.sneaking ? 0.55 : 1))
+  if (cueId === undefined || gainScale === undefined || distance < FOOTSTEP_DISTANCE) {
     return { distanceSinceLastStep: distance }
   }
 
   const steps = Math.floor(distance / FOOTSTEP_DISTANCE)
   for (let index = 0; index < steps; index += 1) {
-    audio.play(cueId, { position: input.position, gainScale: input.sneaking ? 0.55 : 1 })
+    audio.play(cueId, { position: input.position, gainScale })
   }
   return { distanceSinceLastStep: distance - steps * FOOTSTEP_DISTANCE }
 }

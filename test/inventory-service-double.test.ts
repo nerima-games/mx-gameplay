@@ -1,12 +1,11 @@
 import { describe, expect, it } from '@effect/vitest'
-import type { InventoryServiceApi, Slot } from '@nerima-games/mc-sim'
-import { Effect } from 'effect'
-import { StackCount } from '@nerima-games/mc-kernel'
+import { itemStack, type InventoryServiceApi, type Slot } from '@nerima-games/mc-sim'
+import { Effect, Result } from 'effect'
 import { emptySlots, makeInventoryDouble } from './support/inventory-service-double'
 
 type ItemType = Parameters<InventoryServiceApi['add']>[0]
 
-const stack = (item: ItemType, count: number): Slot => ({ item, count: StackCount(count) })
+const stack = (item: ItemType, count: number): Slot => Result.getOrThrow(itemStack(item, count))
 
 const inventoryWith = (...entries: ReadonlyArray<readonly [number, Slot]>): ReadonlyArray<Slot> => {
   const slots = [...emptySlots()]
@@ -113,8 +112,7 @@ describe('inventory service double equipment', () => {
     Effect.gen(function* () {
       const inventory = yield* makeInventoryDouble()
       const helmet = {
-        item: 'iron_helmet' as const,
-        count: StackCount(1),
+        ...Result.getOrThrow(itemStack('iron_helmet', 1)),
         durability: { current: 120, max: 165 },
       }
 

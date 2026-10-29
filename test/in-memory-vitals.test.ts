@@ -1,19 +1,20 @@
 import { describe, expect, it } from '@effect/vitest'
 import { Effect } from 'effect'
-import { DeltaTimeSecs } from '@nerima-games/mc-kernel'
+import { DeltaTimeSecs, EntityHealthPoints, FoodSaturation } from '@nerima-games/mc-kernel'
+import { DamageCause, ExhaustionAmount, FoodTimerSecs, HungerPoints, TotalExperience } from '@nerima-games/mc-sim'
 import { makeInMemoryVitals, type PlayerVitals } from '../src/domain/in-memory-vitals'
 import { makeGeneratedWorld } from '../src/domain/in-memory-world'
 import { isValidPlayerVitals, SPAWN_PLAYER_VITALS } from '../src/index'
 
 const vitals = (overrides: Partial<PlayerVitals> = {}): PlayerVitals => ({
-  healthPoints: 20,
-  maxHealthPoints: 20,
-  hungerPoints: 20,
-  maxHungerPoints: 20,
-  saturation: 5,
-  exhaustion: 0,
-  foodTimerSecs: 0,
-  totalExperience: 0,
+  healthPoints: EntityHealthPoints(20),
+  maxHealthPoints: EntityHealthPoints(20),
+  hungerPoints: HungerPoints(20),
+  maxHungerPoints: HungerPoints(20),
+  saturation: FoodSaturation(5),
+  exhaustion: ExhaustionAmount(0),
+  foodTimerSecs: FoodTimerSecs(0),
+  totalExperience: TotalExperience(0),
   lastDamageCause: undefined,
   ...overrides,
 })
@@ -25,16 +26,20 @@ describe('in-memory vitals facade', () => {
 
       expect(yield* service.snapshot).toStrictEqual(SPAWN_PLAYER_VITALS)
       expect(isValidPlayerVitals(SPAWN_PLAYER_VITALS)).toBe(true)
-      expect(isValidPlayerVitals(vitals({ healthPoints: 7, hungerPoints: 12 }))).toBe(true)
-      expect(isValidPlayerVitals(vitals({ healthPoints: 21 }))).toBe(false)
-      expect(isValidPlayerVitals(vitals({ saturation: 6, hungerPoints: 5 }))).toBe(false)
-      expect(isValidPlayerVitals(vitals({ foodTimerSecs: 4 }))).toBe(false)
+      expect(isValidPlayerVitals(vitals({ healthPoints: EntityHealthPoints(7), hungerPoints: HungerPoints(12) }))).toBe(true)
+      expect(isValidPlayerVitals(vitals({ healthPoints: EntityHealthPoints(21) }))).toBe(false)
+      expect(isValidPlayerVitals(vitals({ saturation: FoodSaturation(6), hungerPoints: HungerPoints(5) }))).toBe(false)
+      expect(isValidPlayerVitals(vitals({ foodTimerSecs: FoodTimerSecs(4) }))).toBe(false)
     }),
   )
 
   it.effect('is exposed by generated worlds with optional initial state', () =>
     Effect.gen(function* () {
-      const initial = vitals({ healthPoints: 12, hungerPoints: 8, totalExperience: 17 })
+      const initial = vitals({
+        healthPoints: EntityHealthPoints(12),
+        hungerPoints: HungerPoints(8),
+        totalExperience: TotalExperience(17),
+      })
       const world = yield* makeGeneratedWorld({ seed: 123, vitals: initial })
 
       expect(yield* world.vitals.snapshot).toStrictEqual(initial)
@@ -47,7 +52,10 @@ describe('in-memory vitals facade', () => {
 
   it.effect('turns food timer signals into healing and starvation damage', () =>
     Effect.gen(function* () {
-      const regenerating = yield* makeInMemoryVitals(vitals({ healthPoints: 19, foodTimerSecs: 3.5 }))
+      const regenerating = yield* makeInMemoryVitals(vitals({
+        healthPoints: EntityHealthPoints(19),
+        foodTimerSecs: FoodTimerSecs(3.5),
+      }))
       const regeneration = yield* regenerating.advanceFoodTimer(DeltaTimeSecs(0.5))
 
       expect(regeneration).toMatchObject({
@@ -57,10 +65,10 @@ describe('in-memory vitals facade', () => {
       })
 
       const starving = yield* makeInMemoryVitals(vitals({
-        healthPoints: 1,
-        hungerPoints: 0,
-        saturation: 0,
-        foodTimerSecs: 3.5,
+        healthPoints: EntityHealthPoints(1),
+        hungerPoints: HungerPoints(0),
+        saturation: FoodSaturation(0),
+        foodTimerSecs: FoodTimerSecs(3.5),
       }))
       const starvation = yield* starving.advanceFoodTimer(DeltaTimeSecs(0.5))
 
@@ -75,10 +83,10 @@ describe('in-memory vitals facade', () => {
   it.effect('blocks survival updates while dead but permits lifecycle operations', () =>
     Effect.gen(function* () {
       const dead = vitals({
-        healthPoints: 0,
-        hungerPoints: 0,
-        saturation: 0,
-        lastDamageCause: 'fall',
+        healthPoints: EntityHealthPoints(0),
+        hungerPoints: HungerPoints(0),
+        saturation: FoodSaturation(0),
+        lastDamageCause: DamageCause('fall'),
       })
       const service = yield* makeInMemoryVitals(dead)
 
@@ -96,7 +104,10 @@ describe('in-memory vitals facade', () => {
         lastDamageCause: undefined,
       })
 
-      const restored = vitals({ healthPoints: 7, totalExperience: 30 })
+      const restored = vitals({
+        healthPoints: EntityHealthPoints(7),
+        totalExperience: TotalExperience(30),
+      })
       yield* service.restore(restored)
       expect(yield* service.snapshot).toStrictEqual(restored)
 

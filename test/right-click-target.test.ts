@@ -16,8 +16,9 @@ import {
   rightClickRoute,
   type RightClickRoute,
 } from '../src/domain/interactions/right-click-target'
-import { BLOCK_TYPES, blockPosition, type BlockType } from '@nerima-games/mc-kernel'
+import { BLOCK_TYPES, type BlockType } from '@nerima-games/mc-kernel'
 import type { BlockPosition } from '@nerima-games/mc-kernel'
+import { blockPosition } from './support/coordinate-fixtures'
 
 const AT: BlockPosition = blockPosition(12, 70, -3)
 

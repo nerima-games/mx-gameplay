@@ -60,7 +60,7 @@
  * down. That ordering is the whole of the cost argument and it is why the gate
  * below takes the block rather than the store deciding.
  */
-import { Effect } from 'effect'
+import { Effect, Option, Result } from 'effect'
 import { blockIdOf, blockTypeOfId, type BlockId, type BlockPosition } from '@nerima-games/mc-kernel'
 import type { ChunkStoreApi } from '@nerima-games/mc-worldgen'
 
@@ -85,7 +85,7 @@ export const MAX_MUSHROOM_PLACEMENT_LIGHT = 12
  * unknown id through rather than refusing it for a reason nobody can state.
  */
 export const isMushroomBlock = (block: BlockId): boolean => {
-  const type = blockTypeOfId(block)
+  const type = Result.getOrUndefined(blockTypeOfId(block))
   return type === 'brown_mushroom' || type === 'red_mushroom'
 }
 
@@ -169,5 +169,5 @@ export const mushroomLightObjection = (
  * all 120 block types, so in a green tree neither of these is ever `undefined`.
  * The type says what the mirror can promise; the test says what is true today.
  */
-export const BROWN_MUSHROOM_BLOCK_ID: BlockId | undefined = blockIdOf('brown_mushroom')
-export const RED_MUSHROOM_BLOCK_ID: BlockId | undefined = blockIdOf('red_mushroom')
+export const BROWN_MUSHROOM_BLOCK_ID: BlockId | undefined = Option.getOrUndefined(blockIdOf('brown_mushroom'))
+export const RED_MUSHROOM_BLOCK_ID: BlockId | undefined = Option.getOrUndefined(blockIdOf('red_mushroom'))

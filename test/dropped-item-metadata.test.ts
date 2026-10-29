@@ -11,6 +11,7 @@
  * itself, not only through the roster sweep that happens to call it.
  */
 import { describe, expect, it } from '@effect/vitest'
+import { position as atPosition } from './support/coordinate-fixtures'
 import { durabilityForItem } from '@nerima-games/mc-sim'
 import { Effect } from 'effect'
 import {
@@ -26,7 +27,7 @@ import {
 } from '../src/domain/entities/mob-frame'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
 
-const origin = { x: 0, y: 0, z: 0 }
+const origin = atPosition(0, 0, 0 )
 
 describe('isDroppedItemPickupEligible', () => {
   it('is eligible with no eligible-from frame at all', () => {

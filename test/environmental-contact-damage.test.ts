@@ -1,5 +1,6 @@
 import { blockIdOf, propertyOfBlockId } from '@nerima-games/mc-kernel'
 import { describe, expect, it } from '@effect/vitest'
+import { Option, Result } from 'effect'
 import { applyDamage, deathMessage, fullHealth } from '../src/domain/death-cause'
 import {
   ENVIRONMENTAL_CONTACT_DAMAGE_CADENCE_SECS,
@@ -8,10 +9,15 @@ import {
   type EnvironmentalContact,
 } from '../src/domain/environmental-contact-damage'
 
-const contact = (block: EnvironmentalContact['block']): EnvironmentalContact => ({
-  block,
-  contactDamage: propertyOfBlockId(blockIdOf(block), 'contactDamage'),
-})
+const contact = (block: EnvironmentalContact['block']): EnvironmentalContact => {
+  const blockId = Option.getOrElse(blockIdOf(block), () => {
+    throw new Error(`missing block registry entry: ${block}`)
+  })
+  return {
+    block,
+    contactDamage: Result.getOrThrow(propertyOfBlockId(blockId, 'contactDamage')),
+  }
+}
 
 describe('environmental contact damage', () => {
   it('hits immediately, then follows elapsed simulation time instead of render frames', () => {

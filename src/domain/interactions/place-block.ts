@@ -118,7 +118,7 @@
  * cactus requires four clear horizontal sides. `test/placement-rules.test.ts`
  * exercises those combinations through `placeBlock` with real item literals.
  */
-import { Effect } from 'effect'
+import { Effect, Option, Result } from 'effect'
 import {
   type BlockId,
   type BlockPosition,
@@ -130,9 +130,9 @@ import {
   AIR_BLOCK_ID,
   blockIdOf,
   blockOfPlaceableItem,
-  blockPosition,
   canBlockStaySupported,
   capabilityOfBlockId,
+  chunkCoordOfBlock,
   isSupportSensitiveBlockId,
   type PlaceableItemType,
   type Position,
@@ -220,7 +220,8 @@ export const blockOverlapsPlayer = (block: BlockPosition, playerFeet: Position):
  * NOT support-sensitive, which is the inert direction — it places, rather than
  * being refused for a reason nobody can name.
  */
-export const isSupportSensitiveOfBlock = (block: BlockId): boolean => isSupportSensitiveBlockId(block)
+export const isSupportSensitiveOfBlock = (block: BlockId): boolean =>
+  Result.getOrUndefined(isSupportSensitiveBlockId(block)) !== false
 
 /**
  * What the player is trying to put down, and where.
@@ -282,17 +283,6 @@ export type PlaceOutcome =
   | { readonly _tag: 'InsidePlayer' }
   /** A support-sensitive block with nothing under it to hold it up. */
   | { readonly _tag: 'Unsupported'; readonly support: BlockId }
-  /**
-   * The item names a block this build has no id for.
-   *
-   * UNREACHABLE TODAY and kept anyway. `PlaceableItemType` is derived from the
-   * two rosters, and every member of it has a registry row — but the rosters and
-   * the registry are two of kernel's own files, taken directly since W1-M4, and
-   * kernel's own `blockIdOf` records what the alternative costs: 「an unregistered type
-   * silently becomes AIR, so the block does not merely misread, it VANISHES」.
-   * A named refusal is the only answer that does not delete a cell.
-   */
-  | { readonly _tag: 'UnknownBlock' }
   /** Out of the resident area. NOT air — the world there is unknown, not empty. */
   | { readonly _tag: 'ChunkNotLoaded' }
   /** Below bedrock or above the build limit. */
@@ -346,20 +336,11 @@ export const placementVerdict = (
   if (target._tag === 'OutOfWorld') {
     return { _tag: 'OutOfWorld' }
   }
-  if (!capabilityOfBlockId(target.block, 'replaceable')) {
+  if (Result.getOrUndefined(capabilityOfBlockId(target.block, 'replaceable')) !== true) {
     return { _tag: 'Occupied', existing: target.block }
   }
 
-  const block = blockIdOf(blockOfPlaceableItem(request.heldItem))
-  /* v8 ignore start -- UnknownBlock is unreachable in a green tree: PlaceableItemType
-   * is exactly the roster `blockIdOf` is pinned total over
-   * (kernel's own type declaration), so `blockIdOf(blockOfPlaceableItem(x))`
-   * never returns `undefined` for a request this type permits. Kept for the reason
-   * the `UnknownBlock` tag's own comment states, on `PlaceOutcome` above. */
-  if (block === undefined) {
-    return { _tag: 'UnknownBlock' }
-  }
-  /* v8 ignore stop */
+  const block = Option.getOrThrow(blockIdOf(blockOfPlaceableItem(request.heldItem)))
 
   if (request.playerFeet !== undefined && blockOverlapsPlayer(request.position, request.playerFeet)) {
     return { _tag: 'InsidePlayer' }
@@ -381,7 +362,7 @@ export const placementVerdict = (
     // the set first refuses a lily pad on water (water is non-supporting) and
     // allows it on stone: wrong in both directions on the only cell it belongs
     // on. `canBlockStaySupported` is the composition in the reference's order.
-    if (!canBlockStaySupported(block, supportBelow.block)) {
+    if (Result.getOrUndefined(canBlockStaySupported(block, supportBelow.block)) !== true) {
       return { _tag: 'Unsupported', support: supportBelow.block }
     }
   }
@@ -415,16 +396,12 @@ export const placeBlock = (
     // target read is interpreted, because it depends only on the held item. It
     // is issued after the target read rather than beside it so that a placement
     // into an occupied cell costs one call and not two.
-    const block = blockIdOf(blockOfPlaceableItem(request.heldItem))
-    const supportBelow =
-      block !== undefined && isSupportSensitiveOfBlock(block)
-        ? yield* store.getBlock(
-            adjacentBlockPosition(
-              blockPosition(request.position.x, request.position.y, request.position.z),
-              'down',
-            ),
-          )
-        : undefined
+    const block = Option.getOrThrow(blockIdOf(blockOfPlaceableItem(request.heldItem)))
+    const supportSensitive = isSupportSensitiveOfBlock(block)
+    const supportPosition = supportSensitive
+      ? Result.getOrUndefined(adjacentBlockPosition(request.position, 'down'))
+      : undefined
+    const supportBelow = supportPosition === undefined ? undefined : yield* store.getBlock(supportPosition)
 
     const verdict = placementVerdict(request, target, supportBelow)
     if (verdict._tag !== 'Allowed') {
@@ -466,57 +443,93 @@ export const placeBlock = (
 
     const outcome = yield* store.setBlock(request.position, verdict.block)
 
-    switch (outcome._tag) {
-      case 'Written': {
-        // The door's upper half. It is written AFTER the lower one and only
-        // when the lower one landed, so a refused placement cannot leave half a
-        // door standing in the world.
-        //
-        // A NON-`Written` ANSWER HERE IS REPORTED BY OMISSION rather than by
-        // undoing the lower cell. The cell was read as air one instruction ago,
-        // so reaching this needs the store to have changed underneath — the
-        // window this file's header is about — and the two available answers are
-        // a compensating write that can itself fail, or a door with no top. The
-        // second is visible, breakable and recorded in `alsoPlaced`; the first
-        // is a second failure mode with nowhere to report itself.
-        const alsoPlaced: Array<BlockPosition> = []
-        if (upper._tag === 'Clear') {
-          const upperOutcome = yield* store.setBlock(upper.cell, verdict.block)
-          if (upperOutcome._tag === 'Written') {
-            alsoPlaced.push(upper.cell)
-          }
-        }
-
-        return {
-          _tag: 'Placed',
-          block: verdict.block,
-          consumed: request.heldItem,
-          chunk: outcome.chunk,
-          alsoPlaced,
+    if (outcome._tag === 'Written') {
+      // The door's upper half. It is written AFTER the lower one and only
+      // when the lower one landed, so a refused placement cannot leave half a
+      // door standing in the world.
+      //
+      // A NON-`Written` ANSWER HERE IS REPORTED BY OMISSION rather than by
+      // undoing the lower cell. The cell was read as air one instruction ago,
+      // so reaching this needs the store to have changed underneath — the
+      // window this file's header is about — and the two available answers are
+      // a compensating write that can itself fail, or a door with no top. The
+      // second is visible, breakable and recorded in `alsoPlaced`; the first
+      // is a second failure mode with nowhere to report itself.
+      const alsoPlaced: Array<BlockPosition> = []
+      if (upper._tag === 'Clear') {
+        const upperOutcome = yield* store.setBlock(upper.cell, verdict.block)
+        if (upperOutcome._tag === 'Written') {
+          alsoPlaced.push(upper.cell)
         }
       }
 
-      // See the module header: the cell already held this exact block, so
-      // nothing was dirtied and nothing may be taken off the stack.
-      case 'Unchanged':
-        return { _tag: 'Occupied', existing: outcome.previous }
-
-      // The store changed its mind between the read and the write. That is the
-      // window this file's header is about, and it is DECIDED rather than
-      // asserted away: the answer is the same one the read would have given.
-      case 'ChunkNotLoaded':
-        return { _tag: 'ChunkNotLoaded' }
-
-      case 'OutOfWorld':
-        return { _tag: 'OutOfWorld' }
-      // exhaustiveness arm over `BlockWriteOutcome`, a closed four-tag union
-      // (mc-worldgen's chunk-store-state.d.ts): `Written`, `Unchanged`, `ChunkNotLoaded` and
-      // `OutOfWorld` are all handled above, so no input can reach this arm.
-      /* v8 ignore start */
-      default: {
-        const exhaustive: never = outcome
-        return exhaustive
+      return {
+        _tag: 'Placed',
+        block: verdict.block,
+        consumed: request.heldItem,
+        chunk: outcome.chunk,
+        alsoPlaced,
       }
-      /* v8 ignore stop */
+    }
+
+    if (outcome._tag === 'Unchanged') return { _tag: 'Occupied', existing: outcome.previous }
+    if (outcome._tag === 'ChunkNotLoaded') return { _tag: 'ChunkNotLoaded' }
+    return { _tag: 'OutOfWorld' }
+  })
+
+/** The world edits a placement would publish after all placement rules pass. */
+export type PlaceBlockPlan = Readonly<{
+  outcome: PlaceOutcome
+  edits: ReadonlyArray<Readonly<{ position: BlockPosition; block: BlockId }>>
+}>
+
+/**
+ * Read and plan a placement without writing the chunk store.
+ *
+ * The stage uses this with a player-storage candidate so inventory consumption
+ * and every block of a multi-cell placement can share one world commit request.
+ */
+export const planPlaceBlock = (
+  store: ChunkStoreApi,
+  request: PlaceRequest,
+): Effect.Effect<PlaceBlockPlan> =>
+  Effect.gen(function* () {
+    const target = yield* store.getBlock(request.position)
+    const block = Option.getOrThrow(blockIdOf(blockOfPlaceableItem(request.heldItem)))
+    const supportPosition = isSupportSensitiveOfBlock(block)
+      ? Result.getOrUndefined(adjacentBlockPosition(request.position, 'down'))
+      : undefined
+    const supportBelow = supportPosition === undefined ? undefined : yield* store.getBlock(supportPosition)
+    const verdict = placementVerdict(request, target, supportBelow)
+    switch (verdict._tag) {
+      case 'Allowed':
+        break
+      default:
+        return { outcome: verdict, edits: [] }
+    }
+
+    const tooBright = yield* mushroomLightObjection(store, verdict.block, request.position)
+    if (tooBright !== undefined) return { outcome: tooBright, edits: [] }
+    const noWater = yield* sugarCaneWaterObjection(store, verdict.block, request.position, supportBelow)
+    if (noWater !== undefined) return { outcome: noWater, edits: [] }
+    const sidesBlocked = yield* cactusSidesObjection(store, verdict.block, request.position)
+    if (sidesBlocked !== undefined) return { outcome: sidesBlocked, edits: [] }
+
+    const upper = yield* doorUpperCell(store, verdict.block, request.position)
+    if (upper._tag === 'NoRoomAbove') return { outcome: upper, edits: [] }
+
+    const alsoPlaced = upper._tag === 'Clear' ? [upper.cell] : []
+    return {
+      outcome: {
+        _tag: 'Placed',
+        block: verdict.block,
+        consumed: request.heldItem,
+        chunk: chunkCoordOfBlock(request.position),
+        alsoPlaced,
+      },
+      edits: [
+        { position: request.position, block: verdict.block },
+        ...(upper._tag === 'Clear' ? [{ position: upper.cell, block: verdict.block }] : []),
+      ],
     }
   })

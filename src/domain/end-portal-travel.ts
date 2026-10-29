@@ -3,16 +3,30 @@ import {
   END_PORTAL_BLOCK,
   endArrivalDescriptor,
 } from '@nerima-games/mc-worldgen'
-import { blockPosition as kernelBlockPosition } from '@nerima-games/mc-kernel'
+import {
+  BlockAxis,
+  PositionAxis,
+  blockPosition as kernelBlockPosition,
+  position,
+  type BlockPosition,
+  type Position,
+} from '@nerima-games/mc-kernel'
 import { Effect } from 'effect'
-import type { BlockPosition } from '@nerima-games/mc-kernel'
-import type { PlayerServiceApi } from '@nerima-games/mc-sim'
+import type { PlayerServiceApi, PlayerServiceInputError } from '@nerima-games/mc-sim'
 
 /** Deterministic End arrival origin until worldgen supplies a world spawn. */
-export const END_ARRIVAL_ORIGIN: ReturnType<typeof kernelBlockPosition> = kernelBlockPosition(0, 60, 0)
+export const END_ARRIVAL_ORIGIN: ReturnType<typeof kernelBlockPosition> =
+  kernelBlockPosition(BlockAxis(0), BlockAxis(60), BlockAxis(0))
 
 /** Deterministic return position until mc-sim exposes the Overworld spawn. */
-export const OVERWORLD_RETURN_POSITION: BlockPosition = kernelBlockPosition(0, 64, 0)
+export const OVERWORLD_RETURN_POSITION: BlockPosition =
+  kernelBlockPosition(BlockAxis(0), BlockAxis(64), BlockAxis(0))
+
+const asPlayerPosition = (positionValue: BlockPosition): Position => position(
+  PositionAxis(positionValue.x),
+  PositionAxis(positionValue.y),
+  PositionAxis(positionValue.z),
+)
 
 export type EndPortalTravelEvent = {
   readonly sourceDimension: Dimension
@@ -28,12 +42,12 @@ export const isEndPortalBlock = (block: number): boolean => block === END_PORTAL
 export const applyEndPortalTravel = (
   player: PlayerServiceApi,
   sourcePosition: BlockPosition,
-): Effect.Effect<EndPortalTravelEvent> =>
+): Effect.Effect<EndPortalTravelEvent, PlayerServiceInputError> =>
   Effect.gen(function* () {
     const sourceDimension = yield* player.dimension
     if (sourceDimension === 'overworld') {
       const arrival = endArrivalDescriptor(END_ARRIVAL_ORIGIN)
-      yield* player.moveTo(arrival.spawn)
+      yield* player.moveTo(asPlayerPosition(arrival.spawn))
       yield* player.setDimension('end')
       return {
         arrival,
@@ -44,7 +58,7 @@ export const applyEndPortalTravel = (
       }
     }
 
-    yield* player.moveTo(OVERWORLD_RETURN_POSITION)
+    yield* player.moveTo(asPlayerPosition(OVERWORLD_RETURN_POSITION))
     yield* player.setDimension('overworld')
     return {
       arrival: undefined,

@@ -56,11 +56,10 @@
  * sugar cane is support-sensitive and that read is what `placementVerdict`
  * needed in order to allow the placement in the first place.
  */
-import { Effect } from 'effect'
+import { Effect, Option, Result } from 'effect'
 import {
   adjacentBlockPosition,
   blockIdOf,
-  blockPosition,
   blockTypeOfId,
   horizontalBlockNeighbours,
   type BlockId,
@@ -69,10 +68,10 @@ import {
 import type { BlockReading, ChunkStoreApi } from '@nerima-games/mc-worldgen'
 
 /** Is this byte sugar cane? Asked of kernel's registry; see `./place-mushroom-light`. */
-export const isSugarCaneBlock = (block: BlockId): boolean => blockTypeOfId(block) === 'sugar_cane'
+export const isSugarCaneBlock = (block: BlockId): boolean => Result.getOrUndefined(blockTypeOfId(block)) === 'sugar_cane'
 
 /** Is this byte water? Asked of kernel's registry, for the same reason. */
-const isWaterBlock = (block: BlockId): boolean => blockTypeOfId(block) === 'water'
+const isWaterBlock = (block: BlockId): boolean => Result.getOrUndefined(blockTypeOfId(block)) === 'water'
 
 /**
  * The reference's `hasRequiredSugarCaneAdjacentWater`, over bytes and over
@@ -126,9 +125,16 @@ export const sugarCaneWaterObjection = (
       return undefined
     }
 
-    const belowSupport = adjacentBlockPosition(blockPosition(position.x, position.y, position.z), 'down')
+    const belowSupport = Result.getOrUndefined(adjacentBlockPosition(position, 'down'))
+    if (belowSupport === undefined) {
+      return { _tag: 'NoAdjacentWater' }
+    }
+    const neighbours = Result.getOrUndefined(horizontalBlockNeighbours(belowSupport))
+    if (neighbours === undefined) {
+      return { _tag: 'NoAdjacentWater' }
+    }
     const besideSupport: Array<BlockReading> = []
-    for (const neighbour of horizontalBlockNeighbours(belowSupport)) {
+    for (const neighbour of neighbours) {
       besideSupport.push(yield* store.getBlock(neighbour))
     }
 
@@ -138,4 +144,4 @@ export const sugarCaneWaterObjection = (
   })
 
 /** The id this rule is about, for a caller that wants to demonstrate it. */
-export const SUGAR_CANE_BLOCK_ID: BlockId | undefined = blockIdOf('sugar_cane')
+export const SUGAR_CANE_BLOCK_ID: BlockId | undefined = Option.getOrUndefined(blockIdOf('sugar_cane'))

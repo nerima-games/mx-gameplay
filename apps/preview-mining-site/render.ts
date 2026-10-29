@@ -12,6 +12,7 @@ import { padEnd, padStart, type Rgb, type Style } from './ansi'
 import type { DayPhase } from '../../src/domain/day-night'
 import { FALLING_BLOCK_MOVES_PER_TICK } from '../../src/domain/falling-block'
 import {
+  BlockAxis,
   blockPosition,
   blockPositionKeyOf,
   type BlockPositionKey,
@@ -173,8 +174,12 @@ export const renderQueue = (
 
   pending.slice(0, visible).forEach((key, index) => {
     const parts = key.split(',')
-    const position = blockPosition(Number(parts[0]), Number(parts[1]), Number(parts[2]))
-    const source = blockPosition(position.x, position.y + 1, position.z)
+    const position = blockPosition(
+      BlockAxis(Number(parts[0])),
+      BlockAxis(Number(parts[1])),
+      BlockAxis(Number(parts[2])),
+    )
+    const source = blockPosition(position.x, BlockAxis(position.y + 1), position.z)
     const resident = site.world.isResident(position)
     const at = resident ? glyphOf(site.world.peekBlock(position) ?? AIR).name : 'not loaded'
     const above = resident ? glyphOf(site.world.peekBlock(source) ?? AIR).name : 'not loaded'

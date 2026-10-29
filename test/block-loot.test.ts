@@ -38,7 +38,7 @@
  * and Silk Touch alternative.
  */
 import { describe, expect, it } from '@effect/vitest'
-import { Effect } from 'effect'
+import { Effect, Option, Result } from 'effect'
 import {
   blockIdOf,
   blockTypeOfId,
@@ -80,6 +80,8 @@ const GLOWSTONE = BlockId(15)
 const TALL_GRASS = BlockId(25)
 const FERN = BlockId(26)
 
+const maybeBlockId = (type: BlockType) => Option.getOrElse(blockIdOf(type), () => undefined)
+
 /** Rolls that fail every chance gate: nothing bonus, no fortune remainder. */
 const NO_LUCK: ReadonlyArray<number> = [0.999, 0.999, 0.999, 0.999]
 
@@ -92,8 +94,8 @@ describe('the kernel bridge — dropOfBlockId', () => {
   // yields a `BlockId` and `InventoryService.add` takes an item.
   it.effect('turns a chunk buffer byte into a block name', () =>
     Effect.sync(() => {
-      expect(blockTypeOfId(STONE)).toBe('stone')
-      expect(blockTypeOfId(GLOWSTONE)).toBe('glowstone')
+      expect(Result.getOrThrow(blockTypeOfId(STONE))).toBe('stone')
+      expect(Result.getOrThrow(blockTypeOfId(GLOWSTONE))).toBe('glowstone')
     }),
   )
 
@@ -103,8 +105,9 @@ describe('the kernel bridge — dropOfBlockId', () => {
   // inventories.
   it.effect('REGRESSION: an unknown byte has no name and no drop, rather than a default one', () =>
     Effect.sync(() => {
-      expect(blockTypeOfId(200)).toBeUndefined()
-      expect(dropOfBlockId(200)).toBeUndefined()
+      const unknown = BlockId(200)
+      expect(Result.getOrThrow(blockTypeOfId(unknown))).toBeUndefined()
+      expect(Result.getOrThrow(dropOfBlockId(unknown))).toBeUndefined()
       expect(blockLoot(BlockId(200))).toStrictEqual([])
     }),
   )
@@ -124,7 +127,7 @@ describe('the kernel bridge — dropOfBlockId', () => {
       // ordinary reason instead: its drop is an OVERRIDE pointing at `snowball`,
       // and a block whose drop is an override needs no item form of its own.
       expect(UNITEMISED_BLOCK_TYPES).toContain('snow')
-      expect(dropOfBlockId(SNOW, { heldTier: 'diamond' })?.item).toBe('snowball')
+      expect(Result.getOrThrow(dropOfBlockId(SNOW, { heldTier: 'diamond' }))?.item).toBe('snowball')
 
       // Support-sensitive plants now have explicit placement rules, so kernel
       // can expose their item forms without making placement overly permissive.
@@ -211,8 +214,11 @@ describe('the kernel bridge — dropOfBlockId', () => {
       const harvestedBy = (tier: HarvestTier): ReadonlySet<BlockType> =>
         new Set(
           BLOCK_TYPES.filter((block) => {
-            const id = blockIdOf(block)
-            return id !== undefined && dropOfBlockId(id, { heldTier: tier, silkTouch: true }) !== undefined
+            const id = maybeBlockId(block)
+            return (
+              id !== undefined &&
+              Result.getOrThrow(dropOfBlockId(id, { heldTier: tier, silkTouch: true })) !== undefined
+            )
           }),
         )
 
@@ -285,8 +291,8 @@ describe('the kernel bridge — dropOfBlockId', () => {
   it.effect('each rung of the ladder gates a real block, exactly as the reference’s rows say', () =>
     Effect.sync(() => {
       const yields = (block: BlockType, tier: HarvestTier): boolean => {
-        const id = blockIdOf(block)
-        return id !== undefined && blockLoot(id, { heldTier: tier }).length > 0
+        const resolvedId = maybeBlockId(block)
+        return resolvedId !== undefined && blockLoot(resolvedId, { heldTier: tier }).length > 0
       }
 
       // `block-utils.test.ts:68` — 「wooden pickaxe harvests stone but not iron ore」.
@@ -374,7 +380,9 @@ describe('blockLoot — the deterministic half', () => {
     Effect.sync(() => {
       const best = { heldTier: 'diamond', silkTouch: true, fortuneLevel: 3 } as const
       for (const id of [AIR, WATER, LAVA, OAK_LEAVES]) {
-        expect(blockLoot(id, best, ALL_LUCK).filter((drop) => drop.item === blockTypeOfId(id))).toStrictEqual(
+        expect(
+          blockLoot(id, best, ALL_LUCK).filter((drop) => drop.item === Result.getOrThrow(blockTypeOfId(id))),
+        ).toStrictEqual(
           [],
         )
       }
@@ -584,7 +592,7 @@ describe('blockLoot — bonus lines', () => {
   // outside the drop path, at `:114` and `:119`.
   it.effect('REGRESSION: the bonus runs even though the block itself drops nothing', () =>
     Effect.sync(() => {
-      expect(dropOfBlockId(OAK_LEAVES)).toBeUndefined()
+      expect(Result.getOrThrow(dropOfBlockId(OAK_LEAVES))).toBeUndefined()
       expect(blockLoot(OAK_LEAVES, NO_TOOL, ALL_LUCK)).toStrictEqual([
         { item: 'stick', count: 1 },
         { item: 'sapling', count: 1 },
@@ -695,13 +703,14 @@ describe('the rule names no block, which is the point of the table', () => {
     Effect.sync(() => {
       const named: ReadonlyArray<BlockType> = ['stone', 'dirt', 'grass_block', 'glowstone', 'glass']
       for (const type of named) {
-        const id = blockIdOf(type)
-        expect(id).toBeDefined()
+        const maybeId = blockIdOf(type)
+        expect(Option.isSome(maybeId)).toBe(true)
+        const id = Option.getOrElse(maybeId, () => BlockId(0))
         // Every gate open — the best tool in the build — so the answer is the
         // table's and nothing else. `silkTouch` is part of "open": glass is the
         // one row that needs it.
         expect(
-          blockLoot(id ?? 0, { heldTier: 'diamond', silkTouch: true }, NO_LUCK).length,
+          blockLoot(id, { heldTier: 'diamond', silkTouch: true }, NO_LUCK).length,
         ).toBeGreaterThan(0)
       }
     }),

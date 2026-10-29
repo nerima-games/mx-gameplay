@@ -1,4 +1,10 @@
 import { describe, expect, it } from '@effect/vitest'
+import { Effect, Result, Schema } from 'effect'
+import {
+  EntityIdSchema,
+  ProjectileIdSchema,
+  SimulationTickSchema,
+} from '@nerima-games/mc-kernel'
 import {
   addItem,
   countOf,
@@ -6,13 +12,20 @@ import {
   emptyInventory,
   equipmentItem,
   itemStack,
+  FishingServiceBiteSuccessSchema,
+  FishingServiceCastSuccessSchema,
+  FishingServiceReelSuccessSchema,
   type EquipmentItem,
+  type FishingServiceApi,
 } from '@nerima-games/mc-sim'
 import {
   advanceFishing,
+  biteFishingWithService,
+  castFishingWithService,
   cancelFishing,
   castFishing,
   fishingPhase,
+  reelFishingWithService,
   reelFishing,
   FISHING_BITE_WINDOW_SECS,
   FISHING_MAX_WAIT_SECS,
@@ -36,7 +49,10 @@ const DEFAULT_ROLLS: FishingRolls = {
 }
 
 const fishingRod = (current = 64): EquipmentItem =>
-  equipmentItem(itemStack('fishing_rod', 1), durability(current, 64))
+  Result.getOrThrow(equipmentItem(
+    Result.getOrThrow(itemStack('fishing_rod', 1)),
+    Result.getOrThrow(durability(current, 64)),
+  ))
 
 const castSession = (
   environment: FishingEnvironment = CLEAR_OPEN_WATER,
@@ -48,11 +64,43 @@ const castSession = (
   return result.session
 }
 
+const fishingServiceDouble = () => {
+  const calls: Array<ReadonlyArray<string>> = []
+  const service: FishingServiceApi = {
+    snapshot: Effect.succeed({ rods: [] }),
+    cast: (actor, bobber) =>
+      Effect.sync(() => {
+        calls.push(['cast', String(actor), String(bobber)])
+      }),
+    bite: (actor) =>
+      Effect.sync(() => {
+        calls.push(['bite', String(actor)])
+      }),
+    reel: (actor, tick) =>
+      Effect.sync(() => {
+        calls.push(['reel', String(actor), String(tick)])
+        return { _tag: 'Caught', item: 'cod' }
+      }),
+    cancel: () => Effect.die(new Error('Unexpected fishing cancel call in this test')),
+    advance: () => Effect.die(new Error('Unexpected fishing advance call in this test')),
+    planCast: () => Effect.die(new Error('Unexpected fishing planCast call in this test')),
+    planBite: () => Effect.die(new Error('Unexpected fishing planBite call in this test')),
+    planReel: () => Effect.die(new Error('Unexpected fishing planReel call in this test')),
+    planCancel: () => Effect.die(new Error('Unexpected fishing planCancel call in this test')),
+    planAdvance: () => Effect.die(new Error('Unexpected fishing planAdvance call in this test')),
+  }
+  return { service, calls }
+}
+
 describe('castFishing', () => {
   it('requires a valid fishing rod and water', () => {
     expect(castFishing(null, CLEAR_OPEN_WATER, DEFAULT_ROLLS)).toEqual({ _tag: 'InvalidRod' })
     expect(
-      castFishing(equipmentItem(itemStack('bow', 1)), CLEAR_OPEN_WATER, DEFAULT_ROLLS),
+      castFishing(
+        Result.getOrThrow(equipmentItem(Result.getOrThrow(itemStack('bow', 1)))),
+        CLEAR_OPEN_WATER,
+        DEFAULT_ROLLS,
+      ),
     ).toEqual({ _tag: 'InvalidRod' })
     expect(
       castFishing(fishingRod(), { ...CLEAR_OPEN_WATER, hasWater: false }, DEFAULT_ROLLS),
@@ -227,6 +275,16 @@ describe('reelFishing', () => {
     })
   })
 
+  it('reports InvalidLoot when a malformed session cannot resolve its item roll', () => {
+    const session = castSession()
+
+    expect(reelFishing({
+      ...session,
+      elapsedSecs: session.waitSecs,
+      rolls: { ...session.rolls, item: -0.01 },
+    })).toStrictEqual({ _tag: 'InvalidLoot' })
+  })
+
   it('falls back from treasure to fish outside open water using the same item roll', () => {
     const session = castSession(
       { ...CLEAR_OPEN_WATER, isOpenWater: false },
@@ -243,8 +301,40 @@ describe('reelFishing', () => {
     const result = reelFishing({ ...session, elapsedSecs: session.waitSecs })
     if (result._tag !== 'Caught') throw new Error('Expected Caught')
 
-    const added = addItem(emptyInventory(), result.loot.item, result.loot.count)
+    const added = Result.getOrThrow(addItem(emptyInventory(), result.loot.item, result.loot.count))
     expect(added.leftover).toBe(0)
     expect(countOf(added.inventory, result.loot.item)).toBe(1)
   })
+})
+
+describe('FishingService adapters', () => {
+  it('forwards cast, bite, and reel inputs directly to mc-sim', () => {
+    const actor = Schema.decodeUnknownSync(EntityIdSchema)('player-fishing-adapter')
+    const bobber = Schema.decodeUnknownSync(ProjectileIdSchema)('bobber-fishing-adapter')
+    const tick = Schema.decodeUnknownSync(SimulationTickSchema)(17)
+    const { service, calls } = fishingServiceDouble()
+
+    const cast = Effect.runSync(castFishingWithService(service, actor, bobber))
+    const bite = Effect.runSync(biteFishingWithService(service, actor))
+    const reel = Effect.runSync(reelFishingWithService(service, actor, tick))
+
+    expect(Schema.decodeUnknownSync(FishingServiceCastSuccessSchema)(cast)).toBeUndefined()
+    expect(Schema.decodeUnknownSync(FishingServiceBiteSuccessSchema)(bite)).toBeUndefined()
+    expect(
+      Schema.decodeUnknownSync(FishingServiceReelSuccessSchema, {
+        onExcessProperty: 'error',
+      })(reel),
+    ).toStrictEqual({ _tag: 'Caught', item: 'cod' })
+    expect(() =>
+      Schema.decodeUnknownSync(FishingServiceReelSuccessSchema, {
+        onExcessProperty: 'error',
+      })({ ...reel, extra: true }),
+    ).toThrow()
+    expect(calls).toStrictEqual([
+      ['cast', String(actor), String(bobber)],
+      ['bite', String(actor)],
+      ['reel', String(actor), String(tick)],
+    ])
+  })
+
 })

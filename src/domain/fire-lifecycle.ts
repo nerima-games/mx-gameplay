@@ -1,3 +1,5 @@
+import { Option, Result } from 'effect'
+import { blockIdOf, capabilityOfBlockId, isBlockType } from '@nerima-games/mc-kernel'
 import type { Damage } from './death-cause.js'
 import { nextRoll, normaliseSeed } from './frame-rolls.js'
 import type { SurvivalDifficulty } from './survival-hunger.js'
@@ -72,14 +74,17 @@ export const FIRE_WORK_BUDGET = 128
 /** A cell value used by the stage to distinguish an unloaded chunk from air. */
 export const FIRE_UNAVAILABLE_BLOCK = '__fire_chunk_unavailable__'
 
-const FLAMMABLE = new Set([
-  'oak_log', 'oak_planks', 'oak_leaves', 'oak_stairs', 'crafting_table', 'chest',
-  'door', 'ladder', 'sapling', 'tall_grass', 'fern', 'wheat_crop', 'potato_crop',
-])
 const offsets = [[0, -1, 0], [0, 1, 0], [-1, 0, 0], [1, 0, 0], [0, 0, -1], [0, 0, 1]] as const
 const key = (p: FirePosition): string => `${p.x},${p.y},${p.z}`
 const compare = (a: FirePosition, b: FirePosition): number => a.x - b.x || a.y - b.y || a.z - b.z
 const copyPosition = (position: FirePosition): FirePosition => ({ ...position })
+
+const hasFlammableCapability = (block: string): boolean => {
+  if (!isBlockType(block)) return false
+  const blockId = Option.getOrUndefined(blockIdOf(block))
+  return blockId !== undefined &&
+    Result.getOrUndefined(capabilityOfBlockId(blockId, 'flammable')) === true
+}
 
 const fireDamageAmountFor = (difficulty: SurvivalDifficulty): number | undefined => {
   if (difficulty === 'peaceful') return undefined
@@ -108,7 +113,7 @@ const supported = (
   if (below.block !== 'air' && below.block !== 'water') return true
   return offsets.some(([dx, dy, dz]) => {
     const neighbour = cellByKey.get(key({ x: position.x + dx, y: position.y + dy, z: position.z + dz }))
-    return neighbour !== undefined && FLAMMABLE.has(neighbour.block)
+    return neighbour !== undefined && hasFlammableCapability(neighbour.block)
   })
 }
 
@@ -294,7 +299,7 @@ export const advanceFireLifecycle = (
     for (const [dx, dy, dz] of offsets) {
       const position = { x: fire.position.x + dx, y: fire.position.y + dy, z: fire.position.z + dz }
       const neighbour = cellByKey.get(key(position))
-      if (neighbour === undefined || !FLAMMABLE.has(neighbour.block) || additions.has(key(position))) continue
+      if (neighbour === undefined || !hasFlammableCapability(neighbour.block) || additions.has(key(position))) continue
       const draw = nextRoll(seed)
       seed = draw.seed
       if (draw.roll < FIRE_SPREAD_CHANCE) {

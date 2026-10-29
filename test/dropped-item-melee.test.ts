@@ -1,17 +1,41 @@
 import { describe, expect, it } from '@effect/vitest'
-import { durabilityForItem, type InventoryServiceApi } from '@nerima-games/mc-sim'
-import { Effect } from 'effect'
-import { StackCount } from '@nerima-games/mc-kernel'
-import { EntityId, EntityKind } from '@nerima-games/mc-sim'
+import { position as atPosition } from './support/coordinate-fixtures'
+import * as FastCheck from 'fast-check'
+import {
+  durabilityForItem,
+  emptyPlayerStorage,
+  makeEntityManager,
+  makeReplicatedOwnerId,
+  makeWorldCommitCoordinator,
+  PlayerStorageSnapshotSchema,
+  type InventoryServiceApi,
+  type ReplicatedOwnerUnknown,
+  type ReplicatedSnapshot,
+  type WorldCommitCoordinatorApi,
+} from '@nerima-games/mc-sim'
+import { Effect, Result, Schema } from 'effect'
+import { AttackRangeDistance, DomainEventSchema, EntityHealthPoints, itemIdOf, itemStack, StackCount, WorldIdSchema, WorldRevisionSchema } from '@nerima-games/mc-kernel'
+import { EntityId, EntityKind, WorldRevisionConflict } from '@nerima-games/mc-sim'
 import {
   CREEPER_KIND,
   DROPPED_ITEM_KIND,
   isDroppedItemBehaviour,
+  repairMobBehaviour,
   type MobBehaviour,
 } from '../src/domain/entities/mob-frame'
 import {
+  appendDroppedItemSpawns,
+  DroppedItemOwnerSnapshotSchema,
+  DroppedItemPickupCommitIncompleteSchema,
+  DroppedItemPickupRequestSchema,
+  DroppedItemPickupSchema,
+  DroppedItemPickupResultSchema,
+  droppedItemPickupOwnerRegistrations,
+  pickupDroppedItemsCommitted,
   pickupDroppedItems,
+  spawnDroppedItems,
   spawnDroppedItem,
+  spawnMobDrops,
   spawnMobDrop,
 } from '../src/domain/entities/dropped-item'
 import { meleeTarget, meleeTargetBeforeBlock } from '../src/domain/interactions/melee-attack'
@@ -21,8 +45,35 @@ import {
   makeInventoryDouble,
 } from './support/inventory-service-double'
 
-const origin = { x: 0, y: 0, z: 0 }
+const origin = atPosition(0, 0, 0 )
 const dropSource = EntityId('source')
+const pickupActor = EntityId('player:pickup')
+const committedPickupOwners = {
+  playerStorage: makeReplicatedOwnerId('player-storage:pickup-test'),
+  droppedItems: makeReplicatedOwnerId('dropped-items:pickup-test'),
+}
+
+const committedDroppedItem = (count: number) => ({
+  id: dropSource,
+  feetPosition: atPosition(0, 0, 0),
+  behaviour: {
+    _tag: 'DroppedItem' as const,
+    item: 'gunpowder' as const,
+    count: StackCount(count),
+    durability: null,
+  },
+})
+
+const makePickupCoordinator = (
+  playerStorage: ReturnType<typeof emptyPlayerStorage>,
+  droppedItems: ReturnType<typeof committedDroppedItem>[],
+) =>
+  makeWorldCommitCoordinator({
+    world: Schema.decodeUnknownSync(WorldIdSchema)('dropped-item-pickup-tests'),
+    owners: droppedItemPickupOwnerRegistrations(committedPickupOwners, playerStorage, {
+      items: droppedItems,
+    }),
+  })
 
 describe('dropped item entities', () => {
   it.effect('spawns and recognises plant items added by the kernel vocabulary', () =>
@@ -44,6 +95,78 @@ describe('dropped item entities', () => {
       })
     }),
   )
+
+  it.effect('spawns direct and mob drop batches', () =>
+    Effect.gen(function* () {
+      const roster = yield* makeEntityManagerDouble<MobBehaviour>()
+      const direct = yield* spawnDroppedItems(roster.api, [
+        { item: 'gunpowder', count: 2, at: origin },
+        { item: 'stick', count: 1, at: origin },
+      ])
+      const mob = yield* spawnMobDrops(roster.api, [{
+        source: dropSource,
+        kind: CREEPER_KIND,
+        item: 'gunpowder',
+        count: 1,
+        at: origin,
+      }])
+
+      expect(direct).toHaveLength(2)
+      expect(mob.map(({ behaviour }) => behaviour)).toStrictEqual([
+        { _tag: 'DroppedItem', item: 'gunpowder', count: 1, durability: null },
+      ])
+    }),
+  )
+
+  it('appends strict owner snapshots with split stacks, metadata, and collision skipping', () => {
+    const collidingId = EntityId('mx-gameplay-drop:12:1')
+    const expectedRevision = Schema.decodeUnknownSync(WorldRevisionSchema)(12)
+    const existing = { ...committedDroppedItem(1), id: collidingId }
+    const outcome = appendDroppedItemSpawns({ items: [existing] }, [
+      { item: 'gunpowder', count: 65, at: origin },
+      {
+        item: 'wooden_pickaxe',
+        count: 1,
+        at: origin,
+        durability: durabilityForItem('wooden_pickaxe'),
+        eligibleFromFrame: 10,
+        customName: 'Field pickaxe',
+        enchantments: [{ id: 'unbreaking', level: 1 }],
+      },
+    ], expectedRevision)
+    expect(Result.isSuccess(outcome)).toBe(true)
+
+    const snapshot = Result.getOrThrow(outcome)
+    expect(Result.isSuccess(Schema.decodeUnknownResult(DroppedItemOwnerSnapshotSchema)(snapshot))).toBe(true)
+    expect(snapshot.items.map(({ id }) => id)).toStrictEqual([
+      collidingId,
+      EntityId('mx-gameplay-drop:12:0'),
+      EntityId('mx-gameplay-drop:12:2'),
+      EntityId('mx-gameplay-drop:12:3'),
+    ])
+    expect(snapshot.items.map(({ behaviour: { item, count } }) => ({ item, count }))).toStrictEqual([
+      { item: 'gunpowder', count: 1 },
+      { item: 'gunpowder', count: 64 },
+      { item: 'gunpowder', count: 1 },
+      { item: 'wooden_pickaxe', count: 1 },
+    ])
+    expect(snapshot.items[3]?.behaviour).toMatchObject({
+      durability: durabilityForItem('wooden_pickaxe'),
+      eligibleFromFrame: 10,
+      customName: 'Field pickaxe',
+      enchantments: [{ id: 'unbreaking', level: 1 }],
+    })
+  })
+
+  it('returns a typed InvalidStack failure for a zero-count request', () => {
+    const expectedRevision = Schema.decodeUnknownSync(WorldRevisionSchema)(12)
+    const outcome = appendDroppedItemSpawns({ items: [] }, [
+      { item: 'gunpowder', count: 0, at: origin },
+    ], expectedRevision)
+
+    expect(Result.isFailure(outcome)).toBe(true)
+    if (Result.isFailure(outcome)) expect(outcome.failure).toStrictEqual({ _tag: 'InvalidStack' })
+  })
 
   it.effect('preserves the item stack in snapshots and despawns it after a full pickup', () =>
     Effect.gen(function* () {
@@ -78,10 +201,7 @@ describe('dropped item entities', () => {
   it.effect('leaves an overflowing stack on the ground with its full remaining count', () =>
     Effect.gen(function* () {
       const roster = yield* makeEntityManagerDouble<MobBehaviour>()
-      const fullInventory = emptySlots().map(() => ({
-        item: 'stone' as const,
-        count: StackCount(64),
-      }))
+      const fullInventory = emptySlots().map(() => Result.getOrThrow(itemStack('stone', StackCount(64))))
       const inventory = yield* makeInventoryDouble(fullInventory)
       yield* spawnMobDrop(roster.api, {
         source: dropSource,
@@ -101,6 +221,52 @@ describe('dropped item entities', () => {
         count: 5,
         durability: null,
       })
+    }),
+  )
+
+  it.effect('preserves a restored non-dropped entity after inventory leaves a stack over', () =>
+    Effect.gen(function* () {
+      const roster = yield* Effect.orDie(
+        makeEntityManager<MobBehaviour>(undefined, repairMobBehaviour),
+      )
+      const spawned = yield* spawnDroppedItem(roster, {
+        item: 'gunpowder',
+        count: 1,
+        at: origin,
+      })
+      const fullInventory = emptySlots().map(() =>
+        Result.getOrThrow(itemStack('stone', StackCount(64))),
+      )
+      const inventory = yield* makeInventoryDouble(fullInventory)
+      const restoringInventory: InventoryServiceApi = {
+        ...inventory.api,
+        addStoredStack: (stack) =>
+          Effect.gen(function* () {
+            const result = yield* inventory.api.addStoredStack(stack)
+            const snapshot = yield* roster.snapshot
+            yield* Effect.orDie(
+              roster.restore({
+                ...snapshot,
+                entities: snapshot.entities.map((entity) =>
+                  entity.id === spawned.id
+                    ? { ...entity, behaviour: undefined }
+                    : entity,
+                ),
+              }),
+            )
+            return result
+          }),
+      }
+
+      yield* pickupDroppedItems(roster, restoringInventory, origin)
+
+      expect(yield* roster.find(spawned.id)).toStrictEqual({
+        ...spawned,
+        behaviour: undefined,
+      })
+      expect(yield* inventory.deposits).toStrictEqual([
+        { item: 'gunpowder', count: 1, leftover: 1 },
+      ])
     }),
   )
 
@@ -130,7 +296,7 @@ describe('dropped item entities', () => {
       const far = yield* spawnDroppedItem(roster.api, {
         item: 'stick',
         count: 1,
-        at: { x: 100, y: 0, z: 100 },
+        at: atPosition(100, 0, 100 ),
       })
 
       yield* pickupDroppedItems(roster.api, inventory.api, origin)
@@ -177,6 +343,7 @@ describe('dropped item entities', () => {
     Effect.gen(function* () {
       const roster = yield* makeEntityManagerDouble<MobBehaviour>()
       const invalidDrops = [
+        { item: 'gunpowder' as const, count: 0 },
         { item: 'wooden_pickaxe' as const, count: 1, durability: null },
         {
           item: 'wooden_pickaxe' as const,
@@ -221,17 +388,13 @@ describe('dropped item entities', () => {
 
       expect(yield* acceptedRoster.api.count).toBe(0)
       const acceptedStorage = yield* acceptedInventory.api.storageSnapshot
-      expect(acceptedStorage.inventory.slots[0]).toStrictEqual({
-        item: 'wooden_pickaxe',
-        count: StackCount(1),
-      })
+      expect(acceptedStorage.inventory.slots[0]).toStrictEqual(
+        Result.getOrThrow(itemStack('wooden_pickaxe', StackCount(1))),
+      )
       expect(acceptedStorage.inventoryDurability[0]).toStrictEqual(durability)
       expect(acceptedStorage.inventoryDurability[0]).not.toBe(durability)
 
-      const fullInventory = emptySlots().map(() => ({
-        item: 'stone' as const,
-        count: StackCount(64),
-      }))
+      const fullInventory = emptySlots().map(() => Result.getOrThrow(itemStack('stone', StackCount(64))))
       const refusedRoster = yield* makeEntityManagerDouble<MobBehaviour>()
       const refusedInventory = yield* makeInventoryDouble(fullInventory)
       yield* spawnDroppedItem(refusedRoster.api, {
@@ -269,7 +432,7 @@ describe('dropped item entities', () => {
       const spawned = yield* roster.api.spawn({
         kind: DROPPED_ITEM_KIND,
         feetPosition: origin,
-        healthPoints: 1,
+        healthPoints: EntityHealthPoints(1),
         behaviour: {
           _tag: 'DroppedItem',
           item: 'wooden_pickaxe',
@@ -284,6 +447,29 @@ describe('dropped item entities', () => {
       expect(remaining.map((entity) => entity.id)).toStrictEqual([spawned.id])
       const storage = yield* inventory.api.storageSnapshot
       expect(storage.inventory.slots.every((slot) => slot === undefined)).toBe(true)
+    }),
+  )
+
+  it.effect('leaves stacks with unsafe counts or overstacked items untouched', () =>
+    Effect.gen(function* () {
+      const roster = yield* makeEntityManagerDouble<MobBehaviour>()
+      const inventory = yield* makeInventoryDouble()
+      for (const [item, count] of [
+        ['gunpowder', 1e30],
+        ['stone', 65],
+      ] as const) {
+        yield* roster.api.spawn({
+          kind: DROPPED_ITEM_KIND,
+          feetPosition: origin,
+          healthPoints: EntityHealthPoints(1),
+          behaviour: { _tag: 'DroppedItem', item, count, durability: null },
+        })
+      }
+
+      yield* pickupDroppedItems(roster.api, inventory.api, origin)
+
+      expect(yield* roster.api.count).toBe(2)
+      expect(yield* inventory.deposits).toStrictEqual([])
     }),
   )
 
@@ -324,7 +510,7 @@ describe('dropped item entities', () => {
       const delayedInventory = {
         ...inventory.api,
         addStoredStack: (stack) =>
-          Effect.zipRight(Effect.yieldNow(), inventory.api.addStoredStack(stack)),
+          Effect.andThen(Effect.yieldNow, inventory.api.addStoredStack(stack)),
       } satisfies InventoryServiceApi
 
       yield* Effect.all(
@@ -342,6 +528,496 @@ describe('dropped item entities', () => {
       expect(yield* roster.api.count).toBe(0)
     }),
   )
+
+  it.effect('commits player storage and dropped items together before emitting pickup events', () =>
+    Effect.gen(function* () {
+      const coordinator = yield* makePickupCoordinator(emptyPlayerStorage(), [
+        committedDroppedItem(3),
+      ])
+
+      const pickups = yield* pickupDroppedItemsCommitted(coordinator, committedPickupOwners, {
+        actor: pickupActor,
+        tick: 4,
+        position: origin,
+      })
+      const playerSnapshot = yield* coordinator.snapshot(
+        committedPickupOwners.playerStorage,
+        PlayerStorageSnapshotSchema,
+      )
+      const droppedItemsSnapshot = yield* coordinator.snapshot(
+        committedPickupOwners.droppedItems,
+        DroppedItemOwnerSnapshotSchema,
+      )
+
+      expect(pickups).toHaveLength(1)
+      expect(pickups[0]).toMatchObject({
+        actor: pickupActor,
+        source: dropSource,
+        item: 'gunpowder',
+        accepted: 3,
+        event: {
+          _tag: 'ItemPickedUp',
+          tick: 4,
+          actor: pickupActor,
+          source: { _tag: 'DroppedItem', id: dropSource },
+          count: 3,
+        },
+      })
+      expect(Result.isSuccess(Schema.decodeUnknownResult(DomainEventSchema)(pickups[0]?.event))).toBe(true)
+      expect(Result.isSuccess(Schema.decodeUnknownResult(DroppedItemPickupResultSchema)(pickups))).toBe(true)
+      expect(Result.isFailure(
+        Schema.decodeUnknownResult(DroppedItemPickupResultSchema)([
+          { ...pickups[0], unexpected: true },
+        ]),
+      )).toBe(true)
+      expect(playerSnapshot.revision).toBe(1)
+      expect(droppedItemsSnapshot.revision).toBe(1)
+      expect(playerSnapshot.state.inventory.slots.some(
+        (slot) => slot?.item === 'gunpowder' && slot.count === 3,
+      )).toBe(true)
+      expect(droppedItemsSnapshot.state.items).toStrictEqual([])
+    }),
+  )
+
+  it.effect('reports only the amount accepted by the committed inventory', () =>
+    Effect.gen(function* () {
+      const emptyStorage = emptyPlayerStorage()
+      const slots = emptySlots().map(() =>
+        Result.getOrThrow(itemStack('stone', StackCount(64))),
+      )
+      slots[0] = Result.getOrThrow(itemStack('gunpowder', StackCount(63)))
+      const almostFullStorage = {
+        ...emptyStorage,
+        inventory: { slots },
+      }
+      const coordinator = yield* makePickupCoordinator(almostFullStorage, [
+        committedDroppedItem(5),
+      ])
+
+      const pickups = yield* pickupDroppedItemsCommitted(coordinator, committedPickupOwners, {
+        actor: pickupActor,
+        tick: 5,
+        position: origin,
+      })
+      const playerSnapshot = yield* coordinator.snapshot(
+        committedPickupOwners.playerStorage,
+        PlayerStorageSnapshotSchema,
+      )
+      const droppedItemsSnapshot = yield* coordinator.snapshot(
+        committedPickupOwners.droppedItems,
+        DroppedItemOwnerSnapshotSchema,
+      )
+
+      expect(pickups).toHaveLength(1)
+      expect(pickups[0]?.accepted).toBe(1)
+      expect(pickups[0]?.event).toMatchObject({ _tag: 'ItemPickedUp', count: 1 })
+      expect(playerSnapshot.state.inventory.slots[0]?.count).toBe(64)
+      expect(droppedItemsSnapshot.state.items[0]?.behaviour.count).toBe(4)
+      expect(playerSnapshot.revision).toBe(1)
+      expect(droppedItemsSnapshot.revision).toBe(1)
+    }),
+  )
+
+  it.effect('does not commit or emit when the inventory accepts nothing', () =>
+    Effect.gen(function* () {
+      const emptyStorage = emptyPlayerStorage()
+      const fullStorage = {
+        ...emptyStorage,
+        inventory: {
+          slots: emptySlots().map(() =>
+            Result.getOrThrow(itemStack('stone', StackCount(64))),
+          ),
+        },
+      }
+      const coordinator = yield* makePickupCoordinator(fullStorage, [committedDroppedItem(2)])
+
+      const pickups = yield* pickupDroppedItemsCommitted(coordinator, committedPickupOwners, {
+        actor: pickupActor,
+        tick: 6,
+        position: origin,
+      })
+      const playerSnapshot = yield* coordinator.snapshot(
+        committedPickupOwners.playerStorage,
+        PlayerStorageSnapshotSchema,
+      )
+      const droppedItemsSnapshot = yield* coordinator.snapshot(
+        committedPickupOwners.droppedItems,
+        DroppedItemOwnerSnapshotSchema,
+      )
+
+      expect(pickups).toStrictEqual([])
+      expect(playerSnapshot.revision).toBe(0)
+      expect(droppedItemsSnapshot.revision).toBe(0)
+      expect(droppedItemsSnapshot.state.items[0]?.behaviour.count).toBe(2)
+    }),
+  )
+
+  it.effect('returns no committed pickups without a position and preserves deferred or distant drops', () =>
+    Effect.gen(function* () {
+      const deferred = {
+        ...committedDroppedItem(2),
+        behaviour: {
+          ...committedDroppedItem(2).behaviour,
+          eligibleFromFrame: 8,
+        },
+      }
+      const distant = {
+        ...committedDroppedItem(1),
+        id: EntityId('source:distant'),
+        feetPosition: atPosition(100, 0, 100),
+      }
+      const coordinator = yield* makePickupCoordinator(emptyPlayerStorage(), [deferred, distant])
+
+      const noPosition = yield* pickupDroppedItemsCommitted(coordinator, committedPickupOwners, {
+        actor: pickupActor,
+        tick: 8,
+        position: undefined,
+      })
+      const ineligible = yield* pickupDroppedItemsCommitted(coordinator, committedPickupOwners, {
+        actor: pickupActor,
+        tick: 8,
+        position: origin,
+        currentFrame: 7,
+      })
+      const snapshot = yield* coordinator.snapshot(
+        committedPickupOwners.droppedItems,
+        DroppedItemOwnerSnapshotSchema,
+      )
+
+      expect(noPosition).toStrictEqual([])
+      expect(ineligible).toStrictEqual([])
+      expect(snapshot.state.items.map(({ id }) => id)).toStrictEqual([
+        dropSource,
+        EntityId('source:distant'),
+      ])
+      expect(snapshot.revision).toBe(0)
+    }),
+  )
+
+  it.effect('rejects a coordinator commit response that omits an owner update', () =>
+    Effect.gen(function* () {
+      const coordinator = yield* makePickupCoordinator(emptyPlayerStorage(), [
+        committedDroppedItem(2),
+      ])
+      const incompleteCoordinator: WorldCommitCoordinatorApi = {
+        ...coordinator,
+        commit: (request) => Effect.map(coordinator.commit(request), (delta) => ({
+          ...delta,
+          changes: delta.changes.filter(({ owner }) => owner !== committedPickupOwners.droppedItems),
+        })),
+      }
+
+      const failure = yield* Effect.flip(pickupDroppedItemsCommitted(
+        incompleteCoordinator,
+        committedPickupOwners,
+        { actor: pickupActor, tick: 9, position: origin },
+      ))
+
+      expect(failure._tag).toBe('DroppedItemPickupCommitIncomplete')
+      expect(failure).toMatchObject({ missingOwners: [committedPickupOwners.droppedItems] })
+    }),
+  )
+
+  it.effect('does not report a pickup when committed counts imply no accepted stack count', () =>
+    Effect.gen(function* () {
+      const coordinator = yield* makePickupCoordinator(emptyPlayerStorage(), [
+        committedDroppedItem(2),
+      ])
+      const inconsistentResponseCoordinator: WorldCommitCoordinatorApi = {
+        ...coordinator,
+        commit: (request) => Effect.map(coordinator.commit(request), (delta) => ({
+          ...delta,
+          changes: delta.changes.map((change) => change.owner === committedPickupOwners.droppedItems
+            ? { ...change, state: { items: [committedDroppedItem(2)] } }
+            : change),
+        })),
+      }
+
+      const pickups = yield* pickupDroppedItemsCommitted(
+        inconsistentResponseCoordinator,
+        committedPickupOwners,
+        { actor: pickupActor, tick: 10, position: origin },
+      )
+
+      expect(pickups).toStrictEqual([])
+    }),
+  )
+
+  it.effect('rejects mixed owner snapshots before committing either pickup candidate', () =>
+    Effect.gen(function* () {
+      const coordinator = yield* makePickupCoordinator(emptyPlayerStorage(), [
+        committedDroppedItem(2),
+      ])
+      type SnapshotCodec = Parameters<WorldCommitCoordinatorApi['snapshot']>[1]
+      type SnapshotOwnerId = Parameters<WorldCommitCoordinatorApi['snapshot']>[0]
+      let injectedConcurrentCommit = false
+      const interleavingCoordinator: WorldCommitCoordinatorApi = {
+        ...coordinator,
+        snapshot: <Codec extends SnapshotCodec>(
+          ownerId: SnapshotOwnerId,
+          schema: Codec,
+        ): Effect.Effect<
+          ReplicatedSnapshot<Codec>,
+          Schema.SchemaError | ReplicatedOwnerUnknown,
+          Schema.Codec.DecodingServices<Codec>
+        > =>
+          Effect.gen(function* () {
+            const snapshot = yield* coordinator.snapshot(ownerId, schema)
+            if (!injectedConcurrentCommit) {
+              injectedConcurrentCommit = true
+              const playerSnapshot = yield* coordinator.snapshot(
+                committedPickupOwners.playerStorage,
+                PlayerStorageSnapshotSchema,
+              )
+              const concurrentCommit = yield* Effect.result(coordinator.commit({
+                expectedRevision: playerSnapshot.revision,
+                expectedDimensions: [],
+                changes: [{
+                  ownerId: committedPickupOwners.playerStorage,
+                  state: playerSnapshot.state,
+                }],
+              }))
+              if (Result.isFailure(concurrentCommit)) return snapshot
+            }
+            return snapshot
+          }),
+      }
+
+      const outcome = yield* Effect.result(pickupDroppedItemsCommitted(
+        interleavingCoordinator,
+        committedPickupOwners,
+        { actor: pickupActor, tick: 7, position: origin },
+      ))
+      const playerSnapshot = yield* coordinator.snapshot(
+        committedPickupOwners.playerStorage,
+        PlayerStorageSnapshotSchema,
+      )
+      const droppedItemsSnapshot = yield* coordinator.snapshot(
+        committedPickupOwners.droppedItems,
+        DroppedItemOwnerSnapshotSchema,
+      )
+
+      expect(Result.isFailure(outcome)).toBe(true)
+      if (Result.isFailure(outcome)) {
+        expect(outcome.failure).toMatchObject({ _tag: 'WorldRevisionConflict' })
+      }
+      expect(playerSnapshot.revision).toBe(1)
+      expect(droppedItemsSnapshot.revision).toBe(1)
+      expect(playerSnapshot.state.inventory.slots.every((slot) => slot === undefined)).toBe(true)
+      expect(droppedItemsSnapshot.state.items[0]?.behaviour.count).toBe(2)
+    }),
+  )
+
+  for (const seed of [70301, 70302]) {
+    it(`commits a successful pickup once and conserves item counts (seed ${seed})`, () => {
+      FastCheck.assert(
+        FastCheck.property(
+          FastCheck.integer({ min: 1, max: 64 }),
+          (count) => {
+            const storage = emptyPlayerStorage()
+            const slots = emptySlots().map(() =>
+              Result.getOrThrow(itemStack('stone', StackCount(64))),
+            )
+            slots[0] = Result.getOrThrow(itemStack('gunpowder', StackCount(63)))
+            const coordinator = Effect.runSync(makePickupCoordinator(
+              { ...storage, inventory: { slots } },
+              [committedDroppedItem(count)],
+            ))
+
+            let commitCalls = 0
+            let committedOwnerCount = 0
+            let requestHasBlockWrite = true
+            const countingCoordinator: WorldCommitCoordinatorApi = {
+              ...coordinator,
+              commit: (request) => {
+                commitCalls += 1
+                committedOwnerCount = request.changes.length
+                requestHasBlockWrite = request.blockWrite !== undefined
+                return coordinator.commit(request)
+              },
+            }
+            const pickups = Effect.runSync(pickupDroppedItemsCommitted(countingCoordinator, committedPickupOwners, {
+              actor: pickupActor,
+              tick: 5,
+              position: origin,
+            }))
+            const playerSnapshot = Effect.runSync(coordinator.snapshot(
+              committedPickupOwners.playerStorage,
+              PlayerStorageSnapshotSchema,
+            ))
+            const droppedItemsSnapshot = Effect.runSync(coordinator.snapshot(
+              committedPickupOwners.droppedItems,
+              DroppedItemOwnerSnapshotSchema,
+            ))
+            const storedAfter = playerSnapshot.state.inventory.slots
+              .filter((slot) => slot?.item === 'gunpowder')
+              .reduce((total, slot) => total + (slot?.count ?? 0), 0)
+            const remaining = droppedItemsSnapshot.state.items
+              .filter(({ behaviour }) => behaviour.item === 'gunpowder')
+              .reduce((total, { behaviour }) => total + behaviour.count, 0)
+            const accepted = pickups.reduce((total, pickup) => total + pickup.accepted, 0)
+
+            return storedAfter - 63 + remaining === count &&
+              accepted === storedAfter - 63 &&
+              commitCalls === 1 &&
+              committedOwnerCount === 2 &&
+              !requestHasBlockWrite &&
+              playerSnapshot.revision === 1 &&
+              droppedItemsSnapshot.revision === 1
+          },
+        ),
+        { numRuns: 50, seed },
+      )
+    })
+  }
+
+  it('keeps both owners and revision unchanged when a pickup commit fails', () => {
+    FastCheck.assert(
+      FastCheck.property(
+        FastCheck.integer({ min: 1, max: 64 }),
+        (count) => {
+          const coordinator = Effect.runSync(makePickupCoordinator(emptyPlayerStorage(), [
+            committedDroppedItem(count),
+          ]))
+          let commitCalls = 0
+          let requestHasBlockWrite = true
+          const rejectingCoordinator: WorldCommitCoordinatorApi = {
+            ...coordinator,
+            commit: (request) => {
+              commitCalls += 1
+              requestHasBlockWrite = request.blockWrite !== undefined
+              return Effect.fail(new WorldRevisionConflict({
+                expected: Schema.decodeUnknownSync(WorldRevisionSchema)(0),
+                actual: Schema.decodeUnknownSync(WorldRevisionSchema)(1),
+              }))
+            },
+          }
+          const playerBefore = Effect.runSync(coordinator.snapshot(
+            committedPickupOwners.playerStorage,
+            PlayerStorageSnapshotSchema,
+          ))
+          const itemsBefore = Effect.runSync(coordinator.snapshot(
+            committedPickupOwners.droppedItems,
+            DroppedItemOwnerSnapshotSchema,
+          ))
+          const outcome = Effect.runSync(Effect.result(pickupDroppedItemsCommitted(
+            rejectingCoordinator,
+            committedPickupOwners,
+            { actor: pickupActor, tick: 5, position: origin },
+          )))
+          const playerAfter = Effect.runSync(coordinator.snapshot(
+            committedPickupOwners.playerStorage,
+            PlayerStorageSnapshotSchema,
+          ))
+          const itemsAfter = Effect.runSync(coordinator.snapshot(
+            committedPickupOwners.droppedItems,
+            DroppedItemOwnerSnapshotSchema,
+          ))
+
+          return Result.isFailure(outcome) &&
+            commitCalls === 1 &&
+            !requestHasBlockWrite &&
+            playerAfter.revision === playerBefore.revision &&
+            itemsAfter.revision === itemsBefore.revision &&
+            JSON.stringify(playerAfter.state) === JSON.stringify(playerBefore.state) &&
+            JSON.stringify(itemsAfter.state) === JSON.stringify(itemsBefore.state)
+        },
+      ),
+      { numRuns: 50, seed: 70303 },
+    )
+  })
+
+  it('strictly validates the replicated dropped-item owner with its public schema', () => {
+    const validSnapshot = { items: [committedDroppedItem(1)] }
+
+    FastCheck.assert(
+      FastCheck.property(
+        FastCheck.integer({ min: 1, max: 64 }),
+        (count) => Result.isSuccess(Schema.decodeUnknownResult(DroppedItemOwnerSnapshotSchema)({
+          items: [committedDroppedItem(count)],
+        })),
+      ),
+      { numRuns: 100 },
+    )
+    expect(Result.isSuccess(
+      Schema.decodeUnknownResult(DroppedItemOwnerSnapshotSchema)(validSnapshot),
+    )).toBe(true)
+    expect(Result.isFailure(
+      Schema.decodeUnknownResult(DroppedItemOwnerSnapshotSchema)({
+        ...validSnapshot,
+        unexpected: true,
+      }),
+    )).toBe(true)
+    expect(Result.isFailure(
+      Schema.decodeUnknownResult(DroppedItemOwnerSnapshotSchema)({
+        items: [{ ...committedDroppedItem(1), unexpected: true }],
+      }),
+    )).toBe(true)
+    const invalidUnstackableDrop = committedDroppedItem(2)
+    expect(Result.isFailure(
+      Schema.decodeUnknownResult(DroppedItemOwnerSnapshotSchema)({
+        items: [{
+          ...invalidUnstackableDrop,
+          behaviour: { ...invalidUnstackableDrop.behaviour, item: 'iron_sword' },
+        }],
+      }),
+    )).toBe(true)
+  })
+
+  it('rejects missing required owner and result fields and null for every public pickup schema', () => {
+    const pickupEvent = {
+      _tag: 'ItemPickedUp' as const,
+      tick: 4,
+      actor: pickupActor,
+      source: { _tag: 'DroppedItem' as const, id: dropSource },
+      item: itemIdOf('gunpowder'),
+      count: 1,
+    }
+    const validPickup = {
+      actor: pickupActor,
+      source: dropSource,
+      item: 'gunpowder' as const,
+      accepted: StackCount(1),
+      event: pickupEvent,
+    }
+    const cases = [
+      {
+        schema: DroppedItemOwnerSnapshotSchema,
+        valid: { items: [committedDroppedItem(1)] },
+        missing: 'items',
+      },
+      {
+        schema: DroppedItemPickupRequestSchema,
+        valid: { actor: pickupActor, tick: 4, position: origin },
+        missing: 'actor',
+      },
+      {
+        schema: DroppedItemPickupCommitIncompleteSchema,
+        valid: { _tag: 'DroppedItemPickupCommitIncomplete', missingOwners: [committedPickupOwners.droppedItems] },
+        missing: 'missingOwners',
+      },
+      {
+        schema: DroppedItemPickupSchema,
+        valid: validPickup,
+        missing: 'actor',
+      },
+      {
+        schema: DroppedItemPickupResultSchema,
+        valid: [validPickup],
+        missing: undefined,
+      },
+    ] as const
+
+    for (const { schema, valid, missing } of cases) {
+      expect(Result.isFailure(Schema.decodeUnknownResult(schema)(null))).toBe(true)
+      if (missing !== undefined) {
+        const partial = Object.fromEntries(
+          Object.entries(valid).filter(([key]) => key !== missing),
+        )
+        expect(Result.isFailure(Schema.decodeUnknownResult(schema)(partial))).toBe(true)
+      }
+    }
+  })
 })
 
 describe('melee targeting', () => {
@@ -350,27 +1026,27 @@ describe('melee targeting', () => {
       const roster = yield* makeEntityManagerDouble<MobBehaviour>()
       yield* roster.api.spawn({
         kind: EntityKind('pig'),
-        feetPosition: { x: 1, y: 0, z: 0 },
-        healthPoints: 10,
+        feetPosition: atPosition(1, 0, 0 ),
+        healthPoints: EntityHealthPoints(10),
         behaviour: undefined,
       })
       const near = yield* roster.api.spawn({
         kind: CREEPER_KIND,
-        feetPosition: { x: 2, y: 0, z: 0 },
-        healthPoints: 10,
+        feetPosition: atPosition(2, 0, 0 ),
+        healthPoints: EntityHealthPoints(10),
         behaviour: undefined,
       })
       yield* roster.api.spawn({
         kind: CREEPER_KIND,
-        feetPosition: { x: 3, y: 0, z: 0 },
-        healthPoints: 10,
+        feetPosition: atPosition(3, 0, 0 ),
+        healthPoints: EntityHealthPoints(10),
         behaviour: undefined,
       })
       const candidates = yield* roster.api.entities
       const request = {
-        origin: { x: 0, y: 0.9, z: 0 },
-        direction: { x: 1, y: 0, z: 0 },
-        reach: 4,
+        origin: atPosition(0, 0.9, 0 ),
+        direction: atPosition(1, 0, 0 ),
+        reach: AttackRangeDistance(4),
         damage: 4,
       }
 
@@ -385,15 +1061,15 @@ describe('melee targeting', () => {
       const roster = yield* makeEntityManagerDouble<MobBehaviour>()
       yield* roster.api.spawn({
         kind: CREEPER_KIND,
-        feetPosition: { x: 2, y: 0, z: 0 },
-        healthPoints: 10,
+        feetPosition: atPosition(2, 0, 0 ),
+        healthPoints: EntityHealthPoints(10),
         behaviour: undefined,
       })
       const candidates = yield* roster.api.entities
       const request = {
-        origin: { x: 0, y: 0.9, z: 0 },
-        direction: { x: 1, y: 0, z: 0 },
-        reach: 4,
+        origin: atPosition(0, 0.9, 0 ),
+        direction: atPosition(1, 0, 0 ),
+        reach: AttackRangeDistance(4),
         damage: 4,
       }
 

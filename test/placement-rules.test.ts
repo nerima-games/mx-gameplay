@@ -18,13 +18,12 @@
  * reach the mushroom, sugar-cane and cactus gates through real held items.
  */
 import { describe, expect, it } from '@effect/vitest'
-import { Effect } from 'effect'
+import { Effect, Option, Result } from 'effect'
 import {
   AIR_BLOCK_ID,
   BLOCK_TYPES,
   PLACEABLE_ITEM_TYPES,
   blockIdOf,
-  blockPosition,
   horizontalBlockNeighbours,
   isPlaceableItem,
   ITEM_TYPES,
@@ -53,11 +52,12 @@ import {
 import { doorUpperBreakCell, doorUpperCell, isDoorBlock } from '../src/domain/interactions/place-door-upper'
 import { placeBlock } from '../src/domain/interactions/place-block'
 import { lightWorld, makeChunkStoreDouble, world, STONE, WATER } from './support/chunk-store-double'
+import { blockPosition } from './support/coordinate-fixtures'
 
 const id = (name: Parameters<typeof blockIdOf>[0]): BlockId => {
   const found = blockIdOf(name)
-  expect(found).toBeDefined()
-  return found ?? -1
+  expect(Option.isSome(found)).toBe(true)
+  return Option.getOrThrow(found)
 }
 
 const BROWN_MUSHROOM = id('brown_mushroom')
@@ -76,13 +76,13 @@ describe('horizontalBlockNeighbours', () => {
     // THE REFERENCE'S DEFECT, NOT REPRODUCED. `localHorizontalNeighbors` drops
     // any neighbour outside the chunk it holds, so a cactus at x = 15 is checked
     // on three sides and a sugar cane at x = 0 cannot see water one cell west.
-    expect(horizontalBlockNeighbours(blockPosition(0, 64, 0))).toStrictEqual([
+    expect(Result.getOrThrow(horizontalBlockNeighbours(blockPosition(0, 64, 0)))).toStrictEqual([
       { x: -1, y: 64, z: 0 },
       { x: 1, y: 64, z: 0 },
       { x: 0, y: 64, z: -1 },
       { x: 0, y: 64, z: 1 },
     ])
-    expect(horizontalBlockNeighbours(blockPosition(15, 64, 15))).toHaveLength(4)
+    expect(Result.getOrThrow(horizontalBlockNeighbours(blockPosition(15, 64, 15)))).toHaveLength(4)
   })
 })
 

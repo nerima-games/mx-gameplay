@@ -2,7 +2,7 @@ import { describe, expect, it } from '@effect/vitest'
 import { Effect, Ref } from 'effect'
 import { makeSite, stepFrame } from '../apps/preview-mining-site/site'
 import { EntityId } from '@nerima-games/mc-sim'
-import { StageId } from '@nerima-games/mc-kernel'
+import { PositionAxis, StageId } from '@nerima-games/mc-kernel'
 import {
   CREEPER_KIND,
   isDroppedItemBehaviour,
@@ -18,7 +18,7 @@ describe('preview mob reward host bridge', () => {
         { width: 1, height: 1 },
         'mob-rewards',
       )
-      const at = { x: 1, y: 64, z: 0 }
+      const at = { x: PositionAxis(1), y: PositionAxis(64), z: PositionAxis(0) }
       const source = EntityId('dead-creeper')
       const drop: MobDropEvent = {
         item: 'gunpowder',

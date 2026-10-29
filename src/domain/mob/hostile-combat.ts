@@ -1,11 +1,206 @@
 import type { Damage } from '../death-cause.js'
-import type { Position } from '@nerima-games/mc-kernel'
+import {
+  DamageAmountSchema,
+  DimensionIdSchema,
+  DomainEventSchema,
+  EntityIdSchema,
+  PositionAxis,
+  SimulationTickSchema,
+  WorldPositionSchema,
+  position,
+  type Dimension,
+  type DomainEvent,
+  type EntityId as KernelEntityId,
+  type Position,
+  type SimulationTick,
+} from '@nerima-games/mc-kernel'
 import {
   EntityKind,
+  IntentPayloadSchema,
   type Entity,
   type EntityId,
+  type IntentPayload,
+  type PlayerPose,
 } from '@nerima-games/mc-sim'
+import { Result, Schema } from 'effect'
 import { explosionDamageAt, type Explosion } from './explosion.js'
+
+/** Java Edition startup delay; the default horizontal blocking angle is 90 degrees per side. */
+export const SHIELD_BLOCKING_DELAY_TICKS = 5
+export const SHIELD_HORIZONTAL_BLOCKING_HALF_ANGLE_DEGREES = 90
+/** Attacks at or above this damage cause item durability loss in Java Edition. */
+export const SHIELD_DURABILITY_DAMAGE_THRESHOLD = 3
+
+export type ShieldBlockingIntent = Extract<IntentPayload, { readonly _tag: 'SetShieldBlocking' }>
+
+export type ShieldBlockingState = Readonly<{
+  actor: KernelEntityId
+  raisedAt: SimulationTick
+}>
+
+export type ShieldBlockingPreparation = Readonly<{
+  actor: KernelEntityId
+  blocking: boolean
+  raisedAt: SimulationTick | null
+  blocked: boolean
+  blockedAmount: number
+  durabilityDamage: number
+  event: DomainEvent | null
+}>
+
+const ShieldBlockingStateSchema = Schema.Struct({
+  actor: EntityIdSchema,
+  raisedAt: SimulationTickSchema,
+})
+
+type ShieldIncomingAttack = Readonly<{
+  attacker: Schema.Schema.Type<typeof EntityIdSchema>
+  attackerPosition: Schema.Schema.Type<typeof WorldPositionSchema>
+  kind: 'melee' | 'projectile' | 'explosion'
+  piercing?: Schema.Schema.Type<typeof Schema.Boolean>
+  amount: Schema.Schema.Type<typeof DamageAmountSchema>
+}>
+type ShieldIncomingAttackInput = Readonly<{
+  attacker: Schema.Codec.Encoded<typeof EntityIdSchema>
+  attackerPosition: Schema.Codec.Encoded<typeof WorldPositionSchema>
+  kind: 'melee' | 'projectile' | 'explosion'
+  piercing?: Schema.Codec.Encoded<typeof Schema.Boolean>
+  amount: Schema.Codec.Encoded<typeof DamageAmountSchema>
+}>
+const ShieldIncomingAttackSchema: Schema.Codec<ShieldIncomingAttack, ShieldIncomingAttackInput> = Schema.Struct({
+  attacker: EntityIdSchema,
+  attackerPosition: WorldPositionSchema,
+  kind: Schema.Literals(['melee', 'projectile', 'explosion']),
+  piercing: Schema.optionalKey(Schema.Boolean),
+  amount: DamageAmountSchema,
+})
+
+export const ShieldBlockingPreparationSchema: Schema.ConstraintDecoder<ShieldBlockingPreparation> = Schema.Struct({
+  actor: EntityIdSchema,
+  blocking: Schema.Boolean,
+  raisedAt: Schema.NullOr(SimulationTickSchema),
+  blocked: Schema.Boolean,
+  blockedAmount: Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)),
+  durabilityDamage: Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)),
+  event: Schema.NullOr(DomainEventSchema),
+})
+
+export type ShieldBlockingPreparationError =
+  | 'invalid-intent'
+  | 'invalid-authoritative-state'
+  | 'invalid-tick-order'
+  | 'shield-not-equipped'
+  | 'invalid-attack'
+
+/** Prepare the C2 shield owner candidate and optional post-commit block event. */
+export const prepareShieldBlocking = (
+  intent: ShieldBlockingIntent,
+  input: Readonly<{
+    tick: SimulationTick
+    dimension: Dimension
+    pose: PlayerPose
+    hasShield: boolean
+    current: ShieldBlockingState | null
+    incoming?: ShieldIncomingAttackInput
+  }>,
+): Result.Result<ShieldBlockingPreparation, ShieldBlockingPreparationError> => {
+  const decodedIntent = Schema.decodeUnknownResult(IntentPayloadSchema)(intent)
+  if (Result.isFailure(decodedIntent) || decodedIntent.success._tag !== 'SetShieldBlocking') {
+    return Result.fail('invalid-intent')
+  }
+  const tick = Schema.decodeUnknownResult(SimulationTickSchema)(input.tick)
+  const dimension = Schema.decodeUnknownResult(DimensionIdSchema)(input.dimension)
+  const current = input.current === null
+    ? Result.succeed(null)
+    : Schema.decodeUnknownResult(ShieldBlockingStateSchema)(input.current)
+  if (Result.isFailure(tick) || Result.isFailure(dimension) || Result.isFailure(current)) {
+    return Result.fail('invalid-authoritative-state')
+  }
+  if (
+    decodedIntent.success.actor !== input.current?.actor && input.current !== null ||
+    !Number.isFinite(input.pose.feetPosition.x) || !Number.isFinite(input.pose.feetPosition.y) ||
+    !Number.isFinite(input.pose.feetPosition.z) || !Number.isFinite(input.pose.yawRadians) ||
+    !Number.isFinite(input.pose.pitchRadians) || typeof input.hasShield !== 'boolean'
+  ) return Result.fail('invalid-authoritative-state')
+  const currentRaisedAt = current.success === null ? null : current.success.raisedAt
+  if (currentRaisedAt !== null && tick.success < currentRaisedAt) {
+    return Result.fail('invalid-tick-order')
+  }
+  if (decodedIntent.success.blocking && !input.hasShield) return Result.fail('shield-not-equipped')
+  const attack = input.incoming === undefined
+    ? Result.succeed(undefined)
+    : Schema.decodeUnknownResult(ShieldIncomingAttackSchema, {
+        onExcessProperty: 'error',
+      })(input.incoming)
+  if (Result.isFailure(attack)) return Result.fail('invalid-attack')
+  if (attack.success !== undefined) {
+    if (
+      attack.success.attacker === decodedIntent.success.actor ||
+      attack.success.attackerPosition.dimension !== dimension.success
+    ) return Result.fail('invalid-attack')
+  }
+
+  const raisedAt = decodedIntent.success.blocking
+    ? (currentRaisedAt ?? tick.success)
+    : null
+  let blocked = false
+  let blockedAmount = 0
+  let durabilityDamage = 0
+  let event: DomainEvent | null = null
+
+  if (decodedIntent.success.blocking && raisedAt !== null && attack.success !== undefined) {
+    const ticksRaised = tick.success - raisedAt
+    const dx = attack.success.attackerPosition.x - input.pose.feetPosition.x
+    const dz = attack.success.attackerPosition.z - input.pose.feetPosition.z
+    const distance = Math.hypot(dx, dz)
+    const facingX = -Math.sin(input.pose.yawRadians)
+    const facingZ = Math.cos(input.pose.yawRadians)
+    const dot = facingX * dx + facingZ * dz
+    const cross = facingX * dz - facingZ * dx
+    if (!Number.isFinite(distance) || !Number.isFinite(dot) || !Number.isFinite(cross)) {
+      return Result.fail('invalid-attack')
+    }
+    const horizontalAngle = distance === 0 ? Math.PI : Math.atan2(Math.abs(cross), dot)
+
+    const blockable = attack.success.kind !== 'projectile' || attack.success.piercing !== true
+    if (
+      blockable &&
+      ticksRaised >= SHIELD_BLOCKING_DELAY_TICKS &&
+      horizontalAngle <= SHIELD_HORIZONTAL_BLOCKING_HALF_ANGLE_DEGREES * Math.PI / 180
+    ) {
+      blocked = true
+      const amount = attack.success.amount
+      blockedAmount = amount
+      durabilityDamage = amount >= SHIELD_DURABILITY_DAMAGE_THRESHOLD ? Math.ceil(amount) : 0
+      const defenderPosition = Result.getOrThrow(Schema.decodeUnknownResult(WorldPositionSchema)({
+        dimension: dimension.success,
+        x: input.pose.feetPosition.x,
+        y: input.pose.feetPosition.y,
+        z: input.pose.feetPosition.z,
+      }))
+      const domainEvent: DomainEvent = {
+        _tag: 'ShieldBlocked',
+        tick: tick.success,
+        attacker: attack.success.attacker,
+        defender: decodedIntent.success.actor,
+        position: defenderPosition,
+        blockedAmount: amount,
+      }
+      event = domainEvent
+    }
+  }
+
+  const preparation: ShieldBlockingPreparation = {
+    actor: decodedIntent.success.actor,
+    blocking: decodedIntent.success.blocking,
+    raisedAt,
+    blocked,
+    blockedAmount,
+    durabilityDamage,
+    event,
+  }
+  return Result.succeed(preparation)
+}
 
 export const ZOMBIE_KIND: EntityKind = EntityKind('zombie')
 
@@ -47,11 +242,11 @@ export const pursueHorizontally = (
     return from
   }
 
-  return {
-    x: from.x + (dx / distance) * distanceMoved,
-    y: from.y,
-    z: from.z + (dz / distance) * distanceMoved,
-  }
+  return position(
+    PositionAxis(from.x + (dx / distance) * distanceMoved),
+    from.y,
+    PositionAxis(from.z + (dz / distance) * distanceMoved),
+  )
 }
 
 export type PlayerDamageEvent =

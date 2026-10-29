@@ -206,26 +206,41 @@
  * that the sequence must depend on what happened rather than on how many mobs
  * existed.
  */
-import { isItemType, type ItemType } from '@nerima-games/mc-kernel'
+import { isItemType, type ItemType, type RandomSeed, type SimulationTick as SimulationTickValue } from '@nerima-games/mc-kernel'
 import {
   durabilityForItem,
   isDamageableItemType,
   isValidDurabilityForItem,
   type Durability,
 } from '@nerima-games/mc-sim'
-import { Effect } from 'effect'
-import { blockPosition, blockTypeOfId, capabilityOfBlockId, type Position } from '@nerima-games/mc-kernel'
-import { applyDamage, isDead, type Vitals } from '../death-cause.js'
+import { Effect, Result } from 'effect'
+import {
+  BlockAxis,
+  EntityHealthPoints,
+  PositionAxis,
+  blockPosition,
+  blockTypeOfId,
+  capabilityOfBlockId,
+  position as kernelPosition,
+  type Position,
+  type Dimension,
+} from '@nerima-games/mc-kernel'
+import { applyDamage, isDead, type Damage, type Vitals } from '../death-cause.js'
 import { decodeEnchantedItem, type Enchantment } from '../enchantment.js'
 import {
   changed,
   DESPAWNED,
   EntityKind,
+  type EntitySerialExhausted,
   UNCHANGED,
   type Entity,
   type EntityId,
   type EntityManagerApi,
+  type EntityRoster,
   type EntityStep,
+  countOfKind,
+  spawnEntity,
+  sweepRoster,
 } from '@nerima-games/mc-sim'
 import type { ChunkStoreApi } from '@nerima-games/mc-worldgen'
 import type { BlockPosition, DeltaTimeSecs } from '@nerima-games/mc-kernel'
@@ -243,7 +258,7 @@ import {
   type EndermanTeleportPosition,
 } from '../mob/enderman-teleport.js'
 import { explosionDamageAt, type Explosion } from '../mob/explosion.js'
-import { FRESH_PRIMED_TNT, isPrimedTnt, stepPrimedTnt, type PrimedTnt } from '../mob/primed-tnt.js'
+import { FRESH_PRIMED_TNT, isPrimedTnt, type PrimedTnt } from '../mob/primed-tnt.js'
 import {
   DESPAWN_DISTANCE_BLOCKS,
   despawnVerdict,
@@ -520,15 +535,10 @@ export const ENDERMITE_MAX_HEALTH = 8
  * agreement」 shape `../mob/hostile-spawn`'s header measures in the reference's
  * surface tables.
  */
-// NON-EMPTY IN THE TYPE, not merely in the literal. `./mob-spawn-search` picks a
-// member by a computed index, which `noUncheckedIndexedAccess` types
-// `EntityKind | undefined` however the index was derived; it therefore needs
-// somewhere total to land, and it used to land on `HOSTILE_KINDS[0] ??
-// EntityKind('creeper')` — a SECOND fallback whose only job was to cover the
-// possibility that this line is `[]`. Saying non-empty here deletes that layer
-// and, more usefully, moves the claim to where a future edit to the roster would
-// have to read it. A build with no hostiles is a decision, not an accident to be
-// absorbed three files away.
+// NON-EMPTY IN THE TYPE, not merely in the literal. `./mob-spawn-search` seeds
+// its reduction from the first member, so an empty roster cannot reach it and no
+// lookup fallback is needed. A build with no hostiles is a decision, not an
+// accident to be absorbed three files away.
 export const HOSTILE_KINDS: readonly [EntityKind, ...ReadonlyArray<EntityKind>] = [
   CREEPER_KIND,
   ENDERMAN_KIND,
@@ -576,14 +586,14 @@ export const ENDERMAN_MAX_HEALTH = 40
  * total function anyway so that adding a kind to that list produces a mob with
  * plausible health rather than a `NaN`-healthed one that is instantly dead.
  */
-export const maxHealthOfKind = (kind: EntityKind): number => {
-  if (kind === ENDERMAN_KIND) return ENDERMAN_MAX_HEALTH
-  if (kind === ZOMBIE_KIND) return ZOMBIE_MAX_HEALTH
-  if (kind === EntityKind('spider')) return 16
-  if (kind === EntityKind('cow') || kind === EntityKind('pig')) return 10
-  if (kind === EntityKind('sheep')) return 8
-  if (kind === EntityKind('chicken')) return 4
-  return CREEPER_MAX_HEALTH
+export const maxHealthOfKind = (kind: EntityKind): EntityHealthPoints => {
+  if (kind === ENDERMAN_KIND) return EntityHealthPoints(ENDERMAN_MAX_HEALTH)
+  if (kind === ZOMBIE_KIND) return EntityHealthPoints(ZOMBIE_MAX_HEALTH)
+  if (kind === EntityKind('spider')) return EntityHealthPoints(16)
+  if (kind === EntityKind('cow') || kind === EntityKind('pig')) return EntityHealthPoints(10)
+  if (kind === EntityKind('sheep')) return EntityHealthPoints(8)
+  if (kind === EntityKind('chicken')) return EntityHealthPoints(4)
+  return EntityHealthPoints(CREEPER_MAX_HEALTH)
 }
 
 /**
@@ -640,19 +650,16 @@ export const MAX_HOSTILE_COUNT = 16
  * tested.
  */
 export const hostilePopulation = <S>(roster: EntityManagerApi<S>): Effect.Effect<number> =>
-  Effect.reduce(HOSTILE_KINDS, 0, (total, kind) =>
+  Effect.reduce(HOSTILE_KINDS, () => 0, (total, kind) =>
     Effect.map(roster.countOfKind(kind), (count) => total + count),
   )
 
 export const MAX_PASSIVE_COUNT = 16
 
 export const passivePopulation = <S>(roster: EntityManagerApi<S>): Effect.Effect<number> =>
-  Effect.reduce(PASSIVE_MOB_KINDS, 0, (total, kind) =>
+  Effect.reduce(PASSIVE_MOB_KINDS, () => 0, (total, kind) =>
     Effect.map(roster.countOfKind(kind), (count) => total + count),
   )
-
-/** What a creeper leaves behind. A creeper drops nothing at all, which is `../mob/mob-drop`'s rule and not this file's. */
-const SELF_DESTRUCT: MobKill = { _tag: 'SelfDestruct' }
 
 /**
  * A player-caused casualty with no Looting context.
@@ -955,24 +962,106 @@ export type Blast = {
   readonly explosion: Explosion
 }
 
-/**
- * A mob that died to a blow, for the drop roll that happens outside the sweep.
- *
- * TWO PRODUCERS NOW, not one: `resolveBlasts` and `resolveBowHits`. The name was
- * always about what a casualty IS rather than what killed it, and the drop roll
- * downstream (`rollCasualtyDrops`) has never asked.
- */
-export type MobCasualty = {
-  readonly id: EntityId
-  readonly kind: EntityKind
-  readonly at: Position
+/** The causes that permit experience for a mob casualty. */
+export type MobKillCredit = 'player' | 'player-triggered-tnt'
+
+/** WCC metadata carried beside the behavior that mc-sim owns. */
+export type MobEntity = Entity<MobBehaviour> & Readonly<{
+  dimension?: Dimension
+  killCredit?: MobKillCredit
+  lastHitTick?: SimulationTickValue
+}>
+
+export type MobRoster = Omit<EntityRoster<MobBehaviour>, 'entities'> & Readonly<{
+  entities: ReadonlyArray<MobEntity>
+}>
+
+/** A mob that died to a blow, for drop and experience resolution outside the sweep. */
+export type MobCasualty = Readonly<{
+  id: EntityId
+  kind: EntityKind
+  at: Position
+  killCredit?: MobKillCredit
+  lastHitTick?: SimulationTickValue
+  deathTick?: SimulationTickValue
+}>
+
+export const MOB_EXPERIENCE_CREDIT_WINDOW_TICKS = 100
+
+type RecentMobHit = Readonly<{
+  killCredit: Exclude<MobKillCredit, 'player-triggered-tnt'>
+  lastHitTick: SimulationTickValue
+}>
+
+const recentMobHit = (
+  killCredit: Exclude<MobKillCredit, 'player-triggered-tnt'> | undefined,
+  lastHitTick: SimulationTickValue | undefined,
+): RecentMobHit | undefined =>
+  killCredit === undefined || lastHitTick === undefined
+    ? undefined
+    : { killCredit, lastHitTick }
+
+const latestMobHit = (
+  previous: RecentMobHit | undefined,
+  next: RecentMobHit | undefined,
+): RecentMobHit | undefined =>
+  next === undefined || (previous !== undefined && next.lastHitTick < previous.lastHitTick)
+    ? previous
+    : next
+
+const mobCasualty = (
+  entity: MobEntity,
+  deathTick: SimulationTickValue | undefined,
+  latestHit?: RecentMobHit,
+  killCredit = latestHit?.killCredit ?? entity.killCredit,
+  lastHitTick = latestHit?.lastHitTick ?? entity.lastHitTick,
+): MobCasualty => ({
+  id: entity.id,
+  kind: entity.kind,
+  at: entity.feetPosition,
+  ...(killCredit === undefined ? {} : { killCredit }),
+  ...(lastHitTick === undefined ? {} : { lastHitTick }),
+  ...(deathTick === undefined ? {} : { deathTick }),
+})
+
+const retainMobMetadata = (
+  candidate: MobRoster,
+  previous: MobRoster,
+  recentHits: ReadonlyMap<EntityId, RecentMobHit> = new Map(),
+): MobRoster => {
+  if (candidate === previous && recentHits.size === 0) return previous
+  const previousById = new Map(previous.entities.map((entity) => [entity.id, entity]))
+  return {
+    ...candidate,
+    entities: candidate.entities.map((entity) => {
+      const prior = previousById.get(entity.id)
+      const recent = recentHits.get(entity.id)
+      const dimension = entity.dimension ?? prior?.dimension
+      const killCredit = recent?.killCredit ?? entity.killCredit ?? prior?.killCredit
+      const lastHitTick = recent?.lastHitTick ?? entity.lastHitTick ?? prior?.lastHitTick
+      if (
+        dimension === entity.dimension &&
+        killCredit === entity.killCredit &&
+        lastHitTick === entity.lastHitTick
+      ) return entity
+      return {
+        ...entity,
+        ...(dimension === undefined ? {} : { dimension }),
+        ...(killCredit === undefined ? {} : { killCredit }),
+        ...(lastHitTick === undefined ? {} : { lastHitTick }),
+      }
+    }),
+  }
 }
+
 
 /** One entity, and what a shot took off it. See `resolveBowHits`. */
 export type BowHit = {
   readonly id: EntityId
   /** Health points, already scaled by charge and Power (`../interactions/draw-bow.ts`). */
   readonly damage: number
+  readonly killCredit?: Exclude<MobKillCredit, 'player-triggered-tnt'>
+  readonly lastHitTick?: SimulationTickValue
 }
 
 // ---------------------------------------------------------------------------
@@ -1007,8 +1096,26 @@ export const distanceBetween = (from: Position, to: Position): number =>
  * creeper standing on the floor of a room one cell above it and blow the roof
  * off instead of the floor.
  */
-export const cellOf = (position: Position): BlockPosition =>
-  blockPosition(Math.floor(position.x), Math.floor(position.y), Math.floor(position.z))
+export const cellOf = (position: Position): BlockPosition | undefined => {
+  const x = Result.getOrUndefined(BlockAxis.result(Math.floor(position.x)))
+  const y = Result.getOrUndefined(BlockAxis.result(Math.floor(position.y)))
+  const z = Result.getOrUndefined(BlockAxis.result(Math.floor(position.z)))
+  return x === undefined || y === undefined || z === undefined ? undefined : blockPosition(x, y, z)
+}
+
+const teleportCellOf = (position: EndermanTeleportPosition): BlockPosition | undefined => {
+  const x = Result.getOrUndefined(BlockAxis.result(position.x))
+  const y = Result.getOrUndefined(BlockAxis.result(position.y))
+  const z = Result.getOrUndefined(BlockAxis.result(position.z))
+  return x === undefined || y === undefined || z === undefined ? undefined : blockPosition(x, y, z)
+}
+
+const teleportPositionOf = (value: EndermanTeleportPosition): Position =>
+  kernelPosition(
+    Result.getOrThrow(PositionAxis.result(value.x)),
+    Result.getOrThrow(PositionAxis.result(value.y)),
+    Result.getOrThrow(PositionAxis.result(value.z)),
+  )
 
 // ---------------------------------------------------------------------------
 // The sweep
@@ -1124,12 +1231,14 @@ export type EndermanTeleportProbe = {
  * DORMANT_FUSE })` from producing an exploding pig. `repairMobBehaviour` enforces
  * the same agreement on the load path; this is the frame path's half of it.
  */
-export const sweepMobs = (
-  roster: EntityManagerApi<MobBehaviour>,
-  senses: MobFrameSenses,
-  seed: number,
-): Effect.Effect<MobSweep> =>
-  Effect.suspend(() => {
+type MobFrameEvent = Blast | MobAttackEvent | EndermanTeleportProbe
+
+type MobFrameSweep = Readonly<{
+  step: (entity: Entity<MobBehaviour>) => EntityStep<MobBehaviour, MobFrameEvent>
+  finish: (events: ReadonlyArray<MobFrameEvent>) => MobSweep
+}>
+
+const makeMobFrameSweep = (senses: MobFrameSenses, seed: number): MobFrameSweep => {
     // Allocated once per sweep, refilled once per entity. See the module header
     // for why that is worth the mutation, and why it is safe.
     const despawnScratch: Mutable<DespawnCandidate> = {
@@ -1172,36 +1281,14 @@ export const sweepMobs = (
     // rule asks for a roll, and handed back beside the blasts.
     let cursor = seed
 
-    return Effect.map(
-      roster.sweep<Blast | MobAttackEvent | EndermanTeleportProbe>((entity) => {
+    const step = (entity: Entity<MobBehaviour>): EntityStep<MobBehaviour, MobFrameEvent> => {
         if (entity.kind === DROPPED_ITEM_KIND && isDroppedItemBehaviour(entity.behaviour)) {
           return IGNORED
         }
 
-        if (entity.kind === PRIMED_TNT_KIND && isPrimedTnt(entity.behaviour)) {
-          const step = stepPrimedTnt(entity.behaviour, senses.dt)
-          if (step.explosion !== undefined) {
-            return {
-              transition: DESPAWNED,
-              emit: {
-                source: entity.id,
-                kind: entity.kind,
-                at: entity.feetPosition,
-                explosion: step.explosion,
-              },
-            }
-          }
-          return step.tnt === entity.behaviour
-            ? IGNORED
-            : {
-                transition: changed({
-                  feetPosition: entity.feetPosition,
-                  healthPoints: entity.healthPoints,
-                  behaviour: step.tnt,
-                }),
-                emit: undefined,
-              }
-        }
+        // Primed TNT is advanced through mc-sim's TntService owner. Keeping a
+        // second fuse lane here would let the roster and TNT owner diverge.
+        if (entity.kind === PRIMED_TNT_KIND && isPrimedTnt(entity.behaviour)) return IGNORED
 
         const distance =
           senses.target === undefined ? undefined : distanceBetween(entity.feetPosition, senses.target)
@@ -1251,16 +1338,7 @@ export const sweepMobs = (
           : {
               ...snapshot,
               behaviour: next,
-              /* v8 ignore next 9 -- `ageTicks` (just above) is `undefined` if and
-               * only if `snapshot` is, and both are `const`s read from the same
-               * `entity.behaviour` with no reassignment between their
-               * definition and this closure, so whenever THIS branch runs
-               * `ageTicks` is always a number. TypeScript cannot see that two
-               * independently-typed consts stay in lockstep, so the fallback is
-               * a type-checker formality the arithmetic forbids — the same
-               * shape as `mob-spawn-search.ts`'s clamped-index fallback
-               * (vitest.config.ts's coverage-gate comment). */
-              ageTicks: ageTicks ?? snapshot.ageTicks,
+              ageTicks: snapshot.ageTicks + senses.dt * 20,
             }
         if (entity.kind === ZOMBIE_KIND) {
           const feetPosition = pursueHorizontally(
@@ -1283,7 +1361,7 @@ export const sweepMobs = (
 
 
         if (ECOSYSTEM_MOB_KINDS.includes(entity.kind) && behaviour?._tag === 'EcosystemMob') {
-          const step = stepEcosystemMob(
+          const ecosystemStep = stepEcosystemMob(
             entity.kind,
             behaviour,
             entity.feetPosition,
@@ -1292,13 +1370,13 @@ export const sweepMobs = (
           )
           return {
             transition: changed({
-              feetPosition: step.feetPosition,
+              feetPosition: ecosystemStep.feetPosition,
               healthPoints: entity.healthPoints,
-              behaviour: storedBehaviour(step.state),
+              behaviour: storedBehaviour(ecosystemStep.state),
             }),
-            emit: step.attack === undefined
+            emit: ecosystemStep.attack === undefined
               ? undefined
-              : { ...step.attack, source: entity.id, at: entity.feetPosition },
+              : { ...ecosystemStep.attack, source: entity.id, at: entity.feetPosition },
           }
         }
 
@@ -1316,9 +1394,9 @@ export const sweepMobs = (
             CREEPER_LOCOMOTION,
           )
           creeperScratch.distanceToTargetBlocks = distance
-          const step = stepCreeperFuse(behaviour, creeperScratch, senses.dt)
+          const fuseStep = stepCreeperFuse(behaviour, creeperScratch, senses.dt)
 
-          if (step.explosion !== undefined) {
+          if (fuseStep.explosion !== undefined) {
             // DESPAWNED rather than stored as `Detonated`, and the two are not the
             // same frame's difference. `../mob/mob-drop`'s `MobKill` records that
             // the reference's detonating creeper drops nothing only because a
@@ -1334,7 +1412,7 @@ export const sweepMobs = (
                 source: entity.id,
                 kind: entity.kind,
                 at: feetPosition,
-                explosion: step.explosion,
+                explosion: fuseStep.explosion,
               },
             }
           }
@@ -1343,13 +1421,13 @@ export const sweepMobs = (
           // ARGUMENT fuse when nothing happened (a dormant creeper out of range, a
           // detonated one), so `===` is exact here and costs nothing — and it is
           // what lets an idle frame reach mc-sim's zero-allocation path.
-          return step.fuse === behaviour && feetPosition === entity.feetPosition && snapshot === undefined
+          return fuseStep.fuse === behaviour && feetPosition === entity.feetPosition && snapshot === undefined
             ? IGNORED
             : {
                 transition: changed({
                   feetPosition,
                   healthPoints: entity.healthPoints,
-                  behaviour: storedBehaviour(step.fuse),
+                  behaviour: storedBehaviour(fuseStep.fuse),
                 }),
                 emit: undefined,
               }
@@ -1458,8 +1536,8 @@ export const sweepMobs = (
         // replaces these on the load path; a host that spawns one directly gets
         // the same answer as a pig, which is the inert one.
         return IGNORED
-      }),
-      (events) => {
+      }
+    const finish = (events: ReadonlyArray<MobFrameEvent>): MobSweep => {
         const blasts: Blast[] = []
         const attacks: MobAttackEvent[] = []
         const teleports: EndermanTeleportProbe[] = []
@@ -1471,9 +1549,32 @@ export const sweepMobs = (
         }
 
         return { blasts, attacks, teleports, seed: cursor }
-      },
-    )
-  })
+      }
+    return { step, finish }
+}
+
+export type MobRosterSweep = MobSweep & Readonly<{ roster: MobRoster }>
+
+/** Calculate one mob frame over an owner snapshot without writing through a service. */
+export const planMobRosterSweep = (
+  roster: MobRoster,
+  senses: MobFrameSenses,
+  seed: RandomSeed,
+): MobRosterSweep => {
+  const frame = makeMobFrameSweep(senses, seed)
+  const swept = sweepRoster(roster, frame.step)
+  return { roster: retainMobMetadata(swept.roster, roster), ...frame.finish(swept.emitted) }
+}
+
+/** Compatibility adapter for callers which still use the local EntityManager. */
+export const sweepMobs = (
+  roster: EntityManagerApi<MobBehaviour>,
+  senses: MobFrameSenses,
+  seed: number,
+): Effect.Effect<MobSweep> => Effect.suspend(() => {
+  const frame = makeMobFrameSweep(senses, seed)
+  return Effect.map(roster.sweep(frame.step), frame.finish)
+})
 
 /** Resolves planned teleports against loaded terrain, then applies only safe landings. */
 export const resolveEndermanTeleportProbes = (
@@ -1482,18 +1583,25 @@ export const resolveEndermanTeleportProbes = (
   probes: ReadonlyArray<EndermanTeleportProbe>,
 ): Effect.Effect<void> =>
   Effect.gen(function* () {
-    const destinations = new Map<EntityId, EndermanTeleportPosition>()
+    const destinations = new Map<EntityId, Position>()
 
     for (const probe of probes) {
       const cells = yield* Effect.forEach(
         endermanTeleportCandidateCells(probe.current, probe.anchor, probe.rolls),
-        (position) =>
-          Effect.map(store.getBlock(blockPosition(position.x, position.y, position.z)), (reading): EndermanTeleportCell | undefined => {
+        (position) => {
+          const cell = teleportCellOf(position)
+          if (cell === undefined) return Effect.succeed(undefined)
+          return Effect.map(store.getBlock(cell), (reading): EndermanTeleportCell | undefined => {
             if (reading._tag !== 'Block') return undefined
-            const block = blockTypeOfId(reading.block)
+            const block = Result.getOrUndefined(blockTypeOfId(reading.block))
             if (block === undefined) return undefined
-            return { position, block, solid: capabilityOfBlockId(reading.block, 'validSpawnSurface') }
-          }),
+            return {
+              position,
+              block,
+              solid: Result.getOrUndefined(capabilityOfBlockId(reading.block, 'validSpawnSurface')) === true,
+            }
+          })
+        },
       )
       const destination = resolveSafeEndermanTeleport(
         probe.current,
@@ -1501,7 +1609,10 @@ export const resolveEndermanTeleportProbes = (
         probe.rolls,
         cells.filter((cell): cell is EndermanTeleportCell => cell !== undefined),
       )
-      if (destination !== probe.current) destinations.set(probe.entityId, destination)
+      if (destination !== probe.current) {
+        // Changed destinations came from candidate cells that passed BlockAxis validation above.
+        destinations.set(probe.entityId, teleportPositionOf(destination))
+      }
     }
 
     if (destinations.size === 0) return
@@ -1520,6 +1631,61 @@ export const resolveEndermanTeleportProbes = (
           }
     })
   })
+
+/** Resolve teleport probes against the world, then return a roster candidate. */
+export const planEndermanTeleportRoster = (
+  roster: MobRoster,
+  store: ChunkStoreApi,
+  probes: ReadonlyArray<EndermanTeleportProbe>,
+): Effect.Effect<MobRoster> => Effect.gen(function* () {
+  if (probes.length === 0) return roster
+
+  const destinations = new Map<EntityId, Position>()
+  for (const probe of probes) {
+    const cells = yield* Effect.forEach(
+      endermanTeleportCandidateCells(probe.current, probe.anchor, probe.rolls),
+      (position) => {
+        const cell = teleportCellOf(position)
+        if (cell === undefined) return Effect.succeed(undefined)
+        return Effect.map(store.getBlock(cell), (reading): EndermanTeleportCell | undefined => {
+          if (reading._tag !== 'Block') return undefined
+          const block = Result.getOrUndefined(blockTypeOfId(reading.block))
+          if (block === undefined) return undefined
+          return {
+            position,
+            block,
+            solid: Result.getOrUndefined(capabilityOfBlockId(reading.block, 'validSpawnSurface')) === true,
+          }
+        })
+      },
+    )
+    const destination = resolveSafeEndermanTeleport(
+      probe.current,
+      probe.anchor,
+      probe.rolls,
+      cells.filter((cell): cell is EndermanTeleportCell => cell !== undefined),
+    )
+    if (destination !== probe.current) {
+      destinations.set(probe.entityId, teleportPositionOf(destination))
+    }
+  }
+
+  if (destinations.size === 0) return roster
+  const swept = sweepRoster(roster, (entity) => {
+    const destination = destinations.get(entity.id)
+    return destination === undefined
+      ? IGNORED
+      : {
+          transition: changed({
+            feetPosition: destination,
+            healthPoints: entity.healthPoints,
+            behaviour: entity.behaviour,
+          }),
+          emit: undefined,
+        }
+  })
+  return retainMobMetadata(swept.roster, roster)
+})
 
 // ---------------------------------------------------------------------------
 // Resolving a blast
@@ -1575,14 +1741,14 @@ export const resolveBlasts = (
       if (isDead(vitals)) {
         return {
           transition: DESPAWNED,
-          emit: { id: entity.id, kind: entity.kind, at: entity.feetPosition },
+          emit: mobCasualty(entity, undefined),
         }
       }
 
       return {
         transition: changed({
           feetPosition: entity.feetPosition,
-          healthPoints: vitals.healthPoints,
+          healthPoints: EntityHealthPoints(vitals.healthPoints),
           // THE ONLY BLOW THIS REPOSITORY CAN MEASURE. `endermanTeleportUrge`'s
           // `damagedThisStep` is 「mc-sim's combat lane」 and there is no combat
           // lane here: melee belongs in a `domain/combat/` that does not exist
@@ -1599,11 +1765,209 @@ export const resolveBlasts = (
 
     const disturbed: Array<BlockPositionKey> = []
     for (const blast of blasts) {
-      disturbed.push(...(yield* carveExplosionCrater(store, cellOf(blast.at), blast.explosion.power)))
+      const center = cellOf(blast.at)
+      if (center !== undefined) {
+        disturbed.push(...(yield* carveExplosionCrater(store, center, blast.explosion.power)))
+      }
     }
 
     return { casualties, disturbed }
   })
+
+export type MobBlastRosterResolution = Readonly<{
+  roster: MobRoster
+  casualties: ReadonlyArray<MobCasualty>
+}>
+
+/** Apply blast damage to a roster snapshot without writing through EntityManager. */
+export const planMobBlastRoster = (
+  roster: MobRoster,
+  blasts: ReadonlyArray<Blast>,
+  deathTick: SimulationTickValue,
+): MobBlastRosterResolution => {
+  if (blasts.length === 0) return { roster, casualties: NO_CASUALTIES }
+
+  const swept = sweepRoster(roster, (entity) => {
+    if (entity.kind === DROPPED_ITEM_KIND && isDroppedItemBehaviour(entity.behaviour)) {
+      return IGNORED
+    }
+
+    const vitals = damageFrom(blasts, entity)
+    if (vitals === undefined) return IGNORED
+    if (isDead(vitals)) {
+      return {
+        transition: DESPAWNED,
+        emit: mobCasualty(entity, deathTick),
+      }
+    }
+    return {
+      transition: changed({
+        feetPosition: entity.feetPosition,
+        healthPoints: EntityHealthPoints(vitals.healthPoints),
+        behaviour: bruise(entity.behaviour),
+      }),
+      emit: undefined,
+    }
+  })
+
+  return {
+    roster: retainMobMetadata(swept.roster, roster),
+    casualties: swept.emitted,
+  }
+}
+
+export type MobDamageHit = Readonly<{
+  id: EntityId
+  damage: Damage
+  killCredit?: Exclude<MobKillCredit, 'player-triggered-tnt'>
+  lastHitTick?: SimulationTickValue
+}>
+
+export type MobExplosionHit = Readonly<{
+  id: EntityId
+  damage: Damage
+  knockback: Position
+  killCredit?: 'player-triggered-tnt'
+}>
+
+/** Apply one explosion's owner-snapshot damage and knockback in a pure pass. */
+export const planMobExplosionRoster = (
+  roster: MobRoster,
+  hits: ReadonlyArray<MobExplosionHit>,
+  deathTick: SimulationTickValue,
+): MobBlastRosterResolution => {
+  if (hits.length === 0) return { roster, casualties: NO_CASUALTIES }
+
+  const byEntity = new Map<EntityId, MobExplosionHit>()
+  for (const hit of hits) {
+    if (
+      !Number.isFinite(hit.damage.amount) || hit.damage.amount < 0 ||
+      !Number.isFinite(hit.knockback.x) ||
+      !Number.isFinite(hit.knockback.y) ||
+      !Number.isFinite(hit.knockback.z)
+    ) continue
+    byEntity.set(hit.id, hit)
+  }
+  if (byEntity.size === 0) return { roster, casualties: NO_CASUALTIES }
+
+  const entityById = new Map(roster.entities.map((entity) => [entity.id, entity]))
+  const swept = sweepRoster(roster, (entity) => {
+    if (entity.kind === DROPPED_ITEM_KIND && isDroppedItemBehaviour(entity.behaviour)) return IGNORED
+    const hit = byEntity.get(entity.id)
+    if (hit === undefined) return IGNORED
+
+    const takesDamage = hit.damage.amount > 0
+    const vitals = takesDamage
+      ? applyDamage({ healthPoints: entity.healthPoints, lastDeathCause: undefined }, hit.damage)
+      : undefined
+    if (vitals !== undefined && isDead(vitals)) {
+      return {
+        transition: DESPAWNED,
+        emit: mobCasualty(
+          entity,
+          deathTick,
+          undefined,
+          hit.killCredit ?? entityById.get(entity.id)?.killCredit,
+          entityById.get(entity.id)?.lastHitTick,
+        ),
+      }
+    }
+
+    const feetPosition = kernelPosition(
+      PositionAxis(entity.feetPosition.x + hit.knockback.x),
+      PositionAxis(entity.feetPosition.y + hit.knockback.y),
+      PositionAxis(entity.feetPosition.z + hit.knockback.z),
+    )
+    const behaviour = takesDamage ? bruise(entity.behaviour) : entity.behaviour
+    if (
+      feetPosition.x === entity.feetPosition.x &&
+      feetPosition.y === entity.feetPosition.y &&
+      feetPosition.z === entity.feetPosition.z &&
+      behaviour === entity.behaviour &&
+      (vitals === undefined || vitals.healthPoints === entity.healthPoints)
+    ) return IGNORED
+
+    return {
+      transition: changed({
+        feetPosition,
+        healthPoints: vitals === undefined
+          ? entity.healthPoints
+          : EntityHealthPoints(vitals.healthPoints),
+        behaviour,
+      }),
+      emit: undefined,
+    }
+  })
+
+  return {
+    roster: retainMobMetadata(swept.roster, roster),
+    casualties: swept.emitted,
+  }
+}
+
+/** Apply owner-snapshot damage in one pure roster pass. */
+export const planMobDamageRoster = (
+  roster: MobRoster,
+  hits: ReadonlyArray<MobDamageHit>,
+  deathTick: SimulationTickValue,
+): MobBlastRosterResolution => {
+  if (hits.length === 0) return { roster, casualties: NO_CASUALTIES }
+
+  type DamageBatch = { damages: Array<Damage>; latestHit?: RecentMobHit }
+  const byEntity = new Map<EntityId, DamageBatch>()
+  for (const hit of hits) {
+    if (!Number.isFinite(hit.damage.amount) || hit.damage.amount <= 0) continue
+    const batch = byEntity.get(hit.id) ?? { damages: [] }
+    batch.damages.push(hit.damage)
+    const recentHit = recentMobHit(hit.killCredit, hit.lastHitTick)
+    if (
+      recentHit !== undefined &&
+      (batch.latestHit === undefined || recentHit.lastHitTick >= batch.latestHit.lastHitTick)
+    ) batch.latestHit = recentHit
+    byEntity.set(hit.id, batch)
+  }
+  if (byEntity.size === 0) return { roster, casualties: NO_CASUALTIES }
+
+  const entityById = new Map(roster.entities.map((entity) => [entity.id, entity]))
+  const recentHits = new Map<EntityId, RecentMobHit>()
+  for (const [id, batch] of byEntity) {
+    const entity = entityById.get(id)
+    if (entity === undefined) continue
+    const previousHit = entity.killCredit === 'player'
+      ? recentMobHit(entity.killCredit, entity.lastHitTick)
+      : undefined
+    const latestHit = latestMobHit(previousHit, batch.latestHit)
+    if (latestHit !== undefined) recentHits.set(id, latestHit)
+  }
+
+  const swept = sweepRoster(roster, (entity) => {
+    if (entity.kind === DROPPED_ITEM_KIND && isDroppedItemBehaviour(entity.behaviour)) return IGNORED
+    const batch = byEntity.get(entity.id)
+    if (batch === undefined) return IGNORED
+
+    let vitals: Vitals = { healthPoints: entity.healthPoints, lastDeathCause: undefined }
+    for (const damage of batch.damages) vitals = applyDamage(vitals, damage)
+    if (isDead(vitals)) {
+      return {
+        transition: DESPAWNED,
+        emit: mobCasualty(entity, deathTick, recentHits.get(entity.id)),
+      }
+    }
+    return {
+      transition: changed({
+        feetPosition: entity.feetPosition,
+        healthPoints: EntityHealthPoints(vitals.healthPoints),
+        behaviour: bruise(entity.behaviour),
+      }),
+      emit: undefined,
+    }
+  })
+
+  return {
+    roster: retainMobMetadata(swept.roster, roster, recentHits),
+    casualties: swept.emitted,
+  }
+}
 
 /**
  * Turn bow hits into damage.
@@ -1691,14 +2055,14 @@ export const resolveBowHits = (
       if (isDead(vitals)) {
         return {
           transition: DESPAWNED,
-          emit: { id: entity.id, kind: entity.kind, at: entity.feetPosition },
+          emit: mobCasualty(entity, undefined),
         }
       }
 
       return {
         transition: changed({
           feetPosition: entity.feetPosition,
-          healthPoints: vitals.healthPoints,
+          healthPoints: EntityHealthPoints(vitals.healthPoints),
           behaviour: bruise(entity.behaviour),
         }),
         emit: undefined,
@@ -1789,6 +2153,16 @@ export const experienceOfCasualties = (
   casualties: ReadonlyArray<MobCasualty>,
 ): ReadonlyArray<MobExperienceEvent> =>
   casualties.flatMap((casualty) => {
+    const hasRecentCredit =
+      casualty.killCredit === 'player-triggered-tnt' ||
+      (
+        casualty.killCredit === 'player' &&
+        casualty.lastHitTick !== undefined &&
+        casualty.deathTick !== undefined &&
+        casualty.deathTick >= casualty.lastHitTick &&
+        casualty.deathTick - casualty.lastHitTick <= MOB_EXPERIENCE_CREDIT_WINDOW_TICKS
+      )
+    if (!hasRecentCredit) return []
     const amount = mobXpReward(SLAIN_WITHOUT_LOOTING, xpRewardOfKind(casualty.kind))
     return amount <= 0
       ? []
@@ -1834,30 +2208,8 @@ export const rollCasualtyDrops = (
   return { drops, seed: current }
 }
 
-/**
- * What the creeper that produced a blast leaves behind: nothing.
- *
- * Called rather than assumed. `../mob/mob-drop`'s `rollMobDrop` returns
- * `undefined` for a `SelfDestruct` before it looks at anything else, so this
- * consumes no rolls and yields no items — and the reason that is written as a
- * call is the header of that file: in the reference the same behaviour is 「an
- * accident」 of statement order, and 「move the removal three lines down and the
- * rule changes with no test to notice」. Here the rule is asked.
- */
-export const rollSelfDestructDrops = (blast: Blast): ReadonlyArray<MobDropEvent> => {
-  // Always `[]`: `../mob/mob-drop`'s `rollMobDrop` returns `undefined` for
-  // EVERY rule the instant `kill._tag` is `'SelfDestruct'`, before it consults
-  // the rule at all, and `SELF_DESTRUCT` is the only kill this call site ever
-  // passes. Kept as a call through `rollDropsOfKind` (see the header above)
-  // — general over what a future rule change would return for a
-  // `SelfDestruct` kill — rather than hard-coded to a bare `[]` literal. The
-  // `.map` that would attach `source` / `kind` / `at` to each drop is not
-  // written out: an array this function can only ever return empty needs no
-  // per-element transform, and one that could never run is what the
-  // structural proof above is naming.
-  const drops = rollDropsOfKind(blast.kind, SELF_DESTRUCT, NO_DROPS)
-  return drops as unknown as ReadonlyArray<MobDropEvent>
-}
+/** A self-destruct casualty never drops an item. */
+export const rollSelfDestructDrops = (_blast: Blast): ReadonlyArray<MobDropEvent> => []
 
 // ---------------------------------------------------------------------------
 // Spawning
@@ -1947,7 +2299,7 @@ export type MobSpawnOutcome =
 export const applySpawnAttempts = (
   roster: EntityManagerApi<MobBehaviour>,
   attempts: ReadonlyArray<MobSpawnAttempt>,
-): Effect.Effect<ReadonlyArray<MobSpawnOutcome>> =>
+): Effect.Effect<ReadonlyArray<MobSpawnOutcome>, EntitySerialExhausted> =>
   Effect.gen(function* () {
     const outcomes: Array<MobSpawnOutcome> = []
 
@@ -1982,3 +2334,48 @@ export const applySpawnAttempts = (
 
     return outcomes
   })
+
+export type MobSpawnRosterResolution = Readonly<{
+  roster: EntityRoster<MobBehaviour>
+  outcomes: ReadonlyArray<MobSpawnOutcome>
+}>
+
+/** Apply validated spawn attempts to a roster snapshot without a stateful service. */
+export const planSpawnAttemptsOnRoster = (
+  initial: EntityRoster<MobBehaviour>,
+  attempts: ReadonlyArray<MobSpawnAttempt>,
+): Result.Result<MobSpawnRosterResolution, EntitySerialExhausted> => {
+  let roster = initial
+  const outcomes: Array<MobSpawnOutcome> = []
+
+  for (const attempt of attempts) {
+    const verdict = canMobSpawnAt(attempt.kind, attempt.candidate)
+    if (verdict._tag === 'Refused') {
+      outcomes.push({ _tag: 'Refused', reason: verdict.reason })
+      continue
+    }
+
+    const passive = PASSIVE_MOB_KINDS.includes(attempt.kind)
+    const kinds = passive ? PASSIVE_MOB_KINDS : HOSTILE_KINDS
+    let population = 0
+    for (const kind of kinds) {
+      population += countOfKind(roster, kind)
+    }
+    if (population >= (passive ? MAX_PASSIVE_COUNT : MAX_HOSTILE_COUNT)) {
+      outcomes.push({ _tag: 'AtCapacity', population })
+      continue
+    }
+
+    const spawned = spawnEntity(roster, {
+      kind: attempt.kind,
+      feetPosition: attempt.feetPosition,
+      healthPoints: maxHealthOfKind(attempt.kind),
+      behaviour: initialBehaviourOfKind(attempt.kind),
+    })
+    if (Result.isFailure(spawned)) return Result.fail(spawned.failure)
+    roster = spawned.success.roster
+    outcomes.push({ _tag: 'Spawned', id: spawned.success.entity.id })
+  }
+
+  return Result.succeed({ roster, outcomes })
+}

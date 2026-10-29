@@ -50,12 +50,11 @@
  * module whether the cell above is the matching closed-door half before it
  * removes it. That keeps a malformed world from losing an unrelated block.
  */
-import { Effect } from 'effect'
+import { Effect, Option, Result } from 'effect'
 import {
   adjacentBlockPosition,
   AIR_BLOCK_ID,
   blockIdOf,
-  blockPosition,
   blockTypeOfId,
   type BlockId,
   type BlockPosition,
@@ -70,7 +69,7 @@ import type { ChunkStoreApi } from '@nerima-games/mc-worldgen'
  * drop column and is never the block being PLACED — a player carries `door` and
  * what goes into the world is `door`.
  */
-export const isDoorBlock = (block: BlockId): boolean => blockTypeOfId(block) === 'door'
+export const isDoorBlock = (block: BlockId): boolean => Result.getOrUndefined(blockTypeOfId(block)) === 'door'
 
 /**
  * What the cell above says about a door placement.
@@ -111,7 +110,10 @@ export const doorUpperCell = (
       return { _tag: 'NotADoor' }
     }
 
-    const cell = adjacentBlockPosition(blockPosition(position.x, position.y, position.z), 'up')
+    const cell = Result.getOrUndefined(adjacentBlockPosition(position, 'up'))
+    if (cell === undefined) {
+      return { _tag: 'NoRoomAbove' }
+    }
     const reading = yield* store.getBlock(cell)
 
     if (reading._tag !== 'Block' || reading.block !== AIR_BLOCK_ID) {
@@ -141,7 +143,10 @@ export const doorUpperBreakCell = (
       return { _tag: 'NotADoor' }
     }
 
-    const cell = adjacentBlockPosition(blockPosition(position.x, position.y, position.z), 'up')
+    const cell = Result.getOrUndefined(adjacentBlockPosition(position, 'up'))
+    if (cell === undefined) {
+      return { _tag: 'NoDoorAbove' }
+    }
     const reading = yield* store.getBlock(cell)
     if (reading._tag !== 'Block' || !isDoorBlock(reading.block)) {
       return { _tag: 'NoDoorAbove' }
@@ -151,4 +156,4 @@ export const doorUpperBreakCell = (
   })
 
 /** The id this rule is about, for a caller that wants to demonstrate it. */
-export const DOOR_BLOCK_ID: BlockId | undefined = blockIdOf('door')
+export const DOOR_BLOCK_ID: BlockId | undefined = Option.getOrUndefined(blockIdOf('door'))

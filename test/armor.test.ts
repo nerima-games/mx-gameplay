@@ -1,4 +1,6 @@
 import { describe, expect, it } from '@effect/vitest'
+import { Result, Schema } from 'effect'
+import * as FastCheck from 'fast-check'
 import {
   equipmentItem,
   itemStack,
@@ -8,13 +10,16 @@ import {
 } from '@nerima-games/mc-sim'
 import {
   applyArmorToDamage,
+  ArmorHitResolutionSchema,
   armorDurabilityWearFromPreMitigationDamage,
+  armorToughnessForEquipment,
   armorPointsForEquipment,
+  prepareArmorHit,
   resolveArmorHit,
 } from '../src/domain/combat/armor'
 
 const armourItem = (item: EquipmentItem['item']): EquipmentItem =>
-  equipmentItem(itemStack(item, 1))
+  Result.getOrThrow(equipmentItem(Result.getOrThrow(itemStack(item, 1))))
 
 const equipmentWith = (
   items: Partial<Record<EquipmentSlot, EquipmentItem>> = {},
@@ -28,7 +33,10 @@ const equipmentWith = (
   },
 })
 
-describe('iron armour damage reduction', () => {
+const ARMOR_SOURCE = 'https://minecraft.wiki/w/Armor'
+const ARMOR_EDITION = 'Java Edition 26.3'
+
+describe('armor damage reduction', () => {
   it('assigns no points when no armour is equipped', () => {
     expect(armorPointsForEquipment(equipmentWith())).toBe(0)
   })
@@ -42,7 +50,7 @@ describe('iron armour damage reduction', () => {
     expect(armorPointsForEquipment(equipmentWith({ [slot]: armourItem(item) }))).toBe(points)
   })
 
-  it('assigns 15 points to a full iron set', () => {
+  it(`matches the Java Edition armor formula (${ARMOR_SOURCE}, ${ARMOR_EDITION})`, () => {
     const equipment = equipmentWith({
       head: armourItem('iron_helmet'),
       chest: armourItem('iron_chestplate'),
@@ -52,7 +60,7 @@ describe('iron armour damage reduction', () => {
 
     expect(armorPointsForEquipment(equipment)).toBe(15)
     expect(applyArmorToDamage({ amount: 10, cause: 'mob' }, 15)).toEqual({
-      amount: 4,
+      amount: 6,
       cause: 'mob',
     })
   })
@@ -65,6 +73,20 @@ describe('iron armour damage reduction', () => {
     expect(armorPointsForEquipment(equipmentWithInvalidOffhand)).toBe(0)
   })
 
+  it('ignores an item without a supported armour tier in a worn slot', () => {
+    const equipment = equipmentWith({ head: armourItem('diamond_sword') })
+
+    expect(armorPointsForEquipment(equipment)).toBe(0)
+    expect(armorToughnessForEquipment(equipment)).toBe(0)
+  })
+
+  it('ignores a non-armour item with no supported armor tier in a worn slot', () => {
+    const equipment = equipmentWith({ head: armourItem('bow') })
+
+    expect(armorPointsForEquipment(equipment)).toBe(0)
+    expect(armorToughnessForEquipment(equipment)).toBe(0)
+  })
+
   it.each([
     ['head', 'iron_boots'],
     ['chest', 'iron_helmet'],
@@ -74,11 +96,11 @@ describe('iron armour damage reduction', () => {
     expect(armorPointsForEquipment(equipmentWith({ [slot]: armourItem(item) }))).toBe(0)
   })
 
-  it('caps reduction at 80 percent', () => {
+  it('caps effective armor points at 20', () => {
     const atCap = applyArmorToDamage({ amount: 10, cause: 'explosion' }, 20)
     const aboveCap = applyArmorToDamage({ amount: 10, cause: 'explosion' }, 200)
 
-    expect(atCap.amount).toBeCloseTo(2)
+    expect(atCap.amount).toBeCloseTo(4)
     expect(atCap.cause).toBe('explosion')
     expect(aboveCap.amount).toBeCloseTo(2)
     expect(aboveCap.cause).toBe('explosion')
@@ -107,6 +129,13 @@ describe('iron armour damage reduction', () => {
   it('preserves the damage cause', () => {
     expect(applyArmorToDamage({ amount: 5, cause: 'lava' }, 2).cause).toBe('lava')
   })
+
+  it('treats an invalid toughness value as zero', () => {
+    expect(applyArmorToDamage({ amount: 10, cause: 'mob' }, 15, Number.NaN)).toEqual({
+      amount: 6,
+      cause: 'mob',
+    })
+  })
 })
 
 describe('armour mitigation by damage cause', () => {
@@ -128,7 +157,7 @@ describe('armour mitigation by damage cause', () => {
     'still mitigates %s damage with full iron armour',
     (cause) => {
       const result = applyArmorToDamage({ amount: 10, cause }, 15)
-      expect(result.amount).toBeCloseTo(4)
+      expect(result.amount).toBeCloseTo(6)
       expect(result.cause).toBe(cause)
     },
   )
@@ -137,7 +166,7 @@ describe('armour mitigation by damage cause', () => {
     'mitigates %s contact damage exactly like a combat hit, not exempted as environmental',
     (cause) => {
       const result = applyArmorToDamage({ amount: 10, cause }, 15)
-      expect(result.amount).toBeCloseTo(4)
+      expect(result.amount).toBeCloseTo(6)
       expect(result.cause).toBe(cause)
     },
   )
@@ -195,9 +224,9 @@ describe('armour hit resolution', () => {
 
     const resolved = resolveArmorHit(equipment, { amount: 8, cause: 'mob' })
 
-    expect(resolved.damage.amount).toBeCloseTo(5.44)
-    expect({ ...resolved, damage: { ...resolved.damage, amount: 5.44 } }).toStrictEqual({
-      damage: { amount: 5.44, cause: 'mob' },
+    expect(resolved.damage.amount).toBeCloseTo(6.72)
+    expect({ ...resolved, damage: { ...resolved.damage, amount: 6.72 } }).toStrictEqual({
+      damage: { amount: 6.72, cause: 'mob' },
       durabilityWear: 2,
       wornSlots: ['head', 'chest'],
     })
@@ -214,5 +243,65 @@ describe('armour hit resolution', () => {
       durabilityWear: 1,
       wornSlots: [],
     })
+  })
+})
+
+describe('diamond and netherite armor', () => {
+  it(`uses Java Edition armor values (${ARMOR_SOURCE}, ${ARMOR_EDITION})`, () => {
+    const diamond = equipmentWith({
+      head: armourItem('diamond_helmet'),
+      chest: armourItem('diamond_chestplate'),
+      legs: armourItem('diamond_leggings'),
+      feet: armourItem('diamond_boots'),
+    })
+    const netherite = equipmentWith({
+      head: armourItem('netherite_helmet'),
+      chest: armourItem('netherite_chestplate'),
+      legs: armourItem('netherite_leggings'),
+      feet: armourItem('netherite_boots'),
+    })
+
+    expect(armorPointsForEquipment(diamond)).toBe(20)
+    expect(armorToughnessForEquipment(diamond)).toBe(8)
+    expect(armorPointsForEquipment(netherite)).toBe(20)
+    expect(armorToughnessForEquipment(netherite)).toBe(12)
+    expect(applyArmorToDamage({ amount: 10, cause: 'mob' }, 20, 8).amount).toBeCloseTo(3)
+  })
+})
+
+describe('validated armor hit preparation', () => {
+  it('decodes every successful result with the public strict schema', () => {
+    FastCheck.assert(
+      FastCheck.property(
+        FastCheck.double({ min: -1e6, max: 1e6, noNaN: false, noDefaultInfinity: false }),
+        (amount) => {
+          const result = prepareArmorHit(equipmentWith(), { amount, cause: 'mob' })
+          if (Result.isFailure(result)) return true
+          const decoded = Schema.decodeUnknownResult(ArmorHitResolutionSchema, {
+            onExcessProperty: 'error',
+          })(result.success)
+          return Result.isSuccess(decoded) &&
+            Number.isFinite(decoded.success.damage.amount) &&
+            decoded.success.damage.amount > 0 &&
+            decoded.success.durabilityWear >= 0
+        },
+      ),
+      { numRuns: 250 },
+    )
+  })
+
+  it('leaves the equipment snapshot unchanged on invalid input', () => {
+    const equipment = equipmentWith({ head: armourItem('iron_helmet') })
+    const before = JSON.stringify(equipment)
+    const result = prepareArmorHit(equipment, { amount: Number.NaN, cause: 'mob' })
+
+    expect(Result.isFailure(result)).toBe(true)
+    expect(JSON.stringify(equipment)).toBe(before)
+  })
+
+  it('returns a typed failure for a damage cause outside the runtime vocabulary', () => {
+    const result = prepareArmorHit(equipmentWith(), { amount: 1, cause: 'unknown' } as never)
+
+    expect(Result.isFailure(result) && result.failure).toBe('invalid-armor')
   })
 })

@@ -1,6 +1,6 @@
 /** A preview adapter over mx-gameplay's canonical recipe-enabled inventory. */
 import type { InventoryServiceApi } from '@nerima-games/mc-sim'
-import { Effect, Ref } from 'effect'
+import { Effect, Ref, Semaphore } from 'effect'
 import { makeInMemoryInventory } from '../../src/domain/in-memory-inventory'
 
 export { INVENTORY_SLOT_COUNT } from '../../src/domain/in-memory-inventory'
@@ -23,9 +23,9 @@ export type PreviewInventory = {
 
 export const makePreviewInventory = (): Effect.Effect<PreviewInventory> =>
   Effect.gen(function* () {
-    const inventory = yield* makeInMemoryInventory()
+    const inventory = yield* makeInMemoryInventory().pipe(Effect.orDie)
     const deposits = yield* Ref.make<ReadonlyArray<InventoryDeposit>>([])
-    const depositMutex = yield* Effect.makeSemaphore(1)
+    const depositMutex = yield* Semaphore.make(1)
 
     const api: InventoryServiceApi = {
       ...inventory,

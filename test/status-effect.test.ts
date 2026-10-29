@@ -1,7 +1,10 @@
 import { describe, expect, it } from '@effect/vitest'
+import { Result, Schema } from 'effect'
 import { DeltaTimeSecs } from '@nerima-games/mc-kernel'
 import {
   SPEED_MOVEMENT_MULTIPLIER,
+  StatusEffectStateSchema,
+  type StatusEffectState,
   applyStatusEffect,
   copyStatusEffectState,
   emptyStatusEffectState,
@@ -39,6 +42,16 @@ describe('status effects', () => {
     expect(initial.effects[0]?.amplifier).toBe(0)
     expect(tick.poisonPulses).toBe(1)
     expect(tick.state.effects[0]?.remainingSecs).toBe(1.75)
+  })
+
+  it('normalizes a non-finite amplifier to zero', () => {
+    const state = applyStatusEffect(emptyStatusEffectState(), {
+      type: 'poison',
+      durationSecs: 2,
+      amplifier: Number.NaN,
+    })
+
+    expect(state.effects[0]?.amplifier).toBe(0)
   })
 
   it('keeps the stronger effect and the longer duration at equal strength', () => {
@@ -146,8 +159,36 @@ describe('status effects', () => {
     expect(expired.state.effects).toStrictEqual([])
   })
 
+  it('drops a regeneration effect when its duration expires on the frame boundary', () => {
+    const state = applyStatusEffect(emptyStatusEffectState(), {
+      type: 'regeneration',
+      durationSecs: 1,
+    })
+
+    const tick = tickStatusEffects(state, DeltaTimeSecs(1))
+
+    expect(tick.regenerationPulses).toBe(0)
+    expect(tick.state.effects).toStrictEqual([])
+  })
+
+  it('ignores an unknown runtime effect tag after decoding has been bypassed', () => {
+    const malformed = {
+      effects: [{ type: 'unknown', remainingSecs: 1, pulseClockSecs: 0, amplifier: 0 }],
+    } as unknown as StatusEffectState
+
+    expect(tickStatusEffects(malformed, DeltaTimeSecs(0))).toMatchObject({
+      state: { effects: [] },
+      poisonPulses: 0,
+      regenerationPulses: 0,
+      hungerExhaustion: 0,
+      movementSpeedMultiplier: 1,
+    })
+  })
+
   it('validates saved effects before restoration', () => {
     expect(isValidStatusEffectState(emptyStatusEffectState())).toBe(true)
+    expect(Result.isSuccess(Schema.decodeUnknownResult(StatusEffectStateSchema)(emptyStatusEffectState()))).toBe(true)
+    expect(Result.isFailure(Schema.decodeUnknownResult(StatusEffectStateSchema)({ effects: [{ type: 'unknown' }] }))).toBe(true)
     expect(isValidStatusEffectState({
       effects: [{ type: 'poison', remainingSecs: 10, pulseClockSecs: 0, amplifier: 1 }],
     })).toBe(true)

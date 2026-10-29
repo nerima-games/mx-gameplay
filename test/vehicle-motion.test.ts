@@ -1,5 +1,6 @@
 import { describe, expect, it } from '@effect/vitest'
 import { OccupantId, VehicleId, type Vehicle } from '@nerima-games/mc-sim'
+import { AngleRadians, PositionAxis, VehicleVelocityComponent } from '@nerima-games/mc-kernel'
 import {
   boardVehicle,
   COLLISION_EXIT_SPEED,
@@ -9,15 +10,40 @@ import {
 } from '../src/domain/vehicle/vehicle-motion'
 
 const rider = OccupantId('player:one')
-const vehicle = (type: Vehicle['type'], overrides: Partial<Vehicle> = {}): Vehicle => ({
-  id: VehicleId(`${type}:one`),
-  type,
-  dimension: 'overworld',
-  position: { x: 0, y: 64, z: 0 },
-  velocity: { x: 0, y: 0, z: 0 },
-  yawRadians: 0,
-  ...overrides,
-})
+type VehicleFixtureOverrides = Omit<
+  Partial<Vehicle>,
+  'id' | 'type' | 'dimension' | 'position' | 'velocity' | 'yawRadians'
+> & {
+  position?: Readonly<{ x: number; y: number; z: number }>
+  velocity?: Readonly<{ x: number; y: number; z: number }>
+  yawRadians?: number
+}
+
+const vehicle = (type: Vehicle['type'], overrides: VehicleFixtureOverrides = {}): Vehicle => {
+  const {
+    position: fixturePosition,
+    velocity: fixtureVelocity,
+    yawRadians,
+    ...vehicleOverrides
+  } = overrides
+  return {
+    id: VehicleId(`${type}:one`),
+    type,
+    dimension: 'overworld',
+    position: {
+      x: PositionAxis(fixturePosition?.x ?? 0),
+      y: PositionAxis(fixturePosition?.y ?? 64),
+      z: PositionAxis(fixturePosition?.z ?? 0),
+    },
+    velocity: {
+      x: VehicleVelocityComponent(fixtureVelocity?.x ?? 0),
+      y: VehicleVelocityComponent(fixtureVelocity?.y ?? 0),
+      z: VehicleVelocityComponent(fixtureVelocity?.z ?? 0),
+    },
+    yawRadians: AngleRadians(yawRadians ?? 0),
+    ...vehicleOverrides,
+  }
+}
 
 describe('vehicle occupancy', () => {
   it('boards only an empty nearby vehicle and supports requested exit', () => {

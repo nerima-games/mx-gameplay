@@ -14,7 +14,7 @@
  *   call it, so a service a host composes has to answer.
  */
 import { describe, expect, it } from '@effect/vitest'
-import { Effect, Layer } from 'effect'
+import { Effect, Layer, Schema } from 'effect'
 import {
   EYE_LEVEL_OFFSET,
   INITIAL_DIMENSION,
@@ -26,15 +26,50 @@ import {
   clampPitch,
   makeInMemoryPlayer,
 } from '../src/domain/in-memory-player'
-import { ClockPort, MonotonicTimeSecs } from '@nerima-games/mc-kernel'
-import { PlayerService, type PlayerPose } from '@nerima-games/mc-sim'
+import {
+  ClockPort,
+  MonotonicTimeSecs,
+  PositionAxis,
+  WorldIdSchema,
+  position,
+  type Position,
+} from '@nerima-games/mc-kernel'
+import {
+  PLAYER_REPLICATED_OWNER_ID,
+  PlayerService,
+  PlayerServiceSnapshotSchema,
+  WorldCommitCoordinator,
+  WorldCommitCoordinatorLayer,
+  type PlayerPose,
+} from '@nerima-games/mc-sim'
+
+const feetPosition = (x: number, y: number, z: number) =>
+  position(PositionAxis(x), PositionAxis(y), PositionAxis(z))
 
 const pose = (overrides: Partial<PlayerPose> = {}): PlayerPose => ({
-  feetPosition: { x: 1, y: 64, z: 2 },
+  feetPosition: feetPosition(1, 64, 2),
   yawRadians: 0,
   pitchRadians: 0,
   ...overrides,
 })
+
+const playerCoordinatorLayer = () =>
+  WorldCommitCoordinatorLayer({
+    world: Schema.decodeUnknownSync(WorldIdSchema)('in-memory-player-tests'),
+    owners: [
+      {
+        ownerId: PLAYER_REPLICATED_OWNER_ID,
+        schema: PlayerServiceSnapshotSchema,
+        initialState: Schema.decodeUnknownSync(PlayerServiceSnapshotSchema)({
+          pose: {
+            feetPosition: { dimension: 'overworld', x: 0, y: 0, z: 0 },
+            yawRadians: 0,
+            pitchRadians: 0,
+          },
+        }),
+      },
+    ],
+  })
 
 /** A clock that always reads the same instant. */
 const fixedClock = Layer.succeed(ClockPort, {
@@ -111,10 +146,10 @@ describe('moveTo and setDimension stay separate', () => {
     Effect.gen(function* () {
       const player = yield* makeInMemoryPlayer(pose({ yawRadians: 1.5 }))
 
-      yield* player.moveTo({ x: 9, y: 70, z: -3 })
+      yield* player.moveTo(feetPosition(9, 70, -3))
       const after = yield* player.pose
 
-      expect(after.feetPosition).toStrictEqual({ x: 9, y: 70, z: -3 })
+      expect(after.feetPosition).toStrictEqual(feetPosition(9, 70, -3))
       expect(after.yawRadians).toBe(1.5)
     }),
   )
@@ -127,7 +162,7 @@ describe('moveTo and setDimension stay separate', () => {
       // "move without switching" — the common case — inexpressible.
       const player = yield* makeInMemoryPlayer(pose(), 'nether')
 
-      yield* player.moveTo({ x: 0, y: 0, z: 0 })
+      yield* player.moveTo(feetPosition(0, 0, 0))
 
       expect(yield* player.dimension).toBe('nether')
     }),
@@ -150,7 +185,7 @@ describe('cameraPose', () => {
     Effect.gen(function* () {
       // The distinction `feetPosition`'s name exists to carry: a camera placed
       // at the feet renders from inside the floor.
-      const player = yield* makeInMemoryPlayer(pose({ feetPosition: { x: 1, y: 64, z: 2 } }))
+      const player = yield* makeInMemoryPlayer(pose({ feetPosition: feetPosition(1, 64, 2) }))
 
       const camera = yield* player.cameraPose
 
@@ -217,6 +252,143 @@ describe('restore and reset', () => {
 
       expect(yield* player.pose).toStrictEqual(INITIAL_PLAYER_POSE)
       expect(yield* player.dimension).toBe(INITIAL_DIMENSION)
+    }),
+  )
+})
+
+describe('replicated player state', () => {
+  it.effect('snapshot reads the registered committed player and revision', () =>
+    Effect.gen(function* () {
+      const player = yield* makeInMemoryPlayer()
+
+      const committed = yield* player.snapshot
+
+      expect(committed.world).toBe('in-memory-player-tests')
+      expect(committed.revision).toBe(0)
+      expect(committed.state.pose).toStrictEqual({
+        feetPosition: { dimension: 'overworld', x: 0, y: 0, z: 0 },
+        yawRadians: 0,
+        pitchRadians: 0,
+      })
+    }).pipe(Effect.provide(playerCoordinatorLayer())),
+  )
+
+  it.effect('replicatedCandidate reflects local pose and dimension without committing', () =>
+    Effect.gen(function* () {
+      const player = yield* makeInMemoryPlayer(pose({ yawRadians: 0.7, pitchRadians: -0.2 }), 'nether')
+
+      const candidate = yield* player.replicatedCandidate
+
+      expect(candidate.pose).toStrictEqual({
+        feetPosition: { dimension: 'nether', x: 1, y: 64, z: 2 },
+        yawRadians: 0.7,
+        pitchRadians: -0.2,
+      })
+    }),
+  )
+
+  it.effect('submitReplicatedCandidate commits a changed pose in its current dimension', () =>
+    Effect.gen(function* () {
+      const player = yield* makeInMemoryPlayer(pose({ yawRadians: 0.4 }))
+      yield* player.moveTo(feetPosition(5, 80, -2))
+      const candidate = yield* player.replicatedCandidate
+      const coordinator = yield* WorldCommitCoordinator
+      const expectedRevision = yield* coordinator.revision
+      const expectedDimensionRevision = yield* coordinator.dimensionRevision('overworld')
+
+      const delta = yield* player.submitReplicatedCandidate(expectedRevision, expectedDimensionRevision)
+      const committed = yield* player.snapshot
+
+      expect(delta.revision).toBe(1)
+      expect(delta.changes).toStrictEqual([{ owner: PLAYER_REPLICATED_OWNER_ID, state: candidate }])
+      expect(delta.blockChanges).toStrictEqual([])
+      expect(committed.revision).toBe(1)
+      expect(committed.state).toStrictEqual(candidate)
+    }).pipe(Effect.provide(playerCoordinatorLayer())),
+  )
+
+  it.effect('submitReplicatedCandidate accounts for both dimensions when the player switches', () =>
+    Effect.gen(function* () {
+      const player = yield* makeInMemoryPlayer(pose(), 'nether')
+      const candidate = yield* player.replicatedCandidate
+      const coordinator = yield* WorldCommitCoordinator
+      const expectedRevision = yield* coordinator.revision
+      const expectedDimensionRevision = yield* coordinator.dimensionRevision('overworld')
+
+      const delta = yield* player.submitReplicatedCandidate(expectedRevision, expectedDimensionRevision)
+      const committed = yield* player.snapshot
+
+      expect(delta.revision).toBe(1)
+      expect(delta.changes).toStrictEqual([{ owner: PLAYER_REPLICATED_OWNER_ID, state: candidate }])
+      expect(committed.state.pose.feetPosition.dimension).toBe('nether')
+      expect(committed.revision).toBe(1)
+    }).pipe(Effect.provide(playerCoordinatorLayer())),
+  )
+})
+
+describe('invalid runtime input', () => {
+  it.effect('rejects bad movement, dimension, and restored pose without replacing state', () =>
+    Effect.gen(function* () {
+      const player = yield* makeInMemoryPlayer(pose(), 'nether')
+      const initialPose = yield* player.pose
+      const invalidPosition = {
+        x: Number.NaN,
+        y: PositionAxis(64),
+        z: PositionAxis(2),
+      } as Position
+
+      expect(yield* Effect.flip(player.moveTo(invalidPosition))).toStrictEqual({
+        _tag: 'PlayerServiceInputError',
+        reason: 'invalid-position',
+        field: 'feetPosition.x',
+      })
+      expect(yield* Effect.flip(player.moveTo(null as unknown as Position))).toStrictEqual({
+        _tag: 'PlayerServiceInputError',
+        reason: 'invalid-position',
+        field: 'feetPosition',
+      })
+      expect(yield* Effect.flip(player.setDimension('void' as Parameters<typeof player.setDimension>[0]))).toStrictEqual({
+        _tag: 'PlayerServiceInputError',
+        reason: 'invalid-dimension',
+        field: 'dimension',
+      })
+      expect(
+        yield* Effect.flip(player.restore(pose({ yawRadians: Number.NaN }), 'end')),
+      ).toStrictEqual({
+        _tag: 'PlayerServiceInputError',
+        reason: 'invalid-pose',
+        field: 'yawRadians',
+      })
+      expect(
+        yield* Effect.flip(player.restore(pose({ feetPosition: null as unknown as Position }), 'end')),
+      ).toStrictEqual({
+        _tag: 'PlayerServiceInputError',
+        reason: 'invalid-pose',
+        field: 'feetPosition',
+      })
+      expect(
+        yield* Effect.flip(player.restore(pose(), 'void' as Parameters<typeof player.restore>[1])),
+      ).toStrictEqual({
+        _tag: 'PlayerServiceInputError',
+        reason: 'invalid-dimension',
+        field: 'dimension',
+      })
+      expect(yield* player.pose).toStrictEqual(initialPose)
+      expect(yield* player.dimension).toBe('nether')
+    }),
+  )
+
+  it.effect('does not install a look derived from an invalid starting position', () =>
+    Effect.gen(function* () {
+      const invalidPose = pose({ feetPosition: null as unknown as Position })
+      const player = yield* makeInMemoryPlayer(invalidPose)
+
+      expect(yield* Effect.flip(player.look(0, 0))).toStrictEqual({
+        _tag: 'PlayerServiceInputError',
+        reason: 'invalid-look',
+        field: 'feetPosition',
+      })
+      expect(yield* player.pose).toStrictEqual(invalidPose)
     }),
   )
 })

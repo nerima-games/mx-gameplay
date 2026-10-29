@@ -38,8 +38,8 @@
  * bug in the game and would reproduce only under a condition nobody thinks to
  * test. `UnequipOutcome` names the case so a caller cannot ignore it.
  */
-import { Effect } from 'effect'
-import type { ItemType } from '@nerima-games/mc-kernel'
+import { ITEM_TYPES, type ItemType } from '@nerima-games/mc-kernel'
+import { Effect, Result, Schema } from 'effect'
 
 /**
  * Where armour sits, in the order it comes off.
@@ -57,6 +57,62 @@ export type ArmorSlot = (typeof ARMOR_SLOTS)[number]
 
 /** What is worn. An absent slot is an empty one. */
 export type Equipment = Partial<Readonly<Record<ArmorSlot, ItemType>>>
+
+const EquipmentSchema = Schema.Struct({
+  helmet: Schema.optionalKey(Schema.Literals(ITEM_TYPES)),
+  chestplate: Schema.optionalKey(Schema.Literals(ITEM_TYPES)),
+  leggings: Schema.optionalKey(Schema.Literals(ITEM_TYPES)),
+  boots: Schema.optionalKey(Schema.Literals(ITEM_TYPES)),
+})
+
+export type UnequipPreparation =
+  | Readonly<{ _tag: 'Unequip'; slot: ArmorSlot; item: ItemType; nextEquipment: Equipment }>
+  | Readonly<{ _tag: 'NothingWorn'; nextEquipment: Equipment }>
+
+export const UnequipPreparationSchema: Schema.ConstraintDecoder<UnequipPreparation> = Schema.Union([
+  Schema.TaggedStruct('Unequip', {
+    slot: Schema.Literals(ARMOR_SLOTS),
+    item: Schema.Literals(ITEM_TYPES),
+    nextEquipment: EquipmentSchema,
+  }),
+  Schema.TaggedStruct('NothingWorn', {
+    nextEquipment: EquipmentSchema,
+  }),
+])
+
+export type UnequipPreparationError = 'invalid-equipment'
+
+const equipmentWithout = (equipment: Equipment, removed: ArmorSlot): Equipment => ({
+  // `firstWornItem` always removes a worn helmet before reaching a lower slot.
+  // A helmet can therefore never be retained in this candidate.
+  ...(removed === 'chestplate' || equipment.chestplate === undefined ? {} : { chestplate: equipment.chestplate }),
+  ...(removed === 'leggings' || equipment.leggings === undefined ? {} : { leggings: equipment.leggings }),
+  ...(removed === 'boots' || equipment.boots === undefined ? {} : { boots: equipment.boots }),
+})
+
+/** Prepare the topmost equipment change for a caller to compose with its inventory owner. */
+export const prepareUnequipTopmost = (
+  equipment: unknown,
+): Result.Result<UnequipPreparation, UnequipPreparationError> => {
+  const decoded = Schema.decodeUnknownResult(EquipmentSchema, {
+    onExcessProperty: 'error',
+  })(equipment)
+  if (Result.isFailure(decoded)) return Result.fail('invalid-equipment')
+
+  const worn = firstWornItem(decoded.success)
+  const prepared: UnequipPreparation = worn === undefined
+    ? { _tag: 'NothingWorn', nextEquipment: decoded.success }
+    : {
+        _tag: 'Unequip',
+        slot: worn.slot,
+        item: worn.item,
+        nextEquipment: equipmentWithout(decoded.success, worn.slot),
+      }
+  // The equipment was decoded above, and both candidate variants are built only
+  // from its validated slots and the same slot-removal helper. Re-decoding this
+  // internally constructed value cannot fail.
+  return Result.succeed(prepared)
+}
 
 /** Nothing worn. */
 export const NO_ARMOR: Equipment = {}
@@ -77,6 +133,14 @@ export type UnequipOutcome =
    */
   | { readonly _tag: 'inventoryFull'; readonly slot: ArmorSlot; readonly item: ItemType }
 
+const firstWornItem = (equipment: Equipment): Readonly<{ slot: ArmorSlot; item: ItemType }> | undefined => {
+  for (const slot of ARMOR_SLOTS) {
+    const item = equipment[slot]
+    if (item !== undefined) return { slot, item }
+  }
+  return undefined
+}
+
 /**
  * The first occupied slot, in `ARMOR_SLOTS` order.
  *
@@ -84,7 +148,7 @@ export type UnequipOutcome =
  * for a bare player.
  */
 export const firstWornSlot = (equipment: Equipment): ArmorSlot | undefined =>
-  ARMOR_SLOTS.find((slot) => equipment[slot] !== undefined)
+  firstWornItem(equipment)?.slot
 
 /** What the rule needs of an inventory and a body. */
 export type UnequipPort = {
@@ -123,20 +187,11 @@ export const unequipTopmost = (
   equipment: Equipment,
 ): Effect.Effect<UnequipOutcome> =>
   Effect.gen(function* () {
-    const slot = firstWornSlot(equipment)
-    if (slot === undefined) {
+    const worn = firstWornItem(equipment)
+    if (worn === undefined) {
       return { _tag: 'nothingWorn' as const }
     }
-
-    const item = equipment[slot]
-    /* v8 ignore start -- unreachable while `firstWornSlot` is the only way in: it
-     * finds `slot` by testing `equipment[slot] !== undefined`, so `item` here is
-     * always defined. Narrowed rather than asserted: a non-null assertion here
-     * would be the one place in this file a future change could make lie. */
-    if (item === undefined) {
-      return { _tag: 'nothingWorn' as const }
-    }
-    /* v8 ignore stop */
+    const { slot, item } = worn
 
     yield* port.unequip(slot)
     const leftover = yield* port.add(item, 1)

@@ -1,20 +1,39 @@
 import { describe, expect, it } from '@effect/vitest'
-import { EntityId, EntityKind, type Entity } from '@nerima-games/mc-sim'
+import { Result, Schema } from 'effect'
+import * as FastCheck from 'fast-check'
+import { position as atPosition } from './support/coordinate-fixtures'
+import { EntityId, EntityKind, IntentPayloadSchema, type Entity } from '@nerima-games/mc-sim'
+import {
+  DimensionIdSchema,
+  EntityHealthPoints,
+  SimulationTickSchema,
+  WorldPositionSchema,
+} from '@nerima-games/mc-kernel'
 import {
   CREEPER_LOCOMOTION,
+  prepareShieldBlocking,
   pursueHorizontally,
   resolveHostileContacts,
   resolvePlayerBlastDamage,
+  SHIELD_BLOCKING_DELAY_TICKS,
+  SHIELD_DURABILITY_DAMAGE_THRESHOLD,
+  SHIELD_HORIZONTAL_BLOCKING_HALF_ANGLE_DEGREES,
+  ShieldBlockingPreparationSchema,
   ZOMBIE_KIND,
   ZOMBIE_LOCOMOTION,
   type HostileLocomotion,
 } from '../src/domain/mob/hostile-combat'
 
+const SHIELD_FIXTURE = {
+  source: 'https://minecraft.wiki/w/Shield',
+  edition: 'Java Edition 26.3',
+} as const
+
 const zombie = (x: number): Entity<undefined> => ({
   id: EntityId('zombie:1'),
   kind: ZOMBIE_KIND,
-  feetPosition: { x, y: 64, z: 0 },
-  healthPoints: 20,
+  feetPosition: atPosition(x, 64, 0),
+  healthPoints: EntityHealthPoints(20),
   behaviour: undefined,
 })
 
@@ -22,17 +41,17 @@ describe('hostile locomotion', () => {
   it('moves horizontally by at most speed * dt and preserves altitude', () => {
     expect(
       pursueHorizontally(
-        { x: 10, y: 70, z: 0 },
-        { x: 0, y: 20, z: 0 },
+        atPosition(10, 70, 0 ),
+        atPosition(0, 20, 0 ),
         0.5,
         ZOMBIE_LOCOMOTION,
       ),
-    ).toStrictEqual({ x: 8.85, y: 70, z: 0 })
+    ).toStrictEqual(atPosition(8.85, 70, 0 ))
   })
 
   it('stops at the kind-specific engagement distance', () => {
-    const target = { x: 0, y: 64, z: 0 }
-    expect(pursueHorizontally({ x: 2, y: 64, z: 0 }, target, 1, CREEPER_LOCOMOTION)).toStrictEqual({
+    const target = atPosition(0, 64, 0 )
+    expect(pursueHorizontally(atPosition(2, 64, 0 ), target, 1, CREEPER_LOCOMOTION)).toStrictEqual({
       x: 2,
       y: 64,
       z: 0,
@@ -40,8 +59,8 @@ describe('hostile locomotion', () => {
   })
 
   it('does not move without a target, with a non-finite dt, or with a non-positive dt', () => {
-    const from = { x: 5, y: 10, z: 5 }
-    const target = { x: 20, y: 10, z: 5 }
+    const from = atPosition(5, 10, 5 )
+    const target = atPosition(20, 10, 5 )
     expect(pursueHorizontally(from, undefined, 1, ZOMBIE_LOCOMOTION)).toStrictEqual(from)
     expect(pursueHorizontally(from, target, Number.NaN, ZOMBIE_LOCOMOTION)).toStrictEqual(from)
     expect(pursueHorizontally(from, target, 0, ZOMBIE_LOCOMOTION)).toStrictEqual(from)
@@ -53,14 +72,14 @@ describe('hostile locomotion', () => {
     // numbers — `dt` and `distance` are already positive by this point — so a
     // stalled mob (speed zero) is the one caller that can produce it.
     const stalled: HostileLocomotion = { speedBlocksPerSecond: 0, stoppingDistanceBlocks: 1 }
-    const from = { x: 0, y: 10, z: 0 }
-    expect(pursueHorizontally(from, { x: 10, y: 10, z: 0 }, 1, stalled)).toStrictEqual(from)
+    const from = atPosition(0, 10, 0 )
+    expect(pursueHorizontally(from, atPosition(10, 10, 0 ), 1, stalled)).toStrictEqual(from)
   })
 })
 
 describe('player damage resolution', () => {
   it('emits zombie contact damage once per cooldown interval', () => {
-    const target = { x: 0, y: 64, z: 0 }
+    const target = atPosition(0, 64, 0 )
     const first = resolveHostileContacts([zombie(1)], target, 0.25, new Map())
     expect(first.damages).toHaveLength(1)
     expect(first.damages[0]).toMatchObject({
@@ -92,18 +111,18 @@ describe('player damage resolution', () => {
           {
             source: EntityId('creeper:1'),
             kind: EntityKind('creeper'),
-            at: { x: 0, y: 64, z: 0 },
+            at: atPosition(0, 64, 0 ),
             explosion: { source: 'creeper', power: 3 },
           },
         ],
-        { x: 2, y: 64, z: 0 },
+        atPosition(2, 64, 0 ),
       ),
     ).toStrictEqual([
       {
         _tag: 'Explosion',
         source: 'creeper:1',
         kind: 'creeper',
-        at: { x: 0, y: 64, z: 0 },
+        at: atPosition(0, 64, 0 ),
         explosion: { source: 'creeper', power: 3 },
         damage: { amount: 24, cause: 'explosion' },
       },
@@ -120,11 +139,11 @@ describe('player damage resolution', () => {
           {
             source: EntityId('creeper:3'),
             kind: EntityKind('creeper'),
-            at: { x: 0, y: 64, z: 0 },
+            at: atPosition(0, 64, 0 ),
             explosion: { source: 'creeper', power: 3 },
           },
         ],
-        { x: 100, y: 64, z: 0 },
+        atPosition(100, 64, 0 ),
       ),
     ).toStrictEqual([])
   })
@@ -136,12 +155,260 @@ describe('player damage resolution', () => {
           {
             source: EntityId('creeper:2'),
             kind: EntityKind('creeper'),
-            at: { x: 0, y: 64, z: 0 },
+            at: atPosition(0, 64, 0 ),
             explosion: { source: 'creeper', power: 3 },
           },
         ],
         undefined,
       ),
     ).toStrictEqual([])
+  })
+})
+
+describe(`C2 shield blocking (${SHIELD_FIXTURE.source}, ${SHIELD_FIXTURE.edition})`, () => {
+  const actor = EntityId('player:shield-owner')
+  const attacker = EntityId('mob:shield-attacker')
+  const dimension = Schema.decodeUnknownSync(DimensionIdSchema)('overworld')
+  const tick = (value: number) => Schema.decodeUnknownSync(SimulationTickSchema)(value)
+  const intent = { _tag: 'SetShieldBlocking', actor, blocking: true } as const
+  const pose = { feetPosition: atPosition(0, 64, 0), yawRadians: 0, pitchRadians: 0 }
+  const input = {
+    tick: tick(15),
+    dimension,
+    pose,
+    hasShield: true,
+    current: { actor, raisedAt: tick(10) },
+    incoming: {
+      attacker,
+      attackerPosition: Schema.decodeUnknownSync(WorldPositionSchema)({
+        dimension,
+        x: 0,
+        y: 64,
+        z: 2,
+      }),
+      kind: 'melee' as const,
+      amount: 3.1,
+    },
+  }
+
+  it('strictly prepares a front block at tick 5 and its 3 HP durability candidate', () => {
+    expect(Result.isSuccess(Schema.decodeUnknownResult(IntentPayloadSchema)(intent))).toBe(true)
+    expect(SHIELD_BLOCKING_DELAY_TICKS).toBe(5)
+    expect(SHIELD_HORIZONTAL_BLOCKING_HALF_ANGLE_DEGREES).toBe(90)
+    expect(SHIELD_DURABILITY_DAMAGE_THRESHOLD).toBe(3)
+    const result = prepareShieldBlocking(intent, input)
+
+    expect(Result.isSuccess(result)).toBe(true)
+    if (Result.isFailure(result)) return
+    const decoded = Schema.decodeUnknownResult(ShieldBlockingPreparationSchema, {
+      onExcessProperty: 'error',
+    })(result.success)
+    expect(Result.isSuccess(decoded)).toBe(true)
+    expect(result.success).toMatchObject({
+      actor,
+      blocking: true,
+      raisedAt: tick(10),
+      blocked: true,
+      blockedAmount: 3.1,
+      durabilityDamage: 4,
+      event: {
+        _tag: 'ShieldBlocked',
+        attacker,
+        defender: actor,
+        blockedAmount: 3.1,
+      },
+    })
+  })
+
+  it('requires the full delay and front-facing, and does not block piercing projectiles', () => {
+    const delayed = prepareShieldBlocking(intent, { ...input, tick: tick(14) })
+    const behind = prepareShieldBlocking(intent, {
+      ...input,
+      incoming: {
+        ...input.incoming,
+        attackerPosition: Schema.decodeUnknownSync(WorldPositionSchema)({
+          dimension,
+          x: 0,
+          y: 64,
+          z: -2,
+        }),
+      },
+    })
+    const piercing = prepareShieldBlocking(intent, {
+      ...input,
+      incoming: { ...input.incoming, kind: 'projectile', piercing: true },
+    })
+
+    expect(Result.isSuccess(delayed) && delayed.success.blocked).toBe(false)
+    expect(Result.isSuccess(behind) && behind.success.blocked).toBe(false)
+    expect(Result.isSuccess(piercing) && piercing.success.blocked).toBe(false)
+  })
+
+  it('includes the 90-degree side boundary and blocks supported explosions', () => {
+    const side = prepareShieldBlocking(intent, {
+      ...input,
+      incoming: {
+        ...input.incoming,
+        attackerPosition: Schema.decodeUnknownSync(WorldPositionSchema)({
+          dimension,
+          x: 2,
+          y: 64,
+          z: 0,
+        }),
+        amount: 3,
+      },
+    })
+    const explosion = prepareShieldBlocking(intent, {
+      ...input,
+      incoming: { ...input.incoming, kind: 'explosion' },
+    })
+    const belowDurabilityThreshold = prepareShieldBlocking(intent, {
+      ...input,
+      incoming: { ...input.incoming, amount: SHIELD_DURABILITY_DAMAGE_THRESHOLD - 0.1 },
+    })
+
+    expect(Result.isSuccess(side) && side.success).toMatchObject({ blocked: true, durabilityDamage: 3 })
+    expect(Result.isSuccess(explosion) && explosion.success.blocked).toBe(true)
+    expect(Result.isSuccess(belowDurabilityThreshold) && belowDurabilityThreshold.success).toMatchObject({
+      blocked: true,
+      durabilityDamage: 0,
+    })
+  })
+
+  it('returns typed failure for invalid damage and leaves the caller state unchanged', () => {
+    const malformed = { ...input, incoming: { ...input.incoming, amount: Number.NaN } }
+    const snapshot = JSON.stringify(malformed)
+
+    expect(Result.isFailure(prepareShieldBlocking(intent, malformed))).toBe(true)
+    expect(JSON.stringify(malformed)).toBe(snapshot)
+  })
+
+  it('starts the delay on the first blocking intent and clears state when lowered', () => {
+    const noCurrentAttack = {
+      tick: tick(20),
+      dimension,
+      pose,
+      hasShield: true,
+      current: null,
+    }
+    const raised = prepareShieldBlocking(intent, noCurrentAttack)
+    const lowered = prepareShieldBlocking({ ...intent, blocking: false }, noCurrentAttack)
+
+    expect(Result.isSuccess(raised) && raised.success).toMatchObject({
+      blocking: true,
+      raisedAt: tick(20),
+      blocked: false,
+      event: null,
+    })
+    expect(Result.isSuccess(lowered) && lowered.success).toMatchObject({
+      blocking: false,
+      raisedAt: null,
+      blocked: false,
+      event: null,
+    })
+  })
+
+  it('rejects malformed intent/state, actor changes, earlier ticks, and a missing shield', () => {
+    const malformedIntent = prepareShieldBlocking({ _tag: 'MeleeAttack', actor } as never, input)
+    const malformedState = prepareShieldBlocking(intent, {
+      ...input,
+      current: { actor, raisedAt: -1 as ReturnType<typeof tick> },
+    })
+    const actorChanged = prepareShieldBlocking(intent, {
+      ...input,
+      current: { actor: EntityId('another-player'), raisedAt: tick(10) },
+    })
+    const earlierTick = prepareShieldBlocking(intent, { ...input, tick: tick(9) })
+    const noShield = prepareShieldBlocking(intent, { ...input, current: null, hasShield: false })
+
+    expect(Result.isFailure(malformedIntent) && malformedIntent.failure).toBe('invalid-intent')
+    expect(Result.isFailure(malformedState) && malformedState.failure).toBe('invalid-authoritative-state')
+    expect(Result.isFailure(actorChanged) && actorChanged.failure).toBe('invalid-authoritative-state')
+    expect(Result.isFailure(earlierTick) && earlierTick.failure).toBe('invalid-tick-order')
+    expect(Result.isFailure(noShield) && noShield.failure).toBe('shield-not-equipped')
+  })
+
+  it('rejects self and cross-dimension attacks, and refuses overflowing geometry', () => {
+    const selfAttack = prepareShieldBlocking(intent, {
+      ...input,
+      incoming: { ...input.incoming, attacker: actor },
+    })
+    const crossDimension = prepareShieldBlocking(intent, {
+      ...input,
+      incoming: {
+        ...input.incoming,
+        attackerPosition: Schema.decodeUnknownSync(WorldPositionSchema)({
+          dimension: Schema.decodeUnknownSync(DimensionIdSchema)('nether'),
+          x: 0,
+          y: 64,
+          z: 2,
+        }),
+      },
+    })
+    const overflow = prepareShieldBlocking(intent, {
+      ...input,
+      pose: {
+        ...pose,
+        feetPosition: { x: -Number.MAX_VALUE, y: 64, z: 0 } as typeof pose.feetPosition,
+      },
+      incoming: {
+        ...input.incoming,
+        attackerPosition: Schema.decodeUnknownSync(WorldPositionSchema)({
+          dimension,
+          x: Number.MAX_VALUE,
+          y: 64,
+          z: 2,
+        }),
+      },
+    })
+
+    expect(Result.isFailure(selfAttack) && selfAttack.failure).toBe('invalid-attack')
+    expect(Result.isFailure(crossDimension) && crossDimension.failure).toBe('invalid-attack')
+    expect(Result.isFailure(overflow) && overflow.failure).toBe('invalid-attack')
+  })
+
+  it('does not treat a coincident attacker as a front-facing block', () => {
+    const coincident = prepareShieldBlocking(intent, {
+      ...input,
+      incoming: {
+        ...input.incoming,
+        attackerPosition: Schema.decodeUnknownSync(WorldPositionSchema)({
+          dimension,
+          x: 0,
+          y: 64,
+          z: 0,
+        }),
+      },
+    })
+
+    expect(Result.isSuccess(coincident) && coincident.success).toMatchObject({
+      blocked: false,
+      blockedAmount: 0,
+      event: null,
+    })
+  })
+
+  it('returns a typed failure or a strict finite result with nonnegative damage fields', () => {
+    FastCheck.assert(
+      FastCheck.property(
+        FastCheck.double({ min: -1e12, max: 1e12, noNaN: false, noDefaultInfinity: false }),
+        (amount) => {
+          const candidate = { ...input, incoming: { ...input.incoming, amount } }
+          const snapshot = JSON.stringify(candidate)
+          const result = prepareShieldBlocking(intent, candidate)
+          if (JSON.stringify(candidate) !== snapshot) return false
+          if (Result.isFailure(result)) return true
+          const decoded = Schema.decodeUnknownResult(ShieldBlockingPreparationSchema, {
+            onExcessProperty: 'error',
+          })(result.success)
+          return Result.isSuccess(decoded) &&
+            Number.isFinite(decoded.success.blockedAmount) &&
+            Number.isFinite(decoded.success.durabilityDamage) &&
+            decoded.success.blockedAmount >= 0 &&
+            decoded.success.durabilityDamage >= 0
+        },
+      ),
+      { numRuns: 250 },
+    )
   })
 })

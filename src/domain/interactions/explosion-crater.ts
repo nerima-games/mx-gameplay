@@ -68,8 +68,10 @@
  * question for kernel's `BlockDrop` and a roll, and it is the same shape as
  * `../mob/mob-drop`; nothing consumes it yet, so it is not invented here.
  */
-import { Effect } from 'effect'
+import { Effect, Result } from 'effect'
 import {
+  BlockAxis,
+  BlockBlastResistance,
   blockPosition,
   blockPositionKeyOf,
   resistsExplosion,
@@ -127,7 +129,12 @@ export const craterCells = (
     for (let dx = -radius; dx <= radius; dx += 1) {
       for (let dz = -radius; dz <= radius; dz += 1) {
         if (dx * dx + dy * dy + dz * dz <= limit) {
-          cells.push(blockPosition(centre.x + dx, centre.y + dy, centre.z + dz))
+          const x = Result.getOrUndefined(BlockAxis.result(centre.x + dx))
+          const y = Result.getOrUndefined(BlockAxis.result(centre.y + dy))
+          const z = Result.getOrUndefined(BlockAxis.result(centre.z + dz))
+          if (x !== undefined && y !== undefined && z !== undefined) {
+            cells.push(blockPosition(x, y, z))
+          }
         }
       }
     }
@@ -157,6 +164,10 @@ export const carveExplosionCrater = (
 ): Effect.Effect<ReadonlyArray<BlockPositionKey>> =>
   Effect.gen(function* () {
     const disturbed: Array<BlockPositionKey> = []
+    const blastPower = Result.getOrUndefined(BlockBlastResistance.result(power))
+    if (blastPower === undefined) {
+      return disturbed
+    }
 
     for (const cell of craterCells(centre, power)) {
       const reading = yield* store.getBlock(cell)
@@ -165,40 +176,16 @@ export const carveExplosionCrater = (
       // always the finite positive value `resistsExplosion`'s contract
       // requires — kernel's own doc comment on the function names this exact
       // mirror predicate as the case it reproduces exactly.
-      if (reading._tag !== 'Block' || resistsExplosion(reading.block, power)) {
+      const resistance = reading._tag === 'Block'
+        ? Result.getOrUndefined(resistsExplosion(reading.block, blastPower))
+        : undefined
+      if (reading._tag !== 'Block' || resistance !== false) {
         continue
       }
 
       const outcome = yield* store.setBlock(cell, AIR_BLOCK_ID)
 
-      switch (outcome._tag) {
-        case 'Written': {
-          disturbed.push(blockPositionKeyOf(blockPosition(cell.x, cell.y, cell.z)))
-          break
-        }
-
-        // The cell was already air: the write did not dirty the chunk, so it
-        // must not enter the falling-block queue either.
-        case 'Unchanged':
-        // Not this session's to touch. Not an error — the blast reached the
-        // edge of the resident area, or the bottom of the world — and `run`
-        // has no error channel to put one in anyway.
-        // falls through
-        case 'ChunkNotLoaded':
-        case 'OutOfWorld': {
-          break
-        }
-        /* v8 ignore start -- BlockWriteOutcome's `_tag` union is exhaustively
-         * handled above; this arm only exists so a fifth outcome added later
-         * fails typecheck (`never`) instead of falling through silently. It
-         * cannot be reached by any value the union currently admits. */
-        default: {
-          const exhaustive: never = outcome
-          void exhaustive
-          break
-        }
-        /* v8 ignore stop */
-      }
+      if (outcome._tag === 'Written') disturbed.push(blockPositionKeyOf(cell))
     }
 
     return disturbed

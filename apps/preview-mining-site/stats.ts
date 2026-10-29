@@ -23,6 +23,7 @@
 import { Brand, Effect, Ref } from 'effect'
 import {
   AIR_BLOCK_ID,
+  BlockAxis,
   BlockId,
   blockPosition,
   blockPositionKeyOf,
@@ -83,7 +84,7 @@ import {
 } from './site'
 import { INVENTORY_SLOT_COUNT } from './inventory'
 import { FrameServicesLayer } from './frame-services'
-import { GRAVEL, SAND, glyphOf, placeableItemOf, type WorldSpec } from './world'
+import { AIR, GRAVEL, LAVA, SAND, WATER, glyphOf, placeableItemOf, type WorldSpec } from './world'
 import { blockLoot } from '../../src/domain/interactions/block-loot'
 import { DEFAULT_ROLL_SEED, drawRolls } from '../../src/domain/frame-rolls'
 import {
@@ -344,7 +345,7 @@ const conservation = Effect.gen(function* () {
     for (let x = 0; x < BOUNDS.width && minedTargets < 3; x += 1) {
       for (let y = BOUNDS.height - 1; y >= 0 && minedTargets < 3; y -= 1) {
         const position = positionAt(site, x, y)
-        if (capabilityOfBlockId(site.world.peekBlock(position) ?? 0, 'fallsWhenUnsupported')) {
+        if (capabilityOfBlockId(site.world.peekBlock(position) ?? AIR, 'fallsWhenUnsupported')) {
           yield* requestBreak(site, position)
           minedTargets += 1
         }
@@ -1345,7 +1346,7 @@ const CHECKS = [
 ] as const
 
 export const buildStatsReport: Effect.Effect<ReadonlyArray<string>> = Effect.gen(function* () {
-  const results = yield* Effect.forEach(CHECKS, (check) => check)
+  const results = yield* Effect.orDie(Effect.forEach(CHECKS, (check) => check))
   const lines: Array<string> = [
     'preview-mining-site --stats',
     '',
@@ -1371,7 +1372,7 @@ export const buildStatsReport: Effect.Effect<ReadonlyArray<string>> = Effect.gen
   // A last sanity line that is cheap and would be embarrassing to get wrong: the
   // capability table the whole cascade keys off.
   const falls = [SAND, GRAVEL].every((id) => capabilityOfBlockId(id, 'fallsWhenUnsupported'))
-  const replaceable = [0, 6, 11].every((id) => capabilityOfBlockId(id, 'replaceable'))
+  const replaceable = [AIR, WATER, LAVA].every((id) => capabilityOfBlockId(id, 'replaceable'))
   lines.push(
     `capability table: fallsWhenUnsupported(sand,gravel)=${String(falls)}  ` +
       `isReplaceable(air,water,lava)=${String(replaceable)}  ` +
@@ -1383,7 +1384,7 @@ export const buildStatsReport: Effect.Effect<ReadonlyArray<string>> = Effect.gen
       // edit above it is a citation that will rot again.
       `(lava was missing from kernel's replaceable set once, before mc-kernel 0.5.1)`,
   )
-  lines.push(`positionKeyOf({x:-1,y:2,z:-3}) = ${blockPositionKeyOf(blockPosition(-1, 2, -3))}`)
+  lines.push(`positionKeyOf({x:-1,y:2,z:-3}) = ${blockPositionKeyOf(blockPosition(BlockAxis(-1), BlockAxis(2), BlockAxis(-3)))}`)
   lines.push(`glyph check: ${glyphOf(SAND).name}/${glyphOf(GRAVEL).name}`)
 
   return lines

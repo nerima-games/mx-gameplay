@@ -60,6 +60,7 @@
  * budget makes the sequence depend only on HOW MANY blocks were broken, which is
  * `../frame-rolls`' rule that it depend on what happened.
  */
+import { Result } from 'effect'
 import {
   dropOfBlockId,
   blockTypeOfId,
@@ -126,7 +127,7 @@ export const NO_TOOL: BlockLootContext = {}
  * rows would silently change what an over-levelled tool does.
  */
 /** Vanilla gravel-to-flint replacement chances for Fortune levels 0 through 3. */
-const GRAVEL_FLINT_CHANCES: ReadonlyArray<number> = [0.1, 0.14285715, 0.25, 1]
+const GRAVEL_FLINT_CHANCES = [0.1, 0.14285715, 0.25, 1] as const
 export const FORTUNE_MULTIPLIERS: ReadonlyMap<number, number> = new Map([
   [1, 1.33],
   [2, 1.75],
@@ -343,8 +344,8 @@ export const blockLoot = (
   context: BlockLootContext = NO_TOOL,
   rolls: ReadonlyArray<number> = NO_LOOT,
 ): ReadonlyArray<MinedItem> => {
-  const drop = dropOfBlockId(block, context)
-  const type = blockTypeOfId(block)
+  const drop = Result.getOrUndefined(dropOfBlockId(block, context))
+  const type = Result.getOrUndefined(blockTypeOfId(block))
   const roll = rolls[0] ?? 0
 
   const items: Array<MinedItem> = []
@@ -353,13 +354,9 @@ export const blockLoot = (
     const fortuneLevel = Number.isFinite(context.fortuneLevel ?? 0)
       ? Math.max(0, Math.floor(context.fortuneLevel ?? 0))
       : 0
-    /* v8 ignore start -- `?? 0` guards Math.min's indexed read against
-     * `noUncheckedIndexedAccess`'s type only: `fortuneLevel` is always a
-     * non-negative integer (the ternary above forces 0 for a non-finite input),
-     * so `Math.min(fortuneLevel, 3)` is always one of 0, 1, 2 or 3 — exactly the
-     * four indices `GRAVEL_FLINT_CHANCES` has. No input reaches the fallback. */
-    const gravelFlintChance = GRAVEL_FLINT_CHANCES[Math.min(fortuneLevel, 3)] ?? 0
-    /* v8 ignore stop */
+    const chanceIndex =
+      fortuneLevel < 1 ? 0 : fortuneLevel < 2 ? 1 : fortuneLevel < 3 ? 2 : 3
+    const gravelFlintChance = GRAVEL_FLINT_CHANCES[chanceIndex]
     const mined =
       type === 'gravel' &&
       context.silkTouch !== true &&

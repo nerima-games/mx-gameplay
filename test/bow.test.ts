@@ -14,8 +14,10 @@
  * here. `domain/interactions/draw-bow.ts`'s header carries the measurement.
  */
 import { describe, expect, it } from '@effect/vitest'
-import { makeTimeService, type Slot } from '@nerima-games/mc-sim'
-import { Effect } from 'effect'
+import { position as atPosition } from './support/coordinate-fixtures'
+import { makeTimeService, PlayerStorageSnapshotSchema, type PlayerPose, type Slot } from '@nerima-games/mc-sim'
+import { Effect, Result, Schema } from 'effect'
+import * as FastCheck from 'fast-check'
 import {
   bowCharge,
   bowDamage,
@@ -27,6 +29,8 @@ import {
   BOW_MIN_CHARGE_SECS,
   BOW_MIN_DAMAGE,
   PLAIN_BOW,
+  BowChargePreparationSchema,
+  prepareBowAction,
 } from '../src/domain/interactions/draw-bow'
 import {
   arrowHitProjection,
@@ -37,33 +41,62 @@ import {
   BOW_LINE_OF_SIGHT_STEP,
   BOW_TARGET_CENTER_Y_OFFSET,
   BOW_TARGET_RADIUS,
+  BowShotPreparationSchema,
+  prepareBowShot,
   type IsArrowBlockedAt,
   type ShotCandidate,
 } from '../src/domain/interactions/bow-shot'
-import { knockbackDirection, KNOCKBACK_EPSILON } from '../src/domain/interactions/knockback'
+import {
+  KnockbackPreparationSchema,
+  knockbackDirection,
+  KNOCKBACK_EPSILON,
+  prepareKnockbackDirection,
+} from '../src/domain/interactions/knockback'
 import { resolveBowHits, type MobBehaviour } from '../src/domain/entities/mob-frame'
-import { EntityId, EntityKind, type EntityRoster } from '@nerima-games/mc-sim'
+import { EntityId, EntityKind, EntitySerial, type EntityRoster } from '@nerima-games/mc-sim'
+import {
+  GAMEPLAY_ENTITIES_OWNER_ID,
+  GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+  GAMEPLAY_VITALS_OWNER_ID,
+  GameplayEntityRosterSchema,
+  type GameplayOwnerInitialState,
+} from '../src/stages/gameplay-owner-registrations'
+import type { GameplayStageCommitServices } from '../src/stages/registration-core'
 import {
   drainBowKnockbacks,
   drainBowShotResults,
   gameplayStages,
-  makeGameplayFrameState,
+  makeGameplayFrameStateForOwner,
   requestBowShot,
 } from '../src/stages/registration'
-import { StackCount, type BlockId } from '@nerima-games/mc-kernel'
+import { DimensionIdSchema, EntityHealthPoints, PositionAxis, SimulationTickSchema, itemStack, StackCount, type BlockId, type Position } from '@nerima-games/mc-kernel'
 import { makeChunkStoreDouble } from './support/chunk-store-double'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
 import { makePlayerServiceDouble } from './support/player-service-double'
 import { makeInventoryDouble } from './support/inventory-service-double'
+import { makeGameplayCommitServices } from './support/transactional-stage-doubles'
 import { runFrame } from './support/frame-runner'
 import { Ref } from 'effect'
 
-const EYE = { x: 0, y: 64, z: 0 }
+// Deliberately malformed positions exercise runtime rejection paths.
+const unsafePosition = (x: number, y: number, z: number): Position => ({ x, y, z }) as unknown as Position
+
+const EYE = atPosition(0, 64, 0 )
+const BOW_PARITY_FIXTURE = {
+  source: 'https://minecraft.wiki/w/Bow',
+  powerSource: 'https://minecraft.wiki/w/Power',
+  paritySource: 'https://github.com/takeokunn/ts-minecraft/blob/main/docs/reference/vanilla-parity.md',
+  edition: 'Java Edition 26.3',
+} as const
+const KNOCKBACK_PARITY_FIXTURE = {
+  source: 'https://raw.githubusercontent.com/takeokunn/ts-minecraft/main/docs/reference/vanilla-parity.md',
+  edition: 'Java Edition 26.3',
+} as const
 
 /** A candidate standing at `(x, y, z)`, feet origin. */
 const standing = (id: string, x: number, y: number, z: number): ShotCandidate => ({
   id: EntityId(id),
-  feetPosition: { x, y, z },
+  feetPosition: atPosition(x, y, z),
 })
 
 /** A world in which the listed cells stop an arrow. */
@@ -102,12 +135,20 @@ describe('bowCharge — <reference-impl>/packages/entity/test/bow-resolution.tes
   })
 })
 
-describe('bowDamage — the reference oracle', () => {
-  it('returns BOW_MIN_DAMAGE at charge = 0 (:40-42)', () => {
+describe(`bowDamage — Java Edition charge bands (${BOW_PARITY_FIXTURE.source}; ${BOW_PARITY_FIXTURE.powerSource}; ${BOW_PARITY_FIXTURE.paritySource}, ${BOW_PARITY_FIXTURE.edition})`, () => {
+  it('returns BOW_MIN_DAMAGE below medium charge', () => {
     expect(bowDamage(0)).toBe(BOW_MIN_DAMAGE)
+    expect(bowDamage(0.1)).toBe(BOW_MIN_DAMAGE)
   })
 
-  it('returns BOW_MAX_DAMAGE at charge = 1 (:44-46)', () => {
+  it('uses the vanilla medium and full-charge damage bands', () => {
+    expect(bowDamage(0.2)).toBe(5)
+    expect(bowDamage(0.5)).toBe(5)
+    expect(bowDamage(0.8)).toBe(5)
+    expect(bowDamage(0.9)).toBe(6)
+  })
+
+  it('uses the parity fixed damage at critical charge', () => {
     expect(bowDamage(1)).toBe(BOW_MAX_DAMAGE)
   })
 
@@ -119,10 +160,11 @@ describe('bowDamage — the reference oracle', () => {
     expect(bowDamage(2)).toBe(BOW_MAX_DAMAGE)
   })
 
-  it('uses quadratic scaling: half charge is well below half max damage (:56-60)', () => {
-    // c=0.5 -> c^2=0.25 -> 1 + 0.25*8 = 3, not 5.
-    expect(bowDamage(0.5)).toBe(3)
-    expect(bowDamage(0.5)).toBeLessThan((BOW_MIN_DAMAGE + BOW_MAX_DAMAGE) / 2)
+  it('applies Power after selecting the medium-charge damage band', () => {
+    expect(bowDamage(0.5, { powerLevel: 1 })).toBe(8)
+    expect(bowDamage(0.5, { powerLevel: 4 })).toBe(12)
+    expect(bowDamage(0.5, { powerLevel: 5 })).toBe(13)
+    expect(bowDamage(0.1, { powerLevel: 4 })).toBe(3)
   })
 })
 
@@ -137,6 +179,256 @@ describe('canFireBow — the reference oracle', () => {
 
   it('fires for any longer hold', () => {
     expect(canFireBow(BOW_FULL_CHARGE_SECS * 10)).toBe(true)
+  })
+})
+
+describe(`C2 bow charge uses simulation ticks (${BOW_PARITY_FIXTURE.source}; ${BOW_PARITY_FIXTURE.powerSource}; ${BOW_PARITY_FIXTURE.paritySource}, ${BOW_PARITY_FIXTURE.edition})`, () => {
+  it('counts one second as 20 server ticks and prepares the fixed full-charge damage', () => {
+    const actor = EntityId('bow-owner')
+    const startedAt = Schema.decodeUnknownSync(SimulationTickSchema)(100)
+    const tick = Schema.decodeUnknownSync(SimulationTickSchema)(120)
+    const result = prepareBowAction(
+      { _tag: 'BowAction', actor, action: 'release' },
+      tick,
+      { actor, startedAt },
+    )
+
+    expect(Result.isSuccess(result) && result.success).toMatchObject({
+      actor,
+      nextState: null,
+      charge: 1,
+      damage: 9,
+      fired: true,
+    })
+  })
+
+  it('fires a no-charge shot after two server ticks and rejects one tick', () => {
+    const actor = EntityId('bow-owner')
+    const startedAt = Schema.decodeUnknownSync(SimulationTickSchema)(100)
+    const state = { actor, startedAt }
+    const oneTick = prepareBowAction(
+      { _tag: 'BowAction', actor, action: 'release' },
+      Schema.decodeUnknownSync(SimulationTickSchema)(101),
+      state,
+    )
+    const twoTicks = prepareBowAction(
+      { _tag: 'BowAction', actor, action: 'release' },
+      Schema.decodeUnknownSync(SimulationTickSchema)(102),
+      state,
+    )
+
+    expect(Result.isSuccess(oneTick) && oneTick.success.fired).toBe(false)
+    expect(Result.isSuccess(twoTicks) && twoTicks.success).toMatchObject({ charge: 0.1, damage: 1, fired: true })
+  })
+
+  it('applies the held bow Power level to a full-charge release', () => {
+    const actor = EntityId('bow-owner')
+    const startedAt = Schema.decodeUnknownSync(SimulationTickSchema)(100)
+    const tick = Schema.decodeUnknownSync(SimulationTickSchema)(120)
+    const result = prepareBowAction(
+      { _tag: 'BowAction', actor, action: 'release' },
+      tick,
+      { actor, startedAt },
+      { powerLevel: 1 },
+    )
+
+    expect(Result.isSuccess(result) && result.success.damage).toBe(14)
+  })
+
+  it('rejects an invalid authoritative Power level', () => {
+    const actor = EntityId('bow-owner')
+    const startedAt = Schema.decodeUnknownSync(SimulationTickSchema)(100)
+    const tick = Schema.decodeUnknownSync(SimulationTickSchema)(120)
+    const result = prepareBowAction(
+      { _tag: 'BowAction', actor, action: 'release' },
+      tick,
+      { actor, startedAt },
+      { powerLevel: Number.NaN },
+    )
+
+    expect(Result.isFailure(result) && result.failure).toBe('invalid-bow-context')
+  })
+
+  it('rejects non-bow intents and releases without a matching draw state', () => {
+    const actor = EntityId('bow-owner')
+    const otherActor = EntityId('another-player')
+    const tick = Schema.decodeUnknownSync(SimulationTickSchema)(20)
+
+    const wrongIntent = prepareBowAction({ _tag: 'MeleeAttack', actor } as never, tick, null)
+    const noDraw = prepareBowAction({ _tag: 'BowAction', actor, action: 'release' }, tick, null)
+    const anotherPlayersDraw = prepareBowAction(
+      { _tag: 'BowAction', actor, action: 'release' },
+      tick,
+      { actor: otherActor, startedAt: Schema.decodeUnknownSync(SimulationTickSchema)(0) },
+    )
+
+    expect(Result.isFailure(wrongIntent) && wrongIntent.failure).toBe('invalid-bow-action')
+    expect(Result.isFailure(noDraw) && noDraw.failure).toBe('not-drawing')
+    expect(Result.isFailure(anotherPlayersDraw) && anotherPlayersDraw.failure).toBe('not-drawing')
+  })
+
+  it('rejects a valid tick that predates the authoritative draw tick', () => {
+    const actor = EntityId('bow-owner')
+    const result = prepareBowAction(
+      { _tag: 'BowAction', actor, action: 'release' },
+      Schema.decodeUnknownSync(SimulationTickSchema)(19),
+      { actor, startedAt: Schema.decodeUnknownSync(SimulationTickSchema)(20) },
+    )
+
+    expect(Result.isFailure(result) && result.failure).toBe('invalid-tick')
+  })
+
+  it('strictly decodes draw and cancel owner candidates', () => {
+    const actor = EntityId('bow-owner')
+    const tick = Schema.decodeUnknownSync(SimulationTickSchema)(50)
+    const drawn = Result.getOrThrow(prepareBowAction({ _tag: 'BowAction', actor, action: 'draw' }, tick, null))
+    const cancelled = Result.getOrThrow(prepareBowAction({ _tag: 'BowAction', actor, action: 'cancel' }, tick, drawn.nextState))
+    const decoded = Schema.decodeUnknownResult(BowChargePreparationSchema, {
+      onExcessProperty: 'error',
+    })(drawn)
+
+    expect(Result.isSuccess(decoded)).toBe(true)
+    expect(drawn.nextState).toStrictEqual({ actor, startedAt: tick })
+    expect(cancelled.nextState).toBeNull()
+  })
+
+  it('returns a strictly decoded finite result for valid ticks', () => {
+    const actor = EntityId('bow-owner')
+    const action = { _tag: 'BowAction', actor, action: 'release' } as const
+    const state = {
+      actor,
+      startedAt: Schema.decodeUnknownSync(SimulationTickSchema)(0),
+    }
+    FastCheck.assert(
+      FastCheck.property(
+        FastCheck.integer({ min: 0, max: 1e12 }),
+        (rawTick) => {
+          const tick = Schema.decodeUnknownSync(SimulationTickSchema)(rawTick)
+          const result = prepareBowAction(action, tick, state)
+          if (Result.isFailure(result)) return true
+          const decoded = Schema.decodeUnknownResult(BowChargePreparationSchema, {
+            onExcessProperty: 'error',
+          })(result.success)
+          return Result.isSuccess(decoded) &&
+            Number.isFinite(decoded.success.charge) &&
+            Number.isFinite(decoded.success.damage) &&
+            decoded.success.charge >= 0 && decoded.success.damage >= 0
+        },
+      ),
+      { numRuns: 250 },
+    )
+  })
+
+  it('prepares a kernel damage event from C2 aim and authoritative pose/world', () => {
+    const actor = EntityId('bow-owner')
+    const action = {
+      _tag: 'BowAction',
+      actor,
+      action: 'release',
+      aimDirection: { x: 0, y: 0, z: 1 },
+    } as const
+    const charge = Result.getOrThrow(prepareBowAction(
+      { _tag: 'BowAction', actor, action: 'release' },
+      Schema.decodeUnknownSync(SimulationTickSchema)(20),
+      { actor, startedAt: Schema.decodeUnknownSync(SimulationTickSchema)(0) },
+    ))
+    const result = prepareBowShot(
+      action,
+      charge,
+      { feetPosition: atPosition(0, 64, 0), yawRadians: 0, pitchRadians: 0 },
+      Schema.decodeUnknownSync(DimensionIdSchema)('overworld'),
+      Schema.decodeUnknownSync(SimulationTickSchema)(20),
+      [standing('target', 0, 64, 3)],
+      NOTHING_BLOCKS,
+    )
+
+    expect(Result.isSuccess(result)).toBe(true)
+    if (Result.isFailure(result)) return
+    const decoded = Schema.decodeUnknownResult(BowShotPreparationSchema, {
+      onExcessProperty: 'error',
+    })(result.success)
+    expect(Result.isSuccess(decoded)).toBe(true)
+    expect(result.success.event).toMatchObject({
+      _tag: 'EntityDamaged',
+      entity: EntityId('target'),
+      amount: 9,
+      cause: 'projectile',
+    })
+  })
+
+  it('fails without changing inputs when authoritative terrain blocks the shot', () => {
+    const actor = EntityId('bow-owner')
+    const action = { _tag: 'BowAction', actor, action: 'release' } as const
+    const charge = Result.getOrThrow(prepareBowAction(
+      action,
+      Schema.decodeUnknownSync(SimulationTickSchema)(20),
+      { actor, startedAt: Schema.decodeUnknownSync(SimulationTickSchema)(0) },
+    ))
+    const pose = { feetPosition: atPosition(0, 64, 0), yawRadians: 0, pitchRadians: 0 }
+    const candidates = [standing('target', 0, 64, 3)]
+    const before = JSON.stringify({ charge, pose, candidates })
+    const result = prepareBowShot(
+      action,
+      charge,
+      pose,
+      Schema.decodeUnknownSync(DimensionIdSchema)('overworld'),
+      Schema.decodeUnknownSync(SimulationTickSchema)(20),
+      candidates,
+      (_x, _y, z) => z === 1,
+    )
+
+    expect(Result.isFailure(result)).toBe(true)
+    expect(JSON.stringify({ charge, pose, candidates })).toBe(before)
+  })
+
+  it('rejects invalid intent, charge, authoritative state, and an empty target roster', () => {
+    const actor = EntityId('bow-owner')
+    const action = { _tag: 'BowAction', actor, action: 'release' } as const
+    const tick = Schema.decodeUnknownSync(SimulationTickSchema)(20)
+    const charge = Result.getOrThrow(prepareBowAction(
+      action,
+      tick,
+      { actor, startedAt: Schema.decodeUnknownSync(SimulationTickSchema)(0) },
+    ))
+    const pose = { feetPosition: atPosition(0, 64, 0), yawRadians: 0, pitchRadians: 0 }
+    const dimension = Schema.decodeUnknownSync(DimensionIdSchema)('overworld')
+    const prepare = (
+      intent: typeof action,
+      candidateCharge: typeof charge,
+      candidatePose = pose,
+      candidateDimension = dimension,
+      candidateTick = tick,
+      candidates: ReadonlyArray<ShotCandidate> = [standing('target', 0, 64, 3)],
+    ) => prepareBowShot(
+      intent,
+      candidateCharge,
+      candidatePose,
+      candidateDimension,
+      candidateTick,
+      candidates,
+      NOTHING_BLOCKS,
+    )
+
+    const invalidIntent = prepare({ _tag: 'MeleeAttack', actor } as never, charge)
+    const mismatchedCharge = prepare(action, {
+      ...charge,
+      actor: EntityId('another-player'),
+    } as typeof charge)
+    const unfiredCharge = Result.getOrThrow(prepareBowAction(
+      action,
+      tick,
+      { actor, startedAt: Schema.decodeUnknownSync(SimulationTickSchema)(19) },
+    ))
+    const malformedCharge = { ...charge, stale: true }
+    const invalidChargeShape = prepare(action, malformedCharge)
+    const noTarget = prepare(action, charge, pose, dimension, tick, [])
+    const notFired = prepare(action, unfiredCharge)
+
+    expect(Result.isFailure(invalidIntent) && invalidIntent.failure).toBe('invalid-intent')
+    expect(Result.isFailure(mismatchedCharge) && mismatchedCharge.failure).toBe('invalid-charge')
+    expect(Result.isFailure(notFired) && notFired.failure).toBe('invalid-charge')
+    expect(Result.isFailure(invalidChargeShape) && invalidChargeShape.failure).toBe('invalid-charge')
+    expect(Result.isFailure(noTarget) && noTarget.failure).toBe('no-target')
   })
 })
 
@@ -308,7 +600,7 @@ describe('shotTarget — the ownership argument, executable', () => {
   it('scaling the aim direction by any positive factor cannot change the answer', () => {
     // A genuinely three-component aim, so that every axis is scaled and none of
     // the multiplications is a no-op.
-    const aim = { x: 0.2, y: 0.1, z: 1 }
+    const aim = atPosition(0.2, 0.1, 1 )
     const length = Math.hypot(aim.x, aim.y, aim.z)
     const along = (id: string, t: number): ShotCandidate =>
       standing(
@@ -351,14 +643,15 @@ describe('shotTarget — the ownership argument, executable', () => {
     const y = 64 - BOW_TARGET_CENTER_Y_OFFSET
     const candidates = [standing('a', 0, y, 10)]
     expect(shotTarget(candidates, EYE, Number.NaN, 0, 1)).toBeUndefined()
-    expect(shotTarget(candidates, { x: Number.NaN, y: 64, z: 0 }, 0, 0, 1)).toBeUndefined()
+    expect(shotTarget(candidates, unsafePosition(Number.NaN, 64, 0), 0, 0, 1)).toBeUndefined()
     expect(shotTarget(candidates, EYE, 0, 0, 1, Number.NaN)).toBeUndefined()
   })
 
   it('a candidate with a non-finite position is never nearest', () => {
     const y = 64 - BOW_TARGET_CENTER_Y_OFFSET
+    const broken = standing('broken', 0, y, 1)
     const hit = shotTarget(
-      [standing('broken', Number.NaN, y, 1), standing('real', 0, y, 10)],
+      [{ ...broken, feetPosition: unsafePosition(Number.NaN, y, 1) }, standing('real', 0, y, 10)],
       EYE,
       0,
       0,
@@ -370,25 +663,25 @@ describe('shotTarget — the ownership argument, executable', () => {
 
 describe('arrowHitProjection', () => {
   it('returns the normalized nearest position for a target inside the arrow cylinder', () => {
-    expect(arrowHitProjection({ x: 0, y: 64, z: 0 }, { x: 0, y: 64, z: 10 }, { x: 0.5, y: 64, z: 4 })).toBeCloseTo(0.4)
+    expect(arrowHitProjection(atPosition(0, 64, 0 ), atPosition(0, 64, 10 ), atPosition(0.5, 64, 4 ))).toBeCloseTo(0.4)
   })
 
   it('clamps targets beyond either segment end', () => {
-    expect(arrowHitProjection({ x: 0, y: 64, z: 0 }, { x: 0, y: 64, z: 10 }, { x: 0, y: 64, z: -0.5 })).toBe(0)
-    expect(arrowHitProjection({ x: 0, y: 64, z: 0 }, { x: 0, y: 64, z: 10 }, { x: 0, y: 64, z: 10.5 })).toBe(1)
+    expect(arrowHitProjection(atPosition(0, 64, 0 ), atPosition(0, 64, 10 ), atPosition(0, 64, -0.5 ))).toBe(0)
+    expect(arrowHitProjection(atPosition(0, 64, 0 ), atPosition(0, 64, 10 ), atPosition(0, 64, 10.5 ))).toBe(1)
   })
 
   it('misses targets outside BOW_TARGET_RADIUS and non-finite positions', () => {
-    expect(arrowHitProjection({ x: 0, y: 64, z: 0 }, { x: 0, y: 64, z: 10 }, { x: BOW_TARGET_RADIUS + 0.01, y: 64, z: 4 })).toBeUndefined()
-    expect(arrowHitProjection({ x: 0, y: 64, z: 0 }, { x: Number.NaN, y: 64, z: 10 }, { x: 0, y: 64, z: 4 })).toBeUndefined()
+    expect(arrowHitProjection(atPosition(0, 64, 0 ), atPosition(0, 64, 10 ), atPosition(BOW_TARGET_RADIUS + 0.01, 64, 4 ))).toBeUndefined()
+    expect(arrowHitProjection(atPosition(0, 64, 0 ), unsafePosition(Number.NaN, 64, 10), atPosition(0, 64, 4 ))).toBeUndefined()
   })
 
   it('a zero-length segment projects to its own single point rather than dividing by zero', () => {
     // `from` and `to` coincide, so `lengthSquared` is 0 and the projection
     // formula's division is skipped rather than producing NaN.
-    const point = { x: 3, y: 64, z: 3 }
-    expect(arrowHitProjection(point, point, { x: 3, y: 64, z: 3.5 })).toBe(0)
-    expect(arrowHitProjection(point, point, { x: 3, y: 64, z: 3 + BOW_TARGET_RADIUS + 0.01 })).toBeUndefined()
+    const point = atPosition(3, 64, 3 )
+    expect(arrowHitProjection(point, point, atPosition(3, 64, 3.5 ))).toBe(0)
+    expect(arrowHitProjection(point, point, atPosition(3, 64, 3 + BOW_TARGET_RADIUS + 0.01 ))).toBeUndefined()
   })
 })
 
@@ -398,12 +691,12 @@ describe('arrowHitProjection', () => {
 
 describe('shotBlockedByTerrain', () => {
   it('an open line is not blocked', () => {
-    expect(shotBlockedByTerrain(NOTHING_BLOCKS, EYE, { x: 0, y: 64, z: 10 })).toBe(false)
+    expect(shotBlockedByTerrain(NOTHING_BLOCKS, EYE, atPosition(0, 64, 10 ))).toBe(false)
   })
 
   it('a wall between the two blocks the shot', () => {
     const wall = blockedAt([[0, 64, 5]])
-    expect(shotBlockedByTerrain(wall, EYE, { x: 0, y: 64, z: 10 })).toBe(true)
+    expect(shotBlockedByTerrain(wall, EYE, atPosition(0, 64, 10 ))).toBe(true)
   })
 
   it("THE SHOOTER'S OWN CELL DOES BLOCK, and the endpoint exclusion does not save it", () => {
@@ -414,12 +707,12 @@ describe('shotBlockedByTerrain', () => {
     // behaviour as well as this one's, and it is pinned rather than repaired;
     // see `shotBlockedByTerrain`'s doc comment on why.
     const ownCell = blockedAt([[0, 64, 0]])
-    expect(shotBlockedByTerrain(ownCell, EYE, { x: 0, y: 64, z: 10 })).toBe(true)
+    expect(shotBlockedByTerrain(ownCell, EYE, atPosition(0, 64, 10 ))).toBe(true)
   })
 
   it("THE TARGET'S CELL DOES NOT BLOCK, because the walk stops before t reaches 1 (:81-82)", () => {
     const targetCell = blockedAt([[0, 64, 10]])
-    expect(shotBlockedByTerrain(targetCell, EYE, { x: 0, y: 64, z: 10 })).toBe(false)
+    expect(shotBlockedByTerrain(targetCell, EYE, atPosition(0, 64, 10 ))).toBe(false)
   })
 
   it('a zero-length shot is not blocked (:77)', () => {
@@ -427,7 +720,7 @@ describe('shotBlockedByTerrain', () => {
   })
 
   it('non-finite endpoints are NOT blocked — the permissive direction, argued in the doc comment', () => {
-    expect(shotBlockedByTerrain(blockedAt([[0, 64, 5]]), EYE, { x: Number.NaN, y: 64, z: 10 })).toBe(
+    expect(shotBlockedByTerrain(blockedAt([[0, 64, 5]]), EYE, unsafePosition(Number.NaN, 64, 10))).toBe(
       false,
     )
   })
@@ -442,7 +735,7 @@ describe('shotBlockedByTerrain', () => {
     const corner = blockedAt([[1, 64, 1]])
     // A line from (0.95, 64, 0) to (0.95, 64, 10) clips x=1 nowhere; a line
     // grazing the corner of the cell below does the same at this resolution.
-    expect(shotBlockedByTerrain(corner, { x: 0.95, y: 64.5, z: 0 }, { x: 0.95, y: 64.5, z: 10 })).toBe(
+    expect(shotBlockedByTerrain(corner, atPosition(0.95, 64.5, 0 ), atPosition(0.95, 64.5, 10 ))).toBe(
       false,
     )
   })
@@ -455,7 +748,7 @@ describe('shotBlockedByTerrain', () => {
       probed.push(wx)
       return false
     }
-    shotBlockedByTerrain(recorder, { x: 1, y: 64.5, z: 0 }, { x: 1, y: 64.5, z: 3 })
+    shotBlockedByTerrain(recorder, atPosition(1, 64.5, 0 ), atPosition(1, 64.5, 3 ))
     expect(probed.every((x) => x === 1)).toBe(true)
   })
 })
@@ -511,6 +804,38 @@ describe('knockbackDirection', () => {
   })
 })
 
+describe(`checked knockback preparation (${KNOCKBACK_PARITY_FIXTURE.source}, ${KNOCKBACK_PARITY_FIXTURE.edition})`, () => {
+  it('rejects a finite offset whose magnitude overflows', () => {
+    const largestAxis = PositionAxis(Number.MAX_VALUE)
+    const infiniteMagnitude = prepareKnockbackDirection(largestAxis, largestAxis)
+
+    expect(Result.isFailure(infiniteMagnitude) && infiniteMagnitude.failure).toBe('invalid-offset')
+  })
+
+  it('returns a typed failure or a strict finite direction with nonnegative horizontal magnitude', () => {
+    FastCheck.assert(
+      FastCheck.property(
+        FastCheck.double({ min: -1e308, max: 1e308, noNaN: true, noDefaultInfinity: true }),
+        FastCheck.double({ min: -1e308, max: 1e308, noNaN: true, noDefaultInfinity: true }),
+        (dx, dz) => {
+          const result = prepareKnockbackDirection(PositionAxis(dx), PositionAxis(dz))
+          if (Result.isFailure(result)) return true
+          const decoded = Schema.decodeUnknownResult(KnockbackPreparationSchema, {
+            onExcessProperty: 'error',
+          })(result.success)
+          return Result.isSuccess(decoded) &&
+            Number.isFinite(decoded.success.horizontalMagnitude) &&
+            decoded.success.horizontalMagnitude >= 0 &&
+            (decoded.success.direction._tag === 'StraightUp' ||
+              (Number.isFinite(decoded.success.direction.x) && Number.isFinite(decoded.success.direction.z)))
+        },
+      ),
+      { numRuns: 250 },
+    )
+  })
+
+})
+
 // ---------------------------------------------------------------------------
 // The sweep
 // ---------------------------------------------------------------------------
@@ -521,11 +846,11 @@ const rosterOf = (
   entities: entities.map((entity) => ({
     id: EntityId(entity.id),
     kind: EntityKind(entity.kind),
-    feetPosition: { x: 0, y: 64, z: 0 },
-    healthPoints: entity.health,
+    feetPosition: atPosition(0, 64, 0 ),
+    healthPoints: EntityHealthPoints(entity.health),
     behaviour: undefined,
   })),
-  nextSerial: entities.length,
+  nextSerial: EntitySerial(entities.length),
 })
 
 describe('resolveBowHits', () => {
@@ -556,7 +881,7 @@ describe('resolveBowHits', () => {
       const casualties = yield* resolveBowHits(roster.api, [{ id: EntityId('doomed'), damage: 9 }])
 
       expect(casualties).toStrictEqual([
-        { id: 'doomed', kind: 'creeper', at: { x: 0, y: 64, z: 0 } },
+        { id: 'doomed', kind: 'creeper', at: atPosition(0, 64, 0 ) },
       ])
       expect((yield* roster.api.snapshot).entities).toStrictEqual([])
     }),
@@ -577,7 +902,7 @@ describe('resolveBowHits', () => {
       ])
 
       expect(casualties).toStrictEqual([
-        { id: 'target', kind: 'creeper', at: { x: 0, y: 64, z: 0 } },
+        { id: 'target', kind: 'creeper', at: atPosition(0, 64, 0 ) },
       ])
       expect((yield* roster.calls).sweeps).toBe(1)
     }),
@@ -635,12 +960,12 @@ describe('resolveBowHits', () => {
           {
             id: EntityId('ender'),
             kind: EntityKind('enderman'),
-            feetPosition: { x: 0, y: 64, z: 0 },
-            healthPoints: 40,
+            feetPosition: atPosition(0, 64, 0 ),
+            healthPoints: EntityHealthPoints(40),
             behaviour: { _tag: 'Steady' },
           },
         ],
-        nextSerial: 1,
+        nextSerial: EntitySerial(1),
       })
 
       yield* resolveBowHits(roster.api, [{ id: EntityId('ender'), damage: 9 }])
@@ -659,26 +984,51 @@ describe('resolveBowHits', () => {
 /** A frame with the shipped stages over the three doubles and a given roster. */
 const inventoryWith = (bow: boolean, arrow: boolean): ReadonlyArray<Slot> =>
   Array.from({ length: 36 }, (_, index) => {
-    if (index === 0 && bow) return { item: 'bow' as const, count: StackCount(1) }
-    if (index === 1 && arrow) return { item: 'arrow' as const, count: StackCount(1) }
+    if (index === 0 && bow) return Result.getOrThrow(itemStack('bow', StackCount(1)))
+    if (index === 1 && arrow) return Result.getOrThrow(itemStack('arrow', StackCount(1)))
     return undefined
   })
 
-const scene = (initial: EntityRoster<MobBehaviour>, inventorySlots?: ReadonlyArray<Slot>) =>
+const scene = (
+  initial: EntityRoster<MobBehaviour>,
+  inventorySlots?: ReadonlyArray<Slot>,
+  ownerInitial: GameplayOwnerInitialState = {},
+) =>
   Effect.gen(function* () {
     const store = yield* makeChunkStoreDouble(new Map<string, BlockId>(), ['0,0'])
     const roster = yield* makeEntityManagerDouble<MobBehaviour>(initial)
     const player = yield* makePlayerServiceDouble()
     const inventory = yield* makeInventoryDouble(inventorySlots)
     const time = yield* makeTimeService()
-    const state = yield* makeGameplayFrameState
+    const commit = yield* makeGameplayCommitServices(store.api, inventory.api, {
+      ...ownerInitial,
+      entities: ownerInitial.entities ?? initial,
+    })
+    const state = yield* makeGameplayFrameStateForOwner({
+      coordinator: commit.coordinator,
+      vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID,
+    })
     return {
       roster,
       state,
       inventory,
-      stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api, time),
+      player,
+      commit,
+      stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api, time, undefined, undefined, {}, commit),
     }
   })
+
+const ownerRoster = (commit: GameplayStageCommitServices) =>
+  Effect.map(
+    commit.coordinator.snapshot(GAMEPLAY_ENTITIES_OWNER_ID, GameplayEntityRosterSchema),
+    ({ state }) => state,
+  )
+
+const ownerStorage = (commit: GameplayStageCommitServices) =>
+  Effect.map(
+    commit.coordinator.snapshot(GAMEPLAY_PLAYER_STORAGE_OWNER_ID, PlayerStorageSnapshotSchema),
+    ({ state }) => state,
+  )
 
 /** A mob standing dead ahead of `EYE`, at the centre of the crosshair. */
 const AHEAD: EntityRoster<MobBehaviour> = {
@@ -686,12 +1036,12 @@ const AHEAD: EntityRoster<MobBehaviour> = {
     {
       id: EntityId('target'),
       kind: EntityKind('creeper'),
-      feetPosition: { x: 0, y: 64 - BOW_TARGET_CENTER_Y_OFFSET, z: 10 },
-      healthPoints: 20,
+      feetPosition: atPosition(0, 64 - BOW_TARGET_CENTER_Y_OFFSET, 10 ),
+      healthPoints: EntityHealthPoints(20),
       behaviour: undefined,
     },
   ],
-  nextSerial: 1,
+  nextSerial: EntitySerial(1),
 }
 
 describe('gameplay:interactions — the bow arm', () => {
@@ -719,48 +1069,48 @@ inventory: { mode: 'creative', slotIndex: 0 },
       // reachable-in-principle before it and unreachable in fact, which
       // docs/testing.md records as a state this repository has repeatedly had
       // to fix.
-      const { state, roster, stages } = yield* scene(AHEAD)
+      const { state, commit, stages } = yield* scene(AHEAD)
       yield* Ref.set(state.pendingBowShots, [
         { origin: EYE, dirX: 0, dirY: 0, dirZ: 1, chargeSecs: BOW_FULL_CHARGE_SECS , inventory: { mode: 'creative', slotIndex: 0 }},
       ])
 
       yield* runFrame(stages)
 
-      expect((yield* roster.api.snapshot).entities[0]?.healthPoints).toBe(20 - BOW_MAX_DAMAGE)
+      expect((yield* ownerRoster(commit)).entities[0]?.healthPoints).toBe(20 - BOW_MAX_DAMAGE)
     }),
   )
 
   it.effect('A TAP IS NOT A SHOT: a hold below the minimum leaves the roster untouched', () =>
     Effect.gen(function* () {
-      const { state, roster, stages } = yield* scene(AHEAD)
+      const { state, commit, stages } = yield* scene(AHEAD)
       yield* Ref.set(state.pendingBowShots, [
         { origin: EYE, dirX: 0, dirY: 0, dirZ: 1, chargeSecs: BOW_MIN_CHARGE_SECS / 2 , inventory: { mode: 'creative', slotIndex: 0 }},
       ])
 
       yield* runFrame(stages)
 
-      expect((yield* roster.api.snapshot).entities[0]?.healthPoints).toBe(20)
+      expect((yield* ownerRoster(commit)).entities[0]?.healthPoints).toBe(20)
       expect(yield* Ref.get(state.bowKnockbacks)).toStrictEqual([])
     }),
   )
 
-  it.effect('a partial draw does the quadratic damage, not the full one', () =>
+  it.effect('a medium charge uses the vanilla damage band, not the critical-charge damage', () =>
     Effect.gen(function* () {
-      const { state, roster, stages } = yield* scene(AHEAD)
+      const { state, commit, stages } = yield* scene(AHEAD)
       yield* Ref.set(state.pendingBowShots, [
         { origin: EYE, dirX: 0, dirY: 0, dirZ: 1, chargeSecs: BOW_FULL_CHARGE_SECS / 2 , inventory: { mode: 'creative', slotIndex: 0 }},
       ])
 
       yield* runFrame(stages)
 
-      // charge 0.5 -> 3 damage, and NOT 5.
-      expect((yield* roster.api.snapshot).entities[0]?.healthPoints).toBe(17)
+      // Medium charge deals 5 damage, not the critical-charge 9.
+      expect((yield* ownerRoster(commit)).entities[0]?.healthPoints).toBe(15)
     }),
   )
 
   it.effect('Power on the bow travels from the request to the damage', () =>
     Effect.gen(function* () {
-      const { state, roster, stages } = yield* scene(AHEAD)
+      const { state, commit, stages } = yield* scene(AHEAD)
       yield* Ref.set(state.pendingBowShots, [
         {
           origin: EYE,
@@ -776,15 +1126,15 @@ inventory: { mode: 'creative', slotIndex: 0 },
       yield* runFrame(stages)
 
       // round(9 * 1.5) = 14, so 20 - 14 = 6.
-      expect((yield* roster.api.snapshot).entities[0]?.healthPoints).toBe(6)
+      expect((yield* ownerRoster(commit)).entities[0]?.healthPoints).toBe(6)
     }),
   )
 
   it.effect('a kill puts the mob\'s loot in the drops outbox', () =>
     Effect.gen(function* () {
-      const { state, roster, stages } = yield* scene({
-        entities: [{ ...AHEAD.entities[0]!, healthPoints: 5 }],
-        nextSerial: 1,
+      const { state, commit, stages } = yield* scene({
+        entities: [{ ...AHEAD.entities[0]!, healthPoints: EntityHealthPoints(5) }],
+        nextSerial: EntitySerial(1),
       })
       yield* Ref.set(state.pendingBowShots, [
         { origin: EYE, dirX: 0, dirY: 0, dirZ: 1, chargeSecs: BOW_FULL_CHARGE_SECS , inventory: { mode: 'creative', slotIndex: 0 }},
@@ -792,7 +1142,7 @@ inventory: { mode: 'creative', slotIndex: 0 },
 
       yield* runFrame(stages)
 
-      expect((yield* roster.api.snapshot).entities).toStrictEqual([])
+      expect((yield* ownerRoster(commit)).entities).toStrictEqual([])
       // A creeper's gunpowder goes through the same outbox a blast kill uses.
       expect(yield* Ref.get(state.mobDrops)).not.toStrictEqual([])
     }),
@@ -800,7 +1150,13 @@ inventory: { mode: 'creative', slotIndex: 0 },
 
   it.effect('the shove is computed and parked, because nothing here can deliver it', () =>
     Effect.gen(function* () {
-      const { state, stages } = yield* scene(AHEAD)
+      const { state, stages } = yield* scene(AHEAD, undefined, {
+        playerPose: {
+          feetPosition: atPosition(5, 64, 5),
+          yawRadians: 0,
+          pitchRadians: 0,
+        } satisfies PlayerPose,
+      })
       yield* Ref.set(state.pendingBowShots, [
         { origin: EYE, dirX: 0, dirY: 0, dirZ: 1, chargeSecs: BOW_FULL_CHARGE_SECS , inventory: { mode: 'creative', slotIndex: 0 }},
       ])
@@ -810,8 +1166,14 @@ inventory: { mode: 'creative', slotIndex: 0 },
       const shoves = yield* Ref.get(state.bowKnockbacks)
       expect(shoves).toHaveLength(1)
       expect(shoves[0]?.id).toBe('target')
-      // Straight ahead of the shooter, so straight away from them on +z.
-      expect(shoves[0]?.direction).toStrictEqual({ _tag: 'Away', x: 0, z: 1 })
+      // This legacy request starts at the fixture origin, but the server pose
+      // is (5, 5) on x/z; the knockback direction uses that authoritative pose.
+      const direction = shoves[0]?.direction
+      expect(direction?._tag).toBe('Away')
+      if (direction?._tag === 'Away') {
+        expect(direction.x).toBeCloseTo(-Math.SQRT1_2)
+        expect(direction.z).toBeCloseTo(Math.SQRT1_2)
+      }
     }),
   )
 
@@ -833,7 +1195,7 @@ inventory: { mode: 'creative', slotIndex: 0 },
 
   it.effect('a miss changes nothing and parks nothing', () =>
     Effect.gen(function* () {
-      const { state, roster, stages } = yield* scene(AHEAD)
+      const { state, commit, stages } = yield* scene(AHEAD)
       yield* Ref.set(state.pendingBowShots, [
         // Aimed straight up, at nothing.
         { origin: EYE, dirX: 0, dirY: 1, dirZ: 0, chargeSecs: BOW_FULL_CHARGE_SECS , inventory: { mode: 'creative', slotIndex: 0 }},
@@ -841,14 +1203,14 @@ inventory: { mode: 'creative', slotIndex: 0 },
 
       yield* runFrame(stages)
 
-      expect((yield* roster.api.snapshot).entities[0]?.healthPoints).toBe(20)
+      expect((yield* ownerRoster(commit)).entities[0]?.healthPoints).toBe(20)
       expect(yield* Ref.get(state.bowKnockbacks)).toStrictEqual([])
     }),
   )
 
   it.effect('THE INBOX IS DRAINED, so one shot is serviced once', () =>
     Effect.gen(function* () {
-      const { state, roster, stages } = yield* scene(AHEAD)
+      const { state, commit, stages } = yield* scene(AHEAD)
       yield* Ref.set(state.pendingBowShots, [
         { origin: EYE, dirX: 0, dirY: 0, dirZ: 1, chargeSecs: BOW_FULL_CHARGE_SECS , inventory: { mode: 'creative', slotIndex: 0 }},
       ])
@@ -857,24 +1219,24 @@ inventory: { mode: 'creative', slotIndex: 0 },
       yield* runFrame(stages)
 
       expect(yield* Ref.get(state.pendingBowShots)).toStrictEqual([])
-      expect((yield* roster.api.snapshot).entities[0]?.healthPoints).toBe(20 - BOW_MAX_DAMAGE)
+      expect((yield* ownerRoster(commit)).entities[0]?.healthPoints).toBe(20 - BOW_MAX_DAMAGE)
     }),
   )
 
   it.effect('an idle frame parks nothing and leaves the roster alone', () =>
     Effect.gen(function* () {
-      const { state, roster, stages } = yield* scene(AHEAD)
+      const { state, commit, stages } = yield* scene(AHEAD)
 
       yield* runFrame(stages)
 
-      expect((yield* roster.api.snapshot).entities[0]?.healthPoints).toBe(20)
+      expect((yield* ownerRoster(commit)).entities[0]?.healthPoints).toBe(20)
       expect(yield* Ref.get(state.bowKnockbacks)).toStrictEqual([])
     }),
   )
 
   it.effect('settles survival bow ammo and durability atomically', () =>
     Effect.gen(function* () {
-      const { state, inventory, stages } = yield* scene(AHEAD, inventoryWith(true, true))
+      const { state, commit, inventory, stages } = yield* scene(AHEAD, inventoryWith(true, true))
       yield* Ref.set(state.pendingBowShots, [
         {
           requestId: 'survival-shot',
@@ -889,19 +1251,22 @@ inventory: { mode: 'creative', slotIndex: 0 },
 
       yield* runFrame(stages)
 
-      const storage = yield* inventory.api.storageSnapshot
-      expect(storage.inventory.slots[0]).toStrictEqual({ item: 'bow', count: StackCount(1) })
+      const storage = yield* ownerStorage(commit)
+      expect(storage.inventory.slots[0]).toStrictEqual(Result.getOrThrow(itemStack('bow', StackCount(1))))
       expect(storage.inventory.slots[1]).toBeUndefined()
       expect(storage.inventoryDurability[0]).toStrictEqual({ current: 383, max: 384 })
       expect(yield* drainBowShotResults(state)).toStrictEqual([
         { requestId: 'survival-shot', success: true, outcome: 'Fired' },
       ])
+      expect((yield* inventory.api.storageSnapshot).inventory.slots[1]).toStrictEqual(
+        Result.getOrThrow(itemStack('arrow', StackCount(1))),
+      )
     }),
   )
 
   it.effect('rejects a survival shot without an arrow before combat', () =>
     Effect.gen(function* () {
-      const { state, roster, inventory, stages } = yield* scene(AHEAD, inventoryWith(true, false))
+      const { state, commit, stages } = yield* scene(AHEAD, inventoryWith(true, false))
       yield* Ref.set(state.pendingBowShots, [
         {
           requestId: 'missing-arrow',
@@ -916,9 +1281,9 @@ inventory: { mode: 'creative', slotIndex: 0 },
 
       yield* runFrame(stages)
 
-      expect((yield* roster.api.snapshot).entities[0]?.healthPoints).toBe(20)
-      const storage = yield* inventory.api.storageSnapshot
-      expect(storage.inventory.slots[0]).toStrictEqual({ item: 'bow', count: StackCount(1) })
+      expect((yield* ownerRoster(commit)).entities[0]?.healthPoints).toBe(20)
+      const storage = yield* ownerStorage(commit)
+      expect(storage.inventory.slots[0]).toStrictEqual(Result.getOrThrow(itemStack('bow', StackCount(1))))
       expect(storage.inventory.slots[1]).toBeUndefined()
       expect(storage.inventoryDurability[0]).toStrictEqual({ current: 384, max: 384 })
       expect(yield* drainBowShotResults(state)).toStrictEqual([
@@ -936,7 +1301,7 @@ inventory: { mode: 'creative', slotIndex: 0 },
       // already exercise for an uncorrelated request; this proves it holds
       // for the InventoryUnavailable arm too, reached only in survival mode
       // when the atomic ammo+durability settlement does not apply.
-      const { state, roster, inventory, stages } = yield* scene(AHEAD, inventoryWith(true, false))
+      const { state, commit, stages } = yield* scene(AHEAD, inventoryWith(true, false))
       yield* Ref.set(state.pendingBowShots, [
         {
           origin: EYE,
@@ -950,8 +1315,8 @@ inventory: { mode: 'creative', slotIndex: 0 },
 
       yield* runFrame(stages)
 
-      expect((yield* roster.api.snapshot).entities[0]?.healthPoints).toBe(20)
-      const storage = yield* inventory.api.storageSnapshot
+      expect((yield* ownerRoster(commit)).entities[0]?.healthPoints).toBe(20)
+      const storage = yield* ownerStorage(commit)
       expect(storage.inventoryDurability[0]).toStrictEqual({ current: 384, max: 384 })
       expect(yield* drainBowShotResults(state)).toStrictEqual([])
     }),
@@ -970,7 +1335,7 @@ describe('shotBlockedByTerrain — the walk never oversteps the target', () => {
         seen.push(wz)
         return false
       }
-      shotBlockedByTerrain(recorder, { x: 0.5, y: 64.5, z: 0.5 }, { x: 0.5, y: 64.5, z: distance + 0.5 })
+      shotBlockedByTerrain(recorder, atPosition(0.5, 64.5, 0.5 ), atPosition(0.5, 64.5, distance + 0.5 ))
       for (const z of seen) {
         // Floored cell indices, so the last one must be below the target cell.
         expect(z).toBeLessThanOrEqual(Math.floor(distance + 0.5))

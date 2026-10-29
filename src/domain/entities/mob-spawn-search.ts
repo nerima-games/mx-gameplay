@@ -88,9 +88,16 @@
  * which is `ChunkStoreApi`'s to grow and is the same shape of request as this
  * light query was.
  */
-import { Effect } from 'effect'
+import { Effect, Result } from 'effect'
 import type { ChunkStoreApi } from '@nerima-games/mc-worldgen'
-import { blockPosition, type BlockPosition, type Position } from '@nerima-games/mc-kernel'
+import {
+  BlockAxis,
+  PositionAxis,
+  blockPosition,
+  position,
+  type BlockPosition,
+  type Position,
+} from '@nerima-games/mc-kernel'
 import { EntityKind } from '@nerima-games/mc-sim'
 import { drawRolls, rollAt } from '../frame-rolls.js'
 import { hostileSpawnsAllowed } from '../day-night.js'
@@ -231,9 +238,27 @@ export const searchSpawnCandidates = (
         const x = Math.floor(target.x + radius * Math.cos(angle))
         const z = Math.floor(target.z + radius * Math.sin(angle))
 
-        const ground = yield* store.getBlock(at(x, footY - 1, z))
-        const foot = yield* store.getBlock(at(x, footY, z))
-        const head = yield* store.getBlock(at(x, footY + 1, z))
+        const groundAt = at(x, footY - 1, z)
+        const footAt = at(x, footY, z)
+        const headAt = at(x, footY + 1, z)
+        const positionX = Result.getOrUndefined(PositionAxis.result(x))
+        const positionY = Result.getOrUndefined(PositionAxis.result(footY))
+        const positionZ = Result.getOrUndefined(PositionAxis.result(z))
+        if (
+          groundAt === undefined ||
+          footAt === undefined ||
+          headAt === undefined ||
+          positionX === undefined ||
+          positionY === undefined ||
+          positionZ === undefined
+        ) {
+          unreadable += 1
+          continue
+        }
+
+        const ground = yield* store.getBlock(groundAt)
+        const foot = yield* store.getBlock(footAt)
+        const head = yield* store.getBlock(headAt)
 
         if (ground._tag !== 'Block' || foot._tag !== 'Block' || head._tag !== 'Block') {
           // NOT offered as air. `@nerima-games/mc-worldgen`'s `BlockReading`
@@ -244,7 +269,7 @@ export const searchSpawnCandidates = (
           continue
         }
 
-        const light = yield* store.getLight(at(x, footY, z))
+        const light = yield* store.getLight(footAt)
         if (light._tag !== 'Light') {
           unreadable += 1
           continue
@@ -274,7 +299,7 @@ export const searchSpawnCandidates = (
         attempts.push({
           candidate,
           kind: kindForRoll(rollAt(batch, 1 + cellIndex), kinds),
-          feetPosition: { x, y: footY, z },
+          feetPosition: position(positionX, positionY, positionZ),
         })
       }
     }
@@ -297,7 +322,14 @@ export const searchSpawnCandidates = (
  * else」. A search that pre-filtered on air would be a second, unnamed and
  * untested copy of the `obstructed` test.
  */
-const at = (x: number, y: number, z: number): BlockPosition => blockPosition(x, y, z)
+const at = (x: number, y: number, z: number): BlockPosition | undefined => {
+  const blockX = Result.getOrUndefined(BlockAxis.result(x))
+  const blockY = Result.getOrUndefined(BlockAxis.result(y))
+  const blockZ = Result.getOrUndefined(BlockAxis.result(z))
+  return blockX === undefined || blockY === undefined || blockZ === undefined
+    ? undefined
+    : blockPosition(blockX, blockY, blockZ)
+}
 
 /**
  * Which hostile a cell would produce.
@@ -313,31 +345,15 @@ const at = (x: number, y: number, z: number): BlockPosition => blockPosition(x, 
  * mc-sim's. A uniform roll is the choice that needs nothing remembered.
  *
  * The clamp on the last index is for a roll of exactly 1.0, which
- * `../frame-rolls` does not produce but which a caller passing its own array
- * could; landing outside the roster would be an `undefined` kind reaching
- * `roster.spawn`.
- *
- * ONE FALLBACK, AND IT IS UNREACHABLE — recorded rather than covered.
- * `HOSTILE_KINDS[index]` is `EntityKind | undefined` under
- * `noUncheckedIndexedAccess` no matter how the index was derived, so a total
- * function has to answer for the `undefined` that the clamp above has already
- * made impossible. That arm cannot be tested without contriving a roll no caller
- * produces, and contriving one would teach the next reader that the roster can
- * be missed. It is left uncovered on purpose; `docs/testing.md` §7 carries the
- * argument and the coverage budget it spends.
- *
- * There used to be a SECOND fallback here — `?? EntityKind('creeper')` behind
- * `?? HOSTILE_KINDS[0]` — covering the case where the roster is empty. That one
- * was deleted by saying non-empty in `./mob-frame`'s type instead, which is a
- * claim a future edit to the roster has to read. Two unreachable fallbacks for
- * one lookup is how a formality stops being examined.
+ * `../frame-rolls` does not produce but which keeps this selection within the
+ * roster's upper bound. The non-empty tuple supplies the initial selection, and
+ * the reduction replaces it when the target index is visited; it does not need
+ * an unchecked indexed read or an empty-roster fallback.
  */
 const kindForRoll = (roll: number, kinds: readonly [EntityKind, ...ReadonlyArray<EntityKind>]): EntityKind => {
   const index = Math.min(kinds.length - 1, Math.floor(roll * kinds.length))
-  /* v8 ignore start -- see the header immediately above: `?? kinds[0]` is the
-   * ONE FALLBACK left, documented as unreachable rather than covered.
-   * `docs/testing.md` §7 and `vitest.config.ts`'s coverage-threshold comment
-   * both name it. */
-  return kinds[index] ?? kinds[0]
-  /* v8 ignore stop */
+  return kinds.reduce(
+    (selected, kind, candidateIndex) => candidateIndex === index ? kind : selected,
+    kinds[0],
+  )
 }

@@ -14,9 +14,9 @@
  * mx-ui reading that same service — not an edge between the two.
  *
  * Its public surface is stage registration (`stages/registration.ts`). The
- * domain modules below are exported because they are the units the tests and the
- * previews drive directly, not because another repository is expected to import
- * them; see docs/public-api.md for what is contract and what is merely visible.
+ * domain modules below are visible to tests and previews; the projectile runtime
+ * adapter is also exported for gameplay callers that use mc-sim's service. See
+ * docs/public-api.md for what is contract and what is merely visible.
  */
 
 export * from './domain/day-night.js'
@@ -26,6 +26,7 @@ export * from './domain/environmental-contact-damage.js'
 export * from './domain/enchantment.js'
 export * from './domain/fall-damage.js'
 export * from './domain/entities/mob-frame.js'
+export * from './domain/entities/projectile-runtime.js'
 export * from './domain/falling-block.js'
 export * from './domain/fluid-frontier.js'
 export * from './domain/frame-rolls.js'
@@ -45,7 +46,7 @@ export * from './domain/interactions/ignite-tnt.js'
 export * from './domain/interactions/knockback.js'
 export * from './domain/interactions/place-block.js'
 export * from './domain/interactions/place-from-hotbar-slot.js'
-export * from './domain/in-memory-chunk-store.js'
+export * from './domain/interactions/break-block.js'
 export * from './domain/in-memory-entity-manager.js'
 export * from './domain/in-memory-inventory.js'
 export * from './domain/in-memory-player.js'
@@ -71,6 +72,7 @@ export * from './domain/interactions/use-flint-and-steel.js'
 export * from './domain/interactions/use-bucket.js'
 export * from './domain/mob/creeper-fuse.js'
 export * from './domain/entities/dropped-item.js'
+export * from './domain/entities/xp-orb.js'
 export * from './domain/item-metadata.js'
 export * from './domain/boss/wither.js'
 export * from './domain/mob/enderman-teleport.js'
@@ -103,6 +105,7 @@ export {
 export * from './domain/interactions/use-block.js'
 export * from './domain/interactions/use-eye-of-ender.js'
 export * from './stages/registration.js'
+export * from './stages/gameplay-owner-registrations.js'
 export * from './stages/ender-dragon-encounter-stage.js'
 export * from './stages/stage-ids.js'
 export * from './stages/targeted-right-click-route.js'

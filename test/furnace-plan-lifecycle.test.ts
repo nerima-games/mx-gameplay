@@ -1,6 +1,6 @@
 import { describe, expect, it } from '@effect/vitest'
 import { emptyFurnaceState, itemStack, makeTimeService, type FurnaceState } from '@nerima-games/mc-sim'
-import { Effect } from 'effect'
+import { Effect, Result } from 'effect'
 import {
   applyFurnaceAdvance,
   MAX_FURNACE_ADVANCE_SECS,
@@ -19,10 +19,13 @@ import { makeInventoryDouble } from './support/inventory-service-double'
 import { makePlayerServiceDouble } from './support/player-service-double'
 import { runFrame } from './support/frame-runner'
 
+const fromResult = <A, E>(result: Result.Result<A, E>): A =>
+  Effect.runSync(Effect.orDie(Effect.fromResult(result)))
+
 const loadedFurnace = (): FurnaceState => ({
-  ...emptyFurnaceState(),
-  input: itemStack('raw_iron', 3),
-  fuel: itemStack('coal', 1),
+  ...fromResult(emptyFurnaceState()),
+  input: fromResult(itemStack('raw_iron', 3)),
+  fuel: fromResult(itemStack('coal', 1)),
 })
 
 const furnaceSlice = Effect.gen(function* () {
@@ -37,7 +40,7 @@ const furnaceSlice = Effect.gen(function* () {
 })
 
 const requestPlan = (
-  slice: Effect.Effect.Success<typeof furnaceSlice>,
+  slice: Effect.Success<typeof furnaceSlice>,
   requestId: string,
   furnace: FurnaceState,
   requestedSecs: number,
@@ -49,7 +52,12 @@ const requestPlan = (
     const result = results[0]
     expect(results).toHaveLength(1)
     expect(result).toMatchObject({ action: 'AdvanceFurnace', requestId })
-    if (result === undefined || !('action' in result) || result.action !== 'AdvanceFurnace') {
+    if (
+      result === undefined ||
+      !('action' in result) ||
+      result.action !== 'AdvanceFurnace' ||
+      'failure' in result
+    ) {
       return yield* Effect.die(`missing furnace plan for ${requestId}`)
     }
     return result.plan
@@ -81,9 +89,9 @@ describe('furnace plan lifecycle through the registered interaction stage', () =
         5,
       ])
       expect(plans.map((plan) => plan.deferredSecs)).toStrictEqual([15, 5, 0])
-      expect(furnace.input).toStrictEqual(itemStack('raw_iron', 1))
-      expect(furnace.output).toStrictEqual(itemStack('iron_ingot', 2))
-      expect(furnace.cookElapsedSecs).toBe(5)
+      expect(furnace.input).toStrictEqual(fromResult(itemStack('raw_iron', 1)))
+      expect(furnace.output).toStrictEqual(fromResult(itemStack('iron_ingot', 2)))
+      expect(furnace.cookProgressSecs).toBe(5)
     }),
   )
 
@@ -92,7 +100,7 @@ describe('furnace plan lifecycle through the registered interaction stage', () =
       const slice = yield* furnaceSlice
       const requestedSnapshot = loadedFurnace()
       const plan = yield* requestPlan(slice, 'stale-plan', requestedSnapshot, 10)
-      const current = { ...requestedSnapshot, input: itemStack('raw_iron', 2) }
+      const current = { ...requestedSnapshot, input: fromResult(itemStack('raw_iron', 2)) }
 
       expect(applyFurnaceAdvance(current, plan)).toStrictEqual({
         _tag: 'Stale',
@@ -122,6 +130,37 @@ describe('furnace plan lifecycle through the registered interaction stage', () =
       expect(second.advancedSecs).toBe(MAX_FURNACE_ADVANCE_SECS)
       expect(second.deferredSecs).toBe(5)
       expect(second.before).toStrictEqual(first.after)
+    }),
+  )
+
+  it.effect('returns an explicit furnace planning failure without a plan', () =>
+    Effect.gen(function* () {
+      const slice = yield* furnaceSlice
+      const invalid = { ...loadedFurnace(), cookProgressSecs: -1 } as FurnaceState
+
+      yield* requestFurnaceAdvance(slice.state, 'invalid-furnace', invalid, 10)
+      yield* runFrame(slice.stages)
+      const results = yield* drainItemUseResults(slice.state)
+      const result = results[0]
+
+      expect(result).toMatchObject({
+        action: 'AdvanceFurnace',
+        requestId: 'invalid-furnace',
+        success: false,
+      })
+      if (
+        result === undefined ||
+        !('action' in result) ||
+        result.action !== 'AdvanceFurnace' ||
+        !('failure' in result)
+      ) {
+        return yield* Effect.die('missing furnace planning failure')
+      }
+      expect(result.failure).toMatchObject({
+        _tag: 'FurnaceStateValidationFailure',
+        path: 'cookProgressSecs',
+      })
+      expect('plan' in result).toBe(false)
     }),
   )
 })

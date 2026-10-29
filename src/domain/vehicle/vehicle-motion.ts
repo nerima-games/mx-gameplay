@@ -1,4 +1,5 @@
 import type { OccupantId, Vehicle } from '@nerima-games/mc-sim'
+import { AngleRadians, VehicleVelocityComponent } from '@nerima-games/mc-kernel'
 import { projectMinecartVelocity, type RailShape } from './rail-shape.js'
 
 export type VehicleExitReason = 'requested' | 'collision' | 'destroyed'
@@ -43,6 +44,12 @@ const safeDt = (dt: number): number => clamp(dt, 0, 0.1)
 const speed = (vehicle: Vehicle): number =>
   Math.hypot(vehicle.velocity.x, vehicle.velocity.y, vehicle.velocity.z)
 
+const vehicleVelocity = (x: number, y: number, z: number): Vehicle['velocity'] => ({
+  x: VehicleVelocityComponent(x),
+  y: VehicleVelocityComponent(y),
+  z: VehicleVelocityComponent(z),
+})
+
 const withoutOccupant = (vehicle: Vehicle): Vehicle => {
   const { occupant, ...unoccupied } = vehicle
   void occupant
@@ -52,7 +59,7 @@ const withoutOccupant = (vehicle: Vehicle): Vehicle => {
 const applyCollision = (vehicle: Vehicle, collision: VehicleCollision): VehicleTransition => {
   const occupant = vehicle.occupant
   if (collision.destroyed) {
-    const stopped = withoutOccupant({ ...vehicle, velocity: { x: 0, y: 0, z: 0 } })
+    const stopped = withoutOccupant({ ...vehicle, velocity: vehicleVelocity(0, 0, 0) })
     return occupant === undefined
       ? { vehicle: stopped }
       : { vehicle: stopped, exited: { occupant, reason: 'destroyed' } }
@@ -69,11 +76,11 @@ const applyCollision = (vehicle: Vehicle, collision: VehicleCollision): VehicleT
     : speed(vehicle)
   const collided: Vehicle = {
     ...vehicle,
-    velocity: {
-      x: vehicle.velocity.x * 0.2,
-      y: Math.min(0, vehicle.velocity.y),
-      z: vehicle.velocity.z * 0.2,
-    },
+    velocity: vehicleVelocity(
+      vehicle.velocity.x * 0.2,
+      Math.min(0, vehicle.velocity.y),
+      vehicle.velocity.z * 0.2,
+    ),
   }
   return occupant !== undefined && impactSpeed >= COLLISION_EXIT_SPEED
     ? { vehicle: withoutOccupant(collided), exited: { occupant, reason: 'collision' } }
@@ -100,7 +107,7 @@ export const stepBoat = (vehicle: Vehicle, control: BoatControl, dt: number): Ve
   const elapsed = safeDt(dt)
   const steering = vehicle.occupant === undefined ? 0 : clamp(control.steering, -1, 1)
   const throttle = vehicle.occupant === undefined ? 0 : clamp(control.throttle, -1, 1)
-  const yawRadians = vehicle.yawRadians + steering * BOAT_TURN_RATE * elapsed
+  const yawRadians = AngleRadians(vehicle.yawRadians + steering * BOAT_TURN_RATE * elapsed)
   const acceleration = control.inWater ? BOAT_ACCELERATION : BOAT_ACCELERATION * 0.15
   const drag = Math.pow(control.inWater ? 0.9 : 0.55, elapsed * 20)
   const vx = (vehicle.velocity.x - Math.sin(yawRadians) * throttle * acceleration * elapsed) * drag
@@ -108,7 +115,7 @@ export const stepBoat = (vehicle: Vehicle, control: BoatControl, dt: number): Ve
   const next: Vehicle = {
     ...vehicle,
     yawRadians,
-    velocity: { x: vx, y: control.inWater ? vehicle.velocity.y * drag : vehicle.velocity.y, z: vz },
+    velocity: vehicleVelocity(vx, control.inWater ? vehicle.velocity.y * drag : vehicle.velocity.y, vz),
   }
   return applyCollision(next, control)
 }
@@ -146,13 +153,13 @@ export const stepMinecart = (
 
   const next: Vehicle = {
     ...vehicle,
-    velocity: {
-      x: vx,
-      y: track.kind !== 'none' && track.ascendingAhead && Math.hypot(vx, vz) > 0
+    velocity: vehicleVelocity(
+      vx,
+      track.kind !== 'none' && track.ascendingAhead && Math.hypot(vx, vz) > 0
         ? Math.max(vehicle.velocity.y, MINECART_CLIMB_SPEED)
         : vehicle.velocity.y,
-      z: vz,
-    },
+      vz,
+    ),
   }
   return applyCollision(next, collision)
 }

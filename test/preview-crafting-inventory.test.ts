@@ -1,13 +1,13 @@
 import { describe, expect, it } from '@effect/vitest'
 import { craftGrid } from '@nerima-games/mc-sim'
-import { Effect } from 'effect'
+import { Effect, Result } from 'effect'
 import { makePreviewInventory } from '../apps/preview-mining-site/inventory'
 
 describe('preview crafting inventory adapter', () => {
   it.effect('previews and crafts one oak log into four oak planks', () =>
     Effect.gen(function* () {
       const inventory = yield* makePreviewInventory()
-      const grid = craftGrid(1, 1, ['oak_log'])
+      const grid = Result.getOrThrow(craftGrid(1, 1, ['oak_log']))
 
       yield* inventory.api.add('oak_log', 1)
 

@@ -1,9 +1,8 @@
 # 公開 API
 
-## 1. 公開 API は stage 登録だけである
+## 1. ホスト連携で中心となるのは stage 登録である
 
-**`mx-gameplay` が他リポジトリに対して公開しているのは `StageRegistration` の配列 1 つだけで、
-サービスは 1 つも公開していない。**
+**ホスト連携の中心となる契約は `StageRegistration` の配列で、状態サービスは公開しない。**
 
 これは実装が未熟だからではなく、体験モジュールの定義そのものである。
 **ルールはサービスではない。** 他リポジトリが `mx-gameplay` に尋ねたくなることを列挙すると、
@@ -16,9 +15,7 @@
 import { makeGameplayStages } from '@nerima-games/mx-gameplay'
 ```
 
-`index.ts` はこれ以外にも多くを export しているが、それらは**このリポジトリ自身のテストとプレビューが
-直接叩く単位**として見えているだけで、他リポジトリが import することを想定していない。
-どれがどちらかは §5 の表に全部書いてある。
+`index.ts` はほかの要素も export する。`makeProjectileRuntime` は、mc-sim の `ProjectileServiceApi` を使う gameplay の呼び出し側に、`launch` と `step` だけを型付きで提供する。projectile の状態、物理計算、commit、event は mc-sim が所有する。この adapter は domain 間の連携向けに見える export で、ホスト連携の契約には含めない。ほかの export の分類は §5 に記す。
 
 ## 2. 契約（plan.md §4.1 逐語）
 
@@ -158,9 +155,7 @@ const world = Layer.merge(
 )
 ```
 
-`MobBehaviour` は `CreeperFuse | EndermanFlinch | undefined` の別名であり、Mob が増えれば `|` が
-1 本増える（`domain/entities/mob-frame.ts`）。**エンダーマンの追加が実際にその 1 本だった**
-——mc-sim 側の変更は 0 行であり、それは `S` が型パラメータであることの意味そのものである。
+`MobBehaviour` は `HostileMobSnapshot | CreeperFuse | PrimedTnt | EndermanFlinch | EcosystemMobState | DroppedItemBehaviour | undefined` の union である（`domain/entities/mob-frame.ts`）。mc-sim 側の変更なしに gameplay 固有の behaviour を加えられるのは、`EntityManager` の behaviour が型パラメータ `S` だからである。
 `repairMobBehaviour` は mc-sim のロード経路が委譲してくる
 `BehaviourRepair` で、mc-sim が「知らないと決めた型」を検査できる唯一の場所である。
 **この 2 つを `index.ts` から export しているのは、他のすべての export とは違う理由による**
@@ -258,9 +253,9 @@ plan.md §4.2 を素直に読むと `input` の後ろでもあり、`redstone` �
 
 ## 5. `index.ts` の全 export
 
-**契約** = 他リポジトリが import してよいもの。**内部(可視)** = テストとプレビューのために見えているだけのもの。
+**契約** = ホストが import してよいもの。**内部(可視)** = root export から参照できるが、ホスト連携の契約ではないもの。テスト、プレビュー、domain 間連携向けの export もここに含む。
 
-`index.ts` は `export *` を **29 本**並べているので、内部(可視) も外から見える。
+`index.ts` は `export *` を **84 本**並べているので、内部(可視) も外から見える。
 （この数は長く「6 本」と書かれたまま古くなっていた。数え直したものである。）
 見えることと契約であることは別で、内部(可視) の変更は semver 上 minor 扱いになる（[versioning.md](./versioning.md) §6）。
 
@@ -279,6 +274,12 @@ plan.md §4.2 を素直に読むと `input` の後ろでもあり、`redstone` �
 ただしそのテストは「列挙されているものが全部契約だ」とは言っていない。
 バレルを正直に保っているだけで、API を凍結してはいない。
 
+### domain/entities/projectile-runtime.ts
+
+| export | 種別 | 備考 |
+| --- | --- | --- |
+| `ProjectileRuntime` / `makeProjectileRuntime` | 内部(可視) | `mc-sim` の `ProjectileServiceApi` から `launch` と `step` を委譲する。projectile の識別子、物理、commit、event は mc-sim が所有する |
+
 ### stages/registration.ts
 
 | export | 種別 | 備考 |
@@ -294,7 +295,8 @@ plan.md §4.2 を素直に読むと `input` の後ろでもあり、`redstone` �
 | `TargetedPrimaryAttackResult` / `TargetedPrimaryAttackOptions` | 内部(可視) | 結果は `Melee`（`ShotHit`）/ `Block`（`BlockTarget`）/ `None`。既定値は melee reach 3、damage 1、block reach 5 |
 | `PlacementRequest` / `ItemUseRequest` | 内部(可視) | 受信箱に積む要求の形。`ItemUseRequest` は従来の tagless な点火要求を維持しつつ、耕作・ジャガイモの植付け・収穫・食事・炉進行・バケツ使用・釣りを `action` で判別する additive union |
 | `requestSoilTill` / `requestPotatoPlanting` / `requestPotatoHarvest` / `requestPotatoFoodUse` / `requestFurnaceAdvance` / `requestBucketUse` / `requestFishingCast` / `requestFishingAdvance` / `requestFishingCancel` / `requestFishingReel` / `drainItemUseResults` | **契約** | 相関 ID 付きの item use enqueue/drain。炉は host 所有の snapshot を最大 10 秒だけ決定的に進め、未処理時間と typed plan を返す。バケツは host が出発・対象次元を明示し、gameplay が world cell と `InventoryService` の交換を原子的に確定して流体フロンティアを起こす。釣りは gameplay が進行中の cast だけを保持し、結果に更新済みロッドと釣果を返す。host はその結果を inventory へ原子的に反映する。耕作と植付けは gameplay が world write を行う。収穫の成熟状態と乱数、食事前の vitals は host が渡し、結果に従う inventory・vitals・炉状態の反映も host が所有する |
-| `requestTargetedBlockUse` / `requestBlockUse` / `drainBlockUseResults` | **契約** | レバーを優先する use 入り口と、`requestId` で相関した結果の enqueue/drain。非レバーなら通常の配置へフォールバックし、レバーなら配置しない |
+| `GameplayTargetingSnapshotContext` / `requestTargetedBlockBreak` / `requestTargetedBlockPlacement` / `requestTargetedBlockUse` / `resolveTargetedBlock` / `requestTargetedItemUse` / `requestTargetedSoilTill` / `requestTargetedPotatoPlanting` | **契約** | context には `WorldCommitCoordinatorApi`、`playerOwnerId`、`entitiesOwnerId` を指定する。各 helper は World Commit Coordinator (WCC) から同じ revision の player/entity snapshot を読み、照準を解決する。revision が 3 回の取得試行で揃わない場合は `WorldRevisionConflict` を型付きで返し、入力を enqueue しない。block use はレバーを優先し、非レバーなら通常の配置へフォールバックする |
+| `requestBlockUse` / `drainBlockUseResults` | **契約** | `requestId` で相関したレバー操作結果の enqueue/drain。結果は 1 回だけ drain される |
 | `BlockUseRequestId` / `BlockUseRequest` / `BlockUseResult` | **契約** | 成否を入力イベントへ返す相関付きプロトコル。結果は 1 回だけ drain される |
 | `LAVA_TICK_INTERVAL` | 内部(可視) | 暫定値。プレビューで測って決める |
 
@@ -625,10 +627,10 @@ kernel が literal を**足す**分にはこちらが stale になるだけで�
 
 | export | 種別 | 備考 |
 | --- | --- | --- |
-| `MobBehaviour` | **契約に近い** | mc-sim の `S` の具体化。Mob 固有状態に dropped item の `{ item, count }` を加えた union。**ホストが名前で import する必要がある**（§2-3） |
-| `repairMobBehaviour` | **契約に近い** | mc-sim の `BehaviourRepair`。ロード経路が委譲してくる、全域かつ不動点の修復（§2-3）。kind ごとに腕があり、**形の合わない behaviour は信用せず差し替える** |
+| `MobBehaviour` | **契約** | mc-sim の `S` を gameplay の entity behaviour union で具体化する型。ホストは `EntityManagerLayer` の型引数に使うため名前で import する（§2-3） |
+| `repairMobBehaviour` | **契約** | mc-sim の `BehaviourRepair`。ロード経路が委譲する。kind ごとに shape を検査し、形の合わない behaviour を置き換える（§2-3） |
 | `EndermanFlinch` / `STEADY_ENDERMAN` / `STRUCK_ENDERMAN` | 内部(可視) | 「直前に殴られたか」だけを持つ 2 タグの union。フィールドが無いので save が壊せる数値も無い。`resolveBlasts` が立て、次の `sweepMobs` が**決定に関わらず消費する**（殴打は 1 フレームのもの） |
-| `CREEPER_KIND` / `ENDERMAN_KIND` | 内部(可視) | 本リポジトリが `EntityKind` を名指しする**唯一の場所**。mc-sim は kind で分岐しない（DN-11）ので綴りを誰も検査しない。`ENDERMAN_KIND` を**スポーンさせるものはまだ無い**（`MobSpawnAttempt` に kind が無く、上限が kind ごとのままだから）ので、到達経路は host の `spawn` とロード経路である |
+| `CREEPER_KIND` / `ENDERMAN_KIND` | 内部(可視) | 本リポジトリが `EntityKind` を名指しする場所。mob spawn search が `MobSpawnAttempt.kind` を通して hostile kind を選び、上限は hostile kind の roster 全体に適用する。host からの `spawn` も利用できる |
 | `CREEPER_MAX_HEALTH` / `MAX_HOSTILE_COUNT` | 内部(可視) | kind ごとの定数はルール層のもの（mc-sim §7-6）。`MAX_HOSTILE_COUNT` は `hostile-spawn.ts` が「mc-sim と一緒に到着する」と書いていた数 |
 | `ENDERMAN_TELEPORT_ROLLS` | 内部(可視) | テレポート 1 回が引くロール数（16 試行 × 2）。**当たった試行数ではなく固定の予算を引く**ので、種の進み方は「テレポートしたか」だけに依存する |
 | `MobSweep` | 内部(可視) | `sweepMobs` の戻り値。`{ blasts, seed }` ——エンダーマンがロールを引くので、種は sweep を**通り抜ける** |
@@ -644,10 +646,12 @@ kernel が literal を**足す**分にはこちらが stale になるだけで�
 
 | export | 種別 | 備考 |
 | --- | --- | --- |
-| `DroppedItemSpawn` | **契約** | `{ item, count, at, eligibleFromFrame? }`。原因を限定しない地面アイテム生成要求。採掘 overflow は次フレームを指定し、未指定の Mob death は従来どおり即時取得できる |
+| `DroppedItemSpawn` | **契約** | `{ item, count, at, durability?, eligibleFromFrame?, customName?, enchantments? }`。原因を限定しない地面アイテム生成要求。採掘 overflow は次フレームを指定し、未指定の Mob death は従来どおり即時取得できる |
 | `spawnDroppedItem` / `spawnDroppedItems` | **契約** | `DROPPED_ITEM_KIND` の entity を指定座標へ生成する汎用入口。複数版は入力順を保つ |
 | `spawnMobDrop` / `spawnMobDrops` | **互換契約** | 既存の Mob drop 用 API。汎用入口へ委譲し、従来の署名と挙動を保つ |
 | `pickupDroppedItems` / `DROPPED_ITEM_PICKUP_RADIUS` | **契約** | 範囲内かつ取得可能フレームに達した entity を inventory へ 1 回だけ渡す。`currentFrame` 未指定は従来どおり即時取得し、全量受理なら despawn、部分受理なら拒否された count だけを同じ entity に残す |
+| `DroppedItemOwnerSnapshot` / `DroppedItemPickupRequest` / `DroppedItemPickupCommitIncomplete` / `DroppedItemPickup` / `DroppedItemPickupResult` と各 `Schema` | 内部(可視) | owner snapshot、pickup request、commit 結果を検査する |
+| `droppedItemOwnerRegistration` / `droppedItemPickupOwnerRegistrations` / `pickupDroppedItemsCommitted` | 内部(可視) | dropped-item と player storage の候補を `WorldCommitCoordinator` の 1 回の commit で確定する。受理数は commit 後の dropped-item state から求める |
 
 採掘 stage は `breakBlock` の前にセル座標を保持する。loot 全量を `InventoryService.add` へ渡し、
 戻った remainder だけをその座標へ spawn するため、部分受理でも inventory と地面の合計は loot 数と一致する。
@@ -695,6 +699,37 @@ kernel が literal を**足す**分にはこちらが stale になるだけで�
 > `mc-sim` 側の配線と一緒に来るべき値である。判断は [responsibility.md](./responsibility.md)
 > §5 が唯一の記述で、§6 の基準に照らせば、今ここにあるのは `projectMinecartVelocity`
 > までである。
+
+### domain/enchantment.ts
+
+| export | 種別 | 備考 |
+| --- | --- | --- |
+| `generateEnchantmentTableOffersForItem` / `enchantmentTableResultItemOf` | 内部(可視) | item 固有の table offer と出力 item の対応を mc-sim に委譲する。Enchantment Table の apply 操作を行う service adapter は公開されていない |
+
+### domain/interactions/advance-furnace.ts
+
+| export | 種別 | 備考 |
+| --- | --- | --- |
+| `FurnaceAdvancePlan` / `FurnaceRuntimeOutcome` / `MAX_FURNACE_ADVANCE_SECS` / `furnaceAdvanceChanged` / `planFurnaceAdvance` / `applyFurnaceAdvance` / `advanceFurnaceRuntime` | 内部(可視) | mc-sim の `advanceFurnace` に渡す時間を最大 10 秒に制限し、host snapshot と plan の一致を確かめる |
+
+### domain/brewing.ts
+
+| export | 種別 | 備考 |
+| --- | --- | --- |
+| `BrewingBottleCollectionRequest` / `BrewingBottleCollectionResult` と各 `Schema` / `collectBrewingBottleWithStorage` | 内部(可視) | brewing bottle と player storage の変更候補を `WorldCommitCoordinator` の 1 回の commit で確定する |
+
+### domain/interactions/fishing.ts
+
+| export | 種別 | 備考 |
+| --- | --- | --- |
+| `castFishingWithService` / `biteFishingWithService` / `reelFishingWithService` | 内部(可視) | mc-sim の FishingService が公開する cast、bite、reel へ委譲する。`cancel` と経過時間を受け取る `advance` の service adapter はない |
+
+### domain/entities/xp-orb.ts
+
+| export | 種別 | 備考 |
+| --- | --- | --- |
+| `ExperienceOrbValue` / `ExperienceOrbAbsorption` / `ExperienceOrbVitalsOwnerSnapshot` / `ExperienceOrbAbsorptionFailure` / `ExperienceOrbAbsorptionCommitResultInvalid` と各 `Schema` / `ExperienceOrbOwnerSnapshotSchema` | 内部(可視) | XP 値、owner snapshot、吸収結果の shape を検査する |
+| `vitalsOwnerRegistration` / `experienceOrbOwnerRegistration` / `createExperienceOrbValue` / `absorbExperienceOrb` | 内部(可視) | XP orb と vitals の候補を `WorldCommitCoordinator` の 1 回の commit で確定し、commit 後の state から event を作る |
 
 ## 6. 契約を足すときの基準
 

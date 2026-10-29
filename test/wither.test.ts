@@ -1,12 +1,13 @@
 import { describe, expect, it } from '@effect/vitest'
 import { WITHER_MAX_HEALTH, WITHER_SPAWN_CHARGE_SECS, type BlockCell } from '@nerima-games/mc-sim'
-import type { Position } from '@nerima-games/mc-kernel'
+import { PositionAxis, position, type Position } from '@nerima-games/mc-kernel'
+import { Result } from 'effect'
 import {
-  advanceWitherRuntime,
-  damageRuntimeWither,
+  advanceWitherRuntime as advanceWitherRuntimeResult,
+  damageRuntimeWither as damageRuntimeWitherResult,
   initialWitherRuntimeState,
   isValidWitherRuntimeSnapshot,
-  matchRuntimeWitherSummon,
+  matchRuntimeWitherSummon as matchRuntimeWitherSummonResult,
   restoreWitherRuntime,
   snapshotWitherRuntime,
   summonRuntimeWither,
@@ -15,16 +16,40 @@ import {
   WITHER_MELEE_RANGE,
   WITHER_RANGED_INTERVAL_SECS,
   WITHER_SKULL_MAX_AGE_SECS,
+  type WitherRuntimeAdvance,
   type WitherRuntimeState,
 } from '../src/domain/boss/wither'
 
-const origin: Position = { x: 0, y: 64, z: 0 }
+const positionAt = (x: number, y: number, z: number): Position =>
+  position(PositionAxis(x), PositionAxis(y), PositionAxis(z))
+const blockCellAt = (x: number, y: number, z: number): BlockCell => ({
+  x: PositionAxis(x),
+  y: PositionAxis(y),
+  z: PositionAxis(z),
+})
+const expectSuccess = <A, E>(result: Result.Result<A, E>): A => {
+  if (Result.isFailure(result)) throw result.failure
+  return result.success
+}
+const expectFailure = <A, E>(result: Result.Result<A, E>): E => {
+  if (Result.isSuccess(result)) throw new Error('Expected a Result failure')
+  return result.failure
+}
+const advanceWitherRuntime = (
+  ...args: Parameters<typeof advanceWitherRuntimeResult>
+): WitherRuntimeAdvance => expectSuccess(advanceWitherRuntimeResult(...args))
+const damageRuntimeWither = (...args: Parameters<typeof damageRuntimeWitherResult>) =>
+  expectSuccess(damageRuntimeWitherResult(...args))
+const matchRuntimeWitherSummon = (...args: Parameters<typeof matchRuntimeWitherSummonResult>) =>
+  expectSuccess(matchRuntimeWitherSummonResult(...args))
+
+const origin = positionAt(0, 64, 0)
 const neverHitsWorld = () => false
 
 describe('summonRuntimeWither', () => {
   it('assigns sequential ids and starts each wither charging', () => {
     const first = summonRuntimeWither(initialWitherRuntimeState(), 'overworld', origin)
-    const second = summonRuntimeWither(first, 'overworld', { x: 10, y: 64, z: 10 })
+    const second = summonRuntimeWither(first, 'overworld', positionAt(10, 64, 10))
     expect(second.withers.map((w) => w.id)).toStrictEqual(['wither-1', 'wither-2'])
     expect(second.withers.every((w) => w.state.phase === 'charging')).toBe(true)
     expect(second.withers.every((w) => w.state.healthPoints === WITHER_MAX_HEALTH)).toBe(true)
@@ -33,7 +58,7 @@ describe('summonRuntimeWither', () => {
 
 describe('matchRuntimeWitherSummon', () => {
   it('finds an x-axis structure when the placed skull is the LEFT (non-centre) one', () => {
-    const base: BlockCell = { x: 10, y: 4, z: 20 }
+    const base = blockCellAt(10, 4, 20)
     const soulBlocks = new Set([
       '10,4,20', '10,5,20', '11,5,20', '9,5,20',
     ])
@@ -48,7 +73,7 @@ describe('matchRuntimeWitherSummon', () => {
     // The player placed the LEFT skull (x offset -1), not the structure's
     // canonical base — this only passes if the loop tries more than the
     // trivial "placedSkull is the centre skull" candidate.
-    const match = matchRuntimeWitherSummon({ x: 9, y: 6, z: 20 }, blockAt)
+    const match = matchRuntimeWitherSummon(blockCellAt(9, 6, 20), blockAt)
 
     expect(match).toStrictEqual({
       axis: 'x',
@@ -58,7 +83,20 @@ describe('matchRuntimeWitherSummon', () => {
   })
 
   it('finds nothing when no candidate base completes the structure', () => {
-    expect(matchRuntimeWitherSummon({ x: 0, y: 6, z: 0 }, () => 'air')).toBeUndefined()
+    expect(matchRuntimeWitherSummon(blockCellAt(0, 6, 0), () => 'air')).toBeUndefined()
+  })
+
+  it('treats unavailable block readings as no match', () => {
+    const result = matchRuntimeWitherSummonResult(blockCellAt(0, 6, 0), () => undefined)
+
+    expect(Result.isSuccess(result)).toBe(true)
+    if (Result.isSuccess(result)) expect(result.success).toBeUndefined()
+  })
+
+  it('returns a successful Result for a structure that does not match', () => {
+    const result = matchRuntimeWitherSummonResult(blockCellAt(0, 6, 0), () => 'air')
+    expect(Result.isSuccess(result)).toBe(true)
+    if (Result.isSuccess(result)) expect(result.success).toBeUndefined()
   })
 })
 
@@ -94,6 +132,14 @@ describe('damageRuntimeWither', () => {
     expect(result.death).toBeUndefined()
     expect(result.state.withers).toStrictEqual(state.withers)
   })
+
+  it('returns a failure for an invalid damage amount', () => {
+    const state = airborne()
+    const id = state.withers[0]!.id
+    const result = damageRuntimeWitherResult(state, id, -1, 'melee')
+    expect(Result.isFailure(result)).toBe(true)
+    expect(expectFailure(result)).toBeDefined()
+  })
 })
 
 describe('advanceWitherRuntime', () => {
@@ -115,7 +161,7 @@ describe('advanceWitherRuntime', () => {
 
   it('launches a skull the instant the ranged cooldown is exhausted, once charging finishes within the same frame', () => {
     const summoned = summonRuntimeWither(initialWitherRuntimeState(), 'overworld', origin)
-    const target = { x: 100, y: 64, z: 0 }
+    const target = positionAt(100, 64, 0)
     // activeDelta = (charge-clearing delta) - WITHER_SPAWN_CHARGE_SECS, and
     // it must reach WITHER_RANGED_INTERVAL_SECS to fire within this one call.
     const deltaSecs = WITHER_SPAWN_CHARGE_SECS + WITHER_RANGED_INTERVAL_SECS
@@ -129,7 +175,7 @@ describe('advanceWitherRuntime', () => {
 
   it('every third shot is the blue variant', () => {
     const summoned = summonRuntimeWither(initialWitherRuntimeState(), 'overworld', origin)
-    const target = { x: 100, y: 64, z: 0 }
+    const target = positionAt(100, 64, 0)
     // Clear charging and fire shot 1 (normal), then re-fire twice more,
     // resetting the ranged cooldown fully each time so shots 2 and 3 land in
     // separate frames — shot 3 (shotsFired % 3 === 0) must be blue.
@@ -160,6 +206,19 @@ describe('advanceWitherRuntime', () => {
     }
   })
 
+  it('returns a failure when skull movement overflows the finite position range', () => {
+    const summoned = summonRuntimeWither(initialWitherRuntimeState(), 'overworld', origin)
+    const result = advanceWitherRuntimeResult(
+      summoned,
+      'overworld',
+      positionAt(100, 64, 0),
+      Number.MAX_VALUE,
+      neverHitsWorld,
+    )
+    expect(Result.isFailure(result)).toBe(true)
+    expect(expectFailure(result)).toBeDefined()
+  })
+
   it('deals melee damage exactly once per interval once the target is in range', () => {
     // Wither summoned AT the target position: distance is 0, well within
     // WITHER_MELEE_RANGE. The clearing frame must run STRICTLY past
@@ -183,7 +242,7 @@ describe('advanceWitherRuntime', () => {
 
   it('does not melee a target outside WITHER_MELEE_RANGE', () => {
     const summoned = summonRuntimeWither(initialWitherRuntimeState(), 'overworld', origin)
-    const farTarget = { x: origin.x + WITHER_MELEE_RANGE + 10, y: origin.y, z: origin.z }
+    const farTarget = positionAt(origin.x + WITHER_MELEE_RANGE + 10, origin.y, origin.z)
     const result = advanceWitherRuntime(summoned, 'overworld', farTarget, WITHER_SPAWN_CHARGE_SECS, neverHitsWorld)
     expect(result.meleeDamage).toBe(0)
   })
@@ -192,7 +251,7 @@ describe('advanceWitherRuntime', () => {
     const launchedSkull = () => {
       const summoned = summonRuntimeWither(initialWitherRuntimeState(), 'overworld', origin)
       // Far enough that melee never triggers; a skull launches once charging clears.
-      const target = { x: origin.x + 30, y: origin.y, z: origin.z }
+      const target = positionAt(origin.x + 30, origin.y, origin.z)
       const launch = advanceWitherRuntime(
         summoned, 'overworld', target,
         WITHER_SPAWN_CHARGE_SECS + WITHER_RANGED_INTERVAL_SECS,
@@ -212,7 +271,7 @@ describe('advanceWitherRuntime', () => {
       // window) guarantee some step's landing position falls inside it,
       // rather than jumping over the target in a single bound.
       let current = state
-      let explosions: ReturnType<typeof advanceWitherRuntime>['explosions'] = []
+      let explosions: WitherRuntimeAdvance['explosions'] = []
       for (let i = 0; i < 100 && explosions.length === 0; i += 1) {
         const step = advanceWitherRuntime(current, 'overworld', target, 0.05, neverHitsWorld)
         current = step.state
@@ -234,7 +293,7 @@ describe('advanceWitherRuntime', () => {
       const { state } = launchedSkull()
       // Aim the "advance" target far away so the skull's own flight never
       // reaches it before ageing out.
-      const distantTarget = { x: 100_000, y: 64, z: 100_000 }
+      const distantTarget = positionAt(100_000, 64, 100_000)
       const result = advanceWitherRuntime(state, 'overworld', distantTarget, WITHER_SKULL_MAX_AGE_SECS + 1, neverHitsWorld)
       expect(result.explosions).toStrictEqual([])
       expect(result.state.skulls).toStrictEqual([])
@@ -251,7 +310,7 @@ describe('advanceWitherRuntime', () => {
 describe('snapshotWitherRuntime / restoreWitherRuntime', () => {
   it('round-trips a runtime with a wither and a skull', () => {
     const summoned = summonRuntimeWither(initialWitherRuntimeState(), 'overworld', origin)
-    const target = { x: origin.x + 30, y: origin.y, z: origin.z }
+    const target = positionAt(origin.x + 30, origin.y, origin.z)
     const withSkull = advanceWitherRuntime(
       summoned, 'overworld', target,
       WITHER_SPAWN_CHARGE_SECS + WITHER_RANGED_INTERVAL_SECS,
@@ -317,7 +376,7 @@ describe('isValidWitherRuntimeSnapshot', () => {
     const withSkull = advanceWitherRuntime(
       summonRuntimeWither(initialWitherRuntimeState(), 'overworld', origin),
       'overworld',
-      { x: origin.x + 30, y: origin.y, z: origin.z },
+      positionAt(origin.x + 30, origin.y, origin.z),
       WITHER_SPAWN_CHARGE_SECS + WITHER_RANGED_INTERVAL_SECS,
       neverHitsWorld,
     ).state

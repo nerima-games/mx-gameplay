@@ -121,25 +121,16 @@ export type PortalDwell =
 /** The state a traveller who has never been near a portal is in. */
 export const OUTSIDE_PORTAL: PortalDwell = { _tag: 'Outside' }
 
-/** One frame of the wait. */
-export type PortalDwellStep = {
-  readonly dwell: PortalDwell
-  /**
-   * Did the portal fire on this frame?
-   *
-   * A BOOLEAN AND NOT A DESTINATION, deliberately. Nothing in this file knows
-   * where the traveller is, so it cannot say where they come out — that is
-   * mc-worldgen's `resolveNetherTravel`, and the caller that owns a position
-   * calls it. Returning a coordinate here would mean this rule had acquired one,
-   * which is the boundary the whole file is arranged around.
-   *
-   * True on EXACTLY ONE frame per crossing: the step that produces it also moves
-   * the state to `Cooling`, and `Cooling` cannot produce another. That is the
-   * same 「exactly once」 property `./mob/creeper-fuse.ts` gets from making
-   * `Detonated` terminal.
-   */
-  readonly travels: boolean
-}
+/**
+ * One frame of the wait. The literal result records whether this frame fires.
+ *
+ * The portal rule reports only whether travel occurred, not a destination.
+ * A crossing fires on exactly one frame because that step moves the state to
+ * `Cooling`, which cannot produce another crossing.
+ */
+export type PortalDwellStep =
+  | { readonly dwell: PortalDwell; readonly travels: true }
+  | { readonly dwell: PortalDwell; readonly travels: false }
 
 /**
  * Begin or continue a dwell, and fire if it has reached the threshold.
@@ -225,14 +216,13 @@ export const stepPortalDwell = (
   inPortal: boolean,
   dt: DeltaTimeSecs,
 ): PortalDwellStep => {
-  switch (current._tag) {
+  if (current._tag === 'Cooling') {
     // The cooldown is checked FIRST and does not consult `inPortal`, which is
     // the reference's early return (`physics-stage-portal.ts:36-40`) and not an
     // omission: a traveller arrives standing inside the destination portal, so a
     // cooldown that let a dwell accrue underneath it would fire again the
     // instant it expired. The frame on which the cooldown reaches zero accrues
     // nothing; the next one may begin a dwell.
-    case 'Cooling': {
       // ONE guard and not two. This read `Math.max(0, ...)` and then asked
       // `> 0` below, which is the same question twice: a clamped zero and a
       // negative both leave through the same arm, so no input could tell the
@@ -241,32 +231,20 @@ export const stepPortalDwell = (
       // than left as unfalsifiable reassurance.
       const remainingSecs = current.remainingSecs - dt
 
-      return { dwell: remainingSecs > 0 ? { _tag: 'Cooling', remainingSecs } : OUTSIDE_PORTAL, travels: false }
-    }
+    return { dwell: remainingSecs > 0 ? { _tag: 'Cooling', remainingSecs } : OUTSIDE_PORTAL, travels: false }
+  }
 
+  if (current._tag === 'Outside') {
     // Entering and dwelling are ONE step, not two. The reference adds `deltaTime`
     // to a dwell of zero on the very frame it finds the traveller in the block
     // (`physics-stage-portal.ts:47-49`); splitting them would cost a frame on
     // every crossing and diverge from the numbers this file is ported from.
-    case 'Outside': {
-      return inPortal ? dwell(dt) : { dwell: current, travels: false }
-    }
+    return inPortal ? dwell(dt) : { dwell: current, travels: false }
+  }
 
-    // Stepping out FORGETS the wait entirely rather than draining it —
+  // Stepping out FORGETS the wait entirely rather than draining it —
     // `physics-stage-portal.ts:99` sets the ref to 0. The same shape as a
     // creeper's fuse going out, and a decision rather than an omission: a
     // traveller who steps out at 3.9 seconds starts again from zero.
-    case 'Standing': {
-      return inPortal ? dwell(current.dwelledSecs + dt) : { dwell: OUTSIDE_PORTAL, travels: false }
-    }
-
-    /* v8 ignore start -- exhaustiveness safety net over PortalDwell's `_tag` union
-     * ('Outside' | 'Standing' | 'Cooling'), a closed union every case above already
-     * covers; no input can reach this arm. */
-    default: {
-      const exhaustive: never = current
-      return exhaustive
-    }
-    /* v8 ignore stop */
-  }
+  return inPortal ? dwell(current.dwelledSecs + dt) : { dwell: OUTSIDE_PORTAL, travels: false }
 }

@@ -1,4 +1,4 @@
-import { Either, Schema } from 'effect'
+import { Result, Schema } from 'effect'
 
 export const ENDER_DRAGON_MAX_HEALTH = 200
 export const ENDER_DRAGON_DEATH_XP = 12_000
@@ -10,18 +10,21 @@ export const ENDER_DRAGON_PHASE_DURATION_SECS = {
   charging: 2,
 } as const
 
-export const EnderDragonPhaseSchema: Schema.Schema<'circling' | 'perching' | 'charging' | 'dead'> =
-  Schema.Literal('circling', 'perching', 'charging', 'dead')
+export const EnderDragonPhaseSchema: Schema.ConstraintDecoder<
+  'circling' | 'perching' | 'charging' | 'dead'
+> = Schema.Literals(['circling', 'perching', 'charging', 'dead'])
 export type EnderDragonPhase = typeof EnderDragonPhaseSchema.Type
 
-const HealthSchema: Schema.Schema<number> = Schema.Number.pipe(Schema.finite(), Schema.between(0, ENDER_DRAGON_MAX_HEALTH))
-const PhaseTimerSchema: Schema.Schema<number> = Schema.Number.pipe(Schema.finite(), Schema.nonNegative())
+const HealthSchema = Schema.Finite.check(
+  Schema.isBetween({ minimum: 0, maximum: ENDER_DRAGON_MAX_HEALTH }),
+)
+const PhaseTimerSchema = Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0))
 
-export const EnderDragonEncounterSnapshotSchema: Schema.Struct<{
-  phase: typeof EnderDragonPhaseSchema
-  phaseTimerSecs: typeof PhaseTimerSchema
-  health: typeof HealthSchema
-  rewardEmitted: typeof Schema.Boolean
+export const EnderDragonEncounterSnapshotSchema: Schema.ConstraintDecoder<{
+  readonly phase: EnderDragonPhase
+  readonly phaseTimerSecs: number
+  readonly health: number
+  readonly rewardEmitted: boolean
 }> = Schema.Struct({
   phase: EnderDragonPhaseSchema,
   phaseTimerSecs: PhaseTimerSchema,
@@ -45,10 +48,9 @@ export type EnderDragonDamageResult =
     }
   | { readonly _tag: 'Rejected'; readonly reason: 'invalid-damage' | 'dragon-defeated' }
 
-const PlayerDamageSchema = Schema.Number.pipe(
-  Schema.finite(),
-  Schema.positive(),
-  Schema.lessThanOrEqualTo(ENDER_DRAGON_MAX_HEALTH),
+const PlayerDamageSchema = Schema.Finite.check(
+  Schema.isGreaterThan(0),
+  Schema.isLessThanOrEqualTo(ENDER_DRAGON_MAX_HEALTH),
 )
 
 export const initialEnderDragonEncounter = (): EnderDragonEncounterSnapshot => ({
@@ -61,10 +63,10 @@ export const initialEnderDragonEncounter = (): EnderDragonEncounterSnapshot => (
 export const decodeEnderDragonEncounterSnapshot = (
   input: unknown,
 ): EnderDragonEncounterSnapshot | undefined => {
-  const decoded = Schema.decodeUnknownEither(EnderDragonEncounterSnapshotSchema)(input)
-  if (Either.isLeft(decoded)) return undefined
+  const decoded = Schema.decodeUnknownResult(EnderDragonEncounterSnapshotSchema)(input)
+  if (Result.isFailure(decoded)) return undefined
 
-  const snapshot = decoded.right
+  const snapshot = decoded.success
   const consistentDeath = snapshot.phase === 'dead'
     ? snapshot.health === 0 && snapshot.rewardEmitted
     : snapshot.health > 0 && !snapshot.rewardEmitted
@@ -85,11 +87,11 @@ export const damageEnderDragonByPlayer = (
   state: EnderDragonEncounterSnapshot,
   input: unknown,
 ): EnderDragonDamageResult => {
-  const decoded = Schema.decodeUnknownEither(PlayerDamageSchema)(input)
-  if (Either.isLeft(decoded)) return { _tag: 'Rejected', reason: 'invalid-damage' }
+  const decoded = Schema.decodeUnknownResult(PlayerDamageSchema)(input)
+  if (Result.isFailure(decoded)) return { _tag: 'Rejected', reason: 'invalid-damage' }
   if (state.phase === 'dead') return { _tag: 'Rejected', reason: 'dragon-defeated' }
 
-  const amount = decoded.right
+  const amount = decoded.success
   const health = Math.max(0, state.health - amount)
   const damageEvent: EnderDragonEncounterEvent = {
     _tag: 'DragonDamagedByPlayer',

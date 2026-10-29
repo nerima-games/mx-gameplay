@@ -8,9 +8,9 @@
  * 2-4 warts」 becomes arithmetic instead of a claim.
  */
 import { describe, expect, it } from '@effect/vitest'
-import { Effect, FastCheck } from 'effect'
+import { Effect } from 'effect'
+import * as FastCheck from 'fast-check'
 import {
-  MISSING_RIPE_PRODUCE,
   RIPE_CROP_YIELD,
   UNRIPE_CROP_DROP,
   cropDrops,
@@ -20,7 +20,8 @@ import { CROP_OF_SEED } from '../src/domain/interactions/plant-crop'
 import { ITEM_TYPES } from '@nerima-games/mc-kernel'
 import type { BlockType } from '@nerima-games/mc-kernel'
 
-const CROPS = Object.keys(UNRIPE_CROP_DROP) as ReadonlyArray<BlockType>
+type CropBlockType = keyof typeof UNRIPE_CROP_DROP
+const CROPS = Object.keys(UNRIPE_CROP_DROP) as ReadonlyArray<CropBlockType>
 
 describe('the table lines up with what can be planted', () => {
   it.effect('every crop that can be planted can also be broken', () =>
@@ -29,7 +30,7 @@ describe('the table lines up with what can be planted', () => {
       // planted and not broken would be a block the player can create and never
       // remove — and neither file alone can see that.
       for (const crop of Object.values(CROP_OF_SEED)) {
-        expect(UNRIPE_CROP_DROP[crop as BlockType]).toBeDefined()
+        expect(UNRIPE_CROP_DROP[crop as CropBlockType]).toBeDefined()
       }
     }),
   )
@@ -151,10 +152,9 @@ describe('wheat yields', () => {
     }),
   )
 
-  it.effect('the ripe produce is part of the item vocabulary', () =>
+  it.effect('ripe wheat is part of the item vocabulary', () =>
     Effect.sync(() => {
       expect(ITEM_TYPES).toContain('wheat')
-      expect(MISSING_RIPE_PRODUCE).not.toHaveProperty('wheat_crop')
     }),
   )
 })

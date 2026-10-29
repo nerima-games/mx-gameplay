@@ -1,4 +1,6 @@
 export {
+  GAMEPLAY_CROPS_OWNER_ID,
+  GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
   resolveArmoredPlayerDamages,
   LAVA_TICK_INTERVAL,
   HOSTILE_SPAWN_INTERVAL_SECS,
@@ -7,6 +9,7 @@ export {
   type VillagerTradeRequest,
   type VillagerTradeResult,
   type PlacementRequest,
+  type BlockBreakRequestContext,
   type BlockPlacementRequestId,
   type BlockPlacementMode,
   type BlockPlacementCommand,
@@ -38,9 +41,22 @@ export {
   type BowShotResult,
   type GameplayMeleeAttackResult,
   type EnderPearlThrowRequest,
+  EnderPearlThrowRequestSchema,
   type BowKnockback,
   type EnderPearlOutcome,
+  EnderPearlOutcomeSchema,
   makeGameplayFrameState,
+  makeGameplayFrameStateForOwner,
+  requestCollectBrewingBottle,
+  type CollectBrewingBottleRequest,
+  CollectBrewingBottleRequestSchema,
+  type BrewingBottleItemUseResult,
+  GameplayBrewingBottleItemUseResultSchema,
+  type BrewingItemUseRequest,
+  GameplayBrewingItemUseRequestSchema,
+  type BrewingItemUseResult,
+  GameplayBrewingItemUseResultSchema,
+  GameplayFishingItemUseResultSchema,
   setPlayerDead,
   requestBlockBreak,
   DEFAULT_BLOCK_REACH,
@@ -73,9 +89,11 @@ export {
   drainBowKnockbacks,
   drainMeleeAttackResults,
   requestMeleeAttack,
+  requestEnderPearlThrow,
   type TargetedPrimaryAttackResult,
   type TargetedPrimaryAttackResolution,
   type TargetedPrimaryAttackOptions,
+  type GameplayTargetingSnapshotContext,
   resolveTargetedPrimaryAttack,
   requestTargetedPrimaryAttack,
   requestMobSpawn,
@@ -90,12 +108,8 @@ export {
   insertBrewingIngredient,
   collectBrewingPotion,
   useBrewingPotion,
-  snapshotBrewingStand,
-  restoreBrewingStand,
   requestVillagerTrade,
   drainVillagerTradeResults,
-  snapshotVillagerTrades,
-  restoreVillagerTrades,
   snapshotFireLifecycle,
   restoreFireLifecycle,
   submitWeatherGameplayInput,
@@ -105,23 +119,27 @@ export {
   requestFireExtinguish,
   drainMobDrops,
   drainMobExperience,
+  requestDroppedItemPickup,
+  drainDroppedItemPickupExecutions,
+  requestExperienceOrbAbsorption,
+  drainExperienceOrbAbsorptionExecutions,
+  type DroppedItemPickupExecution,
+  type ExperienceOrbAbsorptionExecution,
   requestTargetedBlockPlacement,
   requestTargetedBlockUse,
   resolveTargetedBlock,
   requestTargetedItemUse,
   requestTargetedSoilTill,
   requestTargetedPotatoPlanting,
-  requestTargetedBoneMeal,
   type GameplayStageOptions,
 } from './registration-core.js'
 
 import {
   ChunkStore,
-  InventoryService,
-  PlayerService,
   TimeService,
   entityManagerTag,
-  makeGameplayFrameState,
+  GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+  makeGameplayFrameStateForOwner,
 } from './registration-core.js'
 import type {
   ChunkStoreApi,
@@ -129,6 +147,7 @@ import type {
   EntityManagerApi,
   GameplayFrameState,
   GameplayStageContext,
+  GameplayStageCommitServices,
   GameplayStageOptions,
   InventoryServiceApi,
   MobBehaviour,
@@ -137,6 +156,16 @@ import type {
   VehicleFrameEnvironment,
   VehicleServiceApi,
 } from './registration-core.js'
+import {
+  DomainEventBus,
+  WorldCommitCoordinator,
+  makeBrewingService,
+  makeFishingService,
+  makeProjectileService,
+  makeTntService,
+  PROJECTILE_REPLICATED_OWNER_ID,
+  TNT_REPLICATED_OWNER_ID,
+} from '@nerima-games/mc-sim'
 import type { GameModule, StageRegistration } from '@nerima-games/mc-kernel'
 import { Effect, Layer } from 'effect'
 import { makeVehiclesStage } from './vehicles-stage.js'
@@ -147,28 +176,40 @@ import { makeEntitiesStage } from './entities-stage.js'
 import { makeEnderDragonStage } from './ender-dragon-stage.js'
 import { makeFluidsStage } from './fluids-stage.js'
 import { makeTimeWeatherStage } from './time-weather-stage.js'
+import {
+  GAMEPLAY_PLAYER_OWNER_ID,
+  GAMEPLAY_CROPS_OWNER_ID,
+  GAMEPLAY_BREWING_OWNER_ID,
+  GAMEPLAY_ENTITIES_OWNER_ID,
+  GAMEPLAY_FISHING_OWNER_ID,
+  GAMEPLAY_DROPPED_ITEMS_OWNER_ID,
+  GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
+  GAMEPLAY_VITALS_OWNER_ID,
+  GAMEPLAY_VILLAGER_TRADES_OWNER_ID,
+  GAMEPLAY_TNT_SOURCES_OWNER_ID,
+} from './gameplay-owner-registrations.js'
 
 export const gameplayStages = (
   state: GameplayFrameState,
   store: ChunkStoreApi,
   roster: EntityManagerApi<MobBehaviour>,
-  inventory: InventoryServiceApi,
-  player: PlayerServiceApi,
+  _inventory: InventoryServiceApi | undefined,
+  _player: PlayerServiceApi | undefined,
   time: TimeServiceApi,
   vehicleService?: VehicleServiceApi,
   vehicleEnvironment?: VehicleFrameEnvironment,
   options: GameplayStageOptions = {},
+  commit?: GameplayStageCommitServices,
 ): ReadonlyArray<StageRegistration> => {
   const context: GameplayStageContext = {
     state,
     store,
     roster,
-    inventory,
-    player,
     time,
     vehicleService,
     vehicleEnvironment,
     options,
+    commit,
   }
   return [
     makeVehiclesStage(context),
@@ -185,10 +226,10 @@ export const gameplayStages = (
 /**
  * Build the module's state and its stages together.
  *
- * This is exactly `GameModule.frameStages` — see `gameplayModule` below. The two
- * services in the context are the whole reason that field is an Effect: this is
- * the one moment at which a module may acquire a service in order to BUILD a
- * stage, rather than in order to run one.
+ * This is exactly `GameModule.frameStages` — see `gameplayModule` below. The
+ * registration services are the reason that field is an Effect: this is the
+ * one moment at which a module may acquire services in order to BUILD stages,
+ * rather than in order to run them.
  *
  * ---------------------------------------------------------------------------
  * `MobBehaviour` IS NAMED HERE, AND THAT IS THE POINT OF FAILURE TO KNOW ABOUT
@@ -220,16 +261,43 @@ export const gameplayStages = (
 export const makeGameplayStages: Effect.Effect<
   ReadonlyArray<StageRegistration>,
   never,
-  ChunkStore | EntityManager | InventoryService | PlayerService | TimeService
+  ChunkStore | EntityManager | TimeService | WorldCommitCoordinator | DomainEventBus
 > = Effect.gen(function* () {
   const store = yield* ChunkStore
   const roster = yield* entityManagerTag<MobBehaviour>()
-  const inventory = yield* InventoryService
-  const player = yield* PlayerService
   const time = yield* TimeService
-  const state = yield* makeGameplayFrameState
+  const coordinator = yield* WorldCommitCoordinator
+  const eventBus = yield* DomainEventBus
+  const brewingService = yield* makeBrewingService(GAMEPLAY_BREWING_OWNER_ID)
+  const fishingService = yield* makeFishingService(GAMEPLAY_FISHING_OWNER_ID)
+  const projectileService = yield* makeProjectileService()
+  const tntService = yield* makeTntService(TNT_REPLICATED_OWNER_ID)
+  const state = yield* makeGameplayFrameStateForOwner({
+    coordinator,
+    vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID,
+  })
 
-  return gameplayStages(state, store, roster, inventory, player, time)
+  return gameplayStages(state, store, roster, undefined, undefined, time, undefined, undefined, {}, {
+    coordinator,
+    playerOwnerId: GAMEPLAY_PLAYER_OWNER_ID,
+    playerStorageOwnerId: GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+    cropOwnerId: GAMEPLAY_CROPS_OWNER_ID,
+    droppedItemsOwnerId: GAMEPLAY_DROPPED_ITEMS_OWNER_ID,
+    vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID,
+    experienceOrbsOwnerId: GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
+    villagerTradesOwnerId: GAMEPLAY_VILLAGER_TRADES_OWNER_ID,
+    brewingOwnerId: GAMEPLAY_BREWING_OWNER_ID,
+    fishingOwnerId: GAMEPLAY_FISHING_OWNER_ID,
+    entitiesOwnerId: GAMEPLAY_ENTITIES_OWNER_ID,
+    projectileOwnerId: PROJECTILE_REPLICATED_OWNER_ID,
+    tntOwnerId: TNT_REPLICATED_OWNER_ID,
+    tntSourcesOwnerId: GAMEPLAY_TNT_SOURCES_OWNER_ID,
+    brewingService,
+    fishingService,
+    projectileService,
+    tntService,
+    eventBus,
+  })
 })
 
 /**
@@ -255,29 +323,27 @@ export const makeGameplayStages: Effect.Effect<
  * The vertical-slice spike changed `frameStages` to an Effect, and the shape
  * this repository had already been forced into became the contract.
  *
- * `RRegister` is now `ChunkStore | EntityManager | InventoryService |
- * PlayerService | TimeService` and `RIn`
+ * `RRegister` is now `ChunkStore | EntityManager | TimeService |
+ * WorldCommitCoordinator | DomainEventBus` and
+ * `RIn`
  * is still `never`, which is the distinction that parameter was added for: this
  * repository needs mc-worldgen's store in order to REGISTER stages that write
- * blocks, mc-sim's roster in order to register the stage that iterates mobs and
- * mc-sim's inventory in order to register the stage that mines, and needs
- * nothing at all in order to build a Layer it does not have.
+ * blocks, mc-sim's roster in order to register the stage that iterates mobs,
+ * a commit coordinator for atomic owner and block writes, and an event bus for
+ * post-commit plan events. Player pose and inventory are read from gameplay
+ * owner snapshots. It
+ * needs nothing to build a Layer.
  *
- * The union growing to five services is the shape `RRegister`
- * predicted and is not a widening of anything a consumer relies on: `RIn` is
- * untouched, so mx-gameplay still BUILDS nothing another repository has to
- * supply. What it does mean is that a host which was providing only the store
- * and the roster now fails to compile, which is the correct failure — the
- * alternative is a stage that deposits into an inventory nobody built.
+ * The registration contract has five services. `RIn` remains `never`, so
+ * mx-gameplay still BUILDS nothing another repository has to supply. A host
+ * must provide a coordinator registered with the published gameplay and
+ * simulation owners before it can build the stages.
  *
- * A host supplies mc-sim's entity, inventory, player, and time layers. The
- * latter three have no behaviour type parameter, so the `MobBehaviour` hazard
- * does not repeat. The host's line is
+ * A host supplies mc-sim's entity and time layers. The host's line is
  *
  *     Layer.mergeAll(
  *       simModule.layers,
  *       EntityManagerLayer<MobBehaviour>(undefined, repairMobBehaviour),
- *       InventoryServiceLayer(),
  *     )
  */
 
@@ -285,7 +351,7 @@ export const gameplayModule: GameModule<
   never,
   never,
   never,
-  ChunkStore | EntityManager | InventoryService | PlayerService | TimeService
+  ChunkStore | EntityManager | TimeService | WorldCommitCoordinator | DomainEventBus
 > = {
   layers: Layer.empty,
   frameStages: makeGameplayStages,

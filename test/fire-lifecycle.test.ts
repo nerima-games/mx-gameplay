@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest'
+import { Option, Result } from 'effect'
+import { blockIdOf, capabilityOfBlockId } from '@nerima-games/mc-kernel'
 import {
   FIRE_BURN_DURATION_TICKS,
   FIRE_DAMAGE_INTERVAL_TICKS,
@@ -125,6 +127,65 @@ describe('fire lifecycle', () => {
       state = advanceFireLifecycle(state, [fire], 'clear').state
     }
     expect(state.fires).toStrictEqual([])
+  })
+
+  it('uses kernel flammable capabilities for spread fuel', () => {
+    // Vanilla Java Edition fuel values: https://minecraft.wiki/w/Fire#Spread
+    const cases = [
+      { block: 'oak_planks', flammable: true },
+      { block: 'tnt', flammable: true },
+      { block: 'tall_grass', flammable: true },
+      { block: 'fern', flammable: true },
+      { block: 'dandelion', flammable: true },
+      { block: 'poppy', flammable: true },
+      { block: 'coal_block', flammable: true },
+      { block: 'door', flammable: false },
+      { block: 'door_open', flammable: false },
+      { block: 'bed', flammable: false },
+      { block: 'crafting_table', flammable: false },
+      { block: 'ladder', flammable: false },
+      { block: 'sapling', flammable: false },
+      { block: 'wheat_crop', flammable: false },
+      { block: 'potato_crop', flammable: false },
+      { block: 'stone', flammable: false },
+    ] as const
+
+    for (const { block, flammable } of cases) {
+      const blockId = Option.getOrThrow(blockIdOf(block))
+      expect(Result.getOrUndefined(capabilityOfBlockId(blockId, 'flammable'))).toBe(flammable)
+
+      const fuel = { position: { x: 1, y: 1, z: 0 }, block }
+      const step = advanceFireLifecycle(
+        makeFireLifecycleState([fire.position], 1),
+        [fire, stoneBelow, fuel],
+        'clear',
+      )
+      expect(step.mutations.some((mutation) =>
+        mutation.position.x === fuel.position.x &&
+        mutation.position.y === fuel.position.y &&
+        mutation.position.z === fuel.position.z &&
+        mutation.block === 'fire',
+      )).toBe(flammable)
+    }
+  })
+
+  it('uses kernel flammability when deciding whether fire has adjacent support', () => {
+    const withoutFuel = advanceFireLifecycle(
+      makeFireLifecycleState([fire.position], 1),
+      [fire, { position: { x: 0, y: 0, z: 0 }, block: 'air' },
+        { position: { x: 1, y: 1, z: 0 }, block: 'door' }],
+      'clear',
+    )
+    expect(withoutFuel.mutations).toContainEqual({ position: fire.position, block: 'air' })
+
+    const withFuel = advanceFireLifecycle(
+      makeFireLifecycleState([fire.position], 1),
+      [fire, { position: { x: 0, y: 0, z: 0 }, block: 'air' },
+        { position: { x: 1, y: 1, z: 0 }, block: 'tall_grass' }],
+      'clear',
+    )
+    expect(withFuel.mutations).not.toContainEqual({ position: fire.position, block: 'air' })
+    expect(withFuel.mutations).toContainEqual({ position: { x: 1, y: 1, z: 0 }, block: 'fire' })
   })
 
   it('applies difficulty damage on cadence and continues burning after contact', () => {

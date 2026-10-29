@@ -2,24 +2,32 @@ import {
   addItem,
   removeItem,
   withInventory,
+  PlayerStorageSnapshotSchema,
   type InventoryServiceApi,
+  type PlayerStorage,
+  type ReplicatedOwnerId,
+  type WorldCommitCoordinatorApi,
+  type WorldCommitCoordinatorError,
+  type WorldCommitRequest,
 } from '@nerima-games/mc-sim'
-import { Effect, Exit, Ref } from 'effect'
+import { Effect, Option, Ref, Result, Schema } from 'effect'
 import { blockIdOf } from '@nerima-games/mc-kernel'
 import {
   AIR_BLOCK_ID,
+  DimensionIdSchema,
   type BlockId,
   type BlockPosition,
   type ChunkCoord,
+  type WorldWriteBatch,
 } from '@nerima-games/mc-kernel'
-import type { ChunkStoreApi } from '@nerima-games/mc-worldgen'
 import { blockPosition, blockPositionKeyOf, type ItemType } from '@nerima-games/mc-kernel'
+import { chunkCoordOf } from '../chunk-window.js'
 import {
   enqueueFluidDisturbance,
   type FluidKind,
   type FluidWorkItem,
 } from '../fluid-frontier.js'
-import type { Dimension } from '@nerima-games/mc-worldgen'
+import type { ChunkStoreApi, Dimension } from '@nerima-games/mc-worldgen'
 
 export const BUCKET_ITEM_TYPES = ['bucket', 'water_bucket', 'lava_bucket'] as const
 export type BucketItemType = (typeof BUCKET_ITEM_TYPES)[number]
@@ -34,6 +42,7 @@ export type BucketUseRequest = {
   readonly targetDimension: Dimension
   readonly position: BlockPosition
   readonly heldItem: BucketItemType
+  readonly playerStorageOwnerId: ReplicatedOwnerId
 }
 
 export type BucketUseOutcome =
@@ -61,43 +70,39 @@ export type BucketUseOutcome =
   | { readonly _tag: 'ChunkNotLoaded' }
   | { readonly _tag: 'OutOfWorld' }
   | { readonly _tag: 'WorldChanged' }
-  | { readonly _tag: 'InventoryUpdateFailed' }
-  | {
-      readonly _tag: 'RollbackFailed'
-      readonly trigger: 'WorldChanged' | 'InventoryUpdateFailed'
-      readonly world: 'Restored' | 'ChunkNotLoaded' | 'OutOfWorld'
-      readonly inventory: 'Unchanged' | 'Restored' | 'RestoreFailed'
-    }
+  | { readonly _tag: 'CommitContextMissing' }
 
 type BucketPlan = {
   readonly action: 'collect' | 'place'
   readonly fluid: FluidKind
-  readonly expectedBlock: BlockId
   readonly nextBlock: BlockId
   readonly nextItem: BucketItemType
 }
 
-const fluidBlockId = (fluid: FluidKind): BlockId | undefined => blockIdOf(fluid)
+const FLUID_BLOCK_IDS: Readonly<Record<FluidKind, BlockId>> = {
+  water: Option.getOrThrow(blockIdOf('water')),
+  lava: Option.getOrThrow(blockIdOf('lava')),
+}
+
+const fluidBlockId = (fluid: FluidKind): BlockId => FLUID_BLOCK_IDS[fluid]
 
 const planBucketUse = (heldItem: BucketItemType, block: BlockId): BucketPlan | undefined => {
   const waterBlock = fluidBlockId('water')
   const lavaBlock = fluidBlockId('lava')
 
   if (heldItem === 'bucket') {
-    if (waterBlock !== undefined && block === waterBlock) {
+    if (block === waterBlock) {
       return {
         action: 'collect',
         fluid: 'water',
-        expectedBlock: waterBlock,
         nextBlock: AIR_BLOCK_ID,
         nextItem: 'water_bucket',
       }
     }
-    if (lavaBlock !== undefined && block === lavaBlock) {
+    if (block === lavaBlock) {
       return {
         action: 'collect',
         fluid: 'lava',
-        expectedBlock: lavaBlock,
         nextBlock: AIR_BLOCK_ID,
         nextItem: 'lava_bucket',
       }
@@ -111,52 +116,44 @@ const planBucketUse = (heldItem: BucketItemType, block: BlockId): BucketPlan | u
 
   const fluid: FluidKind = heldItem === 'water_bucket' ? 'water' : 'lava'
   const nextBlock = fluidBlockId(fluid)
-  // UNREACHABLE TODAY, same shape as `./ignite-fire`'s `UnknownBlock`:
-  // `FluidKind` is closed to 'water' | 'lava' (fluid-frontier.ts), and
-  // kernel's own type declaration proves `blockIdOf` total over
-  // every `BlockType`, water and lava included, so no legal `fluid` value
-  // can reach this branch.
-  /* v8 ignore start */
-  if (nextBlock === undefined) {
-    return undefined
-  }
-  /* v8 ignore stop */
   return {
     action: 'place',
     fluid,
-    expectedBlock: AIR_BLOCK_ID,
     nextBlock,
     nextItem: 'bucket',
   }
 }
 
-type WorldRollback = 'Restored' | 'ChunkNotLoaded' | 'OutOfWorld'
-
-const rollbackWorld = (
-  store: ChunkStoreApi,
-  position: BlockPosition,
-  block: BlockId,
-): Effect.Effect<WorldRollback> =>
-  Effect.map(store.setBlock(position, block), (outcome) => {
-    if (outcome._tag === 'ChunkNotLoaded' || outcome._tag === 'OutOfWorld') {
-      return outcome._tag
-    }
-    return 'Restored'
-  })
-
 /**
- * Exchange one bucket item and one world cell as one interaction.
+ * Exchange one bucket item and one world cell through one C4/C7 commit.
  *
- * Inventory capacity is proven against a snapshot before the world write. The
- * snapshot is installed only after a successful write, so ordinary refusals do
- * not need compensating mutations.
+ * The coordinator observation is authoritative for both storage and the target
+ * block. The fluid frontier is updated only after the owner and block commit.
  */
-export const useBucket = (
+type LegacyBucketUseRequest = Omit<BucketUseRequest, 'playerStorageOwnerId'>
+
+type LegacyBucketUseArguments = readonly [
   store: ChunkStoreApi,
   inventory: InventoryServiceApi,
   fluidFrontier: Ref.Ref<ReadonlyArray<FluidWorkItem>>,
+  request: LegacyBucketUseRequest,
+]
+
+type CoordinatedBucketUseArguments = readonly [
+  coordinator: WorldCommitCoordinatorApi,
+  fluidFrontier: Ref.Ref<ReadonlyArray<FluidWorkItem>>,
   request: BucketUseRequest,
-): Effect.Effect<BucketUseOutcome> =>
+]
+
+const useBucketWithCommit = (
+  coordinator: WorldCommitCoordinatorApi,
+  fluidFrontier: Ref.Ref<ReadonlyArray<FluidWorkItem>>,
+  request: BucketUseRequest,
+): Effect.Effect<
+  BucketUseOutcome,
+  | WorldCommitCoordinatorError
+  | Schema.SchemaError
+> =>
   Effect.gen(function* () {
     if (request.activeDimension !== request.targetDimension) {
       return {
@@ -166,67 +163,57 @@ export const useBucket = (
       }
     }
 
-    const storage = yield* inventory.storageSnapshot
-    const removed = removeItem(storage.inventory, request.heldItem, 1)
+    const dimension = yield* Schema.decodeUnknownEffect(DimensionIdSchema)(request.targetDimension)
+    const observation = yield* coordinator.observe(
+      request.playerStorageOwnerId,
+      PlayerStorageSnapshotSchema,
+      [{ dimension, position: request.position }],
+    )
+
+    const removed = Result.getOrThrow(removeItem(observation.state.inventory, request.heldItem, 1))
     if (removed.removed !== 1) {
       return { _tag: 'MissingItem', item: request.heldItem }
     }
 
-    const reading = yield* store.getBlock(request.position)
-    if (reading._tag !== 'Block') {
-      return reading
+    const target = observation.blocks[0]
+    if (target === undefined) {
+      return { _tag: 'WorldChanged' }
+    }
+    if (target.reading._tag !== 'Block') {
+      return target.reading
     }
 
-    const plan = planBucketUse(request.heldItem, reading.block)
+    const plan = planBucketUse(request.heldItem, target.reading.block)
     if (plan === undefined) {
       return request.heldItem === 'bucket'
-        ? { _tag: 'WrongTarget', block: reading.block }
-        : { _tag: 'Occupied', block: reading.block }
+        ? { _tag: 'WrongTarget', block: target.reading.block }
+        : { _tag: 'Occupied', block: target.reading.block }
     }
 
-    const added = addItem(removed.inventory, plan.nextItem, 1)
+    const added = Result.getOrThrow(addItem(removed.inventory, plan.nextItem, 1))
     if (added.leftover !== 0) {
       return { _tag: 'InventoryFull', item: plan.nextItem }
     }
 
-    const written = yield* store.setBlock(request.position, plan.nextBlock)
-    if (written._tag === 'ChunkNotLoaded' || written._tag === 'OutOfWorld') {
-      return written
-    }
-    if (written._tag === 'Written' && written.previous !== plan.expectedBlock) {
-      const world = yield* rollbackWorld(store, request.position, written.previous)
-      if (world !== 'Restored') {
-        return {
-          _tag: 'RollbackFailed',
-          trigger: 'WorldChanged',
-          world,
-          inventory: 'Unchanged',
-        }
-      }
-      return { _tag: 'WorldChanged' }
-    }
-    if (written._tag !== 'Written') {
-      return { _tag: 'WorldChanged' }
+    const candidate: PlayerStorage = Result.getOrThrow(withInventory(observation.state, added.inventory))
+
+    const expectedDimensionRevision = yield* coordinator.dimensionRevision(dimension)
+    const blockWrite: WorldWriteBatch = {
+      world: observation.world,
+      expectedWorldRevision: observation.revision,
+      dimension,
+      expectedDimensionRevision,
+      edits: [{ position: request.position, block: plan.nextBlock }],
     }
 
-    const inventoryUpdate = yield* Effect.exit(
-      inventory.restoreStorage(withInventory(storage, added.inventory)),
-    )
-    if (Exit.isFailure(inventoryUpdate)) {
-      const inventoryRollback = yield* Effect.exit(inventory.restoreStorage(storage))
-      const world = yield* rollbackWorld(store, request.position, plan.expectedBlock)
-      const inventoryState = Exit.isSuccess(inventoryRollback) ? 'Restored' : 'RestoreFailed'
-
-      if (world !== 'Restored' || inventoryState === 'RestoreFailed') {
-        return {
-          _tag: 'RollbackFailed',
-          trigger: 'InventoryUpdateFailed',
-          world,
-          inventory: inventoryState,
-        }
-      }
-      return { _tag: 'InventoryUpdateFailed' }
+    const commitRequest: WorldCommitRequest = {
+      expectedRevision: observation.revision,
+      expectedDimensions: [{ dimension, expectedRevision: expectedDimensionRevision }],
+      changes: [{ ownerId: request.playerStorageOwnerId, state: candidate }],
+      blockWrite,
     }
+    yield* coordinator.commit(commitRequest)
+
     yield* Ref.update(fluidFrontier, (frontier) =>
       enqueueFluidDisturbance(frontier, {
         key: blockPositionKeyOf(
@@ -240,6 +227,34 @@ export const useBucket = (
       _tag: plan.action === 'collect' ? 'Collected' : 'Placed',
       fluid: plan.fluid,
       position: request.position,
-      chunk: written.chunk,
+      chunk: chunkCoordOf(request.position),
     }
   })
+
+export function useBucket(...args: LegacyBucketUseArguments): Effect.Effect<BucketUseOutcome>
+export function useBucket(
+  ...args: CoordinatedBucketUseArguments
+): Effect.Effect<
+  BucketUseOutcome,
+  WorldCommitCoordinatorError | Schema.SchemaError
+>
+export function useBucket(
+  ...args: LegacyBucketUseArguments | CoordinatedBucketUseArguments
+): Effect.Effect<
+  BucketUseOutcome,
+  WorldCommitCoordinatorError | Schema.SchemaError
+> {
+  if (args.length === 4) {
+    const request = args[3]
+    return Effect.succeed(
+      request.activeDimension !== request.targetDimension
+        ? {
+            _tag: 'WrongDimension' as const,
+            activeDimension: request.activeDimension,
+            targetDimension: request.targetDimension,
+          }
+        : { _tag: 'CommitContextMissing' as const },
+    )
+  }
+  return useBucketWithCommit(...args)
+}

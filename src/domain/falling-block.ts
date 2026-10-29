@@ -47,7 +47,8 @@
  * collection.
  */
 
-import { blockIdOf, capabilityOfBlockId } from '@nerima-games/mc-kernel'
+import { Option, Result } from 'effect'
+import { BlockId, blockIdOf, capabilityOfBlockId } from '@nerima-games/mc-kernel'
 import type { BlockPositionKey } from '@nerima-games/mc-kernel'
 
 /**
@@ -161,7 +162,8 @@ export const planFallingBlockMoves = (
 ): ReadonlyArray<PlannedFallingBlockMove> => {
   const overlay = new Map<string, number>()
   const read = (at: FallingBlockPosition): number | undefined => overlay.get(fallingPositionKey(at)) ?? readBlock(at)
-  const air = blockIdOf('air')
+  // `air` is a required entry in the kernel's canonical block registry.
+  const air = Option.getOrThrow(blockIdOf('air'))
   const moves: Array<PlannedFallingBlockMove> = []
 
   for (const target of targets) {
@@ -169,8 +171,11 @@ export const planFallingBlockMoves = (
     const material = read(source)
     const destination = read(target)
     if (material === undefined || destination === undefined) continue
-    if (!capabilityOfBlockId(material, 'fallsWhenUnsupported')) continue
-    if (!capabilityOfBlockId(destination, 'replaceable')) continue
+    const materialId = Result.getOrUndefined(BlockId.result(material))
+    const destinationId = Result.getOrUndefined(BlockId.result(destination))
+    if (materialId === undefined || destinationId === undefined) continue
+    if (Result.getOrUndefined(capabilityOfBlockId(materialId, 'fallsWhenUnsupported')) !== true) continue
+    if (Result.getOrUndefined(capabilityOfBlockId(destinationId, 'replaceable')) !== true) continue
 
     const move = { source, target: { ...target }, blockId: material }
     moves.push(move)

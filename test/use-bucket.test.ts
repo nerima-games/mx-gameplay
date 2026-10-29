@@ -1,16 +1,34 @@
 import { describe, expect, it } from '@effect/vitest'
-import type { InventoryServiceApi, Slot } from '@nerima-games/mc-sim'
-import { Effect, Ref } from 'effect'
+import * as FastCheck from 'fast-check'
+import {
+  makeReplicatedOwnerId,
+  makeWorldCommitCoordinator,
+  playerStorageOwnerRegistration,
+  PlayerStorageSnapshotSchema,
+  WorldCommitCoordinatorErrorSchema,
+  WorldRevisionConflict,
+  type InventoryServiceApi,
+  type PlayerStorage,
+  type ReplicatedOwnerId,
+  type Slot,
+  type WorldCommitCoordinatorApi,
+  type WorldCommitCoordinatorError,
+} from '@nerima-games/mc-sim'
+import { Effect, Option, Ref, Result, Schema } from 'effect'
 import {
   AIR_BLOCK_ID,
-  BlockId,
-  blockPosition,
+  blockIdOf,
   blockPositionKeyOf,
-  BlockPositionKey as positionKey,
+  BlockPositionKey as makeBlockPositionKey,
+  itemStack,
   StackCount,
+  WorldIdSchema,
+  WorldRevisionSchema,
+  type BlockId,
+  type BlockPositionKey,
   type BlockPosition,
 } from '@nerima-games/mc-kernel'
-import type { ChunkStoreApi } from '@nerima-games/mc-worldgen'
+import type { ChunkStoreRegistryApi } from '@nerima-games/mc-worldgen'
 import {
   enqueueFluidDisturbance,
   type FluidKind,
@@ -22,16 +40,29 @@ import {
   type BucketItemType,
   type BucketUseRequest,
 } from '../src/domain/interactions/use-bucket'
-import { makeChunkStoreDouble, STONE, WATER, world } from './support/chunk-store-double'
+import {
+  makeInMemoryWorld,
+  cellKey,
+  chunkKey,
+  chunkOf,
+  type InMemoryWorld,
+} from '../src/domain/in-memory-world'
 import { emptySlots, makeInventoryDouble } from './support/inventory-service-double'
+import { makeChunkStoreDouble, world as sparseWorld } from './support/chunk-store-double'
+import { blockPosition as atBlockPosition } from './support/coordinate-fixtures'
 
 type ItemType = Parameters<InventoryServiceApi['add']>[0]
 
-const LAVA: BlockId = BlockId(11)
-const POSITION: BlockPosition = blockPosition(1, 64, 1)
-const LOADED_CHUNKS = ['0,0']
+const STONE = Option.getOrThrow(blockIdOf('stone'))
+const WATER = Option.getOrThrow(blockIdOf('water'))
+const LAVA = Option.getOrThrow(blockIdOf('lava'))
+const POSITION: BlockPosition = atBlockPosition(1, 64, 1)
+const PLAYER_STORAGE_OWNER_ID: ReplicatedOwnerId = makeReplicatedOwnerId('gameplay-test-storage')
+const WORLD_ID = Schema.decodeUnknownSync(WorldIdSchema)('gameplay-bucket-tests')
 
-const stack = (item: ItemType, count: number): Slot => ({ item, count: StackCount(count) })
+const positionKey = (value: string): BlockPositionKey => Result.getOrThrow(makeBlockPositionKey(value))
+const stack = (item: ItemType, count: number): Slot =>
+  Result.getOrThrow(itemStack(item, StackCount(count)))
 
 const inventoryWith = (...entries: ReadonlyArray<readonly [number, Slot]>): ReadonlyArray<Slot> => {
   const slots = [...emptySlots()]
@@ -47,55 +78,202 @@ const request = (
   targetDimension: 'overworld',
   position: POSITION,
   heldItem,
+  playerStorageOwnerId: PLAYER_STORAGE_OWNER_ID,
   ...overrides,
 })
+
+type BucketHarness = {
+  readonly world: InMemoryWorld<unknown>
+  readonly inventory: InventoryServiceApi
+  readonly coordinator: WorldCommitCoordinatorApi
+  readonly ownerId: ReplicatedOwnerId
+  readonly initialStorage: PlayerStorage
+}
+
+const makeBucketHarness = (
+  block: BlockId | undefined,
+  loaded: boolean,
+  slots: ReadonlyArray<Slot>,
+): Effect.Effect<BucketHarness, WorldCommitCoordinatorError> =>
+  Effect.gen(function* () {
+    const initialBlocks =
+      block === undefined ? new Map<string, BlockId>() : new Map([[cellKey(POSITION), block]])
+    const world = yield* makeInMemoryWorld({
+      world: {
+        blocks: initialBlocks,
+        loaded: loaded ? [chunkKey(chunkOf(POSITION))] : [],
+      },
+    })
+    const inventory = yield* makeInventoryDouble(slots)
+    const initialStorage = yield* inventory.api.storageSnapshot
+    const chunkStores: ChunkStoreRegistryApi = { forDimension: () => world.chunkStore }
+    const coordinator = yield* makeWorldCommitCoordinator({
+      world: WORLD_ID,
+      owners: [playerStorageOwnerRegistration(PLAYER_STORAGE_OWNER_ID, initialStorage)],
+      chunkStores,
+    })
+    return {
+      world,
+      inventory: inventory.api,
+      coordinator,
+      ownerId: PLAYER_STORAGE_OWNER_ID,
+      initialStorage,
+    }
+  })
+
+const assertUnchangedAfterFailure = (
+  scenario:
+    | 'wrong-dimension'
+    | 'missing-item'
+    | 'wrong-target'
+    | 'occupied'
+    | 'inventory-full'
+    | 'chunk-not-loaded'
+    | 'commit-failed',
+  stackCount: number,
+  frontierSeeds: ReadonlyArray<readonly [number, FluidKind]>,
+) =>
+  Effect.gen(function* () {
+    const initialInventory =
+      scenario === 'missing-item'
+        ? inventoryWith([0, stack('stone', stackCount)])
+        : scenario === 'occupied'
+          ? inventoryWith([0, stack('water_bucket', 1)])
+          : scenario === 'inventory-full'
+            ? [
+                stack('bucket', Math.max(2, stackCount)),
+                ...emptySlots().slice(1).map(() => stack('stone', 64)),
+              ]
+            : inventoryWith([0, stack('bucket', 1)])
+    const initialBlock =
+      scenario === 'wrong-target' || scenario === 'occupied' ? STONE : WATER
+    const loaded = scenario !== 'chunk-not-loaded'
+    const harness = yield* makeBucketHarness(initialBlock, loaded, initialInventory)
+    const initialFrontier = frontierSeeds.map(([x, kind], index) => ({
+      key: positionKey(`${String(x)},64,${String(index)}`),
+      kind,
+    }))
+    const frontier = yield* Ref.make<ReadonlyArray<FluidWorkItem>>(initialFrontier)
+    let commitCount = 0
+    const coordinator: WorldCommitCoordinatorApi = {
+      ...harness.coordinator,
+      commit: (...args) => {
+        commitCount += 1
+        return scenario === 'commit-failed'
+          ? Effect.fail(new WorldRevisionConflict({
+              expected: Schema.decodeUnknownSync(WorldRevisionSchema)(1),
+              actual: Schema.decodeUnknownSync(WorldRevisionSchema)(0),
+            }))
+          : harness.coordinator.commit(...args)
+      },
+    }
+    const outcome = yield* Effect.result(
+      useBucket(
+        coordinator,
+        frontier,
+        request(scenario === 'occupied' ? 'water_bucket' : 'bucket', {
+          targetDimension: scenario === 'wrong-dimension' ? 'nether' : 'overworld',
+        }),
+      ),
+    )
+
+    if (scenario === 'commit-failed') {
+      expect(Result.isFailure(outcome)).toBe(true)
+      if (Result.isFailure(outcome)) {
+        expect(Schema.decodeUnknownSync(WorldCommitCoordinatorErrorSchema)(outcome.failure)._tag).toBe(
+          'WorldRevisionConflict',
+        )
+      }
+    } else {
+      expect(Result.isSuccess(outcome)).toBe(true)
+      if (Result.isSuccess(outcome)) {
+        expect(outcome.success._tag).not.toBe('Collected')
+        expect(outcome.success._tag).not.toBe('Placed')
+      }
+    }
+    expect(commitCount).toBe(scenario === 'commit-failed' ? 1 : 0)
+
+    const blockAfter = yield* harness.world.chunkStore.getBlock(POSITION)
+    expect(blockAfter).toStrictEqual(
+      loaded ? { _tag: 'Block', block: initialBlock } : { _tag: 'ChunkNotLoaded' },
+    )
+    expect(yield* harness.inventory.storageSnapshot).toStrictEqual(harness.initialStorage)
+    const ownerAfter = yield* harness.coordinator.snapshot(
+      harness.ownerId,
+      PlayerStorageSnapshotSchema,
+    )
+    expect(ownerAfter.revision).toBe(0)
+    expect(Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(ownerAfter.state)).toStrictEqual(
+      harness.initialStorage,
+    )
+    expect(yield* Ref.get(frontier)).toStrictEqual(initialFrontier)
+
+    return true
+  })
 
 describe('bucket interaction', () => {
   for (const scenario of [
     { fluid: 'water', source: WATER, filled: 'water_bucket' },
     { fluid: 'lava', source: LAVA, filled: 'lava_bucket' },
   ] as const) {
-    it.effect(`collects a ${scenario.fluid} source atomically and schedules fluid work`, () =>
+    it.effect(`collects a ${scenario.fluid} source in one owner and block commit`, () =>
       Effect.gen(function* () {
-        const store = yield* makeChunkStoreDouble(
-          world([[POSITION, scenario.source]]),
-          LOADED_CHUNKS,
+        const harness = yield* makeBucketHarness(
+          scenario.source,
+          true,
+          inventoryWith([0, stack('bucket', 1)]),
         )
-        const inventory = yield* makeInventoryDouble(inventoryWith([0, stack('bucket', 1)]))
         const frontier = yield* Ref.make<ReadonlyArray<FluidWorkItem>>([
           { key: positionKey('9,64,9'), kind: 'water' },
         ])
 
-        const outcome = yield* useBucket(store.api, inventory.api, frontier, request('bucket'))
+        const outcome = yield* useBucket(
+          harness.coordinator,
+          frontier,
+          request('bucket'),
+        )
 
         expect(outcome).toMatchObject({
           _tag: 'Collected',
           fluid: scenario.fluid,
           position: POSITION,
         })
-        expect(yield* store.blockAt(POSITION)).toBe(0)
-        expect((yield* inventory.api.snapshot).slots).toStrictEqual(
+        expect(yield* harness.world.chunkStore.getBlock(POSITION)).toStrictEqual({
+          _tag: 'Block',
+          block: AIR_BLOCK_ID,
+        })
+        const localStorage = yield* harness.inventory.storageSnapshot
+        expect(localStorage).toStrictEqual(harness.initialStorage)
+        const owner = yield* harness.coordinator.snapshot(
+          harness.ownerId,
+          PlayerStorageSnapshotSchema,
+        )
+        const committedStorage = Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(owner.state)
+        expect(committedStorage.inventory.slots).toStrictEqual(
           inventoryWith([0, stack(scenario.filled, 1)]),
         )
+        expect(owner.revision).toBe(1)
         expect(yield* Ref.get(frontier)).toStrictEqual([
           { key: '9,64,9', kind: 'water' },
-          { key: blockPositionKeyOf(blockPosition(POSITION.x, POSITION.y, POSITION.z)), kind: scenario.fluid },
+          {
+            key: blockPositionKeyOf(atBlockPosition(POSITION.x, POSITION.y, POSITION.z)),
+            kind: scenario.fluid,
+          },
         ])
-        expect(yield* store.calls).toMatchObject({ reads: 1, writes: 1 })
       }),
     )
 
-    it.effect(`places ${scenario.fluid} into air atomically and schedules fluid work`, () =>
+    it.effect(`places ${scenario.fluid} into air in one owner and block commit`, () =>
       Effect.gen(function* () {
-        const store = yield* makeChunkStoreDouble(world([]), LOADED_CHUNKS)
-        const inventory = yield* makeInventoryDouble(
+        const harness = yield* makeBucketHarness(
+          undefined,
+          true,
           inventoryWith([0, stack(scenario.filled, 1)]),
         )
         const frontier = yield* Ref.make<ReadonlyArray<FluidWorkItem>>([])
 
         const outcome = yield* useBucket(
-          store.api,
-          inventory.api,
+          harness.coordinator,
           frontier,
           request(scenario.filled),
         )
@@ -105,281 +283,337 @@ describe('bucket interaction', () => {
           fluid: scenario.fluid,
           position: POSITION,
         })
-        expect(yield* store.blockAt(POSITION)).toBe(scenario.source)
-        expect((yield* inventory.api.snapshot).slots).toStrictEqual(
+        expect(yield* harness.world.chunkStore.getBlock(POSITION)).toStrictEqual({
+          _tag: 'Block',
+          block: scenario.source,
+        })
+        const localStorage = yield* harness.inventory.storageSnapshot
+        expect(localStorage).toStrictEqual(harness.initialStorage)
+        const owner = yield* harness.coordinator.snapshot(
+          harness.ownerId,
+          PlayerStorageSnapshotSchema,
+        )
+        const committedStorage = Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(owner.state)
+        expect(committedStorage.inventory.slots).toStrictEqual(
           inventoryWith([0, stack('bucket', 1)]),
         )
         expect(yield* Ref.get(frontier)).toStrictEqual([
-          { key: blockPositionKeyOf(blockPosition(POSITION.x, POSITION.y, POSITION.z)), kind: scenario.fluid },
+          {
+            key: blockPositionKeyOf(atBlockPosition(POSITION.x, POSITION.y, POSITION.z)),
+            kind: scenario.fluid,
+          },
         ])
-        expect(yield* store.calls).toMatchObject({ reads: 1, writes: 1 })
       }),
     )
   }
 
-  it.effect('rejects a target in another dimension before reading or mutating state', () =>
+  it.effect(
+    'property: each successful bucket operation commits once without updating the local inventory mirror',
+    () =>
+      Effect.sync(() => {
+        FastCheck.assert(
+          FastCheck.property(
+            FastCheck.constantFrom<FluidKind>('water', 'lava'),
+            FastCheck.boolean(),
+            (fluid, collecting) => {
+              const source = fluid === 'water' ? WATER : LAVA
+              const heldItem: BucketItemType = collecting ? 'bucket' : `${fluid}_bucket`
+              const nextItem: BucketItemType = collecting ? `${fluid}_bucket` : 'bucket'
+              let commitCount = 0
+
+              return Effect.runSync(Effect.orDie(Effect.gen(function* () {
+                const harness = yield* makeBucketHarness(
+                  collecting ? source : undefined,
+                  true,
+                  inventoryWith([0, stack(heldItem, 1)]),
+                )
+                const frontier = yield* Ref.make<ReadonlyArray<FluidWorkItem>>([])
+                const coordinator: WorldCommitCoordinatorApi = {
+                  ...harness.coordinator,
+                  commit: (...args) => {
+                    commitCount += 1
+                    return harness.coordinator.commit(...args)
+                  },
+                }
+                const outcome = yield* useBucket(
+                  coordinator,
+                  frontier,
+                  request(heldItem),
+                )
+                const localStorage = yield* harness.inventory.storageSnapshot
+                const owner = yield* harness.coordinator.snapshot(
+                  harness.ownerId,
+                  PlayerStorageSnapshotSchema,
+                )
+                const committedStorage = Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(owner.state)
+                const world = yield* harness.world.chunkStore.getBlock(POSITION)
+                const expectedBlock = collecting ? AIR_BLOCK_ID : source
+                const frontierAfter = yield* Ref.get(frontier)
+
+                return outcome._tag === (collecting ? 'Collected' : 'Placed') &&
+                  commitCount === 1 &&
+                  owner.revision === 1 &&
+                  JSON.stringify(localStorage) === JSON.stringify(harness.initialStorage) &&
+                  JSON.stringify(committedStorage.inventory.slots) ===
+                    JSON.stringify(inventoryWith([0, stack(nextItem, 1)])) &&
+                  world._tag === 'Block' && world.block === expectedBlock &&
+                  frontierAfter.length === 1 &&
+                  frontierAfter[0]?.key === blockPositionKeyOf(atBlockPosition(POSITION.x, POSITION.y, POSITION.z)) &&
+                  frontierAfter[0]?.kind === fluid
+              })))
+            },
+          ),
+          { numRuns: 35 },
+        )
+      }),
+  )
+
+  it.effect('rejects a target in another dimension without mutation', () =>
+    Effect.gen(function* () {
+      expect(
+        yield* assertUnchangedAfterFailure('wrong-dimension', 1, [[9, 'lava']]),
+      ).toBe(true)
+    }),
+  )
+
+  it.effect('rejects a missing bucket from the observed owner storage', () =>
+    Effect.gen(function* () {
+      expect(yield* assertUnchangedAfterFailure('missing-item', 3, [[9, 'water']])).toBe(true)
+    }),
+  )
+
+  it.effect('rejects a non-fluid target and an occupied placement target unchanged', () =>
+    Effect.gen(function* () {
+      expect(yield* assertUnchangedAfterFailure('wrong-target', 1, [[9, 'water']])).toBe(true)
+      expect(yield* assertUnchangedAfterFailure('occupied', 1, [[8, 'lava']])).toBe(true)
+    }),
+  )
+
+  it.effect('rejects collection when the filled bucket cannot fit', () =>
+    Effect.gen(function* () {
+      expect(yield* assertUnchangedAfterFailure('inventory-full', 2, [[9, 'water']])).toBe(true)
+    }),
+  )
+
+  it.effect('returns ChunkNotLoaded when the target cell is unavailable', () =>
+    Effect.gen(function* () {
+      expect(yield* assertUnchangedAfterFailure('chunk-not-loaded', 1, [[9, 'water']])).toBe(true)
+    }),
+  )
+
+  it.effect('uses registered owner storage when the local inventory mirror differs', () =>
+    Effect.gen(function* () {
+      const harness = yield* makeBucketHarness(
+        WATER,
+        true,
+        inventoryWith([0, stack('bucket', 1)]),
+      )
+      const frontier = yield* Ref.make<ReadonlyArray<FluidWorkItem>>([])
+      const initialOwnerStorage = harness.initialStorage
+
+      expect(yield* harness.inventory.add('stone', 1)).toBe(0)
+      const localStorageAfterChange = yield* harness.inventory.storageSnapshot
+      expect(localStorageAfterChange).not.toStrictEqual(initialOwnerStorage)
+
+      expect(yield* useBucket(
+        harness.coordinator,
+        frontier,
+        request('bucket'),
+      )).toMatchObject({ _tag: 'Collected', fluid: 'water' })
+
+      expect(yield* harness.world.chunkStore.getBlock(POSITION)).toStrictEqual({
+        _tag: 'Block',
+        block: AIR_BLOCK_ID,
+      })
+      expect(yield* harness.inventory.storageSnapshot).toStrictEqual(localStorageAfterChange)
+      const owner = yield* harness.coordinator.snapshot(
+        harness.ownerId,
+        PlayerStorageSnapshotSchema,
+      )
+      const ownerStorage = Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(owner.state)
+      expect(ownerStorage.inventory.slots).toStrictEqual(inventoryWith([0, stack('water_bucket', 1)]))
+      expect(yield* Ref.get(frontier)).toStrictEqual([{
+        key: blockPositionKeyOf(atBlockPosition(POSITION.x, POSITION.y, POSITION.z)),
+        kind: 'water',
+      }])
+    }),
+  )
+
+  it.effect('treats an observation that omits the requested cell as a changed world', () =>
+    Effect.gen(function* () {
+      const harness = yield* makeBucketHarness(
+        WATER,
+        true,
+        inventoryWith([0, stack('bucket', 1)]),
+      )
+      const frontier = yield* Ref.make<ReadonlyArray<FluidWorkItem>>([])
+      const coordinator: WorldCommitCoordinatorApi = {
+        ...harness.coordinator,
+        observe: (...args) => Effect.map(
+          harness.coordinator.observe(...args),
+          (snapshot) => ({ ...snapshot, blocks: [] }),
+        ),
+      }
+
+      expect(yield* useBucket(
+        coordinator,
+        frontier,
+        request('bucket'),
+      )).toStrictEqual({ _tag: 'WorldChanged' })
+      expect(yield* harness.world.chunkStore.getBlock(POSITION)).toStrictEqual({
+        _tag: 'Block',
+        block: WATER,
+      })
+      expect(yield* harness.inventory.storageSnapshot).toStrictEqual(harness.initialStorage)
+      expect(yield* Ref.get(frontier)).toStrictEqual([])
+    }),
+  )
+
+  it.effect('replans a bucket intent on the next call after a concurrent commit advances the revision', () =>
+    Effect.gen(function* () {
+      const harness = yield* makeBucketHarness(
+        WATER,
+        true,
+        inventoryWith([0, stack('bucket', 1)]),
+      )
+      const frontier = yield* Ref.make<ReadonlyArray<FluidWorkItem>>([])
+      let concurrentCommitPending = true
+      const coordinator: WorldCommitCoordinatorApi = {
+        ...harness.coordinator,
+        commit: (...args) => Effect.gen(function* () {
+          if (concurrentCommitPending) {
+            concurrentCommitPending = false
+            const current = yield* harness.coordinator.snapshot(
+              harness.ownerId,
+              PlayerStorageSnapshotSchema,
+            )
+            yield* harness.coordinator.commit({
+              expectedRevision: current.revision,
+              expectedDimensions: [],
+              changes: [{ ownerId: harness.ownerId, state: current.state }],
+            })
+          }
+          return yield* harness.coordinator.commit(...args)
+        }),
+      }
+
+      const firstFrame = yield* Effect.result(useBucket(
+        coordinator,
+        frontier,
+        request('bucket'),
+      ))
+      expect(Result.isFailure(firstFrame)).toBe(true)
+      if (Result.isFailure(firstFrame)) {
+        expect(firstFrame.failure._tag).toBe('WorldRevisionConflict')
+      }
+      expect(yield* Ref.get(frontier)).toStrictEqual([])
+      expect(yield* harness.world.chunkStore.getBlock(POSITION)).toStrictEqual({
+        _tag: 'Block',
+        block: WATER,
+      })
+      const afterConcurrentCommit = yield* harness.coordinator.snapshot(
+        harness.ownerId,
+        PlayerStorageSnapshotSchema,
+      )
+      expect(afterConcurrentCommit.revision).toBe(1)
+      expect(afterConcurrentCommit.state).toStrictEqual(harness.initialStorage)
+
+      const nextFrame = yield* useBucket(
+        coordinator,
+        frontier,
+        request('bucket'),
+      )
+      expect(nextFrame._tag).toBe('Collected')
+      expect(yield* harness.world.chunkStore.getBlock(POSITION)).toStrictEqual({
+        _tag: 'Block',
+        block: AIR_BLOCK_ID,
+      })
+      expect(yield* Ref.get(frontier)).toHaveLength(1)
+      const afterRetry = yield* harness.coordinator.snapshot(
+        harness.ownerId,
+        PlayerStorageSnapshotSchema,
+      )
+      expect(afterRetry.revision).toBe(2)
+      expect(Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(afterRetry.state).inventory.slots)
+        .toStrictEqual(inventoryWith([0, stack('water_bucket', 1)]))
+    }),
+  )
+
+  it.effect('leaves world, owner, local inventory, and frontier unchanged when commit fails', () =>
+    Effect.gen(function* () {
+      expect(yield* assertUnchangedAfterFailure('commit-failed', 1, [[9, 'lava']])).toBe(true)
+    }),
+  )
+
+  it.effect('requires commit context for legacy callers without reading or writing state', () =>
     Effect.gen(function* () {
       const initialInventory = inventoryWith([0, stack('bucket', 1)])
-        const initialFrontier = [{ key: positionKey('9,64,9'), kind: 'lava' }] as const
-      const store = yield* makeChunkStoreDouble(world([[POSITION, WATER]]), LOADED_CHUNKS)
+      const initialFrontier = [{ key: positionKey('9,64,9'), kind: 'lava' }] as const
+      const store = yield* makeChunkStoreDouble(sparseWorld([[POSITION, WATER]]), ['0,0'])
+      const unreadableStore = {
+        ...store.api,
+        getBlock: () => Effect.die('legacy bucket call read the world'),
+        setBlock: () => Effect.die('legacy bucket call wrote the world'),
+      }
       const inventory = yield* makeInventoryDouble(initialInventory)
+      const unreadableInventory = {
+        ...inventory.api,
+        storageSnapshot: Effect.die('legacy bucket call read inventory'),
+      }
       const frontier = yield* Ref.make<ReadonlyArray<FluidWorkItem>>(initialFrontier)
 
-      const outcome = yield* useBucket(
-        store.api,
-        inventory.api,
-        frontier,
-        request('bucket', { targetDimension: 'nether' }),
-      )
+      const outcome = yield* useBucket(unreadableStore, unreadableInventory, frontier, {
+        activeDimension: 'overworld',
+        targetDimension: 'overworld',
+        position: POSITION,
+        heldItem: 'bucket',
+      })
 
-      expect(outcome).toStrictEqual({
+      expect(outcome).toStrictEqual({ _tag: 'CommitContextMissing' })
+      expect(yield* useBucket(unreadableStore, unreadableInventory, frontier, {
+        activeDimension: 'overworld',
+        targetDimension: 'nether',
+        position: POSITION,
+        heldItem: 'bucket',
+      })).toStrictEqual({
         _tag: 'WrongDimension',
         activeDimension: 'overworld',
         targetDimension: 'nether',
       })
       expect(yield* store.blockAt(POSITION)).toBe(WATER)
-      expect((yield* inventory.api.snapshot).slots).toStrictEqual(initialInventory)
+      expect((yield* inventory.api.storageSnapshot).inventory.slots).toStrictEqual(initialInventory)
       expect(yield* Ref.get(frontier)).toStrictEqual(initialFrontier)
       expect(yield* store.calls).toMatchObject({ reads: 0, writes: 0 })
     }),
   )
 
-  for (const scenario of [
-    { name: 'an empty bucket used on a non-fluid block', held: 'bucket', tag: 'WrongTarget' },
-    { name: 'a filled bucket used on an occupied block', held: 'water_bucket', tag: 'Occupied' },
-  ] as const) {
-    it.effect(`rejects ${scenario.name} without a partial mutation`, () =>
-      Effect.gen(function* () {
-        const initialInventory = inventoryWith([0, stack(scenario.held, 1)])
-        const initialFrontier = [{ key: positionKey('9,64,9'), kind: 'water' }] as const
-        const store = yield* makeChunkStoreDouble(world([[POSITION, STONE]]), LOADED_CHUNKS)
-        const inventory = yield* makeInventoryDouble(initialInventory)
-        const frontier = yield* Ref.make<ReadonlyArray<FluidWorkItem>>(initialFrontier)
-
-        const outcome = yield* useBucket(store.api, inventory.api, frontier, request(scenario.held))
-
-        expect(outcome).toStrictEqual({ _tag: scenario.tag, block: STONE })
-        expect(yield* store.blockAt(POSITION)).toBe(STONE)
-        expect((yield* inventory.api.snapshot).slots).toStrictEqual(initialInventory)
-        expect(yield* Ref.get(frontier)).toStrictEqual(initialFrontier)
-        expect(yield* store.calls).toMatchObject({ reads: 1, writes: 0 })
-      }),
-    )
-  }
-
-  it.effect('rejects collection when the filled bucket cannot fit', () =>
-    Effect.gen(function* () {
-      const initialInventory = emptySlots().map((_, index) =>
-        index === 0 ? stack('bucket', 2) : stack('stone', 64),
+  it.effect('property: every failed bucket operation preserves all four state holders', () =>
+    Effect.sync(() => {
+      const scenarios = [
+        'wrong-dimension',
+        'missing-item',
+        'wrong-target',
+        'occupied',
+        'inventory-full',
+        'chunk-not-loaded',
+        'commit-failed',
+      ] as const
+      FastCheck.assert(
+        FastCheck.property(
+          FastCheck.constantFrom(...scenarios),
+          FastCheck.integer({ min: 1, max: 16 }),
+          FastCheck.array(
+            FastCheck.tuple(
+              FastCheck.integer({ min: -64, max: 64 }),
+              FastCheck.constantFrom<FluidKind>('water', 'lava'),
+            ),
+            { maxLength: 5 },
+          ),
+          (scenario, count, seeds) =>
+            Effect.runSync(Effect.orDie(assertUnchangedAfterFailure(scenario, count, seeds))),
+        ),
+        { numRuns: 35 },
       )
-        const initialFrontier = [{ key: positionKey('9,64,9'), kind: 'water' }] as const
-      const store = yield* makeChunkStoreDouble(world([[POSITION, WATER]]), LOADED_CHUNKS)
-      const inventory = yield* makeInventoryDouble(initialInventory)
-      const frontier = yield* Ref.make<ReadonlyArray<FluidWorkItem>>(initialFrontier)
-
-      const outcome = yield* useBucket(store.api, inventory.api, frontier, request('bucket'))
-
-      expect(outcome).toStrictEqual({ _tag: 'InventoryFull', item: 'water_bucket' })
-      expect(yield* store.blockAt(POSITION)).toBe(WATER)
-      expect((yield* inventory.api.snapshot).slots).toStrictEqual(initialInventory)
-      expect(yield* Ref.get(frontier)).toStrictEqual(initialFrontier)
-      expect(yield* store.calls).toMatchObject({ reads: 1, writes: 0 })
-    }),
-  )
-
-  it.effect('rejects a missing held item without reading the world', () =>
-    Effect.gen(function* () {
-      const store = yield* makeChunkStoreDouble(world([[POSITION, WATER]]), LOADED_CHUNKS)
-      const inventory = yield* makeInventoryDouble()
-      const frontier = yield* Ref.make<ReadonlyArray<FluidWorkItem>>([])
-
-      expect(yield* useBucket(store.api, inventory.api, frontier, request('bucket'))).toStrictEqual({
-        _tag: 'MissingItem',
-        item: 'bucket',
-      })
-      expect(yield* store.calls).toMatchObject({ reads: 0, writes: 0 })
-      expect(yield* Ref.get(frontier)).toStrictEqual([])
-    }),
-  )
-
-  it.effect('keeps inventory and frontier unchanged when the world rejects the write', () =>
-    Effect.gen(function* () {
-      const initialInventory = inventoryWith([0, stack('bucket', 1)])
-      const store = yield* makeChunkStoreDouble(world([[POSITION, WATER]]), LOADED_CHUNKS)
-      const refusingStore: ChunkStoreApi = {
-        ...store.api,
-        setBlock: () => Effect.succeed({ _tag: 'ChunkNotLoaded' } as const),
-      }
-      const inventory = yield* makeInventoryDouble(initialInventory)
-      const frontier = yield* Ref.make<ReadonlyArray<FluidWorkItem>>([])
-
-      const outcome = yield* useBucket(refusingStore, inventory.api, frontier, request('bucket'))
-
-      expect(outcome).toStrictEqual({ _tag: 'ChunkNotLoaded' })
-      expect(yield* store.blockAt(POSITION)).toBe(WATER)
-      expect((yield* inventory.api.snapshot).slots).toStrictEqual(initialInventory)
-      expect(yield* Ref.get(frontier)).toStrictEqual([])
-    }),
-  )
-
-  it.effect('restores a concurrently changed block after detecting the stale read', () =>
-    Effect.gen(function* () {
-      const initialInventory = inventoryWith([0, stack('bucket', 1)])
-      const store = yield* makeChunkStoreDouble(world([[POSITION, WATER]]), LOADED_CHUNKS)
-      let writes = 0
-      const racingStore: ChunkStoreApi = {
-        ...store.api,
-        setBlock: (position, block) =>
-          Effect.gen(function* () {
-            writes += 1
-            if (writes === 1) yield* store.api.setBlock(position, STONE)
-            return yield* store.api.setBlock(position, block)
-          }),
-      }
-      const inventory = yield* makeInventoryDouble(initialInventory)
-      const frontier = yield* Ref.make<ReadonlyArray<FluidWorkItem>>([])
-
-      const outcome = yield* useBucket(racingStore, inventory.api, frontier, request('bucket'))
-
-      expect(outcome).toStrictEqual({ _tag: 'WorldChanged' })
-      expect(yield* store.blockAt(POSITION)).toBe(STONE)
-      expect((yield* inventory.api.snapshot).slots).toStrictEqual(initialInventory)
-      expect(yield* Ref.get(frontier)).toStrictEqual([])
-      expect(writes).toBe(2)
-    }),
-  )
-
-  it.effect('reports a failed world rollback after detecting the stale read', () =>
-    Effect.gen(function* () {
-      const initialInventory = inventoryWith([0, stack('bucket', 1)])
-      const store = yield* makeChunkStoreDouble(world([[POSITION, WATER]]), LOADED_CHUNKS)
-      let writes = 0
-      const racingStore: ChunkStoreApi = {
-        ...store.api,
-        setBlock: (position, block) =>
-          Effect.gen(function* () {
-            writes += 1
-            if (writes === 2) return { _tag: 'ChunkNotLoaded' } as const
-            yield* store.api.setBlock(position, STONE)
-            return yield* store.api.setBlock(position, block)
-          }),
-      }
-      const inventory = yield* makeInventoryDouble(initialInventory)
-      const frontier = yield* Ref.make<ReadonlyArray<FluidWorkItem>>([])
-
-      const outcome = yield* useBucket(racingStore, inventory.api, frontier, request('bucket'))
-
-      expect(outcome).toStrictEqual({
-        _tag: 'RollbackFailed',
-        trigger: 'WorldChanged',
-        world: 'ChunkNotLoaded',
-        inventory: 'Unchanged',
-      })
-      expect(yield* store.blockAt(POSITION)).toBe(0)
-      expect((yield* inventory.api.snapshot).slots).toStrictEqual(initialInventory)
-      expect(yield* Ref.get(frontier)).toStrictEqual([])
-    }),
-  )
-
-  it.effect('restores world and inventory when installing the prepared inventory fails', () =>
-    Effect.gen(function* () {
-      const initialInventory = inventoryWith([0, stack('bucket', 1)])
-      const store = yield* makeChunkStoreDouble(world([[POSITION, WATER]]), LOADED_CHUNKS)
-      const inventory = yield* makeInventoryDouble(initialInventory)
-      let restores = 0
-      const refusingInventory: InventoryServiceApi = {
-        ...inventory.api,
-        restoreStorage: (snapshot) => {
-          restores += 1
-          return restores === 1
-            ? Effect.dieMessage('injected inventory update failure')
-            : inventory.api.restoreStorage(snapshot)
-        },
-      }
-      const frontier = yield* Ref.make<ReadonlyArray<FluidWorkItem>>([])
-
-      const outcome = yield* useBucket(store.api, refusingInventory, frontier, request('bucket'))
-
-      expect(outcome).toStrictEqual({ _tag: 'InventoryUpdateFailed' })
-      expect(yield* store.blockAt(POSITION)).toBe(WATER)
-      expect((yield* inventory.api.snapshot).slots).toStrictEqual(initialInventory)
-      expect(yield* Ref.get(frontier)).toStrictEqual([])
-      expect(restores).toBe(2)
-    }),
-  )
-
-  it.effect('passes through a non-Block world reading without touching inventory or scheduling work', () =>
-    Effect.gen(function* () {
-      const initialInventory = inventoryWith([0, stack('bucket', 1)])
-      const store = yield* makeChunkStoreDouble(world([[POSITION, WATER]]), LOADED_CHUNKS)
-      const unreadableStore: ChunkStoreApi = {
-        ...store.api,
-        getBlock: () => Effect.succeed({ _tag: 'ChunkNotLoaded' } as const),
-      }
-      const inventory = yield* makeInventoryDouble(initialInventory)
-      const frontier = yield* Ref.make<ReadonlyArray<FluidWorkItem>>([])
-
-      const outcome = yield* useBucket(unreadableStore, inventory.api, frontier, request('bucket'))
-
-      expect(outcome).toStrictEqual({ _tag: 'ChunkNotLoaded' })
-      expect((yield* inventory.api.snapshot).slots).toStrictEqual(initialInventory)
-      expect(yield* Ref.get(frontier)).toStrictEqual([])
-    }),
-  )
-
-  it.effect('reports WorldChanged when its own write finds the target already at the intended block', () =>
-    Effect.gen(function* () {
-      // A concurrent actor already left the exact block this collection was
-      // about to write (collecting water leaves air behind), so the real
-      // write is a no-op (`Unchanged`) rather than `Written` — and that must
-      // still be reported as a changed world, not silently treated as success.
-      const initialInventory = inventoryWith([0, stack('bucket', 1)])
-      const store = yield* makeChunkStoreDouble(world([[POSITION, WATER]]), LOADED_CHUNKS)
-      const racingStore: ChunkStoreApi = {
-        ...store.api,
-        setBlock: (position, block) =>
-          Effect.gen(function* () {
-            yield* store.api.setBlock(position, block)
-            return yield* store.api.setBlock(position, block)
-          }),
-      }
-      const inventory = yield* makeInventoryDouble(initialInventory)
-      const frontier = yield* Ref.make<ReadonlyArray<FluidWorkItem>>([])
-
-      const outcome = yield* useBucket(racingStore, inventory.api, frontier, request('bucket'))
-
-      expect(outcome).toStrictEqual({ _tag: 'WorldChanged' })
-      expect(yield* store.blockAt(POSITION)).toBe(AIR_BLOCK_ID)
-      expect((yield* inventory.api.snapshot).slots).toStrictEqual(initialInventory)
-      expect(yield* Ref.get(frontier)).toStrictEqual([])
-    }),
-  )
-
-  it.effect('reports a rollback failure trigger when the inventory cannot be restored either', () =>
-    Effect.gen(function* () {
-      const initialInventory = inventoryWith([0, stack('bucket', 1)])
-      const store = yield* makeChunkStoreDouble(world([[POSITION, WATER]]), LOADED_CHUNKS)
-      const inventory = yield* makeInventoryDouble(initialInventory)
-      const refusingInventory: InventoryServiceApi = {
-        ...inventory.api,
-        // Both the initial install AND the compensating rollback die, so
-        // neither half of the recovery succeeds.
-        restoreStorage: () => Effect.dieMessage('injected inventory update failure'),
-      }
-      const frontier = yield* Ref.make<ReadonlyArray<FluidWorkItem>>([])
-
-      const outcome = yield* useBucket(store.api, refusingInventory, frontier, request('bucket'))
-
-      expect(outcome).toStrictEqual({
-        _tag: 'RollbackFailed',
-        trigger: 'InventoryUpdateFailed',
-        world: 'Restored',
-        inventory: 'RestoreFailed',
-      })
-      // The world half of the rollback used the real store and did succeed.
-      expect(yield* store.blockAt(POSITION)).toBe(WATER)
-      expect((yield* inventory.api.snapshot).slots).toStrictEqual(initialInventory)
-      expect(yield* Ref.get(frontier)).toStrictEqual([])
     }),
   )
 })

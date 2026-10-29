@@ -1,4 +1,4 @@
-import type { Position } from '@nerima-games/mc-kernel'
+import { PositionAxis, position, type Position } from '@nerima-games/mc-kernel'
 import { EntityKind, type Entity, type EntityId } from '@nerima-games/mc-sim'
 import type { Dimension } from '@nerima-games/mc-worldgen'
 import { ZOMBIE_KIND } from './hostile-combat.js'
@@ -82,7 +82,13 @@ const move = (from: Position, target: Position, distance: number): Position => {
   const dx = target.x - from.x
   const dz = target.z - from.z
   const length = Math.hypot(dx, dz)
-  return length === 0 ? from : { ...from, x: from.x + (dx / length) * distance, z: from.z + (dz / length) * distance }
+  return length === 0
+    ? from
+    : position(
+        PositionAxis(from.x + (dx / length) * distance),
+        from.y,
+        PositionAxis(from.z + (dz / length) * distance),
+      )
 }
 
 export const stepEcosystemMob = (
@@ -104,8 +110,16 @@ export const stepEcosystemMob = (
 
   if (PASSIVE_MOB_KINDS.includes(kind as (typeof PASSIVE_MOB_KINDS)[number])) {
     const feetPosition = target !== undefined && distance < 8
-      ? move(self, { x: self.x * 2 - target.x, y: self.y, z: self.z * 2 - target.z }, dt * 3)
-      : { ...self, x: self.x + Math.cos(phase) * dt, z: self.z + Math.sin(phase) * dt }
+      ? move(self, position(
+          PositionAxis(self.x * 2 - target.x),
+          self.y,
+          PositionAxis(self.z * 2 - target.z),
+        ), dt * 3)
+      : position(
+          PositionAxis(self.x + Math.cos(phase) * dt),
+          self.y,
+          PositionAxis(self.z + Math.sin(phase) * dt),
+        )
     return { state: nextState(), feetPosition, jumping: false }
   }
   if (target === undefined) return { state: nextState(), feetPosition: self, jumping: false }

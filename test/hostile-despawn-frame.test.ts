@@ -1,4 +1,5 @@
 import { describe, expect, it } from '@effect/vitest'
+import { position as atPosition } from './support/coordinate-fixtures'
 import { Effect } from 'effect'
 import {
   hostileMobSnapshot,
@@ -9,13 +10,13 @@ import {
 } from '../src/domain/entities/mob-frame'
 import { ZOMBIE_KIND } from '../src/domain/mob/hostile-combat'
 import { RANDOM_DESPAWN_CHANCE } from '../src/domain/mob/hostile-despawn'
-import { DeltaTimeSecs } from '@nerima-games/mc-kernel'
+import { DeltaTimeSecs, EntityHealthPoints } from '@nerima-games/mc-kernel'
 import { nextRoll } from '../src/domain/frame-rolls'
 import type { Position } from '@nerima-games/mc-kernel'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
 
-const PLAYER: Position = { x: 0, y: 64, z: 0 }
-const AT_RANDOM_DISTANCE: Position = { x: 40, y: 64, z: 0 }
+const PLAYER: Position = atPosition(0, 64, 0 )
+const AT_RANDOM_DISTANCE: Position = atPosition(40, 64, 0 )
 
 const seedWhoseNextRollDespawns = (): number => {
   for (let seed = 1; seed < 10_000; seed += 1) {
@@ -31,7 +32,7 @@ describe('hostile despawn is part of the mob frame state', () => {
       yield* roster.api.spawn({
         kind: ZOMBIE_KIND,
         feetPosition: AT_RANDOM_DISTANCE,
-        healthPoints: 20,
+        healthPoints: EntityHealthPoints(20),
         behaviour: hostileMobSnapshot(undefined, { ageTicks: 599 }),
       })
 
@@ -68,7 +69,7 @@ describe('hostile despawn is part of the mob frame state', () => {
       yield* natural.api.spawn({
         kind: ZOMBIE_KIND,
         feetPosition: AT_RANDOM_DISTANCE,
-        healthPoints: 20,
+        healthPoints: EntityHealthPoints(20),
         behaviour: hostileMobSnapshot(undefined, { ageTicks: 601 }),
       })
       const naturalSweep = yield* sweepMobs(
@@ -83,7 +84,7 @@ describe('hostile despawn is part of the mob frame state', () => {
       yield* persistent.api.spawn({
         kind: ZOMBIE_KIND,
         feetPosition: AT_RANDOM_DISTANCE,
-        healthPoints: 20,
+        healthPoints: EntityHealthPoints(20),
         behaviour: hostileMobSnapshot(undefined, { ageTicks: 601, named: true }),
       })
       const persistentSweep = yield* sweepMobs(
@@ -97,8 +98,8 @@ describe('hostile despawn is part of the mob frame state', () => {
       const distant = yield* makeEntityManagerDouble<MobBehaviour>()
       yield* distant.api.spawn({
         kind: ZOMBIE_KIND,
-        feetPosition: { x: 129, y: 64, z: 0 },
-        healthPoints: 20,
+        feetPosition: atPosition(129, 64, 0 ),
+        healthPoints: EntityHealthPoints(20),
         behaviour: hostileMobSnapshot(undefined, { ageTicks: 601 }),
       })
       const distantSweep = yield* sweepMobs(
@@ -128,7 +129,7 @@ describe('hostile despawn is part of the mob frame state', () => {
       yield* roster.api.spawn({
         kind: ZOMBIE_KIND,
         feetPosition: PLAYER,
-        healthPoints: 20,
+        healthPoints: EntityHealthPoints(20),
         behaviour: restored,
       })
       const seed = 17

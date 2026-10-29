@@ -39,7 +39,7 @@
  * neighbour should draw as open sky rather than as a black wall — which is
  * right for drawing and wrong for simulating.
  */
-import { Effect } from 'effect'
+import { Effect, Result } from 'effect'
 import {
   adjacentBlockPosition,
   blockPositionKeyOf,
@@ -65,81 +65,19 @@ export type FallingBlockMoves = {
 
 /** The block that would fall from `reading`, or `undefined` if none would. */
 const fallingMaterial = (reading: BlockReading): BlockId | undefined => {
-  switch (reading._tag) {
-    case 'Block':
-      return capabilityOfBlockId(reading.block, 'fallsWhenUnsupported') ? reading.block : undefined
-    // Unknown, not empty. Whatever is up there stays up there until the chunk
-    // is resident and something disturbs it again.
-    case 'ChunkNotLoaded':
-      return undefined
-    // Above the build limit there is nothing to fall.
-    case 'OutOfWorld':
-      return undefined
-    // exhaustiveness arm over BlockReading, a closed three-tag union
-    // (mc-worldgen's chunk-store-state.d.ts's BlockReading); 'Block', 'ChunkNotLoaded' and
-    // 'OutOfWorld' are the only reachable tags and all three are covered
-    // above, so no input can reach this arm.
-    /* v8 ignore start */
-    default: {
-      const exhaustive: never = reading
-      return exhaustive
-    }
-    /* v8 ignore stop */
-  }
+  if (reading._tag !== 'Block') return undefined
+  return Result.getOrUndefined(capabilityOfBlockId(reading.block, 'fallsWhenUnsupported')) === true
+    ? reading.block
+    : undefined
 }
 
 /** Whether a falling block may occupy `reading`'s cell. */
-const canReceive = (reading: BlockReading): boolean => {
-  switch (reading._tag) {
-    // `replaceable`, from kernel's table: air and water, not "everything
-    // non-solid" — kernel's audit §4.9 spends a section on the difference.
-    case 'Block':
-      return capabilityOfBlockId(reading.block, 'replaceable')
-    // THE case this whole three-valued read exists for. Treating it as air
-    // drops the block out of the world at the edge of the loaded area.
-    case 'ChunkNotLoaded':
-      return false
-    // The floor of the world holds everything up.
-    case 'OutOfWorld':
-      return false
-    // exhaustiveness arm over BlockReading, a closed three-tag union
-    // (mc-worldgen's chunk-store-state.d.ts's BlockReading); 'Block', 'ChunkNotLoaded' and
-    // 'OutOfWorld' are the only reachable tags and all three are covered
-    // above, so no input can reach this arm.
-    /* v8 ignore start */
-    default: {
-      const exhaustive: never = reading
-      return exhaustive
-    }
-    /* v8 ignore stop */
-  }
-}
+const canReceive = (reading: BlockReading): boolean =>
+  reading._tag === 'Block' &&
+  Result.getOrUndefined(capabilityOfBlockId(reading.block, 'replaceable')) === true
 
 /** Whether the source cell really was emptied by our write. */
-const vacated = (outcome: BlockWriteOutcome): boolean => {
-  switch (outcome._tag) {
-    case 'Written':
-      return true
-    // Air was already there, so something else moved this block between the
-    // read and the write. Placing it below anyway would duplicate matter.
-    case 'Unchanged':
-      return false
-    case 'ChunkNotLoaded':
-      return false
-    case 'OutOfWorld':
-      return false
-    // exhaustiveness arm over BlockWriteOutcome, a closed four-tag union
-    // (mc-worldgen's chunk-store-state.d.ts's BlockWriteOutcome); 'Written', 'Unchanged',
-    // 'ChunkNotLoaded' and 'OutOfWorld' are the only reachable tags and all
-    // four are covered above, so no input can reach this arm.
-    /* v8 ignore start */
-    default: {
-      const exhaustive: never = outcome
-      return exhaustive
-    }
-    /* v8 ignore stop */
-  }
-}
+const vacated = (outcome: BlockWriteOutcome): boolean => outcome._tag === 'Written'
 
 /**
  * Apply one tick's worth of falling-block moves.
@@ -160,8 +98,14 @@ export const applyFallingBlocks = (
     let moved = 0
 
     for (const positionKey of batch) {
-      const target = blockPositionOfKey(positionKey)
-      const source = adjacentBlockPosition(target, 'up')
+      const target = Result.getOrUndefined(blockPositionOfKey(positionKey))
+      if (target === undefined) {
+        continue
+      }
+      const source = Result.getOrUndefined(adjacentBlockPosition(target, 'up'))
+      if (source === undefined) {
+        continue
+      }
 
       const material = fallingMaterial(yield* store.getBlock(source))
       if (material === undefined) {
@@ -180,46 +124,25 @@ export const applyFallingBlocks = (
       }
 
       const placed = yield* store.setBlock(target, material)
-      switch (placed._tag) {
-        case 'Written':
-        // `Unchanged` here means the destination already held this very
-        // block, which the capability table makes unreachable (nothing is
-        // both `replaceable` and `fallsWhenUnsupported`). If it ever happens
-        // the world is already in the state this move wanted, so it counts
-        // as the move rather than as a failure.
-        // falls through
-        case 'Unchanged': {
-          moved += 1
-          // The cell BELOW the new resting place, so the column keeps sinking,
-          // and the cell it came FROM, because whatever was above that is now
-          // unsupported in its turn.
-          destinations.push(
-            blockPositionKeyOf(adjacentBlockPosition(target, 'down')),
-            blockPositionKeyOf(source),
-          )
-          break
-        }
-
-        // Unreachable for the same reason: the read two lines up said this cell
-        // was resident and inside the world. Restore rather than assume, since
-        // the alternative is a block that silently ceases to exist.
-        case 'ChunkNotLoaded':
-        case 'OutOfWorld': {
-          yield* store.setBlock(source, material)
-          break
-        }
-        // exhaustiveness arm over BlockWriteOutcome, a closed four-tag union
-        // (mc-worldgen's chunk-store-state.d.ts's BlockWriteOutcome); 'Written', 'Unchanged',
-        // 'ChunkNotLoaded' and 'OutOfWorld' are the only reachable tags and
-        // all four are covered above, so no input can reach this arm.
-        /* v8 ignore start */
-        default: {
-          const exhaustive: never = placed
-          void exhaustive
-          break
-        }
-        /* v8 ignore stop */
+      if (placed._tag !== 'Written' && placed._tag !== 'Unchanged') {
+        // The destination can become unavailable between its read and write.
+        // Restore the source rather than silently losing the falling block.
+        yield* store.setBlock(source, material)
+        continue
       }
+
+      moved += 1
+      // The cell BELOW the new resting place, so the column keeps sinking,
+      // and the cell it came FROM, because whatever was above that is now
+      // unsupported in its turn.
+      // `target` was just read as a replaceable block, so it is in-world and
+      // one step down remains representable even at the world floor.
+      const below = Result.getOrThrow(adjacentBlockPosition(target, 'down'))
+      const belowReading = yield* store.getBlock(below)
+      if (belowReading._tag !== 'OutOfWorld') {
+        destinations.push(blockPositionKeyOf(below))
+      }
+      destinations.push(blockPositionKeyOf(source))
     }
 
     return { moved, destinations }

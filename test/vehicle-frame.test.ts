@@ -1,5 +1,5 @@
 import { describe, expect, it } from '@effect/vitest'
-import { Effect, Exit } from 'effect'
+import { Effect, Exit, Option } from 'effect'
 import { blockIdOf } from '@nerima-games/mc-kernel'
 import { VehicleId, type VehicleServiceApi } from '@nerima-games/mc-sim'
 import type { ChunkStoreApi } from '@nerima-games/mc-worldgen'
@@ -61,7 +61,7 @@ describe('vehicle frame', () => {
   })
 
   it('swallows a per-vehicle update failure rather than failing the whole frame', async () => {
-    // Every other test's `updateState` succeeds, so the `Effect.catchAll(() =>
+    // Every other test's `updateState` succeeds, so the `Effect.catch(() =>
     // Effect.void)` at the end of the per-vehicle pipe had never actually
     // caught anything — one bad vehicle write must not stop the rest of the
     // frame, or a roster of ten carts becomes a roster of one bad write away
@@ -102,7 +102,7 @@ describe('vehicle frame', () => {
       vehicles: Effect.succeed([vehicle]),
       updateState: (_id: VehicleId, state: Record<string, unknown>) => Effect.sync(() => { next = state }),
     } as unknown as VehicleServiceApi
-    const water = blockIdOf('water')!
+    const water = Option.getOrThrow(blockIdOf('water'))
     const store = {
       getBlock: () => Effect.succeed({ _tag: 'Block' as const, block: water }),
     } as unknown as ChunkStoreApi
@@ -113,6 +113,58 @@ describe('vehicle frame', () => {
 
     expect(next?.['position']).toEqual({ x: 0, y: 64, z: -0.009000000000000001 })
     expect(next?.['occupant']).toBe('player:local')
+  })
+
+  it('does not treat an unloaded cell as water for boat movement', async () => {
+    const vehicle = {
+      id: VehicleId('v:boat-unloaded-water'),
+      type: 'boat' as const,
+      dimension: 'overworld' as const,
+      position: { x: 0, y: 64, z: 0 },
+      velocity: { x: 0, y: 0, z: 0 },
+      yawRadians: 0,
+      occupant: 'player:local',
+    }
+    let next: Record<string, unknown> | undefined
+    const service = {
+      vehicles: Effect.succeed([vehicle]),
+      updateState: (_id: VehicleId, state: Record<string, unknown>) => Effect.sync(() => { next = state }),
+    } as unknown as VehicleServiceApi
+    const store = {
+      getBlock: () => Effect.succeed({ _tag: 'ChunkNotLoaded' as const }),
+    } as unknown as ChunkStoreApi
+
+    await Effect.runPromise(advanceVehicles(store, service, 0.05, {
+      controlsForVehicle: () => ({ throttle: 1, steering: 0 }),
+    }))
+
+    const velocity = next?.['velocity'] as { x: number; y: number; z: number }
+    expect(velocity.z).toBeCloseTo(-0.0165, 12)
+  })
+
+  it('preserves minecart momentum on a block without rail metadata', async () => {
+    const vehicle = {
+      id: VehicleId('v:non-rail-block'),
+      type: 'minecart' as const,
+      dimension: 'overworld' as const,
+      position: { x: 0, y: 64, z: 0 },
+      velocity: { x: 2, y: 0, z: 0 },
+      yawRadians: 0,
+    }
+    let next: Record<string, unknown> | undefined
+    const service = {
+      vehicles: Effect.succeed([vehicle]),
+      updateState: (_id: VehicleId, state: Record<string, unknown>) => Effect.sync(() => { next = state }),
+    } as unknown as VehicleServiceApi
+    const air = Option.getOrThrow(blockIdOf('air'))
+    const store = {
+      getBlock: () => Effect.succeed({ _tag: 'Block' as const, block: air }),
+    } as unknown as ChunkStoreApi
+
+    await Effect.runPromise(advanceVehicles(store, service, 0.1))
+
+    const velocity = next?.['velocity'] as { x: number; y: number; z: number }
+    expect(velocity.x).toBeCloseTo(2, 12)
   })
 
   it('stops a vehicle before a solid block and reports collision exits', async () => {
@@ -131,7 +183,7 @@ describe('vehicle frame', () => {
       vehicles: Effect.succeed([vehicle]),
       updateState: (_id: VehicleId, state: Record<string, unknown>) => Effect.sync(() => { next = state }),
     } as unknown as VehicleServiceApi
-    const stone = blockIdOf('stone')!
+    const stone = Option.getOrThrow(blockIdOf('stone'))
     const store = {
       getBlock: (position: { x: number; y: number; z: number }) => Effect.succeed(
         position.x === 1 && position.y === 64 && position.z === 0
@@ -165,8 +217,8 @@ describe('vehicle frame', () => {
       vehicles: Effect.succeed([vehicle]),
       updateState: (_id: VehicleId, state: Record<string, unknown>) => Effect.sync(() => { next = state }),
     } as unknown as VehicleServiceApi
-    const stone = blockIdOf('stone')!
-    const water = blockIdOf('water')!
+    const stone = Option.getOrThrow(blockIdOf('stone'))
+    const water = Option.getOrThrow(blockIdOf('water'))
     const store = {
       getBlock: (position: { x: number; y: number; z: number }) => Effect.succeed(
         position.x === 1 && position.y === 64 && position.z === 0
@@ -210,7 +262,7 @@ describe('vehicle frame', () => {
       vehicles: Effect.succeed([vehicle]),
       updateState: (_id: VehicleId, state: Record<string, unknown>) => Effect.sync(() => { next = state }),
     } as unknown as VehicleServiceApi
-    const stone = blockIdOf('stone')!
+    const stone = Option.getOrThrow(blockIdOf('stone'))
     const store = {
       getBlock: (position: { x: number; y: number; z: number }) => Effect.succeed(
         position.x === 1 && position.y === 64 && position.z === 0
@@ -242,8 +294,8 @@ describe('vehicle frame', () => {
       vehicles: Effect.succeed([vehicle]),
       updateState: (_id: VehicleId, state: Record<string, unknown>) => Effect.sync(() => { next = state }),
     } as unknown as VehicleServiceApi
-    const stone = blockIdOf('stone')!
-    const poweredRail = blockIdOf('powered_rail')!
+    const stone = Option.getOrThrow(blockIdOf('stone'))
+    const poweredRail = Option.getOrThrow(blockIdOf('powered_rail'))
     const store = {
       getBlock: (position: { x: number; y: number; z: number }) => Effect.succeed(
         position.x === 1 && position.y === 64 && position.z === 0
@@ -286,8 +338,8 @@ describe('vehicle frame', () => {
       vehicles: Effect.succeed([vehicle]),
       updateState: (_id: VehicleId, state: Record<string, unknown>) => Effect.sync(() => { next = state }),
     } as unknown as VehicleServiceApi
-    const stone = blockIdOf('stone')!
-    const poweredRail = blockIdOf('powered_rail')!
+    const stone = Option.getOrThrow(blockIdOf('stone'))
+    const poweredRail = Option.getOrThrow(blockIdOf('powered_rail'))
     const store = {
       getBlock: (position: { x: number; y: number; z: number }) => Effect.succeed(
         position.x === 1 && position.y === 64 && position.z === 0

@@ -1,22 +1,22 @@
 import { describe, expect, it } from '@effect/vitest'
-import { Effect } from 'effect'
+import { Effect, Option } from 'effect'
 
-import { BlockId, blockIdOf, blockPosition, type BlockPosition } from '@nerima-games/mc-kernel'
-import { cellKey, chunkKey, chunkOf } from '../src/domain/in-memory-chunk-store'
-import { makeInMemoryWorld } from '../src/domain/in-memory-world'
+import { BlockId, blockIdOf, type BlockPosition } from '@nerima-games/mc-kernel'
+import { cellKey, chunkKey, chunkOf, makeInMemoryWorld } from '../src/domain/in-memory-world.js'
 import { targetedRightClickRoute } from '../src/stages/targeted-right-click-route'
+import { blockPosition, position as fixturePosition } from './support/coordinate-fixtures.js'
 
 const TARGET = blockPosition(0, 1, 0)
 const BEHIND_TARGET = blockPosition(0, 1, -1)
 const SPAWN_POSE = {
-  feetPosition: { x: 0.5, y: 0, z: 2.5 },
+  feetPosition: fixturePosition(0.5, 0, 2.5),
   yawRadians: 0,
   pitchRadians: 0,
 }
-const CRAFTING_TABLE_ID = blockIdOf('crafting_table') ?? -1
-const CHEST_ID = blockIdOf('chest') ?? -1
-const SHULKER_BOX_ID = blockIdOf('shulker_box') ?? -1
-const DIRT_ID = blockIdOf('dirt') ?? -1
+const CRAFTING_TABLE_ID = Option.getOrThrow(blockIdOf('crafting_table'))
+const CHEST_ID = Option.getOrThrow(blockIdOf('chest'))
+const SHULKER_BOX_ID = Option.getOrThrow(blockIdOf('shulker_box'))
+const DIRT_ID = Option.getOrThrow(blockIdOf('dirt'))
 // 60_000: inside kernel's `BlockId` brand range ([0, 65535], a storage bound)
 // but far outside its registry (~120 rows), so it is genuinely unregistered
 // rather than out-of-range-invalid — `999_999` used to stand in for this
@@ -25,19 +25,22 @@ const DIRT_ID = blockIdOf('dirt') ?? -1
 const UNKNOWN_BLOCK_ID = 60_000
 
 const makeTargetedWorld = (block: number, loaded: boolean = true) =>
-  makeInMemoryWorld({
-    world: {
-      blocks: new Map([[cellKey(TARGET), BlockId(block)]]),
-      loaded: loaded ? [chunkKey(chunkOf(TARGET))] : [],
-    },
-    spawnPose: SPAWN_POSE,
+  Effect.gen(function* () {
+    const world = yield* makeInMemoryWorld({
+      world: {
+        blocks: new Map([[cellKey(TARGET), BlockId(block)]]),
+        loaded: loaded ? [chunkKey(chunkOf(TARGET))] : [],
+      },
+      spawnPose: SPAWN_POSE,
+    })
+    return { ...world, pose: yield* world.player.pose }
   })
 
 describe('targetedRightClickRoute', () => {
   it.effect('resolves a crafting-table route from player targeting state', () =>
     Effect.gen(function* () {
       const world = yield* makeTargetedWorld(CRAFTING_TABLE_ID)
-      const route = yield* targetedRightClickRoute(world.chunkStore, world.player)
+      const route = yield* targetedRightClickRoute(world.chunkStore, world.pose)
 
       expect(route).toEqual({ kind: 'craftingTable', at: TARGET })
     }),
@@ -47,7 +50,7 @@ describe('targetedRightClickRoute', () => {
     Effect.gen(function* () {
       const world = yield* makeTargetedWorld(CHEST_ID)
 
-      expect(yield* targetedRightClickRoute(world.chunkStore, world.player)).toEqual({
+      expect(yield* targetedRightClickRoute(world.chunkStore, world.pose)).toEqual({
         kind: 'storage',
         at: TARGET,
         block: 'chest',
@@ -59,7 +62,7 @@ describe('targetedRightClickRoute', () => {
     Effect.gen(function* () {
       const world = yield* makeTargetedWorld(SHULKER_BOX_ID)
 
-      expect(yield* targetedRightClickRoute(world.chunkStore, world.player)).toEqual({
+      expect(yield* targetedRightClickRoute(world.chunkStore, world.pose)).toEqual({
         kind: 'storage',
         at: TARGET,
         block: 'shulker_box',
@@ -70,7 +73,7 @@ describe('targetedRightClickRoute', () => {
   it.effect('returns undefined when the targeted block has no right-click route', () =>
     Effect.gen(function* () {
       const world = yield* makeTargetedWorld(DIRT_ID)
-      const route = yield* targetedRightClickRoute(world.chunkStore, world.player)
+      const route = yield* targetedRightClickRoute(world.chunkStore, world.pose)
 
       expect(route).toBeUndefined()
     }),
@@ -81,7 +84,7 @@ describe('targetedRightClickRoute', () => {
       const world = yield* makeTargetedWorld(CRAFTING_TABLE_ID)
       const route = yield* targetedRightClickRoute(
         world.chunkStore,
-        world.player,
+        world.pose,
         0.5,
       )
 
@@ -103,7 +106,7 @@ describe('targetedRightClickRoute', () => {
           }),
       }
 
-      const route = yield* targetedRightClickRoute(store, world.player)
+      const route = yield* targetedRightClickRoute(store, world.pose)
 
       expect(route).toEqual({ kind: 'craftingTable', at: TARGET })
       expect(readCounts.get(cellKey(TARGET))).toBe(1)
@@ -117,7 +120,7 @@ describe('targetedRightClickRoute', () => {
       const world = yield* makeTargetedWorld(0)
 
       expect(
-        yield* targetedRightClickRoute(world.chunkStore, world.player),
+        yield* targetedRightClickRoute(world.chunkStore, world.pose),
       ).toBeUndefined()
     }),
   )
@@ -127,7 +130,7 @@ describe('targetedRightClickRoute', () => {
       const world = yield* makeTargetedWorld(CRAFTING_TABLE_ID, false)
 
       expect(
-        yield* targetedRightClickRoute(world.chunkStore, world.player),
+        yield* targetedRightClickRoute(world.chunkStore, world.pose),
       ).toBeUndefined()
     }),
   )
@@ -137,7 +140,7 @@ describe('targetedRightClickRoute', () => {
       const world = yield* makeTargetedWorld(UNKNOWN_BLOCK_ID)
 
       expect(
-        yield* targetedRightClickRoute(world.chunkStore, world.player),
+        yield* targetedRightClickRoute(world.chunkStore, world.pose),
       ).toBeUndefined()
     }),
   )

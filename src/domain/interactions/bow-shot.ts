@@ -51,9 +51,21 @@
  * the bow ACTUALLY uses, cited to the line that supplies it, and `test/bow.test.ts`
  * pins that this repository's bow and melee radii are free to differ.
  */
-import type { Position } from '@nerima-games/mc-kernel'
+import { AttackRangeDistance, PositionAxis, position } from '@nerima-games/mc-kernel'
+import type { Dimension, Position, SimulationTick } from '@nerima-games/mc-kernel'
 import type { EntityId } from '@nerima-games/mc-sim'
+import {
+  EntityIdSchema,
+  DomainEventSchema,
+  WorldPositionSchema,
+  type DomainEvent,
+} from '@nerima-games/mc-kernel'
+import { EYE_LEVEL_OFFSET, IntentPayloadSchema, type Direction3, type IntentPayload, type PlayerPose } from '@nerima-games/mc-sim'
+import { Result, Schema } from 'effect'
+import { BowChargePreparationSchema, type BowChargePreparation } from './draw-bow.js'
 import { BOW_MAX_RANGE } from './draw-bow.js'
+
+const DEFAULT_BOW_REACH = AttackRangeDistance(BOW_MAX_RANGE)
 
 /**
  * Radius of the targeting cylinder, in blocks.
@@ -214,14 +226,14 @@ export const arrowHitProjection = (
  * hypothetical in a game with spawn stacks; the reference does not record which
  * wins and `test/bow.test.ts` pins it.
  */
-export const shotTarget = (
-  candidates: ReadonlyArray<ShotCandidate>,
+const shotTargetWithCandidateAtReach = <Candidate extends ShotCandidate>(
+  candidates: ReadonlyArray<Candidate>,
   origin: Position,
   dirX: number,
   dirY: number,
   dirZ: number,
   reach: number = BOW_MAX_RANGE,
-): ShotHit | undefined => {
+): Readonly<{ candidate: Candidate; hit: ShotHit }> | undefined => {
   if (
     !Number.isFinite(origin.x) ||
     !Number.isFinite(origin.y) ||
@@ -246,7 +258,7 @@ export const shotTarget = (
   const unitZ = dirZ / length
   const radiusSquared = BOW_TARGET_RADIUS * BOW_TARGET_RADIUS
 
-  let nearest: ShotHit | undefined
+  let nearest: Readonly<{ candidate: Candidate; hit: ShotHit }> | undefined
   for (const candidate of candidates) {
     const toX = candidate.feetPosition.x - origin.x
     const toY = candidate.feetPosition.y + BOW_TARGET_CENTER_Y_OFFSET - origin.y
@@ -268,13 +280,38 @@ export const shotTarget = (
       continue
     }
 
-    if (nearest === undefined || alongRay < nearest.distance) {
-      nearest = { id: candidate.id, distance: alongRay }
+    if (nearest === undefined || alongRay < nearest.hit.distance) {
+      nearest = { candidate, hit: { id: candidate.id, distance: alongRay } }
     }
   }
 
   return nearest
 }
+
+export const shotTargetWithCandidate = <Candidate extends ShotCandidate>(
+  candidates: ReadonlyArray<Candidate>,
+  origin: Position,
+  direction: Direction3,
+  reach: AttackRangeDistance = DEFAULT_BOW_REACH,
+): Readonly<{ candidate: Candidate; hit: ShotHit }> | undefined =>
+  shotTargetWithCandidateAtReach(
+    candidates,
+    origin,
+    direction.x,
+    direction.y,
+    direction.z,
+    reach,
+  )
+
+export const shotTarget = (
+  candidates: ReadonlyArray<ShotCandidate>,
+  origin: Position,
+  dirX: number,
+  dirY: number,
+  dirZ: number,
+  reach: number = BOW_MAX_RANGE,
+): ShotHit | undefined =>
+  shotTargetWithCandidateAtReach(candidates, origin, dirX, dirY, dirZ, reach)?.hit
 
 /**
  * How finely the terrain between shooter and target is sampled, in blocks.
@@ -390,4 +427,93 @@ export const shotBlockedByTerrain = (
   }
 
   return false
+}
+
+export type BowActionIntent = Extract<IntentPayload, { readonly _tag: 'BowAction' }>
+export type BowShotPreparation = Readonly<{
+  target: ShotHit
+  event: DomainEvent
+}>
+
+export const BowShotPreparationSchema: Schema.ConstraintDecoder<BowShotPreparation> = Schema.Struct({
+  target: Schema.Struct({ id: EntityIdSchema, distance: Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)) }),
+  event: DomainEventSchema,
+})
+
+export type BowShotPreparationError =
+  | 'invalid-intent'
+  | 'invalid-charge'
+  | 'no-target'
+  | 'blocked-by-terrain'
+
+/**
+ * Prepare a hitscan bow hit from C2 intent and authoritative player/world state.
+ * The returned kernel event is only a candidate; the owner must commit before publishing it.
+ */
+export const prepareBowShot = (
+  intent: BowActionIntent,
+  charge: BowChargePreparation,
+  pose: PlayerPose,
+  dimension: Dimension,
+  tick: SimulationTick,
+  candidates: ReadonlyArray<ShotCandidate>,
+  isBlockedAt: IsArrowBlockedAt,
+): Result.Result<BowShotPreparation, BowShotPreparationError> => {
+  const decodedIntent = Schema.decodeUnknownResult(IntentPayloadSchema)(intent)
+  if (
+    Result.isFailure(decodedIntent) || decodedIntent.success._tag !== 'BowAction' ||
+    decodedIntent.success.action !== 'release'
+  ) return Result.fail('invalid-intent')
+  if (charge.actor !== decodedIntent.success.actor) return Result.fail('invalid-charge')
+  const decodedCharge = Schema.decodeUnknownResult(BowChargePreparationSchema, {
+    onExcessProperty: 'error',
+  })(charge)
+  if (Result.isFailure(decodedCharge) || !decodedCharge.success.fired) return Result.fail('invalid-charge')
+
+
+  const aim = decodedIntent.success.aimDirection ?? {
+    x: -Math.sin(pose.yawRadians) * Math.cos(pose.pitchRadians),
+    y: -Math.sin(pose.pitchRadians),
+    z: Math.cos(pose.yawRadians) * Math.cos(pose.pitchRadians),
+  }
+  const origin = Result.getOrThrow(Schema.decodeUnknownResult(WorldPositionSchema)({
+    dimension,
+    x: pose.feetPosition.x,
+    y: pose.feetPosition.y + EYE_LEVEL_OFFSET,
+    z: pose.feetPosition.z,
+  }))
+
+  const targetMatch = shotTargetWithCandidate(
+    candidates,
+    origin,
+    aim,
+    DEFAULT_BOW_REACH,
+  )
+  if (targetMatch === undefined) return Result.fail('no-target')
+  const { hit: target, candidate: targetCandidate } = targetMatch
+  const length = Math.hypot(aim.x, aim.y, aim.z)
+  const end = position(
+    PositionAxis(origin.x + aim.x / length * target.distance),
+    PositionAxis(origin.y + aim.y / length * target.distance),
+    PositionAxis(origin.z + aim.z / length * target.distance),
+  )
+  if (shotBlockedByTerrain(isBlockedAt, origin, end)) {
+    return Result.fail('blocked-by-terrain')
+  }
+
+  const targetPosition = Result.getOrThrow(Schema.decodeUnknownResult(WorldPositionSchema)({
+    dimension: dimension,
+    x: targetCandidate.feetPosition.x,
+    y: targetCandidate.feetPosition.y,
+    z: targetCandidate.feetPosition.z,
+  }))
+  const event: DomainEvent = Result.getOrThrow(Schema.decodeUnknownResult(DomainEventSchema)({
+    _tag: 'EntityDamaged',
+    tick: tick,
+    entity: target.id,
+    position: targetPosition,
+    amount: decodedCharge.success.damage,
+    cause: 'projectile',
+  }))
+  return Result.succeed({ target, event })
 }

@@ -1,5 +1,7 @@
 import { describe, expect, it } from '@effect/vitest'
 import { durabilityForItem } from '@nerima-games/mc-sim'
+import { RandomSeed } from '@nerima-games/mc-kernel'
+import { Schema } from 'effect'
 
 import {
   ENCHANTMENT_REGISTRY,
@@ -12,9 +14,12 @@ import {
   enchantmentAppliesTo,
   enchantmentOffer,
   enchantmentOffers,
+  enchantmentTableResultItemOf,
   enchantmentsConflict,
   encodeEnchantedItem,
   fortuneDropCountWithEnchantments,
+  EnchantmentBookshelfCountSchema,
+  generateEnchantmentTableOffersForItem,
   meleeDamageWithEnchantments,
   miningSpeedWithEnchantments,
   rerollEnchantmentSeed,
@@ -193,6 +198,21 @@ describe('enchanted item codec', () => {
 })
 
 describe('enchantment table offers and transaction', () => {
+  it('uses mc-sim enchantment-table rules with a repeatable gameplay seed', () => {
+    const seed = RandomSeed(1234)
+    const bookshelfCount = Schema.decodeUnknownSync(EnchantmentBookshelfCountSchema)(15)
+    const offers = generateEnchantmentTableOffersForItem('diamond_pickaxe', seed, bookshelfCount)
+    const repeated = generateEnchantmentTableOffersForItem('diamond_pickaxe', seed, bookshelfCount)
+
+    expect(offers._tag).toBe('Success')
+    expect(repeated).toEqual(offers)
+    if (offers._tag !== 'Success') return
+
+    expect(offers.success.map((offer) => offer?.lapisCost)).toEqual([1, 2, 3])
+    expect(offers.success.every((offer) => offer !== undefined)).toBe(true)
+    expect(enchantmentTableResultItemOf('book')).toBe('enchanted_book')
+  })
+
   it('derives deterministic offers from normalized seed, shelves and slot', () => {
     expect(enchantmentOffers(1234, 15)).toEqual(enchantmentOffers(1234, 15))
     expect(enchantmentOffer(1234, 99, 2)).toEqual(enchantmentOffer(1234, 15, 2))
@@ -330,8 +350,10 @@ describe('enchantment derivations', () => {
       enchantedItem('iron_leggings', 'protection', 4),
       enchantedItem('iron_boots', 'protection', 4),
     ]
+    // At ten damage, fifteen armor points with zero toughness leave six
+    // damage; Protection IV on four pieces then reduces that by 64%.
     expect(armorDamageWithEnchantments({ amount: 10, cause: 'mob' }, 15, armor)).toEqual({
-      amount: 1.44,
+      amount: 2.16,
       cause: 'mob',
     })
     expect(
@@ -345,7 +367,7 @@ describe('enchantment derivations', () => {
     const unenchantedArmor = armor.map((item) => ({ ...item, enchantments: [] }))
     expect(
       armorDamageWithEnchantments({ amount: 10, cause: 'mob' }, 15, unenchantedArmor),
-    ).toEqual({ amount: 4, cause: 'mob' })
+    ).toEqual({ amount: 6, cause: 'mob' })
   })
 
   it('applies efficiency and clamps invalid mining bases', () => {

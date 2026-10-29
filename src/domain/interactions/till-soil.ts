@@ -49,10 +49,22 @@
  * DIVERGENCE FROM THE REFERENCE, stated rather than silent, and the test that
  * pins it says which behaviour is vanilla's.
  */
-import { Effect } from 'effect'
-import { blockIdOf, blockTypeOfId, type BlockType } from '@nerima-games/mc-kernel'
-import { adjacentBlockPosition, blockPosition } from '@nerima-games/mc-kernel'
+import { Effect, Option, Result, Schema } from 'effect'
+import {
+  BlockId,
+  WorldWriteBatchSchema,
+  adjacentBlockPosition,
+  blockIdOf,
+  blockTypeOfId,
+  type BlockType,
+  type Dimension,
+} from '@nerima-games/mc-kernel'
 import type { BlockPosition } from '@nerima-games/mc-kernel'
+import type {
+  ReplicatedOwnerCandidate,
+  WorldCommitCoordinatorApi,
+  WorldCommitCoordinatorError,
+} from '@nerima-games/mc-sim'
 
 /**
  * Ground that a hoe turns into farmland.
@@ -95,10 +107,13 @@ export type TillOutcome =
    * produces farmland nothing can ever be planted on.
    */
   | { readonly _tag: 'obstructed'; readonly blockedBy: BlockType }
+  | { readonly _tag: 'invalidPosition' }
+  | { readonly _tag: 'commitContextMissing' }
+  | { readonly _tag: 'commitFailed'; readonly error: Schema.SchemaError | WorldCommitCoordinatorError }
 
 /** The cell a hoe must find clear. */
-export const cellAbove = (ground: BlockPosition): BlockPosition =>
-  adjacentBlockPosition(blockPosition(ground.x, ground.y, ground.z), 'up')
+export const cellAbove = (ground: BlockPosition): ReturnType<typeof adjacentBlockPosition> =>
+  adjacentBlockPosition(ground, 'up')
 
 /**
  * Decide, given what is already known about the two cells.
@@ -122,14 +137,23 @@ export const tillingVerdict = (
   if (blockAbove !== 'air') {
     return { _tag: 'obstructed', blockedBy: blockAbove }
   }
-  return { _tag: 'tilled', at: ground }
+  return Result.isSuccess(cellAbove(ground))
+    ? { _tag: 'tilled', at: ground }
+    : { _tag: 'invalidPosition' }
 }
 
 /** The two reads and one write this rule needs of a world. */
 export type TillPort = {
   readonly blockAt: (position: BlockPosition) => Effect.Effect<number | undefined>
-  readonly setBlock: (position: BlockPosition, block: number) => Effect.Effect<unknown>
+  /** Accepted for the current stage call shape; never used for block writes. */
+  readonly setBlock?: (position: BlockPosition, block: BlockId) => Effect.Effect<unknown>
 }
+
+export type TillCommitContext = Readonly<{
+  coordinator: WorldCommitCoordinatorApi
+  dimension: Dimension
+  changes: ReadonlyArray<ReplicatedOwnerCandidate>
+}>
 
 /**
  * Read the two cells, decide, and write farmland if the decision says so.
@@ -142,6 +166,7 @@ export const tillSoil = (
   port: TillPort,
   held: TillingCapability,
   ground: BlockPosition,
+  commitContext?: TillCommitContext,
 ): Effect.Effect<TillOutcome> =>
   Effect.gen(function* () {
     if (!held.tills) {
@@ -150,11 +175,26 @@ export const tillSoil = (
       return { _tag: 'noHoe' as const }
     }
 
-    const groundId = yield* port.blockAt(ground)
-    const aboveId = yield* port.blockAt(cellAbove(ground))
+    const abovePosition = Result.getOrUndefined(cellAbove(ground))
+    if (abovePosition === undefined) {
+      return { _tag: 'invalidPosition' }
+    }
 
-    const groundBlock = groundId === undefined ? undefined : blockTypeOfId(groundId)
-    const aboveBlock = aboveId === undefined ? undefined : blockTypeOfId(aboveId)
+    const commit = commitContext === undefined
+      ? undefined
+      : {
+          ...commitContext,
+          expectedRevision: yield* commitContext.coordinator.revision,
+          expectedDimensionRevision: yield* commitContext.coordinator.dimensionRevision(commitContext.dimension),
+        }
+
+    const groundId = yield* port.blockAt(ground)
+    const aboveId = yield* port.blockAt(abovePosition)
+
+    const groundBlockId = groundId === undefined ? undefined : Result.getOrUndefined(BlockId.result(groundId))
+    const aboveBlockId = aboveId === undefined ? undefined : Result.getOrUndefined(BlockId.result(aboveId))
+    const groundBlock = groundBlockId === undefined ? undefined : Result.getOrUndefined(blockTypeOfId(groundBlockId))
+    const aboveBlock = aboveBlockId === undefined ? undefined : Result.getOrUndefined(blockTypeOfId(aboveBlockId))
 
     if (groundBlock === undefined || aboveBlock === undefined) {
       return { _tag: 'notTillable' as const, found: 'air' as BlockType }
@@ -162,14 +202,34 @@ export const tillSoil = (
 
     const verdict = tillingVerdict(held, ground, groundBlock, aboveBlock)
     if (verdict._tag === 'tilled') {
-      // `TILLED_BLOCK` is the literal `'farmland'`, which carries a row in
-      // kernel's own registry, so `blockIdOf` cannot return `undefined` here.
-      // Asserted rather than
-      // branched on, for the same reason `./plant-crop.ts` asserts its own
-      // three crop ids: a vocabulary defect that removed that row would be
-      // caught by kernel's own type declaration, not by a runtime
-      // fallback that tills nothing and reports success.
-      yield* port.setBlock(verdict.at, blockIdOf(TILLED_BLOCK)!)
+      // A missing id for this fixed BlockType means the kernel registry is inconsistent.
+      const farmlandBlock = Option.getOrThrow(blockIdOf(TILLED_BLOCK))
+      if (commit === undefined) return { _tag: 'commitContextMissing' }
+
+      const committed = Effect.gen(function* () {
+        const blockWrite = yield* Schema.decodeUnknownEffect(WorldWriteBatchSchema)({
+          world: commit.coordinator.worldId,
+          expectedWorldRevision: commit.expectedRevision,
+          dimension: commit.dimension,
+          expectedDimensionRevision: commit.expectedDimensionRevision,
+          edits: [{ position: verdict.at, block: farmlandBlock }],
+        })
+        yield* commit.coordinator.commit({
+          expectedRevision: commit.expectedRevision,
+          expectedDimensions: [{
+            dimension: commit.dimension,
+            expectedRevision: commit.expectedDimensionRevision,
+          }],
+          changes: commit.changes,
+          blockWrite,
+        })
+        return verdict
+      })
+
+      return yield* Effect.matchEffect(committed, {
+        onFailure: (error) => Effect.succeed({ _tag: 'commitFailed' as const, error }),
+        onSuccess: (outcome) => Effect.succeed(outcome),
+      })
     }
     return verdict
   })

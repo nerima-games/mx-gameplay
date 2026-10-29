@@ -1,4 +1,6 @@
-import { advanceFurnace, type FurnaceState } from '@nerima-games/mc-sim'
+import { Result } from 'effect'
+import { itemStackEqualsIgnoringCount } from '@nerima-games/mc-kernel'
+import { advanceFurnace, type FurnaceFailure, type FurnaceState } from '@nerima-games/mc-sim'
 
 /** One request may consume at most one recipe interval, keeping stage work bounded. */
 export const MAX_FURNACE_ADVANCE_SECS = 10
@@ -8,7 +10,7 @@ export type FurnaceAdvancePlan = {
   readonly after: FurnaceState
   readonly advancedSecs: number
   readonly deferredSecs: number
-  readonly smelted: number
+  readonly smeltedCount: number
   readonly fuelConsumed: number
 }
 
@@ -18,14 +20,16 @@ export type FurnaceAdvanceApplyResult =
 
 const sameStack = (left: FurnaceState['input'], right: FurnaceState['input']): boolean =>
   left === right ||
-  (left !== null && right !== null && left.item === right.item && left.count === right.count)
+  (left !== undefined && right !== undefined && itemStackEqualsIgnoringCount(left, right) && left.count === right.count)
 
 const sameFurnace = (left: FurnaceState, right: FurnaceState): boolean =>
   sameStack(left.input, right.input) &&
   sameStack(left.fuel, right.fuel) &&
   sameStack(left.output, right.output) &&
-  left.cookElapsedSecs === right.cookElapsedSecs &&
-  left.burnRemainingSecs === right.burnRemainingSecs
+  left.cookProgressSecs === right.cookProgressSecs &&
+  left.fuelTimeRemainingSecs === right.fuelTimeRemainingSecs &&
+  left.fuelTimeTotalSecs === right.fuelTimeTotalSecs &&
+  left.station === right.station
 
 /** Whether the bounded simulation produced a host-visible furnace change. */
 export const furnaceAdvanceChanged = (plan: FurnaceAdvancePlan): boolean =>
@@ -34,18 +38,17 @@ export const furnaceAdvanceChanged = (plan: FurnaceAdvancePlan): boolean =>
 export const planFurnaceAdvance = (
   state: FurnaceState,
   requestedSecs: number,
-): FurnaceAdvancePlan => {
+): Result.Result<FurnaceAdvancePlan, FurnaceFailure> => {
   const validRequestedSecs = Number.isFinite(requestedSecs) && requestedSecs > 0 ? requestedSecs : 0
   const advancedSecs = Math.min(validRequestedSecs, MAX_FURNACE_ADVANCE_SECS)
-  const outcome = advanceFurnace(state, advancedSecs)
-  return {
+  return Result.map(advanceFurnace(state, advancedSecs), (outcome) => ({
     before: state,
     after: outcome.state,
     advancedSecs,
     deferredSecs: validRequestedSecs - advancedSecs,
-    smelted: outcome.smelted,
+    smeltedCount: outcome.smeltedCount,
     fuelConsumed: outcome.fuelConsumed,
-  }
+  }))
 }
 
 /** Apply only to the exact host-owned snapshot for which the plan was produced. */

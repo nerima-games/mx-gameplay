@@ -1,5 +1,7 @@
 import { describe, expect, it } from '@effect/vitest'
 import { Effect } from 'effect'
+import { EntityHealthPoints } from '@nerima-games/mc-kernel'
+import { HungerPoints } from '@nerima-games/mc-sim'
 import {
   FOOD_PROPERTIES,
   resolveFoodUse,
@@ -8,15 +10,14 @@ import {
 
 const request = (
   held: FoodUseRequest['held'],
-  overrides: Partial<FoodUseRequest['vitals']> = {},
+  overrides: Readonly<{ healthPoints?: number; hungerPoints?: number; maxHungerPoints?: number }> = {},
   effectRoll?: number,
 ): FoodUseRequest => ({
   held,
   vitals: {
-    healthPoints: 20,
-    hungerPoints: 19,
-    maxHungerPoints: 20,
-    ...overrides,
+    healthPoints: EntityHealthPoints(overrides.healthPoints ?? 20),
+    hungerPoints: HungerPoints(overrides.hungerPoints ?? 19),
+    maxHungerPoints: HungerPoints(overrides.maxHungerPoints ?? 20),
   },
   ...(effectRoll === undefined ? {} : { effectRoll }),
 })
@@ -136,7 +137,13 @@ describe('resolveFoodUse', () => {
   it.effect('refuses all item consumption after death', () =>
     Effect.sync(() => {
       expect(resolveFoodUse(request('potato', { healthPoints: 0 }))).toStrictEqual({ _tag: 'dead' })
-      expect(resolveFoodUse(request('stone', { healthPoints: -1 }))).toStrictEqual({ _tag: 'dead' })
+      const malformedVitals = request('stone').vitals
+      // The branded constructor rejects negative health; this malformed value
+      // exercises the resolver's defensive dead guard for persisted input.
+      expect(resolveFoodUse({
+        held: 'stone',
+        vitals: { ...malformedVitals, healthPoints: -1 as FoodUseRequest['vitals']['healthPoints'] },
+      })).toStrictEqual({ _tag: 'dead' })
     }),
   )
 

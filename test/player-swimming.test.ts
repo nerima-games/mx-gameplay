@@ -1,5 +1,7 @@
 import { describe, expect, it } from '@effect/vitest'
-import { Effect } from 'effect'
+import { Effect, Result, Schema } from 'effect'
+import * as FastCheck from 'fast-check'
+import { DeltaTimeSecs } from '@nerima-games/mc-kernel'
 import {
   advancePlayerSwimming,
   applyPlayerSwimming,
@@ -36,6 +38,8 @@ const input = (overrides: Partial<PlayerSwimmingInput> = {}): PlayerSwimmingInpu
   deltaSeconds: 0.1,
   ...overrides,
 })
+
+const NonNegativeFiniteSchema = Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0))
 
 describe('player swimming', () => {
   it.effect('leaves velocity unchanged outside water', () =>
@@ -209,6 +213,21 @@ describe('advancePlayerSwimming: oxygen and drowning boundaries', () => {
     }),
   )
 
+  it.effect('resets a non-finite saved drowning clock before counting a full interval', () =>
+    Effect.sync(() => {
+      const corruptedState = {
+        ...initialPlayerSwimmingState(),
+        oxygenSecs: 0,
+        drowningElapsedSecs: Number.NaN,
+      }
+
+      const result = advancePlayerSwimming(corruptedState, advanceInput({ deltaSecs: DROWNING_DAMAGE_INTERVAL_SECS }))
+
+      expect(result.drowningDamagePoints).toBe(DROWNING_DAMAGE_POINTS)
+      expect(result.state.drowningElapsedSecs).toBe(0)
+    }),
+  )
+
   it.effect('dying mid-drown resets to the initial state rather than leaving stale oxygen debt', () =>
     Effect.sync(() => {
       const drowning = advancePlayerSwimming(
@@ -221,6 +240,37 @@ describe('advancePlayerSwimming: oxygen and drowning boundaries', () => {
         state: initialPlayerSwimmingState(),
         drowningDamagePoints: 0,
       })
+    }),
+  )
+
+  it.effect('property: valid branded deltas give finite non-negative drowning damage', () =>
+    Effect.sync(() => {
+      const deltas = FastCheck.oneof(
+        FastCheck.double({ min: -Number.MAX_VALUE, max: Number.MAX_VALUE }),
+        FastCheck.constantFrom(Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY),
+      )
+
+      const check = (rawDelta: number): boolean => {
+        const delta = DeltaTimeSecs.result(rawDelta)
+        if (Result.isFailure(delta)) return delta.failure._tag === 'BrandError'
+
+        const outcome = advancePlayerSwimming(
+          initialPlayerSwimmingState(),
+          advanceInput({ deltaSecs: delta.success }),
+        )
+        const decodedDamage = Schema.decodeUnknownResult(NonNegativeFiniteSchema)(
+          outcome.drowningDamagePoints,
+        )
+
+        return Result.isSuccess(decodedDamage) &&
+          Number.isFinite(outcome.state.oxygenSecs) &&
+          outcome.state.oxygenSecs >= 0 &&
+          Number.isFinite(outcome.state.drowningElapsedSecs) &&
+          outcome.state.drowningElapsedSecs >= 0
+      }
+
+      FastCheck.assert(FastCheck.property(deltas, check), { numRuns: 100 })
+      FastCheck.assert(FastCheck.property(FastCheck.constant(Number.MAX_VALUE), check), { numRuns: 1 })
     }),
   )
 })

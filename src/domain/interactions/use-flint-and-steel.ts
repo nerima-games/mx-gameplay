@@ -46,7 +46,7 @@
 import { Effect } from 'effect'
 import type { ChunkStoreApi } from '@nerima-games/mc-worldgen'
 import type { BlockPosition, ItemType } from '@nerima-games/mc-kernel'
-import { igniteFire, type IgniteFireOutcome } from './ignite-fire.js'
+import { igniteFire, type IgniteFireCommitContext, type IgniteFireOutcome } from './ignite-fire.js'
 import { ignitePortal, type IgnitePortalOutcome } from './ignite-portal.js'
 import { igniteTnt, type IgniteTntOutcome } from './ignite-tnt.js'
 
@@ -100,6 +100,9 @@ export type IgnitionOutcome =
 /**
  * Use an igniting item on `position`, and report which rule answered.
  *
+ * `commitContext` supplies the dimension and C4 coordinator needed to write
+ * fire. Without it, an empty target returns `CommitContextMissing`.
+ *
  * `item` is carried through unread, and that is on purpose: nothing about the
  * two ignitions differs by item today (see `IGNITION_ITEM_TYPES`), and a
  * parameter the rule ignores is cheaper to keep than a signature change on the
@@ -109,14 +112,13 @@ export type IgnitionOutcome =
  * FALLS THROUGH ON `NoFrame` AND ON NOTHING ELSE. `ChunkNotLoaded` from the
  * portal arm is reported as-is rather than retried as fire: the window could not
  * be read, so the fire arm would be asked about a cell nobody could see, and it
- * would answer `ChunkNotLoaded` a second time after another store call. An
- * `UnknownBlock` is likewise a fact about this build's registry and trying the
- * other arm cannot change it.
+ * would answer `ChunkNotLoaded` a second time after another store call.
  */
 export const useFlintAndSteel = (
   store: ChunkStoreApi,
   position: BlockPosition,
   item: IgnitionItemType,
+  commitContext?: IgniteFireCommitContext,
 ): Effect.Effect<IgnitionOutcome> =>
   Effect.gen(function* () {
     void item
@@ -135,5 +137,5 @@ export const useFlintAndSteel = (
       return { _tag: 'Portal', outcome: portal }
     }
 
-    return { _tag: 'Fire', outcome: yield* igniteFire(store, position) }
+    return { _tag: 'Fire', outcome: yield* igniteFire(store, position, commitContext) }
   })

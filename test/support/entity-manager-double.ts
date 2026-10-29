@@ -61,10 +61,11 @@
  * performs.
  */
 import { Effect, Layer, Ref } from 'effect'
-import type { Position } from '@nerima-games/mc-kernel'
+import { EntityHealthPoints, EntitySerial, PositionAxis, type Position } from '@nerima-games/mc-kernel'
 import type { MobBehaviour } from '../../src/domain/entities/mob-frame'
 import {
   EntityId,
+  EntityCount,
   entityManagerTag,
   type Entity,
   type EntityManager,
@@ -115,14 +116,16 @@ type Doubles<S> = {
 const magnitude = (value: number): number => (Number.isFinite(value) ? value : 0)
 
 const repairPosition = (value: Position): Position => ({
-  x: magnitude(value.x),
-  y: magnitude(value.y),
-  z: magnitude(value.z),
+  x: PositionAxis(magnitude(value.x)),
+  y: PositionAxis(magnitude(value.y)),
+  z: PositionAxis(magnitude(value.z)),
 })
 
 const repairState = <S>(state: EntityState<S>): EntityState<S> => ({
   feetPosition: repairPosition(state.feetPosition),
-  healthPoints: Number.isFinite(state.healthPoints) ? Math.max(0, state.healthPoints) : 0,
+  healthPoints: EntityHealthPoints(
+    Number.isFinite(state.healthPoints) ? Math.max(0, state.healthPoints) : 0,
+  ),
   behaviour: state.behaviour,
 })
 
@@ -130,7 +133,10 @@ const repairState = <S>(state: EntityState<S>): EntityState<S> => ({
 const NO_ENTITIES: ReadonlyArray<never> = []
 const NO_EMISSIONS: ReadonlyArray<never> = []
 
-export const emptyRosterValue = <S>(): EntityRoster<S> => ({ entities: NO_ENTITIES, nextSerial: 0 })
+export const emptyRosterValue = <S>(): EntityRoster<S> => ({
+  entities: NO_ENTITIES,
+  nextSerial: EntitySerial(0),
+})
 
 export const makeEntityManagerDouble = <S>(
   initial: EntityRoster<S> = emptyRosterValue<S>(),
@@ -161,7 +167,7 @@ export const makeEntityManagerDouble = <S>(
                 spawns: doubles.spawns + 1,
                 roster: {
                   entities: [...doubles.roster.entities, entity],
-                  nextSerial: doubles.roster.nextSerial + 1,
+                  nextSerial: EntitySerial(doubles.roster.nextSerial + 1),
                 },
               },
             ] as const
@@ -192,14 +198,14 @@ export const makeEntityManagerDouble = <S>(
           Effect.map(Ref.get(state), (doubles) =>
             doubles.roster.entities.find((entity) => entity.id === id),
           ),
-        count: Effect.map(Ref.get(state), (doubles) => doubles.roster.entities.length),
+        count: Effect.map(Ref.get(state), (doubles) => EntityCount(doubles.roster.entities.length)),
         countOfKind: (kind) =>
           Ref.modify(state, (doubles) => {
             const total = doubles.roster.entities.reduce(
               (running, entity) => (entity.kind === kind ? running + 1 : running),
               0,
             )
-            return [total, { ...doubles, censuses: doubles.censuses + 1 }] as const
+            return [EntityCount(total), { ...doubles, censuses: doubles.censuses + 1 }] as const
           }),
 
         sweep: <A>(step: (entity: Entity<S>) => EntityStep<S, A>) =>
@@ -252,7 +258,7 @@ export const makeEntityManagerDouble = <S>(
         snapshot: Effect.map(Ref.get(state), (doubles) => doubles.roster),
 
         // Not exercised by this repository's slice. See the module header.
-        restore: () => Effect.dieMessage('not exercised by this test'),
+        restore: () => Effect.die('not exercised by this test'),
 
         reset: Ref.update(state, (doubles) => ({ ...doubles, roster: emptyRosterValue<S>() })),
       }

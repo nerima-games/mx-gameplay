@@ -12,9 +12,10 @@
  * at a cost that can be stated.
  */
 import { describe, expect, it } from '@effect/vitest'
+import { position as atPosition } from './support/coordinate-fixtures'
 import { makeTimeService } from '@nerima-games/mc-sim'
-import { Effect, Ref } from 'effect'
-import { AIR_BLOCK_ID, BlockId, blockPosition, type BlockPosition, type Position } from '@nerima-games/mc-kernel'
+import { Effect, Ref, Schema } from 'effect'
+import { AIR_BLOCK_ID, BlockAxis, BlockId, DeltaTimeSecs, InterpolationFraction, blockPosition as makeBlockPosition, type BlockPosition, type Position } from '@nerima-games/mc-kernel'
 import type { ChunkStoreApi } from '@nerima-games/mc-worldgen'
 import {
   CREEPER_KIND,
@@ -42,7 +43,10 @@ import {
   MAX_SPAWN_DISTANCE_BLOCKS,
   MIN_SPAWN_DISTANCE_BLOCKS,
 } from '../src/domain/mob/hostile-spawn'
-import { DeltaTimeSecs } from '@nerima-games/mc-kernel'
+import {
+  GAMEPLAY_ENTITIES_OWNER_ID,
+  GameplayEntityRosterSchema,
+} from '../src/stages/gameplay-owner-registrations'
 import { GAMEPLAY_STAGE_IDS } from '../src/stages/stage-ids'
 import {
   gameplayStages,
@@ -58,8 +62,9 @@ import {
 } from './support/chunk-store-double'
 import { FrameServicesLayer } from './support/frame-services'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
-import { makePlayerServiceDouble } from './support/player-service-double'
+import { makePlayerServiceDouble, SPAWN_POSE } from './support/player-service-double'
 import { makeInventoryDouble } from './support/inventory-service-double'
+import { makeGameplayCommitServices } from './support/transactional-stage-doubles'
 
 // ---------------------------------------------------------------------------
 // A world big enough for the ring to land in.
@@ -70,9 +75,12 @@ import { makeInventoryDouble } from './support/inventory-service-double'
 // is — separately, below.
 // ---------------------------------------------------------------------------
 
-const PLAYER = { x: 0.5, y: 64, z: 0.5 }
+const blockPosition = (x: number, y: number, z: number): BlockPosition =>
+  makeBlockPosition(BlockAxis(x), BlockAxis(y), BlockAxis(z))
+
+const PLAYER = atPosition(0.5, 64, 0.5 )
 const FLOOR_Y = 63
-const MIDNIGHT = 0
+const MIDNIGHT = InterpolationFraction(0)
 
 /** Chunk keys covering -48..47 on both axes, which contains the whole ring. */
 const RESIDENT_CHUNKS: ReadonlyArray<string> = (() => {
@@ -375,7 +383,7 @@ describe('the spawn ring', () => {
       // `domain/mob/hostile-spawn.ts`'s header is emphatic that a second opinion
       // here would be half of the reference's death-loop bug. So a daytime hour
       // still produces candidates; they are refused one layer up.
-      const { found } = yield* searchIn(FLOORED_WORLD, RESIDENT_CHUNKS, new Map(), 1, 0.5)
+      const { found } = yield* searchIn(FLOORED_WORLD, RESIDENT_CHUNKS, new Map(), 1, InterpolationFraction(0.5))
 
       expect(found.attempts.length).toBe(SPAWN_RING_CELLS)
       for (const attempt of found.attempts) {
@@ -386,6 +394,19 @@ describe('the spawn ring', () => {
 })
 
 describe('what the search reads', () => {
+  it.effect('counts ring cells beyond the safe block grid as unreadable', () =>
+    Effect.gen(function* () {
+      const store = yield* makeChunkStoreDouble(FLOORED_WORLD, RESIDENT_CHUNKS)
+      const farTarget = atPosition(Number.MAX_SAFE_INTEGER * 4, PLAYER.y, PLAYER.z)
+
+      const found = yield* searchSpawnCandidates(store.api, farTarget, MIDNIGHT, 7)
+
+      expect(found.attempts).toStrictEqual([])
+      expect(found.unreadable).toBe(SPAWN_RING_CELLS)
+      expect(yield* store.calls).toMatchObject({ reads: 0, writes: 0 })
+    }),
+  )
+
   it.effect('reports BLOCK light, and is not fooled by a bright sky', () =>
     Effect.gen(function* () {
       // THE DISTINCTION THE TWO GRIDS EXIST FOR. At night the sky grid still
@@ -653,14 +674,15 @@ describe('the search inside the frame', () => {
       // hand-feeding a candidate into the inbox.
       const store = yield* makeChunkStoreDouble(FLOORED_WORLD, RESIDENT_CHUNKS)
       const roster = yield* makeEntityManagerDouble<MobBehaviour>()
-      const player = yield* makePlayerServiceDouble()
+      const playerPose = { ...SPAWN_POSE, feetPosition: PLAYER }
+      const player = yield* makePlayerServiceDouble(playerPose)
       const inventory = yield* makeInventoryDouble()
       const time = yield* makeTimeService()
       const state = yield* makeGameplayFrameState
-      const stages = gameplayStages(state, store.api, roster.api, inventory.api, player.api, time)
+      const commit = yield* makeGameplayCommitServices(store.api, inventory.api, { playerPose })
+      const stages = gameplayStages(state, store.api, roster.api, inventory.api, player.api, time, undefined, undefined, {}, commit)
 
       // The authoritative mc-sim services supply both inputs to the stage.
-      yield* player.api.moveTo(PLAYER)
       yield* time.setTimeOfDay(MIDNIGHT)
       expect(yield* Ref.get(state.timeOfDay)).toBe(MIDNIGHT)
 
@@ -669,14 +691,22 @@ describe('the search inside the frame', () => {
 
       // Two frames of 0.25s reaches the 0.3s cadence exactly once.
       yield* entities?.run(DeltaTimeSecs(0.25)) ?? Effect.void
-      expect(yield* roster.api.count).toBe(0)
+      const beforeSearch = yield* commit.coordinator.snapshot(
+        GAMEPLAY_ENTITIES_OWNER_ID,
+        GameplayEntityRosterSchema,
+      )
+      expect(Schema.decodeUnknownSync(GameplayEntityRosterSchema)(beforeSearch.state).entities).toHaveLength(0)
 
       yield* entities?.run(DeltaTimeSecs(0.25)) ?? Effect.void
-      expect(yield* roster.api.count).toBeGreaterThan(0)
+      const afterSearch = yield* commit.coordinator.snapshot(
+        GAMEPLAY_ENTITIES_OWNER_ID,
+        GameplayEntityRosterSchema,
+      )
+      expect(Schema.decodeUnknownSync(GameplayEntityRosterSchema)(afterSearch.state).entities.length).toBeGreaterThan(0)
 
       // ...and the cap held on the way. Every mob on the roster is a hostile
       // this repository names, with the health and the behaviour its kind says.
-      const entries = yield* roster.api.entities
+      const entries = Schema.decodeUnknownSync(GameplayEntityRosterSchema)(afterSearch.state).entities
       for (const entity of entries) {
         expect(HOSTILE_KINDS).toContain(entity.kind)
         expect(entity.healthPoints).toBe(maxHealthOfKind(entity.kind))
@@ -708,14 +738,15 @@ describe('the search inside the frame', () => {
       // and would be invisible in a count.
       const store = yield* makeChunkStoreDouble(FLOORED_WORLD, RESIDENT_CHUNKS)
       const roster = yield* makeEntityManagerDouble<MobBehaviour>()
-      const player = yield* makePlayerServiceDouble()
+      const playerPose = { ...SPAWN_POSE, feetPosition: PLAYER }
+      const player = yield* makePlayerServiceDouble(playerPose)
       const inventory = yield* makeInventoryDouble()
       const time = yield* makeTimeService()
       const state = yield* makeGameplayFrameState
-      const stages = gameplayStages(state, store.api, roster.api, inventory.api, player.api, time)
+      const commit = yield* makeGameplayCommitServices(store.api, inventory.api, { playerPose })
+      const stages = gameplayStages(state, store.api, roster.api, inventory.api, player.api, time, undefined, undefined, {}, commit)
 
-      const offeredAt: Position = { x: -20, y: 64, z: -20 }
-      yield* player.api.moveTo(PLAYER)
+      const offeredAt: Position = atPosition(-20, 64, -20 )
       yield* time.setTimeOfDay(MIDNIGHT)
       yield* Ref.set(state.spawnAttempts, [
         {
@@ -737,7 +768,11 @@ describe('the search inside the frame', () => {
       // drained in the same pass.
       yield* entities?.run(DeltaTimeSecs(HOSTILE_SPAWN_INTERVAL_SECS)) ?? Effect.void
 
-      const entries = yield* roster.api.entities
+      const ownerAfter = yield* commit.coordinator.snapshot(
+        GAMEPLAY_ENTITIES_OWNER_ID,
+        GameplayEntityRosterSchema,
+      )
+      const entries = Schema.decodeUnknownSync(GameplayEntityRosterSchema)(ownerAfter.state).entities
       // The cap held over the COMBINED supply of 65 candidates.
       expect(entries.length).toBe(MAX_HOSTILE_COUNT)
       // The host's cell was taken, and taken first.
@@ -751,22 +786,27 @@ describe('the search inside the frame', () => {
     Effect.gen(function* () {
       const store = yield* makeChunkStoreDouble(FLOORED_WORLD, RESIDENT_CHUNKS)
       const roster = yield* makeEntityManagerDouble<MobBehaviour>()
-      const player = yield* makePlayerServiceDouble()
+      const playerPose = { ...SPAWN_POSE, feetPosition: PLAYER }
+      const player = yield* makePlayerServiceDouble(playerPose)
       const inventory = yield* makeInventoryDouble()
       const time = yield* makeTimeService()
       const state = yield* makeGameplayFrameState
-      const stages = gameplayStages(state, store.api, roster.api, inventory.api, player.api, time)
+      const commit = yield* makeGameplayCommitServices(store.api, inventory.api, { playerPose })
+      const stages = gameplayStages(state, store.api, roster.api, inventory.api, player.api, time, undefined, undefined, {}, commit)
 
-      yield* player.api.moveTo(PLAYER)
       yield* Ref.set(state.timeOfDay, MIDNIGHT)
-      yield* time.setTimeOfDay(0.5)
+      yield* time.setTimeOfDay(InterpolationFraction(0.5))
 
       const entities = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.entities)
       for (let frame = 0; frame < 10; frame += 1) {
         yield* entities?.run(DeltaTimeSecs(0.25)) ?? Effect.void
       }
 
-      const entries = yield* roster.api.entities
+      const ownerAfter = yield* commit.coordinator.snapshot(
+        GAMEPLAY_ENTITIES_OWNER_ID,
+        GameplayEntityRosterSchema,
+      )
+      const entries = Schema.decodeUnknownSync(GameplayEntityRosterSchema)(ownerAfter.state).entities
       expect(entries).toHaveLength(MAX_PASSIVE_COUNT)
       expect(
         entries.every(({ kind }) =>

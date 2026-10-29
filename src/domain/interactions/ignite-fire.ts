@@ -18,7 +18,8 @@
  * makes an item USE a different verb from a placement rather than a special case
  * of one: the item consumed and the block written are two different things.
  *
- * The same fact is why `./ignite-portal` writes `nether_portal` directly.
+ * `./ignite-portal` returns a portal-block candidate so the stage can commit it
+ * together with the held-item owner change.
  *
  * ---------------------------------------------------------------------------
  * AIR, NOT REPLACEABLE, AND THE DIFFERENCE IS DELIBERATE
@@ -32,12 +33,10 @@
  * written yet, and fire in a lava cell is a keystroke that deletes a lava
  * source. Both would be regressions dressed as consistency.
  *
- * There is no `isFlammable` test either, and its absence is kernel's roster
- * rather than an omission here: vanilla requires the cell below or behind to be
- * a burnable block, kernel's capability audit §4.9 lists five independent
- * capabilities and `flammable` is not among them, and inventing a block list
- * would be the scatter plan.md §3.1 measured. The reference does not check it
- * either. It arrives as one column in kernel's table and no edit here.
+ * There is no `isFlammable` test here because this operation places fire in an
+ * empty cell. Fire support and spread are handled by `../fire-lifecycle`, which
+ * reads kernel's `capabilityOfBlockId(id, 'flammable')` table rather than
+ * maintaining a gameplay block list.
  *
  * ---------------------------------------------------------------------------
  * WHAT THIS RULE DOES NOT DO
@@ -58,9 +57,31 @@
  * SPEND THE ITEM or PLAY THE SOUND. See `./ignite-portal`'s header; the same two
  * services own them and neither is published.
  */
-import { Effect } from 'effect'
-import { AIR_BLOCK_ID, blockIdOf, type BlockId, type BlockPosition } from '@nerima-games/mc-kernel'
+import { Effect, Option, Schema } from 'effect'
+import {
+  AIR_BLOCK_ID,
+  blockIdOf,
+  WorldWriteBatchSchema,
+  type BlockId,
+  type BlockPosition,
+  type Dimension,
+  type DimensionRevision,
+  type WorldRevision,
+} from '@nerima-games/mc-kernel'
+import type {
+  ReplicatedOwnerCandidate,
+  WorldCommitCoordinatorApi,
+  WorldCommitCoordinatorError,
+} from '@nerima-games/mc-sim'
 import type { ChunkStoreApi } from '@nerima-games/mc-worldgen'
+
+export type IgniteFireCommitContext = {
+  readonly coordinator: WorldCommitCoordinatorApi
+  readonly dimension: Dimension
+  readonly changes: ReadonlyArray<ReplicatedOwnerCandidate>
+  readonly expectedRevision?: WorldRevision
+  readonly expectedDimensionRevision?: DimensionRevision
+}
 
 /**
  * TOTAL, mirroring `./place-block`'s `PlaceOutcome` and `./ignite-portal`'s.
@@ -76,23 +97,17 @@ export type IgniteFireOutcome =
   | { readonly _tag: 'ChunkNotLoaded' }
   /** Below bedrock or above the build limit. */
   | { readonly _tag: 'OutOfWorld' }
-  /**
-   * This build has no id for `fire`.
-   *
-   * UNREACHABLE TODAY, and kept for `./place-block`'s `UnknownBlock` reason.
-   */
-  | { readonly _tag: 'UnknownBlock' }
+  /** The host did not provide the coordinator and dimension required for C4. */
+  | { readonly _tag: 'CommitContextMissing' }
+  /** The atomic C4 block commit was rejected or could not be validated. */
+  | { readonly _tag: 'CommitFailed'; readonly error: WorldCommitCoordinatorError }
 
 /**
  * Put fire in the cell, and report what happened.
  *
- * ONE READ AND AT MOST ONE WRITE. It reads first for `./place-block`'s reason
- * rather than out of habit: `setBlock` returns the block it replaced, so by the
- * time it could answer "was that air?" the fire is already burning where a lava
- * source used to be, and putting it back is a compensating write that can itself
- * fail. The window between the read and the write is the same one that file's
- * header is about, and it closes the same day — mc-worldgen's `ChunkStore`
- * growing `setBlockIf`.
+ * ONE READ AND AT MOST ONE C4 COMMIT. The coordinator checks the captured world
+ * and dimension revisions while committing the fire edit, so a change after the
+ * air read rejects the whole write. `ChunkStore.setBlock` is not a fallback.
  *
  * NOTHING IS DISTURBED, for `./ignite-portal`'s reason: the cell was air, and
  * filling a hole cannot start a fall.
@@ -100,20 +115,17 @@ export type IgniteFireOutcome =
 export const igniteFire = (
   store: ChunkStoreApi,
   position: BlockPosition,
+  commitContext?: IgniteFireCommitContext,
 ): Effect.Effect<IgniteFireOutcome> =>
   Effect.gen(function* () {
-    const fireBlock = blockIdOf('fire')
-    /* v8 ignore start -- UnknownBlock is unreachable in a green tree: `fire` is one
-     * of the 120 `BlockType`s kernel's own type declaration pins `blockIdOf`
-     * total over, so `blockIdOf('fire')` never returns `undefined`. Kept for the
-     * reason `./place-block.ts`'s own `UnknownBlock` arm is: it fails toward a NAMED
-     * refusal rather than a fire block silently vanishing. Named in
-     * `vitest.config.ts`'s coverage-threshold comment as one of the five
-     * documented-unreachable branches the 99% gate accounts for. */
-    if (fireBlock === undefined) {
-      return { _tag: 'UnknownBlock' }
-    }
-    /* v8 ignore stop */
+    const fireBlock = Option.getOrThrow(blockIdOf('fire'))
+
+    const expectedRevision = commitContext === undefined
+      ? undefined
+      : commitContext.expectedRevision ?? (yield* commitContext.coordinator.revision)
+    const expectedDimensionRevision = commitContext === undefined
+      ? undefined
+      : commitContext.expectedDimensionRevision ?? (yield* commitContext.coordinator.dimensionRevision(commitContext.dimension))
 
     const target = yield* store.getBlock(position)
     if (target._tag === 'ChunkNotLoaded') {
@@ -126,32 +138,34 @@ export const igniteFire = (
       return { _tag: 'Occupied', existing: target.block }
     }
 
-    const outcome = yield* store.setBlock(position, fireBlock)
-    switch (outcome._tag) {
-      case 'Written':
-        return { _tag: 'Lit', position }
+    if (
+      commitContext === undefined ||
+      expectedRevision === undefined ||
+      expectedDimensionRevision === undefined
+    ) return { _tag: 'CommitContextMissing' }
 
-      // The cell already held fire. `target` has just said it held air, so this
-      // is the store changing its mind between the read and the write — the
-      // window named above. Reporting `Occupied` is the same answer the read
-      // would have given had it happened one instruction later.
-      case 'Unchanged':
-        return { _tag: 'Occupied', existing: outcome.previous }
+    const committed = Effect.gen(function* () {
+      const blockWrite = yield* Schema.decodeUnknownEffect(WorldWriteBatchSchema)({
+        world: commitContext.coordinator.worldId,
+        expectedWorldRevision: expectedRevision,
+        dimension: commitContext.dimension,
+        expectedDimensionRevision,
+        edits: [{ position, block: fireBlock }],
+      })
+      yield* commitContext.coordinator.commit({
+        expectedRevision,
+        expectedDimensions: [{
+          dimension: commitContext.dimension,
+          expectedRevision: expectedDimensionRevision,
+        }],
+        changes: commitContext.changes,
+        blockWrite,
+      })
+      return { _tag: 'Lit', position } as const
+    })
 
-      case 'ChunkNotLoaded':
-        return { _tag: 'ChunkNotLoaded' }
-
-      case 'OutOfWorld':
-        return { _tag: 'OutOfWorld' }
-      // exhaustiveness arm over BlockWriteOutcome, a closed four-tag union
-      // (mc-worldgen's chunk-store-state.d.ts's BlockWriteOutcome); 'Written', 'Unchanged',
-      // 'ChunkNotLoaded' and 'OutOfWorld' are the only reachable tags and all
-      // four are handled above, so no input can reach this arm.
-      /* v8 ignore start */
-      default: {
-        const exhaustive: never = outcome
-        return exhaustive
-      }
-      /* v8 ignore stop */
-    }
+    return yield* Effect.matchEffect(committed, {
+      onFailure: (error) => Effect.succeed({ _tag: 'CommitFailed', error } as const),
+      onSuccess: (outcome) => Effect.succeed(outcome),
+    })
   })

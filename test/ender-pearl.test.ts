@@ -14,8 +14,14 @@
  * themselves」.
  */
 import { describe, expect, it } from '@effect/vitest'
-import { makeTimeService, type Slot } from '@nerima-games/mc-sim'
-import { Effect, Ref } from 'effect'
+import {
+  makeTimeService,
+  PlayerServiceSnapshotSchema,
+  PlayerStorageSnapshotSchema,
+  type PlayerPose,
+  type Slot,
+} from '@nerima-games/mc-sim'
+import { Effect, Ref, Result, Schema } from 'effect'
 import {
   enderPearlDisplacement,
   enderPearlDistance,
@@ -34,48 +40,106 @@ import {
 } from '../src/domain/entities/mob-frame'
 import {
   gameplayStages,
-  makeGameplayFrameState,
+  makeGameplayFrameStateForOwner,
+  requestEnderPearlThrow,
   type EnderPearlThrowRequest,
 } from '../src/stages/registration'
+import type { GameplayFrameState, GameplayStageCommitServices } from '../src/stages/registration-core'
+import {
+  GAMEPLAY_ENTITIES_OWNER_ID,
+  GAMEPLAY_PLAYER_OWNER_ID,
+  GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+  GAMEPLAY_VITALS_OWNER_ID,
+  GameplayEntityRosterSchema,
+  type GameplayOwnerInitialState,
+} from '../src/stages/gameplay-owner-registrations'
+import { ExperienceOrbVitalsOwnerSnapshotSchema } from '../src/domain/entities/xp-orb'
 import { makeChunkStoreDouble } from './support/chunk-store-double'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
 import { makePlayerServiceDouble } from './support/player-service-double'
 import { makeInventoryDouble } from './support/inventory-service-double'
+import { makeGameplayCommitServices } from './support/transactional-stage-doubles'
 import { runFrame } from './support/frame-runner'
-import { StackCount, type BlockId } from '@nerima-games/mc-kernel'
+import { itemStack, position, PositionAxis, StackCount, type BlockId, type Position } from '@nerima-games/mc-kernel'
 
-const ORIGIN = { x: 10, y: 64, z: 10 }
+const ORIGIN = position(PositionAxis(10), PositionAxis(64), PositionAxis(10))
+const PEARL_STACK = Result.getOrThrow(itemStack('ender_pearl', StackCount(1)))
+const poseAt = (feetPosition: Position): PlayerPose => ({ feetPosition, yawRadians: 0, pitchRadians: 0 })
 
 /** A frame with the shipped stages over the three doubles. */
 const inventoryWithPearl = (): ReadonlyArray<Slot> =>
   Array.from({ length: 36 }, (_, index) =>
-    index === 0 ? { item: 'ender_pearl' as const, count: StackCount(1) } : undefined,
+    index === 0 ? PEARL_STACK : undefined,
   )
 
-const scene = (inventorySlots?: ReadonlyArray<Slot>) =>
+const scene = (
+  inventorySlots?: ReadonlyArray<Slot>,
+  ownerInitial: GameplayOwnerInitialState = {},
+) =>
   Effect.gen(function* () {
     const store = yield* makeChunkStoreDouble(new Map<string, BlockId>(), ['0,0'])
     const roster = yield* makeEntityManagerDouble<MobBehaviour>()
     const player = yield* makePlayerServiceDouble()
     const inventory = yield* makeInventoryDouble(inventorySlots)
     const time = yield* makeTimeService()
-    const state = yield* makeGameplayFrameState
+    const commit = yield* makeGameplayCommitServices(store.api, inventory.api, {
+      ...ownerInitial,
+      playerPose: ownerInitial.playerPose ?? poseAt(ORIGIN),
+    })
+    const state = yield* makeGameplayFrameStateForOwner({
+      coordinator: commit.coordinator,
+      vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID,
+    })
     return {
       roster,
       player,
       inventory,
       state,
-      stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api, time),
+      commit,
+      stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api, time, undefined, undefined, {}, commit),
     }
   })
 
-type PearlInput = Omit<EnderPearlThrowRequest, 'inventory'> &
-  Partial<Pick<EnderPearlThrowRequest, 'inventory'>>
+type PearlInput = Omit<EnderPearlThrowRequest, 'requestId' | 'inventory'> &
+  Partial<Pick<EnderPearlThrowRequest, 'requestId' | 'inventory'>>
 
 const throwPearl = (request: PearlInput): EnderPearlThrowRequest => ({
+  requestId: 'pearl',
   inventory: { mode: 'creative', slotIndex: 0 },
   ...request,
 })
+
+const enqueuePearls = (
+  state: GameplayFrameState,
+  requests: ReadonlyArray<EnderPearlThrowRequest>,
+): Effect.Effect<void, Schema.SchemaError> =>
+  Effect.gen(function* () {
+    for (const request of requests) yield* requestEnderPearlThrow(state, request)
+  })
+
+const ownerRoster = (commit: GameplayStageCommitServices) =>
+  Effect.map(
+    commit.coordinator.snapshot(GAMEPLAY_ENTITIES_OWNER_ID, GameplayEntityRosterSchema),
+    ({ state }) => state,
+  )
+
+const ownerPlayer = (commit: GameplayStageCommitServices) =>
+  Effect.map(
+    commit.coordinator.snapshot(GAMEPLAY_PLAYER_OWNER_ID, PlayerServiceSnapshotSchema),
+    ({ state }) => state,
+  )
+
+const ownerStorage = (commit: GameplayStageCommitServices) =>
+  Effect.map(
+    commit.coordinator.snapshot(GAMEPLAY_PLAYER_STORAGE_OWNER_ID, PlayerStorageSnapshotSchema),
+    ({ state }) => state,
+  )
+
+const ownerVitals = (commit: GameplayStageCommitServices) =>
+  Effect.map(
+    commit.coordinator.snapshot(GAMEPLAY_VITALS_OWNER_ID, ExperienceOrbVitalsOwnerSnapshotSchema),
+    ({ state }) => state,
+  )
 
 // ---------------------------------------------------------------------------
 // The reference's oracle, transcribed
@@ -235,17 +299,15 @@ describe('the endermite is NOT a naturally spawning hostile', () => {
 describe('gameplay:interactions — the pearl arm', () => {
   it.effect('a throw produces a displacement and its cost in the outbox', () =>
     Effect.gen(function* () {
-      const { state, inventory, stages } = yield* scene(inventoryWithPearl())
-      yield* Ref.set(state.pendingPearlThrows, [
-        throwPearl({
-          origin: ORIGIN,
-          dirX: 0,
-          dirY: 0,
-          dirZ: 1,
-          hitDistance: 8,
-          inventory: { mode: 'survival', slotIndex: 0 },
-        }),
-      ])
+      const { state, commit, inventory, stages } = yield* scene(inventoryWithPearl())
+      yield* requestEnderPearlThrow(state, throwPearl({
+        requestId: 'survival-pearl',
+        dirX: 0,
+        dirY: 0,
+        dirZ: 1,
+        hitDistance: 8,
+        inventory: { mode: 'survival', slotIndex: 0 },
+      }))
 
       yield* runFrame(stages)
 
@@ -256,43 +318,41 @@ describe('gameplay:interactions — the pearl arm', () => {
         amount: ENDER_PEARL_DAMAGE,
         cause: 'ender_pearl',
       })
-      const storage = yield* inventory.api.storageSnapshot
+      const storage = yield* ownerStorage(commit)
       expect(storage.inventory.slots[0]).toBeUndefined()
       expect(storage.inventoryDurability[0]).toBeNull()
+      expect((yield* ownerPlayer(commit)).pose.feetPosition.z).toBe(ORIGIN.z + 8)
+      expect((yield* ownerVitals(commit)).vitals.healthPoints).toBe(20 - ENDER_PEARL_DAMAGE)
+      expect((yield* inventory.api.storageSnapshot).inventory.slots[0]).toStrictEqual(PEARL_STACK)
     }),
   )
 
   it.effect('creative throws do not consume pearls or produce self-damage', () =>
     Effect.gen(function* () {
-      const { state, inventory, stages } = yield* scene(inventoryWithPearl())
-      yield* Ref.set(state.pendingPearlThrows, [
-        throwPearl({
-          origin: ORIGIN,
-          dirX: 0,
-          dirY: 0,
-          dirZ: 1,
-          hitDistance: 8,
-          inventory: { mode: 'creative', slotIndex: 0 },
-        }),
-      ])
+      const { state, commit, inventory, stages } = yield* scene(inventoryWithPearl())
+      yield* requestEnderPearlThrow(state, throwPearl({
+        requestId: 'creative-pearl',
+        dirX: 0,
+        dirY: 0,
+        dirZ: 1,
+        hitDistance: 8,
+        inventory: { mode: 'creative', slotIndex: 0 },
+      }))
 
       yield* runFrame(stages)
 
       const outcomes = yield* Ref.get(state.enderPearlOutcomes)
       expect(outcomes[0]?.damage).toBeUndefined()
-      expect((yield* inventory.api.storageSnapshot).inventory.slots[0]).toStrictEqual({
-        item: 'ender_pearl',
-        count: StackCount(1),
-      })
+      expect((yield* ownerStorage(commit)).inventory.slots[0]).toStrictEqual(PEARL_STACK)
+      expect((yield* ownerVitals(commit)).vitals.healthPoints).toBe(20)
+      expect((yield* inventory.api.storageSnapshot).inventory.slots[0]).toStrictEqual(PEARL_STACK)
     }),
   )
 
   it.effect('THE INBOX IS DRAINED, so one throw is serviced once', () =>
     Effect.gen(function* () {
       const { state, stages } = yield* scene()
-      yield* Ref.set(state.pendingPearlThrows, [
-        throwPearl({ origin: ORIGIN, dirX: 0, dirY: 0, dirZ: 1 }),
-      ])
+      yield* requestEnderPearlThrow(state, throwPearl({ dirX: 0, dirY: 0, dirZ: 1 }))
 
       yield* runFrame(stages)
       yield* runFrame(stages)
@@ -305,9 +365,7 @@ describe('gameplay:interactions — the pearl arm', () => {
   it.effect('a degenerate throw costs nothing at all — no damage, no roll spent on it', () =>
     Effect.gen(function* () {
       const { state, stages } = yield* scene()
-      yield* Ref.set(state.pendingPearlThrows, [
-        throwPearl({ origin: ORIGIN, dirX: 0, dirY: 0, dirZ: 0 }),
-      ])
+      yield* requestEnderPearlThrow(state, throwPearl({ dirX: 0, dirY: 0, dirZ: 0 }))
 
       yield* runFrame(stages)
 
@@ -321,16 +379,19 @@ describe('gameplay:interactions — the pearl arm', () => {
       // reference's tests as an oracle, and the reference's own pearl cannot be
       // replayed because `ender-pearl.ts:72` reads the global generator.
       const run = Effect.gen(function* () {
-        const { state, roster, player, stages } = yield* scene()
-        yield* player.api.moveTo(ORIGIN)
-        yield* Ref.set(
-          state.pendingPearlThrows,
-          Array.from({ length: 60 }, () =>
-            throwPearl({ origin: ORIGIN, dirX: 0, dirY: 0, dirZ: 1, hitDistance: 4 , inventory: { mode: 'creative', slotIndex: 0 }}),
-          ),
-        )
+        const { state, commit, stages } = yield* scene()
+        yield* enqueuePearls(state, Array.from({ length: 60 }, (_, index) =>
+          throwPearl({
+            requestId: `deterministic-pearl-${index}`,
+            dirX: 0,
+            dirY: 0,
+            dirZ: 1,
+            hitDistance: 4,
+            inventory: { mode: 'creative', slotIndex: 0 },
+          }),
+        ))
         yield* runFrame(stages)
-        return (yield* roster.api.snapshot).entities.map((entity) => entity.feetPosition)
+        return (yield* ownerRoster(commit)).entities.map((entity) => entity.feetPosition)
       })
 
       expect(yield* run).toStrictEqual(yield* run)
@@ -341,47 +402,63 @@ describe('gameplay:interactions — the pearl arm', () => {
     Effect.gen(function* () {
       // `ender-pearl.ts:73` spawns it at `teleportTarget`. Sixty throws makes
       // the 5% roll a near-certainty for the seeded generator; the assertion is
-      // about WHERE, not about how many.
-      const { state, roster, player, stages } = yield* scene()
-      yield* player.api.moveTo(ORIGIN)
-      yield* Ref.set(
-        state.pendingPearlThrows,
-        Array.from({ length: 60 }, () =>
-          throwPearl({ origin: ORIGIN, dirX: 0, dirY: 0, dirZ: 1, hitDistance: 4 , inventory: { mode: 'creative', slotIndex: 0 }}),
-        ),
-      )
+      // about WHERE, not about how many. Each accepted throw starts at the
+      // preceding owner pose, so the landing points advance by four blocks.
+      const { state, commit, stages } = yield* scene()
+      const throwCount = 60
+      const landingZs = new Set(Array.from({ length: throwCount }, (_, index) => ORIGIN.z + 4 * (index + 1)))
+      yield* enqueuePearls(state, Array.from({ length: throwCount }, (_, index) =>
+        throwPearl({
+          requestId: `spawn-pearl-${index}`,
+          dirX: 0,
+          dirY: 0,
+          dirZ: 1,
+          hitDistance: 4,
+          inventory: { mode: 'creative', slotIndex: 0 },
+        }),
+      ))
 
       yield* runFrame(stages)
 
-      const spawned = (yield* roster.api.snapshot).entities
+      const spawned = (yield* ownerRoster(commit)).entities
       expect(spawned.length).toBeGreaterThan(0)
       for (const endermite of spawned) {
         expect(endermite.kind).toBe(ENDERMITE_KIND)
         expect(endermite.healthPoints).toBe(ENDERMITE_MAX_HEALTH)
-        // It ticks nothing: no rule in `domain/mob/` claims it.
-        expect(endermite.behaviour).toBeUndefined()
-        expect(endermite.feetPosition.z).toBeCloseTo(ORIGIN.z + 4)
+        expect(endermite.behaviour).toMatchObject({
+          _tag: 'HostileMob',
+          behaviour: { _tag: 'Dormant' },
+        })
+        expect(landingZs.has(endermite.feetPosition.z)).toBe(true)
       }
     }),
   )
 
   it.effect('the compatibility target Ref does not override the mc-sim player pose', () =>
     Effect.gen(function* () {
-      const { state, roster, player, stages } = yield* scene()
-      yield* player.api.moveTo(ORIGIN)
-      yield* Ref.set(
-        state.pendingPearlThrows,
-        Array.from({ length: 60 }, () =>
-          throwPearl({ origin: ORIGIN, dirX: 0, dirY: 0, dirZ: 1, hitDistance: 4 , inventory: { mode: 'creative', slotIndex: 0 }}),
-        ),
-      )
+      const staleTarget = position(PositionAxis(-20), PositionAxis(65), PositionAxis(-30))
+      const { state, commit, stages } = yield* scene()
+      yield* Ref.set(state.targetPosition, staleTarget)
+      yield* enqueuePearls(state, Array.from({ length: 60 }, (_, index) =>
+        throwPearl({
+          requestId: `authoritative-pose-pearl-${index}`,
+          dirX: 0,
+          dirY: 0,
+          dirZ: 1,
+          hitDistance: 4,
+          inventory: { mode: 'creative', slotIndex: 0 },
+        }),
+      ))
 
       yield* runFrame(stages)
 
-      const spawned = (yield* roster.api.snapshot).entities
+      const spawned = (yield* ownerRoster(commit)).entities
       expect(spawned.length).toBeGreaterThan(0)
-      expect(spawned.every((entity) => entity.feetPosition.z === ORIGIN.z + 4)).toBe(true)
-      expect(yield* Ref.get(state.targetPosition)).toBeUndefined()
+      const finalPose = yield* ownerPlayer(commit)
+      expect(finalPose.pose.feetPosition.z).toBe(ORIGIN.z + 4 * 60)
+      expect(spawned.every((entity) => entity.feetPosition.z >= ORIGIN.z + 4)).toBe(true)
+      expect(spawned.every((entity) => (entity.feetPosition.z - ORIGIN.z) % 4 === 0)).toBe(true)
+      expect(yield* Ref.get(state.targetPosition)).toStrictEqual(staleTarget)
       expect(yield* Ref.get(state.enderPearlOutcomes)).toHaveLength(60)
     }),
   )

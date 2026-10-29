@@ -28,16 +28,24 @@
  * failure mode this project's notes call the expensive one: it looks like a
  * design choice rather than a defect.
  */
-import { Effect } from 'effect'
+import { Effect, Option, Result } from 'effect'
 import {
+  BlockId,
+  WorldWriteBatchSchema,
   adjacentBlockPosition,
   blockIdOf,
-  blockPosition,
   blockTypeOfId,
   type BlockType,
+  type Dimension,
   type ItemType,
 } from '@nerima-games/mc-kernel'
 import type { BlockPosition } from '@nerima-games/mc-kernel'
+import type {
+  ReplicatedOwnerCandidate,
+  WorldCommitCoordinatorApi,
+  WorldCommitCoordinatorError,
+} from '@nerima-games/mc-sim'
+import { Schema } from 'effect'
 
 /**
  * Which crop each seed item becomes.
@@ -47,7 +55,8 @@ import type { BlockPosition } from '@nerima-games/mc-kernel'
  * are checked against `ItemType` at compile time — a typo in a seed name is a
  * type error rather than a rule that silently never fires.
  */
-export const CROP_OF_SEED: Readonly<Partial<Record<ItemType, BlockType>>> = {
+type CropBlock = 'wheat_crop' | 'potato_crop' | 'nether_wart_crop'
+export const CROP_OF_SEED: Readonly<Partial<Record<ItemType, CropBlock>>> = {
   wheat_seeds: 'wheat_crop',
   potato: 'potato_crop',
   nether_wart: 'nether_wart_crop',
@@ -60,10 +69,17 @@ export const CROP_OF_SEED: Readonly<Partial<Record<ItemType, BlockType>>> = {
  * wart takes `soul_sand` and refuses farmland, and collapsing this to one
  * predicate is the mistake that reads as a design choice.
  */
-export const SOIL_OF_CROP: Readonly<Partial<Record<BlockType, BlockType>>> = {
+export const SOIL_OF_CROP: Readonly<Record<CropBlock, BlockType>> = {
   wheat_crop: 'farmland',
   potato_crop: 'farmland',
   nether_wart_crop: 'soul_sand',
+}
+
+// A missing id for these fixed BlockTypes means the kernel registry is inconsistent.
+const CROP_BLOCK_IDS: Readonly<Record<CropBlock, BlockId>> = {
+  wheat_crop: Option.getOrThrow(blockIdOf('wheat_crop')),
+  potato_crop: Option.getOrThrow(blockIdOf('potato_crop')),
+  nether_wart_crop: Option.getOrThrow(blockIdOf('nether_wart_crop')),
 }
 
 /** Every item this rule will act on. Derived, so it cannot drift from the table. */
@@ -86,17 +102,21 @@ export type PlantRequest = {
  * makes those the same answer.
  */
 export type PlantOutcome =
-  | { readonly _tag: 'planted'; readonly crop: BlockType; readonly at: BlockPosition }
+  | { readonly _tag: 'planted'; readonly crop: CropBlock; readonly at: BlockPosition }
+  | { readonly _tag: 'cropOwnerMismatch'; readonly crop: CropBlock; readonly at: BlockPosition }
   /** The held item is not a seed. Nothing was read. */
   | { readonly _tag: 'notASeed'; readonly held: ItemType }
   /** A seed, but this soil is not the one it grows on. */
   | { readonly _tag: 'wrongSoil'; readonly crop: BlockType; readonly needs: BlockType; readonly found: BlockType }
   /** The cell above the soil is occupied; a crop cannot share it. */
   | { readonly _tag: 'occupied'; readonly crop: BlockType; readonly blockedBy: BlockType }
+  | { readonly _tag: 'invalidPosition' }
+  | { readonly _tag: 'commitContextMissing' }
+  | { readonly _tag: 'commitFailed'; readonly error: Schema.SchemaError | WorldCommitCoordinatorError }
 
 /** Where the crop goes: directly above the soil. */
-export const cropCellAbove = (soil: BlockPosition): BlockPosition =>
-  adjacentBlockPosition(blockPosition(soil.x, soil.y, soil.z), 'up')
+export const cropCellAbove = (soil: BlockPosition): ReturnType<typeof adjacentBlockPosition> =>
+  adjacentBlockPosition(soil, 'up')
 
 /**
  * Decide, given what is already known about the two cells.
@@ -117,32 +137,30 @@ export const plantingVerdict = (
   }
 
   const needs = SOIL_OF_CROP[crop]
-  if (needs === undefined || soilBlock !== needs) {
-    // `needs === undefined` is unreachable while the two tables agree, and
-    // `test/plant-crop.test.ts` asserts that they do rather than leaving this
-    // branch to be argued about. Reported as `wrongSoil` because that is what a
-    // caller can act on; there is no outcome for "the table is inconsistent".
-    /* v8 ignore start -- the `?? 'air'` fallback only fires when `needs` is
-     * undefined, which the table-agreement invariant above makes unreachable on
-     * every path that reaches this line: `needs === undefined` is itself the
-     * documented-unreachable disjunct, and the other disjunct (`soilBlock !==
-     * needs`) requires `needs` to already be defined. */
-    return { _tag: 'wrongSoil', crop, needs: needs ?? 'air', found: soilBlock }
-    /* v8 ignore stop */
+  if (soilBlock !== needs) {
+    return { _tag: 'wrongSoil', crop, needs, found: soilBlock }
   }
 
   if (blockAbove !== 'air') {
     return { _tag: 'occupied', crop, blockedBy: blockAbove }
   }
 
-  return { _tag: 'planted', crop, at: cropCellAbove(request.soil) }
+  const at = Result.getOrUndefined(cropCellAbove(request.soil))
+  return at === undefined ? { _tag: 'invalidPosition' } : { _tag: 'planted', crop, at }
 }
 
 /** The two reads and one write this rule needs of a world. */
 export type PlantPort = {
   readonly blockAt: (position: BlockPosition) => Effect.Effect<number | undefined>
-  readonly setBlock: (position: BlockPosition, block: number) => Effect.Effect<unknown>
+  /** Accepted for the current stage call shape; never used for block writes. */
+  readonly setBlock?: (position: BlockPosition, block: BlockId) => Effect.Effect<unknown>
 }
+
+export type PlantCommitContext = Readonly<{
+  coordinator: WorldCommitCoordinatorApi
+  dimension: Dimension
+  changes: ReadonlyArray<ReplicatedOwnerCandidate>
+}>
 
 /**
  * Read the two cells, decide, and write if the decision says so.
@@ -164,39 +182,73 @@ export type PlantPort = {
 export const plantCrop = (
   port: PlantPort,
   request: PlantRequest,
+  commitContext?: PlantCommitContext,
 ): Effect.Effect<PlantOutcome> =>
   Effect.gen(function* () {
-    const soilId = yield* port.blockAt(request.soil)
-    const aboveId = yield* port.blockAt(cropCellAbove(request.soil))
+    const abovePosition = Result.getOrUndefined(cropCellAbove(request.soil))
+    if (abovePosition === undefined) {
+      return { _tag: 'invalidPosition' }
+    }
 
-    const soilBlock = soilId === undefined ? undefined : blockTypeOfId(soilId)
-    const aboveBlock = aboveId === undefined ? undefined : blockTypeOfId(aboveId)
+    const heldCrop = CROP_OF_SEED[request.held]
+    if (heldCrop === undefined) {
+      return { _tag: 'notASeed' as const, held: request.held }
+    }
+
+    const commit = commitContext === undefined
+      ? undefined
+      : {
+          ...commitContext,
+          expectedRevision: yield* commitContext.coordinator.revision,
+          expectedDimensionRevision: yield* commitContext.coordinator.dimensionRevision(commitContext.dimension),
+        }
+
+    const soilId = yield* port.blockAt(request.soil)
+    const aboveId = yield* port.blockAt(abovePosition)
+
+    const soilBlockId = soilId === undefined ? undefined : Result.getOrUndefined(BlockId.result(soilId))
+    const aboveBlockId = aboveId === undefined ? undefined : Result.getOrUndefined(BlockId.result(aboveId))
+    const soilBlock = soilBlockId === undefined ? undefined : Result.getOrUndefined(blockTypeOfId(soilBlockId))
+    const aboveBlock = aboveBlockId === undefined ? undefined : Result.getOrUndefined(blockTypeOfId(aboveBlockId))
 
     if (soilBlock === undefined || aboveBlock === undefined) {
-      // Not loaded, or an id this vocabulary does not know. Either way the rule
-      // declines rather than guessing; see the header.
-      const crop = CROP_OF_SEED[request.held]
-      return crop === undefined
-        ? { _tag: 'notASeed' as const, held: request.held }
-        : /* v8 ignore start -- the `?? 'air'` fallback only fires when `crop` is
-           * defined but `SOIL_OF_CROP[crop]` is not, which the table-agreement
-           * invariant `test/plant-crop.test.ts` asserts (`CROP_OF_SEED` and
-           * `SOIL_OF_CROP` name the same crops) makes unreachable. */
-          { _tag: 'wrongSoil' as const, crop, needs: SOIL_OF_CROP[crop] ?? 'air', found: 'air' as BlockType }
-      /* v8 ignore stop */
+      return {
+        _tag: 'wrongSoil' as const,
+        crop: heldCrop,
+        needs: SOIL_OF_CROP[heldCrop],
+        found: 'air' as BlockType,
+      }
     }
 
     const verdict = plantingVerdict(request, soilBlock, aboveBlock)
     if (verdict._tag === 'planted') {
-      // `verdict.crop` is drawn only from `CROP_OF_SEED`'s three values
-      // (`wheat_crop` / `potato_crop` / `nether_wart_crop`), and all three carry
-      // a row in kernel's own registry (ids 71-73), so
-      // `blockIdOf` cannot return `undefined` here. Asserted rather than
-      // branched on, since a vocabulary defect that removed one of those rows
-      // would be caught by kernel's own type declaration long before
-      // this line ran, not by a runtime fallback that plants nothing and
-      // reports success.
-      yield* port.setBlock(verdict.at, blockIdOf(verdict.crop)!)
+      const cropBlock = CROP_BLOCK_IDS[heldCrop]
+      if (commit === undefined) return { _tag: 'commitContextMissing' }
+
+      const committed = Effect.gen(function* () {
+        const blockWrite = yield* Schema.decodeUnknownEffect(WorldWriteBatchSchema)({
+          world: commit.coordinator.worldId,
+          expectedWorldRevision: commit.expectedRevision,
+          dimension: commit.dimension,
+          expectedDimensionRevision: commit.expectedDimensionRevision,
+          edits: [{ position: verdict.at, block: cropBlock }],
+        })
+        yield* commit.coordinator.commit({
+          expectedRevision: commit.expectedRevision,
+          expectedDimensions: [{
+            dimension: commit.dimension,
+            expectedRevision: commit.expectedDimensionRevision,
+          }],
+          changes: commit.changes,
+          blockWrite,
+        })
+        return verdict
+      })
+
+      return yield* Effect.matchEffect(committed, {
+        onFailure: (error) => Effect.succeed({ _tag: 'commitFailed' as const, error }),
+        onSuccess: (outcome) => Effect.succeed(outcome),
+      })
     }
     return verdict
   })

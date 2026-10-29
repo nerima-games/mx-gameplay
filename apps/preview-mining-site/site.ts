@@ -64,8 +64,9 @@
  * decision it cannot make correctly (`test/public-api.test.ts` asserts no such
  * export exists).
  */
-import { Effect, Ref } from 'effect'
+import { Effect, Option, Ref, Result, Schema } from 'effect'
 import {
+  BlockAxis,
   adjacentBlockPosition,
   blockIdOf,
   blockOfPlaceableItem,
@@ -81,8 +82,15 @@ import {
   type PlaceableItemType,
   type StageId,
   type StageRegistration,
+  WorldIdSchema,
 } from '@nerima-games/mc-kernel'
-import { makeTimeService, type EntityManagerApi } from '@nerima-games/mc-sim'
+import {
+  makeTimeService,
+  makeWorldCommitCoordinator,
+  PROJECTILE_REPLICATED_OWNER_ID,
+  TNT_REPLICATED_OWNER_ID,
+  type EntityManagerApi,
+} from '@nerima-games/mc-sim'
 import { FALLING_BLOCK_MOVES_PER_TICK } from '../../src/domain/falling-block'
 import { NO_TOOL, type BlockLootContext, type MinedItem } from '../../src/domain/interactions/block-loot'
 import { spawnMobDrops } from '../../src/domain/entities/dropped-item'
@@ -98,11 +106,25 @@ import {
   drainMobDrops,
   drainMobExperience,
   gameplayStages,
-  makeGameplayFrameState,
+  makeGameplayFrameStateForOwner,
   requestItemUse as enqueueItemUse,
   type GameplayFrameState,
   type PlacementRequest,
 } from '../../src/stages/registration'
+import {
+  GAMEPLAY_BREWING_OWNER_ID,
+  GAMEPLAY_CROPS_OWNER_ID,
+  GAMEPLAY_DROPPED_ITEMS_OWNER_ID,
+  GAMEPLAY_ENTITIES_OWNER_ID,
+  GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
+  GAMEPLAY_FISHING_OWNER_ID,
+  GAMEPLAY_PLAYER_OWNER_ID,
+  GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+  GAMEPLAY_STATUS_EFFECTS_OWNER_ID,
+  GAMEPLAY_VILLAGER_TRADES_OWNER_ID,
+  GAMEPLAY_VITALS_OWNER_ID,
+  gameplayOwnerRegistrations,
+} from '../../src/stages/gameplay-owner-registrations.js'
 import { GAMEPLAY_STAGE_IDS } from '../../src/stages/stage-ids'
 import { FrameServicesLayer } from './frame-services'
 import {
@@ -123,6 +145,8 @@ import { AIR, floatingBlocks, makePreviewWorld, type PreviewWorld, type WorldSpe
  * itself worth knowing and is reported by `--stats`.
  */
 export const FRAME_DELTA: DeltaTimeSecs = DeltaTimeSecs(1 / 60)
+
+const PREVIEW_WORLD_ID = Schema.decodeUnknownSync(WorldIdSchema)('preview-mining-site')
 
 export const schedule = (
   stages: ReadonlyArray<StageRegistration>,
@@ -240,7 +264,7 @@ export const inventorySize = (site: Site): number =>
 export const inventoryCount = (site: Site, item: string): number => site.inventory.get(item) ?? 0
 
 export const positionAt = (site: Site, x: number, y: number): BlockPosition =>
-  kernelBlockPosition(x, y, site.spec.z)
+  kernelBlockPosition(BlockAxis(x), BlockAxis(y), BlockAxis(site.spec.z))
 
 const allCells = (site: Site): ReadonlyArray<BlockPosition> => {
   const cells: Array<BlockPosition> = []
@@ -261,20 +285,53 @@ export const makeSite = (
     const world = yield* makePreviewWorld(spec)
     const inventoryService = yield* makePreviewInventory()
     const roster = yield* makePreviewRoster
-    const state = yield* makeGameplayFrameState
-    // The stages, from the shipped factory. `makeGameplayStages` would acquire
-    // the tags from Layers; `gameplayStages` takes the state and the APIs
-    // directly, which is what lets this app hold the inboxes and the outboxes —
-    // the Refs that stand in for services nobody has published yet. The preview
-    // is the host that drains them, exactly as the comment there describes.
-    //
-    // This preview has no mobs, but mining overflow can spawn dropped-item
-    // entities. The roster is mc-sim's own in-memory service; `./roster.ts`
-    // deliberately contains no second implementation.
     const previewPlayer = yield* makePreviewPlayer
-    const time = yield* makeTimeService()
+    const time = yield* Effect.orDie(makeTimeService())
+    // Register the gameplay owners before constructing the frame state so its
+    // survival vitals runtime reads and commits through the vitals owner.
+    const owners = gameplayOwnerRegistrations({
+      playerPose: yield* previewPlayer.pose,
+      dimension: yield* previewPlayer.dimension,
+      playerStorage: yield* inventoryService.api.storageSnapshot,
+    })
+    const coordinator = yield* Effect.orDie(makeWorldCommitCoordinator({
+      world: PREVIEW_WORLD_ID,
+      owners,
+      chunkStores: { forDimension: () => world.api },
+    }))
+    const state = yield* makeGameplayFrameStateForOwner({
+      coordinator,
+      vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID,
+    })
+    const commit = {
+      coordinator,
+      playerOwnerId: GAMEPLAY_PLAYER_OWNER_ID,
+      playerStorageOwnerId: GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+      cropOwnerId: GAMEPLAY_CROPS_OWNER_ID,
+      droppedItemsOwnerId: GAMEPLAY_DROPPED_ITEMS_OWNER_ID,
+      vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID,
+      experienceOrbsOwnerId: GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
+      villagerTradesOwnerId: GAMEPLAY_VILLAGER_TRADES_OWNER_ID,
+      brewingOwnerId: GAMEPLAY_BREWING_OWNER_ID,
+      fishingOwnerId: GAMEPLAY_FISHING_OWNER_ID,
+      entitiesOwnerId: GAMEPLAY_ENTITIES_OWNER_ID,
+      statusEffectsOwnerId: GAMEPLAY_STATUS_EFFECTS_OWNER_ID,
+      projectileOwnerId: PROJECTILE_REPLICATED_OWNER_ID,
+      tntOwnerId: TNT_REPLICATED_OWNER_ID,
+    }
     const stages = schedule(
-      gameplayStages(state, world.api, roster, inventoryService.api, previewPlayer, time),
+      gameplayStages(
+        state,
+        world.api,
+        roster,
+        inventoryService.api,
+        previewPlayer,
+        time,
+        undefined,
+        undefined,
+        {},
+        commit,
+      ),
     )
 
     return {
@@ -436,10 +493,10 @@ export const previewPlacement = (
   Effect.gen(function* () {
     const request = { position, heldItem }
     const target = yield* site.world.api.getBlock(position)
-    const block = blockIdOf(blockOfPlaceableItem(heldItem))
+    const block = Option.getOrUndefined(blockIdOf(blockOfPlaceableItem(heldItem)))
     const supportBelow =
       block !== undefined && isSupportSensitiveOfBlock(block)
-        ? yield* site.world.api.getBlock(adjacentBlockPosition(kernelBlockPosition(position.x, position.y, position.z), 'down'))
+        ? yield* site.world.api.getBlock(Result.getOrThrow(adjacentBlockPosition(position, 'down')))
         : undefined
 
     return placementVerdict(request, target, supportBelow)

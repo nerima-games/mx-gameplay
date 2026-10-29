@@ -1,9 +1,12 @@
 import { describe, expect, it } from '@effect/vitest'
+import { Option } from 'effect'
 import {
-  blockPosition,
   blockIdOf,
+  type BlockId,
+  type BlockType,
   type HarvestToolRequirement,
 } from '@nerima-games/mc-kernel'
+import { blockPosition as atBlockPosition } from './support/coordinate-fixtures'
 import { Effect } from 'effect'
 import { blockLoot } from '../src/domain/interactions/block-loot'
 import { type requestBlockBreak } from '../src/stages/registration'
@@ -21,9 +24,14 @@ import {
   WOODEN_PICKAXE_MINING_TOOL,
 } from '../src/domain/interactions/mining-progress'
 
-const STONE = { position: blockPosition(1, 64, 2), blockId: blockIdOf('stone') }
-const STONE_BESIDE = { position: blockPosition(2, 64, 2), blockId: blockIdOf('stone') }
-const DIRT = { position: blockPosition(1, 64, 3), blockId: blockIdOf('dirt') }
+const registeredBlockId = (type: BlockType): BlockId =>
+  Option.getOrElse(blockIdOf(type), () => {
+    throw new Error(`missing block registry entry: ${type}`)
+  })
+
+const STONE = { position: atBlockPosition(1, 64, 2), blockId: registeredBlockId('stone') }
+const STONE_BESIDE = { position: atBlockPosition(2, 64, 2), blockId: registeredBlockId('stone') }
+const DIRT = { position: atBlockPosition(1, 64, 3), blockId: registeredBlockId('dirt') }
 const DIRT_AT_STONE_POSITION = { position: STONE.position, blockId: DIRT.blockId }
 
 const completedPositionAcceptedByRequestBlockBreak: Parameters<typeof requestBlockBreak>[1] =
@@ -44,9 +52,9 @@ describe('mining duration', () => {
 
   it.effect('preserves the kernel hardness ordering', () =>
     Effect.sync(() => {
-      const dirt = miningDurationSecsForBlock(blockIdOf('dirt'), null)
-      const stone = miningDurationSecsForBlock(blockIdOf('stone'), null)
-      const deepslate = miningDurationSecsForBlock(blockIdOf('deepslate'), null)
+      const dirt = miningDurationSecsForBlock(registeredBlockId('dirt'), null)
+      const stone = miningDurationSecsForBlock(registeredBlockId('stone'), null)
+      const deepslate = miningDurationSecsForBlock(registeredBlockId('deepslate'), null)
 
       expect(dirt).toBeLessThan(stone)
       expect(stone).toBeLessThan(deepslate)
@@ -86,10 +94,10 @@ describe('mining duration', () => {
 
   it.effect('maps selected pickaxe tiers to gated ore drops', () =>
     Effect.sync(() => {
-      const ironOre = blockIdOf('iron_ore')
-      const goldOre = blockIdOf('gold_ore')
-      const diamondOre = blockIdOf('diamond_ore')
-      const obsidian = blockIdOf('obsidian')
+      const ironOre = registeredBlockId('iron_ore')
+      const goldOre = registeredBlockId('gold_ore')
+      const diamondOre = registeredBlockId('diamond_ore')
+      const obsidian = registeredBlockId('obsidian')
 
       expect(blockLoot(ironOre, miningLootContextForItem('wooden_pickaxe'))).toStrictEqual([])
       expect(blockLoot(ironOre, miningLootContextForItem('stone_pickaxe'))).toStrictEqual([
@@ -161,9 +169,10 @@ describe('mining duration', () => {
     Effect.sync(() => {
       // A dandelion breaks in one hit regardless of tool, same as vanilla:
       // kernel registers it with hardness 0.
-      expect(miningDurationSecsForBlock(blockIdOf('dandelion'), null)).toBe(0)
+      expect(miningDurationSecsForBlock(registeredBlockId('dandelion'), null)).toBe(0)
     }),
   )
+
 })
 
 describe('delta-time progress', () => {
@@ -203,13 +212,42 @@ describe('delta-time progress', () => {
       })
       const second = advanceMiningProgress({
         current: first.nextProgress,
-        target: { position: blockPosition(1, 64, 2), blockId: STONE.blockId },
+        target: { position: atBlockPosition(1, 64, 2), blockId: STONE.blockId },
         isMining: true,
         selectedItem: null,
         deltaSecs: 0.2,
       })
 
       expect(second.nextProgress?.elapsedSecs).toBeCloseTo(0.3)
+    }),
+  )
+
+  it.effect('completes a zero-hardness block immediately and keeps it complete', () =>
+    Effect.sync(() => {
+      const dandelion = {
+        position: atBlockPosition(1, 64, 2),
+        blockId: registeredBlockId('dandelion'),
+      }
+      const first = advanceMiningProgress({
+        current: null,
+        target: dandelion,
+        isMining: true,
+        selectedItem: null,
+        deltaSecs: 0,
+      })
+
+      expect(first.shouldBreak).toBe(true)
+      expect(first.nextProgress).toMatchObject({ completed: true, elapsedSecs: 0, requiredSecs: 0 })
+
+      const repeated = advanceMiningProgress({
+        current: first.nextProgress,
+        target: dandelion,
+        isMining: true,
+        selectedItem: null,
+        deltaSecs: 1,
+      })
+      expect(repeated.shouldBreak).toBe(false)
+      expect(repeated.nextProgress).toStrictEqual(first.nextProgress)
     }),
   )
 
@@ -471,7 +509,7 @@ describe('delta-time progress', () => {
 
   it.effect('an instant-break target completes on the first frame with zero required work', () =>
     Effect.sync(() => {
-      const dandelion = { position: blockPosition(5, 64, 5), blockId: blockIdOf('dandelion') }
+      const dandelion = { position: atBlockPosition(5, 64, 5), blockId: registeredBlockId('dandelion') }
       const result = advanceMiningProgress({
         current: null,
         target: dandelion,
@@ -514,7 +552,7 @@ describe('delta-time progress', () => {
       // whose hardness is zero but whose `completed` flag was never set.
       const progress: MiningProgressState = {
         blockKey: '5,64,5',
-        blockId: blockIdOf('dandelion'),
+        blockId: registeredBlockId('dandelion'),
         elapsedSecs: 0,
         requiredSecs: 0,
         accumulatedWork: 0,

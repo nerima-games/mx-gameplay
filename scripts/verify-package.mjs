@@ -242,6 +242,57 @@ try {
     if (typeof rootModule.planFallingBlockMoves !== 'function') {
       throw new Error('The root export does not expose planFallingBlockMoves');
     }
+    if (typeof rootModule.breakBlock !== 'function') {
+      throw new Error('The root export does not expose breakBlock');
+    }
+    for (const name of [
+      'generateEnchantmentTableOffersForItem',
+      'enchantmentTableResultItemOf',
+      'droppedItemOwnerRegistration',
+      'droppedItemPickupOwnerRegistrations',
+      'pickupDroppedItemsCommitted',
+      'vitalsOwnerRegistration',
+      'experienceOrbOwnerRegistration',
+      'createExperienceOrbValue',
+      'absorbExperienceOrb',
+      'collectBrewingBottleWithStorage',
+      'castFishingWithService',
+      'biteFishingWithService',
+      'reelFishingWithService',
+      'requestFurnaceAdvance',
+      'planFurnaceAdvance',
+      'applyFurnaceAdvance',
+      'advanceFurnaceRuntime',
+    ]) {
+      if (typeof rootModule[name] !== 'function') {
+        throw new Error('The root export does not expose ' + name);
+      }
+    }
+    for (const name of [
+      'DroppedItemOwnerSnapshotSchema',
+      'DroppedItemPickupRequestSchema',
+      'DroppedItemPickupCommitIncompleteSchema',
+      'DroppedItemPickupSchema',
+      'DroppedItemPickupResultSchema',
+      'ExperienceOrbValueSchema',
+      'ExperienceOrbAbsorptionSchema',
+      'ExperienceOrbVitalsOwnerSnapshotSchema',
+      'ExperienceOrbOwnerSnapshotSchema',
+      'ExperienceOrbAbsorptionFailureSchema',
+      'ExperienceOrbAbsorptionCommitResultInvalidSchema',
+      'BrewingBottleCollectionRequestSchema',
+      'BrewingBottleCollectionResultSchema',
+    ]) {
+      if (rootModule[name] === undefined) {
+        throw new Error('The root export does not expose ' + name);
+      }
+    }
+    if (typeof rootModule.makeProjectileRuntime !== 'function') {
+      throw new Error('The root export does not expose makeProjectileRuntime');
+    }
+    if (typeof rootModule.GAMEPLAY_PLAYER_STORAGE_OWNER_ID !== 'string') {
+      throw new Error('The root export does not expose GAMEPLAY_PLAYER_STORAGE_OWNER_ID');
+    }
     console.log('verified ' + packageName + ' exports');
   `;
   run("node", ["--input-type=module", "--eval", probe], {
@@ -256,9 +307,56 @@ import {
   isPlaceableItem,
   makeGameplayStages,
   gameplayModule,
+  GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
   GAMEPLAY_STAGE_IDS,
   type PlaceableItemType,
+  breakBlock,
+  makeProjectileRuntime,
+  type ProjectileRuntime,
+  type BreakOutcome,
+  type BreakTransactionContext,
+  type BreakTransactionResult,
+  generateEnchantmentTableOffersForItem,
+  enchantmentTableResultItemOf,
+  droppedItemOwnerRegistration,
+  droppedItemPickupOwnerRegistrations,
+  DroppedItemOwnerSnapshotSchema,
+  DroppedItemPickupRequestSchema,
+  DroppedItemPickupCommitIncompleteSchema,
+  DroppedItemPickupSchema,
+  DroppedItemPickupResultSchema,
+  pickupDroppedItemsCommitted,
+  ExperienceOrbValueSchema,
+  ExperienceOrbAbsorptionSchema,
+  ExperienceOrbVitalsOwnerSnapshotSchema,
+  ExperienceOrbOwnerSnapshotSchema,
+  ExperienceOrbAbsorptionFailureSchema,
+  ExperienceOrbAbsorptionCommitResultInvalidSchema,
+  vitalsOwnerRegistration,
+  experienceOrbOwnerRegistration,
+  createExperienceOrbValue,
+  absorbExperienceOrb,
+  BrewingBottleCollectionRequestSchema,
+  BrewingBottleCollectionResultSchema,
+  collectBrewingBottleWithStorage,
+  castFishingWithService,
+  biteFishingWithService,
+  reelFishingWithService,
+  requestFurnaceAdvance,
+  planFurnaceAdvance,
+  applyFurnaceAdvance,
+  advanceFurnaceRuntime,
+  type DroppedItemPickupRequest,
+  type DroppedItemPickupResult,
+  type ExperienceOrbAbsorption,
+  type ExperienceOrbValue,
+  type ExperienceOrbVitalsOwnerSnapshot,
+  type BrewingBottleCollectionRequest,
+  type BrewingBottleCollectionResult,
+  type FurnaceAdvancePlan,
+  type FurnaceRuntimeOutcome,
 } from ${JSON.stringify(packageName)}
+import { Effect } from "effect"
 
 const item: PlaceableItemType = 'redstone_dust'
 const block = blockOfPlaceableItem(item)
@@ -276,6 +374,69 @@ if (declaredStageOrder.length === 0) {
 
 void makeGameplayStages
 void gameplayModule
+declare const projectileService: ProjectileRuntime
+const projectileRuntime: ProjectileRuntime = makeProjectileRuntime(projectileService)
+void projectileRuntime
+const ownerId: string = GAMEPLAY_PLAYER_STORAGE_OWNER_ID
+void ownerId
+
+void generateEnchantmentTableOffersForItem
+void enchantmentTableResultItemOf
+void droppedItemOwnerRegistration
+void droppedItemPickupOwnerRegistrations
+void DroppedItemOwnerSnapshotSchema
+void DroppedItemPickupRequestSchema
+void DroppedItemPickupCommitIncompleteSchema
+void DroppedItemPickupSchema
+void DroppedItemPickupResultSchema
+void pickupDroppedItemsCommitted
+void ExperienceOrbValueSchema
+void ExperienceOrbAbsorptionSchema
+void ExperienceOrbVitalsOwnerSnapshotSchema
+void ExperienceOrbOwnerSnapshotSchema
+void ExperienceOrbAbsorptionFailureSchema
+void ExperienceOrbAbsorptionCommitResultInvalidSchema
+void vitalsOwnerRegistration
+void experienceOrbOwnerRegistration
+void createExperienceOrbValue
+void absorbExperienceOrb
+void BrewingBottleCollectionRequestSchema
+void BrewingBottleCollectionResultSchema
+void collectBrewingBottleWithStorage
+void castFishingWithService
+void biteFishingWithService
+void reelFishingWithService
+void requestFurnaceAdvance
+void planFurnaceAdvance
+void applyFurnaceAdvance
+void advanceFurnaceRuntime
+
+declare const pickupRequest: DroppedItemPickupRequest
+declare const pickupResult: DroppedItemPickupResult
+declare const orbAbsorption: ExperienceOrbAbsorption
+declare const orbValue: ExperienceOrbValue
+declare const orbVitals: ExperienceOrbVitalsOwnerSnapshot
+declare const bottleCollectionRequest: BrewingBottleCollectionRequest
+declare const bottleCollectionResult: BrewingBottleCollectionResult
+declare const furnacePlan: FurnaceAdvancePlan
+declare const furnaceOutcome: FurnaceRuntimeOutcome
+void pickupRequest
+void pickupResult
+void orbAbsorption
+void orbValue
+void orbVitals
+void bottleCollectionRequest
+void bottleCollectionResult
+void furnacePlan
+void furnaceOutcome
+
+declare const blockStore: Parameters<typeof breakBlock>[0]
+declare const blockPosition: Parameters<typeof breakBlock>[1]
+declare const transactionContext: BreakTransactionContext
+const legacyBreak: Effect.Effect<BreakOutcome> = breakBlock(blockStore, blockPosition)
+const transactionBreak: Effect.Effect<BreakTransactionResult> = breakBlock(blockStore, blockPosition, transactionContext)
+void legacyBreak
+void transactionBreak
 `;
   if (typeConsumerSource.trim().length === 0) {
     throw new Error("TypeScript consumer source must not be empty");
@@ -289,14 +450,16 @@ void gameplayModule
     `${JSON.stringify(
       {
         compilerOptions: {
-          strict: true,
-          target: "ES2022",
+          target: "ES2024",
           module: "NodeNext",
           moduleResolution: "NodeNext",
-          noEmit: true,
+          lib: ["ES2024", "ESNext.Disposable", "DOM"],
+          types: [],
+          strict: true,
           skipLibCheck: false,
+          noEmit: true,
         },
-        files: ["consumer.ts"],
+        include: ["consumer.ts"],
       },
       null,
       2,

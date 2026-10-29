@@ -2,7 +2,7 @@
  * A COMPLETE in-memory `EntityManager`, typed by this repository's mirror.
  *
  * The third and last of the services `gameplayModule` requires.
- * `./in-memory-chunk-store`'s header carries the argument for why these exist,
+ * `./in-memory-world`'s header carries the argument for why these exist,
  * why they are not test doubles, and when they are deleted.
  *
  * ---------------------------------------------------------------------------
@@ -26,13 +26,11 @@
  * contents.
  *
  * ---------------------------------------------------------------------------
- * `restore` REPAIRS RATHER THAN VALIDATES, AND CANNOT FAIL
+ * `restore` REPAIRS RATHER THAN VALIDATES, AND REPORTS SERIAL EXHAUSTION
  * ---------------------------------------------------------------------------
  *
- * There is no error channel on purpose — the mirror says so — because this is
- * the world-load path and a throw there is a `Cause.Die` the frame loop
- * swallows. A saved roster can be wrong in exactly three ways, and each has a
- * repair rather than a refusal:
+ * A saved roster can be wrong in exactly three ways, and each has a repair
+ * rather than a refusal, unless repairing an id would exhaust the serial space:
  *
  *   NO KIND — unrepairable, because a kind is what the rules dispatch on. The
  *   entity is DISCARDED and counted.
@@ -42,9 +40,12 @@
  *   the injected hook the party that instantiated `S` supplies; it is required
  *   to be total for the same reason this function is.
  */
-import { Effect, Layer, Ref } from 'effect'
+import { Effect, Layer, Ref, Result } from 'effect'
 import {
   EntityId,
+  EntityCount,
+  EntityRosterRepairCount,
+  EntitySerial,
   entityManagerTag,
   type BehaviourRepair,
   type Entity,
@@ -52,13 +53,14 @@ import {
   type EntityManager,
   type EntityManagerApi,
   type EntityRoster,
+  type EntitySerialExhausted,
   type EntityStep,
   type RosterRepair,
   type SpawnRequest,
 } from '@nerima-games/mc-sim'
 
 /** A roster with nothing in it. */
-export const emptyRoster = <S>(): EntityRoster<S> => ({ entities: [], nextSerial: 0 })
+export const emptyRoster = <S>(): EntityRoster<S> => ({ entities: [], nextSerial: EntitySerial(0) })
 
 /**
  * How a minted id is spelled.
@@ -73,7 +75,7 @@ export const mintEntityId = (kind: EntityKind, serial: number): EntityId =>
 export const repairRoster = <S>(
   roster: EntityRoster<S>,
   repairBehaviour: BehaviourRepair<S>,
-): { readonly roster: EntityRoster<S>; readonly repair: RosterRepair } => {
+): Result.Result<{ readonly roster: EntityRoster<S>; readonly repair: RosterRepair }, EntitySerialExhausted> => {
   const seen = new Set<string>()
   const entities: Array<Entity<S>> = []
   let discarded = 0
@@ -89,9 +91,12 @@ export const repairRoster = <S>(
 
     const blank = typeof entity.id !== 'string' || entity.id.trim().length === 0
     const duplicate = !blank && seen.has(entity.id)
-    const id = blank || duplicate ? mintEntityId(entity.kind, serial) : entity.id
+    let id = entity.id
     if (blank || duplicate) {
-      serial += 1
+      const nextSerial = EntitySerial.result(serial + 1)
+      if (Result.isFailure(nextSerial)) return Result.fail({ _tag: 'EntitySerialExhausted' })
+      id = mintEntityId(entity.kind, serial)
+      serial = nextSerial.success
       reidentified += 1
     }
 
@@ -105,7 +110,13 @@ export const repairRoster = <S>(
     })
   }
 
-  return { roster: { entities, nextSerial: serial }, repair: { discarded, reidentified } }
+  return Result.succeed({
+    roster: { entities, nextSerial: EntitySerial(serial) },
+    repair: {
+      discarded: EntityRosterRepairCount(discarded),
+      reidentified: EntityRosterRepairCount(reidentified),
+    },
+  })
 }
 
 /**
@@ -118,10 +129,18 @@ export const repairRoster = <S>(
 export const makeInMemoryEntityManager = <S>(
   initial: EntityRoster<S> = emptyRoster<S>(),
   repairBehaviour: BehaviourRepair<S> = (_kind, behaviour) => behaviour,
-): Effect.Effect<EntityManagerApi<S>> =>
-  Effect.map(Ref.make<EntityRoster<S>>(initial), (state): EntityManagerApi<S> => ({
+): Effect.Effect<EntityManagerApi<S>, EntitySerialExhausted> =>
+  Effect.flatMap(Effect.fromResult(repairRoster(initial, repairBehaviour)), ({ roster: repaired }) =>
+  Effect.map(Ref.make<EntityRoster<S>>(repaired), (state): EntityManagerApi<S> => ({
     spawn: (request: SpawnRequest<S>) =>
-      Ref.modify(state, (roster) => {
+      Effect.flatMap(Ref.modify(state, (roster): readonly [
+        Result.Result<Entity<S>, EntitySerialExhausted>,
+        EntityRoster<S>,
+      ] => {
+        const nextSerial = EntitySerial.result(roster.nextSerial + 1)
+        if (Result.isFailure(nextSerial)) {
+          return [Result.fail({ _tag: 'EntitySerialExhausted' }), roster]
+        }
         const entity: Entity<S> = {
           id: mintEntityId(request.kind, roster.nextSerial),
           kind: request.kind,
@@ -130,16 +149,16 @@ export const makeInMemoryEntityManager = <S>(
           behaviour: request.behaviour,
         }
         return [
-          entity,
-          { entities: [...roster.entities, entity], nextSerial: roster.nextSerial + 1 },
-        ] as const
-      }),
+          Result.succeed(entity),
+          { entities: [...roster.entities, entity], nextSerial: nextSerial.success },
+        ]
+      }), Effect.fromResult),
 
     despawn: (id) =>
-      Ref.modify(state, (roster) => {
+      Ref.modify(state, (roster): readonly [boolean, EntityRoster<S>] => {
         const next = roster.entities.filter((entity) => entity.id !== id)
         // `false` when nothing had that id — "not an error", per the mirror.
-        return [next.length !== roster.entities.length, { ...roster, entities: next }] as const
+        return [next.length !== roster.entities.length, { ...roster, entities: next }]
       }),
 
     // THE ROSTER'S OWN ARRAY. No copy: two reads with no write between them
@@ -152,16 +171,16 @@ export const makeInMemoryEntityManager = <S>(
         roster.entities.find((entity) => entity.id === id),
       ),
 
-    count: Effect.map(Ref.get(state), (roster) => roster.entities.length),
+    count: Effect.map(Ref.get(state), (roster) => EntityCount(roster.entities.length)),
 
     countOfKind: (kind) =>
       Effect.map(
         Ref.get(state),
-        (roster) => roster.entities.filter((entity) => entity.kind === kind).length,
+        (roster) => EntityCount(roster.entities.filter((entity) => entity.kind === kind).length),
       ),
 
     sweep: <A>(step: (entity: Entity<S>) => EntityStep<S, A>) =>
-      Ref.modify(state, (roster) => {
+      Ref.modify(state, (roster): readonly [ReadonlyArray<A>, EntityRoster<S>] => {
         const emitted: Array<A> = []
         let mutated = false
         const next: Array<Entity<S>> = []
@@ -172,13 +191,12 @@ export const makeInMemoryEntityManager = <S>(
             emitted.push(outcome.emit)
           }
 
-          switch (outcome.transition._tag) {
-            case 'Unchanged':
-              // The SAME object, not a copy. See the header.
-              next.push(entity)
-              break
-            case 'Changed':
-              mutated = true
+          if (outcome.transition._tag === 'Unchanged') {
+            // The SAME object, not a copy. See the header.
+            next.push(entity)
+          } else {
+            mutated = true
+            if (outcome.transition._tag === 'Changed') {
               next.push({
                 id: entity.id,
                 kind: entity.kind,
@@ -186,46 +204,36 @@ export const makeInMemoryEntityManager = <S>(
                 healthPoints: outcome.transition.state.healthPoints,
                 behaviour: outcome.transition.state.behaviour,
               })
-              break
-            case 'Despawned':
-              mutated = true
-              break
-            // exhaustiveness arm over EntityStep['transition'], a closed
-            // three-tag union ('Unchanged' | 'Changed' | 'Despawned'); all
-            // three are handled above, so no input can reach this arm.
-            /* v8 ignore start */
-            default: {
-              const exhaustive: never = outcome.transition
-              void exhaustive
-              break
             }
-            /* v8 ignore stop */
           }
         }
 
         // THE ALLOCATION CONTRACT. Nothing changed and nothing emitted means
         // the argument roster goes back untouched — no new array, no new
         // record. An idle frame over a hundred dormant mobs allocates nothing.
-        return mutated
-          ? ([emitted, { ...roster, entities: next }] as const)
-          : ([emitted, roster] as const)
+        const nextRoster: EntityRoster<S> = mutated ? { ...roster, entities: next } : roster
+        return [emitted, nextRoster]
       }),
 
     snapshot: Ref.get(state),
 
     restore: (roster) =>
-      Ref.modify(state, () => {
+      Effect.flatMap(Ref.modify(state, (current): readonly [
+        Result.Result<RosterRepair, EntitySerialExhausted>,
+        EntityRoster<S>,
+      ] => {
         const result = repairRoster(roster, repairBehaviour)
-        return [result.repair, result.roster] as const
-      }),
+        if (Result.isFailure(result)) return [Result.fail(result.failure), current]
+        return [Result.succeed(result.success.repair), result.success.roster]
+      }), Effect.fromResult),
 
     // Counter and all: a NEW world, not a reloaded one.
     reset: Ref.set(state, emptyRoster<S>()),
-  }))
+  })))
 
 /** The roster as a Layer, for a host that composes `gameplayModule`. */
 export const InMemoryEntityManagerLayer = <S>(
   initial: EntityRoster<S> = emptyRoster<S>(),
   repairBehaviour: BehaviourRepair<S> = (_kind, behaviour) => behaviour,
-): Layer.Layer<EntityManager> =>
+): Layer.Layer<EntityManager, EntitySerialExhausted> =>
   Layer.effect(entityManagerTag<S>(), makeInMemoryEntityManager(initial, repairBehaviour))

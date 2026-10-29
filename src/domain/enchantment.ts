@@ -1,8 +1,15 @@
-import { isItemType, type ItemType } from '@nerima-games/mc-kernel'
+import { Brand, Result, Schema } from 'effect'
+import { isItemType, type ItemType, type RandomSeed } from '@nerima-games/mc-kernel'
 import {
+  enchantmentTableOutputItemOf as simEnchantmentTableOutputItemOf,
+  generateEnchantmentTableOffers as generateEnchantmentTableOffersWithSim,
   isDamageableItemType,
   isValidDurabilityForItem,
   type Durability,
+  type EnchantmentTableError,
+  type EnchantmentTableItem,
+  type EnchantmentTableOffers,
+  type EnchantmentTableRandom,
 } from '@nerima-games/mc-sim'
 
 import { applyArmorToDamage } from './combat/armor.js'
@@ -88,23 +95,11 @@ const isEnchantmentId = (value: unknown): value is EnchantmentId =>
   typeof value === 'string' && ENCHANTMENT_IDS.includes(value as EnchantmentId)
 
 const itemMatchesTarget = (item: ItemType, target: EnchantmentTarget): boolean => {
-  switch (target) {
-    case 'armor':
-      return ARMOR_ITEMS.has(item)
-    case 'melee_weapon':
-      return MELEE_ITEMS.has(item)
-    case 'mining_tool':
-      return MINING_ITEMS.has(item)
-    case 'bow':
-      return item === 'bow'
-    case 'damageable':
-      return isDamageableItemType(item)
-    /* v8 ignore next 4 -- EnchantmentTarget is a closed union; the five cases above are exhaustive, so this arm can never execute. */
-    default: {
-      const exhaustive: never = target
-      return exhaustive
-    }
-  }
+  if (target === 'armor') return ARMOR_ITEMS.has(item)
+  if (target === 'melee_weapon') return MELEE_ITEMS.has(item)
+  if (target === 'mining_tool') return MINING_ITEMS.has(item)
+  if (target === 'bow') return item === 'bow'
+  return isDamageableItemType(item)
 }
 
 export const enchantmentAppliesTo = (id: EnchantmentId, item: ItemType): boolean =>
@@ -254,11 +249,10 @@ export const encodeEnchantedItem = (item: EnchantedItem): EnchantedItemEncodingR
 }
 
 export const decodeEnchantedItemSnapshot = (encoded: string): EnchantedItemResult => {
-  try {
-    return decodeEnchantedItem(JSON.parse(encoded) as unknown)
-  } catch {
-    return { ok: false, issues: [{ path: '$', reason: 'must be valid JSON' }] }
-  }
+  const parsed = Schema.decodeUnknownResult(Schema.fromJsonString(Schema.Unknown))(encoded)
+  return Result.isFailure(parsed)
+    ? { ok: false, issues: [{ path: '$', reason: 'must be valid JSON' }] }
+    : decodeEnchantedItem(parsed.success)
 }
 
 export type EnchantmentTableSlot = 0 | 1 | 2
@@ -328,6 +322,37 @@ export const enchantmentOffers = (
   enchantmentOffer(seed, bookshelfCount, 1),
   enchantmentOffer(seed, bookshelfCount, 2),
 ]
+
+const enchantmentTableRandomForSeed = (seed: number): EnchantmentTableRandom => {
+  let state = normalizeSeed(seed)
+  const next = (): number => {
+    state = mixSeed((state + 0x9e3779b9) >>> 0)
+    return state / 0x1_0000_0000
+  }
+
+  return {
+    nextInt: (bound) => Math.floor(next() * bound),
+    nextFloat: next,
+  }
+}
+
+export type EnchantmentBookshelfCount = number & Brand.Brand<'EnchantmentBookshelfCount'>
+export const EnchantmentBookshelfCountSchema: Schema.Codec<EnchantmentBookshelfCount, number> = Schema.Int
+  .check(Schema.isBetween({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER }))
+  .pipe(Schema.brand('EnchantmentBookshelfCount'))
+export const generateEnchantmentTableOffersForItem = (
+  item: EnchantmentTableItem,
+  seed: RandomSeed,
+  bookshelfCount: EnchantmentBookshelfCount,
+): Result.Result<EnchantmentTableOffers, EnchantmentTableError> =>
+  generateEnchantmentTableOffersWithSim({
+    item,
+    bookshelfCount,
+    random: enchantmentTableRandomForSeed(seed),
+  })
+
+export const enchantmentTableResultItemOf = (item: EnchantmentTableItem): ItemType =>
+  simEnchantmentTableOutputItemOf(item)
 
 export type EnchantmentTableState = {
   readonly seed: number

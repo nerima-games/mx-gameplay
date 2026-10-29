@@ -1,4 +1,5 @@
 import type { DeltaTimeSecs } from '@nerima-games/mc-kernel'
+import { Schema } from 'effect'
 
 export const STATUS_EFFECT_TYPES = [
   'poison',
@@ -53,13 +54,27 @@ export const PLAYER_MAXIMUM_HEALTH_POINTS = 20
 
 export const emptyStatusEffectState = (): StatusEffectState => ({ effects: [] })
 
+const StatusEffectTypeSchema = Schema.Literals(STATUS_EFFECT_TYPES)
+const StatusEffectSecondsSchema = Schema.Finite.check(Schema.isGreaterThan(0))
+const StatusEffectClockSchema = Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0))
+const StatusEffectAmplifierSchema = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))
+
+export const StatusEffectStateSchema: Schema.Codec<StatusEffectState, unknown> = Schema.Struct({
+  effects: Schema.Array(Schema.Struct({
+    type: StatusEffectTypeSchema,
+    remainingSecs: StatusEffectSecondsSchema,
+    pulseClockSecs: StatusEffectClockSchema,
+    amplifier: Schema.optionalKey(StatusEffectAmplifierSchema),
+  })),
+}).check(Schema.makeFilter((state) => isValidStatusEffectState(state)))
+
 const finiteDuration = (durationSecs: number): number =>
   Number.isFinite(durationSecs) ? Math.max(0, durationSecs) : 0
 
 const finiteAmplifier = (amplifier: number | undefined): number =>
-  /* v8 ignore start -- `?? 0` guards Math.floor's parameter type only; Number.isFinite(amplifier) being true already proves amplifier is a finite number, never nullish, so this fallback cannot execute. */
-  Number.isFinite(amplifier) ? Math.max(0, Math.floor(amplifier ?? 0)) : 0
-  /* v8 ignore stop */
+  amplifier !== undefined && Number.isFinite(amplifier)
+    ? Math.max(0, Math.floor(amplifier))
+    : 0
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -165,45 +180,23 @@ export const tickStatusEffects = (
     const amplifier = finiteAmplifier(effect.amplifier)
     const activeElapsedSecs = Math.min(effect.remainingSecs, elapsedSecs)
 
-    switch (effect.type) {
-      case 'poison': {
-        const advanced = advancePulsingEffect(
-          effect,
-          elapsedSecs,
-          POISON_INTERVAL_SECS / 2 ** amplifier,
-        )
-        if (advanced.effect !== undefined) effects.push(advanced.effect)
-        poisonPulses += advanced.pulses
-        break
+    if (effect.type === 'poison') {
+      const advanced = advancePulsingEffect(effect, elapsedSecs, POISON_INTERVAL_SECS / 2 ** amplifier)
+      if (advanced.effect !== undefined) effects.push(advanced.effect)
+      poisonPulses += advanced.pulses
+    } else if (effect.type === 'regeneration') {
+      const advanced = advancePulsingEffect(effect, elapsedSecs, REGENERATION_INTERVAL_SECS / 2 ** amplifier)
+      if (advanced.effect !== undefined) effects.push(advanced.effect)
+      regenerationPulses += advanced.pulses
+    } else if (effect.type === 'hunger') {
+      hungerExhaustion += activeElapsedSecs * 0.1 * (amplifier + 1)
+      if (effect.remainingSecs > elapsedSecs) {
+        effects.push({ ...effect, remainingSecs: effect.remainingSecs - elapsedSecs })
       }
-      case 'regeneration': {
-        const advanced = advancePulsingEffect(
-          effect,
-          elapsedSecs,
-          REGENERATION_INTERVAL_SECS / 2 ** amplifier,
-        )
-        if (advanced.effect !== undefined) effects.push(advanced.effect)
-        regenerationPulses += advanced.pulses
-        break
+    } else if (effect.type === 'nausea' || effect.type === 'speed') {
+      if (effect.remainingSecs > elapsedSecs) {
+        effects.push({ ...effect, remainingSecs: effect.remainingSecs - elapsedSecs })
       }
-      case 'hunger':
-        hungerExhaustion += activeElapsedSecs * 0.1 * (amplifier + 1)
-        if (effect.remainingSecs > elapsedSecs) {
-          effects.push({ ...effect, remainingSecs: effect.remainingSecs - elapsedSecs })
-        }
-        break
-      case 'nausea':
-      case 'speed':
-        if (effect.remainingSecs > elapsedSecs) {
-          effects.push({ ...effect, remainingSecs: effect.remainingSecs - elapsedSecs })
-        }
-        break
-      /* v8 ignore start -- exhaustiveness safety net over StatusEffectType, a closed union every case above already covers; no input can reach this arm. */
-      default: {
-        const exhaustiveEffect: never = effect.type
-        return exhaustiveEffect
-      }
-      /* v8 ignore stop */
     }
   }
 
