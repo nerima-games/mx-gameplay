@@ -1,5 +1,25 @@
 # @nerima-games/mx-gameplay
 
+## 0.8.0
+
+### Minor Changes
+
+- Pin mc-kernel 0.14.0 for the gameplay release.
+
+- Remove the public `InMemoryChunkStoreLayer` and `makeInMemoryChunkStore` API and the arbitrary `WorldContents.lights` seed. Migrate callers to `makeInMemoryWorld({ world })`, which adapts supplied blocks through mc-worldgen's `ChunkStoreLayer(source, capacity)` and derives light from chunk contents. Unknown chunk coordinates load as empty chunks from the source.
+
+- Export `breakBlock` and its transaction-aware mining overload from the package root, together with `GAMEPLAY_PLAYER_STORAGE_OWNER_ID` for coordinator setup.
+
+- Update gameplay to mc-worldgen 0.7 and Effect 4.
+
+- Export the typed mc-sim projectile runtime adapter for gameplay callers.
+
+- Pin mc-sim 0.7.1 and route owner-backed interactions through merged plans with one world commit.
+
+### Patch Changes
+
+- Split gameplay registration into stage-specific adapters.
+
 ## 0.7.0
 
 ### Minor Changes
