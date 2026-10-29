@@ -13,20 +13,20 @@ import {
 } from '@nerima-games/mc-sim'
 import type { StatusEffectApplication } from './status-effect.js'
 
-const BrewingBottleIndexSchema = Schema.Int.check(
+const BrewingBottleIndexSchema: Schema.Codec<number, number> = Schema.Int.check(
   Schema.isBetween({ minimum: 0, maximum: 2 }),
 )
-const PositiveStackCountSchema = Schema.Int.check(
+const PositiveStackCountSchema: Schema.Codec<number, number> = Schema.Int.check(
   Schema.isBetween({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
 )
-const NonNegativeStackCountSchema = Schema.Int.check(
+const NonNegativeStackCountSchema: Schema.Codec<number, number> = Schema.Int.check(
   Schema.isBetween({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER }),
 )
 
 export type BrewingBottleCollectionRequest = Readonly<{
   brewingOwnerId: ReplicatedOwnerId
   playerStorageOwnerId: ReplicatedOwnerId
-  bottleIndex: number
+  bottleIndex: Schema.Schema.Type<typeof BrewingBottleIndexSchema>
 }>
 
 export const BrewingBottleCollectionRequestSchema: Schema.ConstraintDecoder<
@@ -41,14 +41,18 @@ export type BrewingBottleCollectionResult =
   | {
       readonly _tag: 'Collected'
       readonly item: ItemType
-      readonly count: number
-      readonly remainingCount: number
+      readonly count: Schema.Schema.Type<typeof PositiveStackCountSchema>
+      readonly remainingCount: Schema.Schema.Type<typeof NonNegativeStackCountSchema>
     }
   | { readonly _tag: 'Empty' }
   | { readonly _tag: 'InvalidOwners' }
   | { readonly _tag: 'InvalidSlot' }
   | { readonly _tag: 'StaleSnapshot' }
-  | { readonly _tag: 'InventoryFull'; readonly item: ItemType; readonly count: number }
+  | {
+      readonly _tag: 'InventoryFull'
+      readonly item: ItemType
+      readonly count: Schema.Schema.Type<typeof PositiveStackCountSchema>
+    }
   | { readonly _tag: 'InvalidStack' }
 
 export const BrewingBottleCollectionResultSchema: Schema.ConstraintDecoder<

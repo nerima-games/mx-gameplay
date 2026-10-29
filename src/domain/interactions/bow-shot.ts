@@ -51,7 +51,7 @@
  * the bow ACTUALLY uses, cited to the line that supplies it, and `test/bow.test.ts`
  * pins that this repository's bow and melee radii are free to differ.
  */
-import { PositionAxis, position } from '@nerima-games/mc-kernel'
+import { AttackRangeDistance, PositionAxis, position } from '@nerima-games/mc-kernel'
 import type { Dimension, Position, SimulationTick } from '@nerima-games/mc-kernel'
 import type { EntityId } from '@nerima-games/mc-sim'
 import {
@@ -60,10 +60,12 @@ import {
   WorldPositionSchema,
   type DomainEvent,
 } from '@nerima-games/mc-kernel'
-import { EYE_LEVEL_OFFSET, IntentPayloadSchema, type IntentPayload, type PlayerPose } from '@nerima-games/mc-sim'
+import { EYE_LEVEL_OFFSET, IntentPayloadSchema, type Direction3, type IntentPayload, type PlayerPose } from '@nerima-games/mc-sim'
 import { Result, Schema } from 'effect'
 import { BowChargePreparationSchema, type BowChargePreparation } from './draw-bow.js'
 import { BOW_MAX_RANGE } from './draw-bow.js'
+
+const DEFAULT_BOW_REACH = AttackRangeDistance(BOW_MAX_RANGE)
 
 /**
  * Radius of the targeting cylinder, in blocks.
@@ -224,7 +226,7 @@ export const arrowHitProjection = (
  * hypothetical in a game with spawn stacks; the reference does not record which
  * wins and `test/bow.test.ts` pins it.
  */
-export const shotTargetWithCandidate = <Candidate extends ShotCandidate>(
+const shotTargetWithCandidateAtReach = <Candidate extends ShotCandidate>(
   candidates: ReadonlyArray<Candidate>,
   origin: Position,
   dirX: number,
@@ -286,6 +288,21 @@ export const shotTargetWithCandidate = <Candidate extends ShotCandidate>(
   return nearest
 }
 
+export const shotTargetWithCandidate = <Candidate extends ShotCandidate>(
+  candidates: ReadonlyArray<Candidate>,
+  origin: Position,
+  direction: Direction3,
+  reach: AttackRangeDistance = DEFAULT_BOW_REACH,
+): Readonly<{ candidate: Candidate; hit: ShotHit }> | undefined =>
+  shotTargetWithCandidateAtReach(
+    candidates,
+    origin,
+    direction.x,
+    direction.y,
+    direction.z,
+    reach,
+  )
+
 export const shotTarget = (
   candidates: ReadonlyArray<ShotCandidate>,
   origin: Position,
@@ -294,7 +311,7 @@ export const shotTarget = (
   dirZ: number,
   reach: number = BOW_MAX_RANGE,
 ): ShotHit | undefined =>
-  shotTargetWithCandidate(candidates, origin, dirX, dirY, dirZ, reach)?.hit
+  shotTargetWithCandidateAtReach(candidates, origin, dirX, dirY, dirZ, reach)?.hit
 
 /**
  * How finely the terrain between shooter and target is sampled, in blocks.
@@ -469,10 +486,8 @@ export const prepareBowShot = (
   const targetMatch = shotTargetWithCandidate(
     candidates,
     origin,
-    aim.x,
-    aim.y,
-    aim.z,
-    BOW_MAX_RANGE,
+    aim,
+    DEFAULT_BOW_REACH,
   )
   if (targetMatch === undefined) return Result.fail('no-target')
   const { hit: target, candidate: targetCandidate } = targetMatch

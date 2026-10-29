@@ -161,7 +161,7 @@ export const experienceOrbOwnerRegistration = (
 })
 
 export const createExperienceOrbValue = (
-  value: number,
+  value: unknown,
 ): Result.Result<ExperienceOrbValue, Schema.SchemaError> =>
   Schema.decodeUnknownResult(ExperienceOrbValueSchema)(value)
 

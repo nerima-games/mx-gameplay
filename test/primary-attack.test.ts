@@ -1,6 +1,6 @@
 import { describe, expect, it } from '@effect/vitest'
 import { Brand, Effect, Ref } from 'effect'
-import { EntityHealthPoints } from '@nerima-games/mc-kernel'
+import { AttackRangeDistance, EntityHealthPoints } from '@nerima-games/mc-kernel'
 import { CREEPER_KIND, type MobBehaviour } from '../src/domain/entities/mob-frame'
 import { meleeDamageForItem } from '../src/domain/interactions/melee-attack'
 import {
@@ -249,7 +249,7 @@ describe('targeted primary attack', () => {
     }),
   )
 
-  it.effect('uses the pure melee rule for invalid reach', () =>
+  it.effect('uses the configured melee reach', () =>
     Effect.gen(function* () {
       const context = yield* makeContext()
       yield* spawnHostile(context.roster, 4)
@@ -259,7 +259,7 @@ describe('targeted primary attack', () => {
         context.store.api,
         context.roster.api,
         context.player.api,
-        { meleeReach: Number.NaN },
+        { meleeReach: AttackRangeDistance(0.5) },
       ))
 
       expect(result).toStrictEqual({ _tag: 'None' })

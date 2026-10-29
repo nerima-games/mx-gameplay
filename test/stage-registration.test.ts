@@ -9,7 +9,7 @@
 import { describe, expect, it } from '@effect/vitest'
 import * as FastCheck from 'fast-check'
 import { Brand, Cause, Effect, Exit, Layer, Option, Ref, Result, Schema, Stream } from 'effect'
-import { AIR_BLOCK_ID, AngleRadians, BlockId, DimensionIdSchema, EntityHealthPoints, EntitySerial, PositionAxis, ProjectileIdSchema, SimulationTickSchema, WorldIdSchema, blockIdOf, position as kernelPosition, type BlockPosition } from '@nerima-games/mc-kernel'
+import { AIR_BLOCK_ID, AngleRadians, AttackRangeDistance, BlockId, DimensionIdSchema, EntityHealthPoints, EntitySerial, PositionAxis, ProjectileIdSchema, SimulationTickSchema, WorldIdSchema, blockIdOf, position as kernelPosition, type BlockPosition } from '@nerima-games/mc-kernel'
 import type { BlockReading, ChunkStore, ChunkStoreApi } from '@nerima-games/mc-worldgen'
 import {
   CREEPER_KIND,
@@ -1592,14 +1592,14 @@ describe('stage behaviour', () => {
         requestId: 'hit',
         origin: fixturePosition(0, 64, 0 ),
         direction: fixturePosition(0, 0, 1),
-        reach: 3,
+        reach: AttackRangeDistance(3),
         damage: 4,
       })
       yield* requestMeleeAttack(state, {
         requestId: 'miss',
         origin: fixturePosition(0, 64, 0 ),
         direction: fixturePosition(1, 0, 0),
-        reach: 3,
+        reach: AttackRangeDistance(3),
         damage: 7,
       })
 
@@ -1641,7 +1641,7 @@ describe('stage behaviour', () => {
         requestId: 'melee-zero-damage',
         origin: fixturePosition(0, 64, 0),
         direction: fixturePosition(0, 0, 1),
-        reach: 3,
+        reach: AttackRangeDistance(3),
         damage: 0,
       })
       const interactions = harness.stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
@@ -1679,7 +1679,7 @@ describe('stage behaviour', () => {
         requestId: 'melee-rejected',
         origin: fixturePosition(0, 64, 0),
         direction: fixturePosition(0, 0, 1),
-        reach: 3,
+        reach: AttackRangeDistance(3),
         damage: 4,
       } as const
 
@@ -1718,7 +1718,7 @@ describe('stage behaviour', () => {
         requestId: 'melee-drop-owner-unavailable',
         origin: fixturePosition(0, 64, 0),
         direction: fixturePosition(0, 0, 1),
-        reach: 3,
+        reach: AttackRangeDistance(3),
         damage: 4,
       } as const
 
@@ -1758,7 +1758,7 @@ describe('stage behaviour', () => {
         requestId: 'melee-drop-snapshot-failure',
         origin: fixturePosition(0, 64, 0),
         direction: fixturePosition(0, 0, 1),
-        reach: 3,
+        reach: AttackRangeDistance(3),
         damage: 4,
       } as const
 
@@ -1803,7 +1803,7 @@ describe('stage behaviour', () => {
       yield* requestMeleeAttack(state, {
         origin: fixturePosition(0, 64, 0 ),
         direction: fixturePosition(0, 0, 1),
-        reach: 3,
+        reach: AttackRangeDistance(3),
         damage: 4,
       })
       const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)
@@ -1834,7 +1834,7 @@ describe('stage behaviour', () => {
       yield* requestMeleeAttack(state, {
         origin: fixturePosition(0, 64, 0 ),
         direction: fixturePosition(0, 0, 1),
-        reach: 3,
+        reach: AttackRangeDistance(3),
         damage: 4,
       })
       const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)
@@ -6998,7 +6998,7 @@ describe('interaction requests retain typed failures when no commit coordinator 
         requestId: 'melee-without-coordinator',
         origin: fixturePosition(0, 64, 0),
         direction: fixturePosition(0, 0, 1),
-        reach: 3,
+        reach: AttackRangeDistance(3),
         damage: 4,
       })
       yield* requestEnderPearlThrow(harness.state, {
@@ -7114,7 +7114,7 @@ describe('interaction requests retain typed failures when their owner is not reg
         requestId: 'melee-no-entity-owner',
         origin: fixturePosition(0, 64, 0),
         direction: fixturePosition(0, 0, 1),
-        reach: 3,
+        reach: AttackRangeDistance(3),
         damage: 4,
       })
       yield* requestEnderPearlThrow(harness.state, {
@@ -7184,7 +7184,7 @@ describe('interaction stages surface owner snapshot failures and preserve retrya
         requestId: 'melee-owner-snapshot-failure',
         origin: fixturePosition(0, 64, 0),
         direction: fixturePosition(0, 0, 1),
-        reach: 3,
+        reach: AttackRangeDistance(3),
         damage: 4,
       })
       yield* run()
@@ -7378,7 +7378,7 @@ describe('interaction stages surface owner snapshot failures and preserve retrya
         requestId: 'melee-player-snapshot-failure',
         origin: fixturePosition(0, 64, 0),
         direction: fixturePosition(0, 0, 1),
-        reach: 3,
+        reach: AttackRangeDistance(3),
         damage: 4,
       })
       yield* run()

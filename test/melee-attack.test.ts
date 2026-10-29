@@ -1,7 +1,7 @@
 import { describe, expect, it } from '@effect/vitest'
 import { Result, Schema } from 'effect'
 import * as FastCheck from 'fast-check'
-import { EntityHealthPoints, EntityId, SimulationTickSchema } from '@nerima-games/mc-kernel'
+import { AttackRangeDistance, EntityHealthPoints, EntityId, SimulationTickSchema } from '@nerima-games/mc-kernel'
 import { type Entity } from '@nerima-games/mc-sim'
 import { position as atPosition } from './support/coordinate-fixtures'
 import { ZOMBIE_KIND } from '../src/domain/mob/hostile-combat'
@@ -83,20 +83,16 @@ describe('C2 melee preparation', () => {
 
   it('rejects a target behind the authoritative block ray without mutating inputs', () => {
     const snapshot = JSON.stringify({ input, zombie })
-    const result = prepareMeleeAttack(intent, { ...input, blockDistance: 1 })
+    const result = prepareMeleeAttack(intent, { ...input, blockDistance: AttackRangeDistance(1) })
 
     expect(Result.isFailure(result)).toBe(true)
     expect(JSON.stringify({ input, zombie })).toBe(snapshot)
   })
 
-  it('rejects a non-melee intent and invalid block distance', () => {
+  it('rejects a non-melee intent', () => {
     const wrongIntent = prepareMeleeAttack({ _tag: 'BowAction', actor, action: 'draw' } as never, input)
-    const invalidBlockDistance = prepareMeleeAttack(intent, { ...input, blockDistance: -1 })
 
     expect(Result.isFailure(wrongIntent) && wrongIntent.failure).toBe('invalid-intent')
-    expect(Result.isFailure(invalidBlockDistance) && invalidBlockDistance.failure).toBe(
-      'invalid-authoritative-state',
-    )
   })
 
   it('returns no-target when no hostile entities are in the authoritative roster', () => {
@@ -123,16 +119,14 @@ describe('C2 melee preparation', () => {
     expect(meleeTargetBeforeBlock(candidates, request, target.distance + 0.01)).toStrictEqual(target)
   })
 
-  it('rejects a negative or non-finite reach and invalid hit distance', () => {
+  it('rejects an invalid hit distance', () => {
     const request: MeleeAttackRequest = {
       origin: atPosition(0, 64 + 1.62, 0),
       direction: atPosition(0, 0, 1),
-      reach: 3,
+      reach: AttackRangeDistance(3),
       damage: 1,
     }
 
-    expect(meleeTarget([zombie], { ...request, reach: -1 })).toBeUndefined()
-    expect(meleeTarget([zombie], { ...request, reach: Number.NaN })).toBeUndefined()
     expect(meleeTarget([zombie], { ...request, hitDistance: -1 })).toBeUndefined()
     expect(meleeTarget([zombie], { ...request, hitDistance: Number.NaN })).toBeUndefined()
   })

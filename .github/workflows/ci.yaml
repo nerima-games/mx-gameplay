@@ -50,8 +50,22 @@ jobs:
       - name: Lint
         run: nix develop --command pnpm lint
 
+      - name: Checkout shared conformance rules
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: nerima-games/.github
+          ref: 26e3dde3909583648694adfc1579299445aced7d
+          path: .github/shared-conformance
+          persist-credentials: false
+          fetch-depth: 1
+
       - name: Shared conformance
-        uses: nerima-games/.github/conformance/ast-grep@26e3dde3909583648694adfc1579299445aced7d
+        env:
+          CONFORMANCE_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          nix develop --command node scripts/verify-shared-conformance.mjs \
+            .github/shared-conformance/conformance/ast-grep \
+            "$CONFORMANCE_BASE_SHA"
 
       - name: Changeset status
         if: github.event_name == 'pull_request' && !startsWith(github.head_ref, 'release/')

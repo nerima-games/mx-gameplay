@@ -1,5 +1,7 @@
 import { describe, expect, it } from '@effect/vitest'
 import { durabilityForItem } from '@nerima-games/mc-sim'
+import { RandomSeed } from '@nerima-games/mc-kernel'
+import { Schema } from 'effect'
 
 import {
   ENCHANTMENT_REGISTRY,
@@ -16,6 +18,7 @@ import {
   enchantmentsConflict,
   encodeEnchantedItem,
   fortuneDropCountWithEnchantments,
+  EnchantmentBookshelfCountSchema,
   generateEnchantmentTableOffersForItem,
   meleeDamageWithEnchantments,
   miningSpeedWithEnchantments,
@@ -196,8 +199,10 @@ describe('enchanted item codec', () => {
 
 describe('enchantment table offers and transaction', () => {
   it('uses mc-sim enchantment-table rules with a repeatable gameplay seed', () => {
-    const offers = generateEnchantmentTableOffersForItem('diamond_pickaxe', 1234, 15)
-    const repeated = generateEnchantmentTableOffersForItem('diamond_pickaxe', 1234, 15)
+    const seed = RandomSeed(1234)
+    const bookshelfCount = Schema.decodeUnknownSync(EnchantmentBookshelfCountSchema)(15)
+    const offers = generateEnchantmentTableOffersForItem('diamond_pickaxe', seed, bookshelfCount)
+    const repeated = generateEnchantmentTableOffersForItem('diamond_pickaxe', seed, bookshelfCount)
 
     expect(offers._tag).toBe('Success')
     expect(repeated).toEqual(offers)

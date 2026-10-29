@@ -187,6 +187,10 @@ const cropCandidate = (
   crops: ReadonlyArray<CropState>,
 ): ReplicatedOwnerCandidate => ({ ownerId, state: { crops } })
 
+// Callers hold schema-decoded item types, and every registered item admits a stack of one.
+const singleItemStack = (item: Parameters<typeof itemStack>[0]) =>
+  Result.getOrThrow(itemStack(item, StackCount(1)))
+
 const commitMobDamage = (
   state: GameplayStageContext['state'],
   context: NonNullable<GameplayStageContext['commit']>,
@@ -359,9 +363,11 @@ const processBowShot = (
     const target = shotTargetWithCandidate(
       entities.success.state.entities,
       request.origin,
-      request.dirX,
-      request.dirY,
-      request.dirZ,
+      {
+        x: request.dirX,
+        y: request.dirY,
+        z: request.dirZ,
+      },
     )
     let hit: Readonly<{ id: import('@nerima-games/mc-kernel').EntityId; damage: Damage }> | undefined
     let knockback: ReturnType<typeof knockbackDirection> | undefined
@@ -830,15 +836,9 @@ const processFishingItemUse = (
             })
             return
           }
-          const caughtStack = itemStack(reel.success.result.item, StackCount(1))
-          if (Result.isFailure(caughtStack)) {
-            yield* recordGameplayStageFailure(state, {
-              _tag: 'Failed', operation: 'CandidateBuild', subject: 'Fishing', error: caughtStack.failure,
-            })
-            return
-          }
+          const caughtStack = singleItemStack(reel.success.result.item)
           const stored = addStoredStack(storageObserved.success.state, {
-            ...caughtStack.success,
+            ...caughtStack,
             durability: null,
           })
           if (stored.result._tag !== 'Added' || stored.result.added !== 1) {
@@ -1280,17 +1280,11 @@ const processBrewingItemUse = (
       requestedItem = request.bottle === 'water_bottle'
         ? request.bottle
         : potionItems[request.bottle.potion]
-      const bottle = itemStack(requestedItem, StackCount(1))
-      if (Result.isFailure(bottle)) {
-        yield* recordGameplayStageFailure(state, {
-          _tag: 'Failed', operation: 'CandidateBuild', subject: 'Brewing', error: bottle.failure,
-        })
-        return
-      }
+      const bottle = singleItemStack(requestedItem)
       const plan = yield* Effect.result(context.brewingService.planSetBottle(
         brewingSnapshot,
         bottleIndex,
-        bottle.success,
+        bottle,
       ))
       if (Result.isFailure(plan)) {
         yield* recordGameplayStageFailure(state, {
@@ -1309,16 +1303,10 @@ const processBrewingItemUse = (
         return
       }
       requestedItem = request.ingredient
-      const ingredient = itemStack(requestedItem, StackCount(1))
-      if (Result.isFailure(ingredient)) {
-        yield* recordGameplayStageFailure(state, {
-          _tag: 'Failed', operation: 'CandidateBuild', subject: 'Brewing', error: ingredient.failure,
-        })
-        return
-      }
+      const ingredient = singleItemStack(requestedItem)
       const plan = yield* Effect.result(context.brewingService.planSetIngredient(
         brewingSnapshot,
-        ingredient.success,
+        ingredient,
       ))
       if (Result.isFailure(plan)) {
         yield* recordGameplayStageFailure(state, {
@@ -1390,13 +1378,9 @@ const processPlacement = (
           }
         }
         if (context === undefined) return unsupported('WorldCommitCoordinatorUnavailable')
-        if (playerState === undefined || context.playerStorageOwnerId === undefined) {
+        if (playerState === undefined) {
           return unsupported('OwnerRegistrationUnavailable')
         }
-        if (playerState.pose.feetPosition.dimension === undefined) {
-          return unsupported('OwnerRegistrationUnavailable')
-        }
-
         const position = yield* blockPositionForKey(request.positionKey)
         const dimension = playerState.pose.feetPosition.dimension
         const observed = yield* Effect.result(context.coordinator.observe(
@@ -1448,49 +1432,24 @@ const processPlacement = (
               outcome: { _tag: 'InventoryUnavailable' },
             }
           }
-          const removed = removeItemAt(observed.success.state.inventory, slotIndex, request.heldItem, 1)
-          if (
-            Result.isFailure(removed) ||
-            removed.success.result._tag !== 'Removed' ||
-            removed.success.result.removed !== 1
-          ) {
-            return {
-              requestId: command?.requestId ?? '',
-              success: false,
-              consumed: false,
-              replayed: false,
-              outcome: { _tag: 'InventoryUnavailable' },
-            }
-          }
-          const updated = Result.getOrThrow(withInventory(observed.success.state, removed.success.inventory))
+          const removed = Result.getOrThrow(removeItemAt(observed.success.state.inventory, slotIndex, request.heldItem, 1))
+          const updated = Result.getOrThrow(withInventory(observed.success.state, removed.inventory))
           storageCandidate = { ownerId: context.playerStorageOwnerId, state: updated }
         }
 
         const expectedDimensionRevision = yield* context.coordinator.dimensionRevision(dimension)
-        const blockWriteResult = yield* Effect.result(Schema.decodeUnknownEffect(WorldWriteBatchSchema)({
+        const blockWrite: WorldWriteBatch = {
           world: observed.success.world,
           expectedWorldRevision: observed.success.revision,
           dimension,
           expectedDimensionRevision,
           edits: planned.edits,
-        }))
-        if (Result.isFailure(blockWriteResult)) {
-          yield* recordGameplayStageFailure(state, {
-            _tag: 'Failed', operation: 'CandidateBuild', subject: 'ItemUse', error: blockWriteResult.failure,
-          })
-          return {
-            requestId: command?.requestId ?? '',
-            success: false,
-            consumed: false,
-            replayed: false,
-            outcome: { _tag: 'CommitFailed', error: blockWriteResult.failure },
-          }
         }
         const committed = yield* Effect.result(context.coordinator.commit({
           expectedRevision: observed.success.revision,
           expectedDimensions: [{ dimension, expectedRevision: expectedDimensionRevision }],
           changes: storageCandidate === undefined ? [] : [storageCandidate],
-          blockWrite: blockWriteResult.success,
+          blockWrite,
         }))
         if (Result.isFailure(committed)) {
           yield* recordGameplayStageFailure(state, {
@@ -1569,7 +1528,7 @@ const processEnderPearlThrow = (
 
     const seed = yield* Ref.get(state.rollSeed)
     const roll = drawRolls(seed, 1)
-    const spawnEndermite = shouldSpawnEndermite(roll.rolls[0] ?? 1)
+    const spawnEndermite = shouldSpawnEndermite(rollAt(roll, 0))
     const entitiesOwnerId = spawnEndermite ? context.entitiesOwnerId : undefined
     if (spawnEndermite && entitiesOwnerId === undefined) {
       yield* unsupported('OwnerRegistrationUnavailable')
@@ -1634,20 +1593,14 @@ const processEnderPearlThrow = (
     }
 
     const currentPose = playerSnapshot.success.state.pose
-    const destination = Schema.decodeUnknownResult(WorldPositionSchema)({
+    const destination = Schema.decodeUnknownSync(WorldPositionSchema)({
       dimension: currentPose.feetPosition.dimension,
       x: currentPose.feetPosition.x + displacement.x,
       y: currentPose.feetPosition.y + displacement.y,
       z: currentPose.feetPosition.z + displacement.z,
     })
-    if (Result.isFailure(destination)) {
-      yield* recordGameplayStageFailure(state, {
-        _tag: 'Failed', operation: 'CandidateBuild', subject: 'Player', error: destination.failure,
-      })
-      return
-    }
     const playerCandidate = Schema.decodeUnknownSync(PlayerServiceSnapshotSchema)({
-      pose: { ...currentPose, feetPosition: destination.success },
+      pose: { ...currentPose, feetPosition: destination },
     })
     changes.push({ ownerId: context.playerOwnerId, state: playerCandidate })
 
@@ -1691,9 +1644,9 @@ const processEnderPearlThrow = (
       const spawned = spawnEntity(entities.success.state, {
         kind: ENDERMITE_KIND,
         feetPosition: kernelPosition(
-          PositionAxis(destination.success.x),
-          PositionAxis(destination.success.y),
-          PositionAxis(destination.success.z),
+          PositionAxis(destination.x),
+          PositionAxis(destination.y),
+          PositionAxis(destination.z),
         ),
         healthPoints: EntityHealthPoints(ENDERMITE_MAX_HEALTH),
         behaviour: initialBehaviourOfKind(ENDERMITE_KIND),
@@ -1752,7 +1705,17 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
         const portalTravel = commit !== undefined && playerState !== undefined
           ? { commit, playerState }
           : undefined
-        if (commit !== undefined && portalTravel === undefined) return
+        if (commit !== undefined && portalTravel === undefined) {
+          const placements = yield* Ref.getAndSet<ReadonlyArray<PlacementRequest | BlockPlacementCommand>>(
+            state.pendingPlacements,
+            [],
+          )
+          const disturbed: Array<BlockPositionKey> = []
+          for (const request of placements) {
+            yield* processPlacement(state, commit, store, playerState, playerDead, request, disturbed)
+          }
+          return
+        }
 
         yield* advanceCropLifecycle(state, commit, dt)
 

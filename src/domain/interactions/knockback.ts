@@ -1,4 +1,5 @@
 import { Result, Schema } from 'effect'
+import type { PositionAxis } from '@nerima-games/mc-kernel'
 
 /**
  * ONE RULE, ONE FILE (DN-GP-9): which way a blow shoves what it hit.
@@ -211,10 +212,9 @@ export const knockbackDirection = (dx: number, dz: number): KnockbackDirection =
 
 /** Prepare a finite direction candidate. Velocity and impulse belong to mc-sim's missing velocity owner. */
 export const prepareKnockbackDirection = (
-  dx: number,
-  dz: number,
+  dx: PositionAxis,
+  dz: PositionAxis,
 ): Result.Result<KnockbackPreparation, KnockbackPreparationError> => {
-  if (!Number.isFinite(dx) || !Number.isFinite(dz)) return Result.fail('invalid-offset')
   const magnitude = Math.hypot(dx, dz)
   if (!Number.isFinite(magnitude)) return Result.fail('invalid-offset')
   const direction = knockbackDirection(dx, dz)

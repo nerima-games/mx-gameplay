@@ -53,7 +53,21 @@ const ShieldBlockingStateSchema = Schema.Struct({
   raisedAt: SimulationTickSchema,
 })
 
-const ShieldIncomingAttackSchema = Schema.Struct({
+type ShieldIncomingAttack = Readonly<{
+  attacker: Schema.Schema.Type<typeof EntityIdSchema>
+  attackerPosition: Schema.Schema.Type<typeof WorldPositionSchema>
+  kind: 'melee' | 'projectile' | 'explosion'
+  piercing?: Schema.Schema.Type<typeof Schema.Boolean>
+  amount: Schema.Schema.Type<typeof DamageAmountSchema>
+}>
+type ShieldIncomingAttackInput = Readonly<{
+  attacker: Schema.Codec.Encoded<typeof EntityIdSchema>
+  attackerPosition: Schema.Codec.Encoded<typeof WorldPositionSchema>
+  kind: 'melee' | 'projectile' | 'explosion'
+  piercing?: Schema.Codec.Encoded<typeof Schema.Boolean>
+  amount: Schema.Codec.Encoded<typeof DamageAmountSchema>
+}>
+const ShieldIncomingAttackSchema: Schema.Codec<ShieldIncomingAttack, ShieldIncomingAttackInput> = Schema.Struct({
   attacker: EntityIdSchema,
   attackerPosition: WorldPositionSchema,
   kind: Schema.Literals(['melee', 'projectile', 'explosion']),
@@ -87,13 +101,7 @@ export const prepareShieldBlocking = (
     pose: PlayerPose
     hasShield: boolean
     current: ShieldBlockingState | null
-    incoming?: Readonly<{
-      attacker: KernelEntityId
-      attackerPosition: Readonly<{ dimension: Dimension; x: number; y: number; z: number }>
-      kind: 'melee' | 'projectile' | 'explosion'
-      piercing?: boolean
-      amount: number
-    }>
+    incoming?: ShieldIncomingAttackInput
   }>,
 ): Result.Result<ShieldBlockingPreparation, ShieldBlockingPreparationError> => {
   const decodedIntent = Schema.decodeUnknownResult(IntentPayloadSchema)(intent)

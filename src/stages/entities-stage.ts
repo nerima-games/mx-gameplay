@@ -17,6 +17,7 @@ import {
   BlockAxis,
   BlockBlastResistance,
   PositionAxis,
+  RandomSeed,
   WorldWriteBatchSchema,
   blockPosition,
   blockPositionKeyOf,
@@ -446,7 +447,7 @@ const runMobSimulation = (
   const sweep = planMobRosterSweep(entitySnapshot.state, {
     target: playerPosition,
     dt,
-  }, seed)
+  }, RandomSeed(seed))
   const teleported = yield* planEndermanTeleportRoster(
     sweep.roster,
     store,

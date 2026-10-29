@@ -99,7 +99,7 @@ export const UNREADABLE_BLOCK = -1
 
 export type ChunkWindow = {
   /** Synchronous reads include the local unreadable sentinel used by gameplay. */
-  readonly blockAt: (x: number, y: number, z: number) => BlockId | typeof UNREADABLE_BLOCK
+  readonly blockAt: (x: BlockAxis, y: BlockAxis, z: BlockAxis) => BlockId | typeof UNREADABLE_BLOCK
   /**
    * How many probes fell on a cell this window could not answer — an absent
    * chunk, a cell missing from its buffer, or a `y` outside the world.
@@ -202,11 +202,7 @@ export const openChunkWindow = (
     const blockAt: ChunkWindow['blockAt'] = (x, y, z) => {
       // The world bound first, because it is the one `readBlock` would answer
       // with fabricated air. See the header.
-      if (!Number.isInteger(y) || y < 0 || y >= CHUNK_HEIGHT) {
-        unreadable += 1
-        return UNREADABLE_BLOCK
-      }
-      if (!Number.isSafeInteger(x) || !Number.isSafeInteger(z)) {
+      if (y < 0 || y >= CHUNK_HEIGHT) {
         unreadable += 1
         return UNREADABLE_BLOCK
       }

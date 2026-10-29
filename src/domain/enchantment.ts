@@ -1,5 +1,5 @@
-import { Result, Schema } from 'effect'
-import { isItemType, type ItemType } from '@nerima-games/mc-kernel'
+import { Brand, Result, Schema } from 'effect'
+import { isItemType, type ItemType, type RandomSeed } from '@nerima-games/mc-kernel'
 import {
   enchantmentTableOutputItemOf as simEnchantmentTableOutputItemOf,
   generateEnchantmentTableOffers as generateEnchantmentTableOffersWithSim,
@@ -336,10 +336,14 @@ const enchantmentTableRandomForSeed = (seed: number): EnchantmentTableRandom => 
   }
 }
 
+export type EnchantmentBookshelfCount = number & Brand.Brand<'EnchantmentBookshelfCount'>
+export const EnchantmentBookshelfCountSchema: Schema.Codec<EnchantmentBookshelfCount, number> = Schema.Int
+  .check(Schema.isBetween({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER }))
+  .pipe(Schema.brand('EnchantmentBookshelfCount'))
 export const generateEnchantmentTableOffersForItem = (
   item: EnchantmentTableItem,
-  seed: number,
-  bookshelfCount: number,
+  seed: RandomSeed,
+  bookshelfCount: EnchantmentBookshelfCount,
 ): Result.Result<EnchantmentTableOffers, EnchantmentTableError> =>
   generateEnchantmentTableOffersWithSim({
     item,

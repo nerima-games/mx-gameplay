@@ -1,4 +1,5 @@
 import {
+  AttackRangeDistance,
   DamageAmountSchema,
   DomainEventSchema,
   EntityIdSchema,
@@ -17,7 +18,7 @@ import type { ItemType } from '@nerima-games/mc-kernel'
 import { shotTargetWithCandidate, type ShotHit } from './bow-shot.js'
 
 /** Vanilla-style survival melee reach, measured from the player's eye position. */
-export const DEFAULT_MELEE_REACH = 3
+export const DEFAULT_MELEE_REACH: AttackRangeDistance = AttackRangeDistance(3)
 
 /** Damage dealt by an unarmed primary attack. */
 export const DEFAULT_MELEE_DAMAGE = 1
@@ -47,7 +48,7 @@ export type MeleeAttackRequest = {
   readonly requestId?: string
   readonly origin: Position
   readonly direction: Position
-  readonly reach: number
+  readonly reach: AttackRangeDistance
   readonly damage: number
   /** Host raycast distance to terrain. A target at or beyond it is blocked. */
   readonly hitDistance?: number
@@ -63,7 +64,6 @@ const meleeTargetMatch = (
   candidates: ReadonlyArray<Entity<MobBehaviour>>,
   request: MeleeAttackRequest,
 ): MeleeTargetMatch | undefined => {
-  if (!Number.isFinite(request.reach) || request.reach < 0) return undefined
   if (request.hitDistance !== undefined && (!Number.isFinite(request.hitDistance) || request.hitDistance < 0)) {
     return undefined
   }
@@ -71,9 +71,7 @@ const meleeTargetMatch = (
   const match = shotTargetWithCandidate(
     candidates.filter((candidate) => HOSTILE_KINDS.includes(candidate.kind)),
     request.origin,
-    request.direction.x,
-    request.direction.y,
-    request.direction.z,
+    request.direction,
     request.reach,
   )
   if (match === undefined) return undefined
@@ -125,7 +123,7 @@ export const prepareMeleeAttack = (
     entities: ReadonlyArray<Entity<MobBehaviour>>
     heldItem: ItemType | null
     critical: boolean
-    blockDistance?: number
+    blockDistance?: AttackRangeDistance
   }>,
 ): Result.Result<MeleeAttackPreparation, MeleeAttackPreparationError> => {
   const decodedIntent = Schema.decodeUnknownResult(IntentPayloadSchema)(intent)
@@ -134,11 +132,6 @@ export const prepareMeleeAttack = (
   }
   const tick = input.tick
   const dimension = input.dimension
-  if (
-    input.blockDistance !== undefined &&
-    (!Number.isFinite(input.blockDistance) || input.blockDistance < 0)
-  ) return Result.fail('invalid-authoritative-state')
-
   const eyeY = input.pose.feetPosition.y + EYE_LEVEL_OFFSET
 
   const origin = position(

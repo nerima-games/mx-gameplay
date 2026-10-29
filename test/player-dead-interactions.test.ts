@@ -1,7 +1,7 @@
 import { describe, expect, it } from '@effect/vitest'
 import { emptyFurnaceState, makeTimeService } from '@nerima-games/mc-sim'
 import { Effect, Ref, Result } from 'effect'
-import { BlockAxis, blockPosition, blockPositionKeyOf, DeltaTimeSecs, PositionAxis, position } from '@nerima-games/mc-kernel'
+import { AttackRangeDistance, BlockAxis,  blockPosition, blockPositionKeyOf, DeltaTimeSecs, PositionAxis, position } from '@nerima-games/mc-kernel'
 import { type MobBehaviour } from '../src/domain/entities/mob-frame'
 import {
   drainBlockPlacementResults,
@@ -48,7 +48,7 @@ const shot = {
 const melee = {
   origin: playerAt(0, 64, 0),
   direction: playerAt(0, 0, 1),
-  reach: 3,
+  reach: AttackRangeDistance(3),
   damage: 4,
 }
 

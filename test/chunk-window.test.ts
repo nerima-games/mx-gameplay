@@ -38,7 +38,7 @@ import {
   chunkCoordsAround,
   openChunkWindow,
 } from '../src/domain/chunk-window'
-import { AIR_BLOCK_ID, CHUNK_SIZE_XZ } from '@nerima-games/mc-kernel'
+import { AIR_BLOCK_ID, BlockAxis, CHUNK_SIZE_XZ } from '@nerima-games/mc-kernel'
 import { blockPosition, chunkCoord } from './support/coordinate-fixtures.js'
 import {
   CHUNK_HEIGHT,
@@ -214,8 +214,8 @@ describe('openChunkWindow', () => {
       const store = yield* makeChunkStoreDouble(world([[blockPosition(3, 64, 5), STONE]]), ['0,0'])
       const window = yield* openChunkWindow(store.api, [chunkCoord(0, 0)])
 
-      expect(window.blockAt(3, 64, 5)).toBe(STONE)
-      expect(window.blockAt(3, 65, 5)).toBe(AIR_BLOCK_ID)
+      expect(window.blockAt(BlockAxis(3), BlockAxis(64), BlockAxis(5))).toBe(STONE)
+      expect(window.blockAt(BlockAxis(3), BlockAxis(65), BlockAxis(5))).toBe(AIR_BLOCK_ID)
       expect(window.unreadableProbes()).toBe(0)
 
       // THE WHOLE POINT OF THE FILE, in one assertion: three cell reads and no
@@ -238,12 +238,12 @@ describe('openChunkWindow', () => {
       // away, and `UNREADABLE_BLOCK` is not a `BlockId` any registry row
       // carries — so a consumer that forgets the counter still refuses rather
       // than fabricating a portal in unloaded space.
-      expect(window.blockAt(20, 64, 0)).toBe(UNREADABLE_BLOCK)
-      expect(window.blockAt(20, 64, 0)).not.toBe(AIR_BLOCK_ID)
+      expect(window.blockAt(BlockAxis(20), BlockAxis(64), BlockAxis(0))).toBe(UNREADABLE_BLOCK)
+      expect(window.blockAt(BlockAxis(20), BlockAxis(64), BlockAxis(0))).not.toBe(AIR_BLOCK_ID)
       expect(window.unreadableProbes()).toBe(2)
 
       // A cell in the resident chunk still answers.
-      expect(window.blockAt(0, 64, 0)).toBe(AIR_BLOCK_ID)
+      expect(window.blockAt(BlockAxis(0), BlockAxis(64), BlockAxis(0))).toBe(AIR_BLOCK_ID)
       expect(window.unreadableProbes()).toBe(2)
     }),
   )
@@ -276,7 +276,7 @@ describe('openChunkWindow', () => {
 
       const window = yield* openChunkWindow(shortBuffered, [chunkCoord(0, 0)])
 
-      expect(window.blockAt(0, 64, 0)).toBe(UNREADABLE_BLOCK)
+      expect(window.blockAt(BlockAxis(0), BlockAxis(64), BlockAxis(0))).toBe(UNREADABLE_BLOCK)
       expect(window.unreadableProbes()).toBe(1)
     }),
   )
@@ -287,7 +287,7 @@ describe('openChunkWindow', () => {
       // Chunk 1,0 is resident but was NOT asked for.
       const window = yield* openChunkWindow(store.api, [chunkCoord(0, 0)])
 
-      expect(window.blockAt(20, 64, 0)).toBe(UNREADABLE_BLOCK)
+      expect(window.blockAt(BlockAxis(20), BlockAxis(64), BlockAxis(0))).toBe(UNREADABLE_BLOCK)
       expect(window.unreadableProbes()).toBe(1)
       expect(yield* store.calls).toStrictEqual({ reads: 0, writes: 0, peeks: 1 })
     }),
@@ -301,25 +301,10 @@ describe('openChunkWindow', () => {
       // THE SHARP CASE. `readBlock` is total and answers AIR for an
       // out-of-range index, so without this guard a portal could be detected in
       // fabricated air under the world. Both bounds, and both are refusals.
-      expect(window.blockAt(0, -1, 0)).toBe(UNREADABLE_BLOCK)
-      expect(window.blockAt(0, CHUNK_HEIGHT, 0)).toBe(UNREADABLE_BLOCK)
-      expect(window.blockAt(0, CHUNK_HEIGHT - 1, 0)).toBe(AIR_BLOCK_ID)
+      expect(window.blockAt(BlockAxis(0), BlockAxis(-1), BlockAxis(0))).toBe(UNREADABLE_BLOCK)
+      expect(window.blockAt(BlockAxis(0), BlockAxis(CHUNK_HEIGHT), BlockAxis(0))).toBe(UNREADABLE_BLOCK)
+      expect(window.blockAt(BlockAxis(0), BlockAxis(CHUNK_HEIGHT - 1), BlockAxis(0))).toBe(AIR_BLOCK_ID)
       expect(window.unreadableProbes()).toBe(2)
-    }),
-  )
-
-  it.effect('answers UNREADABLE for a coordinate that is not an integer', () =>
-    Effect.gen(function* () {
-      const store = yield* makeChunkStoreDouble(world([]), ['0,0'])
-      const window = yield* openChunkWindow(store.api, [chunkCoord(0, 0)])
-
-      // `positionOfKey` yields `NaN` for a malformed key and says so: a `NaN`
-      // position must not be answered with a plausible byte.
-      expect(window.blockAt(Number.NaN, 64, 0)).toBe(UNREADABLE_BLOCK)
-      expect(window.blockAt(0, Number.NaN, 0)).toBe(UNREADABLE_BLOCK)
-      expect(window.blockAt(0, 64, 0.5)).toBe(UNREADABLE_BLOCK)
-      expect(window.blockAt(0.5, 64, 0)).toBe(UNREADABLE_BLOCK)
-      expect(window.unreadableProbes()).toBe(4)
     }),
   )
 
@@ -338,9 +323,9 @@ describe('openChunkWindow', () => {
       )
       const window = yield* openChunkWindow(store.api, [chunkCoord(-1, -1)])
 
-      expect(window.blockAt(-1, 64, -1)).toBe(STONE)
-      expect(window.blockAt(-16, 70, -16)).toBe(STONE)
-      expect(window.blockAt(-2, 64, -1)).toBe(AIR_BLOCK_ID)
+      expect(window.blockAt(BlockAxis(-1), BlockAxis(64), BlockAxis(-1))).toBe(STONE)
+      expect(window.blockAt(BlockAxis(-16), BlockAxis(70), BlockAxis(-16))).toBe(STONE)
+      expect(window.blockAt(BlockAxis(-2), BlockAxis(64), BlockAxis(-1))).toBe(AIR_BLOCK_ID)
       expect(window.unreadableProbes()).toBe(0)
     }),
   )
@@ -350,7 +335,7 @@ describe('openChunkWindow', () => {
       const store = yield* makeChunkStoreDouble(world([]), ['0,0'])
       const window = yield* openChunkWindow(store.api, [])
 
-      expect(window.blockAt(0, 64, 0)).toBe(UNREADABLE_BLOCK)
+      expect(window.blockAt(BlockAxis(0), BlockAxis(64), BlockAxis(0))).toBe(UNREADABLE_BLOCK)
       expect(yield* store.calls).toStrictEqual({ reads: 0, writes: 0, peeks: 0 })
     }),
   )

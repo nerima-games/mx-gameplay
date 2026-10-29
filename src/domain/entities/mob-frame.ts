@@ -206,7 +206,7 @@
  * that the sequence must depend on what happened rather than on how many mobs
  * existed.
  */
-import { isItemType, type ItemType } from '@nerima-games/mc-kernel'
+import { isItemType, type ItemType, type RandomSeed } from '@nerima-games/mc-kernel'
 import {
   durabilityForItem,
   isDamageableItemType,
@@ -1476,7 +1476,7 @@ export type MobRosterSweep = MobSweep & Readonly<{ roster: EntityRoster<MobBehav
 export const planMobRosterSweep = (
   roster: EntityRoster<MobBehaviour>,
   senses: MobFrameSenses,
-  seed: number,
+  seed: RandomSeed,
 ): MobRosterSweep => {
   const frame = makeMobFrameSweep(senses, seed)
   const swept = sweepRoster(roster, frame.step)

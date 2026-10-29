@@ -12,6 +12,7 @@ import {
   type ItemStackFailure,
   type ItemType,
   type Position,
+  type WorldRevision,
 } from '@nerima-games/mc-kernel'
 import {
   addStoredStack as addStorageStoredStack,
@@ -323,7 +324,7 @@ export const droppedItemOwnerRegistration = (
 export const appendDroppedItemSpawns = (
   snapshot: DroppedItemOwnerSnapshot,
   drops: ReadonlyArray<DroppedItemSpawn>,
-  expectedRevision: number,
+  expectedRevision: WorldRevision,
 ): Result.Result<DroppedItemOwnerSnapshot, Schema.SchemaError | DroppedItemSpawnError> => {
   const items = [...snapshot.items]
   const ids = new Set(items.map(({ id }) => id))

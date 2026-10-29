@@ -120,6 +120,7 @@ describe('dropped item entities', () => {
 
   it('appends strict owner snapshots with split stacks, metadata, and collision skipping', () => {
     const collidingId = EntityId('mx-gameplay-drop:12:1')
+    const expectedRevision = Schema.decodeUnknownSync(WorldRevisionSchema)(12)
     const existing = { ...committedDroppedItem(1), id: collidingId }
     const outcome = appendDroppedItemSpawns({ items: [existing] }, [
       { item: 'gunpowder', count: 65, at: origin },
@@ -132,7 +133,7 @@ describe('dropped item entities', () => {
         customName: 'Field pickaxe',
         enchantments: [{ id: 'unbreaking', level: 1 }],
       },
-    ], 12)
+    ], expectedRevision)
     expect(Result.isSuccess(outcome)).toBe(true)
 
     const snapshot = Result.getOrThrow(outcome)
@@ -158,9 +159,10 @@ describe('dropped item entities', () => {
   })
 
   it('returns a typed InvalidStack failure for a zero-count request', () => {
+    const expectedRevision = Schema.decodeUnknownSync(WorldRevisionSchema)(12)
     const outcome = appendDroppedItemSpawns({ items: [] }, [
       { item: 'gunpowder', count: 0, at: origin },
-    ], 12)
+    ], expectedRevision)
 
     expect(Result.isFailure(outcome)).toBe(true)
     if (Result.isFailure(outcome)) expect(outcome.failure).toStrictEqual({ _tag: 'InvalidStack' })

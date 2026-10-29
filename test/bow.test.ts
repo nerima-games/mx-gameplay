@@ -69,7 +69,7 @@ import {
   makeGameplayFrameStateForOwner,
   requestBowShot,
 } from '../src/stages/registration'
-import { DimensionIdSchema, EntityHealthPoints, SimulationTickSchema, itemStack, StackCount, type BlockId, type Position } from '@nerima-games/mc-kernel'
+import { DimensionIdSchema, EntityHealthPoints, PositionAxis, SimulationTickSchema, itemStack, StackCount, type BlockId, type Position } from '@nerima-games/mc-kernel'
 import { makeChunkStoreDouble } from './support/chunk-store-double'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
 import { makePlayerServiceDouble } from './support/player-service-double'
@@ -805,21 +805,20 @@ describe('knockbackDirection', () => {
 })
 
 describe(`checked knockback preparation (${KNOCKBACK_PARITY_FIXTURE.source}, ${KNOCKBACK_PARITY_FIXTURE.edition})`, () => {
-  it('rejects non-finite offsets and a finite offset whose magnitude overflows', () => {
-    const nonFinite = prepareKnockbackDirection(Number.NaN, 1)
-    const infiniteMagnitude = prepareKnockbackDirection(Number.MAX_VALUE, Number.MAX_VALUE)
+  it('rejects a finite offset whose magnitude overflows', () => {
+    const largestAxis = PositionAxis(Number.MAX_VALUE)
+    const infiniteMagnitude = prepareKnockbackDirection(largestAxis, largestAxis)
 
-    expect(Result.isFailure(nonFinite) && nonFinite.failure).toBe('invalid-offset')
     expect(Result.isFailure(infiniteMagnitude) && infiniteMagnitude.failure).toBe('invalid-offset')
   })
 
   it('returns a typed failure or a strict finite direction with nonnegative horizontal magnitude', () => {
     FastCheck.assert(
       FastCheck.property(
-        FastCheck.double({ min: -1e308, max: 1e308, noNaN: false, noDefaultInfinity: false }),
-        FastCheck.double({ min: -1e308, max: 1e308, noNaN: false, noDefaultInfinity: false }),
+        FastCheck.double({ min: -1e308, max: 1e308, noNaN: true, noDefaultInfinity: true }),
+        FastCheck.double({ min: -1e308, max: 1e308, noNaN: true, noDefaultInfinity: true }),
         (dx, dz) => {
-          const result = prepareKnockbackDirection(dx, dz)
+          const result = prepareKnockbackDirection(PositionAxis(dx), PositionAxis(dz))
           if (Result.isFailure(result)) return true
           const decoded = Schema.decodeUnknownResult(KnockbackPreparationSchema, {
             onExcessProperty: 'error',
@@ -835,13 +834,6 @@ describe(`checked knockback preparation (${KNOCKBACK_PARITY_FIXTURE.source}, ${K
     )
   })
 
-  it('keeps caller input unchanged when a non-finite offset fails', () => {
-    const offset = { dx: Number.NaN, dz: 4 }
-    const snapshot = JSON.stringify(offset)
-
-    expect(Result.isFailure(prepareKnockbackDirection(offset.dx, offset.dz))).toBe(true)
-    expect(JSON.stringify(offset)).toBe(snapshot)
-  })
 })
 
 // ---------------------------------------------------------------------------

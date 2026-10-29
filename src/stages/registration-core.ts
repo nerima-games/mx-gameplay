@@ -2759,7 +2759,7 @@ export type TargetedPrimaryAttackResolution =
   | { readonly _tag: 'None' }
 
 export type TargetedPrimaryAttackOptions = {
-  readonly meleeReach?: number
+  readonly meleeReach?: MeleeAttackRequest['reach']
   readonly meleeDamage?: number
   readonly blockReach?: number
   readonly toolLocation?: StorageLocation
