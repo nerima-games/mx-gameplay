@@ -114,7 +114,13 @@ export type CropDropOutcome =
  * 2-5, and with a negative roll gives less than the floor — both are silent
  * off-by-ones in a drop count, which is the kind of thing that reads as luck.
  */
-export const cropDrops = (block: BlockType, ripe: boolean, roll: number): CropDropOutcome => {
+export function cropDrops(
+  block: CropBlockType,
+  ripe: boolean,
+  roll: number,
+): Extract<CropDropOutcome, { readonly _tag: 'drops' }>
+export function cropDrops(block: BlockType, ripe: boolean, roll: number): CropDropOutcome
+export function cropDrops(block: BlockType, ripe: boolean, roll: number): CropDropOutcome {
   if (!isCropBlockType(block)) {
     return { _tag: 'notACrop', block }
   }

@@ -260,6 +260,7 @@ const makeHarness = (options: Readonly<{
   readonly commitVitalsOwnerIdOverride?: ReplicatedOwnerId
 }> = {}) => Effect.gen(function* () {
   const store = yield* makeTransactionalChunkStoreDouble(world(options.blocks ?? []), ['0,0'])
+  const chunkStore = store.api
   const registrations = gameplayOwnerRegistrations({
     playerPose: options.playerPose ?? INITIAL_PLAYER_POSE,
     ...(options.fishing === undefined ? {} : { fishing: options.fishing }),
@@ -287,7 +288,7 @@ const makeHarness = (options: Readonly<{
   const baseCoordinator = yield* makeWorldCommitCoordinator({
     world: WORLD_ID,
     owners,
-    chunkStores: { forDimension: () => store.api },
+    chunkStores: { forDimension: () => chunkStore },
   })
   let commitCalls = 0
   let rejectCommit = false
@@ -351,7 +352,7 @@ const makeHarness = (options: Readonly<{
   const interactionsWithCoordinator = (selectedCoordinator: WorldCommitCoordinatorApi) =>
     gameplayStages(
       state,
-      store.api,
+      chunkStore,
       roster,
       undefined,
       undefined,
@@ -363,7 +364,7 @@ const makeHarness = (options: Readonly<{
     ).find(({ id }) => id === GAMEPLAY_STAGE_IDS.interactions)!
   const interactionsWithoutCommit = gameplayStages(
     state,
-    store.api,
+    chunkStore,
     roster,
     undefined,
     undefined,
@@ -375,7 +376,7 @@ const makeHarness = (options: Readonly<{
   ).find(({ id }) => id === GAMEPLAY_STAGE_IDS.interactions)!
   const stages = gameplayStages(
     state,
-    store.api,
+    chunkStore,
     roster,
     undefined,
     undefined,
@@ -2332,6 +2333,43 @@ describe('owner-backed mining and villager trade coverage in the interactions st
         actual: revisionBefore + 1,
       },
     }])
+  })
+
+  it('preserves unrelated villagers in the committed trade candidate', async () => {
+    const villager = makeVillager('candidate-preservation-trader', 'farmer')
+    const unrelatedVillager = makeVillager('unrelated-candidate-trader', 'toolsmith')
+    const offer = villager.offers.find(({ input }) => input.item === 'wheat')
+    if (offer === undefined) throw new Error('Farmer fixture must include a wheat offer')
+    const harness = await Effect.runPromise(makeHarness({
+      playerStorage: playerStorageWithItem('wheat', 64),
+      villagerTrades: {
+        villagers: [villager, unrelatedVillager],
+        restockElapsedSecs: 0,
+      },
+    }))
+    const request = {
+      requestId: 'trade-preserves-unrelated-villager',
+      villagerId: villager.id,
+      offerId: offer.id,
+    }
+    await Effect.runPromise(requestVillagerTrade(harness.state, request))
+
+    await harness.run()
+
+    const candidateState = harness.lastRequest()?.changes.find(({ ownerId }) =>
+      ownerId === GAMEPLAY_VILLAGER_TRADES_OWNER_ID
+    )?.state
+    const candidate = Schema.decodeUnknownSync(GameplayVillagerTradeSnapshotSchema)(candidateState)
+    const committed = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_VILLAGER_TRADES_OWNER_ID,
+      GameplayVillagerTradeSnapshotSchema,
+    ))
+
+    expect(await Effect.runPromise(drainVillagerTradeResults(harness.state))).toStrictEqual([
+      { ...request, _tag: 'Traded' },
+    ])
+    expect(candidate.villagers).toContainEqual(unrelatedVillager)
+    expect(committed.state.villagers).toContainEqual(unrelatedVillager)
   })
 
   it('returns a typed UnknownOffer rejection without committing either trade owner', async () => {
@@ -4554,5 +4592,84 @@ describe('schema-valid interaction edge paths', () => {
     })
     expect(await Effect.runPromise(drainBlockPlacementResults(harness.state))).toStrictEqual([])
     expect(harness.commitCalls()).toBe(0)
+  })
+
+  it('reports legacy key-only mining requests when the coordinator is unavailable', async () => {
+    const target = blockPosition(BlockAxis(17), BlockAxis(64), BlockAxis(1))
+    const harness = await Effect.runPromise(makeHarness({ blocks: [[target, Option.getOrThrow(blockIdOf('dirt'))]] }))
+    await Effect.runPromise(Ref.update(harness.state.pendingBreaks, (pending) => [
+      ...pending,
+      blockPositionKeyOf(target),
+    ]))
+
+    await Effect.runPromise(harness.interactionsWithoutCommit.run(DeltaTimeSecs(0)).pipe(
+      Effect.provide(FrameServicesLayer),
+    ))
+
+    expect(await Effect.runPromise(Ref.get(harness.state.unsupportedOperations))).toContainEqual({
+      _tag: 'Unsupported', action: 'MineBlock', reason: 'WorldCommitCoordinatorUnavailable',
+    })
+    expect(harness.commitCalls()).toBe(0)
+  })
+
+  it('places at the lowest writable Y and tracks its lower neighbor', async () => {
+    const target = blockPosition(BlockAxis(1), BlockAxis(0), BlockAxis(1))
+    const below = blockPosition(BlockAxis(1), BlockAxis(-1), BlockAxis(1))
+    const harness = await Effect.runPromise(makeHarness({
+      playerStorage: playerStorageWithItem('stone', 1),
+    }))
+    await Effect.runPromise(requestBlockPlacement(harness.state, {
+      positionKey: blockPositionKeyOf(target),
+      heldItem: 'stone',
+    }))
+
+    await harness.run()
+
+    expect(await Effect.runPromise(harness.store.blockAt(target))).toBe(Option.getOrThrow(blockIdOf('stone')))
+    expect(harness.lastRequest()?.blockWrite?.edits[0]?.position.y).toBe(0)
+    expect(await Effect.runPromise(Ref.get(harness.state.fallingBlocks))).toStrictEqual({
+      pending: new Set([blockPositionKeyOf(below)]),
+    })
+    expect(await Effect.runPromise(Ref.get(harness.state.operationFailures))).toStrictEqual([])
+    expect(harness.commitCalls()).toBe(1)
+  })
+
+  it('records dropped-item candidate failures at the largest valid simulation tick', async () => {
+    const minePosition = blockPosition(BlockAxis(15), BlockAxis(64), BlockAxis(1))
+    const harvestPosition = blockPosition(BlockAxis(9), BlockAxis(64), BlockAxis(1))
+    const dirt = Option.getOrThrow(blockIdOf('dirt'))
+    const potatoCrop = Option.getOrThrow(blockIdOf('potato_crop'))
+    const mining = await Effect.runPromise(makeHarness({
+      blocks: [[minePosition, dirt]],
+      playerStorage: fullPlayerStorage(),
+    }))
+    const harvesting = await Effect.runPromise(makeHarness({
+      blocks: [[harvestPosition, potatoCrop]],
+      crops: { crops: [{ dimension: DIMENSION, position: harvestPosition, crop: 'potato_crop', growthSecs: POTATO_MATURITY_SECS }] },
+      playerStorage: fullPlayerStorage(),
+    }))
+    await Promise.all([
+      Effect.runPromise(Ref.set(mining.state.tickCount, Number.MAX_SAFE_INTEGER)),
+      Effect.runPromise(Ref.set(harvesting.state.tickCount, Number.MAX_SAFE_INTEGER)),
+      Effect.runPromise(requestBlockBreak(mining.state, minePosition, undefined, {
+        dimension: DIMENSION,
+        toolLocation: undefined,
+      })),
+      Effect.runPromise(requestPotatoHarvest(harvesting.state, 'harvest-max-safe-tick', harvestPosition, 0.5)),
+    ])
+    await Promise.all([mining.run(), harvesting.run()])
+
+    expect(await Effect.runPromise(Ref.get(mining.state.operationFailures))).toMatchObject([{
+      _tag: 'Failed', operation: 'CandidateBuild', subject: 'Mining',
+      error: { _tag: 'SchemaError' },
+    }])
+    expect(await Effect.runPromise(Ref.get(harvesting.state.operationFailures))).toMatchObject([{
+      _tag: 'Failed', operation: 'CandidateBuild', subject: 'ItemUse',
+      error: { _tag: 'SchemaError' },
+    }])
+    expect(await Effect.runPromise(mining.store.blockAt(minePosition))).toBe(dirt)
+    expect(await Effect.runPromise(harvesting.store.blockAt(harvestPosition))).toBe(potatoCrop)
+    expect(mining.commitCalls()).toBe(0)
+    expect(harvesting.commitCalls()).toBe(0)
   })
 })
