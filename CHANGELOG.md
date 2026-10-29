@@ -1,5 +1,11 @@
 # @nerima-games/mx-gameplay
 
+## 0.9.0
+
+### Minor Changes
+
+- Pin `mc-audio`, `mc-sim`, and `mc-worldgen` to their updated releases.
+
 ## 0.8.0
 
 ### Minor Changes
