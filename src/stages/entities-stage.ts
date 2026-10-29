@@ -285,21 +285,22 @@ const runTntSimulation = (
     const playerEffect = player.pose.feetPosition.dimension === record.dimension
       ? effects.find(({ id: effectId }) => effectId === PLAYER_BLAST_ENTITY_ID)
       : undefined
-    const playerDamage: PlayerDamageEvent | undefined = playerEffect !== undefined && playerEffect.damage > 0
-      ? {
-          _tag: 'Explosion',
-          source: id,
-          kind: PRIMED_TNT_KIND,
-          at: outcome.explosion.center,
-          explosion,
-          damage: { amount: playerEffect.damage, cause: 'explosion' },
-        }
-      : undefined
+    let playerDamage: PlayerDamageEvent | undefined
 
     let playerCandidate: PlayerServiceSnapshot | undefined
     let storageCandidate: PlayerStorage | undefined
     let vitalsCandidate: { readonly vitals: import('@nerima-games/mc-sim').Vitals } | undefined
     if (playerEffect !== undefined) {
+      // TntService emits effects only for positive exposure; its damage formula adds one.
+      const damageEvent: PlayerDamageEvent = {
+        _tag: 'Explosion',
+        source: id,
+        kind: PRIMED_TNT_KIND,
+        at: outcome.explosion.center,
+        explosion,
+        damage: { amount: playerEffect.damage, cause: 'explosion' },
+      }
+      playerDamage = damageEvent
       const playerOwnerId = commit.playerOwnerId
       const playerStorageOwnerId = commit.playerStorageOwnerId
       const vitalsOwnerId = commit.vitalsOwnerId
@@ -319,20 +320,18 @@ const runTntSimulation = (
             : vitalsSnapshot.revision,
         }))
       }
-      if (playerDamage !== undefined) {
-        let storage = storageSnapshot.state
-        let vitals = vitalsSnapshot.state.vitals
-        const armor = yield* Effect.fromResult(prepareArmorHit(storage.equipment, playerDamage.damage))
-        const amount = yield* Effect.fromResult(DamageAmount.result(armor.damage.amount))
-        const cause = yield* Effect.fromResult(DamageCause.result(armor.damage.cause))
-        vitals = applyVitalsDamage(vitals, { amount, cause })
-        for (const slot of armor.wornSlots) {
-          const worn = damageAt(storage, { _tag: 'Equipment', slot }, armor.durabilityWear)
-          if (worn.result._tag === 'Damaged' || worn.result._tag === 'Broken') storage = worn.storage
-        }
-        if (!Equal.equals(storageSnapshot.state, storage)) storageCandidate = storage
-        if (!Equal.equals(vitalsSnapshot.state.vitals, vitals)) vitalsCandidate = { vitals }
+      let storage = storageSnapshot.state
+      let vitals = vitalsSnapshot.state.vitals
+      const armor = yield* Effect.fromResult(prepareArmorHit(storage.equipment, damageEvent.damage))
+      const amount = yield* Effect.fromResult(DamageAmount.result(armor.damage.amount))
+      const cause = yield* Effect.fromResult(DamageCause.result(armor.damage.cause))
+      vitals = applyVitalsDamage(vitals, { amount, cause })
+      for (const slot of armor.wornSlots) {
+        const worn = damageAt(storage, { _tag: 'Equipment', slot }, armor.durabilityWear)
+        storage = worn.storage
       }
+      if (!Equal.equals(storageSnapshot.state, storage)) storageCandidate = storage
+      if (!Equal.equals(vitalsSnapshot.state.vitals, vitals)) vitalsCandidate = { vitals }
       const moved = playerEffect.knockback
       const positionAfterBlast = {
         ...player.pose.feetPosition,
@@ -377,7 +376,10 @@ const runTntSimulation = (
 
     const changes: ReplicatedOwnerCandidate[] = []
     if (!Equal.equals(roster, mobBlast.roster)) {
-      if (entityOwnerId !== undefined) changes.push({ ownerId: entityOwnerId, state: mobBlast.roster })
+      changes.push({
+        ownerId: Option.getOrThrow(Option.fromNullishOr(entityOwnerId)),
+        state: mobBlast.roster,
+      })
     }
     if (playerCandidate !== undefined) changes.push({ ownerId: commit.playerOwnerId, state: playerCandidate })
     if (storageCandidate !== undefined && commit.playerStorageOwnerId !== undefined) {
@@ -536,7 +538,7 @@ const runMobSimulation = (
       vitals = applyVitalsDamage(vitals, { amount, cause })
       for (const slot of armor.wornSlots) {
         const worn = damageAt(storage, { _tag: 'Equipment', slot }, armor.durabilityWear)
-        if (worn.result._tag === 'Damaged' || worn.result._tag === 'Broken') storage = worn.storage
+        storage = worn.storage
       }
       applied.push({ ...event, damage })
     }

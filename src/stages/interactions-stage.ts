@@ -424,10 +424,6 @@ const processBowShot = (
       const damaged = damagePlayerStorageAt(inventory, {
         _tag: 'Inventory', slotIndex: request.inventory.slotIndex,
       }, 1)
-      if (damaged.result._tag !== 'Damaged' && damaged.result._tag !== 'Broken') {
-        yield* result('InventoryUnavailable')
-        return
-      }
       storageCandidate = damaged.storage
     }
 
@@ -607,12 +603,11 @@ const advanceCropLifecycle = (
 
 const commitPlanFragments = (
   state: GameplayStageContext['state'],
-  context: GameplayStageContext['commit'],
+  context: NonNullable<GameplayStageContext['commit']>,
   subject: 'Fishing' | 'Brewing',
   plans: ReadonlyArray<WorldCommitPlanFragment<unknown>>,
 ): Effect.Effect<boolean> =>
   Effect.gen(function* () {
-    if (context === undefined) return false
     const merged = mergeWorldCommitPlans(plans)
     if (Result.isFailure(merged)) {
       yield* recordGameplayStageFailure(state, {

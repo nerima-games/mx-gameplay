@@ -445,11 +445,9 @@ export const resolveArmoredPlayerDamages = (
     Effect.gen(function* () {
       if (event.damage.amount === 0) return event
       const resolved = yield* resultOrDie(prepareArmorHit(yield* inventory.equipmentSnapshot, event.damage))
-      if (resolved.durabilityWear > 0) {
-        yield* Effect.forEach(resolved.wornSlots, (slot) =>
-          inventory.damageAt({ _tag: 'Equipment', slot }, resolved.durabilityWear),
-        )
-      }
+      yield* Effect.forEach(resolved.wornSlots, (slot) =>
+        inventory.damageAt({ _tag: 'Equipment', slot }, resolved.durabilityWear),
+      )
       return { ...event, damage: resolved.damage }
     }),
   )
@@ -495,9 +493,7 @@ const prepareFirePlayerDamage = (
 
     for (const slot of resolved.wornSlots) {
       const damaged = damagePlayerStorageAt(storage, { _tag: 'Equipment', slot }, resolved.durabilityWear)
-      if (damaged.result._tag === 'Damaged' || damaged.result._tag === 'Broken') {
-        storage = damaged.storage
-      }
+      storage = damaged.storage
     }
   }
 
