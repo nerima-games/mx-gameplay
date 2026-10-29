@@ -105,7 +105,7 @@ describe('C2 melee preparation', () => {
     const request: MeleeAttackRequest = {
       origin: atPosition(0, 64 + 1.62, 0),
       direction: atPosition(0, 0, 1),
-      reach: 3,
+      reach: AttackRangeDistance(3),
       damage: 1,
     }
     const candidates = [zombie]

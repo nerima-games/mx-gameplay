@@ -14,7 +14,7 @@ import {
   type WorldCommitCoordinatorApi,
 } from '@nerima-games/mc-sim'
 import { Effect, Result, Schema } from 'effect'
-import { DomainEventSchema, EntityHealthPoints, itemIdOf, itemStack, StackCount, WorldIdSchema, WorldRevisionSchema } from '@nerima-games/mc-kernel'
+import { AttackRangeDistance, DomainEventSchema, EntityHealthPoints, itemIdOf, itemStack, StackCount, WorldIdSchema, WorldRevisionSchema } from '@nerima-games/mc-kernel'
 import { EntityId, EntityKind, WorldRevisionConflict } from '@nerima-games/mc-sim'
 import {
   CREEPER_KIND,
@@ -1046,7 +1046,7 @@ describe('melee targeting', () => {
       const request = {
         origin: atPosition(0, 0.9, 0 ),
         direction: atPosition(1, 0, 0 ),
-        reach: 4,
+        reach: AttackRangeDistance(4),
         damage: 4,
       }
 
@@ -1069,7 +1069,7 @@ describe('melee targeting', () => {
       const request = {
         origin: atPosition(0, 0.9, 0 ),
         direction: atPosition(1, 0, 0 ),
-        reach: 4,
+        reach: AttackRangeDistance(4),
         damage: 4,
       }
 
