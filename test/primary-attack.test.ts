@@ -204,6 +204,64 @@ describe('targeted primary attack', () => {
     }),
   )
 
+  it.effect('follows the WCC player dimension when choosing among same-position roster entities', () =>
+    Effect.gen(function* () {
+      const context = yield* makeContext()
+      const priorDimensionEnemy = yield* spawnHostile(context.roster, context.targeting, 4)
+      const newDimensionEnemy = yield* spawnHostile(context.roster, context.targeting, 4)
+      const coordinator = context.targeting.coordinator
+      const player = yield* coordinator.snapshot(
+        context.targeting.playerOwnerId,
+        PlayerServiceSnapshotSchema,
+      )
+      const localRoster = yield* context.roster.api.snapshot
+      const priorDimension = player.state.pose.feetPosition.dimension
+      const newDimension = Schema.decodeUnknownSync(DimensionIdSchema)('nether')
+      const movedPlayer = Schema.decodeUnknownSync(PlayerServiceSnapshotSchema)({
+        pose: {
+          ...player.state.pose,
+          feetPosition: {
+            ...player.state.pose.feetPosition,
+            dimension: newDimension,
+          },
+        },
+      })
+      const updatedRoster = Schema.decodeUnknownSync(GameplayEntityRosterSchema)({
+        ...localRoster,
+        entities: localRoster.entities.map((entity) => ({
+          ...entity,
+          dimension: entity.id === newDimensionEnemy.id ? newDimension : priorDimension,
+        })),
+      })
+      const priorDimensionCandidate = updatedRoster.entities.find(
+        (entity) => entity.id === priorDimensionEnemy.id,
+      )
+      const newDimensionCandidate = updatedRoster.entities.find(
+        (entity) => entity.id === newDimensionEnemy.id,
+      )
+      expect(priorDimensionCandidate?.feetPosition).toStrictEqual(newDimensionCandidate?.feetPosition)
+      expect(priorDimensionCandidate?.dimension).toBe(priorDimension)
+      expect(newDimensionCandidate?.dimension).toBe(newDimension)
+
+      yield* coordinator.commit({
+        expectedRevision: player.revision,
+        expectedDimensions: [],
+        changes: [
+          { ownerId: context.targeting.playerOwnerId, state: movedPlayer },
+          { ownerId: context.targeting.entitiesOwnerId, state: updatedRoster },
+        ],
+      }).pipe(Effect.orDie)
+
+      const resolution = yield* Effect.orDie(resolveTargetedPrimaryAttack(
+        context.store.api,
+        context.targeting,
+      ))
+
+      expect(resolution._tag).toBe('Melee')
+      if (resolution._tag === 'Melee') expect(resolution.target.id).toBe(newDimensionEnemy.id)
+    }),
+  )
+
   it.effect('retries targeting when player and entity snapshots span revisions', () =>
     Effect.gen(function* () {
       const context = yield* makeContext()

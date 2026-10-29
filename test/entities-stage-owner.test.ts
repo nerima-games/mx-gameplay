@@ -1467,7 +1467,7 @@ describe('entities stage owner-backed MobSimulation', () => {
             GAMEPLAY_PLAYER_OWNER_ID,
             PlayerServiceSnapshotSchema,
           )
-          yield* harness.coordinator.commit({
+          yield* Effect.orDie(harness.coordinator.commit({
             expectedRevision: player.revision,
             expectedDimensions: [],
             changes: [{
@@ -1483,7 +1483,7 @@ describe('entities stage owner-backed MobSimulation', () => {
                 },
               },
             }],
-          })
+          }))
         }
         return yield* harness.coordinator.observe(...args)
       }),

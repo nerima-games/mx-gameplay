@@ -2405,7 +2405,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
               else if (request.action === 'PlantPotato') {
                 const soil = yield* blockPositionForKey(request.positionKey)
                 const above = Result.getOrUndefined(cropCellAbove(soil))
-                if (commit === undefined || above === undefined || commit.cropOwnerId === undefined) {
+                if (commit === undefined || commit.cropOwnerId === undefined) {
                   yield* recordGameplayUnsupportedOperation(state, {
                     _tag: 'Unsupported',
                     action: 'PlantPotato',
@@ -2413,6 +2413,17 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                     reason: commit === undefined
                       ? 'WorldCommitCoordinatorUnavailable'
                       : 'OwnerRegistrationUnavailable',
+                  })
+                  break itemUseAction
+                }
+                if (above === undefined) {
+                  itemUseResults.push({
+                    action: request.action,
+                    requestId: request.requestId,
+                    heldItem: request.heldItem,
+                    success: false,
+                    consumedCount: 0,
+                    outcome: { _tag: 'invalidPosition' },
                   })
                   break itemUseAction
                 }

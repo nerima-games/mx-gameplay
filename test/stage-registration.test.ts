@@ -4330,6 +4330,131 @@ describe('villager trades commit gameplay owners atomically', () => {
     }),
   )
 
+  it.effect('requeues a planned trade after a concurrent revision advances and retries the same request', () =>
+    Effect.gen(function* () {
+      const villager = makeVillager('revision-race-owner-backed-trader', 'farmer')
+      const offer = villager.offers.find((candidate) => candidate.input.item === 'wheat')
+      if (offer === undefined) throw new Error('Farmer fixture must include a wheat offer')
+      const initialSlots = emptySlots().map((slot, index) =>
+        index === 0 ? itemStack('wheat', offer.input.count) : slot,
+      )
+      const { state, store, roster, player, inventory, time, commit, commitCalls, publishedEvents } =
+        yield* builtStagesInWorld(
+          world([]),
+          ['0,0'],
+          { crops: [] },
+          initialSlots,
+          { villagers: [villager], restockElapsedSecs: 0 },
+        )
+      const baseCoordinator = commit.coordinator
+      const revisionBefore = yield* baseCoordinator.revision
+      const storageBefore = yield* baseCoordinator.snapshot(
+        GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+        PlayerStorageSnapshotSchema,
+      )
+      const tradesBefore = yield* baseCoordinator.snapshot(
+        GAMEPLAY_VILLAGER_TRADES_OWNER_ID,
+        GameplayVillagerTradeSnapshotSchema,
+      )
+      let injected = false
+      let tradeCommitAttempts = 0
+      let plannedRevision: typeof revisionBefore | undefined
+      const racingCoordinator: WorldCommitCoordinatorApi = {
+        ...baseCoordinator,
+        commit: (request) => Effect.gen(function* () {
+          tradeCommitAttempts += 1
+          if (!injected) {
+            injected = true
+            plannedRevision = request.expectedRevision
+            const playerSnapshot = yield* baseCoordinator.snapshot(
+              GAMEPLAY_PLAYER_OWNER_ID,
+              PlayerServiceSnapshotSchema,
+            )
+            const movedPlayer = Schema.decodeUnknownSync(PlayerServiceSnapshotSchema)({
+              pose: {
+                ...playerSnapshot.state.pose,
+                feetPosition: {
+                  ...playerSnapshot.state.pose.feetPosition,
+                  x: playerSnapshot.state.pose.feetPosition.x + 1,
+                },
+              },
+            })
+            yield* baseCoordinator.commit({
+              expectedRevision: playerSnapshot.revision,
+              expectedDimensions: [],
+              changes: [{ ownerId: GAMEPLAY_PLAYER_OWNER_ID, state: movedPlayer }],
+            }).pipe(Effect.orDie)
+          }
+          return yield* baseCoordinator.commit(request)
+        }),
+      }
+      const stages = gameplayStages(
+        state,
+        store.api,
+        roster.api,
+        inventory.api,
+        player.api,
+        time,
+        undefined,
+        undefined,
+        {},
+        { ...commit, coordinator: racingCoordinator },
+      )
+      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+      const request = {
+        requestId: 'trade-after-planning-revision-race',
+        villagerId: villager.id,
+        offerId: offer.id,
+      }
+
+      yield* requestVillagerTrade(state, request)
+      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(injected).toBe(true)
+      expect(tradeCommitAttempts).toBe(1)
+      expect(plannedRevision).toBe(revisionBefore)
+      expect(yield* Ref.get(commitCalls)).toBe(2)
+      expect(yield* baseCoordinator.revision).toBe(revisionBefore + 1)
+      expect(yield* Ref.get(state.pendingVillagerTrades)).toStrictEqual([request])
+      expect(yield* drainVillagerTradeResults(state)).toStrictEqual([])
+      expect(yield* Ref.get(state.operationFailures)).toMatchObject([{
+        _tag: 'Failed',
+        operation: 'WorldCommit',
+        subject: 'ItemUse',
+        error: { _tag: 'WorldRevisionConflict' },
+      }])
+      expect((yield* baseCoordinator.snapshot(
+        GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+        PlayerStorageSnapshotSchema,
+      )).state).toStrictEqual(storageBefore.state)
+      expect((yield* baseCoordinator.snapshot(
+        GAMEPLAY_VILLAGER_TRADES_OWNER_ID,
+        GameplayVillagerTradeSnapshotSchema,
+      )).state).toStrictEqual(tradesBefore.state)
+      expect(yield* Ref.get(publishedEvents)).toStrictEqual([])
+
+      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+
+      const storageAfterRetry = yield* baseCoordinator.snapshot(
+        GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+        PlayerStorageSnapshotSchema,
+      )
+      const tradesAfterRetry = yield* baseCoordinator.snapshot(
+        GAMEPLAY_VILLAGER_TRADES_OWNER_ID,
+        GameplayVillagerTradeSnapshotSchema,
+      )
+      expect(tradeCommitAttempts).toBe(2)
+      expect(yield* Ref.get(commitCalls)).toBe(3)
+      expect(yield* Ref.get(state.pendingVillagerTrades)).toStrictEqual([])
+      expect(yield* drainVillagerTradeResults(state)).toStrictEqual([{ ...request, _tag: 'Traded' }])
+      expect(storageAfterRetry.state.inventory.slots[0]?.item).toBe(offer.output.item)
+      expect(storageAfterRetry.state.inventory.slots[0]?.count).toBe(offer.output.count)
+      expect(tradesAfterRetry.state.villagers[0]?.offers.find((entry) => entry.id === offer.id)?.uses).toBe(1)
+      expect(yield* baseCoordinator.revision).toBe(revisionBefore + 2)
+      expect(yield* Ref.get(publishedEvents)).toStrictEqual([])
+    }).pipe(Effect.provide(FrameServicesLayer)),
+  )
+
   it.effect('rejects before commit when storage lacks the offer input', () =>
     Effect.gen(function* () {
       const villager = makeVillager('poor-owner-backed-trader', 'farmer')

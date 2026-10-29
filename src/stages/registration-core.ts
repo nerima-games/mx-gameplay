@@ -2889,10 +2889,6 @@ export const requestTargetedPrimaryAttack = (
       }
       case 'None':
         return resolution
-      default: {
-        const exhaustive: never = resolution
-        return exhaustive
-      }
     }
   })
 
