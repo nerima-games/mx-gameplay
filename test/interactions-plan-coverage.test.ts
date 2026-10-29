@@ -116,6 +116,7 @@ import {
   GAMEPLAY_PLAYER_OWNER_ID,
   GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
   GAMEPLAY_STATUS_EFFECTS_OWNER_ID,
+  GAMEPLAY_TNT_SOURCES_OWNER_ID,
   GAMEPLAY_VILLAGER_TRADES_OWNER_ID,
   GAMEPLAY_VITALS_OWNER_ID,
   gameplayOwnerRegistrations,
@@ -168,6 +169,7 @@ const projectileStateWithBobber = () =>
 const combatTarget = (id: string, healthPoints = 20) => ({
   id: EntityId(id),
   kind: EntityKind('creeper'),
+  dimension: DIMENSION,
   feetPosition: position(
     PositionAxis(0),
     PositionAxis(64 - BOW_TARGET_CENTER_Y_OFFSET),
@@ -341,6 +343,7 @@ const makeHarness = (options: Readonly<{
     experienceOrbsOwnerId: GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
     ...(options.omitVillagerTradesOwnerId ? {} : { villagerTradesOwnerId: GAMEPLAY_VILLAGER_TRADES_OWNER_ID }),
     ...(options.omitEntitiesOwnerId ? {} : { entitiesOwnerId: GAMEPLAY_ENTITIES_OWNER_ID }),
+    tntSourcesOwnerId: GAMEPLAY_TNT_SOURCES_OWNER_ID,
     brewingOwnerId: GAMEPLAY_BREWING_OWNER_ID,
     ...(options.omitStatusEffectsOwnerId ? {} : { statusEffectsOwnerId: GAMEPLAY_STATUS_EFFECTS_OWNER_ID }),
     fishingOwnerId: GAMEPLAY_FISHING_OWNER_ID,
@@ -2420,6 +2423,56 @@ describe('owner-backed mining and villager trade coverage in the interactions st
 })
 
 describe('retrying item-use intents after owner revision conflicts', () => {
+  it('commits effectful food consumption with its status effects in one owner revision', async () => {
+    const vitals = { ...SPAWN_VITALS, hungerPoints: HungerPoints(10) }
+    const harness = await Effect.runPromise(makeHarness({
+      playerStorage: playerStorageWithItem('pufferfish', 1),
+      vitals,
+    }))
+    const revisionBefore = await Effect.runPromise(harness.coordinator.revision)
+    await Effect.runPromise(requestFoodUse(harness.state, 'pufferfish-atomic-effects', 'pufferfish', {
+      healthPoints: vitals.healthPoints,
+      hungerPoints: vitals.hungerPoints,
+      maxHungerPoints: vitals.maxHungerPoints,
+    }))
+
+    await harness.run()
+
+    const storage = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+      PlayerStorageSnapshotSchema,
+    ))
+    const nextVitals = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_VITALS_OWNER_ID,
+      ExperienceOrbVitalsOwnerSnapshotSchema,
+    ))
+    const status = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_STATUS_EFFECTS_OWNER_ID,
+      StatusEffectStateSchema,
+    ))
+    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toMatchObject([{
+      action: 'EatFood',
+      requestId: 'pufferfish-atomic-effects',
+      success: true,
+      consumedCount: 1,
+      outcome: { _tag: 'consume' },
+    }])
+    expect(storage.state.inventory.slots[0]).toBeUndefined()
+    expect(nextVitals.state.vitals.hungerPoints).toBeGreaterThan(vitals.hungerPoints)
+    expect(status.state.effects.map(({ type }) => type)).toStrictEqual(['poison', 'hunger', 'nausea'])
+    expect(harness.lastRequest()?.changes.map(({ ownerId }) => ownerId)).toStrictEqual([
+      GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+      GAMEPLAY_VITALS_OWNER_ID,
+      GAMEPLAY_STATUS_EFFECTS_OWNER_ID,
+    ])
+    expect([storage.revision, nextVitals.revision, status.revision]).toStrictEqual([
+      revisionBefore + 1,
+      revisionBefore + 1,
+      revisionBefore + 1,
+    ])
+    expect(harness.commitCalls()).toBe(1)
+  })
+
   it('replans food consumption after a concurrent commit advances the owner revision', async () => {
     const vitals = { ...SPAWN_VITALS, hungerPoints: HungerPoints(10) }
     const foodVitals = {
@@ -4174,13 +4227,16 @@ describe('schema-valid interaction edge paths', () => {
     await harness.run()
 
     expect(await Effect.runPromise(drainItemUseResults(harness.state))).toMatchObject([
-      { action: 'TillSoil', requestId: 'unknown-till-block', outcome: { _tag: 'notTillable', found: 'air' } },
-      { action: 'PlantPotato', requestId: 'unknown-plant-block', outcome: { _tag: 'wrongSoil', found: 'air' } },
+      { action: 'TillSoil', requestId: 'unknown-till-block', success: false, durabilityDamage: 0, outcome: { _tag: 'notTillable', found: 'air' } },
+      { action: 'PlantPotato', requestId: 'unknown-plant-block', success: false, consumedCount: 0, outcome: { _tag: 'wrongSoil', found: 'air' } },
+      {
+        action: 'HarvestPotato',
+        requestId: 'unknown-harvest-block',
+        success: false,
+        outcome: { _tag: 'cropOwnerMismatch', block: 'air', registeredCrop: 'potato_crop' },
+      },
     ])
-    expect(await Effect.runPromise(Ref.get(harness.state.unsupportedOperations))).toContainEqual({
-      _tag: 'Unsupported', action: 'HarvestPotato', requestId: 'unknown-harvest-block',
-      reason: 'OwnerRegistrationUnavailable',
-    })
+    expect(await Effect.runPromise(Ref.get(harness.state.unsupportedOperations))).toStrictEqual([])
     expect(harness.commitCalls()).toBe(0)
   })
 
@@ -4224,11 +4280,13 @@ describe('schema-valid interaction edge paths', () => {
     }))
     await Effect.runPromise(requestBoneMeal(mismatched.state, 'bone-meal-crop-not-tracked', boneMealPosition))
     await mismatched.run()
-    expect(await Effect.runPromise(Ref.get(mismatched.state.unsupportedOperations))).toContainEqual({
-      _tag: 'Unsupported', action: 'ApplyBoneMeal', requestId: 'bone-meal-crop-not-tracked',
-      reason: 'OwnerRegistrationUnavailable',
-    })
-    expect(await Effect.runPromise(drainItemUseResults(mismatched.state))).toStrictEqual([])
+    expect(await Effect.runPromise(drainItemUseResults(mismatched.state))).toMatchObject([{
+      action: 'ApplyBoneMeal',
+      requestId: 'bone-meal-crop-not-tracked',
+      success: false,
+      outcome: { _tag: 'cropOwnerMismatch' },
+    }])
+    expect(await Effect.runPromise(Ref.get(mismatched.state.unsupportedOperations))).toStrictEqual([])
   })
 
   it('detects crop-owner revision conflicts for bone meal, planting, and harvesting', async () => {
@@ -4298,11 +4356,14 @@ describe('schema-valid interaction edge paths', () => {
 
     await harness.run()
 
-    expect(await Effect.runPromise(Ref.get(harness.state.unsupportedOperations))).toContainEqual({
-      _tag: 'Unsupported', action: 'PlantPotato', requestId: 'plant-tracked-cell',
-      reason: 'OwnerRegistrationUnavailable',
-    })
-    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toStrictEqual([])
+    expect(await Effect.runPromise(Ref.get(harness.state.unsupportedOperations))).toStrictEqual([])
+    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toMatchObject([{
+      action: 'PlantPotato',
+      requestId: 'plant-tracked-cell',
+      success: false,
+      consumedCount: 0,
+      outcome: { _tag: 'cropOwnerMismatch', crop: 'potato_crop', at: cropCell },
+    }])
     expect(harness.commitCalls()).toBe(0)
   })
 

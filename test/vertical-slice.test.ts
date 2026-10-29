@@ -150,7 +150,6 @@ import {
   SNOWBALL_PROFILE,
   TNT_REPLICATED_OWNER_ID,
   WorldCommitCoordinator,
-  WorldRevisionConflict,
   type DomainEventBusApi,
   type EntityManagerApi,
   type ProjectileLaunch,
@@ -326,7 +325,8 @@ const slice = (
     }
   })
 
-const MINING_DIMENSION = Schema.decodeUnknownSync(DimensionIdSchema)('overworld')
+const OVERWORLD_DIMENSION = Schema.decodeUnknownSync(DimensionIdSchema)('overworld')
+const MINING_DIMENSION = OVERWORLD_DIMENSION
 const MINING_DROPPED_ITEMS_OWNER_ID = Schema.decodeUnknownSync(ReplicatedOwnerIdSchema)(
   'vertical-slice-mining-dropped-items',
 )
@@ -412,10 +412,15 @@ const commitGameplayEntityRoster = (
 const syncGameplayRosterOwner = (
   coordinator: WorldCommitCoordinatorApi,
   roster: Readonly<{ api: EntityManagerApi<MobBehaviour> }>,
+  dimension: Schema.Schema.Type<typeof GameplayEntityRosterSchema>['entities'][number]['dimension'],
 ) =>
   Effect.gen(function* () {
     const entities = yield* roster.api.entities
-    yield* commitGameplayEntityRoster(coordinator, entities, entities.length)
+    yield* commitGameplayEntityRoster(
+      coordinator,
+      entities.map((entity) => ({ ...entity, dimension })),
+      entities.length,
+    )
   })
 
 const syncGameplayPlayerOwner = (
@@ -522,7 +527,7 @@ const FISHING_ENVIRONMENT = {
 
 const FISHING_ACTOR = EntityId('vertical-slice-fishing-actor')
 const FISHING_BOBBER = Schema.decodeUnknownSync(ProjectileIdSchema)('vertical-slice-fishing-bobber')
-const FISHING_DIMENSION = Schema.decodeUnknownSync(DimensionIdSchema)('overworld')
+const FISHING_DIMENSION = OVERWORLD_DIMENSION
 const blocksPerSecond = Brand.nominal<ProjectileLaunch['speed']>()
 const FISHING_LAUNCH: ProjectileLaunch = {
   position: fixturePosition(0, 64, 0),
@@ -1368,7 +1373,7 @@ describe('the mob slice, through the stage registration', () => {
         healthPoints: EntityHealthPoints(CREEPER_MAX_HEALTH),
         behaviour: DORMANT_FUSE,
       })
-      yield* syncGameplayRosterOwner(commit.coordinator, roster)
+      yield* syncGameplayRosterOwner(commit.coordinator, roster, OVERWORLD_DIMENSION)
       yield* daylight(time)
       yield* movePlayerAndSyncOwner(player.api, commit.coordinator, playerNear)
 
@@ -1418,7 +1423,7 @@ describe('the mob slice, through the stage registration', () => {
         healthPoints: EntityHealthPoints(CREEPER_MAX_HEALTH),
         behaviour: DORMANT_FUSE,
       })
-      yield* syncGameplayRosterOwner(commit.coordinator, roster)
+      yield* syncGameplayRosterOwner(commit.coordinator, roster, OVERWORLD_DIMENSION)
 
       yield* movePlayerAndSyncOwner(player.api, commit.coordinator, fixturePosition(0, 64, 0 ))
       yield* runFrame(stages, STRIDE)
@@ -1503,7 +1508,7 @@ describe('the mob slice, through the stage registration', () => {
           healthPoints: EntityHealthPoints(CREEPER_MAX_HEALTH),
           behaviour: DORMANT_FUSE,
         })
-        yield* syncGameplayRosterOwner(commit.coordinator, roster)
+        yield* syncGameplayRosterOwner(commit.coordinator, roster, OVERWORLD_DIMENSION)
         yield* movePlayerAndSyncOwner(player.api, commit.coordinator, playerNear)
         yield* runFrames(stages, 6, STRIDE)
 
@@ -1646,7 +1651,7 @@ describe('the enderman slice: a rule that returns a displacement, run over a ros
         healthPoints: EntityHealthPoints(ENDERMAN_HEALTH),
         behaviour: STEADY_ENDERMAN,
       })
-      yield* syncGameplayRosterOwner(commit.coordinator, roster)
+      yield* syncGameplayRosterOwner(commit.coordinator, roster, OVERWORLD_DIMENSION)
       yield* movePlayerAndSyncOwner(player.api, commit.coordinator, playerNear)
       yield* Ref.set(state.rollSeed, seed)
       yield* runFrame(stages, STRIDE)
@@ -1718,7 +1723,7 @@ describe('the enderman slice: a rule that returns a displacement, run over a ros
         healthPoints: EntityHealthPoints(ENDERMAN_HEALTH),
         behaviour: STEADY_ENDERMAN,
       })
-      yield* syncGameplayRosterOwner(commit.coordinator, roster)
+      yield* syncGameplayRosterOwner(commit.coordinator, roster, OVERWORLD_DIMENSION)
       yield* movePlayerAndSyncOwner(player.api, commit.coordinator, playerNear)
       yield* Ref.set(state.rollSeed, seed)
 
@@ -1785,7 +1790,7 @@ describe('the enderman slice: a rule that returns a displacement, run over a ros
         healthPoints: EntityHealthPoints(ENDERMAN_HEALTH),
         behaviour: STRUCK_ENDERMAN,
       })
-      yield* syncGameplayRosterOwner(commit.coordinator, roster)
+      yield* syncGameplayRosterOwner(commit.coordinator, roster, OVERWORLD_DIMENSION)
       // No target at all, so nothing but the flinch can make it act — the chase
       // lane does not run, and the damage branch anchors on `self` and needs no
       // player.
@@ -1831,7 +1836,7 @@ describe('the enderman slice: a rule that returns a displacement, run over a ros
           behaviour: STEADY_ENDERMAN,
         }),
       )
-      yield* syncGameplayRosterOwner(commit.coordinator, roster)
+      yield* syncGameplayRosterOwner(commit.coordinator, roster, OVERWORLD_DIMENSION)
       const before = yield* readGameplayEntityRoster(commit.coordinator)
       const revisionBefore = yield* commit.coordinator.revision
       const entitiesStage = stages.filter((stage) => stage.id === GAMEPLAY_STAGE_IDS.entities)
@@ -1881,7 +1886,7 @@ describe('the enderman slice: a rule that returns a displacement, run over a ros
         healthPoints: EntityHealthPoints(ENDERMAN_HEALTH),
         behaviour: STEADY_ENDERMAN,
       })
-      yield* syncGameplayRosterOwner(commit.coordinator, roster)
+      yield* syncGameplayRosterOwner(commit.coordinator, roster, OVERWORLD_DIMENSION)
       yield* movePlayerAndSyncOwner(player.api, commit.coordinator, playerNear)
       yield* Ref.set(state.rollSeed, seed)
       yield* runFrames(stages, frames, STRIDE)
@@ -1921,7 +1926,7 @@ describe('the enderman slice: a rule that returns a displacement, run over a ros
           healthPoints: EntityHealthPoints(ENDERMAN_HEALTH),
           behaviour: STEADY_ENDERMAN,
         })
-        yield* syncGameplayRosterOwner(commit.coordinator, roster)
+        yield* syncGameplayRosterOwner(commit.coordinator, roster, OVERWORLD_DIMENSION)
         yield* movePlayerAndSyncOwner(player.api, commit.coordinator, playerNear)
         yield* Ref.set(state.rollSeed, seed)
         yield* runFrames(stages, 1, STRIDE)
@@ -1972,7 +1977,7 @@ describe('the enderman slice: a rule that returns a displacement, run over a ros
         // Two blocks from the player, which is well inside ignition range.
         behaviour: DORMANT_FUSE,
       })
-      yield* syncGameplayRosterOwner(commit.coordinator, roster)
+      yield* syncGameplayRosterOwner(commit.coordinator, roster, OVERWORLD_DIMENSION)
       yield* daylight(time)
       yield* movePlayerAndSyncOwner(player.api, commit.coordinator, playerNear)
 
@@ -2070,7 +2075,7 @@ describe('the crater is the other radius, and it is the falling-block queue’s 
         // Already one step from the end, so the very next frame detonates.
         behaviour: { _tag: 'Lit', burnedSecs: 1.4 },
       })
-      yield* syncGameplayRosterOwner(commit.coordinator, roster)
+      yield* syncGameplayRosterOwner(commit.coordinator, roster, OVERWORLD_DIMENSION)
       yield* movePlayerAndSyncOwner(player.api, commit.coordinator, playerNear)
       yield* runFrame(stages, STRIDE)
 
@@ -3104,7 +3109,7 @@ describe('the ignition slice: an item use reaches the world', () => {
     }),
   )
 
-  it.effect('a rejected portal commit changes neither the frame nor the held item', () =>
+  it.effect('replans a portal item use after a concurrent commit advances the owner revision', () =>
     Effect.gen(function* () {
       const ring = generatePortalLayout(origin, 'x', PortalWidth(2), PortalHeight(3)).frame
       const { store, state, roster, player, time, inventory, commit } = yield* slice(
@@ -3114,14 +3119,31 @@ describe('the ignition slice: an item use reaches the world', () => {
       )
       const revisionBefore = yield* commit.coordinator.revision
       const ownerBefore = yield* readPlayerStorageOwner(commit.coordinator, commit.playerStorageOwnerId)
-      const refusingCoordinator: WorldCommitCoordinatorApi = {
+      let injected = false
+      const racingCoordinator: WorldCommitCoordinatorApi = {
         ...commit.coordinator,
-        commit: () => Effect.fail(new WorldRevisionConflict({
-          expected: Schema.decodeUnknownSync(WorldRevisionSchema)(revisionBefore + 1),
-          actual: revisionBefore,
-        })),
+        commit: (request) => Effect.gen(function* () {
+          if (!injected) {
+            injected = true
+            const trades = yield* commit.coordinator.snapshot(
+              GAMEPLAY_VILLAGER_TRADES_OWNER_ID,
+              GameplayVillagerTradeSnapshotSchema,
+            )
+            const changedTrades = Schema.decodeUnknownSync(GameplayVillagerTradeSnapshotSchema)({
+              ...trades.state,
+              restockElapsedSecs: trades.state.restockElapsedSecs + 1,
+            })
+            yield* commit.coordinator.commit({
+              expectedRevision: trades.revision,
+              expectedDimensions: [],
+              changes: [{ ownerId: GAMEPLAY_VILLAGER_TRADES_OWNER_ID, state: changedTrades }],
+            })
+            return yield* commit.coordinator.commit(request)
+          }
+          return yield* commit.coordinator.commit(request)
+        }),
       }
-      const failingCommit = { ...commit, coordinator: refusingCoordinator }
+      const racingCommit = { ...commit, coordinator: racingCoordinator }
       const interactions = gameplayStages(
         state,
         store.api,
@@ -3132,20 +3154,43 @@ describe('the ignition slice: an item use reaches the world', () => {
         undefined,
         undefined,
         {},
-        failingCommit,
+        racingCommit,
       ).filter((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)
 
       yield* requestItemUse(state, 'portal-conflict', origin, 'flint_and_steel')
       yield* runFrame(interactions)
 
-      expect(yield* commit.coordinator.revision).toBe(revisionBefore)
+      expect(injected).toBe(true)
+      expect(yield* commit.coordinator.revision).toBe(revisionBefore + 1)
       expect(yield* store.blockAt(origin)).toBeUndefined()
       expect(yield* readPlayerStorageOwner(commit.coordinator, commit.playerStorageOwnerId)).toStrictEqual(ownerBefore)
       expect(yield* Ref.get(state.usedItems)).toStrictEqual([])
+      expect(yield* drainItemUseResults(state)).toStrictEqual([])
+      expect(yield* Ref.get(state.pendingItemUses)).toMatchObject([{
+        requestId: 'portal-conflict',
+        heldItem: 'flint_and_steel',
+      }])
+
+      yield* runFrame(gameplayStages(
+        state,
+        store.api,
+        roster.api,
+        inventory.api,
+        player.api,
+        time,
+        undefined,
+        undefined,
+        {},
+        commit,
+      ).filter((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions))
+
+      expect(yield* store.blockAt(origin)).toBe(NETHER_PORTAL)
+      expect(yield* Ref.get(state.pendingItemUses)).toStrictEqual([])
+      expect(yield* Ref.get(state.usedItems)).toStrictEqual(['flint_and_steel'])
       expect(yield* drainItemUseResults(state)).toMatchObject([{
         requestId: 'portal-conflict',
-        success: false,
-        outcome: { _tag: 'Portal', outcome: { _tag: 'CommitFailed', error: { _tag: 'WorldRevisionConflict' } } },
+        success: true,
+        outcome: { _tag: 'Portal', outcome: { _tag: 'Lit' } },
       }])
     }),
   )

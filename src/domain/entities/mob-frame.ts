@@ -206,7 +206,7 @@
  * that the sequence must depend on what happened rather than on how many mobs
  * existed.
  */
-import { isItemType, SimulationTick, type ItemType, type RandomSeed, type SimulationTick as SimulationTickValue } from '@nerima-games/mc-kernel'
+import { isItemType, type ItemType, type RandomSeed, type SimulationTick as SimulationTickValue } from '@nerima-games/mc-kernel'
 import {
   durabilityForItem,
   isDamageableItemType,
@@ -1025,7 +1025,7 @@ const mobCasualty = (
 })
 
 const retainMobMetadata = (
-  candidate: EntityRoster<MobBehaviour>,
+  candidate: MobRoster,
   previous: MobRoster,
   recentHits: ReadonlyMap<EntityId, RecentMobHit> = new Map(),
 ): MobRoster => {
@@ -1036,9 +1036,14 @@ const retainMobMetadata = (
     entities: candidate.entities.map((entity) => {
       const prior = previousById.get(entity.id)
       const recent = recentHits.get(entity.id)
-      const dimension = prior?.dimension
-      const killCredit = recent?.killCredit ?? prior?.killCredit
-      const lastHitTick = recent?.lastHitTick ?? prior?.lastHitTick
+      const dimension = entity.dimension ?? prior?.dimension
+      const killCredit = recent?.killCredit ?? entity.killCredit ?? prior?.killCredit
+      const lastHitTick = recent?.lastHitTick ?? entity.lastHitTick ?? prior?.lastHitTick
+      if (
+        dimension === entity.dimension &&
+        killCredit === entity.killCredit &&
+        lastHitTick === entity.lastHitTick
+      ) return entity
       return {
         ...entity,
         ...(dimension === undefined ? {} : { dimension }),
@@ -1845,6 +1850,7 @@ export const planMobExplosionRoster = (
   }
   if (byEntity.size === 0) return { roster, casualties: NO_CASUALTIES }
 
+  const entityById = new Map(roster.entities.map((entity) => [entity.id, entity]))
   const swept = sweepRoster(roster, (entity) => {
     if (entity.kind === DROPPED_ITEM_KIND && isDroppedItemBehaviour(entity.behaviour)) return IGNORED
     const hit = byEntity.get(entity.id)
@@ -1861,8 +1867,8 @@ export const planMobExplosionRoster = (
           entity,
           deathTick,
           undefined,
-          hit.killCredit ?? entity.killCredit,
-          entity.lastHitTick,
+          hit.killCredit ?? entityById.get(entity.id)?.killCredit,
+          entityById.get(entity.id)?.lastHitTick,
         ),
       }
     }
@@ -1913,10 +1919,11 @@ export const planMobDamageRoster = (
     if (!Number.isFinite(hit.damage.amount) || hit.damage.amount <= 0) continue
     const batch = byEntity.get(hit.id) ?? { damages: [] }
     batch.damages.push(hit.damage)
-    batch.latestHit = latestMobHit(
-      batch.latestHit,
-      recentMobHit(hit.killCredit, hit.lastHitTick),
-    )
+    const recentHit = recentMobHit(hit.killCredit, hit.lastHitTick)
+    if (
+      recentHit !== undefined &&
+      (batch.latestHit === undefined || recentHit.lastHitTick >= batch.latestHit.lastHitTick)
+    ) batch.latestHit = recentHit
     byEntity.set(hit.id, batch)
   }
   if (byEntity.size === 0) return { roster, casualties: NO_CASUALTIES }

@@ -75,6 +75,7 @@ describe('gameplay replicated owner registrations', () => {
           id: EntityId('creeper-0'),
           kind: EntityKind('creeper'),
           feetPosition: { x: 0, y: 64, z: 0 },
+          dimension: 'overworld',
           healthPoints: EntityHealthPoints(20),
           behaviour: {
             _tag: 'HostileMob',

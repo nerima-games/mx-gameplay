@@ -1,6 +1,6 @@
 import { describe, expect, it } from '@effect/vitest'
 import { Brand, Effect, Ref, Schema } from 'effect'
-import { AttackRangeDistance, EntityHealthPoints, WorldIdSchema } from '@nerima-games/mc-kernel'
+import { AttackRangeDistance, DimensionIdSchema, EntityHealthPoints, WorldIdSchema } from '@nerima-games/mc-kernel'
 import { CREEPER_KIND, type MobBehaviour } from '../src/domain/entities/mob-frame'
 import { meleeDamageForItem } from '../src/domain/interactions/melee-attack'
 import {
@@ -27,7 +27,7 @@ import {
   GameplayEntityRosterSchema,
   gameplayOwnerRegistrations,
 } from '../src/stages/gameplay-owner-registrations.js'
-import type { GameplayTargetingSnapshotContext } from '../src/stages/registration-core.js'
+import type { GameplayTargetingSnapshotContext } from '../src/stages/registration.js'
 import { blockPosition, position } from './support/coordinate-fixtures'
 
 const PLAYER_POSE = {
@@ -157,6 +157,53 @@ describe('targeted primary attack', () => {
     }),
   )
 
+  it.effect('ignores hostile candidates from another dimension at the same coordinates', () =>
+    Effect.gen(function* () {
+      const context = yield* makeContext()
+      const crossDimensionEnemy = yield* spawnHostile(context.roster, context.targeting, 4)
+      const sameDimensionEnemy = yield* spawnHostile(context.roster, context.targeting, 4)
+      const localRoster = yield* context.roster.api.snapshot
+      const player = yield* context.targeting.coordinator.snapshot(
+        context.targeting.playerOwnerId,
+        PlayerServiceSnapshotSchema,
+      )
+      const nether = Schema.decodeUnknownSync(DimensionIdSchema)('nether')
+      const entityCandidate = Schema.decodeUnknownSync(GameplayEntityRosterSchema)({
+        ...localRoster,
+        entities: localRoster.entities.map((entity) => ({
+          ...entity,
+          dimension: entity.id === crossDimensionEnemy.id
+            ? nether
+            : player.state.pose.feetPosition.dimension,
+        })),
+      })
+      const crossDimensionCandidate = entityCandidate.entities.find(
+        (entity) => entity.id === crossDimensionEnemy.id,
+      )
+      const sameDimensionCandidate = entityCandidate.entities.find(
+        (entity) => entity.id === sameDimensionEnemy.id,
+      )
+      expect(crossDimensionCandidate?.feetPosition).toStrictEqual(sameDimensionCandidate?.feetPosition)
+      expect(crossDimensionCandidate?.dimension).toBe(nether)
+      expect(sameDimensionCandidate?.dimension).toBe(player.state.pose.feetPosition.dimension)
+
+      const expectedRevision = yield* context.targeting.coordinator.revision
+      yield* context.targeting.coordinator.commit({
+        expectedRevision,
+        expectedDimensions: [],
+        changes: [{ ownerId: context.targeting.entitiesOwnerId, state: entityCandidate }],
+      }).pipe(Effect.orDie)
+
+      const resolution = yield* Effect.orDie(resolveTargetedPrimaryAttack(
+        context.store.api,
+        context.targeting,
+      ))
+
+      expect(resolution._tag).toBe('Melee')
+      if (resolution._tag === 'Melee') expect(resolution.target.id).toBe(sameDimensionEnemy.id)
+    }),
+  )
+
   it.effect('retries targeting when player and entity snapshots span revisions', () =>
     Effect.gen(function* () {
       const context = yield* makeContext()
@@ -208,7 +255,7 @@ describe('targeted primary attack', () => {
                   },
                 },
               }],
-            })
+            }).pipe(Effect.orDie)
           }
           return snapshot
         }),

@@ -143,6 +143,7 @@ import { TILLED_BLOCK, tillingVerdict, cellAbove } from '../domain/interactions/
 import { ExperienceOrbVitalsOwnerSnapshotSchema } from '../domain/entities/xp-orb.js'
 import {
   GameplayEntityRosterSchema,
+  GameplayTntSourcesSnapshotSchema,
   GameplayVillagerTradeSnapshotSchema,
   restoreGameplayEntityMetadata,
 } from './gameplay-owner-registrations.js'
@@ -1688,7 +1689,14 @@ const processEnderPearlThrow = (
         })
         return
       }
-      changes.push({ ownerId: entitiesOwnerId, state: spawned.success.roster })
+      changes.push({
+        ownerId: entitiesOwnerId,
+        state: Schema.decodeUnknownSync(GameplayEntityRosterSchema)(restoreGameplayEntityMetadata(
+          spawned.success.roster,
+          entities.success.state,
+          currentPose.feetPosition.dimension,
+        )),
+      })
     }
 
     const outcome = Schema.decodeUnknownSync(EnderPearlOutcomeSchema)({ displacement, damage })
@@ -3011,8 +3019,9 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
           if (targetBlock._tag === 'Block' && targetBlock.block === TNT_BLOCK_ID) {
             const dimension = activePlayerState.pose.feetPosition.dimension
             const tntOwnerId = commit.tntOwnerId
+            const tntSourcesOwnerId = commit.tntSourcesOwnerId
             const playerStorageOwnerId = commit.playerStorageOwnerId
-            if (tntOwnerId === undefined) {
+            if (tntOwnerId === undefined || tntSourcesOwnerId === undefined) {
               yield* recordGameplayUnsupportedOperation(state, {
                 _tag: 'Unsupported',
                 action: 'IgniteTnt',
@@ -3031,6 +3040,10 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
               PlayerStorageSnapshotSchema,
               [],
             ))
+            const observedTntSources = yield* Effect.result(commit.coordinator.snapshot(
+              tntSourcesOwnerId,
+              GameplayTntSourcesSnapshotSchema,
+            ))
             if (Result.isFailure(observedTnt)) {
               yield* recordGameplayStageFailure(state, {
                 _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'ItemUse', error: observedTnt.failure,
@@ -3043,12 +3056,21 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
               })
               continue
             }
-            if (observedTnt.success.revision !== observedStorage.success.revision) {
+            if (Result.isFailure(observedTntSources)) {
+              yield* recordGameplayStageFailure(state, {
+                _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'ItemUse', error: observedTntSources.failure,
+              })
+              continue
+            }
+            if (observedTnt.success.revision !== observedStorage.success.revision ||
+              observedTnt.success.revision !== observedTntSources.success.revision) {
               yield* recordGameplayStageFailure(state, {
                 _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'ItemUse',
                 error: new WorldRevisionConflict({
                   expected: observedTnt.success.revision,
-                  actual: observedStorage.success.revision,
+                  actual: observedStorage.success.revision !== observedTnt.success.revision
+                    ? observedStorage.success.revision
+                    : observedTntSources.success.revision,
                 }),
               })
               yield* requeueItemUsesFrom(itemUseIndex)
@@ -3087,6 +3109,12 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                 state: primed,
               }],
             })
+            const tntSourcesCandidate = Schema.decodeUnknownSync(GameplayTntSourcesSnapshotSchema)({
+              sources: [
+                ...observedTntSources.success.state.sources,
+                { tntId, killCredit: 'player-triggered-tnt' },
+              ],
+            })
             const storageChange = storageCandidate
             const tntState = tntCandidate
             const coordinator = commit.coordinator
@@ -3104,6 +3132,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                 expectedDimensions: [{ dimension, expectedRevision: expectedDimensionRevision }],
                 changes: [
                   { ownerId: tntOwnerId, state: tntState },
+                  { ownerId: tntSourcesOwnerId, state: tntSourcesCandidate },
                   storageChange,
                 ],
                 blockWrite,

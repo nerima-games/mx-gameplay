@@ -10,6 +10,7 @@ import {
   EntitySerial,
   InterpolationFraction,
   PositionAxis,
+  SimulationTick,
   StackCount,
   WorldRevisionSchema,
   WorldIdSchema,
@@ -38,7 +39,6 @@ import {
   WorldRevisionConflict,
   SPAWN_VITALS,
   itemStack,
-  type Entity,
   type PlayerPose,
   type PlayerStorage,
   type TntServiceSnapshot,
@@ -69,7 +69,12 @@ import {
   type ExperienceOrbOwnerSnapshot,
 } from '../src/domain/entities/xp-orb.js'
 import { makeEntitiesStage } from '../src/stages/entities-stage.js'
-import { CREEPER_KIND, hostileMobSnapshot, type MobBehaviour } from '../src/domain/entities/mob-frame.js'
+import {
+  CREEPER_KIND,
+  hostileMobSnapshot,
+  type MobBehaviour,
+  type MobEntity,
+} from '../src/domain/entities/mob-frame.js'
 import { ZOMBIE_KIND } from '../src/domain/mob/hostile-combat.js'
 import {
   GAMEPLAY_ENTITIES_OWNER_ID,
@@ -78,7 +83,9 @@ import {
   GAMEPLAY_DROPPED_ITEMS_OWNER_ID,
   GAMEPLAY_VITALS_OWNER_ID,
   GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
+  GAMEPLAY_TNT_SOURCES_OWNER_ID,
   GameplayEntityRosterSchema,
+  GameplayTntSourcesSnapshotSchema,
   gameplayOwnerRegistrations,
 } from '../src/stages/gameplay-owner-registrations.js'
 import type { GameplayStageContext } from '../src/stages/registration-core.js'
@@ -86,7 +93,7 @@ import { FrameServicesLayer } from './support/frame-services.js'
 
 const worldId = Schema.decodeUnknownSync(WorldIdSchema)('entities-stage-owner-tests')
 
-const creeperAt = (x: number, y = 0): Entity<MobBehaviour> => ({
+const creeperAt = (x: number, y = 0): MobEntity => ({
   id: EntityId('test:creeper'),
   kind: CREEPER_KIND,
   feetPosition: position(PositionAxis(x), PositionAxis(y), PositionAxis(0)),
@@ -94,7 +101,7 @@ const creeperAt = (x: number, y = 0): Entity<MobBehaviour> => ({
   behaviour: { _tag: 'Dormant' as const },
 })
 
-const zombieAt = (x: number, y: number): Entity<MobBehaviour> => ({
+const zombieAt = (x: number, y: number): MobEntity => ({
   id: EntityId('test:zombie'),
   kind: ZOMBIE_KIND,
   feetPosition: position(PositionAxis(x), PositionAxis(y), PositionAxis(0)),
@@ -132,8 +139,9 @@ const nearlyBrokenIronHelmetStorage = (): PlayerStorage => {
 }
 
 const makeHarness = (options: Readonly<{
-  readonly entity?: Entity<MobBehaviour> | null
-  readonly entities?: ReadonlyArray<Entity<MobBehaviour>>
+  readonly entity?: MobEntity | null
+  readonly entities?: ReadonlyArray<MobEntity>
+  readonly tntSources?: Schema.Schema.Type<typeof GameplayTntSourcesSnapshotSchema>
   readonly block?: Readonly<{ position: ReturnType<typeof blockPosition>; id: BlockId }>
   readonly blocks?: ReadonlyArray<readonly [ReturnType<typeof blockPosition>, BlockId]>
   readonly loadedChunks?: ReadonlyArray<string>
@@ -166,6 +174,7 @@ const makeHarness = (options: Readonly<{
       ...(options.vitals === undefined ? {} : { vitals: options.vitals }),
       ...(options.experienceOrbs === undefined ? {} : { experienceOrbs: options.experienceOrbs }),
       entities: { entities, nextSerial: EntitySerial(entities.length) },
+      ...(options.tntSources === undefined ? {} : { tntSources: options.tntSources }),
       ...(options.tnt === undefined ? {} : { tnt: options.tnt }),
     }),
     chunkStores: { forDimension: () => store.api },
@@ -248,6 +257,7 @@ const makeHarness = (options: Readonly<{
       vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID,
       experienceOrbsOwnerId: GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
       entitiesOwnerId: GAMEPLAY_ENTITIES_OWNER_ID,
+      tntSourcesOwnerId: GAMEPLAY_TNT_SOURCES_OWNER_ID,
       tntOwnerId: TNT_REPLICATED_OWNER_ID,
       ...(options.provideTntService === false ? {} : { tntService }),
     },
@@ -483,9 +493,39 @@ describe('entities stage owner-backed MobSimulation', () => {
       count: 1,
     })
     expect(outputs.drops).toMatchObject([{ item: 'rotten_flesh', count: 1 }])
-    expect(outputs.experience).toMatchObject([{ amount: 5, source: zombie.id }])
+    expect(outputs.experience).toStrictEqual([])
     expect(outputs.damages.length).toBeGreaterThan(0)
     expect(await Effect.runPromise(harness.store.blockAt(centre))).toBeUndefined()
+  })
+
+  it('queues XP after a successful mob blast commit when the casualty has recent player credit', async () => {
+    const creeper: MobEntity = {
+      ...creeperAt(0, 64),
+      behaviour: { _tag: 'Lit', burnedSecs: 1.49 },
+    }
+    const zombie: MobEntity = {
+      ...zombieAt(1, 64),
+      healthPoints: EntityHealthPoints(1),
+      killCredit: 'player',
+      lastHitTick: SimulationTick(0),
+    }
+    const harness = await Effect.runPromise(makeHarness({
+      entity: null,
+      entities: [creeper, zombie],
+      playerPose: {
+        ...INITIAL_PLAYER_POSE,
+        feetPosition: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
+      },
+    }))
+    await Effect.runPromise(Ref.set(harness.state.rollSeed, 3))
+
+    await harness.run(makeDeltaTimeSecs(0.02))
+
+    const roster = await Effect.runPromise(strictRoster(harness.coordinator))
+    const experience = await Effect.runPromise(Ref.get(harness.state.mobExperience))
+    expect(harness.commits()).toBe(1)
+    expect(roster.state.entities).toStrictEqual([])
+    expect(experience).toMatchObject([{ source: zombie.id, amount: 5 }])
   })
 
   it('does not commit mob blast casualties when the dropped-item owner revision differs', async () => {
@@ -1297,6 +1337,47 @@ describe('entities stage owner-backed MobSimulation', () => {
     expect(await Effect.runPromise(Ref.get(harness.state.playerDamages))).toStrictEqual([])
   })
 
+  it('does not damage a mob in another dimension at the same coordinates during TNT detonation', async () => {
+    const overworldDimension = Schema.decodeUnknownSync(DimensionIdSchema)('overworld')
+    const netherDimension = Schema.decodeUnknownSync(DimensionIdSchema)('nether')
+    const overworldMob: MobEntity = {
+      ...zombieAt(1, 64),
+      id: EntityId('test:overworld-mob'),
+      healthPoints: EntityHealthPoints(100),
+      dimension: overworldDimension,
+    }
+    const netherMob: MobEntity = {
+      ...zombieAt(1, 64),
+      id: EntityId('test:nether-mob'),
+      healthPoints: EntityHealthPoints(100),
+      dimension: netherDimension,
+    }
+    const harness = await Effect.runPromise(makeHarness({
+      entities: [overworldMob, netherMob],
+      playerPose: {
+        ...INITIAL_PLAYER_POSE,
+        feetPosition: position(PositionAxis(20), PositionAxis(64), PositionAxis(0)),
+      },
+      tnt: {
+        tnts: [{
+          id: EntityId('test:tnt-dimension-filter'),
+          dimension: overworldDimension,
+          center: { x: 0, y: 64, z: 0 },
+          state: { kind: 'primed', remainingFuseSecs: 0 },
+        }],
+      },
+    }))
+
+    await harness.run(makeDeltaTimeSecs(0.05))
+
+    const final = await Effect.runPromise(strictRoster(harness.coordinator))
+    const sameDimensionMob = final.state.entities.find(({ id }) => id === overworldMob.id)
+    const otherDimensionMob = final.state.entities.find(({ id }) => id === netherMob.id)
+    expect(sameDimensionMob?.healthPoints).toBeLessThan(EntityHealthPoints(100))
+    expect(otherDimensionMob?.healthPoints).toBe(EntityHealthPoints(100))
+    expect(otherDimensionMob?.dimension).toBe(netherDimension)
+  })
+
   it('keeps a schema-valid blast-immune block intact during TNT detonation', async () => {
     const centre = blockPosition(BlockAxis(0), BlockAxis(64), BlockAxis(0))
     const bedrock = Option.getOrThrow(blockIdOf('bedrock'))
@@ -1353,6 +1434,81 @@ describe('entities stage owner-backed MobSimulation', () => {
     ))).toStrictEqual(tntBefore)
     expect(await Effect.runPromise(strictRoster(harness.coordinator))).toStrictEqual(rosterBefore)
     expect(await Effect.runPromise(harness.coordinator.revision)).toBe(revisionBefore)
+  })
+
+  it('uses the entity observation revision when that snapshot races another owner transaction', async () => {
+    const tntId = EntityId('test:tnt-roster-observation-race')
+    const harness = await Effect.runPromise(makeHarness({
+      entity: null,
+      tnt: {
+        tnts: [{
+          id: tntId,
+          dimension: INITIAL_DIMENSION,
+          center: { x: 0, y: 64, z: 0 },
+          state: { kind: 'primed', remainingFuseSecs: 0 },
+        }],
+      },
+    }))
+    const playerBefore = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_PLAYER_OWNER_ID,
+      PlayerServiceSnapshotSchema,
+    ))
+    const tntBefore = await Effect.runPromise(harness.coordinator.snapshot(
+      TNT_REPLICATED_OWNER_ID,
+      TntServiceSnapshotSchema,
+    ))
+    let injected = false
+    const coordinator: WorldCommitCoordinatorApi = {
+      ...harness.coordinator,
+      observe: (...args) => Effect.gen(function* () {
+        if (!injected) {
+          injected = true
+          const player = yield* harness.coordinator.snapshot(
+            GAMEPLAY_PLAYER_OWNER_ID,
+            PlayerServiceSnapshotSchema,
+          )
+          yield* harness.coordinator.commit({
+            expectedRevision: player.revision,
+            expectedDimensions: [],
+            changes: [{
+              ownerId: GAMEPLAY_PLAYER_OWNER_ID,
+              state: {
+                ...player.state,
+                pose: {
+                  ...player.state.pose,
+                  feetPosition: {
+                    ...player.state.pose.feetPosition,
+                    x: player.state.pose.feetPosition.x + 1,
+                  },
+                },
+              },
+            }],
+          })
+        }
+        return yield* harness.coordinator.observe(...args)
+      }),
+    }
+    const context: GameplayStageContext = {
+      ...harness.context,
+      commit: { ...harness.context.commit!, coordinator },
+    }
+
+    const exit = await Effect.runPromiseExit(
+      makeEntitiesStage(context).run(makeDeltaTimeSecs(0.05)).pipe(Effect.provide(FrameServicesLayer)),
+    )
+
+    expect(exit._tag).toBe('Failure')
+    expect(injected).toBe(true)
+    expect(harness.commits()).toBe(1)
+    expect(harness.tntCommits()).toBe(0)
+    expect((await Effect.runPromise(harness.coordinator.snapshot(
+      TNT_REPLICATED_OWNER_ID,
+      TntServiceSnapshotSchema,
+    ))).state).toStrictEqual(tntBefore.state)
+    expect((await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_PLAYER_OWNER_ID,
+      PlayerServiceSnapshotSchema,
+    ))).state.pose.feetPosition.x).toBe(playerBefore.state.pose.feetPosition.x + 1)
   })
 
   it.each([
@@ -1544,7 +1700,7 @@ describe('entities stage owner-backed MobSimulation', () => {
     expect(await Effect.runPromise(Ref.get(harness.state.playerDamages))).toStrictEqual([])
   })
 
-  it('commits blast knockback, experience, and generated loot for a slain hostile mob', async () => {
+  it('commits blast loot without XP when TNT has no player ignition credit', async () => {
     const centre = blockPosition(BlockAxis(0), BlockAxis(64), BlockAxis(0))
     const tntId = EntityId('test:tnt-with-loot')
     const zombie = { ...zombieAt(1, 64), healthPoints: EntityHealthPoints(1) }
@@ -1591,7 +1747,41 @@ describe('entities stage owner-backed MobSimulation', () => {
     })
     expect(player.state.pose.feetPosition.x).not.toBe(playerPose.feetPosition.x)
     expect(outputs.drops).toMatchObject([{ item: 'rotten_flesh', count: 1 }])
-    expect(outputs.experience).toMatchObject([{ amount: 5, source: zombie.id }])
+    expect(outputs.experience).toStrictEqual([])
+  })
+
+  it('awards XP only for TNT with player ignition provenance and consumes that provenance', async () => {
+    const tntId = EntityId('test:player-triggered-tnt')
+    const zombie = { ...zombieAt(1, 64), healthPoints: EntityHealthPoints(1) }
+    const harness = await Effect.runPromise(makeHarness({
+      entity: zombie,
+      playerPose: {
+        ...INITIAL_PLAYER_POSE,
+        feetPosition: position(PositionAxis(20), PositionAxis(64), PositionAxis(0)),
+      },
+      tntSources: {
+        sources: [{ tntId, killCredit: 'player-triggered-tnt' }],
+      },
+      tnt: {
+        tnts: [{
+          id: tntId,
+          dimension: INITIAL_DIMENSION,
+          center: { x: 0, y: 64, z: 0 },
+          state: { kind: 'primed', remainingFuseSecs: 0 },
+        }],
+      },
+    }))
+
+    await harness.run(makeDeltaTimeSecs(0.05))
+
+    const outputs = await Effect.runPromise(Ref.get(harness.state.mobExperience))
+    const sources = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_TNT_SOURCES_OWNER_ID,
+      GameplayTntSourcesSnapshotSchema,
+    ))
+    expect(outputs).toMatchObject([{ source: zombie.id, amount: 5 }])
+    expect(sources.state.sources).toStrictEqual([])
+    expect(harness.tntCommits()).toBe(1)
   })
 
   it('keeps TNT casualty loot unsupported when the dropped-item owner is absent', async () => {
@@ -1950,6 +2140,45 @@ describe('entities stage owner-backed MobSimulation', () => {
     }
 
     await Effect.runPromise(makeEntitiesStage(context).run(makeDeltaTimeSecs(0.1)).pipe(
+      Effect.provide(FrameServicesLayer),
+    ))
+
+    expect(harness.tntCommits()).toBe(0)
+    expect(harness.commits()).toBe(0)
+    expect(await Effect.runPromise(harness.coordinator.snapshot(
+      TNT_REPLICATED_OWNER_ID,
+      TntServiceSnapshotSchema,
+    ))).toStrictEqual(before)
+    expect(await Effect.runPromise(drainGameplayUnsupportedOperations(harness.state))).toContainEqual(
+      expect.objectContaining({ action: 'MobSimulation', reason: 'OwnerRegistrationUnavailable' }),
+    )
+  })
+
+  it('requires the TNT provenance owner before planning a due detonation', async () => {
+    const harness = await Effect.runPromise(makeHarness({
+      entity: null,
+      tnt: {
+        tnts: [{
+          id: EntityId('test:tnt-without-provenance-owner'),
+          dimension: INITIAL_DIMENSION,
+          center: { x: 0, y: 64, z: 0 },
+          state: { kind: 'primed', remainingFuseSecs: 0 },
+        }],
+      },
+    }))
+    const before = await Effect.runPromise(harness.coordinator.snapshot(
+      TNT_REPLICATED_OWNER_ID,
+      TntServiceSnapshotSchema,
+    ))
+    const { tntSourcesOwnerId: omittedTntSourcesOwner, ...commitWithoutTntSourcesOwner } =
+      harness.context.commit!
+    void omittedTntSourcesOwner
+    const context: GameplayStageContext = {
+      ...harness.context,
+      commit: commitWithoutTntSourcesOwner,
+    }
+
+    await Effect.runPromise(makeEntitiesStage(context).run(makeDeltaTimeSecs(0.05)).pipe(
       Effect.provide(FrameServicesLayer),
     ))
 

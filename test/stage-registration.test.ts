@@ -15,6 +15,7 @@ import {
   CREEPER_KIND,
   DROPPED_ITEM_KIND,
   type MobBehaviour,
+  type MobEntity,
   type MobDropEvent,
   type MobExperienceEvent,
   type MobSpawnAttempt,
@@ -193,6 +194,7 @@ import {
   WorldCommitChunkStoreUnavailable,
   WorldCommitCoordinator,
   ReplicatedOwnerUnknown,
+  type ReplicatedSnapshot,
   WorldCommitEmptyRequest,
   CropSnapshotSchema,
   PlayerStorageSnapshotSchema,
@@ -212,12 +214,14 @@ import {
   GAMEPLAY_ENTITIES_OWNER_ID,
   GAMEPLAY_FISHING_OWNER_ID,
   GAMEPLAY_STATUS_EFFECTS_OWNER_ID,
+  GAMEPLAY_TNT_SOURCES_OWNER_ID,
   GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
   GAMEPLAY_PLAYER_OWNER_ID,
   GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
   GAMEPLAY_VITALS_OWNER_ID,
   GAMEPLAY_VILLAGER_TRADES_OWNER_ID,
   GameplayEntityRosterSchema,
+  GameplayTntSourcesSnapshotSchema,
   gameplayOwnerRegistrations,
   type GameplayOwnerInitialState,
 } from '../src/stages/gameplay-owner-registrations.js'
@@ -480,6 +484,7 @@ const builtStagesInWorld = (
       projectileService,
       ...(tnt === undefined ? {} : {
         tntOwnerId: TNT_REPLICATED_OWNER_ID,
+        tntSourcesOwnerId: GAMEPLAY_TNT_SOURCES_OWNER_ID,
         tntService,
       }),
       eventBus,
@@ -3397,7 +3402,7 @@ describe('the targeted-block family resolves through the same raycast as placeme
               expectedRevision: player.revision,
               expectedDimensions: [],
               changes: [{ ownerId: GAMEPLAY_PLAYER_OWNER_ID, state: moved }],
-            })
+            }).pipe(Effect.orDie)
           }
           return snapshot
         }),
@@ -3693,10 +3698,12 @@ describe('fire lifecycle: extinguish, restore, and burning-actor bookkeeping', (
   it.effect('fire casualty drops and XP update after one registered-owner commit', () =>
     Effect.gen(function* () {
       const position = fixtureBlockPosition(8, 64, 8)
-      const entity = {
+      const entity: MobEntity = {
         id: EntityId('fire-zombie-drop-and-xp'),
         kind: ZOMBIE_KIND,
         feetPosition: positionOfBlock(position),
+        killCredit: 'player',
+        lastHitTick: Schema.decodeUnknownSync(SimulationTickSchema)(0),
         healthPoints: EntityHealthPoints(1),
         behaviour: undefined,
       }
@@ -4484,6 +4491,9 @@ describe('TNT ignition commits its TNT, storage, and block changes together', ()
             const tntBefore = await Effect.runPromise(
               coordinator.snapshot(TNT_REPLICATED_OWNER_ID, TntServiceSnapshotSchema),
             )
+            const sourcesBefore = await Effect.runPromise(
+              coordinator.snapshot(GAMEPLAY_TNT_SOURCES_OWNER_ID, GameplayTntSourcesSnapshotSchema),
+            )
             const localStorageBefore = await Effect.runPromise(harness.inventory.api.storageSnapshot)
             const revisionBefore = await Effect.runPromise(coordinator.revision)
             const dimensionRevisionBefore = await Effect.runPromise(coordinator.dimensionRevision('overworld'))
@@ -4509,6 +4519,9 @@ describe('TNT ignition commits its TNT, storage, and block changes together', ()
             const tntAfter = await Effect.runPromise(
               coordinator.snapshot(TNT_REPLICATED_OWNER_ID, TntServiceSnapshotSchema),
             )
+            const sourcesAfter = await Effect.runPromise(
+              coordinator.snapshot(GAMEPLAY_TNT_SOURCES_OWNER_ID, GameplayTntSourcesSnapshotSchema),
+            )
             const localStorageAfter = await Effect.runPromise(harness.inventory.api.storageSnapshot)
 
             expect(commits).toBe(1)
@@ -4520,6 +4533,8 @@ describe('TNT ignition commits its TNT, storage, and block changes together', ()
             expect(Schema.decodeUnknownSync(TntServiceSnapshotSchema)(tntAfter.state).tnts)
               .toHaveLength(tntBefore.state.tnts.length + 1)
             expect(tntAfter.revision).toBe(tntBefore.revision + 1)
+            expect(sourcesAfter.state.sources).toMatchObject([{ killCredit: 'player-triggered-tnt' }])
+            expect(sourcesAfter.revision).toBe(sourcesBefore.revision + 1)
             expect(localStorageAfter).toStrictEqual(localStorageBefore)
             expect(await Effect.runPromise(harness.store.blockAt(position))).toBeUndefined()
             expect(await Effect.runPromise(Ref.get(harness.state.itemUseResults))).toMatchObject([
@@ -4577,6 +4592,10 @@ describe('TNT ignition commits its TNT, storage, and block changes together', ()
         PlayerStorageSnapshotSchema,
       )
       const tntBefore = yield* coordinator.snapshot(TNT_REPLICATED_OWNER_ID, TntServiceSnapshotSchema)
+      const sourcesBefore = yield* coordinator.snapshot(
+        GAMEPLAY_TNT_SOURCES_OWNER_ID,
+        GameplayTntSourcesSnapshotSchema,
+      )
       const revisionBefore = yield* coordinator.revision
       const dimensionRevisionBefore = yield* coordinator.dimensionRevision('overworld')
       const request = {
@@ -4596,6 +4615,10 @@ describe('TNT ignition commits its TNT, storage, and block changes together', ()
       expect(yield* coordinator.snapshot(GAMEPLAY_PLAYER_STORAGE_OWNER_ID, PlayerStorageSnapshotSchema))
         .toStrictEqual(storageBefore)
       expect(yield* coordinator.snapshot(TNT_REPLICATED_OWNER_ID, TntServiceSnapshotSchema)).toStrictEqual(tntBefore)
+      expect(yield* coordinator.snapshot(
+        GAMEPLAY_TNT_SOURCES_OWNER_ID,
+        GameplayTntSourcesSnapshotSchema,
+      )).toStrictEqual(sourcesBefore)
       expect(yield* coordinator.revision).toBe(revisionBefore)
       expect(yield* coordinator.dimensionRevision('overworld')).toBe(dimensionRevisionBefore)
       expect(yield* harness.store.blockAt(position)).toBe(tnt)
@@ -4607,8 +4630,9 @@ describe('TNT ignition commits its TNT, storage, and block changes together', ()
       expect(yield* Ref.get(requests)).toHaveLength(2)
       const retry = (yield* Ref.get(requests))[1]
       if (retry === undefined) throw new Error('TNT ignition retry did not submit a commit request')
-      expect(retry.changes).toHaveLength(2)
+      expect(retry.changes).toHaveLength(3)
       expect(retry.changes.map(({ ownerId }) => ownerId)).toContain(TNT_REPLICATED_OWNER_ID)
+      expect(retry.changes.map(({ ownerId }) => ownerId)).toContain(GAMEPLAY_TNT_SOURCES_OWNER_ID)
       expect(retry.changes.map(({ ownerId }) => ownerId)).toContain(GAMEPLAY_PLAYER_STORAGE_OWNER_ID)
       expect(retry.blockWrite?.edits).toStrictEqual([{ position, block: AIR_BLOCK_ID }])
       const storageAfter = yield* coordinator.snapshot(
@@ -4616,8 +4640,13 @@ describe('TNT ignition commits its TNT, storage, and block changes together', ()
         PlayerStorageSnapshotSchema,
       )
       const tntAfter = yield* coordinator.snapshot(TNT_REPLICATED_OWNER_ID, TntServiceSnapshotSchema)
+      const sourcesAfter = yield* coordinator.snapshot(
+        GAMEPLAY_TNT_SOURCES_OWNER_ID,
+        GameplayTntSourcesSnapshotSchema,
+      )
       expect(storageAfter.state.inventory.slots[0]).toBeUndefined()
       expect(tntAfter.state.tnts).toHaveLength(tntBefore.state.tnts.length + 1)
+      expect(sourcesAfter.state.sources).toMatchObject([{ killCredit: 'player-triggered-tnt' }])
       expect(yield* coordinator.revision).toBe(revisionBefore + 1)
       expect(yield* coordinator.dimensionRevision('overworld')).toBe(dimensionRevisionBefore + 1)
       expect(yield* harness.store.blockAt(position)).toBeUndefined()
@@ -5680,7 +5709,7 @@ describe('block placement commit rejection preserves the registered owner and wo
               expectedRevision: player.revision,
               expectedDimensions: [],
               changes: [{ ownerId: GAMEPLAY_PLAYER_OWNER_ID, state: moved }],
-            })
+            }).pipe(Effect.orDie)
           }
           return yield* coordinator.commit(request)
         }),
@@ -5941,12 +5970,13 @@ describe('farming and food item uses through the full interactions stage', () =>
       yield* requestPotatoHarvest(state, 'harvest-already-removed', position, 0.5)
       yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
       expect(yield* Ref.get(commitCalls)).toBe(1)
-      expect(yield* Ref.get(state.unsupportedOperations)).toContainEqual({
-        _tag: 'Unsupported',
+      expect(yield* drainItemUseResults(state)).toMatchObject([{
         action: 'HarvestPotato',
         requestId: 'harvest-already-removed',
-        reason: 'OwnerRegistrationUnavailable',
-      })
+        success: false,
+        outcome: { _tag: 'notACrop' },
+      }])
+      expect(yield* Ref.get(state.unsupportedOperations)).toStrictEqual([])
     }),
   )
 
@@ -6400,13 +6430,14 @@ describe('farming and food item uses through the full interactions stage', () =>
       yield* requestPotatoHarvest(state, 'harvest-unloaded-crop', position, 0.5)
       yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
 
-      expect(yield* Ref.get(state.unsupportedOperations)).toContainEqual({
-        _tag: 'Unsupported',
+      expect(yield* Ref.get(state.operationFailures)).toStrictEqual([])
+      expect(yield* Ref.get(state.unsupportedOperations)).toStrictEqual([])
+      expect(yield* drainItemUseResults(state)).toMatchObject([{
         action: 'HarvestPotato',
         requestId: 'harvest-unloaded-crop',
-        reason: 'OwnerRegistrationUnavailable',
-      })
-      expect(yield* drainItemUseResults(state)).toStrictEqual([])
+        success: false,
+        outcome: { _tag: 'cropOwnerMismatch', block: 'air', registeredCrop: 'potato_crop' },
+      }])
     }),
   )
 

@@ -183,6 +183,7 @@ export {
   GAMEPLAY_FISHING_OWNER_ID,
   GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
   GAMEPLAY_STATUS_EFFECTS_OWNER_ID,
+  GAMEPLAY_TNT_SOURCES_OWNER_ID,
   GAMEPLAY_VILLAGER_TRADES_OWNER_ID,
 } from './gameplay-owner-registrations.js'
 import { GAMEPLAY_STATUS_EFFECTS_OWNER_ID } from './gameplay-owner-registrations.js'
@@ -265,7 +266,10 @@ import {
   type DroppedItemSpawnError,
   type DroppedItemSpawn,
 } from '../domain/entities/dropped-item.js'
-import { GameplayEntityRosterSchema } from './gameplay-owner-registrations.js'
+import {
+  GameplayEntityRosterSchema,
+  restoreGameplayEntityMetadata,
+} from './gameplay-owner-registrations.js'
 import {
   ExperienceOrbVitalsOwnerSnapshotSchema,
   type ExperienceOrbAbsorption,
@@ -2822,8 +2826,11 @@ const resolveTargetedPrimaryAttackWithSnapshots = (
       damage: options.meleeDamage ?? DEFAULT_MELEE_DAMAGE,
       ...(Option.isSome(blockTarget) ? { hitDistance: blockTarget.value.distance } : {}),
     }
+    const entitiesInPlayerDimension = snapshots.entities.state.entities.filter(
+      (entity) => entity.dimension === pose.feetPosition.dimension,
+    )
     const meleeHit = meleeTargetBeforeBlock(
-      snapshots.entities.state.entities,
+      entitiesInPlayerDimension,
       request,
       Option.isSome(blockTarget) ? blockTarget.value.distance : undefined,
     )
@@ -3453,8 +3460,13 @@ const stepFireTick = (
     const damagePlan = planMobDamageRoster(
       entitySnapshotResult.success.state,
       validEntityHits,
+      Schema.decodeUnknownSync(SimulationTickSchema)(yield* Ref.get(state.tickCount)),
     )
-    const entityCandidate = Schema.decodeUnknownSync(GameplayEntityRosterSchema)(damagePlan.roster)
+    const entityCandidate = Schema.decodeUnknownSync(GameplayEntityRosterSchema)(restoreGameplayEntityMetadata(
+      damagePlan.roster,
+      entitySnapshotResult.success.state,
+      playerState.pose.feetPosition.dimension,
+    ))
     const seed = yield* Ref.get(state.rollSeed)
     const casualtyDrops = rollCasualtyDrops(damagePlan.casualties, seed)
     const experience = experienceOfCasualties(damagePlan.casualties)
@@ -3944,6 +3956,7 @@ export type GameplayStageCommitServices = Readonly<{
   readonly entitiesOwnerId?: ReplicatedOwnerId
   readonly projectileOwnerId?: ReplicatedOwnerId
   readonly tntOwnerId?: ReplicatedOwnerId
+  readonly tntSourcesOwnerId?: ReplicatedOwnerId
   readonly brewingService?: BrewingServiceApi
   readonly fishingService?: FishingServiceApi
   readonly projectileService?: ProjectileServiceApi

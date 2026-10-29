@@ -12,6 +12,7 @@ import {
 } from '@nerima-games/mc-kernel'
 import {
   EntityId,
+  WorldCommitBlockWriteMismatch,
   WorldCommitEmptyRequest,
   itemStack as makeItemStack,
   makeReplicatedOwnerId,
@@ -41,6 +42,7 @@ import {
 import {
   candidateForItemUse,
   candidateForPlayerStorageItemUse,
+  isRetryableWorldCommitFailure,
 } from '../src/stages/registration-core'
 import { PlayerStorageSnapshotSchema } from '@nerima-games/mc-sim'
 import type { MobBehaviour } from '../src/domain/entities/mob-frame'
@@ -272,6 +274,20 @@ describe('registration-core public paths omitted from focused coverage', () => {
       }
       expect(missing).toBeUndefined()
       expect(notDurable).toBeUndefined()
+    }),
+  )
+
+  it.effect('classifies block-write revision conflicts as retryable and other mismatches as permanent', () =>
+    Effect.sync(() => {
+      expect(isRetryableWorldCommitFailure(new WorldCommitBlockWriteMismatch({
+        reason: 'world-revision',
+      }))).toBe(true)
+      expect(isRetryableWorldCommitFailure(new WorldCommitBlockWriteMismatch({
+        reason: 'dimension-revision',
+      }))).toBe(true)
+      expect(isRetryableWorldCommitFailure(new WorldCommitBlockWriteMismatch({
+        reason: 'world',
+      }))).toBe(false)
     }),
   )
 

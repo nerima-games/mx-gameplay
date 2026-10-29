@@ -56,6 +56,7 @@ import {
   type EndermanTeleportProbe,
   type MobBehaviour,
   type MobCasualty,
+  type MobRoster,
   type MobSpawnAttempt,
   xpRewardOfKind,
 } from '../src/domain/entities/mob-frame'
@@ -1066,7 +1067,7 @@ describe('owner-snapshot roster plans', () => {
       const resolution = planMobBlastRoster(initial, [CREEPER_BLAST], SimulationTick(0))
 
       expect(resolution.casualties).toStrictEqual([
-        { id: dead.id, kind: dead.kind, at: dead.feetPosition },
+        { id: dead.id, kind: dead.kind, at: dead.feetPosition, deathTick: SimulationTick(0) },
       ])
       expect(resolution.roster.entities.map((entity) => entity.id)).toStrictEqual([survivor.id, dropped.id])
       expect(resolution.roster.entities[0]).toMatchObject({
@@ -1091,24 +1092,104 @@ describe('owner-snapshot roster plans', () => {
       const resolution = planMobDamageRoster(initial, [
         { id: fatal.id, damage: damage(2) },
         { id: fatal.id, damage: damage(3) },
-        { id: survivor.id, damage: damage(1) },
+        {
+          id: survivor.id,
+          damage: damage(1),
+          killCredit: 'tamed-wolf',
+          lastHitTick: SimulationTick(20),
+        },
         { id: dropped.id, damage: damage(1) },
         { id: EntityId('e:missing'), damage: damage(1) },
         { id: EntityId('e:invalid'), damage: damage(Number.NaN) },
         { id: EntityId('e:zero'), damage: damage(0) },
-      ])
+      ], SimulationTick(20))
 
       expect(resolution.casualties).toStrictEqual([
-        { id: fatal.id, kind: fatal.kind, at: fatal.feetPosition },
+        { id: fatal.id, kind: fatal.kind, at: fatal.feetPosition, deathTick: SimulationTick(20) },
       ])
       expect(resolution.roster.entities).toHaveLength(2)
       expect(resolution.roster.entities[0]).toMatchObject({
         id: survivor.id,
         healthPoints: EntityHealthPoints(4),
         behaviour: STRUCK_ENDERMAN,
+        killCredit: 'tamed-wolf',
+        lastHitTick: SimulationTick(20),
       })
       expect(resolution.roster.entities[1]).toBe(dropped)
       expect(resolution.roster.nextSerial).toBe(initial.nextSerial)
+
+      const laterDeath = planMobDamageRoster(
+        resolution.roster,
+        [{ id: survivor.id, damage: damage(4) }],
+        SimulationTick(120),
+      )
+      expect(laterDeath.casualties).toStrictEqual([
+        {
+          id: survivor.id,
+          kind: survivor.kind,
+          at: survivor.feetPosition,
+          killCredit: 'tamed-wolf',
+          lastHitTick: SimulationTick(20),
+          deathTick: SimulationTick(120),
+        },
+      ])
+      expect(experienceOfCasualties(laterDeath.casualties)).toMatchObject([
+        { source: survivor.id, amount: ENDERMAN_XP_REWARD },
+      ])
+    }),
+  )
+
+  it.effect('keeps the latest credited hit when older hits arrive later', () =>
+    Effect.sync(() => {
+      const olderTarget = mobEntity('e:older-target', ZOMBIE_KIND, 5, undefined)
+      const withPriorCredit: MobRoster = {
+        entities: [{
+          ...olderTarget,
+          killCredit: 'player',
+          lastHitTick: SimulationTick(10),
+        }],
+        nextSerial: EntitySerial(1),
+      }
+      const olderDeath = planMobDamageRoster(withPriorCredit, [{
+        id: olderTarget.id,
+        damage: { amount: 5, cause: 'mob' },
+        killCredit: 'tamed-wolf',
+        lastHitTick: SimulationTick(9),
+      }], SimulationTick(20))
+
+      expect(olderDeath.casualties).toMatchObject([{
+        id: olderTarget.id,
+        killCredit: 'player',
+        lastHitTick: SimulationTick(10),
+        deathTick: SimulationTick(20),
+      }])
+
+      const batchedTarget = mobEntity('e:batched-target', ZOMBIE_KIND, 5, undefined)
+      const batchRoster: MobRoster = {
+        entities: [batchedTarget],
+        nextSerial: EntitySerial(1),
+      }
+      const batchedDeath = planMobDamageRoster(batchRoster, [
+        {
+          id: batchedTarget.id,
+          damage: { amount: 2, cause: 'mob' },
+          killCredit: 'tamed-wolf',
+          lastHitTick: SimulationTick(20),
+        },
+        {
+          id: batchedTarget.id,
+          damage: { amount: 3, cause: 'mob' },
+          killCredit: 'player',
+          lastHitTick: SimulationTick(19),
+        },
+      ], SimulationTick(21))
+
+      expect(batchedDeath.casualties).toMatchObject([{
+        id: batchedTarget.id,
+        killCredit: 'tamed-wolf',
+        lastHitTick: SimulationTick(20),
+        deathTick: SimulationTick(21),
+      }])
     }),
   )
 
@@ -1116,11 +1197,11 @@ describe('owner-snapshot roster plans', () => {
     Effect.sync(() => {
       const entity = mobEntity('e:0', CREEPER_KIND, CREEPER_MAX_HEALTH, DORMANT_FUSE)
       const initial = mobRoster([entity], 1)
-      const empty = planMobDamageRoster(initial, [])
+      const empty = planMobDamageRoster(initial, [], SimulationTick(0))
       const invalid = planMobDamageRoster(initial, [
         { id: entity.id, damage: { amount: -1, cause: 'mob' } },
         { id: entity.id, damage: { amount: Number.NaN, cause: 'mob' } },
-      ])
+      ], SimulationTick(0))
 
       expect(empty.roster).toBe(initial)
       expect(empty.casualties).toStrictEqual([])
@@ -1148,10 +1229,10 @@ describe('owner-snapshot roster plans', () => {
         { id: dropped.id, damage: damage(10), knockback: atPosition(10, 0, 0) },
         { id: EntityId('e:missing'), damage: damage(1), knockback: atPosition(1, 0, 0) },
         { id: EntityId('e:invalid'), damage: damage(-1), knockback: atPosition(1, 0, 0) },
-      ])
+      ], SimulationTick(0))
 
       expect(resolution.casualties).toStrictEqual([
-        { id: dead.id, kind: dead.kind, at: dead.feetPosition },
+        { id: dead.id, kind: dead.kind, at: dead.feetPosition, deathTick: SimulationTick(0) },
       ])
       expect(resolution.roster.entities).toHaveLength(3)
       expect(resolution.roster.entities[0]).toMatchObject({
@@ -1174,19 +1255,19 @@ describe('owner-snapshot roster plans', () => {
     Effect.sync(() => {
       const entity = mobEntity('e:0', CREEPER_KIND, CREEPER_MAX_HEALTH, DORMANT_FUSE)
       const initial = mobRoster([entity], 1)
-      const empty = planMobExplosionRoster(initial, [])
+      const empty = planMobExplosionRoster(initial, [], SimulationTick(0))
       const invalid = planMobExplosionRoster(initial, [
         { id: entity.id, damage: { amount: -1, cause: 'explosion' }, knockback: atPosition(0, 0, 0) },
-      ])
+      ], SimulationTick(0))
       const noMatch = planMobExplosionRoster(initial, [
         { id: EntityId('e:missing'), damage: { amount: 1, cause: 'explosion' }, knockback: atPosition(0, 0, 0) },
-      ])
+      ], SimulationTick(0))
       const noOp = planMobExplosionRoster(initial, [
         { id: entity.id, damage: { amount: 0, cause: 'explosion' }, knockback: atPosition(0, 0, 0) },
-      ])
+      ], SimulationTick(0))
       const belowPrecision = planMobExplosionRoster(initial, [
         { id: entity.id, damage: { amount: Number.MIN_VALUE, cause: 'explosion' }, knockback: atPosition(0, 0, 0) },
-      ])
+      ], SimulationTick(0))
 
       expect(empty.roster).toBe(initial)
       expect(invalid.roster).toBe(initial)

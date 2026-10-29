@@ -45,6 +45,7 @@ import type { GameplayStageContext } from '../src/stages/registration-core'
 import { makeSurvivalHungerStage } from '../src/stages/survival-hunger-stage'
 import { makeChunkStoreDouble } from './support/chunk-store-double'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
+import { FrameServicesLayer } from './support/frame-services'
 
 const vitals = (overrides: Partial<PlayerVitals> = {}): PlayerVitals => ({
   healthPoints: EntityHealthPoints(20),
@@ -591,7 +592,7 @@ describe('survival hunger', () => {
         subject: 'Vitals',
         error: { _tag: 'BrandError' },
       }])
-    }),
+    }).pipe(Effect.provide(FrameServicesLayer)),
   )
 
   it.effect('replicated mutations commit owner vitals and do not revive a dead player', () =>

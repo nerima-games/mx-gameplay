@@ -93,6 +93,7 @@ export {
   type TargetedPrimaryAttackResult,
   type TargetedPrimaryAttackResolution,
   type TargetedPrimaryAttackOptions,
+  type GameplayTargetingSnapshotContext,
   resolveTargetedPrimaryAttack,
   requestTargetedPrimaryAttack,
   requestMobSpawn,
@@ -185,6 +186,7 @@ import {
   GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
   GAMEPLAY_VITALS_OWNER_ID,
   GAMEPLAY_VILLAGER_TRADES_OWNER_ID,
+  GAMEPLAY_TNT_SOURCES_OWNER_ID,
 } from './gameplay-owner-registrations.js'
 
 export const gameplayStages = (
@@ -289,6 +291,7 @@ export const makeGameplayStages: Effect.Effect<
     entitiesOwnerId: GAMEPLAY_ENTITIES_OWNER_ID,
     projectileOwnerId: PROJECTILE_REPLICATED_OWNER_ID,
     tntOwnerId: TNT_REPLICATED_OWNER_ID,
+    tntSourcesOwnerId: GAMEPLAY_TNT_SOURCES_OWNER_ID,
     brewingService,
     fishingService,
     projectileService,
