@@ -91,7 +91,7 @@ function scan(category, targetRoot) {
       '--config',
       groupConfigs.get(category),
       '--json=compact',
-      targetRoot,
+      '.',
     ],
     { cwd: targetRoot },
   )
