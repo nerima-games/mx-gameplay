@@ -1,7 +1,7 @@
 /// <reference lib="dom" />
 
 import { describe, expect, it } from '@effect/vitest'
-import { AIR_BLOCK_ID, BlockAxis, PositionAxis, blockPosition, position } from '@nerima-games/mc-kernel'
+import { AIR_BLOCK_ID, BlockAxis, InterpolationFraction, PositionAxis, blockPosition, position } from '@nerima-games/mc-kernel'
 import { EntityId } from '@nerima-games/mc-sim'
 import { Effect, Ref, Result } from 'effect'
 import { createExperienceOrbValue } from '../src/domain/entities/xp-orb'
@@ -16,6 +16,7 @@ import {
 import { STONE, type WorldSpec } from '../apps/preview-mining-site/world'
 import { requestItemUse } from '../apps/preview-mining-site/site'
 import { mountGameplayScenario, type ScenarioSetup } from '../apps/browser-debug/contract'
+import { parseUrlState } from '../apps/browser-debug/url-state'
 
 const world: WorldSpec = { cells: [], loadedChunks: ['0,0', '1,0'], z: 0 }
 const bounds = { width: 32, height: 12 }
@@ -24,13 +25,14 @@ const mountScenario = (
   scenarioId: string,
   scenarioWorld: WorldSpec = world,
   observe?: ScenarioSetup['observe'],
+  time = 12_000,
 ) =>
   mountGameplayScenario(
     {
       root: { replaceChildren: () => undefined } as unknown as HTMLElement,
       scenarioId,
       seed: 17,
-      time: 0.5,
+      time,
       weather: 'clear',
     },
     {
@@ -41,18 +43,49 @@ const mountScenario = (
   )
 
 describe('browser debug Site contract', () => {
+  it('negative control: the URL default tick count cannot pass directly as an interpolation fraction', () => {
+    const urlDefault = parseUrlState('', [], 'contract-clock').state
+
+    expect(urlDefault.time).toBe(6000)
+    expect(() => InterpolationFraction(urlDefault.time)).toThrow(/InterpolationFraction/)
+  })
+
   it.effect('sets the gameplay TimeService clock while retaining the previous snapshot shape', () =>
     Effect.gen(function* () {
       const mount = mountScenario('contract-clock')
 
       expect(yield* mount.site.time.timeOfDay).toBe(0.5)
+      expect(yield* Ref.get(mount.site.state.timeOfDay)).toBe(0.5)
       expect(Object.hasOwn(mount.snapshot(), 'mobs')).toBe(false)
 
-      mount.setTime(0.25)
+      mount.setTime(6000)
 
       expect(yield* mount.site.time.timeOfDay).toBe(0.25)
-      expect(mount.snapshot().timeOfDay).toBe(0.25)
+      expect(yield* Ref.get(mount.site.state.timeOfDay)).toBe(0.25)
+      expect(mount.snapshot().timeOfDay).toBe(6000)
       mount.dispose()
+    }),
+  )
+
+  it.effect('mounts URL defaults and normalizes boundary tick values for both gameplay clocks', () =>
+    Effect.gen(function* () {
+      const urlDefaultTime = parseUrlState('', [], 'contract-url-default').state.time
+      const defaultMount = mountScenario('contract-url-default', world, undefined, urlDefaultTime)
+
+      expect(defaultMount.snapshot().timeOfDay).toBe(6000)
+      expect(yield* defaultMount.site.time.timeOfDay).toBe(0.25)
+      expect(yield* Ref.get(defaultMount.site.state.timeOfDay)).toBe(0.25)
+      defaultMount.dispose()
+
+      for (const [input, expectedTicks] of [[0, 0], [23999, 23997], [24000, 0], [-1, 23997]] as const) {
+        const mount = mountScenario(`contract-time-${String(input)}`, world, undefined, input)
+        const expectedFraction = expectedTicks / 24_000
+
+        expect(mount.snapshot().timeOfDay).toBe(expectedTicks)
+        expect(yield* mount.site.time.timeOfDay).toBe(expectedFraction)
+        expect(yield* Ref.get(mount.site.state.timeOfDay)).toBe(expectedFraction)
+        mount.dispose()
+      }
     }),
   )
 

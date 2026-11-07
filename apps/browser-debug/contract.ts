@@ -15,10 +15,12 @@ export type ScenarioArea =
   | 'cross-area'
   | 'preview'
 
+/** Browser-debug scenario times use ticks in a 24,000-tick day. */
 export type ScenarioMountContext = {
   readonly root: HTMLElement
   readonly scenarioId: string
   readonly seed: number
+  /** Time of day in ticks within a 24,000-tick day; normalized at the Site boundary. */
   readonly time: number
   readonly weather: Weather
 }
@@ -51,6 +53,7 @@ export type ScenarioSetup = {
 
 export type ScenarioSnapshot = {
   readonly frame: number
+  /** Time of day in ticks within a 24,000-tick day. */
   readonly timeOfDay: number
   readonly weather: Weather
   readonly stageNames: ReadonlyArray<string>
@@ -76,6 +79,7 @@ export type ScenarioMount = {
   readonly actions: ReadonlyArray<ScenarioAction>
   readonly advance: () => FrameRow
   readonly snapshot: () => ScenarioSnapshot
+  /** Sets time of day in ticks within a 24,000-tick day. */
   readonly setTime: (time: number) => void
   readonly setWeather: (weather: Weather) => void
   readonly setInventory: (items: ReadonlyArray<readonly [ItemType, number]>) => void
@@ -98,9 +102,13 @@ export const mountGameplayScenario = (
 ): ScenarioMount => {
   const site = Effect.runSync(makeSite(setup.world, setup.bounds, context.scenarioId))
   Effect.runSync(Ref.set(site.state.rollSeed, context.seed))
-  const setTime = (time: number): void => {
-    Effect.runSync(Ref.set(site.state.timeOfDay, time))
-    Effect.runSync(site.time.setTimeOfDay(InterpolationFraction(time)))
+  const ticksPerDay = 24_000
+  const setTime = (timeTicks: number): void => {
+    const normalizedTicks = ((timeTicks % ticksPerDay) + ticksPerDay) % ticksPerDay
+    const timeFraction = normalizedTicks / ticksPerDay
+    Effect.runSync(site.time.setTimeOfDay(InterpolationFraction(timeFraction)))
+    const appliedTimeFraction = Effect.runSync(site.time.timeOfDay)
+    Effect.runSync(Ref.set(site.state.timeOfDay, appliedTimeFraction))
   }
   setTime(context.time)
   site.weather = { weather: context.weather, remainingSecs: site.weather.remainingSecs }
@@ -143,7 +151,7 @@ export const mountGameplayScenario = (
 
       return {
         frame: site.frame,
-        timeOfDay: Effect.runSync(Ref.get(site.state.timeOfDay)),
+        timeOfDay: Math.round(Effect.runSync(site.time.timeOfDay) * ticksPerDay),
         weather: site.weather.weather,
         stageNames: site.stages.map((stage) => String(stage.id)),
         entities: entities.map((entity) => JSON.stringify(entity) ?? String(entity)),

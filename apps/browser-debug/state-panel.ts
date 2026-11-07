@@ -114,7 +114,7 @@ export const createStatePanel = (): StatePanel => {
     entitySelect.value = selectedEntity
     updateEntityDetails()
 
-    time.textContent = `Time of day: ${String(snapshot.timeOfDay)}`
+    time.textContent = `Time of day: ${String(snapshot.timeOfDay)} ticks`
     weather.textContent = `Weather: ${snapshot.weather}`
 
     playerSection.replaceChildren(playerHeading,
