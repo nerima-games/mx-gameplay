@@ -35,3 +35,6 @@ overrides:
   vite: '8.3.5'
   launch-editor: '2.14.2'
   shell-quote: '1.11.0'
+  # Stryker's current dependency constraints still select versions flagged by pnpm audit.
+  '@stryker-mutator/core>minimatch': '11.0.1'
+  'typed-rest-client>qs': '6.16.1'
