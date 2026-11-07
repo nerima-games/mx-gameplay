@@ -104,9 +104,8 @@ export const createItemMetadataStore = (): ItemMetadataStore => {
 
   /** Every slot's metadata in one container, dropped together — closing a chest destroys no fewer of them than closing it one slot at a time would. */
   const deleteContainerMetadata = (containerId: string): void => {
-    const prefix = `${CONTAINER_KEY_PREFIX}${containerId}:`
     for (const key of [...customNames.keys(), ...enchantedItems.keys()]) {
-      if (key.startsWith(prefix)) deleteItemMetadata(key)
+      if (containerMetadataLocation(key)?.containerId === containerId) deleteItemMetadata(key)
     }
   }
 
