@@ -145,12 +145,13 @@ describe('gameplay fishing durability stage', () => {
       if (result.action !== 'ReelFishing' || result.outcome._tag !== 'Caught') {
         throw new Error('Expected a successful fishing catch.')
       }
+      const caughtItem = result.outcome.item
       const storage = yield* ownerStorage(commit)
       expect(storage.inventoryDurability[HELD_ROD_SLOT.slotIndex]).toStrictEqual({
         current: initialDurability.current - EXPECTED_REEL_WEAR,
         max: initialDurability.max,
       })
-      expect(storage.inventory.slots.some((slot) => slot?.item === result.outcome.item)).toBe(true)
+      expect(storage.inventory.slots.some((slot) => slot?.item === caughtItem)).toBe(true)
       expect(yield* commit.coordinator.revision).toBe(revisionBefore + 1)
     }),
   )
@@ -171,9 +172,10 @@ describe('gameplay fishing durability stage', () => {
       if (result.action !== 'ReelFishing' || result.outcome._tag !== 'Caught') {
         throw new Error('Expected a successful fishing catch.')
       }
+      const caughtItem = result.outcome.item
       const storage = yield* ownerStorage(commit)
       expect(storage.inventoryDurability[HELD_ROD_SLOT.slotIndex]).toBeNull()
-      expect(storage.inventory.slots.some((slot) => slot?.item === result.outcome.item)).toBe(true)
+      expect(storage.inventory.slots.some((slot) => slot?.item === caughtItem)).toBe(true)
       expect(yield* commit.coordinator.revision).toBe(revisionBefore + 1)
     }),
   )
