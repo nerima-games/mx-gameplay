@@ -64,33 +64,65 @@
  * decision it cannot make correctly (`test/public-api.test.ts` asserts no such
  * export exists).
  */
-import { Effect, Option, Ref, Result, Schema } from 'effect'
+import { Context, Effect, Equal, Exit, Layer, Option, Ref, Result, Schema, Scope } from 'effect'
 import {
   BlockAxis,
+  AngleRadians,
   adjacentBlockPosition,
   blockIdOf,
   blockOfPlaceableItem,
   blockPosition as kernelBlockPosition,
   blockPositionKeyOf,
-  capabilityOfBlockId,
   DeltaTimeSecs,
   HARVEST_TIERS,
+  type ItemType,
   type BlockId,
   type BlockPosition,
   type BlockPositionKey,
   type HarvestTier,
   type PlaceableItemType,
+  type Position,
   type StageId,
   type StageRegistration,
   WorldIdSchema,
+  VehicleVelocityComponent,
 } from '@nerima-games/mc-kernel'
 import {
   makeTimeService,
   makeWorldCommitCoordinator,
+  WorldCommitCoordinator,
+  DomainEventBus,
+  DomainEventBusLayer,
+  EventSubscriberCapacitySchema,
+  EnchantmentTableApplyRequestSchema,
+  BrewingServiceStateSchema,
+  FishingStateSchema,
+  makeEnchantmentTableService,
+  WorldRevisionConflict,
+  makeBrewingService,
+  makeFishingService,
+  makeProjectileService,
+  makeTntService,
+  PlayerStorageSnapshotSchema,
+  PlayerServiceSnapshotSchema,
   PROJECTILE_REPLICATED_OWNER_ID,
   TNT_REPLICATED_OWNER_ID,
+  makeVehicleService,
+  OccupantId,
   type EntityManagerApi,
+  type DomainEventBusApi,
+  type BrewingServiceApi,
+  type FishingServiceApi,
+  type ProjectileServiceApi,
+  type TntServiceApi,
+  type EnchantmentTableApplyRequest,
+  type EnchantmentTableApplyResult,
+  type PlayerStorage,
+  type TimeServiceApi,
+  type Vehicle,
+  type VehicleServiceApi,
 } from '@nerima-games/mc-sim'
+import type { Dimension } from '@nerima-games/mc-worldgen'
 import { FALLING_BLOCK_MOVES_PER_TICK } from '../../src/domain/falling-block'
 import { NO_TOOL, type BlockLootContext, type MinedItem } from '../../src/domain/interactions/block-loot'
 import { spawnMobDrops } from '../../src/domain/entities/dropped-item'
@@ -101,31 +133,64 @@ import {
 } from '../../src/domain/entities/mob-frame'
 import { isSupportSensitiveOfBlock, placementVerdict } from '../../src/domain/interactions/place-block'
 import { INITIAL_WEATHER, type WeatherState } from '../../src/domain/weather'
+import { createItemMetadataStore, type ItemMetadataStore } from '../../src/domain/item-metadata.js'
+import type { VillagerTradeState } from '../../src/domain/villager-trade.js'
 import type { IgnitionItemType } from '../../src/domain/interactions/use-flint-and-steel'
 import {
   drainMobDrops,
   drainMobExperience,
+  drainItemUseResults,
   gameplayStages,
+  requestTargetedPrimaryAttack as enqueueTargetedPrimaryAttack,
+  insertBrewingFuel as enqueueBrewingFuel,
+  insertBrewingBottle as enqueueBrewingBottle,
+  insertBrewingIngredient as enqueueBrewingIngredient,
+  requestFishingCast as enqueueFishingCast,
+  requestFishingAdvance as enqueueFishingAdvance,
+  requestFishingCancel as enqueueFishingCancel,
+  requestFishingReel as enqueueFishingReel,
+  requestVillagerTrade as enqueueVillagerTrade,
+  drainVillagerTradeResults as takeVillagerTradeResults,
   makeGameplayFrameStateForOwner,
   requestItemUse as enqueueItemUse,
   type GameplayFrameState,
+  type GameplayTargetingSnapshotContext,
   type PlacementRequest,
+  type VillagerTradeRequest,
+  type VillagerTradeResult,
+  type TargetedPrimaryAttackOptions,
+  type TargetedPrimaryAttackResult,
 } from '../../src/stages/registration'
 import {
   GAMEPLAY_BREWING_OWNER_ID,
   GAMEPLAY_CROPS_OWNER_ID,
   GAMEPLAY_DROPPED_ITEMS_OWNER_ID,
+  GameplayEntityRosterSchema,
+  GameplayVillagerTradeSnapshotSchema,
   GAMEPLAY_ENTITIES_OWNER_ID,
   GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
   GAMEPLAY_FISHING_OWNER_ID,
   GAMEPLAY_PLAYER_OWNER_ID,
   GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
   GAMEPLAY_STATUS_EFFECTS_OWNER_ID,
+  GAMEPLAY_TNT_SOURCES_OWNER_ID,
   GAMEPLAY_VILLAGER_TRADES_OWNER_ID,
   GAMEPLAY_VITALS_OWNER_ID,
   gameplayOwnerRegistrations,
+  type GameplayEntity,
 } from '../../src/stages/gameplay-owner-registrations.js'
+import {
+  ExperienceOrbOwnerSnapshotSchema,
+  ExperienceOrbVitalsOwnerSnapshotSchema,
+  type ExperienceOrbRecord,
+  type ExperienceOrbOwnerSnapshot,
+} from '../../src/domain/entities/xp-orb.js'
+import {
+  DroppedItemOwnerSnapshotSchema,
+} from '../../src/domain/entities/dropped-item.js'
 import { GAMEPLAY_STAGE_IDS } from '../../src/stages/stage-ids'
+import type { VehicleControlInput, VehicleFrameEnvironment } from '../../src/domain/vehicle/vehicle-frame.js'
+import type { ItemUseResult } from '../../src/stages/registration-core.js'
 import { FrameServicesLayer } from './frame-services'
 import {
   makePreviewInventory,
@@ -134,7 +199,19 @@ import {
 } from './inventory'
 import { makePreviewRoster } from './roster'
 import { makePreviewPlayer } from './player'
-import { AIR, floatingBlocks, makePreviewWorld, type PreviewWorld, type WorldSpec } from './world'
+import {
+  makeBrewingAdvanceStage,
+  type BrewingAdvanceExecution,
+  type BrewingAdvanceStageApi,
+} from '../../src/stages/brewing-advance-stage.js'
+import {
+  AIR,
+  floatingBlocks,
+  hasBlockCapability,
+  makePreviewWorld,
+  type PreviewWorld,
+  type WorldSpec,
+} from './world'
 
 /**
  * One frame's worth of simulated time, as a 60 Hz loop would produce it.
@@ -212,24 +289,98 @@ export type Site = {
   readonly inventoryService: PreviewInventory
   readonly roster: EntityManagerApi<MobBehaviour>
   readonly state: GameplayFrameState
+  readonly time: TimeServiceApi
+  readonly vehicleService: VehicleServiceApi
+  readonly brewingService: BrewingServiceApi
+  readonly fishingService: FishingServiceApi
+  readonly projectileService: ProjectileServiceApi
+  readonly tntService: TntServiceApi
+  readonly eventBus: DomainEventBusApi
+  readonly itemMetadata: ItemMetadataStore
   readonly stages: ReadonlyArray<StageRegistration>
   readonly spec: WorldSpec
   readonly bounds: { readonly width: number; readonly height: number }
+  /** Read the coordinator-owned gameplay roster only when an observer asks. */
+  readonly observeMobs: () => Effect.Effect<ReadonlyArray<ObservedGameplayMob>, unknown>
+  /** Read the dropped-item owner only when an observer asks. */
+  readonly observeDroppedItems: () => Effect.Effect<ReadonlyArray<ObservedDroppedItem>, unknown>
+  /** Read the player-storage owner only when an observer asks. */
+  readonly observePlayerStorage: () => Effect.Effect<PlayerStorage, unknown>
+  /** Read the vehicle roster only when an observer asks. */
+  readonly observeVehicles: () => Effect.Effect<ReadonlyArray<Vehicle>, unknown>
+  readonly spawnVehicle: (
+    type: Vehicle['type'],
+    dimension: Dimension,
+    position: Position,
+    yawRadians?: number,
+  ) => Effect.Effect<Vehicle, unknown>
+  readonly mountVehicle: (id: Vehicle['id'], occupant: string) => Effect.Effect<void, unknown>
+  readonly setVehicleVelocity: (
+    id: Vehicle['id'],
+    velocity: Readonly<{ x: number; y: number; z: number }>,
+  ) => Effect.Effect<void, unknown>
+  readonly setVehicleControls: (id: Vehicle['id'], controls: VehicleControlInput) => void
+  readonly setPoweredRailAt: (position: BlockPosition, powered: boolean) => void
+  /** Read the player owner snapshot only when an observer asks. */
+  readonly observePlayerPose: () => Effect.Effect<ObservedGameplayPlayerPose, unknown>
+  /** Resolve a primary attack from the live player and Mob owners, then enqueue it. */
+  readonly requestTargetedPrimaryAttack: (
+    options?: TargetedPrimaryAttackOptions,
+  ) => Effect.Effect<TargetedPrimaryAttackResult, unknown>
+  /** Queue a cast that the real fishing and projectile services settle in a frame. */
+  readonly requestFishingCast: (intent: Parameters<typeof enqueueFishingCast>[1]) => Effect.Effect<void, unknown>
+  readonly requestFishingAdvance: (intent: Parameters<typeof enqueueFishingAdvance>[1]) => Effect.Effect<void, unknown>
+  readonly requestFishingCancel: (requestId: string, actor: Parameters<typeof enqueueFishingCancel>[2]) => Effect.Effect<void, unknown>
+  readonly requestFishingReel: (requestId: string, actor: Parameters<typeof enqueueFishingReel>[2]) => Effect.Effect<void, unknown>
+  /** Read fishing owner state only when requested. */
+  readonly observeFishingState: () => Effect.Effect<import('@nerima-games/mc-sim').FishingState, unknown>
+  /** Enqueue a brewing-fuel insertion for the real interaction stage. */
+  readonly insertBrewingFuel: (requestId: string) => Effect.Effect<void, unknown>
+  /** Enqueue a brewing-bottle insertion for the real interaction stage. */
+  readonly insertBrewingBottle: (
+    requestId: string,
+    bottleIndex: number,
+    bottle: Parameters<typeof enqueueBrewingBottle>[3],
+  ) => Effect.Effect<void, unknown>
+  /** Enqueue a brewing-ingredient insertion for the real interaction stage. */
+  readonly insertBrewingIngredient: (
+    requestId: string,
+    ingredient: Parameters<typeof enqueueBrewingIngredient>[2],
+  ) => Effect.Effect<void, unknown>
+  /** Queue a coordinator-backed brewing advance for the gameplay stage. */
+  readonly requestBrewingAdvance: BrewingAdvanceStageApi['requestAdvance']
+  /** Read completed brewing advances only when requested. */
+  readonly drainBrewingAdvanceResults: () => Effect.Effect<ReadonlyArray<BrewingAdvanceExecution>>
+  /** Read brewing owner state only when requested. */
+  readonly observeBrewingState: () => Effect.Effect<import('@nerima-games/mc-sim').BrewingState, unknown>
+  /** Consume completed item-use outcomes only when requested. */
+  readonly drainItemUseResults: () => Effect.Effect<ReadonlyArray<ItemUseResult>, unknown>
+  /** Apply a validated offer through mc-sim's real enchantment-table service. */
+  readonly requestEnchantmentTableApply: (
+    request: Omit<EnchantmentTableApplyRequest, 'playerStorageOwnerId' | 'vitalsOwnerId' | 'itemSlot' | 'lapisSlot'> & {
+      readonly itemSlot: number
+      readonly lapisSlot: number
+    },
+  ) => Effect.Effect<EnchantmentTableApplyResult, unknown>
+  /** Write the scenario's villager and offer owner state. */
+  readonly setVillagerTrades: (trades: VillagerTradeState) => Effect.Effect<void, unknown>
+  /** Read villager offers and stock only when requested. */
+  readonly observeVillagerTrades: () => Effect.Effect<VillagerTradeState, unknown>
+  readonly requestVillagerTrade: (request: VillagerTradeRequest) => Effect.Effect<void, unknown>
+  /** Consume completed trade results only when requested. */
+  readonly drainVillagerTradeResults: () => Effect.Effect<ReadonlyArray<VillagerTradeResult>, unknown>
+  /** Replace the player inventory and synchronize its owner snapshot. */
+  readonly setInventory: (items: ReadonlyArray<readonly [ItemType, number]>) => Effect.Effect<void, unknown>
+  /** Seed the coordinator-owned experience-orb snapshot. */
+  readonly seedExperienceOrbs: (orbs: ReadonlyArray<ExperienceOrbRecord>) => Effect.Effect<void, unknown>
+  /** Release Site-owned service resources. */
+  readonly dispose: () => Effect.Effect<void>
   frame: number
   /**
-   * WHAT MC-SIM HOLDS, refreshed from `snapshot` at the end of every frame.
+   * Player storage projected from its owner at the end of every frame.
    *
-   * This used to be the preview's own tally — a `Map` this file added the
-   * `minedItems` outbox into and subtracted `consumedItems` from — under a
-   * comment saying 「This is the preview playing mc-sim's `InventoryService.add`
-   * / `.remove` pair」. It is playing the service for real now (`./inventory.ts`),
-   * so the number the HUD prints is the number the service would answer, by the
-   * service's stacking rule, and a stack that did not fit is missing from it
-   * rather than silently included.
-   *
-   * It stays a plain `Map` field because the HUD and `--stats` read it
-   * synchronously; it is a PROJECTION, refreshed in `stepFrame`, and writing to
-   * it would change nothing.
+   * Gameplay stages commit this owner. `stepFrame` reads it after all stages so
+   * the HUD and stats show the same inventory the rules just changed.
    */
   inventory: ReadonlyMap<string, number>
   /** XP credited by this preview host after draining the gameplay outbox. */
@@ -246,6 +397,25 @@ export type Site = {
   /** Requests submitted but not yet consumed by a frame. */
   submitted: number
 }
+
+export type ObservedGameplayMob = Readonly<{
+  id: GameplayEntity['id']
+  kind: GameplayEntity['kind']
+  position: GameplayEntity['feetPosition']
+  healthPoints: GameplayEntity['healthPoints']
+}>
+
+export type ObservedDroppedItem = Readonly<{
+  readonly id: string
+  readonly item: ItemType
+  readonly count: number
+  readonly position: Position
+}>
+
+export type ObservedGameplayPlayerPose = Readonly<{
+  dimension: Dimension
+  position: Position
+}>
 
 /**
  * What `placementVerdict` answers: a refusal, or permission with the id.
@@ -287,6 +457,19 @@ export const makeSite = (
     const roster = yield* makePreviewRoster
     const previewPlayer = yield* makePreviewPlayer
     const time = yield* Effect.orDie(makeTimeService())
+    const vehicleService = yield* Effect.orDie(makeVehicleService())
+    const vehicleControls = new Map<string, VehicleControlInput>()
+    const poweredRailOverrides = new Map<BlockPositionKey, boolean>()
+    const vehicleEnvironment: VehicleFrameEnvironment = {
+      isActiveDimension: (dimension) => dimension === 'overworld',
+      controlsForVehicle: (vehicle) => vehicleControls.get(vehicle.id) ?? { throttle: 0, steering: 0 },
+      isPoweredRailAt: (dimension, position) => {
+        if (dimension !== 'overworld') return false
+        const key = blockPositionKeyOf(position)
+        const override = poweredRailOverrides.get(key)
+        return override ?? false
+      },
+    }
     // Register the gameplay owners before constructing the frame state so its
     // survival vitals runtime reads and commits through the vitals owner.
     const owners = gameplayOwnerRegistrations({
@@ -299,10 +482,220 @@ export const makeSite = (
       owners,
       chunkStores: { forDimension: () => world.api },
     }))
+    const resourceScope = yield* Scope.make()
+    const eventContext = yield* Effect.orDie(Layer.buildWithScope(
+      DomainEventBusLayer(Schema.decodeUnknownSync(EventSubscriberCapacitySchema)(256)),
+      resourceScope,
+    ))
+    const eventBus = Context.get(eventContext, DomainEventBus)
+    const brewingService = yield* makeBrewingService(GAMEPLAY_BREWING_OWNER_ID)
+    const fishingService = yield* makeFishingService(GAMEPLAY_FISHING_OWNER_ID).pipe(
+      Effect.provideService(WorldCommitCoordinator, coordinator),
+      Effect.provideService(DomainEventBus, eventBus),
+    )
+    const projectileService = yield* makeProjectileService().pipe(
+      Effect.provideService(WorldCommitCoordinator, coordinator),
+      Effect.provideService(DomainEventBus, eventBus),
+    )
+    const tntService = yield* makeTntService(TNT_REPLICATED_OWNER_ID).pipe(
+      Effect.provideService(WorldCommitCoordinator, coordinator),
+    )
+    const enchantmentTableService = yield* makeEnchantmentTableService().pipe(
+      Effect.provideService(WorldCommitCoordinator, coordinator),
+    )
+    const itemMetadata = createItemMetadataStore()
     const state = yield* makeGameplayFrameStateForOwner({
       coordinator,
       vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID,
     })
+    const targetingContext: GameplayTargetingSnapshotContext = {
+      coordinator,
+      playerOwnerId: GAMEPLAY_PLAYER_OWNER_ID,
+      entitiesOwnerId: GAMEPLAY_ENTITIES_OWNER_ID,
+    }
+    const requestTargetedPrimaryAttack = (options: TargetedPrimaryAttackOptions = {}) =>
+      enqueueTargetedPrimaryAttack(state, world.api, targetingContext, options)
+    const syncPlayerStorageOwner = (storage: PlayerStorage) =>
+      Effect.gen(function* () {
+        const current = yield* coordinator.snapshot(GAMEPLAY_PLAYER_STORAGE_OWNER_ID, PlayerStorageSnapshotSchema)
+        if (Equal.equals(current.state, storage)) return
+        yield* coordinator.commit({
+          expectedRevision: current.revision,
+          expectedDimensions: [],
+          changes: [{ ownerId: GAMEPLAY_PLAYER_STORAGE_OWNER_ID, state: storage }],
+        })
+      })
+    const setInventory = (items: ReadonlyArray<readonly [ItemType, number]>) =>
+      Effect.gen(function* () {
+        const current = yield* inventoryService.api.snapshot
+        const totals = new Map<ItemType, number>()
+        for (const slot of current.slots) {
+          if (slot !== undefined) totals.set(slot.item, (totals.get(slot.item) ?? 0) + slot.count)
+        }
+        for (const [item, count] of totals) yield* inventoryService.api.remove(item, count)
+        for (const [item, count] of items) yield* inventoryService.api.add(item, count)
+
+        const storage = yield* inventoryService.api.storageSnapshot
+        yield* syncPlayerStorageOwner(storage)
+      })
+    const seedExperienceOrbs = (orbs: ReadonlyArray<ExperienceOrbRecord>) =>
+      Effect.gen(function* () {
+        const orbState: ExperienceOrbOwnerSnapshot = { orbs }
+        const current = yield* coordinator.snapshot(GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID, ExperienceOrbOwnerSnapshotSchema)
+        if (Equal.equals(current.state, orbState)) return
+        yield* coordinator.commit({
+          expectedRevision: current.revision,
+          expectedDimensions: [],
+          changes: [{ ownerId: GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID, state: orbState }],
+        })
+      })
+    const observeMobs = () =>
+      Effect.map(
+        coordinator.snapshot(GAMEPLAY_ENTITIES_OWNER_ID, GameplayEntityRosterSchema),
+        ({ state: gameplayRoster }) => gameplayRoster.entities.map(({ id, kind, feetPosition, healthPoints }) => ({
+          id,
+          kind,
+          position: feetPosition,
+          healthPoints,
+        })),
+      )
+    const observeDroppedItems = () =>
+      Effect.map(
+        coordinator.snapshot(GAMEPLAY_DROPPED_ITEMS_OWNER_ID, DroppedItemOwnerSnapshotSchema),
+        ({ state: droppedItems }) => droppedItems.items.map(({ id, feetPosition, behaviour }) => ({
+          id,
+          item: behaviour.item,
+          count: behaviour.count,
+          position: feetPosition,
+        })),
+      )
+    const observePlayerStorage = () =>
+      Effect.map(
+        coordinator.snapshot(GAMEPLAY_PLAYER_STORAGE_OWNER_ID, PlayerStorageSnapshotSchema),
+        ({ state: storage }) => storage,
+      )
+    const observeVehicles = () => vehicleService.vehicles
+    const spawnVehicle = (
+      type: Vehicle['type'],
+      dimension: Dimension,
+      position: Position,
+      yawRadians = 0,
+    ) => vehicleService.spawn(type, dimension, position, AngleRadians(yawRadians))
+    const mountVehicle = (id: Vehicle['id'], occupant: string) =>
+      vehicleService.mount(id, OccupantId(occupant))
+    const setVehicleVelocity = (
+      id: Vehicle['id'],
+      velocity: Readonly<{ x: number; y: number; z: number }>,
+    ) => vehicleService.updateVelocity(id, {
+      x: VehicleVelocityComponent(velocity.x),
+      y: VehicleVelocityComponent(velocity.y),
+      z: VehicleVelocityComponent(velocity.z),
+    })
+    const setVehicleControls = (id: Vehicle['id'], controls: VehicleControlInput): void => {
+      vehicleControls.set(id, controls)
+    }
+    const setPoweredRailAt = (position: BlockPosition, powered: boolean): void => {
+      poweredRailOverrides.set(blockPositionKeyOf(position), powered)
+    }
+    const observePlayerPose = () =>
+      Effect.map(
+        coordinator.snapshot(GAMEPLAY_PLAYER_OWNER_ID, PlayerServiceSnapshotSchema),
+        ({ state: player }) => ({
+          dimension: player.pose.feetPosition.dimension,
+          position: {
+            x: player.pose.feetPosition.x,
+            y: player.pose.feetPosition.y,
+            z: player.pose.feetPosition.z,
+          },
+        }),
+      )
+    const observeFishingState = () =>
+      Effect.map(
+        coordinator.snapshot(GAMEPLAY_FISHING_OWNER_ID, FishingStateSchema),
+        ({ state: fishing }) => fishing,
+      )
+    const observeBrewingState = () =>
+      Effect.map(
+        coordinator.snapshot(GAMEPLAY_BREWING_OWNER_ID, BrewingServiceStateSchema),
+        ({ state: brewing }) => brewing,
+      )
+    const requestFishingCast = (intent: Parameters<typeof enqueueFishingCast>[1]) =>
+      enqueueFishingCast(state, intent)
+    const requestFishingAdvance = (intent: Parameters<typeof enqueueFishingAdvance>[1]) =>
+      enqueueFishingAdvance(state, intent)
+    const requestFishingCancel = (requestId: string, actor: Parameters<typeof enqueueFishingCancel>[2]) =>
+      enqueueFishingCancel(state, requestId, actor)
+    const requestFishingReel = (requestId: string, actor: Parameters<typeof enqueueFishingReel>[2]) =>
+      enqueueFishingReel(state, requestId, actor)
+    const insertBrewingFuel = (requestId: string) => enqueueBrewingFuel(state, requestId)
+    const insertBrewingBottle = (
+      requestId: string,
+      bottleIndex: number,
+      bottle: Parameters<typeof enqueueBrewingBottle>[3],
+    ) => enqueueBrewingBottle(state, requestId, bottleIndex, bottle)
+    const insertBrewingIngredient = (
+      requestId: string,
+      ingredient: Parameters<typeof enqueueBrewingIngredient>[2],
+    ) => enqueueBrewingIngredient(state, requestId, ingredient)
+    const readItemUseResults = () => drainItemUseResults(state)
+    const requestEnchantmentTableApply = (
+      request: Omit<EnchantmentTableApplyRequest, 'playerStorageOwnerId' | 'vitalsOwnerId' | 'itemSlot' | 'lapisSlot'> & {
+        readonly itemSlot: number
+        readonly lapisSlot: number
+      },
+    ) => Effect.gen(function* () {
+      const decoded = yield* Schema.decodeUnknownEffect(EnchantmentTableApplyRequestSchema)({
+        ...request,
+        playerStorageOwnerId: GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+        vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID,
+      })
+      const [storageSnapshot, vitalsSnapshot] = yield* Effect.all([
+        coordinator.snapshot(GAMEPLAY_PLAYER_STORAGE_OWNER_ID, PlayerStorageSnapshotSchema),
+        coordinator.snapshot(GAMEPLAY_VITALS_OWNER_ID, ExperienceOrbVitalsOwnerSnapshotSchema),
+      ])
+      if (storageSnapshot.revision !== vitalsSnapshot.revision) {
+        return yield* Effect.fail(new WorldRevisionConflict({
+          expected: storageSnapshot.revision,
+          actual: vitalsSnapshot.revision,
+        }))
+      }
+      const fragment = yield* enchantmentTableService.planApply({
+        world: storageSnapshot.world,
+        expectedRevision: storageSnapshot.revision,
+        expectedDimensions: [],
+        state: { playerStorage: storageSnapshot.state, vitals: vitalsSnapshot.state.vitals },
+      }, decoded)
+      yield* coordinator.commit({
+        expectedRevision: fragment.expectedRevision,
+        expectedDimensions: fragment.expectedDimensions,
+        changes: fragment.changes.map((change) =>
+          change.ownerId === GAMEPLAY_VITALS_OWNER_ID
+            ? { ...change, state: { vitals: change.state } }
+            : change,
+        ),
+      })
+      const result = fragment.result
+      return result
+    })
+    const setVillagerTrades = (trades: VillagerTradeState) => Effect.gen(function* () {
+      const decoded = yield* Schema.decodeUnknownEffect(GameplayVillagerTradeSnapshotSchema)(trades)
+      const current = yield* coordinator.snapshot(GAMEPLAY_VILLAGER_TRADES_OWNER_ID, GameplayVillagerTradeSnapshotSchema)
+      if (Equal.equals(current.state, decoded)) return
+      yield* coordinator.commit({
+        expectedRevision: current.revision,
+        expectedDimensions: [],
+        changes: [{ ownerId: GAMEPLAY_VILLAGER_TRADES_OWNER_ID, state: decoded }],
+      })
+    })
+    const observeVillagerTrades = () =>
+      Effect.map(
+        coordinator.snapshot(GAMEPLAY_VILLAGER_TRADES_OWNER_ID, GameplayVillagerTradeSnapshotSchema),
+        ({ state: trades }) => trades,
+      )
+    const requestVillagerTrade = (request: VillagerTradeRequest) => enqueueVillagerTrade(state, request)
+    const drainVillagerTradeResults = () => takeVillagerTradeResults(state)
+    const dispose = () => Scope.close(resourceScope, Exit.void)
+    const brewingAdvance = yield* makeBrewingAdvanceStage(brewingService, coordinator)
     const commit = {
       coordinator,
       playerOwnerId: GAMEPLAY_PLAYER_OWNER_ID,
@@ -317,31 +710,77 @@ export const makeSite = (
       entitiesOwnerId: GAMEPLAY_ENTITIES_OWNER_ID,
       statusEffectsOwnerId: GAMEPLAY_STATUS_EFFECTS_OWNER_ID,
       projectileOwnerId: PROJECTILE_REPLICATED_OWNER_ID,
+      tntSourcesOwnerId: GAMEPLAY_TNT_SOURCES_OWNER_ID,
       tntOwnerId: TNT_REPLICATED_OWNER_ID,
+      brewingService,
+      fishingService,
+      projectileService,
+      tntService,
+      eventBus,
     }
-    const stages = schedule(
-      gameplayStages(
+    const stages = schedule([
+      ...gameplayStages(
         state,
         world.api,
         roster,
         inventoryService.api,
         previewPlayer,
         time,
-        undefined,
-        undefined,
+        vehicleService,
+        vehicleEnvironment,
         {},
         commit,
       ),
-    )
+      brewingAdvance.stage,
+    ])
 
     return {
       world,
       inventoryService,
       roster,
       state,
+      time,
+      vehicleService,
+      brewingService,
+      fishingService,
+      projectileService,
+      tntService,
+      eventBus,
+      itemMetadata,
       stages,
       spec,
       bounds,
+      observeMobs,
+      observeDroppedItems,
+      observePlayerStorage,
+      observeVehicles,
+      spawnVehicle,
+      mountVehicle,
+      setVehicleVelocity,
+      setVehicleControls,
+      setPoweredRailAt,
+      observePlayerPose,
+      requestTargetedPrimaryAttack,
+      requestFishingCast,
+      requestFishingAdvance,
+      requestFishingCancel,
+      requestFishingReel,
+      observeFishingState,
+      insertBrewingFuel,
+      insertBrewingBottle,
+      insertBrewingIngredient,
+      requestBrewingAdvance: brewingAdvance.requestAdvance,
+      drainBrewingAdvanceResults: () => brewingAdvance.drainResults,
+      observeBrewingState,
+      drainItemUseResults: readItemUseResults,
+      requestEnchantmentTableApply,
+      setVillagerTrades,
+      observeVillagerTrades,
+      requestVillagerTrade,
+      drainVillagerTradeResults,
+      setInventory,
+      seedExperienceOrbs,
+      dispose,
       frame: 0,
       inventory: new Map<string, number>(),
       experience: 0,
@@ -570,8 +1009,13 @@ export const stepFrame = (site: Site): Effect.Effect<FrameRow> =>
       site.state.consumedItems,
       [],
     )
-    // The HUD's number, refreshed from the SERVICE rather than tallied here.
-    site.inventory = yield* site.inventoryService.held
+    // Project the same player-storage owner the gameplay stages commit.
+    const storage = yield* Effect.orDie(site.observePlayerStorage())
+    const inventory = new Map<string, number>()
+    for (const slot of storage.inventory.slots) {
+      if (slot !== undefined) inventory.set(slot.item, (inventory.get(slot.item) ?? 0) + slot.count)
+    }
+    site.inventory = inventory
 
     // The weather OUTBOX, read after. `undefined` means the stage did not run,
     // which cannot happen here and is answered with "keep what we had" rather
@@ -594,7 +1038,7 @@ export const stepFrame = (site: Site): Effect.Effect<FrameRow> =>
     // counted here; it is unreachable for the reason recorded at that line, and
     // `--stats` measures whether it stayed unreachable.
     const moved = writes.filter(
-      (record) => record.outcome === 'Written' && capabilityOfBlockId(record.block, 'fallsWhenUnsupported'),
+      (record) => record.outcome === 'Written' && hasBlockCapability(record.block, 'fallsWhenUnsupported'),
     ).length
 
     const row: FrameRow = {

@@ -101,6 +101,24 @@ describe('mob ecosystem', () => {
     })
   })
 
+  it('keeps a subnormal diagonal flee within the scalar speed cap', () => {
+    const self = atPosition(0, 0, 0)
+    const target = atPosition(Number.MIN_VALUE, 0, -Number.MIN_VALUE)
+    const step = stepEcosystemMob(
+      COW_KIND,
+      initialEcosystemMobState(),
+      self,
+      target,
+      0.001,
+    )
+    const displacement = Math.hypot(
+      step.feetPosition.x - self.x,
+      step.feetPosition.z - self.z,
+    )
+
+    expect(displacement).toBeCloseTo(0.003, 12)
+  })
+
   it('leaves a hostile mob in place when it has no target', () => {
     const step = stepEcosystemMob(SKELETON_KIND, initialEcosystemMobState(), position(0), undefined, 1)
 

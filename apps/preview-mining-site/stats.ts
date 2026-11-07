@@ -27,7 +27,6 @@ import {
   BlockId,
   blockPosition,
   blockPositionKeyOf,
-  capabilityOfBlockId,
   DeltaTimeSecs,
   HARVEST_TIERS,
   MAX_STACK_COUNT,
@@ -84,7 +83,17 @@ import {
 } from './site'
 import { INVENTORY_SLOT_COUNT } from './inventory'
 import { FrameServicesLayer } from './frame-services'
-import { AIR, GRAVEL, LAVA, SAND, WATER, glyphOf, placeableItemOf, type WorldSpec } from './world'
+import {
+  AIR,
+  GRAVEL,
+  hasBlockCapability,
+  LAVA,
+  SAND,
+  WATER,
+  glyphOf,
+  placeableItemOf,
+  type WorldSpec,
+} from './world'
 import { blockLoot } from '../../src/domain/interactions/block-loot'
 import { DEFAULT_ROLL_SEED, drawRolls } from '../../src/domain/frame-rolls'
 import {
@@ -144,12 +153,22 @@ const buildSite = (spec: WorldSpec, name: string): Effect.Effect<Site> =>
 const fallingCount = (site: Site): number => {
   let total = 0
   for (const [id, count] of site.world.census()) {
-    if (capabilityOfBlockId(id, 'fallsWhenUnsupported')) {
+    if (hasBlockCapability(id, 'fallsWhenUnsupported')) {
       total += count
     }
   }
   return total
 }
+
+type FallingMass = Readonly<{
+  before: number
+  after: number
+  inventory: number
+  dropped: number
+}>
+
+export const isFallingMassConserved = ({ before, after, inventory, dropped }: FallingMass): boolean =>
+  before === after + inventory + dropped
 
 // ---------------------------------------------------------------------------
 // DN-GP-1: the event-driven cascade
@@ -317,16 +336,13 @@ const burstBudget = Effect.gen(function* () {
  * question of the whole cascade instead, which is the only way a compound of two
  * correct steps can be caught.
  *
- * THE INVENTORY SIDE OF THE SUM IS NOW AN ITEM COUNT, not a list of block ids,
- * and the check is stronger for it. `sand` and `gravel` are both `'self'` drops
- * with no tool gate in kernel's table, so mining one still yields exactly one —
- * which means the arithmetic is unchanged AND is now asserting that the drop
- * table did not quietly change what falling materials yield. A row that started
- * dropping two would show up here as mass created out of nothing.
+ * The mined side is an item count from both inventory and dropped-item entities.
+ * A full inventory sends the overflow to the ground, where it remains part of
+ * the conserved mass.
  */
 const conservation = Effect.gen(function* () {
   const lines: Array<string> = [
-    `  ${pad('scenario', 14)}${pad('falling before', 16)}${pad('after', 8)}${pad('mined', 7)}inventory`,
+    `  ${pad('scenario', 14)}${pad('falling before', 16)}${pad('after', 8)}${pad('mined', 7)}inventory + ground`,
   ]
   let broken = false
 
@@ -345,7 +361,8 @@ const conservation = Effect.gen(function* () {
     for (let x = 0; x < BOUNDS.width && minedTargets < 3; x += 1) {
       for (let y = BOUNDS.height - 1; y >= 0 && minedTargets < 3; y -= 1) {
         const position = positionAt(site, x, y)
-        if (capabilityOfBlockId(site.world.peekBlock(position) ?? AIR, 'fallsWhenUnsupported')) {
+        const block = site.world.peekBlock(position) ?? AIR
+        if (hasBlockCapability(block, 'fallsWhenUnsupported')) {
           yield* requestBreak(site, position)
           minedTargets += 1
         }
@@ -358,17 +375,29 @@ const conservation = Effect.gen(function* () {
     // ids are `SAND` and `GRAVEL`; their item forms are named the same, which is
     // kernel's own name-identity bridge and is why
     // this can be written without a second table.
-    const minedFalling = FALLING_ITEM_NAMES.reduce(
+    const minedInventory = FALLING_ITEM_NAMES.reduce(
       (total, item) => total + inventoryCount(site, item),
       0,
     )
-    const conserved = before === after + minedFalling
+    const droppedItems = yield* site.observeDroppedItems()
+    const minedDropped = droppedItems.reduce(
+      (total, dropped) =>
+        FALLING_ITEM_NAMES.includes(dropped.item) ? total + dropped.count : total,
+      0,
+    )
+    const minedFalling = minedInventory + minedDropped
+    const conserved = isFallingMassConserved({
+      before,
+      after,
+      inventory: minedInventory,
+      dropped: minedDropped,
+    })
     if (!conserved) {
       broken = true
     }
     lines.push(
       `  ${pad(scenario.name, 14)}${pad(String(before), 16)}${pad(String(after), 8)}` +
-        `${pad(String(minedFalling), 7)}${String(inventorySize(site))} items  ` +
+        `${pad(String(minedFalling), 7)}${String(minedInventory)} inventory + ${String(minedDropped)} ground  ` +
         `${conserved ? 'conserved' : 'NOT CONSERVED'}`,
     )
   }
@@ -1371,8 +1400,12 @@ export const buildStatsReport: Effect.Effect<ReadonlyArray<string>> = Effect.gen
 
   // A last sanity line that is cheap and would be embarrassing to get wrong: the
   // capability table the whole cascade keys off.
-  const falls = [SAND, GRAVEL].every((id) => capabilityOfBlockId(id, 'fallsWhenUnsupported'))
-  const replaceable = [AIR, WATER, LAVA].every((id) => capabilityOfBlockId(id, 'replaceable'))
+  const falls = [SAND, GRAVEL].every(
+    (id) => hasBlockCapability(id, 'fallsWhenUnsupported'),
+  )
+  const replaceable = [AIR, WATER, LAVA].every(
+    (id) => hasBlockCapability(id, 'replaceable'),
+  )
   lines.push(
     `capability table: fallsWhenUnsupported(sand,gravel)=${String(falls)}  ` +
       `isReplaceable(air,water,lava)=${String(replaceable)}  ` +

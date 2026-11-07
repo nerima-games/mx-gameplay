@@ -166,6 +166,7 @@ import {
   PlayerStorageSnapshotSchema,
   damageAt as damagePlayerStorageAt,
   withInventory,
+  type DamageAtResult,
   type PlayerStorage,
   type ReplicatedOwnerCandidate,
   type ReplicatedOwnerId,
@@ -1397,6 +1398,7 @@ export type FishingItemUseRequest =
       readonly action: 'ReelFishing'
       readonly requestId: ItemUseRequestId
       readonly actor: EntityId
+      readonly toolLocation?: StorageLocation
     }
 
 export type CollectBrewingBottleRequest = Readonly<{
@@ -1546,6 +1548,7 @@ export type FishingItemUseResult =
   | { readonly action: 'AdvanceFishing'; readonly requestId: ItemUseRequestId; readonly success: true; readonly outcome: FishingProgressOutcome }
   | { readonly action: 'CancelFishing'; readonly requestId: ItemUseRequestId; readonly success: true; readonly outcome: FishingCancelOutcome }
   | { readonly action: 'ReelFishing'; readonly requestId: ItemUseRequestId; readonly success: true; readonly outcome: FishingReelOutcome }
+  | { readonly action: 'ReelFishing'; readonly requestId: ItemUseRequestId; readonly success: false; readonly failure: 'InvalidHeldItem' }
 
 function strictCodec<A>(schema: Schema.ConstraintDecoder<A>): Schema.ConstraintDecoder<A> {
   return Schema.declareConstructor<A, unknown>()([schema], ([inner]) =>
@@ -1661,6 +1664,12 @@ export const GameplayFishingItemUseResultSchema: Schema.ConstraintDecoder<Fishin
     requestId: Schema.String,
     success: Schema.Literal(true),
     outcome: FishingServiceReelSuccessSchema,
+  }),
+  Schema.Struct({
+    action: Schema.Literal('ReelFishing'),
+    requestId: Schema.String,
+    success: Schema.Literal(false),
+    failure: Schema.Literal('InvalidHeldItem'),
   }),
 ]))
 
@@ -1935,6 +1944,7 @@ export type GameplayStageOperationFailure = Readonly<{
     | FishingServiceError
     | BrewingServiceError
     | PrimedTntValidationFailure
+    | DamageAtResult
 }>
 
 export const recordGameplayStageFailure = (
@@ -2561,8 +2571,16 @@ export const requestFishingReel = (
   state: GameplayFrameState,
   requestId: ItemUseRequestId,
   actor: EntityId,
-): Effect.Effect<void> =>
-  Ref.update(state.pendingItemUses, (pending) => [...pending, { action: 'ReelFishing' as const, requestId, actor }])
+  toolLocation?: StorageLocation,
+): Effect.Effect<void> => {
+  const request: Extract<FishingItemUseRequest, { readonly action: 'ReelFishing' }> = {
+    action: 'ReelFishing',
+    requestId,
+    actor,
+    ...(toolLocation === undefined ? {} : { toolLocation }),
+  }
+  return Ref.update(state.pendingItemUses, (pending) => [...pending, request])
+}
 
 export const requestCollectBrewingBottle = (
   state: GameplayFrameState,
@@ -2885,7 +2903,10 @@ export const requestTargetedPrimaryAttack = (
     )
 
     if (resolution._tag === 'Melee') {
-      yield* requestMeleeAttack(state, resolution.request)
+      yield* requestMeleeAttack(state, {
+        ...resolution.request,
+        ...(options.toolLocation === undefined ? {} : { toolLocation: options.toolLocation }),
+      })
       return { _tag: 'Melee', target: resolution.target } satisfies TargetedPrimaryAttackResult
     }
     if (resolution._tag === 'Block') {

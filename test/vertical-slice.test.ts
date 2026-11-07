@@ -2967,7 +2967,7 @@ describe('the fishing slice: gameplay holds casts while the host owns settlement
       const [rawReel] = yield* drainItemUseResults(state)
       const reel = Schema.decodeUnknownSync(GameplayFishingItemUseResultSchema)(rawReel)
       expect(reel).toMatchObject({ action: 'ReelFishing', requestId: 'reel', success: true })
-      if (reel.action !== 'ReelFishing' || reel.outcome._tag !== 'Caught') {
+      if (reel.action !== 'ReelFishing' || !reel.success || reel.outcome._tag !== 'Caught') {
         throw new Error('Expected a caught fishing result')
       }
 

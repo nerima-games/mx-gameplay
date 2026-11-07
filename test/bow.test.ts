@@ -622,6 +622,12 @@ describe('shotTarget — the ownership argument, executable', () => {
     }
   })
 
+  it('normalizes a very large finite aim instead of collapsing it to zero', () => {
+    // Catches a squared-length overflow that makes direct division return a zero direction.
+    const y = 64 - BOW_TARGET_CENTER_Y_OFFSET
+    expect(shotTarget([standing('a', 0, y, 10)], EYE, 0, 0, Number.MAX_VALUE)?.id).toBe('a')
+  })
+
   it('DIVERGENCE: a degenerate aim hits nothing, where the reference hits the nearest mob', () => {
     // `THREE.Vector3.normalize()` of a zero vector yields zero, after which
     // every projection is zero and the nearest mob within the radius is struck
@@ -793,6 +799,17 @@ describe('knockbackDirection', () => {
         expect(answer.x).toBeCloseTo(answers[0].x)
         expect(answer.z).toBeCloseTo(answers[0].z)
       }
+    }
+  })
+
+  it('normalizes very large finite offsets into a unit Away direction', () => {
+    // Catches an overflowing Math.hypot result that previously divided both finite axes by Infinity.
+    const direction = knockbackDirection(Number.MAX_VALUE, Number.MAX_VALUE)
+    expect(direction._tag).toBe('Away')
+    if (direction._tag === 'Away') {
+      expect(Math.hypot(direction.x, direction.z)).toBeCloseTo(1)
+      expect(direction.x).toBeCloseTo(1 / Math.sqrt(2))
+      expect(direction.z).toBeCloseTo(1 / Math.sqrt(2))
     }
   })
 

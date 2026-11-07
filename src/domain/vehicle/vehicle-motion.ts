@@ -1,5 +1,6 @@
 import type { OccupantId, Vehicle } from '@nerima-games/mc-sim'
 import { AngleRadians, VehicleVelocityComponent } from '@nerima-games/mc-kernel'
+import { directionComponent, normalizeDirection2 } from '../math/direction.js'
 import { projectMinecartVelocity, type RailShape } from './rail-shape.js'
 
 export type VehicleExitReason = 'requested' | 'collision' | 'destroyed'
@@ -131,12 +132,23 @@ export const stepMinecart = (
   let { vx, vz } = track.kind === 'none'
     ? { vx: vehicle.velocity.x, vz: vehicle.velocity.z }
     : projectMinecartVelocity(track.shape, vehicle.velocity.x, vehicle.velocity.z)
+  const velocity = {
+    x: VehicleVelocityComponent(vx),
+    y: VehicleVelocityComponent(vehicle.velocity.y),
+    z: VehicleVelocityComponent(vz),
+  }
 
   if (track.kind === 'powered') {
     const currentSpeed = Math.hypot(vx, vz)
     if (track.powered) {
-      const directionX = currentSpeed > 0 ? vx / currentSpeed : -Math.sin(vehicle.yawRadians)
-      const directionZ = currentSpeed > 0 ? vz / currentSpeed : -Math.cos(vehicle.yawRadians)
+      let directionX = -Math.sin(vehicle.yawRadians)
+      let directionZ = -Math.cos(vehicle.yawRadians)
+      if (currentSpeed > 0) {
+        const unitVelocity = { x: directionComponent(0), z: directionComponent(0) }
+        normalizeDirection2(directionComponent(vx), directionComponent(vz), unitVelocity)
+        directionX = unitVelocity.x
+        directionZ = unitVelocity.z
+      }
       const nextSpeed = Math.min(MINECART_MAX_SPEED, currentSpeed + MINECART_POWERED_ACCELERATION * elapsed)
       vx = directionX * nextSpeed
       vz = directionZ * nextSpeed
@@ -151,15 +163,16 @@ export const stepMinecart = (
     vz *= drag
   }
 
+  velocity.x = VehicleVelocityComponent(vx)
+  velocity.y = VehicleVelocityComponent(
+    track.kind !== 'none' && track.ascendingAhead && Math.hypot(vx, vz) > 0
+      ? Math.max(vehicle.velocity.y, MINECART_CLIMB_SPEED)
+      : vehicle.velocity.y,
+  )
+  velocity.z = VehicleVelocityComponent(vz)
   const next: Vehicle = {
     ...vehicle,
-    velocity: vehicleVelocity(
-      vx,
-      track.kind !== 'none' && track.ascendingAhead && Math.hypot(vx, vz) > 0
-        ? Math.max(vehicle.velocity.y, MINECART_CLIMB_SPEED)
-        : vehicle.velocity.y,
-      vz,
-    ),
+    velocity,
   }
   return applyCollision(next, collision)
 }

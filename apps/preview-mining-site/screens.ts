@@ -1090,7 +1090,7 @@ export const ARENA_WIRED: ReadonlyArray<readonly [string, string]> = [
  * repository cannot derive without crossing an ownership boundary.
  */
 export const ARENA_MISSING: ReadonlyArray<readonly [string, string]> = [
-  ['enderman / shulker DROPS', 'ender_pearl and shulker_shell are not ItemTypes. One row in mc-kernel’s roster, no edit here'],
+  ['shulker DROPS', 'shulker_shell is absent from mc-kernel’s ItemType roster; that vocabulary is needed before a shulker drop table can use it'],
   ['where a teleport LANDS', 'the offset has no y and no ground check — a ChunkStore query, next to domain/interactions/'],
   // WAS: 'endermanTeleportUrge needs damagedThisStep and stuckTicks; mc-sim's
   // entity has neither field'. That was the right observation and the wrong
@@ -1108,7 +1108,7 @@ export const ARENA_MISSING: ReadonlyArray<readonly [string, string]> = [
   ['water / daylight teleports', 'vanilla’s other two triggers. Needs a "submerged" capability from kernel and mc-worldgen’s sky light'],
   ['the shulker’s bullet', 'computeShulkerBulletDirection is a normalised vector — aiming is mc-physics’, canFire is here'],
   ['a shulker on the roster', 'ShulkerShell fits MobBehaviour unchanged and the enderman’s wiring shows the roster is no obstacle. What blocks it is that canFire is a permission to fire a projectile nothing produces, and that hasTarget and maxHealthPoints have no measurement on this side'],
-  ['projectile + melee cadence', 'canFire is a permission with no cooldown; attackCooldownRemaining is mc-sim’s combat state'],
+  ['projectile + melee cadence', 'canFire is a permission, but mc-sim has no dedicated attack cooldown. kernel’s generic use_cooldown is for item use, not mob attacks'],
   ['the armour formula', '4% per point, capped at 80% — every defender shares it, so it belongs in a domain/combat/, not here'],
   ['age-based despawn', 'vanilla sweeps on time as well as distance; the reference has no age on an entity and neither has this'],
   ['the mob roster’s other SIX', 'HOSTILE_KINDS has two rows and the reference rotates eight. The missing six are not a table this repository can copy — each needs a domain/mob/ rule behind it, or the row is a claim that this build has zombies. The PICK is also uniform where the reference uses a round-robin cursor, which is per-world state and therefore mc-sim’s'],
@@ -1124,7 +1124,7 @@ export const ARENA_MISSING: ReadonlyArray<readonly [string, string]> = [
   // measurement that is still a stand-in.
   ['a spawn candidate’s ALTITUDE', 'the ring searches the player’s own feet plane, not the surface. The reference scans down a column, which is the scan whose lack of a surface test hostile-spawn.ts was written to fix; the honest replacement is a heightmap the STORE maintains, since surfaceHeightAt answers about generated terrain and not about anything a player built'],
   ['the player’s position', 'targetPosition is an inbox. PlayerService.cameraPose requires ClockPort, and a local ClockPort is worse than a narrow mirror'],
-  ['a mob’s death CAUSE', 'explosionDamageAt carries one and applyDamage records it; mc-sim’s EntityState has no field for it, so it is dropped'],
+  ['a mob’s death CAUSE', 'DamageCause and Vitals.lastDamageCause exist in mc-sim, but mob EntityState exposes no Vitals or cause field, so the cause is not retained for mob death'],
   ['blast resistance', 'the crater sets every cell to AIR — obsidian and bedrock included. One flag in kernel’s capability table, no edit here'],
   // ---- what the loot table and the placement rule did NOT close ------------
   // WAS: 'items reaching the inventory — minedItems and consumedItems are

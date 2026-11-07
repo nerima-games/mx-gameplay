@@ -64,6 +64,9 @@ export const GAMEPLAY_STAGE_IDS: {
   timeWeather: StageId('gameplay:time-weather'),
 } as const
 
+/** Coordinator-backed brewing advances composed after the core interaction stage. */
+export const BREWING_ADVANCE_STAGE_ID: StageId = StageId('gameplay:brewing-advance')
+
 /**
  * Stages owned by OTHER repositories that mx-gameplay orders itself against.
  *

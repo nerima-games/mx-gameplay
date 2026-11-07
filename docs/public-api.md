@@ -370,7 +370,8 @@ mc-sim が所有する値の規約であり、[mc-sim の public-api.md](https:/
 
 | export | 種別 | 備考 |
 | --- | --- | --- |
-| `GAMEPLAY_STAGE_IDS` | **契約** | 所有する 4 本の id。`mc-compose` が順序表を書くときに名指しする |
+| `GAMEPLAY_STAGE_IDS` | **契約** | 所有する基本 stage 8 本の id。追加の brewing stage id は次行 |
+| `BREWING_ADVANCE_STAGE_ID` | **契約** | `makeGameplayStages` が `interactions` の後に登録する coordinator-backed stage id |
 | `UPSTREAM_STAGE_IDS` | 内部(可視) | 自分が名指しする他人の stage。レビュー対象として 1 箇所に集めてある |
 | `EXPERIENCE_MODULE_STAGE_PREFIXES` | 内部(可視) | 兄弟宛エッジ検査用。テストの資産 |
 | `OWN_STAGE_PREFIX` | 内部(可視) | 同上 |

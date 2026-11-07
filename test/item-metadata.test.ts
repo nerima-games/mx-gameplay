@@ -130,6 +130,25 @@ describe('copyItemMetadata / moveItemMetadata / deleteItemMetadata', () => {
 })
 
 describe('deleteContainerMetadata', () => {
+  it('deletes every slot of an exact container id without deleting a colon-prefixed id', () => {
+    const store = createItemMetadataStore()
+    const a0 = store.containerMetadataKey('a', 0)
+    const a1 = store.containerMetadataKey('a', 1)
+    const nested0 = store.containerMetadataKey('a:sub', 0)
+    const nested1 = store.containerMetadataKey('a:sub', 1)
+    store.customNames.set(a0, 'A0')
+    store.enchantedItems.set(a1, enchantedPickaxe)
+    store.customNames.set(nested0, 'Nested0')
+    store.enchantedItems.set(nested1, enchantedPickaxe)
+
+    store.deleteContainerMetadata('a')
+
+    expect(store.customNames.has(a0)).toBe(false)
+    expect(store.enchantedItems.has(a1)).toBe(false)
+    expect(store.customNames.get(nested0)).toBe('Nested0')
+    expect(store.enchantedItems.get(nested1)).toStrictEqual(enchantedPickaxe)
+  })
+
   it('drops every slot of the named container and leaves other containers and plain slots alone', () => {
     const store = createItemMetadataStore()
     const a0 = store.containerMetadataKey('chest-a', 0)

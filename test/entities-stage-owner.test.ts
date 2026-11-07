@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import * as fc from 'fast-check'
 import { Effect, Option, Ref, Result, Schema } from 'effect'
 import {
+  CHUNK_SIZE_XZ,
   BlockAxis,
   AIR_BLOCK_ID,
   DeltaTimeSecs as makeDeltaTimeSecs,
@@ -69,6 +70,8 @@ import {
   type ExperienceOrbOwnerSnapshot,
 } from '../src/domain/entities/xp-orb.js'
 import { makeEntitiesStage } from '../src/stages/entities-stage.js'
+import { SPAWN_RING_ANGLES, SPAWN_RING_RADIUS_STEPS, SPAWN_SEARCH_ROLLS } from '../src/domain/entities/mob-spawn-search.js'
+import { DEFAULT_ROLL_SEED, drawRolls, rollAt } from '../src/domain/frame-rolls.js'
 import {
   CREEPER_KIND,
   hostileMobSnapshot,
@@ -849,13 +852,19 @@ describe('entities stage owner-backed MobSimulation', () => {
 
   it('merges an offered spawn ahead of the cadence search and drains the offered attempt', async () => {
     const ground: Array<readonly [ReturnType<typeof blockPosition>, BlockId]> = []
-    for (let x = -40; x <= 40; x += 1) {
-      for (let z = -40; z <= 40; z += 1) {
+    const loadedChunks = new Set<string>()
+    const rotation = rollAt(drawRolls(DEFAULT_ROLL_SEED, SPAWN_SEARCH_ROLLS), 0)
+    // The offered spawn occupies one of the 16 owner slots, so 15 ring cells fill the rest.
+    for (let angleIndex = 0; angleIndex < SPAWN_RING_ANGLES - 1; angleIndex += 1) {
+      const angle = ((angleIndex + rotation) / SPAWN_RING_ANGLES) * 2 * Math.PI
+      // The radius-24 ring stays inside the rule's 16-to-40-block band after flooring.
+      for (const radius of SPAWN_RING_RADIUS_STEPS.slice(1, 2)) {
+        const x = Math.floor(radius * Math.cos(angle))
+        const z = Math.floor(radius * Math.sin(angle))
         ground.push([blockPosition(BlockAxis(x), BlockAxis(63), BlockAxis(z)), STONE])
+        loadedChunks.add(`${String(Math.floor(x / CHUNK_SIZE_XZ))},${String(Math.floor(z / CHUNK_SIZE_XZ))}`)
       }
     }
-    const loadedChunks = Array.from({ length: 6 }, (_, x) => x - 3)
-      .flatMap((cx) => Array.from({ length: 6 }, (_, z) => `${String(cx)},${String(z - 3)}`))
     const playerPose = {
       ...INITIAL_PLAYER_POSE,
       feetPosition: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
@@ -864,7 +873,7 @@ describe('entities stage owner-backed MobSimulation', () => {
       entity: null,
       playerPose,
       blocks: ground,
-      loadedChunks,
+      loadedChunks: [...loadedChunks],
     }))
     const offered = {
       candidate: {

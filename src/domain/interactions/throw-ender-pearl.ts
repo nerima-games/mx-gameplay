@@ -54,6 +54,7 @@
  * pearl gets you up a cliff.
  */
 import type { DeathCause } from '../death-cause.js'
+import { directionComponent, normalizeDirection3 } from '../math/direction.js'
 
 /**
  * Furthest a pearl carries, in blocks.
@@ -150,9 +151,10 @@ export const enderPearlDistance = (hitDistance: number | undefined): number => {
  * PURE and TOTAL. `undefined` means THE THROW DOES NOT MOVE ANYBODY.
  *
  * THE DIRECTION NEED NOT BE A UNIT VECTOR — it is normalised here, so the
- * magnitude does not reach the answer and the rule is scale-invariant under
- * positive factors (docs/responsibility.md §5-1). `test/ender-pearl.test.ts`
- * asserts it, as `test/rail.test.ts` does for `isAscendingAhead`.
+ * magnitude does not reach the answer while floating-point scaling preserves
+ * the represented direction (docs/responsibility.md §5-1). Underflow can erase
+ * or change that direction. `test/ender-pearl.test.ts` asserts the invariant
+ * for representable inputs, as `test/rail.test.ts` does for `isAscendingAhead`.
  *
  * A DEGENERATE DIRECTION MOVES NOBODY, and this is a DIVERGENCE FROM THE
  * REFERENCE stated as one. `ender-pearl.ts:23-25` falls back to
@@ -180,17 +182,23 @@ export const enderPearlDisplacement = (
     return undefined
   }
 
-  const length = Math.hypot(dirX, dirY, dirZ)
-  if (length <= 0) {
-    return undefined
-  }
+  const unitDirection = normalizeDirection3(
+    directionComponent(dirX),
+    directionComponent(dirY),
+    directionComponent(dirZ),
+    {
+      x: directionComponent(dirX),
+      y: directionComponent(dirY),
+      z: directionComponent(dirZ),
+    },
+  )
+  if (unitDirection === undefined) return undefined
 
   const distance = enderPearlDistance(hitDistance)
-
   return {
-    x: (dirX / length) * distance,
-    y: (dirY / length) * distance,
-    z: (dirZ / length) * distance,
+    x: unitDirection.x * distance,
+    y: unitDirection.y * distance,
+    z: unitDirection.z * distance,
   }
 }
 

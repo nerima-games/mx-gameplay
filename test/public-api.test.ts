@@ -23,7 +23,7 @@ import {
 import { applyDamage } from '../src/domain/death-cause'
 import { planFallingBlockMoves, takeBatch } from '../src/domain/falling-block'
 import { resolveFoodUse } from '../src/domain/interactions/eat-food'
-import { GAMEPLAY_STAGE_IDS } from '../src/stages/stage-ids'
+import { BREWING_ADVANCE_STAGE_ID, GAMEPLAY_STAGE_IDS } from '../src/stages/stage-ids'
 
 const withoutKey = (record: Readonly<Record<string, unknown>>, key: string): Record<string, unknown> =>
   Object.fromEntries(Object.entries(record).filter(([candidate]) => candidate !== key))
@@ -76,6 +76,7 @@ describe('public API surface', () => {
         'requestFishingCancel',
         'requestFishingReel',
         'GAMEPLAY_STAGE_IDS',
+        'BREWING_ADVANCE_STAGE_ID',
         'UPSTREAM_STAGE_IDS',
         'isPlaceableItem',
       ]
@@ -560,6 +561,7 @@ describe('public API surface', () => {
       expect(gameplay.resolveFoodUse).toBe(resolveFoodUse)
       expect(gameplay.planFallingBlockMoves).toBe(planFallingBlockMoves)
       expect(gameplay.GAMEPLAY_STAGE_IDS).toBe(GAMEPLAY_STAGE_IDS)
+      expect(gameplay.BREWING_ADVANCE_STAGE_ID).toBe(BREWING_ADVANCE_STAGE_ID)
     }),
   )
 

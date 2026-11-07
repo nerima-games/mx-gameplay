@@ -77,6 +77,10 @@ export const repairRoster = <S>(
   repairBehaviour: BehaviourRepair<S>,
 ): Result.Result<{ readonly roster: EntityRoster<S>; readonly repair: RosterRepair }, EntitySerialExhausted> => {
   const seen = new Set<string>()
+  const reserved = new Set<string>()
+  for (const entity of roster.entities) {
+    if (typeof entity.id === 'string' && entity.id.trim().length > 0) reserved.add(entity.id)
+  }
   const entities: Array<Entity<S>> = []
   let discarded = 0
   let reidentified = 0
@@ -93,10 +97,15 @@ export const repairRoster = <S>(
     const duplicate = !blank && seen.has(entity.id)
     let id = entity.id
     if (blank || duplicate) {
-      const nextSerial = EntitySerial.result(serial + 1)
-      if (Result.isFailure(nextSerial)) return Result.fail({ _tag: 'EntitySerialExhausted' })
-      id = mintEntityId(entity.kind, serial)
-      serial = nextSerial.success
+      while (true) {
+        const nextSerial = EntitySerial.result(serial + 1)
+        if (Result.isFailure(nextSerial)) return Result.fail({ _tag: 'EntitySerialExhausted' })
+        const candidate = mintEntityId(entity.kind, serial)
+        serial = nextSerial.success
+        if (reserved.has(candidate) || seen.has(candidate)) continue
+        id = candidate
+        break
+      }
       reidentified += 1
     }
 

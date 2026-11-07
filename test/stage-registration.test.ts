@@ -55,6 +55,8 @@ import {
 import {
   TimeService,
   TimeServiceLayer,
+  BREWING_FUEL_CHARGES,
+  BREWING_TIME_SECS,
   durability as makeDurability,
   equipmentItem as makeEquipmentItem,
   itemStack as makeItemStack,
@@ -174,6 +176,7 @@ import type {
   GameplayTargetingSnapshotContext,
 } from '../src/stages/registration-core'
 import {
+  BREWING_ADVANCE_STAGE_ID,
   EXPERIENCE_MODULE_STAGE_PREFIXES,
   GAMEPLAY_STAGE_IDS,
   OWN_STAGE_PREFIX,
@@ -205,7 +208,7 @@ import {
 import { brimming, emptyInventoryLayer, emptySlots, makeInventoryDouble } from './support/inventory-service-double'
 import { gameplayCommitServicesLayer, makeGameplayCommitServices, makeTransactionalChunkStoreDouble } from './support/transactional-stage-doubles'
 import { FrameServicesLayer } from './support/frame-services'
-import { runFrames } from './support/frame-runner'
+import { FRAME_DELTA, runFrames } from './support/frame-runner'
 import { blockPosition as fixtureBlockPosition, position as fixturePosition } from './support/coordinate-fixtures'
 import {
   GAMEPLAY_CROPS_OWNER_ID,
@@ -579,6 +582,7 @@ describe('§2.3-3 the total order belongs to mc-compose', () => {
         GAMEPLAY_STAGE_IDS.enderDragon,
         GAMEPLAY_STAGE_IDS.fluids,
         GAMEPLAY_STAGE_IDS.timeWeather,
+        BREWING_ADVANCE_STAGE_ID,
       ])
 
       expect(byId.get(GAMEPLAY_STAGE_IDS.vehicles)?.after).toStrictEqual([
@@ -586,6 +590,9 @@ describe('§2.3-3 the total order belongs to mc-compose', () => {
       ])
       expect(byId.get(GAMEPLAY_STAGE_IDS.interactions)?.after).toStrictEqual([
         UPSTREAM_STAGE_IDS.simPhysics,
+      ])
+      expect(byId.get(BREWING_ADVANCE_STAGE_ID)?.after).toStrictEqual([
+        GAMEPLAY_STAGE_IDS.interactions,
       ])
       expect(byId.get(GAMEPLAY_STAGE_IDS.fire)?.after).toStrictEqual([
         GAMEPLAY_STAGE_IDS.interactions,
@@ -2283,7 +2290,10 @@ describe('the module contract has caught up with this file’s shape', () => {
       > = gameplayModule
       const stages = yield* Effect.provide(module.frameStages, emptyWorld)
 
-      expect(stageIds(stages)).toStrictEqual(Object.values(GAMEPLAY_STAGE_IDS))
+      expect(stageIds(stages)).toStrictEqual([
+        ...Object.values(GAMEPLAY_STAGE_IDS),
+        BREWING_ADVANCE_STAGE_ID,
+      ])
     }),
   )
 
@@ -2301,7 +2311,7 @@ describe('the module contract has caught up with this file’s shape', () => {
 
   // Player pose, inventory and vitals are read from registered WCC owners; the
   // registration effect must not acquire local mirrors of those fields.
-  it.effect('acquires five host services to register and exposes eight stages', () =>
+  it.effect('acquires five host services to register and exposes nine stages', () =>
     Effect.gen(function* () {
       const registration: Effect.Effect<
         ReadonlyArray<StageRegistration>,
@@ -2311,15 +2321,41 @@ describe('the module contract has caught up with this file’s shape', () => {
 
       // Providing those five — and no local player or inventory services —
       // discharges the whole registration context.
-      // If a stage started demanding an EIGHTH service at REGISTRATION time, this
+      // If a stage started demanding another service at REGISTRATION time, this
       // assignment would stop compiling, which is the point. Any new service
       // would need an explicit owner and belongs in this contract, rather than
       // speculation this file's history is a record of NOT doing.
       const satisfied: Effect.Effect<ReadonlyArray<StageRegistration>, never, never> =
         Effect.provide(registration, Layer.orDie(emptyWorld))
 
-      expect(yield* satisfied).toHaveLength(8)
+      expect(yield* satisfied).toHaveLength(9)
     }),
+  )
+
+  it.effect('production gameplay stages advance a brewing stand by the frame delta', () =>
+    Effect.gen(function* () {
+      const coordinator = yield* WorldCommitCoordinator
+      const stages = yield* makeGameplayStages
+      const brewing = yield* makeBrewingService(GAMEPLAY_BREWING_OWNER_ID)
+
+      yield* brewing.setFuel(itemStack('blaze_powder', 1)).pipe(
+        Effect.provideService(WorldCommitCoordinator, coordinator),
+      )
+      yield* brewing.addFuel.pipe(Effect.provideService(WorldCommitCoordinator, coordinator))
+      yield* brewing.setBottle(0, itemStack('water_bottle', 1)).pipe(
+        Effect.provideService(WorldCommitCoordinator, coordinator),
+      )
+      yield* brewing.setIngredient(itemStack('nether_wart', 1)).pipe(
+        Effect.provideService(WorldCommitCoordinator, coordinator),
+      )
+
+      yield* runFrames(stages, Math.ceil(BREWING_TIME_SECS / FRAME_DELTA), FRAME_DELTA)
+
+      const stand = yield* coordinator.snapshot(GAMEPLAY_BREWING_OWNER_ID, BrewingServiceStateSchema)
+      expect(stand.state.bottles[0]).toMatchObject({ item: 'awkward_potion', count: 1 })
+      expect(stand.state.ingredient).toBeUndefined()
+      expect(stand.state.fuelCharges).toBe(BREWING_FUEL_CHARGES - 1)
+    }).pipe(Effect.provide(Layer.orDie(emptyWorld))),
   )
 
   // REGRESSION-SHAPED, and it is the property mc-sim's §7-1 buys with
