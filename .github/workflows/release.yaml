@@ -102,6 +102,9 @@ jobs:
       - name: Install dependencies
         run: nix develop --command pnpm install --frozen-lockfile
 
+      - name: Install Chromium for browser-backed scenarios
+        run: nix develop --command pnpm exec playwright install --with-deps chromium
+
       # The same package checks the branch protection runs, repeated here
       # because publishing is irreversible: a version number, once taken on the
       # registry, cannot be reused.
