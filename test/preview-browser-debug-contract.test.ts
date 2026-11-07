@@ -197,6 +197,8 @@ describe('browser debug Site contract', () => {
         ingredient: { item: 'nether_wart', count: 1 },
       })
 
+      expect(() => mount.requestBrewingAdvance('contract-brewing-invalid-delta', Number.NaN)).toThrow()
+
       for (let frame = 0; frame < brewFrames; frame += 1) {
         mount.requestBrewingAdvance(
           `contract-brewing-advance-${String(frame)}`,
@@ -207,6 +209,9 @@ describe('browser debug Site contract', () => {
 
       const executions = mount.drainBrewingAdvanceResults()
       expect(executions).toHaveLength(brewFrames)
+      expect(executions.map(({ requestId }) => requestId)).toStrictEqual(
+        Array.from({ length: brewFrames }, (_, frame) => `contract-brewing-advance-${String(frame)}`),
+      )
       const finalExecution = executions.at(-1)
       expect(finalExecution).toBeDefined()
       if (finalExecution === undefined) throw new Error('Expected the final brewing advance result')
