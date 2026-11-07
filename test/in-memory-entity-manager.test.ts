@@ -304,6 +304,61 @@ describe('restore repairs rather than validates', () => {
     }),
   )
 
+  it.effect('retries a reidentified id when the serial collides with an existing id', () =>
+    Effect.sync(() => {
+      const result = success(repairRoster<Behaviour>(
+        {
+          entities: [saved({ id: EntityId('zombie-0') }), saved({ id: EntityId('zombie-0') })],
+          nextSerial: serial(0),
+        },
+        (_kind, behaviour) => behaviour,
+      ))
+      const ids = result.roster.entities.map((entity) => entity.id)
+
+      expect(ids).toStrictEqual([EntityId('zombie-0'), EntityId('zombie-1')])
+      expect(new Set(ids).size).toBe(2)
+    }),
+  )
+
+  it.effect('preserves original valid ids during repair', () =>
+    Effect.sync(() => {
+      const result = success(repairRoster<Behaviour>(
+        {
+          entities: [
+            saved({ id: EntityId('zombie-4') }),
+            saved({ id: EntityId('zombie-4') }),
+            saved({ id: EntityId('zombie-8') }),
+          ],
+          nextSerial: serial(4),
+        },
+        (_kind, behaviour) => behaviour,
+      ))
+
+      expect(result.roster.entities.map((entity) => entity.id)).toStrictEqual([
+        EntityId('zombie-4'),
+        EntityId('zombie-5'),
+        EntityId('zombie-8'),
+      ])
+    }),
+  )
+
+  it.effect('skips an id used later in the roster when reidentifying a blank id', () =>
+    Effect.sync(() => {
+      const result = success(repairRoster<Behaviour>(
+        {
+          entities: [saved({ id: ' ' as never }), saved({ id: EntityId('zombie-0') })],
+          nextSerial: serial(0),
+        },
+        (_kind, behaviour) => behaviour,
+      ))
+
+      expect(result.roster.entities.map((entity) => entity.id)).toStrictEqual([
+        EntityId('zombie-1'),
+        EntityId('zombie-0'),
+      ])
+    }),
+  )
+
   it.effect('a blank id is reidentified too', () =>
     Effect.sync(() => {
       const result = success(repairRoster<Behaviour>(
