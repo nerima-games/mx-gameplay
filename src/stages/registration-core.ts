@@ -166,6 +166,7 @@ import {
   PlayerStorageSnapshotSchema,
   damageAt as damagePlayerStorageAt,
   withInventory,
+  type DamageAtResult,
   type PlayerStorage,
   type ReplicatedOwnerCandidate,
   type ReplicatedOwnerId,
@@ -1935,6 +1936,7 @@ export type GameplayStageOperationFailure = Readonly<{
     | FishingServiceError
     | BrewingServiceError
     | PrimedTntValidationFailure
+    | DamageAtResult
 }>
 
 export const recordGameplayStageFailure = (
@@ -2885,7 +2887,10 @@ export const requestTargetedPrimaryAttack = (
     )
 
     if (resolution._tag === 'Melee') {
-      yield* requestMeleeAttack(state, resolution.request)
+      yield* requestMeleeAttack(state, {
+        ...resolution.request,
+        ...(options.toolLocation === undefined ? {} : { toolLocation: options.toolLocation }),
+      })
       return { _tag: 'Melee', target: resolution.target } satisfies TargetedPrimaryAttackResult
     }
     if (resolution._tag === 'Block') {

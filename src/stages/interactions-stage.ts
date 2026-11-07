@@ -33,9 +33,9 @@ import {
   stepStatusEffects,
   useBucket,
 } from './registration-core.js'
-import { EntityHealthPoints, PositionAxis } from '@nerima-games/mc-kernel'
+import { EntityHealthPoints, PositionAxis, weaponComponent } from '@nerima-games/mc-kernel'
 import { position as kernelPosition } from '@nerima-games/mc-kernel'
-import type { BlockId } from '@nerima-games/mc-kernel'
+import type { BlockId, ItemType } from '@nerima-games/mc-kernel'
 import { Option, Result } from 'effect'
 import {
   DamageAmount,
@@ -193,6 +193,10 @@ const cropCandidate = (
 // Callers hold schema-decoded item types, and every registered item admits a stack of one.
 const singleItemStack = (item: Parameters<typeof itemStack>[0]) =>
   Result.getOrThrow(itemStack(item, StackCount(1)))
+
+const DEFAULT_WEAPON_ITEM_DAMAGE = Result.getOrThrow(weaponComponent()).itemDamagePerAttack
+
+const isMeleeWeaponItem = (item: ItemType): boolean => item.endsWith('_sword') || item.endsWith('_axe')
 
 const commitMobDamage = (
   state: GameplayStageContext['state'],
@@ -565,6 +569,53 @@ const processMeleeAttack = (
     const targetEntity = Option.getOrThrow(Option.fromNullishOr(
       entities.success.state.entities.find(({ id }) => id === target.id),
     ))
+    let storageCandidate: Schema.Schema.Type<typeof PlayerStorageSnapshotSchema> | undefined
+    if (request.toolLocation !== undefined) {
+      const playerStorageOwnerId = context.playerStorageOwnerId
+      if (playerStorageOwnerId === undefined) {
+        yield* recordGameplayUnsupportedOperation(state, {
+          _tag: 'Unsupported', action: 'MeleeAttack', reason: 'OwnerRegistrationUnavailable',
+        })
+        yield* Ref.update(state.pendingMeleeAttacks, (pending) => [request, ...pending])
+        return
+      }
+      const storage = yield* Effect.result(context.coordinator.snapshot(
+        playerStorageOwnerId,
+        PlayerStorageSnapshotSchema,
+      ))
+      if (Result.isFailure(storage)) {
+        yield* recordGameplayStageFailure(state, {
+          _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'Player', error: storage.failure,
+        })
+        yield* Ref.update(state.pendingMeleeAttacks, (pending) => [request, ...pending])
+        return
+      }
+      if (storage.success.revision !== entities.success.revision) {
+        yield* recordGameplayStageFailure(state, {
+          _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'Player',
+          error: new WorldRevisionConflict({ expected: entities.success.revision, actual: storage.success.revision }),
+        })
+        yield* Ref.update(state.pendingMeleeAttacks, (pending) => [request, ...pending])
+        return
+      }
+      const heldStack = request.toolLocation._tag === 'Inventory'
+        ? storage.success.state.inventory.slots[request.toolLocation.slotIndex]
+        : storage.success.state.equipment.slots[request.toolLocation.slot]
+      if (heldStack !== undefined && heldStack !== null && isMeleeWeaponItem(heldStack.item)) {
+        const wear = heldStack.components?.weapon?.itemDamagePerAttack ?? DEFAULT_WEAPON_ITEM_DAMAGE
+        if (wear > 0) {
+          const damaged = damagePlayerStorageAt(storage.success.state, request.toolLocation, wear)
+          if (damaged.result._tag !== 'Damaged' && damaged.result._tag !== 'Broken') {
+            yield* recordGameplayStageFailure(state, {
+              _tag: 'Failed', operation: 'CandidateBuild', subject: 'Player', error: damaged.result,
+            })
+            yield* Ref.update(state.pendingMeleeAttacks, (pending) => [request, ...pending])
+            return
+          }
+          storageCandidate = damaged.storage
+        }
+      }
+    }
     const targetPosition = Schema.decodeUnknownSync(WorldPositionSchema)({
       dimension: player.success.state.pose.feetPosition.dimension,
       x: targetEntity.feetPosition.x,
@@ -585,7 +636,7 @@ const processMeleeAttack = (
         damage: { amount: amount.success, cause: 'mob' },
         killCredit: 'player',
       },
-      undefined,
+      storageCandidate,
       event,
     )
     if (!committed) {

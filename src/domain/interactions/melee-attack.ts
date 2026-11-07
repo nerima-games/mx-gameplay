@@ -11,7 +11,14 @@ import {
   type Position,
   type SimulationTick,
 } from '@nerima-games/mc-kernel'
-import { EYE_LEVEL_OFFSET, IntentPayloadSchema, type Entity, type IntentPayload, type PlayerPose } from '@nerima-games/mc-sim'
+import {
+  EYE_LEVEL_OFFSET,
+  IntentPayloadSchema,
+  type Entity,
+  type IntentPayload,
+  type PlayerPose,
+  type StorageLocation,
+} from '@nerima-games/mc-sim'
 import { Result, Schema } from 'effect'
 import { HOSTILE_KINDS, type MobBehaviour } from '../entities/mob-frame.js'
 import type { ItemType } from '@nerima-games/mc-kernel'
@@ -33,6 +40,8 @@ const SWORD_MELEE_DAMAGE: Readonly<Partial<Record<ItemType, number>>> = {
 }
 
 /** Damage for the held item; bare hands and non-swords use the unarmed value. */
+// `node_modules/@nerima-games/mc-kernel/dist/domain/item/weapon-data.d.ts` exposes wear only.
+// The kernel data and docs/ have no per-item axe attack value or rule to use here.
 export const meleeDamageForItem = (
   item: ItemType | null | undefined,
   critical = false,
@@ -50,6 +59,8 @@ export type MeleeAttackRequest = {
   readonly direction: Position
   readonly reach: AttackRangeDistance
   readonly damage: number
+  /** Selected weapon slot used for atomic durability wear by the interactions stage. */
+  readonly toolLocation?: StorageLocation
   /** Host raycast distance to terrain. A target at or beyond it is blocked. */
   readonly hitDistance?: number
 }
