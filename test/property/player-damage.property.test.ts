@@ -5,6 +5,7 @@ import {
   type DeathCause,
   type Vitals,
 } from '../../src/domain/death-cause'
+import { applyArmorToDamage } from '../../src/domain/combat/armor'
 import {
   INITIAL_ENVIRONMENTAL_CONTACT_DAMAGE_STATE,
   resolveEnvironmentalContactDamage,
@@ -35,6 +36,25 @@ const validContacts: ReadonlyArray<EnvironmentalContact> = [
 ]
 
 describe('player damage properties', () => {
+  it('caps armor mitigation at eighty percent without increasing damage', () => {
+    // Fails if armor raises damage or reduces a hit below twenty percent of its original amount.
+    FastCheck.assert(
+      FastCheck.property(
+        FastCheck.integer({ min: 1, max: 200 }),
+        FastCheck.integer({ min: 0, max: 80 }),
+        FastCheck.integer({ min: 0, max: 80 }),
+        (amount, armorPoints, toughness) => {
+          const damage = { amount, cause: 'mob' as const }
+          const mitigated = applyArmorToDamage(damage, armorPoints, toughness)
+
+          return mitigated.cause === damage.cause &&
+            mitigated.amount <= amount &&
+            mitigated.amount / amount >= 0.2 - Number.EPSILON
+        },
+      ),
+    )
+  })
+
   it('records only the cause that reduces health to zero and preserves it afterward', () => {
     // Fails if a nonlethal hit records a cause, a fatal hit loses it, or a later hit rewrites it.
     FastCheck.assert(
