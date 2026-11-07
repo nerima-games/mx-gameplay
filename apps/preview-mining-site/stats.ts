@@ -20,14 +20,13 @@
  * Every check answers a question of the form "if this were broken, what would I
  * see?". A measurement with no such answer is a number, not a check.
  */
-import { Brand, Effect, Ref, Result } from 'effect'
+import { Brand, Effect, Ref } from 'effect'
 import {
   AIR_BLOCK_ID,
   BlockAxis,
   BlockId,
   blockPosition,
   blockPositionKeyOf,
-  capabilityOfBlockId,
   DeltaTimeSecs,
   HARVEST_TIERS,
   MAX_STACK_COUNT,
@@ -84,7 +83,17 @@ import {
 } from './site'
 import { INVENTORY_SLOT_COUNT } from './inventory'
 import { FrameServicesLayer } from './frame-services'
-import { AIR, GRAVEL, LAVA, SAND, WATER, glyphOf, placeableItemOf, type WorldSpec } from './world'
+import {
+  AIR,
+  GRAVEL,
+  hasBlockCapability,
+  LAVA,
+  SAND,
+  WATER,
+  glyphOf,
+  placeableItemOf,
+  type WorldSpec,
+} from './world'
 import { blockLoot } from '../../src/domain/interactions/block-loot'
 import { DEFAULT_ROLL_SEED, drawRolls } from '../../src/domain/frame-rolls'
 import {
@@ -144,7 +153,7 @@ const buildSite = (spec: WorldSpec, name: string): Effect.Effect<Site> =>
 const fallingCount = (site: Site): number => {
   let total = 0
   for (const [id, count] of site.world.census()) {
-    if (Result.getOrUndefined(capabilityOfBlockId(id, 'fallsWhenUnsupported')) === true) {
+    if (hasBlockCapability(id, 'fallsWhenUnsupported')) {
       total += count
     }
   }
@@ -353,7 +362,7 @@ const conservation = Effect.gen(function* () {
       for (let y = BOUNDS.height - 1; y >= 0 && minedTargets < 3; y -= 1) {
         const position = positionAt(site, x, y)
         const block = site.world.peekBlock(position) ?? AIR
-        if (Result.getOrUndefined(capabilityOfBlockId(block, 'fallsWhenUnsupported')) === true) {
+        if (hasBlockCapability(block, 'fallsWhenUnsupported')) {
           yield* requestBreak(site, position)
           minedTargets += 1
         }
@@ -1392,10 +1401,10 @@ export const buildStatsReport: Effect.Effect<ReadonlyArray<string>> = Effect.gen
   // A last sanity line that is cheap and would be embarrassing to get wrong: the
   // capability table the whole cascade keys off.
   const falls = [SAND, GRAVEL].every(
-    (id) => Result.getOrUndefined(capabilityOfBlockId(id, 'fallsWhenUnsupported')) === true,
+    (id) => hasBlockCapability(id, 'fallsWhenUnsupported'),
   )
   const replaceable = [AIR, WATER, LAVA].every(
-    (id) => Result.getOrUndefined(capabilityOfBlockId(id, 'replaceable')) === true,
+    (id) => hasBlockCapability(id, 'replaceable'),
   )
   lines.push(
     `capability table: fallsWhenUnsupported(sand,gravel)=${String(falls)}  ` +

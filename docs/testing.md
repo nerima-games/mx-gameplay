@@ -510,23 +510,24 @@ F3 は「終状態が同じで途中が違う」——3 つとも assertion の�
 
 #### 現行の `pnpm preview --stats` findings
 
-記録済みの最新測定は 21 項目中 18 pass、3 findings である。これは診断結果で、回帰テストの代わりではない。
+現行の 21 項目は 19 pass、2 findings（F0 と F1）である。次表ではこの2件と、数量・unsupported の診断を示す。診断結果は回帰テストの代わりではない。
 
 | Finding | 測定結果 | 状態 |
 | --- | --- | --- |
 | F0: 待機フレームの読み取り | 5 シナリオで連鎖処理後に 20 待機フレームを回した結果、reads は 216〜219 回、writes は 0 回 | 読み取り量の診断。フレームごとの内訳は測っていない |
-| F1: 落下ブロックの処理予算 | 擾乱は 26 件、queue peak は 52。予算上限に達した 6 フレームで 192 位置を調べ、156 回移動した（0.81 moves / examined position） | 上限は守られている |
-| F-mass: 落下ブロックの数量 | 5 シナリオの計測値は次表のとおり。採掘数と inventory 追加数はいずれも 0 | Open（未解決）。別 stream が調査中 |
+| F1: 落下ブロックの処理予算 | 擾乱は 26 件、queue peak は 52。予算上限に達した 6 フレームで 192 位置を調べ、落下素材の書き込みは 78 回（0.41 moves / examined position、13 moves / frame）。以前の 156 件は AIR の採掘書き込みも含む全書き込み数 | 上限は守られている。落下素材だけを数えても 32 位置の予算に対して実移動は 13 / frame で、処理量の診断は続く |
+| F-mass: 落下ブロックの数量 | 5 シナリオの計測値は次表のとおり。各シナリオで 3 個を採掘し、3 個を inventory に追加、ground への overflow は 0 | ✅ コミット 41afab02 で修正済み。stats.ts の Result<boolean> の読み違いであり、ゲーム内でブロックは失われていなかった |
+| unsupported: settle 後に残る落下ブロック | 5 シナリオの settle 後は sand-column / wide-seam / chunk-edge / lava-pit が 0 個、long-drop が 1 個。cascade 中の peak は順に 1 / 1 / 1 / 3 / 2 個 | ✅ Result<boolean> の判定を直した実測。long-drop の 1 個は開始時から浮いていた fixture のブロックで、新たな未支持ブロックは残らない |
 
 #### `preview --stats` で確認したシナリオ別 F-mass
 
 | シナリオ | 測定値 |
 | --- | ---: |
-| sand-column | 63 → 57 |
-| wide-seam | 182 → 176 |
-| chunk-edge | 56 → 52 |
-| lava-pit | 64 → 58 |
-| long-drop | 32 → 31 |
+| sand-column | 10 → 7 |
+| wide-seam | 104 → 101 |
+| chunk-edge | 14 → 11 |
+| lava-pit | 6 → 3 |
+| long-drop | 4 → 1 |
 
 ### 3-5. 移植が見つけたもの —— F7
 

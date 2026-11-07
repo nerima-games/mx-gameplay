@@ -73,7 +73,6 @@ import {
   blockOfPlaceableItem,
   blockPosition as kernelBlockPosition,
   blockPositionKeyOf,
-  capabilityOfBlockId,
   DeltaTimeSecs,
   HARVEST_TIERS,
   type ItemType,
@@ -201,7 +200,14 @@ import {
 import { makePreviewRoster } from './roster'
 import { makePreviewPlayer } from './player'
 import { makeBrewingAdvanceStage, type BrewingAdvanceExecution } from '../../src/stages/brewing-advance-stage.js'
-import { AIR, floatingBlocks, makePreviewWorld, type PreviewWorld, type WorldSpec } from './world'
+import {
+  AIR,
+  floatingBlocks,
+  hasBlockCapability,
+  makePreviewWorld,
+  type PreviewWorld,
+  type WorldSpec,
+} from './world'
 
 /**
  * One frame's worth of simulated time, as a 60 Hz loop would produce it.
@@ -1028,7 +1034,7 @@ export const stepFrame = (site: Site): Effect.Effect<FrameRow> =>
     // counted here; it is unreachable for the reason recorded at that line, and
     // `--stats` measures whether it stayed unreachable.
     const moved = writes.filter(
-      (record) => record.outcome === 'Written' && capabilityOfBlockId(record.block, 'fallsWhenUnsupported'),
+      (record) => record.outcome === 'Written' && hasBlockCapability(record.block, 'fallsWhenUnsupported'),
     ).length
 
     const row: FrameRow = {

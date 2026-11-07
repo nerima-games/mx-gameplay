@@ -612,6 +612,14 @@ export const makePreviewWorld = (spec: WorldSpec): Effect.Effect<PreviewWorld> =
     },
   )
 
+/** Whether the kernel registers `id` with `capability`. */
+export const hasBlockCapability = (
+  id: BlockId,
+  capability: Parameters<typeof capabilityOfBlockId>[1],
+): boolean =>
+  // An unknown block id has no registered capability, so a lookup failure denies it.
+  Result.getOrUndefined(capabilityOfBlockId(id, capability)) === true
+
 /**
  * Is this cell supported, in the sense the falling-block rule uses?
  *
@@ -629,7 +637,7 @@ export const restsOnSupport = (world: PreviewWorld, position: BlockPosition): bo
   if (!world.isResident(belowPosition)) {
     return true
   }
-  return !capabilityOfBlockId(world.peekBlock(belowPosition) ?? AIR_BLOCK_ID, 'replaceable')
+  return !hasBlockCapability(world.peekBlock(belowPosition) ?? AIR_BLOCK_ID, 'replaceable')
 }
 
 /**
@@ -646,6 +654,6 @@ export const floatingBlocks = (
 ): ReadonlyArray<BlockPosition> =>
   cells.filter(
     (position) =>
-      capabilityOfBlockId(world.peekBlock(position) ?? AIR_BLOCK_ID, 'fallsWhenUnsupported') &&
+      hasBlockCapability(world.peekBlock(position) ?? AIR_BLOCK_ID, 'fallsWhenUnsupported') &&
         !restsOnSupport(world, position),
   )
