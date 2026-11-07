@@ -95,8 +95,11 @@ import {
   DomainEventBus,
   DomainEventBusLayer,
   EventSubscriberCapacitySchema,
+  EnchantmentTableApplyRequestSchema,
   BrewingServiceStateSchema,
   FishingStateSchema,
+  makeEnchantmentTableService,
+  WorldRevisionConflict,
   makeBrewingService,
   makeFishingService,
   makeProjectileService,
@@ -113,6 +116,8 @@ import {
   type FishingServiceApi,
   type ProjectileServiceApi,
   type TntServiceApi,
+  type EnchantmentTableApplyRequest,
+  type EnchantmentTableApplyResult,
   type PlayerStorage,
   type TimeServiceApi,
   type Vehicle,
@@ -129,6 +134,8 @@ import {
 } from '../../src/domain/entities/mob-frame'
 import { isSupportSensitiveOfBlock, placementVerdict } from '../../src/domain/interactions/place-block'
 import { INITIAL_WEATHER, type WeatherState } from '../../src/domain/weather'
+import { createItemMetadataStore, type ItemMetadataStore } from '../../src/domain/item-metadata.js'
+import type { VillagerTradeState } from '../../src/domain/villager-trade.js'
 import type { IgnitionItemType } from '../../src/domain/interactions/use-flint-and-steel'
 import {
   drainMobDrops,
@@ -142,16 +149,21 @@ import {
   requestFishingAdvance as enqueueFishingAdvance,
   requestFishingCancel as enqueueFishingCancel,
   requestFishingReel as enqueueFishingReel,
+  requestVillagerTrade as enqueueVillagerTrade,
+  drainVillagerTradeResults as takeVillagerTradeResults,
   makeGameplayFrameStateForOwner,
   requestItemUse as enqueueItemUse,
   type GameplayFrameState,
   type PlacementRequest,
+  type VillagerTradeRequest,
+  type VillagerTradeResult,
 } from '../../src/stages/registration'
 import {
   GAMEPLAY_BREWING_OWNER_ID,
   GAMEPLAY_CROPS_OWNER_ID,
   GAMEPLAY_DROPPED_ITEMS_OWNER_ID,
   GameplayEntityRosterSchema,
+  GameplayVillagerTradeSnapshotSchema,
   GAMEPLAY_ENTITIES_OWNER_ID,
   GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
   GAMEPLAY_FISHING_OWNER_ID,
@@ -166,6 +178,7 @@ import {
 } from '../../src/stages/gameplay-owner-registrations.js'
 import {
   ExperienceOrbOwnerSnapshotSchema,
+  ExperienceOrbVitalsOwnerSnapshotSchema,
   type ExperienceOrbRecord,
   type ExperienceOrbOwnerSnapshot,
 } from '../../src/domain/entities/xp-orb.js'
@@ -265,6 +278,7 @@ export type Site = {
   readonly projectileService: ProjectileServiceApi
   readonly tntService: TntServiceApi
   readonly eventBus: DomainEventBusApi
+  readonly itemMetadata: ItemMetadataStore
   readonly stages: ReadonlyArray<StageRegistration>
   readonly spec: WorldSpec
   readonly bounds: { readonly width: number; readonly height: number }
@@ -311,6 +325,20 @@ export type Site = {
   readonly observeBrewingState: () => Effect.Effect<import('@nerima-games/mc-sim').BrewingState, unknown>
   /** Consume completed item-use outcomes only when requested. */
   readonly drainItemUseResults: () => Effect.Effect<ReadonlyArray<ItemUseResult>, unknown>
+  /** Apply a validated offer through mc-sim's real enchantment-table service. */
+  readonly requestEnchantmentTableApply: (
+    request: Omit<EnchantmentTableApplyRequest, 'playerStorageOwnerId' | 'vitalsOwnerId' | 'itemSlot' | 'lapisSlot'> & {
+      readonly itemSlot: number
+      readonly lapisSlot: number
+    },
+  ) => Effect.Effect<EnchantmentTableApplyResult, unknown>
+  /** Write the scenario's villager and offer owner state. */
+  readonly setVillagerTrades: (trades: VillagerTradeState) => Effect.Effect<void, unknown>
+  /** Read villager offers and stock only when requested. */
+  readonly observeVillagerTrades: () => Effect.Effect<VillagerTradeState, unknown>
+  readonly requestVillagerTrade: (request: VillagerTradeRequest) => Effect.Effect<void, unknown>
+  /** Consume completed trade results only when requested. */
+  readonly drainVillagerTradeResults: () => Effect.Effect<ReadonlyArray<VillagerTradeResult>, unknown>
   /** Replace the player inventory and synchronize its owner snapshot. */
   readonly setInventory: (items: ReadonlyArray<readonly [ItemType, number]>) => Effect.Effect<void, unknown>
   /** Seed the coordinator-owned experience-orb snapshot. */
@@ -443,6 +471,10 @@ export const makeSite = (
     const tntService = yield* makeTntService(TNT_REPLICATED_OWNER_ID).pipe(
       Effect.provideService(WorldCommitCoordinator, coordinator),
     )
+    const enchantmentTableService = yield* makeEnchantmentTableService().pipe(
+      Effect.provideService(WorldCommitCoordinator, coordinator),
+    )
+    const itemMetadata = createItemMetadataStore()
     const state = yield* makeGameplayFrameStateForOwner({
       coordinator,
       vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID,
@@ -554,6 +586,62 @@ export const makeSite = (
       ingredient: Parameters<typeof enqueueBrewingIngredient>[2],
     ) => enqueueBrewingIngredient(state, requestId, ingredient)
     const readItemUseResults = () => drainItemUseResults(state)
+    const requestEnchantmentTableApply = (
+      request: Omit<EnchantmentTableApplyRequest, 'playerStorageOwnerId' | 'vitalsOwnerId' | 'itemSlot' | 'lapisSlot'> & {
+        readonly itemSlot: number
+        readonly lapisSlot: number
+      },
+    ) => Effect.gen(function* () {
+      const decoded = yield* Schema.decodeUnknownEffect(EnchantmentTableApplyRequestSchema)({
+        ...request,
+        playerStorageOwnerId: GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+        vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID,
+      })
+      const [storageSnapshot, vitalsSnapshot] = yield* Effect.all([
+        coordinator.snapshot(GAMEPLAY_PLAYER_STORAGE_OWNER_ID, PlayerStorageSnapshotSchema),
+        coordinator.snapshot(GAMEPLAY_VITALS_OWNER_ID, ExperienceOrbVitalsOwnerSnapshotSchema),
+      ])
+      if (storageSnapshot.revision !== vitalsSnapshot.revision) {
+        return yield* Effect.fail(new WorldRevisionConflict({
+          expected: storageSnapshot.revision,
+          actual: vitalsSnapshot.revision,
+        }))
+      }
+      const fragment = yield* enchantmentTableService.planApply({
+        world: storageSnapshot.world,
+        expectedRevision: storageSnapshot.revision,
+        expectedDimensions: [],
+        state: { playerStorage: storageSnapshot.state, vitals: vitalsSnapshot.state.vitals },
+      }, decoded)
+      yield* coordinator.commit({
+        expectedRevision: fragment.expectedRevision,
+        expectedDimensions: fragment.expectedDimensions,
+        changes: fragment.changes.map((change) =>
+          change.ownerId === GAMEPLAY_VITALS_OWNER_ID
+            ? { ...change, state: { vitals: change.state } }
+            : change,
+        ),
+      })
+      const result = fragment.result
+      return result
+    })
+    const setVillagerTrades = (trades: VillagerTradeState) => Effect.gen(function* () {
+      const decoded = yield* Schema.decodeUnknownEffect(GameplayVillagerTradeSnapshotSchema)(trades)
+      const current = yield* coordinator.snapshot(GAMEPLAY_VILLAGER_TRADES_OWNER_ID, GameplayVillagerTradeSnapshotSchema)
+      if (Equal.equals(current.state, decoded)) return
+      yield* coordinator.commit({
+        expectedRevision: current.revision,
+        expectedDimensions: [],
+        changes: [{ ownerId: GAMEPLAY_VILLAGER_TRADES_OWNER_ID, state: decoded }],
+      })
+    })
+    const observeVillagerTrades = () =>
+      Effect.map(
+        coordinator.snapshot(GAMEPLAY_VILLAGER_TRADES_OWNER_ID, GameplayVillagerTradeSnapshotSchema),
+        ({ state: trades }) => trades,
+      )
+    const requestVillagerTrade = (request: VillagerTradeRequest) => enqueueVillagerTrade(state, request)
+    const drainVillagerTradeResults = () => takeVillagerTradeResults(state)
     const dispose = () => Scope.close(resourceScope, Exit.void)
     const commit = {
       coordinator,
@@ -604,6 +692,7 @@ export const makeSite = (
       projectileService,
       tntService,
       eventBus,
+      itemMetadata,
       stages,
       spec,
       bounds,
@@ -625,6 +714,11 @@ export const makeSite = (
       insertBrewingIngredient,
       observeBrewingState,
       drainItemUseResults: readItemUseResults,
+      requestEnchantmentTableApply,
+      setVillagerTrades,
+      observeVillagerTrades,
+      requestVillagerTrade,
+      drainVillagerTradeResults,
       setInventory,
       seedExperienceOrbs,
       dispose,

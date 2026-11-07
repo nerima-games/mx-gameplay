@@ -6,12 +6,14 @@ import {
   type ItemType,
   type Position,
 } from '@nerima-games/mc-kernel'
-import { type Vehicle } from '@nerima-games/mc-sim'
+import { type EnchantmentTableApplyResult, type Vehicle } from '@nerima-games/mc-sim'
 import type { Dimension } from '@nerima-games/mc-worldgen'
 import type { Weather } from '../../src/domain/weather.js'
 import type { ExperienceOrbRecord } from '../../src/domain/entities/xp-orb.js'
 import type { VehicleControlInput } from '../../src/domain/vehicle/vehicle-frame.js'
 import type { ItemUseResult } from '../../src/stages/registration-core.js'
+import type { VillagerTradeState } from '../../src/domain/villager-trade.js'
+import type { VillagerTradeRequest, VillagerTradeResult } from '../../src/stages/registration-core.js'
 import {
   makeSite,
   stepFrame,
@@ -145,6 +147,17 @@ export type ScenarioMount = {
   readonly observeBrewingState: () => import('@nerima-games/mc-sim').BrewingState
   /** Consume completed item-use results only when called. */
   readonly drainItemUseResults: () => ReadonlyArray<ItemUseResult>
+  /** Apply a table offer through mc-sim and return its committed result. */
+  readonly requestEnchantmentTableApply: (
+    request: Parameters<Site['requestEnchantmentTableApply']>[0],
+  ) => EnchantmentTableApplyResult
+  readonly itemMetadata: Site['itemMetadata']
+  readonly setVillagerTrades: (trades: VillagerTradeState) => void
+  /** Read villager offers and stock only when called. */
+  readonly observeVillagerTrades: () => VillagerTradeState
+  readonly requestVillagerTrade: (request: VillagerTradeRequest) => void
+  /** Consume completed trade results only when called. */
+  readonly drainVillagerTradeResults: () => ReadonlyArray<VillagerTradeResult>
   readonly seedExperienceOrbs: (orbs: ReadonlyArray<ExperienceOrbRecord>) => void
   readonly dispose: () => void
 }
@@ -218,6 +231,12 @@ export const mountGameplayScenario = (
       Effect.runSync(site.insertBrewingIngredient(requestId, ingredient)),
     observeBrewingState: () => Effect.runSync(site.observeBrewingState()),
     drainItemUseResults: () => Effect.runSync(site.drainItemUseResults()),
+    requestEnchantmentTableApply: (request) => Effect.runSync(site.requestEnchantmentTableApply(request)),
+    itemMetadata: site.itemMetadata,
+    setVillagerTrades: (trades) => Effect.runSync(site.setVillagerTrades(trades)),
+    observeVillagerTrades: () => Effect.runSync(site.observeVillagerTrades()),
+    requestVillagerTrade: (request) => Effect.runSync(site.requestVillagerTrade(request)),
+    drainVillagerTradeResults: () => Effect.runSync(site.drainVillagerTradeResults()),
     seedExperienceOrbs: (orbs) => Effect.runSync(site.seedExperienceOrbs(orbs)),
     snapshot: () => {
       const observation = setup.observe?.(site) ?? {}

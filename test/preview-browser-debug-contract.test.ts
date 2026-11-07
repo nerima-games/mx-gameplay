@@ -5,6 +5,7 @@ import { AngleRadians, AIR_BLOCK_ID, BlockAxis, DimensionIdSchema, Interpolation
 import { BREWING_FUEL_CHARGES, EntityId, SNOWBALL_PROFILE, type ProjectileLaunch } from '@nerima-games/mc-sim'
 import { Brand, Effect, Option, Ref, Result, Schema } from 'effect'
 import { createExperienceOrbValue } from '../src/domain/entities/xp-orb'
+import { makeVillager } from '../src/domain/villager-trade.js'
 import { TNT_BLOCK_ID } from '../src/domain/interactions/ignite-tnt'
 import { CREEPER_KIND, type MobSpawnAttempt } from '../src/domain/entities/mob-frame'
 import {
@@ -161,6 +162,98 @@ describe('browser debug Site contract', () => {
         action: 'InsertBrewingFuel', requestId: 'contract-brewing-no-fuel', success: false, failure: 'MissingItem',
       }])
       emptyMount.dispose()
+    }),
+  )
+
+  it.effect('applies enchantment offers and trades through their real owners', () =>
+    Effect.gen(function* () {
+      const enchantMount = mountScenario('contract-enchanting')
+      enchantMount.setInventory([['book', 1], ['lapis_lazuli', 1]])
+      const orb = EntityId('browser-debug:enchanting-xp')
+      const actor = EntityId('browser-debug:enchanting-player')
+      enchantMount.seedExperienceOrbs([{ id: orb, value: Result.getOrThrow(createExperienceOrbValue(1_000)) }])
+      yield* requestExperienceOrbAbsorption(enchantMount.site.state, {
+        actor,
+        orb,
+        tick: 0,
+        position: { dimension: 'overworld', x: 0, y: 64, z: 0 },
+      })
+      enchantMount.advance()
+
+      const enchantment = enchantMount.requestEnchantmentTableApply({
+        itemSlot: 0,
+        lapisSlot: 1,
+        tableSlot: 0,
+        offer: { levelCost: 1, lapisCost: 1, enchantments: [{ id: 'efficiency', level: 1 }] },
+      })
+      enchantMount.advance()
+      expect(enchantment.item).toMatchObject({
+        item: 'enchanted_book',
+        count: 1,
+        components: { storedEnchantments: { 'minecraft:efficiency': 1 } },
+      })
+      expect(enchantMount.itemMetadata.enchantedItems).toBeInstanceOf(Map)
+      enchantMount.dispose()
+
+      const noLapisMount = mountScenario('contract-enchanting-negative')
+      noLapisMount.setInventory([['book', 1]])
+      const noLapisOrb = EntityId('browser-debug:enchanting-no-lapis-xp')
+      yield* requestExperienceOrbAbsorption(noLapisMount.site.state, {
+        actor,
+        orb: noLapisOrb,
+        tick: 0,
+        position: { dimension: 'overworld', x: 0, y: 64, z: 0 },
+      })
+      noLapisMount.seedExperienceOrbs([{ id: noLapisOrb, value: Result.getOrThrow(createExperienceOrbValue(1_000)) }])
+      noLapisMount.advance()
+      const rejectedEnchantment = yield* Effect.result(noLapisMount.site.requestEnchantmentTableApply({
+        itemSlot: 0,
+        lapisSlot: 1,
+        tableSlot: 0,
+        offer: { levelCost: 1, lapisCost: 1, enchantments: [{ id: 'efficiency', level: 1 }] },
+      }))
+      expect(rejectedEnchantment).toMatchObject({
+        _tag: 'Failure',
+        failure: { _tag: 'EnchantmentTableApplyFailure', reason: 'insufficient-lapis' },
+      })
+      noLapisMount.dispose()
+
+      const farmer = makeVillager('contract-farmer', 'farmer')
+      const wheatOffer = farmer.offers.find((offer) => offer.input.item === 'wheat')
+      if (wheatOffer === undefined) throw new Error('Farmer fixture must expose its wheat offer')
+      const tradeMount = mountScenario('contract-trade')
+      tradeMount.setInventory([['wheat', wheatOffer.input.count]])
+      tradeMount.setVillagerTrades({ villagers: [farmer], restockElapsedSecs: 0 })
+      tradeMount.requestVillagerTrade({
+        requestId: 'contract-farmer-trade',
+        villagerId: farmer.id,
+        offerId: wheatOffer.id,
+      })
+      tradeMount.advance()
+      expect(tradeMount.drainVillagerTradeResults()).toStrictEqual([{
+        requestId: 'contract-farmer-trade',
+        villagerId: farmer.id,
+        offerId: wheatOffer.id,
+        _tag: 'Traded',
+      }])
+      expect(tradeMount.observeVillagerTrades().villagers[0]?.offers.find((offer) => offer.id === wheatOffer.id)?.uses).toBe(1)
+      tradeMount.dispose()
+
+      const noWheatMount = mountScenario('contract-trade-negative')
+      noWheatMount.setVillagerTrades({ villagers: [farmer], restockElapsedSecs: 0 })
+      noWheatMount.requestVillagerTrade({
+        requestId: 'contract-farmer-no-wheat',
+        villagerId: farmer.id,
+        offerId: wheatOffer.id,
+      })
+      noWheatMount.advance()
+      expect(noWheatMount.drainVillagerTradeResults()).toMatchObject([{
+        requestId: 'contract-farmer-no-wheat',
+        _tag: 'Rejected',
+        reason: 'InsufficientItems',
+      }])
+      expect(noWheatMount.observeVillagerTrades().villagers[0]?.offers.find((offer) => offer.id === wheatOffer.id)?.uses).toBe(0)
+      noWheatMount.dispose()
     }),
   )
 
