@@ -11,6 +11,7 @@ import {
   type BlockId,
 } from '@nerima-games/mc-kernel'
 import { CREEPER_KIND, type MobSpawnAttempt } from '../../../src/domain/entities/mob-frame.js'
+import { blockLoot } from '../../../src/domain/interactions/block-loot.js'
 import {
   requestBlockPlacementCommand,
   requestMobSpawn,
@@ -28,6 +29,38 @@ const FARMLAND: BlockId = Option.getOrThrow(blockIdOf('farmland'))
 const POTATO_CROP: BlockId = Option.getOrThrow(blockIdOf('potato_crop'))
 
 const at = (x: number, y: number) => blockPosition(BlockAxis(x), BlockAxis(y), BlockAxis(0))
+
+const dirtDropFromLootRules = () => {
+  const drop = blockLoot(DIRT).find(({ item }) => item === 'dirt')
+  if (drop === undefined) throw new Error('browser-debug: dirt loot rule does not yield dirt')
+  return drop
+}
+
+const assertDirtInPlayerStorage = (site: Site): void => {
+  const expected = dirtDropFromLootRules()
+  const storage = Effect.runSync(site.observePlayerStorage())
+  const actualCount = storage.inventory.slots.reduce(
+    (count, slot) => count + (slot?.item === expected.item ? slot.count : 0),
+    0,
+  )
+  if (actualCount !== expected.count) {
+    throw new Error(`browser-debug: expected ${String(expected.count)} ${expected.item}, observed ${String(actualCount)}`)
+  }
+}
+
+const assertDirtDropAt = (site: Site, target: ReturnType<typeof at>): void => {
+  const expected = dirtDropFromLootRules()
+  const observed = Effect.runSync(site.observeDroppedItems()).some((drop) =>
+    drop.item === expected.item &&
+    drop.count === expected.count &&
+    Number(drop.position.x) === Number(target.x) &&
+    Number(drop.position.y) === Number(target.y) &&
+    Number(drop.position.z) === Number(target.z),
+  )
+  if (!observed) {
+    throw new Error(`browser-debug: expected ${String(expected.count)} ${expected.item} drop at ${String(target.x)},${String(target.y)},${String(target.z)}`)
+  }
+}
 
 const row = (
   startX: number,
@@ -101,11 +134,9 @@ export const interactionsBlockScenarios: ReadonlyArray<ScenarioDefinition> = [
               const target = at(2, 64)
               Effect.runSync(requestBreak(site, target))
               advanceUntil(site, () => site.world.peekBlock(target) === AIR_BLOCK_ID, 'dirt mining')
+              assertDirtInPlayerStorage(site)
             },
           },
-        ],
-        unsupported: [
-          'Mining commits the dirt to player storage, but the preview Site inventory projection does not expose that coordinator-owned update.',
         ],
       }),
   },
@@ -118,9 +149,6 @@ export const interactionsBlockScenarios: ReadonlyArray<ScenarioDefinition> = [
       const mounted = mountGameplayScenario(context, {
         world: world([[3, 63, STONE]]),
         bounds: { width: 8, height: 66 },
-        unsupported: [
-          'Placement commits the player-storage owner, but the preview Site inventory projection remains at its seeded value.',
-        ],
         actions: [
           {
             id: 'place-sand',
@@ -159,12 +187,14 @@ export const interactionsBlockScenarios: ReadonlyArray<ScenarioDefinition> = [
               const target = at(3, 64)
               Effect.runSync(requestBreak(site, target))
               advanceUntil(site, () => site.world.peekBlock(target) === AIR_BLOCK_ID, 'overflow dirt mining')
+              assertDirtDropAt(site, target)
             },
           },
         ],
         unsupported: [
-          'The mining stage commits overflow to the dropped-item owner, but the preview Site does not project that owner into its roster or frame snapshot.',
+          'The visible Drops row reads the preview roster. This scenario asserts the authoritative dropped-item owner directly.',
         ],
+        observe: (site) => ({ droppedItems: Effect.runSync(site.observeDroppedItems()) }),
       })
       fillInventoryWithStone(mounted)
       return mounted
@@ -181,9 +211,6 @@ export const interactionsBlockScenarios: ReadonlyArray<ScenarioDefinition> = [
       const mounted = mountGameplayScenario(context, {
         world: world([...row(0, 7, 63, STONE), [4, 64, DIRT]]),
         bounds: { width: 8, height: 66 },
-        unsupported: [
-          'Farming commits player-storage changes, but the preview Site inventory projection remains at its seeded value.',
-        ],
         actions: [
           {
             id: 'till-soil',
