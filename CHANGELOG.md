@@ -1,5 +1,23 @@
 # @nerima-games/mx-gameplay
 
+## 0.10.0
+
+### Minor Changes
+
+- Advance brewing from the production gameplay frame delta.
+
+### Patch Changes
+
+- Allow fishing reel requests to carry the held rod slot and apply rod durability wear during stage settlement.
+
+- Reject fishing reel requests whose declared held slot does not contain a fishing rod.
+
+- Fix entity ID repair collisions, exact container metadata deletion, and subnormal direction handling.
+
+- Add the held storage location to melee attack requests so the gameplay stage can apply weapon durability wear.
+
+- Add a browser debug UI and expand gameplay property and scenario validation. The UI under `apps/browser-debug/` is development tooling and is not included in the published package.
+
 ## 0.9.0
 
 ### Minor Changes
