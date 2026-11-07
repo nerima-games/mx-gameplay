@@ -24,7 +24,7 @@ const previewSleepPlayer: BedSleepPlayer = { dimension: Effect.succeed('overworl
 const setGameplayTime = (site: Site, ticks: number): void => {
   const fraction = InterpolationFraction(ticks / TICKS_PER_DAY)
   Effect.runSync(site.time.setTimeOfDay(fraction))
-  Effect.runSync(Ref.set(site.state.timeOfDay, ticks))
+  Effect.runSync(Ref.set(site.state.timeOfDay, fraction))
 }
 
 const inventoryItems = (site: Site): ReadonlyArray<readonly [ItemType, number]> => {
@@ -58,7 +58,7 @@ export const playerSystemScenarios: ReadonlyArray<ScenarioDefinition> = [
     area: 'player-systems',
     isDefault: false,
     mount: (context) => {
-      const mounted = mountGameplayScenario({ ...context, time: 0 }, {
+      return mountGameplayScenario(context, {
         world: {
           cells: [...floor, [1, 64, BED] as const],
           loadedChunks: ['0,0'],
@@ -100,7 +100,7 @@ export const playerSystemScenarios: ReadonlyArray<ScenarioDefinition> = [
               if (decision._tag === 'SleepRejected') {
                 throw new Error(`sleep rejected: ${decision.reason}`)
               }
-              Effect.runSync(Ref.set(site.state.timeOfDay, decision.morningTimeOfDay * TICKS_PER_DAY))
+              Effect.runSync(Ref.set(site.state.timeOfDay, decision.morningTimeOfDay))
             },
           },
           {
@@ -129,8 +129,6 @@ export const playerSystemScenarios: ReadonlyArray<ScenarioDefinition> = [
           },
         }),
       })
-      setGameplayTime(mounted.site, context.time)
-      return mounted
     },
   },
 ]
