@@ -217,6 +217,19 @@ describe('enderPearlDisplacement', () => {
     )
   })
 
+  it('normalizes a diagonal subnormal direction without losing its travel distance', () => {
+    // Catches Math.hypot rounding two smallest components down before they can be normalized.
+    const smallest = Number.MIN_VALUE
+    const displacement = enderPearlDisplacement(0, -smallest, smallest, ENDER_PEARL_MAX_DISTANCE)
+
+    expect(displacement).toBeDefined()
+    expect(displacement?.y).toBeCloseTo(-ENDER_PEARL_MAX_DISTANCE / Math.sqrt(2))
+    expect(displacement?.z).toBeCloseTo(ENDER_PEARL_MAX_DISTANCE / Math.sqrt(2))
+    expect(Math.hypot(displacement?.x ?? 0, displacement?.y ?? 0, displacement?.z ?? 0)).toBeCloseTo(
+      ENDER_PEARL_MAX_DISTANCE,
+    )
+  })
+
   it('SCALE-INVARIANT under positive factors: docs/responsibility.md §5-1, executable', () => {
     const answers = [1, 0.001, 25, 1e6].map((scale) =>
       enderPearlDisplacement(1 * scale, 2 * scale, 3 * scale, 12),
