@@ -81,14 +81,18 @@ const distanceXZ = (a: Position, b: Position): number => Math.hypot(a.x - b.x, a
 const move = (from: Position, target: Position, distance: number): Position => {
   const dx = target.x - from.x
   const dz = target.z - from.z
-  const length = Math.hypot(dx, dz)
-  return length === 0
-    ? from
-    : position(
-        PositionAxis(from.x + (dx / length) * distance),
-        from.y,
-        PositionAxis(from.z + (dz / length) * distance),
-      )
+  const scale = Math.max(Math.abs(dx), Math.abs(dz))
+  if (scale === 0) return from
+
+  // Scaling first preserves a unit direction when both components are subnormal.
+  const scaledX = dx / scale
+  const scaledZ = dz / scale
+  const length = Math.hypot(scaledX, scaledZ)
+  return position(
+    PositionAxis(from.x + (scaledX / length) * distance),
+    from.y,
+    PositionAxis(from.z + (scaledZ / length) * distance),
+  )
 }
 
 export const stepEcosystemMob = (

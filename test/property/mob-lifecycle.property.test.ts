@@ -38,7 +38,8 @@ const spawnChunks = Array.from({ length: 7 * 7 }, (_, index) => {
 
 describe('mob lifecycle properties', () => {
   it('keeps passive movement non-hostile, level, and bounded by elapsed time', () => {
-    // Catches passive mobs attacking, changing altitude, or moving too far in one step.
+    // Flee speed is capped at 3 blocks per second across the combined horizontal displacement.
+    // The minimum-subnormal diagonal catches normalization losing unit length to rounding.
     fc.assert(
       fc.property(
         fc.constantFrom(...PASSIVE_MOB_KINDS),
@@ -78,6 +79,14 @@ describe('mob lifecycle properties', () => {
           expect(displacement).toBeLessThanOrEqual(deltaSecs * 3 + 1e-9)
         },
       ),
+      {
+        examples: [[
+          PASSIVE_MOB_KINDS[0],
+          { x: 0, y: 0, z: 0 },
+          { x: Number.MIN_VALUE, y: 0, z: -Number.MIN_VALUE },
+          1,
+        ]],
+      },
     )
   })
 
