@@ -92,26 +92,25 @@ describe('player systems properties', () => {
     )
   })
 
-  it('expires a speed effect at its remaining-time boundary', () => {
+  it('expires a speed effect at and after its remaining-time boundary', () => {
     // Fails if speed remains active after its full duration or expires before the boundary.
     FastCheck.assert(
-      FastCheck.property(
-        FastCheck.integer({ min: 1, max: 600 }),
-        FastCheck.integer({ min: 0, max: 600 }),
-        (durationSecs, elapsedSecs) => {
-          const active = applyStatusEffect(emptyStatusEffectState(), {
-            type: 'speed',
-            durationSecs,
-          })
-          const tick = tickStatusEffects(active, DeltaTimeSecs(elapsedSecs))
-          const shouldRemain = elapsedSecs < durationSecs
+      FastCheck.property(FastCheck.integer({ min: 1, max: 600 }), (durationSecs) => {
+        const active = applyStatusEffect(emptyStatusEffectState(), {
+          type: 'speed',
+          durationSecs,
+        })
+        const before = tickStatusEffects(active, DeltaTimeSecs(durationSecs - 1))
+        const exact = tickStatusEffects(active, DeltaTimeSecs(durationSecs))
+        const after = tickStatusEffects(active, DeltaTimeSecs(durationSecs + 1))
 
-          return shouldRemain
-            ? tick.state.effects[0]?.remainingSecs === durationSecs - elapsedSecs &&
-                tick.movementSpeedMultiplier > 1
-            : tick.state.effects.length === 0 && tick.movementSpeedMultiplier === 1
-        },
-      ),
+        return before.state.effects[0]?.remainingSecs === 1 &&
+          before.movementSpeedMultiplier > 1 &&
+          exact.state.effects.length === 0 &&
+          exact.movementSpeedMultiplier === 1 &&
+          after.state.effects.length === 0 &&
+          after.movementSpeedMultiplier === 1
+      }),
     )
   })
 
@@ -241,10 +240,21 @@ describe('player systems properties', () => {
         const updated = after?.villagers[0]
         if (updated === undefined) return false
 
+        const soldOut: VillagerTradeState = {
+          villagers: [{
+            ...villager,
+            offers: [{ ...firstOffer, uses: firstOffer.maxUses }, secondOffer],
+          }],
+          restockElapsedSecs: 0,
+        }
+        const rejectedSoldOutOffer = useVillagerOffer(soldOut, villager.id, firstOffer.id)
+
         return updated?.offers[0]?.uses === uses + 1 &&
           updated.offers[1]?.id === secondOffer.id &&
           updated.offers[1]?.uses === secondOffer.uses &&
-          state.villagers[0]?.offers[0]?.uses === uses
+          state.villagers[0]?.offers[0]?.uses === uses &&
+          rejectedSoldOutOffer === undefined &&
+          soldOut.villagers[0]?.offers[0]?.uses === firstOffer.maxUses
       }),
     )
   })
