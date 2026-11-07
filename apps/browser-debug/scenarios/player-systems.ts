@@ -1,4 +1,5 @@
 import {
+  AIR_BLOCK_ID,
   AngleRadians,
   BlockAxis,
   DimensionIdSchema,
@@ -12,6 +13,8 @@ import {
   position,
 } from '@nerima-games/mc-kernel'
 import {
+  BREWING_FUEL_CHARGES,
+  BREWING_TIME_SECS,
   EntityId,
   FishingApproachTicksSchema,
   FishingBiteWindowTicksSchema,
@@ -24,12 +27,16 @@ import {
 import { Brand, Effect, Option, Ref, Result, Schema } from 'effect'
 import { attemptBedSleep, type BedSleepPlayer } from '../../../src/domain/bed-sleep.js'
 import { createExperienceOrbValue } from '../../../src/domain/entities/xp-orb.js'
+import { type MobSpawnAttempt } from '../../../src/domain/entities/mob-frame.js'
+import { DEFAULT_MELEE_REACH, meleeDamageForItem } from '../../../src/domain/interactions/melee-attack.js'
 import { makeVillager } from '../../../src/domain/villager-trade.js'
+import { ZOMBIE_KIND } from '../../../src/domain/mob/hostile-combat.js'
 import {
   getPlayerMovementSpeedMultiplier,
   GameplayBrewingItemUseResultSchema,
   GameplayFishingItemUseResultSchema,
   requestExperienceOrbAbsorption,
+  requestMobSpawn,
   requestStatusEffect,
 } from '../../../src/stages/registration.js'
 import { stepFrame, type Site } from '../../preview-mining-site/site.js'
@@ -62,6 +69,9 @@ if (wheatOffer === undefined) throw new Error('Farmer fixture must expose a whea
 const enchantmentResults = new WeakMap<Site, EnchantmentTableApplyResult>()
 const fishingCatchResults = new WeakMap<Site, unknown>()
 const villagerTradeResults = new WeakMap<Site, unknown>()
+const meleeResults = new WeakMap<Site, unknown>()
+const brewingResults = new WeakMap<Site, unknown>()
+const meleeToolLocation = { _tag: 'Inventory', slotIndex: 0 } as const
 const setGameplayTime = (site: Site, ticks: number): void => {
   const fraction = InterpolationFraction(ticks / TICKS_PER_DAY)
   Effect.runSync(site.time.setTimeOfDay(fraction))
@@ -107,10 +117,128 @@ const brewingResult = (
 
 const inventoryCount = (site: Site, item: ItemType): number => site.inventory.get(item) ?? 0
 
-const unsupported = [
-  'Melee combat has no reachable target: this Site does not expose player movement or the entity-owner coordinator.',
-  'Player position is unavailable: Site does not expose its preview player pose; the common snapshot currently substitutes a static preview-spawn string.',
-]
+const observePlayerPose = (site: Site) => {
+  const playerPose = Effect.runSync(site.observePlayerPose())
+  return {
+    playerPose,
+    playerPosition: `${playerPose.dimension} ${String(playerPose.position.x)}, ${String(playerPose.position.y)}, ${String(playerPose.position.z)}`,
+  }
+}
+
+export const playerSystemsMeleeSetup: ScenarioSetup = {
+  world: {
+    cells: floor,
+    loadedChunks: ['0,0', '0,-1', '0,-2'],
+    z: -17,
+  },
+  bounds: { width: 8, height: 66 },
+  actions: [
+    {
+      id: 'melee-spawn-target',
+      label: 'Set night and spawn a zombie',
+      perform: (site) => {
+        Effect.runSync(site.setInventory([['iron_sword', 1]]))
+        setGameplayTime(site, 21_600)
+        const feetPosition = position(PositionAxis(0.5), PositionAxis(64), PositionAxis(-16.5))
+        const pose = Effect.runSync(site.observePlayerPose())
+        const attempt: MobSpawnAttempt = {
+          candidate: {
+            dimension: pose.dimension,
+            groundBlock: STONE,
+            footBlock: AIR_BLOCK_ID,
+            headBlock: AIR_BLOCK_ID,
+            blockLight: 0,
+            timeOfDay: Effect.runSync(site.time.timeOfDay),
+            distanceToPlayerBlocksXZ: Math.hypot(0.5, -16.5),
+          },
+          kind: ZOMBIE_KIND,
+          feetPosition,
+        }
+        Effect.runSync(requestMobSpawn(site.state, attempt))
+        frame(site)
+        if (!Effect.runSync(site.observeMobs()).some(({ kind }) => kind === ZOMBIE_KIND)) {
+          throw new Error('melee scenario did not spawn its zombie target')
+        }
+      },
+    },
+    {
+      id: 'melee-attack-target',
+      label: 'Attack with the iron sword',
+      perform: (site) => {
+        const beforeMob = Effect.runSync(site.observeMobs()).find(({ kind }) => kind === ZOMBIE_KIND)
+        if (beforeMob === undefined) throw new Error('melee target is missing before the attack')
+
+        const beforeStorage = Effect.runSync(site.observePlayerStorage())
+        const sword = beforeStorage.inventory.slots[meleeToolLocation.slotIndex]
+        const beforeDurability = beforeStorage.inventoryDurability[meleeToolLocation.slotIndex]
+        if (
+          sword?.item !== 'iron_sword' ||
+          beforeDurability === null ||
+          beforeDurability === undefined
+        ) {
+          throw new Error('melee scenario could not observe the iron sword and its durability')
+        }
+
+        const expectedDamage = meleeDamageForItem(sword.item)
+        let attack = Effect.runSync(site.requestTargetedPrimaryAttack({
+          meleeReach: DEFAULT_MELEE_REACH,
+          meleeDamage: expectedDamage,
+          toolLocation: meleeToolLocation,
+        }))
+        let elapsedFrames = 0
+        while (attack._tag !== 'Melee' && elapsedFrames < 600) {
+          frame(site)
+          elapsedFrames += 1
+          attack = Effect.runSync(site.requestTargetedPrimaryAttack({
+            meleeReach: DEFAULT_MELEE_REACH,
+            meleeDamage: expectedDamage,
+            toolLocation: meleeToolLocation,
+          }))
+        }
+        if (attack._tag !== 'Melee' || attack.target.id !== beforeMob.id) {
+          throw new Error('targeted primary attack did not select the spawned zombie')
+        }
+        frame(site)
+
+        const afterMob = Effect.runSync(site.observeMobs()).find(({ id }) => id === beforeMob.id)
+        const afterDurability = Effect.runSync(site.observePlayerStorage())
+          .inventoryDurability[meleeToolLocation.slotIndex]
+        const durabilityWear = afterDurability === null || afterDurability === undefined
+          ? 0
+          : beforeDurability.current - afterDurability.current
+        if (afterMob === undefined || afterMob.healthPoints !== beforeMob.healthPoints - expectedDamage) {
+          throw new Error('iron sword melee damage did not match the weapon rule')
+        }
+        if (
+          afterDurability === null ||
+          afterDurability === undefined ||
+          durabilityWear <= 0 ||
+          afterDurability.max !== beforeDurability.max
+        ) {
+          throw new Error('iron sword durability did not wear in the observed player storage')
+        }
+        meleeResults.set(site, {
+          targetId: beforeMob.id,
+          health: {
+            before: Number(beforeMob.healthPoints),
+            after: Number(afterMob.healthPoints),
+            damage: expectedDamage,
+          },
+          swordDurability: {
+            before: beforeDurability,
+            after: afterDurability,
+            wear: durabilityWear,
+          },
+        })
+      },
+    },
+  ],
+  observe: (site) => ({
+    ...observePlayerPose(site),
+    mobs: Effect.runSync(site.observeMobs()),
+    equipment: { lastMeleeAttack: meleeResults.get(site) },
+  }),
+}
 
 export const playerSystemsFishingSetup: ScenarioSetup = {
   world: {
@@ -191,6 +319,7 @@ export const playerSystemsFishingSetup: ScenarioSetup = {
     },
   ],
   observe: (site) => ({
+    ...observePlayerPose(site),
     equipment: {
       fishing: Effect.runSync(site.observeFishingState()),
       lastCatch: fishingCatchResults.get(site),
@@ -245,12 +374,48 @@ export const playerSystemsBrewingSetup: ScenarioSetup = {
         brewingResult(site, 'player-systems-brewing-ingredient', 'InsertBrewingIngredient')
       },
     },
-  ],
-  unsupported: [
-    'Brewing completion is unavailable: this mounted Site exposes BrewingService but no coordinator-bound frame advance helper.',
+    {
+      id: 'brewing-advance',
+      label: 'Advance brewing through real frames',
+      perform: (site) => {
+        const brewFrames = Math.ceil(BREWING_TIME_SECS)
+        for (let elapsedFrame = 0; elapsedFrame < brewFrames; elapsedFrame += 1) {
+          Effect.runSync(site.requestBrewingAdvance(
+            `player-systems-brewing-advance-${String(elapsedFrame)}`,
+            Math.min(1, BREWING_TIME_SECS - elapsedFrame),
+          ))
+          frame(site)
+        }
+
+        const executions = Effect.runSync(site.drainBrewingAdvanceResults())
+        if (executions.length !== brewFrames || executions.some(({ result }) => Result.isFailure(result))) {
+          throw new Error('brewing advance did not complete successfully through real frames')
+        }
+        const finalExecution = executions.at(-1)
+        if (finalExecution === undefined || Result.isFailure(finalExecution.result)) {
+          throw new Error('brewing advance did not return a final result')
+        }
+        const completed = finalExecution.result.success
+        const observed = Effect.runSync(site.observeBrewingState())
+        if (
+          completed.brewed !== 1 ||
+          observed.bottles[0]?.item !== 'awkward_potion' ||
+          observed.bottles[0]?.count !== 1 ||
+          observed.ingredient !== undefined ||
+          observed.fuelCharges !== BREWING_FUEL_CHARGES - 1
+        ) {
+          throw new Error('real brewing frames did not produce an awkward potion')
+        }
+        brewingResults.set(site, { brewed: completed.brewed, state: observed })
+      },
+    },
   ],
   observe: (site) => ({
-    equipment: { brewingStand: Effect.runSync(site.observeBrewingState()) },
+    ...observePlayerPose(site),
+    equipment: {
+      brewingStand: Effect.runSync(site.observeBrewingState()),
+      lastBrew: brewingResults.get(site),
+    },
   }),
 }
 
@@ -306,7 +471,10 @@ export const playerSystemsEnchantingSetup: ScenarioSetup = {
   ],
   observe: (site) => {
     const result = enchantmentResults.get(site)
-    return result === undefined ? {} : { equipment: { lastEnchantment: result } }
+    return {
+      ...observePlayerPose(site),
+      ...(result === undefined ? {} : { equipment: { lastEnchantment: result } }),
+    }
   },
 }
 
@@ -357,6 +525,7 @@ export const playerSystemsVillagerTradeSetup: ScenarioSetup = {
     },
   ],
   observe: (site) => ({
+    ...observePlayerPose(site),
     equipment: {
       villagerTrades: Effect.runSync(site.observeVillagerTrades()),
       lastTrade: villagerTradeResults.get(site),
@@ -434,8 +603,8 @@ export const playerSystemScenarios: ReadonlyArray<ScenarioDefinition> = [
             },
           },
         ],
-        unsupported,
         observe: (site) => ({
+          ...observePlayerPose(site),
           statusEffects: {
             pendingApplications: Effect.runSync(Ref.get(site.state.pendingStatusEffects)),
             movementSpeedMultiplier: Effect.runSync(getPlayerMovementSpeedMultiplier(site.state)),
@@ -450,6 +619,13 @@ export const playerSystemScenarios: ReadonlyArray<ScenarioDefinition> = [
     area: 'player-systems',
     isDefault: false,
     mount: (context) => mountGameplayScenario(context, playerSystemsFishingSetup),
+  },
+  {
+    id: 'player-systems-melee',
+    title: 'Melee: iron sword attack and durability',
+    area: 'player-systems',
+    isDefault: false,
+    mount: (context) => mountGameplayScenario(context, playerSystemsMeleeSetup),
   },
   {
     id: 'player-systems-brewing',
