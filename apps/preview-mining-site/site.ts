@@ -64,7 +64,7 @@
  * decision it cannot make correctly (`test/public-api.test.ts` asserts no such
  * export exists).
  */
-import { Effect, Equal, Option, Ref, Result, Schema } from 'effect'
+import { Context, Effect, Equal, Exit, Layer, Option, Ref, Result, Schema, Scope } from 'effect'
 import {
   BlockAxis,
   AngleRadians,
@@ -91,6 +91,16 @@ import {
 import {
   makeTimeService,
   makeWorldCommitCoordinator,
+  WorldCommitCoordinator,
+  DomainEventBus,
+  DomainEventBusLayer,
+  EventSubscriberCapacitySchema,
+  BrewingServiceStateSchema,
+  FishingStateSchema,
+  makeBrewingService,
+  makeFishingService,
+  makeProjectileService,
+  makeTntService,
   PlayerStorageSnapshotSchema,
   PlayerServiceSnapshotSchema,
   PROJECTILE_REPLICATED_OWNER_ID,
@@ -98,6 +108,11 @@ import {
   makeVehicleService,
   OccupantId,
   type EntityManagerApi,
+  type DomainEventBusApi,
+  type BrewingServiceApi,
+  type FishingServiceApi,
+  type ProjectileServiceApi,
+  type TntServiceApi,
   type PlayerStorage,
   type TimeServiceApi,
   type Vehicle,
@@ -118,7 +133,15 @@ import type { IgnitionItemType } from '../../src/domain/interactions/use-flint-a
 import {
   drainMobDrops,
   drainMobExperience,
+  drainItemUseResults,
   gameplayStages,
+  insertBrewingFuel as enqueueBrewingFuel,
+  insertBrewingBottle as enqueueBrewingBottle,
+  insertBrewingIngredient as enqueueBrewingIngredient,
+  requestFishingCast as enqueueFishingCast,
+  requestFishingAdvance as enqueueFishingAdvance,
+  requestFishingCancel as enqueueFishingCancel,
+  requestFishingReel as enqueueFishingReel,
   makeGameplayFrameStateForOwner,
   requestItemUse as enqueueItemUse,
   type GameplayFrameState,
@@ -148,6 +171,7 @@ import {
 } from '../../src/domain/entities/xp-orb.js'
 import { GAMEPLAY_STAGE_IDS } from '../../src/stages/stage-ids'
 import type { VehicleControlInput, VehicleFrameEnvironment } from '../../src/domain/vehicle/vehicle-frame.js'
+import type { ItemUseResult } from '../../src/stages/registration-core.js'
 import { FrameServicesLayer } from './frame-services'
 import {
   makePreviewInventory,
@@ -236,6 +260,11 @@ export type Site = {
   readonly state: GameplayFrameState
   readonly time: TimeServiceApi
   readonly vehicleService: VehicleServiceApi
+  readonly brewingService: BrewingServiceApi
+  readonly fishingService: FishingServiceApi
+  readonly projectileService: ProjectileServiceApi
+  readonly tntService: TntServiceApi
+  readonly eventBus: DomainEventBusApi
   readonly stages: ReadonlyArray<StageRegistration>
   readonly spec: WorldSpec
   readonly bounds: { readonly width: number; readonly height: number }
@@ -258,10 +287,36 @@ export type Site = {
   readonly setPoweredRailAt: (position: BlockPosition, powered: boolean) => void
   /** Read the player owner snapshot only when an observer asks. */
   readonly observePlayerPose: () => Effect.Effect<ObservedGameplayPlayerPose, unknown>
+  /** Queue a cast that the real fishing and projectile services settle in a frame. */
+  readonly requestFishingCast: (intent: Parameters<typeof enqueueFishingCast>[1]) => Effect.Effect<void, unknown>
+  readonly requestFishingAdvance: (intent: Parameters<typeof enqueueFishingAdvance>[1]) => Effect.Effect<void, unknown>
+  readonly requestFishingCancel: (requestId: string, actor: Parameters<typeof enqueueFishingCancel>[2]) => Effect.Effect<void, unknown>
+  readonly requestFishingReel: (requestId: string, actor: Parameters<typeof enqueueFishingReel>[2]) => Effect.Effect<void, unknown>
+  /** Read fishing owner state only when requested. */
+  readonly observeFishingState: () => Effect.Effect<import('@nerima-games/mc-sim').FishingState, unknown>
+  /** Enqueue a brewing-fuel insertion for the real interaction stage. */
+  readonly insertBrewingFuel: (requestId: string) => Effect.Effect<void, unknown>
+  /** Enqueue a brewing-bottle insertion for the real interaction stage. */
+  readonly insertBrewingBottle: (
+    requestId: string,
+    bottleIndex: number,
+    bottle: Parameters<typeof enqueueBrewingBottle>[3],
+  ) => Effect.Effect<void, unknown>
+  /** Enqueue a brewing-ingredient insertion for the real interaction stage. */
+  readonly insertBrewingIngredient: (
+    requestId: string,
+    ingredient: Parameters<typeof enqueueBrewingIngredient>[2],
+  ) => Effect.Effect<void, unknown>
+  /** Read brewing owner state only when requested. */
+  readonly observeBrewingState: () => Effect.Effect<import('@nerima-games/mc-sim').BrewingState, unknown>
+  /** Consume completed item-use outcomes only when requested. */
+  readonly drainItemUseResults: () => Effect.Effect<ReadonlyArray<ItemUseResult>, unknown>
   /** Replace the player inventory and synchronize its owner snapshot. */
   readonly setInventory: (items: ReadonlyArray<readonly [ItemType, number]>) => Effect.Effect<void, unknown>
   /** Seed the coordinator-owned experience-orb snapshot. */
   readonly seedExperienceOrbs: (orbs: ReadonlyArray<ExperienceOrbRecord>) => Effect.Effect<void, unknown>
+  /** Release Site-owned service resources. */
+  readonly dispose: () => Effect.Effect<void>
   frame: number
   /**
    * WHAT MC-SIM HOLDS, refreshed from `snapshot` at the end of every frame.
@@ -370,6 +425,24 @@ export const makeSite = (
       owners,
       chunkStores: { forDimension: () => world.api },
     }))
+    const resourceScope = yield* Scope.make()
+    const eventContext = yield* Effect.orDie(Layer.buildWithScope(
+      DomainEventBusLayer(Schema.decodeUnknownSync(EventSubscriberCapacitySchema)(256)),
+      resourceScope,
+    ))
+    const eventBus = Context.get(eventContext, DomainEventBus)
+    const brewingService = yield* makeBrewingService(GAMEPLAY_BREWING_OWNER_ID)
+    const fishingService = yield* makeFishingService(GAMEPLAY_FISHING_OWNER_ID).pipe(
+      Effect.provideService(WorldCommitCoordinator, coordinator),
+      Effect.provideService(DomainEventBus, eventBus),
+    )
+    const projectileService = yield* makeProjectileService().pipe(
+      Effect.provideService(WorldCommitCoordinator, coordinator),
+      Effect.provideService(DomainEventBus, eventBus),
+    )
+    const tntService = yield* makeTntService(TNT_REPLICATED_OWNER_ID).pipe(
+      Effect.provideService(WorldCommitCoordinator, coordinator),
+    )
     const state = yield* makeGameplayFrameStateForOwner({
       coordinator,
       vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID,
@@ -452,6 +525,36 @@ export const makeSite = (
           },
         }),
       )
+    const observeFishingState = () =>
+      Effect.map(
+        coordinator.snapshot(GAMEPLAY_FISHING_OWNER_ID, FishingStateSchema),
+        ({ state: fishing }) => fishing,
+      )
+    const observeBrewingState = () =>
+      Effect.map(
+        coordinator.snapshot(GAMEPLAY_BREWING_OWNER_ID, BrewingServiceStateSchema),
+        ({ state: brewing }) => brewing,
+      )
+    const requestFishingCast = (intent: Parameters<typeof enqueueFishingCast>[1]) =>
+      enqueueFishingCast(state, intent)
+    const requestFishingAdvance = (intent: Parameters<typeof enqueueFishingAdvance>[1]) =>
+      enqueueFishingAdvance(state, intent)
+    const requestFishingCancel = (requestId: string, actor: Parameters<typeof enqueueFishingCancel>[2]) =>
+      enqueueFishingCancel(state, requestId, actor)
+    const requestFishingReel = (requestId: string, actor: Parameters<typeof enqueueFishingReel>[2]) =>
+      enqueueFishingReel(state, requestId, actor)
+    const insertBrewingFuel = (requestId: string) => enqueueBrewingFuel(state, requestId)
+    const insertBrewingBottle = (
+      requestId: string,
+      bottleIndex: number,
+      bottle: Parameters<typeof enqueueBrewingBottle>[3],
+    ) => enqueueBrewingBottle(state, requestId, bottleIndex, bottle)
+    const insertBrewingIngredient = (
+      requestId: string,
+      ingredient: Parameters<typeof enqueueBrewingIngredient>[2],
+    ) => enqueueBrewingIngredient(state, requestId, ingredient)
+    const readItemUseResults = () => drainItemUseResults(state)
+    const dispose = () => Scope.close(resourceScope, Exit.void)
     const commit = {
       coordinator,
       playerOwnerId: GAMEPLAY_PLAYER_OWNER_ID,
@@ -468,6 +571,11 @@ export const makeSite = (
       projectileOwnerId: PROJECTILE_REPLICATED_OWNER_ID,
       tntSourcesOwnerId: GAMEPLAY_TNT_SOURCES_OWNER_ID,
       tntOwnerId: TNT_REPLICATED_OWNER_ID,
+      brewingService,
+      fishingService,
+      projectileService,
+      tntService,
+      eventBus,
     }
     const stages = schedule(
       gameplayStages(
@@ -491,6 +599,11 @@ export const makeSite = (
       state,
       time,
       vehicleService,
+      brewingService,
+      fishingService,
+      projectileService,
+      tntService,
+      eventBus,
       stages,
       spec,
       bounds,
@@ -502,8 +615,19 @@ export const makeSite = (
       setVehicleControls,
       setPoweredRailAt,
       observePlayerPose,
+      requestFishingCast,
+      requestFishingAdvance,
+      requestFishingCancel,
+      requestFishingReel,
+      observeFishingState,
+      insertBrewingFuel,
+      insertBrewingBottle,
+      insertBrewingIngredient,
+      observeBrewingState,
+      drainItemUseResults: readItemUseResults,
       setInventory,
       seedExperienceOrbs,
+      dispose,
       frame: 0,
       inventory: new Map<string, number>(),
       experience: 0,

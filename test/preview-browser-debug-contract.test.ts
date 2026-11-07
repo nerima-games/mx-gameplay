@@ -1,15 +1,17 @@
 /// <reference lib="dom" />
 
 import { describe, expect, it } from '@effect/vitest'
-import { AIR_BLOCK_ID, BlockAxis, InterpolationFraction, PositionAxis, blockIdOf, blockPosition, position } from '@nerima-games/mc-kernel'
-import { EntityId } from '@nerima-games/mc-sim'
-import { Effect, Option, Ref, Result } from 'effect'
+import { AngleRadians, AIR_BLOCK_ID, BlockAxis, DimensionIdSchema, InterpolationFraction, PositionAxis, ProjectileIdSchema, SimulationTickSchema, blockIdOf, blockPosition, position, position as kernelPosition } from '@nerima-games/mc-kernel'
+import { BREWING_FUEL_CHARGES, EntityId, SNOWBALL_PROFILE, type ProjectileLaunch } from '@nerima-games/mc-sim'
+import { Brand, Effect, Option, Ref, Result, Schema } from 'effect'
 import { createExperienceOrbValue } from '../src/domain/entities/xp-orb'
 import { TNT_BLOCK_ID } from '../src/domain/interactions/ignite-tnt'
 import { CREEPER_KIND, type MobSpawnAttempt } from '../src/domain/entities/mob-frame'
 import {
   drainExperienceOrbAbsorptionExecutions,
   drainItemUseResults,
+  GameplayBrewingItemUseResultSchema,
+  GameplayFishingItemUseResultSchema,
   requestExperienceOrbAbsorption,
   requestMobSpawn,
 } from '../src/stages/registration'
@@ -23,6 +25,16 @@ const world: WorldSpec = { cells: [], loadedChunks: ['0,0', '1,0'], z: 0 }
 const bounds = { width: 32, height: 12 }
 const POWERED_RAIL = Option.getOrThrow(blockIdOf('powered_rail'))
 const WATER = Option.getOrThrow(blockIdOf('water'))
+
+const contractActor = EntityId('browser-debug:contract-fisher')
+const contractBobber = Schema.decodeUnknownSync(ProjectileIdSchema)('browser-debug:contract-bobber')
+const contractLaunchSpeed = Brand.nominal<ProjectileLaunch['speed']>()(1)
+const contractFishingLaunch: ProjectileLaunch = {
+  position: kernelPosition(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
+  yawRadians: AngleRadians(0),
+  pitchRadians: AngleRadians(0),
+  speed: contractLaunchSpeed,
+}
 
 const mountScenario = (
   scenarioId: string,
@@ -89,6 +101,66 @@ describe('browser debug Site contract', () => {
         expect(yield* Ref.get(mount.site.state.timeOfDay)).toBe(expectedFraction)
         mount.dispose()
       }
+    }),
+  )
+
+  it.effect('settles fishing casts and brewing stand setup through real Site services', () =>
+    Effect.gen(function* () {
+      const mount = mountScenario('contract-fishing-brewing')
+      mount.setInventory([['blaze_powder', 1], ['water_bottle', 1], ['nether_wart', 1]])
+
+      mount.requestFishingCast({
+        requestId: 'contract-fishing-cast',
+        actor: contractActor,
+        bobber: contractBobber,
+        tick: Schema.decodeUnknownSync(SimulationTickSchema)(0),
+        dimension: Schema.decodeUnknownSync(DimensionIdSchema)('overworld'),
+        launch: contractFishingLaunch,
+        profile: SNOWBALL_PROFILE,
+        rod: null,
+        environment: { hasWater: true, hasSkyAccess: true, isRaining: false, isOpenWater: true },
+      })
+      mount.advance()
+
+      expect(mount.observeFishingState().rods).toMatchObject([
+        { actor: contractActor, bobber: contractBobber, phase: 'cast' },
+      ])
+      expect(mount.drainItemUseResults().map((result) =>
+        Schema.decodeUnknownSync(GameplayFishingItemUseResultSchema)(result),
+      )).toStrictEqual([{
+        action: 'CastFishing', requestId: 'contract-fishing-cast', success: true, outcome: undefined,
+      }])
+
+      mount.insertBrewingFuel('contract-brewing-fuel')
+      mount.advance()
+      mount.insertBrewingBottle('contract-brewing-bottle', 0, 'water_bottle')
+      mount.advance()
+      mount.insertBrewingIngredient('contract-brewing-ingredient', 'nether_wart')
+      mount.advance()
+
+      const brewingState = mount.observeBrewingState()
+      expect(brewingState.fuelCharges).toBe(BREWING_FUEL_CHARGES)
+      expect(brewingState.bottles[0]).toMatchObject({ item: 'water_bottle', count: 1 })
+      expect(brewingState.ingredient).toMatchObject({ item: 'nether_wart', count: 1 })
+      expect(mount.drainItemUseResults().map((result) =>
+        Schema.decodeUnknownSync(GameplayBrewingItemUseResultSchema)(result),
+      )).toStrictEqual([
+        { action: 'InsertBrewingFuel', requestId: 'contract-brewing-fuel', success: true, outcome: undefined },
+        { action: 'InsertBrewingBottle', requestId: 'contract-brewing-bottle', success: true, outcome: undefined },
+        { action: 'InsertBrewingIngredient', requestId: 'contract-brewing-ingredient', success: true, outcome: undefined },
+      ])
+      mount.dispose()
+
+      const emptyMount = mountScenario('contract-brewing-negative')
+      emptyMount.insertBrewingFuel('contract-brewing-no-fuel')
+      emptyMount.advance()
+      expect(emptyMount.observeBrewingState().fuelCharges).toBe(0)
+      expect(emptyMount.drainItemUseResults().map((result) =>
+        Schema.decodeUnknownSync(GameplayBrewingItemUseResultSchema)(result),
+      )).toStrictEqual([{
+        action: 'InsertBrewingFuel', requestId: 'contract-brewing-no-fuel', success: false, failure: 'MissingItem',
+      }])
+      emptyMount.dispose()
     }),
   )
 

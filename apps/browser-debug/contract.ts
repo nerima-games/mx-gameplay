@@ -11,6 +11,7 @@ import type { Dimension } from '@nerima-games/mc-worldgen'
 import type { Weather } from '../../src/domain/weather.js'
 import type { ExperienceOrbRecord } from '../../src/domain/entities/xp-orb.js'
 import type { VehicleControlInput } from '../../src/domain/vehicle/vehicle-frame.js'
+import type { ItemUseResult } from '../../src/stages/registration-core.js'
 import {
   makeSite,
   stepFrame,
@@ -123,6 +124,27 @@ export type ScenarioMount = {
   readonly observeVehicles: () => ReadonlyArray<Vehicle>
   /** Read the authoritative player pose only when called. */
   readonly observePlayerPose: () => ObservedGameplayPlayerPose
+  /** Queue a fishing cast to be settled by a real gameplay frame. */
+  readonly requestFishingCast: (intent: Parameters<Site['requestFishingCast']>[0]) => void
+  readonly requestFishingAdvance: (intent: Parameters<Site['requestFishingAdvance']>[0]) => void
+  readonly requestFishingCancel: (requestId: string, actor: Parameters<Site['requestFishingCancel']>[1]) => void
+  readonly requestFishingReel: (requestId: string, actor: Parameters<Site['requestFishingReel']>[1]) => void
+  /** Read fishing state only when called. */
+  readonly observeFishingState: () => import('@nerima-games/mc-sim').FishingState
+  readonly insertBrewingFuel: (requestId: string) => void
+  readonly insertBrewingBottle: (
+    requestId: string,
+    bottleIndex: number,
+    bottle: Parameters<Site['insertBrewingBottle']>[2],
+  ) => void
+  readonly insertBrewingIngredient: (
+    requestId: string,
+    ingredient: Parameters<Site['insertBrewingIngredient']>[1],
+  ) => void
+  /** Read brewing state only when called. */
+  readonly observeBrewingState: () => import('@nerima-games/mc-sim').BrewingState
+  /** Consume completed item-use results only when called. */
+  readonly drainItemUseResults: () => ReadonlyArray<ItemUseResult>
   readonly seedExperienceOrbs: (orbs: ReadonlyArray<ExperienceOrbRecord>) => void
   readonly dispose: () => void
 }
@@ -160,7 +182,10 @@ export const mountGameplayScenario = (
   ])
 
   const actions = setup.actions ?? []
-  const dispose = (): void => context.root.replaceChildren()
+  const dispose = (): void => {
+    Effect.runSync(site.dispose())
+    context.root.replaceChildren()
+  }
 
   return {
     site,
@@ -181,6 +206,18 @@ export const mountGameplayScenario = (
     setPoweredRailAt: (position, powered) => site.setPoweredRailAt(position, powered),
     observeVehicles: () => Effect.runSync(site.observeVehicles()),
     observePlayerPose: () => Effect.runSync(site.observePlayerPose()),
+    requestFishingCast: (intent) => Effect.runSync(site.requestFishingCast(intent)),
+    requestFishingAdvance: (intent) => Effect.runSync(site.requestFishingAdvance(intent)),
+    requestFishingCancel: (requestId, actor) => Effect.runSync(site.requestFishingCancel(requestId, actor)),
+    requestFishingReel: (requestId, actor) => Effect.runSync(site.requestFishingReel(requestId, actor)),
+    observeFishingState: () => Effect.runSync(site.observeFishingState()),
+    insertBrewingFuel: (requestId) => Effect.runSync(site.insertBrewingFuel(requestId)),
+    insertBrewingBottle: (requestId, bottleIndex, bottle) =>
+      Effect.runSync(site.insertBrewingBottle(requestId, bottleIndex, bottle)),
+    insertBrewingIngredient: (requestId, ingredient) =>
+      Effect.runSync(site.insertBrewingIngredient(requestId, ingredient)),
+    observeBrewingState: () => Effect.runSync(site.observeBrewingState()),
+    drainItemUseResults: () => Effect.runSync(site.drainItemUseResults()),
     seedExperienceOrbs: (orbs) => Effect.runSync(site.seedExperienceOrbs(orbs)),
     snapshot: () => {
       const observation = setup.observe?.(site) ?? {}
