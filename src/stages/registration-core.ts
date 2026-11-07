@@ -1398,6 +1398,7 @@ export type FishingItemUseRequest =
       readonly action: 'ReelFishing'
       readonly requestId: ItemUseRequestId
       readonly actor: EntityId
+      readonly toolLocation?: StorageLocation
     }
 
 export type CollectBrewingBottleRequest = Readonly<{
@@ -2563,8 +2564,16 @@ export const requestFishingReel = (
   state: GameplayFrameState,
   requestId: ItemUseRequestId,
   actor: EntityId,
-): Effect.Effect<void> =>
-  Ref.update(state.pendingItemUses, (pending) => [...pending, { action: 'ReelFishing' as const, requestId, actor }])
+  toolLocation?: StorageLocation,
+): Effect.Effect<void> => {
+  const request: Extract<FishingItemUseRequest, { readonly action: 'ReelFishing' }> = {
+    action: 'ReelFishing',
+    requestId,
+    actor,
+    ...(toolLocation === undefined ? {} : { toolLocation }),
+  }
+  return Ref.update(state.pendingItemUses, (pending) => [...pending, request])
+}
 
 export const requestCollectBrewingBottle = (
   state: GameplayFrameState,

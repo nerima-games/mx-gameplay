@@ -195,6 +195,7 @@ const singleItemStack = (item: Parameters<typeof itemStack>[0]) =>
   Result.getOrThrow(itemStack(item, StackCount(1)))
 
 const DEFAULT_WEAPON_ITEM_DAMAGE = Result.getOrThrow(weaponComponent()).itemDamagePerAttack
+const FISHING_ROD_REEL_WEAR = 1
 
 const isMeleeWeaponItem = (item: ItemType): boolean => item.endsWith('_sword') || item.endsWith('_axe')
 
@@ -912,7 +913,7 @@ const processFishingItemUse = (
         plans = [reel.success]
         outcome = reel.success.result
         removeBobber = activeRod?.bobber
-        if (reel.success.result._tag === 'Caught') {
+        if (request.toolLocation !== undefined || reel.success.result._tag === 'Caught') {
           const storageObserved = yield* Effect.result(context.coordinator.observe(
             context.playerStorageOwnerId,
             PlayerStorageSnapshotSchema,
@@ -924,15 +925,45 @@ const processFishingItemUse = (
             })
             return
           }
-          const caughtStack = singleItemStack(reel.success.result.item)
-          const stored = addStoredStack(storageObserved.success.state, {
-            ...caughtStack,
-            durability: null,
-          })
-          if (stored.result._tag !== 'Added' || stored.result.added !== 1) {
-            yield* Ref.update(state.pendingItemUses, (pending) => [request, ...pending])
-            return
+
+          let playerStorage = storageObserved.success.state
+          if (request.toolLocation !== undefined) {
+            const heldStack = request.toolLocation._tag === 'Inventory'
+              ? playerStorage.inventory.slots[request.toolLocation.slotIndex]
+              : playerStorage.equipment.slots[request.toolLocation.slot]
+            const rodItem = Schema.decodeUnknownResult(Schema.Literal('fishing_rod'))(heldStack?.item)
+            if (Result.isFailure(rodItem)) {
+              yield* recordGameplayStageFailure(state, {
+                _tag: 'Failed', operation: 'CandidateBuild', subject: 'Fishing', error: rodItem.failure,
+              })
+              yield* Ref.update(state.pendingItemUses, (pending) => [request, ...pending])
+              return
+            }
+            // Kernel and docs/responsibility.md define no reel wear amount; mirror `wearRod` from src/domain/interactions/fishing.ts.
+            const damaged = damagePlayerStorageAt(playerStorage, request.toolLocation, FISHING_ROD_REEL_WEAR)
+            if (damaged.result._tag !== 'Damaged' && damaged.result._tag !== 'Broken') {
+              yield* recordGameplayStageFailure(state, {
+                _tag: 'Failed', operation: 'CandidateBuild', subject: 'Fishing', error: damaged.result,
+              })
+              yield* Ref.update(state.pendingItemUses, (pending) => [request, ...pending])
+              return
+            }
+            playerStorage = damaged.storage
           }
+
+          if (reel.success.result._tag === 'Caught') {
+            const caughtStack = singleItemStack(reel.success.result.item)
+            const stored = addStoredStack(playerStorage, {
+              ...caughtStack,
+              durability: null,
+            })
+            if (stored.result._tag !== 'Added' || stored.result.added !== 1) {
+              yield* Ref.update(state.pendingItemUses, (pending) => [request, ...pending])
+              return
+            }
+            playerStorage = stored.storage
+          }
+
           const storageSnapshot = {
             world: storageObserved.success.world,
             expectedRevision: storageObserved.success.revision,
@@ -943,7 +974,7 @@ const processFishingItemUse = (
             world: storageSnapshot.world,
             expectedRevision: storageSnapshot.expectedRevision,
             expectedDimensions: storageSnapshot.expectedDimensions,
-            changes: [{ ownerId: context.playerStorageOwnerId, state: stored.storage }],
+            changes: [{ ownerId: context.playerStorageOwnerId, state: playerStorage }],
             result: undefined,
             postCommitEvents: [],
           }
