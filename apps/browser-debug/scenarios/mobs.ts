@@ -91,6 +91,22 @@ const observeMobs = (root: HTMLElement) => {
   }
 }
 
+const observeMobDamage = (root: HTMLElement) => {
+  const mobObservation = observeMobs(root)
+  const heading = document.createElement('h2')
+  heading.textContent = 'Observed gameplay Mob damage events'
+  const details = document.createElement('pre')
+  details.setAttribute('aria-label', 'Observed gameplay Mob damage events')
+  root.append(heading, details)
+
+  return (site: Site) => {
+    const observation = mobObservation(site)
+    const damages = Effect.runSync(Ref.get(site.state.playerDamages))
+    details.textContent = JSON.stringify(damages, null, 2)
+    return observation
+  }
+}
+
 const observeExperienceOrbExecutions = (root: HTMLElement) => {
   const heading = document.createElement('h2')
   heading.textContent = 'Experience orb stage executions'
@@ -136,7 +152,7 @@ const creeperScenario: ScenarioDefinition = {
       label: 'Spawn creeper, then press Play or Step',
       perform: (site) => Effect.runSync(requestMobSpawn(site.state, spawnAttempt(site, CREEPER_KIND, 16))),
     }],
-    observe: observeMobs(context.root),
+    observe: observeMobDamage(context.root),
   }, NIGHT_TIME_TICKS),
 }
 
@@ -170,7 +186,7 @@ const hostileMobScenario: ScenarioDefinition = {
       label: 'Spawn zombie, then press Play or Step',
       perform: (site) => Effect.runSync(requestMobSpawn(site.state, spawnAttempt(site, ZOMBIE_KIND, 18))),
     }],
-    observe: observeMobs(context.root),
+    observe: observeMobDamage(context.root),
   }, NIGHT_TIME_TICKS),
 }
 
