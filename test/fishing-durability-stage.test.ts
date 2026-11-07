@@ -8,7 +8,9 @@ import {
   SNOWBALL_PROFILE,
   WorldCommitCoordinator,
   damageAt,
+  equipFromInventory,
   launchProjectile,
+  makeReplicatedOwnerId,
   makeFishingService,
   storageFromInventory,
   type DomainEventBusApi,
@@ -42,6 +44,7 @@ import { position as atPosition } from './support/coordinate-fixtures'
 import { makeTimeService } from '@nerima-games/mc-sim'
 
 const HELD_ROD_SLOT: StorageLocation = { _tag: 'Inventory', slotIndex: 0 }
+const OFFHAND_SLOT: StorageLocation = { _tag: 'Equipment', slot: 'offhand' }
 // Source: `wearRod` in `src/domain/interactions/fishing.ts` decrements current durability by one.
 const EXPECTED_REEL_WEAR = 1
 const FISHER = EntityId('fishing-durability-actor')
@@ -60,6 +63,20 @@ const playerStorageWithRod = (): PlayerStorage => {
   return storageFromInventory({ slots })
 }
 
+const playerStorageWithEquipmentSword = (): PlayerStorage => {
+  const slots = [...emptySlots()]
+  slots[HELD_ROD_SLOT.slotIndex] = Result.getOrThrow(itemStack('iron_sword', StackCount(1)))
+  const equipped = equipFromInventory(storageFromInventory({ slots }), HELD_ROD_SLOT.slotIndex, 'offhand')
+  if (equipped.result._tag !== 'Equipped') throw new Error('The test sword must equip in the offhand slot.')
+  return equipped.storage
+}
+
+const playerStorageWithNonRod = (): PlayerStorage => {
+  const slots = [...emptySlots()]
+  slots[HELD_ROD_SLOT.slotIndex] = Result.getOrThrow(itemStack('stone', StackCount(1)))
+  return storageFromInventory({ slots })
+}
+
 const playerStorageWithOneRodDurability = (): PlayerStorage => {
   const storage = playerStorageWithRod()
   const durability = storage.inventoryDurability[HELD_ROD_SLOT.slotIndex]
@@ -69,7 +86,11 @@ const playerStorageWithOneRodDurability = (): PlayerStorage => {
   return damageAt(storage, HELD_ROD_SLOT, durability.max - 1).storage
 }
 
-const scene = (playerStorage: PlayerStorage) =>
+const scene = (
+  playerStorage: PlayerStorage,
+  fishingPhase: 'bite' | 'cast' = 'bite',
+  playerStorageOwnerId = GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+) =>
   Effect.gen(function* () {
     const store = yield* makeChunkStoreDouble(new Map<string, BlockId>(), ['0,0'])
     const roster = yield* makeEntityManagerDouble<MobBehaviour>()
@@ -77,7 +98,7 @@ const scene = (playerStorage: PlayerStorage) =>
     const player = yield* makePlayerServiceDouble()
     const time = yield* makeTimeService()
     const fishing = Schema.decodeUnknownSync(FishingStateSchema)({
-      rods: [{ actor: FISHER, bobber: BOBBER, phase: 'bite' }],
+      rods: [{ actor: FISHER, bobber: BOBBER, phase: fishingPhase }],
     })
     const projectiles = Schema.decodeUnknownSync(ProjectileServiceSnapshotSchema)({
       projectiles: [{
@@ -103,7 +124,7 @@ const scene = (playerStorage: PlayerStorage) =>
       Effect.provideService(WorldCommitCoordinator, baseCommit.coordinator),
       Effect.provideService(DomainEventBus, eventBus),
     )
-    const commit = { ...baseCommit, fishingService, eventBus }
+    const commit = { ...baseCommit, fishingService, eventBus, playerStorageOwnerId }
     const state = yield* makeGameplayFrameStateForOwner({
       coordinator: commit.coordinator,
       vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID,
@@ -142,7 +163,7 @@ describe('gameplay fishing durability stage', () => {
       const [rawResult] = yield* drainItemUseResults(state)
       if (rawResult === undefined) throw new Error('Expected a fishing result.')
       const result = Schema.decodeUnknownSync(GameplayFishingItemUseResultSchema)(rawResult)
-      if (result.action !== 'ReelFishing' || result.outcome._tag !== 'Caught') {
+      if (result.action !== 'ReelFishing' || !result.success || result.outcome._tag !== 'Caught') {
         throw new Error('Expected a successful fishing catch.')
       }
       const caughtItem = result.outcome.item
@@ -169,7 +190,7 @@ describe('gameplay fishing durability stage', () => {
       const [rawResult] = yield* drainItemUseResults(state)
       if (rawResult === undefined) throw new Error('Expected a fishing result.')
       const result = Schema.decodeUnknownSync(GameplayFishingItemUseResultSchema)(rawResult)
-      if (result.action !== 'ReelFishing' || result.outcome._tag !== 'Caught') {
+      if (result.action !== 'ReelFishing' || !result.success || result.outcome._tag !== 'Caught') {
         throw new Error('Expected a successful fishing catch.')
       }
       const caughtItem = result.outcome.item
@@ -177,6 +198,104 @@ describe('gameplay fishing durability stage', () => {
       expect(storage.inventoryDurability[HELD_ROD_SLOT.slotIndex]).toBeNull()
       expect(storage.inventory.slots.some((slot) => slot?.item === caughtItem)).toBe(true)
       expect(yield* commit.coordinator.revision).toBe(revisionBefore + 1)
+    }),
+  )
+
+  it.effect('rejects an Equipment item that is not a fishing rod', () =>
+    Effect.gen(function* () {
+      // Catches fishing-rod lookup failures for Equipment locations.
+      const { state, commit, stages } = yield* scene(playerStorageWithEquipmentSword())
+      const revisionBefore = yield* commit.coordinator.revision
+
+      yield* requestFishingReel(state, 'reel-equipment-nonrod', FISHER, OFFHAND_SLOT)
+      yield* runInteractions(stages)
+
+      const [result] = yield* drainItemUseResults(state)
+      expect(result).toStrictEqual({
+        action: 'ReelFishing',
+        requestId: 'reel-equipment-nonrod',
+        success: false,
+        failure: 'InvalidHeldItem',
+      })
+      const storage = yield* ownerStorage(commit)
+      expect(storage.equipment.slots.offhand?.item).toBe('iron_sword')
+      expect(yield* commit.coordinator.revision).toBe(revisionBefore)
+    }),
+  )
+
+  it.effect('rejects a non-rod request without reprocessing it next frame', () =>
+    Effect.gen(function* () {
+      // Catches invalid held rods that would otherwise be retried on every frame.
+      const { state, commit, stages } = yield* scene(playerStorageWithNonRod())
+      const revisionBefore = yield* commit.coordinator.revision
+
+      yield* requestFishingReel(state, 'reel-invalid-rod', FISHER, HELD_ROD_SLOT)
+      yield* runInteractions(stages)
+
+      const [result] = yield* drainItemUseResults(state)
+      expect(result).toStrictEqual({
+        action: 'ReelFishing',
+        requestId: 'reel-invalid-rod',
+        success: false,
+        failure: 'InvalidHeldItem',
+      })
+      expect(yield* commit.coordinator.revision).toBe(revisionBefore)
+
+      yield* runInteractions(stages)
+
+      expect(yield* drainItemUseResults(state)).toStrictEqual([])
+      expect(yield* commit.coordinator.revision).toBe(revisionBefore)
+    }),
+  )
+
+  it.effect('wears the rod for a reel result without a catch', () =>
+    Effect.gen(function* () {
+      // Catches non-Caught reels that skip rod wear or add a nonexistent catch.
+      const initialStorage = playerStorageWithRod()
+      const initialDurability = initialStorage.inventoryDurability[HELD_ROD_SLOT.slotIndex]
+      if (initialDurability === null || initialDurability === undefined) {
+        throw new Error('The test fishing rod must have kernel durability data.')
+      }
+      const { state, commit, stages } = yield* scene(initialStorage, 'cast')
+      const revisionBefore = yield* commit.coordinator.revision
+
+      yield* requestFishingReel(state, 'reel-no-bite', FISHER, HELD_ROD_SLOT)
+      yield* runInteractions(stages)
+
+      const [rawResult] = yield* drainItemUseResults(state)
+      if (rawResult === undefined) throw new Error('Expected a fishing result.')
+      const result = Schema.decodeUnknownSync(GameplayFishingItemUseResultSchema)(rawResult)
+      if (result.action !== 'ReelFishing' || !result.success || result.outcome._tag !== 'NoBite') {
+        throw new Error('Expected a reel without a catch.')
+      }
+      const storage = yield* ownerStorage(commit)
+      expect(storage.inventoryDurability[HELD_ROD_SLOT.slotIndex]).toStrictEqual({
+        current: initialDurability.current - EXPECTED_REEL_WEAR,
+        max: initialDurability.max,
+      })
+      expect(storage.inventory.slots.filter((slot) => slot !== undefined).map((slot) => slot.item))
+        .toStrictEqual(['fishing_rod'])
+      expect(yield* commit.coordinator.revision).toBe(revisionBefore + 1)
+    }),
+  )
+
+  it.effect('records a player storage owner snapshot failure without requeueing the request', () =>
+    Effect.gen(function* () {
+      // Catches reel processing that misses a player-storage snapshot failure before planning.
+      const { state, commit, stages } = yield* scene(
+        playerStorageWithRod(),
+        'bite',
+        makeReplicatedOwnerId('missing-fishing-storage-owner'),
+      )
+      const revisionBefore = yield* commit.coordinator.revision
+
+      yield* requestFishingReel(state, 'reel-owner-missing', FISHER, HELD_ROD_SLOT)
+      yield* runInteractions(stages)
+
+      expect(yield* Ref.get(state.operationFailures)).toHaveLength(1)
+      expect(yield* Ref.get(state.pendingItemUses)).toStrictEqual([])
+      expect(yield* drainItemUseResults(state)).toStrictEqual([])
+      expect(yield* commit.coordinator.revision).toBe(revisionBefore)
     }),
   )
 })

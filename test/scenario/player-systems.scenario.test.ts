@@ -308,7 +308,7 @@ describe('player systems gameplay scenarios', () => {
         'ReelFishing',
       ])
       expect(reel).toMatchObject({ action: 'ReelFishing', success: true, outcome: { _tag: 'Caught' } })
-      if (reel?.action !== 'ReelFishing' || reel.outcome._tag !== 'Caught') {
+      if (reel?.action !== 'ReelFishing' || !reel.success || reel.outcome._tag !== 'Caught') {
         throw new Error('Reeling at the bite phase must produce the deterministic catch')
       }
 

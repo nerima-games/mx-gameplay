@@ -1548,6 +1548,7 @@ export type FishingItemUseResult =
   | { readonly action: 'AdvanceFishing'; readonly requestId: ItemUseRequestId; readonly success: true; readonly outcome: FishingProgressOutcome }
   | { readonly action: 'CancelFishing'; readonly requestId: ItemUseRequestId; readonly success: true; readonly outcome: FishingCancelOutcome }
   | { readonly action: 'ReelFishing'; readonly requestId: ItemUseRequestId; readonly success: true; readonly outcome: FishingReelOutcome }
+  | { readonly action: 'ReelFishing'; readonly requestId: ItemUseRequestId; readonly success: false; readonly failure: 'InvalidHeldItem' }
 
 function strictCodec<A>(schema: Schema.ConstraintDecoder<A>): Schema.ConstraintDecoder<A> {
   return Schema.declareConstructor<A, unknown>()([schema], ([inner]) =>
@@ -1663,6 +1664,12 @@ export const GameplayFishingItemUseResultSchema: Schema.ConstraintDecoder<Fishin
     requestId: Schema.String,
     success: Schema.Literal(true),
     outcome: FishingServiceReelSuccessSchema,
+  }),
+  Schema.Struct({
+    action: Schema.Literal('ReelFishing'),
+    requestId: Schema.String,
+    success: Schema.Literal(false),
+    failure: Schema.Literal('InvalidHeldItem'),
   }),
 ]))
 
