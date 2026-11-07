@@ -55,6 +55,8 @@ import {
 import {
   TimeService,
   TimeServiceLayer,
+  BREWING_FUEL_CHARGES,
+  BREWING_TIME_SECS,
   durability as makeDurability,
   equipmentItem as makeEquipmentItem,
   itemStack as makeItemStack,
@@ -206,7 +208,7 @@ import {
 import { brimming, emptyInventoryLayer, emptySlots, makeInventoryDouble } from './support/inventory-service-double'
 import { gameplayCommitServicesLayer, makeGameplayCommitServices, makeTransactionalChunkStoreDouble } from './support/transactional-stage-doubles'
 import { FrameServicesLayer } from './support/frame-services'
-import { runFrames } from './support/frame-runner'
+import { FRAME_DELTA, runFrames } from './support/frame-runner'
 import { blockPosition as fixtureBlockPosition, position as fixturePosition } from './support/coordinate-fixtures'
 import {
   GAMEPLAY_CROPS_OWNER_ID,
@@ -2328,6 +2330,32 @@ describe('the module contract has caught up with this file’s shape', () => {
 
       expect(yield* satisfied).toHaveLength(9)
     }),
+  )
+
+  it.effect('production gameplay stages advance a brewing stand by the frame delta', () =>
+    Effect.gen(function* () {
+      const coordinator = yield* WorldCommitCoordinator
+      const stages = yield* makeGameplayStages
+      const brewing = yield* makeBrewingService(GAMEPLAY_BREWING_OWNER_ID)
+
+      yield* brewing.setFuel(itemStack('blaze_powder', 1)).pipe(
+        Effect.provideService(WorldCommitCoordinator, coordinator),
+      )
+      yield* brewing.addFuel.pipe(Effect.provideService(WorldCommitCoordinator, coordinator))
+      yield* brewing.setBottle(0, itemStack('water_bottle', 1)).pipe(
+        Effect.provideService(WorldCommitCoordinator, coordinator),
+      )
+      yield* brewing.setIngredient(itemStack('nether_wart', 1)).pipe(
+        Effect.provideService(WorldCommitCoordinator, coordinator),
+      )
+
+      yield* runFrames(stages, Math.ceil(BREWING_TIME_SECS / FRAME_DELTA), FRAME_DELTA)
+
+      const stand = yield* coordinator.snapshot(GAMEPLAY_BREWING_OWNER_ID, BrewingServiceStateSchema)
+      expect(stand.state.bottles[0]).toMatchObject({ item: 'awkward_potion', count: 1 })
+      expect(stand.state.ingredient).toBeUndefined()
+      expect(stand.state.fuelCharges).toBe(BREWING_FUEL_CHARGES - 1)
+    }).pipe(Effect.provide(Layer.orDie(emptyWorld))),
   )
 
   // REGRESSION-SHAPED, and it is the property mc-sim's §7-1 buys with

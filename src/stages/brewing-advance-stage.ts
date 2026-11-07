@@ -24,11 +24,12 @@ export type BrewingAdvanceExecution = Readonly<{
 
 export type BrewingAdvanceStageApi = Readonly<{
   readonly stage: StageRegistration
+  /** Replaces the automatic frame delta for a frame when one or more requests are queued. */
   readonly requestAdvance: (requestId: string, elapsedSecs: number) => Effect.Effect<void, Schema.SchemaError>
   readonly drainResults: Effect.Effect<ReadonlyArray<BrewingAdvanceExecution>>
 }>
 
-/** Run queued brewing advances through the real service after interaction requests commit. */
+/** Advance brewing after interactions, using queued elapsed time only when explicitly requested. */
 export const makeBrewingAdvanceStage = (
   brewingService: BrewingServiceApi,
   coordinator: WorldCommitCoordinatorApi,
@@ -39,8 +40,17 @@ export const makeBrewingAdvanceStage = (
     const stage: StageRegistration = {
       id: BREWING_ADVANCE_STAGE_ID,
       after: [GAMEPLAY_STAGE_IDS.interactions],
-      run: () => Effect.gen(function* () {
+      run: (dt) => Effect.gen(function* () {
         const requests = yield* Ref.getAndSet(pending, [])
+        if (requests.length === 0) {
+          yield* Effect.orDie(
+            brewingService.advance(dt).pipe(
+              Effect.provideService(WorldCommitCoordinator, coordinator),
+            ),
+          )
+          return
+        }
+
         const executions: Array<BrewingAdvanceExecution> = []
         for (const request of requests) {
           const result = yield* Effect.result(
@@ -50,9 +60,7 @@ export const makeBrewingAdvanceStage = (
           )
           executions.push({ requestId: request.requestId, result })
         }
-        if (executions.length > 0) {
-          yield* Ref.update(results, (current) => [...current, ...executions])
-        }
+        yield* Ref.update(results, (current) => [...current, ...executions])
       }),
     }
 
