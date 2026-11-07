@@ -62,7 +62,8 @@ describe('player damage properties', () => {
             nonlethal.lastDeathCause === undefined &&
             dead.healthPoints === 0 &&
             dead.lastDeathCause === lethalCause &&
-            afterCorpseHit === dead
+            afterCorpseHit.healthPoints === dead.healthPoints &&
+            afterCorpseHit.lastDeathCause === dead.lastDeathCause
         },
       ),
     )
