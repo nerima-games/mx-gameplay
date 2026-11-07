@@ -1,19 +1,29 @@
 import {
+  AngleRadians,
   AttackRangeDistance,
   AIR_BLOCK_ID,
   BlockId,
+  DimensionIdSchema,
   EntityId,
   PositionAxis,
+  ProjectileIdSchema,
+  SimulationTickSchema,
   position,
 } from '@nerima-games/mc-kernel'
 import {
   EYE_LEVEL_OFFSET,
+  FishingApproachTicksSchema,
+  FishingBiteWindowTicksSchema,
+  FishingElapsedTicksSchema,
+  FishingWaitTicksSchema,
   HungerPoints,
+  SNOWBALL_PROFILE,
   emptyFurnaceState,
   itemStack,
   type FurnaceState,
+  type ProjectileLaunch,
 } from '@nerima-games/mc-sim'
-import { Effect, Result } from 'effect'
+import { Brand, Effect, Result, Schema } from 'effect'
 import { applyFurnaceAdvance } from '../../../src/domain/interactions/advance-furnace.js'
 import { CREEPER_KIND, type MobSpawnAttempt } from '../../../src/domain/entities/mob-frame.js'
 import { meleeDamageForItem } from '../../../src/domain/interactions/melee-attack.js'
@@ -22,6 +32,9 @@ import {
   drainBowShotResults,
   drainItemUseResults,
   drainMeleeAttackResults,
+  requestFishingAdvance,
+  requestFishingCast,
+  requestFishingReel,
   requestBowShot,
   requestFoodUse,
   requestFurnaceAdvance,
@@ -46,6 +59,15 @@ const MELEE_WORLD: WorldSpec = {
 }
 const BOUNDS = { width: 8, height: 8 }
 const MELEE_BOUNDS = { width: 32, height: 68 }
+const FISHING_ACTOR = EntityId('browser-debug:fishing-angler')
+const FISHING_BOBBER = Schema.decodeUnknownSync(ProjectileIdSchema)('browser-debug:fishing-bobber')
+const FISHING_LAUNCH_SPEED = Brand.nominal<ProjectileLaunch['speed']>()(1)
+const FISHING_LAUNCH: ProjectileLaunch = {
+  position: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
+  yawRadians: AngleRadians(0),
+  pitchRadians: AngleRadians(0),
+  speed: FISHING_LAUNCH_SPEED,
+}
 
 const observeInventory = (site: Site): ScenarioObservation => ({
   equipment: Effect.runSync(site.inventoryService.api.equipmentSnapshot),
@@ -154,13 +176,95 @@ const fishingScenario: ScenarioDefinition = {
   area: 'interactions-items',
   isDefault: false,
   mount: (context) => {
+    const root = context.root.ownerDocument
+    const fishingSection = root.createElement('section')
+    fishingSection.className = 'fishing-observation'
+    fishingSection.setAttribute('aria-label', 'Fishing result observation')
+    const fishingHeading = root.createElement('h2')
+    fishingHeading.textContent = 'Fishing result'
+    const fishingDetails = root.createElement('pre')
+    fishingSection.append(fishingHeading, fishingDetails)
+    context.root.append(fishingSection)
+
+    let lastFishingResult: unknown = null
     const mounted = mountGameplayScenario(context, {
       world: EMPTY_WORLD,
       bounds: BOUNDS,
-      unsupported: [
-        'The Site registers the fishing owner but does not provide FishingService to gameplayStages. Fishing requests are therefore reported as Unsupported/Fishing with OwnerRegistrationUnavailable, so this scenario has no action.',
-      ],
-      observe: observeInventory,
+      actions: [{
+        id: 'fish-and-reel',
+        label: 'Cast, wait, and reel',
+        perform: (site) => {
+          const castRequestId = `fishing-cast-${String(site.frame)}`
+          Effect.runSync(requestFishingCast(site.state, {
+            requestId: castRequestId,
+            actor: FISHING_ACTOR,
+            bobber: FISHING_BOBBER,
+            tick: Schema.decodeUnknownSync(SimulationTickSchema)(site.frame),
+            dimension: Schema.decodeUnknownSync(DimensionIdSchema)('overworld'),
+            launch: FISHING_LAUNCH,
+            profile: SNOWBALL_PROFILE,
+            rod: null,
+            environment: { hasWater: true, hasSkyAccess: true, isRaining: false, isOpenWater: true },
+          }))
+          Effect.runSync(stepFrame(site))
+          const castResult = Effect.runSync(drainItemUseResults(site.state)).find((entry) =>
+            'action' in entry && entry.action === 'CastFishing' && entry.requestId === castRequestId,
+          )
+          if (castResult === undefined || !('action' in castResult) ||
+            castResult.action !== 'CastFishing' || !castResult.success) {
+            throw new Error(`fishing cast did not succeed for ${castRequestId}`)
+          }
+          const castRod = Effect.runSync(site.observeFishingState()).rods.find((rod) => rod.actor === FISHING_ACTOR)
+          if (castRod?.bobber !== FISHING_BOBBER || castRod.phase !== 'cast') {
+            throw new Error('fishing cast was not observed in the Site fishing state')
+          }
+
+          const advanceRequestId = `fishing-advance-${String(site.frame)}`
+          Effect.runSync(requestFishingAdvance(site.state, {
+            requestId: advanceRequestId,
+            actor: FISHING_ACTOR,
+            elapsedTicks: Schema.decodeUnknownSync(FishingElapsedTicksSchema)(120),
+            waitTicks: Schema.decodeUnknownSync(FishingWaitTicksSchema)(100),
+            approachTicks: Schema.decodeUnknownSync(FishingApproachTicksSchema)(20),
+            biteWindowTicks: Schema.decodeUnknownSync(FishingBiteWindowTicksSchema)(20),
+            environment: { hasWater: true },
+          }))
+          Effect.runSync(stepFrame(site))
+          const advanceResult = Effect.runSync(drainItemUseResults(site.state)).find((entry) =>
+            'action' in entry && entry.action === 'AdvanceFishing' && entry.requestId === advanceRequestId,
+          )
+          if (advanceResult === undefined || !('action' in advanceResult) ||
+            advanceResult.action !== 'AdvanceFishing' || !advanceResult.success ||
+            advanceResult.outcome._tag !== 'Bite') {
+            throw new Error(`fishing did not reach a bite for ${advanceRequestId}`)
+          }
+          const biteRod = Effect.runSync(site.observeFishingState()).rods.find((rod) => rod.actor === FISHING_ACTOR)
+          if (biteRod?.bobber !== FISHING_BOBBER || biteRod.phase !== 'bite') {
+            throw new Error('fishing bite was not observed in the Site fishing state')
+          }
+
+          const reelRequestId = `fishing-reel-${String(site.frame)}`
+          Effect.runSync(requestFishingReel(site.state, reelRequestId, FISHING_ACTOR))
+          Effect.runSync(stepFrame(site))
+          const reelResult = Effect.runSync(drainItemUseResults(site.state)).find((entry) =>
+            'action' in entry && entry.action === 'ReelFishing' && entry.requestId === reelRequestId,
+          )
+          if (reelResult === undefined || !('action' in reelResult) ||
+            reelResult.action !== 'ReelFishing' || !reelResult.success ||
+            reelResult.outcome._tag !== 'Caught') {
+            throw new Error(`fishing reel did not catch an item for ${reelRequestId}`)
+          }
+          const finalState = Effect.runSync(site.observeFishingState())
+          if (finalState.rods.length !== 0) throw new Error('fishing rod remained active after a successful catch')
+          lastFishingResult = { castResult, advanceResult, fishingStateAtBite: biteRod, reelResult, finalState }
+          fishingDetails.textContent = JSON.stringify(lastFishingResult, null, 2) ?? String(lastFishingResult)
+        },
+      }],
+      observe: (site) => {
+        const fishingState = Effect.runSync(site.observeFishingState())
+        fishingDetails.textContent = JSON.stringify({ fishingState, lastFishingResult }, null, 2) ?? String(lastFishingResult)
+        return observeInventory(site)
+      },
     })
     mounted.setInventory([['fishing_rod', 1]])
     mounted.advance()
