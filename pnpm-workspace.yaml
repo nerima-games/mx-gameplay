@@ -13,6 +13,12 @@ minimumReleaseAgeExclude:
 allowBuilds:
   esbuild: true
 
+packageExtensions:
+  '@stryker-mutator/core@10.1.1':
+    dependencies:
+      # Stryker 10.1.1 uses a TypeScript API removed in TypeScript 7.
+      typescript: 6.0.3
+
 # GHSA-2v37-7h3g-55p8: nanoid <3.3.18 loops indefinitely for a zero-size custom
 # generator. Transitive only (vitest > vite > postcss > nanoid); pinned here
 # rather than waiting on the toolchain to bump it upstream.
@@ -26,6 +32,6 @@ allowBuilds:
 overrides:
   nanoid: '>=3.3.18'
   source-map-js: '1.2.2'
-  vite: '7.3.7'
+  vite: '8.3.5'
   launch-editor: '2.14.2'
   shell-quote: '1.11.0'

@@ -1,0 +1,10 @@
+{
+  // Browser debug harness. The shipped rules remain checked by the platform-free build config.
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2024", "DOM", "DOM.Iterable"],
+    "types": ["node"]
+  },
+  "include": ["apps/browser-debug/**/*.ts"],
+  "exclude": ["node_modules", "coverage", "dist"]
+}
