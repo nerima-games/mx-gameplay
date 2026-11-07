@@ -18,6 +18,13 @@ import {
 } from '../../src/domain/enchantment'
 import { createItemMetadataStore } from '../../src/domain/item-metadata'
 import {
+  applyPlayerSwimming,
+  SWIMMING_BUOYANCY_BLOCKS_PER_S2,
+  SWIMMING_DRAG_PER_SECOND,
+  SWIMMING_HORIZONTAL_ACCELERATION_BLOCKS_PER_S2,
+  SWIMMING_VERTICAL_ACCELERATION_BLOCKS_PER_S2,
+} from '../../src/domain/player-swimming'
+import {
   applyStatusEffect,
   emptyStatusEffectState,
   tickStatusEffects,
@@ -60,6 +67,40 @@ const ironPickaxeWith = (
 })
 
 describe('player systems properties', () => {
+  it('bounds swimming acceleration when input exceeds the control range', () => {
+    // Fails if out-of-range controls create more acceleration than a clamped input can produce.
+    FastCheck.assert(
+      FastCheck.property(
+        FastCheck.constantFrom(-20, -1, 1, 20),
+        FastCheck.constantFrom(-20, -1, 1, 20),
+        FastCheck.constantFrom(-20, -1, 1, 20),
+        FastCheck.integer({ min: 0, max: 500 }),
+        (horizontalX, verticalInput, horizontalZ, deltaMillis) => {
+          const deltaSeconds = deltaMillis / 1000
+          const drag = Math.max(0, 1 - SWIMMING_DRAG_PER_SECOND * deltaSeconds)
+          const horizontalLimit =
+            SWIMMING_HORIZONTAL_ACCELERATION_BLOCKS_PER_S2 * deltaSeconds * drag
+          const verticalLimit = Math.max(
+            Math.abs(SWIMMING_BUOYANCY_BLOCKS_PER_S2 - SWIMMING_VERTICAL_ACCELERATION_BLOCKS_PER_S2),
+            Math.abs(SWIMMING_BUOYANCY_BLOCKS_PER_S2 + SWIMMING_VERTICAL_ACCELERATION_BLOCKS_PER_S2),
+          ) * deltaSeconds * drag
+          const margin = Number.EPSILON * 20
+          const velocity = applyPlayerSwimming({
+            velocity: { x: 0, y: 0, z: 0 },
+            verticalInput,
+            horizontalInput: { x: horizontalX, z: horizontalZ },
+            isInWater: true,
+            deltaSeconds,
+          })
+
+          return Math.abs(velocity.x) <= horizontalLimit + margin &&
+            Math.abs(velocity.y) <= verticalLimit + margin &&
+            Math.abs(velocity.z) <= horizontalLimit + margin
+        },
+      ),
+    )
+  })
+
   it('does not let a weaker effect replace the active amplifier or its pulse clock', () => {
     // Fails if a weaker reapplication lowers strength, shortens duration, or resets poison cadence.
     FastCheck.assert(
