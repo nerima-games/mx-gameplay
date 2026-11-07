@@ -52,6 +52,13 @@ const stoneSlot = (count: number): Slot =>
     ? undefined
     : Result.getOrThrow(itemStack('stone', StackCount(count)))
 
+// Persisted saves may contain a stack count above the item's cap before normalization.
+const savedStoneSlot = (count: number): Slot => {
+  if (count === 0) return undefined
+  const valid = Result.getOrThrow(itemStack('stone', StackCount(1)))
+  return { ...valid, count } as unknown as Slot
+}
+
 const STONE_STACK_LIMIT = maxStackCountForItem('stone')
 
 const pose = (pitchRadians: number, yawRadians: number): PlayerPose => ({
@@ -106,21 +113,24 @@ describe('player state properties', () => {
     // Fails if trimming an overlong save silently loses items without reporting the discarded total.
     FastCheck.assert(
       FastCheck.property(
-        FastCheck.array(FastCheck.integer({ min: 0, max: STONE_STACK_LIMIT }), {
+        FastCheck.array(FastCheck.integer({ min: 0, max: STONE_STACK_LIMIT * 2 }), {
           maxLength: INVENTORY_SLOT_COUNT + 12,
         }),
         (counts) => {
-          const original: ReadonlyArray<Slot> = counts.map(stoneSlot)
+          const original: ReadonlyArray<Slot> = counts.map(savedStoneSlot)
           const result = normaliseInventory({ slots: original })
           const originalTotal = totalOf(original, 'stone')
           const retainedTotal = totalOf(result.slots, 'stone')
-          const discardedTailTotal = counts
-            .slice(INVENTORY_SLOT_COUNT)
-            .reduce((total, count) => total + count, 0)
+          const expectedDiscarded = counts.reduce(
+            (total, count, index) =>
+              total + (index < INVENTORY_SLOT_COUNT ? Math.max(0, count - STONE_STACK_LIMIT) : count),
+            0,
+          )
 
           return result.slots.length === INVENTORY_SLOT_COUNT &&
-            result.discarded === discardedTailTotal &&
-            retainedTotal + result.discarded === originalTotal
+            result.discarded === expectedDiscarded &&
+            retainedTotal + result.discarded === originalTotal &&
+            result.slots.every((slot) => slot === undefined || slot.count <= STONE_STACK_LIMIT)
         },
       ),
     )
