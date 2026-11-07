@@ -1,6 +1,7 @@
 import { AIR_BLOCK_ID, BlockId, PositionAxis, position } from '@nerima-games/mc-kernel'
 import { EntityId } from '@nerima-games/mc-sim'
-import { Effect, Ref, Result } from 'effect'
+import { Ref, Result } from 'effect'
+import { runBrowserDebugEffect } from '../entrypoint.js'
 import { EYE_LEVEL_OFFSET } from '@nerima-games/mc-sim'
 import { createExperienceOrbValue } from '../../../src/domain/entities/xp-orb.js'
 import { CREEPER_KIND, ENDERMAN_KIND, type MobSpawnAttempt } from '../../../src/domain/entities/mob-frame.js'
@@ -40,7 +41,7 @@ const spawnAttempt = (site: Site, kind: MobSpawnAttempt['kind'], x: number): Mob
       footBlock: AIR_BLOCK_ID,
       headBlock: AIR_BLOCK_ID,
       blockLight: 0,
-      timeOfDay: Effect.runSync(site.time.timeOfDay),
+      timeOfDay: runBrowserDebugEffect(site.time.timeOfDay),
       distanceToPlayerBlocksXZ: Math.hypot(mobX, mobZ),
     },
     kind,
@@ -62,11 +63,11 @@ const NIGHT_TIME_TICKS = 21_000
 const DAY_TIME_TICKS = 6_000
 
 const queueCreeperShots = (site: Site): void => {
-  const handled = Effect.runSync(Ref.get(site.state.handledBowShotRequestIds)).size
-  const pending = Effect.runSync(Ref.get(site.state.pendingBowShots)).length
+  const handled = runBrowserDebugEffect(Ref.get(site.state.handledBowShotRequestIds)).size
+  const pending = runBrowserDebugEffect(Ref.get(site.state.pendingBowShots)).length
   const firstShot = handled + pending + 1
   for (let shot = 0; shot < 4; shot += 1) {
-    Effect.runSync(requestBowShot(site.state, `browser-debug-mob-arrow-${String(firstShot + shot)}`, {
+    runBrowserDebugEffect(requestBowShot(site.state, `browser-debug-mob-arrow-${String(firstShot + shot)}`, {
       origin: position(PositionAxis(0), PositionAxis(64 + EYE_LEVEL_OFFSET), PositionAxis(0.5)),
       dirX: 1,
       dirY: 0,
@@ -85,7 +86,7 @@ const observeMobs = (root: HTMLElement) => {
   root.append(heading, details)
 
   return (site: Site) => {
-    const mobs = Effect.runSync(site.observeMobs())
+    const mobs = runBrowserDebugEffect(site.observeMobs())
     details.textContent = JSON.stringify(mobs, null, 2)
     return { mobs }
   }
@@ -101,7 +102,7 @@ const observeMobDamage = (root: HTMLElement) => {
 
   return (site: Site) => {
     const observation = mobObservation(site)
-    const damages = Effect.runSync(Ref.get(site.state.playerDamages))
+    const damages = runBrowserDebugEffect(Ref.get(site.state.playerDamages))
     details.textContent = JSON.stringify(damages, null, 2)
     return observation
   }
@@ -115,7 +116,7 @@ const observeExperienceOrbExecutions = (root: HTMLElement) => {
   root.append(heading, details)
 
   return (site: Site) => {
-    const executions = Effect.runSync(Ref.get(site.state.experienceOrbAbsorptionExecutions))
+    const executions = runBrowserDebugEffect(Ref.get(site.state.experienceOrbAbsorptionExecutions))
     details.textContent = JSON.stringify(executions, null, 2)
     return {}
   }
@@ -129,7 +130,7 @@ const observeEnderPearlOutcomes = (root: HTMLElement) => {
   root.append(heading, details)
 
   return (site: Site) => {
-    const outcomes = Effect.runSync(Ref.get(site.state.enderPearlOutcomes))
+    const outcomes = runBrowserDebugEffect(Ref.get(site.state.enderPearlOutcomes))
     details.textContent = JSON.stringify(outcomes, null, 2)
     return {}
   }
@@ -150,7 +151,7 @@ const creeperScenario: ScenarioDefinition = {
     actions: [{
       id: 'creeper-explosion',
       label: 'Spawn creeper, then press Play or Step',
-      perform: (site) => Effect.runSync(requestMobSpawn(site.state, spawnAttempt(site, CREEPER_KIND, 16))),
+      perform: (site) => runBrowserDebugEffect(requestMobSpawn(site.state, spawnAttempt(site, CREEPER_KIND, 16))),
     }],
     observe: observeMobDamage(context.root),
   }, NIGHT_TIME_TICKS),
@@ -167,7 +168,7 @@ const passiveMobScenario: ScenarioDefinition = {
     actions: [{
       id: 'spawn-cow',
       label: 'Spawn cow, then press Play or Step',
-      perform: (site) => Effect.runSync(requestMobSpawn(site.state, spawnAttempt(site, COW_KIND, 16))),
+      perform: (site) => runBrowserDebugEffect(requestMobSpawn(site.state, spawnAttempt(site, COW_KIND, 16))),
     }],
     observe: observeMobs(context.root),
   }, DAY_TIME_TICKS),
@@ -184,7 +185,7 @@ const hostileMobScenario: ScenarioDefinition = {
     actions: [{
       id: 'zombie-contact',
       label: 'Spawn zombie, then press Play or Step',
-      perform: (site) => Effect.runSync(requestMobSpawn(site.state, spawnAttempt(site, ZOMBIE_KIND, 18))),
+      perform: (site) => runBrowserDebugEffect(requestMobSpawn(site.state, spawnAttempt(site, ZOMBIE_KIND, 18))),
     }],
     observe: observeMobDamage(context.root),
   }, NIGHT_TIME_TICKS),
@@ -203,7 +204,7 @@ const projectileDropExperienceScenario: ScenarioDefinition = {
         {
           id: 'spawn-creeper',
           label: 'Spawn creeper, then Step once',
-          perform: (site) => Effect.runSync(requestMobSpawn(site.state, spawnAttempt(site, CREEPER_KIND, 16))),
+          perform: (site) => runBrowserDebugEffect(requestMobSpawn(site.state, spawnAttempt(site, CREEPER_KIND, 16))),
         },
         {
           id: 'shoot-creeper',
@@ -233,7 +234,7 @@ const enderPearlScenario: ScenarioDefinition = {
       actions: [{
         id: 'throw-ender-pearl',
         label: 'Throw the seeded survival Ender Pearl, then Step',
-        perform: (site) => Effect.runSync(requestEnderPearlThrow(site.state, {
+        perform: (site) => runBrowserDebugEffect(requestEnderPearlThrow(site.state, {
           requestId: ENDER_PEARL_REQUEST_ID,
           dirX: 0,
           dirY: 0,
@@ -262,7 +263,7 @@ const endermanScenario: ScenarioDefinition = {
     actions: [{
       id: 'spawn-enderman',
       label: 'Spawn Enderman, then press Play or Step',
-      perform: (site) => Effect.runSync(requestMobSpawn(site.state, spawnAttempt(site, ENDERMAN_KIND, 16))),
+      perform: (site) => runBrowserDebugEffect(requestMobSpawn(site.state, spawnAttempt(site, ENDERMAN_KIND, 16))),
     }],
     observe: observeMobs(context.root),
   }, NIGHT_TIME_TICKS),
@@ -309,7 +310,7 @@ const experienceOrbScenario: ScenarioDefinition = {
       actions: [{
         id: 'absorb-experience-orb',
         label: 'Queue XP orb absorption, then Step',
-        perform: (site) => Effect.runSync(requestExperienceOrbAbsorption(site.state, {
+        perform: (site) => runBrowserDebugEffect(requestExperienceOrbAbsorption(site.state, {
           actor: PLAYER_ID,
           orb: EXPERIENCE_ORB_ID,
           tick: site.frame,

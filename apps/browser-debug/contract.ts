@@ -1,4 +1,4 @@
-import { Effect, Ref } from 'effect'
+import { Ref } from 'effect'
 import {
   BlockAxis,
   InterpolationFraction,
@@ -29,6 +29,7 @@ import {
 } from '../preview-mining-site/site.js'
 import type { BrewingAdvanceExecution } from '../../src/stages/brewing-advance-stage.js'
 import type { WorldSpec } from '../preview-mining-site/world.js'
+import { runBrowserDebugEffect } from './entrypoint.js'
 
 export type ScenarioArea =
   | 'interactions-blocks'
@@ -194,19 +195,19 @@ export const mountGameplayScenario = (
   context: ScenarioMountContext,
   setup: ScenarioSetup,
 ): ScenarioMount => {
-  const site = Effect.runSync(makeSite(setup.world, setup.bounds, context.scenarioId))
-  Effect.runSync(Ref.set(site.state.rollSeed, context.seed))
+  const site = runBrowserDebugEffect(makeSite(setup.world, setup.bounds, context.scenarioId))
+  runBrowserDebugEffect(Ref.set(site.state.rollSeed, context.seed))
   const ticksPerDay = 24_000
   const setTime = (timeTicks: number): void => {
     const normalizedTicks = ((timeTicks % ticksPerDay) + ticksPerDay) % ticksPerDay
     const timeFraction = normalizedTicks / ticksPerDay
-    Effect.runSync(site.time.setTimeOfDay(InterpolationFraction(timeFraction)))
-    const appliedTimeFraction = Effect.runSync(site.time.timeOfDay)
-    Effect.runSync(Ref.set(site.state.timeOfDay, appliedTimeFraction))
+    runBrowserDebugEffect(site.time.setTimeOfDay(InterpolationFraction(timeFraction)))
+    const appliedTimeFraction = runBrowserDebugEffect(site.time.timeOfDay)
+    runBrowserDebugEffect(Ref.set(site.state.timeOfDay, appliedTimeFraction))
   }
   setTime(context.time)
   site.weather = { weather: context.weather, remainingSecs: site.weather.remainingSecs }
-  Effect.runSync(Ref.set(site.state.weather, site.weather))
+  runBrowserDebugEffect(Ref.set(site.state.weather, site.weather))
 
   const initialChunks = new Set([
     ...setup.world.loadedChunks,
@@ -216,59 +217,59 @@ export const mountGameplayScenario = (
 
   const actions = setup.actions ?? []
   const dispose = (): void => {
-    Effect.runSync(site.dispose())
+    runBrowserDebugEffect(site.dispose())
     context.root.replaceChildren()
   }
 
   return {
     site,
     actions,
-    advance: () => Effect.runSync(stepFrame(site)),
+    advance: () => runBrowserDebugEffect(stepFrame(site)),
     setTime,
     setWeather: (weather) => {
       site.weather = { weather, remainingSecs: site.weather.remainingSecs }
-      Effect.runSync(Ref.set(site.state.weather, site.weather))
+      runBrowserDebugEffect(Ref.set(site.state.weather, site.weather))
     },
-    setInventory: (items) => Effect.runSync(site.setInventory(items)),
-    observeMobs: () => Effect.runSync(site.observeMobs()),
-    observeDroppedItems: () => Effect.runSync(site.observeDroppedItems()),
-    observePlayerStorage: () => Effect.runSync(site.observePlayerStorage()),
+    setInventory: (items) => runBrowserDebugEffect(site.setInventory(items)),
+    observeMobs: () => runBrowserDebugEffect(site.observeMobs()),
+    observeDroppedItems: () => runBrowserDebugEffect(site.observeDroppedItems()),
+    observePlayerStorage: () => runBrowserDebugEffect(site.observePlayerStorage()),
     spawnVehicle: (type, dimension, position, yawRadians = 0) =>
-      Effect.runSync(site.spawnVehicle(type, dimension, position, yawRadians)),
-    mountVehicle: (id, occupant) => Effect.runSync(site.mountVehicle(id, occupant)),
-    setVehicleVelocity: (id, velocity) => Effect.runSync(site.setVehicleVelocity(id, velocity)),
+      runBrowserDebugEffect(site.spawnVehicle(type, dimension, position, yawRadians)),
+    mountVehicle: (id, occupant) => runBrowserDebugEffect(site.mountVehicle(id, occupant)),
+    setVehicleVelocity: (id, velocity) => runBrowserDebugEffect(site.setVehicleVelocity(id, velocity)),
     setVehicleControls: (id, controls) => site.setVehicleControls(id, controls),
     setPoweredRailAt: (position, powered) => site.setPoweredRailAt(position, powered),
-    observeVehicles: () => Effect.runSync(site.observeVehicles()),
-    observePlayerPose: () => Effect.runSync(site.observePlayerPose()),
+    observeVehicles: () => runBrowserDebugEffect(site.observeVehicles()),
+    observePlayerPose: () => runBrowserDebugEffect(site.observePlayerPose()),
     requestTargetedPrimaryAttack: (options) =>
-      Effect.runSync(site.requestTargetedPrimaryAttack(options)),
-    requestFishingCast: (intent) => Effect.runSync(site.requestFishingCast(intent)),
-    requestFishingAdvance: (intent) => Effect.runSync(site.requestFishingAdvance(intent)),
-    requestFishingCancel: (requestId, actor) => Effect.runSync(site.requestFishingCancel(requestId, actor)),
-    requestFishingReel: (requestId, actor) => Effect.runSync(site.requestFishingReel(requestId, actor)),
-    observeFishingState: () => Effect.runSync(site.observeFishingState()),
-    insertBrewingFuel: (requestId) => Effect.runSync(site.insertBrewingFuel(requestId)),
+      runBrowserDebugEffect(site.requestTargetedPrimaryAttack(options)),
+    requestFishingCast: (intent) => runBrowserDebugEffect(site.requestFishingCast(intent)),
+    requestFishingAdvance: (intent) => runBrowserDebugEffect(site.requestFishingAdvance(intent)),
+    requestFishingCancel: (requestId, actor) => runBrowserDebugEffect(site.requestFishingCancel(requestId, actor)),
+    requestFishingReel: (requestId, actor) => runBrowserDebugEffect(site.requestFishingReel(requestId, actor)),
+    observeFishingState: () => runBrowserDebugEffect(site.observeFishingState()),
+    insertBrewingFuel: (requestId) => runBrowserDebugEffect(site.insertBrewingFuel(requestId)),
     insertBrewingBottle: (requestId, bottleIndex, bottle) =>
-      Effect.runSync(site.insertBrewingBottle(requestId, bottleIndex, bottle)),
+      runBrowserDebugEffect(site.insertBrewingBottle(requestId, bottleIndex, bottle)),
     insertBrewingIngredient: (requestId, ingredient) =>
-      Effect.runSync(site.insertBrewingIngredient(requestId, ingredient)),
+      runBrowserDebugEffect(site.insertBrewingIngredient(requestId, ingredient)),
     requestBrewingAdvance: (requestId, elapsedSecs) =>
-      Effect.runSync(site.requestBrewingAdvance(requestId, elapsedSecs)),
-    drainBrewingAdvanceResults: () => Effect.runSync(site.drainBrewingAdvanceResults()),
-    observeBrewingState: () => Effect.runSync(site.observeBrewingState()),
-    drainItemUseResults: () => Effect.runSync(site.drainItemUseResults()),
-    requestEnchantmentTableApply: (request) => Effect.runSync(site.requestEnchantmentTableApply(request)),
+      runBrowserDebugEffect(site.requestBrewingAdvance(requestId, elapsedSecs)),
+    drainBrewingAdvanceResults: () => runBrowserDebugEffect(site.drainBrewingAdvanceResults()),
+    observeBrewingState: () => runBrowserDebugEffect(site.observeBrewingState()),
+    drainItemUseResults: () => runBrowserDebugEffect(site.drainItemUseResults()),
+    requestEnchantmentTableApply: (request) => runBrowserDebugEffect(site.requestEnchantmentTableApply(request)),
     itemMetadata: site.itemMetadata,
-    setVillagerTrades: (trades) => Effect.runSync(site.setVillagerTrades(trades)),
-    observeVillagerTrades: () => Effect.runSync(site.observeVillagerTrades()),
-    requestVillagerTrade: (request) => Effect.runSync(site.requestVillagerTrade(request)),
-    drainVillagerTradeResults: () => Effect.runSync(site.drainVillagerTradeResults()),
-    seedExperienceOrbs: (orbs) => Effect.runSync(site.seedExperienceOrbs(orbs)),
+    setVillagerTrades: (trades) => runBrowserDebugEffect(site.setVillagerTrades(trades)),
+    observeVillagerTrades: () => runBrowserDebugEffect(site.observeVillagerTrades()),
+    requestVillagerTrade: (request) => runBrowserDebugEffect(site.requestVillagerTrade(request)),
+    drainVillagerTradeResults: () => runBrowserDebugEffect(site.drainVillagerTradeResults()),
+    seedExperienceOrbs: (orbs) => runBrowserDebugEffect(site.seedExperienceOrbs(orbs)),
     snapshot: () => {
       const observation = setup.observe?.(site) ?? {}
-      const entities = Effect.runSync(site.roster.entities)
-      const vitals = Effect.runSync(site.state.survivalHunger.snapshot).vitals
+      const entities = runBrowserDebugEffect(site.roster.entities)
+      const vitals = runBrowserDebugEffect(site.state.survivalHunger.snapshot).vitals
       const chunks = [...initialChunks].sort().map((key) => {
         const [chunkXText, chunkZText] = key.split(',')
         const chunkX = Number(chunkXText ?? '0')
@@ -281,7 +282,7 @@ export const mountGameplayScenario = (
 
       return {
         frame: site.frame,
-        timeOfDay: Math.round(Effect.runSync(site.time.timeOfDay) * ticksPerDay),
+        timeOfDay: Math.round(runBrowserDebugEffect(site.time.timeOfDay) * ticksPerDay),
         weather: site.weather.weather,
         stageNames: site.stages.map((stage) => String(stage.id)),
         entities: entities.map((entity) => JSON.stringify(entity) ?? String(entity)),

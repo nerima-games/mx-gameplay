@@ -1,7 +1,8 @@
 import { END_PORTAL_BLOCK } from '@nerima-games/mc-worldgen'
 import { BlockAxis, PositionAxis, blockIdOf, blockPosition, position, type BlockId } from '@nerima-games/mc-kernel'
 import type { Vehicle } from '@nerima-games/mc-sim'
-import { Effect, Option, Ref } from 'effect'
+import { Option, Ref } from 'effect'
+import { runBrowserDebugEffect } from '../entrypoint.js'
 import { mountGameplayScenario, type ScenarioDefinition, type ScenarioObservation } from '../contract.js'
 import type { ObservedGameplayPlayerPose, Site } from '../../preview-mining-site/site.js'
 import { STONE, WATER, type WorldSpec } from '../../preview-mining-site/world.js'
@@ -67,7 +68,7 @@ const vehicleObserver = (
       initial = vehicleMotion(vehicle)
     },
     observe: (site) => {
-      const vehicles = Effect.runSync(site.observeVehicles())
+      const vehicles = runBrowserDebugEffect(site.observeVehicles())
       const vehicle = vehicles.find((candidate) => candidate.id === vehicleId)
       if (vehicle === undefined || initial === undefined) {
         details.textContent = JSON.stringify({ type, condition, status: 'Vehicle not observed' }, null, 2)
@@ -162,7 +163,7 @@ const portalObserver = (
   return (site) => {
     let eventDestination: PortalDestination | undefined
     if (source === 'nether') {
-      const travel = Effect.runSync(Ref.get(site.state.portalTravels)).at(-1)
+      const travel = runBrowserDebugEffect(Ref.get(site.state.portalTravels)).at(-1)
       if (travel !== undefined) {
         eventDestination = {
           dimension: travel.plan.toDimension,
@@ -174,7 +175,7 @@ const portalObserver = (
         }
       }
     } else {
-      const travel = Effect.runSync(Ref.get(site.state.endPortalTravels)).at(-1)
+      const travel = runBrowserDebugEffect(Ref.get(site.state.endPortalTravels)).at(-1)
       if (travel !== undefined) {
         eventDestination = {
           dimension: travel.toDimension,
@@ -183,7 +184,7 @@ const portalObserver = (
       }
     }
 
-    const playerPose = Effect.runSync(site.observePlayerPose())
+    const playerPose = runBrowserDebugEffect(site.observePlayerPose())
     const playerTravelApplied = eventDestination !== undefined
       && eventDestination.dimension === expectedDimension
       && playerPose.dimension === eventDestination.dimension

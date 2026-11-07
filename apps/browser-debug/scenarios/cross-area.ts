@@ -27,6 +27,7 @@ import {
   type ProjectileLaunch,
 } from '@nerima-games/mc-sim'
 import { Brand, Effect, Option, Ref, Schema } from 'effect'
+import { runBrowserDebugEffect } from '../entrypoint.js'
 import { CHUNK_VOLUME, blockIndex, type Chunk, type ReadonlyChunk } from '@nerima-games/mc-worldgen'
 import { chunkCoordsAround } from '../../../src/domain/chunk-window.js'
 import { PORTAL_WINDOW_RADIUS } from '../../../src/domain/interactions/ignite-portal.js'
@@ -84,7 +85,7 @@ const world = (cells: WorldSpec['cells'], loadedChunks: ReadonlyArray<string> = 
 })
 
 const frame = (site: Site): void => {
-  Effect.runSync(stepFrame(site))
+  runBrowserDebugEffect(stepFrame(site))
 }
 
 const advanceFrames = (site: Site, count: number): void => {
@@ -106,15 +107,15 @@ const advanceUntil = (
 }
 
 const inventoryCount = (site: Site, item: ItemType): number =>
-  Effect.runSync(site.observePlayerStorage()).inventory.slots.reduce(
+  runBrowserDebugEffect(site.observePlayerStorage()).inventory.slots.reduce(
     (count, slot) => count + (slot?.item === item ? slot.count : 0),
     0,
   )
 
 const setTime = (site: Site, ticks: number): void => {
   const fraction = InterpolationFraction(ticks / TICKS_PER_DAY)
-  Effect.runSync(site.time.setTimeOfDay(fraction))
-  Effect.runSync(Ref.set(site.state.timeOfDay, fraction))
+  runBrowserDebugEffect(site.time.setTimeOfDay(fraction))
+  runBrowserDebugEffect(Ref.set(site.state.timeOfDay, fraction))
 }
 
 const x01Support = at(0, 63)
@@ -131,12 +132,12 @@ const x01Setup: ScenarioSetup = {
       label: 'Mine the dirt support and expose the falling sand and drop',
       perform: (site) => {
         const fullStackCount = maxStackCountForItem('stone') * INVENTORY_SLOT_COUNT
-        Effect.runSync(site.setInventory([['stone', fullStackCount]]))
-        Effect.runSync(requestBreak(site, x01Support))
+        runBrowserDebugEffect(site.setInventory([['stone', fullStackCount]]))
+        runBrowserDebugEffect(requestBreak(site, x01Support))
         advanceFrames(site, 3)
         const support = site.world.peekBlock(x01Support)
         const sandTop = site.world.peekBlock(x01SandTop)
-        const drops = Effect.runSync(site.observeDroppedItems())
+        const drops = runBrowserDebugEffect(site.observeDroppedItems())
         if (support !== SAND || sandTop !== AIR_BLOCK_ID || drops[0]?.item !== 'dirt') {
           throw new Error('browser-debug: mining did not drop dirt and settle the sand into its support cell')
         }
@@ -147,9 +148,9 @@ const x01Setup: ScenarioSetup = {
       id: 'x01-pick-up-drop',
       label: 'Free one slot and pick up the dirt drop',
       perform: (site) => {
-        Effect.runSync(site.setInventory([['stone', 1]]))
-        const pose = Effect.runSync(site.observePlayerPose())
-        Effect.runSync(requestDroppedItemPickup(site.state, {
+        runBrowserDebugEffect(site.setInventory([['stone', 1]]))
+        const pose = runBrowserDebugEffect(site.observePlayerPose())
+        runBrowserDebugEffect(requestDroppedItemPickup(site.state, {
           actor: EntityId('browser-debug:x01-player'),
           tick: Schema.decodeUnknownSync(SimulationTickSchema)(0),
           position: {
@@ -159,7 +160,7 @@ const x01Setup: ScenarioSetup = {
           },
         }))
         advanceFrames(site, 4)
-        const drops = Effect.runSync(site.observeDroppedItems())
+        const drops = runBrowserDebugEffect(site.observeDroppedItems())
         if (inventoryCount(site, 'dirt') !== 1 || drops.length !== 0) {
           throw new Error('browser-debug: dirt drop did not move into player storage')
         }
@@ -171,7 +172,7 @@ const x01Setup: ScenarioSetup = {
     'Crafting is unsupported: no craft request is called from the gameplay stages and the Site contract has no craft API. Evidence: src/stages/interactions-stage.ts:2066-2112; `rg -n \'craft\' src/stages` exited 1 (T-X report, X-01).',
   ],
   observe: (site) => ({
-    droppedItems: Effect.runSync(site.observeDroppedItems()),
+    droppedItems: runBrowserDebugEffect(site.observeDroppedItems()),
     equipment: {
       phase: x01Phases.get(site) ?? 'ready to mine',
       supportBlock: String(site.world.peekBlock(x01Support)),
@@ -220,11 +221,11 @@ const x02Setup: ScenarioSetup = {
       id: 'x02-spawn-mobs',
       label: 'Spawn a creeper and zombie, then inspect the intact sand pillar',
       perform: (site) => {
-        Effect.runSync(Ref.set(site.state.rollSeed, 3))
-        Effect.runSync(requestMobSpawn(site.state, x02CreeperAttempt))
-        Effect.runSync(requestMobSpawn(site.state, x02ZombieAttempt))
+        runBrowserDebugEffect(Ref.set(site.state.rollSeed, 3))
+        runBrowserDebugEffect(requestMobSpawn(site.state, x02CreeperAttempt))
+        runBrowserDebugEffect(requestMobSpawn(site.state, x02ZombieAttempt))
         frame(site)
-        const mobs = Effect.runSync(site.observeMobs())
+        const mobs = runBrowserDebugEffect(site.observeMobs())
         if (
           mobs.length !== 2 ||
           !mobs.some(({ kind }) => kind === CREEPER_KIND) ||
@@ -245,18 +246,18 @@ const x02Setup: ScenarioSetup = {
           advanceUntil(
             site,
             () => site.world.peekBlock(x02Support) === SAND &&
-              Effect.runSync(site.observeDroppedItems()).some(({ item }) => item === 'rotten_flesh'),
+              runBrowserDebugEffect(site.observeDroppedItems()).some(({ item }) => item === 'rotten_flesh'),
             'creeper blast, Mob loot, and falling sand',
           )
         } catch (error) {
-          const mobs = Effect.runSync(site.observeMobs())
-          const droppedItems = Effect.runSync(site.observeDroppedItems())
-          const player = Effect.runSync(site.observePlayerPose())
+          const mobs = runBrowserDebugEffect(site.observeMobs())
+          const droppedItems = runBrowserDebugEffect(site.observeDroppedItems())
+          const player = runBrowserDebugEffect(site.observePlayerPose())
           const message = error instanceof Error ? error.message : String(error)
           throw new Error(`${message}; player=${JSON.stringify(player)}; mobs=${JSON.stringify(mobs)}; drops=${JSON.stringify(droppedItems)}; support=${String(site.world.peekBlock(x02Support))}; sand=${String(site.world.peekBlock(x02Sand))}`)
         }
         advanceFrames(site, 2)
-        const drops = Effect.runSync(site.observeDroppedItems())
+        const drops = runBrowserDebugEffect(site.observeDroppedItems())
         if (
           site.world.peekBlock(x02Support) !== SAND ||
           site.world.peekBlock(x02Sand) !== AIR_BLOCK_ID ||
@@ -269,8 +270,8 @@ const x02Setup: ScenarioSetup = {
     },
   ],
   observe: (site) => ({
-    droppedItems: Effect.runSync(site.observeDroppedItems()),
-    mobs: Effect.runSync(site.observeMobs()),
+    droppedItems: runBrowserDebugEffect(site.observeDroppedItems()),
+    mobs: runBrowserDebugEffect(site.observeMobs()),
     equipment: {
       phase: x02Phases.get(site) ?? 'sand pillar and Mob are staged for the blast',
       supportCell: String(site.world.peekBlock(x02Support)),
@@ -293,7 +294,7 @@ const x03Setup: ScenarioSetup = {
       id: 'x03-load-water-bucket',
       label: 'Prepare a water bucket and inspect the unchanged lava source',
       perform: (site) => {
-        Effect.runSync(site.setInventory([['water_bucket', 1]]))
+        runBrowserDebugEffect(site.setInventory([['water_bucket', 1]]))
         frame(site)
         if (
           site.world.peekBlock(x03WaterAt) !== undefined ||
@@ -309,7 +310,7 @@ const x03Setup: ScenarioSetup = {
       id: 'x03-pour-water-bucket',
       label: 'Pour the prepared water bucket beside the lava source',
       perform: (site) => {
-        Effect.runSync(requestBucketUse(site.state, 'browser-debug:x03-water-bucket', x03WaterAt, 'water_bucket', 'overworld'))
+        runBrowserDebugEffect(requestBucketUse(site.state, 'browser-debug:x03-water-bucket', x03WaterAt, 'water_bucket', 'overworld'))
         frame(site)
         if (site.world.peekBlock(x03WaterAt) !== WATER || site.world.peekBlock(x03LavaAt) !== OBSIDIAN) {
           throw new Error('browser-debug: water bucket did not convert adjacent lava to obsidian')
@@ -402,7 +403,7 @@ const x04Setup: ScenarioSetup = {
       id: 'x04-place-vehicle',
       label: 'Place a minecart on the fire contact cell',
       perform: (site) => {
-        const vehicle = Effect.runSync(site.spawnVehicle('minecart', 'overworld', point(0, 64, 0)))
+        const vehicle = runBrowserDebugEffect(site.spawnVehicle('minecart', 'overworld', point(0, 64, 0)))
         x04VehicleIds.set(site, vehicle.id)
         x04Phases.set(site, 'minecart occupies the intended fire contact cell')
       },
@@ -412,11 +413,11 @@ const x04Setup: ScenarioSetup = {
       label: 'Ignite the cell and advance a real gameplay frame',
       perform: (site) => {
         installX04ChunkWindow(site)
-        Effect.runSync(site.setInventory([['fire_charge', 1]]))
-        Effect.runSync(requestItemUse(site, x04FireAt, 'fire_charge'))
+        runBrowserDebugEffect(site.setInventory([['fire_charge', 1]]))
+        runBrowserDebugEffect(requestItemUse(site, x04FireAt, 'fire_charge'))
         frame(site)
         const vehicleId = x04VehicleIds.get(site)
-        const vehicles = Effect.runSync(site.observeVehicles())
+        const vehicles = runBrowserDebugEffect(site.observeVehicles())
         if (site.world.peekBlock(x04FireAt) !== FIRE || vehicleId === undefined || !vehicles.some(({ id }) => id === vehicleId)) {
           throw new Error('browser-debug: fire did not commit beside the observed vehicle')
         }
@@ -431,7 +432,7 @@ const x04Setup: ScenarioSetup = {
     'Fire contact with vehicles is unsupported: the registered fire lifecycle contacts burning actors and gameplay entities but does not wire vehicle contact. Evidence: src/domain/fire-lifecycle.ts:39-45,198-263 (T-X report, X-04).',
   ],
   observe: (site) => ({
-    vehicles: Effect.runSync(site.observeVehicles()),
+    vehicles: runBrowserDebugEffect(site.observeVehicles()),
     equipment: {
       phase: x04Phases.get(site) ?? 'place the vehicle before igniting fire',
       fireCell: String(site.world.peekBlock(x04FireAt)),
@@ -449,7 +450,7 @@ const x05SpawnAttempt = (site: Site): MobSpawnAttempt => ({
     footBlock: AIR_BLOCK_ID,
     headBlock: AIR_BLOCK_ID,
     blockLight: 0,
-    timeOfDay: Number(Effect.runSync(site.time.timeOfDay)),
+    timeOfDay: Number(runBrowserDebugEffect(site.time.timeOfDay)),
     distanceToPlayerBlocksXZ: 20,
   },
   kind: CREEPER_KIND,
@@ -464,9 +465,9 @@ const x05Setup: ScenarioSetup = {
       id: 'x05-spawn-at-night',
       label: 'Spawn a hostile Mob during night and advance one frame',
       perform: (site) => {
-        Effect.runSync(requestMobSpawn(site.state, x05SpawnAttempt(site)))
+        runBrowserDebugEffect(requestMobSpawn(site.state, x05SpawnAttempt(site)))
         frame(site)
-        const mob = Effect.runSync(site.observeMobs()).find(({ kind }) => kind === CREEPER_KIND)
+        const mob = runBrowserDebugEffect(site.observeMobs()).find(({ kind }) => kind === CREEPER_KIND)
         if (mob === undefined) throw new Error('browser-debug: night spawn did not produce a creeper')
         x05SpawnedMobIds.set(site, mob.id)
         x05Phases.set(site, 'hostile Mob spawned at night')
@@ -480,7 +481,7 @@ const x05Setup: ScenarioSetup = {
         if (mobId === undefined) throw new Error('browser-debug: spawn the night Mob before advancing daylight')
         setTime(site, 6_000)
         frame(site)
-        const mob = Effect.runSync(site.observeMobs()).find(({ id }) => id === mobId)
+        const mob = runBrowserDebugEffect(site.observeMobs()).find(({ id }) => id === mobId)
         if (mob === undefined) throw new Error('browser-debug: expected Mob remains present after daylight')
         x05Phases.set(site, 'same hostile Mob remains after daylight; dawn despawn is unsupported')
       },
@@ -490,10 +491,10 @@ const x05Setup: ScenarioSetup = {
     'Dawn-triggered despawn is unsupported: the despawn verdict has no time-of-day condition. Evidence: src/domain/entities/mob-frame.ts:1293-1330 (T-X report, X-05).',
   ],
   observe: (site) => ({
-    mobs: Effect.runSync(site.observeMobs()),
+    mobs: runBrowserDebugEffect(site.observeMobs()),
     equipment: {
       phase: x05Phases.get(site) ?? 'set night, then spawn a hostile Mob',
-      timeOfDay: Math.round(Number(Effect.runSync(site.time.timeOfDay)) * TICKS_PER_DAY),
+      timeOfDay: Math.round(Number(runBrowserDebugEffect(site.time.timeOfDay)) * TICKS_PER_DAY),
       spawnedMobId: x05SpawnedMobIds.get(site),
     },
   }),
@@ -519,8 +520,8 @@ const x06Setup: ScenarioSetup = {
       id: 'x06-cast-in-rain',
       label: 'Cast into open water while rain is active',
       perform: (site) => {
-        Effect.runSync(site.setInventory([['fishing_rod', 1]]))
-        Effect.runSync(site.requestFishingCast({
+        runBrowserDebugEffect(site.setInventory([['fishing_rod', 1]]))
+        runBrowserDebugEffect(site.requestFishingCast({
           requestId: 'browser-debug:x06-cast',
           actor: x06FishingActor,
           bobber: x06FishingBobber,
@@ -532,7 +533,7 @@ const x06Setup: ScenarioSetup = {
           environment: { hasWater: true, hasSkyAccess: true, isRaining: true, isOpenWater: true },
         }))
         frame(site)
-        const rod = Effect.runSync(site.observeFishingState()).rods.find(({ actor }) => actor === x06FishingActor)
+        const rod = runBrowserDebugEffect(site.observeFishingState()).rods.find(({ actor }) => actor === x06FishingActor)
         if (rod?.phase !== 'cast' || rod.bobber !== x06FishingBobber) {
           throw new Error('browser-debug: rain fishing cast was not observed')
         }
@@ -544,7 +545,7 @@ const x06Setup: ScenarioSetup = {
       label: 'Advance using the explicit fishing wait request',
       perform: (site) => {
         const waitTicks = 100
-        Effect.runSync(site.requestFishingAdvance({
+        runBrowserDebugEffect(site.requestFishingAdvance({
           requestId: 'browser-debug:x06-advance',
           actor: x06FishingActor,
           elapsedTicks: Schema.decodeUnknownSync(FishingElapsedTicksSchema)(120),
@@ -554,7 +555,7 @@ const x06Setup: ScenarioSetup = {
           environment: { hasWater: true },
         }))
         frame(site)
-        const rod = Effect.runSync(site.observeFishingState()).rods.find(({ actor }) => actor === x06FishingActor)
+        const rod = runBrowserDebugEffect(site.observeFishingState()).rods.find(({ actor }) => actor === x06FishingActor)
         if (rod?.phase !== 'bite') throw new Error('browser-debug: explicit fishing wait did not reach a bite')
         x06WaitTicks.set(site, waitTicks)
         x06Phases.set(site, 'bite reached after an explicit wait; no automatic rain adjustment was applied')
@@ -564,10 +565,10 @@ const x06Setup: ScenarioSetup = {
       id: 'x06-reel-catch',
       label: 'Reel in and observe the caught item',
       perform: (site) => {
-        Effect.runSync(site.requestFishingReel('browser-debug:x06-reel', x06FishingActor))
+        runBrowserDebugEffect(site.requestFishingReel('browser-debug:x06-reel', x06FishingActor))
         frame(site)
-        const rodCount = Effect.runSync(site.observeFishingState()).rods.length
-        const storage = Effect.runSync(site.observePlayerStorage())
+        const rodCount = runBrowserDebugEffect(site.observeFishingState()).rods.length
+        const storage = runBrowserDebugEffect(site.observePlayerStorage())
         const caughtItems = storage.inventory.slots.filter((slot) => slot !== undefined && slot.item !== 'fishing_rod')
         if (rodCount !== 0 || caughtItems.length === 0) {
           throw new Error('browser-debug: fishing reel did not settle a catch into player storage')
@@ -583,9 +584,9 @@ const x06Setup: ScenarioSetup = {
     equipment: {
       phase: x06Phases.get(site) ?? 'set rain, then cast into open water',
       weather: site.weather.weather,
-      fishing: Effect.runSync(site.observeFishingState()),
+      fishing: runBrowserDebugEffect(site.observeFishingState()),
       explicitlyRequestedWaitTicks: x06WaitTicks.get(site),
-      catchInPlayerStorage: Effect.runSync(site.observePlayerStorage()).inventory.slots
+      catchInPlayerStorage: runBrowserDebugEffect(site.observePlayerStorage()).inventory.slots
         .filter((slot) => slot !== undefined && slot.item !== 'fishing_rod'),
     },
   }),
@@ -605,8 +606,8 @@ const x07Setup: ScenarioSetup = {
       id: 'x07-configure-portals',
       label: 'Provide the overworld and Nether portal candidates',
       perform: (site) => {
-        Effect.runSync(setPortalCandidates(site.state, 'nether', [x07NetherPortal]))
-        Effect.runSync(setPortalCandidates(site.state, 'overworld', [x07OverworldPortal]))
+        runBrowserDebugEffect(setPortalCandidates(site.state, 'nether', [x07NetherPortal]))
+        runBrowserDebugEffect(setPortalCandidates(site.state, 'overworld', [x07OverworldPortal]))
         frame(site)
         x07Phases.set(site, 'both portal candidates are registered; player remains in the overworld')
       },
@@ -616,7 +617,7 @@ const x07Setup: ScenarioSetup = {
       label: 'Stand in the overworld portal for its activation interval',
       perform: (site) => {
         advanceFrames(site, x07ActivationFrames)
-        const pose = Effect.runSync(site.observePlayerPose())
+        const pose = runBrowserDebugEffect(site.observePlayerPose())
         if (pose.dimension !== 'nether') throw new Error('browser-debug: portal did not change the player to Nether')
         x07Phases.set(site, 'portal travel reached Nether; observed player pose and source portal')
       },
@@ -626,7 +627,7 @@ const x07Setup: ScenarioSetup = {
       label: 'Wait through portal cooldown and return to the overworld',
       perform: (site) => {
         advanceFrames(site, x07CooldownFrames + x07ActivationFrames)
-        const pose = Effect.runSync(site.observePlayerPose())
+        const pose = runBrowserDebugEffect(site.observePlayerPose())
         if (pose.dimension !== 'overworld') throw new Error('browser-debug: portal did not return the player to Overworld')
         x07Phases.set(site, 'round trip complete; chunk-window refresh is unsupported')
       },
@@ -636,7 +637,7 @@ const x07Setup: ScenarioSetup = {
     'Chunk-window travel cannot be verified: the Site exposes only the initial chunk snapshot and has no `observeChunkWindow` API for a portal-triggered refresh. The portal stage applies player pose and dimension without a chunk-window update. Evidence: src/stages/registration-core.ts:2164-2193,2240-2297 (T-X report, X-07).',
   ],
   observe: (site) => {
-    const playerPose = Effect.runSync(site.observePlayerPose())
+    const playerPose = runBrowserDebugEffect(site.observePlayerPose())
     return {
       playerPose,
       playerPosition: `${playerPose.dimension} ${String(playerPose.position.x)}, ${String(playerPose.position.y)}, ${String(playerPose.position.z)}`,
@@ -662,7 +663,7 @@ const x08Setup: ScenarioSetup = {
       id: 'x08-apply-poison',
       label: 'Apply poison and advance one real frame',
       perform: (site) => {
-        Effect.runSync(requestStatusEffect(site.state, { type: 'poison', durationSecs: 5 }))
+        runBrowserDebugEffect(requestStatusEffect(site.state, { type: 'poison', durationSecs: 5 }))
         frame(site)
         x08Phases.set(site, 'poison request accepted by the status-effect stage')
       },
@@ -671,16 +672,16 @@ const x08Setup: ScenarioSetup = {
       id: 'x08-eat-cod',
       label: 'Reduce hunger, then use cod while poisoned',
       perform: (site) => {
-        Effect.runSync(site.setInventory([['cod', 1]]))
-        Effect.runSync(site.state.survivalHunger.addExhaustion(40))
-        const before = Effect.runSync(site.state.survivalHunger.snapshot).vitals
-        Effect.runSync(requestFoodUse(site.state, 'browser-debug:x08-cod', 'cod', {
+        runBrowserDebugEffect(site.setInventory([['cod', 1]]))
+        runBrowserDebugEffect(site.state.survivalHunger.addExhaustion(40))
+        const before = runBrowserDebugEffect(site.state.survivalHunger.snapshot).vitals
+        runBrowserDebugEffect(requestFoodUse(site.state, 'browser-debug:x08-cod', 'cod', {
           healthPoints: before.healthPoints,
           hungerPoints: before.hungerPoints,
           maxHungerPoints: before.maxHungerPoints,
         }))
         frame(site)
-        const afterFood = Effect.runSync(site.state.survivalHunger.snapshot).vitals
+        const afterFood = runBrowserDebugEffect(site.state.survivalHunger.snapshot).vitals
         if (inventoryCount(site, 'cod') !== 0 || Number(afterFood.hungerPoints) <= Number(before.hungerPoints)) {
           throw new Error('browser-debug: food use did not consume cod and restore hunger')
         }
@@ -702,7 +703,7 @@ const x08Setup: ScenarioSetup = {
         const before = x08Health.get(site)
         if (before === undefined) throw new Error('browser-debug: eat cod before observing the poison pulse')
         advanceFrames(site, 60)
-        const afterPulse = Number(Effect.runSync(site.state.survivalHunger.snapshot).vitals.healthPoints)
+        const afterPulse = Number(runBrowserDebugEffect(site.state.survivalHunger.snapshot).vitals.healthPoints)
         if (afterPulse >= before.beforePulse) throw new Error('browser-debug: poison pulse did not reduce health')
         x08Health.set(site, { ...before, afterPulse })
         x08Phases.set(site, 'food changed hunger and inventory; poison pulse reduced health afterward')
@@ -711,14 +712,14 @@ const x08Setup: ScenarioSetup = {
   ],
   observe: (site) => ({
     statusEffects: {
-      pendingApplications: Effect.runSync(Ref.get(site.state.pendingStatusEffects)),
+      pendingApplications: runBrowserDebugEffect(Ref.get(site.state.pendingStatusEffects)),
       poisonPulse: x08Health.get(site),
     },
     equipment: {
       phase: x08Phases.get(site) ?? 'apply poison, then use food',
       codRemaining: inventoryCount(site, 'cod'),
       foodHunger: x08FoodHunger.get(site),
-      vitals: Effect.runSync(site.state.survivalHunger.snapshot).vitals,
+      vitals: runBrowserDebugEffect(site.state.survivalHunger.snapshot).vitals,
     },
   }),
 }

@@ -1,7 +1,7 @@
 import { BlockAxis, blockPosition } from '@nerima-games/mc-kernel'
 import { DEFAULT_SCENARIO, scenarioByName } from '../../preview-mining-site/scenarios.js'
 import { requestBreak, stepFrame } from '../../preview-mining-site/site.js'
-import { Effect } from 'effect'
+import { runBrowserDebugEffect } from '../entrypoint.js'
 import { mountGameplayScenario, type ScenarioDefinition } from '../contract.js'
 
 const previewScenario = scenarioByName(DEFAULT_SCENARIO)
@@ -25,8 +25,8 @@ export const previewScenarios: ReadonlyArray<ScenarioDefinition> = [
             id: 'break-sand-support',
             label: 'Break sand support',
             perform: (site) => {
-              Effect.runSync(requestBreak(site, target))
-              Effect.runSync(stepFrame(site))
+              runBrowserDebugEffect(requestBreak(site, target))
+              runBrowserDebugEffect(stepFrame(site))
             },
           },
         ],

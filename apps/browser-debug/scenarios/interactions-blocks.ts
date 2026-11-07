@@ -18,7 +18,8 @@ import {
   requestPotatoPlanting,
   requestSoilTill,
 } from '../../../src/stages/registration.js'
-import { Effect, Option } from 'effect'
+import { Option } from 'effect'
+import { runBrowserDebugEffect } from '../entrypoint.js'
 import { mountGameplayScenario, type ScenarioDefinition, type ScenarioMount } from '../contract.js'
 import { requestBreak, stepFrame, type Site } from '../../preview-mining-site/site.js'
 import { SAND, STONE, type WorldSpec } from '../../preview-mining-site/world.js'
@@ -38,7 +39,7 @@ const dirtDropFromLootRules = () => {
 
 const assertDirtInPlayerStorage = (site: Site): void => {
   const expected = dirtDropFromLootRules()
-  const storage = Effect.runSync(site.observePlayerStorage())
+  const storage = runBrowserDebugEffect(site.observePlayerStorage())
   const actualCount = storage.inventory.slots.reduce(
     (count, slot) => count + (slot?.item === expected.item ? slot.count : 0),
     0,
@@ -50,7 +51,7 @@ const assertDirtInPlayerStorage = (site: Site): void => {
 
 const assertDirtDropAt = (site: Site, target: ReturnType<typeof at>): void => {
   const expected = dirtDropFromLootRules()
-  const observed = Effect.runSync(site.observeDroppedItems()).some((drop) =>
+  const observed = runBrowserDebugEffect(site.observeDroppedItems()).some((drop) =>
     drop.item === expected.item &&
     drop.count === expected.count &&
     Number(drop.position.x) === Number(target.x) &&
@@ -77,8 +78,8 @@ const world = (
 
 const seedInventory = (mounted: ScenarioMount, items: ReadonlyArray<readonly [ItemType, number]>): void => {
   mounted.setInventory(items)
-  Effect.runSync(mounted.site.inventoryService.takeDepositLog)
-  mounted.site.inventory = Effect.runSync(mounted.site.inventoryService.held)
+  runBrowserDebugEffect(mounted.site.inventoryService.takeDepositLog)
+  mounted.site.inventory = runBrowserDebugEffect(mounted.site.inventoryService.held)
 }
 
 const fillInventoryWithStone = (mounted: ScenarioMount): void => {
@@ -94,7 +95,7 @@ const advanceUntil = (
 ): void => {
   let frames = 0
   while (!isComplete() && frames < maxFrames) {
-    Effect.runSync(stepFrame(site))
+    runBrowserDebugEffect(stepFrame(site))
     frames += 1
   }
   if (!isComplete()) {
@@ -132,7 +133,7 @@ export const interactionsBlockScenarios: ReadonlyArray<ScenarioDefinition> = [
             label: 'Break dirt',
             perform: (site) => {
               const target = at(2, 64)
-              Effect.runSync(requestBreak(site, target))
+              runBrowserDebugEffect(requestBreak(site, target))
               advanceUntil(site, () => site.world.peekBlock(target) === AIR_BLOCK_ID, 'dirt mining')
               assertDirtInPlayerStorage(site)
             },
@@ -155,7 +156,7 @@ export const interactionsBlockScenarios: ReadonlyArray<ScenarioDefinition> = [
             label: 'Place sand (Survival mode)',
             perform: (site) => {
               const target = at(3, 64)
-              Effect.runSync(requestBlockPlacementCommand(site.state, {
+              runBrowserDebugEffect(requestBlockPlacementCommand(site.state, {
                 requestId: 'browser-debug-place-sand',
                 positionKey: blockPositionKeyOf(target),
                 heldItem: 'sand',
@@ -185,7 +186,7 @@ export const interactionsBlockScenarios: ReadonlyArray<ScenarioDefinition> = [
             label: 'Break dirt with a full inventory',
             perform: (site) => {
               const target = at(3, 64)
-              Effect.runSync(requestBreak(site, target))
+              runBrowserDebugEffect(requestBreak(site, target))
               advanceUntil(site, () => site.world.peekBlock(target) === AIR_BLOCK_ID, 'overflow dirt mining')
               assertDirtDropAt(site, target)
             },
@@ -194,7 +195,7 @@ export const interactionsBlockScenarios: ReadonlyArray<ScenarioDefinition> = [
         unsupported: [
           'The visible Drops row reads the preview roster. This scenario asserts the authoritative dropped-item owner directly.',
         ],
-        observe: (site) => ({ droppedItems: Effect.runSync(site.observeDroppedItems()) }),
+        observe: (site) => ({ droppedItems: runBrowserDebugEffect(site.observeDroppedItems()) }),
       })
       fillInventoryWithStone(mounted)
       return mounted
@@ -216,7 +217,7 @@ export const interactionsBlockScenarios: ReadonlyArray<ScenarioDefinition> = [
             id: 'till-soil',
             label: 'Till dirt with a wooden hoe',
             perform: (site) => {
-              Effect.runSync(requestSoilTill(site.state, 'browser-debug-till-soil', soil, 'wooden_hoe'))
+              runBrowserDebugEffect(requestSoilTill(site.state, 'browser-debug-till-soil', soil, 'wooden_hoe'))
               advanceUntil(site, () => site.world.peekBlock(soil) === FARMLAND, 'soil tilling')
             },
           },
@@ -224,7 +225,7 @@ export const interactionsBlockScenarios: ReadonlyArray<ScenarioDefinition> = [
             id: 'plant-potato',
             label: 'Plant a potato',
             perform: (site) => {
-              Effect.runSync(requestPotatoPlanting(site.state, 'browser-debug-plant-potato', soil))
+              runBrowserDebugEffect(requestPotatoPlanting(site.state, 'browser-debug-plant-potato', soil))
               advanceUntil(site, () => site.world.peekBlock(crop) === POTATO_CROP, 'potato planting')
             },
           },
@@ -254,7 +255,7 @@ export const interactionsBlockScenarios: ReadonlyArray<ScenarioDefinition> = [
             label: 'Spawn a nighttime creeper and wait for its crater',
             perform: (site) => {
               const stoneBefore = site.world.census().get(STONE) ?? 0
-              Effect.runSync(requestMobSpawn(site.state, spawnCreeperAttempt))
+              runBrowserDebugEffect(requestMobSpawn(site.state, spawnCreeperAttempt))
               advanceUntil(
                 site,
                 () => (site.world.census().get(STONE) ?? 0) < stoneBefore,

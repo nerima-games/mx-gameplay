@@ -8,6 +8,7 @@ import {
   type ChunkCoord,
 } from '@nerima-games/mc-kernel'
 import { Effect, Option, Ref } from 'effect'
+import { runBrowserDebugEffect } from '../entrypoint.js'
 import { CHUNK_VOLUME, blockIndex, type Chunk, type ReadonlyChunk } from '@nerima-games/mc-worldgen'
 import { HOSTILE_KINDS } from '../../../src/domain/entities/mob-frame.js'
 import { chunkCoordsAround } from '../../../src/domain/chunk-window.js'
@@ -59,7 +60,7 @@ const residentSpawnChunks = (): Array<string> => {
 
 const advanceFireTick = (site: Parameters<typeof requestBreak>[0]): void => {
   const frames = Math.ceil(FIRE_TICK_INTERVAL_SECS / FRAME_DELTA)
-  for (let frame = 0; frame < frames; frame += 1) Effect.runSync(stepFrame(site))
+  for (let frame = 0; frame < frames; frame += 1) runBrowserDebugEffect(stepFrame(site))
 }
 
 export const environmentScenarios: ReadonlyArray<ScenarioDefinition> = [
@@ -79,8 +80,8 @@ export const environmentScenarios: ReadonlyArray<ScenarioDefinition> = [
             id: 'break-fluid-barrier',
             label: 'Break the flow barrier',
             perform: (site) => {
-              Effect.runSync(requestBreak(site, barrier))
-              Effect.runSync(stepFrame(site))
+              runBrowserDebugEffect(requestBreak(site, barrier))
+              runBrowserDebugEffect(stepFrame(site))
             },
           },
         ],
@@ -89,7 +90,7 @@ export const environmentScenarios: ReadonlyArray<ScenarioDefinition> = [
           'Fluid outside the resident chunk remains unreadable and is retained as deferred frontier work.',
         ],
       })
-      Effect.runSync(Ref.set(mounted.site.state.fluidFrontier, [{
+      runBrowserDebugEffect(Ref.set(mounted.site.state.fluidFrontier, [{
         key: blockPositionKeyOf(source),
         kind: 'water',
         level: 0,
@@ -117,8 +118,8 @@ export const environmentScenarios: ReadonlyArray<ScenarioDefinition> = [
             id: 'break-sand-support',
             label: 'Break the sand support',
             perform: (site) => {
-              Effect.runSync(requestBreak(site, support))
-              Effect.runSync(stepFrame(site))
+              runBrowserDebugEffect(requestBreak(site, support))
+              runBrowserDebugEffect(stepFrame(site))
             },
           },
         ],
@@ -145,15 +146,15 @@ export const environmentScenarios: ReadonlyArray<ScenarioDefinition> = [
             id: 'ignite-fire-charge',
             label: 'Ignite with fire charge',
             perform: (site) => {
-              Effect.runSync(site.setInventory([['fire_charge', 1]]))
-              Effect.runSync(site.inventoryService.takeDepositLog)
-              const usedBefore = Effect.runSync(Ref.get(site.state.usedItems)).length
-              const resultsBefore = Effect.runSync(Ref.get(site.state.itemUseResults)).length
-              Effect.runSync(requestItemUse(site, fire, 'fire_charge'))
-              const frame = Effect.runSync(stepFrame(site))
-              const used = Effect.runSync(Ref.get(site.state.usedItems)).slice(usedBefore)
-              const itemUseResults = Effect.runSync(Ref.get(site.state.itemUseResults)).slice(resultsBefore)
-              const fireBlock = Effect.runSync(site.world.api.getBlock(fire))
+              runBrowserDebugEffect(site.setInventory([['fire_charge', 1]]))
+              runBrowserDebugEffect(site.inventoryService.takeDepositLog)
+              const usedBefore = runBrowserDebugEffect(Ref.get(site.state.usedItems)).length
+              const resultsBefore = runBrowserDebugEffect(Ref.get(site.state.itemUseResults)).length
+              runBrowserDebugEffect(requestItemUse(site, fire, 'fire_charge'))
+              const frame = runBrowserDebugEffect(stepFrame(site))
+              const used = runBrowserDebugEffect(Ref.get(site.state.usedItems)).slice(usedBefore)
+              const itemUseResults = runBrowserDebugEffect(Ref.get(site.state.itemUseResults)).slice(resultsBefore)
+              const fireBlock = runBrowserDebugEffect(site.world.api.getBlock(fire))
               const fireChargeConsumed = used.includes('fire_charge') && itemUseResults.some(
                 (result) => 'heldItem' in result &&
                   result.heldItem === 'fire_charge' &&
@@ -166,8 +167,8 @@ export const environmentScenarios: ReadonlyArray<ScenarioDefinition> = [
                 !fireChargeConsumed) {
                 throw new Error('browser-debug: fire-charge ignition did not commit and consume its item')
               }
-              Effect.runSync(site.setInventory([]))
-              Effect.runSync(stepFrame(site))
+              runBrowserDebugEffect(site.setInventory([]))
+              runBrowserDebugEffect(stepFrame(site))
               if ((site.inventory.get('fire_charge') ?? 0) !== 0) {
                 throw new Error('browser-debug: consumed fire charge remains in the preview inventory')
               }
@@ -242,13 +243,13 @@ export const environmentScenarios: ReadonlyArray<ScenarioDefinition> = [
           label: `Advance ${String(frameCount)} frames and observe mobs`,
           perform: (site) => {
             for (let frame = 0; frame < frameCount; frame += 1) {
-              Effect.runSync(stepFrame(site))
+              runBrowserDebugEffect(stepFrame(site))
             }
 
-            const timeOfDay = Effect.runSync(site.time.timeOfDay)
+            const timeOfDay = runBrowserDebugEffect(site.time.timeOfDay)
             const night = isNight(timeOfDay)
             const phase = night ? 'night' : 'day'
-            const mobs = Effect.runSync(site.observeMobs())
+            const mobs = runBrowserDebugEffect(site.observeMobs())
             details.textContent = JSON.stringify({ phase, timeOfDay, mobs }, null, 2)
             const expectedKinds = night ? HOSTILE_KINDS : PASSIVE_MOB_KINDS
             if (mobs.length === 0 || !mobs.every(({ kind }) =>
@@ -257,7 +258,7 @@ export const environmentScenarios: ReadonlyArray<ScenarioDefinition> = [
             }
           },
         }],
-        observe: (site) => ({ mobs: Effect.runSync(site.observeMobs()) }),
+        observe: (site) => ({ mobs: runBrowserDebugEffect(site.observeMobs()) }),
       })
       for (let x = -48; x <= 47; x += 1) {
         for (let z = -48; z <= 47; z += 1) {
@@ -287,7 +288,7 @@ export const environmentScenarios: ReadonlyArray<ScenarioDefinition> = [
             id: 'expose-fire-to-weather',
             label: 'Break the fire roof',
             perform: (site) => {
-              Effect.runSync(requestBreak(site, roof))
+              runBrowserDebugEffect(requestBreak(site, roof))
               advanceFireTick(site)
             },
           },
@@ -296,7 +297,7 @@ export const environmentScenarios: ReadonlyArray<ScenarioDefinition> = [
           `The fixture tracks one fire cell; fire runtime limits ${String(FIRE_WORK_BUDGET)} work items and ${String(FIRE_FRAME_TICK_BUDGET)} fire ticks per frame. Select rain or thunder to observe weather extinguishing the exposed fire.`,
         ],
       })
-      Effect.runSync(Ref.set(
+      runBrowserDebugEffect(Ref.set(
         mounted.site.state.fireLifecycle,
         makeFireLifecycleState([fire], context.seed),
       ))
@@ -324,16 +325,16 @@ export const environmentScenarios: ReadonlyArray<ScenarioDefinition> = [
             id: 'break-resident-edge-block',
             label: 'Break block in resident chunk',
             perform: (site) => {
-              Effect.runSync(requestBreak(site, residentBlock))
-              Effect.runSync(stepFrame(site))
+              runBrowserDebugEffect(requestBreak(site, residentBlock))
+              runBrowserDebugEffect(stepFrame(site))
             },
           },
           {
             id: 'break-unloaded-edge-block',
             label: 'Request break in unloaded chunk',
             perform: (site) => {
-              Effect.runSync(requestBreak(site, unloadedBlock))
-              Effect.runSync(stepFrame(site))
+              runBrowserDebugEffect(requestBreak(site, unloadedBlock))
+              runBrowserDebugEffect(stepFrame(site))
             },
           },
         ],
