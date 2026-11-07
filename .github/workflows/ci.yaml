@@ -112,6 +112,9 @@ jobs:
       - name: Install dependencies
         run: nix develop --command pnpm install --frozen-lockfile
 
+      - name: Install Chromium for browser-backed scenarios
+        run: nix develop --command pnpm exec playwright install --with-deps chromium
+
       - name: Tests
         run: nix develop --command pnpm test --reporter=dot
 
