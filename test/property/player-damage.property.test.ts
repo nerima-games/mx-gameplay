@@ -56,7 +56,7 @@ describe('player damage properties', () => {
   })
 
   it('caps armor mitigation at eighty percent without increasing damage', () => {
-    // Fails if armor raises damage or reduces a hit below twenty percent of its original amount.
+    // Fails if armor is ignored, increases damage, or reduces a hit by more than eighty percent.
     FastCheck.assert(
       FastCheck.property(
         FastCheck.integer({ min: 1, max: 200 }),
@@ -68,7 +68,8 @@ describe('player damage properties', () => {
 
           return mitigated.cause === damage.cause &&
             mitigated.amount <= amount &&
-            mitigated.amount / amount >= 0.2 - Number.EPSILON
+            mitigated.amount / amount >= 0.2 - Number.EPSILON &&
+            (armorPoints === 0 || mitigated.amount < amount)
         },
       ),
     )
