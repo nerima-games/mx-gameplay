@@ -64,7 +64,7 @@
  * decision it cannot make correctly (`test/public-api.test.ts` asserts no such
  * export exists).
  */
-import { Effect, Option, Ref, Result, Schema } from 'effect'
+import { Effect, Equal, Option, Ref, Result, Schema } from 'effect'
 import {
   BlockAxis,
   adjacentBlockPosition,
@@ -75,6 +75,7 @@ import {
   capabilityOfBlockId,
   DeltaTimeSecs,
   HARVEST_TIERS,
+  type ItemType,
   type BlockId,
   type BlockPosition,
   type BlockPositionKey,
@@ -87,9 +88,12 @@ import {
 import {
   makeTimeService,
   makeWorldCommitCoordinator,
+  PlayerStorageSnapshotSchema,
   PROJECTILE_REPLICATED_OWNER_ID,
   TNT_REPLICATED_OWNER_ID,
   type EntityManagerApi,
+  type PlayerStorage,
+  type TimeServiceApi,
 } from '@nerima-games/mc-sim'
 import { FALLING_BLOCK_MOVES_PER_TICK } from '../../src/domain/falling-block'
 import { NO_TOOL, type BlockLootContext, type MinedItem } from '../../src/domain/interactions/block-loot'
@@ -115,16 +119,24 @@ import {
   GAMEPLAY_BREWING_OWNER_ID,
   GAMEPLAY_CROPS_OWNER_ID,
   GAMEPLAY_DROPPED_ITEMS_OWNER_ID,
+  GameplayEntityRosterSchema,
   GAMEPLAY_ENTITIES_OWNER_ID,
   GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
   GAMEPLAY_FISHING_OWNER_ID,
   GAMEPLAY_PLAYER_OWNER_ID,
   GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
   GAMEPLAY_STATUS_EFFECTS_OWNER_ID,
+  GAMEPLAY_TNT_SOURCES_OWNER_ID,
   GAMEPLAY_VILLAGER_TRADES_OWNER_ID,
   GAMEPLAY_VITALS_OWNER_ID,
   gameplayOwnerRegistrations,
+  type GameplayEntity,
 } from '../../src/stages/gameplay-owner-registrations.js'
+import {
+  ExperienceOrbOwnerSnapshotSchema,
+  type ExperienceOrbRecord,
+  type ExperienceOrbOwnerSnapshot,
+} from '../../src/domain/entities/xp-orb.js'
 import { GAMEPLAY_STAGE_IDS } from '../../src/stages/stage-ids'
 import { FrameServicesLayer } from './frame-services'
 import {
@@ -212,9 +224,16 @@ export type Site = {
   readonly inventoryService: PreviewInventory
   readonly roster: EntityManagerApi<MobBehaviour>
   readonly state: GameplayFrameState
+  readonly time: TimeServiceApi
   readonly stages: ReadonlyArray<StageRegistration>
   readonly spec: WorldSpec
   readonly bounds: { readonly width: number; readonly height: number }
+  /** Read the coordinator-owned gameplay roster only when an observer asks. */
+  readonly observeMobs: () => Effect.Effect<ReadonlyArray<ObservedGameplayMob>, unknown>
+  /** Replace the player inventory and synchronize its owner snapshot. */
+  readonly setInventory: (items: ReadonlyArray<readonly [ItemType, number]>) => Effect.Effect<void, unknown>
+  /** Seed the coordinator-owned experience-orb snapshot. */
+  readonly seedExperienceOrbs: (orbs: ReadonlyArray<ExperienceOrbRecord>) => Effect.Effect<void, unknown>
   frame: number
   /**
    * WHAT MC-SIM HOLDS, refreshed from `snapshot` at the end of every frame.
@@ -246,6 +265,12 @@ export type Site = {
   /** Requests submitted but not yet consumed by a frame. */
   submitted: number
 }
+
+export type ObservedGameplayMob = Readonly<{
+  id: GameplayEntity['id']
+  kind: GameplayEntity['kind']
+  position: GameplayEntity['feetPosition']
+}>
 
 /**
  * What `placementVerdict` answers: a refusal, or permission with the id.
@@ -303,6 +328,49 @@ export const makeSite = (
       coordinator,
       vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID,
     })
+    const syncPlayerStorageOwner = (storage: PlayerStorage) =>
+      Effect.gen(function* () {
+        const current = yield* coordinator.snapshot(GAMEPLAY_PLAYER_STORAGE_OWNER_ID, PlayerStorageSnapshotSchema)
+        if (Equal.equals(current.state, storage)) return
+        yield* coordinator.commit({
+          expectedRevision: current.revision,
+          expectedDimensions: [],
+          changes: [{ ownerId: GAMEPLAY_PLAYER_STORAGE_OWNER_ID, state: storage }],
+        })
+      })
+    const setInventory = (items: ReadonlyArray<readonly [ItemType, number]>) =>
+      Effect.gen(function* () {
+        const current = yield* inventoryService.api.snapshot
+        const totals = new Map<ItemType, number>()
+        for (const slot of current.slots) {
+          if (slot !== undefined) totals.set(slot.item, (totals.get(slot.item) ?? 0) + slot.count)
+        }
+        for (const [item, count] of totals) yield* inventoryService.api.remove(item, count)
+        for (const [item, count] of items) yield* inventoryService.api.add(item, count)
+
+        const storage = yield* inventoryService.api.storageSnapshot
+        yield* syncPlayerStorageOwner(storage)
+      })
+    const seedExperienceOrbs = (orbs: ReadonlyArray<ExperienceOrbRecord>) =>
+      Effect.gen(function* () {
+        const orbState: ExperienceOrbOwnerSnapshot = { orbs }
+        const current = yield* coordinator.snapshot(GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID, ExperienceOrbOwnerSnapshotSchema)
+        if (Equal.equals(current.state, orbState)) return
+        yield* coordinator.commit({
+          expectedRevision: current.revision,
+          expectedDimensions: [],
+          changes: [{ ownerId: GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID, state: orbState }],
+        })
+      })
+    const observeMobs = () =>
+      Effect.map(
+        coordinator.snapshot(GAMEPLAY_ENTITIES_OWNER_ID, GameplayEntityRosterSchema),
+        ({ state: gameplayRoster }) => gameplayRoster.entities.map(({ id, kind, feetPosition }) => ({
+          id,
+          kind,
+          position: feetPosition,
+        })),
+      )
     const commit = {
       coordinator,
       playerOwnerId: GAMEPLAY_PLAYER_OWNER_ID,
@@ -317,6 +385,7 @@ export const makeSite = (
       entitiesOwnerId: GAMEPLAY_ENTITIES_OWNER_ID,
       statusEffectsOwnerId: GAMEPLAY_STATUS_EFFECTS_OWNER_ID,
       projectileOwnerId: PROJECTILE_REPLICATED_OWNER_ID,
+      tntSourcesOwnerId: GAMEPLAY_TNT_SOURCES_OWNER_ID,
       tntOwnerId: TNT_REPLICATED_OWNER_ID,
     }
     const stages = schedule(
@@ -339,9 +408,13 @@ export const makeSite = (
       inventoryService,
       roster,
       state,
+      time,
       stages,
       spec,
       bounds,
+      observeMobs,
+      setInventory,
+      seedExperienceOrbs,
       frame: 0,
       inventory: new Map<string, number>(),
       experience: 0,

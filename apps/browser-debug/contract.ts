@@ -1,7 +1,8 @@
 import { Effect, Ref } from 'effect'
-import { BlockAxis, blockPosition } from '@nerima-games/mc-kernel'
+import { BlockAxis, InterpolationFraction, blockPosition, type ItemType } from '@nerima-games/mc-kernel'
 import type { Weather } from '../../src/domain/weather.js'
-import { makeSite, stepFrame, type FrameRow, type Site } from '../preview-mining-site/site.js'
+import type { ExperienceOrbRecord } from '../../src/domain/entities/xp-orb.js'
+import { makeSite, stepFrame, type FrameRow, type ObservedGameplayMob, type Site } from '../preview-mining-site/site.js'
 import type { WorldSpec } from '../preview-mining-site/world.js'
 
 export type ScenarioArea =
@@ -29,6 +30,7 @@ export type ScenarioAction = {
 }
 
 export type ScenarioObservation = {
+  readonly mobs?: ReadonlyArray<ObservedGameplayMob>
   readonly playerPosition?: string
   readonly equipment?: unknown
   readonly hotbar?: unknown
@@ -63,6 +65,7 @@ export type ScenarioSnapshot = {
   readonly chunks: ReadonlyArray<{ readonly key: string; readonly loaded: boolean }>
   readonly drops: ReadonlyArray<string>
   readonly deathCauses: ReadonlyArray<string>
+  readonly mobs?: ReadonlyArray<ObservedGameplayMob>
   readonly audioCueIds: ReadonlyArray<string>
   readonly unsupported: ReadonlyArray<string>
   readonly trace: ReadonlyArray<FrameRow>
@@ -75,6 +78,9 @@ export type ScenarioMount = {
   readonly snapshot: () => ScenarioSnapshot
   readonly setTime: (time: number) => void
   readonly setWeather: (weather: Weather) => void
+  readonly setInventory: (items: ReadonlyArray<readonly [ItemType, number]>) => void
+  readonly observeMobs: () => ReadonlyArray<ObservedGameplayMob>
+  readonly seedExperienceOrbs: (orbs: ReadonlyArray<ExperienceOrbRecord>) => void
   readonly dispose: () => void
 }
 
@@ -92,7 +98,11 @@ export const mountGameplayScenario = (
 ): ScenarioMount => {
   const site = Effect.runSync(makeSite(setup.world, setup.bounds, context.scenarioId))
   Effect.runSync(Ref.set(site.state.rollSeed, context.seed))
-  Effect.runSync(Ref.set(site.state.timeOfDay, context.time))
+  const setTime = (time: number): void => {
+    Effect.runSync(Ref.set(site.state.timeOfDay, time))
+    Effect.runSync(site.time.setTimeOfDay(InterpolationFraction(time)))
+  }
+  setTime(context.time)
   site.weather = { weather: context.weather, remainingSecs: site.weather.remainingSecs }
   Effect.runSync(Ref.set(site.state.weather, site.weather))
 
@@ -109,11 +119,14 @@ export const mountGameplayScenario = (
     site,
     actions,
     advance: () => Effect.runSync(stepFrame(site)),
-    setTime: (time) => Effect.runSync(Ref.set(site.state.timeOfDay, time)),
+    setTime,
     setWeather: (weather) => {
       site.weather = { weather, remainingSecs: site.weather.remainingSecs }
       Effect.runSync(Ref.set(site.state.weather, site.weather))
     },
+    setInventory: (items) => Effect.runSync(site.setInventory(items)),
+    observeMobs: () => Effect.runSync(site.observeMobs()),
+    seedExperienceOrbs: (orbs) => Effect.runSync(site.seedExperienceOrbs(orbs)),
     snapshot: () => {
       const observation = setup.observe?.(site) ?? {}
       const entities = Effect.runSync(site.roster.entities)
@@ -138,6 +151,7 @@ export const mountGameplayScenario = (
         vitals,
         experience: site.experience,
         playerPosition: observation.playerPosition ?? '0, 64, 0 (preview spawn)',
+        ...(observation.mobs === undefined ? {} : { mobs: observation.mobs }),
         equipment: observation.equipment,
         hotbar: observation.hotbar,
         statusEffects: observation.statusEffects,
