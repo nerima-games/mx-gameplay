@@ -220,6 +220,29 @@ describe('player systems properties', () => {
     )
   })
 
+  it('keeps generated villager prices positive and offer stock within its limit', () => {
+    // Fails if an offer has a nonpositive price or quantity, or its use count escapes the stock range.
+    FastCheck.assert(
+      FastCheck.property(
+        FastCheck.string({ minLength: 1, maxLength: 24 }),
+        FastCheck.constantFrom('farmer', 'toolsmith'),
+        (id, profession) => {
+          const villager = makeVillager(id, profession)
+          return villager.offers.length > 0 && villager.offers.every((offer) =>
+            Number.isSafeInteger(offer.input.count) &&
+            offer.input.count > 0 &&
+            Number.isSafeInteger(offer.output.count) &&
+            offer.output.count > 0 &&
+            Number.isSafeInteger(offer.maxUses) &&
+            offer.maxUses > 0 &&
+            offer.uses >= 0 &&
+            offer.uses <= offer.maxUses,
+          )
+        },
+      ),
+    )
+  })
+
   it('increments one available villager offer without changing its neighbor', () => {
     // Fails if a trade uses the wrong boundary, changes another offer, or mutates the original snapshot.
     FastCheck.assert(
