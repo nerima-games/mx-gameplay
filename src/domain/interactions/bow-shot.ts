@@ -62,6 +62,7 @@ import {
 } from '@nerima-games/mc-kernel'
 import { EYE_LEVEL_OFFSET, IntentPayloadSchema, type Direction3, type IntentPayload, type PlayerPose } from '@nerima-games/mc-sim'
 import { Result, Schema } from 'effect'
+import { normalizeDirection3 } from '../math/direction.js'
 import { BowChargePreparationSchema, type BowChargePreparation } from './draw-bow.js'
 import { BOW_MAX_RANGE } from './draw-bow.js'
 
@@ -252,10 +253,9 @@ const shotTargetWithCandidateAtReach = <Candidate extends ShotCandidate>(
     return undefined
   }
 
-  const length = Math.sqrt(lengthSquared)
-  const unitX = dirX / length
-  const unitY = dirY / length
-  const unitZ = dirZ / length
+  const unitDirection = { x: 0, y: 0, z: 0 }
+  normalizeDirection3(dirX, dirY, dirZ, unitDirection)
+  const { x: unitX, y: unitY, z: unitZ } = unitDirection
   const radiusSquared = BOW_TARGET_RADIUS * BOW_TARGET_RADIUS
 
   let nearest: Readonly<{ candidate: Candidate; hit: ShotHit }> | undefined
@@ -491,11 +491,12 @@ export const prepareBowShot = (
   )
   if (targetMatch === undefined) return Result.fail('no-target')
   const { hit: target, candidate: targetCandidate } = targetMatch
-  const length = Math.hypot(aim.x, aim.y, aim.z)
+  const unitAim = { x: 0, y: 0, z: 0 }
+  normalizeDirection3(aim.x, aim.y, aim.z, unitAim)
   const end = position(
-    PositionAxis(origin.x + aim.x / length * target.distance),
-    PositionAxis(origin.y + aim.y / length * target.distance),
-    PositionAxis(origin.z + aim.z / length * target.distance),
+    PositionAxis(origin.x + unitAim.x * target.distance),
+    PositionAxis(origin.y + unitAim.y * target.distance),
+    PositionAxis(origin.z + unitAim.z * target.distance),
   )
   if (shotBlockedByTerrain(isBlockedAt, origin, end)) {
     return Result.fail('blocked-by-terrain')

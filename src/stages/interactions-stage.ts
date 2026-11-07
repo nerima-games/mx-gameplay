@@ -155,6 +155,7 @@ import {
 import { bowCharge, bowDamage, canFireBow } from '../domain/interactions/draw-bow.js'
 import { meleeTarget } from '../domain/interactions/melee-attack.js'
 import { knockbackDirection } from '../domain/interactions/knockback.js'
+import { normalizeDirection3 } from '../domain/math/direction.js'
 import {
   ENDER_PEARL_DAMAGE,
   enderPearlDisplacement,
@@ -390,11 +391,12 @@ const processBowShot = (
     let hit: Readonly<{ id: import('@nerima-games/mc-kernel').EntityId; damage: Damage }> | undefined
     let knockback: ReturnType<typeof knockbackDirection> | undefined
     if (target !== undefined) {
-      const aimLength = Math.hypot(request.dirX, request.dirY, request.dirZ)
+      const unitAim = { x: 0, y: 0, z: 0 }
+      normalizeDirection3(request.dirX, request.dirY, request.dirZ, unitAim)
       const end = kernelPosition(
-        PositionAxis(request.origin.x + request.dirX / aimLength * target.hit.distance),
-        PositionAxis(request.origin.y + request.dirY / aimLength * target.hit.distance),
-        PositionAxis(request.origin.z + request.dirZ / aimLength * target.hit.distance),
+        PositionAxis(request.origin.x + unitAim.x * target.hit.distance),
+        PositionAxis(request.origin.y + unitAim.y * target.hit.distance),
+        PositionAxis(request.origin.z + unitAim.z * target.hit.distance),
       )
       const isBlockedAt = solidityFromStore(store)
       if (!shotBlockedByTerrain((x, y, z) => isBlockedAt({ x, y, z }), request.origin, end)) {
