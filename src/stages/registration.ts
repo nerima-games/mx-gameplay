@@ -170,6 +170,7 @@ import type { GameModule, StageRegistration } from '@nerima-games/mc-kernel'
 import { Effect, Layer } from 'effect'
 import { makeVehiclesStage } from './vehicles-stage.js'
 import { makeInteractionsStage } from './interactions-stage.js'
+import { makeBrewingAdvanceStage } from './brewing-advance-stage.js'
 import { makeFireStage } from './fire-stage.js'
 import { makeSurvivalHungerStage } from './survival-hunger-stage.js'
 import { makeEntitiesStage } from './entities-stage.js'
@@ -277,7 +278,7 @@ export const makeGameplayStages: Effect.Effect<
     vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID,
   })
 
-  return gameplayStages(state, store, roster, undefined, undefined, time, undefined, undefined, {}, {
+  const stages = gameplayStages(state, store, roster, undefined, undefined, time, undefined, undefined, {}, {
     coordinator,
     playerOwnerId: GAMEPLAY_PLAYER_OWNER_ID,
     playerStorageOwnerId: GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
@@ -298,6 +299,8 @@ export const makeGameplayStages: Effect.Effect<
     tntService,
     eventBus,
   })
+  const brewingAdvance = yield* makeBrewingAdvanceStage(brewingService, coordinator)
+  return [...stages, brewingAdvance.stage]
 })
 
 /**

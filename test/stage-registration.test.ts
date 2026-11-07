@@ -174,6 +174,7 @@ import type {
   GameplayTargetingSnapshotContext,
 } from '../src/stages/registration-core'
 import {
+  BREWING_ADVANCE_STAGE_ID,
   EXPERIENCE_MODULE_STAGE_PREFIXES,
   GAMEPLAY_STAGE_IDS,
   OWN_STAGE_PREFIX,
@@ -579,6 +580,7 @@ describe('§2.3-3 the total order belongs to mc-compose', () => {
         GAMEPLAY_STAGE_IDS.enderDragon,
         GAMEPLAY_STAGE_IDS.fluids,
         GAMEPLAY_STAGE_IDS.timeWeather,
+        BREWING_ADVANCE_STAGE_ID,
       ])
 
       expect(byId.get(GAMEPLAY_STAGE_IDS.vehicles)?.after).toStrictEqual([
@@ -586,6 +588,9 @@ describe('§2.3-3 the total order belongs to mc-compose', () => {
       ])
       expect(byId.get(GAMEPLAY_STAGE_IDS.interactions)?.after).toStrictEqual([
         UPSTREAM_STAGE_IDS.simPhysics,
+      ])
+      expect(byId.get(BREWING_ADVANCE_STAGE_ID)?.after).toStrictEqual([
+        GAMEPLAY_STAGE_IDS.interactions,
       ])
       expect(byId.get(GAMEPLAY_STAGE_IDS.fire)?.after).toStrictEqual([
         GAMEPLAY_STAGE_IDS.interactions,
@@ -2283,7 +2288,10 @@ describe('the module contract has caught up with this file’s shape', () => {
       > = gameplayModule
       const stages = yield* Effect.provide(module.frameStages, emptyWorld)
 
-      expect(stageIds(stages)).toStrictEqual(Object.values(GAMEPLAY_STAGE_IDS))
+      expect(stageIds(stages)).toStrictEqual([
+        ...Object.values(GAMEPLAY_STAGE_IDS),
+        BREWING_ADVANCE_STAGE_ID,
+      ])
     }),
   )
 
@@ -2301,7 +2309,7 @@ describe('the module contract has caught up with this file’s shape', () => {
 
   // Player pose, inventory and vitals are read from registered WCC owners; the
   // registration effect must not acquire local mirrors of those fields.
-  it.effect('acquires five host services to register and exposes eight stages', () =>
+  it.effect('acquires five host services to register and exposes nine stages', () =>
     Effect.gen(function* () {
       const registration: Effect.Effect<
         ReadonlyArray<StageRegistration>,
@@ -2311,14 +2319,14 @@ describe('the module contract has caught up with this file’s shape', () => {
 
       // Providing those five — and no local player or inventory services —
       // discharges the whole registration context.
-      // If a stage started demanding an EIGHTH service at REGISTRATION time, this
+      // If a stage started demanding another service at REGISTRATION time, this
       // assignment would stop compiling, which is the point. Any new service
       // would need an explicit owner and belongs in this contract, rather than
       // speculation this file's history is a record of NOT doing.
       const satisfied: Effect.Effect<ReadonlyArray<StageRegistration>, never, never> =
         Effect.provide(registration, Layer.orDie(emptyWorld))
 
-      expect(yield* satisfied).toHaveLength(8)
+      expect(yield* satisfied).toHaveLength(9)
     }),
   )
 

@@ -3,7 +3,13 @@
 import { describe, expect, it } from '@effect/vitest'
 import { AngleRadians, AIR_BLOCK_ID, AttackRangeDistance, BlockAxis, DimensionIdSchema, InterpolationFraction, PositionAxis, ProjectileIdSchema, SimulationTickSchema, blockIdOf, blockPosition, maxStackCountForItem, position, position as kernelPosition } from '@nerima-games/mc-kernel'
 import { endArrivalDescriptor } from '@nerima-games/mc-worldgen'
-import { BREWING_FUEL_CHARGES, EntityId, SNOWBALL_PROFILE, type ProjectileLaunch } from '@nerima-games/mc-sim'
+import {
+  BREWING_FUEL_CHARGES,
+  BREWING_TIME_SECS,
+  EntityId,
+  SNOWBALL_PROFILE,
+  type ProjectileLaunch,
+} from '@nerima-games/mc-sim'
 import { Brand, Effect, Option, Ref, Result, Schema } from 'effect'
 import { createExperienceOrbValue } from '../src/domain/entities/xp-orb'
 import { makeVillager } from '../src/domain/villager-trade.js'
@@ -169,6 +175,79 @@ describe('browser debug Site contract', () => {
         action: 'InsertBrewingFuel', requestId: 'contract-brewing-no-fuel', success: false, failure: 'MissingItem',
       }])
       emptyMount.dispose()
+    }),
+  )
+
+  it.effect('brews an awkward potion through real frames and keeps a no-fuel stand unchanged', () =>
+    Effect.gen(function* () {
+      const brewFrames = Math.ceil(BREWING_TIME_SECS)
+      const mount = mountScenario('contract-brewing-advance')
+      mount.setInventory([['blaze_powder', 1], ['water_bottle', 1], ['nether_wart', 1]])
+      mount.insertBrewingFuel('contract-brewing-advance-fuel')
+      mount.advance()
+      mount.insertBrewingBottle('contract-brewing-advance-bottle', 0, 'water_bottle')
+      mount.advance()
+      mount.insertBrewingIngredient('contract-brewing-advance-ingredient', 'nether_wart')
+      mount.advance()
+
+      expect(mount.observePlayerStorage().inventory.slots.every((slot) => slot === undefined)).toBe(true)
+      expect(mount.observeBrewingState()).toMatchObject({
+        fuelCharges: BREWING_FUEL_CHARGES,
+        bottles: [{ item: 'water_bottle', count: 1 }, undefined, undefined],
+        ingredient: { item: 'nether_wart', count: 1 },
+      })
+
+      for (let frame = 0; frame < brewFrames; frame += 1) {
+        mount.requestBrewingAdvance(
+          `contract-brewing-advance-${String(frame)}`,
+          Math.min(1, BREWING_TIME_SECS - frame),
+        )
+        mount.advance()
+      }
+
+      const executions = mount.drainBrewingAdvanceResults()
+      expect(executions).toHaveLength(brewFrames)
+      const finalExecution = executions.at(-1)
+      expect(finalExecution).toBeDefined()
+      if (finalExecution === undefined) throw new Error('Expected the final brewing advance result')
+      expect(Result.isSuccess(finalExecution.result)).toBe(true)
+      if (Result.isFailure(finalExecution.result)) throw new Error('Expected the brew service to complete')
+      const completed = finalExecution.result.success
+      expect(completed.brewed).toBe(1)
+      expect(completed.state.bottles[0]).toMatchObject({ item: 'awkward_potion', count: 1 })
+      expect(completed.state.ingredient).toBeUndefined()
+      expect(completed.state.fuelCharges).toBe(BREWING_FUEL_CHARGES - 1)
+      expect(mount.observeBrewingState()).toStrictEqual(completed.state)
+      mount.dispose()
+
+      const noFuelMount = mountScenario('contract-brewing-advance-negative')
+      noFuelMount.setInventory([['water_bottle', 1], ['nether_wart', 1]])
+      noFuelMount.insertBrewingBottle('contract-brewing-negative-bottle', 0, 'water_bottle')
+      noFuelMount.advance()
+      noFuelMount.insertBrewingIngredient('contract-brewing-negative-ingredient', 'nether_wart')
+      noFuelMount.advance()
+
+      for (let frame = 0; frame < brewFrames; frame += 1) {
+        noFuelMount.requestBrewingAdvance(
+          `contract-brewing-negative-${String(frame)}`,
+          Math.min(1, BREWING_TIME_SECS - frame),
+        )
+        noFuelMount.advance()
+      }
+
+      const noFuelState = noFuelMount.observeBrewingState()
+      const noFuelExecutions = noFuelMount.drainBrewingAdvanceResults()
+      expect(noFuelExecutions).toHaveLength(brewFrames)
+      expect(noFuelExecutions.every(({ result }) =>
+        Result.isSuccess(result) && result.success.brewed === 0,
+      )).toBe(true)
+      expect(noFuelState).toMatchObject({
+        fuelCharges: 0,
+        bottles: [{ item: 'water_bottle', count: 1 }, undefined, undefined],
+        ingredient: { item: 'nether_wart', count: 1 },
+        brewProgressSecs: 0,
+      })
+      noFuelMount.dispose()
     }),
   )
 

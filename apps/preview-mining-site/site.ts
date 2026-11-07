@@ -200,6 +200,7 @@ import {
 } from './inventory'
 import { makePreviewRoster } from './roster'
 import { makePreviewPlayer } from './player'
+import { makeBrewingAdvanceStage, type BrewingAdvanceExecution } from '../../src/stages/brewing-advance-stage.js'
 import { AIR, floatingBlocks, makePreviewWorld, type PreviewWorld, type WorldSpec } from './world'
 
 /**
@@ -336,6 +337,10 @@ export type Site = {
     requestId: string,
     ingredient: Parameters<typeof enqueueBrewingIngredient>[2],
   ) => Effect.Effect<void, unknown>
+  /** Queue a coordinator-backed brewing advance for the gameplay stage. */
+  readonly requestBrewingAdvance: (requestId: string, elapsedSecs: number) => Effect.Effect<void, unknown>
+  /** Read completed brewing advances only when requested. */
+  readonly drainBrewingAdvanceResults: () => Effect.Effect<ReadonlyArray<BrewingAdvanceExecution>>
   /** Read brewing owner state only when requested. */
   readonly observeBrewingState: () => Effect.Effect<import('@nerima-games/mc-sim').BrewingState, unknown>
   /** Consume completed item-use outcomes only when requested. */
@@ -680,6 +685,7 @@ export const makeSite = (
     const requestVillagerTrade = (request: VillagerTradeRequest) => enqueueVillagerTrade(state, request)
     const drainVillagerTradeResults = () => takeVillagerTradeResults(state)
     const dispose = () => Scope.close(resourceScope, Exit.void)
+    const brewingAdvance = yield* makeBrewingAdvanceStage(brewingService, coordinator)
     const commit = {
       coordinator,
       playerOwnerId: GAMEPLAY_PLAYER_OWNER_ID,
@@ -702,8 +708,8 @@ export const makeSite = (
       tntService,
       eventBus,
     }
-    const stages = schedule(
-      gameplayStages(
+    const stages = schedule([
+      ...gameplayStages(
         state,
         world.api,
         roster,
@@ -715,7 +721,8 @@ export const makeSite = (
         {},
         commit,
       ),
-    )
+      brewingAdvance.stage,
+    ])
 
     return {
       world,
@@ -752,6 +759,8 @@ export const makeSite = (
       insertBrewingFuel,
       insertBrewingBottle,
       insertBrewingIngredient,
+      requestBrewingAdvance: brewingAdvance.requestAdvance,
+      drainBrewingAdvanceResults: () => brewingAdvance.drainResults,
       observeBrewingState,
       drainItemUseResults: readItemUseResults,
       requestEnchantmentTableApply,

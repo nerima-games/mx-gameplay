@@ -27,6 +27,7 @@ import {
   type ObservedGameplayPlayerPose,
   type Site,
 } from '../preview-mining-site/site.js'
+import type { BrewingAdvanceExecution } from '../../src/stages/brewing-advance-stage.js'
 import type { WorldSpec } from '../preview-mining-site/world.js'
 
 export type ScenarioArea =
@@ -158,6 +159,10 @@ export type ScenarioMount = {
     requestId: string,
     ingredient: Parameters<Site['insertBrewingIngredient']>[1],
   ) => void
+  /** Queue an advance for the coordinator-bound gameplay stage. */
+  readonly requestBrewingAdvance: (requestId: string, elapsedSecs: number) => void
+  /** Read completed brewing advances only when called. */
+  readonly drainBrewingAdvanceResults: () => ReadonlyArray<BrewingAdvanceExecution>
   /** Read brewing state only when called. */
   readonly observeBrewingState: () => import('@nerima-games/mc-sim').BrewingState
   /** Consume completed item-use results only when called. */
@@ -248,6 +253,9 @@ export const mountGameplayScenario = (
       Effect.runSync(site.insertBrewingBottle(requestId, bottleIndex, bottle)),
     insertBrewingIngredient: (requestId, ingredient) =>
       Effect.runSync(site.insertBrewingIngredient(requestId, ingredient)),
+    requestBrewingAdvance: (requestId, elapsedSecs) =>
+      Effect.runSync(site.requestBrewingAdvance(requestId, elapsedSecs)),
+    drainBrewingAdvanceResults: () => Effect.runSync(site.drainBrewingAdvanceResults()),
     observeBrewingState: () => Effect.runSync(site.observeBrewingState()),
     drainItemUseResults: () => Effect.runSync(site.drainItemUseResults()),
     requestEnchantmentTableApply: (request) => Effect.runSync(site.requestEnchantmentTableApply(request)),
