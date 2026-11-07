@@ -9,11 +9,10 @@ import {
 import {
   HungerPoints,
   PlayerStorageSnapshotSchema,
-  type PlayerVitals,
 } from '@nerima-games/mc-sim'
 import { makeInMemoryWorld } from '../../src/domain/in-memory-world'
 import type { MobBehaviour } from '../../src/domain/entities/mob-frame'
-import { SPAWN_PLAYER_VITALS } from '../../src/domain/in-memory-vitals'
+import { SPAWN_PLAYER_VITALS, type PlayerVitals } from '../../src/domain/in-memory-vitals'
 import { ExperienceOrbVitalsOwnerSnapshotSchema } from '../../src/domain/entities/xp-orb'
 import { GAMEPLAY_VITALS_OWNER_ID } from '../../src/stages/gameplay-owner-registrations'
 import {
@@ -81,7 +80,7 @@ describe('player state gameplay scenarios', () => {
       )
       const storage = Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(storageSnapshot.state)
       const vitalsSnapshot = yield* commit.coordinator.snapshot(
-        commit.vitalsOwnerId,
+        GAMEPLAY_VITALS_OWNER_ID,
         ExperienceOrbVitalsOwnerSnapshotSchema,
       )
       const vitals = Schema.decodeUnknownSync(ExperienceOrbVitalsOwnerSnapshotSchema)(vitalsSnapshot.state)

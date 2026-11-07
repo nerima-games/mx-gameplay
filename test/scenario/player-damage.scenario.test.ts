@@ -23,14 +23,14 @@ describe('player damage gameplay scenario', () => {
       const player = yield* makePlayerServiceDouble(SPAWN_POSE)
       const inventory = yield* makeInventoryDouble()
       const time = yield* makeTimeService()
-      const zombie: MobEntity<MobBehaviour> = {
+      const zombie: MobEntity = {
         id: EntityId('zombie:damage-scenario'),
         kind: ZOMBIE_KIND,
         feetPosition: position(0, 64, 0),
         healthPoints: EntityHealthPoints(20),
         behaviour: undefined,
       }
-      const entities: MobRoster<MobBehaviour> = {
+      const entities: MobRoster = {
         entities: [zombie],
         nextSerial: EntitySerial(1),
       }

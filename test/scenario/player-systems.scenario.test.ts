@@ -3,7 +3,11 @@ import { AngleRadians, DeltaTimeSecs, DimensionIdSchema, PositionAxis, Projectil
 import {
   BrewingServiceStateSchema,
   DomainEventBus,
+  FishingApproachTicksSchema,
+  FishingBiteWindowTicksSchema,
+  FishingElapsedTicksSchema,
   FishingStateSchema,
+  FishingWaitTicksSchema,
   PlayerStorageSnapshotSchema,
   ProjectileServiceSnapshotSchema,
   PROJECTILE_REPLICATED_OWNER_ID,
@@ -72,7 +76,9 @@ const makePlayerSystemsSlice = (options: Readonly<{
   readonly inventory?: ReadonlyArray<ReturnType<typeof itemStack> | undefined>
   readonly villagerTrades?: VillagerTradeState
 }> = {}) => Effect.gen(function* () {
-  const world = yield* makeInMemoryWorld<MobBehaviour>({ inventory: options.inventory })
+  const world = yield* makeInMemoryWorld<MobBehaviour>({
+    ...(options.inventory === undefined ? {} : { inventory: options.inventory }),
+  })
   const baseCommit = yield* makeGameplayCommitServices(world.chunkStore, world.inventory, {
     ...(options.villagerTrades === undefined ? {} : { villagerTrades: options.villagerTrades }),
   })
@@ -275,10 +281,10 @@ describe('player systems gameplay scenarios', () => {
       yield* requestFishingAdvance(slice.state, {
         requestId: 'player-systems-advance',
         actor: fishingActor,
-        elapsedTicks: 120,
-        waitTicks: 100,
-        approachTicks: 20,
-        biteWindowTicks: 20,
+        elapsedTicks: Schema.decodeUnknownSync(FishingElapsedTicksSchema)(120),
+        waitTicks: Schema.decodeUnknownSync(FishingWaitTicksSchema)(100),
+        approachTicks: Schema.decodeUnknownSync(FishingApproachTicksSchema)(20),
+        biteWindowTicks: Schema.decodeUnknownSync(FishingBiteWindowTicksSchema)(20),
         environment: { hasWater: true },
       })
       yield* runFrame(slice.stages, DeltaTimeSecs(0))
