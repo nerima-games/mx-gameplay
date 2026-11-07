@@ -1,6 +1,7 @@
 import { PositionAxis, position, type Position } from '@nerima-games/mc-kernel'
 import { EntityKind, type Entity, type EntityId } from '@nerima-games/mc-sim'
 import type { Dimension } from '@nerima-games/mc-worldgen'
+import { normalizeDirection2 } from '../math/direction.js'
 import { ZOMBIE_KIND } from './hostile-combat.js'
 
 export const SKELETON_KIND: EntityKind = EntityKind('skeleton')
@@ -81,18 +82,14 @@ const distanceXZ = (a: Position, b: Position): number => Math.hypot(a.x - b.x, a
 const move = (from: Position, target: Position, distance: number): Position => {
   const dx = target.x - from.x
   const dz = target.z - from.z
-  const scale = Math.max(Math.abs(dx), Math.abs(dz))
-  if (scale === 0) return from
+  if (dx === 0 && dz === 0) return from
 
-  // Scaling first preserves a unit direction when both components are subnormal.
-  const scaledX = dx / scale
-  const scaledZ = dz / scale
-  const length = Math.hypot(scaledX, scaledZ)
-  return position(
-    PositionAxis(from.x + (scaledX / length) * distance),
-    from.y,
-    PositionAxis(from.z + (scaledZ / length) * distance),
-  )
+  const destination = { x: from.x, y: from.y, z: from.z }
+  normalizeDirection2(dx, dz, destination)
+
+  destination.x = PositionAxis(from.x + destination.x * distance)
+  destination.z = PositionAxis(from.z + destination.z * distance)
+  return destination
 }
 
 export const stepEcosystemMob = (
