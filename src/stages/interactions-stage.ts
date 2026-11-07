@@ -156,7 +156,7 @@ import {
 import { bowCharge, bowDamage, canFireBow } from '../domain/interactions/draw-bow.js'
 import { meleeTarget } from '../domain/interactions/melee-attack.js'
 import { knockbackDirection } from '../domain/interactions/knockback.js'
-import { normalizeDirection3 } from '../domain/math/direction.js'
+import { directionComponent, normalizeDirection3 } from '../domain/math/direction.js'
 import {
   ENDER_PEARL_DAMAGE,
   enderPearlDisplacement,
@@ -455,8 +455,13 @@ const processBowShot = (
     let hit: Readonly<{ id: import('@nerima-games/mc-kernel').EntityId; damage: Damage }> | undefined
     let knockback: ReturnType<typeof knockbackDirection> | undefined
     if (target !== undefined) {
-      const unitAim = { x: 0, y: 0, z: 0 }
-      normalizeDirection3(request.dirX, request.dirY, request.dirZ, unitAim)
+      const unitAim = { x: directionComponent(0), y: directionComponent(0), z: directionComponent(0) }
+      normalizeDirection3(
+        directionComponent(request.dirX),
+        directionComponent(request.dirY),
+        directionComponent(request.dirZ),
+        unitAim,
+      )
       const end = kernelPosition(
         PositionAxis(request.origin.x + unitAim.x * target.hit.distance),
         PositionAxis(request.origin.y + unitAim.y * target.hit.distance),

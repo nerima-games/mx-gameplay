@@ -54,7 +54,7 @@
  * pearl gets you up a cliff.
  */
 import type { DeathCause } from '../death-cause.js'
-import { normalizeDirection3 } from '../math/direction.js'
+import { directionComponent, normalizeDirection3 } from '../math/direction.js'
 
 /**
  * Furthest a pearl carries, in blocks.
@@ -182,18 +182,24 @@ export const enderPearlDisplacement = (
     return undefined
   }
 
-  const displacement = normalizeDirection3(dirX, dirY, dirZ, {
-    x: dirX,
-    y: dirY,
-    z: dirZ,
-  })
-  if (displacement === undefined) return undefined
+  const unitDirection = normalizeDirection3(
+    directionComponent(dirX),
+    directionComponent(dirY),
+    directionComponent(dirZ),
+    {
+      x: directionComponent(dirX),
+      y: directionComponent(dirY),
+      z: directionComponent(dirZ),
+    },
+  )
+  if (unitDirection === undefined) return undefined
 
   const distance = enderPearlDistance(hitDistance)
-  displacement.x *= distance
-  displacement.y *= distance
-  displacement.z *= distance
-  return displacement
+  return {
+    x: unitDirection.x * distance,
+    y: unitDirection.y * distance,
+    z: unitDirection.z * distance,
+  }
 }
 
 /**

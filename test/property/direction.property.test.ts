@@ -1,6 +1,23 @@
 import { describe, expect, it } from '@effect/vitest'
 import fc from 'fast-check'
-import { normalizeDirection2, normalizeDirection3 } from '../../src/domain/math/direction'
+import { directionComponent, normalizeDirection2, normalizeDirection3 } from '../../src/domain/math/direction'
+
+const normalize2 = (x: number, z: number) => {
+  const output = { x: directionComponent(0), z: directionComponent(0) }
+  const result = normalizeDirection2(directionComponent(x), directionComponent(z), output)
+  return { result, output }
+}
+
+const normalize3 = (x: number, y: number, z: number) => {
+  const output = { x: directionComponent(0), y: directionComponent(0), z: directionComponent(0) }
+  const result = normalizeDirection3(
+    directionComponent(x),
+    directionComponent(y),
+    directionComponent(z),
+    output,
+  )
+  return { result, output }
+}
 
 const signedMantissa = fc.tuple(
   fc.boolean(),
@@ -16,8 +33,7 @@ describe('direction normalization properties', () => {
       fc.property(binaryScale, signedMantissa, signedMantissa, (scale, unitX, unitZ) => {
         const x = unitX * scale
         const z = unitZ * scale
-        const output = { x: 0, z: 0 }
-        const result = normalizeDirection2(x, z, output)
+        const { result, output } = normalize2(x, z)
 
         expect(result).toBe(output)
         expect(Math.hypot(output.x, output.z)).toBeCloseTo(1, 12)
@@ -35,8 +51,7 @@ describe('direction normalization properties', () => {
         const x = unitX * scale
         const y = unitY * scale
         const z = unitZ * scale
-        const output = { x: 0, y: 0, z: 0 }
-        const result = normalizeDirection3(x, y, z, output)
+        const { result, output } = normalize3(x, y, z)
 
         expect(result).toBe(output)
         expect(Math.hypot(output.x, output.y, output.z)).toBeCloseTo(1, 12)
@@ -51,8 +66,7 @@ describe('direction normalization properties', () => {
 
   it('normalizes a diagonal made from the smallest subnormal components', () => {
     // Catches Math.hypot rounding a subnormal diagonal so division produces a vector of length √2.
-    const output = { x: 0, z: 0 }
-    const result = normalizeDirection2(Number.MIN_VALUE, -Number.MIN_VALUE, output)
+    const { result, output } = normalize2(Number.MIN_VALUE, -Number.MIN_VALUE)
 
     expect(result).toBe(output)
     expect(output.x).toBeCloseTo(1 / Math.sqrt(2), 15)
@@ -67,8 +81,7 @@ describe('direction normalization properties', () => {
       [Number.MAX_VALUE, -Number.MAX_VALUE / 2],
     ]
     for (const [x, z] of directions) {
-      const output = { x: 0, z: 0 }
-      const result = normalizeDirection2(x, z, output)
+      const { result, output } = normalize2(x, z)
 
       expect(result).toBe(output)
       expect(Math.hypot(output.x, output.z)).toBeCloseTo(1, 12)
@@ -84,8 +97,7 @@ describe('direction normalization properties', () => {
       [Number.MAX_VALUE, -Number.MAX_VALUE / 2, 0],
     ]
     for (const [x, y, z] of directions) {
-      const output = { x: 0, y: 0, z: 0 }
-      const result = normalizeDirection3(x, y, z, output)
+      const { result, output } = normalize3(x, y, z)
 
       expect(result).toBe(output)
       expect(Math.hypot(output.x, output.y, output.z)).toBeCloseTo(1, 12)
@@ -100,8 +112,7 @@ describe('direction normalization properties', () => {
 
   it('preserves a zero component and the sign of the other component', () => {
     // Catches a zero axis becoming NaN or a nonzero axis losing its direction during normalization.
-    const output = { x: 1, z: 1 }
-    const result = normalizeDirection2(0, -7, output)
+    const { result, output } = normalize2(0, -7)
 
     expect(result).toBe(output)
     expect(output).toStrictEqual({ x: 0, z: -1 })
@@ -109,7 +120,23 @@ describe('direction normalization properties', () => {
 
   it('returns undefined for zero vectors in both dimensions', () => {
     // Catches dividing a zero vector and returning NaNs instead of the documented absence of direction.
-    expect(normalizeDirection2(0, 0, { x: 0, z: 0 })).toBeUndefined()
-    expect(normalizeDirection3(0, 0, 0, { x: 0, y: 0, z: 0 })).toBeUndefined()
+    expect(normalize2(0, 0).result).toBeUndefined()
+    expect(normalize3(0, 0, 0).result).toBeUndefined()
+  })
+
+  it('preserves NaN and infinite numeric inputs', () => {
+    // Catches validation that narrows the schema to finite values and changes propagation behavior.
+    expect(() => directionComponent('1')).toThrow()
+
+    const two = normalize2(Number.POSITIVE_INFINITY, 0)
+    expect(two.result).toBe(two.output)
+    expect(Number.isNaN(two.output.x)).toBe(true)
+    expect(Number.isNaN(two.output.z)).toBe(true)
+
+    const three = normalize3(Number.NaN, 1, -Infinity)
+    expect(three.result).toBe(three.output)
+    expect(Number.isNaN(three.output.x)).toBe(true)
+    expect(Number.isNaN(three.output.y)).toBe(true)
+    expect(Number.isNaN(three.output.z)).toBe(true)
   })
 })

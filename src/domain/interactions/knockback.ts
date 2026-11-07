@@ -1,6 +1,6 @@
 import { Result, Schema } from 'effect'
 import type { PositionAxis } from '@nerima-games/mc-kernel'
-import { normalizeDirection2 } from '../math/direction.js'
+import { directionComponent, normalizeDirection2 } from '../math/direction.js'
 
 /**
  * ONE RULE, ONE FILE (DN-GP-9): which way a blow shoves what it hit.
@@ -208,8 +208,12 @@ export const knockbackDirection = (dx: number, dz: number): KnockbackDirection =
     return STRAIGHT_UP
   }
 
-  const direction: { _tag: 'Away'; x: number; z: number } = { _tag: 'Away', x: 0, z: 0 }
-  normalizeDirection2(dx, dz, direction)
+  const direction: { _tag: 'Away'; x: ReturnType<typeof directionComponent>; z: ReturnType<typeof directionComponent> } = {
+    _tag: 'Away',
+    x: directionComponent(0),
+    z: directionComponent(0),
+  }
+  normalizeDirection2(directionComponent(dx), directionComponent(dz), direction)
   return direction
 }
 

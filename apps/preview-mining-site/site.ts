@@ -199,7 +199,11 @@ import {
 } from './inventory'
 import { makePreviewRoster } from './roster'
 import { makePreviewPlayer } from './player'
-import { makeBrewingAdvanceStage, type BrewingAdvanceExecution } from '../../src/stages/brewing-advance-stage.js'
+import {
+  makeBrewingAdvanceStage,
+  type BrewingAdvanceExecution,
+  type BrewingAdvanceStageApi,
+} from '../../src/stages/brewing-advance-stage.js'
 import {
   AIR,
   floatingBlocks,
@@ -344,7 +348,7 @@ export type Site = {
     ingredient: Parameters<typeof enqueueBrewingIngredient>[2],
   ) => Effect.Effect<void, unknown>
   /** Queue a coordinator-backed brewing advance for the gameplay stage. */
-  readonly requestBrewingAdvance: (requestId: string, elapsedSecs: number) => Effect.Effect<void, unknown>
+  readonly requestBrewingAdvance: BrewingAdvanceStageApi['requestAdvance']
   /** Read completed brewing advances only when requested. */
   readonly drainBrewingAdvanceResults: () => Effect.Effect<ReadonlyArray<BrewingAdvanceExecution>>
   /** Read brewing owner state only when requested. */

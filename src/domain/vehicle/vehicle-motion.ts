@@ -1,6 +1,6 @@
 import type { OccupantId, Vehicle } from '@nerima-games/mc-sim'
 import { AngleRadians, VehicleVelocityComponent } from '@nerima-games/mc-kernel'
-import { normalizeDirection2 } from '../math/direction.js'
+import { directionComponent, normalizeDirection2 } from '../math/direction.js'
 import { projectMinecartVelocity, type RailShape } from './rail-shape.js'
 
 export type VehicleExitReason = 'requested' | 'collision' | 'destroyed'
@@ -144,9 +144,10 @@ export const stepMinecart = (
       let directionX = -Math.sin(vehicle.yawRadians)
       let directionZ = -Math.cos(vehicle.yawRadians)
       if (currentSpeed > 0) {
-        normalizeDirection2(vx, vz, velocity)
-        directionX = velocity.x
-        directionZ = velocity.z
+        const unitVelocity = { x: directionComponent(0), z: directionComponent(0) }
+        normalizeDirection2(directionComponent(vx), directionComponent(vz), unitVelocity)
+        directionX = unitVelocity.x
+        directionZ = unitVelocity.z
       }
       const nextSpeed = Math.min(MINECART_MAX_SPEED, currentSpeed + MINECART_POWERED_ACCELERATION * elapsed)
       vx = directionX * nextSpeed

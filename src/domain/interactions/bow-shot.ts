@@ -62,7 +62,7 @@ import {
 } from '@nerima-games/mc-kernel'
 import { EYE_LEVEL_OFFSET, IntentPayloadSchema, type Direction3, type IntentPayload, type PlayerPose } from '@nerima-games/mc-sim'
 import { Result, Schema } from 'effect'
-import { normalizeDirection3 } from '../math/direction.js'
+import { directionComponent, normalizeDirection3 } from '../math/direction.js'
 import { BowChargePreparationSchema, type BowChargePreparation } from './draw-bow.js'
 import { BOW_MAX_RANGE } from './draw-bow.js'
 
@@ -253,8 +253,13 @@ const shotTargetWithCandidateAtReach = <Candidate extends ShotCandidate>(
     return undefined
   }
 
-  const unitDirection = { x: 0, y: 0, z: 0 }
-  normalizeDirection3(dirX, dirY, dirZ, unitDirection)
+  const unitDirection = { x: directionComponent(0), y: directionComponent(0), z: directionComponent(0) }
+  normalizeDirection3(
+    directionComponent(dirX),
+    directionComponent(dirY),
+    directionComponent(dirZ),
+    unitDirection,
+  )
   const { x: unitX, y: unitY, z: unitZ } = unitDirection
   const radiusSquared = BOW_TARGET_RADIUS * BOW_TARGET_RADIUS
 
@@ -491,8 +496,13 @@ export const prepareBowShot = (
   )
   if (targetMatch === undefined) return Result.fail('no-target')
   const { hit: target, candidate: targetCandidate } = targetMatch
-  const unitAim = { x: 0, y: 0, z: 0 }
-  normalizeDirection3(aim.x, aim.y, aim.z, unitAim)
+  const unitAim = { x: directionComponent(0), y: directionComponent(0), z: directionComponent(0) }
+  normalizeDirection3(
+    directionComponent(aim.x),
+    directionComponent(aim.y),
+    directionComponent(aim.z),
+    unitAim,
+  )
   const end = position(
     PositionAxis(origin.x + unitAim.x * target.distance),
     PositionAxis(origin.y + unitAim.y * target.distance),

@@ -10,22 +10,31 @@ import {
 } from '@nerima-games/mc-sim'
 import { BREWING_ADVANCE_STAGE_ID, GAMEPLAY_STAGE_IDS } from './stage-ids.js'
 
-const BrewingAdvanceRequestSchema = Schema.Struct({
-  requestId: Schema.String,
+const BrewingAdvanceRequestIdSchema: Schema.brand<typeof Schema.String, 'BrewingAdvanceRequestId'> =
+  Schema.String.pipe(Schema.brand('BrewingAdvanceRequestId'))
+
+const BrewingAdvanceRequestSchema: Schema.Struct<{
+  readonly requestId: typeof BrewingAdvanceRequestIdSchema
+  readonly elapsedSecs: typeof BrewingElapsedSecsSchema
+}> = Schema.Struct({
+  requestId: BrewingAdvanceRequestIdSchema,
   elapsedSecs: BrewingElapsedSecsSchema,
 })
 
 type BrewingAdvanceRequest = Schema.Schema.Type<typeof BrewingAdvanceRequestSchema>
 
 export type BrewingAdvanceExecution = Readonly<{
-  readonly requestId: string
+  readonly requestId: Schema.Schema.Type<typeof BrewingAdvanceRequestSchema>['requestId']
   readonly result: Result.Result<BrewingOutcome, BrewingServiceError>
 }>
 
 export type BrewingAdvanceStageApi = Readonly<{
   readonly stage: StageRegistration
   /** Replaces the automatic frame delta for a frame when one or more requests are queued. */
-  readonly requestAdvance: (requestId: string, elapsedSecs: number) => Effect.Effect<void, Schema.SchemaError>
+  readonly requestAdvance: (
+    requestId: Schema.Codec.Encoded<typeof BrewingAdvanceRequestSchema>['requestId'],
+    elapsedSecs: Schema.Codec.Encoded<typeof BrewingAdvanceRequestSchema>['elapsedSecs'],
+  ) => Effect.Effect<void, Schema.SchemaError>
   readonly drainResults: Effect.Effect<ReadonlyArray<BrewingAdvanceExecution>>
 }>
 
