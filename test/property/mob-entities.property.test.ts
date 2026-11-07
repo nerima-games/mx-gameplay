@@ -250,6 +250,8 @@ describe('mob entity properties', () => {
 
   it('conserves dropped item counts across eligible and partial pickups', () => {
     // Catches consuming an unaccepted stack, losing a leftover, or picking before its eligible frame.
+    // At storedBefore=0, every slot is full stone; that inventory cannot accept gunpowder.
+    // Only a pre-existing gunpowder stack has capacity in this fixture.
     fc.assert(
       fc.property(
         fc.integer({ min: 0, max: 63 }),
@@ -293,12 +295,14 @@ describe('mob entity properties', () => {
             (total, item) => total + item.behaviour.count,
             0,
           )
-          const collected = withinRadius && eligible ? Math.min(dropCount, 64 - storedBefore) : 0
+          const available = storedBefore === 0 ? 0 : 64 - storedBefore
+          const collected = withinRadius && eligible ? Math.min(dropCount, available) : 0
 
           expect(storedAfter - storedBefore + leftover).toBe(dropCount)
           expect(storedAfter - storedBefore).toBe(collected)
         },
       ),
+      { examples: [[0, 1, true, true]] },
     )
   })
 
