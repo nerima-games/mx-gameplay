@@ -48,6 +48,17 @@ const supportedBrewingRecipes: ReadonlyArray<{
   { bottle: { potion: 'awkward' }, ingredient: 'ghast_tear', output: 'regeneration' },
 ]
 
+const expectedVillagerOfferTables = {
+  farmer: [
+    ['wheat', 20, 'emerald', 1, 16],
+    ['potato', 26, 'emerald', 1, 16],
+  ],
+  toolsmith: [
+    ['coal', 15, 'emerald', 1, 12],
+    ['emerald', 4, 'iron_pickaxe', 1, 12],
+  ],
+} as const
+
 const itemForEnchantment: Readonly<Record<EnchantmentId, ItemType>> = {
   protection: 'iron_helmet',
   sharpness: 'iron_sword',
@@ -262,13 +273,33 @@ describe('player systems properties', () => {
   })
 
   it('keeps generated villager prices positive and offer stock within its limit', () => {
-    // Fails if an offer has a nonpositive price or quantity, or its use count escapes the stock range.
+    // Fails if a trade price changes, an offer starts used, or its counts escape valid stock bounds.
     FastCheck.assert(
       FastCheck.property(
         FastCheck.string({ minLength: 1, maxLength: 24 }),
         FastCheck.constantFrom('farmer', 'toolsmith'),
         (id, profession) => {
           const villager = makeVillager(id, profession)
+          const describeOffer = (
+            inputItem: string,
+            inputCount: number,
+            outputItem: string,
+            outputCount: number,
+            maxUses: number,
+          ) => `${inputItem}:${inputCount}->${outputItem}:${outputCount}:${maxUses}`
+          const expected = expectedVillagerOfferTables[profession]
+            .map(([inputItem, inputCount, outputItem, outputCount, maxUses]) =>
+              describeOffer(inputItem, inputCount, outputItem, outputCount, maxUses),
+            )
+            .sort()
+          const actual = villager.offers.map((offer) => describeOffer(
+            offer.input.item,
+            offer.input.count,
+            offer.output.item,
+            offer.output.count,
+            offer.maxUses,
+          )).sort()
+
           return villager.offers.length > 0 && villager.offers.every((offer) =>
             Number.isSafeInteger(offer.input.count) &&
             offer.input.count > 0 &&
@@ -276,9 +307,13 @@ describe('player systems properties', () => {
             offer.output.count > 0 &&
             Number.isSafeInteger(offer.maxUses) &&
             offer.maxUses > 0 &&
+            Number.isSafeInteger(offer.uses) &&
             offer.uses >= 0 &&
-            offer.uses <= offer.maxUses,
+            offer.uses <= offer.maxUses &&
+            offer.uses === 0,
           )
+            && actual.length === expected.length &&
+            actual.every((offer, index) => offer === expected[index])
         },
       ),
     )
