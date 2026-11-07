@@ -6,6 +6,7 @@ import {
   type Vitals,
 } from '../../src/domain/death-cause'
 import { applyArmorToDamage } from '../../src/domain/combat/armor'
+import { resolveFallDamage } from '../../src/domain/fall-damage'
 import {
   INITIAL_ENVIRONMENTAL_CONTACT_DAMAGE_STATE,
   resolveEnvironmentalContactDamage,
@@ -36,6 +37,24 @@ const validContacts: ReadonlyArray<EnvironmentalContact> = [
 ]
 
 describe('player damage properties', () => {
+  it('keeps the fall threshold and whole-point damage boundary', () => {
+    // Fails if damage begins at the threshold, fractional falls round down, or the fall cause is lost.
+    FastCheck.assert(
+      FastCheck.property(FastCheck.integer({ min: 0, max: 4000 }), (quarterSteps) => {
+        const fallDistance = quarterSteps / 4
+        const damage = resolveFallDamage(fallDistance)
+
+        return resolveFallDamage(3) === undefined && (fallDistance <= 3
+          ? damage === undefined
+          : damage !== undefined &&
+            damage.cause === 'fall' &&
+            Number.isInteger(damage.amount) &&
+            damage.amount >= fallDistance - 3 &&
+            damage.amount < fallDistance - 2)
+      }),
+    )
+  })
+
   it('caps armor mitigation at eighty percent without increasing damage', () => {
     // Fails if armor raises damage or reduces a hit below twenty percent of its original amount.
     FastCheck.assert(
