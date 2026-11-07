@@ -1,0 +1,153 @@
+import { describe, expect, it } from '@effect/vitest'
+import { Effect, Option, Result } from 'effect'
+import {
+  AttackRangeDistance,
+  blockIdOf,
+  EntityHealthPoints,
+} from '@nerima-games/mc-kernel'
+import {
+  EntityId,
+  EntitySerial,
+  PlayerStorageSnapshotSchema,
+  SPAWN_VITALS,
+  HungerPoints,
+  itemStack,
+  makeTimeService,
+  type Entity,
+  type EntityRoster,
+} from '@nerima-games/mc-sim'
+import type { MobBehaviour } from '../../src/domain/entities/mob-frame'
+import { CREEPER_KIND } from '../../src/domain/entities/mob-frame'
+import {
+  drainBlockUseResults,
+  drainItemUseResults,
+  drainMeleeAttackResults,
+  gameplayStages,
+  makeGameplayFrameStateForOwner,
+  requestFoodUse,
+  requestBlockUse,
+  requestMeleeAttack,
+} from '../../src/stages/registration'
+import {
+  GAMEPLAY_ENTITIES_OWNER_ID,
+  GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+  GAMEPLAY_VITALS_OWNER_ID,
+  GameplayEntityRosterSchema,
+  type GameplayOwnerInitialState,
+} from '../../src/stages/gameplay-owner-registrations'
+import { world } from '../support/chunk-store-double'
+import { makeEntityManagerDouble } from '../support/entity-manager-double'
+import { emptySlots as inventorySlots, makeInventoryDouble } from '../support/inventory-service-double'
+import { makePlayerServiceDouble } from '../support/player-service-double'
+import {
+  makeGameplayCommitServices,
+  makeTransactionalChunkStoreDouble,
+} from '../support/transactional-stage-doubles'
+import { runFrame } from '../support/frame-runner'
+import { blockPosition, position } from '../support/coordinate-fixtures'
+
+const lowVitals = { ...SPAWN_VITALS, hungerPoints: HungerPoints(10) }
+
+const makeSlice = (
+  initialSlots = inventorySlots(),
+  ownerInitial: GameplayOwnerInitialState = {},
+  initialWorld = world([]),
+) =>
+  Effect.gen(function* () {
+    const store = yield* makeTransactionalChunkStoreDouble(initialWorld, ['0,0'])
+    const roster = yield* makeEntityManagerDouble<MobBehaviour>(
+      ownerInitial.entities ?? { entities: [], nextSerial: EntitySerial(0) },
+    )
+    const inventory = yield* makeInventoryDouble(initialSlots)
+    const player = yield* makePlayerServiceDouble()
+    const time = yield* makeTimeService()
+    const commit = yield* makeGameplayCommitServices(store.api, inventory.api, ownerInitial)
+    const state = yield* makeGameplayFrameStateForOwner({
+      coordinator: commit.coordinator,
+      vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID,
+    })
+    return {
+      state,
+      stages: gameplayStages(state, store.api, roster.api, inventory.api, player.api, time, undefined, undefined, {}, commit),
+      commit,
+    }
+  })
+
+describe('item use and combat through gameplay stages', () => {
+  it.effect('consumes one available food item and returns the matching use result', () =>
+    Effect.gen(function* () {
+      const slots = [...inventorySlots()]
+      slots[0] = Result.getOrThrow(itemStack('potato', 1))
+      const slice = yield* makeSlice(slots, { vitals: lowVitals })
+
+      yield* requestFoodUse(slice.state, 'eat-potato', 'potato', lowVitals)
+      yield* runFrame(slice.stages)
+
+      expect(yield* drainItemUseResults(slice.state)).toMatchObject([{
+        action: 'EatFood',
+        requestId: 'eat-potato',
+        heldItem: 'potato',
+        success: true,
+        consumedCount: 1,
+        outcome: { _tag: 'consume', count: 1, foodPoints: 1 },
+      }])
+      const storage = yield* slice.commit.coordinator.snapshot(
+        GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+        PlayerStorageSnapshotSchema,
+      )
+      expect(storage.state.inventory.slots[0]).toBeUndefined()
+    }),
+  )
+
+  it.effect('applies a melee hit to the registered target and drains its result once', () =>
+    Effect.gen(function* () {
+      const target: Entity<MobBehaviour> = {
+        id: EntityId('melee-scenario-target'),
+        kind: CREEPER_KIND,
+        feetPosition: position(0, 64 - 0.9, 2),
+        healthPoints: EntityHealthPoints(20),
+        behaviour: undefined,
+      }
+      const entities: EntityRoster<MobBehaviour> = { entities: [target], nextSerial: EntitySerial(1) }
+      const slice = yield* makeSlice(undefined, { entities })
+
+      yield* requestMeleeAttack(slice.state, {
+        requestId: 'melee-front-target',
+        origin: position(0, 64, 0),
+        direction: position(0, 0, 1),
+        reach: AttackRangeDistance(3),
+        damage: 4,
+      })
+      yield* runFrame(slice.stages)
+
+      expect(yield* drainMeleeAttackResults(slice.state)).toMatchObject([{
+        requestId: 'melee-front-target',
+        success: true,
+        target: { id: target.id, distance: 2 },
+      }])
+      expect(yield* drainMeleeAttackResults(slice.state)).toStrictEqual([])
+      const updated = yield* slice.commit.coordinator.snapshot(
+        GAMEPLAY_ENTITIES_OWNER_ID,
+        GameplayEntityRosterSchema,
+      )
+      expect(updated.state.entities[0]?.healthPoints).toBe(16)
+    }),
+  )
+
+  it.effect('routes a clicked lever to the block-use result with the same position', () =>
+    Effect.gen(function* () {
+      const leverPosition = blockPosition(2, 64, 3)
+      const lever = Option.getOrThrow(blockIdOf('lever'))
+      const slice = yield* makeSlice(undefined, {}, world([[leverPosition, lever]]))
+
+      yield* requestBlockUse(slice.state, 'use-lever', leverPosition)
+      yield* runFrame(slice.stages)
+
+      expect(yield* drainBlockUseResults(slice.state)).toMatchObject([{
+        requestId: 'use-lever',
+        success: true,
+        outcome: { _tag: 'ToggleLever', position: leverPosition },
+      }])
+    }),
+  )
+})
