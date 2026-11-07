@@ -1,6 +1,6 @@
 import { BlockAxis, blockPosition } from '@nerima-games/mc-kernel'
 import { DEFAULT_SCENARIO, scenarioByName } from '../../preview-mining-site/scenarios.js'
-import { requestBreak } from '../../preview-mining-site/site.js'
+import { requestBreak, stepFrame } from '../../preview-mining-site/site.js'
 import { Effect } from 'effect'
 import { mountGameplayScenario, type ScenarioDefinition } from '../contract.js'
 
@@ -24,15 +24,19 @@ export const previewScenarios: ReadonlyArray<ScenarioDefinition> = [
           {
             id: 'break-sand-support',
             label: 'Break sand support',
-            perform: (site) => Effect.runSync(requestBreak(site, target)),
+            perform: (site) => {
+              Effect.runSync(requestBreak(site, target))
+              Effect.runSync(stepFrame(site))
+            },
           },
         ],
         unsupported: [
           'Equipment, hotbar, and status-effect snapshots are not wired into the preview demo.',
           'The preview demo produces no death-cause or audio-cue events.',
           'The preview exposes frame totals, but not before/after deltas for individual stages.',
+          'The preview Site does not expose the player pose for observation.',
         ],
-        observe: () => ({ playerPosition: '0, 64, 0' }),
+        observe: () => ({ playerPosition: 'unavailable (preview Site does not expose player pose)' }),
       })
     },
   },
