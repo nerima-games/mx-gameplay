@@ -67,6 +67,7 @@
 import { Effect, Equal, Option, Ref, Result, Schema } from 'effect'
 import {
   BlockAxis,
+  AngleRadians,
   adjacentBlockPosition,
   blockIdOf,
   blockOfPlaceableItem,
@@ -81,20 +82,28 @@ import {
   type BlockPositionKey,
   type HarvestTier,
   type PlaceableItemType,
+  type Position,
   type StageId,
   type StageRegistration,
   WorldIdSchema,
+  VehicleVelocityComponent,
 } from '@nerima-games/mc-kernel'
 import {
   makeTimeService,
   makeWorldCommitCoordinator,
   PlayerStorageSnapshotSchema,
+  PlayerServiceSnapshotSchema,
   PROJECTILE_REPLICATED_OWNER_ID,
   TNT_REPLICATED_OWNER_ID,
+  makeVehicleService,
+  OccupantId,
   type EntityManagerApi,
   type PlayerStorage,
   type TimeServiceApi,
+  type Vehicle,
+  type VehicleServiceApi,
 } from '@nerima-games/mc-sim'
+import type { Dimension } from '@nerima-games/mc-worldgen'
 import { FALLING_BLOCK_MOVES_PER_TICK } from '../../src/domain/falling-block'
 import { NO_TOOL, type BlockLootContext, type MinedItem } from '../../src/domain/interactions/block-loot'
 import { spawnMobDrops } from '../../src/domain/entities/dropped-item'
@@ -138,6 +147,7 @@ import {
   type ExperienceOrbOwnerSnapshot,
 } from '../../src/domain/entities/xp-orb.js'
 import { GAMEPLAY_STAGE_IDS } from '../../src/stages/stage-ids'
+import type { VehicleControlInput, VehicleFrameEnvironment } from '../../src/domain/vehicle/vehicle-frame.js'
 import { FrameServicesLayer } from './frame-services'
 import {
   makePreviewInventory,
@@ -225,11 +235,29 @@ export type Site = {
   readonly roster: EntityManagerApi<MobBehaviour>
   readonly state: GameplayFrameState
   readonly time: TimeServiceApi
+  readonly vehicleService: VehicleServiceApi
   readonly stages: ReadonlyArray<StageRegistration>
   readonly spec: WorldSpec
   readonly bounds: { readonly width: number; readonly height: number }
   /** Read the coordinator-owned gameplay roster only when an observer asks. */
   readonly observeMobs: () => Effect.Effect<ReadonlyArray<ObservedGameplayMob>, unknown>
+  /** Read the vehicle roster only when an observer asks. */
+  readonly observeVehicles: () => Effect.Effect<ReadonlyArray<Vehicle>, unknown>
+  readonly spawnVehicle: (
+    type: Vehicle['type'],
+    dimension: Dimension,
+    position: Position,
+    yawRadians?: number,
+  ) => Effect.Effect<Vehicle, unknown>
+  readonly mountVehicle: (id: Vehicle['id'], occupant: string) => Effect.Effect<void, unknown>
+  readonly setVehicleVelocity: (
+    id: Vehicle['id'],
+    velocity: Readonly<{ x: number; y: number; z: number }>,
+  ) => Effect.Effect<void, unknown>
+  readonly setVehicleControls: (id: Vehicle['id'], controls: VehicleControlInput) => void
+  readonly setPoweredRailAt: (position: BlockPosition, powered: boolean) => void
+  /** Read the player owner snapshot only when an observer asks. */
+  readonly observePlayerPose: () => Effect.Effect<ObservedGameplayPlayerPose, unknown>
   /** Replace the player inventory and synchronize its owner snapshot. */
   readonly setInventory: (items: ReadonlyArray<readonly [ItemType, number]>) => Effect.Effect<void, unknown>
   /** Seed the coordinator-owned experience-orb snapshot. */
@@ -272,6 +300,11 @@ export type ObservedGameplayMob = Readonly<{
   position: GameplayEntity['feetPosition']
 }>
 
+export type ObservedGameplayPlayerPose = Readonly<{
+  dimension: Dimension
+  position: Position
+}>
+
 /**
  * What `placementVerdict` answers: a refusal, or permission with the id.
  *
@@ -312,6 +345,19 @@ export const makeSite = (
     const roster = yield* makePreviewRoster
     const previewPlayer = yield* makePreviewPlayer
     const time = yield* Effect.orDie(makeTimeService())
+    const vehicleService = yield* Effect.orDie(makeVehicleService())
+    const vehicleControls = new Map<string, VehicleControlInput>()
+    const poweredRailOverrides = new Map<BlockPositionKey, boolean>()
+    const vehicleEnvironment: VehicleFrameEnvironment = {
+      isActiveDimension: (dimension) => dimension === 'overworld',
+      controlsForVehicle: (vehicle) => vehicleControls.get(vehicle.id) ?? { throttle: 0, steering: 0 },
+      isPoweredRailAt: (dimension, position) => {
+        if (dimension !== 'overworld') return false
+        const key = blockPositionKeyOf(position)
+        const override = poweredRailOverrides.get(key)
+        return override ?? false
+      },
+    }
     // Register the gameplay owners before constructing the frame state so its
     // survival vitals runtime reads and commits through the vitals owner.
     const owners = gameplayOwnerRegistrations({
@@ -371,6 +417,41 @@ export const makeSite = (
           position: feetPosition,
         })),
       )
+    const observeVehicles = () => vehicleService.vehicles
+    const spawnVehicle = (
+      type: Vehicle['type'],
+      dimension: Dimension,
+      position: Position,
+      yawRadians = 0,
+    ) => vehicleService.spawn(type, dimension, position, AngleRadians(yawRadians))
+    const mountVehicle = (id: Vehicle['id'], occupant: string) =>
+      vehicleService.mount(id, OccupantId(occupant))
+    const setVehicleVelocity = (
+      id: Vehicle['id'],
+      velocity: Readonly<{ x: number; y: number; z: number }>,
+    ) => vehicleService.updateVelocity(id, {
+      x: VehicleVelocityComponent(velocity.x),
+      y: VehicleVelocityComponent(velocity.y),
+      z: VehicleVelocityComponent(velocity.z),
+    })
+    const setVehicleControls = (id: Vehicle['id'], controls: VehicleControlInput): void => {
+      vehicleControls.set(id, controls)
+    }
+    const setPoweredRailAt = (position: BlockPosition, powered: boolean): void => {
+      poweredRailOverrides.set(blockPositionKeyOf(position), powered)
+    }
+    const observePlayerPose = () =>
+      Effect.map(
+        coordinator.snapshot(GAMEPLAY_PLAYER_OWNER_ID, PlayerServiceSnapshotSchema),
+        ({ state: player }) => ({
+          dimension: player.pose.feetPosition.dimension,
+          position: {
+            x: player.pose.feetPosition.x,
+            y: player.pose.feetPosition.y,
+            z: player.pose.feetPosition.z,
+          },
+        }),
+      )
     const commit = {
       coordinator,
       playerOwnerId: GAMEPLAY_PLAYER_OWNER_ID,
@@ -396,8 +477,8 @@ export const makeSite = (
         inventoryService.api,
         previewPlayer,
         time,
-        undefined,
-        undefined,
+        vehicleService,
+        vehicleEnvironment,
         {},
         commit,
       ),
@@ -409,10 +490,18 @@ export const makeSite = (
       roster,
       state,
       time,
+      vehicleService,
       stages,
       spec,
       bounds,
       observeMobs,
+      observeVehicles,
+      spawnVehicle,
+      mountVehicle,
+      setVehicleVelocity,
+      setVehicleControls,
+      setPoweredRailAt,
+      observePlayerPose,
       setInventory,
       seedExperienceOrbs,
       frame: 0,

@@ -1,9 +1,9 @@
 /// <reference lib="dom" />
 
 import { describe, expect, it } from '@effect/vitest'
-import { AIR_BLOCK_ID, BlockAxis, InterpolationFraction, PositionAxis, blockPosition, position } from '@nerima-games/mc-kernel'
+import { AIR_BLOCK_ID, BlockAxis, InterpolationFraction, PositionAxis, blockIdOf, blockPosition, position } from '@nerima-games/mc-kernel'
 import { EntityId } from '@nerima-games/mc-sim'
-import { Effect, Ref, Result } from 'effect'
+import { Effect, Option, Ref, Result } from 'effect'
 import { createExperienceOrbValue } from '../src/domain/entities/xp-orb'
 import { TNT_BLOCK_ID } from '../src/domain/interactions/ignite-tnt'
 import { CREEPER_KIND, type MobSpawnAttempt } from '../src/domain/entities/mob-frame'
@@ -17,9 +17,12 @@ import { STONE, type WorldSpec } from '../apps/preview-mining-site/world'
 import { requestItemUse } from '../apps/preview-mining-site/site'
 import { mountGameplayScenario, type ScenarioSetup } from '../apps/browser-debug/contract'
 import { parseUrlState } from '../apps/browser-debug/url-state'
+import { BOAT_ACCELERATION, MINECART_POWERED_ACCELERATION } from '../src/domain/vehicle/vehicle-motion'
 
 const world: WorldSpec = { cells: [], loadedChunks: ['0,0', '1,0'], z: 0 }
 const bounds = { width: 32, height: 12 }
+const POWERED_RAIL = Option.getOrThrow(blockIdOf('powered_rail'))
+const WATER = Option.getOrThrow(blockIdOf('water'))
 
 const mountScenario = (
   scenarioId: string,
@@ -195,6 +198,98 @@ describe('browser debug Site contract', () => {
           expect.objectContaining({ _tag: 'ExperienceCollected', orb, amount: 7 }),
         ]),
       })
+      mount.dispose()
+    }),
+  )
+
+  it.effect('moves a mounted minecart on powered rail according to the acceleration rule', () =>
+    Effect.gen(function* () {
+      const track: WorldSpec = {
+        cells: [[0, 64, POWERED_RAIL]],
+        loadedChunks: ['0,0'],
+        z: 0,
+      }
+      const railPosition = blockPosition(BlockAxis(0), BlockAxis(64), BlockAxis(0))
+      const mount = mountScenario('contract-powered-minecart', track)
+      const cart = mount.spawnVehicle(
+        'minecart',
+        'overworld',
+        position(PositionAxis(0.5), PositionAxis(64), PositionAxis(0.5)),
+      )
+      mount.mountVehicle(cart.id, 'contract:minecart-rider')
+      mount.setPoweredRailAt(railPosition, true)
+
+      let expectedZ = 0.5
+      let expectedVelocity = 0
+      for (let frame = 0; frame < 12; frame += 1) {
+        expectedVelocity -= MINECART_POWERED_ACCELERATION / 60
+        expectedZ += expectedVelocity / 60
+        mount.advance()
+        const observed = mount.observeVehicles()[0]
+
+        expect(observed?.position.z).toBeCloseTo(expectedZ, 8)
+        expect(observed?.velocity.z).toBeCloseTo(expectedVelocity, 8)
+      }
+      expect(mount.observeVehicles()[0]?.occupant).toBe('contract:minecart-rider')
+      mount.dispose()
+    }),
+  )
+
+  it.effect('moves a mounted boat on water according to the acceleration and drag rules', () =>
+    Effect.gen(function* () {
+      const waterWorld: WorldSpec = {
+        cells: [[0, 64, WATER]],
+        loadedChunks: ['0,0'],
+        z: 0,
+      }
+      const mount = mountScenario('contract-boat', waterWorld)
+      const boat = mount.spawnVehicle(
+        'boat',
+        'overworld',
+        position(PositionAxis(0.5), PositionAxis(64), PositionAxis(0.5)),
+      )
+      mount.mountVehicle(boat.id, 'contract:boat-rider')
+      mount.setVehicleControls(boat.id, { throttle: 1, steering: 0 })
+
+      const dt = 1 / 60
+      const waterDrag = Math.pow(0.9, dt * 20)
+      let expectedZ = 0.5
+      let expectedVelocity = 0
+      for (let frame = 0; frame < 5; frame += 1) {
+        expectedVelocity = (expectedVelocity - BOAT_ACCELERATION * dt) * waterDrag
+        expectedZ += expectedVelocity * dt
+        mount.advance()
+        const observed = mount.observeVehicles()[0]
+
+        expect(observed?.position.z).toBeCloseTo(expectedZ, 8)
+        expect(observed?.velocity.z).toBeCloseTo(expectedVelocity, 8)
+      }
+      expect(mount.observeVehicles()[0]?.occupant).toBe('contract:boat-rider')
+      mount.dispose()
+    }),
+  )
+
+  it.effect('keeps a mounted minecart still on an unpowered control rail', () =>
+    Effect.gen(function* () {
+      const track: WorldSpec = {
+        cells: [[0, 64, POWERED_RAIL]],
+        loadedChunks: ['0,0'],
+        z: 0,
+      }
+      const railPosition = blockPosition(BlockAxis(0), BlockAxis(64), BlockAxis(0))
+      const mount = mountScenario('contract-unpowered-minecart', track)
+      const cart = mount.spawnVehicle(
+        'minecart',
+        'overworld',
+        position(PositionAxis(0.5), PositionAxis(64), PositionAxis(0.5)),
+      )
+      mount.mountVehicle(cart.id, 'contract:unpowered-rider')
+      mount.setPoweredRailAt(railPosition, false)
+      for (let frame = 0; frame < 12; frame += 1) mount.advance()
+
+      const observed = mount.observeVehicles()[0]
+      expect(observed?.position.z).toBe(0.5)
+      expect(observed?.velocity.z).toBe(0)
       mount.dispose()
     }),
   )

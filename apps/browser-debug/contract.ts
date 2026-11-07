@@ -1,8 +1,24 @@
 import { Effect, Ref } from 'effect'
-import { BlockAxis, InterpolationFraction, blockPosition, type ItemType } from '@nerima-games/mc-kernel'
+import {
+  BlockAxis,
+  InterpolationFraction,
+  blockPosition,
+  type ItemType,
+  type Position,
+} from '@nerima-games/mc-kernel'
+import { type Vehicle } from '@nerima-games/mc-sim'
+import type { Dimension } from '@nerima-games/mc-worldgen'
 import type { Weather } from '../../src/domain/weather.js'
 import type { ExperienceOrbRecord } from '../../src/domain/entities/xp-orb.js'
-import { makeSite, stepFrame, type FrameRow, type ObservedGameplayMob, type Site } from '../preview-mining-site/site.js'
+import type { VehicleControlInput } from '../../src/domain/vehicle/vehicle-frame.js'
+import {
+  makeSite,
+  stepFrame,
+  type FrameRow,
+  type ObservedGameplayMob,
+  type ObservedGameplayPlayerPose,
+  type Site,
+} from '../preview-mining-site/site.js'
 import type { WorldSpec } from '../preview-mining-site/world.js'
 
 export type ScenarioArea =
@@ -33,6 +49,8 @@ export type ScenarioAction = {
 
 export type ScenarioObservation = {
   readonly mobs?: ReadonlyArray<ObservedGameplayMob>
+  readonly vehicles?: ReadonlyArray<Vehicle>
+  readonly playerPose?: ObservedGameplayPlayerPose
   readonly playerPosition?: string
   readonly equipment?: unknown
   readonly hotbar?: unknown
@@ -69,6 +87,9 @@ export type ScenarioSnapshot = {
   readonly drops: ReadonlyArray<string>
   readonly deathCauses: ReadonlyArray<string>
   readonly mobs?: ReadonlyArray<ObservedGameplayMob>
+  readonly vehicles?: ReadonlyArray<Vehicle>
+  readonly playerPose?: ObservedGameplayPlayerPose
+  readonly playerDimension?: Dimension
   readonly audioCueIds: ReadonlyArray<string>
   readonly unsupported: ReadonlyArray<string>
   readonly trace: ReadonlyArray<FrameRow>
@@ -84,6 +105,24 @@ export type ScenarioMount = {
   readonly setWeather: (weather: Weather) => void
   readonly setInventory: (items: ReadonlyArray<readonly [ItemType, number]>) => void
   readonly observeMobs: () => ReadonlyArray<ObservedGameplayMob>
+  /** Spawn a real gameplay vehicle into the preview Site. */
+  readonly spawnVehicle: (
+    type: Vehicle['type'],
+    dimension: Dimension,
+    position: Position,
+    yawRadians?: number,
+  ) => Vehicle
+  readonly mountVehicle: (id: Vehicle['id'], occupant: string) => void
+  readonly setVehicleVelocity: (
+    id: Vehicle['id'],
+    velocity: Readonly<{ x: number; y: number; z: number }>,
+  ) => void
+  readonly setVehicleControls: (id: Vehicle['id'], controls: VehicleControlInput) => void
+  readonly setPoweredRailAt: (position: Parameters<Site['setPoweredRailAt']>[0], powered: boolean) => void
+  /** Read real vehicle position and velocity only when called. */
+  readonly observeVehicles: () => ReadonlyArray<Vehicle>
+  /** Read the authoritative player pose only when called. */
+  readonly observePlayerPose: () => ObservedGameplayPlayerPose
   readonly seedExperienceOrbs: (orbs: ReadonlyArray<ExperienceOrbRecord>) => void
   readonly dispose: () => void
 }
@@ -134,6 +173,14 @@ export const mountGameplayScenario = (
     },
     setInventory: (items) => Effect.runSync(site.setInventory(items)),
     observeMobs: () => Effect.runSync(site.observeMobs()),
+    spawnVehicle: (type, dimension, position, yawRadians = 0) =>
+      Effect.runSync(site.spawnVehicle(type, dimension, position, yawRadians)),
+    mountVehicle: (id, occupant) => Effect.runSync(site.mountVehicle(id, occupant)),
+    setVehicleVelocity: (id, velocity) => Effect.runSync(site.setVehicleVelocity(id, velocity)),
+    setVehicleControls: (id, controls) => site.setVehicleControls(id, controls),
+    setPoweredRailAt: (position, powered) => site.setPoweredRailAt(position, powered),
+    observeVehicles: () => Effect.runSync(site.observeVehicles()),
+    observePlayerPose: () => Effect.runSync(site.observePlayerPose()),
     seedExperienceOrbs: (orbs) => Effect.runSync(site.seedExperienceOrbs(orbs)),
     snapshot: () => {
       const observation = setup.observe?.(site) ?? {}
@@ -160,6 +207,13 @@ export const mountGameplayScenario = (
         experience: site.experience,
         playerPosition: observation.playerPosition ?? '0, 64, 0 (preview spawn)',
         ...(observation.mobs === undefined ? {} : { mobs: observation.mobs }),
+        ...(observation.vehicles === undefined ? {} : { vehicles: observation.vehicles }),
+        ...(observation.playerPose === undefined
+          ? {}
+          : {
+              playerPose: observation.playerPose,
+              playerDimension: observation.playerPose.dimension,
+            }),
         equipment: observation.equipment,
         hotbar: observation.hotbar,
         statusEffects: observation.statusEffects,
