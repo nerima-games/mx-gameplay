@@ -5,6 +5,7 @@ import {
   boardVehicle,
   COLLISION_EXIT_SPEED,
   exitVehicle,
+  MINECART_POWERED_ACCELERATION,
   stepBoat,
   stepMinecart,
 } from '../src/domain/vehicle/vehicle-motion'
@@ -113,6 +114,19 @@ describe('minecart motion', () => {
     expect(powered.velocity.x).toBe(8)
     const braking = stepMinecart(cart, { kind: 'powered', shape: 'ew', powered: false }, {}, 0.1).vehicle
     expect(braking.velocity.x).toBeCloseTo(1.58)
+  })
+
+  it('keeps a powered minecart unit speed when its direction is subnormal', () => {
+    const tiny = Number.MIN_VALUE
+    const cart = vehicle('minecart', { velocity: { x: tiny, y: 0, z: tiny } })
+    const result = stepMinecart(cart, { kind: 'powered', shape: 'isolated', powered: true }, {}, 0.1).vehicle
+
+    // Math.hypot rounds this subnormal pair to Number.MIN_VALUE, so dividing
+    // each component by it yields (1, 1) and boosts the powered speed by √2.
+    expect(Math.hypot(result.velocity.x, result.velocity.z)).toBeCloseTo(
+      MINECART_POWERED_ACCELERATION * 0.1,
+      12,
+    )
   })
 
   it('a stationary cart on a freshly powered rail accelerates along the way it is facing', () => {
