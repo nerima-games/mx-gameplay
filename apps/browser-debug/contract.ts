@@ -11,13 +11,18 @@ import type { Dimension } from '@nerima-games/mc-worldgen'
 import type { Weather } from '../../src/domain/weather.js'
 import type { ExperienceOrbRecord } from '../../src/domain/entities/xp-orb.js'
 import type { VehicleControlInput } from '../../src/domain/vehicle/vehicle-frame.js'
-import type { ItemUseResult } from '../../src/stages/registration-core.js'
+import type {
+  ItemUseResult,
+  TargetedPrimaryAttackOptions,
+  TargetedPrimaryAttackResult,
+} from '../../src/stages/registration-core.js'
 import type { VillagerTradeState } from '../../src/domain/villager-trade.js'
 import type { VillagerTradeRequest, VillagerTradeResult } from '../../src/stages/registration-core.js'
 import {
   makeSite,
   stepFrame,
   type FrameRow,
+  type ObservedDroppedItem,
   type ObservedGameplayMob,
   type ObservedGameplayPlayerPose,
   type Site,
@@ -52,6 +57,7 @@ export type ScenarioAction = {
 
 export type ScenarioObservation = {
   readonly mobs?: ReadonlyArray<ObservedGameplayMob>
+  readonly droppedItems?: ReadonlyArray<ObservedDroppedItem>
   readonly vehicles?: ReadonlyArray<Vehicle>
   readonly playerPose?: ObservedGameplayPlayerPose
   readonly playerPosition?: string
@@ -90,6 +96,7 @@ export type ScenarioSnapshot = {
   readonly drops: ReadonlyArray<string>
   readonly deathCauses: ReadonlyArray<string>
   readonly mobs?: ReadonlyArray<ObservedGameplayMob>
+  readonly droppedItems?: ReadonlyArray<ObservedDroppedItem>
   readonly vehicles?: ReadonlyArray<Vehicle>
   readonly playerPose?: ObservedGameplayPlayerPose
   readonly playerDimension?: Dimension
@@ -108,6 +115,10 @@ export type ScenarioMount = {
   readonly setWeather: (weather: Weather) => void
   readonly setInventory: (items: ReadonlyArray<readonly [ItemType, number]>) => void
   readonly observeMobs: () => ReadonlyArray<ObservedGameplayMob>
+  /** Read dropped-item owner records only when called. */
+  readonly observeDroppedItems: () => ReadonlyArray<ObservedDroppedItem>
+  /** Read authoritative player storage only when called. */
+  readonly observePlayerStorage: () => import('@nerima-games/mc-sim').PlayerStorage
   /** Spawn a real gameplay vehicle into the preview Site. */
   readonly spawnVehicle: (
     type: Vehicle['type'],
@@ -126,6 +137,10 @@ export type ScenarioMount = {
   readonly observeVehicles: () => ReadonlyArray<Vehicle>
   /** Read the authoritative player pose only when called. */
   readonly observePlayerPose: () => ObservedGameplayPlayerPose
+  /** Resolve and enqueue a primary attack from the live player and Mob owners. */
+  readonly requestTargetedPrimaryAttack: (
+    options?: TargetedPrimaryAttackOptions,
+  ) => TargetedPrimaryAttackResult
   /** Queue a fishing cast to be settled by a real gameplay frame. */
   readonly requestFishingCast: (intent: Parameters<Site['requestFishingCast']>[0]) => void
   readonly requestFishingAdvance: (intent: Parameters<Site['requestFishingAdvance']>[0]) => void
@@ -211,6 +226,8 @@ export const mountGameplayScenario = (
     },
     setInventory: (items) => Effect.runSync(site.setInventory(items)),
     observeMobs: () => Effect.runSync(site.observeMobs()),
+    observeDroppedItems: () => Effect.runSync(site.observeDroppedItems()),
+    observePlayerStorage: () => Effect.runSync(site.observePlayerStorage()),
     spawnVehicle: (type, dimension, position, yawRadians = 0) =>
       Effect.runSync(site.spawnVehicle(type, dimension, position, yawRadians)),
     mountVehicle: (id, occupant) => Effect.runSync(site.mountVehicle(id, occupant)),
@@ -219,6 +236,8 @@ export const mountGameplayScenario = (
     setPoweredRailAt: (position, powered) => site.setPoweredRailAt(position, powered),
     observeVehicles: () => Effect.runSync(site.observeVehicles()),
     observePlayerPose: () => Effect.runSync(site.observePlayerPose()),
+    requestTargetedPrimaryAttack: (options) =>
+      Effect.runSync(site.requestTargetedPrimaryAttack(options)),
     requestFishingCast: (intent) => Effect.runSync(site.requestFishingCast(intent)),
     requestFishingAdvance: (intent) => Effect.runSync(site.requestFishingAdvance(intent)),
     requestFishingCancel: (requestId, actor) => Effect.runSync(site.requestFishingCancel(requestId, actor)),
@@ -263,6 +282,7 @@ export const mountGameplayScenario = (
         experience: site.experience,
         playerPosition: observation.playerPosition ?? '0, 64, 0 (preview spawn)',
         ...(observation.mobs === undefined ? {} : { mobs: observation.mobs }),
+        ...(observation.droppedItems === undefined ? {} : { droppedItems: observation.droppedItems }),
         ...(observation.vehicles === undefined ? {} : { vehicles: observation.vehicles }),
         ...(observation.playerPose === undefined
           ? {}

@@ -142,6 +142,7 @@ import {
   drainMobExperience,
   drainItemUseResults,
   gameplayStages,
+  requestTargetedPrimaryAttack as enqueueTargetedPrimaryAttack,
   insertBrewingFuel as enqueueBrewingFuel,
   insertBrewingBottle as enqueueBrewingBottle,
   insertBrewingIngredient as enqueueBrewingIngredient,
@@ -154,9 +155,12 @@ import {
   makeGameplayFrameStateForOwner,
   requestItemUse as enqueueItemUse,
   type GameplayFrameState,
+  type GameplayTargetingSnapshotContext,
   type PlacementRequest,
   type VillagerTradeRequest,
   type VillagerTradeResult,
+  type TargetedPrimaryAttackOptions,
+  type TargetedPrimaryAttackResult,
 } from '../../src/stages/registration'
 import {
   GAMEPLAY_BREWING_OWNER_ID,
@@ -182,6 +186,9 @@ import {
   type ExperienceOrbRecord,
   type ExperienceOrbOwnerSnapshot,
 } from '../../src/domain/entities/xp-orb.js'
+import {
+  DroppedItemOwnerSnapshotSchema,
+} from '../../src/domain/entities/dropped-item.js'
 import { GAMEPLAY_STAGE_IDS } from '../../src/stages/stage-ids'
 import type { VehicleControlInput, VehicleFrameEnvironment } from '../../src/domain/vehicle/vehicle-frame.js'
 import type { ItemUseResult } from '../../src/stages/registration-core.js'
@@ -284,6 +291,10 @@ export type Site = {
   readonly bounds: { readonly width: number; readonly height: number }
   /** Read the coordinator-owned gameplay roster only when an observer asks. */
   readonly observeMobs: () => Effect.Effect<ReadonlyArray<ObservedGameplayMob>, unknown>
+  /** Read the dropped-item owner only when an observer asks. */
+  readonly observeDroppedItems: () => Effect.Effect<ReadonlyArray<ObservedDroppedItem>, unknown>
+  /** Read the player-storage owner only when an observer asks. */
+  readonly observePlayerStorage: () => Effect.Effect<PlayerStorage, unknown>
   /** Read the vehicle roster only when an observer asks. */
   readonly observeVehicles: () => Effect.Effect<ReadonlyArray<Vehicle>, unknown>
   readonly spawnVehicle: (
@@ -301,6 +312,10 @@ export type Site = {
   readonly setPoweredRailAt: (position: BlockPosition, powered: boolean) => void
   /** Read the player owner snapshot only when an observer asks. */
   readonly observePlayerPose: () => Effect.Effect<ObservedGameplayPlayerPose, unknown>
+  /** Resolve a primary attack from the live player and Mob owners, then enqueue it. */
+  readonly requestTargetedPrimaryAttack: (
+    options?: TargetedPrimaryAttackOptions,
+  ) => Effect.Effect<TargetedPrimaryAttackResult, unknown>
   /** Queue a cast that the real fishing and projectile services settle in a frame. */
   readonly requestFishingCast: (intent: Parameters<typeof enqueueFishingCast>[1]) => Effect.Effect<void, unknown>
   readonly requestFishingAdvance: (intent: Parameters<typeof enqueueFishingAdvance>[1]) => Effect.Effect<void, unknown>
@@ -347,19 +362,10 @@ export type Site = {
   readonly dispose: () => Effect.Effect<void>
   frame: number
   /**
-   * WHAT MC-SIM HOLDS, refreshed from `snapshot` at the end of every frame.
+   * Player storage projected from its owner at the end of every frame.
    *
-   * This used to be the preview's own tally — a `Map` this file added the
-   * `minedItems` outbox into and subtracted `consumedItems` from — under a
-   * comment saying 「This is the preview playing mc-sim's `InventoryService.add`
-   * / `.remove` pair」. It is playing the service for real now (`./inventory.ts`),
-   * so the number the HUD prints is the number the service would answer, by the
-   * service's stacking rule, and a stack that did not fit is missing from it
-   * rather than silently included.
-   *
-   * It stays a plain `Map` field because the HUD and `--stats` read it
-   * synchronously; it is a PROJECTION, refreshed in `stepFrame`, and writing to
-   * it would change nothing.
+   * Gameplay stages commit this owner. `stepFrame` reads it after all stages so
+   * the HUD and stats show the same inventory the rules just changed.
    */
   inventory: ReadonlyMap<string, number>
   /** XP credited by this preview host after draining the gameplay outbox. */
@@ -381,6 +387,14 @@ export type ObservedGameplayMob = Readonly<{
   id: GameplayEntity['id']
   kind: GameplayEntity['kind']
   position: GameplayEntity['feetPosition']
+  healthPoints: GameplayEntity['healthPoints']
+}>
+
+export type ObservedDroppedItem = Readonly<{
+  readonly id: string
+  readonly item: ItemType
+  readonly count: number
+  readonly position: Position
 }>
 
 export type ObservedGameplayPlayerPose = Readonly<{
@@ -479,6 +493,13 @@ export const makeSite = (
       coordinator,
       vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID,
     })
+    const targetingContext: GameplayTargetingSnapshotContext = {
+      coordinator,
+      playerOwnerId: GAMEPLAY_PLAYER_OWNER_ID,
+      entitiesOwnerId: GAMEPLAY_ENTITIES_OWNER_ID,
+    }
+    const requestTargetedPrimaryAttack = (options: TargetedPrimaryAttackOptions = {}) =>
+      enqueueTargetedPrimaryAttack(state, world.api, targetingContext, options)
     const syncPlayerStorageOwner = (storage: PlayerStorage) =>
       Effect.gen(function* () {
         const current = yield* coordinator.snapshot(GAMEPLAY_PLAYER_STORAGE_OWNER_ID, PlayerStorageSnapshotSchema)
@@ -516,11 +537,27 @@ export const makeSite = (
     const observeMobs = () =>
       Effect.map(
         coordinator.snapshot(GAMEPLAY_ENTITIES_OWNER_ID, GameplayEntityRosterSchema),
-        ({ state: gameplayRoster }) => gameplayRoster.entities.map(({ id, kind, feetPosition }) => ({
+        ({ state: gameplayRoster }) => gameplayRoster.entities.map(({ id, kind, feetPosition, healthPoints }) => ({
           id,
           kind,
           position: feetPosition,
+          healthPoints,
         })),
+      )
+    const observeDroppedItems = () =>
+      Effect.map(
+        coordinator.snapshot(GAMEPLAY_DROPPED_ITEMS_OWNER_ID, DroppedItemOwnerSnapshotSchema),
+        ({ state: droppedItems }) => droppedItems.items.map(({ id, feetPosition, behaviour }) => ({
+          id,
+          item: behaviour.item,
+          count: behaviour.count,
+          position: feetPosition,
+        })),
+      )
+    const observePlayerStorage = () =>
+      Effect.map(
+        coordinator.snapshot(GAMEPLAY_PLAYER_STORAGE_OWNER_ID, PlayerStorageSnapshotSchema),
+        ({ state: storage }) => storage,
       )
     const observeVehicles = () => vehicleService.vehicles
     const spawnVehicle = (
@@ -697,6 +734,8 @@ export const makeSite = (
       spec,
       bounds,
       observeMobs,
+      observeDroppedItems,
+      observePlayerStorage,
       observeVehicles,
       spawnVehicle,
       mountVehicle,
@@ -704,6 +743,7 @@ export const makeSite = (
       setVehicleControls,
       setPoweredRailAt,
       observePlayerPose,
+      requestTargetedPrimaryAttack,
       requestFishingCast,
       requestFishingAdvance,
       requestFishingCancel,
@@ -950,8 +990,13 @@ export const stepFrame = (site: Site): Effect.Effect<FrameRow> =>
       site.state.consumedItems,
       [],
     )
-    // The HUD's number, refreshed from the SERVICE rather than tallied here.
-    site.inventory = yield* site.inventoryService.held
+    // Project the same player-storage owner the gameplay stages commit.
+    const storage = yield* Effect.orDie(site.observePlayerStorage())
+    const inventory = new Map<string, number>()
+    for (const slot of storage.inventory.slots) {
+      if (slot !== undefined) inventory.set(slot.item, (inventory.get(slot.item) ?? 0) + slot.count)
+    }
+    site.inventory = inventory
 
     // The weather OUTBOX, read after. `undefined` means the stage did not run,
     // which cannot happen here and is answered with "keep what we had" rather

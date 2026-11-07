@@ -1,13 +1,18 @@
 /// <reference lib="dom" />
 
 import { describe, expect, it } from '@effect/vitest'
-import { AngleRadians, AIR_BLOCK_ID, BlockAxis, DimensionIdSchema, InterpolationFraction, PositionAxis, ProjectileIdSchema, SimulationTickSchema, blockIdOf, blockPosition, position, position as kernelPosition } from '@nerima-games/mc-kernel'
+import { AngleRadians, AIR_BLOCK_ID, AttackRangeDistance, BlockAxis, DimensionIdSchema, InterpolationFraction, PositionAxis, ProjectileIdSchema, SimulationTickSchema, blockIdOf, blockPosition, maxStackCountForItem, position, position as kernelPosition } from '@nerima-games/mc-kernel'
+import { endArrivalDescriptor } from '@nerima-games/mc-worldgen'
 import { BREWING_FUEL_CHARGES, EntityId, SNOWBALL_PROFILE, type ProjectileLaunch } from '@nerima-games/mc-sim'
 import { Brand, Effect, Option, Ref, Result, Schema } from 'effect'
 import { createExperienceOrbValue } from '../src/domain/entities/xp-orb'
 import { makeVillager } from '../src/domain/villager-trade.js'
 import { TNT_BLOCK_ID } from '../src/domain/interactions/ignite-tnt'
+import { blockLoot, NO_TOOL } from '../src/domain/interactions/block-loot'
 import { CREEPER_KIND, type MobSpawnAttempt } from '../src/domain/entities/mob-frame'
+import { DEFAULT_MELEE_DAMAGE } from '../src/domain/interactions/melee-attack'
+import { END_ARRIVAL_ORIGIN } from '../src/domain/end-portal-travel'
+import { PORTAL_ACTIVATION_SECS } from '../src/domain/portal-dwell'
 import {
   drainExperienceOrbAbsorptionExecutions,
   drainItemUseResults,
@@ -17,7 +22,7 @@ import {
   requestMobSpawn,
 } from '../src/stages/registration'
 import { STONE, type WorldSpec } from '../apps/preview-mining-site/world'
-import { requestItemUse } from '../apps/preview-mining-site/site'
+import { FRAME_DELTA, requestBreak, requestItemUse } from '../apps/preview-mining-site/site'
 import { mountGameplayScenario, type ScenarioSetup } from '../apps/browser-debug/contract'
 import { parseUrlState } from '../apps/browser-debug/url-state'
 import { BOAT_ACCELERATION, MINECART_POWERED_ACCELERATION } from '../src/domain/vehicle/vehicle-motion'
@@ -26,6 +31,8 @@ const world: WorldSpec = { cells: [], loadedChunks: ['0,0', '1,0'], z: 0 }
 const bounds = { width: 32, height: 12 }
 const POWERED_RAIL = Option.getOrThrow(blockIdOf('powered_rail'))
 const WATER = Option.getOrThrow(blockIdOf('water'))
+const DIRT_BLOCK = Option.getOrThrow(blockIdOf('dirt'))
+const END_PORTAL = Option.getOrThrow(blockIdOf('end_portal'))
 
 const contractActor = EntityId('browser-debug:contract-fisher')
 const contractBobber = Schema.decodeUnknownSync(ProjectileIdSchema)('browser-debug:contract-bobber')
@@ -336,6 +343,126 @@ describe('browser debug Site contract', () => {
       expect(Math.abs((mobs?.[0]?.position.x ?? Number.NaN) - 16.5)).toBeLessThanOrEqual(0.1)
       expect(Math.abs((mobs?.[0]?.position.z ?? Number.NaN) - 0.5)).toBeLessThanOrEqual(0.1)
       mount.dispose()
+    }),
+  )
+
+  it.effect('projects mined dirt from player storage and observes overflow drops', () =>
+    Effect.gen(function* () {
+      const dirtPosition = blockPosition(BlockAxis(0), BlockAxis(64), BlockAxis(0))
+      const dirtWorld: WorldSpec = {
+        cells: [[0, 64, DIRT_BLOCK]],
+        loadedChunks: ['0,0'],
+        z: 0,
+      }
+      const expectedLoot = blockLoot(DIRT_BLOCK, NO_TOOL)
+      expect(expectedLoot).toStrictEqual([{ item: 'dirt', count: 1 }])
+
+      const emptyMount = mountScenario('contract-mine-dirt-empty', dirtWorld)
+      emptyMount.setInventory([])
+      yield* requestBreak(emptyMount.site, dirtPosition)
+      const emptyFrame = emptyMount.advance()
+      const playerStorage = emptyMount.observePlayerStorage()
+      const dirtCount = playerStorage.inventory.slots.reduce(
+        (count, slot) => count + (slot?.item === 'dirt' ? slot.count : 0),
+        0,
+      )
+      expect(dirtCount, JSON.stringify({ playerStorage: playerStorage.inventory, frame: emptyFrame })).toBe(1)
+      expect(emptyMount.site.inventory.get('dirt')).toBe(1)
+      emptyMount.dispose()
+
+      const fullMount = mountScenario('contract-mine-dirt-full', dirtWorld)
+      const slotCount = fullMount.observePlayerStorage().inventory.slots.length
+      const stoneStackSize = maxStackCountForItem('stone')
+      fullMount.setInventory([['stone', slotCount * stoneStackSize]])
+      const fullStorage = fullMount.observePlayerStorage()
+      expect(fullStorage.inventory.slots.every((slot) => slot?.count === stoneStackSize)).toBe(true)
+      yield* requestBreak(fullMount.site, dirtPosition)
+      fullMount.advance()
+
+      const droppedItems = fullMount.observeDroppedItems()
+      expect(droppedItems).toHaveLength(expectedLoot.length)
+      expect(droppedItems[0]).toMatchObject({
+        item: expectedLoot[0]?.item,
+        count: expectedLoot[0]?.count,
+        position: { x: 0, y: 64, z: 0 },
+      })
+      fullMount.dispose()
+    }),
+  )
+
+  it.effect('targets a Mob for melee and reads the live player pose after portal travel', () =>
+    Effect.gen(function* () {
+      const mobWorld: WorldSpec = {
+        cells: [[0, 63, STONE]],
+        loadedChunks: ['0,-2'],
+        z: -17,
+      }
+      const attemptAt = (z: number): MobSpawnAttempt => ({
+        candidate: {
+          dimension: 'overworld',
+          groundBlock: STONE,
+          footBlock: AIR_BLOCK_ID,
+          headBlock: AIR_BLOCK_ID,
+          blockLight: 0,
+          timeOfDay: 0.9,
+          distanceToPlayerBlocksXZ: Math.hypot(0.5, z + 0.5),
+        },
+        kind: CREEPER_KIND,
+        feetPosition: position(PositionAxis(0.5), PositionAxis(64), PositionAxis(z + 0.5)),
+      })
+      const mount = mountScenario('contract-targeted-melee', mobWorld)
+      yield* requestMobSpawn(mount.site.state, attemptAt(-17))
+      mount.advance()
+      const beforeMob = mount.observeMobs()[0]
+      expect(beforeMob).toBeDefined()
+      const selected = mount.requestTargetedPrimaryAttack({ meleeReach: AttackRangeDistance(20) })
+      expect(selected._tag).toBe('Melee')
+      if (selected._tag !== 'Melee' || beforeMob === undefined) {
+        throw new Error('Expected the targeted primary attack to select the spawned Mob')
+      }
+      expect(selected.target.id).toBe(beforeMob.id)
+      mount.advance()
+      const afterMob = mount.observeMobs().find(({ id }) => id === beforeMob.id)
+      expect(afterMob?.healthPoints).toBe(beforeMob.healthPoints - DEFAULT_MELEE_DAMAGE)
+      mount.dispose()
+
+      const behindMount = mountScenario('contract-targeted-melee-negative', {
+        cells: [[0, 63, STONE]],
+        loadedChunks: ['0,1'],
+        z: 16,
+      })
+      yield* requestMobSpawn(behindMount.site.state, attemptAt(16))
+      behindMount.advance()
+      const behindMob = behindMount.observeMobs()[0]
+      expect(behindMob).toBeDefined()
+      if (behindMob === undefined) throw new Error('Expected the negative-control Mob to spawn')
+      expect(behindMount.requestTargetedPrimaryAttack({ meleeReach: AttackRangeDistance(20) }))
+        .toStrictEqual({ _tag: 'None' })
+      behindMount.advance()
+      expect(behindMount.observeMobs().find(({ id }) => id === behindMob.id)?.healthPoints)
+        .toBe(behindMob.healthPoints)
+      behindMount.dispose()
+
+      const portalMount = mountScenario('contract-live-player-pose', {
+        cells: [[0, 64, END_PORTAL]],
+        loadedChunks: ['0,0'],
+        z: 0,
+      }, (site) => ({ playerPose: Effect.runSync(site.observePlayerPose()) }))
+      const initialPose = portalMount.observePlayerPose()
+      expect(initialPose).toMatchObject({ dimension: 'overworld', position: { x: 0, y: 64, z: 0 } })
+      const activationFrames = Math.ceil(PORTAL_ACTIVATION_SECS / FRAME_DELTA) + 1
+      for (let frame = 0; frame < activationFrames; frame += 1) portalMount.advance()
+      const expectedArrival = endArrivalDescriptor(END_ARRIVAL_ORIGIN).spawn
+      const arrivedPose = portalMount.observePlayerPose()
+      expect(arrivedPose).toStrictEqual({ dimension: 'end', position: expectedArrival })
+      expect(portalMount.snapshot().playerDimension).toBe('end')
+      expect(portalMount.snapshot().playerPose).toStrictEqual(arrivedPose)
+      portalMount.dispose()
+
+      const noPortalMount = mountScenario('contract-live-player-pose-negative')
+      for (let frame = 0; frame < activationFrames; frame += 1) noPortalMount.advance()
+      expect(noPortalMount.observePlayerPose()).toStrictEqual(initialPose)
+      noPortalMount.dispose()
     }),
   )
 

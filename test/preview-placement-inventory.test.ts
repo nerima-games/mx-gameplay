@@ -1,42 +1,15 @@
 import { describe, expect, it } from '@effect/vitest'
-import { Effect, Schema } from 'effect'
-import { makeTimeService, PlayerStorageSnapshotSchema } from '@nerima-games/mc-sim'
+import { Effect } from 'effect'
 import { blockPosition } from './support/coordinate-fixtures'
-import { gameplayStages } from '../src/stages/registration'
-import { makeGameplayCommitServices } from './support/transactional-stage-doubles'
-import { makePreviewPlayer } from '../apps/preview-mining-site/player'
-import { makeSite, requestPlace, schedule, stepFrame, type Site } from '../apps/preview-mining-site/site'
+import { makeSite, requestPlace, stepFrame } from '../apps/preview-mining-site/site'
 import { AIR, STONE } from '../apps/preview-mining-site/world'
 
 const TARGET = blockPosition(2, 64, 0)
 
-const withRegisteredPlayerStorage = (site: Site) =>
-  Effect.gen(function* () {
-    const player = yield* makePreviewPlayer
-    const time = yield* makeTimeService()
-    const commit = yield* makeGameplayCommitServices(site.world.api, site.inventoryService.api, {
-      playerPose: yield* player.pose,
-      dimension: yield* player.dimension,
-    })
-    const stages = schedule(gameplayStages(
-      site.state,
-      site.world.api,
-      site.roster,
-      site.inventoryService.api,
-      player,
-      time,
-      undefined,
-      undefined,
-      {},
-      commit,
-    ))
-    return { site: { ...site, stages }, commit }
-  })
-
-const ownerItemCount = (
-  storage: Schema.Schema.Type<typeof PlayerStorageSnapshotSchema>,
+const inventoryItemCount = (
+  slots: ReadonlyArray<{ readonly item: string; readonly count: number } | undefined>,
   item: string,
-): number => storage.inventory.slots.reduce(
+): number => slots.reduce(
   (total, slot) => total + (slot?.item === item ? slot.count : 0),
   0,
 )
@@ -49,16 +22,15 @@ describe('preview placement inventory bridge', () => {
         { width: 4, height: 4 },
         'placement-inventory',
       )
-      yield* base.inventoryService.api.add('stone', 2)
-      const { site, commit } = yield* withRegisteredPlayerStorage(base)
+      yield* base.setInventory([['stone', 2]])
 
-      yield* requestPlace(site, TARGET, 'stone')
-      const frame = yield* stepFrame(site)
+      yield* requestPlace(base, TARGET, 'stone')
+      const frame = yield* stepFrame(base)
 
-      expect(site.world.peekBlock(TARGET)).toBe(STONE)
-      expect(site.inventory.get('stone')).toBe(2)
-      const storage = yield* commit.coordinator.snapshot(commit.playerStorageOwnerId, PlayerStorageSnapshotSchema)
-      expect(ownerItemCount(Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(storage.state), 'stone')).toBe(1)
+      expect(base.world.peekBlock(TARGET)).toBe(STONE)
+      expect(base.inventory.get('stone')).toBe(1)
+      const storage = yield* base.observePlayerStorage()
+      expect(inventoryItemCount(storage.inventory.slots, 'stone')).toBe(1)
       expect(frame.spent).toStrictEqual(['stone'])
     }),
   )
@@ -70,15 +42,13 @@ describe('preview placement inventory bridge', () => {
         { width: 4, height: 4 },
         'placement-inventory',
       )
-      const { site, commit } = yield* withRegisteredPlayerStorage(base)
+      yield* requestPlace(base, TARGET, 'stone')
+      const frame = yield* stepFrame(base)
 
-      yield* requestPlace(site, TARGET, 'stone')
-      const frame = yield* stepFrame(site)
-
-      expect(site.world.peekBlock(TARGET) ?? AIR).toBe(AIR)
-      expect(site.inventory.get('stone') ?? 0).toBe(0)
-      const storage = yield* commit.coordinator.snapshot(commit.playerStorageOwnerId, PlayerStorageSnapshotSchema)
-      expect(ownerItemCount(Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(storage.state), 'stone')).toBe(0)
+      expect(base.world.peekBlock(TARGET) ?? AIR).toBe(AIR)
+      expect(base.inventory.get('stone') ?? 0).toBe(0)
+      const storage = yield* base.observePlayerStorage()
+      expect(inventoryItemCount(storage.inventory.slots, 'stone')).toBe(0)
       expect(frame.spent).toStrictEqual([])
     }),
   )
@@ -90,16 +60,15 @@ describe('preview placement inventory bridge', () => {
         { width: 4, height: 4 },
         'placement-inventory',
       )
-      yield* base.inventoryService.api.add('stone', 1)
-      const { site, commit } = yield* withRegisteredPlayerStorage(base)
+      yield* base.setInventory([['stone', 1]])
 
-      yield* requestPlace(site, TARGET, 'stone')
-      const frame = yield* stepFrame(site)
+      yield* requestPlace(base, TARGET, 'stone')
+      const frame = yield* stepFrame(base)
 
-      expect(site.world.peekBlock(TARGET)).toBe(STONE)
-      expect(site.inventory.get('stone')).toBe(1)
-      const storage = yield* commit.coordinator.snapshot(commit.playerStorageOwnerId, PlayerStorageSnapshotSchema)
-      expect(ownerItemCount(Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)(storage.state), 'stone')).toBe(1)
+      expect(base.world.peekBlock(TARGET)).toBe(STONE)
+      expect(base.inventory.get('stone')).toBe(1)
+      const storage = yield* base.observePlayerStorage()
+      expect(inventoryItemCount(storage.inventory.slots, 'stone')).toBe(1)
       expect(frame.spent).toStrictEqual([])
     }),
   )
