@@ -132,6 +132,7 @@ const makeHarness = (options: Readonly<{
     vehicleEnvironment: undefined,
     options: options.mobSimulation === undefined ? {} : { mobSimulation: options.mobSimulation },
     commit,
+    blockStateWorld: undefined,
   }
   return {
     state,

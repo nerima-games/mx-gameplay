@@ -17,6 +17,7 @@ import type { EntityManager, GameplayFrameState, MobBehaviour } from './registra
 import { makeBrewingAdvanceStage } from './brewing-advance-stage.js'
 import { bindEnchantmentTableService } from './interactions-stage.js'
 import { gameplayStages } from './gameplay-stages.js'
+import type { GameplayBlockStateWorldApi } from './gameplay-block-state-world.js'
 import {
   GAMEPLAY_PLAYER_OWNER_ID,
   GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
@@ -55,8 +56,42 @@ const enchantmentTableCoordinator = (
   return { ...coordinator, snapshot, commit }
 }
 
+/**
+ * Build the production stage list for a host-owned gameplay frame state.
+ *
+ * `makeGameplayStages` in `stages/registration.ts` reaches this through
+ * `makeGameplayStagesWithState`, so this is where `GameModule.frameStages`
+ * acquires the services it needs to BUILD stages, rather than to run them.
+ *
+ * ---------------------------------------------------------------------------
+ * `MobBehaviour` IS NAMED HERE, AND THAT IS THE POINT OF FAILURE TO KNOW ABOUT
+ * ---------------------------------------------------------------------------
+ *
+ * `entityManagerTag<MobBehaviour>()` and `EntityManagerLayer<MobBehaviour>()`
+ * must agree, and NO COMPILER CAN CHECK THAT THEY DO: mc-sim's Layer has result
+ * type `Layer.Layer<EntityManager>` with the behaviour parameter appearing
+ * nowhere in it, because the context identity is unparameterised while the
+ * service value type is not (`docs/public-api.md` §7-1 of that repository). A
+ * host that instantiates the roster at some other `S` gets a Layer that
+ * satisfies this requirement and a `behaviour` field that is not what the line
+ * below says it is.
+ *
+ * The mitigation is that exactly one repository names the type and the host
+ * imports that name: `MobBehaviour` and `repairMobBehaviour` are both exported
+ * from `index.ts` for this reason. The host's two lines are
+ *
+ *     const world = Layer.merge(
+ *       simModule.layers,
+ *       EntityManagerLayer<MobBehaviour>(undefined, repairMobBehaviour),
+ *     )
+ *
+ * and taking `gameplayModule.frameStages` from inside that same `Effect.provide`.
+ * See `docs/public-api.md` for why `simModule` should not grow a type parameter
+ * to try to do this for the host.
+ */
 const makeGameplayStageRegistrations = (
   state: GameplayFrameState,
+  blockStateWorld: GameplayBlockStateWorldApi | undefined,
 ): Effect.Effect<
   ReadonlyArray<StageRegistration>,
   never,
@@ -98,7 +133,7 @@ const makeGameplayStageRegistrations = (
     projectileService,
     tntService,
     eventBus,
-  })
+  }, blockStateWorld)
   const brewingAdvance = yield* makeBrewingAdvanceStage(brewingService, coordinator)
   return [...stages, brewingAdvance.stage]
 })
@@ -106,8 +141,9 @@ const makeGameplayStageRegistrations = (
 /** Shared production composition for a host-owned gameplay frame state. */
 export const makeGameplayStagesWithState = (
   state: GameplayFrameState,
+  blockStateWorld?: GameplayBlockStateWorldApi,
 ): Effect.Effect<
   ReadonlyArray<StageRegistration>,
   never,
   ChunkStore | EntityManager | TimeService | WorldCommitCoordinator | DomainEventBus
-> => makeGameplayStageRegistrations(state)
+> => makeGameplayStageRegistrations(state, blockStateWorld)

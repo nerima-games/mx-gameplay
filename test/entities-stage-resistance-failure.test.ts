@@ -107,6 +107,7 @@ const makeHarness = () => Effect.gen(function* () {
       tntOwnerId: TNT_REPLICATED_OWNER_ID,
       tntService,
     },
+    blockStateWorld: undefined,
   }
   return { state, store, stage: makeEntitiesStage(context) }
 })

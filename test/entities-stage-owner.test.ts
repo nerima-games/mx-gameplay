@@ -534,6 +534,7 @@ const makeHarness = (options: Readonly<{
       }),
       ...(options.provideTntService === false ? {} : { tntService }),
     },
+    blockStateWorld: undefined,
   }
   return {
     context,

@@ -7,6 +7,7 @@ import { blockPosition } from './support/coordinate-fixtures'
 
 const POSITION: BlockPosition = blockPosition(1, 64, 1)
 const LEVER_ID = Option.getOrThrow(blockIdOf('lever'))
+const DOOR_ID = Option.getOrThrow(blockIdOf('door'))
 const DIRT_ID = Option.getOrThrow(blockIdOf('dirt'))
 
 describe('resolveBlockUse', () => {
@@ -17,6 +18,17 @@ describe('resolveBlockUse', () => {
       _tag: 'ToggleLever',
       position: POSITION,
     })
+  })
+
+  it('routes doors through the state toggle rule', () => {
+    expect(resolveBlockUse(POSITION, { _tag: 'Block', block: DOOR_ID })).toStrictEqual({
+      _tag: 'ToggleDoor',
+      position: POSITION,
+    })
+    expect(resolveBlockUse(POSITION, {
+      _tag: 'Block',
+      block: Option.getOrThrow(blockIdOf('door_open')),
+    })).toStrictEqual({ _tag: 'ToggleDoor', position: POSITION })
   })
 
   it('refuses a block that is not a lever, naming what it found', () => {
@@ -49,8 +61,9 @@ describe('resolveBlockUse', () => {
 })
 
 describe('isSuccessfulBlockUse', () => {
-  it('is true only for a lit lever toggle', () => {
+  it('is true for lever and door toggles', () => {
     expect(isSuccessfulBlockUse({ _tag: 'ToggleLever', position: POSITION })).toBe(true)
+    expect(isSuccessfulBlockUse({ _tag: 'ToggleDoor', position: POSITION })).toBe(true)
     expect(
       isSuccessfulBlockUse({ _tag: 'NotLever', position: POSITION, existing: DIRT_ID }),
     ).toBe(false)

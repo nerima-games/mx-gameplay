@@ -104,6 +104,7 @@ import { StatusEffectStateSchema } from '../src/domain/status-effect.js'
 import {
   gameplayStages,
   drainItemUseResults,
+  drainBlockStateRuleResults,
   drainPlayerDamages,
   drainPlayerHeals,
   drainBowShotResults,
@@ -132,6 +133,7 @@ import {
   requestBlockBreak,
   requestTargetedBlockBreak,
   requestBucketUse,
+  requestBlockPlacement,
   requestBoneMeal,
   requestBowShot,
   requestFireExtinguish,
@@ -179,6 +181,7 @@ import type {
   GameplayStageCommitServices,
   GameplayTargetingSnapshotContext,
 } from '../src/stages/registration-core'
+import { GameplayBlockStateWorld } from '../src/stages/gameplay-block-state-world.js'
 import {
   BREWING_ADVANCE_STAGE_ID,
   EXPERIENCE_MODULE_STAGE_PREFIXES,
@@ -363,7 +366,8 @@ const positionKey = Brand.nominal<BlockPositionKey>()
 
 /**
  * The registration effect takes mc-worldgen's `ChunkStore`, mc-sim's
- * `EntityManager`, `TimeService`, `WorldCommitCoordinator` and `DomainEventBus`
+ * `EntityManager`, `TimeService`, `WorldCommitCoordinator`, `DomainEventBus`,
+ * and the host's `GameplayBlockStateWorld` adapter
  * (kernel's `domain/frame.ts` on `RRegister`). The coordinator fixture also
  * needs an empty inventory to seed the registered player-storage owner. Tests
  * about the SHAPE of registration use these empty host services; behaviour over
@@ -373,6 +377,12 @@ const registrationEventBus: DomainEventBusApi = {
   publish: () => Effect.void,
   events: Stream.empty,
 }
+const emptyBlockStateWorld = {
+  forDimension: () => ({
+    read: () => Effect.succeed({ _tag: 'Unavailable', reason: 'ChunkNotLoaded' } as const),
+    write: () => Effect.succeed({ _tag: 'Written' } as const),
+  }),
+}
 
 const emptyWorldBase = Layer.mergeAll(
   emptyWorldStoreLayer,
@@ -380,6 +390,7 @@ const emptyWorldBase = Layer.mergeAll(
   TimeServiceLayer(),
   emptyInventoryLayer,
   Layer.succeed(DomainEventBus, registrationEventBus),
+  Layer.succeed(GameplayBlockStateWorld, emptyBlockStateWorld),
 )
 const emptyHostWorld = Layer.provideMerge(gameplayCommitServicesLayer, emptyWorldBase)
 const emptyWorld = Layer.merge(emptyHostWorld, gameplayModule.layers)
@@ -610,6 +621,7 @@ describe('§2.3-3 the total order belongs to mc-compose', () => {
       expect(stageIds(stages)).toStrictEqual([
         GAMEPLAY_STAGE_IDS.vehicles,
         GAMEPLAY_STAGE_IDS.interactions,
+        GAMEPLAY_STAGE_IDS.blockStateRules,
         GAMEPLAY_STAGE_IDS.fire,
         GAMEPLAY_STAGE_IDS.survivalHunger,
         GAMEPLAY_STAGE_IDS.entities,
@@ -624,6 +636,9 @@ describe('§2.3-3 the total order belongs to mc-compose', () => {
       ])
       expect(byId.get(GAMEPLAY_STAGE_IDS.interactions)?.after).toStrictEqual([
         UPSTREAM_STAGE_IDS.simPhysics,
+      ])
+      expect(byId.get(GAMEPLAY_STAGE_IDS.blockStateRules)?.after).toStrictEqual([
+        GAMEPLAY_STAGE_IDS.interactions,
       ])
       expect(byId.get(BREWING_ADVANCE_STAGE_ID)?.after).toStrictEqual([
         GAMEPLAY_STAGE_IDS.interactions,
@@ -1577,6 +1592,7 @@ describe('stage behaviour', () => {
       // knockback outcome, and status-effect modifier projection are package-
       // owned transition state; none duplicates host-owned authority.
       expect(Object.keys(state).sort()).toStrictEqual([
+        'blockStateRuleResults',
         'blockUseResults',
         'bowKnockbacks',
         'bowShotResults',
@@ -1610,6 +1626,7 @@ describe('stage behaviour', () => {
         'operationFailures',
         'passiveInitialSpawnPending',
         'pendingBlockMiningAttempt',
+        'pendingBlockStateRules',
         'pendingBlockUses',
         'pendingBowShots',
         'pendingBreaks',
@@ -2571,7 +2588,7 @@ describe('the module contract has caught up with this file’s shape', () => {
         never,
         never,
         never,
-        ChunkStore | EntityManager | TimeService | WorldCommitCoordinator | DomainEventBus
+        ChunkStore | EntityManager | TimeService | WorldCommitCoordinator | DomainEventBus | GameplayBlockStateWorld
       > = gameplayModule
       const stages = yield* Effect.provide(module.frameStages, emptyWorld)
 
@@ -2596,15 +2613,15 @@ describe('the module contract has caught up with this file’s shape', () => {
 
   // Player pose, inventory and vitals are read from registered WCC owners; the
   // registration effect must not acquire local mirrors of those fields.
-  it.effect('acquires five host services to register nine stages', () =>
+  it.effect('acquires six host services to register ten stages', () =>
     Effect.gen(function* () {
       const registration: Effect.Effect<
         ReadonlyArray<StageRegistration>,
         never,
-        ChunkStore | EntityManager | TimeService | WorldCommitCoordinator | DomainEventBus
+        ChunkStore | EntityManager | TimeService | WorldCommitCoordinator | DomainEventBus | GameplayBlockStateWorld
       > = gameplayModule.frameStages
 
-      // Providing the five host services, with
+      // Providing the six host services, with
       // no local player or inventory services —
       // discharges the whole registration context.
       // If a stage started demanding another service at REGISTRATION time, this
@@ -2614,7 +2631,7 @@ describe('the module contract has caught up with this file’s shape', () => {
       const satisfied: Effect.Effect<ReadonlyArray<StageRegistration>, never, never> =
         Effect.provide(registration, Layer.orDie(emptyWorld))
 
-      expect(yield* satisfied).toHaveLength(9)
+      expect(yield* satisfied).toHaveLength(10)
     }),
   )
 
@@ -2690,7 +2707,7 @@ describe('the module contract has caught up with this file’s shape', () => {
       const unparameterised: Effect.Effect<
         ReadonlyArray<StageRegistration>,
         never,
-        ChunkStore | EntityManager | TimeService | WorldCommitCoordinator | DomainEventBus
+        ChunkStore | EntityManager | TimeService | WorldCommitCoordinator | DomainEventBus | GameplayBlockStateWorld
       > = makeGameplayStages
 
       expect(typeof unparameterised).toBe('object')
@@ -2793,7 +2810,7 @@ describe('the module contract has caught up with this file’s shape', () => {
       })
 
       const stages = yield* makeGameplayStagesWithState(state)
-      expect(stages).toHaveLength(9)
+      expect(stages).toHaveLength(10)
       yield* requestFoodUse(state, 'production-eat-pufferfish', 'pufferfish', {
         healthPoints: lowVitals.healthPoints,
         hungerPoints: lowVitals.hungerPoints,
@@ -4083,10 +4100,159 @@ describe('the targeted-block family resolves through the same raycast as placeme
       expect(yield* player.api.pose).toStrictEqual(AIMING_POSE)
       expect(Option.getOrUndefined(target)?.position).toStrictEqual(MOVED_AIM)
       expect(Option.getOrUndefined(target)?.adjacentPosition).toStrictEqual(fixtureBlockPosition(0, 1, 10))
-      expect(yield* Ref.get(state.pendingPlacements)).toStrictEqual([{
+      const placements = yield* Ref.get(state.pendingPlacements)
+      expect(placements).toHaveLength(1)
+      expect(placements[0]).toMatchObject({
         positionKey: positionKey('0,1,10'),
         heldItem: 'sand',
-      }])
+        targeting: { facing: 'north', hitFace: 'south' },
+      })
+      expect(placements[0]?.targeting?.hitY).toBeCloseTo(0.62)
+    }),
+  )
+
+  it.effect('targeted placement carries the hit face and horizontal facing for all six block faces', () =>
+    Effect.gen(function* () {
+      const targetPosition = fixtureBlockPosition(8, 1, 8)
+      const cases = [
+        {
+          name: 'west face',
+          pose: { feetPosition: fixturePosition(6.5, 0, 8.5), yawRadians: -Math.PI / 2, pitchRadians: 0 },
+          hitFace: 'west',
+          facing: 'east',
+          hitY: 0.62,
+        },
+        {
+          name: 'east face',
+          pose: { feetPosition: fixturePosition(10.5, 0, 8.5), yawRadians: Math.PI / 2, pitchRadians: 0 },
+          hitFace: 'east',
+          facing: 'west',
+          hitY: 0.62,
+        },
+        {
+          name: 'south face',
+          pose: { feetPosition: fixturePosition(8.5, 0, 10.5), yawRadians: 0, pitchRadians: 0 },
+          hitFace: 'south',
+          facing: 'north',
+          hitY: 0.62,
+        },
+        {
+          name: 'north face',
+          pose: { feetPosition: fixturePosition(8.5, 0, 6.5), yawRadians: Math.PI, pitchRadians: 0 },
+          hitFace: 'north',
+          facing: 'south',
+          hitY: 0.62,
+        },
+        {
+          name: 'top face',
+          pose: { feetPosition: fixturePosition(8.5, 4, 8.5), yawRadians: 0, pitchRadians: -Math.PI / 2 },
+          hitFace: 'up',
+          facing: 'north',
+          hitY: 1,
+        },
+        {
+          name: 'bottom face',
+          pose: { feetPosition: fixturePosition(8.5, -3, 8.5), yawRadians: 0, pitchRadians: Math.PI / 2 },
+          hitFace: 'down',
+          facing: 'north',
+          hitY: 0,
+        },
+      ] as const
+
+      for (const testCase of cases) {
+        const harness = yield* builtStagesInWorld(
+          world([[targetPosition, STONE]]),
+          ['0,0'],
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          { playerPose: testCase.pose },
+        )
+        const target = yield* Effect.orDie(requestTargetedBlockPlacement(
+          harness.state,
+          harness.store.api,
+          targetingContextFor(harness.commit),
+          'oak_stairs',
+        ))
+        const placement = (yield* Ref.get(harness.state.pendingPlacements))[0]
+
+        expect(Option.getOrUndefined(target)?.position, testCase.name).toStrictEqual(targetPosition)
+        expect(placement?.targeting, testCase.name).toMatchObject({
+          hitFace: testCase.hitFace,
+          facing: testCase.facing,
+        })
+        expect(placement?.targeting?.hitY, testCase.name).toBeCloseTo(testCase.hitY)
+      }
+    }).pipe(Effect.provide(FrameServicesLayer)),
+  )
+
+  it.effect('fails a stateful placement explicitly when targeting or the state port is unavailable', () =>
+    Effect.gen(function* () {
+      const support = fixtureBlockPosition(0, 0, 1)
+      const storage = [...emptySlots()]
+      storage[0] = itemStack('door', 1)
+      const missingTargeting = yield* builtStagesInWorld(world([[support, STONE]]), ['0,0'], undefined, storage)
+      const interactionsWithoutTargeting = missingTargeting.stages.find(
+        (stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions,
+      )!
+      yield* requestBlockPlacement(missingTargeting.state, {
+        positionKey: positionKey('0,1,1'),
+        heldItem: 'door',
+      })
+      yield* interactionsWithoutTargeting.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+      expect(yield* drainGameplayUnsupportedOperations(missingTargeting.state)).toMatchObject([
+        { _tag: 'Unsupported', action: 'PlaceBlock', reason: 'StateRuleTargetingUnavailable' },
+      ])
+
+      const missingPort = yield* builtStagesInWorld(world([[support, STONE]]), ['0,0'], undefined, storage)
+      const targetedPlacement = {
+        positionKey: positionKey('0,1,1'),
+        heldItem: 'door' as const,
+        targeting: { facing: 'north' as const, hitFace: 'south' as const, hitY: 0.62 },
+      }
+      yield* requestBlockPlacement(missingPort.state, targetedPlacement)
+      const interactionsWithoutPort = missingPort.stages.find(
+        (stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions,
+      )!
+      yield* interactionsWithoutPort.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+      expect(yield* drainGameplayUnsupportedOperations(missingPort.state)).toMatchObject([
+        { _tag: 'Unsupported', action: 'PlaceBlock', reason: 'StateRuleUnavailable' },
+      ])
+
+      const unsupportedRead = yield* builtStagesInWorld(world([[support, STONE]]), ['0,0'], undefined, storage)
+      const stagesWithPort = gameplayStages(
+        unsupportedRead.state,
+        unsupportedRead.store.api,
+        unsupportedRead.roster.api,
+        unsupportedRead.inventory.api,
+        unsupportedRead.player.api,
+        unsupportedRead.time,
+        undefined,
+        undefined,
+        {},
+        unsupportedRead.commit,
+        {
+          forDimension: () => ({
+            read: () => Effect.succeed({ _tag: 'Unsupported' as const, operation: 'readState' as const }),
+            write: () => Effect.succeed({ _tag: 'Unsupported' as const, operation: 'writeState' as const }),
+          }),
+        },
+      )
+      yield* requestBlockPlacement(unsupportedRead.state, targetedPlacement)
+      const interactionsWithPort = stagesWithPort.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+      yield* interactionsWithPort.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+      expect(yield* drainGameplayUnsupportedOperations(unsupportedRead.state)).toMatchObject([
+        {
+          _tag: 'Unsupported',
+          action: 'PlaceBlock',
+          reason: 'StateRuleFailed',
+          stateRuleOutcome: { _tag: 'Unsupported', operation: 'readState' },
+        },
+      ])
     }),
   )
 
@@ -4111,6 +4277,30 @@ describe('the targeted-block family resolves through the same raycast as placeme
         requestId: 'moved-lever-use',
         positionKey: positionKey('0,1,9'),
       }])
+    }),
+  )
+
+  it.effect('requestTargetedBlockUse sends a door to the registered state rules stage', () =>
+    Effect.gen(function* () {
+      const door = Option.getOrThrow(blockIdOf('door'))
+      const { state, store, commit, stages } = yield* aimingAt(door)
+      const targeting = targetingContextFor(commit)
+
+      yield* requestTargetedBlockUse(state, store.api, targeting, 'door-toggle', 'redstone_dust')
+      expect(yield* Ref.get(state.pendingBlockStateRules)).toStrictEqual([{
+        requestId: 'door-toggle',
+        position: AIMED_AT,
+        operation: { _tag: 'ToggleDoor' },
+        dimension: 'overworld',
+      }])
+
+      const rules = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.blockStateRules)!
+      yield* rules.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+      expect(yield* drainBlockStateRuleResults(state)).toStrictEqual([{
+        requestId: 'door-toggle',
+        outcome: { _tag: 'PortUnavailable', position: AIMED_AT },
+      }])
+      expect(yield* store.api.getBlock(AIMED_AT)).toStrictEqual({ _tag: 'Block', block: door })
     }),
   )
 
@@ -4253,10 +4443,14 @@ describe('the targeted-block family resolves through the same raycast as placeme
         'sand',
       )
       expect(Option.getOrUndefined(target)?.adjacentPosition).toStrictEqual(AIMED_ADJACENT)
-      expect(yield* Ref.get(state.pendingPlacements)).toStrictEqual([{
+      const placements = yield* Ref.get(state.pendingPlacements)
+      expect(placements).toHaveLength(1)
+      expect(placements[0]).toMatchObject({
         positionKey: positionKey('0,1,1'),
         heldItem: 'sand',
-      }])
+        targeting: { facing: 'north', hitFace: 'south' },
+      })
+      expect(placements[0]?.targeting?.hitY).toBeCloseTo(0.62)
     }),
   )
 
@@ -7071,6 +7265,41 @@ describe('farming and food item uses through the full interactions stage', () =>
     }),
   )
 
+  it.effect('reports a missing C7 port while preserving the CropOwner clock on fallback commit failure', () =>
+    Effect.gen(function* () {
+      const position = fixtureBlockPosition(39, 64, 39)
+      const crops: CropSnapshot = { crops: [{ dimension: 'overworld', position, crop: 'wheat_crop', growthSecs: 0 }] }
+      const completed = yield* builtStagesInWorld(world([]), ['2,2'], crops)
+      const completedInteractions = completed.stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+
+      yield* completedInteractions.run(DeltaTimeSecs(69)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* drainBlockStateRuleResults(completed.state)).toMatchObject([
+        { outcome: { _tag: 'PortUnavailable', position } },
+      ])
+      expect((yield* completed.commit.coordinator.snapshot(GAMEPLAY_CROPS_OWNER_ID, CropSnapshotSchema))
+        .state.crops).toMatchObject([{ growthSecs: 69 }])
+
+      const rejected = yield* builtStagesInWorld(world([]), ['2,2'], crops)
+      const rejectedInteractions = rejected.stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+      yield* Ref.set(rejected.rejectCommits, true)
+
+      yield* rejectedInteractions.run(DeltaTimeSecs(69)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* Ref.get(rejected.commitCalls)).toBe(1)
+      expect(yield* Ref.get(rejected.state.operationFailures)).toMatchObject([
+        {
+          _tag: 'Failed',
+          operation: 'WorldCommit',
+          subject: 'ItemUse',
+          error: { _tag: 'WorldCommitEmptyRequest' },
+        },
+      ])
+      expect((yield* rejected.commit.coordinator.snapshot(GAMEPLAY_CROPS_OWNER_ID, CropSnapshotSchema))
+        .state.crops).toMatchObject([{ growthSecs: 0 }])
+    }),
+  )
+
   it.effect('harvesting a mature potato commits storage, crop removal, and its block write once', () =>
     Effect.gen(function* () {
       const position = fixtureBlockPosition(38, 64, 38)
@@ -7252,13 +7481,13 @@ describe('farming and food item uses through the full interactions stage', () =>
     }),
   )
 
-  it.effect('bone meal against a real crop applies and consumes one', () =>
+  it.effect('bone meal against a real crop reports unsupported state and consumes nothing', () =>
     Effect.gen(function* () {
       const wheatCrop = Option.getOrThrow(blockIdOf('wheat_crop'))
       const position = fixtureBlockPosition(0, 64, 0)
       const slots = [...emptySlots()]
       slots[0] = itemStack('bone_meal', 1)
-      const { state, stages, commit, inventory } = yield* builtStagesInWorld(
+      const { state, stages, commit } = yield* builtStagesInWorld(
         world([[position, wheatCrop]]),
         ['0,0'],
         { crops: [{ dimension: 'overworld', position, crop: 'wheat_crop', growthSecs: 0 }] },
@@ -7274,9 +7503,9 @@ describe('farming and food item uses through the full interactions stage', () =>
           action: 'ApplyBoneMeal',
           requestId: 'bone-meal-success',
           heldItem: 'bone_meal',
-          success: true,
-          consumedCount: 1,
-          outcome: { _tag: 'applied', at: position },
+          success: false,
+          consumedCount: 0,
+          outcome: { _tag: 'stateUnsupported', at: position, block: 'wheat_crop', operation: 'readState' },
         },
       ])
       const cropOwner = yield* commit.coordinator.snapshot(GAMEPLAY_CROPS_OWNER_ID, CropSnapshotSchema)
@@ -7284,14 +7513,13 @@ describe('farming and food item uses through the full interactions stage', () =>
         GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
         PlayerStorageSnapshotSchema,
       )
-      expect(cropOwner.state.crops[0]?.growthSecs).toBeGreaterThan(0)
-      expect(storageOwner.state.inventory.slots[0]).toBeUndefined()
-      expect(yield* inventory.api.countOf('bone_meal')).toBe(1)
-      expect(yield* commit.coordinator.revision).toBe(1)
+      expect(cropOwner.state.crops[0]?.growthSecs).toBe(0)
+      expect(storageOwner.state.inventory.slots[0]?.item).toBe('bone_meal')
+      expect(yield* commit.coordinator.revision).toBe(0)
     }),
   )
 
-  it.effect('bone meal advances only its matching crop when the owner contains several crops', () =>
+  it.effect('bone meal leaves every crop unchanged when block state is unsupported', () =>
     Effect.gen(function* () {
       const wheatBlock = Option.getOrThrow(blockIdOf('wheat_crop'))
       const potatoBlock = Option.getOrThrow(blockIdOf('potato_crop'))
@@ -7309,15 +7537,23 @@ describe('farming and food item uses through the full interactions stage', () =>
         slots,
       )
       const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+      const cropsBefore = yield* commit.coordinator.snapshot(GAMEPLAY_CROPS_OWNER_ID, CropSnapshotSchema)
 
       yield* requestBoneMeal(state, 'bone-meal-one-of-two', wheatPosition)
       yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
 
       const crops = yield* commit.coordinator.snapshot(GAMEPLAY_CROPS_OWNER_ID, CropSnapshotSchema)
-      expect(crops.state.crops[0]?.growthSecs).toBeGreaterThan(0)
+      expect(crops).toStrictEqual(cropsBefore)
+      expect(crops.state.crops[0]?.growthSecs).toBe(0)
       expect(crops.state.crops[1]?.growthSecs).toBe(0)
       expect(yield* drainItemUseResults(state)).toMatchObject([
-        { action: 'ApplyBoneMeal', requestId: 'bone-meal-one-of-two', success: true },
+        {
+          action: 'ApplyBoneMeal',
+          requestId: 'bone-meal-one-of-two',
+          success: false,
+          consumedCount: 0,
+          outcome: { _tag: 'stateUnsupported', operation: 'readState' },
+        },
       ])
     }),
   )
@@ -7367,7 +7603,7 @@ describe('farming and food item uses through the full interactions stage', () =>
     }),
   )
 
-  it.effect('preserves crop and storage when the bone meal owner commit is rejected', () =>
+  it.effect('does not attempt a bone meal commit when the chunk store cannot read block state', () =>
     Effect.gen(function* () {
       const wheatCrop = Option.getOrThrow(blockIdOf('wheat_crop'))
       const position = fixtureBlockPosition(0, 64, 0)
@@ -7390,7 +7626,7 @@ describe('farming and food item uses through the full interactions stage', () =>
       yield* requestBoneMeal(harness.state, 'bone-meal-rejected', position)
       yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
 
-      expect(yield* Ref.get(harness.commitCalls)).toBe(1)
+      expect(yield* Ref.get(harness.commitCalls)).toBe(0)
       expect(yield* harness.commit.coordinator.revision).toBe(cropBefore.revision)
       expect(yield* harness.commit.coordinator.snapshot(GAMEPLAY_CROPS_OWNER_ID, CropSnapshotSchema))
         .toStrictEqual(cropBefore)
@@ -7399,10 +7635,14 @@ describe('farming and food item uses through the full interactions stage', () =>
         PlayerStorageSnapshotSchema,
       )).toStrictEqual(storageBefore)
       expect(yield* harness.store.api.getBlock(position)).toStrictEqual({ _tag: 'Block', block: wheatCrop })
-      expect(yield* Ref.get(harness.state.operationFailures)).toMatchObject([
-        { _tag: 'Failed', operation: 'WorldCommit', subject: 'ItemUse' },
-      ])
-      expect(yield* drainItemUseResults(harness.state)).toStrictEqual([])
+      expect(yield* Ref.get(harness.state.operationFailures)).toStrictEqual([])
+      expect(yield* drainItemUseResults(harness.state)).toMatchObject([{
+        action: 'ApplyBoneMeal',
+        requestId: 'bone-meal-rejected',
+        success: false,
+        consumedCount: 0,
+        outcome: { _tag: 'stateUnsupported', operation: 'readState' },
+      }])
     }),
   )
 
@@ -7472,7 +7712,7 @@ describe('farming and food item uses through the full interactions stage', () =>
     }),
   )
 
-  it.effect('detects a crop owner revision change between bone meal observation and snapshot', () =>
+  it.effect('does not read a crop owner revision after block state is reported unsupported', () =>
     Effect.gen(function* () {
       const wheatBlock = Option.getOrThrow(blockIdOf('wheat_crop'))
       const position = fixtureBlockPosition(0, 64, 0)
@@ -7531,17 +7771,14 @@ describe('farming and food item uses through the full interactions stage', () =>
       expect(injected).toBe(true)
       expect(after.revision).toBe(before.revision + 1)
       expect(after.state.crops[0]?.growthSecs).toBe(1)
-      expect((yield* Ref.get(harness.state.operationFailures)).at(-1)).toMatchObject({
-        _tag: 'Failed',
-        operation: 'OwnerSnapshot',
-        subject: 'ItemUse',
-        error: {
-          _tag: 'WorldRevisionConflict',
-          expected: before.revision,
-          actual: before.revision + 1,
-        },
-      })
-      expect(yield* drainItemUseResults(harness.state)).toStrictEqual([])
+      expect(yield* Ref.get(harness.state.operationFailures)).toStrictEqual([])
+      expect(yield* drainItemUseResults(harness.state)).toMatchObject([{
+        action: 'ApplyBoneMeal',
+        requestId: 'bone-meal-revision-race',
+        success: false,
+        consumedCount: 0,
+        outcome: { _tag: 'stateUnsupported', operation: 'readState' },
+      }])
     }),
   )
 

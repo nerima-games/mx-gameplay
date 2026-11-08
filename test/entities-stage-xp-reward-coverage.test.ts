@@ -231,7 +231,7 @@ describe('XP rewards through production gameplay composition', () => {
       const { coordinator, state, stages, observedCommits } = yield* makeZombieRewardFrame([
         orbRecord('existing-three-point-orb', 3, mobPosition),
       ])
-      expect(stages).toHaveLength(9)
+      expect(stages).toHaveLength(10)
 
       yield* runFrame(stages, DeltaTimeSecs(0))
 
@@ -257,7 +257,7 @@ describe('XP rewards through production gameplay composition', () => {
     Effect.gen(function* () {
       const maxCountOrb = orbRecord('full-three-point-orb-stack', 3, mobPosition, Number.MAX_SAFE_INTEGER)
       const { coordinator, state, stages, observedCommits } = yield* makeZombieRewardFrame([maxCountOrb])
-      expect(stages).toHaveLength(9)
+      expect(stages).toHaveLength(10)
 
       yield* runFrame(stages, DeltaTimeSecs(0))
 
@@ -295,7 +295,7 @@ describe('XP rewards through production gameplay composition', () => {
         fixturePosition(100 + index * 2, 0.72, -2),
       ))
       const { coordinator, state, stages, observedCommits } = yield* makeZombieRewardFrame(replayedRewards)
-      expect(stages).toHaveLength(9)
+      expect(stages).toHaveLength(10)
       const before = yield* coordinator.snapshot(GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID, ExperienceOrbOwnerSnapshotSchema)
 
       yield* runFrame(stages, DeltaTimeSecs(0))
