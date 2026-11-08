@@ -287,7 +287,8 @@ plan.md §4.2 を素直に読むと `input` の後ろでもあり、`redstone` �
 | `makeGameplayStages` | **契約** | `mc-compose` が消費する唯一の入口。`ChunkStore` を要求する（§2-2） |
 | `gameplayStages(state, store, entities, inventory, player, time)` | 内部(可視) | state と各サービスを外から渡す版。プレビューとテストが state を覗くために使う。プレイヤー位置と時刻はそれぞれ PlayerService と TimeService が権威であり、互換Refはステージから読まない |
 | `makeGameplayFrameState` | 内部(可視) | 再入可能な初期化。テストが 2 つ作って独立性を検査する（DN-GP-6） |
-| `GameplayFrameState` | 内部(可視) | フレームローカルの作業メモ（`Ref` 群）。ゲーム状態ではない |
+| `GameplayFrameState` | 内部(可視) | stage 実行間で保持する `Ref` 群。作業キューと、盾の構え・前回被弾した tick・被ダメージ量を持つ。一時状態でありセーブ対象ではない |
+| `requestShieldBlocking` | 内部(可視) | `SetShieldBlocking` を次の entities tick に積む。盾の装備状態と構え時間は stage が検証する |
 | `setPortalCandidates` | **契約** | ホストが宛先次元ごとの既知ポータル snapshot を渡す。未設定の次元は空候補として扱い、新規ポータル設計になる |
 | `drainPortalTravels` | **契約** | 成立した移動を FIFO で 1 回だけ取り出す。2 回目の drain は空になる |
 | `PortalTravelEvent` | **契約** | 出発次元・出発セル・`PortalTravelPlan` を束ねる。`portalToCreate` が `Some` のときだけホストが世界生成を行う |

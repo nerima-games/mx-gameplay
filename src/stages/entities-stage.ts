@@ -6,6 +6,7 @@ import {
   Ref,
   applyFallingBlocks,
   hostileSpawnsAllowed,
+  recordGameplayStageFailure,
   recordGameplayUnsupportedOperation,
   searchSpawnCandidates,
   settled,
@@ -19,6 +20,7 @@ import {
   PositionAxis,
   RandomSeed,
   SimulationTickSchema,
+  WorldPositionSchema,
   WorldWriteBatchSchema,
   blockPosition,
   blockPositionKeyOf,
@@ -72,9 +74,10 @@ import {
   type MobExplosionHit,
   type MobSpawnAttempt,
 } from '../domain/entities/mob-frame.js'
-import type { Damage } from '../domain/death-cause.js'
 import {
   resolveHostileContacts,
+  prepareHostileAttack,
+  prepareShieldBlocking,
   resolvePlayerBlastDamage,
   type PlayerDamageEvent,
 } from '../domain/mob/hostile-combat.js'
@@ -533,61 +536,193 @@ const runMobSimulation = (
   const spawned = planSpawnAttemptsOnRoster(blast.roster, attempts)
   if (Result.isFailure(spawned)) return yield* Effect.fail(spawned.failure)
 
+  const difficulty = (yield* state.survivalHunger.snapshot).difficulty
   const contact = resolveHostileContacts(
     spawned.success.roster.entities,
     playerPosition,
     dt,
     yield* Ref.get(state.hostileContactCooldowns),
+    difficulty,
   )
-  const playerBlasts = resolvePlayerBlastDamage(sweep.blasts, playerPosition)
-  const attacks: ReadonlyArray<PlayerDamageEvent> = sweep.attacks.map((attack) => ({
-    _tag: 'HostileContact',
-    source: attack.source,
-    kind: attack.attackerKind,
-    at: attack.at,
-    damage: { amount: attack.damage, cause: 'mob' },
-  }))
-  const damages = [...attacks, ...contact.damages, ...playerBlasts]
+  const playerBlasts = resolvePlayerBlastDamage(sweep.blasts, playerPosition, difficulty)
+  type HostileDamageEvent = Extract<PlayerDamageEvent, { readonly _tag: 'HostileContact' | 'Explosion' }>
+  type HostileDamageInput = Readonly<{
+    event: HostileDamageEvent
+    attackKind: 'melee' | 'projectile' | 'explosion'
+    difficulty: typeof difficulty
+  }>
+  const damageInputs: ReadonlyArray<HostileDamageInput> = [
+    ...sweep.attacks.map((attack) => ({
+      event: {
+        _tag: 'HostileContact' as const,
+        source: attack.source,
+        kind: attack.attackerKind,
+        at: attack.at,
+        damage: { amount: attack.damage, cause: 'mob' as const },
+      },
+      attackKind: attack.mode,
+      difficulty,
+    })),
+    // Contact and blast resolvers already apply the selected difficulty. Their
+    // events still pass through shield and hurt resistance without scaling twice.
+    ...contact.damages.flatMap((event) => event._tag === 'HostileContact'
+      ? [{ event, attackKind: 'melee' as const, difficulty: 'normal' as const }]
+      : []),
+    ...playerBlasts.flatMap((event) => event._tag === 'Explosion'
+      ? [{ event, attackKind: 'explosion' as const, difficulty: 'normal' as const }]
+      : []),
+  ]
+  const damages = damageInputs.map(({ event }) => event)
+  const pendingShieldBlocking = yield* Ref.get(state.pendingShieldBlocking)
+  const damageTick = Schema.decodeUnknownSync(SimulationTickSchema)(yield* Ref.get(state.tickCount))
+  let shieldState = yield* Ref.get(state.shieldBlocking)
+  let damageImmunityState = yield* Ref.get(state.damageImmunity)
+  const combatPose = {
+    feetPosition: {
+      x: playerSnapshot.state.pose.feetPosition.x,
+      y: playerSnapshot.state.pose.feetPosition.y,
+      z: playerSnapshot.state.pose.feetPosition.z,
+    },
+    yawRadians: playerSnapshot.state.pose.yawRadians,
+    pitchRadians: playerSnapshot.state.pose.pitchRadians,
+  }
   const experience = experienceOfCasualties(blast.casualties)
 
+  let storage: PlayerStorage | undefined
+  let storageSnapshot: Readonly<{ revision: number; state: PlayerStorage }> | undefined
   let storageCandidate: PlayerStorage | undefined
   let vitalsCandidate: { readonly vitals: import('@nerima-games/mc-sim').Vitals } | undefined
-  let resolvedDamages: ReadonlyArray<PlayerDamageEvent> = damages
-  if (damages.length > 0) {
-    if (commit.playerStorageOwnerId === undefined || commit.vitalsOwnerId === undefined) {
+  let resolvedDamages: ReadonlyArray<PlayerDamageEvent> = []
+  if (damages.length > 0 || pendingShieldBlocking.length > 0) {
+    if (
+      commit.playerStorageOwnerId === undefined ||
+      (damages.length > 0 && commit.vitalsOwnerId === undefined)
+    ) {
       yield* unsupportedMobSimulation(state, 'OwnerRegistrationUnavailable')
       return
     }
-    const [storageSnapshot, vitalsSnapshot] = yield* Effect.all([
-      commit.coordinator.snapshot(commit.playerStorageOwnerId, PlayerStorageSnapshotSchema),
-      commit.coordinator.snapshot(commit.vitalsOwnerId, ExperienceOrbVitalsOwnerSnapshotSchema),
-    ])
-    if (storageSnapshot.revision !== expectedRevision || vitalsSnapshot.revision !== expectedRevision) {
+    storageSnapshot = yield* commit.coordinator.snapshot(
+      commit.playerStorageOwnerId,
+      PlayerStorageSnapshotSchema,
+    )
+    if (storageSnapshot.revision !== expectedRevision) {
       return yield* Effect.fail(new WorldRevisionConflict({
         expected: expectedRevision,
-        actual: storageSnapshot.revision !== expectedRevision
-          ? storageSnapshot.revision
-          : vitalsSnapshot.revision,
+        actual: storageSnapshot.revision,
       }))
     }
-    let storage = storageSnapshot.state
-    let vitals = vitalsSnapshot.state.vitals
+    storage = storageSnapshot.state
+
+    const hasShield = () => storage?.equipment.slots.offhand?.item === 'shield'
+    if (!hasShield()) shieldState = null
+    for (const intent of pendingShieldBlocking) {
+      if (intent.actor !== PLAYER_BLAST_ENTITY_ID) {
+        yield* recordGameplayStageFailure(state, {
+          _tag: 'Failed', operation: 'CandidateBuild', subject: 'Player',
+          error: { _tag: 'ShieldBlockingPreparation', reason: 'invalid-authoritative-state' },
+        })
+        continue
+      }
+      const prepared = prepareShieldBlocking(intent, {
+        tick: damageTick,
+        dimension: playerSnapshot.state.pose.feetPosition.dimension,
+        pose: combatPose,
+        hasShield: hasShield(),
+        current: shieldState,
+      })
+      if (Result.isFailure(prepared)) {
+        yield* recordGameplayStageFailure(state, {
+          _tag: 'Failed', operation: 'CandidateBuild', subject: 'Player',
+          error: { _tag: 'ShieldBlockingPreparation', reason: prepared.failure },
+        })
+        continue
+      }
+      shieldState = prepared.success.blocking && prepared.success.raisedAt !== null
+        ? { actor: prepared.success.actor, raisedAt: prepared.success.raisedAt }
+        : null
+    }
+
+    const vitalsSnapshot = damages.length === 0
+      ? undefined
+      : yield* commit.coordinator.snapshot(
+        commit.vitalsOwnerId!,
+        ExperienceOrbVitalsOwnerSnapshotSchema,
+      )
+    if (vitalsSnapshot !== undefined && vitalsSnapshot.revision !== expectedRevision) {
+      return yield* Effect.fail(new WorldRevisionConflict({
+        expected: expectedRevision,
+        actual: vitalsSnapshot.revision,
+      }))
+    }
+    let vitals = vitalsSnapshot?.state.vitals
     const applied: PlayerDamageEvent[] = []
-    for (const event of damages) {
-      const armor = yield* Effect.fromResult(prepareArmorHit(storage.equipment, event.damage))
-      const damage: Damage = armor.damage
-      const amount = yield* Effect.fromResult(DamageAmount.result(damage.amount))
-      const cause = yield* Effect.fromResult(DamageCause.result(damage.cause))
-      vitals = applyVitalsDamage(vitals, { amount, cause })
+    for (const { event, attackKind, difficulty: attackDifficulty } of damageInputs) {
+      if (storage === undefined) break
+      const hasEquippedShield = hasShield()
+      if (!hasEquippedShield) shieldState = null
+      const intent = {
+        _tag: 'SetShieldBlocking' as const,
+        actor: PLAYER_BLAST_ENTITY_ID,
+        blocking: shieldState !== null,
+      }
+      const hostileAttackInput = {
+        tick: damageTick,
+        dimension: playerSnapshot.state.pose.feetPosition.dimension,
+        pose: combatPose,
+        hasShield: hasEquippedShield,
+        currentShield: shieldState,
+        incoming: {
+          attacker: event.source,
+          attackerPosition: Schema.decodeUnknownSync(WorldPositionSchema)({
+            dimension: playerSnapshot.state.pose.feetPosition.dimension,
+            ...event.at,
+          }),
+          kind: attackKind,
+          amount: event.damage.amount,
+        },
+        difficulty: attackDifficulty,
+        damageState: damageImmunityState,
+      }
+      const prepared = yield* Effect.fromResult(prepareHostileAttack(intent, hostileAttackInput))
+      shieldState = prepared.shield.blocking && prepared.shield.raisedAt !== null
+        ? { actor: prepared.shield.actor, raisedAt: prepared.shield.raisedAt }
+        : null
+      damageImmunityState = prepared.damageState
+
+      if (prepared.shield.durabilityDamage > 0) {
+        storage = damageAt(
+          storage,
+          { _tag: 'Equipment', slot: 'offhand' },
+          prepared.shield.durabilityDamage,
+        ).storage
+        if (!hasShield()) shieldState = null
+      }
+      if (prepared.appliedAmount === 0) continue
+
+      const storageForArmor = storage
+      if (storageForArmor === undefined) break
+      const armor = yield* Effect.fromResult(prepareArmorHit(storageForArmor.equipment, {
+        ...event.damage,
+        amount: prepared.appliedAmount,
+      }))
+      const amount = yield* Effect.fromResult(DamageAmount.result(armor.damage.amount))
+      const cause = yield* Effect.fromResult(DamageCause.result(armor.damage.cause))
+      vitals = applyVitalsDamage(vitals!, { amount, cause })
       for (const slot of armor.wornSlots) {
-        const worn = damageAt(storage, { _tag: 'Equipment', slot }, armor.durabilityWear)
+        const storageBeforeWear = storage
+        if (storageBeforeWear === undefined) break
+        const worn = damageAt(storageBeforeWear, { _tag: 'Equipment', slot }, armor.durabilityWear)
         storage = worn.storage
       }
-      applied.push({ ...event, damage })
+      applied.push({ ...event, damage: armor.damage })
     }
     resolvedDamages = applied
-    if (!Equal.equals(storageSnapshot.state, storage)) storageCandidate = storage
-    if (!Equal.equals(vitalsSnapshot.state.vitals, vitals)) vitalsCandidate = { vitals }
+    if (storageSnapshot !== undefined && storage !== undefined && !Equal.equals(storageSnapshot.state, storage)) {
+      storageCandidate = storage
+    }
+    if (vitalsSnapshot !== undefined && vitals !== undefined && !Equal.equals(vitalsSnapshot.state.vitals, vitals)) {
+      vitalsCandidate = { vitals }
+    }
   }
 
   let droppedCandidate: DroppedItemOwnerSnapshot | undefined
@@ -693,6 +828,11 @@ const runMobSimulation = (
   yield* Ref.set(state.rollSeed, nextRollSeed)
   yield* Ref.set(state.spawnClockSecs, nextSpawnClockSecs)
   yield* Ref.set(state.hostileContactCooldowns, contact.cooldowns)
+  yield* Ref.set(state.shieldBlocking, shieldState)
+  yield* Ref.set(state.damageImmunity, damageImmunityState)
+  if (pendingShieldBlocking.length > 0) {
+    yield* Ref.update(state.pendingShieldBlocking, (pending) => pending.slice(pendingShieldBlocking.length))
+  }
   if (offeredAttempts.length > 0) {
     yield* Ref.update(state.spawnAttempts, (pending) => pending.slice(offeredAttempts.length))
   }

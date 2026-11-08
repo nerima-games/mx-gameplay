@@ -53,6 +53,7 @@ import { disturb } from '../src/domain/falling-block.js'
 import {
   drainGameplayUnsupportedOperations,
   makeGameplayFrameState,
+  requestShieldBlocking,
   requestDroppedItemPickup,
   requestExperienceOrbAbsorption,
   HOSTILE_SPAWN_INTERVAL_SECS,
@@ -78,6 +79,7 @@ import {
   type MobBehaviour,
   type MobEntity,
 } from '../src/domain/entities/mob-frame.js'
+import { BLAZE_KIND, initialEcosystemMobState, SKELETON_KIND } from '../src/domain/mob/mob-ecosystem.js'
 import { ZOMBIE_KIND } from '../src/domain/mob/hostile-combat.js'
 import {
   GAMEPLAY_ENTITIES_OWNER_ID,
@@ -110,6 +112,14 @@ const zombieAt = (x: number, y: number): MobEntity => ({
   feetPosition: position(PositionAxis(x), PositionAxis(y), PositionAxis(0)),
   healthPoints: EntityHealthPoints(20),
   behaviour: hostileMobSnapshot(undefined),
+})
+
+const ecosystemMobAt = (id: string, kind: typeof BLAZE_KIND | typeof SKELETON_KIND, x: number, y: number): MobEntity => ({
+  id: EntityId(id),
+  kind,
+  feetPosition: position(PositionAxis(x), PositionAxis(y), PositionAxis(0)),
+  healthPoints: EntityHealthPoints(20),
+  behaviour: hostileMobSnapshot(initialEcosystemMobState()),
 })
 
 const equippedIronHelmetStorage = (): PlayerStorage => {
@@ -154,6 +164,7 @@ const makeHarness = (options: Readonly<{
   readonly provideTntService?: boolean
   readonly playerPose?: PlayerPose
   readonly playerStorage?: PlayerStorage
+  readonly synthesizeShieldStorageSnapshot?: boolean
   readonly droppedItems?: DroppedItemOwnerSnapshot
   readonly vitals?: Vitals
   readonly experienceOrbs?: ExperienceOrbOwnerSnapshot
@@ -193,6 +204,29 @@ const makeHarness = (options: Readonly<{
     ...baseCoordinator,
     snapshot: <Codec extends Schema.Codec<any, any>>(ownerId: ReturnType<typeof makeReplicatedOwnerId>, schema: Codec) =>
       baseCoordinator.snapshot(ownerId, schema).pipe(Effect.flatMap((snapshot) => {
+        if (
+          options.synthesizeShieldStorageSnapshot === true &&
+          ownerId === GAMEPLAY_PLAYER_STORAGE_OWNER_ID &&
+          schema === PlayerStorageSnapshotSchema &&
+          'state' in snapshot
+        ) {
+          // Installed mc-sim/mc-kernel catalogs cannot represent shield equipment yet.
+          const shield = {
+            ...Result.getOrThrow(itemStack('shield', StackCount(1))),
+            durability: { current: 336, max: 336 },
+          }
+          const storage = snapshot.state as PlayerStorage
+          return Effect.succeed({
+            ...snapshot,
+            state: {
+              ...storage,
+              equipment: {
+                ...storage.equipment,
+                slots: { ...storage.equipment.slots, offhand: shield },
+              },
+            } as typeof snapshot.state,
+          })
+        }
         if (ownerId !== mismatchNextSnapshotOwnerId) {
           return Effect.succeed(snapshot)
         }
@@ -364,6 +398,122 @@ describe('entities stage owner-backed MobSimulation', () => {
       source: EntityId('test:zombie'),
       damage: { amount: 3, cause: 'mob' },
     }])
+  })
+
+  it('routes AI attacks, contact, and explosions through Peaceful damage resolution', async () => {
+    const playerPose = {
+      ...INITIAL_PLAYER_POSE,
+      feetPosition: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
+    }
+    const creeper = {
+      ...creeperAt(0, 64),
+      behaviour: { _tag: 'Lit' as const, burnedSecs: 1.49 },
+    }
+    const harness = await Effect.runPromise(makeHarness({
+      entity: null,
+      entities: [creeper, zombieAt(1, 64), ecosystemMobAt('test:skeleton', SKELETON_KIND, 8, 64)],
+      playerPose,
+      block: { position: blockPosition(BlockAxis(0), BlockAxis(64), BlockAxis(0)), id: STONE },
+    }))
+    await Effect.runPromise(harness.state.survivalHunger.setDifficulty('peaceful'))
+    await Effect.runPromise(Ref.set(harness.state.rollSeed, 3))
+    const before = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_VITALS_OWNER_ID,
+      ExperienceOrbVitalsOwnerSnapshotSchema,
+    ))
+
+    await harness.run(0.25 as DeltaTimeSecs)
+
+    const after = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_VITALS_OWNER_ID,
+      ExperienceOrbVitalsOwnerSnapshotSchema,
+    ))
+    expect(after.state.vitals.healthPoints).toBe(before.state.vitals.healthPoints)
+    expect(await Effect.runPromise(Ref.get(harness.state.playerDamages))).toEqual([])
+  })
+
+  it('applies Hard difficulty to an AI attack before storing hurt resistance', async () => {
+    const playerPose = {
+      ...INITIAL_PLAYER_POSE,
+      feetPosition: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
+    }
+    const harness = await Effect.runPromise(makeHarness({
+      entity: null,
+      entities: [ecosystemMobAt('test:skeleton', SKELETON_KIND, 8, 64)],
+      playerPose,
+    }))
+    await Effect.runPromise(harness.state.survivalHunger.setDifficulty('hard'))
+
+    await harness.run(0.05 as DeltaTimeSecs)
+
+    expect(await Effect.runPromise(Ref.get(harness.state.playerDamages))).toMatchObject([{
+      damage: { amount: 4.5, cause: 'mob' },
+    }])
+    expect(await Effect.runPromise(Ref.get(harness.state.damageImmunity))).toMatchObject({
+      lastDamageAmount: 4.5,
+    })
+  })
+
+  it('blocks contact damage with the stage-held shield state', async () => {
+    const playerPose = {
+      ...INITIAL_PLAYER_POSE,
+      feetPosition: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
+      yawRadians: -Math.PI / 2 as typeof INITIAL_PLAYER_POSE.yawRadians,
+    }
+    const harness = await Effect.runPromise(makeHarness({
+      entity: zombieAt(1, 64),
+      playerPose,
+      synthesizeShieldStorageSnapshot: true,
+    }))
+    await Effect.runPromise(harness.state.survivalHunger.setDifficulty('easy'))
+    await Effect.runPromise(Ref.set(harness.state.hostileContactCooldowns, new Map([
+      [EntityId('test:zombie'), 0.31],
+    ])))
+    const actor = EntityId('mx-gameplay:player-avatar')
+    await Effect.runPromise(requestShieldBlocking(harness.state, {
+      _tag: 'SetShieldBlocking',
+      actor,
+      blocking: true,
+    }))
+
+    for (let tick = 0; tick <= 12; tick += 1) {
+      await Effect.runPromise(Ref.set(harness.state.tickCount, SimulationTick(tick)))
+      await harness.run(0.05 as DeltaTimeSecs)
+    }
+
+    expect(await Effect.runPromise(Ref.get(harness.state.shieldBlocking))).toMatchObject({ actor })
+    expect(await Effect.runPromise(Ref.get(harness.state.damageImmunity))).toBeNull()
+    expect(await Effect.runPromise(Ref.get(harness.state.playerDamages))).toEqual([])
+    const contactCooldowns = await Effect.runPromise(Ref.get(harness.state.hostileContactCooldowns))
+    expect(contactCooldowns.get(EntityId('test:zombie'))).toBeCloseTo(0.7)
+  })
+
+  it('ignores a weaker mob hit during the ten-tick hurt-resistance window', async () => {
+    const playerPose = {
+      ...INITIAL_PLAYER_POSE,
+      feetPosition: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
+    }
+    const harness = await Effect.runPromise(makeHarness({
+      entity: null,
+      entities: [ecosystemMobAt('test:blaze', BLAZE_KIND, 8, 64), zombieAt(2, 64)],
+      playerPose,
+    }))
+    await harness.run(0.05 as DeltaTimeSecs)
+    expect(await Effect.runPromise(Ref.get(harness.state.damageImmunity))).toMatchObject({
+      lastDamageTick: 0,
+      lastDamageAmount: 6,
+    })
+
+    for (let tick = 1; tick <= 9; tick += 1) {
+      await Effect.runPromise(Ref.set(harness.state.tickCount, SimulationTick(tick)))
+      await harness.run(0.05 as DeltaTimeSecs)
+    }
+
+    expect(await Effect.runPromise(Ref.get(harness.state.damageImmunity))).toMatchObject({
+      lastDamageTick: 0,
+      lastDamageAmount: 6,
+    })
+    expect(await Effect.runPromise(Ref.get(harness.state.playerDamages))).toHaveLength(1)
   })
 
   it('keeps dead-player vitals unchanged while recording a valid mob-contact hit', async () => {

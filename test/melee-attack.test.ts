@@ -27,6 +27,33 @@ const MELEE_PARITY_FIXTURE = {
   edition: 'Java Edition 26.3',
 } as const
 
+const NON_SWORD_TOOL_STATS = [
+  { item: 'wooden_axe', damage: 7, attackSpeed: 0.8 },
+  { item: 'gold_axe', damage: 7, attackSpeed: 1 },
+  { item: 'stone_axe', damage: 9, attackSpeed: 0.8 },
+  { item: 'iron_axe', damage: 9, attackSpeed: 0.9 },
+  { item: 'diamond_axe', damage: 9, attackSpeed: 1 },
+  { item: 'netherite_axe', damage: 10, attackSpeed: 1 },
+  { item: 'wooden_pickaxe', damage: 2, attackSpeed: 1.2 },
+  { item: 'gold_pickaxe', damage: 2, attackSpeed: 1.2 },
+  { item: 'stone_pickaxe', damage: 3, attackSpeed: 1.2 },
+  { item: 'iron_pickaxe', damage: 4, attackSpeed: 1.2 },
+  { item: 'diamond_pickaxe', damage: 5, attackSpeed: 1.2 },
+  { item: 'netherite_pickaxe', damage: 6, attackSpeed: 1.2 },
+  { item: 'wooden_shovel', damage: 2.5, attackSpeed: 1 },
+  { item: 'gold_shovel', damage: 2.5, attackSpeed: 1 },
+  { item: 'stone_shovel', damage: 3.5, attackSpeed: 1 },
+  { item: 'iron_shovel', damage: 4.5, attackSpeed: 1 },
+  { item: 'diamond_shovel', damage: 5.5, attackSpeed: 1 },
+  { item: 'netherite_shovel', damage: 6.5, attackSpeed: 1 },
+  { item: 'wooden_hoe', damage: 1, attackSpeed: 1 },
+  { item: 'gold_hoe', damage: 1, attackSpeed: 1 },
+  { item: 'stone_hoe', damage: 1, attackSpeed: 2 },
+  { item: 'iron_hoe', damage: 1, attackSpeed: 3 },
+  { item: 'diamond_hoe', damage: 1, attackSpeed: 4 },
+  { item: 'netherite_hoe', damage: 1, attackSpeed: 4 },
+] as const
+
 const zombie: Entity<MobBehaviour> = {
   id: EntityId('zombie:melee-target'),
   kind: ZOMBIE_KIND,
@@ -51,19 +78,16 @@ describe('melee attack damage', () => {
     expect(meleeDamageForItem('bow')).toBe(1)
   })
 
-  it('maps mining tools to their melee damage', () => {
-    expect(meleeDamageForItem('diamond_pickaxe')).toBe(5)
-    expect(meleeDamageForItem('diamond_shovel')).toBe(5.5)
-    expect(meleeDamageForItem('wooden_hoe')).toBe(1)
-  })
+  it(`maps all 24 non-sword tools to vanilla damage and attack speed (${MELEE_PARITY_FIXTURE.source}, ${MELEE_PARITY_FIXTURE.edition})`, () => {
+    expect(NON_SWORD_TOOL_STATS).toHaveLength(24)
+    for (const { item, damage, attackSpeed } of NON_SWORD_TOOL_STATS) {
+      expect(meleeDamageForItem(item)).toBe(damage)
 
-  it(`maps axes to their vanilla damage (${MELEE_PARITY_FIXTURE.source}, ${MELEE_PARITY_FIXTURE.edition})`, () => {
-    expect(meleeDamageForItem('wooden_axe')).toBe(7)
-    expect(meleeDamageForItem('gold_axe')).toBe(7)
-    expect(meleeDamageForItem('stone_axe')).toBe(9)
-    expect(meleeDamageForItem('iron_axe')).toBe(9)
-    expect(meleeDamageForItem('diamond_axe')).toBe(9)
-    expect(meleeDamageForItem('netherite_axe')).toBe(10)
+      const cooldownAtStart = meleeAttackCooldownForItem(item, 0)
+      expect(Result.isSuccess(cooldownAtStart)).toBe(true)
+      if (Result.isFailure(cooldownAtStart)) continue
+      expect(cooldownAtStart.success.charge).toBeCloseTo(attackSpeed / 40, 10)
+    }
   })
 
   it(`maps each supported sword to its melee damage (${MELEE_PARITY_FIXTURE.source}, ${MELEE_PARITY_FIXTURE.edition})`, () => {
@@ -114,6 +138,11 @@ describe('melee attack cooldown', () => {
     expect(meleeAttackCooldown({ attackSpeed: 1, ticksSinceLastAttack: -1 })).toStrictEqual(
       Result.fail('invalid-input'),
     )
+    for (const ticksSinceLastAttack of [1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(meleeAttackCooldown({ attackSpeed: 1, ticksSinceLastAttack })).toStrictEqual(
+        Result.fail('invalid-input'),
+      )
+    }
     expect(meleeAttackCooldownForItem('not-an-item' as never, 0)).toStrictEqual(
       Result.fail('invalid-input'),
     )

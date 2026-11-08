@@ -19,6 +19,8 @@ export type MiningToolProfile = {
   readonly efficiencyLevel?: number
 }
 
+export type EffectiveMiningSpeedError = 'invalid-speed-multiplier'
+
 export const HAND_MINING_TOOL: MiningToolProfile = {
   category: 'none',
   speedMultiplier: 1,
@@ -101,17 +103,19 @@ export const miningLootContextForItem = (item: ItemType | null): BlockLootContex
 export const effectiveMiningSpeed = (
   tool: MiningToolProfile,
   requirement: HarvestToolRequirement,
-): number => {
+): Result.Result<number, EffectiveMiningSpeedError> => {
   if (!Number.isFinite(tool.speedMultiplier) || tool.speedMultiplier <= 0) {
-    return HAND_MINING_TOOL.speedMultiplier
+    return Result.fail('invalid-speed-multiplier')
   }
   if (requirement.category === 'none' || tool.category === 'none') {
-    return HAND_MINING_TOOL.speedMultiplier
+    return Result.succeed(HAND_MINING_TOOL.speedMultiplier)
   }
-  if (tool.category !== requirement.category) return HAND_MINING_TOOL.speedMultiplier / 5
+  if (tool.category !== requirement.category) {
+    return Result.succeed(HAND_MINING_TOOL.speedMultiplier / 5)
+  }
   const efficiencyLevel = normaliseEfficiencyLevel(tool.efficiencyLevel)
   const efficiencyBonus = efficiencyLevel > 0 ? efficiencyLevel ** 2 + 1 : 0
-  return tool.speedMultiplier + efficiencyBonus
+  return Result.succeed(tool.speedMultiplier + efficiencyBonus)
 }
 
 const hardnessOfBlockId = (blockId: BlockId): number =>
@@ -131,7 +135,7 @@ export const miningDurationSecsForBlock = (
   }
 
   const requirement = harvestToolRequirementOfBlockId(blockId)
-  const speed = effectiveMiningSpeed(miningToolForItem(item, efficiencyLevel), requirement)
+  const speed = Result.getOrThrow(effectiveMiningSpeed(miningToolForItem(item, efficiencyLevel), requirement))
   return hardness / (MINING_TICKS_PER_SECOND * speed)
 }
 
@@ -147,10 +151,10 @@ const miningSpeedForBlock = (
   item: ItemType | null,
   efficiencyLevel: number,
 ): number =>
-  effectiveMiningSpeed(
+  Result.getOrThrow(effectiveMiningSpeed(
     miningToolForItem(item, efficiencyLevel),
     harvestToolRequirementOfBlockId(blockId),
-  )
+  ))
 
 const normaliseDeltaSecs = (deltaSecs: number): number =>
   Number.isFinite(deltaSecs) && deltaSecs > 0 ? deltaSecs : 0

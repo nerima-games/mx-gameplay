@@ -49,10 +49,31 @@ describe('mining progress properties', () => {
             'wooden_pickaxe',
             efficiencyLevel,
           )
-          return Number.isFinite(speed) &&
-            speed === HAND_MINING_TOOL.speedMultiplier / 5 &&
+          return Result.isSuccess(speed) &&
+            Number.isFinite(speed.success) &&
+            speed.success === HAND_MINING_TOOL.speedMultiplier / 5 &&
             Math.abs(mismatchedToolDuration - handDuration * 5) < 1e-10
         }),
+      )
+    }),
+  )
+
+  it.effect('returns a typed failure for invalid mining speed multipliers', () =>
+    Effect.sync(() => {
+      fc.assert(
+        fc.property(
+          fc.double({ noNaN: false, noDefaultInfinity: false }),
+          (speedMultiplier) => {
+            const result = effectiveMiningSpeed(
+              { ...miningToolForItem('wooden_pickaxe'), speedMultiplier },
+              dirtRequirement,
+            )
+            if (!Number.isFinite(speedMultiplier) || speedMultiplier <= 0) {
+              return Result.isFailure(result) && result.failure === 'invalid-speed-multiplier'
+            }
+            return Result.isSuccess(result) && result.success === HAND_MINING_TOOL.speedMultiplier / 5
+          },
+        ),
       )
     }),
   )

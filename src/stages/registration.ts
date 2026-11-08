@@ -89,6 +89,7 @@ export {
   drainBowKnockbacks,
   drainMeleeAttackResults,
   requestMeleeAttack,
+  requestShieldBlocking,
   requestEnderPearlThrow,
   type TargetedPrimaryAttackResult,
   type TargetedPrimaryAttackResolution,

@@ -149,16 +149,63 @@ describe('melee combat properties', () => {
     )
   })
 
-  it('returns a typed failure or schema-valid hostile wrapper result for valid generated attacks', () => {
+  it('matches generated difficulty, shield, and hurt-resistance damage calculations', () => {
     FastCheck.assert(
       FastCheck.property(
         FastCheck.record({
           tick: FastCheck.integer({ min: 0, max: 100 }),
           amount: FastCheck.integer({ min: 1, max: 20 }),
           blocking: FastCheck.boolean(),
+          shieldAge: FastCheck.integer({ min: 0, max: 10 }),
+          attackKind: FastCheck.constantFrom('melee', 'projectile', 'explosion'),
+          piercing: FastCheck.boolean(),
           difficulty: FastCheck.constantFrom('peaceful', 'easy', 'normal', 'hard'),
+          hasDamageState: FastCheck.boolean(),
+          previousDamageAge: FastCheck.integer({ min: 0, max: 20 }),
+          previousDamageAmount: FastCheck.integer({ min: 1, max: 30 }),
         }),
-        ({ tick, amount, blocking, difficulty }) => {
+        ({
+          tick,
+          amount,
+          blocking,
+          shieldAge,
+          attackKind,
+          piercing,
+          difficulty,
+          hasDamageState,
+          previousDamageAge,
+          previousDamageAmount,
+        }) => {
+          const raisedAt = Math.max(0, tick - shieldAge)
+          const damageTick = Math.max(0, tick - previousDamageAge)
+          const previousState = hasDamageState
+            ? { lastDamageTick: simulationTick(damageTick), lastDamageAmount: previousDamageAmount }
+            : null
+          const previousDamageElapsed = tick - damageTick
+          const scaledAmount = difficulty === 'peaceful'
+            ? 0
+            : difficulty === 'easy'
+              ? Math.min(amount, amount / 2 + 1)
+              : difficulty === 'hard'
+                ? amount * 1.5
+                : amount
+          const ticksRaised = tick - raisedAt
+          const expectedBlocked = blocking &&
+            scaledAmount > 0 &&
+            ticksRaised >= 5 &&
+            (attackKind !== 'projectile' || !piercing)
+          const expectedApplied = scaledAmount === 0 || expectedBlocked
+            ? 0
+            : previousState === null || previousDamageElapsed >= DAMAGE_IMMUNITY_TICKS
+              ? scaledAmount
+              : Math.max(0, scaledAmount - previousDamageAmount)
+          const expectedDamageState = scaledAmount === 0 || expectedBlocked
+            ? previousState
+            : previousState === null || previousDamageElapsed >= DAMAGE_IMMUNITY_TICKS
+              ? { lastDamageTick: simulationTick(tick), lastDamageAmount: scaledAmount }
+              : scaledAmount > previousDamageAmount
+                ? { lastDamageTick: simulationTick(damageTick), lastDamageAmount: scaledAmount }
+                : previousState
           const result = prepareHostileAttack(
             { _tag: 'SetShieldBlocking', actor, blocking },
             {
@@ -166,23 +213,24 @@ describe('melee combat properties', () => {
               dimension,
               pose,
               hasShield: blocking,
-              currentShield: blocking ? { actor, raisedAt: simulationTick(0) } : null,
-              incoming: { ...incoming, amount },
+              currentShield: blocking ? { actor, raisedAt: simulationTick(raisedAt) } : null,
+              incoming: { ...incoming, kind: attackKind, piercing, amount },
               difficulty,
-              damageState: null,
+              damageState: previousState,
             },
           )
-          if (Result.isFailure(result)) {
-            return result.failure === 'invalid-attack' ||
-              result.failure === 'invalid-shield-state' ||
-              result.failure === 'invalid-damage-state'
-          }
+          if (Result.isFailure(result)) return false
           const decoded = Schema.decodeUnknownResult(HostileAttackPreparationSchema, {
             onExcessProperty: 'error',
           })(result.success)
-          return Result.isSuccess(decoded) &&
-            Number.isFinite(decoded.success.appliedAmount) &&
-            decoded.success.appliedAmount >= 0
+          if (Result.isFailure(decoded)) return false
+          return decoded.success.appliedAmount === expectedApplied &&
+            JSON.stringify(decoded.success.damageState) === JSON.stringify(expectedDamageState) &&
+            decoded.success.shield.blocked === expectedBlocked &&
+            decoded.success.shield.blockedAmount === (expectedBlocked ? scaledAmount : 0) &&
+            decoded.success.shield.durabilityDamage === (expectedBlocked && scaledAmount >= 3 ? Math.ceil(scaledAmount) : 0) &&
+            decoded.success.shield.raisedAt === (blocking ? simulationTick(raisedAt) : null) &&
+            (decoded.success.shield.event !== null) === expectedBlocked
         },
       ),
     )

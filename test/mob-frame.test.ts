@@ -505,7 +505,9 @@ describe('repairMobBehaviour: the load path for every stored shape', () => {
       const state = {
         _tag: 'EcosystemMob' as const, attackCooldownSecs: 1, motionPhase: 2, provoked: true,
       }
-      expect(repairMobBehaviour(BLAZE_KIND, state)).toStrictEqual(hostileMobSnapshot(state))
+      expect(repairMobBehaviour(BLAZE_KIND, state)).toStrictEqual(hostileMobSnapshot({
+        _tag: 'EcosystemMob', attackCooldownTicks: 20, motionPhase: 2, provoked: true,
+      }))
     }),
   )
 

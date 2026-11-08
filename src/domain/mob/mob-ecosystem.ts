@@ -1,4 +1,4 @@
-import { PositionAxis, position, type Position } from '@nerima-games/mc-kernel'
+import { PositionAxis, position, tickDuration, type Position } from '@nerima-games/mc-kernel'
 import { EntityKind, type Entity, type EntityId } from '@nerima-games/mc-sim'
 import type { Dimension } from '@nerima-games/mc-worldgen'
 import { directionComponent, normalizeDirection2 } from '../math/direction.js'
@@ -12,9 +12,23 @@ export const SHEEP_KIND: EntityKind = EntityKind('sheep')
 export const CHICKEN_KIND: EntityKind = EntityKind('chicken')
 export const ZOMBIFIED_PIGLIN_KIND: EntityKind = EntityKind('zombified_piglin')
 export const BLAZE_KIND: EntityKind = EntityKind('blaze')
-export const SKELETON_ATTACK_INTERVAL_SECS = 3
+export const SKELETON_ATTACK_INTERVAL_TICKS = 60
 export const SKELETON_ATTACK_DAMAGE = 3
 export const SPIDER_ATTACK_DAMAGE = 2
+
+const LEGACY_TICKS_PER_SECOND = 1 / Number(tickDuration)
+const BLAZE_ATTACK_INTERVAL_TICKS = 60
+const MELEE_ATTACK_INTERVAL_TICKS = 20
+
+const repairAttackCooldownTicks = (ticks: unknown, legacySecs: unknown): number => {
+  if (typeof ticks === 'number' && Number.isFinite(ticks)) {
+    return Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, Math.ceil(ticks)))
+  }
+  if (typeof legacySecs === 'number' && Number.isFinite(legacySecs)) {
+    return Math.min(Number.MAX_SAFE_INTEGER, Math.ceil(Math.max(0, legacySecs) * LEGACY_TICKS_PER_SECOND))
+  }
+  return 0
+}
 
 // Explicit fixed-length tuple annotations (not `ReadonlyArray<EntityKind>`) are
 // deliberate on these three: `./entities/mob-frame`'s `HOSTILE_KINDS` and
@@ -39,24 +53,24 @@ export const ECOSYSTEM_MOB_KINDS: ReadonlyArray<EntityKind> = [
 
 export type EcosystemMobState = {
   readonly _tag: 'EcosystemMob'
-  readonly attackCooldownSecs: number
+  readonly attackCooldownTicks: number
   readonly motionPhase: number
   readonly provoked: boolean
 }
 
 export const initialEcosystemMobState = (): EcosystemMobState => ({
   _tag: 'EcosystemMob',
-  attackCooldownSecs: 0,
+  attackCooldownTicks: 0,
   motionPhase: 0,
   provoked: false,
 })
 
 export const repairEcosystemMobState = (value: unknown): EcosystemMobState | undefined => {
   if (typeof value !== 'object' || value === null || (value as { _tag?: unknown })._tag !== 'EcosystemMob') return undefined
-  const state = value as Partial<EcosystemMobState>
+  const state = value as Partial<EcosystemMobState> & { readonly attackCooldownSecs?: unknown }
   return {
     _tag: 'EcosystemMob',
-    attackCooldownSecs: Number.isFinite(state.attackCooldownSecs) ? Math.max(0, state.attackCooldownSecs!) : 0,
+    attackCooldownTicks: repairAttackCooldownTicks(state.attackCooldownTicks, state.attackCooldownSecs),
     motionPhase: Number.isFinite(state.motionPhase) ? state.motionPhase! : 0,
     provoked: state.provoked === true,
   }
@@ -105,12 +119,12 @@ export const stepEcosystemMob = (
   deltaSecs: number,
 ): EcosystemMobStep => {
   const dt = Number.isFinite(deltaSecs) ? Math.max(0, deltaSecs) : 0
-  const cooldown = Math.max(0, state.attackCooldownSecs - dt)
+  const cooldown = Math.max(0, state.attackCooldownTicks - 1)
   const phase = state.motionPhase + dt
   const distance = target === undefined ? Number.POSITIVE_INFINITY : distanceXZ(self, target)
-  const nextState = (attackCooldownSecs = cooldown): EcosystemMobState => ({ ...state, attackCooldownSecs, motionPhase: phase })
-  const attack = (mode: 'melee' | 'projectile', damage: number, reset: number): EcosystemMobStep => ({
-    state: nextState(reset), feetPosition: self, jumping: kind === SPIDER_KIND,
+  const nextState = (attackCooldownTicks = cooldown): EcosystemMobState => ({ ...state, attackCooldownTicks, motionPhase: phase })
+  const attack = (mode: 'melee' | 'projectile', damage: number, resetTicks: number): EcosystemMobStep => ({
+    state: nextState(resetTicks), feetPosition: self, jumping: kind === SPIDER_KIND,
     attack: { _tag: 'MobAttack', attackerKind: kind, mode, damage },
   })
 
@@ -134,10 +148,14 @@ export const stepEcosystemMob = (
     return attack(
       'projectile',
       kind === BLAZE_KIND ? 6 : SKELETON_ATTACK_DAMAGE,
-      kind === BLAZE_KIND ? 3 : SKELETON_ATTACK_INTERVAL_SECS,
+      kind === BLAZE_KIND ? BLAZE_ATTACK_INTERVAL_TICKS : SKELETON_ATTACK_INTERVAL_TICKS,
     )
   if ((kind === SPIDER_KIND || kind === ZOMBIE_KIND || kind === ZOMBIFIED_PIGLIN_KIND) && cooldown === 0 && distance <= 1.5)
-    return attack('melee', kind === SPIDER_KIND ? SPIDER_ATTACK_DAMAGE : kind === ZOMBIE_KIND ? 3 : 5, 1)
+    return attack(
+      'melee',
+      kind === SPIDER_KIND ? SPIDER_ATTACK_DAMAGE : kind === ZOMBIE_KIND ? 3 : 5,
+      MELEE_ATTACK_INTERVAL_TICKS,
+    )
   const speed = kind === SPIDER_KIND ? 4 : 2.5
   return { state: nextState(), feetPosition: move(self, target, Math.min(distance, speed * dt)), jumping: kind === SPIDER_KIND && distance > 1.5 }
 }
