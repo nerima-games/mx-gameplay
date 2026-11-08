@@ -165,6 +165,7 @@ const makeHarness = (options: Readonly<{
   readonly playerPose?: PlayerPose
   readonly playerStorage?: PlayerStorage
   readonly synthesizeShieldStorageSnapshot?: boolean
+  readonly shieldDurability?: number
   readonly droppedItems?: DroppedItemOwnerSnapshot
   readonly vitals?: Vitals
   readonly experienceOrbs?: ExperienceOrbOwnerSnapshot
@@ -213,7 +214,7 @@ const makeHarness = (options: Readonly<{
           // Installed mc-sim/mc-kernel catalogs cannot represent shield equipment yet.
           const shield = {
             ...Result.getOrThrow(itemStack('shield', StackCount(1))),
-            durability: { current: 336, max: 336 },
+            durability: { current: options.shieldDurability ?? 336, max: 336 },
           }
           const storage = snapshot.state as PlayerStorage
           return Effect.succeed({
@@ -490,6 +491,82 @@ describe('entities stage owner-backed MobSimulation', () => {
     expect(await Effect.runPromise(Ref.get(harness.state.playerDamages))).toEqual([])
     const contactCooldowns = await Effect.runPromise(Ref.get(harness.state.hostileContactCooldowns))
     expect(contactCooldowns.get(EntityId('test:zombie'))).toBeCloseTo(0.7)
+  })
+
+  it('breaks an almost-depleted shield after a blocked hard contact', async () => {
+    const playerPose = {
+      ...INITIAL_PLAYER_POSE,
+      feetPosition: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
+      yawRadians: -Math.PI / 2 as typeof INITIAL_PLAYER_POSE.yawRadians,
+    }
+    const harness = await Effect.runPromise(makeHarness({
+      entity: zombieAt(1, 64),
+      playerPose,
+      synthesizeShieldStorageSnapshot: true,
+      shieldDurability: 1,
+    }))
+    await Effect.runPromise(harness.state.survivalHunger.setDifficulty('hard'))
+    await Effect.runPromise(Ref.set(harness.state.hostileContactCooldowns, new Map([
+      [EntityId('test:zombie'), 0.31],
+    ])))
+    await Effect.runPromise(requestShieldBlocking(harness.state, {
+      _tag: 'SetShieldBlocking',
+      actor: EntityId('mx-gameplay:player-avatar'),
+      blocking: true,
+    }))
+
+    await Effect.runPromise(Effect.forEach(
+      Array.from({ length: 6 }, (_, tick) => tick),
+      (tick) => Effect.gen(function* () {
+        yield* Ref.set(harness.state.tickCount, SimulationTick(tick))
+        yield* Effect.promise(() => harness.run(0.05 as DeltaTimeSecs))
+      }),
+      { concurrency: 1 },
+    ))
+    await Effect.runPromise(Ref.set(harness.state.tickCount, SimulationTick(6)))
+    harness.rejectCommits(true)
+    const exit = await Effect.runPromiseExit(
+      harness.stage.run(0.05 as DeltaTimeSecs).pipe(Effect.provide(FrameServicesLayer)),
+    )
+
+    expect(exit._tag).toBe('Failure')
+    const storageChange = harness.lastRequest()?.changes.find(({ ownerId }) =>
+      ownerId === GAMEPLAY_PLAYER_STORAGE_OWNER_ID
+    )
+    expect(storageChange?.state).toMatchObject({
+      equipment: { slots: { offhand: null } },
+    })
+  })
+
+  it('rejects shield-block requests from the wrong actor and without a shield', async () => {
+    const harness = await Effect.runPromise(makeHarness({ entity: null }))
+    await Effect.runPromise(requestShieldBlocking(harness.state, {
+      _tag: 'SetShieldBlocking',
+      actor: EntityId('test:zombie'),
+      blocking: true,
+    }))
+    await Effect.runPromise(requestShieldBlocking(harness.state, {
+      _tag: 'SetShieldBlocking',
+      actor: EntityId('mx-gameplay:player-avatar'),
+      blocking: true,
+    }))
+
+    await harness.run(0.05 as DeltaTimeSecs)
+
+    expect(await Effect.runPromise(Ref.get(harness.state.operationFailures))).toContainEqual(
+      expect.objectContaining({
+        operation: 'CandidateBuild',
+        subject: 'Player',
+        error: { _tag: 'ShieldBlockingPreparation', reason: 'invalid-authoritative-state' },
+      }),
+    )
+    expect(await Effect.runPromise(Ref.get(harness.state.operationFailures))).toContainEqual(
+      expect.objectContaining({
+        operation: 'CandidateBuild',
+        subject: 'Player',
+        error: { _tag: 'ShieldBlockingPreparation', reason: 'shield-not-equipped' },
+      }),
+    )
   })
 
   it('suppresses weaker contact during the ten-tick hurt-resistance window', async () => {
