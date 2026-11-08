@@ -454,7 +454,7 @@ describe('entities stage owner-backed MobSimulation', () => {
     })
   })
 
-  it('blocks contact damage with the stage-held shield state', async () => {
+  it('routes shielded contact through the stage-held shield state', async () => {
     const playerPose = {
       ...INITIAL_PLAYER_POSE,
       feetPosition: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
@@ -476,10 +476,14 @@ describe('entities stage owner-backed MobSimulation', () => {
       blocking: true,
     }))
 
-    for (let tick = 0; tick <= 12; tick += 1) {
-      await Effect.runPromise(Ref.set(harness.state.tickCount, SimulationTick(tick)))
-      await harness.run(0.05 as DeltaTimeSecs)
-    }
+    await Effect.runPromise(Effect.forEach(
+      Array.from({ length: 13 }, (_, tick) => tick),
+      (tick) => Effect.gen(function* () {
+        yield* Ref.set(harness.state.tickCount, SimulationTick(tick))
+        yield* Effect.promise(() => harness.run(0.05 as DeltaTimeSecs))
+      }),
+      { concurrency: 1 },
+    ))
 
     expect(await Effect.runPromise(Ref.get(harness.state.shieldBlocking))).toMatchObject({ actor })
     expect(await Effect.runPromise(Ref.get(harness.state.damageImmunity))).toBeNull()
@@ -488,7 +492,7 @@ describe('entities stage owner-backed MobSimulation', () => {
     expect(contactCooldowns.get(EntityId('test:zombie'))).toBeCloseTo(0.7)
   })
 
-  it('ignores a weaker mob hit during the ten-tick hurt-resistance window', async () => {
+  it('suppresses weaker contact during the ten-tick hurt-resistance window', async () => {
     const playerPose = {
       ...INITIAL_PLAYER_POSE,
       feetPosition: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
@@ -504,10 +508,14 @@ describe('entities stage owner-backed MobSimulation', () => {
       lastDamageAmount: 6,
     })
 
-    for (let tick = 1; tick <= 9; tick += 1) {
-      await Effect.runPromise(Ref.set(harness.state.tickCount, SimulationTick(tick)))
-      await harness.run(0.05 as DeltaTimeSecs)
-    }
+    await Effect.runPromise(Effect.forEach(
+      Array.from({ length: 9 }, (_, index) => index + 1),
+      (tick) => Effect.gen(function* () {
+        yield* Ref.set(harness.state.tickCount, SimulationTick(tick))
+        yield* Effect.promise(() => harness.run(0.05 as DeltaTimeSecs))
+      }),
+      { concurrency: 1 },
+    ))
 
     expect(await Effect.runPromise(Ref.get(harness.state.damageImmunity))).toMatchObject({
       lastDamageTick: 0,

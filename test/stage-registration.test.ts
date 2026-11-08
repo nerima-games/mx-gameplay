@@ -1475,6 +1475,7 @@ describe('stage behaviour', () => {
         'bowKnockbacks',
         'bowShotResults',
         'consumedItems',
+        'damageImmunity',
         'droppedItemPickupExecutions',
         'endPortalTravels',
         'enderDragonEncounter',
@@ -1501,6 +1502,7 @@ describe('stage behaviour', () => {
         'pendingMeleeAttacks',
         'pendingPearlThrows',
         'pendingPlacements',
+        'pendingShieldBlocking',
         'pendingStatusEffects',
         'pendingVillagerTrades',
         'playerDamages',
@@ -1510,6 +1512,7 @@ describe('stage behaviour', () => {
         'portalDwell',
         'portalTravels',
         'rollSeed',
+        'shieldBlocking',
         'spawnAttempts',
         'spawnClockSecs',
         'survivalHunger',
@@ -5129,7 +5132,7 @@ describe('TNT ignition commits its TNT, storage, and block changes together', ()
 })
 
 describe('the entities stage resolves both ranged mob attacks and zombie contact damage', () => {
-  it.effect('a skeleton in projectile range and a zombie in contact range both damage the player in one sweep', () =>
+  it.effect('a skeleton hit applies and suppresses same-tick zombie contact damage after recording cooldown', () =>
     Effect.gen(function* () {
       // Skeleton: within the [6, 16] projectile band the ecosystem rule uses,
       // cooldown at zero so it fires immediately.
@@ -5158,8 +5161,19 @@ describe('the entities stage resolves both ranged mob attacks and zombie contact
       yield* entities.run(DeltaTimeSecs(0.05)).pipe(Effect.provide(FrameServicesLayer))
 
       const damages = yield* drainPlayerDamages(state)
-      expect(damages.some((event) => event._tag === 'HostileContact' && event.kind === SKELETON_KIND)).toBe(true)
-      expect(damages.some((event) => event._tag === 'HostileContact' && event.kind === ZOMBIE_KIND)).toBe(true)
+      expect(damages).toHaveLength(1)
+      expect(damages[0]).toMatchObject({
+        _tag: 'HostileContact',
+        source: skeleton.id,
+        kind: SKELETON_KIND,
+        damage: { amount: 3, cause: 'mob' },
+      })
+      expect(damages.some((event) => event._tag === 'HostileContact' && event.kind === ZOMBIE_KIND)).toBe(false)
+      expect((yield* Ref.get(state.hostileContactCooldowns)).get(zombie.id)).toBe(1)
+      expect(yield* Ref.get(state.damageImmunity)).toMatchObject({
+        lastDamageTick: 0,
+        lastDamageAmount: 3,
+      })
     }).pipe(Effect.provide(FrameServicesLayer)),
   )
 })
