@@ -402,6 +402,7 @@ export const prepareHostileAttack = (
 }
 
 export const ZOMBIE_KIND: EntityKind = EntityKind('zombie')
+export const CREEPER_KIND: EntityKind = EntityKind('creeper')
 
 export type HostileLocomotion = {
   readonly speedBlocksPerSecond: number

@@ -5232,8 +5232,8 @@ describe('TNT ignition commits its TNT, storage, and block changes together', ()
   )
 })
 
-describe('the entities stage resolves both ranged mob attacks and zombie contact damage', () => {
-  it.effect('a skeleton hit applies and suppresses same-tick zombie contact damage after recording cooldown', () =>
+describe('the entities stage resolves ranged mob attacks and zombie contact damage', () => {
+  it.effect('a skeleton ranged attack records cooldown while nearby zombie contact resolves this tick', () =>
     Effect.gen(function* () {
       // Skeleton: within the [6, 16] projectile band the ecosystem rule uses,
       // cooldown at zero so it fires immediately.
@@ -5253,7 +5253,7 @@ describe('the entities stage resolves both ranged mob attacks and zombie contact
         healthPoints: EntityHealthPoints(20),
         behaviour: undefined,
       }
-      const { state, stages } = yield* builtStagesInWorld(
+      const { state, stages, commit } = yield* builtStagesInWorld(
         world([]), ['0,0'], undefined, undefined, undefined,
         { entities: [skeleton, zombie], nextSerial: EntitySerial(2) },
       )
@@ -5261,15 +5261,21 @@ describe('the entities stage resolves both ranged mob attacks and zombie contact
 
       yield* entities.run(DeltaTimeSecs(0.05)).pipe(Effect.provide(FrameServicesLayer))
 
+      const entitySnapshot = yield* commit.coordinator.snapshot(
+        GAMEPLAY_ENTITIES_OWNER_ID,
+        GameplayEntityRosterSchema,
+      )
+      const skeletonAfter = entitySnapshot.state.entities.find(({ id }) => id === skeleton.id)
+      expect(skeletonAfter?.behaviour).toMatchObject({ _tag: 'EcosystemMob', attackCooldownTicks: 60 })
       const damages = yield* drainPlayerDamages(state)
       expect(damages).toHaveLength(1)
       expect(damages[0]).toMatchObject({
         _tag: 'HostileContact',
-        source: skeleton.id,
-        kind: SKELETON_KIND,
+        source: zombie.id,
+        kind: ZOMBIE_KIND,
         damage: { amount: 3, cause: 'mob' },
       })
-      expect(damages.some((event) => event._tag === 'HostileContact' && event.kind === ZOMBIE_KIND)).toBe(false)
+      expect(damages.some((event) => event._tag === 'HostileContact' && event.kind === SKELETON_KIND)).toBe(false)
       expect((yield* Ref.get(state.hostileContactCooldowns)).get(zombie.id)).toBe(
         Schema.decodeUnknownSync(SimulationTickSchema)(0),
       )

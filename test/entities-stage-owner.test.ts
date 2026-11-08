@@ -6,6 +6,7 @@ import { SPAWN_RING_ANGLES, SPAWN_RING_RADIUS_INSET_BLOCKS } from '../src/domain
 import {
   BlockAxis,
   AIR_BLOCK_ID,
+  DamageAmountSchema,
   DeltaTimeSecs as makeDeltaTimeSecs,
   DimensionIdSchema,
   EntityHealthPoints,
@@ -418,7 +419,7 @@ describe('entities stage owner-backed MobSimulation', () => {
     expect(harness.lastRequest()?.changes.map(({ ownerId }) => ownerId)).toContain(GAMEPLAY_ENTITIES_OWNER_ID)
     expect(harness.lastRequest()?.changes.map(({ ownerId }) => ownerId)).toContain(GAMEPLAY_VITALS_OWNER_ID)
     expect(afterRoster.revision).toBe(revisionBefore + 1)
-    expect(decodedRoster.entities[0]?.behaviour).toMatchObject({ ageTicks: 5 })
+    expect(decodedRoster.entities[0]?.behaviour).toMatchObject({ ageTicks: 1 })
     expect(decodedVitals.vitals.healthPoints).toBeLessThan(beforeVitals.state.vitals.healthPoints)
     expect(damages).toMatchObject([{
       _tag: 'HostileContact',
@@ -466,7 +467,7 @@ describe('entities stage owner-backed MobSimulation', () => {
     }
     const harness = await Effect.runPromise(makeHarness({
       entity: null,
-      entities: [ecosystemMobAt('test:skeleton', SKELETON_KIND, 8, 64)],
+      entities: [zombieAt(1, 64)],
       playerPose,
     }))
     await Effect.runPromise(harness.state.survivalHunger.setDifficulty('hard'))
@@ -617,19 +618,26 @@ describe('entities stage owner-backed MobSimulation', () => {
     }
     const harness = await Effect.runPromise(makeHarness({
       entity: null,
-      entities: [ecosystemMobAt('test:blaze', BLAZE_KIND, 8, 64), zombieAt(2, 64)],
+      entities: [zombieAt(1, 64)],
       playerPose,
+    }))
+    await Effect.runPromise(Ref.set(harness.state.damageImmunity, {
+      lastDamageTick: SimulationTick(0),
+      lastDamageAmount: Schema.decodeUnknownSync(DamageAmountSchema)(6),
     }))
     await harness.run(0.05 as DeltaTimeSecs)
     expect(await Effect.runPromise(Ref.get(harness.state.damageImmunity))).toMatchObject({
       lastDamageTick: 0,
       lastDamageAmount: 6,
     })
+    expect((await Effect.runPromise(Ref.get(harness.state.hostileContactCooldowns))).size).toBe(1)
+    expect(await Effect.runPromise(Ref.get(harness.state.playerDamages))).toStrictEqual([])
 
     await Effect.runPromise(Effect.forEach(
       Array.from({ length: 9 }, (_, index) => index + 1),
       (tick) => Effect.gen(function* () {
         yield* Ref.set(harness.state.tickCount, SimulationTick(tick))
+        yield* Ref.set(harness.state.hostileContactCooldowns, new Map())
         yield* Effect.promise(() => harness.run(0.05 as DeltaTimeSecs))
       }),
       { concurrency: 1 },
@@ -639,7 +647,8 @@ describe('entities stage owner-backed MobSimulation', () => {
       lastDamageTick: 0,
       lastDamageAmount: 6,
     })
-    expect(await Effect.runPromise(Ref.get(harness.state.playerDamages))).toHaveLength(1)
+    expect((await Effect.runPromise(Ref.get(harness.state.hostileContactCooldowns))).size).toBe(1)
+    expect(await Effect.runPromise(Ref.get(harness.state.playerDamages))).toStrictEqual([])
   })
 
   it('keeps same logical tick contact counts and cooldown ticks independent of dt', async () => {
@@ -1214,15 +1223,19 @@ describe('entities stage owner-backed MobSimulation', () => {
     const boundary = await Effect.runPromise(makeHarness({ entity: creeperAt(3) }))
     await boundary.run(0 as DeltaTimeSecs)
     const lit = await Effect.runPromise(strictRoster(boundary.coordinator))
-    expect(lit.state.entities[0]?.behaviour).toMatchObject({ _tag: 'Lit', burnedSecs: 0 })
+    expect(lit.state.entities[0]?.behaviour).toMatchObject({ _tag: 'Lit', burnedSecs: 0.05 })
     expect(boundary.commits()).toBe(1)
 
     const outside = await Effect.runPromise(makeHarness({ entity: creeperAt(3.0001) }))
     const before = await Effect.runPromise(strictRoster(outside.coordinator))
     await outside.run(0 as DeltaTimeSecs)
     const after = await Effect.runPromise(strictRoster(outside.coordinator))
-    expect(after.state).toStrictEqual(before.state)
-    expect(outside.commits()).toBe(0)
+    expect(after.state.entities[0]?.behaviour).toMatchObject({
+      _tag: 'HostileMob',
+      behaviour: { _tag: 'Dormant' },
+    })
+    expect(after.state.entities[0]?.feetPosition).toStrictEqual(before.state.entities[0]?.feetPosition)
+    expect(outside.commits()).toBe(1)
   })
 
   it('runs passive and hostile spawn searches on the cadence with their distinct seed rules', async () => {

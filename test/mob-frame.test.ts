@@ -21,7 +21,7 @@
 import { describe, expect, it } from '@effect/vitest'
 import { position as atPosition } from './support/coordinate-fixtures'
 import { Brand, Effect, Result } from 'effect'
-import type { Position } from '@nerima-games/mc-kernel'
+import { NonNegativeTickCount, type Position } from '@nerima-games/mc-kernel'
 import {
   CREEPER_KIND,
   CREEPER_MAX_HEALTH,
@@ -532,9 +532,11 @@ describe('repairMobBehaviour: the load path for every stored shape', () => {
       )
       const state = {
         _tag: 'EcosystemMob' as const, attackCooldownSecs: 1, motionPhase: 2, provoked: true,
+        hasHeadProtection: false, burningTicks: NonNegativeTickCount(0),
       }
       expect(repairMobBehaviour(BLAZE_KIND, state)).toStrictEqual(hostileMobSnapshot({
         _tag: 'EcosystemMob', attackCooldownTicks: 20, motionPhase: 2, provoked: true,
+        hasHeadProtection: false, burningTicks: NonNegativeTickCount(0),
       }))
     }),
   )
@@ -721,20 +723,21 @@ describe('sweepMobs: TNT belongs to its replicated owner', () => {
   )
 })
 
-describe('sweepMobs: the zombie that has nothing to chase', () => {
-  it.effect('with no target and no snapshot, the same shared step is returned', () =>
+describe('sweepMobs: zombie movement is owned by SM3', () => {
+  it.effect('with no target and no snapshot, ticks ecosystem state without moving the entity', () =>
     Effect.gen(function* () {
       const roster = yield* makeEntityManagerDouble<MobBehaviour>()
-      const zombie = yield* roster.api.spawn({
+      yield* roster.api.spawn({
         kind: ZOMBIE_KIND, feetPosition: ORIGIN, healthPoints: EntityHealthPoints(20), behaviour: undefined,
       })
       yield* sweepMobs(roster.api, { target: undefined, dt: DeltaTimeSecs(0.05) }, 1)
       const after = yield* roster.api.entities
-      expect(after[0]).toBe(zombie)
+      expect(after[0]?.feetPosition).toStrictEqual(ORIGIN)
+      expect(after[0]?.behaviour).toMatchObject({ _tag: 'EcosystemMob', motionPhase: 1 })
     }),
   )
 
-  it.effect('a RAW (un-wrapped) zombie that DOES move stays raw — `storedBehaviour` hands the inner value straight back', () =>
+  it.effect('a raw zombie records its target goal but leaves physical movement to the SM3 stage', () =>
     Effect.gen(function* () {
       const roster = yield* makeEntityManagerDouble<MobBehaviour>()
       yield* roster.api.spawn({
@@ -742,8 +745,8 @@ describe('sweepMobs: the zombie that has nothing to chase', () => {
       })
       yield* sweepMobs(roster.api, { target: away(10), dt: DeltaTimeSecs(0.05) }, 1)
       const after = yield* roster.api.entities
-      expect(after[0]?.feetPosition).not.toStrictEqual(ORIGIN)
-      expect(after[0]?.behaviour).toBeUndefined()
+      expect(after[0]?.feetPosition).toStrictEqual(ORIGIN)
+      expect(after[0]?.behaviour).toMatchObject({ _tag: 'EcosystemMob', movementGoal: away(10) })
     }),
   )
 })

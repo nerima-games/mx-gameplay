@@ -264,7 +264,7 @@ describe('entities-stage owner-backed coverage', () => {
       GAMEPLAY_ENTITIES_OWNER_ID,
     ])
     expect(after.revision).toBe(before.revision + 1)
-    expect(after.state.entities[0]?.behaviour).toMatchObject({ _tag: 'Lit', burnedSecs: 0 })
+    expect(after.state.entities[0]?.behaviour).toMatchObject({ _tag: 'Lit', burnedSecs: 0.05 })
     expect(await Effect.runPromise(drainGameplayUnsupportedOperations(registered.state))).toStrictEqual([])
   })
 })

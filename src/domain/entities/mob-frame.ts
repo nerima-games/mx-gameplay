@@ -206,11 +206,23 @@
  * that the sequence must depend on what happened rather than on how many mobs
  * existed.
  */
-import { isItemType, type ItemType, type RandomSeed, type SimulationTick as SimulationTickValue } from '@nerima-games/mc-kernel'
+import {
+  DeltaTimeSecs,
+  NonNegativeTickCount,
+  isItemType,
+  type ItemType,
+  type RandomSeed,
+  type SimulationTick as SimulationTickValue,
+  type DeltaTimeSecs as DeltaTimeSecsValue,
+} from '@nerima-games/mc-kernel'
 import {
   durabilityForItem,
   isDamageableItemType,
   isValidDurabilityForItem,
+  stepMobMovementsForTick,
+  type MobMovementFailure,
+  type MobMovementState,
+  type MobMovementWorldPort,
   type Durability,
 } from '@nerima-games/mc-sim'
 import { Brand, Effect, Result } from 'effect'
@@ -224,6 +236,8 @@ import {
   position as kernelPosition,
   type Position,
   type Dimension,
+  type ProjectileId,
+  type WorldPosition,
 } from '@nerima-games/mc-kernel'
 import { applyDamage, isDead, type Damage, type Vitals } from '../death-cause.js'
 import { decodeEnchantedItem, type Enchantment } from '../enchantment.js'
@@ -243,7 +257,7 @@ import {
   sweepRoster,
 } from '@nerima-games/mc-sim'
 import type { ChunkStoreApi } from '@nerima-games/mc-worldgen'
-import type { BlockPosition, DeltaTimeSecs } from '@nerima-games/mc-kernel'
+import type { BlockPosition } from '@nerima-games/mc-kernel'
 import { drawRolls, nextRoll } from '../frame-rolls.js'
 import { carveExplosionCrater } from '../interactions/explosion-crater.js'
 import type { BlockPositionKey } from '@nerima-games/mc-kernel'
@@ -268,10 +282,8 @@ import {
   type HostileDifficulty,
 } from '../mob/hostile-despawn.js'
 import {
-  CREEPER_LOCOMOTION,
-  pursueHorizontally,
+  CREEPER_KIND,
   ZOMBIE_KIND,
-  ZOMBIE_LOCOMOTION,
 } from '../mob/hostile-combat.js'
 import {
   canMobSpawnAt,
@@ -283,14 +295,23 @@ import {
   ENDERMAN_KIND,
   ECOSYSTEM_MOB_KINDS,
   initialEcosystemMobState,
+  MOB_MOVEMENT_POLICIES,
   NETHER_ECOSYSTEM_HOSTILE_KINDS,
   OVERWORLD_ECOSYSTEM_HOSTILE_KINDS,
   PASSIVE_MOB_KINDS,
+  SKELETON_KIND,
+  movementGoalForEcosystemMob,
   repairEcosystemMobState,
+  repairMobMovementState,
   stepEcosystemMob,
   type EcosystemAttack,
   type EcosystemMobState,
 } from '../mob/mob-ecosystem.js'
+import {
+  initialMobMovementState,
+  movementFeetPosition,
+  movementStateForGoal,
+} from './mob-movement-world.js'
 import {
   mobXpReward,
   dropRollsNeededForTable,
@@ -391,6 +412,7 @@ export type DroppedItemBehaviour = {
 export type HostileMobSnapshot = {
   readonly _tag: 'HostileMob'
   readonly behaviour: CreeperFuse | EndermanFlinch | EcosystemMobState | undefined
+  readonly movement?: MobMovementState
   readonly ageTicks: number
   readonly persistent: boolean
   readonly named: boolean
@@ -408,10 +430,11 @@ export type MobBehaviour =
 
 export const hostileMobSnapshot = (
   behaviour: HostileMobSnapshot['behaviour'],
-  options: Partial<Omit<HostileMobSnapshot, '_tag' | 'behaviour'>> = {},
+  options: Partial<Omit<HostileMobSnapshot, '_tag' | 'behaviour' | 'movement'>> & Readonly<{ movement?: MobMovementState }> = {},
 ): HostileMobSnapshot => ({
   _tag: 'HostileMob',
   behaviour,
+  ...(options.movement === undefined ? {} : { movement: options.movement }),
   ageTicks: options.ageTicks ?? 0,
   persistent: options.persistent ?? false,
   named: options.named ?? false,
@@ -424,8 +447,8 @@ export const hostileMobSnapshot = (
  * mc-sim's `EntityKind` is deliberately OPEN and mc-sim never branches on one —
  * `countOfKind` compares two strings the caller supplied and that is the whole of
  * its interest (mc-sim DN-11). Which means the spelling is checked by nobody, and
- * so it is written down exactly once, here, and every comparison in the
- * repository goes through this constant. The reference's failure in the other
+ * so it is written down exactly once at its defining module, and every
+ * comparison in the repository goes through its constant. The reference's failure in the other
  * direction is the one plan.md §3.1 measured: `blockTypeToIndex('SAND')` in 229
  * places across 51 files.
  *
@@ -433,7 +456,7 @@ export const hostileMobSnapshot = (
  * member of it, and mc-sim's `EntityKind` becomes an alias of it — mc-sim's
  * §7-6 already records that repoint as one line.
  */
-export const CREEPER_KIND: EntityKind = EntityKind('creeper')
+export { CREEPER_KIND }
 export const DROPPED_ITEM_KIND: EntityKind = EntityKind('dropped_item')
 export const PRIMED_TNT_KIND: EntityKind = EntityKind('primed_tnt')
 export { ENDERMAN_KIND }
@@ -728,11 +751,18 @@ export const rollDropsOfKind = (
  * no fuse and consult the teleport rule instead.
  */
 export const repairMobBehaviour = (kind: EntityKind, behaviour: unknown): MobBehaviour => {
-  if (isHostileMobSnapshot(behaviour) && HOSTILE_KINDS.includes(kind)) {
+  if (hasHostileMobSnapshotMetadata(behaviour) && HOSTILE_KINDS.includes(kind)) {
     const inner = repairHostileInner(kind, behaviour.behaviour)
-    return inner === behaviour.behaviour && Object.hasOwn(behaviour, 'behaviour')
+    const movement = repairMobMovementState(behaviour.movement)
+    return inner === behaviour.behaviour && Object.hasOwn(behaviour, 'behaviour') && isHostileMobSnapshot(behaviour)
       ? behaviour
-      : { ...behaviour, behaviour: inner }
+      : hostileMobSnapshot(inner, {
+          ageTicks: behaviour.ageTicks,
+          persistent: behaviour.persistent,
+          named: behaviour.named,
+          tamed: behaviour.tamed,
+          ...(movement === undefined ? {} : { movement }),
+        })
   }
 
   if (kind === CREEPER_KIND) {
@@ -772,9 +802,19 @@ const repairHostileInner = (
   return undefined
 }
 
-export const isHostileMobSnapshot = (value: unknown): value is HostileMobSnapshot => {
+type HostileMobSnapshotEnvelope = Readonly<{
+  _tag: 'HostileMob'
+  behaviour: unknown
+  movement?: unknown
+  ageTicks: number
+  persistent: boolean
+  named: boolean
+  tamed: boolean
+}>
+
+const hasHostileMobSnapshotMetadata = (value: unknown): value is HostileMobSnapshotEnvelope => {
   if (typeof value !== 'object' || value === null) return false
-  const candidate = value as Partial<HostileMobSnapshot>
+  const candidate = value as Partial<HostileMobSnapshotEnvelope>
   return (
     candidate._tag === 'HostileMob' &&
     typeof candidate.ageTicks === 'number' &&
@@ -784,6 +824,11 @@ export const isHostileMobSnapshot = (value: unknown): value is HostileMobSnapsho
     typeof candidate.named === 'boolean' &&
     typeof candidate.tamed === 'boolean'
   )
+}
+
+export const isHostileMobSnapshot = (value: unknown): value is HostileMobSnapshot => {
+  if (!hasHostileMobSnapshotMetadata(value)) return false
+  return value.movement === undefined || repairMobMovementState(value.movement) !== undefined
 }
 
 export const isDroppedItemBehaviour = (value: unknown): value is DroppedItemBehaviour => {
@@ -941,6 +986,17 @@ export type MobEntity = Entity<MobBehaviour> & Readonly<{
 
 export type MobRoster = Omit<EntityRoster<MobBehaviour>, 'entities'> & Readonly<{
   entities: ReadonlyArray<MobEntity>
+  resolvedMobProjectileIds?: ReadonlyArray<ProjectileId>
+  pendingMobProjectileImpacts?: ReadonlyArray<MobProjectilePendingImpact>
+}>
+
+export type MobProjectilePendingImpact = Readonly<{
+  id: ProjectileId
+  source: EntityId
+  kind: import('@nerima-games/mc-sim').EntityKind
+  hit:
+    | Readonly<{ kind: 'entity'; entityId: EntityId; point: WorldPosition }>
+    | Readonly<{ kind: 'block'; point: WorldPosition }>
 }>
 
 /** A mob that died to a blow, for drop and experience resolution outside the sweep. */
@@ -1023,8 +1079,12 @@ const retainMobMetadata = (
 ): MobRoster => {
   if (candidate === previous && recentHits.size === 0) return previous
   const previousById = new Map(previous.entities.map((entity) => [entity.id, entity]))
+  const resolvedMobProjectileIds = candidate.resolvedMobProjectileIds ?? previous.resolvedMobProjectileIds
+  const pendingMobProjectileImpacts = candidate.pendingMobProjectileImpacts ?? previous.pendingMobProjectileImpacts
   return {
     ...candidate,
+    ...(resolvedMobProjectileIds === undefined ? {} : { resolvedMobProjectileIds }),
+    ...(pendingMobProjectileImpacts === undefined ? {} : { pendingMobProjectileImpacts }),
     entities: candidate.entities.map((entity) => {
       const prior = previousById.get(entity.id)
       const recent = recentHits.get(entity.id)
@@ -1140,9 +1200,11 @@ export type MobFrameSenses = {
    * would silently pick one of those answers for both.
    */
   readonly target: Position | undefined
-  readonly dt: DeltaTimeSecs
+  readonly dt: DeltaTimeSecsValue
   /** Additive until the world host supplies its difficulty; omitted means normal. */
   readonly difficulty?: HostileDifficulty
+  /** Stage-computed exposure facts; absence fails closed and preserves the burn timer. */
+  readonly undeadDaylight?: ReadonlyMap<EntityId, Readonly<{ exposed: boolean; inWater: boolean }>>
 }
 
 /**
@@ -1225,6 +1287,22 @@ export type EndermanTeleportProbe = {
  */
 type MobFrameEvent = Blast | MobAttackEvent | EndermanTeleportProbe
 
+const MOB_TICK_DELTA_SECS = DeltaTimeSecs(1 / 20)
+
+const advanceUndeadBurn = (
+  kind: EntityKind,
+  id: EntityId,
+  state: EcosystemMobState,
+  senses: MobFrameSenses,
+): EcosystemMobState => {
+  if (kind !== ZOMBIE_KIND && kind !== SKELETON_KIND) return state
+  const exposure = senses.undeadDaylight?.get(id)
+  if (exposure === undefined) return state
+  if (exposure.inWater) return { ...state, burningTicks: NonNegativeTickCount(0) }
+  const activeTicks = state.burningTicks > 0 ? state.burningTicks : exposure.exposed ? 160 : 0
+  return { ...state, burningTicks: NonNegativeTickCount(Math.max(0, activeTicks - 1)) }
+}
+
 type MobFrameSweep = Readonly<{
   step: (entity: Entity<MobBehaviour>) => EntityStep<MobBehaviour, MobFrameEvent>
   finish: (events: ReadonlyArray<MobFrameEvent>) => MobSweep
@@ -1286,7 +1364,7 @@ const makeMobFrameSweep = (senses: MobFrameSenses, seed: number): MobFrameSweep 
           senses.target === undefined ? undefined : distanceBetween(entity.feetPosition, senses.target)
 
         const snapshot = isHostileMobSnapshot(entity.behaviour) ? entity.behaviour : undefined
-        const ageTicks = snapshot === undefined ? undefined : snapshot.ageTicks + senses.dt * 20
+        const ageTicks = snapshot === undefined ? undefined : snapshot.ageTicks + 1
         despawnScratch.distanceToPlayerBlocks = distance
         if (ageTicks === undefined) delete despawnScratch.ageTicks
         else despawnScratch.ageTicks = ageTicks
@@ -1330,25 +1408,26 @@ const makeMobFrameSweep = (senses: MobFrameSenses, seed: number): MobFrameSweep 
           : {
               ...snapshot,
               behaviour: next,
-              ageTicks: snapshot.ageTicks + senses.dt * 20,
+              ageTicks: snapshot.ageTicks + 1,
             }
         if (entity.kind === ZOMBIE_KIND) {
-          const feetPosition = pursueHorizontally(
+          const zombieState = behaviour?._tag === 'EcosystemMob' ? behaviour : initialEcosystemMobState()
+          const ecosystemStep = stepEcosystemMob(
+            entity.kind,
+            zombieState,
             entity.feetPosition,
             senses.target,
-            senses.dt,
-            ZOMBIE_LOCOMOTION,
+            MOB_TICK_DELTA_SECS,
           )
-          return feetPosition === entity.feetPosition && snapshot === undefined
-            ? IGNORED
-            : {
-                transition: changed({
-                  feetPosition,
-                  healthPoints: entity.healthPoints,
-                  behaviour: storedBehaviour(behaviour),
-                }),
-                emit: undefined,
-              }
+          const state = advanceUndeadBurn(entity.kind, entity.id, ecosystemStep.state, senses)
+          return {
+            transition: changed({
+              feetPosition: entity.feetPosition,
+              healthPoints: entity.healthPoints,
+              behaviour: storedBehaviour(state),
+            }),
+            emit: undefined,
+          }
         }
 
 
@@ -1358,13 +1437,14 @@ const makeMobFrameSweep = (senses: MobFrameSenses, seed: number): MobFrameSweep 
             behaviour,
             entity.feetPosition,
             senses.target,
-            senses.dt,
+            MOB_TICK_DELTA_SECS,
           )
+          const state = advanceUndeadBurn(entity.kind, entity.id, ecosystemStep.state, senses)
           return {
             transition: changed({
-              feetPosition: ecosystemStep.feetPosition,
+              feetPosition: entity.feetPosition,
               healthPoints: entity.healthPoints,
-              behaviour: storedBehaviour(ecosystemStep.state),
+              behaviour: storedBehaviour(state),
             }),
             emit: ecosystemStep.attack === undefined
               ? undefined
@@ -1379,14 +1459,8 @@ const makeMobFrameSweep = (senses: MobFrameSenses, seed: number): MobFrameSweep 
         }
 
         if (entity.kind === CREEPER_KIND && isFuse(behaviour)) {
-          const feetPosition = pursueHorizontally(
-            entity.feetPosition,
-            senses.target,
-            senses.dt,
-            CREEPER_LOCOMOTION,
-          )
           creeperScratch.distanceToTargetBlocks = distance
-          const fuseStep = stepCreeperFuse(behaviour, creeperScratch, senses.dt)
+          const fuseStep = stepCreeperFuse(behaviour, creeperScratch, MOB_TICK_DELTA_SECS)
 
           if (fuseStep.explosion !== undefined) {
             // DESPAWNED rather than stored as `Detonated`, and the two are not the
@@ -1403,7 +1477,7 @@ const makeMobFrameSweep = (senses: MobFrameSenses, seed: number): MobFrameSweep 
               emit: {
                 source: entity.id,
                 kind: entity.kind,
-                at: feetPosition,
+                at: entity.feetPosition,
                 explosion: fuseStep.explosion,
               },
             }
@@ -1413,11 +1487,11 @@ const makeMobFrameSweep = (senses: MobFrameSenses, seed: number): MobFrameSweep 
           // ARGUMENT fuse when nothing happened (a dormant creeper out of range, a
           // detonated one), so `===` is exact here and costs nothing — and it is
           // what lets an idle frame reach mc-sim's zero-allocation path.
-          return fuseStep.fuse === behaviour && feetPosition === entity.feetPosition && snapshot === undefined
+          return fuseStep.fuse === behaviour && snapshot === undefined
             ? IGNORED
             : {
                 transition: changed({
-                  feetPosition,
+                  feetPosition: entity.feetPosition,
                   healthPoints: entity.healthPoints,
                   behaviour: storedBehaviour(fuseStep.fuse),
                 }),
@@ -1556,6 +1630,136 @@ export const planMobRosterSweep = (
   const frame = makeMobFrameSweep(senses, seed)
   const swept = sweepRoster(roster, frame.step)
   return { roster: retainMobMetadata(swept.roster, roster), ...frame.finish(swept.emitted) }
+}
+
+export type MobMovementRosterFailure = Readonly<{
+  _tag: 'MobMovementRosterFailure'
+  reason: 'invalid-state' | 'invalid-goal' | 'invalid-position' | 'simulation-rejected' | 'step-failed'
+  entityId?: EntityId
+  failure?: MobMovementFailure
+}>
+
+const ecosystemStateForMovement = (entity: MobEntity): EcosystemMobState | undefined => {
+  if (!MOB_MOVEMENT_POLICIES.has(entity.kind)) return undefined
+  const snapshot = isHostileMobSnapshot(entity.behaviour) ? entity.behaviour : undefined
+  const behaviour = snapshot === undefined ? entity.behaviour : snapshot.behaviour
+  if (behaviour === undefined) return undefined
+  const ecosystem = repairEcosystemMobState(behaviour)
+  if (ecosystem !== undefined) return ecosystem
+  return entity.kind === CREEPER_KIND && isFuse(behaviour)
+    ? initialEcosystemMobState()
+    : undefined
+}
+
+const movementHasMomentum = (movement: MobMovementState | undefined): boolean =>
+  movement !== undefined && (
+    !movement.isGrounded ||
+    movement.body.vx !== 0 ||
+    movement.body.vy !== 0 ||
+    movement.body.vz !== 0
+  )
+
+const movementGoalFor = (
+  entity: MobEntity,
+  ecosystem: EcosystemMobState,
+  target: Position | undefined,
+): Position => ecosystem.movementGoal ?? movementGoalForEcosystemMob(
+  entity.kind,
+  ecosystem,
+  entity.feetPosition,
+  target,
+)
+
+const movementGoalDiffers = (entity: MobEntity, goal: Position): boolean =>
+  goal.x !== entity.feetPosition.x || goal.y !== entity.feetPosition.y || goal.z !== entity.feetPosition.z
+
+export const hasMobMovementCandidates = (
+  roster: MobRoster,
+  dimension: Dimension,
+  target?: Position,
+): boolean => roster.entities.some((entity) => {
+  if (entity.dimension !== undefined && entity.dimension !== dimension) return false
+  const ecosystem = ecosystemStateForMovement(entity)
+  if (ecosystem === undefined) return false
+  const snapshot = isHostileMobSnapshot(entity.behaviour) ? entity.behaviour : undefined
+  const previous = snapshot?.movement ?? ecosystem.movement
+  return movementGoalDiffers(entity, movementGoalFor(entity, ecosystem, target)) || movementHasMomentum(previous)
+})
+
+export const planMobMovementRoster = (
+  roster: MobRoster,
+  target: Position | undefined,
+  world: MobMovementWorldPort,
+  simulationTick: SimulationTickValue,
+  dimension: Dimension,
+): Result.Result<Readonly<{ roster: MobRoster }>, MobMovementRosterFailure> => {
+  const entries: Array<Readonly<{ entity: MobEntity; movement: MobMovementState; snapshot?: HostileMobSnapshot; ecosystem?: EcosystemMobState }>> = []
+  for (const entity of roster.entities) {
+    if (entity.dimension !== undefined && entity.dimension !== dimension) continue
+    const snapshot = isHostileMobSnapshot(entity.behaviour) ? entity.behaviour : undefined
+    const ecosystem = ecosystemStateForMovement(entity)
+    if (ecosystem === undefined) continue
+    const previous = snapshot?.movement ?? ecosystem.movement
+    const goal = movementGoalFor(entity, ecosystem, target)
+    if (!movementGoalDiffers(entity, goal) && !movementHasMomentum(previous)) continue
+    const movement = previous === undefined
+      ? initialMobMovementState(entity.id, entity.kind, entity.feetPosition, goal)
+      : movementStateForGoal(previous, goal)
+    if (movement === undefined) {
+      return Result.fail({ _tag: 'MobMovementRosterFailure', reason: previous === undefined ? 'invalid-state' : 'invalid-goal', entityId: entity.id })
+    }
+    entries.push({ entity, movement, ...(snapshot === undefined ? {} : { snapshot }), ecosystem })
+  }
+  if (entries.length === 0) return Result.succeed({ roster })
+
+  const simResult = stepMobMovementsForTick({
+    mobs: entries.map(({ movement }) => movement),
+    world,
+    searchCursor: NonNegativeTickCount(Number(simulationTick) % entries.length),
+  })
+  if (simResult._tag === 'MobMovementRejected') {
+    return Result.fail({ _tag: 'MobMovementRosterFailure', reason: 'simulation-rejected', failure: simResult.failure })
+  }
+  const updated = new Map<EntityId, Readonly<{ movement: MobMovementState; feet: Position }>>()
+  for (const [index, outcome] of simResult.outcomes.entries()) {
+    const entry = entries[index]
+    if (entry === undefined) continue
+    if (outcome._tag === 'MobStepFailed') {
+      const pathFailure = outcome.failure._tag === 'MobMovementPathFailure' &&
+        (outcome.failure.failure._tag === 'NoPath' ||
+          outcome.failure.failure._tag === 'NodeBudgetExhausted' ||
+          outcome.failure.failure._tag === 'TickBudgetExhausted')
+      if (!pathFailure) {
+        return Result.fail({ _tag: 'MobMovementRosterFailure', reason: 'step-failed', entityId: entry.entity.id, failure: outcome.failure })
+      }
+      updated.set(entry.entity.id, { movement: entry.movement, feet: entry.entity.feetPosition })
+      continue
+    }
+    const feet = movementFeetPosition(outcome.state)
+    if (feet === undefined) {
+      return Result.fail({ _tag: 'MobMovementRosterFailure', reason: 'invalid-position', entityId: entry.entity.id })
+    }
+    updated.set(entry.entity.id, { movement: outcome.state, feet })
+  }
+
+  const entities = roster.entities.map((entity) => {
+    const next = updated.get(entity.id)
+    if (next === undefined) return entity
+    const snapshot = isHostileMobSnapshot(entity.behaviour) ? entity.behaviour : undefined
+    const ecosystem = ecosystemStateForMovement(entity)
+    if (ecosystem === undefined) return entity
+    const behaviour: MobBehaviour = snapshot !== undefined
+      ? { ...snapshot, movement: next.movement }
+      : isFuse(entity.behaviour)
+        ? hostileMobSnapshot(entity.behaviour, { movement: next.movement })
+        : { ...ecosystem, movement: next.movement }
+    return {
+      ...entity,
+      feetPosition: next.feet,
+      behaviour,
+    }
+  })
+  return Result.succeed({ roster: retainMobMetadata({ ...roster, entities }, roster) })
 }
 
 /** Compatibility adapter for callers which still use the local EntityManager. */
