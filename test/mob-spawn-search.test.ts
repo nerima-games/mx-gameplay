@@ -45,7 +45,7 @@ import { drawRolls, rollAt } from '../src/domain/frame-rolls'
 import { isNight } from '../src/domain/day-night'
 import { DESPAWN_DISTANCE_BLOCKS, despawnVerdict } from '../src/domain/mob/hostile-despawn'
 import { ZOMBIE_KIND } from '../src/domain/mob/hostile-combat'
-import { PASSIVE_MOB_KINDS } from '../src/domain/mob/mob-ecosystem'
+import { NETHER_HOSTILE_KINDS, PASSIVE_MOB_KINDS } from '../src/domain/mob/mob-ecosystem'
 import {
   HOSTILE_SPAWN_SETTINGS,
   hostileSpawnSearchDue,
@@ -69,6 +69,7 @@ import {
 } from '../src/stages/registration-core'
 import {
   blockKey,
+  biomeWorld,
   lightWorld,
   makeChunkStoreDouble,
   STONE,
@@ -119,6 +120,14 @@ const FLOORED_WORLD = (() => {
   }
   return world(cells)
 })()
+
+const NETHER_BIOME_WORLD = biomeWorld(
+  Array.from({ length: 96 * 96 }, (_, index) => {
+    const x = index % 96 - 48
+    const z = Math.floor(index / 96) - 48
+    return [blockPosition(x, 0, z), 'NETHER'] as const
+  }),
+)
 
 const CAVE_FLOORED_WORLD = (() => {
   const cells: Array<readonly [BlockPosition, BlockId]> = []
@@ -729,7 +738,7 @@ describe('what the search reads', () => {
     }),
   )
 
-  it.effect('does not read the End and selects only Nether hostiles in the Nether', () =>
+  it.effect('does not read the End and spawns Endermen from Nether search candidates', () =>
     Effect.gen(function* () {
       const end = yield* searchIn(
         FLOORED_WORLD,
@@ -744,18 +753,42 @@ describe('what the search reads', () => {
       expect(end.found.unreadable).toBe(0)
       expect((yield* end.store.calls).peeks).toBe(0)
 
-      const nether = yield* searchIn(
+      const overworld = yield* searchIn(FLOORED_WORLD, RESIDENT_CHUNKS, new Map(), 7)
+      expect(overworld.found.attempts.some(({ kind }) => kind === ENDERMAN_KIND)).toBe(true)
+
+      const netherStore = yield* makeChunkStoreDouble(
         FLOORED_WORLD,
         RESIDENT_CHUNKS,
         new Map(),
-        7,
+        NETHER_BIOME_WORLD,
+      )
+      const netherFound = yield* searchSpawnCandidates(
+        netherStore.api,
+        PLAYER,
         MIDNIGHT,
-        'hostile',
+        RandomSeed(7),
         'nether',
       )
-      expect(nether.found.attempts).toStrictEqual([])
-      expect(nether.found.unreadable).toBe(0)
-      expect((yield* nether.store.calls).peeks).toBeGreaterThan(0)
+      expect(netherFound.attempts).toHaveLength(SPAWN_RING_CELLS)
+      expect(netherFound.attempts.every(({ kind, candidate }) =>
+        NETHER_HOSTILE_KINDS.some((netherKind) => netherKind === kind) &&
+        candidate.dimension === 'nether',
+      )).toBe(true)
+      const endermanAttempt = netherFound.attempts.find(({ kind }) => kind === ENDERMAN_KIND)
+      expect(endermanAttempt).toBeDefined()
+      if (endermanAttempt === undefined) return
+
+      const spawned = planSpawnAttemptsOnRoster(
+        { entities: [], nextSerial: EntitySerial(0) },
+        [endermanAttempt],
+        'normal',
+      )
+      expect(Result.isSuccess(spawned)).toBe(true)
+      if (Result.isSuccess(spawned)) {
+        expect(spawned.success.roster.entities.map(({ kind }) => kind)).toContain(ENDERMAN_KIND)
+      }
+      expect(netherFound.unreadable).toBe(0)
+      expect((yield* netherStore.calls).peeks).toBeGreaterThan(0)
     }),
   )
 

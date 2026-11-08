@@ -12,6 +12,8 @@ export const SHEEP_KIND: EntityKind = EntityKind('sheep')
 export const CHICKEN_KIND: EntityKind = EntityKind('chicken')
 export const ZOMBIFIED_PIGLIN_KIND: EntityKind = EntityKind('zombified_piglin')
 export const BLAZE_KIND: EntityKind = EntityKind('blaze')
+export const ENDERMAN_KIND: EntityKind = EntityKind('enderman')
+
 export const SKELETON_ATTACK_INTERVAL_TICKS = 60
 export const SKELETON_ATTACK_DAMAGE = 3
 export const SPIDER_ATTACK_DAMAGE = 2
@@ -31,7 +33,7 @@ const repairAttackCooldownTicks = (ticks: unknown, legacySecs: unknown): number 
 }
 
 // Explicit fixed-length tuple annotations (not `ReadonlyArray<EntityKind>`) are
-// deliberate on these three: `./entities/mob-frame`'s `HOSTILE_KINDS` and
+// deliberate on the spawn-kind tuples: `./entities/mob-frame`'s `HOSTILE_KINDS` and
 // `./entities/mob-spawn-search` both need the non-empty TUPLE type these
 // produce, not a widened array — see `HOSTILE_KINDS`' own explicit
 // `readonly [EntityKind, ...]` annotation, which a plain array-typed source
@@ -44,11 +46,18 @@ export const PASSIVE_MOB_KINDS: readonly [EntityKind, EntityKind, EntityKind, En
   CHICKEN_KIND,
 ]
 export const OVERWORLD_ECOSYSTEM_HOSTILE_KINDS: readonly [EntityKind, EntityKind] = [SKELETON_KIND, SPIDER_KIND]
-export const NETHER_HOSTILE_KINDS: readonly [EntityKind, EntityKind] = [ZOMBIFIED_PIGLIN_KIND, BLAZE_KIND]
+export const NETHER_ECOSYSTEM_HOSTILE_KINDS: readonly [EntityKind, EntityKind] = [
+  ZOMBIFIED_PIGLIN_KIND,
+  BLAZE_KIND,
+]
+export const NETHER_HOSTILE_KINDS: readonly [EntityKind, EntityKind, EntityKind] = [
+  ENDERMAN_KIND,
+  ...NETHER_ECOSYSTEM_HOSTILE_KINDS,
+]
 export const ECOSYSTEM_MOB_KINDS: ReadonlyArray<EntityKind> = [
   ...OVERWORLD_ECOSYSTEM_HOSTILE_KINDS,
   ...PASSIVE_MOB_KINDS,
-  ...NETHER_HOSTILE_KINDS,
+  ...NETHER_ECOSYSTEM_HOSTILE_KINDS,
 ]
 
 export type EcosystemMobState = {
@@ -76,10 +85,12 @@ export const repairEcosystemMobState = (value: unknown): EcosystemMobState | und
   }
 }
 
-export const ecosystemDimensionAllows = (kind: EntityKind, dimension: Dimension): boolean =>
-  NETHER_HOSTILE_KINDS.includes(kind as (typeof NETHER_HOSTILE_KINDS)[number])
+export const ecosystemDimensionAllows = (kind: EntityKind, dimension: Dimension): boolean => {
+  if (kind === ENDERMAN_KIND) return dimension === 'overworld' || dimension === 'nether'
+  return NETHER_HOSTILE_KINDS.includes(kind as (typeof NETHER_HOSTILE_KINDS)[number])
     ? dimension === 'nether'
     : dimension === 'overworld'
+}
 
 export type EcosystemAttack = {
   readonly _tag: 'MobAttack'

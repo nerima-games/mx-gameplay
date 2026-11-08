@@ -634,8 +634,8 @@ describe('entities stage owner-backed MobSimulation', () => {
       await Effect.runPromise(Ref.set(harness.state.playerDamages, []))
 
       await Effect.runPromise(Ref.set(harness.state.tickCount, SimulationTick(10)))
-      // Keep the long-delta run from crossing the unrelated spawn interval.
-      await Effect.runPromise(Ref.set(harness.state.spawnClockSecs, -1))
+      // A recent hostile search keeps this contact-cooldown check independent of spawn cadence.
+      await Effect.runPromise(Ref.set(harness.state.lastHostileSpawnTick, SimulationTick(10)))
       await harness.run(makeDeltaTimeSecs(secondDeltaSecs))
       const secondDamages = await Effect.runPromise(Ref.get(harness.state.playerDamages))
       const secondCooldowns = await Effect.runPromise(Ref.get(harness.state.hostileContactCooldowns))

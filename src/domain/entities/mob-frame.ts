@@ -281,9 +281,10 @@ import {
 } from '../mob/hostile-spawn.js'
 import {
   BLAZE_KIND,
+  ENDERMAN_KIND,
   ECOSYSTEM_MOB_KINDS,
   initialEcosystemMobState,
-  NETHER_HOSTILE_KINDS,
+  NETHER_ECOSYSTEM_HOSTILE_KINDS,
   OVERWORLD_ECOSYSTEM_HOSTILE_KINDS,
   PASSIVE_MOB_KINDS,
   repairEcosystemMobState,
@@ -435,8 +436,7 @@ export const hostileMobSnapshot = (
 export const CREEPER_KIND: EntityKind = EntityKind('creeper')
 export const DROPPED_ITEM_KIND: EntityKind = EntityKind('dropped_item')
 export const PRIMED_TNT_KIND: EntityKind = EntityKind('primed_tnt')
-
-export const ENDERMAN_KIND: EntityKind = EntityKind('enderman')
+export { ENDERMAN_KIND }
 
 /**
  * The third, and the only one that is NOT in `HOSTILE_KINDS` below.
@@ -532,7 +532,7 @@ export const HOSTILE_KINDS: readonly [EntityKind, ...ReadonlyArray<EntityKind>] 
   ENDERMAN_KIND,
   ZOMBIE_KIND,
   ...OVERWORLD_ECOSYSTEM_HOSTILE_KINDS,
-  ...NETHER_HOSTILE_KINDS,
+  ...NETHER_ECOSYSTEM_HOSTILE_KINDS,
 ]
 
 /**

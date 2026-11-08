@@ -69,8 +69,6 @@ import type { ChunkBiomeType, Dimension } from '@nerima-games/mc-worldgen'
 import type { HostileDifficulty } from './hostile-despawn.js'
 import {
   ecosystemDimensionAllows,
-  ECOSYSTEM_MOB_KINDS,
-  NETHER_HOSTILE_KINDS,
   PASSIVE_MOB_KINDS,
 } from './mob-ecosystem.js'
 
@@ -149,7 +147,7 @@ export const MOB_BIOME_SPAWN_TABLE: Readonly<Record<ChunkBiomeType, ReadonlyArra
   RIVER: [...OVERWORLD_HOSTILES],
   TAIGA: [...OVERWORLD_HOSTILES, ...FARM_ANIMALS, 'chicken'],
   SAVANNA: [...OVERWORLD_HOSTILES, ...FARM_ANIMALS, 'chicken'],
-  NETHER: ['zombified_piglin', 'blaze'],
+  NETHER: ['enderman', 'zombified_piglin', 'blaze'],
   END: [],
 }
 
@@ -282,15 +280,11 @@ export const canHostileSpawnAt = (candidate: SpawnCandidate): SpawnVerdict => {
 export const canMobSpawnAt = (kind: EntityKind, candidate: SpawnCandidate): SpawnVerdict => {
   const dimension = candidate.dimension ?? 'overworld'
   if (!biomeAllowsMob(kind, candidate.biome)) return REFUSED('wrong-biome')
-  if (
-    ECOSYSTEM_MOB_KINDS.includes(kind as (typeof ECOSYSTEM_MOB_KINDS)[number]) &&
-    !ecosystemDimensionAllows(kind, dimension)
-  ) return REFUSED('wrong-dimension')
+  if (!ecosystemDimensionAllows(kind, dimension)) return REFUSED('wrong-dimension')
 
   const passive = PASSIVE_MOB_KINDS.includes(kind as (typeof PASSIVE_MOB_KINDS)[number])
-  const nether = NETHER_HOSTILE_KINDS.includes(kind as (typeof NETHER_HOSTILE_KINDS)[number])
+  const nether = dimension === 'nether'
   if (!passive && !nether) {
-    if (dimension !== 'overworld') return REFUSED('wrong-dimension')
     return canHostileSpawnAt(candidate)
   }
 

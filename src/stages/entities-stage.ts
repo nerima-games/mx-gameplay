@@ -491,8 +491,9 @@ const runMobSimulation = (
     PositionAxis(playerSnapshot.state.pose.feetPosition.z),
   )
   const seed = yield* Ref.get(state.rollSeed)
-  // `entities` runs before `fluids`, which advances this shared counter later
-  // in the same registered stage pass. Count the pass being executed now.
+  // Spawn cadence assumes the host runs `entities` once per simulation tick.
+  // W5 HW7 adds the fixed-step loop; count this stage pass, never frame dt.
+  // `entities` runs before `fluids`, which advances this counter later in the pass.
   const currentTick = (yield* Ref.get(state.tickCount)) + 1
   const stageTick = Schema.decodeUnknownSync(SimulationTickSchema)(currentTick)
   const sweep = planMobRosterSweep(entitySnapshot.state, {
@@ -556,7 +557,6 @@ const runMobSimulation = (
   const spawned = planSpawnAttemptsOnRoster(blast.roster, attempts, difficulty)
   if (Result.isFailure(spawned)) return yield* Effect.fail(spawned.failure)
 
-  const difficulty = (yield* state.survivalHunger.snapshot).difficulty
   const damageTick = Schema.decodeUnknownSync(SimulationTickSchema)(yield* Ref.get(state.tickCount))
   const contact = yield* Effect.fromResult(resolveHostileContacts(
     spawned.success.roster.entities,

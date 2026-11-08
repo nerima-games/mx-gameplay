@@ -578,12 +578,10 @@ describe('canMobSpawnAt: the ecosystem roster on top of the hostile rule', () =>
     }),
   )
 
-  it.effect('a non-ecosystem hostile is confined to the overworld too, via the plain dimension check', () =>
+  it.effect('a non-ecosystem hostile is confined to the overworld by the shared dimension gate', () =>
     Effect.sync(() => {
-      // ZOMBIE_KIND is not in ECOSYSTEM_MOB_KINDS at all, so it skips the
-      // ecosystem-dimension branch entirely and is caught by the second,
-      // unconditional overworld check instead — a different line reaching the
-      // same refusal.
+      // The shared dimension gate also rejects non-ecosystem hostiles outside
+      // the overworld before any candidate cell fact is read.
       expect(
         canMobSpawnAt(ZOMBIE_KIND, candidate({ dimension: 'nether' })),
       ).toStrictEqual({ _tag: 'Refused', reason: 'wrong-dimension' })

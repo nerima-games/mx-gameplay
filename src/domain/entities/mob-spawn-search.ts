@@ -84,7 +84,7 @@ import {
 import { EntityKind } from '@nerima-games/mc-sim'
 import { drawRolls, rollAt } from '../frame-rolls.js'
 import {
-  NETHER_HOSTILE_KINDS,
+  ecosystemDimensionAllows,
   PASSIVE_MOB_KINDS,
 } from '../mob/mob-ecosystem.js'
 import {
@@ -177,9 +177,7 @@ export const searchSpawnCandidates = (
     if (dimension === 'end') return { attempts: EMPTY_ATTEMPTS, unreadable: 0, seed: batch.seed }
     const spawnKinds: ReadonlyArray<EntityKind> = mode === 'passive'
       ? dimension === 'overworld' ? PASSIVE_MOB_KINDS : []
-      : dimension === 'nether'
-        ? NETHER_HOSTILE_KINDS
-        : HOSTILE_KINDS.filter((kind) => !NETHER_HOSTILE_KINDS.includes(kind as (typeof NETHER_HOSTILE_KINDS)[number]))
+      : HOSTILE_KINDS.filter((kind) => ecosystemDimensionAllows(kind, dimension))
     // `rollAt` and not `batch.rolls[0] ?? 0`: the fallback is a
     // `noUncheckedIndexedAccess` formality — `drawRolls` returns exactly the
     // count asked for — and `../frame-rolls` now owns the one spelling of it,
