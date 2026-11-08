@@ -220,7 +220,7 @@ export const observeNight1Death = (input: Readonly<{
   : !input.stagesCovered
     ? { status: 'unavailable', reason: 'night stage coverage did not reach the first-night end' }
     : input.deathTick !== undefined && input.deathTick < input.firstNight
-      ? { status: 'unavailable', reason: 'player died before first night began at tick ' + input.firstNight }
+      ? { status: 'unavailable', reason: `player died before first night began at tick ${input.firstNight}` }
       : input.deathTick !== undefined && input.deathTick < input.firstNightEnd
         ? { status: 'observed', died: true, deathTicks: input.deathTick }
         : { status: 'observed', died: false, deathTicks: null }
@@ -622,7 +622,7 @@ export const simulateSeed = async (
         const indexed = blocks.get(type)
         return indexed === undefined
           ? []
-          : indexed.positions.map((position) => ({ id: indexed.id, position }))
+          : indexed.positions.map((blockCell) => ({ id: indexed.id, position: blockCell }))
       })
 
       const executeShelterAction = () => Effect.gen(function* () {
@@ -645,7 +645,7 @@ export const simulateSeed = async (
           )
           const reading = yield* runtime.world.chunkStore.getBlock(target)
           if (reading._tag !== 'Block' || reading.block === AIR_BLOCK_ID) {
-            policyActionFailure = 'shelter shaft block at depth ' + depth + ' is missing or air'
+            policyActionFailure = `shelter shaft block at depth ${depth} is missing or air`
             break
           }
           const dug = yield* mineAndCollect(reading.block, shelterTool, target)
@@ -670,14 +670,13 @@ export const simulateSeed = async (
       if (oakLogs.length === 0) {
         observations.firstLog = unavailable('generated chunk (0, 0) contains no oak_log')
       } else if (oakFailure !== undefined) {
-        observations.woodenPickaxe = unavailable('oak log mining failed: ' + oakFailure)
+        observations.woodenPickaxe = unavailable(`oak log mining failed: ${oakFailure}`)
       }
 
       let craftFailure: string | undefined
       if (countOf(gatheredInventory, 'oak_log') < 3) {
         observations.woodenPickaxe = unavailable(
-          'only ' + countOf(gatheredInventory, 'oak_log') +
-          ' actual oak_log drops were gathered; three are required for planks, a workbench, sticks, and a wooden pickaxe',
+          `only ${countOf(gatheredInventory, 'oak_log')} actual oak_log drops were gathered; three are required for planks, a workbench, sticks, and a wooden pickaxe`,
         )
         observations.stoneTool = unavailable('wooden pickaxe route could not start without three actual oak_log drops')
         observations.iron = unavailable('wooden pickaxe route could not start without three actual oak_log drops')
@@ -685,7 +684,7 @@ export const simulateSeed = async (
         for (let index = 0; index < 3; index += 1) {
           const plankCraft = yield* craft(1, 1, ['oak_log'])
           if (plankCraft.output !== 'oak_planks') {
-            craftFailure = plankCraft.reason ?? 'expected oak_planks, got ' + String(plankCraft.output)
+            craftFailure = plankCraft.reason ?? `expected oak_planks, got ${String(plankCraft.output)}`
             break
           }
         }
@@ -695,13 +694,13 @@ export const simulateSeed = async (
             'oak_planks', 'oak_planks',
           ])
           if (workbench.output !== 'crafting_table') {
-            craftFailure = workbench.reason ?? 'expected crafting_table, got ' + String(workbench.output)
+            craftFailure = workbench.reason ?? `expected crafting_table, got ${String(workbench.output)}`
           }
         }
         if (craftFailure === undefined) {
           const sticks = yield* craft(1, 2, ['oak_planks', 'oak_planks'])
           if (sticks.output !== 'stick') {
-            craftFailure = sticks.reason ?? 'expected stick, got ' + String(sticks.output)
+            craftFailure = sticks.reason ?? `expected stick, got ${String(sticks.output)}`
           }
         }
         if (craftFailure === undefined) {
@@ -711,18 +710,18 @@ export const simulateSeed = async (
             undefined, 'stick', undefined,
           ])
           if (woodenPick.output !== 'wooden_pickaxe') {
-            craftFailure = woodenPick.reason ?? 'expected wooden_pickaxe, got ' + String(woodenPick.output)
+            craftFailure = woodenPick.reason ?? `expected wooden_pickaxe, got ${String(woodenPick.output)}`
           }
         }
         if (craftFailure !== undefined) {
-          observations.woodenPickaxe = unavailable('starter recipe crafting failed: ' + craftFailure)
+          observations.woodenPickaxe = unavailable(`starter recipe crafting failed: ${craftFailure}`)
           observations.stoneTool = unavailable('wooden pickaxe route could not start because crafting failed')
           observations.iron = unavailable('iron route could not start because crafting failed')
         } else {
           observations.woodenPickaxe = metricAt(yield* Ref.get(runtime.stageTickCount))
           const stoneFailure = yield* collectUntil(candidatesOf('stone'), 'cobblestone', 11, 'wooden_pickaxe')
           if (stoneFailure !== undefined) {
-            observations.stoneTool = unavailable('wooden-pickaxe mining failed: ' + stoneFailure)
+            observations.stoneTool = unavailable(`wooden-pickaxe mining failed: ${stoneFailure}`)
             observations.iron = unavailable('iron route could not start because stone mining failed')
           } else if (countOf(gatheredInventory, 'cobblestone') < 11) {
             observations.stoneTool = unavailable('generated world had fewer than eleven cobblestone drops')
@@ -734,7 +733,7 @@ export const simulateSeed = async (
               undefined, 'stick', undefined,
             ])
             if (stonePick.output !== 'stone_pickaxe') {
-              observations.stoneTool = unavailable('stone pickaxe recipe failed: ' + (stonePick.reason ?? 'wrong output'))
+              observations.stoneTool = unavailable(`stone pickaxe recipe failed: ${stonePick.reason ?? 'wrong output'}`)
               observations.iron = unavailable('iron route could not start without a stone pickaxe')
             } else {
               observations.stoneTool = metricAt(yield* Ref.get(runtime.stageTickCount))
@@ -745,7 +744,7 @@ export const simulateSeed = async (
               ])
               if (furnace.output !== 'furnace') {
                 yield* executeShelterAction()
-                observations.iron = unavailable('furnace recipe failed: ' + (furnace.reason ?? 'wrong output'))
+                observations.iron = unavailable(`furnace recipe failed: ${furnace.reason ?? 'wrong output'}`)
               } else {
                 gatheredInventory = furnace.inventory
                 yield* executeShelterAction()
@@ -767,11 +766,11 @@ export const simulateSeed = async (
                   } else {
                     const inputTransfer = transferToFurnace(gatheredInventory, emptyFurnace, 'input', 'raw_iron', 1)
                     if (inputTransfer.result._tag !== 'Transferred') {
-                      observations.iron = unavailable('raw_iron furnace transfer failed: ' + inputTransfer.result._tag)
+                      observations.iron = unavailable(`raw_iron furnace transfer failed: ${inputTransfer.result._tag}`)
                     } else {
                       const fuelTransfer = transferToFurnace(inputTransfer.inventory, inputTransfer.furnace, 'fuel', 'oak_planks', 1)
                       if (fuelTransfer.result._tag !== 'Transferred') {
-                        observations.iron = unavailable('oak_planks furnace fuel transfer failed: ' + fuelTransfer.result._tag)
+                        observations.iron = unavailable(`oak_planks furnace fuel transfer failed: ${fuelTransfer.result._tag}`)
                       } else {
                         const recipe = Result.getOrUndefined(
                           matchSmeltingRecipe(fuelTransfer.furnace.input, 'furnace', recipeList),
@@ -851,11 +850,11 @@ export const simulateSeed = async (
         measurementFailure === undefined
       const preTwilightReason = measurementFailure ??
         (deathTick !== undefined && deathTick < firstTwilight
-          ? 'player died at tick ' + deathTick + ' before twilight tick ' + firstTwilight
+          ? `player died at tick ${deathTick} before twilight tick ${firstTwilight}`
           : 'registered gameplay stages did not cover the complete pre-twilight interval')
       const damageReason = measurementFailure ??
         (deathTick !== undefined && deathTick < firstNightEnd
-          ? 'player died at tick ' + deathTick + ' before first-night end tick ' + firstNightEnd
+          ? `player died at tick ${deathTick} before first-night end tick ${firstNightEnd}`
           : 'registered gameplay stages did not cover the complete first-night interval')
       const preTwilightDamage: BalanceEventSeries = preTwilightComplete
         ? { status: 'observed', events: preTwilightHostileEvents }
@@ -892,7 +891,7 @@ export const simulateSeed = async (
   const policyExecution: PolicyExecutionObservation = surfaceStart === undefined
     ? { status: 'unavailable', reason: 'generated chunk (0, 0) has no valid spawn surface with two air blocks above it' }
     : result.policyActionFailure !== undefined
-      ? { status: 'unavailable', reason: 'policy ' + nightAction + ' action could not be executed: ' + result.policyActionFailure }
+      ? { status: 'unavailable', reason: `policy ${nightAction} action could not be executed: ${result.policyActionFailure}` }
       : {
           status: 'observed',
           action: nightAction,
