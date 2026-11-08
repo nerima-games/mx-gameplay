@@ -1,5 +1,3 @@
-import { pathToFileURL } from 'node:url'
-import { resolve } from 'node:path'
 import { Result } from 'effect'
 import type { DeltaTimeSecs } from '@nerima-games/mc-kernel'
 import {
@@ -14,6 +12,7 @@ import {
   exposedPolicy,
   shelterPolicy,
   simulateSeed,
+  type BalanceEffectRunner,
   type BalanceObservation,
   type BalancePolicy,
   type SeedSimulationResult,
@@ -149,7 +148,7 @@ const goalDefinitions: ReadonlyArray<GoalDefinition> = [
   },
 ]
 
-const usage = 'Usage: tsx scripts/balance/run.ts --seeds <positive-integer> --policy <shelter|exposed>'
+const usage = 'Usage: tsx apps/balance-simulation/main.ts --seeds <positive-integer> --policy <shelter|exposed>'
 
 export const parseRunArguments = (args: ReadonlyArray<string>): CliParseResult => {
   let seedCount: number | undefined
@@ -375,12 +374,15 @@ export const buildBalanceReport = (
   simulations: results,
 })
 
-export const runBalanceSimulation = async (options: RunOptions): Promise<BalanceReport> => {
+export const runBalanceSimulation = async (
+  options: RunOptions,
+  runEffect: BalanceEffectRunner,
+): Promise<BalanceReport> => {
   const policy = policyFor(options.policy)
   const results: SeedSimulationResult[] = []
   const simulateNext = (seed: number): Promise<void> => seed >= options.seedCount
     ? Promise.resolve()
-    : simulateSeed(seed, policy).then((result) => {
+    : simulateSeed(seed, policy, runEffect).then((result) => {
         results.push(result)
         return simulateNext(seed + 1)
       })
@@ -439,20 +441,16 @@ ${JSON.stringify(report, null, 2)}
 ${formatBalanceTable(report)}
 `
 
-export const runCli = async (args: ReadonlyArray<string>): Promise<number> => {
+export const runCli = async (
+  args: ReadonlyArray<string>,
+  runEffect: BalanceEffectRunner,
+): Promise<number> => {
   const parsed = parseRunArguments(args)
   if (!parsed.ok) {
     process.stderr.write(`${parsed.error}\n${usage}\n`)
     return 2
   }
-  const report = await runBalanceSimulation(parsed.value)
+  const report = await runBalanceSimulation(parsed.value, runEffect)
   process.stdout.write(renderBalanceReport(report))
   return 0
-}
-
-const invokedPath = process.argv[1]
-if (invokedPath !== undefined && import.meta.url === pathToFileURL(resolve(invokedPath)).href) {
-  void runCli(process.argv.slice(2)).then((status) => {
-    process.exitCode = status
-  })
 }

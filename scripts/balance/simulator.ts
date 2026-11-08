@@ -83,6 +83,8 @@ import {
   type NaturalStructureChunk,
 } from '@nerima-games/mc-worldgen'
 
+export type BalanceEffectRunner = typeof Effect.runPromise
+
 export type BalancePolicyAction = 'shelter' | 'exposed'
 
 export type BalancePolicyInput = Readonly<{
@@ -429,6 +431,7 @@ const measureNightCombat = async (
   routeElapsedTicks: number,
   routeHungerState: SurvivalHungerState,
   minedPositions: ReadonlyArray<BlockPosition>,
+  runEffect: BalanceEffectRunner,
 ): Promise<NightCombatResult> => {
   const program = Effect.gen(function* () {
     const store = yield* ChunkStore
@@ -611,12 +614,13 @@ const measureNightCombat = async (
     } satisfies NightCombatResult
   })
   const storeLayer = GeneratedChunkStoreLayer(NoiseSeed(seed), ChunkCapacity(64))
-  return Effect.runPromise(Effect.provide(program, storeLayer))
+  return runEffect(Effect.provide(program, storeLayer))
 }
 
 export const simulateSeed = async (
   seed: number,
   policy: BalancePolicy,
+  runEffect: BalanceEffectRunner,
 ): Promise<SeedSimulationResult> => {
   if (!Number.isSafeInteger(seed)) {
     return { status: 'invalid-seed', seed, reason: 'seed must be a safe integer' }
@@ -882,7 +886,7 @@ export const simulateSeed = async (
 
   executeShelterAction()
 
-  const routeHunger = await Effect.runPromise(Effect.gen(function* () {
+  const routeHunger = await runEffect(Effect.gen(function* () {
     const hunger = yield* makeSurvivalHungerRuntime()
     if (miningActions > 0) yield* hunger.submit({ _tag: 'mine', blocks: miningActions })
     const outcome = elapsedTicks > 0
@@ -920,6 +924,7 @@ export const simulateSeed = async (
         elapsedTicks,
         routeHunger.state,
         minedPositions,
+        runEffect,
       )
   const policyExecution: PolicyExecutionObservation = surfaceStart === undefined
     ? { status: 'unavailable', reason: 'generated chunk (0, 0) has no valid spawn surface with two air blocks above it' }
@@ -973,7 +978,7 @@ export const simulateSeed = async (
   const layer = HeadlessHarnessTestLayer(headlessStages).pipe(
     Layer.provide(HeadlessHarnessSessionFactoryLayer),
   )
-  await Effect.runPromise(Effect.provide(harnessProgram, layer))
+  await runEffect(Effect.provide(harnessProgram, layer))
 
   return {
     status: 'simulated',

@@ -1,4 +1,5 @@
 import { beforeAll, describe, expect, it } from '@effect/vitest'
+import { Effect } from 'effect'
 import { TICKS_PER_SECOND } from '@nerima-games/mc-sim'
 import {
   buildBalanceReport,
@@ -73,7 +74,7 @@ describe('balance simulation runner', () => {
   let shelterResult: SeedSimulationResult | undefined
 
   beforeAll(async () => {
-    shelterResult = await simulateSeed(0, shelterPolicy)
+    shelterResult = await simulateSeed(0, shelterPolicy, Effect.runPromise)
   })
 
   it('requires a positive seed count and a supported policy', () => {
@@ -243,7 +244,7 @@ describe('balance simulation runner', () => {
 
   it('replays a seed deterministically and leaves the unobserved route interval unknown', async () => {
     if (shelterResult === undefined) throw new Error('seed setup did not complete')
-    expect(await simulateSeed(0, shelterPolicy)).toStrictEqual(shelterResult)
+    expect(await simulateSeed(0, shelterPolicy, Effect.runPromise)).toStrictEqual(shelterResult)
     expect(shelterResult.status).toBe('simulated')
     if (shelterResult.status !== 'simulated') return
 
@@ -279,7 +280,7 @@ describe('balance simulation runner', () => {
   it('applies replacement policies to the actual night position', async () => {
     if (shelterResult === undefined) throw new Error('seed setup did not complete')
     const shelter = shelterResult
-    const exposed = await simulateSeed(0, exposedPolicy)
+    const exposed = await simulateSeed(0, exposedPolicy, Effect.runPromise)
 
     expect(shelter.status).toBe('simulated')
     expect(exposed.status).toBe('simulated')
