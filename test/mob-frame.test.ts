@@ -1075,6 +1075,48 @@ describe('experienceOfCasualties', () => {
       ])
     }),
   )
+
+  it.effect('forwards optional casualty metadata to loot and experience rules', () =>
+    Effect.sync(() => {
+      const atTick = SimulationTick(200)
+      const babyCow = EntityId('e:baby-cow')
+      const burningCow = EntityId('e:burning-cow')
+      const chargedCreeperKill = EntityId('e:charged-creeper-kill')
+      const drops = rollCasualtyDrops([
+        { id: babyCow, kind: COW_KIND, at: ORIGIN, age: 'baby' },
+        { id: burningCow, kind: COW_KIND, at: ORIGIN, burning: true },
+        {
+          id: chargedCreeperKill,
+          kind: EntityKind('wither_skeleton'),
+          at: ORIGIN,
+          killedByChargedCreeper: true,
+        },
+      ], 1)
+      expect(drops.drops).not.toContainEqual(expect.objectContaining({ source: babyCow }))
+      expect(drops.drops).toContainEqual(expect.objectContaining({
+        source: burningCow,
+        item: 'cooked_beef',
+      }))
+      expect(drops.drops).toContainEqual(expect.objectContaining({
+        source: chargedCreeperKill,
+        item: 'wither_skeleton_skull',
+      }))
+
+      const smallSlime = EntityId('e:small-slime')
+      expect(experienceOfCasualties([{
+        id: smallSlime,
+        kind: EntityKind('slime'),
+        at: ORIGIN,
+        killCredit: 'player',
+        lastHitTick: atTick,
+        deathTick: atTick,
+        size: 'small',
+        equipmentXpRolls: [],
+      }])).toStrictEqual([
+        { source: smallSlime, kind: EntityKind('slime'), at: ORIGIN, amount: 1 },
+      ])
+    }),
+  )
 })
 
 describe('owner-snapshot roster plans', () => {
