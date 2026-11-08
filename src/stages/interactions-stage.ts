@@ -13,6 +13,7 @@ import {
   blockPositionForKey,
   breakRequestQueueFor,
   requeueBlockBreak,
+  rollCasualtyExperience,
   requestBlockBreak,
   candidateForPlayerStorageItemUse,
   EnderPearlOutcomeSchema,
@@ -169,7 +170,6 @@ import {
 import {
   ENDERMITE_KIND,
   ENDERMITE_MAX_HEALTH,
-  rollCasualtyExperience,
   initialBehaviourOfKind,
   planMobDamageRoster,
   rollCasualtyDrops,

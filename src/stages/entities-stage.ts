@@ -10,6 +10,7 @@ import {
   hostileSpawnsAllowed,
   recordGameplayStageFailure,
   recordGameplayUnsupportedOperation,
+  rollCasualtyExperience,
   searchSpawnCandidates,
   settled,
   takeBatch,
@@ -71,7 +72,6 @@ import {
   planMobRosterSweep,
   planSpawnAttemptsOnRoster,
   rollCasualtyDrops,
-  rollCasualtyExperience,
   type MobExplosionHit,
   type MobSpawnAttempt,
 } from '../domain/entities/mob-frame.js'

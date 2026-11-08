@@ -104,8 +104,8 @@ type MobDropTable = Readonly<{
   readonly pools?: ReadonlyArray<MobDropPool>
 }>
 
-export type MobExperienceRange = Readonly<{ readonly min: number; readonly max: number }>
-export type MobExperienceRule = Readonly<{
+type MobExperienceRange = Readonly<{ readonly min: number; readonly max: number }>
+type MobExperienceRule = Readonly<{
   readonly adult: MobExperienceRange
   readonly baby?: MobExperienceRange
   readonly sizes?: Readonly<Partial<Record<MobSize, MobExperienceRange>>>
@@ -114,7 +114,7 @@ export type MobExperienceRule = Readonly<{
   readonly dragonRespawn?: MobExperienceRange
 }>
 
-export type MobExperienceContext = Readonly<{
+type MobExperienceContext = Readonly<{
   readonly age?: MobAge
   readonly size?: MobSize
   readonly undroppedEquipmentCount?: number
@@ -496,24 +496,6 @@ const experienceRangeFor = (
     ? context.age === 'baby' && reward.baby !== undefined ? reward.baby : reward.adult
     : reward.sizes?.[context.size] ??
       (context.age === 'baby' && reward.baby !== undefined ? reward.baby : reward.adult)
-
-/** Random rolls a mob's selected experience range needs from the frame seed. */
-export const mobExperienceRollBudgetOfKind = (
-  kind: EntityKind,
-  context: MobExperienceContext = {},
-): Readonly<{ readonly base: boolean; readonly equipment: number }> => {
-  const rule = mobExperienceRuleOfKind(kind)
-  const selectedRange = experienceRangeFor(rule, context)
-  const equipmentCount = rule.equipmentBonus === undefined
-    ? 0
-    : Math.max(0, Math.floor(context.undroppedEquipmentCount ?? 0))
-  return {
-    base: selectedRange.min < selectedRange.max,
-    equipment: rule.equipmentBonus !== undefined && rule.equipmentBonus.min < rule.equipmentBonus.max
-      ? equipmentCount
-      : 0,
-  }
-}
 
 /**
  * Clamp a roll into `[0, 1)`.

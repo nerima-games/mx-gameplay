@@ -249,7 +249,6 @@ import {
   resolveEndermanTeleportProbes,
   resolveMeleeHits,
   rollCasualtyDrops,
-  rollCasualtyExperience,
   rollSelfDestructDrops,
   sweepMobs,
   ENDERMITE_KIND,
@@ -257,7 +256,10 @@ import {
   PRIMED_TNT_KIND,
   type BowHit,
   type MobDropEvent,
+  type MobCasualty,
+  type MobExperienceRoll,
   type MobExperienceEvent,
+  MOB_EXPERIENCE_CREDIT_WINDOW_TICKS,
   type MobBehaviour,
   type MobSpawnAttempt,
 } from '../domain/entities/mob-frame.js'
@@ -319,6 +321,7 @@ import {
   type FluidWorkItem,
 } from '../domain/fluid-frontier.js'
 import { DEFAULT_ROLL_SEED, drawRolls, rollAt } from '../domain/frame-rolls.js'
+import { mobExperienceRuleOfKind, mobXpReward, type MobKill } from '../domain/mob/mob-drop.js'
 import {
   endArrivalDescriptor,
   resolveNetherTravel,
@@ -425,6 +428,82 @@ import {
 } from './ender-dragon-encounter-stage.js'
 import { GAMEPLAY_STAGE_IDS, UPSTREAM_STAGE_IDS } from './stage-ids.js'
 import { advanceVehicles, type VehicleFrameEnvironment } from '../domain/vehicle/vehicle-frame.js'
+
+const makeMobExperienceRoll = Brand.nominal<MobExperienceRoll>()
+const NO_MOB_EXPERIENCE: ReadonlyArray<never> = []
+const SLAIN_WITHOUT_LOOTING: MobKill = { _tag: 'Slain', lootingLevel: 0 }
+
+const hasRecentPlayerCredit = (casualty: MobCasualty): boolean =>
+  casualty.killCredit === 'player-triggered-tnt' ||
+  (
+    (casualty.killCredit === 'player' || casualty.killCredit === 'tamed-wolf') &&
+    casualty.lastHitTick !== undefined &&
+    casualty.deathTick !== undefined &&
+    casualty.deathTick >= casualty.lastHitTick &&
+    casualty.deathTick - casualty.lastHitTick <= MOB_EXPERIENCE_CREDIT_WINDOW_TICKS
+  )
+
+const experienceContextOfCasualty = (casualty: MobCasualty) => ({
+  ...(casualty.age === undefined ? {} : { age: casualty.age }),
+  ...(casualty.size === undefined ? {} : { size: casualty.size }),
+  ...(casualty.undroppedEquipmentCount === undefined
+    ? {}
+    : { undroppedEquipmentCount: casualty.undroppedEquipmentCount }),
+  ...(casualty.equipmentXpRolls === undefined
+    ? {}
+    : { equipmentRolls: casualty.equipmentXpRolls }),
+  ...(casualty.firstDragonDeath === undefined
+    ? {}
+    : { firstDragonDeath: casualty.firstDragonDeath }),
+})
+
+/** Draw variable experience rolls from the frame seed after the loot rolls. */
+const rollCasualtyExperience = (
+  casualties: ReadonlyArray<MobCasualty>,
+  seed: number,
+): Readonly<{ readonly experience: ReadonlyArray<MobExperienceEvent>; readonly seed: number }> => {
+  if (casualties.length === 0) return { experience: NO_MOB_EXPERIENCE, seed }
+
+  let current = seed
+  const rolled = casualties.map((casualty) => {
+    const rule = mobExperienceRuleOfKind(casualty.kind)
+    if (rule.playerKillRequired !== false && !hasRecentPlayerCredit(casualty)) return casualty
+
+    const context = experienceContextOfCasualty(casualty)
+    const baseContext = { ...context, undroppedEquipmentCount: 0, equipmentRolls: [] }
+    const variableBase = mobXpReward(SLAIN_WITHOUT_LOOTING, rule, 0, baseContext) !==
+      mobXpReward(SLAIN_WITHOUT_LOOTING, rule, 0.999, baseContext)
+    const baseRollCount = casualty.experienceRoll === undefined && variableBase ? 1 : 0
+    const existingEquipmentRolls = casualty.equipmentXpRolls ?? []
+    const equipmentBonus = rule.equipmentBonus
+    const equipmentCount = equipmentBonus === undefined
+      ? 0
+      : Math.max(0, Math.floor(casualty.undroppedEquipmentCount ?? 0))
+    const equipmentRollCount = equipmentBonus !== undefined && equipmentBonus.min < equipmentBonus.max
+      ? Math.max(0, equipmentCount - existingEquipmentRolls.length)
+      : 0
+    const batch = drawRolls(current, baseRollCount + equipmentRollCount)
+    current = batch.seed
+
+    let cursor = 0
+    const experienceRoll = casualty.experienceRoll ?? (baseRollCount > 0
+      ? makeMobExperienceRoll(rollAt(batch, cursor++))
+      : undefined)
+    const equipmentXpRolls = equipmentRollCount === 0
+      ? existingEquipmentRolls
+      : [
+          ...existingEquipmentRolls,
+          ...Array.from({ length: equipmentRollCount }, () => makeMobExperienceRoll(rollAt(batch, cursor++))),
+        ]
+
+    return {
+      ...casualty,
+      ...(experienceRoll === undefined ? {} : { experienceRoll }),
+      ...(equipmentXpRolls.length === 0 ? {} : { equipmentXpRolls }),
+    }
+  })
+  return { experience: experienceOfCasualties(rolled), seed: current }
+}
 
 /**
  * Historically a lift from `domain/chunk-store-port.ts`'s local, unbranded

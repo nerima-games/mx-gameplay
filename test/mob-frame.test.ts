@@ -47,7 +47,6 @@ import {
   resolveMeleeHits,
   rollSelfDestructDrops,
   rollCasualtyDrops,
-  rollCasualtyExperience,
   rollDropsOfKind,
   STEADY_ENDERMAN,
   STRUCK_ENDERMAN,
@@ -64,6 +63,7 @@ import {
   type MobSpawnAttempt,
   xpRewardOfKind,
 } from '../src/domain/entities/mob-frame'
+import { rollCasualtyExperience } from '../src/stages/registration-core'
 import {
   BLAZE_XP_REWARD,
   ENDERMAN_XP_REWARD,

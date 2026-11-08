@@ -91,7 +91,6 @@ import {
   MOB_DROP_TABLES,
   MOB_EXPERIENCE_RULES,
   type MobDropRollSequence,
-  mobExperienceRollBudgetOfKind,
   mobExperienceRuleOfKind,
   mobXpReward,
   rollMobDrop,
@@ -772,33 +771,6 @@ describe('mob drop tables', () => {
         undroppedEquipmentCount: 2,
         equipmentRolls: [0],
       })).toBe(7)
-    }),
-  )
-
-  it.effect('budgets only variable base and equipment experience rolls', () =>
-    Effect.sync(() => {
-      expect(mobExperienceRollBudgetOfKind(COW_KIND)).toStrictEqual({ base: true, equipment: 0 })
-      expect(mobExperienceRollBudgetOfKind(ZOMBIE_KIND)).toStrictEqual({ base: false, equipment: 0 })
-      expect(mobExperienceRollBudgetOfKind(ZOMBIE_KIND, { age: 'baby' })).toStrictEqual({
-        base: false,
-        equipment: 0,
-      })
-      expect(mobExperienceRollBudgetOfKind(ZOMBIE_KIND, { undroppedEquipmentCount: 2 })).toStrictEqual({
-        base: false,
-        equipment: 2,
-      })
-      expect(mobExperienceRollBudgetOfKind(ZOMBIE_KIND, { undroppedEquipmentCount: -1 })).toStrictEqual({
-        base: false,
-        equipment: 0,
-      })
-      expect(mobExperienceRollBudgetOfKind(EntityKind('ender_dragon'), { firstDragonDeath: false })).toStrictEqual({
-        base: false,
-        equipment: 0,
-      })
-      expect(mobExperienceRollBudgetOfKind(EntityKind('slime'), { size: 'small' })).toStrictEqual({
-        base: false,
-        equipment: 0,
-      })
     }),
   )
 
