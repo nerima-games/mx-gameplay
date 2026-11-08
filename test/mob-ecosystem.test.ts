@@ -41,10 +41,13 @@ describe('mob ecosystem', () => {
       position(10),
       0.05,
     )
-    const second = stepEcosystemMob(SKELETON_KIND, first.state, position(0), position(10), 0.05)
+    const beforeCadence = stepEcosystemMob(SKELETON_KIND, first.state, position(0), position(10), 2.99)
+    const ready = stepEcosystemMob(SKELETON_KIND, beforeCadence.state, position(0), position(10), 0.01)
 
-    expect(first.attack).toMatchObject({ mode: 'projectile', damage: 4 })
-    expect(second.attack).toBeUndefined()
+    expect(first.attack).toMatchObject({ mode: 'projectile', damage: 3 })
+    expect(first.state.attackCooldownSecs).toBe(3)
+    expect(beforeCadence.attack).toBeUndefined()
+    expect(ready.attack).toMatchObject({ mode: 'projectile', damage: 3 })
   })
 
   it('lets zombies attack in melee range and respects their cooldown', () => {
@@ -169,7 +172,7 @@ describe('mob ecosystem', () => {
   it('lets spiders attack in melee range and jump while attacking', () => {
     const step = stepEcosystemMob(SPIDER_KIND, initialEcosystemMobState(), position(0), position(1), 0.05)
 
-    expect(step.attack).toMatchObject({ mode: 'melee', damage: 3, attackerKind: SPIDER_KIND })
+    expect(step.attack).toMatchObject({ mode: 'melee', damage: 2, attackerKind: SPIDER_KIND })
     expect(step.jumping).toBe(true)
   })
 

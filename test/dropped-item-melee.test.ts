@@ -1021,10 +1021,10 @@ describe('dropped item entities', () => {
 })
 
 describe('melee targeting', () => {
-  it.effect('selects the nearest hostile on the aim ray and ignores passive entities', () =>
+  it.effect('allows passive mobs as targets and still chooses the nearest eligible ray hit', () =>
     Effect.gen(function* () {
       const roster = yield* makeEntityManagerDouble<MobBehaviour>()
-      yield* roster.api.spawn({
+      const passive = yield* roster.api.spawn({
         kind: EntityKind('pig'),
         feetPosition: atPosition(1, 0, 0 ),
         healthPoints: EntityHealthPoints(10),
@@ -1050,9 +1050,14 @@ describe('melee targeting', () => {
         damage: 4,
       }
 
-      expect(meleeTarget(candidates, request)?.id).toBe(near.id)
-      expect(meleeTargetBeforeBlock(candidates, request, 1.5)).toBeUndefined()
-      expect(meleeTargetBeforeBlock(candidates, request, 2.5)?.id).toBe(near.id)
+      const target = meleeTarget(candidates, request)
+      expect(target?.id).toBe(passive.id)
+      if (target === undefined) return
+
+      expect(meleeTargetBeforeBlock(candidates, request, target.distance - 0.01)).toBeUndefined()
+      expect(meleeTargetBeforeBlock(candidates, request, target.distance)).toBeUndefined()
+      expect(meleeTargetBeforeBlock(candidates, request, target.distance + 0.01)?.id).toBe(passive.id)
+      expect(meleeTarget(candidates.filter(({ id }) => id !== passive.id), request)?.id).toBe(near.id)
     }),
   )
 

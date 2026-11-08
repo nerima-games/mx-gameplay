@@ -11,10 +11,15 @@ import {
 } from '@nerima-games/mc-kernel'
 import {
   CREEPER_LOCOMOTION,
+  DAMAGE_IMMUNITY_TICKS,
+  HostileAttackPreparationSchema,
+  prepareHostileAttack,
   prepareShieldBlocking,
   pursueHorizontally,
+  resolveDamageWithInvulnerability,
   resolveHostileContacts,
   resolvePlayerBlastDamage,
+  scaleHostileDamageForDifficulty,
   SHIELD_BLOCKING_DELAY_TICKS,
   SHIELD_DURABILITY_DAMAGE_THRESHOLD,
   SHIELD_HORIZONTAL_BLOCKING_HALF_ANGLE_DEGREES,
@@ -36,6 +41,8 @@ const zombie = (x: number): Entity<undefined> => ({
   healthPoints: EntityHealthPoints(20),
   behaviour: undefined,
 })
+
+const simulationTick = (value: number) => Schema.decodeUnknownSync(SimulationTickSchema)(value)
 
 describe('hostile locomotion', () => {
   it('moves horizontally by at most speed * dt and preserves altitude', () => {
@@ -78,6 +85,71 @@ describe('hostile locomotion', () => {
 })
 
 describe('player damage resolution', () => {
+  it('holds hurt resistance through tick 9, expires at tick 10, and applies only a stronger-hit delta', () => {
+    const previousState = { lastDamageTick: simulationTick(10), lastDamageAmount: 4 }
+    const withinWindow = resolveDamageWithInvulnerability({
+      tick: simulationTick(10 + DAMAGE_IMMUNITY_TICKS - 1),
+      amount: 4,
+      previousState,
+    })
+    const strongerHit = resolveDamageWithInvulnerability({
+      tick: simulationTick(15),
+      amount: 7,
+      previousState,
+    })
+    const repeatedStrongerHit = Result.isFailure(strongerHit)
+      ? strongerHit
+      : resolveDamageWithInvulnerability({
+          tick: simulationTick(16),
+          amount: 7,
+          previousState: strongerHit.success.state,
+        })
+    const windowExpired = Result.isFailure(repeatedStrongerHit)
+      ? repeatedStrongerHit
+      : resolveDamageWithInvulnerability({
+          tick: simulationTick(10 + DAMAGE_IMMUNITY_TICKS),
+          amount: 4,
+          previousState: repeatedStrongerHit.success.state,
+        })
+
+    expect(DAMAGE_IMMUNITY_TICKS).toBe(10)
+    expect(Result.isSuccess(withinWindow) && withinWindow.success.appliedAmount).toBe(0)
+    expect(Result.isSuccess(withinWindow) && withinWindow.success.state).toStrictEqual(previousState)
+    expect(Result.isSuccess(strongerHit) && strongerHit.success.appliedAmount).toBe(3)
+    expect(Result.isSuccess(strongerHit) && strongerHit.success.state).toStrictEqual({
+      lastDamageTick: simulationTick(10),
+      lastDamageAmount: 7,
+    })
+    expect(Result.isSuccess(repeatedStrongerHit) && repeatedStrongerHit.success.appliedAmount).toBe(0)
+    expect(Result.isSuccess(repeatedStrongerHit) && repeatedStrongerHit.success.state).toStrictEqual({
+      lastDamageTick: simulationTick(10),
+      lastDamageAmount: 7,
+    })
+    expect(Result.isSuccess(windowExpired) && windowExpired.success.appliedAmount).toBe(4)
+    expect(Result.isSuccess(windowExpired) && windowExpired.success.state).toStrictEqual({
+      lastDamageTick: simulationTick(20),
+      lastDamageAmount: 4,
+    })
+  })
+
+  it('scales hostile damage for each difficulty, including the easy-mode cap boundary', () => {
+    expect(scaleHostileDamageForDifficulty({ amount: 6, difficulty: 'peaceful' })).toStrictEqual(
+      Result.succeed(0),
+    )
+    expect(scaleHostileDamageForDifficulty({ amount: 6, difficulty: 'easy' })).toStrictEqual(
+      Result.succeed(4),
+    )
+    expect(scaleHostileDamageForDifficulty({ amount: 2, difficulty: 'easy' })).toStrictEqual(
+      Result.succeed(2),
+    )
+    expect(scaleHostileDamageForDifficulty({ amount: 6, difficulty: 'normal' })).toStrictEqual(
+      Result.succeed(6),
+    )
+    expect(scaleHostileDamageForDifficulty({ amount: 6, difficulty: 'hard' })).toStrictEqual(
+      Result.succeed(9),
+    )
+  })
+
   it('emits zombie contact damage once per cooldown interval', () => {
     const target = atPosition(0, 64, 0 )
     const first = resolveHostileContacts([zombie(1)], target, 0.25, new Map())
@@ -217,6 +289,43 @@ describe(`C2 shield blocking (${SHIELD_FIXTURE.source}, ${SHIELD_FIXTURE.edition
         defender: actor,
         blockedAmount: 3.1,
       },
+    })
+  })
+
+  it('composes difficulty scaling with shield blocking and incoming damage', () => {
+    const commonInput = {
+      tick: tick(15),
+      dimension,
+      pose,
+      hasShield: true,
+      currentShield: input.current,
+      incoming: { ...input.incoming, amount: 6 },
+      difficulty: 'easy' as const,
+      damageState: null,
+    }
+    const blocked = prepareHostileAttack(intent, commonInput)
+    const unblocked = prepareHostileAttack(
+      { ...intent, blocking: false },
+      { ...commonInput, hasShield: false, currentShield: null },
+    )
+
+    expect(Result.isSuccess(blocked)).toBe(true)
+    expect(Result.isSuccess(unblocked)).toBe(true)
+    if (Result.isFailure(blocked) || Result.isFailure(unblocked)) return
+
+    const decodedBlocked = Schema.decodeUnknownResult(HostileAttackPreparationSchema)(blocked.success)
+    const decodedUnblocked = Schema.decodeUnknownResult(HostileAttackPreparationSchema)(unblocked.success)
+    expect(Result.isSuccess(decodedBlocked)).toBe(true)
+    expect(Result.isSuccess(decodedUnblocked)).toBe(true)
+    expect(blocked.success).toMatchObject({
+      shield: { blocked: true, blockedAmount: 4, durabilityDamage: 4 },
+      appliedAmount: 0,
+      damageState: null,
+    })
+    expect(unblocked.success).toMatchObject({
+      shield: { blocked: false, blockedAmount: 0 },
+      appliedAmount: 4,
+      damageState: { lastDamageTick: tick(15), lastDamageAmount: 4 },
     })
   })
 

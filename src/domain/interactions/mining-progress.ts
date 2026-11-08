@@ -97,15 +97,18 @@ export const miningLootContextForItem = (item: ItemType | null): BlockLootContex
   return NO_TOOL
 }
 
-/** `minTier` is intentionally irrelevant here; it gates drops, not mining speed. */
+/** `minTier` gates drops; an unsuitable tool mines at one fifth of hand speed. */
 export const effectiveMiningSpeed = (
   tool: MiningToolProfile,
   requirement: HarvestToolRequirement,
 ): number => {
-  const matchesCategory = requirement.category !== 'none' && tool.category === requirement.category
-  if (!matchesCategory || !Number.isFinite(tool.speedMultiplier) || tool.speedMultiplier <= 0) {
+  if (!Number.isFinite(tool.speedMultiplier) || tool.speedMultiplier <= 0) {
     return HAND_MINING_TOOL.speedMultiplier
   }
+  if (requirement.category === 'none' || tool.category === 'none') {
+    return HAND_MINING_TOOL.speedMultiplier
+  }
+  if (tool.category !== requirement.category) return HAND_MINING_TOOL.speedMultiplier / 5
   const efficiencyLevel = normaliseEfficiencyLevel(tool.efficiencyLevel)
   const efficiencyBonus = efficiencyLevel > 0 ? efficiencyLevel ** 2 + 1 : 0
   return tool.speedMultiplier + efficiencyBonus

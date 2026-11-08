@@ -5,7 +5,11 @@ import fc from 'fast-check'
 import { blockPosition } from '../support/coordinate-fixtures'
 import {
   advanceMiningProgress,
+  effectiveMiningSpeed,
+  HAND_MINING_TOOL,
   MINING_TICKS_PER_SECOND,
+  miningDurationSecsForBlock,
+  miningToolForItem,
   type MiningProgressState,
 } from '../../src/domain/interactions/mining-progress'
 
@@ -18,9 +22,11 @@ const stone = {
   position: blockPosition(1, 64, 2),
   blockId: registeredBlockId('stone'),
 }
+const dirt = { ...stone, blockId: registeredBlockId('dirt') }
 
 const requiredWork =
   Result.getOrThrow(propertyOfBlockId(stone.blockId, 'hardness')) / MINING_TICKS_PER_SECOND
+const dirtRequirement = Result.getOrThrow(propertyOfBlockId(dirt.blockId, 'harvestTool'))
 
 const tools: ReadonlyArray<ItemType | null> = [
   null,
@@ -31,6 +37,27 @@ const tools: ReadonlyArray<ItemType | null> = [
 ]
 
 describe('mining progress properties', () => {
+  it.effect('keeps an unsuitable mining category at one fifth of hand speed regardless of Efficiency', () =>
+    Effect.sync(() => {
+      // This catches Efficiency being applied to an unsuitable tool or the 5x penalty drifting.
+      fc.assert(
+        fc.property(fc.integer({ min: 0, max: 5 }), (efficiencyLevel) => {
+          const wrongTool = miningToolForItem('wooden_pickaxe', efficiencyLevel)
+          const speed = effectiveMiningSpeed(wrongTool, dirtRequirement)
+          const handDuration = miningDurationSecsForBlock(dirt.blockId, null)
+          const mismatchedToolDuration = miningDurationSecsForBlock(
+            dirt.blockId,
+            'wooden_pickaxe',
+            efficiencyLevel,
+          )
+          return Number.isFinite(speed) &&
+            speed === HAND_MINING_TOOL.speedMultiplier / 5 &&
+            Math.abs(mismatchedToolDuration - handDuration * 5) < 1e-10
+        }),
+      )
+    }),
+  )
+
   it.effect('keeps work bounded and announces completion once for a held target', () =>
     Effect.sync(() => {
       // This catches lost work on tool changes, work overshoot, or repeated break notifications.

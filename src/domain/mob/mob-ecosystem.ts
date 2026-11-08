@@ -12,6 +12,9 @@ export const SHEEP_KIND: EntityKind = EntityKind('sheep')
 export const CHICKEN_KIND: EntityKind = EntityKind('chicken')
 export const ZOMBIFIED_PIGLIN_KIND: EntityKind = EntityKind('zombified_piglin')
 export const BLAZE_KIND: EntityKind = EntityKind('blaze')
+export const SKELETON_ATTACK_INTERVAL_SECS = 3
+export const SKELETON_ATTACK_DAMAGE = 3
+export const SPIDER_ATTACK_DAMAGE = 2
 
 // Explicit fixed-length tuple annotations (not `ReadonlyArray<EntityKind>`) are
 // deliberate on these three: `./entities/mob-frame`'s `HOSTILE_KINDS` and
@@ -128,9 +131,13 @@ export const stepEcosystemMob = (
   if (target === undefined) return { state: nextState(), feetPosition: self, jumping: false }
   if (kind === ZOMBIFIED_PIGLIN_KIND && !state.provoked) return { state: nextState(), feetPosition: self, jumping: false }
   if ((kind === SKELETON_KIND || kind === BLAZE_KIND) && cooldown === 0 && distance >= (kind === BLAZE_KIND ? 8 : 6) && distance <= (kind === BLAZE_KIND ? 24 : 16))
-    return attack('projectile', kind === BLAZE_KIND ? 6 : 4, kind === BLAZE_KIND ? 3 : 2)
+    return attack(
+      'projectile',
+      kind === BLAZE_KIND ? 6 : SKELETON_ATTACK_DAMAGE,
+      kind === BLAZE_KIND ? 3 : SKELETON_ATTACK_INTERVAL_SECS,
+    )
   if ((kind === SPIDER_KIND || kind === ZOMBIE_KIND || kind === ZOMBIFIED_PIGLIN_KIND) && cooldown === 0 && distance <= 1.5)
-    return attack('melee', kind === SPIDER_KIND ? 3 : kind === ZOMBIE_KIND ? 3 : 5, 1)
+    return attack('melee', kind === SPIDER_KIND ? SPIDER_ATTACK_DAMAGE : kind === ZOMBIE_KIND ? 3 : 5, 1)
   const speed = kind === SPIDER_KIND ? 4 : 2.5
   return { state: nextState(), feetPosition: move(self, target, Math.min(distance, speed * dt)), jumping: kind === SPIDER_KIND && distance > 1.5 }
 }

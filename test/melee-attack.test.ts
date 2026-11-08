@@ -6,7 +6,12 @@ import { type Entity } from '@nerima-games/mc-sim'
 import { position as atPosition } from './support/coordinate-fixtures'
 import { ZOMBIE_KIND } from '../src/domain/mob/hostile-combat'
 import {
+  DEFAULT_MELEE_ATTACK_SPEED,
+  MELEE_ATTACK_COOLDOWN_TICKS_PER_SECOND,
+  MIN_ATTACK_COOLDOWN_FOR_CRITICAL,
   MeleeAttackPreparationSchema,
+  meleeAttackCooldown,
+  meleeAttackCooldownForItem,
   meleeDamageForItem,
   meleeTarget,
   meleeTargetBeforeBlock,
@@ -30,11 +35,25 @@ const zombie: Entity<MobBehaviour> = {
 }
 
 describe('melee attack damage', () => {
-  it('uses unarmed damage for empty hands and non-swords', () => {
+  it('uses unarmed damage for empty hands and ranged items', () => {
     expect(meleeDamageForItem(undefined)).toBe(1)
     expect(meleeDamageForItem(null)).toBe(1)
     expect(meleeDamageForItem('bow')).toBe(1)
-    expect(meleeDamageForItem('diamond_pickaxe')).toBe(1)
+  })
+
+  it('maps mining tools to their melee damage', () => {
+    expect(meleeDamageForItem('diamond_pickaxe')).toBe(5)
+    expect(meleeDamageForItem('diamond_shovel')).toBe(5.5)
+    expect(meleeDamageForItem('wooden_hoe')).toBe(1)
+  })
+
+  it(`maps axes to their vanilla damage (${MELEE_PARITY_FIXTURE.source}, ${MELEE_PARITY_FIXTURE.edition})`, () => {
+    expect(meleeDamageForItem('wooden_axe')).toBe(7)
+    expect(meleeDamageForItem('gold_axe')).toBe(7)
+    expect(meleeDamageForItem('stone_axe')).toBe(9)
+    expect(meleeDamageForItem('iron_axe')).toBe(9)
+    expect(meleeDamageForItem('diamond_axe')).toBe(9)
+    expect(meleeDamageForItem('netherite_axe')).toBe(10)
   })
 
   it(`maps each supported sword to its melee damage (${MELEE_PARITY_FIXTURE.source}, ${MELEE_PARITY_FIXTURE.edition})`, () => {
@@ -52,6 +71,41 @@ describe('melee attack damage', () => {
   })
 })
 
+describe('melee attack cooldown', () => {
+  it('scales charge by attack speed and reaches full strength at the cooldown boundary', () => {
+    const atStart = meleeAttackCooldown({ attackSpeed: 4, ticksSinceLastAttack: 0 })
+    const oneTickShort = meleeAttackCooldown({ attackSpeed: 4, ticksSinceLastAttack: 4 })
+    const ready = meleeAttackCooldown({ attackSpeed: 4, ticksSinceLastAttack: 5 })
+    const slowStart = meleeAttackCooldown({ attackSpeed: 1, ticksSinceLastAttack: 0 })
+    const swordReady = meleeAttackCooldownForItem('iron_sword', 12)
+    const swordStart = meleeAttackCooldownForItem('iron_sword', 0)
+    const axeStart = meleeAttackCooldownForItem('wooden_axe', 0)
+
+    expect(MELEE_ATTACK_COOLDOWN_TICKS_PER_SECOND).toBe(20)
+    expect(DEFAULT_MELEE_ATTACK_SPEED).toBe(4)
+    expect(Result.isSuccess(swordStart) && swordStart.success.charge).toBeCloseTo(0.04)
+    expect(Result.isSuccess(axeStart) && axeStart.success.charge).toBeCloseTo(0.02)
+    expect(Result.isSuccess(atStart) && atStart.success.charge).toBe(0.1)
+    expect(Result.isSuccess(atStart) && atStart.success.damageMultiplier).toBeCloseTo(0.208)
+    expect(Result.isSuccess(oneTickShort) && oneTickShort.success.charge).toBe(0.9)
+    expect(Result.isSuccess(ready) && ready.success).toStrictEqual({ charge: 1, damageMultiplier: 1 })
+    expect(Result.isSuccess(slowStart) && slowStart.success.charge).toBe(0.025)
+    expect(Result.isSuccess(swordReady) && swordReady.success.charge).toBe(1)
+  })
+
+  it('returns typed failures outside the attack speed and tick schema', () => {
+    expect(meleeAttackCooldown({ attackSpeed: 0, ticksSinceLastAttack: 0 })).toStrictEqual(
+      Result.fail('invalid-input'),
+    )
+    expect(meleeAttackCooldown({ attackSpeed: 1, ticksSinceLastAttack: -1 })).toStrictEqual(
+      Result.fail('invalid-input'),
+    )
+    expect(meleeAttackCooldown({ attackSpeed: Number.NaN, ticksSinceLastAttack: 1 })).toStrictEqual(
+      Result.fail('invalid-input'),
+    )
+  })
+})
+
 describe('C2 melee preparation', () => {
   const actor = EntityId('melee-owner')
   const intent = { _tag: 'MeleeAttack', actor } as const
@@ -62,6 +116,8 @@ describe('C2 melee preparation', () => {
     entities: [zombie],
     heldItem: 'iron_sword' as const,
     critical: false,
+    ticksSinceLastAttack: 12,
+    targetDamageState: null,
   }
 
   it('uses the authoritative pose, reach, held item, and world candidates', () => {
@@ -78,6 +134,64 @@ describe('C2 melee preparation', () => {
       entity: zombie.id,
       amount: 6,
       cause: 'mob',
+    })
+  })
+
+  it('gates critical damage at the charge threshold and returns knockback away from the attacker', () => {
+    const belowThreshold = prepareMeleeAttack(intent, {
+      ...input,
+      critical: true,
+      ticksSinceLastAttack: 10,
+    })
+    const aboveThreshold = prepareMeleeAttack(intent, {
+      ...input,
+      critical: true,
+      ticksSinceLastAttack: 11,
+    })
+
+    expect(MIN_ATTACK_COOLDOWN_FOR_CRITICAL).toBe(0.848)
+    expect(Result.isSuccess(belowThreshold)).toBe(true)
+    expect(Result.isSuccess(aboveThreshold)).toBe(true)
+    if (Result.isFailure(belowThreshold) || Result.isFailure(aboveThreshold)) return
+
+    const belowEvent = belowThreshold.success.event
+    const aboveEvent = aboveThreshold.success.event
+    expect(belowEvent._tag).toBe('EntityDamaged')
+    expect(aboveEvent._tag).toBe('EntityDamaged')
+    if (belowEvent._tag !== 'EntityDamaged' || aboveEvent._tag !== 'EntityDamaged') return
+    expect(belowEvent.amount).toBeCloseTo(4.58688)
+    expect(aboveEvent.amount).toBeCloseTo(7.89408)
+    expect(aboveThreshold.success.knockback).toMatchObject({ _tag: 'Away', x: 0, z: 1 })
+  })
+
+  it('applies mob hurt resistance to melee hits and records stronger-hit state', () => {
+    const ignored = prepareMeleeAttack(intent, {
+      ...input,
+      tick: Schema.decodeUnknownSync(SimulationTickSchema)(20),
+      targetDamageState: {
+        lastDamageTick: Schema.decodeUnknownSync(SimulationTickSchema)(11),
+        lastDamageAmount: 6,
+      },
+    })
+    const stronger = prepareMeleeAttack(intent, {
+      ...input,
+      tick: Schema.decodeUnknownSync(SimulationTickSchema)(20),
+      heldItem: 'netherite_axe',
+      ticksSinceLastAttack: 20,
+      targetDamageState: {
+        lastDamageTick: Schema.decodeUnknownSync(SimulationTickSchema)(11),
+        lastDamageAmount: 8,
+      },
+    })
+
+    expect(Result.isFailure(ignored) && ignored.failure).toBe('target-invulnerable')
+    expect(Result.isSuccess(stronger) && stronger.success.event).toMatchObject({
+      _tag: 'EntityDamaged',
+      amount: 2,
+    })
+    expect(Result.isSuccess(stronger) && stronger.success.targetDamageState).toStrictEqual({
+      lastDamageTick: Schema.decodeUnknownSync(SimulationTickSchema)(11),
+      lastDamageAmount: 10,
     })
   })
 

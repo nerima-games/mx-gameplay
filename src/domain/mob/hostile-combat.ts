@@ -20,10 +20,17 @@ import {
   type Entity,
   type EntityId,
   type IntentPayload,
-  type PlayerPose,
 } from '@nerima-games/mc-sim'
 import { Result, Schema } from 'effect'
 import { explosionDamageAt, type Explosion } from './explosion.js'
+import {
+  DifficultyDamageResultSchema,
+  difficultyDamageAmount,
+  scaleDifficultyDamage,
+} from '../combat/difficulty-damage.js'
+import type { SurvivalDifficulty } from '../survival-hunger.js'
+
+export { DifficultyDamageResultSchema, scaleDifficultyDamage as scaleHostileDamageForDifficulty }
 
 /** Java Edition startup delay; the default horizontal blocking angle is 90 degrees per side. */
 export const SHIELD_BLOCKING_DELAY_TICKS = 5
@@ -33,10 +40,84 @@ export const SHIELD_DURABILITY_DAMAGE_THRESHOLD = 3
 
 export type ShieldBlockingIntent = Extract<IntentPayload, { readonly _tag: 'SetShieldBlocking' }>
 
+export type HostileCombatPose = Readonly<{
+  feetPosition: Readonly<{ x: number; y: number; z: number }>
+  yawRadians: number
+  pitchRadians: number
+}>
+
+const HostileCombatPoseSchema: Schema.ConstraintDecoder<HostileCombatPose> = Schema.Struct({
+  feetPosition: Schema.Struct({ x: Schema.Finite, y: Schema.Finite, z: Schema.Finite }),
+  yawRadians: Schema.Finite,
+  pitchRadians: Schema.Finite,
+})
+
 export type ShieldBlockingState = Readonly<{
   actor: KernelEntityId
   raisedAt: SimulationTick
 }>
+
+export type DamageImmunityState = Readonly<{
+  lastDamageTick: SimulationTick
+  lastDamageAmount: number
+}>
+
+export const DAMAGE_IMMUNITY_TICKS = 10
+
+export const DamageImmunityStateSchema: Schema.ConstraintDecoder<DamageImmunityState> = Schema.Struct({
+  lastDamageTick: SimulationTickSchema,
+  lastDamageAmount: DamageAmountSchema,
+})
+
+export type DamageImmunityResolution = Readonly<{
+  appliedAmount: number
+  state: DamageImmunityState | null
+}>
+
+export const DamageImmunityResolutionSchema: Schema.ConstraintDecoder<DamageImmunityResolution> = Schema.Struct({
+  appliedAmount: Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)),
+  state: Schema.NullOr(DamageImmunityStateSchema),
+})
+
+const DamageImmunityInputSchema = Schema.Struct({
+  tick: SimulationTickSchema,
+  amount: DamageAmountSchema,
+  previousState: Schema.NullOr(DamageImmunityStateSchema),
+})
+
+export type DamageImmunityResolutionError = 'invalid-input' | 'invalid-tick-order' | 'invalid-result'
+
+/** Applies Java Edition's ten-tick hurt resistance to one incoming hit. */
+export const resolveDamageWithInvulnerability = (
+  input: unknown,
+): Result.Result<DamageImmunityResolution, DamageImmunityResolutionError> => {
+  const decoded = Schema.decodeUnknownResult(DamageImmunityInputSchema, {
+    onExcessProperty: 'error',
+  })(input)
+  if (Result.isFailure(decoded)) return Result.fail('invalid-input')
+
+  const { tick, amount, previousState } = decoded.success
+  let appliedAmount: number = amount
+  let state: DamageImmunityState | null = { lastDamageTick: tick, lastDamageAmount: amount }
+  if (previousState !== null) {
+    const ticksSinceLastDamage = tick - previousState.lastDamageTick
+    if (ticksSinceLastDamage < 0) return Result.fail('invalid-tick-order')
+    if (ticksSinceLastDamage < DAMAGE_IMMUNITY_TICKS) {
+      appliedAmount = amount > previousState.lastDamageAmount
+        ? amount - previousState.lastDamageAmount
+        : 0
+      state = appliedAmount > 0
+        ? { ...previousState, lastDamageAmount: amount }
+        : previousState
+    }
+  }
+
+  const result = Schema.decodeUnknownResult(DamageImmunityResolutionSchema, {
+    onExcessProperty: 'error',
+  })({ appliedAmount, state })
+  if (Result.isFailure(result)) return Result.fail('invalid-result')
+  return Result.succeed(result.success)
+}
 
 export type ShieldBlockingPreparation = Readonly<{
   actor: KernelEntityId
@@ -60,7 +141,7 @@ type ShieldIncomingAttack = Readonly<{
   piercing?: Schema.Schema.Type<typeof Schema.Boolean>
   amount: Schema.Schema.Type<typeof DamageAmountSchema>
 }>
-type ShieldIncomingAttackInput = Readonly<{
+export type ShieldIncomingAttackInput = Readonly<{
   attacker: Schema.Codec.Encoded<typeof EntityIdSchema>
   attackerPosition: Schema.Codec.Encoded<typeof WorldPositionSchema>
   kind: 'melee' | 'projectile' | 'explosion'
@@ -73,6 +154,28 @@ const ShieldIncomingAttackSchema: Schema.Codec<ShieldIncomingAttack, ShieldIncom
   kind: Schema.Literals(['melee', 'projectile', 'explosion']),
   piercing: Schema.optionalKey(Schema.Boolean),
   amount: DamageAmountSchema,
+})
+
+export type HostileAttackInput = Readonly<{
+  tick: SimulationTick
+  dimension: Dimension
+  pose: HostileCombatPose
+  hasShield: boolean
+  currentShield: ShieldBlockingState | null
+  incoming: ShieldIncomingAttackInput
+  difficulty: SurvivalDifficulty
+  damageState: DamageImmunityState | null
+}>
+
+const HostileAttackInputSchema: Schema.ConstraintDecoder<HostileAttackInput> = Schema.Struct({
+  tick: SimulationTickSchema,
+  dimension: DimensionIdSchema,
+  pose: HostileCombatPoseSchema,
+  hasShield: Schema.Boolean,
+  currentShield: Schema.NullOr(ShieldBlockingStateSchema),
+  incoming: ShieldIncomingAttackSchema,
+  difficulty: Schema.Literals(['peaceful', 'easy', 'normal', 'hard']),
+  damageState: Schema.NullOr(DamageImmunityStateSchema),
 })
 
 export const ShieldBlockingPreparationSchema: Schema.ConstraintDecoder<ShieldBlockingPreparation> = Schema.Struct({
@@ -98,7 +201,7 @@ export const prepareShieldBlocking = (
   input: Readonly<{
     tick: SimulationTick
     dimension: Dimension
-    pose: PlayerPose
+    pose: HostileCombatPose
     hasShield: boolean
     current: ShieldBlockingState | null
     incoming?: ShieldIncomingAttackInput
@@ -202,6 +305,89 @@ export const prepareShieldBlocking = (
   return Result.succeed(preparation)
 }
 
+export type HostileAttackPreparation = Readonly<{
+  shield: ShieldBlockingPreparation
+  appliedAmount: number
+  damageState: DamageImmunityState | null
+}>
+
+export const HostileAttackPreparationSchema: Schema.ConstraintDecoder<HostileAttackPreparation> = Schema.Struct({
+  shield: ShieldBlockingPreparationSchema,
+  appliedAmount: Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)),
+  damageState: Schema.NullOr(DamageImmunityStateSchema),
+})
+
+export type HostileAttackPreparationError =
+  | 'invalid-intent'
+  | 'invalid-input'
+  | 'invalid-attack'
+  | 'invalid-shield-state'
+  | 'invalid-damage-state'
+  | 'invalid-result'
+
+/** Prepare one hostile hit through difficulty, shield blocking, and hurt resistance. */
+export const prepareHostileAttack = (
+  intent: unknown,
+  input: unknown,
+): Result.Result<HostileAttackPreparation, HostileAttackPreparationError> => {
+  const decodedIntent = Schema.decodeUnknownResult(IntentPayloadSchema, {
+    onExcessProperty: 'error',
+  })(intent)
+  if (Result.isFailure(decodedIntent) || decodedIntent.success._tag !== 'SetShieldBlocking') {
+    return Result.fail('invalid-intent')
+  }
+  const decodedInput = Schema.decodeUnknownResult(HostileAttackInputSchema, {
+    onExcessProperty: 'error',
+  })(input)
+  if (Result.isFailure(decodedInput)) return Result.fail('invalid-input')
+  if (
+    decodedInput.success.damageState !== null &&
+    decodedInput.success.damageState.lastDamageTick > decodedInput.success.tick
+  ) return Result.fail('invalid-damage-state')
+
+  const adjusted = scaleDifficultyDamage({
+    amount: decodedInput.success.incoming.amount,
+    difficulty: decodedInput.success.difficulty,
+  })
+  if (Result.isFailure(adjusted)) return Result.fail('invalid-attack')
+
+  const incomingAmount = adjusted.success === 0
+    ? Result.succeed(undefined)
+    : Schema.decodeUnknownResult(DamageAmountSchema)(adjusted.success)
+  if (Result.isFailure(incomingAmount)) return Result.fail('invalid-attack')
+
+  const shield = prepareShieldBlocking(decodedIntent.success, {
+    tick: decodedInput.success.tick,
+    dimension: decodedInput.success.dimension,
+    pose: decodedInput.success.pose,
+    hasShield: decodedInput.success.hasShield,
+    current: decodedInput.success.currentShield,
+    ...(incomingAmount.success === undefined
+      ? {}
+      : { incoming: { ...decodedInput.success.incoming, amount: incomingAmount.success } }),
+  })
+  if (Result.isFailure(shield)) return Result.fail('invalid-shield-state')
+
+  const damage = incomingAmount.success === undefined || shield.success.blocked
+    ? Result.succeed({ appliedAmount: 0, state: decodedInput.success.damageState })
+    : resolveDamageWithInvulnerability({
+        tick: decodedInput.success.tick,
+        amount: incomingAmount.success,
+        previousState: decodedInput.success.damageState,
+      })
+  if (Result.isFailure(damage)) return Result.fail('invalid-damage-state')
+
+  const result = Schema.decodeUnknownResult(HostileAttackPreparationSchema, {
+    onExcessProperty: 'error',
+  })({
+    shield: shield.success,
+    appliedAmount: damage.success.appliedAmount,
+    damageState: damage.success.state,
+  })
+  if (Result.isFailure(result)) return Result.fail('invalid-result')
+  return Result.succeed(result.success)
+}
+
 export const ZOMBIE_KIND: EntityKind = EntityKind('zombie')
 
 export type HostileLocomotion = {
@@ -291,6 +477,7 @@ export const resolveHostileContacts = <S>(
   target: Position | undefined,
   dt: number,
   previousCooldowns: ReadonlyMap<EntityId, number>,
+  difficulty: SurvivalDifficulty = 'normal',
 ): HostileContactResolution => {
   const elapsed = Number.isFinite(dt) && dt > 0 ? dt : 0
   const cooldowns = new Map<EntityId, number>()
@@ -304,6 +491,7 @@ export const resolveHostileContacts = <S>(
   }
 
   const damages: Array<PlayerDamageEvent> = []
+  if (difficulty === 'peaceful') return { damages, cooldowns }
   for (const entity of entities) {
     if (
       entity.kind !== ZOMBIE_KIND ||
@@ -322,7 +510,7 @@ export const resolveHostileContacts = <S>(
       source: entity.id,
       kind: entity.kind,
       at: entity.feetPosition,
-      damage: ZOMBIE_CONTACT_DAMAGE,
+      damage: { amount: difficultyDamageAmount(ZOMBIE_CONTACT_DAMAGE.amount, difficulty), cause: 'mob' },
     })
     cooldowns.set(entity.id, HOSTILE_CONTACT_INTERVAL_SECS)
   }
@@ -340,23 +528,25 @@ export type PlayerBlast = {
 export const resolvePlayerBlastDamage = (
   blasts: ReadonlyArray<PlayerBlast>,
   target: Position | undefined,
+  difficulty: SurvivalDifficulty = 'normal',
 ): ReadonlyArray<PlayerDamageEvent> => {
   if (target === undefined) return []
 
   const damages: Array<PlayerDamageEvent> = []
   for (const blast of blasts) {
-    const damage = explosionDamageAt(
+    const baseDamage = explosionDamageAt(
       blast.explosion,
       Math.hypot(target.x - blast.at.x, target.y - blast.at.y, target.z - blast.at.z),
     )
-    if (damage.amount > 0) {
+    const amount = difficultyDamageAmount(baseDamage.amount, difficulty)
+    if (amount > 0) {
       damages.push({
         _tag: 'Explosion',
         source: blast.source,
         kind: blast.kind,
         at: blast.at,
         explosion: blast.explosion,
-        damage,
+        damage: { amount, cause: 'explosion' },
       })
     }
   }

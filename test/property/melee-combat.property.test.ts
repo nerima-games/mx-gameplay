@@ -1,0 +1,221 @@
+import { describe, it } from '@effect/vitest'
+import { Result, Schema } from 'effect'
+import * as FastCheck from 'fast-check'
+import {
+  DimensionIdSchema,
+  SimulationTickSchema,
+  WorldPositionSchema,
+} from '@nerima-games/mc-kernel'
+import { EntityId } from '@nerima-games/mc-sim'
+import { position as atPosition } from '../support/coordinate-fixtures'
+import {
+  DAMAGE_IMMUNITY_TICKS,
+  DamageImmunityResolutionSchema,
+  HostileAttackPreparationSchema,
+  prepareHostileAttack,
+  resolveDamageWithInvulnerability,
+  scaleHostileDamageForDifficulty,
+} from '../../src/domain/mob/hostile-combat'
+import { DifficultyDamageResultSchema } from '../../src/domain/combat/difficulty-damage'
+import { meleeAttackCooldown, MeleeAttackCooldownSchema } from '../../src/domain/interactions/melee-attack'
+
+const actor = EntityId('property:shield-owner')
+const attacker = EntityId('property:mob-attacker')
+const dimension = Schema.decodeUnknownSync(DimensionIdSchema)('overworld')
+const simulationTick = (value: number) => Schema.decodeUnknownSync(SimulationTickSchema)(value)
+const pose = { feetPosition: atPosition(0, 64, 0), yawRadians: 0, pitchRadians: 0 }
+const incoming = {
+  attacker,
+  attackerPosition: Schema.decodeUnknownSync(WorldPositionSchema)({
+    dimension,
+    x: 0,
+    y: 64,
+    z: 2,
+  }),
+  kind: 'melee' as const,
+  amount: 4,
+}
+
+describe('melee combat properties', () => {
+  it('returns a typed failure or schema-valid cooldown for arbitrary input', () => {
+    FastCheck.assert(
+      FastCheck.property(FastCheck.anything(), (input: unknown) => {
+        const result = meleeAttackCooldown(input)
+        if (Result.isFailure(result)) {
+          return result.failure === 'invalid-input' || result.failure === 'invalid-result'
+        }
+        const decoded = Schema.decodeUnknownResult(MeleeAttackCooldownSchema, {
+          onExcessProperty: 'error',
+        })(result.success)
+        return Result.isSuccess(decoded) &&
+          Number.isFinite(decoded.success.charge) &&
+          Number.isFinite(decoded.success.damageMultiplier)
+      }),
+    )
+  })
+
+  it('returns a typed failure or schema-valid hurt-resistance result for arbitrary input', () => {
+    FastCheck.assert(
+      FastCheck.property(FastCheck.anything(), (input: unknown) => {
+        const result = resolveDamageWithInvulnerability(input)
+        if (Result.isFailure(result)) {
+          return result.failure === 'invalid-input' ||
+            result.failure === 'invalid-tick-order' ||
+            result.failure === 'invalid-result'
+        }
+        const decoded = Schema.decodeUnknownResult(DamageImmunityResolutionSchema, {
+          onExcessProperty: 'error',
+        })(result.success)
+        return Result.isSuccess(decoded) && Number.isFinite(decoded.success.appliedAmount)
+      }),
+    )
+  })
+
+  it('matches cooldown charge and damage to generated valid tick and attack-speed inputs', () => {
+    FastCheck.assert(
+      FastCheck.property(
+        FastCheck.record({
+          attackSpeed: FastCheck.double({ min: 0.01, max: 20, noNaN: true, noDefaultInfinity: true }),
+          ticksSinceLastAttack: FastCheck.integer({ min: 0, max: 1000 }),
+        }),
+        ({ attackSpeed, ticksSinceLastAttack }) => {
+          const result = meleeAttackCooldown({ attackSpeed, ticksSinceLastAttack })
+          if (Result.isFailure(result)) return false
+          const decoded = Schema.decodeUnknownResult(MeleeAttackCooldownSchema)(result.success)
+          if (Result.isFailure(decoded)) return false
+          const expectedCharge = Math.min(
+            1,
+            (ticksSinceLastAttack + 0.5) /
+              (20 / attackSpeed),
+          )
+          const expectedDamageMultiplier = 0.2 + 0.8 * expectedCharge ** 2
+          return Number.isFinite(decoded.success.charge) &&
+            Number.isFinite(decoded.success.damageMultiplier) &&
+            Math.abs(decoded.success.charge - expectedCharge) < 1e-12 &&
+            Math.abs(decoded.success.damageMultiplier - expectedDamageMultiplier) < 1e-12
+        },
+      ),
+    )
+  })
+
+  it('returns a typed failure or schema-valid difficulty damage for arbitrary input', () => {
+    FastCheck.assert(
+      FastCheck.property(FastCheck.anything(), (input: unknown) => {
+        const result = scaleHostileDamageForDifficulty(input)
+        if (Result.isFailure(result)) {
+          return result.failure === 'invalid-input' || result.failure === 'invalid-result'
+        }
+        const decoded = Schema.decodeUnknownResult(DifficultyDamageResultSchema, {
+          onExcessProperty: 'error',
+        })(result.success)
+        return Result.isSuccess(decoded) && Number.isFinite(decoded.success) && decoded.success >= 0
+      }),
+    )
+  })
+
+  it('matches the hurt-resistance window and stronger-hit delta for generated valid inputs', () => {
+    FastCheck.assert(
+      FastCheck.property(
+        FastCheck.record({
+          lastDamageTick: FastCheck.integer({ min: 0, max: 1000 }),
+          elapsedTicks: FastCheck.integer({ min: 0, max: 20 }),
+          lastDamageAmount: FastCheck.integer({ min: 1, max: 20 }),
+          incomingAmount: FastCheck.integer({ min: 1, max: 30 }),
+        }),
+        ({ lastDamageTick, elapsedTicks, lastDamageAmount, incomingAmount }) => {
+          const previousState = {
+            lastDamageTick: simulationTick(lastDamageTick),
+            lastDamageAmount,
+          }
+          const result = resolveDamageWithInvulnerability({
+            tick: simulationTick(lastDamageTick + elapsedTicks),
+            amount: incomingAmount,
+            previousState,
+          })
+          if (Result.isFailure(result)) return false
+          const decoded = Schema.decodeUnknownResult(DamageImmunityResolutionSchema)(result.success)
+          if (Result.isFailure(decoded)) return false
+          const expectedApplied = elapsedTicks < DAMAGE_IMMUNITY_TICKS
+            ? Math.max(0, incomingAmount - lastDamageAmount)
+            : incomingAmount
+          const expectedState = elapsedTicks < DAMAGE_IMMUNITY_TICKS
+            ? incomingAmount > lastDamageAmount
+              ? { lastDamageTick: simulationTick(lastDamageTick), lastDamageAmount: incomingAmount }
+              : previousState
+            : { lastDamageTick: simulationTick(lastDamageTick + elapsedTicks), lastDamageAmount: incomingAmount }
+          return Number.isFinite(decoded.success.appliedAmount) &&
+            decoded.success.appliedAmount === expectedApplied &&
+            JSON.stringify(decoded.success.state) === JSON.stringify(expectedState)
+        },
+      ),
+    )
+  })
+
+  it('returns a typed failure or schema-valid hostile wrapper result for valid generated attacks', () => {
+    FastCheck.assert(
+      FastCheck.property(
+        FastCheck.record({
+          tick: FastCheck.integer({ min: 0, max: 100 }),
+          amount: FastCheck.integer({ min: 1, max: 20 }),
+          blocking: FastCheck.boolean(),
+          difficulty: FastCheck.constantFrom('peaceful', 'easy', 'normal', 'hard'),
+        }),
+        ({ tick, amount, blocking, difficulty }) => {
+          const result = prepareHostileAttack(
+            { _tag: 'SetShieldBlocking', actor, blocking },
+            {
+              tick: simulationTick(tick),
+              dimension,
+              pose,
+              hasShield: blocking,
+              currentShield: blocking ? { actor, raisedAt: simulationTick(0) } : null,
+              incoming: { ...incoming, amount },
+              difficulty,
+              damageState: null,
+            },
+          )
+          if (Result.isFailure(result)) {
+            return result.failure === 'invalid-attack' ||
+              result.failure === 'invalid-shield-state' ||
+              result.failure === 'invalid-damage-state' ||
+              result.failure === 'invalid-result'
+          }
+          const decoded = Schema.decodeUnknownResult(HostileAttackPreparationSchema, {
+            onExcessProperty: 'error',
+          })(result.success)
+          return Result.isSuccess(decoded) &&
+            Number.isFinite(decoded.success.appliedAmount) &&
+            decoded.success.appliedAmount >= 0
+        },
+      ),
+    )
+  })
+
+  it('returns a typed failure or schema-valid result for arbitrary hostile wrapper arguments', () => {
+    FastCheck.assert(
+      FastCheck.property(
+        FastCheck.anything(),
+        FastCheck.anything(),
+        (intent: unknown, input: unknown) => {
+          try {
+            const result = prepareHostileAttack(intent, input)
+            if (Result.isFailure(result)) {
+              return result.failure === 'invalid-intent' ||
+                result.failure === 'invalid-input' ||
+                result.failure === 'invalid-attack' ||
+                result.failure === 'invalid-shield-state' ||
+                result.failure === 'invalid-damage-state' ||
+                result.failure === 'invalid-result'
+            }
+            const decoded = Schema.decodeUnknownResult(HostileAttackPreparationSchema, {
+              onExcessProperty: 'error',
+            })(result.success)
+            return Result.isSuccess(decoded)
+          } catch {
+            return false
+          }
+        },
+      ),
+    )
+  })
+})

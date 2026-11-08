@@ -1,13 +1,13 @@
 import { describe, expect, it } from '@effect/vitest'
-import { Option } from 'effect'
+import { Effect, Option, Result } from 'effect'
 import {
   blockIdOf,
   type BlockId,
   type BlockType,
   type HarvestToolRequirement,
+  propertyOfBlockId,
 } from '@nerima-games/mc-kernel'
 import { blockPosition as atBlockPosition } from './support/coordinate-fixtures'
-import { Effect } from 'effect'
 import { blockLoot } from '../src/domain/interactions/block-loot'
 import { type requestBlockBreak } from '../src/stages/registration'
 import {
@@ -16,6 +16,7 @@ import {
   effectiveMiningSpeed,
   HAND_MINING_TOOL,
   IRON_PICKAXE_MINING_TOOL,
+  MINING_TICKS_PER_SECOND,
   miningDurationSecsForBlock,
   miningLootContextForItem,
   miningProgressFraction,
@@ -61,13 +62,13 @@ describe('mining duration', () => {
     }),
   )
 
-  it.effect('a wooden pickaxe speeds up pickaxe blocks, but not shovel blocks', () =>
+  it.effect('a wooden pickaxe speeds up pickaxe blocks and is five times slower than hand on shovel blocks', () =>
     Effect.sync(() => {
       expect(miningDurationSecsForBlock(STONE.blockId, 'wooden_pickaxe')).toBeLessThan(
         miningDurationSecsForBlock(STONE.blockId, null),
       )
-      expect(miningDurationSecsForBlock(DIRT.blockId, 'wooden_pickaxe')).toBe(
-        miningDurationSecsForBlock(DIRT.blockId, null),
+      expect(miningDurationSecsForBlock(DIRT.blockId, 'wooden_pickaxe')).toBeCloseTo(
+        miningDurationSecsForBlock(DIRT.blockId, null) * 5,
       )
     }),
   )
@@ -127,6 +128,19 @@ describe('mining duration', () => {
       expect(effectiveMiningSpeed(woodenPickaxe, lowTier)).toBe(2)
       expect(effectiveMiningSpeed(woodenPickaxe, highTier)).toBe(2)
       expect(effectiveMiningSpeed(HAND_MINING_TOOL, highTier)).toBe(1)
+      expect(
+        effectiveMiningSpeed(woodenPickaxe, { category: 'shovel', minTier: 'wooden' }),
+      ).toBe(0.2)
+    }),
+  )
+
+  it.effect('keeps the no-tool speed as the hand-mining baseline', () =>
+    Effect.sync(() => {
+      const hardness = Result.getOrThrow(propertyOfBlockId(STONE.blockId, 'hardness'))
+
+      expect(miningDurationSecsForBlock(STONE.blockId, null)).toBe(
+        hardness / MINING_TICKS_PER_SECOND,
+      )
     }),
   )
 
