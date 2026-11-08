@@ -299,18 +299,25 @@ const WITCH_POOL: MobDropPool = {
 const WITHER_DROPS: ReadonlyArray<MobDropRule> = [{ item: 'nether_star', count: 1 }]
 
 const FISH_CHOICES: ReadonlyArray<MobDropChoice> = [
-  { item: 'cod', weight: 60, count: 0, maxCount: 1, burningItem: 'cooked_cod' },
-  { item: 'salmon', weight: 25, count: 0, maxCount: 1, burningItem: 'cooked_salmon' },
-  { item: 'pufferfish', weight: 13, count: 0, maxCount: 1 },
-  { item: 'tropical_fish', weight: 2, count: 0, maxCount: 1 },
+  { item: 'cod', weight: 60, count: 1, burningItem: 'cooked_cod' },
+  { item: 'salmon', weight: 25, count: 1, burningItem: 'cooked_salmon' },
+  { item: 'pufferfish', weight: 13, count: 1 },
+  { item: 'tropical_fish', weight: 2, count: 1 },
+]
+const GUARDIAN_DROPS: ReadonlyArray<MobDropRule> = [
+  { item: 'cod', count: 1, chance: 0.4, burningItem: 'cooked_cod' },
+]
+const ELDER_GUARDIAN_DROPS: ReadonlyArray<MobDropRule> = [
+  { item: 'cod', count: 1, chance: 0.5, burningItem: 'cooked_cod' },
 ]
 const GUARDIAN_FISH_POOL: MobDropPool = {
   minSelections: 1,
   maxSelections: 1,
-  chance: 0.4,
+  chance: 0.025,
+  playerKillOnly: true,
   choices: FISH_CHOICES,
 }
-const ELDER_GUARDIAN_FISH_POOL: MobDropPool = { ...GUARDIAN_FISH_POOL, chance: 0.5 }
+const ELDER_GUARDIAN_FISH_POOL: MobDropPool = { ...GUARDIAN_FISH_POOL }
 const POLAR_BEAR_FISH_POOL: MobDropPool = {
   minSelections: 1,
   maxSelections: 1,
@@ -388,7 +395,7 @@ export const MOB_DROP_TABLES: Readonly<Record<string, MobDropTable>> = withDropS
     unsupportedItemIds: unsupportedDropItemIds('copper_ingot', 'trident'),
   },
   elder_guardian: {
-    rules: [],
+    rules: ELDER_GUARDIAN_DROPS,
     pools: [ELDER_GUARDIAN_FISH_POOL],
     unsupportedItemIds: unsupportedDropItemIds('prismarine_shard', 'prismarine_crystals', 'wet_sponge'),
   },
@@ -397,7 +404,7 @@ export const MOB_DROP_TABLES: Readonly<Record<string, MobDropTable>> = withDropS
   ghast: { rules: GHAST_DROPS },
   giant: { rules: [] },
   guardian: {
-    rules: [],
+    rules: GUARDIAN_DROPS,
     pools: [GUARDIAN_FISH_POOL],
     unsupportedItemIds: unsupportedDropItemIds('prismarine_shard', 'prismarine_crystals'),
   },

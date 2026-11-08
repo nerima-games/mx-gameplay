@@ -38,6 +38,26 @@ const STATUS_EFFECT_TYPE_BY_FOOD_NAME: Readonly<Partial<Record<FoodStatusEffectN
 const statusEffectTypeOf = (name: FoodStatusEffectName): StatusEffectType | undefined =>
   STATUS_EFFECT_TYPE_BY_FOOD_NAME[name]
 
+type FoodKernel014Override = {
+  readonly alwaysEdible?: true
+  readonly effectAmplifiers?: Partial<Record<FoodStatusEffectName, number>>
+}
+
+// mc-kernel #95 (https://github.com/nerima-games/mc-kernel/pull/95) fixes these
+// two vanilla-data errors in 0.16.0. Remove the entries when gameplay upgrades
+// to that pin. Pufferfish Nausea I stores
+// amplifier 1 (which means Nausea II); honey_bottle is marked not always edible,
+// though vanilla allows it at full hunger.
+const FOOD_KERNEL_014_OVERRIDES: Readonly<Partial<Record<ItemType, FoodKernel014Override>>> = {
+  pufferfish: { effectAmplifiers: { nausea: 0 } },
+  honey_bottle: { alwaysEdible: true },
+}
+
+const foodEffectAmplifierOf = (
+  food: FoodDefinition,
+  effect: Extract<FoodDefinition['effects'][number], { readonly kind: 'status' }>,
+): number => FOOD_KERNEL_014_OVERRIDES[food.item]?.effectAmplifiers?.[effect.name] ?? effect.amplifier
+
 const effectsOfFood = (
   food: FoodDefinition,
   effectRoll: number,
@@ -53,10 +73,15 @@ const effectsOfFood = (
     return []
   }
 
+  const amplifier = foodEffectAmplifierOf(food, effect)
   const type = statusEffectTypeOf(effect.name)
   return type === undefined
     ? []
-    : [{ type, amplifier: effect.amplifier, durationSecs: effect.durationSecs }]
+    : [{
+        type,
+        amplifier,
+        durationSecs: effect.durationSecs,
+      }]
 })
 
 export type FoodUseRequest = {
@@ -101,7 +126,11 @@ export const resolveFoodUse = ({
     return Result.succeed({ _tag: 'notFood' })
   }
 
-  if (!definition.canAlwaysEat && vitals.hungerPoints >= vitals.maxHungerPoints) {
+  if (
+    !definition.canAlwaysEat &&
+    FOOD_KERNEL_014_OVERRIDES[held]?.alwaysEdible !== true &&
+    vitals.hungerPoints >= vitals.maxHungerPoints
+  ) {
     return Result.succeed({ _tag: 'full' })
   }
 

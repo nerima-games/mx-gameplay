@@ -48,6 +48,8 @@ import {
   stepCreeperFuse,
   type CreeperFuse,
 } from '../src/domain/mob/creeper-fuse'
+import { dropRollsNeeded, rollDropsOfKind } from '../src/domain/entities/mob-frame'
+import { nextRoll } from '../src/domain/frame-rolls'
 import {
   CHARGED_CREEPER_EXPLOSION_POWER,
   CREEPER_EXPLOSION_POWER,
@@ -910,6 +912,71 @@ describe('mob drop tables', () => {
           item: 'cooked_beef',
           count: 1,
         })
+      }
+    }),
+  )
+
+  it.effect('guardian cod and player bonus fish use separate vanilla rolls', () =>
+    Effect.sync(() => {
+      const guardian = EntityKind('guardian')
+      const elderGuardian = EntityKind('elder_guardian')
+      const nonPlayerKill = { _tag: 'Slain', lootingLevel: 0 } as const
+      const playerKill = { ...nonPlayerKill, playerKill: true } as const
+      const wikiCodRows = [
+        { kind: guardian, chance: 0.4, countOnSuccess: 1 },
+        { kind: elderGuardian, chance: 0.5, countOnSuccess: 1 },
+      ] as const
+
+      // The wiki's Looting 0 table gives 0–1 cod at 40% / 50%, with means 0.40
+      // / 0.50. A successful normal drop is exactly one cod. The 2.5%
+      // player-kill bonus is a separate weighted fish, not another count roll.
+      expect(Result.getOrThrow(dropRollsNeeded(guardian))).toBe(5)
+      expect(Result.getOrThrow(dropRollsNeeded(elderGuardian))).toBe(5)
+      expect(Result.getOrThrow(rollDropsOfKind(guardian, nonPlayerKill, [0.399, 0.999, 0.024, 0.61, 0.999])))
+        .toStrictEqual([{ item: 'cod', count: 1 }])
+      expect(Result.getOrThrow(rollDropsOfKind(guardian, nonPlayerKill, [0.4, 0.999, 0, 0.61, 0])))
+        .toStrictEqual([])
+      expect(Result.getOrThrow(rollDropsOfKind(elderGuardian, nonPlayerKill, [0.499, 0.999, 0.5, 0, 0])))
+        .toStrictEqual([{ item: 'cod', count: 1 }])
+      expect(Result.getOrThrow(rollDropsOfKind(elderGuardian, nonPlayerKill, [0.5, 0.999, 0, 0, 0])))
+        .toStrictEqual([])
+
+      const sampleSize = 20_000
+      for (const { kind, chance, countOnSuccess } of wikiCodRows) {
+        let seed = 20_261_109
+        let totalCod = 0
+        for (let sample = 0; sample < sampleSize; sample += 1) {
+          const chanceDraw = nextRoll(seed)
+          seed = chanceDraw.seed
+          const countDraw = nextRoll(seed)
+          seed = countDraw.seed
+          totalCod += Result.getOrThrow(rollDropsOfKind(
+            kind,
+            nonPlayerKill,
+            [chanceDraw.roll, countDraw.roll, 0, 0, 0],
+          )).reduce((total, drop) => total + (drop.item === 'cod' ? drop.count : 0), 0)
+        }
+
+        const wikiAverageCod = chance * countOnSuccess
+        expect(totalCod / sampleSize).toBeCloseTo(wikiAverageCod, 2)
+      }
+
+      expect(Result.getOrThrow(rollDropsOfKind(guardian, playerKill, [0, 0.999, 0.024, 0.61, 0.999])))
+        .toStrictEqual([{ item: 'cod', count: 1 }, { item: 'salmon', count: 1 }])
+      expect(Result.getOrThrow(rollDropsOfKind(guardian, playerKill, [0, 0.999, 0.025, 0.61, 0])))
+        .toStrictEqual([{ item: 'cod', count: 1 }])
+
+      for (const [choiceRoll, expectedItem] of [
+        [0, 'cod'],
+        [0.6, 'salmon'],
+        [0.85, 'pufferfish'],
+        [0.98, 'tropical_fish'],
+      ] as const) {
+        expect(Result.getOrThrow(rollDropsOfKind(
+          guardian,
+          playerKill,
+          [0.999, 0, 0.024, choiceRoll, 0],
+        ))).toStrictEqual([{ item: expectedItem, count: 1 }])
       }
     }),
   )

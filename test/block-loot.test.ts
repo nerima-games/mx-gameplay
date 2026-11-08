@@ -529,16 +529,18 @@ describe('blockLoot — fortune', () => {
 
   it.effect('a non-finite fortuneLevel is treated as 0 rather than propagating NaN', () =>
     Effect.sync(() => {
-      // Gravel is the vocabulary's only fortune-sensitive drop whose chance
-      // depends on this exact clamp, so it is the case that shows a NaN
-      // fortuneLevel resolving to the unenchanted 0.1 chance rather than NaN
-      // poisoning the comparison and never dropping flint.
+      // Gravel's flint replacement and oak leaves' apple chance both use this
+      // clamp. A non-finite level follows Fortune 0 at each exact boundary.
       expect(blockLoot(GRAVEL, { fortuneLevel: Number.NaN }, [0.099999])).toStrictEqual([
         { item: 'flint', count: 1 },
       ])
       expect(blockLoot(GRAVEL, { fortuneLevel: Number.NaN }, [0.1])).toStrictEqual([
         { item: 'gravel', count: 1 },
       ])
+      expect(blockLoot(OAK_LEAVES, { fortuneLevel: Number.NaN }, [0.5, 0.5, 0.5, 1 / 200 - Number.EPSILON]))
+        .toStrictEqual([{ item: 'apple', count: 1 }])
+      expect(blockLoot(OAK_LEAVES, { fortuneLevel: Number.NaN }, [0.5, 0.5, 0.5, 1 / 200]))
+        .toStrictEqual([])
     }),
   )
 
@@ -680,6 +682,20 @@ describe('blockLoot — bonus lines', () => {
       expect(LEAF_STICK_DROP_CHANCE).toBe(1 / 50)
       expect(LEAF_SAPLING_DROP_CHANCE).toBe(1 / 20)
       expect(GRASS_SEED_DROP_CHANCE).toBe(1 / 8)
+    }),
+  )
+
+  it.effect('applies the wiki apple chance for each Fortune level', () =>
+    Effect.sync(() => {
+      const wikiRates = [1 / 200, 1 / 180, 1 / 160, 1 / 120] as const
+      expect(BLOCK_TYPES).not.toContain('dark_oak_leaves')
+
+      wikiRates.forEach((chance, fortuneLevel) => {
+        expect(blockLoot(OAK_LEAVES, { fortuneLevel }, [0.5, 0.5, 0.5, chance - Number.EPSILON]))
+          .toStrictEqual([{ item: 'apple', count: 1 }])
+        expect(blockLoot(OAK_LEAVES, { fortuneLevel }, [0.5, 0.5, 0.5, chance]))
+          .toStrictEqual([])
+      })
     }),
   )
 

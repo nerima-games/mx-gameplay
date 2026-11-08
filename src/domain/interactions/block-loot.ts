@@ -173,7 +173,8 @@ export const rollFortuneExtraDrops = (level: number, roll: number): number => {
  * `<reference-impl>/packages/world/application/block-service.config.ts:221-223`.
  * One in two hundred, one in fifty, one in twenty.
  */
-export const LEAF_APPLE_DROP_CHANCE = 0.005
+const LEAF_APPLE_DROP_CHANCES_BY_FORTUNE = [1 / 200, 1 / 180, 1 / 160, 1 / 120] as const
+export const LEAF_APPLE_DROP_CHANCE: number = LEAF_APPLE_DROP_CHANCES_BY_FORTUNE[0]
 export const LEAF_STICK_DROP_CHANCE = 0.02
 export const LEAF_SAPLING_DROP_CHANCE = 0.05
 
@@ -190,6 +191,7 @@ export const GRASS_SEED_DROP_CHANCE = 0.125
 type BonusDropLine = {
   readonly item: ItemType
   readonly chance: number
+  readonly fortuneChances?: typeof LEAF_APPLE_DROP_CHANCES_BY_FORTUNE
   readonly maxCount?: number
 }
 
@@ -210,7 +212,8 @@ type BonusDropLine = {
  * yields WHEAT_SEEDS from both tall grass and ferns. All four item types are in
  * the pinned kernel roster, so the reference rows are represented directly:
  *
- *   `apple`, `stick`, `sapling` from oak leaves
+ *   `apple`, `stick`, `sapling` from oak leaves. Kernel 0.14.0 has no
+ *   `dark_oak_leaves` block ID, so only oak leaves can currently be keyed here.
  *   `wheat_seeds` from tall grass and ferns
  */
 const BONUS_DROPS: ReadonlyMap<BlockType, ReadonlyArray<BonusDropLine>> = new Map<
@@ -222,7 +225,11 @@ const BONUS_DROPS: ReadonlyMap<BlockType, ReadonlyArray<BonusDropLine>> = new Ma
     [
       { item: 'stick', chance: LEAF_STICK_DROP_CHANCE, maxCount: 2 },
       { item: 'sapling', chance: LEAF_SAPLING_DROP_CHANCE },
-      { item: 'apple', chance: LEAF_APPLE_DROP_CHANCE },
+      {
+        item: 'apple',
+        chance: LEAF_APPLE_DROP_CHANCE,
+        fortuneChances: LEAF_APPLE_DROP_CHANCES_BY_FORTUNE,
+      },
     ],
   ],
   ['tall_grass', [{ item: 'wheat_seeds', chance: GRASS_SEED_DROP_CHANCE }]],
@@ -365,11 +372,16 @@ export const blockLoot = (
   if (bonus !== undefined) {
     bonus.slice(0, MAX_BONUS_LINES).forEach((line, index) => {
       const bonusRoll = rolls[index + 1] ?? 0
-      if (bonusRoll < line.chance) {
+      const fortuneLevel = Number.isFinite(context.fortuneLevel ?? 0)
+        ? Math.max(0, Math.floor(context.fortuneLevel ?? 0))
+        : 0
+      const fortuneIndex = Math.min(fortuneLevel, LEAF_APPLE_DROP_CHANCES_BY_FORTUNE.length - 1)
+      const chance = line.fortuneChances?.[fortuneIndex] ?? line.chance
+      if (bonusRoll < chance) {
         const count =
           line.maxCount === undefined
             ? 1
-            : 1 + Math.floor((bonusRoll / line.chance) * line.maxCount)
+            : 1 + Math.floor((bonusRoll / chance) * line.maxCount)
         items.push({ item: line.item, count })
       }
     })

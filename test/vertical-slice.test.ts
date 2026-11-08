@@ -3655,7 +3655,7 @@ describe('the potato farming slice: host input reaches farming rules', () => {
             saturationModifier: 0.1,
             effects: [
               { type: 'poison', durationSecs: 60, amplifier: 1 },
-              { type: 'nausea', durationSecs: 15, amplifier: 1 },
+              { type: 'nausea', durationSecs: 15, amplifier: 0 },
               { type: 'hunger', durationSecs: 15, amplifier: 2 },
             ],
           },
@@ -3667,7 +3667,7 @@ describe('the potato farming slice: host input reaches farming rules', () => {
       expect((yield* snapshotStatusEffects(state, commit)).effects).toStrictEqual([
         { type: 'poison', remainingSecs: 59.75, pulseClockSecs: 0.25, amplifier: 1 },
         { type: 'hunger', remainingSecs: 14.75, pulseClockSecs: 0, amplifier: 2 },
-        { type: 'nausea', remainingSecs: 14.75, pulseClockSecs: 0, amplifier: 1 },
+        { type: 'nausea', remainingSecs: 14.75, pulseClockSecs: 0, amplifier: 0 },
       ])
       expect((yield* state.survivalHunger.snapshot).vitals.exhaustion).toBeCloseTo(0.075)
     }),
