@@ -476,8 +476,11 @@ export type PlayerDamageEvent =
       readonly minimumHealthPoints: 1
     }
 
+type HostileContactDamageEvent = Extract<PlayerDamageEvent, { readonly _tag: 'HostileContact' }>
+type PlayerExplosionDamageEvent = Extract<PlayerDamageEvent, { readonly _tag: 'Explosion' }>
+
 export type HostileContactResolution = {
-  readonly damages: ReadonlyArray<PlayerDamageEvent>
+  readonly damages: ReadonlyArray<HostileContactDamageEvent>
   readonly cooldowns: ReadonlyMap<EntityId, number>
 }
 
@@ -503,7 +506,7 @@ export const resolveHostileContacts = <S>(
     return { damages: [], cooldowns }
   }
 
-  const damages: Array<PlayerDamageEvent> = []
+  const damages: Array<HostileContactDamageEvent> = []
   if (difficulty === 'peaceful') return { damages, cooldowns }
   for (const entity of entities) {
     if (
@@ -547,10 +550,10 @@ export const resolvePlayerBlastDamage = (
   blasts: ReadonlyArray<PlayerBlast>,
   target: Position | undefined,
   difficulty: SurvivalDifficulty = 'normal',
-): ReadonlyArray<PlayerDamageEvent> => {
+): ReadonlyArray<PlayerExplosionDamageEvent> => {
   if (target === undefined) return []
 
-  const damages: Array<PlayerDamageEvent> = []
+  const damages: Array<PlayerExplosionDamageEvent> = []
   for (const blast of blasts) {
     const baseDamage = explosionDamageAt(
       blast.explosion,

@@ -565,12 +565,16 @@ const runMobSimulation = (
     })),
     // Contact and blast resolvers already apply the selected difficulty. Their
     // events still pass through shield and hurt resistance without scaling twice.
-    ...contact.damages.flatMap((event) => event._tag === 'HostileContact'
-      ? [{ event, attackKind: 'melee' as const, difficulty: 'normal' as const }]
-      : []),
-    ...playerBlasts.flatMap((event) => event._tag === 'Explosion'
-      ? [{ event, attackKind: 'explosion' as const, difficulty: 'normal' as const }]
-      : []),
+    ...contact.damages.map((event) => ({
+      event,
+      attackKind: 'melee' as const,
+      difficulty: 'normal' as const,
+    })),
+    ...playerBlasts.map((event) => ({
+      event,
+      attackKind: 'explosion' as const,
+      difficulty: 'normal' as const,
+    })),
   ]
   const damages = damageInputs.map(({ event }) => event)
   const pendingShieldBlocking = yield* Ref.get(state.pendingShieldBlocking)
@@ -656,65 +660,62 @@ const runMobSimulation = (
     }
     let vitals = vitalsSnapshot?.state.vitals
     const applied: PlayerDamageEvent[] = []
-    for (const { event, attackKind, difficulty: attackDifficulty } of damageInputs) {
-      if (storage === undefined) break
-      const hasEquippedShield = hasShield()
-      if (!hasEquippedShield) shieldState = null
-      const intent = {
-        _tag: 'SetShieldBlocking' as const,
-        actor: PLAYER_BLAST_ENTITY_ID,
-        blocking: shieldState !== null,
-      }
-      const hostileAttackInput = {
-        tick: damageTick,
-        dimension: playerSnapshot.state.pose.feetPosition.dimension,
-        pose: combatPose,
-        hasShield: hasEquippedShield,
-        currentShield: shieldState,
-        incoming: {
-          attacker: event.source,
-          attackerPosition: Schema.decodeUnknownSync(WorldPositionSchema)({
-            dimension: playerSnapshot.state.pose.feetPosition.dimension,
-            ...event.at,
-          }),
-          kind: attackKind,
-          amount: event.damage.amount,
-        },
-        difficulty: attackDifficulty,
-        damageState: damageImmunityState,
-      }
-      const prepared = yield* Effect.fromResult(prepareHostileAttack(intent, hostileAttackInput))
-      shieldState = prepared.shield.blocking && prepared.shield.raisedAt !== null
-        ? { actor: prepared.shield.actor, raisedAt: prepared.shield.raisedAt }
-        : null
-      damageImmunityState = prepared.damageState
+    if (storage !== undefined) {
+      for (const { event, attackKind, difficulty: attackDifficulty } of damageInputs) {
+        const hasEquippedShield = hasShield()
+        if (!hasEquippedShield) shieldState = null
+        const intent = {
+          _tag: 'SetShieldBlocking' as const,
+          actor: PLAYER_BLAST_ENTITY_ID,
+          blocking: shieldState !== null,
+        }
+        const hostileAttackInput = {
+          tick: damageTick,
+          dimension: playerSnapshot.state.pose.feetPosition.dimension,
+          pose: combatPose,
+          hasShield: hasEquippedShield,
+          currentShield: shieldState,
+          incoming: {
+            attacker: event.source,
+            attackerPosition: Schema.decodeUnknownSync(WorldPositionSchema)({
+              dimension: playerSnapshot.state.pose.feetPosition.dimension,
+              ...event.at,
+            }),
+            kind: attackKind,
+            amount: event.damage.amount,
+          },
+          difficulty: attackDifficulty,
+          damageState: damageImmunityState,
+        }
+        const prepared = yield* Effect.fromResult(prepareHostileAttack(intent, hostileAttackInput))
+        shieldState = prepared.shield.blocking && prepared.shield.raisedAt !== null
+          ? { actor: prepared.shield.actor, raisedAt: prepared.shield.raisedAt }
+          : null
+        damageImmunityState = prepared.damageState
 
-      if (prepared.shield.durabilityDamage > 0) {
-        storage = damageAt(
-          storage,
-          { _tag: 'Equipment', slot: 'offhand' },
-          prepared.shield.durabilityDamage,
-        ).storage
-        if (!hasShield()) shieldState = null
-      }
-      if (prepared.appliedAmount === 0) continue
+        if (prepared.shield.durabilityDamage > 0) {
+          storage = damageAt(
+            storage,
+            { _tag: 'Equipment', slot: 'offhand' },
+            prepared.shield.durabilityDamage,
+          ).storage
+          if (!hasShield()) shieldState = null
+        }
+        if (prepared.appliedAmount === 0) continue
 
-      const storageForArmor = storage
-      if (storageForArmor === undefined) break
-      const armor = yield* Effect.fromResult(prepareArmorHit(storageForArmor.equipment, {
-        ...event.damage,
-        amount: prepared.appliedAmount,
-      }))
-      const amount = yield* Effect.fromResult(DamageAmount.result(armor.damage.amount))
-      const cause = yield* Effect.fromResult(DamageCause.result(armor.damage.cause))
-      vitals = applyVitalsDamage(vitals!, { amount, cause })
-      for (const slot of armor.wornSlots) {
-        const storageBeforeWear = storage
-        if (storageBeforeWear === undefined) break
-        const worn = damageAt(storageBeforeWear, { _tag: 'Equipment', slot }, armor.durabilityWear)
-        storage = worn.storage
+        const armor = yield* Effect.fromResult(prepareArmorHit(storage.equipment, {
+          ...event.damage,
+          amount: prepared.appliedAmount,
+        }))
+        const amount = yield* Effect.fromResult(DamageAmount.result(armor.damage.amount))
+        const cause = yield* Effect.fromResult(DamageCause.result(armor.damage.cause))
+        vitals = applyVitalsDamage(vitals!, { amount, cause })
+        for (const slot of armor.wornSlots) {
+          const worn = damageAt(storage, { _tag: 'Equipment', slot }, armor.durabilityWear)
+          storage = worn.storage
+        }
+        applied.push({ ...event, damage: armor.damage })
       }
-      applied.push({ ...event, damage: armor.damage })
     }
     resolvedDamages = applied
     if (storageSnapshot !== undefined && storage !== undefined && !Equal.equals(storageSnapshot.state, storage)) {
