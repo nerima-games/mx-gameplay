@@ -110,6 +110,8 @@ const spawnCreeperAttempt: MobSpawnAttempt = {
     footBlock: AIR_BLOCK_ID,
     headBlock: AIR_BLOCK_ID,
     blockLight: 0,
+    skyLight: 15,
+    biome: 'PLAINS',
     timeOfDay: 0,
     distanceToPlayerBlocksXZ: 16,
   },

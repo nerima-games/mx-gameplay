@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest'
 import * as fc from 'fast-check'
 import { Effect, Option, Ref, Result, Schema } from 'effect'
 import {
-  CHUNK_SIZE_XZ,
   BlockAxis,
   AIR_BLOCK_ID,
   DeltaTimeSecs as makeDeltaTimeSecs,
@@ -56,7 +55,7 @@ import {
   requestShieldBlocking,
   requestDroppedItemPickup,
   requestExperienceOrbAbsorption,
-  HOSTILE_SPAWN_INTERVAL_SECS,
+  HOSTILE_SPAWN_INTERVAL_TICKS,
   requestMobSpawn,
 } from '../src/stages/registration-core.js'
 import { INITIAL_DIMENSION, INITIAL_PLAYER_POSE } from '../src/domain/in-memory-player.js'
@@ -71,8 +70,6 @@ import {
   type ExperienceOrbOwnerSnapshot,
 } from '../src/domain/entities/xp-orb.js'
 import { makeEntitiesStage } from '../src/stages/entities-stage.js'
-import { SPAWN_RING_ANGLES, SPAWN_RING_RADIUS_STEPS, SPAWN_SEARCH_ROLLS } from '../src/domain/entities/mob-spawn-search.js'
-import { DEFAULT_ROLL_SEED, drawRolls, rollAt } from '../src/domain/frame-rolls.js'
 import {
   CREEPER_KIND,
   hostileMobSnapshot,
@@ -265,6 +262,7 @@ const makeHarness = (options: Readonly<{
   const state = yield* makeGameplayFrameState
   const roster = yield* makeEntityManager<MobBehaviour>()
   const time = yield* makeTimeService()
+  yield* time.setTimeOfDay(InterpolationFraction(0.9))
   const tntServiceBase = yield* makeTntService(TNT_REPLICATED_OWNER_ID).pipe(
     Effect.provideService(WorldCommitCoordinator, coordinator),
   )
@@ -1109,7 +1107,9 @@ describe('entities stage owner-backed MobSimulation', () => {
     const localBefore = await Effect.runPromise(Effect.all({
       damages: Ref.get(harness.state.playerDamages),
       cooldowns: Ref.get(harness.state.hostileContactCooldowns),
-      spawnClock: Ref.get(harness.state.spawnClockSecs),
+      lastHostileSpawnTick: Ref.get(harness.state.lastHostileSpawnTick),
+      lastPassiveSpawnTick: Ref.get(harness.state.lastPassiveSpawnTick),
+      passiveInitialSpawnPending: Ref.get(harness.state.passiveInitialSpawnPending),
     }))
 
     const exit = await Effect.runPromiseExit(
@@ -1131,7 +1131,9 @@ describe('entities stage owner-backed MobSimulation', () => {
     expect(await Effect.runPromise(Effect.all({
       damages: Ref.get(harness.state.playerDamages),
       cooldowns: Ref.get(harness.state.hostileContactCooldowns),
-      spawnClock: Ref.get(harness.state.spawnClockSecs),
+      lastHostileSpawnTick: Ref.get(harness.state.lastHostileSpawnTick),
+      lastPassiveSpawnTick: Ref.get(harness.state.lastPassiveSpawnTick),
+      passiveInitialSpawnPending: Ref.get(harness.state.passiveInitialSpawnPending),
     }))).toStrictEqual(localBefore)
   })
 
@@ -1155,35 +1157,36 @@ describe('entities stage owner-backed MobSimulation', () => {
     const initialSeed = await Effect.runPromise(Ref.get(harness.state.rollSeed))
     await Effect.runPromise(harness.context.time.setTimeOfDay(InterpolationFraction(0.5)))
 
-    await harness.run(makeDeltaTimeSecs(HOSTILE_SPAWN_INTERVAL_SECS))
+    await harness.run(makeDeltaTimeSecs(0))
 
     const passiveSeed = await Effect.runPromise(Ref.get(harness.state.rollSeed))
-    const passiveClock = await Effect.runPromise(Ref.get(harness.state.spawnClockSecs))
+    const initialPending = await Effect.runPromise(Ref.get(harness.state.passiveInitialSpawnPending))
     const passiveCalls = await Effect.runPromise(harness.store.calls)
-    expect(passiveSeed).toBe(initialSeed)
-    expect(passiveClock).toBe(0)
-    expect(passiveCalls.reads).toBeGreaterThan(0)
+    expect(passiveSeed).not.toBe(initialSeed)
+    expect(initialPending).toBe(false)
+    expect(passiveCalls.peeks).toBeGreaterThan(0)
 
-    await Effect.runPromise(harness.context.time.setTimeOfDay(InterpolationFraction(0)))
-    await harness.run(makeDeltaTimeSecs(HOSTILE_SPAWN_INTERVAL_SECS))
+    await Effect.runPromise(harness.context.time.setTimeOfDay(InterpolationFraction(0.9)))
+    await Effect.runPromise(Ref.set(harness.state.tickCount, HOSTILE_SPAWN_INTERVAL_TICKS - 1))
+    await harness.run(makeDeltaTimeSecs(0))
 
     expect(await Effect.runPromise(Ref.get(harness.state.rollSeed))).not.toBe(passiveSeed)
-    expect(await Effect.runPromise(Ref.get(harness.state.spawnClockSecs))).toBe(0)
+    expect(await Effect.runPromise(Ref.get(harness.state.lastHostileSpawnTick))).toBe(HOSTILE_SPAWN_INTERVAL_TICKS)
   })
 
   it('merges an offered spawn ahead of the cadence search and drains the offered attempt', async () => {
     const ground: Array<readonly [ReturnType<typeof blockPosition>, BlockId]> = []
     const loadedChunks = new Set<string>()
-    const rotation = rollAt(drawRolls(DEFAULT_ROLL_SEED, SPAWN_SEARCH_ROLLS), 0)
-    // The offered spawn occupies one of the 16 owner slots, so 15 ring cells fill the rest.
-    for (let angleIndex = 0; angleIndex < SPAWN_RING_ANGLES - 1; angleIndex += 1) {
-      const angle = ((angleIndex + rotation) / SPAWN_RING_ANGLES) * 2 * Math.PI
-      // The radius-24 ring stays inside the rule's 16-to-40-block band after flooring.
-      for (const radius of SPAWN_RING_RADIUS_STEPS.slice(1, 2)) {
-        const x = Math.floor(radius * Math.cos(angle))
-        const z = Math.floor(radius * Math.sin(angle))
+    // The stage advances the seed as it sweeps the roster; floor the full 24-to-40
+    // band so the search result does not depend on the cursor's resulting angle.
+    for (let x = -48; x <= 47; x += 1) {
+      for (let z = -48; z <= 47; z += 1) {
         ground.push([blockPosition(BlockAxis(x), BlockAxis(63), BlockAxis(z)), STONE])
-        loadedChunks.add(`${String(Math.floor(x / CHUNK_SIZE_XZ))},${String(Math.floor(z / CHUNK_SIZE_XZ))}`)
+      }
+    }
+    for (let chunkX = -3; chunkX <= 2; chunkX += 1) {
+      for (let chunkZ = -3; chunkZ <= 2; chunkZ += 1) {
+        loadedChunks.add(`${String(chunkX)},${String(chunkZ)}`)
       }
     }
     const playerPose = {
@@ -1202,19 +1205,22 @@ describe('entities stage owner-backed MobSimulation', () => {
         footBlock: AIR_BLOCK_ID,
         headBlock: AIR_BLOCK_ID,
         blockLight: 0,
-        timeOfDay: 0,
+        skyLight: 0,
+        biome: 'PLAINS' as const,
+        timeOfDay: 0.9,
         distanceToPlayerBlocksXZ: 30,
       },
       kind: CREEPER_KIND,
       feetPosition: position(PositionAxis(30), PositionAxis(64), PositionAxis(0)),
     }
-    await Effect.runPromise(harness.context.time.setTimeOfDay(InterpolationFraction(0)))
+    await Effect.runPromise(harness.context.time.setTimeOfDay(InterpolationFraction(0.9)))
     await Effect.runPromise(requestMobSpawn(harness.state, offered))
 
-    await harness.run(makeDeltaTimeSecs(HOSTILE_SPAWN_INTERVAL_SECS))
+    await Effect.runPromise(Ref.set(harness.state.tickCount, HOSTILE_SPAWN_INTERVAL_TICKS - 1))
+    await harness.run(makeDeltaTimeSecs(0))
 
     const roster = await Effect.runPromise(strictRoster(harness.coordinator))
-    expect(roster.state.entities).toHaveLength(16)
+    expect(roster.state.entities).toHaveLength(2)
     expect(roster.state.entities[0]?.feetPosition).toStrictEqual(offered.feetPosition)
     expect(await Effect.runPromise(Ref.get(harness.state.spawnAttempts))).toStrictEqual([])
     expect(harness.commits()).toBe(1)
@@ -1238,7 +1244,9 @@ describe('entities stage owner-backed MobSimulation', () => {
         footBlock: AIR_BLOCK_ID,
         headBlock: AIR_BLOCK_ID,
         blockLight: 0,
-        timeOfDay: 0,
+        skyLight: 0,
+        biome: 'PLAINS' as const,
+        timeOfDay: 0.9,
         distanceToPlayerBlocksXZ: 30,
       },
       kind: CREEPER_KIND,
@@ -1255,7 +1263,7 @@ describe('entities stage owner-backed MobSimulation', () => {
     expect(await Effect.runPromise(strictRoster(harness.coordinator))).toStrictEqual(exhaustedRoster)
     expect(await Effect.runPromise(harness.coordinator.revision)).toBe(exhaustedRoster.revision)
     expect(await Effect.runPromise(Ref.get(harness.state.spawnAttempts))).toStrictEqual([offered])
-    expect(await Effect.runPromise(Ref.get(harness.state.spawnClockSecs))).toBe(0)
+    expect(await Effect.runPromise(Ref.get(harness.state.lastHostileSpawnTick))).toBe(0)
   })
 
   it('skips block edits when a valid finite mob position exceeds the block-axis range', async () => {

@@ -4,8 +4,8 @@
  * plan.md §7 gives mx-gameplay the mob row's 「AI・スポーン条件・ドロップ」, and this
  * is the spawn condition. It answers about ONE candidate cell. Choosing which
  * cells to offer — the reference's ring of sixteen angles by four radii
- * (`packages/entity/application/mob/mob-spawner-helpers.ts:9-18`), the 0.3s
- * cadence, the population caps, the moon-phase gate — is a SEARCH over mc-sim's
+ * (`packages/entity/application/mob/mob-spawner-helpers.ts:9-18`), the
+ * difficulty-based tick cadence, and the population caps — is a SEARCH over the
  * entity roster, and the roster is mc-sim's. A rule that iterated candidates
  * would need to know how many mobs already exist, which is the question
  * `EntityManager` answers.
@@ -45,35 +45,28 @@
  * The night gate is `../day-night`'s, and is not re-derived
  * ---------------------------------------------------------------------------
  *
- * `hostileSpawnsAllowed` is called, not reimplemented. `../day-night`'s header
- * records what happens when a caller inlines its own comparison instead: the
- * reference shipped a fresh world that spawned at midnight with hostiles that do
- * not burn in daylight camped on the respawn point — an unrecoverable death loop
- * on world creation. DN-GP-7's whole point is that mc-sim and this repository
- * must agree about when night is; a third opinion in this file would be the
- * second half of that bug.
+ * `hostileSpawnsAllowed` provides the configured night window, while raw sky
+ * light distinguishes exposed daytime surfaces from dark caves. `ChunkStoreApi`
+ * reports sky light before time-of-day reduction, so the threshold is an
+ * approximation until the host exposes adjusted sky light.
  *
- * (Creepers are, incidentally, among the mobs that do NOT burn at dawn —
- * `packages/entity/domain/mob/mob-categories.ts:59-68` lists only the undead —
- * so "it is night" is the whole of the daylight rule for this mob, and the
- * despawn half is not here. See what is missing, below.)
+ * This rule requires block light zero in every hostile dimension; surface
+ * Overworld hostiles also require the night window or low raw sky light.
  *
  * ---------------------------------------------------------------------------
  * What this rule does NOT decide
  * ---------------------------------------------------------------------------
  *
- * WHICH mob (the reference rotates a roster by cursor, `mob-categories.ts:16-25`
- * — the creeper is index 1 of 8), HOW MANY (`MAX_HOSTILE_COUNT = 16` against a
- * live census), HOW OFTEN (`SPAWN_INTERVAL_SECS = 0.3`), and DESPAWNING
- * (`DESPAWN_DISTANCE = 128`, a 3D test). Every one of those reads or writes the
- * roster. They arrive with mc-sim, and until then a rule that pretended to make
- * them would be a second owner of the mob population.
+ * HOW MANY is difficulty-configured; the search and frame own the roster census
+ * and cadence. Biomes here use worldgen's coarse categories, which cannot
+ * distinguish several vanilla sub-biomes or structure-only spawn locations.
  */
 import { Result } from 'effect'
 import { AIR_BLOCK_ID, capabilityOfBlockId, type BlockId } from '@nerima-games/mc-kernel'
 import { hostileSpawnsAllowed } from '../day-night.js'
 import type { EntityKind } from '@nerima-games/mc-sim'
-import type { Dimension } from '@nerima-games/mc-worldgen'
+import type { ChunkBiomeType, Dimension } from '@nerima-games/mc-worldgen'
+import type { HostileDifficulty } from './hostile-despawn.js'
 import {
   ecosystemDimensionAllows,
   ECOSYSTEM_MOB_KINDS,
@@ -84,27 +77,81 @@ import {
 /**
  * Brightest block light a hostile may spawn in.
  *
- * `packages/entity/domain/mob/spawner-config.ts:29`, and the comparison is
- * STRICTLY GREATER (`terrain-spawn.ts:75`): light of exactly 7 still spawns.
- * The reference's own oracle pins both sides of that boundary
- * (`packages/entity/test/mob/terrain-spawn.test.ts`: 7 spawns, 8 does not).
+ * Vanilla Java Edition requires block light zero. Tests cover zero and the
+ * adjacent level-one boundary.
  */
-export const HOSTILE_SPAWN_MAX_BLOCK_LIGHT = 7
+export const HOSTILE_SPAWN_MAX_BLOCK_LIGHT = 0
+
+/** Raw sky light above this level marks an exposed cell outside the night window. */
+export const HOSTILE_SPAWN_MAX_DAY_SKY_LIGHT = 7
 
 /**
  * The band of horizontal distances from the player a spawn may land in.
  *
- * `spawner-config.ts:2-3`. Both ends are INCLUSIVE, which is not obvious from
- * the reference's code and is asserted by its oracle: `mob-spawner-rules.ts:14`
- * rejects on `distSq < minSq` and `distSq > maxSq`, so 16 and 40 both pass
- * (`packages/entity/test/mob/mob-spawner-rules.test.ts` asserts exactly that,
- * and that 15 and 41 fail).
+ * Both ends are inclusive. The balance target is 24–40 blocks.
  *
  * The band is HORIZONTAL (XZ) in the reference; the vertical component enters
  * only the 128-block despawn guard, which is not ported (see the module header).
  */
-export const MIN_SPAWN_DISTANCE_BLOCKS = 16
+export const MIN_SPAWN_DISTANCE_BLOCKS = 24
 export const MAX_SPAWN_DISTANCE_BLOCKS = 40
+
+/** Spawn pacing and population limits at the simulation's 20-tick-per-second rate. */
+export const HOSTILE_SPAWN_SETTINGS: Readonly<Record<HostileDifficulty, {
+  readonly maxPopulation: number
+  readonly intervalTicks: number
+}>> = {
+  peaceful: { maxPopulation: 0, intervalTicks: 40 },
+  easy: { maxPopulation: 6, intervalTicks: 40 },
+  normal: { maxPopulation: 9, intervalTicks: 30 },
+  hard: { maxPopulation: 14, intervalTicks: 20 },
+}
+
+export type SpawnTickFailure = { readonly _tag: 'InvalidSpawnTick' }
+
+export const hostileSpawnSearchDue = (
+  currentTick: number,
+  lastSpawnTick: number,
+  difficulty: HostileDifficulty,
+): Result.Result<boolean, SpawnTickFailure> => {
+  if (
+    !Number.isSafeInteger(currentTick) || currentTick < 0 ||
+    !Number.isSafeInteger(lastSpawnTick) || lastSpawnTick < 0 || currentTick < lastSpawnTick
+  ) return Result.fail({ _tag: 'InvalidSpawnTick' })
+
+  return Result.succeed(
+    currentTick - lastSpawnTick >= HOSTILE_SPAWN_SETTINGS[difficulty].intervalTicks,
+  )
+}
+
+const OVERWORLD_HOSTILES = ['creeper', 'enderman', 'zombie', 'skeleton', 'spider'] as const
+const FARM_ANIMALS = ['cow', 'pig', 'sheep'] as const
+
+/**
+ * The current worldgen API stores 13 coarse Overworld biomes plus Nether and
+ * End. These entries approximate the species each label can represent; they do
+ * not encode sub-biome variants, spawn weights, group sizes, or structures.
+ */
+export const MOB_BIOME_SPAWN_TABLE: Readonly<Record<ChunkBiomeType, ReadonlyArray<string>>> = {
+  PLAINS: [...OVERWORLD_HOSTILES, ...FARM_ANIMALS, 'chicken'],
+  DESERT: [...OVERWORLD_HOSTILES],
+  FOREST: [...OVERWORLD_HOSTILES, ...FARM_ANIMALS, 'chicken'],
+  FLOWER_FOREST: [...OVERWORLD_HOSTILES, ...FARM_ANIMALS, 'chicken'],
+  OCEAN: [...OVERWORLD_HOSTILES],
+  MOUNTAINS: [...OVERWORLD_HOSTILES, ...FARM_ANIMALS, 'chicken'],
+  SNOW: [...OVERWORLD_HOSTILES],
+  SWAMP: [...OVERWORLD_HOSTILES, ...FARM_ANIMALS, 'chicken'],
+  JUNGLE: [...OVERWORLD_HOSTILES, ...FARM_ANIMALS, 'chicken'],
+  BEACH: [...OVERWORLD_HOSTILES],
+  RIVER: [...OVERWORLD_HOSTILES],
+  TAIGA: [...OVERWORLD_HOSTILES, ...FARM_ANIMALS, 'chicken'],
+  SAVANNA: [...OVERWORLD_HOSTILES, ...FARM_ANIMALS, 'chicken'],
+  NETHER: ['zombified_piglin', 'blaze'],
+  END: [],
+}
+
+export const biomeAllowsMob = (kind: EntityKind, biome: ChunkBiomeType): boolean =>
+  MOB_BIOME_SPAWN_TABLE[biome]?.includes(kind) === true
 
 /**
  * Everything the rule needs to know, and nothing it does not.
@@ -122,9 +169,13 @@ export type SpawnCandidate = {
   readonly footBlock: BlockId
   /** The cell above that. Mobs are two blocks tall (`terrain-spawn.ts:69`). */
   readonly headBlock: BlockId
-  /** Block light at the body cell, 0-15. An absent light grid reads as 0 = dark. */
+  /** Block light at the body cell, 0-15. An unavailable light read refuses the candidate. */
   readonly blockLight: number
-  /** mc-sim's fraction of the day. Zero is midnight (`../day-night`). */
+  /** Raw sky light at the body cell, before time-of-day reduction. */
+  readonly skyLight: number
+  /** Coarse biome read from the candidate's chunk column. */
+  readonly biome: ChunkBiomeType
+  /** mc-sim's fraction of the day, interpreted by this module's .55-.95 night window. */
   readonly timeOfDay: number
   /** Horizontal distance to the nearest player, in blocks. */
   readonly distanceToPlayerBlocksXZ: number
@@ -154,12 +205,14 @@ export type SpawnRefusal =
   | 'too-bright'
   | 'unmeasurable'
   | 'wrong-dimension'
+  | 'wrong-biome'
 
 export type SpawnVerdict =
   | { readonly _tag: 'Spawn' }
   | { readonly _tag: 'Refused'; readonly reason: SpawnRefusal }
 
 const REFUSED = (reason: SpawnRefusal): SpawnVerdict => ({ _tag: 'Refused', reason })
+const isLightLevel = (value: number): boolean => Number.isInteger(value) && value >= 0 && value <= 15
 
 // Valid but unregistered ids retain kernel's default capability values.
 const isSpawnSurface = (block: BlockId): boolean =>
@@ -180,15 +233,17 @@ const isSpawnSurface = (block: BlockId): boolean =>
  * mob it would be. See the module header.
  */
 export const canHostileSpawnAt = (candidate: SpawnCandidate): SpawnVerdict => {
-  if (!hostileSpawnsAllowed(candidate.timeOfDay)) {
-    return REFUSED('daylight')
-  }
-
   if (
     !Number.isFinite(candidate.distanceToPlayerBlocksXZ) ||
-    !Number.isFinite(candidate.blockLight)
+    !isLightLevel(candidate.blockLight) ||
+    !isLightLevel(candidate.skyLight) ||
+    !Number.isFinite(candidate.timeOfDay)
   ) {
     return REFUSED('unmeasurable')
+  }
+
+  if (!hostileSpawnsAllowed(candidate.timeOfDay) && candidate.skyLight > HOSTILE_SPAWN_MAX_DAY_SKY_LIGHT) {
+    return REFUSED('daylight')
   }
 
   if (candidate.distanceToPlayerBlocksXZ < MIN_SPAWN_DISTANCE_BLOCKS) {
@@ -214,7 +269,7 @@ export const canHostileSpawnAt = (candidate: SpawnCandidate): SpawnVerdict => {
     return REFUSED('obstructed')
   }
 
-  if (candidate.blockLight > HOSTILE_SPAWN_MAX_BLOCK_LIGHT) {
+  if (candidate.blockLight !== HOSTILE_SPAWN_MAX_BLOCK_LIGHT) {
     return REFUSED('too-bright')
   }
 
@@ -223,6 +278,7 @@ export const canHostileSpawnAt = (candidate: SpawnCandidate): SpawnVerdict => {
 
 export const canMobSpawnAt = (kind: EntityKind, candidate: SpawnCandidate): SpawnVerdict => {
   const dimension = candidate.dimension ?? 'overworld'
+  if (!biomeAllowsMob(kind, candidate.biome)) return REFUSED('wrong-biome')
   if (
     ECOSYSTEM_MOB_KINDS.includes(kind as (typeof ECOSYSTEM_MOB_KINDS)[number]) &&
     !ecosystemDimensionAllows(kind, dimension)
@@ -235,11 +291,11 @@ export const canMobSpawnAt = (kind: EntityKind, candidate: SpawnCandidate): Spaw
     return canHostileSpawnAt(candidate)
   }
 
-  if (!Number.isFinite(candidate.distanceToPlayerBlocksXZ) || !Number.isFinite(candidate.blockLight)) return REFUSED('unmeasurable')
+  if (!Number.isFinite(candidate.distanceToPlayerBlocksXZ) || !isLightLevel(candidate.blockLight) || !isLightLevel(candidate.skyLight)) return REFUSED('unmeasurable')
   if (candidate.distanceToPlayerBlocksXZ < MIN_SPAWN_DISTANCE_BLOCKS) return REFUSED('too-close')
   if (candidate.distanceToPlayerBlocksXZ > MAX_SPAWN_DISTANCE_BLOCKS) return REFUSED('too-far')
   if (!isSpawnSurface(candidate.groundBlock)) return REFUSED('not-a-surface')
   if (candidate.footBlock !== AIR_BLOCK_ID || candidate.headBlock !== AIR_BLOCK_ID) return REFUSED('obstructed')
-  if (nether && candidate.blockLight > HOSTILE_SPAWN_MAX_BLOCK_LIGHT) return REFUSED('too-bright')
+  if (nether && candidate.blockLight !== HOSTILE_SPAWN_MAX_BLOCK_LIGHT) return REFUSED('too-bright')
   return { _tag: 'Spawn' }
 }

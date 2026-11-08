@@ -46,6 +46,7 @@ import {
   type ChunkDirtyBatch,
   type ChunkDirtySubscription,
   type ChunkStoreApi,
+  type ChunkBiomeType,
   type LightReading,
   type ReadonlyChunk,
 } from '@nerima-games/mc-worldgen'
@@ -72,6 +73,8 @@ export const blockKey = (position: BlockPosition): string =>
 export const chunkKeyOf = (position: BlockPosition): string =>
   `${String(Math.floor(position.x / CHUNK_SIDE))},${String(Math.floor(position.z / CHUNK_SIDE))}`
 
+export const biomeKeyOf = (position: BlockPosition): string => `${String(position.x)},${String(position.z)}`
+
 const chunkCoordOf = (position: BlockPosition) =>
   chunkCoord(
     ChunkAxis(Math.floor(position.x / CHUNK_SIDE)),
@@ -82,6 +85,11 @@ export const world = (
   entries: ReadonlyArray<readonly [BlockPosition, BlockId]>,
 ): ReadonlyMap<string, BlockId> =>
   new Map(entries.map(([position, block]) => [blockKey(position), block] as const))
+
+export const biomeWorld = (
+  entries: ReadonlyArray<readonly [BlockPosition, ChunkBiomeType]>,
+): ReadonlyMap<string, ChunkBiomeType> =>
+  new Map(entries.map(([position, biome]) => [biomeKeyOf(position), biome] as const))
 
 /** One cell's brightness, as the double stores it. */
 export type LightLevels = {
@@ -130,6 +138,7 @@ export type StoreCalls = {
 type Doubles = {
   readonly blocks: Map<string, BlockId>
   readonly lights: Map<string, LightLevels>
+  readonly biomes: Map<string, ChunkBiomeType>
   readonly loadedChunks: Set<string>
   readonly subscribers: Map<number, Set<string>>
   nextSubscriber: number
@@ -158,11 +167,13 @@ export const makeChunkStoreDouble = (
    * `getLight` existed.
    */
   lights: ReadonlyMap<string, LightLevels> = new Map(),
+  biomes: ReadonlyMap<string, ChunkBiomeType> = new Map(),
 ): Effect.Effect<ChunkStoreDouble> =>
   Effect.map(
     Ref.make<Doubles>({
       blocks: new Map(initial),
       lights: new Map(lights),
+      biomes: new Map(biomes),
       loadedChunks: new Set(loaded),
       subscribers: new Map(),
       nextSubscriber: 0,
@@ -254,8 +265,15 @@ export const makeChunkStoreDouble = (
               const lz = ((z % CHUNK_SIDE) + CHUNK_SIDE) % CHUNK_SIDE
               blocks[blockIndex(lx, y, lz)] = block
             }
+            const chunkBiomes = Array.from({ length: CHUNK_SIDE * CHUNK_SIDE }, (_, index) => {
+              const lx = index % CHUNK_SIDE
+              const lz = Math.floor(index / CHUNK_SIDE)
+              const x = coord.cx * CHUNK_SIDE + lx
+              const z = coord.cz * CHUNK_SIDE + lz
+              return doubles.biomes.get(`${String(x)},${String(z)}`) ?? 'PLAINS'
+            })
 
-            return [{ coord, blocks, biomes: [] }, doubles] as const
+            return [{ coord, blocks, biomes: chunkBiomes }, doubles] as const
           }),
 
         snapshot: () => notImplemented,

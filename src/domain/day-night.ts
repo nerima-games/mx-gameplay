@@ -33,28 +33,28 @@
  * `timeOfDay` is a fraction in [0, 1) supplied by mc-sim's
  * `TimeService.timeOfDay`. Finite values outside that range still denote the
  * same phase on an adjacent day, so this rule canonicalises them before
- * deciding the phase. ZERO IS MIDNIGHT: 0.25 is dawn, 0.5 noon, 0.75 dusk.
- * That is the reference implementation's convention, and mc-sim carries it —
- * `mc-sim/domain/time-of-day.ts:117-120` computes night as
- * `fraction < 0.25 || fraction > 0.75`, and the same file records why a
- * fresh world starts at 0.30 rather than 0: a midnight spawn put the
- * night-mob roster on top of a brand-new player and daylight-immune hostiles
- * camped the respawn point, an unrecoverable death loop on world creation.
+ * deciding the phase. Hostile spawning uses the balance window 0.55 through
+ * 0.95; the daytime span wraps through zero.
  *
- * `isNight` below uses mc-sim's predicate after canonicalising its finite
- * input. The spawn rule and the state that feeds it must agree about when night
- * is, and they are in different repositories, so the agreement is written down
- * twice and pinned by a test in each rather than assumed.
+ * `isNight` below is mx-gameplay's spawn-window rule after canonicalising its
+ * finite input. mc-sim currently supplies the time fraction but retains its own
+ * default night predicate; callers must not assume those windows are coupled.
  */
 
+/** Start of the hostile-spawn night window. */
+export const NIGHT_START_FRACTION = 0.55
+
+/** End of the hostile-spawn night window. */
+export const NIGHT_END_FRACTION = 0.95
+
 /** Dawn: the sun clears the horizon. */
-export const DAWN_FRACTION = 0.25
+export const DAWN_FRACTION: number = NIGHT_END_FRACTION
 
 /** Noon: the sun is highest. */
-export const NOON_FRACTION = 0.5
+export const NOON_FRACTION = 0.25
 
 /** Dusk: the sun touches the horizon. */
-export const DUSK_FRACTION = 0.75
+export const DUSK_FRACTION: number = NIGHT_START_FRACTION
 
 /**
  * Width of the twilight bands, as a fraction of the day.
@@ -85,16 +85,15 @@ const canonicalTimeOfDay = (timeOfDay: number): number => {
 }
 
 /**
- * Is it night?
+ * Is it in the hostile-spawn night window?
  *
- * The comparison is identical to `mc-sim/domain/time-of-day.ts` after finite
- * input is reduced to the current day's fraction. This keeps a rewound or
- * manually advanced clock from changing the phase merely because it crossed a
- * day boundary.
+ * The inclusive bounds are balance values. This keeps a rewound or manually
+ * advanced clock from changing the phase merely because it crossed a day
+ * boundary.
  */
 export const isNight = (timeOfDay: number): boolean => {
   const fraction = canonicalTimeOfDay(timeOfDay)
-  return fraction < DAWN_FRACTION || fraction > DUSK_FRACTION
+  return fraction >= NIGHT_START_FRACTION && fraction <= NIGHT_END_FRACTION
 }
 
 /**
@@ -108,7 +107,7 @@ export const dayPhase = (timeOfDay: number): DayPhase => {
   if (isNight(fraction)) {
     return 'night'
   }
-  if (fraction < DAWN_FRACTION + TWILIGHT_BAND) {
+  if (fraction > NIGHT_END_FRACTION || fraction < TWILIGHT_BAND) {
     return 'dawn'
   }
   if (fraction > DUSK_FRACTION - TWILIGHT_BAND) {
@@ -120,10 +119,9 @@ export const dayPhase = (timeOfDay: number): DayPhase => {
 /**
  * May daylight-sensitive hostiles spawn?
  *
- * A named alias for `isNight` rather than a second predicate. The two are the
- * same question today, and the reference's death-loop bug (see the module
- * header) is what happens when a caller answers it by inlining a comparison of
- * its own. When mob-specific rosters arrive they take a `DayPhase`, and this
- * stays the coarse gate.
+ * A named alias for the configured hostile night window. Surface hostiles use
+ * it together with raw sky light; cave hostiles may spawn outside this window.
+ * Passive spawning uses the daylight result to avoid competing with the
+ * hostile night cycle.
  */
 export const hostileSpawnsAllowed = (timeOfDay: number): boolean => isNight(timeOfDay)

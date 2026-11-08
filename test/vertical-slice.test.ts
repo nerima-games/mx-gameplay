@@ -282,6 +282,7 @@ const slice = (
     const inventory = yield* makeInventoryDouble(inventorySlots)
     const player = yield* makePlayerServiceDouble()
     const time = yield* makeTimeService()
+    yield* time.setTimeOfDay(InterpolationFraction(0.9))
     const commitServices = yield* makeGameplayCommitServices(store.api, inventory.api, ownerInitial)
     const publishedEvents = yield* Ref.make<ReadonlyArray<Parameters<DomainEventBusApi['publish']>[0]>>([])
     const eventBus: DomainEventBusApi = {
@@ -1091,7 +1092,7 @@ describe('the slice, through the stage registration', () => {
 /** Chunk (0, 0), so that a creeper's whole 3-block crater is resident. */
 const creeperAt: BlockPosition = fixtureBlockPosition(5, 64, 5)
 const bystanderAt: Position = fixturePosition(7, 64, 5)
-/** 20 blocks off in XZ, which is inside `hostile-spawn`'s 16..40 band. */
+/** 25 blocks off in XZ, which is inside `hostile-spawn`'s 24..40 band. */
 const playerFar: Position = fixturePosition(25, 64, 5)
 /** Two blocks from the creeper and four from the bystander: one lights, one does not. */
 const playerNear: Position = fixturePosition(3, 64, 5)
@@ -1107,8 +1108,8 @@ const ledgeSand: BlockPosition = fixtureBlockPosition(5, 68, 5)
  * A candidate cell that `canHostileSpawnAt` says yes to.
  *
  * Every field is somebody else's fact and the test is playing all of them:
- * midnight (mc-sim's hour), pitch dark and a stone floor with two cells of air
- * (mc-worldgen's blocks and light grid), 20 blocks away in XZ (mc-sim's player).
+ * the configured night window, block light zero, a stone floor with two cells of
+ * air, and a horizontal distance of 30 blocks.
  *
  * These tests keep OFFERING candidates through the inbox even though
  * `domain/entities/mob-spawn-search.ts` now gathers them for real. That is
@@ -1122,8 +1123,10 @@ const legalCandidate = {
   footBlock: AIR_BLOCK_ID,
   headBlock: AIR_BLOCK_ID,
   blockLight: 0,
-  timeOfDay: 0,
-  distanceToPlayerBlocksXZ: 20,
+  skyLight: 0,
+  biome: 'PLAINS',
+  timeOfDay: 0.9,
+  distanceToPlayerBlocksXZ: 30,
 } as const
 
 const attemptAt = (feetPosition: Position, kind: EntityKind = CREEPER_KIND): MobSpawnAttempt => ({
@@ -1151,10 +1154,9 @@ const STRIDE = DeltaTimeSecs(0.25)
 /**
  * Put the world at noon, so that the SPAWN SEARCH does not run.
  *
- * `domain/entities/mob-spawn-search.ts` is paced by
- * `HOSTILE_SPAWN_INTERVAL_SECS` and gated on `hostileSpawnsAllowed`, and the
- * authoritative TimeService defaults to 0 — midnight — which is night and
- * therefore ALLOWS spawns.
+ * `domain/entities/mob-spawn-search.ts` is paced by the host tick counter, and
+ * daylight surface cells are rejected by the sky-light approximation. The
+ * authoritative TimeService defaults to 0, which is inside the spawn window.
  *
  * It means every test below that is about something ELSE has to say what time it
  * is, exactly as it already has to say where the player is. The tests that ARE
@@ -1176,12 +1178,13 @@ describe('the mob slice, through the stage registration', () => {
       const routeSpawn = (dimension: 'overworld' | 'nether', kind: EntityKind) =>
         Effect.gen(function* () {
           const target = fixturePosition(0.5, 64, 0.5)
-          const { store, state, player, stages, commit } = yield* slice(world([]))
+          const { store, state, player, time, stages, commit } = yield* slice(world([]))
           yield* movePlayerAndSyncOwner(player.api, commit.coordinator, target)
           yield* setPlayerDimensionAndSyncOwner(player.api, commit.coordinator, dimension)
           const candidate: SpawnCandidate = {
             ...legalCandidate,
             dimension,
+            biome: dimension === 'nether' ? 'NETHER' : 'PLAINS',
             timeOfDay: NOON_FRACTION,
           }
           const attempt: MobSpawnAttempt = { candidate, kind, feetPosition: target }
@@ -1190,6 +1193,7 @@ describe('the mob slice, through the stage registration', () => {
           )
           expect(allowedKinds.has(attempt.kind)).toBe(true)
           expect(attempt.candidate.dimension).toBe(dimension)
+          yield* daylight(time)
 
           const entitiesBefore = yield* readGameplayEntityRoster(commit.coordinator)
           const revisionBefore = yield* commit.coordinator.revision
@@ -1222,6 +1226,7 @@ describe('the mob slice, through the stage registration', () => {
           [ledgeSand, SAND],
         ]),
       )
+      yield* Ref.set(state.passiveInitialSpawnPending, false)
 
       // ---- the player is far away, and two creepers are offered ------------
       yield* daylight(time)
@@ -1352,7 +1357,7 @@ describe('the mob slice, through the stage registration', () => {
       // fresh one per mob would be completely correct and would hand back
       // per-mob-per-frame garbage on the frame path — DN-GP-1's mistake made out
       // of objects instead of block reads.
-      const { store, roster, state, player, time, stages, commit } = yield* slice(world([[craterFloor, STONE]]))
+      const { store, roster, state, player, stages, commit } = yield* slice(world([[craterFloor, STONE]]))
 
       // Three mobs this repository has no rule for, and one dormant creeper.
       // The creeper is 50 blocks off: outside the 3-block ignition range and
@@ -1374,7 +1379,6 @@ describe('the mob slice, through the stage registration', () => {
         behaviour: DORMANT_FUSE,
       })
       yield* syncGameplayRosterOwner(commit.coordinator, roster, OVERWORLD_DIMENSION)
-      yield* daylight(time)
       yield* movePlayerAndSyncOwner(player.api, commit.coordinator, playerNear)
 
       const before = yield* readGameplayEntityRoster(commit.coordinator)
@@ -1435,8 +1439,8 @@ describe('the mob slice, through the stage registration', () => {
 
   it.effect('the population cap is a live census, re-read for every candidate', () =>
     Effect.gen(function* () {
-      // `domain/mob/hostile-spawn.ts` said HOW MANY 「arrives with mc-sim」 and
-      // named `MAX_HOSTILE_COUNT = 16 against a live census`. `countOfKind` is
+      // `domain/mob/hostile-spawn.ts` leaves the difficulty cap to this layer.
+      // `countOfKind` is
       // that census. The cap is re-read per attempt rather than hoisted, because
       // the frame in which the last slot is taken is the only frame in which the
       // cap is the thing being tested.
@@ -1455,7 +1459,7 @@ describe('the mob slice, through the stage registration', () => {
       expect(candidates.filter((entity) => entity.kind === CREEPER_KIND)).toHaveLength(MAX_HOSTILE_COUNT)
 
       // The owner candidate is the stage's live census. A hoisted count would
-      // have allowed all twenty attempts through; only sixteen may be committed.
+      // have allowed all attempts through; only the configured normal cap may be committed.
       expect((yield* roster.calls).censuses).toBe(0)
     }),
   )
@@ -1470,7 +1474,7 @@ describe('the mob slice, through the stage registration', () => {
       yield* movePlayerAndSyncOwner(player.api, commit.coordinator, playerFar)
 
       yield* offerSpawns(state, [
-        { candidate: { ...legalCandidate, timeOfDay: 0.5 }, kind: CREEPER_KIND, feetPosition: positionOfBlock(creeperAt) },
+        { candidate: { ...legalCandidate, timeOfDay: 0.5, skyLight: 15 }, kind: CREEPER_KIND, feetPosition: positionOfBlock(creeperAt) },
         { candidate: { ...legalCandidate, blockLight: 8 }, kind: CREEPER_KIND, feetPosition: positionOfBlock(creeperAt) },
         { candidate: { ...legalCandidate, distanceToPlayerBlocksXZ: 4 }, kind: CREEPER_KIND, feetPosition: positionOfBlock(creeperAt) },
         { candidate: { ...legalCandidate, groundBlock: AIR_BLOCK_ID }, kind: CREEPER_KIND, feetPosition: positionOfBlock(creeperAt) },
@@ -1955,7 +1959,7 @@ describe('the enderman slice: a rule that returns a displacement, run over a ros
       // failure this prevents is not cosmetic: dispatching on the tag alone would
       // make a pig carrying a fuse explode, and a creeper carrying a flinch
       // consult the teleport rule instead of burning down.
-      const { roster, state, player, time, stages, commit } = yield* slice(world([]))
+      const { roster, state, player, stages, commit } = yield* slice(world([]))
 
       const pig = EntityKind('pig')
       yield* roster.api.spawn({
@@ -1978,7 +1982,6 @@ describe('the enderman slice: a rule that returns a displacement, run over a ros
         behaviour: DORMANT_FUSE,
       })
       yield* syncGameplayRosterOwner(commit.coordinator, roster, OVERWORLD_DIMENSION)
-      yield* daylight(time)
       yield* movePlayerAndSyncOwner(player.api, commit.coordinator, playerNear)
 
       const before = yield* readGameplayEntityRoster(commit.coordinator)

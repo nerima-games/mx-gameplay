@@ -149,6 +149,8 @@ export const playerSystemsMeleeSetup: ScenarioSetup = {
             footBlock: AIR_BLOCK_ID,
             headBlock: AIR_BLOCK_ID,
             blockLight: 0,
+            skyLight: 15,
+            biome: pose.dimension === 'nether' ? 'NETHER' : pose.dimension === 'end' ? 'END' : 'PLAINS',
             timeOfDay: runBrowserDebugEffect(site.time.timeOfDay),
             distanceToPlayerBlocksXZ: Math.hypot(0.5, -16.5),
           },

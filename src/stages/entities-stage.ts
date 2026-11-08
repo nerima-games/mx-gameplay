@@ -1,7 +1,9 @@
 import {
   Effect,
   GAMEPLAY_STAGE_IDS,
-  HOSTILE_SPAWN_INTERVAL_SECS,
+  HOSTILE_SPAWN_BATCH_SIZE,
+  PASSIVE_SPAWN_BATCH_SIZE,
+  PASSIVE_SPAWN_INTERVAL_TICKS,
   NO_ATTEMPTS,
   Ref,
   applyFallingBlocks,
@@ -85,6 +87,7 @@ import { prepareArmorHit } from '../domain/combat/armor.js'
 import { disturb } from '../domain/falling-block.js'
 import { TNT_EXPLOSION_POWER, type Explosion } from '../domain/mob/explosion.js'
 import { PRIMED_TNT_KIND } from '../domain/entities/mob-frame.js'
+import { hostileSpawnSearchDue } from '../domain/mob/hostile-spawn.js'
 import {
   GameplayEntityRosterSchema,
   GameplayTntSourcesSnapshotSchema,
@@ -488,7 +491,10 @@ const runMobSimulation = (
     PositionAxis(playerSnapshot.state.pose.feetPosition.z),
   )
   const seed = yield* Ref.get(state.rollSeed)
-  const deathTick = Schema.decodeUnknownSync(SimulationTickSchema)(yield* Ref.get(state.tickCount))
+  // `entities` runs before `fluids`, which advances this shared counter later
+  // in the same registered stage pass. Count the pass being executed now.
+  const currentTick = (yield* Ref.get(state.tickCount)) + 1
+  const deathTick = Schema.decodeUnknownSync(SimulationTickSchema)(currentTick)
   const sweep = planMobRosterSweep(entitySnapshot.state, {
     target: playerPosition,
     dt,
@@ -500,40 +506,54 @@ const runMobSimulation = (
   )
   const blast = planMobBlastRoster(teleported, sweep.blasts, deathTick)
   const offeredAttempts = yield* Ref.get(state.spawnAttempts)
-  const spawnElapsed = (yield* Ref.get(state.spawnClockSecs)) + dt
-  const searchDue = spawnElapsed >= HOSTILE_SPAWN_INTERVAL_SECS
-  const nextSpawnClockSecs = searchDue
-    ? spawnElapsed - HOSTILE_SPAWN_INTERVAL_SECS
-    : spawnElapsed
+  const difficulty = (yield* state.survivalHunger.snapshot).difficulty
+  const lastHostileSpawnTick = yield* Ref.get(state.lastHostileSpawnTick)
+  const intervalElapsed = yield* Effect.fromResult(
+    hostileSpawnSearchDue(currentTick, lastHostileSpawnTick, difficulty),
+  )
+  const hostileSearchDue = difficulty !== 'peaceful' && intervalElapsed
   const casualtyDrops = rollCasualtyDrops(blast.casualties, sweep.seed)
   let searchedAttempts: ReadonlyArray<MobSpawnAttempt> = NO_ATTEMPTS
   let nextRollSeed = casualtyDrops.seed
-  if (searchDue) {
-    const timeOfDay = yield* context.time.timeOfDay
-    const dimension = playerSnapshot.state.pose.feetPosition.dimension
-    const hostileSearch = dimension === 'nether' || hostileSpawnsAllowed(timeOfDay)
-    const passiveRepopulationSearch = !hostileSearch && entitySnapshot.state.entities.length === 0
-    if (hostileSearch || passiveRepopulationSearch) {
-      const found = yield* searchSpawnCandidates(
-        store,
-        playerPosition,
-        timeOfDay,
-        casualtyDrops.seed,
-        dimension,
-      )
-      searchedAttempts = found.attempts
-      // Daylight passive repopulation does not perturb the shared combat/drop
-      // sequence. It only runs while the roster is empty, so if it succeeds the
-      // next cadence is gated until hostile spawning is allowed again.
-      if (hostileSearch) nextRollSeed = found.seed
-    }
+  const timeOfDay = yield* context.time.timeOfDay
+  const dimension = playerSnapshot.state.pose.feetPosition.dimension
+  const passiveInitialSpawnPending = yield* Ref.get(state.passiveInitialSpawnPending)
+  const lastPassiveSpawnTick = yield* Ref.get(state.lastPassiveSpawnTick)
+  const passiveSearchDue = dimension === 'overworld' &&
+    !hostileSpawnsAllowed(timeOfDay) &&
+    (passiveInitialSpawnPending || currentTick - lastPassiveSpawnTick >= PASSIVE_SPAWN_INTERVAL_TICKS)
+  if (hostileSearchDue) {
+    const found = yield* searchSpawnCandidates(
+      store,
+      playerPosition,
+      timeOfDay,
+      casualtyDrops.seed,
+      dimension,
+      'hostile',
+    )
+    searchedAttempts = found.attempts.slice(0, HOSTILE_SPAWN_BATCH_SIZE)
+    nextRollSeed = found.seed
+  }
+  if (passiveSearchDue) {
+    const found = yield* searchSpawnCandidates(
+      store,
+      playerPosition,
+      timeOfDay,
+      nextRollSeed,
+      dimension,
+      'passive',
+    )
+    nextRollSeed = found.seed
+    searchedAttempts = searchedAttempts.length === 0
+      ? found.attempts.slice(0, PASSIVE_SPAWN_BATCH_SIZE)
+      : [...searchedAttempts, ...found.attempts.slice(0, PASSIVE_SPAWN_BATCH_SIZE)]
   }
   const attempts = offeredAttempts.length === 0
     ? searchedAttempts
     : searchedAttempts.length === 0
       ? offeredAttempts
       : [...offeredAttempts, ...searchedAttempts]
-  const spawned = planSpawnAttemptsOnRoster(blast.roster, attempts)
+  const spawned = planSpawnAttemptsOnRoster(blast.roster, attempts, difficulty)
   if (Result.isFailure(spawned)) return yield* Effect.fail(spawned.failure)
 
   const difficulty = (yield* state.survivalHunger.snapshot).difficulty
@@ -770,7 +790,6 @@ const runMobSimulation = (
     }
   }
   const edits = [...blockEdits.values()]
-  const dimension = playerSnapshot.state.pose.feetPosition.dimension
   const dimensionRevision = yield* commit.coordinator.dimensionRevision(dimension)
   const expectedDimensions = edits.length === 0
     ? []
@@ -827,7 +846,11 @@ const runMobSimulation = (
   // Local cursors and output queues move only after the replicated candidate
   // has committed. Ref updates are synchronous and append to any newly queued work.
   yield* Ref.set(state.rollSeed, nextRollSeed)
-  yield* Ref.set(state.spawnClockSecs, nextSpawnClockSecs)
+  if (hostileSearchDue) yield* Ref.set(state.lastHostileSpawnTick, currentTick)
+  if (passiveSearchDue) {
+    yield* Ref.set(state.lastPassiveSpawnTick, currentTick)
+    yield* Ref.set(state.passiveInitialSpawnPending, false)
+  }
   yield* Ref.set(state.hostileContactCooldowns, contact.cooldowns)
   yield* Ref.set(state.shieldBlocking, shieldState)
   yield* Ref.set(state.damageImmunity, damageImmunityState)

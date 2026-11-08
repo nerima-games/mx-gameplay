@@ -285,6 +285,7 @@ import {
 } from '../domain/entities/xp-orb.js'
 import { searchSpawnCandidates } from '../domain/entities/mob-spawn-search.js'
 import { hostileSpawnsAllowed } from '../domain/day-night.js'
+import { HOSTILE_SPAWN_SETTINGS } from '../domain/mob/hostile-spawn.js'
 import {
   entityManagerTag,
   type EntityId,
@@ -524,22 +525,20 @@ const prepareFirePlayerDamage = (
  */
 export const LAVA_TICK_INTERVAL = 4
 
-/**
- * Seconds between two runs of the hostile spawn search.
- *
- * `<reference-impl>/packages/entity/domain/mob/spawner-config.ts`'s
- * `SPAWN_INTERVAL_SECS`, and `domain/mob/hostile-spawn.ts`'s header lists it
- * among the things that rule does not decide — 「HOW OFTEN (`SPAWN_INTERVAL_SECS
- * = 0.3`)」. This is where it arrives.
- *
- * IN SECONDS AND NOT IN TICKS, unlike `LAVA_TICK_INTERVAL` above. The lava
- * cadence is a ratio between two rules that both run per tick, so counting ticks
- * is the honest unit for it. This one is a real-time budget for a fixed amount
- * of work, so a frame-rate change must not change how often the world spawns
- * mobs — which is precisely the divergence `domain/mob/enderman-teleport.ts`
- * records as the known defect of the reference's tick-counted lanes.
- */
-export const HOSTILE_SPAWN_INTERVAL_SECS = 0.3
+/** Hostile search interval at the normal difficulty, expressed as simulation ticks. */
+export const HOSTILE_SPAWN_INTERVAL_TICKS: number = HOSTILE_SPAWN_SETTINGS.normal.intervalTicks
+
+/** Compatibility value for callers that display the normal cadence in seconds. */
+export const HOSTILE_SPAWN_INTERVAL_SECS: number = HOSTILE_SPAWN_INTERVAL_TICKS / 20
+
+/** Passive mobs use the vanilla-style 400-tick rare respawn cadence. */
+export const PASSIVE_SPAWN_INTERVAL_TICKS = 400
+
+/** One initial/periodic animal batch is bounded to a small group. */
+export const PASSIVE_SPAWN_BATCH_SIZE = 4
+
+/** One hostile is tried per cadence interval. */
+export const HOSTILE_SPAWN_BATCH_SIZE = 1
 
 /** Shared empty list, so a frame that searches nothing allocates nothing. */
 const NO_ATTEMPTS: ReadonlyArray<never> = []
@@ -1109,8 +1108,12 @@ export type GameplayFrameState = {
   readonly weatherGameplayInput: Ref.Ref<WeatherGameplayInput>
   readonly weatherGameplay: Ref.Ref<WeatherGameplayState>
   readonly weatherGameplayEvents: Ref.Ref<ReadonlyArray<WeatherGameplayEvent>>
-  /** Seconds accumulated towards the next spawn search. Scratch: losing it costs one interval. */
-  readonly spawnClockSecs: Ref.Ref<number>
+  /** Simulation tick of the last hostile search. */
+  readonly lastHostileSpawnTick: Ref.Ref<number>
+  /** Simulation tick of the last passive respawn search. */
+  readonly lastPassiveSpawnTick: Ref.Ref<number>
+  /** Initial chunk-generation-style animal batch has not yet run. */
+  readonly passiveInitialSpawnPending: Ref.Ref<boolean>
   readonly rollSeed: Ref.Ref<number>
   readonly fallingBlocks: Ref.Ref<FallingBlockQueue>
   readonly fluidFrontier: Ref.Ref<ReadonlyArray<FluidWorkItem>>
@@ -2036,8 +2039,8 @@ const makeGameplayFrameStateWithOptions = (
   const villagerTradeResults = yield* Ref.make<ReadonlyArray<VillagerTradeResult>>([])
   const spawnAttempts = yield* Ref.make<ReadonlyArray<MobSpawnAttempt>>([])
   const targetPosition = yield* Ref.make<Position | undefined>(undefined)
-  // Midnight, which `domain/day-night.ts` reads as night. See the module header
-  // on why the permissive default is the right one to be wrong with.
+  // Zero is outside `domain/day-night.ts`'s .55-.95 hostile-spawn window.
+  // Callers that need a specific phase set the TimeService explicitly.
   const timeOfDay = yield* Ref.make(0)
   // Bare hands. The RESTRICTIVE default, unlike the hour's — see the header.
   const heldTool = yield* Ref.make<BlockLootContext>(NO_TOOL)
@@ -2054,7 +2057,9 @@ const makeGameplayFrameStateWithOptions = (
   })
   const weatherGameplay = yield* Ref.make(makeWeatherGameplayState(DEFAULT_ROLL_SEED))
   const weatherGameplayEvents = yield* Ref.make<ReadonlyArray<WeatherGameplayEvent>>([])
-  const spawnClockSecs = yield* Ref.make(0)
+  const lastHostileSpawnTick = yield* Ref.make(0)
+  const lastPassiveSpawnTick = yield* Ref.make(0)
+  const passiveInitialSpawnPending = yield* Ref.make(true)
   // A LITERAL, not a clock reading: two runs of one scenario must draw the same
   // numbers (plan.md §5.1-3). A world seed is mc-worldgen's noun and this is
   // where it lands when that repository publishes one.
@@ -2130,7 +2135,9 @@ const makeGameplayFrameStateWithOptions = (
     weatherGameplayInput,
     weatherGameplay,
     weatherGameplayEvents,
-    spawnClockSecs,
+    lastHostileSpawnTick,
+    lastPassiveSpawnTick,
+    passiveInitialSpawnPending,
     rollSeed,
     fallingBlocks,
     fluidFrontier,

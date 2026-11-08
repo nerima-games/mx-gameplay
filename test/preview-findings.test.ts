@@ -76,8 +76,8 @@ describe('F6 regression — the day/night rules are periodic in the day', () => 
 
   it.effect('maps negative fractions to the previous day', () =>
     Effect.sync(() => {
-      // -0.25 is dusk on the previous day; -0.5 is noon on the previous day.
-      expect(dayPhase(-0.25)).toBe('dusk')
+      // -0.25 wraps to the configured night window; -0.5 is daytime.
+      expect(dayPhase(-0.25)).toBe('night')
       expect(dayPhase(-0.5)).toBe('day')
       expect(hostileSpawnsAllowed(-0.5)).toBe(false)
 

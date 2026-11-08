@@ -48,11 +48,11 @@ describe('bed sleep', () => {
       bedPosition,
       dangerNearby: false,
       dimension: 'overworld',
-      timeOfDay: 0,
+      timeOfDay: 0.9,
       weather: 'clear',
     })).toStrictEqual({
       _tag: 'SleepAccepted',
-      morningTimeOfDay: 0.25,
+      morningTimeOfDay: 0.95,
       respawnLocation: {
         dimension: 'overworld',
         position: { x: 5, y: 65, z: -3 },
@@ -107,7 +107,7 @@ describe('bed sleep', () => {
       })
 
       expect(decision._tag).toBe('SleepAccepted')
-      expect(setTimeOfDay).toHaveBeenCalledExactlyOnceWith(0.25)
+      expect(setTimeOfDay).toHaveBeenCalledExactlyOnceWith(0.95)
     }),
   )
 

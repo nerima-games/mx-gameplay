@@ -1,7 +1,6 @@
 import { describe, expect, it } from '@effect/vitest'
 import fc from 'fast-check'
 import { AIR_BLOCK_ID, DeltaTimeSecs } from '@nerima-games/mc-kernel'
-import { Effect } from 'effect'
 import {
   DORMANT_FUSE,
   CREEPER_FUSE_SECS,
@@ -18,23 +17,8 @@ import {
   PASSIVE_MOB_KINDS,
   stepEcosystemMob,
 } from '../../src/domain/mob/mob-ecosystem'
-import { searchSpawnCandidates, SPAWN_RING_CELLS } from '../../src/domain/entities/mob-spawn-search'
-import { makeChunkStoreDouble, STONE, world } from '../support/chunk-store-double'
-import { blockPosition, position } from '../support/coordinate-fixtures'
-
-const spawnWorld = world(
-  Array.from({ length: 96 * 96 }, (_, index) => {
-    const x = -48 + (index % 96)
-    const z = -48 + Math.floor(index / 96)
-    return [blockPosition(x, 63, z), STONE] as const
-  }),
-)
-
-const spawnChunks = Array.from({ length: 7 * 7 }, (_, index) => {
-  const x = -3 + (index % 7)
-  const z = -3 + Math.floor(index / 7)
-  return `${String(x)},${String(z)}`
-})
+import { STONE } from '../support/chunk-store-double'
+import { position } from '../support/coordinate-fixtures'
 
 describe('mob lifecycle properties', () => {
   it('keeps passive movement non-hostile, level, and bounded by elapsed time', () => {
@@ -110,8 +94,7 @@ describe('mob lifecycle properties', () => {
     )
   })
 
-  it('refuses hostile spawn candidates only above the valid block-light limit', () => {
-    // Catches an off-by-one light gate that rejects level 7 or admits level 8.
+  it('requires zero block light for hostile spawning', () => {
     fc.assert(
       fc.property(fc.integer({ min: 0, max: 15 }), (blockLight) => {
         const verdict = canHostileSpawnAt({
@@ -119,56 +102,18 @@ describe('mob lifecycle properties', () => {
           footBlock: AIR_BLOCK_ID,
           headBlock: AIR_BLOCK_ID,
           blockLight,
+          skyLight: 0,
+          biome: 'PLAINS',
           timeOfDay: 0.9,
-          distanceToPlayerBlocksXZ: 20,
+          distanceToPlayerBlocksXZ: 30,
         })
 
-        if (blockLight <= 7) {
+        if (blockLight === 0) {
           expect(verdict).toStrictEqual({ _tag: 'Spawn' })
         } else {
           expect(verdict).toStrictEqual({ _tag: 'Refused', reason: 'too-bright' })
         }
       }),
-    )
-  })
-
-  it('offers a complete spawn ring on the floored player plane without immediate despawns', async () => {
-    // Catches bad floor rounding, duplicate candidates, and spawn points swept on arrival.
-    const store = await Effect.runPromise(makeChunkStoreDouble(spawnWorld, spawnChunks))
-
-    await fc.assert(
-      fc.asyncProperty(
-        fc.integer({ min: 0, max: 65_535 }),
-        fc.double({ min: -4, max: 4, noNaN: true, noDefaultInfinity: true }),
-        fc.double({ min: -4, max: 4, noNaN: true, noDefaultInfinity: true }),
-        fc.double({ min: 64, max: 64.99, noNaN: true, noDefaultInfinity: true }),
-        async (seed, x, z, y) => {
-          const target = position(x, y, z)
-          const found = await Effect.runPromise(
-            searchSpawnCandidates(store.api, target, 0.9, seed),
-          )
-          const identities = new Set(
-            found.attempts.map(({ feetPosition }) =>
-              `${String(feetPosition.x)},${String(feetPosition.y)},${String(feetPosition.z)}`,
-            ),
-          )
-
-          expect(found.unreadable).toBe(0)
-          expect(found.attempts).toHaveLength(SPAWN_RING_CELLS)
-          expect(identities.size).toBe(SPAWN_RING_CELLS)
-          for (const attempt of found.attempts) {
-            expect(attempt.feetPosition.y).toBe(Math.floor(target.y))
-            expect(attempt.candidate.groundBlock).toBe(STONE)
-            const distance3d = Math.hypot(
-              attempt.feetPosition.x - target.x,
-              attempt.feetPosition.y - target.y,
-              attempt.feetPosition.z - target.z,
-            )
-            expect(despawnVerdict({ distanceToPlayerBlocks: distance3d, persistent: false }))
-              .toStrictEqual({ _tag: 'Keep' })
-          }
-        },
-      ),
     )
   })
 

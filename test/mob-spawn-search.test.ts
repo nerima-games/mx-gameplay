@@ -13,18 +13,23 @@
  */
 import { describe, expect, it } from '@effect/vitest'
 import { position as atPosition } from './support/coordinate-fixtures'
-import { makeTimeService } from '@nerima-games/mc-sim'
-import { Effect, Ref, Schema } from 'effect'
-import { AIR_BLOCK_ID, BlockAxis, BlockId, DeltaTimeSecs, InterpolationFraction, blockPosition as makeBlockPosition, type BlockPosition, type Position } from '@nerima-games/mc-kernel'
+import {
+  EntityId,
+  makeTimeService,
+  type EntityKind,
+  type EntityRoster,
+} from '@nerima-games/mc-sim'
+import { Effect, Ref, Result, Schema } from 'effect'
+import { AIR_BLOCK_ID, BlockAxis, BlockId, DeltaTimeSecs, EntitySerial, InterpolationFraction, blockPosition as makeBlockPosition, type BlockPosition, type Position } from '@nerima-games/mc-kernel'
 import type { ChunkStoreApi } from '@nerima-games/mc-worldgen'
 import {
   CREEPER_KIND,
   ENDERMAN_KIND,
   HOSTILE_KINDS,
   initialBehaviourOfKind,
-  MAX_HOSTILE_COUNT,
   MAX_PASSIVE_COUNT,
   maxHealthOfKind,
+  planSpawnAttemptsOnRoster,
   type MobBehaviour,
 } from '../src/domain/entities/mob-frame'
 import {
@@ -32,14 +37,19 @@ import {
   SPAWN_RING_ANGLES,
   SPAWN_RING_CELLS,
   SPAWN_RING_RADII,
+  SPAWN_RING_RADIUS_INSET_BLOCKS,
   SPAWN_RING_RADIUS_STEPS,
   SPAWN_SEARCH_ROLLS,
 } from '../src/domain/entities/mob-spawn-search'
 import { drawRolls, rollAt } from '../src/domain/frame-rolls'
+import { isNight } from '../src/domain/day-night'
 import { DESPAWN_DISTANCE_BLOCKS, despawnVerdict } from '../src/domain/mob/hostile-despawn'
 import { ZOMBIE_KIND } from '../src/domain/mob/hostile-combat'
 import { PASSIVE_MOB_KINDS } from '../src/domain/mob/mob-ecosystem'
 import {
+  HOSTILE_SPAWN_SETTINGS,
+  hostileSpawnSearchDue,
+  MOB_BIOME_SPAWN_TABLE,
   MAX_SPAWN_DISTANCE_BLOCKS,
   MIN_SPAWN_DISTANCE_BLOCKS,
 } from '../src/domain/mob/hostile-spawn'
@@ -50,9 +60,12 @@ import {
 import { GAMEPLAY_STAGE_IDS } from '../src/stages/stage-ids'
 import {
   gameplayStages,
-  HOSTILE_SPAWN_INTERVAL_SECS,
   makeGameplayFrameState,
 } from '../src/stages/registration'
+import {
+  HOSTILE_SPAWN_INTERVAL_TICKS,
+  PASSIVE_SPAWN_BATCH_SIZE,
+} from '../src/stages/registration-core'
 import {
   lightWorld,
   makeChunkStoreDouble,
@@ -61,6 +74,7 @@ import {
   type LightLevels,
 } from './support/chunk-store-double'
 import { FrameServicesLayer } from './support/frame-services'
+import { runFrame, runFrames } from './support/frame-runner'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
 import { makePlayerServiceDouble, SPAWN_POSE } from './support/player-service-double'
 import { makeInventoryDouble } from './support/inventory-service-double'
@@ -80,7 +94,7 @@ const blockPosition = (x: number, y: number, z: number): BlockPosition =>
 
 const PLAYER = atPosition(0.5, 64, 0.5 )
 const FLOOR_Y = 63
-const MIDNIGHT = InterpolationFraction(0)
+const MIDNIGHT = InterpolationFraction(0.9)
 
 /** Chunk keys covering -48..47 on both axes, which contains the whole ring. */
 const RESIDENT_CHUNKS: ReadonlyArray<string> = (() => {
@@ -104,18 +118,101 @@ const FLOORED_WORLD = (() => {
   return world(cells)
 })()
 
+const CAVE_FLOORED_WORLD = (() => {
+  const cells: Array<readonly [BlockPosition, BlockId]> = []
+  for (let x = -48; x <= 47; x += 1) {
+    for (let z = -48; z <= 47; z += 1) {
+      cells.push([blockPosition(x, FLOOR_Y, z), STONE] as const)
+      cells.push([blockPosition(x, 30, z), STONE] as const)
+    }
+  }
+  return world(cells)
+})()
+
+const TEST_TICKS_PER_DAY = 24_000
+const NIGHT_DISTRIBUTION_SEEDS = [1, 42, 2026] as const
+const brightSkyAt = (y: number) => lightWorld(
+  Array.from({ length: 96 * 96 }, (_, index) => {
+    const x = index % 96 - 48
+    const z = Math.floor(index / 96) - 48
+    return [blockPosition(x, y, z), { sky: 15, block: 0 }] as const
+  }),
+)
+const BRIGHT_SURFACE_LIGHT = brightSkyAt(64)
+const DISTRIBUTION_FLOOR_Y = 251
+const DISTRIBUTION_WORLD = world(
+  Array.from({ length: 96 * 96 }, (_, index) => {
+    const x = index % 96 - 48
+    const z = Math.floor(index / 96) - 48
+    return [blockPosition(x, DISTRIBUTION_FLOOR_Y, z), STONE] as const
+  }),
+)
+const DISTRIBUTION_LIGHT = brightSkyAt(DISTRIBUTION_FLOOR_Y + 1)
+const DISTRIBUTION_PLAYER = atPosition(0.5, DISTRIBUTION_FLOOR_Y - 15, 0.5)
+
 const searchIn = (
   blocks: ReadonlyMap<string, BlockId>,
   loaded: ReadonlyArray<string>,
   lights: ReadonlyMap<string, LightLevels> = new Map(),
   seed = 1,
   timeOfDay = MIDNIGHT,
+  mode: 'hostile' | 'passive' = 'hostile',
 ) =>
   Effect.gen(function* () {
     const store = yield* makeChunkStoreDouble(blocks, loaded, lights)
-    const found = yield* searchSpawnCandidates(store.api, PLAYER, timeOfDay, seed)
+    const found = yield* searchSpawnCandidates(store.api, PLAYER, timeOfDay, seed, 'overworld', mode)
     return { store, found }
   })
+
+const makeStageHarness = (
+  blocks: ReadonlyMap<string, BlockId>,
+  lights: ReadonlyMap<string, LightLevels>,
+  playerFeet: Position,
+  initialRoster?: EntityRoster<MobBehaviour>,
+) =>
+  Effect.gen(function* () {
+    const store = yield* makeChunkStoreDouble(blocks, RESIDENT_CHUNKS, lights)
+    const roster = initialRoster === undefined
+      ? yield* makeEntityManagerDouble<MobBehaviour>()
+      : yield* makeEntityManagerDouble(initialRoster)
+    const playerPose = { ...SPAWN_POSE, feetPosition: playerFeet }
+    const player = yield* makePlayerServiceDouble(playerPose)
+    const inventory = yield* makeInventoryDouble()
+    const time = yield* makeTimeService()
+    const state = yield* makeGameplayFrameState
+    const commit = yield* makeGameplayCommitServices(store.api, inventory.api, {
+      playerPose,
+      ...(initialRoster === undefined ? {} : { entities: initialRoster }),
+    })
+    const stages = gameplayStages(
+      state,
+      store.api,
+      roster.api,
+      inventory.api,
+      player.api,
+      time,
+      undefined,
+      undefined,
+      {},
+      commit,
+    )
+    return { store, roster, time, state, commit, stages }
+  })
+
+const seededRoster = (
+  kind: EntityKind,
+  count: number,
+  feetAt: (index: number) => Position,
+): EntityRoster<MobBehaviour> => ({
+  entities: Array.from({ length: count }, (_, index) => ({
+    id: EntityId(`seeded-${kind}-${String(index)}`),
+    kind,
+    feetPosition: feetAt(index),
+    healthPoints: maxHealthOfKind(kind),
+    behaviour: initialBehaviourOfKind(kind),
+  })),
+  nextSerial: EntitySerial(count),
+})
 
 describe('the spawn ring', () => {
   it.effect('is the reference’s sixteen angles by four radii', () =>
@@ -136,9 +233,10 @@ describe('the spawn ring', () => {
       // must move the ring with it. A search that probed outside the band the
       // rule enforces would refuse everything it found and look like a broken
       // spawner.
-      expect(SPAWN_RING_RADIUS_STEPS[0]).toBe(MIN_SPAWN_DISTANCE_BLOCKS)
-      expect(SPAWN_RING_RADIUS_STEPS[SPAWN_RING_RADII - 1]).toBe(MAX_SPAWN_DISTANCE_BLOCKS)
-      expect(SPAWN_RING_RADIUS_STEPS).toStrictEqual([16, 24, 32, 40])
+      expect(SPAWN_RING_RADIUS_STEPS[0]).toBe(MIN_SPAWN_DISTANCE_BLOCKS + SPAWN_RING_RADIUS_INSET_BLOCKS)
+      expect(SPAWN_RING_RADIUS_STEPS[SPAWN_RING_RADII - 1]).toBe(MAX_SPAWN_DISTANCE_BLOCKS - SPAWN_RING_RADIUS_INSET_BLOCKS)
+      expect(SPAWN_RING_RADIUS_INSET_BLOCKS).toBe(2)
+      expect(SPAWN_RING_RADIUS_STEPS).toStrictEqual([26, 30, 34, 38])
     }),
   )
 
@@ -156,15 +254,34 @@ describe('the spawn ring', () => {
       const { found } = yield* searchIn(FLOORED_WORLD, RESIDENT_CHUNKS)
 
       for (const attempt of found.attempts) {
-        // The plane is the PLAYER's feet altitude — see the module header on why
-        // this is a divergence from the reference's column scan and what it
-        // costs. Here the floor is at 63 and the player at 64, so the ground
-        // block really is stone.
-        expect(attempt.feetPosition.y).toBe(Math.floor(PLAYER.y))
+        // A column scan finds the floor at y=63 and places feet at y=64.
+        expect(attempt.feetPosition.y).toBe(64)
         expect(attempt.candidate.groundBlock).toBe(STONE)
         expect(attempt.candidate.footBlock).toBe(AIR_BLOCK_ID)
         expect(attempt.candidate.headBlock).toBe(AIR_BLOCK_ID)
       }
+    }),
+  )
+
+  it.effect('finds a dark cave floor below a bright surface during daytime', () =>
+    Effect.gen(function* () {
+      const surfaceLight: Array<readonly [BlockPosition, LightLevels]> = []
+      for (let x = -48; x <= 47; x += 1) {
+        for (let z = -48; z <= 47; z += 1) {
+          surfaceLight.push([blockPosition(x, 64, z), { sky: 15, block: 0 }] as const)
+        }
+      }
+      const { found } = yield* searchIn(
+        CAVE_FLOORED_WORLD,
+        RESIDENT_CHUNKS,
+        lightWorld(surfaceLight),
+        3,
+        InterpolationFraction(0.5),
+      )
+
+      expect(found.attempts).toHaveLength(SPAWN_RING_CELLS)
+      expect(found.attempts.every(({ feetPosition }) => feetPosition.y === 31)).toBe(true)
+      expect(found.attempts.every(({ candidate }) => candidate.skyLight === 0)).toBe(true)
     }),
   )
 
@@ -190,15 +307,11 @@ describe('the spawn ring', () => {
       const { found } = yield* searchIn(FLOORED_WORLD, RESIDENT_CHUNKS)
 
       for (const attempt of found.attempts) {
-        // Flooring a continuous ring position moves a cell by up to one block on
-        // each axis, so the true distance can fall a little outside the radius
-        // it came from. It must not fall FAR outside: a candidate at 45 would be
-        // refused `too-far` every time and would be pure waste.
         expect(attempt.candidate.distanceToPlayerBlocksXZ).toBeGreaterThan(
-          MIN_SPAWN_DISTANCE_BLOCKS - 2,
+          MIN_SPAWN_DISTANCE_BLOCKS - Number.EPSILON,
         )
         expect(attempt.candidate.distanceToPlayerBlocksXZ).toBeLessThan(
-          MAX_SPAWN_DISTANCE_BLOCKS + 2,
+          MAX_SPAWN_DISTANCE_BLOCKS + Number.EPSILON,
         )
       }
     }),
@@ -207,8 +320,8 @@ describe('the spawn ring', () => {
   it.effect('SPANS the four radii — every step is actually probed, not just the inner one', () =>
     Effect.gen(function* () {
       // FOUND BY A MUTATION, and it was the one the loop's own comment predicted.
-      // Replacing the per-step radius with `MIN_SPAWN_DISTANCE_BLOCKS` — a ring
-      // that probes 16 blocks four times over and never looks past it — passed
+      // Replacing the per-step radius with the inner radius — a ring that probes
+      // the same circle four times and never looks farther — passed
       // every other test in this file. The count is still 64, the band assertion
       // still holds (16 is inside it), the store-call cost is unchanged, and the
       // rule refuses nothing extra. In a running game it is a spawner that only
@@ -281,7 +394,9 @@ describe('the spawn ring', () => {
         rotation: number,
       ): { readonly x: number; readonly z: number } => {
         const angle = ((angleIndex + rotation) / SPAWN_RING_ANGLES) * Math.PI * 2
-        const distance = MIN_SPAWN_DISTANCE_BLOCKS + radiusIndex * 8
+        const distance = MIN_SPAWN_DISTANCE_BLOCKS + SPAWN_RING_RADIUS_INSET_BLOCKS +
+          ((MAX_SPAWN_DISTANCE_BLOCKS - MIN_SPAWN_DISTANCE_BLOCKS - SPAWN_RING_RADIUS_INSET_BLOCKS * 2) * radiusIndex) /
+            (SPAWN_RING_RADII - 1)
 
         return {
           x: PLAYER.x + Math.cos(angle) * distance,
@@ -294,15 +409,10 @@ describe('the spawn ring', () => {
       // and `expect(spawnPosition.z).toBeCloseTo(playerPosition.z + 16)`.
       const quarterTurn = referenceRingPosition(4, 0, 0)
       expect(quarterTurn.x).toBeCloseTo(PLAYER.x, 10)
-      expect(quarterTurn.z).toBeCloseTo(PLAYER.z + MIN_SPAWN_DISTANCE_BLOCKS, 10)
+      expect(quarterTurn.z).toBeCloseTo(PLAYER.z + MIN_SPAWN_DISTANCE_BLOCKS + SPAWN_RING_RADIUS_INSET_BLOCKS, 10)
 
-      // ...and the reference's radii, which its `MIN + (cursor % 4) * 8` spells
-      // as arithmetic and this repository derives from the rule's band. The two
-      // agree, and that agreement is what makes the transcription above usable
-      // as an oracle for the cells below.
-      expect(
-        SPAWN_RING_RADIUS_STEPS.map((_, index) => MIN_SPAWN_DISTANCE_BLOCKS + index * 8),
-      ).toStrictEqual([...SPAWN_RING_RADIUS_STEPS])
+      expect(SPAWN_RING_RADIUS_STEPS[0]).toBe(MIN_SPAWN_DISTANCE_BLOCKS + SPAWN_RING_RADIUS_INSET_BLOCKS)
+      expect(SPAWN_RING_RADIUS_STEPS[SPAWN_RING_RADII - 1]).toBe(MAX_SPAWN_DISTANCE_BLOCKS - SPAWN_RING_RADIUS_INSET_BLOCKS)
 
       const { found } = yield* searchIn(FLOORED_WORLD, RESIDENT_CHUNKS)
       const rotation = rollAt(drawRolls(1, SPAWN_SEARCH_ROLLS), 0)
@@ -379,16 +489,72 @@ describe('the spawn ring', () => {
 
   it.effect('carries the hour it was given, unchanged', () =>
     Effect.gen(function* () {
-      // The search does not gate on time — the RULE does, and
-      // `domain/mob/hostile-spawn.ts`'s header is emphatic that a second opinion
-      // here would be half of the reference's death-loop bug. So a daytime hour
-      // still produces candidates; they are refused one layer up.
+      // The daytime fraction is carried to the rule, which combines it with raw
+      // sky light rather than treating time as a global hostile gate.
       const { found } = yield* searchIn(FLOORED_WORLD, RESIDENT_CHUNKS, new Map(), 1, InterpolationFraction(0.5))
 
       expect(found.attempts.length).toBe(SPAWN_RING_CELLS)
       for (const attempt of found.attempts) {
         expect(attempt.candidate.timeOfDay).toBe(0.5)
       }
+    }),
+  )
+})
+
+describe('fixed-seed one-night spawn distribution', () => {
+  const runNight = (initialSeed: number) => Effect.gen(function* () {
+    let seed = initialSeed
+    let lastSearchTick = 0
+    const store = yield* makeChunkStoreDouble(
+      DISTRIBUTION_WORLD,
+      RESIDENT_CHUNKS,
+      DISTRIBUTION_LIGHT,
+    )
+    let roster: EntityRoster<MobBehaviour> = {
+      entities: [],
+      nextSerial: EntitySerial(0),
+    }
+
+    const intervalTicks = HOSTILE_SPAWN_SETTINGS.normal.intervalTicks
+    for (let tick = intervalTicks; tick <= TEST_TICKS_PER_DAY; tick += intervalTicks) {
+      const due = Result.getOrThrow(hostileSpawnSearchDue(tick, lastSearchTick, 'normal'))
+      if (!due) continue
+      lastSearchTick = tick
+      const timeOfDay = tick / TEST_TICKS_PER_DAY
+      if (!isNight(timeOfDay) || roster.entities.length >= HOSTILE_SPAWN_SETTINGS.normal.maxPopulation) {
+        seed = drawRolls(seed, SPAWN_SEARCH_ROLLS).seed
+        continue
+      }
+
+      const found = yield* searchSpawnCandidates(
+        store.api,
+        DISTRIBUTION_PLAYER,
+        timeOfDay,
+        seed,
+        'overworld',
+        'hostile',
+      )
+      seed = found.seed
+      const first = found.attempts[0]
+      expect(first, `expected an eligible spawn candidate at tick ${String(tick)}`).toBeDefined()
+      if (first === undefined) continue
+      const planned = planSpawnAttemptsOnRoster(roster, [first], 'normal')
+      if (Result.isSuccess(planned)) roster = planned.success.roster
+    }
+
+    return roster.entities.length
+  })
+
+  it.effect('replays the same full-night count vector across fixed seeds', () =>
+    Effect.gen(function* () {
+      const counts: Array<number> = []
+      for (const seed of NIGHT_DISTRIBUTION_SEEDS) {
+        counts.push(yield* runNight(seed))
+      }
+      const firstSeedReplay = yield* runNight(NIGHT_DISTRIBUTION_SEEDS[0])
+
+      expect(counts).toStrictEqual([9, 9, 9])
+      expect(firstSeedReplay).toBe(counts[0])
     }),
   )
 })
@@ -407,25 +573,28 @@ describe('what the search reads', () => {
     }),
   )
 
-  it.effect('reports BLOCK light, and is not fooled by a bright sky', () =>
+  it.effect('carries both raw sky light and block light into the rule', () =>
     Effect.gen(function* () {
-      // THE DISTINCTION THE TWO GRIDS EXIST FOR. At night the sky grid still
-      // holds whatever the sun left in it, and the rule gates on block light
-      // alone; a search that passed `sky` through would refuse every open-air
-      // cell as `too-bright` and hostiles would only ever spawn indoors.
+      // Raw sky light stays high at night; time-of-day admits this exposed cell.
       const lit: Array<readonly [BlockPosition, LightLevels]> = []
       for (let x = -48; x <= 47; x += 1) {
         for (let z = -48; z <= 47; z += 1) {
-          lit.push([blockPosition(x, 64, z), { sky: 15, block: 3 }] as const)
+          lit.push([blockPosition(x, 64, z), { sky: 15, block: 0 }] as const)
         }
       }
 
-      const { found } = yield* searchIn(FLOORED_WORLD, RESIDENT_CHUNKS, lightWorld(lit))
+      const { found } = yield* searchIn(FLOORED_WORLD, RESIDENT_CHUNKS, lightWorld(lit), 1, InterpolationFraction(0.9))
 
       expect(found.attempts.length).toBe(SPAWN_RING_CELLS)
       for (const attempt of found.attempts) {
-        expect(attempt.candidate.blockLight).toBe(3)
+        expect(attempt.candidate.blockLight).toBe(0)
+        expect(attempt.candidate.skyLight).toBe(15)
       }
+
+      const rejected = yield* searchIn(FLOORED_WORLD, RESIDENT_CHUNKS, lightWorld(
+        lit.map(([cell]) => [cell, { sky: 15, block: 1 }] as const),
+      ), 1, InterpolationFraction(0.9))
+      expect(rejected.found.attempts).toHaveLength(0)
     }),
   )
 
@@ -451,17 +620,18 @@ describe('what the search reads', () => {
 
   it.effect('costs a stated number of store calls, which is what makes the cadence checkable', () =>
     Effect.gen(function* () {
-      // Three blocks and one light per cell. This number is why
-      // `stages/registration.ts` paces the search at `HOSTILE_SPAWN_INTERVAL_SECS`
-      // instead of running it per frame, and why the light query's own note warns
-      // that a read after a write may relight a chunk.
+      // Each sampled column comes from a cached chunk snapshot; one selected
+      // foot-cell light reading crosses the store API.
       //
       // AN EXACT COUNT, not a bound. A bound would not notice the ring quietly
-      // gaining a fifth read per cell, which is 64 extra store calls every 0.3s.
+      // gaining an extra store read per cell.
       const { store, found } = yield* searchIn(FLOORED_WORLD, RESIDENT_CHUNKS)
 
       expect(found.attempts.length).toBe(SPAWN_RING_CELLS)
-      expect(yield* store.calls).toStrictEqual({ reads: SPAWN_RING_CELLS * 4, writes: 0, peeks: 0 })
+      const calls = yield* store.calls
+      expect(calls.reads).toBe(SPAWN_RING_CELLS)
+      expect(calls.writes).toBe(0)
+      expect(calls.peeks).toBeGreaterThan(0)
     }),
   )
 
@@ -473,7 +643,10 @@ describe('what the search reads', () => {
       const { store, found } = yield* searchIn(FLOORED_WORLD, [])
 
       expect(found.unreadable).toBe(SPAWN_RING_CELLS)
-      expect(yield* store.calls).toStrictEqual({ reads: SPAWN_RING_CELLS * 3, writes: 0, peeks: 0 })
+      const calls = yield* store.calls
+      expect(calls.reads).toBe(0)
+      expect(calls.writes).toBe(0)
+      expect(calls.peeks).toBeGreaterThan(0)
     }),
   )
 
@@ -601,33 +774,35 @@ describe('the search’s randomness', () => {
   )
 })
 
-describe('the cells the rule then refuses', () => {
-  it.effect('offers a lit cell and lets the RULE call it too bright', () =>
+describe('the search filters unsuitable floors before offering them', () => {
+  it.effect('skips a bright surface during daylight', () =>
     Effect.gen(function* () {
-      // The search has no opinion about brightness. It reports what it read, and
-      // `canHostileSpawnAt` compares against `HOSTILE_SPAWN_SPAWN_MAX` — which is
-      // the shape `domain/mob/hostile-spawn.ts` asks for: 「a total function from
-      // facts to a decision, with the facts gathered by somebody else」.
+      // The daytime surface is skipped, while the rule still accepts a low-sky
+      // cave candidate (covered above).
       const lit: Array<readonly [BlockPosition, LightLevels]> = []
       for (let x = -48; x <= 47; x += 1) {
         for (let z = -48; z <= 47; z += 1) {
-          lit.push([blockPosition(x, 64, z), { sky: 0, block: 15 }] as const)
+          lit.push([blockPosition(x, 64, z), { sky: 15, block: 0 }] as const)
         }
       }
 
-      const { found } = yield* searchIn(FLOORED_WORLD, RESIDENT_CHUNKS, lightWorld(lit))
+      const { found } = yield* searchIn(
+        FLOORED_WORLD,
+        RESIDENT_CHUNKS,
+        lightWorld(lit),
+        1,
+        InterpolationFraction(0.5),
+      )
 
-      // Still sixty-four candidates. The search did not filter them.
-      expect(found.attempts.length).toBe(SPAWN_RING_CELLS)
-      expect(found.attempts.every((attempt) => attempt.candidate.blockLight === 15)).toBe(true)
+      expect(found.attempts).toHaveLength(0)
+      expect(found.unreadable).toBe(0)
     }),
   )
 
-  it.effect('offers an obstructed cell rather than pre-filtering it', () =>
+  it.effect('finds the top valid floor above a short column obstruction', () =>
     Effect.gen(function* () {
-      // A world that is solid at the feet cell as well as the floor. The search
-      // must report the stone it found; the `obstructed` test is the rule's, and
-      // a second copy of it here would be untested and would drift.
+      // The scan treats each non-air block as a potential floor and uses the
+      // first valid topmost one.
       const solid: Array<readonly [BlockPosition, BlockId]> = []
       for (let x = -48; x <= 47; x += 1) {
         for (let z = -48; z <= 47; z += 1) {
@@ -639,7 +814,8 @@ describe('the cells the rule then refuses', () => {
       const { found } = yield* searchIn(world(solid), RESIDENT_CHUNKS)
 
       expect(found.attempts.length).toBe(SPAWN_RING_CELLS)
-      expect(found.attempts.every((attempt) => attempt.candidate.footBlock === STONE)).toBe(true)
+      expect(found.attempts.every((attempt) => attempt.feetPosition.y === 65)).toBe(true)
+      expect(found.attempts.every((attempt) => attempt.candidate.groundBlock === STONE)).toBe(true)
     }),
   )
 
@@ -649,88 +825,90 @@ describe('the cells the rule then refuses', () => {
       // the ground cell instead would measure the brightness of the inside of a
       // rock, which is 0 for every solid floor in the world — so every cell would
       // read dark and `too-bright` would never fire.
-      const oneCellLit = lightWorld([[blockPosition(0, 64, 0), { sky: 0, block: 9 }]])
-      const store = yield* makeChunkStoreDouble(FLOORED_WORLD, RESIDENT_CHUNKS, oneCellLit)
-
-      const reading = yield* store.api.getLight(blockPosition(0, 64, 0))
-      expect(reading).toStrictEqual({ _tag: 'Light', sky: 0, block: 9 })
-
-      const ground = yield* store.api.getLight(blockPosition(0, FLOOR_Y, 0))
-      expect(ground).toStrictEqual({ _tag: 'Light', sky: 0, block: 0 })
-
-      // And the search asks about the foot cell: every candidate sits at
-      // `feetPosition.y`, and the light it carries is the light at that Y.
-      const found = yield* searchSpawnCandidates(store.api, PLAYER, MIDNIGHT, 5)
-      expect(found.attempts.every((attempt) => attempt.feetPosition.y === 64)).toBe(true)
+      const store = yield* makeChunkStoreDouble(FLOORED_WORLD, RESIDENT_CHUNKS)
+      const lightPositions: Array<BlockPosition> = []
+      const observed: ChunkStoreApi = {
+        ...store.api,
+        getLight: (position) => Effect.map(
+          store.api.getLight(position),
+          (light) => {
+            lightPositions.push(position)
+            return light
+          },
+        ),
+      }
+      const found = yield* searchSpawnCandidates(observed, PLAYER, MIDNIGHT, 5)
+      expect(found.attempts).toHaveLength(SPAWN_RING_CELLS)
+      expect(lightPositions).toHaveLength(SPAWN_RING_CELLS)
+      expect(lightPositions.every(({ y }) => y === 64)).toBe(true)
     }),
   )
 })
 
 describe('the search inside the frame', () => {
-  it.effect('is what the ARENA_MISSING row was waiting for, end to end', () =>
+  it.effect('spawns from a daytime cave on the 30th registered stage pass', () =>
     Effect.gen(function* () {
-      // The whole point of the exercise: a dark night world with a stone floor
-      // and a player in it produces mobs, through the real stage, with nobody
-      // hand-feeding a candidate into the inbox.
-      const store = yield* makeChunkStoreDouble(FLOORED_WORLD, RESIDENT_CHUNKS)
-      const roster = yield* makeEntityManagerDouble<MobBehaviour>()
-      const playerPose = { ...SPAWN_POSE, feetPosition: PLAYER }
-      const player = yield* makePlayerServiceDouble(playerPose)
-      const inventory = yield* makeInventoryDouble()
-      const time = yield* makeTimeService()
-      const state = yield* makeGameplayFrameState
-      const commit = yield* makeGameplayCommitServices(store.api, inventory.api, { playerPose })
-      const stages = gameplayStages(state, store.api, roster.api, inventory.api, player.api, time, undefined, undefined, {}, commit)
+      const { store, time, state, commit, stages } = yield* makeStageHarness(
+        CAVE_FLOORED_WORLD,
+        BRIGHT_SURFACE_LIGHT,
+        PLAYER,
+      )
+      yield* Ref.set(state.passiveInitialSpawnPending, false)
+      yield* time.setTimeOfDay(InterpolationFraction(0.5))
 
-      // The authoritative mc-sim services supply both inputs to the stage.
-      yield* time.setTimeOfDay(MIDNIGHT)
-      expect(yield* Ref.get(state.timeOfDay)).toBe(MIDNIGHT)
+      // `entities` runs before `fluids`; the shared tick counter therefore
+      // still reads 28 inside `entities` on pass 29. It uses that upcoming
+      // pass number for cadence and stores the same value after a successful search.
+      yield* runFrames(stages, 29, DeltaTimeSecs(0.05))
+      expect(yield* Ref.get(state.tickCount)).toBe(29)
+      expect(yield* Ref.get(state.lastHostileSpawnTick)).toBe(0)
 
-      const entities = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.entities)
-      expect(entities).toBeDefined()
-
-      // Two frames of 0.25s reaches the 0.3s cadence exactly once.
-      yield* entities?.run(DeltaTimeSecs(0.25)) ?? Effect.void
       const beforeSearch = yield* commit.coordinator.snapshot(
         GAMEPLAY_ENTITIES_OWNER_ID,
         GameplayEntityRosterSchema,
       )
-      expect(Schema.decodeUnknownSync(GameplayEntityRosterSchema)(beforeSearch.state).entities).toHaveLength(0)
+      expect(Schema.decodeUnknownSync(GameplayEntityRosterSchema)(beforeSearch.state).entities)
+        .toHaveLength(0)
 
-      yield* entities?.run(DeltaTimeSecs(0.25)) ?? Effect.void
+      yield* runFrame(stages, DeltaTimeSecs(0.05))
+      expect(yield* Ref.get(state.tickCount)).toBe(HOSTILE_SPAWN_INTERVAL_TICKS)
+      expect(yield* Ref.get(state.lastHostileSpawnTick)).toBe(HOSTILE_SPAWN_INTERVAL_TICKS)
+      expect(yield* time.timeOfDay).toBeGreaterThanOrEqual(0.5)
+      expect(yield* time.timeOfDay).toBeLessThan(0.55)
+
       const afterSearch = yield* commit.coordinator.snapshot(
         GAMEPLAY_ENTITIES_OWNER_ID,
         GameplayEntityRosterSchema,
       )
-      expect(Schema.decodeUnknownSync(GameplayEntityRosterSchema)(afterSearch.state).entities.length).toBeGreaterThan(0)
-
-      // ...and the cap held on the way. Every mob on the roster is a hostile
-      // this repository names, with the health and the behaviour its kind says.
       const entries = Schema.decodeUnknownSync(GameplayEntityRosterSchema)(afterSearch.state).entities
+      expect(entries).toHaveLength(1)
       for (const entity of entries) {
+        expect(entity.feetPosition.y).toBe(31)
+        expect(MOB_BIOME_SPAWN_TABLE.PLAINS).toContain(entity.kind)
         expect(HOSTILE_KINDS).toContain(entity.kind)
         expect(entity.healthPoints).toBe(maxHealthOfKind(entity.kind))
         expect(entity.behaviour).toStrictEqual(initialBehaviourOfKind(entity.kind))
+        const distance = Math.hypot(
+          entity.feetPosition.x - PLAYER.x,
+          entity.feetPosition.z - PLAYER.z,
+        )
+        expect(distance).toBeGreaterThanOrEqual(MIN_SPAWN_DISTANCE_BLOCKS)
+        expect(distance).toBeLessThanOrEqual(MAX_SPAWN_DISTANCE_BLOCKS)
       }
+
+      const calls = yield* store.calls
+      expect(calls.reads).toBeGreaterThan(0)
+      expect(calls.peeks).toBeGreaterThan(0)
     }).pipe(Effect.provide(FrameServicesLayer)),
   )
 
-  it.effect('an OFFERED cell and a SEARCHED ring in one frame are ONE stream against the cap', () =>
+  it.effect('an offered cell and cadence search share one ordered attempt stream', () =>
     Effect.gen(function* () {
       // The concatenation, and the only frame in which it happens: the inbox has
-      // something in it AND the 0.3s cadence comes due on the same tick. Every
+      // something in it AND the tick cadence comes due on the same tick. Every
       // other test has one or the other — the vertical slice puts the world at
       // noon so the search cannot run, and the end-to-end case above feeds
       // nothing into the inbox — so this arm had never executed.
-      //
-      // WHY IT IS ONE LIST AND NOT TWO PASSES. `applySpawnAttempts` applies
-      // `MAX_HOSTILE_COUNT` against a census it takes as it goes. Run twice, each
-      // pass starts from the count the other left, and a frame holding one
-      // offered cell and a full ring can spawn one mob PAST the cap — sixteen
-      // from the ring, then the offered one against a census that was taken
-      // before any of them. One stream cannot do that, and sixty-four candidates
-      // plus one is the shape that shows it: the cap is what stops this frame,
-      // not the supply.
       //
       // AND THE ORDER IS THE HOST'S FIRST. `offered` leads the concatenation, so
       // a cell somebody asked for is not silently outbid by a ring that happened
@@ -755,8 +933,10 @@ describe('the search inside the frame', () => {
             footBlock: AIR_BLOCK_ID,
             headBlock: AIR_BLOCK_ID,
             blockLight: 0,
+            skyLight: 0,
+            biome: 'PLAINS',
             timeOfDay: MIDNIGHT,
-            distanceToPlayerBlocksXZ: 20,
+            distanceToPlayerBlocksXZ: 30,
           },
           kind: CREEPER_KIND,
           feetPosition: offeredAt,
@@ -764,17 +944,16 @@ describe('the search inside the frame', () => {
       ])
 
       const entities = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.entities)
-      // One frame that reaches the cadence, so the ring runs and the inbox is
-      // drained in the same pass.
-      yield* entities?.run(DeltaTimeSecs(HOSTILE_SPAWN_INTERVAL_SECS)) ?? Effect.void
+      yield* Ref.set(state.tickCount, HOSTILE_SPAWN_INTERVAL_TICKS)
+      yield* entities?.run(DeltaTimeSecs(0)) ?? Effect.void
 
       const ownerAfter = yield* commit.coordinator.snapshot(
         GAMEPLAY_ENTITIES_OWNER_ID,
         GameplayEntityRosterSchema,
       )
       const entries = Schema.decodeUnknownSync(GameplayEntityRosterSchema)(ownerAfter.state).entities
-      // The cap held over the COMBINED supply of 65 candidates.
-      expect(entries.length).toBe(MAX_HOSTILE_COUNT)
+      // The one offered attempt and one cadence attempt share a single pass.
+      expect(entries.length).toBe(2)
       // The host's cell was taken, and taken first.
       expect(entries[0]?.feetPosition).toStrictEqual(offeredAt)
       // The inbox was drained rather than left to be re-offered next frame.
@@ -782,41 +961,146 @@ describe('the search inside the frame', () => {
     }).pipe(Effect.provide(FrameServicesLayer)),
   )
 
-  it.effect('uses daylight searches for passive mobs and respects their population cap', () =>
+  it.effect('enforces the normal hostile cap on the 30th and 60th registered passes', () =>
     Effect.gen(function* () {
-      const store = yield* makeChunkStoreDouble(FLOORED_WORLD, RESIDENT_CHUNKS)
-      const roster = yield* makeEntityManagerDouble<MobBehaviour>()
-      const playerPose = { ...SPAWN_POSE, feetPosition: PLAYER }
-      const player = yield* makePlayerServiceDouble(playerPose)
-      const inventory = yield* makeInventoryDouble()
-      const time = yield* makeTimeService()
-      const state = yield* makeGameplayFrameState
-      const commit = yield* makeGameplayCommitServices(store.api, inventory.api, { playerPose })
-      const stages = gameplayStages(state, store.api, roster.api, inventory.api, player.api, time, undefined, undefined, {}, commit)
+      const initialRoster = seededRoster(CREEPER_KIND, 8, (index) =>
+        atPosition(26 + index, DISTRIBUTION_FLOOR_Y + 1, 0.5),
+      )
+      const { time, state, commit, stages } = yield* makeStageHarness(
+        DISTRIBUTION_WORLD,
+        DISTRIBUTION_LIGHT,
+        DISTRIBUTION_PLAYER,
+        initialRoster,
+      )
+      yield* Ref.set(state.passiveInitialSpawnPending, false)
+      yield* time.setTimeOfDay(MIDNIGHT)
 
-      yield* Ref.set(state.timeOfDay, MIDNIGHT)
+      yield* runFrames(stages, HOSTILE_SPAWN_INTERVAL_TICKS, DeltaTimeSecs(0.05))
+
+      expect(yield* Ref.get(state.lastHostileSpawnTick)).toBe(HOSTILE_SPAWN_INTERVAL_TICKS)
+      expect(yield* Ref.get(state.tickCount)).toBe(HOSTILE_SPAWN_INTERVAL_TICKS)
+      const afterFirstSearch = yield* commit.coordinator.snapshot(
+        GAMEPLAY_ENTITIES_OWNER_ID,
+        GameplayEntityRosterSchema,
+      )
+      expect(Schema.decodeUnknownSync(GameplayEntityRosterSchema)(afterFirstSearch.state).entities)
+        .toHaveLength(HOSTILE_SPAWN_SETTINGS.normal.maxPopulation)
+
+      yield* runFrames(stages, HOSTILE_SPAWN_INTERVAL_TICKS, DeltaTimeSecs(0.05))
+
+      expect(yield* Ref.get(state.tickCount)).toBe(60)
+      expect(yield* Ref.get(state.lastHostileSpawnTick)).toBe(60)
+      const ownerAfter = yield* commit.coordinator.snapshot(
+        GAMEPLAY_ENTITIES_OWNER_ID,
+        GameplayEntityRosterSchema,
+      )
+      const entries = Schema.decodeUnknownSync(GameplayEntityRosterSchema)(ownerAfter.state).entities
+      expect(entries).toHaveLength(HOSTILE_SPAWN_SETTINGS.normal.maxPopulation)
+      expect(entries.every(({ kind }) => HOSTILE_KINDS.includes(kind))).toBe(true)
+    }),
+  )
+
+  it.effect('does not search or spawn hostiles in Peaceful after the due interval', () =>
+    Effect.gen(function* () {
+      const { store, time, state, commit, stages } = yield* makeStageHarness(
+        DISTRIBUTION_WORLD,
+        DISTRIBUTION_LIGHT,
+        DISTRIBUTION_PLAYER,
+      )
+      yield* Ref.set(state.passiveInitialSpawnPending, false)
+      yield* state.survivalHunger.setDifficulty('peaceful')
+      yield* time.setTimeOfDay(MIDNIGHT)
+
+      yield* runFrames(
+        stages,
+        HOSTILE_SPAWN_SETTINGS.peaceful.intervalTicks,
+        DeltaTimeSecs(0.05),
+      )
+
+      expect(yield* Ref.get(state.tickCount)).toBe(HOSTILE_SPAWN_SETTINGS.peaceful.intervalTicks)
+      expect(yield* Ref.get(state.lastHostileSpawnTick)).toBe(0)
+      const ownerAfter = yield* commit.coordinator.snapshot(
+        GAMEPLAY_ENTITIES_OWNER_ID,
+        GameplayEntityRosterSchema,
+      )
+      expect(Schema.decodeUnknownSync(GameplayEntityRosterSchema)(ownerAfter.state).entities)
+        .toStrictEqual([])
+      expect((yield* store.calls).peeks).toBe(0)
+    }),
+  )
+
+  it.effect('uses the initial daylight passive search and respects its roster cap', () =>
+    Effect.gen(function* () {
+      const passiveKind = PASSIVE_MOB_KINDS[0]
+      const initialRoster = seededRoster(passiveKind, MAX_PASSIVE_COUNT - PASSIVE_SPAWN_BATCH_SIZE, (index) =>
+        atPosition(26 + index, DISTRIBUTION_FLOOR_Y + 1, 0.5),
+      )
+      const { store, time, state, commit, stages } = yield* makeStageHarness(
+        DISTRIBUTION_WORLD,
+        DISTRIBUTION_LIGHT,
+        DISTRIBUTION_PLAYER,
+        initialRoster,
+      )
       yield* time.setTimeOfDay(InterpolationFraction(0.5))
 
-      const entities = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.entities)
-      for (let frame = 0; frame < 10; frame += 1) {
-        yield* entities?.run(DeltaTimeSecs(0.25)) ?? Effect.void
-      }
+      yield* runFrames(stages, 30, DeltaTimeSecs(0.05))
 
+      expect(yield* Ref.get(state.tickCount)).toBe(30)
+      expect(yield* Ref.get(state.lastPassiveSpawnTick)).toBe(1)
+      expect(yield* Ref.get(state.passiveInitialSpawnPending)).toBe(false)
       const ownerAfter = yield* commit.coordinator.snapshot(
         GAMEPLAY_ENTITIES_OWNER_ID,
         GameplayEntityRosterSchema,
       )
       const entries = Schema.decodeUnknownSync(GameplayEntityRosterSchema)(ownerAfter.state).entities
       expect(entries).toHaveLength(MAX_PASSIVE_COUNT)
-      expect(
-        entries.every(({ kind }) =>
-          PASSIVE_MOB_KINDS.includes(kind as (typeof PASSIVE_MOB_KINDS)[number]),
-        ),
-      ).toBe(true)
+      expect(entries.every(({ kind }) =>
+        PASSIVE_MOB_KINDS.includes(kind as (typeof PASSIVE_MOB_KINDS)[number]),
+      )).toBe(true)
 
       const calls = yield* store.calls
       expect(calls.reads).toBeGreaterThan(0)
+      expect(calls.peeks).toBeGreaterThan(0)
       expect(calls.writes).toBe(0)
-    }).pipe(Effect.provide(FrameServicesLayer)),
+    }),
+  )
+
+  it.effect('runs the periodic passive search at tick 400 when the initial batch is complete', () =>
+    Effect.gen(function* () {
+      const passiveKind = PASSIVE_MOB_KINDS[0]
+      const initialRoster = seededRoster(passiveKind, 1, () =>
+        atPosition(26, DISTRIBUTION_FLOOR_Y + 1, 0.5),
+      )
+      const { store, time, state, commit, stages } = yield* makeStageHarness(
+        DISTRIBUTION_WORLD,
+        DISTRIBUTION_LIGHT,
+        DISTRIBUTION_PLAYER,
+        initialRoster,
+      )
+      yield* time.setTimeOfDay(InterpolationFraction(0.5))
+      yield* Ref.set(state.passiveInitialSpawnPending, false)
+      yield* Ref.set(state.lastPassiveSpawnTick, 0)
+      yield* Ref.set(state.lastHostileSpawnTick, 399)
+      yield* Ref.set(state.tickCount, 399)
+
+      yield* runFrame(stages, DeltaTimeSecs(0.05))
+
+      expect(yield* Ref.get(state.tickCount)).toBe(400)
+      expect(yield* Ref.get(state.lastPassiveSpawnTick)).toBe(400)
+      expect(yield* Ref.get(state.passiveInitialSpawnPending)).toBe(false)
+      const ownerAfter = yield* commit.coordinator.snapshot(
+        GAMEPLAY_ENTITIES_OWNER_ID,
+        GameplayEntityRosterSchema,
+      )
+      const entries = Schema.decodeUnknownSync(GameplayEntityRosterSchema)(ownerAfter.state).entities
+      expect(entries.length).toBeGreaterThan(1)
+      expect(entries.every(({ kind }) =>
+        PASSIVE_MOB_KINDS.includes(kind as (typeof PASSIVE_MOB_KINDS)[number]),
+      )).toBe(true)
+
+      const calls = yield* store.calls
+      expect(calls.reads).toBeGreaterThan(0)
+      expect(calls.peeks).toBeGreaterThan(0)
+    }),
   )
 })

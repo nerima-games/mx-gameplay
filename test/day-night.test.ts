@@ -23,6 +23,8 @@ import {
   dayPhase,
   hostileSpawnsAllowed,
   isNight,
+  NIGHT_END_FRACTION,
+  NIGHT_START_FRACTION,
   NOON_FRACTION,
   TWILIGHT_BAND,
 } from '../src/domain/day-night'
@@ -87,21 +89,18 @@ describe('the rule holds no state of its own', () => {
 })
 
 describe('when night is', () => {
-  // REGRESSION: mc-sim persists the fraction and this repository decides what
-  // it means, so the two are in different packages and must agree about the
-  // boundary. `mc-sim/domain/time-of-day.ts:117-120` computes exactly this, and
-  // `mc-sim/test/time-of-day.test.ts` pins it there. Zero is MIDNIGHT.
-  it.effect('is the half of the day centred on the 0/1 boundary, exactly as mc-sim computes it', () =>
+  it.effect('uses the inclusive 0.55–0.95 hostile spawn window', () =>
     Effect.sync(() => {
-      expect(isNight(0)).toBe(true)
-      expect(isNight(0.1)).toBe(true)
+      expect(NIGHT_START_FRACTION).toBe(0.55)
+      expect(NIGHT_END_FRACTION).toBe(0.95)
+      expect(isNight(0)).toBe(false)
+      expect(isNight(0.1)).toBe(false)
       expect(isNight(0.9)).toBe(true)
-      // The boundaries themselves are daylight: dawn has broken at 0.25 and
-      // the sun has not yet set at 0.75.
-      expect(isNight(DAWN_FRACTION)).toBe(false)
+      expect(isNight(NIGHT_START_FRACTION)).toBe(true)
+      expect(isNight(NIGHT_END_FRACTION)).toBe(true)
+      expect(isNight(NIGHT_START_FRACTION - Number.EPSILON * 4)).toBe(false)
+      expect(isNight(NIGHT_END_FRACTION + Number.EPSILON * 4)).toBe(false)
       expect(isNight(NOON_FRACTION)).toBe(false)
-      expect(isNight(DUSK_FRACTION)).toBe(false)
-      expect(isNight(0.75 + Number.EPSILON * 4)).toBe(true)
     }),
   )
 
@@ -134,13 +133,12 @@ describe('when night is', () => {
 describe('the four phases', () => {
   it.effect('names dawn, day, dusk and night at the hours they belong to', () =>
     Effect.sync(() => {
-      expect(dayPhase(0)).toBe('night')
-      expect(dayPhase(DAWN_FRACTION)).toBe('dawn')
+      expect(dayPhase(0)).toBe('dawn')
       expect(dayPhase(DAWN_FRACTION + TWILIGHT_BAND / 2)).toBe('dawn')
       expect(dayPhase(NOON_FRACTION)).toBe('day')
       expect(dayPhase(DUSK_FRACTION - TWILIGHT_BAND / 2)).toBe('dusk')
-      expect(dayPhase(DUSK_FRACTION)).toBe('dusk')
-      expect(dayPhase(0.99)).toBe('night')
+      expect(dayPhase(DUSK_FRACTION)).toBe('night')
+      expect(dayPhase(0.99)).toBe('dawn')
     }),
   )
 

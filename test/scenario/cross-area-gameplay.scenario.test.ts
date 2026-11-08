@@ -344,20 +344,22 @@ describe('cross-area gameplay scenarios through gameplayStages', () => {
 
   it.effect('X-05 spawns a hostile mob at night and observes that daylight does not trigger the absent despawn rule', () =>
     Effect.gen(function* () {
-      const rig = yield* makeSlice([[blockPosition(20, 63, 0), STONE]], { loadedChunks: ['0,0', '1,0'] })
-      yield* rig.time.setTimeOfDay(InterpolationFraction(0))
+      const rig = yield* makeSlice([[blockPosition(30, 63, 0), STONE]], { loadedChunks: ['0,0', '1,0'] })
+      yield* rig.time.setTimeOfDay(InterpolationFraction(0.9))
       const attempt: MobSpawnAttempt = {
         candidate: {
           groundBlock: STONE,
           footBlock: AIR_BLOCK_ID,
           headBlock: AIR_BLOCK_ID,
           blockLight: 0,
-          timeOfDay: 0,
-          distanceToPlayerBlocksXZ: 20,
+          skyLight: 0,
+          biome: 'PLAINS',
+          timeOfDay: 0.9,
+          distanceToPlayerBlocksXZ: 30,
           dimension: 'overworld',
         },
         kind: CREEPER_KIND,
-        feetPosition: position(20.5, 64, 0.5),
+        feetPosition: position(30.5, 64, 0.5),
       }
       yield* requestMobSpawn(rig.state, attempt)
       yield* runFrame(rig.stages, DeltaTimeSecs(0))

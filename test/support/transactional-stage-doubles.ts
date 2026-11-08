@@ -11,7 +11,7 @@ import {
   type WorldCommitCoordinatorError,
 } from '@nerima-games/mc-sim'
 import { AIR_BLOCK_ID, WorldIdSchema, type BlockId, type BlockPosition } from '@nerima-games/mc-kernel'
-import { ChunkStore, type ChunkStoreApi } from '@nerima-games/mc-worldgen'
+import { ChunkStore, type ChunkBiomeType, type ChunkStoreApi } from '@nerima-games/mc-worldgen'
 import { Effect, Layer, Ref, Schema } from 'effect'
 import { makeInMemoryWorld } from '../../src/domain/in-memory-world.js'
 import {
@@ -58,9 +58,22 @@ export const makeTransactionalChunkStoreDouble = (
           () => backing.getLight(position),
         ),
       peek: (coord) =>
-        Effect.flatMap(
-          Ref.update(calls, (current) => ({ ...current, peeks: current.peeks + 1 })),
-          () => backing.peek(coord),
+        Effect.map(
+          Effect.flatMap(
+            Ref.update(calls, (current) => ({ ...current, peeks: current.peeks + 1 })),
+            () => backing.peek(coord),
+          ),
+          (chunk) => chunk === undefined
+            ? undefined
+            : {
+                ...chunk,
+                // The in-memory world omits generated biome data; provide the
+                // default biome so spawn-search tests exercise the full chunk API.
+                biomes: Array.from(
+                  { length: 256 },
+                  (_, index): ChunkBiomeType => chunk.biomes[index] ?? 'PLAINS',
+                ),
+              },
         ),
       setBlock: (position, block) =>
         Effect.flatMap(
