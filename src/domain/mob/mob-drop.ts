@@ -2,7 +2,7 @@
  * Vanilla mob loot and XP rules. Item IDs come from kernel; the frame layer
  * supplies rolls and casualty context.
  */
-import { Brand } from 'effect'
+import { Brand, Result } from 'effect'
 import type { ItemType } from '@nerima-games/mc-kernel'
 import type { EntityKind } from '@nerima-games/mc-sim'
 
@@ -102,7 +102,23 @@ type MobDropPool = Readonly<{
 type MobDropTable = Readonly<{
   readonly rules: ReadonlyArray<MobDropRule>
   readonly pools?: ReadonlyArray<MobDropPool>
+  readonly unsupportedItemIds: ReadonlyArray<string>
 }>
+type MobDropTableInput = Omit<MobDropTable, 'unsupportedItemIds'> & {
+  readonly unsupportedItemIds?: ReadonlyArray<string>
+}
+type MobDropRollTable = Pick<MobDropTable, 'rules' | 'pools'>
+
+type UnknownMobKind = Readonly<{ _tag: 'UnknownMobKind'; kind: string }>
+
+const withDropSupportStatus = (
+  tables: Readonly<Record<string, MobDropTableInput>>,
+): Readonly<Record<string, MobDropTable>> => Object.fromEntries(
+  Object.entries(tables).map(([kind, table]) => [kind, {
+    ...table,
+    unsupportedItemIds: table.unsupportedItemIds ?? [],
+  }]),
+)
 
 type MobExperienceRange = Readonly<{ readonly min: number; readonly max: number }>
 type MobExperienceRule = Readonly<{
@@ -170,7 +186,7 @@ export const ENDERMAN_XP_REWARD = 5
  */
 export const CREEPER_XP_REWARD = 5
 
-/** Supported ghast drops; the vanilla music disc drop has no kernel item ID. */
+/** Supported ghast drops. Music discs are a creeper drop, not ghast loot. */
 export const GHAST_DROPS: ReadonlyArray<MobDropRule> = [
   { item: 'ghast_tear', count: 0, maxCount: 1 },
   { item: 'gunpowder', count: 0, maxCount: 2 },
@@ -203,6 +219,7 @@ const CHICKEN_DROPS: ReadonlyArray<MobDropRule> = [
 const SKELETON_DROPS: ReadonlyArray<MobDropRule> = [
   { item: 'bone', count: 0, maxCount: 2 },
   { item: 'arrow', count: 0, maxCount: 2 },
+  { item: 'string', count: 0, maxCount: 2 },
 ]
 const SPIDER_DROPS: ReadonlyArray<MobDropRule> = [
   { item: 'string', count: 0, maxCount: 2 },
@@ -305,7 +322,7 @@ const ZOMBIFIED_PIGLIN_RARE_POOL: MobDropPool = {
   choices: [{ item: 'gold_ingot', weight: 1, count: 1 }],
 }
 
-export const MOB_DROP_TABLES: Readonly<Record<string, MobDropTable>> = {
+export const MOB_DROP_TABLES: Readonly<Record<string, MobDropTable>> = withDropSupportStatus({
   allay: { rules: [] },
   armadillo: { rules: [] },
   axolotl: { rules: [] },
@@ -319,7 +336,7 @@ export const MOB_DROP_TABLES: Readonly<Record<string, MobDropTable>> = {
   donkey: { rules: [{ item: 'leather', count: 0, maxCount: 2, adultOnly: true }] },
   fox: { rules: [] },
   frog: { rules: [] },
-  glow_squid: { rules: [] },
+  glow_squid: { rules: [], unsupportedItemIds: ['glow_ink_sac'] },
   horse: { rules: [{ item: 'leather', count: 0, maxCount: 2, adultOnly: true }] },
   mooshroom: { rules: MOOSHROOM_DROPS },
   mule: { rules: [{ item: 'leather', count: 0, maxCount: 2, adultOnly: true }] },
@@ -327,12 +344,12 @@ export const MOB_DROP_TABLES: Readonly<Record<string, MobDropTable>> = {
   parrot: { rules: PARROT_DROPS },
   pig: { rules: PIG_DROPS },
   pufferfish: { rules: [{ item: 'pufferfish', count: 1 }] },
-  rabbit: { rules: RABBIT_DROPS },
+  rabbit: { rules: RABBIT_DROPS, unsupportedItemIds: ['rabbit_hide', 'rabbit_foot'] },
   salmon: { rules: SALMON_DROPS },
   sheep: { rules: SHEEP_DROPS },
   skeleton_horse: { rules: SKELETON_HORSE_DROPS },
   sniffer: { rules: [] },
-  squid: { rules: [] },
+  squid: { rules: [], unsupportedItemIds: ['ink_sac'] },
   strider: { rules: STRIDER_DROPS },
   tadpole: { rules: [] },
   tropical_fish: { rules: [{ item: 'tropical_fish', count: 1 }] },
@@ -348,46 +365,65 @@ export const MOB_DROP_TABLES: Readonly<Record<string, MobDropTable>> = {
   llama: { rules: LLAMA_DROPS },
   trader_llama: { rules: LLAMA_DROPS },
   panda: { rules: [] },
-  piglin: { rules: [] },
+  piglin: { rules: [], unsupportedItemIds: ['piglin_head'] },
   polar_bear: { rules: [], pools: [POLAR_BEAR_FISH_POOL] },
   snow_golem: { rules: SNOW_GOLEM_DROPS },
   spider: { rules: SPIDER_DROPS },
   wolf: { rules: [] },
   zombified_piglin: { rules: ZOMBIFIED_PIGLIN_DROPS, pools: [ZOMBIFIED_PIGLIN_RARE_POOL] },
-  blaze: { rules: BLAZE_DROPS },
+  blaze: { rules: BLAZE_DROPS, unsupportedItemIds: ['blaze_rod'] },
   bogged: { rules: BOGGED_DROPS },
   breeze: { rules: [] },
-  creeper: { rules: CREEPER_DROPS },
-  drowned: { rules: [{ item: 'rotten_flesh', count: 0, maxCount: 2 }] },
-  elder_guardian: { rules: [], pools: [ELDER_GUARDIAN_FISH_POOL] },
+  creeper: { rules: CREEPER_DROPS, unsupportedItemIds: ['creeper_head', 'music_disc_*'] },
+  drowned: {
+    rules: [{ item: 'rotten_flesh', count: 0, maxCount: 2 }],
+    unsupportedItemIds: ['copper_ingot', 'trident'],
+  },
+  elder_guardian: {
+    rules: [],
+    pools: [ELDER_GUARDIAN_FISH_POOL],
+    unsupportedItemIds: ['prismarine_shard', 'prismarine_crystals', 'wet_sponge'],
+  },
   endermite: { rules: [] },
-  evoker: { rules: EVOKER_DROPS },
+  evoker: { rules: EVOKER_DROPS, unsupportedItemIds: ['totem_of_undying'] },
   ghast: { rules: GHAST_DROPS },
   giant: { rules: [] },
-  guardian: { rules: [], pools: [GUARDIAN_FISH_POOL] },
+  guardian: {
+    rules: [],
+    pools: [GUARDIAN_FISH_POOL],
+    unsupportedItemIds: ['prismarine_shard', 'prismarine_crystals'],
+  },
   hoglin: { rules: HOGLIN_DROPS },
   husk: { rules: HUSK_DROPS, pools: [ZOMBIE_RARE_DROPS] },
-  magma_cube: { rules: [] },
-  phantom: { rules: [] },
-  piglin_brute: { rules: [] },
+  magma_cube: { rules: [], unsupportedItemIds: ['magma_cream'] },
+  phantom: { rules: [], unsupportedItemIds: ['phantom_membrane'] },
+  piglin_brute: { rules: [], unsupportedItemIds: ['piglin_head'] },
   pillager: { rules: [] },
-  ravager: { rules: [] },
-  shulker: { rules: [] },
+  ravager: { rules: [{ item: 'saddle', count: 1 }] },
+  shulker: { rules: [], unsupportedItemIds: ['shulker_shell'] },
   silverfish: { rules: [] },
-  skeleton: { rules: SKELETON_DROPS },
-  slime: { rules: [] },
-  stray: { rules: STRAY_DROPS },
+  skeleton: { rules: SKELETON_DROPS, unsupportedItemIds: ['skeleton_skull'] },
+  slime: { rules: [], unsupportedItemIds: ['slime_ball'] },
+  stray: { rules: STRAY_DROPS, unsupportedItemIds: ['tipped_arrow'] },
   vex: { rules: [] },
   vindicator: { rules: VINDICATOR_DROPS },
-  warden: { rules: [] },
-  witch: { rules: WITCH_DROPS, pools: [WITCH_POOL] },
+  warden: { rules: [], unsupportedItemIds: ['sculk_catalyst'] },
+  witch: { rules: WITCH_DROPS, pools: [WITCH_POOL], unsupportedItemIds: ['potion'] },
   wither_skeleton: { rules: WITHER_SKELETON_DROPS },
   zoglin: { rules: ZOGLIN_DROPS },
-  zombie: { rules: ZOMBIE_DROPS, pools: [ZOMBIE_RARE_DROPS] },
-  zombie_villager: { rules: ZOMBIE_DROPS, pools: [ZOMBIE_RARE_DROPS] },
+  zombie: {
+    rules: ZOMBIE_DROPS,
+    pools: [ZOMBIE_RARE_DROPS],
+    unsupportedItemIds: ['zombie_head'],
+  },
+  zombie_villager: {
+    rules: ZOMBIE_DROPS,
+    pools: [ZOMBIE_RARE_DROPS],
+    unsupportedItemIds: ['zombie_head'],
+  },
   ender_dragon: { rules: [] },
   wither: { rules: WITHER_DROPS },
-}
+})
 
 const range = (min: number, max = min): MobExperienceRange => ({ min, max })
 const ANIMAL_EXPERIENCE: MobExperienceRule = { adult: range(1, 3), baby: range(0) }
@@ -478,14 +514,30 @@ export const MOB_EXPERIENCE_RULES: Readonly<Record<string, MobExperienceRule>> =
   wither: { adult: range(50) },
 }
 
-export const mobDropTableOfKind = (kind: EntityKind): MobDropTable =>
-  MOB_DROP_TABLES[kind] ?? { rules: [] }
+export const mobDropTableOfKind = (
+  kind: EntityKind,
+): Result.Result<MobDropTable, UnknownMobKind> => {
+  const table = MOB_DROP_TABLES[kind]
+  return table === undefined
+    ? Result.fail({ _tag: 'UnknownMobKind', kind: String(kind) })
+    : Result.succeed(table)
+}
 
-export const mobDropRulesOfKind = (kind: EntityKind): ReadonlyArray<MobDropRule> =>
-  mobDropTableOfKind(kind).rules
+export const mobDropRulesOfKind = (
+  kind: EntityKind,
+): Result.Result<ReadonlyArray<MobDropRule>, UnknownMobKind> => {
+  const table = mobDropTableOfKind(kind)
+  return Result.isFailure(table) ? Result.fail(table.failure) : Result.succeed(table.success.rules)
+}
 
-export const mobExperienceRuleOfKind = (kind: EntityKind): MobExperienceRule =>
-  MOB_EXPERIENCE_RULES[kind] ?? NO_EXPERIENCE
+export const mobExperienceRuleOfKind = (
+  kind: EntityKind,
+): Result.Result<MobExperienceRule, UnknownMobKind> => {
+  const rule = MOB_EXPERIENCE_RULES[kind]
+  return rule === undefined
+    ? Result.fail({ _tag: 'UnknownMobKind', kind: String(kind) })
+    : Result.succeed(rule)
+}
 
 const experienceRangeFor = (
   reward: MobExperienceRule,
@@ -611,7 +663,7 @@ const rollWeightedChoice = (
 
 /** Resolves fixed drop lines and weighted selections from one mob table. */
 export const rollMobTable = (
-  table: MobDropTable,
+  table: MobDropRollTable,
   kill: MobKill,
   rolls: MobDropRollSequence,
 ): ReadonlyArray<MobDrop> => {
@@ -652,7 +704,7 @@ export const rollMobTable = (
   return drops
 }
 
-export const dropRollsNeededForTable = (table: MobDropTable): MobDropRollCount =>
+export const dropRollsNeededForTable = (table: MobDropRollTable): MobDropRollCount =>
   makeMobDropRollCount(table.rules.length * 2 +
   (table.pools ?? []).reduce((total, pool) =>
     total +

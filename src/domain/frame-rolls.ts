@@ -39,6 +39,9 @@
  *                                 other, so a frame is a pure function of its
  *                                 inputs and its seed, and two runs of one
  *                                 scenario produce the same drops.
+ *                                 Multiplayer assumes the host keeps this seed
+ *                                 server-owned. This package does not enforce
+ *                                 that boundary; MP1 must verify it.
  *
  * mc-worldgen threads a seed for the same reason and `./mob/mob-drop`'s header
  * names it as the model 「the way mc-worldgen threads a seed」. This is the

@@ -10,6 +10,7 @@ import {
   hostileSpawnsAllowed,
   recordGameplayStageFailure,
   recordGameplayUnsupportedOperation,
+  recordMobRuleIssues,
   rollCasualtyExperience,
   searchSpawnCandidates,
   settled,
@@ -318,6 +319,10 @@ const runTntSimulation = (
     const mobBlast = planMobExplosionRoster(roster, mobHits, deathTick)
     const loot = rollCasualtyDrops(mobBlast.casualties, seed)
     const casualtyExperience = rollCasualtyExperience(mobBlast.casualties, loot.seed)
+    if (loot._tag === 'Unsupported') yield* recordMobRuleIssues(state, 'MobDrop', loot.issues)
+    if (casualtyExperience._tag === 'Unsupported') {
+      yield* recordMobRuleIssues(state, 'MobExperience', casualtyExperience.issues)
+    }
     const explosion: Explosion = { source: 'tnt', power: TNT_EXPLOSION_POWER }
     const playerEffect = player.pose.feetPosition.dimension === record.dimension
       ? effects.find(({ id: effectId }) => effectId === PLAYER_BLAST_ENTITY_ID)
@@ -516,6 +521,12 @@ const runMobSimulation = (
   const hostileSearchDue = difficulty !== 'peaceful' && intervalElapsed
   const casualtyDrops = rollCasualtyDrops(blast.casualties, sweep.seed)
   const casualtyExperience = rollCasualtyExperience(blast.casualties, casualtyDrops.seed)
+  if (casualtyDrops._tag === 'Unsupported') {
+    yield* recordMobRuleIssues(state, 'MobDrop', casualtyDrops.issues)
+  }
+  if (casualtyExperience._tag === 'Unsupported') {
+    yield* recordMobRuleIssues(state, 'MobExperience', casualtyExperience.issues)
+  }
   let searchedAttempts: ReadonlyArray<MobSpawnAttempt> = NO_ATTEMPTS
   let nextRollSeed = casualtyExperience.seed
   const timeOfDay = yield* context.time.timeOfDay

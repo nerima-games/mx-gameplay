@@ -759,7 +759,7 @@ describe('mob drop tables', () => {
 
   it.effect('adds experience for undropped equipment with its own rolls', () =>
     Effect.sync(() => {
-      const zombie = mobExperienceRuleOfKind(EntityKind('zombie'))
+      const zombie = Result.getOrThrow(mobExperienceRuleOfKind(EntityKind('zombie')))
       expect(mobXpReward(SLAIN, zombie, 0, {
         undroppedEquipmentCount: 2,
         equipmentRolls: [0, 0.999],
@@ -803,7 +803,7 @@ describe('mob drop tables', () => {
 
   it.effect('uses the respawn dragon experience range and rejects non-finite fixed rewards', () =>
     Effect.sync(() => {
-      const dragon = mobExperienceRuleOfKind(EntityKind('ender_dragon'))
+      const dragon = Result.getOrThrow(mobExperienceRuleOfKind(EntityKind('ender_dragon')))
       expect(mobXpReward(SLAIN, dragon, 0, { firstDragonDeath: false })).toBe(500)
       expect(mobXpReward(SLAIN, Number.NaN)).toBe(0)
     }),
@@ -1021,7 +1021,7 @@ describe('mob drop tables', () => {
           for (const choice of pool.choices) expect(ITEM_TYPES).toContain(choice.item)
         }
       }
-      expect(mobExperienceRuleOfKind(EntityKind('slime')).sizes).toStrictEqual({
+      expect(Result.getOrThrow(mobExperienceRuleOfKind(EntityKind('slime'))).sizes).toStrictEqual({
         small: { min: 1, max: 1 },
         medium: { min: 2, max: 2 },
         large: { min: 4, max: 4 },

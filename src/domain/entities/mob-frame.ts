@@ -655,16 +655,22 @@ export const passivePopulation = <S>(roster: EntityManagerApi<S>): Effect.Effect
  */
 const SLAIN_WITHOUT_LOOTING: MobKill = { _tag: 'Slain', lootingLevel: 0 }
 
-/** Resolve the table-backed drops for any kernel entity kind. */
-export const dropRulesOfKind = (kind: EntityKind): ReadonlyArray<MobDropRule> =>
+/** Resolve table-backed drops for a kernel entity kind. */
+export const dropRulesOfKind = (kind: EntityKind): Result.Result<ReadonlyArray<MobDropRule>, { readonly _tag: 'UnknownMobKind'; readonly kind: string }> =>
   mobDropRulesOfKind(kind)
 
 /** The adult base XP value; variable rules are resolved with casualty context. */
-export const xpRewardOfKind = (kind: EntityKind): number =>
-  mobExperienceRuleOfKind(kind).adult.min
+export const xpRewardOfKind = (kind: EntityKind): Result.Result<number, { readonly _tag: 'UnknownMobKind'; readonly kind: string }> => {
+  const rule = mobExperienceRuleOfKind(kind)
+  return Result.isFailure(rule) ? Result.fail(rule.failure) : Result.succeed(rule.success.adult.min)
+}
 
-export const dropRollsNeeded = (kind: EntityKind): number =>
-  dropRollsNeededForTable(mobDropTableOfKind(kind))
+export const dropRollsNeeded = (kind: EntityKind): Result.Result<number, { readonly _tag: 'UnknownMobKind'; readonly kind: string }> => {
+  const table = mobDropTableOfKind(kind)
+  return Result.isFailure(table)
+    ? Result.fail(table.failure)
+    : Result.succeed(dropRollsNeededForTable(table.success))
+}
 
 /**
  * Roll a kind's loot from a flat array of rolls.
@@ -681,11 +687,12 @@ export const rollDropsOfKind = (
   kind: EntityKind,
   kill: MobKill,
   rolls: ReadonlyArray<number>,
-): ReadonlyArray<MobDrop> => rollMobTable(
-  mobDropTableOfKind(kind),
-  kill,
-  makeMobDropRollSequence(rolls),
-)
+): Result.Result<ReadonlyArray<MobDrop>, { readonly _tag: 'UnknownMobKind'; readonly kind: string }> => {
+  const table = mobDropTableOfKind(kind)
+  return Result.isFailure(table)
+    ? Result.fail(table.failure)
+    : Result.succeed(rollMobTable(table.success, kill, makeMobDropRollSequence(rolls)))
+}
 
 /**
  * The host's `BehaviourRepair` — the function mc-sim's load path delegates to
@@ -999,6 +1006,7 @@ const mobCasualty = (
   latestHit?: RecentMobHit,
   killCredit = latestHit?.killCredit ?? entity.killCredit,
   lastHitTick = latestHit?.lastHitTick ?? entity.lastHitTick,
+  burning = false,
 ): MobCasualty => ({
   id: entity.id,
   kind: entity.kind,
@@ -1006,6 +1014,7 @@ const mobCasualty = (
   ...(killCredit === undefined ? {} : { killCredit }),
   ...(lastHitTick === undefined ? {} : { lastHitTick }),
   ...(deathTick === undefined ? {} : { deathTick }),
+  ...(burning ? { burning: true } : {}),
 })
 
 const retainMobMetadata = (
@@ -1805,6 +1814,7 @@ export type MobDamageHit = Readonly<{
   damage: Damage
   killCredit?: Exclude<MobKillCredit, 'player-triggered-tnt'>
   lastHitTick?: SimulationTickValue
+  burning?: boolean
 }>
 
 export type MobExplosionHit = Readonly<{
@@ -1897,7 +1907,7 @@ export const planMobDamageRoster = (
 ): MobBlastRosterResolution => {
   if (hits.length === 0) return { roster, casualties: NO_CASUALTIES }
 
-  type DamageBatch = { damages: Array<Damage>; latestHit?: RecentMobHit }
+  type DamageBatch = { damages: Array<Damage>; latestHit?: RecentMobHit; burning?: boolean }
   const byEntity = new Map<EntityId, DamageBatch>()
   for (const hit of hits) {
     if (!Number.isFinite(hit.damage.amount) || hit.damage.amount <= 0) continue
@@ -1908,6 +1918,7 @@ export const planMobDamageRoster = (
       recentHit !== undefined &&
       (batch.latestHit === undefined || recentHit.lastHitTick >= batch.latestHit.lastHitTick)
     ) batch.latestHit = recentHit
+    if (hit.burning === true) batch.burning = true
     byEntity.set(hit.id, batch)
   }
   if (byEntity.size === 0) return { roster, casualties: NO_CASUALTIES }
@@ -1934,7 +1945,7 @@ export const planMobDamageRoster = (
     if (isDead(vitals)) {
       return {
         transition: DESPAWNED,
-        emit: mobCasualty(entity, deathTick, recentHits.get(entity.id)),
+        emit: mobCasualty(entity, deathTick, recentHits.get(entity.id), undefined, undefined, batch.burning),
       }
     }
     return {
@@ -2111,10 +2122,30 @@ const damageFrom = (blasts: ReadonlyArray<Blast>, entity: Entity<MobBehaviour>):
 }
 
 /** Every drop a blast's casualties leave, and the seed to keep. */
-export type CasualtyDrops = {
-  readonly drops: ReadonlyArray<MobDropEvent>
-  readonly seed: number
-}
+export type CasualtyDrops =
+  | {
+      readonly _tag: 'Resolved'
+      readonly drops: ReadonlyArray<MobDropEvent>
+      readonly seed: number
+    }
+  | {
+      readonly _tag: 'Unsupported'
+      readonly drops: ReadonlyArray<MobDropEvent>
+      readonly seed: number
+      readonly issues: ReadonlyArray<MobRuleIssue>
+    }
+
+type MobRuleIssue =
+  | { readonly _tag: 'UnknownMobKind'; readonly kind: string }
+  | { readonly _tag: 'UnsupportedDropItemIds'; readonly kind: string; readonly itemIds: ReadonlyArray<string> }
+
+type MobExperienceResolution =
+  | { readonly _tag: 'Resolved'; readonly experience: ReadonlyArray<MobExperienceEvent> }
+  | {
+      readonly _tag: 'Unsupported'
+      readonly experience: ReadonlyArray<MobExperienceEvent>
+      readonly issues: ReadonlyArray<{ readonly _tag: 'UnknownMobKind'; readonly kind: string }>
+    }
 
 export type MobDropEvent = MobDrop & {
   readonly source: EntityId
@@ -2149,20 +2180,29 @@ const experienceContextOfCasualty = (casualty: MobCasualty) => ({
 /** Resolve experience from the rolls already attached to each casualty. */
 export const experienceOfCasualties = (
   casualties: ReadonlyArray<MobCasualty>,
-): ReadonlyArray<MobExperienceEvent> =>
-  casualties.flatMap((casualty) => {
-    const rule = mobExperienceRuleOfKind(casualty.kind)
-    if (rule.playerKillRequired !== false && !hasRecentPlayerCredit(casualty)) return []
+): MobExperienceResolution => {
+  const experience: Array<MobExperienceEvent> = []
+  const issues: Array<{ readonly _tag: 'UnknownMobKind'; readonly kind: string }> = []
+  for (const casualty of casualties) {
+    const result = mobExperienceRuleOfKind(casualty.kind)
+    if (Result.isFailure(result)) {
+      issues.push(result.failure)
+      continue
+    }
+    const rule = result.success
+    if (rule.playerKillRequired !== false && !hasRecentPlayerCredit(casualty)) continue
     const amount = mobXpReward(
       SLAIN_WITHOUT_LOOTING,
       rule,
       casualty.experienceRoll ?? 0,
       experienceContextOfCasualty(casualty),
     )
-    return amount <= 0
-      ? []
-      : [{ source: casualty.id, kind: casualty.kind, at: casualty.at, amount }]
-  })
+    if (amount > 0) experience.push({ source: casualty.id, kind: casualty.kind, at: casualty.at, amount })
+  }
+  return issues.length === 0
+    ? { _tag: 'Resolved', experience }
+    : { _tag: 'Unsupported', experience, issues }
+}
 
 /**
  * Roll what the dead leave behind.
@@ -2181,14 +2221,28 @@ export const rollCasualtyDrops = (
   seed: number,
 ): CasualtyDrops => {
   if (casualties.length === 0) {
-    return { drops: NO_DROPS, seed }
+    return { _tag: 'Resolved', drops: NO_DROPS, seed }
   }
 
   const drops: Array<MobDropEvent> = []
+  const issues: Array<MobRuleIssue> = []
   let current = seed
 
   for (const casualty of casualties) {
-    const batch = drawRolls(current, dropRollsNeeded(casualty.kind))
+    const tableResult = mobDropTableOfKind(casualty.kind)
+    if (Result.isFailure(tableResult)) {
+      issues.push(tableResult.failure)
+      continue
+    }
+    const table = tableResult.success
+    if (table.unsupportedItemIds.length > 0) {
+      issues.push({
+        _tag: 'UnsupportedDropItemIds',
+        kind: String(casualty.kind),
+        itemIds: table.unsupportedItemIds,
+      })
+    }
+    const batch = drawRolls(current, dropRollsNeededForTable(table))
     current = batch.seed
     const playerKill = hasRecentPlayerCredit(casualty)
     const kill: MobKill = {
@@ -2202,7 +2256,7 @@ export const rollCasualtyDrops = (
         : { killedByChargedCreeper: casualty.killedByChargedCreeper }),
     }
     drops.push(
-      ...rollDropsOfKind(casualty.kind, kill, batch.rolls).map((drop) => ({
+      ...rollMobTable(table, kill, makeMobDropRollSequence(batch.rolls)).map((drop) => ({
         ...drop,
         source: casualty.id,
         kind: casualty.kind,
@@ -2211,7 +2265,9 @@ export const rollCasualtyDrops = (
     )
   }
 
-  return { drops, seed: current }
+  return issues.length === 0
+    ? { _tag: 'Resolved', drops, seed: current }
+    : { _tag: 'Unsupported', drops, seed: current, issues }
 }
 
 /** A self-destruct casualty never drops an item. */

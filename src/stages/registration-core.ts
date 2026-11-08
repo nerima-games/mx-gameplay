@@ -348,7 +348,11 @@ import {
 import type { PlaceOutcome } from '../domain/interactions/place-block.js'
 import { cropDrops, type CropDropOutcome } from '../domain/interactions/crop-drops.js'
 import { applyBoneMeal, type BoneMealOutcome } from '../domain/interactions/bone-meal.js'
-import { resolveFoodUse, type FoodUseOutcome, type FoodUseRequest } from '../domain/interactions/eat-food.js'
+import {
+  resolveFoodUse,
+  type FoodUseOutcome,
+  type FoodUseRequest,
+} from '../domain/interactions/eat-food.js'
 import {
   makeSurvivalHungerRuntime,
   makeReplicatedSurvivalHungerRuntime,
@@ -458,16 +462,39 @@ const experienceContextOfCasualty = (casualty: MobCasualty) => ({
 })
 
 /** Draw variable experience rolls from the frame seed after the loot rolls. */
+type CasualtyExperienceRoll =
+  | Readonly<{
+      readonly _tag: 'Resolved'
+      readonly experience: ReadonlyArray<MobExperienceEvent>
+      readonly seed: number
+    }>
+  | Readonly<{
+      readonly _tag: 'Unsupported'
+      readonly experience: ReadonlyArray<MobExperienceEvent>
+      readonly seed: number
+      readonly issues: ReadonlyArray<{ readonly _tag: 'UnknownMobKind'; readonly kind: string }>
+    }>
+
 const rollCasualtyExperience = (
   casualties: ReadonlyArray<MobCasualty>,
   seed: number,
-): Readonly<{ readonly experience: ReadonlyArray<MobExperienceEvent>; readonly seed: number }> => {
-  if (casualties.length === 0) return { experience: NO_MOB_EXPERIENCE, seed }
+): CasualtyExperienceRoll => {
+  if (casualties.length === 0) return { _tag: 'Resolved', experience: NO_MOB_EXPERIENCE, seed }
 
   let current = seed
-  const rolled = casualties.map((casualty) => {
-    const rule = mobExperienceRuleOfKind(casualty.kind)
-    if (rule.playerKillRequired !== false && !hasRecentPlayerCredit(casualty)) return casualty
+  const rolled: Array<MobCasualty> = []
+  const issues: Array<{ readonly _tag: 'UnknownMobKind'; readonly kind: string }> = []
+  for (const casualty of casualties) {
+    const result = mobExperienceRuleOfKind(casualty.kind)
+    if (Result.isFailure(result)) {
+      issues.push(result.failure)
+      continue
+    }
+    const rule = result.success
+    if (rule.playerKillRequired !== false && !hasRecentPlayerCredit(casualty)) {
+      rolled.push(casualty)
+      continue
+    }
 
     const context = experienceContextOfCasualty(casualty)
     const baseContext = { ...context, undroppedEquipmentCount: 0, equipmentRolls: [] }
@@ -496,13 +523,18 @@ const rollCasualtyExperience = (
           ...Array.from({ length: equipmentRollCount }, () => makeMobExperienceRoll(rollAt(batch, cursor++))),
         ]
 
-    return {
+    rolled.push({
       ...casualty,
       ...(experienceRoll === undefined ? {} : { experienceRoll }),
       ...(equipmentXpRolls.length === 0 ? {} : { equipmentXpRolls }),
-    }
-  })
-  return { experience: experienceOfCasualties(rolled), seed: current }
+    })
+  }
+  const resolution = experienceOfCasualties(rolled)
+  const experience = resolution.experience
+  if (resolution._tag === 'Unsupported') issues.push(...resolution.issues)
+  return issues.length === 0
+    ? { _tag: 'Resolved', experience, seed: current }
+    : { _tag: 'Unsupported', experience, seed: current, issues }
 }
 
 /**
@@ -1593,7 +1625,10 @@ export type FarmingItemUseResult =
       readonly heldItem: 'potato'
       readonly success: boolean
       readonly consumedCount: 0 | 1
-      readonly outcome: FoodUseOutcome | { readonly _tag: 'missingItem' }
+      readonly outcome:
+        | FoodUseOutcome
+        | { readonly _tag: 'InvalidFoodItemId'; readonly itemId: string }
+        | { readonly _tag: 'missingItem' }
     }
   | {
       readonly action: 'EatFood'
@@ -1601,7 +1636,10 @@ export type FarmingItemUseResult =
       readonly heldItem: ItemType
       readonly success: boolean
       readonly consumedCount: 0 | 1
-      readonly outcome: FoodUseOutcome | { readonly _tag: 'missingItem' }
+      readonly outcome:
+        | FoodUseOutcome
+        | { readonly _tag: 'InvalidFoodItemId'; readonly itemId: string }
+        | { readonly _tag: 'missingItem' }
     }
 
 export type FurnaceItemUseResult =
@@ -1999,6 +2037,7 @@ export type GameplayUnsupportedAction =
   | 'EnchantItem'
   | 'PlayerDamage'
   | 'MobDrop'
+  | 'MobExperience'
   | 'ExperienceOrbCreation'
   | 'PortalTravel'
   | 'MobSimulation'
@@ -2014,12 +2053,16 @@ export type GameplayUnsupportedReason =
   | 'OwnerRegistrationUnavailable'
   | 'TntServiceUnavailable'
   | 'EntityRosterOwnerUnavailable'
+  | 'UnknownMobKind'
+  | 'UnsupportedDropItemIds'
 
 export type GameplayUnsupportedOperation = Readonly<{
   _tag: 'Unsupported'
   action: GameplayUnsupportedAction
   requestId?: string
   reason: GameplayUnsupportedReason
+  mobKind?: string
+  itemIds?: ReadonlyArray<string>
 }>
 
 export type GameplayFrameStateOptions = Readonly<{
@@ -3610,6 +3653,7 @@ const stepFireTick = (
     const validEntityHits = step.entityDamages.map(({ actorId, damage }) => ({
       id: Schema.decodeUnknownSync(EntityIdSchema)(actorId),
       damage,
+      burning: true,
     }))
     const damagePlan = planMobDamageRoster(
       entitySnapshotResult.success.state,
@@ -3624,6 +3668,12 @@ const stepFireTick = (
     const seed = yield* Ref.get(state.rollSeed)
     const casualtyDrops = rollCasualtyDrops(damagePlan.casualties, seed)
     const casualtyExperience = rollCasualtyExperience(damagePlan.casualties, casualtyDrops.seed)
+    if (casualtyDrops._tag === 'Unsupported') {
+      yield* recordMobRuleIssues(state, 'MobDrop', casualtyDrops.issues)
+    }
+    if (casualtyExperience._tag === 'Unsupported') {
+      yield* recordMobRuleIssues(state, 'MobExperience', casualtyExperience.issues)
+    }
     let droppedItemsCandidate: Schema.Schema.Type<typeof DroppedItemOwnerSnapshotSchema> | undefined
     if (casualtyDrops.drops.length > 0) {
       if (context.droppedItemsOwnerId === undefined) {
@@ -3874,6 +3924,26 @@ export const recordGameplayUnsupportedOperation = (
   operation: GameplayUnsupportedOperation,
 ): Effect.Effect<void> =>
   Ref.update(state.unsupportedOperations, (current) => [...current, operation])
+
+export const recordMobRuleIssues = (
+  state: GameplayFrameState,
+  action: 'MobDrop' | 'MobExperience',
+  issues: ReadonlyArray<{
+    readonly _tag: 'UnknownMobKind' | 'UnsupportedDropItemIds'
+    readonly kind: string
+    readonly itemIds?: ReadonlyArray<string>
+  }>,
+): Effect.Effect<void> => Effect.gen(function* () {
+  for (const issue of issues) {
+    yield* recordGameplayUnsupportedOperation(state, {
+      _tag: 'Unsupported',
+      action,
+      reason: issue._tag,
+      mobKind: issue.kind,
+      ...(issue.itemIds === undefined ? {} : { itemIds: issue.itemIds }),
+    })
+  }
+})
 
 /** Resolve the block under the crosshair and enqueue placement in its adjacent cell. */
 export const requestTargetedBlockPlacement = (

@@ -1,5 +1,5 @@
 import { describe, expect, it } from '@effect/vitest'
-import { Effect } from 'effect'
+import { Effect, Result } from 'effect'
 import * as FastCheck from 'fast-check'
 import { EntityHealthPoints, VANILLA_FOOD_DEFINITIONS } from '@nerima-games/mc-kernel'
 import { HungerPoints } from '@nerima-games/mc-sim'
@@ -25,10 +25,12 @@ const request = (
 })
 
 const effectsOf = (foodRequest: FoodUseRequest) => {
-  const outcome = resolveFoodUse(foodRequest)
+  const outcome = Result.getOrThrow(resolveFoodUse(foodRequest))
   if (outcome._tag !== 'consume') throw new Error('expected food to be consumed')
   return outcome.effects
 }
+
+const foodUse = (foodRequest: FoodUseRequest) => Result.getOrThrow(resolveFoodUse(foodRequest))
 
 describe('resolveFoodUse', () => {
   it.effect('resolves every kernel food with its nutrition and converted saturation modifier', () =>
@@ -42,7 +44,7 @@ describe('resolveFoodUse', () => {
           saturationModifier: definition.saturation / (2 * definition.nutrition),
         }
         expect(FOOD_PROPERTIES[definition.item]).toStrictEqual(expected)
-        expect(resolveFoodUse(request(definition.item, { hungerPoints: 0 }, 1))).toMatchObject({
+        expect(foodUse(request(definition.item, { hungerPoints: 0 }, 1))).toMatchObject({
           _tag: 'consume',
           count: 1,
           ...expected,
@@ -58,7 +60,7 @@ describe('resolveFoodUse', () => {
 
       FastCheck.assert(
         FastCheck.property(definition, effectRoll, (food, roll) => {
-          const outcome = resolveFoodUse(request(food.item, { hungerPoints: 0 }, roll))
+          const outcome = foodUse(request(food.item, { hungerPoints: 0 }, roll))
           expect(outcome).toMatchObject({
             _tag: 'consume',
             count: 1,
@@ -73,10 +75,10 @@ describe('resolveFoodUse', () => {
 
   it.effect('allows only foods marked canAlwaysEat at full hunger', () =>
     Effect.sync(() => {
-      expect(resolveFoodUse(request('potato', { hungerPoints: 20 }))).toStrictEqual({ _tag: 'full' })
+      expect(foodUse(request('potato', { hungerPoints: 20 }))).toStrictEqual({ _tag: 'full' })
 
       for (const held of ['chorus_fruit', 'golden_apple', 'enchanted_golden_apple'] as const) {
-        expect(resolveFoodUse(request(held, { hungerPoints: 20 }))._tag).toBe('consume')
+        expect(foodUse(request(held, { hungerPoints: 20 }))._tag).toBe('consume')
       }
     }),
   )
@@ -142,16 +144,18 @@ describe('resolveFoodUse', () => {
 
   it.effect('still consumes below full hunger and refuses ordinary food at or above full', () =>
     Effect.sync(() => {
-      expect(resolveFoodUse(request('potato', { hungerPoints: 19, maxHungerPoints: 20 }))._tag).toBe('consume')
-      expect(resolveFoodUse(request('pufferfish', { hungerPoints: 20 }, 0))).toStrictEqual({ _tag: 'full' })
-      expect(resolveFoodUse(request('potato', { hungerPoints: 21 }))).toStrictEqual({ _tag: 'full' })
+      expect(foodUse(request('potato', { hungerPoints: 19, maxHungerPoints: 20 }))._tag).toBe('consume')
+      expect(foodUse(request('pufferfish', { hungerPoints: 20 }, 0))).toStrictEqual({ _tag: 'full' })
+      expect(foodUse(request('potato', { hungerPoints: 21 }))).toStrictEqual({ _tag: 'full' })
     }),
   )
 
   it.effect('classifies non-food items and refuses consumption after death', () =>
     Effect.sync(() => {
-      expect(resolveFoodUse(request('stone', {}, 0))).toStrictEqual({ _tag: 'notFood' })
-      expect(resolveFoodUse(request('potato', { healthPoints: 0 }))).toStrictEqual({ _tag: 'dead' })
+      expect(foodUse(request('stone', {}, 0))).toStrictEqual({ _tag: 'notFood' })
+      expect(foodUse(request('potato', { healthPoints: 0 }))).toStrictEqual({ _tag: 'dead' })
+      expect(resolveFoodUse(request('not_a_kernel_item' as FoodUseRequest['held'], {}, 0)))
+        .toStrictEqual(Result.fail({ _tag: 'InvalidFoodItemId', itemId: 'not_a_kernel_item' }))
     }),
   )
 })

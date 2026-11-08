@@ -1,10 +1,12 @@
 import {
+  ITEM_TYPES,
   foodDefinitionOf,
   VANILLA_FOOD_DEFINITIONS,
   type FoodDefinition,
   type FoodStatusEffectName,
   type ItemType,
 } from '@nerima-games/mc-kernel'
+import { Result } from 'effect'
 import type { PlayerVitals } from '../in-memory-vitals.js'
 import type { StatusEffectApplication, StatusEffectType } from '../status-effect.js'
 
@@ -74,25 +76,37 @@ export type FoodUseOutcome =
   | { readonly _tag: 'full' }
   | { readonly _tag: 'dead' }
 
+type InvalidFoodItemId = Readonly<{ _tag: 'InvalidFoodItemId'; itemId: string }>
+
+const KNOWN_ITEM_IDS: ReadonlySet<string> = new Set<string>(ITEM_TYPES)
+
 /** Decide whether normal item use should eat the held item. */
-export const resolveFoodUse = ({ held, vitals, effectRoll = 1 }: FoodUseRequest): FoodUseOutcome => {
+export const resolveFoodUse = ({
+  held,
+  vitals,
+  effectRoll = 1,
+}: FoodUseRequest): Result.Result<FoodUseOutcome, InvalidFoodItemId> => {
+  if (!KNOWN_ITEM_IDS.has(held)) {
+    return Result.fail({ _tag: 'InvalidFoodItemId', itemId: String(held) })
+  }
+
   if (vitals.healthPoints <= 0) {
-    return { _tag: 'dead' }
+    return Result.succeed({ _tag: 'dead' })
   }
 
   const definition = foodDefinitionOf(held)
   if (definition === undefined) {
-    return { _tag: 'notFood' }
+    return Result.succeed({ _tag: 'notFood' })
   }
 
   if (!definition.canAlwaysEat && vitals.hungerPoints >= vitals.maxHungerPoints) {
-    return { _tag: 'full' }
+    return Result.succeed({ _tag: 'full' })
   }
 
-  return {
+  return Result.succeed({
     _tag: 'consume',
     count: 1,
     effects: effectsOfFood(definition, effectRoll),
     ...foodPropertiesOf(definition),
-  }
+  })
 }
