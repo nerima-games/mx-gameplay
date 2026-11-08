@@ -757,6 +757,19 @@ describe('mob drop tables', () => {
     }),
   )
 
+  it.effect('adds experience for undropped equipment with its own rolls', () =>
+    Effect.sync(() => {
+      const zombie = mobExperienceRuleOfKind(EntityKind('zombie'))
+      expect(mobXpReward(SLAIN, zombie, 0, {
+        undroppedEquipmentCount: 2,
+        equipmentRolls: [0, 0.999],
+      })).toBe(9)
+      expect(mobXpReward(SLAIN, zombie, 0.999, {
+        undroppedEquipmentCount: 2,
+      })).toBe(11)
+    }),
+  )
+
   it.effect('accepts Looting context without applying the enchantment', () =>
     Effect.sync(() => {
       const rolls = () => ({ chance: 0, count: 0.75 })
@@ -872,6 +885,25 @@ describe('mob drop tables', () => {
         { item: 'stick', count: 2 },
         { item: 'stick', count: 2 },
         { item: 'stick', count: 2 },
+      ])
+    }),
+  )
+
+  it.effect('keeps the final weighted choice when finite weights overflow in total', () =>
+    Effect.sync(() => {
+      const table = {
+        rules: [],
+        pools: [{
+          minSelections: 1,
+          maxSelections: 1,
+          choices: [
+            { item: 'cod', weight: Number.MAX_VALUE, count: 1 },
+            { item: 'salmon', weight: Number.MAX_VALUE, count: 1 },
+          ],
+        }],
+      } as const
+      expect(rollMobTable(table, SLAIN, makeMobDropRollSequence([0.5, 0, 0, 0]))).toStrictEqual([
+        { item: 'salmon', count: 1 },
       ])
     }),
   )
