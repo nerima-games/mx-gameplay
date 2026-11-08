@@ -656,16 +656,16 @@ export const passivePopulation = <S>(roster: EntityManagerApi<S>): Effect.Effect
 const SLAIN_WITHOUT_LOOTING: MobKill = { _tag: 'Slain', lootingLevel: 0 }
 
 /** Resolve table-backed drops for a kernel entity kind. */
-export const dropRulesOfKind = (kind: EntityKind): Result.Result<ReadonlyArray<MobDropRule>, { readonly _tag: 'UnknownMobKind'; readonly kind: string }> =>
+export const dropRulesOfKind = (kind: EntityKind): Result.Result<ReadonlyArray<MobDropRule>, { readonly _tag: 'UnknownMobKind'; readonly kind: EntityKind }> =>
   mobDropRulesOfKind(kind)
 
 /** The adult base XP value; variable rules are resolved with casualty context. */
-export const xpRewardOfKind = (kind: EntityKind): Result.Result<number, { readonly _tag: 'UnknownMobKind'; readonly kind: string }> => {
+export const xpRewardOfKind = (kind: EntityKind): Result.Result<number, { readonly _tag: 'UnknownMobKind'; readonly kind: EntityKind }> => {
   const rule = mobExperienceRuleOfKind(kind)
   return Result.isFailure(rule) ? Result.fail(rule.failure) : Result.succeed(rule.success.adult.min)
 }
 
-export const dropRollsNeeded = (kind: EntityKind): Result.Result<number, { readonly _tag: 'UnknownMobKind'; readonly kind: string }> => {
+export const dropRollsNeeded = (kind: EntityKind): Result.Result<number, { readonly _tag: 'UnknownMobKind'; readonly kind: EntityKind }> => {
   const table = mobDropTableOfKind(kind)
   return Result.isFailure(table)
     ? Result.fail(table.failure)
@@ -687,7 +687,7 @@ export const rollDropsOfKind = (
   kind: EntityKind,
   kill: MobKill,
   rolls: ReadonlyArray<number>,
-): Result.Result<ReadonlyArray<MobDrop>, { readonly _tag: 'UnknownMobKind'; readonly kind: string }> => {
+): Result.Result<ReadonlyArray<MobDrop>, { readonly _tag: 'UnknownMobKind'; readonly kind: EntityKind }> => {
   const table = mobDropTableOfKind(kind)
   return Result.isFailure(table)
     ? Result.fail(table.failure)
@@ -2122,29 +2122,29 @@ const damageFrom = (blasts: ReadonlyArray<Blast>, entity: Entity<MobBehaviour>):
 }
 
 /** Every drop a blast's casualties leave, and the seed to keep. */
-export type CasualtyDrops =
-  | {
-      readonly _tag: 'Resolved'
-      readonly drops: ReadonlyArray<MobDropEvent>
-      readonly seed: number
-    }
-  | {
-      readonly _tag: 'Unsupported'
-      readonly drops: ReadonlyArray<MobDropEvent>
-      readonly seed: number
-      readonly issues: ReadonlyArray<MobRuleIssue>
-    }
+export type CasualtyDrops = Readonly<{
+  readonly drops: ReadonlyArray<MobDropEvent>
+  readonly seed: number
+}> & (
+  | { readonly _tag: 'Resolved' }
+  | { readonly _tag: 'Unsupported'; readonly issues: ReadonlyArray<MobRuleIssue> }
+)
 
+type UnsupportedDropItemId = string & Brand.Brand<'UnsupportedDropItemId'>
 type MobRuleIssue =
-  | { readonly _tag: 'UnknownMobKind'; readonly kind: string }
-  | { readonly _tag: 'UnsupportedDropItemIds'; readonly kind: string; readonly itemIds: ReadonlyArray<string> }
+  | { readonly _tag: 'UnknownMobKind'; readonly kind: EntityKind }
+  | {
+      readonly _tag: 'UnsupportedDropItemIds'
+      readonly kind: EntityKind
+      readonly itemIds: ReadonlyArray<UnsupportedDropItemId>
+    }
 
 type MobExperienceResolution =
   | { readonly _tag: 'Resolved'; readonly experience: ReadonlyArray<MobExperienceEvent> }
   | {
       readonly _tag: 'Unsupported'
       readonly experience: ReadonlyArray<MobExperienceEvent>
-      readonly issues: ReadonlyArray<{ readonly _tag: 'UnknownMobKind'; readonly kind: string }>
+      readonly issues: ReadonlyArray<{ readonly _tag: 'UnknownMobKind'; readonly kind: EntityKind }>
     }
 
 export type MobDropEvent = MobDrop & {
@@ -2182,7 +2182,7 @@ export const experienceOfCasualties = (
   casualties: ReadonlyArray<MobCasualty>,
 ): MobExperienceResolution => {
   const experience: Array<MobExperienceEvent> = []
-  const issues: Array<{ readonly _tag: 'UnknownMobKind'; readonly kind: string }> = []
+  const issues: Array<{ readonly _tag: 'UnknownMobKind'; readonly kind: EntityKind }> = []
   for (const casualty of casualties) {
     const result = mobExperienceRuleOfKind(casualty.kind)
     if (Result.isFailure(result)) {
@@ -2238,7 +2238,7 @@ export const rollCasualtyDrops = (
     if (table.unsupportedItemIds.length > 0) {
       issues.push({
         _tag: 'UnsupportedDropItemIds',
-        kind: String(casualty.kind),
+        kind: casualty.kind,
         itemIds: table.unsupportedItemIds,
       })
     }

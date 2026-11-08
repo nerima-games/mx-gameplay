@@ -6,7 +6,7 @@ import {
   type FoodStatusEffectName,
   type ItemType,
 } from '@nerima-games/mc-kernel'
-import { Result } from 'effect'
+import { Brand, Result } from 'effect'
 import type { PlayerVitals } from '../in-memory-vitals.js'
 import type { StatusEffectApplication, StatusEffectType } from '../status-effect.js'
 
@@ -76,7 +76,9 @@ export type FoodUseOutcome =
   | { readonly _tag: 'full' }
   | { readonly _tag: 'dead' }
 
-type InvalidFoodItemId = Readonly<{ _tag: 'InvalidFoodItemId'; itemId: string }>
+type InvalidFoodItemValue = string & Brand.Brand<'InvalidFoodItemValue'>
+const makeInvalidFoodItemValue = Brand.nominal<InvalidFoodItemValue>()
+export type InvalidFoodItemId = Readonly<{ _tag: 'InvalidFoodItemId'; itemId: InvalidFoodItemValue }>
 
 const KNOWN_ITEM_IDS: ReadonlySet<string> = new Set<string>(ITEM_TYPES)
 
@@ -87,7 +89,7 @@ export const resolveFoodUse = ({
   effectRoll = 1,
 }: FoodUseRequest): Result.Result<FoodUseOutcome, InvalidFoodItemId> => {
   if (!KNOWN_ITEM_IDS.has(held)) {
-    return Result.fail({ _tag: 'InvalidFoodItemId', itemId: String(held) })
+    return Result.fail({ _tag: 'InvalidFoodItemId', itemId: makeInvalidFoodItemValue(String(held)) })
   }
 
   if (vitals.healthPoints <= 0) {

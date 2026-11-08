@@ -163,6 +163,7 @@ import {
 } from '@nerima-games/mc-sim'
 import { Brand, Effect, Equal, Option, Ref, Result, Schema, SchemaParser, Semaphore } from 'effect'
 import {
+  type EntityKind,
   PlayerStorageSnapshotSchema,
   damageAt as damagePlayerStorageAt,
   withInventory,
@@ -350,6 +351,7 @@ import { cropDrops, type CropDropOutcome } from '../domain/interactions/crop-dro
 import { applyBoneMeal, type BoneMealOutcome } from '../domain/interactions/bone-meal.js'
 import {
   resolveFoodUse,
+  type InvalidFoodItemId,
   type FoodUseOutcome,
   type FoodUseRequest,
 } from '../domain/interactions/eat-food.js'
@@ -472,7 +474,7 @@ type CasualtyExperienceRoll =
       readonly _tag: 'Unsupported'
       readonly experience: ReadonlyArray<MobExperienceEvent>
       readonly seed: number
-      readonly issues: ReadonlyArray<{ readonly _tag: 'UnknownMobKind'; readonly kind: string }>
+      readonly issues: ReadonlyArray<{ readonly _tag: 'UnknownMobKind'; readonly kind: EntityKind }>
     }>
 
 const rollCasualtyExperience = (
@@ -483,7 +485,7 @@ const rollCasualtyExperience = (
 
   let current = seed
   const rolled: Array<MobCasualty> = []
-  const issues: Array<{ readonly _tag: 'UnknownMobKind'; readonly kind: string }> = []
+  const issues: Array<{ readonly _tag: 'UnknownMobKind'; readonly kind: EntityKind }> = []
   for (const casualty of casualties) {
     const result = mobExperienceRuleOfKind(casualty.kind)
     if (Result.isFailure(result)) {
@@ -1627,7 +1629,7 @@ export type FarmingItemUseResult =
       readonly consumedCount: 0 | 1
       readonly outcome:
         | FoodUseOutcome
-        | { readonly _tag: 'InvalidFoodItemId'; readonly itemId: string }
+        | InvalidFoodItemId
         | { readonly _tag: 'missingItem' }
     }
   | {
@@ -1638,7 +1640,7 @@ export type FarmingItemUseResult =
       readonly consumedCount: 0 | 1
       readonly outcome:
         | FoodUseOutcome
-        | { readonly _tag: 'InvalidFoodItemId'; readonly itemId: string }
+        | InvalidFoodItemId
         | { readonly _tag: 'missingItem' }
     }
 
@@ -2056,13 +2058,15 @@ export type GameplayUnsupportedReason =
   | 'UnknownMobKind'
   | 'UnsupportedDropItemIds'
 
+type UnsupportedDropItemId = string & Brand.Brand<'UnsupportedDropItemId'>
+
 export type GameplayUnsupportedOperation = Readonly<{
   _tag: 'Unsupported'
   action: GameplayUnsupportedAction
   requestId?: string
   reason: GameplayUnsupportedReason
-  mobKind?: string
-  itemIds?: ReadonlyArray<string>
+  mobKind?: EntityKind
+  itemIds?: ReadonlyArray<UnsupportedDropItemId>
 }>
 
 export type GameplayFrameStateOptions = Readonly<{
@@ -3668,12 +3672,6 @@ const stepFireTick = (
     const seed = yield* Ref.get(state.rollSeed)
     const casualtyDrops = rollCasualtyDrops(damagePlan.casualties, seed)
     const casualtyExperience = rollCasualtyExperience(damagePlan.casualties, casualtyDrops.seed)
-    if (casualtyDrops._tag === 'Unsupported') {
-      yield* recordMobRuleIssues(state, 'MobDrop', casualtyDrops.issues)
-    }
-    if (casualtyExperience._tag === 'Unsupported') {
-      yield* recordMobRuleIssues(state, 'MobExperience', casualtyExperience.issues)
-    }
     let droppedItemsCandidate: Schema.Schema.Type<typeof DroppedItemOwnerSnapshotSchema> | undefined
     if (casualtyDrops.drops.length > 0) {
       if (context.droppedItemsOwnerId === undefined) {
@@ -3808,6 +3806,13 @@ const stepFireTick = (
       ))
     }
 
+    if (casualtyDrops._tag === 'Unsupported') {
+      yield* recordMobRuleIssues(state, 'MobDrop', casualtyDrops.issues)
+    }
+    if (casualtyExperience._tag === 'Unsupported') {
+      yield* recordMobRuleIssues(state, 'MobExperience', casualtyExperience.issues)
+    }
+
     yield* Ref.set(state.fireLifecycle, {
       ...step.state,
       fires: [...step.state.fires].sort((a, b) =>
@@ -3930,8 +3935,8 @@ export const recordMobRuleIssues = (
   action: 'MobDrop' | 'MobExperience',
   issues: ReadonlyArray<{
     readonly _tag: 'UnknownMobKind' | 'UnsupportedDropItemIds'
-    readonly kind: string
-    readonly itemIds?: ReadonlyArray<string>
+    readonly kind: EntityKind
+    readonly itemIds?: ReadonlyArray<UnsupportedDropItemId>
   }>,
 ): Effect.Effect<void> => Effect.gen(function* () {
   for (const issue of issues) {

@@ -1032,7 +1032,13 @@ describe('registration-core public paths omitted from focused coverage', () => {
         DroppedItemOwnerSnapshotSchema,
       )
       expect(drops.state.items.length).toBeGreaterThan(0)
-      expect(yield* Ref.get(harness.state.unsupportedOperations)).toStrictEqual([])
+      expect(yield* Ref.get(harness.state.unsupportedOperations)).toContainEqual({
+        _tag: 'Unsupported',
+        action: 'MobDrop',
+        reason: 'UnsupportedDropItemIds',
+        mobKind: 'zombie',
+        itemIds: ['zombie_head'],
+      })
       expect(yield* Ref.get(harness.state.operationFailures)).toStrictEqual([])
       expect(yield* commit.coordinator.revision).toBe(1)
     }),

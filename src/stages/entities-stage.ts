@@ -319,10 +319,6 @@ const runTntSimulation = (
     const mobBlast = planMobExplosionRoster(roster, mobHits, deathTick)
     const loot = rollCasualtyDrops(mobBlast.casualties, seed)
     const casualtyExperience = rollCasualtyExperience(mobBlast.casualties, loot.seed)
-    if (loot._tag === 'Unsupported') yield* recordMobRuleIssues(state, 'MobDrop', loot.issues)
-    if (casualtyExperience._tag === 'Unsupported') {
-      yield* recordMobRuleIssues(state, 'MobExperience', casualtyExperience.issues)
-    }
     const explosion: Explosion = { source: 'tnt', power: TNT_EXPLOSION_POWER }
     const playerEffect = player.pose.feetPosition.dimension === record.dimension
       ? effects.find(({ id: effectId }) => effectId === PLAYER_BLAST_ENTITY_ID)
@@ -446,6 +442,10 @@ const runTntSimulation = (
 
     yield* commit.tntService.commitDetonation({ id: outcome.id, planRevision: outcome.planRevision }, changes)
 
+    if (loot._tag === 'Unsupported') yield* recordMobRuleIssues(state, 'MobDrop', loot.issues)
+    if (casualtyExperience._tag === 'Unsupported') {
+      yield* recordMobRuleIssues(state, 'MobExperience', casualtyExperience.issues)
+    }
     yield* Ref.set(state.rollSeed, casualtyExperience.seed)
     if (loot.drops.length > 0) yield* Ref.update(state.mobDrops, (pending) => [...pending, ...loot.drops])
     if (casualtyExperience.experience.length > 0) {
@@ -521,12 +521,6 @@ const runMobSimulation = (
   const hostileSearchDue = difficulty !== 'peaceful' && intervalElapsed
   const casualtyDrops = rollCasualtyDrops(blast.casualties, sweep.seed)
   const casualtyExperience = rollCasualtyExperience(blast.casualties, casualtyDrops.seed)
-  if (casualtyDrops._tag === 'Unsupported') {
-    yield* recordMobRuleIssues(state, 'MobDrop', casualtyDrops.issues)
-  }
-  if (casualtyExperience._tag === 'Unsupported') {
-    yield* recordMobRuleIssues(state, 'MobExperience', casualtyExperience.issues)
-  }
   let searchedAttempts: ReadonlyArray<MobSpawnAttempt> = NO_ATTEMPTS
   let nextRollSeed = casualtyExperience.seed
   const timeOfDay = yield* context.time.timeOfDay
@@ -854,6 +848,13 @@ const runMobSimulation = (
       ...(blockWrite === undefined ? {} : { blockWrite }),
     }
     yield* commit.coordinator.commit(request)
+  }
+
+  if (casualtyDrops._tag === 'Unsupported') {
+    yield* recordMobRuleIssues(state, 'MobDrop', casualtyDrops.issues)
+  }
+  if (casualtyExperience._tag === 'Unsupported') {
+    yield* recordMobRuleIssues(state, 'MobExperience', casualtyExperience.issues)
   }
 
   // Local cursors and output queues move only after the replicated candidate

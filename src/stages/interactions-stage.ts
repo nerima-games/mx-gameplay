@@ -142,6 +142,7 @@ import { applyBoneMeal } from '../domain/interactions/bone-meal.js'
 import { cropDrops } from '../domain/interactions/crop-drops.js'
 import {
   resolveFoodUse,
+  type InvalidFoodItemId,
   type FoodUseOutcome,
 } from '../domain/interactions/eat-food.js'
 import { plantingVerdict, cropCellAbove } from '../domain/interactions/plant-crop.js'
@@ -314,12 +315,6 @@ const commitMobDamage = (
     const seed = yield* Ref.get(state.rollSeed)
     const drops = rollCasualtyDrops(damage.casualties, seed)
     const casualtyExperience = rollCasualtyExperience(damage.casualties, drops.seed)
-    if (drops._tag === 'Unsupported') {
-      yield* recordMobRuleIssues(state, 'MobDrop', drops.issues)
-    }
-    if (casualtyExperience._tag === 'Unsupported') {
-      yield* recordMobRuleIssues(state, 'MobExperience', casualtyExperience.issues)
-    }
     const changes: Array<ReplicatedOwnerCandidate> = []
     if (damage.roster !== entitySnapshot.state) {
       changes.push({ ownerId, state: roster })
@@ -374,6 +369,12 @@ const commitMobDamage = (
         _tag: 'Failed', operation: 'WorldCommit', subject: 'Player', error: committed.failure,
       })
       return false
+    }
+    if (drops._tag === 'Unsupported') {
+      yield* recordMobRuleIssues(state, 'MobDrop', drops.issues)
+    }
+    if (casualtyExperience._tag === 'Unsupported') {
+      yield* recordMobRuleIssues(state, 'MobExperience', casualtyExperience.issues)
     }
     if (damage.casualties.length > 0) yield* Ref.set(state.rollSeed, casualtyExperience.seed)
     if (drops.drops.length > 0) {
@@ -3052,7 +3053,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                   consumedCount: 0 | 1,
                   finalOutcome:
                     | FoodUseOutcome
-                    | { readonly _tag: 'InvalidFoodItemId'; readonly itemId: string }
+                    | InvalidFoodItemId
                     | { readonly _tag: 'missingItem' },
                 ) => {
                   if (request.action === 'EatPotato') {
