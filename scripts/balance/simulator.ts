@@ -30,7 +30,7 @@ import {
   INITIAL_TIME_STATE,
   matchSmeltingRecipe,
   timeOfDay,
-  TICKS_PER_SECOND,
+  type TimeState,
 } from '@nerima-games/mc-sim'
 import {
   isNight,
@@ -52,11 +52,13 @@ import {
 } from '@nerima-games/mc-worldgen'
 import { cellKey } from '../../src/domain/in-memory-world.js'
 import {
+  BALANCE_HARNESS_TICKS_PER_SECOND,
   makeGeneratedBalanceGameplayRuntime,
   movePlayer,
   runBalanceHarness,
   scheduleGameplayStages,
   setBlockBreakRequest,
+  type BalanceTimeServiceReading,
 } from './gameplay-harness.js'
 
 export type BalanceEffectRunner = typeof Effect.runPromise
@@ -93,6 +95,18 @@ export type BalanceDamageEvent = Readonly<{
   seconds: number
   ticks: number
   cause?: 'hostile' | 'starvation'
+  timeService?: BalanceTimeServiceReading
+  attacker?: Readonly<{
+    source: string
+    mobKind: string
+    position: Readonly<{ x: number; y: number; z: number }>
+    spawnPosition: Readonly<{ x: number; y: number; z: number }> | null
+    spawnTick: number | null
+    spawnTimeService: BalanceTimeServiceReading | null
+    spawnCandidateBlockLight:
+      | Readonly<{ status: 'observed'; block: number }>
+      | Readonly<{ status: 'unavailable'; reason: string }>
+  }>
 }>
 
 export type BalanceEventSeries =
@@ -256,11 +270,11 @@ const positionFromIndex = (index: number): BlockPosition => {
   return blockPosition(BlockAxis(x), BlockAxis(y), BlockAxis(z))
 }
 
-const firstNightTick = (): number => {
-  const ticksPerDay = Math.ceil(dayLengthSecs(INITIAL_TIME_STATE) * TICKS_PER_SECOND)
+const firstNightTick = (initialTimeState: TimeState): number => {
+  const ticksPerDay = Math.ceil(dayLengthSecs(initialTimeState) * BALANCE_HARNESS_TICKS_PER_SECOND)
   const reachedNight = (ticks: number): boolean => {
     const state = Result.getOrThrow(
-      advanceTime(INITIAL_TIME_STATE, (ticks / TICKS_PER_SECOND) as DeltaTimeSecs),
+      advanceTime(initialTimeState, (ticks / BALANCE_HARNESS_TICKS_PER_SECOND) as DeltaTimeSecs),
     )
     return isNight(timeOfDay(state))
   }
@@ -275,11 +289,11 @@ const firstNightTick = (): number => {
   return high
 }
 
-const firstNightEndTick = (startTick: number): number => {
-  const ticksPerDay = Math.ceil(dayLengthSecs(INITIAL_TIME_STATE) * TICKS_PER_SECOND)
+const firstNightEndTick = (initialTimeState: TimeState, startTick: number): number => {
+  const ticksPerDay = Math.ceil(dayLengthSecs(initialTimeState) * BALANCE_HARNESS_TICKS_PER_SECOND)
   const reachedNight = (ticks: number): boolean => {
     const state = Result.getOrThrow(
-      advanceTime(INITIAL_TIME_STATE, (ticks / TICKS_PER_SECOND) as DeltaTimeSecs),
+      advanceTime(initialTimeState, (ticks / BALANCE_HARNESS_TICKS_PER_SECOND) as DeltaTimeSecs),
     )
     return isNight(timeOfDay(state))
   }
@@ -294,10 +308,10 @@ const firstNightEndTick = (startTick: number): number => {
   return high
 }
 
-const firstTwilightTick = (firstNight: number): number => {
+const firstTwilightTick = (initialTimeState: TimeState, firstNight: number): number => {
   const entersTwilightOrNight = (ticks: number): boolean => {
     const state = Result.getOrThrow(
-      advanceTime(INITIAL_TIME_STATE, (ticks / TICKS_PER_SECOND) as DeltaTimeSecs),
+      advanceTime(initialTimeState, (ticks / BALANCE_HARNESS_TICKS_PER_SECOND) as DeltaTimeSecs),
     )
     const phase = dayPhase(timeOfDay(state))
     return phase === 'dusk' || phase === 'night'
@@ -310,6 +324,19 @@ const firstTwilightTick = (firstNight: number): number => {
     else low = middle
   }
   return high
+}
+
+export const balanceDayBoundaries = (initialTimeState: TimeState = INITIAL_TIME_STATE): Readonly<{
+  firstTwilightTick: number
+  firstNightTick: number
+  firstNightEndTick: number
+}> => {
+  const night = firstNightTick(initialTimeState)
+  return {
+    firstTwilightTick: firstTwilightTick(initialTimeState, night),
+    firstNightTick: night,
+    firstNightEndTick: firstNightEndTick(initialTimeState, night),
+  }
 }
 
 const findSurfaceStart = (seed: number, chunk: NaturalStructureChunk): SurfaceStart | undefined => {
@@ -339,7 +366,7 @@ const findSurfaceStart = (seed: number, chunk: NaturalStructureChunk): SurfaceSt
 
 const metricAt = (ticks: number): BalanceObservation => ({
   status: 'observed',
-  seconds: ticks / TICKS_PER_SECOND,
+  seconds: ticks / BALANCE_HARNESS_TICKS_PER_SECOND,
   ticks,
 })
 
@@ -368,9 +395,10 @@ export const simulateSeed = async (
 
   const terrain = terrainResult.chunk
   const blocks = indexedBlocks(terrain)
-  const firstNight = firstNightTick()
-  const firstTwilight = firstTwilightTick(firstNight)
-  const firstNightEnd = firstNightEndTick(firstNight)
+  const boundaries = balanceDayBoundaries()
+  const firstNight = boundaries.firstNightTick
+  const firstTwilight = boundaries.firstTwilightTick
+  const firstNightEnd = boundaries.firstNightEndTick
   const availableBlockTypes = [...blocks.keys()]
   const nightAction = policy.decide({ seed, terrain, firstNightTick: firstNight, availableBlockTypes })
   const surfaceStart = findSurfaceStart(seed, terrain)
@@ -441,7 +469,7 @@ export const simulateSeed = async (
           target.y - start.y,
           target.z - start.z,
         )
-        const ticks = Math.ceil((distance / WALK_SPEED_BLOCKS_PER_SECOND) * TICKS_PER_SECOND)
+        const ticks = Math.ceil((distance / WALK_SPEED_BLOCKS_PER_SECOND) * BALANCE_HARNESS_TICKS_PER_SECOND)
         if (distance > 0) {
           yield* runtime.state.survivalHunger.submit({ _tag: 'walk', distance })
         }
@@ -537,7 +565,7 @@ export const simulateSeed = async (
         yield* travelTo(target)
         const before = yield* inventoryFromOwner()
         const seconds = miningDurationSecsForBlock(blockId, item)
-        const miningTicks = Math.max(1, Math.ceil(seconds * TICKS_PER_SECOND))
+        const miningTicks = Math.max(1, Math.ceil(seconds * BALANCE_HARNESS_TICKS_PER_SECOND))
         yield* step(miningTicks - 1)
         yield* runtime.state.survivalHunger.submit({ _tag: 'mine', blocks: 1 })
         yield* setBlockBreakRequest(runtime, minedBlockPosition, miningLootContextForItem(item))
@@ -788,7 +816,7 @@ export const simulateSeed = async (
                             STARTER_FUEL_RULES,
                           ))
                           if (smelted?.state.output?.item === 'iron_ingot') {
-                            const cookTicks = Math.ceil(cookSeconds * TICKS_PER_SECOND)
+                            const cookTicks = Math.ceil(cookSeconds * BALANCE_HARNESS_TICKS_PER_SECOND)
                             yield* step(cookTicks)
                             observations.iron = metricAt(yield* Ref.get(runtime.stageTickCount))
                           } else {
@@ -817,20 +845,22 @@ export const simulateSeed = async (
       const nightTicks = Math.max(0, firstNightEnd - routeElapsedTicks)
       yield* step(nightTicks)
       const coverageEnd = yield* Ref.get(runtime.stageTickCount)
-      const hostileEvents = (yield* Ref.get(runtime.damageEventsByTick)).flatMap(({ tick, event }) =>
+      const hostileEvents = (yield* Ref.get(runtime.damageEventsByTick)).flatMap(({ tick, event, timeService, attacker }) =>
         (event._tag === 'HostileContact' || event._tag === 'Explosion') &&
         event.damage.amount > 0
           ? [{
-              seconds: tick / TICKS_PER_SECOND,
+              seconds: tick / BALANCE_HARNESS_TICKS_PER_SECOND,
               ticks: tick,
               cause: 'hostile' as const,
+              timeService,
+              ...(attacker === undefined ? {} : { attacker }),
             }]
           : [],
       )
       const starvationEvents = runtime.hungerOutcomesByTick.flatMap(({ tick, outcome }) =>
         outcome.starvationDamage > 0
           ? [{
-              seconds: tick / TICKS_PER_SECOND,
+              seconds: tick / BALANCE_HARNESS_TICKS_PER_SECOND,
               ticks: tick,
               cause: 'starvation' as const,
             }]
@@ -911,10 +941,10 @@ export const simulateSeed = async (
     firstNightTick: firstNight,
     firstTwilightTick: firstTwilight,
     limitations: [
-      'Resource exploration walks a deterministic Manhattan-distance order over the 16×16 columns in generated chunk (0, 0), advancing harness ticks at 4.317 blocks/s until a requested resource column is found. This scans generated column contents rather than the game visibility/raycast path. Off-road pathfinding, collision, 3D mining reach, and search beyond the center chunk are not modeled.',
-      'Player travel updates the owner and PlayerService along a straight line at 4.317 blocks/s; mc-physics foot locomotion, collision, and obstacles are not executed.',
+      'Resource exploration walks a deterministic Manhattan-distance order over the 16×16 columns in generated chunk (0, 0), advancing harness ticks at 4.317 blocks/s until a requested resource column is found. This scan and all travel time are estimates: they do not model game visibility/raycast, pathfinding, collision, obstacles, or mining reach.',
+      'Player travel updates the owner and PlayerService along an estimated straight line at 4.317 blocks/s; mc-physics foot locomotion, collision, and obstacles are not executed. Movement-dependent times and target attainment are model outputs, not actual-play results. Physical movement and pathfinding are deferred to W6 after release.',
       'Mining requests are sent through the registered gameplay:interactions stage and that stage commits block removal and drops. Time until each request uses the current kernel hardness/(20×speed) mining rule, rounded up to simulation ticks; a bare-hand oak log is 1.75 s here versus about 3.0 s in vanilla, and scale alignment is deferred to W6. The stage has no progressive mining-time state.',
-      'There is no crafting stage in gameplayStages() or simStages. Recipe actions use mc-sim InventoryService.craft() and have no modeled duration. Furnace smelting uses advanceFurnace directly and includes its cook duration in harness ticks.',
+      'There is no crafting stage in gameplayStages() or simStages. Recipe actions use mc-sim InventoryService.craft() and do not advance ticks. Furnace smelting uses advanceFurnace directly and includes its cook duration in harness ticks.',
       'The actual gameplay:entities stage handles spawn search, mob movement, explosions, hostile contact, and damage on the same HeadlessHarness tick stream as route movement/mining. The generated world loads every chunk intersecting the 40-block hostile spawn search radius. Hunger advances through gameplay:survival-hunger.',
       'Animal meat and wool drops are not implemented in mx-gameplay; the route also does not search for animals or crops, so food and bed inputs remain unavailable for both game and route reasons.',
     ],

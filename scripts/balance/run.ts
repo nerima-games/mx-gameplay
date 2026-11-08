@@ -1,14 +1,6 @@
-import { Result } from 'effect'
-import type { DeltaTimeSecs } from '@nerima-games/mc-kernel'
+import { INITIAL_TIME_STATE } from '@nerima-games/mc-sim'
 import {
-  advance as advanceTime,
-  dayLengthSecs,
-  INITIAL_TIME_STATE,
-  TICKS_PER_SECOND,
-  timeOfDay,
-} from '@nerima-games/mc-sim'
-import { isNight } from '../../src/index.js'
-import {
+  balanceDayBoundaries,
   exposedPolicy,
   shelterPolicy,
   simulateSeed,
@@ -17,6 +9,7 @@ import {
   type BalancePolicy,
   type SeedSimulationResult,
 } from './simulator.js'
+import { BALANCE_HARNESS_TICKS_PER_SECOND } from './gameplay-harness.js'
 import {
   summarizeGoal,
   type AchievementGoal,
@@ -39,6 +32,7 @@ export type GoalReport = Readonly<{
   key: string
   label: string
   target: string
+  timeBasis: 'estimated straight-line movement' | 'TimeService' | 'unavailable'
   measurementPath: string
   goal: AchievementGoal
   summary: TargetSummary
@@ -96,55 +90,25 @@ type GoalDefinition = Readonly<{
   key: 'firstLog' | 'woodenPickaxe' | 'stoneTool' | 'cookedFood' | 'iron' | 'firstNight' | 'bedByNight1'
   label: string
   target: string
+  timeBasis: GoalReport['timeBasis']
   goal: AchievementGoal
 }>
 
-const ticksPerDay = Math.ceil(dayLengthSecs(INITIAL_TIME_STATE) * TICKS_PER_SECOND)
-
-const isNightAt = (ticks: number): boolean => {
-  const state = Result.getOrThrow(
-    advanceTime(INITIAL_TIME_STATE, (ticks / TICKS_PER_SECOND) as DeltaTimeSecs),
-  )
-  return isNight(timeOfDay(state))
-}
-
-const findFirstNightStartTick = (): number => {
-  if (isNightAt(0)) return 0
-  let low = 0
-  let high = ticksPerDay
-  while (low + 1 < high) {
-    const middle = Math.floor((low + high) / 2)
-    if (isNightAt(middle)) high = middle
-    else low = middle
-  }
-  return high
-}
-
-const findFirstNightEndTick = (startTick: number): number => {
-  let low = startTick
-  let high = startTick + Math.ceil(ticksPerDay / 2)
-  while (isNightAt(high)) high += 1
-  while (low + 1 < high) {
-    const middle = Math.floor((low + high) / 2)
-    if (isNightAt(middle)) low = middle
-    else high = middle
-  }
-  return high
-}
-
-const firstNightEndSeconds = findFirstNightEndTick(findFirstNightStartTick()) / TICKS_PER_SECOND
+const initialDayBoundaries = balanceDayBoundaries(INITIAL_TIME_STATE)
+const firstNightEndSeconds = initialDayBoundaries.firstNightEndTick / BALANCE_HARNESS_TICKS_PER_SECOND
 
 const goalDefinitions: ReadonlyArray<GoalDefinition> = [
-  { key: 'firstLog', label: 'First log', target: '≤ 30 s', goal: { kind: 'max', threshold: 30 } },
-  { key: 'woodenPickaxe', label: 'Wooden pickaxe', target: '≤ 150 s', goal: { kind: 'max', threshold: 150 } },
-  { key: 'stoneTool', label: 'Stone tool', target: '≤ 240 s', goal: { kind: 'max', threshold: 240 } },
-  { key: 'cookedFood', label: 'First cooked food', target: '≤ 420 s', goal: { kind: 'max', threshold: 420 } },
-  { key: 'firstNight', label: 'First night', target: '≥ 480 s', goal: { kind: 'min', threshold: 480 } },
-  { key: 'iron', label: 'First iron', target: '≤ 900 s', goal: { kind: 'max', threshold: 900 } },
+  { key: 'firstLog', label: 'First log', target: '≤ 30 s', timeBasis: 'estimated straight-line movement', goal: { kind: 'max', threshold: 30 } },
+  { key: 'woodenPickaxe', label: 'Wooden pickaxe', target: '≤ 150 s', timeBasis: 'estimated straight-line movement', goal: { kind: 'max', threshold: 150 } },
+  { key: 'stoneTool', label: 'Stone tool', target: '≤ 240 s', timeBasis: 'estimated straight-line movement', goal: { kind: 'max', threshold: 240 } },
+  { key: 'cookedFood', label: 'First cooked food', target: '≤ 420 s', timeBasis: 'unavailable', goal: { kind: 'max', threshold: 420 } },
+  { key: 'firstNight', label: 'First night', target: '≥ 480 s', timeBasis: 'TimeService', goal: { kind: 'min', threshold: 480 } },
+  { key: 'iron', label: 'First iron', target: '≤ 900 s', timeBasis: 'estimated straight-line movement', goal: { kind: 'max', threshold: 900 } },
   {
     key: 'bedByNight1',
     label: 'Bed by end of first night',
     target: `≤ ${firstNightEndSeconds} s`,
+    timeBasis: 'unavailable',
     goal: { kind: 'max', threshold: firstNightEndSeconds },
   },
 ]
@@ -201,7 +165,7 @@ const sampleForGoal = (result: SeedSimulationResult, key: GoalDefinition['key'])
     return { status: 'unavailable', reason: unavailableReasonForSimulation(result) }
   }
   if (key === 'firstNight') {
-    return { status: 'measured', value: result.firstNightTick / TICKS_PER_SECOND }
+    return { status: 'measured', value: result.firstNightTick / BALANCE_HARNESS_TICKS_PER_SECOND }
   }
   return sampleFromObservation(result.observations[key])
 }
@@ -251,6 +215,7 @@ const goalReport = (results: ReadonlyArray<SeedSimulationResult>, definition: Go
     key: definition.key,
     label: definition.label,
     target: definition.target,
+    timeBasis: definition.timeBasis,
     measurementPath: [...measurementPaths].join('; ') || 'no simulated path available',
     goal: definition.goal,
     summary,
@@ -413,9 +378,10 @@ export const formatBalanceTable = (report: BalanceReport): string => {
     `Policy: ${report.config.policy}; seeds: ${report.config.seedCount}`,
     '',
     'Gap is signed: positive means outside the target; negative means within it.',
+    'Route attainment is modelled and is not an actual-play success rate. Resource travel times use straight-line movement estimates.',
     '',
-    '| Goal | Target | Measured / unknown | Median | p90 | Attainment | Median gap | p90 gap | Measurement path |',
-    '| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |',
+    '| Goal | Target | Measured / unknown | Time basis | Model median (s) | Model p90 (s) | Modelled attainment (not actual play) | Median gap | p90 gap | Measurement path |',
+    '| --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | --- |',
   ]
 
   for (const goal of report.goals) {
@@ -424,6 +390,7 @@ export const formatBalanceTable = (report: BalanceReport): string => {
       `| ${goal.label}`,
       goal.target,
       `${summary.measuredCount} / ${summary.unavailableCount}`,
+      goal.timeBasis,
       formatNumber(summary.median, ' s'),
       formatNumber(summary.p90, ' s'),
       formatPercent(summary.achievementRate === null ? null : summary.achievementRate * 100),

@@ -4,9 +4,11 @@ import {
   EpochMillis,
   FixedClockLayer,
   MonotonicTimeSecs,
+  BlockAxis,
   ChunkAxis,
   PositionAxis,
   WorldIdSchema,
+  blockPosition,
   chunkCoord,
   position,
   type BlockPosition,
@@ -18,6 +20,7 @@ import {
   PlayerServiceSnapshotSchema,
   PlayerStorageSnapshotSchema,
   makeWorldCommitCoordinator,
+  type TimeState,
   type PlayerServiceInputError,
   type WorldCommitCoordinatorError,
   type PlayerPose,
@@ -43,6 +46,7 @@ import {
   GAMEPLAY_CROPS_OWNER_ID,
   GAMEPLAY_DROPPED_ITEMS_OWNER_ID,
   GAMEPLAY_ENTITIES_OWNER_ID,
+  GameplayEntityRosterSchema,
   GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
   GAMEPLAY_FISHING_OWNER_ID,
   GAMEPLAY_PLAYER_OWNER_ID,
@@ -61,7 +65,9 @@ import {
 } from '../../src/stages/registration.js'
 import type { GameplayStageCommitServices } from '../../src/stages/registration-core.js'
 
-const TICK_SECS = DeltaTimeSecs(1 / 20)
+// Harness frames advance at 20 Hz, independently of mc-sim's 60 Hz TimeService clock.
+export const BALANCE_HARNESS_TICKS_PER_SECOND = 20
+const TICK_SECS = DeltaTimeSecs(1 / BALANCE_HARNESS_TICKS_PER_SECOND)
 const WORLD_ID = Schema.decodeUnknownSync(WorldIdSchema)('balance-simulation')
 const EMPTY_CANDIDATE = { changes: [], expectedDimensions: [], events: [] } as const
 
@@ -71,10 +77,43 @@ export type BalanceGameplayRuntime = Readonly<{
   commit: GameplayStageCommitServices
   stages: ReadonlyArray<StageRegistration>
   stageTickCount: Ref.Ref<number>
-  damageEventsByTick: Ref.Ref<ReadonlyArray<Readonly<{ tick: number; event: PlayerDamageEvent }>>>
+  damageEventsByTick: Ref.Ref<ReadonlyArray<BalanceRecordedDamage>>
+  mobSpawnsByTick: Ref.Ref<ReadonlyArray<BalanceMobSpawnRecord>>
   hungerOutcomesByTick: ReadonlyArray<Readonly<{ tick: number; outcome: SurvivalHungerTickOutcome }>>
   deathTick: Ref.Ref<number | undefined>
   measurementFailure: Ref.Ref<string | undefined>
+}>
+
+export type BalanceTimeServiceReading = TimeState & Readonly<{ timeOfDay: number }>
+
+export type BalanceMobSpawnRecord = Readonly<{
+  tick: number
+  id: string
+  kind: string
+  position: Readonly<{ x: number; y: number; z: number }>
+  timeService: BalanceTimeServiceReading
+  candidateBlockLight:
+    | Readonly<{ status: 'observed'; block: number }>
+    | Readonly<{ status: 'unavailable'; reason: string }>
+}>
+
+export type BalanceAttackerProvenance = Readonly<{
+  source: string
+  mobKind: string
+  position: Readonly<{ x: number; y: number; z: number }>
+  spawnPosition: Readonly<{ x: number; y: number; z: number }> | null
+  spawnTick: number | null
+  spawnTimeService: BalanceTimeServiceReading | null
+  spawnCandidateBlockLight:
+    | Readonly<{ status: 'observed'; block: number }>
+    | Readonly<{ status: 'unavailable'; reason: string }>
+}>
+
+export type BalanceRecordedDamage = Readonly<{
+  tick: number
+  event: PlayerDamageEvent
+  timeService: BalanceTimeServiceReading
+  attacker?: BalanceAttackerProvenance
 }>
 
 export const makeBalanceGameplayRuntime = (
@@ -144,7 +183,8 @@ const makeRuntimeFromWorld = (
     vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID,
   })
   const stageTickCount = yield* Ref.make(0)
-  const damageEventsByTick = yield* Ref.make<ReadonlyArray<Readonly<{ tick: number; event: PlayerDamageEvent }>>>([])
+  const damageEventsByTick = yield* Ref.make<ReadonlyArray<BalanceRecordedDamage>>([])
+  const mobSpawnsByTick = yield* Ref.make<ReadonlyArray<BalanceMobSpawnRecord>>([])
   const hungerOutcomesByTick: Array<Readonly<{ tick: number; outcome: SurvivalHungerTickOutcome }>> = []
   const deathTick = yield* Ref.make<number | undefined>(undefined)
   const measurementFailure = yield* Ref.make<string | undefined>(undefined)
@@ -178,6 +218,7 @@ const makeRuntimeFromWorld = (
     stages,
     stageTickCount,
     damageEventsByTick,
+    mobSpawnsByTick,
     hungerOutcomesByTick,
     deathTick,
     measurementFailure,
@@ -213,12 +254,89 @@ const harnessStagesFor = (
       yield* Ref.set(runtime.state.tickCount, tick)
       yield* Effect.orDie(runtime.world.time.advance(TICK_SECS))
       const damageStart = (yield* Ref.get(runtime.state.playerDamages)).length
-      yield* Effect.forEach(ordered, (stage) => stage.run(TICK_SECS), { discard: true })
+      for (const stage of ordered) {
+        const entitiesOwnerId = stage.id === 'gameplay:entities'
+          ? runtime.commit.entitiesOwnerId
+          : undefined
+        const entitiesBefore = entitiesOwnerId === undefined
+          ? undefined
+          : yield* Effect.orDie(runtime.commit.coordinator.snapshot(
+              entitiesOwnerId,
+              GameplayEntityRosterSchema,
+            ))
+        yield* stage.run(TICK_SECS)
+        if (entitiesOwnerId !== undefined && entitiesBefore !== undefined) {
+          const entitiesAfter = yield* Effect.orDie(runtime.commit.coordinator.snapshot(
+            entitiesOwnerId,
+            GameplayEntityRosterSchema,
+          ))
+          const priorIds = new Set(entitiesBefore['state'].entities.map((entity) => entity.id))
+          const newEntities = entitiesAfter['state'].entities.filter((entity) => !priorIds.has(entity.id))
+          if (newEntities.length > 0) {
+            const timeState = yield* runtime.world.time.snapshot
+            const timeOfDay = yield* Effect.orDie(runtime.world.time.timeOfDay)
+            const timeService = { ...timeState, timeOfDay: Number(timeOfDay) }
+            const spawnRecords = yield* Effect.forEach(newEntities, (entity) => Effect.gen(function* () {
+              const candidatePosition = blockPosition(
+                BlockAxis(Math.floor(entity.feetPosition.x)),
+                BlockAxis(Math.floor(entity.feetPosition.y)),
+                BlockAxis(Math.floor(entity.feetPosition.z)),
+              )
+              const light = yield* runtime.world.chunkStore.getLight(candidatePosition)
+              return {
+                tick,
+                id: String(entity.id),
+                kind: String(entity.kind),
+                position: {
+                  x: Number(entity.feetPosition.x),
+                  y: Number(entity.feetPosition.y),
+                  z: Number(entity.feetPosition.z),
+                },
+                timeService,
+                candidateBlockLight: light._tag === 'Light'
+                  ? { status: 'observed' as const, block: light.block }
+                  : { status: 'unavailable' as const, reason: light._tag },
+              }
+            }))
+            yield* Ref.update(runtime.mobSpawnsByTick, (current) => [...current, ...spawnRecords])
+          }
+        }
+      }
       const damageEvents = yield* Ref.get(runtime.state.playerDamages)
       if (damageEvents.length > damageStart) {
+        const timeState = yield* runtime.world.time.snapshot
+        const timeOfDay = yield* Effect.orDie(runtime.world.time.timeOfDay)
+        const timeService = { ...timeState, timeOfDay: Number(timeOfDay) }
+        const spawnsById = new Map((yield* Ref.get(runtime.mobSpawnsByTick)).map((spawn) => [spawn.id, spawn]))
         yield* Ref.update(runtime.damageEventsByTick, (current) => [
           ...current,
-          ...damageEvents.slice(damageStart).map((event) => ({ tick, event })),
+          ...damageEvents.slice(damageStart).map((event) => {
+            if (event._tag !== 'HostileContact' && event._tag !== 'Explosion') {
+              return { tick, event, timeService }
+            }
+            const spawn = spawnsById.get(String(event.source))
+            return {
+              tick,
+              event,
+              timeService,
+              attacker: {
+                source: String(event.source),
+                mobKind: String(event.kind),
+                position: {
+                  x: Number(event.at.x),
+                  y: Number(event.at.y),
+                  z: Number(event.at.z),
+                },
+                spawnPosition: spawn?.position ?? null,
+                spawnTick: spawn?.tick ?? null,
+                spawnTimeService: spawn?.timeService ?? null,
+                spawnCandidateBlockLight: spawn?.candidateBlockLight ?? {
+                  status: 'unavailable' as const,
+                  reason: 'attacker did not spawn during the recorded harness run',
+                },
+              },
+            }
+          }),
         ])
       }
       const health = yield* Effect.result(runtime.state.survivalHunger.snapshot)
@@ -232,7 +350,7 @@ const harnessStagesFor = (
       }
       return EMPTY_CANDIDATE
     }).pipe(Effect.provide(FixedClockLayer({
-      monotonicSecs: MonotonicTimeSecs(tick / 20),
+      monotonicSecs: MonotonicTimeSecs(tick / BALANCE_HARNESS_TICKS_PER_SECOND),
       wallClockEpochMillis: EpochMillis(0),
     })))
   }

@@ -1,15 +1,18 @@
 import { describe, expect, it } from '@effect/vitest'
 import { Effect, Option, Ref, Schema } from 'effect'
-import { AIR_BLOCK_ID, BlockAxis, EntityHealthPoints, PositionAxis, blockIdOf, blockPosition, position } from '@nerima-games/mc-kernel'
-import { PlayerServiceSnapshotSchema, PlayerStorageSnapshotSchema, TICKS_PER_SECOND } from '@nerima-games/mc-sim'
+import { AIR_BLOCK_ID, BlockAxis, ChunkAxis, EntityHealthPoints, InterpolationFraction, PositionAxis, blockIdOf, blockPosition, chunkCoord, position } from '@nerima-games/mc-kernel'
+import { PlayerServiceSnapshotSchema, PlayerStorageSnapshotSchema } from '@nerima-games/mc-sim'
 import { TickCountSchema } from '@nerima-games/mc-sim/testing'
 import { cellKey, chunkKey, chunkOf } from '../src/domain/in-memory-world.js'
 import {
+  BALANCE_HARNESS_TICKS_PER_SECOND,
   countPlayerStorageItem,
   makeBalanceGameplayRuntime,
   movePlayer,
   runBalanceHarness,
   setBlockBreakRequest,
+  type BalanceMobSpawnRecord,
+  type BalanceRecordedDamage,
 } from '../scripts/balance/gameplay-harness.js'
 import {
   buildBalanceReport,
@@ -22,9 +25,10 @@ import {
   type BalanceObservation,
   type SeedObservations,
   type SeedSimulationResult,
+  balanceDayBoundaries,
   observeNight1Death,
 } from '../scripts/balance/simulator.js'
-import { hostileMobSnapshot } from '../src/domain/entities/mob-frame.js'
+import { HOSTILE_KINDS, hostileMobSnapshot } from '../src/domain/entities/mob-frame.js'
 import { ZOMBIE_KIND } from '../src/domain/mob/hostile-combat.js'
 import {
   GAMEPLAY_ENTITIES_OWNER_ID,
@@ -35,14 +39,14 @@ import {
 const observedAt = (seconds: number): BalanceObservation => ({
   status: 'observed',
   seconds,
-  ticks: seconds * TICKS_PER_SECOND,
+  ticks: seconds * BALANCE_HARNESS_TICKS_PER_SECOND,
 })
 
 const unavailableObservation = (reason: string): BalanceObservation => ({ status: 'unavailable', reason })
 
 const observedEvents = (...seconds: ReadonlyArray<number>): BalanceEventSeries => ({
   status: 'observed',
-  events: seconds.map((value) => ({ seconds: value, ticks: value * TICKS_PER_SECOND })),
+  events: seconds.map((value) => ({ seconds: value, ticks: value * BALANCE_HARNESS_TICKS_PER_SECOND })),
 })
 
 const observationsFor = (overrides: Partial<SeedObservations> = {}): SeedObservations => ({
@@ -73,8 +77,8 @@ const simulatedResult = (
     targetPosition: { x: 0, y: 61, z: 0 },
     shelterBlocksMined: 3,
   },
-  firstNightTick: 480 * TICKS_PER_SECOND,
-  firstTwilightTick: 360 * TICKS_PER_SECOND,
+  firstNightTick: 480 * BALANCE_HARNESS_TICKS_PER_SECOND,
+  firstTwilightTick: 360 * BALANCE_HARNESS_TICKS_PER_SECOND,
   limitations: [],
   terrain: { chunkX: 0, chunkZ: 0, blockTypes: [] },
   observations,
@@ -89,6 +93,16 @@ const simulatedResult = (
 })
 
 describe('balance simulation runner', () => {
+  it('scales night boundary harness ticks with the configured day length', () => {
+    const defaultDay = balanceDayBoundaries()
+    const doubledDay = balanceDayBoundaries({ ticks: 14_400, dayLengthTicks: 48_000 })
+
+    expect(Math.abs(doubledDay.firstTwilightTick - defaultDay.firstTwilightTick * 2)).toBeLessThanOrEqual(1)
+    expect(Math.abs(doubledDay.firstNightTick - defaultDay.firstNightTick * 2)).toBeLessThanOrEqual(1)
+    expect(Math.abs(doubledDay.firstNightEndTick - defaultDay.firstNightEndTick * 2)).toBeLessThanOrEqual(1)
+    expect(defaultDay.firstNightTick).toBeGreaterThan(60 * BALANCE_HARNESS_TICKS_PER_SECOND)
+  })
+
   it('requires a positive seed count and a supported policy', () => {
     expect(parseRunArguments(['--seeds', '3', '--policy', 'shelter'])).toStrictEqual({
       ok: true,
@@ -185,7 +199,7 @@ describe('balance simulation runner', () => {
     expect(formatBalanceTable(report)).toContain('actual path not exercised for crafting')
     expect(formatBalanceTable(report)).toContain('actual path not exercised: animal meat drops are unimplemented')
     const table = formatBalanceTable(report)
-    expect(table).toContain('| 0 / 2 | unknown | unknown | unknown |')
+    expect(table).toContain('| Bed by end of first night | ≤ 380 s | 0 / 2 | unavailable | unknown')
     expect(table).toContain('50% deaths')
     expect(renderBalanceReport(report)).toContain('"schemaVersion": 1')
     expect(renderBalanceReport(report)).toContain('## Summary')
@@ -196,7 +210,7 @@ describe('balance simulation runner', () => {
       night1Death: { status: 'unavailable', reason: 'player died before first night' },
       preTwilightDamage: {
         status: 'partial',
-        events: [{ seconds: 100, ticks: 100 * TICKS_PER_SECOND, cause: 'hostile' }],
+        events: [{ seconds: 100, ticks: 100 * BALANCE_HARNESS_TICKS_PER_SECOND, cause: 'hostile' }],
         reason: 'player died before twilight',
       },
       damageTimestamps: {
@@ -213,7 +227,7 @@ describe('balance simulation runner', () => {
       },
       damageTimestamps: {
         status: 'observed',
-        events: [{ seconds: 100, ticks: 100 * TICKS_PER_SECOND, cause: 'starvation' }],
+        events: [{ seconds: 100, ticks: 100 * BALANCE_HARNESS_TICKS_PER_SECOND, cause: 'starvation' }],
       },
     }))
     const routeReachedTwilightBeforeCombat = simulatedResult(4, observationsFor({
@@ -369,5 +383,58 @@ describe('balance simulation runner', () => {
     expect(first.stageIds).toHaveLength(8)
     expect(first.stageIds).toContain('gameplay:interactions')
     expect(first.stageIds).toContain('gameplay:entities')
+  })
+
+  it('records hostile damage after a natural night spawn with TimeService and candidate-light provenance', async () => {
+    const grass = Option.getOrThrow(blockIdOf('grass_block'))
+    const blocks = new Map<string, typeof grass>()
+    for (let z = -48; z <= 48; z += 1) {
+      for (let x = -48; x <= 48; x += 1) {
+        blocks.set(cellKey(blockPosition(BlockAxis(x), BlockAxis(63), BlockAxis(z))), grass)
+      }
+    }
+    const loaded = Array.from({ length: 36 }, (_, index) => {
+      const z = Math.floor(index / 6) - 3
+      const x = (index % 6) - 3
+      return chunkKey(chunkCoord(ChunkAxis(x), ChunkAxis(z)))
+    })
+    const runtime = await Effect.runPromise(makeBalanceGameplayRuntime({ blocks, loaded }, {
+      feetPosition: position(PositionAxis(0.5), PositionAxis(64), PositionAxis(0.5)),
+      yawRadians: 0,
+      pitchRadians: 0,
+    }, 7))
+    await Effect.runPromise(runtime.world.time.setTimeOfDay(InterpolationFraction(0.8)))
+    const result = await runBalanceHarness<{
+      spawns: ReadonlyArray<BalanceMobSpawnRecord>
+      damage: ReadonlyArray<BalanceRecordedDamage>
+    }>(runtime, 7, Effect.runPromise, (harness) => Effect.gen(function* () {
+      yield* harness.step(Schema.decodeUnknownSync(TickCountSchema)(300))
+      return {
+        spawns: yield* Ref.get(runtime.mobSpawnsByTick),
+        damage: yield* Ref.get(runtime.damageEventsByTick),
+      }
+    }))
+    const nighttimeHostiles = result.spawns.filter((spawn) =>
+      HOSTILE_KINDS.some((kind) => String(kind) === spawn.kind),
+    )
+    const hostileDamage = result.damage.find((entry) => entry.attacker !== undefined)
+
+    expect(nighttimeHostiles.length).toBeGreaterThan(0)
+    expect(['HostileContact', 'Explosion']).toContain(hostileDamage?.event._tag)
+    expect(hostileDamage?.attacker).toMatchObject({
+      source: expect.any(String),
+      mobKind: expect.any(String),
+      position: { x: expect.any(Number), y: expect.any(Number), z: expect.any(Number) },
+      spawnPosition: { x: expect.any(Number), y: expect.any(Number), z: expect.any(Number) },
+      spawnTick: expect.any(Number),
+      spawnCandidateBlockLight: { status: 'observed', block: expect.any(Number) },
+    })
+    expect(Number(hostileDamage?.attacker?.spawnTick)).toBeGreaterThan(0)
+    expect(Number(hostileDamage?.attacker?.spawnCandidateBlockLight.status === 'observed'
+      ? hostileDamage.attacker.spawnCandidateBlockLight.block
+      : Infinity)).toBeLessThanOrEqual(7)
+    expect(Number(hostileDamage?.timeService.timeOfDay)).toBeGreaterThan(0.75)
+    expect(Number(hostileDamage?.attacker?.spawnTimeService?.timeOfDay)).toBeGreaterThan(0.75)
+    expect(hostileDamage?.tick).toBeGreaterThan(hostileDamage?.attacker?.spawnTick ?? Infinity)
   })
 })
