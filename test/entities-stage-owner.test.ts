@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import * as fc from 'fast-check'
 import { Effect, Option, Ref, Result, Schema } from 'effect'
+import { SkyLightLevel } from '../src/domain/mob/hostile-spawn'
 import {
   BlockAxis,
   AIR_BLOCK_ID,
@@ -1205,7 +1206,7 @@ describe('entities stage owner-backed MobSimulation', () => {
         footBlock: AIR_BLOCK_ID,
         headBlock: AIR_BLOCK_ID,
         blockLight: 0,
-        skyLight: 0,
+        skyLight: SkyLightLevel(0),
         biome: 'PLAINS' as const,
         timeOfDay: 0.9,
         distanceToPlayerBlocksXZ: 30,
@@ -1244,7 +1245,7 @@ describe('entities stage owner-backed MobSimulation', () => {
         footBlock: AIR_BLOCK_ID,
         headBlock: AIR_BLOCK_ID,
         blockLight: 0,
-        skyLight: 0,
+        skyLight: SkyLightLevel(0),
         biome: 'PLAINS' as const,
         timeOfDay: 0.9,
         distanceToPlayerBlocksXZ: 30,

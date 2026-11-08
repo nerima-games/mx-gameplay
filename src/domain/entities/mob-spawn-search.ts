@@ -77,7 +77,9 @@ import {
   blockPosition,
   position,
   type BlockPosition,
+  type InterpolationFraction as InterpolationFractionValue,
   type Position,
+  type RandomSeed as RandomSeedValue,
 } from '@nerima-games/mc-kernel'
 import { EntityKind } from '@nerima-games/mc-sim'
 import { drawRolls, rollAt } from '../frame-rolls.js'
@@ -90,6 +92,7 @@ import {
   canMobSpawnAt,
   MAX_SPAWN_DISTANCE_BLOCKS,
   MIN_SPAWN_DISTANCE_BLOCKS,
+  SkyLightLevel,
   type SpawnCandidate,
 } from '../mob/hostile-spawn.js'
 import { HOSTILE_KINDS, type MobSpawnAttempt } from './mob-frame.js'
@@ -138,7 +141,7 @@ export const SPAWN_RING_RADIUS_STEPS: ReadonlyArray<number> = Array.from(
 )
 
 /** What the search found, and where the generator ended. */
-export type MobSpawnSearch = {
+type MobSpawnSearch = {
   readonly attempts: ReadonlyArray<MobSpawnAttempt>
   /**
    * Cells that could not be read at all — an unloaded chunk, or a Y outside the
@@ -164,8 +167,8 @@ const EMPTY_ATTEMPTS: ReadonlyArray<never> = []
 export const searchSpawnCandidates = (
   store: ChunkStoreApi,
   target: Position,
-  timeOfDay: number,
-  seed: number,
+  timeOfDay: InterpolationFractionValue,
+  seed: RandomSeedValue,
   dimension: Dimension = 'overworld',
   mode: 'hostile' | 'passive' = 'hostile',
 ): Effect.Effect<MobSpawnSearch> =>
@@ -287,7 +290,7 @@ export const searchSpawnCandidates = (
             footBlock,
             headBlock,
             blockLight: light.block,
-            skyLight: light.sky,
+            skyLight: SkyLightLevel(light.sky),
             biome,
             timeOfDay,
             distanceToPlayerBlocksXZ,

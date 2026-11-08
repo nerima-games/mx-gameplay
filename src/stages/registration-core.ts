@@ -525,13 +525,13 @@ const prepareFirePlayerDamage = (
  */
 export const LAVA_TICK_INTERVAL = 4
 
-/** Hostile search interval at the normal difficulty, expressed as simulation ticks. */
+/** Normal hostile search interval, expressed in the domain's tick unit. */
 export const HOSTILE_SPAWN_INTERVAL_TICKS: number = HOSTILE_SPAWN_SETTINGS.normal.intervalTicks
 
 /** Compatibility value for callers that display the normal cadence in seconds. */
 export const HOSTILE_SPAWN_INTERVAL_SECS: number = HOSTILE_SPAWN_INTERVAL_TICKS / 20
 
-/** Passive mobs use the vanilla-style 400-tick rare respawn cadence. */
+/** Passive search interval in stage passes until the host supplies service ticks. */
 export const PASSIVE_SPAWN_INTERVAL_TICKS = 400
 
 /** One initial/periodic animal batch is bounded to a small group. */
@@ -1109,7 +1109,7 @@ export type GameplayFrameState = {
   readonly weatherGameplay: Ref.Ref<WeatherGameplayState>
   readonly weatherGameplayEvents: Ref.Ref<ReadonlyArray<WeatherGameplayEvent>>
   /** Simulation tick of the last hostile search. */
-  readonly lastHostileSpawnTick: Ref.Ref<number>
+  readonly lastHostileSpawnTick: Ref.Ref<SimulationTick>
   /** Simulation tick of the last passive respawn search. */
   readonly lastPassiveSpawnTick: Ref.Ref<number>
   /** Initial chunk-generation-style animal batch has not yet run. */
@@ -2057,7 +2057,9 @@ const makeGameplayFrameStateWithOptions = (
   })
   const weatherGameplay = yield* Ref.make(makeWeatherGameplayState(DEFAULT_ROLL_SEED))
   const weatherGameplayEvents = yield* Ref.make<ReadonlyArray<WeatherGameplayEvent>>([])
-  const lastHostileSpawnTick = yield* Ref.make(0)
+  const lastHostileSpawnTick = yield* Ref.make<SimulationTick>(
+    Schema.decodeUnknownSync(SimulationTickSchema)(0),
+  )
   const lastPassiveSpawnTick = yield* Ref.make(0)
   const passiveInitialSpawnPending = yield* Ref.make(true)
   // A LITERAL, not a clock reading: two runs of one scenario must draw the same

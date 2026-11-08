@@ -63,6 +63,7 @@ import {
   HOSTILE_SPAWN_MAX_BLOCK_LIGHT,
   MAX_SPAWN_DISTANCE_BLOCKS,
   MIN_SPAWN_DISTANCE_BLOCKS,
+  SkyLightLevel,
   type SpawnCandidate,
 } from '../src/domain/mob/hostile-spawn'
 import {
@@ -416,7 +417,7 @@ describe('creeper: spawning is a rule about light and surface, never a block lis
     footBlock: AIR_BLOCK_ID,
     headBlock: AIR_BLOCK_ID,
     blockLight: 0,
-    skyLight: 0,
+    skyLight: SkyLightLevel(0),
     biome: 'PLAINS',
     timeOfDay: NIGHT,
     distanceToPlayerBlocksXZ: 30,
@@ -431,11 +432,11 @@ describe('creeper: spawning is a rule about light and surface, never a block lis
 
   it.effect('lets dark caves spawn in daytime but blocks exposed daylight', () =>
     Effect.sync(() => {
-      expect(canHostileSpawnAt(candidate({ timeOfDay: NOON, skyLight: 15 }))).toStrictEqual({
+      expect(canHostileSpawnAt(candidate({ timeOfDay: NOON, skyLight: SkyLightLevel(15) }))).toStrictEqual({
         _tag: 'Refused',
         reason: 'daylight',
       })
-      expect(canHostileSpawnAt(candidate({ timeOfDay: NOON, skyLight: 7 }))._tag).toBe('Spawn')
+      expect(canHostileSpawnAt(candidate({ timeOfDay: NOON, skyLight: SkyLightLevel(7) }))._tag).toBe('Spawn')
     }),
   )
 
@@ -538,7 +539,7 @@ describe('creeper: spawning is a rule about light and surface, never a block lis
         canHostileSpawnAt(
           candidate({
             timeOfDay: NOON,
-            skyLight: 15,
+            skyLight: SkyLightLevel(15),
             blockLight: 15,
             groundBlock: OAK_LEAVES,
             footBlock: STONE,
@@ -558,7 +559,7 @@ describe('canMobSpawnAt: the ecosystem roster on top of the hostile rule', () =>
     footBlock: AIR_BLOCK_ID,
     headBlock: AIR_BLOCK_ID,
     blockLight: 0,
-    skyLight: 0,
+    skyLight: SkyLightLevel(0),
     biome: 'PLAINS',
     timeOfDay: NIGHT,
     distanceToPlayerBlocksXZ: 30,
@@ -1422,7 +1423,7 @@ describe('the sweep: a mob stops existing when nobody is near it', () => {
         footBlock: AIR_BLOCK_ID,
         headBlock: AIR_BLOCK_ID,
         blockLight: Number.NaN,
-        skyLight: 0,
+        skyLight: SkyLightLevel(0),
         biome: 'PLAINS',
         timeOfDay: 0.9,
         distanceToPlayerBlocksXZ: 30,
@@ -1512,7 +1513,7 @@ describe('the mob rules are deterministic by construction', () => {
           footBlock: AIR_BLOCK_ID,
           headBlock: AIR_BLOCK_ID,
           blockLight: 0,
-          skyLight: 0,
+          skyLight: SkyLightLevel(0),
           biome: 'PLAINS',
           timeOfDay: 0.9,
           distanceToPlayerBlocksXZ: 30,

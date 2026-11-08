@@ -494,7 +494,7 @@ const runMobSimulation = (
   // `entities` runs before `fluids`, which advances this shared counter later
   // in the same registered stage pass. Count the pass being executed now.
   const currentTick = (yield* Ref.get(state.tickCount)) + 1
-  const deathTick = Schema.decodeUnknownSync(SimulationTickSchema)(currentTick)
+  const stageTick = Schema.decodeUnknownSync(SimulationTickSchema)(currentTick)
   const sweep = planMobRosterSweep(entitySnapshot.state, {
     target: playerPosition,
     dt,
@@ -504,12 +504,12 @@ const runMobSimulation = (
     store,
     sweep.teleports,
   )
-  const blast = planMobBlastRoster(teleported, sweep.blasts, deathTick)
+  const blast = planMobBlastRoster(teleported, sweep.blasts, stageTick)
   const offeredAttempts = yield* Ref.get(state.spawnAttempts)
   const difficulty = (yield* state.survivalHunger.snapshot).difficulty
   const lastHostileSpawnTick = yield* Ref.get(state.lastHostileSpawnTick)
   const intervalElapsed = yield* Effect.fromResult(
-    hostileSpawnSearchDue(currentTick, lastHostileSpawnTick, difficulty),
+    hostileSpawnSearchDue(stageTick, lastHostileSpawnTick, difficulty),
   )
   const hostileSearchDue = difficulty !== 'peaceful' && intervalElapsed
   const casualtyDrops = rollCasualtyDrops(blast.casualties, sweep.seed)
@@ -527,7 +527,7 @@ const runMobSimulation = (
       store,
       playerPosition,
       timeOfDay,
-      casualtyDrops.seed,
+      RandomSeed(casualtyDrops.seed),
       dimension,
       'hostile',
     )
@@ -539,7 +539,7 @@ const runMobSimulation = (
       store,
       playerPosition,
       timeOfDay,
-      nextRollSeed,
+      RandomSeed(nextRollSeed),
       dimension,
       'passive',
     )
@@ -846,7 +846,7 @@ const runMobSimulation = (
   // Local cursors and output queues move only after the replicated candidate
   // has committed. Ref updates are synchronous and append to any newly queued work.
   yield* Ref.set(state.rollSeed, nextRollSeed)
-  if (hostileSearchDue) yield* Ref.set(state.lastHostileSpawnTick, currentTick)
+  if (hostileSearchDue) yield* Ref.set(state.lastHostileSpawnTick, stageTick)
   if (passiveSearchDue) {
     yield* Ref.set(state.lastPassiveSpawnTick, currentTick)
     yield* Ref.set(state.passiveInitialSpawnPending, false)

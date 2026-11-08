@@ -32,6 +32,7 @@ import { CHUNK_VOLUME, blockIndex, type Chunk, type ReadonlyChunk } from '@nerim
 import { chunkCoordsAround } from '../../../src/domain/chunk-window.js'
 import { PORTAL_WINDOW_RADIUS } from '../../../src/domain/interactions/ignite-portal.js'
 import { CREEPER_KIND, type MobSpawnAttempt } from '../../../src/domain/entities/mob-frame.js'
+import { SkyLightLevel } from '../../../src/domain/mob/hostile-spawn.js'
 import { ZOMBIE_KIND } from '../../../src/domain/mob/hostile-combat.js'
 import { requestMobSpawn } from '../../../src/stages/registration.js'
 import {
@@ -183,61 +184,61 @@ const x01Setup: ScenarioSetup = {
   }),
 }
 
-const x02Support = at(6, 64)
-const x02Sand = at(6, 65)
+const x02Support = at(23, 64)
+const x02Sand = at(23, 65)
 const x02Phases = new WeakMap<Site, string>()
-const x02CreeperAttempt: MobSpawnAttempt = {
+const x02CreeperAttempt = (site: Site): MobSpawnAttempt => ({
   candidate: {
     dimension: 'overworld',
     groundBlock: STONE,
     footBlock: AIR_BLOCK_ID,
     headBlock: AIR_BLOCK_ID,
     blockLight: 0,
-    skyLight: 15,
+    skyLight: SkyLightLevel(15),
     biome: 'PLAINS',
-    timeOfDay: 0,
-    distanceToPlayerBlocksXZ: 16,
+    timeOfDay: Number(runBrowserDebugEffect(site.time.timeOfDay)),
+    distanceToPlayerBlocksXZ: 24,
   },
   kind: CREEPER_KIND,
-  feetPosition: point(16, 64, 0),
-}
-const x02ZombieAttempt: MobSpawnAttempt = {
+  feetPosition: point(24, 64, 0),
+})
+const x02ZombieAttempt = (site: Site): MobSpawnAttempt => ({
   candidate: {
     dimension: 'overworld',
     groundBlock: STONE,
     footBlock: AIR_BLOCK_ID,
     headBlock: AIR_BLOCK_ID,
     blockLight: 0,
-    skyLight: 15,
+    skyLight: SkyLightLevel(15),
     biome: 'PLAINS',
-    timeOfDay: 0,
-    distanceToPlayerBlocksXZ: 16,
+    timeOfDay: Number(runBrowserDebugEffect(site.time.timeOfDay)),
+    distanceToPlayerBlocksXZ: 25,
   },
   kind: ZOMBIE_KIND,
-  feetPosition: point(16, 64, 0),
-}
+  feetPosition: point(25, 64, 0),
+})
 
 const x02Setup: ScenarioSetup = {
-  world: world([...row(0, 21, 63, STONE), [6, 64, STONE], [6, 65, SAND]], ['0,0', '1,0']),
-  bounds: { width: 22, height: 68 },
+  world: world([...row(0, 26, 63, STONE), [23, 64, STONE], [23, 65, SAND]], ['0,0', '1,0']),
+  bounds: { width: 27, height: 68 },
   actions: [
     {
       id: 'x02-spawn-mobs',
       label: 'Spawn a creeper and zombie, then inspect the intact sand pillar',
       perform: (site) => {
         runBrowserDebugEffect(Ref.set(site.state.rollSeed, 3))
-        runBrowserDebugEffect(requestMobSpawn(site.state, x02CreeperAttempt))
-        runBrowserDebugEffect(requestMobSpawn(site.state, x02ZombieAttempt))
+        runBrowserDebugEffect(requestMobSpawn(site.state, x02CreeperAttempt(site)))
+        runBrowserDebugEffect(requestMobSpawn(site.state, x02ZombieAttempt(site)))
         frame(site)
         const mobs = runBrowserDebugEffect(site.observeMobs())
         if (
-          mobs.length !== 2 ||
+          mobs.length < 2 ||
           !mobs.some(({ kind }) => kind === CREEPER_KIND) ||
           !mobs.some(({ kind }) => kind === ZOMBIE_KIND) ||
           site.world.peekBlock(x02Support) !== STONE ||
           site.world.peekBlock(x02Sand) !== SAND
         ) {
-          throw new Error('browser-debug: Creeper and Zombie did not spawn before the sand pillar blast')
+          throw new Error(`browser-debug: Creeper and Zombie did not spawn before the sand pillar blast; time=${String(runBrowserDebugEffect(site.time.timeOfDay))}; mobs=${JSON.stringify(mobs)}`)
         }
         x02Phases.set(site, 'Creeper and Zombie spawned; sand pillar is intact before the blast')
       },
@@ -246,6 +247,7 @@ const x02Setup: ScenarioSetup = {
       id: 'x02-explode-pillar',
       label: 'Advance until the creeper blast drops rotten flesh and settles the sand',
       perform: (site) => {
+        runBrowserDebugEffect(site.movePlayerTo(point(23, 65, 0)))
         try {
           advanceUntil(
             site,
@@ -454,13 +456,13 @@ const x05SpawnAttempt = (site: Site): MobSpawnAttempt => ({
     footBlock: AIR_BLOCK_ID,
     headBlock: AIR_BLOCK_ID,
     blockLight: 0,
-    skyLight: 15,
+    skyLight: SkyLightLevel(15),
     biome: 'PLAINS',
     timeOfDay: Number(runBrowserDebugEffect(site.time.timeOfDay)),
-    distanceToPlayerBlocksXZ: 20,
+    distanceToPlayerBlocksXZ: Math.hypot(30.5, 0.5),
   },
   kind: CREEPER_KIND,
-  feetPosition: point(20.5, 64, 0.5),
+  feetPosition: point(30.5, 64, 0.5),
 })
 
 const x05Setup: ScenarioSetup = {
@@ -745,7 +747,7 @@ export const crossAreaSetups: Readonly<Record<CrossAreaSetupId, ScenarioSetup>> 
 
 const mountAtNight = (context: Parameters<ScenarioDefinition['mount']>[0], setup: ScenarioSetup): ScenarioMount => {
   const mounted = mountGameplayScenario(context, setup)
-  mounted.setTime(0)
+  mounted.setTime(21_600)
   return mounted
 }
 

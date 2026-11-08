@@ -1,4 +1,5 @@
 import { describe, expect, it } from '@effect/vitest'
+import { SkyLightLevel } from '../../src/domain/mob/hostile-spawn'
 import {
   AngleRadians,
   AIR_BLOCK_ID,
@@ -352,7 +353,7 @@ describe('cross-area gameplay scenarios through gameplayStages', () => {
           footBlock: AIR_BLOCK_ID,
           headBlock: AIR_BLOCK_ID,
           blockLight: 0,
-          skyLight: 0,
+          skyLight: SkyLightLevel(0),
           biome: 'PLAINS',
           timeOfDay: 0.9,
           distanceToPlayerBlocksXZ: 30,

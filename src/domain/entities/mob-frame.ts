@@ -436,22 +436,6 @@ export const CREEPER_KIND: EntityKind = EntityKind('creeper')
 export const DROPPED_ITEM_KIND: EntityKind = EntityKind('dropped_item')
 export const PRIMED_TNT_KIND: EntityKind = EntityKind('primed_tnt')
 
-/**
- * The second, and it now arrives from the spawner as well as from a host.
- *
- * THIS PARAGRAPH USED TO SAY 「NOTHING IN THIS REPOSITORY PUTS ONE ON THE
- * ROSTER」, and gave two reasons: `MobSpawnAttempt` carried no kind, and
- * `MAX_HOSTILE_COUNT` was a per-kind cap that a second hostile kind would turn
- * into 「a sum over a roster of hostile kinds that does not exist yet」. Both were
- * deferrals rather than refusals, and both are now done — the roster is
- * `HOSTILE_KINDS` below, the attempt carries a kind, and the cap is the sum.
- *
- * What made them deferrable was that no search existed to offer candidates. With
- * `./mob-spawn-search` the question stopped being hypothetical: a spawner that
- * produced only creepers in a world that can contain endermen would enforce a
- * per-kind cap rather than a population-wide cap, allowing the total to exceed
- * the configured difficulty limit.
- */
 export const ENDERMAN_KIND: EntityKind = EntityKind('enderman')
 
 /**

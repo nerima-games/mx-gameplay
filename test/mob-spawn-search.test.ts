@@ -20,7 +20,7 @@ import {
   type EntityRoster,
 } from '@nerima-games/mc-sim'
 import { Effect, Ref, Result, Schema } from 'effect'
-import { AIR_BLOCK_ID, BlockAxis, BlockId, DeltaTimeSecs, EntitySerial, InterpolationFraction, blockPosition as makeBlockPosition, type BlockPosition, type Position } from '@nerima-games/mc-kernel'
+import { AIR_BLOCK_ID, BlockAxis, BlockId, DeltaTimeSecs, EntitySerial, InterpolationFraction, RandomSeed, SimulationTick, blockPosition as makeBlockPosition, type BlockPosition, type Position } from '@nerima-games/mc-kernel'
 import type { ChunkStoreApi } from '@nerima-games/mc-worldgen'
 import {
   CREEPER_KIND,
@@ -52,6 +52,7 @@ import {
   MOB_BIOME_SPAWN_TABLE,
   MAX_SPAWN_DISTANCE_BLOCKS,
   MIN_SPAWN_DISTANCE_BLOCKS,
+  SkyLightLevel,
 } from '../src/domain/mob/hostile-spawn'
 import {
   GAMEPLAY_ENTITIES_OWNER_ID,
@@ -160,7 +161,7 @@ const searchIn = (
 ) =>
   Effect.gen(function* () {
     const store = yield* makeChunkStoreDouble(blocks, loaded, lights)
-    const found = yield* searchSpawnCandidates(store.api, PLAYER, timeOfDay, seed, 'overworld', mode)
+    const found = yield* searchSpawnCandidates(store.api, PLAYER, timeOfDay, RandomSeed(seed), 'overworld', mode)
     return { store, found }
   })
 
@@ -282,6 +283,31 @@ describe('the spawn ring', () => {
       expect(found.attempts).toHaveLength(SPAWN_RING_CELLS)
       expect(found.attempts.every(({ feetPosition }) => feetPosition.y === 31)).toBe(true)
       expect(found.attempts.every(({ candidate }) => candidate.skyLight === 0)).toBe(true)
+    }),
+  )
+
+  it.effect('the registered entity stage spawns from the dark cave below a bright daytime surface', () =>
+    Effect.gen(function* () {
+      const { time, state, commit, stages, store } = yield* makeStageHarness(
+        CAVE_FLOORED_WORLD,
+        BRIGHT_SURFACE_LIGHT,
+        PLAYER,
+      )
+      yield* Ref.set(state.passiveInitialSpawnPending, false)
+      yield* time.setTimeOfDay(InterpolationFraction(0.5))
+
+      yield* runFrames(stages, HOSTILE_SPAWN_INTERVAL_TICKS, DeltaTimeSecs(0.05))
+
+      const ownerAfter = yield* commit.coordinator.snapshot(
+        GAMEPLAY_ENTITIES_OWNER_ID,
+        GameplayEntityRosterSchema,
+      )
+      const entries = Schema.decodeUnknownSync(GameplayEntityRosterSchema)(ownerAfter.state).entities
+      const hostiles = entries.filter(({ kind }) => HOSTILE_KINDS.includes(kind))
+      expect(hostiles).toHaveLength(1)
+      expect(hostiles[0]?.feetPosition.y).toBe(31)
+      expect(yield* Ref.get(state.lastHostileSpawnTick)).toBe(HOSTILE_SPAWN_INTERVAL_TICKS)
+      expect((yield* store.calls).peeks).toBeGreaterThan(0)
     }),
   )
 
@@ -517,7 +543,11 @@ describe('fixed-seed one-night spawn distribution', () => {
 
     const intervalTicks = HOSTILE_SPAWN_SETTINGS.normal.intervalTicks
     for (let tick = intervalTicks; tick <= TEST_TICKS_PER_DAY; tick += intervalTicks) {
-      const due = Result.getOrThrow(hostileSpawnSearchDue(tick, lastSearchTick, 'normal'))
+      const due = Result.getOrThrow(hostileSpawnSearchDue(
+        SimulationTick(tick),
+        SimulationTick(lastSearchTick),
+        'normal',
+      ))
       if (!due) continue
       lastSearchTick = tick
       const timeOfDay = tick / TEST_TICKS_PER_DAY
@@ -529,8 +559,8 @@ describe('fixed-seed one-night spawn distribution', () => {
       const found = yield* searchSpawnCandidates(
         store.api,
         DISTRIBUTION_PLAYER,
-        timeOfDay,
-        seed,
+        InterpolationFraction(timeOfDay),
+        RandomSeed(seed),
         'overworld',
         'hostile',
       )
@@ -565,7 +595,7 @@ describe('what the search reads', () => {
       const store = yield* makeChunkStoreDouble(FLOORED_WORLD, RESIDENT_CHUNKS)
       const farTarget = atPosition(Number.MAX_SAFE_INTEGER * 4, PLAYER.y, PLAYER.z)
 
-      const found = yield* searchSpawnCandidates(store.api, farTarget, MIDNIGHT, 7)
+      const found = yield* searchSpawnCandidates(store.api, farTarget, MIDNIGHT, RandomSeed(7))
 
       expect(found.attempts).toStrictEqual([])
       expect(found.unreadable).toBe(SPAWN_RING_CELLS)
@@ -677,7 +707,7 @@ describe('what the search reads', () => {
         getLight: () => Effect.succeed({ _tag: 'ChunkNotLoaded' as const }),
       }
 
-      const found = yield* searchSpawnCandidates(blind, PLAYER, MIDNIGHT, 1)
+      const found = yield* searchSpawnCandidates(blind, PLAYER, MIDNIGHT, RandomSeed(1))
 
       expect(found.attempts.length).toBe(0)
       expect(found.unreadable).toBe(SPAWN_RING_CELLS)
@@ -837,7 +867,7 @@ describe('the search filters unsuitable floors before offering them', () => {
           },
         ),
       }
-      const found = yield* searchSpawnCandidates(observed, PLAYER, MIDNIGHT, 5)
+      const found = yield* searchSpawnCandidates(observed, PLAYER, MIDNIGHT, RandomSeed(5))
       expect(found.attempts).toHaveLength(SPAWN_RING_CELLS)
       expect(lightPositions).toHaveLength(SPAWN_RING_CELLS)
       expect(lightPositions.every(({ y }) => y === 64)).toBe(true)
@@ -933,7 +963,7 @@ describe('the search inside the frame', () => {
             footBlock: AIR_BLOCK_ID,
             headBlock: AIR_BLOCK_ID,
             blockLight: 0,
-            skyLight: 0,
+            skyLight: SkyLightLevel(0),
             biome: 'PLAINS',
             timeOfDay: MIDNIGHT,
             distanceToPlayerBlocksXZ: 30,
@@ -1065,7 +1095,7 @@ describe('the search inside the frame', () => {
     }),
   )
 
-  it.effect('runs the periodic passive search at tick 400 when the initial batch is complete', () =>
+  it.effect('runs the periodic passive search at stage pass 400 after the initial batch', () =>
     Effect.gen(function* () {
       const passiveKind = PASSIVE_MOB_KINDS[0]
       const initialRoster = seededRoster(passiveKind, 1, () =>
@@ -1080,7 +1110,7 @@ describe('the search inside the frame', () => {
       yield* time.setTimeOfDay(InterpolationFraction(0.5))
       yield* Ref.set(state.passiveInitialSpawnPending, false)
       yield* Ref.set(state.lastPassiveSpawnTick, 0)
-      yield* Ref.set(state.lastHostileSpawnTick, 399)
+      yield* Ref.set(state.lastHostileSpawnTick, SimulationTick(399))
       yield* Ref.set(state.tickCount, 399)
 
       yield* runFrame(stages, DeltaTimeSecs(0.05))

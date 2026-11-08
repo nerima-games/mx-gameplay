@@ -132,7 +132,7 @@ import {
   type MobBehaviour,
   type MobSpawnAttempt,
 } from '../src/domain/entities/mob-frame'
-import type { SpawnCandidate } from '../src/domain/mob/hostile-spawn'
+import { SkyLightLevel, type SpawnCandidate } from '../src/domain/mob/hostile-spawn'
 import { NETHER_HOSTILE_KINDS, PASSIVE_MOB_KINDS } from '../src/domain/mob/mob-ecosystem'
 import {
   DomainEventBus,
@@ -1123,7 +1123,7 @@ const legalCandidate = {
   footBlock: AIR_BLOCK_ID,
   headBlock: AIR_BLOCK_ID,
   blockLight: 0,
-  skyLight: 0,
+  skyLight: SkyLightLevel(0),
   biome: 'PLAINS',
   timeOfDay: 0.9,
   distanceToPlayerBlocksXZ: 30,
@@ -1152,22 +1152,14 @@ const offerSpawns = (
 const STRIDE = DeltaTimeSecs(0.25)
 
 /**
- * Put the world at noon, so that the SPAWN SEARCH does not run.
+ * Put the world at noon so exposed fixture cells fail the hostile sky-light
+ * rule. The scheduled search can still run; spawn-specific behavior is tested
+ * separately below and in `test/mob-spawn-search.test.ts`.
  *
- * `domain/entities/mob-spawn-search.ts` is paced by the host tick counter, and
- * daylight surface cells are rejected by the sky-light approximation. The
- * authoritative TimeService defaults to 0, which is inside the spawn window.
+ * `domain/entities/mob-spawn-search.ts` is paced by registered-stage passes, and
+ * daylight surface cells are rejected by the sky-light approximation. Set the
+ * fraction explicitly so these tests do not depend on the TimeService default.
  *
- * It means every test below that is about something ELSE has to say what time it
- * is, exactly as it already has to say where the player is. The tests that ARE
- * about the search are in `test/mob-spawn-search.test.ts` and in the end-to-end
- * case at the bottom of this file, and they set night explicitly.
- *
- * This is NOT a way of switching the feature off to keep an old assertion
- * passing. The assertions these tests make — no store reads, no rolls drawn, one
- * shared step object — are claims about the MOB SWEEP, and the sweep is what
- * they still measure. Measuring the sweep plus a paced search in one number
- * would make both unfalsifiable.
  */
 const daylight = (time: TimeServiceApi): Effect.Effect<void> =>
   time.setTimeOfDay(InterpolationFraction(NOON_FRACTION))
@@ -1474,7 +1466,7 @@ describe('the mob slice, through the stage registration', () => {
       yield* movePlayerAndSyncOwner(player.api, commit.coordinator, playerFar)
 
       yield* offerSpawns(state, [
-        { candidate: { ...legalCandidate, timeOfDay: 0.5, skyLight: 15 }, kind: CREEPER_KIND, feetPosition: positionOfBlock(creeperAt) },
+        { candidate: { ...legalCandidate, timeOfDay: 0.5, skyLight: SkyLightLevel(15) }, kind: CREEPER_KIND, feetPosition: positionOfBlock(creeperAt) },
         { candidate: { ...legalCandidate, blockLight: 8 }, kind: CREEPER_KIND, feetPosition: positionOfBlock(creeperAt) },
         { candidate: { ...legalCandidate, distanceToPlayerBlocksXZ: 4 }, kind: CREEPER_KIND, feetPosition: positionOfBlock(creeperAt) },
         { candidate: { ...legalCandidate, groundBlock: AIR_BLOCK_ID }, kind: CREEPER_KIND, feetPosition: positionOfBlock(creeperAt) },

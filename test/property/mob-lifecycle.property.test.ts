@@ -11,7 +11,7 @@ import {
   DESPAWN_DISTANCE_BLOCKS,
   despawnVerdict,
 } from '../../src/domain/mob/hostile-despawn'
-import { canHostileSpawnAt } from '../../src/domain/mob/hostile-spawn'
+import { canHostileSpawnAt, SkyLightLevel } from '../../src/domain/mob/hostile-spawn'
 import {
   initialEcosystemMobState,
   PASSIVE_MOB_KINDS,
@@ -102,7 +102,7 @@ describe('mob lifecycle properties', () => {
           footBlock: AIR_BLOCK_ID,
           headBlock: AIR_BLOCK_ID,
           blockLight,
-          skyLight: 0,
+          skyLight: SkyLightLevel(0),
           biome: 'PLAINS',
           timeOfDay: 0.9,
           distanceToPlayerBlocksXZ: 30,

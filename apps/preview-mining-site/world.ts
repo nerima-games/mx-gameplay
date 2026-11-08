@@ -63,7 +63,9 @@ import {
   type BlockPosition,
   type ChunkCoord,
   type PlaceableItemType,
+  localCoordOfBlock,
 } from '@nerima-games/mc-kernel'
+import { CHUNK_HEIGHT, blockIndex } from '@nerima-games/mc-worldgen'
 import type {
   BlockReading,
   LightReading,
@@ -77,6 +79,8 @@ import type {
   ChunkWritePrepareError,
   ChunkWritePublishError,
   PreparedChunkWrite,
+  Chunk,
+  ChunkBiomeType,
 } from '@nerima-games/mc-worldgen'
 
 /**
@@ -205,6 +209,7 @@ type Inner = {
   readonly blocks: Map<string, BlockId>
   readonly loadedChunks: Set<string>
   readonly chunkRevisions: Map<string, number>
+  readonly chunkViews: Map<string, Chunk>
   readonly subscribers: Map<number, Set<string>>
   readonly preparedWrites: Map<PreparedChunkWrite, PreparedPreviewWrite>
   readonly publishedWrites: WeakSet<PreparedChunkWrite>
@@ -271,6 +276,7 @@ export const makePreviewWorld = (spec: WorldSpec): Effect.Effect<PreviewWorld> =
       ),
       loadedChunks: new Set(spec.loadedChunks),
       chunkRevisions: new Map([...new Set(spec.loadedChunks)].map((key) => [key, 0] as const)),
+      chunkViews: new Map(),
       subscribers: new Map(),
       preparedWrites: new Map(),
       publishedWrites: new WeakSet(),
@@ -294,6 +300,37 @@ export const makePreviewWorld = (spec: WorldSpec): Effect.Effect<PreviewWorld> =
         for (const pending of doubles.subscribers.values()) {
           pending.add(chunkKeyOf(position))
         }
+      }
+
+      const updateChunkView = (doubles: Inner, position: BlockPosition, block: BlockId): void => {
+        const chunk = doubles.chunkViews.get(chunkKeyOf(position))
+        if (chunk === undefined) return
+        const local = localCoordOfBlock(position)
+        chunk.blocks[blockIndex(local.lx, BlockAxis(position.y), local.lz)] = Number(block)
+      }
+
+      const chunkView = (doubles: Inner, coord: ChunkCoord): Chunk => {
+        const key = `${String(coord.cx)},${String(coord.cz)}`
+        const cached = doubles.chunkViews.get(key)
+        if (cached !== undefined) return cached
+
+        const blocks = new Uint16Array(CHUNK_HEIGHT * CHUNK_SIDE * CHUNK_SIDE)
+        for (const [entry, block] of doubles.blocks) {
+          const [rawX, rawY, rawZ] = entry.split(',').map(Number)
+          if (rawX === undefined || rawY === undefined || rawZ === undefined) continue
+          const position = blockPosition(BlockAxis(rawX), BlockAxis(rawY), BlockAxis(rawZ))
+          if (chunkKeyOf(position) !== key) continue
+          const local = localCoordOfBlock(position)
+          blocks[blockIndex(local.lx, BlockAxis(rawY), local.lz)] = Number(block)
+        }
+
+        const chunk: Chunk = {
+          coord,
+          blocks,
+          biomes: Array.from({ length: CHUNK_SIDE * CHUNK_SIDE }, () => 'PLAINS' as ChunkBiomeType),
+        }
+        doubles.chunkViews.set(key, chunk)
+        return chunk
       }
 
       const subscribe: Effect.Effect<ChunkDirtySubscription> = Ref.modify(state, (doubles) => {
@@ -433,6 +470,7 @@ export const makePreviewWorld = (spec: WorldSpec): Effect.Effect<PreviewWorld> =
 
             for (const change of record.changes) {
               doubles.blocks.set(blockKey(change.position), change.next)
+              updateChunkView(doubles, change.position, change.next)
               doubles.writes += 1
               doubles.writeLog.push({
                 position: change.position,
@@ -457,7 +495,12 @@ export const makePreviewWorld = (spec: WorldSpec): Effect.Effect<PreviewWorld> =
         prepare,
         publish,
         load: () => notImplemented('load'),
-        peek: () => notImplemented('peek'),
+        peek: (coord) =>
+          Ref.modify(state, (doubles): readonly [Chunk | undefined, Inner] => {
+            const key = `${String(coord.cx)},${String(coord.cz)}`
+            if (!doubles.loadedChunks.has(key)) return [undefined, doubles] as const
+            return [chunkView(doubles, coord), doubles] as const
+          }),
         snapshot: () => notImplemented('snapshot'),
         isLoaded: (coord) =>
           Effect.sync(() => inner().loadedChunks.has(`${String(coord.cx)},${String(coord.cz)}`)),
@@ -553,6 +596,7 @@ export const makePreviewWorld = (spec: WorldSpec): Effect.Effect<PreviewWorld> =
             }
 
             doubles.blocks.set(blockKey(position), block)
+            updateChunkView(doubles, position, block)
             const chunkKey = chunkKeyOf(position)
             doubles.chunkRevisions.set(chunkKey, (doubles.chunkRevisions.get(chunkKey) ?? 0) + 1)
             markDirty(doubles, position)
@@ -564,6 +608,7 @@ export const makePreviewWorld = (spec: WorldSpec): Effect.Effect<PreviewWorld> =
         subscribeDirtyScoped: Effect.acquireRelease(subscribe, (s) => s.unsubscribe),
         reset: Ref.update(state, (doubles) => {
           doubles.blocks.clear()
+          for (const chunk of doubles.chunkViews.values()) chunk.blocks.fill(Number(AIR_BLOCK_ID))
           for (const [key, revision] of doubles.chunkRevisions) {
             doubles.chunkRevisions.set(key, revision + 1)
           }
@@ -607,6 +652,7 @@ export const makePreviewWorld = (spec: WorldSpec): Effect.Effect<PreviewWorld> =
           } else {
             doubles.blocks.set(blockKey(position), block)
           }
+          updateChunkView(doubles, position, block)
         },
       }
     },

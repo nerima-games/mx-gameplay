@@ -118,6 +118,7 @@ import { explosionDamageAmount, explosionDamageAt, explosionRadius } from '../..
 import {
   canHostileSpawnAt,
   MIN_SPAWN_DISTANCE_BLOCKS,
+  SkyLightLevel,
   type SpawnCandidate,
   type SpawnVerdict,
 } from '../../src/domain/mob/hostile-spawn'
@@ -658,7 +659,7 @@ export const arenaCandidate = (state: ArenaState, timeOfDay: number): SpawnCandi
   footBlock: AIR_BLOCK_ID,
   headBlock: AIR_BLOCK_ID,
   blockLight: state.site.blockLight,
-  skyLight: 15,
+  skyLight: SkyLightLevel(15),
   biome: 'PLAINS',
   timeOfDay,
   distanceToPlayerBlocksXZ: state.site.distanceBlocks,

@@ -61,8 +61,8 @@
  * and cadence. Biomes here use worldgen's coarse categories, which cannot
  * distinguish several vanilla sub-biomes or structure-only spawn locations.
  */
-import { Result } from 'effect'
-import { AIR_BLOCK_ID, capabilityOfBlockId, type BlockId } from '@nerima-games/mc-kernel'
+import { Brand, Result } from 'effect'
+import { AIR_BLOCK_ID, capabilityOfBlockId, type BlockId, type SimulationTick } from '@nerima-games/mc-kernel'
 import { hostileSpawnsAllowed } from '../day-night.js'
 import type { EntityKind } from '@nerima-games/mc-sim'
 import type { ChunkBiomeType, Dimension } from '@nerima-games/mc-worldgen'
@@ -96,7 +96,7 @@ export const HOSTILE_SPAWN_MAX_DAY_SKY_LIGHT = 7
 export const MIN_SPAWN_DISTANCE_BLOCKS = 24
 export const MAX_SPAWN_DISTANCE_BLOCKS = 40
 
-/** Spawn pacing and population limits at the simulation's 20-tick-per-second rate. */
+/** Difficulty-specific hostile population caps and tick-unit search intervals. */
 export const HOSTILE_SPAWN_SETTINGS: Readonly<Record<HostileDifficulty, {
   readonly maxPopulation: number
   readonly intervalTicks: number
@@ -109,9 +109,12 @@ export const HOSTILE_SPAWN_SETTINGS: Readonly<Record<HostileDifficulty, {
 
 export type SpawnTickFailure = { readonly _tag: 'InvalidSpawnTick' }
 
+export type SkyLightLevel = number & Brand.Brand<'SkyLightLevel'>
+export const SkyLightLevel: Brand.Constructor<SkyLightLevel> = Brand.nominal<SkyLightLevel>()
+
 export const hostileSpawnSearchDue = (
-  currentTick: number,
-  lastSpawnTick: number,
+  currentTick: SimulationTick,
+  lastSpawnTick: SimulationTick,
   difficulty: HostileDifficulty,
 ): Result.Result<boolean, SpawnTickFailure> => {
   if (
@@ -172,7 +175,7 @@ export type SpawnCandidate = {
   /** Block light at the body cell, 0-15. An unavailable light read refuses the candidate. */
   readonly blockLight: number
   /** Raw sky light at the body cell, before time-of-day reduction. */
-  readonly skyLight: number
+  readonly skyLight: SkyLightLevel
   /** Coarse biome read from the candidate's chunk column. */
   readonly biome: ChunkBiomeType
   /** mc-sim's fraction of the day, interpreted by this module's .55-.95 night window. */

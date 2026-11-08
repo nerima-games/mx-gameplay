@@ -5,6 +5,7 @@ import { runBrowserDebugEffect } from '../entrypoint.js'
 import { EYE_LEVEL_OFFSET } from '@nerima-games/mc-sim'
 import { createExperienceOrbValue } from '../../../src/domain/entities/xp-orb.js'
 import { CREEPER_KIND, ENDERMAN_KIND, type MobSpawnAttempt } from '../../../src/domain/entities/mob-frame.js'
+import { SkyLightLevel } from '../../../src/domain/mob/hostile-spawn.js'
 import { ZOMBIE_KIND } from '../../../src/domain/mob/hostile-combat.js'
 import { COW_KIND } from '../../../src/domain/mob/mob-ecosystem.js'
 import {
@@ -41,7 +42,7 @@ const spawnAttempt = (site: Site, kind: MobSpawnAttempt['kind'], x: number): Mob
       footBlock: AIR_BLOCK_ID,
       headBlock: AIR_BLOCK_ID,
       blockLight: 0,
-      skyLight: 15,
+      skyLight: SkyLightLevel(15),
       biome: 'PLAINS',
       timeOfDay: runBrowserDebugEffect(site.time.timeOfDay),
       distanceToPlayerBlocksXZ: Math.hypot(mobX, mobZ),
@@ -153,7 +154,7 @@ const creeperScenario: ScenarioDefinition = {
     actions: [{
       id: 'creeper-explosion',
       label: 'Spawn creeper, then press Play or Step',
-      perform: (site) => runBrowserDebugEffect(requestMobSpawn(site.state, spawnAttempt(site, CREEPER_KIND, 16))),
+      perform: (site) => runBrowserDebugEffect(requestMobSpawn(site.state, spawnAttempt(site, CREEPER_KIND, 24))),
     }],
     observe: observeMobDamage(context.root),
   }, NIGHT_TIME_TICKS),
@@ -170,7 +171,7 @@ const passiveMobScenario: ScenarioDefinition = {
     actions: [{
       id: 'spawn-cow',
       label: 'Spawn cow, then press Play or Step',
-      perform: (site) => runBrowserDebugEffect(requestMobSpawn(site.state, spawnAttempt(site, COW_KIND, 16))),
+      perform: (site) => runBrowserDebugEffect(requestMobSpawn(site.state, spawnAttempt(site, COW_KIND, 24))),
     }],
     observe: observeMobs(context.root),
   }, DAY_TIME_TICKS),
@@ -187,7 +188,7 @@ const hostileMobScenario: ScenarioDefinition = {
     actions: [{
       id: 'zombie-contact',
       label: 'Spawn zombie, then press Play or Step',
-      perform: (site) => runBrowserDebugEffect(requestMobSpawn(site.state, spawnAttempt(site, ZOMBIE_KIND, 18))),
+      perform: (site) => runBrowserDebugEffect(requestMobSpawn(site.state, spawnAttempt(site, ZOMBIE_KIND, 24))),
     }],
     observe: observeMobDamage(context.root),
   }, NIGHT_TIME_TICKS),
@@ -206,7 +207,7 @@ const projectileDropExperienceScenario: ScenarioDefinition = {
         {
           id: 'spawn-creeper',
           label: 'Spawn creeper, then Step once',
-          perform: (site) => runBrowserDebugEffect(requestMobSpawn(site.state, spawnAttempt(site, CREEPER_KIND, 16))),
+          perform: (site) => runBrowserDebugEffect(requestMobSpawn(site.state, spawnAttempt(site, CREEPER_KIND, 24))),
         },
         {
           id: 'shoot-creeper',
@@ -265,7 +266,7 @@ const endermanScenario: ScenarioDefinition = {
     actions: [{
       id: 'spawn-enderman',
       label: 'Spawn Enderman, then press Play or Step',
-      perform: (site) => runBrowserDebugEffect(requestMobSpawn(site.state, spawnAttempt(site, ENDERMAN_KIND, 16))),
+      perform: (site) => runBrowserDebugEffect(requestMobSpawn(site.state, spawnAttempt(site, ENDERMAN_KIND, 24))),
     }],
     observe: observeMobs(context.root),
   }, NIGHT_TIME_TICKS),

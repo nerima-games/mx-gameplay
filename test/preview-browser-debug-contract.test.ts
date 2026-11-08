@@ -1,7 +1,7 @@
 /// <reference lib="dom" />
 
 import { describe, expect, it } from '@effect/vitest'
-import { AngleRadians, AIR_BLOCK_ID, AttackRangeDistance, BlockAxis, DimensionIdSchema, InterpolationFraction, PositionAxis, ProjectileIdSchema, SimulationTickSchema, blockIdOf, blockPosition, maxStackCountForItem, position, position as kernelPosition } from '@nerima-games/mc-kernel'
+import { AngleRadians, AIR_BLOCK_ID, AttackRangeDistance, BlockAxis, DimensionIdSchema, InterpolationFraction, PositionAxis, ProjectileIdSchema, SimulationTick, SimulationTickSchema, blockIdOf, blockPosition, maxStackCountForItem, position, position as kernelPosition } from '@nerima-games/mc-kernel'
 import { endArrivalDescriptor } from '@nerima-games/mc-worldgen'
 import {
   BREWING_FUEL_CHARGES,
@@ -12,6 +12,7 @@ import {
 } from '@nerima-games/mc-sim'
 import { Brand, Effect, Option, Ref, Result, Schema } from 'effect'
 import { createExperienceOrbValue } from '../src/domain/entities/xp-orb'
+import { SkyLightLevel } from '../src/domain/mob/hostile-spawn'
 import { makeVillager } from '../src/domain/villager-trade.js'
 import { TNT_BLOCK_ID } from '../src/domain/interactions/ignite-tnt'
 import { blockLoot, NO_TOOL } from '../src/domain/interactions/block-loot'
@@ -403,7 +404,7 @@ describe('browser debug Site contract', () => {
           footBlock: AIR_BLOCK_ID,
           headBlock: AIR_BLOCK_ID,
           blockLight: 0,
-          skyLight: 0,
+          skyLight: SkyLightLevel(0),
           biome: 'PLAINS',
           timeOfDay: 0.9,
           distanceToPlayerBlocksXZ: Math.hypot(25.5, 0.5),
@@ -489,7 +490,7 @@ describe('browser debug Site contract', () => {
           footBlock: AIR_BLOCK_ID,
           headBlock: AIR_BLOCK_ID,
           blockLight: 0,
-          skyLight: 0,
+          skyLight: SkyLightLevel(0),
           biome: 'PLAINS',
           timeOfDay: 0.9,
           distanceToPlayerBlocksXZ: Math.hypot(0.5, z + 0.5),
@@ -544,7 +545,7 @@ describe('browser debug Site contract', () => {
       const activationFrames = Math.ceil(PORTAL_ACTIVATION_SECS / FRAME_DELTA) + 1
       for (let frame = 0; frame < activationFrames; frame += 1) {
         const tick = Effect.runSync(Ref.get(portalMount.site.state.tickCount))
-        Effect.runSync(Ref.set(portalMount.site.state.lastHostileSpawnTick, tick))
+        Effect.runSync(Ref.set(portalMount.site.state.lastHostileSpawnTick, SimulationTick(tick)))
         portalMount.advance()
       }
       const expectedArrival = endArrivalDescriptor(END_ARRIVAL_ORIGIN).spawn
@@ -557,7 +558,7 @@ describe('browser debug Site contract', () => {
       const noPortalMount = mountScenario('contract-live-player-pose-negative')
       for (let frame = 0; frame < activationFrames; frame += 1) {
         const tick = Effect.runSync(Ref.get(noPortalMount.site.state.tickCount))
-        Effect.runSync(Ref.set(noPortalMount.site.state.lastHostileSpawnTick, tick))
+        Effect.runSync(Ref.set(noPortalMount.site.state.lastHostileSpawnTick, SimulationTick(tick)))
         noPortalMount.advance()
       }
       expect(noPortalMount.observePlayerPose()).toStrictEqual(initialPose)

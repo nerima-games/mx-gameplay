@@ -72,7 +72,7 @@ import {
 import { BLAZE_KIND, COW_KIND, initialEcosystemMobState } from '../src/domain/mob/mob-ecosystem'
 import { CREEPER_EXPLOSION_POWER, explosionDamageAmount } from '../src/domain/mob/explosion'
 import { ZOMBIE_KIND } from '../src/domain/mob/hostile-combat'
-import type { SpawnCandidate } from '../src/domain/mob/hostile-spawn'
+import { SkyLightLevel, type SpawnCandidate } from '../src/domain/mob/hostile-spawn'
 import { DORMANT_FUSE } from '../src/domain/mob/creeper-fuse'
 import { FRESH_PRIMED_TNT } from '../src/domain/mob/primed-tnt'
 import { AIR_BLOCK_ID, BlockAxis, BlockId, blockPosition as makeBlockPosition, DeltaTimeSecs, EntityHealthPoints, EntitySerial, SimulationTick } from '@nerima-games/mc-kernel'
@@ -135,7 +135,7 @@ const SPAWN_CANDIDATE: SpawnCandidate = {
   footBlock: AIR_BLOCK_ID,
   headBlock: AIR_BLOCK_ID,
   blockLight: 0,
-  skyLight: 0,
+  skyLight: SkyLightLevel(0),
   biome: 'PLAINS',
   timeOfDay: 0.9,
   distanceToPlayerBlocksXZ: 30,
@@ -1372,7 +1372,7 @@ describe('mob spawn application and owner roster planning', () => {
       })
 
       const outcomes = yield* applySpawnAttempts(manager.api, [
-        attempt({ ...SPAWN_CANDIDATE, timeOfDay: 0.5, skyLight: 15 }),
+        attempt({ ...SPAWN_CANDIDATE, timeOfDay: 0.5, skyLight: SkyLightLevel(15) }),
         attempt(SPAWN_CANDIDATE),
         attempt(SPAWN_CANDIDATE),
       ])
@@ -1409,7 +1409,7 @@ describe('mob spawn application and owner roster planning', () => {
     Effect.sync(() => {
       const initial = mobRoster([], 0)
       const attempts: ReadonlyArray<MobSpawnAttempt> = [
-        { candidate: { ...SPAWN_CANDIDATE, timeOfDay: 0.5, skyLight: 15 }, kind: CREEPER_KIND, feetPosition: ORIGIN },
+        { candidate: { ...SPAWN_CANDIDATE, timeOfDay: 0.5, skyLight: SkyLightLevel(15) }, kind: CREEPER_KIND, feetPosition: ORIGIN },
         { candidate: SPAWN_CANDIDATE, kind: CREEPER_KIND, feetPosition: ORIGIN },
       ]
 

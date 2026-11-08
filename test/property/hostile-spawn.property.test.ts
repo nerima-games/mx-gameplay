@@ -1,7 +1,7 @@
 import { describe, expect, it } from '@effect/vitest'
 import fc from 'fast-check'
 import { Result } from 'effect'
-import { AIR_BLOCK_ID, EntitySerial } from '@nerima-games/mc-kernel'
+import { AIR_BLOCK_ID, EntitySerial, SimulationTick } from '@nerima-games/mc-kernel'
 import type { EntityRoster } from '@nerima-games/mc-sim'
 import { CREEPER_KIND, type MobBehaviour, planSpawnAttemptsOnRoster } from '../../src/domain/entities/mob-frame'
 import {
@@ -9,6 +9,7 @@ import {
   canHostileSpawnAt,
   HOSTILE_SPAWN_SETTINGS,
   MOB_BIOME_SPAWN_TABLE,
+  SkyLightLevel,
   type SpawnCandidate,
 } from '../../src/domain/mob/hostile-spawn'
 import type { HostileDifficulty } from '../../src/domain/mob/hostile-despawn'
@@ -20,7 +21,7 @@ const validCandidate: SpawnCandidate = {
   footBlock: AIR_BLOCK_ID,
   headBlock: AIR_BLOCK_ID,
   blockLight: 0,
-  skyLight: 0,
+  skyLight: SkyLightLevel(0),
   biome: 'PLAINS',
   timeOfDay: 0.9,
   distanceToPlayerBlocksXZ: 30,
@@ -35,7 +36,7 @@ describe('hostile spawn properties', () => {
       fc.property(
         fc.record({
           blockLight: fc.double({ noNaN: true, noDefaultInfinity: true }),
-          skyLight: fc.double({ noNaN: true, noDefaultInfinity: true }),
+          skyLight: fc.double({ noNaN: true, noDefaultInfinity: true }).map(SkyLightLevel),
           timeOfDay: fc.double({ noNaN: true, noDefaultInfinity: true }),
           distanceToPlayerBlocksXZ: fc.double({ noNaN: true, noDefaultInfinity: true }),
           biome: fc.constantFrom(...biomes),
@@ -63,14 +64,18 @@ describe('hostile spawn properties', () => {
     )
   })
 
-  it('returns a typed failure or a boolean due result for arbitrary ticks', () => {
+  it('returns a typed failure or a boolean due result for arbitrary valid ticks', () => {
     fc.assert(
       fc.property(
-        fc.double({ noNaN: false, noDefaultInfinity: false }),
-        fc.double({ noNaN: false, noDefaultInfinity: false }),
+        fc.integer({ min: 0, max: Number.MAX_SAFE_INTEGER }),
+        fc.integer({ min: 0, max: Number.MAX_SAFE_INTEGER }),
         fc.constantFrom(...difficulties),
         (currentTick, lastSpawnTick, difficulty) => {
-          const result = hostileSpawnSearchDue(currentTick, lastSpawnTick, difficulty)
+          const result = hostileSpawnSearchDue(
+            SimulationTick(currentTick),
+            SimulationTick(lastSpawnTick),
+            difficulty,
+          )
           if (Result.isFailure(result)) {
             expect(result.failure).toStrictEqual({ _tag: 'InvalidSpawnTick' })
           } else {
@@ -81,12 +86,18 @@ describe('hostile spawn properties', () => {
     )
   })
 
+  it('returns a typed failure when the current tick precedes the last spawn tick', () => {
+    const result = hostileSpawnSearchDue(SimulationTick(0), SimulationTick(1), 'normal')
+    expect(Result.isFailure(result)).toBe(true)
+    if (Result.isFailure(result)) expect(result.failure).toStrictEqual({ _tag: 'InvalidSpawnTick' })
+  })
+
   it('starts the next search exactly at each difficulty interval boundary', () => {
     for (const difficulty of difficulties) {
       const interval = HOSTILE_SPAWN_SETTINGS[difficulty].intervalTicks
-      expect(Result.getOrThrow(hostileSpawnSearchDue(interval - 1, 0, difficulty))).toBe(false)
-      expect(Result.getOrThrow(hostileSpawnSearchDue(interval, 0, difficulty))).toBe(true)
-      expect(Result.getOrThrow(hostileSpawnSearchDue(interval + 1, 0, difficulty))).toBe(true)
+      expect(Result.getOrThrow(hostileSpawnSearchDue(SimulationTick(interval - 1), SimulationTick(0), difficulty))).toBe(false)
+      expect(Result.getOrThrow(hostileSpawnSearchDue(SimulationTick(interval), SimulationTick(0), difficulty))).toBe(true)
+      expect(Result.getOrThrow(hostileSpawnSearchDue(SimulationTick(interval + 1), SimulationTick(0), difficulty))).toBe(true)
     }
   })
 

@@ -7,9 +7,10 @@
  * violated with STRINGS rather than with imports.
  */
 import { describe, expect, it } from '@effect/vitest'
+import { SkyLightLevel } from '../src/domain/mob/hostile-spawn'
 import * as FastCheck from 'fast-check'
 import { Brand, Cause, Effect, Exit, Layer, Option, Ref, Result, Schema, Stream } from 'effect'
-import { AIR_BLOCK_ID, AngleRadians, AttackRangeDistance, BlockId, DimensionIdSchema, EntityHealthPoints, EntitySerial, PositionAxis, ProjectileIdSchema, SimulationTickSchema, WorldIdSchema, blockIdOf, position as kernelPosition, type BlockPosition } from '@nerima-games/mc-kernel'
+import { AIR_BLOCK_ID, AngleRadians, AttackRangeDistance, BlockId, DimensionIdSchema, EntityHealthPoints, EntitySerial, PositionAxis, ProjectileIdSchema, SimulationTick, SimulationTickSchema, WorldIdSchema, blockIdOf, position as kernelPosition, type BlockPosition } from '@nerima-games/mc-kernel'
 import type { BlockReading, ChunkStore, ChunkStoreApi } from '@nerima-games/mc-worldgen'
 import {
   CREEPER_KIND,
@@ -2058,7 +2059,7 @@ describe('stage behaviour', () => {
           footBlock: AIR_BLOCK_ID,
           headBlock: AIR_BLOCK_ID,
           blockLight: 0,
-          skyLight: 0,
+          skyLight: SkyLightLevel(0),
           biome: 'PLAINS',
           timeOfDay: 0,
           distanceToPlayerBlocksXZ: 24,
@@ -2067,7 +2068,7 @@ describe('stage behaviour', () => {
         feetPosition: fixturePosition(1, 64, 0 ),
       }
       yield* Ref.set(state.spawnAttempts, [offered])
-      yield* Ref.set(state.lastHostileSpawnTick, 12)
+      yield* Ref.set(state.lastHostileSpawnTick, SimulationTick(12))
       yield* Ref.set(state.lastPassiveSpawnTick, 18)
       yield* Ref.set(state.passiveInitialSpawnPending, false)
 
@@ -2164,7 +2165,7 @@ describe('stage behaviour', () => {
           footBlock: AIR_BLOCK_ID,
           headBlock: AIR_BLOCK_ID,
           blockLight: 0,
-          skyLight: 0,
+          skyLight: SkyLightLevel(0),
           biome: 'PLAINS',
           timeOfDay: 0,
           distanceToPlayerBlocksXZ: 24,
