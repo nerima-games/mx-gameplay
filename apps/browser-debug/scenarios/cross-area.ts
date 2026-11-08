@@ -184,8 +184,8 @@ const x01Setup: ScenarioSetup = {
   }),
 }
 
-const x02Support = at(23, 64)
-const x02Sand = at(23, 65)
+const x02Support = at(21, 64)
+const x02Sand = at(21, 65)
 const x02Phases = new WeakMap<Site, string>()
 const x02CreeperAttempt = (site: Site): MobSpawnAttempt => ({
   candidate: {
@@ -219,7 +219,7 @@ const x02ZombieAttempt = (site: Site): MobSpawnAttempt => ({
 })
 
 const x02Setup: ScenarioSetup = {
-  world: world([...row(0, 26, 63, STONE), [23, 64, STONE], [23, 65, SAND]], ['0,0', '1,0']),
+  world: world([...row(0, 26, 63, STONE), [21, 64, STONE], [21, 65, SAND]], ['0,0', '1,0']),
   bounds: { width: 27, height: 68 },
   actions: [
     {
@@ -247,7 +247,7 @@ const x02Setup: ScenarioSetup = {
       id: 'x02-explode-pillar',
       label: 'Advance until the creeper blast drops rotten flesh and settles the sand',
       perform: (site) => {
-        runBrowserDebugEffect(site.movePlayerTo(point(23, 65, 0)))
+        runBrowserDebugEffect(site.movePlayerTo(point(24, 64, 0)))
         try {
           advanceUntil(
             site,
