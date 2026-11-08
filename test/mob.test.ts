@@ -774,6 +774,33 @@ describe('mob drop tables', () => {
     }),
   )
 
+  it.effect('enforces baby and size gates at their boundaries', () =>
+    Effect.sync(() => {
+      const babyOnly = { item: 'rotten_flesh', count: 1, babyOnly: true } as const
+      expect(rollMobDrop(babyOnly, SLAIN, LOWEST_ROLLS)).toBeUndefined()
+      expect(rollMobDrop(babyOnly, { ...SLAIN, age: 'baby' }, LOWEST_ROLLS)).toStrictEqual({
+        item: 'rotten_flesh',
+        count: 1,
+      })
+
+      const smallOnly = { item: 'rotten_flesh', count: 1, size: 'small' } as const
+      expect(rollMobDrop(smallOnly, SLAIN, LOWEST_ROLLS)).toBeUndefined()
+      expect(rollMobDrop(smallOnly, { ...SLAIN, size: 'small' }, LOWEST_ROLLS)).toStrictEqual({
+        item: 'rotten_flesh',
+        count: 1,
+      })
+      expect(rollMobDrop(smallOnly, { ...SLAIN, size: 'medium' }, LOWEST_ROLLS)).toBeUndefined()
+
+      const mediumOrLarger = { item: 'rotten_flesh', count: 1, minimumSize: 'medium' } as const
+      expect(rollMobDrop(mediumOrLarger, SLAIN, LOWEST_ROLLS)).toBeUndefined()
+      expect(rollMobDrop(mediumOrLarger, { ...SLAIN, size: 'small' }, LOWEST_ROLLS)).toBeUndefined()
+      expect(rollMobDrop(mediumOrLarger, { ...SLAIN, size: 'medium' }, LOWEST_ROLLS)).toStrictEqual({
+        item: 'rotten_flesh',
+        count: 1,
+      })
+    }),
+  )
+
   it.effect('uses the respawn dragon experience range and rejects non-finite fixed rewards', () =>
     Effect.sync(() => {
       const dragon = mobExperienceRuleOfKind(EntityKind('ender_dragon'))
@@ -932,6 +959,18 @@ describe('mob drop tables', () => {
       } as const
       expect(rollMobTable(burningPool, { ...SLAIN, burning: true }, makeMobDropRollSequence([0]))).toStrictEqual([
         { item: 'cooked_beef', count: 1 },
+      ])
+
+      const shortVariablePool = {
+        rules: [],
+        pools: [{
+          minSelections: 1,
+          maxSelections: 2,
+          choices: [{ item: 'rotten_flesh', weight: 1, count: 1 }],
+        }],
+      } as const
+      expect(rollMobTable(shortVariablePool, SLAIN, makeMobDropRollSequence([]))).toStrictEqual([
+        { item: 'rotten_flesh', count: 1 },
       ])
     }),
   )
