@@ -39,6 +39,7 @@ export type GoalReport = Readonly<{
   key: string
   label: string
   target: string
+  measurementPath: string
   goal: AchievementGoal
   summary: TargetSummary
   medianGap: number | null
@@ -235,10 +236,22 @@ const gapFromGoal = (value: number | null, goal: AchievementGoal): number | null
 const goalReport = (results: ReadonlyArray<SeedSimulationResult>, definition: GoalDefinition): GoalReport => {
   const samples = results.map((result) => sampleForGoal(result, definition.key))
   const summary = summarize(samples, definition.goal)
+  const measurementPaths = new Set(results.flatMap((result) => {
+    if (result.status !== 'simulated') return []
+    if (definition.key === 'firstNight') return ['first-night duration calculated from mc-sim TimeService day/night rules']
+    if (definition.key === 'cookedFood') {
+      return ['actual path not exercised: animal meat drops are unimplemented and the route does not search animals or crops']
+    }
+    if (definition.key === 'bedByNight1') {
+      return ['actual path not exercised: wool drops are unimplemented and the route does not search sheep']
+    }
+    return [result.metricPaths[definition.key]]
+  }))
   return {
     key: definition.key,
     label: definition.label,
     target: definition.target,
+    measurementPath: [...measurementPaths].join('; ') || 'no simulated path available',
     goal: definition.goal,
     summary,
     medianGap: gapFromGoal(summary.median, definition.goal),
@@ -401,8 +414,8 @@ export const formatBalanceTable = (report: BalanceReport): string => {
     '',
     'Gap is signed: positive means outside the target; negative means within it.',
     '',
-    '| Goal | Target | Measured / unknown | Median | p90 | Attainment | Median gap | p90 gap |',
-    '| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |',
+    '| Goal | Target | Measured / unknown | Median | p90 | Attainment | Median gap | p90 gap | Measurement path |',
+    '| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |',
   ]
 
   for (const goal of report.goals) {
@@ -416,6 +429,7 @@ export const formatBalanceTable = (report: BalanceReport): string => {
       formatPercent(summary.achievementRate === null ? null : summary.achievementRate * 100),
       formatNumber(goal.medianGap, ' s'),
       formatNumber(goal.p90Gap, ' s'),
+      goal.measurementPath,
     ].join(' | ')} |`)
   }
 

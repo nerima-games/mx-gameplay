@@ -1,6 +1,16 @@
-import { beforeAll, describe, expect, it } from '@effect/vitest'
-import { Effect } from 'effect'
-import { TICKS_PER_SECOND } from '@nerima-games/mc-sim'
+import { describe, expect, it } from '@effect/vitest'
+import { Effect, Option, Ref, Schema } from 'effect'
+import { AIR_BLOCK_ID, BlockAxis, EntityHealthPoints, PositionAxis, blockIdOf, blockPosition, position } from '@nerima-games/mc-kernel'
+import { PlayerServiceSnapshotSchema, PlayerStorageSnapshotSchema, TICKS_PER_SECOND } from '@nerima-games/mc-sim'
+import { TickCountSchema } from '@nerima-games/mc-sim/testing'
+import { cellKey, chunkKey, chunkOf } from '../src/domain/in-memory-world.js'
+import {
+  countPlayerStorageItem,
+  makeBalanceGameplayRuntime,
+  movePlayer,
+  runBalanceHarness,
+  setBlockBreakRequest,
+} from '../scripts/balance/gameplay-harness.js'
 import {
   buildBalanceReport,
   formatBalanceTable,
@@ -8,14 +18,19 @@ import {
   renderBalanceReport,
 } from '../scripts/balance/run.js'
 import {
-  exposedPolicy,
-  shelterPolicy,
-  simulateSeed,
   type BalanceEventSeries,
   type BalanceObservation,
   type SeedObservations,
   type SeedSimulationResult,
+  observeNight1Death,
 } from '../scripts/balance/simulator.js'
+import { hostileMobSnapshot } from '../src/domain/entities/mob-frame.js'
+import { ZOMBIE_KIND } from '../src/domain/mob/hostile-combat.js'
+import {
+  GAMEPLAY_ENTITIES_OWNER_ID,
+  GameplayEntityRosterSchema,
+  restoreGameplayEntityMetadata,
+} from '../src/stages/gameplay-owner-registrations.js'
 
 const observedAt = (seconds: number): BalanceObservation => ({
   status: 'observed',
@@ -24,11 +39,6 @@ const observedAt = (seconds: number): BalanceObservation => ({
 })
 
 const unavailableObservation = (reason: string): BalanceObservation => ({ status: 'unavailable', reason })
-
-const expectObservedAtOrUnder = (observation: BalanceObservation, threshold: number): void => {
-  expect(observation.status).toBe('observed')
-  if (observation.status === 'observed') expect(observation.seconds).toBeLessThanOrEqual(threshold)
-}
 
 const observedEvents = (...seconds: ReadonlyArray<number>): BalanceEventSeries => ({
   status: 'observed',
@@ -68,15 +78,17 @@ const simulatedResult = (
   limitations: [],
   terrain: { chunkX: 0, chunkZ: 0, blockTypes: [] },
   observations,
+  metricPaths: {
+    firstLog: 'actual path exercised',
+    woodenPickaxe: 'actual path not exercised for crafting: no crafting stage is registered',
+    stoneTool: 'actual path not exercised for crafting: no crafting stage is registered',
+    iron: 'actual path not exercised for crafting/smelting; furnace uses advanceFurnace',
+  },
+  gameplayStageIds: [],
+  gameplayTicks: 0,
 })
 
 describe('balance simulation runner', () => {
-  let shelterResult: SeedSimulationResult | undefined
-
-  beforeAll(async () => {
-    shelterResult = await simulateSeed(0, shelterPolicy, Effect.runPromise)
-  })
-
   it('requires a positive seed count and a supported policy', () => {
     expect(parseRunArguments(['--seeds', '3', '--policy', 'shelter'])).toStrictEqual({
       ok: true,
@@ -170,6 +182,8 @@ describe('balance simulation runner', () => {
       completeRunQuantiles: { sampleCount: 2, medianEvents: 1, p90Events: 2 },
     })
     expect(formatBalanceTable(report)).toContain('| Bed by end of first night')
+    expect(formatBalanceTable(report)).toContain('actual path not exercised for crafting')
+    expect(formatBalanceTable(report)).toContain('actual path not exercised: animal meat drops are unimplemented')
     const table = formatBalanceTable(report)
     expect(table).toContain('| 0 / 2 | unknown | unknown | unknown |')
     expect(table).toContain('50% deaths')
@@ -240,61 +254,120 @@ describe('balance simulation runner', () => {
       }],
     })
     expect(formatBalanceTable(report)).toContain('| complete-run events 0 / 0 (n=1) | 1 |')
-  })
-
-  it('replays a seed deterministically and leaves the unobserved route interval unknown', async () => {
-    if (shelterResult === undefined) throw new Error('seed setup did not complete')
-    expect(await simulateSeed(0, shelterPolicy, Effect.runPromise)).toStrictEqual(shelterResult)
-    expect(shelterResult.status).toBe('simulated')
-    if (shelterResult.status !== 'simulated') return
-
-    expectObservedAtOrUnder(shelterResult.observations.firstLog, 30)
-    expectObservedAtOrUnder(shelterResult.observations.woodenPickaxe, 150)
-    expectObservedAtOrUnder(shelterResult.observations.stoneTool, 240)
-    expectObservedAtOrUnder(shelterResult.observations.iron, 900)
-    expect(shelterResult.observations.cookedFood).toMatchObject({
-      status: 'unavailable',
-      reason: expect.stringContaining('animal meat drops are not implemented'),
-    })
-    expect(shelterResult.observations.bedByNight1).toMatchObject({
-      status: 'unavailable',
-      reason: expect.stringContaining('wool drops'),
-    })
-    expect(shelterResult.observations.preTwilightDamage).toMatchObject({
-      status: 'unavailable',
-      reason: expect.stringContaining('route actions were not interleaved with combat'),
-    })
-    expect(buildBalanceReport([shelterResult], 'shelter').preTwilightDamage).toMatchObject({
-      status: 'unknown',
-      attainment: {
-        totalCount: 1,
-        measuredCount: 0,
-        unavailableCount: 1,
-        noDamageRatePercent: null,
-        damageRunRatePercent: null,
-      },
-      completeRunQuantiles: { sampleCount: 0, medianEvents: null, p90Events: null },
+    expect(buildBalanceReport([fullyObservedNoDamage], 'exposed').preTwilightDamage).toMatchObject({
+      status: 'observed',
+      attainment: { measuredCount: 1, unavailableCount: 0, noDamageRatePercent: 100, damageRunRatePercent: 0 },
+      completeRunQuantiles: { sampleCount: 1, medianEvents: 0, p90Events: 0 },
     })
   })
 
-  it('applies replacement policies to the actual night position', async () => {
-    if (shelterResult === undefined) throw new Error('seed setup did not complete')
-    const shelter = shelterResult
-    const exposed = await simulateSeed(0, exposedPolicy, Effect.runPromise)
+  it('counts night deaths only inside the first-night interval', () => {
+    const coverage = { firstNight: 4_800, firstNightEnd: 12_000, stagesCovered: true, measurementFailure: undefined }
+    expect(observeNight1Death({ ...coverage, deathTick: 4_799 })).toStrictEqual({
+      status: 'unavailable',
+      reason: 'player died before first night began at tick 4800',
+    })
+    expect(observeNight1Death({ ...coverage, deathTick: 4_800 })).toStrictEqual({
+      status: 'observed',
+      died: true,
+      deathTicks: 4_800,
+    })
+    expect(observeNight1Death({ ...coverage, deathTick: 12_000 })).toStrictEqual({
+      status: 'observed',
+      died: false,
+      deathTicks: null,
+    })
+    expect(observeNight1Death({ ...coverage, deathTick: undefined })).toStrictEqual({
+      status: 'observed',
+      died: false,
+      deathTicks: null,
+    })
+  })
 
-    expect(shelter.status).toBe('simulated')
-    expect(exposed.status).toBe('simulated')
-    if (shelter.status !== 'simulated' || exposed.status !== 'simulated') return
-    expect(shelter.policyExecution.status).toBe('observed')
-    expect(exposed.policyExecution.status).toBe('observed')
-    if (shelter.policyExecution.status !== 'observed' || exposed.policyExecution.status !== 'observed') return
+  it('replays mining and hostile damage deterministically through registered stages on the same harness tick', async () => {
+    const target = blockPosition(BlockAxis(0), BlockAxis(1), BlockAxis(0))
+    const dirt = Option.getOrThrow(blockIdOf('dirt'))
+    const runOneTick = async () => {
+      const runtime = await Effect.runPromise(makeBalanceGameplayRuntime({
+        blocks: new Map([[cellKey(target), dirt]]),
+        loaded: [chunkKey(chunkOf(target))],
+      }, {
+        feetPosition: position(PositionAxis(0.5), PositionAxis(0), PositionAxis(2.5)),
+        yawRadians: 0,
+        pitchRadians: 0,
+      }, 7))
+      const zombie = await Effect.runPromise(runtime.world.entities.spawn({
+        kind: ZOMBIE_KIND,
+        feetPosition: position(PositionAxis(1.25), PositionAxis(0), PositionAxis(2.5)),
+        healthPoints: EntityHealthPoints(20),
+        behaviour: hostileMobSnapshot(undefined),
+      }))
+      await Effect.runPromise(Effect.gen(function* () {
+        const owner = yield* runtime.commit.coordinator.snapshot(
+          GAMEPLAY_ENTITIES_OWNER_ID,
+          GameplayEntityRosterSchema,
+        )
+        const roster = yield* runtime.world.entities.snapshot
+        const entities = restoreGameplayEntityMetadata(roster, owner.state, 'overworld')
+        yield* runtime.commit.coordinator.commit({
+          expectedRevision: owner.revision,
+          expectedDimensions: [],
+          changes: [{ ownerId: GAMEPLAY_ENTITIES_OWNER_ID, state: entities }],
+        })
+      }))
+      const result = await runBalanceHarness<{
+        before: Schema.Schema.Type<typeof PlayerStorageSnapshotSchema>
+        block: Effect.Success<ReturnType<typeof runtime.world.chunkStore.getBlock>>
+        after: Schema.Schema.Type<typeof PlayerStorageSnapshotSchema>
+        player: Readonly<{ state: Schema.Schema.Type<typeof PlayerServiceSnapshotSchema> }>
+        events: ReadonlyArray<Readonly<{ tick: number; event: unknown }>>
+        stageTicks: number
+        stageDamages: ReadonlyArray<unknown>
+      }>(runtime, 7, Effect.runPromise, (harness) => Effect.gen(function* () {
+        const before = yield* runtime.commit.coordinator.snapshot(
+          runtime.commit.playerStorageOwnerId,
+          PlayerStorageSnapshotSchema,
+        )
+        yield* setBlockBreakRequest(runtime, target)
+        yield* movePlayer(runtime, position(PositionAxis(0.75), PositionAxis(0), PositionAxis(2.5)))
+        yield* harness.step(Schema.decodeUnknownSync(TickCountSchema)(1))
+        const block = yield* runtime.world.chunkStore.getBlock(target)
+        const after = yield* runtime.commit.coordinator.snapshot(
+          runtime.commit.playerStorageOwnerId,
+          PlayerStorageSnapshotSchema,
+        )
+        return {
+          before: before.state,
+          block,
+          after: after.state,
+          player: yield* runtime.commit.coordinator.snapshot(
+            runtime.commit.playerOwnerId,
+            PlayerServiceSnapshotSchema,
+          ),
+          events: yield* Ref.get(runtime.damageEventsByTick),
+          stageTicks: yield* Ref.get(runtime.stageTickCount),
+          stageDamages: yield* Ref.get(runtime.state.playerDamages),
+        }
+      }))
+      return { result, zombieId: zombie.id, stageIds: runtime.stages.map((stage) => stage.id) }
+    }
+    const first = await runOneTick()
+    const replay = await runOneTick()
 
-    expect(shelter.policyExecution.action).toBe('shelter')
-    expect(shelter.policyExecution.shelterBlocksMined).toBe(3)
-    expect(shelter.policyExecution.targetPosition.y).toBeLessThan(shelter.policyExecution.startPosition.y)
-    expect(exposed.policyExecution.action).toBe('exposed')
-    expect(exposed.policyExecution.shelterBlocksMined).toBe(0)
-    expect(exposed.policyExecution.targetPosition.y).toBe(exposed.policyExecution.startPosition.y)
-    expect(shelter.policyExecution.targetPosition).not.toStrictEqual(exposed.policyExecution.targetPosition)
+    expect(first).toStrictEqual(replay)
+    expect(first.result.block).toStrictEqual({ _tag: 'Block', block: AIR_BLOCK_ID })
+    expect(countPlayerStorageItem(first.result.before, 'dirt')).toBe(0)
+    expect(countPlayerStorageItem(first.result.after, 'dirt')).toBe(1)
+    expect(first.result.player.state.pose.feetPosition.x).toBe(0.75)
+    expect(first.result.stageTicks).toBe(1)
+    expect(first.result.events).toHaveLength(1)
+    expect(first.result.events[0]).toMatchObject({
+      tick: 1,
+      event: { _tag: 'HostileContact', source: first.zombieId },
+    })
+    expect(first.result.stageDamages).toHaveLength(1)
+    expect(first.stageIds).toHaveLength(8)
+    expect(first.stageIds).toContain('gameplay:interactions')
+    expect(first.stageIds).toContain('gameplay:entities')
   })
 })

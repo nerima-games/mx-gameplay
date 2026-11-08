@@ -27,28 +27,39 @@ const goalArbitrary: fc.Arbitrary<AchievementGoal> = fc.oneof(
   })),
 )
 
-function summaryOf(samples: readonly BalanceSample[], target: number): TargetSummary {
-  const result = summarizeTarget(samples, target)
-  if (!result.ok) throw new Error(`Expected valid samples, got ${result.error.kind}`)
-  return result.value
-}
+function independentSummary(
+  samples: readonly BalanceSample[],
+  isAchieved: (value: number) => boolean,
+): TargetSummary {
+  const measured = samples.filter(
+    (sample): sample is Extract<BalanceSample, { status: 'measured' }> => sample.status === 'measured',
+  )
+  const values = measured.flatMap((sample) => sample.value === null ? [] : [sample.value])
+  values.sort((left, right) => left - right)
 
-function goalSummaryOf(samples: readonly BalanceSample[], goal: AchievementGoal): TargetSummary {
-  const result = summarizeGoal(samples, goal)
-  if (!result.ok) throw new Error(`Expected a valid goal, got ${result.error.kind}`)
-  return result.value
-}
-
-function numericStatsOf(summary: TargetSummary): { readonly median: number; readonly p90: number } {
-  if (summary.median === null || summary.p90 === null) {
-    throw new Error('Expected at least one measured numeric value')
+  const valueAt = (index: number): number => {
+    const value = values[index]
+    if (value === undefined) throw new Error(`Expected a sorted value at index ${index}`)
+    return value
   }
-  return { median: summary.median, p90: summary.p90 }
-}
+  const middle = Math.floor(values.length / 2)
+  const median = values.length === 0
+    ? null
+    : values.length % 2 === 1
+      ? valueAt(middle)
+      : valueAt(middle - 1) / 2 + valueAt(middle) / 2
+  const p90Rank = Math.ceil(values.length * 0.9)
+  const p90 = p90Rank === 0 ? null : valueAt(p90Rank - 1)
+  const achievedCount = measured.filter((sample) => sample.value !== null && isAchieved(sample.value)).length
 
-function achievementRateOf(summary: TargetSummary): number {
-  if (summary.achievementRate === null) throw new Error('Expected at least one measured sample')
-  return summary.achievementRate
+  return {
+    totalCount: samples.length,
+    measuredCount: measured.length,
+    unavailableCount: samples.filter((sample) => sample.status === 'unavailable').length,
+    median,
+    p90,
+    achievementRate: measured.length === 0 ? null : achievedCount / measured.length,
+  }
 }
 
 describe('balance target statistics', () => {
@@ -166,46 +177,38 @@ describe('balance target statistics', () => {
     })
   })
 
-  it('keeps p90 at or above the median for non-empty numeric samples', () => {
+  it('matches target summaries against independently sorted and counted samples', () => {
     fc.assert(
-      fc.property(fc.array(timeArbitrary, { minLength: 1, maxLength: 40 }), timeArbitrary, (values, target) => {
-        const stats = numericStatsOf(
-          summaryOf(
-            values.map((value) => ({ status: 'measured', value })),
-            target,
-          ),
-        )
-        expect(stats.p90).toBeGreaterThanOrEqual(stats.median)
+      fc.property(sampleArbitrary, fc.array(sampleArbitrary, { maxLength: 40 }), timeArbitrary, (first, rest, target) => {
+        const samples = [first, ...rest]
+        expect(summarizeTarget(samples, target)).toStrictEqual({
+          ok: true,
+          value: independentSummary(samples, (value) => value <= target),
+        })
       }),
       { numRuns: 100 },
     )
   })
 
-  it('keeps achievement rates between zero and one', () => {
+  it('matches goal summaries against independently sorted and counted samples', () => {
     fc.assert(
       fc.property(
-        timeArbitrary,
-        fc.array(sampleArbitrary, { maxLength: 20 }),
-        timeArbitrary,
-        (value, samples, target) => {
-          const rate = achievementRateOf(
-            summaryOf([...samples, { status: 'measured', value }], target),
-          )
-          expect(rate).toBeGreaterThanOrEqual(0)
-          expect(rate).toBeLessThanOrEqual(1)
+        sampleArbitrary,
+        fc.array(sampleArbitrary, { maxLength: 40 }),
+        goalArbitrary,
+        (first, rest, goal) => {
+          const samples = [first, ...rest]
+          const isAchieved = (value: number): boolean => goal.kind === 'range'
+            ? value >= goal.min && value <= goal.max
+            : goal.kind === 'min'
+              ? value >= goal.threshold
+              : value <= goal.threshold
+          expect(summarizeGoal(samples, goal)).toStrictEqual({
+            ok: true,
+            value: independentSummary(samples, isAchieved),
+          })
         },
       ),
-      { numRuns: 100 },
-    )
-  })
-
-  it('does not change summaries when valid samples are reordered', () => {
-    fc.assert(
-      fc.property(fc.array(sampleArbitrary, { maxLength: 40 }), timeArbitrary, (samples, target) => {
-        expect(summarizeTarget(samples, target)).toStrictEqual(
-          summarizeTarget([...samples].reverse(), target),
-        )
-      }),
       { numRuns: 100 },
     )
   })
@@ -235,50 +238,23 @@ describe('balance target statistics', () => {
           ]
 
           expect({
-            maxRate: goalSummaryOf(maxSamples, { kind: 'max', threshold: maxThreshold }).achievementRate,
-            maxMatchesLegacy: summarizeGoal(maxSamples, { kind: 'max', threshold: maxThreshold }),
-            minRate: goalSummaryOf(minSamples, { kind: 'min', threshold: minThreshold }).achievementRate,
-            rangeRate: goalSummaryOf(rangeSamples, { kind: 'range', min: rangeMin, max: rangeMax })
-              .achievementRate,
+            max: summarizeGoal(maxSamples, { kind: 'max', threshold: maxThreshold }),
+            min: summarizeGoal(minSamples, { kind: 'min', threshold: minThreshold }),
+            range: summarizeGoal(rangeSamples, { kind: 'range', min: rangeMin, max: rangeMax }),
           }).toStrictEqual({
-            maxRate: 0.5,
-            maxMatchesLegacy: summarizeTarget(maxSamples, maxThreshold),
-            minRate: 0.5,
-            rangeRate: 0.5,
+            max: {
+              ok: true,
+              value: independentSummary(maxSamples, (value) => value <= maxThreshold),
+            },
+            min: {
+              ok: true,
+              value: independentSummary(minSamples, (value) => value >= minThreshold),
+            },
+            range: {
+              ok: true,
+              value: independentSummary(rangeSamples, (value) => value >= rangeMin && value <= rangeMax),
+            },
           })
-        },
-      ),
-      { numRuns: 100 },
-    )
-  })
-
-  it('keeps goal summaries unchanged when valid samples are reordered', () => {
-    fc.assert(
-      fc.property(
-        fc.array(sampleArbitrary, { maxLength: 40 }),
-        goalArbitrary,
-        (samples, goal) => {
-          expect(summarizeGoal(samples, goal)).toStrictEqual(
-            summarizeGoal([...samples].reverse(), goal),
-          )
-        },
-      ),
-      { numRuns: 100 },
-    )
-  })
-
-  it('keeps goal achievement rates between zero and one', () => {
-    fc.assert(
-      fc.property(
-        timeArbitrary,
-        fc.array(sampleArbitrary, { maxLength: 20 }),
-        goalArbitrary,
-        (value, samples, goal) => {
-          const rate = achievementRateOf(
-            goalSummaryOf([...samples, { status: 'measured', value }], goal),
-          )
-          expect(rate).toBeGreaterThanOrEqual(0)
-          expect(rate).toBeLessThanOrEqual(1)
         },
       ),
       { numRuns: 100 },

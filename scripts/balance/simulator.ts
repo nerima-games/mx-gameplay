@@ -1,16 +1,14 @@
-import { Effect, Layer, Result, Schema } from 'effect'
+import { Effect, Ref, Result, Schema } from 'effect'
 import {
   AIR_BLOCK_ID,
   BlockAxis,
   BlockId,
   ChunkAxis,
+  ITEM_TYPES,
   PositionAxis,
-  RandomSeed,
-  SimulationTickSchema,
   blockPosition,
   capabilityOfBlockId,
   blockTypeOfId,
-  chunkCoord,
   position,
   type BlockPosition,
   type BlockType,
@@ -22,59 +20,29 @@ import {
   countOf,
   emptyFurnaceState,
   STARTER_FUEL_RULES,
-  STARTER_RECIPES,
   STARTER_SMELTING_RECIPES,
   advance as advanceTime,
   advanceFurnace,
-  craftFromGrid,
   craftGrid,
   dayLengthSecs,
   emptyInventory,
-  addItem,
   transferToFurnace,
   INITIAL_TIME_STATE,
   matchSmeltingRecipe,
   timeOfDay,
   TICKS_PER_SECOND,
-  type RecipeTable,
 } from '@nerima-games/mc-sim'
-import { emptyRoster } from '@nerima-games/mc-sim'
 import {
-  advanceMiningProgress,
-  blockLoot,
   isNight,
   miningDurationSecsForBlock,
   miningLootContextForItem,
 } from '../../src/index.js'
-import { searchSpawnCandidates } from '../../src/domain/entities/mob-spawn-search.js'
-import {
-  planMobRosterSweep,
-  planMobBlastRoster,
-  planEndermanTeleportRoster,
-  planSpawnAttemptsOnRoster,
-  rollCasualtyDrops,
-  type MobBehaviour,
-  type MobRoster,
-} from '../../src/domain/entities/mob-frame.js'
-import { resolveHostileContacts, resolvePlayerBlastDamage } from '../../src/domain/mob/hostile-combat.js'
 import { dayPhase } from '../../src/domain/day-night.js'
-import {
-  makeSurvivalHungerRuntime,
-  type SurvivalHungerState,
-} from '../../src/domain/survival-hunger.js'
-import { HOSTILE_SPAWN_INTERVAL_SECS } from '../../src/stages/registration-core.js'
-import {
-  HeadlessHarness,
-  HeadlessHarnessSessionFactoryLayer,
-  HeadlessHarnessTestLayer,
-  RandomSeedSchema,
-  type HeadlessHarnessStages,
-} from '@nerima-games/mc-sim/testing'
+import { PlayerServiceSnapshotSchema, PlayerStorageSnapshotSchema } from '@nerima-games/mc-sim'
+import { TickCountSchema } from '@nerima-games/mc-sim/testing'
 import {
   CHUNK_HEIGHT,
-  ChunkCapacity,
-  ChunkStore,
-  GeneratedChunkStoreLayer,
+  CHUNK_SIZE_XZ,
   blockIndex,
   generateChunk as generateWorldChunk,
   NoiseSeed,
@@ -82,6 +50,14 @@ import {
   type InvalidNaturalStructureCoordinate,
   type NaturalStructureChunk,
 } from '@nerima-games/mc-worldgen'
+import { cellKey } from '../../src/domain/in-memory-world.js'
+import {
+  makeGeneratedBalanceGameplayRuntime,
+  movePlayer,
+  runBalanceHarness,
+  scheduleGameplayStages,
+  setBlockBreakRequest,
+} from './gameplay-harness.js'
 
 export type BalanceEffectRunner = typeof Effect.runPromise
 
@@ -168,6 +144,9 @@ export type SeedSimulationResult =
       limitations: ReadonlyArray<string>
       terrain: Readonly<{ chunkX: 0; chunkZ: 0; blockTypes: ReadonlyArray<BlockType> }>
       observations: SeedObservations
+      metricPaths: Readonly<Record<MetricName, string>>
+      gameplayStageIds: ReadonlyArray<string>
+      gameplayTicks: number
     }>
   | Readonly<{
       status: 'terrain-failed'
@@ -193,6 +172,8 @@ type CraftAttempt = Readonly<{
 
 type MetricName = 'firstLog' | 'woodenPickaxe' | 'stoneTool' | 'iron'
 
+const WALK_SPEED_BLOCKS_PER_SECOND = 4.317
+
 type SurfaceStart = Readonly<{
   readonly x: number
   readonly y: number
@@ -201,6 +182,22 @@ type SurfaceStart = Readonly<{
   readonly groundPosition: BlockPosition
   readonly exposedPosition: Position
   readonly shelteredPosition: Position
+}>
+
+type RouteMeasurement = Readonly<{
+  observations: Record<MetricName, BalanceObservation>
+  routeElapsedTicks: number
+  routeHunger: Readonly<{
+    died: boolean
+    healthPoints: number
+    hungerPoints: number
+    starvationDamage: number
+  }>
+  night1Death: NightDeathObservation
+  preTwilightDamage: BalanceEventSeries
+  damageTimestamps: BalanceEventSeries
+  policyActionFailure: string | undefined
+  policyShelterBlocksMined: number
 }>
 
 const unavailable = (reason: string): BalanceObservation => ({ status: 'unavailable', reason })
@@ -212,23 +209,28 @@ const incompleteEvents = (
   ? { status: 'partial', events, reason }
   : { status: 'unavailable', reason }
 
+export const observeNight1Death = (input: Readonly<{
+  deathTick: number | undefined
+  firstNight: number
+  firstNightEnd: number
+  stagesCovered: boolean
+  measurementFailure: string | undefined
+}>): NightDeathObservation => input.measurementFailure !== undefined
+  ? { status: 'unavailable', reason: input.measurementFailure }
+  : !input.stagesCovered
+    ? { status: 'unavailable', reason: 'night stage coverage did not reach the first-night end' }
+    : input.deathTick !== undefined && input.deathTick < input.firstNight
+      ? { status: 'unavailable', reason: 'player died before first night began at tick ' + input.firstNight }
+      : input.deathTick !== undefined && input.deathTick < input.firstNightEnd
+        ? { status: 'observed', died: true, deathTicks: input.deathTick }
+        : { status: 'observed', died: false, deathTicks: null }
+
 const reasonOf = (failure: unknown): string => {
   if (typeof failure === 'object' && failure !== null && '_tag' in failure) {
     return String(failure._tag)
   }
   return String(failure)
 }
-
-const makeNoopStage = () => Effect.succeed({ changes: [], expectedDimensions: [], events: [] })
-
-const headlessStages: HeadlessHarnessStages = {
-  intentsAndRules: makeNoopStage,
-  stations: makeNoopStage,
-  environment: makeNoopStage,
-  entities: makeNoopStage,
-}
-
-const targetPosition = blockPosition(BlockAxis(0), BlockAxis(0), BlockAxis(0))
 
 const indexedBlocks = (chunk: NaturalStructureChunk): ReadonlyMap<BlockType, Readonly<{ id: ReturnType<typeof BlockId>; positions: ReadonlyArray<BlockPosition> }>> => {
   const blocks = new Map<BlockType, { id: ReturnType<typeof BlockId>; positions: Array<BlockPosition> }>()
@@ -248,76 +250,10 @@ const indexedBlocks = (chunk: NaturalStructureChunk): ReadonlyMap<BlockType, Rea
 }
 
 const positionFromIndex = (index: number): BlockPosition => {
-  const x = Math.floor(index / (CHUNK_HEIGHT * 16))
-  const z = Math.floor(index / CHUNK_HEIGHT) % 16
+  const x = Math.floor(index / (CHUNK_HEIGHT * CHUNK_SIZE_XZ))
+  const z = Math.floor(index / CHUNK_HEIGHT) % CHUNK_SIZE_XZ
   const y = index % CHUNK_HEIGHT
   return blockPosition(BlockAxis(x), BlockAxis(y), BlockAxis(z))
-}
-
-const mine = (
-  blockId: ReturnType<typeof BlockId>,
-  item: ItemType | null,
-  miningTargetPosition = targetPosition,
-): MinedBlock | undefined => {
-  const progress = advanceMiningProgress({
-    current: null,
-    target: { position: miningTargetPosition, blockId },
-    isMining: true,
-    selectedItem: item,
-    deltaSecs: miningDurationSecsForBlock(blockId, item),
-  })
-  if (!progress.shouldBreak || progress.nextProgress === null) return undefined
-  return {
-    seconds: progress.nextProgress.elapsedSecs,
-    drops: blockLoot(blockId, miningLootContextForItem(item)),
-  }
-}
-
-const craft = (
-  inventory: ReturnType<typeof emptyInventory>,
-  recipes: RecipeTable,
-  width: number,
-  height: number,
-  gridItems: ReadonlyArray<ItemType | undefined>,
-): CraftAttempt => {
-  const grid = craftGrid(width, height, gridItems)
-  if (Result.isFailure(grid)) return { inventory, output: undefined, reason: reasonOf(grid.failure) }
-  const outcome = craftFromGrid(inventory, recipes, grid.success)
-  if (Result.isFailure(outcome)) return { inventory, output: undefined, reason: reasonOf(outcome.failure) }
-  if (outcome.success.result._tag !== 'Crafted') {
-    return { inventory, output: undefined, reason: outcome.success.result._tag }
-  }
-  return {
-    inventory: outcome.success.inventory,
-    output: outcome.success.result.output.item,
-    reason: undefined,
-  }
-}
-
-const inventoryWith = (
-  inventory: ReturnType<typeof emptyInventory>,
-  item: ItemType,
-  count: number,
-): Readonly<{ inventory?: ReturnType<typeof emptyInventory>; reason?: string }> => {
-  const added = addItem(inventory, item, count)
-  return Result.isFailure(added)
-    ? { reason: reasonOf(added.failure) }
-    : added.success.leftover === 0
-      ? { inventory: added.success.inventory }
-      : { reason: `inventory-full:${added.success.leftover}` }
-}
-
-const inventoryWithDrops = (
-  inventory: ReturnType<typeof emptyInventory>,
-  drops: ReadonlyArray<Readonly<{ item: ItemType; count: number }>>,
-): Readonly<{ inventory?: ReturnType<typeof emptyInventory>; reason?: string }> => {
-  let current = inventory
-  for (const drop of drops) {
-    const next = inventoryWith(current, drop.item, drop.count)
-    if (next.inventory === undefined) return next
-    current = next.inventory
-  }
-  return { inventory: current }
 }
 
 const firstNightTick = (): number => {
@@ -416,207 +352,6 @@ const generatedChunk = (seed: number):
     : { status: 'ok', chunk: result.success }
 }
 
-type NightCombatResult = Readonly<{
-  night1Death: NightDeathObservation
-  preTwilightDamage: BalanceEventSeries
-  damageTimestamps: BalanceEventSeries
-}>
-
-const measureNightCombat = async (
-  seed: number,
-  start: Position,
-  firstTwilight: number,
-  firstNight: number,
-  firstNightEnd: number,
-  routeElapsedTicks: number,
-  routeHungerState: SurvivalHungerState,
-  minedPositions: ReadonlyArray<BlockPosition>,
-  runEffect: BalanceEffectRunner,
-): Promise<NightCombatResult> => {
-  const program = Effect.gen(function* () {
-    const store = yield* ChunkStore
-    const minimumChunkX = Math.floor((start.x - 40) / 16)
-    const maximumChunkX = Math.floor((start.x + 40) / 16)
-    const minimumChunkZ = Math.floor((start.z - 40) / 16)
-    const maximumChunkZ = Math.floor((start.z + 40) / 16)
-    for (let chunkZ = minimumChunkZ; chunkZ <= maximumChunkZ; chunkZ += 1) {
-      for (let chunkX = minimumChunkX; chunkX <= maximumChunkX; chunkX += 1) {
-        yield* store.load(chunkCoord(ChunkAxis(chunkX), ChunkAxis(chunkZ)))
-      }
-    }
-
-    for (const minedPosition of minedPositions) {
-      const write = yield* store.setBlock(minedPosition, AIR_BLOCK_ID)
-      if (write._tag !== 'Written') {
-        return {
-          night1Death: { status: 'unavailable', reason: `mined terrain block write returned ${write._tag}` },
-          preTwilightDamage: { status: 'unavailable', reason: `mined terrain block write returned ${write._tag}` },
-          damageTimestamps: { status: 'unavailable', reason: `mined terrain block write returned ${write._tag}` },
-        } satisfies NightCombatResult
-      }
-    }
-
-    if (routeHungerState.vitals.healthPoints <= 0) {
-      const reason = 'route hunger runtime ended with zero health before day/night measurement began'
-      return {
-        night1Death: { status: 'unavailable', reason },
-        preTwilightDamage: { status: 'unavailable', reason },
-        damageTimestamps: { status: 'unavailable', reason },
-      } satisfies NightCombatResult
-    }
-
-    const hunger = yield* makeSurvivalHungerRuntime(routeHungerState)
-    let roster: MobRoster = emptyRoster<MobBehaviour>()
-    let rollSeed = seed
-    let state = Result.getOrThrow(
-      advanceTime(INITIAL_TIME_STATE, (routeElapsedTicks / TICKS_PER_SECOND) as DeltaTimeSecs),
-    )
-    let deathTicks: number | null = null
-    let contactCooldowns = new Map()
-    const preTwilightDamage: Array<BalanceDamageEvent> = []
-    const damageTimestamps: Array<BalanceDamageEvent> = []
-    let spawnClockSecs = (routeElapsedTicks / TICKS_PER_SECOND) % HOSTILE_SPAWN_INTERVAL_SECS
-    let ticks = routeElapsedTicks
-
-    let deathBeforeNight = false
-    let deathBeforeTwilight = false
-    while (ticks < firstNightEnd && deathTicks === null) {
-      const untilNight = ticks < firstNight ? firstNight - ticks : firstNightEnd - ticks
-      const stepTicks = Math.min(
-        Math.ceil(HOSTILE_SPAWN_INTERVAL_SECS * TICKS_PER_SECOND),
-        untilNight,
-      )
-      const deltaSecs = stepTicks / TICKS_PER_SECOND
-      const delta = deltaSecs as DeltaTimeSecs
-      const currentTime = timeOfDay(state)
-      const hostileSearch = isNight(currentTime)
-      spawnClockSecs += deltaSecs
-      const searchDue = spawnClockSecs >= HOSTILE_SPAWN_INTERVAL_SECS
-      if (searchDue) spawnClockSecs -= HOSTILE_SPAWN_INTERVAL_SECS
-      const tickAtEvents = ticks + stepTicks
-
-      if (!hostileSearch) {
-        // Daylight spawn search yields passive mobs only; they cannot damage the player.
-        const hungerTick = yield* hunger.tick(delta)
-        if (hungerTick.starvationDamage > 0) {
-          damageTimestamps.push({
-            seconds: tickAtEvents / TICKS_PER_SECOND,
-            ticks: tickAtEvents,
-            cause: 'starvation',
-          })
-        }
-        if (hungerTick.died) {
-          deathTicks = tickAtEvents
-          deathBeforeNight = tickAtEvents < firstNight
-          deathBeforeTwilight = tickAtEvents < firstTwilight
-        }
-        state = Result.getOrThrow(advanceTime(state, delta))
-        ticks = tickAtEvents
-        continue
-      }
-
-      const sweep = planMobRosterSweep(roster, { target: start, dt: delta }, RandomSeed(rollSeed))
-      const teleported = yield* planEndermanTeleportRoster(sweep.roster, store, sweep.teleports)
-      const blast = planMobBlastRoster(
-        teleported,
-        sweep.blasts,
-        Schema.decodeUnknownSync(SimulationTickSchema)(ticks),
-      )
-      const casualtyDrops = rollCasualtyDrops(blast.casualties, sweep.seed)
-      rollSeed = casualtyDrops.seed
-      const found = searchDue
-        ? yield* searchSpawnCandidates(store, start, currentTime, rollSeed)
-        : undefined
-      if (found !== undefined) rollSeed = found.seed
-      const attempts = found?.attempts ?? []
-      const spawned = planSpawnAttemptsOnRoster(blast.roster, attempts)
-      if (Result.isFailure(spawned)) return yield* Effect.fail(spawned.failure)
-      roster = spawned.success.roster
-
-      const contact = resolveHostileContacts(roster.entities, start, deltaSecs, contactCooldowns)
-      contactCooldowns = new Map(contact.cooldowns)
-      const attacks = sweep.attacks.map((attack) => ({
-        damage: { amount: attack.damage, cause: 'mob' as const },
-      }))
-      const damageEvents = [
-        ...attacks,
-        ...contact.damages,
-        ...resolvePlayerBlastDamage(sweep.blasts, start),
-      ]
-      for (const event of damageEvents) {
-        if (event.damage.amount <= 0) continue
-        yield* hunger.damage(event.damage)
-        const timestamp = {
-          seconds: tickAtEvents / TICKS_PER_SECOND,
-          ticks: tickAtEvents,
-          cause: 'hostile' as const,
-        }
-        damageTimestamps.push(timestamp)
-        if (tickAtEvents < firstTwilight) preTwilightDamage.push(timestamp)
-        const snapshot = yield* hunger.snapshot
-        if (snapshot.vitals.healthPoints <= 0) {
-          deathTicks = tickAtEvents
-          deathBeforeNight = tickAtEvents < firstNight
-          deathBeforeTwilight = tickAtEvents < firstTwilight
-          break
-        }
-      }
-      const hungerTick = yield* hunger.tick(delta)
-      if (hungerTick.starvationDamage > 0) {
-        const timestamp = {
-          seconds: tickAtEvents / TICKS_PER_SECOND,
-          ticks: tickAtEvents,
-          cause: 'starvation' as const,
-        }
-        damageTimestamps.push(timestamp)
-      }
-      if (hungerTick.died) {
-        deathTicks = tickAtEvents
-        deathBeforeNight = tickAtEvents < firstNight
-        deathBeforeTwilight = tickAtEvents < firstTwilight
-      }
-      state = Result.getOrThrow(advanceTime(state, delta))
-      ticks = tickAtEvents
-    }
-
-    const twilightCoverageReason = routeElapsedTicks >= firstTwilight
-      ? `combat measurement started at tick ${routeElapsedTicks}, after twilight began at tick ${firstTwilight}`
-      : deathBeforeTwilight
-        ? `player died at tick ${deathTicks} before the pre-twilight interval ended at tick ${firstTwilight}`
-        : `combat measurement started at tick ${routeElapsedTicks}; route actions were not interleaved with combat`
-    const preTwilightIncomplete = routeElapsedTicks > 0 || deathBeforeTwilight
-    const damageCoverageReason = routeElapsedTicks > 0
-      ? `combat damage timestamps exclude the route interval ending at tick ${routeElapsedTicks}`
-      : deathTicks !== null
-        ? `player died at tick ${deathTicks} before the twilight/night interval ended at tick ${firstNightEnd}`
-        : `combat measurement started at tick ${routeElapsedTicks}, after first night ended at tick ${firstNightEnd}`
-    const damageCoverageIncomplete = routeElapsedTicks > 0 ||
-      deathTicks !== null ||
-      routeElapsedTicks >= firstNightEnd
-    const night1Death: NightDeathObservation = routeElapsedTicks >= firstNightEnd
-      ? { status: 'unavailable', reason: `combat measurement started at tick ${routeElapsedTicks}, after first night ended at tick ${firstNightEnd}` }
-      : deathBeforeNight
-        ? { status: 'unavailable', reason: `player died at tick ${deathTicks} before first night began at tick ${firstNight}` }
-        : deathTicks !== null
-          ? { status: 'observed', died: true, deathTicks }
-          : routeElapsedTicks > firstNight
-            ? { status: 'unavailable', reason: `combat measurement started at tick ${routeElapsedTicks}, after first night began at tick ${firstNight}` }
-            : { status: 'observed', died: false, deathTicks: null }
-
-    return {
-      night1Death,
-      preTwilightDamage: preTwilightIncomplete
-        ? incompleteEvents(preTwilightDamage, twilightCoverageReason)
-        : { status: 'observed', events: preTwilightDamage },
-      damageTimestamps: damageCoverageIncomplete
-        ? incompleteEvents(damageTimestamps, damageCoverageReason)
-        : { status: 'observed', events: damageTimestamps },
-    } satisfies NightCombatResult
-  })
-  const storeLayer = GeneratedChunkStoreLayer(NoiseSeed(seed), ChunkCapacity(64))
-  return runEffect(Effect.provide(program, storeLayer))
-}
-
 export const simulateSeed = async (
   seed: number,
   policy: BalancePolicy,
@@ -635,241 +370,430 @@ export const simulateSeed = async (
   const blocks = indexedBlocks(terrain)
   const firstNight = firstNightTick()
   const firstTwilight = firstTwilightTick(firstNight)
+  const firstNightEnd = firstNightEndTick(firstNight)
   const availableBlockTypes = [...blocks.keys()]
   const nightAction = policy.decide({ seed, terrain, firstNightTick: firstNight, availableBlockTypes })
-  const observations: Record<MetricName, BalanceObservation> = {
-    firstLog: unavailable('no oak log in generated chunk (0, 0)'),
-    woodenPickaxe: unavailable('requires three mined oak logs, a workbench, and successful starter recipes'),
-    stoneTool: unavailable('requires three actual cobblestone drops and a workbench crafting recipe'),
-    iron: unavailable('requires a crafted furnace, actual raw iron, fuel, and a successful smelting recipe'),
-  }
-  let elapsedTicks = 0
-  let gatheredInventory = emptyInventory()
-  const minedPositions: BlockPosition[] = []
-  let miningActions = 0
-
-  const addActionTime = (seconds: number): number => {
-    const ticks = Math.ceil(seconds * TICKS_PER_SECOND)
-    elapsedTicks += ticks
-    return elapsedTicks
-  }
-
-  const mineAndCollect = (
-    blockId: ReturnType<typeof BlockId>,
-    item: ItemType | null,
-    minedBlockPosition: BlockPosition,
-  ): Readonly<{ mined?: MinedBlock; reason?: string }> => {
-    const mined = mine(blockId, item, minedBlockPosition)
-    if (mined === undefined) return { reason: 'mining progress did not reach the block break threshold' }
-    miningActions += 1
-    minedPositions.push(minedBlockPosition)
-    addActionTime(mined.seconds)
-    const collected = inventoryWithDrops(gatheredInventory, mined.drops)
-    if (collected.inventory === undefined) return { mined, reason: collected.reason ?? 'could not add mined drops to inventory' }
-    gatheredInventory = collected.inventory
-    return { mined }
-  }
-
-  const recipesResult = STARTER_RECIPES
-  const recipes = Result.getOrUndefined(recipesResult)
   const surfaceStart = findSurfaceStart(seed, terrain)
-  let policyActionFailure: string | undefined
-  let policyShelterBlocksMined = 0
-  let policyActionAttempted = false
+  const spawn = surfaceStart === undefined
+    ? { x: 0.5, z: 0.5 }
+    : { x: surfaceStart.x + 0.5, z: surfaceStart.z + 0.5 }
+  const runtime = await runEffect(makeGeneratedBalanceGameplayRuntime(seed, spawn, seed))
 
-  const executeShelterAction = (): void => {
-    if (nightAction !== 'shelter' || surfaceStart === undefined || policyActionAttempted) return
-    policyActionAttempted = true
-    const shelterTool: ItemType | null = countOf(gatheredInventory, 'stone_pickaxe') > 0
-      ? 'stone_pickaxe'
-      : countOf(gatheredInventory, 'wooden_pickaxe') > 0
-        ? 'wooden_pickaxe'
-        : null
-    for (let depth = 0; depth < 3; depth += 1) {
-      const y = surfaceStart.y - depth
-      const rawBlock = terrain.blocks[blockIndex(surfaceStart.x, y, surfaceStart.z)]
-      if (rawBlock === undefined || rawBlock === AIR_BLOCK_ID) {
-        policyActionFailure = `shelter shaft block at depth ${depth} is missing or air`
-        break
+  const result = await runBalanceHarness<RouteMeasurement>(runtime, seed, runEffect, (harness) =>
+    Effect.gen(function* () {
+      const observations: Record<MetricName, BalanceObservation> = {
+        firstLog: unavailable('no oak log in generated chunk (0, 0)'),
+        woodenPickaxe: unavailable('requires three mined oak logs and starter recipes'),
+        stoneTool: unavailable('requires actual cobblestone drops and a crafting recipe'),
+        iron: unavailable('requires a crafted furnace, actual raw iron, fuel, and smelting'),
       }
-      const dug = mineAndCollect(
-        BlockId(rawBlock),
-        shelterTool,
-        blockPosition(BlockAxis(surfaceStart.x), BlockAxis(y), BlockAxis(surfaceStart.z)),
-      )
-      if (dug.reason !== undefined) {
-        policyActionFailure = dug.reason
-        break
-      }
-      policyShelterBlocksMined += 1
-    }
-  }
+      const minedPositions = new Set<string>()
+      const exploredColumns = new Set<string>()
+      let gatheredInventory = yield* runtime.world.inventory.snapshot
+      let policyActionFailure: string | undefined
+      let policyShelterBlocksMined = 0
+      let policyActionAttempted = false
+      const step = (ticks: number) => ticks <= 0
+        ? Effect.void
+        : harness.step(Schema.decodeUnknownSync(TickCountSchema)(ticks))
 
-  const oakLog = blocks.get('oak_log')
-  let firstLogObserved = false
-  if (oakLog !== undefined) {
-    for (const logPosition of oakLog.positions) {
-      if (countOf(gatheredInventory, 'oak_log') >= 3) break
-      const result = mineAndCollect(oakLog.id, null, logPosition)
-      if (
-        result.reason === undefined &&
-        result.mined !== undefined &&
-        result.mined.drops.some((drop) => drop.item === 'oak_log') &&
-        countOf(gatheredInventory, 'oak_log') > 0
-      ) {
-        if (!firstLogObserved) {
-          observations.firstLog = metricAt(elapsedTicks)
-          firstLogObserved = true
+      const inventoryFromOwner = () => Effect.gen(function* () {
+        const snapshot = yield* runtime.commit.coordinator.snapshot(
+          runtime.commit.playerStorageOwnerId,
+          PlayerStorageSnapshotSchema,
+        )
+        yield* runtime.world.inventory.restoreStorage(snapshot.state)
+        return yield* runtime.world.inventory.snapshot
+      })
+
+      const saveInventoryToOwner = () => Effect.gen(function* () {
+        const storage = yield* runtime.world.inventory.storageSnapshot
+        const snapshot = yield* runtime.commit.coordinator.snapshot(
+          runtime.commit.playerStorageOwnerId,
+          PlayerStorageSnapshotSchema,
+        )
+        yield* runtime.commit.coordinator.commit({
+          expectedRevision: snapshot.revision,
+          expectedDimensions: [],
+          changes: [{ ownerId: runtime.commit.playerStorageOwnerId, state: storage }],
+        })
+      })
+
+      const footPositionFor = (target: BlockPosition): Position => {
+        const x = Number(target.x)
+        const z = Number(target.z)
+        const y = Number(surfaceHeightAt(NoiseSeed(seed), BlockAxis(x), BlockAxis(z)))
+        return position(
+          PositionAxis(x + 0.5),
+          PositionAxis(y + 1),
+          PositionAxis(z + 0.5),
+        )
+      }
+
+      const travelTo = (target: Position) => Effect.gen(function* () {
+        const snapshot = yield* runtime.commit.coordinator.snapshot(
+          runtime.commit.playerOwnerId,
+          PlayerServiceSnapshotSchema,
+        )
+        const start = snapshot.state.pose.feetPosition
+        const distance = Math.hypot(
+          target.x - start.x,
+          target.y - start.y,
+          target.z - start.z,
+        )
+        const ticks = Math.ceil((distance / WALK_SPEED_BLOCKS_PER_SECOND) * TICKS_PER_SECOND)
+        if (distance > 0) {
+          yield* runtime.state.survivalHunger.submit({ _tag: 'walk', distance })
         }
-      }
-      if (result.reason !== undefined) {
-        observations.woodenPickaxe = unavailable(`oak log mining failed: ${result.reason}`)
-        break
-      }
-    }
-  }
-  if (!firstLogObserved && oakLog !== undefined) {
-    observations.firstLog = unavailable('mined oak log blocks in generated chunk (0, 0) did not drop oak_log')
-  }
+        for (let tick = 1; tick <= ticks; tick += 1) {
+          const fraction = tick / ticks
+          yield* movePlayer(runtime, position(
+            PositionAxis(start.x + (target.x - start.x) * fraction),
+            PositionAxis(start.y + (target.y - start.y) * fraction),
+            PositionAxis(start.z + (target.z - start.z) * fraction),
+          ))
+          yield* step(1)
+        }
+      })
 
-  if (recipes === undefined) {
-    const reason = `starter crafting recipes failed: ${reasonOf(Result.isFailure(recipesResult) ? recipesResult.failure : 'no recipe table')}`
-    observations.woodenPickaxe = unavailable(reason)
-    observations.stoneTool = unavailable(reason)
-    observations.iron = unavailable(reason)
-  } else if (countOf(gatheredInventory, 'oak_log') < 3) {
-    observations.woodenPickaxe = unavailable(
-      `only ${countOf(gatheredInventory, 'oak_log')} actual oak_log drops were gathered; three are required for planks, a workbench, sticks, and the wooden pickaxe`,
-    )
-    observations.stoneTool = unavailable('wooden pickaxe route could not start without three actual oak_log drops')
-    observations.iron = unavailable('wooden pickaxe route could not start without three actual oak_log drops')
-  } else {
-    let plankCraftReason: string | undefined
-    for (let index = 0; index < 3; index += 1) {
-      const plankCraft = craft(gatheredInventory, recipes, 1, 1, ['oak_log'])
-      if (plankCraft.output !== 'oak_planks') {
-        plankCraftReason = plankCraft.reason ?? `expected oak_planks, got ${plankCraft.output ?? 'no output'}`
-        break
+      const exploreForBlock = (candidates: ReadonlyArray<Readonly<{
+        id: ReturnType<typeof BlockId>
+        position: BlockPosition
+      }>>) => Effect.gen(function* () {
+        const columns = new Map<string, Array<typeof candidates[number]>>()
+        for (const candidate of candidates) {
+          const x = Math.floor(candidate.position.x)
+          const z = Math.floor(candidate.position.z)
+          const key = `${x},${z}`
+          const column = columns.get(key)
+          if (column === undefined) columns.set(key, [candidate])
+          else column.push(candidate)
+        }
+
+        const snapshot = yield* runtime.commit.coordinator.snapshot(
+          runtime.commit.playerOwnerId,
+          PlayerServiceSnapshotSchema,
+        )
+        const current = snapshot.state.pose.feetPosition
+        const known = candidates.filter((candidate) =>
+          exploredColumns.has(`${Math.floor(candidate.position.x)},${Math.floor(candidate.position.z)}`) &&
+          !minedPositions.has(cellKey(candidate.position)),
+        )
+        if (known.length > 0) {
+          return known.reduce((nearest, candidate) => {
+            if (nearest === undefined) return candidate
+            const nearestTarget = footPositionFor(nearest.position)
+            const candidateTarget = footPositionFor(candidate.position)
+            const nearestDistance = Math.hypot(
+              nearestTarget.x - current.x,
+              nearestTarget.y - current.y,
+              nearestTarget.z - current.z,
+            )
+            const candidateDistance = Math.hypot(
+              candidateTarget.x - current.x,
+              candidateTarget.y - current.y,
+              candidateTarget.z - current.z,
+            )
+            return candidateDistance < nearestDistance ? candidate : nearest
+          }, undefined as typeof candidates[number] | undefined)
+        }
+
+        const originX = Math.max(0, Math.min(CHUNK_SIZE_XZ - 1, Math.floor(current.x)))
+        const originZ = Math.max(0, Math.min(CHUNK_SIZE_XZ - 1, Math.floor(current.z)))
+        const searchOrder = Array.from({ length: CHUNK_SIZE_XZ * CHUNK_SIZE_XZ }, (_, index) => ({
+          x: index % CHUNK_SIZE_XZ,
+          z: Math.floor(index / CHUNK_SIZE_XZ),
+        })).filter(({ x, z }) => !exploredColumns.has(`${x},${z}`))
+          .sort((left, right) =>
+            Math.abs(left.x - originX) + Math.abs(left.z - originZ) -
+              (Math.abs(right.x - originX) + Math.abs(right.z - originZ)) ||
+            left.z - right.z ||
+            left.x - right.x,
+          )
+
+        for (const column of searchOrder) {
+          const key = `${column.x},${column.z}`
+          const y = Number(surfaceHeightAt(NoiseSeed(seed), BlockAxis(column.x), BlockAxis(column.z)))
+          yield* travelTo(position(
+            PositionAxis(column.x + 0.5),
+            PositionAxis(y + 1),
+            PositionAxis(column.z + 0.5),
+          ))
+          exploredColumns.add(key)
+          const found = (columns.get(key) ?? []).filter((candidate) =>
+            !minedPositions.has(cellKey(candidate.position)),
+          )
+          if (found.length > 0) return found[0]
+        }
+        return undefined
+      })
+
+      const mineAndCollect = (
+        blockId: ReturnType<typeof BlockId>,
+        item: ItemType | null,
+        minedBlockPosition: BlockPosition,
+      ) => Effect.gen(function* () {
+        const target = footPositionFor(minedBlockPosition)
+        yield* travelTo(target)
+        const before = yield* inventoryFromOwner()
+        const seconds = miningDurationSecsForBlock(blockId, item)
+        const miningTicks = Math.max(1, Math.ceil(seconds * TICKS_PER_SECOND))
+        yield* step(miningTicks - 1)
+        yield* runtime.state.survivalHunger.submit({ _tag: 'mine', blocks: 1 })
+        yield* setBlockBreakRequest(runtime, minedBlockPosition, miningLootContextForItem(item))
+        yield* step(1)
+        const actualBlock = yield* runtime.world.chunkStore.getBlock(minedBlockPosition)
+        if (actualBlock._tag !== 'Block' || actualBlock.block !== AIR_BLOCK_ID) {
+          return {
+            reason: 'registered interactions stage did not remove the requested block',
+            mined: undefined,
+          }
+        }
+        const after = yield* inventoryFromOwner()
+        const drops = ITEM_TYPES.flatMap((dropItem) => {
+          const count = countOf(after, dropItem) - countOf(before, dropItem)
+          return count > 0 ? [{ item: dropItem, count }] : []
+        })
+        gatheredInventory = after
+        minedPositions.add(cellKey(minedBlockPosition))
+        return {
+          reason: undefined,
+          mined: { seconds, drops } satisfies MinedBlock,
+        }
+      })
+
+      const craft = (
+        width: number,
+        height: number,
+        gridItems: ReadonlyArray<ItemType | undefined>,
+      ) => Effect.gen(function* () {
+        const inventory = yield* inventoryFromOwner()
+        const grid = craftGrid(width, height, gridItems)
+        if (Result.isFailure(grid)) {
+          return { inventory, output: undefined, reason: reasonOf(grid.failure) } satisfies CraftAttempt
+        }
+        const crafted = yield* Effect.result(runtime.world.inventory.craft(grid.success))
+        if (crafted._tag === 'Failure') {
+          return { inventory, output: undefined, reason: reasonOf(crafted.failure) } satisfies CraftAttempt
+        }
+        if (crafted.success._tag !== 'Crafted') {
+          return {
+            inventory: yield* runtime.world.inventory.snapshot,
+            output: undefined,
+            reason: crafted.success._tag,
+          } satisfies CraftAttempt
+        }
+        yield* saveInventoryToOwner()
+        gatheredInventory = yield* runtime.world.inventory.snapshot
+        return {
+          inventory: gatheredInventory,
+          output: crafted.success.output.item,
+          reason: undefined,
+        } satisfies CraftAttempt
+      })
+
+      const collectUntil = (
+        candidates: ReadonlyArray<Readonly<{ id: ReturnType<typeof BlockId>; position: BlockPosition }>>,
+        item: ItemType,
+        count: number,
+        tool: ItemType | null,
+      ) => Effect.gen(function* () {
+        let failure: string | undefined
+        while (countOf(gatheredInventory, item) < count) {
+          const candidate = yield* exploreForBlock(candidates)
+          if (candidate === undefined) break
+          const dug = yield* mineAndCollect(candidate.id, tool, candidate.position)
+          if (dug.reason !== undefined || dug.mined === undefined) {
+            failure = dug.reason ?? 'mining did not produce a completed block action'
+            break
+          }
+          if (
+            item === 'oak_log' &&
+            countOf(gatheredInventory, 'oak_log') > 0 &&
+            observations.firstLog.status !== 'observed'
+          ) {
+            observations.firstLog = metricAt(yield* Ref.get(runtime.stageTickCount))
+          }
+        }
+        return failure
+      })
+
+      const candidatesOf = (...types: ReadonlyArray<BlockType>) => types.flatMap((type) => {
+        const indexed = blocks.get(type)
+        return indexed === undefined
+          ? []
+          : indexed.positions.map((position) => ({ id: indexed.id, position }))
+      })
+
+      const executeShelterAction = () => Effect.gen(function* () {
+        if (
+          nightAction !== 'shelter' ||
+          surfaceStart === undefined ||
+          policyActionAttempted
+        ) return
+        policyActionAttempted = true
+        const shelterTool: ItemType | null = countOf(gatheredInventory, 'stone_pickaxe') > 0
+          ? 'stone_pickaxe'
+          : countOf(gatheredInventory, 'wooden_pickaxe') > 0
+            ? 'wooden_pickaxe'
+            : null
+        for (let depth = 0; depth < 3; depth += 1) {
+          const target = blockPosition(
+            BlockAxis(surfaceStart.x),
+            BlockAxis(surfaceStart.y - depth),
+            BlockAxis(surfaceStart.z),
+          )
+          const reading = yield* runtime.world.chunkStore.getBlock(target)
+          if (reading._tag !== 'Block' || reading.block === AIR_BLOCK_ID) {
+            policyActionFailure = 'shelter shaft block at depth ' + depth + ' is missing or air'
+            break
+          }
+          const dug = yield* mineAndCollect(reading.block, shelterTool, target)
+          if (dug.reason !== undefined) {
+            policyActionFailure = dug.reason
+            break
+          }
+          policyShelterBlocksMined += 1
+        }
+        if (policyActionFailure === undefined) {
+          const sheltered = position(
+            PositionAxis(surfaceStart.x + 0.5),
+            PositionAxis(surfaceStart.y - 2),
+            PositionAxis(surfaceStart.z + 0.5),
+          )
+          yield* movePlayer(runtime, sheltered)
+        }
+      })
+
+      const oakLogs = candidatesOf('oak_log')
+      let oakFailure = yield* collectUntil(oakLogs, 'oak_log', 3, null)
+      if (oakLogs.length === 0) {
+        observations.firstLog = unavailable('generated chunk (0, 0) contains no oak_log')
+      } else if (oakFailure !== undefined) {
+        observations.woodenPickaxe = unavailable('oak log mining failed: ' + oakFailure)
       }
-      gatheredInventory = plankCraft.inventory
-    }
-    if (plankCraftReason !== undefined) {
-      observations.woodenPickaxe = unavailable(`oak plank recipe failed: ${plankCraftReason}`)
-      observations.stoneTool = unavailable('wooden pickaxe route could not start because planks could not be crafted')
-      observations.iron = unavailable('wooden pickaxe route could not start because planks could not be crafted')
-    } else {
-      const workbench = craft(gatheredInventory, recipes, 2, 2, [
-        'oak_planks', 'oak_planks',
-        'oak_planks', 'oak_planks',
-      ])
-      if (workbench.output !== 'crafting_table') {
-        observations.woodenPickaxe = unavailable(`workbench recipe failed: ${workbench.reason ?? `expected crafting_table, got ${workbench.output ?? 'no output'}`}`)
-        observations.stoneTool = unavailable('3x3 tool recipes require a workbench item from a successful crafting recipe')
-        observations.iron = unavailable('furnace route could not start without a workbench')
+
+      let craftFailure: string | undefined
+      if (countOf(gatheredInventory, 'oak_log') < 3) {
+        observations.woodenPickaxe = unavailable(
+          'only ' + countOf(gatheredInventory, 'oak_log') +
+          ' actual oak_log drops were gathered; three are required for planks, a workbench, sticks, and a wooden pickaxe',
+        )
+        observations.stoneTool = unavailable('wooden pickaxe route could not start without three actual oak_log drops')
+        observations.iron = unavailable('wooden pickaxe route could not start without three actual oak_log drops')
       } else {
-        gatheredInventory = workbench.inventory
-        const sticks = craft(gatheredInventory, recipes, 1, 2, ['oak_planks', 'oak_planks'])
-        if (sticks.output !== 'stick') {
-          observations.woodenPickaxe = unavailable(`stick recipe failed: ${sticks.reason ?? `expected stick, got ${sticks.output ?? 'no output'}`}`)
-          observations.stoneTool = unavailable('wooden pickaxe route could not start because sticks could not be crafted')
-          observations.iron = unavailable('wooden pickaxe route could not start because sticks could not be crafted')
-        } else {
-          gatheredInventory = sticks.inventory
-          const woodenPick = craft(gatheredInventory, recipes, 3, 3, [
+        for (let index = 0; index < 3; index += 1) {
+          const plankCraft = yield* craft(1, 1, ['oak_log'])
+          if (plankCraft.output !== 'oak_planks') {
+            craftFailure = plankCraft.reason ?? 'expected oak_planks, got ' + String(plankCraft.output)
+            break
+          }
+        }
+        if (craftFailure === undefined) {
+          const workbench = yield* craft(2, 2, [
+            'oak_planks', 'oak_planks',
+            'oak_planks', 'oak_planks',
+          ])
+          if (workbench.output !== 'crafting_table') {
+            craftFailure = workbench.reason ?? 'expected crafting_table, got ' + String(workbench.output)
+          }
+        }
+        if (craftFailure === undefined) {
+          const sticks = yield* craft(1, 2, ['oak_planks', 'oak_planks'])
+          if (sticks.output !== 'stick') {
+            craftFailure = sticks.reason ?? 'expected stick, got ' + String(sticks.output)
+          }
+        }
+        if (craftFailure === undefined) {
+          const woodenPick = yield* craft(3, 3, [
             'oak_planks', 'oak_planks', 'oak_planks',
             undefined, 'stick', undefined,
             undefined, 'stick', undefined,
           ])
           if (woodenPick.output !== 'wooden_pickaxe') {
-            observations.woodenPickaxe = unavailable(`wooden pickaxe recipe failed: ${woodenPick.reason ?? `expected wooden_pickaxe, got ${woodenPick.output ?? 'no output'}`}`)
-            observations.stoneTool = unavailable('stone tool route could not start without a wooden pickaxe')
-            observations.iron = unavailable('iron route could not start without a wooden pickaxe')
+            craftFailure = woodenPick.reason ?? 'expected wooden_pickaxe, got ' + String(woodenPick.output)
+          }
+        }
+        if (craftFailure !== undefined) {
+          observations.woodenPickaxe = unavailable('starter recipe crafting failed: ' + craftFailure)
+          observations.stoneTool = unavailable('wooden pickaxe route could not start because crafting failed')
+          observations.iron = unavailable('iron route could not start because crafting failed')
+        } else {
+          observations.woodenPickaxe = metricAt(yield* Ref.get(runtime.stageTickCount))
+          const stoneFailure = yield* collectUntil(candidatesOf('stone'), 'cobblestone', 11, 'wooden_pickaxe')
+          if (stoneFailure !== undefined) {
+            observations.stoneTool = unavailable('wooden-pickaxe mining failed: ' + stoneFailure)
+            observations.iron = unavailable('iron route could not start because stone mining failed')
+          } else if (countOf(gatheredInventory, 'cobblestone') < 11) {
+            observations.stoneTool = unavailable('generated world had fewer than eleven cobblestone drops')
+            observations.iron = unavailable('iron route could not start without a furnace')
           } else {
-            gatheredInventory = woodenPick.inventory
-            observations.woodenPickaxe = metricAt(elapsedTicks)
-
-            const stone = blocks.get('stone')
-            if (stone !== undefined) {
-              for (const stonePosition of stone.positions) {
-                if (countOf(gatheredInventory, 'cobblestone') >= 11) break
-                const result = mineAndCollect(stone.id, 'wooden_pickaxe', stonePosition)
-                if (result.reason !== undefined) break
-              }
-            }
-            if (countOf(gatheredInventory, 'cobblestone') < 3) {
-              observations.stoneTool = unavailable('actual wooden-pickaxe mining produced fewer than three cobblestone drops')
-              observations.iron = unavailable('iron route could not start without three actual cobblestone drops')
+            const stonePick = yield* craft(3, 3, [
+              'cobblestone', 'cobblestone', 'cobblestone',
+              undefined, 'stick', undefined,
+              undefined, 'stick', undefined,
+            ])
+            if (stonePick.output !== 'stone_pickaxe') {
+              observations.stoneTool = unavailable('stone pickaxe recipe failed: ' + (stonePick.reason ?? 'wrong output'))
+              observations.iron = unavailable('iron route could not start without a stone pickaxe')
             } else {
-              const stonePick = craft(gatheredInventory, recipes, 3, 3, [
+              observations.stoneTool = metricAt(yield* Ref.get(runtime.stageTickCount))
+              const furnace = yield* craft(3, 3, [
                 'cobblestone', 'cobblestone', 'cobblestone',
-                undefined, 'stick', undefined,
-                undefined, 'stick', undefined,
+                'cobblestone', undefined, 'cobblestone',
+                'cobblestone', 'cobblestone', 'cobblestone',
               ])
-              if (stonePick.output !== 'stone_pickaxe') {
-                observations.stoneTool = unavailable(`stone pickaxe recipe failed: ${stonePick.reason ?? `expected stone_pickaxe, got ${stonePick.output ?? 'no output'}`}`)
-                observations.iron = unavailable('iron route could not start without a stone pickaxe')
+              if (furnace.output !== 'furnace') {
+                yield* executeShelterAction()
+                observations.iron = unavailable('furnace recipe failed: ' + (furnace.reason ?? 'wrong output'))
               } else {
-                gatheredInventory = stonePick.inventory
-                observations.stoneTool = metricAt(elapsedTicks)
-
-                const furnace = craft(gatheredInventory, recipes, 3, 3, [
-                  'cobblestone', 'cobblestone', 'cobblestone',
-                  'cobblestone', undefined, 'cobblestone',
-                  'cobblestone', 'cobblestone', 'cobblestone',
-                ])
-                if (furnace.output !== 'furnace') {
-                  executeShelterAction()
-                  observations.iron = unavailable(`furnace recipe failed: ${furnace.reason ?? `expected furnace, got ${furnace.output ?? 'no output'}`}`)
+                gatheredInventory = furnace.inventory
+                yield* executeShelterAction()
+                const ironFailure = yield* collectUntil(
+                  candidatesOf('iron_ore', 'deepslate_iron_ore'),
+                  'raw_iron',
+                  1,
+                  'stone_pickaxe',
+                )
+                if (ironFailure !== undefined || countOf(gatheredInventory, 'raw_iron') < 1) {
+                  observations.iron = unavailable(
+                    ironFailure ?? 'no mined iron ore block produced raw_iron in generated chunks',
+                  )
                 } else {
-                  gatheredInventory = furnace.inventory
-                  executeShelterAction()
-                  const ironOre = blocks.get('iron_ore') ?? blocks.get('deepslate_iron_ore')
-                  let rawIronGathered = false
-                  if (ironOre !== undefined) {
-                    for (const orePosition of ironOre.positions) {
-                      const result = mineAndCollect(ironOre.id, 'stone_pickaxe', orePosition)
-                      if (result.mined?.drops.some((drop) => drop.item === 'raw_iron')) {
-                        rawIronGathered = true
-                        break
-                      }
-                    }
-                  }
-                  if (!rawIronGathered || countOf(gatheredInventory, 'raw_iron') < 1) {
-                    observations.iron = unavailable('no mined iron_ore or deepslate_iron_ore block produced raw_iron in generated chunk (0, 0)')
+                  const recipeList = Result.getOrUndefined(STARTER_SMELTING_RECIPES)
+                  const emptyFurnace = Result.getOrUndefined(emptyFurnaceState('furnace'))
+                  if (recipeList === undefined || emptyFurnace === undefined) {
+                    observations.iron = unavailable('starter furnace state or smelting recipes could not be constructed')
                   } else {
-                    const recipeList = Result.getOrUndefined(STARTER_SMELTING_RECIPES)
-                    const emptyFurnace = Result.getOrUndefined(emptyFurnaceState('furnace'))
-                    if (recipeList === undefined || emptyFurnace === undefined) {
-                      observations.iron = unavailable('starter furnace state or smelting recipes could not be constructed')
+                    const inputTransfer = transferToFurnace(gatheredInventory, emptyFurnace, 'input', 'raw_iron', 1)
+                    if (inputTransfer.result._tag !== 'Transferred') {
+                      observations.iron = unavailable('raw_iron furnace transfer failed: ' + inputTransfer.result._tag)
                     } else {
-                      const inputTransfer = transferToFurnace(gatheredInventory, emptyFurnace, 'input', 'raw_iron', 1)
-                      if (inputTransfer.result._tag !== 'Transferred') {
-                        observations.iron = unavailable(`raw_iron furnace transfer failed: ${inputTransfer.result._tag}`)
+                      const fuelTransfer = transferToFurnace(inputTransfer.inventory, inputTransfer.furnace, 'fuel', 'oak_planks', 1)
+                      if (fuelTransfer.result._tag !== 'Transferred') {
+                        observations.iron = unavailable('oak_planks furnace fuel transfer failed: ' + fuelTransfer.result._tag)
                       } else {
-                        const fuelTransfer = transferToFurnace(inputTransfer.inventory, inputTransfer.furnace, 'fuel', 'oak_planks', 1)
-                        if (fuelTransfer.result._tag !== 'Transferred') {
-                          observations.iron = unavailable(`oak_planks furnace fuel transfer failed: ${fuelTransfer.result._tag}`)
+                        const recipe = Result.getOrUndefined(
+                          matchSmeltingRecipe(fuelTransfer.furnace.input, 'furnace', recipeList),
+                        )
+                        if (recipe === undefined) {
+                          observations.iron = unavailable('no starter smelting recipe matched the transferred raw_iron')
                         } else {
-                          const recipe = Result.getOrUndefined(
-                            matchSmeltingRecipe(fuelTransfer.furnace.input, 'furnace', recipeList),
-                          )
-                          if (recipe === undefined) {
-                            observations.iron = unavailable('no starter smelting recipe matched the transferred raw_iron')
+                          const cookSeconds = 'cookDurationSecs' in recipe
+                            ? recipe.cookDurationSecs
+                            : recipe.cookTimeSecs
+                          const smelted = Result.getOrUndefined(advanceFurnace(
+                            fuelTransfer.furnace,
+                            cookSeconds,
+                            recipeList,
+                            STARTER_FUEL_RULES,
+                          ))
+                          if (smelted?.state.output?.item === 'iron_ingot') {
+                            const cookTicks = Math.ceil(cookSeconds * TICKS_PER_SECOND)
+                            yield* step(cookTicks)
+                            observations.iron = metricAt(yield* Ref.get(runtime.stageTickCount))
                           } else {
-                            const cookSeconds = 'cookDurationSecs' in recipe
-                              ? recipe.cookDurationSecs
-                              : recipe.cookTimeSecs
-                            const smelted = Result.getOrUndefined(advanceFurnace(
-                              fuelTransfer.furnace,
-                              cookSeconds,
-                              recipeList,
-                              STARTER_FUEL_RULES,
-                            ))
-                            if (smelted?.state.output?.item === 'iron_ingot') {
-                              observations.iron = metricAt(addActionTime(cookSeconds))
-                            } else {
-                              observations.iron = unavailable('advanceFurnace did not produce an iron_ingot after the recipe cook duration')
-                            }
+                            observations.iron = unavailable('advanceFurnace did not produce an iron_ingot after the recipe cook duration')
                           }
                         }
                       }
@@ -881,104 +805,104 @@ export const simulateSeed = async (
           }
         }
       }
-    }
-  }
 
-  executeShelterAction()
-
-  const routeHunger = await runEffect(Effect.gen(function* () {
-    const hunger = yield* makeSurvivalHungerRuntime()
-    if (miningActions > 0) yield* hunger.submit({ _tag: 'mine', blocks: miningActions })
-    const outcome = elapsedTicks > 0
-      ? yield* hunger.tick((elapsedTicks / TICKS_PER_SECOND) as DeltaTimeSecs)
-      : undefined
-    const snapshot = yield* hunger.snapshot
-    return {
-      state: snapshot,
-      died: outcome?.died ?? snapshot.vitals.healthPoints <= 0,
-      healthPoints: snapshot.vitals.healthPoints,
-      hungerPoints: snapshot.vitals.hungerPoints,
-      starvationDamage: outcome?.starvationDamage ?? 0,
-    }
-  }))
-
-  const nightEnd = firstNightEndTick(firstNight)
-  const nightResult = surfaceStart === undefined
-    ? {
-        night1Death: { status: 'unavailable', reason: 'generated chunk (0, 0) has no valid spawn surface with two air blocks above it' },
-        preTwilightDamage: { status: 'unavailable', reason: 'generated chunk (0, 0) has no valid spawn surface with two air blocks above it' },
-        damageTimestamps: { status: 'unavailable', reason: 'generated chunk (0, 0) has no valid spawn surface with two air blocks above it' },
-      } satisfies NightCombatResult
-    : policyActionFailure !== undefined
-      ? {
-          night1Death: { status: 'unavailable', reason: `policy ${nightAction} action could not be executed: ${policyActionFailure}` },
-          preTwilightDamage: { status: 'unavailable', reason: `policy ${nightAction} action could not be executed: ${policyActionFailure}` },
-          damageTimestamps: { status: 'unavailable', reason: `policy ${nightAction} action could not be executed: ${policyActionFailure}` },
-        } satisfies NightCombatResult
-    : await measureNightCombat(
-        seed,
-        nightAction === 'shelter' ? surfaceStart.shelteredPosition : surfaceStart.exposedPosition,
-        firstTwilight,
-        firstNight,
-        nightEnd,
-        elapsedTicks,
-        routeHunger.state,
-        minedPositions,
-        runEffect,
+      yield* executeShelterAction()
+      const routeElapsedTicks = yield* Ref.get(runtime.stageTickCount)
+      const routeHungerState = yield* runtime.state.survivalHunger.snapshot
+      const routeHungerOutcomes = runtime.hungerOutcomesByTick
+      const routeStarvationDamage = routeHungerOutcomes.reduce(
+        (total, entry) => total + entry.outcome.starvationDamage,
+        0,
       )
+
+      const nightTicks = Math.max(0, firstNightEnd - routeElapsedTicks)
+      yield* step(nightTicks)
+      const coverageEnd = yield* Ref.get(runtime.stageTickCount)
+      const hostileEvents = (yield* Ref.get(runtime.damageEventsByTick)).flatMap(({ tick, event }) =>
+        (event._tag === 'HostileContact' || event._tag === 'Explosion') &&
+        event.damage.amount > 0
+          ? [{
+              seconds: tick / TICKS_PER_SECOND,
+              ticks: tick,
+              cause: 'hostile' as const,
+            }]
+          : [],
+      )
+      const starvationEvents = runtime.hungerOutcomesByTick.flatMap(({ tick, outcome }) =>
+        outcome.starvationDamage > 0
+          ? [{
+              seconds: tick / TICKS_PER_SECOND,
+              ticks: tick,
+              cause: 'starvation' as const,
+            }]
+          : [],
+      )
+      const preTwilightHostileEvents = hostileEvents.filter((event) => event.ticks < firstTwilight)
+      const deathTick = yield* Ref.get(runtime.deathTick)
+      const measurementFailure = yield* Ref.get(runtime.measurementFailure)
+      const stagesCovered = coverageEnd >= firstNightEnd
+      const preTwilightComplete =
+        stagesCovered &&
+        (deathTick === undefined || deathTick >= firstTwilight) &&
+        measurementFailure === undefined
+      const damageComplete =
+        stagesCovered &&
+        (deathTick === undefined || deathTick >= firstNightEnd) &&
+        measurementFailure === undefined
+      const preTwilightReason = measurementFailure ??
+        (deathTick !== undefined && deathTick < firstTwilight
+          ? 'player died at tick ' + deathTick + ' before twilight tick ' + firstTwilight
+          : 'registered gameplay stages did not cover the complete pre-twilight interval')
+      const damageReason = measurementFailure ??
+        (deathTick !== undefined && deathTick < firstNightEnd
+          ? 'player died at tick ' + deathTick + ' before first-night end tick ' + firstNightEnd
+          : 'registered gameplay stages did not cover the complete first-night interval')
+      const preTwilightDamage: BalanceEventSeries = preTwilightComplete
+        ? { status: 'observed', events: preTwilightHostileEvents }
+        : incompleteEvents(preTwilightHostileEvents, preTwilightReason)
+      const damageTimestamps: BalanceEventSeries = damageComplete
+        ? { status: 'observed', events: [...hostileEvents, ...starvationEvents].sort((a, b) => a.ticks - b.ticks) }
+        : incompleteEvents([...hostileEvents, ...starvationEvents], damageReason)
+      const firstNightDeath = observeNight1Death({
+        deathTick,
+        firstNight,
+        firstNightEnd,
+        stagesCovered,
+        measurementFailure,
+      })
+
+      return {
+        observations,
+        routeElapsedTicks,
+        routeHunger: {
+          died: routeHungerState.vitals.healthPoints <= 0,
+          healthPoints: routeHungerState.vitals.healthPoints,
+          hungerPoints: routeHungerState.vitals.hungerPoints,
+          starvationDamage: routeStarvationDamage,
+        },
+        night1Death: firstNightDeath,
+        preTwilightDamage,
+        damageTimestamps,
+        policyActionFailure,
+        policyShelterBlocksMined,
+      }
+    }),
+  )
+
   const policyExecution: PolicyExecutionObservation = surfaceStart === undefined
     ? { status: 'unavailable', reason: 'generated chunk (0, 0) has no valid spawn surface with two air blocks above it' }
-    : policyActionFailure !== undefined
-      ? { status: 'unavailable', reason: `policy ${nightAction} action could not be executed: ${policyActionFailure}` }
+    : result.policyActionFailure !== undefined
+      ? { status: 'unavailable', reason: 'policy ' + nightAction + ' action could not be executed: ' + result.policyActionFailure }
       : {
           status: 'observed',
           action: nightAction,
-          startPosition: {
-            x: surfaceStart.exposedPosition.x,
-            y: surfaceStart.exposedPosition.y,
-            z: surfaceStart.exposedPosition.z,
-          },
+          startPosition: { x: spawn.x, y: surfaceStart.exposedPosition.y, z: spawn.z },
           targetPosition: nightAction === 'shelter'
-            ? {
-                x: surfaceStart.shelteredPosition.x,
-                y: surfaceStart.shelteredPosition.y,
-                z: surfaceStart.shelteredPosition.z,
-              }
-            : {
-                x: surfaceStart.exposedPosition.x,
-                y: surfaceStart.exposedPosition.y,
-                z: surfaceStart.exposedPosition.z,
-              },
-          shelterBlocksMined: policyShelterBlocksMined,
+            ? { x: spawn.x, y: surfaceStart.y - 2, z: spawn.z }
+            : { x: spawn.x, y: surfaceStart.exposedPosition.y, z: spawn.z },
+          shelterBlocksMined: result.policyShelterBlocksMined,
         }
-
-  const finalObservations: SeedObservations = {
-    ...observations,
-    cookedFood: unavailable('no mined block drop produced raw food, and animal meat drops are not implemented'),
-    bedByNight1: unavailable('wool drops, breeding, and shearing are not implemented, so the wool recipe inputs cannot be gathered'),
-    night1Death: nightResult.night1Death,
-    preTwilightDamage: nightResult.preTwilightDamage,
-    damageTimestamps: nightResult.damageTimestamps,
-    hunger: {
-      status: 'observed',
-      died: routeHunger.died,
-      healthPoints: routeHunger.healthPoints,
-      hungerPoints: routeHunger.hungerPoints,
-      starvationDamage: routeHunger.starvationDamage,
-    },
-  }
-
-  const harnessProgram = Effect.gen(function* () {
-    const harness = yield* HeadlessHarness
-    yield* harness.reset({
-      worldSeed: NoiseSeed(seed),
-      randomSeed: Schema.decodeUnknownSync(RandomSeedSchema)(seed),
-    })
-  })
-  const layer = HeadlessHarnessTestLayer(headlessStages).pipe(
-    Layer.provide(HeadlessHarnessSessionFactoryLayer),
-  )
-  await runEffect(Effect.provide(harnessProgram, layer))
+  const gameplayTicks = await runEffect(Ref.get(runtime.stageTickCount))
 
   return {
     status: 'simulated',
@@ -988,15 +912,36 @@ export const simulateSeed = async (
     firstNightTick: firstNight,
     firstTwilightTick: firstTwilight,
     limitations: [
-      'Resource collection scans generated chunk (0, 0); travel, pathfinding, and movement time are not modeled. Milestone time sums actual mining durations and furnace cook time. Crafting is a pure recipe transition with no duration rule.',
-      'HeadlessHarness resets with both seeds. Route ticks come from mining durations and furnace cook time; mining, loot, crafting, spawn search, mob movement, blast resolution, contact damage, and hunger use directly composed domain functions. Owner-backed casualty drops and experience are not committed.',
-      'Pre-twilight hostile damage covers tick 0 through the first dusk tick, but combat starts at routeElapsedTicks. Any nonzero route duration makes coverage incomplete: known hostile hits remain partial target failures, while a no-hit interval is unavailable. damageTimestamps records hostile and starvation hits with causes from routeElapsedTicks through first night. Mining actions are not interleaved with mob frames and all route-mined terrain is applied before combat starts. The player stays at the policy execution target during that interval.',
+      'Resource exploration walks a deterministic Manhattan-distance order over the 16×16 columns in generated chunk (0, 0), advancing harness ticks at 4.317 blocks/s until a requested resource column is found. This scans generated column contents rather than the game visibility/raycast path. Off-road pathfinding, collision, 3D mining reach, and search beyond the center chunk are not modeled.',
+      'Player travel updates the owner and PlayerService along a straight line at 4.317 blocks/s; mc-physics foot locomotion, collision, and obstacles are not executed.',
+      'Mining requests are sent through the registered gameplay:interactions stage and that stage commits block removal and drops. Time until each request uses the current kernel hardness/(20×speed) mining rule, rounded up to simulation ticks; a bare-hand oak log is 1.75 s here versus about 3.0 s in vanilla, and scale alignment is deferred to W6. The stage has no progressive mining-time state.',
+      'There is no crafting stage in gameplayStages() or simStages. Recipe actions use mc-sim InventoryService.craft() and have no modeled duration. Furnace smelting uses advanceFurnace directly and includes its cook duration in harness ticks.',
+      'The actual gameplay:entities stage handles spawn search, mob movement, explosions, hostile contact, and damage on the same HeadlessHarness tick stream as route movement/mining. The generated world loads every chunk intersecting the 40-block hostile spawn search radius. Hunger advances through gameplay:survival-hunger.',
+      'Animal meat and wool drops are not implemented in mx-gameplay; the route also does not search for animals or crops, so food and bed inputs remain unavailable for both game and route reasons.',
     ],
-    terrain: {
-      chunkX: 0,
-      chunkZ: 0,
-      blockTypes: [...blocks.keys()],
+    terrain: { chunkX: 0, chunkZ: 0, blockTypes: [...blocks.keys()] },
+    observations: {
+      ...result.observations,
+      cookedFood: unavailable('animal meat drops are not implemented in mx-gameplay, and the route does not search for animals or crops'),
+      bedByNight1: unavailable('wool drops are not implemented in mx-gameplay, and the route does not search for sheep'),
+      night1Death: result.night1Death,
+      preTwilightDamage: result.preTwilightDamage,
+      damageTimestamps: result.damageTimestamps,
+      hunger: {
+        status: 'observed',
+        died: result.routeHunger.died,
+        healthPoints: result.routeHunger.healthPoints,
+        hungerPoints: result.routeHunger.hungerPoints,
+        starvationDamage: result.routeHunger.starvationDamage,
+      },
     },
-    observations: finalObservations,
+    metricPaths: {
+      firstLog: 'actual gameplay:interactions stage for mining; deterministic column scan and 4.317 block/s travel are modeled, but game visibility/raycast is not exercised',
+      woodenPickaxe: 'actual path not exercised for crafting: no crafting stage is registered; InventoryService.craft is used after deterministic column scan/travel',
+      stoneTool: 'actual path not exercised for crafting: no crafting stage is registered; InventoryService.craft is used after deterministic column scan/travel',
+      iron: 'actual path not exercised for crafting/smelting; ore mining is stage-backed, deterministic column scan/travel is modeled, furnace uses advanceFurnace',
+    },
+    gameplayStageIds: scheduleGameplayStages(runtime.stages).map((stage) => stage.id),
+    gameplayTicks,
   }
 }
