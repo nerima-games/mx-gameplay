@@ -323,6 +323,8 @@ export type Site = {
   readonly setPoweredRailAt: (position: BlockPosition, powered: boolean) => void
   /** Read the player owner snapshot only when an observer asks. */
   readonly observePlayerPose: () => Effect.Effect<ObservedGameplayPlayerPose, unknown>
+  /** Move the preview player and commit the authoritative player owner snapshot. */
+  readonly movePlayerTo: (feetPosition: Position) => Effect.Effect<void, unknown>
   /** Resolve a primary attack from the live player and Mob owners, then enqueue it. */
   readonly requestTargetedPrimaryAttack: (
     options?: TargetedPrimaryAttackOptions,
@@ -609,6 +611,29 @@ export const makeSite = (
           },
         }),
       )
+    const movePlayerTo = (feetPosition: Position) => Effect.gen(function* () {
+      const current = yield* coordinator.snapshot(GAMEPLAY_PLAYER_OWNER_ID, PlayerServiceSnapshotSchema)
+      yield* previewPlayer.moveTo(feetPosition)
+      const pose = yield* previewPlayer.pose
+      const dimension = yield* previewPlayer.dimension
+      const candidate = yield* Schema.decodeUnknownEffect(PlayerServiceSnapshotSchema)({
+        pose: {
+          feetPosition: {
+            dimension,
+            x: pose.feetPosition.x,
+            y: pose.feetPosition.y,
+            z: pose.feetPosition.z,
+          },
+          yawRadians: pose.yawRadians,
+          pitchRadians: pose.pitchRadians,
+        },
+      })
+      yield* coordinator.commit({
+        expectedRevision: current.revision,
+        expectedDimensions: [],
+        changes: [{ ownerId: GAMEPLAY_PLAYER_OWNER_ID, state: candidate }],
+      })
+    })
     const observeFishingState = () =>
       Effect.map(
         coordinator.snapshot(GAMEPLAY_FISHING_OWNER_ID, FishingStateSchema),
@@ -760,6 +785,7 @@ export const makeSite = (
       setVehicleControls,
       setPoweredRailAt,
       observePlayerPose,
+      movePlayerTo,
       requestTargetedPrimaryAttack,
       requestFishingCast,
       requestFishingAdvance,

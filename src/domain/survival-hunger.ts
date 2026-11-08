@@ -1,4 +1,4 @@
-import { Brand, Effect, Ref, Schema } from 'effect'
+import { Brand, Effect, Ref, Result, Schema } from 'effect'
 import type { Damage } from './death-cause.js'
 import { DeltaTimeSecs, FoodNutrition } from '@nerima-games/mc-kernel'
 import {
@@ -6,6 +6,7 @@ import {
   DamageCause as SimDamageCause,
   ExhaustionAmount,
   HealthAmount,
+  HungerPoints,
   SaturationModifier,
   addExhaustion as addVitalsExhaustion,
   advanceFoodTimer as advanceVitalsFoodTimer,
@@ -35,6 +36,17 @@ export const SURVIVAL_HUNGER_STATE_VERSION = 1 as const
 export const DEFAULT_SURVIVAL_DIFFICULTY = 'normal' as const
 
 export type SurvivalDifficulty = 'peaceful' | 'easy' | 'normal' | 'hard'
+
+export const MIN_SPRINT_HUNGER_POINTS = 7
+
+export const canSprintAtHungerPoints = (
+  input: unknown,
+): Result.Result<boolean, 'invalid-hunger-points'> => {
+  if (typeof input !== 'number') return Result.fail('invalid-hunger-points')
+  const hungerPoints = HungerPoints.result(input)
+  if (Result.isFailure(hungerPoints)) return Result.fail('invalid-hunger-points')
+  return Result.succeed(hungerPoints.success >= MIN_SPRINT_HUNGER_POINTS)
+}
 
 export type SurvivalActivityInput =
   | { readonly _tag: 'walk'; readonly distance: number }

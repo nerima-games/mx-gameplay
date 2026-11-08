@@ -160,6 +160,7 @@ export const playerSystemsMeleeSetup: ScenarioSetup = {
         if (!runBrowserDebugEffect(site.observeMobs()).some(({ kind }) => kind === ZOMBIE_KIND)) {
           throw new Error('melee scenario did not spawn its zombie target')
         }
+        runBrowserDebugEffect(site.movePlayerTo(position(PositionAxis(0.5), PositionAxis(64), PositionAxis(-14))))
       },
     },
     {
@@ -180,7 +181,7 @@ export const playerSystemsMeleeSetup: ScenarioSetup = {
           throw new Error('melee scenario could not observe the iron sword and its durability')
         }
 
-        const expectedDamage = meleeDamageForItem(sword.item)
+        const expectedDamage = Result.getOrThrow(meleeDamageForItem(sword.item))
         let attack = runBrowserDebugEffect(site.requestTargetedPrimaryAttack({
           meleeReach: DEFAULT_MELEE_REACH,
           meleeDamage: expectedDamage,

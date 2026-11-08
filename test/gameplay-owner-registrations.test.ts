@@ -135,7 +135,8 @@ describe('gameplay replicated owner registrations', () => {
         { _tag: 'Lit', burnedSecs: 0.5 },
         { _tag: 'Steady' },
         { _tag: 'Struck' },
-        { _tag: 'EcosystemMob', attackCooldownSecs: 0, motionPhase: 0.25, provoked: false },
+        { _tag: 'EcosystemMob', attackCooldownTicks: 0, motionPhase: 0.25, provoked: false },
+        { _tag: 'EcosystemMob', attackCooldownSecs: 0.05, motionPhase: 0.25, provoked: false },
         {
           _tag: 'DroppedItem', item: 'stone', count: 2, durability: null,
           eligibleFromFrame: 3, customName: 'Stone',
@@ -146,7 +147,7 @@ describe('gameplay replicated owner registrations', () => {
         },
         { _tag: 'PrimedTnt', burnedSecs: 0 },
         {
-          _tag: 'HostileMob', behaviour: { _tag: 'EcosystemMob', attackCooldownSecs: 0, motionPhase: 0, provoked: true },
+          _tag: 'HostileMob', behaviour: { _tag: 'EcosystemMob', attackCooldownTicks: 0, motionPhase: 0, provoked: true },
           ageTicks: 0, persistent: false, named: false, tamed: false,
         },
       ]
@@ -159,6 +160,7 @@ describe('gameplay replicated owner registrations', () => {
         { _tag: 'Lit', burnedSecs: -1 },
         { _tag: 'Steady', extra: true },
         { _tag: 'EcosystemMob', attackCooldownSecs: 0, motionPhase: 0, provoked: false, extra: true },
+        { _tag: 'EcosystemMob', attackCooldownTicks: 0, motionPhase: 0, provoked: false, extra: true },
         { _tag: 'DroppedItem', item: 'stone', count: 1, durability: null, extra: true },
         {
           _tag: 'DroppedItem', item: 'bow', count: 1, durability: { current: 384, max: 384 },

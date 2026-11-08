@@ -16,7 +16,6 @@ import { makeVillager } from '../src/domain/villager-trade.js'
 import { TNT_BLOCK_ID } from '../src/domain/interactions/ignite-tnt'
 import { blockLoot, NO_TOOL } from '../src/domain/interactions/block-loot'
 import { CREEPER_KIND, type MobSpawnAttempt } from '../src/domain/entities/mob-frame'
-import { DEFAULT_MELEE_DAMAGE } from '../src/domain/interactions/melee-attack'
 import { END_ARRIVAL_ORIGIN } from '../src/domain/end-portal-travel'
 import { PORTAL_ACTIVATION_SECS } from '../src/domain/portal-dwell'
 import {
@@ -474,7 +473,7 @@ describe('browser debug Site contract', () => {
     }),
   )
 
-  it.effect('targets a Mob for melee and reads the live player pose after portal travel', () =>
+  it.effect('enforces server melee reach after targeting and reads the live player pose after portal travel', () =>
     Effect.gen(function* () {
       const mobWorld: WorldSpec = {
         cells: [[0, 63, STONE]],
@@ -507,7 +506,7 @@ describe('browser debug Site contract', () => {
       expect(selected.target.id).toBe(beforeMob.id)
       mount.advance()
       const afterMob = mount.observeMobs().find(({ id }) => id === beforeMob.id)
-      expect(afterMob?.healthPoints).toBe(beforeMob.healthPoints - DEFAULT_MELEE_DAMAGE)
+      expect(afterMob?.healthPoints).toBe(beforeMob.healthPoints)
       mount.dispose()
 
       const behindMount = mountScenario('contract-targeted-melee-negative', {
@@ -526,7 +525,11 @@ describe('browser debug Site contract', () => {
       expect(behindMount.observeMobs().find(({ id }) => id === behindMob.id)?.healthPoints)
         .toBe(behindMob.healthPoints)
       behindMount.dispose()
+    }),
+  )
 
+  it.effect('reads the live player pose after portal travel', () =>
+    Effect.gen(function* () {
       const portalMount = mountScenario('contract-live-player-pose', {
         cells: [[0, 64, END_PORTAL]],
         loadedChunks: ['0,0'],

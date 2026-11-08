@@ -27,6 +27,8 @@ import {
 } from '../src/domain/in-memory-vitals'
 import {
   DEFAULT_SURVIVAL_DIFFICULTY,
+  canSprintAtHungerPoints,
+  MIN_SPRINT_HUNGER_POINTS,
   SURVIVAL_HUNGER_STATE_VERSION,
   exhaustionForSurvivalActivity,
   isSurvivalHungerState,
@@ -102,6 +104,38 @@ const makeReplicatedRuntime = (
   })
 
 describe('survival hunger', () => {
+  it('allows sprinting only above six hunger points', () => {
+    expect(canSprintAtHungerPoints(6)).toStrictEqual(Result.succeed(false))
+    expect(canSprintAtHungerPoints(7)).toStrictEqual(Result.succeed(true))
+    expect(canSprintAtHungerPoints(MIN_SPRINT_HUNGER_POINTS)).toStrictEqual(Result.succeed(true))
+    expect(canSprintAtHungerPoints(21)).toStrictEqual(Result.succeed(true))
+    expect(canSprintAtHungerPoints(-1)).toStrictEqual(Result.fail('invalid-hunger-points'))
+    expect(canSprintAtHungerPoints(Number.NaN)).toStrictEqual(Result.fail('invalid-hunger-points'))
+    expect(canSprintAtHungerPoints(Number.POSITIVE_INFINITY)).toStrictEqual(
+      Result.fail('invalid-hunger-points'),
+    )
+  })
+
+  it('property: sprint eligibility decodes arbitrary input and never returns a nonboolean value', () => {
+    FastCheck.assert(
+      FastCheck.property(FastCheck.anything(), (input: unknown) => {
+        const result = canSprintAtHungerPoints(input)
+        return Result.isFailure(result)
+          ? result.failure === 'invalid-hunger-points'
+          : typeof result.success === 'boolean'
+      }),
+    )
+  })
+
+  it('property: valid hunger values enable sprint only above six points', () => {
+    FastCheck.assert(
+      FastCheck.property(FastCheck.integer({ min: 0, max: 100 }), (hungerPoints) => {
+        const result = canSprintAtHungerPoints(hungerPoints)
+        return Result.isSuccess(result) && result.success === (hungerPoints >= 7)
+      }),
+    )
+  })
+
   it('maps player activity to deterministic exhaustion and rejects invalid magnitudes', () => {
     expect(exhaustionForSurvivalActivity({ _tag: 'walk', distance: 100 })).toBe(1)
     expect(exhaustionForSurvivalActivity({ _tag: 'sprint', distance: 10 })).toBe(1)

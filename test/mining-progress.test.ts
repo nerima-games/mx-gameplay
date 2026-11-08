@@ -1,13 +1,13 @@
 import { describe, expect, it } from '@effect/vitest'
-import { Option } from 'effect'
+import { Effect, Option, Result } from 'effect'
 import {
   blockIdOf,
   type BlockId,
   type BlockType,
   type HarvestToolRequirement,
+  propertyOfBlockId,
 } from '@nerima-games/mc-kernel'
 import { blockPosition as atBlockPosition } from './support/coordinate-fixtures'
-import { Effect } from 'effect'
 import { blockLoot } from '../src/domain/interactions/block-loot'
 import { type requestBlockBreak } from '../src/stages/registration'
 import {
@@ -16,6 +16,7 @@ import {
   effectiveMiningSpeed,
   HAND_MINING_TOOL,
   IRON_PICKAXE_MINING_TOOL,
+  MINING_TICKS_PER_SECOND,
   miningDurationSecsForBlock,
   miningLootContextForItem,
   miningProgressFraction,
@@ -33,6 +34,8 @@ const STONE = { position: atBlockPosition(1, 64, 2), blockId: registeredBlockId(
 const STONE_BESIDE = { position: atBlockPosition(2, 64, 2), blockId: registeredBlockId('stone') }
 const DIRT = { position: atBlockPosition(1, 64, 3), blockId: registeredBlockId('dirt') }
 const DIRT_AT_STONE_POSITION = { position: STONE.position, blockId: DIRT.blockId }
+const miningSpeed = (tool: Parameters<typeof effectiveMiningSpeed>[0], requirement: HarvestToolRequirement) =>
+  Result.getOrThrow(effectiveMiningSpeed(tool, requirement))
 
 const completedPositionAcceptedByRequestBlockBreak: Parameters<typeof requestBlockBreak>[1] =
   STONE.position
@@ -61,13 +64,13 @@ describe('mining duration', () => {
     }),
   )
 
-  it.effect('a wooden pickaxe speeds up pickaxe blocks, but not shovel blocks', () =>
+  it.effect('a wooden pickaxe speeds up pickaxe blocks and is five times slower than hand on shovel blocks', () =>
     Effect.sync(() => {
       expect(miningDurationSecsForBlock(STONE.blockId, 'wooden_pickaxe')).toBeLessThan(
         miningDurationSecsForBlock(STONE.blockId, null),
       )
-      expect(miningDurationSecsForBlock(DIRT.blockId, 'wooden_pickaxe')).toBe(
-        miningDurationSecsForBlock(DIRT.blockId, null),
+      expect(miningDurationSecsForBlock(DIRT.blockId, 'wooden_pickaxe')).toBeCloseTo(
+        miningDurationSecsForBlock(DIRT.blockId, null) * 5,
       )
     }),
   )
@@ -124,9 +127,22 @@ describe('mining duration', () => {
       const highTier: HarvestToolRequirement = { category: 'pickaxe', minTier: 'diamond' }
       const woodenPickaxe = miningToolForItem('wooden_pickaxe')
 
-      expect(effectiveMiningSpeed(woodenPickaxe, lowTier)).toBe(2)
-      expect(effectiveMiningSpeed(woodenPickaxe, highTier)).toBe(2)
-      expect(effectiveMiningSpeed(HAND_MINING_TOOL, highTier)).toBe(1)
+      expect(miningSpeed(woodenPickaxe, lowTier)).toBe(2)
+      expect(miningSpeed(woodenPickaxe, highTier)).toBe(2)
+      expect(miningSpeed(HAND_MINING_TOOL, highTier)).toBe(1)
+      expect(
+        miningSpeed(woodenPickaxe, { category: 'shovel', minTier: 'wooden' }),
+      ).toBe(0.2)
+    }),
+  )
+
+  it.effect('keeps the no-tool speed as the hand-mining baseline', () =>
+    Effect.sync(() => {
+      const hardness = Result.getOrThrow(propertyOfBlockId(STONE.blockId, 'hardness'))
+
+      expect(miningDurationSecsForBlock(STONE.blockId, null)).toBe(
+        hardness / MINING_TICKS_PER_SECOND,
+      )
     }),
   )
 
@@ -140,7 +156,7 @@ describe('mining duration', () => {
         miningDurationSecsForBlock(DIRT.blockId, 'wooden_pickaxe'),
       )
       expect(
-        effectiveMiningSpeed(miningToolForItem('wooden_pickaxe', 3), {
+        miningSpeed(miningToolForItem('wooden_pickaxe', 3), {
           category: 'pickaxe',
           minTier: 'wooden',
         }),
@@ -152,16 +168,32 @@ describe('mining duration', () => {
     Effect.sync(() => {
       const requirement: HarvestToolRequirement = { category: 'pickaxe', minTier: 'wooden' }
 
-      expect(effectiveMiningSpeed(miningToolForItem('wooden_pickaxe', -1), requirement)).toBe(2)
+      expect(miningSpeed(miningToolForItem('wooden_pickaxe', -1), requirement)).toBe(2)
       expect(
-        effectiveMiningSpeed(miningToolForItem('wooden_pickaxe', Number.NaN), requirement),
+        miningSpeed(miningToolForItem('wooden_pickaxe', Number.NaN), requirement),
       ).toBe(2)
       expect(
-        effectiveMiningSpeed(
+        miningSpeed(
           { ...WOODEN_PICKAXE_MINING_TOOL, efficiencyLevel: 0.5 },
           requirement,
         ),
       ).toBe(2)
+    }),
+  )
+
+  it.effect('returns a typed failure for invalid mining speed multipliers', () =>
+    Effect.sync(() => {
+      const requirement: HarvestToolRequirement = { category: 'pickaxe', minTier: 'wooden' }
+      const invalidSpeedMultipliers = [0, -1, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]
+
+      for (const speedMultiplier of invalidSpeedMultipliers) {
+        expect(
+          effectiveMiningSpeed(
+            { ...WOODEN_PICKAXE_MINING_TOOL, speedMultiplier },
+            requirement,
+          ),
+        ).toStrictEqual(Result.fail('invalid-speed-multiplier'))
+      }
     }),
   )
 

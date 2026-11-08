@@ -11,10 +11,16 @@ import {
 } from '@nerima-games/mc-kernel'
 import {
   CREEPER_LOCOMOTION,
+  DAMAGE_IMMUNITY_TICKS,
+  HOSTILE_CONTACT_INTERVAL_TICKS,
+  HostileAttackPreparationSchema,
+  prepareHostileAttack,
   prepareShieldBlocking,
   pursueHorizontally,
+  resolveDamageWithInvulnerability,
   resolveHostileContacts,
   resolvePlayerBlastDamage,
+  scaleHostileDamageForDifficulty,
   SHIELD_BLOCKING_DELAY_TICKS,
   SHIELD_DURABILITY_DAMAGE_THRESHOLD,
   SHIELD_HORIZONTAL_BLOCKING_HALF_ANGLE_DEGREES,
@@ -36,6 +42,8 @@ const zombie = (x: number): Entity<undefined> => ({
   healthPoints: EntityHealthPoints(20),
   behaviour: undefined,
 })
+
+const simulationTick = (value: number) => Schema.decodeUnknownSync(SimulationTickSchema)(value)
 
 describe('hostile locomotion', () => {
   it('moves horizontally by at most speed * dt and preserves altitude', () => {
@@ -78,9 +86,83 @@ describe('hostile locomotion', () => {
 })
 
 describe('player damage resolution', () => {
-  it('emits zombie contact damage once per cooldown interval', () => {
+  it('holds hurt resistance through tick 9, expires at tick 10, and applies only a stronger-hit delta', () => {
+    const previousState = { lastDamageTick: simulationTick(10), lastDamageAmount: 4 }
+    const earlierTick = resolveDamageWithInvulnerability({
+      tick: simulationTick(9),
+      amount: 4,
+      previousState,
+    })
+    const withinWindow = resolveDamageWithInvulnerability({
+      tick: simulationTick(10 + DAMAGE_IMMUNITY_TICKS - 1),
+      amount: 4,
+      previousState,
+    })
+    const strongerHit = resolveDamageWithInvulnerability({
+      tick: simulationTick(15),
+      amount: 7,
+      previousState,
+    })
+    const repeatedStrongerHit = Result.isFailure(strongerHit)
+      ? strongerHit
+      : resolveDamageWithInvulnerability({
+          tick: simulationTick(16),
+          amount: 7,
+          previousState: strongerHit.success.state,
+        })
+    const windowExpired = Result.isFailure(repeatedStrongerHit)
+      ? repeatedStrongerHit
+      : resolveDamageWithInvulnerability({
+          tick: simulationTick(10 + DAMAGE_IMMUNITY_TICKS),
+          amount: 4,
+          previousState: repeatedStrongerHit.success.state,
+        })
+
+    expect(DAMAGE_IMMUNITY_TICKS).toBe(10)
+    expect(earlierTick).toStrictEqual(Result.fail('invalid-tick-order'))
+    expect(Result.isSuccess(withinWindow) && withinWindow.success.appliedAmount).toBe(0)
+    expect(Result.isSuccess(withinWindow) && withinWindow.success.state).toStrictEqual(previousState)
+    expect(Result.isSuccess(strongerHit) && strongerHit.success.appliedAmount).toBe(3)
+    expect(Result.isSuccess(strongerHit) && strongerHit.success.state).toStrictEqual({
+      lastDamageTick: simulationTick(10),
+      lastDamageAmount: 7,
+    })
+    expect(Result.isSuccess(repeatedStrongerHit) && repeatedStrongerHit.success.appliedAmount).toBe(0)
+    expect(Result.isSuccess(repeatedStrongerHit) && repeatedStrongerHit.success.state).toStrictEqual({
+      lastDamageTick: simulationTick(10),
+      lastDamageAmount: 7,
+    })
+    expect(Result.isSuccess(windowExpired) && windowExpired.success.appliedAmount).toBe(4)
+    expect(Result.isSuccess(windowExpired) && windowExpired.success.state).toStrictEqual({
+      lastDamageTick: simulationTick(20),
+      lastDamageAmount: 4,
+    })
+  })
+
+  it('scales hostile damage for each difficulty, including the easy-mode cap boundary', () => {
+    expect(scaleHostileDamageForDifficulty({ amount: 6, difficulty: 'peaceful' })).toStrictEqual(
+      Result.succeed(0),
+    )
+    expect(scaleHostileDamageForDifficulty({ amount: 6, difficulty: 'easy' })).toStrictEqual(
+      Result.succeed(4),
+    )
+    expect(scaleHostileDamageForDifficulty({ amount: 2, difficulty: 'easy' })).toStrictEqual(
+      Result.succeed(2),
+    )
+    expect(scaleHostileDamageForDifficulty({ amount: 6, difficulty: 'normal' })).toStrictEqual(
+      Result.succeed(6),
+    )
+    expect(scaleHostileDamageForDifficulty({ amount: 6, difficulty: 'hard' })).toStrictEqual(
+      Result.succeed(9),
+    )
+    expect(scaleHostileDamageForDifficulty({ amount: Number.MAX_VALUE, difficulty: 'hard' })).toStrictEqual(
+      Result.fail('invalid-result'),
+    )
+  })
+
+  it('emits zombie contact damage once per 20-tick interval and suppresses same-tick replays', () => {
     const target = atPosition(0, 64, 0 )
-    const first = resolveHostileContacts([zombie(1)], target, 0.25, new Map())
+    const first = Result.getOrThrow(resolveHostileContacts([zombie(1)], target, simulationTick(10), new Map()))
     expect(first.damages).toHaveLength(1)
     expect(first.damages[0]).toMatchObject({
       _tag: 'HostileContact',
@@ -88,36 +170,135 @@ describe('player damage resolution', () => {
       kind: 'zombie',
       damage: { amount: 3, cause: 'mob' },
     })
+    expect(first.cooldowns.get(EntityId('zombie:1'))).toBe(simulationTick(10))
 
-    const cooling = resolveHostileContacts([zombie(1)], target, 0.5, first.cooldowns)
-    expect(cooling.damages).toStrictEqual([])
-    const ready = resolveHostileContacts([zombie(1)], target, 0.5, cooling.cooldowns)
+    const sameTickReplay = Result.getOrThrow(resolveHostileContacts(
+      [zombie(1)], target, simulationTick(10), first.cooldowns,
+    ))
+    expect(sameTickReplay.damages).toStrictEqual([])
+    expect(sameTickReplay.cooldowns.get(EntityId('zombie:1'))).toBe(simulationTick(10))
+
+    const beforeInterval = Result.getOrThrow(resolveHostileContacts(
+      [zombie(1)], target, simulationTick(10 + HOSTILE_CONTACT_INTERVAL_TICKS - 1), first.cooldowns,
+    ))
+    expect(beforeInterval.damages).toStrictEqual([])
+    expect(beforeInterval.cooldowns.get(EntityId('zombie:1'))).toBe(simulationTick(10))
+
+    const ready = Result.getOrThrow(resolveHostileContacts(
+      [zombie(1)], target, simulationTick(10 + HOSTILE_CONTACT_INTERVAL_TICKS), first.cooldowns,
+    ))
     expect(ready.damages).toHaveLength(1)
+    expect(ready.cooldowns.get(EntityId('zombie:1'))).toBe(simulationTick(30))
+
+    const peaceful = Result.getOrThrow(resolveHostileContacts(
+      [zombie(1)], target, simulationTick(31), ready.cooldowns, 'peaceful',
+    ))
+    expect(peaceful.damages).toStrictEqual([])
+    expect(peaceful.cooldowns.get(EntityId('zombie:1'))).toBe(simulationTick(30))
   })
 
-  it('without a target, no damage is emitted but a non-finite dt still leaves cooldowns untouched', () => {
-    const cooldowns = new Map([[EntityId('zombie:9'), 0.5]])
-    const result = resolveHostileContacts([zombie(1)], undefined, Number.NaN, cooldowns)
+  it('fails closed when the simulation tick moves behind a prior contact tick', () => {
+    const cooldowns = new Map([[EntityId('zombie:9'), simulationTick(10)]])
+    const result = resolveHostileContacts([zombie(1)], atPosition(0, 64, 0), simulationTick(9), cooldowns)
+
+    expect(result).toStrictEqual(Result.fail('invalid-tick-order'))
+  })
+
+  it('rejects invalid current and prior contact ticks', () => {
+    const invalidTick = -1 as unknown as ReturnType<typeof simulationTick>
+    const invalidCurrent = resolveHostileContacts([zombie(1)], atPosition(0, 64, 0), invalidTick, new Map())
+    const invalidPrevious = resolveHostileContacts(
+      [zombie(1)],
+      atPosition(0, 64, 0),
+      simulationTick(10),
+      new Map([[EntityId('zombie:9'), invalidTick]]),
+    )
+
+    expect(invalidCurrent).toStrictEqual(Result.fail('invalid-input'))
+    expect(invalidPrevious).toStrictEqual(Result.fail('invalid-input'))
+  })
+
+  it('ignores non-zombies and zombies outside the contact range', () => {
+    const target = atPosition(0, 64, 0)
+    const skeleton = { ...zombie(1), id: EntityId('skeleton:1'), kind: EntityKind('skeleton') }
+    const result = Result.getOrThrow(resolveHostileContacts(
+      [skeleton, zombie(2)],
+      target,
+      simulationTick(10),
+      new Map(),
+    ))
+
     expect(result.damages).toStrictEqual([])
-    // `elapsed` fell back to zero, so nothing was subtracted from the
-    // cooldown that was already ticking down.
-    expect(result.cooldowns.get(EntityId('zombie:9'))).toBe(0.5)
+    expect(result.cooldowns).toStrictEqual(new Map())
+  })
+
+  it('without a target, no damage is emitted and an active tick cooldown is preserved', () => {
+    const cooldowns = new Map([[EntityId('zombie:9'), simulationTick(10)]])
+    const result = Result.getOrThrow(resolveHostileContacts(
+      [zombie(1)], undefined, simulationTick(11), cooldowns,
+    ))
+    expect(result.damages).toStrictEqual([])
+    expect(result.cooldowns.get(EntityId('zombie:9'))).toBe(simulationTick(10))
+  })
+
+  it('returns typed contact failures or schema-valid tick state for generated inputs', () => {
+    const tickValue = FastCheck.oneof(
+      FastCheck.integer({ min: 0, max: 50 }),
+      FastCheck.integer({ min: -50, max: -1 }),
+      FastCheck.constantFrom(1.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1),
+    )
+    const isSimulationTick = (value: unknown): boolean =>
+      Result.isSuccess(Schema.decodeUnknownResult(SimulationTickSchema)(value))
+
+    FastCheck.assert(
+      FastCheck.property(tickValue, FastCheck.boolean(), tickValue, (currentValue, hasPrevious, previousValue) => {
+        const zombieId = EntityId('zombie:1')
+        const currentTick = currentValue as unknown as ReturnType<typeof simulationTick>
+        const previousTick = previousValue as unknown as ReturnType<typeof simulationTick>
+        const previousCooldowns = hasPrevious
+          ? new Map([[zombieId, previousTick]])
+          : new Map()
+        const result = resolveHostileContacts(
+          [zombie(1)],
+          atPosition(0, 64, 0),
+          currentTick,
+          previousCooldowns,
+        )
+
+        const validCurrent = isSimulationTick(currentValue)
+        const validPrevious = !hasPrevious || isSimulationTick(previousValue)
+        const validOrder = !hasPrevious || currentValue >= previousValue
+        if (!validCurrent || !validPrevious || !validOrder) {
+          const expectedFailure = validCurrent && validPrevious
+            ? 'invalid-tick-order'
+            : 'invalid-input'
+          return Result.isFailure(result) && result.failure === expectedFailure
+        }
+        if (Result.isFailure(result)) return false
+
+        const previousIsActive = hasPrevious && currentValue - previousValue < HOSTILE_CONTACT_INTERVAL_TICKS
+        const expectedContactTick = previousIsActive ? previousTick : currentTick
+        const expectedDamageCount = previousIsActive ? 0 : 1
+        if (result.success.damages.length !== expectedDamageCount) return false
+        const savedTick = result.success.cooldowns.get(zombieId)
+        return savedTick === expectedContactTick &&
+          [...result.success.cooldowns.values()].every((saved) =>
+            isSimulationTick(saved) && Number.isSafeInteger(saved) && saved >= 0,
+          )
+      }),
+      { numRuns: 250 },
+    )
   })
 
   it('attributes explosion damage to the detonating mob', () => {
-    expect(
-      resolvePlayerBlastDamage(
-        [
-          {
-            source: EntityId('creeper:1'),
-            kind: EntityKind('creeper'),
-            at: atPosition(0, 64, 0 ),
-            explosion: { source: 'creeper', power: 3 },
-          },
-        ],
-        atPosition(2, 64, 0 ),
-      ),
-    ).toStrictEqual([
+    const blast = {
+      source: EntityId('creeper:1'),
+      kind: EntityKind('creeper'),
+      at: atPosition(0, 64, 0 ),
+      explosion: { source: 'creeper' as const, power: 3 },
+    }
+    const target = atPosition(2, 64, 0 )
+    expect(resolvePlayerBlastDamage([blast], target)).toStrictEqual([
       {
         _tag: 'Explosion',
         source: 'creeper:1',
@@ -127,6 +308,7 @@ describe('player damage resolution', () => {
         damage: { amount: 24, cause: 'explosion' },
       },
     ])
+    expect(resolvePlayerBlastDamage([blast], target, 'peaceful')).toStrictEqual([])
   })
 
   it('drops a blast whose damage falls off to zero at distance, rather than reporting a zero-amount event', () => {
@@ -190,6 +372,16 @@ describe(`C2 shield blocking (${SHIELD_FIXTURE.source}, ${SHIELD_FIXTURE.edition
       amount: 3.1,
     },
   }
+  const hostileAttackInput = {
+    tick: tick(15),
+    dimension,
+    pose,
+    hasShield: true,
+    currentShield: input.current,
+    incoming: input.incoming,
+    difficulty: 'normal' as const,
+    damageState: null,
+  }
 
   it('strictly prepares a front block at tick 5 and its 3 HP durability candidate', () => {
     expect(Result.isSuccess(Schema.decodeUnknownResult(IntentPayloadSchema)(intent))).toBe(true)
@@ -218,6 +410,84 @@ describe(`C2 shield blocking (${SHIELD_FIXTURE.source}, ${SHIELD_FIXTURE.edition
         blockedAmount: 3.1,
       },
     })
+  })
+
+  it('composes difficulty scaling with shield blocking and incoming damage', () => {
+    const commonInput = {
+      tick: tick(15),
+      dimension,
+      pose,
+      hasShield: true,
+      currentShield: input.current,
+      incoming: { ...input.incoming, amount: 6 },
+      difficulty: 'easy' as const,
+      damageState: null,
+    }
+    const blocked = prepareHostileAttack(intent, commonInput)
+    const unblocked = prepareHostileAttack(
+      { ...intent, blocking: false },
+      { ...commonInput, hasShield: false, currentShield: null },
+    )
+
+    expect(Result.isSuccess(blocked)).toBe(true)
+    expect(Result.isSuccess(unblocked)).toBe(true)
+    if (Result.isFailure(blocked) || Result.isFailure(unblocked)) return
+
+    const decodedBlocked = Schema.decodeUnknownResult(HostileAttackPreparationSchema)(blocked.success)
+    const decodedUnblocked = Schema.decodeUnknownResult(HostileAttackPreparationSchema)(unblocked.success)
+    expect(Result.isSuccess(decodedBlocked)).toBe(true)
+    expect(Result.isSuccess(decodedUnblocked)).toBe(true)
+    expect(blocked.success).toMatchObject({
+      shield: { blocked: true, blockedAmount: 4, durabilityDamage: 4 },
+      appliedAmount: 0,
+      damageState: null,
+    })
+    expect(unblocked.success).toMatchObject({
+      shield: { blocked: false, blockedAmount: 0 },
+      appliedAmount: 4,
+      damageState: { lastDamageTick: tick(15), lastDamageAmount: 4 },
+    })
+  })
+
+  it('rejects malformed hostile attack state and propagates preparation failures', () => {
+    const invalidInput = prepareHostileAttack(intent, { ...hostileAttackInput, tick: -1 })
+    const futureDamageState = prepareHostileAttack(intent, {
+      ...hostileAttackInput,
+      damageState: { lastDamageTick: tick(16), lastDamageAmount: 4 },
+    })
+    const priorDamageState = prepareHostileAttack(
+      { ...intent, blocking: false },
+      {
+        ...hostileAttackInput,
+        hasShield: false,
+        currentShield: null,
+        damageState: { lastDamageTick: tick(10), lastDamageAmount: 4 },
+      },
+    )
+    const invalidAttack = prepareHostileAttack(
+      { ...intent, blocking: false },
+      {
+        ...hostileAttackInput,
+        hasShield: false,
+        currentShield: null,
+        difficulty: 'hard',
+        incoming: { ...input.incoming, amount: Number.MAX_VALUE },
+      },
+    )
+    const invalidShield = prepareHostileAttack(intent, {
+      ...hostileAttackInput,
+      hasShield: false,
+      currentShield: null,
+    })
+
+    expect(invalidInput).toStrictEqual(Result.fail('invalid-input'))
+    expect(futureDamageState).toStrictEqual(Result.fail('invalid-damage-state'))
+    expect(Result.isSuccess(priorDamageState) && priorDamageState.success).toMatchObject({
+      appliedAmount: 0,
+      damageState: { lastDamageTick: tick(10), lastDamageAmount: 4 },
+    })
+    expect(invalidAttack).toStrictEqual(Result.fail('invalid-attack'))
+    expect(invalidShield).toStrictEqual(Result.fail('invalid-shield-state'))
   })
 
   it('requires the full delay and front-facing, and does not block piercing projectiles', () => {

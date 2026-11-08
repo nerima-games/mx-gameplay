@@ -117,17 +117,26 @@ const isEndermanFlinch = (value: unknown): boolean =>
     hasOnlyKeys(value, ['_tag']) &&
     (value['_tag'] === 'Steady' || value['_tag'] === 'Struck')
 
-const isEcosystemState = (value: unknown): boolean =>
-  isRecord(value) &&
+const isEcosystemState = (value: unknown): boolean => {
+  if (!isRecord(value) || value['_tag'] !== 'EcosystemMob') return false
+
+  const hasTickCooldown =
+    hasOnlyKeys(value, ['_tag', 'attackCooldownTicks', 'motionPhase', 'provoked']) &&
+      typeof value['attackCooldownTicks'] === 'number' &&
+      Number.isSafeInteger(value['attackCooldownTicks']) &&
+      value['attackCooldownTicks'] >= 0
+  const hasLegacyCooldown =
     hasOnlyKeys(value, ['_tag', 'attackCooldownSecs', 'motionPhase', 'provoked']) &&
-    value['_tag'] === 'EcosystemMob' &&
-    typeof value['attackCooldownSecs'] === 'number' &&
-    Number.isFinite(value['attackCooldownSecs']) &&
-    value['attackCooldownSecs'] >= 0 &&
+      typeof value['attackCooldownSecs'] === 'number' &&
+      Number.isFinite(value['attackCooldownSecs']) &&
+      value['attackCooldownSecs'] >= 0
+
+  return (hasTickCooldown || hasLegacyCooldown) &&
     typeof value['motionPhase'] === 'number' &&
     Number.isFinite(value['motionPhase']) &&
     typeof value['provoked'] === 'boolean' &&
     repairEcosystemMobState(value) !== undefined
+}
 
 const isStrictDroppedItem = (value: unknown): boolean => {
   if (!isDroppedItemBehaviour(value) || !hasOnlyKeys(value, [

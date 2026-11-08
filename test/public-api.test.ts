@@ -63,6 +63,7 @@ describe('public API surface', () => {
         'meleeDamageForItem',
         'requestMobSpawn',
         'requestMeleeAttack',
+        'requestShieldBlocking',
         'drainMeleeAttackResults',
         'requestTargetedPrimaryAttack',
         'drainMobDrops',

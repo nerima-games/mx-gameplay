@@ -39,8 +39,8 @@
  * State ownership in this file
  * ---------------------------------------------------------------------------
  *
- * The `Ref`s in `GameplayFrameState` are frame-local scratch: work queues,
- * inboxes, outboxes, a counter and a seed. They are NOT game state. The blocks
+ * `GameplayFrameState` owns stage-runtime refs: work queues, inboxes,
+ * outboxes, runtime cursors, and transient combat state. They are NOT save-game state. The blocks
  * that fall, the fluid that flows, the items in the inventory, the mobs that
  * exist and the time of day are all mc-sim's and mc-worldgen's to hold; a
  * frontier is a note about what to look at next, and it is legitimately private
@@ -201,6 +201,12 @@ import {
   type StatusEffectApplication,
   type StatusEffectState,
 } from '../domain/status-effect.js'
+import type {
+  DamageImmunityState,
+  ShieldBlockingIntent,
+  ShieldBlockingPreparationError,
+  ShieldBlockingState,
+} from '../domain/mob/hostile-combat.js'
 import { targetabilityFromStore } from '../domain/in-memory-world.js'
 import {
   BREWING_INGREDIENTS,
@@ -1063,6 +1069,7 @@ export type GameplayFrameState = {
   readonly pendingItemUses: Ref.Ref<ReadonlyArray<ItemUseRequest>>
   readonly pendingBowShots: Ref.Ref<ReadonlyArray<BowShotRequest>>
   readonly pendingMeleeAttacks: Ref.Ref<ReadonlyArray<MeleeAttackRequest>>
+  readonly nextTargetedMeleeRequestId: Ref.Ref<number>
   readonly pendingPearlThrows: Ref.Ref<ReadonlyArray<EnderPearlThrowRequest>>
   readonly pendingDroppedItemPickups: Ref.Ref<ReadonlyArray<DroppedItemPickupRequest>>
   readonly droppedItemPickupExecutions: Ref.Ref<ReadonlyArray<DroppedItemPickupExecution>>
@@ -1081,10 +1088,15 @@ export type GameplayFrameState = {
   readonly bowKnockbacks: Ref.Ref<ReadonlyArray<BowKnockback>>
   readonly enderPearlOutcomes: Ref.Ref<ReadonlyArray<EnderPearlOutcome>>
   readonly playerDamages: Ref.Ref<ReadonlyArray<PlayerDamageEvent>>
+  readonly pendingShieldBlocking: Ref.Ref<ReadonlyArray<ShieldBlockingIntent>>
+  readonly shieldBlocking: Ref.Ref<ShieldBlockingState | null>
+  readonly damageImmunity: Ref.Ref<DamageImmunityState | null>
   readonly playerHeals: Ref.Ref<ReadonlyArray<PlayerHealingEvent>>
   readonly playerMovementSpeedMultiplier: Ref.Ref<number>
   readonly fireLifecycle: Ref.Ref<FireLifecycleState>
-  readonly hostileContactCooldowns: Ref.Ref<ReadonlyMap<EntityId, number>>
+  readonly hostileContactCooldowns: Ref.Ref<ReadonlyMap<EntityId, SimulationTick>>
+  readonly meleeLastAttackTick: Ref.Ref<SimulationTick | null>
+  readonly meleeTargetDamageStates: Ref.Ref<ReadonlyMap<EntityId, DamageImmunityState>>
   readonly mobDrops: Ref.Ref<ReadonlyArray<MobDropEvent>>
   readonly mobExperience: Ref.Ref<ReadonlyArray<MobExperienceEvent>>
   readonly villagerTradeResults: Ref.Ref<ReadonlyArray<VillagerTradeResult>>
@@ -1757,7 +1769,11 @@ export type BowShotResult =
 
 export type GameplayMeleeAttackResult =
   | ResolvedMeleeAttackResult
-  | { readonly requestId: string; readonly success: false; readonly outcome: 'PlayerDead' }
+  | {
+      readonly requestId: string
+      readonly success: false
+      readonly outcome: 'InvalidToolLocation' | 'PlayerDead'
+    }
 
 /**
  * One ender pearl thrown.
@@ -1945,6 +1961,7 @@ export type GameplayStageOperationFailure = Readonly<{
     | BrewingServiceError
     | PrimedTntValidationFailure
     | DamageAtResult
+    | Readonly<{ _tag: 'ShieldBlockingPreparation'; reason: ShieldBlockingPreparationError }>
 }>
 
 export const recordGameplayStageFailure = (
@@ -1981,6 +1998,7 @@ const makeGameplayFrameStateWithOptions = (
   const pendingItemUses = yield* Ref.make<ReadonlyArray<ItemUseRequest>>([])
   const pendingBowShots = yield* Ref.make<ReadonlyArray<BowShotRequest>>([])
   const pendingMeleeAttacks = yield* Ref.make<ReadonlyArray<MeleeAttackRequest>>([])
+  const nextTargetedMeleeRequestId = yield* Ref.make(0)
   const pendingPearlThrows = yield* Ref.make<ReadonlyArray<EnderPearlThrowRequest>>([])
   const pendingDroppedItemPickups = yield* Ref.make<ReadonlyArray<DroppedItemPickupRequest>>([])
   const droppedItemPickupExecutions = yield* Ref.make<ReadonlyArray<DroppedItemPickupExecution>>([])
@@ -2002,12 +2020,17 @@ const makeGameplayFrameStateWithOptions = (
   const bowKnockbacks = yield* Ref.make<ReadonlyArray<BowKnockback>>([])
   const enderPearlOutcomes = yield* Ref.make<ReadonlyArray<EnderPearlOutcome>>([])
   const playerDamages = yield* Ref.make<ReadonlyArray<PlayerDamageEvent>>([])
+  const pendingShieldBlocking = yield* Ref.make<ReadonlyArray<ShieldBlockingIntent>>([])
+  const shieldBlocking = yield* Ref.make<ShieldBlockingState | null>(null)
+  const damageImmunity = yield* Ref.make<DamageImmunityState | null>(null)
   const playerHeals = yield* Ref.make<ReadonlyArray<PlayerHealingEvent>>([])
   const playerMovementSpeedMultiplier = yield* Ref.make(1)
   const fireLifecycle = yield* Ref.make<FireLifecycleState>(makeFireLifecycleState([], DEFAULT_ROLL_SEED))
   const fireTickAccumulator = yield* Ref.make(0)
   fireTickAccumulators.set(fireLifecycle, fireTickAccumulator)
-  const hostileContactCooldowns = yield* Ref.make<ReadonlyMap<EntityId, number>>(new Map())
+  const hostileContactCooldowns = yield* Ref.make<ReadonlyMap<EntityId, SimulationTick>>(new Map())
+  const meleeLastAttackTick = yield* Ref.make<SimulationTick | null>(null)
+  const meleeTargetDamageStates = yield* Ref.make<ReadonlyMap<EntityId, DamageImmunityState>>(new Map())
   const mobDrops = yield* Ref.make<ReadonlyArray<MobDropEvent>>([])
   const mobExperience = yield* Ref.make<ReadonlyArray<MobExperienceEvent>>([])
   const villagerTradeResults = yield* Ref.make<ReadonlyArray<VillagerTradeResult>>([])
@@ -2067,6 +2090,7 @@ const makeGameplayFrameStateWithOptions = (
     pendingItemUses,
     pendingBowShots,
     pendingMeleeAttacks,
+    nextTargetedMeleeRequestId,
     pendingPearlThrows,
     pendingDroppedItemPickups,
     droppedItemPickupExecutions,
@@ -2085,10 +2109,15 @@ const makeGameplayFrameStateWithOptions = (
     bowKnockbacks,
     enderPearlOutcomes,
     playerDamages,
+    pendingShieldBlocking,
+    shieldBlocking,
+    damageImmunity,
     playerHeals,
     playerMovementSpeedMultiplier,
     fireLifecycle,
     hostileContactCooldowns,
+    meleeLastAttackTick,
+    meleeTargetDamageStates,
     mobDrops,
     mobExperience,
     villagerTradeResults,
@@ -2807,8 +2836,15 @@ export const requestMeleeAttack = (
 ): Effect.Effect<void> =>
   Ref.update(state.pendingMeleeAttacks, (pending) => [...pending, request])
 
+/** Queue the player's shield blocking state for the next entity simulation tick. */
+export const requestShieldBlocking = (
+  state: GameplayFrameState,
+  intent: ShieldBlockingIntent,
+): Effect.Effect<void> =>
+  Ref.update(state.pendingShieldBlocking, (pending) => [...pending, intent])
+
 export type TargetedPrimaryAttackResult =
-  | { readonly _tag: 'Melee'; readonly target: ShotHit }
+  | { readonly _tag: 'Melee'; readonly target: ShotHit; readonly requestId: string }
   | { readonly _tag: 'Block'; readonly target: BlockTarget }
   | { readonly _tag: 'None' }
 
@@ -2903,11 +2939,14 @@ export const requestTargetedPrimaryAttack = (
     )
 
     if (resolution._tag === 'Melee') {
+      const requestSequence = yield* Ref.modify(state.nextTargetedMeleeRequestId, (next) => [next, next + 1])
+      const requestId = `targeted-melee-${requestSequence}`
       yield* requestMeleeAttack(state, {
         ...resolution.request,
+        requestId,
         ...(options.toolLocation === undefined ? {} : { toolLocation: options.toolLocation }),
       })
-      return { _tag: 'Melee', target: resolution.target } satisfies TargetedPrimaryAttackResult
+      return { _tag: 'Melee', target: resolution.target, requestId } satisfies TargetedPrimaryAttackResult
     }
     if (resolution._tag === 'Block') {
       const lootContext = yield* Ref.get(state.heldTool)
