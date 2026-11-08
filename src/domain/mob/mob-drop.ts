@@ -2,7 +2,9 @@
  * Vanilla mob loot and XP rules. Item IDs come from kernel; the frame layer
  * supplies rolls and casualty context.
  */
+import { Brand } from 'effect'
 import type { ItemType } from '@nerima-games/mc-kernel'
+import type { EntityKind } from '@nerima-games/mc-sim'
 
 /**
  * One line of a mob's loot, in kernel's vocabulary.
@@ -81,7 +83,7 @@ export type DropRolls = {
 export type MobAge = 'adult' | 'baby'
 export type MobSize = 'small' | 'medium' | 'large'
 
-export type MobDropChoice = Readonly<{
+type MobDropChoice = Readonly<{
   readonly item: ItemType
   readonly weight: number
   readonly count: number
@@ -89,7 +91,7 @@ export type MobDropChoice = Readonly<{
   readonly burningItem?: ItemType
 }>
 
-export type MobDropPool = Readonly<{
+type MobDropPool = Readonly<{
   readonly minSelections: number
   readonly maxSelections: number
   readonly chance?: number
@@ -97,13 +99,13 @@ export type MobDropPool = Readonly<{
   readonly choices: ReadonlyArray<MobDropChoice>
 }>
 
-export type MobDropTable = Readonly<{
+type MobDropTable = Readonly<{
   readonly rules: ReadonlyArray<MobDropRule>
   readonly pools?: ReadonlyArray<MobDropPool>
 }>
 
-export type MobExperienceRange = Readonly<{ readonly min: number; readonly max: number }>
-export type MobExperienceRule = Readonly<{
+type MobExperienceRange = Readonly<{ readonly min: number; readonly max: number }>
+type MobExperienceRule = Readonly<{
   readonly adult: MobExperienceRange
   readonly baby?: MobExperienceRange
   readonly sizes?: Readonly<Partial<Record<MobSize, MobExperienceRange>>>
@@ -112,13 +114,18 @@ export type MobExperienceRule = Readonly<{
   readonly dragonRespawn?: MobExperienceRange
 }>
 
-export type MobExperienceContext = Readonly<{
+type MobExperienceContext = Readonly<{
   readonly age?: MobAge
   readonly size?: MobSize
   readonly undroppedEquipmentCount?: number
   readonly equipmentRolls?: ReadonlyArray<number>
   readonly firstDragonDeath?: boolean
 }>
+
+export type MobDropRollSequence = ReadonlyArray<number> & Brand.Brand<'MobDropRollSequence'>
+export type MobDropRollCount = number & Brand.Brand<'MobDropRollCount'>
+
+const makeMobDropRollCount = Brand.nominal<MobDropRollCount>()
 
 /** Rolls that take every "always" branch and the smallest count. */
 export const LOWEST_ROLLS: DropRolls = { chance: 0, count: 0 }
@@ -471,17 +478,14 @@ export const MOB_EXPERIENCE_RULES: Readonly<Record<string, MobExperienceRule>> =
   wither: { adult: range(50) },
 }
 
-export const mobDropTableOfKind = (kind: string): MobDropTable =>
+export const mobDropTableOfKind = (kind: EntityKind): MobDropTable =>
   MOB_DROP_TABLES[kind] ?? { rules: [] }
 
-export const mobDropRulesOfKind = (kind: string): ReadonlyArray<MobDropRule> =>
+export const mobDropRulesOfKind = (kind: EntityKind): ReadonlyArray<MobDropRule> =>
   mobDropTableOfKind(kind).rules
 
-export const mobExperienceRuleOfKind = (kind: string): MobExperienceRule =>
+export const mobExperienceRuleOfKind = (kind: EntityKind): MobExperienceRule =>
   MOB_EXPERIENCE_RULES[kind] ?? NO_EXPERIENCE
-
-export const mobXpBaseOfKind = (kind: string): number =>
-  mobExperienceRuleOfKind(kind).adult.min
 
 /**
  * Clamp a roll into `[0, 1)`.
@@ -599,7 +603,7 @@ const rollWeightedChoice = (
 export const rollMobTable = (
   table: MobDropTable,
   kill: MobKill,
-  rolls: ReadonlyArray<number>,
+  rolls: MobDropRollSequence,
 ): ReadonlyArray<MobDrop> => {
   const drops = [...rollMobDrops(table.rules, kill, (index) => ({
     chance: rolls[index * 2] ?? 0,
@@ -638,14 +642,14 @@ export const rollMobTable = (
   return drops
 }
 
-export const dropRollsNeededForTable = (table: MobDropTable): number =>
-  table.rules.length * 2 +
+export const dropRollsNeededForTable = (table: MobDropTable): MobDropRollCount =>
+  makeMobDropRollCount(table.rules.length * 2 +
   (table.pools ?? []).reduce((total, pool) =>
     total +
       (pool.chance === undefined ? 0 : 1) +
       (pool.maxSelections === pool.minSelections ? 0 : 1) +
       pool.maxSelections * 2,
-  0)
+  0))
 
 /**
  * Experience for a kill. `roll` is shared by the base range; callers that know
@@ -678,5 +682,5 @@ export const mobXpReward = (
   return amount + equipmentXp
 }
 
-export const rollRange = (value: MobExperienceRange, roll: number): number =>
+const rollRange = (value: MobExperienceRange, roll: number): number =>
   value.min + Math.floor(clampRoll(roll) * (value.max - value.min + 1))

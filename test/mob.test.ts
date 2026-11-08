@@ -33,10 +33,11 @@
  * shape checks that keep a whole class out.
  */
 import { describe, expect, it } from '@effect/vitest'
-import { Effect, Result } from 'effect'
+import { Brand, Effect, Result } from 'effect'
 import { readdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { EntityKind } from '@nerima-games/mc-sim'
 import { AIR_BLOCK_ID, BlockId } from '@nerima-games/mc-kernel'
 import { applyDamage, deathMessage, fullHealth, isDead, MAX_HEALTH_POINTS } from '../src/domain/death-cause'
 import { capabilityOfBlockId, DeltaTimeSecs, ENTITY_TYPES, ITEM_TYPES } from '@nerima-games/mc-kernel'
@@ -89,6 +90,7 @@ import {
   LOWEST_ROLLS,
   MOB_DROP_TABLES,
   MOB_EXPERIENCE_RULES,
+  type MobDropRollSequence,
   mobExperienceRuleOfKind,
   mobXpReward,
   rollMobDrop,
@@ -98,6 +100,8 @@ import {
   ZOMBIE_DROPS,
   ZOMBIE_XP_REWARD,
 } from '../src/domain/mob/mob-drop'
+
+const makeMobDropRollSequence = Brand.nominal<MobDropRollSequence>()
 import {
   ENDERMAN_CHASE_TELEPORT_CHANCE,
   ENDERMAN_DAMAGE_TELEPORT_CHANCE,
@@ -863,7 +867,7 @@ describe('mob drop tables', () => {
       const witch = MOB_DROP_TABLES['witch']
       expect(witch).toBeDefined()
       if (witch === undefined) return
-      expect(rollMobTable(witch, SLAIN, [0.99, 0.99, 0.99, 0.6, 0.99, 0.6, 0.99, 0.6, 0.99])).toStrictEqual([
+      expect(rollMobTable(witch, SLAIN, makeMobDropRollSequence([0.99, 0.99, 0.99, 0.6, 0.99, 0.6, 0.99, 0.6, 0.99]))).toStrictEqual([
         { item: 'redstone_dust', count: 8 },
         { item: 'stick', count: 2 },
         { item: 'stick', count: 2 },
@@ -885,7 +889,7 @@ describe('mob drop tables', () => {
           for (const choice of pool.choices) expect(ITEM_TYPES).toContain(choice.item)
         }
       }
-      expect(mobExperienceRuleOfKind('slime').sizes).toStrictEqual({
+      expect(mobExperienceRuleOfKind(EntityKind('slime')).sizes).toStrictEqual({
         small: { min: 1, max: 1 },
         medium: { min: 2, max: 2 },
         large: { min: 4, max: 4 },

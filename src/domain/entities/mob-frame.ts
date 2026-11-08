@@ -213,7 +213,7 @@ import {
   isValidDurabilityForItem,
   type Durability,
 } from '@nerima-games/mc-sim'
-import { Effect, Result } from 'effect'
+import { Brand, Effect, Result } from 'effect'
 import {
   BlockAxis,
   EntityHealthPoints,
@@ -299,13 +299,15 @@ import {
   mobDropTableOfKind,
   mobExperienceRuleOfKind,
   rollMobTable,
+  type MobDropRollSequence,
   type MobDrop,
   type MobDropRule,
   type MobKill,
   type MobAge,
-  type MobExperienceContext,
   type MobSize,
 } from '../mob/mob-drop.js'
+
+const makeMobDropRollSequence = Brand.nominal<MobDropRollSequence>()
 
 // ---------------------------------------------------------------------------
 // The vocabulary this repository contributes to the roster
@@ -679,7 +681,11 @@ export const rollDropsOfKind = (
   kind: EntityKind,
   kill: MobKill,
   rolls: ReadonlyArray<number>,
-): ReadonlyArray<MobDrop> => rollMobTable(mobDropTableOfKind(kind), kill, rolls)
+): ReadonlyArray<MobDrop> => rollMobTable(
+  mobDropTableOfKind(kind),
+  kill,
+  makeMobDropRollSequence(rolls),
+)
 
 /**
  * The host's `BehaviourRepair` — the function mc-sim's load path delegates to
@@ -943,11 +949,14 @@ export type MobCasualty = Readonly<{
   size?: MobSize
   burning?: boolean
   killedByChargedCreeper?: boolean
-  experienceRoll?: number
-  undroppedEquipmentCount?: number
-  equipmentXpRolls?: ReadonlyArray<number>
+  experienceRoll?: MobExperienceRoll
+  undroppedEquipmentCount?: MobUndroppedEquipmentCount
+  equipmentXpRolls?: ReadonlyArray<MobExperienceRoll>
   firstDragonDeath?: boolean
 }>
+
+export type MobExperienceRoll = number & Brand.Brand<'MobExperienceRoll'>
+export type MobUndroppedEquipmentCount = number & Brand.Brand<'MobUndroppedEquipmentCount'>
 
 export const MOB_EXPERIENCE_CREDIT_WINDOW_TICKS = 100
 
@@ -2130,7 +2139,7 @@ export const experienceOfCasualties = (
   casualties.flatMap((casualty) => {
     const rule = mobExperienceRuleOfKind(casualty.kind)
     if (rule.playerKillRequired !== false && !hasRecentPlayerCredit(casualty)) return []
-    const context: MobExperienceContext = {
+    const context = {
       ...(casualty.age === undefined ? {} : { age: casualty.age }),
       ...(casualty.size === undefined ? {} : { size: casualty.size }),
       ...(casualty.undroppedEquipmentCount === undefined

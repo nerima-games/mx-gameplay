@@ -1,6 +1,6 @@
 import { describe, expect, it } from '@effect/vitest'
 import fc from 'fast-check'
-import { Effect, Result, Schema } from 'effect'
+import { Brand, Effect, Result, Schema } from 'effect'
 import {
   AngleRadians,
   DeltaTimeSecs,
@@ -56,6 +56,7 @@ import {
   dropPasses,
   MOB_DROP_TABLES,
   MOB_EXPERIENCE_RULES,
+  type MobDropRollSequence,
   mobXpReward,
   rollMobTable,
   rollMobDrop,
@@ -65,6 +66,8 @@ import {
 import { ZOMBIE_KIND } from '../../src/domain/mob/hostile-combat'
 import { dropRollsNeeded } from '../../src/domain/entities/mob-frame'
 import { COW_KIND } from '../../src/domain/mob/mob-ecosystem'
+
+const makeMobDropRollSequence = Brand.nominal<MobDropRollSequence>()
 
 const position = (x: number, y: number, z: number): Position =>
   makePosition(PositionAxis(x), PositionAxis(y), PositionAxis(z))
@@ -277,7 +280,7 @@ describe('mob entity properties', () => {
             burning,
             age,
             size,
-          }, rolls)
+          }, makeMobDropRollSequence(rolls))
           const candidates = [
             ...table.rules.map((rule) => ({
               item: rule.item,
