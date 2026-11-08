@@ -387,25 +387,17 @@ describe('doorUpperBreakCell finds the upper half that must break with the lower
   )
 })
 
-describe('placeBlock composes the four, and a door fills two cells', () => {
-  it.effect('places both halves of a door and reports the second in `alsoPlaced`', () =>
+describe('placeBlock composes the four, and a door requires a state write', () => {
+  it.effect('refuses a door without a state-aware writer and leaves both cells untouched', () =>
     Effect.gen(function* () {
       const store = yield* makeChunkStoreDouble(world([[supportCell, STONE]]), ['0,0'])
 
       const outcome = yield* placeBlock(store.api, { position: target, heldItem: 'door' })
 
-      expect(outcome).toStrictEqual({
-        _tag: 'Placed',
-        block: DOOR,
-        consumed: 'door',
-        chunk: { cx: 0, cz: 0 },
-        alsoPlaced: [{ x: 4, y: 65, z: 4 }],
-      })
-      expect(yield* store.blockAt(target)).toBe(DOOR)
-      expect(yield* store.blockAt(blockPosition(4, 65, 4))).toBe(DOOR)
-      // ONE ITEM, TWO CELLS. The second cell is the other half of the same
-      // object rather than a second placement.
-      expect(outcome._tag === 'Placed' && outcome.consumed).toBe('door')
+      expect(outcome).toStrictEqual({ _tag: 'StateWriteUnsupported', blockType: 'door' })
+      expect((yield* store.calls).writes).toBe(0)
+      expect(yield* store.blockAt(target)).toBeUndefined()
+      expect(yield* store.blockAt(blockPosition(4, 65, 4))).toBeUndefined()
     }),
   )
 
@@ -492,7 +484,7 @@ describe('placeBlock composes the four, and a door fills two cells', () => {
     }),
   )
 
-  it.effect('a door whose upper write is lost reports the lower half only, and does not undo it', () =>
+  it.effect('a door with an id-only store never starts the two-cell write', () =>
     Effect.gen(function* () {
       // The window between the read and the write, on the second cell. The two
       // available answers are a compensating write that can itself fail, or a
@@ -512,16 +504,9 @@ describe('placeBlock composes the four, and a door fills two cells', () => {
 
       const outcome = yield* placeBlock(dropsTheSecondWrite, { position: target, heldItem: 'door' })
 
-      expect(outcome).toStrictEqual({
-        _tag: 'Placed',
-        block: DOOR,
-        consumed: 'door',
-        chunk: { cx: 0, cz: 0 },
-        alsoPlaced: [],
-      })
-      // The lower half is still there: a refusal on the second cell is not a
-      // reason to take the first one back.
-      expect(yield* store.blockAt(target)).toBe(DOOR)
+      expect(outcome).toStrictEqual({ _tag: 'StateWriteUnsupported', blockType: 'door' })
+      expect(writes).toBe(0)
+      expect(yield* store.blockAt(target)).toBeUndefined()
     }),
   )
 

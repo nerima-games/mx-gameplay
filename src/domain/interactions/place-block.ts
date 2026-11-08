@@ -129,12 +129,14 @@ import {
   adjacentBlockPosition,
   AIR_BLOCK_ID,
   blockIdOf,
+  blockTypeOfId,
   blockOfPlaceableItem,
   canBlockStaySupported,
   capabilityOfBlockId,
   chunkCoordOfBlock,
   isSupportSensitiveBlockId,
   type PlaceableItemType,
+  type BlockType,
   type Position,
 } from '@nerima-games/mc-kernel'
 import { cactusSidesObjection, type CactusSidesRefusal } from './place-cactus-sides.js'
@@ -156,6 +158,18 @@ import { sugarCaneWaterObjection, type SugarCaneWaterRefusal } from './place-sug
  */
 export const PLAYER_HALF_WIDTH = 0.3
 export const PLAYER_HALF_HEIGHT = 0.9
+
+const STATEFUL_PLACEABLE_BLOCKS: ReadonlySet<BlockType> = new Set([
+  'door',
+  'door_open',
+  'oak_stairs',
+  'purpur_stairs',
+])
+
+const statefulBlockType = (block: BlockId): BlockType | undefined => {
+  const type = Result.getOrUndefined(blockTypeOfId(block))
+  return type !== undefined && STATEFUL_PLACEABLE_BLOCKS.has(type) ? type : undefined
+}
 
 /** Half a unit cube. Written down because it appears three times below and means one thing. */
 const BLOCK_HALF = 0.5
@@ -303,6 +317,8 @@ export type PlaceOutcome =
   | CactusSidesRefusal
   /** A door with something in the way above it. `./place-door-upper`. */
   | { readonly _tag: 'NoRoomAbove' }
+  /** The stateful block needs a state-aware write port. */
+  | { readonly _tag: 'StateWriteUnsupported'; readonly blockType: BlockType }
 
 /**
  * Decide, given what the store said is in the target cell and what is under it.
@@ -407,7 +423,6 @@ export const placeBlock = (
     if (verdict._tag !== 'Allowed') {
       return verdict
     }
-
     // THE FOUR PER-BLOCK RULES, in the reference's own order
     // (`PLACEMENT_RULES`, `block-service-place-plan.ts:207-213`): support —
     // which `placementVerdict` has just done — then mushroom, sugar cane,
@@ -440,6 +455,9 @@ export const placeBlock = (
     if (upper._tag === 'NoRoomAbove') {
       return { _tag: 'NoRoomAbove' }
     }
+
+    const needsState = statefulBlockType(verdict.block)
+    if (needsState !== undefined) return { _tag: 'StateWriteUnsupported', blockType: needsState }
 
     const outcome = yield* store.setBlock(request.position, verdict.block)
 
@@ -517,6 +535,11 @@ export const planPlaceBlock = (
 
     const upper = yield* doorUpperCell(store, verdict.block, request.position)
     if (upper._tag === 'NoRoomAbove') return { outcome: upper, edits: [] }
+
+    const needsState = statefulBlockType(verdict.block)
+    if (needsState !== undefined) {
+      return { outcome: { _tag: 'StateWriteUnsupported', blockType: needsState }, edits: [] }
+    }
 
     const alsoPlaced = upper._tag === 'Clear' ? [upper.cell] : []
     return {

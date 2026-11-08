@@ -66,6 +66,8 @@ export {
   drainBlockPlacementResults,
   requestBlockUse,
   drainBlockUseResults,
+  drainBlockStateRuleResults,
+  requestBlockStateRule,
   requestItemUse,
   requestBucketUse,
   requestFishingCast,
@@ -132,6 +134,8 @@ export {
   requestTargetedItemUse,
   requestTargetedSoilTill,
   requestTargetedPotatoPlanting,
+  type BlockStateRuleRequest,
+  type BlockStateRuleResult,
   type GameplayStageOptions,
 } from './registration-core.js'
 
@@ -178,6 +182,7 @@ import { makeEntitiesStage } from './entities-stage.js'
 import { makeEnderDragonStage } from './ender-dragon-stage.js'
 import { makeFluidsStage } from './fluids-stage.js'
 import { makeTimeWeatherStage } from './time-weather-stage.js'
+import { makeBlockStateRulesStage } from './block-state-rules-stage.js'
 import {
   GAMEPLAY_PLAYER_OWNER_ID,
   GAMEPLAY_CROPS_OWNER_ID,
@@ -216,6 +221,7 @@ export const gameplayStages = (
   return [
     makeVehiclesStage(context),
     makeInteractionsStage(context),
+    makeBlockStateRulesStage(state, store),
     makeFireStage(context),
     makeSurvivalHungerStage(context),
     makeEntitiesStage(context),

@@ -95,7 +95,7 @@ mc-sim を import できない mc-compose がどう構築するのか」 —— 
 
 **`run` の側は増えてはならない。** `StageRegistration.run` の文脈は kernel の `FrameServices` であり、
 そこに `ChunkStore` を要求することは kernel に mc-worldgen のサービスを名指しさせることになる
-（階層モデル、plan.md §2.2 が禁じている）。だから 3 つとも登録時に 1 度だけ取得し、4 stage が共有する。
+（階層モデル、plan.md §2.2 が禁じている）。The three services are acquired once at registration and passed only to stages that need them.
 固定しているテスト: `` REGRESSION: the store is acquired at registration, never demanded by `run` ``、
 `acquires exactly three services to register — the store, the roster and the inventory`
 （`test/stage-registration.test.ts`）。この最後のテストは長く「exactly **two**」だったうえに、
@@ -255,7 +255,7 @@ plan.md §4.2 を素直に読むと `input` の後ろでもあり、`redstone` �
 
 **契約** = ホストが import してよいもの。**内部(可視)** = root export から参照できるが、ホスト連携の契約ではないもの。テスト、プレビュー、domain 間連携向けの export もここに含む。
 
-`index.ts` は `export *` を **84 本**並べているので、内部(可視) も外から見える。
+`index.ts` は `export *` を **86 本**並べているので、内部(可視) も外から見える。
 （この数は長く「6 本」と書かれたまま古くなっていた。数え直したものである。）
 見えることと契約であることは別で、内部(可視) の変更は semver 上 minor 扱いになる（[versioning.md](./versioning.md) §6）。
 
@@ -296,9 +296,11 @@ plan.md §4.2 を素直に読むと `input` の後ろでもあり、`redstone` �
 | `TargetedPrimaryAttackResult` / `TargetedPrimaryAttackOptions` | 内部(可視) | 結果は `Melee`（`ShotHit`）/ `Block`（`BlockTarget`）/ `None`。既定値は melee reach 3、damage 1、block reach 5 |
 | `PlacementRequest` / `ItemUseRequest` | 内部(可視) | 受信箱に積む要求の形。`ItemUseRequest` は従来の tagless な点火要求を維持しつつ、耕作・ジャガイモの植付け・収穫・食事・炉進行・バケツ使用・釣りを `action` で判別する additive union |
 | `requestSoilTill` / `requestPotatoPlanting` / `requestPotatoHarvest` / `requestPotatoFoodUse` / `requestFurnaceAdvance` / `requestBucketUse` / `requestFishingCast` / `requestFishingAdvance` / `requestFishingCancel` / `requestFishingReel` / `drainItemUseResults` | **契約** | 相関 ID 付きの item use enqueue/drain。炉は host 所有の snapshot を最大 10 秒だけ決定的に進め、未処理時間と typed plan を返す。バケツは host が出発・対象次元を明示し、gameplay が world cell と `InventoryService` の交換を原子的に確定して流体フロンティアを起こす。釣りは gameplay が進行中の cast だけを保持し、結果に更新済みロッドと釣果を返す。host はその結果を inventory へ原子的に反映する。耕作と植付けは gameplay が world write を行う。収穫の成熟状態と乱数、食事前の vitals は host が渡し、結果に従う inventory・vitals・炉状態の反映も host が所有する |
-| `GameplayTargetingSnapshotContext` / `requestTargetedBlockBreak` / `requestTargetedBlockPlacement` / `requestTargetedBlockUse` / `resolveTargetedBlock` / `requestTargetedItemUse` / `requestTargetedSoilTill` / `requestTargetedPotatoPlanting` | **契約** | context には `WorldCommitCoordinatorApi`、`playerOwnerId`、`entitiesOwnerId` を指定する。各 helper は World Commit Coordinator (WCC) から同じ revision の player/entity snapshot を読み、照準を解決する。revision が 3 回の取得試行で揃わない場合は `WorldRevisionConflict` を型付きで返し、入力を enqueue しない。block use はレバーを優先し、非レバーなら通常の配置へフォールバックする |
+| `GameplayTargetingSnapshotContext` / `requestTargetedBlockBreak` / `requestTargetedBlockPlacement` / `requestTargetedBlockUse` / `resolveTargetedBlock` / `requestTargetedItemUse` / `requestTargetedSoilTill` / `requestTargetedPotatoPlanting` | **契約** | The context names the WCC, player owner and entity owner. Helpers resolve aim from player and entity snapshots at a shared revision; after three failed attempts they return `WorldRevisionConflict` and enqueue nothing. Block use prioritizes levers, routes doors to block-state rules, then falls back to placement for other blocks. |
 | `requestBlockUse` / `drainBlockUseResults` | **契約** | `requestId` で相関したレバー操作結果の enqueue/drain。結果は 1 回だけ drain される |
 | `BlockUseRequestId` / `BlockUseRequest` / `BlockUseResult` | **契約** | 成否を入力イベントへ返す相関付きプロトコル。結果は 1 回だけ drain される |
+| `BlockStateRuleRequest` / `BlockStateRuleResult` / `requestBlockStateRule` / `drainBlockStateRuleResults` | **契約** | Queue and drain correlated door, stair, crop, sapling and bone-meal state rules. The current chunk-store adapter reports typed `Unsupported` when a rule needs state-aware reads or writes. |
+| `requestBoneMeal` | **契約** | Enqueues correlated bone-meal use. The current chunk-store adapter returns a typed `stateUnsupported` result before gameplay consumes the item. |
 | `LAVA_TICK_INTERVAL` | 内部(可視) | 暫定値。プレビューで測って決める |
 
 下表は**全部ではなく、判定の型が違う Ref**を挙げている —— 残りは同じ型
@@ -314,6 +316,7 @@ plan.md §4.2 を素直に読むと `input` の後ろでもあり、`redstone` �
 | `fishingSession` | 進行中の釣り cast | 要らない。ロッドと釣果の inventory 反映は host が所有し、ここには次フレームまでの純粋な相互作用状態だけを置く |
 | `usedItems` | **送信箱**。点火に使われた道具。`consumedItems` と**別**なのは、`InventoryService` の動詞が違う（消費ではなく耐久の消耗）からである | 要らない。同上 |
 | `pendingBlockUses` / `blockUseResults` | 相関 ID 付きのレバー use 受信箱 / 結果送信箱 | 要らない。レバーの on/off はホストのワールド状態であり、ここには保存しない |
+| `pendingBlockStateRules` / `blockStateRuleResults` | Correlated block-state rule requests and results | No. These are frame queues; block state belongs to the persisted world. |
 | `portalCandidates` / `portalTravels` | 宛先次元別の既知ポータル snapshot / 成立した移動の送信箱 | 要らない。ポータル台帳と生成済み世界はホストが保存し、ここにはフレーム間の受け渡しだけを置く |
 
 受信箱は mc-render の入力イベントになる。**送信箱のうち採掘のぶんは消えた** ——
@@ -371,7 +374,7 @@ mc-sim が所有する値の規約であり、[mc-sim の public-api.md](https:/
 
 | export | 種別 | 備考 |
 | --- | --- | --- |
-| `GAMEPLAY_STAGE_IDS` | **契約** | 所有する基本 stage 8 本の id。追加の brewing stage id は次行 |
+| `GAMEPLAY_STAGE_IDS` | **契約** | Nine gameplay stage ids, including `blockStateRules`, which runs after `interactions`. The optional brewing stage id is listed next. |
 | `BREWING_ADVANCE_STAGE_ID` | **契約** | `makeGameplayStages` が `interactions` の後に登録する coordinator-backed stage id |
 | `UPSTREAM_STAGE_IDS` | 内部(可視) | 自分が名指しする他人の stage。レビュー対象として 1 箇所に集めてある |
 | `EXPERIENCE_MODULE_STAGE_PREFIXES` | 内部(可視) | 兄弟宛エッジ検査用。テストの資産 |
@@ -572,12 +575,20 @@ outbox を空にする破壊的な読み出しで、同一プロセス内では 
 
 | export | 種別 | 備考 |
 | --- | --- | --- |
-| `resolveBlockUse` / `isSuccessfulBlockUse` / `BlockUseOutcome` | **契約** | 読み取り結果を `ToggleLever` / `NotLever` / `ChunkNotLoaded` / `OutOfWorld` にする純粋規則。ブロックもレバー状態も変更しない |
+| `resolveBlockUse` / `isSuccessfulBlockUse` / `BlockUseOutcome` | **契約** | Purely resolves a block read to `ToggleLever`, `ToggleDoor`, `NotLever`, `ChunkNotLoaded` or `OutOfWorld`. Door state changes are handled by the registered block-state rules stage. |
 
 ホストは `drainBlockUseResults` の成功結果を受けて、自身が所有するレバーの `active` を反転する。
 その後、その状態を含む `RedstoneWorldSnapshot` を `mx-redstone` の
 `RedstoneWorldRuntime.syncSnapshot` に渡し、通常どおり redstone stage を実行する。
 現行の `mx-redstone` 公開 API にレバー専用の toggle 関数はなく、この snapshot 同期が正確な結線点である。
+
+### domain/interactions/block-state-rules.ts
+
+| export | 種別 | 備考 |
+| --- | --- | --- |
+| `BlockStateWorldPort` / `BlockStateRuleRequest` / `BlockStateRuleResult` | 内部(可視) | Minimal state-aware read/write port and correlated requests/results. `BlockId`, `BlockPosition` and `BlockStateValues` come from mc-kernel. |
+| `blockStateWorldPortForChunkStore` | 内部(可視) | Adapts the current mc-worldgen store. Resident-cell state reads and all state writes return typed `Unsupported`; residency and world-bound errors remain typed. |
+| `applyBlockStateRule` / `cropGrowthProbability` / `cropAgeAfterRandomTick` / `cropAgeAfterBoneMeal` / `doorOpenAfterToggle` / `doorPlacementState` / `stairPlacementState` / `saplingStageAfterGrowthAttempt` / `saplingStageAfterBoneMeal` | 内部(可視) | Pure state transitions and port-driven rules for doors, stairs, crops, saplings and bone meal. Tree placement and vegetation spread return typed `Unsupported` outcomes. |
 
 ### domain/block-vocabulary.ts
 

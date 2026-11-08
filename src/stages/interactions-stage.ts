@@ -15,6 +15,7 @@ import {
   requeueBlockBreak,
   rollCasualtyExperience,
   requestBlockBreak,
+  requestBlockStateRule,
   candidateForPlayerStorageItemUse,
   EnderPearlOutcomeSchema,
   disturb,
@@ -139,6 +140,7 @@ import {
   StatusEffectStateSchema,
 } from '../domain/status-effect.js'
 import { applyBoneMeal } from '../domain/interactions/bone-meal.js'
+import { blockStateWorldPortForChunkStore } from '../domain/interactions/block-state-rules.js'
 import { cropDrops } from '../domain/interactions/crop-drops.js'
 import {
   resolveFoodUse,
@@ -2395,6 +2397,14 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
           }
           const position = yield* blockPositionForKey(request.positionKey)
           const outcome = resolveBlockUse(position, yield* store.getBlock(position))
+          if (outcome._tag === 'ToggleDoor') {
+            yield* requestBlockStateRule(state, {
+              requestId: request.requestId,
+              position,
+              operation: { _tag: 'ToggleDoor' },
+            })
+            continue
+          }
           blockUseResults.push({
             requestId: request.requestId,
             success: isSuccessfulBlockUse(outcome),
@@ -2470,6 +2480,55 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                   })
                   break itemUseAction
                 }
+                const candidate = candidateForPlayerStorageItemUse(
+                  commit.playerStorageOwnerId,
+                  observed.success.state,
+                  request.heldItem,
+                  'consume',
+                )
+                if (candidate === undefined) {
+                  itemUseResults.push({
+                    action: request.action,
+                    requestId: request.requestId,
+                    heldItem: request.heldItem,
+                    success: false,
+                    consumedCount: 0,
+                    outcome,
+                  })
+                  break itemUseAction
+                }
+                const stateRead = yield* blockStateWorldPortForChunkStore(store).read(position)
+                if (stateRead._tag === 'Unsupported') {
+                  itemUseResults.push({
+                    action: request.action,
+                    requestId: request.requestId,
+                    heldItem: request.heldItem,
+                    success: false,
+                    consumedCount: 0,
+                    outcome: {
+                      _tag: 'stateUnsupported',
+                      at: position,
+                      block: blockType,
+                      operation: stateRead.operation,
+                    },
+                  })
+                  break itemUseAction
+                }
+                if (stateRead._tag === 'Unavailable') {
+                  itemUseResults.push({
+                    action: request.action,
+                    requestId: request.requestId,
+                    heldItem: request.heldItem,
+                    success: false,
+                    consumedCount: 0,
+                    outcome: {
+                      _tag: 'stateUnavailable',
+                      at: position,
+                      reason: stateRead.reason,
+                    },
+                  })
+                  break itemUseAction
+                }
                 const cropSnapshot = yield* Effect.result(commit.coordinator.snapshot(
                   commit.cropOwnerId,
                   CropSnapshotSchema,
@@ -2513,12 +2572,6 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                   })
                   break itemUseAction
                 }
-                const candidate = candidateForPlayerStorageItemUse(
-                  commit.playerStorageOwnerId,
-                  observed.success.state,
-                  request.heldItem,
-                  'consume',
-                )
                 const nextCrops = cropSnapshot.success.state.crops.map((entry) =>
                   entry === crop ? advanceCropByBoneMeal(entry) : entry,
                 )

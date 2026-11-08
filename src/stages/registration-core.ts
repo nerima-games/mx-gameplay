@@ -347,6 +347,10 @@ import {
   type BlockLootContext,
 } from '../domain/interactions/block-loot.js'
 import type { PlaceOutcome } from '../domain/interactions/place-block.js'
+import type {
+  BlockStateRuleRequest,
+  BlockStateRuleResult,
+} from '../domain/interactions/block-state-rules.js'
 import { cropDrops, type CropDropOutcome } from '../domain/interactions/crop-drops.js'
 import { applyBoneMeal, type BoneMealOutcome } from '../domain/interactions/bone-meal.js'
 import {
@@ -1182,6 +1186,7 @@ export type GameplayFrameState = {
   readonly pendingBreaks: Ref.Ref<ReadonlyArray<BlockPositionKey>>
   readonly pendingPlacements: Ref.Ref<ReadonlyArray<PlacementRequest | BlockPlacementCommand>>
   readonly pendingBlockUses: Ref.Ref<ReadonlyArray<BlockUseRequest>>
+  readonly pendingBlockStateRules: Ref.Ref<ReadonlyArray<BlockStateRuleRequest>>
   readonly pendingItemUses: Ref.Ref<ReadonlyArray<ItemUseRequest>>
   readonly pendingBowShots: Ref.Ref<ReadonlyArray<BowShotRequest>>
   readonly pendingMeleeAttacks: Ref.Ref<ReadonlyArray<MeleeAttackRequest>>
@@ -1197,6 +1202,7 @@ export type GameplayFrameState = {
   readonly consumedItems: Ref.Ref<ReadonlyArray<PlaceableItemType>>
   readonly usedItems: Ref.Ref<ReadonlyArray<IgnitionItemType>>
   readonly blockUseResults: Ref.Ref<ReadonlyArray<BlockUseResult>>
+  readonly blockStateRuleResults: Ref.Ref<ReadonlyArray<BlockStateRuleResult>>
   readonly itemUseResults: Ref.Ref<ReadonlyArray<ItemUseResult>>
   readonly bowShotResults: Ref.Ref<ReadonlyArray<BowShotResult>>
   readonly meleeAttackResults: Ref.Ref<ReadonlyArray<GameplayMeleeAttackResult>>
@@ -2128,6 +2134,7 @@ const makeGameplayFrameStateWithOptions = (
   const breakRequestMutex = yield* Semaphore.make(1)
   const pendingPlacements = yield* Ref.make<ReadonlyArray<PlacementRequest | BlockPlacementCommand>>([])
   const pendingBlockUses = yield* Ref.make<ReadonlyArray<BlockUseRequest>>([])
+  const pendingBlockStateRules = yield* Ref.make<ReadonlyArray<BlockStateRuleRequest>>([])
   const pendingItemUses = yield* Ref.make<ReadonlyArray<ItemUseRequest>>([])
   const pendingBowShots = yield* Ref.make<ReadonlyArray<BowShotRequest>>([])
   const pendingMeleeAttacks = yield* Ref.make<ReadonlyArray<MeleeAttackRequest>>([])
@@ -2143,6 +2150,7 @@ const makeGameplayFrameStateWithOptions = (
   const consumedItems = yield* Ref.make<ReadonlyArray<PlaceableItemType>>([])
   const usedItems = yield* Ref.make<ReadonlyArray<IgnitionItemType>>([])
   const blockUseResults = yield* Ref.make<ReadonlyArray<BlockUseResult>>([])
+  const blockStateRuleResults = yield* Ref.make<ReadonlyArray<BlockStateRuleResult>>([])
   const itemUseResults = yield* Ref.make<ReadonlyArray<ItemUseResult>>([])
   const bowShotResults = yield* Ref.make<ReadonlyArray<BowShotResult>>([])
   const meleeAttackResults = yield* Ref.make<ReadonlyArray<GameplayMeleeAttackResult>>([])
@@ -2224,6 +2232,7 @@ const makeGameplayFrameStateWithOptions = (
     pendingBreaks,
     pendingPlacements,
     pendingBlockUses,
+    pendingBlockStateRules,
     pendingItemUses,
     pendingBowShots,
     pendingMeleeAttacks,
@@ -2239,6 +2248,7 @@ const makeGameplayFrameStateWithOptions = (
     consumedItems,
     usedItems,
     blockUseResults,
+    blockStateRuleResults,
     itemUseResults,
     bowShotResults,
     meleeAttackResults,
@@ -2675,6 +2685,17 @@ export const requestBlockUse = (
 export const drainBlockUseResults = (
   state: GameplayFrameState,
 ): Effect.Effect<ReadonlyArray<BlockUseResult>> => Ref.getAndSet(state.blockUseResults, [])
+
+export const requestBlockStateRule = (
+  state: GameplayFrameState,
+  request: BlockStateRuleRequest,
+): Effect.Effect<void> =>
+  Ref.update(state.pendingBlockStateRules, (pending) => [...pending, request])
+
+export const drainBlockStateRuleResults = (
+  state: GameplayFrameState,
+): Effect.Effect<ReadonlyArray<BlockStateRuleResult>> =>
+  Ref.getAndSet(state.blockStateRuleResults, [])
 
 /** Enqueue one igniting-item use without exposing the internal position encoding. */
 export const requestItemUse = (
@@ -4013,6 +4034,13 @@ export const requestTargetedBlockUse = (
       case 'ToggleLever':
         yield* requestBlockUse(state, requestId, targetPosition)
         break
+      case 'ToggleDoor':
+        yield* requestBlockStateRule(state, {
+          requestId,
+          position: targetPosition,
+          operation: { _tag: 'ToggleDoor' },
+        })
+        break
       case 'NotLever':
         yield* requestBlockPlacement(state, {
           positionKey: blockPositionKeyOf(blockPosition(target.value.adjacentPosition.x, target.value.adjacentPosition.y, target.value.adjacentPosition.z)),
@@ -4022,9 +4050,7 @@ export const requestTargetedBlockUse = (
       case 'ChunkNotLoaded':
       case 'OutOfWorld':
         break
-      // exhaustiveness arm over BlockUseOutcome, a closed four-tag union
-      // (use-block.ts's own exhaustiveness arm pins the same fact); all four
-      // tags are handled above, so no input can reach this arm.
+      // exhaustiveness arm over BlockUseOutcome, a closed five-tag union.
       /* v8 ignore start */
       default: {
         const exhaustive: never = outcome
@@ -4402,6 +4428,8 @@ export {
   useVillagerOffer,
   weatherExpires,
   type BlockPositionKey,
+  type BlockStateRuleRequest,
+  type BlockStateRuleResult,
   type BlockLootContext,
   type BowHit,
   type ChunkStoreApi,
