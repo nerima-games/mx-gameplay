@@ -21,7 +21,7 @@ import {
 } from '@nerima-games/mc-sim'
 import { Effect, Ref, Result, Schema } from 'effect'
 import { AIR_BLOCK_ID, BlockAxis, BlockId, DeltaTimeSecs, EntitySerial, InterpolationFraction, RandomSeed, SimulationTick, blockPosition as makeBlockPosition, type BlockPosition, type Position } from '@nerima-games/mc-kernel'
-import type { ChunkStoreApi } from '@nerima-games/mc-worldgen'
+import { CHUNK_HEIGHT, type ChunkStoreApi, type ReadonlyChunk } from '@nerima-games/mc-worldgen'
 import {
   CREEPER_KIND,
   ENDERMAN_KIND,
@@ -648,6 +648,30 @@ describe('what the search reads', () => {
     }),
   )
 
+  it.effect('counts a chunk with an unreadable block buffer rather than treating it as air', () =>
+    Effect.gen(function* () {
+      const store = yield* makeChunkStoreDouble(FLOORED_WORLD, RESIDENT_CHUNKS)
+      const blocks = new Proxy(new Uint16Array(CHUNK_HEIGHT * 256), {
+        get: (target, property) => typeof property === 'string' && /^\d+$/.test(property)
+          ? undefined
+          : Reflect.get(target, property, target),
+      })
+      const api: ChunkStoreApi = {
+        ...store.api,
+        peek: (coord) => Effect.succeed({
+          coord,
+          blocks,
+          biomes: Array.from({ length: 256 }, () => 'PLAINS' as const),
+        } satisfies ReadonlyChunk),
+      }
+
+      const found = yield* searchSpawnCandidates(api, PLAYER, MIDNIGHT, RandomSeed(7))
+
+      expect(found.attempts).toStrictEqual([])
+      expect(found.unreadable).toBe(SPAWN_RING_CELLS)
+    }),
+  )
+
   it.effect('costs a stated number of store calls, which is what makes the cadence checkable', () =>
     Effect.gen(function* () {
       // Each sampled column comes from a cached chunk snapshot; one selected
@@ -1131,6 +1155,33 @@ describe('the search inside the frame', () => {
       const calls = yield* store.calls
       expect(calls.reads).toBeGreaterThan(0)
       expect(calls.peeks).toBeGreaterThan(0)
+    }),
+  )
+
+  it.effect('combines hostile and passive candidates when both searches are due on the same pass', () =>
+    Effect.gen(function* () {
+      const { time, state, commit, stages } = yield* makeStageHarness(
+        CAVE_FLOORED_WORLD,
+        BRIGHT_SURFACE_LIGHT,
+        PLAYER,
+      )
+      yield* Ref.set(state.tickCount, 1199)
+      yield* Ref.set(state.lastHostileSpawnTick, SimulationTick(1170))
+      yield* Ref.set(state.lastPassiveSpawnTick, SimulationTick(800))
+      yield* Ref.set(state.passiveInitialSpawnPending, false)
+      yield* time.setTimeOfDay(InterpolationFraction(0.5))
+
+      yield* runFrame(stages, DeltaTimeSecs(0.05))
+
+      const ownerAfter = yield* commit.coordinator.snapshot(
+        GAMEPLAY_ENTITIES_OWNER_ID,
+        GameplayEntityRosterSchema,
+      )
+      const entries = Schema.decodeUnknownSync(GameplayEntityRosterSchema)(ownerAfter.state).entities
+      expect(entries.some(({ kind }) => HOSTILE_KINDS.includes(kind))).toBe(true)
+      expect(entries.some(({ kind }) => PASSIVE_MOB_KINDS.includes(kind as (typeof PASSIVE_MOB_KINDS)[number]))).toBe(true)
+      expect(yield* Ref.get(state.lastHostileSpawnTick)).toBe(1200)
+      expect(yield* Ref.get(state.lastPassiveSpawnTick)).toBe(1200)
     }),
   )
 })

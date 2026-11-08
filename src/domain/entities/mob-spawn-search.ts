@@ -275,11 +275,7 @@ export const searchSpawnCandidates = (
           if (Result.getOrUndefined(capabilityOfBlockId(groundBlock, 'validSpawnSurface')) !== true) continue
           if (footBlock !== AIR_BLOCK_ID || headBlock !== AIR_BLOCK_ID) continue
 
-          const footAt = at(x, groundY + 1, z)
-          if (footAt === undefined) {
-            columnUnreadable = true
-            break
-          }
+          const footAt = blockPosition(probeAt.x, BlockAxis(groundY + 1), probeAt.z)
           const light = yield* store.getLight(footAt)
           if (light._tag !== 'Light') {
             columnUnreadable = true
