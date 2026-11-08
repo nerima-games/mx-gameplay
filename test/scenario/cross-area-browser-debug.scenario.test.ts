@@ -185,7 +185,7 @@ const runScenario = async ({ setupId, actionIds, setNight, setRain }) => {
   }
   const mount = mountGameplayScenario(context, crossAreaSetups[setupId])
   try {
-    if (setNight) mount.setTime(0)
+    if (setNight) mount.setTime(21_600)
     if (setRain) mount.setWeather('rain')
     const steps = [capture(mount)]
     for (const actionId of actionIds) {
@@ -357,7 +357,7 @@ describe('cross-area Browser Debug scenarios', () => {
   it('X-05 observes the night spawn still present after daylight', async () => {
     const steps = await runScenario('x05', ['x05-spawn-at-night', 'x05-advance-to-daylight'], { setNight: true })
     expect(steps).toHaveLength(3)
-    expect(steps[1]?.timeOfDay).toBe(0)
+    expect(steps[1]?.timeOfDay).toBe(21_600)
     expect(steps[1]?.mobs).toHaveLength(1)
     expect(steps[2]?.timeOfDay).toBe(6_000)
     expect(steps[2]?.spawnedMobPresent).toBe(true)

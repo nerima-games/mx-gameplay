@@ -29,6 +29,7 @@ import { runBrowserDebugEffect } from '../entrypoint.js'
 import { attemptBedSleep, type BedSleepPlayer } from '../../../src/domain/bed-sleep.js'
 import { createExperienceOrbValue } from '../../../src/domain/entities/xp-orb.js'
 import { type MobSpawnAttempt } from '../../../src/domain/entities/mob-frame.js'
+import { SkyLightLevel } from '../../../src/domain/mob/hostile-spawn.js'
 import { DEFAULT_MELEE_REACH, meleeDamageForItem } from '../../../src/domain/interactions/melee-attack.js'
 import { makeVillager } from '../../../src/domain/villager-trade.js'
 import { ZOMBIE_KIND } from '../../../src/domain/mob/hostile-combat.js'
@@ -130,7 +131,7 @@ export const playerSystemsMeleeSetup: ScenarioSetup = {
   world: {
     cells: floor,
     loadedChunks: ['0,0', '0,-1', '0,-2'],
-    z: -17,
+    z: -31,
   },
   bounds: { width: 8, height: 66 },
   actions: [
@@ -140,7 +141,7 @@ export const playerSystemsMeleeSetup: ScenarioSetup = {
       perform: (site) => {
         runBrowserDebugEffect(site.setInventory([['iron_sword', 1]]))
         setGameplayTime(site, 21_600)
-        const feetPosition = position(PositionAxis(0.5), PositionAxis(64), PositionAxis(-16.5))
+        const feetPosition = position(PositionAxis(0.5), PositionAxis(64), PositionAxis(-30.5))
         const pose = runBrowserDebugEffect(site.observePlayerPose())
         const attempt: MobSpawnAttempt = {
           candidate: {
@@ -149,8 +150,10 @@ export const playerSystemsMeleeSetup: ScenarioSetup = {
             footBlock: AIR_BLOCK_ID,
             headBlock: AIR_BLOCK_ID,
             blockLight: 0,
+            skyLight: SkyLightLevel(15),
+            biome: pose.dimension === 'nether' ? 'NETHER' : pose.dimension === 'end' ? 'END' : 'PLAINS',
             timeOfDay: runBrowserDebugEffect(site.time.timeOfDay),
-            distanceToPlayerBlocksXZ: Math.hypot(0.5, -16.5),
+            distanceToPlayerBlocksXZ: Math.hypot(0.5, 30.5),
           },
           kind: ZOMBIE_KIND,
           feetPosition,
@@ -167,6 +170,10 @@ export const playerSystemsMeleeSetup: ScenarioSetup = {
       id: 'melee-attack-target',
       label: 'Attack with the iron sword',
       perform: (site) => {
+        runBrowserDebugEffect(site.movePlayerTo(
+          position(PositionAxis(0.5), PositionAxis(64), PositionAxis(-32.5)),
+          AngleRadians(Math.PI),
+        ))
         const beforeMob = runBrowserDebugEffect(site.observeMobs()).find(({ kind }) => kind === ZOMBIE_KIND)
         if (beforeMob === undefined) throw new Error('melee target is missing before the attack')
 
@@ -198,7 +205,13 @@ export const playerSystemsMeleeSetup: ScenarioSetup = {
           }))
         }
         if (attack._tag !== 'Melee' || attack.target.id !== beforeMob.id) {
-          throw new Error('targeted primary attack did not select the spawned zombie')
+          const playerPose = runBrowserDebugEffect(site.observePlayerPose())
+          const currentMob = runBrowserDebugEffect(site.observeMobs()).find(({ id }) => id === beforeMob.id)
+          throw new Error(
+            `targeted primary attack did not select the spawned zombie: ` +
+              `verdict=${attack._tag}; elapsedFrames=${String(elapsedFrames)}; ` +
+              `player=${JSON.stringify(playerPose)}; mob=${JSON.stringify(currentMob)}`,
+          )
         }
         frame(site)
 

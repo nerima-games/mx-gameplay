@@ -273,12 +273,18 @@ import {
   ZOMBIE_KIND,
   ZOMBIE_LOCOMOTION,
 } from '../mob/hostile-combat.js'
-import { canMobSpawnAt, type SpawnCandidate, type SpawnRefusal } from '../mob/hostile-spawn.js'
+import {
+  canMobSpawnAt,
+  HOSTILE_SPAWN_SETTINGS,
+  type SpawnCandidate,
+  type SpawnRefusal,
+} from '../mob/hostile-spawn.js'
 import {
   BLAZE_KIND,
+  ENDERMAN_KIND,
   ECOSYSTEM_MOB_KINDS,
   initialEcosystemMobState,
-  NETHER_HOSTILE_KINDS,
+  NETHER_ECOSYSTEM_HOSTILE_KINDS,
   OVERWORLD_ECOSYSTEM_HOSTILE_KINDS,
   PASSIVE_MOB_KINDS,
   repairEcosystemMobState,
@@ -430,25 +436,7 @@ export const hostileMobSnapshot = (
 export const CREEPER_KIND: EntityKind = EntityKind('creeper')
 export const DROPPED_ITEM_KIND: EntityKind = EntityKind('dropped_item')
 export const PRIMED_TNT_KIND: EntityKind = EntityKind('primed_tnt')
-
-/**
- * The second, and it now arrives from the spawner as well as from a host.
- *
- * THIS PARAGRAPH USED TO SAY 「NOTHING IN THIS REPOSITORY PUTS ONE ON THE
- * ROSTER」, and gave two reasons: `MobSpawnAttempt` carried no kind, and
- * `MAX_HOSTILE_COUNT` was a per-kind cap that a second hostile kind would turn
- * into 「a sum over a roster of hostile kinds that does not exist yet」. Both were
- * deferrals rather than refusals, and both are now done — the roster is
- * `HOSTILE_KINDS` below, the attempt carries a kind, and the cap is the sum.
- *
- * What made them deferrable was that no search existed to offer candidates. With
- * `./mob-spawn-search` the question stopped being hypothetical: a spawner that
- * produced only creepers in a world that can contain endermen would enforce
- * 「16 creepers」 rather than 「16 hostiles」, which is not the reference's cap and
- * not a defensible one — a player could be surrounded by 16 creepers AND every
- * enderman a host ever spawned.
- */
-export const ENDERMAN_KIND: EntityKind = EntityKind('enderman')
+export { ENDERMAN_KIND }
 
 /**
  * The third, and the only one that is NOT in `HOSTILE_KINDS` below.
@@ -544,7 +532,7 @@ export const HOSTILE_KINDS: readonly [EntityKind, ...ReadonlyArray<EntityKind>] 
   ENDERMAN_KIND,
   ZOMBIE_KIND,
   ...OVERWORLD_ECOSYSTEM_HOSTILE_KINDS,
-  ...NETHER_HOSTILE_KINDS,
+  ...NETHER_ECOSYSTEM_HOSTILE_KINDS,
 ]
 
 /**
@@ -618,11 +606,8 @@ export const initialBehaviourOfKind = (kind: EntityKind): MobBehaviour => {
 /**
  * How many hostiles may exist at once.
  *
- * `../mob/hostile-spawn.ts`'s header lists this among the things it does not
- * decide — 「HOW MANY (`MAX_HOSTILE_COUNT = 16` against a live census) [...] Every
- * one of those reads or writes the roster. They arrive with mc-sim」 — and this is
- * that arrival. The number is
- * `<reference-impl>/packages/entity/domain/mob/spawner-config.ts`'s.
+ * `../mob/hostile-spawn.ts` supplies the difficulty table; this value exposes
+ * the normal cap for callers that need the default.
  *
  * THE DIVERGENCE THIS NOTE USED TO RECORD IS GONE. It read: 「the reference's cap
  * is over ALL hostiles and this one is per kind, because `countOfKind` is the
@@ -639,7 +624,7 @@ export const initialBehaviourOfKind = (kind: EntityKind): MobBehaviour => {
  * two strings the caller supplied and that is the whole of its interest」), so a
  * total is this repository's to add up.
  */
-export const MAX_HOSTILE_COUNT = 16
+export const MAX_HOSTILE_COUNT: number = HOSTILE_SPAWN_SETTINGS.normal.maxPopulation
 
 /**
  * How many hostiles are on the roster right now.
@@ -2299,6 +2284,7 @@ export type MobSpawnOutcome =
 export const applySpawnAttempts = (
   roster: EntityManagerApi<MobBehaviour>,
   attempts: ReadonlyArray<MobSpawnAttempt>,
+  difficulty: HostileDifficulty = 'normal',
 ): Effect.Effect<ReadonlyArray<MobSpawnOutcome>, EntitySerialExhausted> =>
   Effect.gen(function* () {
     const outcomes: Array<MobSpawnOutcome> = []
@@ -2311,12 +2297,11 @@ export const applySpawnAttempts = (
       }
 
       // THE SUM, not `countOfKind(CREEPER_KIND)`. With multiple hostile kinds a
-      // per-kind cap enforces 「16 creepers」 rather than 「16 hostiles」, so a
-      // player could be surrounded by sixteen of each. See `MAX_HOSTILE_COUNT`,
-      // whose note recorded this as the thing that would have to change.
+      // per-kind cap would let a mixed hostile roster exceed its difficulty cap.
       const passive = PASSIVE_MOB_KINDS.includes(attempt.kind)
       const population = yield* (passive ? passivePopulation(roster) : hostilePopulation(roster))
-      if (population >= (passive ? MAX_PASSIVE_COUNT : MAX_HOSTILE_COUNT)) {
+      const populationCap = passive ? MAX_PASSIVE_COUNT : HOSTILE_SPAWN_SETTINGS[difficulty].maxPopulation
+      if (population >= populationCap) {
         outcomes.push({ _tag: 'AtCapacity', population })
         continue
       }
@@ -2344,6 +2329,7 @@ export type MobSpawnRosterResolution = Readonly<{
 export const planSpawnAttemptsOnRoster = (
   initial: EntityRoster<MobBehaviour>,
   attempts: ReadonlyArray<MobSpawnAttempt>,
+  difficulty: HostileDifficulty = 'normal',
 ): Result.Result<MobSpawnRosterResolution, EntitySerialExhausted> => {
   let roster = initial
   const outcomes: Array<MobSpawnOutcome> = []
@@ -2361,7 +2347,8 @@ export const planSpawnAttemptsOnRoster = (
     for (const kind of kinds) {
       population += countOfKind(roster, kind)
     }
-    if (population >= (passive ? MAX_PASSIVE_COUNT : MAX_HOSTILE_COUNT)) {
+    const populationCap = passive ? MAX_PASSIVE_COUNT : HOSTILE_SPAWN_SETTINGS[difficulty].maxPopulation
+    if (population >= populationCap) {
       outcomes.push({ _tag: 'AtCapacity', population })
       continue
     }

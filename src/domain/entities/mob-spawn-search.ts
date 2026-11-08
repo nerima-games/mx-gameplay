@@ -2,30 +2,22 @@
  * THE SPAWN SEARCH: which cells are offered to `../mob/hostile-spawn`'s rule.
  *
  * ---------------------------------------------------------------------------
- * What this file is, and why it could not be written until now
+ * Search inputs and constraints
  * ---------------------------------------------------------------------------
  *
- * `../mob/hostile-spawn.ts` has been finished for as long as it has existed. Its
- * header says so and says what was missing: 「Choosing which cells to offer — the
- * reference's ring of sixteen angles by four radii, the 0.3s cadence, the
- * population caps, the moon-phase gate — is a SEARCH」, and a search needs facts
- * the rule deliberately does not gather.
+ * This module samples the player's horizontal ring, finds a valid floor in each
+ * sampled column, and supplies the world facts required by the spawn rule.
  *
- * `MobSpawnAttempt`'s own header in `./mob-frame.ts` named the two that were
- * unobtainable, and one of them has now been built:
+ * The candidate facts come from the world store and the time service:
  *
- *   BLOCK LIGHT   「mc-worldgen's light grid, and `../chunk-store-port` — a
- *                 mirror of mc-worldgen's WHOLE `ChunkStoreApi` — has no light
- *                 query at all」. It has one now: `getLight`, three-valued for
- *                 the same reason `getBlock` is, backed by
- *                 `mc-worldgen/domain/light.ts`.
- *   TIME OF DAY   mc-sim's `TimeService.timeOfDay`, still unmirrorable for the
- *                 reason kernel's `domain/clock.ts` gives about `ClockPort`. It reaches
- *                 this function as an ARGUMENT rather than as a service, and
- *                 `stages/registration.ts` argues the inbox that carries it.
+ *   BLOCK AND SKY LIGHT   `getLight` returns the raw levels or an unreadable
+ *                         result. The host has not exposed time-adjusted sky
+ *                         light, so surface daylight uses a documented coarse
+ *                         threshold while block light remains exact.
+ *   TIME OF DAY            The time service supplies the fraction as an
+ *                         argument, keeping this search deterministic.
  *
- * So this is the loop those two headers predicted, and — as with the mob sweep
- * before it — NOT ONE FILE IN `domain/mob/` CHANGED to make it work.
+ * Each proposed cell is passed through the same rule used for offered attempts.
  *
  * ---------------------------------------------------------------------------
  * The ring, and the one thing about it that is random
@@ -52,64 +44,55 @@
  * how many candidates this search happened to reject.
  *
  * ---------------------------------------------------------------------------
- * ONE PLANE, NOT A COLUMN SCAN, AND THAT IS A DIVERGENCE
+ * FLOOR SEARCH AND BIOME LIMITS
  * ---------------------------------------------------------------------------
  *
- * The reference finds a Y by taking 「the first non-air block from the top」
- * (`terrain-spawn.ts`). This search does not: every candidate sits at the
- * PLAYER'S OWN feet altitude, and the three cells it reads are the one below,
- * the one at, and the one above that Y.
+ * Each sampled XZ column is scanned from world height down. The first solid
+ * spawn-capable block with two air cells and acceptable light is selected. A
+ * bright daytime surface therefore does not hide a darker cave floor below it.
+ * Missing chunks, biome data, blocks, or light remain unreadable rather than
+ * being treated as air or darkness.
  *
- * Two reasons, in order of force.
- *
- *  1. **The reference's version is the bug `../mob/hostile-spawn.ts` was written
- *     to avoid.** 「takes the first non-air block from the top and spawns on it,
- *     so leaves and glass were legal mob ground」. Porting the scan and then
- *     filtering it with `validSpawnSurface` would work, but the scan is the part
- *     that has no surface test in it.
- *  2. **A scan has no bounded cost anyone here can cite.** Walking a 256-cell
- *     column for each of 64 candidates is ~16,000 store reads per attempt, and
- *     every read after a block write may relight a chunk (see `getLight`'s note
- *     in `@nerima-games/mc-worldgen`). Three reads per candidate is 192, and it is a
- *     number rather than a hope.
- *
- * The consequence is honest and worth stating: a player standing on a plain sees
- * spawns on that plain, and a player at the top of a tower sees candidates in
- * mid-air 40 blocks out, all of which the rule refuses as `not-a-surface`. That
- * is a REFUSAL rather than a wrong spawn, so the divergence fails in the inert
- * direction — but it does mean the spawn rate depends on the local terrain in a
- * way vanilla's does not.
- *
- * The honest fix is a surface query, and it is worth naming precisely because
- * one nearly exists: mc-worldgen publishes `surfaceHeightAt`, which answers
- * about GENERATED terrain and therefore does not know about anything a player
- * has built or mined. A spawner that used it would put mobs on the roof of a
- * house that is not there. What is wanted is a heightmap the STORE maintains,
- * which is `ChunkStoreApi`'s to grow and is the same shape of request as this
- * light query was.
+ * Worldgen exposes coarse biome labels only. This table covers those labels and
+ * the species the runtime supports; it cannot express vanilla sub-biomes,
+ * Mushroom Fields or Deep Dark exclusions, or structure-only fortress rules.
  */
 import { Effect, Result } from 'effect'
-import type { ChunkStoreApi } from '@nerima-games/mc-worldgen'
 import {
+  CHUNK_HEIGHT,
+  blockIndex,
+  biomeAt,
+  type ChunkStoreApi,
+  type Dimension,
+  type ReadonlyChunk,
+} from '@nerima-games/mc-worldgen'
+import {
+  AIR_BLOCK_ID,
   BlockAxis,
+  BlockId,
   PositionAxis,
+  chunkCoordOfBlock,
+  capabilityOfBlockId,
+  localCoordOfBlock,
   blockPosition,
   position,
   type BlockPosition,
+  type InterpolationFraction as InterpolationFractionValue,
   type Position,
+  type RandomSeed as RandomSeedValue,
 } from '@nerima-games/mc-kernel'
 import { EntityKind } from '@nerima-games/mc-sim'
 import { drawRolls, rollAt } from '../frame-rolls.js'
-import { hostileSpawnsAllowed } from '../day-night.js'
-import type { Dimension } from '@nerima-games/mc-worldgen'
 import {
   ecosystemDimensionAllows,
-  NETHER_HOSTILE_KINDS,
   PASSIVE_MOB_KINDS,
 } from '../mob/mob-ecosystem.js'
 import {
+  biomeAllowsMob,
+  canMobSpawnAt,
   MAX_SPAWN_DISTANCE_BLOCKS,
   MIN_SPAWN_DISTANCE_BLOCKS,
+  SkyLightLevel,
   type SpawnCandidate,
 } from '../mob/hostile-spawn.js'
 import { HOSTILE_KINDS, type MobSpawnAttempt } from './mob-frame.js'
@@ -122,6 +105,9 @@ export const SPAWN_RING_ANGLES = 16
 
 /** Radii per angle. The reference's four, spanning the rule's band inclusively. */
 export const SPAWN_RING_RADII = 4
+
+/** Allow for flooring both horizontal coordinates while keeping the true range. */
+export const SPAWN_RING_RADIUS_INSET_BLOCKS = 2
 
 /** Cells offered per attempt, before any of them is read. */
 export const SPAWN_RING_CELLS: number = SPAWN_RING_ANGLES * SPAWN_RING_RADII
@@ -140,22 +126,22 @@ export const SPAWN_RING_CELLS: number = SPAWN_RING_ANGLES * SPAWN_RING_RADII
 export const SPAWN_SEARCH_ROLLS: number = 1 + SPAWN_RING_CELLS
 
 /**
- * The radii of the ring, from the rule's band rather than from four literals.
+ * The radii of the ring sit two blocks inside the rule's band.
  *
- * Both ends INCLUSIVE, which is `../mob/hostile-spawn`'s documented reading of
- * the reference (16 and 40 both pass; 15 and 41 do not, and its oracle asserts
- * exactly that). Deriving them here means a change to the band moves the ring
+ * The inset covers the maximum XZ shift from flooring both coordinates. Deriving
+ * them here means a change to the band moves the ring
  * with it instead of leaving a search that probes outside the rule it feeds.
  */
 export const SPAWN_RING_RADIUS_STEPS: ReadonlyArray<number> = Array.from(
   { length: SPAWN_RING_RADII },
   (_, index) =>
-    MIN_SPAWN_DISTANCE_BLOCKS +
-    ((MAX_SPAWN_DISTANCE_BLOCKS - MIN_SPAWN_DISTANCE_BLOCKS) * index) / (SPAWN_RING_RADII - 1),
+    MIN_SPAWN_DISTANCE_BLOCKS + SPAWN_RING_RADIUS_INSET_BLOCKS +
+    ((MAX_SPAWN_DISTANCE_BLOCKS - MIN_SPAWN_DISTANCE_BLOCKS - SPAWN_RING_RADIUS_INSET_BLOCKS * 2) * index) /
+      (SPAWN_RING_RADII - 1),
 )
 
 /** What the search found, and where the generator ended. */
-export type MobSpawnSearch = {
+type MobSpawnSearch = {
   readonly attempts: ReadonlyArray<MobSpawnAttempt>
   /**
    * Cells that could not be read at all — an unloaded chunk, or a Y outside the
@@ -174,34 +160,24 @@ export type MobSpawnSearch = {
 const EMPTY_ATTEMPTS: ReadonlyArray<never> = []
 
 /**
- * Offer the cells around a player to the spawn rule.
- *
- * READS 3 BLOCKS AND 1 LIGHT PER CELL, so 256 store calls for the full ring.
- * That is why this is called on a CADENCE and not every frame — see
- * `stages/registration.ts`, which paces it, and `@nerima-games/mc-worldgen`'s
- * note on `getLight` being occasionally O(chunk) rather than O(1).
- *
- * The rule is NOT applied here. This function gathers facts and hands them over;
- * `applySpawnAttempts` runs `canHostileSpawnAt` and the population cap. Keeping
- * the two apart is what lets the arena screen drive the rule with cells nobody
- * searched for, and what keeps this file free of any opinion about whether a
- * candidate is good.
+ * Search each sampled column from the top of the world down. A column contributes
+ * its first geometrically valid, biome-valid and light-valid floor, which lets a
+ * dark cave replace an exposed daytime surface as the candidate.
  */
 export const searchSpawnCandidates = (
   store: ChunkStoreApi,
   target: Position,
-  timeOfDay: number,
-  seed: number,
+  timeOfDay: InterpolationFractionValue,
+  seed: RandomSeedValue,
   dimension: Dimension = 'overworld',
+  mode: 'hostile' | 'passive' = 'hostile',
 ): Effect.Effect<MobSpawnSearch> =>
   Effect.gen(function* () {
     const batch = drawRolls(seed, SPAWN_SEARCH_ROLLS)
     if (dimension === 'end') return { attempts: EMPTY_ATTEMPTS, unreadable: 0, seed: batch.seed }
-    const kinds: readonly [EntityKind, ...ReadonlyArray<EntityKind>] = dimension === 'nether'
-      ? NETHER_HOSTILE_KINDS
-      : hostileSpawnsAllowed(timeOfDay)
-        ? HOSTILE_KINDS.filter((kind) => ecosystemDimensionAllows(kind, dimension)) as [EntityKind, ...EntityKind[]]
-        : PASSIVE_MOB_KINDS
+    const spawnKinds: ReadonlyArray<EntityKind> = mode === 'passive'
+      ? dimension === 'overworld' ? PASSIVE_MOB_KINDS : []
+      : HOSTILE_KINDS.filter((kind) => ecosystemDimensionAllows(kind, dimension))
     // `rollAt` and not `batch.rolls[0] ?? 0`: the fallback is a
     // `noUncheckedIndexedAccess` formality — `drawRolls` returns exactly the
     // count asked for — and `../frame-rolls` now owns the one spelling of it,
@@ -212,11 +188,7 @@ export const searchSpawnCandidates = (
 
     const attempts: Array<MobSpawnAttempt> = []
     let unreadable = 0
-
-    // The plane. `Math.floor` and not `Math.round`, for the reason
-    // `./mob-frame`'s `cellOf` gives: a mob at y = 64.0 is at the BOTTOM of cell
-    // 64, and rounding would offer the cell above the one it is standing in.
-    const footY = Math.floor(target.y)
+    const chunks = new Map<string, ReadonlyChunk | undefined>()
 
     for (let angleIndex = 0; angleIndex < SPAWN_RING_ANGLES; angleIndex += 1) {
       // The rotation is a FRACTION OF ONE STEP, so the ring turns by less than
@@ -238,69 +210,83 @@ export const searchSpawnCandidates = (
         const x = Math.floor(target.x + radius * Math.cos(angle))
         const z = Math.floor(target.z + radius * Math.sin(angle))
 
-        const groundAt = at(x, footY - 1, z)
-        const footAt = at(x, footY, z)
-        const headAt = at(x, footY + 1, z)
-        const positionX = Result.getOrUndefined(PositionAxis.result(x))
-        const positionY = Result.getOrUndefined(PositionAxis.result(footY))
-        const positionZ = Result.getOrUndefined(PositionAxis.result(z))
+        const distanceToPlayerBlocksXZ = Math.hypot(x - target.x, z - target.z)
+        const probeAt = at(x, 0, z)
+        if (probeAt === undefined) {
+          unreadable += 1
+          continue
+        }
+        const coord = chunkCoordOfBlock(probeAt)
+        const chunkKey = `${String(coord.cx)},${String(coord.cz)}`
+        if (!chunks.has(chunkKey)) chunks.set(chunkKey, yield* store.peek(coord))
+        const chunk = chunks.get(chunkKey)
+        if (chunk === undefined) {
+          unreadable += 1
+          continue
+        }
+        const local = localCoordOfBlock(probeAt)
+        const biomeIndex = local.lz * 16 + local.lx
         if (
-          groundAt === undefined ||
-          footAt === undefined ||
-          headAt === undefined ||
-          positionX === undefined ||
-          positionY === undefined ||
-          positionZ === undefined
+          chunk.biomes.length !== 256 || chunk.biomes[biomeIndex] === undefined ||
+          chunk.blocks.length !== CHUNK_HEIGHT * 256
         ) {
           unreadable += 1
           continue
         }
+        const biome = biomeAt(chunk, local.lx, local.lz)
+        const kinds = spawnKinds.filter((kind) => biomeAllowsMob(kind, biome))
+        if (kinds.length === 0) continue
+        const kind = kindForRoll(
+          rollAt(batch, 1 + cellIndex),
+          kinds as [EntityKind, ...ReadonlyArray<EntityKind>],
+        )
+        let columnUnreadable = false
+        const attemptsBeforeColumn = attempts.length
+        const positionX = PositionAxis(x)
+        const positionZ = PositionAxis(z)
 
-        const ground = yield* store.getBlock(groundAt)
-        const foot = yield* store.getBlock(footAt)
-        const head = yield* store.getBlock(headAt)
+        for (let groundY = CHUNK_HEIGHT - 3; groundY >= 0; groundY -= 1) {
+          const positionY = PositionAxis(groundY + 1)
+          const groundValue = chunk.blocks[blockIndex(local.lx, groundY, local.lz)]
+          const footValue = chunk.blocks[blockIndex(local.lx, groundY + 1, local.lz)]
+          const headValue = chunk.blocks[blockIndex(local.lx, groundY + 2, local.lz)]
+          if (groundValue === undefined || footValue === undefined || headValue === undefined) {
+            columnUnreadable = true
+            break
+          }
+          const groundBlock = BlockId(groundValue)
+          const footBlock = BlockId(footValue)
+          const headBlock = BlockId(headValue)
+          if (Result.getOrUndefined(capabilityOfBlockId(groundBlock, 'validSpawnSurface')) !== true) continue
+          if (footBlock !== AIR_BLOCK_ID || headBlock !== AIR_BLOCK_ID) continue
 
-        if (ground._tag !== 'Block' || foot._tag !== 'Block' || head._tag !== 'Block') {
-          // NOT offered as air. `@nerima-games/mc-worldgen`'s `BlockReading`
-          // exists to keep these apart: 「sand at the edge of the loaded area, told the cell
-          // below it is air, falls out of the world」, and a spawner told the same
-          // thing puts a mob there.
-          unreadable += 1
-          continue
+          const footAt = blockPosition(probeAt.x, BlockAxis(groundY + 1), probeAt.z)
+          const light = yield* store.getLight(footAt)
+          if (light._tag !== 'Light') {
+            columnUnreadable = true
+            break
+          }
+          const candidate: SpawnCandidate = {
+            groundBlock,
+            footBlock,
+            headBlock,
+            blockLight: light.block,
+            skyLight: SkyLightLevel(light.sky),
+            biome,
+            timeOfDay,
+            distanceToPlayerBlocksXZ,
+            dimension,
+          }
+          if (canMobSpawnAt(kind, candidate)._tag !== 'Spawn') continue
+
+          attempts.push({
+            candidate,
+            kind,
+            feetPosition: position(positionX, positionY, positionZ),
+          })
+          break
         }
-
-        const light = yield* store.getLight(footAt)
-        if (light._tag !== 'Light') {
-          unreadable += 1
-          continue
-        }
-
-        // MEASURED FROM THE CELL, not from the radius that produced it. The
-        // floor above moves a cell by up to a block on each axis, so the true
-        // distance is not the radius — and the rule's band test must be about
-        // where the mob would actually stand. Offering a cell whose real
-        // distance is 40.6 and calling it 40 would be the search lying to the
-        // rule about the one fact the rule cannot check.
-        const distanceToPlayerBlocksXZ = Math.hypot(x - target.x, z - target.z)
-
-        const candidate: SpawnCandidate = {
-          groundBlock: ground.block,
-          footBlock: foot.block,
-          headBlock: head.block,
-          // The BLOCK grid, not the sky grid. `../mob/hostile-spawn` gates on
-          // block light alone, and its header explains why the daylight half is
-          // `hostileSpawnsAllowed`'s job instead.
-          blockLight: light.block,
-          timeOfDay,
-          distanceToPlayerBlocksXZ,
-          dimension,
-        }
-
-        attempts.push({
-          candidate,
-          kind: kindForRoll(rollAt(batch, 1 + cellIndex), kinds),
-          feetPosition: position(positionX, positionY, positionZ),
-        })
+        if (columnUnreadable && attempts.length === attemptsBeforeColumn) unreadable += 1
       }
     }
 
@@ -312,15 +298,8 @@ export const searchSpawnCandidates = (
   })
 
 /**
- * A world position, spelled once.
- *
- * Note what this file never does with one: compare it to `AIR_BLOCK_ID`. The
- * search reports the blocks it found and the rule decides whether they are a
- * floor and two blocks of room — which is the whole shape
- * `../mob/hostile-spawn`'s header asks for, 「a total function from facts to a
- * decision, with the facts named in the argument type and gathered by somebody
- * else」. A search that pre-filtered on air would be a second, unnamed and
- * untested copy of the `obstructed` test.
+ * Build a branded world position, returning undefined when a coordinate is out
+ * of the kernel's valid range.
  */
 const at = (x: number, y: number, z: number): BlockPosition | undefined => {
   const blockX = Result.getOrUndefined(BlockAxis.result(x))

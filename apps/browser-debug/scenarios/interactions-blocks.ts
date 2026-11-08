@@ -11,6 +11,7 @@ import {
   type BlockId,
 } from '@nerima-games/mc-kernel'
 import { CREEPER_KIND, type MobSpawnAttempt } from '../../../src/domain/entities/mob-frame.js'
+import { SkyLightLevel } from '../../../src/domain/mob/hostile-spawn.js'
 import { blockLoot } from '../../../src/domain/interactions/block-loot.js'
 import {
   requestBlockPlacementCommand,
@@ -103,19 +104,21 @@ const advanceUntil = (
   }
 }
 
-const spawnCreeperAttempt: MobSpawnAttempt = {
+const spawnCreeperAttempt = (site: Site): MobSpawnAttempt => ({
   candidate: {
     dimension: 'overworld',
     groundBlock: STONE,
     footBlock: AIR_BLOCK_ID,
     headBlock: AIR_BLOCK_ID,
     blockLight: 0,
-    timeOfDay: 0,
-    distanceToPlayerBlocksXZ: 16,
+    skyLight: SkyLightLevel(15),
+    biome: 'PLAINS',
+    timeOfDay: Number(runBrowserDebugEffect(site.time.timeOfDay)),
+    distanceToPlayerBlocksXZ: 24,
   },
   kind: CREEPER_KIND,
-  feetPosition: position(PositionAxis(16), PositionAxis(64), PositionAxis(0)),
-}
+  feetPosition: position(PositionAxis(24), PositionAxis(64), PositionAxis(0)),
+})
 
 export const interactionsBlockScenarios: ReadonlyArray<ScenarioDefinition> = [
   {
@@ -240,22 +243,23 @@ export const interactionsBlockScenarios: ReadonlyArray<ScenarioDefinition> = [
     title: 'Spawn a creeper with a nighttime candidate, then advance frames until its crater is carved',
     area: 'interactions-blocks',
     isDefault: false,
-    mount: (context) =>
-      mountGameplayScenario(context, {
+    mount: (context) => {
+      const mounted = mountGameplayScenario(context, {
         world: world([
-          ...row(0, 21, 60, STONE),
-          ...row(0, 21, 61, STONE),
-          ...row(0, 21, 62, STONE),
-          ...row(0, 21, 63, STONE),
+          ...row(0, 27, 60, STONE),
+          ...row(0, 27, 61, STONE),
+          ...row(0, 27, 62, STONE),
+          ...row(0, 27, 63, STONE),
         ], ['0,0', '1,0']),
-        bounds: { width: 22, height: 68 },
+        bounds: { width: 28, height: 68 },
         actions: [
           {
             id: 'spawn-creeper',
             label: 'Spawn a nighttime creeper and wait for its crater',
             perform: (site) => {
               const stoneBefore = site.world.census().get(STONE) ?? 0
-              runBrowserDebugEffect(requestMobSpawn(site.state, spawnCreeperAttempt))
+              runBrowserDebugEffect(requestMobSpawn(site.state, spawnCreeperAttempt(site)))
+              runBrowserDebugEffect(site.movePlayerTo(position(PositionAxis(21), PositionAxis(64), PositionAxis(0))))
               advanceUntil(
                 site,
                 () => (site.world.census().get(STONE) ?? 0) < stoneBefore,
@@ -268,6 +272,9 @@ export const interactionsBlockScenarios: ReadonlyArray<ScenarioDefinition> = [
         unsupported: [
           'TNT priming is unavailable because the preview site does not provide TntService. This scenario uses the registered creeper simulation to carve the crater.',
         ],
-      }),
+      })
+      mounted.setTime(21_600)
+      return mounted
+    },
   },
 ]

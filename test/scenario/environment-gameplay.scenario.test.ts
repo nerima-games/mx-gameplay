@@ -22,20 +22,18 @@ import { generatePortalLayout, type ChunkStoreApi } from '@nerima-games/mc-world
 import { FIRE_TICK_INTERVAL_SECS } from '../../src/domain/fire-lifecycle'
 import { PASSIVE_MOB_KINDS } from '../../src/domain/mob/mob-ecosystem'
 import { HOSTILE_KINDS } from '../../src/domain/entities/mob-frame'
-import { SPAWN_RING_ANGLES, SPAWN_RING_RADIUS_STEPS, SPAWN_SEARCH_ROLLS } from '../../src/domain/entities/mob-spawn-search.js'
-import { DEFAULT_ROLL_SEED, drawRolls, rollAt } from '../../src/domain/frame-rolls.js'
 import { chunkCoordsAround } from '../../src/domain/chunk-window'
 import { PORTAL_WINDOW_RADIUS } from '../../src/domain/interactions/ignite-portal'
 import {
   drainItemUseResults,
   gameplayStages,
   makeGameplayFrameStateForOwner,
-  HOSTILE_SPAWN_INTERVAL_SECS,
   requestBlockBreak,
   requestItemUse,
   restoreFireLifecycle,
   snapshotFireLifecycle,
 } from '../../src/stages/registration'
+import { HOSTILE_SPAWN_INTERVAL_TICKS } from '../../src/stages/registration-core'
 import { GAMEPLAY_STAGE_IDS } from '../../src/stages/stage-ids'
 import {
   GAMEPLAY_ENTITIES_OWNER_ID,
@@ -99,15 +97,15 @@ const environmentSlice = (
 const spawnSearchWorld = (() => {
   const cells: Array<readonly [BlockPosition, BlockId]> = []
   const loaded = new Set<string>()
-  const rotation = rollAt(drawRolls(DEFAULT_ROLL_SEED, SPAWN_SEARCH_ROLLS), 0)
-  const angle = (rotation / SPAWN_RING_ANGLES) * 2 * Math.PI
-
-  // One radius-24 candidate is enough to assert that each time phase spawns its kind.
-  for (const radius of SPAWN_RING_RADIUS_STEPS.slice(1, 2)) {
-    const x = Math.floor(radius * Math.cos(angle))
-    const z = Math.floor(radius * Math.sin(angle))
-    cells.push([blockPosition(x, 63, z), STONE])
-    loaded.add(`${String(Math.floor(x / CHUNK_SIZE_XZ))},${String(Math.floor(z / CHUNK_SIZE_XZ))}`)
+  for (let x = -48; x <= 47; x += 1) {
+    for (let z = -48; z <= 47; z += 1) {
+      cells.push([blockPosition(x, 63, z), STONE])
+    }
+  }
+  for (let chunkX = -3; chunkX <= 2; chunkX += 1) {
+    for (let chunkZ = -3; chunkZ <= 2; chunkZ += 1) {
+      loaded.add(`${String(chunkX)},${String(chunkZ)}`)
+    }
   }
   return { blocks: world(cells), loaded: [...loaded] }
 })()
@@ -174,12 +172,13 @@ describe('environment gameplay scenarios through registered stages', () => {
     Effect.gen(function* () {
       const spawnAt = (fraction: number) =>
         Effect.gen(function* () {
-          const { time, stages, commit } = yield* environmentSlice(
+          const { state, time, stages, commit } = yield* environmentSlice(
             spawnSearchWorld.blocks,
             spawnSearchWorld.loaded,
           )
           yield* time.setTimeOfDay(InterpolationFraction(fraction))
-          yield* runFrame(stages, DeltaTimeSecs(HOSTILE_SPAWN_INTERVAL_SECS))
+          yield* Ref.set(state.tickCount, HOSTILE_SPAWN_INTERVAL_TICKS)
+          yield* runFrame(stages, DeltaTimeSecs(0))
           const snapshot = yield* commit.coordinator.snapshot(
             GAMEPLAY_ENTITIES_OWNER_ID,
             GameplayEntityRosterSchema,
@@ -187,7 +186,7 @@ describe('environment gameplay scenarios through registered stages', () => {
           return Schema.decodeUnknownSync(GameplayEntityRosterSchema)(snapshot.state).entities
         })
 
-      const night = yield* spawnAt(0)
+      const night = yield* spawnAt(0.9)
       const daylight = yield* spawnAt(0.5)
 
       expect(night.length).toBeGreaterThan(0)

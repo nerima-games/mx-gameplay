@@ -7,9 +7,10 @@
  * violated with STRINGS rather than with imports.
  */
 import { describe, expect, it } from '@effect/vitest'
+import { SkyLightLevel } from '../src/domain/mob/hostile-spawn'
 import * as FastCheck from 'fast-check'
 import { Brand, Cause, Effect, Exit, Layer, Option, Ref, Result, Schema, Stream } from 'effect'
-import { AIR_BLOCK_ID, AngleRadians, AttackRangeDistance, BlockId, DimensionIdSchema, EntityHealthPoints, EntitySerial, PositionAxis, ProjectileIdSchema, SimulationTickSchema, WorldIdSchema, blockIdOf, position as kernelPosition, type BlockPosition } from '@nerima-games/mc-kernel'
+import { AIR_BLOCK_ID, AngleRadians, AttackRangeDistance, BlockId, DimensionIdSchema, EntityHealthPoints, EntitySerial, PositionAxis, ProjectileIdSchema, SimulationTick, SimulationTickSchema, WorldIdSchema, blockIdOf, position as kernelPosition, type BlockPosition } from '@nerima-games/mc-kernel'
 import type { BlockReading, ChunkStore, ChunkStoreApi } from '@nerima-games/mc-worldgen'
 import {
   CREEPER_KIND,
@@ -182,6 +183,7 @@ import {
   OWN_STAGE_PREFIX,
   UPSTREAM_STAGE_IDS,
 } from '../src/stages/stage-ids'
+import { makeBrewingAdvanceStage } from '../src/stages/brewing-advance-stage'
 import {
   blockKey,
   emptyWorldStoreLayer,
@@ -1116,6 +1118,7 @@ describe('stage behaviour', () => {
       const { state, store, stages } = yield* builtStages
       const entities = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.entities)
       expect(entities).toBeDefined()
+      yield* Ref.set(state.passiveInitialSpawnPending, false)
 
       yield* entities?.run(DeltaTimeSecs(0.016)) ?? Effect.void
 
@@ -1422,9 +1425,8 @@ describe('stage behaviour', () => {
       // `targetPosition`, `timeOfDay` and the weather pair at length because
       // they are the ones that most look like second owners of a noun.
       //
-      // `spawnClockSecs` is the least interesting of the sixteen and the easiest
-      // to justify: it is a countdown to the next search, and losing it on a
-      // reload costs at most one 0.3s interval.
+      // Spawn cadence uses the host tick counter; these last-tick markers and
+      // the initial passive batch flag are frame-local scratch.
       //
       // `weather` / `weatherAdvanced` ARE THE PAIR TO WATCH, and they are the
       // reason this list is worth keeping exact. A save file does need the
@@ -1458,7 +1460,7 @@ describe('stage behaviour', () => {
       // save records WHICH DIMENSION the player is in — mc-sim's, reached
       // through `PlayerServiceApi.setDimension` — and never that they were two
       // seconds into a crossing. Losing it on a reload costs at most one dwell,
-      // which is the same trade `spawnClockSecs` makes.
+      // which is the same trade the spawn cadence markers make.
       //
       // It is emphatically NOT a second owner of the dimension. The union is
       // mc-worldgen's word and the current value is mc-sim's state; this Ref
@@ -1489,6 +1491,8 @@ describe('stage behaviour', () => {
         'heldTool',
         'hostileContactCooldowns',
         'itemUseResults',
+        'lastHostileSpawnTick',
+        'lastPassiveSpawnTick',
         'meleeAttackResults',
         'meleeLastAttackTick',
         'meleeTargetDamageStates',
@@ -1496,6 +1500,7 @@ describe('stage behaviour', () => {
         'mobExperience',
         'nextTargetedMeleeRequestId',
         'operationFailures',
+        'passiveInitialSpawnPending',
         'pendingBlockUses',
         'pendingBowShots',
         'pendingBreaks',
@@ -1517,7 +1522,6 @@ describe('stage behaviour', () => {
         'rollSeed',
         'shieldBlocking',
         'spawnAttempts',
-        'spawnClockSecs',
         'survivalHunger',
         'targetPosition',
         'tickCount',
@@ -2025,7 +2029,7 @@ describe('stage behaviour', () => {
       yield* Ref.set(state.timeOfDay, written)
 
       // Every stage, many times, with a delta large enough that the spawn
-      // search's 0.3s cadence fires repeatedly. If anything ticked the clock —
+      // tick-based cadence fires repeatedly. If anything ticked the clock —
       // by dt, by a day length, or by a tick count — twenty frames would show
       // it.
       for (let frame = 0; frame < 20; frame += 1) {
@@ -2055,6 +2059,8 @@ describe('stage behaviour', () => {
           footBlock: AIR_BLOCK_ID,
           headBlock: AIR_BLOCK_ID,
           blockLight: 0,
+          skyLight: SkyLightLevel(0),
+          biome: 'PLAINS',
           timeOfDay: 0,
           distanceToPlayerBlocksXZ: 24,
         },
@@ -2062,7 +2068,9 @@ describe('stage behaviour', () => {
         feetPosition: fixturePosition(1, 64, 0 ),
       }
       yield* Ref.set(state.spawnAttempts, [offered])
-      yield* Ref.set(state.spawnClockSecs, 0.2)
+      yield* Ref.set(state.lastHostileSpawnTick, SimulationTick(12))
+      yield* Ref.set(state.lastPassiveSpawnTick, 18)
+      yield* Ref.set(state.passiveInitialSpawnPending, false)
 
       const stages = gameplayStages(
         state,
@@ -2079,7 +2087,9 @@ describe('stage behaviour', () => {
       yield* entities!.run(DeltaTimeSecs(1))
 
       expect(yield* Ref.get(state.spawnAttempts)).toStrictEqual([offered])
-      expect(yield* Ref.get(state.spawnClockSecs)).toBe(0.2)
+      expect(yield* Ref.get(state.lastHostileSpawnTick)).toBe(12)
+      expect(yield* Ref.get(state.lastPassiveSpawnTick)).toBe(18)
+      expect(yield* Ref.get(state.passiveInitialSpawnPending)).toBe(false)
       expect(yield* roster.api.count).toBe(0)
     }).pipe(Effect.provide(FrameServicesLayer)),
   )
@@ -2155,6 +2165,8 @@ describe('stage behaviour', () => {
           footBlock: AIR_BLOCK_ID,
           headBlock: AIR_BLOCK_ID,
           blockLight: 0,
+          skyLight: SkyLightLevel(0),
+          biome: 'PLAINS',
           timeOfDay: 0,
           distanceToPlayerBlocksXZ: 24,
         },
@@ -2341,9 +2353,14 @@ describe('the module contract has caught up with this file’s shape', () => {
 
   it.effect('production gameplay stages advance a brewing stand by the frame delta', () =>
     Effect.gen(function* () {
-      const coordinator = yield* WorldCommitCoordinator
-      const stages = yield* makeGameplayStages
+      const { state, stages: gameplayStagesForTest, commit } = yield* builtStages
+      const coordinator = commit.coordinator
       const brewing = yield* makeBrewingService(GAMEPLAY_BREWING_OWNER_ID)
+      const brewingAdvance = yield* makeBrewingAdvanceStage(brewing, coordinator)
+      const stages = [...gameplayStagesForTest, brewingAdvance.stage]
+
+      yield* Ref.set(state.passiveInitialSpawnPending, false)
+      yield* Ref.set(state.lastPassiveSpawnTick, yield* Ref.get(state.tickCount))
 
       yield* brewing.setFuel(itemStack('blaze_powder', 1)).pipe(
         Effect.provideService(WorldCommitCoordinator, coordinator),

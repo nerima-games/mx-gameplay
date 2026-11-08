@@ -27,6 +27,7 @@ import { Brand, Result, Schema } from 'effect'
 import { runBrowserDebugEffect } from '../entrypoint.js'
 import { applyFurnaceAdvance } from '../../../src/domain/interactions/advance-furnace.js'
 import { CREEPER_KIND, type MobSpawnAttempt } from '../../../src/domain/entities/mob-frame.js'
+import { SkyLightLevel } from '../../../src/domain/mob/hostile-spawn.js'
 import { meleeDamageForItem } from '../../../src/domain/interactions/melee-attack.js'
 import type { PlayerDamageEvent } from '../../../src/domain/mob/hostile-combat.js'
 import {
@@ -299,7 +300,7 @@ const meleeScenario: ScenarioDefinition = {
         perform: (site) => {
           let target = runBrowserDebugEffect(site.observeMobs()).find((mob) => mob.kind === CREEPER_KIND)
           if (target === undefined) {
-            const mobX = 16.5
+            const mobX = 24.5
             const mobZ = 0.5
             const spawnAttempt: MobSpawnAttempt = {
               candidate: {
@@ -308,7 +309,9 @@ const meleeScenario: ScenarioDefinition = {
                 footBlock: AIR_BLOCK_ID,
                 headBlock: AIR_BLOCK_ID,
                 blockLight: 0,
-                timeOfDay: 0.9,
+                skyLight: SkyLightLevel(15),
+                biome: 'PLAINS',
+                timeOfDay: Number(runBrowserDebugEffect(site.time.timeOfDay)),
                 distanceToPlayerBlocksXZ: Math.hypot(mobX, mobZ),
               },
               kind: CREEPER_KIND,
@@ -365,6 +368,7 @@ const meleeScenario: ScenarioDefinition = {
         return { mobs, ...observeInventory(site) }
       },
     })
+    mounted.setTime(21_600)
     mounted.setInventory([['iron_sword', 1]])
     mounted.advance()
     return mounted

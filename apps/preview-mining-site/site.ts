@@ -323,8 +323,8 @@ export type Site = {
   readonly setPoweredRailAt: (position: BlockPosition, powered: boolean) => void
   /** Read the player owner snapshot only when an observer asks. */
   readonly observePlayerPose: () => Effect.Effect<ObservedGameplayPlayerPose, unknown>
-  /** Move the preview player and commit the authoritative player owner snapshot. */
-  readonly movePlayerTo: (feetPosition: Position) => Effect.Effect<void, unknown>
+  /** Move the preview player, optionally set its heading, and commit its owner snapshot. */
+  readonly movePlayerTo: (feetPosition: Position, yawRadians?: AngleRadians) => Effect.Effect<void, unknown>
   /** Resolve a primary attack from the live player and Mob owners, then enqueue it. */
   readonly requestTargetedPrimaryAttack: (
     options?: TargetedPrimaryAttackOptions,
@@ -611,9 +611,14 @@ export const makeSite = (
           },
         }),
       )
-    const movePlayerTo = (feetPosition: Position) => Effect.gen(function* () {
+    const movePlayerTo = (feetPosition: Position, yawRadians?: AngleRadians) => Effect.gen(function* () {
       const current = yield* coordinator.snapshot(GAMEPLAY_PLAYER_OWNER_ID, PlayerServiceSnapshotSchema)
       yield* previewPlayer.moveTo(feetPosition)
+      if (yawRadians !== undefined) {
+        const movedPose = yield* previewPlayer.pose
+        const dimension = yield* previewPlayer.dimension
+        yield* previewPlayer.restore({ ...movedPose, yawRadians }, dimension)
+      }
       const pose = yield* previewPlayer.pose
       const dimension = yield* previewPlayer.dimension
       const candidate = yield* Schema.decodeUnknownEffect(PlayerServiceSnapshotSchema)({

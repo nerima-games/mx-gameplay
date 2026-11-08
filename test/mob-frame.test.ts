@@ -72,7 +72,7 @@ import {
 import { BLAZE_KIND, COW_KIND, initialEcosystemMobState } from '../src/domain/mob/mob-ecosystem'
 import { CREEPER_EXPLOSION_POWER, explosionDamageAmount } from '../src/domain/mob/explosion'
 import { ZOMBIE_KIND } from '../src/domain/mob/hostile-combat'
-import type { SpawnCandidate } from '../src/domain/mob/hostile-spawn'
+import { SkyLightLevel, type SpawnCandidate } from '../src/domain/mob/hostile-spawn'
 import { DORMANT_FUSE } from '../src/domain/mob/creeper-fuse'
 import { FRESH_PRIMED_TNT } from '../src/domain/mob/primed-tnt'
 import { AIR_BLOCK_ID, BlockAxis, BlockId, blockPosition as makeBlockPosition, DeltaTimeSecs, EntityHealthPoints, EntitySerial, SimulationTick } from '@nerima-games/mc-kernel'
@@ -135,8 +135,10 @@ const SPAWN_CANDIDATE: SpawnCandidate = {
   footBlock: AIR_BLOCK_ID,
   headBlock: AIR_BLOCK_ID,
   blockLight: 0,
-  timeOfDay: 0,
-  distanceToPlayerBlocksXZ: 16,
+  skyLight: SkyLightLevel(0),
+  biome: 'PLAINS',
+  timeOfDay: 0.9,
+  distanceToPlayerBlocksXZ: 30,
 }
 
 describe('the loot table is keyed by a kind that something actually spawns', () => {
@@ -1359,28 +1361,28 @@ describe('planEndermanTeleportRoster', () => {
 describe('mob spawn application and owner roster planning', () => {
   it.effect('refuses daylight, then re-counts all hostile kinds between accepted attempts', () =>
     Effect.gen(function* () {
-      const fullExceptOne = Array.from({ length: 15 }, (_, index) =>
+      const fullExceptOne = Array.from({ length: 8 }, (_, index) =>
         mobEntity(`e:${String(index)}`, CREEPER_KIND, CREEPER_MAX_HEALTH, hostileMobSnapshot(DORMANT_FUSE)),
       )
       const manager = yield* makeEntityManagerDouble<MobBehaviour>(mobRoster(fullExceptOne, fullExceptOne.length))
       const attempt = (candidate: SpawnCandidate): MobSpawnAttempt => ({
         candidate,
         kind: CREEPER_KIND,
-        feetPosition: away(16),
+        feetPosition: away(30),
       })
 
       const outcomes = yield* applySpawnAttempts(manager.api, [
-        attempt({ ...SPAWN_CANDIDATE, timeOfDay: 0.5 }),
+        attempt({ ...SPAWN_CANDIDATE, timeOfDay: 0.5, skyLight: SkyLightLevel(15) }),
         attempt(SPAWN_CANDIDATE),
         attempt(SPAWN_CANDIDATE),
       ])
 
       expect(outcomes).toStrictEqual([
         { _tag: 'Refused', reason: 'daylight' },
-        { _tag: 'Spawned', id: EntityId('e:15') },
-        { _tag: 'AtCapacity', population: 16 },
+        { _tag: 'Spawned', id: EntityId('e:8') },
+        { _tag: 'AtCapacity', population: 9 },
       ])
-      expect(yield* manager.api.count).toBe(16)
+      expect(yield* manager.api.count).toBe(9)
       expect(yield* manager.calls).toMatchObject({ censuses: HOSTILE_KINDS.length * 2 })
     }),
   )
@@ -1407,7 +1409,7 @@ describe('mob spawn application and owner roster planning', () => {
     Effect.sync(() => {
       const initial = mobRoster([], 0)
       const attempts: ReadonlyArray<MobSpawnAttempt> = [
-        { candidate: { ...SPAWN_CANDIDATE, timeOfDay: 0.5 }, kind: CREEPER_KIND, feetPosition: ORIGIN },
+        { candidate: { ...SPAWN_CANDIDATE, timeOfDay: 0.5, skyLight: SkyLightLevel(15) }, kind: CREEPER_KIND, feetPosition: ORIGIN },
         { candidate: SPAWN_CANDIDATE, kind: CREEPER_KIND, feetPosition: ORIGIN },
       ]
 

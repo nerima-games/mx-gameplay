@@ -58,15 +58,21 @@ import {
 import {
   canHostileSpawnAt,
   canMobSpawnAt,
+  biomeAllowsMob,
+  HOSTILE_SPAWN_SETTINGS,
   HOSTILE_SPAWN_MAX_BLOCK_LIGHT,
   MAX_SPAWN_DISTANCE_BLOCKS,
   MIN_SPAWN_DISTANCE_BLOCKS,
+  SkyLightLevel,
   type SpawnCandidate,
 } from '../src/domain/mob/hostile-spawn'
 import {
   BLAZE_KIND,
+  CHICKEN_KIND,
   COW_KIND,
+  PIG_KIND,
   SKELETON_KIND,
+  SHEEP_KIND,
   ZOMBIFIED_PIGLIN_KIND,
 } from '../src/domain/mob/mob-ecosystem'
 import { ZOMBIE_KIND } from '../src/domain/mob/hostile-combat'
@@ -411,8 +417,10 @@ describe('creeper: spawning is a rule about light and surface, never a block lis
     footBlock: AIR_BLOCK_ID,
     headBlock: AIR_BLOCK_ID,
     blockLight: 0,
+    skyLight: SkyLightLevel(0),
+    biome: 'PLAINS',
     timeOfDay: NIGHT,
-    distanceToPlayerBlocksXZ: 20,
+    distanceToPlayerBlocksXZ: 30,
     ...overrides,
   })
 
@@ -422,31 +430,21 @@ describe('creeper: spawning is a rule about light and surface, never a block lis
     }),
   )
 
-  it.effect('is gated on domain/day-night.ts, not on a comparison of its own', () =>
+  it.effect('lets dark caves spawn in daytime but blocks exposed daylight', () =>
     Effect.sync(() => {
-      // domain/day-night.ts's header records what a second opinion costs: the
-      // reference shipped a world that spawned at midnight, and daylight-immune
-      // hostiles camped the respawn point — an unrecoverable death loop on
-      // world creation. `hostileSpawnsAllowed` is CALLED here, so widening
-      // twilight or moving dawn cannot make the two disagree.
-      expect(canHostileSpawnAt(candidate({ timeOfDay: NOON }))).toStrictEqual({
+      expect(canHostileSpawnAt(candidate({ timeOfDay: NOON, skyLight: SkyLightLevel(15) }))).toStrictEqual({
         _tag: 'Refused',
         reason: 'daylight',
       })
-      // Pitch dark at noon is still noon.
-      expect(canHostileSpawnAt(candidate({ timeOfDay: NOON, blockLight: 0 }))._tag).toBe('Refused')
+      expect(canHostileSpawnAt(candidate({ timeOfDay: NOON, skyLight: SkyLightLevel(7) }))._tag).toBe('Spawn')
     }),
   )
 
-  it.effect('refuses light 8 and accepts light 7, exactly as the reference does', () =>
+  it.effect('requires block light zero', () =>
     Effect.sync(() => {
-      // packages/entity/domain/mob/spawner-config.ts:29 with the strictly
-      // greater test at terrain-spawn.ts:75; the oracle is
-      // packages/entity/test/mob/terrain-spawn.test.ts, which asserts both
-      // sides of this boundary and that an absent light grid reads as 0.
-      expect(HOSTILE_SPAWN_MAX_BLOCK_LIGHT).toBe(7)
-      expect(canHostileSpawnAt(candidate({ blockLight: 7 }))).toStrictEqual({ _tag: 'Spawn' })
-      expect(canHostileSpawnAt(candidate({ blockLight: 8 }))).toStrictEqual({
+      expect(HOSTILE_SPAWN_MAX_BLOCK_LIGHT).toBe(0)
+      expect(canHostileSpawnAt(candidate({ blockLight: 0 }))).toStrictEqual({ _tag: 'Spawn' })
+      expect(canHostileSpawnAt(candidate({ blockLight: 1 }))).toStrictEqual({
         _tag: 'Refused',
         reason: 'too-bright',
       })
@@ -493,21 +491,16 @@ describe('creeper: spawning is a rule about light and surface, never a block lis
     }),
   )
 
-  it.effect('accepts both ends of the reference’s distance band and rejects just outside it', () =>
+  it.effect('accepts 24 and 40 blocks and rejects the adjacent distances', () =>
     Effect.sync(() => {
-      // packages/entity/application/mob/mob-spawner-rules.ts:14 rejects on
-      // `< min` and `> max`, so 16 and 40 are both legal — asserted by
-      // packages/entity/test/mob/mob-spawner-rules.test.ts, which also asserts
-      // 15 and 41 are not. The asymmetry is invisible in the code and only the
-      // boundary tests carry it.
-      expect(MIN_SPAWN_DISTANCE_BLOCKS).toBe(16)
+      expect(MIN_SPAWN_DISTANCE_BLOCKS).toBe(24)
       expect(MAX_SPAWN_DISTANCE_BLOCKS).toBe(40)
 
-      expect(canHostileSpawnAt(candidate({ distanceToPlayerBlocksXZ: 16 }))._tag).toBe('Spawn')
-      expect(canHostileSpawnAt(candidate({ distanceToPlayerBlocksXZ: 28 }))._tag).toBe('Spawn')
+      expect(canHostileSpawnAt(candidate({ distanceToPlayerBlocksXZ: 24 }))._tag).toBe('Spawn')
+      expect(canHostileSpawnAt(candidate({ distanceToPlayerBlocksXZ: 32 }))._tag).toBe('Spawn')
       expect(canHostileSpawnAt(candidate({ distanceToPlayerBlocksXZ: 40 }))._tag).toBe('Spawn')
 
-      expect(canHostileSpawnAt(candidate({ distanceToPlayerBlocksXZ: 15 }))).toStrictEqual({
+      expect(canHostileSpawnAt(candidate({ distanceToPlayerBlocksXZ: 23 }))).toStrictEqual({
         _tag: 'Refused',
         reason: 'too-close',
       })
@@ -521,7 +514,7 @@ describe('creeper: spawning is a rule about light and surface, never a block lis
 
   it.effect('a measurement that is not a number refuses, rather than reading as darkness', () =>
     Effect.sync(() => {
-      // `NaN > 7` is false, so an unguarded light gate would treat a broken
+      // `NaN > 0` is false, so an unguarded light gate would treat a broken
       // measurement as pitch dark and spawn a mob in daylight. Finding F5 is the
       // same shape one module over, and this is the guard it argues for.
       for (const overrides of [
@@ -546,6 +539,7 @@ describe('creeper: spawning is a rule about light and surface, never a block lis
         canHostileSpawnAt(
           candidate({
             timeOfDay: NOON,
+            skyLight: SkyLightLevel(15),
             blockLight: 15,
             groundBlock: OAK_LEAVES,
             footBlock: STONE,
@@ -565,8 +559,10 @@ describe('canMobSpawnAt: the ecosystem roster on top of the hostile rule', () =>
     footBlock: AIR_BLOCK_ID,
     headBlock: AIR_BLOCK_ID,
     blockLight: 0,
+    skyLight: SkyLightLevel(0),
+    biome: 'PLAINS',
     timeOfDay: NIGHT,
-    distanceToPlayerBlocksXZ: 20,
+    distanceToPlayerBlocksXZ: 30,
     ...overrides,
   })
 
@@ -582,12 +578,10 @@ describe('canMobSpawnAt: the ecosystem roster on top of the hostile rule', () =>
     }),
   )
 
-  it.effect('a non-ecosystem hostile is confined to the overworld too, via the plain dimension check', () =>
+  it.effect('a non-ecosystem hostile is confined to the overworld by the shared dimension gate', () =>
     Effect.sync(() => {
-      // ZOMBIE_KIND is not in ECOSYSTEM_MOB_KINDS at all, so it skips the
-      // ecosystem-dimension branch entirely and is caught by the second,
-      // unconditional overworld check instead — a different line reaching the
-      // same refusal.
+      // The shared dimension gate also rejects non-ecosystem hostiles outside
+      // the overworld before any candidate cell fact is read.
       expect(
         canMobSpawnAt(ZOMBIE_KIND, candidate({ dimension: 'nether' })),
       ).toStrictEqual({ _tag: 'Refused', reason: 'wrong-dimension' })
@@ -603,10 +597,47 @@ describe('canMobSpawnAt: the ecosystem roster on top of the hostile rule', () =>
     }),
   )
 
+  it.effect('uses the supported coarse biome table for species', () =>
+    Effect.sync(() => {
+      expect(biomeAllowsMob(ZOMBIE_KIND, 'DESERT')).toBe(true)
+      expect(canMobSpawnAt(COW_KIND, candidate({ biome: 'DESERT' }))).toStrictEqual({
+        _tag: 'Refused',
+        reason: 'wrong-biome',
+      })
+      for (const biome of ['SWAMP', 'JUNGLE'] as const) {
+        for (const kind of [COW_KIND, PIG_KIND, SHEEP_KIND, CHICKEN_KIND]) {
+          expect(canMobSpawnAt(kind, candidate({ biome }))).toStrictEqual({ _tag: 'Spawn' })
+        }
+      }
+      expect(canMobSpawnAt(BLAZE_KIND, candidate({ dimension: 'nether', biome: 'NETHER' }))).toStrictEqual({
+        _tag: 'Spawn',
+      })
+      expect(canMobSpawnAt(BLAZE_KIND, candidate({ dimension: 'nether', biome: 'END' }))).toStrictEqual({
+        _tag: 'Refused',
+        reason: 'wrong-biome',
+      })
+    }),
+  )
+
+  it.effect('maps difficulty to a bounded cap and a 1–2 second tick interval', () =>
+    Effect.sync(() => {
+      expect(HOSTILE_SPAWN_SETTINGS).toStrictEqual({
+        peaceful: { maxPopulation: 0, intervalTicks: 40 },
+        easy: { maxPopulation: 6, intervalTicks: 40 },
+        normal: { maxPopulation: 9, intervalTicks: 30 },
+        hard: { maxPopulation: 14, intervalTicks: 20 },
+      })
+      for (const settings of Object.values(HOSTILE_SPAWN_SETTINGS)) {
+        expect(settings.intervalTicks).toBeGreaterThanOrEqual(20)
+        expect(settings.intervalTicks).toBeLessThanOrEqual(40)
+      }
+    }),
+  )
+
   it.effect('a passive mob spawns by the same distance and surface facts, but is never light-gated', () =>
     Effect.sync(() => {
-      // COW_KIND is in PASSIVE_MOB_KINDS, so `nether` is false for it and the
-      // final `nether && blockLight > 7` guard can never refuse it — a cow
+      // COW_KIND is in PASSIVE_MOB_KINDS, so the hostile block-light guard does
+      // not refuse it — a cow
       // spawns at noon in a lit field, unlike a creeper.
       expect(canMobSpawnAt(COW_KIND, candidate({ timeOfDay: 0.5, blockLight: 15 }))).toStrictEqual({
         _tag: 'Spawn',
@@ -620,7 +651,7 @@ describe('canMobSpawnAt: the ecosystem roster on top of the hostile rule', () =>
         canMobSpawnAt(COW_KIND, candidate({ distanceToPlayerBlocksXZ: Number.NaN })),
       ).toStrictEqual({ _tag: 'Refused', reason: 'unmeasurable' })
       expect(
-        canMobSpawnAt(COW_KIND, candidate({ distanceToPlayerBlocksXZ: 15 })),
+        canMobSpawnAt(COW_KIND, candidate({ distanceToPlayerBlocksXZ: 23 })),
       ).toStrictEqual({ _tag: 'Refused', reason: 'too-close' })
       expect(
         canMobSpawnAt(COW_KIND, candidate({ distanceToPlayerBlocksXZ: 41 })),
@@ -638,18 +669,17 @@ describe('canMobSpawnAt: the ecosystem roster on top of the hostile rule', () =>
     Effect.sync(() => {
       // ZOMBIFIED_PIGLIN_KIND and BLAZE_KIND are both ecosystem AND nether-hostile
       // kinds: `ecosystemDimensionAllows` only lets them through in 'nether', and
-      // once through, `nether && blockLight > 7` is the guard a passive mob never
-      // reaches.
+      // once through, block light must be zero, which a passive mob does not need.
       expect(
         canMobSpawnAt(
           BLAZE_KIND,
-          candidate({ dimension: 'nether', blockLight: 15 }),
+          candidate({ dimension: 'nether', biome: 'NETHER', blockLight: 15 }),
         ),
       ).toStrictEqual({ _tag: 'Refused', reason: 'too-bright' })
       expect(
         canMobSpawnAt(
           ZOMBIFIED_PIGLIN_KIND,
-          candidate({ dimension: 'nether', blockLight: 7 }),
+          candidate({ dimension: 'nether', biome: 'NETHER', blockLight: 0 }),
         ),
       ).toStrictEqual({ _tag: 'Spawn' })
     }),
@@ -1334,7 +1364,7 @@ describe('the sweep: a mob stops existing when nobody is near it', () => {
   it.effect('nothing this repository can SPAWN is ever swept on the frame it spawns', () =>
     Effect.sync(() => {
       // The two rules are the ends of one budget and this is the sentence that
-      // says they agree: the whole 16..40 band sits inside 128, with 88 blocks
+      // says they agree: the whole 24..40 band sits inside 128, with 88 blocks
       // of slack. A despawn distance under 40 would make a spawner that spawns
       // and immediately sweeps, and neither rule alone would look wrong.
       for (const distance of [MIN_SPAWN_DISTANCE_BLOCKS, 28, MAX_SPAWN_DISTANCE_BLOCKS]) {
@@ -1391,8 +1421,10 @@ describe('the sweep: a mob stops existing when nobody is near it', () => {
         footBlock: AIR_BLOCK_ID,
         headBlock: AIR_BLOCK_ID,
         blockLight: Number.NaN,
+        skyLight: SkyLightLevel(0),
+        biome: 'PLAINS',
         timeOfDay: 0.9,
-        distanceToPlayerBlocksXZ: 20,
+        distanceToPlayerBlocksXZ: 30,
       })
       expect(refused).toStrictEqual({ _tag: 'Refused', reason: 'unmeasurable' })
       expect(despawnVerdict(candidate({ distanceToPlayerBlocks: Number.NaN }))).toStrictEqual({
@@ -1479,8 +1511,10 @@ describe('the mob rules are deterministic by construction', () => {
           footBlock: AIR_BLOCK_ID,
           headBlock: AIR_BLOCK_ID,
           blockLight: 0,
+          skyLight: SkyLightLevel(0),
+          biome: 'PLAINS',
           timeOfDay: 0.9,
-          distanceToPlayerBlocksXZ: 20,
+          distanceToPlayerBlocksXZ: 30,
         })
         trace.push(`spawn:${verdict._tag}`)
 

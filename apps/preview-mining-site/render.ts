@@ -9,7 +9,12 @@
  * gives.
  */
 import { padEnd, padStart, type Rgb, type Style } from './ansi'
-import type { DayPhase } from '../../src/domain/day-night'
+import {
+  DAWN_FRACTION,
+  DUSK_FRACTION,
+  NOON_FRACTION,
+  type DayPhase,
+} from '../../src/domain/day-night'
 import { FALLING_BLOCK_MOVES_PER_TICK } from '../../src/domain/falling-block'
 import {
   BlockAxis,
@@ -344,9 +349,9 @@ export const renderTimeScreen = (
   // hard-coded caption line is how a chart ends up lying about its own axis.
   const marks: ReadonlyArray<readonly [number, string]> = [
     [0, '0 midnight'],
-    [0.25, '0.25 dawn'],
-    [0.5, '0.5 noon'],
-    [0.75, '0.75 dusk'],
+    [NOON_FRACTION, `${String(NOON_FRACTION)} noon`],
+    [DUSK_FRACTION, `${String(DUSK_FRACTION)} dusk`],
+    [DAWN_FRACTION, `${String(DAWN_FRACTION)} dawn`],
   ]
 
   const place = (glyphFor: (caption: string) => string): string => {
@@ -576,8 +581,8 @@ export const renderArenaScreen = (
     '',
     style.bold('  1. spawn condition — domain/mob/hostile-spawn.ts'),
     `    ground ${padEnd(groundName(candidate.groundBlock), 22)}${style.dim('u cycles')}`,
-    `    light  ${padEnd(String(candidate.blockLight), 22)}${style.dim('t cycles — the gate is > 7')}`,
-    `    range  ${padEnd(`${String(candidate.distanceToPlayerBlocksXZ)} blocks`, 22)}${style.dim('[ ] adjust — the band is 16..40')}`,
+    `    light  ${padEnd(String(candidate.blockLight), 22)}${style.dim('t cycles — hostiles require block light 0')}`,
+    `    range  ${padEnd(`${String(candidate.distanceToPlayerBlocksXZ)} blocks`, 22)}${style.dim('[ ] adjust — the band is 24..40')}`,
     `    hour   ${padEnd(timeOfDay.toFixed(3), 22)}${style.dim('the TIME screen owns it (DN-GP-7); noon refuses')}`,
     '',
     `    ${style.bold('s')} asks the rule -> ${

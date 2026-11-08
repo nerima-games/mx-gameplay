@@ -1,4 +1,5 @@
 import { describe, expect, it } from '@effect/vitest'
+import { SkyLightLevel } from '../../src/domain/mob/hostile-spawn'
 import {
   AIR_BLOCK_ID,
   DeltaTimeSecs,
@@ -116,8 +117,10 @@ describe('mob lifecycle gameplay scenarios', () => {
           footBlock: AIR_BLOCK_ID,
           headBlock: AIR_BLOCK_ID,
           blockLight: 0,
+          skyLight: SkyLightLevel(0),
+          biome: 'PLAINS',
           timeOfDay: 0.5,
-          distanceToPlayerBlocksXZ: 20,
+          distanceToPlayerBlocksXZ: 30,
           dimension: 'overworld',
         },
         kind: PASSIVE_MOB_KINDS[0],
@@ -152,8 +155,10 @@ describe('mob lifecycle gameplay scenarios', () => {
           footBlock: AIR_BLOCK_ID,
           headBlock: AIR_BLOCK_ID,
           blockLight: 0,
+          skyLight: SkyLightLevel(0),
+          biome: 'PLAINS',
           timeOfDay: 0.9,
-          distanceToPlayerBlocksXZ: 20,
+          distanceToPlayerBlocksXZ: 30,
           dimension: 'overworld',
         },
         kind: CREEPER_KIND,

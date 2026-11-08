@@ -1,7 +1,7 @@
 /// <reference lib="dom" />
 
 import { describe, expect, it } from '@effect/vitest'
-import { AngleRadians, AIR_BLOCK_ID, AttackRangeDistance, BlockAxis, DimensionIdSchema, InterpolationFraction, PositionAxis, ProjectileIdSchema, SimulationTickSchema, blockIdOf, blockPosition, maxStackCountForItem, position, position as kernelPosition } from '@nerima-games/mc-kernel'
+import { AngleRadians, AIR_BLOCK_ID, AttackRangeDistance, BlockAxis, DimensionIdSchema, InterpolationFraction, PositionAxis, ProjectileIdSchema, SimulationTick, SimulationTickSchema, blockIdOf, blockPosition, maxStackCountForItem, position, position as kernelPosition } from '@nerima-games/mc-kernel'
 import { endArrivalDescriptor } from '@nerima-games/mc-worldgen'
 import {
   BREWING_FUEL_CHARGES,
@@ -12,6 +12,7 @@ import {
 } from '@nerima-games/mc-sim'
 import { Brand, Effect, Option, Ref, Result, Schema } from 'effect'
 import { createExperienceOrbValue } from '../src/domain/entities/xp-orb'
+import { SkyLightLevel } from '../src/domain/mob/hostile-spawn'
 import { makeVillager } from '../src/domain/villager-trade.js'
 import { TNT_BLOCK_ID } from '../src/domain/interactions/ignite-tnt'
 import { blockLoot, NO_TOOL } from '../src/domain/interactions/block-loot'
@@ -53,7 +54,7 @@ const mountScenario = (
   scenarioId: string,
   scenarioWorld: WorldSpec = world,
   observe?: ScenarioSetup['observe'],
-  time = 12_000,
+  time = 21_600,
 ) =>
   mountGameplayScenario(
     {
@@ -80,7 +81,7 @@ describe('browser debug Site contract', () => {
 
   it.effect('sets the gameplay TimeService clock while retaining the previous snapshot shape', () =>
     Effect.gen(function* () {
-      const mount = mountScenario('contract-clock')
+      const mount = mountScenario('contract-clock', world, undefined, 12_000)
 
       expect(yield* mount.site.time.timeOfDay).toBe(0.5)
       expect(yield* Ref.get(mount.site.state.timeOfDay)).toBe(0.5)
@@ -392,7 +393,7 @@ describe('browser debug Site contract', () => {
   it.effect('observes the identity and position of a gameplay-spawned Mob on demand', () =>
     Effect.gen(function* () {
       const mobWorld: WorldSpec = {
-        cells: [[16, 63, STONE]],
+        cells: [[25, 63, STONE]],
         loadedChunks: ['0,0', '1,0'],
         z: 0,
       }
@@ -403,11 +404,13 @@ describe('browser debug Site contract', () => {
           footBlock: AIR_BLOCK_ID,
           headBlock: AIR_BLOCK_ID,
           blockLight: 0,
+          skyLight: SkyLightLevel(0),
+          biome: 'PLAINS',
           timeOfDay: 0.9,
-          distanceToPlayerBlocksXZ: Math.hypot(16.5, 0.5),
+          distanceToPlayerBlocksXZ: Math.hypot(25.5, 0.5),
         },
         kind: CREEPER_KIND,
-        feetPosition: position(PositionAxis(16.5), PositionAxis(64), PositionAxis(0.5)),
+        feetPosition: position(PositionAxis(25.5), PositionAxis(64), PositionAxis(0.5)),
       }
       const mount = mountScenario('contract-mob-observation', mobWorld, (site) => ({
         mobs: Effect.runSync(site.observeMobs()),
@@ -423,7 +426,7 @@ describe('browser debug Site contract', () => {
         position: { y: 64 },
       })
       expect(mobs?.[0]?.id).toEqual(expect.any(String))
-      expect(Math.abs((mobs?.[0]?.position.x ?? Number.NaN) - 16.5)).toBeLessThanOrEqual(0.1)
+      expect(Math.abs((mobs?.[0]?.position.x ?? Number.NaN) - 25.5)).toBeLessThanOrEqual(0.1)
       expect(Math.abs((mobs?.[0]?.position.z ?? Number.NaN) - 0.5)).toBeLessThanOrEqual(0.1)
       mount.dispose()
     }),
@@ -478,7 +481,7 @@ describe('browser debug Site contract', () => {
       const mobWorld: WorldSpec = {
         cells: [[0, 63, STONE]],
         loadedChunks: ['0,-2'],
-        z: -17,
+        z: -25,
       }
       const attemptAt = (z: number): MobSpawnAttempt => ({
         candidate: {
@@ -487,6 +490,8 @@ describe('browser debug Site contract', () => {
           footBlock: AIR_BLOCK_ID,
           headBlock: AIR_BLOCK_ID,
           blockLight: 0,
+          skyLight: SkyLightLevel(0),
+          biome: 'PLAINS',
           timeOfDay: 0.9,
           distanceToPlayerBlocksXZ: Math.hypot(0.5, z + 0.5),
         },
@@ -494,11 +499,11 @@ describe('browser debug Site contract', () => {
         feetPosition: position(PositionAxis(0.5), PositionAxis(64), PositionAxis(z + 0.5)),
       })
       const mount = mountScenario('contract-targeted-melee', mobWorld)
-      yield* requestMobSpawn(mount.site.state, attemptAt(-17))
+      yield* requestMobSpawn(mount.site.state, attemptAt(-25))
       mount.advance()
       const beforeMob = mount.observeMobs()[0]
       expect(beforeMob).toBeDefined()
-      const selected = mount.requestTargetedPrimaryAttack({ meleeReach: AttackRangeDistance(20) })
+      const selected = mount.requestTargetedPrimaryAttack({ meleeReach: AttackRangeDistance(30) })
       expect(selected._tag).toBe('Melee')
       if (selected._tag !== 'Melee' || beforeMob === undefined) {
         throw new Error('Expected the targeted primary attack to select the spawned Mob')
@@ -512,14 +517,14 @@ describe('browser debug Site contract', () => {
       const behindMount = mountScenario('contract-targeted-melee-negative', {
         cells: [[0, 63, STONE]],
         loadedChunks: ['0,1'],
-        z: 16,
+        z: 24,
       })
-      yield* requestMobSpawn(behindMount.site.state, attemptAt(16))
+      yield* requestMobSpawn(behindMount.site.state, attemptAt(24))
       behindMount.advance()
       const behindMob = behindMount.observeMobs()[0]
       expect(behindMob).toBeDefined()
       if (behindMob === undefined) throw new Error('Expected the negative-control Mob to spawn')
-      expect(behindMount.requestTargetedPrimaryAttack({ meleeReach: AttackRangeDistance(20) }))
+      expect(behindMount.requestTargetedPrimaryAttack({ meleeReach: AttackRangeDistance(30) }))
         .toStrictEqual({ _tag: 'None' })
       behindMount.advance()
       expect(behindMount.observeMobs().find(({ id }) => id === behindMob.id)?.healthPoints)
@@ -538,7 +543,11 @@ describe('browser debug Site contract', () => {
       const initialPose = portalMount.observePlayerPose()
       expect(initialPose).toMatchObject({ dimension: 'overworld', position: { x: 0, y: 64, z: 0 } })
       const activationFrames = Math.ceil(PORTAL_ACTIVATION_SECS / FRAME_DELTA) + 1
-      for (let frame = 0; frame < activationFrames; frame += 1) portalMount.advance()
+      for (let frame = 0; frame < activationFrames; frame += 1) {
+        const tick = Effect.runSync(Ref.get(portalMount.site.state.tickCount))
+        Effect.runSync(Ref.set(portalMount.site.state.lastHostileSpawnTick, SimulationTick(tick)))
+        portalMount.advance()
+      }
       const expectedArrival = endArrivalDescriptor(END_ARRIVAL_ORIGIN).spawn
       const arrivedPose = portalMount.observePlayerPose()
       expect(arrivedPose).toStrictEqual({ dimension: 'end', position: expectedArrival })
@@ -547,7 +556,11 @@ describe('browser debug Site contract', () => {
       portalMount.dispose()
 
       const noPortalMount = mountScenario('contract-live-player-pose-negative')
-      for (let frame = 0; frame < activationFrames; frame += 1) noPortalMount.advance()
+      for (let frame = 0; frame < activationFrames; frame += 1) {
+        const tick = Effect.runSync(Ref.get(noPortalMount.site.state.tickCount))
+        Effect.runSync(Ref.set(noPortalMount.site.state.lastHostileSpawnTick, SimulationTick(tick)))
+        noPortalMount.advance()
+      }
       expect(noPortalMount.observePlayerPose()).toStrictEqual(initialPose)
       noPortalMount.dispose()
     }),

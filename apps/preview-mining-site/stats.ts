@@ -50,7 +50,7 @@ import {
   DORMANT_FUSE,
   stepCreeperFuse,
 } from '../../src/domain/mob/creeper-fuse'
-import { canHostileSpawnAt } from '../../src/domain/mob/hostile-spawn'
+import { canHostileSpawnAt, SkyLightLevel } from '../../src/domain/mob/hostile-spawn'
 import { carryOver, splitBudget, type FluidWorkItem } from '../../src/domain/fluid-frontier'
 import { GAMEPLAY_STAGE_IDS } from '../../src/stages/stage-ids'
 import { SCENARIOS, scenarioByName } from './scenarios'
@@ -1012,8 +1012,10 @@ const spawnGate = Effect.sync((): Check => {
         footBlock: AIR_BLOCK_ID,
         headBlock: AIR_BLOCK_ID,
         blockLight: light,
+        skyLight: SkyLightLevel(15),
+        biome: 'PLAINS',
         timeOfDay: 0.9,
-        distanceToPlayerBlocksXZ: 20,
+        distanceToPlayerBlocksXZ: 30,
       })
       if (verdict._tag === 'Spawn' && (block === 10 || block === 13)) {
         canopyAccepted += 1
@@ -1029,8 +1031,10 @@ const spawnGate = Effect.sync((): Check => {
       footBlock: AIR_BLOCK_ID,
       headBlock: AIR_BLOCK_ID,
       blockLight: light,
+      skyLight: SkyLightLevel(15),
+      biome: 'PLAINS',
       timeOfDay: 0.5,
-      distanceToPlayerBlocksXZ: 20,
+      distanceToPlayerBlocksXZ: 30,
     })
     if (verdict._tag === 'Spawn') {
       daylightAccepted += 1

@@ -118,6 +118,7 @@ import { explosionDamageAmount, explosionDamageAt, explosionRadius } from '../..
 import {
   canHostileSpawnAt,
   MIN_SPAWN_DISTANCE_BLOCKS,
+  SkyLightLevel,
   type SpawnCandidate,
   type SpawnVerdict,
 } from '../../src/domain/mob/hostile-spawn'
@@ -658,6 +659,8 @@ export const arenaCandidate = (state: ArenaState, timeOfDay: number): SpawnCandi
   footBlock: AIR_BLOCK_ID,
   headBlock: AIR_BLOCK_ID,
   blockLight: state.site.blockLight,
+  skyLight: SkyLightLevel(15),
+  biome: 'PLAINS',
   timeOfDay,
   distanceToPlayerBlocksXZ: state.site.distanceBlocks,
 })
@@ -1042,7 +1045,7 @@ export const arenaIsDead = (vitals: Vitals): boolean => isDead(vitals)
  * `shulker-shell.ts`, and there is no eighth file.
  */
 export const ARENA_IMPLEMENTED: ReadonlyArray<readonly [string, string]> = [
-  ['spawn condition', 'domain/mob/hostile-spawn.ts — night, light <= 7, kernel’s validSpawnSurface, 16-40 blocks'],
+  ['spawn condition', 'domain/mob/hostile-spawn.ts — night window, block light 0, raw-sky daylight gate, validSpawnSurface, 24-40 blocks, coarse biome table'],
   ['creeper fuse', 'domain/mob/creeper-fuse.ts — 3-block ignition, 1.5s, cancels on retreat, detonates once'],
   ['blast + death cause', 'domain/mob/explosion.ts — the reference’s curve, and the cause reaches the message'],
   ['enderman teleport', 'domain/mob/enderman-teleport.ts — three triggers, and an 8..32 block offset with no y'],
@@ -1063,7 +1066,7 @@ export const ARENA_IMPLEMENTED: ReadonlyArray<readonly [string, string]> = [
 export const ARENA_WIRED: ReadonlyArray<readonly [string, string]> = [
   ['the stage runs them', 'domain/entities/mob-frame.ts — one sweep over mc-sim’s roster; an idle frame allocates nothing per mob'],
   ['mob death rewards reach the host', 'site.ts drains mobDrops into dropped-item entities and credits mobExperience to its cumulative XP ledger once per frame'],
-  ['the population cap', 'MAX_HOSTILE_COUNT = 16 against countOfKind, re-read per candidate. The census hostile-spawn.ts was waiting for'],
+  ['the population cap', 'MAX_HOSTILE_COUNT = 9 on Normal against countOfKind, re-read per candidate. The census hostile-spawn.ts was waiting for'],
   ['the blast crater', 'domain/interactions/explosion-crater.ts — floor(power) = 3, and every emptied cell feeds `disturb`'],
   ['rolls without an RNG', 'domain/frame-rolls.ts — a seed in the frame state, so a whole scenario replays'],
 ]
@@ -1113,16 +1116,6 @@ export const ARENA_MISSING: ReadonlyArray<readonly [string, string]> = [
   ['age-based despawn', 'vanilla sweeps on time as well as distance; the reference has no age on an entity and neither has this'],
   ['the mob roster’s other SIX', 'HOSTILE_KINDS has two rows and the reference rotates eight. The missing six are not a table this repository can copy — each needs a domain/mob/ rule behind it, or the row is a claim that this build has zombies. The PICK is also uniform where the reference uses a round-robin cursor, which is per-world state and therefore mc-sim’s'],
   ['AI / pathfinding', 'the creeper’s distance is an arrow key on this screen. The teleport is now the ONLY write to feetPosition anywhere — walking, chasing and fleeing on foot are all still missing'],
-  // WAS: 'THE SPAWN SEARCH — the stage applies the verdict to candidates it is
-  // handed. The ring that offers them needs mc-worldgen's block LIGHT
-  // (ChunkStoreApi has no light query) and mc-sim's hour'. Both halves are
-  // answered. mc-worldgen built the light grid it had claimed to own since
-  // `application/chunk-store.ts`'s header was written, `ChunkStoreApi.getLight`
-  // is the query, and the hour reaches the stage through an inbox `Ref` argued
-  // in `stages/registration.ts` beside `targetPosition`'s. The ring itself is
-  // `domain/entities/mob-spawn-search.ts`. What is left of the row is the ONE
-  // measurement that is still a stand-in.
-  ['a spawn candidate’s ALTITUDE', 'the ring searches the player’s own feet plane, not the surface. The reference scans down a column, which is the scan whose lack of a surface test hostile-spawn.ts was written to fix; the honest replacement is a heightmap the STORE maintains, since surfaceHeightAt answers about generated terrain and not about anything a player built'],
   ['the player’s position', 'targetPosition is an inbox. PlayerService.cameraPose requires ClockPort, and a local ClockPort is worse than a narrow mirror'],
   ['a mob’s death CAUSE', 'DamageCause and Vitals.lastDamageCause exist in mc-sim, but mob EntityState exposes no Vitals or cause field, so the cause is not retained for mob death'],
   ['blast resistance', 'the crater sets every cell to AIR — obsidian and bedrock included. One flag in kernel’s capability table, no edit here'],
