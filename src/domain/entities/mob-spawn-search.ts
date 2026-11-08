@@ -249,19 +249,11 @@ export const searchSpawnCandidates = (
         )
         let columnUnreadable = false
         const attemptsBeforeColumn = attempts.length
-        const positionX = Result.getOrUndefined(PositionAxis.result(x))
-        const positionZ = Result.getOrUndefined(PositionAxis.result(z))
-        if (positionX === undefined || positionZ === undefined) {
-          unreadable += 1
-          continue
-        }
+        const positionX = PositionAxis(x)
+        const positionZ = PositionAxis(z)
 
         for (let groundY = CHUNK_HEIGHT - 3; groundY >= 0; groundY -= 1) {
-          const positionY = Result.getOrUndefined(PositionAxis.result(groundY + 1))
-          if (positionY === undefined) {
-            columnUnreadable = true
-            break
-          }
+          const positionY = PositionAxis(groundY + 1)
           const groundValue = chunk.blocks[blockIndex(local.lx, groundY, local.lz)]
           const footValue = chunk.blocks[blockIndex(local.lx, groundY + 1, local.lz)]
           const headValue = chunk.blocks[blockIndex(local.lx, groundY + 2, local.lz)]
