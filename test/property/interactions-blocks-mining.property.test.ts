@@ -39,7 +39,6 @@ const tools: ReadonlyArray<ItemType | null> = [
 describe('mining progress properties', () => {
   it.effect('keeps an unsuitable mining category at one fifth of hand speed regardless of Efficiency', () =>
     Effect.sync(() => {
-      // This catches Efficiency being applied to an unsuitable tool or the 5x penalty drifting.
       fc.assert(
         fc.property(fc.integer({ min: 0, max: 5 }), (efficiencyLevel) => {
           const wrongTool = miningToolForItem('wooden_pickaxe', efficiencyLevel)
