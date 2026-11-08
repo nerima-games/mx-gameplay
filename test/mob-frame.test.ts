@@ -20,7 +20,7 @@
  */
 import { describe, expect, it } from '@effect/vitest'
 import { position as atPosition } from './support/coordinate-fixtures'
-import { Effect, Result } from 'effect'
+import { Brand, Effect, Result } from 'effect'
 import type { Position } from '@nerima-games/mc-kernel'
 import {
   CREEPER_KIND,
@@ -55,8 +55,10 @@ import {
   type Blast,
   type DroppedItemBehaviour,
   type EndermanTeleportProbe,
+  type MobExperienceRoll,
   type MobBehaviour,
   type MobCasualty,
+  type MobUndroppedEquipmentCount,
   type MobRoster,
   type MobSpawnAttempt,
   xpRewardOfKind,
@@ -1082,9 +1084,11 @@ describe('experienceOfCasualties', () => {
       const babyCow = EntityId('e:baby-cow')
       const burningCow = EntityId('e:burning-cow')
       const chargedCreeperKill = EntityId('e:charged-creeper-kill')
+      const smallSlime = EntityId('e:small-slime')
       const drops = rollCasualtyDrops([
         { id: babyCow, kind: COW_KIND, at: ORIGIN, age: 'baby' },
         { id: burningCow, kind: COW_KIND, at: ORIGIN, burning: true },
+        { id: smallSlime, kind: EntityKind('slime'), at: ORIGIN, size: 'small' },
         {
           id: chargedCreeperKill,
           kind: EntityKind('wither_skeleton'),
@@ -1102,7 +1106,9 @@ describe('experienceOfCasualties', () => {
         item: 'wither_skeleton_skull',
       }))
 
-      const smallSlime = EntityId('e:small-slime')
+      const equipmentCount = Brand.nominal<MobUndroppedEquipmentCount>()(1)
+      const equipmentRoll = Brand.nominal<MobExperienceRoll>()(0)
+      const equippedZombie = EntityId('e:equipped-zombie')
       expect(experienceOfCasualties([{
         id: smallSlime,
         kind: EntityKind('slime'),
@@ -1112,8 +1118,18 @@ describe('experienceOfCasualties', () => {
         deathTick: atTick,
         size: 'small',
         equipmentXpRolls: [],
+      }, {
+        id: equippedZombie,
+        kind: ZOMBIE_KIND,
+        at: ORIGIN,
+        killCredit: 'player',
+        lastHitTick: atTick,
+        deathTick: atTick,
+        undroppedEquipmentCount: equipmentCount,
+        equipmentXpRolls: [equipmentRoll],
       }])).toStrictEqual([
         { source: smallSlime, kind: EntityKind('slime'), at: ORIGIN, amount: 1 },
+        { source: equippedZombie, kind: ZOMBIE_KIND, at: ORIGIN, amount: 6 },
       ])
     }),
   )
