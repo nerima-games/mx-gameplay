@@ -90,11 +90,15 @@ describe('melee attack cooldown', () => {
     const swordReady = meleeAttackCooldownForItem('iron_sword', 12)
     const swordStart = meleeAttackCooldownForItem('iron_sword', 0)
     const axeStart = meleeAttackCooldownForItem('wooden_axe', 0)
+    const emptyHandStart = meleeAttackCooldownForItem(undefined, 0)
+    const rangedItemStart = meleeAttackCooldownForItem('bow', 0)
 
     expect(MELEE_ATTACK_COOLDOWN_TICKS_PER_SECOND).toBe(20)
     expect(DEFAULT_MELEE_ATTACK_SPEED).toBe(4)
     expect(Result.isSuccess(swordStart) && swordStart.success.charge).toBeCloseTo(0.04)
     expect(Result.isSuccess(axeStart) && axeStart.success.charge).toBeCloseTo(0.02)
+    expect(Result.isSuccess(emptyHandStart) && emptyHandStart.success.charge).toBe(0.1)
+    expect(Result.isSuccess(rangedItemStart) && rangedItemStart.success.charge).toBe(0.1)
     expect(Result.isSuccess(atStart) && atStart.success.charge).toBe(0.1)
     expect(Result.isSuccess(atStart) && atStart.success.damageMultiplier).toBeCloseTo(0.208)
     expect(Result.isSuccess(oneTickShort) && oneTickShort.success.charge).toBe(0.9)
@@ -108,6 +112,9 @@ describe('melee attack cooldown', () => {
       Result.fail('invalid-input'),
     )
     expect(meleeAttackCooldown({ attackSpeed: 1, ticksSinceLastAttack: -1 })).toStrictEqual(
+      Result.fail('invalid-input'),
+    )
+    expect(meleeAttackCooldownForItem('not-an-item' as never, 0)).toStrictEqual(
       Result.fail('invalid-input'),
     )
     expect(meleeAttackCooldown({ attackSpeed: Number.NaN, ticksSinceLastAttack: 1 })).toStrictEqual(
@@ -199,6 +206,15 @@ describe('C2 melee preparation', () => {
     })
   })
 
+  it('rejects a damage state from a later authoritative tick', () => {
+    const result = prepareMeleeAttack(intent, {
+      ...input,
+      targetDamageState: damageImmunityState(13, 4),
+    })
+
+    expect(result).toStrictEqual(Result.fail('invalid-authoritative-state'))
+  })
+
   it('rejects a target behind the authoritative block ray without mutating inputs', () => {
     const snapshot = JSON.stringify({ input, zombie })
     const result = prepareMeleeAttack(intent, { ...input, blockDistance: AttackRangeDistance(1) })
@@ -222,6 +238,12 @@ describe('C2 melee preparation', () => {
     Reflect.set(invalidPose, 'pose', null)
     const invalidEntity = { ...input }
     Reflect.set(invalidEntity, 'entities', [null])
+    const invalidCritical = { ...input }
+    Reflect.set(invalidCritical, 'critical', 'true')
+    const invalidHeldItem = { ...input }
+    Reflect.set(invalidHeldItem, 'heldItem', 'not-an-item')
+    const invalidAttackTime = { ...input }
+    Reflect.set(invalidAttackTime, 'ticksSinceLastAttack', -1)
 
     expect(prepareMeleeAttack(intent, missingEntities)).toStrictEqual(
       Result.fail('invalid-authoritative-state'),
@@ -235,6 +257,22 @@ describe('C2 melee preparation', () => {
     expect(prepareMeleeAttack(intent, invalidEntity)).toStrictEqual(
       Result.fail('invalid-authoritative-state'),
     )
+    expect(prepareMeleeAttack(intent, invalidCritical)).toStrictEqual(
+      Result.fail('invalid-authoritative-state'),
+    )
+    expect(prepareMeleeAttack(intent, invalidHeldItem)).toStrictEqual(
+      Result.fail('invalid-authoritative-state'),
+    )
+    expect(prepareMeleeAttack(intent, invalidAttackTime)).toStrictEqual(
+      Result.fail('invalid-attack-timing'),
+    )
+  })
+
+  it('rejects a target id that cannot be emitted in the damage event', () => {
+    const invalidIdTarget = { ...zombie, id: '' as typeof zombie.id }
+    const result = prepareMeleeAttack(intent, { ...input, entities: [invalidIdTarget] })
+
+    expect(result).toStrictEqual(Result.fail('invalid-authoritative-state'))
   })
 
   it('returns no-target when no hostile entities are in the authoritative roster', () => {

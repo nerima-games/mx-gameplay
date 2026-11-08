@@ -42,7 +42,7 @@ describe('melee combat properties', () => {
       FastCheck.property(FastCheck.anything(), (input: unknown) => {
         const result = meleeAttackCooldown(input)
         if (Result.isFailure(result)) {
-          return result.failure === 'invalid-input' || result.failure === 'invalid-result'
+          return result.failure === 'invalid-input'
         }
         const decoded = Schema.decodeUnknownResult(MeleeAttackCooldownSchema, {
           onExcessProperty: 'error',
@@ -59,9 +59,7 @@ describe('melee combat properties', () => {
       FastCheck.property(FastCheck.anything(), (input: unknown) => {
         const result = resolveDamageWithInvulnerability(input)
         if (Result.isFailure(result)) {
-          return result.failure === 'invalid-input' ||
-            result.failure === 'invalid-tick-order' ||
-            result.failure === 'invalid-result'
+          return result.failure === 'invalid-input' || result.failure === 'invalid-tick-order'
         }
         const decoded = Schema.decodeUnknownResult(DamageImmunityResolutionSchema, {
           onExcessProperty: 'error',
@@ -177,8 +175,7 @@ describe('melee combat properties', () => {
           if (Result.isFailure(result)) {
             return result.failure === 'invalid-attack' ||
               result.failure === 'invalid-shield-state' ||
-              result.failure === 'invalid-damage-state' ||
-              result.failure === 'invalid-result'
+              result.failure === 'invalid-damage-state'
           }
           const decoded = Schema.decodeUnknownResult(HostileAttackPreparationSchema, {
             onExcessProperty: 'error',
@@ -204,8 +201,7 @@ describe('melee combat properties', () => {
                 result.failure === 'invalid-input' ||
                 result.failure === 'invalid-attack' ||
                 result.failure === 'invalid-shield-state' ||
-                result.failure === 'invalid-damage-state' ||
-                result.failure === 'invalid-result'
+                result.failure === 'invalid-damage-state'
             }
             const decoded = Schema.decodeUnknownResult(HostileAttackPreparationSchema, {
               onExcessProperty: 'error',

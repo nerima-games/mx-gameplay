@@ -87,6 +87,11 @@ describe('hostile locomotion', () => {
 describe('player damage resolution', () => {
   it('holds hurt resistance through tick 9, expires at tick 10, and applies only a stronger-hit delta', () => {
     const previousState = { lastDamageTick: simulationTick(10), lastDamageAmount: 4 }
+    const earlierTick = resolveDamageWithInvulnerability({
+      tick: simulationTick(9),
+      amount: 4,
+      previousState,
+    })
     const withinWindow = resolveDamageWithInvulnerability({
       tick: simulationTick(10 + DAMAGE_IMMUNITY_TICKS - 1),
       amount: 4,
@@ -113,6 +118,7 @@ describe('player damage resolution', () => {
         })
 
     expect(DAMAGE_IMMUNITY_TICKS).toBe(10)
+    expect(earlierTick).toStrictEqual(Result.fail('invalid-tick-order'))
     expect(Result.isSuccess(withinWindow) && withinWindow.success.appliedAmount).toBe(0)
     expect(Result.isSuccess(withinWindow) && withinWindow.success.state).toStrictEqual(previousState)
     expect(Result.isSuccess(strongerHit) && strongerHit.success.appliedAmount).toBe(3)
@@ -168,6 +174,9 @@ describe('player damage resolution', () => {
     expect(cooling.damages).toStrictEqual([])
     const ready = resolveHostileContacts([zombie(1)], target, 0.5, cooling.cooldowns)
     expect(ready.damages).toHaveLength(1)
+
+    const peaceful = resolveHostileContacts([zombie(1)], target, 0.25, new Map(), 'peaceful')
+    expect(peaceful.damages).toStrictEqual([])
   })
 
   it('without a target, no damage is emitted but a non-finite dt still leaves cooldowns untouched', () => {
@@ -180,19 +189,14 @@ describe('player damage resolution', () => {
   })
 
   it('attributes explosion damage to the detonating mob', () => {
-    expect(
-      resolvePlayerBlastDamage(
-        [
-          {
-            source: EntityId('creeper:1'),
-            kind: EntityKind('creeper'),
-            at: atPosition(0, 64, 0 ),
-            explosion: { source: 'creeper', power: 3 },
-          },
-        ],
-        atPosition(2, 64, 0 ),
-      ),
-    ).toStrictEqual([
+    const blast = {
+      source: EntityId('creeper:1'),
+      kind: EntityKind('creeper'),
+      at: atPosition(0, 64, 0 ),
+      explosion: { source: 'creeper' as const, power: 3 },
+    }
+    const target = atPosition(2, 64, 0 )
+    expect(resolvePlayerBlastDamage([blast], target)).toStrictEqual([
       {
         _tag: 'Explosion',
         source: 'creeper:1',
@@ -202,6 +206,7 @@ describe('player damage resolution', () => {
         damage: { amount: 24, cause: 'explosion' },
       },
     ])
+    expect(resolvePlayerBlastDamage([blast], target, 'peaceful')).toStrictEqual([])
   })
 
   it('drops a blast whose damage falls off to zero at distance, rather than reporting a zero-amount event', () => {
@@ -264,6 +269,16 @@ describe(`C2 shield blocking (${SHIELD_FIXTURE.source}, ${SHIELD_FIXTURE.edition
       kind: 'melee' as const,
       amount: 3.1,
     },
+  }
+  const hostileAttackInput = {
+    tick: tick(15),
+    dimension,
+    pose,
+    hasShield: true,
+    currentShield: input.current,
+    incoming: input.incoming,
+    difficulty: 'normal' as const,
+    damageState: null,
   }
 
   it('strictly prepares a front block at tick 5 and its 3 HP durability candidate', () => {
@@ -330,6 +345,47 @@ describe(`C2 shield blocking (${SHIELD_FIXTURE.source}, ${SHIELD_FIXTURE.edition
       appliedAmount: 4,
       damageState: { lastDamageTick: tick(15), lastDamageAmount: 4 },
     })
+  })
+
+  it('rejects malformed hostile attack state and propagates preparation failures', () => {
+    const invalidInput = prepareHostileAttack(intent, { ...hostileAttackInput, tick: -1 })
+    const futureDamageState = prepareHostileAttack(intent, {
+      ...hostileAttackInput,
+      damageState: { lastDamageTick: tick(16), lastDamageAmount: 4 },
+    })
+    const priorDamageState = prepareHostileAttack(
+      { ...intent, blocking: false },
+      {
+        ...hostileAttackInput,
+        hasShield: false,
+        currentShield: null,
+        damageState: { lastDamageTick: tick(10), lastDamageAmount: 4 },
+      },
+    )
+    const invalidAttack = prepareHostileAttack(
+      { ...intent, blocking: false },
+      {
+        ...hostileAttackInput,
+        hasShield: false,
+        currentShield: null,
+        difficulty: 'hard',
+        incoming: { ...input.incoming, amount: Number.MAX_VALUE },
+      },
+    )
+    const invalidShield = prepareHostileAttack(intent, {
+      ...hostileAttackInput,
+      hasShield: false,
+      currentShield: null,
+    })
+
+    expect(invalidInput).toStrictEqual(Result.fail('invalid-input'))
+    expect(futureDamageState).toStrictEqual(Result.fail('invalid-damage-state'))
+    expect(Result.isSuccess(priorDamageState) && priorDamageState.success).toMatchObject({
+      appliedAmount: 0,
+      damageState: { lastDamageTick: tick(10), lastDamageAmount: 4 },
+    })
+    expect(invalidAttack).toStrictEqual(Result.fail('invalid-attack'))
+    expect(invalidShield).toStrictEqual(Result.fail('invalid-shield-state'))
   })
 
   it('requires the full delay and front-facing, and does not block piercing projectiles', () => {

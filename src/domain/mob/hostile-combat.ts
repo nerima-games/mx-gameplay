@@ -78,7 +78,7 @@ export const DamageImmunityStateSchema: Schema.ConstraintDecoder<DamageImmunityS
 
 export type DamageImmunityResolution = Readonly<{
   appliedAmount: AppliedDamageAmount
-  state: DamageImmunityState | null
+  state: DamageImmunityState
 }>
 
 type AppliedDamageAmountValue = Brand.Brand<'AppliedDamageAmount'>
@@ -90,7 +90,7 @@ const AppliedDamageAmountSchema: Schema.Codec<AppliedDamageAmount, number> = Sch
 
 export const DamageImmunityResolutionSchema: Schema.ConstraintDecoder<DamageImmunityResolution> = Schema.Struct({
   appliedAmount: AppliedDamageAmountSchema,
-  state: Schema.NullOr(DamageImmunityStateSchema),
+  state: DamageImmunityStateSchema,
 })
 
 const DamageImmunityInputSchema = Schema.Struct({
@@ -99,7 +99,7 @@ const DamageImmunityInputSchema = Schema.Struct({
   previousState: Schema.NullOr(DamageImmunityStateSchema),
 })
 
-export type DamageImmunityResolutionError = 'invalid-input' | 'invalid-tick-order' | 'invalid-result'
+export type DamageImmunityResolutionError = 'invalid-input' | 'invalid-tick-order'
 
 /** Applies Java Edition's ten-tick hurt resistance to one incoming hit. */
 export const resolveDamageWithInvulnerability = (
@@ -112,7 +112,7 @@ export const resolveDamageWithInvulnerability = (
 
   const { tick, amount, previousState } = decoded.success
   let appliedAmount: number = amount
-  let state: DamageImmunityState | null = { lastDamageTick: tick, lastDamageAmount: amount }
+  let state: DamageImmunityState = { lastDamageTick: tick, lastDamageAmount: amount }
   if (previousState !== null) {
     const ticksSinceLastDamage = tick - previousState.lastDamageTick
     if (ticksSinceLastDamage < 0) return Result.fail('invalid-tick-order')
@@ -129,8 +129,7 @@ export const resolveDamageWithInvulnerability = (
   const result = Schema.decodeUnknownResult(DamageImmunityResolutionSchema, {
     onExcessProperty: 'error',
   })({ appliedAmount, state })
-  if (Result.isFailure(result)) return Result.fail('invalid-result')
-  return Result.succeed(result.success)
+  return Result.succeed(Result.getOrThrow(result))
 }
 
 export type ShieldBlockingPreparation = Readonly<{
@@ -340,7 +339,6 @@ export type HostileAttackPreparationError =
   | 'invalid-attack'
   | 'invalid-shield-state'
   | 'invalid-damage-state'
-  | 'invalid-result'
 
 /** Prepare one hostile hit through difficulty, shield blocking, and hurt resistance. */
 export const prepareHostileAttack = (
@@ -369,9 +367,8 @@ export const prepareHostileAttack = (
   if (Result.isFailure(adjusted)) return Result.fail('invalid-attack')
 
   const incomingAmount = adjusted.success === 0
-    ? Result.succeed(undefined)
-    : Schema.decodeUnknownResult(DamageAmountSchema)(adjusted.success)
-  if (Result.isFailure(incomingAmount)) return Result.fail('invalid-attack')
+    ? undefined
+    : Result.getOrThrow(Schema.decodeUnknownResult(DamageAmountSchema)(adjusted.success))
 
   const shield = prepareShieldBlocking(decodedIntent.success, {
     tick: decodedInput.success.tick,
@@ -379,30 +376,29 @@ export const prepareHostileAttack = (
     pose: decodedInput.success.pose,
     hasShield: decodedInput.success.hasShield,
     current: decodedInput.success.currentShield,
-    ...(incomingAmount.success === undefined
+    ...(incomingAmount === undefined
       ? {}
-      : { incoming: { ...decodedInput.success.incoming, amount: incomingAmount.success } }),
+      : { incoming: { ...decodedInput.success.incoming, amount: incomingAmount } }),
   })
   if (Result.isFailure(shield)) return Result.fail('invalid-shield-state')
 
-  const damage = incomingAmount.success === undefined || shield.success.blocked
+  const damage = incomingAmount === undefined || shield.success.blocked
     ? Result.succeed({ appliedAmount: 0, state: decodedInput.success.damageState })
     : resolveDamageWithInvulnerability({
         tick: decodedInput.success.tick,
-        amount: incomingAmount.success,
+        amount: incomingAmount,
         previousState: decodedInput.success.damageState,
       })
-  if (Result.isFailure(damage)) return Result.fail('invalid-damage-state')
+  const resolvedDamage = Result.getOrThrow(damage)
 
   const result = Schema.decodeUnknownResult(HostileAttackPreparationSchema, {
     onExcessProperty: 'error',
   })({
     shield: shield.success,
-    appliedAmount: damage.success.appliedAmount,
-    damageState: damage.success.state,
+    appliedAmount: resolvedDamage.appliedAmount,
+    damageState: resolvedDamage.state,
   })
-  if (Result.isFailure(result)) return Result.fail('invalid-result')
-  return Result.succeed(result.success)
+  return Result.succeed(Result.getOrThrow(result))
 }
 
 export const ZOMBIE_KIND: EntityKind = EntityKind('zombie')

@@ -1,13 +1,11 @@
 import {
   AttackRangeDistance,
-  DamageAmountSchema,
   DimensionIdSchema,
   DomainEventSchema,
   EntityIdSchema,
   isItemType,
   PositionAxis,
   SimulationTickSchema,
-  WorldPositionSchema,
   position,
   type Dimension,
   type DomainEvent,
@@ -131,7 +129,7 @@ export const MeleeAttackCooldownSchema: Schema.ConstraintDecoder<{
 })
 
 export type MeleeAttackCooldown = Schema.Schema.Type<typeof MeleeAttackCooldownSchema>
-export type MeleeAttackCooldownError = 'invalid-input' | 'invalid-result'
+export type MeleeAttackCooldownError = 'invalid-input'
 
 const meleeAttackSpeedForItem = (item: ItemType | null | undefined): number =>
   item === null || item === undefined
@@ -148,12 +146,10 @@ export const meleeAttackCooldown = (input: unknown): Result.Result<MeleeAttackCo
 
   const cooldownTicks = MELEE_ATTACK_COOLDOWN_TICKS_PER_SECOND / decoded.success.attackSpeed
   const charge = Math.min(1, (decoded.success.ticksSinceLastAttack + 0.5) / cooldownTicks)
-  const result = Schema.decodeUnknownResult(MeleeAttackCooldownSchema)({
+  return Result.succeed({
     charge,
     damageMultiplier: 0.2 + 0.8 * charge ** 2,
   })
-  if (Result.isFailure(result)) return Result.fail('invalid-result')
-  return Result.succeed(result.success)
 }
 
 export const meleeAttackCooldownForItem = (
@@ -340,27 +336,21 @@ export const prepareMeleeAttack = (
   })
   if (Result.isFailure(invulnerability)) return Result.fail('invalid-authoritative-state')
   if (invulnerability.success.appliedAmount <= 0) return Result.fail('target-invulnerable')
-  if (invulnerability.success.state === null) return Result.fail('invalid-authoritative-state')
-  const amount = Schema.decodeUnknownResult(DamageAmountSchema)(invulnerability.success.appliedAmount)
-  if (Result.isFailure(amount)) return Result.fail('invalid-authoritative-state')
-
-  const targetPosition = Schema.decodeUnknownResult(WorldPositionSchema)({
-    dimension: dimension.success,
-    x: match.entity.feetPosition.x,
-    y: match.entity.feetPosition.y,
-    z: match.entity.feetPosition.z,
-  })
-  if (Result.isFailure(targetPosition)) return Result.fail('invalid-authoritative-state')
   const decodedEvent = Schema.decodeUnknownResult(DomainEventSchema)({
     _tag: 'EntityDamaged',
     tick: tick.success,
     entity: match.target.id,
-    position: targetPosition.success,
-    amount: amount.success,
+    position: {
+      dimension: dimension.success,
+      x: match.entity.feetPosition.x,
+      y: match.entity.feetPosition.y,
+      z: match.entity.feetPosition.z,
+    },
+    amount: invulnerability.success.appliedAmount,
     cause: 'mob',
   })
   if (Result.isFailure(decodedEvent)) return Result.fail('invalid-authoritative-state')
-  const result: MeleeAttackPreparation = {
+  return Result.succeed({
     target: match.target,
     event: decodedEvent.success,
     knockback: knockbackDirection(
@@ -368,10 +358,5 @@ export const prepareMeleeAttack = (
       match.entity.feetPosition.z - pose.feetPosition.z,
     ),
     targetDamageState: invulnerability.success.state,
-  }
-  const decodedResult = Schema.decodeUnknownResult(MeleeAttackPreparationSchema, {
-    onExcessProperty: 'error',
-  })(result)
-  if (Result.isFailure(decodedResult)) return Result.fail('invalid-authoritative-state')
-  return Result.succeed(decodedResult.success)
+  })
 }
