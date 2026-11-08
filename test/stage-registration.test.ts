@@ -1494,6 +1494,7 @@ describe('stage behaviour', () => {
         'meleeTargetDamageStates',
         'mobDrops',
         'mobExperience',
+        'nextTargetedMeleeRequestId',
         'operationFailures',
         'pendingBlockUses',
         'pendingBowShots',

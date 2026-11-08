@@ -581,12 +581,13 @@ const processMeleeAttack = (
   playerDead: boolean,
 ): Effect.Effect<void> =>
   Effect.gen(function* () {
-    const recordFailure = () => {
+    const recordFailure = (outcome?: 'InvalidToolLocation') => {
       const requestId = request.requestId
       if (requestId === undefined) return Effect.void
       const failure: import('./registration-core.js').GameplayMeleeAttackResult = {
         requestId,
         success: false,
+        ...(outcome === undefined ? {} : { outcome }),
       }
       return Ref.update(state.meleeAttackResults, (results) => [...results, failure])
     }
@@ -616,7 +617,7 @@ const processMeleeAttack = (
     }
     const toolLocation = request.toolLocation
     if (toolLocation !== undefined && !isMeleeToolLocation(toolLocation)) {
-      yield* recordFailure()
+      yield* recordFailure('InvalidToolLocation')
       return
     }
     let blockDistance: AttackRangeDistance | undefined

@@ -7,6 +7,7 @@ import { meleeDamageForItem, type MeleeAttackRequest } from '../src/domain/inter
 import {
   makeGameplayFrameStateForOwner,
   gameplayStages,
+  drainMeleeAttackResults,
   requestMeleeAttack,
   requestTargetedPrimaryAttack,
 } from '../src/stages/registration'
@@ -577,6 +578,39 @@ describe('gameplay melee durability stage', () => {
       const storage = yield* ownerStorage(commit)
       expect(storage.inventoryDurability[0]).toStrictEqual(initialDurability)
       expect((yield* ownerRoster(commit)).entities[0]?.healthPoints).toBeLessThan(20)
+    }),
+  )
+
+  it.effect('returns correlated typed failures for invalid targeted melee slots', () =>
+    Effect.gen(function* () {
+      const initialStorage = storageWith('iron_sword')
+      const initialDurability = initialStorage.inventoryDurability[0]
+      if (initialDurability === null || initialDurability === undefined) {
+        throw new Error('The test sword must have kernel durability data.')
+      }
+      const { state, commit, stages, store, targeting } = yield* scene(initialStorage)
+      const requestIds = new Set<string>()
+
+      for (const slotIndex of [-1, 9, 1.5]) {
+        const queued = yield* requestTargetedPrimaryAttack(state, store.api, targeting, {
+          toolLocation: { _tag: 'Inventory', slotIndex },
+        })
+        expect(queued._tag).toBe('Melee')
+        if (queued._tag !== 'Melee') throw new Error('Expected the targeted request to queue a melee attack.')
+        expect(requestIds.has(queued.requestId)).toBe(false)
+        requestIds.add(queued.requestId)
+
+        yield* runFrame(stages)
+
+        expect(yield* drainMeleeAttackResults(state)).toStrictEqual([{
+          requestId: queued.requestId,
+          success: false,
+          outcome: 'InvalidToolLocation',
+        }])
+        expect((yield* ownerRoster(commit)).entities[0]?.healthPoints).toBe(20)
+        expect((yield* ownerStorage(commit)).inventoryDurability[0]).toStrictEqual(initialDurability)
+      }
+      expect(yield* Ref.get(state.pendingMeleeAttacks)).toStrictEqual([])
     }),
   )
 

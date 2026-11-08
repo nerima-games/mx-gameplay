@@ -1069,6 +1069,7 @@ export type GameplayFrameState = {
   readonly pendingItemUses: Ref.Ref<ReadonlyArray<ItemUseRequest>>
   readonly pendingBowShots: Ref.Ref<ReadonlyArray<BowShotRequest>>
   readonly pendingMeleeAttacks: Ref.Ref<ReadonlyArray<MeleeAttackRequest>>
+  readonly nextTargetedMeleeRequestId: Ref.Ref<number>
   readonly pendingPearlThrows: Ref.Ref<ReadonlyArray<EnderPearlThrowRequest>>
   readonly pendingDroppedItemPickups: Ref.Ref<ReadonlyArray<DroppedItemPickupRequest>>
   readonly droppedItemPickupExecutions: Ref.Ref<ReadonlyArray<DroppedItemPickupExecution>>
@@ -1768,7 +1769,11 @@ export type BowShotResult =
 
 export type GameplayMeleeAttackResult =
   | ResolvedMeleeAttackResult
-  | { readonly requestId: string; readonly success: false; readonly outcome: 'PlayerDead' }
+  | {
+      readonly requestId: string
+      readonly success: false
+      readonly outcome: 'InvalidToolLocation' | 'PlayerDead'
+    }
 
 /**
  * One ender pearl thrown.
@@ -1993,6 +1998,7 @@ const makeGameplayFrameStateWithOptions = (
   const pendingItemUses = yield* Ref.make<ReadonlyArray<ItemUseRequest>>([])
   const pendingBowShots = yield* Ref.make<ReadonlyArray<BowShotRequest>>([])
   const pendingMeleeAttacks = yield* Ref.make<ReadonlyArray<MeleeAttackRequest>>([])
+  const nextTargetedMeleeRequestId = yield* Ref.make(0)
   const pendingPearlThrows = yield* Ref.make<ReadonlyArray<EnderPearlThrowRequest>>([])
   const pendingDroppedItemPickups = yield* Ref.make<ReadonlyArray<DroppedItemPickupRequest>>([])
   const droppedItemPickupExecutions = yield* Ref.make<ReadonlyArray<DroppedItemPickupExecution>>([])
@@ -2084,6 +2090,7 @@ const makeGameplayFrameStateWithOptions = (
     pendingItemUses,
     pendingBowShots,
     pendingMeleeAttacks,
+    nextTargetedMeleeRequestId,
     pendingPearlThrows,
     pendingDroppedItemPickups,
     droppedItemPickupExecutions,
@@ -2837,7 +2844,7 @@ export const requestShieldBlocking = (
   Ref.update(state.pendingShieldBlocking, (pending) => [...pending, intent])
 
 export type TargetedPrimaryAttackResult =
-  | { readonly _tag: 'Melee'; readonly target: ShotHit }
+  | { readonly _tag: 'Melee'; readonly target: ShotHit; readonly requestId: string }
   | { readonly _tag: 'Block'; readonly target: BlockTarget }
   | { readonly _tag: 'None' }
 
@@ -2932,11 +2939,14 @@ export const requestTargetedPrimaryAttack = (
     )
 
     if (resolution._tag === 'Melee') {
+      const requestSequence = yield* Ref.modify(state.nextTargetedMeleeRequestId, (next) => [next, next + 1])
+      const requestId = `targeted-melee-${requestSequence}`
       yield* requestMeleeAttack(state, {
         ...resolution.request,
+        requestId,
         ...(options.toolLocation === undefined ? {} : { toolLocation: options.toolLocation }),
       })
-      return { _tag: 'Melee', target: resolution.target } satisfies TargetedPrimaryAttackResult
+      return { _tag: 'Melee', target: resolution.target, requestId } satisfies TargetedPrimaryAttackResult
     }
     if (resolution._tag === 'Block') {
       const lootContext = yield* Ref.get(state.heldTool)
