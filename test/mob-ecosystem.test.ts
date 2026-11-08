@@ -4,20 +4,29 @@ import { EntityHealthPoints, type Position } from '@nerima-games/mc-kernel'
 import { EntityId, type Entity } from '@nerima-games/mc-sim'
 import {
   BLAZE_KIND,
+  CHICKEN_KIND,
   COW_KIND,
   ecosystemDimensionAllows,
   initialEcosystemMobState,
   propagatedPiglinProvocation,
+  PIG_KIND,
   repairEcosystemMobState,
   SKELETON_KIND,
   SKELETON_ATTACK_INTERVAL_TICKS,
+  SHEEP_KIND,
   SPIDER_KIND,
   stepEcosystemMob,
   ZOMBIFIED_PIGLIN_KIND,
 } from '../src/domain/mob/mob-ecosystem'
-import { ZOMBIE_KIND } from '../src/domain/mob/hostile-combat'
+import { CREEPER_KIND, ZOMBIE_KIND } from '../src/domain/mob/hostile-combat'
 
 const position = (x: number, z = 0): Position => atPosition(x, 64, z)
+const movementGoal = (
+  kind: Parameters<typeof stepEcosystemMob>[0],
+  self: Position,
+  target: Position,
+  state = initialEcosystemMobState(),
+): Position | undefined => stepEcosystemMob(kind, state, self, target, 0.05).state.movementGoal
 
 describe('mob ecosystem', () => {
   it('restricts overworld and nether mobs to their dimensions', () => {
@@ -30,7 +39,8 @@ describe('mob ecosystem', () => {
   it('makes passive mobs flee a nearby player', () => {
     const step = stepEcosystemMob(COW_KIND, initialEcosystemMobState(), position(0), position(2), 1)
 
-    expect(step.feetPosition.x).toBeLessThan(0)
+    expect(step.feetPosition).toEqual(position(0))
+    expect(step.state.movementGoal?.x).toBeLessThan(0)
     expect(step.attack).toBeUndefined()
   })
 
@@ -72,6 +82,34 @@ describe('mob ecosystem', () => {
     expect(second.attack).toBeUndefined()
   })
 
+  it('stops hostile pursuit at the Java Edition follow range', () => {
+    // Java Edition 26.3 ranges: creepers 16 blocks, zombies and zombified piglins 35.
+    // Sources: https://minecraft.wiki/w/Creeper#Behavior and https://minecraft.wiki/w/Attribute#Mob_Follow_Range
+    const self = position(0)
+    const provokedPiglin = { ...initialEcosystemMobState(), provoked: true }
+
+    expect(movementGoal(CREEPER_KIND, self, position(16))).toEqual(position(16))
+    expect(movementGoal(CREEPER_KIND, self, position(16.5))).toEqual(self)
+    expect(movementGoal(ZOMBIE_KIND, self, position(35))).toEqual(position(35))
+    expect(movementGoal(ZOMBIE_KIND, self, position(35.5))).toEqual(self)
+    expect(movementGoal(ZOMBIFIED_PIGLIN_KIND, self, position(35), provokedPiglin)).toEqual(position(35))
+    expect(movementGoal(ZOMBIFIED_PIGLIN_KIND, self, position(35.5), provokedPiglin)).toEqual(self)
+  })
+
+  it('keeps spider and ranged pursuit inside their follow ranges', () => {
+    // Spider, skeleton, and other ordinary mobs use 16 blocks; blaze uses 48.
+    // Source: https://minecraft.wiki/w/Attribute#Mob_Follow_Range
+    const self = atPosition(0, 64, 0)
+    const spiderTargetAtRange = atPosition(16, 65, 0)
+    const spiderTargetOutsideRange = atPosition(16.5, 65, 0)
+
+    expect(movementGoal(SPIDER_KIND, self, spiderTargetAtRange)).toEqual(spiderTargetAtRange)
+    expect(movementGoal(SPIDER_KIND, self, spiderTargetOutsideRange)).toEqual(self)
+    expect(movementGoal(SKELETON_KIND, self, position(16.5))).toEqual(self)
+    expect(movementGoal(BLAZE_KIND, self, position(48))).toEqual(position(48))
+    expect(movementGoal(BLAZE_KIND, self, position(48.5))).toEqual(self)
+  })
+
   it('propagates provocation only to nearby zombified piglins', () => {
     const attackedId = EntityId('piglin-attacked')
     const nearbyId = EntityId('piglin-nearby')
@@ -87,30 +125,30 @@ describe('mob ecosystem', () => {
     )
   })
 
-  it('makes passive mobs wander instead of fleeing once the player is far enough away', () => {
+  it('sets a four-block wander goal instead of fleeing once the player is far enough away', () => {
     const step = stepEcosystemMob(COW_KIND, initialEcosystemMobState(), position(0), position(20), 1)
 
-    // Too far to flee (distance 20 >= 8), so the mob wanders along the
-    // cos/sin path rather than moving away from the target.
-    expect(step.feetPosition).toEqual({
-      x: 0 + Math.cos(1) * 1,
+    expect(step.feetPosition).toEqual(position(0))
+    expect(step.state.movementGoal).toEqual({
+      x: 0 + Math.cos(0) * 4,
       y: 64,
-      z: 0 + Math.sin(1) * 1,
+      z: 0 + Math.sin(0) * 4,
     })
     expect(step.attack).toBeUndefined()
   })
 
-  it('makes a passive mob wander when it has no target at all', () => {
+  it('makes a passive mob set a wander goal when it has no target at all', () => {
     const step = stepEcosystemMob(COW_KIND, initialEcosystemMobState(), position(0), undefined, 1)
 
-    expect(step.feetPosition).toEqual({
-      x: 0 + Math.cos(1) * 1,
+    expect(step.feetPosition).toEqual(position(0))
+    expect(step.state.movementGoal).toEqual({
+      x: 0 + Math.cos(0) * 4,
       y: 64,
-      z: 0 + Math.sin(1) * 1,
+      z: 0 + Math.sin(0) * 4,
     })
   })
 
-  it('keeps a subnormal diagonal flee within the scalar speed cap', () => {
+  it('sets a finite flee goal for a subnormal diagonal offset', () => {
     const self = atPosition(0, 0, 0)
     const target = atPosition(Number.MIN_VALUE, 0, -Number.MIN_VALUE)
     const step = stepEcosystemMob(
@@ -120,12 +158,9 @@ describe('mob ecosystem', () => {
       target,
       0.001,
     )
-    const displacement = Math.hypot(
-      step.feetPosition.x - self.x,
-      step.feetPosition.z - self.z,
-    )
-
-    expect(displacement).toBeCloseTo(0.003, 12)
+    expect(step.feetPosition).toEqual(self)
+    expect(Number.isFinite(step.state.movementGoal?.x)).toBe(true)
+    expect(Number.isFinite(step.state.movementGoal?.z)).toBe(true)
   })
 
   it('leaves a hostile mob in place when it has no target', () => {
@@ -136,13 +171,20 @@ describe('mob ecosystem', () => {
     expect(step.jumping).toBe(false)
   })
 
-  it('treats a non-finite deltaSecs as zero movement while still advancing one logical tick', () => {
+  it('advances motion phase by exactly one simulation tick regardless of deltaSecs', () => {
     const state = { ...initialEcosystemMobState(), attackCooldownTicks: 2, motionPhase: 3 }
 
     const step = stepEcosystemMob(SKELETON_KIND, state, position(0), position(10), Number.NaN)
 
     expect(step.state.attackCooldownTicks).toBe(1)
-    expect(step.state.motionPhase).toBe(3)
+    expect(step.state.motionPhase).toBe(4)
+  })
+
+  it('saturates the tick counter at the largest safe integer', () => {
+    const state = { ...initialEcosystemMobState(), motionPhase: Number.MAX_SAFE_INTEGER }
+    const step = stepEcosystemMob(SKELETON_KIND, state, position(0), undefined, 0.05)
+
+    expect(step.state.motionPhase).toBe(Number.MAX_SAFE_INTEGER)
   })
 
   it('does not let an unprovoked zombified piglin attack, even in melee range', () => {
@@ -182,6 +224,36 @@ describe('mob ecosystem', () => {
     expect(step.jumping).toBe(true)
   })
 
+  it('uses per-kind movement goals for all supported species', () => {
+    const target = position(12)
+    const self = position(0)
+    const cases = [
+      COW_KIND,
+      PIG_KIND,
+      SHEEP_KIND,
+      CHICKEN_KIND,
+      SKELETON_KIND,
+      SPIDER_KIND,
+      BLAZE_KIND,
+      ZOMBIFIED_PIGLIN_KIND,
+    ] as const
+
+    for (const kind of cases) {
+      const state = kind === ZOMBIFIED_PIGLIN_KIND
+        ? { ...initialEcosystemMobState(), provoked: true }
+        : initialEcosystemMobState()
+      const step = stepEcosystemMob(kind, state, self, target, 0)
+      expect(step.state.movementGoal).toBeDefined()
+      if (kind === SKELETON_KIND || kind === BLAZE_KIND) {
+        expect(step.state.movementGoal).toEqual(self)
+      } else if (kind === ZOMBIFIED_PIGLIN_KIND || kind === SPIDER_KIND) {
+        expect(step.state.movementGoal).toEqual(target)
+      } else {
+        expect(step.state.movementGoal?.x).toBeGreaterThan(0)
+      }
+    }
+  })
+
   it('makes a spider jump while closing distance outside melee range', () => {
     const step = stepEcosystemMob(SPIDER_KIND, initialEcosystemMobState(), position(0), position(10), 0.05)
 
@@ -202,7 +274,10 @@ describe('mob ecosystem', () => {
 
 describe('repairEcosystemMobState', () => {
   it('round-trips a validly-shaped persisted state', () => {
-    const persisted = { _tag: 'EcosystemMob', attackCooldownTicks: 30, motionPhase: 4.2, provoked: true }
+    const persisted = {
+      _tag: 'EcosystemMob', attackCooldownTicks: 30, motionPhase: 5, provoked: true,
+      hasHeadProtection: false, burningTicks: 0,
+    }
 
     expect(repairEcosystemMobState(persisted)).toEqual(persisted)
   })
@@ -211,7 +286,8 @@ describe('repairEcosystemMobState', () => {
     expect(repairEcosystemMobState({
       _tag: 'EcosystemMob', attackCooldownSecs: 1.5, motionPhase: 4.2, provoked: true,
     })).toEqual({
-      _tag: 'EcosystemMob', attackCooldownTicks: 30, motionPhase: 4.2, provoked: true,
+      _tag: 'EcosystemMob', attackCooldownTicks: 30, motionPhase: 5, provoked: true,
+      hasHeadProtection: false, burningTicks: 0,
     })
   })
 
@@ -268,6 +344,14 @@ describe('repairEcosystemMobState', () => {
     expect(repaired?.motionPhase).toBe(0)
   })
 
+  it('repairs a fractional saved motion phase to a whole tick count', () => {
+    const repaired = repairEcosystemMobState({
+      _tag: 'EcosystemMob', attackCooldownTicks: 0, motionPhase: 4.2, provoked: false,
+    })
+
+    expect(repaired?.motionPhase).toBe(5)
+  })
+
   it('only a literal true survives as provoked', () => {
     const repaired = repairEcosystemMobState({
       _tag: 'EcosystemMob',
@@ -277,5 +361,17 @@ describe('repairEcosystemMobState', () => {
     })
 
     expect(repaired?.provoked).toBe(false)
+  })
+
+  it('fails closed on malformed or out-of-range saved movement goals', () => {
+    const base = {
+      _tag: 'EcosystemMob', attackCooldownTicks: 0, motionPhase: 0, provoked: false,
+      hasHeadProtection: false, burningTicks: 0,
+    }
+    expect(repairEcosystemMobState({ ...base, movementGoal: { x: '2', y: 64, z: 3 } })?.movementGoal).toBeUndefined()
+    expect(repairEcosystemMobState({
+      ...base,
+      movementGoal: { x: Number.MAX_VALUE, y: 64, z: 3 },
+    })?.movementGoal).toBeUndefined()
   })
 })

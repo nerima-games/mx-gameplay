@@ -1,8 +1,8 @@
-import { PositionAxis, position, tickDuration, type Position } from '@nerima-games/mc-kernel'
-import { EntityKind, type Entity, type EntityId } from '@nerima-games/mc-sim'
+import { NonNegativeTickCount, PositionAxis, position, tickDuration, type Position } from '@nerima-games/mc-kernel'
+import { EntityKind, MobMovementStateSchema, type Entity, type EntityId, type MobMovementState } from '@nerima-games/mc-sim'
 import type { Dimension } from '@nerima-games/mc-worldgen'
-import { directionComponent, normalizeDirection2 } from '../math/direction.js'
-import { ZOMBIE_KIND } from './hostile-combat.js'
+import { Brand, Schema } from 'effect'
+import { CREEPER_KIND, ZOMBIE_KIND } from './hostile-combat.js'
 
 export const SKELETON_KIND: EntityKind = EntityKind('skeleton')
 export const SPIDER_KIND: EntityKind = EntityKind('spider')
@@ -18,6 +18,9 @@ export const SKELETON_ATTACK_INTERVAL_TICKS = 60
 export const SKELETON_ATTACK_DAMAGE = 3
 export const SPIDER_ATTACK_DAMAGE = 2
 
+export type MobMovementDistance = number & Brand.Brand<'MobMovementDistance'>
+const mobMovementDistance = Brand.nominal<MobMovementDistance>()
+
 const LEGACY_TICKS_PER_SECOND = 1 / Number(tickDuration)
 const BLAZE_ATTACK_INTERVAL_TICKS = 60
 const MELEE_ATTACK_INTERVAL_TICKS = 20
@@ -31,6 +34,11 @@ const repairAttackCooldownTicks = (ticks: unknown, legacySecs: unknown): number 
   }
   return 0
 }
+
+const repairMotionPhaseTicks = (phase: unknown): number =>
+  typeof phase === 'number' && Number.isFinite(phase)
+    ? Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, Math.ceil(phase)))
+    : 0
 
 // Explicit fixed-length tuple annotations (not `ReadonlyArray<EntityKind>`) are
 // deliberate on the spawn-kind tuples: `./entities/mob-frame`'s `HOSTILE_KINDS` and
@@ -60,11 +68,61 @@ export const ECOSYSTEM_MOB_KINDS: ReadonlyArray<EntityKind> = [
   ...NETHER_ECOSYSTEM_HOSTILE_KINDS,
 ]
 
+export type MobMovementPolicy =
+  | Readonly<{ _tag: 'FleeOrWander'; fleeWithin: MobMovementDistance; fleeDistance: MobMovementDistance; wanderRadius: MobMovementDistance }>
+  | Readonly<{ _tag: 'Approach'; attackDistance: MobMovementDistance; followRange: MobMovementDistance }>
+  | Readonly<{ _tag: 'RangedSpacing'; minDistance: MobMovementDistance; maxDistance: MobMovementDistance; followRange: MobMovementDistance }>
+  | Readonly<{ _tag: 'ProvokedApproach'; attackDistance: MobMovementDistance; followRange: MobMovementDistance }>
+
+const PASSIVE_MOVEMENT_POLICY: MobMovementPolicy = {
+  _tag: 'FleeOrWander', fleeWithin: mobMovementDistance(8), fleeDistance: mobMovementDistance(8), wanderRadius: mobMovementDistance(4),
+}
+
+/** Per-kind movement decisions; SM3 owns the path and physical step that follows. */
+export const MOB_MOVEMENT_POLICIES: ReadonlyMap<EntityKind, MobMovementPolicy> = new Map<EntityKind, MobMovementPolicy>([
+  [COW_KIND, PASSIVE_MOVEMENT_POLICY],
+  [PIG_KIND, PASSIVE_MOVEMENT_POLICY],
+  [SHEEP_KIND, PASSIVE_MOVEMENT_POLICY],
+  [CHICKEN_KIND, PASSIVE_MOVEMENT_POLICY],
+  [ZOMBIE_KIND, { _tag: 'Approach', attackDistance: mobMovementDistance(1.5), followRange: mobMovementDistance(35) }],
+  [CREEPER_KIND, { _tag: 'Approach', attackDistance: mobMovementDistance(3), followRange: mobMovementDistance(16) }],
+  [SPIDER_KIND, { _tag: 'Approach', attackDistance: mobMovementDistance(1.5), followRange: mobMovementDistance(16) }],
+  [SKELETON_KIND, { _tag: 'RangedSpacing', minDistance: mobMovementDistance(8), maxDistance: mobMovementDistance(16), followRange: mobMovementDistance(16) }],
+  [BLAZE_KIND, { _tag: 'RangedSpacing', minDistance: mobMovementDistance(8), maxDistance: mobMovementDistance(24), followRange: mobMovementDistance(48) }],
+  [ZOMBIFIED_PIGLIN_KIND, { _tag: 'ProvokedApproach', attackDistance: mobMovementDistance(1.5), followRange: mobMovementDistance(35) }],
+])
+
+const DEFAULT_MOVEMENT_POLICY: MobMovementPolicy = {
+  _tag: 'Approach',
+  attackDistance: mobMovementDistance(1.5),
+  followRange: mobMovementDistance(16),
+}
+
+const movementPolicyFor = (kind: EntityKind): MobMovementPolicy =>
+  MOB_MOVEMENT_POLICIES.get(kind) ?? DEFAULT_MOVEMENT_POLICY
+
+const validPosition = (value: unknown): value is Position => {
+  if (typeof value !== 'object' || value === null) return false
+  const candidate = value as Partial<Position>
+  const validAxis = (axis: unknown): axis is number =>
+    typeof axis === 'number' && Number.isFinite(axis) && Number.isSafeInteger(Math.floor(axis))
+  return validAxis(candidate.x) && validAxis(candidate.y) && validAxis(candidate.z)
+}
+
+export const repairMobMovementState = (value: unknown): MobMovementState | undefined => {
+  const decoded = Schema.decodeUnknownResult(MobMovementStateSchema)(value)
+  return decoded._tag === 'Success' ? decoded.success : undefined
+}
+
 export type EcosystemMobState = {
   readonly _tag: 'EcosystemMob'
   readonly attackCooldownTicks: number
   readonly motionPhase: number
   readonly provoked: boolean
+  readonly movementGoal?: Position
+  readonly movement?: MobMovementState
+  readonly hasHeadProtection: boolean
+  readonly burningTicks: NonNegativeTickCount
 }
 
 export const initialEcosystemMobState = (): EcosystemMobState => ({
@@ -72,16 +130,37 @@ export const initialEcosystemMobState = (): EcosystemMobState => ({
   attackCooldownTicks: 0,
   motionPhase: 0,
   provoked: false,
+  hasHeadProtection: false,
+  burningTicks: NonNegativeTickCount(0),
 })
 
 export const repairEcosystemMobState = (value: unknown): EcosystemMobState | undefined => {
   if (typeof value !== 'object' || value === null || (value as { _tag?: unknown })._tag !== 'EcosystemMob') return undefined
   const state = value as Partial<EcosystemMobState> & { readonly attackCooldownSecs?: unknown }
+  let goal: Position | undefined
+  if (validPosition(state.movementGoal)) {
+    const x = PositionAxis.result(state.movementGoal.x)
+    const y = PositionAxis.result(state.movementGoal.y)
+    const z = PositionAxis.result(state.movementGoal.z)
+    if (x._tag === 'Success' && y._tag === 'Success' && z._tag === 'Success') {
+      goal = position(x.success, y.success, z.success)
+    }
+  }
+  const movement = repairMobMovementState(state.movement)
+  const burningTicks = NonNegativeTickCount(
+    typeof state.burningTicks === 'number' && Number.isSafeInteger(state.burningTicks)
+      ? Math.max(0, Math.min(160, state.burningTicks))
+      : 0,
+  )
   return {
     _tag: 'EcosystemMob',
     attackCooldownTicks: repairAttackCooldownTicks(state.attackCooldownTicks, state.attackCooldownSecs),
-    motionPhase: Number.isFinite(state.motionPhase) ? state.motionPhase! : 0,
+    motionPhase: repairMotionPhaseTicks(state.motionPhase),
     provoked: state.provoked === true,
+    ...(goal === undefined ? {} : { movementGoal: goal }),
+    ...(movement === undefined ? {} : { movement }),
+    hasHeadProtection: state.hasHeadProtection === true,
+    burningTicks,
   }
 }
 
@@ -107,18 +186,60 @@ export type EcosystemMobStep = {
 }
 
 const distanceXZ = (a: Position, b: Position): number => Math.hypot(a.x - b.x, a.z - b.z)
-const move = (from: Position, target: Position, distance: number): Position => {
-  const dx = target.x - from.x
-  const dz = target.z - from.z
-  if (dx === 0 && dz === 0) return from
 
-  const direction = { x: directionComponent(0), z: directionComponent(0) }
-  normalizeDirection2(directionComponent(dx), directionComponent(dz), direction)
+const positionAt = (self: Position, x: number, z: number): Position => {
+  const nextX = PositionAxis.result(x)
+  const nextZ = PositionAxis.result(z)
+  return nextX._tag === 'Success' && nextZ._tag === 'Success'
+    ? position(nextX.success, self.y, nextZ.success)
+    : self
+}
 
-  return {
-    x: PositionAxis(from.x + direction.x * distance),
-    y: from.y,
-    z: PositionAxis(from.z + direction.z * distance),
+const atDistanceAwayFrom = (self: Position, target: Position, distance: number, phase: number): Position => {
+  const dx = self.x - target.x
+  const dz = self.z - target.z
+  const length = Math.hypot(dx, dz)
+  const angle = phase * 2.399963229728653
+  const directionX = length === 0 ? Math.cos(angle) : dx / length
+  const directionZ = length === 0 ? Math.sin(angle) : dz / length
+  return positionAt(self, self.x + directionX * distance, self.z + directionZ * distance)
+}
+
+const WANDER_TURN_INTERVAL_TICKS = 60
+const wanderGoal = (self: Position, phase: number, radius: number): Position => {
+  const direction = Math.floor(phase / WANDER_TURN_INTERVAL_TICKS) * 2.399963229728653
+  return positionAt(self, self.x + Math.cos(direction) * radius, self.z + Math.sin(direction) * radius)
+}
+
+export const movementGoalForEcosystemMob = (
+  kind: EntityKind,
+  state: EcosystemMobState,
+  self: Position,
+  target: Position | undefined,
+  phase: NonNegativeTickCount = NonNegativeTickCount(state.motionPhase),
+): Position => {
+  const policy = movementPolicyFor(kind)
+  const distance = target === undefined ? Number.POSITIVE_INFINITY : distanceXZ(self, target)
+  switch (policy._tag) {
+    case 'FleeOrWander':
+      return target !== undefined && distance < policy.fleeWithin
+        ? atDistanceAwayFrom(self, target, policy.fleeDistance, phase)
+        : wanderGoal(self, phase, policy.wanderRadius)
+    case 'Approach':
+      return target !== undefined && distance <= policy.followRange &&
+        (distance > policy.attackDistance || (kind === SPIDER_KIND && target.y > self.y))
+        ? target
+        : self
+    case 'RangedSpacing':
+      if (target === undefined || distance > policy.followRange) return self
+      if (distance < policy.minDistance) return atDistanceAwayFrom(self, target, policy.minDistance, phase)
+      return distance > policy.maxDistance ? target : self
+    case 'ProvokedApproach':
+      return state.provoked && target !== undefined && distance <= policy.followRange && distance > policy.attackDistance
+        ? target
+        : self
+    default:
+      return self
   }
 }
 
@@ -127,35 +248,31 @@ export const stepEcosystemMob = (
   state: EcosystemMobState,
   self: Position,
   target: Position | undefined,
-  deltaSecs: number,
+  _deltaSecs: number,
 ): EcosystemMobStep => {
-  const dt = Number.isFinite(deltaSecs) ? Math.max(0, deltaSecs) : 0
   const cooldown = Math.max(0, state.attackCooldownTicks - 1)
-  const phase = state.motionPhase + dt
+  const currentPhase = repairMotionPhaseTicks(state.motionPhase)
+  const phase = NonNegativeTickCount(currentPhase === Number.MAX_SAFE_INTEGER ? currentPhase : currentPhase + 1)
   const distance = target === undefined ? Number.POSITIVE_INFINITY : distanceXZ(self, target)
-  const nextState = (attackCooldownTicks = cooldown): EcosystemMobState => ({ ...state, attackCooldownTicks, motionPhase: phase })
+  const movementGoal = movementGoalForEcosystemMob(kind, state, self, target, phase)
+  const nextState = (attackCooldownTicks = cooldown): EcosystemMobState => ({
+    ...state,
+    attackCooldownTicks,
+    motionPhase: phase,
+    movementGoal,
+  })
   const attack = (mode: 'melee' | 'projectile', damage: number, resetTicks: number): EcosystemMobStep => ({
     state: nextState(resetTicks), feetPosition: self, jumping: kind === SPIDER_KIND,
     attack: { _tag: 'MobAttack', attackerKind: kind, mode, damage },
   })
 
   if (PASSIVE_MOB_KINDS.includes(kind as (typeof PASSIVE_MOB_KINDS)[number])) {
-    const feetPosition = target !== undefined && distance < 8
-      ? move(self, position(
-          PositionAxis(self.x * 2 - target.x),
-          self.y,
-          PositionAxis(self.z * 2 - target.z),
-        ), dt * 3)
-      : position(
-          PositionAxis(self.x + Math.cos(phase) * dt),
-          self.y,
-          PositionAxis(self.z + Math.sin(phase) * dt),
-        )
-    return { state: nextState(), feetPosition, jumping: false }
+    return { state: nextState(), feetPosition: self, jumping: false }
   }
   if (target === undefined) return { state: nextState(), feetPosition: self, jumping: false }
-  if (kind === ZOMBIFIED_PIGLIN_KIND && !state.provoked) return { state: nextState(), feetPosition: self, jumping: false }
-  if ((kind === SKELETON_KIND || kind === BLAZE_KIND) && cooldown === 0 && distance >= (kind === BLAZE_KIND ? 8 : 6) && distance <= (kind === BLAZE_KIND ? 24 : 16))
+  const policy = movementPolicyFor(kind)
+  if (policy._tag === 'ProvokedApproach' && !state.provoked) return { state: nextState(), feetPosition: self, jumping: false }
+  if (policy._tag === 'RangedSpacing' && cooldown === 0 && distance >= policy.minDistance && distance <= policy.maxDistance)
     return attack(
       'projectile',
       kind === BLAZE_KIND ? 6 : SKELETON_ATTACK_DAMAGE,
@@ -167,8 +284,7 @@ export const stepEcosystemMob = (
       kind === SPIDER_KIND ? SPIDER_ATTACK_DAMAGE : kind === ZOMBIE_KIND ? 3 : 5,
       MELEE_ATTACK_INTERVAL_TICKS,
     )
-  const speed = kind === SPIDER_KIND ? 4 : 2.5
-  return { state: nextState(), feetPosition: move(self, target, Math.min(distance, speed * dt)), jumping: kind === SPIDER_KIND && distance > 1.5 }
+  return { state: nextState(), feetPosition: self, jumping: kind === SPIDER_KIND && distance > 1.5 }
 }
 
 export const propagatedPiglinProvocation = <S>(

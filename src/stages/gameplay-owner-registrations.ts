@@ -35,10 +35,13 @@ import { Result } from 'effect'
 import {
   DimensionIdSchema,
   EntityIdSchema,
+  ProjectileIdSchema,
+  WorldPositionSchema,
   ITEM_TYPES,
   SimulationTickSchema,
   type Dimension,
   type EntityId,
+  type ProjectileId,
 } from '@nerima-games/mc-kernel'
 import {
   droppedItemOwnerRegistration,
@@ -67,9 +70,10 @@ import {
   type MobBehaviour,
   type MobEntity,
   type MobKillCredit,
+  type MobProjectilePendingImpact,
   type MobRoster,
 } from '../domain/entities/mob-frame.js'
-import { repairEcosystemMobState } from '../domain/mob/mob-ecosystem.js'
+import { BLAZE_KIND, SKELETON_KIND, repairEcosystemMobState, repairMobMovementState } from '../domain/mob/mob-ecosystem.js'
 import { isPrimedTnt } from '../domain/mob/primed-tnt.js'
 
 export const GAMEPLAY_PLAYER_STORAGE_OWNER_ID: ReplicatedOwnerId = makeReplicatedOwnerId('mx-gameplay-player-storage')
@@ -119,22 +123,34 @@ const isEndermanFlinch = (value: unknown): boolean =>
 
 const isEcosystemState = (value: unknown): boolean => {
   if (!isRecord(value) || value['_tag'] !== 'EcosystemMob') return false
+  const ecosystemKeys = [
+    '_tag', 'attackCooldownTicks', 'attackCooldownSecs', 'motionPhase', 'provoked',
+    'movementGoal', 'movement', 'hasHeadProtection', 'burningTicks',
+  ]
 
   const hasTickCooldown =
-    hasOnlyKeys(value, ['_tag', 'attackCooldownTicks', 'motionPhase', 'provoked']) &&
+    hasOnlyKeys(value, ecosystemKeys) &&
       typeof value['attackCooldownTicks'] === 'number' &&
       Number.isSafeInteger(value['attackCooldownTicks']) &&
       value['attackCooldownTicks'] >= 0
   const hasLegacyCooldown =
-    hasOnlyKeys(value, ['_tag', 'attackCooldownSecs', 'motionPhase', 'provoked']) &&
+    hasOnlyKeys(value, ecosystemKeys) &&
       typeof value['attackCooldownSecs'] === 'number' &&
       Number.isFinite(value['attackCooldownSecs']) &&
       value['attackCooldownSecs'] >= 0
+  const validMovement = value['movement'] === undefined || repairMobMovementState(value['movement']) !== undefined
+  const validMovementGoal = value['movementGoal'] === undefined ||
+    repairEcosystemMobState(value)?.movementGoal !== undefined
+  const validProtection = value['hasHeadProtection'] === undefined || typeof value['hasHeadProtection'] === 'boolean'
+  const validBurningTicks = value['burningTicks'] === undefined ||
+    (typeof value['burningTicks'] === 'number' && Number.isSafeInteger(value['burningTicks']) &&
+      value['burningTicks'] >= 0 && value['burningTicks'] <= 160)
 
   return (hasTickCooldown || hasLegacyCooldown) &&
     typeof value['motionPhase'] === 'number' &&
     Number.isFinite(value['motionPhase']) &&
     typeof value['provoked'] === 'boolean' &&
+    validMovement && validMovementGoal && validProtection && validBurningTicks &&
     repairEcosystemMobState(value) !== undefined
 }
 
@@ -152,7 +168,7 @@ const isMobBehaviour = (value: unknown): value is MobBehaviour => {
   if (!isRecord(value)) return false
   if (value['_tag'] === 'HostileMob') {
     return isHostileMobSnapshot(value) &&
-      hasOnlyKeys(value, ['_tag', 'behaviour', 'ageTicks', 'persistent', 'named', 'tamed']) &&
+      hasOnlyKeys(value, ['_tag', 'behaviour', 'movement', 'ageTicks', 'persistent', 'named', 'tamed']) &&
       (value['behaviour'] === undefined ||
         isCreeperFuse(value['behaviour']) ||
         isEndermanFlinch(value['behaviour']) ||
@@ -170,6 +186,8 @@ export const GameplayMobBehaviourSchema: Schema.Codec<MobBehaviour, unknown> =
 export type GameplayEntity = MobEntity & Readonly<{ dimension: Dimension }>
 export type GameplayEntityRoster = Omit<EntityRoster<MobBehaviour>, 'entities'> & Readonly<{
   entities: ReadonlyArray<GameplayEntity>
+  resolvedMobProjectileIds?: ReadonlyArray<ProjectileId>
+  pendingMobProjectileImpacts?: ReadonlyArray<MobProjectilePendingImpact>
 }>
 
 const GameplayMobEntityBaseSchema = EntitySchema(GameplayMobBehaviourSchema)
@@ -184,17 +202,46 @@ export const GameplayEntityRosterSchema: Schema.Codec<GameplayEntityRoster, unkn
       lastHitTick: Schema.optionalKey(SimulationTickSchema),
     })),
     nextSerial: GameplayMobRosterBaseSchema.fields.nextSerial,
+    resolvedMobProjectileIds: Schema.optionalKey(Schema.Array(ProjectileIdSchema)),
+    pendingMobProjectileImpacts: Schema.optionalKey(Schema.Array(Schema.Struct({
+      id: ProjectileIdSchema,
+      source: EntityIdSchema,
+      kind: Schema.Literals([SKELETON_KIND, BLAZE_KIND]),
+      hit: Schema.Union([
+        Schema.Struct({
+          kind: Schema.Literals(['entity']),
+          entityId: EntityIdSchema,
+          point: WorldPositionSchema,
+        }),
+        Schema.Struct({
+          kind: Schema.Literals(['block']),
+          point: WorldPositionSchema,
+        }),
+      ]),
+    }))),
   }),
 )
 
 export const restoreGameplayEntityMetadata = (
-  roster: MobRoster,
-  previous: MobRoster,
+  roster: MobRoster & Readonly<{
+    resolvedMobProjectileIds?: ReadonlyArray<ProjectileId>
+    pendingMobProjectileImpacts?: ReadonlyArray<MobProjectilePendingImpact>
+  }>,
+  previous: MobRoster & Readonly<{
+    resolvedMobProjectileIds?: ReadonlyArray<ProjectileId>
+    pendingMobProjectileImpacts?: ReadonlyArray<MobProjectilePendingImpact>
+  }>,
   fallbackDimension: Dimension,
 ): GameplayEntityRoster => {
   const previousById = new Map(previous.entities.map((entity) => [entity.id, entity]))
   return Schema.decodeUnknownSync(GameplayEntityRosterSchema)({
     ...roster,
+    ...(roster.resolvedMobProjectileIds === undefined && previous.resolvedMobProjectileIds === undefined
+      ? {}
+      : { resolvedMobProjectileIds: roster.resolvedMobProjectileIds ?? previous.resolvedMobProjectileIds }),
+    ...(roster.pendingMobProjectileImpacts === undefined && previous.pendingMobProjectileImpacts === undefined
+      ? {}
+      : { pendingMobProjectileImpacts: roster.pendingMobProjectileImpacts ?? previous.pendingMobProjectileImpacts }),
     entities: roster.entities.map((entity) => {
       const prior = previousById.get(entity.id)
       const dimension = entity.dimension ?? prior?.dimension ?? fallbackDimension
