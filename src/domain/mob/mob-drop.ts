@@ -673,12 +673,15 @@ export const mobXpReward = (
       : reward.sizes?.[context.size] ??
         (context.age === 'baby' && reward.baby !== undefined ? reward.baby : reward.adult)
   const amount = rollRange(selectedRange, roll)
-  const equipmentCount = reward.equipmentBonus === undefined
+  const equipmentBonus = reward.equipmentBonus
+  const equipmentCount = equipmentBonus === undefined
     ? 0
     : Math.max(0, Math.floor(context.undroppedEquipmentCount ?? 0))
-  const equipmentXp = Array.from({ length: equipmentCount }, (_, index) =>
-    rollRange(reward.equipmentBonus ?? range(0), context.equipmentRolls?.[index] ?? roll),
-  ).reduce((total, value) => total + value, 0)
+  const equipmentXp = equipmentBonus === undefined
+    ? 0
+    : Array.from({ length: equipmentCount }, (_, index) =>
+      rollRange(equipmentBonus, context.equipmentRolls?.[index] ?? roll),
+    ).reduce((total, value) => total + value, 0)
   return amount + equipmentXp
 }
 

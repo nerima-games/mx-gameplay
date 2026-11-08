@@ -904,6 +904,28 @@ describe('mob drop tables', () => {
     }),
   )
 
+  it.effect('weighted pools skip empty choices and substitute cooked items when burning', () =>
+    Effect.sync(() => {
+      const emptyPool = {
+        rules: [],
+        pools: [{ minSelections: 1, maxSelections: 1, choices: [] }],
+      }
+      expect(rollMobTable(emptyPool, SLAIN, makeMobDropRollSequence([]))).toStrictEqual([])
+
+      const burningPool = {
+        rules: [],
+        pools: [{
+          minSelections: 1,
+          maxSelections: 1,
+          choices: [{ item: 'rotten_flesh', weight: 1, count: 1, burningItem: 'cooked_beef' }],
+        }],
+      } as const
+      expect(rollMobTable(burningPool, { ...SLAIN, burning: true }, makeMobDropRollSequence([0]))).toStrictEqual([
+        { item: 'cooked_beef', count: 1 },
+      ])
+    }),
+  )
+
   it.effect('witch uses a weighted 1–3 choice pool', () =>
     Effect.sync(() => {
       const witch = MOB_DROP_TABLES['witch']
