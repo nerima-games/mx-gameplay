@@ -167,15 +167,19 @@ export const meleeAttackCooldownForItem = (
 }
 
 /** Damage for the held item; bare hands and non-weapon items use the unarmed value. */
+const meleeDamageForKnownItem = (item: ItemType | null | undefined, critical: boolean): number => {
+  const base = item === null || item === undefined
+    ? DEFAULT_MELEE_DAMAGE
+    : (SWORD_MELEE_DAMAGE[item] ?? TOOL_MELEE_DAMAGE[item] ?? DEFAULT_MELEE_DAMAGE)
+  return critical ? base * 1.5 : base
+}
+
 export const meleeDamageForItem = (
   item: ItemType | null | undefined,
   critical = false,
 ): Result.Result<number, 'invalid-input'> => {
   if (item !== null && item !== undefined && !isItemType(item)) return Result.fail('invalid-input')
-  const base = item === null || item === undefined
-    ? DEFAULT_MELEE_DAMAGE
-    : (SWORD_MELEE_DAMAGE[item] ?? TOOL_MELEE_DAMAGE[item] ?? DEFAULT_MELEE_DAMAGE)
-  return Result.succeed(critical ? base * 1.5 : base)
+  return Result.succeed(meleeDamageForKnownItem(item, critical))
 }
 
 export type MeleeAttackRequest = {
@@ -322,9 +326,7 @@ export const prepareMeleeAttack = (
   if (Result.isFailure(cooldown)) return Result.fail('invalid-attack-timing')
 
   const critical = input.critical && cooldown.success.charge >= MIN_ATTACK_COOLDOWN_FOR_CRITICAL
-  const meleeDamage = meleeDamageForItem(input.heldItem, critical)
-  if (Result.isFailure(meleeDamage)) return Result.fail('invalid-authoritative-state')
-  const attackDamage = meleeDamage.success * cooldown.success.damageMultiplier
+  const attackDamage = meleeDamageForKnownItem(input.heldItem, critical) * cooldown.success.damageMultiplier
 
   const eyeY = pose.feetPosition.y + EYE_LEVEL_OFFSET
 

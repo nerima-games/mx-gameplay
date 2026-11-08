@@ -378,6 +378,127 @@ describe('gameplay melee durability stage', () => {
     }),
   )
 
+  it.effect('accepts pickaxes, shovels and hoes as melee weapons but treats a bow as unarmed', () =>
+    Effect.gen(function* () {
+      const cases: ReadonlyArray<{ readonly item: ItemType; readonly heldItem: ItemType | null }> = [
+        { item: 'diamond_pickaxe', heldItem: 'diamond_pickaxe' },
+        { item: 'iron_shovel', heldItem: 'iron_shovel' },
+        { item: 'netherite_hoe', heldItem: 'netherite_hoe' },
+        { item: 'bow', heldItem: null },
+      ]
+
+      for (const { item, heldItem } of cases) {
+        const initialStorage = storageWith(item)
+        const initialDurability = initialStorage.inventoryDurability[0]
+        const { state, commit, stages } = yield* scene(initialStorage)
+        const expected = expectedMeleeAttack({
+          heldItem,
+          ticksSinceLastAttack: 25,
+          critical: false,
+          tick: 0,
+          targetDamageState: null,
+        })
+        if (expected === null) throw new Error('The test melee input must produce oracle damage.')
+        yield* requestMeleeAttack(state, forgedMeleeRequest(`weapon-${item}`))
+        yield* runInteractions(stages)
+
+        expect((yield* ownerRoster(commit)).entities[0]?.healthPoints).toBe(20 - expected.appliedAmount)
+        expect((yield* Ref.get(state.meleeTargetDamageStates)).get(MELEE_TARGETS.entities[0]!.id)).toStrictEqual(
+          expected.targetDamageState,
+        )
+        if (heldItem === null) {
+          expect((yield* ownerStorage(commit)).inventoryDurability[0]).toStrictEqual(initialDurability)
+        } else {
+          if (initialDurability === null || initialDurability === undefined) {
+            throw new Error(`The test ${item} must have kernel durability data.`)
+          }
+          expect((yield* ownerStorage(commit)).inventoryDurability[0]).toStrictEqual({
+            current: initialDurability.current - WEAPON_WEAR,
+            max: initialDurability.max,
+          })
+        }
+      }
+    }),
+  )
+
+  it.effect('rejects an attack when its stage tick precedes the last attack tick', () =>
+    Effect.gen(function* () {
+      const initialStorage = storageWith('iron_sword')
+      const { state, commit, stages } = yield* scene(initialStorage)
+      const tick = simulationTick(40)
+      const lastAttackTick = simulationTick(41)
+      yield* Ref.set(state.tickCount, tick)
+      yield* Ref.set(state.meleeLastAttackTick, lastAttackTick)
+      yield* requestMeleeAttack(state, forgedMeleeRequest('stale-attack-tick'))
+
+      yield* runFrame(stages)
+
+      expect(yield* Ref.get(state.meleeAttackResults)).toStrictEqual([{
+        requestId: 'stale-attack-tick',
+        success: false,
+      }])
+      expect(yield* Ref.get(state.pendingMeleeAttacks)).toStrictEqual([])
+      expect(yield* Ref.get(state.meleeLastAttackTick)).toBe(lastAttackTick)
+      expect(yield* Ref.get(state.meleeTargetDamageStates)).toStrictEqual(new Map())
+      expect((yield* ownerRoster(commit)).entities[0]?.healthPoints).toBe(20)
+      expect(yield* ownerStorage(commit)).toStrictEqual(initialStorage)
+    }),
+  )
+
+  it.effect('rejects melee attacks when the stage tick is malformed', () =>
+    Effect.gen(function* () {
+      const initialStorage = storageWith('iron_sword')
+      const { state, commit, stages } = yield* scene(initialStorage)
+      yield* Ref.set(state.tickCount, Number.NaN as never)
+      yield* requestMeleeAttack(state, forgedMeleeRequest('malformed-attack-tick'))
+
+      yield* runInteractions(stages)
+
+      expect(yield* Ref.get(state.meleeAttackResults)).toStrictEqual([{
+        requestId: 'malformed-attack-tick',
+        success: false,
+      }])
+      expect(yield* Ref.get(state.pendingMeleeAttacks)).toStrictEqual([])
+      expect(yield* Ref.get(state.meleeLastAttackTick)).toBeNull()
+      expect(yield* Ref.get(state.meleeTargetDamageStates)).toStrictEqual(new Map())
+      expect((yield* ownerRoster(commit)).entities[0]?.healthPoints).toBe(20)
+      expect(yield* ownerStorage(commit)).toStrictEqual(initialStorage)
+    }),
+  )
+
+  it.effect('does not consume attack cooldown for an invalid target damage state', () =>
+    Effect.gen(function* () {
+      const initialStorage = storageWith('iron_sword')
+      const { state, commit, stages } = yield* scene(initialStorage)
+      const tick = simulationTick(40)
+      const lastAttackTick = simulationTick(35)
+      const futureDamageState = {
+        lastDamageTick: simulationTick(41),
+        lastDamageAmount: Schema.decodeUnknownSync(DamageAmountSchema)(5),
+      }
+      yield* Ref.set(state.tickCount, tick)
+      yield* Ref.set(state.meleeLastAttackTick, lastAttackTick)
+      yield* Ref.set(state.meleeTargetDamageStates, new Map([
+        [MELEE_TARGETS.entities[0]!.id, futureDamageState],
+      ]))
+      yield* requestMeleeAttack(state, forgedMeleeRequest('future-damage-tick'))
+
+      yield* runInteractions(stages)
+
+      expect(yield* Ref.get(state.meleeAttackResults)).toStrictEqual([{
+        requestId: 'future-damage-tick',
+        success: false,
+      }])
+      expect(yield* Ref.get(state.pendingMeleeAttacks)).toStrictEqual([])
+      expect(yield* Ref.get(state.meleeLastAttackTick)).toBe(lastAttackTick)
+      expect(yield* Ref.get(state.meleeTargetDamageStates)).toStrictEqual(new Map([
+        [MELEE_TARGETS.entities[0]!.id, futureDamageState],
+      ]))
+      expect((yield* ownerRoster(commit)).entities[0]?.healthPoints).toBe(20)
+      expect(yield* ownerStorage(commit)).toStrictEqual(initialStorage)
+    }),
+  )
+
   it.effect('consumes cooldown without committing damage or wear when target hurt resistance suppresses a hit', () =>
     Effect.gen(function* () {
       const initialStorage = storageWith('iron_sword')

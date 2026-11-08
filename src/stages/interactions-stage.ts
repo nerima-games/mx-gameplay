@@ -254,9 +254,8 @@ const isMeleeToolLocation = (location: unknown): location is Extract<StorageLoca
 
 const validatedMeleeWeaponAt = (
   storage: PlayerStorage,
-  location: StorageLocation,
-): ValidatedMeleeWeaponLocation | undefined => {
-  if (!isMeleeToolLocation(location)) return undefined
+  location: Extract<StorageLocation, { readonly _tag: 'Inventory' }>,
+): ValidatedMeleeWeaponLocation => {
   const heldStack = storage.inventory.slots[location.slotIndex]
   const item = heldStack !== undefined && heldStack !== null && isMeleeWeaponItem(heldStack.item)
     ? heldStack.item
@@ -615,7 +614,8 @@ const processMeleeAttack = (
       yield* Ref.update(state.pendingMeleeAttacks, (pending) => [request, ...pending])
       return
     }
-    if (request.toolLocation !== undefined && !isMeleeToolLocation(request.toolLocation)) {
+    const toolLocation = request.toolLocation
+    if (toolLocation !== undefined && !isMeleeToolLocation(toolLocation)) {
       yield* recordFailure()
       return
     }
@@ -668,7 +668,7 @@ const processMeleeAttack = (
     }
     let heldItem: ItemType | null = null
     let storageCandidate: Schema.Schema.Type<typeof PlayerStorageSnapshotSchema> | undefined
-    if (request.toolLocation !== undefined) {
+    if (toolLocation !== undefined) {
       const storage = yield* Effect.result(context.coordinator.snapshot(
         storageOwnerId!,
         PlayerStorageSnapshotSchema,
@@ -688,11 +688,7 @@ const processMeleeAttack = (
         yield* Ref.update(state.pendingMeleeAttacks, (pending) => [request, ...pending])
         return
       }
-      const weapon = validatedMeleeWeaponAt(storage.success.state, request.toolLocation)
-      if (weapon === undefined) {
-        yield* recordFailure()
-        return
-      }
+      const weapon = validatedMeleeWeaponAt(storage.success.state, toolLocation)
       heldItem = weapon.item
       if (weapon.wear > 0) {
         storageCandidate = damageValidatedMeleeWeaponAt(weapon)
