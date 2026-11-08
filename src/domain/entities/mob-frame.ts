@@ -244,7 +244,7 @@ import {
 } from '@nerima-games/mc-sim'
 import type { ChunkStoreApi } from '@nerima-games/mc-worldgen'
 import type { BlockPosition, DeltaTimeSecs } from '@nerima-games/mc-kernel'
-import { drawRolls, nextRoll } from '../frame-rolls.js'
+import { drawRolls, nextRoll, rollAt } from '../frame-rolls.js'
 import { carveExplosionCrater } from '../interactions/explosion-crater.js'
 import type { BlockPositionKey } from '@nerima-games/mc-kernel'
 import { DORMANT_FUSE, stepCreeperFuse, type CreeperFuse, type CreeperSenses } from '../mob/creeper-fuse.js'
@@ -297,8 +297,10 @@ import {
   dropRollsNeededForTable,
   mobDropRulesOfKind,
   mobDropTableOfKind,
+  mobExperienceRollBudgetOfKind,
   mobExperienceRuleOfKind,
   rollMobTable,
+  type MobExperienceContext,
   type MobDropRollSequence,
   type MobDrop,
   type MobDropRule,
@@ -308,6 +310,7 @@ import {
 } from '../mob/mob-drop.js'
 
 const makeMobDropRollSequence = Brand.nominal<MobDropRollSequence>()
+const makeMobExperienceRoll = Brand.nominal<MobExperienceRoll>()
 
 // ---------------------------------------------------------------------------
 // The vocabulary this repository contributes to the roster
@@ -2131,38 +2134,79 @@ export type MobExperienceEvent = {
 }
 
 const NO_DROPS: ReadonlyArray<never> = []
+const NO_EXPERIENCE: ReadonlyArray<never> = []
 
-/** Resolve experience without consuming the deterministic loot seed. */
+const experienceContextOfCasualty = (casualty: MobCasualty): MobExperienceContext => ({
+  ...(casualty.age === undefined ? {} : { age: casualty.age }),
+  ...(casualty.size === undefined ? {} : { size: casualty.size }),
+  ...(casualty.undroppedEquipmentCount === undefined
+    ? {}
+    : { undroppedEquipmentCount: casualty.undroppedEquipmentCount }),
+  ...(casualty.equipmentXpRolls === undefined
+    ? {}
+    : { equipmentRolls: casualty.equipmentXpRolls }),
+  ...(casualty.firstDragonDeath === undefined
+    ? {}
+    : { firstDragonDeath: casualty.firstDragonDeath }),
+})
+
+/** Resolve experience from the rolls already attached to each casualty. */
 export const experienceOfCasualties = (
   casualties: ReadonlyArray<MobCasualty>,
 ): ReadonlyArray<MobExperienceEvent> =>
   casualties.flatMap((casualty) => {
     const rule = mobExperienceRuleOfKind(casualty.kind)
     if (rule.playerKillRequired !== false && !hasRecentPlayerCredit(casualty)) return []
-    const context = {
-      ...(casualty.age === undefined ? {} : { age: casualty.age }),
-      ...(casualty.size === undefined ? {} : { size: casualty.size }),
-      ...(casualty.undroppedEquipmentCount === undefined
-        ? {}
-        : { undroppedEquipmentCount: casualty.undroppedEquipmentCount }),
-      ...(casualty.equipmentXpRolls === undefined
-        ? {}
-        : { equipmentRolls: casualty.equipmentXpRolls }),
-      ...(casualty.firstDragonDeath === undefined
-        ? {}
-        : { firstDragonDeath: casualty.firstDragonDeath }),
-    }
-    // Stages do not yet supply this roll; zero selects the range minimum at runtime.
     const amount = mobXpReward(
       SLAIN_WITHOUT_LOOTING,
       rule,
       casualty.experienceRoll ?? 0,
-      context,
+      experienceContextOfCasualty(casualty),
     )
     return amount <= 0
       ? []
       : [{ source: casualty.id, kind: casualty.kind, at: casualty.at, amount }]
   })
+
+/** Draw variable experience rolls from the same deterministic seed as loot. */
+export const rollCasualtyExperience = (
+  casualties: ReadonlyArray<MobCasualty>,
+  seed: number,
+): Readonly<{ readonly experience: ReadonlyArray<MobExperienceEvent>; readonly seed: number }> => {
+  if (casualties.length === 0) return { experience: NO_EXPERIENCE, seed }
+
+  let current = seed
+  const rolled = casualties.map((casualty) => {
+    const rule = mobExperienceRuleOfKind(casualty.kind)
+    if (rule.playerKillRequired !== false && !hasRecentPlayerCredit(casualty)) return casualty
+
+    const context = experienceContextOfCasualty(casualty)
+    const budget = mobExperienceRollBudgetOfKind(casualty.kind, context)
+    const baseRollCount = casualty.experienceRoll === undefined && budget.base ? 1 : 0
+    const existingEquipmentRolls = casualty.equipmentXpRolls ?? []
+    const equipmentRollCount = Math.max(0, budget.equipment - existingEquipmentRolls.length)
+    const batch = drawRolls(current, baseRollCount + equipmentRollCount)
+    current = batch.seed
+
+    let cursor = 0
+    const experienceRoll = casualty.experienceRoll ?? (baseRollCount > 0
+      ? makeMobExperienceRoll(rollAt(batch, cursor++))
+      : undefined)
+    const equipmentXpRolls = equipmentRollCount === 0
+      ? existingEquipmentRolls
+      : [
+          ...existingEquipmentRolls,
+          ...Array.from({ length: equipmentRollCount }, () => makeMobExperienceRoll(rollAt(batch, cursor++))),
+        ]
+
+    return {
+      ...casualty,
+      ...(experienceRoll === undefined ? {} : { experienceRoll }),
+      ...(equipmentXpRolls.length === 0 ? {} : { equipmentXpRolls }),
+    }
+  })
+  return { experience: experienceOfCasualties(rolled), seed: current }
+}
 
 /**
  * Roll what the dead leave behind.

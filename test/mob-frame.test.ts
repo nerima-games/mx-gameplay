@@ -47,6 +47,7 @@ import {
   resolveMeleeHits,
   rollSelfDestructDrops,
   rollCasualtyDrops,
+  rollCasualtyExperience,
   rollDropsOfKind,
   STEADY_ENDERMAN,
   STRUCK_ENDERMAN,
@@ -977,6 +978,58 @@ describe('bruise: a hostile snapshot survives a non-lethal blast with its outer 
 })
 
 describe('experienceOfCasualties', () => {
+  it.effect('rolls variable experience from the frame seed only when credited', () =>
+    Effect.sync(() => {
+      const seed = 1_000_000
+      const cow: MobCasualty = {
+        id: EntityId('e:experience-cow'),
+        kind: COW_KIND,
+        at: ORIGIN,
+        killCredit: 'player-triggered-tnt',
+      }
+      const first = rollCasualtyExperience([cow], seed)
+      const replay = rollCasualtyExperience([cow], seed)
+      expect(first.experience).toStrictEqual([
+        { source: cow.id, kind: COW_KIND, at: ORIGIN, amount: 3 },
+      ])
+      expect(replay).toStrictEqual(first)
+      expect(first.seed).not.toBe(seed)
+
+      const noCredit = rollCasualtyExperience([{ id: cow.id, kind: cow.kind, at: cow.at }], seed)
+      expect(noCredit).toStrictEqual({ experience: [], seed })
+      expect(rollCasualtyExperience([], seed)).toStrictEqual({ experience: [], seed })
+    }),
+  )
+
+  it.effect('uses supplied and rolled equipment experience rolls', () =>
+    Effect.sync(() => {
+      const seed = 1_000_000
+      const equipmentCount = Brand.nominal<MobUndroppedEquipmentCount>()(1)
+      const suppliedRoll = Brand.nominal<MobExperienceRoll>()(0)
+      const zombie: MobCasualty = {
+        id: EntityId('e:equipment-zombie'),
+        kind: ZOMBIE_KIND,
+        at: ORIGIN,
+        killCredit: 'player-triggered-tnt',
+        undroppedEquipmentCount: equipmentCount,
+      }
+      const rolled = rollCasualtyExperience([zombie], seed)
+      expect(rolled.experience).toStrictEqual([
+        { source: zombie.id, kind: ZOMBIE_KIND, at: ORIGIN, amount: 8 },
+      ])
+      expect(rolled.seed).not.toBe(seed)
+
+      const supplied = rollCasualtyExperience([{
+        ...zombie,
+        equipmentXpRolls: [suppliedRoll],
+      }], seed)
+      expect(supplied.experience).toStrictEqual([
+        { source: zombie.id, kind: ZOMBIE_KIND, at: ORIGIN, amount: 6 },
+      ])
+      expect(supplied.seed).toBe(seed)
+    }),
+  )
+
   it.effect('requires a player hit in the last 100 ticks or player-triggered TNT', () =>
     Effect.sync(() => {
       const atTick = SimulationTick(200)

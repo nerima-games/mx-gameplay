@@ -249,6 +249,7 @@ import {
   resolveEndermanTeleportProbes,
   resolveMeleeHits,
   rollCasualtyDrops,
+  rollCasualtyExperience,
   rollSelfDestructDrops,
   sweepMobs,
   ENDERMITE_KIND,
@@ -3543,7 +3544,7 @@ const stepFireTick = (
     ))
     const seed = yield* Ref.get(state.rollSeed)
     const casualtyDrops = rollCasualtyDrops(damagePlan.casualties, seed)
-    const experience = experienceOfCasualties(damagePlan.casualties)
+    const casualtyExperience = rollCasualtyExperience(damagePlan.casualties, casualtyDrops.seed)
     let droppedItemsCandidate: Schema.Schema.Type<typeof DroppedItemOwnerSnapshotSchema> | undefined
     if (casualtyDrops.drops.length > 0) {
       if (context.droppedItemsOwnerId === undefined) {
@@ -3684,12 +3685,12 @@ const stepFireTick = (
         a.position.x - b.position.x || a.position.y - b.position.y || a.position.z - b.position.z),
       burningActors: step.state.burningActors ?? [],
     })
-    yield* Ref.set(state.rollSeed, casualtyDrops.seed)
+    yield* Ref.set(state.rollSeed, casualtyExperience.seed)
     if (casualtyDrops.drops.length > 0) {
       yield* Ref.update(state.mobDrops, (pending) => [...pending, ...casualtyDrops.drops])
     }
-    if (experience.length > 0) {
-      yield* Ref.update(state.mobExperience, (pending) => [...pending, ...experience])
+    if (casualtyExperience.experience.length > 0) {
+      yield* Ref.update(state.mobExperience, (pending) => [...pending, ...casualtyExperience.experience])
     }
     if (fireDamage.damages.length > 0) {
       yield* Ref.update(state.playerDamages, (damages) => [...damages, ...fireDamage.damages])
@@ -4198,6 +4199,7 @@ export {
   enqueueFluidDisturbance,
   entityManagerTag,
   experienceOfCasualties,
+  rollCasualtyExperience,
   firePositionKey,
   fluidRuntimeSemaphoreFor,
   fluidRuntimeStateFor,

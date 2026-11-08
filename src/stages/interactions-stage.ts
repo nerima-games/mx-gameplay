@@ -169,7 +169,7 @@ import {
 import {
   ENDERMITE_KIND,
   ENDERMITE_MAX_HEALTH,
-  experienceOfCasualties,
+  rollCasualtyExperience,
   initialBehaviourOfKind,
   planMobDamageRoster,
   rollCasualtyDrops,
@@ -309,7 +309,7 @@ const commitMobDamage = (
 
     const seed = yield* Ref.get(state.rollSeed)
     const drops = rollCasualtyDrops(damage.casualties, seed)
-    const experience = experienceOfCasualties(damage.casualties)
+    const casualtyExperience = rollCasualtyExperience(damage.casualties, drops.seed)
     const changes: Array<ReplicatedOwnerCandidate> = []
     if (damage.roster !== entitySnapshot.state) {
       changes.push({ ownerId, state: roster })
@@ -365,12 +365,12 @@ const commitMobDamage = (
       })
       return false
     }
-    if (damage.casualties.length > 0) yield* Ref.set(state.rollSeed, drops.seed)
+    if (damage.casualties.length > 0) yield* Ref.set(state.rollSeed, casualtyExperience.seed)
     if (drops.drops.length > 0) {
       yield* Ref.update(state.mobDrops, (pending) => [...pending, ...drops.drops])
     }
-    if (experience.length > 0) {
-      yield* Ref.update(state.mobExperience, (pending) => [...pending, ...experience])
+    if (casualtyExperience.experience.length > 0) {
+      yield* Ref.update(state.mobExperience, (pending) => [...pending, ...casualtyExperience.experience])
     }
     if (event !== undefined && context.eventBus !== undefined) {
       const published = yield* Effect.result(context.eventBus.publish(event))

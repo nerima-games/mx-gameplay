@@ -104,8 +104,8 @@ type MobDropTable = Readonly<{
   readonly pools?: ReadonlyArray<MobDropPool>
 }>
 
-type MobExperienceRange = Readonly<{ readonly min: number; readonly max: number }>
-type MobExperienceRule = Readonly<{
+export type MobExperienceRange = Readonly<{ readonly min: number; readonly max: number }>
+export type MobExperienceRule = Readonly<{
   readonly adult: MobExperienceRange
   readonly baby?: MobExperienceRange
   readonly sizes?: Readonly<Partial<Record<MobSize, MobExperienceRange>>>
@@ -114,7 +114,7 @@ type MobExperienceRule = Readonly<{
   readonly dragonRespawn?: MobExperienceRange
 }>
 
-type MobExperienceContext = Readonly<{
+export type MobExperienceContext = Readonly<{
   readonly age?: MobAge
   readonly size?: MobSize
   readonly undroppedEquipmentCount?: number
@@ -487,6 +487,34 @@ export const mobDropRulesOfKind = (kind: EntityKind): ReadonlyArray<MobDropRule>
 export const mobExperienceRuleOfKind = (kind: EntityKind): MobExperienceRule =>
   MOB_EXPERIENCE_RULES[kind] ?? NO_EXPERIENCE
 
+const experienceRangeFor = (
+  reward: MobExperienceRule,
+  context: MobExperienceContext,
+): MobExperienceRange => context.firstDragonDeath === false && reward.dragonRespawn !== undefined
+  ? reward.dragonRespawn
+  : context.size === undefined
+    ? context.age === 'baby' && reward.baby !== undefined ? reward.baby : reward.adult
+    : reward.sizes?.[context.size] ??
+      (context.age === 'baby' && reward.baby !== undefined ? reward.baby : reward.adult)
+
+/** Random rolls a mob's selected experience range needs from the frame seed. */
+export const mobExperienceRollBudgetOfKind = (
+  kind: EntityKind,
+  context: MobExperienceContext = {},
+): Readonly<{ readonly base: boolean; readonly equipment: number }> => {
+  const rule = mobExperienceRuleOfKind(kind)
+  const selectedRange = experienceRangeFor(rule, context)
+  const equipmentCount = rule.equipmentBonus === undefined
+    ? 0
+    : Math.max(0, Math.floor(context.undroppedEquipmentCount ?? 0))
+  return {
+    base: selectedRange.min < selectedRange.max,
+    equipment: rule.equipmentBonus !== undefined && rule.equipmentBonus.min < rule.equipmentBonus.max
+      ? equipmentCount
+      : 0,
+  }
+}
+
 /**
  * Clamp a roll into `[0, 1)`.
  *
@@ -666,12 +694,7 @@ export const mobXpReward = (
     return Number.isFinite(reward) ? Math.max(0, reward) : 0
   }
 
-  const selectedRange = context.firstDragonDeath === false && reward.dragonRespawn !== undefined
-    ? reward.dragonRespawn
-    : context.size === undefined
-      ? context.age === 'baby' && reward.baby !== undefined ? reward.baby : reward.adult
-      : reward.sizes?.[context.size] ??
-        (context.age === 'baby' && reward.baby !== undefined ? reward.baby : reward.adult)
+  const selectedRange = experienceRangeFor(reward, context)
   const amount = rollRange(selectedRange, roll)
   const equipmentBonus = reward.equipmentBonus
   const equipmentCount = equipmentBonus === undefined

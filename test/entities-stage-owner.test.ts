@@ -73,12 +73,14 @@ import {
 import { makeEntitiesStage } from '../src/stages/entities-stage.js'
 import {
   CREEPER_KIND,
+  initialBehaviourOfKind,
   hostileMobSnapshot,
   type MobBehaviour,
   type MobEntity,
 } from '../src/domain/entities/mob-frame.js'
 import { BLAZE_KIND, initialEcosystemMobState, SKELETON_KIND } from '../src/domain/mob/mob-ecosystem.js'
 import { ZOMBIE_KIND } from '../src/domain/mob/hostile-combat.js'
+import { COW_KIND } from '../src/domain/mob/mob-ecosystem.js'
 import {
   GAMEPLAY_ENTITIES_OWNER_ID,
   GAMEPLAY_PLAYER_OWNER_ID,
@@ -1431,6 +1433,53 @@ describe('entities stage owner-backed MobSimulation', () => {
       }),
       { numRuns: 8 },
     )
+  })
+
+  it('rolls player-triggered TNT cow experience from the frame seed and replays it', async () => {
+    const tntId = EntityId('test:tnt-cow-xp')
+    const cowId = EntityId('test:cow-xp')
+    const run = async () => {
+      const harness = await Effect.runPromise(makeHarness({
+        entity: null,
+        entities: [{
+          id: cowId,
+          kind: COW_KIND,
+          feetPosition: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
+          healthPoints: EntityHealthPoints(1),
+          behaviour: initialBehaviourOfKind(COW_KIND),
+        }],
+        block: { position: blockPosition(BlockAxis(0), BlockAxis(64), BlockAxis(0)), id: STONE },
+        tntSources: { sources: [{ tntId, killCredit: 'player-triggered-tnt' }] },
+        tnt: {
+          tnts: [{
+            id: tntId,
+            dimension: INITIAL_DIMENSION,
+            center: { x: 0, y: 64, z: 0 },
+            state: { kind: 'primed', remainingFuseSecs: 0.01 },
+          }],
+        },
+      }))
+      await Effect.runPromise(Ref.set(harness.state.rollSeed, 133))
+      await harness.run(0.05 as DeltaTimeSecs)
+      return Effect.runPromise(Effect.all({
+        drops: Ref.get(harness.state.mobDrops),
+        experience: Ref.get(harness.state.mobExperience),
+        seed: Ref.get(harness.state.rollSeed),
+      }))
+    }
+
+    const first = await run()
+    const replay = await run()
+    expect(first.drops).toContainEqual(expect.objectContaining({
+      source: cowId,
+      kind: COW_KIND,
+      item: 'beef',
+    }))
+    expect(first.experience).toStrictEqual([
+      expect.objectContaining({ source: cowId, kind: COW_KIND, amount: 3 }),
+    ])
+    expect(replay).toStrictEqual(first)
+    expect(first.seed).not.toBe(133)
   })
 
   it('wears equipped armor in the same owner revision as TNT blast damage', async () => {

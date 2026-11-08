@@ -65,14 +65,13 @@ import {
   planExperienceOrbAbsorption,
 } from '../domain/entities/xp-orb.js'
 import {
-  experienceOfCasualties,
   planEndermanTeleportRoster,
   planMobBlastRoster,
   planMobExplosionRoster,
   planMobRosterSweep,
   planSpawnAttemptsOnRoster,
   rollCasualtyDrops,
-  type MobExperienceEvent,
+  rollCasualtyExperience,
   type MobExplosionHit,
   type MobSpawnAttempt,
 } from '../domain/entities/mob-frame.js'
@@ -318,7 +317,7 @@ const runTntSimulation = (
     const deathTick = Schema.decodeUnknownSync(SimulationTickSchema)(yield* Ref.get(state.tickCount))
     const mobBlast = planMobExplosionRoster(roster, mobHits, deathTick)
     const loot = rollCasualtyDrops(mobBlast.casualties, seed)
-    const experience: ReadonlyArray<MobExperienceEvent> = experienceOfCasualties(mobBlast.casualties)
+    const casualtyExperience = rollCasualtyExperience(mobBlast.casualties, loot.seed)
     const explosion: Explosion = { source: 'tnt', power: TNT_EXPLOSION_POWER }
     const playerEffect = player.pose.feetPosition.dimension === record.dimension
       ? effects.find(({ id: effectId }) => effectId === PLAYER_BLAST_ENTITY_ID)
@@ -442,9 +441,11 @@ const runTntSimulation = (
 
     yield* commit.tntService.commitDetonation({ id: outcome.id, planRevision: outcome.planRevision }, changes)
 
-    yield* Ref.set(state.rollSeed, loot.seed)
+    yield* Ref.set(state.rollSeed, casualtyExperience.seed)
     if (loot.drops.length > 0) yield* Ref.update(state.mobDrops, (pending) => [...pending, ...loot.drops])
-    if (experience.length > 0) yield* Ref.update(state.mobExperience, (pending) => [...pending, ...experience])
+    if (casualtyExperience.experience.length > 0) {
+      yield* Ref.update(state.mobExperience, (pending) => [...pending, ...casualtyExperience.experience])
+    }
     if (playerDamage !== undefined) yield* Ref.update(state.playerDamages, (pending) => [...pending, playerDamage])
     const disturbed = outcome.explosion.destroyedBlocks.map(({ x, y, z }) => blockPositionKeyOf(blockPosition(
       Result.getOrThrow(BlockAxis.result(x)),
@@ -514,8 +515,9 @@ const runMobSimulation = (
   )
   const hostileSearchDue = difficulty !== 'peaceful' && intervalElapsed
   const casualtyDrops = rollCasualtyDrops(blast.casualties, sweep.seed)
+  const casualtyExperience = rollCasualtyExperience(blast.casualties, casualtyDrops.seed)
   let searchedAttempts: ReadonlyArray<MobSpawnAttempt> = NO_ATTEMPTS
-  let nextRollSeed = casualtyDrops.seed
+  let nextRollSeed = casualtyExperience.seed
   const timeOfDay = yield* context.time.timeOfDay
   const dimension = playerSnapshot.state.pose.feetPosition.dimension
   const passiveInitialSpawnPending = yield* Ref.get(state.passiveInitialSpawnPending)
@@ -528,7 +530,7 @@ const runMobSimulation = (
       store,
       playerPosition,
       timeOfDay,
-      RandomSeed(casualtyDrops.seed),
+      RandomSeed(casualtyExperience.seed),
       dimension,
       'hostile',
     )
@@ -863,8 +865,8 @@ const runMobSimulation = (
   if (casualtyDrops.drops.length > 0) {
     yield* Ref.update(state.mobDrops, (pending) => [...pending, ...casualtyDrops.drops])
   }
-  if (experience.length > 0) {
-    yield* Ref.update(state.mobExperience, (pending) => [...pending, ...experience])
+  if (casualtyExperience.experience.length > 0) {
+    yield* Ref.update(state.mobExperience, (pending) => [...pending, ...casualtyExperience.experience])
   }
   if (resolvedDamages.length > 0) {
     yield* Ref.update(state.playerDamages, (pending) => [...pending, ...resolvedDamages])
