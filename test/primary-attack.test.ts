@@ -1,5 +1,5 @@
 import { describe, expect, it } from '@effect/vitest'
-import { Brand, Effect, Ref, Schema } from 'effect'
+import { Brand, Effect, Ref, Result, Schema } from 'effect'
 import { AttackRangeDistance, DimensionIdSchema, EntityHealthPoints, WorldIdSchema } from '@nerima-games/mc-kernel'
 import { CREEPER_KIND, type MobBehaviour } from '../src/domain/entities/mob-frame'
 import { meleeDamageForItem } from '../src/domain/interactions/melee-attack'
@@ -130,7 +130,7 @@ describe('targeted primary attack', () => {
       const resolution = yield* Effect.orDie(resolveTargetedPrimaryAttack(
         context.store.api,
         context.targeting,
-        { meleeDamage: meleeDamageForItem('diamond_sword') },
+        { meleeDamage: Result.getOrThrow(meleeDamageForItem('diamond_sword')) },
       ))
 
       expect(resolution._tag).toBe('Melee')

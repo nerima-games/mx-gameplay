@@ -481,33 +481,42 @@ type PlayerExplosionDamageEvent = Extract<PlayerDamageEvent, { readonly _tag: 'E
 
 export type HostileContactResolution = {
   readonly damages: ReadonlyArray<HostileContactDamageEvent>
-  readonly cooldowns: ReadonlyMap<EntityId, number>
+  readonly cooldowns: ReadonlyMap<EntityId, SimulationTick>
 }
 
-export const HOSTILE_CONTACT_INTERVAL_SECS = 1
+export type HostileContactResolutionError = 'invalid-input' | 'invalid-tick-order'
+
+export const HOSTILE_CONTACT_INTERVAL_TICKS = 20
 export const ZOMBIE_CONTACT_RANGE_BLOCKS = 1.5
 export const ZOMBIE_CONTACT_DAMAGE: Damage = { amount: 3, cause: 'mob' }
 
 export const resolveHostileContacts = <S>(
   entities: ReadonlyArray<Entity<S>>,
   target: Position | undefined,
-  dt: number,
-  previousCooldowns: ReadonlyMap<EntityId, number>,
+  tick: SimulationTick,
+  previousCooldowns: ReadonlyMap<EntityId, SimulationTick>,
   difficulty: SurvivalDifficulty = 'normal',
-): HostileContactResolution => {
-  const elapsed = Number.isFinite(dt) && dt > 0 ? dt : 0
-  const cooldowns = new Map<EntityId, number>()
-  for (const [id, remaining] of previousCooldowns) {
-    const next = remaining - elapsed
-    if (next > 0) cooldowns.set(id, next)
+): Result.Result<HostileContactResolution, HostileContactResolutionError> => {
+  const decodedTick = Schema.decodeUnknownResult(SimulationTickSchema)(tick)
+  if (Result.isFailure(decodedTick)) return Result.fail('invalid-input')
+
+  const currentTick = decodedTick.success
+  const cooldowns = new Map<EntityId, SimulationTick>()
+  for (const [id, previousTick] of previousCooldowns) {
+    const decodedPreviousTick = Schema.decodeUnknownResult(SimulationTickSchema)(previousTick)
+    if (Result.isFailure(decodedPreviousTick)) return Result.fail('invalid-input')
+    if (currentTick < decodedPreviousTick.success) return Result.fail('invalid-tick-order')
+    if (currentTick - decodedPreviousTick.success < HOSTILE_CONTACT_INTERVAL_TICKS) {
+      cooldowns.set(id, decodedPreviousTick.success)
+    }
   }
 
   if (target === undefined) {
-    return { damages: [], cooldowns }
+    return Result.succeed({ damages: [], cooldowns })
   }
 
   const damages: Array<HostileContactDamageEvent> = []
-  if (difficulty === 'peaceful') return { damages, cooldowns }
+  if (difficulty === 'peaceful') return Result.succeed({ damages, cooldowns })
   for (const entity of entities) {
     if (
       entity.kind !== ZOMBIE_KIND ||
@@ -533,10 +542,10 @@ export const resolveHostileContacts = <S>(
       at: entity.feetPosition,
       damage: { amount, cause: 'mob' },
     })
-    cooldowns.set(entity.id, HOSTILE_CONTACT_INTERVAL_SECS)
+    cooldowns.set(entity.id, currentTick)
   }
 
-  return { damages, cooldowns }
+  return Result.succeed({ damages, cooldowns })
 }
 
 export type PlayerBlast = {

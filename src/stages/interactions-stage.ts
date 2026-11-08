@@ -33,7 +33,7 @@ import {
   stepStatusEffects,
   useBucket,
 } from './registration-core.js'
-import { EntityHealthPoints, PositionAxis, weaponComponent } from '@nerima-games/mc-kernel'
+import { AttackRangeDistance, EntityHealthPoints, EntityId, PositionAxis, weaponComponent } from '@nerima-games/mc-kernel'
 import { position as kernelPosition } from '@nerima-games/mc-kernel'
 import type { BlockId, ItemType } from '@nerima-games/mc-kernel'
 import { Option, Result } from 'effect'
@@ -154,7 +154,11 @@ import {
   shotTargetWithCandidate,
 } from '../domain/interactions/bow-shot.js'
 import { bowCharge, bowDamage, canFireBow } from '../domain/interactions/draw-bow.js'
-import { meleeTarget } from '../domain/interactions/melee-attack.js'
+import {
+  MeleeCooldownTicksSchema,
+  prepareMeleeAttack,
+  type MeleeAttackIntent,
+} from '../domain/interactions/melee-attack.js'
 import { knockbackDirection } from '../domain/interactions/knockback.js'
 import { directionComponent, normalizeDirection3 } from '../domain/math/direction.js'
 import {
@@ -228,29 +232,40 @@ type PlayerStorageCommitSnapshot = Readonly<{
   state: PlayerStorage
 }>
 
-const isMeleeWeaponItem = (item: ItemType): boolean => item.endsWith('_sword') || item.endsWith('_axe')
+const isMeleeWeaponItem = (item: ItemType): boolean =>
+  item.endsWith('_sword') || item.endsWith('_axe') || item.endsWith('_pickaxe') ||
+  item.endsWith('_shovel') || item.endsWith('_hoe')
 
 const VALIDATED_MELEE_WEAPON_LOCATION = Symbol('ValidatedMeleeWeaponLocation')
 
 type ValidatedMeleeWeaponLocation = Readonly<{
   storage: PlayerStorage
   location: StorageLocation
+  item: ItemType | null
   wear: number
   [VALIDATED_MELEE_WEAPON_LOCATION]: true
 }>
+
+const isMeleeToolLocation = (location: unknown): location is Extract<StorageLocation, { _tag: 'Inventory' }> =>
+  typeof location === 'object' && location !== null &&
+    '_tag' in location && location._tag === 'Inventory' &&
+    'slotIndex' in location && typeof location.slotIndex === 'number' && Number.isSafeInteger(location.slotIndex) &&
+    location.slotIndex >= 0 && location.slotIndex < 9
 
 const validatedMeleeWeaponAt = (
   storage: PlayerStorage,
   location: StorageLocation,
 ): ValidatedMeleeWeaponLocation | undefined => {
-  const heldStack = location._tag === 'Inventory'
-    ? storage.inventory.slots[location.slotIndex]
-    : storage.equipment.slots[location.slot]
-  if (heldStack === undefined || heldStack === null || !isMeleeWeaponItem(heldStack.item)) return undefined
+  if (!isMeleeToolLocation(location)) return undefined
+  const heldStack = storage.inventory.slots[location.slotIndex]
+  const item = heldStack !== undefined && heldStack !== null && isMeleeWeaponItem(heldStack.item)
+    ? heldStack.item
+    : null
   return {
     storage,
     location,
-    wear: heldStack.components?.weapon?.itemDamagePerAttack ?? DEFAULT_WEAPON_ITEM_DAMAGE,
+    item,
+    wear: item === null ? 0 : heldStack?.components?.weapon?.itemDamagePerAttack ?? DEFAULT_WEAPON_ITEM_DAMAGE,
     [VALIDATED_MELEE_WEAPON_LOCATION]: true,
   }
 }
@@ -567,6 +582,15 @@ const processMeleeAttack = (
   playerDead: boolean,
 ): Effect.Effect<void> =>
   Effect.gen(function* () {
+    const recordFailure = () => {
+      const requestId = request.requestId
+      if (requestId === undefined) return Effect.void
+      const failure: import('./registration-core.js').GameplayMeleeAttackResult = {
+        requestId,
+        success: false,
+      }
+      return Ref.update(state.meleeAttackResults, (results) => [...results, failure])
+    }
     if (playerDead) {
       if (request.requestId !== undefined) {
         const result: import('./registration-core.js').GameplayMeleeAttackResult = {
@@ -578,7 +602,11 @@ const processMeleeAttack = (
       }
       return
     }
-    if (context === undefined || context.entitiesOwnerId === undefined || context.playerOwnerId === undefined) {
+    const storageOwnerId = context?.playerStorageOwnerId
+    if (
+      context === undefined || context.entitiesOwnerId === undefined || context.playerOwnerId === undefined ||
+      (request.toolLocation !== undefined && storageOwnerId === undefined)
+    ) {
       yield* recordGameplayUnsupportedOperation(state, {
         _tag: 'Unsupported', action: 'MeleeAttack',
         ...(request.requestId === undefined ? {} : { requestId: request.requestId }),
@@ -587,29 +615,23 @@ const processMeleeAttack = (
       yield* Ref.update(state.pendingMeleeAttacks, (pending) => [request, ...pending])
       return
     }
+    if (request.toolLocation !== undefined && !isMeleeToolLocation(request.toolLocation)) {
+      yield* recordFailure()
+      return
+    }
+    let blockDistance: AttackRangeDistance | undefined
+    if (request.hitDistance !== undefined) {
+      const validatedDistance = AttackRangeDistance.result(request.hitDistance)
+      if (Result.isFailure(validatedDistance)) {
+        yield* recordFailure()
+        return
+      }
+      blockDistance = validatedDistance.success
+    }
     const entities = yield* Effect.result(context.coordinator.snapshot(context.entitiesOwnerId, GameplayEntityRosterSchema))
     if (Result.isFailure(entities)) {
       yield* recordGameplayStageFailure(state, {
         _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'Player', error: entities.failure,
-      })
-      yield* Ref.update(state.pendingMeleeAttacks, (pending) => [request, ...pending])
-      return
-    }
-    const target = meleeTarget(entities.success.state.entities, request)
-    if (target === undefined) {
-      if (request.requestId !== undefined) {
-        const result: import('./registration-core.js').GameplayMeleeAttackResult = {
-          requestId: request.requestId,
-          success: false,
-        }
-        yield* Ref.update(state.meleeAttackResults, (results) => [...results, result])
-      }
-      return
-    }
-    const amount = DamageAmount.result(request.damage)
-    if (Result.isFailure(amount)) {
-      yield* recordGameplayStageFailure(state, {
-        _tag: 'Failed', operation: 'CandidateBuild', subject: 'Player', error: amount.failure,
       })
       yield* Ref.update(state.pendingMeleeAttacks, (pending) => [request, ...pending])
       return
@@ -630,14 +652,25 @@ const processMeleeAttack = (
       yield* Ref.update(state.pendingMeleeAttacks, (pending) => [request, ...pending])
       return
     }
-    const tick = yield* Ref.get(state.tickCount)
-    const targetEntity = Option.getOrThrow(Option.fromNullishOr(
-      entities.success.state.entities.find(({ id }) => id === target.id),
-    ))
+    const decodedTick = Schema.decodeUnknownResult(SimulationTickSchema)(yield* Ref.get(state.tickCount))
+    if (Result.isFailure(decodedTick)) {
+      yield* recordFailure()
+      return
+    }
+    const tick = decodedTick.success
+    const lastAttackTick = yield* Ref.get(state.meleeLastAttackTick)
+    const ticksSinceLastAttack = Schema.decodeUnknownResult(MeleeCooldownTicksSchema)(
+      lastAttackTick === null ? 25 : tick - lastAttackTick,
+    )
+    if (Result.isFailure(ticksSinceLastAttack)) {
+      yield* recordFailure()
+      return
+    }
+    let heldItem: ItemType | null = null
     let storageCandidate: Schema.Schema.Type<typeof PlayerStorageSnapshotSchema> | undefined
     if (request.toolLocation !== undefined) {
       const storage = yield* Effect.result(context.coordinator.snapshot(
-        context.playerStorageOwnerId,
+        storageOwnerId!,
         PlayerStorageSnapshotSchema,
       ))
       if (Result.isFailure(storage)) {
@@ -656,42 +689,74 @@ const processMeleeAttack = (
         return
       }
       const weapon = validatedMeleeWeaponAt(storage.success.state, request.toolLocation)
-      if (weapon !== undefined && weapon.wear > 0) {
+      if (weapon === undefined) {
+        yield* recordFailure()
+        return
+      }
+      heldItem = weapon.item
+      if (weapon.wear > 0) {
         storageCandidate = damageValidatedMeleeWeaponAt(weapon)
       }
     }
-    const targetPosition = Schema.decodeUnknownSync(WorldPositionSchema)({
+    const intent: MeleeAttackIntent = {
+      _tag: 'MeleeAttack',
+      actor: EntityId('mx-gameplay:player-avatar'),
+    }
+    const preparationInput = {
+      tick,
       dimension: player.success.state.pose.feetPosition.dimension,
-      x: targetEntity.feetPosition.x,
-      y: targetEntity.feetPosition.y,
-      z: targetEntity.feetPosition.z,
-    })
-    const event = Schema.decodeUnknownSync(DomainEventSchema)({
-      _tag: 'EntityDamaged', tick, entity: target.id,
-      position: targetPosition, amount: amount.success, cause: 'mob',
-    })
+      pose: player.success.state.pose,
+      entities: entities.success.state.entities,
+      heldItem,
+      critical: false,
+      ticksSinceLastAttack: ticksSinceLastAttack.success,
+      targetDamageState: null,
+      ...(blockDistance === undefined ? {} : { blockDistance }),
+    }
+    const targetDamageStates = yield* Ref.get(state.meleeTargetDamageStates)
+    const initialPreparation = prepareMeleeAttack(intent, preparationInput)
+    if (Result.isFailure(initialPreparation)) {
+      yield* recordFailure()
+      return
+    }
+    const previousTargetDamageState = targetDamageStates.get(initialPreparation.success.target.id) ?? null
+    const preparation = previousTargetDamageState === null
+      ? initialPreparation
+      : prepareMeleeAttack(intent, { ...preparationInput, targetDamageState: previousTargetDamageState })
+    if (Result.isFailure(preparation)) {
+      if (preparation.failure === 'target-invulnerable') {
+        yield* Ref.set(state.meleeLastAttackTick, tick)
+      }
+      yield* recordFailure()
+      return
+    }
     const committed = yield* commitMobDamage(
       state,
       context,
       entities.success,
       player.success.state.pose.feetPosition.dimension,
       {
-        id: target.id,
-        damage: { amount: amount.success, cause: 'mob' },
+        id: preparation.success.target.id,
+        damage: { amount: preparation.success.event.amount, cause: 'mob' },
         killCredit: 'player',
       },
       storageCandidate,
-      event,
+      preparation.success.event,
     )
     if (!committed) {
       yield* Ref.update(state.pendingMeleeAttacks, (pending) => [request, ...pending])
       return
     }
+    yield* Ref.set(state.meleeLastAttackTick, tick)
+    yield* Ref.set(state.meleeTargetDamageStates, new Map(targetDamageStates).set(
+      preparation.success.target.id,
+      preparation.success.targetDamageState,
+    ))
     if (request.requestId !== undefined) {
       const result: import('./registration-core.js').GameplayMeleeAttackResult = {
         requestId: request.requestId,
         success: true,
-        target,
+        target: preparation.success.target,
       }
       yield* Ref.update(state.meleeAttackResults, (results) => [...results, result])
     }

@@ -1,12 +1,13 @@
 import { describe, expect, it } from '@effect/vitest'
-import { EntityHealthPoints, EntityId, EntityKind, EntitySerial, ItemDamage, StackCount, itemComponents, itemStack, weaponComponent, type BlockId, type EntityRoster, type ItemType } from '@nerima-games/mc-kernel'
+import { AttackRangeDistance, DamageAmountSchema, EntityHealthPoints, EntityId, EntityKind, EntitySerial, ItemDamage, SimulationTickSchema, StackCount, itemComponents, itemStack, weaponComponent, type BlockId, type EntityRoster, type ItemType } from '@nerima-games/mc-kernel'
 import { PlayerStorageSnapshotSchema, damageAt, equipFromInventory, makeReplicatedOwnerId, makeTimeService, storageFromInventory, type PlayerStorage, type ReplicatedOwnerId, type StorageLocation, type WorldCommitCoordinatorApi } from '@nerima-games/mc-sim'
-import { Effect, Ref, Result } from 'effect'
+import { Effect, Ref, Result, Schema } from 'effect'
 import type { MobBehaviour } from '../src/domain/entities/mob-frame'
-import { meleeDamageForItem } from '../src/domain/interactions/melee-attack'
+import { meleeDamageForItem, type MeleeAttackRequest } from '../src/domain/interactions/melee-attack'
 import {
   makeGameplayFrameStateForOwner,
   gameplayStages,
+  requestMeleeAttack,
   requestTargetedPrimaryAttack,
 } from '../src/stages/registration'
 import { GAMEPLAY_STAGE_IDS } from '../src/stages/stage-ids'
@@ -26,11 +27,24 @@ import { makeGameplayCommitServices } from './support/transactional-stage-double
 import { makePlayerServiceDouble } from './support/player-service-double'
 import { runFrame } from './support/frame-runner'
 import { position as atPosition } from './support/coordinate-fixtures'
+import { expectedMeleeAttack } from './support/melee-attack-oracle'
 
 const HELD_SLOT: StorageLocation = { _tag: 'Inventory', slotIndex: 0 }
 const EMPTY_HELD_SLOT: StorageLocation = { _tag: 'Inventory', slotIndex: 1 }
 const OFFHAND_SLOT: StorageLocation = { _tag: 'Equipment', slot: 'offhand' }
 const WEAPON_WEAR = Result.getOrThrow(weaponComponent()).itemDamagePerAttack
+const simulationTick = (tick: number) => Schema.decodeUnknownSync(SimulationTickSchema)(tick)
+
+const forgedMeleeRequest = (requestId: string): MeleeAttackRequest => ({
+  requestId,
+  origin: atPosition(80, 64, 80),
+  direction: atPosition(1, 0, 0),
+  reach: AttackRangeDistance(64),
+  damage: 999,
+  toolLocation: HELD_SLOT,
+  hitDistance: 64,
+  critical: true,
+} as unknown as MeleeAttackRequest)
 
 const MELEE_TARGETS: EntityRoster<MobBehaviour> = {
   entities: [{
@@ -167,7 +181,7 @@ describe('gameplay melee durability stage', () => {
       }
       const { state, commit, stages, store, targeting } = yield* scene(initialStorage)
       const queued = yield* requestTargetedPrimaryAttack(state, store.api, targeting, {
-        meleeDamage: meleeDamageForItem('iron_sword'),
+        meleeDamage: Result.getOrThrow(meleeDamageForItem('iron_sword')),
         toolLocation: HELD_SLOT,
       })
       expect(queued._tag).toBe('Melee')
@@ -215,7 +229,7 @@ describe('gameplay melee durability stage', () => {
       // Catches a last-point sword hit that leaves a broken weapon in PlayerStorage.
       const { state, commit, stages, store, targeting } = yield* scene(storageWithOneDurability('iron_sword'))
       const queued = yield* requestTargetedPrimaryAttack(state, store.api, targeting, {
-        meleeDamage: meleeDamageForItem('iron_sword'),
+        meleeDamage: Result.getOrThrow(meleeDamageForItem('iron_sword')),
         toolLocation: HELD_SLOT,
       })
       expect(queued._tag).toBe('Melee')
@@ -235,7 +249,7 @@ describe('gameplay melee durability stage', () => {
       const initialStorage = storageWith('iron_sword')
       const { state, commit, stages, store, targeting } = yield* scene(initialStorage)
       const queued = yield* requestTargetedPrimaryAttack(state, store.api, targeting, {
-        meleeDamage: meleeDamageForItem(null),
+        meleeDamage: Result.getOrThrow(meleeDamageForItem(null)),
       })
       expect(queued._tag).toBe('Melee')
 
@@ -308,14 +322,10 @@ describe('gameplay melee durability stage', () => {
     }),
   )
 
-  it.effect('wears a sword held in the Equipment offhand slot', () =>
+  it.effect('does not treat an Equipment offhand slot as the selected hotbar weapon', () =>
     Effect.gen(function* () {
-      // Catches Equipment-held swords that bypass the inventory lookup path.
+      // Catches offhand weapons being accepted without a server-owned selected hotbar slot.
       const initialStorage = storageWithEquipmentSword()
-      const initialDurability = initialStorage.equipment.slots.offhand?.durability
-      if (initialDurability === null || initialDurability === undefined) {
-        throw new Error('The test offhand sword must have kernel durability data.')
-      }
       const { state, commit, stages, store, targeting } = yield* scene(initialStorage)
       const queued = yield* requestTargetedPrimaryAttack(state, store.api, targeting, {
         toolLocation: OFFHAND_SLOT,
@@ -325,11 +335,105 @@ describe('gameplay melee durability stage', () => {
       yield* runFrame(stages)
 
       const storage = yield* ownerStorage(commit)
-      expect(storage.equipment.slots.offhand?.durability).toStrictEqual({
+      expect(storage.equipment).toStrictEqual(initialStorage.equipment)
+      expect((yield* ownerRoster(commit)).entities[0]?.healthPoints).toBe(20)
+      expect(yield* Ref.get(state.meleeLastAttackTick)).toBeNull()
+    }),
+  )
+
+  it.effect('uses server pose, hotbar snapshot, cooldown and hurt resistance instead of request claims', () =>
+    Effect.gen(function* () {
+      const initialStorage = storageWith('iron_sword')
+      const initialDurability = initialStorage.inventoryDurability[0]
+      if (initialDurability === null || initialDurability === undefined) {
+        throw new Error('The test sword must have kernel durability data.')
+      }
+      const { state, commit, stages } = yield* scene(initialStorage)
+      const tick = simulationTick(40)
+      yield* Ref.set(state.tickCount, tick)
+      yield* Ref.set(state.meleeLastAttackTick, simulationTick(35))
+      const expected = expectedMeleeAttack({
+        heldItem: 'iron_sword',
+        ticksSinceLastAttack: 5,
+        critical: false,
+        tick: 40,
+        targetDamageState: null,
+      })
+      if (expected === null) throw new Error('The valid server melee input must produce oracle damage.')
+      yield* requestMeleeAttack(state, forgedMeleeRequest('forged-melee-damage'))
+
+      yield* runFrame(stages)
+
+      expect(yield* Ref.get(state.operationFailures)).toStrictEqual([])
+      expect(yield* Ref.get(state.pendingMeleeAttacks)).toStrictEqual([])
+      expect((yield* ownerRoster(commit)).entities[0]?.healthPoints).toBe(20 - expected.appliedAmount)
+      const damageState = (yield* Ref.get(state.meleeTargetDamageStates)).get(MELEE_TARGETS.entities[0]!.id)
+      expect(damageState?.lastDamageTick).toBe(expected.targetDamageState.lastDamageTick)
+      expect(damageState?.lastDamageAmount).toBeCloseTo(expected.targetDamageState.lastDamageAmount, 12)
+      expect(yield* Ref.get(state.meleeLastAttackTick)).toBe(tick)
+      expect((yield* ownerStorage(commit)).inventoryDurability[0]).toStrictEqual({
         current: initialDurability.current - WEAPON_WEAR,
         max: initialDurability.max,
       })
-      expect((yield* ownerRoster(commit)).entities[0]?.healthPoints).toBeLessThan(20)
+    }),
+  )
+
+  it.effect('consumes cooldown without committing damage or wear when target hurt resistance suppresses a hit', () =>
+    Effect.gen(function* () {
+      const initialStorage = storageWith('iron_sword')
+      const initialDurability = initialStorage.inventoryDurability[0]
+      if (initialDurability === null || initialDurability === undefined) {
+        throw new Error('The test sword must have kernel durability data.')
+      }
+      const { state, commit, stages } = yield* scene(initialStorage)
+      const tick = simulationTick(40)
+      const previousDamageState = {
+        lastDamageTick: simulationTick(39),
+        lastDamageAmount: Schema.decodeUnknownSync(DamageAmountSchema)(5),
+      }
+      yield* Ref.set(state.tickCount, tick)
+      yield* Ref.set(state.meleeLastAttackTick, simulationTick(35))
+      yield* Ref.set(state.meleeTargetDamageStates, new Map([
+        [MELEE_TARGETS.entities[0]!.id, previousDamageState],
+      ]))
+      const expected = expectedMeleeAttack({
+        heldItem: 'iron_sword',
+        ticksSinceLastAttack: 5,
+        critical: false,
+        tick: 40,
+        targetDamageState: { lastDamageTick: 39, lastDamageAmount: 5 },
+      })
+      expect(expected).toBeNull()
+      yield* requestMeleeAttack(state, forgedMeleeRequest('hurt-resistant-target'))
+
+      yield* runFrame(stages)
+
+      expect((yield* ownerRoster(commit)).entities[0]?.healthPoints).toBe(20)
+      expect((yield* ownerStorage(commit)).inventoryDurability[0]).toStrictEqual(initialDurability)
+      expect(yield* Ref.get(state.meleeTargetDamageStates)).toStrictEqual(new Map([
+        [MELEE_TARGETS.entities[0]!.id, previousDamageState],
+      ]))
+      expect(yield* Ref.get(state.meleeLastAttackTick)).toBe(tick)
+      expect(yield* Ref.get(state.pendingMeleeAttacks)).toStrictEqual([])
+
+      const nextTick = simulationTick(41)
+      expect(expectedMeleeAttack({
+        heldItem: 'iron_sword',
+        ticksSinceLastAttack: 1,
+        critical: false,
+        tick: 41,
+        targetDamageState: { lastDamageTick: 39, lastDamageAmount: 5 },
+      })).toBeNull()
+      yield* Ref.set(state.tickCount, nextTick)
+      yield* requestMeleeAttack(state, forgedMeleeRequest('hurt-resistant-follow-up'))
+      yield* runInteractions(stages)
+
+      expect((yield* ownerRoster(commit)).entities[0]?.healthPoints).toBe(20)
+      expect((yield* ownerStorage(commit)).inventoryDurability[0]).toStrictEqual(initialDurability)
+      expect(yield* Ref.get(state.meleeTargetDamageStates)).toStrictEqual(new Map([
+        [MELEE_TARGETS.entities[0]!.id, previousDamageState],
+      ]))
+      expect(yield* Ref.get(state.meleeLastAttackTick)).toBe(nextTick)
     }),
   )
 

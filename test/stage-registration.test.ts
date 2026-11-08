@@ -1490,6 +1490,8 @@ describe('stage behaviour', () => {
         'hostileContactCooldowns',
         'itemUseResults',
         'meleeAttackResults',
+        'meleeLastAttackTick',
+        'meleeTargetDamageStates',
         'mobDrops',
         'mobExperience',
         'operationFailures',
@@ -1592,12 +1594,12 @@ describe('stage behaviour', () => {
     }),
   )
 
-  it.effect('melee results reflect actual stage hits and misses in request order and drain once', () =>
+  it.effect('melee uses the authoritative pose and server-computed unarmed damage, ignoring request claims', () =>
     Effect.gen(function* () {
       const target = {
         id: EntityId('e:0'),
         kind: CREEPER_KIND,
-        feetPosition: fixturePosition(0, 64 - BOW_TARGET_CENTER_Y_OFFSET, 2),
+        feetPosition: fixturePosition(0, 64.72, -2),
         healthPoints: EntityHealthPoints(20),
         behaviour: undefined,
       }
@@ -1608,15 +1610,15 @@ describe('stage behaviour', () => {
 
       yield* requestMeleeAttack(state, {
         requestId: 'hit',
-        origin: fixturePosition(0, 64, 0 ),
-        direction: fixturePosition(0, 0, 1),
+        origin: fixturePosition(80, 64, 80),
+        direction: fixturePosition(1, 0, 0),
         reach: AttackRangeDistance(3),
-        damage: 4,
+        damage: 999,
       })
       yield* requestMeleeAttack(state, {
-        requestId: 'miss',
-        origin: fixturePosition(0, 64, 0 ),
-        direction: fixturePosition(1, 0, 0),
+        requestId: 'weak-follow-up',
+        origin: fixturePosition(-80, 64, 80),
+        direction: fixturePosition(0, 0, 1),
         reach: AttackRangeDistance(3),
         damage: 7,
       })
@@ -1631,15 +1633,15 @@ describe('stage behaviour', () => {
         success: true,
         target: { id: target.id, distance: 2 },
       })
-      expect(results[1]).toStrictEqual({ requestId: 'miss', success: false })
+      expect(results[1]).toStrictEqual({ requestId: 'weak-follow-up', success: false })
       expect(yield* drainMeleeAttackResults(state)).toStrictEqual([])
       const entityOwner = yield* commit.coordinator.snapshot(GAMEPLAY_ENTITIES_OWNER_ID, GameplayEntityRosterSchema)
-      expect(entityOwner.state.entities[0]?.healthPoints).toBe(16)
+      expect(entityOwner.state.entities[0]?.healthPoints).toBe(19)
       expect(yield* drainMobExperience(state)).toStrictEqual([])
     }),
   )
 
-  it.effect('rejects zero melee damage without committing or dropping the retryable intent', () =>
+  it.effect('rejects an invalid host block distance without committing or requeueing the request', () =>
     Effect.gen(function* () {
       const target = {
         id: EntityId('melee-zero-damage-target'),
@@ -1656,11 +1658,12 @@ describe('stage behaviour', () => {
       const revision = yield* harness.commit.coordinator.revision
 
       yield* requestMeleeAttack(harness.state, {
-        requestId: 'melee-zero-damage',
+        requestId: 'melee-invalid-block-distance',
         origin: fixturePosition(0, 64, 0),
         direction: fixturePosition(0, 0, 1),
         reach: AttackRangeDistance(3),
         damage: 0,
+        hitDistance: -1,
       })
       const interactions = harness.stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
       yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
@@ -1669,12 +1672,12 @@ describe('stage behaviour', () => {
       expect(yield* harness.commit.coordinator.revision).toBe(revision)
       expect(yield* harness.commit.coordinator.snapshot(GAMEPLAY_ENTITIES_OWNER_ID, GameplayEntityRosterSchema))
         .toStrictEqual(before)
-      expect(yield* Ref.get(harness.state.pendingMeleeAttacks)).toHaveLength(1)
-      expect(yield* drainMeleeAttackResults(harness.state)).toStrictEqual([])
-      expect(yield* Ref.get(harness.publishedEvents)).toStrictEqual([])
-      expect(yield* Ref.get(harness.state.operationFailures)).toMatchObject([
-        { _tag: 'Failed', operation: 'CandidateBuild', subject: 'Player' },
+      expect(yield* Ref.get(harness.state.pendingMeleeAttacks)).toStrictEqual([])
+      expect(yield* drainMeleeAttackResults(harness.state)).toStrictEqual([
+        { requestId: 'melee-invalid-block-distance', success: false },
       ])
+      expect(yield* Ref.get(harness.publishedEvents)).toStrictEqual([])
+      expect(yield* Ref.get(harness.state.operationFailures)).toStrictEqual([])
     }),
   )
 
@@ -1683,7 +1686,7 @@ describe('stage behaviour', () => {
       const target = {
         id: EntityId('melee-rejected-target'),
         kind: CREEPER_KIND,
-        feetPosition: fixturePosition(0, 64 - BOW_TARGET_CENTER_Y_OFFSET, 2),
+        feetPosition: fixturePosition(0, 64.72, -2),
         healthPoints: EntityHealthPoints(20),
         behaviour: undefined,
       }
@@ -1721,8 +1724,8 @@ describe('stage behaviour', () => {
       const target = {
         id: EntityId('melee-drop-owner-target'),
         kind: CREEPER_KIND,
-        feetPosition: fixturePosition(0, 64 - BOW_TARGET_CENTER_Y_OFFSET, 2),
-        healthPoints: EntityHealthPoints(4),
+        feetPosition: fixturePosition(0, 64.72, -2),
+        healthPoints: EntityHealthPoints(1),
         behaviour: undefined,
       }
       const harness = yield* builtStagesInWorld(
@@ -1761,8 +1764,8 @@ describe('stage behaviour', () => {
       const target = {
         id: EntityId('melee-drop-snapshot-target'),
         kind: CREEPER_KIND,
-        feetPosition: fixturePosition(0, 64 - BOW_TARGET_CENTER_Y_OFFSET, 2),
-        healthPoints: EntityHealthPoints(4),
+        feetPosition: fixturePosition(0, 64.72, -2),
+        healthPoints: EntityHealthPoints(1),
         behaviour: undefined,
       }
       const harness = yield* builtStagesInWorld(
@@ -1805,12 +1808,12 @@ describe('stage behaviour', () => {
       // `HOSTILE_KINDS` member (melee can target it) for which
       // `xpRewardOfKind` and `dropRulesOfKind` both fall through to their
       // zero/empty default, so a lethal hit on it takes neither.
-      const feetPosition = fixturePosition(0, 64 - BOW_TARGET_CENTER_Y_OFFSET, 2)
+      const feetPosition = fixturePosition(0, 64.72, -2)
       const entity = {
         id: EntityId('e:0'),
         kind: EntityKind('skeleton'),
         feetPosition,
-        healthPoints: EntityHealthPoints(4),
+        healthPoints: EntityHealthPoints(1),
         behaviour: undefined,
       }
       const { state, commit, stages } = yield* builtStagesInWorld(
@@ -1836,12 +1839,12 @@ describe('stage behaviour', () => {
 
   it.effect('a lethal player melee hit emits mob experience exactly once', () =>
     Effect.gen(function* () {
-      const feetPosition = fixturePosition(0, 64 - BOW_TARGET_CENTER_Y_OFFSET, 2)
+      const feetPosition = fixturePosition(0, 64.72, -2)
       const target = {
         id: EntityId('e:0'),
         kind: CREEPER_KIND,
         feetPosition,
-        healthPoints: EntityHealthPoints(4),
+        healthPoints: EntityHealthPoints(1),
         behaviour: undefined,
       }
       const { state, commit, stages } = yield* builtStagesInWorld(
@@ -5169,7 +5172,9 @@ describe('the entities stage resolves both ranged mob attacks and zombie contact
         damage: { amount: 3, cause: 'mob' },
       })
       expect(damages.some((event) => event._tag === 'HostileContact' && event.kind === ZOMBIE_KIND)).toBe(false)
-      expect((yield* Ref.get(state.hostileContactCooldowns)).get(zombie.id)).toBe(1)
+      expect((yield* Ref.get(state.hostileContactCooldowns)).get(zombie.id)).toBe(
+        Schema.decodeUnknownSync(SimulationTickSchema)(0),
+      )
       expect(yield* Ref.get(state.damageImmunity)).toMatchObject({
         lastDamageTick: 0,
         lastDamageAmount: 3,

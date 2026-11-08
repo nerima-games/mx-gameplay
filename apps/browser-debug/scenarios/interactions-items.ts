@@ -332,7 +332,7 @@ const meleeScenario: ScenarioDefinition = {
                 origin: position(PositionAxis(0), PositionAxis(64 + EYE_LEVEL_OFFSET), PositionAxis(0)),
                 direction: position(PositionAxis(dx / directionLength), PositionAxis(0), PositionAxis(dz / directionLength)),
                 reach: AttackRangeDistance(3),
-                damage: meleeDamageForItem('iron_sword'),
+                damage: Result.getOrThrow(meleeDamageForItem('iron_sword')),
               }))
               runBrowserDebugEffect(stepFrame(site))
               const results = runBrowserDebugEffect(drainMeleeAttackResults(site.state))

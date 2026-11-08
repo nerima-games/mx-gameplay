@@ -1093,7 +1093,9 @@ export type GameplayFrameState = {
   readonly playerHeals: Ref.Ref<ReadonlyArray<PlayerHealingEvent>>
   readonly playerMovementSpeedMultiplier: Ref.Ref<number>
   readonly fireLifecycle: Ref.Ref<FireLifecycleState>
-  readonly hostileContactCooldowns: Ref.Ref<ReadonlyMap<EntityId, number>>
+  readonly hostileContactCooldowns: Ref.Ref<ReadonlyMap<EntityId, SimulationTick>>
+  readonly meleeLastAttackTick: Ref.Ref<SimulationTick | null>
+  readonly meleeTargetDamageStates: Ref.Ref<ReadonlyMap<EntityId, DamageImmunityState>>
   readonly mobDrops: Ref.Ref<ReadonlyArray<MobDropEvent>>
   readonly mobExperience: Ref.Ref<ReadonlyArray<MobExperienceEvent>>
   readonly villagerTradeResults: Ref.Ref<ReadonlyArray<VillagerTradeResult>>
@@ -2020,7 +2022,9 @@ const makeGameplayFrameStateWithOptions = (
   const fireLifecycle = yield* Ref.make<FireLifecycleState>(makeFireLifecycleState([], DEFAULT_ROLL_SEED))
   const fireTickAccumulator = yield* Ref.make(0)
   fireTickAccumulators.set(fireLifecycle, fireTickAccumulator)
-  const hostileContactCooldowns = yield* Ref.make<ReadonlyMap<EntityId, number>>(new Map())
+  const hostileContactCooldowns = yield* Ref.make<ReadonlyMap<EntityId, SimulationTick>>(new Map())
+  const meleeLastAttackTick = yield* Ref.make<SimulationTick | null>(null)
+  const meleeTargetDamageStates = yield* Ref.make<ReadonlyMap<EntityId, DamageImmunityState>>(new Map())
   const mobDrops = yield* Ref.make<ReadonlyArray<MobDropEvent>>([])
   const mobExperience = yield* Ref.make<ReadonlyArray<MobExperienceEvent>>([])
   const villagerTradeResults = yield* Ref.make<ReadonlyArray<VillagerTradeResult>>([])
@@ -2105,6 +2109,8 @@ const makeGameplayFrameStateWithOptions = (
     playerMovementSpeedMultiplier,
     fireLifecycle,
     hostileContactCooldowns,
+    meleeLastAttackTick,
+    meleeTargetDamageStates,
     mobDrops,
     mobExperience,
     villagerTradeResults,

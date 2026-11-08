@@ -15,6 +15,7 @@ import {
   SimulationTickSchema,
   StackCount,
   WorldIdSchema,
+  WorldPositionSchema,
   blockIdOf,
   blockPosition,
   blockPositionKeyOf,
@@ -181,6 +182,19 @@ const combatTarget = (id: string, healthPoints = 20) => ({
   healthPoints: EntityHealthPoints(healthPoints),
   behaviour: undefined,
 })
+
+const meleePlayerPose = Schema.decodeUnknownSync(PlayerServiceSnapshotSchema)({
+  pose: {
+    feetPosition: Schema.decodeUnknownSync(WorldPositionSchema)({
+      dimension: DIMENSION,
+      x: 0,
+      y: 64 - 1.62,
+      z: 0,
+    }),
+    yawRadians: Math.PI,
+    pitchRadians: 0,
+  },
+}).pose
 
 const brewingStateWithBottle = (bottleIndex = 0) =>
   Schema.decodeUnknownSync(BrewingServiceStateSchema)({
@@ -3126,10 +3140,11 @@ describe('registered combat and teleport requests in the interactions stage', ()
     expect(harness.commitCalls()).toBe(0)
   })
 
-  it('commits a melee damage owner update once and requeues it after commit rejection', async () => {
+  it('commits server-computed melee damage once and requeues it after commit rejection', async () => {
     const target = combatTarget('coverage-melee-target')
     const harness = await Effect.runPromise(makeHarness({
       entities: { entities: [target], nextSerial: EntitySerial(1) },
+      playerPose: meleePlayerPose,
     }))
     const targetBefore = await Effect.runPromise(harness.coordinator.snapshot(
       GAMEPLAY_ENTITIES_OWNER_ID,
@@ -3162,7 +3177,7 @@ describe('registered combat and teleport requests in the interactions stage', ()
       GAMEPLAY_ENTITIES_OWNER_ID,
       GameplayEntityRosterSchema,
     ))
-    expect(targetAfter.state.entities[0]?.healthPoints).toBe(16)
+    expect(targetAfter.state.entities[0]?.healthPoints).toBe(19)
     expect(await Effect.runPromise(drainMeleeAttackResults(harness.state))).toMatchObject([{
       requestId: 'melee-damage-retry',
       success: true,
@@ -3176,7 +3191,7 @@ describe('registered combat and teleport requests in the interactions stage', ()
     expect(await Effect.runPromise(Ref.get(harness.publishedEvents))).toMatchObject([{
       _tag: 'EntityDamaged',
       entity: target.id,
-      amount: 4,
+      amount: 1,
       cause: 'mob',
     }])
   })
@@ -3186,6 +3201,7 @@ describe('registered combat and teleport requests in the interactions stage', ()
     const harness = await Effect.runPromise(makeHarness({
       entities: { entities: [target], nextSerial: EntitySerial(1) },
       omitDroppedItemsOwnerId: true,
+      playerPose: meleePlayerPose,
     }))
     const request = {
       requestId: 'melee-missing-drop-owner',
@@ -3217,6 +3233,7 @@ describe('registered combat and teleport requests in the interactions stage', ()
     const target = combatTarget('coverage-lethal-drop-target', 1)
     const harness = await Effect.runPromise(makeHarness({
       entities: { entities: [target], nextSerial: EntitySerial(1) },
+      playerPose: meleePlayerPose,
     }))
     await Effect.runPromise(requestMeleeAttack(harness.state, {
       requestId: 'melee-lethal-drop-commit',
@@ -3255,6 +3272,7 @@ describe('registered combat and teleport requests in the interactions stage', ()
     const harness = await Effect.runPromise(makeHarness({
       entities: { entities: [target], nextSerial: EntitySerial(1) },
       omitDroppedItemsRegistration: true,
+      playerPose: meleePlayerPose,
     }))
     const request = {
       requestId: 'melee-drop-snapshot-failure',
@@ -3285,6 +3303,7 @@ describe('registered combat and teleport requests in the interactions stage', ()
     const target = combatTarget('coverage-drop-revision-target', 1)
     const harness = await Effect.runPromise(makeHarness({
       entities: { entities: [target], nextSerial: EntitySerial(1) },
+      playerPose: meleePlayerPose,
     }))
     let injected = false
     const coordinator: WorldCommitCoordinatorApi = {
@@ -3341,6 +3360,7 @@ describe('registered combat and teleport requests in the interactions stage', ()
     const target = combatTarget('coverage-event-publish-target')
     const harness = await Effect.runPromise(makeHarness({
       entities: { entities: [target], nextSerial: EntitySerial(1) },
+      playerPose: meleePlayerPose,
     }))
     harness.rejectEventPublishes(true)
     await Effect.runPromise(requestMeleeAttack(harness.state, {
@@ -3357,7 +3377,7 @@ describe('registered combat and teleport requests in the interactions stage', ()
       GAMEPLAY_ENTITIES_OWNER_ID,
       GameplayEntityRosterSchema,
     ))
-    expect(entities.state.entities[0]?.healthPoints).toBe(16)
+    expect(entities.state.entities[0]?.healthPoints).toBe(19)
     expect(await Effect.runPromise(drainMeleeAttackResults(harness.state))).toMatchObject([{
       requestId: 'melee-event-publish-failed',
       success: true,
@@ -3374,6 +3394,7 @@ describe('registered combat and teleport requests in the interactions stage', ()
     const harness = await Effect.runPromise(makeHarness({
       entities: { entities: [target], nextSerial: EntitySerial(1) },
       omitInteractionEventBus: true,
+      playerPose: meleePlayerPose,
     }))
     await Effect.runPromise(requestMeleeAttack(harness.state, {
       requestId: 'melee-no-event-bus',
@@ -3389,7 +3410,7 @@ describe('registered combat and teleport requests in the interactions stage', ()
       GAMEPLAY_ENTITIES_OWNER_ID,
       GameplayEntityRosterSchema,
     ))
-    expect(entities.state.entities[0]?.healthPoints).toBe(16)
+    expect(entities.state.entities[0]?.healthPoints).toBe(19)
     expect(harness.commitCalls()).toBe(1)
     expect(await Effect.runPromise(Ref.get(harness.publishedEvents))).toStrictEqual([])
     expect(await Effect.runPromise(Ref.get(harness.state.operationFailures))).toStrictEqual([])

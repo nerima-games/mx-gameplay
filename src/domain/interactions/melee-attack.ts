@@ -1,4 +1,6 @@
 import {
+  DamageAmountSchema,
+  DamageCauseSchema,
   AttackRangeDistance,
   DimensionIdSchema,
   DomainEventSchema,
@@ -6,6 +8,7 @@ import {
   isItemType,
   PositionAxis,
   SimulationTickSchema,
+  WorldPositionSchema,
   position,
   type Dimension,
   type DomainEvent,
@@ -167,11 +170,12 @@ export const meleeAttackCooldownForItem = (
 export const meleeDamageForItem = (
   item: ItemType | null | undefined,
   critical = false,
-): number => {
+): Result.Result<number, 'invalid-input'> => {
+  if (item !== null && item !== undefined && !isItemType(item)) return Result.fail('invalid-input')
   const base = item === null || item === undefined
     ? DEFAULT_MELEE_DAMAGE
     : (SWORD_MELEE_DAMAGE[item] ?? TOOL_MELEE_DAMAGE[item] ?? DEFAULT_MELEE_DAMAGE)
-  return critical ? base * 1.5 : base
+  return Result.succeed(critical ? base * 1.5 : base)
 }
 
 export type MeleeAttackRequest = {
@@ -232,17 +236,29 @@ export const meleeTargetBeforeBlock = (
   })
 
 export type MeleeAttackIntent = Extract<IntentPayload, { readonly _tag: 'MeleeAttack' }>
+type MeleeAttackDamageEvent = Extract<DomainEvent, { readonly _tag: 'EntityDamaged' }>
+
+const MeleeAttackDamageEventSchema: Schema.ConstraintDecoder<MeleeAttackDamageEvent> = Schema.TaggedStruct(
+  'EntityDamaged',
+  {
+    tick: SimulationTickSchema,
+    entity: EntityIdSchema,
+    position: WorldPositionSchema,
+    amount: DamageAmountSchema,
+    cause: DamageCauseSchema,
+  },
+)
 
 export type MeleeAttackPreparation = Readonly<{
   target: ShotHit
-  event: DomainEvent
+  event: MeleeAttackDamageEvent
   knockback: KnockbackDirection
   targetDamageState: DamageImmunityState
 }>
 
 export const MeleeAttackPreparationSchema: Schema.ConstraintDecoder<MeleeAttackPreparation> = Schema.Struct({
   target: Schema.Struct({ id: EntityIdSchema, distance: Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)) }),
-  event: DomainEventSchema,
+  event: MeleeAttackDamageEventSchema,
   knockback: KnockbackDirectionSchema,
   targetDamageState: DamageImmunityStateSchema,
 })
@@ -306,7 +322,9 @@ export const prepareMeleeAttack = (
   if (Result.isFailure(cooldown)) return Result.fail('invalid-attack-timing')
 
   const critical = input.critical && cooldown.success.charge >= MIN_ATTACK_COOLDOWN_FOR_CRITICAL
-  const attackDamage = meleeDamageForItem(input.heldItem) * cooldown.success.damageMultiplier * (critical ? 1.5 : 1)
+  const meleeDamage = meleeDamageForItem(input.heldItem, critical)
+  if (Result.isFailure(meleeDamage)) return Result.fail('invalid-authoritative-state')
+  const attackDamage = meleeDamage.success * cooldown.success.damageMultiplier
 
   const eyeY = pose.feetPosition.y + EYE_LEVEL_OFFSET
 
@@ -317,8 +335,8 @@ export const prepareMeleeAttack = (
   )
   const direction = position(
     PositionAxis(-Math.sin(pose.yawRadians) * Math.cos(pose.pitchRadians)),
-    PositionAxis(-Math.sin(pose.pitchRadians)),
-    PositionAxis(Math.cos(pose.yawRadians) * Math.cos(pose.pitchRadians)),
+    PositionAxis(Math.sin(pose.pitchRadians)),
+    PositionAxis(-Math.cos(pose.yawRadians) * Math.cos(pose.pitchRadians)),
   )
   const match = meleeTargetMatch(input.entities, {
     origin,
@@ -349,7 +367,9 @@ export const prepareMeleeAttack = (
     amount: invulnerability.success.appliedAmount,
     cause: 'mob',
   })
-  if (Result.isFailure(decodedEvent)) return Result.fail('invalid-authoritative-state')
+  if (Result.isFailure(decodedEvent) || decodedEvent.success._tag !== 'EntityDamaged') {
+    return Result.fail('invalid-authoritative-state')
+  }
   return Result.succeed({
     target: match.target,
     event: decodedEvent.success,

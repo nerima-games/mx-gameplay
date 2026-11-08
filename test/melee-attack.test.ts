@@ -1,9 +1,11 @@
 import { describe, expect, it } from '@effect/vitest'
 import { Result, Schema } from 'effect'
 import * as FastCheck from 'fast-check'
-import { AttackRangeDistance, EntityHealthPoints, EntityId, SimulationTickSchema } from '@nerima-games/mc-kernel'
-import { type Entity } from '@nerima-games/mc-sim'
+import { AttackRangeDistance, EntityHealthPoints, EntityId, isItemType, SimulationTickSchema, type ItemType } from '@nerima-games/mc-kernel'
+import { EYE_LEVEL_OFFSET, type Entity } from '@nerima-games/mc-sim'
 import { position as atPosition } from './support/coordinate-fixtures'
+import { expectedMeleeAttack } from './support/melee-attack-oracle'
+import { BOW_TARGET_CENTER_Y_OFFSET } from '../src/domain/interactions/bow-shot'
 import { DamageImmunityStateSchema, ZOMBIE_KIND } from '../src/domain/mob/hostile-combat'
 import {
   DEFAULT_MELEE_ATTACK_SPEED,
@@ -27,7 +29,13 @@ const MELEE_PARITY_FIXTURE = {
   edition: 'Java Edition 26.3',
 } as const
 
-const NON_SWORD_TOOL_STATS = [
+const MELEE_WEAPON_STATS = [
+  { item: 'wooden_sword', damage: 4, attackSpeed: 1.6 },
+  { item: 'gold_sword', damage: 4, attackSpeed: 1.6 },
+  { item: 'stone_sword', damage: 5, attackSpeed: 1.6 },
+  { item: 'iron_sword', damage: 6, attackSpeed: 1.6 },
+  { item: 'diamond_sword', damage: 7, attackSpeed: 1.6 },
+  { item: 'netherite_sword', damage: 8, attackSpeed: 1.6 },
   { item: 'wooden_axe', damage: 7, attackSpeed: 0.8 },
   { item: 'gold_axe', damage: 7, attackSpeed: 1 },
   { item: 'stone_axe', damage: 9, attackSpeed: 0.8 },
@@ -57,7 +65,7 @@ const NON_SWORD_TOOL_STATS = [
 const zombie: Entity<MobBehaviour> = {
   id: EntityId('zombie:melee-target'),
   kind: ZOMBIE_KIND,
-  feetPosition: atPosition(0, 64, 2.5),
+  feetPosition: atPosition(0, 64, -2.5),
   healthPoints: EntityHealthPoints(20),
   behaviour: undefined,
 }
@@ -73,15 +81,15 @@ const damageImmunityState = (lastDamageTick: number, lastDamageAmount: number) =
 
 describe('melee attack damage', () => {
   it('uses unarmed damage for empty hands and ranged items', () => {
-    expect(meleeDamageForItem(undefined)).toBe(1)
-    expect(meleeDamageForItem(null)).toBe(1)
-    expect(meleeDamageForItem('bow')).toBe(1)
+    expect(meleeDamageForItem(undefined)).toStrictEqual(Result.succeed(1))
+    expect(meleeDamageForItem(null)).toStrictEqual(Result.succeed(1))
+    expect(meleeDamageForItem('bow')).toStrictEqual(Result.succeed(1))
   })
 
-  it(`maps all 24 non-sword tools to vanilla damage and attack speed (${MELEE_PARITY_FIXTURE.source}, ${MELEE_PARITY_FIXTURE.edition})`, () => {
-    expect(NON_SWORD_TOOL_STATS).toHaveLength(24)
-    for (const { item, damage, attackSpeed } of NON_SWORD_TOOL_STATS) {
-      expect(meleeDamageForItem(item)).toBe(damage)
+  it(`maps all 30 swords and tools to vanilla damage and attack speed (${MELEE_PARITY_FIXTURE.source}, ${MELEE_PARITY_FIXTURE.edition})`, () => {
+    expect(MELEE_WEAPON_STATS).toHaveLength(30)
+    for (const { item, damage, attackSpeed } of MELEE_WEAPON_STATS) {
+      expect(meleeDamageForItem(item)).toStrictEqual(Result.succeed(damage))
 
       const cooldownAtStart = meleeAttackCooldownForItem(item, 0)
       expect(Result.isSuccess(cooldownAtStart)).toBe(true)
@@ -90,18 +98,24 @@ describe('melee attack damage', () => {
     }
   })
 
-  it(`maps each supported sword to its melee damage (${MELEE_PARITY_FIXTURE.source}, ${MELEE_PARITY_FIXTURE.edition})`, () => {
-    expect(meleeDamageForItem('wooden_sword')).toBe(4)
-    expect(meleeDamageForItem('gold_sword')).toBe(4)
-    expect(meleeDamageForItem('stone_sword')).toBe(5)
-    expect(meleeDamageForItem('iron_sword')).toBe(6)
-    expect(meleeDamageForItem('diamond_sword')).toBe(7)
-    expect(meleeDamageForItem('netherite_sword')).toBe(8)
+  it('rejects unknown item identifiers instead of assigning unarmed damage', () => {
+    expect(meleeDamageForItem('not-an-item' as never)).toStrictEqual(Result.fail('invalid-input'))
+  })
+
+  it('returns typed finite damage for arbitrary runtime item identifiers without throwing', () => {
+    FastCheck.assert(
+      FastCheck.property(FastCheck.string(), FastCheck.boolean(), (item, critical) => {
+        const result = meleeDamageForItem(item as never, critical)
+        if (!isItemType(item)) return Result.isFailure(result) && result.failure === 'invalid-input'
+        return Result.isSuccess(result) && Number.isFinite(result.success) && result.success >= 0
+      }),
+      { numRuns: 500 },
+    )
   })
 
   it(`applies the parity critical multiplier (${MELEE_PARITY_FIXTURE.parity}, ${MELEE_PARITY_FIXTURE.edition})`, () => {
-    expect(meleeDamageForItem('iron_sword', true)).toBe(9)
-    expect(meleeDamageForItem(undefined, true)).toBe(1.5)
+    expect(meleeDamageForItem('iron_sword', true)).toStrictEqual(Result.succeed(9))
+    expect(meleeDamageForItem(undefined, true)).toStrictEqual(Result.succeed(1.5))
   })
 })
 
@@ -207,7 +221,47 @@ describe('C2 melee preparation', () => {
     if (belowEvent._tag !== 'EntityDamaged' || aboveEvent._tag !== 'EntityDamaged') return
     expect(belowEvent.amount).toBeCloseTo(4.58688)
     expect(aboveEvent.amount).toBeCloseTo(7.89408)
-    expect(aboveThreshold.success.knockback).toMatchObject({ _tag: 'Away', x: 0, z: 1 })
+    expect(aboveThreshold.success.knockback).toMatchObject({ _tag: 'Away', x: 0, z: -1 })
+  })
+
+  it('uses mc-sim yaw and pitch directions at cardinal aim boundaries', () => {
+    const westTarget: Entity<MobBehaviour> = {
+      ...zombie,
+      id: EntityId('melee-west-target'),
+      feetPosition: atPosition(-2.5, 64, 0),
+    }
+    const verticalOffset = 2
+    const eyeY = 64 + EYE_LEVEL_OFFSET
+    const upwardTarget: Entity<MobBehaviour> = {
+      ...zombie,
+      id: EntityId('melee-upward-target'),
+      feetPosition: atPosition(0, eyeY + verticalOffset - BOW_TARGET_CENTER_Y_OFFSET, 0),
+    }
+    const downwardTarget: Entity<MobBehaviour> = {
+      ...zombie,
+      id: EntityId('melee-downward-target'),
+      feetPosition: atPosition(0, eyeY - verticalOffset - BOW_TARGET_CENTER_Y_OFFSET, 0),
+    }
+
+    const west = prepareMeleeAttack(intent, {
+      ...input,
+      pose: { ...input.pose, yawRadians: Math.PI / 2 },
+      entities: [westTarget],
+    })
+    const upward = prepareMeleeAttack(intent, {
+      ...input,
+      pose: { ...input.pose, pitchRadians: Math.PI / 2 },
+      entities: [upwardTarget],
+    })
+    const downward = prepareMeleeAttack(intent, {
+      ...input,
+      pose: { ...input.pose, pitchRadians: -Math.PI / 2 },
+      entities: [downwardTarget],
+    })
+
+    expect(Result.isSuccess(west) && west.success.target.id).toBe(westTarget.id)
+    expect(Result.isSuccess(upward) && upward.success.target.id).toBe(upwardTarget.id)
+    expect(Result.isSuccess(downward) && downward.success.target.id).toBe(downwardTarget.id)
   })
 
   it('applies mob hurt resistance to melee hits and records stronger-hit state', () => {
@@ -232,6 +286,22 @@ describe('C2 melee preparation', () => {
     expect(Result.isSuccess(stronger) && stronger.success.targetDamageState).toStrictEqual({
       lastDamageTick: Schema.decodeUnknownSync(SimulationTickSchema)(11),
       lastDamageAmount: 10,
+    })
+  })
+
+  it('applies full damage and records the current tick after the 10-tick immunity window', () => {
+    const result = prepareMeleeAttack(intent, {
+      ...input,
+      tick: Schema.decodeUnknownSync(SimulationTickSchema)(21),
+      targetDamageState: damageImmunityState(11, 20),
+    })
+
+    expect(Result.isSuccess(result)).toBe(true)
+    if (Result.isFailure(result)) return
+    expect(result.success.event).toMatchObject({ _tag: 'EntityDamaged', amount: 6 })
+    expect(result.success.targetDamageState).toStrictEqual({
+      lastDamageTick: Schema.decodeUnknownSync(SimulationTickSchema)(21),
+      lastDamageAmount: 6,
     })
   })
 
@@ -313,7 +383,7 @@ describe('C2 melee preparation', () => {
   it('returns a hostile target only when it is in reach and before the aimed block', () => {
     const request: MeleeAttackRequest = {
       origin: atPosition(0, 64 + 1.62, 0),
-      direction: atPosition(0, 0, 1),
+      direction: atPosition(0, 0, -1),
       reach: AttackRangeDistance(3),
       damage: 1,
     }
@@ -331,7 +401,7 @@ describe('C2 melee preparation', () => {
   it('rejects an invalid hit distance', () => {
     const request: MeleeAttackRequest = {
       origin: atPosition(0, 64 + 1.62, 0),
-      direction: atPosition(0, 0, 1),
+      direction: atPosition(0, 0, -1),
       reach: AttackRangeDistance(3),
       damage: 1,
     }
@@ -357,6 +427,66 @@ describe('C2 melee preparation', () => {
         },
       ),
       { numRuns: 250 },
+    )
+  })
+
+  it('matches independent damage and hurt-resistance expectations for every weapon', () => {
+    const weaponItem = FastCheck.constantFrom(
+      ...MELEE_WEAPON_STATS.map(({ item }) => item as ItemType),
+    )
+    const previousDamage = FastCheck.oneof(
+      FastCheck.constant(null),
+      FastCheck.record({
+        ageTicks: FastCheck.integer({ min: 0, max: 15 }),
+        lastDamageAmount: FastCheck.double({ min: 0.1, max: 20, noNaN: true, noDefaultInfinity: true }),
+      }),
+    )
+
+    FastCheck.assert(
+      FastCheck.property(
+        weaponItem,
+        FastCheck.integer({ min: 0, max: 60 }),
+        FastCheck.boolean(),
+        FastCheck.integer({ min: 20, max: 1000 }),
+        previousDamage,
+        (heldItem, ticksSinceLastAttack, critical, rawTick, previous) => {
+          const tick = Schema.decodeUnknownSync(SimulationTickSchema)(rawTick)
+          const targetDamageState = previous === null
+            ? null
+            : damageImmunityState(rawTick - previous.ageTicks, previous.lastDamageAmount)
+          const expected = expectedMeleeAttack({
+            heldItem,
+            ticksSinceLastAttack,
+            critical,
+            tick: rawTick,
+            targetDamageState: targetDamageState === null
+              ? null
+              : {
+                  lastDamageTick: targetDamageState.lastDamageTick,
+                  lastDamageAmount: targetDamageState.lastDamageAmount,
+                },
+          })
+          const result = prepareMeleeAttack(intent, {
+            ...input,
+            tick,
+            heldItem,
+            critical,
+            ticksSinceLastAttack: meleeCooldownTicks(ticksSinceLastAttack),
+            targetDamageState,
+          })
+
+          if (expected === null) {
+            return Result.isFailure(result) && result.failure === 'target-invulnerable'
+          }
+          if (Result.isFailure(result) || result.success.event._tag !== 'EntityDamaged') return false
+          return Math.abs(result.success.event.amount - expected.appliedAmount) < 1e-9 &&
+            result.success.targetDamageState.lastDamageTick === expected.targetDamageState.lastDamageTick &&
+            Math.abs(
+              result.success.targetDamageState.lastDamageAmount - expected.targetDamageState.lastDamageAmount,
+            ) < 1e-9
+        },
+      ),
+      { numRuns: 500 },
     )
   })
 })

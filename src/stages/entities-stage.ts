@@ -537,13 +537,14 @@ const runMobSimulation = (
   if (Result.isFailure(spawned)) return yield* Effect.fail(spawned.failure)
 
   const difficulty = (yield* state.survivalHunger.snapshot).difficulty
-  const contact = resolveHostileContacts(
+  const damageTick = Schema.decodeUnknownSync(SimulationTickSchema)(yield* Ref.get(state.tickCount))
+  const contact = yield* Effect.fromResult(resolveHostileContacts(
     spawned.success.roster.entities,
     playerPosition,
-    dt,
+    damageTick,
     yield* Ref.get(state.hostileContactCooldowns),
     difficulty,
-  )
+  ))
   const playerBlasts = resolvePlayerBlastDamage(sweep.blasts, playerPosition, difficulty)
   type HostileDamageEvent = Extract<PlayerDamageEvent, { readonly _tag: 'HostileContact' | 'Explosion' }>
   type HostileDamageInput = Readonly<{
@@ -578,7 +579,6 @@ const runMobSimulation = (
   ]
   const damages = damageInputs.map(({ event }) => event)
   const pendingShieldBlocking = yield* Ref.get(state.pendingShieldBlocking)
-  const damageTick = Schema.decodeUnknownSync(SimulationTickSchema)(yield* Ref.get(state.tickCount))
   let shieldState = yield* Ref.get(state.shieldBlocking)
   let damageImmunityState = yield* Ref.get(state.damageImmunity)
   const combatPose = {

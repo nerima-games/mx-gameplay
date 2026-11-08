@@ -1,6 +1,6 @@
 /// <reference lib="dom" />
 import { describe, expect, it } from '@effect/vitest'
-import { Effect } from 'effect'
+import { Effect, Result } from 'effect'
 import {
   mountGameplayScenario,
   type ScenarioMountContext,
@@ -179,7 +179,7 @@ describe('player-system browser debug scenarios', () => {
       ) {
         throw new Error('melee scenario did not seed an observable iron sword')
       }
-      const expectedDamage = meleeDamageForItem(sword.item)
+      const expectedDamage = Result.getOrThrow(meleeDamageForItem(sword.item))
 
       perform(mount, 'melee-attack-target')
 

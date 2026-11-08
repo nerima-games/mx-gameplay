@@ -104,12 +104,17 @@ describe('item use and combat through gameplay stages', () => {
       const target: Entity<MobBehaviour> = {
         id: EntityId('melee-scenario-target'),
         kind: CREEPER_KIND,
-        feetPosition: position(0, 64 - 0.9, 2),
+        feetPosition: position(0, 64.72, -2),
         healthPoints: EntityHealthPoints(20),
         behaviour: undefined,
       }
       const entities: EntityRoster<MobBehaviour> = { entities: [target], nextSerial: EntitySerial(1) }
-      const slice = yield* makeSlice(undefined, { entities })
+      const slots = [...inventorySlots()]
+      slots[0] = Result.getOrThrow(itemStack('wooden_sword', 1))
+      const slice = yield* makeSlice(slots, {
+        entities,
+        playerPose: { feetPosition: position(0, 64, 0), yawRadians: 0, pitchRadians: 0 },
+      })
 
       yield* requestMeleeAttack(slice.state, {
         requestId: 'melee-front-target',
@@ -117,6 +122,7 @@ describe('item use and combat through gameplay stages', () => {
         direction: position(0, 0, 1),
         reach: AttackRangeDistance(3),
         damage: 4,
+        toolLocation: { _tag: 'Inventory', slotIndex: 0 },
       })
       yield* runFrame(slice.stages)
 

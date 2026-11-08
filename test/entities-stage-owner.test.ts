@@ -468,7 +468,7 @@ describe('entities stage owner-backed MobSimulation', () => {
     }))
     await Effect.runPromise(harness.state.survivalHunger.setDifficulty('easy'))
     await Effect.runPromise(Ref.set(harness.state.hostileContactCooldowns, new Map([
-      [EntityId('test:zombie'), 0.31],
+      [EntityId('test:zombie'), SimulationTick(0)],
     ])))
     const actor = EntityId('mx-gameplay:player-avatar')
     await Effect.runPromise(requestShieldBlocking(harness.state, {
@@ -478,7 +478,7 @@ describe('entities stage owner-backed MobSimulation', () => {
     }))
 
     await Effect.runPromise(Effect.forEach(
-      Array.from({ length: 13 }, (_, tick) => tick),
+      Array.from({ length: 20 }, (_, index) => index + 1),
       (tick) => Effect.gen(function* () {
         yield* Ref.set(harness.state.tickCount, SimulationTick(tick))
         yield* Effect.promise(() => harness.run(0.05 as DeltaTimeSecs))
@@ -490,7 +490,7 @@ describe('entities stage owner-backed MobSimulation', () => {
     expect(await Effect.runPromise(Ref.get(harness.state.damageImmunity))).toBeNull()
     expect(await Effect.runPromise(Ref.get(harness.state.playerDamages))).toEqual([])
     const contactCooldowns = await Effect.runPromise(Ref.get(harness.state.hostileContactCooldowns))
-    expect(contactCooldowns.get(EntityId('test:zombie'))).toBeCloseTo(0.7)
+    expect(contactCooldowns.get(EntityId('test:zombie'))).toBe(SimulationTick(20))
   })
 
   it('damages or breaks a shield after a blocked hard contact', async () => {
@@ -508,7 +508,7 @@ describe('entities stage owner-backed MobSimulation', () => {
       }))
       await Effect.runPromise(harness.state.survivalHunger.setDifficulty('hard'))
       await Effect.runPromise(Ref.set(harness.state.hostileContactCooldowns, new Map([
-        [EntityId('test:zombie'), 0.31],
+        [EntityId('test:zombie'), SimulationTick(0)],
       ])))
       await Effect.runPromise(requestShieldBlocking(harness.state, {
         _tag: 'SetShieldBlocking',
@@ -517,14 +517,14 @@ describe('entities stage owner-backed MobSimulation', () => {
       }))
 
       await Effect.runPromise(Effect.forEach(
-        Array.from({ length: 6 }, (_, tick) => tick),
+        Array.from({ length: 19 }, (_, index) => index + 1),
         (tick) => Effect.gen(function* () {
           yield* Ref.set(harness.state.tickCount, SimulationTick(tick))
           yield* Effect.promise(() => harness.run(0.05 as DeltaTimeSecs))
         }),
         { concurrency: 1 },
       ))
-      await Effect.runPromise(Ref.set(harness.state.tickCount, SimulationTick(6)))
+      await Effect.runPromise(Ref.set(harness.state.tickCount, SimulationTick(20)))
       harness.rejectCommits(true)
       const exit = await Effect.runPromiseExit(
         harness.stage.run(0.05 as DeltaTimeSecs).pipe(Effect.provide(FrameServicesLayer)),
@@ -614,6 +614,77 @@ describe('entities stage owner-backed MobSimulation', () => {
       lastDamageAmount: 6,
     })
     expect(await Effect.runPromise(Ref.get(harness.state.playerDamages))).toHaveLength(1)
+  })
+
+  it('keeps same logical tick contact counts and cooldown ticks independent of dt', async () => {
+    const playerPose = {
+      ...INITIAL_PLAYER_POSE,
+      feetPosition: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
+    }
+    const runSchedule = async (secondDeltaSecs: number) => {
+      const zombieId = EntityId('test:zombie')
+      const harness = await Effect.runPromise(makeHarness({
+        entity: zombieAt(1, 64),
+        playerPose,
+      }))
+
+      await Effect.runPromise(Ref.set(harness.state.tickCount, SimulationTick(0)))
+      await harness.run(makeDeltaTimeSecs(0.05))
+      const firstDamages = await Effect.runPromise(Ref.get(harness.state.playerDamages))
+      const firstCooldowns = await Effect.runPromise(Ref.get(harness.state.hostileContactCooldowns))
+      await Effect.runPromise(Ref.set(harness.state.playerDamages, []))
+
+      await Effect.runPromise(Ref.set(harness.state.tickCount, SimulationTick(10)))
+      // Keep the long-delta run from crossing the unrelated spawn interval.
+      await Effect.runPromise(Ref.set(harness.state.spawnClockSecs, -1))
+      await harness.run(makeDeltaTimeSecs(secondDeltaSecs))
+      const secondDamages = await Effect.runPromise(Ref.get(harness.state.playerDamages))
+      const secondCooldowns = await Effect.runPromise(Ref.get(harness.state.hostileContactCooldowns))
+
+      return {
+        firstDamage: firstDamages[0],
+        damageCounts: [firstDamages.length, secondDamages.length],
+        contactCounts: [firstCooldowns.size, secondCooldowns.size],
+        contactTicks: [firstCooldowns.get(zombieId), secondCooldowns.get(zombieId)],
+      }
+    }
+
+    const shortDelta = await runSchedule(0.05)
+    const longDelta = await runSchedule(1)
+
+    expect(shortDelta.firstDamage).toMatchObject({
+      _tag: 'HostileContact',
+      source: EntityId('test:zombie'),
+      kind: ZOMBIE_KIND,
+      damage: { amount: 3, cause: 'mob' },
+    })
+    expect(longDelta.firstDamage).toMatchObject({
+      _tag: 'HostileContact',
+      source: EntityId('test:zombie'),
+      kind: ZOMBIE_KIND,
+      damage: { amount: 3, cause: 'mob' },
+    })
+    expect(shortDelta.damageCounts).toStrictEqual([1, 0])
+    expect(longDelta.damageCounts).toStrictEqual([1, 0])
+    expect(shortDelta.contactCounts).toStrictEqual([1, 1])
+    expect(longDelta.contactCounts).toStrictEqual([1, 1])
+    expect(shortDelta.contactTicks).toStrictEqual([SimulationTick(0), SimulationTick(0)])
+    expect(longDelta.contactTicks).toStrictEqual([SimulationTick(0), SimulationTick(0)])
+  })
+
+  it('fails closed when the entities stage tick is behind a stored contact tick', async () => {
+    const harness = await Effect.runPromise(makeHarness({ entity: zombieAt(1, 64) }))
+    const previousCooldowns = new Map([[EntityId('test:zombie'), SimulationTick(10)]])
+    await Effect.runPromise(Ref.set(harness.state.hostileContactCooldowns, previousCooldowns))
+    await Effect.runPromise(Ref.set(harness.state.tickCount, SimulationTick(9)))
+
+    const exit = await Effect.runPromiseExit(
+      harness.stage.run(makeDeltaTimeSecs(0.05)).pipe(Effect.provide(FrameServicesLayer)),
+    )
+
+    expect(exit._tag).toBe('Failure')
+    expect(harness.commits()).toBe(0)
+    expect(await Effect.runPromise(Ref.get(harness.state.hostileContactCooldowns))).toStrictEqual(previousCooldowns)
   })
 
   it('keeps dead-player vitals unchanged while recording a valid mob-contact hit', async () => {
