@@ -1,48 +1,6 @@
 /**
- * ONE RULE, ONE FILE (DN-GP-9): what a dead mob leaves behind.
- *
- * plan.md §7 gives mx-gameplay the mob row's 「AI・スポーン条件・ドロップ」, and
- * kernel's capability-flag audit §6-9 draws the same line one level down: random
- * drop rules belong with the RULES and not in the registry, because 「`drops`
- * では表現できない」. Kernel's own `BlockDrop` is built to that rule — it carries
- * `affectedByFortune` OUT as a flag rather than applying it, and says why:
- *
- *     Kernel is pure and deterministic — `StageRegistration.run` has error
- *     channel `never` and no source of randomness — so it reports the base count
- *     and the fact that fortune applies, and lets the rule that owns the RNG do
- *     the multiplication.
- *
- * This file is the mob-side twin of that sentence. `gunpowder` is a NAME and
- * names are kernel's (`ITEM_TYPES`, `mc-kernel/domain/item-type.ts`, where the
- * literal arrived with the note "mob drops —
- * plan.md §3.11 gives the rules to mx-gameplay; the vocabulary is kernel's").
- * "One, always, unless it blew itself up" is a RULE and it is here.
- *
- * ---------------------------------------------------------------------------
- * THE RULE OWNS THE ROLL AND STILL HAS NO RNG
- * ---------------------------------------------------------------------------
- *
- * Every function below takes its randomness as an ARGUMENT — a number in
- * `[0, 1)` — the way mc-worldgen threads a seed. There is no `Math.random()` in
- * `domain/`, and `test/mob.test.ts` asserts that by reading the source rather
- * than by trusting this paragraph, in the same spirit as DN-GP-8's ban on
- * `Date.now()`.
- *
- * The reference splits it the same way and is worth quoting as evidence that the
- * split survives contact: its domain layer is pure (`dropPasses(drop, roll)`,
- * `packages/entity/domain/mob/drop.ts:14-16`) and `Math.random()` appears only
- * in the application layer that calls it
- * (`interaction-melee-handler.ts:185`, `interaction-mob-drops.ts:16-19`). What
- * it does NOT have is a seed: those calls read the global generator, so its
- * drop behaviour cannot be replayed. Threading the roll all the way out is what
- * makes a scenario test an oracle (plan.md §5.1-3), and it costs one parameter.
- *
- * For the creeper specifically the parameter is never even consulted: one
- * gunpowder, always, no `chance` and no `maxCount`
- * (`packages/entity/domain/mob/mobs/creeper.ts:15`). Nothing about this mob is
- * random — not the fuse, not the blast, not the drop. The rolls exist for the
- * seven roster entries that do have a `chance`, and taking them now is cheaper
- * than retrofitting determinism onto a signature later.
+ * Vanilla mob loot and XP rules. Item IDs come from kernel; the frame layer
+ * supplies rolls and casualty context.
  */
 import type { ItemType } from '@nerima-games/mc-kernel'
 
@@ -56,8 +14,7 @@ import type { ItemType } from '@nerima-games/mc-kernel'
  * "the old spelling could express 'different block', never 'not a block'" — and
  * gunpowder is exactly a not-a-block.
  *
- * Both optional members are absent for the creeper, and an absent one means the
- * boring answer, so its rule reads as the two fields that carry information.
+ * Without `chance`, a line always passes. Without `maxCount`, it uses `count`.
  */
 export type MobDropRule = {
   readonly item: ItemType
@@ -67,6 +24,13 @@ export type MobDropRule = {
   readonly chance?: number
   /** Upper end of a uniform inclusive roll over `[count, maxCount]`. */
   readonly maxCount?: number
+  readonly playerKillOnly?: boolean
+  readonly adultOnly?: boolean
+  readonly babyOnly?: boolean
+  readonly burningItem?: ItemType
+  readonly size?: MobSize
+  readonly minimumSize?: MobSize
+  readonly chargedCreeperOnly?: boolean
 }
 
 /** What actually lands: a name and a number, and nothing that needs resolving. */
@@ -94,7 +58,15 @@ export type MobKill =
    * Killed by damage. `lootingLevel` is the enchantment level on the killing
    * weapon, 0 for none.
    */
-  | { readonly _tag: 'Slain'; readonly lootingLevel: number }
+  | {
+      readonly _tag: 'Slain'
+      readonly lootingLevel: number
+      readonly playerKill?: boolean
+      readonly age?: MobAge
+      readonly size?: MobSize
+      readonly burning?: boolean
+      readonly killedByChargedCreeper?: boolean
+    }
   /** The mob destroyed itself — a creeper that reached the end of its fuse. */
   | { readonly _tag: 'SelfDestruct' }
 
@@ -106,22 +78,70 @@ export type DropRolls = {
   readonly count: number
 }
 
+export type MobAge = 'adult' | 'baby'
+export type MobSize = 'small' | 'medium' | 'large'
+
+export type MobDropChoice = Readonly<{
+  readonly item: ItemType
+  readonly weight: number
+  readonly count: number
+  readonly maxCount?: number
+  readonly burningItem?: ItemType
+}>
+
+export type MobDropPool = Readonly<{
+  readonly minSelections: number
+  readonly maxSelections: number
+  readonly chance?: number
+  readonly playerKillOnly?: boolean
+  readonly choices: ReadonlyArray<MobDropChoice>
+}>
+
+export type MobDropTable = Readonly<{
+  readonly rules: ReadonlyArray<MobDropRule>
+  readonly pools?: ReadonlyArray<MobDropPool>
+}>
+
+export type MobExperienceRange = Readonly<{ readonly min: number; readonly max: number }>
+export type MobExperienceRule = Readonly<{
+  readonly adult: MobExperienceRange
+  readonly baby?: MobExperienceRange
+  readonly sizes?: Readonly<Partial<Record<MobSize, MobExperienceRange>>>
+  readonly equipmentBonus?: MobExperienceRange
+  readonly playerKillRequired?: boolean
+  readonly dragonRespawn?: MobExperienceRange
+}>
+
+export type MobExperienceContext = Readonly<{
+  readonly age?: MobAge
+  readonly size?: MobSize
+  readonly undroppedEquipmentCount?: number
+  readonly equipmentRolls?: ReadonlyArray<number>
+  readonly firstDragonDeath?: boolean
+}>
+
 /** Rolls that take every "always" branch and the smallest count. */
 export const LOWEST_ROLLS: DropRolls = { chance: 0, count: 0 }
 
-/**
- * What a creeper drops.
- *
- * `packages/entity/domain/mob/mobs/creeper.ts:15`:
- * `drops: [{ blockType: 'GUNPOWDER', count: 1 }]` — exactly one, always, with
- * no chance gate and no count range.
- */
-export const CREEPER_DROPS: ReadonlyArray<MobDropRule> = [{ item: 'gunpowder', count: 1 }]
+/** A creeper drops zero to two gunpowder unless it self-destructs. */
+export const CREEPER_DROPS: ReadonlyArray<MobDropRule> = [{ item: 'gunpowder', count: 0, maxCount: 2 }]
 
 /** A slain zombie drops zero to two rotten flesh. */
 export const ZOMBIE_DROPS: ReadonlyArray<MobDropRule> = [
   { item: 'rotten_flesh', count: 0, maxCount: 2 },
 ]
+
+const ZOMBIE_RARE_DROPS: MobDropPool = {
+  minSelections: 1,
+  maxSelections: 1,
+  chance: 0.025,
+  playerKillOnly: true,
+  choices: [
+    { item: 'iron_ingot', weight: 1, count: 1 },
+    { item: 'carrot', weight: 1, count: 1 },
+    { item: 'potato', weight: 1, count: 1, burningItem: 'baked_potato' },
+  ],
+}
 
 /** Experience for killing a zombie. */
 export const ZOMBIE_XP_REWARD = 5
@@ -143,56 +163,325 @@ export const ENDERMAN_XP_REWARD = 5
  */
 export const CREEPER_XP_REWARD = 5
 
-/**
- * What a ghast drops. `packages/entity/domain/mob/mobs/ghast.ts:16-17`:
- * `drops: [{ blockType: 'GUNPOWDER', count: 1 }]`, `xpReward: 5`.
- *
- * The second table in this file, and the cheapest possible demonstration that
- * the first one is not a creeper-shaped special case: same item, same count,
- * different mob, no new mechanism. It is here because gunpowder is a NAME and a
- * name is kernel's — two mobs sharing one is the vocabulary working, and would
- * have been two spellings of `'GUNPOWDER'` under the scatter plan.md §3.1
- * measured.
- */
-export const GHAST_DROPS: ReadonlyArray<MobDropRule> = [{ item: 'gunpowder', count: 1 }]
+/** Supported ghast drops; the vanilla music disc drop has no kernel item ID. */
+export const GHAST_DROPS: ReadonlyArray<MobDropRule> = [
+  { item: 'ghast_tear', count: 0, maxCount: 1 },
+  { item: 'gunpowder', count: 0, maxCount: 2 },
+]
 
 /** `mobs/ghast.ts:17`. */
 export const GHAST_XP_REWARD = 5
 
-/**
- * What a blaze drops, and THE ONE PLACE THIS FILE DOES NOT SPELL THE REFERENCE'S
- * ITEM.
- *
- * The rule is ported exactly — `packages/entity/domain/mob/mobs/blaze.ts:17-18`
- * gives `count: 1, chance: 0.5` and `xpReward: 10`, and the half is the first
- * `chance` any real mob in this repository has, so `rollMobDrop`'s gate finally
- * runs against a table rather than against one written for the test.
- *
- * The ITEM is not. The reference drops `BLAZE_ROD`; kernel's `ITEM_TYPES` has no
- * `blaze_rod`, and it does have `blaze_powder`, which kernel added with the note
- * quoted in that file's header —
- *
- *     `gunpowder` / `blaze_powder`   mob drops (plan.md §3.11 gives the rules
- *                                    to mx-gameplay; the vocabulary is kernel's)
- *
- * — so kernel has already decided that the thing a blaze leaves behind is called
- * `blaze_powder` here. This file follows that decision rather than making a
- * second one, and states it because a silent rename inside a drop table is
- * exactly the kind of edit that is impossible to find later.
- *
- * The substitution is not free and the cost is worth writing down: in vanilla a
- * rod is the item and powder is what you craft it into (one rod, two powder), so
- * collapsing them halves a recipe step and makes the drop count mean something
- * slightly different. If kernel ever adds `blaze_rod` this line changes to it and
- * the `0.5` does not — the rule is the reference's either way, and only the noun
- * was ever in question.
- */
-export const BLAZE_DROPS: ReadonlyArray<MobDropRule> = [
-  { item: 'blaze_powder', count: 1, chance: 0.5 },
-]
+/** Blaze rods are absent from kernel, so there is no supported blaze item drop. */
+export const BLAZE_DROPS: ReadonlyArray<MobDropRule> = []
 
 /** `mobs/blaze.ts:18`. Double a creeper's, for a mob half as common. */
 export const BLAZE_XP_REWARD = 10
+
+const COW_DROPS: ReadonlyArray<MobDropRule> = [
+  { item: 'leather', count: 0, maxCount: 2, adultOnly: true },
+  { item: 'beef', count: 1, maxCount: 3, adultOnly: true, burningItem: 'cooked_beef' },
+]
+const PIG_DROPS: ReadonlyArray<MobDropRule> = [
+  { item: 'porkchop', count: 1, maxCount: 3, adultOnly: true, burningItem: 'cooked_porkchop' },
+]
+const SHEEP_DROPS: ReadonlyArray<MobDropRule> = [
+  { item: 'wool', count: 1, adultOnly: true },
+  { item: 'mutton', count: 1, maxCount: 2, adultOnly: true, burningItem: 'cooked_mutton' },
+]
+const CHICKEN_DROPS: ReadonlyArray<MobDropRule> = [
+  { item: 'feather', count: 0, maxCount: 2, adultOnly: true },
+  { item: 'chicken', count: 1, adultOnly: true, burningItem: 'cooked_chicken' },
+]
+const SKELETON_DROPS: ReadonlyArray<MobDropRule> = [
+  { item: 'bone', count: 0, maxCount: 2 },
+  { item: 'arrow', count: 0, maxCount: 2 },
+]
+const SPIDER_DROPS: ReadonlyArray<MobDropRule> = [
+  { item: 'string', count: 0, maxCount: 2 },
+  { item: 'spider_eye', count: 1, chance: 1 / 3, playerKillOnly: true },
+]
+const ZOMBIFIED_PIGLIN_DROPS: ReadonlyArray<MobDropRule> = [
+  { item: 'rotten_flesh', count: 0, maxCount: 1 },
+  { item: 'gold_nugget', count: 0, maxCount: 1 },
+]
+const BOGGED_DROPS = SKELETON_DROPS
+const STRAY_DROPS = SKELETON_DROPS
+const CAVE_SPIDER_DROPS = SPIDER_DROPS
+const COW_LIKE_DROPS: ReadonlyArray<MobDropRule> = [
+  { item: 'leather', count: 0, maxCount: 2, adultOnly: true },
+  { item: 'beef', count: 1, maxCount: 3, adultOnly: true, burningItem: 'cooked_beef' },
+]
+const RABBIT_DROPS: ReadonlyArray<MobDropRule> = [
+  { item: 'rabbit', count: 1, adultOnly: true, burningItem: 'cooked_rabbit' },
+]
+const COD_DROPS: ReadonlyArray<MobDropRule> = [
+  { item: 'cod', count: 1, burningItem: 'cooked_cod' },
+  { item: 'bone_meal', count: 1, chance: 0.05 },
+]
+const SALMON_DROPS: ReadonlyArray<MobDropRule> = [
+  { item: 'salmon', count: 1, burningItem: 'cooked_salmon' },
+  { item: 'bone_meal', count: 1, chance: 0.05 },
+]
+const MOOSHROOM_DROPS = COW_LIKE_DROPS
+const STRIDER_DROPS: ReadonlyArray<MobDropRule> = [{ item: 'string', count: 0, maxCount: 5 }]
+const PARROT_DROPS: ReadonlyArray<MobDropRule> = [{ item: 'feather', count: 1, maxCount: 2 }]
+const SNOW_GOLEM_DROPS: ReadonlyArray<MobDropRule> = [{ item: 'snowball', count: 0, maxCount: 15 }]
+const TURTLE_DROPS: ReadonlyArray<MobDropRule> = [{ item: 'seagrass', count: 0, maxCount: 2 }]
+const ZOMBIE_HORSE_DROPS: ReadonlyArray<MobDropRule> = [
+  { item: 'rotten_flesh', count: 2, maxCount: 3 },
+]
+const SKELETON_HORSE_DROPS: ReadonlyArray<MobDropRule> = [{ item: 'bone', count: 0, maxCount: 2 }]
+const IRON_GOLEM_DROPS: ReadonlyArray<MobDropRule> = [
+  { item: 'iron_ingot', count: 3, maxCount: 5 },
+  { item: 'poppy', count: 0, maxCount: 2 },
+]
+const LLAMA_DROPS: ReadonlyArray<MobDropRule> = [{ item: 'leather', count: 0, maxCount: 2 }]
+const VINDICATOR_DROPS: ReadonlyArray<MobDropRule> = [
+  { item: 'emerald', count: 0, maxCount: 1, playerKillOnly: true },
+]
+const EVOKER_DROPS: ReadonlyArray<MobDropRule> = [
+  { item: 'emerald', count: 0, maxCount: 1, playerKillOnly: true },
+]
+const HOGLIN_DROPS: ReadonlyArray<MobDropRule> = [
+  { item: 'porkchop', count: 2, maxCount: 4, adultOnly: true, burningItem: 'cooked_porkchop' },
+  { item: 'leather', count: 0, maxCount: 1, adultOnly: true },
+]
+const HUSK_DROPS: ReadonlyArray<MobDropRule> = [{ item: 'rotten_flesh', count: 0, maxCount: 2 }]
+const WITHER_SKELETON_DROPS: ReadonlyArray<MobDropRule> = [
+  { item: 'coal', count: 0, maxCount: 1 },
+  { item: 'bone', count: 0, maxCount: 2 },
+  { item: 'wither_skeleton_skull', count: 1, chance: 0.025, playerKillOnly: true, chargedCreeperOnly: true },
+]
+const ZOGLIN_DROPS: ReadonlyArray<MobDropRule> = [{ item: 'rotten_flesh', count: 1, maxCount: 3 }]
+const WITCH_DROPS: ReadonlyArray<MobDropRule> = [{ item: 'redstone_dust', count: 4, maxCount: 8 }]
+const WITCH_POOL: MobDropPool = {
+  minSelections: 1,
+  maxSelections: 3,
+  choices: [
+    { item: 'glass_bottle', weight: 1, count: 0, maxCount: 2 },
+    { item: 'glowstone_dust', weight: 1, count: 0, maxCount: 2 },
+    { item: 'gunpowder', weight: 1, count: 0, maxCount: 2 },
+    { item: 'spider_eye', weight: 1, count: 0, maxCount: 2 },
+    { item: 'stick', weight: 2, count: 0, maxCount: 2 },
+    { item: 'sugar', weight: 1, count: 0, maxCount: 2 },
+  ],
+}
+const WITHER_DROPS: ReadonlyArray<MobDropRule> = [{ item: 'nether_star', count: 1 }]
+
+const FISH_CHOICES: ReadonlyArray<MobDropChoice> = [
+  { item: 'cod', weight: 60, count: 0, maxCount: 1, burningItem: 'cooked_cod' },
+  { item: 'salmon', weight: 25, count: 0, maxCount: 1, burningItem: 'cooked_salmon' },
+  { item: 'pufferfish', weight: 13, count: 0, maxCount: 1 },
+  { item: 'tropical_fish', weight: 2, count: 0, maxCount: 1 },
+]
+const GUARDIAN_FISH_POOL: MobDropPool = {
+  minSelections: 1,
+  maxSelections: 1,
+  chance: 0.4,
+  choices: FISH_CHOICES,
+}
+const ELDER_GUARDIAN_FISH_POOL: MobDropPool = { ...GUARDIAN_FISH_POOL, chance: 0.5 }
+const POLAR_BEAR_FISH_POOL: MobDropPool = {
+  minSelections: 1,
+  maxSelections: 1,
+  choices: [
+    { item: 'cod', weight: 3, count: 0, maxCount: 2, burningItem: 'cooked_cod' },
+    { item: 'salmon', weight: 1, count: 0, maxCount: 2, burningItem: 'cooked_salmon' },
+  ],
+}
+const ZOMBIFIED_PIGLIN_RARE_POOL: MobDropPool = {
+  minSelections: 1,
+  maxSelections: 1,
+  chance: 0.025,
+  playerKillOnly: true,
+  choices: [{ item: 'gold_ingot', weight: 1, count: 1 }],
+}
+
+export const MOB_DROP_TABLES: Readonly<Record<string, MobDropTable>> = {
+  allay: { rules: [] },
+  armadillo: { rules: [] },
+  axolotl: { rules: [] },
+  bat: { rules: [] },
+  camel: { rules: [] },
+  cat: { rules: [{ item: 'string', count: 0, maxCount: 2 }] },
+  chicken: { rules: CHICKEN_DROPS },
+  cod: { rules: COD_DROPS },
+  cow: { rules: COW_DROPS },
+  dolphin: { rules: [{ item: 'cod', count: 0, maxCount: 1, burningItem: 'cooked_cod' }] },
+  donkey: { rules: [{ item: 'leather', count: 0, maxCount: 2, adultOnly: true }] },
+  fox: { rules: [] },
+  frog: { rules: [] },
+  glow_squid: { rules: [] },
+  horse: { rules: [{ item: 'leather', count: 0, maxCount: 2, adultOnly: true }] },
+  mooshroom: { rules: MOOSHROOM_DROPS },
+  mule: { rules: [{ item: 'leather', count: 0, maxCount: 2, adultOnly: true }] },
+  ocelot: { rules: [] },
+  parrot: { rules: PARROT_DROPS },
+  pig: { rules: PIG_DROPS },
+  pufferfish: { rules: [{ item: 'pufferfish', count: 1 }] },
+  rabbit: { rules: RABBIT_DROPS },
+  salmon: { rules: SALMON_DROPS },
+  sheep: { rules: SHEEP_DROPS },
+  skeleton_horse: { rules: SKELETON_HORSE_DROPS },
+  sniffer: { rules: [] },
+  squid: { rules: [] },
+  strider: { rules: STRIDER_DROPS },
+  tadpole: { rules: [] },
+  tropical_fish: { rules: [{ item: 'tropical_fish', count: 1 }] },
+  turtle: { rules: TURTLE_DROPS },
+  villager: { rules: [] },
+  wandering_trader: { rules: [] },
+  zombie_horse: { rules: ZOMBIE_HORSE_DROPS },
+  bee: { rules: [] },
+  cave_spider: { rules: CAVE_SPIDER_DROPS },
+  enderman: { rules: ENDERMAN_DROPS },
+  goat: { rules: [] },
+  iron_golem: { rules: IRON_GOLEM_DROPS },
+  llama: { rules: LLAMA_DROPS },
+  trader_llama: { rules: LLAMA_DROPS },
+  panda: { rules: [] },
+  piglin: { rules: [] },
+  polar_bear: { rules: [], pools: [POLAR_BEAR_FISH_POOL] },
+  snow_golem: { rules: SNOW_GOLEM_DROPS },
+  spider: { rules: SPIDER_DROPS },
+  wolf: { rules: [] },
+  zombified_piglin: { rules: ZOMBIFIED_PIGLIN_DROPS, pools: [ZOMBIFIED_PIGLIN_RARE_POOL] },
+  blaze: { rules: BLAZE_DROPS },
+  bogged: { rules: BOGGED_DROPS },
+  breeze: { rules: [] },
+  creeper: { rules: CREEPER_DROPS },
+  drowned: { rules: [{ item: 'rotten_flesh', count: 0, maxCount: 2 }] },
+  elder_guardian: { rules: [], pools: [ELDER_GUARDIAN_FISH_POOL] },
+  endermite: { rules: [] },
+  evoker: { rules: EVOKER_DROPS },
+  ghast: { rules: GHAST_DROPS },
+  giant: { rules: [] },
+  guardian: { rules: [], pools: [GUARDIAN_FISH_POOL] },
+  hoglin: { rules: HOGLIN_DROPS },
+  husk: { rules: HUSK_DROPS, pools: [ZOMBIE_RARE_DROPS] },
+  magma_cube: { rules: [] },
+  phantom: { rules: [] },
+  piglin_brute: { rules: [] },
+  pillager: { rules: [] },
+  ravager: { rules: [] },
+  shulker: { rules: [] },
+  silverfish: { rules: [] },
+  skeleton: { rules: SKELETON_DROPS },
+  slime: { rules: [] },
+  stray: { rules: STRAY_DROPS },
+  vex: { rules: [] },
+  vindicator: { rules: VINDICATOR_DROPS },
+  warden: { rules: [] },
+  witch: { rules: WITCH_DROPS, pools: [WITCH_POOL] },
+  wither_skeleton: { rules: WITHER_SKELETON_DROPS },
+  zoglin: { rules: ZOGLIN_DROPS },
+  zombie: { rules: ZOMBIE_DROPS, pools: [ZOMBIE_RARE_DROPS] },
+  zombie_villager: { rules: ZOMBIE_DROPS, pools: [ZOMBIE_RARE_DROPS] },
+  ender_dragon: { rules: [] },
+  wither: { rules: WITHER_DROPS },
+}
+
+const range = (min: number, max = min): MobExperienceRange => ({ min, max })
+const ANIMAL_EXPERIENCE: MobExperienceRule = { adult: range(1, 3), baby: range(0) }
+const HOSTILE_EXPERIENCE: MobExperienceRule = { adult: range(5), equipmentBonus: range(1, 3) }
+const NO_EXPERIENCE: MobExperienceRule = { adult: range(0), baby: range(0) }
+
+export const MOB_EXPERIENCE_RULES: Readonly<Record<string, MobExperienceRule>> = {
+  allay: NO_EXPERIENCE,
+  armadillo: ANIMAL_EXPERIENCE,
+  axolotl: ANIMAL_EXPERIENCE,
+  bat: NO_EXPERIENCE,
+  camel: ANIMAL_EXPERIENCE,
+  cat: ANIMAL_EXPERIENCE,
+  chicken: ANIMAL_EXPERIENCE,
+  cod: ANIMAL_EXPERIENCE,
+  cow: ANIMAL_EXPERIENCE,
+  dolphin: ANIMAL_EXPERIENCE,
+  donkey: ANIMAL_EXPERIENCE,
+  fox: ANIMAL_EXPERIENCE,
+  frog: ANIMAL_EXPERIENCE,
+  glow_squid: ANIMAL_EXPERIENCE,
+  horse: ANIMAL_EXPERIENCE,
+  mooshroom: ANIMAL_EXPERIENCE,
+  mule: ANIMAL_EXPERIENCE,
+  ocelot: ANIMAL_EXPERIENCE,
+  parrot: ANIMAL_EXPERIENCE,
+  pig: ANIMAL_EXPERIENCE,
+  pufferfish: ANIMAL_EXPERIENCE,
+  rabbit: ANIMAL_EXPERIENCE,
+  salmon: ANIMAL_EXPERIENCE,
+  sheep: ANIMAL_EXPERIENCE,
+  skeleton_horse: ANIMAL_EXPERIENCE,
+  sniffer: ANIMAL_EXPERIENCE,
+  squid: ANIMAL_EXPERIENCE,
+  strider: ANIMAL_EXPERIENCE,
+  tadpole: NO_EXPERIENCE,
+  tropical_fish: ANIMAL_EXPERIENCE,
+  turtle: ANIMAL_EXPERIENCE,
+  villager: NO_EXPERIENCE,
+  wandering_trader: NO_EXPERIENCE,
+  zombie_horse: ANIMAL_EXPERIENCE,
+  bee: ANIMAL_EXPERIENCE,
+  cave_spider: HOSTILE_EXPERIENCE,
+  enderman: { adult: range(5) },
+  goat: ANIMAL_EXPERIENCE,
+  iron_golem: NO_EXPERIENCE,
+  llama: ANIMAL_EXPERIENCE,
+  trader_llama: ANIMAL_EXPERIENCE,
+  panda: ANIMAL_EXPERIENCE,
+  piglin: { adult: range(5), baby: range(5), equipmentBonus: range(1, 3) },
+  polar_bear: ANIMAL_EXPERIENCE,
+  snow_golem: NO_EXPERIENCE,
+  spider: { adult: range(5) },
+  wolf: ANIMAL_EXPERIENCE,
+  zombified_piglin: { adult: range(5), baby: range(12), equipmentBonus: range(1, 3) },
+  blaze: { adult: range(10) },
+  bogged: HOSTILE_EXPERIENCE,
+  breeze: { adult: range(10) },
+  creeper: { adult: range(5) },
+  drowned: { adult: range(5), baby: range(12), equipmentBonus: range(1, 3) },
+  elder_guardian: { adult: range(10) },
+  endermite: { adult: range(3) },
+  evoker: { adult: range(10), equipmentBonus: range(1, 3) },
+  ghast: { adult: range(5) },
+  giant: { adult: range(5) },
+  guardian: { adult: range(10) },
+  hoglin: { adult: range(5), baby: range(5) },
+  husk: { adult: range(5), baby: range(12), equipmentBonus: range(1, 3) },
+  magma_cube: { adult: range(4), sizes: { small: range(1), medium: range(2), large: range(4) } },
+  phantom: { adult: range(5) },
+  piglin_brute: { adult: range(20), equipmentBonus: range(1, 3) },
+  pillager: HOSTILE_EXPERIENCE,
+  ravager: { adult: range(20), equipmentBonus: range(1, 3) },
+  shulker: { adult: range(5) },
+  silverfish: { adult: range(5) },
+  skeleton: HOSTILE_EXPERIENCE,
+  slime: { adult: range(4), sizes: { small: range(1), medium: range(2), large: range(4) } },
+  stray: HOSTILE_EXPERIENCE,
+  vex: HOSTILE_EXPERIENCE,
+  vindicator: HOSTILE_EXPERIENCE,
+  warden: { adult: range(5) },
+  witch: HOSTILE_EXPERIENCE,
+  wither_skeleton: HOSTILE_EXPERIENCE,
+  zoglin: { adult: range(5), baby: range(5) },
+  zombie: { adult: range(5), baby: range(12), equipmentBonus: range(1, 3) },
+  zombie_villager: { adult: range(5), baby: range(12), equipmentBonus: range(1, 3) },
+  ender_dragon: { adult: range(12000), dragonRespawn: range(500), playerKillRequired: false },
+  wither: { adult: range(50) },
+}
+
+export const mobDropTableOfKind = (kind: string): MobDropTable =>
+  MOB_DROP_TABLES[kind] ?? { rules: [] }
+
+export const mobDropRulesOfKind = (kind: string): ReadonlyArray<MobDropRule> =>
+  mobDropTableOfKind(kind).rules
+
+export const mobExperienceRuleOfKind = (kind: string): MobExperienceRule =>
+  MOB_EXPERIENCE_RULES[kind] ?? NO_EXPERIENCE
+
+export const mobXpBaseOfKind = (kind: string): number =>
+  mobExperienceRuleOfKind(kind).adult.min
 
 /**
  * Clamp a roll into `[0, 1)`.
@@ -233,26 +522,8 @@ const rollCount = (rule: MobDropRule, roll: number): number =>
     : rule.count
 
 /**
- * Extra items from Looting.
- *
- * The reference re-spawns each already-rolled drop a second time with
- * `count = lootingEnchant.level` (`interaction-melee-handler.ts:180-200`), so
- * the total is base + level. That is not vanilla's rule (vanilla rolls an extra
- * `0..level`), and it is ported rather than corrected because docs/porting.md §4
- * says the reference is the specification and a silent "fix" to a drop rate is
- * the kind of change that should arrive with a measurement.
- *
- * A negative or non-finite level adds nothing.
- */
-const lootingBonus = (kill: MobKill): number =>
-  kill._tag === 'Slain' && Number.isFinite(kill.lootingLevel)
-    ? Math.max(0, Math.floor(kill.lootingLevel))
-    : 0
-
-/**
- * Resolve one drop line. TOTAL, with `undefined` meaning "nothing from this
- * line" — the same convention kernel's `resolveDrop` uses for blocks, and for
- * the same reason: nothing is an answer, not a count of zero.
+ * Looting stays on the kill input so GP8 can apply it without changing callers.
+ * GP2 intentionally resolves only the base vanilla loot rule.
  */
 export const rollMobDrop = (
   rule: MobDropRule,
@@ -263,6 +534,18 @@ export const rollMobDrop = (
     return undefined
   }
 
+  const chargedCreeperDrop = rule.chargedCreeperOnly && kill.killedByChargedCreeper === true
+  if (
+    (rule.playerKillOnly && !kill.playerKill && !chargedCreeperDrop) ||
+    (rule.adultOnly && kill.age === 'baby') ||
+    (rule.babyOnly && kill.age !== 'baby') ||
+    (rule.size !== undefined && kill.size !== rule.size) ||
+    (rule.minimumSize !== undefined &&
+      (kill.size === undefined || SIZE_ORDER[kill.size] < SIZE_ORDER[rule.minimumSize]))
+  ) {
+    return undefined
+  }
+
   // The finiteness guard is INSIDE the `chance !== undefined` branch on
   // purpose. A roll that is not a number fails a gate — the inert direction,
   // since `NaN < 0.025` is already `false` and this only makes it deliberate —
@@ -270,16 +553,21 @@ export const rollMobDrop = (
   // creeper's does not, so its gunpowder survives a caller with a broken
   // generator, which is the behaviour `test/mob.test.ts` enumerates.
   if (
+    !chargedCreeperDrop &&
     rule.chance !== undefined &&
     (!Number.isFinite(rolls.chance) || !dropPasses(rule, rolls.chance))
   ) {
     return undefined
   }
 
-  const count = rollCount(rule, rolls.count) + lootingBonus(kill)
+  const count = rollCount(rule, rolls.count)
 
-  return count <= 0 ? undefined : { item: rule.item, count }
+  return count <= 0
+    ? undefined
+    : { item: kill.burning && rule.burningItem !== undefined ? rule.burningItem : rule.item, count }
 }
+
+const SIZE_ORDER: Readonly<Record<MobSize, number>> = { small: 0, medium: 1, large: 2 }
 
 /** Every line of a mob's loot at once. Drops that yield nothing are absent. */
 export const rollMobDrops = (
@@ -292,13 +580,103 @@ export const rollMobDrops = (
     return drop === undefined ? [] : [drop]
   })
 
+const rollWeightedChoice = (
+  choices: ReadonlyArray<MobDropChoice>,
+  roll: number,
+): MobDropChoice | undefined => {
+  const totalWeight = choices.reduce((total, choice) => total + choice.weight, 0)
+  if (choices.length === 0 || totalWeight <= 0) return undefined
+
+  let selected = clampRoll(roll) * totalWeight
+  for (const choice of choices) {
+    selected -= choice.weight
+    if (selected < 0) return choice
+  }
+  return choices[choices.length - 1]
+}
+
+/** Resolves fixed drop lines and weighted selections from one mob table. */
+export const rollMobTable = (
+  table: MobDropTable,
+  kill: MobKill,
+  rolls: ReadonlyArray<number>,
+): ReadonlyArray<MobDrop> => {
+  const drops = [...rollMobDrops(table.rules, kill, (index) => ({
+    chance: rolls[index * 2] ?? 0,
+    count: rolls[index * 2 + 1] ?? 0,
+  }))]
+  let cursor = table.rules.length * 2
+
+  for (const pool of table.pools ?? []) {
+    const chanceRoll = pool.chance === undefined ? 0 : rolls[cursor++] ?? 0
+    const countRoll = pool.maxSelections === pool.minSelections ? 0 : rolls[cursor++] ?? 0
+    const selections = pool.minSelections + Math.floor(
+      clampRoll(countRoll) * (pool.maxSelections - pool.minSelections + 1),
+    )
+    const eligible =
+      kill._tag === 'Slain' &&
+      (!pool.playerKillOnly || kill.playerKill === true) &&
+      (pool.chance === undefined || (Number.isFinite(chanceRoll) && chanceRoll < pool.chance))
+
+    for (let index = 0; index < pool.maxSelections; index += 1) {
+      const choiceRoll = rolls[cursor++] ?? 0
+      const itemCountRoll = rolls[cursor++] ?? 0
+      if (!eligible || index >= selections) continue
+
+      const choice = rollWeightedChoice(pool.choices, choiceRoll)
+      if (choice === undefined) continue
+      const count = rollCount(choice, itemCountRoll)
+      if (count > 0) {
+        drops.push({
+          item: kill.burning && choice.burningItem !== undefined ? choice.burningItem : choice.item,
+          count,
+        })
+      }
+    }
+  }
+
+  return drops
+}
+
+export const dropRollsNeededForTable = (table: MobDropTable): number =>
+  table.rules.length * 2 +
+  (table.pools ?? []).reduce((total, pool) =>
+    total +
+      (pool.chance === undefined ? 0 : 1) +
+      (pool.maxSelections === pool.minSelections ? 0 : 1) +
+      pool.maxSelections * 2,
+  0)
+
 /**
- * Experience for a kill.
- *
- * Zero for a self-destruct, for the reason `MobKill` records: the reference's
- * detonating creeper is removed before the path that awards it, so it grants
- * none. A mob killed with Looting still grants its plain reward — looting is a
- * loot enchantment and the reference does not apply it to experience.
+ * Experience for a kill. `roll` is shared by the base range; callers that know
+ * how many spawned equipment items survived may supply one roll per item.
  */
-export const mobXpReward = (kill: MobKill, reward: number): number =>
-  kill._tag === 'SelfDestruct' || !Number.isFinite(reward) ? 0 : Math.max(0, reward)
+export const mobXpReward = (
+  kill: MobKill,
+  reward: number | MobExperienceRule,
+  roll = 0,
+  context: MobExperienceContext = {},
+): number => {
+  if (kill._tag === 'SelfDestruct') return 0
+  if (typeof reward === 'number') {
+    return Number.isFinite(reward) ? Math.max(0, reward) : 0
+  }
+
+  const selectedRange = context.firstDragonDeath === false && reward.dragonRespawn !== undefined
+    ? reward.dragonRespawn
+    : context.size === undefined
+      ? context.age === 'baby' && reward.baby !== undefined ? reward.baby : reward.adult
+      : reward.sizes?.[context.size] ??
+        (context.age === 'baby' && reward.baby !== undefined ? reward.baby : reward.adult)
+  const amount = rollRange(selectedRange, roll)
+  const equipmentCount = reward.equipmentBonus === undefined
+    ? 0
+    : Math.max(0, Math.floor(context.undroppedEquipmentCount ?? 0))
+  const equipmentXp = Array.from({ length: equipmentCount }, (_, index) =>
+    rollRange(reward.equipmentBonus ?? range(0), context.equipmentRolls?.[index] ?? roll),
+  ).reduce((total, value) => total + value, 0)
+  return amount + equipmentXp
+}
+
+export const rollRange = (value: MobExperienceRange, roll: number): number =>
+  value.min + Math.floor(clampRoll(roll) * (value.max - value.min + 1))

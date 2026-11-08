@@ -3203,6 +3203,7 @@ describe('registered combat and teleport requests in the interactions stage', ()
       omitDroppedItemsOwnerId: true,
       playerPose: meleePlayerPose,
     }))
+    await Effect.runPromise(Ref.set(harness.state.rollSeed, 3))
     const request = {
       requestId: 'melee-missing-drop-owner',
       origin: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
@@ -3235,6 +3236,7 @@ describe('registered combat and teleport requests in the interactions stage', ()
       entities: { entities: [target], nextSerial: EntitySerial(1) },
       playerPose: meleePlayerPose,
     }))
+    await Effect.runPromise(Ref.set(harness.state.rollSeed, 3))
     await Effect.runPromise(requestMeleeAttack(harness.state, {
       requestId: 'melee-lethal-drop-commit',
       origin: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
@@ -3274,6 +3276,7 @@ describe('registered combat and teleport requests in the interactions stage', ()
       omitDroppedItemsRegistration: true,
       playerPose: meleePlayerPose,
     }))
+    await Effect.runPromise(Ref.set(harness.state.rollSeed, 3))
     const request = {
       requestId: 'melee-drop-snapshot-failure',
       origin: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
@@ -3305,6 +3308,7 @@ describe('registered combat and teleport requests in the interactions stage', ()
       entities: { entities: [target], nextSerial: EntitySerial(1) },
       playerPose: meleePlayerPose,
     }))
+    await Effect.runPromise(Ref.set(harness.state.rollSeed, 3))
     let injected = false
     const coordinator: WorldCommitCoordinatorApi = {
       ...harness.coordinator,
@@ -3543,6 +3547,7 @@ describe('registered combat and teleport requests in the interactions stage', ()
       entities: { entities: [target], nextSerial: EntitySerial(1) },
       playerStorage: playerStorageWithItems([['bow', 1], ['arrow', 1]]),
     }))
+    await Effect.runPromise(Ref.set(harness.state.rollSeed, 3))
     await Effect.runPromise(requestBowShot(harness.state, 'bow-lethal-owner-damage', {
       origin: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
       dirX: 0,

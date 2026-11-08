@@ -1701,6 +1701,7 @@ describe('stage behaviour', () => {
       )
       const interactions = harness.stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
       const before = yield* harness.commit.coordinator.snapshot(GAMEPLAY_ENTITIES_OWNER_ID, GameplayEntityRosterSchema)
+      yield* Ref.set(harness.state.rollSeed, 3)
       const request = {
         requestId: 'melee-rejected',
         origin: fixturePosition(0, 64, 0),
@@ -1748,6 +1749,7 @@ describe('stage behaviour', () => {
         damage: 4,
       } as const
 
+      yield* Ref.set(harness.state.rollSeed, 3)
       yield* requestMeleeAttack(harness.state, request)
       yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
 
@@ -1779,6 +1781,7 @@ describe('stage behaviour', () => {
       )
       const interactions = harness.stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
       const before = yield* harness.commit.coordinator.snapshot(GAMEPLAY_ENTITIES_OWNER_ID, GameplayEntityRosterSchema)
+      yield* Ref.set(harness.state.rollSeed, 3)
       yield* Ref.set(harness.failSnapshotOwnerId, GAMEPLAY_DROPPED_ITEMS_OWNER_ID)
       const request = {
         requestId: 'melee-drop-snapshot-failure',
@@ -1805,18 +1808,12 @@ describe('stage behaviour', () => {
     }),
   )
 
-  it.effect('a lethal melee hit on a kind with no XP reward or drop table emits neither', () =>
+  it.effect('a lethal melee hit on a registered villager emits neither loot nor XP', () =>
     Effect.gen(function* () {
-      // Every other lethal-hit test in this file kills a `CREEPER_KIND`, which
-      // has both an XP reward and a drop table, so `experience.length > 0` and
-      // `drops.length > 0` had only ever been taken. `skeleton` is a
-      // `HOSTILE_KINDS` member (melee can target it) for which
-      // `xpRewardOfKind` and `dropRulesOfKind` both fall through to their
-      // zero/empty default, so a lethal hit on it takes neither.
-      const feetPosition = fixturePosition(0, 64.72, -2)
+      const feetPosition = fixturePosition(0, 64 - BOW_TARGET_CENTER_Y_OFFSET, 2)
       const entity = {
-        id: EntityId('e:0'),
-        kind: EntityKind('skeleton'),
+        id: EntityId('melee-no-loot-villager'),
+        kind: EntityKind('villager'),
         feetPosition,
         healthPoints: EntityHealthPoints(1),
         behaviour: undefined,
@@ -1827,7 +1824,7 @@ describe('stage behaviour', () => {
       )
 
       yield* requestMeleeAttack(state, {
-        origin: fixturePosition(0, 64, 0 ),
+        origin: fixturePosition(0, 64, 0),
         direction: fixturePosition(0, 0, 1),
         reach: AttackRangeDistance(3),
         damage: 4,
@@ -1839,6 +1836,41 @@ describe('stage behaviour', () => {
       expect(entityOwner.state.entities).toStrictEqual([])
       expect(yield* drainMobExperience(state)).toStrictEqual([])
       expect(yield* drainMobDrops(state)).toStrictEqual([])
+    }),
+  )
+
+  it.effect('a lethal skeleton hit emits its table-backed drops and XP', () =>
+    Effect.gen(function* () {
+      const feetPosition = fixturePosition(0, 64 - BOW_TARGET_CENTER_Y_OFFSET, 2)
+      const entity = {
+        id: EntityId('e:0'),
+        kind: SKELETON_KIND,
+        feetPosition,
+        healthPoints: EntityHealthPoints(1),
+        behaviour: undefined,
+      }
+      const { state, commit, stages } = yield* builtStagesInWorld(
+        world([]), ['0,0'], undefined, undefined, undefined,
+        { entities: [entity], nextSerial: EntitySerial(1) },
+      )
+
+      yield* Ref.set(state.rollSeed, 3)
+      yield* requestMeleeAttack(state, {
+        origin: fixturePosition(0, 64, 0 ),
+        direction: fixturePosition(0, 0, 1),
+        reach: AttackRangeDistance(3),
+        damage: 4,
+      })
+      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)
+      yield* interactions!.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+
+      const entityOwner = yield* commit.coordinator.snapshot(GAMEPLAY_ENTITIES_OWNER_ID, GameplayEntityRosterSchema)
+      expect(entityOwner.state.entities).toStrictEqual([])
+      expect(yield* drainMobExperience(state)).toMatchObject([{ amount: 5 }])
+      expect(yield* drainMobDrops(state)).toMatchObject([
+        { item: 'bone', count: 1 },
+        { item: 'arrow', count: 1 },
+      ])
     }),
   )
 

@@ -8,12 +8,14 @@ import {
   DimensionRevisionSchema,
   EntityHealthPoints,
   EntityIdSchema,
+  ENTITY_TYPES,
   PositionAxis,
   ProjectileIdSchema,
   SimulationTick,
   SimulationTickSchema,
   StackCount,
   WorldRevisionSchema,
+  ITEM_TYPES,
   itemStack,
   position as makePosition,
   type Position,
@@ -52,7 +54,10 @@ import { planExperienceOrbAbsorption, createExperienceOrbValue } from '../../src
 import { makeInMemoryEntityManager as createEntityManager } from '../../src/domain/in-memory-entity-manager'
 import {
   dropPasses,
+  MOB_DROP_TABLES,
+  MOB_EXPERIENCE_RULES,
   mobXpReward,
+  rollMobTable,
   rollMobDrop,
   type DropRolls,
   type MobDropRule,
@@ -196,7 +201,7 @@ describe('mob entity properties', () => {
   })
 
   it('keeps mob drop chances strict and the count roll monotone', () => {
-    // Catches an inclusive chance boundary, reversed count roll, or Looting changing XP.
+    // Catches an inclusive chance boundary or a count outside its declared range.
     fc.assert(
       fc.property(
         fc.double({ min: 0.01, max: 1, noNaN: true }),
@@ -238,11 +243,92 @@ describe('mob entity properties', () => {
           expect(highCount).toBeDefined()
           expect(withoutLooting!.count).toBeGreaterThanOrEqual(baseCount)
           expect(withoutLooting!.count).toBeLessThanOrEqual(baseCount + spread)
-          expect(withLooting!.count - withoutLooting!.count).toBe(lootingLevel)
+          expect(withLooting!.count).toBe(withoutLooting!.count)
           expect(highCount!.count).toBeGreaterThanOrEqual(withLooting!.count)
           expect(rollMobDrop(rule, { _tag: 'SelfDestruct' }, rolls)).toBeUndefined()
           expect(mobXpReward({ _tag: 'Slain', lootingLevel }, 10)).toBe(10)
           expect(mobXpReward({ _tag: 'SelfDestruct' }, 10)).toBe(0)
+        },
+      ),
+    )
+  })
+
+  it('rolls every kernel mob table with valid item IDs and in-range counts', () => {
+    const kinds = Object.keys(MOB_DROP_TABLES)
+    fc.assert(
+      fc.property(
+        fc.constantFrom(...kinds),
+        fc.array(normalizedRoll, { maxLength: 32 }),
+        fc.boolean(),
+        fc.boolean(),
+        fc.constantFrom('adult' as const, 'baby' as const),
+        fc.constantFrom('small' as const, 'medium' as const, 'large' as const),
+        fc.integer({ min: 0, max: 5 }),
+        (kind, rolls, playerKill, burning, age, size, lootingLevel) => {
+          const table = MOB_DROP_TABLES[kind]
+          if (table === undefined) throw new Error(`Missing mob drop table for ${kind}`)
+          expect(table).toBeDefined()
+          if (table === undefined) return
+
+          const drops = rollMobTable(table, {
+            _tag: 'Slain',
+            lootingLevel,
+            playerKill,
+            burning,
+            age,
+            size,
+          }, rolls)
+          const candidates = [
+            ...table.rules.map((rule) => ({
+              item: rule.item,
+              burningItem: rule.burningItem,
+              count: rule.count,
+              maxCount: rule.maxCount,
+            })),
+            ...(table.pools ?? []).flatMap((pool) => pool.choices.map((choice) => ({
+              item: choice.item,
+              burningItem: choice.burningItem,
+              count: choice.count,
+              maxCount: choice.maxCount,
+            }))),
+          ]
+
+          expect(drops.every((drop) => ITEM_TYPES.includes(drop.item))).toBe(true)
+          for (const drop of drops) {
+            const matching = candidates.filter((candidate) =>
+              candidate.item === drop.item || candidate.burningItem === drop.item,
+            )
+            expect(matching.some((candidate) =>
+              drop.count >= candidate.count && drop.count <= (candidate.maxCount ?? candidate.count),
+            )).toBe(true)
+          }
+        },
+      ),
+    )
+    expect(kinds).toHaveLength(81)
+    expect(kinds.every((kind) => ENTITY_TYPES.includes(kind as typeof ENTITY_TYPES[number]))).toBe(true)
+  })
+
+  it('resolves XP rolls within each adult, baby, and size range', () => {
+    const kinds = Object.keys(MOB_EXPERIENCE_RULES)
+    fc.assert(
+      fc.property(
+        fc.constantFrom(...kinds),
+        normalizedRoll,
+        fc.constantFrom('adult' as const, 'baby' as const),
+        fc.constantFrom('small' as const, 'medium' as const, 'large' as const),
+        (kind, roll, age, size) => {
+          const rule = MOB_EXPERIENCE_RULES[kind]
+          if (rule === undefined) throw new Error(`Missing mob experience rule for ${kind}`)
+          const range = rule.sizes?.[size] ?? (age === 'baby' ? rule.baby : undefined) ?? rule.adult
+          const amount = mobXpReward(
+            { _tag: 'Slain', lootingLevel: 0 },
+            rule,
+            roll,
+            { age, size },
+          )
+          expect(amount).toBeGreaterThanOrEqual(range.min)
+          expect(amount).toBeLessThanOrEqual(range.max)
         },
       ),
     )

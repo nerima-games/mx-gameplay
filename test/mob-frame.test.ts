@@ -28,6 +28,7 @@ import {
   DROPPED_ITEM_KIND,
   dropRollsNeeded,
   dropRulesOfKind,
+  ENDERMITE_KIND,
   ENDERMAN_KIND,
   ENDERMAN_MAX_HEALTH,
   experienceOfCasualties,
@@ -61,12 +62,10 @@ import {
   xpRewardOfKind,
 } from '../src/domain/entities/mob-frame'
 import {
-  BLAZE_DROPS,
   BLAZE_XP_REWARD,
-  CREEPER_DROPS,
-  ENDERMAN_DROPS,
   ENDERMAN_XP_REWARD,
-  ZOMBIE_DROPS,
+  MOB_DROP_TABLES,
+  dropRollsNeededForTable,
   ZOMBIE_XP_REWARD,
 } from '../src/domain/mob/mob-drop'
 import { BLAZE_KIND, COW_KIND, initialEcosystemMobState } from '../src/domain/mob/mob-ecosystem'
@@ -148,42 +147,53 @@ describe('the loot table is keyed by a kind that something actually spawns', () 
     }),
   )
 
-  it.effect('every hostile kind has its drop table wired into the frame', () =>
+  it.effect('runtime and requested kinds resolve their domain tables through the frame', () =>
     Effect.sync(() => {
-      // The module header refuses a row for a kind nothing produces: 「a row
-      // mapping a kind nothing produces would be a claim that this build has
-      // ghasts」. `domain/mob/mob-drop.ts` holds a ghast's table, but no ghast is
-      // spawned here. A blaze is spawned by the Nether ecosystem, so its table
-      // and XP reward must be reachable through the frame dispatchers.
-      //
-      // Asked over the whole roster and not just the enderman: a third hostile
-      // added without a `domain/mob/` rule behind it should show up here as a
-      // silent zero, and that is the state worth being able to see.
-      const tables = [
-        [CREEPER_KIND, CREEPER_DROPS],
-        [BLAZE_KIND, BLAZE_DROPS],
-        [ENDERMAN_KIND, ENDERMAN_DROPS],
-        [ZOMBIE_KIND, ZOMBIE_DROPS],
-      ] as const
-      for (const [kind, rules] of tables) {
-        expect(HOSTILE_KINDS).toContain(kind)
-        expect(dropRulesOfKind(kind)).toBe(rules)
-        expect(dropRollsNeeded(kind)).toBe(rules.length * 2)
+      const kinds = [CREEPER_KIND, BLAZE_KIND, ENDERMAN_KIND, ZOMBIE_KIND, COW_KIND, EntityKind('witch')]
+      for (const kind of kinds) {
+        const table = MOB_DROP_TABLES[kind]
+        if (table === undefined) throw new Error(`missing table for ${kind}`)
+        expect(dropRulesOfKind(kind)).toBe(table.rules)
+        expect(dropRollsNeeded(kind)).toBe(dropRollsNeededForTable(table))
       }
       expect(xpRewardOfKind(BLAZE_KIND)).toBe(BLAZE_XP_REWARD)
+      expect(xpRewardOfKind(COW_KIND)).toBe(1)
+      expect(xpRewardOfKind(ENDERMITE_KIND)).toBe(3)
     }),
   )
 
-  it.effect('the roll budget is two per line, which is what lets the caller draw before it knows', () =>
+  it.effect('weighted pools have a deterministic roll budget', () =>
     Effect.sync(() => {
-      // A chance and a count per line. The budget is asked BEFORE the drop is
-      // rolled, so this arithmetic is the contract between the two.
       expect(dropRollsNeeded(CREEPER_KIND)).toBe(dropRulesOfKind(CREEPER_KIND).length * 2)
+      expect(dropRollsNeeded(EntityKind('witch'))).toBe(9)
     }),
   )
 })
 
 describe('mob drops through frame death paths', () => {
+  it.effect('player-only drops require a hit within the 100-tick credit window', () =>
+    Effect.sync(() => {
+      const casualty = (id: string, lastHitTick: number) => ({
+        id: EntityId(id),
+        kind: EntityKind('spider'),
+        at: ORIGIN,
+        killCredit: 'player' as const,
+        lastHitTick: SimulationTick(lastHitTick),
+        deathTick: SimulationTick(200),
+      })
+      const stale = rollCasualtyDrops([casualty('e:stale-spider', 99)], 3)
+      const recent = rollCasualtyDrops([casualty('e:recent-spider', 100)], 3)
+
+      expect(stale.drops.map(({ item, count }) => ({ item, count }))).toStrictEqual([
+        { item: 'string', count: 1 },
+      ])
+      expect(recent.drops.map(({ item, count }) => ({ item, count }))).toStrictEqual([
+        { item: 'string', count: 1 },
+        { item: 'spider_eye', count: 1 },
+      ])
+    }),
+  )
+
   it.effect('normal deaths generate zombie and enderman drops', () =>
     Effect.gen(function* () {
       const roster = yield* makeEntityManagerDouble<MobBehaviour>()
@@ -196,7 +206,7 @@ describe('mob drops through frame death paths', () => {
       const casualties = yield* resolveMeleeHits(roster.api, [
         { id: zombie.id, damage: 1 }, { id: enderman.id, damage: 1 },
       ])
-      const { drops } = rollCasualtyDrops(casualties, 4)
+      const { drops } = rollCasualtyDrops(casualties, 11)
       expect(drops.map((drop) => drop.item)).toContain('rotten_flesh')
       expect(drops.map((drop) => drop.item)).toContain('ender_pearl')
     }),
@@ -213,7 +223,7 @@ describe('mob drops through frame death paths', () => {
         kind: ENDERMAN_KIND, feetPosition: ORIGIN, healthPoints: EntityHealthPoints(1), behaviour: STEADY_ENDERMAN,
       })
       const resolution = yield* resolveBlasts(roster.api, store.api, [CREEPER_BLAST])
-      const { drops } = rollCasualtyDrops(resolution.casualties, 4)
+      const { drops } = rollCasualtyDrops(resolution.casualties, 11)
       expect(drops.map((drop) => drop.item)).toContain('rotten_flesh')
       expect(drops.map((drop) => drop.item)).toContain('ender_pearl')
     }),
@@ -439,20 +449,13 @@ describe('resolveBlasts: what a survivor remembers', () => {
   )
 })
 
-describe('dropRulesOfKind and xpRewardOfKind: a kind nothing here has a rule for', () => {
+describe('dropRulesOfKind and xpRewardOfKind: an unknown kind', () => {
   it.effect('answers the empty table and zero reward rather than throwing', () =>
     Effect.sync(() => {
-      // VILLAGER: the module header's own refusal, applied to a third kind — a
-      // row for a kind nothing produces would be a claim this build has
-      // villagers, the same argument `dropRulesOfKind`'s own comment makes for
-      // the ghast.
-      const NO_RULE_KIND = EntityKind('villager')
+      const NO_RULE_KIND = EntityKind('unregistered')
       expect(dropRulesOfKind(NO_RULE_KIND)).toStrictEqual([])
       expect(xpRewardOfKind(NO_RULE_KIND)).toBe(0)
 
-      // The two rows the table above never asked for directly: it looped over
-      // CREEPER/BLAZE/ENDERMAN/ZOMBIE together for `dropRulesOfKind`, but only
-      // ever called `xpRewardOfKind` with BLAZE_KIND.
       expect(xpRewardOfKind(ZOMBIE_KIND)).toBe(ZOMBIE_XP_REWARD)
       expect(xpRewardOfKind(ENDERMAN_KIND)).toBe(ENDERMAN_XP_REWARD)
     }),
@@ -1020,12 +1023,55 @@ describe('experienceOfCasualties', () => {
         killCredit: 'player-triggered-tnt',
         deathTick: atTick,
       }
+      const babyZombie: MobCasualty = {
+        id: EntityId('e:baby'),
+        kind: ZOMBIE_KIND,
+        at: ORIGIN,
+        killCredit: 'player',
+        lastHitTick: SimulationTick(199),
+        deathTick: atTick,
+        age: 'baby',
+      }
+      const wolfCredit: MobCasualty = {
+        id: EntityId('e:wolf-credit'),
+        kind: ZOMBIE_KIND,
+        at: ORIGIN,
+        killCredit: 'tamed-wolf',
+        lastHitTick: SimulationTick(199),
+        deathTick: atTick,
+      }
+      const witherNoCredit: MobCasualty = {
+        id: EntityId('e:wither-no-credit'),
+        kind: EntityKind('wither'),
+        at: ORIGIN,
+        deathTick: atTick,
+      }
+      const wither: MobCasualty = {
+        id: EntityId('e:wither'),
+        kind: EntityKind('wither'),
+        at: ORIGIN,
+        killCredit: 'player',
+        lastHitTick: atTick,
+        deathTick: atTick,
+      }
+      const dragon: MobCasualty = {
+        id: EntityId('e:dragon'),
+        kind: EntityKind('ender_dragon'),
+        at: ORIGIN,
+        deathTick: atTick,
+        firstDragonDeath: true,
+      }
 
       expect(experienceOfCasualties([
-        noReward, noCredit, recentPlayer, staleHit, futureHit, playerTnt,
+        noReward, noCredit, recentPlayer, staleHit, futureHit, playerTnt, babyZombie, wolfCredit,
+        witherNoCredit, wither, dragon,
       ])).toStrictEqual([
         { source: recentPlayer.id, kind: ZOMBIE_KIND, at: ORIGIN, amount: ZOMBIE_XP_REWARD },
         { source: playerTnt.id, kind: ZOMBIE_KIND, at: ORIGIN, amount: ZOMBIE_XP_REWARD },
+        { source: babyZombie.id, kind: ZOMBIE_KIND, at: ORIGIN, amount: 12 },
+        { source: wolfCredit.id, kind: ZOMBIE_KIND, at: ORIGIN, amount: ZOMBIE_XP_REWARD },
+        { source: wither.id, kind: wither.kind, at: ORIGIN, amount: 50 },
+        { source: dragon.id, kind: dragon.kind, at: ORIGIN, amount: 12_000 },
       ])
     }),
   )

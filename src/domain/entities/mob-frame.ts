@@ -293,19 +293,18 @@ import {
   type EcosystemMobState,
 } from '../mob/mob-ecosystem.js'
 import {
-  BLAZE_DROPS,
-  BLAZE_XP_REWARD,
-  CREEPER_DROPS,
-  CREEPER_XP_REWARD,
-  ENDERMAN_DROPS,
-  ENDERMAN_XP_REWARD,
   mobXpReward,
-  rollMobDrops,
+  dropRollsNeededForTable,
+  mobDropRulesOfKind,
+  mobDropTableOfKind,
+  mobExperienceRuleOfKind,
+  rollMobTable,
   type MobDrop,
   type MobDropRule,
   type MobKill,
-  ZOMBIE_DROPS,
-  ZOMBIE_XP_REWARD,
+  type MobAge,
+  type MobExperienceContext,
+  type MobSize,
 } from '../mob/mob-drop.js'
 
 // ---------------------------------------------------------------------------
@@ -654,41 +653,16 @@ export const passivePopulation = <S>(roster: EntityManagerApi<S>): Effect.Effect
  */
 const SLAIN_WITHOUT_LOOTING: MobKill = { _tag: 'Slain', lootingLevel: 0 }
 
-const NO_DROP_RULES: ReadonlyArray<MobDropRule> = []
-
-/**
- * The loot table for a kind.
- *
- * A table in the rules tier, which is where mob identity lives (plan.md §3.11).
- * `../mob/mob-drop` also holds a ghast's; it is not here because no `EntityKind`
- * in this build spawns one. Blaze is wired because the Nether ecosystem does
- * spawn `BLAZE_KIND`.
- */
+/** Resolve the table-backed drops for any kernel entity kind. */
 export const dropRulesOfKind = (kind: EntityKind): ReadonlyArray<MobDropRule> =>
-  kind === CREEPER_KIND
-    ? CREEPER_DROPS
-    : kind === ZOMBIE_KIND
-      ? ZOMBIE_DROPS
-      : kind === ENDERMAN_KIND
-        ? ENDERMAN_DROPS
-        : kind === BLAZE_KIND
-          ? BLAZE_DROPS
-          : NO_DROP_RULES
+  mobDropRulesOfKind(kind)
 
-/** Experience granted when the player kills one runtime-supported hostile. */
+/** The adult base XP value; variable rules are resolved with casualty context. */
 export const xpRewardOfKind = (kind: EntityKind): number =>
-  kind === CREEPER_KIND
-    ? CREEPER_XP_REWARD
-    : kind === ZOMBIE_KIND
-      ? ZOMBIE_XP_REWARD
-      : kind === ENDERMAN_KIND
-        ? ENDERMAN_XP_REWARD
-        : kind === BLAZE_KIND
-          ? BLAZE_XP_REWARD
-          : 0
+  mobExperienceRuleOfKind(kind).adult.min
 
-/** How many rolls `rollDropsOfKind` will consume for this kind. Two per drop line — a chance and a count. */
-export const dropRollsNeeded = (kind: EntityKind): number => dropRulesOfKind(kind).length * 2
+export const dropRollsNeeded = (kind: EntityKind): number =>
+  dropRollsNeededForTable(mobDropTableOfKind(kind))
 
 /**
  * Roll a kind's loot from a flat array of rolls.
@@ -705,11 +679,7 @@ export const rollDropsOfKind = (
   kind: EntityKind,
   kill: MobKill,
   rolls: ReadonlyArray<number>,
-): ReadonlyArray<MobDrop> =>
-  rollMobDrops(dropRulesOfKind(kind), kill, (index) => ({
-    chance: rolls[index * 2] ?? 0,
-    count: rolls[index * 2 + 1] ?? 0,
-  }))
+): ReadonlyArray<MobDrop> => rollMobTable(mobDropTableOfKind(kind), kill, rolls)
 
 /**
  * The host's `BehaviourRepair` — the function mc-sim's load path delegates to
@@ -948,7 +918,7 @@ export type Blast = {
 }
 
 /** The causes that permit experience for a mob casualty. */
-export type MobKillCredit = 'player' | 'player-triggered-tnt'
+export type MobKillCredit = 'player' | 'player-triggered-tnt' | 'tamed-wolf'
 
 /** WCC metadata carried beside the behavior that mc-sim owns. */
 export type MobEntity = Entity<MobBehaviour> & Readonly<{
@@ -969,9 +939,29 @@ export type MobCasualty = Readonly<{
   killCredit?: MobKillCredit
   lastHitTick?: SimulationTickValue
   deathTick?: SimulationTickValue
+  age?: MobAge
+  size?: MobSize
+  burning?: boolean
+  killedByChargedCreeper?: boolean
+  experienceRoll?: number
+  undroppedEquipmentCount?: number
+  equipmentXpRolls?: ReadonlyArray<number>
+  firstDragonDeath?: boolean
 }>
 
 export const MOB_EXPERIENCE_CREDIT_WINDOW_TICKS = 100
+
+const hasRecentPlayerCredit = (
+  casualty: Pick<MobCasualty, 'killCredit' | 'lastHitTick' | 'deathTick'>,
+): boolean =>
+  casualty.killCredit === 'player-triggered-tnt' ||
+  (
+    (casualty.killCredit === 'player' || casualty.killCredit === 'tamed-wolf') &&
+    casualty.lastHitTick !== undefined &&
+    casualty.deathTick !== undefined &&
+    casualty.deathTick >= casualty.lastHitTick &&
+    casualty.deathTick - casualty.lastHitTick <= MOB_EXPERIENCE_CREDIT_WINDOW_TICKS
+  )
 
 type RecentMobHit = Readonly<{
   killCredit: Exclude<MobKillCredit, 'player-triggered-tnt'>
@@ -2138,17 +2128,28 @@ export const experienceOfCasualties = (
   casualties: ReadonlyArray<MobCasualty>,
 ): ReadonlyArray<MobExperienceEvent> =>
   casualties.flatMap((casualty) => {
-    const hasRecentCredit =
-      casualty.killCredit === 'player-triggered-tnt' ||
-      (
-        casualty.killCredit === 'player' &&
-        casualty.lastHitTick !== undefined &&
-        casualty.deathTick !== undefined &&
-        casualty.deathTick >= casualty.lastHitTick &&
-        casualty.deathTick - casualty.lastHitTick <= MOB_EXPERIENCE_CREDIT_WINDOW_TICKS
-      )
-    if (!hasRecentCredit) return []
-    const amount = mobXpReward(SLAIN_WITHOUT_LOOTING, xpRewardOfKind(casualty.kind))
+    const rule = mobExperienceRuleOfKind(casualty.kind)
+    if (rule.playerKillRequired !== false && !hasRecentPlayerCredit(casualty)) return []
+    const context: MobExperienceContext = {
+      ...(casualty.age === undefined ? {} : { age: casualty.age }),
+      ...(casualty.size === undefined ? {} : { size: casualty.size }),
+      ...(casualty.undroppedEquipmentCount === undefined
+        ? {}
+        : { undroppedEquipmentCount: casualty.undroppedEquipmentCount }),
+      ...(casualty.equipmentXpRolls === undefined
+        ? {}
+        : { equipmentRolls: casualty.equipmentXpRolls }),
+      ...(casualty.firstDragonDeath === undefined
+        ? {}
+        : { firstDragonDeath: casualty.firstDragonDeath }),
+    }
+    // Stages do not yet supply this roll; zero selects the range minimum at runtime.
+    const amount = mobXpReward(
+      SLAIN_WITHOUT_LOOTING,
+      rule,
+      casualty.experienceRoll ?? 0,
+      context,
+    )
     return amount <= 0
       ? []
       : [{ source: casualty.id, kind: casualty.kind, at: casualty.at, amount }]
@@ -2180,8 +2181,19 @@ export const rollCasualtyDrops = (
   for (const casualty of casualties) {
     const batch = drawRolls(current, dropRollsNeeded(casualty.kind))
     current = batch.seed
+    const playerKill = hasRecentPlayerCredit(casualty)
+    const kill: MobKill = {
+      ...SLAIN_WITHOUT_LOOTING,
+      playerKill,
+      ...(casualty.age === undefined ? {} : { age: casualty.age }),
+      ...(casualty.size === undefined ? {} : { size: casualty.size }),
+      ...(casualty.burning === undefined ? {} : { burning: casualty.burning }),
+      ...(casualty.killedByChargedCreeper === undefined
+        ? {}
+        : { killedByChargedCreeper: casualty.killedByChargedCreeper }),
+    }
     drops.push(
-      ...rollDropsOfKind(casualty.kind, SLAIN_WITHOUT_LOOTING, batch.rolls).map((drop) => ({
+      ...rollDropsOfKind(casualty.kind, kill, batch.rolls).map((drop) => ({
         ...drop,
         source: casualty.id,
         kind: casualty.kind,

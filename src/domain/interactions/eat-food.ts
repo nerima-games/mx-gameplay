@@ -1,6 +1,12 @@
-import type { ItemType } from '@nerima-games/mc-kernel'
+import {
+  foodDefinitionOf,
+  VANILLA_FOOD_DEFINITIONS,
+  type FoodDefinition,
+  type FoodStatusEffectName,
+  type ItemType,
+} from '@nerima-games/mc-kernel'
 import type { PlayerVitals } from '../in-memory-vitals.js'
-import type { StatusEffectApplication } from '../status-effect.js'
+import type { StatusEffectApplication, StatusEffectType } from '../status-effect.js'
 
 /** Nutrition passed to the vitals service after an item has been consumed. */
 export type FoodProperties = {
@@ -8,16 +14,48 @@ export type FoodProperties = {
   readonly saturationModifier: number
 }
 
-/** Foods currently understood by gameplay. Missing items are not food. */
-export const FOOD_PROPERTIES: Readonly<Partial<Record<ItemType, FoodProperties>>> = {
-  potato: { foodPoints: 1, saturationModifier: 0.6 },
-  rotten_flesh: { foodPoints: 4, saturationModifier: 0.1 },
-  cod: { foodPoints: 2, saturationModifier: 0.1 },
-  salmon: { foodPoints: 2, saturationModifier: 0.1 },
-  tropical_fish: { foodPoints: 1, saturationModifier: 0.1 },
-  pufferfish: { foodPoints: 1, saturationModifier: 0.1 },
-  spider_eye: { foodPoints: 2, saturationModifier: 0.8 },
+const foodPropertiesOf = (food: FoodDefinition): FoodProperties => ({
+  foodPoints: food.nutrition,
+  saturationModifier: food.saturation / (2 * food.nutrition),
+})
+
+/** Food values follow the kernel's canonical vanilla definitions. */
+const foodProperties: Partial<Record<ItemType, FoodProperties>> = {}
+for (const definition of VANILLA_FOOD_DEFINITIONS) {
+  foodProperties[definition.item] = foodPropertiesOf(definition)
 }
+export const FOOD_PROPERTIES: Readonly<Partial<Record<ItemType, FoodProperties>>> = foodProperties
+
+const STATUS_EFFECT_TYPE_BY_FOOD_NAME: Readonly<Partial<Record<FoodStatusEffectName, StatusEffectType>>> = {
+  hunger: 'hunger',
+  nausea: 'nausea',
+  poison: 'poison',
+  regeneration: 'regeneration',
+}
+
+const statusEffectTypeOf = (name: FoodStatusEffectName): StatusEffectType | undefined =>
+  STATUS_EFFECT_TYPE_BY_FOOD_NAME[name]
+
+const effectsOfFood = (
+  food: FoodDefinition,
+  effectRoll: number,
+): ReadonlyArray<StatusEffectApplication> => food.effects.flatMap<StatusEffectApplication>((effect) => {
+  if (effect.chance < 1 && !(effectRoll < effect.chance)) {
+    return []
+  }
+
+  if (effect.kind === 'remove') {
+    return [{ type: effect.name, durationSecs: 0 }]
+  }
+  if (effect.kind === 'teleport') {
+    return []
+  }
+
+  const type = statusEffectTypeOf(effect.name)
+  return type === undefined
+    ? []
+    : [{ type, amplifier: effect.amplifier, durationSecs: effect.durationSecs }]
+})
 
 export type FoodUseRequest = {
   readonly held: ItemType
@@ -42,26 +80,19 @@ export const resolveFoodUse = ({ held, vitals, effectRoll = 1 }: FoodUseRequest)
     return { _tag: 'dead' }
   }
 
-  const food = FOOD_PROPERTIES[held]
-  if (food === undefined) {
+  const definition = foodDefinitionOf(held)
+  if (definition === undefined) {
     return { _tag: 'notFood' }
   }
 
-  if (vitals.hungerPoints >= vitals.maxHungerPoints) {
+  if (!definition.canAlwaysEat && vitals.hungerPoints >= vitals.maxHungerPoints) {
     return { _tag: 'full' }
   }
 
-  const effects: ReadonlyArray<StatusEffectApplication> = held === 'pufferfish'
-    ? [
-        { type: 'poison', amplifier: 3, durationSecs: 60 },
-        { type: 'hunger', amplifier: 2, durationSecs: 15 },
-        { type: 'nausea', amplifier: 0, durationSecs: 15 },
-      ]
-    : held === 'spider_eye'
-      ? [{ type: 'poison', amplifier: 0, durationSecs: 5 }]
-    : held === 'rotten_flesh' && effectRoll < 0.8
-      ? [{ type: 'hunger', amplifier: 0, durationSecs: 30 }]
-      : []
-
-  return { _tag: 'consume', count: 1, effects, ...food }
+  return {
+    _tag: 'consume',
+    count: 1,
+    effects: effectsOfFood(definition, effectRoll),
+    ...foodPropertiesOf(definition),
+  }
 }
