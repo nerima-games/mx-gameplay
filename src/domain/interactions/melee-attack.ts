@@ -23,7 +23,7 @@ import {
   type PlayerPose,
   type StorageLocation,
 } from '@nerima-games/mc-sim'
-import { Result, Schema } from 'effect'
+import { Brand, Result, Schema } from 'effect'
 import { HOSTILE_KINDS, type MobBehaviour } from '../entities/mob-frame.js'
 import {
   DamageImmunityStateSchema,
@@ -107,12 +107,19 @@ export const DEFAULT_MELEE_ATTACK_SPEED = 4
 export const MELEE_ATTACK_COOLDOWN_TICKS_PER_SECOND = 20
 export const MIN_ATTACK_COOLDOWN_FOR_CRITICAL = 0.848
 
+type MeleeCooldownTicksValue = Brand.Brand<'MeleeCooldownTicks'>
+export type MeleeCooldownTicks = number & MeleeCooldownTicksValue
+
+export const MeleeCooldownTicksSchema: Schema.Codec<MeleeCooldownTicks, number> = Schema.Int
+  .check(Schema.isGreaterThanOrEqualTo(0))
+  .pipe(Schema.brand('MeleeCooldownTicks'))
+
 const MeleeAttackCooldownInputSchema: Schema.ConstraintDecoder<{
   attackSpeed: number
-  ticksSinceLastAttack: number
+  ticksSinceLastAttack: MeleeCooldownTicks
 }> = Schema.Struct({
   attackSpeed: Schema.Finite.check(Schema.isGreaterThan(0)),
-  ticksSinceLastAttack: SimulationTickSchema,
+  ticksSinceLastAttack: MeleeCooldownTicksSchema,
 })
 
 export const MeleeAttackCooldownSchema: Schema.ConstraintDecoder<{
@@ -261,7 +268,7 @@ export const prepareMeleeAttack = (
     entities: ReadonlyArray<Entity<MobBehaviour>>
     heldItem: ItemType | null
     critical: boolean
-    ticksSinceLastAttack: number
+    ticksSinceLastAttack: MeleeCooldownTicks
     targetDamageState: DamageImmunityState | null
     blockDistance?: AttackRangeDistance
   }>,

@@ -1,5 +1,5 @@
 import { DamageAmountSchema } from '@nerima-games/mc-kernel'
-import { Result, Schema } from 'effect'
+import { Brand, Result, Schema } from 'effect'
 import type { SurvivalDifficulty } from '../survival-hunger.js'
 
 const DifficultySchema = Schema.Literals(['peaceful', 'easy', 'normal', 'hard'])
@@ -9,14 +9,17 @@ const DifficultyDamageInputSchema = Schema.Struct({
   difficulty: DifficultySchema,
 })
 
-export const DifficultyDamageResultSchema: Schema.ConstraintDecoder<number> = Schema.Finite.check(
+type DifficultyScaledDamageValue = Brand.Brand<'DifficultyScaledDamage'>
+export type DifficultyScaledDamage = number & DifficultyScaledDamageValue
+
+export const DifficultyDamageResultSchema: Schema.Codec<DifficultyScaledDamage, number> = Schema.Finite.check(
   Schema.isGreaterThanOrEqualTo(0),
-)
+).pipe(Schema.brand('DifficultyScaledDamage'))
 
 export type DifficultyDamageError = 'invalid-input' | 'invalid-result'
 
-export const difficultyDamageAmount = (
-  amount: number,
+const difficultyDamageAmount = (
+  amount: Schema.Schema.Type<typeof DamageAmountSchema>,
   difficulty: SurvivalDifficulty,
 ): number => {
   if (difficulty === 'peaceful') return 0
@@ -27,7 +30,7 @@ export const difficultyDamageAmount = (
 
 export const scaleDifficultyDamage = (
   input: unknown,
-): Result.Result<number, DifficultyDamageError> => {
+): Result.Result<DifficultyScaledDamage, DifficultyDamageError> => {
   const decoded = Schema.decodeUnknownResult(DifficultyDamageInputSchema, {
     onExcessProperty: 'error',
   })(input)

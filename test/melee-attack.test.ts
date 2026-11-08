@@ -4,11 +4,12 @@ import * as FastCheck from 'fast-check'
 import { AttackRangeDistance, EntityHealthPoints, EntityId, SimulationTickSchema } from '@nerima-games/mc-kernel'
 import { type Entity } from '@nerima-games/mc-sim'
 import { position as atPosition } from './support/coordinate-fixtures'
-import { ZOMBIE_KIND } from '../src/domain/mob/hostile-combat'
+import { DamageImmunityStateSchema, ZOMBIE_KIND } from '../src/domain/mob/hostile-combat'
 import {
   DEFAULT_MELEE_ATTACK_SPEED,
   MELEE_ATTACK_COOLDOWN_TICKS_PER_SECOND,
   MIN_ATTACK_COOLDOWN_FOR_CRITICAL,
+  MeleeCooldownTicksSchema,
   MeleeAttackPreparationSchema,
   meleeAttackCooldown,
   meleeAttackCooldownForItem,
@@ -33,6 +34,15 @@ const zombie: Entity<MobBehaviour> = {
   healthPoints: EntityHealthPoints(20),
   behaviour: undefined,
 }
+
+const meleeCooldownTicks = (value: number) =>
+  Result.getOrThrow(Schema.decodeUnknownResult(MeleeCooldownTicksSchema)(value))
+
+const damageImmunityState = (lastDamageTick: number, lastDamageAmount: number) =>
+  Schema.decodeUnknownSync(DamageImmunityStateSchema)({
+    lastDamageTick: Schema.decodeUnknownSync(SimulationTickSchema)(lastDamageTick),
+    lastDamageAmount,
+  })
 
 describe('melee attack damage', () => {
   it('uses unarmed damage for empty hands and ranged items', () => {
@@ -116,7 +126,7 @@ describe('C2 melee preparation', () => {
     entities: [zombie],
     heldItem: 'iron_sword' as const,
     critical: false,
-    ticksSinceLastAttack: 12,
+    ticksSinceLastAttack: meleeCooldownTicks(12),
     targetDamageState: null,
   }
 
@@ -141,12 +151,12 @@ describe('C2 melee preparation', () => {
     const belowThreshold = prepareMeleeAttack(intent, {
       ...input,
       critical: true,
-      ticksSinceLastAttack: 10,
+      ticksSinceLastAttack: meleeCooldownTicks(10),
     })
     const aboveThreshold = prepareMeleeAttack(intent, {
       ...input,
       critical: true,
-      ticksSinceLastAttack: 11,
+      ticksSinceLastAttack: meleeCooldownTicks(11),
     })
 
     expect(MIN_ATTACK_COOLDOWN_FOR_CRITICAL).toBe(0.848)
@@ -168,20 +178,14 @@ describe('C2 melee preparation', () => {
     const ignored = prepareMeleeAttack(intent, {
       ...input,
       tick: Schema.decodeUnknownSync(SimulationTickSchema)(20),
-      targetDamageState: {
-        lastDamageTick: Schema.decodeUnknownSync(SimulationTickSchema)(11),
-        lastDamageAmount: 6,
-      },
+      targetDamageState: damageImmunityState(11, 6),
     })
     const stronger = prepareMeleeAttack(intent, {
       ...input,
       tick: Schema.decodeUnknownSync(SimulationTickSchema)(20),
       heldItem: 'netherite_axe',
-      ticksSinceLastAttack: 20,
-      targetDamageState: {
-        lastDamageTick: Schema.decodeUnknownSync(SimulationTickSchema)(11),
-        lastDamageAmount: 8,
-      },
+      ticksSinceLastAttack: meleeCooldownTicks(20),
+      targetDamageState: damageImmunityState(11, 8),
     })
 
     expect(Result.isFailure(ignored) && ignored.failure).toBe('target-invulnerable')
@@ -207,6 +211,30 @@ describe('C2 melee preparation', () => {
     const wrongIntent = prepareMeleeAttack({ _tag: 'BowAction', actor, action: 'draw' } as never, input)
 
     expect(Result.isFailure(wrongIntent) && wrongIntent.failure).toBe('invalid-intent')
+  })
+
+  it('rejects malformed authoritative state before selecting a target', () => {
+    const missingEntities = { ...input }
+    Reflect.set(missingEntities, 'entities', undefined)
+    const invalidTick = { ...input }
+    Reflect.set(invalidTick, 'tick', -1)
+    const invalidPose = { ...input }
+    Reflect.set(invalidPose, 'pose', null)
+    const invalidEntity = { ...input }
+    Reflect.set(invalidEntity, 'entities', [null])
+
+    expect(prepareMeleeAttack(intent, missingEntities)).toStrictEqual(
+      Result.fail('invalid-authoritative-state'),
+    )
+    expect(prepareMeleeAttack(intent, invalidTick)).toStrictEqual(
+      Result.fail('invalid-authoritative-state'),
+    )
+    expect(prepareMeleeAttack(intent, invalidPose)).toStrictEqual(
+      Result.fail('invalid-authoritative-state'),
+    )
+    expect(prepareMeleeAttack(intent, invalidEntity)).toStrictEqual(
+      Result.fail('invalid-authoritative-state'),
+    )
   })
 
   it('returns no-target when no hostile entities are in the authoritative roster', () => {

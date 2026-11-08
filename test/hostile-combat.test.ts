@@ -148,6 +148,9 @@ describe('player damage resolution', () => {
     expect(scaleHostileDamageForDifficulty({ amount: 6, difficulty: 'hard' })).toStrictEqual(
       Result.succeed(9),
     )
+    expect(scaleHostileDamageForDifficulty({ amount: Number.MAX_VALUE, difficulty: 'hard' })).toStrictEqual(
+      Result.fail('invalid-result'),
+    )
   })
 
   it('emits zombie contact damage once per cooldown interval', () => {

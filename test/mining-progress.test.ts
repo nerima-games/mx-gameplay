@@ -176,6 +176,12 @@ describe('mining duration', () => {
           requirement,
         ),
       ).toBe(2)
+      expect(
+        effectiveMiningSpeed(
+          { ...WOODEN_PICKAXE_MINING_TOOL, speedMultiplier: 0 },
+          requirement,
+        ),
+      ).toBe(HAND_MINING_TOOL.speedMultiplier)
     }),
   )
 
