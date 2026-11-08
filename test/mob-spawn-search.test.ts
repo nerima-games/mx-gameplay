@@ -672,6 +672,43 @@ describe('what the search reads', () => {
     }),
   )
 
+  it.effect('counts malformed chunk dimensions and missing biome data as unreadable', () =>
+    Effect.gen(function* () {
+      const readableBlocks = new Uint16Array(CHUNK_HEIGHT * 256)
+      const readableBiomes = Array.from({ length: 256 }, () => 'PLAINS' as const)
+      const missingBiome = new Proxy(readableBiomes, {
+        get: (target, property, receiver) => typeof property === 'string' && Number.isInteger(Number(property))
+          ? undefined
+          : Reflect.get(target, property, receiver),
+      })
+      const malformedChunks: ReadonlyArray<(coord: ReadonlyChunk['coord']) => ReadonlyChunk> = [
+        (coord) => ({ coord, blocks: readableBlocks, biomes: [] }),
+        (coord) => ({
+          coord,
+          blocks: readableBlocks,
+          biomes: missingBiome,
+        }),
+        (coord) => ({
+          coord,
+          blocks: new Uint16Array(CHUNK_HEIGHT * 256 - 1),
+          biomes: readableBiomes,
+        }),
+      ]
+
+      for (const chunkForCoord of malformedChunks) {
+        const store = yield* makeChunkStoreDouble(FLOORED_WORLD, RESIDENT_CHUNKS)
+        const api: ChunkStoreApi = {
+          ...store.api,
+          peek: (coord) => Effect.succeed(chunkForCoord(coord)),
+        }
+        const found = yield* searchSpawnCandidates(api, PLAYER, MIDNIGHT, RandomSeed(7))
+
+        expect(found.attempts).toStrictEqual([])
+        expect(found.unreadable).toBe(SPAWN_RING_CELLS)
+      }
+    }),
+  )
+
   it.effect('costs a stated number of store calls, which is what makes the cadence checkable', () =>
     Effect.gen(function* () {
       // Each sampled column comes from a cached chunk snapshot; one selected

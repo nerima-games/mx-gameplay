@@ -213,11 +213,6 @@ export const searchSpawnCandidates = (
         const z = Math.floor(target.z + radius * Math.sin(angle))
 
         const distanceToPlayerBlocksXZ = Math.hypot(x - target.x, z - target.z)
-        if (
-          distanceToPlayerBlocksXZ < MIN_SPAWN_DISTANCE_BLOCKS ||
-          distanceToPlayerBlocksXZ > MAX_SPAWN_DISTANCE_BLOCKS
-        ) continue
-
         const probeAt = at(x, 0, z)
         if (probeAt === undefined) {
           unreadable += 1
