@@ -51,6 +51,7 @@ import {
   type MobSpawnAttempt,
 } from '../../src/domain/entities/mob-frame'
 import { CREEPER_FUSE_SECS } from '../../src/domain/mob/creeper-fuse'
+import { COW_KIND } from '../../src/domain/mob/mob-ecosystem'
 import { ZOMBIE_KIND } from '../../src/domain/mob/hostile-combat'
 import { DroppedItemOwnerSnapshotSchema } from '../../src/domain/entities/dropped-item'
 import { FIRE_TICK_INTERVAL_SECS } from '../../src/domain/fire-lifecycle'
@@ -213,6 +214,22 @@ describe('cross-area gameplay scenarios through gameplayStages', () => {
     }),
   )
 
+  it.effect('breaking oak leaves can drop an apple through gameplay stages', () =>
+    Effect.gen(function* () {
+      const leaves = blockPosition(0, 64, 0)
+      const rig = yield* makeSlice([[leaves, registeredBlock('oak_leaves')]])
+      yield* Ref.set(rig.state.rollSeed, 133)
+
+      yield* requestBlockBreak(rig.state, leaves, {})
+      yield* runFrame(rig.stages)
+
+      const storage = yield* storageSnapshot(rig.commit)
+      expect(countItem(storage.state.inventory.slots, 'apple')).toBe(1)
+      expect(yield* rig.store.blockAt(leaves)).toBeUndefined()
+      expect(yield* Ref.get(rig.state.rollSeed)).not.toBe(133)
+    }),
+  )
+
   it.effect('X-02 blasts sand support, drops mob loot, and settles sand through gameplay stages', () =>
     Effect.gen(function* () {
       const blast = blockPosition(5, 64, 5)
@@ -264,6 +281,12 @@ describe('cross-area gameplay scenarios through gameplayStages', () => {
         healthPoints: EntityHealthPoints(1),
         behaviour: hostileMobSnapshot(undefined),
       })
+      yield* roster.api.spawn({
+        kind: COW_KIND,
+        feetPosition: position(blast.x + 1, blast.y, blast.z),
+        healthPoints: EntityHealthPoints(1),
+        behaviour: initialBehaviourOfKind(COW_KIND),
+      })
       yield* syncEntityOwner(commit.coordinator, roster)
       yield* Ref.set(state.rollSeed, 3)
 
@@ -274,8 +297,11 @@ describe('cross-area gameplay scenarios through gameplayStages', () => {
       expect(yield* store.blockAt(sandSupport)).toBe(SAND)
       expect(yield* store.blockAt(sandAt)).toBeUndefined()
       expect(entities.state.entities.some(({ kind }) => kind === ZOMBIE_KIND)).toBe(false)
-      expect(dropped.state.items).toHaveLength(1)
-      expect(dropped.state.items[0]?.behaviour).toMatchObject({ item: 'rotten_flesh', count: 1 })
+      expect(entities.state.entities.some(({ kind }) => kind === COW_KIND)).toBe(false)
+      expect(dropped.state.items).toEqual(expect.arrayContaining([
+        expect.objectContaining({ behaviour: expect.objectContaining({ item: 'rotten_flesh', count: 1 }) }),
+        expect.objectContaining({ behaviour: expect.objectContaining({ item: 'beef', count: expect.any(Number) }) }),
+      ]))
 
       yield* runFrames(stages, 3)
       expect(yield* store.blockAt(floor)).toBe(STONE)

@@ -1,5 +1,5 @@
 import { describe, expect, it } from '@effect/vitest'
-import { Effect, Option, Result } from 'effect'
+import { Effect, Option, Ref, Result } from 'effect'
 import {
   AttackRangeDistance,
   blockIdOf,
@@ -18,6 +18,8 @@ import {
 } from '@nerima-games/mc-sim'
 import type { MobBehaviour } from '../../src/domain/entities/mob-frame'
 import { CREEPER_KIND } from '../../src/domain/entities/mob-frame'
+import { ZOMBIE_KIND } from '../../src/domain/mob/hostile-combat'
+import { DroppedItemOwnerSnapshotSchema } from '../../src/domain/entities/dropped-item'
 import {
   drainBlockUseResults,
   drainItemUseResults,
@@ -30,6 +32,7 @@ import {
 } from '../../src/stages/registration'
 import {
   GAMEPLAY_ENTITIES_OWNER_ID,
+  GAMEPLAY_DROPPED_ITEMS_OWNER_ID,
   GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
   GAMEPLAY_VITALS_OWNER_ID,
   GameplayEntityRosterSchema,
@@ -137,6 +140,49 @@ describe('item use and combat through gameplay stages', () => {
         GameplayEntityRosterSchema,
       )
       expect(updated.state.entities[0]?.healthPoints).toBe(16)
+    }),
+  )
+
+  it.effect('a player melee kill of a zombie commits mob drops and experience through gameplay stages', () =>
+    Effect.gen(function* () {
+      const zombie: Entity<MobBehaviour> = {
+        id: EntityId('zombie-drop-scenario-target'),
+        kind: ZOMBIE_KIND,
+        feetPosition: position(0, 64 - 0.9, 2),
+        healthPoints: EntityHealthPoints(1),
+        behaviour: undefined,
+      }
+      const entities: EntityRoster<MobBehaviour> = { entities: [zombie], nextSerial: EntitySerial(1) }
+      const slice = yield* makeSlice(undefined, { entities })
+      yield* Ref.set(slice.state.rollSeed, 133)
+
+      yield* requestMeleeAttack(slice.state, {
+        requestId: 'kill-zombie-for-drops',
+        origin: position(0, 64, 0),
+        direction: position(0, 0, 1),
+        reach: AttackRangeDistance(3),
+        damage: 20,
+      })
+      yield* runFrame(slice.stages)
+
+      expect(yield* drainMeleeAttackResults(slice.state)).toMatchObject([{
+        requestId: 'kill-zombie-for-drops',
+        success: true,
+        target: { id: zombie.id },
+      }])
+      expect(yield* Ref.get(slice.state.mobDrops)).toMatchObject([
+        { source: zombie.id, kind: ZOMBIE_KIND, item: 'rotten_flesh' },
+      ])
+      const dropped = yield* slice.commit.coordinator.snapshot(
+        GAMEPLAY_DROPPED_ITEMS_OWNER_ID,
+        DroppedItemOwnerSnapshotSchema,
+      )
+      expect(dropped.state.items).toEqual(expect.arrayContaining([
+        expect.objectContaining({ behaviour: expect.objectContaining({ item: 'rotten_flesh', count: expect.any(Number) }) }),
+      ]))
+      expect(yield* Ref.get(slice.state.mobExperience)).toMatchObject([
+        { source: zombie.id, kind: ZOMBIE_KIND, amount: 5 },
+      ])
     }),
   )
 

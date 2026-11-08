@@ -767,6 +767,18 @@ describe('mob drop tables', () => {
       expect(mobXpReward(SLAIN, zombie, 0.999, {
         undroppedEquipmentCount: 2,
       })).toBe(11)
+      expect(mobXpReward(SLAIN, zombie, 0, {
+        undroppedEquipmentCount: 2,
+        equipmentRolls: [0],
+      })).toBe(7)
+    }),
+  )
+
+  it.effect('uses the respawn dragon experience range and rejects non-finite fixed rewards', () =>
+    Effect.sync(() => {
+      const dragon = mobExperienceRuleOfKind(EntityKind('ender_dragon'))
+      expect(mobXpReward(SLAIN, dragon, 0, { firstDragonDeath: false })).toBe(500)
+      expect(mobXpReward(SLAIN, Number.NaN)).toBe(0)
     }),
   )
 
@@ -872,6 +884,23 @@ describe('mob drop tables', () => {
           count: 1,
         })
       }
+    }),
+  )
+
+  it.effect('a charged creeper can satisfy a player-kill drop without its chance roll', () =>
+    Effect.sync(() => {
+      const chargedOnly = {
+        item: 'rotten_flesh',
+        count: 1,
+        chance: 1 / 3,
+        playerKillOnly: true,
+        chargedCreeperOnly: true,
+      } as const
+      expect(rollMobDrop(chargedOnly, SLAIN, { chance: 0, count: 0 })).toBeUndefined()
+      expect(rollMobDrop(chargedOnly, { ...SLAIN, killedByChargedCreeper: true }, { chance: 1, count: 0 })).toStrictEqual({
+        item: 'rotten_flesh',
+        count: 1,
+      })
     }),
   )
 
