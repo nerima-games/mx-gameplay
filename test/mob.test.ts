@@ -901,6 +901,16 @@ describe('mob drop tables', () => {
         item: 'rotten_flesh',
         count: 1,
       })
+      const unrestricted = {
+        item: 'rotten_flesh',
+        count: 1,
+        playerKillOnly: false,
+        chargedCreeperOnly: false,
+      } as const
+      expect(rollMobDrop(unrestricted, SLAIN, { chance: 1, count: 0 })).toStrictEqual({
+        item: 'rotten_flesh',
+        count: 1,
+      })
     }),
   )
 
