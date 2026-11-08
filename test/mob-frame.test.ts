@@ -1030,6 +1030,39 @@ describe('experienceOfCasualties', () => {
     }),
   )
 
+  it.effect('uses age, size, and dragon respawn casualty context for experience', () =>
+    Effect.sync(() => {
+      const babyCow: MobCasualty = {
+        id: EntityId('e:baby-experience-cow'),
+        kind: COW_KIND,
+        at: ORIGIN,
+        killCredit: 'player-triggered-tnt',
+        age: 'baby',
+      }
+      const smallSlime: MobCasualty = {
+        id: EntityId('e:small-experience-slime'),
+        kind: EntityKind('slime'),
+        at: ORIGIN,
+        killCredit: 'player-triggered-tnt',
+        size: 'small',
+      }
+      const dragon: MobCasualty = {
+        id: EntityId('e:respawned-dragon'),
+        kind: EntityKind('ender_dragon'),
+        at: ORIGIN,
+        firstDragonDeath: false,
+      }
+
+      expect(rollCasualtyExperience([babyCow, smallSlime, dragon], 42)).toStrictEqual({
+        experience: [
+          { source: smallSlime.id, kind: smallSlime.kind, at: ORIGIN, amount: 1 },
+          { source: dragon.id, kind: dragon.kind, at: ORIGIN, amount: 500 },
+        ],
+        seed: 42,
+      })
+    }),
+  )
+
   it.effect('requires a player hit in the last 100 ticks or player-triggered TNT', () =>
     Effect.sync(() => {
       const atTick = SimulationTick(200)
