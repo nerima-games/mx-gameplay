@@ -972,6 +972,16 @@ describe('mob drop tables', () => {
       expect(rollMobTable(shortVariablePool, SLAIN, makeMobDropRollSequence([]))).toStrictEqual([
         { item: 'rotten_flesh', count: 1 },
       ])
+
+      const zeroCountPool = {
+        rules: [],
+        pools: [{
+          minSelections: 1,
+          maxSelections: 1,
+          choices: [{ item: 'rotten_flesh', weight: 1, count: 0, maxCount: 0 }],
+        }],
+      } as const
+      expect(rollMobTable(zeroCountPool, SLAIN, makeMobDropRollSequence([0, 0]))).toStrictEqual([])
     }),
   )
 

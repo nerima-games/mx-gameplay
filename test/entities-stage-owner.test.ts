@@ -24,6 +24,7 @@ import {
 } from '@nerima-games/mc-kernel'
 import {
   EntityId,
+  EntityKind,
   emptyPlayerStorage,
   equipmentItem,
   makeEntityManager,
@@ -823,6 +824,51 @@ describe('entities stage owner-backed MobSimulation', () => {
     expect(await Effect.runPromise(harness.store.blockAt(centre))).toBeUndefined()
   })
 
+  it('reports unknown mob loot and XP after a successful mob blast commit', async () => {
+    const centre = blockPosition(BlockAxis(0), BlockAxis(64), BlockAxis(0))
+    const creeper = {
+      ...creeperAt(0, 64),
+      behaviour: { _tag: 'Lit' as const, burnedSecs: 1.49 },
+    }
+    const unknownMob = {
+      ...zombieAt(1, 64),
+      id: EntityId('test:unknown-blast-casualty'),
+      kind: EntityKind('unregistered'),
+      healthPoints: EntityHealthPoints(1),
+    }
+    const harness = await Effect.runPromise(makeHarness({
+      entity: null,
+      entities: [creeper, unknownMob],
+      playerPose: {
+        ...INITIAL_PLAYER_POSE,
+        feetPosition: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
+      },
+      block: { position: centre, id: STONE },
+    }))
+    await Effect.runPromise(Ref.set(harness.state.rollSeed, 3))
+
+    await harness.run(makeDeltaTimeSecs(0.02))
+
+    expect(harness.commits()).toBe(1)
+    expect((await Effect.runPromise(strictRoster(harness.coordinator))).state.entities).toStrictEqual([])
+    expect(await Effect.runPromise(Ref.get(harness.state.unsupportedOperations))).toEqual(expect.arrayContaining([
+      {
+        _tag: 'Unsupported',
+        action: 'MobDrop',
+        reason: 'UnknownMobKind',
+        mobKind: 'unregistered',
+      },
+      {
+        _tag: 'Unsupported',
+        action: 'MobExperience',
+        reason: 'UnknownMobKind',
+        mobKind: 'unregistered',
+      },
+    ]))
+    expect(await Effect.runPromise(Ref.get(harness.state.mobDrops))).toStrictEqual([])
+    expect(await Effect.runPromise(Ref.get(harness.state.mobExperience))).toStrictEqual([])
+  })
+
   it('queues XP after a successful mob blast commit when the casualty has recent player credit', async () => {
     const creeper: MobEntity = {
       ...creeperAt(0, 64),
@@ -1175,6 +1221,65 @@ describe('entities stage owner-backed MobSimulation', () => {
 
     expect(await Effect.runPromise(Ref.get(harness.state.rollSeed))).not.toBe(passiveSeed)
     expect(await Effect.runPromise(Ref.get(harness.state.lastHostileSpawnTick))).toBe(HOSTILE_SPAWN_INTERVAL_TICKS)
+  })
+
+  it('commits casualty drops and XP with a passive spawn in the same simulation tick', async () => {
+    const centre = blockPosition(BlockAxis(0), BlockAxis(64), BlockAxis(0))
+    const creeper: MobEntity = {
+      ...creeperAt(0, 64),
+      behaviour: { _tag: 'Lit', burnedSecs: 1.49 },
+    }
+    const zombie: MobEntity = {
+      ...zombieAt(1, 64),
+      healthPoints: EntityHealthPoints(1),
+      killCredit: 'player',
+      lastHitTick: SimulationTick(0),
+    }
+    const playerPose = {
+      ...INITIAL_PLAYER_POSE,
+      feetPosition: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
+    }
+    const harness = await Effect.runPromise(makeHarness({
+      entity: null,
+      entities: [creeper, zombie],
+      playerPose,
+      block: { position: centre, id: STONE },
+    }))
+    await Effect.runPromise(Ref.set(harness.state.rollSeed, 3))
+    await Effect.runPromise(harness.context.time.setTimeOfDay(InterpolationFraction(0.5)))
+    await Effect.runPromise(requestMobSpawn(harness.state, {
+      candidate: {
+        groundBlock: STONE,
+        footBlock: AIR_BLOCK_ID,
+        headBlock: AIR_BLOCK_ID,
+        blockLight: 0,
+        skyLight: SkyLightLevel(0),
+        biome: 'PLAINS',
+        timeOfDay: 0.5,
+        distanceToPlayerBlocksXZ: 30,
+      },
+      kind: COW_KIND,
+      feetPosition: position(PositionAxis(30), PositionAxis(64), PositionAxis(0)),
+    }))
+
+    await harness.run(makeDeltaTimeSecs(0.02))
+
+    const roster = await Effect.runPromise(strictRoster(harness.coordinator))
+    const outputs = await Effect.runPromise(Effect.all({
+      drops: Ref.get(harness.state.mobDrops),
+      experience: Ref.get(harness.state.mobExperience),
+      lastPassiveSpawnTick: Ref.get(harness.state.lastPassiveSpawnTick),
+      passiveInitialSpawnPending: Ref.get(harness.state.passiveInitialSpawnPending),
+    }))
+    expect(harness.commits()).toBe(1)
+    expect(roster.state.entities.some(({ kind }) =>
+      kind === 'cow' || kind === 'pig' || kind === 'sheep' || kind === 'chicken',
+    )).toBe(true)
+    expect(roster.state.entities.some(({ id }) => id === zombie.id)).toBe(false)
+    expect(outputs.drops).toMatchObject([{ item: 'rotten_flesh', count: 1 }])
+    expect(outputs.experience).toMatchObject([{ source: zombie.id, amount: 5 }])
+    expect(outputs.lastPassiveSpawnTick).toBe(1)
+    expect(outputs.passiveInitialSpawnPending).toBe(false)
   })
 
   it('merges an offered spawn ahead of the cadence search and drains the offered attempt', async () => {
@@ -2092,12 +2197,19 @@ describe('entities stage owner-backed MobSimulation', () => {
     const centre = blockPosition(BlockAxis(0), BlockAxis(64), BlockAxis(0))
     const tntId = EntityId('test:tnt-with-loot')
     const zombie = { ...zombieAt(1, 64), healthPoints: EntityHealthPoints(1) }
+    const unknownMob = {
+      ...zombieAt(1, 64),
+      id: EntityId('test:tnt-unknown-mob'),
+      kind: EntityKind('unregistered'),
+      healthPoints: EntityHealthPoints(1),
+    }
     const playerPose = {
       ...INITIAL_PLAYER_POSE,
       feetPosition: position(PositionAxis(2), PositionAxis(64), PositionAxis(0)),
     }
     const harness = await Effect.runPromise(makeHarness({
-      entity: zombie,
+      entity: null,
+      entities: [zombie, unknownMob],
       playerPose,
       block: { position: centre, id: STONE },
       tnt: {
@@ -2123,6 +2235,7 @@ describe('entities stage owner-backed MobSimulation', () => {
     const outputs = await Effect.runPromise(Effect.all({
       drops: Ref.get(harness.state.mobDrops),
       experience: Ref.get(harness.state.mobExperience),
+      unsupported: Ref.get(harness.state.unsupportedOperations),
     }))
 
     expect(harness.tntCommits()).toBe(1)
@@ -2136,6 +2249,12 @@ describe('entities stage owner-backed MobSimulation', () => {
     expect(player.state.pose.feetPosition.x).not.toBe(playerPose.feetPosition.x)
     expect(outputs.drops).toMatchObject([{ item: 'rotten_flesh', count: 1 }])
     expect(outputs.experience).toStrictEqual([])
+    expect(outputs.unsupported).toContainEqual({
+      _tag: 'Unsupported',
+      action: 'MobExperience',
+      reason: 'UnknownMobKind',
+      mobKind: 'unregistered',
+    })
   })
 
   it('awards XP only for TNT with player ignition provenance and consumes that provenance', async () => {

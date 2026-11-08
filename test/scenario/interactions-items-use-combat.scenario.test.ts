@@ -18,6 +18,7 @@ import {
 } from '@nerima-games/mc-sim'
 import type { MobBehaviour } from '../../src/domain/entities/mob-frame'
 import { CREEPER_KIND } from '../../src/domain/entities/mob-frame'
+import { COW_KIND } from '../../src/domain/mob/mob-ecosystem'
 import { ZOMBIE_KIND } from '../../src/domain/mob/hostile-combat'
 import { DroppedItemOwnerSnapshotSchema } from '../../src/domain/entities/dropped-item'
 import {
@@ -148,12 +149,15 @@ describe('item use and combat through gameplay stages', () => {
       const zombie: Entity<MobBehaviour> = {
         id: EntityId('zombie-drop-scenario-target'),
         kind: ZOMBIE_KIND,
-        feetPosition: position(0, 64 - 0.9, 2),
+        feetPosition: position(0, 64.72, -2),
         healthPoints: EntityHealthPoints(1),
         behaviour: undefined,
       }
       const entities: EntityRoster<MobBehaviour> = { entities: [zombie], nextSerial: EntitySerial(1) }
-      const slice = yield* makeSlice(undefined, { entities })
+      const slice = yield* makeSlice(undefined, {
+        entities,
+        playerPose: { feetPosition: position(0, 64, 0), yawRadians: 0, pitchRadians: 0 },
+      })
       yield* Ref.set(slice.state.rollSeed, 133)
 
       yield* requestMeleeAttack(slice.state, {
@@ -183,6 +187,50 @@ describe('item use and combat through gameplay stages', () => {
       expect(yield* Ref.get(slice.state.mobExperience)).toMatchObject([
         { source: zombie.id, kind: ZOMBIE_KIND, amount: 5 },
       ])
+    }),
+  )
+
+  it.effect('a wooden-sword melee casualty drops raw beef from the prepared damage result', () =>
+    Effect.gen(function* () {
+      const cow: Entity<MobBehaviour> = {
+        id: EntityId('cow-drop-scenario-target'),
+        kind: COW_KIND,
+        feetPosition: position(0, 64.72, -2),
+        healthPoints: EntityHealthPoints(3),
+        behaviour: undefined,
+      }
+      const entities: EntityRoster<MobBehaviour> = { entities: [cow], nextSerial: EntitySerial(1) }
+      const slots = [...inventorySlots()]
+      slots[0] = Result.getOrThrow(itemStack('wooden_sword', 1))
+      const slice = yield* makeSlice(slots, {
+        entities,
+        playerPose: { feetPosition: position(0, 64, 0), yawRadians: 0, pitchRadians: 0 },
+      })
+      yield* Ref.set(slice.state.rollSeed, 3)
+
+      yield* requestMeleeAttack(slice.state, {
+        requestId: 'kill-cow-with-prepared-sword-damage',
+        origin: position(0, 64, 0),
+        direction: position(0, 0, 1),
+        reach: AttackRangeDistance(3),
+        damage: 1,
+        toolLocation: { _tag: 'Inventory', slotIndex: 0 },
+      })
+      yield* runFrame(slice.stages)
+
+      expect(yield* drainMeleeAttackResults(slice.state)).toMatchObject([{
+        requestId: 'kill-cow-with-prepared-sword-damage',
+        success: true,
+        target: { id: cow.id },
+      }])
+      expect((yield* slice.commit.coordinator.snapshot(
+        GAMEPLAY_ENTITIES_OWNER_ID,
+        GameplayEntityRosterSchema,
+      )).state.entities).toStrictEqual([])
+      const drops = yield* Ref.get(slice.state.mobDrops)
+      expect(drops.some(({ source, kind, item, count }) =>
+        source === cow.id && kind === COW_KIND && item === 'beef' && count > 0,
+      )).toBe(true)
     }),
   )
 

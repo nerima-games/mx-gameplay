@@ -1,6 +1,6 @@
 import { describe, expect, it } from '@effect/vitest'
 import { Effect, Option, Ref, Schema } from 'effect'
-import { AIR_BLOCK_ID, BlockAxis, ChunkAxis, EntityHealthPoints, InterpolationFraction, PositionAxis, blockIdOf, blockPosition, chunkCoord, position } from '@nerima-games/mc-kernel'
+import { AIR_BLOCK_ID, BlockAxis, EntityHealthPoints, InterpolationFraction, PositionAxis, blockIdOf, blockPosition, position } from '@nerima-games/mc-kernel'
 import { PlayerServiceSnapshotSchema, PlayerStorageSnapshotSchema } from '@nerima-games/mc-sim'
 import { TickCountSchema } from '@nerima-games/mc-sim/testing'
 import { cellKey, chunkKey, chunkOf } from '../src/domain/in-memory-world.js'
@@ -8,6 +8,7 @@ import {
   BALANCE_HARNESS_TICKS_PER_SECOND,
   countPlayerStorageItem,
   makeBalanceGameplayRuntime,
+  makeGeneratedBalanceGameplayRuntime,
   movePlayer,
   runBalanceHarness,
   setBlockBreakRequest,
@@ -132,6 +133,7 @@ describe('balance simulation runner', () => {
     }))
 
     const report = buildBalanceReport([first, second], 'shelter')
+    const firstNightEndSeconds = balanceDayBoundaries().firstNightEndTick / BALANCE_HARNESS_TICKS_PER_SECOND
     const firstLog = report.goals.find((goal) => goal.key === 'firstLog')
     const food = report.goals.find((goal) => goal.key === 'cookedFood')
     const bed = report.goals.find((goal) => goal.key === 'bedByNight1')
@@ -197,9 +199,9 @@ describe('balance simulation runner', () => {
     })
     expect(formatBalanceTable(report)).toContain('| Bed by end of first night')
     expect(formatBalanceTable(report)).toContain('actual path not exercised for crafting')
-    expect(formatBalanceTable(report)).toContain('actual path not exercised: animal meat drops are unimplemented')
+    expect(formatBalanceTable(report)).toContain('actual path not exercised: the route does not search animals or crops')
     const table = formatBalanceTable(report)
-    expect(table).toContain('| Bed by end of first night | ≤ 380 s | 0 / 2 | unavailable | unknown')
+    expect(table).toContain(`| Bed by end of first night | ≤ ${firstNightEndSeconds} s | 0 / 2 | unavailable | unknown`)
     expect(table).toContain('50% deaths')
     expect(renderBalanceReport(report)).toContain('"schemaVersion": 1')
     expect(renderBalanceReport(report)).toContain('## Summary')
@@ -386,28 +388,12 @@ describe('balance simulation runner', () => {
   })
 
   it('records hostile damage after a natural night spawn with TimeService and candidate-light provenance', async () => {
-    const grass = Option.getOrThrow(blockIdOf('grass_block'))
-    const blocks = new Map<string, typeof grass>()
-    for (let z = -48; z <= 48; z += 1) {
-      for (let x = -48; x <= 48; x += 1) {
-        blocks.set(cellKey(blockPosition(BlockAxis(x), BlockAxis(63), BlockAxis(z))), grass)
-      }
-    }
-    const loaded = Array.from({ length: 36 }, (_, index) => {
-      const z = Math.floor(index / 6) - 3
-      const x = (index % 6) - 3
-      return chunkKey(chunkCoord(ChunkAxis(x), ChunkAxis(z)))
-    })
-    const runtime = await Effect.runPromise(makeBalanceGameplayRuntime({ blocks, loaded }, {
-      feetPosition: position(PositionAxis(0.5), PositionAxis(64), PositionAxis(0.5)),
-      yawRadians: 0,
-      pitchRadians: 0,
-    }, 7))
-    await Effect.runPromise(runtime.world.time.setTimeOfDay(InterpolationFraction(0.8)))
+    const runtime = await Effect.runPromise(makeGeneratedBalanceGameplayRuntime(7, { x: 0.5, z: 0.5 }, 7))
     const result = await runBalanceHarness<{
       spawns: ReadonlyArray<BalanceMobSpawnRecord>
       damage: ReadonlyArray<BalanceRecordedDamage>
     }>(runtime, 7, Effect.runPromise, (harness) => Effect.gen(function* () {
+      yield* runtime.world.time.setTimeOfDay(InterpolationFraction(0.8))
       yield* harness.step(Schema.decodeUnknownSync(TickCountSchema)(300))
       return {
         spawns: yield* Ref.get(runtime.mobSpawnsByTick),

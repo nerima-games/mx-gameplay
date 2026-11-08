@@ -459,7 +459,10 @@ describe('dropRulesOfKind and xpRewardOfKind: an unknown kind', () => {
       const NO_RULE_KIND = EntityKind('unregistered')
       const unknown = { _tag: 'UnknownMobKind', kind: 'unregistered' }
       expect(dropRulesOfKind(NO_RULE_KIND)).toStrictEqual(Result.fail(unknown))
+      expect(dropRollsNeeded(NO_RULE_KIND)).toStrictEqual(Result.fail(unknown))
       expect(xpRewardOfKind(NO_RULE_KIND)).toStrictEqual(Result.fail(unknown))
+      expect(rollDropsOfKind(NO_RULE_KIND, { _tag: 'Slain', lootingLevel: 0 }, []))
+        .toStrictEqual(Result.fail(unknown))
       expect(rollCasualtyDrops([{ id: EntityId('e:unknown'), kind: NO_RULE_KIND, at: ORIGIN }], 7))
         .toStrictEqual({ _tag: 'Unsupported', drops: [], seed: 7, issues: [unknown] })
       expect(experienceOfCasualties([{ id: EntityId('e:unknown'), kind: NO_RULE_KIND, at: ORIGIN }]))

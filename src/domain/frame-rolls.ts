@@ -1,41 +1,28 @@
 /**
  * Deterministic frame-local rolls for gameplay rules.
  *
- * Rules receive rolls as inputs. Stages draw them from the frame seed and
- * advance it, so identical frame inputs replay the same outcomes. Multiplayer
- * assumes the host owns this seed on the server; this package does not enforce
- * that boundary. The MP1 multiplayer review must verify it.
+ * Stages draw rolls from the frame seed and advance it, so identical frame
+ * inputs replay the same outcomes. Multiplayer assumes the server owns this
+ * seed. This package does not enforce that boundary; a separate multiplayer
+ * server-authority review (MP1) must verify it.
  */
 
 /**
- * The modulus. `2^31 - 1`, prime, which is what makes the multiplier's orbit
- * cover every value in `[1, m - 1]` exactly once before repeating.
+ * Prime modulus used by the Park–Miller generator.
  */
 const MODULUS = 2_147_483_647
 
-/** The multiplier. Park & Miller's, and a primitive root of `MODULUS`. */
+/** Park–Miller generator multiplier. */
 const MULTIPLIER = 16_807
 
 /**
- * The seed every frame state starts from.
- *
- * A LITERAL and not a clock reading, which is the whole point: two runs of one
- * scenario replay identically, and `Date.now()` is banned by
- * `scripts/check-dependency-whitelist.ts` anyway (DN-GP-8). The value is
- * arbitrary; it is written as a number rather than as `1` so that a reader does
- * not mistake it for a placeholder that somebody meant to replace.
+ * Fixed initial seed for each frame state.
  */
 export const DEFAULT_ROLL_SEED = 20_260_727
 
 /**
- * Fold any number at all into the generator's legal state, `[1, MODULUS - 1]`.
- *
- * TOTAL. Zero is the generator's fixed point — `16807 * 0 mod m` is `0` forever —
- * so it is mapped to `1` rather than accepted, and a seed that is not a number
- * lands on the same value instead of poisoning every roll after it with `NaN`.
- * That is the inert direction and it is the one `./mob/mob-drop`'s `clampRoll`
- * takes for the same reason: the preview's finding F5 is a non-number travelling
- * through arithmetic that had no opinion about it.
+ * Map a seed to the generator's legal state, `[1, MODULUS - 1]`. Zero is an
+ * absorbing state, so it maps to `1`; non-finite seeds also map to `1`.
  */
 export const normaliseSeed = (seed: number): number => {
   if (!Number.isFinite(seed)) {
@@ -76,13 +63,7 @@ export type RollBatch = {
 const NO_ROLLS: ReadonlyArray<never> = []
 
 /**
- * Draw `count` rolls in order.
- *
- * A count of zero draws nothing, advances nothing and allocates nothing — the
- * shared empty array — because the common case on the frame path is a sweep in
- * which nothing died. Drawing "just in case" would make the sequence depend on
- * how many mobs existed rather than on what happened to them, and a scenario
- * that spawns one extra pig would then get different gunpowder.
+ * Draw `count` rolls in order. A zero count does not allocate or advance the seed.
  */
 export const drawRolls = (seed: number, count: number): RollBatch => {
   if (!Number.isFinite(count) || count <= 0) {

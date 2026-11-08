@@ -3269,6 +3269,55 @@ describe('registered combat and teleport requests in the interactions stage', ()
     expect(await Effect.runPromise(Ref.get(harness.publishedEvents))).toMatchObject([{ _tag: 'EntityDamaged' }])
   })
 
+  it('reports unknown mob loot and XP rules after a lethal bow commit', async () => {
+    const target = {
+      ...combatTarget('coverage-unknown-mob-target', 1),
+      kind: EntityKind('unregistered'),
+    }
+    const harness = await Effect.runPromise(makeHarness({
+      entities: { entities: [target], nextSerial: EntitySerial(1) },
+      playerStorage: playerStorageWithItems([['bow', 1], ['arrow', 1]]),
+    }))
+    await Effect.runPromise(requestBowShot(harness.state, 'bow-unknown-mob', {
+      origin: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
+      dirX: 0,
+      dirY: 0,
+      dirZ: 1,
+      chargeSecs: BOW_FULL_CHARGE_SECS,
+      inventory: { mode: 'survival', slotIndex: 0 },
+    }))
+
+    await harness.run()
+
+    const entities = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_ENTITIES_OWNER_ID,
+      GameplayEntityRosterSchema,
+    ))
+    expect(entities.state.entities).toStrictEqual([])
+    expect(await Effect.runPromise(Ref.get(harness.state.unsupportedOperations))).toEqual(expect.arrayContaining([
+      {
+        _tag: 'Unsupported',
+        action: 'MobDrop',
+        reason: 'UnknownMobKind',
+        mobKind: 'unregistered',
+      },
+      {
+        _tag: 'Unsupported',
+        action: 'MobExperience',
+        reason: 'UnknownMobKind',
+        mobKind: 'unregistered',
+      },
+    ]))
+    expect(await Effect.runPromise(Ref.get(harness.state.mobDrops))).toStrictEqual([])
+    expect(await Effect.runPromise(Ref.get(harness.state.mobExperience))).toStrictEqual([])
+    expect(await Effect.runPromise(drainBowShotResults(harness.state))).toStrictEqual([{
+      requestId: 'bow-unknown-mob',
+      success: true,
+      outcome: 'Fired',
+    }])
+    expect(harness.commitCalls()).toBe(1)
+  })
+
   it('requeues a lethal hit when the registered dropped-item owner cannot be snapshotted', async () => {
     const target = combatTarget('coverage-drop-snapshot-target', 1)
     const harness = await Effect.runPromise(makeHarness({

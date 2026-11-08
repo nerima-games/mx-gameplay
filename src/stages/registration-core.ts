@@ -484,7 +484,7 @@ const rollCasualtyExperience = (
   if (casualties.length === 0) return { _tag: 'Resolved', experience: NO_MOB_EXPERIENCE, seed }
 
   let current = seed
-  const rolled: Array<MobCasualty> = []
+  const experience: Array<MobExperienceEvent> = []
   const issues: Array<{ readonly _tag: 'UnknownMobKind'; readonly kind: EntityKind }> = []
   for (const casualty of casualties) {
     const result = mobExperienceRuleOfKind(casualty.kind)
@@ -493,10 +493,7 @@ const rollCasualtyExperience = (
       continue
     }
     const rule = result.success
-    if (rule.playerKillRequired !== false && !hasRecentPlayerCredit(casualty)) {
-      rolled.push(casualty)
-      continue
-    }
+    if (rule.playerKillRequired !== false && !hasRecentPlayerCredit(casualty)) continue
 
     const context = experienceContextOfCasualty(casualty)
     const baseContext = { ...context, undroppedEquipmentCount: 0, equipmentRolls: [] }
@@ -525,15 +522,21 @@ const rollCasualtyExperience = (
           ...Array.from({ length: equipmentRollCount }, () => makeMobExperienceRoll(rollAt(batch, cursor++))),
         ]
 
-    rolled.push({
+    const rolledCasualty = {
       ...casualty,
       ...(experienceRoll === undefined ? {} : { experienceRoll }),
       ...(equipmentXpRolls.length === 0 ? {} : { equipmentXpRolls }),
-    })
+    }
+    const amount = mobXpReward(
+      SLAIN_WITHOUT_LOOTING,
+      rule,
+      rolledCasualty.experienceRoll ?? 0,
+      experienceContextOfCasualty(rolledCasualty),
+    )
+    if (amount > 0) {
+      experience.push({ source: casualty.id, kind: casualty.kind, at: casualty.at, amount })
+    }
   }
-  const resolution = experienceOfCasualties(rolled)
-  const experience = resolution.experience
-  if (resolution._tag === 'Unsupported') issues.push(...resolution.issues)
   return issues.length === 0
     ? { _tag: 'Resolved', experience, seed: current }
     : { _tag: 'Unsupported', experience, seed: current, issues }

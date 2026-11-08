@@ -4,6 +4,7 @@ import {
   AttackRangeDistance,
   DimensionIdSchema,
   DomainEventSchema,
+  ENTITY_TYPES,
   EntityIdSchema,
   isItemType,
   PositionAxis,
@@ -25,13 +26,12 @@ import {
   type StorageLocation,
 } from '@nerima-games/mc-sim'
 import { Brand, Result, Schema } from 'effect'
-import { HOSTILE_KINDS, type MobBehaviour } from '../entities/mob-frame.js'
+import type { MobBehaviour } from '../entities/mob-frame.js'
 import {
   DamageImmunityStateSchema,
   resolveDamageWithInvulnerability,
   type DamageImmunityState,
 } from '../mob/hostile-combat.js'
-import { PASSIVE_MOB_KINDS } from '../mob/mob-ecosystem.js'
 import { knockbackDirection, KnockbackDirectionSchema, type KnockbackDirection } from './knockback.js'
 import { shotTargetWithCandidate, type ShotHit } from './bow-shot.js'
 
@@ -201,6 +201,17 @@ export type MeleeAttackResult =
 
 type MeleeTargetMatch = Readonly<{ entity: Entity<MobBehaviour>; target: ShotHit }>
 
+/**
+ * Kernel groups all 81 mob IDs from `allay` through `wither` before projectiles.
+ * Players, projectiles, vehicles, display/marker, and miscellaneous entities
+ * are not mob casualties and must not enter the mob death, drop, or XP path.
+ */
+const FIRST_MOB_KIND_INDEX = ENTITY_TYPES.indexOf('allay')
+const FIRST_PROJECTILE_KIND_INDEX = ENTITY_TYPES.indexOf('arrow')
+const MELEE_TARGET_MOB_KINDS = new Set<string>(
+  ENTITY_TYPES.slice(FIRST_MOB_KIND_INDEX, FIRST_PROJECTILE_KIND_INDEX),
+)
+
 const meleeTargetMatch = (
   candidates: ReadonlyArray<Entity<MobBehaviour>>,
   request: MeleeAttackRequest,
@@ -210,9 +221,7 @@ const meleeTargetMatch = (
   }
 
   const match = shotTargetWithCandidate(
-    candidates.filter((candidate) =>
-      HOSTILE_KINDS.includes(candidate.kind) || PASSIVE_MOB_KINDS.some((kind) => kind === candidate.kind),
-    ),
+    candidates.filter((candidate) => MELEE_TARGET_MOB_KINDS.has(candidate.kind)),
     request.origin,
     request.direction,
     request.reach,

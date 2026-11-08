@@ -617,8 +617,6 @@ const runMobSimulation = (
     yawRadians: playerSnapshot.state.pose.yawRadians,
     pitchRadians: playerSnapshot.state.pose.pitchRadians,
   }
-  const experience = experienceOfCasualties(blast.casualties)
-
   let storage: PlayerStorage | undefined
   let storageSnapshot: Readonly<{ revision: number; state: PlayerStorage }> | undefined
   let storageCandidate: PlayerStorage | undefined

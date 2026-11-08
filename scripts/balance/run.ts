@@ -204,10 +204,10 @@ const goalReport = (results: ReadonlyArray<SeedSimulationResult>, definition: Go
     if (result.status !== 'simulated') return []
     if (definition.key === 'firstNight') return ['first-night duration calculated from mc-sim TimeService day/night rules']
     if (definition.key === 'cookedFood') {
-      return ['actual path not exercised: animal meat drops are unimplemented and the route does not search animals or crops']
+      return ['actual path not exercised: the route does not search animals or crops']
     }
     if (definition.key === 'bedByNight1') {
-      return ['actual path not exercised: wool drops are unimplemented and the route does not search sheep']
+      return ['actual path not exercised: the route does not search sheep']
     }
     return [result.metricPaths[definition.key]]
   }))

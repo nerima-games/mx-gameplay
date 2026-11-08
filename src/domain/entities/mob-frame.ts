@@ -280,7 +280,6 @@ import {
   type SpawnRefusal,
 } from '../mob/hostile-spawn.js'
 import {
-  BLAZE_KIND,
   ENDERMAN_KIND,
   ECOSYSTEM_MOB_KINDS,
   initialEcosystemMobState,

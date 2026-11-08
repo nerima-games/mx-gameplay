@@ -10,7 +10,7 @@ import { describe, expect, it } from '@effect/vitest'
 import { SkyLightLevel } from '../src/domain/mob/hostile-spawn'
 import * as FastCheck from 'fast-check'
 import { Brand, Cause, Effect, Exit, Layer, Option, Ref, Result, Schema, Stream } from 'effect'
-import { AIR_BLOCK_ID, AngleRadians, AttackRangeDistance, BlockId, DimensionIdSchema, EntityHealthPoints, EntitySerial, PositionAxis, ProjectileIdSchema, SimulationTick, SimulationTickSchema, WorldIdSchema, blockIdOf, position as kernelPosition, type BlockPosition } from '@nerima-games/mc-kernel'
+import { AIR_BLOCK_ID, AngleRadians, AttackRangeDistance, BlockId, DimensionIdSchema, EntityHealthPoints, EntitySerial, PositionAxis, ProjectileIdSchema, SimulationTick, SimulationTickSchema, WorldIdSchema, blockIdOf, position as kernelPosition, type BlockPosition, type ItemType } from '@nerima-games/mc-kernel'
 import type { BlockReading, ChunkStore, ChunkStoreApi } from '@nerima-games/mc-worldgen'
 import {
   CREEPER_KIND,
@@ -1809,44 +1809,85 @@ describe('stage behaviour', () => {
     }),
   )
 
-  it.effect('a lethal melee hit on a registered villager emits neither loot nor XP', () =>
-    Effect.gen(function* () {
-      const feetPosition = fixturePosition(0, 64 - BOW_TARGET_CENTER_Y_OFFSET, 2)
-      const entity = {
-        id: EntityId('melee-no-loot-villager'),
-        kind: EntityKind('villager'),
-        feetPosition,
-        healthPoints: EntityHealthPoints(1),
-        behaviour: undefined,
-      }
-      const { state, commit, stages } = yield* builtStagesInWorld(
-        world([]), ['0,0'], undefined, undefined, undefined,
-        { entities: [entity], nextSerial: EntitySerial(1) },
-      )
+  const meleeDeathFixtures = [
+    { kind: 'villager', seed: 7, dropItem: undefined, awardsExperience: false },
+    { kind: 'iron_golem', seed: 7, dropItem: 'iron_ingot', awardsExperience: false },
+    { kind: 'wolf', seed: 7, dropItem: undefined, awardsExperience: true },
+    { kind: 'horse', seed: 42, dropItem: 'leather', awardsExperience: true },
+    { kind: 'squid', seed: 7, dropItem: undefined, awardsExperience: true, unsupportedDrop: 'ink_sac' },
+  ] as const
 
-      yield* requestMeleeAttack(state, {
-        origin: fixturePosition(0, 64, 0),
-        direction: fixturePosition(0, 0, 1),
-        reach: AttackRangeDistance(3),
-        damage: 4,
-      })
-      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)
-      yield* interactions!.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+  for (const fixture of meleeDeathFixtures) {
+    it.effect(`a lethal melee hit reaches the ${fixture.kind} death rules`, () =>
+      Effect.gen(function* () {
+        const entity = {
+          id: EntityId(`melee-death-${fixture.kind}`),
+          kind: EntityKind(fixture.kind),
+          feetPosition: fixturePosition(0, 64.72, -2),
+          healthPoints: EntityHealthPoints(1),
+          behaviour: undefined,
+        }
+        const { state, commit, stages } = yield* builtStagesInWorld(
+          world([]), ['0,0'], undefined, undefined, undefined,
+          { entities: [entity], nextSerial: EntitySerial(1) },
+        )
+        yield* Ref.set(state.rollSeed, fixture.seed)
+        yield* requestMeleeAttack(state, {
+          requestId: `melee-death-${fixture.kind}`,
+          origin: fixturePosition(0, 64, 0),
+          direction: fixturePosition(0, 0, 1),
+          reach: AttackRangeDistance(3),
+          damage: 4,
+        })
+        const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)
+        yield* interactions!.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
 
-      const entityOwner = yield* commit.coordinator.snapshot(GAMEPLAY_ENTITIES_OWNER_ID, GameplayEntityRosterSchema)
-      expect(entityOwner.state.entities).toStrictEqual([])
-      expect(yield* drainMobExperience(state)).toStrictEqual([])
-      expect(yield* drainMobDrops(state)).toStrictEqual([])
-    }),
-  )
+        const entityOwner = yield* commit.coordinator.snapshot(GAMEPLAY_ENTITIES_OWNER_ID, GameplayEntityRosterSchema)
+        expect(entityOwner.state.entities).toStrictEqual([])
+        expect(yield* drainMeleeAttackResults(state)).toMatchObject([{
+          requestId: `melee-death-${fixture.kind}`,
+          success: true,
+          target: { id: entity.id },
+        }])
+
+        const drops = yield* drainMobDrops(state)
+        if (fixture.dropItem === undefined) {
+          expect(drops).toStrictEqual([])
+        } else {
+          expect(drops.some(({ item, count }) => item === fixture.dropItem && count > 0)).toBe(true)
+        }
+
+        const experience = yield* drainMobExperience(state)
+        if (fixture.awardsExperience) {
+          expect(experience).toHaveLength(1)
+          expect(experience[0]?.amount).toBeGreaterThanOrEqual(1)
+          expect(experience[0]?.amount).toBeLessThanOrEqual(3)
+        } else {
+          expect(experience).toStrictEqual([])
+        }
+
+        const unsupported = yield* drainGameplayUnsupportedOperations(state)
+        if ('unsupportedDrop' in fixture) {
+          expect(unsupported).toContainEqual({
+            _tag: 'Unsupported',
+            action: 'MobDrop',
+            reason: 'UnsupportedDropItemIds',
+            mobKind: fixture.kind,
+            itemIds: [fixture.unsupportedDrop],
+          })
+        } else {
+          expect(unsupported).toStrictEqual([])
+        }
+      }),
+    )
+  }
 
   it.effect('a lethal skeleton hit emits its table-backed drops and XP', () =>
     Effect.gen(function* () {
-      const feetPosition = fixturePosition(0, 64 - BOW_TARGET_CENTER_Y_OFFSET, 2)
       const entity = {
         id: EntityId('e:0'),
         kind: SKELETON_KIND,
-        feetPosition,
+        feetPosition: fixturePosition(0, 64.72, -2),
         healthPoints: EntityHealthPoints(1),
         behaviour: undefined,
       }
@@ -7417,6 +7458,31 @@ describe('farming and food item uses through the full interactions stage', () =>
         consumedCount: 0,
         outcome: { _tag: 'full' },
       })
+    }),
+  )
+
+  it.effect('reports an invalid food item ID through the interactions stage', () =>
+    Effect.gen(function* () {
+      const { state, stages } = yield* builtStages
+      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+      const invalidItem = 'not_a_kernel_item' as ItemType
+
+      yield* requestFoodUse(state, 'eat-invalid-food-id', invalidItem, {
+        healthPoints: EntityHealthPoints(20),
+        hungerPoints: HungerPoints(10),
+        maxHungerPoints: HungerPoints(20),
+      })
+      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* drainItemUseResults(state)).toStrictEqual([{
+        action: 'EatFood',
+        requestId: 'eat-invalid-food-id',
+        heldItem: invalidItem,
+        success: false,
+        consumedCount: 0,
+        outcome: { _tag: 'InvalidFoodItemId', itemId: 'not_a_kernel_item' },
+      }])
+      expect(yield* Ref.get(state.usedItems)).toStrictEqual([])
     }),
   )
 
