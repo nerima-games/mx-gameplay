@@ -137,7 +137,7 @@ describe('survival hunger', () => {
   })
 
   it('maps player activity to deterministic exhaustion and rejects invalid magnitudes', () => {
-    expect(exhaustionForSurvivalActivity({ _tag: 'walk', distance: 100 })).toBe(1)
+    expect(exhaustionForSurvivalActivity({ _tag: 'walk', distance: 100 })).toBe(0)
     expect(exhaustionForSurvivalActivity({ _tag: 'sprint', distance: 10 })).toBe(1)
     expect(exhaustionForSurvivalActivity({ _tag: 'jump', count: 2 })).toBe(0.1)
     expect(exhaustionForSurvivalActivity({ _tag: 'jump', count: 2, sprinting: true })).toBe(0.4)
@@ -154,14 +154,16 @@ describe('survival hunger', () => {
       yield* runtime.submit({ _tag: 'walk', distance: 400 })
       expect((yield* runtime.tick(DeltaTimeSecs(0))).vitals).toMatchObject({
         hungerPoints: 20,
-        saturation: 0,
+        saturation: 1,
       })
 
       yield* runtime.submit({ _tag: 'attack', count: 40 })
       expect((yield* runtime.tick(DeltaTimeSecs(0))).vitals).toMatchObject({
-        hungerPoints: 19,
+        hungerPoints: 20,
         saturation: 0,
       })
+      yield* runtime.submit({ _tag: 'attack', count: 40 })
+      expect((yield* runtime.tick(DeltaTimeSecs(0))).vitals.hungerPoints).toBe(19)
 
       expect(yield* runtime.eat(1, 0.6)).toMatchObject({
         hungerPoints: 20,
@@ -445,12 +447,12 @@ describe('survival hunger', () => {
       const regeneration = yield* regen.runtime.tick(DeltaTimeSecs(4))
       expect(regeneration).toMatchObject({
         difficulty: 'normal',
-        exhaustionAdded: 0.01,
+        exhaustionAdded: 0,
         foodTicks: 1,
         regeneratedHealth: 1,
         starvationDamage: 0,
         died: false,
-        vitals: { healthPoints: 20, hungerPoints: 19, exhaustion: 2.01 },
+        vitals: { healthPoints: 20, hungerPoints: 19, exhaustion: 2 },
       })
       const regeneratedOwner = yield* regen.coordinator.snapshot(
         REPLICATED_VITALS_OWNER,
@@ -567,7 +569,7 @@ describe('survival hunger', () => {
       )).state.vitals).toStrictEqual(retry.vitals)
 
       const queuedDuringCommit = yield* runtime.tick(DeltaTimeSecs(0))
-      expect(queuedDuringCommit.exhaustionAdded).toBe(0.01)
+      expect(queuedDuringCommit.exhaustionAdded).toBe(0)
       expect((yield* coordinator.snapshot(
         REPLICATED_VITALS_OWNER,
         ExperienceOrbVitalsOwnerSnapshotSchema,

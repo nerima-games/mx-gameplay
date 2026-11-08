@@ -26,7 +26,7 @@ import { runFrame } from '../support/frame-runner'
 import { emptySlots } from '../../src/domain/in-memory-inventory'
 
 describe('player state gameplay scenarios', () => {
-  it.effect('eating cod commits one item and raises low hunger through gameplay stages', () =>
+  it.effect('eating cooked beef commits one item and raises low hunger through gameplay stages', () =>
     Effect.gen(function* () {
       const lowVitals: PlayerVitals = {
         ...SPAWN_PLAYER_VITALS,
@@ -34,7 +34,7 @@ describe('player state gameplay scenarios', () => {
         saturation: FoodSaturation(0),
       }
       const slots = [...emptySlots()]
-      slots[0] = Result.getOrThrow(itemStack('cod', StackCount(2)))
+      slots[0] = Result.getOrThrow(itemStack('cooked_beef', StackCount(2)))
       slots[1] = Result.getOrThrow(itemStack('bread', StackCount(3)))
       const world = yield* makeInMemoryWorld<MobBehaviour>({ inventory: slots, vitals: lowVitals })
       const commit = yield* makeGameplayCommitServices(world.chunkStore, world.inventory, {
@@ -57,7 +57,7 @@ describe('player state gameplay scenarios', () => {
         commit,
       )
 
-      yield* requestFoodUse(state, 'eat-one-cod', 'cod', {
+      yield* requestFoodUse(state, 'eat-one-cooked-beef', 'cooked_beef', {
         healthPoints: lowVitals.healthPoints,
         hungerPoints: lowVitals.hungerPoints,
         maxHungerPoints: lowVitals.maxHungerPoints,
@@ -67,8 +67,8 @@ describe('player state gameplay scenarios', () => {
       expect(yield* drainItemUseResults(state)).toStrictEqual([
         {
           action: 'EatFood',
-          requestId: 'eat-one-cod',
-          heldItem: 'cod',
+          requestId: 'eat-one-cooked-beef',
+          heldItem: 'cooked_beef',
           success: true,
           consumedCount: 1,
           outcome: expect.objectContaining({ _tag: 'consume' }),
@@ -90,9 +90,9 @@ describe('player state gameplay scenarios', () => {
           0,
         )
 
-      expect(count('cod')).toBe(1)
+      expect(count('cooked_beef')).toBe(1)
       expect(count('bread')).toBe(3)
-      expect(vitals.vitals.hungerPoints).toBe(12)
+      expect(vitals.vitals.hungerPoints).toBe(18)
       expect(vitals.vitals.saturation).toBeGreaterThan(0)
       expect(storageSnapshot.revision).toBe(vitalsSnapshot.revision)
     }),

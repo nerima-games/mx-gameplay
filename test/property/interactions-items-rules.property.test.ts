@@ -111,14 +111,14 @@ describe('interaction and item-use properties', () => {
     // Fails if hunger at its exact maximum still consumes food or a valid meal removes multiple items.
     FastCheck.assert(
       FastCheck.property(FastCheck.integer({ min: 0, max: 20 }), (hungerPoints) => {
-        const outcome = resolveFoodUse({
+        const outcome = Result.getOrThrow(resolveFoodUse({
           held: 'potato',
           vitals: {
             healthPoints: EntityHealthPoints(20),
             hungerPoints: HungerPoints(hungerPoints),
             maxHungerPoints: HungerPoints(20),
           },
-        })
+        }))
 
         return hungerPoints === 20
           ? outcome._tag === 'full'

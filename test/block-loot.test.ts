@@ -529,16 +529,18 @@ describe('blockLoot — fortune', () => {
 
   it.effect('a non-finite fortuneLevel is treated as 0 rather than propagating NaN', () =>
     Effect.sync(() => {
-      // Gravel is the vocabulary's only fortune-sensitive drop whose chance
-      // depends on this exact clamp, so it is the case that shows a NaN
-      // fortuneLevel resolving to the unenchanted 0.1 chance rather than NaN
-      // poisoning the comparison and never dropping flint.
+      // Gravel's flint replacement and oak leaves' apple chance both use this
+      // clamp. A non-finite level follows Fortune 0 at each exact boundary.
       expect(blockLoot(GRAVEL, { fortuneLevel: Number.NaN }, [0.099999])).toStrictEqual([
         { item: 'flint', count: 1 },
       ])
       expect(blockLoot(GRAVEL, { fortuneLevel: Number.NaN }, [0.1])).toStrictEqual([
         { item: 'gravel', count: 1 },
       ])
+      expect(blockLoot(OAK_LEAVES, { fortuneLevel: Number.NaN }, [0.5, 0.5, 0.5, 1 / 200 - Number.EPSILON]))
+        .toStrictEqual([{ item: 'apple', count: 1 }])
+      expect(blockLoot(OAK_LEAVES, { fortuneLevel: Number.NaN }, [0.5, 0.5, 0.5, 1 / 200]))
+        .toStrictEqual([])
     }),
   )
 
@@ -559,29 +561,82 @@ describe('blockLoot — fortune', () => {
 })
 
 describe('blockLoot — bonus lines', () => {
-  it.effect('leaves roll stick and sapling independently at their vanilla boundaries', () =>
+  it.effect('leaves roll 1–2 sticks, saplings, and apples independently at their vanilla boundaries', () =>
     Effect.sync(() => {
+      expect(ITEM_TYPES).toContain('stick')
       expect(ITEM_TYPES).toContain('sapling')
-
-      expect(blockLoot(OAK_LEAVES, NO_TOOL, [0.5, LEAF_STICK_DROP_CHANCE - Number.EPSILON, 0.5])).toStrictEqual([
-        { item: 'stick', count: 1 },
-      ])
-      expect(blockLoot(OAK_LEAVES, NO_TOOL, [0.5, LEAF_STICK_DROP_CHANCE, 0.5])).toStrictEqual([])
-
-      expect(blockLoot(OAK_LEAVES, NO_TOOL, [0.5, 0.5, LEAF_SAPLING_DROP_CHANCE - Number.EPSILON])).toStrictEqual([
-        { item: 'sapling', count: 1 },
-      ])
-      expect(blockLoot(OAK_LEAVES, NO_TOOL, [0.5, 0.5, LEAF_SAPLING_DROP_CHANCE])).toStrictEqual([])
+      expect(ITEM_TYPES).toContain('apple')
 
       expect(
         blockLoot(OAK_LEAVES, NO_TOOL, [
           0.5,
-          LEAF_STICK_DROP_CHANCE - Number.EPSILON,
+          LEAF_STICK_DROP_CHANCE / 2 - Number.EPSILON,
+          0.5,
+          LEAF_APPLE_DROP_CHANCE,
+        ]),
+      ).toStrictEqual([{ item: 'stick', count: 1 }])
+      expect(
+        blockLoot(OAK_LEAVES, NO_TOOL, [
+          0.5,
+          LEAF_STICK_DROP_CHANCE / 2,
+          0.5,
+          LEAF_APPLE_DROP_CHANCE,
+        ]),
+      ).toStrictEqual([{ item: 'stick', count: 2 }])
+      expect(
+        blockLoot(OAK_LEAVES, NO_TOOL, [
+          0.5,
+          LEAF_STICK_DROP_CHANCE,
+          0.5,
+          LEAF_APPLE_DROP_CHANCE,
+        ]),
+      ).toStrictEqual([])
+
+      expect(
+        blockLoot(OAK_LEAVES, NO_TOOL, [
+          0.5,
+          LEAF_STICK_DROP_CHANCE,
           LEAF_SAPLING_DROP_CHANCE - Number.EPSILON,
+          LEAF_APPLE_DROP_CHANCE,
+        ]),
+      ).toStrictEqual([{ item: 'sapling', count: 1 }])
+      expect(
+        blockLoot(OAK_LEAVES, NO_TOOL, [
+          0.5,
+          LEAF_STICK_DROP_CHANCE,
+          LEAF_SAPLING_DROP_CHANCE,
+          LEAF_APPLE_DROP_CHANCE,
+        ]),
+      ).toStrictEqual([])
+
+      expect(
+        blockLoot(OAK_LEAVES, NO_TOOL, [
+          0.5,
+          LEAF_STICK_DROP_CHANCE,
+          LEAF_SAPLING_DROP_CHANCE,
+          LEAF_APPLE_DROP_CHANCE - Number.EPSILON,
+        ]),
+      ).toStrictEqual([{ item: 'apple', count: 1 }])
+      expect(
+        blockLoot(OAK_LEAVES, NO_TOOL, [
+          0.5,
+          LEAF_STICK_DROP_CHANCE,
+          LEAF_SAPLING_DROP_CHANCE,
+          LEAF_APPLE_DROP_CHANCE,
+        ]),
+      ).toStrictEqual([])
+
+      expect(
+        blockLoot(OAK_LEAVES, NO_TOOL, [
+          0.5,
+          0,
+          LEAF_SAPLING_DROP_CHANCE - Number.EPSILON,
+          LEAF_APPLE_DROP_CHANCE - Number.EPSILON,
         ]),
       ).toStrictEqual([
         { item: 'stick', count: 1 },
         { item: 'sapling', count: 1 },
+        { item: 'apple', count: 1 },
       ])
     }),
   )
@@ -596,6 +651,7 @@ describe('blockLoot — bonus lines', () => {
       expect(blockLoot(OAK_LEAVES, NO_TOOL, ALL_LUCK)).toStrictEqual([
         { item: 'stick', count: 1 },
         { item: 'sapling', count: 1 },
+        { item: 'apple', count: 1 },
       ])
     }),
   )
@@ -623,8 +679,23 @@ describe('blockLoot — bonus lines', () => {
       // ...and the fractions they are written as, which is how the reference
       // words its own assertion (`:139-141`: 1/200, 2%, 5%; `:163`: 1/8).
       expect(LEAF_APPLE_DROP_CHANCE).toBe(1 / 200)
+      expect(LEAF_STICK_DROP_CHANCE).toBe(1 / 50)
       expect(LEAF_SAPLING_DROP_CHANCE).toBe(1 / 20)
       expect(GRASS_SEED_DROP_CHANCE).toBe(1 / 8)
+    }),
+  )
+
+  it.effect('applies the wiki apple chance for each Fortune level', () =>
+    Effect.sync(() => {
+      const wikiRates = [1 / 200, 1 / 180, 1 / 160, 1 / 120] as const
+      expect(BLOCK_TYPES).not.toContain('dark_oak_leaves')
+
+      wikiRates.forEach((chance, fortuneLevel) => {
+        expect(blockLoot(OAK_LEAVES, { fortuneLevel }, [0.5, 0.5, 0.5, chance - Number.EPSILON]))
+          .toStrictEqual([{ item: 'apple', count: 1 }])
+        expect(blockLoot(OAK_LEAVES, { fortuneLevel }, [0.5, 0.5, 0.5, chance]))
+          .toStrictEqual([])
+      })
     }),
   )
 
@@ -656,9 +727,8 @@ describe('blockLoot — the roll budget', () => {
   // FOUR, and a constant rather than a function of the block. See the rule's
   // header: a budget that varied would make each break's loot depend on which
   // blocks preceded it, so mining one extra dirt would change your glowstone.
-  // The width is the reference's `rollLeafDrops`, which takes THREE rolls, so
-  // restoring the apple and sapling lines the day kernel has the items is a
-  // change to the table and NOT to this number.
+  // Oak leaves use all three bonus slots; the stick count uses its chance roll,
+  // so adding apples does not increase the budget.
   it.effect('is four rolls per broken block, whatever the block', () =>
     Effect.sync(() => {
       expect(BLOCK_LOOT_ROLLS).toBe(4)
@@ -673,6 +743,7 @@ describe('blockLoot — the roll budget', () => {
       expect(blockLoot(OAK_LEAVES, NO_TOOL, [])).toStrictEqual([
         { item: 'stick', count: 1 },
         { item: 'sapling', count: 1 },
+        { item: 'apple', count: 1 },
       ])
     }),
   )

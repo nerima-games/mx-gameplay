@@ -67,7 +67,7 @@ type PendingSurvivalActivities = {
 }
 
 export const SURVIVAL_EXHAUSTION = {
-  walkPerBlock: 0.01,
+  walkPerBlock: 0,
   sprintPerBlock: 0.1,
   jump: 0.05,
   sprintJump: 0.2,

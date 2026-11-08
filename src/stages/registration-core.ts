@@ -163,6 +163,7 @@ import {
 } from '@nerima-games/mc-sim'
 import { Brand, Effect, Equal, Option, Ref, Result, Schema, SchemaParser, Semaphore } from 'effect'
 import {
+  type EntityKind,
   PlayerStorageSnapshotSchema,
   damageAt as damagePlayerStorageAt,
   withInventory,
@@ -256,7 +257,10 @@ import {
   PRIMED_TNT_KIND,
   type BowHit,
   type MobDropEvent,
+  type MobCasualty,
+  type MobExperienceRoll,
   type MobExperienceEvent,
+  MOB_EXPERIENCE_CREDIT_WINDOW_TICKS,
   type MobBehaviour,
   type MobSpawnAttempt,
 } from '../domain/entities/mob-frame.js'
@@ -318,6 +322,7 @@ import {
   type FluidWorkItem,
 } from '../domain/fluid-frontier.js'
 import { DEFAULT_ROLL_SEED, drawRolls, rollAt } from '../domain/frame-rolls.js'
+import { mobExperienceRuleOfKind, mobXpReward, type MobKill } from '../domain/mob/mob-drop.js'
 import {
   endArrivalDescriptor,
   resolveNetherTravel,
@@ -344,7 +349,12 @@ import {
 import type { PlaceOutcome } from '../domain/interactions/place-block.js'
 import { cropDrops, type CropDropOutcome } from '../domain/interactions/crop-drops.js'
 import { applyBoneMeal, type BoneMealOutcome } from '../domain/interactions/bone-meal.js'
-import { resolveFoodUse, type FoodUseOutcome, type FoodUseRequest } from '../domain/interactions/eat-food.js'
+import {
+  resolveFoodUse,
+  type InvalidFoodItemId,
+  type FoodUseOutcome,
+  type FoodUseRequest,
+} from '../domain/interactions/eat-food.js'
 import {
   makeSurvivalHungerRuntime,
   makeReplicatedSurvivalHungerRuntime,
@@ -424,6 +434,113 @@ import {
 } from './ender-dragon-encounter-stage.js'
 import { GAMEPLAY_STAGE_IDS, UPSTREAM_STAGE_IDS } from './stage-ids.js'
 import { advanceVehicles, type VehicleFrameEnvironment } from '../domain/vehicle/vehicle-frame.js'
+
+const makeMobExperienceRoll = Brand.nominal<MobExperienceRoll>()
+const NO_MOB_EXPERIENCE: ReadonlyArray<never> = []
+const SLAIN_WITHOUT_LOOTING: MobKill = { _tag: 'Slain', lootingLevel: 0 }
+
+const hasRecentPlayerCredit = (casualty: MobCasualty): boolean =>
+  casualty.killCredit === 'player-triggered-tnt' ||
+  (
+    (casualty.killCredit === 'player' || casualty.killCredit === 'tamed-wolf') &&
+    casualty.lastHitTick !== undefined &&
+    casualty.deathTick !== undefined &&
+    casualty.deathTick >= casualty.lastHitTick &&
+    casualty.deathTick - casualty.lastHitTick <= MOB_EXPERIENCE_CREDIT_WINDOW_TICKS
+  )
+
+const experienceContextOfCasualty = (casualty: MobCasualty) => ({
+  ...(casualty.age === undefined ? {} : { age: casualty.age }),
+  ...(casualty.size === undefined ? {} : { size: casualty.size }),
+  ...(casualty.undroppedEquipmentCount === undefined
+    ? {}
+    : { undroppedEquipmentCount: casualty.undroppedEquipmentCount }),
+  ...(casualty.equipmentXpRolls === undefined
+    ? {}
+    : { equipmentRolls: casualty.equipmentXpRolls }),
+  ...(casualty.firstDragonDeath === undefined
+    ? {}
+    : { firstDragonDeath: casualty.firstDragonDeath }),
+})
+
+/** Draw variable experience rolls from the frame seed after the loot rolls. */
+type CasualtyExperienceRoll =
+  | Readonly<{
+      readonly _tag: 'Resolved'
+      readonly experience: ReadonlyArray<MobExperienceEvent>
+      readonly seed: number
+    }>
+  | Readonly<{
+      readonly _tag: 'Unsupported'
+      readonly experience: ReadonlyArray<MobExperienceEvent>
+      readonly seed: number
+      readonly issues: ReadonlyArray<{ readonly _tag: 'UnknownMobKind'; readonly kind: EntityKind }>
+    }>
+
+const rollCasualtyExperience = (
+  casualties: ReadonlyArray<MobCasualty>,
+  seed: number,
+): CasualtyExperienceRoll => {
+  if (casualties.length === 0) return { _tag: 'Resolved', experience: NO_MOB_EXPERIENCE, seed }
+
+  let current = seed
+  const experience: Array<MobExperienceEvent> = []
+  const issues: Array<{ readonly _tag: 'UnknownMobKind'; readonly kind: EntityKind }> = []
+  for (const casualty of casualties) {
+    const result = mobExperienceRuleOfKind(casualty.kind)
+    if (Result.isFailure(result)) {
+      issues.push(result.failure)
+      continue
+    }
+    const rule = result.success
+    if (rule.playerKillRequired !== false && !hasRecentPlayerCredit(casualty)) continue
+
+    const context = experienceContextOfCasualty(casualty)
+    const baseContext = { ...context, undroppedEquipmentCount: 0, equipmentRolls: [] }
+    const variableBase = mobXpReward(SLAIN_WITHOUT_LOOTING, rule, 0, baseContext) !==
+      mobXpReward(SLAIN_WITHOUT_LOOTING, rule, 0.999, baseContext)
+    const baseRollCount = casualty.experienceRoll === undefined && variableBase ? 1 : 0
+    const existingEquipmentRolls = casualty.equipmentXpRolls ?? []
+    const equipmentBonus = rule.equipmentBonus
+    const equipmentCount = equipmentBonus === undefined
+      ? 0
+      : Math.max(0, Math.floor(casualty.undroppedEquipmentCount ?? 0))
+    const equipmentRollCount = equipmentBonus !== undefined && equipmentBonus.min < equipmentBonus.max
+      ? Math.max(0, equipmentCount - existingEquipmentRolls.length)
+      : 0
+    const batch = drawRolls(current, baseRollCount + equipmentRollCount)
+    current = batch.seed
+
+    let cursor = 0
+    const experienceRoll = casualty.experienceRoll ?? (baseRollCount > 0
+      ? makeMobExperienceRoll(rollAt(batch, cursor++))
+      : undefined)
+    const equipmentXpRolls = equipmentRollCount === 0
+      ? existingEquipmentRolls
+      : [
+          ...existingEquipmentRolls,
+          ...Array.from({ length: equipmentRollCount }, () => makeMobExperienceRoll(rollAt(batch, cursor++))),
+        ]
+
+    const rolledCasualty = {
+      ...casualty,
+      ...(experienceRoll === undefined ? {} : { experienceRoll }),
+      ...(equipmentXpRolls.length === 0 ? {} : { equipmentXpRolls }),
+    }
+    const amount = mobXpReward(
+      SLAIN_WITHOUT_LOOTING,
+      rule,
+      rolledCasualty.experienceRoll ?? 0,
+      experienceContextOfCasualty(rolledCasualty),
+    )
+    if (amount > 0) {
+      experience.push({ source: casualty.id, kind: casualty.kind, at: casualty.at, amount })
+    }
+  }
+  return issues.length === 0
+    ? { _tag: 'Resolved', experience, seed: current }
+    : { _tag: 'Unsupported', experience, seed: current, issues }
+}
 
 /**
  * Historically a lift from `domain/chunk-store-port.ts`'s local, unbranded
@@ -1513,7 +1630,10 @@ export type FarmingItemUseResult =
       readonly heldItem: 'potato'
       readonly success: boolean
       readonly consumedCount: 0 | 1
-      readonly outcome: FoodUseOutcome | { readonly _tag: 'missingItem' }
+      readonly outcome:
+        | FoodUseOutcome
+        | InvalidFoodItemId
+        | { readonly _tag: 'missingItem' }
     }
   | {
       readonly action: 'EatFood'
@@ -1521,7 +1641,10 @@ export type FarmingItemUseResult =
       readonly heldItem: ItemType
       readonly success: boolean
       readonly consumedCount: 0 | 1
-      readonly outcome: FoodUseOutcome | { readonly _tag: 'missingItem' }
+      readonly outcome:
+        | FoodUseOutcome
+        | InvalidFoodItemId
+        | { readonly _tag: 'missingItem' }
     }
 
 export type FurnaceItemUseResult =
@@ -1919,6 +2042,7 @@ export type GameplayUnsupportedAction =
   | 'EnchantItem'
   | 'PlayerDamage'
   | 'MobDrop'
+  | 'MobExperience'
   | 'ExperienceOrbCreation'
   | 'PortalTravel'
   | 'MobSimulation'
@@ -1934,12 +2058,18 @@ export type GameplayUnsupportedReason =
   | 'OwnerRegistrationUnavailable'
   | 'TntServiceUnavailable'
   | 'EntityRosterOwnerUnavailable'
+  | 'UnknownMobKind'
+  | 'UnsupportedDropItemIds'
+
+type UnsupportedDropItemId = string & Brand.Brand<'UnsupportedDropItemId'>
 
 export type GameplayUnsupportedOperation = Readonly<{
   _tag: 'Unsupported'
   action: GameplayUnsupportedAction
   requestId?: string
   reason: GameplayUnsupportedReason
+  mobKind?: EntityKind
+  itemIds?: ReadonlyArray<UnsupportedDropItemId>
 }>
 
 export type GameplayFrameStateOptions = Readonly<{
@@ -3530,6 +3660,7 @@ const stepFireTick = (
     const validEntityHits = step.entityDamages.map(({ actorId, damage }) => ({
       id: Schema.decodeUnknownSync(EntityIdSchema)(actorId),
       damage,
+      burning: true,
     }))
     const damagePlan = planMobDamageRoster(
       entitySnapshotResult.success.state,
@@ -3543,7 +3674,7 @@ const stepFireTick = (
     ))
     const seed = yield* Ref.get(state.rollSeed)
     const casualtyDrops = rollCasualtyDrops(damagePlan.casualties, seed)
-    const experience = experienceOfCasualties(damagePlan.casualties)
+    const casualtyExperience = rollCasualtyExperience(damagePlan.casualties, casualtyDrops.seed)
     let droppedItemsCandidate: Schema.Schema.Type<typeof DroppedItemOwnerSnapshotSchema> | undefined
     if (casualtyDrops.drops.length > 0) {
       if (context.droppedItemsOwnerId === undefined) {
@@ -3678,18 +3809,25 @@ const stepFireTick = (
       ))
     }
 
+    if (casualtyDrops._tag === 'Unsupported') {
+      yield* recordMobRuleIssues(state, 'MobDrop', casualtyDrops.issues)
+    }
+    if (casualtyExperience._tag === 'Unsupported') {
+      yield* recordMobRuleIssues(state, 'MobExperience', casualtyExperience.issues)
+    }
+
     yield* Ref.set(state.fireLifecycle, {
       ...step.state,
       fires: [...step.state.fires].sort((a, b) =>
         a.position.x - b.position.x || a.position.y - b.position.y || a.position.z - b.position.z),
       burningActors: step.state.burningActors ?? [],
     })
-    yield* Ref.set(state.rollSeed, casualtyDrops.seed)
+    yield* Ref.set(state.rollSeed, casualtyExperience.seed)
     if (casualtyDrops.drops.length > 0) {
       yield* Ref.update(state.mobDrops, (pending) => [...pending, ...casualtyDrops.drops])
     }
-    if (experience.length > 0) {
-      yield* Ref.update(state.mobExperience, (pending) => [...pending, ...experience])
+    if (casualtyExperience.experience.length > 0) {
+      yield* Ref.update(state.mobExperience, (pending) => [...pending, ...casualtyExperience.experience])
     }
     if (fireDamage.damages.length > 0) {
       yield* Ref.update(state.playerDamages, (damages) => [...damages, ...fireDamage.damages])
@@ -3794,6 +3932,26 @@ export const recordGameplayUnsupportedOperation = (
   operation: GameplayUnsupportedOperation,
 ): Effect.Effect<void> =>
   Ref.update(state.unsupportedOperations, (current) => [...current, operation])
+
+export const recordMobRuleIssues = (
+  state: GameplayFrameState,
+  action: 'MobDrop' | 'MobExperience',
+  issues: ReadonlyArray<{
+    readonly _tag: 'UnknownMobKind' | 'UnsupportedDropItemIds'
+    readonly kind: EntityKind
+    readonly itemIds?: ReadonlyArray<UnsupportedDropItemId>
+  }>,
+): Effect.Effect<void> => Effect.gen(function* () {
+  for (const issue of issues) {
+    yield* recordGameplayUnsupportedOperation(state, {
+      _tag: 'Unsupported',
+      action,
+      reason: issue._tag,
+      mobKind: issue.kind,
+      ...(issue.itemIds === undefined ? {} : { itemIds: issue.itemIds }),
+    })
+  }
+})
 
 /** Resolve the block under the crosshair and enqueue placement in its adjacent cell. */
 export const requestTargetedBlockPlacement = (
@@ -4198,6 +4356,7 @@ export {
   enqueueFluidDisturbance,
   entityManagerTag,
   experienceOfCasualties,
+  rollCasualtyExperience,
   firePositionKey,
   fluidRuntimeSemaphoreFor,
   fluidRuntimeStateFor,

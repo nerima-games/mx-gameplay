@@ -1,118 +1,28 @@
 /**
- * WHERE RANDOMNESS ENTERS A FRAME, and the only place it may.
+ * Deterministic frame-local rolls for gameplay rules.
  *
- * ---------------------------------------------------------------------------
- * The rules take rolls; something has to produce them
- * ---------------------------------------------------------------------------
- *
- * `./mob/mob-drop` and `./mob/enderman-teleport` both take their randomness as
- * an ARGUMENT — a number in `[0, 1)` — and `test/mob.test.ts` enforces that by
- * reading their sources and failing on `Math.random`. That is the right shape
- * for a rule and it leaves a question the rules deliberately do not answer:
- * where does the number come from when the stage actually runs one?
- *
- * Four candidate answers were available and three of them are wrong here.
- *
- *   `Math.random()`               Banned by the source check, and rightly:
- *                                 plan.md §5.1-3 makes determinism the
- *                                 precondition for using the reference's tests
- *                                 as an oracle, and the reference's own drop
- *                                 behaviour cannot be replayed for exactly this
- *                                 reason (`interaction-mob-drops.ts:18` reads
- *                                 the global generator).
- *
- *   Effect's `Random` service     A service in the context. `StageRegistration.run`
- *                                 has `FrameServices` as its context and
- *                                 `FrameServices` is kernel's `ClockPort`
- *                                 (`domain/frame.ts`). A stage that demanded
- *                                 `Random` there would be asking kernel to widen
- *                                 the one alias plan.md §6 wants frozen at 1.0.0,
- *                                 in order to obtain a number.
- *
- *   A roll per entity from mc-sim `EntityState` has three fields and none of them is
- *                                 a generator. Adding one would make mc-sim the
- *                                 owner of a rules-tier concern, which is the
- *                                 boundary `domain/entity.ts` is built to hold.
- *
- *   A SEED IN THE FRAME STATE     What this file is. The seed is drawn from at
- *                                 the moment a rule consults a roll and at no
- *                                 other, so a frame is a pure function of its
- *                                 inputs and its seed, and two runs of one
- *                                 scenario produce the same drops.
- *
- * mc-worldgen threads a seed for the same reason and `./mob/mob-drop`'s header
- * names it as the model 「the way mc-worldgen threads a seed」. This is the
- * consumer side of that sentence.
- *
- * ---------------------------------------------------------------------------
- * The seed is frame-local scratch, and it passes the save-file test
- * ---------------------------------------------------------------------------
- *
- * `stages/registration.ts` asks one question of every `Ref` it holds: would a
- * save file need it? A generator's position is not a fact about the world. A
- * reload restarts the sequence, and the only observable consequence is which
- * numbers a kill that has not happened yet will draw — no saved noun disagrees
- * with anything, which is the property `timeOfDaySecs` failed.
- *
- * What a save file WOULD need is a world seed, and that is mc-worldgen's noun
- * rather than a second one invented here. When it is published, the frame's seed
- * is derived from it and this file's function does not change.
- *
- * ---------------------------------------------------------------------------
- * Which generator, and the one thing to know about it
- * ---------------------------------------------------------------------------
- *
- * Lehmer / Park-Miller "MINSTD": `x' = 16807 * x mod (2^31 - 1)`. Three
- * properties decide it over the usual bit-twiddling alternatives:
- *
- *   - EVERY INTERMEDIATE IS EXACT IN A DOUBLE. `16807 * (2^31 - 2)` is about
- *     3.6e13, comfortably inside 2^53, so there is no coercion to int32 anywhere
- *     and the sequence is identical in every JavaScript engine. A generator whose
- *     reproducibility depends on wraparound semantics is a generator whose
- *     reproducibility has to be argued for.
- *   - It is one line, and a reader can check it against a citation rather than
- *     against a comment.
- *   - It uses no bitwise operator, which `.oxlintrc.json`'s `no-bitwise` would
- *     otherwise have to be suppressed for — and a suppression comment in the one
- *     file that produces randomness is exactly the kind of thing nobody reads.
- *
- * The cost, stated rather than discovered: MINSTD has poor high-dimensional
- * uniformity — successive triples fall on a lattice of about 2953 planes. That is
- * irrelevant to "does this drop pass a 50% gate" and would matter to terrain, so
- * the trigger for replacing it is a rule that draws many rolls and cares how they
- * correlate. Nothing in `domain/` does; `./mob/mob-drop`'s creeper table never
- * consults a roll at all.
+ * Stages draw rolls from the frame seed and advance it, so identical frame
+ * inputs replay the same outcomes. Multiplayer assumes the server owns this
+ * seed. This package does not enforce that boundary; a separate multiplayer
+ * server-authority review (MP1) must verify it.
  */
 
 /**
- * The modulus. `2^31 - 1`, prime, which is what makes the multiplier's orbit
- * cover every value in `[1, m - 1]` exactly once before repeating.
+ * Prime modulus used by the Park–Miller generator.
  */
 const MODULUS = 2_147_483_647
 
-/** The multiplier. Park & Miller's, and a primitive root of `MODULUS`. */
+/** Park–Miller generator multiplier. */
 const MULTIPLIER = 16_807
 
 /**
- * The seed every frame state starts from.
- *
- * A LITERAL and not a clock reading, which is the whole point: two runs of one
- * scenario replay identically, and `Date.now()` is banned by
- * `scripts/check-dependency-whitelist.ts` anyway (DN-GP-8). The value is
- * arbitrary; it is written as a number rather than as `1` so that a reader does
- * not mistake it for a placeholder that somebody meant to replace.
+ * Fixed initial seed for each frame state.
  */
 export const DEFAULT_ROLL_SEED = 20_260_727
 
 /**
- * Fold any number at all into the generator's legal state, `[1, MODULUS - 1]`.
- *
- * TOTAL. Zero is the generator's fixed point — `16807 * 0 mod m` is `0` forever —
- * so it is mapped to `1` rather than accepted, and a seed that is not a number
- * lands on the same value instead of poisoning every roll after it with `NaN`.
- * That is the inert direction and it is the one `./mob/mob-drop`'s `clampRoll`
- * takes for the same reason: the preview's finding F5 is a non-number travelling
- * through arithmetic that had no opinion about it.
+ * Map a seed to the generator's legal state, `[1, MODULUS - 1]`. Zero is an
+ * absorbing state, so it maps to `1`; non-finite seeds also map to `1`.
  */
 export const normaliseSeed = (seed: number): number => {
   if (!Number.isFinite(seed)) {
@@ -153,13 +63,7 @@ export type RollBatch = {
 const NO_ROLLS: ReadonlyArray<never> = []
 
 /**
- * Draw `count` rolls in order.
- *
- * A count of zero draws nothing, advances nothing and allocates nothing — the
- * shared empty array — because the common case on the frame path is a sweep in
- * which nothing died. Drawing "just in case" would make the sequence depend on
- * how many mobs existed rather than on what happened to them, and a scenario
- * that spawns one extra pig would then get different gunpowder.
+ * Draw `count` rolls in order. A zero count does not allocate or advance the seed.
  */
 export const drawRolls = (seed: number, count: number): RollBatch => {
   if (!Number.isFinite(count) || count <= 0) {

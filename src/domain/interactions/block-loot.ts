@@ -173,7 +173,8 @@ export const rollFortuneExtraDrops = (level: number, roll: number): number => {
  * `<reference-impl>/packages/world/application/block-service.config.ts:221-223`.
  * One in two hundred, one in fifty, one in twenty.
  */
-export const LEAF_APPLE_DROP_CHANCE = 0.005
+const LEAF_APPLE_DROP_CHANCES_BY_FORTUNE = [1 / 200, 1 / 180, 1 / 160, 1 / 120] as const
+export const LEAF_APPLE_DROP_CHANCE: number = LEAF_APPLE_DROP_CHANCES_BY_FORTUNE[0]
 export const LEAF_STICK_DROP_CHANCE = 0.02
 export const LEAF_SAPLING_DROP_CHANCE = 0.05
 
@@ -183,15 +184,15 @@ export const GRASS_SEED_DROP_CHANCE = 0.125
 /**
  * One line of a block's bonus loot: an item, and the roll it has to beat.
  *
- * A COUNT IS ALWAYS ONE. Every bonus line the reference has
- * (`rollLeafDrops` :225-233, `rollGrassSeedDrop` :245-246) yields exactly one
- * item or none, so there is no range to roll over and adding a `maxCount` here
- * would be inventing the other end of a rule — which is what
- * `../mob/shulker-shell` declines to do with `SHULKER_FORCED_CLOSED_TICKS`.
+ * Each line yields one stack or none. Leaf sticks are the one variable-size
+ * stack: their existing chance roll is split evenly between counts 1 and 2, so
+ * the vanilla count range fits without consuming another roll.
  */
 type BonusDropLine = {
   readonly item: ItemType
   readonly chance: number
+  readonly fortuneChances?: typeof LEAF_APPLE_DROP_CHANCES_BY_FORTUNE
+  readonly maxCount?: number
 }
 
 /**
@@ -204,27 +205,16 @@ type BonusDropLine = {
  * kernel's registry deliberately cannot express a random line.
  *
  * ---------------------------------------------------------------------------
- * TWO OF THE REFERENCE'S FIVE LINES ARE ROSTER GAPS, AND THEY ARE RECORDED
+ * THE SUPPORTED LEAF BONUS LINES
  * ---------------------------------------------------------------------------
  *
  * `rollLeafDrops` yields APPLE, STICKS and SAPLING, and `rollGrassSeedDrop`
- * yields WHEAT_SEEDS from both tall grass and ferns. Of those item types this
- * build has two:
+ * yields WHEAT_SEEDS from both tall grass and ferns. All four item types are in
+ * the pinned kernel roster, so the reference rows are represented directly:
  *
- *   `stick`         in kernel's `ITEM_TYPES`. Shipped below.
- *   `apple`         NOT an `ItemType`. One row in kernel's roster, no edit here.
- *   `sapling`       a `BlockType` and NOT an `ItemType` — so it is in
- *                   kernel's `UNITEMISED_BLOCK_TYPES`, which is
- *                   the list that exists so this gap is data rather than a
- *                   comment. Breaking leaves cannot yield a sapling you can
- *                   carry until kernel itemises it.
- *   `wheat_seeds`   in kernel's `ITEM_TYPES`. Both source blocks ship below.
- *
- * The two absent lines are NOT written with a substitute item. `../mob/mob-drop`
- * records the one place this repository did substitute (`blaze_rod` ->
- * `blaze_powder`) and the paragraph justifying it is four times the length of
- * the line — because kernel had already decided that name. Nothing has decided
- * that an apple is a `glowstone_dust`.
+ *   `apple`, `stick`, `sapling` from oak leaves. Kernel 0.14.0 has no
+ *   `dark_oak_leaves` block ID, so only oak leaves can currently be keyed here.
+ *   `wheat_seeds` from tall grass and ferns
  */
 const BONUS_DROPS: ReadonlyMap<BlockType, ReadonlyArray<BonusDropLine>> = new Map<
   BlockType,
@@ -233,8 +223,13 @@ const BONUS_DROPS: ReadonlyMap<BlockType, ReadonlyArray<BonusDropLine>> = new Ma
   [
     'oak_leaves',
     [
-      { item: 'stick', chance: LEAF_STICK_DROP_CHANCE },
+      { item: 'stick', chance: LEAF_STICK_DROP_CHANCE, maxCount: 2 },
       { item: 'sapling', chance: LEAF_SAPLING_DROP_CHANCE },
+      {
+        item: 'apple',
+        chance: LEAF_APPLE_DROP_CHANCE,
+        fortuneChances: LEAF_APPLE_DROP_CHANCES_BY_FORTUNE,
+      },
     ],
   ],
   ['tall_grass', [{ item: 'wheat_seeds', chance: GRASS_SEED_DROP_CHANCE }]],
@@ -253,12 +248,9 @@ const BONUS_DROPS: ReadonlyMap<BlockType, ReadonlyArray<BonusDropLine>> = new Ma
  *   [2] bonus line 1
  *   [3] bonus line 2
  *
- * THREE BONUS SLOTS AND ONE TABLE ENTRY THAT USES ONE. The width is the
- * reference's `rollLeafDrops`, which takes three rolls, so restoring the apple
- * and sapling lines the day kernel has the items is a change to `BONUS_DROPS`
- * and NOT to this number — which is the whole reason it is not `1`. A budget
- * that grew when a table row grew would reshuffle every later draw in every
- * existing scenario test.
+ * THREE BONUS SLOTS AND ONE TABLE ENTRY THAT USES ONE. Oak leaves use all three
+ * bonus slots; the stick count is derived from its chance roll, so adding the
+ * apple line does not increase the budget or reshuffle later draws.
  */
 export const BLOCK_LOOT_ROLLS = 4
 
@@ -379,8 +371,18 @@ export const blockLoot = (
   const bonus = type === undefined || context.silkTouch === true ? undefined : BONUS_DROPS.get(type)
   if (bonus !== undefined) {
     bonus.slice(0, MAX_BONUS_LINES).forEach((line, index) => {
-      if ((rolls[index + 1] ?? 0) < line.chance) {
-        items.push({ item: line.item, count: 1 })
+      const bonusRoll = rolls[index + 1] ?? 0
+      const fortuneLevel = Number.isFinite(context.fortuneLevel ?? 0)
+        ? Math.max(0, Math.floor(context.fortuneLevel ?? 0))
+        : 0
+      const fortuneIndex = Math.min(fortuneLevel, LEAF_APPLE_DROP_CHANCES_BY_FORTUNE.length - 1)
+      const chance = line.fortuneChances?.[fortuneIndex] ?? line.chance
+      if (bonusRoll < chance) {
+        const count =
+          line.maxCount === undefined
+            ? 1
+            : 1 + Math.floor((bonusRoll / chance) * line.maxCount)
+        items.push({ item: line.item, count })
       }
     })
   }

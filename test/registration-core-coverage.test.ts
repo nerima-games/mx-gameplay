@@ -12,6 +12,7 @@ import {
 } from '@nerima-games/mc-kernel'
 import {
   EntityId,
+  EntityKind,
   WorldCommitBlockWriteMismatch,
   WorldCommitEmptyRequest,
   itemStack as makeItemStack,
@@ -139,13 +140,13 @@ const fireStageWithCommit = (
   commit,
 ).find((stage) => stage.id === GAMEPLAY_STAGE_IDS.fire)
 
-const makeFireCasualtyHarness = () => Effect.gen(function* () {
+const makeFireCasualtyHarness = (kind = ZOMBIE_KIND) => Effect.gen(function* () {
   const firePosition = fixtureBlockPosition(9, 64, 9)
   const fireBlock = Option.getOrThrow(blockIdOf('fire'))
   const supportBlock = Option.getOrThrow(blockIdOf('stone'))
   const entity = {
     id: EntityId('test:fire-zombie-drop'),
-    kind: ZOMBIE_KIND,
+    kind,
     feetPosition: position(
       PositionAxis(firePosition.x),
       PositionAxis(firePosition.y),
@@ -1032,7 +1033,47 @@ describe('registration-core public paths omitted from focused coverage', () => {
         DroppedItemOwnerSnapshotSchema,
       )
       expect(drops.state.items.length).toBeGreaterThan(0)
-      expect(yield* Ref.get(harness.state.unsupportedOperations)).toStrictEqual([])
+      expect(yield* Ref.get(harness.state.unsupportedOperations)).toContainEqual({
+        _tag: 'Unsupported',
+        action: 'MobDrop',
+        reason: 'UnsupportedDropItemIds',
+        mobKind: 'zombie',
+        itemIds: ['zombie_head'],
+      })
+      expect(yield* Ref.get(harness.state.operationFailures)).toStrictEqual([])
+      expect(yield* commit.coordinator.revision).toBe(1)
+    }),
+  )
+
+  it.effect('reports unknown mob loot and XP after a successful fire casualty commit', () =>
+    Effect.gen(function* () {
+      const harness = yield* makeFireCasualtyHarness(EntityKind('unregistered'))
+      const commit = harness.commit
+      if (commit?.entitiesOwnerId === undefined) throw new Error('fire casualty entities owner was not registered')
+      const fire = fireStageWithCommit(harness, commit)
+      if (fire === undefined) throw new Error('fire stage was not registered')
+      yield* Ref.set(harness.state.rollSeed, 4)
+      yield* Ref.set(harness.state.fireLifecycle, makeFireLifecycleState([harness.firePosition], 41))
+
+      for (let tick = 0; tick <= FIRE_DAMAGE_INTERVAL_TICKS; tick += 1) {
+        yield* fire.run(DeltaTimeSecs(FIRE_TICK_INTERVAL_SECS)).pipe(Effect.provide(FrameServicesLayer))
+        if ((yield* Ref.get(harness.state.unsupportedOperations)).length > 0) break
+      }
+
+      expect(yield* Ref.get(harness.state.unsupportedOperations)).toEqual(expect.arrayContaining([
+        {
+          _tag: 'Unsupported',
+          action: 'MobDrop',
+          reason: 'UnknownMobKind',
+          mobKind: 'unregistered',
+        },
+        {
+          _tag: 'Unsupported',
+          action: 'MobExperience',
+          reason: 'UnknownMobKind',
+          mobKind: 'unregistered',
+        },
+      ]))
       expect(yield* Ref.get(harness.state.operationFailures)).toStrictEqual([])
       expect(yield* commit.coordinator.revision).toBe(1)
     }),

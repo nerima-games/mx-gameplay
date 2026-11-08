@@ -8,12 +8,14 @@ import {
   DimensionRevisionSchema,
   EntityHealthPoints,
   EntityIdSchema,
+  ENTITY_TYPES,
   PositionAxis,
   ProjectileIdSchema,
   SimulationTick,
   SimulationTickSchema,
   StackCount,
   WorldRevisionSchema,
+  ITEM_TYPES,
   itemStack,
   position as makePosition,
   type Position,
@@ -52,14 +54,51 @@ import { planExperienceOrbAbsorption, createExperienceOrbValue } from '../../src
 import { makeInMemoryEntityManager as createEntityManager } from '../../src/domain/in-memory-entity-manager'
 import {
   dropPasses,
+  MOB_DROP_TABLES,
   mobXpReward,
   rollMobDrop,
   type DropRolls,
   type MobDropRule,
 } from '../../src/domain/mob/mob-drop'
 import { ZOMBIE_KIND } from '../../src/domain/mob/hostile-combat'
-import { dropRollsNeeded } from '../../src/domain/entities/mob-frame'
-import { COW_KIND } from '../../src/domain/mob/mob-ecosystem'
+import { rollCasualtyExperience } from '../../src/stages/registration-core'
+
+const ORACLE_MOB_LOOT = {
+  cow: {
+    rules: [
+      { item: 'leather', count: 0, maxCount: 2, adultOnly: true },
+      { item: 'beef', count: 1, maxCount: 3, adultOnly: true, burningItem: 'cooked_beef' },
+    ],
+    xp: { adult: { min: 1, max: 3 }, baby: { min: 0, max: 0 } },
+    unsupportedItemIds: [],
+  },
+  skeleton: {
+    rules: [
+      { item: 'bone', count: 0, maxCount: 2 },
+      { item: 'arrow', count: 0, maxCount: 2 },
+      { item: 'string', count: 0, maxCount: 2 },
+    ],
+    xp: { adult: { min: 5, max: 5 } },
+    unsupportedItemIds: ['skeleton_skull'],
+  },
+  ravager: {
+    rules: [{ item: 'saddle', count: 1 }],
+    xp: { adult: { min: 20, max: 20 } },
+    unsupportedItemIds: [],
+  },
+  slime: {
+    rules: [],
+    xp: {
+      adult: { min: 4, max: 4 },
+      sizes: {
+        small: { min: 1, max: 1 },
+        medium: { min: 2, max: 2 },
+        large: { min: 4, max: 4 },
+      },
+    },
+    unsupportedItemIds: ['slime_ball'],
+  },
+} as const
 
 const position = (x: number, y: number, z: number): Position =>
   makePosition(PositionAxis(x), PositionAxis(y), PositionAxis(z))
@@ -166,37 +205,8 @@ describe('mob entity properties', () => {
     )
   })
 
-  it('advances mob loot seed only for casualty drop budgets', () => {
-    // Catches loot draws inside ordinary mob sweeps or a per-casualty budget off by one.
-    fc.assert(
-      fc.property(
-        fc.integer({ min: 1, max: 2_147_483_646 }),
-        fc.integer({ min: 0, max: 12 }),
-        (seed, casualtyCount) => {
-          const casualties: ReadonlyArray<MobCasualty> = Array.from(
-            { length: casualtyCount },
-            (_, index) => ({
-              id: EntityId(`property-zombie-${String(index)}`),
-              kind: ZOMBIE_KIND,
-              at: ORIGIN,
-            }),
-          )
-          const rolled = rollCasualtyDrops(casualties, seed)
-          const expectedSeed = drawRolls(
-            seed,
-            casualtyCount * dropRollsNeeded(ZOMBIE_KIND),
-          ).seed
-
-          expect(rolled.seed).toBe(expectedSeed)
-          expect(rolled.drops.every((drop) => drop.count >= 1 && drop.count <= 2)).toBe(true)
-          expect(rolled.drops.every((drop) => casualties.some(({ id }) => id === drop.source))).toBe(true)
-        },
-      ),
-    )
-  })
-
   it('keeps mob drop chances strict and the count roll monotone', () => {
-    // Catches an inclusive chance boundary, reversed count roll, or Looting changing XP.
+    // Catches an inclusive chance boundary or a count outside its declared range.
     fc.assert(
       fc.property(
         fc.double({ min: 0.01, max: 1, noNaN: true }),
@@ -238,13 +248,109 @@ describe('mob entity properties', () => {
           expect(highCount).toBeDefined()
           expect(withoutLooting!.count).toBeGreaterThanOrEqual(baseCount)
           expect(withoutLooting!.count).toBeLessThanOrEqual(baseCount + spread)
-          expect(withLooting!.count - withoutLooting!.count).toBe(lootingLevel)
+          expect(withLooting!.count).toBe(withoutLooting!.count)
           expect(highCount!.count).toBeGreaterThanOrEqual(withLooting!.count)
           expect(rollMobDrop(rule, { _tag: 'SelfDestruct' }, rolls)).toBeUndefined()
           expect(mobXpReward({ _tag: 'Slain', lootingLevel }, 10)).toBe(10)
           expect(mobXpReward({ _tag: 'SelfDestruct' }, 10)).toBe(0)
         },
       ),
+    )
+  })
+
+  it('covers every kernel kind with a table containing only kernel item IDs', () => {
+    const kinds = Object.keys(MOB_DROP_TABLES)
+    expect(kinds).toHaveLength(81)
+    expect(kinds.every((kind) => ENTITY_TYPES.includes(kind as typeof ENTITY_TYPES[number]))).toBe(true)
+    for (const table of Object.values(MOB_DROP_TABLES)) {
+      const itemIds = [
+        ...table.rules.flatMap((rule) => [rule.item, rule.burningItem].filter((item) => item !== undefined)),
+        ...(table.pools ?? []).flatMap((pool) => pool.choices.flatMap((choice) => [
+          choice.item,
+          choice.burningItem,
+        ].filter((item) => item !== undefined))),
+      ]
+      expect(itemIds.every((item) => ITEM_TYPES.includes(item))).toBe(true)
+    }
+  })
+
+  it('matches an independent drop and XP oracle for generated seed and casualty context', () => {
+    const kinds = ['cow', 'skeleton', 'ravager', 'slime'] as const
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 1, max: 2_147_483_646 }),
+        fc.constantFrom(...kinds),
+        fc.constantFrom('adult' as const, 'baby' as const),
+        fc.constantFrom('small' as const, 'medium' as const, 'large' as const),
+        fc.boolean(),
+        fc.boolean(),
+        (seed, kind, age, size, playerKill, burning) => {
+          const oracle = ORACLE_MOB_LOOT[kind]
+          const id = EntityId('property-oracle-casualty')
+          const mobKind = EntityKind(kind)
+          const casualty: MobCasualty = {
+            id,
+            kind: mobKind,
+            at: ORIGIN,
+            age,
+            size,
+            burning,
+            ...(playerKill ? {
+              killCredit: 'player' as const,
+              lastHitTick: SimulationTick(0),
+              deathTick: SimulationTick(0),
+            } : {}),
+          }
+          const dropRollCount = oracle.rules.length * 2
+          const dropBatch = drawRolls(seed, dropRollCount)
+          const expectedDrops = oracle.rules.flatMap((rule, index) => {
+            if ('adultOnly' in rule && rule.adultOnly && age === 'baby') return []
+            const maxCount = 'maxCount' in rule && rule.maxCount !== undefined
+              ? rule.maxCount
+              : rule.count
+            const count = rule.count + Math.floor(
+              dropBatch.rolls[index * 2 + 1]! * (maxCount - rule.count + 1),
+            )
+            if (count <= 0) return []
+            const item = burning && 'burningItem' in rule && rule.burningItem !== undefined
+              ? rule.burningItem
+              : rule.item
+            return [{ item, count, source: id, kind: mobKind, at: ORIGIN }]
+          })
+          const issue = oracle.unsupportedItemIds.length === 0
+            ? []
+            : [{
+                _tag: 'UnsupportedDropItemIds' as const,
+                kind,
+                itemIds: oracle.unsupportedItemIds,
+              }]
+          const expectedLoot = issue.length === 0
+            ? { _tag: 'Resolved' as const, drops: expectedDrops, seed: dropBatch.seed }
+            : { _tag: 'Unsupported' as const, drops: expectedDrops, seed: dropBatch.seed, issues: issue }
+
+          const xpRange = 'sizes' in oracle.xp
+            ? oracle.xp.sizes[size]
+            : age === 'baby' && 'baby' in oracle.xp
+              ? oracle.xp.baby
+              : oracle.xp.adult
+          const xpRollCount = playerKill && xpRange.max > xpRange.min ? 1 : 0
+          const xpBatch = drawRolls(dropBatch.seed, xpRollCount)
+          const xpAmount = playerKill
+            ? xpRange.min + Math.floor((xpBatch.rolls[0] ?? 0) * (xpRange.max - xpRange.min + 1))
+            : 0
+          const expectedExperience = xpAmount > 0
+            ? [{ source: id, kind: mobKind, at: ORIGIN, amount: xpAmount }]
+            : []
+
+          expect(rollCasualtyDrops([casualty], seed)).toStrictEqual(expectedLoot)
+          expect(rollCasualtyExperience([casualty], dropBatch.seed)).toStrictEqual({
+            _tag: 'Resolved',
+            experience: expectedExperience,
+            seed: xpBatch.seed,
+          })
+        },
+      ),
+      { numRuns: 200 },
     )
   })
 
@@ -453,38 +559,18 @@ describe('mob entity properties', () => {
             deathTick: SimulationTick(age),
           }
 
-          expect(experience.length).toBe(age <= MOB_EXPERIENCE_CREDIT_WINDOW_TICKS ? 1 : 0)
+          expect(experience._tag).toBe('Resolved')
+          expect(experience.experience.length).toBe(age <= MOB_EXPERIENCE_CREDIT_WINDOW_TICKS ? 1 : 0)
           if (age <= MOB_EXPERIENCE_CREDIT_WINDOW_TICKS) {
-            expect(experience[0]?.amount).toBe(5)
+            expect(experience.experience[0]?.amount).toBe(5)
           }
-          expect(experienceOfCasualties([uncreditedCasualty])).toStrictEqual([])
+          expect(experienceOfCasualties([uncreditedCasualty])).toStrictEqual({
+            _tag: 'Resolved',
+            experience: [],
+          })
         },
       ),
     )
   })
 
-  it('keeps the recorded roll count tied to each mob drop table', () => {
-    // Catches a frame budget that spends too few or too many rolls for a casualty's loot table.
-    fc.assert(
-      fc.property(
-        fc.integer({ min: 1, max: 2_147_483_646 }),
-        fc.integer({ min: 0, max: 12 }),
-        (seed, casualtyCount) => {
-          const casualtyKinds = Array.from({ length: casualtyCount }, (_, index) =>
-            index % 2 === 0 ? ZOMBIE_KIND : COW_KIND)
-          const casualties: ReadonlyArray<MobCasualty> = casualtyKinds.map((kind, index) => ({
-            id: EntityId(`property-mob-${String(index)}`),
-            kind,
-            at: ORIGIN,
-          }))
-          const expectedRollCount = casualtyKinds.reduce(
-            (total, kind) => total + dropRollsNeeded(kind),
-            0,
-          )
-
-          expect(rollCasualtyDrops(casualties, seed).seed).toBe(drawRolls(seed, expectedRollCount).seed)
-        },
-      ),
-    )
-  })
 })

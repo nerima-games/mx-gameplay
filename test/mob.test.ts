@@ -33,13 +33,14 @@
  * shape checks that keep a whole class out.
  */
 import { describe, expect, it } from '@effect/vitest'
-import { Effect, Result } from 'effect'
+import { Brand, Effect, Result } from 'effect'
 import { readdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { EntityKind } from '@nerima-games/mc-sim'
 import { AIR_BLOCK_ID, BlockId } from '@nerima-games/mc-kernel'
 import { applyDamage, deathMessage, fullHealth, isDead, MAX_HEALTH_POINTS } from '../src/domain/death-cause'
-import { capabilityOfBlockId, DeltaTimeSecs, ITEM_TYPES } from '@nerima-games/mc-kernel'
+import { capabilityOfBlockId, DeltaTimeSecs, ENTITY_TYPES, ITEM_TYPES } from '@nerima-games/mc-kernel'
 import {
   CREEPER_FUSE_SECS,
   CREEPER_IGNITION_RANGE_BLOCKS,
@@ -47,6 +48,8 @@ import {
   stepCreeperFuse,
   type CreeperFuse,
 } from '../src/domain/mob/creeper-fuse'
+import { dropRollsNeeded, rollDropsOfKind } from '../src/domain/entities/mob-frame'
+import { nextRoll } from '../src/domain/frame-rolls'
 import {
   CHARGED_CREEPER_EXPLOSION_POWER,
   CREEPER_EXPLOSION_POWER,
@@ -87,13 +90,20 @@ import {
   GHAST_DROPS,
   GHAST_XP_REWARD,
   LOWEST_ROLLS,
+  MOB_DROP_TABLES,
+  MOB_EXPERIENCE_RULES,
+  type MobDropRollSequence,
+  mobExperienceRuleOfKind,
   mobXpReward,
   rollMobDrop,
   rollMobDrops,
+  rollMobTable,
   type MobDropRule,
   ZOMBIE_DROPS,
   ZOMBIE_XP_REWARD,
 } from '../src/domain/mob/mob-drop'
+
+const makeMobDropRollSequence = Brand.nominal<MobDropRollSequence>()
 import {
   ENDERMAN_CHASE_TELEPORT_CHANCE,
   ENDERMAN_DAMAGE_TELEPORT_CHANCE,
@@ -686,35 +696,27 @@ describe('canMobSpawnAt: the ecosystem roster on top of the hostile rule', () =>
   )
 })
 
-describe('creeper: kernel names the drop, this repository decides the count', () => {
+describe('mob drop tables', () => {
   const SLAIN = { _tag: 'Slain', lootingLevel: 0 } as const
   const SELF_DESTRUCT = { _tag: 'SelfDestruct' } as const
 
-  it.effect('drops exactly one gunpowder, and gunpowder is spelled kernel’s way', () =>
+  it.effect('rolls creeper gunpowder from the vanilla 0–2 range', () =>
     Effect.sync(() => {
-      // packages/entity/domain/mob/mobs/creeper.ts:15 —
-      // `drops: [{ blockType: 'GUNPOWDER', count: 1 }]`. The re-casing is the
-      // repoint kernel's item-type header predicts: mc-sim's provisional
-      // strings are UPPER_SNAKE and the union is lower_snake.
-      expect(CREEPER_DROPS).toStrictEqual([{ item: 'gunpowder', count: 1 }])
+      expect(CREEPER_DROPS).toStrictEqual([{ item: 'gunpowder', count: 0, maxCount: 2 }])
       expect(ITEM_TYPES).toContain('gunpowder')
 
-      expect(rollMobDrops(CREEPER_DROPS, SLAIN, () => LOWEST_ROLLS)).toStrictEqual([
-        { item: 'gunpowder', count: 1 },
+      expect(rollMobDrops(CREEPER_DROPS, SLAIN, () => ({ chance: 0, count: 0 }))).toStrictEqual([])
+      expect(rollMobDrops(CREEPER_DROPS, SLAIN, () => ({ chance: 0, count: 0.99 }))).toStrictEqual([
+        { item: 'gunpowder', count: 2 },
       ])
     }),
   )
 
-  it.effect('is not random at all — every roll produces the same single gunpowder', () =>
+  it.effect('keeps each generated count inside the table range', () =>
     Effect.sync(() => {
-      // Nothing about this mob is random: not the fuse, not the blast, not the
-      // drop. The rolls are threaded for the roster entries that DO have a
-      // `chance`, and taking them now is cheaper than retrofitting determinism
-      // onto a signature later.
-      for (const roll of [0, 0.001, 0.5, 0.999, 1, -1, Number.NaN]) {
-        expect(rollMobDrops(CREEPER_DROPS, SLAIN, () => ({ chance: roll, count: roll }))).toStrictEqual([
-          { item: 'gunpowder', count: 1 },
-        ])
+      for (const roll of [0, 0.001, 0.5, 0.999]) {
+        const drops = rollMobDrops(CREEPER_DROPS, SLAIN, () => ({ chance: 0, count: roll }))
+        expect(drops.every(({ count }) => count >= 1 && count <= 2)).toBe(true)
       }
     }),
   )
@@ -757,21 +759,67 @@ describe('creeper: kernel names the drop, this repository decides the count', ()
     }),
   )
 
-  it.effect('looting adds one item per level, which is the reference’s rule and not vanilla’s', () =>
+  it.effect('adds experience for undropped equipment with its own rolls', () =>
     Effect.sync(() => {
-      // interaction-melee-handler.ts:180-200 re-spawns each already-rolled drop
-      // with `count = lootingEnchant.level`, so the total is base + level.
-      // Vanilla rolls an extra 0..level instead. Ported rather than corrected:
-      // docs/porting.md §4 makes the reference the specification, and a silent
-      // change to a drop rate should arrive with a measurement.
-      const withLooting = (level: number) =>
-        rollMobDrops(CREEPER_DROPS, { _tag: 'Slain', lootingLevel: level }, () => LOWEST_ROLLS)
+      const zombie = Result.getOrThrow(mobExperienceRuleOfKind(EntityKind('zombie')))
+      expect(mobXpReward(SLAIN, zombie, 0, {
+        undroppedEquipmentCount: 2,
+        equipmentRolls: [0, 0.999],
+      })).toBe(9)
+      expect(mobXpReward(SLAIN, zombie, 0.999, {
+        undroppedEquipmentCount: 2,
+      })).toBe(11)
+      expect(mobXpReward(SLAIN, zombie, 0, {
+        undroppedEquipmentCount: 2,
+        equipmentRolls: [0],
+      })).toBe(7)
+    }),
+  )
 
-      expect(withLooting(0)).toStrictEqual([{ item: 'gunpowder', count: 1 }])
-      expect(withLooting(3)).toStrictEqual([{ item: 'gunpowder', count: 4 }])
-      // A nonsense level adds nothing rather than producing a nonsense stack.
-      expect(withLooting(-2)).toStrictEqual([{ item: 'gunpowder', count: 1 }])
-      expect(withLooting(Number.NaN)).toStrictEqual([{ item: 'gunpowder', count: 1 }])
+  it.effect('enforces baby and size gates at their boundaries', () =>
+    Effect.sync(() => {
+      const babyOnly = { item: 'rotten_flesh', count: 1, babyOnly: true } as const
+      expect(rollMobDrop(babyOnly, SLAIN, LOWEST_ROLLS)).toBeUndefined()
+      expect(rollMobDrop(babyOnly, { ...SLAIN, age: 'baby' }, LOWEST_ROLLS)).toStrictEqual({
+        item: 'rotten_flesh',
+        count: 1,
+      })
+
+      const smallOnly = { item: 'rotten_flesh', count: 1, size: 'small' } as const
+      expect(rollMobDrop(smallOnly, SLAIN, LOWEST_ROLLS)).toBeUndefined()
+      expect(rollMobDrop(smallOnly, { ...SLAIN, size: 'small' }, LOWEST_ROLLS)).toStrictEqual({
+        item: 'rotten_flesh',
+        count: 1,
+      })
+      expect(rollMobDrop(smallOnly, { ...SLAIN, size: 'medium' }, LOWEST_ROLLS)).toBeUndefined()
+
+      const mediumOrLarger = { item: 'rotten_flesh', count: 1, minimumSize: 'medium' } as const
+      expect(rollMobDrop(mediumOrLarger, SLAIN, LOWEST_ROLLS)).toBeUndefined()
+      expect(rollMobDrop(mediumOrLarger, { ...SLAIN, size: 'small' }, LOWEST_ROLLS)).toBeUndefined()
+      expect(rollMobDrop(mediumOrLarger, { ...SLAIN, size: 'medium' }, LOWEST_ROLLS)).toStrictEqual({
+        item: 'rotten_flesh',
+        count: 1,
+      })
+    }),
+  )
+
+  it.effect('uses the respawn dragon experience range and rejects non-finite fixed rewards', () =>
+    Effect.sync(() => {
+      const dragon = Result.getOrThrow(mobExperienceRuleOfKind(EntityKind('ender_dragon')))
+      expect(mobXpReward(SLAIN, dragon, 0, { firstDragonDeath: false })).toBe(500)
+      expect(mobXpReward(SLAIN, Number.NaN)).toBe(0)
+    }),
+  )
+
+  it.effect('accepts Looting context without applying the enchantment', () =>
+    Effect.sync(() => {
+      const rolls = () => ({ chance: 0, count: 0.75 })
+      expect(rollMobDrops(CREEPER_DROPS, { _tag: 'Slain', lootingLevel: 0 }, rolls)).toStrictEqual([
+        { item: 'gunpowder', count: 2 },
+      ])
+      expect(rollMobDrops(CREEPER_DROPS, { _tag: 'Slain', lootingLevel: 3 }, rolls)).toStrictEqual([
+        { item: 'gunpowder', count: 2 },
+      ])
     }),
   )
 
@@ -781,7 +829,7 @@ describe('creeper: kernel names the drop, this repository decides the count', ()
       // packages/entity/test/mob/drop.test.ts: a `chance` of 0.025 passes at
       // 0.024 and fails at exactly 0.025, and an un-gated drop passes even at a
       // roll of 1.
-      const rare: MobDropRule = { item: 'blaze_powder', count: 1, chance: 0.025 }
+      const rare: MobDropRule = { item: 'gunpowder', count: 1, chance: 0.025 }
 
       expect(dropPasses(rare, 0)).toBe(true)
       expect(dropPasses(rare, 0.024)).toBe(true)
@@ -791,7 +839,7 @@ describe('creeper: kernel names the drop, this repository decides the count', ()
 
       expect(rollMobDrop(rare, SLAIN, { chance: 0.5, count: 0 })).toBeUndefined()
       expect(rollMobDrop(rare, SLAIN, { chance: 0.01, count: 0 })).toStrictEqual({
-        item: 'blaze_powder',
+        item: 'gunpowder',
         count: 1,
       })
     }),
@@ -826,71 +874,235 @@ describe('creeper: kernel names the drop, this repository decides the count', ()
     }),
   )
 
-  it.effect('a ghast drops the same gunpowder, because the NAME is kernel’s', () =>
+  it.effect('ghasts roll tear and gunpowder ranges', () =>
     Effect.sync(() => {
-      // packages/entity/domain/mob/mobs/ghast.ts:16-17. Same item, same count,
-      // different mob, no new mechanism — which is the point of asserting it:
-      // under the scatter plan.md §3.1 measured these would have been two
-      // spellings of the same string.
-      expect(GHAST_DROPS).toStrictEqual([{ item: 'gunpowder', count: 1 }])
-      expect(GHAST_XP_REWARD).toBe(5)
-      expect(rollMobDrops(GHAST_DROPS, SLAIN, () => LOWEST_ROLLS)).toStrictEqual([
-        { item: 'gunpowder', count: 1 },
+      expect(GHAST_DROPS).toStrictEqual([
+        { item: 'ghast_tear', count: 0, maxCount: 1 },
+        { item: 'gunpowder', count: 0, maxCount: 2 },
       ])
-      // And it obeys the same self-destruct rule the creeper does — it is a
-      // case of the argument, not a fact about creepers.
+      expect(GHAST_XP_REWARD).toBe(5)
+      expect(rollMobDrops(GHAST_DROPS, SLAIN, (index) => ({ chance: 0, count: index === 0 ? 0.9 : 0.99 }))).toStrictEqual([
+        { item: 'ghast_tear', count: 1 },
+        { item: 'gunpowder', count: 2 },
+      ])
       expect(rollMobDrops(GHAST_DROPS, SELF_DESTRUCT, () => LOWEST_ROLLS)).toStrictEqual([])
     }),
   )
 
-  it.effect('a blaze is the first REAL table with a chance, and the half is strict', () =>
+  it.effect('blaze rods are omitted while kernel has no blaze_rod item', () =>
     Effect.sync(() => {
-      // packages/entity/domain/mob/mobs/blaze.ts:17-18 — `chance: 0.5`,
-      // `xpReward: 10`. Until now the only chance-gated rule in this file was
-      // one written for the test; this is the gate running against a table.
-      expect(BLAZE_DROPS).toStrictEqual([{ item: 'blaze_powder', count: 1, chance: 0.5 }])
+      expect(BLAZE_DROPS).toStrictEqual([])
       expect(BLAZE_XP_REWARD).toBe(10)
-
-      const powder = [{ item: 'blaze_powder', count: 1 }]
-      expect(rollMobDrops(BLAZE_DROPS, SLAIN, () => ({ chance: 0.499, count: 0 }))).toStrictEqual(powder)
-      // Strictly less than, so exactly half fails — the same comparison
-      // packages/entity/domain/mob/drop.ts:14-16 makes, checked at the one
-      // value where `<` and `<=` differ.
-      expect(rollMobDrops(BLAZE_DROPS, SLAIN, () => ({ chance: 0.5, count: 0 }))).toStrictEqual([])
-      expect(rollMobDrops(BLAZE_DROPS, SLAIN, () => ({ chance: 0.9, count: 0 }))).toStrictEqual([])
-      // A broken generator fails the gate rather than passing it — the guard in
-      // `rollMobDrop` that the creeper's ungated drop can never exercise.
-      expect(rollMobDrops(BLAZE_DROPS, SLAIN, () => ({ chance: Number.NaN, count: 0 }))).toStrictEqual([])
-      // Looting still applies to a drop that PASSED its gate.
-      expect(
-        rollMobDrops(BLAZE_DROPS, { _tag: 'Slain', lootingLevel: 2 }, () => ({ chance: 0, count: 0 })),
-      ).toStrictEqual([{ item: 'blaze_powder', count: 3 }])
+      expect(rollMobDrops(BLAZE_DROPS, SLAIN, () => LOWEST_ROLLS)).toStrictEqual([])
     }),
   )
 
-  it.effect('DECIDED AND PINNED: the blaze’s item is kernel’s word, not the reference’s', () =>
+  it.effect('spider eyes require a player kill and burning meat uses the cooked item', () =>
     Effect.sync(() => {
-      // The reference drops `BLAZE_ROD` (mobs/blaze.ts:17). `blaze_rod` is not
-      // in kernel's roster and `blaze_powder` is — added by kernel with the note
-      // "mob drops", which is this rule. The RULE is ported unchanged and only
-      // the noun moved; domain/mob/mob-drop.ts states what that costs.
-      expect(ITEM_TYPES).toContain('blaze_powder')
-      expect(ITEM_TYPES as ReadonlyArray<string>).not.toContain('blaze_rod')
-      expect(BLAZE_DROPS[0]?.item).toBe('blaze_powder')
+      const spiderEye = { item: 'spider_eye', count: 1, chance: 1 / 3, playerKillOnly: true } as const
+      expect(rollMobDrop(spiderEye, SLAIN, { chance: 0, count: 0 })).toBeUndefined()
+      expect(rollMobDrop(spiderEye, { ...SLAIN, playerKill: true }, { chance: 0, count: 0 })).toStrictEqual({
+        item: 'spider_eye',
+        count: 1,
+      })
+      const beef = MOB_DROP_TABLES['cow']?.rules[1]
+      expect(beef).toBeDefined()
+      if (beef !== undefined) {
+        expect(rollMobDrop(beef, { ...SLAIN, burning: true }, { chance: 0, count: 0 })).toStrictEqual({
+          item: 'cooked_beef',
+          count: 1,
+        })
+      }
     }),
   )
 
-  it.effect('a drop this repository cannot spell is absent rather than approximated', () =>
+  it.effect('guardian cod and player bonus fish use separate vanilla rolls', () =>
     Effect.sync(() => {
-      // An enderman drops ENDER_PEARL and a shulker SHULKER_SHELL
-      // (mobs/enderman.ts:15, mobs/shulker.ts:15). Neither name exists in
-      // kernel's vocabulary, and substituting a name that happens to be
-      // spellable is a different rule wearing this one's clothes — the blaze is
-      // a substitution kernel itself made, and these would be substitutions this
-      // repository invented. So there is no ENDERMAN_DROPS and no SHULKER_DROPS,
-      // and the arena's missing list says which kernel row would unblock them.
-      const names = ITEM_TYPES as ReadonlyArray<string>
-      expect(names).not.toContain('shulker_shell')
+      const guardian = EntityKind('guardian')
+      const elderGuardian = EntityKind('elder_guardian')
+      const nonPlayerKill = { _tag: 'Slain', lootingLevel: 0 } as const
+      const playerKill = { ...nonPlayerKill, playerKill: true } as const
+      const wikiCodRows = [
+        { kind: guardian, chance: 0.4, countOnSuccess: 1 },
+        { kind: elderGuardian, chance: 0.5, countOnSuccess: 1 },
+      ] as const
+
+      // The wiki's Looting 0 table gives 0–1 cod at 40% / 50%, with means 0.40
+      // / 0.50. A successful normal drop is exactly one cod. The 2.5%
+      // player-kill bonus is a separate weighted fish, not another count roll.
+      expect(Result.getOrThrow(dropRollsNeeded(guardian))).toBe(5)
+      expect(Result.getOrThrow(dropRollsNeeded(elderGuardian))).toBe(5)
+      expect(Result.getOrThrow(rollDropsOfKind(guardian, nonPlayerKill, [0.399, 0.999, 0.024, 0.61, 0.999])))
+        .toStrictEqual([{ item: 'cod', count: 1 }])
+      expect(Result.getOrThrow(rollDropsOfKind(guardian, nonPlayerKill, [0.4, 0.999, 0, 0.61, 0])))
+        .toStrictEqual([])
+      expect(Result.getOrThrow(rollDropsOfKind(elderGuardian, nonPlayerKill, [0.499, 0.999, 0.5, 0, 0])))
+        .toStrictEqual([{ item: 'cod', count: 1 }])
+      expect(Result.getOrThrow(rollDropsOfKind(elderGuardian, nonPlayerKill, [0.5, 0.999, 0, 0, 0])))
+        .toStrictEqual([])
+
+      const sampleSize = 20_000
+      for (const { kind, chance, countOnSuccess } of wikiCodRows) {
+        let seed = 20_261_109
+        let totalCod = 0
+        for (let sample = 0; sample < sampleSize; sample += 1) {
+          const chanceDraw = nextRoll(seed)
+          seed = chanceDraw.seed
+          const countDraw = nextRoll(seed)
+          seed = countDraw.seed
+          totalCod += Result.getOrThrow(rollDropsOfKind(
+            kind,
+            nonPlayerKill,
+            [chanceDraw.roll, countDraw.roll, 0, 0, 0],
+          )).reduce((total, drop) => total + (drop.item === 'cod' ? drop.count : 0), 0)
+        }
+
+        const wikiAverageCod = chance * countOnSuccess
+        expect(totalCod / sampleSize).toBeCloseTo(wikiAverageCod, 2)
+      }
+
+      expect(Result.getOrThrow(rollDropsOfKind(guardian, playerKill, [0, 0.999, 0.024, 0.61, 0.999])))
+        .toStrictEqual([{ item: 'cod', count: 1 }, { item: 'salmon', count: 1 }])
+      expect(Result.getOrThrow(rollDropsOfKind(guardian, playerKill, [0, 0.999, 0.025, 0.61, 0])))
+        .toStrictEqual([{ item: 'cod', count: 1 }])
+
+      for (const [choiceRoll, expectedItem] of [
+        [0, 'cod'],
+        [0.6, 'salmon'],
+        [0.85, 'pufferfish'],
+        [0.98, 'tropical_fish'],
+      ] as const) {
+        expect(Result.getOrThrow(rollDropsOfKind(
+          guardian,
+          playerKill,
+          [0.999, 0, 0.024, choiceRoll, 0],
+        ))).toStrictEqual([{ item: expectedItem, count: 1 }])
+      }
+    }),
+  )
+
+  it.effect('a charged creeper can satisfy a player-kill drop without its chance roll', () =>
+    Effect.sync(() => {
+      const chargedOnly = {
+        item: 'rotten_flesh',
+        count: 1,
+        chance: 1 / 3,
+        playerKillOnly: true,
+        chargedCreeperOnly: true,
+      } as const
+      expect(rollMobDrop(chargedOnly, SLAIN, { chance: 0, count: 0 })).toBeUndefined()
+      expect(rollMobDrop(chargedOnly, { ...SLAIN, killedByChargedCreeper: true }, { chance: 1, count: 0 })).toStrictEqual({
+        item: 'rotten_flesh',
+        count: 1,
+      })
+      const unrestricted = {
+        item: 'rotten_flesh',
+        count: 1,
+        playerKillOnly: false,
+        chargedCreeperOnly: false,
+      } as const
+      expect(rollMobDrop(unrestricted, SLAIN, { chance: 1, count: 0 })).toStrictEqual({
+        item: 'rotten_flesh',
+        count: 1,
+      })
+    }),
+  )
+
+  it.effect('weighted pools skip empty choices and substitute cooked items when burning', () =>
+    Effect.sync(() => {
+      const emptyPool = {
+        rules: [],
+        pools: [{ minSelections: 1, maxSelections: 1, choices: [] }],
+      }
+      expect(rollMobTable(emptyPool, SLAIN, makeMobDropRollSequence([]))).toStrictEqual([])
+
+      const burningPool = {
+        rules: [],
+        pools: [{
+          minSelections: 1,
+          maxSelections: 1,
+          choices: [{ item: 'rotten_flesh', weight: 1, count: 1, burningItem: 'cooked_beef' }],
+        }],
+      } as const
+      expect(rollMobTable(burningPool, { ...SLAIN, burning: true }, makeMobDropRollSequence([0]))).toStrictEqual([
+        { item: 'cooked_beef', count: 1 },
+      ])
+
+      const shortVariablePool = {
+        rules: [],
+        pools: [{
+          minSelections: 1,
+          maxSelections: 2,
+          choices: [{ item: 'rotten_flesh', weight: 1, count: 1 }],
+        }],
+      } as const
+      expect(rollMobTable(shortVariablePool, SLAIN, makeMobDropRollSequence([]))).toStrictEqual([
+        { item: 'rotten_flesh', count: 1 },
+      ])
+
+      const zeroCountPool = {
+        rules: [],
+        pools: [{
+          minSelections: 1,
+          maxSelections: 1,
+          choices: [{ item: 'rotten_flesh', weight: 1, count: 0, maxCount: 0 }],
+        }],
+      } as const
+      expect(rollMobTable(zeroCountPool, SLAIN, makeMobDropRollSequence([0, 0]))).toStrictEqual([])
+    }),
+  )
+
+  it.effect('witch uses a weighted 1–3 choice pool', () =>
+    Effect.sync(() => {
+      const witch = MOB_DROP_TABLES['witch']
+      expect(witch).toBeDefined()
+      if (witch === undefined) return
+      expect(rollMobTable(witch, SLAIN, makeMobDropRollSequence([0.99, 0.99, 0.99, 0.6, 0.99, 0.6, 0.99, 0.6, 0.99]))).toStrictEqual([
+        { item: 'redstone_dust', count: 8 },
+        { item: 'stick', count: 2 },
+        { item: 'stick', count: 2 },
+        { item: 'stick', count: 2 },
+      ])
+    }),
+  )
+
+  it.effect('keeps the final weighted choice when finite weights overflow in total', () =>
+    Effect.sync(() => {
+      const table = {
+        rules: [],
+        pools: [{
+          minSelections: 1,
+          maxSelections: 1,
+          choices: [
+            { item: 'cod', weight: Number.MAX_VALUE, count: 1 },
+            { item: 'salmon', weight: Number.MAX_VALUE, count: 1 },
+          ],
+        }],
+      } as const
+      expect(rollMobTable(table, SLAIN, makeMobDropRollSequence([0.5, 0, 0, 0]))).toStrictEqual([
+        { item: 'salmon', count: 1 },
+      ])
+    }),
+  )
+
+  it.effect('all 81 mob rows use kernel entity and item IDs', () =>
+    Effect.sync(() => {
+      expect(Object.keys(MOB_EXPERIENCE_RULES)).toHaveLength(81)
+      for (const kind of Object.keys(MOB_EXPERIENCE_RULES)) {
+        expect(ENTITY_TYPES).toContain(kind)
+        expect(MOB_DROP_TABLES[kind]).toBeDefined()
+        for (const rule of MOB_DROP_TABLES[kind]?.rules ?? []) {
+          expect(ITEM_TYPES).toContain(rule.item)
+        }
+        for (const pool of MOB_DROP_TABLES[kind]?.pools ?? []) {
+          for (const choice of pool.choices) expect(ITEM_TYPES).toContain(choice.item)
+        }
+      }
+      expect(Result.getOrThrow(mobExperienceRuleOfKind(EntityKind('slime'))).sizes).toStrictEqual({
+        small: { min: 1, max: 1 },
+        medium: { min: 2, max: 2 },
+        large: { min: 4, max: 4 },
+      })
     }),
   )
 })
@@ -1534,7 +1746,7 @@ describe('the mob rules are deterministic by construction', () => {
         trace.push(`fuse:${fuse._tag}`)
         trace.push(`death:${String(deathMessage(vitals))}`)
         trace.push(
-          `drop:${JSON.stringify(rollMobDrops(CREEPER_DROPS, { _tag: 'Slain', lootingLevel: 0 }, () => LOWEST_ROLLS))}`,
+          `drop:${JSON.stringify(rollMobDrops(CREEPER_DROPS, { _tag: 'SelfDestruct' }, () => LOWEST_ROLLS))}`,
         )
         return trace
       }
@@ -1548,7 +1760,7 @@ describe('the mob rules are deterministic by construction', () => {
         'blast@8',
         'fuse:Detonated',
         'death:You blew up.',
-        'drop:[{"item":"gunpowder","count":1}]',
+        'drop:[]',
       ])
     }),
   )

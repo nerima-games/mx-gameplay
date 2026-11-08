@@ -1153,6 +1153,7 @@ inventory: { mode: 'creative', slotIndex: 0 },
         entities: [{ ...AHEAD.entities[0]!, healthPoints: EntityHealthPoints(5) }],
         nextSerial: EntitySerial(1),
       })
+      yield* Ref.set(state.rollSeed, 3)
       yield* Ref.set(state.pendingBowShots, [
         { origin: EYE, dirX: 0, dirY: 0, dirZ: 1, chargeSecs: BOW_FULL_CHARGE_SECS , inventory: { mode: 'creative', slotIndex: 0 }},
       ])

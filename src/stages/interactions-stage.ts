@@ -13,6 +13,7 @@ import {
   blockPositionForKey,
   breakRequestQueueFor,
   requeueBlockBreak,
+  rollCasualtyExperience,
   requestBlockBreak,
   candidateForPlayerStorageItemUse,
   EnderPearlOutcomeSchema,
@@ -23,6 +24,7 @@ import {
   gameplayPlayerStateForStage,
   recordGameplayStageFailure,
   recordGameplayUnsupportedOperation,
+  recordMobRuleIssues,
   rollAt,
   isSuccessfulBlockUse,
   planFurnaceAdvance,
@@ -138,7 +140,11 @@ import {
 } from '../domain/status-effect.js'
 import { applyBoneMeal } from '../domain/interactions/bone-meal.js'
 import { cropDrops } from '../domain/interactions/crop-drops.js'
-import { resolveFoodUse } from '../domain/interactions/eat-food.js'
+import {
+  resolveFoodUse,
+  type InvalidFoodItemId,
+  type FoodUseOutcome,
+} from '../domain/interactions/eat-food.js'
 import { plantingVerdict, cropCellAbove } from '../domain/interactions/plant-crop.js'
 import { TILLED_BLOCK, tillingVerdict, cellAbove } from '../domain/interactions/till-soil.js'
 import { ExperienceOrbVitalsOwnerSnapshotSchema } from '../domain/entities/xp-orb.js'
@@ -169,7 +175,6 @@ import {
 import {
   ENDERMITE_KIND,
   ENDERMITE_MAX_HEALTH,
-  experienceOfCasualties,
   initialBehaviourOfKind,
   planMobDamageRoster,
   rollCasualtyDrops,
@@ -309,7 +314,7 @@ const commitMobDamage = (
 
     const seed = yield* Ref.get(state.rollSeed)
     const drops = rollCasualtyDrops(damage.casualties, seed)
-    const experience = experienceOfCasualties(damage.casualties)
+    const casualtyExperience = rollCasualtyExperience(damage.casualties, drops.seed)
     const changes: Array<ReplicatedOwnerCandidate> = []
     if (damage.roster !== entitySnapshot.state) {
       changes.push({ ownerId, state: roster })
@@ -365,12 +370,18 @@ const commitMobDamage = (
       })
       return false
     }
-    if (damage.casualties.length > 0) yield* Ref.set(state.rollSeed, drops.seed)
+    if (drops._tag === 'Unsupported') {
+      yield* recordMobRuleIssues(state, 'MobDrop', drops.issues)
+    }
+    if (casualtyExperience._tag === 'Unsupported') {
+      yield* recordMobRuleIssues(state, 'MobExperience', casualtyExperience.issues)
+    }
+    if (damage.casualties.length > 0) yield* Ref.set(state.rollSeed, casualtyExperience.seed)
     if (drops.drops.length > 0) {
       yield* Ref.update(state.mobDrops, (pending) => [...pending, ...drops.drops])
     }
-    if (experience.length > 0) {
-      yield* Ref.update(state.mobExperience, (pending) => [...pending, ...experience])
+    if (casualtyExperience.experience.length > 0) {
+      yield* Ref.update(state.mobExperience, (pending) => [...pending, ...casualtyExperience.experience])
     }
     if (event !== undefined && context.eventBus !== undefined) {
       const published = yield* Effect.result(context.eventBus.publish(event))
@@ -3028,7 +3039,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                   break itemUseRequests
                 }
                 const vitals = eatenVitalsSnapshot.success.state.vitals
-                const outcome = resolveFoodUse({
+                const foodResolution = resolveFoodUse({
                   held: heldItem,
                   vitals: {
                     healthPoints: vitals.healthPoints,
@@ -3040,7 +3051,10 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                 const publishFoodResult = (
                   success: boolean,
                   consumedCount: 0 | 1,
-                  finalOutcome: typeof outcome | { readonly _tag: 'missingItem' },
+                  finalOutcome:
+                    | FoodUseOutcome
+                    | InvalidFoodItemId
+                    | { readonly _tag: 'missingItem' },
                 ) => {
                   if (request.action === 'EatPotato') {
                     itemUseResults.push({
@@ -3062,6 +3076,11 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                     })
                   }
                 }
+                if (Result.isFailure(foodResolution)) {
+                  publishFoodResult(false, 0, foodResolution.failure)
+                  break itemUseAction
+                }
+                const outcome = foodResolution.success
                 if (outcome._tag !== 'consume') {
                   publishFoodResult(false, 0, outcome)
                   break itemUseAction

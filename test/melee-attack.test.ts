@@ -1,7 +1,16 @@
 import { describe, expect, it } from '@effect/vitest'
 import { Result, Schema } from 'effect'
 import * as FastCheck from 'fast-check'
-import { AttackRangeDistance, EntityHealthPoints, EntityId, isItemType, SimulationTickSchema, type ItemType } from '@nerima-games/mc-kernel'
+import {
+  AttackRangeDistance,
+  ENTITY_TYPES,
+  EntityHealthPoints,
+  EntityId,
+  EntityKind,
+  isItemType,
+  SimulationTickSchema,
+  type ItemType,
+} from '@nerima-games/mc-kernel'
 import { EYE_LEVEL_OFFSET, type Entity } from '@nerima-games/mc-sim'
 import { position as atPosition } from './support/coordinate-fixtures'
 import { expectedMeleeAttack } from './support/melee-attack-oracle'
@@ -179,6 +188,40 @@ describe('C2 melee preparation', () => {
     ticksSinceLastAttack: meleeCooldownTicks(12),
     targetDamageState: null,
   }
+
+  it('targets all 81 kernel mob IDs and excludes every non-mob entity kind', () => {
+    const firstMobIndex = ENTITY_TYPES.indexOf('allay')
+    const firstProjectileIndex = ENTITY_TYPES.indexOf('arrow')
+    const mobKinds = ENTITY_TYPES.slice(firstMobIndex, firstProjectileIndex)
+    const nonMobKinds = ENTITY_TYPES.filter((_, index) =>
+      index < firstMobIndex || index >= firstProjectileIndex,
+    )
+    const request: MeleeAttackRequest = {
+      origin: atPosition(0, 64 + EYE_LEVEL_OFFSET, 0),
+      direction: atPosition(0, 0, -1),
+      reach: AttackRangeDistance(3),
+      damage: 1,
+    }
+
+    expect(mobKinds).toHaveLength(81)
+    expect(nonMobKinds).toEqual(expect.arrayContaining([
+      'player',
+      'arrow',
+      'boat',
+      'block_display',
+      'interaction',
+      'marker',
+      'armor_stand',
+    ]))
+    for (const kind of mobKinds) {
+      const candidate = { ...zombie, id: EntityId(`melee-target-${kind}`), kind: EntityKind(kind) }
+      expect(meleeTarget([candidate], request)?.id).toBe(candidate.id)
+    }
+    for (const kind of nonMobKinds) {
+      const candidate = { ...zombie, id: EntityId(`melee-target-${kind}`), kind: EntityKind(kind) }
+      expect(meleeTarget([candidate], request)).toBeUndefined()
+    }
+  })
 
   it('uses the authoritative pose, reach, held item, and world candidates', () => {
     const result = prepareMeleeAttack(intent, input)

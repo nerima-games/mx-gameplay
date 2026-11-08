@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import * as fc from 'fast-check'
 import { Effect, Option, Ref, Result, Schema } from 'effect'
-import { SkyLightLevel } from '../src/domain/mob/hostile-spawn'
+import { MIN_SPAWN_DISTANCE_BLOCKS, SkyLightLevel } from '../src/domain/mob/hostile-spawn'
+import { SPAWN_RING_ANGLES, SPAWN_RING_RADIUS_INSET_BLOCKS } from '../src/domain/entities/mob-spawn-search'
 import {
   BlockAxis,
   AIR_BLOCK_ID,
@@ -11,6 +12,7 @@ import {
   EntitySerial,
   InterpolationFraction,
   PositionAxis,
+  RandomSeed,
   SimulationTick,
   StackCount,
   WorldRevisionSchema,
@@ -24,6 +26,7 @@ import {
 } from '@nerima-games/mc-kernel'
 import {
   EntityId,
+  EntityKind,
   emptyPlayerStorage,
   equipmentItem,
   makeEntityManager,
@@ -71,14 +74,20 @@ import {
   type ExperienceOrbOwnerSnapshot,
 } from '../src/domain/entities/xp-orb.js'
 import { makeEntitiesStage } from '../src/stages/entities-stage.js'
+import { nextRoll } from '../src/domain/frame-rolls.js'
 import {
   CREEPER_KIND,
+  initialBehaviourOfKind,
   hostileMobSnapshot,
   type MobBehaviour,
   type MobEntity,
+  planMobBlastRoster,
+  planMobRosterSweep,
+  rollCasualtyDrops,
 } from '../src/domain/entities/mob-frame.js'
 import { BLAZE_KIND, initialEcosystemMobState, SKELETON_KIND } from '../src/domain/mob/mob-ecosystem.js'
 import { ZOMBIE_KIND } from '../src/domain/mob/hostile-combat.js'
+import { COW_KIND } from '../src/domain/mob/mob-ecosystem.js'
 import {
   GAMEPLAY_ENTITIES_OWNER_ID,
   GAMEPLAY_PLAYER_OWNER_ID,
@@ -110,6 +119,14 @@ const zombieAt = (x: number, y: number): MobEntity => ({
   feetPosition: position(PositionAxis(x), PositionAxis(y), PositionAxis(0)),
   healthPoints: EntityHealthPoints(20),
   behaviour: hostileMobSnapshot(undefined),
+})
+
+const beeAt = (x: number, y: number, health: number): MobEntity => ({
+  id: EntityId('test:bee'),
+  kind: EntityKind('bee'),
+  feetPosition: position(PositionAxis(x), PositionAxis(y), PositionAxis(0)),
+  healthPoints: EntityHealthPoints(health),
+  behaviour: undefined,
 })
 
 const ecosystemMobAt = (id: string, kind: typeof BLAZE_KIND | typeof SKELETON_KIND, x: number, y: number): MobEntity => ({
@@ -152,6 +169,7 @@ const nearlyBrokenIronHelmetStorage = (): PlayerStorage => {
 const makeHarness = (options: Readonly<{
   readonly entity?: MobEntity | null
   readonly entities?: ReadonlyArray<MobEntity>
+  readonly onLightRead?: (position: Readonly<{ x: number; y: number; z: number }>) => void
   readonly tntSources?: Schema.Schema.Type<typeof GameplayTntSourcesSnapshotSchema>
   readonly block?: Readonly<{ position: ReturnType<typeof blockPosition>; id: BlockId }>
   readonly blocks?: ReadonlyArray<readonly [ReturnType<typeof blockPosition>, BlockId]>
@@ -177,6 +195,15 @@ const makeHarness = (options: Readonly<{
     ? []
     : [[options.block.position, options.block.id] as const])
   const store = yield* makeTransactionalChunkStoreDouble(world(entries), options.loadedChunks ?? ['0,0'])
+  const observedStoreApi = options.onLightRead === undefined
+    ? store.api
+    : {
+        ...store.api,
+        getLight: (lightPosition: Parameters<typeof store.api.getLight>[0]) => {
+          options.onLightRead?.(lightPosition)
+          return store.api.getLight(lightPosition)
+        },
+      }
   const baseCoordinator = yield* makeWorldCommitCoordinator({
     world: worldId,
     owners: gameplayOwnerRegistrations({
@@ -190,7 +217,7 @@ const makeHarness = (options: Readonly<{
       ...(options.tntSources === undefined ? {} : { tntSources: options.tntSources }),
       ...(options.tnt === undefined ? {} : { tnt: options.tnt }),
     }),
-    chunkStores: { forDimension: () => store.api },
+    chunkStores: { forDimension: () => observedStoreApi },
   })
   let commits = 0
   let rejectCommits = options.rejectCommit === true
@@ -280,7 +307,7 @@ const makeHarness = (options: Readonly<{
   }
   const context: GameplayStageContext = {
     state,
-    store: store.api,
+    store: observedStoreApi,
     roster,
     time,
     vehicleService: undefined,
@@ -821,6 +848,51 @@ describe('entities stage owner-backed MobSimulation', () => {
     expect(await Effect.runPromise(harness.store.blockAt(centre))).toBeUndefined()
   })
 
+  it('reports unknown mob loot and XP after a successful mob blast commit', async () => {
+    const centre = blockPosition(BlockAxis(0), BlockAxis(64), BlockAxis(0))
+    const creeper = {
+      ...creeperAt(0, 64),
+      behaviour: { _tag: 'Lit' as const, burnedSecs: 1.49 },
+    }
+    const unknownMob = {
+      ...zombieAt(1, 64),
+      id: EntityId('test:unknown-blast-casualty'),
+      kind: EntityKind('unregistered'),
+      healthPoints: EntityHealthPoints(1),
+    }
+    const harness = await Effect.runPromise(makeHarness({
+      entity: null,
+      entities: [creeper, unknownMob],
+      playerPose: {
+        ...INITIAL_PLAYER_POSE,
+        feetPosition: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
+      },
+      block: { position: centre, id: STONE },
+    }))
+    await Effect.runPromise(Ref.set(harness.state.rollSeed, 3))
+
+    await harness.run(makeDeltaTimeSecs(0.02))
+
+    expect(harness.commits()).toBe(1)
+    expect((await Effect.runPromise(strictRoster(harness.coordinator))).state.entities).toStrictEqual([])
+    expect(await Effect.runPromise(Ref.get(harness.state.unsupportedOperations))).toEqual(expect.arrayContaining([
+      {
+        _tag: 'Unsupported',
+        action: 'MobDrop',
+        reason: 'UnknownMobKind',
+        mobKind: 'unregistered',
+      },
+      {
+        _tag: 'Unsupported',
+        action: 'MobExperience',
+        reason: 'UnknownMobKind',
+        mobKind: 'unregistered',
+      },
+    ]))
+    expect(await Effect.runPromise(Ref.get(harness.state.mobDrops))).toStrictEqual([])
+    expect(await Effect.runPromise(Ref.get(harness.state.mobExperience))).toStrictEqual([])
+  })
+
   it('queues XP after a successful mob blast commit when the casualty has recent player credit', async () => {
     const creeper: MobEntity = {
       ...creeperAt(0, 64),
@@ -1175,6 +1247,193 @@ describe('entities stage owner-backed MobSimulation', () => {
     expect(await Effect.runPromise(Ref.get(harness.state.lastHostileSpawnTick))).toBe(HOSTILE_SPAWN_INTERVAL_TICKS)
   })
 
+  it('commits casualty drops and XP with a passive spawn in the same simulation tick', async () => {
+    const centre = blockPosition(BlockAxis(0), BlockAxis(64), BlockAxis(0))
+    const creeper: MobEntity = {
+      ...creeperAt(0, 64),
+      behaviour: { _tag: 'Lit', burnedSecs: 1.49 },
+    }
+    const zombie: MobEntity = {
+      ...zombieAt(1, 64),
+      healthPoints: EntityHealthPoints(1),
+      killCredit: 'player',
+      lastHitTick: SimulationTick(0),
+    }
+    const playerPose = {
+      ...INITIAL_PLAYER_POSE,
+      feetPosition: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
+    }
+    const harness = await Effect.runPromise(makeHarness({
+      entity: null,
+      entities: [creeper, zombie],
+      playerPose,
+      block: { position: centre, id: STONE },
+    }))
+    await Effect.runPromise(Ref.set(harness.state.rollSeed, 3))
+    await Effect.runPromise(harness.context.time.setTimeOfDay(InterpolationFraction(0.5)))
+    await Effect.runPromise(requestMobSpawn(harness.state, {
+      candidate: {
+        groundBlock: STONE,
+        footBlock: AIR_BLOCK_ID,
+        headBlock: AIR_BLOCK_ID,
+        blockLight: 0,
+        skyLight: SkyLightLevel(0),
+        biome: 'PLAINS',
+        timeOfDay: 0.5,
+        distanceToPlayerBlocksXZ: 30,
+      },
+      kind: COW_KIND,
+      feetPosition: position(PositionAxis(30), PositionAxis(64), PositionAxis(0)),
+    }))
+
+    await harness.run(makeDeltaTimeSecs(0.02))
+
+    const roster = await Effect.runPromise(strictRoster(harness.coordinator))
+    const outputs = await Effect.runPromise(Effect.all({
+      drops: Ref.get(harness.state.mobDrops),
+      experience: Ref.get(harness.state.mobExperience),
+      lastPassiveSpawnTick: Ref.get(harness.state.lastPassiveSpawnTick),
+      passiveInitialSpawnPending: Ref.get(harness.state.passiveInitialSpawnPending),
+    }))
+    expect(harness.commits()).toBe(1)
+    expect(roster.state.entities.some(({ kind }) =>
+      kind === 'cow' || kind === 'pig' || kind === 'sheep' || kind === 'chicken',
+    )).toBe(true)
+    expect(roster.state.entities.some(({ id }) => id === zombie.id)).toBe(false)
+    expect(outputs.drops).toMatchObject([{ item: 'rotten_flesh', count: 1 }])
+    expect(outputs.experience).toMatchObject([{ source: zombie.id, amount: 5 }])
+    expect(outputs.lastPassiveSpawnTick).toBe(1)
+    expect(outputs.passiveInitialSpawnPending).toBe(false)
+  })
+
+  it('feeds a variable casualty XP roll into the same-tick hostile spawn seed', async () => {
+    const playerPose = {
+      ...INITIAL_PLAYER_POSE,
+      feetPosition: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
+    }
+    const detonatingCreeper: MobEntity = {
+      ...creeperAt(0, 64),
+      behaviour: { _tag: 'Lit', burnedSecs: 1.49 },
+    }
+    const bee = {
+      ...beeAt(3, 64, 1),
+      killCredit: 'player' as const,
+      lastHitTick: SimulationTick(0),
+    }
+    const deadSearchLightPositions: Array<string> = []
+    const livingSearchLightPositions: Array<string> = []
+    const spawnFloor = Array.from({ length: 16 * 16 }, (_, index) => {
+      const x = 16 + index % 16
+      const z = Math.floor(index / 16)
+      return [blockPosition(BlockAxis(x), BlockAxis(63), BlockAxis(z)), STONE] as const
+    })
+    const creditedDeath = await Effect.runPromise(makeHarness({
+      entity: null,
+      entities: [detonatingCreeper, bee],
+      playerPose,
+      blocks: spawnFloor,
+      loadedChunks: ['1,0'],
+      onLightRead: ({ x, y, z }) => deadSearchLightPositions.push(`${String(x)},${String(y)},${String(z)}`),
+    }))
+    const survivingBee = await Effect.runPromise(makeHarness({
+      entity: null,
+      entities: [detonatingCreeper, { ...bee, healthPoints: EntityHealthPoints(20) }],
+      playerPose,
+      blocks: spawnFloor,
+      loadedChunks: ['1,0'],
+      onLightRead: ({ x, y, z }) => livingSearchLightPositions.push(`${String(x)},${String(y)},${String(z)}`),
+    }))
+    const initialRoster = await Effect.runPromise(strictRoster(creditedDeath.coordinator))
+    const expectedHostileSearchPosition = (seed: number): string => {
+      const rotation = nextRoll(seed).roll
+      const firstRadius = MIN_SPAWN_DISTANCE_BLOCKS + SPAWN_RING_RADIUS_INSET_BLOCKS
+      const angle = rotation / SPAWN_RING_ANGLES * 2 * Math.PI
+      const x = Math.floor(playerPose.feetPosition.x + firstRadius * Math.cos(angle))
+      const z = Math.floor(playerPose.feetPosition.z + firstRadius * Math.sin(angle))
+      return `${String(x)},64,${String(z)}`
+    }
+    const expectedSeedFlowFor = (frameSeed: number) => {
+      const sweep = planMobRosterSweep(initialRoster.state, {
+        target: playerPose.feetPosition,
+        dt: makeDeltaTimeSecs(0.02),
+      }, RandomSeed(frameSeed))
+      const blast = planMobBlastRoster(
+        sweep.roster,
+        sweep.blasts,
+        SimulationTick(HOSTILE_SPAWN_INTERVAL_TICKS),
+      )
+      const drops = rollCasualtyDrops(blast.casualties, sweep.seed)
+      const experienceRoll = nextRoll(drops.seed)
+      return {
+        frameSeed,
+        casualties: blast.casualties,
+        experienceRoll,
+        expectedSearchPosition: expectedHostileSearchPosition(experienceRoll.seed),
+        searchPositionWithoutExperienceRoll: expectedHostileSearchPosition(drops.seed),
+      }
+    }
+    let seedFixture: ReturnType<typeof expectedSeedFlowFor> | undefined
+    for (let frameSeed = 3; frameSeed < 131; frameSeed += 1) {
+      const candidate = expectedSeedFlowFor(frameSeed)
+      if (
+        candidate.casualties.length === 1 && candidate.casualties[0]?.id === bee.id &&
+        candidate.expectedSearchPosition !== candidate.searchPositionWithoutExperienceRoll
+      ) {
+        seedFixture = candidate
+        break
+      }
+    }
+    expect(seedFixture).toBeDefined()
+    if (seedFixture === undefined) return
+    const {
+      frameSeed,
+      casualties,
+      experienceRoll: expectedExperienceRoll,
+      expectedSearchPosition,
+      searchPositionWithoutExperienceRoll,
+    } = seedFixture
+    expect(casualties.map(({ id }) => id)).toStrictEqual([bee.id])
+    const runHostileSearchTick = async (harness: typeof creditedDeath) => {
+      await Effect.runPromise(Ref.set(harness.state.rollSeed, frameSeed))
+      await Effect.runPromise(harness.context.time.setTimeOfDay(InterpolationFraction(0.9)))
+      await Effect.runPromise(Ref.set(harness.state.tickCount, HOSTILE_SPAWN_INTERVAL_TICKS - 1))
+      await harness.run(makeDeltaTimeSecs(0.02))
+    }
+    await runHostileSearchTick(creditedDeath)
+    await runHostileSearchTick(survivingBee)
+
+    const deadRoster = await Effect.runPromise(strictRoster(creditedDeath.coordinator))
+    const livingRoster = await Effect.runPromise(strictRoster(survivingBee.coordinator))
+    const outputs = await Effect.runPromise(Effect.all({
+      deadExperience: Ref.get(creditedDeath.state.mobExperience),
+      livingExperience: Ref.get(survivingBee.state.mobExperience),
+      deadSeed: Ref.get(creditedDeath.state.rollSeed),
+      livingSeed: Ref.get(survivingBee.state.rollSeed),
+      deadHostileTick: Ref.get(creditedDeath.state.lastHostileSpawnTick),
+      livingHostileTick: Ref.get(survivingBee.state.lastHostileSpawnTick),
+    }))
+    const deadSearchCalls = await Effect.runPromise(creditedDeath.store.calls)
+    const livingSearchCalls = await Effect.runPromise(survivingBee.store.calls)
+
+    expect(outputs.deadExperience).toStrictEqual([{
+      source: bee.id,
+      kind: EntityKind('bee'),
+      amount: 1 + Math.floor(expectedExperienceRoll.roll * 3),
+      at: bee.feetPosition,
+    }])
+    expect(outputs.livingExperience).toStrictEqual([])
+    expect(outputs.deadSeed).toBe(nextRoll(outputs.livingSeed).seed)
+    expect(outputs.deadHostileTick).toBe(HOSTILE_SPAWN_INTERVAL_TICKS)
+    expect(outputs.livingHostileTick).toBe(HOSTILE_SPAWN_INTERVAL_TICKS)
+    expect(deadSearchCalls.peeks).toBeGreaterThan(0)
+    expect(livingSearchCalls.peeks).toBeGreaterThan(0)
+    expect(deadSearchLightPositions[0]).toBe(expectedSearchPosition)
+    expect(deadSearchLightPositions[0]).not.toBe(searchPositionWithoutExperienceRoll)
+    expect(livingSearchLightPositions[0]).toBeDefined()
+    expect(deadRoster.state.entities.some(({ id }) => id === bee.id)).toBe(false)
+    expect(livingRoster.state.entities.some(({ id }) => id === bee.id)).toBe(true)
+  })
+
   it('merges an offered spawn ahead of the cadence search and drains the offered attempt', async () => {
     const ground: Array<readonly [ReturnType<typeof blockPosition>, BlockId]> = []
     const loadedChunks = new Set<string>()
@@ -1431,6 +1690,53 @@ describe('entities stage owner-backed MobSimulation', () => {
       }),
       { numRuns: 8 },
     )
+  })
+
+  it('rolls player-triggered TNT cow experience from the frame seed and replays it', async () => {
+    const tntId = EntityId('test:tnt-cow-xp')
+    const cowId = EntityId('test:cow-xp')
+    const run = async () => {
+      const harness = await Effect.runPromise(makeHarness({
+        entity: null,
+        entities: [{
+          id: cowId,
+          kind: COW_KIND,
+          feetPosition: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
+          healthPoints: EntityHealthPoints(1),
+          behaviour: initialBehaviourOfKind(COW_KIND),
+        }],
+        block: { position: blockPosition(BlockAxis(0), BlockAxis(64), BlockAxis(0)), id: STONE },
+        tntSources: { sources: [{ tntId, killCredit: 'player-triggered-tnt' }] },
+        tnt: {
+          tnts: [{
+            id: tntId,
+            dimension: INITIAL_DIMENSION,
+            center: { x: 0, y: 64, z: 0 },
+            state: { kind: 'primed', remainingFuseSecs: 0.01 },
+          }],
+        },
+      }))
+      await Effect.runPromise(Ref.set(harness.state.rollSeed, 133))
+      await harness.run(0.05 as DeltaTimeSecs)
+      return Effect.runPromise(Effect.all({
+        drops: Ref.get(harness.state.mobDrops),
+        experience: Ref.get(harness.state.mobExperience),
+        seed: Ref.get(harness.state.rollSeed),
+      }))
+    }
+
+    const first = await run()
+    const replay = await run()
+    expect(first.drops).toContainEqual(expect.objectContaining({
+      source: cowId,
+      kind: COW_KIND,
+      item: 'beef',
+    }))
+    expect(first.experience).toStrictEqual([
+      expect.objectContaining({ source: cowId, kind: COW_KIND, amount: 3 }),
+    ])
+    expect(replay).toStrictEqual(first)
+    expect(first.seed).not.toBe(133)
   })
 
   it('wears equipped armor in the same owner revision as TNT blast damage', async () => {
@@ -2043,12 +2349,19 @@ describe('entities stage owner-backed MobSimulation', () => {
     const centre = blockPosition(BlockAxis(0), BlockAxis(64), BlockAxis(0))
     const tntId = EntityId('test:tnt-with-loot')
     const zombie = { ...zombieAt(1, 64), healthPoints: EntityHealthPoints(1) }
+    const unknownMob = {
+      ...zombieAt(1, 64),
+      id: EntityId('test:tnt-unknown-mob'),
+      kind: EntityKind('unregistered'),
+      healthPoints: EntityHealthPoints(1),
+    }
     const playerPose = {
       ...INITIAL_PLAYER_POSE,
       feetPosition: position(PositionAxis(2), PositionAxis(64), PositionAxis(0)),
     }
     const harness = await Effect.runPromise(makeHarness({
-      entity: zombie,
+      entity: null,
+      entities: [zombie, unknownMob],
       playerPose,
       block: { position: centre, id: STONE },
       tnt: {
@@ -2074,6 +2387,7 @@ describe('entities stage owner-backed MobSimulation', () => {
     const outputs = await Effect.runPromise(Effect.all({
       drops: Ref.get(harness.state.mobDrops),
       experience: Ref.get(harness.state.mobExperience),
+      unsupported: Ref.get(harness.state.unsupportedOperations),
     }))
 
     expect(harness.tntCommits()).toBe(1)
@@ -2087,6 +2401,12 @@ describe('entities stage owner-backed MobSimulation', () => {
     expect(player.state.pose.feetPosition.x).not.toBe(playerPose.feetPosition.x)
     expect(outputs.drops).toMatchObject([{ item: 'rotten_flesh', count: 1 }])
     expect(outputs.experience).toStrictEqual([])
+    expect(outputs.unsupported).toContainEqual({
+      _tag: 'Unsupported',
+      action: 'MobExperience',
+      reason: 'UnknownMobKind',
+      mobKind: 'unregistered',
+    })
   })
 
   it('awards XP only for TNT with player ignition provenance and consumes that provenance', async () => {
