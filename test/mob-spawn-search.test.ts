@@ -21,7 +21,7 @@ import {
 } from '@nerima-games/mc-sim'
 import { Effect, Ref, Result, Schema } from 'effect'
 import { AIR_BLOCK_ID, BlockAxis, BlockId, DeltaTimeSecs, EntitySerial, InterpolationFraction, RandomSeed, SimulationTick, blockPosition as makeBlockPosition, type BlockPosition, type Position } from '@nerima-games/mc-kernel'
-import { CHUNK_HEIGHT, type ChunkStoreApi, type ReadonlyChunk } from '@nerima-games/mc-worldgen'
+import { CHUNK_HEIGHT, type ChunkStoreApi, type Dimension, type ReadonlyChunk } from '@nerima-games/mc-worldgen'
 import {
   CREEPER_KIND,
   ENDERMAN_KIND,
@@ -68,6 +68,7 @@ import {
   PASSIVE_SPAWN_BATCH_SIZE,
 } from '../src/stages/registration-core'
 import {
+  blockKey,
   lightWorld,
   makeChunkStoreDouble,
   STONE,
@@ -158,10 +159,11 @@ const searchIn = (
   seed = 1,
   timeOfDay = MIDNIGHT,
   mode: 'hostile' | 'passive' = 'hostile',
+  dimension: Dimension = 'overworld',
 ) =>
   Effect.gen(function* () {
     const store = yield* makeChunkStoreDouble(blocks, loaded, lights)
-    const found = yield* searchSpawnCandidates(store.api, PLAYER, timeOfDay, RandomSeed(seed), 'overworld', mode)
+    const found = yield* searchSpawnCandidates(store.api, PLAYER, timeOfDay, RandomSeed(seed), dimension, mode)
     return { store, found }
   })
 
@@ -706,6 +708,75 @@ describe('what the search reads', () => {
         expect(found.attempts).toStrictEqual([])
         expect(found.unreadable).toBe(SPAWN_RING_CELLS)
       }
+    }),
+  )
+
+  it.effect('does not search passive candidates in the Nether', () =>
+    Effect.gen(function* () {
+      const { store, found } = yield* searchIn(
+        FLOORED_WORLD,
+        RESIDENT_CHUNKS,
+        new Map(),
+        7,
+        MIDNIGHT,
+        'passive',
+        'nether',
+      )
+
+      expect(found.attempts).toStrictEqual([])
+      expect(found.unreadable).toBe(0)
+      expect((yield* store.calls).peeks).toBeGreaterThan(0)
+    }),
+  )
+
+  it.effect('does not read the End and selects only Nether hostiles in the Nether', () =>
+    Effect.gen(function* () {
+      const end = yield* searchIn(
+        FLOORED_WORLD,
+        RESIDENT_CHUNKS,
+        new Map(),
+        7,
+        MIDNIGHT,
+        'hostile',
+        'end',
+      )
+      expect(end.found.attempts).toStrictEqual([])
+      expect(end.found.unreadable).toBe(0)
+      expect((yield* end.store.calls).peeks).toBe(0)
+
+      const nether = yield* searchIn(
+        FLOORED_WORLD,
+        RESIDENT_CHUNKS,
+        new Map(),
+        7,
+        MIDNIGHT,
+        'hostile',
+        'nether',
+      )
+      expect(nether.found.attempts).toStrictEqual([])
+      expect(nether.found.unreadable).toBe(0)
+      expect((yield* nether.store.calls).peeks).toBeGreaterThan(0)
+    }),
+  )
+
+  it.effect('keeps scanning below an obstructed column without offering it', () =>
+    Effect.gen(function* () {
+      const rotation = rollAt(drawRolls(7, SPAWN_SEARCH_ROLLS), 0)
+      const angle = (rotation / SPAWN_RING_ANGLES) * 2 * Math.PI
+      const radius = MIN_SPAWN_DISTANCE_BLOCKS + SPAWN_RING_RADIUS_INSET_BLOCKS
+      const blockedX = Math.floor(PLAYER.x + radius * Math.cos(angle))
+      const blockedZ = Math.floor(PLAYER.z + radius * Math.sin(angle))
+      const blockedWorld = new Map(FLOORED_WORLD)
+      for (let y = 31; y <= 255; y += 1) {
+        blockedWorld.set(blockKey(blockPosition(blockedX, y, blockedZ)), STONE)
+      }
+
+      const { found } = yield* searchIn(blockedWorld, RESIDENT_CHUNKS, new Map(), 7)
+
+      expect(found.attempts.length).toBeGreaterThan(0)
+      expect(found.attempts.some(({ feetPosition }) =>
+        feetPosition.x === blockedX && feetPosition.z === blockedZ,
+      )).toBe(false)
     }),
   )
 
