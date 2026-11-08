@@ -94,14 +94,18 @@ const simulatedResult = (
 })
 
 describe('balance simulation runner', () => {
-  it('scales night boundary harness ticks with the configured day length', () => {
+  it('uses mc-sim night boundaries and scales them with a shorter day length', () => {
     const defaultDay = balanceDayBoundaries()
-    const doubledDay = balanceDayBoundaries({ ticks: 14_400, dayLengthTicks: 48_000 })
+    const shorterDay = balanceDayBoundaries({ ticks: 3_600, dayLengthTicks: 12_000 })
 
-    expect(Math.abs(doubledDay.firstTwilightTick - defaultDay.firstTwilightTick * 2)).toBeLessThanOrEqual(1)
-    expect(Math.abs(doubledDay.firstNightTick - defaultDay.firstNightTick * 2)).toBeLessThanOrEqual(1)
-    expect(Math.abs(doubledDay.firstNightEndTick - defaultDay.firstNightEndTick * 2)).toBeLessThanOrEqual(1)
-    expect(defaultDay.firstNightTick).toBeGreaterThan(60 * BALANCE_HARNESS_TICKS_PER_SECOND)
+    // Fresh worlds start at 0.30. The sim predicate is strict above 0.75,
+    // so the first night begins one tick after that boundary.
+    expect(defaultDay.firstNightTick).toBe(10_801)
+    expect(defaultDay.firstNightTick / BALANCE_HARNESS_TICKS_PER_SECOND).toBe(540.05)
+    expect(defaultDay.firstNightEndTick).toBe(22_800)
+    expect(Math.abs(defaultDay.firstTwilightTick - shorterDay.firstTwilightTick * 2)).toBeLessThanOrEqual(1)
+    expect(Math.abs(defaultDay.firstNightTick - shorterDay.firstNightTick * 2)).toBeLessThanOrEqual(1)
+    expect(Math.abs(defaultDay.firstNightEndTick - shorterDay.firstNightEndTick * 2)).toBeLessThanOrEqual(1)
   })
 
   it('requires a positive seed count and a supported policy', () => {

@@ -1,4 +1,4 @@
-import { Effect, Layer, Ref, Schema } from 'effect'
+import { Effect, Layer, Ref, Result, Schema } from 'effect'
 import {
   DeltaTimeSecs,
   EpochMillis,
@@ -6,6 +6,7 @@ import {
   MonotonicTimeSecs,
   BlockAxis,
   ChunkAxis,
+  NonNegativeTickCount,
   PositionAxis,
   WorldIdSchema,
   blockPosition,
@@ -65,9 +66,10 @@ import {
 } from '../../src/stages/registration.js'
 import type { GameplayStageCommitServices } from '../../src/stages/registration-core.js'
 
-// Harness frames advance at 20 Hz, independently of mc-sim's 60 Hz TimeService clock.
+// Each harness step advances one 20 Hz simulation tick.
 export const BALANCE_HARNESS_TICKS_PER_SECOND = 20
 const TICK_SECS = DeltaTimeSecs(1 / BALANCE_HARNESS_TICKS_PER_SECOND)
+const SIMULATION_TICK_COUNT = Result.getOrThrow(NonNegativeTickCount.result(1))
 const WORLD_ID = Schema.decodeUnknownSync(WorldIdSchema)('balance-simulation')
 const EMPTY_CANDIDATE = { changes: [], expectedDimensions: [], events: [] } as const
 
@@ -252,7 +254,7 @@ const harnessStagesFor = (
     return Effect.gen(function* () {
       yield* Ref.set(runtime.stageTickCount, tick)
       yield* Ref.set(runtime.state.tickCount, tick)
-      yield* Effect.orDie(runtime.world.time.advance(TICK_SECS))
+      yield* Effect.orDie(runtime.world.time.advance(SIMULATION_TICK_COUNT))
       const damageStart = (yield* Ref.get(runtime.state.playerDamages)).length
       for (const stage of ordered) {
         const entitiesOwnerId = stage.id === 'gameplay:entities'

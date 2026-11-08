@@ -7,15 +7,15 @@
  * (`mc-sim/domain/time-of-day.ts`, behind `application/time-service.ts`).
  * mx-gameplay's share is what the world DOES about the hour.
  *
- * This repository held a second copy of the noun until it was deleted —
- * `timeOfDaySecs` and `dayLengthSecs` `Ref`s advanced by the
- * `gameplay:time-weather` stage, and a `DEFAULT_DAY_LENGTH_SECS` of 1200
- * against mc-sim's 400. The first describe block below is the regression that
- * keeps it deleted: it asserts that the rule holds NO STATE OF ITS OWN, which
- * is the structural reason it cannot drift out of agreement with mc-sim again.
+ * This repository once held a second copy of the noun — `timeOfDaySecs` and
+ * `dayLengthSecs` `Ref`s advanced by the `gameplay:time-weather` stage.
+ * mc-sim 0.10.0 now owns the 24,000-tick, 20 Hz day. The first describe block
+ * below keeps this module free of clock state; its spawn window stays separate
+ * from mc-sim's simulation-night predicate.
  */
 import { describe, expect, it } from '@effect/vitest'
 import { Effect } from 'effect'
+import { isNight as isSimulationNight } from '@nerima-games/mc-sim'
 import * as dayNight from '../src/domain/day-night'
 import {
   DAWN_FRACTION,
@@ -69,10 +69,8 @@ describe('the rule holds no state of its own', () => {
     }),
   )
 
-  // REGRESSION: no day-length constant here. mc-sim's is 400 seconds
-  // (INITIAL_TIME_STATE: 24000 ticks at 60 ticks/s); this repository's was
-  // 1200, which is in fact mc-sim's MAXIMUM. The rule is expressed over a
-  // FRACTION of the day precisely so that the day's length is not its business.
+  // REGRESSION: no day-length constant here. mc-sim 0.10.0 owns a 24,000-tick
+  // day at 20 ticks/s, and this rule remains expressed over a fraction.
   it.effect('REGRESSION: takes a fraction of the day, so no day length is duplicated here', () =>
     Effect.sync(() => {
       expect(Object.keys(dayNight)).not.toContain('DEFAULT_DAY_LENGTH_SECS')
@@ -101,6 +99,17 @@ describe('when night is', () => {
       expect(isNight(NIGHT_START_FRACTION - Number.EPSILON * 4)).toBe(false)
       expect(isNight(NIGHT_END_FRACTION + Number.EPSILON * 4)).toBe(false)
       expect(isNight(NOON_FRACTION)).toBe(false)
+    }),
+  )
+
+  it.effect('keeps hostile spawning separate from mc-sim clock night', () =>
+    Effect.sync(() => {
+      const simulationTime = (ticks: number) => ({ ticks, dayLengthTicks: 24_000 })
+
+      expect(isNight(0.6)).toBe(true)
+      expect(isSimulationNight(simulationTime(14_400))).toBe(false)
+      expect(isSimulationNight(simulationTime(18_000))).toBe(false)
+      expect(isSimulationNight(simulationTime(18_001))).toBe(true)
     }),
   )
 
