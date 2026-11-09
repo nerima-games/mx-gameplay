@@ -305,7 +305,8 @@ describe('deterministic gameplay replay', () => {
   it.effect('runs every gameplay stage ID', () =>
     Effect.gen(function* () {
       const result = yield* replay(0x1a2b3c4d, 1)
-      expect(result.scheduledStageIds).toHaveLength(8)
+      expect(result.scheduledStageIds).toHaveLength(9)
+      expect(result.scheduledStageIds).toContain(GAMEPLAY_STAGE_IDS.blockStateRules)
       expect(new Set(result.scheduledStageIds)).toStrictEqual(new Set(Object.values(GAMEPLAY_STAGE_IDS)))
     }),
   )

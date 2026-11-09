@@ -6,6 +6,7 @@ import {
   blockIdOf,
   blockTypeOfId,
   defaultBlockState,
+  type BlockFace,
   type BlockId,
   type BlockPosition,
   type BlockStateAge,
@@ -57,9 +58,10 @@ export type BlockStateRuleRequest = Readonly<{
         _tag: 'PlaceStairs'
         block: 'oak_stairs' | 'purpur_stairs'
         facing: HorizontalBlockStateFacing
+        hitFace: BlockFace
         hitY: number
       }>
-    | Readonly<{ _tag: 'CropRandomTick'; speedLevel: number; roll: number }>
+    | Readonly<{ _tag: 'CropRandomTick'; speedLevel?: number; roll: number }>
     | Readonly<{
         /** Sampled roll for a light-eligible random tick; the caller handles the light gate. */
         _tag: 'SaplingGrowthAttempt'
@@ -106,8 +108,9 @@ export type HorizontalBlockStateFacing = Extract<BlockStateFacing, 'north' | 'ea
 const CROP_MAX_AGE: Readonly<Partial<Record<BlockType, number>>> = {
   wheat_crop: 7,
   potato_crop: 7,
-  nether_wart_crop: 3,
 }
+const NETHER_WART_MAX_AGE = 3
+const NETHER_WART_RANDOM_TICK_CHANCE = 10 / 100
 const BONE_MEAL_CROP_TYPES: ReadonlySet<BlockType> = new Set(['wheat_crop', 'potato_crop'])
 
 const cropAge = (value: number): BlockStateAge | undefined =>
@@ -192,6 +195,26 @@ export const cropAgeAfterRandomTick = (
     : { _tag: 'NoChange', reason: 'growthMiss' }
 }
 
+export const netherWartAgeAfterRandomTick = (
+  age: number,
+  roll: number,
+): Readonly<{
+  _tag: 'Grew'
+  age: number
+} | {
+  _tag: 'NoChange'
+  reason: 'growthMiss' | 'mature'
+} | {
+  _tag: 'InvalidInput'
+}> => {
+  if (!Number.isFinite(roll) || roll < 0 || roll >= 1) return { _tag: 'InvalidInput' }
+  if (!validCropAgeRange(age, NETHER_WART_MAX_AGE)) return { _tag: 'InvalidInput' }
+  if (age >= NETHER_WART_MAX_AGE) return { _tag: 'NoChange', reason: 'mature' }
+  return roll < NETHER_WART_RANDOM_TICK_CHANCE
+    ? { _tag: 'Grew', age: age + 1 }
+    : { _tag: 'NoChange', reason: 'growthMiss' }
+}
+
 export const cropAgeAfterBoneMeal = (
   age: number,
   maximumAge: number,
@@ -213,10 +236,18 @@ export const doorPlacementState = (
 
 export const stairPlacementState = (
   facing: HorizontalBlockStateFacing,
+  hitFace: BlockFace,
   hitY: number,
 ): Readonly<{ facing: HorizontalBlockStateFacing; half: Extract<BlockStateHalf, 'top' | 'bottom'> }> | undefined => {
   if (!Number.isFinite(hitY) || hitY < 0 || hitY > 1) return undefined
-  return { facing, half: hitY >= 0.5 ? 'top' : 'bottom' }
+  const half = hitFace === 'down'
+    ? 'top'
+    : hitFace === 'up'
+      ? 'bottom'
+      : hitY > 0.5
+        ? 'top'
+        : 'bottom'
+  return { facing, half }
 }
 
 export const saplingStageAfterGrowthAttempt = (
@@ -357,7 +388,7 @@ const placeDoor = (
 const growCrop = (
   port: BlockStateWorldPort,
   position: BlockPosition,
-  speedLevel: number,
+  speedLevel: number | undefined,
   roll: number,
 ): Effect.Effect<BlockStateRuleOutcome> =>
   Effect.gen(function* () {
@@ -366,13 +397,20 @@ const growCrop = (
     if (failure !== undefined) return failure
     if (reading._tag !== 'Found') return { _tag: 'InvalidState', position }
     const block = typeOf(reading.cell.block)
-    const maximumAge = block === undefined ? undefined : CROP_MAX_AGE[block]
+    const isNetherWart = block === 'nether_wart_crop'
+    const maximumAge = isNetherWart
+      ? NETHER_WART_MAX_AGE
+      : block === undefined ? undefined : CROP_MAX_AGE[block]
     if (maximumAge === undefined) return { _tag: 'NotApplicable', block }
     const age = reading.cell.state.age
     if (age === undefined) return { _tag: 'InvalidState', position }
-    const transition = cropAgeAfterRandomTick(age, maximumAge, speedLevel, roll)
+    const transition = isNetherWart
+      ? netherWartAgeAfterRandomTick(age, roll)
+      : speedLevel === undefined
+        ? { _tag: 'InvalidInput' as const }
+        : cropAgeAfterRandomTick(age, maximumAge, speedLevel, roll)
     if (transition._tag === 'InvalidInput') {
-      const reason = cropGrowthProbability(speedLevel) === undefined
+      const reason = !isNetherWart && (speedLevel === undefined || cropGrowthProbability(speedLevel) === undefined)
         ? 'cropSpeedLevel'
         : !Number.isFinite(roll) || roll < 0 || roll >= 1
           ? 'randomRoll'
@@ -456,7 +494,7 @@ export const applyBlockStateRule = (
     case 'PlaceDoor':
       return placeDoor(port, request)
     case 'PlaceStairs': {
-      const state = stairPlacementState(request.operation.facing, request.operation.hitY)
+      const state = stairPlacementState(request.operation.facing, request.operation.hitFace, request.operation.hitY)
       if (state === undefined) return Effect.succeed({ _tag: 'InvalidInput', reason: 'stairPlacement' })
       const defaults = stateDefault(request.operation.block)
       const block = idOf(request.operation.block)

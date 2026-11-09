@@ -7,6 +7,7 @@ import {
   blockPosition,
   DeltaTimeSecs,
   defaultBlockState,
+  type BlockFace,
   type BlockPosition,
   type BlockStateValues,
   type BlockType,
@@ -20,6 +21,7 @@ import {
   cropGrowthProbability,
   doorOpenAfterToggle,
   doorPlacementState,
+  netherWartAgeAfterRandomTick,
   saplingStageAfterBoneMeal,
   saplingStageAfterGrowthAttempt,
   stairPlacementState,
@@ -96,6 +98,60 @@ describe('block state rules', () => {
       expect(cropAgeAfterRandomTick(0, 7, 10, 0)).toStrictEqual({ _tag: 'Grew', age: 1 })
       expect(cropAgeAfterRandomTick(0, 7, 1, 1 / (Math.floor(25 / 1) + 1)))
         .toStrictEqual({ _tag: 'NoChange', reason: 'growthMiss' })
+    }),
+  )
+
+  it.effect('nether wart grows on a fixed 10% random-tick chance independent of crop speed', () =>
+    Effect.gen(function* () {
+      const expectedChance = 10 / 100
+      FastCheck.assert(FastCheck.property(
+        FastCheck.integer({ min: 0, max: 2 }),
+        FastCheck.integer({ min: 0, max: 9999 }).map((value) => value / 10000),
+        (age, roll) => {
+          expect(netherWartAgeAfterRandomTick(age, roll)).toStrictEqual(roll < expectedChance
+            ? { _tag: 'Grew', age: age + 1 }
+            : { _tag: 'NoChange', reason: 'growthMiss' })
+        },
+      ))
+      expect(netherWartAgeAfterRandomTick(0, 0.099)).toStrictEqual({ _tag: 'Grew', age: 1 })
+      expect(netherWartAgeAfterRandomTick(0, 0.1)).toStrictEqual({ _tag: 'NoChange', reason: 'growthMiss' })
+      expect(netherWartAgeAfterRandomTick(3, 0)).toStrictEqual({ _tag: 'NoChange', reason: 'mature' })
+      expect(netherWartAgeAfterRandomTick(4, 0)).toStrictEqual({ _tag: 'InvalidInput' })
+      expect(netherWartAgeAfterRandomTick(0, -0.01)).toStrictEqual({ _tag: 'InvalidInput' })
+      expect(netherWartAgeAfterRandomTick(0, 1)).toStrictEqual({ _tag: 'InvalidInput' })
+
+      const netherWartWorld = memoryWorld([[position, {
+        block: blockId('nether_wart_crop'),
+        state: { age: 0 },
+      }]])
+      expect(yield* applyBlockStateRule(netherWartWorld.port, {
+        requestId: 'nether-wart-random-tick',
+        position,
+        operation: { _tag: 'CropRandomTick', roll: 0.05 },
+      })).toMatchObject({ _tag: 'Applied' })
+      expect(netherWartWorld.cells.get(keyOf(position))?.state.age).toBe(1)
+
+      const slowSpeedWorld = memoryWorld([[position, {
+        block: blockId('nether_wart_crop'),
+        state: { age: 0 },
+      }]])
+      expect(yield* applyBlockStateRule(slowSpeedWorld.port, {
+        requestId: 'nether-wart-random-tick-with-slow-speed',
+        position,
+        operation: { _tag: 'CropRandomTick', speedLevel: 0, roll: 0.05 },
+      })).toMatchObject({ _tag: 'Applied' })
+      expect(slowSpeedWorld.cells.get(keyOf(position))?.state.age).toBe(1)
+
+      const fastSpeedWorld = memoryWorld([[position, {
+        block: blockId('nether_wart_crop'),
+        state: { age: 0 },
+      }]])
+      expect(yield* applyBlockStateRule(fastSpeedWorld.port, {
+        requestId: 'nether-wart-random-tick-with-fast-speed',
+        position,
+        operation: { _tag: 'CropRandomTick', speedLevel: 10, roll: 0.2 },
+      })).toMatchObject({ _tag: 'NoChange', reason: 'growthMiss' })
+      expect(fastSpeedWorld.cells.get(keyOf(position))?.state.age).toBe(0)
     }),
   )
 
@@ -179,22 +235,40 @@ describe('block state rules', () => {
     }),
   )
 
-  it.effect('stairs face the chosen horizontal direction and use the clicked half boundary', () =>
+  it.effect('stair halves follow the clicked face and fixed side-height cases', () =>
     Effect.sync(() => {
       const facings: ReadonlyArray<HorizontalBlockStateFacing> = ['north', 'east', 'south', 'west']
-      FastCheck.assert(FastCheck.property(
-        FastCheck.constantFrom(...facings),
-        FastCheck.integer({ min: 0, max: 100 }).map((percent) => percent / 100),
-        (facing, hitY) => {
-          expect(stairPlacementState(facing, hitY)).toStrictEqual({
+      const placements: ReadonlyArray<Readonly<{
+        hitFace: BlockFace
+        hitY: number
+        half: 'top' | 'bottom'
+      }>> = [
+        { hitFace: 'up', hitY: 0, half: 'bottom' },
+        { hitFace: 'up', hitY: 1, half: 'bottom' },
+        { hitFace: 'down', hitY: 0, half: 'top' },
+        { hitFace: 'down', hitY: 1, half: 'top' },
+        { hitFace: 'north', hitY: 0.49, half: 'bottom' },
+        { hitFace: 'north', hitY: 0.5, half: 'bottom' },
+        { hitFace: 'north', hitY: 0.51, half: 'top' },
+        { hitFace: 'south', hitY: 0.49, half: 'bottom' },
+        { hitFace: 'south', hitY: 0.5, half: 'bottom' },
+        { hitFace: 'south', hitY: 0.51, half: 'top' },
+        { hitFace: 'east', hitY: 0.49, half: 'bottom' },
+        { hitFace: 'east', hitY: 0.5, half: 'bottom' },
+        { hitFace: 'east', hitY: 0.51, half: 'top' },
+        { hitFace: 'west', hitY: 0.49, half: 'bottom' },
+        { hitFace: 'west', hitY: 0.5, half: 'bottom' },
+        { hitFace: 'west', hitY: 0.51, half: 'top' },
+      ]
+      for (const facing of facings) {
+        for (const { hitFace, hitY, half } of placements) {
+          expect(stairPlacementState(facing, hitFace, hitY)).toStrictEqual({
             facing,
-            half: hitY >= 0.5 ? 'top' : 'bottom',
+            half,
           })
-        },
-      ))
-      expect(stairPlacementState('west', 0.49)?.half).toBe('bottom')
-      expect(stairPlacementState('west', 0.5)?.half).toBe('top')
-      expect(stairPlacementState('west', 1.01)).toBeUndefined()
+        }
+      }
+      expect(stairPlacementState('west', 'east', 1.01)).toBeUndefined()
     }),
   )
 
@@ -309,7 +383,7 @@ describe('block state rules', () => {
       yield* requestBlockStateRule(state, {
         requestId: 'stair-place-unsupported',
         position,
-        operation: { _tag: 'PlaceStairs', block: 'oak_stairs', facing: 'east', hitY: 0.5 },
+        operation: { _tag: 'PlaceStairs', block: 'oak_stairs', facing: 'east', hitFace: 'up', hitY: 0.5 },
       })
       yield* requestBlockStateRule(state, {
         requestId: 'crop-tick-unsupported',

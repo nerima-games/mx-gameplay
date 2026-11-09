@@ -4754,14 +4754,21 @@ describe('schema-valid interaction edge paths', () => {
     await Effect.runPromise(requestPotatoHarvest(stale.state, 'harvest-crop-owner-missing', harvestPosition, 0.5))
     await stale.run()
 
-    expect(await Effect.runPromise(Ref.get(stale.state.operationFailures))).toHaveLength(3)
+    expect(await Effect.runPromise(Ref.get(stale.state.operationFailures))).toHaveLength(2)
     expect(await Effect.runPromise(Ref.get(stale.state.operationFailures))).toMatchObject(
-      Array.from({ length: 3 }, () => ({
+      Array.from({ length: 2 }, () => ({
         _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'ItemUse',
         error: { _tag: 'ReplicatedOwnerUnknown' },
       })),
     )
-    expect(await Effect.runPromise(drainItemUseResults(stale.state))).toStrictEqual([])
+    expect(await Effect.runPromise(Ref.get(stale.state.unsupportedOperations))).toStrictEqual([])
+    expect(await Effect.runPromise(drainItemUseResults(stale.state))).toMatchObject([{
+      action: 'ApplyBoneMeal',
+      requestId: 'bone-meal-crop-owner-missing',
+      success: false,
+      consumedCount: 0,
+      outcome: { _tag: 'stateUnsupported', operation: 'readState' },
+    }])
 
     const mismatched = await Effect.runPromise(makeHarness({
       blocks: [[boneMealPosition, wheatBlock]],
@@ -4774,12 +4781,13 @@ describe('schema-valid interaction edge paths', () => {
       action: 'ApplyBoneMeal',
       requestId: 'bone-meal-crop-not-tracked',
       success: false,
-      outcome: { _tag: 'cropOwnerMismatch' },
+      consumedCount: 0,
+      outcome: { _tag: 'stateUnsupported', operation: 'readState' },
     }])
     expect(await Effect.runPromise(Ref.get(mismatched.state.unsupportedOperations))).toStrictEqual([])
   })
 
-  it('detects crop-owner revision conflicts for bone meal, planting, and harvesting', async () => {
+  it('detects crop-owner revision conflicts for planting and harvesting and refuses state-less bone meal', async () => {
     const wheatPosition = blockPosition(BlockAxis(5), BlockAxis(64), BlockAxis(1))
     const plantPosition = blockPosition(BlockAxis(6), BlockAxis(64), BlockAxis(1))
     const harvestPosition = blockPosition(BlockAxis(7), BlockAxis(64), BlockAxis(1))
@@ -4849,6 +4857,31 @@ describe('schema-valid interaction edge paths', () => {
       const queuedIntent = await Effect.runPromise(Ref.get(harness.state.pendingItemUses))
       const worldBlockBefore = await Effect.runPromise(harness.store.blockAt(scenario.worldPosition))
       await Effect.runPromise(interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer)))
+
+      if (scenario.name === 'bone meal') {
+        expect(await Effect.runPromise(Ref.get(harness.state.operationFailures)), scenario.name).toStrictEqual([])
+        expect(await Effect.runPromise(drainItemUseResults(harness.state)), scenario.name).toMatchObject([{
+          action: scenario.action,
+          requestId: scenario.requestId,
+          success: false,
+          consumedCount: 0,
+          outcome: { _tag: 'stateUnsupported', operation: 'readState' },
+        }])
+        expect(await Effect.runPromise(Ref.get(harness.state.pendingItemUses)), scenario.name).toStrictEqual([])
+        expect((await Effect.runPromise(harness.coordinator.snapshot(
+          GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+          PlayerStorageSnapshotSchema,
+        ))).state, scenario.name).toStrictEqual(storageBefore.state)
+        expect((await Effect.runPromise(harness.coordinator.snapshot(
+          GAMEPLAY_CROPS_OWNER_ID,
+          CropSnapshotSchema,
+        ))).state, scenario.name).toStrictEqual(cropsBefore.state)
+        expect(await Effect.runPromise(harness.store.blockAt(scenario.worldPosition)), scenario.name).toBe(worldBlockBefore)
+        expect(await Effect.runPromise(Ref.get(harness.publishedEvents)), scenario.name).toStrictEqual([])
+        expect(harness.commitCalls(), scenario.name).toBe(0)
+        expect(await Effect.runPromise(harness.coordinator.revision), scenario.name).toBe(revisionBefore)
+        return
+      }
 
       expect(await Effect.runPromise(Ref.get(harness.state.operationFailures)), scenario.name).toMatchObject([{
         _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'ItemUse',
