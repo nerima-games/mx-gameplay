@@ -103,6 +103,8 @@ describe('balance simulation runner', () => {
     expect(defaultDay.firstNightTick).toBe(10_801)
     expect(defaultDay.firstNightTick / BALANCE_HARNESS_TICKS_PER_SECOND).toBe(540.05)
     expect(defaultDay.firstNightEndTick).toBe(22_800)
+    // The first tick above 0.50 is 12,001; subtract the initial 7,200 ticks.
+    expect(defaultDay.firstTwilightTick).toBe(4_801)
     expect(Math.abs(defaultDay.firstTwilightTick - shorterDay.firstTwilightTick * 2)).toBeLessThanOrEqual(1)
     expect(Math.abs(defaultDay.firstNightTick - shorterDay.firstNightTick * 2)).toBeLessThanOrEqual(1)
     expect(Math.abs(defaultDay.firstNightEndTick - shorterDay.firstNightEndTick * 2)).toBeLessThanOrEqual(1)
