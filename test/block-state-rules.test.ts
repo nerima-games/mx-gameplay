@@ -25,8 +25,12 @@ import {
   saplingStageAfterBoneMeal,
   saplingStageAfterGrowthAttempt,
   stairPlacementState,
+  type BlockStateEdit,
   type BlockStateCell,
+  type BlockStateRead,
+  type BlockStateRuleRequest,
   type BlockStateWorldPort,
+  type BlockStateWrite,
   type HorizontalBlockStateFacing,
 } from '../src/domain/interactions/block-state-rules.js'
 import { makeBlockStateRulesStage } from '../src/stages/block-state-rules-stage.js'
@@ -60,6 +64,26 @@ const memoryWorld = (initial: ReadonlyArray<readonly [BlockPosition, BlockStateC
     }),
   }
   return { port, cells }
+}
+
+const scriptedWorld = (
+  readings: ReadonlyArray<BlockStateRead>,
+  writeResult: BlockStateWrite = { _tag: 'Written' },
+): Readonly<{
+  port: BlockStateWorldPort
+  reads: () => number
+  writes: Array<ReadonlyArray<BlockStateEdit>>
+}> => {
+  let readIndex = 0
+  const writes: Array<ReadonlyArray<BlockStateEdit>> = []
+  const port: BlockStateWorldPort = {
+    read: () => Effect.sync(() => readings[readIndex++] ?? { _tag: 'Unavailable', reason: 'ChunkNotLoaded' }),
+    write: (edits) => Effect.sync(() => {
+      writes.push(edits)
+      return writeResult
+    }),
+  }
+  return { port, reads: () => readIndex, writes }
 }
 
 const above = (at: BlockPosition): BlockPosition => blockPosition(
@@ -268,7 +292,56 @@ describe('block state rules', () => {
           })
         }
       }
+      expect(stairPlacementState('west', 'east', Number.NaN)).toBeUndefined()
+      expect(stairPlacementState('west', 'east', -0.01)).toBeUndefined()
       expect(stairPlacementState('west', 'east', 1.01)).toBeUndefined()
+      expect(stairPlacementState('west', 'east', Number.POSITIVE_INFINITY)).toBeUndefined()
+    }),
+  )
+
+  it.effect('places stairs through the world port and returns typed failures for invalid input or unsupported writes', () =>
+    Effect.gen(function* () {
+      const world = memoryWorld([])
+      expect(yield* applyBlockStateRule(world.port, {
+        requestId: 'stairs-top-face-upper-edge',
+        position,
+        operation: { _tag: 'PlaceStairs', block: 'oak_stairs', facing: 'south', hitFace: 'up', hitY: 1 },
+      })).toMatchObject({ _tag: 'Applied' })
+      expect(world.cells.get(keyOf(position))?.state).toMatchObject({ facing: 'south', half: 'bottom' })
+
+      const invalidHit = memoryWorld([])
+      expect(yield* applyBlockStateRule(invalidHit.port, {
+        requestId: 'stairs-invalid-hit',
+        position,
+        operation: { _tag: 'PlaceStairs', block: 'oak_stairs', facing: 'south', hitFace: 'east', hitY: 1.01 },
+      })).toStrictEqual({ _tag: 'InvalidInput', reason: 'stairPlacement' })
+      expect(invalidHit.cells.size).toBe(0)
+
+      const invalidBlock = {
+        requestId: 'stairs-unknown-block',
+        position,
+        operation: { _tag: 'PlaceStairs', block: 'unknown_stairs', facing: 'south', hitFace: 'up', hitY: 1 },
+      } as unknown as BlockStateRuleRequest
+      expect(yield* applyBlockStateRule(memoryWorld([]).port, invalidBlock)).toStrictEqual({
+        _tag: 'InvalidState', position,
+      })
+
+      const unsupportedWrite = scriptedWorld([], { _tag: 'Unsupported', operation: 'writeState' })
+      expect(yield* applyBlockStateRule(unsupportedWrite.port, {
+        requestId: 'stairs-unsupported-write',
+        position,
+        operation: { _tag: 'PlaceStairs', block: 'oak_stairs', facing: 'south', hitFace: 'up', hitY: 1 },
+      })).toStrictEqual({ _tag: 'Unsupported', operation: 'writeState', position })
+      expect(unsupportedWrite.writes).toHaveLength(1)
+
+      const invalidOperation = {
+        requestId: 'unknown-rule-operation',
+        position,
+        operation: { _tag: 'UnknownOperation' },
+      } as unknown as BlockStateRuleRequest
+      expect(yield* applyBlockStateRule(memoryWorld([]).port, invalidOperation)).toStrictEqual({
+        _tag: 'InvalidInput', reason: 'ruleOperation',
+      })
     }),
   )
 

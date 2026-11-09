@@ -76,6 +76,9 @@ export type BlockStateRuleRequest = Readonly<{
       }>
 }>
 
+type PlaceDoorOperation = Extract<BlockStateRuleRequest['operation'], { _tag: 'PlaceDoor' }>
+type BoneMealOperation = Extract<BlockStateRuleRequest['operation'], { _tag: 'BoneMeal' }>
+
 export type BlockStateRuleFailure = Readonly<{
   _tag: 'Unsupported'
   operation: 'readState' | 'writeState' | 'treePlacement' | 'vegetationSpread'
@@ -111,7 +114,6 @@ const CROP_MAX_AGE: Readonly<Partial<Record<BlockType, number>>> = {
 }
 const NETHER_WART_MAX_AGE = 3
 const NETHER_WART_RANDOM_TICK_CHANCE = 10 / 100
-const BONE_MEAL_CROP_TYPES: ReadonlySet<BlockType> = new Set(['wheat_crop', 'potato_crop'])
 
 const cropAge = (value: number): BlockStateAge | undefined =>
   Result.getOrUndefined(Schema.decodeUnknownResult(BlockStateAgeSchema)(value))
@@ -133,15 +135,21 @@ const stateDefault = (block: BlockType): BlockStateValues | undefined => {
   return id === undefined ? undefined : Result.getOrUndefined(defaultBlockState(id))
 }
 
-const accessFailure = (position: BlockPosition, reading: BlockStateRead): BlockStateRuleFailure | undefined => {
+type BlockStateAccess =
+  | Readonly<{ _tag: 'Found'; cell: BlockStateCell }>
+  | Readonly<{ _tag: 'Failed'; failure: BlockStateRuleFailure }>
+
+const readAccess = (position: BlockPosition, reading: BlockStateRead): BlockStateAccess => {
   switch (reading._tag) {
-    case 'Found': return undefined
-    case 'Unsupported': return { _tag: 'Unsupported', operation: reading.operation, position }
-    case 'Unavailable': return { _tag: 'Unavailable', position, reason: reading.reason }
+    case 'Found': return { _tag: 'Found', cell: reading.cell }
+    case 'Unsupported':
+      return { _tag: 'Failed', failure: { _tag: 'Unsupported', operation: reading.operation, position } }
+    case 'Unavailable':
+      return { _tag: 'Failed', failure: { _tag: 'Unavailable', position, reason: reading.reason } }
     default: {
       const exhaustive: never = reading
       void exhaustive
-      return { _tag: 'Unsupported', operation: 'readState', position }
+      return { _tag: 'Failed', failure: { _tag: 'Unsupported', operation: 'readState', position } }
     }
   }
 }
@@ -280,27 +288,18 @@ const outcomeForSapling = (
   cell: BlockStateCell,
   transition: ReturnType<typeof saplingStageAfterGrowthAttempt> | ReturnType<typeof saplingStageAfterBoneMeal>,
 ): Effect.Effect<BlockStateRuleOutcome> => {
-  switch (transition._tag) {
-    case 'Advanced': {
-      const stage = saplingStage(transition.stage)
-      return stage === undefined
-        ? Effect.succeed({ _tag: 'InvalidState', position })
-        : writeEdits(port, [{ position, block: cell.block, state: { ...cell.state, stage } }], position)
-    }
-    case 'TreeRequired':
-      return Effect.succeed({ _tag: 'Unsupported', operation: 'treePlacement', position })
-    case 'NoChange':
-      return Effect.succeed({ _tag: 'NoChange', reason: transition.reason })
-    case 'InvalidInput':
-      return Effect.succeed({ _tag: 'InvalidInput', reason: 'randomRoll' })
-    case 'InvalidState':
-      return Effect.succeed({ _tag: 'InvalidState', position })
-    default: {
-      const exhaustive: never = transition
-      void exhaustive
-      return Effect.succeed({ _tag: 'InvalidState', position })
-    }
+  if (transition._tag === 'Advanced') {
+    const stage = saplingStage(transition.stage)
+    return stage === undefined
+      ? Effect.succeed({ _tag: 'InvalidState', position })
+      : writeEdits(port, [{ position, block: cell.block, state: { ...cell.state, stage } }], position)
   }
+  if (transition._tag === 'TreeRequired') {
+    return Effect.succeed({ _tag: 'Unsupported', operation: 'treePlacement', position })
+  }
+  if (transition._tag === 'NoChange') return Effect.succeed({ _tag: 'NoChange', reason: transition.reason })
+  if (transition._tag === 'InvalidInput') return Effect.succeed({ _tag: 'InvalidInput', reason: 'randomRoll' })
+  return Effect.succeed({ _tag: 'InvalidState', position })
 }
 
 const toggleDoor = (
@@ -309,42 +308,42 @@ const toggleDoor = (
 ): Effect.Effect<BlockStateRuleOutcome> =>
   Effect.gen(function* () {
     const lowerRead = yield* port.read(position)
-    const lowerFailure = accessFailure(position, lowerRead)
-    if (lowerFailure !== undefined) return lowerFailure
-    if (lowerRead._tag !== 'Found') return { _tag: 'InvalidState', position }
-    const blockType = typeOf(lowerRead.cell.block)
+    const lowerAccess = readAccess(position, lowerRead)
+    if (lowerAccess._tag === 'Failed') return lowerAccess.failure
+    const lowerCell = lowerAccess.cell
+    const blockType = typeOf(lowerCell.block)
     if (blockType !== 'door' && blockType !== 'door_open') return { _tag: 'NotApplicable', block: blockType }
 
-    const half = lowerRead.cell.state.half
+    const half = lowerCell.state.half
     if (half !== 'lower' && half !== 'upper') return { _tag: 'InvalidState', position }
     const otherPosition = Result.getOrUndefined(adjacentBlockPosition(position, half === 'lower' ? 'up' : 'down'))
     if (otherPosition === undefined) return { _tag: 'InvalidState', position }
     const otherRead = yield* port.read(otherPosition)
-    const otherFailure = accessFailure(otherPosition, otherRead)
-    if (otherFailure !== undefined) return otherFailure
-    if (otherRead._tag !== 'Found') return { _tag: 'InvalidState', position: otherPosition }
+    const otherAccess = readAccess(otherPosition, otherRead)
+    if (otherAccess._tag === 'Failed') return otherAccess.failure
+    const otherCell = otherAccess.cell
 
-    const otherType = typeOf(otherRead.cell.block)
-    const otherHalf = otherRead.cell.state.half
+    const otherType = typeOf(otherCell.block)
+    const otherHalf = otherCell.state.half
     const expectedOtherHalf = half === 'lower' ? 'upper' : 'lower'
     if ((otherType !== 'door' && otherType !== 'door_open') || otherHalf !== expectedOtherHalf) {
       return { _tag: 'InvalidState', position: otherPosition }
     }
-    const facing = lowerRead.cell.state.facing
-    const hinge = lowerRead.cell.state.hinge
+    const facing = lowerCell.state.facing
+    const hinge = lowerCell.state.hinge
     if (facing === undefined || hinge === undefined || facing === 'up' || facing === 'down') {
       return { _tag: 'InvalidState', position }
     }
-    if (otherRead.cell.state.facing !== facing || otherRead.cell.state.hinge !== hinge) {
+    if (otherCell.state.facing !== facing || otherCell.state.hinge !== hinge) {
       return { _tag: 'InvalidState', position: otherPosition }
     }
 
     const doorId = idOf('door')
     if (doorId === undefined) return { _tag: 'InvalidState', position }
-    const open = blockType === 'door_open' || lowerRead.cell.state.open === true
+    const open = blockType === 'door_open' || lowerCell.state.open === true
     const nextOpen = doorOpenAfterToggle(open)
-    const edits = [lowerRead.cell, otherRead.cell].map((cell): BlockStateEdit => ({
-      position: cell === lowerRead.cell ? position : otherPosition,
+    const edits = [lowerCell, otherCell].map((cell): BlockStateEdit => ({
+      position: cell === lowerCell ? position : otherPosition,
       block: doorId,
       state: { ...cell.state, open: nextOpen },
     }))
@@ -353,36 +352,35 @@ const toggleDoor = (
 
 const placeDoor = (
   port: BlockStateWorldPort,
-  request: BlockStateRuleRequest,
+  position: BlockPosition,
+  operation: PlaceDoorOperation,
 ): Effect.Effect<BlockStateRuleOutcome> =>
   Effect.gen(function* () {
-    if (request.operation._tag !== 'PlaceDoor') return { _tag: 'InvalidState', position: request.position }
-    const upper = Result.getOrUndefined(adjacentBlockPosition(request.position, 'up'))
-    if (upper === undefined) return { _tag: 'InvalidState', position: request.position }
-    const lowerRead = yield* port.read(request.position)
-    const lowerFailure = accessFailure(request.position, lowerRead)
-    if (lowerFailure !== undefined) return lowerFailure
+    const upper = Result.getOrUndefined(adjacentBlockPosition(position, 'up'))
+    if (upper === undefined) return { _tag: 'InvalidState', position }
+    const lowerRead = yield* port.read(position)
+    const lowerAccess = readAccess(position, lowerRead)
+    if (lowerAccess._tag === 'Failed') return lowerAccess.failure
     const upperRead = yield* port.read(upper)
-    const upperFailure = accessFailure(upper, upperRead)
-    if (upperFailure !== undefined) return upperFailure
-    if (lowerRead._tag !== 'Found' || upperRead._tag !== 'Found') return { _tag: 'InvalidState', position: request.position }
-    if (typeOf(lowerRead.cell.block) !== 'air' || typeOf(upperRead.cell.block) !== 'air') {
-      return { _tag: 'InvalidState', position: request.position }
+    const upperAccess = readAccess(upper, upperRead)
+    if (upperAccess._tag === 'Failed') return upperAccess.failure
+    if (typeOf(lowerAccess.cell.block) !== 'air' || typeOf(upperAccess.cell.block) !== 'air') {
+      return { _tag: 'InvalidState', position }
     }
     const door = idOf('door')
-    if (door === undefined) return { _tag: 'InvalidState', position: request.position }
+    if (door === undefined) return { _tag: 'InvalidState', position }
     return yield* writeEdits(port, [
       {
-        position: request.position,
+        position,
         block: door,
-        state: doorPlacementState(request.operation.facing, request.operation.hinge, 'lower'),
+        state: doorPlacementState(operation.facing, operation.hinge, 'lower'),
       },
       {
         position: upper,
         block: door,
-        state: doorPlacementState(request.operation.facing, request.operation.hinge, 'upper'),
+        state: doorPlacementState(operation.facing, operation.hinge, 'upper'),
       },
-    ], request.position)
+    ], position)
   })
 
 const growCrop = (
@@ -393,16 +391,16 @@ const growCrop = (
 ): Effect.Effect<BlockStateRuleOutcome> =>
   Effect.gen(function* () {
     const reading = yield* port.read(position)
-    const failure = accessFailure(position, reading)
-    if (failure !== undefined) return failure
-    if (reading._tag !== 'Found') return { _tag: 'InvalidState', position }
-    const block = typeOf(reading.cell.block)
+    const access = readAccess(position, reading)
+    if (access._tag === 'Failed') return access.failure
+    const cell = access.cell
+    const block = typeOf(cell.block)
     const isNetherWart = block === 'nether_wart_crop'
     const maximumAge = isNetherWart
       ? NETHER_WART_MAX_AGE
       : block === undefined ? undefined : CROP_MAX_AGE[block]
     if (maximumAge === undefined) return { _tag: 'NotApplicable', block }
-    const age = reading.cell.state.age
+    const age = cell.state.age
     if (age === undefined) return { _tag: 'InvalidState', position }
     const transition = isNetherWart
       ? netherWartAgeAfterRandomTick(age, roll)
@@ -422,64 +420,61 @@ const growCrop = (
     if (nextAge === undefined) return { _tag: 'InvalidState', position }
     return yield* writeEdits(port, [{
       position,
-      block: reading.cell.block,
-      state: { ...reading.cell.state, age: nextAge },
+      block: cell.block,
+      state: { ...cell.state, age: nextAge },
     }], position)
   })
 
 const applyBoneMeal = (
   port: BlockStateWorldPort,
-  request: BlockStateRuleRequest,
+  position: BlockPosition,
+  operation: BoneMealOperation,
 ): Effect.Effect<BlockStateRuleOutcome> =>
   Effect.gen(function* () {
-    if (request.operation._tag !== 'BoneMeal') return { _tag: 'InvalidState', position: request.position }
-    const { cropStages, saplingRoll, treeSpaceAvailable } = request.operation
+    const { cropStages, saplingRoll, treeSpaceAvailable } = operation
     if (!Number.isInteger(cropStages) || cropStages < 2 || cropStages > 5) {
       return { _tag: 'InvalidInput', reason: 'boneMealGrowth' }
     }
     if (!Number.isFinite(saplingRoll) || saplingRoll < 0 || saplingRoll >= 1) {
       return { _tag: 'InvalidInput', reason: 'randomRoll' }
     }
-    const reading = yield* port.read(request.position)
-    const failure = accessFailure(request.position, reading)
-    if (failure !== undefined) return failure
-    if (reading._tag !== 'Found') return { _tag: 'InvalidState', position: request.position }
-    const block = typeOf(reading.cell.block)
+    const reading = yield* port.read(position)
+    const access = readAccess(position, reading)
+    if (access._tag === 'Failed') return access.failure
+    const cell = access.cell
+    const block = typeOf(cell.block)
 
     if (block === 'sapling') {
-      const stage = reading.cell.state.stage
-      if (stage === undefined) return { _tag: 'InvalidState', position: request.position }
+      const stage = cell.state.stage
+      if (stage === undefined) return { _tag: 'InvalidState', position }
       return yield* outcomeForSapling(
         port,
-        request.position,
-        reading.cell,
+        position,
+        cell,
         saplingStageAfterBoneMeal(stage, saplingRoll, treeSpaceAvailable),
       )
     }
 
     const maximumAge = block === undefined ? undefined : CROP_MAX_AGE[block]
     if (maximumAge !== undefined) {
-      if (block === undefined || !BONE_MEAL_CROP_TYPES.has(block)) {
-        return { _tag: 'NotApplicable', block }
-      }
-      const age = reading.cell.state.age
-      if (age === undefined) return { _tag: 'InvalidState', position: request.position }
+      const age = cell.state.age
+      if (age === undefined) return { _tag: 'InvalidState', position }
       const transition = cropAgeAfterBoneMeal(age, maximumAge, cropStages)
       if (transition._tag === 'NoChange') return { _tag: 'NoChange', reason: transition.reason }
       if (transition._tag === 'InvalidInput') {
-        return { _tag: 'InvalidInput', reason: validCropAgeRange(age, maximumAge) ? 'boneMealGrowth' : 'cropAge' }
+        return { _tag: 'InvalidInput', reason: 'cropAge' }
       }
       const nextAge = cropAge(transition.age)
-      if (nextAge === undefined) return { _tag: 'InvalidState', position: request.position }
+      if (nextAge === undefined) return { _tag: 'InvalidState', position }
       return yield* writeEdits(port, [{
-        position: request.position,
-        block: reading.cell.block,
-        state: { ...reading.cell.state, age: nextAge },
-      }], request.position)
+        position,
+        block: cell.block,
+        state: { ...cell.state, age: nextAge },
+      }], position)
     }
 
     if (block === 'grass_block') {
-      return { _tag: 'Unsupported', operation: 'vegetationSpread', position: request.position }
+      return { _tag: 'Unsupported', operation: 'vegetationSpread', position }
     }
     return { _tag: 'NotApplicable', block }
   })
@@ -492,7 +487,7 @@ export const applyBlockStateRule = (
     case 'ToggleDoor':
       return toggleDoor(port, request.position)
     case 'PlaceDoor':
-      return placeDoor(port, request)
+      return placeDoor(port, request.position, request.operation)
     case 'PlaceStairs': {
       const state = stairPlacementState(request.operation.facing, request.operation.hitFace, request.operation.hitY)
       if (state === undefined) return Effect.succeed({ _tag: 'InvalidInput', reason: 'stairPlacement' })
@@ -511,22 +506,22 @@ export const applyBlockStateRule = (
       const { roll, treeSpaceAvailable } = request.operation
       return Effect.gen(function* () {
         const reading = yield* port.read(request.position)
-        const failure = accessFailure(request.position, reading)
-        if (failure !== undefined) return failure
-        if (reading._tag !== 'Found') return { _tag: 'InvalidState', position: request.position }
-        if (typeOf(reading.cell.block) !== 'sapling') return { _tag: 'NotApplicable', block: typeOf(reading.cell.block) }
-        const stage = reading.cell.state.stage
+        const access = readAccess(request.position, reading)
+        if (access._tag === 'Failed') return access.failure
+        const cell = access.cell
+        if (typeOf(cell.block) !== 'sapling') return { _tag: 'NotApplicable', block: typeOf(cell.block) }
+        const stage = cell.state.stage
         if (stage === undefined) return { _tag: 'InvalidState', position: request.position }
         return yield* outcomeForSapling(
           port,
           request.position,
-          reading.cell,
+          cell,
           saplingStageAfterGrowthAttempt(stage, roll, treeSpaceAvailable),
         )
       })
     }
     case 'BoneMeal':
-      return applyBoneMeal(port, request)
+      return applyBoneMeal(port, request.position, request.operation)
     default: {
       const exhaustive: never = request.operation
       void exhaustive
