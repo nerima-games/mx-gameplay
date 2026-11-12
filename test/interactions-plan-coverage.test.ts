@@ -2966,6 +2966,61 @@ describe('registered block-use and placement requests in the interactions stage'
     expect(harness.commitCalls()).toBe(0)
   })
 
+  it('queues stair-neighbor refresh only after a successful stair break', async () => {
+    const target = blockPosition(BlockAxis(3), BlockAxis(64), BlockAxis(2))
+    const assertSuccessfulStairBreak = async (stair: 'oak_stairs' | 'purpur_stairs') => {
+      const harness = await Effect.runPromise(makeHarness({
+        blocks: [[target, Option.getOrThrow(blockIdOf(stair))]],
+      }))
+      await Effect.runPromise(requestBlockBreak(harness.state, target, undefined, {
+        dimension: DIMENSION, toolLocation: undefined,
+      }))
+
+      await harness.run()
+
+      expect(await Effect.runPromise(Ref.get(harness.state.pendingBlockStateRules))).toMatchObject([{
+        position: target,
+        operation: { _tag: 'RefreshStairShapes' },
+      }])
+      expect(harness.commitCalls()).toBe(1)
+    }
+    await Promise.all(['oak_stairs', 'purpur_stairs'].map(assertSuccessfulStairBreak))
+
+    const rejected = await Effect.runPromise(makeHarness({
+      blocks: [[target, Option.getOrThrow(blockIdOf('oak_stairs'))]],
+    }))
+    await Effect.runPromise(requestBlockBreak(rejected.state, target, undefined, {
+      dimension: DIMENSION, toolLocation: undefined,
+    }))
+    rejected.rejectCommits(true)
+    await rejected.run()
+    expect(await Effect.runPromise(Ref.get(rejected.state.pendingBlockStateRules))).toStrictEqual([])
+    expect(await Effect.runPromise(Ref.get(rejected.state.pendingBreaks))).toHaveLength(1)
+
+    const nonStair = await Effect.runPromise(makeHarness({
+      blocks: [[target, Option.getOrThrow(blockIdOf('stone'))]],
+    }))
+    await Effect.runPromise(requestBlockBreak(nonStair.state, target, undefined, {
+      dimension: DIMENSION, toolLocation: undefined,
+    }))
+    await nonStair.run()
+    expect(await Effect.runPromise(Ref.get(nonStair.state.pendingBlockStateRules))).toStrictEqual([])
+
+    const keyOnly = await Effect.runPromise(makeHarness({
+      blocks: [[target, Option.getOrThrow(blockIdOf('purpur_stairs'))]],
+    }))
+    await Effect.runPromise(Ref.update(keyOnly.state.pendingBreaks, (pending) => [
+      ...pending,
+      blockPositionKeyOf(target),
+    ]))
+    await keyOnly.run()
+    expect(await Effect.runPromise(Ref.get(keyOnly.state.pendingBlockStateRules))).toStrictEqual([{
+      requestId: `${blockPositionKeyOf(target)}:refresh-stair-shapes`,
+      position: target,
+      operation: { _tag: 'RefreshStairShapes' },
+    }])
+  })
+
   it('commits a survival placement block write and inventory consumption once', async () => {
     const target = blockPosition(BlockAxis(3), BlockAxis(64), BlockAxis(3))
     const harness = await Effect.runPromise(makeHarness({

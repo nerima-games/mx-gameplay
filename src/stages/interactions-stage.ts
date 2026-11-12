@@ -2360,6 +2360,14 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                 continue
               }
               yield* Ref.set(state.rollSeed, plannedLoot.seed)
+              const yieldedType = Result.getOrUndefined(blockTypeOfId(plan.yielded))
+              if (yieldedType === 'oak_stairs' || yieldedType === 'purpur_stairs') {
+                yield* requestBlockStateRule(state, {
+                  requestId: `${request?.requestId ?? positionKey}:refresh-stair-shapes`,
+                  position: breakPosition,
+                  operation: { _tag: 'RefreshStairShapes' },
+                })
+              }
               for (const removed of plan.removed) {
                 disturbed.push(blockPositionKeyOf(removed))
               }

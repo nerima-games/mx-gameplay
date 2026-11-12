@@ -13,6 +13,7 @@ import {
   type BlockStateFacing,
   type BlockStateHalf,
   type BlockStateHinge,
+  type BlockStateShape,
   type BlockStateStage,
   type BlockStateValues,
   type BlockType,
@@ -64,6 +65,7 @@ export type BlockStateRuleRequest = Readonly<{
         hitFace: BlockFace
         hitY: number
       }>
+    | Readonly<{ _tag: 'RefreshStairShapes' }>
     | Readonly<{ _tag: 'CropRandomTick'; speedLevel?: number; roll: number }>
     | Readonly<{
         /** Sampled roll for a light-eligible random tick; the caller handles the light gate. */
@@ -80,6 +82,7 @@ export type BlockStateRuleRequest = Readonly<{
 }>
 
 type PlaceDoorOperation = Extract<BlockStateRuleRequest['operation'], { _tag: 'PlaceDoor' }>
+type PlaceStairsOperation = Extract<BlockStateRuleRequest['operation'], { _tag: 'PlaceStairs' }>
 type BoneMealOperation = Extract<BlockStateRuleRequest['operation'], { _tag: 'BoneMeal' }>
 
 export type BlockStateRuleFailure = Readonly<{
@@ -92,7 +95,7 @@ export type BlockStateRuleFailure = Readonly<{
   reason: 'ChunkNotLoaded' | 'OutOfWorld'
 }> | Readonly<{
   _tag: 'InvalidInput'
-  reason: 'cropSpeedLevel' | 'cropAge' | 'randomRoll' | 'boneMealGrowth' | 'stairPlacement' | 'ruleOperation'
+  reason: 'cropSpeedLevel' | 'cropAge' | 'randomRoll' | 'boneMealGrowth' | 'stairPlacement'
 }> | Readonly<{
   _tag: 'InvalidState'
   position: BlockPosition
@@ -100,7 +103,7 @@ export type BlockStateRuleFailure = Readonly<{
 
 export type BlockStateRuleOutcome =
   | Readonly<{ _tag: 'Applied'; edits: ReadonlyArray<BlockStateEdit> }>
-  | Readonly<{ _tag: 'NoChange'; reason: 'growthMiss' | 'mature' | 'blocked' }>
+  | Readonly<{ _tag: 'NoChange'; reason: 'growthMiss' | 'mature' | 'blocked' | 'unchanged' }>
   | Readonly<{ _tag: 'NotApplicable'; block: BlockType | undefined }>
   | BlockStateRuleFailure
 
@@ -127,14 +130,6 @@ const validCropAgeRange = (age: number, maximumAge: number): boolean =>
 
 const typeOf = (block: BlockId): BlockType | undefined =>
   Result.getOrUndefined(blockTypeOfId(block))
-
-const idOf = (block: BlockType): BlockId | undefined =>
-  Option.getOrUndefined(blockIdOf(block))
-
-const stateDefault = (block: BlockType): BlockStateValues | undefined => {
-  const id = idOf(block)
-  return id === undefined ? undefined : Result.getOrUndefined(defaultBlockState(id))
-}
 
 type BlockStateAccess =
   | Readonly<{ _tag: 'Found'; cell: BlockStateCell }>
@@ -244,6 +239,171 @@ export const stairPlacementState = (
         : 'bottom'
   return { facing, half }
 }
+
+type StairHalf = Extract<BlockStateHalf, 'top' | 'bottom'>
+type StairState = Readonly<{ facing: HorizontalBlockStateFacing; half: StairHalf }>
+type StairCellState =
+  | Readonly<{ _tag: 'NotStair' }>
+  | Readonly<{ _tag: 'Stair'; facing: HorizontalBlockStateFacing; half: StairHalf }>
+  | Readonly<{ _tag: 'Invalid'; position: BlockPosition }>
+
+const CARDINAL_FACINGS: ReadonlyArray<HorizontalBlockStateFacing> = ['north', 'east', 'south', 'west']
+
+const OPPOSITE_FACING = {
+  north: 'south',
+  east: 'west',
+  south: 'north',
+  west: 'east',
+} as const satisfies Readonly<Record<HorizontalBlockStateFacing, HorizontalBlockStateFacing>>
+
+const COUNTER_CLOCKWISE_FACING = {
+  north: 'west',
+  east: 'north',
+  south: 'east',
+  west: 'south',
+} as const satisfies Readonly<Record<HorizontalBlockStateFacing, HorizontalBlockStateFacing>>
+
+const oppositeFacing = (facing: HorizontalBlockStateFacing): HorizontalBlockStateFacing => OPPOSITE_FACING[facing]
+
+const counterClockwiseFacing = (facing: HorizontalBlockStateFacing): HorizontalBlockStateFacing =>
+  COUNTER_CLOCKWISE_FACING[facing]
+
+const isHorizontalFacing = (facing: BlockStateFacing | undefined): facing is HorizontalBlockStateFacing =>
+  facing === 'north' || facing === 'east' || facing === 'south' || facing === 'west'
+
+const isStairType = (block: BlockType | undefined): boolean =>
+  block === 'oak_stairs' || block === 'purpur_stairs'
+
+const stairCellState = (position: BlockPosition, cell: BlockStateCell): StairCellState => {
+  if (!isStairType(typeOf(cell.block))) return { _tag: 'NotStair' }
+  const facing = cell.state.facing
+  const half = cell.state.half
+  return isHorizontalFacing(facing) && (half === 'top' || half === 'bottom')
+    ? { _tag: 'Stair', facing, half }
+    : { _tag: 'Invalid', position }
+}
+
+const positionKey = (position: BlockPosition): string => `${position.x},${position.y},${position.z}`
+
+const adjacent = (
+  position: BlockPosition,
+  facing: HorizontalBlockStateFacing,
+): BlockPosition | undefined => Result.getOrUndefined(adjacentBlockPosition(position, facing))
+
+const readFromSnapshot = (
+  port: BlockStateWorldPort,
+  snapshot: Map<string, BlockStateCell>,
+  position: BlockPosition,
+): Effect.Effect<BlockStateAccess> => Effect.gen(function* () {
+  const cached = snapshot.get(positionKey(position))
+  if (cached !== undefined) return { _tag: 'Found', cell: cached }
+  const access = readAccess(position, yield* port.read(position))
+  if (access._tag === 'Found') snapshot.set(positionKey(position), access.cell)
+  return access
+})
+
+type StairCornerResult =
+  | Readonly<{ _tag: 'Skip' }>
+  | Readonly<{ _tag: 'Blocked' }>
+  | Readonly<{ _tag: 'Shape'; shape: BlockStateShape }>
+  | Readonly<{ _tag: 'Failed'; failure: BlockStateRuleFailure }>
+
+const stairCornerAt = (
+  port: BlockStateWorldPort,
+  snapshot: Map<string, BlockStateCell>,
+  position: BlockPosition,
+  subject: StairState,
+  side: 'front' | 'back',
+): Effect.Effect<StairCornerResult> => Effect.gen(function* () {
+  const direction = side === 'front' ? subject.facing : oppositeFacing(subject.facing)
+  const candidatePosition = adjacent(position, direction)
+  if (candidatePosition === undefined) {
+    return { _tag: 'Failed', failure: { _tag: 'InvalidState', position } }
+  }
+  const candidateAccess = yield* readFromSnapshot(port, snapshot, candidatePosition)
+  if (candidateAccess._tag === 'Failed') return { _tag: 'Failed', failure: candidateAccess.failure }
+  const candidate = stairCellState(candidatePosition, candidateAccess.cell)
+  if (candidate._tag === 'Invalid') {
+    return { _tag: 'Failed', failure: { _tag: 'InvalidState', position: candidate.position } }
+  }
+  if (candidate._tag !== 'Stair' || candidate.half !== subject.half ||
+      candidate.facing === subject.facing || candidate.facing === oppositeFacing(subject.facing)) {
+    return { _tag: 'Skip' }
+  }
+
+  const checkedSideDirection = side === 'front' ? oppositeFacing(candidate.facing) : candidate.facing
+  const checkedSidePosition = adjacent(position, checkedSideDirection)
+  if (checkedSidePosition === undefined) {
+    return { _tag: 'Failed', failure: { _tag: 'InvalidState', position } }
+  }
+  const checkedSideAccess = yield* readFromSnapshot(port, snapshot, checkedSidePosition)
+  if (checkedSideAccess._tag === 'Failed') return { _tag: 'Failed', failure: checkedSideAccess.failure }
+  const checkedSide = stairCellState(checkedSidePosition, checkedSideAccess.cell)
+  if (checkedSide._tag === 'Invalid') {
+    return { _tag: 'Failed', failure: { _tag: 'InvalidState', position: checkedSide.position } }
+  }
+  if (checkedSide._tag === 'Stair' && checkedSide.facing === subject.facing && checkedSide.half === subject.half) {
+    return { _tag: 'Blocked' }
+  }
+
+  const left = candidate.facing === counterClockwiseFacing(subject.facing)
+  const shape: BlockStateShape = side === 'front'
+    ? left ? 'outer_left' : 'outer_right'
+    : left ? 'inner_left' : 'inner_right'
+  return { _tag: 'Shape', shape }
+})
+
+const stairShapeAt = (
+  port: BlockStateWorldPort,
+  snapshot: Map<string, BlockStateCell>,
+  position: BlockPosition,
+  subject: StairState,
+): Effect.Effect<BlockStateShape | BlockStateRuleFailure> => Effect.gen(function* () {
+  const front = yield* stairCornerAt(port, snapshot, position, subject, 'front')
+  if (front._tag === 'Failed') return front.failure
+  if (front._tag === 'Shape') return front.shape
+
+  const back = yield* stairCornerAt(port, snapshot, position, subject, 'back')
+  if (back._tag === 'Failed') return back.failure
+  if (back._tag === 'Shape') return back.shape
+  return 'straight'
+})
+
+type AdjacentStairEdits =
+  | Readonly<{ _tag: 'Ready'; edits: ReadonlyArray<BlockStateEdit> }>
+  | Readonly<{ _tag: 'Failed'; failure: BlockStateRuleFailure }>
+
+const adjacentStairShapeEdits = (
+  port: BlockStateWorldPort,
+  snapshot: Map<string, BlockStateCell>,
+  position: BlockPosition,
+): Effect.Effect<AdjacentStairEdits> => Effect.gen(function* () {
+  const edits: Array<BlockStateEdit> = []
+  for (const facing of CARDINAL_FACINGS) {
+    const neighborPosition = adjacent(position, facing)
+    if (neighborPosition === undefined) {
+      return { _tag: 'Failed', failure: { _tag: 'InvalidState', position } }
+    }
+    const access = yield* readFromSnapshot(port, snapshot, neighborPosition)
+    if (access._tag === 'Failed') return { _tag: 'Failed', failure: access.failure }
+    const stair = stairCellState(neighborPosition, access.cell)
+    if (stair._tag === 'Invalid') {
+      return { _tag: 'Failed', failure: { _tag: 'InvalidState', position: stair.position } }
+    }
+    if (stair._tag === 'NotStair') continue
+
+    const shape = yield* stairShapeAt(port, snapshot, neighborPosition, stair)
+    if (typeof shape !== 'string') return { _tag: 'Failed', failure: shape }
+    if (access.cell.state.shape !== shape) {
+      edits.push({
+        position: neighborPosition,
+        block: access.cell.block,
+        state: { ...access.cell.state, shape },
+      })
+    }
+  }
+  return { _tag: 'Ready', edits }
+})
 
 type SaplingStageTransition = Readonly<
   | { _tag: 'Advanced'; stage: BlockStateStage }
@@ -393,6 +553,55 @@ const placeDoor = (
     ], position)
   })
 
+const placeStairs = (
+  port: BlockStateWorldPort,
+  position: BlockPosition,
+  operation: PlaceStairsOperation,
+): Effect.Effect<BlockStateRuleOutcome> => Effect.gen(function* () {
+  const placement = stairPlacementState(operation.facing, operation.hitFace, operation.hitY)
+  if (placement === undefined) return { _tag: 'InvalidInput', reason: 'stairPlacement' }
+  const block = Option.getOrThrow(blockIdOf(operation.block))
+  const defaults = Result.getOrThrow(defaultBlockState(block))
+
+  const snapshot = new Map<string, BlockStateCell>()
+  const targetAccess = yield* readFromSnapshot(port, snapshot, position)
+  if (targetAccess._tag === 'Failed') return targetAccess.failure
+  const targetType = typeOf(targetAccess.cell.block)
+  if (targetType !== 'air' && targetType !== 'water') return { _tag: 'InvalidState', position }
+
+  const initialState: BlockStateValues = {
+    ...defaults,
+    ...placement,
+    shape: 'straight',
+    waterlogged: targetType === 'water' && targetAccess.cell.state.level === 0,
+  }
+  const placedCell: BlockStateCell = { block, state: initialState }
+  snapshot.set(positionKey(position), placedCell)
+
+  const shape = yield* stairShapeAt(port, snapshot, position, placement)
+  if (typeof shape !== 'string') return shape
+  const placedState = { ...initialState, shape }
+  snapshot.set(positionKey(position), { block, state: placedState })
+
+  const adjacentEdits = yield* adjacentStairShapeEdits(port, snapshot, position)
+  if (adjacentEdits._tag === 'Failed') return adjacentEdits.failure
+  return yield* writeEdits(port, [{
+    position,
+    block,
+    state: placedState,
+  }, ...adjacentEdits.edits], position)
+})
+
+const refreshStairShapes = (
+  port: BlockStateWorldPort,
+  position: BlockPosition,
+): Effect.Effect<BlockStateRuleOutcome> => Effect.gen(function* () {
+  const edits = yield* adjacentStairShapeEdits(port, new Map(), position)
+  if (edits._tag === 'Failed') return edits.failure
+  if (edits.edits.length === 0) return { _tag: 'NoChange', reason: 'unchanged' }
+  return yield* writeEdits(port, edits.edits, position)
+})
+
 const growCrop = (
   port: BlockStateWorldPort,
   position: BlockPosition,
@@ -489,49 +698,31 @@ export const applyBlockStateRule = (
   port: BlockStateWorldPort,
   request: BlockStateRuleRequest,
 ): Effect.Effect<BlockStateRuleOutcome> => {
-  switch (request.operation._tag) {
-    case 'ToggleDoor':
-      return toggleDoor(port, request.position)
-    case 'PlaceDoor':
-      return placeDoor(port, request.position, request.operation)
-    case 'PlaceStairs': {
-      const state = stairPlacementState(request.operation.facing, request.operation.hitFace, request.operation.hitY)
-      if (state === undefined) return Effect.succeed({ _tag: 'InvalidInput', reason: 'stairPlacement' })
-      const defaults = stateDefault(request.operation.block)
-      const block = idOf(request.operation.block)
-      if (defaults === undefined || block === undefined) return Effect.succeed({ _tag: 'InvalidState', position: request.position })
-      return writeEdits(port, [{
-        position: request.position,
-        block,
-        state: { ...defaults, ...state },
-      }], request.position)
-    }
-    case 'CropRandomTick':
-      return growCrop(port, request.position, request.operation.speedLevel, request.operation.roll)
-    case 'SaplingGrowthAttempt': {
-      const { roll, treeSpaceAvailable } = request.operation
-      return Effect.gen(function* () {
-        const reading = yield* port.read(request.position)
-        const access = readAccess(request.position, reading)
-        if (access._tag === 'Failed') return access.failure
-        const cell = access.cell
-        if (typeOf(cell.block) !== 'sapling') return { _tag: 'NotApplicable', block: typeOf(cell.block) }
-        const stage = cell.state.stage
-        if (stage === undefined) return { _tag: 'InvalidState', position: request.position }
-        return yield* outcomeForSapling(
-          port,
-          request.position,
-          cell,
-          saplingStageAfterGrowthAttempt(stage, roll, treeSpaceAvailable),
-        )
-      })
-    }
-    case 'BoneMeal':
-      return applyBoneMeal(port, request.position, request.operation)
-    default: {
-      const exhaustive: never = request.operation
-      void exhaustive
-      return Effect.succeed({ _tag: 'InvalidInput', reason: 'ruleOperation' })
-    }
+  const { operation } = request
+  if (operation._tag === 'ToggleDoor') return toggleDoor(port, request.position)
+  if (operation._tag === 'PlaceDoor') return placeDoor(port, request.position, operation)
+  if (operation._tag === 'PlaceStairs') return placeStairs(port, request.position, operation)
+  if (operation._tag === 'RefreshStairShapes') return refreshStairShapes(port, request.position)
+  if (operation._tag === 'CropRandomTick') {
+    return growCrop(port, request.position, operation.speedLevel, operation.roll)
   }
+  if (operation._tag === 'SaplingGrowthAttempt') {
+    const { roll, treeSpaceAvailable } = operation
+    return Effect.gen(function* () {
+      const reading = yield* port.read(request.position)
+      const access = readAccess(request.position, reading)
+      if (access._tag === 'Failed') return access.failure
+      const cell = access.cell
+      if (typeOf(cell.block) !== 'sapling') return { _tag: 'NotApplicable', block: typeOf(cell.block) }
+      const stage = cell.state.stage
+      if (stage === undefined) return { _tag: 'InvalidState', position: request.position }
+      return yield* outcomeForSapling(
+        port,
+        request.position,
+        cell,
+        saplingStageAfterGrowthAttempt(stage, roll, treeSpaceAvailable),
+      )
+    })
+  }
+  return applyBoneMeal(port, request.position, operation)
 }

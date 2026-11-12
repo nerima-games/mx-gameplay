@@ -4,6 +4,7 @@ import { Effect, Option, Result } from 'effect'
 import {
   BlockAxis,
   BlockId,
+  adjacentBlockPosition,
   blockIdOf,
   blockPosition,
   DeltaTimeSecs,
@@ -52,19 +53,22 @@ const stateOf = (type: BlockType): BlockStateValues =>
 const memoryWorld = (initial: ReadonlyArray<readonly [BlockPosition, BlockStateCell]>): {
   port: BlockStateWorldPort
   cells: Map<string, BlockStateCell>
+  writes: Array<ReadonlyArray<BlockStateEdit>>
 } => {
   const cells = new Map(initial.map(([at, cell]) => [keyOf(at), cell]))
+  const writes: Array<ReadonlyArray<BlockStateEdit>> = []
   const port: BlockStateWorldPort = {
     read: (at) => Effect.sync(() => ({
       _tag: 'Found',
       cell: cells.get(keyOf(at)) ?? { block: blockId('air'), state: {} },
     })),
     write: (edits) => Effect.sync(() => {
+      writes.push(edits)
       for (const edit of edits) cells.set(keyOf(edit.position), { block: edit.block, state: edit.state })
       return { _tag: 'Written' }
     }),
   }
-  return { port, cells }
+  return { port, cells, writes }
 }
 
 const scriptedWorld = (
@@ -104,6 +108,39 @@ const applyRuleAt = (
   operation: BlockStateRuleRequest['operation'],
   at: BlockPosition = position,
 ) => applyBlockStateRule(port, { requestId: 'test-rule', position: at, operation })
+
+const runRuleAtRegisteredStage = (
+  port: BlockStateWorldPort,
+  operation: BlockStateRuleRequest['operation'],
+  at: BlockPosition = position,
+  requestId = 'registered-state-rule',
+) => Effect.gen(function* () {
+  const state = yield* makeGameplayFrameState
+  const stage = makeBlockStateRulesStage(state, {} as ChunkStoreApi, port)
+  yield* requestBlockStateRule(state, { requestId, position: at, operation })
+  yield* stage.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+  return yield* drainBlockStateRuleResults(state)
+})
+
+const offset = (at: BlockPosition, x: number, y = 0, z = 0): BlockPosition => blockPosition(
+  BlockAxis(at.x + x),
+  BlockAxis(at.y + y),
+  BlockAxis(at.z + z),
+)
+
+const step = (at: BlockPosition, facing: HorizontalBlockStateFacing): BlockPosition =>
+  Result.getOrThrow(adjacentBlockPosition(at, facing))
+
+const stairCell = (
+  facing: HorizontalBlockStateFacing,
+  half: 'top' | 'bottom',
+  shape: BlockStateValues['shape'] = 'straight',
+  block: 'oak_stairs' | 'purpur_stairs' = 'oak_stairs',
+  extra: Partial<BlockStateValues> = {},
+): BlockStateCell => ({
+  block: blockId(block),
+  state: { ...stateOf(block), ...extra, facing, half, shape },
+})
 
 describe('block state rules', () => {
   it.effect('crop random tick probability follows the wiki speed-level expression', () =>
@@ -483,49 +520,289 @@ describe('block state rules', () => {
     }),
   )
 
-  it.effect('places stairs through the world port and returns typed failures for invalid input or unsupported writes', () =>
+  it.effect('the registered stage derives all four stair values from vanilla corner rules', () =>
     Effect.gen(function* () {
-      const world = memoryWorld([])
-      expect(yield* applyBlockStateRule(world.port, {
-        requestId: 'stairs-top-face-upper-edge',
-        position,
-        operation: { _tag: 'PlaceStairs', block: 'oak_stairs', facing: 'south', hitFace: 'up', hitY: 1 },
-      })).toMatchObject({ _tag: 'Applied' })
-      expect(world.cells.get(keyOf(position))?.state).toMatchObject({ facing: 'south', half: 'bottom' })
+      const north = offset(position, 0, 0, -1)
+      const south = offset(position, 0, 0, 1)
+      const cases: ReadonlyArray<Readonly<{
+        name: string
+        neighbors: ReadonlyArray<readonly [BlockPosition, BlockStateCell]>
+        expectedShape: 'straight' | 'outer_left' | 'outer_right' | 'inner_left' | 'inner_right'
+      }>> = [
+        { name: 'front left', neighbors: [[north, stairCell('west', 'bottom')]], expectedShape: 'outer_left' },
+        { name: 'front right', neighbors: [[north, stairCell('east', 'bottom')]], expectedShape: 'outer_right' },
+        { name: 'back left', neighbors: [[south, stairCell('west', 'bottom')]], expectedShape: 'inner_left' },
+        { name: 'back right', neighbors: [[south, stairCell('east', 'bottom')]], expectedShape: 'inner_right' },
+        {
+          name: 'front outer shape precedes a back inner shape',
+          neighbors: [
+            [north, stairCell('west', 'bottom')],
+            [south, stairCell('east', 'bottom')],
+          ],
+          expectedShape: 'outer_left',
+        },
+        { name: 'opposite half does not make a corner', neighbors: [[north, stairCell('west', 'top')]], expectedShape: 'straight' },
+      ]
 
-      const invalidHit = memoryWorld([])
-      expect(yield* applyBlockStateRule(invalidHit.port, {
-        requestId: 'stairs-invalid-hit',
-        position,
-        operation: { _tag: 'PlaceStairs', block: 'oak_stairs', facing: 'south', hitFace: 'east', hitY: 1.01 },
-      })).toStrictEqual({ _tag: 'InvalidInput', reason: 'stairPlacement' })
-      expect(invalidHit.cells.size).toBe(0)
+      for (const testCase of cases) {
+        const world = memoryWorld(testCase.neighbors)
+        const results = yield* runRuleAtRegisteredStage(world.port, {
+          _tag: 'PlaceStairs', block: 'oak_stairs', facing: 'north', hitFace: 'up', hitY: 0.5,
+        }, position, `place-stairs-${testCase.name}`)
+        expect(results, testCase.name).toMatchObject([{ outcome: { _tag: 'Applied' } }])
+        expect(world.cells.get(keyOf(position))?.state, testCase.name).toMatchObject({
+          facing: 'north', half: 'bottom', shape: testCase.expectedShape, waterlogged: false,
+        })
+      }
 
-      const invalidBlock = {
-        requestId: 'stairs-unknown-block',
-        position,
-        operation: { _tag: 'PlaceStairs', block: 'unknown_stairs', facing: 'south', hitFace: 'up', hitY: 1 },
-      } as unknown as BlockStateRuleRequest
-      expect(yield* applyBlockStateRule(memoryWorld([]).port, invalidBlock)).toStrictEqual({
-        _tag: 'InvalidState', position,
+      const rotatedOuterLeftCases: ReadonlyArray<Readonly<{
+        facing: HorizontalBlockStateFacing
+        candidateFacing: HorizontalBlockStateFacing
+      }>> = [
+        { facing: 'east', candidateFacing: 'north' },
+        { facing: 'south', candidateFacing: 'east' },
+        { facing: 'west', candidateFacing: 'south' },
+      ]
+      for (const testCase of rotatedOuterLeftCases) {
+        const world = memoryWorld([[step(position, testCase.facing), stairCell(testCase.candidateFacing, 'bottom')]])
+        const results = yield* runRuleAtRegisteredStage(world.port, {
+          _tag: 'PlaceStairs', block: 'purpur_stairs', facing: testCase.facing, hitFace: 'up', hitY: 0.5,
+        }, position, `place-stairs-${testCase.facing}-outer-left`)
+        expect(results).toMatchObject([{ outcome: { _tag: 'Applied' } }])
+        expect(world.cells.get(keyOf(position))?.state).toMatchObject({
+          facing: testCase.facing, half: 'bottom', shape: 'outer_left', waterlogged: false,
+        })
+      }
+
+      const frontBlocked = memoryWorld([
+        [north, stairCell('west', 'bottom')],
+        [offset(position, 1), stairCell('north', 'bottom')],
+        [south, stairCell('west', 'bottom')],
+      ])
+      const blockedResults = yield* runRuleAtRegisteredStage(frontBlocked.port, {
+        _tag: 'PlaceStairs', block: 'oak_stairs', facing: 'north', hitFace: 'up', hitY: 0.5,
+      }, position, 'place-stairs-front-blocked')
+      expect(blockedResults).toMatchObject([{ outcome: { _tag: 'Applied' } }])
+      expect(frontBlocked.cells.get(keyOf(position))?.state.shape).toBe('inner_left')
+
+      const oppositeHalfBlocker = memoryWorld([
+        [north, stairCell('west', 'bottom')],
+        [offset(position, 1), stairCell('north', 'top')],
+      ])
+      const oppositeBlockerResults = yield* runRuleAtRegisteredStage(oppositeHalfBlocker.port, {
+        _tag: 'PlaceStairs', block: 'oak_stairs', facing: 'north', hitFace: 'up', hitY: 0.5,
+      }, position, 'place-stairs-opposite-half-blocker')
+      expect(oppositeBlockerResults).toMatchObject([{ outcome: { _tag: 'Applied' } }])
+      expect(oppositeHalfBlocker.cells.get(keyOf(position))?.state.shape).toBe('outer_left')
+
+      const backBlocked = memoryWorld([
+        [south, stairCell('east', 'bottom')],
+        [offset(position, 1), stairCell('north', 'bottom')],
+      ])
+      const backBlockedResults = yield* runRuleAtRegisteredStage(backBlocked.port, {
+        _tag: 'PlaceStairs', block: 'oak_stairs', facing: 'north', hitFace: 'up', hitY: 0.5,
+      }, position, 'place-stairs-back-blocked')
+      expect(backBlockedResults).toMatchObject([{ outcome: { _tag: 'Applied' } }])
+      expect(backBlocked.cells.get(keyOf(position))?.state.shape).toBe('straight')
+    }),
+  )
+
+  it.effect('source water waterlogs placed stairs while flowing water does not', () =>
+    Effect.gen(function* () {
+      for (const testCase of [
+        { level: 0, waterlogged: true },
+        { level: 6, waterlogged: false },
+      ] as const) {
+        const world = memoryWorld([[position, { block: blockId('water'), state: { level: testCase.level } }]])
+        const results = yield* runRuleAtRegisteredStage(world.port, {
+          _tag: 'PlaceStairs', block: 'purpur_stairs', facing: 'west', hitFace: 'up', hitY: 0.5,
+        }, position, `place-waterlogged-${testCase.level}`)
+        expect(results).toMatchObject([{ outcome: { _tag: 'Applied' } }])
+        expect(world.cells.get(keyOf(position))?.state).toMatchObject({
+          facing: 'west', half: 'bottom', shape: 'straight', waterlogged: testCase.waterlogged,
+        })
+      }
+    }),
+  )
+
+  it.effect('placing a stair refreshes a same-half adjacent stair in one write and preserves its waterlogged state', () =>
+    Effect.gen(function* () {
+      const oldStair = offset(position, 0, 0, 1)
+      const world = memoryWorld([[oldStair, stairCell('north', 'bottom', 'straight', 'oak_stairs', { waterlogged: true })]])
+      const results = yield* runRuleAtRegisteredStage(world.port, {
+        _tag: 'PlaceStairs', block: 'purpur_stairs', facing: 'east', hitFace: 'up', hitY: 0.5,
+      }, position, 'place-next-to-stair')
+
+      expect(results).toMatchObject([{ outcome: { _tag: 'Applied' } }])
+      expect(world.cells.get(keyOf(position))?.state).toMatchObject({
+        facing: 'east', half: 'bottom', shape: 'straight', waterlogged: false,
       })
-
-      const unsupportedWrite = scriptedWorld([], { _tag: 'Unsupported', operation: 'writeState' })
-      expect(yield* applyBlockStateRule(unsupportedWrite.port, {
-        requestId: 'stairs-unsupported-write',
-        position,
-        operation: { _tag: 'PlaceStairs', block: 'oak_stairs', facing: 'south', hitFace: 'up', hitY: 1 },
-      })).toStrictEqual({ _tag: 'Unsupported', operation: 'writeState', position })
-      expect(unsupportedWrite.writes).toHaveLength(1)
-
-      const invalidOperation = {
-        requestId: 'unknown-rule-operation',
-        position,
-        operation: { _tag: 'UnknownOperation' },
-      } as unknown as BlockStateRuleRequest
-      expect(yield* applyBlockStateRule(memoryWorld([]).port, invalidOperation)).toStrictEqual({
-        _tag: 'InvalidInput', reason: 'ruleOperation',
+      expect(world.cells.get(keyOf(oldStair))?.state).toMatchObject({
+        facing: 'north', half: 'bottom', shape: 'outer_right', waterlogged: true,
       })
+      expect(world.writes).toHaveLength(1)
+      expect(world.writes[0]?.map(({ position: editPosition }) => keyOf(editPosition))).toStrictEqual([
+        keyOf(position), keyOf(oldStair),
+      ])
+    }),
+  )
+
+  it.effect('refreshing after a stair removal restores straight shape and preserves its other state', () =>
+    Effect.gen(function* () {
+      const oldStair = offset(position, 0, 0, 1)
+      const world = memoryWorld([[oldStair, stairCell('north', 'bottom', 'outer_right', 'oak_stairs', { waterlogged: true })]])
+      const results = yield* runRuleAtRegisteredStage(world.port, {
+        _tag: 'RefreshStairShapes',
+      }, position, 'remove-neighbor-stair')
+      expect(results).toMatchObject([{ outcome: { _tag: 'Applied' } }])
+      expect(world.cells.get(keyOf(oldStair))?.state).toMatchObject({
+        facing: 'north', half: 'bottom', shape: 'straight', waterlogged: true,
+      })
+      expect(world.writes).toHaveLength(1)
+
+      const noStairs = memoryWorld([])
+      expect(yield* runRuleAtRegisteredStage(noStairs.port, {
+        _tag: 'RefreshStairShapes',
+      }, position, 'refresh-without-stairs')).toStrictEqual([{
+        requestId: 'refresh-without-stairs',
+        outcome: { _tag: 'NoChange', reason: 'unchanged' },
+      }])
+      expect(noStairs.writes).toHaveLength(0)
+    }),
+  )
+
+  it.effect('stair rules return typed results for invalid input and state-port failures', () =>
+    Effect.gen(function* () {
+      const placeOperation = {
+        _tag: 'PlaceStairs', block: 'oak_stairs', facing: 'north', hitFace: 'up', hitY: 0.5,
+      } as const
+      expect(yield* runRuleAtRegisteredStage(memoryWorld([]).port, {
+        ...placeOperation, hitY: 1.01,
+      }, position, 'stairs-invalid-hit')).toStrictEqual([{ requestId: 'stairs-invalid-hit', outcome: {
+        _tag: 'InvalidInput', reason: 'stairPlacement',
+      } }])
+
+      const unsupportedTarget = scriptedWorld([{ _tag: 'Unsupported', operation: 'readState' }])
+      expect(yield* runRuleAtRegisteredStage(unsupportedTarget.port, placeOperation, position, 'stairs-read-unsupported'))
+        .toStrictEqual([{ requestId: 'stairs-read-unsupported', outcome: {
+          _tag: 'Unsupported', operation: 'readState', position,
+        } }])
+      const unavailableTarget = scriptedWorld([{ _tag: 'Unavailable', reason: 'OutOfWorld' }])
+      expect(yield* runRuleAtRegisteredStage(unavailableTarget.port, placeOperation, position, 'stairs-read-unavailable'))
+        .toStrictEqual([{ requestId: 'stairs-read-unavailable', outcome: {
+          _tag: 'Unavailable', position, reason: 'OutOfWorld',
+        } }])
+
+      const north = offset(position, 0, 0, -1)
+      const unsupportedCandidate = scriptedWorld([
+        { _tag: 'Found', cell: { block: blockId('air'), state: {} } },
+        { _tag: 'Unsupported', operation: 'readState' },
+      ])
+      expect(yield* runRuleAtRegisteredStage(unsupportedCandidate.port, placeOperation, position, 'stairs-candidate-unsupported'))
+        .toStrictEqual([{ requestId: 'stairs-candidate-unsupported', outcome: {
+          _tag: 'Unsupported', operation: 'readState', position: north,
+        } }])
+
+      const south = offset(position, 0, 0, 1)
+      const unsupportedBackCandidate = scriptedWorld([
+        { _tag: 'Found', cell: { block: blockId('air'), state: {} } },
+        { _tag: 'Found', cell: { block: blockId('air'), state: {} } },
+        { _tag: 'Unsupported', operation: 'readState' },
+      ])
+      expect(yield* runRuleAtRegisteredStage(unsupportedBackCandidate.port, placeOperation, position, 'stairs-back-unsupported'))
+        .toStrictEqual([{ requestId: 'stairs-back-unsupported', outcome: {
+          _tag: 'Unsupported', operation: 'readState', position: south,
+        } }])
+
+      const east = offset(position, 1)
+      const unsupportedCheckedSide = scriptedWorld([
+        { _tag: 'Found', cell: { block: blockId('air'), state: {} } },
+        { _tag: 'Found', cell: stairCell('west', 'bottom') },
+        { _tag: 'Unsupported', operation: 'readState' },
+      ])
+      expect(yield* runRuleAtRegisteredStage(unsupportedCheckedSide.port, placeOperation, position, 'stairs-side-unsupported'))
+        .toStrictEqual([{ requestId: 'stairs-side-unsupported', outcome: {
+          _tag: 'Unsupported', operation: 'readState', position: east,
+        } }])
+
+      const malformedCandidate = memoryWorld([[north, {
+        block: blockId('oak_stairs'), state: { facing: 'up', half: 'bottom' },
+      }]])
+      expect(yield* runRuleAtRegisteredStage(malformedCandidate.port, placeOperation, position, 'stairs-invalid-neighbor'))
+        .toStrictEqual([{ requestId: 'stairs-invalid-neighbor', outcome: { _tag: 'InvalidState', position: north } }])
+
+      const malformedBlocker = memoryWorld([
+        [north, stairCell('west', 'bottom')],
+        [east, { block: blockId('oak_stairs'), state: { facing: 'up', half: 'bottom' } }],
+      ])
+      expect(yield* runRuleAtRegisteredStage(malformedBlocker.port, placeOperation, position, 'stairs-invalid-blocker'))
+        .toStrictEqual([{ requestId: 'stairs-invalid-blocker', outcome: { _tag: 'InvalidState', position: east } }])
+
+      const malformedAdjacent = memoryWorld([[east, {
+        block: blockId('purpur_stairs'), state: { facing: 'north' },
+      }]])
+      expect(yield* runRuleAtRegisteredStage(malformedAdjacent.port, placeOperation, position, 'stairs-invalid-adjacent'))
+        .toStrictEqual([{ requestId: 'stairs-invalid-adjacent', outcome: { _tag: 'InvalidState', position: east } }])
+
+      const edge = blockPosition(BlockAxis(Number.MAX_SAFE_INTEGER), BlockAxis(64), BlockAxis(0))
+      const edgeCandidate = yield* runRuleAtRegisteredStage(memoryWorld([]).port, {
+        ...placeOperation, facing: 'east',
+      }, edge, 'stairs-edge-candidate')
+      expect(edgeCandidate).toStrictEqual([{ requestId: 'stairs-edge-candidate', outcome: { _tag: 'InvalidState', position: edge } }])
+
+      const edgeNorth = step(edge, 'north')
+      const edgeCheckedSide = memoryWorld([[edgeNorth, stairCell('west', 'bottom')]])
+      expect(yield* runRuleAtRegisteredStage(edgeCheckedSide.port, placeOperation, edge, 'stairs-edge-checked-side'))
+        .toStrictEqual([{ requestId: 'stairs-edge-checked-side', outcome: { _tag: 'InvalidState', position: edge } }])
+
+      const edgeNeighborScan = yield* runRuleAtRegisteredStage(memoryWorld([]).port, placeOperation, edge, 'stairs-edge-neighbor-scan')
+      expect(edgeNeighborScan).toStrictEqual([{ requestId: 'stairs-edge-neighbor-scan', outcome: { _tag: 'InvalidState', position: edge } }])
+
+      const eastStair = step(position, 'east')
+      const diagonal = step(eastStair, 'north')
+      const stairWithUnreadableShapeCandidate = memoryWorld([[eastStair, stairCell('north', 'bottom')]])
+      const unreadableShapePort: BlockStateWorldPort = {
+        ...stairWithUnreadableShapeCandidate.port,
+        read: (at) => keyOf(at) === keyOf(diagonal)
+          ? Effect.succeed({ _tag: 'Unsupported', operation: 'readState' })
+          : stairWithUnreadableShapeCandidate.port.read(at),
+      }
+      expect(yield* runRuleAtRegisteredStage(unreadableShapePort, placeOperation, position, 'stairs-neighbor-shape-unsupported'))
+        .toStrictEqual([{ requestId: 'stairs-neighbor-shape-unsupported', outcome: {
+          _tag: 'Unsupported', operation: 'readState', position: diagonal,
+        } }])
+
+      const occupiedTarget = memoryWorld([[position, { block: blockId('stone'), state: {} }]])
+      expect(yield* runRuleAtRegisteredStage(occupiedTarget.port, placeOperation, position, 'stairs-occupied-target'))
+        .toStrictEqual([{ requestId: 'stairs-occupied-target', outcome: { _tag: 'InvalidState', position } }])
+
+      const unsupportedWrite = memoryWorld([])
+      const noWritePort: BlockStateWorldPort = {
+        ...unsupportedWrite.port,
+        write: () => Effect.succeed({ _tag: 'Unsupported', operation: 'writeState' }),
+      }
+      expect(yield* runRuleAtRegisteredStage(noWritePort, placeOperation, position, 'stairs-write-unsupported'))
+        .toStrictEqual([{ requestId: 'stairs-write-unsupported', outcome: {
+          _tag: 'Unsupported', operation: 'writeState', position,
+        } }])
+
+      const refreshReadFailure = scriptedWorld([{ _tag: 'Unavailable', reason: 'ChunkNotLoaded' }])
+      expect(yield* runRuleAtRegisteredStage(refreshReadFailure.port, {
+        _tag: 'RefreshStairShapes',
+      }, position, 'stairs-refresh-read-unavailable')).toStrictEqual([{ requestId: 'stairs-refresh-read-unavailable', outcome: {
+        _tag: 'Unavailable', position: offset(position, 0, 0, -1), reason: 'ChunkNotLoaded',
+      } }])
+
+      const refreshWriteFailure = memoryWorld([[south, stairCell('north', 'bottom', 'outer_right')]])
+      const noRefreshWritePort: BlockStateWorldPort = {
+        ...refreshWriteFailure.port,
+        write: () => Effect.succeed({ _tag: 'Unsupported', operation: 'writeState' }),
+      }
+      expect(yield* runRuleAtRegisteredStage(noRefreshWritePort, {
+        _tag: 'RefreshStairShapes',
+      }, position, 'stairs-refresh-write-unsupported')).toStrictEqual([{ requestId: 'stairs-refresh-write-unsupported', outcome: {
+        _tag: 'Unsupported', operation: 'writeState', position,
+      } }])
     }),
   )
 
@@ -778,7 +1055,7 @@ describe('block state rules', () => {
         outcome: { _tag: 'Unsupported', operation: 'readState', position },
       }, {
         requestId: 'stair-place-unsupported',
-        outcome: { _tag: 'Unsupported', operation: 'writeState', position },
+        outcome: { _tag: 'Unsupported', operation: 'readState', position },
       }, {
         requestId: 'crop-tick-unsupported',
         outcome: { _tag: 'Unsupported', operation: 'readState', position },
