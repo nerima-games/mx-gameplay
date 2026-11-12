@@ -215,25 +215,25 @@ export const movementGoalForEcosystemMob = (
 ): Position => {
   const policy = movementPolicyFor(kind)
   const distance = target === undefined ? Number.POSITIVE_INFINITY : distanceXZ(self, target)
-  switch (policy._tag) {
-    case 'FleeOrWander':
-      return target !== undefined && distance < policy.fleeWithin
-        ? atDistanceAwayFrom(self, target, policy.fleeDistance, phase)
-        : wanderGoal(self, phase, policy.wanderRadius)
-    case 'Approach':
-      return target !== undefined && distance <= policy.followRange &&
-        (distance > policy.attackDistance || (kind === SPIDER_KIND && target.y > self.y))
-        ? target
-        : self
-    case 'RangedSpacing':
-      if (target === undefined || distance > policy.followRange) return self
-      if (distance < policy.minDistance) return atDistanceAwayFrom(self, target, policy.minDistance, phase)
-      return distance > policy.maxDistance ? target : self
-    case 'ProvokedApproach':
-      return state.provoked && target !== undefined && distance <= policy.followRange && distance > policy.attackDistance
-        ? target
-        : self
+  if (policy._tag === 'FleeOrWander') {
+    return target !== undefined && distance < policy.fleeWithin
+      ? atDistanceAwayFrom(self, target, policy.fleeDistance, phase)
+      : wanderGoal(self, phase, policy.wanderRadius)
   }
+  if (policy._tag === 'Approach') {
+    return target !== undefined && distance <= policy.followRange &&
+      (distance > policy.attackDistance || (kind === SPIDER_KIND && target.y > self.y))
+      ? target
+      : self
+  }
+  if (policy._tag === 'RangedSpacing') {
+    if (target === undefined || distance > policy.followRange) return self
+    if (distance < policy.minDistance) return atDistanceAwayFrom(self, target, policy.minDistance, phase)
+    return distance > policy.maxDistance ? target : self
+  }
+  return state.provoked && target !== undefined && distance <= policy.followRange && distance > policy.attackDistance
+    ? target
+    : self
 }
 
 export const stepEcosystemMob = (
