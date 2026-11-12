@@ -528,7 +528,8 @@ export const durabilityWearWithEnchantments = (
   const level = enchantmentLevel(source, 'unbreaking')
   if (level === 0) return wear
 
-  const preserveChance = (itemKind === 'armor' ? 0.4 : 1) * (level / (level + 1))
+  const preserveNumerator = itemKind === 'armor' ? 2 * level : level
+  const preserveDenominator = (itemKind === 'armor' ? 5 : 1) * (level + 1)
   let applied = 0
   for (let index = 0; index < wear; index += 1) {
     const roll = rolls[index]
@@ -537,7 +538,7 @@ export const durabilityWearWithEnchantments = (
       !Number.isFinite(roll) ||
       roll < 0 ||
       roll >= 1 ||
-      roll >= preserveChance
+      roll * preserveDenominator >= preserveNumerator
     ) {
       applied += 1
     }
