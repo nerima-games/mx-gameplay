@@ -15,6 +15,7 @@ import {
   RandomSeed,
   SimulationTick,
   StackCount,
+  WorldPositionSchema,
   WorldRevisionSchema,
   WorldIdSchema,
   blockIdOf,
@@ -87,7 +88,7 @@ import {
   planMobRosterSweep,
   rollCasualtyDrops,
 } from '../src/domain/entities/mob-frame.js'
-import { BLAZE_KIND, initialEcosystemMobState, SKELETON_KIND } from '../src/domain/mob/mob-ecosystem.js'
+import { BLAZE_KIND, initialEcosystemMobState, SKELETON_KIND, SPIDER_KIND } from '../src/domain/mob/mob-ecosystem.js'
 import { ZOMBIE_KIND } from '../src/domain/mob/hostile-combat.js'
 import { COW_KIND } from '../src/domain/mob/mob-ecosystem.js'
 import {
@@ -194,6 +195,24 @@ const thornsIronHelmetStorage = (): PlayerStorage => {
   const helmet = Result.getOrThrow(equipmentItem(
     Result.getOrThrow(itemStack('iron_helmet', StackCount(1), { components })),
     Result.getOrThrow(durability(100, 165)),
+  ))
+  return {
+    ...storage,
+    equipment: {
+      ...storage.equipment,
+      slots: { ...storage.equipment.slots, head: helmet },
+    },
+  }
+}
+
+const nearlyBrokenThornsIronHelmetStorage = (): PlayerStorage => {
+  const storage = emptyPlayerStorage()
+  const components = Result.getOrThrow(itemComponents('iron_helmet', {
+    enchantments: Result.getOrThrow(enchantmentsComponent({ 'minecraft:thorns': 1 })),
+  }))
+  const helmet = Result.getOrThrow(equipmentItem(
+    Result.getOrThrow(itemStack('iron_helmet', StackCount(1), { components })),
+    Result.getOrThrow(durability(1, 165)),
   ))
   return {
     ...storage,
@@ -535,6 +554,47 @@ describe('entities stage owner-backed MobSimulation', () => {
     expect(retaliating.harness.lastRequest()?.changes.map(({ ownerId }) => ownerId)).toEqual(
       expect.arrayContaining([GAMEPLAY_ENTITIES_OWNER_ID, GAMEPLAY_PLAYER_STORAGE_OWNER_ID, GAMEPLAY_VITALS_OWNER_ID]),
     )
+  })
+
+  it('does not reuse a Thorns helmet after an earlier contact breaks it in the same frame', async () => {
+    const playerPose = {
+      ...INITIAL_PLAYER_POSE,
+      feetPosition: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
+    }
+    const spider = ecosystemMobAt('test:spider-before-zombie', SPIDER_KIND, 1, 64)
+    const zombie = zombieAt(1.4, 64)
+    const harness = await Effect.runPromise(makeHarness({
+      entity: null,
+      entities: [spider, zombie],
+      playerPose,
+      playerStorage: nearlyBrokenThornsIronHelmetStorage(),
+    }))
+    const seed = 19_166
+    const firstThornsRoll = nextRoll(seed)
+    const staleSnapshotSecondRoll = nextRoll(firstThornsRoll.seed)
+    expect(firstThornsRoll.roll).toBeGreaterThanOrEqual(0.15)
+    expect(staleSnapshotSecondRoll.roll).toBeLessThan(0.15)
+    await Effect.runPromise(Ref.set(harness.state.rollSeed, seed))
+
+    await harness.run(makeDeltaTimeSecs(0.25))
+
+    const [roster, storage, playerDamages] = await Effect.runPromise(Effect.all([
+      strictRoster(harness.coordinator),
+      harness.coordinator.snapshot(GAMEPLAY_PLAYER_STORAGE_OWNER_ID, PlayerStorageSnapshotSchema),
+      Ref.get(harness.state.playerDamages),
+    ]))
+    const spiderAfter = roster.state.entities.find(({ id }) => id === spider.id)
+    const zombieAfter = roster.state.entities.find(({ id }) => id === zombie.id)
+
+    expect(playerDamages).toMatchObject([
+      { _tag: 'HostileContact', source: spider.id },
+      { _tag: 'HostileContact', source: zombie.id },
+    ])
+    expect(playerDamages.map(({ damage }) => damage.amount)).toStrictEqual([1.92, 1])
+    expect(Number(spiderAfter?.healthPoints)).toBe(20)
+    expect(Number(zombieAfter?.healthPoints)).toBe(20)
+    expect(storage.state.equipment.slots.head).toBeNull()
+    expect(harness.commits()).toBe(1)
   })
 
   it('routes AI attacks, contact, and explosions through Peaceful damage resolution', async () => {
@@ -1834,7 +1894,7 @@ describe('entities stage owner-backed MobSimulation', () => {
         tnt: {
           tnts: [{
             id: tntId,
-            dimension: INITIAL_DIMENSION,
+          dimension: INITIAL_DIMENSION,
             center: { x: 0, y: 64, z: 0 },
             state: { kind: 'primed', remainingFuseSecs: 0.01 },
           }],
@@ -3461,7 +3521,10 @@ describe('entities stage owner-backed MobSimulation', () => {
         orbs: [{
           id: orbId,
           value: orbValue,
-          position: { dimension: INITIAL_DIMENSION, x: 1.02, y: 64, z: 0 },
+          position: Schema.decodeUnknownSync(WorldPositionSchema)({
+            dimension: INITIAL_DIMENSION,
+            ...position(PositionAxis(1.02), PositionAxis(64), PositionAxis(0)),
+          }),
           spawnedAt: SimulationTick(0),
         }],
       },

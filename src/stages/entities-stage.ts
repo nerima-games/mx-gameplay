@@ -813,6 +813,17 @@ const runMobSimulation = (
         if (modifiers.fireResistance && fireDamage) continue
         if (modifiers.damageTakenMultiplier === 0) continue
 
+        const storageBeforeHit = storage
+        const thornsPieces = event._tag === 'HostileContact' &&
+          spawned.success.roster.entities.some(({ id }) => id === event.source)
+          ? (['head', 'chest', 'legs', 'feet'] as const).flatMap((slot) => {
+              const equipped = storageBeforeHit.equipment.slots[slot]
+              if (equipped === null) return []
+              const enchantments: EnchantmentSource = equipped.components?.enchantments ?? {}
+              const chance = thornsRetaliationChance(enchantments)
+              return chance > 0 ? [{ slot, chance }] : []
+            })
+          : []
         const armor = yield* Effect.fromResult(prepareArmorHit(storage.equipment, {
           ...event.damage,
           amount: prepared.appliedAmount,
@@ -824,43 +835,32 @@ const runMobSimulation = (
         storage = wear.storage
         nextRollSeed = wear.seed
         applied.push({ ...event, damage: armor.damage })
-      }
-    }
-    const thornsStorageSnapshot = storageSnapshot
-    if (thornsStorageSnapshot !== undefined && storage !== undefined && applied.length > 0) {
-      const thornsPieces = (['head', 'chest', 'legs', 'feet'] as const).flatMap((slot) => {
-        const equipped = thornsStorageSnapshot.state.equipment.slots[slot]
-        if (equipped === null) return []
-        const enchantments: EnchantmentSource = equipped.components?.enchantments ?? {}
-        const chance = thornsRetaliationChance(enchantments)
-        return chance > 0 ? [{ slot, chance }] : []
-      })
-      for (const event of applied) {
-        if (event._tag !== 'HostileContact') continue
-        if (!spawned.success.roster.entities.some(({ id }) => id === event.source)) continue
-        let retaliationDamage: number | undefined
-        const triggeredSlots: Array<'head' | 'chest' | 'legs' | 'feet'> = []
-        for (const piece of thornsPieces) {
-          const chance = drawRolls(nextRollSeed, 1)
-          nextRollSeed = chance.seed
-          if (rollAt(chance, 0) >= piece.chance) continue
-          const damage = drawRolls(nextRollSeed, 1)
-          nextRollSeed = damage.seed
-          retaliationDamage = Math.max(retaliationDamage ?? 0, 1 + rollAt(damage, 0) * 4)
-          triggeredSlots.push(piece.slot)
-        }
-        for (const slot of triggeredSlots) {
-          const wear = damageEquipmentWithUnbreaking(storage, slot, 2, nextRollSeed, 'armor')
-          storage = wear.storage
-          nextRollSeed = wear.seed
-        }
-        if (retaliationDamage !== undefined) {
-          thornsDamageHits.push({
-            id: event.source,
-            damage: { amount: retaliationDamage, cause: 'generic' },
-            killCredit: 'player',
-            lastHitTick: damageTick,
-          })
+
+        if (thornsPieces.length > 0) {
+          let retaliationDamage: number | undefined
+          const triggeredSlots: Array<'head' | 'chest' | 'legs' | 'feet'> = []
+          for (const piece of thornsPieces) {
+            const chance = drawRolls(nextRollSeed, 1)
+            nextRollSeed = chance.seed
+            if (rollAt(chance, 0) >= piece.chance) continue
+            const damage = drawRolls(nextRollSeed, 1)
+            nextRollSeed = damage.seed
+            retaliationDamage = Math.max(retaliationDamage ?? 0, 1 + rollAt(damage, 0) * 4)
+            triggeredSlots.push(piece.slot)
+          }
+          for (const slot of triggeredSlots) {
+            const wear = damageEquipmentWithUnbreaking(storage, slot, 2, nextRollSeed, 'armor')
+            storage = wear.storage
+            nextRollSeed = wear.seed
+          }
+          if (retaliationDamage !== undefined) {
+            thornsDamageHits.push({
+              id: event.source,
+              damage: { amount: retaliationDamage, cause: 'generic' },
+              killCredit: 'player',
+              lastHitTick: damageTick,
+            })
+          }
         }
       }
     }
