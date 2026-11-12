@@ -1618,25 +1618,23 @@ describe('entities stage owner-backed MobSimulation', () => {
     expect(exit._tag).toBe('Failure')
   })
 
-  it('retires expired mob projectiles with omitted and explicit empty pending lists', async () => {
-    for (const withExplicitEmptyPending of [false, true]) {
-      const harness = await Effect.runPromise(makeHarness({ entity: null, projectileService: true }))
-      const projectileId = await seedExpiredMobProjectile(harness.coordinator, withExplicitEmptyPending)
+  it.each([false, true])('retires expired mob projectiles with explicitEmptyPending=%s', async (withExplicitEmptyPending) => {
+    const harness = await Effect.runPromise(makeHarness({ entity: null, projectileService: true }))
+    const projectileId = await seedExpiredMobProjectile(harness.coordinator, withExplicitEmptyPending)
 
-      await harness.run(makeDeltaTimeSecs(0.05))
+    await harness.run(makeDeltaTimeSecs(0.05))
 
-      const projectiles = await Effect.runPromise(harness.coordinator.snapshot(
+    const projectiles = await Effect.runPromise(harness.coordinator.snapshot(
+      PROJECTILE_REPLICATED_OWNER_ID,
+      ProjectileServiceSnapshotSchema,
+    ))
+    const roster = await Effect.runPromise(strictRoster(harness.coordinator))
+    expect(projectiles.state.projectiles).toStrictEqual([])
+    expect(roster.state.resolvedMobProjectileIds ?? []).not.toContain(projectileId)
+    if (withExplicitEmptyPending) {
+      expect(harness.lastRequest()?.changes.map(({ ownerId }) => ownerId)).toStrictEqual([
         PROJECTILE_REPLICATED_OWNER_ID,
-        ProjectileServiceSnapshotSchema,
-      ))
-      const roster = await Effect.runPromise(strictRoster(harness.coordinator))
-      expect(projectiles.state.projectiles).toStrictEqual([])
-      expect(roster.state.resolvedMobProjectileIds ?? []).not.toContain(projectileId)
-      if (withExplicitEmptyPending) {
-        expect(harness.lastRequest()?.changes.map(({ ownerId }) => ownerId)).toStrictEqual([
-          PROJECTILE_REPLICATED_OWNER_ID,
-        ])
-      }
+      ])
     }
   })
 
@@ -1914,34 +1912,32 @@ describe('entities stage owner-backed MobSimulation', () => {
     expect(broken.fires).toStrictEqual([])
   })
 
-  it('rejects a saved projectile impact when player-side owner revisions diverge', async () => {
-    for (const ownerId of [
-      GAMEPLAY_PLAYER_OWNER_ID,
-      GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
-      GAMEPLAY_VITALS_OWNER_ID,
-    ]) {
-      const harness = await Effect.runPromise(makeHarness({
-        entity: null,
-        projectileService: true,
-        mismatchSnapshotAt: {
-          ownerId,
-          snapshotNumber: ownerId === GAMEPLAY_PLAYER_OWNER_ID ? 3 : 2,
-          count: 3,
-        },
-      }))
-      await seedPendingMobProjectileImpact(harness.coordinator, {
-        point: position(PositionAxis(1), PositionAxis(64), PositionAxis(0)),
-      })
+  it.each([
+    ['player', GAMEPLAY_PLAYER_OWNER_ID, 3],
+    ['player storage', GAMEPLAY_PLAYER_STORAGE_OWNER_ID, 2],
+    ['vitals', GAMEPLAY_VITALS_OWNER_ID, 2],
+  ] as const)('rejects a saved projectile impact when the %s owner revision diverges', async (_label, ownerId, snapshotNumber) => {
+    const harness = await Effect.runPromise(makeHarness({
+      entity: null,
+      projectileService: true,
+      mismatchSnapshotAt: {
+        ownerId,
+        snapshotNumber,
+        count: 3,
+      },
+    }))
+    await seedPendingMobProjectileImpact(harness.coordinator, {
+      point: position(PositionAxis(1), PositionAxis(64), PositionAxis(0)),
+    })
 
-      const exit = await Effect.runPromiseExit(
-        harness.stage.run(makeDeltaTimeSecs(0.05)).pipe(Effect.provide(FrameServicesLayer)),
-      )
+    const exit = await Effect.runPromiseExit(
+      harness.stage.run(makeDeltaTimeSecs(0.05)).pipe(Effect.provide(FrameServicesLayer)),
+    )
 
-      expect(exit._tag).toBe('Failure')
-      if (exit._tag !== 'Failure') continue
-      expect(Cause.squash(exit.cause)).toBeInstanceOf(WorldRevisionConflict)
-      expect(harness.mismatchedSnapshots()).toBe(3)
-    }
+    expect(exit._tag).toBe('Failure')
+    if (exit._tag !== 'Failure') return
+    expect(Cause.squash(exit.cause)).toBeInstanceOf(WorldRevisionConflict)
+    expect(harness.mismatchedSnapshots()).toBe(3)
   })
 
   it('rejects saved projectile casualty drops when the dropped-item revision changes', async () => {

@@ -226,6 +226,14 @@ const BlocksPerSecondSchema = Schema.Finite.pipe(Schema.brand('BlocksPerSecond')
 const BlocksPerSecondSquaredSchema = Schema.Finite.pipe(Schema.brand('BlocksPerSecondSquared'))
 const PROJECTILE_FIXED_STEP_SECONDS = 1 / 20
 const PROJECTILE_AGE_TOLERANCE_SECONDS = 1e-9
+type ProjectileBlockShapeBox = readonly [number, number, number, number, number, number]
+const PROJECTILE_LOCAL_SHAPE_BOXES: Record<CollisionShape, ReadonlyArray<ProjectileBlockShapeBox>> = {
+  full: [[0, 0, 0, 1, 1, 1]],
+  none: [],
+  slab: [[0, 0, 0, 1, 0.5, 1]],
+  cactus: [[1 / 16, 0, 1 / 16, 15 / 16, 1, 15 / 16]],
+  pressurePlate: [[0, 0, 0, 1, 1 / 16, 1]],
+}
 const BLAZE_FIREBALL_PROFILE: ProjectileProfile = {
   ...ARROW_PROFILE,
   gravity: Schema.decodeUnknownSync(BlocksPerSecondSquaredSchema)(0),
@@ -297,15 +305,6 @@ const projectileWorldFor = (
     if (Result.isFailure(bx) || Result.isFailure(by) || Result.isFailure(bz)) return UNREADABLE_BLOCK
     return window.blockAt(bx.success, by.success, bz.success)
   }
-  const localShapeBoxes = (shape: CollisionShape): ReadonlyArray<readonly [number, number, number, number, number, number]> => {
-    switch (shape) {
-      case 'full': return [[0, 0, 0, 1, 1, 1]]
-      case 'none': return []
-      case 'slab': return [[0, 0, 0, 1, 0.5, 1]]
-      case 'cactus': return [[1 / 16, 0, 1 / 16, 15 / 16, 1, 15 / 16]]
-      case 'pressurePlate': return [[0, 0, 0, 1, 1 / 16, 1]]
-    }
-  }
   return {
     bounds,
     entities,
@@ -331,7 +330,7 @@ const projectileWorldFor = (
               ? 'full'
               // Readable cells carry BlockId; the kernel returns a default shape for every valid ID.
               : Result.getOrThrow(propertyOfBlockId(block, 'collisionShape'))
-            for (const [localMinX, localMinY, localMinZ, localMaxX, localMaxY, localMaxZ] of localShapeBoxes(shape)) {
+            for (const [localMinX, localMinY, localMinZ, localMaxX, localMaxY, localMaxZ] of PROJECTILE_LOCAL_SHAPE_BOXES[shape]) {
               boxes.push({
                 minX: projectileAxis(x + localMinX),
                 minY: projectileAxis(y + localMinY),
