@@ -151,6 +151,17 @@ import type { GameModule, StageRegistration } from '@nerima-games/mc-kernel'
 import { Effect, Layer } from 'effect'
 import { makeGameplayStagesWithState } from './gameplay-stage-composition.js'
 export { gameplayStages } from './gameplay-stages.js'
+export {
+  GameplayEnchantmentTableApplyRequestSchema,
+  GameplayEnchantmentTableOffersRequestSchema,
+  GameplayEnchantmentTableResultSchema,
+  drainEnchantmentTableResults,
+  requestEnchantmentTableApply,
+  requestEnchantmentTableOffers,
+  type GameplayEnchantmentTableApplyRequest,
+  type GameplayEnchantmentTableOffersRequest,
+  type GameplayEnchantmentTableResult,
+} from './interactions-stage.js'
 
 import { GAMEPLAY_VITALS_OWNER_ID } from './gameplay-owner-registrations.js'
 

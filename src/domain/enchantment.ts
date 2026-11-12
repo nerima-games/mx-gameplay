@@ -1,9 +1,10 @@
 import { Brand, Result, Schema } from 'effect'
 import {
   isItemType,
+  RandomSeed,
   type ExperienceAmount,
   type ItemType,
-  type RandomSeed,
+  type RandomSeed as RandomSeedValue,
 } from '@nerima-games/mc-kernel'
 import {
   EnchantmentLevel,
@@ -31,6 +32,7 @@ import {
   type EnchantmentTableItem,
   type EnchantmentTableOffers,
   type EnchantmentTableRandom,
+  EnchantmentTableOfferSchema as SimEnchantmentTableOfferSchema,
   type EquipmentSlot,
 } from '@nerima-games/mc-sim'
 
@@ -347,9 +349,12 @@ export type EnchantmentBookshelfCount = number & Brand.Brand<'EnchantmentBookshe
 export const EnchantmentBookshelfCountSchema: Schema.Codec<EnchantmentBookshelfCount, number> = Schema.Int
   .check(Schema.isBetween({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER }))
   .pipe(Schema.brand('EnchantmentBookshelfCount'))
+export const EnchantmentTableShelfCountSchema: Schema.Codec<EnchantmentBookshelfCount, number> = Schema.Int
+  .check(Schema.isBetween({ minimum: 0, maximum: 15 }))
+  .pipe(Schema.brand('EnchantmentBookshelfCount'))
 export const generateEnchantmentTableOffersForItem = (
   item: EnchantmentTableItem,
-  seed: RandomSeed,
+  seed: RandomSeedValue,
   bookshelfCount: EnchantmentBookshelfCount,
 ): Result.Result<EnchantmentTableOffers, EnchantmentTableError> =>
   generateEnchantmentTableOffersWithSim({
@@ -388,7 +393,7 @@ const rejectTransaction = (
   reason: EnchantmentRejectionReason,
 ): EnchantmentTransactionResult => ({ ok: false, state, reason })
 
-const offersMatch = (left: EnchantmentOffer, right: EnchantmentOffer): boolean =>
+const legacyOffersMatch = (left: EnchantmentOffer, right: EnchantmentOffer): boolean =>
   left.seed === right.seed &&
   left.bookshelfCount === right.bookshelfCount &&
   left.slot === right.slot &&
@@ -397,10 +402,49 @@ const offersMatch = (left: EnchantmentOffer, right: EnchantmentOffer): boolean =
   left.requiredPlayerLevel === right.requiredPlayerLevel &&
   left.lapisCost === right.lapisCost
 
+const tableOffersMatch = (
+  left: Readonly<{
+    readonly levelCost: number
+    readonly lapisCost: 1 | 2 | 3
+    readonly enchantments: ReadonlyArray<Readonly<{ readonly id: string; readonly level: number }>>
+  }>,
+  right: Readonly<{
+    readonly levelCost: number
+    readonly lapisCost: 1 | 2 | 3
+    readonly enchantments: ReadonlyArray<Readonly<{ readonly id: string; readonly level: number }>>
+  }>,
+): boolean =>
+  left.levelCost === right.levelCost &&
+  left.lapisCost === right.lapisCost &&
+  left.enchantments.length === right.enchantments.length &&
+  left.enchantments.every(({ id, level }, index) => {
+    const expected = right.enchantments[index]
+    return expected !== undefined && expected.id === id && expected.level === level
+  })
+
+const LegacyEnchantmentOfferSchema = Schema.Struct({
+  seed: Schema.Int,
+  bookshelfCount: Schema.Int,
+  slot: Schema.Literals([0, 1, 2]),
+  enchantment: Schema.Struct({
+    id: Schema.Literals(ENCHANTMENT_IDS),
+    level: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 255 })),
+  }),
+  requiredPlayerLevel: Schema.Int.check(Schema.isGreaterThan(0)),
+  lapisCost: Schema.Literals([1, 2, 3]),
+})
+const EnchantmentOfferInputSchema = Schema.Union([
+  LegacyEnchantmentOfferSchema,
+  SimEnchantmentTableOfferSchema,
+])
+
 export const applyEnchantmentOffer = (
   state: EnchantmentTableState,
-  offer: EnchantmentOffer,
+  input: unknown,
 ): EnchantmentTransactionResult => {
+  const decodedOffer = Schema.decodeUnknownResult(EnchantmentOfferInputSchema)(input)
+  if (Result.isFailure(decodedOffer)) return rejectTransaction(state, 'invalid_offer')
+  const offer = decodedOffer.success
   if (state.item === null) return rejectTransaction(state, 'no_item')
   if (
     !Number.isSafeInteger(state.playerLevel) ||
@@ -412,30 +456,49 @@ export const applyEnchantmentOffer = (
   }
   const itemSnapshot = snapshotEnchantedItem(state.item)
   if (!itemSnapshot.ok) return rejectTransaction(state, 'invalid_item')
-  if (offer.slot !== 0 && offer.slot !== 1 && offer.slot !== 2) {
-    return rejectTransaction(state, 'invalid_offer')
+  let offeredEnchantments: ReadonlyArray<Enchantment>
+  let requiredPlayerLevel: number
+  if ('enchantments' in offer) {
+    const seed = Result.getOrUndefined(RandomSeed.result(state.seed))
+    const bookshelfCount = Result.getOrUndefined(
+      Schema.decodeUnknownResult(EnchantmentTableShelfCountSchema)(state.bookshelfCount),
+    )
+    if (seed === undefined || bookshelfCount === undefined) return rejectTransaction(state, 'invalid_state')
+    const slot = (offer.lapisCost - 1) as EnchantmentTableSlot
+    const expectedOffers = generateEnchantmentTableOffersForItem(itemSnapshot.value.item, seed, bookshelfCount)
+    if (Result.isFailure(expectedOffers)) return rejectTransaction(state, 'invalid_offer')
+    const expected = expectedOffers.success[slot]
+    if (expected === undefined || !tableOffersMatch(offer, expected)) {
+      return rejectTransaction(state, 'invalid_offer')
+    }
+    offeredEnchantments = offer.enchantments
+    requiredPlayerLevel = Math.max(offer.levelCost, offer.lapisCost)
+  } else {
+    const expected = enchantmentOffer(state.seed, state.bookshelfCount, offer.slot)
+    if (!legacyOffersMatch(offer, expected)) return rejectTransaction(state, 'invalid_offer')
+    offeredEnchantments = [offer.enchantment]
+    requiredPlayerLevel = offer.requiredPlayerLevel
   }
-  const expected = enchantmentOffer(state.seed, state.bookshelfCount, offer.slot)
-  if (!offersMatch(offer, expected)) return rejectTransaction(state, 'invalid_offer')
-  if (!enchantmentAppliesTo(offer.enchantment.id, itemSnapshot.value.item)) {
+  if (offeredEnchantments.length === 0 || offeredEnchantments.some(({ id }) =>
+    !enchantmentAppliesTo(id, itemSnapshot.value.item),
+  )) {
     return rejectTransaction(state, 'incompatible_item')
   }
-  if (
-    itemSnapshot.value.enchantments.some(({ id }) =>
-      enchantmentsConflict(offer.enchantment.id, id),
-    )
-  ) {
+  if (offeredEnchantments.some(({ id }, index) =>
+    itemSnapshot.value.enchantments.some((existing) => enchantmentsConflict(id, existing.id)) ||
+    offeredEnchantments.slice(index + 1).some((next) => enchantmentsConflict(id, next.id)),
+  )) {
     return rejectTransaction(state, 'conflicting_enchantment')
   }
-  if (state.playerLevel < offer.requiredPlayerLevel) {
+  if (state.playerLevel < requiredPlayerLevel) {
     return rejectTransaction(state, 'insufficient_level')
   }
   if (state.lapis < offer.lapisCost) return rejectTransaction(state, 'insufficient_lapis')
 
   const nextEnchantments = itemSnapshot.value.enchantments.filter(
-    ({ id }) => id !== expected.enchantment.id,
+    ({ id }) => !offeredEnchantments.some((enchantment) => enchantment.id === id),
   )
-  nextEnchantments.push(expected.enchantment)
+  nextEnchantments.push(...offeredEnchantments)
   const nextItem: EnchantedItem = {
     ...itemSnapshot.value,
     enchantments: canonicalEnchantments(nextEnchantments),

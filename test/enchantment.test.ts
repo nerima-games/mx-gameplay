@@ -70,6 +70,7 @@ import {
   silkTouchEnabled,
   snapshotEnchantedItem,
   sweepingEdgeDamageMultiplier,
+  EnchantmentTableShelfCountSchema,
   soulSpeedLevel,
   swiftSneakLevel,
   thornsRetaliationChance,
@@ -324,6 +325,33 @@ describe('enchanted item codec', () => {
 })
 
 describe('enchantment table offers and transaction', () => {
+  it('generates offers throughout the validated shelf range and rejects adjacent counts', () => {
+    const seed = RandomSeed(1234)
+    FastCheck.assert(
+      FastCheck.property(FastCheck.integer({ min: 0, max: 15 }), (bookshelfCount) => {
+        const decoded = Schema.decodeUnknownResult(EnchantmentTableShelfCountSchema)(bookshelfCount)
+        expect(Result.isSuccess(decoded)).toBe(true)
+        if (Result.isFailure(decoded)) return
+
+        const generated = generateEnchantmentTableOffersForItem('diamond_sword', seed, decoded.success)
+        expect(Result.isSuccess(generated)).toBe(true)
+        if (Result.isFailure(generated)) return
+        expect(generated.success).toHaveLength(3)
+        expect(generated.success.map((offer) => offer?.lapisCost)).toEqual([1, 2, 3])
+      }),
+    )
+    for (const bookshelfCount of [0, 15]) {
+      expect(Result.isSuccess(
+        Schema.decodeUnknownResult(EnchantmentTableShelfCountSchema)(bookshelfCount),
+      )).toBe(true)
+    }
+    for (const bookshelfCount of [-1, 16]) {
+      expect(Result.isFailure(
+        Schema.decodeUnknownResult(EnchantmentTableShelfCountSchema)(bookshelfCount),
+      )).toBe(true)
+    }
+  })
+
   it('uses mc-sim enchantment-table rules with a repeatable gameplay seed', () => {
     const seed = RandomSeed(1234)
     const bookshelfCount = Schema.decodeUnknownSync(EnchantmentBookshelfCountSchema)(15)
@@ -368,6 +396,116 @@ describe('enchantment table offers and transaction', () => {
     expect(result.state.seed).toBe(rerollEnchantmentSeed(offer.seed))
     expect(result.state.item?.enchantments).toContainEqual(offer.enchantment)
     expect(state.item.enchantments).toEqual([])
+  })
+
+  it('validates and applies a fixed multi-enchantment mc-sim table offer', () => {
+    const offer = {
+      levelCost: 30,
+      lapisCost: 3,
+      enchantments: [{ id: 'unbreaking', level: 3 }, { id: 'smite', level: 4 }],
+    } as const
+    const state = {
+      seed: 1,
+      bookshelfCount: 15,
+      playerLevel: 30,
+      lapis: 3,
+      item: enchantedItem('diamond_sword'),
+    }
+
+    const result = applyEnchantmentOffer(state, offer)
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error('expected fixed table offer to apply')
+    expect(result.state.playerLevel).toBe(27)
+    expect(result.state.lapis).toBe(0)
+    expect(result.state.seed).toBe(rerollEnchantmentSeed(1))
+    expect(result.state.item?.enchantments).toEqual([
+      { id: 'smite', level: 4 },
+      { id: 'unbreaking', level: 3 },
+    ])
+    expect(state.item.enchantments).toEqual([])
+  })
+
+  it('rejects a modern offer whose cost or enchantment list differs from the generated table vector', () => {
+    const offer = {
+      levelCost: 30,
+      lapisCost: 3,
+      enchantments: [{ id: 'unbreaking', level: 3 }, { id: 'smite', level: 4 }],
+    } as const
+    const state = {
+      seed: 1,
+      bookshelfCount: 15,
+      playerLevel: 30,
+      lapis: 3,
+      item: enchantedItem('diamond_sword'),
+    }
+    const invalidOffers = [
+      { ...offer, levelCost: 29 },
+      { ...offer, enchantments: [{ id: 'unbreaking', level: 3 }] },
+      { ...offer, enchantments: [{ id: 'unbreaking', level: 3 }, { id: 'smite', level: 3 }] },
+      { ...offer, enchantments: [{ id: 'sharpness', level: 3 }, { id: 'smite', level: 4 }] },
+    ] as const
+
+    for (const forgedOffer of invalidOffers) {
+      const result = applyEnchantmentOffer(state, forgedOffer)
+      expect(result).toEqual({ ok: false, state, reason: 'invalid_offer' })
+      expect(state.item.enchantments).toEqual([])
+      expect(state.playerLevel).toBe(30)
+      expect(state.lapis).toBe(3)
+    }
+  })
+
+  it('rejects modern offers when their seeded table state is invalid or resources are insufficient', () => {
+    const offer = {
+      levelCost: 30,
+      lapisCost: 3,
+      enchantments: [{ id: 'unbreaking', level: 3 }, { id: 'smite', level: 4 }],
+    } as const
+    const state = {
+      seed: 1,
+      bookshelfCount: 15,
+      playerLevel: 30,
+      lapis: 3,
+      item: enchantedItem('diamond_sword'),
+    }
+    const invalidSeed = { ...state, seed: Number.NaN }
+    const invalidShelves = { ...state, bookshelfCount: 16 }
+    const insufficientLevel = { ...state, playerLevel: 29 }
+    const insufficientLapis = { ...state, lapis: 2 }
+
+    expect(applyEnchantmentOffer(invalidSeed, offer)).toEqual({
+      ok: false, state: invalidSeed, reason: 'invalid_state',
+    })
+    expect(applyEnchantmentOffer(invalidShelves, offer)).toEqual({
+      ok: false, state: invalidShelves, reason: 'invalid_state',
+    })
+    expect(applyEnchantmentOffer(insufficientLevel, offer)).toEqual({
+      ok: false, state: insufficientLevel, reason: 'insufficient_level',
+    })
+    expect(applyEnchantmentOffer(insufficientLapis, offer)).toEqual({
+      ok: false, state: insufficientLapis, reason: 'insufficient_lapis',
+    })
+  })
+
+  it('rejects a generated multi-enchantment offer that conflicts with an existing sword enchantment', () => {
+    const offer = {
+      levelCost: 30,
+      lapisCost: 3,
+      enchantments: [{ id: 'unbreaking', level: 3 }, { id: 'smite', level: 4 }],
+    } as const
+    const state = {
+      seed: 1,
+      bookshelfCount: 15,
+      playerLevel: 30,
+      lapis: 3,
+      item: enchantedItem('diamond_sword', 'sharpness', 1),
+    }
+
+    expect(applyEnchantmentOffer(state, offer)).toEqual({
+      ok: false,
+      state,
+      reason: 'conflicting_enchantment',
+    })
   })
 
   it('rejects no item, forged offers, incompatible items and insufficient resources without mutation', () => {

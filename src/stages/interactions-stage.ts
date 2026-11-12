@@ -35,6 +35,7 @@ import {
   stepPortalTravel,
   stepStatusEffects,
   useBucket,
+  type GameplayStageOperationFailure,
 } from './registration-core.js'
 import {
   AttackRangeDistance,
@@ -42,12 +43,13 @@ import {
   EntityHealthPoints,
   EntityId,
   PositionAxis,
+  RandomSeed,
   weaponComponent,
   type EnchantmentLevel as EnchantmentLevelValue,
 } from '@nerima-games/mc-kernel'
 import { position as kernelPosition } from '@nerima-games/mc-kernel'
 import type { BlockId, ItemType } from '@nerima-games/mc-kernel'
-import { Option, Result } from 'effect'
+import { Equal, Option, Result, Schema } from 'effect'
 import {
   DamageAmount,
   DamageCause,
@@ -78,6 +80,7 @@ import type {
   BlockUseResult,
   CollectBrewingBottleRequest,
   BrewingItemUseRequest,
+  GameplayFrameState,
   BowShotRequest,
   DroppedItemSpawn,
   GameplayStageContext,
@@ -123,6 +126,9 @@ import {
   FishingStateSchema,
   FishingLootSampleSchema,
   FishingWaitTicksSchema,
+  EnchantmentTableInventorySlotSchema,
+  EnchantmentTableOfferSchema as SimEnchantmentTableOfferSchema,
+  ItemStackSchema,
   ProjectileServiceSnapshotSchema,
   PROJECTILE_REPLICATED_OWNER_ID,
   launchProjectile,
@@ -142,8 +148,14 @@ import {
   type CropState,
   primeTnt,
   spawnEntity,
+  type EnchantmentTableApplyResult,
+  type EnchantmentTableInventorySlot,
+  type EnchantmentTableOffer as RawEnchantmentTableOffer,
+  type EnchantmentTableOffers as RawEnchantmentTableOffers,
+  type ItemStack,
+  type EnchantmentTableServiceApi,
+  type EnchantmentTableServiceError,
 } from '@nerima-games/mc-sim'
-import { Schema } from 'effect'
 import {
   applyStatusEffect,
   AttackDamageBonusSchema,
@@ -187,7 +199,10 @@ import {
   punchKnockbackBonus,
   silkTouchEnabled,
   KnockbackStrengthSchema,
+  EnchantmentTableShelfCountSchema,
+  generateEnchantmentTableOffersForItem,
   type EnchantmentSource,
+  type EnchantmentBookshelfCount,
 } from '../domain/enchantment.js'
 import {
   advanceMiningProgress,
@@ -2335,8 +2350,384 @@ const advanceBlockMiningAttempt = (
   }
 })
 
+type GameplayEnchantmentTableRequestId = string
+type GameplayEnchantmentTableOffer = Schema.Schema.Type<typeof SimEnchantmentTableOfferSchema>
+type GameplayEnchantmentTableOffers = readonly [
+  GameplayEnchantmentTableOffer | undefined,
+  GameplayEnchantmentTableOffer | undefined,
+  GameplayEnchantmentTableOffer | undefined,
+]
+const EnchantmentTableRequestIdSchema: Schema.Codec<GameplayEnchantmentTableRequestId, string> = Schema.String.check(
+  Schema.makeFilter((requestId) => requestId.length > 0),
+)
+
+export type GameplayEnchantmentTableOffersRequest = Readonly<{
+  readonly requestId: GameplayEnchantmentTableRequestId
+  readonly itemSlot: EnchantmentTableInventorySlot
+  readonly lapisSlot: EnchantmentTableInventorySlot
+  readonly bookshelfCount: EnchantmentBookshelfCount
+}>
+export const GameplayEnchantmentTableOffersRequestSchema: Schema.Codec<
+  GameplayEnchantmentTableOffersRequest,
+  unknown
+> = Schema.Struct({
+  requestId: EnchantmentTableRequestIdSchema,
+  itemSlot: EnchantmentTableInventorySlotSchema,
+  lapisSlot: EnchantmentTableInventorySlotSchema,
+  // mc-kernel 0.14.0 has no bookshelf block ID, so a trusted caller supplies the count.
+  bookshelfCount: EnchantmentTableShelfCountSchema,
+}).check(Schema.makeFilter(({ itemSlot, lapisSlot }) => itemSlot !== lapisSlot))
+
+export type GameplayEnchantmentTableApplyRequest = Readonly<{
+  readonly requestId: GameplayEnchantmentTableRequestId
+  readonly tableSlot: 0 | 1 | 2
+}>
+export const GameplayEnchantmentTableApplyRequestSchema: Schema.Codec<
+  GameplayEnchantmentTableApplyRequest,
+  unknown
+> = Schema.Struct({
+  requestId: EnchantmentTableRequestIdSchema,
+  tableSlot: Schema.Literals([0, 1, 2]),
+})
+
+type EnchantmentTableOfferEntry = Readonly<{
+  readonly slot: 0 | 1 | 2
+  readonly offer: GameplayEnchantmentTableOffer
+}>
+const EnchantmentTableOfferEntrySchema: Schema.Codec<EnchantmentTableOfferEntry, unknown> = Schema.Struct({
+  slot: Schema.Literals([0, 1, 2]),
+  offer: SimEnchantmentTableOfferSchema,
+})
+type EnchantmentTableRejectionReason =
+  | 'service-unavailable'
+  | 'player-dead'
+  | 'no-item'
+  | 'already-enchanted'
+  | 'invalid-seed'
+  | 'offer-generation-failed'
+  | 'duplicate-session'
+  | 'session-not-found'
+  | 'item-changed'
+  | 'invalid-offer'
+  | 'empty-item-slot'
+  | 'invalid-item'
+  | 'not-enchantable'
+  | 'insufficient-level'
+  | 'insufficient-lapis'
+  | 'invalid-storage'
+  | 'item-stack-failure'
+  | 'transaction-failed'
+const EnchantmentTableRejectionReasonSchema: Schema.Codec<EnchantmentTableRejectionReason, string> = Schema.Literals([
+  'service-unavailable', 'player-dead', 'no-item', 'already-enchanted', 'invalid-seed',
+  'offer-generation-failed', 'duplicate-session', 'session-not-found', 'item-changed',
+  'invalid-offer', 'empty-item-slot', 'invalid-item', 'not-enchantable', 'insufficient-level',
+  'insufficient-lapis', 'invalid-storage', 'item-stack-failure', 'transaction-failed',
+])
+export type GameplayEnchantmentTableResult =
+  | Readonly<{
+      readonly _tag: 'OffersGenerated'
+      readonly requestId: GameplayEnchantmentTableRequestId
+      readonly offers: ReadonlyArray<EnchantmentTableOfferEntry>
+    }>
+  | Readonly<{
+      readonly _tag: 'Applied'
+      readonly requestId: GameplayEnchantmentTableRequestId
+      readonly tableSlot: 0 | 1 | 2
+      readonly offer: GameplayEnchantmentTableOffer
+      readonly item: ItemStack
+    }>
+  | Readonly<{
+      readonly _tag: 'Rejected'
+      readonly requestId: GameplayEnchantmentTableRequestId
+      readonly reason: EnchantmentTableRejectionReason
+    }>
+export const GameplayEnchantmentTableResultSchema: Schema.Codec<
+  GameplayEnchantmentTableResult,
+  unknown
+> = Schema.Union([
+  Schema.TaggedStruct('OffersGenerated', {
+    requestId: EnchantmentTableRequestIdSchema,
+    offers: Schema.Array(EnchantmentTableOfferEntrySchema),
+  }),
+  Schema.TaggedStruct('Applied', {
+    requestId: EnchantmentTableRequestIdSchema,
+    tableSlot: Schema.Literals([0, 1, 2]),
+    offer: SimEnchantmentTableOfferSchema,
+    item: ItemStackSchema,
+  }),
+  Schema.TaggedStruct('Rejected', {
+    requestId: EnchantmentTableRequestIdSchema,
+    reason: EnchantmentTableRejectionReasonSchema,
+  }),
+])
+
+type EnchantmentTableQueuedRequest =
+  | { readonly _tag: 'GenerateOffers'; readonly request: GameplayEnchantmentTableOffersRequest }
+  | { readonly _tag: 'ApplyOffer'; readonly request: GameplayEnchantmentTableApplyRequest }
+
+type EnchantmentTableOfferSession = Readonly<{
+  readonly itemSlot: EnchantmentTableInventorySlot
+  readonly lapisSlot: EnchantmentTableInventorySlot
+  readonly sourceStack: ItemStack
+  readonly offers: GameplayEnchantmentTableOffers
+}>
+
+type EnchantmentTableMailbox = {
+  readonly requests: Array<EnchantmentTableQueuedRequest>
+  readonly results: Array<GameplayEnchantmentTableResult>
+  readonly sessions: Map<string, EnchantmentTableOfferSession>
+}
+
+const enchantmentTableMailboxes = new WeakMap<GameplayFrameState, EnchantmentTableMailbox>()
+const enchantmentTableServices = new WeakMap<GameplayFrameState, EnchantmentTableServiceApi>()
+
+const enchantmentTableMailboxFor = (state: GameplayFrameState): EnchantmentTableMailbox => {
+  let mailbox = enchantmentTableMailboxes.get(state)
+  if (mailbox === undefined) {
+    mailbox = { requests: [], results: [], sessions: new Map() }
+    enchantmentTableMailboxes.set(state, mailbox)
+  }
+  return mailbox
+}
+
+/** Internal composition hook; the public module binds the mc-sim service before building stages. */
+export const bindEnchantmentTableService = (
+  state: GameplayFrameState,
+  service: EnchantmentTableServiceApi,
+): void => {
+  enchantmentTableServices.set(state, service)
+}
+
+export const requestEnchantmentTableOffers = (
+  state: GameplayFrameState,
+  input: unknown,
+): Effect.Effect<void, Schema.SchemaError> =>
+  Schema.decodeUnknownEffect(GameplayEnchantmentTableOffersRequestSchema)(input).pipe(
+    Effect.flatMap((request) => Effect.sync(() => {
+      enchantmentTableMailboxFor(state).requests.push({ _tag: 'GenerateOffers', request })
+    })),
+  )
+
+export const requestEnchantmentTableApply = (
+  state: GameplayFrameState,
+  input: unknown,
+): Effect.Effect<void, Schema.SchemaError> =>
+  Schema.decodeUnknownEffect(GameplayEnchantmentTableApplyRequestSchema)(input).pipe(
+    Effect.flatMap((request) => Effect.sync(() => {
+      enchantmentTableMailboxFor(state).requests.push({ _tag: 'ApplyOffer', request })
+    })),
+  )
+
+export const drainEnchantmentTableResults = (
+  state: GameplayFrameState,
+): Effect.Effect<ReadonlyArray<GameplayEnchantmentTableResult>> =>
+  Effect.sync(() => enchantmentTableMailboxFor(state).results.splice(0))
+
+const sameItemStack = (left: ItemStack, right: ItemStack): boolean =>
+  Equal.equals(left, right)
+
+const decodeGeneratedOffer = (
+  offer: RawEnchantmentTableOffer | undefined,
+): Result.Result<GameplayEnchantmentTableOffer | undefined, Schema.SchemaError> =>
+  offer === undefined
+    ? Result.succeed(undefined)
+    : Schema.decodeUnknownResult(SimEnchantmentTableOfferSchema)(offer)
+
+const decodeGeneratedOffers = (
+  offers: RawEnchantmentTableOffers,
+): Result.Result<GameplayEnchantmentTableOffers, Schema.SchemaError> =>
+  Result.all([
+    decodeGeneratedOffer(offers[0]),
+    decodeGeneratedOffer(offers[1]),
+    decodeGeneratedOffer(offers[2]),
+  ] as const)
+
+const gameplayStageOperationError = (
+  error: EnchantmentTableServiceError,
+): GameplayStageOperationFailure['error'] | undefined => {
+  if ('_tag' in error && error._tag === 'EnchantmentTableApplyFailure') return undefined
+  return error
+}
+
+const serviceFailureReason = (error: EnchantmentTableServiceError): EnchantmentTableRejectionReason =>
+  '_tag' in error && error._tag === 'EnchantmentTableApplyFailure'
+    ? error.reason
+    : 'transaction-failed'
+
+const applyEnchantmentTableRequest = (
+  state: GameplayFrameState,
+  mailbox: EnchantmentTableMailbox,
+  commit: GameplayStageContext['commit'],
+  service: EnchantmentTableServiceApi | undefined,
+  request: GameplayEnchantmentTableApplyRequest,
+): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    if (
+      commit === undefined ||
+      commit.playerStorageOwnerId === undefined ||
+      commit.vitalsOwnerId === undefined ||
+      service === undefined
+    ) {
+      mailbox.results.push({ _tag: 'Rejected', requestId: request.requestId, reason: 'service-unavailable' })
+      return
+    }
+    const session = mailbox.sessions.get(request.requestId)
+    if (session === undefined) {
+      mailbox.results.push({ _tag: 'Rejected', requestId: request.requestId, reason: 'session-not-found' })
+      return
+    }
+    const storage = yield* Effect.result(commit.coordinator.snapshot(
+      commit.playerStorageOwnerId,
+      PlayerStorageSnapshotSchema,
+    ))
+    if (Result.isFailure(storage)) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'ItemUse', error: storage.failure,
+      })
+      mailbox.results.push({ _tag: 'Rejected', requestId: request.requestId, reason: 'transaction-failed' })
+      return
+    }
+    const currentStack = storage.success.state.inventory.slots[session.itemSlot]
+    if (currentStack === undefined || !sameItemStack(currentStack, session.sourceStack)) {
+      mailbox.sessions.delete(request.requestId)
+      mailbox.results.push({ _tag: 'Rejected', requestId: request.requestId, reason: 'item-changed' })
+      return
+    }
+    const offer = session.offers[request.tableSlot]
+    if (offer === undefined) {
+      mailbox.results.push({ _tag: 'Rejected', requestId: request.requestId, reason: 'invalid-offer' })
+      return
+    }
+    const applied = yield* Effect.result(service.apply({
+      playerStorageOwnerId: commit.playerStorageOwnerId,
+      vitalsOwnerId: commit.vitalsOwnerId,
+      itemSlot: session.itemSlot,
+      lapisSlot: session.lapisSlot,
+      tableSlot: request.tableSlot,
+      offer,
+    }))
+    if (Result.isFailure(applied)) {
+      const reason = serviceFailureReason(applied.failure)
+      if (reason === 'transaction-failed') {
+        const error = gameplayStageOperationError(applied.failure)
+        if (error !== undefined) {
+          yield* recordGameplayStageFailure(state, {
+            _tag: 'Failed', operation: 'WorldCommit', subject: 'ItemUse', error,
+          })
+        }
+      }
+      mailbox.results.push({ _tag: 'Rejected', requestId: request.requestId, reason })
+      return
+    }
+    mailbox.sessions.delete(request.requestId)
+    const result: EnchantmentTableApplyResult = applied.success.result
+    mailbox.results.push({
+      _tag: 'Applied',
+      requestId: request.requestId,
+      tableSlot: request.tableSlot,
+      offer,
+      item: result.item,
+    })
+  })
+
+const generateEnchantmentTableOffersRequest = (
+  state: GameplayFrameState,
+  mailbox: EnchantmentTableMailbox,
+  commit: GameplayStageContext['commit'],
+  service: EnchantmentTableServiceApi | undefined,
+  request: GameplayEnchantmentTableOffersRequest,
+): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    if (commit === undefined || commit.playerStorageOwnerId === undefined || service === undefined) {
+      mailbox.results.push({ _tag: 'Rejected', requestId: request.requestId, reason: 'service-unavailable' })
+      return
+    }
+    if (mailbox.sessions.has(request.requestId)) {
+      mailbox.results.push({ _tag: 'Rejected', requestId: request.requestId, reason: 'duplicate-session' })
+      return
+    }
+    const storage = yield* Effect.result(commit.coordinator.snapshot(
+      commit.playerStorageOwnerId,
+      PlayerStorageSnapshotSchema,
+    ))
+    if (Result.isFailure(storage)) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'ItemUse', error: storage.failure,
+      })
+      mailbox.results.push({ _tag: 'Rejected', requestId: request.requestId, reason: 'transaction-failed' })
+      return
+    }
+    const sourceStack = storage.success.state.inventory.slots[request.itemSlot]
+    if (sourceStack === undefined) {
+      mailbox.results.push({ _tag: 'Rejected', requestId: request.requestId, reason: 'no-item' })
+      return
+    }
+    if (sourceStack.components.enchantments !== undefined || sourceStack.components.storedEnchantments !== undefined) {
+      mailbox.results.push({ _tag: 'Rejected', requestId: request.requestId, reason: 'already-enchanted' })
+      return
+    }
+    const seedValue = yield* Ref.get(state.rollSeed)
+    const seed = RandomSeed.result(seedValue)
+    if (Result.isFailure(seed)) {
+      mailbox.results.push({ _tag: 'Rejected', requestId: request.requestId, reason: 'invalid-seed' })
+      return
+    }
+    yield* Ref.set(state.rollSeed, drawRolls(seedValue, 1).seed)
+    const offers = generateEnchantmentTableOffersForItem(sourceStack.item, seed.success, request.bookshelfCount)
+    if (Result.isFailure(offers)) {
+      mailbox.results.push({ _tag: 'Rejected', requestId: request.requestId, reason: 'offer-generation-failed' })
+      return
+    }
+    const serviceOffers = decodeGeneratedOffers(offers.success)
+    if (Result.isFailure(serviceOffers)) {
+      mailbox.results.push({ _tag: 'Rejected', requestId: request.requestId, reason: 'offer-generation-failed' })
+      return
+    }
+    mailbox.sessions.set(request.requestId, {
+      itemSlot: request.itemSlot,
+      lapisSlot: request.lapisSlot,
+      sourceStack,
+      offers: serviceOffers.success,
+    })
+    mailbox.results.push({
+      _tag: 'OffersGenerated',
+      requestId: request.requestId,
+      offers: serviceOffers.success.flatMap((offer, slot) => offer === undefined
+        ? []
+        : [{ slot: slot as 0 | 1 | 2, offer }]),
+    })
+  })
+
+const processEnchantmentTableRequests = (
+  state: GameplayFrameState,
+  mailbox: EnchantmentTableMailbox,
+  commit: GameplayStageContext['commit'],
+  service: EnchantmentTableServiceApi | undefined,
+  playerDead: boolean,
+): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    const requests = yield* Effect.sync(() => mailbox.requests.splice(0))
+    for (const queued of requests) {
+      if (playerDead) {
+        mailbox.results.push({
+          _tag: 'Rejected',
+          requestId: queued.request.requestId,
+          reason: 'player-dead',
+        })
+        continue
+      }
+      if (queued._tag === 'GenerateOffers') {
+        yield* generateEnchantmentTableOffersRequest(state, mailbox, commit, service, queued.request)
+      } else {
+        yield* applyEnchantmentTableRequest(state, mailbox, commit, service, queued.request)
+      }
+    }
+  })
+
 export const makeInteractionsStage = (context: GameplayStageContext): StageRegistration => {
   const { state, store, commit } = context
+  const enchantmentTableMailbox = enchantmentTableMailboxFor(state)
+  const enchantmentTableService = enchantmentTableServices.get(state)
   const fishingEnchantmentsByActor = new Map<EntityId, FishingEnchantments>()
   return {
     id: GAMEPLAY_STAGE_IDS.interactions,
@@ -2360,6 +2751,13 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
           return
         }
         const playerDead = vitalsSnapshot.success.vitals.healthPoints <= 0
+        yield* processEnchantmentTableRequests(
+          state,
+          enchantmentTableMailbox,
+          commit,
+          enchantmentTableService,
+          playerDead,
+        )
         const playerState = yield* gameplayPlayerStateForStage(state, commit)
         const portalTravel = commit !== undefined && playerState !== undefined
           ? { commit, playerState }

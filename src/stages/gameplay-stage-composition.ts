@@ -3,16 +3,19 @@ import {
   DomainEventBus,
   WorldCommitCoordinator,
   makeBrewingService,
+  makeEnchantmentTableService,
   makeFishingService,
   makeProjectileService,
   makeTntService,
   PROJECTILE_REPLICATED_OWNER_ID,
   TNT_REPLICATED_OWNER_ID,
+  type WorldCommitCoordinatorApi,
 } from '@nerima-games/mc-sim'
-import { Effect } from 'effect'
+import { Effect, Schema } from 'effect'
 import { ChunkStore, TimeService, entityManagerTag } from './registration-core.js'
 import type { EntityManager, GameplayFrameState, MobBehaviour } from './registration-core.js'
 import { makeBrewingAdvanceStage } from './brewing-advance-stage.js'
+import { bindEnchantmentTableService } from './interactions-stage.js'
 import { gameplayStages } from './gameplay-stages.js'
 import {
   GAMEPLAY_PLAYER_OWNER_ID,
@@ -29,6 +32,28 @@ import {
   GAMEPLAY_TNT_SOURCES_OWNER_ID,
 } from './gameplay-owner-registrations.js'
 
+import { ExperienceOrbVitalsOwnerSnapshotSchema } from '../domain/entities/xp-orb.js'
+
+const enchantmentTableCoordinator = (
+  coordinator: WorldCommitCoordinatorApi,
+): WorldCommitCoordinatorApi => {
+  const snapshot: WorldCommitCoordinatorApi['snapshot'] = (ownerId, schema) => {
+    if (ownerId !== GAMEPLAY_VITALS_OWNER_ID) return coordinator.snapshot(ownerId, schema)
+    return Effect.gen(function* () {
+      const wrapped = yield* coordinator.snapshot(ownerId, ExperienceOrbVitalsOwnerSnapshotSchema)
+      const state = yield* Schema.decodeUnknownEffect(schema)(wrapped.state.vitals)
+      return { ...wrapped, state }
+    })
+  }
+  const commit: WorldCommitCoordinatorApi['commit'] = (request) => coordinator.commit({
+    ...request,
+    changes: request.changes.map((change) => change.ownerId === GAMEPLAY_VITALS_OWNER_ID
+      ? { ...change, state: { vitals: change.state } }
+      : change),
+  })
+  return { ...coordinator, snapshot, commit }
+}
+
 const makeGameplayStageRegistrations = (
   state: GameplayFrameState,
 ): Effect.Effect<
@@ -41,10 +66,14 @@ const makeGameplayStageRegistrations = (
   const time = yield* TimeService
   const coordinator = yield* WorldCommitCoordinator
   const eventBus = yield* DomainEventBus
+  const enchantmentTableService = yield* makeEnchantmentTableService().pipe(
+    Effect.provideService(WorldCommitCoordinator, enchantmentTableCoordinator(coordinator)),
+  )
   const brewingService = yield* makeBrewingService(GAMEPLAY_BREWING_OWNER_ID)
   const fishingService = yield* makeFishingService(GAMEPLAY_FISHING_OWNER_ID)
   const projectileService = yield* makeProjectileService()
   const tntService = yield* makeTntService(TNT_REPLICATED_OWNER_ID)
+  bindEnchantmentTableService(state, enchantmentTableService)
 
   const stages = gameplayStages(state, store, roster, undefined, undefined, time, undefined, undefined, {}, {
     coordinator,
