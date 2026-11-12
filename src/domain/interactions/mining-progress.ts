@@ -1,19 +1,23 @@
 import {
   blockPositionKeyOf,
+  satisfiesHarvestTier,
   type BlockId,
   propertyOfBlockId,
   type BlockPosition,
   type HarvestToolCategory,
   type HarvestToolRequirement,
+  type HarvestTier,
   type ItemType,
 } from '@nerima-games/mc-kernel'
 import { Result } from 'effect'
 import { NO_TOOL, type BlockLootContext } from './block-loot.js'
+import { miningSpeedWithEnchantments } from '../enchantment.js'
 
 export const MINING_TICKS_PER_SECOND = 20
 
 export type MiningToolProfile = {
   readonly category: HarvestToolCategory
+  readonly tier: HarvestTier
   readonly speedMultiplier: number
   /** Efficiency enchantment level. 0, absent or invalid = none. */
   readonly efficiencyLevel?: number
@@ -23,27 +27,44 @@ export type EffectiveMiningSpeedError = 'invalid-speed-multiplier'
 
 export const HAND_MINING_TOOL: MiningToolProfile = {
   category: 'none',
+  tier: 'none',
   speedMultiplier: 1,
 }
 
 export const WOODEN_PICKAXE_MINING_TOOL: MiningToolProfile = {
   category: 'pickaxe',
+  tier: 'wooden',
   speedMultiplier: 2,
 }
 
 export const STONE_PICKAXE_MINING_TOOL: MiningToolProfile = {
   category: 'pickaxe',
+  tier: 'stone',
   speedMultiplier: 4,
 }
 
 export const IRON_PICKAXE_MINING_TOOL: MiningToolProfile = {
   category: 'pickaxe',
+  tier: 'iron',
   speedMultiplier: 6,
 }
 
 export const DIAMOND_PICKAXE_MINING_TOOL: MiningToolProfile = {
   category: 'pickaxe',
+  tier: 'diamond',
   speedMultiplier: 8,
+}
+
+export const GOLD_PICKAXE_MINING_TOOL: MiningToolProfile = {
+  category: 'pickaxe',
+  tier: 'wooden',
+  speedMultiplier: 12,
+}
+
+export const NETHERITE_PICKAXE_MINING_TOOL: MiningToolProfile = {
+  category: 'pickaxe',
+  tier: 'netherite',
+  speedMultiplier: 9,
 }
 
 const normaliseEfficiencyLevel = (level: number | undefined): number =>
@@ -69,6 +90,7 @@ export type AdvanceMiningProgressInput = {
   readonly isMining: boolean
   readonly selectedItem: ItemType | null
   readonly efficiencyLevel?: number
+  readonly miningSpeedMultiplier?: number
   readonly deltaSecs: number
 }
 
@@ -88,18 +110,21 @@ export const miningToolForItem = (
   if (item === 'stone_pickaxe') return enchanted(STONE_PICKAXE_MINING_TOOL)
   if (item === 'iron_pickaxe') return enchanted(IRON_PICKAXE_MINING_TOOL)
   if (item === 'diamond_pickaxe') return enchanted(DIAMOND_PICKAXE_MINING_TOOL)
+  if (item === 'gold_pickaxe') return enchanted(GOLD_PICKAXE_MINING_TOOL)
+  if (item === 'netherite_pickaxe') return enchanted(NETHERITE_PICKAXE_MINING_TOOL)
   return HAND_MINING_TOOL
 }
 
 export const miningLootContextForItem = (item: ItemType | null): BlockLootContext => {
-  if (item === 'wooden_pickaxe') return { heldTier: 'wooden' }
+  if (item === 'wooden_pickaxe' || item === 'gold_pickaxe') return { heldTier: 'wooden' }
   if (item === 'stone_pickaxe') return { heldTier: 'stone' }
   if (item === 'iron_pickaxe') return { heldTier: 'iron' }
   if (item === 'diamond_pickaxe') return { heldTier: 'diamond' }
+  if (item === 'netherite_pickaxe') return { heldTier: 'netherite' }
   return NO_TOOL
 }
 
-/** `minTier` gates drops; an unsuitable tool mines at one fifth of hand speed. */
+/** Java Edition's slower hardness divisor applies when the held tool cannot harvest. */
 export const effectiveMiningSpeed = (
   tool: MiningToolProfile,
   requirement: HarvestToolRequirement,
@@ -107,15 +132,20 @@ export const effectiveMiningSpeed = (
   if (!Number.isFinite(tool.speedMultiplier) || tool.speedMultiplier <= 0) {
     return Result.fail('invalid-speed-multiplier')
   }
-  if (requirement.category === 'none' || tool.category === 'none') {
+  const suitableTool = requirement.category !== 'none' &&
+    tool.category === requirement.category &&
+    satisfiesHarvestTier(requirement, tool.tier)
+  if (!suitableTool) {
     return Result.succeed(HAND_MINING_TOOL.speedMultiplier)
   }
-  if (tool.category !== requirement.category) {
-    return Result.succeed(HAND_MINING_TOOL.speedMultiplier / 5)
-  }
-  const efficiencyLevel = normaliseEfficiencyLevel(tool.efficiencyLevel)
-  const efficiencyBonus = efficiencyLevel > 0 ? efficiencyLevel ** 2 + 1 : 0
-  return Result.succeed(tool.speedMultiplier + efficiencyBonus)
+  const efficiency = tool.efficiencyLevel === undefined
+    ? []
+    : [{ id: 'efficiency' as const, level: tool.efficiencyLevel }]
+  return Result.succeed(miningSpeedWithEnchantments(
+    tool.speedMultiplier,
+    efficiency,
+    suitableTool,
+  ))
 }
 
 const hardnessOfBlockId = (blockId: BlockId): number =>
@@ -124,37 +154,50 @@ const hardnessOfBlockId = (blockId: BlockId): number =>
 const harvestToolRequirementOfBlockId = (blockId: BlockId): HarvestToolRequirement =>
   Result.getOrThrow(propertyOfBlockId(blockId, 'harvestTool'))
 
+const canHarvestWithTool = (
+  tool: MiningToolProfile,
+  requirement: HarvestToolRequirement,
+): boolean => requirement.minTier === 'none' || (
+  tool.category === requirement.category && satisfiesHarvestTier(requirement, tool.tier)
+)
+
 export const miningDurationSecsForBlock = (
   blockId: BlockId,
   item: ItemType | null,
   efficiencyLevel: number = 0,
+  miningSpeedMultiplier: number = 1,
 ): number => {
   const hardness = hardnessOfBlockId(blockId)
-  if (!Number.isFinite(hardness) || hardness <= 0) {
-    return 0
-  }
-
+  if (hardness === 0) return 0
+  if (!Number.isFinite(hardness) || hardness < 0) return Number.POSITIVE_INFINITY
   const requirement = harvestToolRequirementOfBlockId(blockId)
-  const speed = Result.getOrThrow(effectiveMiningSpeed(miningToolForItem(item, efficiencyLevel), requirement))
-  return hardness / (MINING_TICKS_PER_SECOND * speed)
+  const tool = miningToolForItem(item, efficiencyLevel)
+  const speed = Result.getOrThrow(effectiveMiningSpeed(tool, requirement)) *
+    normaliseMiningSpeedMultiplier(miningSpeedMultiplier)
+  const divisor = canHarvestWithTool(tool, requirement) ? 30 : 100
+  return Math.ceil((hardness * divisor) / speed) / MINING_TICKS_PER_SECOND
 }
 
-const miningWorkRequiredForBlock = (blockId: BlockId): number => {
+const hardnessOfMiningTarget = (blockId: BlockId): number => {
   const hardness = hardnessOfBlockId(blockId)
-  return Number.isFinite(hardness) && hardness > 0
-    ? hardness / MINING_TICKS_PER_SECOND
-    : 0
+  return Number.isFinite(hardness) ? hardness : Number.POSITIVE_INFINITY
 }
 
 const miningSpeedForBlock = (
   blockId: BlockId,
   item: ItemType | null,
   efficiencyLevel: number,
-): number =>
-  Result.getOrThrow(effectiveMiningSpeed(
-    miningToolForItem(item, efficiencyLevel),
-    harvestToolRequirementOfBlockId(blockId),
-  ))
+  miningSpeedMultiplier: number,
+): Readonly<{ hardness: number; speed: number; divisor: number }> => {
+  const tool = miningToolForItem(item, efficiencyLevel)
+  const requirement = harvestToolRequirementOfBlockId(blockId)
+  return {
+    hardness: hardnessOfMiningTarget(blockId),
+    speed: Result.getOrThrow(effectiveMiningSpeed(tool, requirement)) *
+      normaliseMiningSpeedMultiplier(miningSpeedMultiplier),
+    divisor: canHarvestWithTool(tool, requirement) ? 30 : 100,
+  }
+}
 
 const normaliseDeltaSecs = (deltaSecs: number): number =>
   Number.isFinite(deltaSecs) && deltaSecs > 0 ? deltaSecs : 0
@@ -167,12 +210,16 @@ const normaliseAccumulatedWork = (accumulatedWork: number, requiredWork: number)
 const normaliseElapsedSecs = (elapsedSecs: number): number =>
   Number.isFinite(elapsedSecs) && elapsedSecs > 0 ? elapsedSecs : 0
 
+const normaliseMiningSpeedMultiplier = (multiplier: number): number =>
+  Number.isFinite(multiplier) && multiplier > 0 ? multiplier : 1
+
 export const advanceMiningProgress = ({
   current,
   target,
   isMining,
   selectedItem,
   efficiencyLevel = 0,
+  miningSpeedMultiplier = 1,
   deltaSecs,
 }: AdvanceMiningProgressInput): AdvanceMiningProgressResult => {
   if (!isMining || target === null) {
@@ -181,7 +228,12 @@ export const advanceMiningProgress = ({
 
   const blockKey = blockPositionKeyOf(target.position)
   const sameTarget = current?.blockKey === blockKey && current.blockId === target.blockId
-  const requiredWork = miningWorkRequiredForBlock(target.blockId)
+  const mining = miningSpeedForBlock(
+    target.blockId,
+    selectedItem,
+    efficiencyLevel,
+    miningSpeedMultiplier,
+  )
   if (sameTarget && current.completed) {
     const elapsedSecs = normaliseElapsedSecs(current.elapsedSecs)
     return {
@@ -189,29 +241,63 @@ export const advanceMiningProgress = ({
         ...current,
         elapsedSecs,
         requiredSecs: elapsedSecs,
-        accumulatedWork: requiredWork,
+        accumulatedWork: 1,
       },
       shouldBreak: false,
     }
   }
 
-  const speed = miningSpeedForBlock(target.blockId, selectedItem, efficiencyLevel)
+  const hardness = mining.hardness
+  if (hardness < 0 || !Number.isFinite(hardness)) {
+    const elapsedSecs = sameTarget ? normaliseElapsedSecs(current.elapsedSecs) : 0
+    return {
+      nextProgress: {
+        blockKey,
+        blockId: target.blockId,
+        elapsedSecs,
+        requiredSecs: Number.POSITIVE_INFINITY,
+        accumulatedWork: 0,
+        completed: false,
+      },
+      shouldBreak: false,
+    }
+  }
+  if (hardness === 0) {
+    return {
+      nextProgress: {
+        blockKey,
+        blockId: target.blockId,
+        elapsedSecs: 0,
+        requiredSecs: 0,
+        accumulatedWork: 1,
+        completed: true,
+      },
+      shouldBreak: true,
+    }
+  }
   const previousWork = sameTarget
-    ? normaliseAccumulatedWork(current.accumulatedWork, requiredWork)
+    ? normaliseAccumulatedWork(current.accumulatedWork, 1)
     : 0
   const previousElapsedSecs = sameTarget ? normaliseElapsedSecs(current.elapsedSecs) : 0
   const availableSecs = normaliseDeltaSecs(deltaSecs)
-  const remainingWork = Math.max(0, requiredWork - previousWork)
-  const consumedSecs = requiredWork === 0 ? 0 : Math.min(availableSecs, remainingWork / speed)
-  const accumulatedWork = Math.min(requiredWork, previousWork + consumedSecs * speed)
-  const elapsedSecs = previousElapsedSecs + consumedSecs
-  const completed = requiredWork === 0 || accumulatedWork >= requiredWork
-  const progressFraction = requiredWork === 0 ? 1 : accumulatedWork / requiredWork
+  const totalElapsedSecs = previousElapsedSecs + availableSecs
+  const previousTicks = Math.floor(previousElapsedSecs * MINING_TICKS_PER_SECOND + 1e-9)
+  const totalTicks = Math.floor(totalElapsedSecs * MINING_TICKS_PER_SECOND + 1e-9)
+  const availableTicks = Math.max(0, totalTicks - previousTicks)
+  const damagePerTick = mining.speed / (hardness * mining.divisor)
+  const remainingWork = Math.max(0, 1 - previousWork)
+  const ticksToFinish = Math.ceil(remainingWork / damagePerTick - 1e-12)
+  const consumedTicks = Math.min(availableTicks, ticksToFinish)
+  const accumulatedWork = Math.min(1, previousWork + consumedTicks * damagePerTick)
+  const completed = consumedTicks >= ticksToFinish
+  const elapsedSecs = completed
+    ? (previousTicks + consumedTicks) / MINING_TICKS_PER_SECOND
+    : totalElapsedSecs
+  const remainingSecs = (1 - accumulatedWork) / (damagePerTick * MINING_TICKS_PER_SECOND)
   const requiredSecs = completed
     ? elapsedSecs
-    : progressFraction === 0
-      ? requiredWork / speed
-      : elapsedSecs / progressFraction
+    : Math.ceil((elapsedSecs + remainingSecs) * MINING_TICKS_PER_SECOND - 1e-9) /
+      MINING_TICKS_PER_SECOND
   const nextProgress: MiningProgressState = {
     blockKey,
     blockId: target.blockId,
@@ -231,9 +317,10 @@ export const miningProgressFraction = (progress: MiningProgressState | null): nu
   if (progress.completed) {
     return 1
   }
-  const requiredWork = miningWorkRequiredForBlock(progress.blockId)
-  if (requiredWork === 0) {
+  const hardness = hardnessOfMiningTarget(progress.blockId)
+  if (hardness === 0) {
     return 1
   }
-  return normaliseAccumulatedWork(progress.accumulatedWork, requiredWork) / requiredWork
+  if (!Number.isFinite(hardness) || hardness < 0) return 0
+  return normaliseAccumulatedWork(progress.accumulatedWork, 1)
 }

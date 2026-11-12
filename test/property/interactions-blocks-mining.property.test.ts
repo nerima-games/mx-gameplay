@@ -7,7 +7,6 @@ import {
   advanceMiningProgress,
   effectiveMiningSpeed,
   HAND_MINING_TOOL,
-  MINING_TICKS_PER_SECOND,
   miningDurationSecsForBlock,
   miningToolForItem,
   type MiningProgressState,
@@ -24,8 +23,7 @@ const stone = {
 }
 const dirt = { ...stone, blockId: registeredBlockId('dirt') }
 
-const requiredWork =
-  Result.getOrThrow(propertyOfBlockId(stone.blockId, 'hardness')) / MINING_TICKS_PER_SECOND
+const requiredWork = 1
 const dirtRequirement = Result.getOrThrow(propertyOfBlockId(dirt.blockId, 'harvestTool'))
 
 const tools: ReadonlyArray<ItemType | null> = [
@@ -37,7 +35,7 @@ const tools: ReadonlyArray<ItemType | null> = [
 ]
 
 describe('mining progress properties', () => {
-  it.effect('keeps an unsuitable mining category at one fifth of hand speed regardless of Efficiency', () =>
+  it.effect('keeps an unsuitable mining category at hand speed regardless of Efficiency', () =>
     Effect.sync(() => {
       fc.assert(
         fc.property(fc.integer({ min: 0, max: 5 }), (efficiencyLevel) => {
@@ -51,8 +49,8 @@ describe('mining progress properties', () => {
           )
           return Result.isSuccess(speed) &&
             Number.isFinite(speed.success) &&
-            speed.success === HAND_MINING_TOOL.speedMultiplier / 5 &&
-            Math.abs(mismatchedToolDuration - handDuration * 5) < 1e-10
+            speed.success === HAND_MINING_TOOL.speedMultiplier &&
+            mismatchedToolDuration === handDuration
         }),
       )
     }),
@@ -71,7 +69,7 @@ describe('mining progress properties', () => {
             if (!Number.isFinite(speedMultiplier) || speedMultiplier <= 0) {
               return Result.isFailure(result) && result.failure === 'invalid-speed-multiplier'
             }
-            return Result.isSuccess(result) && result.success === HAND_MINING_TOOL.speedMultiplier / 5
+            return Result.isSuccess(result) && result.success === HAND_MINING_TOOL.speedMultiplier
           },
         ),
       )
@@ -114,11 +112,8 @@ describe('mining progress properties', () => {
               const previousWork = current?.accumulatedWork ?? 0
               if (!Number.isFinite(next.accumulatedWork)) return false
               if (next.accumulatedWork < previousWork) return false
-              if (!current?.completed && frame.deltaSecs > 0 && next.accumulatedWork <= previousWork) {
-                return false
-              }
               if (next.accumulatedWork > requiredWork) return false
-              if (next.completed !== (next.accumulatedWork >= requiredWork)) return false
+              if (next.completed !== (next.accumulatedWork === requiredWork)) return false
               if (result.shouldBreak !== (!current?.completed && next.completed)) return false
 
               current = next

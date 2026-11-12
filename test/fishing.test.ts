@@ -1,4 +1,5 @@
 import { describe, expect, it } from '@effect/vitest'
+import * as fc from 'fast-check'
 import { Effect, Result, Schema } from 'effect'
 import {
   EntityIdSchema,
@@ -15,6 +16,8 @@ import {
   FishingServiceBiteSuccessSchema,
   FishingServiceCastSuccessSchema,
   FishingServiceReelSuccessSchema,
+  FishingLootSampleSchema,
+  FishingWaitTicksSchema,
   type EquipmentItem,
   type FishingServiceApi,
 } from '@nerima-games/mc-sim'
@@ -34,6 +37,11 @@ import {
   type FishingRolls,
   type FishingSession,
 } from '../src/domain/interactions/fishing'
+import {
+  FISHING_MAX_ENCHANTMENT_LEVEL,
+  fishingLootSampleWithLuckOfTheSea,
+  fishingWaitTicksWithLure,
+} from '../src/domain/interactions/fishing-enchantment'
 
 const CLEAR_OPEN_WATER: FishingEnvironment = {
   hasWater: true,
@@ -53,6 +61,9 @@ const fishingRod = (current = 64): EquipmentItem =>
     Result.getOrThrow(itemStack('fishing_rod', 1)),
     Result.getOrThrow(durability(current, 64)),
   ))
+
+const asWaitTicks = (value: number) => Schema.decodeUnknownSync(FishingWaitTicksSchema)(value)
+const lootSample = (value: number) => Schema.decodeUnknownSync(FishingLootSampleSchema)(value)
 
 const castSession = (
   environment: FishingEnvironment = CLEAR_OPEN_WATER,
@@ -155,6 +166,77 @@ describe('castFishing', () => {
     expect(result.session.rolls).toEqual(rolls)
     expect(result.session.rolls).not.toBe(rolls)
     expect(result.session.biteWindowSecs).toBe(FISHING_BITE_WINDOW_SECS)
+  })
+})
+
+describe('fishing enchantments', () => {
+  it('reduces the wait countdown by five seconds per Lure level, in Java ticks', () => {
+    // Java 26.3: Lure removes 100 countdown ticks per level (5 seconds at 20 ticks/second).
+    // Independent fixtures: https://torchandanvil.com/tools/fishing-calculator.html and
+    // https://mctoolkit.net/fishing-loot-odds.
+    const ticksPerSecond = 20
+    const secondsPerLureLevel = 5
+    const ticksPerLevel = ticksPerSecond * secondsPerLureLevel
+    expect(fishingWaitTicksWithLure(asWaitTicks(100), 0)).toBe(100)
+    expect(fishingWaitTicksWithLure(asWaitTicks(100), 1)).toBe(0)
+    expect(fishingWaitTicksWithLure(asWaitTicks(600), 3)).toBe(300)
+    expect(fishingWaitTicksWithLure(asWaitTicks(600), 99)).toBe(600 - ticksPerLevel * FISHING_MAX_ENCHANTMENT_LEVEL)
+  })
+
+  it('clamps each vanilla countdown at zero and saturates enchantment levels at III', () => {
+    expect(fishingWaitTicksWithLure(asWaitTicks(99), 1)).toBe(0)
+    expect(fishingWaitTicksWithLure(asWaitTicks(0), 3)).toBe(0)
+    expect(fishingWaitTicksWithLure(asWaitTicks(250), 3)).toBe(fishingWaitTicksWithLure(asWaitTicks(250), 30))
+    expect(fishingWaitTicksWithLure(asWaitTicks(250), -1)).toBe(250)
+  })
+
+  it('uses Java 26.3 selector qualities for Luck of the Sea category boundaries', () => {
+    // Weights are fish 85 (quality -1), junk 10 (quality -2), treasure 5 (quality +2).
+    // Each enchantment level adds one luck, so level III yields 82/4/11 out of 97.
+    // Independent fixtures: https://torchandanvil.com/tools/fishing-calculator.html and
+    // https://mctoolkit.net/fishing-loot-odds.
+    expect(fishingLootSampleWithLuckOfTheSea(lootSample(0.887), 0, true)).toBe(0.887)
+    expect(fishingLootSampleWithLuckOfTheSea(lootSample(82 / 97), 3, true)).toBeCloseTo(0.85, 14)
+    expect(fishingLootSampleWithLuckOfTheSea(lootSample(86 / 97), 3, true)).toBeCloseTo(0.95, 14)
+    expect(fishingLootSampleWithLuckOfTheSea(lootSample(0.5), 3, false)).toBeLessThan(0.85)
+    expect(fishingLootSampleWithLuckOfTheSea(lootSample(0.999999), 3, false)).toBeLessThan(0.95)
+  })
+
+  it('keeps Lure outputs in the supported wait interval for integer inputs', () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 0, max: 600 }),
+        fc.integer({ min: -4, max: 8 }),
+        (waitTicks, lureLevel) => {
+          const effectiveLevel = Math.min(3, Math.max(0, lureLevel))
+          expect(fishingWaitTicksWithLure(asWaitTicks(waitTicks), lureLevel)).toBe(
+            Math.max(0, waitTicks - effectiveLevel * 100),
+          )
+        },
+      ),
+    )
+  })
+
+  it('keeps Luck sample mappings inside the unit interval and monotone', () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 0, max: 999_998 }),
+        fc.integer({ min: 0, max: 3 }),
+        fc.boolean(),
+        (sampleMillionths, level, openWater) => {
+          const sample = sampleMillionths / 1_000_000
+          const mapped = fishingLootSampleWithLuckOfTheSea(lootSample(sample), level, openWater)
+          const next = fishingLootSampleWithLuckOfTheSea(
+            lootSample((sampleMillionths + 1) / 1_000_000),
+            level,
+            openWater,
+          )
+          expect(mapped).toBeGreaterThanOrEqual(0)
+          expect(mapped).toBeLessThan(1)
+          expect(next).toBeGreaterThanOrEqual(mapped)
+        },
+      ),
+    )
   })
 })
 

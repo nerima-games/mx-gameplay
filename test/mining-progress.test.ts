@@ -53,24 +53,30 @@ describe('mining duration', () => {
     }),
   )
 
-  it.effect('preserves the kernel hardness ordering', () =>
+  it.effect('uses the registry hardness as input to the vanilla tick formula', () =>
     Effect.sync(() => {
       const dirt = miningDurationSecsForBlock(registeredBlockId('dirt'), null)
       const stone = miningDurationSecsForBlock(registeredBlockId('stone'), null)
       const deepslate = miningDurationSecsForBlock(registeredBlockId('deepslate'), null)
+      const dirtHardness = Result.getOrThrow(propertyOfBlockId(registeredBlockId('dirt'), 'hardness'))
+      const stoneHardness = Result.getOrThrow(propertyOfBlockId(STONE.blockId, 'hardness'))
+      const deepslateHardness = Result.getOrThrow(
+        propertyOfBlockId(registeredBlockId('deepslate'), 'hardness'),
+      )
 
-      expect(dirt).toBeLessThan(stone)
-      expect(stone).toBeLessThan(deepslate)
+      expect(dirt).toBe(Math.ceil(dirtHardness * 30) / MINING_TICKS_PER_SECOND)
+      expect(stone).toBe(Math.ceil(stoneHardness * 100) / MINING_TICKS_PER_SECOND)
+      expect(deepslate).toBe(Math.ceil(deepslateHardness * 30) / MINING_TICKS_PER_SECOND)
     }),
   )
 
-  it.effect('a wooden pickaxe speeds up pickaxe blocks and is five times slower than hand on shovel blocks', () =>
+  it.effect('a wooden pickaxe speeds up stone but does not help on dirt', () =>
     Effect.sync(() => {
       expect(miningDurationSecsForBlock(STONE.blockId, 'wooden_pickaxe')).toBeLessThan(
         miningDurationSecsForBlock(STONE.blockId, null),
       )
-      expect(miningDurationSecsForBlock(DIRT.blockId, 'wooden_pickaxe')).toBeCloseTo(
-        miningDurationSecsForBlock(DIRT.blockId, null) * 5,
+      expect(miningDurationSecsForBlock(DIRT.blockId, 'wooden_pickaxe', 3)).toBe(
+        miningDurationSecsForBlock(DIRT.blockId, null),
       )
     }),
   )
@@ -87,9 +93,14 @@ describe('mining duration', () => {
       expect(diamondDuration).toBeLessThan(ironDuration)
       expect(miningToolForItem('iron_pickaxe')).toBe(IRON_PICKAXE_MINING_TOOL)
       expect(miningToolForItem('diamond_pickaxe')).toBe(DIAMOND_PICKAXE_MINING_TOOL)
-      expect(IRON_PICKAXE_MINING_TOOL).toStrictEqual({ category: 'pickaxe', speedMultiplier: 6 })
+      expect(IRON_PICKAXE_MINING_TOOL).toStrictEqual({
+        category: 'pickaxe',
+        tier: 'iron',
+        speedMultiplier: 6,
+      })
       expect(DIAMOND_PICKAXE_MINING_TOOL).toStrictEqual({
         category: 'pickaxe',
+        tier: 'diamond',
         speedMultiplier: 8,
       })
     }),
@@ -121,18 +132,26 @@ describe('mining duration', () => {
     }),
   )
 
-  it.effect('does not use the drop tier gate as a speed gate', () =>
+  it.effect('uses the vanilla slow divisor when the tool cannot harvest the block', () =>
     Effect.sync(() => {
       const lowTier: HarvestToolRequirement = { category: 'pickaxe', minTier: 'wooden' }
       const highTier: HarvestToolRequirement = { category: 'pickaxe', minTier: 'diamond' }
       const woodenPickaxe = miningToolForItem('wooden_pickaxe')
 
       expect(miningSpeed(woodenPickaxe, lowTier)).toBe(2)
-      expect(miningSpeed(woodenPickaxe, highTier)).toBe(2)
+      expect(miningSpeed(woodenPickaxe, highTier)).toBe(1)
       expect(miningSpeed(HAND_MINING_TOOL, highTier)).toBe(1)
       expect(
         miningSpeed(woodenPickaxe, { category: 'shovel', minTier: 'wooden' }),
-      ).toBe(0.2)
+      ).toBe(1)
+      const obsidian = registeredBlockId('obsidian')
+      const obsidianHardness = Result.getOrThrow(propertyOfBlockId(obsidian, 'hardness'))
+      expect(miningDurationSecsForBlock(obsidian, 'wooden_pickaxe')).toBe(
+        Math.ceil(obsidianHardness * 100) / MINING_TICKS_PER_SECOND,
+      )
+      expect(miningDurationSecsForBlock(obsidian, 'diamond_pickaxe')).toBe(
+        Math.ceil(obsidianHardness * 30 / 8) / MINING_TICKS_PER_SECOND,
+      )
     }),
   )
 
@@ -140,8 +159,9 @@ describe('mining duration', () => {
     Effect.sync(() => {
       const hardness = Result.getOrThrow(propertyOfBlockId(STONE.blockId, 'hardness'))
 
+      expect(hardness).toBe(25)
       expect(miningDurationSecsForBlock(STONE.blockId, null)).toBe(
-        hardness / MINING_TICKS_PER_SECOND,
+        Math.ceil(hardness * 100) / MINING_TICKS_PER_SECOND,
       )
     }),
   )
@@ -151,7 +171,8 @@ describe('mining duration', () => {
       const plainStone = miningDurationSecsForBlock(STONE.blockId, 'wooden_pickaxe')
       const efficientStone = miningDurationSecsForBlock(STONE.blockId, 'wooden_pickaxe', 3)
 
-      expect(efficientStone).toBeLessThan(plainStone)
+      expect(plainStone).toBe(Math.ceil(25 * 30 / 2) / MINING_TICKS_PER_SECOND)
+      expect(efficientStone).toBe(Math.ceil(25 * 30 / 12) / MINING_TICKS_PER_SECOND)
       expect(miningDurationSecsForBlock(DIRT.blockId, 'wooden_pickaxe', 3)).toBe(
         miningDurationSecsForBlock(DIRT.blockId, 'wooden_pickaxe'),
       )
@@ -357,7 +378,7 @@ describe('delta-time progress', () => {
         [0.15, 'wooden_pickaxe'],
       ])
 
-      expect(coarse?.accumulatedWork).toBeCloseTo(0.1 + 0.2 * 2)
+      expect(coarse?.accumulatedWork).toBeCloseTo((2 / (25 * 100)) + (8 / (25 * 30)))
       expect(partitioned?.accumulatedWork).toBeCloseTo(coarse?.accumulatedWork ?? -1)
       expect(miningProgressFraction(partitioned)).toBeCloseTo(miningProgressFraction(coarse))
       expect(partitioned?.completed).toBe(coarse?.completed)
@@ -371,7 +392,7 @@ describe('delta-time progress', () => {
         target: STONE,
         isMining: true,
         selectedItem: 'wooden_pickaxe',
-        deltaSecs: 0.01,
+        deltaSecs: 0.05,
       })
       const enchanted = advanceMiningProgress({
         current: first.nextProgress,
@@ -379,11 +400,11 @@ describe('delta-time progress', () => {
         isMining: true,
         selectedItem: 'wooden_pickaxe',
         efficiencyLevel: 2,
-        deltaSecs: 0.01,
+        deltaSecs: 0.05,
       })
 
-      expect(first.nextProgress?.accumulatedWork).toBeCloseTo(0.02)
-      expect(enchanted.nextProgress?.accumulatedWork).toBeCloseTo(0.09)
+      expect(first.nextProgress?.accumulatedWork).toBeCloseTo(2 / (25 * 30))
+      expect(enchanted.nextProgress?.accumulatedWork).toBeCloseTo(9 / (25 * 30))
     }),
   )
 
@@ -437,14 +458,16 @@ describe('delta-time progress', () => {
         target: STONE,
         isMining: true,
         selectedItem: 'wooden_pickaxe',
-        deltaSecs: 0.5,
+        efficiencyLevel: 1,
+        deltaSecs: 4.5,
       })
       const completed = advanceMiningProgress({
         current: first.nextProgress,
         target: STONE,
         isMining: true,
         selectedItem: 'wooden_pickaxe',
-        deltaSecs: 0.2,
+        efficiencyLevel: 1,
+        deltaSecs: 5,
       })
       const heldAfterCompletion = advanceMiningProgress({
         current: completed.nextProgress,
@@ -552,7 +575,7 @@ describe('delta-time progress', () => {
 
       expect(result.shouldBreak).toBe(true)
       expect(result.nextProgress?.completed).toBe(true)
-      expect(result.nextProgress?.accumulatedWork).toBe(0)
+      expect(result.nextProgress?.accumulatedWork).toBe(1)
       expect(miningProgressFraction(result.nextProgress)).toBe(1)
     }),
   )

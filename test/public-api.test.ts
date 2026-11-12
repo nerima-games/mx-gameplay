@@ -66,6 +66,8 @@ describe('public API surface', () => {
         'requestShieldBlocking',
         'drainMeleeAttackResults',
         'requestTargetedPrimaryAttack',
+        'requestBlockMining',
+        'getMiningProgressFraction',
         'drainMobDrops',
         'drainMobExperience',
         'spawnDroppedItem',
@@ -91,6 +93,14 @@ describe('public API surface', () => {
   it.effect('re-exports host-facing targeted right-click routing', () =>
     Effect.sync(() => {
       expect(Object.keys(gameplay)).toContain('targetedRightClickRoute')
+    }),
+  )
+
+  it.effect('keeps fishing enchantment sample transforms out of the package barrel', () =>
+    Effect.sync(() => {
+      expect(Object.keys(gameplay)).not.toContain('fishingWaitTicksWithLure')
+      expect(Object.keys(gameplay)).not.toContain('fishingLootSampleWithLuckOfTheSea')
+      expect(Object.keys(gameplay)).not.toContain('FISHING_MAX_ENCHANTMENT_LEVEL')
     }),
   )
 
