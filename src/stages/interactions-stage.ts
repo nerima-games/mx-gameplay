@@ -61,7 +61,7 @@ import {
   type StorageLocation,
   type EquipmentItem,
 } from '@nerima-games/mc-sim'
-import type { BlockPosition, Dimension } from '@nerima-games/mc-kernel'
+import type { BlockPosition, DeltaTimeSecs, Dimension } from '@nerima-games/mc-kernel'
 import { planBreakBlock } from '../domain/interactions/break-block.js'
 import { TNT_BLOCK_ID } from '../domain/interactions/ignite-tnt.js'
 import { igniteFire } from '../domain/interactions/ignite-fire.js'
@@ -2272,7 +2272,7 @@ const advanceBlockMiningAttempt = (
   state: GameplayStageContext['state'],
   commit: GameplayStageContext['commit'],
   store: GameplayStageContext['store'],
-  dt: number,
+  dt: DeltaTimeSecs,
   playerDead: boolean,
 ): Effect.Effect<void> => Effect.gen(function* () {
   const attempt = yield* Ref.getAndSet(state.pendingBlockMiningAttempt, null)
@@ -2393,7 +2393,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
             _tag: 'Failed', operation: 'CandidateBuild', subject: 'Vitals', error,
           })),
         )
-        yield* advanceBlockMiningAttempt(state, commit, store, Number(dt), playerDead)
+        yield* advanceBlockMiningAttempt(state, commit, store, dt, playerDead)
 
         // `getAndSet` rather than get-then-set: whoever fills the inboxes is not
         // this fiber, and a request that arrived between the two steps would be

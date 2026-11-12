@@ -1,5 +1,6 @@
 import { describe, it } from '@effect/vitest'
-import { blockIdOf, propertyOfBlockId, type BlockType, type ItemType } from '@nerima-games/mc-kernel'
+import { DeltaTimeSecs, blockIdOf, propertyOfBlockId, type BlockType, type DeltaTimeSecs as DeltaTimeSecsValue, type ItemType } from '@nerima-games/mc-kernel'
+import { EnchantmentLevel } from '@nerima-games/mc-kernel/domain/quantities'
 import { Effect, Option, Result } from 'effect'
 import fc from 'fast-check'
 import { blockPosition } from '../support/coordinate-fixtures'
@@ -25,6 +26,8 @@ const dirt = { ...stone, blockId: registeredBlockId('dirt') }
 
 const requiredWork = 1
 const dirtRequirement = Result.getOrThrow(propertyOfBlockId(dirt.blockId, 'harvestTool'))
+const enchantmentLevel = (value: number) => Result.getOrThrow(EnchantmentLevel.result(value))
+const deltaTimeSecs = (value: number): DeltaTimeSecsValue => Result.getOrThrow(DeltaTimeSecs.result(value))
 
 const tools: ReadonlyArray<ItemType | null> = [
   null,
@@ -39,13 +42,14 @@ describe('mining progress properties', () => {
     Effect.sync(() => {
       fc.assert(
         fc.property(fc.integer({ min: 0, max: 5 }), (efficiencyLevel) => {
-          const wrongTool = miningToolForItem('wooden_pickaxe', efficiencyLevel)
+          const level = enchantmentLevel(efficiencyLevel)
+          const wrongTool = miningToolForItem('wooden_pickaxe', level)
           const speed = effectiveMiningSpeed(wrongTool, dirtRequirement)
           const handDuration = miningDurationSecsForBlock(dirt.blockId, null)
           const mismatchedToolDuration = miningDurationSecsForBlock(
             dirt.blockId,
             'wooden_pickaxe',
-            efficiencyLevel,
+            level,
           )
           return Result.isSuccess(speed) &&
             Number.isFinite(speed.success) &&
@@ -83,17 +87,17 @@ describe('mining progress properties', () => {
         fc.property(
           fc.array(
             fc.record({
-              deltaSecs: fc.integer({ min: 0, max: 10 }).map((milliseconds) => milliseconds / 1000),
+              deltaSecs: fc.integer({ min: 0, max: 10 }).map((milliseconds) => deltaTimeSecs(milliseconds / 1000)),
               selectedItem: fc.constantFrom(...tools),
-              efficiencyLevel: fc.integer({ min: 0, max: 5 }),
+              efficiencyLevel: fc.integer({ min: 0, max: 5 }).map(enchantmentLevel),
             }),
             { minLength: 1, maxLength: 32 },
           ),
           (generatedFrames) => {
             let current: MiningProgressState | null = null
             const frames = [
-              { deltaSecs: 0.001, selectedItem: 'diamond_pickaxe' as const, efficiencyLevel: 0 },
-              { deltaSecs: 0.001, selectedItem: null, efficiencyLevel: 0 },
+              { deltaSecs: deltaTimeSecs(0.001), selectedItem: 'diamond_pickaxe' as const, efficiencyLevel: enchantmentLevel(0) },
+              { deltaSecs: deltaTimeSecs(0.001), selectedItem: null, efficiencyLevel: enchantmentLevel(0) },
               ...generatedFrames,
             ]
 

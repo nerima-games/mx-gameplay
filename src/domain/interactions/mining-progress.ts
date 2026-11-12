@@ -4,12 +4,14 @@ import {
   type BlockId,
   propertyOfBlockId,
   type BlockPosition,
+  type DeltaTimeSecs as DeltaTimeSecsValue,
   type HarvestToolCategory,
   type HarvestToolRequirement,
   type HarvestTier,
   type ItemType,
 } from '@nerima-games/mc-kernel'
 import { Brand, Result, Schema } from 'effect'
+import { EnchantmentLevel, type EnchantmentLevel as EnchantmentLevelValue } from '@nerima-games/mc-kernel/domain/quantities'
 import { NO_TOOL, type BlockLootContext } from './block-loot.js'
 import { miningSpeedWithEnchantments } from '../enchantment.js'
 import {
@@ -18,6 +20,7 @@ import {
 } from '../status-effect.js'
 
 export const MINING_TICKS_PER_SECOND = 20
+const NO_EFFICIENCY_LEVEL = Result.getOrThrow(EnchantmentLevel.result(0))
 
 export type MiningProgressFraction = number & Brand.Brand<'MiningProgressFraction'>
 
@@ -37,8 +40,7 @@ export type MiningToolProfile = {
   readonly category: HarvestToolCategory
   readonly tier: HarvestTier
   readonly speedMultiplier: number
-  /** Efficiency enchantment level. 0, absent or invalid = none. */
-  readonly efficiencyLevel?: number
+  readonly efficiencyLevel?: EnchantmentLevelValue
 }
 
 export type EffectiveMiningSpeedError = 'invalid-speed-multiplier'
@@ -85,9 +87,6 @@ export const NETHERITE_PICKAXE_MINING_TOOL: MiningToolProfile = {
   speedMultiplier: 9,
 }
 
-const normaliseEfficiencyLevel = (level: number | undefined): number =>
-  level !== undefined && Number.isFinite(level) ? Math.max(0, Math.floor(level)) : 0
-
 export type MiningProgressState = {
   readonly blockKey: string
   readonly blockId: BlockId
@@ -107,9 +106,9 @@ export type AdvanceMiningProgressInput = {
   readonly target: MiningTarget | null
   readonly isMining: boolean
   readonly selectedItem: ItemType | null
-  readonly efficiencyLevel?: number
+  readonly efficiencyLevel?: EnchantmentLevelValue
   readonly miningSpeedMultiplier?: MiningSpeedMultiplierValue
-  readonly deltaSecs: number
+  readonly deltaSecs: DeltaTimeSecsValue
 }
 
 export type AdvanceMiningProgressResult = {
@@ -119,11 +118,10 @@ export type AdvanceMiningProgressResult = {
 
 export const miningToolForItem = (
   item: ItemType | null,
-  efficiencyLevel: number = 0,
+  efficiencyLevel: EnchantmentLevelValue = NO_EFFICIENCY_LEVEL,
 ): MiningToolProfile => {
-  const normalisedLevel = normaliseEfficiencyLevel(efficiencyLevel)
   const enchanted = (tool: MiningToolProfile): MiningToolProfile =>
-    normalisedLevel === 0 ? tool : { ...tool, efficiencyLevel: normalisedLevel }
+    efficiencyLevel === NO_EFFICIENCY_LEVEL ? tool : { ...tool, efficiencyLevel }
   if (item === 'wooden_pickaxe') return enchanted(WOODEN_PICKAXE_MINING_TOOL)
   if (item === 'stone_pickaxe') return enchanted(STONE_PICKAXE_MINING_TOOL)
   if (item === 'iron_pickaxe') return enchanted(IRON_PICKAXE_MINING_TOOL)
@@ -182,7 +180,7 @@ const canHarvestWithTool = (
 export const miningDurationSecsForBlock = (
   blockId: BlockId,
   item: ItemType | null,
-  efficiencyLevel: number = 0,
+  efficiencyLevel: EnchantmentLevelValue = NO_EFFICIENCY_LEVEL,
   miningSpeedMultiplier: MiningSpeedMultiplierValue = DEFAULT_MINING_SPEED_MULTIPLIER,
 ): number => {
   const hardness = hardnessOfBlockId(blockId)
@@ -204,7 +202,7 @@ const hardnessOfMiningTarget = (blockId: BlockId): number => {
 const miningSpeedForBlock = (
   blockId: BlockId,
   item: ItemType | null,
-  efficiencyLevel: number,
+  efficiencyLevel: EnchantmentLevelValue,
   miningSpeedMultiplier: MiningSpeedMultiplierValue,
 ): Readonly<{ hardness: number; speed: number; divisor: number }> => {
   const tool = miningToolForItem(item, efficiencyLevel)
@@ -216,9 +214,6 @@ const miningSpeedForBlock = (
     divisor: canHarvestWithTool(tool, requirement) ? 30 : 100,
   }
 }
-
-const normaliseDeltaSecs = (deltaSecs: number): number =>
-  Number.isFinite(deltaSecs) && deltaSecs > 0 ? deltaSecs : 0
 
 const normaliseAccumulatedWork = (accumulatedWork: number, requiredWork: number): number =>
   Number.isFinite(accumulatedWork)
@@ -233,7 +228,7 @@ export const advanceMiningProgress = ({
   target,
   isMining,
   selectedItem,
-  efficiencyLevel = 0,
+  efficiencyLevel = NO_EFFICIENCY_LEVEL,
   miningSpeedMultiplier = DEFAULT_MINING_SPEED_MULTIPLIER,
   deltaSecs,
 }: AdvanceMiningProgressInput): AdvanceMiningProgressResult => {
@@ -294,7 +289,7 @@ export const advanceMiningProgress = ({
     ? normaliseAccumulatedWork(current.accumulatedWork, 1)
     : 0
   const previousElapsedSecs = sameTarget ? normaliseElapsedSecs(current.elapsedSecs) : 0
-  const availableSecs = normaliseDeltaSecs(deltaSecs)
+  const availableSecs = deltaSecs
   const totalElapsedSecs = previousElapsedSecs + availableSecs
   const previousTicks = Math.floor(previousElapsedSecs * MINING_TICKS_PER_SECOND + 1e-9)
   const totalTicks = Math.floor(totalElapsedSecs * MINING_TICKS_PER_SECOND + 1e-9)
