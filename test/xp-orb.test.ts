@@ -304,12 +304,17 @@ describe('experience orb values', () => {
   it.effect('consumes one count from a merged orb and preserves its XP value', () =>
     Effect.gen(function* () {
       const orb = yield* Effect.fromResult(createExperienceOrbValue(7))
+      const otherOrb = yield* Effect.fromResult(createExperienceOrbValue(4))
+      const otherOrbId = EntityId('xp-orb:2')
       const coordinator = yield* makeCoordinator(SPAWN_VITALS, {
-        orbs: [{
-          id: PICKUP_CONTEXT.orb,
-          value: orb,
-          count: Result.getOrThrow(Schema.decodeUnknownResult(ExperienceOrbCountSchema)(2)),
-        }],
+        orbs: [
+          {
+            id: PICKUP_CONTEXT.orb,
+            value: orb,
+            count: Result.getOrThrow(Schema.decodeUnknownResult(ExperienceOrbCountSchema)(2)),
+          },
+          { id: otherOrbId, value: otherOrb },
+        ],
       })
 
       const events = yield* absorbExperienceOrb(coordinator, OWNER_IDS, PICKUP_CONTEXT)
@@ -320,7 +325,10 @@ describe('experience orb values', () => {
       const orbs = yield* coordinator.snapshot(OWNER_IDS.orbs, ExperienceOrbOwnerSnapshotSchema)
 
       expect(vitals['state'].vitals.totalExperience).toBe(7)
-      expect(orbs['state'].orbs).toEqual([{ id: PICKUP_CONTEXT.orb, value: orb, count: 1 }])
+      expect(orbs['state'].orbs).toEqual([
+        { id: PICKUP_CONTEXT.orb, value: orb, count: 1 },
+        { id: otherOrbId, value: otherOrb },
+      ])
       expect(events[0]).toMatchObject({ _tag: 'ExperienceCollected', amount: 7 })
     }),
   )
@@ -473,6 +481,34 @@ describe('experience orb values', () => {
 
       const failure = yield* Effect.flip(
         absorbExperienceOrb(incompleteCoordinator, OWNER_IDS, PICKUP_CONTEXT),
+      )
+
+      expect(failure).toMatchObject({
+        _tag: 'ExperienceOrbAbsorptionCommitResultInvalid',
+        reason: 'orb-not-consumed',
+        owners: [OWNER_IDS.orbs],
+      })
+    }),
+  )
+
+  it.effect('reports when a merged orb count was not decremented by the commit', () =>
+    Effect.gen(function* () {
+      const value = yield* Effect.fromResult(createExperienceOrbValue(1))
+      const count = Result.getOrThrow(Schema.decodeUnknownResult(ExperienceOrbCountSchema)(2))
+      const staleOrbs = { orbs: [{ id: PICKUP_CONTEXT.orb, value, count }] }
+      const coordinator = yield* makeCoordinator(SPAWN_VITALS, staleOrbs)
+      const staleCountCoordinator: WorldCommitCoordinatorApi = {
+        ...coordinator,
+        commit: (request) => coordinator.commit({
+          ...request,
+          changes: request.changes.map((change) => change.ownerId === OWNER_IDS.orbs
+            ? { ...change, state: staleOrbs }
+            : change),
+        }),
+      }
+
+      const failure = yield* Effect.flip(
+        absorbExperienceOrb(staleCountCoordinator, OWNER_IDS, PICKUP_CONTEXT),
       )
 
       expect(failure).toMatchObject({
@@ -651,6 +687,7 @@ describe('experience orb decisions', () => {
       selectedLocation: 'main_hand',
     } as const
     expect(applyMendingRepair(7, repair)).toEqual(Result.succeed(repair))
+    expect(Result.isFailure(applyMendingRepair(0, repair))).toBe(true)
     expect(applyMendingRepair(7, { ...repair, experienceRemaining: 0 })).toEqual(Result.succeed({
       ...repair,
       experienceRemaining: 0,
@@ -704,6 +741,10 @@ describe('experience orb decisions', () => {
       ...origin,
       x: Number.NaN,
     }))).toBe(true)
+    expect(Result.isFailure(isExperienceOrbWithinAttractionRange({
+      ...origin,
+      x: Number.NaN,
+    }, origin))).toBe(true)
   })
 
   it('pulls attracted orbs toward the player with a stronger pull at close range', () => {
@@ -752,6 +793,16 @@ describe('experience orb decisions', () => {
       player,
       -0.1,
     ))).toBe(true)
+    expect(Result.isFailure(pullExperienceOrbTowardPlayer(
+      { dimension: 'overworld', x: Number.NaN, y: 0, z: 0 },
+      player,
+      0.5,
+    ))).toBe(true)
+    expect(Result.isFailure(pullExperienceOrbTowardPlayer(
+      { dimension: 'overworld', x: 3, y: 0, z: 0 },
+      { ...player, x: Number.NaN },
+      0.5,
+    ))).toBe(true)
   })
 
   it('collects only within the player contact radius', () => {
@@ -760,6 +811,14 @@ describe('experience orb decisions', () => {
     expect(isExperienceOrbWithinPickupRange(origin, { ...origin, x: 1.0001 })).toEqual(Result.succeed(false))
     expect(isExperienceOrbWithinPickupRange(origin, { ...origin, dimension: 'nether' }))
       .toEqual(Result.succeed(false))
+    expect(Result.isFailure(isExperienceOrbWithinPickupRange({
+      ...origin,
+      x: Number.NaN,
+    }, origin))).toBe(true)
+    expect(Result.isFailure(isExperienceOrbWithinPickupRange(origin, {
+      ...origin,
+      x: Number.NaN,
+    }))).toBe(true)
   })
 
   it('agrees with Euclidean distance and is symmetric over valid positions', () => {
@@ -845,6 +904,14 @@ describe('experience orb decisions', () => {
     )).toEqual(Result.succeed(undefined))
     expect(Result.isFailure(mergeSameValueExperienceOrbStacks(
       { value: 7, count: 0 },
+      { value: 7 },
+    ))).toBe(true)
+    expect(Result.isFailure(mergeSameValueExperienceOrbStacks(
+      { value: 7 },
+      { value: 0 },
+    ))).toBe(true)
+    expect(Result.isFailure(mergeSameValueExperienceOrbStacks(
+      { value: 7, count: Number.MAX_SAFE_INTEGER },
       { value: 7 },
     ))).toBe(true)
 
