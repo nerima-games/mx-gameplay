@@ -702,7 +702,9 @@ describe('mob drop tables', () => {
 
   it.effect('rolls creeper gunpowder from the vanilla 0–2 range', () =>
     Effect.sync(() => {
-      expect(CREEPER_DROPS).toStrictEqual([{ item: 'gunpowder', count: 0, maxCount: 2 }])
+      expect(CREEPER_DROPS).toStrictEqual([{
+        item: 'gunpowder', count: 0, maxCount: 2, lootingCountIncrease: true,
+      }])
       expect(ITEM_TYPES).toContain('gunpowder')
 
       expect(rollMobDrops(CREEPER_DROPS, SLAIN, () => ({ chance: 0, count: 0 }))).toStrictEqual([])
@@ -723,8 +725,12 @@ describe('mob drop tables', () => {
 
   it.effect('zombie and enderman use Minecraft count ranges', () =>
     Effect.sync(() => {
-      expect(ZOMBIE_DROPS).toStrictEqual([{ item: 'rotten_flesh', count: 0, maxCount: 2 }])
-      expect(ENDERMAN_DROPS).toStrictEqual([{ item: 'ender_pearl', count: 0, maxCount: 1 }])
+      expect(ZOMBIE_DROPS).toStrictEqual([{
+        item: 'rotten_flesh', count: 0, maxCount: 2, lootingCountIncrease: true,
+      }])
+      expect(ENDERMAN_DROPS).toStrictEqual([{
+        item: 'ender_pearl', count: 0, maxCount: 1, lootingCountIncrease: true,
+      }])
       expect(ITEM_TYPES).toContain('rotten_flesh')
       expect(ITEM_TYPES).toContain('ender_pearl')
 
@@ -811,14 +817,14 @@ describe('mob drop tables', () => {
     }),
   )
 
-  it.effect('accepts Looting context without applying the enchantment', () =>
+  it.effect('Looting increases drops within the vanilla count range', () =>
     Effect.sync(() => {
       const rolls = () => ({ chance: 0, count: 0.75 })
       expect(rollMobDrops(CREEPER_DROPS, { _tag: 'Slain', lootingLevel: 0 }, rolls)).toStrictEqual([
         { item: 'gunpowder', count: 2 },
       ])
       expect(rollMobDrops(CREEPER_DROPS, { _tag: 'Slain', lootingLevel: 3 }, rolls)).toStrictEqual([
-        { item: 'gunpowder', count: 2 },
+        { item: 'gunpowder', count: 3 },
       ])
     }),
   )
@@ -877,8 +883,8 @@ describe('mob drop tables', () => {
   it.effect('ghasts roll tear and gunpowder ranges', () =>
     Effect.sync(() => {
       expect(GHAST_DROPS).toStrictEqual([
-        { item: 'ghast_tear', count: 0, maxCount: 1 },
-        { item: 'gunpowder', count: 0, maxCount: 2 },
+        { item: 'ghast_tear', count: 0, maxCount: 1, lootingCountIncrease: true },
+        { item: 'gunpowder', count: 0, maxCount: 2, lootingCountIncrease: true },
       ])
       expect(GHAST_XP_REWARD).toBe(5)
       expect(rollMobDrops(GHAST_DROPS, SLAIN, (index) => ({ chance: 0, count: index === 0 ? 0.9 : 0.99 }))).toStrictEqual([
