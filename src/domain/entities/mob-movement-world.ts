@@ -20,6 +20,7 @@ import {
   type MobPathProfile,
 } from '@nerima-games/mc-sim'
 import { Option, Result, Schema } from 'effect'
+import { LOCAL_COLLISION_BOXES_BY_SHAPE } from './collision-shape-boxes.js'
 import { UNREADABLE_BLOCK, type ChunkWindow } from '../chunk-window.js'
 import {
   CHICKEN_KIND,
@@ -54,15 +55,10 @@ const localBox = (
   maxZ: PositionAxis(maxZ),
 })
 
-const PHYSICS_BLOCK_SHAPES: Record<CollisionShape, PhysicsBlockShapeResult> = {
-  full: localBox(0, 0, 0, 1, 1, 1),
-  slab: localBox(0, 0, 0, 1, 0.5, 1),
-  cactus: localBox(1 / 16, 0, 1 / 16, 15 / 16, 1, 15 / 16),
-  pressurePlate: localBox(0, 0, 0, 1, 1 / 16, 1),
-  none: null,
+const blockShape = (shape: CollisionShape): PhysicsBlockShapeResult => {
+  const box = LOCAL_COLLISION_BOXES_BY_SHAPE[shape][0]
+  return box === undefined ? null : localBox(...box)
 }
-
-const blockShape = (shape: CollisionShape): PhysicsBlockShapeResult => PHYSICS_BLOCK_SHAPES[shape]
 
 const profileForKind = (kind: EntityKind): MobPathProfile => {
   const [width, height] = kind === SPIDER_KIND
