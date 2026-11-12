@@ -73,6 +73,7 @@ import {
 import {
   ExperienceOrbOwnerSnapshotSchema,
   ExperienceOrbVitalsOwnerSnapshotSchema,
+  ExperienceOrbCountSchema,
   createExperienceOrbValue,
   type ExperienceOrbOwnerSnapshot,
 } from '../src/domain/entities/xp-orb.js'
@@ -3714,6 +3715,40 @@ describe('entities stage owner-backed MobSimulation', () => {
     }])
   })
 
+  it('absorbs one orb from a stacked XP orb and keeps the remaining count', async () => {
+    const orbId = EntityId('test:stacked-xp-orb')
+    const orbValue = Result.getOrThrow(createExperienceOrbValue(5))
+    const orbCount = Result.getOrThrow(Schema.decodeUnknownResult(ExperienceOrbCountSchema)(2))
+    const harness = await Effect.runPromise(makeHarness({
+      entity: null,
+      experienceOrbs: { orbs: [{ id: orbId, value: orbValue, count: orbCount }] },
+    }))
+    const request = {
+      actor: EntityId('test:player'),
+      orb: orbId,
+      tick: 4,
+      position: { dimension: INITIAL_DIMENSION, x: 0, y: 64, z: 0 },
+    }
+    await Effect.runPromise(requestExperienceOrbAbsorption(harness.state, request))
+
+    await harness.run(0 as DeltaTimeSecs)
+
+    const orbsAfter = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
+      ExperienceOrbOwnerSnapshotSchema,
+    ))
+    const vitalsAfter = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_VITALS_OWNER_ID,
+      ExperienceOrbVitalsOwnerSnapshotSchema,
+    ))
+    expect(orbsAfter.state.orbs).toStrictEqual([{ id: orbId, value: orbValue, count: 1 }])
+    expect(vitalsAfter.state.vitals.totalExperience).toBe(5)
+    expect(await Effect.runPromise(Ref.get(harness.state.experienceOrbAbsorptionExecutions))).toMatchObject([{
+      request,
+      outcome: { _tag: 'Completed', result: [{ _tag: 'ExperienceCollected', amount: 5, orb: orbId }] },
+    }])
+  })
+
   it('commits registered XP-orb absorption once and requeues after an atomic rejection', async () => {
     const orbId = EntityId('test:xp-orb')
     const orbValue = Result.getOrThrow(createExperienceOrbValue(5))
@@ -3819,6 +3854,51 @@ describe('entities stage owner-backed MobSimulation', () => {
     expect(await Effect.runPromise(harness.coordinator.revision)).toBe(revisionBefore)
     expect(await Effect.runPromise(Ref.get(harness.state.pendingExperienceOrbAbsorptions))).toStrictEqual([request])
     expect(await Effect.runPromise(Ref.get(harness.state.experienceOrbAbsorptionExecutions))).toStrictEqual([])
+  })
+
+  it('requeues XP-orb absorption when the player-storage snapshot races, then retries successfully', async () => {
+    const orbId = EntityId('test:xp-orb-storage-revision-mismatch')
+    const orbValue = Result.getOrThrow(createExperienceOrbValue(4))
+    const harness = await Effect.runPromise(makeHarness({
+      entity: null,
+      experienceOrbs: { orbs: [{ id: orbId, value: orbValue }] },
+    }))
+    const request = {
+      actor: EntityId('test:player'),
+      orb: orbId,
+      tick: 10,
+      position: { dimension: INITIAL_DIMENSION, x: 0, y: 64, z: 0 },
+    }
+    await Effect.runPromise(requestExperienceOrbAbsorption(harness.state, request))
+    const revisionBefore = await Effect.runPromise(harness.coordinator.revision)
+    harness.mismatchNextSnapshot(GAMEPLAY_PLAYER_STORAGE_OWNER_ID)
+
+    await harness.run(0 as DeltaTimeSecs)
+
+    expect(harness.mismatchedSnapshots()).toBe(1)
+    expect(harness.commits()).toBe(0)
+    expect(await Effect.runPromise(harness.coordinator.revision)).toBe(revisionBefore)
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingExperienceOrbAbsorptions))).toStrictEqual([request])
+    expect(await Effect.runPromise(Ref.get(harness.state.experienceOrbAbsorptionExecutions))).toStrictEqual([])
+
+    await harness.run(0 as DeltaTimeSecs)
+
+    const vitalsAfter = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_VITALS_OWNER_ID,
+      ExperienceOrbVitalsOwnerSnapshotSchema,
+    ))
+    const orbsAfter = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
+      ExperienceOrbOwnerSnapshotSchema,
+    ))
+    expect(harness.commits()).toBe(1)
+    expect(vitalsAfter.state.vitals.totalExperience).toBe(4)
+    expect(orbsAfter.state.orbs).toStrictEqual([])
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingExperienceOrbAbsorptions))).toStrictEqual([])
+    expect(await Effect.runPromise(Ref.get(harness.state.experienceOrbAbsorptionExecutions))).toMatchObject([{
+      request,
+      outcome: { _tag: 'Completed', result: [{ _tag: 'ExperienceCollected', amount: 4, orb: orbId }] },
+    }])
   })
 
   it('keeps XP-orb absorption typed when its owner is not registered', async () => {
@@ -3929,6 +4009,39 @@ describe('entities stage owner-backed MobSimulation', () => {
     expect(await Effect.runPromise(Ref.get(harness.state.experienceOrbAbsorptionExecutions))).toMatchObject([
       { request, outcome: { _tag: 'Failed', error: { _tag: 'ReplicatedOwnerUnknown' } } },
     ])
+  })
+
+  it('records player-storage snapshot failure for a registered XP-orb absorption', async () => {
+    const orbId = EntityId('test:xp-orb-storage-snapshot-failure')
+    const harness = await Effect.runPromise(makeHarness({
+      entity: null,
+      experienceOrbs: { orbs: [{ id: orbId, value: Result.getOrThrow(createExperienceOrbValue(3)) }] },
+    }))
+    const request = {
+      actor: EntityId('test:player'),
+      orb: orbId,
+      tick: 11,
+      position: { dimension: INITIAL_DIMENSION, x: 0, y: 64, z: 0 },
+    }
+    await Effect.runPromise(requestExperienceOrbAbsorption(harness.state, request))
+    const context: GameplayStageContext = {
+      ...harness.context,
+      commit: {
+        ...harness.context.commit!,
+        playerStorageOwnerId: makeReplicatedOwnerId('test:unregistered-player-storage-owner'),
+      },
+    }
+
+    await Effect.runPromise(makeEntitiesStage(context).run(0 as DeltaTimeSecs).pipe(
+      Effect.provide(FrameServicesLayer),
+    ))
+
+    expect(harness.commits()).toBe(0)
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingExperienceOrbAbsorptions))).toStrictEqual([])
+    expect(await Effect.runPromise(Ref.get(harness.state.experienceOrbAbsorptionExecutions))).toMatchObject([{
+      request,
+      outcome: { _tag: 'Failed', error: { _tag: 'ReplicatedOwnerUnknown' } },
+    }])
   })
 
   it('reports a requested XP orb missing from the registered owner without committing', async () => {

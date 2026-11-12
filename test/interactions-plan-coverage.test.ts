@@ -14,6 +14,8 @@ import {
   ProjectileIdSchema,
   SimulationTickSchema,
   StackCount,
+  enchantmentsComponent,
+  itemComponents,
   WorldIdSchema,
   WorldPositionSchema,
   blockIdOf,
@@ -78,6 +80,7 @@ import {
   drainBlockPlacementResults,
   drainBlockUseResults,
   drainBowShotResults,
+  drainMeleeKnockbacks,
   drainMeleeAttackResults,
   drainVillagerTradeResults,
   gameplayStages,
@@ -239,6 +242,19 @@ const playerStorageWithItems = (items: ReadonlyArray<readonly [ItemType, number]
       ? undefined
       : Result.getOrThrow(makeItemStack(entry[0], StackCount(entry[1])))
   })
+  return {
+    ...empty,
+    inventory: { ...empty.inventory, slots },
+    inventoryDurability: slots.map((slot) => slot === undefined ? null : durabilityForItem(slot.item)),
+  }
+}
+
+const playerStorageWithKnockbackSword = (): PlayerStorage => {
+  const empty = emptyPlayerStorage()
+  const enchantments = Result.getOrThrow(enchantmentsComponent({ 'minecraft:knockback': 2 }))
+  const components = Result.getOrThrow(itemComponents('iron_sword', { enchantments }))
+  const sword = Result.getOrThrow(makeItemStack('iron_sword', StackCount(1), { components }))
+  const slots = empty.inventory.slots.map((slot, index) => index === 0 ? sword : slot)
   return {
     ...empty,
     inventory: { ...empty.inventory, slots },
@@ -3194,6 +3210,38 @@ describe('registered combat and teleport requests in the interactions stage', ()
       amount: 1,
       cause: 'mob',
     }])
+  })
+
+  it('drains knockback produced by a registered melee hit with an enchanted sword exactly once', async () => {
+    const target = combatTarget('coverage-melee-knockback-target')
+    const harness = await Effect.runPromise(makeHarness({
+      entities: { entities: [target], nextSerial: EntitySerial(1) },
+      playerStorage: playerStorageWithKnockbackSword(),
+      playerPose: meleePlayerPose,
+    }))
+    await Effect.runPromise(requestMeleeAttack(harness.state, {
+      requestId: 'melee-knockback-outbox',
+      origin: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
+      direction: position(PositionAxis(0), PositionAxis(0), PositionAxis(1)),
+      reach: AttackRangeDistance(3),
+      damage: 4,
+      toolLocation: { _tag: 'Inventory', slotIndex: 0 },
+    }))
+
+    await harness.run()
+
+    expect(await Effect.runPromise(drainMeleeAttackResults(harness.state))).toMatchObject([{
+      requestId: 'melee-knockback-outbox',
+      success: true,
+      target: { id: target.id, distance: 2 },
+    }])
+    expect(await Effect.runPromise(drainMeleeKnockbacks(harness.state))).toStrictEqual([{
+      id: target.id,
+      direction: { _tag: 'Away', x: 0, z: 1 },
+      strength: 6,
+    }])
+    expect(await Effect.runPromise(drainMeleeKnockbacks(harness.state))).toStrictEqual([])
+    expect(harness.commitCalls()).toBe(1)
   })
 
   it('keeps a lethal melee hit pending when its mob drop owner is not registered', async () => {
