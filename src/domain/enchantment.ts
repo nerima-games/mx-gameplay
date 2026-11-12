@@ -5,7 +5,10 @@ import {
   SUPPORTED_VANILLA_ENCHANTMENT_RULES,
   type SupportedVanillaEnchantmentId,
 } from '@nerima-games/mc-kernel/domain/enchantment'
-import type { EnchantmentsComponent } from '@nerima-games/mc-kernel/domain/item-enchantments'
+import {
+  enchantmentsComponent,
+  type EnchantmentsComponent,
+} from '@nerima-games/mc-kernel/domain/item-enchantments'
 import {
   enchantmentTableOutputItemOf as simEnchantmentTableOutputItemOf,
   generateEnchantmentTableOffers as generateEnchantmentTableOffersWithSim,
@@ -425,8 +428,12 @@ export const enchantmentLevel = (source: EnchantmentSource, id: EnchantmentId): 
 }
 
 /** Convert the gameplay list representation into the kernel's namespaced component map. */
-export const enchantmentComponentOf = (item: EnchantedItem): EnchantmentsComponent =>
-  Object.fromEntries(item.enchantments.map(({ id, level }) => [`minecraft:${id}`, level])) as unknown as EnchantmentsComponent
+export const enchantmentComponentOf = (
+  item: EnchantedItem,
+): ReturnType<typeof enchantmentsComponent> =>
+  enchantmentsComponent(Object.fromEntries(
+    item.enchantments.map(({ id, level }) => [`minecraft:${id}`, level]),
+  ))
 
 const nonNegative = (value: number): number =>
   Number.isFinite(value) ? Math.max(0, value) : 0

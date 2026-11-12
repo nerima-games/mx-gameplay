@@ -5,8 +5,11 @@ import {
   SUPPORTED_VANILLA_ENCHANTMENT_IDS,
   SUPPORTED_VANILLA_ENCHANTMENT_RULES,
 } from '@nerima-games/mc-kernel/domain/enchantment'
-import type { EnchantmentsComponent } from '@nerima-games/mc-kernel/domain/item-enchantments'
-import { Schema } from 'effect'
+import {
+  isEnchantmentsComponent,
+  type EnchantmentsComponent,
+} from '@nerima-games/mc-kernel/domain/item-enchantments'
+import { Result, Schema } from 'effect'
 import * as FastCheck from 'fast-check'
 
 import {
@@ -575,7 +578,7 @@ describe('enchantment derivations', () => {
 
   it('reads short ids and namespaced kernel component keys', () => {
     const item = enchantedItem('bow', 'power', 2)
-    const kernelComponent = enchantmentComponentOf(item)
+    const kernelComponent = Result.getOrThrow(enchantmentComponentOf(item))
     expect(kernelComponent).toEqual({ 'minecraft:power': 2 })
     expect(enchantmentLevel(kernelComponent, 'power')).toBe(2)
     expect(enchantmentLevel(component([['power', 2]]), 'power')).toBe(2)
@@ -584,6 +587,30 @@ describe('enchantment derivations', () => {
     expect(
       enchantmentLevel({ 'minecraft:power': 256 } as unknown as EnchantmentsComponent, 'power'),
     ).toBe(0)
+  })
+
+  it('builds kernel components through the checked enchantment constructor', () => {
+    const componentOfLevel = (level: number) =>
+      enchantmentComponentOf({
+        item: 'bow',
+        durability: durabilityForItem('bow'),
+        enchantments: [{ id: 'power', level }],
+      })
+
+    FastCheck.assert(
+      FastCheck.property(FastCheck.integer({ min: -1, max: 256 }), (level) => {
+        const result = componentOfLevel(level)
+        const withinKernelRange = level >= 0 && level <= 255
+        return Result.isFailure(result)
+          ? !withinKernelRange
+          : withinKernelRange && isEnchantmentsComponent(result.success)
+      }),
+    )
+
+    expect(Result.isSuccess(componentOfLevel(0))).toBe(true)
+    expect(Result.isSuccess(componentOfLevel(255))).toBe(true)
+    expect(Result.isFailure(componentOfLevel(-1))).toBe(true)
+    expect(Result.isFailure(componentOfLevel(256))).toBe(true)
   })
 
   it('provides vanilla effect inputs for weapon, fishing, underwater, and utility consumers', () => {
