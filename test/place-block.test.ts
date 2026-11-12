@@ -727,7 +727,7 @@ describe('planPlaceBlock per-block verdicts', () => {
     }),
   )
 
-  it.effect('refuses a door without room above and plans both cells when clear', () =>
+  it.effect('refuses a door without room above and plans its lower cell for the state rule', () =>
     Effect.gen(function* () {
       const upper = blockPosition(target.x, target.y + 1, target.z)
       const occupied = yield* storeWith([
@@ -740,8 +740,8 @@ describe('planPlaceBlock per-block verdicts', () => {
 
       expect(refused.outcome).toStrictEqual({ _tag: 'NoRoomAbove' })
       expect(refused.edits).toStrictEqual([])
-      expect(planned.outcome).toStrictEqual({ _tag: 'StateWriteUnsupported', blockType: 'door' })
-      expect(planned.edits).toStrictEqual([])
+      expect(planned.outcome._tag).toBe('Placed')
+      expect(planned.edits).toMatchObject([{ position: target }])
     }),
   )
 })

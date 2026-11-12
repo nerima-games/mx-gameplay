@@ -19,6 +19,7 @@ import {
   type BlockType,
 } from '@nerima-games/mc-kernel'
 import type { ChunkStoreApi } from '@nerima-games/mc-worldgen'
+import type { ReplicatedOwnerCandidate } from '@nerima-games/mc-sim'
 
 export type BlockStateCell = Readonly<{
   block: BlockId
@@ -42,7 +43,10 @@ export type BlockStateWrite =
 
 export type BlockStateWorldPort = Readonly<{
   read: (position: BlockPosition) => Effect.Effect<BlockStateRead>
-  write: (edits: ReadonlyArray<BlockStateEdit>) => Effect.Effect<BlockStateWrite>
+  write: (
+    edits: ReadonlyArray<BlockStateEdit>,
+    ownerChanges?: ReadonlyArray<ReplicatedOwnerCandidate>,
+  ) => Effect.Effect<BlockStateWrite>
 }>
 
 // ChunkStoreApi stores block IDs only, so this adapter cannot return a stateful cell.
@@ -88,6 +92,9 @@ type BoneMealOperation = Extract<BlockStateRuleRequest['operation'], { _tag: 'Bo
 export type BlockStateRuleFailure = Readonly<{
   _tag: 'Unsupported'
   operation: 'readState' | 'writeState' | 'treePlacement' | 'vegetationSpread'
+  position: BlockPosition
+}> | Readonly<{
+  _tag: 'PortUnavailable'
   position: BlockPosition
 }> | Readonly<{
   _tag: 'Unavailable'

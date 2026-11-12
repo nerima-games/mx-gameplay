@@ -511,11 +511,6 @@ export const planPlaceBlock = (
     const upper = yield* doorUpperCell(store, verdict.block, request.position)
     if (upper._tag === 'NoRoomAbove') return { outcome: upper, edits: [] }
 
-    const needsState = statefulBlockType(verdict.block)
-    if (needsState !== undefined) {
-      return { outcome: { _tag: 'StateWriteUnsupported', blockType: needsState }, edits: [] }
-    }
-
     return {
       outcome: {
         _tag: 'Placed',

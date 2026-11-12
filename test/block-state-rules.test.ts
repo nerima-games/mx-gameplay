@@ -116,8 +116,9 @@ const runRuleAtRegisteredStage = (
   requestId = 'registered-state-rule',
 ) => Effect.gen(function* () {
   const state = yield* makeGameplayFrameState
-  const stage = makeBlockStateRulesStage(state, {} as ChunkStoreApi, port)
-  yield* requestBlockStateRule(state, { requestId, position: at, operation })
+  const world = { forDimension: () => port }
+  const stage = makeBlockStateRulesStage(state, world)
+  yield* requestBlockStateRule(state, 'overworld', { requestId, position: at, operation })
   yield* stage.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
   return yield* drainBlockStateRuleResults(state)
 })
@@ -937,6 +938,11 @@ describe('block state rules', () => {
       expect(yield* applyRuleAt(unknownBlock.port, {
         _tag: 'SaplingGrowthAttempt', roll: 0, treeSpaceAvailable: true,
       })).toStrictEqual({ _tag: 'NotApplicable', block: undefined })
+
+      const unreadable = scriptedWorld([{ _tag: 'Unavailable', reason: 'ChunkNotLoaded' }])
+      expect(yield* applyRuleAt(unreadable.port, {
+        _tag: 'SaplingGrowthAttempt', roll: 0, treeSpaceAvailable: true,
+      })).toStrictEqual({ _tag: 'Unavailable', position, reason: 'ChunkNotLoaded' })
     }),
   )
 
@@ -1007,41 +1013,36 @@ describe('block state rules', () => {
     }),
   )
 
-  it.effect('the registered stage routes every state operation to a typed unsupported result without id-only writes', () =>
+  it.effect('the registered stage reports a typed missing-port failure instead of installing an unsupported adapter', () =>
     Effect.gen(function* () {
       const state = yield* makeGameplayFrameState
-      let idOnlyWrites = 0
-      const store = {
-        getBlock: () => Effect.succeed({ _tag: 'Block', block: blockId('door') } as const),
-        setBlock: () => Effect.sync(() => { idOnlyWrites += 1; return { _tag: 'Written' } }),
-      } as unknown as ChunkStoreApi
-      const stage = makeBlockStateRulesStage(state, store)
-      yield* requestBlockStateRule(state, {
+      const stage = makeBlockStateRulesStage(state, undefined)
+      yield* requestBlockStateRule(state, 'overworld', {
         requestId: 'door-unsupported',
         position,
         operation: { _tag: 'ToggleDoor' },
       })
-      yield* requestBlockStateRule(state, {
+      yield* requestBlockStateRule(state, 'overworld', {
         requestId: 'door-place-unsupported',
         position,
         operation: { _tag: 'PlaceDoor', facing: 'north', hinge: 'left' },
       })
-      yield* requestBlockStateRule(state, {
+      yield* requestBlockStateRule(state, 'overworld', {
         requestId: 'stair-place-unsupported',
         position,
         operation: { _tag: 'PlaceStairs', block: 'oak_stairs', facing: 'east', hitFace: 'up', hitY: 0.5 },
       })
-      yield* requestBlockStateRule(state, {
+      yield* requestBlockStateRule(state, 'overworld', {
         requestId: 'crop-tick-unsupported',
         position,
         operation: { _tag: 'CropRandomTick', speedLevel: 10, roll: 0 },
       })
-      yield* requestBlockStateRule(state, {
+      yield* requestBlockStateRule(state, 'overworld', {
         requestId: 'sapling-tick-unsupported',
         position,
         operation: { _tag: 'SaplingGrowthAttempt', roll: 0, treeSpaceAvailable: true },
       })
-      yield* requestBlockStateRule(state, {
+      yield* requestBlockStateRule(state, 'overworld', {
         requestId: 'bone-meal-unsupported',
         position,
         operation: { _tag: 'BoneMeal', cropStages: 2, saplingRoll: 0, treeSpaceAvailable: true },
@@ -1049,24 +1050,23 @@ describe('block state rules', () => {
       yield* stage.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
       expect(yield* drainBlockStateRuleResults(state)).toStrictEqual([{
         requestId: 'door-unsupported',
-        outcome: { _tag: 'Unsupported', operation: 'readState', position },
+        outcome: { _tag: 'PortUnavailable', position },
       }, {
         requestId: 'door-place-unsupported',
-        outcome: { _tag: 'Unsupported', operation: 'readState', position },
+        outcome: { _tag: 'PortUnavailable', position },
       }, {
         requestId: 'stair-place-unsupported',
-        outcome: { _tag: 'Unsupported', operation: 'readState', position },
+        outcome: { _tag: 'PortUnavailable', position },
       }, {
         requestId: 'crop-tick-unsupported',
-        outcome: { _tag: 'Unsupported', operation: 'readState', position },
+        outcome: { _tag: 'PortUnavailable', position },
       }, {
         requestId: 'sapling-tick-unsupported',
-        outcome: { _tag: 'Unsupported', operation: 'readState', position },
+        outcome: { _tag: 'PortUnavailable', position },
       }, {
         requestId: 'bone-meal-unsupported',
-        outcome: { _tag: 'Unsupported', operation: 'readState', position },
+        outcome: { _tag: 'PortUnavailable', position },
       }])
-      expect(idOnlyWrites).toBe(0)
     }),
   )
 
@@ -1087,11 +1087,12 @@ describe('block state rules', () => {
   it.effect('the registered state stage reports an out-of-world read as unavailable', () =>
     Effect.gen(function* () {
       const state = yield* makeGameplayFrameState
-      const store = {
-        getBlock: () => Effect.succeed({ _tag: 'OutOfWorld' } as const),
-      } as unknown as ChunkStoreApi
-      const stage = makeBlockStateRulesStage(state, store)
-      yield* requestBlockStateRule(state, {
+      const port: BlockStateWorldPort = {
+        read: () => Effect.succeed({ _tag: 'Unavailable', reason: 'OutOfWorld' }),
+        write: () => Effect.succeed({ _tag: 'Written' }),
+      }
+      const stage = makeBlockStateRulesStage(state, { forDimension: () => port })
+      yield* requestBlockStateRule(state, 'overworld', {
         requestId: 'out-of-world-state-read',
         position,
         operation: { _tag: 'ToggleDoor' },

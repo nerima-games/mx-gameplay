@@ -2961,7 +2961,7 @@ describe('registered block-use and placement requests in the interactions stage'
     await Effect.runPromise(stateRules!.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer)))
     expect(await Effect.runPromise(drainBlockStateRuleResults(harness.state))).toStrictEqual([{
       requestId: 'use-door',
-      outcome: { _tag: 'Unsupported', operation: 'readState', position: doorPosition },
+      outcome: { _tag: 'PortUnavailable', position: doorPosition },
     }])
     expect(harness.commitCalls()).toBe(0)
   })
@@ -3018,6 +3018,7 @@ describe('registered block-use and placement requests in the interactions stage'
       requestId: `${blockPositionKeyOf(target)}:refresh-stair-shapes`,
       position: target,
       operation: { _tag: 'RefreshStairShapes' },
+      dimension: DIMENSION,
     }])
   })
 

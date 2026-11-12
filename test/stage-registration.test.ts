@@ -132,6 +132,7 @@ import {
   requestBlockBreak,
   requestTargetedBlockBreak,
   requestBucketUse,
+  requestBlockPlacement,
   requestBoneMeal,
   requestBowShot,
   requestFireExtinguish,
@@ -178,6 +179,7 @@ import type {
   GameplayStageCommitServices,
   GameplayTargetingSnapshotContext,
 } from '../src/stages/registration-core'
+import { GameplayBlockStateWorld } from '../src/stages/gameplay-block-state-world.js'
 import {
   BREWING_ADVANCE_STAGE_ID,
   EXPERIENCE_MODULE_STAGE_PREFIXES,
@@ -343,7 +345,8 @@ const positionKey = Brand.nominal<BlockPositionKey>()
 
 /**
  * The registration effect takes mc-worldgen's `ChunkStore`, mc-sim's
- * `EntityManager`, `TimeService`, `WorldCommitCoordinator` and `DomainEventBus`
+ * `EntityManager`, `TimeService`, `WorldCommitCoordinator`, `DomainEventBus`,
+ * and the host's `GameplayBlockStateWorld` adapter
  * (kernel's `domain/frame.ts` on `RRegister`). The coordinator fixture also
  * needs an empty inventory to seed the registered player-storage owner. Tests
  * about the SHAPE of registration use these empty host services; behaviour over
@@ -353,6 +356,12 @@ const registrationEventBus: DomainEventBusApi = {
   publish: () => Effect.void,
   events: Stream.empty,
 }
+const emptyBlockStateWorld = {
+  forDimension: () => ({
+    read: () => Effect.succeed({ _tag: 'Unavailable', reason: 'ChunkNotLoaded' } as const),
+    write: () => Effect.succeed({ _tag: 'Written' } as const),
+  }),
+}
 
 const emptyWorldBase = Layer.mergeAll(
   emptyWorldStoreLayer,
@@ -360,6 +369,7 @@ const emptyWorldBase = Layer.mergeAll(
   TimeServiceLayer(),
   emptyInventoryLayer,
   Layer.succeed(DomainEventBus, registrationEventBus),
+  Layer.succeed(GameplayBlockStateWorld, emptyBlockStateWorld),
 )
 const emptyWorld = Layer.provideMerge(gameplayCommitServicesLayer, emptyWorldBase)
 const registeredStages = Effect.provide(makeGameplayStages, Layer.orDie(emptyWorld))
@@ -2387,7 +2397,7 @@ describe('the module contract has caught up with this file’s shape', () => {
         never,
         never,
         never,
-        ChunkStore | EntityManager | TimeService | WorldCommitCoordinator | DomainEventBus
+        ChunkStore | EntityManager | TimeService | WorldCommitCoordinator | DomainEventBus | GameplayBlockStateWorld
       > = gameplayModule
       const stages = yield* Effect.provide(module.frameStages, emptyWorld)
 
@@ -2412,15 +2422,15 @@ describe('the module contract has caught up with this file’s shape', () => {
 
   // Player pose, inventory and vitals are read from registered WCC owners; the
   // registration effect must not acquire local mirrors of those fields.
-  it.effect('acquires five host services to register and exposes ten stages', () =>
+  it.effect('acquires six host services to register and exposes ten stages', () =>
     Effect.gen(function* () {
       const registration: Effect.Effect<
         ReadonlyArray<StageRegistration>,
         never,
-        ChunkStore | EntityManager | TimeService | WorldCommitCoordinator | DomainEventBus
+        ChunkStore | EntityManager | TimeService | WorldCommitCoordinator | DomainEventBus | GameplayBlockStateWorld
       > = gameplayModule.frameStages
 
-      // Providing those five — and no local player or inventory services —
+      // Providing those six — and no local player or inventory services —
       // discharges the whole registration context.
       // If a stage started demanding another service at REGISTRATION time, this
       // assignment would stop compiling, which is the point. Any new service
@@ -2474,7 +2484,7 @@ describe('the module contract has caught up with this file’s shape', () => {
       const unparameterised: Effect.Effect<
         ReadonlyArray<StageRegistration>,
         never,
-        ChunkStore | EntityManager | TimeService | WorldCommitCoordinator | DomainEventBus
+        ChunkStore | EntityManager | TimeService | WorldCommitCoordinator | DomainEventBus | GameplayBlockStateWorld
       > = makeGameplayStages
 
       expect(typeof unparameterised).toBe('object')
@@ -3715,10 +3725,159 @@ describe('the targeted-block family resolves through the same raycast as placeme
       expect(yield* player.api.pose).toStrictEqual(AIMING_POSE)
       expect(Option.getOrUndefined(target)?.position).toStrictEqual(MOVED_AIM)
       expect(Option.getOrUndefined(target)?.adjacentPosition).toStrictEqual(fixtureBlockPosition(0, 1, 10))
-      expect(yield* Ref.get(state.pendingPlacements)).toStrictEqual([{
+      const placements = yield* Ref.get(state.pendingPlacements)
+      expect(placements).toHaveLength(1)
+      expect(placements[0]).toMatchObject({
         positionKey: positionKey('0,1,10'),
         heldItem: 'sand',
-      }])
+        targeting: { facing: 'north', hitFace: 'south' },
+      })
+      expect(placements[0]?.targeting?.hitY).toBeCloseTo(0.62)
+    }),
+  )
+
+  it.effect('targeted placement carries the hit face and horizontal facing for all six block faces', () =>
+    Effect.gen(function* () {
+      const targetPosition = fixtureBlockPosition(8, 1, 8)
+      const cases = [
+        {
+          name: 'west face',
+          pose: { feetPosition: fixturePosition(6.5, 0, 8.5), yawRadians: -Math.PI / 2, pitchRadians: 0 },
+          hitFace: 'west',
+          facing: 'east',
+          hitY: 0.62,
+        },
+        {
+          name: 'east face',
+          pose: { feetPosition: fixturePosition(10.5, 0, 8.5), yawRadians: Math.PI / 2, pitchRadians: 0 },
+          hitFace: 'east',
+          facing: 'west',
+          hitY: 0.62,
+        },
+        {
+          name: 'south face',
+          pose: { feetPosition: fixturePosition(8.5, 0, 10.5), yawRadians: 0, pitchRadians: 0 },
+          hitFace: 'south',
+          facing: 'north',
+          hitY: 0.62,
+        },
+        {
+          name: 'north face',
+          pose: { feetPosition: fixturePosition(8.5, 0, 6.5), yawRadians: Math.PI, pitchRadians: 0 },
+          hitFace: 'north',
+          facing: 'south',
+          hitY: 0.62,
+        },
+        {
+          name: 'top face',
+          pose: { feetPosition: fixturePosition(8.5, 4, 8.5), yawRadians: 0, pitchRadians: -Math.PI / 2 },
+          hitFace: 'up',
+          facing: 'north',
+          hitY: 1,
+        },
+        {
+          name: 'bottom face',
+          pose: { feetPosition: fixturePosition(8.5, -3, 8.5), yawRadians: 0, pitchRadians: Math.PI / 2 },
+          hitFace: 'down',
+          facing: 'north',
+          hitY: 0,
+        },
+      ] as const
+
+      for (const testCase of cases) {
+        const harness = yield* builtStagesInWorld(
+          world([[targetPosition, STONE]]),
+          ['0,0'],
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          { playerPose: testCase.pose },
+        )
+        const target = yield* Effect.orDie(requestTargetedBlockPlacement(
+          harness.state,
+          harness.store.api,
+          targetingContextFor(harness.commit),
+          'oak_stairs',
+        ))
+        const placement = (yield* Ref.get(harness.state.pendingPlacements))[0]
+
+        expect(Option.getOrUndefined(target)?.position, testCase.name).toStrictEqual(targetPosition)
+        expect(placement?.targeting, testCase.name).toMatchObject({
+          hitFace: testCase.hitFace,
+          facing: testCase.facing,
+        })
+        expect(placement?.targeting?.hitY, testCase.name).toBeCloseTo(testCase.hitY)
+      }
+    }).pipe(Effect.provide(FrameServicesLayer)),
+  )
+
+  it.effect('fails a stateful placement explicitly when targeting or the state port is unavailable', () =>
+    Effect.gen(function* () {
+      const support = fixtureBlockPosition(0, 0, 1)
+      const storage = [...emptySlots()]
+      storage[0] = itemStack('door', 1)
+      const missingTargeting = yield* builtStagesInWorld(world([[support, STONE]]), ['0,0'], undefined, storage)
+      const interactionsWithoutTargeting = missingTargeting.stages.find(
+        (stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions,
+      )!
+      yield* requestBlockPlacement(missingTargeting.state, {
+        positionKey: positionKey('0,1,1'),
+        heldItem: 'door',
+      })
+      yield* interactionsWithoutTargeting.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+      expect(yield* drainGameplayUnsupportedOperations(missingTargeting.state)).toMatchObject([
+        { _tag: 'Unsupported', action: 'PlaceBlock', reason: 'StateRuleTargetingUnavailable' },
+      ])
+
+      const missingPort = yield* builtStagesInWorld(world([[support, STONE]]), ['0,0'], undefined, storage)
+      const targetedPlacement = {
+        positionKey: positionKey('0,1,1'),
+        heldItem: 'door' as const,
+        targeting: { facing: 'north' as const, hitFace: 'south' as const, hitY: 0.62 },
+      }
+      yield* requestBlockPlacement(missingPort.state, targetedPlacement)
+      const interactionsWithoutPort = missingPort.stages.find(
+        (stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions,
+      )!
+      yield* interactionsWithoutPort.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+      expect(yield* drainGameplayUnsupportedOperations(missingPort.state)).toMatchObject([
+        { _tag: 'Unsupported', action: 'PlaceBlock', reason: 'StateRuleUnavailable' },
+      ])
+
+      const unsupportedRead = yield* builtStagesInWorld(world([[support, STONE]]), ['0,0'], undefined, storage)
+      const stagesWithPort = gameplayStages(
+        unsupportedRead.state,
+        unsupportedRead.store.api,
+        unsupportedRead.roster.api,
+        unsupportedRead.inventory.api,
+        unsupportedRead.player.api,
+        unsupportedRead.time,
+        undefined,
+        undefined,
+        {},
+        unsupportedRead.commit,
+        {
+          forDimension: () => ({
+            read: () => Effect.succeed({ _tag: 'Unsupported' as const, operation: 'readState' as const }),
+            write: () => Effect.succeed({ _tag: 'Unsupported' as const, operation: 'writeState' as const }),
+          }),
+        },
+      )
+      yield* requestBlockPlacement(unsupportedRead.state, targetedPlacement)
+      const interactionsWithPort = stagesWithPort.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+      yield* interactionsWithPort.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+      expect(yield* drainGameplayUnsupportedOperations(unsupportedRead.state)).toMatchObject([
+        {
+          _tag: 'Unsupported',
+          action: 'PlaceBlock',
+          reason: 'StateRuleFailed',
+          stateRuleOutcome: { _tag: 'Unsupported', operation: 'readState' },
+        },
+      ])
     }),
   )
 
@@ -3757,13 +3916,14 @@ describe('the targeted-block family resolves through the same raycast as placeme
         requestId: 'door-toggle',
         position: AIMED_AT,
         operation: { _tag: 'ToggleDoor' },
+        dimension: 'overworld',
       }])
 
       const rules = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.blockStateRules)!
       yield* rules.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
       expect(yield* drainBlockStateRuleResults(state)).toStrictEqual([{
         requestId: 'door-toggle',
-        outcome: { _tag: 'Unsupported', operation: 'readState', position: AIMED_AT },
+        outcome: { _tag: 'PortUnavailable', position: AIMED_AT },
       }])
       expect(yield* store.api.getBlock(AIMED_AT)).toStrictEqual({ _tag: 'Block', block: door })
     }),
@@ -3908,10 +4068,14 @@ describe('the targeted-block family resolves through the same raycast as placeme
         'sand',
       )
       expect(Option.getOrUndefined(target)?.adjacentPosition).toStrictEqual(AIMED_ADJACENT)
-      expect(yield* Ref.get(state.pendingPlacements)).toStrictEqual([{
+      const placements = yield* Ref.get(state.pendingPlacements)
+      expect(placements).toHaveLength(1)
+      expect(placements[0]).toMatchObject({
         positionKey: positionKey('0,1,1'),
         heldItem: 'sand',
-      }])
+        targeting: { facing: 'north', hitFace: 'south' },
+      })
+      expect(placements[0]?.targeting?.hitY).toBeCloseTo(0.62)
     }),
   )
 
@@ -6550,6 +6714,41 @@ describe('farming and food item uses through the full interactions stage', () =>
       expect(yield* harness.commit.coordinator.snapshot(GAMEPLAY_CROPS_OWNER_ID, CropSnapshotSchema))
         .toStrictEqual(before)
       expect(yield* harness.commit.coordinator.revision).toBe(before.revision)
+    }),
+  )
+
+  it.effect('reports a missing C7 port while preserving the CropOwner clock on fallback commit failure', () =>
+    Effect.gen(function* () {
+      const position = fixtureBlockPosition(39, 64, 39)
+      const crops = { crops: [{ dimension: 'overworld', position, crop: 'wheat_crop' as const, growthSecs: 0 }] }
+      const completed = yield* builtStagesInWorld(world([]), ['2,2'], crops)
+      const completedInteractions = completed.stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+
+      yield* completedInteractions.run(DeltaTimeSecs(69)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* drainBlockStateRuleResults(completed.state)).toMatchObject([
+        { outcome: { _tag: 'PortUnavailable', position } },
+      ])
+      expect((yield* completed.commit.coordinator.snapshot(GAMEPLAY_CROPS_OWNER_ID, CropSnapshotSchema))
+        .state.crops).toMatchObject([{ growthSecs: 69 }])
+
+      const rejected = yield* builtStagesInWorld(world([]), ['2,2'], crops)
+      const rejectedInteractions = rejected.stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+      yield* Ref.set(rejected.rejectCommits, true)
+
+      yield* rejectedInteractions.run(DeltaTimeSecs(69)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* Ref.get(rejected.commitCalls)).toBe(1)
+      expect(yield* Ref.get(rejected.state.operationFailures)).toMatchObject([
+        {
+          _tag: 'Failed',
+          operation: 'WorldCommit',
+          subject: 'ItemUse',
+          error: { _tag: 'WorldCommitEmptyRequest' },
+        },
+      ])
+      expect((yield* rejected.commit.coordinator.snapshot(GAMEPLAY_CROPS_OWNER_ID, CropSnapshotSchema))
+        .state.crops).toMatchObject([{ growthSecs: 0 }])
     }),
   )
 

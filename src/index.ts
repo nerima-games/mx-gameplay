@@ -106,6 +106,8 @@ export {
 export * from './domain/interactions/use-block.js'
 export * from './domain/interactions/use-eye-of-ender.js'
 export * from './stages/registration.js'
+export { GameplayBlockStateWorld } from './stages/gameplay-block-state-world.js'
+export type { GameplayBlockStateWorldApi } from './stages/gameplay-block-state-world.js'
 export * from './stages/gameplay-owner-registrations.js'
 export * from './stages/ender-dragon-encounter-stage.js'
 export * from './stages/stage-ids.js'
