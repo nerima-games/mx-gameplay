@@ -3665,9 +3665,9 @@ describe('the potato farming slice: host input reaches farming rules', () => {
       yield* runFrame(stages, STRIDE)
 
       expect((yield* snapshotStatusEffects(state, commit)).effects).toStrictEqual([
-        { type: 'poison', remainingSecs: 59.75, pulseClockSecs: 0.25, amplifier: 1 },
         { type: 'hunger', remainingSecs: 14.75, pulseClockSecs: 0, amplifier: 2 },
         { type: 'nausea', remainingSecs: 14.75, pulseClockSecs: 0, amplifier: 0 },
+        { type: 'poison', remainingSecs: 59.75, pulseClockSecs: 0.25, amplifier: 1 },
       ])
       expect((yield* state.survivalHunger.snapshot).vitals.exhaustion).toBeCloseTo(0.075)
     }),

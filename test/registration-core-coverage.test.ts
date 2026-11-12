@@ -10,6 +10,7 @@ import {
   type DeltaTimeSecs as DeltaTimeSecsValue,
   type StageRegistration,
 } from '@nerima-games/mc-kernel'
+import { STATUS_EFFECT_AMPLIFIER_MAX } from '@nerima-games/mc-kernel/domain/status-effect'
 import {
   EntityId,
   EntityKind,
@@ -415,18 +416,28 @@ describe('registration-core public paths omitted from focused coverage', () => {
       }
       yield* runInteractions(harness.interactions, 2.5)
 
+      // Java Edition Poison II pulses every floor(25 / 2) = 12 ticks.
+      // Four pulses in 2.5 seconds leave this independently derived remainder.
+      // https://minecraft.wiki/w/Poison
+      const poisonIntervalSecs = Math.floor(25 / 2) / 20
+      const poisonPulses = Math.floor(2.5 / poisonIntervalSecs)
+      const poisonPulseClockSecs = 2.5 - poisonPulses * poisonIntervalSecs
+      const regenerationIntervalSecs = Math.floor(50 / 2) / 20
+      const regenerationPulses = Math.floor(2.5 / regenerationIntervalSecs)
       const status = yield* commit.coordinator.snapshot(commit.statusEffectsOwnerId, StatusEffectStateSchema)
       expect(status.state.effects).toStrictEqual([
-        { type: 'poison', remainingSecs: 0.5, pulseClockSecs: 0, amplifier: 1 },
+        { type: 'hunger', remainingSecs: 0.5, pulseClockSecs: 0, amplifier: 1 },
+        { type: 'poison', remainingSecs: 0.5, pulseClockSecs: poisonPulseClockSecs, amplifier: 1 },
         { type: 'regeneration', remainingSecs: 0.5, pulseClockSecs: 0, amplifier: 1 },
         { type: 'speed', remainingSecs: 0.5, pulseClockSecs: 0, amplifier: 0 },
-        { type: 'hunger', remainingSecs: 0.5, pulseClockSecs: 0, amplifier: 1 },
       ])
       const vitalsAfter = yield* commit.coordinator.snapshot(
         GAMEPLAY_VITALS_OWNER_ID,
         ExperienceOrbVitalsOwnerSnapshotSchema,
       )
-      expect(vitalsAfter.state.vitals.healthPoints).toBe(vitalsBefore.state.vitals.healthPoints - 3)
+      expect(vitalsAfter.state.vitals.healthPoints).toBe(
+        vitalsBefore.state.vitals.healthPoints - poisonPulses + regenerationPulses,
+      )
       expect(vitalsAfter.state.vitals.exhaustion).toBe(vitalsBefore.state.vitals.exhaustion + 0.5)
       expect(yield* drainPlayerHeals(harness.state)).toStrictEqual([
         {
@@ -475,7 +486,7 @@ describe('registration-core public paths omitted from focused coverage', () => {
       const application = {
         type: 'hunger' as const,
         durationSecs: Number.MAX_VALUE,
-        amplifier: Number.MAX_SAFE_INTEGER,
+        amplifier: STATUS_EFFECT_AMPLIFIER_MAX,
       }
 
       yield* requestStatusEffect(harness.state, application)
@@ -546,8 +557,10 @@ describe('registration-core public paths omitted from focused coverage', () => {
       const { vitalsOwnerId: _vitalsOwnerId, ...withoutVitalsOwner } = commit
       const interactions = interactionsWithCommit(harness, withoutVitalsOwner)
 
-      yield* requestStatusEffect(harness.state, { type: 'poison', durationSecs: 1 })
-      yield* runInteractions(interactions, 1)
+      // Java Edition poison I first pulses at 25 ticks (1.25 seconds).
+      // https://minecraft.wiki/w/Poison
+      yield* requestStatusEffect(harness.state, { type: 'poison', durationSecs: 2 })
+      yield* runInteractions(interactions, 1.25)
 
       expect(yield* Ref.get(harness.state.unsupportedOperations)).toContainEqual({
         _tag: 'Unsupported',
@@ -573,8 +586,9 @@ describe('registration-core public paths omitted from focused coverage', () => {
       }
       const interactions = interactionsWithCommit(harness, mismatchedCommit)
 
-      yield* requestStatusEffect(harness.state, { type: 'poison', durationSecs: 1 })
-      yield* runInteractions(interactions, 1)
+      // Reach Poison I's 25-tick interval before checking the vitals owner.
+      yield* requestStatusEffect(harness.state, { type: 'poison', durationSecs: 2 })
+      yield* runInteractions(interactions, 1.25)
 
       expect(yield* Ref.get(harness.state.operationFailures)).toContainEqual(
         expect.objectContaining({
