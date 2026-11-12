@@ -35,6 +35,8 @@ const tools: ReadonlyArray<ItemType | null> = [
   'stone_pickaxe',
   'iron_pickaxe',
   'diamond_pickaxe',
+  'gold_pickaxe',
+  'netherite_pickaxe',
 ]
 
 describe('mining progress properties', () => {

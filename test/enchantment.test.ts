@@ -550,6 +550,16 @@ describe('enchantment derivations', () => {
         'projectile',
       ),
     ).toBe(1 - 8 / 25)
+    expect(armorDamageWithEnchantments(
+      { amount: 10, cause: 'explosion' },
+      armorPoints(0),
+      [enchantedItem('iron_chestplate', 'blast_protection', 4)],
+    )).toEqual({ amount: 10 * (1 - 8 / 25), cause: 'explosion' })
+    expect(armorDamageWithEnchantments(
+      { amount: 10, cause: 'projectile' },
+      armorPoints(0),
+      [enchantedItem('iron_chestplate', 'projectile_protection', 4)],
+    )).toEqual({ amount: 10 * (1 - 8 / 25), cause: 'projectile' })
     expect(
       enchantmentProtectionFactor(
         [enchantedItem('iron_boots', 'feather_falling', 4)],
@@ -674,6 +684,7 @@ describe('enchantment derivations', () => {
     expect(knockbackLevel(sword)).toBe(2)
     expect(sweepingEdgeDamageMultiplier(sword)).toBe(2 / 3)
     expect(flameDurationTicks(bow)).toBe(100)
+    expect(flameDurationTicks([])).toBe(0)
     expect(punchKnockbackBonus(bow)).toBe(3 * 2)
     expect(infinityPreventsArrowConsumption(bow)).toBe(true)
     expect(respirationAirConsumptionChance(helmet)).toBe(1 / 4)
@@ -738,6 +749,23 @@ describe('enchantment derivations', () => {
     )).toBe(true)
   })
 
+  it('uses finite Mending XP boundaries and keeps invalid runtime values out of the repair total', () => {
+    for (const value of [0, 1, Number.MAX_SAFE_INTEGER]) {
+      expect(Result.isSuccess(Schema.decodeUnknownResult(MendingExperiencePointsSchema)(value))).toBe(true)
+    }
+    for (const value of [-1, Number.MAX_SAFE_INTEGER + 1, Number.POSITIVE_INFINITY]) {
+      expect(Result.isFailure(Schema.decodeUnknownResult(MendingExperiencePointsSchema)(value))).toBe(true)
+    }
+
+    expect(mendingDurabilityRepairPoints(mendingExperiencePoints(0))).toBe(0)
+    expect(mendingDurabilityRepairPoints(mendingExperiencePoints(Number.MAX_SAFE_INTEGER))).toBe(
+      Number.MAX_SAFE_INTEGER * 2,
+    )
+    expect(mendingDurabilityRepairPoints(
+      Number.POSITIVE_INFINITY as Parameters<typeof mendingDurabilityRepairPoints>[0],
+    )).toBe(0)
+  })
+
   it('keeps Mending roll bounds half-open and leaves XP untouched without eligible items', () => {
     const eligible: MendingRepairCandidate = {
       slot: 'main_hand',
@@ -782,6 +810,17 @@ describe('enchantment derivations', () => {
     const invalid = mendOneItemFromExperience([eligible], unsafeExperience, interpolationFraction(0))
     expect(Result.isFailure(invalid)).toBe(true)
     if (Result.isFailure(invalid)) expect(invalid.failure._tag).toBe('BrandError')
+
+    expect(mendOneItemFromExperience(
+      [eligible],
+      Number.POSITIVE_INFINITY as ExperienceAmount,
+      interpolationFraction(0),
+    )).toEqual(Result.succeed({
+      repairedCandidate: undefined,
+      selectedSlot: undefined,
+      xpConsumed: 0,
+      xpRemaining: 0,
+    }))
   })
 
   it('satisfies independent fast-check properties for public calculations', () => {

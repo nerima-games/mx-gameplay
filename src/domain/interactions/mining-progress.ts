@@ -185,18 +185,13 @@ export const miningDurationSecsForBlock = (
 ): number => {
   const hardness = hardnessOfBlockId(blockId)
   if (hardness === 0) return 0
-  if (!Number.isFinite(hardness) || hardness < 0) return Number.POSITIVE_INFINITY
+  if (hardness < 0) return Number.POSITIVE_INFINITY
   const requirement = harvestToolRequirementOfBlockId(blockId)
   const tool = miningToolForItem(item, efficiencyLevel)
   const speed = Result.getOrThrow(effectiveMiningSpeed(tool, requirement)) *
     miningSpeedMultiplier
   const divisor = canHarvestWithTool(tool, requirement) ? 30 : 100
   return Math.ceil((hardness * divisor) / speed) / MINING_TICKS_PER_SECOND
-}
-
-const hardnessOfMiningTarget = (blockId: BlockId): number => {
-  const hardness = hardnessOfBlockId(blockId)
-  return Number.isFinite(hardness) ? hardness : Number.POSITIVE_INFINITY
 }
 
 const miningSpeedForBlock = (
@@ -208,7 +203,7 @@ const miningSpeedForBlock = (
   const tool = miningToolForItem(item, efficiencyLevel)
   const requirement = harvestToolRequirementOfBlockId(blockId)
   return {
-    hardness: hardnessOfMiningTarget(blockId),
+    hardness: hardnessOfBlockId(blockId),
     speed: Result.getOrThrow(effectiveMiningSpeed(tool, requirement)) *
       miningSpeedMultiplier,
     divisor: canHarvestWithTool(tool, requirement) ? 30 : 100,
@@ -258,7 +253,7 @@ export const advanceMiningProgress = ({
   }
 
   const hardness = mining.hardness
-  if (hardness < 0 || !Number.isFinite(hardness)) {
+  if (hardness < 0) {
     const elapsedSecs = sameTarget ? normaliseElapsedSecs(current.elapsedSecs) : 0
     return {
       nextProgress: {
@@ -329,10 +324,10 @@ export const miningProgressFraction = (
   if (progress.completed) {
     return miningProgressFractionOf(1)
   }
-  const hardness = hardnessOfMiningTarget(progress.blockId)
+  const hardness = hardnessOfBlockId(progress.blockId)
   if (hardness === 0) {
     return miningProgressFractionOf(1)
   }
-  if (!Number.isFinite(hardness) || hardness < 0) return miningProgressFractionOf(0)
+  if (hardness < 0) return miningProgressFractionOf(0)
   return miningProgressFractionOf(normaliseAccumulatedWork(progress.accumulatedWork, 1))
 }

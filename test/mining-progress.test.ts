@@ -20,6 +20,7 @@ import {
   advanceMiningProgress,
   DIAMOND_PICKAXE_MINING_TOOL,
   effectiveMiningSpeed,
+  GOLD_PICKAXE_MINING_TOOL,
   HAND_MINING_TOOL,
   IRON_PICKAXE_MINING_TOOL,
   MINING_TICKS_PER_SECOND,
@@ -29,6 +30,7 @@ import {
   MiningProgressFractionSchema,
   miningToolForItem,
   type MiningProgressState,
+  NETHERITE_PICKAXE_MINING_TOOL,
   WOODEN_PICKAXE_MINING_TOOL,
 } from '../src/domain/interactions/mining-progress'
 
@@ -60,6 +62,7 @@ describe('mining duration', () => {
       expect(miningLootContextForItem('stone_pickaxe')).toStrictEqual({ heldTier: 'stone' })
       expect(miningLootContextForItem('iron_pickaxe')).toStrictEqual({ heldTier: 'iron' })
       expect(miningLootContextForItem('diamond_pickaxe')).toStrictEqual({ heldTier: 'diamond' })
+      expect(miningLootContextForItem('netherite_pickaxe')).toStrictEqual({ heldTier: 'netherite' })
       expect(miningLootContextForItem(null)).toStrictEqual({})
       expect(miningLootContextForItem('dirt')).toStrictEqual({})
     }),
@@ -70,6 +73,7 @@ describe('mining duration', () => {
       const dirt = miningDurationSecsForBlock(registeredBlockId('dirt'), null)
       const stone = miningDurationSecsForBlock(registeredBlockId('stone'), null)
       const deepslate = miningDurationSecsForBlock(registeredBlockId('deepslate'), null)
+      const unbreakable = miningDurationSecsForBlock(END_GATEWAY.blockId, null)
       const dirtHardness = Result.getOrThrow(propertyOfBlockId(registeredBlockId('dirt'), 'hardness'))
       const stoneHardness = Result.getOrThrow(propertyOfBlockId(STONE.blockId, 'hardness'))
       const deepslateHardness = Result.getOrThrow(
@@ -79,6 +83,7 @@ describe('mining duration', () => {
       expect(dirt).toBe(Math.ceil(dirtHardness * 30) / MINING_TICKS_PER_SECOND)
       expect(stone).toBe(Math.ceil(stoneHardness * 100) / MINING_TICKS_PER_SECOND)
       expect(deepslate).toBe(Math.ceil(deepslateHardness * 30) / MINING_TICKS_PER_SECOND)
+      expect(unbreakable).toBe(Number.POSITIVE_INFINITY)
     }),
   )
 
@@ -164,6 +169,18 @@ describe('mining duration', () => {
         tier: 'diamond',
         speedMultiplier: 8,
       })
+      expect(miningToolForItem('gold_pickaxe')).toStrictEqual(GOLD_PICKAXE_MINING_TOOL)
+      expect(GOLD_PICKAXE_MINING_TOOL).toStrictEqual({
+        category: 'pickaxe',
+        tier: 'wooden',
+        speedMultiplier: 12,
+      })
+      expect(miningToolForItem('netherite_pickaxe')).toStrictEqual(NETHERITE_PICKAXE_MINING_TOOL)
+      expect(NETHERITE_PICKAXE_MINING_TOOL).toStrictEqual({
+        category: 'pickaxe',
+        tier: 'netherite',
+        speedMultiplier: 9,
+      })
     }),
   )
 
@@ -188,6 +205,9 @@ describe('mining duration', () => {
       ])
       expect(blockLoot(obsidian, miningLootContextForItem('iron_pickaxe'))).toStrictEqual([])
       expect(blockLoot(obsidian, miningLootContextForItem('diamond_pickaxe'))).toStrictEqual([
+        { item: 'obsidian', count: 1 },
+      ])
+      expect(blockLoot(obsidian, miningLootContextForItem('netherite_pickaxe'))).toStrictEqual([
         { item: 'obsidian', count: 1 },
       ])
     }),

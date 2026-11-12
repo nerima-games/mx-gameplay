@@ -433,14 +433,13 @@ export const applyEnchantmentOffer = (
   if (state.lapis < offer.lapisCost) return rejectTransaction(state, 'insufficient_lapis')
 
   const nextEnchantments = itemSnapshot.value.enchantments.filter(
-    ({ id }) => id !== offer.enchantment.id,
+    ({ id }) => id !== expected.enchantment.id,
   )
-  nextEnchantments.push(offer.enchantment)
-  const nextItem = decodeEnchantedItem({
+  nextEnchantments.push(expected.enchantment)
+  const nextItem: EnchantedItem = {
     ...itemSnapshot.value,
-    enchantments: nextEnchantments,
-  })
-  if (!nextItem.ok) return rejectTransaction(state, 'invalid_item')
+    enchantments: canonicalEnchantments(nextEnchantments),
+  }
 
   return {
     ok: true,
@@ -449,7 +448,7 @@ export const applyEnchantmentOffer = (
       bookshelfCount: normalizeBookshelves(state.bookshelfCount),
       playerLevel: state.playerLevel - offer.lapisCost,
       lapis: state.lapis - offer.lapisCost,
-      item: nextItem.value,
+      item: nextItem,
     },
   }
 }
