@@ -1,6 +1,12 @@
 import { Brand, Result, Schema } from 'effect'
 import { isItemType, type ItemType, type RandomSeed } from '@nerima-games/mc-kernel'
 import {
+  SUPPORTED_VANILLA_ENCHANTMENT_IDS,
+  SUPPORTED_VANILLA_ENCHANTMENT_RULES,
+  type SupportedVanillaEnchantmentId,
+} from '@nerima-games/mc-kernel/domain/enchantment'
+import type { EnchantmentsComponent } from '@nerima-games/mc-kernel/domain/item-enchantments'
+import {
   enchantmentTableOutputItemOf as simEnchantmentTableOutputItemOf,
   generateEnchantmentTableOffers as generateEnchantmentTableOffersWithSim,
   isDamageableItemType,
@@ -12,98 +18,48 @@ import {
   type EnchantmentTableRandom,
 } from '@nerima-games/mc-sim'
 
-import { applyArmorToDamage } from './combat/armor.js'
+import { applyArmorPointsToDamage } from './combat/armor-mitigation.js'
 import type { Damage } from './death-cause.js'
-import { rollFortuneExtraDrops } from './interactions/block-loot.js'
 import { bowPowerMultiplier } from './interactions/draw-bow.js'
 
-export const ENCHANTMENT_IDS = [
-  'protection',
-  'sharpness',
-  'efficiency',
-  'unbreaking',
-  'fortune',
-  'power',
-] as const
+export const ENCHANTMENT_IDS: typeof SUPPORTED_VANILLA_ENCHANTMENT_IDS =
+  SUPPORTED_VANILLA_ENCHANTMENT_IDS
 
-export type EnchantmentId = (typeof ENCHANTMENT_IDS)[number]
+export type EnchantmentId = SupportedVanillaEnchantmentId
 export type EnchantmentTarget = 'armor' | 'melee_weapon' | 'mining_tool' | 'bow' | 'damageable'
-export type EnchantmentConflictId =
-  | EnchantmentId
-  | 'fire_protection'
-  | 'blast_protection'
-  | 'projectile_protection'
-  | 'smite'
-  | 'bane_of_arthropods'
-  | 'silk_touch'
+export type EnchantmentConflictId = EnchantmentId
 
-export type EnchantmentDefinition = {
-  readonly id: EnchantmentId
-  readonly maxLevel: number
+type SharedEnchantmentRule = (typeof SUPPORTED_VANILLA_ENCHANTMENT_RULES)[number]
+export type EnchantmentDefinition = SharedEnchantmentRule & {
+  /** Compatibility metadata derived from the shared item applicability table. */
   readonly targets: ReadonlyArray<EnchantmentTarget>
-  readonly incompatibleWith: ReadonlyArray<EnchantmentConflictId>
 }
 
-export const ENCHANTMENT_REGISTRY: Readonly<Record<EnchantmentId, EnchantmentDefinition>> = {
-  protection: {
-    id: 'protection',
-    maxLevel: 4,
-    targets: ['armor'],
-    incompatibleWith: ['fire_protection', 'blast_protection', 'projectile_protection'],
-  },
-  sharpness: {
-    id: 'sharpness',
-    maxLevel: 5,
-    targets: ['melee_weapon'],
-    incompatibleWith: ['smite', 'bane_of_arthropods'],
-  },
-  efficiency: { id: 'efficiency', maxLevel: 5, targets: ['mining_tool'], incompatibleWith: [] },
-  unbreaking: { id: 'unbreaking', maxLevel: 3, targets: ['damageable'], incompatibleWith: [] },
-  fortune: {
-    id: 'fortune',
-    maxLevel: 3,
-    targets: ['mining_tool'],
-    incompatibleWith: ['silk_touch'],
-  },
-  power: { id: 'power', maxLevel: 5, targets: ['bow'], incompatibleWith: [] },
+const targetsForItems = (items: ReadonlyArray<ItemType>): ReadonlyArray<EnchantmentTarget> => {
+  const targets = new Set<EnchantmentTarget>()
+  if (items.some((item) => /_(helmet|chestplate|leggings|boots)$/.test(item))) targets.add('armor')
+  if (items.some((item) => item.endsWith('_sword'))) targets.add('melee_weapon')
+  if (items.some((item) => /_(pickaxe|hoe)$/.test(item) || item === 'shears')) {
+    targets.add('mining_tool')
+  }
+  if (items.includes('bow')) targets.add('bow')
+  if (items.some(isDamageableItemType)) targets.add('damageable')
+  return [...targets]
 }
 
-const ARMOR_ITEMS = new Set<ItemType>([
-  'iron_helmet',
-  'iron_chestplate',
-  'iron_leggings',
-  'iron_boots',
-])
-const MELEE_ITEMS = new Set<ItemType>([
-  'wooden_sword',
-  'stone_sword',
-  'iron_sword',
-  'diamond_sword',
-])
-const MINING_ITEMS = new Set<ItemType>([
-  'wooden_pickaxe',
-  'stone_pickaxe',
-  'iron_pickaxe',
-  'diamond_pickaxe',
-  'wooden_hoe',
-  'stone_hoe',
-  'iron_hoe',
-  'diamond_hoe',
-])
+export const ENCHANTMENT_REGISTRY: Readonly<Record<EnchantmentId, EnchantmentDefinition>> =
+  Object.fromEntries(
+    SUPPORTED_VANILLA_ENCHANTMENT_RULES.map((rule) => [
+      rule.id,
+      { ...rule, targets: targetsForItems(rule.applicableItems) },
+    ]),
+  ) as Record<EnchantmentId, EnchantmentDefinition>
 
 const isEnchantmentId = (value: unknown): value is EnchantmentId =>
   typeof value === 'string' && ENCHANTMENT_IDS.includes(value as EnchantmentId)
 
-const itemMatchesTarget = (item: ItemType, target: EnchantmentTarget): boolean => {
-  if (target === 'armor') return ARMOR_ITEMS.has(item)
-  if (target === 'melee_weapon') return MELEE_ITEMS.has(item)
-  if (target === 'mining_tool') return MINING_ITEMS.has(item)
-  if (target === 'bow') return item === 'bow'
-  return isDamageableItemType(item)
-}
-
 export const enchantmentAppliesTo = (id: EnchantmentId, item: ItemType): boolean =>
-  ENCHANTMENT_REGISTRY[id].targets.some((target) => itemMatchesTarget(item, target))
+  ENCHANTMENT_REGISTRY[id].applicableItems.includes(item)
 
 export const enchantmentsConflict = (
   left: EnchantmentConflictId,
@@ -111,11 +67,9 @@ export const enchantmentsConflict = (
 ): boolean => {
   if (left === right) return false
 
-  const leftDefinition = isEnchantmentId(left) ? ENCHANTMENT_REGISTRY[left] : undefined
-  const rightDefinition = isEnchantmentId(right) ? ENCHANTMENT_REGISTRY[right] : undefined
   return (
-    leftDefinition?.incompatibleWith.includes(right) === true ||
-    rightDefinition?.incompatibleWith.includes(left) === true
+    ENCHANTMENT_REGISTRY[left].incompatibleWith.includes(right) ||
+    ENCHANTMENT_REGISTRY[right].incompatibleWith.includes(left)
   )
 }
 
@@ -212,11 +166,10 @@ export const decodeEnchantedItem = (value: unknown): EnchantedItemResult => {
         issues.push({ path: `enchantments.${index}.id`, reason: 'does not apply to this item' })
         continue
       }
-      // No conflict check here: no two of the six EnchantmentIds are ever
-      // mutually incompatible in ENCHANTMENT_REGISTRY (incompatibleWith only
-      // names the six non-EnchantmentId conflict ids), so `enchantmentsConflict`
-      // can never return true for two ids that both passed `isEnchantmentId` —
-      // deleted rather than kept as a dead, unreachable branch.
+      if ([...seen].some((previousId) => enchantmentsConflict(idValue, previousId))) {
+        issues.push({ path: `enchantments.${index}.id`, reason: 'conflicts with another enchantment' })
+        continue
+      }
       seen.add(idValue)
       enchantments.push({ id: idValue, level: levelValue })
     }
@@ -296,10 +249,7 @@ export const enchantmentOffer = (
       : slot === 1
         ? Math.max(1, Math.floor((base * 2) / 3) + 1)
         : Math.max(1, Math.min(30, Math.max(shelves * 2, base)))
-  // Asserted, not defaulted: `mixSeed(...) % ENCHANTMENT_IDS.length` is a
-  // `noUncheckedIndexedAccess` formality — the modulus (6, `ENCHANTMENT_IDS`'s
-  // own length) guarantees an index in `0..5`, so the lookup is never
-  // `undefined`. Same shape as `mob-spawn-search.ts`'s `HOSTILE_KINDS[index]`.
+  // The modulus uses the shared registry length, so every shared ID can appear.
   const id = ENCHANTMENT_IDS[mixSeed(slotSeed + 1) % ENCHANTMENT_IDS.length]!
   const maxLevel = ENCHANTMENT_REGISTRY[id].maxLevel
   const level = Math.min(maxLevel, Math.max(1, 1 + Math.floor(requiredPlayerLevel / 6)))
@@ -413,11 +363,13 @@ export const applyEnchantmentOffer = (
   if (!enchantmentAppliesTo(offer.enchantment.id, itemSnapshot.value.item)) {
     return rejectTransaction(state, 'incompatible_item')
   }
-  // No conflict check here, for the same reason as decodeEnchantedItem's
-  // identical (now-deleted) check: no two EnchantmentIds are ever mutually
-  // incompatible in ENCHANTMENT_REGISTRY, so `enchantmentsConflict` can never
-  // return true for `itemSnapshot`'s already-valid enchantments against the
-  // already-`enchantmentAppliesTo`-checked offer.
+  if (
+    itemSnapshot.value.enchantments.some(({ id }) =>
+      enchantmentsConflict(offer.enchantment.id, id),
+    )
+  ) {
+    return rejectTransaction(state, 'conflicting_enchantment')
+  }
   if (state.playerLevel < offer.requiredPlayerLevel) {
     return rejectTransaction(state, 'insufficient_level')
   }
@@ -427,19 +379,11 @@ export const applyEnchantmentOffer = (
     ({ id }) => id !== offer.enchantment.id,
   )
   nextEnchantments.push(offer.enchantment)
-  // Asserted rather than branched on `.ok`, because the branch is provably
-  // unreachable and a coverage-gate-driven test cannot reach it either: item
-  // and durability are copied unchanged from the already-ok `itemSnapshot`,
-  // the retained enchantments were already valid on that snapshot, the added
-  // enchantment's id and level are guaranteed equal to the already-checked
-  // offer (`offersMatch` passed above), the filter above removes any existing
-  // entry with the same id before pushing (no duplicate), and no pairing can
-  // conflict, per the proof at the (now-deleted) `enchantmentsConflict` check
-  // above.
   const nextItem = decodeEnchantedItem({
     ...itemSnapshot.value,
     enchantments: nextEnchantments,
-  }) as { readonly ok: true; readonly value: EnchantedItem }
+  })
+  if (!nextItem.ok) return rejectTransaction(state, 'invalid_item')
 
   return {
     ok: true,
@@ -453,63 +397,287 @@ export const applyEnchantmentOffer = (
   }
 }
 
-export const enchantmentLevel = (item: EnchantedItem, id: EnchantmentId): number =>
-  item.enchantments.find((enchantment) => enchantment.id === id)?.level ?? 0
+export type EnchantmentSource = EnchantedItem | EnchantmentsComponent | ReadonlyArray<Enchantment>
+
+const isEnchantedItemSource = (source: EnchantmentSource): source is EnchantedItem =>
+  !Array.isArray(source) &&
+  typeof source === 'object' &&
+  source !== null &&
+  'item' in source &&
+  typeof source.item === 'string' &&
+  isItemType(source.item)
+
+const validLevel = (value: unknown): number =>
+  typeof value === 'number' && Number.isSafeInteger(value) && value > 0 && value <= 255 ? value : 0
+
+/** Read one level from a gameplay item, an enchantment list, or a kernel component. */
+export const enchantmentLevel = (source: EnchantmentSource, id: EnchantmentId): number => {
+  if (Array.isArray(source)) {
+    return validLevel(
+      (source as ReadonlyArray<Enchantment>).find((enchantment) => enchantment.id === id)?.level,
+    )
+  }
+  if (isEnchantedItemSource(source)) {
+    return validLevel(source.enchantments.find((enchantment) => enchantment.id === id)?.level)
+  }
+  const component = source as EnchantmentsComponent
+  return validLevel(component[`minecraft:${id}`] ?? component[id])
+}
+
+/** Convert the gameplay list representation into the kernel's namespaced component map. */
+export const enchantmentComponentOf = (item: EnchantedItem): EnchantmentsComponent =>
+  Object.fromEntries(item.enchantments.map(({ id, level }) => [`minecraft:${id}`, level])) as unknown as EnchantmentsComponent
 
 const nonNegative = (value: number): number =>
   Number.isFinite(value) ? Math.max(0, value) : 0
 
-export const meleeDamageWithEnchantments = (baseDamage: number, item: EnchantedItem): number => {
-  const level = enchantmentLevel(item, 'sharpness')
-  return nonNegative(baseDamage) + (level === 0 ? 0 : 0.5 * level + 0.5)
+export type EnchantmentDamageTarget = 'undead' | 'arthropod' | 'other'
+
+export const meleeDamageWithEnchantments = (
+  baseDamage: number,
+  source: EnchantmentSource,
+  target: EnchantmentDamageTarget = 'other',
+): number => {
+  const sharpness = enchantmentLevel(source, 'sharpness')
+  const smite = target === 'undead' ? enchantmentLevel(source, 'smite') : 0
+  const bane = target === 'arthropod' ? enchantmentLevel(source, 'bane_of_arthropods') : 0
+  return (
+    nonNegative(baseDamage) +
+    (sharpness === 0 ? 0 : 0.5 * sharpness + 0.5) +
+    2.5 * (smite + bane)
+  )
 }
 
-export const bowDamageWithEnchantments = (baseDamage: number, item: EnchantedItem): number =>
-  Math.round(nonNegative(baseDamage) * bowPowerMultiplier(enchantmentLevel(item, 'power')))
+export const bowDamageWithEnchantments = (baseDamage: number, source: EnchantmentSource): number =>
+  Math.ceil(nonNegative(baseDamage) * bowPowerMultiplier(enchantmentLevel(source, 'power')))
+
+export type EnchantmentDamageCategory =
+  | 'generic'
+  | 'fire'
+  | 'explosion'
+  | 'projectile'
+  | 'fall'
+  | 'unprotected'
+
+const damageCategory = (damage: Damage): EnchantmentDamageCategory => {
+  if (damage.cause === 'fall' || damage.cause === 'ender_pearl') return 'fall'
+  if (damage.cause === 'starvation' || damage.cause === 'void' || damage.cause === 'generic') {
+    return 'unprotected'
+  }
+  if (damage.cause === 'explosion') return 'explosion'
+  if (damage.cause === 'projectile') return 'projectile'
+  if (damage.cause === 'lava' || damage.cause === 'in_fire' || damage.cause === 'on_fire') {
+    return 'fire'
+  }
+  return 'generic'
+}
+
+/** Vanilla's capped EPF reduction as a remaining-damage multiplier. */
+export const enchantmentProtectionFactor = (
+  armor: ReadonlyArray<EnchantmentSource>,
+  category: EnchantmentDamageCategory,
+): number => {
+  if (category === 'unprotected') return 1
+  const epf = armor.reduce((total, source) => {
+    const protection = enchantmentLevel(source, 'protection')
+    const fire = category === 'fire' ? 2 * enchantmentLevel(source, 'fire_protection') : 0
+    const blast = category === 'explosion' ? 2 * enchantmentLevel(source, 'blast_protection') : 0
+    const projectile = category === 'projectile'
+      ? 2 * enchantmentLevel(source, 'projectile_protection')
+      : 0
+    const fall = category === 'fall' ? 3 * enchantmentLevel(source, 'feather_falling') : 0
+    return total + protection + fire + blast + projectile + fall
+  }, 0)
+  return 1 - Math.min(20, epf) / 25
+}
 
 export const armorDamageWithEnchantments = (
   damage: Damage,
   armorPoints: number,
-  armor: ReadonlyArray<EnchantedItem>,
+  armor: ReadonlyArray<EnchantmentSource>,
 ): Damage => {
-  const afterArmor = applyArmorToDamage(damage, armorPoints)
-  const protectionLevel = Math.min(
-    20,
-    armor.reduce((total, item) => total + enchantmentLevel(item, 'protection'), 0),
-  )
-  return { ...afterArmor, amount: nonNegative(afterArmor.amount) * (1 - protectionLevel * 0.04) }
+  const afterArmor = applyArmorPointsToDamage(damage, armorPoints)
+  return {
+    ...afterArmor,
+    amount: nonNegative(afterArmor.amount) * enchantmentProtectionFactor(armor, damageCategory(damage)),
+  }
 }
 
-export const miningSpeedWithEnchantments = (baseSpeed: number, item: EnchantedItem): number => {
+export const miningSpeedWithEnchantments = (
+  baseSpeed: number,
+  source: EnchantmentSource,
+  suitableTool = true,
+): number => {
   const normalizedBase = Number.isFinite(baseSpeed) && baseSpeed > 0 ? baseSpeed : 1
-  const level = enchantmentLevel(item, 'efficiency')
+  const level = suitableTool ? enchantmentLevel(source, 'efficiency') : 0
   return normalizedBase + (level === 0 ? 0 : level * level + 1)
 }
 
+export type DurabilityItemKind = 'tool' | 'armor'
+
+const isArmorItem = (source: EnchantmentSource): boolean =>
+  isEnchantedItemSource(source) && /_(helmet|chestplate|leggings|boots)$/.test(source.item)
+
 export const durabilityWearWithEnchantments = (
   requestedWear: number,
-  item: EnchantedItem,
+  source: EnchantmentSource,
   rolls: ReadonlyArray<number>,
+  itemKind: DurabilityItemKind = isArmorItem(source) ? 'armor' : 'tool',
 ): number => {
   const wear = Number.isFinite(requestedWear) ? Math.max(0, Math.floor(requestedWear)) : 0
-  const level = enchantmentLevel(item, 'unbreaking')
+  const level = enchantmentLevel(source, 'unbreaking')
   if (level === 0) return wear
 
-  const preserveChance = level / (level + 1)
+  const preserveChance = (itemKind === 'armor' ? 0.4 : 1) * (level / (level + 1))
   let applied = 0
   for (let index = 0; index < wear; index += 1) {
     const roll = rolls[index]
-    if (roll === undefined || !Number.isFinite(roll) || roll < 0 || roll >= preserveChance) applied += 1
+    if (
+      roll === undefined ||
+      !Number.isFinite(roll) ||
+      roll < 0 ||
+      roll >= 1 ||
+      roll >= preserveChance
+    ) {
+      applied += 1
+    }
   }
   return applied
 }
 
 export const fortuneDropCountWithEnchantments = (
   baseDrops: number,
-  item: EnchantedItem,
+  source: EnchantmentSource,
   roll: number,
 ): number => {
   const normalizedBase = Number.isFinite(baseDrops) ? Math.max(0, Math.floor(baseDrops)) : 0
-  if (normalizedBase === 0) return 0
-  return normalizedBase + rollFortuneExtraDrops(enchantmentLevel(item, 'fortune'), roll)
+  const level = enchantmentLevel(source, 'fortune')
+  if (normalizedBase === 0 || level === 0 || !Number.isFinite(roll) || roll < 0 || roll >= 1) {
+    return normalizedBase
+  }
+  const extraMultiplier = Math.max(0, Math.floor(roll * (level + 2)) - 1)
+  return normalizedBase * (extraMultiplier + 1)
+}
+
+export const fireAspectDurationTicks = (source: EnchantmentSource): number =>
+  80 * enchantmentLevel(source, 'fire_aspect')
+
+export const lootingLevel = (source: EnchantmentSource): number =>
+  enchantmentLevel(source, 'looting')
+
+export const luckOfTheSeaLevel = (source: EnchantmentSource): number =>
+  enchantmentLevel(source, 'luck_of_the_sea')
+
+export const silkTouchEnabled = (source: EnchantmentSource): boolean =>
+  enchantmentLevel(source, 'silk_touch') > 0
+
+export const infinityPreventsArrowConsumption = (source: EnchantmentSource): boolean =>
+  enchantmentLevel(source, 'infinity') > 0
+
+export const flameDurationTicks = (source: EnchantmentSource): number =>
+  enchantmentLevel(source, 'flame') > 0 ? 100 : 0
+
+export const knockbackLevel = (source: EnchantmentSource): number =>
+  enchantmentLevel(source, 'knockback')
+
+export const punchKnockbackBonus = (source: EnchantmentSource): number =>
+  3 * enchantmentLevel(source, 'punch')
+
+export const sweepingEdgeDamageMultiplier = (source: EnchantmentSource): number => {
+  const level = enchantmentLevel(source, 'sweeping_edge')
+  return level === 0 ? 0 : level / (level + 1)
+}
+
+export const respirationAirConsumptionChance = (source: EnchantmentSource): number =>
+  1 / (enchantmentLevel(source, 'respiration') + 1)
+
+export const respirationBonusAirTicks = (source: EnchantmentSource): number =>
+  300 * enchantmentLevel(source, 'respiration')
+
+export const aquaAffinityEnabled = (source: EnchantmentSource): boolean =>
+  enchantmentLevel(source, 'aqua_affinity') > 0
+
+export const depthStriderLevel = (source: EnchantmentSource): number =>
+  enchantmentLevel(source, 'depth_strider')
+
+export const soulSpeedLevel = (source: EnchantmentSource): number =>
+  enchantmentLevel(source, 'soul_speed')
+
+export const swiftSneakLevel = (source: EnchantmentSource): number =>
+  enchantmentLevel(source, 'swift_sneak')
+
+export const thornsRetaliationChance = (source: EnchantmentSource): number =>
+  0.15 * enchantmentLevel(source, 'thorns')
+
+export const bindingCurseBlocksRemoval = (source: EnchantmentSource): boolean =>
+  enchantmentLevel(source, 'binding_curse') > 0
+
+export const vanishingCurseRemovesOnDeath = (source: EnchantmentSource): boolean =>
+  enchantmentLevel(source, 'vanishing_curse') > 0
+
+export const lureWaitReductionTicks = (source: EnchantmentSource): number =>
+  100 * enchantmentLevel(source, 'lure')
+
+export const frostWalkerFreezeRadius = (source: EnchantmentSource): number => {
+  const level = enchantmentLevel(source, 'frost_walker')
+  return level === 0 ? 0 : 2 + level
+}
+
+export const mendingDurabilityRepairPoints = (experiencePoints: number): number =>
+  2 * (Number.isFinite(experiencePoints) ? Math.max(0, Math.floor(experiencePoints)) : 0)
+
+export type MendingRepairCandidate = {
+  readonly slot: string
+  readonly durability: Durability | null
+  readonly enchantments: EnchantmentSource
+}
+
+export type MendingRepairResult = {
+  readonly repairedCandidate: MendingRepairCandidate | undefined
+  readonly selectedSlot: string | undefined
+  readonly xpConsumed: number
+  readonly xpRemaining: number
+}
+
+/** Choose one damaged Mending candidate; callers supply only held or equipped items. */
+export const mendOneItemFromExperience = (
+  candidates: ReadonlyArray<MendingRepairCandidate>,
+  orbExperience: number,
+  roll: number,
+): MendingRepairResult => {
+  const xp = Number.isFinite(orbExperience) ? Math.max(0, Math.floor(orbExperience)) : 0
+  if (xp === 0 || !Number.isFinite(roll) || roll < 0 || roll >= 1) {
+    return { repairedCandidate: undefined, selectedSlot: undefined, xpConsumed: 0, xpRemaining: xp }
+  }
+
+  const eligible = candidates.filter(({ durability, enchantments }) =>
+    durability !== null &&
+    Number.isSafeInteger(durability.current) &&
+    Number.isSafeInteger(durability.max) &&
+    durability.current >= 0 &&
+    durability.max > durability.current &&
+    enchantmentLevel(enchantments, 'mending') > 0,
+  )
+  if (eligible.length === 0) {
+    return { repairedCandidate: undefined, selectedSlot: undefined, xpConsumed: 0, xpRemaining: xp }
+  }
+
+  const selected = eligible[Math.floor(roll * eligible.length)]
+  if (selected === undefined || selected.durability === null) {
+    return { repairedCandidate: undefined, selectedSlot: undefined, xpConsumed: 0, xpRemaining: xp }
+  }
+
+  const missing = selected.durability.max - selected.durability.current
+  const repaired = Math.min(missing, mendingDurabilityRepairPoints(xp))
+  const xpConsumed = Math.ceil(repaired / 2)
+  const repairedCandidate: MendingRepairCandidate = {
+    ...selected,
+    durability: { ...selected.durability, current: selected.durability.current + repaired },
+  }
+  return {
+    repairedCandidate,
+    selectedSlot: selected.slot,
+    xpConsumed,
+    xpRemaining: xp - xpConsumed,
+  }
 }

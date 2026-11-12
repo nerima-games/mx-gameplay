@@ -1,33 +1,66 @@
 import { describe, expect, it } from '@effect/vitest'
 import { durabilityForItem } from '@nerima-games/mc-sim'
 import { RandomSeed } from '@nerima-games/mc-kernel'
+import {
+  SUPPORTED_VANILLA_ENCHANTMENT_IDS,
+  SUPPORTED_VANILLA_ENCHANTMENT_RULES,
+} from '@nerima-games/mc-kernel/domain/enchantment'
+import type { EnchantmentsComponent } from '@nerima-games/mc-kernel/domain/item-enchantments'
 import { Schema } from 'effect'
+import * as FastCheck from 'fast-check'
 
 import {
+  ENCHANTMENT_IDS,
   ENCHANTMENT_REGISTRY,
   applyEnchantmentOffer,
   armorDamageWithEnchantments,
+  aquaAffinityEnabled,
+  bindingCurseBlocksRemoval,
   bowDamageWithEnchantments,
   decodeEnchantedItem,
   decodeEnchantedItemSnapshot,
+  depthStriderLevel,
   durabilityWearWithEnchantments,
+  enchantmentComponentOf,
   enchantmentAppliesTo,
+  enchantmentLevel,
   enchantmentOffer,
   enchantmentOffers,
+  enchantmentProtectionFactor,
   enchantmentTableResultItemOf,
   enchantmentsConflict,
   encodeEnchantedItem,
+  fireAspectDurationTicks,
+  flameDurationTicks,
   fortuneDropCountWithEnchantments,
+  frostWalkerFreezeRadius,
   EnchantmentBookshelfCountSchema,
   generateEnchantmentTableOffersForItem,
+  infinityPreventsArrowConsumption,
+  lootingLevel,
+  luckOfTheSeaLevel,
+  lureWaitReductionTicks,
+  mendOneItemFromExperience,
+  mendingDurabilityRepairPoints,
   meleeDamageWithEnchantments,
   miningSpeedWithEnchantments,
+  knockbackLevel,
+  punchKnockbackBonus,
+  respirationAirConsumptionChance,
+  respirationBonusAirTicks,
   rerollEnchantmentSeed,
+  silkTouchEnabled,
   snapshotEnchantedItem,
+  sweepingEdgeDamageMultiplier,
+  soulSpeedLevel,
+  swiftSneakLevel,
+  thornsRetaliationChance,
+  vanishingCurseRemovesOnDeath,
   validateEnchantedItem,
   type EnchantedItem,
   type EnchantmentId,
   type EnchantmentOffer,
+  type MendingRepairCandidate,
 } from '../src/domain/enchantment'
 
 const enchantedItem = (
@@ -39,6 +72,11 @@ const enchantedItem = (
   durability: durabilityForItem(item),
   enchantments: id === undefined ? [] : [{ id, level }],
 })
+
+const component = (
+  entries: ReadonlyArray<readonly [EnchantmentId, number]>,
+): EnchantmentsComponent =>
+  Object.fromEntries(entries.map(([id, level]) => [`minecraft:${id}`, level])) as unknown as EnchantmentsComponent
 
 const compatibleOffer = (item: EnchantedItem['item']): EnchantmentOffer => {
   for (let seed = 0; seed < 10_000; seed += 1) {
@@ -63,15 +101,48 @@ const compatibleOfferExcluding = (
   throw new Error(`no compatible offer for ${item} excluding ${excludedId}`)
 }
 
+const conflictingOfferFor = (
+  item: EnchantedItem['item'],
+  existingId: EnchantmentId,
+): EnchantmentOffer => {
+  for (let seed = 0; seed < 10_000; seed += 1) {
+    for (const offer of enchantmentOffers(seed, 15)) {
+      if (
+        enchantmentAppliesTo(offer.enchantment.id, item) &&
+        enchantmentsConflict(offer.enchantment.id, existingId)
+      ) {
+        return offer
+      }
+    }
+  }
+  throw new Error(`no conflicting offer for ${item} and ${existingId}`)
+}
+
 describe('enchantment registry', () => {
-  it('defines caps, targets and vanilla conflicts', () => {
-    expect(Object.fromEntries(Object.entries(ENCHANTMENT_REGISTRY).map(([id, entry]) => [id, entry.maxLevel]))).toEqual({
-      protection: 4,
-      sharpness: 5,
-      efficiency: 5,
-      unbreaking: 3,
-      fortune: 3,
-      power: 5,
+  it('represents every shared 26.3 enchantment rule and preserves exact applicability', () => {
+    expect(ENCHANTMENT_IDS).toHaveLength(43)
+    expect(Object.keys(ENCHANTMENT_REGISTRY).sort()).toEqual([...SUPPORTED_VANILLA_ENCHANTMENT_IDS].sort())
+    expect(
+      SUPPORTED_VANILLA_ENCHANTMENT_RULES.every(
+        (rule) => ENCHANTMENT_REGISTRY[rule.id].maxLevel === rule.maxLevel,
+      ),
+    ).toBe(true)
+    for (const rule of SUPPORTED_VANILLA_ENCHANTMENT_RULES) {
+      for (const item of rule.applicableItems) expect(enchantmentAppliesTo(rule.id, item)).toBe(true)
+    }
+    expect(ENCHANTMENT_REGISTRY.breach.applicableItems).toEqual([])
+    expect(enchantmentAppliesTo('breach', 'iron_sword')).toBe(false)
+    expect(ENCHANTMENT_REGISTRY.impaling.applicableItems).toEqual([])
+    expect(enchantmentAppliesTo('impaling', 'iron_sword')).toBe(false)
+    expect(
+      decodeEnchantedItem({
+        item: 'iron_sword',
+        durability: durabilityForItem('iron_sword'),
+        enchantments: [{ id: 'breach', level: 1 }],
+      }),
+    ).toEqual({
+      ok: false,
+      issues: [{ path: 'enchantments.0.id', reason: 'does not apply to this item' }],
     })
     expect(enchantmentAppliesTo('protection', 'iron_chestplate')).toBe(true)
     expect(enchantmentAppliesTo('sharpness', 'diamond_sword')).toBe(true)
@@ -86,6 +157,8 @@ describe('enchantment registry', () => {
     expect(enchantmentsConflict('efficiency', 'fortune')).toBe(false)
     expect(enchantmentsConflict('protection', 'protection')).toBe(false)
     expect(enchantmentsConflict('fire_protection', 'protection')).toBe(true)
+    expect(enchantmentsConflict('mending', 'infinity')).toBe(true)
+    expect(enchantmentsConflict('depth_strider', 'frost_walker')).toBe(true)
   })
 })
 
@@ -107,8 +180,8 @@ describe('enchanted item codec', () => {
         ...input,
         enchantments: [
           { id: 'efficiency', level: 5 },
-          { id: 'unbreaking', level: 3 },
           { id: 'fortune', level: 3 },
+          { id: 'unbreaking', level: 3 },
         ],
       },
     })
@@ -139,6 +212,10 @@ describe('enchanted item codec', () => {
       'enchantments.0.level',
     ],
     [
+      { item: 'bow', durability: durabilityForItem('bow'), enchantments: [{ id: 'power', level: 0 }] },
+      'enchantments.0.level',
+    ],
+    [
       {
         item: 'bow',
         durability: durabilityForItem('bow'),
@@ -152,6 +229,21 @@ describe('enchanted item codec', () => {
     [
       { item: 'bow', durability: durabilityForItem('bow'), enchantments: [{ id: 'fortune', level: 1 }] },
       'enchantments.0.id',
+    ],
+    [
+      { item: 'iron_sword', durability: durabilityForItem('iron_sword'), enchantments: [{ id: 'breach', level: 1 }] },
+      'enchantments.0.id',
+    ],
+    [
+      {
+        item: 'bow',
+        durability: durabilityForItem('bow'),
+        enchantments: [
+          { id: 'mending', level: 1 },
+          { id: 'infinity', level: 1 },
+        ],
+      },
+      'enchantments.1.id',
     ],
   ])('rejects invalid payload %#', (value, path) => {
     const result = decodeEnchantedItem(value)
@@ -327,14 +419,45 @@ describe('enchantment table offers and transaction', () => {
     expect(result.state.item?.enchantments).toContainEqual({ id: 'unbreaking', level: 3 })
     expect(result.state.item?.enchantments).toContainEqual(offer.enchantment)
   })
+
+  it('rejects a mutually exclusive offer without changing the item or resources', () => {
+    const offer = conflictingOfferFor('diamond_sword', 'sharpness')
+    const state = {
+      seed: offer.seed,
+      bookshelfCount: offer.bookshelfCount,
+      playerLevel: 30,
+      lapis: 3,
+      item: enchantedItem('diamond_sword', 'sharpness', 1),
+    }
+    expect(applyEnchantmentOffer(state, offer)).toEqual({
+      ok: false,
+      state,
+      reason: 'conflicting_enchantment',
+    })
+  })
 })
 
 describe('enchantment derivations', () => {
+  // These independent arithmetic expectations are for Vanilla Java Edition 26.3.
+  // Sources: Sharpness/Smite/Bane https://minecraft.wiki/w/Attack_cooldown#Enchanted_values
+  // Power https://minecraft.wiki/w/Power; protection EPF https://minecraft.wiki/w/Armor#Protection_enchantments
+  // Efficiency https://minecraft.wiki/w/Breaking; Unbreaking https://minecraft.wiki/w/Unbreaking
+  // Fortune https://minecraft.wiki/w/Fortune; Mending https://minecraft.wiki/w/Mending
+  // Sweeping Edge https://minecraft.wiki/w/Sweeping_Edge; other utility effects:
+  // https://minecraft.wiki/w/Fire_Aspect https://minecraft.wiki/w/Respiration
+  // https://minecraft.wiki/w/Frost_Walker https://minecraft.wiki/w/Lure
+  // https://minecraft.wiki/w/Thorns https://minecraft.wiki/w/Curse_of_Binding
+  // https://minecraft.wiki/w/Curse_of_Vanishing https://minecraft.wiki/w/Depth_Strider
+  // https://minecraft.wiki/w/Soul_Speed https://minecraft.wiki/w/Swift_Sneak
   it('applies sharpness and power with inert invalid bases', () => {
-    expect(meleeDamageWithEnchantments(7, enchantedItem('diamond_sword', 'sharpness', 5))).toBe(10)
+    expect(meleeDamageWithEnchantments(7, enchantedItem('diamond_sword', 'sharpness', 5))).toBe(
+      7 + 0.5 * 5 + 0.5,
+    )
     expect(meleeDamageWithEnchantments(Number.NaN, enchantedItem('diamond_sword', 'sharpness', 1))).toBe(1)
     expect(meleeDamageWithEnchantments(5, enchantedItem('diamond_sword'))).toBe(5)
-    expect(bowDamageWithEnchantments(9, enchantedItem('bow', 'power', 5))).toBe(23)
+    expect(bowDamageWithEnchantments(9, enchantedItem('bow', 'power', 5))).toBe(
+      Math.ceil(9 * (1 + 0.25 * (5 + 1))),
+    )
     expect(bowDamageWithEnchantments(-10, enchantedItem('bow', 'power', 5))).toBe(0)
     // An unenchanted bow must agree with the plain base damage — unlike
     // sharpness and efficiency above, this had no test of its own, and a
@@ -359,6 +482,12 @@ describe('enchantment derivations', () => {
     expect(
       armorDamageWithEnchantments({ amount: 10, cause: 'mob' }, 0, [...armor, ...armor]).amount,
     ).toBeCloseTo(2)
+    expect(
+      enchantmentProtectionFactor(
+        [...armor, enchantedItem('iron_helmet', 'protection', 4)],
+        'generic',
+      ),
+    ).toBe(1 - 20 / 25)
     // Unenchanted armour must contribute zero protection each, not zero
     // total by coincidence — every armour piece above carries protection 4,
     // so a per-item fallback of "no protection reads as level 1" would still
@@ -368,18 +497,54 @@ describe('enchantment derivations', () => {
     expect(
       armorDamageWithEnchantments({ amount: 10, cause: 'mob' }, 15, unenchantedArmor),
     ).toEqual({ amount: 6, cause: 'mob' })
+    expect(enchantmentProtectionFactor(armor, 'generic')).toBe(1 - 16 / 25)
+    expect(
+      enchantmentProtectionFactor(
+        [enchantedItem('iron_chestplate', 'fire_protection', 4)],
+        'fire',
+      ),
+    ).toBe(1 - 8 / 25)
+    expect(
+      enchantmentProtectionFactor(
+        [enchantedItem('iron_chestplate', 'blast_protection', 3)],
+        'explosion',
+      ),
+    ).toBe(1 - 6 / 25)
+    expect(
+      enchantmentProtectionFactor(
+        [enchantedItem('iron_chestplate', 'projectile_protection', 4)],
+        'projectile',
+      ),
+    ).toBe(1 - 8 / 25)
+    expect(
+      enchantmentProtectionFactor(
+        [enchantedItem('iron_boots', 'feather_falling', 4)],
+        'fall',
+      ),
+    ).toBe(1 - 12 / 25)
+    expect(
+      armorDamageWithEnchantments({ amount: 10, cause: 'fall' }, 15, [
+        enchantedItem('iron_boots', 'feather_falling', 4),
+      ]),
+    ).toEqual({ amount: 5.2, cause: 'fall' })
+    expect(enchantmentProtectionFactor(armor, 'unprotected')).toBe(1)
   })
 
   it('applies efficiency and clamps invalid mining bases', () => {
     const tool = enchantedItem('diamond_pickaxe', 'efficiency', 5)
     expect(miningSpeedWithEnchantments(8, tool)).toBe(34)
     expect(miningSpeedWithEnchantments(Number.NaN, tool)).toBe(27)
+    expect(miningSpeedWithEnchantments(8, tool, false)).toBe(8)
     expect(miningSpeedWithEnchantments(8, enchantedItem('diamond_pickaxe'))).toBe(8)
   })
 
   it('uses one injected roll per durability point and conservatively applies missing or invalid rolls', () => {
     const tool = enchantedItem('diamond_pickaxe', 'unbreaking', 3)
     expect(durabilityWearWithEnchantments(5, tool, [0, 0.74, 0.75, 0.99, Number.NaN])).toBe(3)
+    const armor = enchantedItem('iron_chestplate', 'unbreaking', 3)
+    expect(durabilityWearWithEnchantments(3, armor, [0, 0.299, 0.3])).toBe(1)
+    expect(durabilityWearWithEnchantments(1, tool, [-Number.EPSILON])).toBe(1)
+    expect(durabilityWearWithEnchantments(1, tool, [1])).toBe(1)
     expect(durabilityWearWithEnchantments(-1, tool, [])).toBe(0)
     expect(durabilityWearWithEnchantments(3, enchantedItem('diamond_pickaxe'), [])).toBe(3)
     expect(durabilityWearWithEnchantments(Number.NaN, tool, [])).toBe(0)
@@ -387,9 +552,234 @@ describe('enchantment derivations', () => {
 
   it('uses deterministic Fortune rolls and clamps invalid base counts', () => {
     const tool = enchantedItem('diamond_pickaxe', 'fortune', 3)
-    expect(fortuneDropCountWithEnchantments(1, tool, 0.1)).toBe(3)
-    expect(fortuneDropCountWithEnchantments(1, tool, 0.9)).toBe(2)
+    expect(fortuneDropCountWithEnchantments(1, tool, 0)).toBe(1)
+    expect(fortuneDropCountWithEnchantments(1, tool, 0.399999999)).toBe(1)
+    expect(fortuneDropCountWithEnchantments(1, tool, 0.4)).toBe(2)
+    expect(fortuneDropCountWithEnchantments(1, tool, 0.6)).toBe(3)
+    expect(fortuneDropCountWithEnchantments(1, tool, 0.8)).toBe(4)
+    expect(fortuneDropCountWithEnchantments(2, tool, 0.8)).toBe(8)
+    expect(fortuneDropCountWithEnchantments(1, tool, -Number.EPSILON)).toBe(1)
+    expect(fortuneDropCountWithEnchantments(1, tool, 1)).toBe(1)
     expect(fortuneDropCountWithEnchantments(Number.NaN, tool, 0)).toBe(0)
     expect(fortuneDropCountWithEnchantments(2.9, enchantedItem('diamond_pickaxe'), 0)).toBe(2)
+  })
+
+  it('resolves matching damage enchantments and ignores mismatched mob categories', () => {
+    const smite = enchantedItem('diamond_sword', 'smite', 3)
+    const bane = enchantedItem('diamond_sword', 'bane_of_arthropods', 2)
+    expect(meleeDamageWithEnchantments(7, smite, 'undead')).toBe(7 + 2.5 * 3)
+    expect(meleeDamageWithEnchantments(7, smite, 'arthropod')).toBe(7)
+    expect(meleeDamageWithEnchantments(7, bane, 'arthropod')).toBe(7 + 2.5 * 2)
+    expect(meleeDamageWithEnchantments(7, bane, 'undead')).toBe(7)
+  })
+
+  it('reads short ids and namespaced kernel component keys', () => {
+    const item = enchantedItem('bow', 'power', 2)
+    const kernelComponent = enchantmentComponentOf(item)
+    expect(kernelComponent).toEqual({ 'minecraft:power': 2 })
+    expect(enchantmentLevel(kernelComponent, 'power')).toBe(2)
+    expect(enchantmentLevel(component([['power', 2]]), 'power')).toBe(2)
+    expect(enchantmentLevel(component([['power', 0]]), 'power')).toBe(0)
+    expect(enchantmentLevel(component([['power', 255]]), 'power')).toBe(255)
+    expect(
+      enchantmentLevel({ 'minecraft:power': 256 } as unknown as EnchantmentsComponent, 'power'),
+    ).toBe(0)
+  })
+
+  it('provides vanilla effect inputs for weapon, fishing, underwater, and utility consumers', () => {
+    const sword = component([
+      ['fire_aspect', 2],
+      ['looting', 3],
+      ['knockback', 2],
+      ['sweeping_edge', 2],
+    ])
+    const bow = component([['flame', 1], ['punch', 2], ['infinity', 1]])
+    const helmet = component([['respiration', 3], ['aqua_affinity', 1]])
+    const boots = component([['frost_walker', 2]])
+    const rod = component([['luck_of_the_sea', 3], ['lure', 2]])
+    const silkTool = component([['silk_touch', 1]])
+    const leggings = component([['swift_sneak', 3], ['binding_curse', 1]])
+    const bootsWithMovement = component([['depth_strider', 3], ['soul_speed', 2]])
+    const thornsArmor = component([['thorns', 2], ['vanishing_curse', 1]])
+
+    expect(fireAspectDurationTicks(sword)).toBe(2 * 80)
+    expect(lootingLevel(sword)).toBe(3)
+    expect(knockbackLevel(sword)).toBe(2)
+    expect(sweepingEdgeDamageMultiplier(sword)).toBe(2 / 3)
+    expect(flameDurationTicks(bow)).toBe(100)
+    expect(punchKnockbackBonus(bow)).toBe(3 * 2)
+    expect(infinityPreventsArrowConsumption(bow)).toBe(true)
+    expect(respirationAirConsumptionChance(helmet)).toBe(1 / 4)
+    expect(respirationBonusAirTicks(helmet)).toBe(3 * 300)
+    expect(aquaAffinityEnabled(helmet)).toBe(true)
+    expect(frostWalkerFreezeRadius(boots)).toBe(2 + 2)
+    expect(luckOfTheSeaLevel(rod)).toBe(3)
+    expect(lureWaitReductionTicks(rod)).toBe(2 * 100)
+    expect(silkTouchEnabled(silkTool)).toBe(true)
+    expect(depthStriderLevel(bootsWithMovement)).toBe(3)
+    expect(soulSpeedLevel(bootsWithMovement)).toBe(2)
+    expect(swiftSneakLevel(leggings)).toBe(3)
+    expect(thornsRetaliationChance(thornsArmor)).toBe(0.15 * 2)
+    expect(bindingCurseBlocksRemoval(leggings)).toBe(true)
+    expect(vanishingCurseRemovesOnDeath(thornsArmor)).toBe(true)
+  })
+
+  it('selects one Mending candidate, repairs at two durability per XP and returns unused XP', () => {
+    const candidates: ReadonlyArray<MendingRepairCandidate> = [
+      {
+        slot: 'main_hand',
+        durability: { current: 90, max: 100 },
+        enchantments: component([['mending', 1]]),
+      },
+      {
+        slot: 'chest',
+        durability: { current: 96, max: 100 },
+        enchantments: component([['mending', 1]]),
+      },
+      {
+        slot: 'feet',
+        durability: { current: 50, max: 100 },
+        enchantments: component([['unbreaking', 3]]),
+      },
+    ]
+    const result = mendOneItemFromExperience(candidates, 3, 0.5)
+    expect(result).toEqual({
+      repairedCandidate: {
+        ...candidates[1],
+        durability: { current: 100, max: 100 },
+      },
+      selectedSlot: 'chest',
+      xpConsumed: 2,
+      xpRemaining: 1,
+    })
+    expect(candidates[1]?.durability).toEqual({ current: 96, max: 100 })
+    expect(mendingDurabilityRepairPoints(3)).toBe(6)
+  })
+
+  it('keeps Mending roll bounds half-open and leaves XP untouched without eligible items', () => {
+    const eligible: MendingRepairCandidate = {
+      slot: 'main_hand',
+      durability: { current: 0, max: 10 },
+      enchantments: component([['mending', 1]]),
+    }
+    expect(mendOneItemFromExperience([eligible], 3, 0).selectedSlot).toBe('main_hand')
+    expect(mendOneItemFromExperience([eligible], 3, 1 - Number.EPSILON).selectedSlot).toBe(
+      'main_hand',
+    )
+    expect(mendOneItemFromExperience([eligible], 3, -Number.EPSILON)).toEqual({
+      repairedCandidate: undefined,
+      selectedSlot: undefined,
+      xpConsumed: 0,
+      xpRemaining: 3,
+    })
+    expect(mendOneItemFromExperience([eligible], 3, 1)).toEqual({
+      repairedCandidate: undefined,
+      selectedSlot: undefined,
+      xpConsumed: 0,
+      xpRemaining: 3,
+    })
+    expect(mendOneItemFromExperience([], 3, 0)).toEqual({
+      repairedCandidate: undefined,
+      selectedSlot: undefined,
+      xpConsumed: 0,
+      xpRemaining: 3,
+    })
+  })
+
+  it('satisfies independent fast-check properties for public calculations', () => {
+    FastCheck.assert(
+      FastCheck.property(FastCheck.integer({ min: 0, max: 255 }), (level) => {
+        expect(enchantmentLevel(component([['power', level]]), 'power')).toBe(level)
+      }),
+    )
+    FastCheck.assert(
+      FastCheck.property(
+        FastCheck.integer({ min: 0, max: 100 }),
+        FastCheck.integer({ min: 1, max: 5 }),
+        (base, level) => {
+          expect(meleeDamageWithEnchantments(base, enchantedItem('diamond_sword', 'sharpness', level))).toBe(
+            base + 0.5 * level + 0.5,
+          )
+        },
+      ),
+    )
+    FastCheck.assert(
+      FastCheck.property(
+        FastCheck.integer({ min: 0, max: 100 }),
+        FastCheck.integer({ min: 0, max: 5 }),
+        (base, level) => {
+          const expected = level === 0 ? base : Math.ceil(base * (1 + 0.25 * (level + 1)))
+          expect(bowDamageWithEnchantments(base, enchantedItem('bow', level === 0 ? undefined : 'power', level))).toBe(
+            expected,
+          )
+        },
+      ),
+    )
+    FastCheck.assert(
+      FastCheck.property(
+        FastCheck.integer({ min: 0, max: 40 }),
+        FastCheck.integer({ min: 1, max: 5 }),
+        (base, level) => {
+          expect(miningSpeedWithEnchantments(base, enchantedItem('diamond_pickaxe', 'efficiency', level))).toBe(
+            (base > 0 ? base : 1) + level * level + 1,
+          )
+          expect(miningSpeedWithEnchantments(base, enchantedItem('diamond_pickaxe', 'efficiency', level), false)).toBe(
+            base > 0 ? base : 1,
+          )
+        },
+      ),
+    )
+    FastCheck.assert(
+      FastCheck.property(
+        FastCheck.integer({ min: 1, max: 3 }),
+        FastCheck.double({ min: 0, max: 0.999999, noNaN: true }),
+        FastCheck.integer({ min: 1, max: 32 }),
+        (level, roll, base) => {
+          const drops = fortuneDropCountWithEnchantments(
+            base,
+            enchantedItem('diamond_pickaxe', 'fortune', level),
+            roll,
+          )
+          expect(drops).toBeGreaterThanOrEqual(base)
+          expect(drops).toBeLessThanOrEqual(base * (level + 1))
+          expect(drops % base).toBe(0)
+        },
+      ),
+    )
+    FastCheck.assert(
+      FastCheck.property(
+        FastCheck.integer({ min: 1, max: 3 }),
+        FastCheck.array(FastCheck.double({ min: 0, max: 0.999999, noNaN: true }), {
+          minLength: 0,
+          maxLength: 20,
+        }),
+        (level, rolls) => {
+          const threshold = 0.4 * (level / (level + 1))
+          const expectedWear = rolls.filter((roll) => roll >= threshold).length
+          const armor = enchantedItem('iron_chestplate', 'unbreaking', level)
+          expect(durabilityWearWithEnchantments(rolls.length, armor, rolls, 'armor')).toBe(expectedWear)
+        },
+      ),
+    )
+    FastCheck.assert(
+      FastCheck.property(
+        FastCheck.integer({ min: 1, max: 80 }),
+        FastCheck.integer({ min: 0, max: 100 }),
+        FastCheck.integer({ min: 1, max: 40 }),
+        (missing, current, xp) => {
+          const candidate: MendingRepairCandidate = {
+            slot: 'main_hand',
+            durability: { current, max: current + missing },
+            enchantments: component([['mending', 1]]),
+          }
+          const repaired = Math.min(missing, xp * 2)
+          const used = Math.ceil(repaired / 2)
+          const result = mendOneItemFromExperience([candidate], xp, 0)
+          expect(result.repairedCandidate?.durability?.current).toBe(current + repaired)
+          expect(result.xpConsumed).toBe(used)
+          expect(result.xpRemaining).toBe(xp - used)
+        },
+      ),
+    )
   })
 })

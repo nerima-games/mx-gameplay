@@ -948,7 +948,9 @@ export type MobCasualty = Readonly<{
   id: EntityId
   kind: EntityKind
   at: Position
+  dimension?: Dimension
   killCredit?: MobKillCredit
+  lootingLevel?: number
   lastHitTick?: SimulationTickValue
   deathTick?: SimulationTickValue
   age?: MobAge
@@ -1006,12 +1008,15 @@ const mobCasualty = (
   killCredit = latestHit?.killCredit ?? entity.killCredit,
   lastHitTick = latestHit?.lastHitTick ?? entity.lastHitTick,
   burning = false,
+  lootingLevel?: number,
 ): MobCasualty => ({
   id: entity.id,
   kind: entity.kind,
   at: entity.feetPosition,
+  ...(entity.dimension === undefined ? {} : { dimension: entity.dimension }),
   ...(killCredit === undefined ? {} : { killCredit }),
   ...(lastHitTick === undefined ? {} : { lastHitTick }),
+  ...(lootingLevel === undefined ? {} : { lootingLevel }),
   ...(deathTick === undefined ? {} : { deathTick }),
   ...(burning ? { burning: true } : {}),
 })
@@ -1812,6 +1817,7 @@ export type MobDamageHit = Readonly<{
   id: EntityId
   damage: Damage
   killCredit?: Exclude<MobKillCredit, 'player-triggered-tnt'>
+  lootingLevel?: number
   lastHitTick?: SimulationTickValue
   burning?: boolean
 }>
@@ -1906,7 +1912,12 @@ export const planMobDamageRoster = (
 ): MobBlastRosterResolution => {
   if (hits.length === 0) return { roster, casualties: NO_CASUALTIES }
 
-  type DamageBatch = { damages: Array<Damage>; latestHit?: RecentMobHit; burning?: boolean }
+  type DamageBatch = {
+    damages: Array<Damage>
+    latestHit?: RecentMobHit
+    burning?: boolean
+    lootingLevel?: number
+  }
   const byEntity = new Map<EntityId, DamageBatch>()
   for (const hit of hits) {
     if (!Number.isFinite(hit.damage.amount) || hit.damage.amount <= 0) continue
@@ -1916,7 +1927,10 @@ export const planMobDamageRoster = (
     if (
       recentHit !== undefined &&
       (batch.latestHit === undefined || recentHit.lastHitTick >= batch.latestHit.lastHitTick)
-    ) batch.latestHit = recentHit
+    ) {
+      batch.latestHit = recentHit
+      batch.lootingLevel = hit.lootingLevel ?? 0
+    }
     if (hit.burning === true) batch.burning = true
     byEntity.set(hit.id, batch)
   }
@@ -1944,7 +1958,15 @@ export const planMobDamageRoster = (
     if (isDead(vitals)) {
       return {
         transition: DESPAWNED,
-        emit: mobCasualty(entity, deathTick, recentHits.get(entity.id), undefined, undefined, batch.burning),
+        emit: mobCasualty(
+          entity,
+          deathTick,
+          recentHits.get(entity.id),
+          undefined,
+          undefined,
+          batch.burning,
+          batch.lootingLevel,
+        ),
       }
     }
     return {
@@ -2157,6 +2179,7 @@ export type MobExperienceEvent = {
   readonly source: EntityId
   readonly kind: EntityKind
   readonly at: Position
+  readonly dimension?: Dimension
   readonly amount: number
 }
 
@@ -2196,7 +2219,13 @@ export const experienceOfCasualties = (
       casualty.experienceRoll ?? 0,
       experienceContextOfCasualty(casualty),
     )
-    if (amount > 0) experience.push({ source: casualty.id, kind: casualty.kind, at: casualty.at, amount })
+    if (amount > 0) experience.push({
+      source: casualty.id,
+      kind: casualty.kind,
+      at: casualty.at,
+      ...(casualty.dimension === undefined ? {} : { dimension: casualty.dimension }),
+      amount,
+    })
   }
   return issues.length === 0
     ? { _tag: 'Resolved', experience }
@@ -2247,6 +2276,7 @@ export const rollCasualtyDrops = (
     const kill: MobKill = {
       ...SLAIN_WITHOUT_LOOTING,
       playerKill,
+      lootingLevel: casualty.lootingLevel ?? 0,
       ...(casualty.age === undefined ? {} : { age: casualty.age }),
       ...(casualty.size === undefined ? {} : { size: casualty.size }),
       ...(casualty.burning === undefined ? {} : { burning: casualty.burning }),

@@ -117,52 +117,25 @@ export const NO_TOOL: BlockLootContext = {}
 // Fortune
 // ---------------------------------------------------------------------------
 
-/**
- * Expected TOTAL drops at each Fortune level.
- *
- * `<reference-impl>/packages/inventory/domain/enchantment.config.ts:46`:
- * `{ 1: 1.33, 2: 1.75, 3: 2.5, 4: 2.5, 5: 2.5 }`. Levels 4 and 5 repeat level
- * 3's value in the reference and are transcribed rather than trimmed — the cap
- * is `MAX_LEVEL` in a table this repository does not own, and dropping the two
- * rows would silently change what an over-levelled tool does.
- */
 /** Vanilla gravel-to-flint replacement chances for Fortune levels 0 through 3. */
 const GRAVEL_FLINT_CHANCES = [0.1, 0.14285715, 0.25, 1] as const
+/** Expected total drops under Java Edition's Fortune integer roll. */
 export const FORTUNE_MULTIPLIERS: ReadonlyMap<number, number> = new Map([
-  [1, 1.33],
-  [2, 1.75],
-  [3, 2.5],
-  [4, 2.5],
-  [5, 2.5],
+  [1, 4 / 3],
+  [2, 7 / 4],
+  [3, 11 / 5],
+  [4, 8 / 3],
+  [5, 22 / 7],
 ])
 
 /**
- * Extra drops beyond the base count, given one roll in `[0, 1)`.
- *
- * `<reference-impl>/packages/inventory/domain/enchantment.ts:107-111`, verbatim,
- * and its comment is the part worth keeping: the multiplier is the EXPECTED
- * total, so the extra is its fractional expectation realised probabilistically —
- * the integer part is guaranteed and the fractional part is the chance of one
- * more. Fortune I is therefore a bonus about a third of the time rather than
- * `Math.round(1.33)` rounding down to a flat no-op.
- *
- * TOTAL: a level with no row, a level that is not a number, and a roll that is
- * not a number all yield zero extra. That is the direction `../mob/mob-drop`'s
- * `clampRoll` takes and for the identical reason — the preview's finding F5 is a
- * `NaN` travelling through arithmetic that had no opinion about it, and a `NaN`
- * count is an item stack whose size is not a number arriving in mc-sim's
- * inventory.
+ * Returns the random integer multiplier minus one for Fortune's level roll.
+ * Vanilla draws an integer from zero through the level plus one, subtracts one,
+ * and clamps the result at zero.
  */
 export const rollFortuneExtraDrops = (level: number, roll: number): number => {
-  const multiplier = FORTUNE_MULTIPLIERS.get(Math.floor(level))
-  if (multiplier === undefined || !Number.isFinite(roll)) {
-    return 0
-  }
-
-  const expectedExtra = multiplier - 1
-  const guaranteed = Math.floor(expectedExtra)
-
-  return guaranteed + (roll < expectedExtra - guaranteed ? 1 : 0)
+  if (!Number.isSafeInteger(level) || level < 0 || !Number.isFinite(roll) || roll < 0 || roll >= 1) return 0
+  return Math.max(0, Math.floor(roll * (level + 2)) - 1)
 }
 
 // ---------------------------------------------------------------------------
@@ -303,7 +276,7 @@ const withFortune = (drop: BlockDrop, context: BlockLootContext, roll: number): 
       ? rollFortuneExtraDrops(context.fortuneLevel ?? 0, roll)
       : 0
 
-  return { item: drop.item, count: drop.count + extra }
+  return { item: drop.item, count: drop.count * (extra + 1) }
 }
 
 /**
@@ -322,14 +295,10 @@ const withFortune = (drop: BlockDrop, context: BlockLootContext, roll: number): 
  *   - air, water, lava, bedrock, snow and leaves yield nothing to anyone
  *     (`count: 0` in kernel's table).
  *
- * `rolls` shorter than `BLOCK_LOOT_ROLLS` reads as zeros, which is the
- * every-"always"-branch answer `../mob/mob-drop`'s `LOWEST_ROLLS` documents —
- * and a zero roll PASSES a chance gate, so a caller that forgets to draw gets
- * the most generous loot rather than the least. That is the opposite of the
- * inert direction and it is chosen: the only caller draws its budget from
- * `../frame-rolls`, so an all-zeros array means a test wrote one on purpose, and
- * a test that means "every bonus line fires" should be able to say so by passing
- * nothing.
+ * `rolls` shorter than `BLOCK_LOOT_ROLLS` reads as zeros, the lowest result for
+ * variable-count rolls. Zero also passes chance gates, which keeps deterministic
+ * fixtures able to exercise every bonus line. The stage draws the full budget
+ * from `../frame-rolls`; tests pass explicit rolls when checking probabilities.
  */
 export const blockLoot = (
   block: BlockId,

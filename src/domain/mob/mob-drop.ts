@@ -22,6 +22,10 @@ export type MobDropRule = {
   readonly item: ItemType
   /** Base count. The whole count unless `maxCount` says otherwise. */
   readonly count: number
+  /** Add the vanilla uniform per-level count increase when Looting is present. */
+  readonly lootingCountIncrease?: boolean
+  /** Increase a chance by this amount per Looting level. */
+  readonly lootingChancePerLevel?: number
   /** Probability in `(0, 1]`. ABSENT means "always", not "never". */
   readonly chance?: number
   /** Upper end of a uniform inclusive roll over `[count, maxCount]`. */
@@ -88,6 +92,7 @@ type MobDropChoice = Readonly<{
   readonly weight: number
   readonly count: number
   readonly maxCount?: number
+  readonly lootingCountIncrease?: boolean
   readonly burningItem?: ItemType
 }>
 
@@ -95,6 +100,7 @@ type MobDropPool = Readonly<{
   readonly minSelections: number
   readonly maxSelections: number
   readonly chance?: number
+  readonly lootingChancePerLevel?: number
   readonly playerKillOnly?: boolean
   readonly choices: ReadonlyArray<MobDropChoice>
 }>
@@ -152,17 +158,20 @@ const makeMobDropRollCount = Brand.nominal<MobDropRollCount>()
 export const LOWEST_ROLLS: DropRolls = { chance: 0, count: 0 }
 
 /** A creeper drops zero to two gunpowder unless it self-destructs. */
-export const CREEPER_DROPS: ReadonlyArray<MobDropRule> = [{ item: 'gunpowder', count: 0, maxCount: 2 }]
+export const CREEPER_DROPS: ReadonlyArray<MobDropRule> = [
+  { item: 'gunpowder', count: 0, maxCount: 2, lootingCountIncrease: true },
+]
 
 /** A slain zombie drops zero to two rotten flesh. */
 export const ZOMBIE_DROPS: ReadonlyArray<MobDropRule> = [
-  { item: 'rotten_flesh', count: 0, maxCount: 2 },
+  { item: 'rotten_flesh', count: 0, maxCount: 2, lootingCountIncrease: true },
 ]
 
 const ZOMBIE_RARE_DROPS: MobDropPool = {
   minSelections: 1,
   maxSelections: 1,
   chance: 0.025,
+  lootingChancePerLevel: 0.01,
   playerKillOnly: true,
   choices: [
     { item: 'iron_ingot', weight: 1, count: 1 },
@@ -176,7 +185,7 @@ export const ZOMBIE_XP_REWARD = 5
 
 /** A slain enderman drops zero or one ender pearl. */
 export const ENDERMAN_DROPS: ReadonlyArray<MobDropRule> = [
-  { item: 'ender_pearl', count: 0, maxCount: 1 },
+  { item: 'ender_pearl', count: 0, maxCount: 1, lootingCountIncrease: true },
 ]
 
 /** Experience for killing an enderman. */
@@ -193,8 +202,8 @@ export const CREEPER_XP_REWARD = 5
 
 /** Supported ghast drops. Music discs are a creeper drop, not ghast loot. */
 export const GHAST_DROPS: ReadonlyArray<MobDropRule> = [
-  { item: 'ghast_tear', count: 0, maxCount: 1 },
-  { item: 'gunpowder', count: 0, maxCount: 2 },
+  { item: 'ghast_tear', count: 0, maxCount: 1, lootingCountIncrease: true },
+  { item: 'gunpowder', count: 0, maxCount: 2, lootingCountIncrease: true },
 ]
 
 /** `mobs/ghast.ts:17`. */
@@ -207,42 +216,61 @@ export const BLAZE_DROPS: ReadonlyArray<MobDropRule> = []
 export const BLAZE_XP_REWARD = 10
 
 const COW_DROPS: ReadonlyArray<MobDropRule> = [
-  { item: 'leather', count: 0, maxCount: 2, adultOnly: true },
-  { item: 'beef', count: 1, maxCount: 3, adultOnly: true, burningItem: 'cooked_beef' },
+  {
+    item: 'leather', count: 0, maxCount: 2, adultOnly: true, lootingCountIncrease: true,
+  },
+  {
+    item: 'beef', count: 1, maxCount: 3, adultOnly: true,
+    burningItem: 'cooked_beef', lootingCountIncrease: true,
+  },
 ]
 const PIG_DROPS: ReadonlyArray<MobDropRule> = [
-  { item: 'porkchop', count: 1, maxCount: 3, adultOnly: true, burningItem: 'cooked_porkchop' },
+  {
+    item: 'porkchop', count: 1, maxCount: 3, adultOnly: true,
+    burningItem: 'cooked_porkchop', lootingCountIncrease: true,
+  },
 ]
 const SHEEP_DROPS: ReadonlyArray<MobDropRule> = [
   { item: 'wool', count: 1, adultOnly: true },
-  { item: 'mutton', count: 1, maxCount: 2, adultOnly: true, burningItem: 'cooked_mutton' },
+  {
+    item: 'mutton', count: 1, maxCount: 2, adultOnly: true,
+    burningItem: 'cooked_mutton', lootingCountIncrease: true,
+  },
 ]
 const CHICKEN_DROPS: ReadonlyArray<MobDropRule> = [
-  { item: 'feather', count: 0, maxCount: 2, adultOnly: true },
-  { item: 'chicken', count: 1, adultOnly: true, burningItem: 'cooked_chicken' },
+  { item: 'feather', count: 0, maxCount: 2, adultOnly: true, lootingCountIncrease: true },
+  {
+    item: 'chicken', count: 1, adultOnly: true,
+    burningItem: 'cooked_chicken', lootingCountIncrease: true,
+  },
 ]
 const SKELETON_DROPS: ReadonlyArray<MobDropRule> = [
-  { item: 'bone', count: 0, maxCount: 2 },
-  { item: 'arrow', count: 0, maxCount: 2 },
-  { item: 'string', count: 0, maxCount: 2 },
+  { item: 'bone', count: 0, maxCount: 2, lootingCountIncrease: true },
+  { item: 'arrow', count: 0, maxCount: 2, lootingCountIncrease: true },
+  { item: 'string', count: 0, maxCount: 2, lootingCountIncrease: true },
 ]
 const SPIDER_DROPS: ReadonlyArray<MobDropRule> = [
-  { item: 'string', count: 0, maxCount: 2 },
-  { item: 'spider_eye', count: 1, chance: 1 / 3, playerKillOnly: true },
+  { item: 'string', count: 0, maxCount: 2, lootingCountIncrease: true },
+  { item: 'spider_eye', count: 1, chance: 1 / 3, playerKillOnly: true, lootingCountIncrease: true },
 ]
 const ZOMBIFIED_PIGLIN_DROPS: ReadonlyArray<MobDropRule> = [
-  { item: 'rotten_flesh', count: 0, maxCount: 1 },
-  { item: 'gold_nugget', count: 0, maxCount: 1 },
+  { item: 'rotten_flesh', count: 0, maxCount: 1, lootingCountIncrease: true },
+  { item: 'gold_nugget', count: 0, maxCount: 1, lootingCountIncrease: true },
 ]
 const BOGGED_DROPS = SKELETON_DROPS
 const STRAY_DROPS = SKELETON_DROPS
 const CAVE_SPIDER_DROPS = SPIDER_DROPS
 const COW_LIKE_DROPS: ReadonlyArray<MobDropRule> = [
-  { item: 'leather', count: 0, maxCount: 2, adultOnly: true },
-  { item: 'beef', count: 1, maxCount: 3, adultOnly: true, burningItem: 'cooked_beef' },
+  {
+    item: 'leather', count: 0, maxCount: 2, adultOnly: true, lootingCountIncrease: true,
+  },
+  {
+    item: 'beef', count: 1, maxCount: 3, adultOnly: true,
+    burningItem: 'cooked_beef', lootingCountIncrease: true,
+  },
 ]
 const RABBIT_DROPS: ReadonlyArray<MobDropRule> = [
-  { item: 'rabbit', count: 1, adultOnly: true, burningItem: 'cooked_rabbit' },
+  { item: 'rabbit', count: 1, adultOnly: true, burningItem: 'cooked_rabbit', lootingCountIncrease: true },
 ]
 const COD_DROPS: ReadonlyArray<MobDropRule> = [
   { item: 'cod', count: 1, burningItem: 'cooked_cod' },
@@ -253,47 +281,70 @@ const SALMON_DROPS: ReadonlyArray<MobDropRule> = [
   { item: 'bone_meal', count: 1, chance: 0.05 },
 ]
 const MOOSHROOM_DROPS = COW_LIKE_DROPS
-const STRIDER_DROPS: ReadonlyArray<MobDropRule> = [{ item: 'string', count: 0, maxCount: 5 }]
-const PARROT_DROPS: ReadonlyArray<MobDropRule> = [{ item: 'feather', count: 1, maxCount: 2 }]
-const SNOW_GOLEM_DROPS: ReadonlyArray<MobDropRule> = [{ item: 'snowball', count: 0, maxCount: 15 }]
-const TURTLE_DROPS: ReadonlyArray<MobDropRule> = [{ item: 'seagrass', count: 0, maxCount: 2 }]
-const ZOMBIE_HORSE_DROPS: ReadonlyArray<MobDropRule> = [
-  { item: 'rotten_flesh', count: 2, maxCount: 3 },
+const STRIDER_DROPS: ReadonlyArray<MobDropRule> = [
+  { item: 'string', count: 0, maxCount: 5, lootingCountIncrease: true },
 ]
-const SKELETON_HORSE_DROPS: ReadonlyArray<MobDropRule> = [{ item: 'bone', count: 0, maxCount: 2 }]
+const PARROT_DROPS: ReadonlyArray<MobDropRule> = [
+  { item: 'feather', count: 1, maxCount: 2, lootingCountIncrease: true },
+]
+const SNOW_GOLEM_DROPS: ReadonlyArray<MobDropRule> = [{ item: 'snowball', count: 0, maxCount: 15 }]
+const TURTLE_DROPS: ReadonlyArray<MobDropRule> = [
+  { item: 'seagrass', count: 0, maxCount: 2, lootingCountIncrease: true },
+]
+const ZOMBIE_HORSE_DROPS: ReadonlyArray<MobDropRule> = [
+  { item: 'rotten_flesh', count: 2, maxCount: 3, lootingCountIncrease: true },
+]
+const SKELETON_HORSE_DROPS: ReadonlyArray<MobDropRule> = [
+  { item: 'bone', count: 0, maxCount: 2, lootingCountIncrease: true },
+]
 const IRON_GOLEM_DROPS: ReadonlyArray<MobDropRule> = [
   { item: 'iron_ingot', count: 3, maxCount: 5 },
   { item: 'poppy', count: 0, maxCount: 2 },
 ]
-const LLAMA_DROPS: ReadonlyArray<MobDropRule> = [{ item: 'leather', count: 0, maxCount: 2 }]
+const LLAMA_DROPS: ReadonlyArray<MobDropRule> = [
+  { item: 'leather', count: 0, maxCount: 2, lootingCountIncrease: true },
+]
 const VINDICATOR_DROPS: ReadonlyArray<MobDropRule> = [
-  { item: 'emerald', count: 0, maxCount: 1, playerKillOnly: true },
+  { item: 'emerald', count: 0, maxCount: 1, playerKillOnly: true, lootingCountIncrease: true },
 ]
 const EVOKER_DROPS: ReadonlyArray<MobDropRule> = [
-  { item: 'emerald', count: 0, maxCount: 1, playerKillOnly: true },
+  { item: 'emerald', count: 0, maxCount: 1, playerKillOnly: true, lootingCountIncrease: true },
 ]
 const HOGLIN_DROPS: ReadonlyArray<MobDropRule> = [
-  { item: 'porkchop', count: 2, maxCount: 4, adultOnly: true, burningItem: 'cooked_porkchop' },
-  { item: 'leather', count: 0, maxCount: 1, adultOnly: true },
+  {
+    item: 'porkchop', count: 2, maxCount: 4, adultOnly: true,
+    burningItem: 'cooked_porkchop', lootingCountIncrease: true,
+  },
+  { item: 'leather', count: 0, maxCount: 1, adultOnly: true, lootingCountIncrease: true },
 ]
-const HUSK_DROPS: ReadonlyArray<MobDropRule> = [{ item: 'rotten_flesh', count: 0, maxCount: 2 }]
+const HUSK_DROPS: ReadonlyArray<MobDropRule> = [
+  { item: 'rotten_flesh', count: 0, maxCount: 2, lootingCountIncrease: true },
+]
 const WITHER_SKELETON_DROPS: ReadonlyArray<MobDropRule> = [
-  { item: 'coal', count: 0, maxCount: 1 },
-  { item: 'bone', count: 0, maxCount: 2 },
-  { item: 'wither_skeleton_skull', count: 1, chance: 0.025, playerKillOnly: true, chargedCreeperOnly: true },
+  { item: 'coal', count: 0, maxCount: 1, lootingCountIncrease: true },
+  { item: 'bone', count: 0, maxCount: 2, lootingCountIncrease: true },
+  {
+    item: 'wither_skeleton_skull', count: 1, chance: 0.025,
+    lootingChancePerLevel: 0.01,
+    playerKillOnly: true, chargedCreeperOnly: true,
+  },
 ]
-const ZOGLIN_DROPS: ReadonlyArray<MobDropRule> = [{ item: 'rotten_flesh', count: 1, maxCount: 3 }]
-const WITCH_DROPS: ReadonlyArray<MobDropRule> = [{ item: 'redstone_dust', count: 4, maxCount: 8 }]
+const ZOGLIN_DROPS: ReadonlyArray<MobDropRule> = [
+  { item: 'rotten_flesh', count: 1, maxCount: 3, lootingCountIncrease: true },
+]
+const WITCH_DROPS: ReadonlyArray<MobDropRule> = [
+  { item: 'redstone_dust', count: 4, maxCount: 8, lootingCountIncrease: true },
+]
 const WITCH_POOL: MobDropPool = {
   minSelections: 1,
   maxSelections: 3,
   choices: [
-    { item: 'glass_bottle', weight: 1, count: 0, maxCount: 2 },
-    { item: 'glowstone_dust', weight: 1, count: 0, maxCount: 2 },
-    { item: 'gunpowder', weight: 1, count: 0, maxCount: 2 },
-    { item: 'spider_eye', weight: 1, count: 0, maxCount: 2 },
-    { item: 'stick', weight: 2, count: 0, maxCount: 2 },
-    { item: 'sugar', weight: 1, count: 0, maxCount: 2 },
+    { item: 'glass_bottle', weight: 1, count: 0, maxCount: 2, lootingCountIncrease: true },
+    { item: 'glowstone_dust', weight: 1, count: 0, maxCount: 2, lootingCountIncrease: true },
+    { item: 'gunpowder', weight: 1, count: 0, maxCount: 2, lootingCountIncrease: true },
+    { item: 'spider_eye', weight: 1, count: 0, maxCount: 2, lootingCountIncrease: true },
+    { item: 'stick', weight: 2, count: 0, maxCount: 2, lootingCountIncrease: true },
+    { item: 'sugar', weight: 1, count: 0, maxCount: 2, lootingCountIncrease: true },
   ],
 }
 const WITHER_DROPS: ReadonlyArray<MobDropRule> = [{ item: 'nether_star', count: 1 }]
@@ -314,6 +365,7 @@ const GUARDIAN_FISH_POOL: MobDropPool = {
   minSelections: 1,
   maxSelections: 1,
   chance: 0.025,
+  lootingChancePerLevel: 0.01,
   playerKillOnly: true,
   choices: FISH_CHOICES,
 }
@@ -322,14 +374,21 @@ const POLAR_BEAR_FISH_POOL: MobDropPool = {
   minSelections: 1,
   maxSelections: 1,
   choices: [
-    { item: 'cod', weight: 3, count: 0, maxCount: 2, burningItem: 'cooked_cod' },
-    { item: 'salmon', weight: 1, count: 0, maxCount: 2, burningItem: 'cooked_salmon' },
+    {
+      item: 'cod', weight: 3, count: 0, maxCount: 2,
+      burningItem: 'cooked_cod', lootingCountIncrease: true,
+    },
+    {
+      item: 'salmon', weight: 1, count: 0, maxCount: 2,
+      burningItem: 'cooked_salmon', lootingCountIncrease: true,
+    },
   ],
 }
 const ZOMBIFIED_PIGLIN_RARE_POOL: MobDropPool = {
   minSelections: 1,
   maxSelections: 1,
   chance: 0.025,
+  lootingChancePerLevel: 0.01,
   playerKillOnly: true,
   choices: [{ item: 'gold_ingot', weight: 1, count: 1 }],
 }
@@ -345,13 +404,13 @@ export const MOB_DROP_TABLES: Readonly<Record<string, MobDropTable>> = withDropS
   cod: { rules: COD_DROPS },
   cow: { rules: COW_DROPS },
   dolphin: { rules: [{ item: 'cod', count: 0, maxCount: 1, burningItem: 'cooked_cod' }] },
-  donkey: { rules: [{ item: 'leather', count: 0, maxCount: 2, adultOnly: true }] },
+  donkey: { rules: [{ item: 'leather', count: 0, maxCount: 2, adultOnly: true, lootingCountIncrease: true }] },
   fox: { rules: [] },
   frog: { rules: [] },
   glow_squid: { rules: [], unsupportedItemIds: unsupportedDropItemIds('glow_ink_sac') },
-  horse: { rules: [{ item: 'leather', count: 0, maxCount: 2, adultOnly: true }] },
+  horse: { rules: [{ item: 'leather', count: 0, maxCount: 2, adultOnly: true, lootingCountIncrease: true }] },
   mooshroom: { rules: MOOSHROOM_DROPS },
-  mule: { rules: [{ item: 'leather', count: 0, maxCount: 2, adultOnly: true }] },
+  mule: { rules: [{ item: 'leather', count: 0, maxCount: 2, adultOnly: true, lootingCountIncrease: true }] },
   ocelot: { rules: [] },
   parrot: { rules: PARROT_DROPS },
   pig: { rules: PIG_DROPS },
@@ -597,15 +656,76 @@ export const dropPasses = (rule: MobDropRule, roll: number): boolean =>
  * range. Reproduced with the roll passed in instead of read from the global
  * generator.
  */
-const rollCount = (rule: MobDropRule, roll: number): number =>
-  rule.maxCount !== undefined && rule.maxCount > rule.count
-    ? rule.count + Math.floor(clampRoll(roll) * (rule.maxCount - rule.count + 1))
-    : rule.count
+const rollCount = (count: number, maxCount: number | undefined, roll: number): number =>
+  maxCount !== undefined && maxCount > count
+    ? count + Math.floor(clampRoll(roll) * (maxCount - count + 1))
+    : count
+
+const lootingLevelOf = (kill: MobKill): number =>
+  kill._tag === 'Slain' && Number.isFinite(kill.lootingLevel)
+    ? Math.max(0, Math.floor(kill.lootingLevel))
+    : 0
+
+const lootingCountCumulativeNumerator = (
+  baseMin: number,
+  baseMax: number,
+  level: number,
+  total: number,
+): number => {
+  const unmodifiedThrough = Math.max(0, Math.min(baseMax, total - level) - baseMin + 1)
+  const partialMin = Math.max(baseMin, total - level + 1)
+  const partialMax = Math.min(baseMax, total)
+  const partialCount = Math.max(0, partialMax - partialMin + 1)
+  const partialNumerator = partialCount === 0
+    ? 0
+    : partialCount * (2 * total + 1 - partialMin - partialMax)
+
+  // The denominator is 2 * level * baseCount. Comparing the un-divided
+  // numerator keeps exact CDF boundaries such as 17/18 on the correct side.
+  return 2 * level * unmodifiedThrough + partialNumerator
+}
 
 /**
- * Looting stays on the kill input so GP8 can apply it without changing callers.
- * GP2 intentionally resolves only the base vanilla loot rule.
+ * Applies `minecraft:enchanted_count_increase`: vanilla scales a uniform 0..1
+ * provider by the level and rounds it. The count roll samples the convolution
+ * with the base count so this model keeps its existing two-roll call shape.
  */
+const rollCountWithLooting = (
+  count: number,
+  maxCount: number | undefined,
+  roll: number,
+  level: number,
+  enabled: boolean,
+): number => {
+  const baseRolledCount = rollCount(count, maxCount, roll)
+  if (!enabled || level <= 0 || !Number.isInteger(count) ||
+    (maxCount !== undefined && !Number.isInteger(maxCount))) return baseRolledCount
+
+  const baseMin = count
+  const baseMax = maxCount !== undefined && maxCount > count
+    ? count + Math.floor(maxCount - count)
+    : count
+  let low = baseMin
+  let high = baseMax + level
+  const boundedRoll = clampRoll(roll)
+  const cumulativeDenominator = 2 * level * (baseMax - baseMin + 1)
+
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2)
+    if (
+      boundedRoll * cumulativeDenominator <
+      lootingCountCumulativeNumerator(baseMin, baseMax, level, middle)
+    ) {
+      high = middle
+    } else {
+      low = middle + 1
+    }
+  }
+
+  return low
+}
+
+/** Resolves one drop line, including the killer's Looting enchantment. */
 export const rollMobDrop = (
   rule: MobDropRule,
   kill: MobKill,
@@ -615,6 +735,7 @@ export const rollMobDrop = (
     return undefined
   }
 
+  const lootingLevel = lootingLevelOf(kill)
   const chargedCreeperDrop = rule.chargedCreeperOnly && kill.killedByChargedCreeper === true
   if (
     (rule.playerKillOnly && !kill.playerKill && !chargedCreeperDrop) ||
@@ -636,12 +757,19 @@ export const rollMobDrop = (
   if (
     !chargedCreeperDrop &&
     rule.chance !== undefined &&
-    (!Number.isFinite(rolls.chance) || !dropPasses(rule, rolls.chance))
+    (!Number.isFinite(rolls.chance) ||
+      rolls.chance >= rule.chance + (rule.lootingChancePerLevel ?? 0) * lootingLevel)
   ) {
     return undefined
   }
 
-  const count = rollCount(rule, rolls.count)
+  const count = rollCountWithLooting(
+    rule.count,
+    rule.maxCount,
+    rolls.count,
+    lootingLevel,
+    rule.lootingCountIncrease === true,
+  )
 
   return count <= 0
     ? undefined
@@ -687,6 +815,7 @@ export const rollMobTable = (
     count: rolls[index * 2 + 1] ?? 0,
   }))]
   let cursor = table.rules.length * 2
+  const lootingLevel = lootingLevelOf(kill)
 
   for (const pool of table.pools ?? []) {
     const chanceRoll = pool.chance === undefined ? 0 : rolls[cursor++] ?? 0
@@ -694,10 +823,13 @@ export const rollMobTable = (
     const selections = pool.minSelections + Math.floor(
       clampRoll(countRoll) * (pool.maxSelections - pool.minSelections + 1),
     )
+    const chance = pool.chance === undefined
+      ? undefined
+      : pool.chance + (pool.lootingChancePerLevel ?? 0) * lootingLevel
     const eligible =
       kill._tag === 'Slain' &&
       (!pool.playerKillOnly || kill.playerKill === true) &&
-      (pool.chance === undefined || (Number.isFinite(chanceRoll) && chanceRoll < pool.chance))
+      (chance === undefined || (Number.isFinite(chanceRoll) && chanceRoll < chance))
 
     for (let index = 0; index < pool.maxSelections; index += 1) {
       const choiceRoll = rolls[cursor++] ?? 0
@@ -706,7 +838,13 @@ export const rollMobTable = (
 
       const choice = rollWeightedChoice(pool.choices, choiceRoll)
       if (choice === undefined) continue
-      const count = rollCount(choice, itemCountRoll)
+      const count = rollCountWithLooting(
+        choice.count,
+        choice.maxCount,
+        itemCountRoll,
+        lootingLevel,
+        choice.lootingCountIncrease === true,
+      )
       if (count > 0) {
         drops.push({
           item: kill.burning && choice.burningItem !== undefined ? choice.burningItem : choice.item,

@@ -10,6 +10,7 @@ import {
   itemIdOf,
   itemStack,
   type ItemStackFailure,
+  type ItemStack,
   type ItemType,
   type Position,
   type WorldRevision,
@@ -38,7 +39,12 @@ import {
 import { Brand, Effect, Result, Schema, SchemaParser, Semaphore } from 'effect'
 import { changed, DESPAWNED, UNCHANGED, type Entity, type EntityManagerApi } from '@nerima-games/mc-sim'
 import { StackCount } from '@nerima-games/mc-kernel'
-import { decodeEnchantedItem, type Enchantment, type EnchantedItem } from '../enchantment.js'
+import {
+  decodeEnchantedItem,
+  vanishingCurseRemovesOnDeath,
+  type Enchantment,
+  type EnchantedItem,
+} from '../enchantment.js'
 import {
   DROPPED_ITEM_KIND,
   isDroppedItemBehaviour,
@@ -771,6 +777,17 @@ const deathDropMetadataForSlot = (
   }
 }
 
+const deathDropHasVanishingCurse = (
+  key: string,
+  stack: ItemStack,
+  metadata: PlayerSlotMetadata | undefined,
+): boolean => {
+  if (vanishingCurseRemovesOnDeath(stack.components.enchantments ?? [])) return true
+  const enchantedItem = metadata?.enchantedItems[key]
+  if (enchantedItem === undefined || enchantedItem.item !== stack.item) return false
+  return vanishingCurseRemovesOnDeath(enchantedItem.enchantments)
+}
+
 /**
  * Everything a dying player's inventory and equipment spill onto the ground,
  * as spawn requests ready for `spawnDroppedItems` — one per occupied slot,
@@ -784,28 +801,27 @@ export const deathDropsFromPlayerStorage = (
 ): ReadonlyArray<DroppedItemSpawn> => {
   const drops: Array<DroppedItemSpawn> = []
 
-  storage.inventory.slots.forEach((stack, index) => {
-    if (stack === undefined) return
-    const durability = storage.inventoryDurability[index] ?? null
+  const appendDrop = (key: string, stack: ItemStack, durability: Durability | null): void => {
+    if (deathDropHasVanishingCurse(key, stack, metadata)) return
     drops.push({
       item: stack.item,
       count: stack.count,
       at,
       durability: copyDurability(durability),
-      ...deathDropMetadataForSlot(String(index), stack.item, metadata),
+      ...deathDropMetadataForSlot(key, stack.item, metadata),
     })
+  }
+
+  storage.inventory.slots.forEach((stack, index) => {
+    if (stack === undefined) return
+    const durability = storage.inventoryDurability[index] ?? null
+    appendDrop(String(index), stack, durability)
   })
 
   for (const slot of EQUIPMENT_SLOTS) {
     const stack = storage.equipment.slots[slot]
     if (stack === null) continue
-    drops.push({
-      item: stack.item,
-      count: stack.count,
-      at,
-      durability: copyDurability(stack.durability),
-      ...deathDropMetadataForSlot(`equipment:${slot}`, stack.item, metadata),
-    })
+    appendDrop(`equipment:${slot}`, stack, stack.durability)
   }
 
   return drops

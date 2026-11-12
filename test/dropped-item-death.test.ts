@@ -7,12 +7,14 @@
  */
 import { describe, expect, it } from '@effect/vitest'
 import { Result } from 'effect'
+import { enchantmentsComponent, itemComponents } from '@nerima-games/mc-kernel'
 import { position as atPosition } from './support/coordinate-fixtures'
 import {
   emptyEquipment,
   emptyPlayerStorage,
   equip,
   equipmentItem,
+  durabilityForItem,
   itemStack,
   withInventory,
   type Inventory,
@@ -51,6 +53,52 @@ describe('deathDropsFromPlayerStorage', () => {
       { item: 'gunpowder', count: 3, at, durability: null },
       { item: 'stick', count: 1, at, durability: null },
     ])
+  })
+
+  it('removes only Vanishing-cursed inventory and equipment while keeping an ordinary item', () => {
+    // Java Edition removes Curse of Vanishing items on player death, regardless of inventory slot:
+    // https://minecraft.wiki/w/Curse_of_vanishing and https://bugs.mojang.com/browse/MC-298183.
+    const curse = Result.getOrThrow(enchantmentsComponent({ 'minecraft:vanishing_curse': 1 }))
+    const cursedComponents = Result.getOrThrow(itemComponents('diamond_pickaxe', { enchantments: curse }))
+    const cursedPickaxe = Result.getOrThrow(itemStack('diamond_pickaxe', 1, { components: cursedComponents }))
+    const slots: Inventory['slots'] = [cursedPickaxe, makeItemStack('stick', 2)]
+    const metadata: PlayerSlotMetadata = {
+      customNames: { '1': 'Keepsake' },
+      enchantedItems: {
+        'equipment:head': {
+          item: 'iron_helmet',
+          durability: durabilityForItem('iron_helmet'),
+          enchantments: [{ id: 'vanishing_curse', level: 1 }],
+        },
+      },
+    }
+
+    const drops = deathDropsFromPlayerStorage(
+      storageWith(slots, { slot: 'head', item: makeItemStack('iron_helmet', 1) }),
+      at,
+      metadata,
+    )
+
+    expect(drops).toStrictEqual([
+      { item: 'stick', count: 2, at, durability: null, customName: 'Keepsake' },
+    ])
+  })
+
+  it('does not apply a stale Vanishing curse to a replacement item in that slot', () => {
+    const metadata: PlayerSlotMetadata = {
+      customNames: {},
+      enchantedItems: {
+        '0': {
+          item: 'iron_helmet',
+          durability: durabilityForItem('iron_helmet'),
+          enchantments: [{ id: 'vanishing_curse', level: 1 }],
+        },
+      },
+    }
+
+    const drops = deathDropsFromPlayerStorage(storageWith([makeItemStack('stick', 1)]), at, metadata)
+
+    expect(drops).toStrictEqual([{ item: 'stick', count: 1, at, durability: null }])
   })
 
   it('drops equipped items, and leaves an empty equipment slot uncounted', () => {

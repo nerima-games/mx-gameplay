@@ -431,53 +431,39 @@ describe('blockLoot — the deterministic half', () => {
 })
 
 describe('blockLoot — fortune', () => {
-  // `<reference-impl>/packages/inventory/domain/enchantment.config.ts:46`.
-  it.effect('carries the reference’s multipliers, including the two that repeat', () =>
+  it.effect('reports the expected multipliers from vanilla integer rolls', () =>
     Effect.sync(() => {
-      expect(FORTUNE_MULTIPLIERS.get(1)).toBe(1.33)
-      expect(FORTUNE_MULTIPLIERS.get(2)).toBe(1.75)
-      expect(FORTUNE_MULTIPLIERS.get(3)).toBe(2.5)
-      // Levels 4 and 5 repeat level 3 in the reference. Trimming them would
-      // silently change what an over-levelled tool does.
-      expect(FORTUNE_MULTIPLIERS.get(4)).toBe(2.5)
-      expect(FORTUNE_MULTIPLIERS.get(5)).toBe(2.5)
+      expect(FORTUNE_MULTIPLIERS.get(1)).toBe(4 / 3)
+      expect(FORTUNE_MULTIPLIERS.get(2)).toBe(7 / 4)
+      expect(FORTUNE_MULTIPLIERS.get(3)).toBe(11 / 5)
+      expect(FORTUNE_MULTIPLIERS.get(4)).toBe(8 / 3)
+      expect(FORTUNE_MULTIPLIERS.get(5)).toBe(22 / 7)
     }),
   )
 
-  // `enchantment.ts:107-111`, and its comment is the specification: the
-  // multiplier is the EXPECTED total, so the integer part is guaranteed and the
-  // fractional part is the chance of one more. Fortune I must be a bonus about a
-  // third of the time rather than `Math.round(1.33)` rounding to zero.
-  it.effect('REGRESSION: fortune I is stochastic, not a rounded-down no-op', () =>
+  it.effect('Fortune I uses vanilla’s three-outcome integer roll', () =>
     Effect.sync(() => {
-      // expectedExtra = 0.33, guaranteed = 0.
-      expect(rollFortuneExtraDrops(1, 0.32)).toBe(1)
-      expect(rollFortuneExtraDrops(1, 0.34)).toBe(0)
-      expect(rollFortuneExtraDrops(1, 0.99)).toBe(0)
-
-      // THE BOUNDARY IS NOT AT 0.33, and that is a fact about the reference's
-      // arithmetic rather than about this port: `1.33 - 1` is
-      // 0.33000000000000007 in a double, so a roll of exactly 0.33 is UNDER the
-      // threshold and grants the bonus. Pinned rather than rounded away —
-      // "fix" it to `Math.round(x * 100) / 100` and the drop rate moves by a
-      // ten-thousandth for a reason nobody would find later.
-      expect(1.33 - 1).toBeGreaterThan(0.33)
-      expect(rollFortuneExtraDrops(1, 0.33)).toBe(1)
+      expect(rollFortuneExtraDrops(1, 0)).toBe(0)
+      expect(rollFortuneExtraDrops(1, 2 / 3 - Number.EPSILON)).toBe(0)
+      expect(rollFortuneExtraDrops(1, 2 / 3)).toBe(1)
+      expect(rollFortuneExtraDrops(1, 1 - Number.EPSILON)).toBe(1)
     }),
   )
 
-  it.effect('fortune III guarantees one and rolls for the second', () =>
+  it.effect('Fortune III reaches one, two, and three extra multipliers', () =>
     Effect.sync(() => {
-      // expectedExtra = 1.5, guaranteed = 1.
-      expect(rollFortuneExtraDrops(3, 0.49)).toBe(2)
-      expect(rollFortuneExtraDrops(3, 0.5)).toBe(1)
+      expect(rollFortuneExtraDrops(3, 0.4)).toBe(1)
+      expect(rollFortuneExtraDrops(3, 0.6)).toBe(2)
+      expect(rollFortuneExtraDrops(3, 0.8)).toBe(3)
+      expect(rollFortuneExtraDrops(3, 0.6 - Number.EPSILON)).toBe(1)
     }),
   )
 
-  it.effect('level 0, a level with no row and a NaN roll all add nothing', () =>
+  it.effect('level 0 and invalid inputs add nothing', () =>
     Effect.sync(() => {
       expect(rollFortuneExtraDrops(0, 0)).toBe(0)
-      expect(rollFortuneExtraDrops(9, 0)).toBe(0)
+      expect(rollFortuneExtraDrops(-1, 0)).toBe(0)
+      expect(rollFortuneExtraDrops(1.5, 0)).toBe(0)
       expect(rollFortuneExtraDrops(3, Number.NaN)).toBe(0)
     }),
   )
@@ -489,8 +475,8 @@ describe('blockLoot — fortune', () => {
       expect(blockLoot(GLOWSTONE, NO_TOOL, NO_LUCK)).toStrictEqual([
         { item: 'glowstone_dust', count: 2 },
       ])
-      // Fortune III: +1 guaranteed, +1 more on a roll under 0.5.
-      expect(blockLoot(GLOWSTONE, { fortuneLevel: 3 }, [0])).toStrictEqual([
+      // A 0.4 roll selects two times the base count for Fortune III.
+      expect(blockLoot(GLOWSTONE, { fortuneLevel: 3 }, [0.4])).toStrictEqual([
         { item: 'glowstone_dust', count: 4 },
       ])
     }),
@@ -553,7 +539,7 @@ describe('blockLoot — fortune', () => {
       // harvested block for its normal drop' above. What this test still
       // proves: fortuneLevel: 3 added nothing beyond the row's own base
       // count, because `fortuneApplies` refuses whenever `silkTouch` is true.
-      expect(blockLoot(GLOWSTONE, { fortuneLevel: 3, silkTouch: true }, [0])).toStrictEqual([
+      expect(blockLoot(GLOWSTONE, { fortuneLevel: 3, silkTouch: true }, [0.4])).toStrictEqual([
         { item: 'glowstone', count: 2 },
       ])
     }),
