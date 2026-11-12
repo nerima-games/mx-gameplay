@@ -117,15 +117,13 @@ const CROP_MAX_AGE: Readonly<Partial<Record<BlockType, number>>> = {
 }
 const NETHER_WART_MAX_AGE = 3
 const NETHER_WART_RANDOM_TICK_CHANCE = 10 / 100
+const SAPLING_STAGE_ONE = Schema.decodeUnknownSync(BlockStateStageSchema)(1)
 
 const cropAge = (value: number): BlockStateAge | undefined =>
   Result.getOrUndefined(Schema.decodeUnknownResult(BlockStateAgeSchema)(value))
 
 const validCropAgeRange = (age: number, maximumAge: number): boolean =>
   cropAge(age) !== undefined && cropAge(maximumAge) !== undefined && age <= maximumAge
-
-const saplingStage = (value: number): BlockStateStage | undefined =>
-  Result.getOrUndefined(Schema.decodeUnknownResult(BlockStateStageSchema)(value))
 
 const typeOf = (block: BlockId): BlockType | undefined =>
   Result.getOrUndefined(blockTypeOfId(block))
@@ -182,13 +180,13 @@ export const cropAgeAfterRandomTick = (
   maximumAge: number,
   speedLevel: number,
   roll: number,
-): Readonly<{ _tag: 'Grew'; age: number } | { _tag: 'NoChange'; reason: 'growthMiss' | 'mature' } | { _tag: 'InvalidInput' }> => {
+): Readonly<{ _tag: 'Grew'; age: BlockStateAge } | { _tag: 'NoChange'; reason: 'growthMiss' | 'mature' } | { _tag: 'InvalidInput' }> => {
   const probability = cropGrowthProbability(speedLevel)
   if (probability === undefined || !Number.isFinite(roll) || roll < 0 || roll >= 1) return { _tag: 'InvalidInput' }
   if (!validCropAgeRange(age, maximumAge)) return { _tag: 'InvalidInput' }
   if (age >= maximumAge) return { _tag: 'NoChange', reason: 'mature' }
   return roll < probability
-    ? { _tag: 'Grew', age: age + 1 }
+    ? { _tag: 'Grew', age: Schema.decodeUnknownSync(BlockStateAgeSchema)(age + 1) }
     : { _tag: 'NoChange', reason: 'growthMiss' }
 }
 
@@ -197,7 +195,7 @@ export const netherWartAgeAfterRandomTick = (
   roll: number,
 ): Readonly<{
   _tag: 'Grew'
-  age: number
+  age: BlockStateAge
 } | {
   _tag: 'NoChange'
   reason: 'growthMiss' | 'mature'
@@ -208,7 +206,7 @@ export const netherWartAgeAfterRandomTick = (
   if (!validCropAgeRange(age, NETHER_WART_MAX_AGE)) return { _tag: 'InvalidInput' }
   if (age >= NETHER_WART_MAX_AGE) return { _tag: 'NoChange', reason: 'mature' }
   return roll < NETHER_WART_RANDOM_TICK_CHANCE
-    ? { _tag: 'Grew', age: age + 1 }
+    ? { _tag: 'Grew', age: Schema.decodeUnknownSync(BlockStateAgeSchema)(age + 1) }
     : { _tag: 'NoChange', reason: 'growthMiss' }
 }
 
@@ -216,11 +214,11 @@ export const cropAgeAfterBoneMeal = (
   age: number,
   maximumAge: number,
   stages: number,
-): Readonly<{ _tag: 'Grew'; age: number } | { _tag: 'NoChange'; reason: 'mature' } | { _tag: 'InvalidInput' }> => {
+): Readonly<{ _tag: 'Grew'; age: BlockStateAge } | { _tag: 'NoChange'; reason: 'mature' } | { _tag: 'InvalidInput' }> => {
   if (!Number.isInteger(stages) || stages < 2 || stages > 5) return { _tag: 'InvalidInput' }
   if (!validCropAgeRange(age, maximumAge)) return { _tag: 'InvalidInput' }
   if (age >= maximumAge) return { _tag: 'NoChange', reason: 'mature' }
-  return { _tag: 'Grew', age: Math.min(maximumAge, age + stages) }
+  return { _tag: 'Grew', age: Schema.decodeUnknownSync(BlockStateAgeSchema)(Math.min(maximumAge, age + stages)) }
 }
 
 export const doorOpenAfterToggle = (open: boolean): boolean => !open
@@ -247,27 +245,56 @@ export const stairPlacementState = (
   return { facing, half }
 }
 
-export const saplingStageAfterGrowthAttempt = (
+type SaplingStageTransition = Readonly<
+  | { _tag: 'Advanced'; stage: BlockStateStage }
+  | { _tag: 'TreeRequired' }
+  | { _tag: 'NoChange'; reason: 'growthMiss' | 'blocked' }
+  | { _tag: 'InvalidInput' }
+  | { _tag: 'InvalidState' }
+>
+type SaplingTransitionAfterValidatedStage = Exclude<SaplingStageTransition, { _tag: 'InvalidState' }>
+
+export function saplingStageAfterGrowthAttempt(
+  stage: BlockStateStage,
+  roll: number,
+  treeSpaceAvailable: boolean,
+): SaplingTransitionAfterValidatedStage
+export function saplingStageAfterGrowthAttempt(
   stage: number,
   roll: number,
   treeSpaceAvailable: boolean,
-): Readonly<{ _tag: 'Advanced'; stage: 1 } | { _tag: 'TreeRequired' } | { _tag: 'NoChange'; reason: 'growthMiss' | 'blocked' } | { _tag: 'InvalidInput' | 'InvalidState' }> => {
+): SaplingStageTransition
+export function saplingStageAfterGrowthAttempt(
+  stage: number,
+  roll: number,
+  treeSpaceAvailable: boolean,
+): SaplingStageTransition {
   if (!Number.isFinite(roll) || roll < 0 || roll >= 1) return { _tag: 'InvalidInput' }
   if (stage !== 0 && stage !== 1) return { _tag: 'InvalidState' }
   if (roll >= 1 / 7) return { _tag: 'NoChange', reason: 'growthMiss' }
-  if (stage === 0) return { _tag: 'Advanced', stage: 1 }
+  if (stage === 0) return { _tag: 'Advanced', stage: SAPLING_STAGE_ONE }
   return treeSpaceAvailable ? { _tag: 'TreeRequired' } : { _tag: 'NoChange', reason: 'blocked' }
 }
 
-export const saplingStageAfterBoneMeal = (
+export function saplingStageAfterBoneMeal(
+  stage: BlockStateStage,
+  roll: number,
+  treeSpaceAvailable: boolean,
+): SaplingTransitionAfterValidatedStage
+export function saplingStageAfterBoneMeal(
   stage: number,
   roll: number,
   treeSpaceAvailable: boolean,
-): Readonly<{ _tag: 'Advanced'; stage: 1 } | { _tag: 'TreeRequired' } | { _tag: 'NoChange'; reason: 'growthMiss' | 'blocked' } | { _tag: 'InvalidInput' | 'InvalidState' }> => {
+): SaplingStageTransition
+export function saplingStageAfterBoneMeal(
+  stage: number,
+  roll: number,
+  treeSpaceAvailable: boolean,
+): SaplingStageTransition {
   if (!Number.isFinite(roll) || roll < 0 || roll >= 1) return { _tag: 'InvalidInput' }
   if (stage !== 0 && stage !== 1) return { _tag: 'InvalidState' }
   if (roll >= 0.45) return { _tag: 'NoChange', reason: 'growthMiss' }
-  if (stage === 0) return { _tag: 'Advanced', stage: 1 }
+  if (stage === 0) return { _tag: 'Advanced', stage: SAPLING_STAGE_ONE }
   return treeSpaceAvailable ? { _tag: 'TreeRequired' } : { _tag: 'NoChange', reason: 'blocked' }
 }
 
@@ -275,20 +302,16 @@ const outcomeForSapling = (
   port: BlockStateWorldPort,
   position: BlockPosition,
   cell: BlockStateCell,
-  transition: ReturnType<typeof saplingStageAfterGrowthAttempt> | ReturnType<typeof saplingStageAfterBoneMeal>,
+  transition: SaplingTransitionAfterValidatedStage,
 ): Effect.Effect<BlockStateRuleOutcome> => {
   if (transition._tag === 'Advanced') {
-    const stage = saplingStage(transition.stage)
-    return stage === undefined
-      ? Effect.succeed({ _tag: 'InvalidState', position })
-      : writeEdits(port, [{ position, block: cell.block, state: { ...cell.state, stage } }], position)
+    return writeEdits(port, [{ position, block: cell.block, state: { ...cell.state, stage: transition.stage } }], position)
   }
   if (transition._tag === 'TreeRequired') {
     return Effect.succeed({ _tag: 'Unsupported', operation: 'treePlacement', position })
   }
   if (transition._tag === 'NoChange') return Effect.succeed({ _tag: 'NoChange', reason: transition.reason })
-  if (transition._tag === 'InvalidInput') return Effect.succeed({ _tag: 'InvalidInput', reason: 'randomRoll' })
-  return Effect.succeed({ _tag: 'InvalidState', position })
+  return Effect.succeed({ _tag: 'InvalidInput', reason: 'randomRoll' })
 }
 
 const toggleDoor = (
@@ -327,8 +350,7 @@ const toggleDoor = (
       return { _tag: 'InvalidState', position: otherPosition }
     }
 
-    const doorId = idOf('door')
-    if (doorId === undefined) return { _tag: 'InvalidState', position }
+    const doorId = Option.getOrThrow(blockIdOf('door'))
     const open = blockType === 'door_open' || lowerCell.state.open === true
     const nextOpen = doorOpenAfterToggle(open)
     const edits = [lowerCell, otherCell].map((cell): BlockStateEdit => ({
@@ -356,8 +378,7 @@ const placeDoor = (
     if (typeOf(lowerAccess.cell.block) !== 'air' || typeOf(upperAccess.cell.block) !== 'air') {
       return { _tag: 'InvalidState', position }
     }
-    const door = idOf('door')
-    if (door === undefined) return { _tag: 'InvalidState', position }
+    const door = Option.getOrThrow(blockIdOf('door'))
     return yield* writeEdits(port, [
       {
         position,
@@ -405,12 +426,10 @@ const growCrop = (
       return { _tag: 'InvalidInput', reason }
     }
     if (transition._tag === 'NoChange') return { _tag: 'NoChange', reason: transition.reason }
-    const nextAge = cropAge(transition.age)
-    if (nextAge === undefined) return { _tag: 'InvalidState', position }
     return yield* writeEdits(port, [{
       position,
       block: cell.block,
-      state: { ...cell.state, age: nextAge },
+      state: { ...cell.state, age: transition.age },
     }], position)
   })
 
@@ -453,12 +472,10 @@ const applyBoneMeal = (
       if (transition._tag === 'InvalidInput') {
         return { _tag: 'InvalidInput', reason: 'cropAge' }
       }
-      const nextAge = cropAge(transition.age)
-      if (nextAge === undefined) return { _tag: 'InvalidState', position }
       return yield* writeEdits(port, [{
         position,
         block: cell.block,
-        state: { ...cell.state, age: nextAge },
+        state: { ...cell.state, age: transition.age },
       }], position)
     }
 
