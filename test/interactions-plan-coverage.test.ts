@@ -25,6 +25,7 @@ import {
   type BlockPosition,
   type ItemType,
 } from '@nerima-games/mc-kernel'
+import type { ChunkStoreApi } from '@nerima-games/mc-worldgen'
 import {
   BrewingServiceStateSchema,
   BrewingServiceErrorSchema,
@@ -77,6 +78,7 @@ import {
   drainItemUseResults,
   drainBlockPlacementResults,
   drainBlockUseResults,
+  drainBlockStateRuleResults,
   drainBowShotResults,
   drainMeleeAttackResults,
   drainVillagerTradeResults,
@@ -256,6 +258,7 @@ const makeHarness = (options: Readonly<{
   readonly entities?: EntityRoster<MobBehaviour>
   readonly blocks?: ReadonlyArray<readonly [BlockPosition, BlockId]>
   readonly loadedChunks?: ReadonlyArray<string>
+  readonly chunkStoreOverride?: (store: ChunkStoreApi) => ChunkStoreApi
   readonly omitProjectileOwnerId?: boolean
   readonly omitProjectileRegistration?: boolean
   readonly omitDroppedItemsOwnerId?: boolean
@@ -285,7 +288,7 @@ const makeHarness = (options: Readonly<{
     world(options.blocks ?? []),
     options.loadedChunks ?? ['0,0'],
   )
-  const chunkStore = store.api
+  const chunkStore = options.chunkStoreOverride?.(store.api) ?? store.api
   const registrations = gameplayOwnerRegistrations({
     playerPose: options.playerPose ?? INITIAL_PLAYER_POSE,
     ...(options.fishing === undefined ? {} : { fishing: options.fishing }),
@@ -2943,6 +2946,26 @@ describe('registered block-use and placement requests in the interactions stage'
     expect(harness.commitCalls()).toBe(0)
   })
 
+  it('routes a door block use through the registered block-state rule stage', async () => {
+    const doorPosition = blockPosition(BlockAxis(3), BlockAxis(64), BlockAxis(1))
+    const harness = await Effect.runPromise(makeHarness({
+      blocks: [[doorPosition, Option.getOrThrow(blockIdOf('door'))]],
+    }))
+    await Effect.runPromise(requestBlockUse(harness.state, 'use-door', doorPosition))
+
+    await harness.run()
+
+    expect(await Effect.runPromise(drainBlockUseResults(harness.state))).toStrictEqual([])
+    const stateRules = harness.stages.find(({ id }) => id === GAMEPLAY_STAGE_IDS.blockStateRules)
+    expect(stateRules).toBeDefined()
+    await Effect.runPromise(stateRules!.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer)))
+    expect(await Effect.runPromise(drainBlockStateRuleResults(harness.state))).toStrictEqual([{
+      requestId: 'use-door',
+      outcome: { _tag: 'Unsupported', operation: 'readState', position: doorPosition },
+    }])
+    expect(harness.commitCalls()).toBe(0)
+  })
+
   it('commits a survival placement block write and inventory consumption once', async () => {
     const target = blockPosition(BlockAxis(3), BlockAxis(64), BlockAxis(3))
     const harness = await Effect.runPromise(makeHarness({
@@ -4785,6 +4808,44 @@ describe('schema-valid interaction edge paths', () => {
       outcome: { _tag: 'stateUnsupported', operation: 'readState' },
     }])
     expect(await Effect.runPromise(Ref.get(mismatched.state.unsupportedOperations))).toStrictEqual([])
+  })
+
+  it('returns the typed unavailable state result when a chunk unloads after the bone meal snapshot', async () => {
+    const boneMealPosition = blockPosition(BlockAxis(8), BlockAxis(64), BlockAxis(1))
+    const wheatBlock = Option.getOrThrow(blockIdOf('wheat_crop'))
+    let targetReads = 0
+    const harness = await Effect.runPromise(makeHarness({
+      blocks: [[boneMealPosition, wheatBlock]],
+      playerStorage: playerStorageWithItem('bone_meal', 1),
+      crops: { crops: [{ dimension: 'overworld', position: boneMealPosition, crop: 'wheat_crop', growthSecs: 0 }] },
+      chunkStoreOverride: (store) => ({
+        ...store,
+        getBlock: (targetPosition) => {
+          if (blockPositionKeyOf(targetPosition) === blockPositionKeyOf(boneMealPosition) && targetReads++ === 1) {
+            return Effect.succeed({ _tag: 'ChunkNotLoaded' } as const)
+          }
+          return store.getBlock(targetPosition)
+        },
+      }),
+    }))
+    await Effect.runPromise(requestBoneMeal(harness.state, 'bone-meal-unloaded-state', boneMealPosition))
+
+    await harness.run()
+
+    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toStrictEqual([{
+      action: 'ApplyBoneMeal',
+      requestId: 'bone-meal-unloaded-state',
+      heldItem: 'bone_meal',
+      success: false,
+      consumedCount: 0,
+      outcome: { _tag: 'stateUnavailable', at: boneMealPosition, reason: 'ChunkNotLoaded' },
+    }])
+    const storage = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+      PlayerStorageSnapshotSchema,
+    ))
+    expect(storage.state.inventory.slots[0]?.item).toBe('bone_meal')
+    expect(harness.commitCalls()).toBe(0)
   })
 
   it('detects crop-owner revision conflicts for planting and harvesting and refuses state-less bone meal', async () => {

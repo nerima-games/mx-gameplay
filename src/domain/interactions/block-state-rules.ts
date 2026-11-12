@@ -44,6 +44,9 @@ export type BlockStateWorldPort = Readonly<{
   write: (edits: ReadonlyArray<BlockStateEdit>) => Effect.Effect<BlockStateWrite>
 }>
 
+// ChunkStoreApi stores block IDs only, so this adapter cannot return a stateful cell.
+type ChunkStoreBlockStateRead = Exclude<BlockStateRead, Readonly<{ _tag: 'Found' }>>
+
 export type BlockStateRuleRequest = Readonly<{
   requestId: string
   position: BlockPosition
@@ -140,18 +143,11 @@ type BlockStateAccess =
   | Readonly<{ _tag: 'Failed'; failure: BlockStateRuleFailure }>
 
 const readAccess = (position: BlockPosition, reading: BlockStateRead): BlockStateAccess => {
-  switch (reading._tag) {
-    case 'Found': return { _tag: 'Found', cell: reading.cell }
-    case 'Unsupported':
-      return { _tag: 'Failed', failure: { _tag: 'Unsupported', operation: reading.operation, position } }
-    case 'Unavailable':
-      return { _tag: 'Failed', failure: { _tag: 'Unavailable', position, reason: reading.reason } }
-    default: {
-      const exhaustive: never = reading
-      void exhaustive
-      return { _tag: 'Failed', failure: { _tag: 'Unsupported', operation: 'readState', position } }
-    }
+  if (reading._tag === 'Found') return { _tag: 'Found', cell: reading.cell }
+  if (reading._tag === 'Unsupported') {
+    return { _tag: 'Failed', failure: { _tag: 'Unsupported', operation: reading.operation, position } }
   }
+  return { _tag: 'Failed', failure: { _tag: 'Unavailable', position, reason: reading.reason } }
 }
 
 const writeEdits = (
@@ -164,22 +160,15 @@ const writeEdits = (
     : { _tag: 'Unsupported', operation: result.operation, position },
   )
 
-export const blockStateWorldPortForChunkStore = (store: ChunkStoreApi): BlockStateWorldPort => ({
-  read: (position) => Effect.map(store.getBlock(position), (reading): BlockStateRead => {
-    switch (reading._tag) {
-      case 'Block':
-        return { _tag: 'Unsupported', operation: 'readState', block: reading.block }
-      case 'ChunkNotLoaded':
-        return { _tag: 'Unavailable', reason: 'ChunkNotLoaded' }
-      case 'OutOfWorld':
-        return { _tag: 'Unavailable', reason: 'OutOfWorld' }
-      default: {
-        const exhaustive: never = reading
-        void exhaustive
-        return { _tag: 'Unsupported', operation: 'readState' }
-      }
-    }
-  }),
+export const blockStateWorldPortForChunkStore = (store: ChunkStoreApi): Readonly<{
+  read: (position: BlockPosition) => Effect.Effect<ChunkStoreBlockStateRead>
+  write: BlockStateWorldPort['write']
+}> => ({
+  read: (position) => Effect.map(store.getBlock(position), (reading): ChunkStoreBlockStateRead =>
+    reading._tag === 'Block'
+      ? { _tag: 'Unsupported', operation: 'readState', block: reading.block }
+      : { _tag: 'Unavailable', reason: reading._tag },
+  ),
   write: () => Effect.succeed({ _tag: 'Unsupported', operation: 'writeState' }),
 })
 

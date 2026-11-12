@@ -121,7 +121,6 @@ import {
   type WorldCommitPlanFragment,
   CropSnapshotSchema,
   advanceCrop,
-  advanceCropByBoneMeal,
   isMatureCrop,
   isCropType,
   SaturationModifier,
@@ -2498,109 +2497,25 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                   break itemUseAction
                 }
                 const stateRead = yield* blockStateWorldPortForChunkStore(store).read(position)
-                if (stateRead._tag === 'Unsupported') {
-                  itemUseResults.push({
-                    action: request.action,
-                    requestId: request.requestId,
-                    heldItem: request.heldItem,
-                    success: false,
-                    consumedCount: 0,
-                    outcome: {
-                      _tag: 'stateUnsupported',
+                const stateOutcome = stateRead._tag === 'Unsupported'
+                  ? {
+                      _tag: 'stateUnsupported' as const,
                       at: position,
                       block: blockType,
                       operation: stateRead.operation,
-                    },
-                  })
-                  break itemUseAction
-                }
-                if (stateRead._tag === 'Unavailable') {
-                  itemUseResults.push({
-                    action: request.action,
-                    requestId: request.requestId,
-                    heldItem: request.heldItem,
-                    success: false,
-                    consumedCount: 0,
-                    outcome: {
-                      _tag: 'stateUnavailable',
+                    }
+                  : {
+                      _tag: 'stateUnavailable' as const,
                       at: position,
                       reason: stateRead.reason,
-                    },
-                  })
-                  break itemUseAction
-                }
-                const cropSnapshot = yield* Effect.result(commit.coordinator.snapshot(
-                  commit.cropOwnerId,
-                  CropSnapshotSchema,
-                ))
-                if (Result.isFailure(cropSnapshot)) {
-                  yield* recordGameplayStageFailure(state, {
-                    _tag: 'Failed',
-                    operation: 'OwnerSnapshot',
-                    subject: 'ItemUse',
-                    error: cropSnapshot.failure,
-                  })
-                  break itemUseAction
-                }
-                if (cropSnapshot.success.revision !== observed.success.revision) {
-                  yield* recordGameplayStageFailure(state, {
-                    _tag: 'Failed',
-                    operation: 'OwnerSnapshot',
-                    subject: 'ItemUse',
-                    error: new WorldRevisionConflict({
-                      expected: observed.success.revision,
-                      actual: cropSnapshot.success.revision,
-                    }),
-                  })
-                  yield* requeueItemUsesFrom(itemUseIndex)
-                  break itemUseRequests
-                }
-                const crop = cropAt(cropSnapshot.success.state, dimension, position)
-                if (crop === undefined || crop.crop !== blockType) {
-                  itemUseResults.push({
-                    action: request.action,
-                    requestId: request.requestId,
-                    heldItem: request.heldItem,
-                    success: false,
-                    consumedCount: 0,
-                    outcome: {
-                      _tag: 'cropOwnerMismatch',
-                      at: position,
-                      block: blockType,
-                      registeredCrop: crop?.crop,
-                    },
-                  })
-                  break itemUseAction
-                }
-                const nextCrops = cropSnapshot.success.state.crops.map((entry) =>
-                  entry === crop ? advanceCropByBoneMeal(entry) : entry,
-                )
-                const cropChange = cropCandidate(commit.cropOwnerId, nextCrops)
-                const success = candidate !== undefined
-                if (success) {
-                  const committed = yield* Effect.result(commit.coordinator.commit({
-                    expectedRevision: observed.success.revision,
-                    expectedDimensions: [],
-                    changes: [candidate, cropChange],
-                  }))
-                  if (Result.isFailure(committed)) {
-                    yield* recordGameplayStageFailure(state, {
-                      _tag: 'Failed',
-                      operation: 'WorldCommit',
-                      subject: 'ItemUse',
-                      error: committed.failure,
-                    })
-                    yield* requeueItemUsesFrom(itemUseIndex)
-                    break itemUseRequests
-                  }
-                }
+                    }
                 itemUseResults.push({
                   action: request.action,
                   requestId: request.requestId,
                   heldItem: request.heldItem,
-                  success,
-                  consumedCount: success ? 1 : 0,
-                  outcome,
+                  success: false,
+                  consumedCount: 0,
+                  outcome: stateOutcome,
                 })
                 break itemUseAction
               }

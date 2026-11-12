@@ -510,4 +510,26 @@ describe('block state rules', () => {
         .toStrictEqual({ _tag: 'Unsupported', operation: 'writeState' })
     }),
   )
+
+  it.effect('the registered state stage reports an out-of-world read as unavailable', () =>
+    Effect.gen(function* () {
+      const state = yield* makeGameplayFrameState
+      const store = {
+        getBlock: () => Effect.succeed({ _tag: 'OutOfWorld' } as const),
+      } as unknown as ChunkStoreApi
+      const stage = makeBlockStateRulesStage(state, store)
+      yield* requestBlockStateRule(state, {
+        requestId: 'out-of-world-state-read',
+        position,
+        operation: { _tag: 'ToggleDoor' },
+      })
+
+      yield* stage.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* drainBlockStateRuleResults(state)).toStrictEqual([{
+        requestId: 'out-of-world-state-read',
+        outcome: { _tag: 'Unavailable', position, reason: 'OutOfWorld' },
+      }])
+    }),
+  )
 })
