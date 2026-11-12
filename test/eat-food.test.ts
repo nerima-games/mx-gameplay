@@ -199,12 +199,15 @@ describe('resolveFoodUse', () => {
 
   it.effect('uses the status-effect removal path for honey bottle poison clearing', () =>
     Effect.sync(() => {
-      const poisoned = applyStatusEffect(emptyStatusEffectState(), {
+      const poisoned = Result.getOrThrow(applyStatusEffect(emptyStatusEffectState(), {
         type: 'poison',
         amplifier: 0,
         durationSecs: 10,
-      })
-      const cleared = effectsOf(request('honey_bottle')).reduce(applyStatusEffect, poisoned)
+      })).state
+      const cleared = effectsOf(request('honey_bottle')).reduce(
+        (state, effect) => Result.getOrThrow(applyStatusEffect(state, effect)).state,
+        poisoned,
+      )
       expect(cleared).toStrictEqual({ effects: [] })
     }),
   )

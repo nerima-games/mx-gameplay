@@ -1,4 +1,5 @@
 import { describe, it } from '@effect/vitest'
+import { Result } from 'effect'
 import * as FastCheck from 'fast-check'
 import { DeltaTimeSecs, type ItemType } from '@nerima-games/mc-kernel'
 import { durabilityForItem } from '@nerima-games/mc-sim'
@@ -59,14 +60,12 @@ const expectedVillagerOfferTables = {
   ],
 } as const
 
-const itemForEnchantment: Readonly<Record<EnchantmentId, ItemType>> = {
-  protection: 'iron_helmet',
-  sharpness: 'iron_sword',
-  efficiency: 'iron_pickaxe',
-  unbreaking: 'flint_and_steel',
-  fortune: 'diamond_pickaxe',
-  power: 'bow',
-}
+const itemForEnchantment: Readonly<Partial<Record<EnchantmentId, ItemType>>> = Object.fromEntries(
+  ENCHANTMENT_IDS.flatMap((id) => {
+    const item = ENCHANTMENT_REGISTRY[id].applicableItems[0]
+    return item === undefined ? [] : [[id, item]]
+  }),
+)
 
 const ironPickaxeWith = (
   id: 'efficiency' | 'unbreaking',
@@ -133,9 +132,11 @@ describe('player systems properties', () => {
             durationSecs: durationSecs + extraSecs,
             amplifier: amplifier - 1,
           })
-          const effect = refreshed.effects[0]
+          if (Result.isFailure(refreshed)) return false
+          const refreshedState = refreshed.success.state
+          const effect = refreshedState.effects[0]
 
-          return refreshed.effects.length === 1 &&
+          return refreshedState.effects.length === 1 &&
             effect?.amplifier === amplifier &&
             effect.remainingSecs === durationSecs &&
             effect.pulseClockSecs === 0.25
@@ -148,10 +149,12 @@ describe('player systems properties', () => {
     // Fails if speed remains active after its full duration or expires before the boundary.
     FastCheck.assert(
       FastCheck.property(FastCheck.integer({ min: 1, max: 600 }), (durationSecs) => {
-        const active = applyStatusEffect(emptyStatusEffectState(), {
+        const activeResult = applyStatusEffect(emptyStatusEffectState(), {
           type: 'speed',
           durationSecs,
         })
+        if (Result.isFailure(activeResult)) return false
+        const active = activeResult.success.state
         const before = tickStatusEffects(active, DeltaTimeSecs(durationSecs - 1))
         const exact = tickStatusEffects(active, DeltaTimeSecs(durationSecs))
         const after = tickStatusEffects(active, DeltaTimeSecs(durationSecs + 1))
@@ -197,6 +200,7 @@ describe('player systems properties', () => {
         FastCheck.integer({ min: 1, max: 6 }),
         (id, level) => {
           const item = itemForEnchantment[id]
+          if (item === undefined) return ENCHANTMENT_REGISTRY[id].applicableItems.length === 0
           const decoded = decodeEnchantedItem({
             item,
             durability: durabilityForItem(item),
