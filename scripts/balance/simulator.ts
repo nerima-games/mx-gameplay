@@ -5,6 +5,7 @@ import {
   BlockId,
   ChunkAxis,
   ITEM_TYPES,
+  NonNegativeTickCount,
   PositionAxis,
   blockPosition,
   capabilityOfBlockId,
@@ -12,7 +13,6 @@ import {
   position,
   type BlockPosition,
   type BlockType,
-  type DeltaTimeSecs,
   type ItemType,
   type Position,
 } from '@nerima-games/mc-kernel'
@@ -28,12 +28,12 @@ import {
   emptyInventory,
   transferToFurnace,
   INITIAL_TIME_STATE,
+  isNight as isSimulationNight,
   matchSmeltingRecipe,
   timeOfDay,
   type TimeState,
 } from '@nerima-games/mc-sim'
 import {
-  isNight,
   miningDurationSecsForBlock,
   miningLootContextForItem,
 } from '../../src/index.js'
@@ -270,14 +270,14 @@ const positionFromIndex = (index: number): BlockPosition => {
   return blockPosition(BlockAxis(x), BlockAxis(y), BlockAxis(z))
 }
 
+const stateAfterTicks = (initialTimeState: TimeState, ticks: number): TimeState => {
+  const elapsedTicks = Result.getOrThrow(NonNegativeTickCount.result(ticks))
+  return Result.getOrThrow(advanceTime(initialTimeState, elapsedTicks))
+}
+
 const firstNightTick = (initialTimeState: TimeState): number => {
   const ticksPerDay = Math.ceil(dayLengthSecs(initialTimeState) * BALANCE_HARNESS_TICKS_PER_SECOND)
-  const reachedNight = (ticks: number): boolean => {
-    const state = Result.getOrThrow(
-      advanceTime(initialTimeState, (ticks / BALANCE_HARNESS_TICKS_PER_SECOND) as DeltaTimeSecs),
-    )
-    return isNight(timeOfDay(state))
-  }
+  const reachedNight = (ticks: number): boolean => isSimulationNight(stateAfterTicks(initialTimeState, ticks))
   if (reachedNight(0)) return 0
   let low = 0
   let high = ticksPerDay
@@ -291,12 +291,7 @@ const firstNightTick = (initialTimeState: TimeState): number => {
 
 const firstNightEndTick = (initialTimeState: TimeState, startTick: number): number => {
   const ticksPerDay = Math.ceil(dayLengthSecs(initialTimeState) * BALANCE_HARNESS_TICKS_PER_SECOND)
-  const reachedNight = (ticks: number): boolean => {
-    const state = Result.getOrThrow(
-      advanceTime(initialTimeState, (ticks / BALANCE_HARNESS_TICKS_PER_SECOND) as DeltaTimeSecs),
-    )
-    return isNight(timeOfDay(state))
-  }
+  const reachedNight = (ticks: number): boolean => isSimulationNight(stateAfterTicks(initialTimeState, ticks))
   let low = startTick
   let high = startTick + Math.ceil(ticksPerDay / 2)
   while (reachedNight(high)) high += 1
@@ -310,9 +305,7 @@ const firstNightEndTick = (initialTimeState: TimeState, startTick: number): numb
 
 const firstTwilightTick = (initialTimeState: TimeState, firstNight: number): number => {
   const entersTwilightOrNight = (ticks: number): boolean => {
-    const state = Result.getOrThrow(
-      advanceTime(initialTimeState, (ticks / BALANCE_HARNESS_TICKS_PER_SECOND) as DeltaTimeSecs),
-    )
+    const state = stateAfterTicks(initialTimeState, ticks)
     const phase = dayPhase(timeOfDay(state))
     return phase === 'dusk' || phase === 'night'
   }
