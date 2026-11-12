@@ -142,94 +142,17 @@ export {
 } from './registration-core.js'
 
 import {
-  ChunkStore,
-  TimeService,
-  entityManagerTag,
-  GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
   makeGameplayFrameStateForOwner,
 } from './registration-core.js'
-import type {
-  ChunkStoreApi,
-  EntityManager,
-  EntityManagerApi,
-  GameplayFrameState,
-  GameplayStageContext,
-  GameplayStageCommitServices,
-  GameplayStageOptions,
-  InventoryServiceApi,
-  MobBehaviour,
-  PlayerServiceApi,
-  TimeServiceApi,
-  VehicleFrameEnvironment,
-  VehicleServiceApi,
-} from './registration-core.js'
-import {
-  DomainEventBus,
-  WorldCommitCoordinator,
-  makeBrewingService,
-  makeFishingService,
-  makeProjectileService,
-  makeTntService,
-  PROJECTILE_REPLICATED_OWNER_ID,
-  TNT_REPLICATED_OWNER_ID,
-} from '@nerima-games/mc-sim'
+import type { ChunkStore, EntityManager, TimeService } from './registration-core.js'
+import { WorldCommitCoordinator } from '@nerima-games/mc-sim'
+import type { DomainEventBus } from '@nerima-games/mc-sim'
 import type { GameModule, StageRegistration } from '@nerima-games/mc-kernel'
 import { Effect, Layer } from 'effect'
-import { makeVehiclesStage } from './vehicles-stage.js'
-import { makeInteractionsStage } from './interactions-stage.js'
-import { makeBrewingAdvanceStage } from './brewing-advance-stage.js'
-import { makeFireStage } from './fire-stage.js'
-import { makeSurvivalHungerStage } from './survival-hunger-stage.js'
-import { makeEntitiesStage } from './entities-stage.js'
-import { makeEnderDragonStage } from './ender-dragon-stage.js'
-import { makeFluidsStage } from './fluids-stage.js'
-import { makeTimeWeatherStage } from './time-weather-stage.js'
-import {
-  GAMEPLAY_PLAYER_OWNER_ID,
-  GAMEPLAY_CROPS_OWNER_ID,
-  GAMEPLAY_BREWING_OWNER_ID,
-  GAMEPLAY_ENTITIES_OWNER_ID,
-  GAMEPLAY_FISHING_OWNER_ID,
-  GAMEPLAY_DROPPED_ITEMS_OWNER_ID,
-  GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
-  GAMEPLAY_VITALS_OWNER_ID,
-  GAMEPLAY_VILLAGER_TRADES_OWNER_ID,
-  GAMEPLAY_TNT_SOURCES_OWNER_ID,
-} from './gameplay-owner-registrations.js'
+import { makeGameplayStagesWithState } from './gameplay-stage-composition.js'
+export { gameplayStages } from './gameplay-stages.js'
 
-export const gameplayStages = (
-  state: GameplayFrameState,
-  store: ChunkStoreApi,
-  roster: EntityManagerApi<MobBehaviour>,
-  _inventory: InventoryServiceApi | undefined,
-  _player: PlayerServiceApi | undefined,
-  time: TimeServiceApi,
-  vehicleService?: VehicleServiceApi,
-  vehicleEnvironment?: VehicleFrameEnvironment,
-  options: GameplayStageOptions = {},
-  commit?: GameplayStageCommitServices,
-): ReadonlyArray<StageRegistration> => {
-  const context: GameplayStageContext = {
-    state,
-    store,
-    roster,
-    time,
-    vehicleService,
-    vehicleEnvironment,
-    options,
-    commit,
-  }
-  return [
-    makeVehiclesStage(context),
-    makeInteractionsStage(context),
-    makeFireStage(context),
-    makeSurvivalHungerStage(context),
-    makeEntitiesStage(context),
-    makeEnderDragonStage(context),
-    makeFluidsStage(context),
-    makeTimeWeatherStage(context),
-  ]
-}
+import { GAMEPLAY_VITALS_OWNER_ID } from './gameplay-owner-registrations.js'
 
 /**
  * Build the module's state and its stages together.
@@ -271,43 +194,12 @@ export const makeGameplayStages: Effect.Effect<
   never,
   ChunkStore | EntityManager | TimeService | WorldCommitCoordinator | DomainEventBus
 > = Effect.gen(function* () {
-  const store = yield* ChunkStore
-  const roster = yield* entityManagerTag<MobBehaviour>()
-  const time = yield* TimeService
   const coordinator = yield* WorldCommitCoordinator
-  const eventBus = yield* DomainEventBus
-  const brewingService = yield* makeBrewingService(GAMEPLAY_BREWING_OWNER_ID)
-  const fishingService = yield* makeFishingService(GAMEPLAY_FISHING_OWNER_ID)
-  const projectileService = yield* makeProjectileService()
-  const tntService = yield* makeTntService(TNT_REPLICATED_OWNER_ID)
   const state = yield* makeGameplayFrameStateForOwner({
     coordinator,
     vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID,
   })
-
-  const stages = gameplayStages(state, store, roster, undefined, undefined, time, undefined, undefined, {}, {
-    coordinator,
-    playerOwnerId: GAMEPLAY_PLAYER_OWNER_ID,
-    playerStorageOwnerId: GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
-    cropOwnerId: GAMEPLAY_CROPS_OWNER_ID,
-    droppedItemsOwnerId: GAMEPLAY_DROPPED_ITEMS_OWNER_ID,
-    vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID,
-    experienceOrbsOwnerId: GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
-    villagerTradesOwnerId: GAMEPLAY_VILLAGER_TRADES_OWNER_ID,
-    brewingOwnerId: GAMEPLAY_BREWING_OWNER_ID,
-    fishingOwnerId: GAMEPLAY_FISHING_OWNER_ID,
-    entitiesOwnerId: GAMEPLAY_ENTITIES_OWNER_ID,
-    projectileOwnerId: PROJECTILE_REPLICATED_OWNER_ID,
-    tntOwnerId: TNT_REPLICATED_OWNER_ID,
-    tntSourcesOwnerId: GAMEPLAY_TNT_SOURCES_OWNER_ID,
-    brewingService,
-    fishingService,
-    projectileService,
-    tntService,
-    eventBus,
-  })
-  const brewingAdvance = yield* makeBrewingAdvanceStage(brewingService, coordinator)
-  return [...stages, brewingAdvance.stage]
+  return yield* makeGameplayStagesWithState(state)
 })
 
 /**

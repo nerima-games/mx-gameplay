@@ -168,6 +168,7 @@ import {
   type EnderPearlThrowRequest,
   type GameplayFrameState,
 } from '../src/stages/registration'
+import { makeGameplayStagesWithState } from '../src/stages/gameplay-stage-composition.js'
 import {
   candidateForItemUse,
   candidateForPlayerStorageItemUse,
@@ -211,7 +212,7 @@ import {
 import { brimming, emptyInventoryLayer, emptySlots, makeInventoryDouble } from './support/inventory-service-double'
 import { gameplayCommitServicesLayer, makeGameplayCommitServices, makeTransactionalChunkStoreDouble } from './support/transactional-stage-doubles'
 import { FrameServicesLayer } from './support/frame-services'
-import { FRAME_DELTA, runFrames } from './support/frame-runner'
+import { FRAME_DELTA, runFrame, runFrames } from './support/frame-runner'
 import { blockPosition as fixtureBlockPosition, position as fixturePosition } from './support/coordinate-fixtures'
 import {
   GAMEPLAY_CROPS_OWNER_ID,
@@ -2552,6 +2553,91 @@ describe('the module contract has caught up with this file’s shape', () => {
       ])
       expect(yield* getPlayerMovementSpeedMultiplier(state)).toBe(1)
     }),
+  )
+
+  it.effect('production composition commits pufferfish effects to the registered status owner and ticks poison', () =>
+    Effect.gen(function* () {
+      const coordinator = yield* WorldCommitCoordinator
+      const state = yield* makeGameplayFrameStateForOwner({
+        coordinator,
+        vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID,
+      })
+      const [storageBefore, vitalsBefore] = yield* Effect.all([
+        coordinator.snapshot(GAMEPLAY_PLAYER_STORAGE_OWNER_ID, PlayerStorageSnapshotSchema),
+        coordinator.snapshot(GAMEPLAY_VITALS_OWNER_ID, ExperienceOrbVitalsOwnerSnapshotSchema),
+      ])
+      const foodSlots = [...storageBefore.state.inventory.slots]
+      foodSlots[0] = itemStack('pufferfish', 1)
+      const storageCandidate = Schema.decodeUnknownSync(PlayerStorageSnapshotSchema)({
+        ...storageBefore.state,
+        inventory: { ...storageBefore.state.inventory, slots: foodSlots },
+      })
+      const lowVitals = { ...vitalsBefore.state.vitals, hungerPoints: HungerPoints(10) }
+      const vitalsCandidate = Schema.decodeUnknownSync(ExperienceOrbVitalsOwnerSnapshotSchema)({
+        vitals: lowVitals,
+      })
+      yield* coordinator.commit({
+        expectedRevision: storageBefore.revision,
+        expectedDimensions: [],
+        changes: [
+          { ownerId: GAMEPLAY_PLAYER_STORAGE_OWNER_ID, state: storageCandidate },
+          { ownerId: GAMEPLAY_VITALS_OWNER_ID, state: vitalsCandidate },
+        ],
+      })
+
+      const stages = yield* makeGameplayStagesWithState(state)
+      expect(stages).toHaveLength(9)
+      yield* requestFoodUse(state, 'production-eat-pufferfish', 'pufferfish', {
+        healthPoints: lowVitals.healthPoints,
+        hungerPoints: lowVitals.hungerPoints,
+        maxHungerPoints: lowVitals.maxHungerPoints,
+      })
+      yield* runFrame(stages, DeltaTimeSecs(0))
+
+      expect(yield* drainItemUseResults(state)).toMatchObject([{
+        action: 'EatFood',
+        requestId: 'production-eat-pufferfish',
+        success: true,
+        consumedCount: 1,
+      }])
+      const storageAfterFood = yield* coordinator.snapshot(
+        GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+        PlayerStorageSnapshotSchema,
+      )
+      const statusAfterFood = yield* coordinator.snapshot(
+        GAMEPLAY_STATUS_EFFECTS_OWNER_ID,
+        StatusEffectStateSchema,
+      )
+      expect(countStoredItem(storageAfterFood.state, 'pufferfish')).toBe(0)
+      expect(statusAfterFood.state.effects).toHaveLength(3)
+      expect(statusAfterFood.state.effects.find(({ type }) => type === 'poison')).toMatchObject({
+        remainingSecs: 60,
+        amplifier: 1,
+      })
+      expect(statusAfterFood.state.effects.find(({ type }) => type === 'nausea')).toMatchObject({
+        remainingSecs: 15,
+        amplifier: 0,
+      })
+      expect(statusAfterFood.state.effects.find(({ type }) => type === 'hunger')).toMatchObject({
+        remainingSecs: 15,
+        amplifier: 2,
+      })
+
+      yield* runFrame(stages, DeltaTimeSecs(0.6))
+
+      const vitalsAfterPulse = yield* coordinator.snapshot(
+        GAMEPLAY_VITALS_OWNER_ID,
+        ExperienceOrbVitalsOwnerSnapshotSchema,
+      )
+      const statusAfterPulse = yield* coordinator.snapshot(
+        GAMEPLAY_STATUS_EFFECTS_OWNER_ID,
+        StatusEffectStateSchema,
+      )
+      expect(vitalsAfterPulse.state.vitals.healthPoints).toBe(lowVitals.healthPoints - 1)
+      expect(statusAfterPulse.state.effects.find(({ type }) => type === 'poison')?.remainingSecs).toBeCloseTo(59.4)
+      expect(yield* Ref.get(state.operationFailures)).toStrictEqual([])
+      expect(yield* Ref.get(state.unsupportedOperations)).toStrictEqual([])
+    }).pipe(Effect.provide(Layer.orDie(emptyWorld))),
   )
 
   it.effect('applies the registered Wither I pulse at 40 ticks', () =>
