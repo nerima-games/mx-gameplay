@@ -25,15 +25,27 @@ import {
   WorldRevisionConflict,
 } from '@nerima-games/mc-sim'
 import {
+  EXPERIENCE_ORB_ATTRACTION_RADIUS_BLOCKS,
+  EXPERIENCE_ORB_LIFETIME_TICKS,
+  EXPERIENCE_ORB_PICKUP_RADIUS_BLOCKS,
+  EXPERIENCE_ORB_PICKUP_INTERVAL_TICKS,
   ExperienceOrbAbsorptionSchema,
   ExperienceOrbAbsorptionCommitResultInvalidSchema,
   ExperienceOrbAbsorptionFailureSchema,
   ExperienceOrbOwnerSnapshotSchema,
   ExperienceOrbValueSchema,
   ExperienceOrbVitalsOwnerSnapshotSchema,
+  applyMendingRepair,
   absorbExperienceOrb,
+  canCollectExperienceOrbAtTick,
   createExperienceOrbValue,
   experienceOrbOwnerRegistration,
+  isExperienceOrbExpiredAtTick,
+  isExperienceOrbWithinAttractionRange,
+  isExperienceOrbWithinPickupRange,
+  mergeSameValueExperienceOrbStacks,
+  pullExperienceOrbTowardPlayer,
+  splitExperienceOrbReward,
   type ExperienceOrbAbsorptionContext,
   type ExperienceOrbOwnerSnapshot,
   vitalsOwnerRegistration,
@@ -54,6 +66,32 @@ const VANILLA_XP_FIXTURE = {
     { level: 17, points: 394 },
     { level: 31, points: 1507 },
     { level: 32, points: 1628 },
+  ],
+} as const
+
+const VANILLA_XP_ORB_FIXTURE = {
+  sources: [
+    'https://minecraft.wiki/w/Experience',
+    'https://minecraft.wiki/w/Drops',
+  ],
+  edition: 'Java Edition 26.3',
+  ticksPerSecond: 20,
+  attractionRadiusBlocks: 7.25,
+  lifetimeTicks: 6000,
+  maximumOrbPickupsPerSecond: 10,
+  naturalOrbValues: [
+    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 17, 37, 73, 149, 307, 617, 1237, 2477,
+  ],
+  splitValues: [2477, 1237, 617, 307, 149, 73, 37, 17, 7, 3, 1],
+  splitExamples: [
+    { total: 0, values: [] },
+    { total: 1, values: [1] },
+    { total: 11, values: [7, 3, 1] },
+    { total: 12, values: [7, 3, 1, 1] },
+    { total: 17, values: [17] },
+    { total: 18, values: [17, 1] },
+    { total: 1000, values: [617, 307, 73, 3] },
+    { total: 2478, values: [2477, 1] },
   ],
 } as const
 
@@ -259,6 +297,26 @@ describe('experience orb values', () => {
 
       expect(vitals['state'].vitals.totalExperience).toBe(1)
       expect(events.map(({ _tag }) => _tag)).toEqual(['ExperienceCollected'])
+    }),
+  )
+
+  it.effect('consumes one count from a merged orb and preserves its XP value', () =>
+    Effect.gen(function* () {
+      const orb = yield* Effect.fromResult(createExperienceOrbValue(7))
+      const coordinator = yield* makeCoordinator(SPAWN_VITALS, {
+        orbs: [{ id: PICKUP_CONTEXT.orb, value: orb, count: 2 }],
+      })
+
+      const events = yield* absorbExperienceOrb(coordinator, OWNER_IDS, PICKUP_CONTEXT)
+      const vitals = yield* coordinator.snapshot(
+        OWNER_IDS.vitals,
+        ExperienceOrbVitalsOwnerSnapshotSchema,
+      )
+      const orbs = yield* coordinator.snapshot(OWNER_IDS.orbs, ExperienceOrbOwnerSnapshotSchema)
+
+      expect(vitals['state'].vitals.totalExperience).toBe(7)
+      expect(orbs['state'].orbs).toEqual([{ id: PICKUP_CONTEXT.orb, value: orb, count: 1 }])
+      expect(events[0]).toMatchObject({ _tag: 'ExperienceCollected', amount: 7 })
     }),
   )
 
@@ -526,5 +584,297 @@ describe('experience orb values', () => {
       ),
       { numRuns: 100, seed: 90102 },
     )
+  })
+})
+
+describe('experience orb decisions', () => {
+  const origin = { dimension: 'overworld', x: 0, y: 64, z: 0 }
+
+  it('matches fixed Java Edition 26.3 orb, movement, and pickup fixtures', () => {
+    expect(VANILLA_XP_ORB_FIXTURE.sources).toEqual([
+      'https://minecraft.wiki/w/Experience',
+      'https://minecraft.wiki/w/Drops',
+    ])
+    expect(VANILLA_XP_ORB_FIXTURE.edition).toBe('Java Edition 26.3')
+    expect(EXPERIENCE_ORB_ATTRACTION_RADIUS_BLOCKS).toBe(
+      VANILLA_XP_ORB_FIXTURE.attractionRadiusBlocks,
+    )
+    expect(EXPERIENCE_ORB_LIFETIME_TICKS).toBe(VANILLA_XP_ORB_FIXTURE.lifetimeTicks)
+    expect(EXPERIENCE_ORB_PICKUP_INTERVAL_TICKS).toBe(
+      VANILLA_XP_ORB_FIXTURE.ticksPerSecond /
+        VANILLA_XP_ORB_FIXTURE.maximumOrbPickupsPerSecond,
+    )
+
+    for (const { total, values } of VANILLA_XP_ORB_FIXTURE.splitExamples) {
+      const result = splitExperienceOrbReward(total)
+      expect(Result.isSuccess(result)).toBe(true)
+      if (Result.isSuccess(result)) expect(result.success).toEqual(values)
+    }
+
+    expect(VANILLA_XP_ORB_FIXTURE.naturalOrbValues).toEqual([
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 17, 37, 73, 149, 307, 617, 1237, 2477,
+    ])
+    expect(VANILLA_XP_ORB_FIXTURE.splitValues).toEqual([
+      2477, 1237, 617, 307, 149, 73, 37, 17, 7, 3, 1,
+    ])
+  })
+
+  it('splits valid integer rewards into descending vanilla base orb values', () => {
+    const baseValues = new Set<number>(VANILLA_XP_ORB_FIXTURE.splitValues)
+    FastCheck.assert(
+      FastCheck.property(FastCheck.integer({ min: 0, max: 100_000 }), (points) => {
+        const result = splitExperienceOrbReward(points)
+        if (Result.isFailure(result)) return false
+        const values = result.success
+        return values.reduce((sum, value) => sum + value, 0) === points &&
+          values.every((value) => baseValues.has(value)) &&
+          values.every((value, index) => index === 0 || values[index - 1]! >= value)
+      }),
+      { numRuns: 250, seed: 81301 },
+    )
+
+    for (const invalid of [-1, 1.25, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(Result.isFailure(splitExperienceOrbReward(invalid))).toBe(true)
+    }
+  })
+
+  it('carries a Mending storage candidate forward and bounds the XP remainder', () => {
+    const repair = {
+      repairedStorage: { revision: 1 },
+      experienceRemaining: 3,
+      repairedDurability: { current: 10, max: 100 },
+      selectedLocation: 'main_hand',
+    } as const
+    expect(applyMendingRepair(7, repair)).toEqual(Result.succeed(repair))
+    expect(applyMendingRepair(7, { ...repair, experienceRemaining: 0 })).toEqual(Result.succeed({
+      ...repair,
+      experienceRemaining: 0,
+    }))
+    expect(applyMendingRepair(7, { ...repair, experienceRemaining: 8 })).toEqual(Result.fail({
+      _tag: 'ExperienceOrbMendingInvalid',
+      reason: 'remaining-exceeds-orb-value',
+      orbExperience: 7,
+      experienceRemaining: 8,
+    }))
+    expect(Result.isFailure(applyMendingRepair(7, { ...repair, experienceRemaining: 1.5 }))).toBe(true)
+
+    FastCheck.assert(
+      FastCheck.property(
+        FastCheck.integer({ min: 1, max: 1000 }),
+        FastCheck.integer({ min: 0, max: 1000 }),
+        (orbExperience, proposedRemaining) => {
+          const experienceRemaining = Math.min(orbExperience, proposedRemaining)
+          const storage = { marker: orbExperience }
+          const applied = applyMendingRepair(orbExperience, {
+            repairedStorage: storage,
+            experienceRemaining,
+            repairedDurability: null,
+            selectedLocation: 'slot:0',
+          })
+          return Result.isSuccess(applied) &&
+            applied.success.repairedStorage === storage &&
+            applied.success.experienceRemaining === experienceRemaining &&
+            applied.success.selectedLocation === 'slot:0'
+        },
+      ),
+      { numRuns: 250, seed: 81306 },
+    )
+  })
+
+  it('includes the attraction boundary and excludes just-outside positions', () => {
+    expect(Result.isSuccess(isExperienceOrbWithinAttractionRange(
+      origin,
+      { ...origin, x: 7.25 },
+    ))).toBe(true)
+    expect(isExperienceOrbWithinAttractionRange(
+      origin,
+      { ...origin, x: 7.250001 },
+    )).toEqual(Result.succeed(false))
+    expect(isExperienceOrbWithinAttractionRange(origin, origin)).toEqual(Result.succeed(true))
+    expect(isExperienceOrbWithinAttractionRange(origin, {
+      ...origin,
+      dimension: 'the_nether',
+    })).toEqual(Result.succeed(false))
+    expect(Result.isFailure(isExperienceOrbWithinAttractionRange(origin, {
+      ...origin,
+      x: Number.NaN,
+    }))).toBe(true)
+  })
+
+  it('pulls attracted orbs toward the player with a stronger pull at close range', () => {
+    const player = { dimension: 'overworld', x: 0, y: 0, z: 0 }
+    const farPulled = pullExperienceOrbTowardPlayer(
+      { dimension: 'overworld', x: 3, y: 0, z: 0 },
+      player,
+      0.5,
+    )
+    const nearPulled = pullExperienceOrbTowardPlayer(
+      { dimension: 'overworld', x: 1, y: 0, z: 0 },
+      player,
+      0.5,
+    )
+    expect(Result.isSuccess(farPulled)).toBe(true)
+    expect(Result.isSuccess(nearPulled)).toBe(true)
+    if (Result.isFailure(farPulled) || Result.isFailure(nearPulled)) return
+
+    const expectedFarTravel = 2 * (1 - 3 / 7.25) ** 2 * 0.5
+    expect(farPulled.success.x).toBeCloseTo(3 - expectedFarTravel)
+    expect(3 - farPulled.success.x).toBeGreaterThan(0)
+    expect(1 - nearPulled.success.x).toBeGreaterThan(3 - farPulled.success.x)
+    expect(pullExperienceOrbTowardPlayer(
+      { dimension: 'nether', x: 3, y: 0, z: 0 },
+      player,
+      0.5,
+    )).toEqual(Result.succeed({ dimension: 'nether', x: 3, y: 0, z: 0 }))
+    expect(pullExperienceOrbTowardPlayer(
+      { dimension: 'overworld', x: 3, y: 0, z: 0 },
+      player,
+      0,
+    )).toEqual(Result.succeed({ dimension: 'overworld', x: 3, y: 0, z: 0 }))
+    expect(Result.isFailure(pullExperienceOrbTowardPlayer(
+      { dimension: 'overworld', x: 3, y: 0, z: 0 },
+      player,
+      -0.1,
+    ))).toBe(true)
+  })
+
+  it('collects only within the player contact radius', () => {
+    expect(EXPERIENCE_ORB_PICKUP_RADIUS_BLOCKS).toBe(1)
+    expect(isExperienceOrbWithinPickupRange(origin, { ...origin, x: 1 })).toEqual(Result.succeed(true))
+    expect(isExperienceOrbWithinPickupRange(origin, { ...origin, x: 1.0001 })).toEqual(Result.succeed(false))
+    expect(isExperienceOrbWithinPickupRange(origin, { ...origin, dimension: 'the_nether' }))
+      .toEqual(Result.succeed(false))
+  })
+
+  it('agrees with Euclidean distance and is symmetric over valid positions', () => {
+    FastCheck.assert(
+      FastCheck.property(
+        FastCheck.tuple(
+          FastCheck.integer({ min: -10, max: 10 }),
+          FastCheck.integer({ min: -10, max: 10 }),
+          FastCheck.integer({ min: -10, max: 10 }),
+        ),
+        ([x, y, z]) => {
+          const first = { dimension: 'overworld', x: 0, y: 0, z: 0 }
+          const second = { dimension: 'overworld', x, y, z }
+          const forward = isExperienceOrbWithinAttractionRange(first, second)
+          const reverse = isExperienceOrbWithinAttractionRange(second, first)
+          const expected = Math.hypot(x, y, z) <= EXPERIENCE_ORB_ATTRACTION_RADIUS_BLOCKS
+          return Result.isSuccess(forward) &&
+            Result.isSuccess(reverse) &&
+            forward.success === expected &&
+            reverse.success === expected
+        },
+      ),
+      { numRuns: 250, seed: 81302 },
+    )
+  })
+
+  it('expires at 6000 ticks, keeps legacy orbs, and rejects malformed ticks', () => {
+    expect(isExperienceOrbExpiredAtTick(100, 6099)).toEqual(Result.succeed(false))
+    expect(isExperienceOrbExpiredAtTick(100, 6100)).toEqual(Result.succeed(true))
+    expect(isExperienceOrbExpiredAtTick(100, 6101)).toEqual(Result.succeed(true))
+    expect(isExperienceOrbExpiredAtTick(101, 100)).toEqual(Result.succeed(false))
+    expect(isExperienceOrbExpiredAtTick(undefined, 6100)).toEqual(Result.succeed(false))
+    expect(Result.isFailure(isExperienceOrbExpiredAtTick(-1, 6000))).toBe(true)
+    expect(Result.isFailure(isExperienceOrbExpiredAtTick(0, -1))).toBe(true)
+
+    FastCheck.assert(
+      FastCheck.property(
+        FastCheck.integer({ min: 0, max: 1_000_000 }),
+        FastCheck.integer({ min: 0, max: 10_000 }),
+        (spawnedAt, age) => {
+          const expired = isExperienceOrbExpiredAtTick(spawnedAt, spawnedAt + age)
+          return Result.isSuccess(expired) && expired.success === (age >= 6000)
+        },
+      ),
+      { numRuns: 250, seed: 81303 },
+    )
+  })
+
+  it('enforces the two-tick pickup interval and permits the first pickup', () => {
+    expect(canCollectExperienceOrbAtTick(10, undefined)).toEqual(Result.succeed(true))
+    expect(canCollectExperienceOrbAtTick(10, 10)).toEqual(Result.succeed(false))
+    expect(canCollectExperienceOrbAtTick(11, 10)).toEqual(Result.succeed(false))
+    expect(canCollectExperienceOrbAtTick(12, 10)).toEqual(Result.succeed(true))
+    expect(canCollectExperienceOrbAtTick(9, 10)).toEqual(Result.succeed(false))
+    expect(Result.isFailure(canCollectExperienceOrbAtTick(-1, undefined))).toBe(true)
+    expect(Result.isFailure(canCollectExperienceOrbAtTick(2, -1))).toBe(true)
+
+    FastCheck.assert(
+      FastCheck.property(
+        FastCheck.integer({ min: 0, max: 1_000_000 }),
+        FastCheck.integer({ min: 0, max: 4 }),
+        (lastCollectedTick, elapsedTicks) => {
+          const eligible = canCollectExperienceOrbAtTick(
+            lastCollectedTick + elapsedTicks,
+            lastCollectedTick,
+          )
+          return Result.isSuccess(eligible) &&
+            eligible.success === (elapsedTicks >= EXPERIENCE_ORB_PICKUP_INTERVAL_TICKS)
+        },
+      ),
+      { numRuns: 250, seed: 81304 },
+    )
+  })
+
+  it('merges equal values by count while preserving the XP value', () => {
+    expect(mergeSameValueExperienceOrbStacks(
+      { value: 7, count: 2 },
+      { value: 7 },
+    )).toEqual(Result.succeed({ value: 7, count: 3 }))
+    expect(mergeSameValueExperienceOrbStacks(
+      { value: 7, count: 2 },
+      { value: 8, count: 3 },
+    )).toEqual(Result.succeed(undefined))
+    expect(Result.isFailure(mergeSameValueExperienceOrbStacks(
+      { value: 7, count: 0 },
+      { value: 7 },
+    ))).toBe(true)
+
+    FastCheck.assert(
+      FastCheck.property(
+        FastCheck.integer({ min: 1, max: 1000 }),
+        FastCheck.integer({ min: 1, max: 1000 }),
+        FastCheck.integer({ min: 1, max: 1000 }),
+        FastCheck.integer({ min: 1, max: 1000 }),
+        (leftValue, rightValue, leftCount, rightCount) => {
+          const merged = mergeSameValueExperienceOrbStacks(
+            { value: leftValue, count: leftCount },
+            { value: rightValue, count: rightCount },
+          )
+          if (Result.isFailure(merged)) return false
+          if (leftValue !== rightValue) return merged.success === undefined
+          return merged.success?.value === leftValue &&
+            merged.success.count === leftCount + rightCount
+        },
+      ),
+      { numRuns: 250, seed: 81305 },
+    )
+  })
+
+  it('accepts optional orb position and spawn ticks in strict snapshots', () => {
+    expect(Result.isSuccess(Schema.decodeUnknownResult(ExperienceOrbOwnerSnapshotSchema)({
+      orbs: [{
+        id: PICKUP_CONTEXT.orb,
+        value: 7,
+        count: 2,
+        position: origin,
+        spawnedAt: 100,
+      }],
+    }))).toBe(true)
+    expect(Result.isSuccess(Schema.decodeUnknownResult(ExperienceOrbOwnerSnapshotSchema)({
+      orbs: [{ id: PICKUP_CONTEXT.orb, value: 7 }],
+    }))).toBe(true)
+    for (const invalidRecord of [
+      { id: PICKUP_CONTEXT.orb, value: 7, count: 0 },
+      { id: PICKUP_CONTEXT.orb, value: 7, position: { ...origin, x: Number.NaN } },
+      { id: PICKUP_CONTEXT.orb, value: 7, spawnedAt: -1 },
+      { id: PICKUP_CONTEXT.orb, value: 7, unexpected: true },
+    ]) {
+      expect(Result.isFailure(Schema.decodeUnknownResult(ExperienceOrbOwnerSnapshotSchema)({
+        orbs: [invalidRecord],
+      }))).toBe(true)
+    }
   })
 })

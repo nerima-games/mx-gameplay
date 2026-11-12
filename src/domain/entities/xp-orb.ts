@@ -35,6 +35,199 @@ const isSingleElement = <A>(values: ReadonlyArray<A>): values is readonly [A] =>
 export const ExperienceOrbValueSchema: typeof ExperienceAmountSchema = ExperienceAmountSchema
 export type ExperienceOrbValue = Schema.Schema.Type<typeof ExperienceOrbValueSchema>
 
+const ExperienceOrbRewardPointsSchema = Schema.Int.check(
+  Schema.isBetween({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER }),
+)
+
+/** Java Edition drops integer rewards as the largest fitting orb values first. */
+const EXPERIENCE_ORB_VALUE_DENOMINATIONS = [
+  2477,
+  1237,
+  617,
+  307,
+  149,
+  73,
+  37,
+  17,
+  7,
+  3,
+  1,
+] as const
+
+export const EXPERIENCE_ORB_ATTRACTION_RADIUS_BLOCKS = 7.25
+export const EXPERIENCE_ORB_PICKUP_RADIUS_BLOCKS = 1
+export const EXPERIENCE_ORB_LIFETIME_TICKS = 6000
+export const EXPERIENCE_ORB_PICKUP_INTERVAL_TICKS = 2
+
+/** Splits a validated mob reward into vanilla orb values, largest first. */
+export const splitExperienceOrbReward = (
+  totalPoints: unknown,
+): Result.Result<ReadonlyArray<number>, Schema.SchemaError> => {
+  const decoded = Schema.decodeUnknownResult(ExperienceOrbRewardPointsSchema)(totalPoints)
+  if (Result.isFailure(decoded)) return Result.fail(decoded.failure)
+
+  let remaining = decoded.success
+  const values: Array<number> = []
+  for (const denomination of EXPERIENCE_ORB_VALUE_DENOMINATIONS) {
+    const count = Math.floor(remaining / denomination)
+    for (let index = 0; index < count; index += 1) values.push(denomination)
+    remaining %= denomination
+  }
+  return Result.succeed(values)
+}
+
+export type ExperienceOrbMendingInput<Storage, Durability, Location extends string> = Readonly<{
+  repairedStorage: Storage
+  experienceRemaining: number
+  repairedDurability: Durability
+  selectedLocation: Location
+}>
+
+export type ExperienceOrbMendingInvalid = Readonly<{
+  _tag: 'ExperienceOrbMendingInvalid'
+  reason: 'remaining-exceeds-orb-value'
+  orbExperience: number
+  experienceRemaining: number
+}>
+
+/** Validates the Mending remainder while carrying the stage's storage candidate forward. */
+export const applyMendingRepair = <Storage, Durability, Location extends string>(
+  orbExperience: unknown,
+  repair: Readonly<{
+    repairedStorage: Storage
+    experienceRemaining: unknown
+    repairedDurability: Durability
+    selectedLocation: Location
+  }>,
+): Result.Result<
+  ExperienceOrbMendingInput<Storage, Durability, Location>,
+  Schema.SchemaError | ExperienceOrbMendingInvalid
+> => {
+  const decodedOrbExperience = Schema.decodeUnknownResult(ExperienceOrbValueSchema)(orbExperience)
+  if (Result.isFailure(decodedOrbExperience)) return Result.fail(decodedOrbExperience.failure)
+  const decodedRemaining = Schema.decodeUnknownResult(ExperienceOrbRewardPointsSchema)(
+    repair.experienceRemaining,
+  )
+  if (Result.isFailure(decodedRemaining)) return Result.fail(decodedRemaining.failure)
+  if (decodedRemaining.success > decodedOrbExperience.success) {
+    return Result.fail({
+      _tag: 'ExperienceOrbMendingInvalid',
+      reason: 'remaining-exceeds-orb-value',
+      orbExperience: decodedOrbExperience.success,
+      experienceRemaining: decodedRemaining.success,
+    })
+  }
+  return Result.succeed({
+    ...repair,
+    experienceRemaining: decodedRemaining.success,
+  })
+}
+
+/** True when an orb is in the same dimension and within vanilla's pull range. */
+export const isExperienceOrbWithinAttractionRange = (
+  orbPosition: unknown,
+  playerPosition: unknown,
+): Result.Result<boolean, Schema.SchemaError> => {
+  const orb = Schema.decodeUnknownResult(WorldPositionSchema)(orbPosition)
+  if (Result.isFailure(orb)) return Result.fail(orb.failure)
+  const player = Schema.decodeUnknownResult(WorldPositionSchema)(playerPosition)
+  if (Result.isFailure(player)) return Result.fail(player.failure)
+
+  if (orb.success.dimension !== player.success.dimension) return Result.succeed(false)
+  const dx = player.success.x - orb.success.x
+  const dy = player.success.y - orb.success.y
+  const dz = player.success.z - orb.success.z
+  const distanceSquared = dx * dx + dy * dy + dz * dz
+  const radiusSquared = EXPERIENCE_ORB_ATTRACTION_RADIUS_BLOCKS ** 2
+  return Result.succeed(distanceSquared <= radiusSquared)
+}
+
+export const isExperienceOrbWithinPickupRange = (
+  orbPosition: unknown,
+  playerPosition: unknown,
+): Result.Result<boolean, Schema.SchemaError> => {
+  const orb = Schema.decodeUnknownResult(WorldPositionSchema)(orbPosition)
+  if (Result.isFailure(orb)) return Result.fail(orb.failure)
+  const player = Schema.decodeUnknownResult(WorldPositionSchema)(playerPosition)
+  if (Result.isFailure(player)) return Result.fail(player.failure)
+  if (orb.success.dimension !== player.success.dimension) return Result.succeed(false)
+
+  const dx = player.success.x - orb.success.x
+  const dy = player.success.y - orb.success.y
+  const dz = player.success.z - orb.success.z
+  return Result.succeed(
+    dx * dx + dy * dy + dz * dz <= EXPERIENCE_ORB_PICKUP_RADIUS_BLOCKS ** 2,
+  )
+}
+
+/**
+ * Moves an attracted orb toward the player. The owner snapshot stores position,
+ * not velocity, so this preserves the documented range and increasing pull as
+ * distance closes without inventing persisted motion state.
+ */
+export const pullExperienceOrbTowardPlayer = (
+  orbPosition: unknown,
+  playerPosition: unknown,
+  dtSeconds: unknown,
+): Result.Result<Schema.Schema.Type<typeof WorldPositionSchema>, Schema.SchemaError> => {
+  const orb = Schema.decodeUnknownResult(WorldPositionSchema)(orbPosition)
+  if (Result.isFailure(orb)) return Result.fail(orb.failure)
+  const player = Schema.decodeUnknownResult(WorldPositionSchema)(playerPosition)
+  if (Result.isFailure(player)) return Result.fail(player.failure)
+  const elapsed = Schema.decodeUnknownResult(Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)))(dtSeconds)
+  if (Result.isFailure(elapsed)) return Result.fail(elapsed.failure)
+  if (orb.success.dimension !== player.success.dimension) return Result.succeed(orb.success)
+
+  const dx = player.success.x - orb.success.x
+  const dy = player.success.y - orb.success.y
+  const dz = player.success.z - orb.success.z
+  const distance = Math.hypot(dx, dy, dz)
+  if (distance === 0 || distance > EXPERIENCE_ORB_ATTRACTION_RADIUS_BLOCKS) {
+    return Result.succeed(orb.success)
+  }
+
+  const closeness = 1 - distance / EXPERIENCE_ORB_ATTRACTION_RADIUS_BLOCKS
+  const speed = 2 * closeness * closeness
+  const travel = Math.min(distance, speed * elapsed.success)
+  return Schema.decodeUnknownResult(WorldPositionSchema)({
+    dimension: orb.success.dimension,
+    x: orb.success.x + dx / distance * travel,
+    y: orb.success.y + dy / distance * travel,
+    z: orb.success.z + dz / distance * travel,
+  })
+}
+
+/** Legacy records without a spawn tick have no known age and remain eligible. */
+export const isExperienceOrbExpiredAtTick = (
+  spawnedAt: unknown | undefined,
+  currentTick: unknown,
+): Result.Result<boolean, Schema.SchemaError> => {
+  const current = Schema.decodeUnknownResult(SimulationTickSchema)(currentTick)
+  if (Result.isFailure(current)) return Result.fail(current.failure)
+  if (spawnedAt === undefined) return Result.succeed(false)
+  const spawned = Schema.decodeUnknownResult(SimulationTickSchema)(spawnedAt)
+  if (Result.isFailure(spawned)) return Result.fail(spawned.failure)
+  return Result.succeed(
+    current.success >= spawned.success &&
+      current.success - spawned.success >= EXPERIENCE_ORB_LIFETIME_TICKS,
+  )
+}
+
+/** Vanilla collects at most one orb every two simulation ticks (10 per second). */
+export const canCollectExperienceOrbAtTick = (
+  currentTick: unknown,
+  lastCollectedTick: unknown | undefined,
+): Result.Result<boolean, Schema.SchemaError> => {
+  const current = Schema.decodeUnknownResult(SimulationTickSchema)(currentTick)
+  if (Result.isFailure(current)) return Result.fail(current.failure)
+  if (lastCollectedTick === undefined) return Result.succeed(true)
+  const last = Schema.decodeUnknownResult(SimulationTickSchema)(lastCollectedTick)
+  if (Result.isFailure(last)) return Result.fail(last.failure)
+  return Result.succeed(
+    current.success >= last.success + EXPERIENCE_ORB_PICKUP_INTERVAL_TICKS,
+  )
+}
+
 export const ExperienceOrbAbsorptionSchema: Schema.ConstraintDecoder<ReadonlyArray<DomainEvent>> =
   Schema.Array(DomainEventSchema)
 export type ExperienceOrbAbsorption = Schema.Schema.Type<typeof ExperienceOrbAbsorptionSchema>
@@ -92,11 +285,53 @@ export const ExperienceOrbVitalsOwnerSnapshotSchema: Schema.Codec<
 export type ExperienceOrbRecord = Readonly<{
   id: Schema.Schema.Type<typeof EntityIdSchema>
   value: ExperienceOrbValue
+  /** Number of same-value orbs represented by this record; omitted means one. */
+  count?: number | undefined
+  /** Omitted on snapshots written before orb movement state was introduced. */
+  position?: Schema.Schema.Type<typeof WorldPositionSchema> | undefined
+  /** Omitted on snapshots written before orb spawn time was tracked. */
+  spawnedAt?: Schema.Schema.Type<typeof SimulationTickSchema> | undefined
 }>
+const ExperienceOrbCountSchema = Schema.Int.check(
+  Schema.isBetween({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
+)
+const ExperienceOrbMergeCandidateSchema = strictCodec(
+  Schema.Struct({
+    value: ExperienceOrbValueSchema,
+    count: Schema.optional(ExperienceOrbCountSchema),
+  }),
+)
+
+export type ExperienceOrbMergedStack = Readonly<{
+  value: ExperienceOrbValue
+  count: number
+}>
+
+/** Merges only equal-valued stacks and adds entity count, never XP value. */
+export const mergeSameValueExperienceOrbStacks = (
+  left: unknown,
+  right: unknown,
+): Result.Result<ExperienceOrbMergedStack | undefined, Schema.SchemaError> => {
+  const decodedLeft = Schema.decodeUnknownResult(ExperienceOrbMergeCandidateSchema)(left)
+  if (Result.isFailure(decodedLeft)) return Result.fail(decodedLeft.failure)
+  const decodedRight = Schema.decodeUnknownResult(ExperienceOrbMergeCandidateSchema)(right)
+  if (Result.isFailure(decodedRight)) return Result.fail(decodedRight.failure)
+  if (decodedLeft.success.value !== decodedRight.success.value) return Result.succeed(undefined)
+
+  const mergedCount = Schema.decodeUnknownResult(ExperienceOrbCountSchema)(
+    (decodedLeft.success.count ?? 1) + (decodedRight.success.count ?? 1),
+  )
+  if (Result.isFailure(mergedCount)) return Result.fail(mergedCount.failure)
+  return Result.succeed({ value: decodedLeft.success.value, count: mergedCount.success })
+}
+
 const ExperienceOrbRecordSchema = strictCodec(
   Schema.Struct({
     id: EntityIdSchema,
     value: ExperienceOrbValueSchema,
+    count: Schema.optional(ExperienceOrbCountSchema),
+    position: Schema.optional(WorldPositionSchema),
+    spawnedAt: Schema.optional(SimulationTickSchema),
   }),
 )
 
@@ -169,6 +404,7 @@ export type ExperienceOrbAbsorptionError =
   | Brand.BrandError
   | ExperienceOrbAbsorptionFailure
   | ExperienceOrbAbsorptionCommitResultInvalid
+  | ExperienceOrbMendingInvalid
   | Schema.SchemaError
   | WorldCommitCoordinatorError
 
@@ -178,6 +414,7 @@ export type ExperienceOrbAbsorptionPlan = Readonly<{
   orbs: ExperienceOrbOwnerSnapshot
   experience: ExperienceOrbValue
   levelBefore: number
+  orbCountBefore: number
 }>
 
 /** Calculates the vitals and orb owner candidates without committing them. */
@@ -202,12 +439,19 @@ export const planExperienceOrbAbsorption = (
     const experience = yield* Schema.decodeUnknownEffect(ExperienceOrbValueSchema)(orb.value)
     const experienceDelta = yield* Effect.fromResult(ExperienceDelta.result(experience))
     const levelBefore = experienceLevel(vitals.vitals)
+    const orbCountBefore = orb.count ?? 1
+    const remainingOrbs = orbCountBefore === 1
+      ? orbs.orbs.filter(({ id }) => id !== decodedContext.orb)
+      : orbs.orbs.map((entry) => entry.id === decodedContext.orb
+        ? { ...entry, count: orbCountBefore - 1 }
+        : entry)
     return {
       context: decodedContext,
       vitals: { vitals: addExperience(vitals.vitals, experienceDelta) },
-      orbs: { orbs: orbs.orbs.filter(({ id }) => id !== decodedContext.orb) },
+      orbs: { orbs: remainingOrbs },
       experience,
       levelBefore,
+      orbCountBefore,
     }
   })
 
@@ -218,7 +462,12 @@ export const experienceOrbAbsorptionResultAfterCommit = (
   owners: ExperienceOrbAbsorptionOwners,
 ): Effect.Effect<ExperienceOrbAbsorption, ExperienceOrbAbsorptionError> =>
   Effect.gen(function* () {
-    if (committedOrbs.orbs.some(({ id }) => id === plan.context.orb)) {
+    const committedOrb = committedOrbs.orbs.find(({ id }) => id === plan.context.orb)
+    const expectedCount = plan.orbCountBefore - 1
+    const orbWasNotConsumed = expectedCount === 0
+      ? committedOrb !== undefined
+      : committedOrb === undefined || (committedOrb.count ?? 1) !== expectedCount
+    if (orbWasNotConsumed) {
       const failure = yield* Schema.decodeUnknownEffect(ExperienceOrbAbsorptionCommitResultInvalidSchema)({
         _tag: 'ExperienceOrbAbsorptionCommitResultInvalid',
         reason: 'orb-not-consumed',
