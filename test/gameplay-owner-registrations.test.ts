@@ -1,6 +1,6 @@
 import { describe, expect, it } from '@effect/vitest'
 import { Effect, Result, Schema } from 'effect'
-import { WorldIdSchema } from '@nerima-games/mc-kernel'
+import { ProjectileIdSchema, WorldIdSchema } from '@nerima-games/mc-kernel'
 import {
   EntityId,
   EntityKind,
@@ -10,6 +10,7 @@ import {
   PROJECTILE_REPLICATED_OWNER_ID,
   TNT_REPLICATED_OWNER_ID,
   TntServiceSnapshotSchema,
+  MobMovementStateSchema,
   WorldCommitCoordinator,
 } from '@nerima-games/mc-sim'
 import {
@@ -18,6 +19,7 @@ import {
   GAMEPLAY_OWNER_REGISTRATIONS,
   GameplayEntityRosterSchema,
   GameplayMobBehaviourSchema,
+  restoreGameplayEntityMetadata,
 } from '../src/stages/gameplay-owner-registrations.js'
 
 describe('gameplay replicated owner registrations', () => {
@@ -128,6 +130,17 @@ describe('gameplay replicated owner registrations', () => {
 
   it.effect('strictly decodes every gameplay mob-behaviour family', () =>
     Effect.sync(() => {
+      const movement = Schema.decodeUnknownSync(MobMovementStateSchema)({
+        id: EntityId('owner-registration-mob'),
+        body: { kind: 'dynamic', x: 0, y: 64.9, z: 0, vx: 0, vy: 0, vz: 0 },
+        profile: { kind: 'ground', width: 0.6, height: 1.8, canJump: true },
+        goal: { x: 2, y: 64, z: 0 },
+        path: [],
+        pathIndex: 0,
+        stuckTicks: 0,
+        isGrounded: false,
+        movementSpeed: 2.5,
+      })
       const valid = [
         undefined,
         { _tag: 'Dormant' },
@@ -136,6 +149,7 @@ describe('gameplay replicated owner registrations', () => {
         { _tag: 'Steady' },
         { _tag: 'Struck' },
         { _tag: 'EcosystemMob', attackCooldownTicks: 0, motionPhase: 0.25, provoked: false },
+        { _tag: 'EcosystemMob', attackCooldownTicks: 0, motionPhase: 0.25, provoked: false, movement },
         { _tag: 'EcosystemMob', attackCooldownSecs: 0.05, motionPhase: 0.25, provoked: false },
         {
           _tag: 'DroppedItem', item: 'stone', count: 2, durability: null,
@@ -173,6 +187,33 @@ describe('gameplay replicated owner registrations', () => {
       for (const behaviour of invalid) {
         expect(Result.isFailure(Schema.decodeUnknownResult(GameplayMobBehaviourSchema)(behaviour))).toBe(true)
       }
+    }),
+  )
+
+  it.effect('preserves resolved projectile IDs and pending impacts when restoring a narrowed roster', () =>
+    Effect.sync(() => {
+      const projectileId = Schema.decodeUnknownSync(ProjectileIdSchema)('mx-gameplay:mob:arrow:zombie-0:20')
+      const previous = Schema.decodeUnknownSync(GameplayEntityRosterSchema)({
+        entities: [],
+        nextSerial: 1,
+        resolvedMobProjectileIds: [projectileId],
+        pendingMobProjectileImpacts: [{
+          id: projectileId,
+          source: EntityId('zombie-0'),
+          kind: 'skeleton',
+          hit: {
+            kind: 'entity',
+            entityId: EntityId('zombie-target'),
+            point: { dimension: 'overworld', x: 0.5, y: 64, z: 0.5 },
+          },
+        }],
+      })
+      const narrowed = { entities: [], nextSerial: previous.nextSerial }
+
+      const restored = restoreGameplayEntityMetadata(narrowed, previous, 'overworld')
+
+      expect(restored.resolvedMobProjectileIds).toStrictEqual([projectileId])
+      expect(restored.pendingMobProjectileImpacts).toStrictEqual(previous.pendingMobProjectileImpacts)
     }),
   )
 })

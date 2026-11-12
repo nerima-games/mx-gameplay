@@ -1,7 +1,7 @@
 import { describe, expect, it } from '@effect/vitest'
 import { Effect, Option, Result, Schema } from 'effect'
-import { BlockAxis, blockIdOf, blockPosition, ChunkAxis, chunkCoord, EntityHealthPoints, EntitySerial, SimulationTick, type BlockType, position, PositionAxis } from '@nerima-games/mc-kernel'
-import { EntityId, EntityKind, MobPathProfileSchema, planMobPathsForTick } from '@nerima-games/mc-sim'
+import { BlockAxis, BlockId, blockIdOf, blockPosition, ChunkAxis, chunkCoord, EntityHealthPoints, EntitySerial, SimulationTick, type BlockType, position, PositionAxis } from '@nerima-games/mc-kernel'
+import { EntityId, EntityKind, MobMovementStateSchema, MobPathProfileSchema, planMobPathsForTick } from '@nerima-games/mc-sim'
 import { openChunkWindow } from '../src/domain/chunk-window'
 import {
   initialMobMovementState,
@@ -130,6 +130,44 @@ describe('SM3 mob movement world', () => {
     })
   })
 
+  it('rejects finite positions whose floored coordinates cannot be path cells', () => {
+    const outsidePathGrid = at(Number.MAX_SAFE_INTEGER + 1, 64, 0)
+    const spider = initialMobMovementState(
+      EntityId('mob:outside-path-grid'),
+      SPIDER_KIND,
+      at(0.5, 64, 0.5),
+      outsidePathGrid,
+    )
+    const ordinary = initialMobMovementState(
+      EntityId('mob:ordinary-path-grid'),
+      SPIDER_KIND,
+      at(0.5, 64, 0.5),
+      at(4.5, 64, 0.5),
+    )
+
+    expect(mobMovementCell(outsidePathGrid)).toBeUndefined()
+    expect(spider).toBeUndefined()
+    expect(ordinary).toBeDefined()
+    if (ordinary === undefined) return
+    expect(movementStateForGoal(ordinary, outsidePathGrid)).toBeUndefined()
+  })
+
+  it.effect('treats unresolved block ids as blocking and keeps physics on the solid fallback', () =>
+    Effect.gen(function* () {
+      const unresolvedBlockId = BlockId(65535)
+      const port = yield* makeWorldPort([[block(0, 64, 0), unresolvedBlockId]])
+      const cell = mobMovementCell(at(0.5, 64, 0.5))!
+
+      expect(port.isPassable(cell)).toBe(false)
+      expect(port.hasSupport(cell)).toBe(false)
+      expect(port.hazardAt(cell)).toBeNull()
+      expect(port.physics.blockPropertiesAt(BlockAxis(0), BlockAxis(64), BlockAxis(0))._tag).toBe('Success')
+      expect(port.physics.blockShapeAt?.(BlockAxis(0), BlockAxis(64), BlockAxis(0))).toMatchObject({
+        minX: 0, minY: 0, minZ: 0, maxX: 1, maxY: 1, maxZ: 1,
+      })
+    }),
+  )
+
   it.effect('moves a distant Blaze toward its ranged band with SM3 physics', () =>
     Effect.gen(function* () {
       const floor = Array.from({ length: 32 }, (_value, x) => [block(x, 63, 0), STONE] as const)
@@ -161,6 +199,72 @@ describe('SM3 mob movement world', () => {
         current = planned.success.roster
       }
       expect(current.entities[0]?.feetPosition.x).toBeLessThan(blaze.feetPosition.x)
+    }),
+  )
+
+  it.effect('reports a typed step failure for a persisted finite body outside the path grid', () =>
+    Effect.gen(function* () {
+      const port = yield* makeWorldPort([[block(0, 63, 0), STONE]])
+      const id = EntityId('mob:outside-path-grid-body')
+      const initial = initialMobMovementState(id, PIG_KIND, at(0.5, 64, 0.5), at(2.5, 64, 0.5))
+      if (initial === undefined) throw new Error('the in-range movement goal must decode')
+      const movement = Schema.decodeUnknownSync(MobMovementStateSchema)({
+        ...initial,
+        body: { ...initial.body, x: Number.MAX_SAFE_INTEGER + 1 },
+      })
+      const roster: MobRoster = {
+        entities: [{
+          id,
+          kind: PIG_KIND,
+          feetPosition: at(0.5, 64, 0.5),
+          healthPoints: EntityHealthPoints(10),
+          behaviour: { ...initialEcosystemMobState(), movement },
+          dimension: 'overworld',
+        }],
+        nextSerial: EntitySerial(1),
+      }
+
+      const planned = planMobMovementRoster(roster, at(10.5, 64, 0.5), port, SimulationTick(1), 'overworld')
+
+      expect(Result.isFailure(planned)).toBe(true)
+      if (Result.isSuccess(planned)) return
+      expect(planned.failure).toMatchObject({
+        _tag: 'MobMovementRosterFailure',
+        reason: 'step-failed',
+        entityId: id,
+      })
+    }),
+  )
+
+  it.effect('returns the simulator rejection when a supplied movement world is malformed', () =>
+    Effect.gen(function* () {
+      const port = yield* makeWorldPort([[block(0, 63, 0), STONE]])
+      const malformedWorld = new Proxy(port, {
+        get(target, property, receiver) {
+          if (property === 'isPassable') return undefined
+          return Reflect.get(target, property, receiver)
+        },
+      })
+      const roster: MobRoster = {
+        entities: [{
+          id: EntityId('mob:rejected-world'),
+          kind: PIG_KIND,
+          feetPosition: at(0.5, 64, 0.5),
+          healthPoints: EntityHealthPoints(10),
+          behaviour: initialEcosystemMobState(),
+          dimension: 'overworld',
+        }],
+        nextSerial: EntitySerial(1),
+      }
+
+      const planned = planMobMovementRoster(roster, at(10.5, 64, 0.5), malformedWorld, SimulationTick(1), 'overworld')
+
+      expect(Result.isFailure(planned)).toBe(true)
+      if (Result.isSuccess(planned)) return
+      expect(planned.failure).toMatchObject({
+        _tag: 'MobMovementRosterFailure',
+        reason: 'simulation-rejected',
+      })
     }),
   )
 

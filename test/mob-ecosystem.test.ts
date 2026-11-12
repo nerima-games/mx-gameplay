@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { position as atPosition } from './support/coordinate-fixtures'
 import { EntityHealthPoints, type Position } from '@nerima-games/mc-kernel'
-import { EntityId, type Entity } from '@nerima-games/mc-sim'
+import { EntityId, EntityKind, type Entity } from '@nerima-games/mc-sim'
 import {
   BLAZE_KIND,
   CHICKEN_KIND,
@@ -108,6 +108,15 @@ describe('mob ecosystem', () => {
     expect(movementGoal(SKELETON_KIND, self, position(16.5))).toEqual(self)
     expect(movementGoal(BLAZE_KIND, self, position(48))).toEqual(position(48))
     expect(movementGoal(BLAZE_KIND, self, position(48.5))).toEqual(self)
+  })
+
+  it('uses the default approach policy for an unlisted entity kind', () => {
+    const villager = EntityKind('villager')
+    const self = position(0)
+    const target = position(8)
+
+    expect(movementGoal(villager, self, target)).toEqual(target)
+    expect(movementGoal(villager, self, position(17))).toEqual(self)
   })
 
   it('propagates provocation only to nearby zombified piglins', () => {
@@ -280,6 +289,18 @@ describe('repairEcosystemMobState', () => {
     }
 
     expect(repairEcosystemMobState(persisted)).toEqual(persisted)
+  })
+
+  it('restores finite, cell-addressable movement goals', () => {
+    const goal = atPosition(4.5, 64, -2.5)
+
+    expect(repairEcosystemMobState({
+      _tag: 'EcosystemMob',
+      attackCooldownTicks: 0,
+      motionPhase: 0,
+      provoked: false,
+      movementGoal: goal,
+    })?.movementGoal).toEqual(goal)
   })
 
   it('migrates a persisted seconds cooldown to the equivalent whole tick count', () => {

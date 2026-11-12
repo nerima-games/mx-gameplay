@@ -139,12 +139,11 @@ export const repairEcosystemMobState = (value: unknown): EcosystemMobState | und
   const state = value as Partial<EcosystemMobState> & { readonly attackCooldownSecs?: unknown }
   let goal: Position | undefined
   if (validPosition(state.movementGoal)) {
-    const x = PositionAxis.result(state.movementGoal.x)
-    const y = PositionAxis.result(state.movementGoal.y)
-    const z = PositionAxis.result(state.movementGoal.z)
-    if (x._tag === 'Success' && y._tag === 'Success' && z._tag === 'Success') {
-      goal = position(x.success, y.success, z.success)
-    }
+    goal = position(
+      PositionAxis(state.movementGoal.x),
+      PositionAxis(state.movementGoal.y),
+      PositionAxis(state.movementGoal.z),
+    )
   }
   const movement = repairMobMovementState(state.movement)
   const burningTicks = NonNegativeTickCount(
@@ -188,11 +187,7 @@ export type EcosystemMobStep = {
 const distanceXZ = (a: Position, b: Position): number => Math.hypot(a.x - b.x, a.z - b.z)
 
 const positionAt = (self: Position, x: number, z: number): Position => {
-  const nextX = PositionAxis.result(x)
-  const nextZ = PositionAxis.result(z)
-  return nextX._tag === 'Success' && nextZ._tag === 'Success'
-    ? position(nextX.success, self.y, nextZ.success)
-    : self
+  return position(PositionAxis(x), self.y, PositionAxis(z))
 }
 
 const atDistanceAwayFrom = (self: Position, target: Position, distance: number, phase: number): Position => {
@@ -238,8 +233,6 @@ export const movementGoalForEcosystemMob = (
       return state.provoked && target !== undefined && distance <= policy.followRange && distance > policy.attackDistance
         ? target
         : self
-    default:
-      return self
   }
 }
 

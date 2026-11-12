@@ -20,7 +20,7 @@
  */
 import { describe, expect, it } from '@effect/vitest'
 import { position as atPosition } from './support/coordinate-fixtures'
-import { Brand, Effect, Result } from 'effect'
+import { Brand, Effect, Result, Schema } from 'effect'
 import { NonNegativeTickCount, type Position } from '@nerima-games/mc-kernel'
 import {
   CREEPER_KIND,
@@ -78,7 +78,7 @@ import { SkyLightLevel, type SpawnCandidate } from '../src/domain/mob/hostile-sp
 import { DORMANT_FUSE } from '../src/domain/mob/creeper-fuse'
 import { FRESH_PRIMED_TNT } from '../src/domain/mob/primed-tnt'
 import { AIR_BLOCK_ID, BlockAxis, BlockId, blockPosition as makeBlockPosition, DeltaTimeSecs, EntityHealthPoints, EntitySerial, SimulationTick } from '@nerima-games/mc-kernel'
-import { durabilityForItem, EntityId, EntityKind, type Entity, type EntityRoster } from '@nerima-games/mc-sim'
+import { durabilityForItem, EntityId, EntityKind, MobMovementStateSchema, type Entity, type EntityRoster } from '@nerima-games/mc-sim'
 import { makeChunkStoreDouble, STONE, world } from './support/chunk-store-double'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
 
@@ -665,6 +665,48 @@ describe('repairMobBehaviour: the load path for every stored shape', () => {
         ...badBlaze,
         behaviour: initialEcosystemMobState(),
       })
+
+      const movement = Schema.decodeUnknownSync(MobMovementStateSchema)({
+        id: EntityId('mob:repair-movement'),
+        body: { kind: 'dynamic', x: 0, y: 64.975, z: 0, vx: 0, vy: 0, vz: 0 },
+        profile: { kind: 'ground', width: 0.6, height: 1.95, canJump: true },
+        goal: { x: 1, y: 64, z: 0 },
+        path: [],
+        pathIndex: 0,
+        stuckTicks: 0,
+        isGrounded: true,
+        movementSpeed: 2.5,
+      })
+      const badCreeperWithMovement = hostileMobSnapshot(STEADY_ENDERMAN, {
+        ageTicks: 12,
+        named: true,
+        movement,
+      })
+      expect(repairMobBehaviour(CREEPER_KIND, badCreeperWithMovement)).toStrictEqual({
+        ...badCreeperWithMovement,
+        behaviour: DORMANT_FUSE,
+      })
+    }),
+  )
+
+  it.effect('drops invalid persisted movement while retaining hostile snapshot metadata', () =>
+    Effect.sync(() => {
+      const malformed = {
+        _tag: 'HostileMob',
+        behaviour: undefined,
+        movement: { body: 'invalid' },
+        ageTicks: 12,
+        persistent: true,
+        named: false,
+        tamed: false,
+      }
+
+      expect(repairMobBehaviour(ZOMBIE_KIND, malformed)).toStrictEqual(hostileMobSnapshot(undefined, {
+        ageTicks: 12,
+        persistent: true,
+        named: false,
+        tamed: false,
+      }))
     }),
   )
 })

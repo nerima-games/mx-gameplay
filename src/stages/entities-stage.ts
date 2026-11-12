@@ -39,6 +39,7 @@ import {
   resistsExplosion,
   type BlockPosition,
   type BlockPositionKey,
+  type CollisionShape,
   type Dimension,
   type Position,
   type ProjectileId,
@@ -241,25 +242,15 @@ const projectileAabb = (
   widthX: number,
   widthZ: number,
   height: number,
-): ProjectileWorld['entities'][number]['bounds'] | undefined => {
-  const values = [
-    feet.x - widthX / 2,
-    feet.y,
-    feet.z - widthZ / 2,
-    feet.x + widthX / 2,
-    feet.y + height,
-    feet.z + widthZ / 2,
-  ]
-  if (!values.every(Number.isFinite)) return undefined
-  const decoded = values.map((value) => Result.getOrUndefined(PositionAxis.result(value)))
-  if (decoded.some((value) => value === undefined)) return undefined
+): ProjectileWorld['entities'][number]['bounds'] => {
+  // Position coordinates are finite and every dimension below is a finite constant.
   return {
-    minX: decoded[0]!,
-    minY: decoded[1]!,
-    minZ: decoded[2]!,
-    maxX: decoded[3]!,
-    maxY: decoded[4]!,
-    maxZ: decoded[5]!,
+    minX: projectileAxis(feet.x - widthX / 2),
+    minY: projectileAxis(feet.y),
+    minZ: projectileAxis(feet.z - widthZ / 2),
+    maxX: projectileAxis(feet.x + widthX / 2),
+    maxY: projectileAxis(feet.y + height),
+    maxZ: projectileAxis(feet.z + widthZ / 2),
   }
 }
 
@@ -281,32 +272,23 @@ const projectileWorldFor = (
   if (coords.length === 0) return undefined
   const chunksX = coords.map(({ cx }) => Number(cx))
   const chunksZ = coords.map(({ cz }) => Number(cz))
-  const worldBounds = [
-    PositionAxis.result(Math.min(...chunksX) * CHUNK_SIZE_XZ),
-    PositionAxis.result(0),
-    PositionAxis.result(Math.min(...chunksZ) * CHUNK_SIZE_XZ),
-    PositionAxis.result((Math.max(...chunksX) + 1) * CHUNK_SIZE_XZ),
-    PositionAxis.result(256),
-    PositionAxis.result((Math.max(...chunksZ) + 1) * CHUNK_SIZE_XZ),
-  ]
-  if (worldBounds.some(Result.isFailure)) return undefined
   const bounds: ProjectileWorld['entities'][number]['bounds'] = {
-    minX: Result.getOrThrow(worldBounds[0]!),
-    minY: Result.getOrThrow(worldBounds[1]!),
-    minZ: Result.getOrThrow(worldBounds[2]!),
-    maxX: Result.getOrThrow(worldBounds[3]!),
-    maxY: Result.getOrThrow(worldBounds[4]!),
-    maxZ: Result.getOrThrow(worldBounds[5]!),
+    minX: projectileAxis(Math.min(...chunksX) * CHUNK_SIZE_XZ),
+    minY: projectileAxis(0),
+    minZ: projectileAxis(Math.min(...chunksZ) * CHUNK_SIZE_XZ),
+    maxX: projectileAxis((Math.max(...chunksX) + 1) * CHUNK_SIZE_XZ),
+    maxY: projectileAxis(256),
+    maxZ: projectileAxis((Math.max(...chunksZ) + 1) * CHUNK_SIZE_XZ),
   }
   const entities: ProjectileWorld['entities'][number][] = []
   const playerBounds = projectileAabb(player, 0.6, 0.6, 1.8)
-  if (playerBounds !== undefined) entities.push({ id: PLAYER_BLAST_ENTITY_ID, bounds: playerBounds })
+  entities.push({ id: PLAYER_BLAST_ENTITY_ID, bounds: playerBounds })
   for (const entity of roster.entities) {
     if (entity.dimension !== undefined && entity.dimension !== dimension) continue
     if (isDroppedItemBehaviour(entity.behaviour)) continue
     const [width, height] = projectileEntitySize(entity.kind)
     const entityBounds = projectileAabb(entity.feetPosition, width, width, height)
-    if (entityBounds !== undefined) entities.push({ id: entity.id, bounds: entityBounds })
+    entities.push({ id: entity.id, bounds: entityBounds })
   }
   const blockAt = (x: number, y: number, z: number) => {
     const bx = BlockAxis.result(x)
@@ -315,13 +297,13 @@ const projectileWorldFor = (
     if (Result.isFailure(bx) || Result.isFailure(by) || Result.isFailure(bz)) return UNREADABLE_BLOCK
     return window.blockAt(bx.success, by.success, bz.success)
   }
-  const localShapeBoxes = (shape: string): ReadonlyArray<readonly [number, number, number, number, number, number]> => {
+  const localShapeBoxes = (shape: CollisionShape): ReadonlyArray<readonly [number, number, number, number, number, number]> => {
     switch (shape) {
+      case 'full': return [[0, 0, 0, 1, 1, 1]]
       case 'none': return []
       case 'slab': return [[0, 0, 0, 1, 0.5, 1]]
       case 'cactus': return [[1 / 16, 0, 1 / 16, 15 / 16, 1, 15 / 16]]
       case 'pressurePlate': return [[0, 0, 0, 1, 1 / 16, 1]]
-      default: return [[0, 0, 0, 1, 1, 1]]
     }
   }
   return {
@@ -347,7 +329,8 @@ const projectileWorldFor = (
             const block = blockAt(x, y, z)
             const shape = block === UNREADABLE_BLOCK
               ? 'full'
-              : Result.getOrUndefined(propertyOfBlockId(block, 'collisionShape')) ?? 'full'
+              // Readable cells carry BlockId; the kernel returns a default shape for every valid ID.
+              : Result.getOrThrow(propertyOfBlockId(block, 'collisionShape'))
             for (const [localMinX, localMinY, localMinZ, localMaxX, localMaxY, localMaxZ] of localShapeBoxes(shape)) {
               boxes.push({
                 minX: projectileAxis(x + localMinX),
@@ -375,11 +358,8 @@ const projectileLineOfSight = (
   window: import('../domain/chunk-window.js').ChunkWindow,
 ): boolean => {
   const ray = raycastArrowBlock(from, to, (x, y, z) => {
-    const bx = BlockAxis.result(Math.floor(x))
-    const by = BlockAxis.result(Math.floor(y))
-    const bz = BlockAxis.result(Math.floor(z))
-    if (Result.isFailure(bx) || Result.isFailure(by) || Result.isFailure(bz)) return true
-    const block = window.blockAt(bx.success, by.success, bz.success)
+    // The DDA validates each next BlockAxis before calling the voxel predicate.
+    const block = window.blockAt(BlockAxis(x), BlockAxis(y), BlockAxis(z))
     return block === UNREADABLE_BLOCK || Result.getOrUndefined(propertyOfBlockId(block, 'collisionShape')) !== 'none'
   })
   return Result.isSuccess(ray) && Option.isNone(ray.success)
@@ -425,12 +405,9 @@ const launchAndStepMobProjectiles = (
   store: GameplayStageContext['store'],
   coords: ReadonlyArray<ReturnType<typeof chunkCoordsAround>[number]>,
 ): Effect.Effect<MobProjectileStep, unknown> => Effect.gen(function* () {
-  const { commit } = context
+  // runMobSimulation returns before this helper when no coordinator is available.
+  const commit = context.commit!
   const ranged = attacks.filter(({ mode }) => mode === 'projectile')
-  if (commit === undefined) {
-    if (ranged.length > 0) yield* unsupportedMobSimulation(context.state, 'WorldCommitCoordinatorUnavailable')
-    return noMobProjectileStep
-  }
   const service = commit.projectileService
   if (service === undefined || commit.projectileOwnerId === undefined) {
     let hasMobProjectiles = false
@@ -497,23 +474,24 @@ const launchAndStepMobProjectiles = (
   const newlyLaunchedIds = new Set<string>()
   for (const attack of ranged) {
     const source = sourceById.get(attack.source)
-    if (source === undefined || (source.kind !== 'skeleton' && source.kind !== BLAZE_KIND)) continue
-    const eyeY = PositionAxis.result(source.feetPosition.y + (source.kind === BLAZE_KIND ? 1.5 : 1.62))
-    const targetY = PositionAxis.result(playerPosition.y + 1.62)
-    if (Result.isFailure(eyeY) || Result.isFailure(targetY)) continue
-    const from = position(PositionAxis(source.feetPosition.x), eyeY.success, PositionAxis(source.feetPosition.z))
-    const to = position(PositionAxis(playerPosition.x), targetY.success, PositionAxis(playerPosition.z))
-    if (projectileWindow === undefined) return yield* Effect.fail({ _tag: 'ProjectileWorldUnavailable' })
-    if (!projectileLineOfSight(from, to, projectileWindow)) continue
+    if (source === undefined) continue
+    // `stepEcosystemMob` emits projectile attacks only for skeletons and blazes.
+    const eyeY = projectileAxis(source.feetPosition.y + (source.kind === BLAZE_KIND ? 1.5 : 1.62))
+    const targetY = projectileAxis(playerPosition.y + 1.62)
+    const from = position(PositionAxis(source.feetPosition.x), eyeY, PositionAxis(source.feetPosition.z))
+    const to = position(PositionAxis(playerPosition.x), targetY, PositionAxis(playerPosition.z))
+    // A non-empty `ranged` list opened this window above.
+    const launchWindow = projectileWindow!
+    if (!projectileLineOfSight(from, to, launchWindow)) continue
     const dx = to.x - from.x
     const dy = to.y - from.y
     const dz = to.z - from.z
     const horizontal = Math.hypot(dx, dz)
-    if (!Number.isFinite(horizontal) || (horizontal === 0 && dy === 0)) continue
+    // Ranged policies only emit inside finite distance bands with a positive minimum.
     const fireball = source.kind === BLAZE_KIND
     const rawId = mobProjectileId(String(source.id), Number(tick), fireball)
-    const projectileId = Result.getOrUndefined(Schema.decodeUnknownResult(ProjectileIdSchema)(rawId))
-    if (projectileId === undefined || existingIds.has(rawId) || resolvedProjectileIds.has(projectileId)) continue
+    const projectileId = Schema.decodeUnknownSync(ProjectileIdSchema)(rawId)
+    if (existingIds.has(rawId) || resolvedProjectileIds.has(projectileId)) continue
     const request: ProjectileLaunchRequest = {
       projectileId,
       dimension,
@@ -539,14 +517,10 @@ const launchAndStepMobProjectiles = (
     return value.startsWith('mx-gameplay:mob:') && recordDimension === dimension && !resolvedProjectileIds.has(id)
   })
   if (mobRecords.length === 0 && pendingForDimension.length === 0) return noMobProjectileStep
-  if (mobRecords.length > 0 && world === undefined) {
-    return yield* Effect.fail({ _tag: 'ProjectileWorldUnavailable' })
-  }
-
-  if (commit.entitiesOwnerId === undefined) {
-    return yield* Effect.fail({ _tag: 'MobProjectileOwnerUnavailable' })
-  }
-  const entitySnapshot = yield* commit.coordinator.snapshot(commit.entitiesOwnerId, GameplayEntityRosterSchema)
+  // Any selected mob record was in the initial unresolved set, which built this world above.
+  const projectileWorld = world!
+  const entitiesOwnerId = commit.entitiesOwnerId!
+  const entitySnapshot = yield* commit.coordinator.snapshot(entitiesOwnerId, GameplayEntityRosterSchema)
   if (projectileSnapshot.revision !== entitySnapshot.revision) {
     return yield* Effect.fail(new WorldRevisionConflict({
       expected: projectileSnapshot.revision,
@@ -583,12 +557,10 @@ const launchAndStepMobProjectiles = (
     if (launchTick === currentTick && !newlyLaunchedIds.has(id)) continue
     const expectedAge = Math.max(0, (currentTick - launchTick) * PROJECTILE_FIXED_STEP_SECONDS)
     if (record.projectile.ageSeconds + PROJECTILE_AGE_TOLERANCE_SECONDS >= expectedAge + PROJECTILE_FIXED_STEP_SECONDS) continue
-    const previewWorld = world
-    if (previewWorld === undefined) return yield* Effect.fail({ _tag: 'ProjectileWorldUnavailable' })
     const preview = stepProjectile(
       record.projectile,
       DeltaTimeSecs(PROJECTILE_FIXED_STEP_SECONDS),
-      previewWorld,
+      projectileWorld,
       record.profile,
     )
     toStep.push({ id: record.id, record, previewHit: preview.hit !== undefined })
@@ -606,7 +578,7 @@ const launchAndStepMobProjectiles = (
       expectedRevision: entitySnapshot.revision,
       expectedDimensions: [],
       changes: [{
-        ownerId: commit.entitiesOwnerId,
+        ownerId: entitiesOwnerId,
         state: { ...entitySnapshot.state, pendingMobProjectileImpacts: pendingCandidate },
       }],
     })
@@ -614,23 +586,22 @@ const launchAndStepMobProjectiles = (
   }
 
   for (const candidate of toStep) {
-    const stepWorld = world
-    if (stepWorld === undefined) return yield* Effect.fail({ _tag: 'ProjectileWorldUnavailable' })
     const outcome = yield* service.step({
       projectileId: candidate.id,
       tick,
       expectedRevision,
       expectedDimensionRevision: dimensionRevision,
       deltaTime: DeltaTimeSecs(PROJECTILE_FIXED_STEP_SECONDS),
-      world: stepWorld,
+      world: projectileWorld,
       blockAddressOfHit: (hit) => {
         const x = BlockAxis.result(Math.floor(hit.point.x))
         const y = BlockAxis.result(Math.floor(hit.point.y))
         const z = BlockAxis.result(Math.floor(hit.point.z))
         if (Result.isFailure(x) || Result.isFailure(y) || Result.isFailure(z)) return undefined
-        const decodedDimension = Schema.decodeUnknownResult(DimensionIdSchema)(candidate.record.dimension)
-        if (Result.isFailure(decodedDimension)) return undefined
-        return { dimension: decodedDimension.success, position: blockPosition(x.success, y.success, z.success) }
+        return {
+          dimension: Schema.decodeUnknownSync(DimensionIdSchema)(candidate.record.dimension),
+          position: blockPosition(x.success, y.success, z.success),
+        }
       },
     })
     if (candidate.previewHit !== (outcome.hit !== undefined)) {
@@ -675,21 +646,18 @@ const resolveMobProjectileImpactsOnce = (
     ignitions: [],
   }
   if (impacts.length === 0 && retiredIds.length === 0) return noChange
-  if (commit === undefined) {
-    return yield* Effect.fail({ _tag: 'MobProjectileOwnerUnavailable' })
-  }
-  const entitiesOwnerId = commit.entitiesOwnerId
-  const projectileOwnerId = commit.projectileOwnerId
-  if (entitiesOwnerId === undefined || projectileOwnerId === undefined) {
-    return yield* Effect.fail({ _tag: 'MobProjectileOwnerUnavailable' })
-  }
+  // The only caller supplies outcomes from launchAndStepMobProjectiles, which
+  // returns no outcomes when the stage has no commit coordinator.
+  const projectileCommit = commit!
+  const entitiesOwnerId = projectileCommit.entitiesOwnerId!
+  const projectileOwnerId = projectileCommit.projectileOwnerId!
 
-  const entitySnapshot = yield* commit.coordinator.snapshot(entitiesOwnerId, GameplayEntityRosterSchema)
+  const entitySnapshot = yield* projectileCommit.coordinator.snapshot(entitiesOwnerId, GameplayEntityRosterSchema)
   const expectedRevision = entitySnapshot.revision
   const resolved = new Set(entitySnapshot.state.resolvedMobProjectileIds ?? [])
   const pendingImpacts = impacts.filter(({ id }) => !resolved.has(id))
   const consumedIds = new Set(impacts.map(({ id }) => id))
-  const projectileSnapshot = yield* commit.coordinator.snapshot(projectileOwnerId, ProjectileServiceSnapshotSchema)
+  const projectileSnapshot = yield* projectileCommit.coordinator.snapshot(projectileOwnerId, ProjectileServiceSnapshotSchema)
   if (projectileSnapshot.revision !== expectedRevision) {
     return yield* Effect.fail(new WorldRevisionConflict({
       expected: expectedRevision,
@@ -739,13 +707,10 @@ const resolveMobProjectileImpactsOnce = (
   const playerDamages: PlayerDamageEvent[] = []
   const ignitedPlayers = new Set<string>()
   if (playerImpacts.length > 0) {
-    if (commit.playerStorageOwnerId === undefined || commit.vitalsOwnerId === undefined || commit.playerOwnerId === undefined) {
-      return yield* Effect.fail({ _tag: 'MobProjectilePlayerOwnerUnavailable' })
-    }
     const [playerSnapshot, readStorage, readVitals] = yield* Effect.all([
-      commit.coordinator.snapshot(commit.playerOwnerId, PlayerServiceSnapshotSchema),
-      commit.coordinator.snapshot(commit.playerStorageOwnerId, PlayerStorageSnapshotSchema),
-      commit.coordinator.snapshot(commit.vitalsOwnerId, ExperienceOrbVitalsOwnerSnapshotSchema),
+      projectileCommit.coordinator.snapshot(projectileCommit.playerOwnerId!, PlayerServiceSnapshotSchema),
+      projectileCommit.coordinator.snapshot(projectileCommit.playerStorageOwnerId!, PlayerStorageSnapshotSchema),
+      projectileCommit.coordinator.snapshot(projectileCommit.vitalsOwnerId!, ExperienceOrbVitalsOwnerSnapshotSchema),
     ])
     if (playerSnapshot.revision !== expectedRevision || readStorage.revision !== expectedRevision || readVitals.revision !== expectedRevision) {
       return yield* Effect.fail(new WorldRevisionConflict({
@@ -828,10 +793,8 @@ const resolveMobProjectileImpactsOnce = (
 
   let droppedCandidate: DroppedItemOwnerSnapshot | undefined
   if (casualtyDrops.drops.length > 0) {
-    if (commit.droppedItemsOwnerId === undefined) {
-      return yield* Effect.fail({ _tag: 'MobProjectileDropOwnerUnavailable' })
-    }
-    const snapshot = yield* commit.coordinator.snapshot(commit.droppedItemsOwnerId, DroppedItemOwnerSnapshotSchema)
+    const droppedItemsOwnerId = projectileCommit.droppedItemsOwnerId!
+    const snapshot = yield* projectileCommit.coordinator.snapshot(droppedItemsOwnerId, DroppedItemOwnerSnapshotSchema)
     if (snapshot.revision !== expectedRevision) {
       return yield* Effect.fail(new WorldRevisionConflict({ expected: expectedRevision, actual: snapshot.revision }))
     }
@@ -850,21 +813,17 @@ const resolveMobProjectileImpactsOnce = (
     changes.push({ ownerId: projectileOwnerId, state: projectileCandidate })
   }
   if (storageSnapshot !== undefined && storage !== undefined && !Equal.equals(storageSnapshot.state, storage)) {
-    changes.push({ ownerId: commit.playerStorageOwnerId, state: storage })
+    changes.push({ ownerId: projectileCommit.playerStorageOwnerId!, state: storage })
   }
   if (vitalsSnapshot !== undefined && vitals !== undefined && !Equal.equals(vitalsSnapshot.state.vitals, vitals)) {
-    const vitalsOwnerId = commit.vitalsOwnerId
-    if (vitalsOwnerId === undefined) {
-      return yield* Effect.fail({ _tag: 'MobProjectileVitalsOwnerUnavailable' })
-    }
-    changes.push({ ownerId: vitalsOwnerId, state: { vitals } })
+    changes.push({ ownerId: projectileCommit.vitalsOwnerId!, state: { vitals } })
   }
-  if (droppedCandidate !== undefined && commit.droppedItemsOwnerId !== undefined) {
-    changes.push({ ownerId: commit.droppedItemsOwnerId, state: droppedCandidate })
+  if (droppedCandidate !== undefined) {
+    changes.push({ ownerId: projectileCommit.droppedItemsOwnerId!, state: droppedCandidate })
   }
-  if (changes.length > 0) {
-    yield* commit.coordinator.commit({ expectedRevision, expectedDimensions: [], changes })
-  }
+  // Non-empty impacts consume a pending roster entry, and retired IDs remove
+  // a projectile record; this function only runs when one of those sets exists.
+  yield* projectileCommit.coordinator.commit({ expectedRevision, expectedDimensions: [], changes })
 
   const livingEntityIds = new Set(damagePlan.roster.entities.map(({ id }) => id))
   const ignitions: BurningActor[] = pendingImpacts.flatMap((impact): ReadonlyArray<BurningActor> => {
@@ -881,8 +840,7 @@ const resolveMobProjectileImpactsOnce = (
       }]
     }
     if (!livingEntityIds.has(hit.entityId)) return []
-    const target = damagePlan.roster.entities.find(({ id }) => id === hit.entityId)
-    if (target === undefined) return []
+    const target = damagePlan.roster.entities.find(({ id }) => id === hit.entityId)!
     return [{
       id: String(target.id),
       kind: 'entity',
@@ -1325,7 +1283,7 @@ const runMobSimulation = (
   const hasMovableMob = hasMobMovementCandidates(entitySnapshot.state, dimension, playerPosition)
   const hasUndeadForDaylight = hasUndeadDaylightCandidates(entitySnapshot.state, dimension)
   let movementWindow: import('../domain/chunk-window.js').ChunkWindow | undefined = undefined
-  let movementWorld: ReturnType<typeof mobMovementWorldFromChunkWindow> = undefined
+  let movementWorld: ReturnType<typeof mobMovementWorldFromChunkWindow> | undefined = undefined
   let daylightFacts: ReadonlyMap<import('@nerima-games/mc-sim').EntityId, Readonly<{ exposed: boolean; inWater: boolean }>> = new Map()
   if (hasMovableMob || hasUndeadForDaylight) {
     const coords = hasMovableMob
@@ -1334,7 +1292,6 @@ const runMobSimulation = (
     movementWindow = yield* openChunkWindow(store, coords)
     if (hasMovableMob) {
       movementWorld = mobMovementWorldFromChunkWindow(movementWindow)
-      if (movementWorld === undefined) return yield* Effect.fail({ _tag: 'MobMovementWorldUnavailable' })
     }
     if (hasUndeadForDaylight) {
       // A stopped undead still burns or extinguishes when SM3 has no movement work.
