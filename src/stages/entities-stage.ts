@@ -849,9 +849,9 @@ const runMobSimulation = (
             triggeredSlots.push(piece.slot)
           }
           for (const slot of triggeredSlots) {
-            const wear = damageEquipmentWithUnbreaking(storage, slot, 2, nextRollSeed, 'armor')
-            storage = wear.storage
-            nextRollSeed = wear.seed
+            const wearResult = damageEquipmentWithUnbreaking(storage, slot, 2, nextRollSeed, 'armor')
+            storage = wearResult.storage
+            nextRollSeed = wearResult.seed
           }
           if (retaliationDamage !== undefined) {
             thornsDamageHits.push({
@@ -1280,7 +1280,7 @@ const attractExperienceOrbsAndQueuePickup = (
     if (expired.success) changed = true
     else liveOrbs.push(orb)
   }
-  if (!liveOrbs.some(({ position }) => position !== undefined)) {
+  if (!liveOrbs.some(({ position: orbPosition }) => orbPosition !== undefined)) {
     if (changed) {
       const committed = yield* Effect.result(commit.coordinator.commit({
         expectedRevision: orbSnapshot.revision,

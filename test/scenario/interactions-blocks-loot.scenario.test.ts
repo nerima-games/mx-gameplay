@@ -141,11 +141,11 @@ const mineWithEquippedPickaxe = (
   lootContext?: BlockLootContext,
 ) =>
   Effect.gen(function* () {
-    const position = blockPosition(3, 64, 7)
+    const blockPos = blockPosition(3, 64, 7)
     const world = yield* makeInMemoryWorld<MobBehaviour>({
       world: {
-        blocks: new Map([[cellKey(position), block]]),
-        loaded: [chunkKey(chunkOf(position))],
+        blocks: new Map([[cellKey(blockPos), block]]),
+        loaded: [chunkKey(chunkOf(blockPos))],
       },
     })
     const state = yield* makeGameplayFrameState
@@ -164,7 +164,7 @@ const mineWithEquippedPickaxe = (
       commit,
     )
 
-    yield* requestBlockBreak(state, position, lootContext, {
+    yield* requestBlockBreak(state, blockPos, lootContext, {
       dimension: OVERWORLD,
       toolLocation: HELD_PICKAXE,
     })
@@ -187,12 +187,12 @@ const itemCount = (storage: PlayerStorage, item: string): number =>
 describe('block loot gameplay scenarios', () => {
   it.effect('mines glass with Silk Touch and commits the block item to player storage', () =>
     Effect.gen(function* () {
-      const position = blockPosition(3, 64, 7)
+      const blockPos = blockPosition(3, 64, 7)
       const glass = Option.getOrThrow(blockIdOf('glass'))
       const world = yield* makeInMemoryWorld<MobBehaviour>({
         world: {
-          blocks: new Map([[cellKey(position), glass]]),
-          loaded: [chunkKey(chunkOf(position))],
+          blocks: new Map([[cellKey(blockPos), glass]]),
+          loaded: [chunkKey(chunkOf(blockPos))],
         },
       })
       const state = yield* makeGameplayFrameState
@@ -210,10 +210,10 @@ describe('block loot gameplay scenarios', () => {
         commit,
       )
 
-      yield* requestBlockBreak(state, position, { silkTouch: true })
+      yield* requestBlockBreak(state, blockPos, { silkTouch: true })
       yield* runFrame(stages)
 
-      expect(yield* world.chunkStore.getBlock(position)).toStrictEqual({
+      expect(yield* world.chunkStore.getBlock(blockPos)).toStrictEqual({
         _tag: 'Block',
         block: BlockId(0),
       })
