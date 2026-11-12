@@ -73,9 +73,9 @@ describe('status effects', () => {
     // https://minecraft.wiki/w/Regeneration
     // https://minecraft.wiki/w/Damage
     let state = emptyStatusEffectState()
-    state = apply(state, { type: 'poison', durationSecs: 6 }).state
-    state = apply(state, { type: 'regeneration', durationSecs: 6 }).state
-    state = apply(state, { type: 'wither', durationSecs: 6 }).state
+    state = apply(state, { type: 'poison', durationSecs: 6, amplifier: 0 }).state
+    state = apply(state, { type: 'regeneration', durationSecs: 6, amplifier: 0 }).state
+    state = apply(state, { type: 'wither', durationSecs: 6, amplifier: 0 }).state
 
     const tick = tickStatusEffects(state, DeltaTimeSecs(3))
 
@@ -192,21 +192,21 @@ describe('status effects', () => {
       { type: 'strength', durationSecs: 30, amplifier: 1 },
       { type: 'weakness', durationSecs: 30, amplifier: 0 },
       { type: 'resistance', durationSecs: 30, amplifier: 1 },
-      { type: 'fire_resistance', durationSecs: 30 },
-      { type: 'water_breathing', durationSecs: 30 },
-      { type: 'breath_of_the_nautilus', durationSecs: 30 },
-      { type: 'health_boost', durationSecs: 30 },
+      { type: 'fire_resistance', durationSecs: 30, amplifier: 0 },
+      { type: 'water_breathing', durationSecs: 30, amplifier: 0 },
+      { type: 'breath_of_the_nautilus', durationSecs: 30, amplifier: 0 },
+      { type: 'health_boost', durationSecs: 30, amplifier: 0 },
       { type: 'absorption', durationSecs: 30, amplifier: 1 },
       { type: 'jump_boost', durationSecs: 30, amplifier: 2 },
-      { type: 'slow_falling', durationSecs: 30 },
+      { type: 'slow_falling', durationSecs: 30, amplifier: 0 },
       { type: 'luck', durationSecs: 30, amplifier: 1 },
-      { type: 'unluck', durationSecs: 30 },
+      { type: 'unluck', durationSecs: 30, amplifier: 0 },
       { type: 'nausea', durationSecs: 30, amplifier: 3 },
-      { type: 'blindness', durationSecs: 30 },
-      { type: 'darkness', durationSecs: 30 },
-      { type: 'night_vision', durationSecs: 30 },
-      { type: 'invisibility', durationSecs: 30 },
-      { type: 'glowing', durationSecs: 30 },
+      { type: 'blindness', durationSecs: 30, amplifier: 0 },
+      { type: 'darkness', durationSecs: 30, amplifier: 0 },
+      { type: 'night_vision', durationSecs: 30, amplifier: 0 },
+      { type: 'invisibility', durationSecs: 30, amplifier: 0 },
+      { type: 'glowing', durationSecs: 30, amplifier: 0 },
     ]
     const state = applications.reduce(
       (current, application) => apply(current, application).state,
@@ -264,6 +264,7 @@ describe('status effects', () => {
     const state = apply(emptyStatusEffectState(), {
       type: 'breath_of_the_nautilus',
       durationSecs: 2,
+      amplifier: 0,
     }).state
     const modifiers = statusEffectModifiers(state)
 
@@ -275,6 +276,7 @@ describe('status effects', () => {
     let state = apply(emptyStatusEffectState(), {
       type: 'speed',
       durationSecs: 4,
+      amplifier: 0,
     }).state
     state = tickStatusEffects(state, DeltaTimeSecs(1)).state
     state = apply(state, { type: 'speed', durationSecs: 2, amplifier: 1 }).state
@@ -302,6 +304,7 @@ describe('status effects', () => {
     let state = apply(emptyStatusEffectState(), {
       type: 'poison',
       durationSecs: 3,
+      amplifier: 0,
     }).state
     state = tickStatusEffects(state, DeltaTimeSecs(0.25)).state
     state = apply(state, { type: 'poison', durationSecs: 0.5, amplifier: 1 }).state
@@ -323,9 +326,10 @@ describe('status effects', () => {
     let state = apply(emptyStatusEffectState(), {
       type: 'poison',
       durationSecs: 2,
+      amplifier: 0,
     }).state
     state = tickStatusEffects(state, DeltaTimeSecs(0.75)).state
-    state = apply(state, { type: 'poison', durationSecs: 2 }).state
+    state = apply(state, { type: 'poison', durationSecs: 2, amplifier: 0 }).state
 
     expect(state.effects[0]?.pulseClockSecs).toBe(0.75)
     const tick = tickStatusEffects(state, DeltaTimeSecs(0.5))
@@ -344,6 +348,9 @@ describe('status effects', () => {
       durationSecs: 10,
       amplifier: 1,
     }).state
+    expect(isValidStatusEffectState(longerWeaker)).toBe(true)
+    expect(Result.isSuccess(Schema.decodeUnknownResult(StatusEffectStateSchema)(longerWeaker))).toBe(true)
+
     const shorterEqual = apply(longerWeaker, {
       type: 'poison',
       durationSecs: 2,
@@ -364,6 +371,7 @@ describe('status effects', () => {
     const existing = apply(emptyStatusEffectState(), {
       type: 'speed',
       durationSecs: 8,
+      amplifier: 0,
     }).state
 
     for (const type of ['instant_health', 'instant_damage', 'saturation'] as const) {
@@ -441,6 +449,7 @@ describe('status effects', () => {
     const unknown = applyStatusEffect(original as StatusEffectState, {
       type: 'not_a_status_effect' as StatusEffectName,
       durationSecs: 1,
+      amplifier: 0,
     })
     expect(Result.isFailure(unknown)).toBe(true)
     if (Result.isFailure(unknown)) {
@@ -457,7 +466,11 @@ describe('status effects', () => {
         { type: 'speed', remainingSecs: 2, pulseClockSecs: 0, amplifier: 1 },
       ],
     } as unknown as StatusEffectState
-    const rejectedState = applyStatusEffect(invalidState, { type: 'poison', durationSecs: 1 })
+    const rejectedState = applyStatusEffect(invalidState, {
+      type: 'poison',
+      durationSecs: 1,
+      amplifier: 0,
+    })
     expect(Result.isFailure(rejectedState)).toBe(true)
     if (Result.isFailure(rejectedState)) {
       expect(rejectedState.failure._tag).toBe('InvalidStatusEffectApplication')
@@ -478,12 +491,17 @@ describe('status effects', () => {
     const active = apply(emptyStatusEffectState(), {
       type: 'speed',
       durationSecs: 4,
+      amplifier: 0,
     }).state
-    const removed = applyStatusEffect(active, { type: 'speed', durationSecs: 0 })
+    const removed = applyStatusEffect(active, { type: 'speed', durationSecs: 0, amplifier: 0 })
     expect(Result.isSuccess(removed)).toBe(true)
     if (Result.isSuccess(removed)) expect(removed.success.state.effects).toStrictEqual([])
 
-    const negativeDuration = applyStatusEffect(active, { type: 'speed', durationSecs: -Number.MIN_VALUE })
+    const negativeDuration = applyStatusEffect(active, {
+      type: 'speed',
+      durationSecs: -Number.MIN_VALUE,
+      amplifier: 0,
+    })
     expect(Result.isFailure(negativeDuration)).toBe(true)
   })
 
@@ -523,7 +541,7 @@ describe('status effects', () => {
   })
 
   it('keeps malformed tick state inert and treats a bypassed non-finite delta as no elapsed time', () => {
-    const poison = apply(emptyStatusEffectState(), { type: 'poison', durationSecs: 5 }).state
+    const poison = apply(emptyStatusEffectState(), { type: 'poison', durationSecs: 5, amplifier: 0 }).state
     const invalidDelta = tickStatusEffects(poison, Number.NaN as unknown as DeltaTimeSecs)
     expect(invalidDelta.poisonPulses).toBe(0)
     expect(invalidDelta.state.effects).toStrictEqual(poison.effects)
@@ -542,7 +560,7 @@ describe('status effects', () => {
   })
 
   it('clones active and hidden status-effect records without aliasing', () => {
-    let state = apply(emptyStatusEffectState(), { type: 'speed', durationSecs: 5 }).state
+    let state = apply(emptyStatusEffectState(), { type: 'speed', durationSecs: 5, amplifier: 0 }).state
     state = apply(state, { type: 'speed', durationSecs: 2, amplifier: 1 }).state
 
     const copy = copyStatusEffectState(state)
@@ -555,13 +573,15 @@ describe('status effects', () => {
   it('returns a typed failure or schema-decodable result for arbitrary JSON input without throwing', () => {
     fc.assert(
       fc.property(fc.jsonValue(), fc.jsonValue(), (state, application) => {
-        const result = applyStatusEffect(
-          state as StatusEffectState,
-          application as StatusEffectApplication,
-        )
-        return Result.isFailure(result)
-          ? Result.isSuccess(Schema.decodeUnknownResult(StatusEffectApplicationErrorSchema)(result.failure))
-          : Result.isSuccess(Schema.decodeUnknownResult(StatusEffectApplicationOutcomeSchema)(result.success))
+        const result: unknown = Reflect.apply(applyStatusEffect, undefined, [state, application])
+        if (typeof result !== 'object' || result === null) return false
+        if ('failure' in result) {
+          return Result.isSuccess(Schema.decodeUnknownResult(StatusEffectApplicationErrorSchema)(result.failure))
+        }
+        if ('success' in result) {
+          return Result.isSuccess(Schema.decodeUnknownResult(StatusEffectApplicationOutcomeSchema)(result.success))
+        }
+        return false
       }),
       { numRuns: 300 },
     )

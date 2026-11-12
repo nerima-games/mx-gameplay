@@ -407,7 +407,7 @@ export const applyStatusEffect = (
       remainingSecs: durationSecs,
       pulseClockSecs: 0,
       amplifier,
-    })
+    }).filter((effect) => effect.amplifier < current.amplifier)
     nextEffect = { ...current, hiddenEffects }
   } else {
     nextEffect = {
