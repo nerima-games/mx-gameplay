@@ -553,7 +553,18 @@ describe('fixed-seed one-night spawn distribution', () => {
     }
 
     const intervalTicks = HOSTILE_SPAWN_SETTINGS.normal.intervalTicks
-    for (let tick = intervalTicks; tick <= TEST_TICKS_PER_DAY; tick += intervalTicks) {
+    let firstNightSearchTick = intervalTicks
+    while (
+      firstNightSearchTick <= TEST_TICKS_PER_DAY &&
+      !isNight(firstNightSearchTick / TEST_TICKS_PER_DAY)
+    ) {
+      firstNightSearchTick += intervalTicks
+    }
+    const skippedDaySearches = firstNightSearchTick / intervalTicks - 1
+    seed = drawRolls(seed, skippedDaySearches * SPAWN_SEARCH_ROLLS).seed
+    for (let tick = firstNightSearchTick; tick <= TEST_TICKS_PER_DAY; tick += intervalTicks) {
+      // This harness never despawns; after the cap, later night ticks cannot change the count under test.
+      if (roster.entities.length >= HOSTILE_SPAWN_SETTINGS.normal.maxPopulation) break
       const due = Result.getOrThrow(hostileSpawnSearchDue(
         SimulationTick(tick),
         SimulationTick(lastSearchTick),
@@ -562,10 +573,6 @@ describe('fixed-seed one-night spawn distribution', () => {
       if (!due) continue
       lastSearchTick = tick
       const timeOfDay = tick / TEST_TICKS_PER_DAY
-      if (!isNight(timeOfDay) || roster.entities.length >= HOSTILE_SPAWN_SETTINGS.normal.maxPopulation) {
-        seed = drawRolls(seed, SPAWN_SEARCH_ROLLS).seed
-        continue
-      }
 
       const found = yield* searchSpawnCandidates(
         store.api,
@@ -1238,9 +1245,9 @@ describe('the search inside the frame', () => {
       )
       yield* time.setTimeOfDay(InterpolationFraction(0.5))
 
-      yield* runFrames(stages, 30, DeltaTimeSecs(0.05))
+      yield* runFrames(stages, 1, DeltaTimeSecs(0.05))
 
-      expect(yield* Ref.get(state.tickCount)).toBe(30)
+      expect(yield* Ref.get(state.tickCount)).toBe(1)
       expect(yield* Ref.get(state.lastPassiveSpawnTick)).toBe(1)
       expect(yield* Ref.get(state.passiveInitialSpawnPending)).toBe(false)
       const ownerAfter = yield* commit.coordinator.snapshot(

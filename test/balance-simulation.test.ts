@@ -415,14 +415,28 @@ describe('balance simulation runner', () => {
     expect(first.stageIds).toContain('gameplay:entities')
   })
 
-  it('records hostile damage after a natural night spawn with TimeService and candidate-light provenance', async () => {
-    const runtime = await Effect.runPromise(makeGeneratedBalanceGameplayRuntime(7, { x: 0.5, z: 0.5 }, 7))
+  it('records damage after a natural night spawn and SM3 pursuit with TimeService and spawn-position light provenance', async () => {
+    const runtime = await Effect.runPromise(makeGeneratedBalanceGameplayRuntime(
+      7,
+      { x: 0.5, z: 0.5 },
+      7,
+      { flatHostileSpawnSurface: true },
+    ))
     const result = await runBalanceHarness<{
       spawns: ReadonlyArray<BalanceMobSpawnRecord>
       damage: ReadonlyArray<BalanceRecordedDamage>
     }>(runtime, 7, Effect.runPromise, (harness) => Effect.gen(function* () {
       yield* runtime.world.time.setTimeOfDay(InterpolationFraction(0.8))
-      yield* harness.step(Schema.decodeUnknownSync(TickCountSchema)(300))
+      yield* harness.step(Schema.decodeUnknownSync(TickCountSchema)(90))
+      const zombieSpawn = (yield* Ref.get(runtime.mobSpawnsByTick)).find((spawn) => spawn.kind === String(ZOMBIE_KIND))
+      if (zombieSpawn !== undefined) {
+        yield* movePlayer(runtime, position(
+          PositionAxis(zombieSpawn.position.x - 2),
+          PositionAxis(zombieSpawn.position.y),
+          PositionAxis(zombieSpawn.position.z),
+        ))
+        yield* harness.step(Schema.decodeUnknownSync(TickCountSchema)(20))
+      }
       return {
         spawns: yield* Ref.get(runtime.mobSpawnsByTick),
         damage: yield* Ref.get(runtime.damageEventsByTick),
@@ -431,9 +445,11 @@ describe('balance simulation runner', () => {
     const nighttimeHostiles = result.spawns.filter((spawn) =>
       HOSTILE_KINDS.some((kind) => String(kind) === spawn.kind),
     )
+    const zombieSpawn = nighttimeHostiles.find((spawn) => spawn.kind === String(ZOMBIE_KIND))
     const hostileDamage = result.damage.find((entry) => entry.attacker !== undefined)
 
     expect(nighttimeHostiles.length).toBeGreaterThan(0)
+    expect(zombieSpawn).toBeDefined()
     expect(['HostileContact', 'Explosion']).toContain(hostileDamage?.event._tag)
     expect(hostileDamage?.attacker).toMatchObject({
       source: expect.any(String),
@@ -441,11 +457,14 @@ describe('balance simulation runner', () => {
       position: { x: expect.any(Number), y: expect.any(Number), z: expect.any(Number) },
       spawnPosition: { x: expect.any(Number), y: expect.any(Number), z: expect.any(Number) },
       spawnTick: expect.any(Number),
-      spawnCandidateBlockLight: { status: 'observed', block: expect.any(Number) },
+      spawnPositionBlockLight: { status: 'observed', block: expect.any(Number) },
     })
+    expect(hostileDamage?.attacker?.source).toBe(zombieSpawn?.id)
+    expect(hostileDamage?.attacker?.spawnTick).toBe(zombieSpawn?.tick)
+    expect(hostileDamage?.attacker?.position).not.toStrictEqual(hostileDamage?.attacker?.spawnPosition)
     expect(Number(hostileDamage?.attacker?.spawnTick)).toBeGreaterThan(0)
-    expect(Number(hostileDamage?.attacker?.spawnCandidateBlockLight.status === 'observed'
-      ? hostileDamage.attacker.spawnCandidateBlockLight.block
+    expect(Number(hostileDamage?.attacker?.spawnPositionBlockLight.status === 'observed'
+      ? hostileDamage.attacker.spawnPositionBlockLight.block
       : Infinity)).toBeLessThanOrEqual(7)
     expect(Number(hostileDamage?.timeService.timeOfDay)).toBeGreaterThan(0.75)
     expect(Number(hostileDamage?.attacker?.spawnTimeService?.timeOfDay)).toBeGreaterThan(0.75)
