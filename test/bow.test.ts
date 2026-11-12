@@ -1008,7 +1008,7 @@ const inventoryWith = (bow: boolean, arrow: boolean): ReadonlyArray<Slot> =>
 
 const scene = (
   initial: EntityRoster<MobBehaviour>,
-  inventorySlots?: ReadonlyArray<Slot>,
+  inventorySlots: ReadonlyArray<Slot> = inventoryWith(true, false),
   ownerInitial: GameplayOwnerInitialState = {},
 ) =>
   Effect.gen(function* () {
@@ -1223,6 +1223,28 @@ inventory: { mode: 'creative', slotIndex: 0 },
 
       expect((yield* ownerRoster(commit)).entities[0]?.healthPoints).toBe(20)
       expect(yield* Ref.get(state.bowKnockbacks)).toStrictEqual([])
+    }),
+  )
+
+  it.effect('refuses a shot when the requested slot does not hold a bow', () =>
+    Effect.gen(function* () {
+      const { state, commit, stages } = yield* scene(AHEAD, inventoryWith(false, true))
+      yield* Ref.set(state.pendingBowShots, [{
+        requestId: 'missing-bow',
+        origin: EYE,
+        dirX: 0,
+        dirY: 0,
+        dirZ: 1,
+        chargeSecs: BOW_FULL_CHARGE_SECS,
+        inventory: { mode: 'creative', slotIndex: 0 },
+      }])
+
+      yield* runFrame(stages)
+
+      expect((yield* ownerRoster(commit)).entities[0]?.healthPoints).toBe(20)
+      expect(yield* drainBowShotResults(state)).toStrictEqual([
+        { requestId: 'missing-bow', success: false, outcome: 'InventoryUnavailable' },
+      ])
     }),
   )
 

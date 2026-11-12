@@ -164,7 +164,7 @@ import {
   shotBlockedByTerrain,
   shotTargetWithCandidate,
 } from '../domain/interactions/bow-shot.js'
-import { bowCharge, canFireBow } from '../domain/interactions/draw-bow.js'
+import { bowCharge, bowDamage, canFireBow } from '../domain/interactions/draw-bow.js'
 import {
   bowDamageWithEnchantments,
   durabilityWearWithEnchantments,
@@ -647,9 +647,12 @@ const processBowShot = (
       )
       const isBlockedAt = solidityFromStore(store)
       if (!shotBlockedByTerrain((x, y, z) => isBlockedAt({ x, y, z }), request.origin, end)) {
+        const damageEnchantments: EnchantmentSource = request.powerLevel === undefined
+          ? bowEnchantments
+          : [{ id: 'power', level: request.powerLevel }]
         const amount = DamageAmount.result(bowDamageWithEnchantments(
-          bowCharge(request.chargeSecs),
-          bowEnchantments,
+          bowDamage(bowCharge(request.chargeSecs)),
+          damageEnchantments,
         ))
         if (Result.isFailure(amount)) {
           yield* recordGameplayStageFailure(state, {
@@ -3575,7 +3578,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                     storageCandidate,
                     {
                       ownerId: commit.vitalsOwnerId,
-                      state: validatedVitals,
+                      state: validatedVitals.success,
                     },
                     ...(statusEffectCandidate === undefined ? [] : [statusEffectCandidate]),
                   ],
