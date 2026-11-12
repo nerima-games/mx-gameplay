@@ -13,13 +13,12 @@
  * That includes the tick counter, the day-length denominator, the advance, and
  * the `setDayLength -> setTimeOfDay` ordering hazard those two create.
  *
- * This repository had a second copy of all of it: `timeOfDaySecs` and
- * `dayLengthSecs` `Ref`s advanced by the `gameplay:time-weather` stage, plus a
- * `DEFAULT_DAY_LENGTH_SECS` of 1200 against mc-sim's 400. Two owners of one
- * noun is two answers to "what time is it", and the one that gets saved is
- * mc-sim's — so the divergence would have surfaced as the sky jumping on world
- * load. The file header of `stages/registration.ts` and docs/architecture.md
- * both already said mc-sim owned it; only the code disagreed.
+ * Before mc-sim 0.10.0, this repository had a second copy of that state:
+ * `timeOfDaySecs` and `dayLengthSecs` `Ref`s advanced by the
+ * `gameplay:time-weather` stage, with a 1200-second default against mc-sim's
+ * former 400-second default. mc-sim 0.10.0 owns a 24000-tick day at 20 ticks
+ * per second (1200 seconds). This module stays a fraction-based rule and does
+ * not own the clock.
  *
  * What is left here is the part that really is a rule: given the time of day,
  * what does the world do about it. Every function below is a total function of
@@ -36,9 +35,10 @@
  * deciding the phase. Hostile spawning uses the balance window 0.55 through
  * 0.95; the daytime span wraps through zero.
  *
- * `isNight` below is mx-gameplay's spawn-window rule after canonicalising its
- * finite input. mc-sim currently supplies the time fraction but retains its own
- * default night predicate; callers must not assume those windows are coupled.
+ * `isNight` below is mx-gameplay's hostile-spawn window after canonicalising
+ * its finite input. mc-sim's `TimeService.isNight` has a separate clock
+ * predicate; callers must not assume the spawn and simulation-night windows
+ * are coupled.
  */
 
 /** Start of the hostile-spawn night window. */

@@ -66,7 +66,7 @@ import {
 } from '../../src/stages/registration.js'
 import type { GameplayStageCommitServices } from '../../src/stages/registration-core.js'
 
-// Harness frames advance at 20 Hz, independently of mc-sim's 60 Hz TimeService clock.
+// Each harness step advances one 20 Hz simulation tick.
 export const BALANCE_HARNESS_TICKS_PER_SECOND = 20
 const TICK_SECS = DeltaTimeSecs(1 / BALANCE_HARNESS_TICKS_PER_SECOND)
 const SIMULATION_TICK_COUNT = Result.getOrThrow(NonNegativeTickCount.result(1))

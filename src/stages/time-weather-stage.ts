@@ -20,11 +20,12 @@ export const makeTimeWeatherStage = (context: GameplayStageContext): StageRegist
   return {
     id: GAMEPLAY_STAGE_IDS.timeWeather,
     after: [GAMEPLAY_STAGE_IDS.fluids],
-    // ADVANCING THE CLOCK IS STILL mc-sim's: `TimeService.advance(dt)` over
-    // `mc-sim/domain/time-of-day.ts`, which owns the absolute tick counter, the
-    // day-length denominator, the `setDayLength -> setTimeOfDay` ordering rule
-    // and the value that reaches the save file. This stage held a second copy of
-    // that state until it was deleted; see the registration-core.ts header. mc-sim registers
+    // ADVANCING THE CLOCK IS STILL mc-sim's: its fixed-step stage calls
+    // `TimeService.advance(elapsedTicks)` over `mc-sim/domain/time-of-day.ts`,
+    // which owns the absolute tick counter, the day-length denominator, the
+    // `setDayLength -> setTimeOfDay` ordering rule and the value that reaches
+    // the save file. This stage held a second copy of that state until it was
+    // deleted; see the registration-core.ts header. mc-sim registers
     // its advance inside `sim:physics` rather than a `sim:time-weather`, for a
     // reason that repository documents at length: two stages in one phase are
     // ordered lexicographically, `gameplay:` sorts before `sim:`, and this stage
