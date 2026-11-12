@@ -95,7 +95,7 @@ type GoalDefinition = Readonly<{
 }>
 
 const initialDayBoundaries = balanceDayBoundaries(INITIAL_TIME_STATE)
-const firstNightEndSeconds = initialDayBoundaries.firstNightEndTick / BALANCE_HARNESS_TICKS_PER_SECOND
+const firstHostileSpawnEndSeconds = initialDayBoundaries.firstHostileSpawnEndTick / BALANCE_HARNESS_TICKS_PER_SECOND
 
 const goalDefinitions: ReadonlyArray<GoalDefinition> = [
   { key: 'firstLog', label: 'First log', target: '≤ 30 s', timeBasis: 'estimated straight-line movement', goal: { kind: 'max', threshold: 30 } },
@@ -106,10 +106,10 @@ const goalDefinitions: ReadonlyArray<GoalDefinition> = [
   { key: 'iron', label: 'First iron', target: '≤ 900 s', timeBasis: 'estimated straight-line movement', goal: { kind: 'max', threshold: 900 } },
   {
     key: 'bedByNight1',
-    label: 'Bed by end of first night',
-    target: `≤ ${firstNightEndSeconds} s`,
+    label: 'Bed by end of hostile-spawn window',
+    target: `≤ ${firstHostileSpawnEndSeconds} s`,
     timeBasis: 'unavailable',
-    goal: { kind: 'max', threshold: firstNightEndSeconds },
+    goal: { kind: 'max', threshold: firstHostileSpawnEndSeconds },
   },
 ]
 
@@ -207,7 +207,7 @@ const goalReport = (results: ReadonlyArray<SeedSimulationResult>, definition: Go
       return ['actual path not exercised: the route does not search animals or crops']
     }
     if (definition.key === 'bedByNight1') {
-      return ['actual path not exercised: the route does not search sheep']
+      return ['deadline is the end of the first hostile-spawn window; actual path not exercised: the route does not search sheep']
     }
     return [result.metricPaths[definition.key]]
   }))
