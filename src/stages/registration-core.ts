@@ -207,6 +207,7 @@ import {
   tickStatusEffects,
   type StatusEffectInstantEffect,
   type StatusEffectModifiers,
+  type DamageTakenMultiplier,
   type PlayerHealingEvent,
   type StatusEffectApplication,
   type StatusEffectApplicationError,
@@ -639,7 +640,6 @@ const prepareFirePlayerDamage = (
   let storage = observed.success.state
   const resolvedDamages: PlayerDamageEvent[] = []
   for (const event of damages) {
-    if (damageMultiplier === 0) continue
     const resolved = yield* resultOrDie(prepareArmorHit(storage.equipment, event.damage, damageMultiplier))
     resolvedDamages.push({ ...event, damage: resolved.damage })
 
@@ -3202,27 +3202,28 @@ export const getPlayerStatusEffectModifiers = (
 export const applyStatusEffectInstantEffects = (
   vitals: Vitals,
   effects: ReadonlyArray<StatusEffectInstantEffect>,
-  damageMultiplier = 1,
-): Result.Result<Vitals, Brand.BrandError | Schema.SchemaError> => {
+  damageMultiplier: DamageTakenMultiplier = statusEffectModifiers({ effects: [] }).damageTakenMultiplier,
+): Result.Result<Vitals, never> => {
+  // Amplifiers come from the bounded status-effect schema; the damage multiplier
+  // is the bounded modifier projection. Their arithmetic stays within each
+  // quantity's valid range, so the result constructors are total here.
   let next = vitals
   for (const effect of effects) {
     const level = effect.amplifier + 1
     if (effect.type === 'instant_health') {
       const amount = HealthAmount.result(4 * 2 ** effect.amplifier)
-      if (Result.isFailure(amount)) return Result.fail(amount.failure)
-      next = healVitals(next, amount.success)
+      next = healVitals(next, Result.getOrThrow(amount))
     } else if (effect.type === 'instant_damage') {
       const amount = DamageAmount.result(6 * 2 ** effect.amplifier * damageMultiplier)
-      if (Result.isFailure(amount)) return Result.fail(amount.failure)
       const cause = DamageCause.result('generic')
-      if (Result.isFailure(cause)) return Result.fail(cause.failure)
-      next = applyVitalsDamage(next, { amount: amount.success, cause: cause.success })
+      next = applyVitalsDamage(next, {
+        amount: Result.getOrThrow(amount),
+        cause: Result.getOrThrow(cause),
+      })
     } else {
       const nutrition = FoodNutrition.result(2 * level)
-      if (Result.isFailure(nutrition)) return Result.fail(nutrition.failure)
       const saturation = SaturationModifier.result(1)
-      if (Result.isFailure(saturation)) return Result.fail(saturation.failure)
-      next = eatVitals(next, nutrition.success, saturation.success)
+      next = eatVitals(next, Result.getOrThrow(nutrition), Result.getOrThrow(saturation))
     }
   }
   return Result.succeed(next)
@@ -3361,16 +3362,10 @@ const stepStatusEffects = (
       instantEffects.push(...outcome.success.instantEffects)
     }
     const tick = tickStatusEffects(applied, dt)
-    const status = Schema.decodeUnknownResult(StatusEffectStateSchema)(tick.state)
-    if (Result.isFailure(status)) {
-      yield* recordGameplayStageFailure(state, {
-        _tag: 'Failed', operation: 'CandidateBuild', subject: 'Brewing', error: status.failure,
-      })
-      return
-    }
+    const status = tick.state
     const changes: Array<ReplicatedOwnerCandidate> = [{
       ownerId: commit.statusEffectsOwnerId,
-      state: status.success,
+      state: status,
     }]
     let heals: ReadonlyArray<PlayerHealingEvent> = []
     if (
@@ -3405,18 +3400,11 @@ const stepStatusEffects = (
         return
       }
       let vitals = vitalsObserved.success.state.vitals
-      const afterInstant = applyStatusEffectInstantEffects(
+      vitals = Result.getOrThrow(applyStatusEffectInstantEffects(
         vitals,
         instantEffects,
         tick.modifiers.damageTakenMultiplier,
-      )
-      if (Result.isFailure(afterInstant)) {
-        yield* recordGameplayStageFailure(state, {
-          _tag: 'Failed', operation: 'CandidateBuild', subject: 'Vitals', error: afterInstant.failure,
-        })
-        return
-      }
-      vitals = afterInstant.success
+      ))
       const damagePulses = tick.poisonPulses + tick.witherPulses
       if (tick.modifiers.damageTakenMultiplier > 0) {
         for (let index = 0; index < damagePulses; index += 1) {
@@ -3874,9 +3862,7 @@ const stepFireTick = (
     const fireBlock = fire.value
     const statusModifiers = yield* Ref.get(state.playerStatusEffectModifiers)
     const playerDamages: ReadonlyArray<PlayerDamageEvent> = step.damages
-      .filter(({ damage }) => !statusModifiers.fireResistance || (
-        damage.cause !== 'lava' && damage.cause !== 'in_fire' && damage.cause !== 'on_fire'
-      ))
+      .filter(() => !statusModifiers.fireResistance)
       .map((damage) => ({
         ...damage,
         at: kernelPosition(

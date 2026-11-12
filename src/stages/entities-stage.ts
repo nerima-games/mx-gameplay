@@ -69,7 +69,6 @@ import {
 import {
   ExperienceOrbOwnerSnapshotSchema,
   ExperienceOrbVitalsOwnerSnapshotSchema,
-  ExperienceOrbValueSchema,
   applyMendingRepair,
   canCollectExperienceOrbAtTick,
   experienceOrbAbsorptionResultAfterCommit,
@@ -1063,10 +1062,8 @@ const storageAfterMendingRepair = (
     return { ...storage, inventoryDurability }
   }
   const equipmentSlot = selectedSlot.slice('equipment:'.length)
-  if (!['head', 'chest', 'legs', 'feet', 'offhand'].includes(equipmentSlot)) return storage
   const slot = equipmentSlot as keyof PlayerStorage['equipment']['slots']
-  const equipped = storage.equipment.slots[slot]
-  if (equipped === null) return storage
+  const equipped = storage.equipment.slots[slot]!
   return {
     ...storage,
     equipment: {
@@ -1093,25 +1090,20 @@ const planMendingRepair = (
     PlannedMendingRepair,
     Schema.SchemaError | ExperienceOrbMendingInvalid
   > => {
-    if (selected.selectedSlot === undefined || selected.repairedCandidate?.durability === null ||
-      selected.repairedCandidate?.durability === undefined) {
-      const noRepair: PlannedMendingRepair = {
-        storage,
-        experienceRemaining: orbExperience,
-        selectedSlot: undefined,
-      }
-      return Result.succeed(noRepair)
-    }
+    // The caller only plans a repair after finding a damaged Mending candidate,
+    // and orb rewards are positive, so the Mending selector must return one.
+    const selectedSlot = selected.selectedSlot!
+    const repairedDurability = selected.repairedCandidate!.durability!
     const repairedStorage = storageAfterMendingRepair(
       storage,
-      selected.selectedSlot,
-      selected.repairedCandidate.durability,
+      selectedSlot,
+      repairedDurability,
     )
     const validated = applyMendingRepair(orbExperience, {
       repairedStorage,
       experienceRemaining: selected.xpRemaining,
-      repairedDurability: selected.repairedCandidate.durability,
-      selectedLocation: selected.selectedSlot,
+      repairedDurability,
+      selectedLocation: selectedSlot,
     })
     return Result.map(validated, (result): PlannedMendingRepair => ({
       storage: result.repairedStorage,
@@ -1125,37 +1117,32 @@ const experienceOrbRecordsForReward = (
   existing: ReadonlyArray<ExperienceOrbRecord>,
   source: string,
   eventIndex: number,
-  values: ReadonlyArray<number>,
+  values: ReadonlyArray<ExperienceOrbValue>,
   at: Schema.Schema.Type<typeof WorldPositionSchema>,
   tick: Schema.Schema.Type<typeof SimulationTickSchema>,
 ): Result.Result<ReadonlyArray<ExperienceOrbRecord>, Schema.SchemaError> => {
   const next = [...existing]
   const ids = new Set(existing.map(({ id }) => id))
-  for (const [valueIndex, rawValue] of values.entries()) {
-    const value = Schema.decodeUnknownResult(ExperienceOrbValueSchema)(rawValue)
-    if (Result.isFailure(value)) return Result.fail(value.failure)
+  for (const [valueIndex, value] of values.entries()) {
     const nearbyIndex = next.findIndex((orb) =>
-      orb.value === value.success && orb.position !== undefined &&
+      orb.value === value && orb.position !== undefined &&
       orb.position.dimension === at.dimension && orb.position.x === at.x &&
       orb.position.y === at.y && orb.position.z === at.z,
     )
     if (nearbyIndex >= 0) {
-      const existingOrb = next[nearbyIndex]
-      if (existingOrb === undefined) continue
+      const existingOrb = next[nearbyIndex]!
       const merged = mergeSameValueExperienceOrbStacks(
         { value: existingOrb.value, count: existingOrb.count },
-        { value: value.success },
+        { value },
       )
       if (Result.isFailure(merged)) return Result.fail(merged.failure)
-      if (merged.success !== undefined) {
-        next[nearbyIndex] = { ...existingOrb, count: merged.success.count }
-        continue
-      }
+      next[nearbyIndex] = { ...existingOrb, count: merged.success!.count }
+      continue
     }
     const id = EntityId(`mx-gameplay:experience-orb/${source}/${tick}/${eventIndex}/${valueIndex}`)
     if (ids.has(id)) continue
     ids.add(id)
-    next.push({ id, value: value.success, position: at, spawnedAt: tick })
+    next.push({ id, value, position: at, spawnedAt: tick })
   }
   const validated = Schema.decodeUnknownResult(ExperienceOrbOwnerSnapshotSchema)({ orbs: next })
   return Result.isFailure(validated)

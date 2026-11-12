@@ -3,6 +3,7 @@ import {
   DeltaTimeSecs,
   EntityHealthPoints,
   EntitySerial,
+  FoodSaturation,
   PositionAxis,
   StackCount,
   blockIdOf,
@@ -14,6 +15,8 @@ import { STATUS_EFFECT_AMPLIFIER_MAX } from '@nerima-games/mc-kernel/domain/stat
 import {
   EntityId,
   EntityKind,
+  HungerPoints,
+  SPAWN_VITALS,
   WorldCommitBlockWriteMismatch,
   WorldCommitEmptyRequest,
   itemStack as makeItemStack,
@@ -29,6 +32,7 @@ import {
   drainItemUseResults,
   drainPlayerDamages,
   drainPlayerHeals,
+  getPlayerStatusEffectModifiers,
   getPlayerMovementSpeedMultiplier,
   gameplayStages,
   makeGameplayFrameState,
@@ -373,6 +377,7 @@ describe('registration-core public paths omitted from focused coverage', () => {
 
       yield* runInteractions(harness.interactions, 0)
       expect(yield* getPlayerMovementSpeedMultiplier(harness.state)).toBe(1)
+      expect((yield* getPlayerStatusEffectModifiers(harness.state)).movementSpeedMultiplier).toBe(1)
       expect((yield* commit.coordinator.snapshot(commit.statusEffectsOwnerId, StatusEffectStateSchema)).state.effects)
         .toStrictEqual([])
       expect(yield* commit.coordinator.revision).toBe(revisionBefore)
@@ -455,6 +460,43 @@ describe('registration-core public paths omitted from focused coverage', () => {
       ])
       expect(yield* getPlayerMovementSpeedMultiplier(harness.state)).toBe(1.2)
       expect(yield* Ref.get(harness.state.pendingStatusEffects)).toStrictEqual([])
+    }),
+  )
+
+  it.effect('applies instant health, instant damage, and saturation through the registered status stage', () =>
+    Effect.gen(function* () {
+      const startingVitals = {
+        ...SPAWN_VITALS,
+        healthPoints: EntityHealthPoints(10),
+        hungerPoints: HungerPoints(10),
+        saturation: FoodSaturation(0),
+      }
+      const harness = yield* makeHarness(world([]), true, { vitals: startingVitals })
+      const commit = harness.commit
+      if (commit?.vitalsOwnerId === undefined || commit.statusEffectsOwnerId === undefined) {
+        throw new Error('status-effect and vitals owners were not registered')
+      }
+
+      for (const application of [
+        { type: 'instant_health', durationSecs: 0 },
+        { type: 'instant_damage', durationSecs: 0 },
+        { type: 'saturation', durationSecs: 0 },
+      ] as const) {
+        yield* requestStatusEffect(harness.state, application)
+      }
+      yield* runInteractions(harness.interactions, 0)
+
+      const vitalsAfter = yield* commit.coordinator.snapshot(
+        GAMEPLAY_VITALS_OWNER_ID,
+        ExperienceOrbVitalsOwnerSnapshotSchema,
+      )
+      expect(vitalsAfter.state.vitals.healthPoints).toBe(8)
+      expect(vitalsAfter.state.vitals.hungerPoints).toBe(12)
+      expect(vitalsAfter.state.vitals.saturation).toBe(4)
+      expect((yield* commit.coordinator.snapshot(commit.statusEffectsOwnerId, StatusEffectStateSchema)).state.effects)
+        .toStrictEqual([])
+      expect(yield* Ref.get(harness.state.pendingStatusEffects)).toStrictEqual([])
+      expect(yield* Ref.get(harness.state.operationFailures)).toStrictEqual([])
     }),
   )
 
@@ -814,6 +856,62 @@ describe('registration-core public paths omitted from focused coverage', () => {
       expect((yield* Ref.get(harness.state.fireLifecycle)).burningActors).toContainEqual(
         expect.objectContaining({ id: 'player', kind: 'player' }),
       )
+      expect(yield* Ref.get(harness.state.operationFailures)).toStrictEqual([])
+    }),
+  )
+
+  it.effect('suppresses direct and continuing fire damage under fire resistance', () =>
+    Effect.gen(function* () {
+      const firePosition = fixtureBlockPosition(0, 64, 0)
+      const harness = yield* makeHarness(world([]), true)
+      const fire = fireStageWithCommit(harness, harness.commit)
+      if (fire === undefined) throw new Error('fire stage was not registered')
+      yield* requestStatusEffect(harness.state, { type: 'fire_resistance', durationSecs: 3 })
+      yield* runInteractions(harness.interactions, 0)
+      yield* Ref.set(harness.state.fireLifecycle, {
+        ...makeFireLifecycleState([], 19),
+        burningActors: [{
+          id: 'player',
+          kind: 'player',
+          position: firePosition,
+          remainingTicks: FIRE_DAMAGE_INTERVAL_TICKS,
+          damageCooldownTicks: 0,
+        }],
+      })
+
+      yield* fire.run(DeltaTimeSecs(FIRE_TICK_INTERVAL_SECS)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* drainPlayerDamages(harness.state)).toStrictEqual([])
+      expect(yield* getPlayerStatusEffectModifiers(harness.state)).toMatchObject({ fireResistance: true })
+      expect(yield* Ref.get(harness.state.operationFailures)).toStrictEqual([])
+    }),
+  )
+
+  it.effect('suppresses direct fire damage when Resistance reduces damage taken to zero', () =>
+    Effect.gen(function* () {
+      const firePosition = fixtureBlockPosition(0, 64, 0)
+      const harness = yield* makeHarness(world([]), true)
+      const fire = fireStageWithCommit(harness, harness.commit)
+      if (fire === undefined) throw new Error('fire stage was not registered')
+      yield* requestStatusEffect(harness.state, { type: 'resistance', durationSecs: 3, amplifier: 4 })
+      yield* runInteractions(harness.interactions, 0)
+      yield* Ref.set(harness.state.fireLifecycle, {
+        ...makeFireLifecycleState([], 23),
+        burningActors: [{
+          id: 'player',
+          kind: 'player',
+          position: firePosition,
+          remainingTicks: FIRE_DAMAGE_INTERVAL_TICKS,
+          damageCooldownTicks: 0,
+        }],
+      })
+
+      yield* fire.run(DeltaTimeSecs(FIRE_TICK_INTERVAL_SECS)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* getPlayerStatusEffectModifiers(harness.state).pipe(Effect.map(
+        ({ damageTakenMultiplier }) => damageTakenMultiplier,
+      ))).toBe(0)
+      expect(yield* drainPlayerDamages(harness.state)).toStrictEqual([])
       expect(yield* Ref.get(harness.state.operationFailures)).toStrictEqual([])
     }),
   )
