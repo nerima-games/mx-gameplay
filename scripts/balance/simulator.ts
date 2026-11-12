@@ -109,7 +109,7 @@ export type BalanceDamageEvent = Readonly<{
     spawnPosition: Readonly<{ x: number; y: number; z: number }> | null
     spawnTick: number | null
     spawnTimeService: BalanceTimeServiceReading | null
-    spawnCandidateBlockLight:
+    spawnPositionBlockLight:
       | Readonly<{ status: 'observed'; block: number }>
       | Readonly<{ status: 'unavailable'; reason: string }>
   }>
