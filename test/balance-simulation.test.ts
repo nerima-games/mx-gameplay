@@ -94,7 +94,7 @@ const simulatedResult = (
 })
 
 describe('balance simulation runner', () => {
-  it('uses mc-sim night boundaries and scales them with a shorter day length', () => {
+  it('keeps TimeService night separate from hostile-spawn window boundaries', () => {
     const defaultDay = balanceDayBoundaries()
     const shorterDay = balanceDayBoundaries({ ticks: 3_600, dayLengthTicks: 12_000 })
 
@@ -105,6 +105,11 @@ describe('balance simulation runner', () => {
     expect(defaultDay.firstNightEndTick).toBe(22_800)
     // The first tick above 0.50 is 12,001; subtract the initial 7,200 ticks.
     expect(defaultDay.firstTwilightTick).toBe(4_801)
+    // A fresh world starts at 0.30; the inclusive hostile window is 0.55 through 0.95.
+    expect(defaultDay.firstHostileSpawnTick).toBe(6_000)
+    expect(defaultDay.firstHostileSpawnEndTick).toBe(15_601)
+    expect(defaultDay.firstHostileSpawnTick / BALANCE_HARNESS_TICKS_PER_SECOND).toBe(300)
+    expect(defaultDay.firstHostileSpawnEndTick / BALANCE_HARNESS_TICKS_PER_SECOND).toBe(780.05)
     expect(Math.abs(defaultDay.firstTwilightTick - shorterDay.firstTwilightTick * 2)).toBeLessThanOrEqual(1)
     expect(Math.abs(defaultDay.firstNightTick - shorterDay.firstNightTick * 2)).toBeLessThanOrEqual(1)
     expect(Math.abs(defaultDay.firstNightEndTick - shorterDay.firstNightEndTick * 2)).toBeLessThanOrEqual(1)
@@ -139,7 +144,6 @@ describe('balance simulation runner', () => {
     }))
 
     const report = buildBalanceReport([first, second], 'shelter')
-    const firstNightEndSeconds = balanceDayBoundaries().firstNightEndTick / BALANCE_HARNESS_TICKS_PER_SECOND
     const firstLog = report.goals.find((goal) => goal.key === 'firstLog')
     const food = report.goals.find((goal) => goal.key === 'cookedFood')
     const bed = report.goals.find((goal) => goal.key === 'bedByNight1')
@@ -174,6 +178,7 @@ describe('balance simulation runner', () => {
       p90: null,
       achievementRate: null,
     })
+    expect(bed?.target).toBe('≤ 780.05 s')
     expect(report.night1Death).toMatchObject({
       status: 'observed',
       measuredCount: 2,
@@ -203,11 +208,11 @@ describe('balance simulation runner', () => {
       partialKnownDamageCount: 0,
       completeRunQuantiles: { sampleCount: 2, medianEvents: 1, p90Events: 2 },
     })
-    expect(formatBalanceTable(report)).toContain('| Bed by end of first night')
+    expect(formatBalanceTable(report)).toContain('| Bed by end of hostile-spawn window')
     expect(formatBalanceTable(report)).toContain('actual path not exercised for crafting')
     expect(formatBalanceTable(report)).toContain('actual path not exercised: the route does not search animals or crops')
     const table = formatBalanceTable(report)
-    expect(table).toContain(`| Bed by end of first night | ≤ ${firstNightEndSeconds} s | 0 / 2 | unavailable | unknown`)
+    expect(table).toContain('| Bed by end of hostile-spawn window | ≤ 780.05 s | 0 / 2 | unavailable | unknown')
     expect(table).toContain('50% deaths')
     expect(renderBalanceReport(report)).toContain('"schemaVersion": 1')
     expect(renderBalanceReport(report)).toContain('## Summary')
@@ -215,7 +220,7 @@ describe('balance simulation runner', () => {
 
   it('keeps known pre-twilight damage as a target failure and leaves incomplete no-hit runs unknown', () => {
     const diedAfterHostileDamage = simulatedResult(2, observationsFor({
-      night1Death: { status: 'unavailable', reason: 'player died before first night' },
+      night1Death: { status: 'unavailable', reason: 'player died before hostile spawning began' },
       preTwilightDamage: {
         status: 'partial',
         events: [{ seconds: 100, ticks: 100 * BALANCE_HARNESS_TICKS_PER_SECOND, cause: 'hostile' }],
@@ -227,7 +232,7 @@ describe('balance simulation runner', () => {
       },
     }))
     const diedWithoutHostileDamage = simulatedResult(3, observationsFor({
-      night1Death: { status: 'unavailable', reason: 'player died before first night' },
+      night1Death: { status: 'unavailable', reason: 'player died before hostile spawning began' },
       preTwilightDamage: {
         status: 'partial',
         events: [],
@@ -283,18 +288,35 @@ describe('balance simulation runner', () => {
     })
   })
 
-  it('counts night deaths only inside the first-night interval', () => {
-    const coverage = { firstNight: 4_800, firstNightEnd: 12_000, stagesCovered: true, measurementFailure: undefined }
-    expect(observeNight1Death({ ...coverage, deathTick: 4_799 })).toStrictEqual({
+  it('counts deaths from the hostile-spawn start through its inclusive end', () => {
+    const coverage = {
+      hostileSpawnStart: 6_000,
+      hostileSpawnEnd: 15_601,
+      hostileSpawnWindowCovered: true,
+      measurementFailure: undefined,
+    }
+    expect(observeNight1Death({ ...coverage, deathTick: 5_999 })).toStrictEqual({
       status: 'unavailable',
-      reason: 'player died before first night began at tick 4800',
+      reason: 'player died before hostile spawning began at tick 6000',
     })
-    expect(observeNight1Death({ ...coverage, deathTick: 4_800 })).toStrictEqual({
+    expect(observeNight1Death({ ...coverage, deathTick: 6_000 })).toStrictEqual({
       status: 'observed',
       died: true,
-      deathTicks: 4_800,
+      deathTicks: 6_000,
     })
-    expect(observeNight1Death({ ...coverage, deathTick: 12_000 })).toStrictEqual({
+    // Tick 10,800 is before mc-sim's first clock-night tick (10,801), but already in the spawn window.
+    expect(observeNight1Death({ ...coverage, deathTick: 10_800 })).toStrictEqual({
+      status: 'observed',
+      died: true,
+      deathTicks: 10_800,
+    })
+    // Tick 15,600 is the inclusive 0.95 endpoint; 15,601 is outside it.
+    expect(observeNight1Death({ ...coverage, deathTick: 15_600 })).toStrictEqual({
+      status: 'observed',
+      died: true,
+      deathTicks: 15_600,
+    })
+    expect(observeNight1Death({ ...coverage, deathTick: 15_601 })).toStrictEqual({
       status: 'observed',
       died: false,
       deathTicks: null,

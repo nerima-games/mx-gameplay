@@ -37,7 +37,12 @@ import {
   miningDurationSecsForBlock,
   miningLootContextForItem,
 } from '../../src/index.js'
-import { dayPhase } from '../../src/domain/day-night.js'
+import {
+  dayPhase,
+  hostileSpawnsAllowed,
+  NIGHT_END_FRACTION,
+  NIGHT_START_FRACTION,
+} from '../../src/domain/day-night.js'
 import { PlayerServiceSnapshotSchema, PlayerStorageSnapshotSchema } from '@nerima-games/mc-sim'
 import { TickCountSchema } from '@nerima-games/mc-sim/testing'
 import {
@@ -225,17 +230,17 @@ const incompleteEvents = (
 
 export const observeNight1Death = (input: Readonly<{
   deathTick: number | undefined
-  firstNight: number
-  firstNightEnd: number
-  stagesCovered: boolean
+  hostileSpawnStart: number
+  hostileSpawnEnd: number
+  hostileSpawnWindowCovered: boolean
   measurementFailure: string | undefined
 }>): NightDeathObservation => input.measurementFailure !== undefined
   ? { status: 'unavailable', reason: input.measurementFailure }
-  : !input.stagesCovered
-    ? { status: 'unavailable', reason: 'night stage coverage did not reach the first-night end' }
-    : input.deathTick !== undefined && input.deathTick < input.firstNight
-      ? { status: 'unavailable', reason: `player died before first night began at tick ${input.firstNight}` }
-      : input.deathTick !== undefined && input.deathTick < input.firstNightEnd
+  : !input.hostileSpawnWindowCovered
+    ? { status: 'unavailable', reason: 'gameplay stage coverage did not reach the end of the first hostile-spawn window' }
+    : input.deathTick !== undefined && input.deathTick < input.hostileSpawnStart
+      ? { status: 'unavailable', reason: `player died before hostile spawning began at tick ${input.hostileSpawnStart}` }
+      : input.deathTick !== undefined && input.deathTick < input.hostileSpawnEnd
         ? { status: 'observed', died: true, deathTicks: input.deathTick }
         : { status: 'observed', died: false, deathTicks: null }
 
@@ -275,8 +280,8 @@ const stateAfterTicks = (initialTimeState: TimeState, ticks: number): TimeState 
   return Result.getOrThrow(advanceTime(initialTimeState, elapsedTicks))
 }
 
-// BAL's first night follows mc-sim's clock predicate. The gameplay .55-.95
-// window remains the separate rule that allows hostile spawns.
+// BAL's clock night follows mc-sim. Hostile survival uses the separate
+// gameplay window that allows hostile spawns.
 const firstNightTick = (initialTimeState: TimeState): number => {
   const ticksPerDay = Math.ceil(dayLengthSecs(initialTimeState) * BALANCE_HARNESS_TICKS_PER_SECOND)
   const reachedNight = (ticks: number): boolean => isSimulationNight(stateAfterTicks(initialTimeState, ticks))
@@ -287,6 +292,42 @@ const firstNightTick = (initialTimeState: TimeState): number => {
     const middle = Math.floor((low + high) / 2)
     if (reachedNight(middle)) high = middle
     else low = middle
+  }
+  return high
+}
+
+const firstHostileSpawnTick = (initialTimeState: TimeState): number => {
+  const ticksPerDay = Math.ceil(dayLengthSecs(initialTimeState) * BALANCE_HARNESS_TICKS_PER_SECOND)
+  const allowedAt = (ticks: number): boolean => hostileSpawnsAllowed(timeOfDay(stateAfterTicks(initialTimeState, ticks)))
+  if (allowedAt(0)) return 0
+
+  const currentFraction = timeOfDay(initialTimeState)
+  const fractionUntilStart = (NIGHT_START_FRACTION - currentFraction + 1) % 1
+  let high = Math.max(1, Math.floor(fractionUntilStart * ticksPerDay))
+  while (!allowedAt(high)) high += 1
+  let low = 0
+  while (low + 1 < high) {
+    const middle = Math.floor((low + high) / 2)
+    if (allowedAt(middle)) high = middle
+    else low = middle
+  }
+  return high
+}
+
+// The returned end is exclusive because NIGHT_END_FRACTION is inclusive.
+const firstHostileSpawnEndTick = (initialTimeState: TimeState, startTick: number): number => {
+  const ticksPerDay = Math.ceil(dayLengthSecs(initialTimeState) * BALANCE_HARNESS_TICKS_PER_SECOND)
+  const allowedAt = (ticks: number): boolean => hostileSpawnsAllowed(timeOfDay(stateAfterTicks(initialTimeState, ticks)))
+  const startFraction = timeOfDay(stateAfterTicks(initialTimeState, startTick))
+  const fractionUntilEnd = (NIGHT_END_FRACTION - startFraction + 1) % 1
+  let low = startTick + Math.floor(fractionUntilEnd * ticksPerDay)
+  while (!allowedAt(low)) low -= 1
+  let high = low + 1
+  while (allowedAt(high)) high += 1
+  while (low + 1 < high) {
+    const middle = Math.floor((low + high) / 2)
+    if (allowedAt(middle)) low = middle
+    else high = middle
   }
   return high
 }
@@ -324,12 +365,17 @@ export const balanceDayBoundaries = (initialTimeState: TimeState = INITIAL_TIME_
   firstTwilightTick: number
   firstNightTick: number
   firstNightEndTick: number
+  firstHostileSpawnTick: number
+  firstHostileSpawnEndTick: number
 }> => {
   const night = firstNightTick(initialTimeState)
+  const hostileSpawnStart = firstHostileSpawnTick(initialTimeState)
   return {
     firstTwilightTick: firstTwilightTick(initialTimeState, night),
     firstNightTick: night,
     firstNightEndTick: firstNightEndTick(initialTimeState, night),
+    firstHostileSpawnTick: hostileSpawnStart,
+    firstHostileSpawnEndTick: firstHostileSpawnEndTick(initialTimeState, hostileSpawnStart),
   }
 }
 
@@ -393,6 +439,8 @@ export const simulateSeed = async (
   const firstNight = boundaries.firstNightTick
   const firstTwilight = boundaries.firstTwilightTick
   const firstNightEnd = boundaries.firstNightEndTick
+  const hostileSpawnStart = boundaries.firstHostileSpawnTick
+  const hostileSpawnEnd = boundaries.firstHostileSpawnEndTick
   const availableBlockTypes = [...blocks.keys()]
   const nightAction = policy.decide({ seed, terrain, firstNightTick: firstNight, availableBlockTypes })
   const surfaceStart = findSurfaceStart(seed, terrain)
@@ -864,6 +912,7 @@ export const simulateSeed = async (
       const deathTick = yield* Ref.get(runtime.deathTick)
       const measurementFailure = yield* Ref.get(runtime.measurementFailure)
       const stagesCovered = coverageEnd >= firstNightEnd
+      const hostileSpawnWindowCovered = coverageEnd >= hostileSpawnEnd
       const preTwilightComplete =
         stagesCovered &&
         (deathTick === undefined || deathTick >= firstTwilight) &&
@@ -888,9 +937,9 @@ export const simulateSeed = async (
         : incompleteEvents([...hostileEvents, ...starvationEvents], damageReason)
       const firstNightDeath = observeNight1Death({
         deathTick,
-        firstNight,
-        firstNightEnd,
-        stagesCovered,
+        hostileSpawnStart,
+        hostileSpawnEnd,
+        hostileSpawnWindowCovered,
         measurementFailure,
       })
 
