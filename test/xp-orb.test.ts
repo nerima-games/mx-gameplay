@@ -29,6 +29,7 @@ import {
   EXPERIENCE_ORB_LIFETIME_TICKS,
   EXPERIENCE_ORB_PICKUP_RADIUS_BLOCKS,
   EXPERIENCE_ORB_PICKUP_INTERVAL_TICKS,
+  ExperienceOrbCountSchema,
   ExperienceOrbAbsorptionSchema,
   ExperienceOrbAbsorptionCommitResultInvalidSchema,
   ExperienceOrbAbsorptionFailureSchema,
@@ -304,7 +305,11 @@ describe('experience orb values', () => {
     Effect.gen(function* () {
       const orb = yield* Effect.fromResult(createExperienceOrbValue(7))
       const coordinator = yield* makeCoordinator(SPAWN_VITALS, {
-        orbs: [{ id: PICKUP_CONTEXT.orb, value: orb, count: 2 }],
+        orbs: [{
+          id: PICKUP_CONTEXT.orb,
+          value: orb,
+          count: Result.getOrThrow(Schema.decodeUnknownResult(ExperienceOrbCountSchema)(2)),
+        }],
       })
 
       const events = yield* absorbExperienceOrb(coordinator, OWNER_IDS, PICKUP_CONTEXT)
@@ -726,6 +731,17 @@ describe('experience orb decisions', () => {
       player,
       0.5,
     )).toEqual(Result.succeed({ dimension: 'nether', x: 3, y: 0, z: 0 }))
+    expect(pullExperienceOrbTowardPlayer(player, player, 0.5)).toEqual(Result.succeed(player))
+    expect(pullExperienceOrbTowardPlayer(
+      { dimension: 'overworld', x: EXPERIENCE_ORB_ATTRACTION_RADIUS_BLOCKS + 0.000001, y: 0, z: 0 },
+      player,
+      0.5,
+    )).toEqual(Result.succeed({
+      dimension: 'overworld',
+      x: EXPERIENCE_ORB_ATTRACTION_RADIUS_BLOCKS + 0.000001,
+      y: 0,
+      z: 0,
+    }))
     expect(pullExperienceOrbTowardPlayer(
       { dimension: 'overworld', x: 3, y: 0, z: 0 },
       player,

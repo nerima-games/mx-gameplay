@@ -1,7 +1,9 @@
 import { describe, expect, it } from '@effect/vitest'
-import { Effect, Option, Result } from 'effect'
+import * as fc from 'fast-check'
+import { Effect, Option, Result, Schema } from 'effect'
 import {
   blockIdOf,
+  blockPositionKeyOf,
   type BlockId,
   type BlockType,
   type HarvestToolRequirement,
@@ -9,6 +11,7 @@ import {
 } from '@nerima-games/mc-kernel'
 import { blockPosition as atBlockPosition } from './support/coordinate-fixtures'
 import { blockLoot } from '../src/domain/interactions/block-loot'
+import { MiningSpeedMultiplierSchema, type MiningSpeedMultiplier } from '../src/domain/status-effect.js'
 import { type requestBlockBreak } from '../src/stages/registration'
 import {
   advanceMiningProgress,
@@ -20,6 +23,7 @@ import {
   miningDurationSecsForBlock,
   miningLootContextForItem,
   miningProgressFraction,
+  MiningProgressFractionSchema,
   miningToolForItem,
   type MiningProgressState,
   WOODEN_PICKAXE_MINING_TOOL,
@@ -34,8 +38,11 @@ const STONE = { position: atBlockPosition(1, 64, 2), blockId: registeredBlockId(
 const STONE_BESIDE = { position: atBlockPosition(2, 64, 2), blockId: registeredBlockId('stone') }
 const DIRT = { position: atBlockPosition(1, 64, 3), blockId: registeredBlockId('dirt') }
 const DIRT_AT_STONE_POSITION = { position: STONE.position, blockId: DIRT.blockId }
+const END_GATEWAY = { position: atBlockPosition(3, 64, 2), blockId: registeredBlockId('end_gateway') }
 const miningSpeed = (tool: Parameters<typeof effectiveMiningSpeed>[0], requirement: HarvestToolRequirement) =>
   Result.getOrThrow(effectiveMiningSpeed(tool, requirement))
+const miningSpeedMultiplier = (value: number): MiningSpeedMultiplier =>
+  Result.getOrThrow(Schema.decodeUnknownResult(MiningSpeedMultiplierSchema)(value))
 
 const completedPositionAcceptedByRequestBlockBreak: Parameters<typeof requestBlockBreak>[1] =
   STONE.position
@@ -78,6 +85,45 @@ describe('mining duration', () => {
       expect(miningDurationSecsForBlock(DIRT.blockId, 'wooden_pickaxe', 3)).toBe(
         miningDurationSecsForBlock(DIRT.blockId, null),
       )
+    }),
+  )
+
+  it.effect('applies a branded mining-speed multiplier to the vanilla tick formula', () =>
+    Effect.sync(() => {
+      // Stone hardness is 25; hand mining uses divisor 100 and speed 1.
+      expect(miningDurationSecsForBlock(STONE.blockId, null, 0, miningSpeedMultiplier(2))).toBe(
+        Math.ceil((25 * 100) / 2) / MINING_TICKS_PER_SECOND,
+      )
+      fc.assert(
+        fc.property(fc.integer({ min: 1, max: 2_000 }), (multiplierMilli) => {
+          const multiplier = multiplierMilli / 1_000
+          const result = advanceMiningProgress({
+            current: null,
+            target: STONE,
+            isMining: true,
+            selectedItem: null,
+            miningSpeedMultiplier: miningSpeedMultiplier(multiplier),
+            deltaSecs: 1 / MINING_TICKS_PER_SECOND,
+          })
+          expect(result.nextProgress?.accumulatedWork).toBeCloseTo(multiplier / (25 * 100), 12)
+        }),
+      )
+      expect(Result.isSuccess(Schema.decodeUnknownResult(MiningSpeedMultiplierSchema)(0))).toBe(true)
+      expect(Result.isFailure(Schema.decodeUnknownResult(MiningSpeedMultiplierSchema)(-Number.MIN_VALUE))).toBe(true)
+      expect(miningDurationSecsForBlock(STONE.blockId, null, 0, miningSpeedMultiplier(0))).toBe(
+        Number.POSITIVE_INFINITY,
+      )
+      const stopped = advanceMiningProgress({
+        current: null,
+        target: STONE,
+        isMining: true,
+        selectedItem: null,
+        miningSpeedMultiplier: miningSpeedMultiplier(0),
+        deltaSecs: 1,
+      })
+      expect(stopped.shouldBreak).toBe(false)
+      expect(stopped.nextProgress?.accumulatedWork).toBe(0)
+      expect(stopped.nextProgress?.requiredSecs).toBe(Number.POSITIVE_INFINITY)
     }),
   )
 
@@ -272,6 +318,51 @@ describe('delta-time progress', () => {
       })
 
       expect(second.nextProgress?.elapsedSecs).toBeCloseTo(0.3)
+    }),
+  )
+
+  it.effect('keeps registered unbreakable blocks at zero work without resetting same-target elapsed time', () =>
+    Effect.sync(() => {
+      expect(Result.getOrThrow(propertyOfBlockId(END_GATEWAY.blockId, 'hardness'))).toBe(-1)
+      const persistedProgress: MiningProgressState = {
+        blockKey: blockPositionKeyOf(END_GATEWAY.position),
+        blockId: END_GATEWAY.blockId,
+        elapsedSecs: 1.5,
+        requiredSecs: Number.POSITIVE_INFINITY,
+        accumulatedWork: 0,
+        completed: false,
+      }
+      const firstFrame = advanceMiningProgress({
+        current: null,
+        target: END_GATEWAY,
+        isMining: true,
+        selectedItem: null,
+        deltaSecs: 0.1,
+      })
+      const resumed = advanceMiningProgress({
+        current: persistedProgress,
+        target: END_GATEWAY,
+        isMining: true,
+        selectedItem: null,
+        deltaSecs: 0.1,
+      })
+
+      expect(firstFrame).toMatchObject({
+        shouldBreak: false,
+        nextProgress: {
+          elapsedSecs: 0,
+          requiredSecs: Number.POSITIVE_INFINITY,
+          accumulatedWork: 0,
+          completed: false,
+        },
+      })
+      expect(resumed.nextProgress).toMatchObject({
+        elapsedSecs: 1.5,
+        requiredSecs: Number.POSITIVE_INFINITY,
+        accumulatedWork: 0,
+        completed: false,
+      })
+      expect(miningProgressFraction(resumed.nextProgress)).toBe(0)
     }),
   )
 
@@ -559,6 +650,30 @@ describe('delta-time progress', () => {
       expect(miningProgressFraction(progress(Number.POSITIVE_INFINITY))).toBe(0)
       expect(miningProgressFraction(progress(Number.NEGATIVE_INFINITY))).toBe(0)
       expect(miningProgressFraction(progress(-1))).toBe(0)
+    }),
+  )
+
+  it.effect('returns schema-branded progress fractions within inclusive boundaries', () =>
+    Effect.sync(() => {
+      fc.assert(
+        fc.property(fc.integer({ min: 0, max: 1_000 }), (workMilli) => {
+          const fraction = workMilli / 1_000
+          const result = miningProgressFraction({
+            blockKey: '1,64,2',
+            blockId: STONE.blockId,
+            elapsedSecs: 0,
+            requiredSecs: 1,
+            accumulatedWork: fraction,
+            completed: false,
+          })
+          expect(result).toBe(fraction)
+          expect(Result.isSuccess(Schema.decodeUnknownResult(MiningProgressFractionSchema)(result))).toBe(true)
+        }),
+      )
+      expect(Result.isSuccess(Schema.decodeUnknownResult(MiningProgressFractionSchema)(0))).toBe(true)
+      expect(Result.isSuccess(Schema.decodeUnknownResult(MiningProgressFractionSchema)(1))).toBe(true)
+      expect(Result.isFailure(Schema.decodeUnknownResult(MiningProgressFractionSchema)(-Number.EPSILON))).toBe(true)
+      expect(Result.isFailure(Schema.decodeUnknownResult(MiningProgressFractionSchema)(1 + Number.EPSILON))).toBe(true)
     }),
   )
 

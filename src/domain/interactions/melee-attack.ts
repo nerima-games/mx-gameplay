@@ -27,6 +27,7 @@ import {
 } from '@nerima-games/mc-sim'
 import { Brand, Result, Schema } from 'effect'
 import type { MobBehaviour } from '../entities/mob-frame.js'
+import type { AttackDamageBonus } from '../status-effect.js'
 import {
   DamageImmunityStateSchema,
   resolveDamageWithInvulnerability,
@@ -293,7 +294,7 @@ export const prepareMeleeAttack = (
     entities: ReadonlyArray<Entity<MobBehaviour>>
     heldItem: ItemType | null
     critical: boolean
-    damageBonus?: number
+    damageBonus?: AttackDamageBonus
     ticksSinceLastAttack: MeleeCooldownTicks
     targetDamageState: DamageImmunityState | null
     blockDistance?: AttackRangeDistance

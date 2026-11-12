@@ -3,7 +3,7 @@ import type { Equipment, EquipmentSlot } from '@nerima-games/mc-sim'
 import { Result, Schema } from 'effect'
 import type { Damage, DeathCause } from '../death-cause.js'
 import { enchantmentProtectionFactor, type EnchantmentDamageCategory, type EnchantmentSource } from '../enchantment.js'
-import { applyArmorPointsToDamage } from './armor-mitigation.js'
+import { applyArmorPointsToDamage, type ArmorPoints } from './armor-mitigation.js'
 
 const WORN_ARMOR_SLOTS = ['head', 'chest', 'legs', 'feet'] as const
 // Compile-time-only validation, kept off the declaration above: line 54 below
@@ -68,7 +68,7 @@ const enchantmentSourcesForEquipment = (equipment: Equipment): ReadonlyArray<Enc
   })
 
 /** Sum the protection supplied by correctly slotted iron, diamond, and netherite armour. */
-export const armorPointsForEquipment = (equipment: Equipment): number => {
+export const armorPointsForEquipment = (equipment: Equipment): ArmorPoints => {
   let points = 0
 
   for (const slot of WORN_ARMOR_SLOTS) {
@@ -79,7 +79,7 @@ export const armorPointsForEquipment = (equipment: Equipment): number => {
     if (rule !== undefined && equipped.item === rule.item) points += rule.points
   }
 
-  return points
+  return points as ArmorPoints
 }
 
 /** Sum armor toughness from correctly slotted diamond and netherite pieces. */
@@ -103,7 +103,7 @@ export const applyArmorToDamage = (
   enchantmentSources: ReadonlyArray<EnchantmentSource> = [],
   damageMultiplier = 1,
 ): Damage => {
-  const afterArmor = applyArmorPointsToDamage(damage, armorPoints, toughness)
+  const afterArmor = applyArmorPointsToDamage(damage, armorPoints as ArmorPoints, toughness)
   const afterEnchantments = afterArmor.amount * enchantmentProtectionFactor(
     enchantmentSources,
     protectionCategoryForCause(damage.cause),

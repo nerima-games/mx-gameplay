@@ -1,4 +1,8 @@
-import { DeltaTimeSecs } from '@nerima-games/mc-kernel'
+import {
+  DeltaTimeSecs,
+  type DeltaTimeSecs as DeltaTimeSecsValue,
+  type EffectAmplifier,
+} from '@nerima-games/mc-kernel'
 import {
   STATUS_EFFECT_AMPLIFIER_MAX,
   STATUS_EFFECT_DEFINITIONS,
@@ -7,11 +11,72 @@ import {
   type StatusEffectDefinition,
   type StatusEffectName,
 } from '@nerima-games/mc-kernel/domain/status-effect'
-import { Result, Schema, SchemaParser } from 'effect'
+import { Brand, Result, Schema, SchemaParser } from 'effect'
 
 export const STATUS_EFFECT_TYPES: typeof STATUS_EFFECT_NAMES = STATUS_EFFECT_NAMES
 
 export type StatusEffectType = StatusEffectName
+
+export type StatusEffectLevel = number & Brand.Brand<'StatusEffectLevel'>
+export const StatusEffectLevelSchema: Schema.Codec<StatusEffectLevel, number> = Schema.Int
+  .check(Schema.isBetween({ minimum: 0, maximum: STATUS_EFFECT_AMPLIFIER_MAX + 1 }))
+  .pipe(Schema.brand('StatusEffectLevel'))
+
+export type StatusEffectPulseCount = number & Brand.Brand<'StatusEffectPulseCount'>
+export const StatusEffectPulseCountSchema: Schema.Codec<StatusEffectPulseCount, number> = Schema.Int
+  .check(Schema.isGreaterThanOrEqualTo(0))
+  .pipe(Schema.brand('StatusEffectPulseCount'))
+
+export type MovementSpeedMultiplier = number & Brand.Brand<'MovementSpeedMultiplier'>
+export const MovementSpeedMultiplierSchema: Schema.Codec<MovementSpeedMultiplier, number> = Schema.Finite
+  .check(Schema.isGreaterThanOrEqualTo(0))
+  .pipe(Schema.brand('MovementSpeedMultiplier'))
+
+export type AttackSpeedMultiplier = number & Brand.Brand<'AttackSpeedMultiplier'>
+const AttackSpeedMultiplierSchema: Schema.Codec<AttackSpeedMultiplier, number> = Schema.Finite
+  .check(Schema.isGreaterThanOrEqualTo(0))
+  .pipe(Schema.brand('AttackSpeedMultiplier'))
+
+export type MiningSpeedMultiplier = number & Brand.Brand<'MiningSpeedMultiplier'>
+export const MiningSpeedMultiplierSchema: Schema.Codec<MiningSpeedMultiplier, number> = Schema.Finite
+  .check(Schema.isGreaterThanOrEqualTo(0))
+  .pipe(Schema.brand('MiningSpeedMultiplier'))
+
+export type AttackDamageBonus = number & Brand.Brand<'AttackDamageBonus'>
+export const AttackDamageBonusSchema: Schema.Codec<AttackDamageBonus, number> = Schema.Finite
+  .pipe(Schema.brand('AttackDamageBonus'))
+
+export type DamageTakenMultiplier = number & Brand.Brand<'DamageTakenMultiplier'>
+const DamageTakenMultiplierSchema: Schema.Codec<DamageTakenMultiplier, number> = Schema.Finite
+  .check(Schema.isBetween({ minimum: 0, maximum: 1 }))
+  .pipe(Schema.brand('DamageTakenMultiplier'))
+
+export type AdditionalMaximumHealthPoints = number & Brand.Brand<'AdditionalMaximumHealthPoints'>
+const AdditionalMaximumHealthPointsSchema: Schema.Codec<AdditionalMaximumHealthPoints, number> = Schema.Int
+  .check(Schema.isGreaterThanOrEqualTo(0))
+  .pipe(Schema.brand('AdditionalMaximumHealthPoints'))
+
+export type AbsorptionHealthPoints = number & Brand.Brand<'AbsorptionHealthPoints'>
+const AbsorptionHealthPointsSchema: Schema.Codec<AbsorptionHealthPoints, number> = Schema.Int
+  .check(Schema.isGreaterThanOrEqualTo(0))
+  .pipe(Schema.brand('AbsorptionHealthPoints'))
+
+export type StatusEffectLuck = number & Brand.Brand<'StatusEffectLuck'>
+const StatusEffectLuckSchema: Schema.Codec<StatusEffectLuck, number> = Schema.Int
+  .pipe(Schema.brand('StatusEffectLuck'))
+
+const makeStatusEffectLevel = Brand.nominal<StatusEffectLevel>()
+const makeStatusEffectPulseCount = Brand.nominal<StatusEffectPulseCount>()
+const makeMovementSpeedMultiplier = Brand.nominal<MovementSpeedMultiplier>()
+const makeAttackSpeedMultiplier = Brand.nominal<AttackSpeedMultiplier>()
+const makeMiningSpeedMultiplier = Brand.nominal<MiningSpeedMultiplier>()
+const makeAttackDamageBonus = Brand.nominal<AttackDamageBonus>()
+const makeDamageTakenMultiplier = Brand.nominal<DamageTakenMultiplier>()
+const makeAdditionalMaximumHealthPoints = Brand.nominal<AdditionalMaximumHealthPoints>()
+const makeAbsorptionHealthPoints = Brand.nominal<AbsorptionHealthPoints>()
+const makeStatusEffectLuck = Brand.nominal<StatusEffectLuck>()
+const makeEffectAmplifier = Brand.nominal<EffectAmplifier>()
+const makeDeltaTimeSecs = Brand.nominal<DeltaTimeSecsValue>()
 
 export type StatusEffectApplication = Readonly<{
   type: StatusEffectType
@@ -20,9 +85,9 @@ export type StatusEffectApplication = Readonly<{
 }>
 
 export type HiddenStatusEffect = Readonly<{
-  remainingSecs: number
-  pulseClockSecs: number
-  amplifier: number
+  remainingSecs: DeltaTimeSecsValue
+  pulseClockSecs: DeltaTimeSecsValue
+  amplifier: EffectAmplifier
 }>
 
 export type ActiveStatusEffect = Readonly<{
@@ -38,9 +103,9 @@ export type StatusEffectState = Readonly<{
 }>
 
 export type StatusEffectInstantEffect =
-  | Readonly<{ type: 'instant_health'; amplifier: number }>
-  | Readonly<{ type: 'instant_damage'; amplifier: number }>
-  | Readonly<{ type: 'saturation'; amplifier: number }>
+  | Readonly<{ type: 'instant_health'; amplifier: EffectAmplifier }>
+  | Readonly<{ type: 'instant_damage'; amplifier: EffectAmplifier }>
+  | Readonly<{ type: 'saturation'; amplifier: EffectAmplifier }>
 
 export type StatusEffectApplicationOutcome = Readonly<{
   state: StatusEffectState
@@ -51,31 +116,31 @@ export type StatusEffectTick = Readonly<{
   state: StatusEffectState
   poisonPulses: number
   regenerationPulses: number
-  witherPulses: number
-  movementSpeedMultiplier: number
+  witherPulses: StatusEffectPulseCount
+  movementSpeedMultiplier: MovementSpeedMultiplier
   hungerExhaustion: number
-  nauseaAmplifier: number | null
+  nauseaAmplifier: EffectAmplifier | null
   modifiers: StatusEffectModifiers
 }>
 
 /** Derived gameplay attributes; `levels` preserves every active kernel effect for consumers. */
 export type StatusEffectModifiers = Readonly<{
-  levels: Readonly<Partial<Record<StatusEffectType, number>>>
+  levels: Readonly<Partial<Record<StatusEffectType, StatusEffectLevel>>>
   definitions: ReadonlyArray<StatusEffectDefinition>
-  movementSpeedMultiplier: number
-  attackSpeedMultiplier: number
-  miningSpeedMultiplier: number
-  attackDamageBonus: number
-  damageTakenMultiplier: number
+  movementSpeedMultiplier: MovementSpeedMultiplier
+  attackSpeedMultiplier: AttackSpeedMultiplier
+  miningSpeedMultiplier: MiningSpeedMultiplier
+  attackDamageBonus: AttackDamageBonus
+  damageTakenMultiplier: DamageTakenMultiplier
   fireResistance: boolean
   waterBreathing: boolean
   breathOfTheNautilus: boolean
-  additionalMaximumHealthPoints: number
-  absorptionHealthPoints: number
-  jumpBoostLevel: number
+  additionalMaximumHealthPoints: AdditionalMaximumHealthPoints
+  absorptionHealthPoints: AbsorptionHealthPoints
+  jumpBoostLevel: StatusEffectLevel
   slowFalling: boolean
-  luck: number
-  nauseaAmplifier: number | null
+  luck: StatusEffectLuck
+  nauseaAmplifier: EffectAmplifier | null
   blindness: boolean
   darkness: boolean
   nightVision: boolean
@@ -135,15 +200,19 @@ const strictCodec = <A, I>(schema: Schema.Codec<A, I>): Schema.Codec<A, I> =>
       }),
   )
 
-const StatusEffectSecondsSchema = Schema.Finite.check(Schema.isGreaterThan(0))
+const StatusEffectSecondsSchema: Schema.Codec<DeltaTimeSecsValue, number> = Schema.Finite
+  .check(Schema.isGreaterThan(0))
+  .pipe(Schema.brand('DeltaTimeSecs'))
 const StatusEffectApplicationDurationSchema = Schema.Finite.check(
   Schema.isGreaterThanOrEqualTo(0),
 )
-const StatusEffectClockSchema = Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0))
-const StatusEffectAmplifierSchema = Schema.Int.check(Schema.isBetween({
+const StatusEffectClockSchema: Schema.Codec<DeltaTimeSecsValue, number> = Schema.Finite
+  .check(Schema.isGreaterThanOrEqualTo(0))
+  .pipe(Schema.brand('DeltaTimeSecs'))
+const StatusEffectAmplifierSchema: Schema.Codec<EffectAmplifier, number> = Schema.Int.check(Schema.isBetween({
   minimum: 0,
   maximum: STATUS_EFFECT_AMPLIFIER_MAX,
-}))
+})).pipe(Schema.brand('EffectAmplifier'))
 
 const HiddenStatusEffectSchema = strictCodec(Schema.Struct({
   remainingSecs: StatusEffectSecondsSchema,
@@ -187,6 +256,44 @@ export const StatusEffectApplicationOutcomeSchema: Schema.Codec<
   state: StatusEffectStateSchema,
   instantEffects: Schema.Array(StatusEffectInstantEffectSchema),
 }))
+
+const StatusEffectDefinitionSchema: Schema.Codec<StatusEffectDefinition, unknown> = Schema.Struct({
+  name: Schema.Literals(STATUS_EFFECT_TYPES),
+  beneficial: Schema.Boolean,
+  particleColor: Schema.Int
+    .check(Schema.isBetween({ minimum: 0, maximum: 0xffffff }))
+    .pipe(Schema.brand('RgbColor')),
+  maxAmplifier: StatusEffectAmplifierSchema,
+})
+
+export const StatusEffectModifiersSchema: Schema.Codec<StatusEffectModifiers, unknown> = strictCodec(
+  Schema.Struct({
+    levels: Schema.Record(
+      Schema.Literals(STATUS_EFFECT_TYPES),
+      Schema.optionalKey(StatusEffectLevelSchema),
+    ),
+    definitions: Schema.Array(StatusEffectDefinitionSchema),
+    movementSpeedMultiplier: MovementSpeedMultiplierSchema,
+    attackSpeedMultiplier: AttackSpeedMultiplierSchema,
+    miningSpeedMultiplier: MiningSpeedMultiplierSchema,
+    attackDamageBonus: AttackDamageBonusSchema,
+    damageTakenMultiplier: DamageTakenMultiplierSchema,
+    fireResistance: Schema.Boolean,
+    waterBreathing: Schema.Boolean,
+    breathOfTheNautilus: Schema.Boolean,
+    additionalMaximumHealthPoints: AdditionalMaximumHealthPointsSchema,
+    absorptionHealthPoints: AbsorptionHealthPointsSchema,
+    jumpBoostLevel: StatusEffectLevelSchema,
+    slowFalling: Schema.Boolean,
+    luck: StatusEffectLuckSchema,
+    nauseaAmplifier: Schema.NullOr(StatusEffectAmplifierSchema),
+    blindness: Schema.Boolean,
+    darkness: Schema.Boolean,
+    nightVision: Schema.Boolean,
+    invisibility: Schema.Boolean,
+    glowing: Schema.Boolean,
+  }),
+)
 
 const InvalidStatusEffectApplicationSchema: Schema.Codec<
   InvalidStatusEffectApplication,
@@ -297,7 +404,7 @@ const instantEffectFor = (
   amplifier: number,
 ): StatusEffectInstantEffect | undefined => {
   if (type === 'instant_health' || type === 'instant_damage' || type === 'saturation') {
-    return { type, amplifier }
+    return { type, amplifier: makeEffectAmplifier(amplifier) }
   }
   return undefined
 }
@@ -313,7 +420,11 @@ const hiddenEffectsWith = (
 ): ReadonlyArray<HiddenStatusEffect> => {
   const byAmplifier = new Map<number, HiddenStatusEffect>()
   for (const hidden of [
-    { remainingSecs: current.remainingSecs, pulseClockSecs: current.pulseClockSecs, amplifier: current.amplifier },
+    {
+      remainingSecs: makeDeltaTimeSecs(current.remainingSecs),
+      pulseClockSecs: makeDeltaTimeSecs(current.pulseClockSecs),
+      amplifier: makeEffectAmplifier(current.amplifier),
+    },
     ...(current.hiddenEffects ?? []),
   ]) {
     byAmplifier.set(hidden.amplifier, hidden)
@@ -323,7 +434,7 @@ const hiddenEffectsWith = (
     ? application
     : {
         ...previous,
-        remainingSecs: Math.max(previous.remainingSecs, application.remainingSecs),
+        remainingSecs: makeDeltaTimeSecs(Math.max(previous.remainingSecs, application.remainingSecs)),
       })
   return [...byAmplifier.values()]
     .sort((left, right) => right.amplifier - left.amplifier)
@@ -404,18 +515,18 @@ export const applyStatusEffect = (
     }
   } else if (current.amplifier > amplifier) {
     const hiddenEffects = hiddenEffectsWith(current, {
-      remainingSecs: durationSecs,
-      pulseClockSecs: 0,
-      amplifier,
+      remainingSecs: makeDeltaTimeSecs(durationSecs),
+      pulseClockSecs: makeDeltaTimeSecs(0),
+      amplifier: makeEffectAmplifier(amplifier),
     }).filter((effect) => effect.amplifier < current.amplifier)
     nextEffect = { ...current, hiddenEffects }
   } else {
     nextEffect = {
       ...applicationEffect,
       hiddenEffects: hiddenEffectsWith(current, {
-        remainingSecs: current.remainingSecs,
-        pulseClockSecs: current.pulseClockSecs,
-        amplifier: current.amplifier,
+        remainingSecs: makeDeltaTimeSecs(current.remainingSecs),
+        pulseClockSecs: makeDeltaTimeSecs(current.pulseClockSecs),
+        amplifier: makeEffectAmplifier(current.amplifier),
       }).filter((effect) => effect.amplifier < amplifier),
     }
   }
@@ -426,36 +537,33 @@ export const applyStatusEffect = (
     state: { effects: canonicalEffects(effects) },
     instantEffects: [],
   } satisfies StatusEffectApplicationOutcome
-  const decodedResult = Schema.decodeUnknownResult(StatusEffectApplicationOutcomeSchema)(result)
-  return Result.isFailure(decodedResult)
-    ? invalidApplication('invalid-state')
-    : Result.succeed(decodedResult.success)
+  return Result.succeed(result)
 }
 
 const finiteAmplifier = (amplifier: number): number =>
   Number.isFinite(amplifier) ? Math.max(0, Math.min(STATUS_EFFECT_AMPLIFIER_MAX, Math.floor(amplifier))) : 0
 
-const effectLevel = (effect: ActiveStatusEffect | undefined): number =>
-  effect === undefined ? 0 : finiteAmplifier(effect.amplifier) + 1
+const effectLevel = (effect: ActiveStatusEffect): number =>
+  finiteAmplifier(effect.amplifier) + 1
 
 /** Returns the 1-based Vanilla level, or zero when the effect is absent. */
 export const statusEffectLevel = (
   state: StatusEffectState,
   type: StatusEffectType,
-): number => {
+): StatusEffectLevel => {
   const definition = STATUS_EFFECT_DEFINITIONS[type]
   const effect = state.effects.find((candidate) => candidate.type === definition.name)
-  return effect === undefined
+  return makeStatusEffectLevel(effect === undefined
     ? 0
-    : Math.min(definition.maxAmplifier, finiteAmplifier(effect.amplifier)) + 1
+    : Math.min(definition.maxAmplifier, finiteAmplifier(effect.amplifier)) + 1)
 }
 
 /** Projects active kernel effects into the shared numeric modifiers for stages. */
 export const statusEffectModifiers = (state: StatusEffectState): StatusEffectModifiers => {
-  const levels: Partial<Record<StatusEffectType, number>> = {}
-  for (const effect of state.effects) levels[effect.type] = effectLevel(effect)
+  const levels: Partial<Record<StatusEffectType, StatusEffectLevel>> = {}
+  for (const effect of state.effects) levels[effect.type] = makeStatusEffectLevel(effectLevel(effect))
 
-  const level = (type: StatusEffectType): number => levels[type] ?? 0
+  const level = (type: StatusEffectType): StatusEffectLevel => levels[type] ?? makeStatusEffectLevel(0)
   const speedLevel = level('speed')
   const slownessLevel = level('slowness')
   const resistanceLevel = level('resistance')
@@ -468,31 +576,33 @@ export const statusEffectModifiers = (state: StatusEffectState): StatusEffectMod
   return {
     levels,
     definitions: state.effects.map(({ type }) => STATUS_EFFECT_DEFINITIONS[type]),
-    movementSpeedMultiplier: Math.max(
+    movementSpeedMultiplier: makeMovementSpeedMultiplier(Math.max(
       0,
       (1 + SPEED_PER_LEVEL * speedLevel) * (1 - SLOWNESS_PER_LEVEL * slownessLevel),
-    ),
-    attackSpeedMultiplier: Math.max(
+    )),
+    attackSpeedMultiplier: makeAttackSpeedMultiplier(Math.max(
       0,
       (1 + ATTACK_SPEED_PER_LEVEL * hasteLevel) *
         (1 - ATTACK_SPEED_PER_LEVEL * miningFatigueLevel),
-    ),
-    miningSpeedMultiplier:
+    )),
+    miningSpeedMultiplier: makeMiningSpeedMultiplier(
       (1 + HASTE_PER_LEVEL * Math.max(hasteLevel, conduitPowerLevel)) *
       MINING_FATIGUE_MULTIPLIER_PER_LEVEL ** Math.min(miningFatigueLevel, 4),
-    attackDamageBonus:
+    ),
+    attackDamageBonus: makeAttackDamageBonus(
       STRENGTH_DAMAGE_PER_LEVEL * level('strength') -
       WEAKNESS_DAMAGE_PER_LEVEL * level('weakness'),
-    damageTakenMultiplier: Math.max(0, 1 - RESISTANCE_PER_LEVEL * resistanceLevel),
+    ),
+    damageTakenMultiplier: makeDamageTakenMultiplier(Math.max(0, 1 - RESISTANCE_PER_LEVEL * resistanceLevel)),
     fireResistance: level('fire_resistance') > 0,
     waterBreathing: level('water_breathing') > 0 || level('conduit_power') > 0,
     breathOfTheNautilus: level('breath_of_the_nautilus') > 0,
-    additionalMaximumHealthPoints: HEALTH_POINTS_PER_LEVEL * level('health_boost'),
-    absorptionHealthPoints: HEALTH_POINTS_PER_LEVEL * level('absorption'),
+    additionalMaximumHealthPoints: makeAdditionalMaximumHealthPoints(HEALTH_POINTS_PER_LEVEL * level('health_boost')),
+    absorptionHealthPoints: makeAbsorptionHealthPoints(HEALTH_POINTS_PER_LEVEL * level('absorption')),
     jumpBoostLevel: level('jump_boost'),
     slowFalling: level('slow_falling') > 0,
-    luck,
-    nauseaAmplifier: nausea === undefined ? null : finiteAmplifier(nausea.amplifier),
+    luck: makeStatusEffectLuck(luck),
+    nauseaAmplifier: nausea === undefined ? null : makeEffectAmplifier(finiteAmplifier(nausea.amplifier)),
     blindness: level('blindness') > 0,
     darkness: level('darkness') > 0,
     nightVision: level('night_vision') > 0,
@@ -543,7 +653,11 @@ const advanceHiddenEffects = (
     if (remainingSecs <= 0) return []
 
     const pulse = advancePulseClock(type, effect.amplifier, effect.pulseClockSecs, activeElapsedSecs)
-    return [{ ...effect, remainingSecs, pulseClockSecs: pulse.pulseClockSecs }]
+    return [{
+      ...effect,
+      remainingSecs: makeDeltaTimeSecs(remainingSecs),
+      pulseClockSecs: makeDeltaTimeSecs(pulse.pulseClockSecs),
+    }]
   })
 
 const promoteHiddenEffect = (
@@ -615,7 +729,7 @@ export const tickStatusEffects = (
     state: nextState,
     poisonPulses,
     regenerationPulses,
-    witherPulses,
+    witherPulses: makeStatusEffectPulseCount(witherPulses),
     movementSpeedMultiplier: modifiers.movementSpeedMultiplier,
     hungerExhaustion,
     nauseaAmplifier: modifiers.nauseaAmplifier,

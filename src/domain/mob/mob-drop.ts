@@ -2,8 +2,9 @@
  * Vanilla mob loot and XP rules. Item IDs come from kernel; the frame layer
  * supplies rolls and casualty context.
  */
+import { FoodEffectProbability, type ItemType } from '@nerima-games/mc-kernel'
+import type { EnchantmentLevel } from '@nerima-games/mc-kernel/domain/quantities'
 import { Brand, Result } from 'effect'
-import type { ItemType } from '@nerima-games/mc-kernel'
 import type { EntityKind } from '@nerima-games/mc-sim'
 
 /**
@@ -25,7 +26,7 @@ export type MobDropRule = {
   /** Add the vanilla uniform per-level count increase when Looting is present. */
   readonly lootingCountIncrease?: boolean
   /** Increase a chance by this amount per Looting level. */
-  readonly lootingChancePerLevel?: number
+  readonly lootingChancePerLevel?: FoodEffectProbability
   /** Probability in `(0, 1]`. ABSENT means "always", not "never". */
   readonly chance?: number
   /** Upper end of a uniform inclusive roll over `[count, maxCount]`. */
@@ -38,6 +39,8 @@ export type MobDropRule = {
   readonly minimumSize?: MobSize
   readonly chargedCreeperOnly?: boolean
 }
+
+const LOOTING_CHANCE_PER_LEVEL = Result.getOrThrow(FoodEffectProbability.result(0.01))
 
 /** What actually lands: a name and a number, and nothing that needs resolving. */
 export type MobDrop = {
@@ -66,7 +69,7 @@ export type MobKill =
    */
   | {
       readonly _tag: 'Slain'
-      readonly lootingLevel: number
+      readonly lootingLevel: EnchantmentLevel
       readonly playerKill?: boolean
       readonly age?: MobAge
       readonly size?: MobSize
@@ -100,7 +103,7 @@ type MobDropPool = Readonly<{
   readonly minSelections: number
   readonly maxSelections: number
   readonly chance?: number
-  readonly lootingChancePerLevel?: number
+  readonly lootingChancePerLevel?: FoodEffectProbability
   readonly playerKillOnly?: boolean
   readonly choices: ReadonlyArray<MobDropChoice>
 }>
@@ -171,7 +174,7 @@ const ZOMBIE_RARE_DROPS: MobDropPool = {
   minSelections: 1,
   maxSelections: 1,
   chance: 0.025,
-  lootingChancePerLevel: 0.01,
+  lootingChancePerLevel: LOOTING_CHANCE_PER_LEVEL,
   playerKillOnly: true,
   choices: [
     { item: 'iron_ingot', weight: 1, count: 1 },
@@ -325,7 +328,7 @@ const WITHER_SKELETON_DROPS: ReadonlyArray<MobDropRule> = [
   { item: 'bone', count: 0, maxCount: 2, lootingCountIncrease: true },
   {
     item: 'wither_skeleton_skull', count: 1, chance: 0.025,
-    lootingChancePerLevel: 0.01,
+    lootingChancePerLevel: LOOTING_CHANCE_PER_LEVEL,
     playerKillOnly: true, chargedCreeperOnly: true,
   },
 ]
@@ -365,7 +368,7 @@ const GUARDIAN_FISH_POOL: MobDropPool = {
   minSelections: 1,
   maxSelections: 1,
   chance: 0.025,
-  lootingChancePerLevel: 0.01,
+  lootingChancePerLevel: LOOTING_CHANCE_PER_LEVEL,
   playerKillOnly: true,
   choices: FISH_CHOICES,
 }
@@ -388,7 +391,7 @@ const ZOMBIFIED_PIGLIN_RARE_POOL: MobDropPool = {
   minSelections: 1,
   maxSelections: 1,
   chance: 0.025,
-  lootingChancePerLevel: 0.01,
+  lootingChancePerLevel: LOOTING_CHANCE_PER_LEVEL,
   playerKillOnly: true,
   choices: [{ item: 'gold_ingot', weight: 1, count: 1 }],
 }
@@ -676,9 +679,10 @@ const lootingCountCumulativeNumerator = (
   const partialMin = Math.max(baseMin, total - level + 1)
   const partialMax = Math.min(baseMax, total)
   const partialCount = Math.max(0, partialMax - partialMin + 1)
-  const partialNumerator = partialCount === 0
-    ? 0
-    : partialCount * (2 * total + 1 - partialMin - partialMax)
+  // The caller searches integer totals in [baseMin, baseMax + level), so this
+  // overlap has at least one value. Keep the numerator direct instead of a
+  // defensive zero branch that cannot occur for a sampled count.
+  const partialNumerator = partialCount * (2 * total + 1 - partialMin - partialMax)
 
   // The denominator is 2 * level * baseCount. Comparing the un-divided
   // numerator keeps exact CDF boundaries such as 17/18 on the correct side.

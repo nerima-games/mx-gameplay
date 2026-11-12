@@ -3,6 +3,7 @@ import {
   AttackRangeDistance,
   BlockId,
   DimensionIdSchema,
+  FoodEffectProbability,
   EntityHealthPoints,
   StackCount,
   blockIdOf,
@@ -10,6 +11,7 @@ import {
   itemStack,
   type EnchantmentsComponent,
 } from '@nerima-games/mc-kernel'
+import { EnchantmentLevel } from '@nerima-games/mc-kernel/domain/quantities'
 import {
   PlayerStorageSnapshotSchema,
   EntityId,
@@ -289,6 +291,9 @@ describe('block loot gameplay scenarios', () => {
   )
 })
 
+const enchantmentLevel = (value: number) => Result.getOrThrow(EnchantmentLevel.result(value))
+const lootChancePerLevel = Result.getOrThrow(FoodEffectProbability.result(0.01))
+
 describe('Looting mob-drop calculations', () => {
   it.effect('matches the Vanilla Java 26.3 zombie count distribution', () =>
     Effect.sync(() => {
@@ -305,7 +310,7 @@ describe('Looting mob-drop calculations', () => {
         maxCount: 2,
         lootingCountIncrease: true,
       }
-      const kill = { _tag: 'Slain', lootingLevel: 3 } as const
+      const kill = { _tag: 'Slain', lootingLevel: enchantmentLevel(3) } as const
       const epsilon = 0.000001
       const cases = [
         [0, undefined],
@@ -325,9 +330,13 @@ describe('Looting mob-drop calculations', () => {
       for (const [roll, expected] of cases) {
         expect(rollMobDrop(rule, kill, { chance: 0, count: roll })).toStrictEqual(expected)
       }
-      expect(rollMobDrop(rule, { ...kill, lootingLevel: 0 }, { chance: 0, count: 0.5 }))
+      expect(rollMobDrop(rule, { ...kill, lootingLevel: enchantmentLevel(0) }, { chance: 0, count: 0.5 }))
         .toStrictEqual({ item: 'rotten_flesh', count: 1 })
-      expect(rollMobDrop(rule, { ...kill, lootingLevel: -1 }, { chance: 0, count: 0.5 }))
+      const negativeLevelKill = {
+        ...kill,
+        lootingLevel: -1,
+      } as unknown as Parameters<typeof rollMobDrop>[1]
+      expect(rollMobDrop(rule, negativeLevelKill, { chance: 0, count: 0.5 }))
         .toStrictEqual({ item: 'rotten_flesh', count: 1 })
     }),
   )
@@ -338,10 +347,10 @@ describe('Looting mob-drop calculations', () => {
         item: 'iron_ingot',
         count: 1,
         chance: 0.025,
-        lootingChancePerLevel: 0.01,
+        lootingChancePerLevel: lootChancePerLevel,
         playerKillOnly: true,
       }
-      const lootingThreeKill = { _tag: 'Slain', lootingLevel: 3, playerKill: true } as const
+      const lootingThreeKill = { _tag: 'Slain', lootingLevel: enchantmentLevel(3), playerKill: true } as const
 
       // Zombie rare drops use 2.5% base chance and 3.5% + 1% per level above
       // I, hence 5.5% at Looting III.
@@ -350,7 +359,7 @@ describe('Looting mob-drop calculations', () => {
         .toStrictEqual({ item: 'iron_ingot', count: 1 })
       expect(rollMobDrop(rareDrop, lootingThreeKill, { chance: 0.055, count: 0 }))
         .toBeUndefined()
-      expect(rollMobDrop(rareDrop, { ...lootingThreeKill, lootingLevel: 0 }, { chance: 0.025, count: 0 }))
+      expect(rollMobDrop(rareDrop, { ...lootingThreeKill, lootingLevel: enchantmentLevel(0) }, { chance: 0.025, count: 0 }))
         .toBeUndefined()
     }),
   )
@@ -363,7 +372,7 @@ describe('Looting mob-drop calculations', () => {
       lootingCountIncrease: true,
     }
     const actualCount = (level: number, roll: number): number =>
-      rollMobDrop(rule, { _tag: 'Slain', lootingLevel: level }, { chance: 0, count: roll })?.count ?? 0
+      rollMobDrop(rule, { _tag: 'Slain', lootingLevel: enchantmentLevel(level) }, { chance: 0, count: roll })?.count ?? 0
 
     fc.assert(fc.property(
       fc.integer({ min: 0, max: 8 }),

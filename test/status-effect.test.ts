@@ -1,7 +1,7 @@
 import { describe, expect, it } from '@effect/vitest'
 import fc from 'fast-check'
 import { Result, Schema } from 'effect'
-import { DeltaTimeSecs } from '@nerima-games/mc-kernel'
+import { DeltaTimeSecs, EffectAmplifier } from '@nerima-games/mc-kernel'
 import {
   STATUS_EFFECT_AMPLIFIER_MAX,
   STATUS_EFFECT_NAMES,
@@ -10,6 +10,11 @@ import {
 import {
   StatusEffectApplicationErrorSchema,
   StatusEffectApplicationOutcomeSchema,
+  AttackDamageBonusSchema,
+  MiningSpeedMultiplierSchema,
+  StatusEffectLevelSchema,
+  StatusEffectModifiersSchema,
+  StatusEffectPulseCountSchema,
   StatusEffectStateSchema,
   applyStatusEffect,
   copyStatusEffectState,
@@ -214,6 +219,7 @@ describe('status effects', () => {
     )
     const modifiers = statusEffectModifiers(state)
 
+    expect(statusEffectLevel(emptyStatusEffectState(), 'speed')).toBe(0)
     expect(statusEffectLevel(state, 'speed')).toBe(2)
     expect(modifiers.levels['conduit_power']).toBe(1)
     expect(modifiers.movementSpeedMultiplier).toBeCloseTo((1 + 0.2 * 2) * (1 - 0.15), 12)
@@ -238,6 +244,49 @@ describe('status effects', () => {
     expect(modifiers.nightVision).toBe(true)
     expect(modifiers.invisibility).toBe(true)
     expect(modifiers.glowing).toBe(true)
+  })
+
+  it('validates the public modifier quantities at their boundaries', () => {
+    expect(Result.isSuccess(Schema.decodeUnknownResult(StatusEffectLevelSchema)(0))).toBe(true)
+    expect(Result.isSuccess(Schema.decodeUnknownResult(StatusEffectLevelSchema)(256))).toBe(true)
+    expect(Result.isFailure(Schema.decodeUnknownResult(StatusEffectLevelSchema)(-1))).toBe(true)
+    expect(Result.isFailure(Schema.decodeUnknownResult(StatusEffectLevelSchema)(257))).toBe(true)
+
+    expect(Result.isSuccess(Schema.decodeUnknownResult(StatusEffectPulseCountSchema)(0))).toBe(true)
+    expect(Result.isFailure(Schema.decodeUnknownResult(StatusEffectPulseCountSchema)(-1))).toBe(true)
+    expect(Result.isFailure(Schema.decodeUnknownResult(StatusEffectPulseCountSchema)(1.5))).toBe(true)
+
+    expect(Result.isSuccess(Schema.decodeUnknownResult(MiningSpeedMultiplierSchema)(0))).toBe(true)
+    expect(Result.isFailure(Schema.decodeUnknownResult(MiningSpeedMultiplierSchema)(-Number.MIN_VALUE))).toBe(true)
+    expect(Result.isFailure(Schema.decodeUnknownResult(MiningSpeedMultiplierSchema)(Number.POSITIVE_INFINITY))).toBe(true)
+    expect(Result.isSuccess(Schema.decodeUnknownResult(AttackDamageBonusSchema)(-4))).toBe(true)
+    expect(Result.isFailure(Schema.decodeUnknownResult(AttackDamageBonusSchema)(Number.NaN))).toBe(true)
+  })
+
+  it('rejects out-of-domain values for every public status modifier field', () => {
+    const valid = statusEffectModifiers(emptyStatusEffectState())
+    expect(Result.isSuccess(Schema.decodeUnknownResult(StatusEffectModifiersSchema)(valid))).toBe(true)
+
+    const invalidValues: ReadonlyArray<readonly [string, unknown]> = [
+      ['levels', { speed: -1 }],
+      ['movementSpeedMultiplier', -1],
+      ['attackSpeedMultiplier', Number.POSITIVE_INFINITY],
+      ['miningSpeedMultiplier', -Number.MIN_VALUE],
+      ['attackDamageBonus', Number.NaN],
+      ['damageTakenMultiplier', 1.01],
+      ['additionalMaximumHealthPoints', 0.5],
+      ['absorptionHealthPoints', -1],
+      ['jumpBoostLevel', -1],
+      ['luck', 1.5],
+      ['nauseaAmplifier', STATUS_EFFECT_AMPLIFIER_MAX + 1],
+    ]
+
+    for (const [field, value] of invalidValues) {
+      expect(Result.isFailure(Schema.decodeUnknownResult(StatusEffectModifiersSchema)({
+        ...valid,
+        [field]: value,
+      })), `${field} should be rejected`).toBe(true)
+    }
   })
 
   it('caps resistance and mining-fatigue projections at their Java Edition limits', () => {
@@ -272,6 +321,13 @@ describe('status effects', () => {
     expect(modifiers.breathOfTheNautilus).toBe(true)
   })
 
+  it('defaults an omitted amplifier to status-effect level I', () => {
+    const outcome = apply(emptyStatusEffectState(), { type: 'speed', durationSecs: 1 })
+
+    expect(outcome.state.effects[0]?.amplifier).toBe(0)
+    expect(statusEffectLevel(outcome.state, 'speed')).toBe(1)
+  })
+
   it('preserves weaker effects and restores their remaining duration after a stronger effect', () => {
     let state = apply(emptyStatusEffectState(), {
       type: 'speed',
@@ -298,6 +354,48 @@ describe('status effects', () => {
       amplifier: 0,
     }])
     expect(restored.movementSpeedMultiplier).toBeCloseTo(1.2, 12)
+  })
+
+  it('drops a hidden effect that expires before the active effect and keeps the next one on promotion', () => {
+    const expiringHidden = {
+      effects: [{
+        type: 'speed',
+        remainingSecs: 3,
+        pulseClockSecs: 0,
+        amplifier: 2,
+        hiddenEffects: [
+          { remainingSecs: DeltaTimeSecs(0.5), pulseClockSecs: DeltaTimeSecs(0), amplifier: EffectAmplifier(1) },
+        ],
+      }],
+    } as const
+    const afterHiddenExpiry = tickStatusEffects(expiringHidden, DeltaTimeSecs(1))
+    expect(afterHiddenExpiry.state.effects).toStrictEqual([{
+      type: 'speed',
+      remainingSecs: 2,
+      pulseClockSecs: 0,
+      amplifier: 2,
+    }])
+
+    const stackedEffects = {
+      effects: [{
+        type: 'speed',
+        remainingSecs: 1,
+        pulseClockSecs: 0,
+        amplifier: 2,
+        hiddenEffects: [
+          { remainingSecs: DeltaTimeSecs(4), pulseClockSecs: DeltaTimeSecs(0), amplifier: EffectAmplifier(1) },
+          { remainingSecs: DeltaTimeSecs(3), pulseClockSecs: DeltaTimeSecs(0), amplifier: EffectAmplifier(0) },
+        ],
+      }],
+    } as const
+    const afterPromotion = tickStatusEffects(stackedEffects, DeltaTimeSecs(1))
+    expect(afterPromotion.state.effects).toStrictEqual([{
+      type: 'speed',
+      remainingSecs: 3,
+      pulseClockSecs: 0,
+      amplifier: 1,
+      hiddenEffects: [{ remainingSecs: 2, pulseClockSecs: 0, amplifier: 0 }],
+    }])
   })
 
   it('advances a hidden poison clock without applying pulses until it is restored', () => {
@@ -535,6 +633,24 @@ describe('status effects', () => {
       }],
     })).toBe(false)
     expect(isValidStatusEffectState({
+      effects: [{
+        type: 'speed',
+        remainingSecs: 10,
+        pulseClockSecs: 0,
+        amplifier: 2,
+        hiddenEffects: [{ remainingSecs: 5, pulseClockSecs: 0, amplifier: 1, extra: true }],
+      }],
+    })).toBe(false)
+    expect(isValidStatusEffectState({
+      effects: [{
+        type: 'speed',
+        remainingSecs: 10,
+        pulseClockSecs: 0,
+        amplifier: 2,
+        hiddenEffects: 'not-an-array',
+      }],
+    })).toBe(false)
+    expect(isValidStatusEffectState({
       effects: [{ type: 'speed', remainingSecs: Number.POSITIVE_INFINITY, pulseClockSecs: 0, amplifier: 0 }],
     })).toBe(false)
     expect(isValidStatusEffectState({ effects: [], extra: true })).toBe(false)
@@ -559,8 +675,22 @@ describe('status effects', () => {
     })
   })
 
+  it('clamps a non-finite amplifier when projecting malformed state into modifiers', () => {
+    const malformed = {
+      effects: [{ type: 'speed', remainingSecs: 1, pulseClockSecs: 0, amplifier: Number.NaN }],
+    } as unknown as StatusEffectState
+    const modifiers = statusEffectModifiers(malformed)
+
+    expect(statusEffectLevel(malformed, 'speed')).toBe(1)
+    expect(modifiers.movementSpeedMultiplier).toBeCloseTo(1.2, 12)
+    expect(Result.isSuccess(Schema.decodeUnknownResult(StatusEffectModifiersSchema)(modifiers))).toBe(true)
+  })
+
   it('clones active and hidden status-effect records without aliasing', () => {
-    let state = apply(emptyStatusEffectState(), { type: 'speed', durationSecs: 5, amplifier: 0 }).state
+    const visibleOnly = apply(emptyStatusEffectState(), { type: 'speed', durationSecs: 5, amplifier: 0 }).state
+    expect(copyStatusEffectState(visibleOnly)).toStrictEqual(visibleOnly)
+
+    let state = visibleOnly
     state = apply(state, { type: 'speed', durationSecs: 2, amplifier: 1 }).state
 
     const copy = copyStatusEffectState(state)
@@ -628,6 +758,7 @@ describe('status effects', () => {
             DeltaTimeSecs(elapsedTicks / 20),
           )
           return Result.isSuccess(Schema.decodeUnknownResult(StatusEffectStateSchema)(tick.state)) &&
+            Result.isSuccess(Schema.decodeUnknownResult(StatusEffectModifiersSchema)(tick.modifiers)) &&
             Number.isSafeInteger(tick.poisonPulses) && tick.poisonPulses >= 0 &&
             Number.isSafeInteger(tick.regenerationPulses) && tick.regenerationPulses >= 0 &&
             Number.isSafeInteger(tick.witherPulses) && tick.witherPulses >= 0 &&

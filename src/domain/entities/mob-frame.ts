@@ -207,6 +207,7 @@
  * existed.
  */
 import { isItemType, type ItemType, type RandomSeed, type SimulationTick as SimulationTickValue } from '@nerima-games/mc-kernel'
+import { EnchantmentLevel } from '@nerima-games/mc-kernel/domain/quantities'
 import {
   durabilityForItem,
   isDamageableItemType,
@@ -652,7 +653,8 @@ export const passivePopulation = <S>(roster: EntityManagerApi<S>): Effect.Effect
  * Bow and melee requests currently carry damage but no enchantment metadata,
  * so both drop and experience resolution use level zero.
  */
-const SLAIN_WITHOUT_LOOTING: MobKill = { _tag: 'Slain', lootingLevel: 0 }
+const NO_LOOTING_LEVEL = Result.getOrThrow(EnchantmentLevel.result(0))
+const SLAIN_WITHOUT_LOOTING: MobKill = { _tag: 'Slain', lootingLevel: NO_LOOTING_LEVEL }
 
 /** Resolve table-backed drops for a kernel entity kind. */
 export const dropRulesOfKind = (kind: EntityKind): Result.Result<ReadonlyArray<MobDropRule>, { readonly _tag: 'UnknownMobKind'; readonly kind: EntityKind }> =>
@@ -950,7 +952,7 @@ export type MobCasualty = Readonly<{
   at: Position
   dimension?: Dimension
   killCredit?: MobKillCredit
-  lootingLevel?: number
+  lootingLevel?: EnchantmentLevel
   lastHitTick?: SimulationTickValue
   deathTick?: SimulationTickValue
   age?: MobAge
@@ -1008,7 +1010,7 @@ const mobCasualty = (
   killCredit = latestHit?.killCredit ?? entity.killCredit,
   lastHitTick = latestHit?.lastHitTick ?? entity.lastHitTick,
   burning = false,
-  lootingLevel?: number,
+  lootingLevel?: EnchantmentLevel,
 ): MobCasualty => ({
   id: entity.id,
   kind: entity.kind,
@@ -1817,7 +1819,7 @@ export type MobDamageHit = Readonly<{
   id: EntityId
   damage: Damage
   killCredit?: Exclude<MobKillCredit, 'player-triggered-tnt'>
-  lootingLevel?: number
+  lootingLevel?: EnchantmentLevel
   lastHitTick?: SimulationTickValue
   burning?: boolean
 }>
@@ -1916,7 +1918,7 @@ export const planMobDamageRoster = (
     damages: Array<Damage>
     latestHit?: RecentMobHit
     burning?: boolean
-    lootingLevel?: number
+    lootingLevel?: EnchantmentLevel
   }
   const byEntity = new Map<EntityId, DamageBatch>()
   for (const hit of hits) {
@@ -1929,7 +1931,7 @@ export const planMobDamageRoster = (
       (batch.latestHit === undefined || recentHit.lastHitTick >= batch.latestHit.lastHitTick)
     ) {
       batch.latestHit = recentHit
-      batch.lootingLevel = hit.lootingLevel ?? 0
+      batch.lootingLevel = hit.lootingLevel ?? NO_LOOTING_LEVEL
     }
     if (hit.burning === true) batch.burning = true
     byEntity.set(hit.id, batch)
@@ -2276,7 +2278,7 @@ export const rollCasualtyDrops = (
     const kill: MobKill = {
       ...SLAIN_WITHOUT_LOOTING,
       playerKill,
-      lootingLevel: casualty.lootingLevel ?? 0,
+      lootingLevel: casualty.lootingLevel ?? NO_LOOTING_LEVEL,
       ...(casualty.age === undefined ? {} : { age: casualty.age }),
       ...(casualty.size === undefined ? {} : { size: casualty.size }),
       ...(casualty.burning === undefined ? {} : { burning: casualty.burning }),

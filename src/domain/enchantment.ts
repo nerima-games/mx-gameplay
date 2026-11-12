@@ -1,5 +1,17 @@
 import { Brand, Result, Schema } from 'effect'
-import { isItemType, type ItemType, type RandomSeed } from '@nerima-games/mc-kernel'
+import {
+  isItemType,
+  type ExperienceAmount,
+  type ItemType,
+  type RandomSeed,
+} from '@nerima-games/mc-kernel'
+import {
+  EnchantmentLevel,
+  NonNegativeTickCount,
+  type EnchantmentLevel as EnchantmentLevelValue,
+  type InterpolationFraction as InterpolationFractionValue,
+  type NonNegativeTickCount as NonNegativeTickCountValue,
+} from '@nerima-games/mc-kernel/domain/quantities'
 import {
   SUPPORTED_VANILLA_ENCHANTMENT_IDS,
   SUPPORTED_VANILLA_ENCHANTMENT_RULES,
@@ -19,9 +31,10 @@ import {
   type EnchantmentTableItem,
   type EnchantmentTableOffers,
   type EnchantmentTableRandom,
+  type EquipmentSlot,
 } from '@nerima-games/mc-sim'
 
-import { applyArmorPointsToDamage } from './combat/armor-mitigation.js'
+import { applyArmorPointsToDamage, type ArmorPoints } from './combat/armor-mitigation.js'
 import type { Damage } from './death-cause.js'
 import { bowPowerMultiplier } from './interactions/draw-bow.js'
 
@@ -80,6 +93,47 @@ export type Enchantment = {
   readonly id: EnchantmentId
   readonly level: number
 }
+
+export type EnchantmentDamageMultiplier = number & Brand.Brand<'EnchantmentDamageMultiplier'>
+export const EnchantmentDamageMultiplierSchema: Schema.Codec<EnchantmentDamageMultiplier, number> =
+  Schema.Finite.check(Schema.isBetween({ minimum: 0, maximum: 1 })).pipe(
+    Schema.brand('EnchantmentDamageMultiplier'),
+  )
+
+export type SweepingEdgeDamageMultiplier = number & Brand.Brand<'SweepingEdgeDamageMultiplier'>
+export const SweepingEdgeDamageMultiplierSchema: Schema.Codec<SweepingEdgeDamageMultiplier, number> =
+  Schema.Finite.check(Schema.isBetween({ minimum: 0, maximum: 1 })).pipe(
+    Schema.brand('SweepingEdgeDamageMultiplier'),
+  )
+
+export type EnchantmentChance = number & Brand.Brand<'EnchantmentChance'>
+export const EnchantmentChanceSchema: Schema.Codec<EnchantmentChance, number> =
+  Schema.Finite.check(Schema.isBetween({ minimum: 0, maximum: 1 })).pipe(
+    Schema.brand('EnchantmentChance'),
+  )
+
+export type KnockbackStrength = number & Brand.Brand<'KnockbackStrength'>
+export const KnockbackStrengthSchema: Schema.Codec<KnockbackStrength, number> =
+  Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)).pipe(Schema.brand('KnockbackStrength'))
+
+export type FrostWalkerFreezeRadius = number & Brand.Brand<'FrostWalkerFreezeRadius'>
+export const FrostWalkerFreezeRadiusSchema: Schema.Codec<FrostWalkerFreezeRadius, number> =
+  Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)).pipe(Schema.brand('FrostWalkerFreezeRadius'))
+
+export type MendingDurabilityRepairPoints = number & Brand.Brand<'MendingDurabilityRepairPoints'>
+export const MendingDurabilityRepairPointsSchema: Schema.Codec<MendingDurabilityRepairPoints, number> =
+  Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)).pipe(
+    Schema.brand('MendingDurabilityRepairPoints'),
+  )
+
+export type MendingExperiencePoints = number & Brand.Brand<'MendingExperiencePoints'>
+export const MendingExperiencePointsSchema: Schema.Codec<MendingExperiencePoints, number> =
+  Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER })).pipe(
+    Schema.brand('MendingExperiencePoints'),
+  )
+const makeMendingExperiencePoints = Brand.make<MendingExperiencePoints>(
+  (value) => Number.isSafeInteger(value) && value >= 0,
+)
 
 export type EnchantedItem = {
   readonly item: ItemType
@@ -410,11 +464,16 @@ const isEnchantedItemSource = (source: EnchantmentSource): source is EnchantedIt
   typeof source.item === 'string' &&
   isItemType(source.item)
 
-const validLevel = (value: unknown): number =>
-  typeof value === 'number' && Number.isSafeInteger(value) && value > 0 && value <= 255 ? value : 0
+const validLevel = (value: unknown): EnchantmentLevelValue =>
+  typeof value === 'number' && Number.isSafeInteger(value) && value > 0 && value <= 255
+    ? EnchantmentLevel(value)
+    : EnchantmentLevel(0)
 
 /** Read one level from a gameplay item, an enchantment list, or a kernel component. */
-export const enchantmentLevel = (source: EnchantmentSource, id: EnchantmentId): number => {
+export const enchantmentLevel = (
+  source: EnchantmentSource,
+  id: EnchantmentId,
+): EnchantmentLevelValue => {
   if (Array.isArray(source)) {
     return validLevel(
       (source as ReadonlyArray<Enchantment>).find((enchantment) => enchantment.id === id)?.level,
@@ -483,8 +542,8 @@ const damageCategory = (damage: Damage): EnchantmentDamageCategory => {
 export const enchantmentProtectionFactor = (
   armor: ReadonlyArray<EnchantmentSource>,
   category: EnchantmentDamageCategory,
-): number => {
-  if (category === 'unprotected') return 1
+): EnchantmentDamageMultiplier => {
+  if (category === 'unprotected') return 1 as EnchantmentDamageMultiplier
   const epf = armor.reduce((total, source) => {
     const protection = enchantmentLevel(source, 'protection')
     const fire = category === 'fire' ? 2 * enchantmentLevel(source, 'fire_protection') : 0
@@ -495,15 +554,15 @@ export const enchantmentProtectionFactor = (
     const fall = category === 'fall' ? 3 * enchantmentLevel(source, 'feather_falling') : 0
     return total + protection + fire + blast + projectile + fall
   }, 0)
-  return 1 - Math.min(20, epf) / 25
+  return (1 - Math.min(20, epf) / 25) as EnchantmentDamageMultiplier
 }
 
 export const armorDamageWithEnchantments = (
   damage: Damage,
-  armorPoints: number,
+  armorPoints: ArmorPoints,
   armor: ReadonlyArray<EnchantmentSource>,
 ): Damage => {
-  const afterArmor = applyArmorPointsToDamage(damage, armorPoints)
+  const afterArmor = applyArmorPointsToDamage(damage, armorPoints as ArmorPoints)
   return {
     ...afterArmor,
     amount: nonNegative(afterArmor.amount) * enchantmentProtectionFactor(armor, damageCategory(damage)),
@@ -567,13 +626,13 @@ export const fortuneDropCountWithEnchantments = (
   return normalizedBase * (extraMultiplier + 1)
 }
 
-export const fireAspectDurationTicks = (source: EnchantmentSource): number =>
-  80 * enchantmentLevel(source, 'fire_aspect')
+export const fireAspectDurationTicks = (source: EnchantmentSource): NonNegativeTickCountValue =>
+  NonNegativeTickCount(80 * enchantmentLevel(source, 'fire_aspect'))
 
-export const lootingLevel = (source: EnchantmentSource): number =>
+export const lootingLevel = (source: EnchantmentSource): EnchantmentLevelValue =>
   enchantmentLevel(source, 'looting')
 
-export const luckOfTheSeaLevel = (source: EnchantmentSource): number =>
+export const luckOfTheSeaLevel = (source: EnchantmentSource): EnchantmentLevelValue =>
   enchantmentLevel(source, 'luck_of_the_sea')
 
 export const silkTouchEnabled = (source: EnchantmentSource): boolean =>
@@ -582,40 +641,40 @@ export const silkTouchEnabled = (source: EnchantmentSource): boolean =>
 export const infinityPreventsArrowConsumption = (source: EnchantmentSource): boolean =>
   enchantmentLevel(source, 'infinity') > 0
 
-export const flameDurationTicks = (source: EnchantmentSource): number =>
-  enchantmentLevel(source, 'flame') > 0 ? 100 : 0
+export const flameDurationTicks = (source: EnchantmentSource): NonNegativeTickCountValue =>
+  NonNegativeTickCount(enchantmentLevel(source, 'flame') > 0 ? 100 : 0)
 
-export const knockbackLevel = (source: EnchantmentSource): number =>
+export const knockbackLevel = (source: EnchantmentSource): EnchantmentLevelValue =>
   enchantmentLevel(source, 'knockback')
 
-export const punchKnockbackBonus = (source: EnchantmentSource): number =>
-  3 * enchantmentLevel(source, 'punch')
+export const punchKnockbackBonus = (source: EnchantmentSource): KnockbackStrength =>
+  (3 * enchantmentLevel(source, 'punch')) as KnockbackStrength
 
-export const sweepingEdgeDamageMultiplier = (source: EnchantmentSource): number => {
+export const sweepingEdgeDamageMultiplier = (source: EnchantmentSource): SweepingEdgeDamageMultiplier => {
   const level = enchantmentLevel(source, 'sweeping_edge')
-  return level === 0 ? 0 : level / (level + 1)
+  return (level === 0 ? 0 : level / (level + 1)) as SweepingEdgeDamageMultiplier
 }
 
-export const respirationAirConsumptionChance = (source: EnchantmentSource): number =>
-  1 / (enchantmentLevel(source, 'respiration') + 1)
+export const respirationAirConsumptionChance = (source: EnchantmentSource): EnchantmentChance =>
+  (1 / (enchantmentLevel(source, 'respiration') + 1)) as EnchantmentChance
 
-export const respirationBonusAirTicks = (source: EnchantmentSource): number =>
-  300 * enchantmentLevel(source, 'respiration')
+export const respirationBonusAirTicks = (source: EnchantmentSource): NonNegativeTickCountValue =>
+  NonNegativeTickCount(300 * enchantmentLevel(source, 'respiration'))
 
 export const aquaAffinityEnabled = (source: EnchantmentSource): boolean =>
   enchantmentLevel(source, 'aqua_affinity') > 0
 
-export const depthStriderLevel = (source: EnchantmentSource): number =>
+export const depthStriderLevel = (source: EnchantmentSource): EnchantmentLevelValue =>
   enchantmentLevel(source, 'depth_strider')
 
-export const soulSpeedLevel = (source: EnchantmentSource): number =>
+export const soulSpeedLevel = (source: EnchantmentSource): EnchantmentLevelValue =>
   enchantmentLevel(source, 'soul_speed')
 
-export const swiftSneakLevel = (source: EnchantmentSource): number =>
+export const swiftSneakLevel = (source: EnchantmentSource): EnchantmentLevelValue =>
   enchantmentLevel(source, 'swift_sneak')
 
-export const thornsRetaliationChance = (source: EnchantmentSource): number =>
-  0.15 * enchantmentLevel(source, 'thorns')
+export const thornsRetaliationChance = (source: EnchantmentSource): EnchantmentChance =>
+  (0.15 * enchantmentLevel(source, 'thorns')) as EnchantmentChance
 
 export const bindingCurseBlocksRemoval = (source: EnchantmentSource): boolean =>
   enchantmentLevel(source, 'binding_curse') > 0
@@ -623,39 +682,55 @@ export const bindingCurseBlocksRemoval = (source: EnchantmentSource): boolean =>
 export const vanishingCurseRemovesOnDeath = (source: EnchantmentSource): boolean =>
   enchantmentLevel(source, 'vanishing_curse') > 0
 
-export const lureWaitReductionTicks = (source: EnchantmentSource): number =>
-  100 * enchantmentLevel(source, 'lure')
+export const lureWaitReductionTicks = (source: EnchantmentSource): NonNegativeTickCountValue =>
+  NonNegativeTickCount(100 * enchantmentLevel(source, 'lure'))
 
-export const frostWalkerFreezeRadius = (source: EnchantmentSource): number => {
+export const frostWalkerFreezeRadius = (source: EnchantmentSource): FrostWalkerFreezeRadius => {
   const level = enchantmentLevel(source, 'frost_walker')
-  return level === 0 ? 0 : 2 + level
+  return (level === 0 ? 0 : 2 + level) as FrostWalkerFreezeRadius
 }
 
-export const mendingDurabilityRepairPoints = (experiencePoints: number): number =>
-  2 * (Number.isFinite(experiencePoints) ? Math.max(0, Math.floor(experiencePoints)) : 0)
+export const mendingDurabilityRepairPoints = (experiencePoints: MendingExperiencePoints): MendingDurabilityRepairPoints =>
+  (2 * (Number.isFinite(experiencePoints) ? Math.max(0, Math.floor(experiencePoints)) : 0)) as MendingDurabilityRepairPoints
+
+const mendingExperiencePointsResult = (value: number): Result.Result<MendingExperiencePoints, Brand.BrandError> =>
+  makeMendingExperiencePoints.result(value)
+
+export type MendingRepairSlot =
+  | 'main_hand'
+  | EquipmentSlot
+  | `inventory:${number}`
+  | `equipment:${EquipmentSlot}`
 
 export type MendingRepairCandidate = {
-  readonly slot: string
+  readonly slot: MendingRepairSlot
   readonly durability: Durability | null
   readonly enchantments: EnchantmentSource
 }
 
 export type MendingRepairResult = {
   readonly repairedCandidate: MendingRepairCandidate | undefined
-  readonly selectedSlot: string | undefined
-  readonly xpConsumed: number
-  readonly xpRemaining: number
+  readonly selectedSlot: MendingRepairSlot | undefined
+  readonly xpConsumed: MendingExperiencePoints
+  readonly xpRemaining: MendingExperiencePoints
 }
 
 /** Choose one damaged Mending candidate; callers supply only held or equipped items. */
 export const mendOneItemFromExperience = (
   candidates: ReadonlyArray<MendingRepairCandidate>,
-  orbExperience: number,
-  roll: number,
-): MendingRepairResult => {
+  orbExperience: ExperienceAmount,
+  roll: InterpolationFractionValue,
+): Result.Result<MendingRepairResult, Brand.BrandError> => {
   const xp = Number.isFinite(orbExperience) ? Math.max(0, Math.floor(orbExperience)) : 0
   if (xp === 0 || !Number.isFinite(roll) || roll < 0 || roll >= 1) {
-    return { repairedCandidate: undefined, selectedSlot: undefined, xpConsumed: 0, xpRemaining: xp }
+    return Result.gen(function* () {
+      return {
+        repairedCandidate: undefined,
+        selectedSlot: undefined,
+        xpConsumed: yield* mendingExperiencePointsResult(0),
+        xpRemaining: yield* mendingExperiencePointsResult(xp),
+      }
+    })
   }
 
   const eligible = candidates.filter(({ durability, enchantments }) =>
@@ -667,25 +742,33 @@ export const mendOneItemFromExperience = (
     enchantmentLevel(enchantments, 'mending') > 0,
   )
   if (eligible.length === 0) {
-    return { repairedCandidate: undefined, selectedSlot: undefined, xpConsumed: 0, xpRemaining: xp }
+    return Result.gen(function* () {
+      return {
+        repairedCandidate: undefined,
+        selectedSlot: undefined,
+        xpConsumed: yield* mendingExperiencePointsResult(0),
+        xpRemaining: yield* mendingExperiencePointsResult(xp),
+      }
+    })
   }
 
-  const selected = eligible[Math.floor(roll * eligible.length)]
-  if (selected === undefined || selected.durability === null) {
-    return { repairedCandidate: undefined, selectedSlot: undefined, xpConsumed: 0, xpRemaining: xp }
-  }
+  const selected = eligible[Math.floor(roll * eligible.length)]!
+  const selectedDurability = selected.durability!
 
-  const missing = selected.durability.max - selected.durability.current
-  const repaired = Math.min(missing, mendingDurabilityRepairPoints(xp))
-  const xpConsumed = Math.ceil(repaired / 2)
-  const repairedCandidate: MendingRepairCandidate = {
-    ...selected,
-    durability: { ...selected.durability, current: selected.durability.current + repaired },
-  }
-  return {
-    repairedCandidate,
-    selectedSlot: selected.slot,
-    xpConsumed,
-    xpRemaining: xp - xpConsumed,
-  }
+  const missing = selectedDurability.max - selectedDurability.current
+  return Result.gen(function* () {
+    const experiencePoints = yield* mendingExperiencePointsResult(xp)
+    const repaired = Math.min(missing, mendingDurabilityRepairPoints(experiencePoints))
+    const xpConsumed = Math.ceil(repaired / 2)
+    const repairedCandidate: MendingRepairCandidate = {
+      ...selected,
+      durability: { ...selectedDurability, current: selectedDurability.current + repaired },
+    }
+    return {
+      repairedCandidate,
+      selectedSlot: selected.slot,
+      xpConsumed: yield* mendingExperiencePointsResult(xpConsumed),
+      xpRemaining: yield* mendingExperiencePointsResult(xp - xpConsumed),
+    }
+  })
 }

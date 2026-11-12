@@ -36,7 +36,15 @@ import {
   stepStatusEffects,
   useBucket,
 } from './registration-core.js'
-import { AttackRangeDistance, EntityHealthPoints, EntityId, PositionAxis, weaponComponent } from '@nerima-games/mc-kernel'
+import {
+  AttackRangeDistance,
+  EnchantmentLevel,
+  EntityHealthPoints,
+  EntityId,
+  PositionAxis,
+  weaponComponent,
+  type EnchantmentLevel as EnchantmentLevelValue,
+} from '@nerima-games/mc-kernel'
 import { position as kernelPosition } from '@nerima-games/mc-kernel'
 import type { BlockId, ItemType } from '@nerima-games/mc-kernel'
 import { Option, Result } from 'effect'
@@ -138,6 +146,7 @@ import {
 import { Schema } from 'effect'
 import {
   applyStatusEffect,
+  AttackDamageBonusSchema,
   statusEffectModifiers,
   StatusEffectStateSchema,
   type StatusEffectInstantEffect,
@@ -177,6 +186,7 @@ import {
   knockbackLevel,
   punchKnockbackBonus,
   silkTouchEnabled,
+  KnockbackStrengthSchema,
   type EnchantmentSource,
 } from '../domain/enchantment.js'
 import {
@@ -237,8 +247,8 @@ const FISHING_ROD_REEL_WEAR = 1
 const VALIDATED_FISHING_ROD_LOCATION = Symbol('ValidatedFishingRodLocation')
 
 type FishingEnchantments = Readonly<{
-  lureLevel: number
-  luckOfTheSeaLevel: number
+  lureLevel: EnchantmentLevelValue
+  luckOfTheSeaLevel: EnchantmentLevelValue
   openWater: boolean
 }>
 
@@ -248,11 +258,15 @@ const fishingEnchantmentsForRod = (
 ): FishingEnchantments => {
   const enchantments = rod?.components.enchantments ?? []
   return {
-    lureLevel: Math.min(FISHING_MAX_ENCHANTMENT_LEVEL, enchantmentLevel(enchantments, 'lure')),
-    luckOfTheSeaLevel: Math.min(
-      FISHING_MAX_ENCHANTMENT_LEVEL,
-      enchantmentLevel(enchantments, 'luck_of_the_sea'),
-    ),
+    lureLevel: Result.getOrThrow(EnchantmentLevel.result(
+      Math.min(FISHING_MAX_ENCHANTMENT_LEVEL, enchantmentLevel(enchantments, 'lure')),
+    )),
+    luckOfTheSeaLevel: Result.getOrThrow(EnchantmentLevel.result(
+      Math.min(
+        FISHING_MAX_ENCHANTMENT_LEVEL,
+        enchantmentLevel(enchantments, 'luck_of_the_sea'),
+      ),
+    )),
     openWater,
   }
 }
@@ -375,7 +389,7 @@ const commitMobDamage = (
     id: import('@nerima-games/mc-kernel').EntityId
     damage: Damage
     killCredit: Exclude<MobKillCredit, 'player-triggered-tnt'>
-    lootingLevel?: number
+    lootingLevel?: EnchantmentLevelValue
     burning?: boolean
   }> | undefined,
   storageCandidate?: Schema.Schema.Type<typeof PlayerStorageSnapshotSchema>,
@@ -628,7 +642,7 @@ const processBowShot = (
     let hit: Readonly<{
       id: import('@nerima-games/mc-kernel').EntityId
       damage: Damage
-      lootingLevel?: number
+      lootingLevel?: EnchantmentLevelValue
       burning?: boolean
     }> | undefined
     let knockback: ReturnType<typeof knockbackDirection> | undefined
@@ -734,8 +748,7 @@ const processMeleeAttack = (
   context: GameplayStageContext['commit'],
   request: MeleeAttackRequest,
   playerDead: boolean,
-): Effect.Effect<void> =>
-  Effect.gen(function* () {
+): Effect.Effect<void, Schema.SchemaError> => Effect.gen(function* () {
     const recordFailure = (outcome?: 'InvalidToolLocation') => {
       const requestId = request.requestId
       if (requestId === undefined) return Effect.void
@@ -891,11 +904,13 @@ const processMeleeAttack = (
       (entity) => entity.id === initialPreparation.success.target.id,
     )
     const statusModifiers = yield* Ref.get(state.playerStatusEffectModifiers)
-    const damageBonus = meleeDamageWithEnchantments(
-      0,
-      heldEnchantments,
-      meleeEnchantmentTarget(targetEntity?.kind ?? ''),
-    ) + statusModifiers.attackDamageBonus
+    const damageBonus = yield* Effect.fromResult(Schema.decodeUnknownResult(AttackDamageBonusSchema)(
+      meleeDamageWithEnchantments(
+        0,
+        heldEnchantments,
+        meleeEnchantmentTarget(targetEntity?.kind ?? ''),
+      ) + statusModifiers.attackDamageBonus,
+    ))
     const previousTargetDamageState = targetDamageStates.get(initialPreparation.success.target.id) ?? null
     const preparation = prepareMeleeAttack(intent, {
       ...preparationInput,
@@ -936,10 +951,13 @@ const processMeleeAttack = (
     ))
     const knockback = knockbackLevel(heldEnchantments)
     if (knockback > 0) {
+      const strength = yield* Effect.fromResult(
+        Schema.decodeUnknownResult(KnockbackStrengthSchema)(3 * knockback),
+      )
       yield* Ref.update(state.meleeKnockbacks, (pending) => [...pending, {
         id: preparation.success.target.id,
         direction: preparation.success.knockback,
-        strength: 3 * knockback,
+        strength,
       }])
     }
     const fireDuration = fireAspectDurationTicks(heldEnchantments)
@@ -1219,7 +1237,7 @@ const processFishingItemUse = (
         const adjustedWaitTicks = Schema.decodeUnknownResult(FishingWaitTicksSchema)(
           fishingWaitTicksWithLure(
             requestedWaitTicks.success,
-            enchantmentsByActor.get(request.actor)?.lureLevel ?? 0,
+            enchantmentsByActor.get(request.actor)?.lureLevel ?? EnchantmentLevel(0),
           ),
         )
         if (Result.isFailure(adjustedWaitTicks)) {
@@ -2370,7 +2388,11 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
             dt,
           )
         }
-        yield* stepStatusEffects(state, commit, dt)
+        yield* stepStatusEffects(state, commit, dt).pipe(
+          Effect.catch((error) => recordGameplayStageFailure(state, {
+            _tag: 'Failed', operation: 'CandidateBuild', subject: 'Vitals', error,
+          })),
+        )
         yield* advanceBlockMiningAttempt(state, commit, store, Number(dt), playerDead)
 
         // `getAndSet` rather than get-then-set: whoever fills the inboxes is not
@@ -3550,27 +3572,14 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                 const modifiers = nextStatusEffectState === undefined
                   ? yield* Ref.get(state.playerStatusEffectModifiers)
                   : statusEffectModifiers(nextStatusEffectState)
-                const afterInstant = applyStatusEffectInstantEffects(
+                const vitalsAfterInstantEffects = yield* Effect.fromResult(applyStatusEffectInstantEffects(
                   nextVitals,
                   instantEffects,
                   modifiers.damageTakenMultiplier,
-                )
-                if (Result.isFailure(afterInstant)) {
-                  yield* recordGameplayStageFailure(state, {
-                    _tag: 'Failed', operation: 'CandidateBuild', subject: 'Vitals', error: afterInstant.failure,
-                  })
-                  break itemUseAction
-                }
-                nextVitals = afterInstant.success
-                const validatedVitals = Schema.decodeUnknownResult(ExperienceOrbVitalsOwnerSnapshotSchema)({
-                  vitals: nextVitals,
-                })
-                if (Result.isFailure(validatedVitals)) {
-                  yield* recordGameplayStageFailure(state, {
-                    _tag: 'Failed', operation: 'CandidateBuild', subject: 'Vitals', error: validatedVitals.failure,
-                  })
-                  break itemUseAction
-                }
+                ))
+                const validatedVitals = yield* Effect.fromResult(Schema.decodeUnknownResult(ExperienceOrbVitalsOwnerSnapshotSchema)({
+                  vitals: vitalsAfterInstantEffects,
+                }))
                 const committed = yield* Effect.result(commit.coordinator.commit({
                   expectedRevision: storageSnapshot.success.revision,
                   expectedDimensions: [],
@@ -3578,7 +3587,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                     storageCandidate,
                     {
                       ownerId: commit.vitalsOwnerId,
-                      state: validatedVitals.success,
+                      state: validatedVitals,
                     },
                     ...(statusEffectCandidate === undefined ? [] : [statusEffectCandidate]),
                   ],
@@ -3976,7 +3985,11 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
           yield* processBowShot(state, commit, store, shot, playerDead)
         }
         for (const attack of meleeAttacks) {
-          yield* processMeleeAttack(state, commit, attack, playerDead)
+          yield* processMeleeAttack(state, commit, attack, playerDead).pipe(
+            Effect.catch((error) => recordGameplayStageFailure(state, {
+              _tag: 'Failed', operation: 'CandidateBuild', subject: 'Player', error,
+            })),
+          )
         }
 
         // ---- THE ENDER PEARL -----------------------------------------------
@@ -4004,6 +4017,10 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
         if (disturbed.length > 0) {
           yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, disturbed))
         }
-      }).pipe(Effect.orDie),
+      }).pipe(
+        Effect.catch((error) => recordGameplayStageFailure(state, {
+          _tag: 'Failed', operation: 'CandidateBuild', subject: 'Vitals', error,
+        })),
+      ),
   }
 }

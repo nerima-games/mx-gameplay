@@ -16,6 +16,7 @@ import { position as atPosition } from './support/coordinate-fixtures'
 import { expectedMeleeAttack } from './support/melee-attack-oracle'
 import { BOW_TARGET_CENTER_Y_OFFSET } from '../src/domain/interactions/bow-shot'
 import { DamageImmunityStateSchema, ZOMBIE_KIND } from '../src/domain/mob/hostile-combat'
+import { AttackDamageBonusSchema } from '../src/domain/status-effect.js'
 import {
   DEFAULT_MELEE_ATTACK_SPEED,
   MELEE_ATTACK_COOLDOWN_TICKS_PER_SECOND,
@@ -81,6 +82,9 @@ const zombie: Entity<MobBehaviour> = {
 
 const meleeCooldownTicks = (value: number) =>
   Result.getOrThrow(Schema.decodeUnknownResult(MeleeCooldownTicksSchema)(value))
+
+const attackDamageBonus = (value: number) =>
+  Result.getOrThrow(Schema.decodeUnknownResult(AttackDamageBonusSchema)(value))
 
 const damageImmunityState = (lastDamageTick: number, lastDamageAmount: number) =>
   Schema.decodeUnknownSync(DamageImmunityStateSchema)({
@@ -240,6 +244,39 @@ describe('C2 melee preparation', () => {
     })
   })
 
+  it('applies a schema-branded signed attack damage bonus', () => {
+    const bonus = attackDamageBonus(-1.25)
+    const result = prepareMeleeAttack(intent, { ...input, damageBonus: bonus })
+
+    expect(Result.isSuccess(result)).toBe(true)
+    if (Result.isFailure(result)) return
+    expect(result.success.event).toMatchObject({ _tag: 'EntityDamaged', amount: 4.75 })
+  })
+
+  it('keeps signed damage bonuses finite and accepts finite boundary values', () => {
+    for (const value of [-Number.MAX_VALUE, -5.5, 0, 5.5, Number.MAX_VALUE]) {
+      expect(Result.isSuccess(Schema.decodeUnknownResult(AttackDamageBonusSchema)(value))).toBe(true)
+    }
+    for (const value of [Number.NEGATIVE_INFINITY, Number.POSITIVE_INFINITY, Number.NaN]) {
+      expect(Result.isFailure(Schema.decodeUnknownResult(AttackDamageBonusSchema)(value))).toBe(true)
+    }
+
+    FastCheck.assert(
+      FastCheck.property(
+        FastCheck.double({ min: -5.5, max: 5.5, noNaN: true, noDefaultInfinity: true }),
+        (rawBonus) => {
+          const bonus = Schema.decodeUnknownResult(AttackDamageBonusSchema)(rawBonus)
+          if (Result.isFailure(bonus)) return false
+          const prepared = prepareMeleeAttack(intent, { ...input, damageBonus: bonus.success })
+          if (Result.isFailure(prepared) || prepared.success.event._tag !== 'EntityDamaged') return false
+          return Math.abs(prepared.success.event.amount - (6 + rawBonus)) < 1e-9 &&
+            Result.isSuccess(Schema.decodeUnknownResult(MeleeAttackPreparationSchema)(prepared.success))
+        },
+      ),
+      { numRuns: 250 },
+    )
+  })
+
   it('gates critical damage at the charge threshold and returns knockback away from the attacker', () => {
     const belowThreshold = prepareMeleeAttack(intent, {
       ...input,
@@ -386,6 +423,8 @@ describe('C2 melee preparation', () => {
     Reflect.set(invalidHeldItem, 'heldItem', 'not-an-item')
     const invalidAttackTime = { ...input }
     Reflect.set(invalidAttackTime, 'ticksSinceLastAttack', -1)
+    const invalidDamageBonus = { ...input }
+    Reflect.set(invalidDamageBonus, 'damageBonus', Number.NaN)
 
     expect(prepareMeleeAttack(intent, missingEntities)).toStrictEqual(
       Result.fail('invalid-authoritative-state'),
@@ -407,6 +446,9 @@ describe('C2 melee preparation', () => {
     )
     expect(prepareMeleeAttack(intent, invalidAttackTime)).toStrictEqual(
       Result.fail('invalid-attack-timing'),
+    )
+    expect(prepareMeleeAttack(intent, invalidDamageBonus)).toStrictEqual(
+      Result.fail('invalid-authoritative-state'),
     )
   })
 

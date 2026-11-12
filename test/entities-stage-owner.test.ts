@@ -169,14 +169,14 @@ const nearlyBrokenIronHelmetStorage = (): PlayerStorage => {
   }
 }
 
-const mendingIronHelmetStorage = (): PlayerStorage => {
+const mendingIronHelmetStorage = (currentDurability = 163): PlayerStorage => {
   const storage = emptyPlayerStorage()
   const components = Result.getOrThrow(itemComponents('iron_helmet', {
     enchantments: Result.getOrThrow(enchantmentsComponent({ 'minecraft:mending': 1 })),
   }))
   const helmet = Result.getOrThrow(equipmentItem(
     Result.getOrThrow(itemStack('iron_helmet', StackCount(1), { components })),
-    Result.getOrThrow(durability(163, 165)),
+    Result.getOrThrow(durability(currentDurability, 165)),
   ))
   return {
     ...storage,
@@ -3568,6 +3568,57 @@ describe('entities stage owner-backed MobSimulation', () => {
         tick: SimulationTick(1),
       },
       outcome: { _tag: 'Completed' },
+    }])
+  })
+
+  it('consumes an XP orb completely when Mending repairs exactly its full durability value', async () => {
+    // Java Edition 26.3 Mending repairs 2 durability per XP; a 5-XP orb repairs
+    // this helmet's 10 missing durability and leaves no XP to credit.
+    const playerPose = {
+      ...INITIAL_PLAYER_POSE,
+      feetPosition: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
+    }
+    const orbId = EntityId('test:mending-full-consumption-orb')
+    const harness = await Effect.runPromise(makeHarness({
+      entity: null,
+      playerPose,
+      playerStorage: mendingIronHelmetStorage(155),
+      vitals: SPAWN_VITALS,
+      experienceOrbs: {
+        orbs: [{
+          id: orbId,
+          value: Result.getOrThrow(createExperienceOrbValue(5)),
+          position: Schema.decodeUnknownSync(WorldPositionSchema)({
+            dimension: INITIAL_DIMENSION,
+            ...position(PositionAxis(1.02), PositionAxis(64), PositionAxis(0)),
+          }),
+          spawnedAt: SimulationTick(0),
+        }],
+      },
+    }))
+    await Effect.runPromise(Ref.set(harness.state.tickCount, SimulationTick(1)))
+
+    await harness.run(makeDeltaTimeSecs(0.05))
+
+    const storageAfter = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+      PlayerStorageSnapshotSchema,
+    ))
+    const vitalsAfter = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_VITALS_OWNER_ID,
+      ExperienceOrbVitalsOwnerSnapshotSchema,
+    ))
+    const orbsAfter = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
+      ExperienceOrbOwnerSnapshotSchema,
+    ))
+
+    expect(storageAfter.state.equipment.slots.head?.durability).toStrictEqual({ current: 165, max: 165 })
+    expect(vitalsAfter.state.vitals.totalExperience).toBe(0)
+    expect(orbsAfter.state.orbs).toStrictEqual([])
+    expect(await Effect.runPromise(Ref.get(harness.state.experienceOrbAbsorptionExecutions))).toMatchObject([{
+      request: { orb: orbId },
+      outcome: { _tag: 'Completed', result: [{ _tag: 'ExperienceCollected', amount: 5, orb: orbId }] },
     }])
   })
 

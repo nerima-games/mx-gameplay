@@ -1,6 +1,12 @@
+import { Brand, Schema } from 'effect'
 import type { Damage } from '../death-cause.js'
 
 const MAX_ARMOR_POINTS = 20
+
+export type ArmorPoints = number & Brand.Brand<'ArmorPoints'>
+export const ArmorPointsSchema: Schema.Codec<ArmorPoints, number> = Schema.Int.check(
+  Schema.isBetween({ minimum: 0, maximum: MAX_ARMOR_POINTS }),
+).pipe(Schema.brand('ArmorPoints'))
 
 /**
  * These damage causes bypass armor's per-point mitigation entirely. Environmental
@@ -22,7 +28,7 @@ const CAUSES_BYPASSING_ARMOR: ReadonlySet<Damage['cause']> = new Set([
 /** Apply Java Edition's armor and toughness damage formula. */
 export const applyArmorPointsToDamage = (
   damage: Damage,
-  armorPoints: number,
+  armorPoints: ArmorPoints,
   toughness = 0,
 ): Damage => {
   const normalizedPoints = Number.isNaN(armorPoints) ? 0 : Math.max(0, armorPoints)

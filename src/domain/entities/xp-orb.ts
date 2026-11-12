@@ -20,6 +20,10 @@ import {
   type Vitals,
   VitalsSchema,
 } from '@nerima-games/mc-sim'
+import {
+  MendingExperiencePointsSchema,
+  type MendingExperiencePoints,
+} from '../enchantment.js'
 
 const strictCodec = <A, I>(schema: Schema.Codec<A, I>): Schema.Codec<A, I> =>
   Schema.declareConstructor<A, I>()([schema], ([inner]) =>
@@ -35,9 +39,7 @@ const isSingleElement = <A>(values: ReadonlyArray<A>): values is readonly [A] =>
 export const ExperienceOrbValueSchema: typeof ExperienceAmountSchema = ExperienceAmountSchema
 export type ExperienceOrbValue = Schema.Schema.Type<typeof ExperienceOrbValueSchema>
 
-const ExperienceOrbRewardPointsSchema = Schema.Int.check(
-  Schema.isBetween({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER }),
-)
+const ExperienceOrbRewardPointsSchema = MendingExperiencePointsSchema
 
 /** Java Edition drops integer rewards as the largest fitting orb values first. */
 const EXPERIENCE_ORB_VALUE_DENOMINATIONS = [
@@ -53,6 +55,7 @@ const EXPERIENCE_ORB_VALUE_DENOMINATIONS = [
   3,
   1,
 ] as const
+const asExperienceOrbValue = (value: number): ExperienceOrbValue => value as ExperienceOrbValue
 
 export const EXPERIENCE_ORB_ATTRACTION_RADIUS_BLOCKS = 7.25
 export const EXPERIENCE_ORB_PICKUP_RADIUS_BLOCKS = 1
@@ -62,15 +65,15 @@ export const EXPERIENCE_ORB_PICKUP_INTERVAL_TICKS = 2
 /** Splits a validated mob reward into vanilla orb values, largest first. */
 export const splitExperienceOrbReward = (
   totalPoints: unknown,
-): Result.Result<ReadonlyArray<number>, Schema.SchemaError> => {
+): Result.Result<ReadonlyArray<ExperienceOrbValue>, Schema.SchemaError> => {
   const decoded = Schema.decodeUnknownResult(ExperienceOrbRewardPointsSchema)(totalPoints)
   if (Result.isFailure(decoded)) return Result.fail(decoded.failure)
 
-  let remaining = decoded.success
-  const values: Array<number> = []
+  let remaining: number = decoded.success
+  const values: Array<ExperienceOrbValue> = []
   for (const denomination of EXPERIENCE_ORB_VALUE_DENOMINATIONS) {
     const count = Math.floor(remaining / denomination)
-    for (let index = 0; index < count; index += 1) values.push(denomination)
+    for (let index = 0; index < count; index += 1) values.push(asExperienceOrbValue(denomination))
     remaining %= denomination
   }
   return Result.succeed(values)
@@ -78,7 +81,7 @@ export const splitExperienceOrbReward = (
 
 export type ExperienceOrbMendingInput<Storage, Durability, Location extends string> = Readonly<{
   repairedStorage: Storage
-  experienceRemaining: number
+  experienceRemaining: MendingExperiencePoints
   repairedDurability: Durability
   selectedLocation: Location
 }>
@@ -86,8 +89,8 @@ export type ExperienceOrbMendingInput<Storage, Durability, Location extends stri
 export type ExperienceOrbMendingInvalid = Readonly<{
   _tag: 'ExperienceOrbMendingInvalid'
   reason: 'remaining-exceeds-orb-value'
-  orbExperience: number
-  experienceRemaining: number
+  orbExperience: ExperienceOrbValue
+  experienceRemaining: MendingExperiencePoints
 }>
 
 /** Validates the Mending remainder while carrying the stage's storage candidate forward. */
@@ -286,15 +289,17 @@ export type ExperienceOrbRecord = Readonly<{
   id: Schema.Schema.Type<typeof EntityIdSchema>
   value: ExperienceOrbValue
   /** Number of same-value orbs represented by this record; omitted means one. */
-  count?: number | undefined
+  count?: ExperienceOrbCount | undefined
   /** Omitted on snapshots written before orb movement state was introduced. */
   position?: Schema.Schema.Type<typeof WorldPositionSchema> | undefined
   /** Omitted on snapshots written before orb spawn time was tracked. */
   spawnedAt?: Schema.Schema.Type<typeof SimulationTickSchema> | undefined
 }>
-const ExperienceOrbCountSchema = Schema.Int.check(
+export type ExperienceOrbCount = number & Brand.Brand<'ExperienceOrbCount'>
+export const ExperienceOrbCountSchema: Schema.Codec<ExperienceOrbCount, number> = Schema.Int.check(
   Schema.isBetween({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
-)
+).pipe(Schema.brand('ExperienceOrbCount'))
+const SINGLE_EXPERIENCE_ORB_COUNT = 1 as ExperienceOrbCount
 const ExperienceOrbMergeCandidateSchema = strictCodec(
   Schema.Struct({
     value: ExperienceOrbValueSchema,
@@ -304,7 +309,7 @@ const ExperienceOrbMergeCandidateSchema = strictCodec(
 
 export type ExperienceOrbMergedStack = Readonly<{
   value: ExperienceOrbValue
-  count: number
+  count: ExperienceOrbCount
 }>
 
 /** Merges only equal-valued stacks and adds entity count, never XP value. */
@@ -414,7 +419,7 @@ export type ExperienceOrbAbsorptionPlan = Readonly<{
   orbs: ExperienceOrbOwnerSnapshot
   experience: ExperienceOrbValue
   levelBefore: number
-  orbCountBefore: number
+  orbCountBefore: ExperienceOrbCount
 }>
 
 /** Calculates the vitals and orb owner candidates without committing them. */
@@ -439,11 +444,11 @@ export const planExperienceOrbAbsorption = (
     const experience = yield* Schema.decodeUnknownEffect(ExperienceOrbValueSchema)(orb.value)
     const experienceDelta = yield* Effect.fromResult(ExperienceDelta.result(experience))
     const levelBefore = experienceLevel(vitals.vitals)
-    const orbCountBefore = orb.count ?? 1
+    const orbCountBefore = orb.count ?? SINGLE_EXPERIENCE_ORB_COUNT
     const remainingOrbs = orbCountBefore === 1
       ? orbs.orbs.filter(({ id }) => id !== decodedContext.orb)
       : orbs.orbs.map((entry) => entry.id === decodedContext.orb
-        ? { ...entry, count: orbCountBefore - 1 }
+        ? { ...entry, count: (orbCountBefore - 1) as ExperienceOrbCount }
         : entry)
     return {
       context: decodedContext,

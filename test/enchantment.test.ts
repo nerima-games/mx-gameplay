@@ -1,10 +1,19 @@
 import { describe, expect, it } from '@effect/vitest'
 import { durabilityForItem } from '@nerima-games/mc-sim'
-import { RandomSeed } from '@nerima-games/mc-kernel'
+import {
+  ExperienceAmountSchema,
+  RandomSeed,
+  type ExperienceAmount,
+} from '@nerima-games/mc-kernel'
+import {
+  InterpolationFraction,
+  type InterpolationFraction as InterpolationFractionValue,
+} from '@nerima-games/mc-kernel/domain/quantities'
 import {
   SUPPORTED_VANILLA_ENCHANTMENT_IDS,
   SUPPORTED_VANILLA_ENCHANTMENT_RULES,
 } from '@nerima-games/mc-kernel/domain/enchantment'
+import { ArmorPointsSchema } from '../src/domain/combat/armor-mitigation'
 import {
   isEnchantmentsComponent,
   type EnchantmentsComponent,
@@ -15,6 +24,12 @@ import * as FastCheck from 'fast-check'
 import {
   ENCHANTMENT_IDS,
   ENCHANTMENT_REGISTRY,
+  EnchantmentChanceSchema,
+  EnchantmentDamageMultiplierSchema,
+  FrostWalkerFreezeRadiusSchema,
+  MendingDurabilityRepairPointsSchema,
+  MendingExperiencePointsSchema,
+  SweepingEdgeDamageMultiplierSchema,
   applyEnchantmentOffer,
   armorDamageWithEnchantments,
   aquaAffinityEnabled,
@@ -75,6 +90,22 @@ const enchantedItem = (
   durability: durabilityForItem(item),
   enchantments: id === undefined ? [] : [{ id, level }],
 })
+
+const experienceAmount = (value: number) =>
+  Result.getOrThrow(Schema.decodeUnknownResult(ExperienceAmountSchema)(value))
+const armorPoints = (value: number) =>
+  Result.getOrThrow(Schema.decodeUnknownResult(ArmorPointsSchema)(value))
+const mendOneItem = (...args: Parameters<typeof mendOneItemFromExperience>) =>
+  Result.getOrThrow(mendOneItemFromExperience(...args))
+
+const mendingExperiencePoints = (value: number) =>
+  Result.getOrThrow(Schema.decodeUnknownResult(MendingExperiencePointsSchema)(value))
+
+const interpolationFraction = (value: number) =>
+  Result.getOrThrow(InterpolationFraction.result(value))
+
+const uncheckedInterpolationFraction = (value: number): InterpolationFractionValue =>
+  value as InterpolationFractionValue
 
 const component = (
   entries: ReadonlyArray<readonly [EnchantmentId, number]>,
@@ -478,12 +509,12 @@ describe('enchantment derivations', () => {
     ]
     // At ten damage, fifteen armor points with zero toughness leave six
     // damage; Protection IV on four pieces then reduces that by 64%.
-    expect(armorDamageWithEnchantments({ amount: 10, cause: 'mob' }, 15, armor)).toEqual({
+    expect(armorDamageWithEnchantments({ amount: 10, cause: 'mob' }, armorPoints(15), armor)).toEqual({
       amount: 2.16,
       cause: 'mob',
     })
     expect(
-      armorDamageWithEnchantments({ amount: 10, cause: 'mob' }, 0, [...armor, ...armor]).amount,
+      armorDamageWithEnchantments({ amount: 10, cause: 'mob' }, armorPoints(0), [...armor, ...armor]).amount,
     ).toBeCloseTo(2)
     expect(
       enchantmentProtectionFactor(
@@ -498,7 +529,7 @@ describe('enchantment derivations', () => {
     // any positive contribution per unenchanted piece changes this amount.
     const unenchantedArmor = armor.map((item) => ({ ...item, enchantments: [] }))
     expect(
-      armorDamageWithEnchantments({ amount: 10, cause: 'mob' }, 15, unenchantedArmor),
+      armorDamageWithEnchantments({ amount: 10, cause: 'mob' }, armorPoints(15), unenchantedArmor),
     ).toEqual({ amount: 6, cause: 'mob' })
     expect(enchantmentProtectionFactor(armor, 'generic')).toBe(1 - 16 / 25)
     expect(
@@ -526,11 +557,20 @@ describe('enchantment derivations', () => {
       ),
     ).toBe(1 - 12 / 25)
     expect(
-      armorDamageWithEnchantments({ amount: 10, cause: 'fall' }, 15, [
+      armorDamageWithEnchantments({ amount: 10, cause: 'fall' }, armorPoints(15), [
         enchantedItem('iron_boots', 'feather_falling', 4),
       ]),
     ).toEqual({ amount: 5.2, cause: 'fall' })
     expect(enchantmentProtectionFactor(armor, 'unprotected')).toBe(1)
+    expect(armorDamageWithEnchantments({ amount: 10, cause: 'generic' }, armorPoints(15), armor)).toEqual({
+      amount: 10,
+      cause: 'generic',
+    })
+    expect(armorDamageWithEnchantments(
+      { amount: 10, cause: 'lava' },
+      armorPoints(15),
+      [enchantedItem('iron_chestplate', 'fire_protection', 4)],
+    ).amount).toBeCloseTo(4.08)
   })
 
   it('applies efficiency and clamps invalid mining bases', () => {
@@ -669,7 +709,11 @@ describe('enchantment derivations', () => {
         enchantments: component([['unbreaking', 3]]),
       },
     ]
-    const result = mendOneItemFromExperience(candidates, 3, 0.5)
+    const result = mendOneItem(
+      candidates,
+      experienceAmount(3),
+      interpolationFraction(0.5),
+    )
     expect(result).toEqual({
       repairedCandidate: {
         ...candidates[1],
@@ -680,7 +724,18 @@ describe('enchantment derivations', () => {
       xpRemaining: 1,
     })
     expect(candidates[1]?.durability).toEqual({ current: 96, max: 100 })
-    expect(mendingDurabilityRepairPoints(3)).toBe(6)
+    expect(mendingDurabilityRepairPoints(mendingExperiencePoints(3))).toBe(6)
+
+    const fullyConsumed = mendOneItem(
+      [candidates[0]!],
+      experienceAmount(2),
+      interpolationFraction(0),
+    )
+    expect(fullyConsumed.xpConsumed).toBe(2)
+    expect(fullyConsumed.xpRemaining).toBe(0)
+    expect(Result.isSuccess(
+      Schema.decodeUnknownResult(MendingExperiencePointsSchema)(fullyConsumed.xpRemaining),
+    )).toBe(true)
   })
 
   it('keeps Mending roll bounds half-open and leaves XP untouched without eligible items', () => {
@@ -689,34 +744,90 @@ describe('enchantment derivations', () => {
       durability: { current: 0, max: 10 },
       enchantments: component([['mending', 1]]),
     }
-    expect(mendOneItemFromExperience([eligible], 3, 0).selectedSlot).toBe('main_hand')
-    expect(mendOneItemFromExperience([eligible], 3, 1 - Number.EPSILON).selectedSlot).toBe(
-      'main_hand',
-    )
-    expect(mendOneItemFromExperience([eligible], 3, -Number.EPSILON)).toEqual({
+    expect(mendOneItem([eligible], experienceAmount(3), interpolationFraction(0)).selectedSlot)
+      .toBe('main_hand')
+    expect(mendOneItem(
+      [eligible],
+      experienceAmount(3),
+      interpolationFraction(1 - Number.EPSILON),
+    ).selectedSlot).toBe('main_hand')
+    expect(mendOneItem(
+      [eligible],
+      experienceAmount(3),
+      uncheckedInterpolationFraction(-Number.EPSILON),
+    )).toEqual({
       repairedCandidate: undefined,
       selectedSlot: undefined,
       xpConsumed: 0,
       xpRemaining: 3,
     })
-    expect(mendOneItemFromExperience([eligible], 3, 1)).toEqual({
+    expect(mendOneItem(
+      [eligible],
+      experienceAmount(3),
+      uncheckedInterpolationFraction(1),
+    )).toEqual({
       repairedCandidate: undefined,
       selectedSlot: undefined,
       xpConsumed: 0,
       xpRemaining: 3,
     })
-    expect(mendOneItemFromExperience([], 3, 0)).toEqual({
+    expect(mendOneItem([], experienceAmount(3), interpolationFraction(0))).toEqual({
       repairedCandidate: undefined,
       selectedSlot: undefined,
       xpConsumed: 0,
       xpRemaining: 3,
     })
+
+    const unsafeExperience = (Number.MAX_SAFE_INTEGER + 1) as ExperienceAmount
+    const invalid = mendOneItemFromExperience([eligible], unsafeExperience, interpolationFraction(0))
+    expect(Result.isFailure(invalid)).toBe(true)
+    if (Result.isFailure(invalid)) expect(invalid.failure._tag).toBe('BrandError')
   })
 
   it('satisfies independent fast-check properties for public calculations', () => {
     FastCheck.assert(
       FastCheck.property(FastCheck.integer({ min: 0, max: 255 }), (level) => {
         expect(enchantmentLevel(component([['power', level]]), 'power')).toBe(level)
+      }),
+    )
+    FastCheck.assert(
+      FastCheck.property(FastCheck.integer({ min: 0, max: 255 }), (level) => {
+        const factor = enchantmentProtectionFactor([component([['protection', level]])], 'generic')
+        const decoded = Schema.decodeUnknownResult(EnchantmentDamageMultiplierSchema)(factor)
+        return Result.isSuccess(decoded) && decoded.success === 1 - Math.min(20, level) / 25
+      }),
+    )
+    FastCheck.assert(
+      FastCheck.property(FastCheck.integer({ min: 0, max: 3 }), (level) => {
+        const source = component([
+          ['respiration', level],
+          ['thorns', level],
+          ['sweeping_edge', level],
+          ['frost_walker', level],
+        ])
+        const respirationChance = Schema.decodeUnknownResult(EnchantmentChanceSchema)(
+          respirationAirConsumptionChance(source),
+        )
+        const thornsChance = Schema.decodeUnknownResult(EnchantmentChanceSchema)(
+          thornsRetaliationChance(source),
+        )
+        const sweepingFraction = Schema.decodeUnknownResult(SweepingEdgeDamageMultiplierSchema)(
+          sweepingEdgeDamageMultiplier(source),
+        )
+        const freezeRadius = Schema.decodeUnknownResult(FrostWalkerFreezeRadiusSchema)(
+          frostWalkerFreezeRadius(source),
+        )
+        const repairPoints = Schema.decodeUnknownResult(MendingDurabilityRepairPointsSchema)(
+          mendingDurabilityRepairPoints(mendingExperiencePoints(level)),
+        )
+        return Result.isSuccess(respirationChance) &&
+          respirationChance.success === 1 / (level + 1) &&
+          Result.isSuccess(thornsChance) && thornsChance.success === 0.15 * level &&
+          Result.isSuccess(sweepingFraction) &&
+          sweepingFraction.success === (level === 0 ? 0 : level / (level + 1)) &&
+          Result.isSuccess(freezeRadius) &&
+          freezeRadius.success === (level === 0 ? 0 : 2 + level) &&
+          Result.isSuccess(repairPoints) && repairPoints.success === level * 2
       }),
     )
     FastCheck.assert(
@@ -801,10 +912,20 @@ describe('enchantment derivations', () => {
           }
           const repaired = Math.min(missing, xp * 2)
           const used = Math.ceil(repaired / 2)
-          const result = mendOneItemFromExperience([candidate], xp, 0)
+          const result = mendOneItem(
+            [candidate],
+            experienceAmount(xp),
+            interpolationFraction(0),
+          )
           expect(result.repairedCandidate?.durability?.current).toBe(current + repaired)
           expect(result.xpConsumed).toBe(used)
           expect(result.xpRemaining).toBe(xp - used)
+          expect(Result.isSuccess(
+            Schema.decodeUnknownResult(MendingExperiencePointsSchema)(result.xpConsumed),
+          )).toBe(true)
+          expect(Result.isSuccess(
+            Schema.decodeUnknownResult(MendingExperiencePointsSchema)(result.xpRemaining),
+          )).toBe(true)
         },
       ),
     )

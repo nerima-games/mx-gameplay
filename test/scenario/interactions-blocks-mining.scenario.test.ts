@@ -18,6 +18,7 @@ import { runFrame } from '../support/frame-runner'
 import { makeGameplayCommitServices } from '../support/transactional-stage-doubles'
 import { blockPosition, position as fixturePosition } from '../support/coordinate-fixtures'
 import { emptySlots } from '../support/inventory-service-double'
+import { MiningProgressFractionSchema } from '../../src/domain/interactions/mining-progress.js'
 
 const TARGET = blockPosition(0, 1, 0)
 const DIRT_ID = Option.getOrThrow(blockIdOf('dirt'))
@@ -213,9 +214,11 @@ describe('mining gameplay scenario', () => {
       yield* requestBlockMining(state, { position: TARGET, dimension, toolLocation: PICKAXE_SLOT })
       yield* runFrame(stages, DeltaTimeSecs(1))
 
-      expect(yield* getMiningProgressFraction(state)).toBeCloseTo(
+      const progressFraction = yield* getMiningProgressFraction(state)
+      expect(progressFraction).toBeCloseTo(
         (20 * 2 * HASTE_I_MINING_SPEED_MULTIPLIER) / (PINNED_STONE_HARDNESS * 30),
       )
+      expect(Result.isSuccess(Schema.decodeUnknownResult(MiningProgressFractionSchema)(progressFraction))).toBe(true)
       expect(yield* world.chunkStore.getBlock(TARGET)).toStrictEqual({
         _tag: 'Block',
         block: STONE_ID,

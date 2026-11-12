@@ -2554,6 +2554,56 @@ describe('the module contract has caught up with this file’s shape', () => {
     }),
   )
 
+  it.effect('applies the registered Wither I pulse at 40 ticks', () =>
+    Effect.gen(function* () {
+      const { state, stages, commit } = yield* builtStagesInWorld(world([]))
+      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+
+      // Java Edition Wither I deals one health point every 40 ticks.
+      // https://minecraft.wiki/w/Wither_(effect)
+      yield* requestStatusEffect(state, { type: 'wither', durationSecs: 3, amplifier: 0 })
+      yield* interactions.run(DeltaTimeSecs(2)).pipe(Effect.provide(FrameServicesLayer))
+
+      const vitals = yield* commit.coordinator.snapshot(
+        GAMEPLAY_VITALS_OWNER_ID,
+        ExperienceOrbVitalsOwnerSnapshotSchema,
+      )
+      const status = yield* commit.coordinator.snapshot(
+        GAMEPLAY_STATUS_EFFECTS_OWNER_ID,
+        StatusEffectStateSchema,
+      )
+      expect(vitals.state.vitals.healthPoints).toBe(19)
+      expect(status.state.effects.map(({ type }) => type)).toStrictEqual(['wither'])
+      expect(yield* Ref.get(state.operationFailures)).toStrictEqual([])
+    }),
+  )
+
+  it.effect('keeps poison status progression when Resistance V reduces pulse damage to zero', () =>
+    Effect.gen(function* () {
+      const { state, stages, commit } = yield* builtStagesInWorld(world([]))
+      const interactions = stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+
+      // Resistance V removes all damage: max(0, 1 - 0.2 × 5) = 0.
+      yield* requestStatusEffect(state, { type: 'resistance', durationSecs: 2, amplifier: 4 })
+      yield* requestStatusEffect(state, { type: 'poison', durationSecs: 2, amplifier: 0 })
+      yield* interactions.run(DeltaTimeSecs(1.25)).pipe(Effect.provide(FrameServicesLayer))
+
+      const vitals = yield* commit.coordinator.snapshot(
+        GAMEPLAY_VITALS_OWNER_ID,
+        ExperienceOrbVitalsOwnerSnapshotSchema,
+      )
+      const status = yield* commit.coordinator.snapshot(
+        GAMEPLAY_STATUS_EFFECTS_OWNER_ID,
+        StatusEffectStateSchema,
+      )
+      expect(vitals.state.vitals.healthPoints).toBe(20)
+      expect(status.state.effects.map(({ type }) => type)).toEqual(expect.arrayContaining(['poison', 'resistance']))
+      expect(status.state.effects).toHaveLength(2)
+      expect(status.state.effects.find(({ type }) => type === 'poison')?.remainingSecs).toBeCloseTo(0.75)
+      expect(yield* Ref.get(state.operationFailures)).toStrictEqual([])
+    }),
+  )
+
   it.effect('does not commit status effects or vitals across a concurrent owner revision', () =>
     Effect.gen(function* () {
       const harness = yield* builtStagesInWorld(world([]))

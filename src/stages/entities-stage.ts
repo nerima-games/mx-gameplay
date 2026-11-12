@@ -18,11 +18,12 @@ import {
   takeBatch,
   drawRolls,
 } from './registration-core.js'
-import { Equal, Option, Result, Schema } from 'effect'
+import { Brand, Equal, Option, Result, Schema } from 'effect'
 import {
   AIR_BLOCK_ID,
   BlockAxis,
   BlockBlastResistance,
+  InterpolationFraction,
   PositionAxis,
   RandomSeed,
   SimulationTickSchema,
@@ -35,6 +36,7 @@ import {
   resistsExplosion,
   type BlockPosition,
   type DeltaTimeSecs,
+  type InterpolationFraction as InterpolationFractionValue,
   type BlockPositionKey,
   type Position,
   type WorldWriteBatch,
@@ -1080,35 +1082,43 @@ const storageAfterMendingRepair = (
 const planMendingRepair = (
   storage: PlayerStorage,
   orbExperience: ExperienceOrbValue,
-  roll: number,
-): Result.Result<PlannedMendingRepair, Schema.SchemaError | ExperienceOrbMendingInvalid> => {
+  roll: InterpolationFractionValue,
+): Result.Result<PlannedMendingRepair, Brand.BrandError | Schema.SchemaError | ExperienceOrbMendingInvalid> => {
   const repair = mendOneItemFromExperience(
     mendingCandidatesForStorage(storage),
     orbExperience,
     roll,
   )
-  if (repair.selectedSlot === undefined || repair.repairedCandidate?.durability === null ||
-    repair.repairedCandidate?.durability === undefined) {
-    return Result.succeed({ storage, experienceRemaining: orbExperience, selectedSlot: undefined })
-  }
-  const repairedStorage = storageAfterMendingRepair(
-    storage,
-    repair.selectedSlot,
-    repair.repairedCandidate.durability,
-  )
-  const validated = applyMendingRepair(orbExperience, {
-    repairedStorage,
-    experienceRemaining: repair.xpRemaining,
-    repairedDurability: repair.repairedCandidate.durability,
-    selectedLocation: repair.selectedSlot,
+  return Result.flatMap(repair, (selected): Result.Result<
+    PlannedMendingRepair,
+    Schema.SchemaError | ExperienceOrbMendingInvalid
+  > => {
+    if (selected.selectedSlot === undefined || selected.repairedCandidate?.durability === null ||
+      selected.repairedCandidate?.durability === undefined) {
+      const noRepair: PlannedMendingRepair = {
+        storage,
+        experienceRemaining: orbExperience,
+        selectedSlot: undefined,
+      }
+      return Result.succeed(noRepair)
+    }
+    const repairedStorage = storageAfterMendingRepair(
+      storage,
+      selected.selectedSlot,
+      selected.repairedCandidate.durability,
+    )
+    const validated = applyMendingRepair(orbExperience, {
+      repairedStorage,
+      experienceRemaining: selected.xpRemaining,
+      repairedDurability: selected.repairedCandidate.durability,
+      selectedLocation: selected.selectedSlot,
+    })
+    return Result.map(validated, (result): PlannedMendingRepair => ({
+      storage: result.repairedStorage,
+      experienceRemaining: result.experienceRemaining,
+      selectedSlot: result.selectedLocation,
+    }))
   })
-  return Result.isFailure(validated)
-    ? Result.fail(validated.failure)
-    : Result.succeed({
-        storage: validated.success.repairedStorage,
-        experienceRemaining: validated.success.experienceRemaining,
-        selectedSlot: validated.success.selectedLocation,
-      })
 }
 
 const experienceOrbRecordsForReward = (
@@ -1563,41 +1573,25 @@ export const makeEntitiesStage = (context: GameplayStageContext): StageRegistrat
             if (eligibleMending) {
               const currentSeed = yield* Ref.get(state.rollSeed)
               const rolls = drawRolls(currentSeed, 1)
-              const repair = planMendingRepair(storage.state, planned.success.experience, rolls.rolls[0] ?? 0)
-              if (Result.isFailure(repair)) {
-                absorptionExecutions.push({
-                  request,
-                  outcome: { _tag: 'Failed', error: repair.failure } as const,
-                })
-                continue
-              }
-              experienceRemaining = repair.success.experienceRemaining
-              repairedStorage = repair.success.selectedSlot === undefined
+              const roll = yield* Effect.fromResult(InterpolationFraction.result(rollAt(rolls, 0)))
+              const repair = yield* Effect.fromResult(
+                planMendingRepair(storage.state, planned.success.experience, roll),
+              )
+              experienceRemaining = repair.experienceRemaining
+              repairedStorage = repair.selectedSlot === undefined
                 ? undefined
-                : repair.success.storage
+                : repair.storage
               rollSeed = rolls.seed
             }
           }
-          const experienceDelta = ExperienceDelta.result(experienceRemaining)
-          if (Result.isFailure(experienceDelta)) {
-            absorptionExecutions.push({
-              request,
-              outcome: { _tag: 'Failed', error: experienceDelta.failure } as const,
-            })
-            continue
-          }
-          const vitalsCandidate = Schema.decodeUnknownResult(ExperienceOrbVitalsOwnerSnapshotSchema)({
-            vitals: addExperience(vitalsSnapshot.state.vitals, experienceDelta.success),
-          })
-          if (Result.isFailure(vitalsCandidate)) {
-            absorptionExecutions.push({
-              request,
-              outcome: { _tag: 'Failed', error: vitalsCandidate.failure } as const,
-            })
-            continue
-          }
+          const experienceDelta = yield* Effect.fromResult(ExperienceDelta.result(experienceRemaining))
+          const vitalsCandidate = yield* Effect.fromResult(
+            Schema.decodeUnknownResult(ExperienceOrbVitalsOwnerSnapshotSchema)({
+              vitals: addExperience(vitalsSnapshot.state.vitals, experienceDelta),
+            }),
+          )
           const changes = [
-            { ownerId: owners.vitals, state: vitalsCandidate.success },
+            { ownerId: owners.vitals, state: vitalsCandidate },
             { ownerId: owners.orbs, state: planned.success.orbs },
             ...(repairedStorage === undefined || commit.playerStorageOwnerId === undefined
               ? []
@@ -1615,7 +1609,7 @@ export const makeEntitiesStage = (context: GameplayStageContext): StageRegistrat
           if (rollSeed !== undefined) yield* Ref.set(state.rollSeed, rollSeed)
           const result = yield* experienceOrbAbsorptionResultAfterCommit(
             planned.success,
-            vitalsCandidate.success,
+            vitalsCandidate,
             planned.success.orbs,
             owners,
           )

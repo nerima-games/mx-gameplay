@@ -82,6 +82,7 @@ import {
   BlockAxis,
   BlockAddressSchema,
   BlockId,
+  EnchantmentLevel,
   EntityIdSchema,
   blockIdOf,
   SimulationTickSchema,
@@ -194,6 +195,7 @@ export {
 } from './gameplay-owner-registrations.js'
 import { GAMEPLAY_STATUS_EFFECTS_OWNER_ID } from './gameplay-owner-registrations.js'
 import { useVillagerOffer } from '../domain/villager-trade.js'
+import type { KnockbackStrength } from '../domain/enchantment.js'
 import {
   PLAYER_MAXIMUM_HEALTH_POINTS,
   POISON_DAMAGE_POINTS,
@@ -349,6 +351,7 @@ import { breakBlock } from '../domain/interactions/break-block.js'
 import type { BreakTransactionFailure } from '../domain/interactions/break-block.js'
 import {
   miningProgressFraction,
+  type MiningProgressFraction,
   type MiningProgressState,
 } from '../domain/interactions/mining-progress.js'
 import { doorUpperBreakCell } from '../domain/interactions/place-door-upper.js'
@@ -449,7 +452,7 @@ import { advanceVehicles, type VehicleFrameEnvironment } from '../domain/vehicle
 
 const makeMobExperienceRoll = Brand.nominal<MobExperienceRoll>()
 const NO_MOB_EXPERIENCE: ReadonlyArray<never> = []
-const SLAIN_WITHOUT_LOOTING: MobKill = { _tag: 'Slain', lootingLevel: 0 }
+const SLAIN_WITHOUT_LOOTING: MobKill = { _tag: 'Slain', lootingLevel: EnchantmentLevel(0) }
 
 const hasRecentPlayerCredit = (casualty: MobCasualty): boolean =>
   casualty.killCredit === 'player-triggered-tnt' ||
@@ -1987,13 +1990,13 @@ export const EnderPearlThrowRequestSchema: Schema.ConstraintDecoder<EnderPearlTh
 export type BowKnockback = {
   readonly id: EntityId
   readonly direction: KnockbackDirection
-  readonly strength?: number
+  readonly strength?: KnockbackStrength
 }
 
 export type MeleeKnockback = Readonly<{
   id: EntityId
   direction: KnockbackDirection
-  strength: number
+  strength: KnockbackStrength
 }>
 
 /**
@@ -2602,7 +2605,7 @@ export const requestBlockMining = (
 
 export const getMiningProgressFraction = (
   state: GameplayFrameState,
-): Effect.Effect<number> => Effect.map(
+): Effect.Effect<MiningProgressFraction> => Effect.map(
   Ref.get(state.miningProgress),
   miningProgressFraction,
 )
@@ -3317,8 +3320,7 @@ const stepStatusEffects = (
   state: GameplayFrameState,
   commit: GameplayStageCommitServices | undefined,
   dt: DeltaTimeSecs,
-): Effect.Effect<void> =>
-  Effect.gen(function* () {
+): Effect.Effect<void, Brand.BrandError | Schema.SchemaError> => Effect.gen(function* () {
     const applications = yield* Ref.get(state.pendingStatusEffects)
     if (commit === undefined || commit.statusEffectsOwnerId === undefined) {
       if (applications.length > 0) {
@@ -3416,25 +3418,15 @@ const stepStatusEffects = (
       }
       vitals = afterInstant.success
       const damagePulses = tick.poisonPulses + tick.witherPulses
-      for (let index = 0; index < damagePulses; index += 1) {
-        const amount = DamageAmount.result(
-          POISON_DAMAGE_POINTS * tick.modifiers.damageTakenMultiplier,
-        )
-        if (Result.isFailure(amount)) {
-          yield* recordGameplayStageFailure(state, {
-            _tag: 'Failed', operation: 'CandidateBuild', subject: 'Vitals', error: amount.failure,
-          })
-          return
+      if (tick.modifiers.damageTakenMultiplier > 0) {
+        for (let index = 0; index < damagePulses; index += 1) {
+          const amount = yield* Effect.fromResult(DamageAmount.result(
+            POISON_DAMAGE_POINTS * tick.modifiers.damageTakenMultiplier,
+          ))
+          const causeValue = index < tick.poisonPulses ? 'poison' : 'generic'
+          const cause = yield* Effect.fromResult(DamageCause.result(causeValue))
+          vitals = applyVitalsDamage(vitals, { amount, cause })
         }
-        const cause = DamageCause.result(index < tick.poisonPulses ? 'poison' : 'wither')
-        if (Result.isFailure(cause)) {
-          yield* recordGameplayStageFailure(state, {
-            _tag: 'Failed', operation: 'CandidateBuild', subject: 'Vitals',
-            error: cause.failure,
-          })
-          return
-        }
-        vitals = applyVitalsDamage(vitals, { amount: amount.success, cause: cause.success })
       }
       for (let index = 0; index < tick.regenerationPulses; index += 1) {
         const amount = Result.getOrThrow(HealthAmount.result(REGENERATION_HEAL_POINTS))

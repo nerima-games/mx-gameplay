@@ -9,11 +9,29 @@ import {
   type HarvestTier,
   type ItemType,
 } from '@nerima-games/mc-kernel'
-import { Result } from 'effect'
+import { Brand, Result, Schema } from 'effect'
 import { NO_TOOL, type BlockLootContext } from './block-loot.js'
 import { miningSpeedWithEnchantments } from '../enchantment.js'
+import {
+  MiningSpeedMultiplierSchema,
+  type MiningSpeedMultiplier as MiningSpeedMultiplierValue,
+} from '../status-effect.js'
 
 export const MINING_TICKS_PER_SECOND = 20
+
+export type MiningProgressFraction = number & Brand.Brand<'MiningProgressFraction'>
+
+export const MiningProgressFractionSchema: Schema.Codec<MiningProgressFraction, number> = Schema.Finite
+  .check(Schema.isBetween({ minimum: 0, maximum: 1 }))
+  .pipe(Schema.brand('MiningProgressFraction'))
+
+const DEFAULT_MINING_SPEED_MULTIPLIER: MiningSpeedMultiplierValue = Result.getOrThrow(
+  Schema.decodeUnknownResult(MiningSpeedMultiplierSchema)(1),
+)
+
+const miningProgressFractionOf = (fraction: number): MiningProgressFraction => Result.getOrThrow(
+  Schema.decodeUnknownResult(MiningProgressFractionSchema)(fraction),
+)
 
 export type MiningToolProfile = {
   readonly category: HarvestToolCategory
@@ -90,7 +108,7 @@ export type AdvanceMiningProgressInput = {
   readonly isMining: boolean
   readonly selectedItem: ItemType | null
   readonly efficiencyLevel?: number
-  readonly miningSpeedMultiplier?: number
+  readonly miningSpeedMultiplier?: MiningSpeedMultiplierValue
   readonly deltaSecs: number
 }
 
@@ -165,7 +183,7 @@ export const miningDurationSecsForBlock = (
   blockId: BlockId,
   item: ItemType | null,
   efficiencyLevel: number = 0,
-  miningSpeedMultiplier: number = 1,
+  miningSpeedMultiplier: MiningSpeedMultiplierValue = DEFAULT_MINING_SPEED_MULTIPLIER,
 ): number => {
   const hardness = hardnessOfBlockId(blockId)
   if (hardness === 0) return 0
@@ -173,7 +191,7 @@ export const miningDurationSecsForBlock = (
   const requirement = harvestToolRequirementOfBlockId(blockId)
   const tool = miningToolForItem(item, efficiencyLevel)
   const speed = Result.getOrThrow(effectiveMiningSpeed(tool, requirement)) *
-    normaliseMiningSpeedMultiplier(miningSpeedMultiplier)
+    miningSpeedMultiplier
   const divisor = canHarvestWithTool(tool, requirement) ? 30 : 100
   return Math.ceil((hardness * divisor) / speed) / MINING_TICKS_PER_SECOND
 }
@@ -187,14 +205,14 @@ const miningSpeedForBlock = (
   blockId: BlockId,
   item: ItemType | null,
   efficiencyLevel: number,
-  miningSpeedMultiplier: number,
+  miningSpeedMultiplier: MiningSpeedMultiplierValue,
 ): Readonly<{ hardness: number; speed: number; divisor: number }> => {
   const tool = miningToolForItem(item, efficiencyLevel)
   const requirement = harvestToolRequirementOfBlockId(blockId)
   return {
     hardness: hardnessOfMiningTarget(blockId),
     speed: Result.getOrThrow(effectiveMiningSpeed(tool, requirement)) *
-      normaliseMiningSpeedMultiplier(miningSpeedMultiplier),
+      miningSpeedMultiplier,
     divisor: canHarvestWithTool(tool, requirement) ? 30 : 100,
   }
 }
@@ -210,16 +228,13 @@ const normaliseAccumulatedWork = (accumulatedWork: number, requiredWork: number)
 const normaliseElapsedSecs = (elapsedSecs: number): number =>
   Number.isFinite(elapsedSecs) && elapsedSecs > 0 ? elapsedSecs : 0
 
-const normaliseMiningSpeedMultiplier = (multiplier: number): number =>
-  Number.isFinite(multiplier) && multiplier > 0 ? multiplier : 1
-
 export const advanceMiningProgress = ({
   current,
   target,
   isMining,
   selectedItem,
   efficiencyLevel = 0,
-  miningSpeedMultiplier = 1,
+  miningSpeedMultiplier = DEFAULT_MINING_SPEED_MULTIPLIER,
   deltaSecs,
 }: AdvanceMiningProgressInput): AdvanceMiningProgressResult => {
   if (!isMining || target === null) {
@@ -310,17 +325,19 @@ export const advanceMiningProgress = ({
   return { nextProgress, shouldBreak: completed }
 }
 
-export const miningProgressFraction = (progress: MiningProgressState | null): number => {
+export const miningProgressFraction = (
+  progress: MiningProgressState | null,
+): MiningProgressFraction => {
   if (progress === null) {
-    return 0
+    return miningProgressFractionOf(0)
   }
   if (progress.completed) {
-    return 1
+    return miningProgressFractionOf(1)
   }
   const hardness = hardnessOfMiningTarget(progress.blockId)
   if (hardness === 0) {
-    return 1
+    return miningProgressFractionOf(1)
   }
-  if (!Number.isFinite(hardness) || hardness < 0) return 0
-  return normaliseAccumulatedWork(progress.accumulatedWork, 1)
+  if (!Number.isFinite(hardness) || hardness < 0) return miningProgressFractionOf(0)
+  return miningProgressFractionOf(normaliseAccumulatedWork(progress.accumulatedWork, 1))
 }
