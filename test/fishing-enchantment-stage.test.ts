@@ -9,6 +9,7 @@ import {
   enchantmentsComponent,
   itemComponents,
   itemStack,
+  type BlockId,
 } from '@nerima-games/mc-kernel'
 import {
   DomainEventBus,
@@ -23,7 +24,6 @@ import {
   makeFishingService,
   makeTimeService,
   storageFromInventory,
-  type BlockId,
   type DomainEventBusApi,
   type EquipmentItem,
   type ProjectileLaunch,

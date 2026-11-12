@@ -693,7 +693,7 @@ describe('experience orb decisions', () => {
     expect(isExperienceOrbWithinAttractionRange(origin, origin)).toEqual(Result.succeed(true))
     expect(isExperienceOrbWithinAttractionRange(origin, {
       ...origin,
-      dimension: 'the_nether',
+      dimension: 'nether',
     })).toEqual(Result.succeed(false))
     expect(Result.isFailure(isExperienceOrbWithinAttractionRange(origin, {
       ...origin,
@@ -742,7 +742,7 @@ describe('experience orb decisions', () => {
     expect(EXPERIENCE_ORB_PICKUP_RADIUS_BLOCKS).toBe(1)
     expect(isExperienceOrbWithinPickupRange(origin, { ...origin, x: 1 })).toEqual(Result.succeed(true))
     expect(isExperienceOrbWithinPickupRange(origin, { ...origin, x: 1.0001 })).toEqual(Result.succeed(false))
-    expect(isExperienceOrbWithinPickupRange(origin, { ...origin, dimension: 'the_nether' }))
+    expect(isExperienceOrbWithinPickupRange(origin, { ...origin, dimension: 'nether' }))
       .toEqual(Result.succeed(false))
   })
 

@@ -21,6 +21,7 @@ import { CREEPER_KIND } from '../../src/domain/entities/mob-frame'
 import { COW_KIND } from '../../src/domain/mob/mob-ecosystem'
 import { ZOMBIE_KIND } from '../../src/domain/mob/hostile-combat'
 import { DroppedItemOwnerSnapshotSchema } from '../../src/domain/entities/dropped-item'
+import { ExperienceOrbOwnerSnapshotSchema } from '../../src/domain/entities/xp-orb'
 import {
   drainBlockUseResults,
   drainItemUseResults,
@@ -34,6 +35,7 @@ import {
 import {
   GAMEPLAY_ENTITIES_OWNER_ID,
   GAMEPLAY_DROPPED_ITEMS_OWNER_ID,
+  GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
   GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
   GAMEPLAY_VITALS_OWNER_ID,
   GameplayEntityRosterSchema,
@@ -184,9 +186,16 @@ describe('item use and combat through gameplay stages', () => {
       expect(dropped.state.items).toEqual(expect.arrayContaining([
         expect.objectContaining({ behaviour: expect.objectContaining({ item: 'rotten_flesh', count: expect.any(Number) }) }),
       ]))
-      expect(yield* Ref.get(slice.state.mobExperience)).toMatchObject([
-        { source: zombie.id, kind: ZOMBIE_KIND, amount: 5 },
-      ])
+      const experienceOrbs = yield* slice.commit.coordinator.snapshot(
+        GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
+        ExperienceOrbOwnerSnapshotSchema,
+      )
+      const collectedExperienceOrbPoints = experienceOrbs.state.orbs.reduce(
+        (total, orb) => total + Number(orb.value) * (orb.count ?? 1),
+        0,
+      )
+      expect(collectedExperienceOrbPoints).toBe(5)
+      expect(yield* Ref.get(slice.state.mobExperience)).toStrictEqual([])
     }),
   )
 

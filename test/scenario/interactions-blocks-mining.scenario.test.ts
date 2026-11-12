@@ -1,6 +1,7 @@
 import { describe, expect, it } from '@effect/vitest'
 import { AIR_BLOCK_ID, blockIdOf, DeltaTimeSecs, itemStack, StackCount } from '@nerima-games/mc-kernel'
 import { itemComponents } from '@nerima-games/mc-kernel/domain/item-components'
+import { enchantmentsComponent } from '@nerima-games/mc-kernel/domain/item-enchantments'
 import { Effect, Option, Ref, Result, Schema } from 'effect'
 import { cellKey, chunkKey, chunkOf, makeInMemoryWorld } from '../../src/domain/in-memory-world.js'
 import type { MobBehaviour } from '../../src/domain/entities/mob-frame'
@@ -118,9 +119,8 @@ describe('mining gameplay scenario', () => {
       const playerPose = yield* world.player.pose
       const dimension = yield* world.player.dimension
       const slots = [...emptySlots()]
-      const components = Result.getOrThrow(itemComponents('wooden_pickaxe', {
-        enchantments: { 'minecraft:efficiency': 1 },
-      }))
+      const enchantments = Result.getOrThrow(enchantmentsComponent({ 'minecraft:efficiency': 1 }))
+      const components = Result.getOrThrow(itemComponents('wooden_pickaxe', { enchantments }))
       slots[PICKAXE_SLOT.slotIndex] = Result.getOrThrow(itemStack('wooden_pickaxe', StackCount(1), {
         components,
       }))
