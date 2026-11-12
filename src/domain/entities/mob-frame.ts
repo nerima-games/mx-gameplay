@@ -1634,7 +1634,7 @@ export const planMobRosterSweep = (
 
 export type MobMovementRosterFailure = Readonly<{
   _tag: 'MobMovementRosterFailure'
-  reason: 'invalid-state' | 'invalid-goal' | 'invalid-position' | 'simulation-rejected' | 'step-failed'
+  reason: 'invalid-state' | 'invalid-goal' | 'simulation-rejected' | 'step-failed'
   entityId?: EntityId
   failure?: MobMovementFailure
 }>
@@ -1693,7 +1693,7 @@ export const planMobMovementRoster = (
   simulationTick: SimulationTickValue,
   dimension: Dimension,
 ): Result.Result<Readonly<{ roster: MobRoster }>, MobMovementRosterFailure> => {
-  const entries: Array<Readonly<{ entity: MobEntity; movement: MobMovementState; snapshot?: HostileMobSnapshot; ecosystem?: EcosystemMobState }>> = []
+  const entries: Array<Readonly<{ entity: MobEntity; movement: MobMovementState; snapshot?: HostileMobSnapshot; ecosystem: EcosystemMobState }>> = []
   for (const entity of roster.entities) {
     if (entity.dimension !== undefined && entity.dimension !== dimension) continue
     const snapshot = isHostileMobSnapshot(entity.behaviour) ? entity.behaviour : undefined
@@ -1720,10 +1720,14 @@ export const planMobMovementRoster = (
   if (simResult._tag === 'MobMovementRejected') {
     return Result.fail({ _tag: 'MobMovementRosterFailure', reason: 'simulation-rejected', failure: simResult.failure })
   }
-  const updated = new Map<EntityId, Readonly<{ movement: MobMovementState; feet: Position }>>()
+  const updated = new Map<MobEntity, Readonly<{
+    entry: (typeof entries)[number]
+    movement: MobMovementState
+    feet: Position
+  }>>()
   for (const [index, outcome] of simResult.outcomes.entries()) {
-    const entry = entries[index]
-    if (entry === undefined) continue
+    // mc-sim returns one outcome per supplied mob; entries built that same input array.
+    const entry = entries[index]!
     if (outcome._tag === 'MobStepFailed') {
       const pathFailure = outcome.failure._tag === 'MobMovementPathFailure' &&
         (outcome.failure.failure._tag === 'NoPath' ||
@@ -1732,30 +1736,26 @@ export const planMobMovementRoster = (
       if (!pathFailure) {
         return Result.fail({ _tag: 'MobMovementRosterFailure', reason: 'step-failed', entityId: entry.entity.id, failure: outcome.failure })
       }
-      updated.set(entry.entity.id, { movement: entry.movement, feet: entry.entity.feetPosition })
+      updated.set(entry.entity, { entry, movement: entry.movement, feet: entry.entity.feetPosition })
       continue
     }
     const feet = movementFeetPosition(outcome.state)
-    if (feet === undefined) {
-      return Result.fail({ _tag: 'MobMovementRosterFailure', reason: 'invalid-position', entityId: entry.entity.id })
-    }
-    updated.set(entry.entity.id, { movement: outcome.state, feet })
+    updated.set(entry.entity, { entry, movement: outcome.state, feet })
   }
 
   const entities = roster.entities.map((entity) => {
-    const next = updated.get(entity.id)
+    const next = updated.get(entity)
     if (next === undefined) return entity
-    const snapshot = isHostileMobSnapshot(entity.behaviour) ? entity.behaviour : undefined
-    const ecosystem = ecosystemStateForMovement(entity)
-    if (ecosystem === undefined) return entity
+    const { snapshot, ecosystem } = next.entry
+    const { movement, feet } = next
     const behaviour: MobBehaviour = snapshot !== undefined
-      ? { ...snapshot, movement: next.movement }
+      ? { ...snapshot, movement }
       : isFuse(entity.behaviour)
-        ? hostileMobSnapshot(entity.behaviour, { movement: next.movement })
-        : { ...ecosystem, movement: next.movement }
+        ? hostileMobSnapshot(entity.behaviour, { movement })
+        : { ...ecosystem, movement }
     return {
       ...entity,
-      feetPosition: next.feet,
+      feetPosition: feet,
       behaviour,
     }
   })

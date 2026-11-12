@@ -31,10 +31,8 @@ import {
 } from '../mob/mob-ecosystem.js'
 import { ZOMBIE_KIND } from '../mob/hostile-combat.js'
 
-const BEDROCK_ID = Option.getOrUndefined(blockIdOf('bedrock'))
-const BEDROCK_BLOCK = BEDROCK_ID === undefined
-  ? undefined
-  : Result.getOrUndefined(resolvedBlockOfId(BEDROCK_ID))
+// Bedrock is part of the kernel registry; this module uses it as the unreadable-cell fallback.
+const BEDROCK_BLOCK = Result.getOrThrow(resolvedBlockOfId(Option.getOrThrow(blockIdOf('bedrock'))))!
 
 type PhysicsBlockShapeAt = NonNullable<MobMovementWorldPort['physics']['blockShapeAt']>
 type PhysicsBlockShapeResult = ReturnType<PhysicsBlockShapeAt>
@@ -68,12 +66,10 @@ const blockShape = (shape: CollisionShape): PhysicsBlockShapeResult => {
       return localBox(0, 0, 0, 1, 1 / 16, 1)
     case 'none':
       return null
-    default:
-      return localBox(0, 0, 0, 1, 1, 1)
   }
 }
 
-const profileForKind = (kind: EntityKind): MobPathProfile | undefined => {
+const profileForKind = (kind: EntityKind): MobPathProfile => {
   const [width, height] = kind === SPIDER_KIND
     ? [1.4, 0.9]
     : kind === CHICKEN_KIND
@@ -84,14 +80,11 @@ const profileForKind = (kind: EntityKind): MobPathProfile | undefined => {
           ? [0.9, 0.9]
           : kind === ZOMBIE_KIND || kind === 'skeleton' || kind === 'zombified_piglin'
             ? [0.6, 1.95]
-            : kind === 'enderman'
-              ? [0.6, 2.9]
-              : [0.6, 1.8]
+            : [0.6, 1.8]
   const raw = kind === SPIDER_KIND
     ? { kind: 'spider', width, height }
     : { kind: 'ground', width, height, canJump: true }
-  const decoded = Schema.decodeUnknownResult(MobPathProfileSchema)(raw)
-  return Result.isSuccess(decoded) ? decoded.success : undefined
+  return Schema.decodeUnknownSync(MobPathProfileSchema)(raw)
 }
 
 const pathCellAt = (value: Position): MobPathCell | undefined => {
@@ -111,13 +104,13 @@ export const initialMobMovementState = (
 ): MobMovementState | undefined => {
   const profile = profileForKind(kind)
   const goalCell = pathCellAt(goal)
-  if (profile === undefined || goalCell === undefined) return undefined
+  if (goalCell === undefined) return undefined
   const speed = kind === SPIDER_KIND
     ? 3
     : PASSIVE_MOB_KINDS.some((passiveKind) => passiveKind === kind)
       ? 1.25
       : 2.5
-  const decoded = Schema.decodeUnknownResult(MobMovementStateSchema)({
+  return Schema.decodeUnknownSync(MobMovementStateSchema)({
     id,
     body: {
       kind: 'dynamic',
@@ -136,7 +129,6 @@ export const initialMobMovementState = (
     isGrounded: false,
     movementSpeed: speed,
   })
-  return Result.isSuccess(decoded) ? decoded.success : undefined
 }
 
 export const movementStateForGoal = (
@@ -146,22 +138,21 @@ export const movementStateForGoal = (
   const goalCell = pathCellAt(goal)
   if (goalCell === undefined) return undefined
   if (state.goal.x === goalCell.x && state.goal.y === goalCell.y && state.goal.z === goalCell.z) return state
-  const decoded = Schema.decodeUnknownResult(MobMovementStateSchema)({
+  return Schema.decodeUnknownSync(MobMovementStateSchema)({
     ...state,
     goal: goalCell,
     path: [],
     pathIndex: 0,
     stuckTicks: 0,
   })
-  return Result.isSuccess(decoded) ? decoded.success : undefined
 }
 
-export const movementFeetPosition = (state: MobMovementState): Position | undefined => {
-  const x = PositionAxis.result(state.body.x)
-  const y = PositionAxis.result(state.body.y - state.profile.height / 2)
-  const z = PositionAxis.result(state.body.z)
-  if (Result.isFailure(x) || Result.isFailure(y) || Result.isFailure(z)) return undefined
-  return position(x.success, y.success, z.success)
+export const movementFeetPosition = (state: MobMovementState): Position => {
+  return position(
+    PositionAxis(state.body.x),
+    PositionAxis(state.body.y - state.profile.height / 2),
+    PositionAxis(state.body.z),
+  )
 }
 
 const rawBlockAt = (window: ChunkWindow, x: BlockAxis, y: BlockAxis, z: BlockAxis): BlockId | undefined => {
@@ -191,9 +182,8 @@ const hazardsAt = (window: ChunkWindow, cell: MobPathCell): 'water' | 'lava' | '
 /** Build an SM3 world over loaded chunks. Unreadable cells block movement and collision. */
 export const mobMovementWorldFromChunkWindow = (
   window: ChunkWindow,
-): MobMovementWorldPort | undefined => {
+): MobMovementWorldPort => {
   const solidFallback = BEDROCK_BLOCK
-  if (solidFallback === undefined) return undefined
   const blockAt = (x: BlockAxis, y: BlockAxis, z: BlockAxis) => {
     const block = resolvedAt(window, x, y, z) ?? solidFallback
     return Result.succeed({ properties: block.properties, capabilities: block.capabilities })

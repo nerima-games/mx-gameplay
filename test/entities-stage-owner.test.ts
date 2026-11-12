@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import * as fc from 'fast-check'
-import { Effect, Option, Ref, Result, Schema } from 'effect'
+import { Cause, Effect, Option, Ref, Result, Schema, Stream } from 'effect'
 import { MIN_SPAWN_DISTANCE_BLOCKS, SkyLightLevel } from '../src/domain/mob/hostile-spawn'
 import { SPAWN_RING_ANGLES, SPAWN_RING_RADIUS_INSET_BLOCKS } from '../src/domain/entities/mob-spawn-search'
 import {
@@ -13,11 +13,13 @@ import {
   EntitySerial,
   InterpolationFraction,
   PositionAxis,
+  ProjectileIdSchema,
   RandomSeed,
   SimulationTick,
   StackCount,
   WorldRevisionSchema,
   WorldIdSchema,
+  WorldPositionSchema,
   blockIdOf,
   blockPosition,
   blockPositionKeyOf,
@@ -30,14 +32,20 @@ import {
   EntityKind,
   emptyPlayerStorage,
   equipmentItem,
+  ARROW_PROFILE,
   makeEntityManager,
+  makeProjectileService,
   makeReplicatedOwnerId,
   makeTntService,
   makeTimeService,
   makeWorldCommitCoordinator,
+  DomainEventBus,
   durability,
   PlayerServiceSnapshotSchema,
   PlayerStorageSnapshotSchema,
+  ProjectileServiceSnapshotSchema,
+  MobMovementStateSchema,
+  PROJECTILE_REPLICATED_OWNER_ID,
   TntServiceSnapshotSchema,
   TNT_REPLICATED_OWNER_ID,
   WorldCommitCoordinator,
@@ -46,6 +54,7 @@ import {
   itemStack,
   type PlayerPose,
   type PlayerStorage,
+  type DomainEventBusApi,
   type TntServiceSnapshot,
   type Vitals,
   type WorldCommitCoordinatorApi,
@@ -86,7 +95,7 @@ import {
   planMobRosterSweep,
   rollCasualtyDrops,
 } from '../src/domain/entities/mob-frame.js'
-import { BLAZE_KIND, initialEcosystemMobState, SKELETON_KIND } from '../src/domain/mob/mob-ecosystem.js'
+import { BLAZE_KIND, initialEcosystemMobState, SKELETON_KIND, SPIDER_KIND } from '../src/domain/mob/mob-ecosystem.js'
 import { ZOMBIE_KIND } from '../src/domain/mob/hostile-combat.js'
 import { COW_KIND } from '../src/domain/mob/mob-ecosystem.js'
 import {
@@ -187,6 +196,17 @@ const makeHarness = (options: Readonly<{
   readonly vitals?: Vitals
   readonly experienceOrbs?: ExperienceOrbOwnerSnapshot
   readonly tnt?: TntServiceSnapshot
+  readonly projectileService?: boolean
+  readonly armSnapshotMismatchAfterProjectileSnapshot?: Readonly<{
+    readonly snapshotNumber: number
+    readonly ownerId: ReturnType<typeof makeReplicatedOwnerId>
+    readonly count?: number
+  }>
+  readonly mismatchSnapshotAt?: Readonly<{
+    readonly snapshotNumber: number
+    readonly ownerId: ReturnType<typeof makeReplicatedOwnerId>
+    readonly count?: number
+  }>
 }> = {}) => Effect.gen(function* () {
   const entities = options.entities ?? (options.entity === null ? [] : [options.entity ?? creeperAt(3)])
   const playerPose = options.playerPose ?? (entities[0]?.feetPosition.y === 64
@@ -226,11 +246,15 @@ const makeHarness = (options: Readonly<{
   let tntSnapshotCommits = 0
   let lastRequest: WorldCommitRequest | undefined
   let mismatchNextSnapshotOwnerId: ReturnType<typeof makeReplicatedOwnerId> | undefined
+  let mismatchSnapshotsRemaining = 0
   let mismatchedSnapshots = 0
+  const snapshotsByOwner = new Map<ReturnType<typeof makeReplicatedOwnerId>, number>()
   const coordinator: WorldCommitCoordinatorApi = {
     ...baseCoordinator,
-    snapshot: <Codec extends Schema.Codec<any, any>>(ownerId: ReturnType<typeof makeReplicatedOwnerId>, schema: Codec) =>
-      baseCoordinator.snapshot(ownerId, schema).pipe(Effect.flatMap((snapshot) => {
+    snapshot: <Codec extends Schema.Codec<any, any>>(ownerId: ReturnType<typeof makeReplicatedOwnerId>, schema: Codec) => {
+      const snapshotNumber = (snapshotsByOwner.get(ownerId) ?? 0) + 1
+      snapshotsByOwner.set(ownerId, snapshotNumber)
+      return baseCoordinator.snapshot(ownerId, schema).pipe(Effect.flatMap((snapshot) => {
         if (
           options.synthesizeShieldStorageSnapshot === true &&
           ownerId === GAMEPLAY_PLAYER_STORAGE_OWNER_ID &&
@@ -254,11 +278,18 @@ const makeHarness = (options: Readonly<{
             } as typeof snapshot.state,
           })
         }
-        if (ownerId !== mismatchNextSnapshotOwnerId) {
+        const armedMismatch = ownerId === mismatchNextSnapshotOwnerId && mismatchSnapshotsRemaining > 0
+        const scheduledMismatch = options.mismatchSnapshotAt?.ownerId === ownerId &&
+          snapshotNumber >= options.mismatchSnapshotAt.snapshotNumber &&
+          snapshotNumber < options.mismatchSnapshotAt.snapshotNumber + (options.mismatchSnapshotAt.count ?? 1)
+        if (!armedMismatch && !scheduledMismatch) {
           return Effect.succeed(snapshot)
         }
-        mismatchNextSnapshotOwnerId = undefined
         mismatchedSnapshots += 1
+        if (armedMismatch) {
+          mismatchSnapshotsRemaining -= 1
+          if (mismatchSnapshotsRemaining === 0) mismatchNextSnapshotOwnerId = undefined
+        }
         const snapshotSchema = Schema.Struct({
           world: WorldIdSchema,
           revision: WorldRevisionSchema,
@@ -270,7 +301,8 @@ const makeHarness = (options: Readonly<{
             revision: revision + 1,
           }),
         ))
-      })),
+      }))
+    },
     commit: (request) => {
       commits += 1
       lastRequest = request
@@ -306,6 +338,33 @@ const makeHarness = (options: Readonly<{
       return tntServiceBase.commitDetonation(reference, affectedEntityChanges)
     },
   }
+  const eventBus: DomainEventBusApi = {
+    publish: () => Effect.void,
+    events: Stream.empty,
+  }
+  const baseProjectileService = options.projectileService === true
+    ? yield* makeProjectileService().pipe(
+      Effect.provideService(WorldCommitCoordinator, coordinator),
+      Effect.provideService(DomainEventBus, eventBus),
+    )
+    : undefined
+  let projectileSnapshotReads = 0
+  const projectileService = baseProjectileService === undefined
+    ? undefined
+    : {
+        ...baseProjectileService,
+        get snapshot() {
+          projectileSnapshotReads += 1
+          const snapshotEffect = baseProjectileService.snapshot
+          const mismatch = options.armSnapshotMismatchAfterProjectileSnapshot
+          if (mismatch?.snapshotNumber !== projectileSnapshotReads) return snapshotEffect
+          return snapshotEffect.pipe(Effect.map((snapshot) => {
+            mismatchNextSnapshotOwnerId = mismatch.ownerId
+            mismatchSnapshotsRemaining = mismatch.count ?? 1
+            return snapshot
+          }))
+        },
+      }
   const context: GameplayStageContext = {
     state,
     store: observedStoreApi,
@@ -324,6 +383,11 @@ const makeHarness = (options: Readonly<{
       entitiesOwnerId: GAMEPLAY_ENTITIES_OWNER_ID,
       tntSourcesOwnerId: GAMEPLAY_TNT_SOURCES_OWNER_ID,
       tntOwnerId: TNT_REPLICATED_OWNER_ID,
+      ...(projectileService === undefined ? {} : {
+        projectileOwnerId: PROJECTILE_REPLICATED_OWNER_ID,
+        projectileService,
+        eventBus,
+      }),
       ...(options.provideTntService === false ? {} : { tntService }),
     },
   }
@@ -332,11 +396,13 @@ const makeHarness = (options: Readonly<{
     state,
     store,
     coordinator,
+    time,
     stage: makeEntitiesStage(context),
     commits: () => commits,
     rejectCommits: (reject: boolean) => { rejectCommits = reject },
-    mismatchNextSnapshot: (ownerId: ReturnType<typeof makeReplicatedOwnerId>) => {
+    mismatchNextSnapshot: (ownerId: ReturnType<typeof makeReplicatedOwnerId>, count = 1) => {
       mismatchNextSnapshotOwnerId = ownerId
+      mismatchSnapshotsRemaining = count
     },
     mismatchedSnapshots: () => mismatchedSnapshots,
     tntCommits: () => tntCommits,
@@ -371,7 +437,197 @@ const makeMobBlastHarness = async () => {
 const strictRoster = (coordinator: WorldCommitCoordinatorApi) =>
   coordinator.snapshot(GAMEPLAY_ENTITIES_OWNER_ID, GameplayEntityRosterSchema)
 
+const seedPendingMobProjectileImpact = async (
+  coordinator: WorldCommitCoordinatorApi,
+  impact: Readonly<{
+    readonly kind?: typeof BLAZE_KIND | typeof SKELETON_KIND
+    readonly entityId?: ReturnType<typeof EntityId>
+    readonly point?: ReturnType<typeof position>
+  }> = {},
+) => {
+  const snapshot = await Effect.runPromise(strictRoster(coordinator))
+  const projectileId = Schema.decodeUnknownSync(ProjectileIdSchema)(
+    'mx-gameplay:mob:arrow:test:skeleton:1',
+  )
+  const point = Schema.decodeUnknownSync(WorldPositionSchema)({
+    dimension: 'overworld',
+    x: impact.point?.x ?? 0,
+    y: impact.point?.y ?? 64,
+    z: impact.point?.z ?? 0,
+  })
+  const state = Schema.decodeUnknownSync(GameplayEntityRosterSchema)({
+    ...snapshot.state,
+    pendingMobProjectileImpacts: [{
+      id: projectileId,
+      source: EntityId(impact.kind === BLAZE_KIND ? 'test:blaze' : 'test:skeleton'),
+      kind: impact.kind ?? SKELETON_KIND,
+      hit: {
+        kind: 'entity',
+        entityId: impact.entityId ?? EntityId('mx-gameplay:player-avatar'),
+        point,
+      },
+    }],
+  })
+  await Effect.runPromise(coordinator.commit({
+    expectedRevision: snapshot.revision,
+    expectedDimensions: [],
+    changes: [{ ownerId: GAMEPLAY_ENTITIES_OWNER_ID, state }],
+  }))
+  return projectileId
+}
+
+const seedExpiredMobProjectile = async (
+  coordinator: WorldCommitCoordinatorApi,
+  withExplicitEmptyPending: boolean,
+  markResolved = false,
+) => {
+  const entities = await Effect.runPromise(strictRoster(coordinator))
+  const projectileId = Schema.decodeUnknownSync(ProjectileIdSchema)(
+    'mx-gameplay:mob:arrow:test:0',
+  )
+  const source = EntityId('test:skeleton')
+  const state = Schema.decodeUnknownSync(GameplayEntityRosterSchema)({
+    ...entities.state,
+    ...(withExplicitEmptyPending
+      ? {
+          resolvedMobProjectileIds: markResolved ? [projectileId] : [],
+          pendingMobProjectileImpacts: [],
+        }
+      : {}),
+  })
+  const projectiles = Schema.decodeUnknownSync(ProjectileServiceSnapshotSchema)({
+    projectiles: [{
+      id: projectileId,
+      dimension: 'overworld',
+      shooter: source,
+      kind: 'projectile',
+      profile: ARROW_PROFILE,
+      projectile: {
+        state: 'despawned',
+        reason: 'lifetime',
+        position: position(PositionAxis(8), PositionAxis(64), PositionAxis(0)),
+        velocity: { x: 0, y: 0, z: 0 },
+        ageSeconds: 3,
+        shooterId: source,
+      },
+    }],
+  })
+  await Effect.runPromise(coordinator.commit({
+    expectedRevision: entities.revision,
+    expectedDimensions: [],
+    changes: [
+      { ownerId: GAMEPLAY_ENTITIES_OWNER_ID, state },
+      { ownerId: PROJECTILE_REPLICATED_OWNER_ID, state: projectiles },
+    ],
+  }))
+  return projectileId
+}
+
+const seedFlyingMobProjectile = async (
+  coordinator: WorldCommitCoordinatorApi,
+  id: string,
+  at: ReturnType<typeof position>,
+  velocity: Readonly<{ x: number; y: number; z: number }>,
+) => {
+  const entities = await Effect.runPromise(strictRoster(coordinator))
+  const source = EntityId('test:skeleton')
+  const projectiles = Schema.decodeUnknownSync(ProjectileServiceSnapshotSchema)({
+    projectiles: [{
+      id: Schema.decodeUnknownSync(ProjectileIdSchema)(id),
+      dimension: 'overworld',
+      shooter: source,
+      kind: 'projectile',
+      profile: ARROW_PROFILE,
+      projectile: {
+        state: 'flying',
+        position: at,
+        velocity,
+        ageSeconds: 0,
+        shooterId: source,
+      },
+    }],
+  })
+  await Effect.runPromise(coordinator.commit({
+    expectedRevision: entities.revision,
+    expectedDimensions: [],
+    changes: [{ ownerId: PROJECTILE_REPLICATED_OWNER_ID, state: projectiles }],
+  }))
+}
+
+const unsafeMovementX = 2 ** 53
+
+const spiderAtUnsafeMovementX = (movement?: Schema.Schema.Type<typeof MobMovementStateSchema>): MobEntity => ({
+  id: EntityId('test:spider'),
+  kind: SPIDER_KIND,
+  feetPosition: position(PositionAxis(unsafeMovementX), PositionAxis(64), PositionAxis(0)),
+  healthPoints: EntityHealthPoints(16),
+  behaviour: hostileMobSnapshot({
+    ...initialEcosystemMobState(),
+    attackCooldownTicks: 2,
+  }, movement === undefined ? {} : { movement }),
+})
+
 describe('entities stage owner-backed MobSimulation', () => {
+  it.each([
+    ['invalid-state', undefined],
+    ['invalid-goal', 'previous-movement'],
+  ] as const)('rejects a real movement tick with %s at an unsafe finite goal', async (reason, previousMovement) => {
+    const spider = spiderAtUnsafeMovementX()
+    const movement = previousMovement === undefined
+      ? undefined
+      : Schema.decodeUnknownSync(MobMovementStateSchema)({
+          id: spider.id,
+          body: {
+            kind: 'dynamic',
+            x: unsafeMovementX,
+            y: 64.45,
+            z: 0,
+            vx: 0,
+            vy: 0,
+            vz: 0,
+          },
+          profile: { kind: 'spider', width: 1.4, height: 0.9 },
+          goal: { x: 0, y: 64, z: 0 },
+          path: [],
+          pathIndex: 0,
+          stuckTicks: 0,
+          isGrounded: false,
+          movementSpeed: 3,
+        })
+    const entity = spiderAtUnsafeMovementX(movement)
+    const playerPose = {
+      ...INITIAL_PLAYER_POSE,
+      feetPosition: position(PositionAxis(unsafeMovementX), PositionAxis(66), PositionAxis(0)),
+    }
+    const harness = await Effect.runPromise(makeHarness({ entity, playerPose }))
+    const rosterBefore = await Effect.runPromise(strictRoster(harness.coordinator))
+    const playerBefore = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_PLAYER_OWNER_ID,
+      PlayerServiceSnapshotSchema,
+    ))
+    const revisionBefore = await Effect.runPromise(harness.coordinator.revision)
+
+    expect(Number.isFinite(unsafeMovementX)).toBe(true)
+    expect(Number.isSafeInteger(unsafeMovementX)).toBe(false)
+    expect(rosterBefore.state.entities[0]?.feetPosition.x).toBe(unsafeMovementX)
+    expect(playerBefore.state.pose.feetPosition.x).toBe(unsafeMovementX)
+    expect(playerBefore.state.pose.feetPosition.y).toBe(66)
+
+    const exit = await Effect.runPromiseExit(
+      harness.stage.run(makeDeltaTimeSecs(0.05)).pipe(Effect.provide(FrameServicesLayer)),
+    )
+
+    if (exit._tag !== 'Failure') throw new Error('Expected the movement planner to reject the unsafe goal')
+    expect(Cause.squash(exit.cause)).toMatchObject({
+      _tag: 'MobMovementRosterFailure',
+      reason,
+      entityId: EntityId('test:spider'),
+    })
+    expect(harness.commits()).toBe(0)
+    expect(await Effect.runPromise(strictRoster(harness.coordinator))).toStrictEqual(rosterBefore)
+    expect(await Effect.runPromise(harness.coordinator.revision)).toBe(revisionBefore)
+  })
+
   it('commits the registered entity owner exactly once across generated frame deltas', async () => {
     await fc.assert(
       fc.asyncProperty(fc.integer({ min: 1, max: 10 }), async (ticks) => {
@@ -1137,6 +1393,587 @@ describe('entities stage owner-backed MobSimulation', () => {
     ))).toStrictEqual(vitalsBefore)
     expect(await Effect.runPromise(harness.coordinator.revision)).toBe(revisionBefore)
     expect(await Effect.runPromise(Ref.get(harness.state.playerDamages))).toStrictEqual([])
+  })
+
+  it('rejects mob projectile preparation when entity and projectile revisions differ', async () => {
+    const harness = await Effect.runPromise(makeHarness({
+      entity: null,
+      projectileService: true,
+      armSnapshotMismatchAfterProjectileSnapshot: {
+        snapshotNumber: 2,
+        ownerId: GAMEPLAY_ENTITIES_OWNER_ID,
+      },
+    }))
+    await seedPendingMobProjectileImpact(harness.coordinator)
+    const entitiesBefore = await Effect.runPromise(strictRoster(harness.coordinator))
+    const projectilesBefore = await Effect.runPromise(harness.coordinator.snapshot(
+      PROJECTILE_REPLICATED_OWNER_ID,
+      ProjectileServiceSnapshotSchema,
+    ))
+    const revisionBefore = await Effect.runPromise(harness.coordinator.revision)
+    const commitsBefore = harness.commits()
+
+    const exit = await Effect.runPromiseExit(
+      harness.stage.run(makeDeltaTimeSecs(0.05)).pipe(Effect.provide(FrameServicesLayer)),
+    )
+
+    if (exit._tag !== 'Failure') throw new Error('Expected the stage to reject mismatched owner revisions')
+    expect(Cause.squash(exit.cause)).toBeInstanceOf(WorldRevisionConflict)
+    expect(harness.mismatchedSnapshots()).toBe(1)
+    expect(harness.commits()).toBe(commitsBefore)
+    expect(await Effect.runPromise(strictRoster(harness.coordinator))).toStrictEqual(entitiesBefore)
+    expect(await Effect.runPromise(harness.coordinator.snapshot(
+      PROJECTILE_REPLICATED_OWNER_ID,
+      ProjectileServiceSnapshotSchema,
+    ))).toStrictEqual(projectilesBefore)
+    expect(await Effect.runPromise(harness.coordinator.revision)).toBe(revisionBefore)
+  })
+
+  it('rejects mob projectile resolution when projectile and entity revisions differ', async () => {
+    const harness = await Effect.runPromise(makeHarness({
+      entity: null,
+      projectileService: true,
+      armSnapshotMismatchAfterProjectileSnapshot: {
+        snapshotNumber: 2,
+        ownerId: PROJECTILE_REPLICATED_OWNER_ID,
+        count: 3,
+      },
+    }))
+    await seedPendingMobProjectileImpact(harness.coordinator)
+    const entitiesBefore = await Effect.runPromise(strictRoster(harness.coordinator))
+    const projectilesBefore = await Effect.runPromise(harness.coordinator.snapshot(
+      PROJECTILE_REPLICATED_OWNER_ID,
+      ProjectileServiceSnapshotSchema,
+    ))
+    const revisionBefore = await Effect.runPromise(harness.coordinator.revision)
+    const commitsBefore = harness.commits()
+
+    const exit = await Effect.runPromiseExit(
+      harness.stage.run(makeDeltaTimeSecs(0.05)).pipe(Effect.provide(FrameServicesLayer)),
+    )
+
+    if (exit._tag !== 'Failure') throw new Error('Expected the stage to reject mismatched owner revisions')
+    expect(Cause.squash(exit.cause)).toBeInstanceOf(WorldRevisionConflict)
+    expect(harness.mismatchedSnapshots()).toBe(3)
+    expect(harness.commits()).toBe(commitsBefore)
+    expect(await Effect.runPromise(strictRoster(harness.coordinator))).toStrictEqual(entitiesBefore)
+    expect(await Effect.runPromise(harness.coordinator.snapshot(
+      PROJECTILE_REPLICATED_OWNER_ID,
+      ProjectileServiceSnapshotSchema,
+    ))).toStrictEqual(projectilesBefore)
+    expect(await Effect.runPromise(harness.coordinator.revision)).toBe(revisionBefore)
+  })
+
+  it('consumes a saved projectile impact after its target has left the roster', async () => {
+    const harness = await Effect.runPromise(makeHarness({ entity: null, projectileService: true }))
+    const staleTarget = EntityId('test:despawned-target')
+    const projectileId = await seedPendingMobProjectileImpact(harness.coordinator, {
+      kind: BLAZE_KIND,
+      entityId: staleTarget,
+    })
+
+    await harness.run(makeDeltaTimeSecs(0.05))
+
+    const roster = await Effect.runPromise(strictRoster(harness.coordinator))
+    expect(roster.state.entities.map(({ id }) => id)).not.toContain(staleTarget)
+    expect(roster.state.pendingMobProjectileImpacts ?? []).toStrictEqual([])
+    expect(roster.state.resolvedMobProjectileIds).toContain(projectileId)
+    expect(await Effect.runPromise(Ref.get(harness.state.playerDamages))).toStrictEqual([])
+    expect(await Effect.runPromise(Ref.get(harness.state.fireLifecycle))).toMatchObject({ fires: [] })
+  })
+
+  it('keeps undead protected when their chunk and skylight are unavailable', async () => {
+    const lightReads: Array<Readonly<{ x: number; y: number; z: number }>> = []
+    const skeleton: MobEntity = {
+      ...ecosystemMobAt('test:unloaded-skeleton', SKELETON_KIND, 8, 64),
+      dimension: 'overworld',
+    }
+    const harness = await Effect.runPromise(makeHarness({
+      entity: null,
+      entities: [skeleton],
+      loadedChunks: [],
+      onLightRead: (at) => lightReads.push(at),
+    }))
+    await Effect.runPromise(harness.time.setTimeOfDay(InterpolationFraction(0.5)))
+
+    await harness.run(makeDeltaTimeSecs(0.05))
+
+    const roster = await Effect.runPromise(strictRoster(harness.coordinator))
+    expect(lightReads).toContainEqual({ x: 8, y: 65, z: 0 })
+    expect(roster.state.entities[0]?.healthPoints).toBe(20)
+    expect(roster.state.entities[0]?.behaviour).toMatchObject({
+      behaviour: { burningTicks: 0 },
+    })
+  })
+
+  it('records an unavailable projectile owner when its registration is unknown', async () => {
+    const harness = await Effect.runPromise(makeHarness({ entity: null }))
+    const context: GameplayStageContext = {
+      ...harness.context,
+      commit: {
+        ...harness.context.commit!,
+        projectileOwnerId: makeReplicatedOwnerId('test:unknown-projectile-owner'),
+      },
+    }
+
+    await Effect.runPromise(makeEntitiesStage(context).run(makeDeltaTimeSecs(0.05)).pipe(
+      Effect.provide(FrameServicesLayer),
+    ))
+
+    expect(await Effect.runPromise(drainGameplayUnsupportedOperations(harness.state))).toContainEqual(
+      expect.objectContaining({ action: 'MobSimulation', reason: 'OwnerRegistrationUnavailable' }),
+    )
+  })
+
+  it('propagates a non-unknown projectile owner snapshot failure', async () => {
+    const harness = await Effect.runPromise(makeHarness({ entity: null }))
+    const context: GameplayStageContext = {
+      ...harness.context,
+      commit: {
+        ...harness.context.commit!,
+        projectileOwnerId: GAMEPLAY_VITALS_OWNER_ID,
+      },
+    }
+
+    const exit = await Effect.runPromiseExit(makeEntitiesStage(context).run(makeDeltaTimeSecs(0.05)).pipe(
+      Effect.provide(FrameServicesLayer),
+    ))
+
+    expect(exit._tag).toBe('Failure')
+  })
+
+  it('does not report a resolved projectile as outstanding without its service', async () => {
+    const harness = await Effect.runPromise(makeHarness({ entity: null, projectileService: true }))
+    await seedExpiredMobProjectile(harness.coordinator, true, true)
+    const { projectileService: registeredService, eventBus: registeredEventBus, ...commitWithoutService } =
+      harness.context.commit!
+    void registeredService
+    void registeredEventBus
+    const context: GameplayStageContext = {
+      ...harness.context,
+      commit: commitWithoutService,
+    }
+
+    await Effect.runPromise(makeEntitiesStage(context).run(makeDeltaTimeSecs(0.05)).pipe(
+      Effect.provide(FrameServicesLayer),
+    ))
+
+    expect(await Effect.runPromise(drainGameplayUnsupportedOperations(harness.state))).toStrictEqual([])
+  })
+
+  it('fails closed when projectile support has no dropped item owner', async () => {
+    const harness = await Effect.runPromise(makeHarness({ entity: null, projectileService: true }))
+    await seedPendingMobProjectileImpact(harness.coordinator, { entityId: EntityId('test:despawned-target') })
+    const { droppedItemsOwnerId: omittedOwner, ...commitWithoutDroppedItemsOwner } = harness.context.commit!
+    void omittedOwner
+    const context: GameplayStageContext = {
+      ...harness.context,
+      commit: commitWithoutDroppedItemsOwner,
+    }
+
+    await Effect.runPromise(makeEntitiesStage(context).run(makeDeltaTimeSecs(0.05)).pipe(
+      Effect.provide(FrameServicesLayer),
+    ))
+
+    expect(await Effect.runPromise(drainGameplayUnsupportedOperations(harness.state))).toContainEqual(
+      expect.objectContaining({ action: 'MobSimulation', reason: 'OwnerRegistrationUnavailable' }),
+    )
+  })
+
+  it('records an unknown preflight owner as unsupported projectile simulation', async () => {
+    const harness = await Effect.runPromise(makeHarness({ entity: null, projectileService: true }))
+    await seedPendingMobProjectileImpact(harness.coordinator, { entityId: EntityId('test:despawned-target') })
+    const context: GameplayStageContext = {
+      ...harness.context,
+      commit: {
+        ...harness.context.commit!,
+        droppedItemsOwnerId: makeReplicatedOwnerId('test:unknown-dropped-items-owner'),
+      },
+    }
+
+    await Effect.runPromise(makeEntitiesStage(context).run(makeDeltaTimeSecs(0.05)).pipe(
+      Effect.provide(FrameServicesLayer),
+    ))
+
+    expect(await Effect.runPromise(drainGameplayUnsupportedOperations(harness.state))).toContainEqual(
+      expect.objectContaining({ action: 'MobSimulation', reason: 'OwnerRegistrationUnavailable' }),
+    )
+  })
+
+  it('propagates a non-unknown projectile preflight failure', async () => {
+    const harness = await Effect.runPromise(makeHarness({ entity: null, projectileService: true }))
+    await seedPendingMobProjectileImpact(harness.coordinator, { entityId: EntityId('test:despawned-target') })
+    const context: GameplayStageContext = {
+      ...harness.context,
+      commit: {
+        ...harness.context.commit!,
+        droppedItemsOwnerId: GAMEPLAY_VITALS_OWNER_ID,
+      },
+    }
+
+    const exit = await Effect.runPromiseExit(makeEntitiesStage(context).run(makeDeltaTimeSecs(0.05)).pipe(
+      Effect.provide(FrameServicesLayer),
+    ))
+
+    expect(exit._tag).toBe('Failure')
+  })
+
+  it('retires expired mob projectiles with omitted and explicit empty pending lists', async () => {
+    for (const withExplicitEmptyPending of [false, true]) {
+      const harness = await Effect.runPromise(makeHarness({ entity: null, projectileService: true }))
+      const projectileId = await seedExpiredMobProjectile(harness.coordinator, withExplicitEmptyPending)
+
+      await harness.run(makeDeltaTimeSecs(0.05))
+
+      const projectiles = await Effect.runPromise(harness.coordinator.snapshot(
+        PROJECTILE_REPLICATED_OWNER_ID,
+        ProjectileServiceSnapshotSchema,
+      ))
+      const roster = await Effect.runPromise(strictRoster(harness.coordinator))
+      expect(projectiles.state.projectiles).toStrictEqual([])
+      expect(roster.state.resolvedMobProjectileIds ?? []).not.toContain(projectileId)
+      if (withExplicitEmptyPending) {
+        expect(harness.lastRequest()?.changes.map(({ ownerId }) => ownerId)).toStrictEqual([
+          PROJECTILE_REPLICATED_OWNER_ID,
+        ])
+      }
+    }
+  })
+
+  it('does not launch an arrow from a skeleton killed by a same-tick creeper blast', async () => {
+    const creeper: MobEntity = {
+      ...creeperAt(3, 64),
+      behaviour: { _tag: 'Lit', burnedSecs: 1.49 },
+    }
+    const skeleton: MobEntity = {
+      ...ecosystemMobAt('test:blast-killed-skeleton', SKELETON_KIND, 8, 64),
+      healthPoints: EntityHealthPoints(1),
+    }
+    const spider: MobEntity = {
+      id: EntityId('test:movement-tick-spider'),
+      kind: SPIDER_KIND,
+      feetPosition: position(PositionAxis(12), PositionAxis(64), PositionAxis(0)),
+      healthPoints: EntityHealthPoints(16),
+      behaviour: hostileMobSnapshot(initialEcosystemMobState()),
+    }
+    const loadedChunks = [-2, -1, 0, 1, 2].flatMap((chunkX) =>
+      [-2, -1, 0, 1, 2].map((chunkZ) => `${String(chunkX)},${String(chunkZ)}`),
+    )
+    const harness = await Effect.runPromise(makeHarness({
+      entity: null,
+      entities: [creeper, skeleton, spider],
+      loadedChunks,
+      playerPose: {
+        ...INITIAL_PLAYER_POSE,
+        feetPosition: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
+      },
+      projectileService: true,
+    }))
+    await Effect.runPromise(Ref.set(harness.state.rollSeed, RandomSeed(3)))
+
+    await harness.run(makeDeltaTimeSecs(0.02))
+
+    const roster = await Effect.runPromise(strictRoster(harness.coordinator))
+    const projectiles = await Effect.runPromise(harness.coordinator.snapshot(
+      PROJECTILE_REPLICATED_OWNER_ID,
+      ProjectileServiceSnapshotSchema,
+    ))
+    const afterSpider = roster.state.entities.find(({ id }) => id === spider.id)
+    expect(roster.state.entities.map(({ id }) => id)).not.toContain(skeleton.id)
+    expect(projectiles.state.projectiles).toStrictEqual([])
+    expect(afterSpider?.behaviour).toMatchObject({ _tag: 'HostileMob', movement: expect.any(Object) })
+  })
+
+  it('fails the projectile world build for finite coordinates outside the chunk range', async () => {
+    const far = 2 ** 60
+    const harness = await Effect.runPromise(makeHarness({
+      entity: null,
+      playerPose: {
+        ...INITIAL_PLAYER_POSE,
+        feetPosition: position(PositionAxis(far), PositionAxis(64), PositionAxis(0)),
+      },
+      loadedChunks: [],
+      projectileService: true,
+    }))
+    await seedFlyingMobProjectile(
+      harness.coordinator,
+      'mx-gameplay:mob:arrow:empty-world:0',
+      position(PositionAxis(far), PositionAxis(65), PositionAxis(0)),
+      { x: 1, y: 0, z: 0 },
+    )
+
+    const exit = await Effect.runPromiseExit(harness.stage.run(makeDeltaTimeSecs(0.05)).pipe(
+      Effect.provide(FrameServicesLayer),
+    ))
+
+    expect(exit._tag).toBe('Failure')
+    if (exit._tag !== 'Failure') return
+    expect(Cause.squash(exit.cause)).toMatchObject({ _tag: 'ProjectileWorldUnavailable' })
+  })
+
+  it('rejects a block hit outside the safe block-coordinate range', async () => {
+    const edge = 2 ** 53
+    const harness = await Effect.runPromise(makeHarness({
+      entity: null,
+      playerPose: {
+        ...INITIAL_PLAYER_POSE,
+        feetPosition: position(PositionAxis(edge - 20), PositionAxis(64), PositionAxis(0)),
+      },
+      loadedChunks: [],
+      projectileService: true,
+    }))
+    await seedFlyingMobProjectile(
+      harness.coordinator,
+      'mx-gameplay:mob:arrow:unsafe-block:0',
+      position(PositionAxis(edge), PositionAxis(65.5), PositionAxis(0)),
+      { x: 1000, y: 0, z: 0 },
+    )
+
+    const exit = await Effect.runPromiseExit(harness.stage.run(makeDeltaTimeSecs(0.05)).pipe(
+      Effect.provide(FrameServicesLayer),
+    ))
+
+    expect(exit._tag).toBe('Failure')
+    if (exit._tag !== 'Failure') return
+    expect(Cause.squash(exit.cause)).toMatchObject({
+      _tag: 'ProjectileServiceFailure',
+      reason: 'block-address-unavailable',
+    })
+  })
+
+  it('reports when the projectile service disagrees with the stage preview', async () => {
+    const harness = await Effect.runPromise(makeHarness({
+      entity: null,
+      block: { position: blockPosition(BlockAxis(8), BlockAxis(65), BlockAxis(0)), id: STONE },
+      projectileService: true,
+    }))
+    await seedFlyingMobProjectile(
+      harness.coordinator,
+      'mx-gameplay:mob:arrow:preview-mismatch:0',
+      position(PositionAxis(10.5), PositionAxis(65.5), PositionAxis(0.5)),
+      { x: -60, y: 0, z: 0 },
+    )
+
+    const commit = harness.context.commit!
+    const service = commit.projectileService!
+    const projectileService = {
+      ...service,
+      step: (request: Parameters<typeof service.step>[0]) => service.step(request).pipe(
+        Effect.map((outcome) => {
+          const { hit, ...withoutHit } = outcome
+          void hit
+          return withoutHit
+        }),
+      ),
+    }
+    const context: GameplayStageContext = {
+      ...harness.context,
+      commit: { ...commit, projectileService },
+    }
+    const exit = await Effect.runPromiseExit(
+      makeEntitiesStage(context).run(makeDeltaTimeSecs(0.05)).pipe(Effect.provide(FrameServicesLayer)),
+    )
+
+    expect(exit._tag).toBe('Failure')
+    if (exit._tag !== 'Failure') return
+    expect(Cause.squash(exit.cause)).toMatchObject({ _tag: 'MobProjectilePreviewMismatch' })
+  })
+
+  it('treats an unrepresentable ranged ray as blocked at the stage boundary', async () => {
+    const edge = 2 ** 53
+    const sourceChunkX = Math.floor(Number.MAX_SAFE_INTEGER / 16)
+    const targetChunkX = Math.floor((edge + 8) / 16)
+    const loadedChunks = []
+    for (let chunkX = sourceChunkX - 2; chunkX <= targetChunkX + 2; chunkX += 1) {
+      for (let chunkZ = -2; chunkZ <= 2; chunkZ += 1) {
+        loadedChunks.push(`${String(chunkX)},${String(chunkZ)}`)
+      }
+    }
+    const playerPose = {
+      ...INITIAL_PLAYER_POSE,
+      feetPosition: position(PositionAxis(edge + 8), PositionAxis(64), PositionAxis(0)),
+    }
+    const skeleton: MobEntity = {
+      ...ecosystemMobAt('test:unrepresentable-ray-skeleton', SKELETON_KIND, Number.MAX_SAFE_INTEGER, 64),
+      dimension: 'overworld',
+    }
+    const harness = await Effect.runPromise(makeHarness({
+      entity: null,
+      entities: [skeleton],
+      playerPose,
+      loadedChunks,
+      projectileService: true,
+    }))
+
+    await harness.run(makeDeltaTimeSecs(0.05))
+
+    const projectiles = await Effect.runPromise(harness.coordinator.snapshot(
+      PROJECTILE_REPLICATED_OWNER_ID,
+      ProjectileServiceSnapshotSchema,
+    ))
+    const roster = await Effect.runPromise(strictRoster(harness.coordinator))
+    const afterSkeleton = roster.state.entities.find(({ id }) => id === skeleton.id)
+    expect(projectiles.state.projectiles).toStrictEqual([])
+    const hostileSnapshot = afterSkeleton?.behaviour
+    expect(hostileSnapshot?._tag).toBe('HostileMob')
+    if (hostileSnapshot?._tag !== 'HostileMob') return
+    const ecosystemState = hostileSnapshot.behaviour
+    expect(ecosystemState?._tag).toBe('EcosystemMob')
+    if (ecosystemState?._tag !== 'EcosystemMob') return
+    expect(ecosystemState.attackCooldownTicks).toBeGreaterThan(0)
+  })
+
+  it('applies saved mob projectile damage and wear to equipped player armor', async () => {
+    const playerPose = {
+      ...INITIAL_PLAYER_POSE,
+      feetPosition: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
+    }
+    const harness = await Effect.runPromise(makeHarness({
+      entity: null,
+      playerPose,
+      playerStorage: equippedIronHelmetStorage(),
+      projectileService: true,
+    }))
+    const beforeVitals = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_VITALS_OWNER_ID,
+      ExperienceOrbVitalsOwnerSnapshotSchema,
+    ))
+    await seedPendingMobProjectileImpact(harness.coordinator, {
+      point: position(PositionAxis(1), PositionAxis(64), PositionAxis(0)),
+    })
+
+    await harness.run(makeDeltaTimeSecs(0.05))
+
+    const afterVitals = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_VITALS_OWNER_ID,
+      ExperienceOrbVitalsOwnerSnapshotSchema,
+    ))
+    const storageChange = harness.lastRequest()?.changes.find(({ ownerId }) =>
+      ownerId === GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+    )?.state as PlayerStorage | undefined
+    expect(afterVitals.state.vitals.healthPoints).toBeLessThan(beforeVitals.state.vitals.healthPoints)
+    expect(await Effect.runPromise(Ref.get(harness.state.playerDamages))).toMatchObject([{
+      _tag: 'HostileContact',
+      kind: SKELETON_KIND,
+      damage: { cause: 'projectile' },
+    }])
+    expect(storageChange?.equipment.slots.head?.durability?.current).toBeLessThan(165)
+  })
+
+  it('blocks a saved Blaze fireball with a ready shield and records shield wear', async () => {
+    const runBlockedFireball = async (shieldDurability: number) => {
+      const playerPose = {
+        ...INITIAL_PLAYER_POSE,
+        feetPosition: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
+        yawRadians: -Math.PI / 2 as typeof INITIAL_PLAYER_POSE.yawRadians,
+      }
+      const harness = await Effect.runPromise(makeHarness({
+        entity: null,
+        playerPose,
+        projectileService: true,
+        synthesizeShieldStorageSnapshot: true,
+        shieldDurability,
+      }))
+      await Effect.runPromise(Ref.set(harness.state.shieldBlocking, {
+        actor: EntityId('mx-gameplay:player-avatar'),
+        raisedAt: SimulationTick(1),
+      }))
+      await Effect.runPromise(Ref.set(harness.state.tickCount, SimulationTick(15)))
+      await seedPendingMobProjectileImpact(harness.coordinator, {
+        kind: BLAZE_KIND,
+        point: position(PositionAxis(1), PositionAxis(64), PositionAxis(0)),
+      })
+      if (shieldDurability > 1) harness.rejectCommits(true)
+
+      const exit = await Effect.runPromiseExit(
+        harness.stage.run(makeDeltaTimeSecs(0.05)).pipe(Effect.provide(FrameServicesLayer)),
+      )
+      if (shieldDurability > 1) {
+        expect(exit._tag).toBe('Failure')
+      } else {
+        expect(exit._tag).toBe('Success')
+      }
+      if (exit._tag === 'Failure') {
+        expect(Cause.squash(exit.cause)).toBeInstanceOf(WorldRevisionConflict)
+      }
+      const storageChange = harness.lastRequest()?.changes.find(({ ownerId }) =>
+        ownerId === GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+      )?.state as PlayerStorage | undefined
+      return {
+        offhand: storageChange?.equipment.slots.offhand,
+        fires: (await Effect.runPromise(Ref.get(harness.state.fireLifecycle))).burningActors ?? [],
+      }
+    }
+
+    const durable = await runBlockedFireball(336)
+    const broken = await runBlockedFireball(1)
+
+    expect(durable.offhand?.item).toBe('shield')
+    expect(durable.offhand?.durability?.current).toBeLessThan(336)
+    expect(broken.offhand).toBeNull()
+    expect(broken.fires).toStrictEqual([])
+  })
+
+  it('rejects a saved projectile impact when player-side owner revisions diverge', async () => {
+    for (const ownerId of [
+      GAMEPLAY_PLAYER_OWNER_ID,
+      GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+      GAMEPLAY_VITALS_OWNER_ID,
+    ]) {
+      const harness = await Effect.runPromise(makeHarness({
+        entity: null,
+        projectileService: true,
+        mismatchSnapshotAt: {
+          ownerId,
+          snapshotNumber: ownerId === GAMEPLAY_PLAYER_OWNER_ID ? 3 : 2,
+          count: 3,
+        },
+      }))
+      await seedPendingMobProjectileImpact(harness.coordinator, {
+        point: position(PositionAxis(1), PositionAxis(64), PositionAxis(0)),
+      })
+
+      const exit = await Effect.runPromiseExit(
+        harness.stage.run(makeDeltaTimeSecs(0.05)).pipe(Effect.provide(FrameServicesLayer)),
+      )
+
+      expect(exit._tag).toBe('Failure')
+      if (exit._tag !== 'Failure') continue
+      expect(Cause.squash(exit.cause)).toBeInstanceOf(WorldRevisionConflict)
+      expect(harness.mismatchedSnapshots()).toBe(3)
+    }
+  })
+
+  it('rejects saved projectile casualty drops when the dropped-item revision changes', async () => {
+    const pig: MobEntity = {
+      id: EntityId('test:pig'),
+      kind: EntityKind('pig'),
+      feetPosition: position(PositionAxis(8), PositionAxis(64), PositionAxis(0)),
+      healthPoints: EntityHealthPoints(3),
+      behaviour: undefined,
+    }
+    const harness = await Effect.runPromise(makeHarness({
+      entity: null,
+      entities: [pig],
+      projectileService: true,
+      mismatchSnapshotAt: {
+        snapshotNumber: 2,
+        ownerId: GAMEPLAY_DROPPED_ITEMS_OWNER_ID,
+        count: 3,
+      },
+    }))
+    await Effect.runPromise(Ref.set(harness.state.rollSeed, RandomSeed(1)))
+    await seedPendingMobProjectileImpact(harness.coordinator, { entityId: pig.id })
+
+    const exit = await Effect.runPromiseExit(
+      harness.stage.run(makeDeltaTimeSecs(0.05)).pipe(Effect.provide(FrameServicesLayer)),
+    )
+
+    expect(exit._tag).toBe('Failure')
+    if (exit._tag !== 'Failure') return
+    expect(Cause.squash(exit.cause)).toBeInstanceOf(WorldRevisionConflict)
+    expect(harness.mismatchedSnapshots()).toBe(3)
+    expect(await Effect.runPromise(Ref.get(harness.state.mobDrops))).toStrictEqual([])
   })
 
   it('records unavailable player damage owners without committing a mob contact candidate', async () => {
