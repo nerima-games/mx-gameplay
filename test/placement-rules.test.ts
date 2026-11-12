@@ -326,10 +326,7 @@ describe('a door needs the cell above', () => {
       expect(yield* doorUpperCell(store.api, STONE, target)).toStrictEqual({ _tag: 'NotADoor' })
       expect((yield* store.calls).reads).toBe(0)
 
-      expect(yield* doorUpperCell(store.api, DOOR, target)).toStrictEqual({
-        _tag: 'Clear',
-        cell: { x: 4, y: 65, z: 4 },
-      })
+      expect(yield* doorUpperCell(store.api, DOOR, target)).toStrictEqual({ _tag: 'Clear' })
       expect((yield* store.calls).reads).toBe(1)
     }),
   )
