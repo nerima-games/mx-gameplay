@@ -2566,7 +2566,7 @@ describe('retrying item-use intents after owner revision conflicts', () => {
     }])
     expect(storage.state.inventory.slots[0]).toBeUndefined()
     expect(nextVitals.state.vitals.hungerPoints).toBeGreaterThan(vitals.hungerPoints)
-    expect(status.state.effects.map(({ type }) => type)).toStrictEqual(['poison', 'hunger', 'nausea'])
+    expect(status.state.effects.map(({ type }) => type)).toStrictEqual(['hunger', 'nausea', 'poison'])
     expect(harness.lastRequest()?.changes.map(({ ownerId }) => ownerId)).toStrictEqual([
       GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
       GAMEPLAY_VITALS_OWNER_ID,
@@ -2715,7 +2715,7 @@ describe('retrying item-use intents after owner revision conflicts', () => {
     }])
     expect(await Effect.runPromise(Ref.get(harness.state.pendingItemUses))).toStrictEqual([])
     expect(storageAfter.state.inventory.slots[0]).toBeUndefined()
-    expect(statusAfter.state.effects.map(({ type }) => type)).toStrictEqual(['poison', 'hunger', 'nausea'])
+    expect(statusAfter.state.effects.map(({ type }) => type)).toStrictEqual(['hunger', 'nausea', 'poison'])
     expect(await Effect.runPromise(harness.baseCoordinator.revision)).toBe(revisionBefore + 2)
   })
 
@@ -3735,7 +3735,9 @@ describe('registered combat and teleport requests in the interactions stage', ()
   })
 
   it('completes a charged creative bow miss without committing owners', async () => {
-    const harness = await Effect.runPromise(makeHarness())
+    const harness = await Effect.runPromise(makeHarness({
+      playerStorage: playerStorageWithItems([['bow', 1]]),
+    }))
     await Effect.runPromise(requestBowShot(harness.state, 'creative-bow-miss', {
       origin: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
       dirX: 0,
@@ -3758,7 +3760,9 @@ describe('registered combat and teleport requests in the interactions stage', ()
   })
 
   it('reports undercharge and duplicate bow request IDs without committing owners twice', async () => {
-    const harness = await Effect.runPromise(makeHarness())
+    const harness = await Effect.runPromise(makeHarness({
+      playerStorage: playerStorageWithItems([['bow', 1]]),
+    }))
     const shot = {
       origin: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
       dirX: 0,

@@ -239,7 +239,7 @@ describe('player systems properties', () => {
 
         return decoded.ok &&
           decoded.value.enchantments.map(({ id }) => id).join(',') ===
-            'efficiency,unbreaking,fortune'
+            'efficiency,fortune,unbreaking'
       }),
     )
   })
