@@ -40,7 +40,7 @@ plan.md §7 は「Minecraft クローンの全機能が 16 リポジトリで表
 | **すべての画面**（HUD / メニュー / インベントリ UI / 設定）、**死亡画面を含む** | `mx-ui` | 兄弟。死因は `mx-gameplay` の事実だが、文章と描画は `mx-ui` の仕事 |
 | stage の**全順序**と Layer 配線 | `mc-compose` | ここは制約（`after`）を宣言するだけ（plan.md §2.3-3） |
 | ブロック能力フラグ・ブランデッド型・座標系・契約型 | `mc-kernel` | 共有語彙。`fallsWhenUnsupported` は kernel、「落ちる」は here |
-| 衝突判定・レイキャスト（voxel-DDA） | `mc-physics`（`mc-sim` 経由） | 推移閉包禁止。`mc-physics` を直接 import はできない（[architecture.md](./architecture.md) §5） |
+| 衝突判定・レイキャスト（voxel-DDA） | `mc-sim` 経由。正規の衝突形状データは `mc-physics` | `mc-physics` は `COLLISION_SHAPE_AABBS` の参照に限り直接・exact pin で依存する。物理計算とレイキャストは `mc-sim` に委譲する（[architecture.md](./architecture.md) §5） |
 | 実行時入力（キーボード / マウス / ポインタロック） | `mc-render` | plan.md §2.3-2。kit に置くと出荷ゲームから入力が消える |
 | E2E・QA/デバッグ API・Modding 入口 | `mc-compose` | 体験モジュール間の相互作用はそこでしか検証できない |
 

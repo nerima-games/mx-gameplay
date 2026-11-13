@@ -1709,6 +1709,40 @@ describe('entities stage owner-backed MobSimulation', () => {
     expect(Cause.squash(exit.cause)).toMatchObject({ _tag: 'ProjectileWorldUnavailable' })
   })
 
+  it('fails with a typed error when a mob projectile appears between service snapshots', async () => {
+    const harness = await Effect.runPromise(makeHarness({ entity: null, projectileService: true }))
+    await seedFlyingMobProjectile(
+      harness.coordinator,
+      'mx-gameplay:mob:arrow:between-snapshots:0',
+      position(PositionAxis(8), PositionAxis(65.5), PositionAxis(0)),
+      { x: 1, y: 0, z: 0 },
+    )
+    const commit = harness.context.commit!
+    const service = commit.projectileService!
+    let snapshotReads = 0
+    const changingProjectileService = {
+      ...service,
+      snapshot: service.snapshot.pipe(Effect.map((snapshot) => {
+        snapshotReads += 1
+        return snapshotReads === 1
+          ? { ...snapshot, state: { ...snapshot.state, projectiles: [] } }
+          : snapshot
+      })),
+    }
+    const context: GameplayStageContext = {
+      ...harness.context,
+      commit: { ...commit, projectileService: changingProjectileService },
+    }
+
+    const exit = await Effect.runPromiseExit(makeEntitiesStage(context).run(makeDeltaTimeSecs(0.05)).pipe(
+      Effect.provide(FrameServicesLayer),
+    ))
+
+    expect(exit._tag).toBe('Failure')
+    if (exit._tag !== 'Failure') return
+    expect(Cause.squash(exit.cause)).toMatchObject({ _tag: 'ProjectileWorldUnavailable' })
+  })
+
   it('rejects a block hit outside the safe block-coordinate range', async () => {
     const edge = 2 ** 53
     const harness = await Effect.runPromise(makeHarness({
@@ -1734,8 +1768,8 @@ describe('entities stage owner-backed MobSimulation', () => {
     expect(exit._tag).toBe('Failure')
     if (exit._tag !== 'Failure') return
     expect(Cause.squash(exit.cause)).toMatchObject({
-      _tag: 'ProjectileServiceFailure',
-      reason: 'block-address-unavailable',
+      _tag: 'MobProjectileWorldQueryFailure',
+      failure: { _tag: 'EntityWorldInvalidCell' },
     })
   })
 

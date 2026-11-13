@@ -48,11 +48,11 @@
  *     then lets `./interactions/ignite-portal` say `ChunkNotLoaded` instead of
  *     "there is no frame here", which are different answers to the player.
  *
- * The same value answers a `y` outside the world or a cell missing from a
- * truncated chunk buffer. `@nerima-games/mc-worldgen`'s `readBlock` is TOTAL
- * and answers AIR for an out-of-range index, so both cases must be guarded here.
- * Otherwise a portal probe could observe fabricated empty space and report a
- * definite `NoFrame` where the world data was merely unavailable.
+ * The legacy sentinel also answers a `y` outside the world or a cell missing
+ * from a truncated chunk buffer. `readChunkWindowCell` retains the reason for
+ * movement and projectile queries that need to distinguish normal world bounds,
+ * unloaded chunks, and corrupt buffers. `readBlock` answers AIR for an
+ * out-of-range index, so every case is guarded before that call.
  *
  * ---------------------------------------------------------------------------
  * A LIVE VIEW, AND WHY THAT IS SAFE HERE AND NOT IN GENERAL
@@ -73,7 +73,7 @@
  * than defended with a copy, because a copy would only make the stale answer
  * quieter.
  */
-import { Effect } from 'effect'
+import { Effect, Result } from 'effect'
 import {
   BlockAxis,
   BlockId,
@@ -86,16 +86,17 @@ import {
 } from '@nerima-games/mc-kernel'
 import { CHUNK_HEIGHT, blockIndex, readBlock, type ChunkStoreApi, type ReadonlyChunk } from '@nerima-games/mc-worldgen'
 
-/**
- * The answer for a cell this window cannot speak for.
- *
- * NOT a `BlockId`. Kernel's registry runs 0..119 and every id fits a
- * `Uint16Array` element, so a negative number cannot collide with a row now or
- * after any number of additions. See the header on why the inert answer is a
- * value rather than a throw: the consumers are pure predicates over a byte, and
- * every one of them answers "no" to a byte it cannot name.
- */
+/** Legacy sentinel for callers whose contract accepts only `BlockId`. */
 export const UNREADABLE_BLOCK = -1
+
+export type ChunkWindowCell =
+  | Readonly<{ _tag: 'Loaded'; blockId: BlockId }>
+  | Readonly<{ _tag: 'Unloaded' }>
+  | Readonly<{ _tag: 'AboveWorld' }>
+  | Readonly<{ _tag: 'BelowWorld' }>
+  | Readonly<{ _tag: 'CorruptBuffer'; index: number; length: number }>
+
+export type ChunkWindowReadFailure = Readonly<{ _tag: 'ChunkWindowUnavailable' }>
 
 export type ChunkWindow = {
   /** Synchronous reads include the local unreadable sentinel used by gameplay. */
@@ -110,6 +111,21 @@ export type ChunkWindow = {
    * things to tell the player.
    */
   readonly unreadableProbes: () => number
+}
+
+const cellReaders = new WeakMap<ChunkWindow, (x: BlockAxis, y: BlockAxis, z: BlockAxis) => ChunkWindowCell>()
+
+/** Read the cell state without collapsing it into the legacy sentinel. */
+export const readChunkWindowCell = (
+  window: ChunkWindow,
+  x: BlockAxis,
+  y: BlockAxis,
+  z: BlockAxis,
+): Result.Result<ChunkWindowCell, ChunkWindowReadFailure> => {
+  const readCell = cellReaders.get(window)
+  return readCell === undefined
+    ? Result.fail({ _tag: 'ChunkWindowUnavailable' })
+    : Result.succeed(readCell(x, y, z))
 }
 
 /** The chunk a world position lives in. `Math.floor`, so negative x works. */
@@ -199,29 +215,37 @@ export const openChunkWindow = (
 
     let unreadable = 0
 
-    const blockAt: ChunkWindow['blockAt'] = (x, y, z) => {
-      // The world bound first, because it is the one `readBlock` would answer
-      // with fabricated air. See the header.
-      if (y < 0 || y >= CHUNK_HEIGHT) {
+    const cellAt = (x: BlockAxis, y: BlockAxis, z: BlockAxis): ChunkWindowCell => {
+      if (y < 0) {
         unreadable += 1
-        return UNREADABLE_BLOCK
+        return { _tag: 'BelowWorld' }
+      }
+      if (y >= CHUNK_HEIGHT) {
+        unreadable += 1
+        return { _tag: 'AboveWorld' }
       }
 
       const coordinate = blockPosition(BlockAxis(x), BlockAxis(y), BlockAxis(z))
       const chunk = chunks.get(chunkKey(chunkCoordOf(coordinate)))
       if (chunk === undefined) {
         unreadable += 1
-        return UNREADABLE_BLOCK
+        return { _tag: 'Unloaded' }
       }
 
       const index = blockIndex(localOf(x), y, localOf(z))
       if (index >= chunk.blocks.length) {
         unreadable += 1
-        return UNREADABLE_BLOCK
+        return { _tag: 'CorruptBuffer', index, length: chunk.blocks.length }
       }
 
-      return BlockId(readBlock(chunk.blocks, index))
+      return { _tag: 'Loaded', blockId: BlockId(readBlock(chunk.blocks, index)) }
     }
 
-    return { blockAt, unreadableProbes: () => unreadable }
+    const blockAt: ChunkWindow['blockAt'] = (x, y, z) => {
+      const cell = cellAt(x, y, z)
+      return cell._tag === 'Loaded' ? cell.blockId : UNREADABLE_BLOCK
+    }
+    const window: ChunkWindow = { blockAt, unreadableProbes: () => unreadable }
+    cellReaders.set(window, cellAt)
+    return window
   })

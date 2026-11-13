@@ -183,6 +183,9 @@ importers:
       '@nerima-games/mc-kernel':
         specifier: 0.14.0
         version: 0.14.0
+      '@nerima-games/mc-physics':
+        specifier: 0.5.0
+        version: 0.5.0
       '@nerima-games/mc-sim':
         specifier: 0.10.0
         version: 0.10.0

@@ -222,10 +222,10 @@ import {
   stepMobMovementsForTick,
   type MobMovementFailure,
   type MobMovementState,
-  type MobMovementWorldPort,
   type Durability,
 } from '@nerima-games/mc-sim'
 import { Brand, Effect, Result } from 'effect'
+import type { MobMovementWorldAdapter, MobMovementWorldFailure } from './mob-movement-world.js'
 import {
   BlockAxis,
   EntityHealthPoints,
@@ -1634,9 +1634,10 @@ export const planMobRosterSweep = (
 
 export type MobMovementRosterFailure = Readonly<{
   _tag: 'MobMovementRosterFailure'
-  reason: 'invalid-state' | 'invalid-goal' | 'simulation-rejected' | 'step-failed'
+  reason: 'invalid-state' | 'invalid-goal' | 'simulation-rejected' | 'step-failed' | 'world-query-failed'
   entityId?: EntityId
   failure?: MobMovementFailure
+  worldFailure?: MobMovementWorldFailure
 }>
 
 const ecosystemStateForMovement = (entity: MobEntity): EcosystemMobState | undefined => {
@@ -1689,7 +1690,7 @@ export const hasMobMovementCandidates = (
 export const planMobMovementRoster = (
   roster: MobRoster,
   target: Position | undefined,
-  world: MobMovementWorldPort,
+  world: MobMovementWorldAdapter,
   simulationTick: SimulationTickValue,
   dimension: Dimension,
 ): Result.Result<Readonly<{ roster: MobRoster }>, MobMovementRosterFailure> => {
@@ -1717,6 +1718,10 @@ export const planMobMovementRoster = (
     world,
     searchCursor: NonNegativeTickCount(Number(simulationTick) % entries.length),
   })
+  const worldFailure = world.queryFailure()
+  if (worldFailure !== undefined) {
+    return Result.fail({ _tag: 'MobMovementRosterFailure', reason: 'world-query-failed', worldFailure })
+  }
   if (simResult._tag === 'MobMovementRejected') {
     return Result.fail({ _tag: 'MobMovementRosterFailure', reason: 'simulation-rejected', failure: simResult.failure })
   }
@@ -1740,6 +1745,14 @@ export const planMobMovementRoster = (
       continue
     }
     const feet = movementFeetPosition(outcome.state)
+    const overlapsUnloaded = world.bodyOverlapsUnloadedCell(outcome.state)
+    if (Result.isFailure(overlapsUnloaded)) {
+      return Result.fail({ _tag: 'MobMovementRosterFailure', reason: 'world-query-failed', worldFailure: overlapsUnloaded.failure })
+    }
+    if (overlapsUnloaded.success) {
+      updated.set(entry.entity, { entry, movement: entry.movement, feet: entry.entity.feetPosition })
+      continue
+    }
     updated.set(entry.entity, { entry, movement: outcome.state, feet })
   }
 

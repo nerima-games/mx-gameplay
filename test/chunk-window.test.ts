@@ -31,12 +31,13 @@
  * and is the last test below.
  */
 import { describe, expect, it } from '@effect/vitest'
-import { Effect } from 'effect'
+import { Effect, Result } from 'effect'
 import {
   UNREADABLE_BLOCK,
   chunkCoordOf,
   chunkCoordsAround,
   openChunkWindow,
+  readChunkWindowCell,
 } from '../src/domain/chunk-window'
 import { AIR_BLOCK_ID, BlockAxis, CHUNK_SIZE_XZ } from '@nerima-games/mc-kernel'
 import { blockPosition, chunkCoord } from './support/coordinate-fixtures.js'
@@ -305,6 +306,27 @@ describe('openChunkWindow', () => {
       expect(window.blockAt(BlockAxis(0), BlockAxis(CHUNK_HEIGHT), BlockAxis(0))).toBe(UNREADABLE_BLOCK)
       expect(window.blockAt(BlockAxis(0), BlockAxis(CHUNK_HEIGHT - 1), BlockAxis(0))).toBe(AIR_BLOCK_ID)
       expect(window.unreadableProbes()).toBe(2)
+    }),
+  )
+
+  it.effect('keeps unloaded, world-boundary, and corrupt-buffer cells distinct', () =>
+    Effect.gen(function* () {
+      const shortBuffered: ChunkStoreApi = {
+        ...notAStore,
+        peek: (coord) => Effect.succeed({
+          coord,
+          blocks: new Uint16Array(1),
+          biomes: [],
+        }),
+      }
+      const window = yield* openChunkWindow(shortBuffered, [chunkCoord(0, 0)])
+      const cell = (x: number, y: number, z: number) =>
+        readChunkWindowCell(window, BlockAxis(x), BlockAxis(y), BlockAxis(z))
+
+      expect(cell(16, 64, 0)).toEqual(Result.succeed({ _tag: 'Unloaded' }))
+      expect(cell(0, -1, 0)).toEqual(Result.succeed({ _tag: 'BelowWorld' }))
+      expect(cell(0, 256, 0)).toEqual(Result.succeed({ _tag: 'AboveWorld' }))
+      expect(cell(0, 255, 0)).toEqual(Result.succeed({ _tag: 'CorruptBuffer', index: 255, length: 1 }))
     }),
   )
 

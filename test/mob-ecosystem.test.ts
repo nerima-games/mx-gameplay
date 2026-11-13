@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import fc from 'fast-check'
 import { position as atPosition } from './support/coordinate-fixtures'
 import { EntityHealthPoints, type Position } from '@nerima-games/mc-kernel'
 import { EntityId, EntityKind, type Entity } from '@nerima-games/mc-sim'
@@ -42,6 +43,65 @@ describe('mob ecosystem', () => {
     expect(step.feetPosition).toEqual(position(0))
     expect(step.state.movementGoal?.x).toBeLessThan(0)
     expect(step.attack).toBeUndefined()
+  })
+
+  it('sets a flee goal eight blocks directly away from every nearby target', () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: -100, max: 100 }),
+        fc.integer({ min: -100, max: 100 }),
+        fc.tuple(fc.integer({ min: -5, max: 5 }), fc.integer({ min: -5, max: 5 }))
+          .filter(([offsetX, offsetZ]) => offsetX !== 0 || offsetZ !== 0),
+        (selfX, selfZ, [offsetX, offsetZ]) => {
+          const self = position(selfX, selfZ)
+          const target = position(selfX + offsetX, selfZ + offsetZ)
+          const goal = movementGoal(COW_KIND, self, target)
+
+          if (goal === undefined) {
+            expect(goal).toBeDefined()
+            return
+          }
+
+          const goalX = goal.x - self.x
+          const goalZ = goal.z - self.z
+          const goalDistance = Math.hypot(goalX, goalZ)
+          const targetDistance = Math.hypot(offsetX, offsetZ)
+
+          expect(goal.y).toBe(self.y)
+          expect(goalDistance).toBeCloseTo(8, 10)
+          expect(goalX / goalDistance).toBeCloseTo(-offsetX / targetDistance, 10)
+          expect(goalZ / goalDistance).toBeCloseTo(-offsetZ / targetDistance, 10)
+        },
+      ),
+      { numRuns: 100 },
+    )
+  })
+
+  it('holds skeleton and blaze positions throughout their ranged-spacing bands', () => {
+    const rangedBands = [
+      { kind: SKELETON_KIND, minDistance: 8, maxDistance: 16 },
+      { kind: BLAZE_KIND, minDistance: 8, maxDistance: 24 },
+    ] as const
+
+    fc.assert(
+      fc.property(
+        fc.constantFrom(...rangedBands),
+        fc.integer({ min: -100, max: 100 }),
+        fc.integer({ min: -100, max: 100 }),
+        fc.integer({ min: -24, max: 24 }),
+        fc.integer({ min: -24, max: 24 }),
+        (band, selfX, selfZ, offsetX, offsetZ) => {
+          const distance = Math.hypot(offsetX, offsetZ)
+          fc.pre(distance >= band.minDistance && distance <= band.maxDistance)
+
+          const self = position(selfX, selfZ)
+          const target = position(selfX + offsetX, selfZ + offsetZ)
+
+          expect(movementGoal(band.kind, self, target)).toEqual(self)
+        },
+      ),
+      { numRuns: 100 },
+    )
   })
 
   it('lets skeletons attack at range and observes the 60-tick cadence independent of deltaSecs', () => {
@@ -136,25 +196,53 @@ describe('mob ecosystem', () => {
 
   it('sets a four-block wander goal instead of fleeing once the player is far enough away', () => {
     const step = stepEcosystemMob(COW_KIND, initialEcosystemMobState(), position(0), position(20), 1)
+    const goal = step.state.movementGoal
 
     expect(step.feetPosition).toEqual(position(0))
-    expect(step.state.movementGoal).toEqual({
-      x: 0 + Math.cos(0) * 4,
-      y: 64,
-      z: 0 + Math.sin(0) * 4,
-    })
+    expect(goal).toBeDefined()
+    if (goal === undefined) return
+    expect(goal.y).toBe(step.feetPosition.y)
+    expect(Math.hypot(goal.x - step.feetPosition.x, goal.z - step.feetPosition.z)).toBeLessThanOrEqual(4 + 1e-12)
     expect(step.attack).toBeUndefined()
   })
 
   it('makes a passive mob set a wander goal when it has no target at all', () => {
     const step = stepEcosystemMob(COW_KIND, initialEcosystemMobState(), position(0), undefined, 1)
+    const goal = step.state.movementGoal
 
     expect(step.feetPosition).toEqual(position(0))
-    expect(step.state.movementGoal).toEqual({
-      x: 0 + Math.cos(0) * 4,
-      y: 64,
-      z: 0 + Math.sin(0) * 4,
-    })
+    expect(goal).toBeDefined()
+    if (goal === undefined) return
+    expect(goal.y).toBe(step.feetPosition.y)
+    expect(Math.hypot(goal.x - step.feetPosition.x, goal.z - step.feetPosition.z)).toBeLessThanOrEqual(4 + 1e-12)
+  })
+
+  it('keeps wander goals within four blocks and repeats them for the same phase', () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: -100, max: 100 }),
+        fc.integer({ min: -100, max: 100 }),
+        fc.integer({ min: 0, max: 100_000 }),
+        (selfX, selfZ, phase) => {
+          const self = position(selfX, selfZ)
+          const target = position(selfX + 20, selfZ)
+          const state = { ...initialEcosystemMobState(), motionPhase: phase }
+          const firstGoal = movementGoal(COW_KIND, self, target, state)
+          const repeatedGoal = movementGoal(COW_KIND, self, target, state)
+
+          if (firstGoal === undefined || repeatedGoal === undefined) {
+            expect(firstGoal).toBeDefined()
+            expect(repeatedGoal).toBeDefined()
+            return
+          }
+
+          expect(firstGoal.y).toBe(self.y)
+          expect(Math.hypot(firstGoal.x - self.x, firstGoal.z - self.z)).toBeLessThanOrEqual(4 + 1e-12)
+          expect(repeatedGoal).toEqual(firstGoal)
+        },
+      ),
+      { numRuns: 100 },
+    )
   })
 
   it('sets a finite flee goal for a subnormal diagonal offset', () => {
