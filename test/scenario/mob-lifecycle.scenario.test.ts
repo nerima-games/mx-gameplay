@@ -2,10 +2,12 @@ import { describe, expect, it } from '@effect/vitest'
 import { SkyLightLevel } from '../../src/domain/mob/hostile-spawn'
 import {
   AIR_BLOCK_ID,
+  ChunkAxis,
   DeltaTimeSecs,
   EntityHealthPoints,
   InterpolationFraction,
   blockIdOf,
+  chunkCoord,
   ProjectileIdSchema,
   WorldPositionSchema,
   WorldRevisionSchema,
@@ -358,26 +360,45 @@ describe('mob lifecycle gameplay scenarios', () => {
     }),
   )
 
-  it.effect('keeps a zombie inside the loaded chunk while the composed gameplay tick succeeds', () =>
+  it.effect('stops a mob before an unloaded chunk while the composed gameplay tick succeeds', () =>
     Effect.gen(function* () {
       const start = position(15.5, 64, 0.5)
       const harness = yield* makeHarness(
-        position(20.5, 64, 0.5),
-        floorWorld(0, 15),
-        ['0,0'],
+        position(21.5, 64, 0.5),
+        floorWorld(0, 31),
+        ['0,0', '1,0'],
       )
       yield* harness.time.setTimeOfDay(InterpolationFraction(0.9))
       yield* requestMobSpawn(harness.state, spawnAttempt(ZOMBIE_KIND, start))
       yield* runFrame(harness.stages, DeltaTimeSecs(0))
 
+      yield* runFrame(harness.stages, DeltaTimeSecs(1 / 20))
       const before = (yield* mobEntities(harness.commit.coordinator)).find(({ kind }) => kind === ZOMBIE_KIND)
-      expect(before?.feetPosition).toStrictEqual(start)
+      const movementGoal = before !== undefined && isHostileMobSnapshot(before.behaviour) &&
+        before.behaviour.behaviour?._tag === 'EcosystemMob'
+        ? before.behaviour.behaviour.movementGoal
+        : undefined
+      expect(before?.feetPosition.x).toBeGreaterThanOrEqual(start.x)
+      expect(before?.feetPosition.x).toBeLessThan(15.8)
+      expect(movementGoal?.x).toBeGreaterThanOrEqual(16)
 
-      const tick = yield* Effect.exit(runFrame(harness.stages, DeltaTimeSecs(1 / 20)))
-      expect(Exit.isSuccess(tick)).toBe(true)
-      const after = (yield* mobEntities(harness.commit.coordinator)).find(({ id }) => id === before?.id)
-      expect(after?.feetPosition).toStrictEqual(start)
-      expect(after?.feetPosition.x).toBeLessThan(16)
+      const eastChunk = chunkCoord(ChunkAxis(1), ChunkAxis(0))
+      expect(yield* harness.store.api.unload(eastChunk)).toBe(true)
+
+      let current = before
+      let stopped = false
+      for (let tick = 0; tick < 12 && !stopped; tick += 1) {
+        const previousPosition = current?.feetPosition
+        const frame = yield* Effect.exit(runFrame(harness.stages, DeltaTimeSecs(1 / 20)))
+        expect(Exit.isSuccess(frame)).toBe(true)
+        current = (yield* mobEntities(harness.commit.coordinator)).find(({ id }) => id === before?.id)
+        stopped = current !== undefined && previousPosition !== undefined &&
+          current.feetPosition.x === previousPosition.x &&
+          current.feetPosition.y === previousPosition.y &&
+          current.feetPosition.z === previousPosition.z
+      }
+      expect(stopped).toBe(true)
+      expect(current?.feetPosition.x).toBeLessThan(16)
     }),
   )
 

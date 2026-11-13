@@ -6,11 +6,13 @@ import { CHUNK_HEIGHT } from '@nerima-games/mc-worldgen'
 import { openChunkWindow, UNREADABLE_BLOCK, type ChunkWindow } from '../src/domain/chunk-window'
 import {
   entityWorldBlockDataFromLookup,
+  entityWorldValueFromLookup,
   entityWorldCellAt,
 } from '../src/domain/entities/entity-world-cell'
 import {
   initialMobMovementState,
   mobMovementCell,
+  mobMovementPhysicsSampleForCell,
   mobMovementWorldFromChunkWindow,
   movementFeetPosition,
   movementStateForGoal,
@@ -60,9 +62,43 @@ describe('SM3 mob movement world', () => {
       )
       expect(unresolved).toMatchObject({
         _tag: 'Failure',
-        failure: { _tag: 'EntityWorldRegistryFailure', cell },
+        failure: { _tag: 'EntityWorldRegistryFailure', cell, failure: invalidBlockId.failure },
       })
     }
+  })
+
+  it('keeps registry failures on SM3 physics results and above-world air lookups', () => {
+    const cell = { x: BlockAxis(0), y: BlockAxis(64), z: BlockAxis(0) }
+    const registryFailure = {
+      _tag: 'BlockPropertyFailure' as const,
+      reason: 'type' as const,
+      message: 'property columns could not be resolved',
+    }
+    const lookup = entityWorldValueFromLookup(cell, Result.fail(registryFailure))
+    expect(Result.isFailure(lookup)).toBe(true)
+    if (Result.isSuccess(lookup)) return
+
+    const fromRegistryFailure = mobMovementPhysicsSampleForCell(
+      Result.fail(lookup.failure),
+      () => Result.fail(lookup.failure),
+    )
+    expect(fromRegistryFailure.sample).toStrictEqual(Result.fail(registryFailure))
+    expect(fromRegistryFailure.queryFailure).toMatchObject({
+      _tag: 'EntityWorldRegistryFailure',
+      cell,
+      failure: registryFailure,
+    })
+
+    const fromAboveWorldAirFailure = mobMovementPhysicsSampleForCell(
+      Result.succeed({ _tag: 'AboveWorld' }),
+      () => Result.fail(lookup.failure),
+    )
+    expect(fromAboveWorldAirFailure.sample).toStrictEqual(Result.fail(registryFailure))
+    expect(fromAboveWorldAirFailure.queryFailure).toMatchObject({
+      _tag: 'EntityWorldRegistryFailure',
+      cell,
+      failure: registryFailure,
+    })
   })
 
   it.effect('reads air as passable, blocks as solid, and exposes support and hazards', () =>
@@ -283,6 +319,74 @@ describe('SM3 mob movement world', () => {
         _tag: 'MobMovementRosterFailure',
         reason: 'step-failed',
         entityId: id,
+      })
+    }),
+  )
+
+  it.effect('returns the typed failure when a mob body overlaps an invalid world cell', () =>
+    Effect.gen(function* () {
+      const port = yield* makeWorldPort([])
+      const movement = initialMobMovementState(
+        EntityId('mob:invalid-overlap-cell'),
+        PIG_KIND,
+        at(0.5, 64, 0.5),
+        at(2.5, 64, 0.5),
+      )
+      if (movement === undefined) throw new Error('the in-range movement state must decode')
+      const outside = Schema.decodeUnknownSync(MobMovementStateSchema)({
+        ...movement,
+        body: { ...movement.body, x: 2 ** 53 + 2 },
+      })
+      const invalidXCell = BlockAxis.result(Math.floor(outside.body.x - outside.profile.width / 2))
+
+      const overlap = port.bodyOverlapsUnloadedCell(outside)
+
+      expect(Number.isSafeInteger(outside.body.x)).toBe(false)
+      expect(Result.isFailure(invalidXCell)).toBe(true)
+      expect(overlap).toMatchObject({
+        _tag: 'Failure',
+        failure: { _tag: 'EntityWorldInvalidCell' },
+      })
+    }),
+  )
+
+  it.effect('propagates typed overlap-query failures from the movement roster', () =>
+    Effect.gen(function* () {
+      const floor = Array.from({ length: 32 }, (_value, x) => [block(x, 63, 0), STONE] as const)
+      const port = yield* makeWorldPort(floor, ['0,0', '1,0'])
+      const failure = {
+        _tag: 'EntityWorldCorruptBuffer' as const,
+        cell: { x: BlockAxis(6), y: BlockAxis(64), z: BlockAxis(0) },
+        index: 1_024,
+        length: 1,
+      }
+      const failingWorld = {
+        ...port,
+        bodyOverlapsUnloadedCell: () => Result.fail(failure),
+      }
+      const pig = {
+        id: EntityId('mob:overlap-query-failure'),
+        kind: PIG_KIND,
+        feetPosition: at(5.5, 64, 0.5),
+        healthPoints: EntityHealthPoints(10),
+        behaviour: initialEcosystemMobState(),
+        dimension: 'overworld' as const,
+      }
+      const planned = planMobMovementRoster(
+        { entities: [pig], nextSerial: EntitySerial(1) },
+        at(0.5, 64, 0.5),
+        failingWorld,
+        SimulationTick(1),
+        'overworld',
+      )
+
+      expect(planned).toMatchObject({
+        _tag: 'Failure',
+        failure: {
+          _tag: 'MobMovementRosterFailure',
+          reason: 'world-query-failed',
+          worldFailure: failure,
+        },
       })
     }),
   )

@@ -32,27 +32,36 @@ type EntityWorldBlockLookup = Result.Result<
   BlockRegistryResolutionFailure
 >
 
+type EntityWorldRegistryFailure = Extract<EntityWorldQueryFailure, { _tag: 'EntityWorldRegistryFailure' }>
+
+export const entityWorldValueFromLookup = <Value>(
+  cell: EntityWorldCellPosition,
+  lookup: Result.Result<Value, BlockRegistryResolutionFailure>,
+): Result.Result<Value, EntityWorldRegistryFailure> => {
+  if (Result.isFailure(lookup)) {
+    return Result.fail({ _tag: 'EntityWorldRegistryFailure', cell, failure: lookup.failure })
+  }
+  return Result.succeed(lookup.success)
+}
+
 export const entityWorldBlockDataFromLookup = (
   cell: EntityWorldCellPosition,
   blockId: BlockId,
   lookup: EntityWorldBlockLookup,
-): Result.Result<Extract<EntityWorldCell, { _tag: 'Loaded' }>, EntityWorldQueryFailure> => {
-  if (Result.isFailure(lookup)) {
-    return Result.fail({ _tag: 'EntityWorldRegistryFailure', cell, failure: lookup.failure })
-  }
-  return Result.succeed({
+): Result.Result<Extract<EntityWorldCell, { _tag: 'Loaded' }>, EntityWorldRegistryFailure> => {
+  return Result.map(entityWorldValueFromLookup(cell, lookup), ({ block, capabilities }) => ({
     _tag: 'Loaded',
     blockId,
-    block: lookup.success.block,
-    properties: lookup.success.block?.properties ?? BLOCK_PROPERTY_DEFAULTS,
-    capabilities: lookup.success.capabilities,
-  })
+    block,
+    properties: block?.properties ?? BLOCK_PROPERTY_DEFAULTS,
+    capabilities,
+  }))
 }
 
 export const entityWorldBlockDataAt = (
   cell: EntityWorldCellPosition,
   blockId: BlockId,
-): Result.Result<Extract<EntityWorldCell, { _tag: 'Loaded' }>, EntityWorldQueryFailure> =>
+): Result.Result<Extract<EntityWorldCell, { _tag: 'Loaded' }>, EntityWorldRegistryFailure> =>
   entityWorldBlockDataFromLookup(cell, blockId, Result.all({
     block: resolvedBlockOfId(blockId),
     capabilities: capabilitiesOfBlockId(blockId),
@@ -60,7 +69,7 @@ export const entityWorldBlockDataAt = (
 
 export const entityWorldAirBlockDataAt = (
   cell: EntityWorldCellPosition,
-): Result.Result<Extract<EntityWorldCell, { _tag: 'Loaded' }>, EntityWorldQueryFailure> =>
+): Result.Result<Extract<EntityWorldCell, { _tag: 'Loaded' }>, EntityWorldRegistryFailure> =>
   entityWorldBlockDataAt(cell, AIR_BLOCK_ID)
 
 export const entityWorldCellAt = (
