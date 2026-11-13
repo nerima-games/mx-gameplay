@@ -15,15 +15,21 @@ import {
 import {
   DomainEventBus,
   EntityId,
+  FishingApproachTicksSchema,
+  FishingBiteWindowTicksSchema,
+  FishingElapsedTicksSchema,
   FishingStateSchema,
+  FishingWaitTicksSchema,
   InventoryService,
   PlayerStorageSnapshotSchema,
   PlayerServiceSnapshotSchema,
   ProjectileServiceSnapshotSchema,
   PROJECTILE_REPLICATED_OWNER_ID,
+  ReplicatedOwnerUnknown,
   SNOWBALL_PROFILE,
   TimeService,
   WorldCommitCoordinator,
+  type WorldCommitCoordinatorApi,
   durabilityForItem,
   itemStack,
   launchProjectile,
@@ -49,6 +55,7 @@ import {
   makeGameplayFrameStateForOwner,
   requestBlockMining,
   requestFishingReel,
+  requestFishingAdvance,
   requestMeleeAttack,
 } from '../src/stages/registration.js'
 import { makeGameplayStagesWithState } from '../src/stages/gameplay-stage-composition.js'
@@ -282,6 +289,33 @@ describe('production interactions-stage coverage', () => {
     }).pipe(Effect.provide(Layer.orDie(productionWorld))),
   )
 
+  it.effect('reports an invalid fishing wait from the queued public request through production stages', () =>
+    Effect.gen(function* () {
+      const coordinator = yield* WorldCommitCoordinator
+      const state = yield* makeGameplayFrameStateForOwner({
+        coordinator,
+        vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID,
+      })
+      const stages = yield* makeGameplayStagesWithState(state)
+
+      yield* requestFishingAdvance(state, {
+        requestId: 'invalid-fishing-wait',
+        actor: FISHING_ACTOR,
+        elapsedTicks: Schema.decodeUnknownSync(FishingElapsedTicksSchema)(0),
+        waitTicks: Brand.nominal<Schema.Schema.Type<typeof FishingWaitTicksSchema>>()(-1),
+        approachTicks: Schema.decodeUnknownSync(FishingApproachTicksSchema)(20),
+        biteWindowTicks: Schema.decodeUnknownSync(FishingBiteWindowTicksSchema)(20),
+        environment: { hasWater: true },
+      })
+      yield* runFrame(stages, DeltaTimeSecs(0))
+
+      expect(yield* Ref.get(state.operationFailures)).toContainEqual(expect.objectContaining({
+        _tag: 'Failed', operation: 'PlanBuild', subject: 'Fishing',
+      }))
+      expect(yield* Ref.get(state.pendingItemUses)).toStrictEqual([])
+    }).pipe(Effect.provide(Layer.orDie(productionWorld))),
+  )
+
   it.effect('uses the no-tool mining path for a breakable block, then clears progress when the target is air', () =>
     Effect.gen(function* () {
       const position = blockPosition(1, 64, 1)
@@ -301,7 +335,11 @@ describe('production interactions-stage coverage', () => {
         const dimension = Schema.decodeUnknownSync(DimensionIdSchema)('overworld')
         const stages = yield* makeGameplayStagesWithState(state)
 
-        yield* requestBlockMining(state, { position, dimension })
+        yield* requestBlockMining(state, {
+          position,
+          dimension,
+          toolLocation: { _tag: 'Inventory', slotIndex: 0 },
+        })
         // Torch hardness is 1 and its default no-tool requirement permits hand mining: 30 ticks / 20 = 1.5 s.
         yield* runFrame(stages, DeltaTimeSecs(1.5))
 
@@ -312,6 +350,52 @@ describe('production interactions-stage coverage', () => {
 
         expect(yield* getMiningProgressFraction(state)).toBe(0)
         expect(yield* Ref.get(state.pendingBlockMiningAttempt)).toBeNull()
+      }).pipe(Effect.provide(Layer.orDie(productionWorldWithStore(transactionalStore.layer))))
+    }),
+  )
+
+  it.effect('keeps the target block and reports a storage snapshot failure in production mining', () =>
+    Effect.gen(function* () {
+      const position = blockPosition(1, 64, 1)
+      const torch = Option.getOrThrow(blockIdOf('torch'))
+      const transactionalStore = yield* makeTransactionalChunkStoreDouble(
+        world([[position, torch]]),
+        ['0,0'],
+      )
+
+      return yield* Effect.gen(function* () {
+        const coordinator = yield* WorldCommitCoordinator
+        const store = yield* ChunkStore
+        const state = yield* makeGameplayFrameStateForOwner({
+          coordinator,
+          vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID,
+        })
+        let failStorageSnapshot = true
+        const snapshotFailingCoordinator: WorldCommitCoordinatorApi = {
+          ...coordinator,
+          snapshot: (ownerId, schema) => {
+            if (ownerId === GAMEPLAY_PLAYER_STORAGE_OWNER_ID && failStorageSnapshot) {
+              failStorageSnapshot = false
+              return Effect.fail(new ReplicatedOwnerUnknown({ ownerId }))
+            }
+            return coordinator.snapshot(ownerId, schema)
+          },
+        }
+        const stages = yield* makeGameplayStagesWithState(state).pipe(
+          Effect.provideService(WorldCommitCoordinator, snapshotFailingCoordinator),
+        )
+        const dimension = Schema.decodeUnknownSync(DimensionIdSchema)('overworld')
+
+        yield* requestBlockMining(state, { position, dimension })
+        yield* runFrame(stages, DeltaTimeSecs(1.5))
+
+        expect(yield* store.getBlock(position)).toStrictEqual({ _tag: 'Block', block: torch })
+        expect(yield* Ref.get(state.pendingBlockMiningAttempt)).toBeNull()
+        const failure = (yield* Ref.get(state.operationFailures)).find((entry) =>
+          entry._tag === 'Failed' && entry.operation === 'OwnerSnapshot' && entry.subject === 'Mining',
+        )
+        expect(failure?._tag).toBe('Failed')
+        expect(failure?.error._tag).toBe('ReplicatedOwnerUnknown')
       }).pipe(Effect.provide(Layer.orDie(productionWorldWithStore(transactionalStore.layer))))
     }),
   )

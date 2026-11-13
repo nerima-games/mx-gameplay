@@ -14,6 +14,8 @@ import {
   EntityId,
   PlayerServiceSnapshotSchema,
   PlayerStorageSnapshotSchema,
+  TNT_REPLICATED_OWNER_ID,
+  TntServiceSnapshotSchema,
   TimeService,
   WorldCommitCoordinator,
   durability,
@@ -23,6 +25,7 @@ import {
   makeTimeService,
   type DomainEventBusApi,
 } from '@nerima-games/mc-sim'
+import { ChunkStore } from '@nerima-games/mc-worldgen'
 import { Effect, Layer, Ref, Result, Schema, Stream } from 'effect'
 import {
   drawRolls,
@@ -56,10 +59,13 @@ import {
   makeGameplayFrameStateForOwner,
 } from '../src/stages/registration.js'
 import { drainGameplayUnsupportedOperations } from '../src/stages/registration-core.js'
-import { emptyWorldStoreLayer } from './support/chunk-store-double.js'
+import { emptyWorldStoreLayer, world } from './support/chunk-store-double.js'
 import { emptyRosterLayer } from './support/entity-manager-double.js'
 import { emptyInventoryLayer } from './support/inventory-service-double.js'
-import { gameplayCommitServicesLayer } from './support/transactional-stage-doubles.js'
+import {
+  gameplayCommitServicesLayer,
+  makeTransactionalChunkStoreDouble,
+} from './support/transactional-stage-doubles.js'
 import { runFrame } from './support/frame-runner.js'
 
 const eventBus: DomainEventBusApi = {
@@ -78,14 +84,36 @@ const productionWorld = Layer.provideMerge(
   ),
 )
 
-const enchantedHelmetStorage = (enchantmentId: 'minecraft:unbreaking' | 'minecraft:thorns') => {
+const productionWorldWithStore = (storeLayer: Layer.Layer<ChunkStore>) => Layer.provideMerge(
+  gameplayCommitServicesLayer,
+  Layer.mergeAll(
+    storeLayer,
+    emptyRosterLayer,
+    Layer.effect(TimeService, makeTimeService()),
+    emptyInventoryLayer,
+    Layer.succeed(DomainEventBus, eventBus),
+  ),
+)
+
+const productionTntWorld = productionWorldWithStore(Layer.effect(
+  ChunkStore,
+  Effect.map(
+    makeTransactionalChunkStoreDouble(world([]), ['0,0']),
+    (store) => store.api,
+  ),
+))
+
+const enchantedHelmetStorage = (
+  enchantmentId: 'minecraft:unbreaking' | 'minecraft:thorns',
+  currentDurability = 100,
+) => {
   const enchantments = enchantmentId === 'minecraft:unbreaking'
     ? Result.getOrThrow(enchantmentsComponent({ 'minecraft:unbreaking': 1 }))
     : Result.getOrThrow(enchantmentsComponent({ 'minecraft:thorns': 1 }))
   const components = Result.getOrThrow(itemComponents('iron_helmet', { enchantments }))
   const helmet = Result.getOrThrow(equipmentItem(
     Result.getOrThrow(itemStack('iron_helmet', StackCount(1), { components })),
-    Result.getOrThrow(durability(100, 165)),
+    Result.getOrThrow(durability(currentDurability, 165)),
   ))
   const storage = emptyPlayerStorage()
   return {
@@ -113,6 +141,7 @@ const makeProductionScenario = (options: Readonly<{
   storage: ReturnType<typeof emptyPlayerStorage>
   statusEffects: StatusEffectState
   zombieHealth: number
+  tnt?: Schema.Schema.Type<typeof TntServiceSnapshotSchema>
 }>) => Effect.gen(function* () {
   const coordinator = yield* WorldCommitCoordinator
   const state = yield* makeGameplayFrameStateForOwner({
@@ -146,6 +175,7 @@ const makeProductionScenario = (options: Readonly<{
       { ownerId: GAMEPLAY_PLAYER_STORAGE_OWNER_ID, state: options.storage },
       { ownerId: GAMEPLAY_ENTITIES_OWNER_ID, state: roster },
       { ownerId: GAMEPLAY_STATUS_EFFECTS_OWNER_ID, state: options.statusEffects },
+      ...(options.tnt === undefined ? [] : [{ ownerId: TNT_REPLICATED_OWNER_ID, state: options.tnt }]),
     ],
   })
   const stages = yield* makeGameplayStagesWithState(state)
@@ -229,10 +259,48 @@ describe('full-composition enchantment coverage', () => {
     }).pipe(Effect.provide(Layer.orDie(productionWorld))),
   )
 
+  it.effect('suppresses TNT blast damage through Resistance V in the production entity stage', () =>
+    Effect.gen(function* () {
+      const resistance = Result.getOrThrow(applyStatusEffect(emptyStatusEffectState(), {
+        type: 'resistance',
+        durationSecs: 20,
+        amplifier: 4,
+      })).state
+      const tnt = Schema.decodeUnknownSync(TntServiceSnapshotSchema)({
+        tnts: [{
+          id: EntityId('test:resisted-tnt'),
+          dimension: 'overworld',
+          center: { x: 0, y: 64, z: 0 },
+          state: { kind: 'primed', remainingFuseSecs: 0.05 },
+        }],
+      })
+      const { coordinator, stages, state } = yield* makeProductionScenario({
+        storage: emptyPlayerStorage(),
+        statusEffects: resistance,
+        zombieHealth: 20,
+        tnt,
+      })
+      const before = yield* coordinator.snapshot(GAMEPLAY_VITALS_OWNER_ID, ExperienceOrbVitalsOwnerSnapshotSchema)
+
+      yield* runFrame(stages, DeltaTimeSecs(0.25))
+
+      const [after, tntAfter, modifiers, damages] = yield* Effect.all([
+        coordinator.snapshot(GAMEPLAY_VITALS_OWNER_ID, ExperienceOrbVitalsOwnerSnapshotSchema),
+        coordinator.snapshot(TNT_REPLICATED_OWNER_ID, TntServiceSnapshotSchema),
+        Ref.get(state.playerStatusEffectModifiers),
+        Ref.get(state.playerDamages),
+      ])
+      expect(tntAfter.state.tnts[0]?.state).toStrictEqual({ kind: 'detonated' })
+      expect(modifiers.damageTakenMultiplier).toBe(0)
+      expect(after.state.vitals.healthPoints).toBe(before.state.vitals.healthPoints)
+      expect(damages).toContainEqual(expect.objectContaining({ _tag: 'Explosion' }))
+    }).pipe(Effect.provide(Layer.orDie(productionTntWorld))),
+  )
+
   it.effect('resolves Thorns retaliation through zombie drops and experience rewards', () =>
     Effect.gen(function* () {
       const { coordinator, stages, state } = yield* makeProductionScenario({
-        storage: enchantedHelmetStorage('minecraft:thorns'),
+        storage: enchantedHelmetStorage('minecraft:thorns', 1),
         statusEffects: emptyStatusEffectState(),
         zombieHealth: 1,
       })
@@ -255,7 +323,7 @@ describe('full-composition enchantment coverage', () => {
         drainGameplayUnsupportedOperations(state),
       ])
       expect(roster.state.entities).toStrictEqual([])
-      expect(storage.state.equipment.slots.head?.durability?.current).toBe(97)
+      expect(storage.state.equipment.slots.head).toBeNull()
       expect(orbs.state.orbs.reduce(
         (total, orb) => total + Number(orb.value) * (orb.count ?? 1),
         0,

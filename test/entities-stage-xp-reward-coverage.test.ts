@@ -294,7 +294,7 @@ describe('XP rewards through production gameplay composition', () => {
         value,
         fixturePosition(100 + index * 2, 0.72, -2),
       ))
-      const { coordinator, state, stages } = yield* makeZombieRewardFrame(replayedRewards)
+      const { coordinator, state, stages, observedCommits } = yield* makeZombieRewardFrame(replayedRewards)
       expect(stages).toHaveLength(9)
       const before = yield* coordinator.snapshot(GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID, ExperienceOrbOwnerSnapshotSchema)
 
@@ -308,6 +308,7 @@ describe('XP rewards through production gameplay composition', () => {
       }])
       expect(after.state).toStrictEqual(before.state)
       expect(yield* Ref.get(state.mobExperience)).toStrictEqual([])
+      expect(orbOwnerWrites(observedCommits)).toStrictEqual([])
     }),
   )
 

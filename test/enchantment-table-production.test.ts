@@ -9,6 +9,7 @@ import {
 import {
   DomainEventBus,
   PlayerStorageSnapshotSchema,
+  ReplicatedOwnerUnknown,
   TimeService,
   TotalExperience,
   WorldCommitCoordinator,
@@ -339,6 +340,18 @@ describe('production enchanting table orchestration', () => {
       yield* runFrame(stages, DeltaTimeSecs(0))
       yield* assertRejected(state, 'empty-table-slot', 'no-item')
 
+      yield* seedTableInputs('apple')
+      yield* requestEnchantmentTableOffers(state, {
+        requestId: 'no-table-offers', itemSlot: 0, lapisSlot: 1, bookshelfCount: 15,
+      })
+      yield* runFrame(stages, DeltaTimeSecs(0))
+      expect(yield* drainEnchantmentTableResults(state)).toStrictEqual([{
+        _tag: 'OffersGenerated', requestId: 'no-table-offers', offers: [],
+      }])
+      yield* requestEnchantmentTableApply(state, { requestId: 'no-table-offers', tableSlot: 0 })
+      yield* runFrame(stages, DeltaTimeSecs(0))
+      yield* assertRejected(state, 'no-table-offers', 'invalid-offer')
+
       yield* seedTableInputs()
       yield* Ref.set(state.rollSeed, ENCHANTMENT_TABLE_SEED)
       const duplicateRequest = {
@@ -463,6 +476,60 @@ describe('production enchanting table orchestration', () => {
         _tag: 'Failed', operation: 'WorldCommit', subject: 'ItemUse',
         error: { _tag: 'WorldRevisionConflict' },
       }])
+    }).pipe(Effect.provide(Layer.orDie(productionWorld))),
+  )
+
+  it.effect('reports owner snapshot failures for production offers and apply requests', () =>
+    Effect.gen(function* () {
+      const coordinator = yield* WorldCommitCoordinator
+      const state = yield* makeGameplayFrameStateForOwner({
+        coordinator,
+        vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID,
+      })
+      yield* seedTableInputs()
+      let failStorageSnapshot = true
+      const snapshotFailingCoordinator: WorldCommitCoordinatorApi = {
+        ...coordinator,
+        snapshot: (ownerId, schema) => {
+          if (ownerId === GAMEPLAY_PLAYER_STORAGE_OWNER_ID && failStorageSnapshot) {
+            failStorageSnapshot = false
+            return Effect.fail(new ReplicatedOwnerUnknown({ ownerId }))
+          }
+          return coordinator.snapshot(ownerId, schema)
+        },
+      }
+      const failedOffersStages = yield* makeGameplayStagesWithState(state).pipe(
+        Effect.provideService(WorldCommitCoordinator, snapshotFailingCoordinator),
+      )
+      yield* requestEnchantmentTableOffers(state, {
+        requestId: 'offer-snapshot-failure', itemSlot: 0, lapisSlot: 1, bookshelfCount: 15,
+      })
+      yield* runFrame(failedOffersStages, DeltaTimeSecs(0))
+      yield* assertRejected(state, 'offer-snapshot-failure', 'transaction-failed')
+      expect(yield* Ref.get(state.operationFailures)).toContainEqual(expect.objectContaining({
+        _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'ItemUse',
+      }))
+
+      const stages = yield* makeGameplayStagesWithState(state)
+      yield* Ref.set(state.rollSeed, ENCHANTMENT_TABLE_SEED)
+      yield* requestEnchantmentTableOffers(state, {
+        requestId: 'apply-snapshot-failure', itemSlot: 0, lapisSlot: 1, bookshelfCount: 15,
+      })
+      yield* runFrame(stages, DeltaTimeSecs(0))
+      yield* drainEnchantmentTableResults(state)
+
+      failStorageSnapshot = true
+      const failedApplyStages = yield* makeGameplayStagesWithState(state).pipe(
+        Effect.provideService(WorldCommitCoordinator, snapshotFailingCoordinator),
+      )
+      yield* requestEnchantmentTableApply(state, {
+        requestId: 'apply-snapshot-failure', tableSlot: MULTI_ENCHANTMENT_SLOT,
+      })
+      yield* runFrame(failedApplyStages, DeltaTimeSecs(0))
+      yield* assertRejected(state, 'apply-snapshot-failure', 'transaction-failed')
+      expect(yield* Ref.get(state.operationFailures)).toContainEqual(expect.objectContaining({
+        _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'ItemUse',
+      }))
     }).pipe(Effect.provide(Layer.orDie(productionWorld))),
   )
 

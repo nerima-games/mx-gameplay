@@ -162,7 +162,8 @@ const damageEquipmentWithUnbreaking = (
   itemKind: 'tool' | 'armor',
 ): Readonly<{ storage: PlayerStorage; seed: number }> => {
   const equipped = storage.equipment.slots[slot]
-  if (equipped === null || requestedWear <= 0) return { storage, seed }
+  // Thorns snapshots the triggering piece before ordinary armor wear can break it.
+  if (equipped === null) return { storage, seed }
   const enchantments: EnchantmentSource = equipped.components?.enchantments ?? {}
   const unbreaking = enchantmentLevel(enchantments, 'unbreaking')
   const rolls = unbreaking > 0 ? drawRolls(seed, requestedWear) : undefined
@@ -992,9 +993,6 @@ const runMobSimulation = (
     yield* recordMobRuleIssues(state, 'MobExperience', casualtyExperience.issues)
   }
   if (thornsDrops._tag === 'Unsupported') yield* recordMobRuleIssues(state, 'MobDrop', thornsDrops.issues)
-  if (thornsExperience._tag === 'Unsupported') {
-    yield* recordMobRuleIssues(state, 'MobExperience', thornsExperience.issues)
-  }
 
   // Local cursors and output queues move only after the replicated candidate
   // has committed. Ref updates are synchronous and append to any newly queued work.
@@ -1030,7 +1028,6 @@ const runMobSimulation = (
 type PlannedMendingRepair = Readonly<{
   storage: PlayerStorage
   experienceRemaining: number
-  selectedSlot: string | undefined
 }>
 
 const mendingCandidatesForStorage = (
@@ -1115,7 +1112,6 @@ const planMendingRepair = (
     return Result.map(validated, (result): PlannedMendingRepair => ({
       storage: result.repairedStorage,
       experienceRemaining: result.experienceRemaining,
-      selectedSlot: result.selectedLocation,
     }))
   })
 }
@@ -1127,9 +1123,10 @@ const experienceOrbRecordsForReward = (
   values: ReadonlyArray<ExperienceOrbValue>,
   at: Schema.Schema.Type<typeof WorldPositionSchema>,
   tick: Schema.Schema.Type<typeof SimulationTickSchema>,
-): Result.Result<ReadonlyArray<ExperienceOrbRecord>, Schema.SchemaError> => {
+): Result.Result<Readonly<{ records: ReadonlyArray<ExperienceOrbRecord>; changed: boolean }>, Schema.SchemaError> => {
   const next = [...existing]
   const ids = new Set(existing.map(({ id }) => id))
+  let changed = false
   for (const [valueIndex, value] of values.entries()) {
     const nearbyIndex = next.findIndex((orb) =>
       orb.value === value && orb.position !== undefined &&
@@ -1144,17 +1141,18 @@ const experienceOrbRecordsForReward = (
       )
       if (Result.isFailure(merged)) return Result.fail(merged.failure)
       next[nearbyIndex] = { ...existingOrb, count: merged.success!.count }
+      changed = true
       continue
     }
     const id = EntityId(`mx-gameplay:experience-orb/${source}/${tick}/${eventIndex}/${valueIndex}`)
     if (ids.has(id)) continue
     ids.add(id)
     next.push({ id, value, position: at, spawnedAt: tick })
+    changed = true
   }
   const validated = Schema.decodeUnknownResult(ExperienceOrbOwnerSnapshotSchema)({ orbs: next })
-  return Result.isFailure(validated)
-    ? Result.fail(validated.failure)
-    : Result.succeed(validated.success.orbs)
+  if (Result.isFailure(validated)) return Result.fail(validated.failure)
+  return Result.succeed({ records: validated.success.orbs, changed })
 }
 
 const spawnQueuedExperienceOrbs = (context: GameplayStageContext): Effect.Effect<void> =>
@@ -1194,6 +1192,7 @@ const spawnQueuedExperienceOrbs = (context: GameplayStageContext): Effect.Effect
       return
     }
     let nextOrbs = orbSnapshot.state.orbs
+    let orbRecordsChanged = false
     for (const [eventIndex, event] of experiences.entries()) {
       const values = splitExperienceOrbReward(event.amount)
       if (Result.isFailure(values)) {
@@ -1228,10 +1227,10 @@ const spawnQueuedExperienceOrbs = (context: GameplayStageContext): Effect.Effect
         })
         return
       }
-      nextOrbs = spawned.success
+      nextOrbs = spawned.success.records
+      orbRecordsChanged ||= spawned.success.changed
     }
-    if (nextOrbs.length !== orbSnapshot.state.orbs.length ||
-      nextOrbs.some((orb, index) => orb !== orbSnapshot.state.orbs[index])) {
+    if (orbRecordsChanged) {
       const committed = yield* Effect.result(commit.coordinator.commit({
         expectedRevision: orbSnapshot.revision,
         expectedDimensions: [],
@@ -1547,9 +1546,7 @@ export const makeEntitiesStage = (context: GameplayStageContext): StageRegistrat
               planMendingRepair(storage.state, planned.success.experience, roll),
             )
             experienceRemaining = repair.experienceRemaining
-            repairedStorage = repair.selectedSlot === undefined
-              ? undefined
-              : repair.storage
+            repairedStorage = repair.storage
             rollSeed = rolls.seed
           }
           const experienceDelta = yield* Effect.fromResult(ExperienceDelta.result(experienceRemaining))
@@ -1583,8 +1580,7 @@ export const makeEntitiesStage = (context: GameplayStageContext): StageRegistrat
           )
           absorptionExecutions.push({ request, outcome: { _tag: 'Completed', result } as const })
           if (automaticOrbIds.has(request.orb)) {
-            const tick = Schema.decodeUnknownResult(SimulationTickSchema)(request.tick)
-            if (Result.isSuccess(tick)) yield* Ref.set(state.lastExperienceOrbPickupTick, tick.success)
+            yield* Ref.set(state.lastExperienceOrbPickupTick, planned.success.context.tick)
           }
         }
         if (retryAbsorptions.length > 0) {
