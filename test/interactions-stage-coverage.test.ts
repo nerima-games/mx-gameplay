@@ -60,10 +60,12 @@ import {
   requestFishingAdvance,
   requestMeleeAttack,
   drainEnchantmentTableResults,
+  requestStatusEffect,
   gameplayStages,
 } from '../src/stages/registration.js'
 import {
   drainGameplayUnsupportedOperations,
+  GAMEPLAY_STAGE_IDS,
   entityManagerTag,
 } from '../src/stages/registration-core.js'
 import type { MobBehaviour } from '../src/domain/entities/mob-frame.js'
@@ -551,6 +553,34 @@ describe('production interactions-stage coverage', () => {
           0,
         )).toBe(1)
         expect(yield* Ref.get(state.operationFailures)).toStrictEqual([])
+      }).pipe(Effect.provide(Layer.orDie(productionWorldWithStore(transactionalStore.layer))))
+    }),
+  )
+
+  it.effect('records an exhaustion conversion failure from an extreme hunger tick in production stages', () =>
+    Effect.gen(function* () {
+      const transactionalStore = yield* makeTransactionalChunkStoreDouble(world([]), ['0,0'])
+
+      return yield* Effect.gen(function* () {
+        const coordinator = yield* WorldCommitCoordinator
+        const state = yield* makeGameplayFrameStateForOwner({
+          coordinator,
+          vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID,
+        })
+        const stages = yield* makeGameplayStagesWithState(state)
+        const interactions = stages.filter((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)
+        expect(interactions).toHaveLength(1)
+        const application = { type: 'hunger' as const, durationSecs: Number.MAX_VALUE, amplifier: 255 }
+
+        yield* requestStatusEffect(state, application)
+        yield* runFrame(interactions, DeltaTimeSecs(Number.MAX_VALUE))
+
+        const failure = (yield* Ref.get(state.operationFailures)).find((entry) =>
+          entry._tag === 'Failed' && entry.operation === 'CandidateBuild' && entry.subject === 'Vitals',
+        )
+        expect(failure?._tag).toBe('Failed')
+        expect(failure?.error._tag).toBe('BrandError')
+        expect(yield* Ref.get(state.pendingStatusEffects)).toStrictEqual([application])
       }).pipe(Effect.provide(Layer.orDie(productionWorldWithStore(transactionalStore.layer))))
     }),
   )
