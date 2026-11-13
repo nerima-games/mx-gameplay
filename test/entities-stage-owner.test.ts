@@ -3782,7 +3782,7 @@ describe('entities stage owner-backed MobSimulation', () => {
     }])
   })
 
-  it('automatically absorbs the nearest XP orb without a player-storage owner', async () => {
+  it('automatically absorbs the nearest XP orb among multiple nearby orbs', async () => {
     const firstOrbId = EntityId('test:nearest-owner-pickup-first')
     const secondOrbId = EntityId('test:nearest-owner-pickup-second')
     const nearestOrbId = EntityId('test:nearest-owner-pickup-last')
@@ -3823,14 +3823,9 @@ describe('entities stage owner-backed MobSimulation', () => {
         ],
       },
     }))
-    const { playerStorageOwnerId: _omittedStorageOwner, ...commitWithoutStorageOwner } = harness.context.commit!
-    const context: GameplayStageContext = {
-      ...harness.context,
-      commit: commitWithoutStorageOwner,
-    }
     await Effect.runPromise(Ref.set(harness.state.tickCount, SimulationTick(8)))
 
-    await Effect.runPromise(makeEntitiesStage(context).run(makeDeltaTimeSecs(0)).pipe(
+    await Effect.runPromise(makeEntitiesStage(harness.context).run(makeDeltaTimeSecs(0)).pipe(
       Effect.provide(FrameServicesLayer),
     ))
 

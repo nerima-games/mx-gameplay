@@ -1508,23 +1508,19 @@ export const makeEntitiesStage = (context: GameplayStageContext): StageRegistrat
             retryAbsorptions.push(request)
             continue
           }
-          const storageSnapshot = commit.playerStorageOwnerId === undefined
-            ? undefined
-            : yield* Effect.result(commit.coordinator.snapshot(
-              commit.playerStorageOwnerId,
-              PlayerStorageSnapshotSchema,
-            ))
-          if (storageSnapshot !== undefined && Result.isFailure(storageSnapshot)) {
+          const storageSnapshot = yield* Effect.result(commit.coordinator.snapshot(
+            commit.playerStorageOwnerId,
+            PlayerStorageSnapshotSchema,
+          ))
+          if (Result.isFailure(storageSnapshot)) {
             absorptionExecutions.push({
               request,
               outcome: { _tag: 'Failed', error: storageSnapshot.failure } as const,
             })
             continue
           }
-          const storage = storageSnapshot === undefined || Result.isFailure(storageSnapshot)
-            ? undefined
-            : storageSnapshot.success
-          if (storage !== undefined && storage.revision !== vitalsSnapshot.revision) {
+          const storage = storageSnapshot.success
+          if (storage.revision !== vitalsSnapshot.revision) {
             retryAbsorptions.push(request)
             continue
           }
@@ -1540,26 +1536,24 @@ export const makeEntitiesStage = (context: GameplayStageContext): StageRegistrat
           let experienceRemaining: number = planned.success.experience
           let repairedStorage: PlayerStorage | undefined
           let rollSeed: number | undefined
-          if (storage !== undefined) {
-            const candidates = mendingCandidatesForStorage(storage.state)
-            const eligibleMending = candidates.some(({ durability, enchantments }) =>
-              durability !== null &&
-              durability.max > durability.current &&
-              enchantmentLevel(enchantments, 'mending') > 0,
+          const candidates = mendingCandidatesForStorage(storage.state)
+          const eligibleMending = candidates.some(({ durability, enchantments }) =>
+            durability !== null &&
+            durability.max > durability.current &&
+            enchantmentLevel(enchantments, 'mending') > 0,
+          )
+          if (eligibleMending) {
+            const currentSeed = yield* Ref.get(state.rollSeed)
+            const rolls = drawRolls(currentSeed, 1)
+            const roll = yield* Effect.fromResult(InterpolationFraction.result(rollAt(rolls, 0)))
+            const repair = yield* Effect.fromResult(
+              planMendingRepair(storage.state, planned.success.experience, roll),
             )
-            if (eligibleMending) {
-              const currentSeed = yield* Ref.get(state.rollSeed)
-              const rolls = drawRolls(currentSeed, 1)
-              const roll = yield* Effect.fromResult(InterpolationFraction.result(rollAt(rolls, 0)))
-              const repair = yield* Effect.fromResult(
-                planMendingRepair(storage.state, planned.success.experience, roll),
-              )
-              experienceRemaining = repair.experienceRemaining
-              repairedStorage = repair.selectedSlot === undefined
-                ? undefined
-                : repair.storage
-              rollSeed = rolls.seed
-            }
+            experienceRemaining = repair.experienceRemaining
+            repairedStorage = repair.selectedSlot === undefined
+              ? undefined
+              : repair.storage
+            rollSeed = rolls.seed
           }
           const experienceDelta = yield* Effect.fromResult(ExperienceDelta.result(experienceRemaining))
           const vitalsCandidate = yield* Effect.fromResult(
