@@ -41,6 +41,7 @@ import {
   GameplayEnchantmentTableOffersRequestSchema,
 } from '../src/stages/registration.js'
 import { makeGameplayStagesWithState } from '../src/stages/gameplay-stage-composition.js'
+import { GAMEPLAY_STAGE_IDS } from '../src/stages/stage-ids.js'
 import { emptyRosterLayer } from './support/entity-manager-double.js'
 import { emptyWorldStoreLayer } from './support/chunk-store-double.js'
 import { emptyInventoryLayer } from './support/inventory-service-double.js'
@@ -149,6 +150,32 @@ const assertRejected = (
 })
 
 describe('production enchanting table orchestration', () => {
+  it.effect('rejects an offer request when the production random seed is invalid', () =>
+    Effect.gen(function* () {
+      const coordinator = yield* WorldCommitCoordinator
+      const state = yield* makeGameplayFrameStateForOwner({
+        coordinator,
+        vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID,
+      })
+      yield* seedTableInputs()
+      const stages = yield* makeGameplayStagesWithState(state)
+      const interactions = stages.filter(({ id }) => id === GAMEPLAY_STAGE_IDS.interactions)
+      expect(interactions).toHaveLength(1)
+      yield* Ref.set(state.rollSeed, Number.NaN)
+
+      yield* requestEnchantmentTableOffers(state, {
+        requestId: 'invalid-random-seed', itemSlot: 0, lapisSlot: 1, bookshelfCount: 15,
+      })
+      yield* runFrame(interactions, DeltaTimeSecs(0))
+
+      expect(yield* drainEnchantmentTableResults(state)).toStrictEqual([{
+        _tag: 'Rejected', requestId: 'invalid-random-seed', reason: 'invalid-seed',
+      }])
+      expect(yield* Ref.get(state.rollSeed)).toBeNaN()
+      expect(yield* Ref.get(state.operationFailures)).toStrictEqual([])
+    }).pipe(Effect.provide(Layer.orDie(productionWorld))),
+  )
+
   it.effect('uses gameplayModule’s frame-stage builder and applies a multi-enchantment offer atomically', () =>
     Effect.gen(function* () {
       const coordinator = yield* WorldCommitCoordinator
