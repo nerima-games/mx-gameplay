@@ -1,7 +1,7 @@
 import { NonNegativeTickCount, PositionAxis, position, tickDuration, type Position } from '@nerima-games/mc-kernel'
 import { EntityKind, MobMovementStateSchema, type Entity, type EntityId, type MobMovementState } from '@nerima-games/mc-sim'
 import type { Dimension } from '@nerima-games/mc-worldgen'
-import { Brand, Schema } from 'effect'
+import { Brand, Result, Schema } from 'effect'
 import { CREEPER_KIND, ZOMBIE_KIND } from './hostile-combat.js'
 
 export const SKELETON_KIND: EntityKind = EntityKind('skeleton')
@@ -24,21 +24,50 @@ const mobMovementDistance = Brand.nominal<MobMovementDistance>()
 const LEGACY_TICKS_PER_SECOND = 1 / Number(tickDuration)
 const BLAZE_ATTACK_INTERVAL_TICKS = 60
 const MELEE_ATTACK_INTERVAL_TICKS = 20
+const motionPhaseTicks = (phase: number): number => Math.ceil(phase)
 
-const repairAttackCooldownTicks = (ticks: unknown, legacySecs: unknown): number => {
-  if (typeof ticks === 'number' && Number.isFinite(ticks)) {
-    return Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, Math.ceil(ticks)))
+export type MobStateRepairFailure =
+  | Readonly<{ _tag: 'MobMovementStateRepairFailure' }>
+  | Readonly<{
+      _tag: 'EcosystemMobStateRepairFailure'
+      field: '_tag' | 'attackCooldownTicks' | 'attackCooldownSecs' | 'motionPhase' | 'provoked' | 'movementGoal' | 'movement' | 'hasHeadProtection' | 'burningTicks'
+    }>
+
+const migrateLegacyEcosystemMobFields = (state: Readonly<Record<string, unknown>>): Readonly<Record<string, unknown>> => ({
+  ...state,
+  ...(!Object.hasOwn(state, 'hasHeadProtection') ? { hasHeadProtection: false } : {}),
+  ...(!Object.hasOwn(state, 'burningTicks') ? { burningTicks: 0 } : {}),
+})
+
+const cooldownTicksFromPersisted = (
+  state: Readonly<Record<string, unknown>>,
+): Result.Result<number, MobStateRepairFailure> => {
+  const hasTicks = Object.hasOwn(state, 'attackCooldownTicks')
+  if (hasTicks) {
+    const ticks = state['attackCooldownTicks']
+    if (typeof ticks !== 'number' || !Number.isFinite(ticks) || ticks < 0 || ticks > Number.MAX_SAFE_INTEGER) {
+      return Result.fail({ _tag: 'EcosystemMobStateRepairFailure', field: 'attackCooldownTicks' })
+    }
+    if (Object.hasOwn(state, 'attackCooldownSecs')) {
+      const seconds = state['attackCooldownSecs']
+      if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds < 0) {
+        return Result.fail({ _tag: 'EcosystemMobStateRepairFailure', field: 'attackCooldownSecs' })
+      }
+    }
+    return Result.succeed(Math.ceil(ticks))
   }
-  if (typeof legacySecs === 'number' && Number.isFinite(legacySecs)) {
-    return Math.min(Number.MAX_SAFE_INTEGER, Math.ceil(Math.max(0, legacySecs) * LEGACY_TICKS_PER_SECOND))
+  if (!Object.hasOwn(state, 'attackCooldownSecs')) {
+    return Result.fail({ _tag: 'EcosystemMobStateRepairFailure', field: 'attackCooldownTicks' })
   }
-  return 0
+  const seconds = state['attackCooldownSecs']
+  if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds < 0) {
+    return Result.fail({ _tag: 'EcosystemMobStateRepairFailure', field: 'attackCooldownSecs' })
+  }
+  const ticks = Math.ceil(seconds * LEGACY_TICKS_PER_SECOND)
+  return Number.isSafeInteger(ticks)
+    ? Result.succeed(ticks)
+    : Result.fail({ _tag: 'EcosystemMobStateRepairFailure', field: 'attackCooldownSecs' })
 }
-
-const repairMotionPhaseTicks = (phase: unknown): number =>
-  typeof phase === 'number' && Number.isFinite(phase)
-    ? Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, Math.ceil(phase)))
-    : 0
 
 // Explicit fixed-length tuple annotations (not `ReadonlyArray<EntityKind>`) are
 // deliberate on the spawn-kind tuples: `./entities/mob-frame`'s `HOSTILE_KINDS` and
@@ -109,9 +138,14 @@ const validPosition = (value: unknown): value is Position => {
   return validAxis(candidate.x) && validAxis(candidate.y) && validAxis(candidate.z)
 }
 
-export const repairMobMovementState = (value: unknown): MobMovementState | undefined => {
+export const repairMobMovementState = (
+  value: unknown,
+): Result.Result<MobMovementState | undefined, MobStateRepairFailure> => {
+  if (value === undefined) return Result.succeed(undefined)
   const decoded = Schema.decodeUnknownResult(MobMovementStateSchema)(value)
-  return decoded._tag === 'Success' ? decoded.success : undefined
+  return decoded._tag === 'Success'
+    ? Result.succeed(decoded.success)
+    : Result.fail({ _tag: 'MobMovementStateRepairFailure' })
 }
 
 export type EcosystemMobState = {
@@ -134,33 +168,62 @@ export const initialEcosystemMobState = (): EcosystemMobState => ({
   burningTicks: NonNegativeTickCount(0),
 })
 
-export const repairEcosystemMobState = (value: unknown): EcosystemMobState | undefined => {
-  if (typeof value !== 'object' || value === null || (value as { _tag?: unknown })._tag !== 'EcosystemMob') return undefined
-  const state = value as Partial<EcosystemMobState> & { readonly attackCooldownSecs?: unknown }
+export const repairEcosystemMobState = (
+  value: unknown,
+): Result.Result<EcosystemMobState | undefined, MobStateRepairFailure> => {
+  if (value === undefined) return Result.succeed(undefined)
+  if (typeof value !== 'object' || value === null || (value as { _tag?: unknown })._tag !== 'EcosystemMob') {
+    return Result.fail({ _tag: 'EcosystemMobStateRepairFailure', field: '_tag' })
+  }
+  const state = migrateLegacyEcosystemMobFields(value as Readonly<Record<string, unknown>>)
+  const cooldownTicks = cooldownTicksFromPersisted(state)
+  if (Result.isFailure(cooldownTicks)) return Result.fail(cooldownTicks.failure)
+  const motionPhase = state['motionPhase']
+  if (typeof motionPhase !== 'number' || !Number.isFinite(motionPhase) || motionPhase < 0 ||
+    Math.ceil(motionPhase) > Number.MAX_SAFE_INTEGER) {
+    return Result.fail({ _tag: 'EcosystemMobStateRepairFailure', field: 'motionPhase' })
+  }
+  const provoked = state['provoked']
+  if (typeof provoked !== 'boolean') {
+    return Result.fail({ _tag: 'EcosystemMobStateRepairFailure', field: 'provoked' })
+  }
+  const hasHeadProtection = state['hasHeadProtection']
+  if (typeof hasHeadProtection !== 'boolean') {
+    return Result.fail({ _tag: 'EcosystemMobStateRepairFailure', field: 'hasHeadProtection' })
+  }
+  const burningTicks = state['burningTicks']
+  if (typeof burningTicks !== 'number' || !Number.isSafeInteger(burningTicks) || burningTicks < 0 || burningTicks > 160) {
+    return Result.fail({ _tag: 'EcosystemMobStateRepairFailure', field: 'burningTicks' })
+  }
   let goal: Position | undefined
-  if (validPosition(state.movementGoal)) {
+  if (Object.hasOwn(state, 'movementGoal')) {
+    if (!validPosition(state['movementGoal'])) {
+      return Result.fail({ _tag: 'EcosystemMobStateRepairFailure', field: 'movementGoal' })
+    }
+    const movementGoal = state['movementGoal']
     goal = position(
-      PositionAxis(state.movementGoal.x),
-      PositionAxis(state.movementGoal.y),
-      PositionAxis(state.movementGoal.z),
+      PositionAxis(movementGoal.x),
+      PositionAxis(movementGoal.y),
+      PositionAxis(movementGoal.z),
     )
   }
-  const movement = repairMobMovementState(state.movement)
-  const burningTicks = NonNegativeTickCount(
-    typeof state.burningTicks === 'number' && Number.isSafeInteger(state.burningTicks)
-      ? Math.max(0, Math.min(160, state.burningTicks))
-      : 0,
-  )
-  return {
-    _tag: 'EcosystemMob',
-    attackCooldownTicks: repairAttackCooldownTicks(state.attackCooldownTicks, state.attackCooldownSecs),
-    motionPhase: repairMotionPhaseTicks(state.motionPhase),
-    provoked: state.provoked === true,
-    ...(goal === undefined ? {} : { movementGoal: goal }),
-    ...(movement === undefined ? {} : { movement }),
-    hasHeadProtection: state.hasHeadProtection === true,
-    burningTicks,
+  const movementResult = repairMobMovementState(state['movement'])
+  if (Result.isFailure(movementResult)) {
+    return Result.fail({ _tag: 'EcosystemMobStateRepairFailure', field: 'movement' })
   }
+  if (Object.hasOwn(state, 'movement') && movementResult.success === undefined) {
+    return Result.fail({ _tag: 'EcosystemMobStateRepairFailure', field: 'movement' })
+  }
+  return Result.succeed({
+    _tag: 'EcosystemMob',
+    attackCooldownTicks: cooldownTicks.success,
+    motionPhase: motionPhaseTicks(motionPhase),
+    provoked,
+    ...(goal === undefined ? {} : { movementGoal: goal }),
+    ...(movementResult.success === undefined ? {} : { movement: movementResult.success }),
+    hasHeadProtection,
+    burningTicks: NonNegativeTickCount(burningTicks),
+  })
 }
 
 export const ecosystemDimensionAllows = (kind: EntityKind, dimension: Dimension): boolean => {
@@ -250,7 +313,7 @@ export const stepEcosystemMob = (
   _deltaSecs: number,
 ): EcosystemMobStep => {
   const cooldown = Math.max(0, state.attackCooldownTicks - 1)
-  const currentPhase = repairMotionPhaseTicks(state.motionPhase)
+  const currentPhase = motionPhaseTicks(state.motionPhase)
   const phase = NonNegativeTickCount(currentPhase === Number.MAX_SAFE_INTEGER ? currentPhase : currentPhase + 1)
   const distance = target === undefined ? Number.POSITIVE_INFINITY : distanceXZ(self, target)
   const movementGoal = movementGoalForEcosystemMob(kind, state, self, target, phase)

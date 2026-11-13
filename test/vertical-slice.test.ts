@@ -1251,6 +1251,7 @@ describe('the mob slice, through the stage registration', () => {
       // ---- the player walks up ---------------------------------------------
       yield* movePlayerAndSyncOwner(player.api, commit.coordinator, playerNear)
       yield* runFrames(stages, 5, DeltaTimeSecs(1 / 20))
+      expect((yield* Ref.get(state.entityStageFaults)).pending).toStrictEqual([])
 
       // Lighting and burning are ONE step (`domain/mob/creeper-fuse.ts`). Five
       // fixed simulation ticks burn 0.25 seconds regardless of host frame delta.
@@ -1389,6 +1390,7 @@ describe('the mob slice, through the stage registration', () => {
       const revisionBefore = yield* commit.coordinator.revision
       const entitiesStage = stages.filter((stage) => stage.id === GAMEPLAY_STAGE_IDS.entities)
       yield* runFrames(entitiesStage, 10, STRIDE)
+      expect((yield* Ref.get(state.entityStageFaults)).pending).toStrictEqual([])
 
       const after = yield* readGameplayEntityRoster(commit.coordinator)
       expect(after.entities.slice(0, 3)).toStrictEqual(before.entities.slice(0, 3))

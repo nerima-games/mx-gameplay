@@ -35,6 +35,7 @@ import {
   hostileMobSnapshot,
   HOSTILE_KINDS,
   isDroppedItemBehaviour,
+  isMobBehaviourRepairFault,
   planEndermanTeleportRoster,
   planMobBlastRoster,
   planMobDamageRoster,
@@ -525,11 +526,18 @@ describe('repairMobBehaviour: the load path for every stored shape', () => {
     }),
   )
 
-  it.effect('an ecosystem mob repairs garbage to a fresh state and keeps a good one, raw', () =>
+  it.effect('an ecosystem mob preserves typed repair faults and migrates valid legacy state', () =>
     Effect.sync(() => {
-      expect(repairMobBehaviour(BLAZE_KIND, 'garbage')).toStrictEqual(
-        hostileMobSnapshot(initialEcosystemMobState()),
-      )
+      expect(repairMobBehaviour(BLAZE_KIND, 'garbage')).toMatchObject({
+        _tag: 'MobBehaviourRepairFault',
+        failure: { _tag: 'EcosystemMobStateRepairFailure', field: '_tag' },
+      })
+      expect(repairMobBehaviour(BLAZE_KIND, {
+        ...initialEcosystemMobState(), burningTicks: 161,
+      })).toMatchObject({
+        _tag: 'MobBehaviourRepairFault',
+        failure: { _tag: 'EcosystemMobStateRepairFailure', field: 'burningTicks' },
+      })
       const state = {
         _tag: 'EcosystemMob' as const, attackCooldownSecs: 1, motionPhase: 2, provoked: true,
         hasHeadProtection: false, burningTicks: NonNegativeTickCount(0),
@@ -538,6 +546,34 @@ describe('repairMobBehaviour: the load path for every stored shape', () => {
         _tag: 'EcosystemMob', attackCooldownTicks: 20, motionPhase: 2, provoked: true,
         hasHeadProtection: false, burningTicks: NonNegativeTickCount(0),
       }))
+    }),
+  )
+
+  it.effect('an ecosystem hostile snapshot initializes omitted inner state and validates repair fault tags', () =>
+    Effect.sync(() => {
+      expect(repairMobBehaviour(BLAZE_KIND, hostileMobSnapshot(undefined))).toMatchObject({
+        _tag: 'HostileMob',
+        behaviour: { _tag: 'EcosystemMob' },
+      })
+      expect(repairMobBehaviour(BLAZE_KIND, hostileMobSnapshot(initialEcosystemMobState()))).toMatchObject({
+        _tag: 'HostileMob',
+        behaviour: { _tag: 'EcosystemMob', burningTicks: 0 },
+      })
+
+      expect(isMobBehaviourRepairFault(null)).toBe(false)
+      expect(isMobBehaviourRepairFault({ _tag: 'MobBehaviourRepairFault', failure: null })).toBe(false)
+      expect(isMobBehaviourRepairFault({
+        _tag: 'MobBehaviourRepairFault',
+        failure: { _tag: 'UnexpectedRepairFailure' },
+      })).toBe(false)
+      expect(isMobBehaviourRepairFault({
+        _tag: 'MobBehaviourRepairFault',
+        failure: { _tag: 'MobMovementStateRepairFailure' },
+      })).toBe(true)
+      expect(isMobBehaviourRepairFault({
+        _tag: 'MobBehaviourRepairFault',
+        failure: { _tag: 'EcosystemMobStateRepairFailure', field: 'burningTicks' },
+      })).toBe(true)
     }),
   )
 
@@ -662,8 +698,8 @@ describe('repairMobBehaviour: the load path for every stored shape', () => {
 
       const badBlaze = hostileMobSnapshot(DORMANT_FUSE, { ageTicks: 12 })
       expect(repairMobBehaviour(BLAZE_KIND, badBlaze)).toStrictEqual({
-        ...badBlaze,
-        behaviour: initialEcosystemMobState(),
+        _tag: 'MobBehaviourRepairFault',
+        failure: { _tag: 'EcosystemMobStateRepairFailure', field: '_tag' },
       })
 
       const movement = Schema.decodeUnknownSync(MobMovementStateSchema)({
@@ -689,7 +725,7 @@ describe('repairMobBehaviour: the load path for every stored shape', () => {
     }),
   )
 
-  it.effect('drops invalid persisted movement while retaining hostile snapshot metadata', () =>
+  it.effect('retains invalid persisted movement as a typed repair fault', () =>
     Effect.sync(() => {
       const malformed = {
         _tag: 'HostileMob',
@@ -701,12 +737,12 @@ describe('repairMobBehaviour: the load path for every stored shape', () => {
         tamed: false,
       }
 
-      expect(repairMobBehaviour(ZOMBIE_KIND, malformed)).toStrictEqual(hostileMobSnapshot(undefined, {
-        ageTicks: 12,
-        persistent: true,
-        named: false,
-        tamed: false,
-      }))
+      const fault = repairMobBehaviour(ZOMBIE_KIND, malformed)
+      expect(fault).toStrictEqual({
+        _tag: 'MobBehaviourRepairFault',
+        failure: { _tag: 'MobMovementStateRepairFailure' },
+      })
+      expect(repairMobBehaviour(ZOMBIE_KIND, fault)).toBe(fault)
     }),
   )
 })

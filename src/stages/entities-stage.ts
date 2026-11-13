@@ -9,6 +9,7 @@ import {
   applyFallingBlocks,
   hostileSpawnsAllowed,
   recordGameplayStageFailure,
+  recordGameplayEntityStageFault,
   recordGameplayUnsupportedOperation,
   recordMobRuleIssues,
   rollCasualtyExperience,
@@ -35,7 +36,6 @@ import {
   WorldWriteBatchSchema,
   blockPosition,
   blockPositionKeyOf,
-  propertyOfBlockId,
   position,
   resistsExplosion,
   type BlockPosition,
@@ -95,22 +95,26 @@ import {
   type MobExplosionHit,
   type MobDamageHit,
   type MobAttackEvent,
+  type MobMovementRosterFault,
   type MobProjectilePendingImpact,
   type MobSpawnAttempt,
+  type MobRoster,
   isDroppedItemBehaviour,
   isHostileMobSnapshot,
+  isMobBehaviourRepairFault,
 } from '../domain/entities/mob-frame.js'
 import { chunkCoordsAround, openChunkWindow } from '../domain/chunk-window.js'
 import {
+  entityWorldBlockDataAt,
   entityWorldCellAt,
-  entityWorldValueFromLookup,
   type EntityWorldCell,
   type EntityWorldCellPosition,
   type EntityWorldQueryFailure,
 } from '../domain/entities/entity-world-cell.js'
-import { mobMovementWorldFromChunkWindow } from '../domain/entities/mob-movement-world.js'
+import { mobMovementCell, mobMovementWorldFromChunkWindow } from '../domain/entities/mob-movement-world.js'
+import type { EntityStageFault, EntityWorldFaultTarget } from '../domain/entities/entity-stage-fault.js'
 import { burnsInDaylight } from '../domain/mob/undead-daylight.js'
-import { SPIDER_KIND, BLAZE_KIND, SKELETON_KIND } from '../domain/mob/mob-ecosystem.js'
+import { SPIDER_KIND, BLAZE_KIND, SKELETON_KIND, MOB_MOVEMENT_POLICIES } from '../domain/mob/mob-ecosystem.js'
 import type { BurningActor } from '../domain/fire-lifecycle.js'
 import {
   resolveHostileContacts,
@@ -156,6 +160,77 @@ const unsupportedMobSimulation = (
   reason,
 })
 
+const entityWorldFaultTarget = (
+  failure: EntityWorldQueryFailure,
+  entityId?: import('@nerima-games/mc-sim').EntityId,
+): EntityWorldFaultTarget => {
+  if ('cell' in failure) return { _tag: 'Cell', cell: failure.cell }
+  if (entityId !== undefined) return { _tag: 'Entity', entityId }
+  return { _tag: 'Position', position: failure.position }
+}
+
+const entitiesStageFailureTag = (failure: unknown): string => {
+  if (typeof failure !== 'object' || failure === null) return typeof failure
+  const tagged = failure as Readonly<{ _tag?: unknown; name?: unknown }>
+  if (typeof tagged._tag === 'string') return tagged._tag
+  return typeof tagged.name === 'string' ? tagged.name : 'UnknownFailure'
+}
+
+const recordEntityWorldDataFault = (
+  state: GameplayStageContext['state'],
+  source: 'UndeadDaylight' | 'MobMovement' | 'ProjectileLineOfSight' | 'ProjectileStep' | 'TntExplosion',
+  failure: EntityWorldQueryFailure,
+  entityId?: import('@nerima-games/mc-sim').EntityId,
+): Effect.Effect<void> => recordGameplayEntityStageFault(state, {
+  _tag: 'EntityWorldDataFault',
+  source,
+  target: entityWorldFaultTarget(failure, entityId),
+  failure,
+})
+
+export const entityStageFaultForMobMovement = (fault: MobMovementRosterFault): EntityStageFault => {
+  switch (fault.reason) {
+    case 'world-query-failed':
+      return {
+        _tag: 'EntityWorldDataFault',
+        source: 'MobMovement',
+        target: entityWorldFaultTarget(fault.worldFailure, fault.entityId),
+        failure: fault.worldFailure,
+      }
+    case 'invalid-state':
+      if ('repairFailure' in fault) {
+        return {
+          _tag: 'MobBehaviourRepairFault',
+          entityId: fault.entityId,
+          entityKind: fault.entityKind,
+          failure: fault.repairFailure,
+        }
+      }
+      return { _tag: 'MobMovementExecutionFault', entityId: fault.entityId, reason: fault.reason }
+    case 'invalid-goal':
+      return { _tag: 'MobMovementExecutionFault', entityId: fault.entityId, reason: fault.reason }
+    case 'simulation-rejected':
+    case 'step-failed':
+      return {
+        _tag: 'MobMovementExecutionFault',
+        entityId: fault.entityId,
+        reason: fault.reason,
+        failure: fault.failure,
+      }
+    /* v8 ignore start */
+    default: {
+      const exhaustive: never = fault
+      return exhaustive
+    }
+    /* v8 ignore stop */
+  }
+}
+
+const recordMobMovementRosterFault = (
+  state: GameplayStageContext['state'],
+  fault: MobMovementRosterFault,
+): Effect.Effect<void> => recordGameplayEntityStageFault(state, entityStageFaultForMobMovement(fault))
+
 const mobMovementChunkCoords = (
   roster: GameplayEntityRoster,
   target: Position,
@@ -163,6 +238,7 @@ const mobMovementChunkCoords = (
 ): ReadonlyArray<ReturnType<typeof chunkCoordsAround>[number]> => {
   const coords = new Map<string, ReturnType<typeof chunkCoordsAround>[number]>()
   const add = (at: Position, radius: number) => {
+    if (mobMovementCell(at) === undefined) return
     for (const coord of chunkCoordsAround(at, radius)) coords.set(`${Number(coord.cx)},${Number(coord.cz)}`, coord)
   }
   add(target, 32)
@@ -170,6 +246,14 @@ const mobMovementChunkCoords = (
     if (entity.dimension === dimension) add(entity.feetPosition, 16)
   }
   return [...coords.values()]
+}
+
+const mobHasStoredMovement = (entity: MobRoster['entities'][number]): boolean => {
+  const snapshot = isHostileMobSnapshot(entity.behaviour) ? entity.behaviour : undefined
+  if (snapshot?.movement !== undefined) return true
+  const behaviour = snapshot?.behaviour ?? entity.behaviour
+  return typeof behaviour === 'object' && behaviour !== null &&
+    'movement' in behaviour && behaviour.movement !== undefined
 }
 
 const hasUndeadDaylightCandidates = (roster: GameplayEntityRoster, dimension: string): boolean =>
@@ -197,12 +281,13 @@ const undeadDaylightFacts = (
   store: GameplayStageContext['store'],
   daytime: boolean,
   dimension: string,
-): Effect.Effect<
-  ReadonlyMap<import('@nerima-games/mc-sim').EntityId, Readonly<{ exposed: boolean; inWater: boolean }>>,
-  EntityWorldQueryFailure
-> =>
+): Effect.Effect<Readonly<{
+  facts: ReadonlyMap<import('@nerima-games/mc-sim').EntityId, Readonly<{ exposed: boolean; inWater: boolean }>>
+  faults: ReadonlyArray<Readonly<{ entityId: import('@nerima-games/mc-sim').EntityId; failure: EntityWorldQueryFailure }>>
+}>> =>
   Effect.gen(function* () {
     const facts = new Map<import('@nerima-games/mc-sim').EntityId, Readonly<{ exposed: boolean; inWater: boolean }>>()
+    const faults: Array<Readonly<{ entityId: import('@nerima-games/mc-sim').EntityId; failure: EntityWorldQueryFailure }>> = []
     for (const entity of roster.entities) {
       if ((entity.kind !== 'zombie' && entity.kind !== 'skeleton') || entity.dimension !== dimension) continue
       const feetX = BlockAxis.result(Math.floor(entity.feetPosition.x))
@@ -215,7 +300,10 @@ const undeadDaylightFacts = (
       }
       const cellPosition = { x: feetX.success, y: feetY.success, z: feetZ.success }
       const feetCell = entityWorldCellAt(window, cellPosition)
-      if (Result.isFailure(feetCell)) return yield* Effect.fail(feetCell.failure)
+      if (Result.isFailure(feetCell)) {
+        faults.push({ entityId: entity.id, failure: feetCell.failure })
+        continue
+      }
       let inWater: boolean
       switch (feetCell.success._tag) {
         case 'Loaded': {
@@ -249,7 +337,7 @@ const undeadDaylightFacts = (
         inWater,
       })
     }
-    return facts
+    return { facts, faults }
   })
 
 const BlocksPerSecondSchema = Schema.Finite.pipe(Schema.brand('BlocksPerSecond'))
@@ -345,8 +433,7 @@ const projectileWorldFor = (
   dimension: Dimension,
   window: import('../domain/chunk-window.js').ChunkWindow,
   coords: ReadonlyArray<ReturnType<typeof chunkCoordsAround>[number]>,
-): ProjectileWorldAdapter | undefined => {
-  if (coords.length === 0) return undefined
+): ProjectileWorldAdapter => {
   const chunksX = coords.map(({ cx }) => Number(cx))
   const chunksZ = coords.map(({ cz }) => Number(cz))
   const bounds: ProjectileWorld['entities'][number]['bounds'] = {
@@ -362,6 +449,7 @@ const projectileWorldFor = (
   entities.push({ id: PLAYER_BLAST_ENTITY_ID, bounds: playerBounds })
   for (const entity of roster.entities) {
     if (entity.dimension !== undefined && entity.dimension !== dimension) continue
+    if (isMobBehaviourRepairFault(entity.behaviour)) continue
     if (isDroppedItemBehaviour(entity.behaviour)) continue
     const [width, height] = projectileEntitySize(entity.kind)
     const entityBounds = projectileAabb(entity.feetPosition, width, width, height)
@@ -571,8 +659,9 @@ const launchAndStepMobProjectiles = (
     .filter((id) => projectileLaunchTick(String(id)) === currentTick))
   const initial = yield* service.snapshot
   const existingIds = new Set(initial.state.projectiles.map(({ id }) => String(id)))
-  const hasUnresolvedMobProjectiles = initial.state.projectiles.some(({ id, dimension: recordDimension }) =>
+  const unresolvedMobProjectiles = initial.state.projectiles.filter(({ id, dimension: recordDimension }) =>
     recordDimension === dimension && String(id).startsWith('mx-gameplay:mob:') && !resolvedProjectileIds.has(id))
+  const hasUnresolvedMobProjectiles = unresolvedMobProjectiles.length > 0
   const pendingForDimension = (roster.pendingMobProjectileImpacts ?? [])
     .filter(({ hit }) => hit.point.dimension === dimension)
   if (ranged.length > 0 || hasUnresolvedMobProjectiles || pendingForDimension.length > 0) {
@@ -598,11 +687,21 @@ const launchAndStepMobProjectiles = (
     }
   }
   let projectileWindow = window
-  let world: ReturnType<typeof projectileWorldFor> = undefined
+  let world: ProjectileWorldAdapter | undefined = undefined
   if (ranged.length > 0 || hasUnresolvedMobProjectiles) {
-    if (projectileWindow === undefined) projectileWindow = yield* openChunkWindow(store, coords)
-    world = projectileWorldFor(roster, playerPosition, dimension, projectileWindow, coords)
-    if (world === undefined) return yield* Effect.fail({ _tag: 'ProjectileWorldUnavailable' })
+    if (coords.length === 0) {
+      if (ranged.length > 0) {
+        yield* recordEntityWorldDataFault(context.state, 'ProjectileLineOfSight', {
+          _tag: 'EntityWorldInvalidCell',
+          reason: 'not-block-coordinate',
+          position: playerPosition,
+        })
+        ranged.length = 0
+      }
+    } else {
+      if (projectileWindow === undefined) projectileWindow = yield* openChunkWindow(store, coords)
+      world = projectileWorldFor(roster, playerPosition, dimension, projectileWindow, coords)
+    }
   }
   const sourceById = new Map(roster.entities.map((entity) => [entity.id, entity]))
   const newlyLaunchedIds = new Set<string>()
@@ -618,7 +717,8 @@ const launchAndStepMobProjectiles = (
     const lineOfSight = world!.lineOfSight(from, to)
     if (Result.isFailure(lineOfSight)) {
       if (lineOfSight.failure._tag === 'ProjectilePathUnavailable') continue
-      return yield* Effect.fail({ _tag: 'MobProjectileWorldQueryFailure', failure: lineOfSight.failure })
+      yield* recordEntityWorldDataFault(context.state, 'ProjectileLineOfSight', lineOfSight.failure, source.id)
+      continue
     }
     if (!lineOfSight.success) continue
     const dx = to.x - from.x
@@ -695,7 +795,20 @@ const launchAndStepMobProjectiles = (
     if (launchTick === currentTick && !newlyLaunchedIds.has(id)) continue
     const expectedAge = Math.max(0, (currentTick - launchTick) * PROJECTILE_FIXED_STEP_SECONDS)
     if (record.projectile.ageSeconds + PROJECTILE_AGE_TOLERANCE_SECONDS >= expectedAge + PROJECTILE_FIXED_STEP_SECONDS) continue
-    if (projectileAdapter === undefined) return yield* Effect.fail({ _tag: 'ProjectileWorldUnavailable' })
+    if (projectileAdapter === undefined) {
+      if (coords.length === 0) {
+        const invalidPosition = mobMovementCell(record.projectile.position) === undefined
+          ? record.projectile.position
+          : playerPosition
+        yield* recordEntityWorldDataFault(context.state, 'ProjectileStep', {
+          _tag: 'EntityWorldInvalidCell',
+          reason: 'not-block-coordinate',
+          position: invalidPosition,
+        }, record.shooter)
+        continue
+      }
+      return yield* Effect.fail({ _tag: 'ProjectileWorldUnavailable' })
+    }
     projectileAdapter.resetUnloadedCells()
     const preview = stepProjectile(
       record.projectile,
@@ -705,7 +818,8 @@ const launchAndStepMobProjectiles = (
     )
     const queryFailure = projectileAdapter.queryFailure()
     if (queryFailure !== undefined) {
-      return yield* Effect.fail({ _tag: 'MobProjectileWorldQueryFailure', failure: queryFailure })
+      yield* recordEntityWorldDataFault(context.state, 'ProjectileStep', queryFailure, record.shooter)
+      continue
     }
     const unloadedEntry = projectileAdapter.unloadedEntryFraction()
     const hitElapsed = preview.hit === undefined
@@ -1079,8 +1193,8 @@ const explosionBlockReader = (
 ): Result.Result<ExplosionBlockReader, EntityWorldQueryFailure> => {
   const resolved = Result.all(blocks.map(({ position: cell, reading }) => reading._tag === 'Block'
     ? Result.map(
-        entityWorldValueFromLookup(cell, propertyOfBlockId(reading.block, 'blastResistance')),
-        (resistance) => ({ cell, resistance }),
+        entityWorldBlockDataAt(cell, reading.block),
+        ({ properties }) => ({ cell, resistance: properties.blastResistance }),
       )
     : Result.succeed(undefined)))
   return Result.map(resolved, (entries) => {
@@ -1182,7 +1296,20 @@ const runTntSimulation = (
         yield* unsupportedMobSimulation(state, 'EntityRosterOwnerUnavailable')
         return
       }
-      const reads = yield* explosionReadPositions(record.center)
+      const readPositions = yield* Effect.result(explosionReadPositions(record.center))
+      if (Result.isFailure(readPositions)) {
+        yield* recordEntityWorldDataFault(state, 'TntExplosion', {
+          _tag: 'EntityWorldInvalidCell',
+          reason: 'not-block-coordinate',
+          position: position(
+            PositionAxis(record.center.x),
+            PositionAxis(record.center.y),
+            PositionAxis(record.center.z),
+          ),
+        }, id)
+        continue
+      }
+      const reads = readPositions.success
       const observed = yield* commit.coordinator.observe(
         entityOwnerId,
         GameplayEntityRosterSchema,
@@ -1197,7 +1324,12 @@ const runTntSimulation = (
       }
       entityRoster = observed.state
       playerState = player.state
-      blocks = yield* Effect.fromResult(explosionBlockReader(observed.blocks))
+      const explosionBlocks = explosionBlockReader(observed.blocks)
+      if (Result.isFailure(explosionBlocks)) {
+        yield* recordEntityWorldDataFault(state, 'TntExplosion', explosionBlocks.failure)
+        continue
+      }
+      blocks = explosionBlocks.success
       const mobEntities = observed.state.entities
         .filter(({ dimension }) => dimension === record.dimension)
         .map(({ id: entityId, feetPosition }) => ({
@@ -1410,6 +1542,21 @@ const runMobSimulation = (
     commit.entitiesOwnerId,
     GameplayEntityRosterSchema,
   )
+  const faultedEntities: GameplayEntityRoster['entities'][number][] = []
+  for (const entity of entitySnapshot.state.entities) {
+    if (!isMobBehaviourRepairFault(entity.behaviour)) continue
+    faultedEntities.push(entity)
+    yield* recordGameplayEntityStageFault(state, {
+      _tag: 'MobBehaviourRepairFault',
+      entityId: entity.id,
+      entityKind: entity.kind,
+      failure: entity.behaviour.failure,
+    })
+  }
+  let tickRoster: GameplayEntityRoster = {
+    ...entitySnapshot.state,
+    entities: entitySnapshot.state.entities.filter(({ behaviour }) => !isMobBehaviourRepairFault(behaviour)),
+  }
   const playerSnapshot = yield* commit.coordinator.snapshot(
     commit.playerOwnerId,
     PlayerServiceSnapshotSchema,
@@ -1435,32 +1582,63 @@ const runMobSimulation = (
   const dimension = playerSnapshot.state.pose.feetPosition.dimension
   const timeOfDay = yield* context.time.timeOfDay
   const daytime = dimension === 'overworld' && !(yield* context.time.isNight)
-  const movementCoords = mobMovementChunkCoords(entitySnapshot.state, playerPosition, dimension)
-  const hasMovableMob = hasMobMovementCandidates(entitySnapshot.state, dimension, playerPosition)
-  const hasUndeadForDaylight = hasUndeadDaylightCandidates(entitySnapshot.state, dimension)
+  const invalidMovementEntities = tickRoster.entities.filter((entity) =>
+    (entity.dimension === undefined || entity.dimension === dimension) &&
+    MOB_MOVEMENT_POLICIES.has(entity.kind) &&
+    mobMovementCell(entity.feetPosition) === undefined,
+  )
+  const invalidMovementEntityIds = new Set(invalidMovementEntities.map(({ id }) => id))
+  for (const entity of invalidMovementEntities) {
+    yield* recordGameplayEntityStageFault(state, {
+      _tag: 'MobMovementExecutionFault',
+      entityId: entity.id,
+      reason: mobHasStoredMovement(entity) ? 'invalid-goal' : 'invalid-state',
+    })
+  }
+  if (invalidMovementEntities.length > 0) faultedEntities.push(...invalidMovementEntities)
+  tickRoster = {
+    ...tickRoster,
+    entities: tickRoster.entities.filter(({ id }) => !invalidMovementEntityIds.has(id)),
+  }
+  const hasMovableMobBeforeFiltering = invalidMovementEntities.length > 0 ||
+    hasMobMovementCandidates(tickRoster, dimension, playerPosition)
+  if (hasMovableMobBeforeFiltering && mobMovementCell(playerPosition) === undefined) {
+    yield* recordEntityWorldDataFault(state, 'MobMovement', {
+      _tag: 'EntityWorldInvalidCell',
+      reason: 'not-block-coordinate',
+      position: playerPosition,
+    })
+  }
+  const hasMovableMob = hasMobMovementCandidates(tickRoster, dimension, playerPosition)
+  const movementCoords = mobMovementChunkCoords(tickRoster, playerPosition, dimension)
+  const hasUndeadForDaylight = hasUndeadDaylightCandidates(tickRoster, dimension)
   let movementWindow: import('../domain/chunk-window.js').ChunkWindow | undefined = undefined
   let movementWorld: ReturnType<typeof mobMovementWorldFromChunkWindow> | undefined = undefined
   let daylightFacts: ReadonlyMap<import('@nerima-games/mc-sim').EntityId, Readonly<{ exposed: boolean; inWater: boolean }>> = new Map()
   if (hasMovableMob || hasUndeadForDaylight) {
     const coords = hasMovableMob
       ? movementCoords
-      : undeadDaylightChunkCoords(entitySnapshot.state, dimension)
+      : undeadDaylightChunkCoords(tickRoster, dimension)
     movementWindow = yield* openChunkWindow(store, coords)
     if (hasMovableMob) {
       movementWorld = mobMovementWorldFromChunkWindow(movementWindow)
     }
     if (hasUndeadForDaylight) {
       // A stopped undead still burns or extinguishes when SM3 has no movement work.
-      daylightFacts = yield* undeadDaylightFacts(
-        entitySnapshot.state,
+      const daylight = yield* undeadDaylightFacts(
+        tickRoster,
         movementWindow,
         store,
         daytime,
         dimension,
       )
+      daylightFacts = daylight.facts
+      for (const fault of daylight.faults) {
+        yield* recordEntityWorldDataFault(state, 'UndeadDaylight', fault.failure, fault.entityId)
+      }
     }
   }
-  const sweep = planMobRosterSweep(entitySnapshot.state, {
+  const sweep = planMobRosterSweep(tickRoster, {
     target: playerPosition,
     dt,
     undeadDaylight: daylightFacts,
@@ -1471,10 +1649,13 @@ const runMobSimulation = (
     sweep.teleports,
   )
   const movement = movementWorld === undefined
-    ? Result.succeed({ roster: teleported })
-    : planMobMovementRoster(teleported, playerPosition, movementWorld, stageTick, dimension)
-  if (Result.isFailure(movement)) return yield* Effect.fail(movement.failure)
-  const blast = planMobBlastRoster(movement.success.roster, sweep.blasts, stageTick)
+    ? { roster: teleported, faults: [] as ReadonlyArray<MobMovementRosterFault> }
+    : Result.getOrThrow(planMobMovementRoster(teleported, playerPosition, movementWorld, stageTick, dimension))
+  const movementRoster = movement.roster
+  for (const fault of movement.faults) {
+    yield* recordMobMovementRosterFault(state, fault)
+  }
+  const blast = planMobBlastRoster(movementRoster, sweep.blasts, stageTick)
   const undeadBurnHits: ReadonlyArray<MobDamageHit> = blast.roster.entities.flatMap((entity) => {
     if (entity.kind !== 'zombie' && entity.kind !== 'skeleton') return []
     const behaviour = isHostileMobSnapshot(entity.behaviour) ? entity.behaviour.behaviour : entity.behaviour
@@ -1769,8 +1950,11 @@ const runMobSimulation = (
     ? []
     : [{ dimension, expectedRevision: dimensionRevision }]
   const entityCandidate = restoreGameplayEntityMetadata(
-    spawned.success.roster,
-    undeadBurning.roster,
+    {
+      ...spawned.success.roster,
+      entities: [...spawned.success.roster.entities, ...faultedEntities],
+    },
+    entitySnapshot.state,
     playerSnapshot.state.pose.feetPosition.dimension,
   )
   const changes: ReplicatedOwnerCandidate[] = []
@@ -1913,7 +2097,7 @@ export const makeEntitiesStage = (context: GameplayStageContext): StageRegistrat
     // Owner-backed pickups, mob simulation, and TNT detonation run before the
     // deferred falling-block work.
     run: (dt) =>
-      Effect.orDie(Effect.gen(function* () {
+      Effect.catch(Effect.gen(function* () {
         const pickupRequests = yield* Ref.getAndSet(state.pendingDroppedItemPickups, [])
         const pickupExecutions: Array<DroppedItemPickupExecution> = []
         const retryPickups: Array<(typeof pickupRequests)[number]> = []
@@ -2099,6 +2283,11 @@ export const makeEntitiesStage = (context: GameplayStageContext): StageRegistrat
         if (destinations.length > 0) {
           yield* Ref.update(state.fallingBlocks, (queue) => settled(queue, destinations))
         }
+      }), (failure) => recordGameplayStageFailure(state, {
+        _tag: 'Failed',
+        operation: 'EntityExecution',
+        subject: 'Entities',
+        error: { _tag: 'EntitiesStageExecutionFailure', failureTag: entitiesStageFailureTag(failure) },
       })),
   }
 }

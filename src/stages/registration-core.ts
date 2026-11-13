@@ -265,6 +265,7 @@ import {
   type MobSpawnAttempt,
 } from '../domain/entities/mob-frame.js'
 import { FRESH_PRIMED_TNT } from '../domain/mob/primed-tnt.js'
+import type { EntityStageFault } from '../domain/entities/entity-stage-fault.js'
 import {
   DROPPED_ITEM_PICKUP_RADIUS,
   pickupDroppedItems,
@@ -1179,6 +1180,7 @@ export type GameplayFrameState = {
   readonly enderDragonEncounter: EnderDragonEncounterStageApi
   readonly survivalHunger: SurvivalHungerRuntimeApi
   readonly operationFailures: Ref.Ref<ReadonlyArray<GameplayStageOperationFailure>>
+  readonly entityStageFaults: Ref.Ref<Readonly<{ pending: ReadonlyArray<EntityStageFault>; seen: ReadonlySet<string> }>>
   readonly pendingBreaks: Ref.Ref<ReadonlyArray<BlockPositionKey>>
   readonly pendingPlacements: Ref.Ref<ReadonlyArray<PlacementRequest | BlockPlacementCommand>>
   readonly pendingBlockUses: Ref.Ref<ReadonlyArray<BlockUseRequest>>
@@ -2079,8 +2081,8 @@ export type GameplayFrameStateOptions = Readonly<{
 
 export type GameplayStageOperationFailure = Readonly<{
   _tag: 'Failed'
-  operation: 'OwnerSnapshot' | 'WorldCommit' | 'VitalsOperation' | 'CandidateBuild' | 'PlanBuild' | 'EventPublish'
-  subject: 'Player' | 'Vitals' | 'Mining' | 'ItemUse' | 'Fire' | 'Fishing' | 'Brewing'
+  operation: 'OwnerSnapshot' | 'WorldCommit' | 'VitalsOperation' | 'CandidateBuild' | 'PlanBuild' | 'EventPublish' | 'EntityExecution'
+  subject: 'Player' | 'Vitals' | 'Mining' | 'ItemUse' | 'Fire' | 'Fishing' | 'Brewing' | 'Entities'
   error:
     | WorldCommitCoordinatorError
     | WorldCommitPlanConflict
@@ -2095,6 +2097,7 @@ export type GameplayStageOperationFailure = Readonly<{
     | PrimedTntValidationFailure
     | DamageAtResult
     | Readonly<{ _tag: 'ShieldBlockingPreparation'; reason: ShieldBlockingPreparationError }>
+    | Readonly<{ _tag: 'EntitiesStageExecutionFailure'; failureTag: string }>
 }>
 
 export const recordGameplayStageFailure = (
@@ -2102,6 +2105,62 @@ export const recordGameplayStageFailure = (
   failure: GameplayStageOperationFailure,
 ): Effect.Effect<void> =>
   Ref.update(state.operationFailures, (failures) => [...failures, failure])
+
+const entityStageFaultKey = (fault: EntityStageFault): string => {
+  switch (fault._tag) {
+    case 'EntityWorldDataFault': {
+      const target = fault.target._tag === 'Cell'
+        ? `cell:${Number(fault.target.cell.x)}:${Number(fault.target.cell.y)}:${Number(fault.target.cell.z)}`
+        : fault.target._tag === 'Entity'
+          ? `entity:${String(fault.target.entityId)}`
+          : `position:${fault.target.position.x}:${fault.target.position.y}:${fault.target.position.z}`
+      const reason = fault.failure._tag === 'EntityWorldCorruptBuffer'
+        ? `${fault.failure._tag}:${Number(fault.failure.index)}:${Number(fault.failure.length)}`
+        : fault.failure._tag === 'EntityWorldUnregisteredBlockId'
+          ? `${fault.failure._tag}:${Number(fault.failure.blockId)}`
+          : fault.failure._tag === 'EntityWorldRegistryFailure'
+            ? `${fault.failure._tag}:${fault.failure.failure._tag}`
+            : fault.failure._tag
+      return `${target}:${reason}`
+    }
+    case 'MobBehaviourRepairFault': {
+      const reason = fault.failure._tag === 'EcosystemMobStateRepairFailure'
+        ? `${fault.failure._tag}:${fault.failure.field}`
+        : fault.failure._tag
+      return `entity:${String(fault.entityId)}:${reason}`
+    }
+    case 'MobMovementExecutionFault': {
+      const failureTag = fault.reason === 'simulation-rejected' || fault.reason === 'step-failed'
+        ? fault.failure._tag
+        : ''
+      return `entity:${String(fault.entityId)}:${fault.reason}:${failureTag}`
+    }
+    /* v8 ignore start */
+    default: {
+      const exhaustive: never = fault
+      return exhaustive
+    }
+    /* v8 ignore stop */
+  }
+}
+
+export const recordGameplayEntityStageFault = (
+  state: GameplayFrameState,
+  fault: EntityStageFault,
+): Effect.Effect<void> => Ref.update(state.entityStageFaults, (current) => {
+  const key = entityStageFaultKey(fault)
+  if (current.seen.has(key)) return current
+  return {
+    pending: [...current.pending, fault],
+    seen: new Set([...current.seen, key]),
+  }
+})
+
+/** Atomically drain entities-stage data faults; each target/reason is recorded once per frame state. */
+export const drainGameplayEntityStageFaults = (
+  state: GameplayFrameState,
+): Effect.Effect<ReadonlyArray<EntityStageFault>> =>
+  Ref.modify(state.entityStageFaults, (current) => [current.pending, { ...current, pending: [] }])
 
 export const readGameplayPlayer = (
   coordinator: WorldCommitCoordinatorApi,
@@ -2120,6 +2179,10 @@ const makeGameplayFrameStateWithOptions = (
     ? yield* makeSurvivalHungerRuntime()
     : yield* makeReplicatedSurvivalHungerRuntime(options.coordinator, options.vitalsOwnerId)
   const operationFailures = yield* Ref.make<ReadonlyArray<GameplayStageOperationFailure>>([])
+  const entityStageFaults = yield* Ref.make<Readonly<{
+    pending: ReadonlyArray<EntityStageFault>
+    seen: ReadonlySet<string>
+  }>>({ pending: [], seen: new Set() })
   const pendingBreaks = yield* Ref.make<ReadonlyArray<BlockPositionKey>>([])
   const breakRequests = yield* Ref.make<PendingBlockBreakRequestState>({
     nextRequestId: 0,
@@ -2221,6 +2284,7 @@ const makeGameplayFrameStateWithOptions = (
     enderDragonEncounter,
     survivalHunger,
     operationFailures,
+    entityStageFaults,
     pendingBreaks,
     pendingPlacements,
     pendingBlockUses,

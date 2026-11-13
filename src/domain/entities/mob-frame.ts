@@ -216,6 +216,7 @@ import {
   type DeltaTimeSecs as DeltaTimeSecsValue,
 } from '@nerima-games/mc-kernel'
 import {
+  DEFAULT_MOB_MOVEMENT_SETTINGS,
   durabilityForItem,
   isDamageableItemType,
   isValidDurabilityForItem,
@@ -306,6 +307,7 @@ import {
   stepEcosystemMob,
   type EcosystemAttack,
   type EcosystemMobState,
+  type MobStateRepairFailure,
 } from '../mob/mob-ecosystem.js'
 import {
   initialMobMovementState,
@@ -421,12 +423,32 @@ export type HostileMobSnapshot = {
 
 export type MobBehaviour =
   | HostileMobSnapshot
+  | MobBehaviourRepairFault
   | CreeperFuse
   | PrimedTnt
   | EndermanFlinch
   | EcosystemMobState
   | DroppedItemBehaviour
   | undefined
+
+export type MobBehaviourRepairFault = Readonly<{
+  _tag: 'MobBehaviourRepairFault'
+  failure: MobStateRepairFailure
+}>
+
+export const isMobBehaviourRepairFault = (value: unknown): value is MobBehaviourRepairFault => {
+  if (typeof value !== 'object' || value === null ||
+    (value as { readonly _tag?: unknown })._tag !== 'MobBehaviourRepairFault') return false
+  const failure = (value as { readonly failure?: unknown }).failure
+  if (typeof failure !== 'object' || failure === null) return false
+  const tag = (failure as { readonly _tag?: unknown })._tag
+  if (tag === 'MobMovementStateRepairFailure') return true
+  if (tag !== 'EcosystemMobStateRepairFailure') return false
+  const field = (failure as { readonly field?: unknown }).field
+  return field === '_tag' || field === 'attackCooldownTicks' || field === 'attackCooldownSecs' ||
+    field === 'motionPhase' || field === 'provoked' || field === 'movementGoal' ||
+    field === 'movement' || field === 'hasHeadProtection' || field === 'burningTicks'
+}
 
 export const hostileMobSnapshot = (
   behaviour: HostileMobSnapshot['behaviour'],
@@ -751,17 +773,20 @@ export const rollDropsOfKind = (
  * no fuse and consult the teleport rule instead.
  */
 export const repairMobBehaviour = (kind: EntityKind, behaviour: unknown): MobBehaviour => {
+  if (isMobBehaviourRepairFault(behaviour)) return behaviour
   if (hasHostileMobSnapshotMetadata(behaviour) && HOSTILE_KINDS.includes(kind)) {
     const inner = repairHostileInner(kind, behaviour.behaviour)
+    if (Result.isFailure(inner)) return { _tag: 'MobBehaviourRepairFault', failure: inner.failure }
     const movement = repairMobMovementState(behaviour.movement)
-    return inner === behaviour.behaviour && Object.hasOwn(behaviour, 'behaviour') && isHostileMobSnapshot(behaviour)
+    if (Result.isFailure(movement)) return { _tag: 'MobBehaviourRepairFault', failure: movement.failure }
+    return inner.success === behaviour.behaviour && Object.hasOwn(behaviour, 'behaviour') && isHostileMobSnapshot(behaviour)
       ? behaviour
-      : hostileMobSnapshot(inner, {
+      : hostileMobSnapshot(inner.success, {
           ageTicks: behaviour.ageTicks,
           persistent: behaviour.persistent,
           named: behaviour.named,
           tamed: behaviour.tamed,
-          ...(movement === undefined ? {} : { movement }),
+          ...(movement.success === undefined ? {} : { movement: movement.success }),
         })
   }
 
@@ -776,7 +801,10 @@ export const repairMobBehaviour = (kind: EntityKind, behaviour: unknown): MobBeh
   if (kind === ZOMBIE_KIND) return hostileMobSnapshot(undefined)
 
   if (ECOSYSTEM_MOB_KINDS.includes(kind as (typeof ECOSYSTEM_MOB_KINDS)[number])) {
-    return hostileMobSnapshot(repairEcosystemMobState(behaviour) ?? initialEcosystemMobState())
+    const ecosystem = repairEcosystemMobState(behaviour)
+    return Result.isFailure(ecosystem)
+      ? { _tag: 'MobBehaviourRepairFault', failure: ecosystem.failure }
+      : hostileMobSnapshot(ecosystem.success ?? initialEcosystemMobState())
   }
 
   if (kind === PRIMED_TNT_KIND) {
@@ -795,11 +823,15 @@ export const repairMobBehaviour = (kind: EntityKind, behaviour: unknown): MobBeh
 const repairHostileInner = (
   kind: EntityKind,
   behaviour: unknown,
-): HostileMobSnapshot['behaviour'] => {
-  if (kind === CREEPER_KIND) return isCreeperFuse(behaviour) ? behaviour : DORMANT_FUSE
-  if (kind === ENDERMAN_KIND) return isEndermanFlinch(behaviour) ? behaviour : STEADY_ENDERMAN
-  if (ECOSYSTEM_MOB_KINDS.includes(kind as (typeof ECOSYSTEM_MOB_KINDS)[number])) return repairEcosystemMobState(behaviour) ?? initialEcosystemMobState()
-  return undefined
+): Result.Result<HostileMobSnapshot['behaviour'], MobStateRepairFailure> => {
+  if (kind === CREEPER_KIND) return Result.succeed(isCreeperFuse(behaviour) ? behaviour : DORMANT_FUSE)
+  if (kind === ENDERMAN_KIND) return Result.succeed(isEndermanFlinch(behaviour) ? behaviour : STEADY_ENDERMAN)
+  if (ECOSYSTEM_MOB_KINDS.includes(kind as (typeof ECOSYSTEM_MOB_KINDS)[number])) {
+    const ecosystem = repairEcosystemMobState(behaviour)
+    if (Result.isFailure(ecosystem)) return ecosystem
+    return Result.succeed(ecosystem.success ?? initialEcosystemMobState())
+  }
+  return Result.succeed(undefined)
 }
 
 type HostileMobSnapshotEnvelope = Readonly<{
@@ -828,7 +860,7 @@ const hasHostileMobSnapshotMetadata = (value: unknown): value is HostileMobSnaps
 
 export const isHostileMobSnapshot = (value: unknown): value is HostileMobSnapshot => {
   if (!hasHostileMobSnapshotMetadata(value)) return false
-  return value.movement === undefined || repairMobMovementState(value.movement) !== undefined
+  return Result.isSuccess(repairMobMovementState(value.movement))
 }
 
 export const isDroppedItemBehaviour = (value: unknown): value is DroppedItemBehaviour => {
@@ -1632,24 +1664,54 @@ export const planMobRosterSweep = (
   return { roster: retainMobMetadata(swept.roster, roster), ...frame.finish(swept.emitted) }
 }
 
-export type MobMovementRosterFailure = Readonly<{
-  _tag: 'MobMovementRosterFailure'
-  reason: 'invalid-state' | 'invalid-goal' | 'simulation-rejected' | 'step-failed' | 'world-query-failed'
-  entityId?: EntityId
-  failure?: MobMovementFailure
-  worldFailure?: MobMovementWorldFailure
-}>
+export type MobMovementRosterFault =
+  | Readonly<{
+      _tag: 'MobMovementRosterFailure'
+      reason: 'invalid-state'
+      entityId: EntityId
+      entityKind: EntityKind
+      repairFailure: MobStateRepairFailure
+    }>
+  | Readonly<{
+      _tag: 'MobMovementRosterFailure'
+      reason: 'invalid-state'
+      entityId: EntityId
+    }>
+  | Readonly<{
+      _tag: 'MobMovementRosterFailure'
+      reason: 'invalid-goal'
+      entityId: EntityId
+    }>
+  | Readonly<{
+      _tag: 'MobMovementRosterFailure'
+      reason: 'simulation-rejected'
+      entityId: EntityId
+      failure: MobMovementFailure
+    }>
+  | Readonly<{
+      _tag: 'MobMovementRosterFailure'
+      reason: 'step-failed'
+      entityId: EntityId
+      failure: MobMovementFailure
+    }>
+  | Readonly<{
+      _tag: 'MobMovementRosterFailure'
+      reason: 'world-query-failed'
+      entityId: EntityId
+      worldFailure: MobMovementWorldFailure
+    }>
 
-const ecosystemStateForMovement = (entity: MobEntity): EcosystemMobState | undefined => {
-  if (!MOB_MOVEMENT_POLICIES.has(entity.kind)) return undefined
+const ecosystemStateForMovement = (
+  entity: MobEntity,
+): Result.Result<EcosystemMobState | undefined, MobStateRepairFailure> => {
+  if (!MOB_MOVEMENT_POLICIES.has(entity.kind)) return Result.succeed(undefined)
   const snapshot = isHostileMobSnapshot(entity.behaviour) ? entity.behaviour : undefined
   const behaviour = snapshot === undefined ? entity.behaviour : snapshot.behaviour
-  if (behaviour === undefined) return undefined
+  if (behaviour === undefined) return Result.succeed(undefined)
+  if (entity.kind === CREEPER_KIND && isFuse(behaviour)) return Result.succeed(initialEcosystemMobState())
   const ecosystem = repairEcosystemMobState(behaviour)
-  if (ecosystem !== undefined) return ecosystem
-  return entity.kind === CREEPER_KIND && isFuse(behaviour)
-    ? initialEcosystemMobState()
-    : undefined
+  if (Result.isFailure(ecosystem)) return ecosystem
+  return ecosystem
 }
 
 const movementHasMomentum = (movement: MobMovementState | undefined): boolean =>
@@ -1680,8 +1742,9 @@ export const hasMobMovementCandidates = (
   target?: Position,
 ): boolean => roster.entities.some((entity) => {
   if (entity.dimension !== undefined && entity.dimension !== dimension) return false
-  const ecosystem = ecosystemStateForMovement(entity)
-  if (ecosystem === undefined) return false
+  const ecosystemResult = ecosystemStateForMovement(entity)
+  if (Result.isFailure(ecosystemResult) || ecosystemResult.success === undefined) return false
+  const ecosystem = ecosystemResult.success
   const snapshot = isHostileMobSnapshot(entity.behaviour) ? entity.behaviour : undefined
   const previous = snapshot?.movement ?? ecosystem.movement
   return movementGoalDiffers(entity, movementGoalFor(entity, ecosystem, target)) || movementHasMomentum(previous)
@@ -1693,12 +1756,24 @@ export const planMobMovementRoster = (
   world: MobMovementWorldAdapter,
   simulationTick: SimulationTickValue,
   dimension: Dimension,
-): Result.Result<Readonly<{ roster: MobRoster }>, MobMovementRosterFailure> => {
+): Result.Result<Readonly<{ roster: MobRoster; faults: ReadonlyArray<MobMovementRosterFault> }>, never> => {
   const entries: Array<Readonly<{ entity: MobEntity; movement: MobMovementState; snapshot?: HostileMobSnapshot; ecosystem: EcosystemMobState }>> = []
+  const faults: MobMovementRosterFault[] = []
   for (const entity of roster.entities) {
     if (entity.dimension !== undefined && entity.dimension !== dimension) continue
     const snapshot = isHostileMobSnapshot(entity.behaviour) ? entity.behaviour : undefined
-    const ecosystem = ecosystemStateForMovement(entity)
+    const ecosystemResult = ecosystemStateForMovement(entity)
+    if (Result.isFailure(ecosystemResult)) {
+      faults.push({
+        _tag: 'MobMovementRosterFailure',
+        reason: 'invalid-state',
+        entityId: entity.id,
+        entityKind: entity.kind,
+        repairFailure: ecosystemResult.failure,
+      })
+      continue
+    }
+    const ecosystem = ecosystemResult.success
     if (ecosystem === undefined) continue
     const previous = snapshot?.movement ?? ecosystem.movement
     const goal = movementGoalFor(entity, ecosystem, target)
@@ -1707,39 +1782,64 @@ export const planMobMovementRoster = (
       ? initialMobMovementState(entity.id, entity.kind, entity.feetPosition, goal)
       : movementStateForGoal(previous, goal)
     if (movement === undefined) {
-      return Result.fail({ _tag: 'MobMovementRosterFailure', reason: previous === undefined ? 'invalid-state' : 'invalid-goal', entityId: entity.id })
+      faults.push(previous === undefined
+        ? { _tag: 'MobMovementRosterFailure', reason: 'invalid-state', entityId: entity.id }
+        : { _tag: 'MobMovementRosterFailure', reason: 'invalid-goal', entityId: entity.id })
+      continue
     }
     entries.push({ entity, movement, ...(snapshot === undefined ? {} : { snapshot }), ecosystem })
-  }
-  if (entries.length === 0) return Result.succeed({ roster })
-
-  const simResult = stepMobMovementsForTick({
-    mobs: entries.map(({ movement }) => movement),
-    world,
-    searchCursor: NonNegativeTickCount(Number(simulationTick) % entries.length),
-  })
-  const worldFailure = world.queryFailure()
-  if (worldFailure !== undefined) {
-    return Result.fail({ _tag: 'MobMovementRosterFailure', reason: 'world-query-failed', worldFailure })
-  }
-  if (simResult._tag === 'MobMovementRejected') {
-    return Result.fail({ _tag: 'MobMovementRosterFailure', reason: 'simulation-rejected', failure: simResult.failure })
   }
   const updated = new Map<MobEntity, Readonly<{
     entry: (typeof entries)[number]
     movement: MobMovementState
     feet: Position
   }>>()
-  for (const [index, outcome] of simResult.outcomes.entries()) {
-    // mc-sim returns one outcome per supplied mob; entries built that same input array.
-    const entry = entries[index]!
+  const searchCursor = entries.length === 0 ? 0 : Number(simulationTick) % entries.length
+  const orderedEntries = [
+    ...entries.slice(searchCursor),
+    ...entries.slice(0, searchCursor),
+  ]
+  let searchesRemaining = Number(DEFAULT_MOB_MOVEMENT_SETTINGS.maxSearchesPerTick)
+  for (const entry of orderedEntries) {
+    if (searchesRemaining === 0) {
+      updated.set(entry.entity, { entry, movement: entry.movement, feet: entry.entity.feetPosition })
+      continue
+    }
+    world.resetQueryFailure()
+    const simResult = stepMobMovementsForTick({
+      mobs: [entry.movement],
+      world,
+      searchCursor: NonNegativeTickCount(0),
+      settings: { maxSearchesPerTick: NonNegativeTickCount(searchesRemaining) },
+    })
+    if (simResult._tag === 'MobMovementRejected') {
+      faults.push({
+        _tag: 'MobMovementRosterFailure',
+        reason: 'simulation-rejected',
+        entityId: entry.entity.id,
+        failure: simResult.failure,
+      })
+      continue
+    }
+    if (Number(simResult.searchesPerformed) > 0) searchesRemaining -= Number(simResult.searchesPerformed)
+    const worldFailure = world.queryFailure()
+    if (worldFailure !== undefined) {
+      faults.push({
+        _tag: 'MobMovementRosterFailure',
+        reason: 'world-query-failed',
+        entityId: entry.entity.id,
+        worldFailure,
+      })
+      continue
+    }
+    const outcome = simResult.outcomes[0]!
     if (outcome._tag === 'MobStepFailed') {
       const pathFailure = outcome.failure._tag === 'MobMovementPathFailure' &&
         (outcome.failure.failure._tag === 'NoPath' ||
-          outcome.failure.failure._tag === 'NodeBudgetExhausted' ||
-          outcome.failure.failure._tag === 'TickBudgetExhausted')
+          outcome.failure.failure._tag === 'NodeBudgetExhausted')
       if (!pathFailure) {
-        return Result.fail({ _tag: 'MobMovementRosterFailure', reason: 'step-failed', entityId: entry.entity.id, failure: outcome.failure })
+        faults.push({ _tag: 'MobMovementRosterFailure', reason: 'step-failed', entityId: entry.entity.id, failure: outcome.failure })
+        continue
       }
       updated.set(entry.entity, { entry, movement: entry.movement, feet: entry.entity.feetPosition })
       continue
@@ -1747,7 +1847,13 @@ export const planMobMovementRoster = (
     const feet = movementFeetPosition(outcome.state)
     const overlapsUnloaded = world.bodyOverlapsUnloadedCell(outcome.state)
     if (Result.isFailure(overlapsUnloaded)) {
-      return Result.fail({ _tag: 'MobMovementRosterFailure', reason: 'world-query-failed', worldFailure: overlapsUnloaded.failure })
+      faults.push({
+        _tag: 'MobMovementRosterFailure',
+        reason: 'world-query-failed',
+        entityId: entry.entity.id,
+        worldFailure: overlapsUnloaded.failure,
+      })
+      continue
     }
     if (overlapsUnloaded.success) {
       updated.set(entry.entity, { entry, movement: entry.movement, feet: entry.entity.feetPosition })
@@ -1772,7 +1878,7 @@ export const planMobMovementRoster = (
       behaviour,
     }
   })
-  return Result.succeed({ roster: retainMobMetadata({ ...roster, entities }, roster) })
+  return Result.succeed({ roster: retainMobMetadata({ ...roster, entities }, roster), faults })
 }
 
 /** Compatibility adapter for callers which still use the local EntityManager. */

@@ -47,6 +47,7 @@ export {
   EnderPearlOutcomeSchema,
   makeGameplayFrameState,
   makeGameplayFrameStateForOwner,
+  drainGameplayEntityStageFaults,
   requestCollectBrewingBottle,
   type CollectBrewingBottleRequest,
   CollectBrewingBottleRequestSchema,
@@ -134,6 +135,7 @@ export {
   requestTargetedPotatoPlanting,
   type GameplayStageOptions,
 } from './registration-core.js'
+export type { EntityStageFault } from '../domain/entities/entity-stage-fault.js'
 
 import {
   ChunkStore,
