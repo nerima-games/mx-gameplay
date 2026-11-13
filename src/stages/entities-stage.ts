@@ -61,7 +61,6 @@ import { craterCells } from '../domain/interactions/explosion-crater.js'
 import {
   appendDroppedItemSpawns,
   DroppedItemOwnerSnapshotSchema,
-  droppedItemPickupResultAfterCommit,
   planDroppedItemPickup,
   type DroppedItemSpawn,
   type DroppedItemOwnerSnapshot,
@@ -572,22 +571,24 @@ const runMobSimulation = (
 ): Effect.Effect<undefined, Readonly<{
   operation: 'OwnerSnapshot' | 'CandidateBuild' | 'WorldCommit'
   cause: unknown
+  requestId: string
 }>> => {
-  let operation: 'OwnerSnapshot' | 'CandidateBuild' | 'WorldCommit' = 'OwnerSnapshot'
-  return Effect.gen(function* () {
-  const { state, store, commit } = context
-  if (context.options.mobSimulation === false) return
+  const { state, commit } = context
+  if (context.options.mobSimulation === false) return Effect.succeed(undefined)
   if (commit === undefined) {
-    yield* unsupportedMobSimulation(state, 'WorldCommitCoordinatorUnavailable')
-    return
+    return Effect.as(unsupportedMobSimulation(state, 'WorldCommitCoordinatorUnavailable'), undefined)
   }
-  if (commit.entitiesOwnerId === undefined) {
-    yield* unsupportedMobSimulation(state, 'EntityRosterOwnerUnavailable')
-    return
+  const entityOwnerId = commit.entitiesOwnerId
+  if (entityOwnerId === undefined) {
+    return Effect.as(unsupportedMobSimulation(state, 'EntityRosterOwnerUnavailable'), undefined)
   }
 
+  let operation: 'OwnerSnapshot' | 'CandidateBuild' | 'WorldCommit' = 'OwnerSnapshot'
+  return Effect.gen(function* () {
+  const { store } = context
+
   const entitySnapshot = yield* commit.coordinator.snapshot(
-    commit.entitiesOwnerId,
+    entityOwnerId,
     GameplayEntityRosterSchema,
   )
   const playerSnapshot = yield* commit.coordinator.snapshot(
@@ -748,29 +749,17 @@ const runMobSimulation = (
     const entityCooldowns = previousTick === undefined
       ? new Map<ReturnType<typeof EntityId>, Schema.Schema.Type<typeof SimulationTickSchema>>()
       : new Map([[entity.id, previousTick]])
-    const checked = resolveHostileContacts(
+    // The first pass decoded damageTick and every cooldown retained in contactCooldowns.
+    // Those are the only values that can make this resolver fail.
+    const checked = Result.getOrThrow(resolveHostileContacts(
       [entity],
       playerPosition,
       damageTick,
       entityCooldowns,
       difficulty,
-    )
-    if (Result.isFailure(checked)) {
-      contactCooldowns.delete(entity.id)
-      yield* recordGameplayStageFailureDeduplicated(state, {
-        _tag: 'Failed',
-        operation: 'CandidateBuild',
-        subject: 'EntityRoster',
-        requestId: String(entity.id),
-        error: {
-          _tag: 'GameplayStageExecutionFailure',
-          cause: { _tag: 'HostileContactResolutionFailure', reason: checked.failure },
-        },
-      })
-      continue
-    }
-    contactDamages.push(...checked.success.damages)
-    for (const [validId, validTick] of checked.success.cooldowns) {
+    ))
+    contactDamages.push(...checked.damages)
+    for (const [validId, validTick] of checked.cooldowns) {
       contactCooldowns.set(validId, validTick)
     }
   }
@@ -1023,16 +1012,13 @@ const runMobSimulation = (
         const { event } = input
         const attempted = yield* Effect.result(attemptDamage(input))
         if (Result.isFailure(attempted)) {
-          const cause = typeof attempted.failure === 'string'
-            ? { _tag: 'HostileAttackPreparationFailure', reason: attempted.failure }
-            : attempted.failure
           if (event._tag === 'HostileContact') contact.cooldowns.delete(event.source)
           yield* recordGameplayStageFailureDeduplicated(state, {
             _tag: 'Failed',
             operation: 'CandidateBuild',
             subject: 'Player',
             requestId: JSON.stringify(['player-damage', event._tag, event.source]),
-            error: { _tag: 'GameplayStageExecutionFailure', cause },
+            error: { _tag: 'GameplayStageExecutionFailure', cause: attempted.failure },
           })
           continue
         }
@@ -1220,7 +1206,7 @@ const runMobSimulation = (
   if (disturbedKeys.length > 0) {
     yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, disturbedKeys))
   }
-  }).pipe(Effect.mapError((cause) => ({ operation, cause })))
+  }).pipe(Effect.mapError((cause) => ({ operation, cause, requestId: String(entityOwnerId) })))
 }
 
 type PlannedMendingRepair = Readonly<{
@@ -1649,19 +1635,7 @@ export const makeEntitiesStage = (context: GameplayStageContext): StageRegistrat
             retryPickups.push(request)
             continue
           }
-          const result = yield* Effect.result(droppedItemPickupResultAfterCommit(planned, planned.droppedItems))
-          if (Result.isFailure(result)) {
-            yield* recordGameplayStageFailureDeduplicated(state, {
-              _tag: 'Failed',
-              operation: 'CandidateBuild',
-              subject: 'DroppedItem',
-              requestId: String(request.actor),
-              error: result.failure,
-            })
-            pickupExecutions.push({ request, outcome: { _tag: 'Failed', error: result.failure } as const })
-            continue
-          }
-          pickupExecutions.push({ request, outcome: { _tag: 'Completed', result: result.success } as const })
+          pickupExecutions.push({ request, outcome: { _tag: 'Completed', result: planned.result } as const })
         }
         if (retryPickups.length > 0) {
           yield* Ref.update(state.pendingDroppedItemPickups, (pending) => [
@@ -1830,7 +1804,7 @@ export const makeEntitiesStage = (context: GameplayStageContext): StageRegistrat
             _tag: 'Failed',
             operation: mobSimulation.failure.operation,
             subject: 'EntityRoster',
-            requestId: String(commit?.entitiesOwnerId ?? 'entity-roster'),
+            requestId: mobSimulation.failure.requestId,
             error: {
               _tag: 'GameplayStageExecutionFailure',
               cause: mobSimulation.failure.cause,

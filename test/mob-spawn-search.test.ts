@@ -66,6 +66,7 @@ import {
 import {
   HOSTILE_SPAWN_INTERVAL_TICKS,
   PASSIVE_SPAWN_BATCH_SIZE,
+  drainGameplayStageFailures,
 } from '../src/stages/registration-core'
 import {
   blockKey,
@@ -1192,6 +1193,43 @@ describe('the search inside the frame', () => {
       const entries = Schema.decodeUnknownSync(GameplayEntityRosterSchema)(ownerAfter.state).entities
       expect(entries).toHaveLength(HOSTILE_SPAWN_SETTINGS.normal.maxPopulation)
       expect(entries.every(({ kind }) => HOSTILE_KINDS.includes(kind))).toBe(true)
+    }),
+  )
+
+  it.effect('does not retry failed cells discovered by the cadence search', () =>
+    Effect.gen(function* () {
+      const exhaustedRoster: EntityRoster<MobBehaviour> = {
+        entities: [],
+        nextSerial: EntitySerial(Number.MAX_SAFE_INTEGER),
+      }
+      const { time, state, commit, stages } = yield* makeStageHarness(
+        CAVE_FLOORED_WORLD,
+        BRIGHT_SURFACE_LIGHT,
+        PLAYER,
+        exhaustedRoster,
+      )
+      yield* Ref.set(state.passiveInitialSpawnPending, false)
+      yield* Ref.set(state.tickCount, HOSTILE_SPAWN_INTERVAL_TICKS - 1)
+      yield* time.setTimeOfDay(InterpolationFraction(0.5))
+
+      yield* runFrame(stages, DeltaTimeSecs(0))
+
+      const [faults, ownerAfter] = yield* Effect.all([
+        drainGameplayStageFailures(state),
+        commit.coordinator.snapshot(GAMEPLAY_ENTITIES_OWNER_ID, GameplayEntityRosterSchema),
+      ])
+      expect(faults).toContainEqual(expect.objectContaining({
+        _tag: 'Failed',
+        operation: 'CandidateBuild',
+        subject: 'EntityRoster',
+        error: expect.objectContaining({
+          _tag: 'GameplayStageExecutionFailure',
+          cause: { _tag: 'EntitySerialExhausted' },
+        }),
+      }))
+      expect(ownerAfter.state.entities).toStrictEqual([])
+      expect(yield* Ref.get(state.spawnAttempts)).toStrictEqual([])
+      expect(yield* Ref.get(state.lastHostileSpawnTick)).toBe(HOSTILE_SPAWN_INTERVAL_TICKS)
     }),
   )
 

@@ -2175,6 +2175,7 @@ const sameGameplayStageFailure = (
 ): boolean => {
   const reasonOf = (error: GameplayStageOperationFailure['error']): string | undefined => {
     const cause = error._tag === 'GameplayStageExecutionFailure' ? error.cause : error
+    if (typeof cause === 'string') return cause
     if (typeof cause !== 'object' || cause === null || !('reason' in cause)) return undefined
     return typeof cause.reason === 'string' ? cause.reason : undefined
   }

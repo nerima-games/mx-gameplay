@@ -42,6 +42,7 @@ import {
   PlayerStorageSnapshotSchema,
   TntServiceSnapshotSchema,
   TNT_REPLICATED_OWNER_ID,
+  WorldCommitEmptyRequest,
   WorldCommitCoordinator,
   WorldRevisionConflict,
   SPAWN_VITALS,
@@ -3193,6 +3194,32 @@ describe('entities stage owner-backed MobSimulation', () => {
     expect(await Effect.runPromise(drainGameplayUnsupportedOperations(harness.state))).toContainEqual(
       expect.objectContaining({ action: 'MobSimulation', reason: 'OwnerRegistrationUnavailable' }),
     )
+  })
+
+  it('records a TNT service snapshot failure without a registered TNT owner id', async () => {
+    const harness = await Effect.runPromise(makeHarness({ entity: null }))
+    const commit = harness.context.commit!
+    const tntService = commit.tntService!
+    const failedTntService = {
+      ...tntService,
+      snapshot: Effect.fail(new WorldCommitEmptyRequest()),
+    }
+    const { tntOwnerId: _tntOwnerId, ...withoutTntOwner } = commit
+    const context: GameplayStageContext = {
+      ...harness.context,
+      commit: { ...withoutTntOwner, tntService: failedTntService },
+    }
+
+    const exit = await Effect.runPromiseExit(makeEntitiesStage(context).run(makeDeltaTimeSecs(0.1)).pipe(
+      Effect.provide(FrameServicesLayer),
+    ))
+
+    expect(exit._tag).toBe('Success')
+    expectGameplayStageFault(await Effect.runPromise(drainGameplayStageFailures(harness.state)), {
+      operation: 'OwnerSnapshot',
+      subject: 'Tnt',
+      requestId: 'tnt-service',
+    })
   })
 
   it('requires the TNT provenance owner before planning a due detonation', async () => {

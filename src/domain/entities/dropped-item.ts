@@ -481,6 +481,7 @@ export type DroppedItemPickupPlan = Readonly<{
   playerStorage: PlayerStorage
   droppedItems: DroppedItemOwnerSnapshot
   planned: ReadonlyArray<PlannedDroppedItemPickup>
+  result: DroppedItemPickupResult
 }>
 
 /**
@@ -495,12 +496,13 @@ export const planDroppedItemPickup = (
   Effect.gen(function* () {
     const request = yield* Schema.decodeUnknownEffect(DroppedItemPickupRequestSchema)(input)
     if (request.position === undefined) {
-      return {
+      const plan = {
         request,
         playerStorage,
         droppedItems,
         planned: [],
       }
+      return { ...plan, result: yield* droppedItemPickupResultAfterCommit(plan, droppedItems) }
     }
 
     const radius = request.radius ?? DROPPED_ITEM_PICKUP_RADIUS
@@ -557,16 +559,17 @@ export const planDroppedItemPickup = (
       items: nextItems,
     })
     const decodedStorage = yield* Schema.decodeUnknownEffect(PlayerStorageSnapshotSchema)(storage)
-    return {
+    const plan = {
       request,
       playerStorage: decodedStorage,
       droppedItems: candidate,
       planned,
     }
+    return { ...plan, result: yield* droppedItemPickupResultAfterCommit(plan, candidate) }
   })
 
 export const droppedItemPickupResultAfterCommit = (
-  plan: DroppedItemPickupPlan,
+  plan: Pick<DroppedItemPickupPlan, 'request' | 'planned'>,
   committedDroppedItems: DroppedItemOwnerSnapshot,
 ): Effect.Effect<DroppedItemPickupResult, DroppedItemPickupFailure> =>
   Effect.gen(function* () {

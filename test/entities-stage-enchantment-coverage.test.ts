@@ -39,10 +39,13 @@ import {
   ExperienceOrbOwnerSnapshotSchema,
   ExperienceOrbVitalsOwnerSnapshotSchema,
 } from '../src/domain/entities/xp-orb.js'
+import { DroppedItemOwnerSnapshotSchema } from '../src/domain/entities/dropped-item.js'
 import {
+  CREEPER_KIND,
   hostileMobSnapshot,
 } from '../src/domain/entities/mob-frame.js'
 import { ZOMBIE_KIND } from '../src/domain/mob/hostile-combat.js'
+import { MOB_DROP_TABLES } from '../src/domain/mob/mob-drop.js'
 import { SkyLightLevel } from '../src/domain/mob/hostile-spawn.js'
 import {
   applyStatusEffect,
@@ -52,6 +55,7 @@ import {
 import { makeGameplayStagesWithState } from '../src/stages/gameplay-stage-composition.js'
 import {
   GAMEPLAY_ENTITIES_OWNER_ID,
+  GAMEPLAY_DROPPED_ITEMS_OWNER_ID,
   GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
   GAMEPLAY_PLAYER_OWNER_ID,
   GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
@@ -61,8 +65,10 @@ import {
 } from '../src/stages/gameplay-owner-registrations.js'
 import {
   makeGameplayFrameStateForOwner,
+  drainDroppedItemPickupExecutions,
   drainExperienceOrbAbsorptionExecutions,
   drainGameplayStageFailures,
+  requestDroppedItemPickup,
   requestMobSpawn,
   requestExperienceOrbAbsorption,
 } from '../src/stages/registration.js'
@@ -149,6 +155,7 @@ const makeProductionScenario = (options: Readonly<{
   storage: ReturnType<typeof emptyPlayerStorage>
   statusEffects: StatusEffectState
   zombieHealth: number
+  mobRoster?: Schema.Schema.Type<typeof GameplayEntityRosterSchema>
   tnt?: Schema.Schema.Type<typeof TntServiceSnapshotSchema>
 }>) => Effect.gen(function* () {
   const coordinator = yield* WorldCommitCoordinator
@@ -174,7 +181,7 @@ const makeProductionScenario = (options: Readonly<{
       },
     },
   })
-  const roster = zombieRoster(options.zombieHealth)
+  const roster = options.mobRoster ?? zombieRoster(options.zombieHealth)
   yield* coordinator.commit({
     expectedRevision: storageSnapshot.revision,
     expectedDimensions: [],
@@ -305,8 +312,20 @@ describe('full-composition enchantment coverage', () => {
     }).pipe(Effect.provide(Layer.orDie(productionTntWorld))),
   )
 
-  it.effect('resolves Thorns retaliation through zombie drops and experience rewards', () =>
-    Effect.gen(function* () {
+  it.effect('faults malformed Thorns drops and continues XP rewards through production stages', () => {
+    const table = MOB_DROP_TABLES[ZOMBIE_KIND]
+    if (table === undefined) throw new Error('Zombie loot rules must exist.')
+    const originalRules = table.rules
+    const originalPools = table.pools
+    return Effect.gen(function* () {
+      yield* Effect.sync(() => {
+        if (!Reflect.set(table, 'rules', [{ item: 'rotten_flesh', count: 1000 }])) {
+          throw new Error('The test must be able to install malformed loot data.')
+        }
+        if (!Reflect.set(table, 'pools', [])) {
+          throw new Error('The test must be able to clear the zombie loot pools.')
+        }
+      })
       const { coordinator, stages, state } = yield* makeProductionScenario({
         storage: enchantedHelmetStorage('minecraft:thorns', 1),
         statusEffects: emptyStatusEffectState(),
@@ -324,27 +343,43 @@ describe('full-composition enchantment coverage', () => {
 
       yield* runFrame(stages, DeltaTimeSecs(0.25))
 
-      const [roster, storage, orbs, unsupported] = yield* Effect.all([
+      const [faults, roster, storage, droppedItems, orbs] = yield* Effect.all([
+        drainGameplayStageFailures(state),
         coordinator.snapshot(GAMEPLAY_ENTITIES_OWNER_ID, GameplayEntityRosterSchema),
         coordinator.snapshot(GAMEPLAY_PLAYER_STORAGE_OWNER_ID, PlayerStorageSnapshotSchema),
+        coordinator.snapshot(GAMEPLAY_DROPPED_ITEMS_OWNER_ID, DroppedItemOwnerSnapshotSchema),
         coordinator.snapshot(GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID, ExperienceOrbOwnerSnapshotSchema),
-        drainGameplayUnsupportedOperations(state),
       ])
+      expect(faults).toContainEqual(expect.objectContaining({
+        _tag: 'Failed',
+        operation: 'CandidateBuild',
+        subject: 'DroppedItem',
+        requestId: 'test:thorns-target',
+        error: { _tag: 'InvalidStack' },
+      }))
       expect(roster.state.entities).toStrictEqual([])
       expect(storage.state.equipment.slots.head).toBeNull()
+      expect(droppedItems.state.items).toStrictEqual([])
       expect(orbs.state.orbs.reduce(
         (total, orb) => total + Number(orb.value) * (orb.count ?? 1),
         0,
       )).toBe(5)
       expect(orbs.state.orbs.every(({ position: orbPosition }) => orbPosition?.dimension === 'overworld')).toBe(true)
-      expect(unsupported).toContainEqual(expect.objectContaining({
+      expect(yield* drainGameplayUnsupportedOperations(state)).toContainEqual(expect.objectContaining({
         _tag: 'Unsupported',
         action: 'MobDrop',
         reason: 'UnsupportedDropItemIds',
         mobKind: ZOMBIE_KIND,
       }))
-    }).pipe(Effect.provide(Layer.orDie(productionWorld))),
-  )
+    }).pipe(
+      Effect.ensuring(Effect.sync(() => {
+        if (originalPools === undefined) Reflect.deleteProperty(table, 'pools')
+        else Reflect.set(table, 'pools', originalPools)
+        Reflect.set(table, 'rules', originalRules)
+      })),
+      Effect.provide(Layer.orDie(productionWorld)),
+    )
+  })
 
   it.effect('uses Mending on an inventory pickaxe while collecting an XP orb through production stages', () =>
     Effect.gen(function* () {
@@ -463,6 +498,67 @@ describe('full-composition enchantment coverage', () => {
     }).pipe(Effect.provide(Layer.orDie(productionWorld))),
   )
 
+  it.effect('records an invalid pickup request and continues valid dropped-item pickup through production stages', () =>
+    Effect.gen(function* () {
+      const { coordinator, stages, state } = yield* makeProductionScenario({
+        storage: emptyPlayerStorage(),
+        statusEffects: emptyStatusEffectState(),
+        zombieHealth: 20,
+      })
+      const droppedSnapshot = yield* coordinator.snapshot(
+        GAMEPLAY_DROPPED_ITEMS_OWNER_ID,
+        DroppedItemOwnerSnapshotSchema,
+      )
+      yield* coordinator.commit({
+        expectedRevision: droppedSnapshot.revision,
+        expectedDimensions: [],
+        changes: [{
+          ownerId: GAMEPLAY_DROPPED_ITEMS_OWNER_ID,
+          state: Schema.decodeUnknownSync(DroppedItemOwnerSnapshotSchema)({
+            items: [{
+              id: EntityId('test:pickup-after-invalid-request'),
+              feetPosition: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
+              behaviour: { _tag: 'DroppedItem', item: 'gunpowder', count: StackCount(1), durability: null },
+            }],
+          }),
+        }],
+      })
+      const invalidRequest = {
+        actor: EntityId('test:invalid-pickup-request'),
+        tick: -1,
+        position: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
+      } as unknown as Parameters<typeof requestDroppedItemPickup>[1]
+      const validRequest = {
+        actor: EntityId('test:valid-pickup-request'),
+        tick: 1,
+        position: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
+      }
+      yield* requestDroppedItemPickup(state, invalidRequest)
+      yield* requestDroppedItemPickup(state, validRequest)
+
+      yield* runFrame(stages, DeltaTimeSecs(0))
+
+      const [faults, executions, storage, droppedItems] = yield* Effect.all([
+        drainGameplayStageFailures(state),
+        drainDroppedItemPickupExecutions(state),
+        coordinator.snapshot(GAMEPLAY_PLAYER_STORAGE_OWNER_ID, PlayerStorageSnapshotSchema),
+        coordinator.snapshot(GAMEPLAY_DROPPED_ITEMS_OWNER_ID, DroppedItemOwnerSnapshotSchema),
+      ])
+      expect(faults).toContainEqual(expect.objectContaining({
+        _tag: 'Failed',
+        operation: 'PlanBuild',
+        subject: 'DroppedItem',
+        requestId: String(invalidRequest.actor),
+        occurrences: 1,
+        error: expect.any(Object),
+      }))
+      expect(executions.map(({ outcome }) => outcome._tag)).toStrictEqual(['Failed', 'Completed'])
+      expect(storage.state.inventory.slots.some((slot) => slot?.item === 'gunpowder' && slot.count === 1)).toBe(true)
+      expect(droppedItems.state.items).toStrictEqual([])
+      expect(yield* drainGameplayStageFailures(state)).toStrictEqual([])
+    }).pipe(Effect.provide(Layer.orDie(productionWorld))),
+  )
+
   it.effect('continues mob contact damage after a valid spawn attempt exhausts the roster serial', () =>
     Effect.gen(function* () {
       const { coordinator, stages, state } = yield* makeProductionScenario({
@@ -500,6 +596,7 @@ describe('full-composition enchantment coverage', () => {
       )
 
       yield* runFrame(stages, DeltaTimeSecs(0))
+      yield* runFrame(stages, DeltaTimeSecs(0))
 
       const [faults, vitalsAfter, cooldowns, pendingAttempts] = yield* Effect.all([
         drainGameplayStageFailures(state),
@@ -519,6 +616,7 @@ describe('full-composition enchantment coverage', () => {
           attempt.feetPosition.y,
           attempt.feetPosition.z,
         ]),
+        occurrences: 2,
         error: expect.objectContaining({
           _tag: 'GameplayStageExecutionFailure',
           cause: { _tag: 'EntitySerialExhausted' },
@@ -539,7 +637,7 @@ describe('full-composition enchantment coverage', () => {
         zombieHealth: 20,
       })
       const futureDamageState = {
-        lastDamageTick: Schema.decodeUnknownSync(SimulationTickSchema)(1),
+        lastDamageTick: Schema.decodeUnknownSync(SimulationTickSchema)(100),
         lastDamageAmount: DamageAmount(1),
       }
       yield* Ref.set(state.damageImmunity, futureDamageState)
@@ -555,6 +653,7 @@ describe('full-composition enchantment coverage', () => {
       )
 
       yield* runFrame(stages, DeltaTimeSecs(0))
+      yield* runFrame(stages, DeltaTimeSecs(0))
 
       const [faults, vitalsAfter, orbs, immunityAfter, contactCooldowns] = yield* Effect.all([
         drainGameplayStageFailures(state),
@@ -568,9 +667,10 @@ describe('full-composition enchantment coverage', () => {
         operation: 'CandidateBuild',
         subject: 'Player',
         requestId: JSON.stringify(['player-damage', 'HostileContact', 'test:thorns-target']),
+        occurrences: 2,
         error: expect.objectContaining({
           _tag: 'GameplayStageExecutionFailure',
-          cause: { _tag: 'HostileAttackPreparationFailure', reason: 'invalid-damage-state' },
+          cause: 'invalid-damage-state',
         }),
       }))
       expect(vitalsAfter.state.vitals).toStrictEqual(vitalsBefore.state.vitals)
@@ -580,6 +680,54 @@ describe('full-composition enchantment coverage', () => {
         id: EntityId('mx-gameplay:experience-orb/test:queued-xp-after-damage-fault/0/0/0'),
         value: 3,
       }))
+      expect(yield* drainGameplayStageFailures(state)).toStrictEqual([])
+    }).pipe(Effect.provide(Layer.orDie(productionWorld))),
+  )
+
+  it.effect('records a creeper blast damage fault and continues the production entity tick', () =>
+    Effect.gen(function* () {
+      const mobRoster = Schema.decodeUnknownSync(GameplayEntityRosterSchema)({
+        entities: [{
+          id: EntityId('test:blast-creeper'),
+          kind: CREEPER_KIND,
+          feetPosition: position(PositionAxis(1), PositionAxis(64), PositionAxis(0)),
+          healthPoints: EntityHealthPoints(20),
+          behaviour: hostileMobSnapshot({ _tag: 'Lit', burnedSecs: 1.49 }),
+          dimension: 'overworld',
+        }],
+        nextSerial: EntitySerial(1),
+      })
+      const { coordinator, stages, state } = yield* makeProductionScenario({
+        storage: emptyPlayerStorage(),
+        statusEffects: emptyStatusEffectState(),
+        zombieHealth: 20,
+        mobRoster,
+      })
+      const futureDamageState = {
+        lastDamageTick: Schema.decodeUnknownSync(SimulationTickSchema)(100),
+        lastDamageAmount: DamageAmount(1),
+      }
+      yield* Ref.set(state.damageImmunity, futureDamageState)
+
+      yield* runFrame(stages, DeltaTimeSecs(0.02))
+
+      const [faults, roster, vitals] = yield* Effect.all([
+        drainGameplayStageFailures(state),
+        coordinator.snapshot(GAMEPLAY_ENTITIES_OWNER_ID, GameplayEntityRosterSchema),
+        coordinator.snapshot(GAMEPLAY_VITALS_OWNER_ID, ExperienceOrbVitalsOwnerSnapshotSchema),
+      ])
+      expect(faults).toContainEqual(expect.objectContaining({
+        _tag: 'Failed',
+        operation: 'CandidateBuild',
+        subject: 'Player',
+        requestId: JSON.stringify(['player-damage', 'Explosion', 'test:blast-creeper']),
+        error: expect.objectContaining({
+          _tag: 'GameplayStageExecutionFailure',
+          cause: 'invalid-damage-state',
+        }),
+      }))
+      expect(roster.state.entities).toStrictEqual([])
+      expect(vitals.state.vitals.healthPoints).toBe(20)
       expect(yield* drainGameplayStageFailures(state)).toStrictEqual([])
     }).pipe(Effect.provide(Layer.orDie(productionWorld))),
   )
