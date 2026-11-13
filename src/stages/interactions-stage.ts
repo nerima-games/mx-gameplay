@@ -676,21 +676,15 @@ const processBowShot = (
         const damageEnchantments: EnchantmentSource = request.powerLevel === undefined
           ? bowEnchantments
           : [{ id: 'power', level: request.powerLevel }]
-        const amount = DamageAmount.result(bowDamageWithEnchantments(
+        // The request decoder bounds charge and enchantment levels before this finite calculation.
+        const amount = DamageAmount(bowDamageWithEnchantments(
           bowDamage(bowCharge(request.chargeSecs)),
           damageEnchantments,
         ))
-        if (Result.isFailure(amount)) {
-          yield* recordGameplayStageFailure(state, {
-            _tag: 'Failed', operation: 'CandidateBuild', subject: 'Player', error: amount.failure,
-          })
-          yield* Ref.update(state.pendingBowShots, (pending) => [request, ...pending])
-          return
-        }
         const flame = flameDurationTicks(bowEnchantments) > 0
         hit = {
           id: target.hit.id,
-          damage: { amount: amount.success, cause: 'projectile' },
+          damage: { amount, cause: 'projectile' },
           lootingLevel: lootingLevel(bowEnchantments),
           ...(flame ? { burning: true } : {}),
         }
