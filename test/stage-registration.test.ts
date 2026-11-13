@@ -6720,7 +6720,7 @@ describe('farming and food item uses through the full interactions stage', () =>
   it.effect('reports a missing C7 port while preserving the CropOwner clock on fallback commit failure', () =>
     Effect.gen(function* () {
       const position = fixtureBlockPosition(39, 64, 39)
-      const crops = { crops: [{ dimension: 'overworld', position, crop: 'wheat_crop' as const, growthSecs: 0 }] }
+      const crops: CropSnapshot = { crops: [{ dimension: 'overworld', position, crop: 'wheat_crop', growthSecs: 0 }] }
       const completed = yield* builtStagesInWorld(world([]), ['2,2'], crops)
       const completedInteractions = completed.stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
 

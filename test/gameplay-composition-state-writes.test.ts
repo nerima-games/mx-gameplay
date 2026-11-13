@@ -2,6 +2,8 @@ import { describe, expect, it } from '@effect/vitest'
 import { Effect, Layer, Option, Ref, Result, Schema, Stream } from 'effect'
 import {
   AIR_BLOCK_ID,
+  BlockId,
+  DimensionIdSchema,
   DeltaTimeSecs,
   DimensionRevisionSchema,
   WorldIdSchema,
@@ -50,10 +52,15 @@ import { blockKey, world } from './support/chunk-store-double.js'
 import { makeEntityManagerDouble } from './support/entity-manager-double.js'
 import { emptySlots, makeInventoryDouble } from './support/inventory-service-double.js'
 import { makeGameplayCommitServices, makeTransactionalChunkStoreDouble } from './support/transactional-stage-doubles.js'
-import { position as fixturePosition, blockPosition as fixtureBlockPosition } from './support/coordinate-fixtures.js'
+import {
+  position as fixturePosition,
+  blockPosition as fixtureBlockPosition,
+  chunkCoord as fixtureChunkCoord,
+} from './support/coordinate-fixtures.js'
 import { FRAME_DELTA, runFrames } from './support/frame-runner.js'
 import { GAMEPLAY_STAGE_IDS } from '../src/stages/stage-ids.js'
-import type { CropSnapshot, MobBehaviour, Slot } from '@nerima-games/mc-sim'
+import type { CropSnapshot, Slot } from '@nerima-games/mc-sim'
+import type { MobBehaviour } from '../src/domain/entities/mob-frame.js'
 
 const AIMING_POSE = {
   feetPosition: fixturePosition(0.5, 0, 2.5),
@@ -108,15 +115,23 @@ const makeStateWorld = (
         cell: cells.get(blockKey(position)) ?? { block: AIR_BLOCK_ID, state: stateFor('air') },
       })),
       write: portOverrides.write ?? ((edits) => {
-        adapterWrites.push({ dimension, ownerChanges, expectedWorldRevision, edits })
+        adapterWrites.push({
+          dimension,
+          ...(ownerChanges === undefined ? {} : { ownerChanges }),
+          ...(expectedWorldRevision === undefined ? {} : { expectedWorldRevision }),
+          edits,
+        })
         const batch: WorldWriteBatch = {
           world: Schema.decodeUnknownSync(WorldIdSchema)('gp1-composition-test'),
           expectedWorldRevision: expectedWorldRevision ?? worldRevision,
-          dimension,
+          dimension: Schema.decodeUnknownSync(DimensionIdSchema)(dimension),
           expectedDimensionRevision: dimensionRevision,
           edits,
         }
-        return Effect.as(c7Port.applyBatch(batch), { _tag: 'Written' as const })
+        return Effect.match(c7Port.applyBatch(batch), {
+          onFailure: () => ({ _tag: 'Unsupported' as const, operation: 'writeState' as const }),
+          onSuccess: () => ({ _tag: 'Written' as const }),
+        })
       }),
     }),
   }
@@ -179,10 +194,10 @@ describe('the registered production composition reaches the C7 state writer', ()
       expect(interactions).toBeGreaterThanOrEqual(0)
       expect(stateRules).toBeGreaterThan(interactions)
 
-      const opened = yield* requestTargetedBlockUse(composition.state, composition.store.api, composition.targeting, 'door-open', 'oak_door')
+      const opened = yield* requestTargetedBlockUse(composition.state, composition.store.api, composition.targeting, 'door-open', 'door')
       expect(Option.isSome(opened)).toBe(true)
       yield* runFrames(composition.stages, 1, FRAME_DELTA)
-      yield* requestTargetedBlockUse(composition.state, composition.store.api, composition.targeting, 'door-close', 'oak_door')
+      yield* requestTargetedBlockUse(composition.state, composition.store.api, composition.targeting, 'door-close', 'door')
       yield* runFrames(composition.stages, 1, FRAME_DELTA)
 
       expect(composition.stateWorld.batches).toHaveLength(2)
@@ -426,7 +441,7 @@ describe('the registered production composition reaches the C7 state writer', ()
         { outcome: { _tag: 'Applied', edits: [{ state: { stage: 1 } }] } },
         { outcome: { _tag: 'NoChange', reason: 'growthMiss' } },
       ])
-      yield* saplingComposition.store.api.unload({ cx: 0, cz: 0 })
+      yield* saplingComposition.store.api.unload(fixtureChunkCoord(0, 0))
       yield* runFrames(saplingComposition.stages, 1, DeltaTimeSecs(1))
       expect(saplingComposition.stateWorld.batches).toHaveLength(1)
     }),
@@ -567,8 +582,8 @@ describe('the registered production composition reaches the C7 state writer', ()
       yield* runFrames(composition.stages, 1, DeltaTimeSecs(1))
 
       expect(yield* Ref.get(composition.state.blockStateRuleResults)).toMatchObject([
-        { outcome: { _tag: 'NoChange', reason: 'blocked' } },
-        { outcome: { _tag: 'NoChange', reason: 'blocked' } },
+        { outcome: { _tag: 'NoChange', reason: 'outOfWorld' } },
+        { outcome: { _tag: 'NoChange', reason: 'outOfWorld' } },
       ])
       expect(composition.stateWorld.batches).toHaveLength(0)
       expect(composition.stateWorld.cells.get(blockKey(topSapling))?.state.stage).toBe(1)
@@ -593,7 +608,7 @@ describe('the registered production composition reaches the C7 state writer', ()
     }),
   )
 
-  it.effect('blocks sapling growth when a tree-space read reports an unloaded chunk', () =>
+  it.effect('keeps sapling growth untried when a tree-space read reports an unloaded chunk', () =>
     Effect.gen(function* () {
       const saplingPosition = fixtureBlockPosition(4, 64, 4)
       const composition = yield* makeProductionComposition(
@@ -610,10 +625,105 @@ describe('the registered production composition reaches the C7 state writer', ()
       yield* runFrames(composition.stages, 1, DeltaTimeSecs(1))
 
       expect(yield* Ref.get(composition.state.blockStateRuleResults)).toMatchObject([
-        { outcome: { _tag: 'NoChange', reason: 'blocked' } },
+        { outcome: { _tag: 'NoChange', reason: 'chunkNotLoaded' } },
       ])
       expect(composition.stateWorld.batches).toHaveLength(0)
       expect(composition.stateWorld.cells.get(blockKey(saplingPosition))?.state.stage).toBe(1)
+    }),
+  )
+
+  it.effect('reports block type resolution failures from tree-space reads through the registered stage', () =>
+    Effect.gen(function* () {
+      const malformedSapling = fixtureBlockPosition(4, 64, 4)
+      const unregisteredSapling = fixtureBlockPosition(5, 64, 4)
+      const malformedSpace = fixtureBlockPosition(4, 65, 4)
+      const unregisteredSpace = fixtureBlockPosition(5, 65, 4)
+      // This models corrupt chunk data crossing the ChunkStore boundary.
+      const malformedBlock = -1 as BlockId
+      const unregisteredBlock = BlockId(65_535)
+      const composition = yield* makeProductionComposition(
+        [
+          [malformedSapling, cell('sapling', { stage: 1 })],
+          [unregisteredSapling, cell('sapling', { stage: 1 })],
+        ],
+        emptySlots(),
+        { crops: [] },
+        {},
+        {
+          getBlock: (position) => {
+            if (position.x === 4 && position.y === 65) {
+              return Effect.succeed({ _tag: 'Block', block: malformedBlock })
+            }
+            if (position.x === 5 && position.y === 65) {
+              return Effect.succeed({ _tag: 'Block', block: unregisteredBlock })
+            }
+            return Effect.succeed({ _tag: 'Block', block: AIR_BLOCK_ID })
+          },
+          getLight: () => Effect.succeed({ _tag: 'Light', sky: 15, block: 0 }),
+        },
+      )
+      yield* runFrames(composition.stages, 1, DeltaTimeSecs(1))
+
+      expect(yield* Ref.get(composition.state.blockStateRuleResults)).toMatchObject([
+        {
+          outcome: {
+            _tag: 'BlockTypeDecodeFailed',
+            position: malformedSpace,
+            block: malformedBlock,
+            failure: { _tag: 'BrandError' },
+          },
+        },
+        {
+          outcome: {
+            _tag: 'BlockTypeDecodeFailed',
+            position: unregisteredSpace,
+            block: unregisteredBlock,
+            failure: { _tag: 'UnregisteredBlockId' },
+          },
+        },
+      ])
+      expect(composition.stateWorld.batches).toHaveLength(0)
+      expect(composition.stateWorld.cells.get(blockKey(malformedSapling))?.state.stage).toBe(1)
+      expect(composition.stateWorld.cells.get(blockKey(unregisteredSapling))?.state.stage).toBe(1)
+    }),
+  )
+
+  it.effect('distinguishes blocked tree space from an unloaded second tree cell', () =>
+    Effect.gen(function* () {
+      const blockedSapling = fixtureBlockPosition(4, 64, 4)
+      const unloadedSapling = fixtureBlockPosition(5, 64, 4)
+      const composition = yield* makeProductionComposition(
+        [
+          [blockedSapling, cell('sapling', { stage: 1 })],
+          [unloadedSapling, cell('sapling', { stage: 1 })],
+        ],
+        emptySlots(),
+        { crops: [] },
+        {},
+        {
+          getBlock: (position) => {
+            if (position.x === 4 && position.y === 65) {
+              return Effect.succeed({ _tag: 'Block', block: blockId('stone') })
+            }
+            if (position.x === 5 && position.y === 65) {
+              return Effect.succeed({ _tag: 'Block', block: AIR_BLOCK_ID })
+            }
+            if (position.x === 5 && position.y === 66) return Effect.succeed({ _tag: 'ChunkNotLoaded' })
+            return Effect.succeed({ _tag: 'Block', block: AIR_BLOCK_ID })
+          },
+          getLight: () => Effect.succeed({ _tag: 'Light', sky: 15, block: 0 }),
+        },
+      )
+      yield* Ref.set(composition.state.rollSeed, 1)
+      yield* runFrames(composition.stages, 1, DeltaTimeSecs(1))
+
+      expect(yield* Ref.get(composition.state.blockStateRuleResults)).toMatchObject([
+        { outcome: { _tag: 'NoChange', reason: 'blocked' } },
+        { outcome: { _tag: 'NoChange', reason: 'chunkNotLoaded' } },
+      ])
+      expect(composition.stateWorld.batches).toHaveLength(0)
+      expect(composition.stateWorld.cells.get(blockKey(blockedSapling))?.state.stage).toBe(1)
+      expect(composition.stateWorld.cells.get(blockKey(unloadedSapling))?.state.stage).toBe(1)
     }),
   )
 })

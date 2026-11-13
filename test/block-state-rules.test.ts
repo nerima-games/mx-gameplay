@@ -34,6 +34,7 @@ import {
   type BlockStateWorldPort,
   type BlockStateWrite,
   type HorizontalBlockStateFacing,
+  type SaplingTreeSpaceStatus,
 } from '../src/domain/interactions/block-state-rules.js'
 import { makeBlockStateRulesStage } from '../src/stages/block-state-rules-stage.js'
 import { FrameServicesLayer } from './support/frame-services.js'
@@ -809,20 +810,26 @@ describe('block state rules', () => {
 
   it.effect('sapling stages advance once before tree placement, and bone meal succeeds 45% of the time', () =>
     Effect.sync(() => {
+      const treeSpaceCases = [
+        { treeSpace: { _tag: 'Available' }, expected: { _tag: 'TreeRequired' } },
+        { treeSpace: { _tag: 'Blocked' }, expected: { _tag: 'NoChange', reason: 'blocked' } },
+        { treeSpace: { _tag: 'OutOfWorld' }, expected: { _tag: 'NoChange', reason: 'outOfWorld' } },
+        { treeSpace: { _tag: 'ChunkNotLoaded' }, expected: { _tag: 'NoChange', reason: 'chunkNotLoaded' } },
+      ] as const satisfies ReadonlyArray<Readonly<{ treeSpace: SaplingTreeSpaceStatus; expected: object }>>
       FastCheck.assert(FastCheck.property(
         FastCheck.integer({ min: 0, max: 1 }),
         FastCheck.integer({ min: 0, max: 9999 }).map((value) => value / 10000),
-        FastCheck.boolean(),
-        (stage, roll, treeSpaceAvailable) => {
+        FastCheck.constantFrom(...treeSpaceCases),
+        (stage, roll, treeSpaceCase) => {
           const chance = 1 / 7
-          const expected = roll >= chance
-            ? { _tag: 'NoChange', reason: 'growthMiss' }
-            : stage === 0
-              ? { _tag: 'Advanced', stage: 1 }
-              : treeSpaceAvailable
-                ? { _tag: 'TreeRequired' }
-                : { _tag: 'NoChange', reason: 'blocked' }
-          expect(saplingStageAfterGrowthAttempt(stage, roll, treeSpaceAvailable)).toStrictEqual(expected)
+          const expected = treeSpaceCase.treeSpace._tag === 'OutOfWorld' || treeSpaceCase.treeSpace._tag === 'ChunkNotLoaded'
+            ? treeSpaceCase.expected
+            : roll >= chance
+              ? { _tag: 'NoChange', reason: 'growthMiss' }
+              : stage === 0
+                ? { _tag: 'Advanced', stage: 1 }
+                : treeSpaceCase.expected
+          expect(saplingStageAfterGrowthAttempt(stage, roll, treeSpaceCase.treeSpace)).toStrictEqual(expected)
         },
       ))
       FastCheck.assert(FastCheck.property(
@@ -841,17 +848,21 @@ describe('block state rules', () => {
         },
       ))
       const naturalGrowthChance = 1 / 7
-      expect(saplingStageAfterGrowthAttempt(0, naturalGrowthChance - Number.EPSILON, true))
+      expect(saplingStageAfterGrowthAttempt(0, naturalGrowthChance - Number.EPSILON, { _tag: 'Available' }))
         .toStrictEqual({ _tag: 'Advanced', stage: 1 })
-      expect(saplingStageAfterGrowthAttempt(0, naturalGrowthChance, true))
+      expect(saplingStageAfterGrowthAttempt(0, naturalGrowthChance, { _tag: 'Available' }))
         .toStrictEqual({ _tag: 'NoChange', reason: 'growthMiss' })
       expect(saplingStageAfterBoneMeal(0, 0.4499, true)).toStrictEqual({ _tag: 'Advanced', stage: 1 })
       expect(saplingStageAfterBoneMeal(0, 0.45, true)).toStrictEqual({ _tag: 'NoChange', reason: 'growthMiss' })
-      expect(saplingStageAfterGrowthAttempt(1, 0, false)).toStrictEqual({ _tag: 'NoChange', reason: 'blocked' })
-      expect(saplingStageAfterGrowthAttempt(1, 0, true)).toStrictEqual({ _tag: 'TreeRequired' })
-      expect(saplingStageAfterGrowthAttempt(2, 0, true)).toStrictEqual({ _tag: 'InvalidState' })
-      expect(saplingStageAfterGrowthAttempt(0, -0.01, true)).toStrictEqual({ _tag: 'InvalidInput' })
-      expect(saplingStageAfterGrowthAttempt(0, 1, true)).toStrictEqual({ _tag: 'InvalidInput' })
+      expect(saplingStageAfterGrowthAttempt(1, 0, { _tag: 'Blocked' })).toStrictEqual({ _tag: 'NoChange', reason: 'blocked' })
+      expect(saplingStageAfterGrowthAttempt(1, 0, { _tag: 'OutOfWorld' })).toStrictEqual({ _tag: 'NoChange', reason: 'outOfWorld' })
+      expect(saplingStageAfterGrowthAttempt(1, 0, { _tag: 'ChunkNotLoaded' })).toStrictEqual({ _tag: 'NoChange', reason: 'chunkNotLoaded' })
+      expect(saplingStageAfterGrowthAttempt(0, 0, { _tag: 'OutOfWorld' })).toStrictEqual({ _tag: 'NoChange', reason: 'outOfWorld' })
+      expect(saplingStageAfterGrowthAttempt(0, 0, { _tag: 'ChunkNotLoaded' })).toStrictEqual({ _tag: 'NoChange', reason: 'chunkNotLoaded' })
+      expect(saplingStageAfterGrowthAttempt(1, 0, { _tag: 'Available' })).toStrictEqual({ _tag: 'TreeRequired' })
+      expect(saplingStageAfterGrowthAttempt(2, 0, { _tag: 'Available' })).toStrictEqual({ _tag: 'InvalidState' })
+      expect(saplingStageAfterGrowthAttempt(0, -0.01, { _tag: 'Available' })).toStrictEqual({ _tag: 'InvalidInput' })
+      expect(saplingStageAfterGrowthAttempt(0, 1, { _tag: 'Available' })).toStrictEqual({ _tag: 'InvalidInput' })
       expect(saplingStageAfterBoneMeal(2, 0, true)).toStrictEqual({ _tag: 'InvalidState' })
       expect(saplingStageAfterBoneMeal(0, -0.01, true)).toStrictEqual({ _tag: 'InvalidInput' })
     }),
@@ -876,7 +887,7 @@ describe('block state rules', () => {
       const saplingPosition = fixtureBlockPosition(4, 64, -2)
       const saplingOutcome = yield* applyBlockStateRule(world.port, {
         requestId: 'sapling-tick', position: saplingPosition,
-        operation: { _tag: 'SaplingGrowthAttempt', roll: 0, treeSpaceAvailable: true },
+        operation: { _tag: 'SaplingGrowthAttempt', roll: 0, treeSpace: { _tag: 'Available' } },
       })
       expect(saplingOutcome).toMatchObject({ _tag: 'Applied' })
       expect(world.cells.get(keyOf(saplingPosition))?.state.stage).toBe(1)
@@ -906,42 +917,59 @@ describe('block state rules', () => {
 
       const growthMiss = saplingAtStage(0)
       expect(yield* applyRuleAt(growthMiss.port, {
-        _tag: 'SaplingGrowthAttempt', roll: 1 / 7, treeSpaceAvailable: true,
+        _tag: 'SaplingGrowthAttempt', roll: 1 / 7, treeSpace: { _tag: 'Available' },
       })).toStrictEqual({ _tag: 'NoChange', reason: 'growthMiss' })
 
       const blockedAtStageOne = saplingAtStage(1)
       expect(yield* applyRuleAt(blockedAtStageOne.port, {
-        _tag: 'SaplingGrowthAttempt', roll: 0, treeSpaceAvailable: false,
+        _tag: 'SaplingGrowthAttempt', roll: 0, treeSpace: { _tag: 'Blocked' },
       })).toStrictEqual({ _tag: 'NoChange', reason: 'blocked' })
 
       const treeRequired = saplingAtStage(1)
       expect(yield* applyRuleAt(treeRequired.port, {
-        _tag: 'SaplingGrowthAttempt', roll: 0, treeSpaceAvailable: true,
+        _tag: 'SaplingGrowthAttempt', roll: 0, treeSpace: { _tag: 'Available' },
       })).toStrictEqual({ _tag: 'Unsupported', operation: 'treePlacement', position })
 
       const invalidRoll = saplingAtStage(0)
       expect(yield* applyRuleAt(invalidRoll.port, {
-        _tag: 'SaplingGrowthAttempt', roll: Number.NaN, treeSpaceAvailable: true,
+        _tag: 'SaplingGrowthAttempt', roll: Number.NaN, treeSpace: { _tag: 'Available' },
       })).toStrictEqual({ _tag: 'InvalidInput', reason: 'randomRoll' })
 
       const missingStage = memoryWorld([[position, { block: blockId('sapling'), state: {} }]])
       expect(yield* applyRuleAt(missingStage.port, {
-        _tag: 'SaplingGrowthAttempt', roll: 0, treeSpaceAvailable: true,
+        _tag: 'SaplingGrowthAttempt', roll: 0, treeSpace: { _tag: 'Available' },
       })).toStrictEqual({ _tag: 'InvalidState', position })
 
       const notSapling = memoryWorld([[position, { block: blockId('stone'), state: {} }]])
       expect(yield* applyRuleAt(notSapling.port, {
-        _tag: 'SaplingGrowthAttempt', roll: 0, treeSpaceAvailable: true,
+        _tag: 'SaplingGrowthAttempt', roll: 0, treeSpace: { _tag: 'Available' },
       })).toStrictEqual({ _tag: 'NotApplicable', block: 'stone' })
 
       const unknownBlock = memoryWorld([[position, { block: BlockId(65_535), state: {} }]])
       expect(yield* applyRuleAt(unknownBlock.port, {
-        _tag: 'SaplingGrowthAttempt', roll: 0, treeSpaceAvailable: true,
+        _tag: 'SaplingGrowthAttempt', roll: 0, treeSpace: { _tag: 'Available' },
       })).toStrictEqual({ _tag: 'NotApplicable', block: undefined })
+
+      const blockDecodeFailure = memoryWorld([[position, { block: blockId('sapling'), state: { stage: 1 } }]])
+      expect(yield* applyRuleAt(blockDecodeFailure.port, {
+        _tag: 'SaplingGrowthAttempt',
+        roll: 0,
+        treeSpace: {
+          _tag: 'BlockTypeDecodeFailed',
+          position,
+          block: BlockId(65_535),
+          failure: { _tag: 'UnregisteredBlockId' },
+        },
+      })).toStrictEqual({
+        _tag: 'BlockTypeDecodeFailed',
+        position,
+        block: BlockId(65_535),
+        failure: { _tag: 'UnregisteredBlockId' },
+      })
 
       const unreadable = scriptedWorld([{ _tag: 'Unavailable', reason: 'ChunkNotLoaded' }])
       expect(yield* applyRuleAt(unreadable.port, {
-        _tag: 'SaplingGrowthAttempt', roll: 0, treeSpaceAvailable: true,
+        _tag: 'SaplingGrowthAttempt', roll: 0, treeSpace: { _tag: 'Available' },
       })).toStrictEqual({ _tag: 'Unavailable', position, reason: 'ChunkNotLoaded' })
     }),
   )
@@ -1040,7 +1068,7 @@ describe('block state rules', () => {
       yield* requestBlockStateRule(state, 'overworld', {
         requestId: 'sapling-tick-unsupported',
         position,
-        operation: { _tag: 'SaplingGrowthAttempt', roll: 0, treeSpaceAvailable: true },
+        operation: { _tag: 'SaplingGrowthAttempt', roll: 0, treeSpace: { _tag: 'Available' } },
       })
       yield* requestBlockStateRule(state, 'overworld', {
         requestId: 'bone-meal-unsupported',

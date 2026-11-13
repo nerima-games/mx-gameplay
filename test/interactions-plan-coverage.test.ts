@@ -3016,7 +3016,7 @@ describe('registered block-use and placement requests in the interactions stage'
       }])
       expect(harness.commitCalls()).toBe(1)
     }
-    await Promise.all(['oak_stairs', 'purpur_stairs'].map(assertSuccessfulStairBreak))
+    await Promise.all((['oak_stairs', 'purpur_stairs'] as const).map(assertSuccessfulStairBreak))
 
     const rejected = await Effect.runPromise(makeHarness({
       blocks: [[target, Option.getOrThrow(blockIdOf('oak_stairs'))]],

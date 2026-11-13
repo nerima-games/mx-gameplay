@@ -133,7 +133,7 @@ import {
   primeTnt,
   spawnEntity,
 } from '@nerima-games/mc-sim'
-import { blockIndex, CHUNK_HEIGHT, CHUNK_SIZE_XZ, type ReadonlyChunk } from '@nerima-games/mc-worldgen'
+import { blockIndex, CHUNK_HEIGHT, CHUNK_SIZE_XZ, type BlockReading, type ReadonlyChunk } from '@nerima-games/mc-worldgen'
 import { Schema } from 'effect'
 import {
   applyStatusEffect,
@@ -146,6 +146,7 @@ import {
   blockStateWorldPortForChunkStore,
   type BlockStateRuleRequest,
   type BlockStateRuleOutcome,
+  type SaplingTreeSpaceResult,
 } from '../domain/interactions/block-state-rules.js'
 import { cropDrops } from '../domain/interactions/crop-drops.js'
 import {
@@ -317,22 +318,46 @@ const indexSaplingsInChunk = (
   return { blocks: chunk.blocks, positions }
 }
 
-const treeSpaceAvailableAt = (
+const saplingTreeSpaceForBlock = (
+  position: BlockPosition,
+  reading: BlockReading,
+): SaplingTreeSpaceResult => {
+  if (reading._tag === 'ChunkNotLoaded') return { _tag: 'ChunkNotLoaded' }
+  if (reading._tag === 'OutOfWorld') return { _tag: 'OutOfWorld' }
+
+  const decoded = blockTypeOfId(reading.block)
+  if (Result.isFailure(decoded)) {
+    return {
+      _tag: 'BlockTypeDecodeFailed',
+      position,
+      block: reading.block,
+      failure: decoded.failure,
+    }
+  }
+  if (decoded.success === undefined) {
+    return {
+      _tag: 'BlockTypeDecodeFailed',
+      position,
+      block: reading.block,
+      failure: { _tag: 'UnregisteredBlockId' },
+    }
+  }
+  return decoded.success === 'air' ? { _tag: 'Available' } : { _tag: 'Blocked' }
+}
+
+const treeSpaceAt = (
   store: GameplayStageContext['store'],
   position: BlockPosition,
-): Effect.Effect<boolean> =>
+): Effect.Effect<SaplingTreeSpaceResult> =>
   Effect.gen(function* () {
     // Sapling positions are indexed from the world's 0..CHUNK_HEIGHT Y range.
     // BlockPosition neighbours remain numerically valid above the world, so the
     // store's OutOfWorld result is the authoritative boundary check.
     const first = blockPosition(position.x, BlockAxis(position.y + 1), position.z)
     const second = blockPosition(position.x, BlockAxis(position.y + 2), position.z)
-    const firstRead = yield* store.getBlock(first)
-    if (firstRead._tag === 'OutOfWorld') return false
-    if (firstRead._tag !== 'Block' || Result.getOrUndefined(blockTypeOfId(firstRead.block)) !== 'air') return false
-    const secondRead = yield* store.getBlock(second)
-    if (secondRead._tag === 'OutOfWorld') return false
-    return secondRead._tag === 'Block' && Result.getOrUndefined(blockTypeOfId(secondRead.block)) === 'air'
+    const firstResult = saplingTreeSpaceForBlock(first, yield* store.getBlock(first))
+    if (firstResult._tag !== 'Available') return firstResult
+    return saplingTreeSpaceForBlock(second, yield* store.getBlock(second))
   })
 
 const makeSaplingGrowthTick = (
@@ -389,14 +414,14 @@ const makeSaplingGrowthTick = (
         for (const [index, position] of saplings.entries()) {
           const light = yield* store.getLight(position)
           if (light._tag !== 'Light' || Math.max(light.sky, light.block) < 9) continue
-          const treeSpaceAvailable = yield* treeSpaceAvailableAt(store, position)
+          const treeSpace = yield* treeSpaceAt(store, position)
           yield* applyGameplayBlockStateRule(state, blockStateWorld, dimension, {
             requestId: `sapling-growth:${position.x}:${position.y}:${position.z}:${tick}`,
             position,
             operation: {
               _tag: 'SaplingGrowthAttempt',
               roll: rollAt(batch, index),
-              treeSpaceAvailable,
+              treeSpace,
             },
           })
         }

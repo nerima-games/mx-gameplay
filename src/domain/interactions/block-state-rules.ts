@@ -8,6 +8,7 @@ import {
   defaultBlockState,
   type BlockFace,
   type BlockId,
+  type BlockRegistryResolutionFailure,
   type BlockPosition,
   type BlockStateAge,
   type BlockStateFacing,
@@ -75,7 +76,7 @@ export type BlockStateRuleRequest = Readonly<{
         /** Sampled roll for a light-eligible random tick; the caller handles the light gate. */
         _tag: 'SaplingGrowthAttempt'
         roll: number
-        treeSpaceAvailable: boolean
+        treeSpace: SaplingTreeSpaceResult
       }>
     | Readonly<{
         _tag: 'BoneMeal'
@@ -106,11 +107,30 @@ export type BlockStateRuleFailure = Readonly<{
 }> | Readonly<{
   _tag: 'InvalidState'
   position: BlockPosition
+}> | BlockIdDecodeFailure
+
+export type BlockIdDecodeFailure = Readonly<{
+  _tag: 'BlockTypeDecodeFailed'
+  position: BlockPosition
+  block: BlockId
+  failure: BlockRegistryResolutionFailure | Readonly<{ _tag: 'UnregisteredBlockId' }>
 }>
+
+export type SaplingTreeSpaceStatus = Readonly<
+  | { _tag: 'Available' }
+  | { _tag: 'Blocked' }
+  | { _tag: 'OutOfWorld' }
+  | { _tag: 'ChunkNotLoaded' }
+>
+
+export type SaplingTreeSpaceResult = SaplingTreeSpaceStatus | BlockIdDecodeFailure
 
 export type BlockStateRuleOutcome =
   | Readonly<{ _tag: 'Applied'; edits: ReadonlyArray<BlockStateEdit> }>
-  | Readonly<{ _tag: 'NoChange'; reason: 'growthMiss' | 'mature' | 'blocked' | 'unchanged' }>
+  | Readonly<{
+      _tag: 'NoChange'
+      reason: 'growthMiss' | 'mature' | 'blocked' | 'outOfWorld' | 'chunkNotLoaded' | 'unchanged'
+    }>
   | Readonly<{ _tag: 'NotApplicable'; block: BlockType | undefined }>
   | BlockStateRuleFailure
 
@@ -415,7 +435,7 @@ const adjacentStairShapeEdits = (
 type SaplingStageTransition = Readonly<
   | { _tag: 'Advanced'; stage: BlockStateStage }
   | { _tag: 'TreeRequired' }
-  | { _tag: 'NoChange'; reason: 'growthMiss' | 'blocked' }
+  | { _tag: 'NoChange'; reason: 'growthMiss' | 'blocked' | 'outOfWorld' | 'chunkNotLoaded' }
   | { _tag: 'InvalidInput' }
   | { _tag: 'InvalidState' }
 >
@@ -424,23 +444,28 @@ type SaplingTransitionAfterValidatedStage = Exclude<SaplingStageTransition, { _t
 export function saplingStageAfterGrowthAttempt(
   stage: BlockStateStage,
   roll: number,
-  treeSpaceAvailable: boolean,
+  treeSpace: SaplingTreeSpaceStatus,
 ): SaplingTransitionAfterValidatedStage
 export function saplingStageAfterGrowthAttempt(
   stage: number,
   roll: number,
-  treeSpaceAvailable: boolean,
+  treeSpace: SaplingTreeSpaceStatus,
 ): SaplingStageTransition
 export function saplingStageAfterGrowthAttempt(
   stage: number,
   roll: number,
-  treeSpaceAvailable: boolean,
+  treeSpace: SaplingTreeSpaceStatus,
 ): SaplingStageTransition {
   if (!Number.isFinite(roll) || roll < 0 || roll >= 1) return { _tag: 'InvalidInput' }
   if (stage !== 0 && stage !== 1) return { _tag: 'InvalidState' }
+  if (treeSpace._tag === 'OutOfWorld') return { _tag: 'NoChange', reason: 'outOfWorld' }
+  if (treeSpace._tag === 'ChunkNotLoaded') return { _tag: 'NoChange', reason: 'chunkNotLoaded' }
   if (roll >= 1 / 7) return { _tag: 'NoChange', reason: 'growthMiss' }
   if (stage === 0) return { _tag: 'Advanced', stage: SAPLING_STAGE_ONE }
-  return treeSpaceAvailable ? { _tag: 'TreeRequired' } : { _tag: 'NoChange', reason: 'blocked' }
+  switch (treeSpace._tag) {
+    case 'Available': return { _tag: 'TreeRequired' }
+    case 'Blocked': return { _tag: 'NoChange', reason: 'blocked' }
+  }
 }
 
 export function saplingStageAfterBoneMeal(
@@ -714,7 +739,8 @@ export const applyBlockStateRule = (
     return growCrop(port, request.position, operation.speedLevel, operation.roll)
   }
   if (operation._tag === 'SaplingGrowthAttempt') {
-    const { roll, treeSpaceAvailable } = operation
+    const { roll, treeSpace } = operation
+    if (treeSpace._tag === 'BlockTypeDecodeFailed') return Effect.succeed(treeSpace)
     return Effect.gen(function* () {
       const reading = yield* port.read(request.position)
       const access = readAccess(request.position, reading)
@@ -727,7 +753,7 @@ export const applyBlockStateRule = (
         port,
         request.position,
         cell,
-        saplingStageAfterGrowthAttempt(stage, roll, treeSpaceAvailable),
+        saplingStageAfterGrowthAttempt(stage, roll, treeSpace),
       )
     })
   }

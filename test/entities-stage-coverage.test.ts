@@ -114,6 +114,7 @@ const makeHarness = (options: Readonly<{
     vehicleEnvironment: undefined,
     options: {},
     commit,
+    blockStateWorld: undefined,
   }
   return {
     state,
