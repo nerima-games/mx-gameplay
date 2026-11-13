@@ -455,6 +455,41 @@ describe('enchantment table offers and transaction', () => {
     }
   })
 
+  it('rejects a modern offer for an unenchantable item without mutation', () => {
+    const state = {
+      seed: 1,
+      bookshelfCount: 15,
+      playerLevel: 30,
+      lapis: 3,
+      item: enchantedItem('apple'),
+    }
+    const offer = {
+      levelCost: 1,
+      lapisCost: 1,
+      enchantments: [{ id: 'unbreaking', level: 1 }],
+    } as const
+    const snapshot = snapshotEnchantedItem(state.item)
+    expect(snapshot.ok).toBe(true)
+    if (!snapshot.ok) throw new Error('A valid apple snapshot must succeed')
+
+    const bookshelfCount = Result.getOrThrow(
+      Schema.decodeUnknownResult(EnchantmentTableShelfCountSchema)(state.bookshelfCount),
+    )
+    const generatedOffers = Result.getOrThrow(generateEnchantmentTableOffersForItem(
+      snapshot.value.item,
+      RandomSeed(state.seed),
+      bookshelfCount,
+    ))
+    expect(generatedOffers).toStrictEqual([undefined, undefined, undefined])
+
+    const before = JSON.stringify(state)
+    const result = applyEnchantmentOffer(state, offer)
+
+    expect(result).toEqual({ ok: false, state, reason: 'invalid_offer' })
+    expect(result.state).toBe(state)
+    expect(JSON.stringify(state)).toBe(before)
+  })
+
   it('rejects modern offers when their seeded table state is invalid or resources are insufficient', () => {
     const offer = {
       levelCost: 30,

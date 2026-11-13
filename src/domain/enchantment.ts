@@ -465,9 +465,11 @@ export const applyEnchantmentOffer = (
     )
     if (seed === undefined || bookshelfCount === undefined) return rejectTransaction(state, 'invalid_state')
     const slot = (offer.lapisCost - 1) as EnchantmentTableSlot
-    const expectedOffers = generateEnchantmentTableOffersForItem(itemSnapshot.value.item, seed, bookshelfCount)
-    if (Result.isFailure(expectedOffers)) return rejectTransaction(state, 'invalid_offer')
-    const expected = expectedOffers.success[slot]
+    const expectedOffers = Result.getOrElse(
+      generateEnchantmentTableOffersForItem(itemSnapshot.value.item, seed, bookshelfCount),
+      () => [undefined, undefined, undefined],
+    )
+    const expected = expectedOffers[slot]
     if (expected === undefined || !tableOffersMatch(offer, expected)) {
       return rejectTransaction(state, 'invalid_offer')
     }
