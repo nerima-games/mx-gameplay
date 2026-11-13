@@ -1,12 +1,10 @@
 import { describe, expect, it } from '@effect/vitest'
 import { Brand, Effect, Option, Result, Schema } from 'effect'
-import { AIR_BLOCK_ID, BlockAxis, BlockId, BlockStateIndex, BlockStateLength, blockIdOf, blockPosition, capabilitiesOfBlockId, ChunkAxis, chunkCoord, EntityHealthPoints, EntitySerial, SimulationTick, type BlockType, position, PositionAxis } from '@nerima-games/mc-kernel'
+import { BlockAxis, BlockId, BlockStateIndex, BlockStateLength, blockIdOf, blockPosition, ChunkAxis, chunkCoord, EntityHealthPoints, EntitySerial, SimulationTick, type BlockType, position, PositionAxis } from '@nerima-games/mc-kernel'
 import { EntityId, EntityKind, MobMovementStateSchema, MobPathProfileSchema, planMobPathsForTick } from '@nerima-games/mc-sim'
 import { openChunkWindow, UNREADABLE_BLOCK, type ChunkWindow } from '../src/domain/chunk-window'
 import {
-  entityWorldBlockDataFromLookup,
   entityWorldBlockDataAt,
-  entityWorldValueFromLookup,
   entityWorldCellAt,
 } from '../src/domain/entities/entity-world-cell'
 import {
@@ -55,53 +53,23 @@ describe('SM3 mob movement world', () => {
     })
   })
 
-  it('returns typed failures for missing detailed reads and invalid block ids', () => {
+  it('returns typed failures for unavailable windows and out-of-range block ids', () => {
     const cell = { x: BlockAxis(0), y: BlockAxis(64), z: BlockAxis(0) }
     const legacyWindow: ChunkWindow = {
       blockAt: () => UNREADABLE_BLOCK,
       unreadableProbes: () => 0,
     }
     const unavailable = entityWorldCellAt(legacyWindow, cell)
-    const invalidBlockId = BlockId.result(65_536)
+    const invalidBlockId = Brand.nominal<BlockId>()(65_536)
+    const invalidLookup = entityWorldBlockDataAt(cell, invalidBlockId)
 
     expect(unavailable).toMatchObject({
       _tag: 'Failure',
       failure: { _tag: 'EntityWorldWindowUnavailable', cell },
     })
-    expect(Result.isFailure(invalidBlockId)).toBe(true)
-    if (Result.isFailure(invalidBlockId)) {
-      const unresolved = entityWorldBlockDataFromLookup(
-        cell,
-        BlockId(0),
-        Result.fail(invalidBlockId.failure),
-      )
-      expect(unresolved).toMatchObject({
-        _tag: 'Failure',
-        failure: { _tag: 'EntityWorldRegistryFailure', cell, failure: invalidBlockId.failure },
-      })
-    }
-  })
-
-  it('keeps registry lookup failures and known ids without definitions typed', () => {
-    const cell = { x: BlockAxis(0), y: BlockAxis(64), z: BlockAxis(0) }
-    const forgedOutOfRangeId = Brand.nominal<BlockId>()(65_536)
-    const invalidId = entityWorldBlockDataAt(cell, forgedOutOfRangeId)
-    expect(invalidId).toMatchObject({
+    expect(invalidLookup).toMatchObject({
       _tag: 'Failure',
       failure: { _tag: 'EntityWorldRegistryFailure', cell },
-    })
-
-    const capabilities = capabilitiesOfBlockId(AIR_BLOCK_ID)
-    expect(Result.isSuccess(capabilities)).toBe(true)
-    if (Result.isFailure(capabilities)) return
-    const missingDefinition = entityWorldBlockDataFromLookup(
-      cell,
-      AIR_BLOCK_ID,
-      Result.succeed({ block: undefined, capabilities: capabilities.success }),
-    )
-    expect(missingDefinition).toMatchObject({
-      _tag: 'Failure',
-      failure: { _tag: 'EntityWorldUnregisteredBlockId', cell, blockId: AIR_BLOCK_ID },
     })
   })
 
@@ -129,34 +97,35 @@ describe('SM3 mob movement world', () => {
   it('keeps registry failures on SM3 physics results and above-world air lookups', () => {
     const cell = { x: BlockAxis(0), y: BlockAxis(64), z: BlockAxis(0) }
     const registryFailure = {
-      _tag: 'BlockPropertyFailure' as const,
-      reason: 'type' as const,
-      message: 'property columns could not be resolved',
+      _tag: 'EntityWorldRegistryFailure' as const,
+      cell,
+      failure: {
+        _tag: 'BlockPropertyFailure' as const,
+        reason: 'type' as const,
+        message: 'property columns could not be resolved',
+      },
     }
-    const lookup = entityWorldValueFromLookup(cell, Result.fail(registryFailure))
-    expect(Result.isFailure(lookup)).toBe(true)
-    if (Result.isSuccess(lookup)) return
 
     const fromRegistryFailure = mobMovementPhysicsSampleForCell(
-      Result.fail(lookup.failure),
-      () => Result.fail(lookup.failure),
+      Result.fail(registryFailure),
+      () => Result.fail(registryFailure),
     )
-    expect(fromRegistryFailure.sample).toStrictEqual(Result.fail(registryFailure))
+    expect(fromRegistryFailure.sample).toStrictEqual(Result.fail(registryFailure.failure))
     expect(fromRegistryFailure.queryFailure).toMatchObject({
       _tag: 'EntityWorldRegistryFailure',
       cell,
-      failure: registryFailure,
+      failure: registryFailure.failure,
     })
 
     const fromAboveWorldAirFailure = mobMovementPhysicsSampleForCell(
       Result.succeed({ _tag: 'AboveWorld' }),
-      () => Result.fail(lookup.failure),
+      () => Result.fail(registryFailure),
     )
-    expect(fromAboveWorldAirFailure.sample).toStrictEqual(Result.fail(registryFailure))
+    expect(fromAboveWorldAirFailure.sample).toStrictEqual(Result.fail(registryFailure.failure))
     expect(fromAboveWorldAirFailure.queryFailure).toMatchObject({
       _tag: 'EntityWorldRegistryFailure',
       cell,
-      failure: registryFailure,
+      failure: registryFailure.failure,
     })
 
     const unregisteredAir = {

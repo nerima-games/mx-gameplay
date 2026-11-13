@@ -43,7 +43,7 @@ type EntityWorldBlockLookup = Result.Result<
 type EntityWorldRegistryFailure = Extract<EntityWorldQueryFailure, { _tag: 'EntityWorldRegistryFailure' }>
 type EntityWorldUnregisteredBlockId = Extract<EntityWorldQueryFailure, { _tag: 'EntityWorldUnregisteredBlockId' }>
 
-export const entityWorldValueFromLookup = <Value>(
+const entityWorldValueFromLookup = <Value>(
   cell: EntityWorldCellPosition,
   lookup: Result.Result<Value, BlockRegistryResolutionFailure>,
 ): Result.Result<Value, EntityWorldRegistryFailure> => {
@@ -53,7 +53,7 @@ export const entityWorldValueFromLookup = <Value>(
   return Result.succeed(lookup.success)
 }
 
-export const entityWorldBlockDataFromLookup = (
+const entityWorldBlockDataFromLookup = (
   cell: EntityWorldCellPosition,
   blockId: BlockId,
   lookup: EntityWorldBlockLookup,
