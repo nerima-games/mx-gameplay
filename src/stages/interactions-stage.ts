@@ -2282,12 +2282,12 @@ const advanceBlockMiningAttempt = (
     yield* Ref.set(state.miningProgress, null)
     return
   }
-  if (commit === undefined || commit.playerStorageOwnerId === undefined) {
+  if (commit === undefined) {
     yield* Ref.set(state.miningProgress, null)
     yield* recordGameplayUnsupportedOperation(state, {
       _tag: 'Unsupported',
       action: 'MineBlock',
-      reason: commit === undefined ? 'WorldCommitCoordinatorUnavailable' : 'OwnerRegistrationUnavailable',
+      reason: 'WorldCommitCoordinatorUnavailable',
     })
     return
   }
@@ -2540,7 +2540,6 @@ const applyEnchantmentTableRequest = (
   Effect.gen(function* () {
     if (
       commit === undefined ||
-      commit.playerStorageOwnerId === undefined ||
       commit.vitalsOwnerId === undefined ||
       service === undefined
     ) {
@@ -2614,7 +2613,7 @@ const generateEnchantmentTableOffersRequest = (
   request: GameplayEnchantmentTableOffersRequest,
 ): Effect.Effect<void> =>
   Effect.gen(function* () {
-    if (commit === undefined || commit.playerStorageOwnerId === undefined || service === undefined) {
+    if (commit === undefined || service === undefined) {
       mailbox.results.push({ _tag: 'Rejected', requestId: request.requestId, reason: 'service-unavailable' })
       return
     }
