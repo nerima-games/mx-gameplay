@@ -355,13 +355,13 @@ describe('entities-stage owner-backed coverage', () => {
   })
 
   it('keeps future-dated orbs live and blocks pickup until the cooldown tick is reached', async () => {
-    const position = Schema.decodeUnknownSync(WorldPositionSchema)({
+    const orbPosition = Schema.decodeUnknownSync(WorldPositionSchema)({
       dimension: 'overworld', x: 40, y: 64, z: 40,
     })
     const futureOrb = await Effect.runPromise(makeHarness({
       entity: null,
       mobSimulation: false,
-      orb: { id: EntityId('test:future-xp-orb'), amount: 3, position, spawnedAt: 1 },
+      orb: { id: EntityId('test:future-xp-orb'), amount: 3, position: orbPosition, spawnedAt: 1 },
     }))
     await futureOrb.run()
     expect(await Effect.runPromise(Ref.get(futureOrb.state.operationFailures))).toStrictEqual([])
@@ -370,7 +370,7 @@ describe('entities-stage owner-backed coverage', () => {
     const futureCooldown = await Effect.runPromise(makeHarness({
       entity: null,
       mobSimulation: false,
-      orb: { id: EntityId('test:cooldown-xp-orb'), amount: 3, position, spawnedAt: 0 },
+      orb: { id: EntityId('test:cooldown-xp-orb'), amount: 3, position: orbPosition, spawnedAt: 0 },
     }))
     await Effect.runPromise(Ref.set(
       futureCooldown.state.lastExperienceOrbPickupTick,
