@@ -8,6 +8,7 @@ import {
   Ref,
   applyFallingBlocks,
   hostileSpawnsAllowed,
+  recordGameplayEntityStageExecutionFailure,
   recordGameplayStageFailure,
   recordGameplayEntityStageFault,
   recordGameplayUnsupportedOperation,
@@ -168,13 +169,6 @@ const entityWorldFaultTarget = (
   if ('cell' in failure) return { _tag: 'Cell', cell: failure.cell }
   if (entityId !== undefined) return { _tag: 'Entity', entityId }
   return { _tag: 'Position', position: failure.position }
-}
-
-const entitiesStageFailureTag = (failure: unknown): string => {
-  if (typeof failure !== 'object' || failure === null) return typeof failure
-  const tagged = failure as Readonly<{ _tag?: unknown; name?: unknown }>
-  if (typeof tagged._tag === 'string') return tagged._tag
-  return typeof tagged.name === 'string' ? tagged.name : 'UnknownFailure'
 }
 
 const recordEntityWorldDataFault = (
@@ -2296,11 +2290,6 @@ export const makeEntitiesStage = (context: GameplayStageContext): StageRegistrat
         if (moves.destinations.length > 0) {
           yield* Ref.update(state.fallingBlocks, (queue) => settled(queue, moves.destinations))
         }
-      }), (failure) => recordGameplayStageFailure(state, {
-        _tag: 'Failed',
-        operation: 'EntityExecution',
-        subject: 'Entities',
-        error: { _tag: 'EntitiesStageExecutionFailure', failureTag: entitiesStageFailureTag(failure) },
-      })),
+      }), (failure) => recordGameplayEntityStageExecutionFailure(state, failure)),
   }
 }
