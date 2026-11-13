@@ -341,23 +341,47 @@ describe('production interactions-stage coverage', () => {
           coordinator,
           vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID,
         })
+        const storage = yield* coordinator.snapshot(
+          GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+          PlayerStorageSnapshotSchema,
+        )
+        const slots: Array<Slot> = [...storage.state.inventory.slots]
+        slots[0] = undefined
+        yield* coordinator.commit({
+          expectedRevision: storage.revision,
+          expectedDimensions: [],
+          changes: [{ ownerId: GAMEPLAY_PLAYER_STORAGE_OWNER_ID, state: storageWithSlots(storage.state, slots) }],
+        })
         const dimension = Schema.decodeUnknownSync(DimensionIdSchema)('overworld')
         const stages = yield* makeGameplayStagesWithState(state)
+        const emptySlot = { _tag: 'Inventory' as const, slotIndex: 0 }
 
-        yield* requestBlockMining(state, { position, dimension })
+        yield* requestBlockMining(state, { position, dimension, toolLocation: emptySlot })
         yield* runFrame(stages, DeltaTimeSecs(1 / 20))
         expect(yield* getMiningProgressFraction(state)).toBeGreaterThan(0)
 
         yield* requestBlockMining(state, {
           position,
           dimension,
+          toolLocation: emptySlot,
         })
         // Torch hardness is 1 and its default no-tool requirement permits hand mining: 30 ticks / 20 = 1.5 s.
         yield* runFrame(stages, DeltaTimeSecs(1.45))
 
         expect(yield* store.getBlock(position)).toStrictEqual({ _tag: 'Block', block: AIR_BLOCK_ID })
 
-        yield* requestBlockMining(state, { position, dimension })
+        const after = yield* coordinator.snapshot(
+          GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+          PlayerStorageSnapshotSchema,
+        )
+        expect(after.state.inventory.slots[0]?.item).toBe('torch')
+        expect(after.state.inventory.slots.reduce(
+          (count, slot) => count + (slot?.item === 'torch' ? slot.count : 0),
+          0,
+        )).toBe(1)
+        expect(yield* Ref.get(state.operationFailures)).toStrictEqual([])
+
+        yield* requestBlockMining(state, { position, dimension, toolLocation: emptySlot })
         yield* runFrame(stages, DeltaTimeSecs(1 / 20))
 
         expect(yield* getMiningProgressFraction(state)).toBe(0)
