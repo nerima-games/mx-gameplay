@@ -41,6 +41,20 @@ const makeWorldPort = (entries: ReadonlyArray<readonly [ReturnType<typeof block>
   })
 
 describe('SM3 mob movement world', () => {
+  it('initializes an omitted ecosystem state with its vanilla zero-state values', () => {
+    expect(repairMobBehaviour(PIG_KIND, undefined)).toMatchObject({
+      _tag: 'HostileMob',
+      behaviour: {
+        _tag: 'EcosystemMob',
+        attackCooldownTicks: 0,
+        motionPhase: 0,
+        provoked: false,
+        hasHeadProtection: false,
+        burningTicks: 0,
+      },
+    })
+  })
+
   it('returns typed failures for missing detailed reads and invalid block ids', () => {
     const cell = { x: BlockAxis(0), y: BlockAxis(64), z: BlockAxis(0) }
     const legacyWindow: ChunkWindow = {
