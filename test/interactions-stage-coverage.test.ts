@@ -327,7 +327,7 @@ describe('production interactions-stage coverage', () => {
     }).pipe(Effect.provide(Layer.orDie(productionWorld))),
   )
 
-  it.effect('uses the no-tool mining path for a breakable block, then clears progress when the target is air', () =>
+  it.effect('uses an empty inventory slot for hand mining, then clears progress when the target is air', () =>
     Effect.gen(function* () {
       const position = blockPosition(1, 64, 1)
       const torch = Option.getOrThrow(blockIdOf('torch'))
@@ -388,6 +388,44 @@ describe('production interactions-stage coverage', () => {
 
         expect(yield* getMiningProgressFraction(state)).toBe(0)
         expect(yield* Ref.get(state.pendingBlockMiningAttempt)).toBeNull()
+      }).pipe(Effect.provide(Layer.orDie(productionWorldWithStore(transactionalStore.layer))))
+    }),
+  )
+
+  it.effect('mines with no selected inventory slot through production stages', () =>
+    Effect.gen(function* () {
+      const position = blockPosition(2, 64, 1)
+      const torch = Option.getOrThrow(blockIdOf('torch'))
+      const transactionalStore = yield* makeTransactionalChunkStoreDouble(
+        world([[position, torch]]),
+        ['0,0'],
+      )
+
+      return yield* Effect.gen(function* () {
+        const coordinator = yield* WorldCommitCoordinator
+        const store = yield* ChunkStore
+        const state = yield* makeGameplayFrameStateForOwner({
+          coordinator,
+          vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID,
+        })
+        const dimension = Schema.decodeUnknownSync(DimensionIdSchema)('overworld')
+        const stages = yield* makeGameplayStagesWithState(state)
+
+        for (let tick = 0; tick < 30; tick += 1) {
+          yield* requestBlockMining(state, { position, dimension })
+          yield* runFrame(stages, DeltaTimeSecs(1 / 20))
+        }
+
+        expect(yield* store.getBlock(position)).toStrictEqual({ _tag: 'Block', block: AIR_BLOCK_ID })
+        const storage = yield* coordinator.snapshot(
+          GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+          PlayerStorageSnapshotSchema,
+        )
+        expect(storage.state.inventory.slots.reduce(
+          (count, slot) => count + (slot?.item === 'torch' ? slot.count : 0),
+          0,
+        )).toBe(1)
+        expect(yield* Ref.get(state.operationFailures)).toStrictEqual([])
       }).pipe(Effect.provide(Layer.orDie(productionWorldWithStore(transactionalStore.layer))))
     }),
   )
