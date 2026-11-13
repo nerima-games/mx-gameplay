@@ -465,7 +465,7 @@ describe('mob lifecycle gameplay scenarios', () => {
       const unaffectedAfter = after.find(({ id }) => id === unaffectedBefore?.id)
       const faults = yield* drainGameplayEntityStageFaults(harness.state)
       expect(affectedBefore).toBeDefined()
-      expect(affectedAfter?.feetPosition).toStrictEqual(affectedBefore?.feetPosition)
+      expect(affectedAfter).toStrictEqual(affectedBefore)
       expect(unaffectedBefore).toBeDefined()
       expect(unaffectedAfter?.behaviour).not.toEqual(unaffectedBefore?.behaviour)
       expect(faults).toContainEqual(expect.objectContaining({
@@ -484,7 +484,9 @@ describe('mob lifecycle gameplay scenarios', () => {
       const adaptStore = (store: ChunkStoreApi): ChunkStoreApi => ({
         ...store,
         peek: (coord) => Effect.map(store.peek(coord), (chunk) => {
-          if (chunk === undefined || bufferMode === 'healthy') return chunk
+          if (
+            chunk === undefined || bufferMode === 'healthy' || Number(coord.cx) !== 0 || Number(coord.cz) !== 0
+          ) return chunk
           return bufferMode === 'short'
             ? { ...chunk, blocks: Uint16Array.from(chunk.blocks).subarray(0, 1) }
             : { ...chunk, blocks: Uint16Array.from(chunk.blocks, () => 65_535) }
@@ -492,19 +494,30 @@ describe('mob lifecycle gameplay scenarios', () => {
       })
       const harness = yield* makeHarness(
         position(0.5, 64, 0.5),
-        floorWorld(0, 8),
-        ['0,0'],
+        floorWorld(0, 31),
+        ['0,0', '1,0'],
         'overworld',
         undefined,
         adaptStore,
       )
       yield* harness.time.setTimeOfDay(InterpolationFraction(0.5))
       yield* requestMobSpawn(harness.state, spawnAttempt(ZOMBIE_KIND, position(5.5, 64, 0.5)))
+      yield* requestMobSpawn(harness.state, spawnAttempt(PIG_KIND, position(20.5, 64, 0.5)))
       yield* runFrame(harness.stages, DeltaTimeSecs(0))
+      const before = yield* mobEntities(harness.commit.coordinator)
+      const zombieBefore = before.find(({ kind }) => kind === ZOMBIE_KIND)
+      const pigBefore = before.find(({ kind }) => kind === PIG_KIND)
+      expect(zombieBefore).toBeDefined()
+      expect(pigBefore).toBeDefined()
       bufferMode = 'short'
 
       const tick = yield* Effect.exit(runFrame(harness.stages, DeltaTimeSecs(1 / 20)))
       expect(Exit.isSuccess(tick)).toBe(true)
+      const after = yield* mobEntities(harness.commit.coordinator)
+      const zombieAfter = after.find(({ id }) => id === zombieBefore?.id)
+      const pigAfter = after.find(({ id }) => id === pigBefore?.id)
+      expect(zombieAfter).toStrictEqual(zombieBefore)
+      expect(pigAfter?.behaviour).not.toEqual(pigBefore?.behaviour)
       expect(yield* drainGameplayEntityStageFaults(harness.state)).toContainEqual(expect.objectContaining({
         _tag: 'EntityWorldDataFault',
         source: 'UndeadDaylight',

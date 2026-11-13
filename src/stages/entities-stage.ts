@@ -1526,10 +1526,13 @@ const runMobSimulation = (
     commit.entitiesOwnerId,
     GameplayEntityRosterSchema,
   )
-  const faultedEntities: GameplayEntityRoster['entities'][number][] = []
+  const faultedEntities = new Map<
+    GameplayEntityRoster['entities'][number]['id'],
+    GameplayEntityRoster['entities'][number]
+  >()
   for (const entity of entitySnapshot.state.entities) {
     if (!isMobBehaviourRepairFault(entity.behaviour)) continue
-    faultedEntities.push(entity)
+    faultedEntities.set(entity.id, entity)
     yield* recordGameplayEntityStageFault(state, {
       _tag: 'MobBehaviourRepairFault',
       entityId: entity.id,
@@ -1588,7 +1591,7 @@ const runMobSimulation = (
       reason: mobHasStoredMovement(entity) ? 'invalid-goal' : 'invalid-state',
     })
   }
-  if (invalidMovementEntities.length > 0) faultedEntities.push(...invalidMovementEntities)
+  for (const entity of invalidMovementEntities) faultedEntities.set(entity.id, entity)
   tickRoster = {
     ...tickRoster,
     entities: tickRoster.entities.filter(({ id }) => !invalidMovementEntityIds.has(id)),
@@ -1626,8 +1629,16 @@ const runMobSimulation = (
         dimension,
       )
       daylightFacts = daylight.facts
+      const daylightFaultEntityIds = new Set(daylight.faults.map(({ entityId }) => entityId))
       for (const fault of daylight.faults) {
         yield* recordEntityWorldDataFault(state, 'UndeadDaylight', fault.failure, fault.entityId)
+      }
+      for (const entity of tickRoster.entities) {
+        if (daylightFaultEntityIds.has(entity.id)) faultedEntities.set(entity.id, entity)
+      }
+      tickRoster = {
+        ...tickRoster,
+        entities: tickRoster.entities.filter(({ id }) => !daylightFaultEntityIds.has(id)),
       }
     }
   }
@@ -1644,11 +1655,20 @@ const runMobSimulation = (
   const movement = movementWorld === undefined
     ? { roster: teleported, faults: [] as ReadonlyArray<MobMovementRosterFault> }
     : Result.getOrThrow(planMobMovementRoster(teleported, playerPosition, movementWorld, stageTick, dimension))
-  const movementRoster = movement.roster
+  const movementFaultEntityIds = new Set(movement.faults.map(({ entityId }) => entityId))
   for (const fault of movement.faults) {
     yield* recordMobMovementRosterFault(state, fault)
   }
-  const blast = planMobBlastRoster(movementRoster, sweep.blasts, stageTick)
+  for (const entity of tickRoster.entities) {
+    if (movementFaultEntityIds.has(entity.id)) faultedEntities.set(entity.id, entity)
+  }
+  const movementRoster = {
+    ...movement.roster,
+    entities: movement.roster.entities.filter(({ id }) => !movementFaultEntityIds.has(id)),
+  }
+  const activeBlastEvents = sweep.blasts.filter(({ source }) => !movementFaultEntityIds.has(source))
+  const activeAttacks = sweep.attacks.filter(({ source }) => !movementFaultEntityIds.has(source))
+  const blast = planMobBlastRoster(movementRoster, activeBlastEvents, stageTick)
   const undeadBurnHits: ReadonlyArray<MobDamageHit> = blast.roster.entities.flatMap((entity) => {
     if (entity.kind !== 'zombie' && entity.kind !== 'skeleton') return []
     const behaviour = isHostileMobSnapshot(entity.behaviour) ? entity.behaviour.behaviour : entity.behaviour
@@ -1723,7 +1743,7 @@ const runMobSimulation = (
     difficulty: typeof difficulty
   }>
   const damageInputs: ReadonlyArray<HostileDamageInput> = [
-    ...sweep.attacks.filter(({ mode }) => mode === 'melee').map((attack) => ({
+    ...activeAttacks.filter(({ mode }) => mode === 'melee').map((attack) => ({
       event: {
         _tag: 'HostileContact' as const,
         source: attack.source,
@@ -1918,7 +1938,7 @@ const runMobSimulation = (
 
   const blockEdits = new Map<string, { readonly position: ReturnType<typeof blockPosition>; readonly block: typeof AIR_BLOCK_ID }>()
   const disturbedKeys: BlockPositionKey[] = []
-  for (const blastEvent of sweep.blasts) {
+  for (const blastEvent of activeBlastEvents) {
     // Only validated, in-dimension creepers reach this sweep; their cell and fixed blast power are valid.
     const power = Result.getOrThrow(BlockBlastResistance.result(blastEvent.explosion.power))
     const blastPosition = blockPosition(
@@ -1947,7 +1967,11 @@ const runMobSimulation = (
   const entityCandidate = restoreGameplayEntityMetadata(
     {
       ...spawned.success.roster,
-      entities: [...spawned.success.roster.entities, ...faultedEntities, ...otherDimensionEntities],
+      entities: [
+        ...spawned.success.roster.entities.filter(({ id }) => !faultedEntities.has(id)),
+        ...faultedEntities.values(),
+        ...otherDimensionEntities,
+      ],
     },
     entitySnapshot.state,
     playerSnapshot.state.pose.feetPosition.dimension,
