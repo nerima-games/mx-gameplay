@@ -68,6 +68,7 @@ const makeHarness = (options: Readonly<{
   readonly orb?: Readonly<{ id: ReturnType<typeof EntityId>; amount: number }>
   readonly withoutCoordinator?: boolean
   readonly withoutEntitiesOwner?: boolean
+  readonly withoutExperienceOrbsOwner?: boolean
 }> = {}) => Effect.gen(function* () {
   const entities = options.entity === null ? [] : [options.entity ?? makeCreeper()]
   const store = yield* makeTransactionalChunkStoreDouble(world([]), ['0,0'])
@@ -102,7 +103,9 @@ const makeHarness = (options: Readonly<{
         playerStorageOwnerId: GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
         droppedItemsOwnerId: GAMEPLAY_DROPPED_ITEMS_OWNER_ID,
         vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID,
-        experienceOrbsOwnerId: GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
+        ...(options.withoutExperienceOrbsOwner === true
+          ? {}
+          : { experienceOrbsOwnerId: GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID }),
         ...(options.withoutEntitiesOwner === true ? {} : { entitiesOwnerId: GAMEPLAY_ENTITIES_OWNER_ID }),
       }
   const context: GameplayStageContext = {
@@ -266,5 +269,29 @@ describe('entities-stage owner-backed coverage', () => {
     expect(after.revision).toBe(before.revision + 1)
     expect(after.state.entities[0]?.behaviour).toMatchObject({ _tag: 'Lit', burnedSecs: 0 })
     expect(await Effect.runPromise(drainGameplayUnsupportedOperations(registered.state))).toStrictEqual([])
+  })
+
+  it('keeps queued mob XP when a lower-level stage composition omits the orb owner', async () => {
+    const harness = await Effect.runPromise(makeHarness({
+      entity: null,
+      withoutExperienceOrbsOwner: true,
+    }))
+    const experience = {
+      source: EntityId('test:queued-experience'),
+      kind: CREEPER_KIND,
+      at: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
+      amount: 5,
+    }
+    await Effect.runPromise(Ref.set(harness.state.mobExperience, [experience]))
+
+    await harness.run()
+
+    expect(await Effect.runPromise(drainGameplayUnsupportedOperations(harness.state))).toContainEqual({
+      _tag: 'Unsupported',
+      action: 'ExperienceOrbCreation',
+      reason: 'OwnerRegistrationUnavailable',
+    })
+    expect(await Effect.runPromise(Ref.get(harness.state.mobExperience))).toStrictEqual([experience])
+    expect(harness.requests).toHaveLength(0)
   })
 })
