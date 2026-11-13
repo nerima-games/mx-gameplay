@@ -73,6 +73,21 @@ const asExperienceOrbValue = (value: number): ExperienceOrbValue => value as Exp
 export const EXPERIENCE_ORB_LIFETIME_TICKS = 6000
 export const EXPERIENCE_ORB_PICKUP_INTERVAL_TICKS = 2
 
+type SimulationTick = Schema.Schema.Type<typeof SimulationTickSchema>
+
+export const hasExperienceOrbExpiredAtValidatedTick = (
+  spawnedAt: SimulationTick | undefined,
+  currentTick: SimulationTick,
+): boolean =>
+  spawnedAt !== undefined && currentTick >= spawnedAt &&
+  currentTick - spawnedAt >= EXPERIENCE_ORB_LIFETIME_TICKS
+
+export const canCollectExperienceOrbAtValidatedTick = (
+  currentTick: SimulationTick,
+  lastCollectedTick: SimulationTick | undefined,
+): boolean => lastCollectedTick === undefined ||
+  currentTick >= lastCollectedTick + EXPERIENCE_ORB_PICKUP_INTERVAL_TICKS
+
 /** Splits a validated mob reward into vanilla orb values, largest first. */
 export const splitExperienceOrbReward = (
   totalPoints: unknown,
@@ -191,10 +206,7 @@ export const isExperienceOrbExpiredAtTick = (
   if (spawnedAt === undefined) return Result.succeed(false)
   const spawned = Schema.decodeUnknownResult(SimulationTickSchema)(spawnedAt)
   if (Result.isFailure(spawned)) return Result.fail(spawned.failure)
-  return Result.succeed(
-    current.success >= spawned.success &&
-      current.success - spawned.success >= EXPERIENCE_ORB_LIFETIME_TICKS,
-  )
+  return Result.succeed(hasExperienceOrbExpiredAtValidatedTick(spawned.success, current.success))
 }
 
 /** Vanilla collects at most one orb every two simulation ticks (10 per second). */
@@ -204,12 +216,10 @@ export const canCollectExperienceOrbAtTick = (
 ): Result.Result<boolean, Schema.SchemaError> => {
   const current = Schema.decodeUnknownResult(SimulationTickSchema)(currentTick)
   if (Result.isFailure(current)) return Result.fail(current.failure)
-  if (lastCollectedTick === undefined) return Result.succeed(true)
+  if (lastCollectedTick === undefined) return Result.succeed(canCollectExperienceOrbAtValidatedTick(current.success, undefined))
   const last = Schema.decodeUnknownResult(SimulationTickSchema)(lastCollectedTick)
   if (Result.isFailure(last)) return Result.fail(last.failure)
-  return Result.succeed(
-    current.success >= last.success + EXPERIENCE_ORB_PICKUP_INTERVAL_TICKS,
-  )
+  return Result.succeed(canCollectExperienceOrbAtValidatedTick(current.success, last.success))
 }
 
 export const ExperienceOrbAbsorptionSchema: Schema.ConstraintDecoder<ReadonlyArray<DomainEvent>> =

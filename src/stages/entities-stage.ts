@@ -70,9 +70,9 @@ import {
   ExperienceOrbOwnerSnapshotSchema,
   ExperienceOrbVitalsOwnerSnapshotSchema,
   applyMendingRepair,
-  canCollectExperienceOrbAtTick,
+  canCollectExperienceOrbAtValidatedTick,
   experienceOrbAbsorptionResultAfterCommit,
-  isExperienceOrbExpiredAtTick,
+  hasExperienceOrbExpiredAtValidatedTick,
   mergeSameValueExperienceOrbStacks,
   planExperienceOrbAbsorption,
   splitExperienceOrbReward,
@@ -1150,9 +1150,8 @@ const experienceOrbRecordsForReward = (
     next.push({ id, value, position: at, spawnedAt: tick })
     changed = true
   }
-  const validated = Schema.decodeUnknownResult(ExperienceOrbOwnerSnapshotSchema)({ orbs: next })
-  if (Result.isFailure(validated)) return Result.fail(validated.failure)
-  return Result.succeed({ records: validated.success.orbs, changed })
+  // Existing records were decoded at the owner boundary; additions and merged counts are branded above.
+  return Result.succeed({ records: next, changed })
 }
 
 const spawnQueuedExperienceOrbs = (context: GameplayStageContext): Effect.Effect<void> =>
@@ -1273,14 +1272,8 @@ const attractExperienceOrbsAndQueuePickup = (
   let changed = false
   const liveOrbs: ExperienceOrbRecord[] = []
   for (const orb of orbSnapshot.state.orbs) {
-    const expired = isExperienceOrbExpiredAtTick(orb.spawnedAt, tick.success)
-    if (Result.isFailure(expired)) {
-      yield* recordGameplayStageFailure(state, {
-        _tag: 'Failed', operation: 'CandidateBuild', subject: 'ExperienceOrb', error: expired.failure,
-      })
-      return []
-    }
-    if (expired.success) changed = true
+    const expired = hasExperienceOrbExpiredAtValidatedTick(orb.spawnedAt, tick.success)
+    if (expired) changed = true
     else liveOrbs.push(orb)
   }
   if (!liveOrbs.some(({ position: orbPosition }) => orbPosition !== undefined)) {
@@ -1318,13 +1311,7 @@ const attractExperienceOrbsAndQueuePickup = (
   }
   const playerPosition = playerSnapshot.state.pose.feetPosition
   const lastCollectedTick = yield* Ref.get(state.lastExperienceOrbPickupTick)
-  const mayCollect = canCollectExperienceOrbAtTick(tick.success, lastCollectedTick ?? undefined)
-  if (Result.isFailure(mayCollect)) {
-    yield* recordGameplayStageFailure(state, {
-      _tag: 'Failed', operation: 'CandidateBuild', subject: 'ExperienceOrb', error: mayCollect.failure,
-    })
-    return []
-  }
+  const mayCollect = canCollectExperienceOrbAtValidatedTick(tick.success, lastCollectedTick ?? undefined)
   let closest: Readonly<{ orb: ExperienceOrbRecord; distanceSquared: number }> | undefined
   const nextOrbs: ExperienceOrbRecordForCommit[] = []
   for (const orb of liveOrbs) {
@@ -1364,7 +1351,7 @@ const attractExperienceOrbsAndQueuePickup = (
       return []
     }
   }
-  if (!mayCollect.success || closest === undefined) return []
+  if (!mayCollect || closest === undefined) return []
   return [{
     actor: EntityId('mx-gameplay:player-avatar'),
     orb: closest.orb.id,
