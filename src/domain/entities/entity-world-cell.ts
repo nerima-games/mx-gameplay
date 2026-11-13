@@ -1,7 +1,7 @@
 import {
   AIR_BLOCK_ID,
-  BLOCK_PROPERTY_DEFAULTS,
   capabilitiesOfBlockId,
+  isKnownBlockId,
   resolvedBlockOfId,
   type BlockAxis,
   type BlockCapabilities,
@@ -26,10 +26,11 @@ export type EntityWorldQueryFailure =
       length: CorruptChunkBuffer['length']
     }>
   | Readonly<{ _tag: 'EntityWorldRegistryFailure'; cell: EntityWorldCellPosition; failure: BlockRegistryResolutionFailure }>
+  | Readonly<{ _tag: 'EntityWorldUnregisteredBlockId'; cell: EntityWorldCellPosition; blockId: BlockId }>
   | Readonly<{ _tag: 'EntityWorldInvalidCell'; reason: 'not-block-coordinate'; position: Position }>
 
 export type EntityWorldCell =
-  | Readonly<{ _tag: 'Loaded'; blockId: BlockId; block: ResolvedBlock | undefined; properties: BlockProperties; capabilities: BlockCapabilities }>
+  | Readonly<{ _tag: 'Loaded'; blockId: BlockId; block: ResolvedBlock; properties: BlockProperties; capabilities: BlockCapabilities }>
   | Readonly<{ _tag: 'Unloaded' }>
   | Readonly<{ _tag: 'AboveWorld' }>
   | Readonly<{ _tag: 'BelowWorld' }>
@@ -40,6 +41,7 @@ type EntityWorldBlockLookup = Result.Result<
 >
 
 type EntityWorldRegistryFailure = Extract<EntityWorldQueryFailure, { _tag: 'EntityWorldRegistryFailure' }>
+type EntityWorldUnregisteredBlockId = Extract<EntityWorldQueryFailure, { _tag: 'EntityWorldUnregisteredBlockId' }>
 
 export const entityWorldValueFromLookup = <Value>(
   cell: EntityWorldCellPosition,
@@ -55,20 +57,34 @@ export const entityWorldBlockDataFromLookup = (
   cell: EntityWorldCellPosition,
   blockId: BlockId,
   lookup: EntityWorldBlockLookup,
-): Result.Result<Extract<EntityWorldCell, { _tag: 'Loaded' }>, EntityWorldRegistryFailure> => {
-  return Result.map(entityWorldValueFromLookup(cell, lookup), ({ block, capabilities }) => ({
+): Result.Result<
+  Extract<EntityWorldCell, { _tag: 'Loaded' }>,
+  EntityWorldRegistryFailure | EntityWorldUnregisteredBlockId
+> => {
+  const known = isKnownBlockId(blockId)
+  if (Result.isFailure(known)) {
+    return Result.fail({ _tag: 'EntityWorldRegistryFailure', cell, failure: known.failure })
+  }
+  if (!known.success) return Result.fail({ _tag: 'EntityWorldUnregisteredBlockId', cell, blockId })
+
+  const resolved = entityWorldValueFromLookup(cell, lookup)
+  if (Result.isFailure(resolved)) return Result.fail(resolved.failure)
+  if (resolved.success.block === undefined) {
+    return Result.fail({ _tag: 'EntityWorldUnregisteredBlockId', cell, blockId })
+  }
+  return Result.succeed({
     _tag: 'Loaded',
     blockId,
-    block,
-    properties: block?.properties ?? BLOCK_PROPERTY_DEFAULTS,
-    capabilities,
-  }))
+    block: resolved.success.block,
+    properties: resolved.success.block.properties,
+    capabilities: resolved.success.capabilities,
+  })
 }
 
 export const entityWorldBlockDataAt = (
   cell: EntityWorldCellPosition,
   blockId: BlockId,
-): Result.Result<Extract<EntityWorldCell, { _tag: 'Loaded' }>, EntityWorldRegistryFailure> =>
+): Result.Result<Extract<EntityWorldCell, { _tag: 'Loaded' }>, EntityWorldRegistryFailure | EntityWorldUnregisteredBlockId> =>
   entityWorldBlockDataFromLookup(cell, blockId, Result.all({
     block: resolvedBlockOfId(blockId),
     capabilities: capabilitiesOfBlockId(blockId),
@@ -76,7 +92,10 @@ export const entityWorldBlockDataAt = (
 
 export const entityWorldAirBlockDataAt = (
   cell: EntityWorldCellPosition,
-): Result.Result<Extract<EntityWorldCell, { _tag: 'Loaded' }>, EntityWorldRegistryFailure> =>
+): Result.Result<
+  Extract<EntityWorldCell, { _tag: 'Loaded' }>,
+  EntityWorldRegistryFailure | EntityWorldUnregisteredBlockId
+> =>
   entityWorldBlockDataAt(cell, AIR_BLOCK_ID)
 
 export const entityWorldCellAt = (
