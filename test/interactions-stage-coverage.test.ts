@@ -335,13 +335,17 @@ describe('production interactions-stage coverage', () => {
         const dimension = Schema.decodeUnknownSync(DimensionIdSchema)('overworld')
         const stages = yield* makeGameplayStagesWithState(state)
 
+        yield* requestBlockMining(state, { position, dimension })
+        yield* runFrame(stages, DeltaTimeSecs(1 / 20))
+        expect(yield* getMiningProgressFraction(state)).toBeGreaterThan(0)
+
         yield* requestBlockMining(state, {
           position,
           dimension,
           toolLocation: { _tag: 'Inventory', slotIndex: 0 },
         })
         // Torch hardness is 1 and its default no-tool requirement permits hand mining: 30 ticks / 20 = 1.5 s.
-        yield* runFrame(stages, DeltaTimeSecs(1.5))
+        yield* runFrame(stages, DeltaTimeSecs(1.45))
 
         expect(yield* store.getBlock(position)).toStrictEqual({ _tag: 'Block', block: AIR_BLOCK_ID })
 
