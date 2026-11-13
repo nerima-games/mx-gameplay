@@ -110,7 +110,7 @@ const zombieRoster = (health: number) => Schema.decodeUnknownSync(GameplayEntity
 })
 
 const makeProductionScenario = (options: Readonly<{
-  storage: ReturnType<typeof enchantedHelmetStorage>
+  storage: ReturnType<typeof emptyPlayerStorage>
   statusEffects: StatusEffectState
   zombieHealth: number
 }>) => Effect.gen(function* () {
@@ -260,12 +260,100 @@ describe('full-composition enchantment coverage', () => {
         (total, orb) => total + Number(orb.value) * (orb.count ?? 1),
         0,
       )).toBe(5)
+      expect(orbs.state.orbs.every(({ position: orbPosition }) => orbPosition?.dimension === 'overworld')).toBe(true)
       expect(unsupported).toContainEqual(expect.objectContaining({
         _tag: 'Unsupported',
         action: 'MobDrop',
         reason: 'UnsupportedDropItemIds',
         mobKind: ZOMBIE_KIND,
       }))
+    }).pipe(Effect.provide(Layer.orDie(productionWorld))),
+  )
+
+  it.effect('uses Mending on an inventory pickaxe while collecting an XP orb through production stages', () =>
+    Effect.gen(function* () {
+      const storage = emptyPlayerStorage()
+      const components = Result.getOrThrow(itemComponents('iron_pickaxe', {
+        enchantments: Result.getOrThrow(enchantmentsComponent({ 'minecraft:mending': 1 })),
+      }))
+      const pickaxe = Result.getOrThrow(itemStack('iron_pickaxe', StackCount(1), { components }))
+      const inventoryDurability = [...storage.inventoryDurability]
+      inventoryDurability[0] = Result.getOrThrow(durability(244, 250))
+      const unenchantedHelmet = Result.getOrThrow(equipmentItem(
+        Result.getOrThrow(itemStack('iron_helmet', StackCount(1))),
+        Result.getOrThrow(durability(150, 165)),
+      ))
+      const mendingStorage = {
+        ...storage,
+        inventory: {
+          ...storage.inventory,
+          slots: [pickaxe, ...storage.inventory.slots.slice(1)],
+        },
+        inventoryDurability,
+        equipment: {
+          ...storage.equipment,
+          slots: { ...storage.equipment.slots, head: unenchantedHelmet },
+        },
+      }
+      const { coordinator, stages } = yield* makeProductionScenario({
+        storage: mendingStorage,
+        statusEffects: emptyStatusEffectState(),
+        zombieHealth: 20,
+      })
+      const orbSnapshot = yield* coordinator.snapshot(
+        GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
+        ExperienceOrbOwnerSnapshotSchema,
+      )
+      const orbs = Schema.decodeUnknownSync(ExperienceOrbOwnerSnapshotSchema)({
+        orbs: [{
+          id: EntityId('test:production-mending-orb'),
+          value: 3,
+          position: { dimension: 'overworld', x: 1.02, y: 64, z: 0 },
+          spawnedAt: 0,
+        }],
+      })
+      yield* coordinator.commit({
+        expectedRevision: orbSnapshot.revision,
+        expectedDimensions: [],
+        changes: [{ ownerId: GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID, state: orbs }],
+      })
+
+      yield* runFrame(stages, DeltaTimeSecs(0.05))
+
+      const [storageAfter, vitalsAfter, orbsAfter] = yield* Effect.all([
+        coordinator.snapshot(GAMEPLAY_PLAYER_STORAGE_OWNER_ID, PlayerStorageSnapshotSchema),
+        coordinator.snapshot(GAMEPLAY_VITALS_OWNER_ID, ExperienceOrbVitalsOwnerSnapshotSchema),
+        coordinator.snapshot(GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID, ExperienceOrbOwnerSnapshotSchema),
+      ])
+      expect(storageAfter.state.inventoryDurability[0]).toStrictEqual({ current: 250, max: 250 })
+      expect(vitalsAfter.state.vitals.totalExperience).toBe(0)
+      expect(orbsAfter.state.orbs).toStrictEqual([])
+    }).pipe(Effect.provide(Layer.orDie(productionWorld))),
+  )
+
+  it.effect('uses the player dimension for a queued XP event without an explicit dimension', () =>
+    Effect.gen(function* () {
+      const { coordinator, stages, state } = yield* makeProductionScenario({
+        storage: emptyPlayerStorage(),
+        statusEffects: emptyStatusEffectState(),
+        zombieHealth: 20,
+      })
+      yield* Ref.update(state.mobExperience, (pending) => [...pending, {
+        source: EntityId('test:dimensionless-xp-event'),
+        kind: ZOMBIE_KIND,
+        at: position(PositionAxis(2), PositionAxis(64), PositionAxis(0)),
+        amount: 3,
+      }])
+
+      yield* runFrame(stages, DeltaTimeSecs(0))
+
+      const orbs = yield* coordinator.snapshot(
+        GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
+        ExperienceOrbOwnerSnapshotSchema,
+      )
+      expect(orbs.state.orbs).toHaveLength(1)
+      expect(orbs.state.orbs[0]?.position?.dimension).toBe('overworld')
+      expect(yield* Ref.get(state.mobExperience)).toStrictEqual([])
     }).pipe(Effect.provide(Layer.orDie(productionWorld))),
   )
 })
