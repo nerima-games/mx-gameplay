@@ -760,6 +760,7 @@ export const mendingDurabilityRepairPoints = (experiencePoints: MendingExperienc
 
 const mendingExperiencePointsResult = (value: number): Result.Result<MendingExperiencePoints, Brand.BrandError> =>
   makeMendingExperiencePoints.result(value)
+const brandMendingExperiencePoints = Brand.nominal<MendingExperiencePoints>()
 
 export type MendingRepairSlot =
   | 'main_hand'
@@ -780,22 +781,27 @@ export type MendingRepairResult = {
   readonly xpRemaining: MendingExperiencePoints
 }
 
-/** Choose one damaged Mending candidate; callers supply only held or equipped items. */
-export const mendOneItemFromExperience = (
+type MendingRepairCalculation = Omit<MendingRepairResult, 'xpConsumed' | 'xpRemaining'> & Readonly<{
+  xpConsumed: number
+  xpRemaining: number
+}>
+
+const normalizedMendingExperience = (orbExperience: number): number =>
+  Number.isFinite(orbExperience) ? Math.max(0, Math.floor(orbExperience)) : 0
+
+const calculateMendingRepair = (
   candidates: ReadonlyArray<MendingRepairCandidate>,
-  orbExperience: ExperienceAmount,
-  roll: InterpolationFractionValue,
-): Result.Result<MendingRepairResult, Brand.BrandError> => {
-  const xp = Number.isFinite(orbExperience) ? Math.max(0, Math.floor(orbExperience)) : 0
+  orbExperience: number,
+  roll: number,
+): MendingRepairCalculation => {
+  const xp = normalizedMendingExperience(orbExperience)
   if (xp === 0 || !Number.isFinite(roll) || roll < 0 || roll >= 1) {
-    return Result.gen(function* () {
-      return {
-        repairedCandidate: undefined,
-        selectedSlot: undefined,
-        xpConsumed: yield* mendingExperiencePointsResult(0),
-        xpRemaining: yield* mendingExperiencePointsResult(xp),
-      }
-    })
+    return {
+      repairedCandidate: undefined,
+      selectedSlot: undefined,
+      xpConsumed: 0,
+      xpRemaining: xp,
+    }
   }
 
   const eligible = candidates.filter(({ durability, enchantments }) =>
@@ -807,33 +813,60 @@ export const mendOneItemFromExperience = (
     enchantmentLevel(enchantments, 'mending') > 0,
   )
   if (eligible.length === 0) {
-    return Result.gen(function* () {
-      return {
-        repairedCandidate: undefined,
-        selectedSlot: undefined,
-        xpConsumed: yield* mendingExperiencePointsResult(0),
-        xpRemaining: yield* mendingExperiencePointsResult(xp),
-      }
-    })
+    return {
+      repairedCandidate: undefined,
+      selectedSlot: undefined,
+      xpConsumed: 0,
+      xpRemaining: xp,
+    }
   }
 
   const selected = eligible[Math.floor(roll * eligible.length)]!
   const selectedDurability = selected.durability!
 
   const missing = selectedDurability.max - selectedDurability.current
+  const repaired = Math.min(missing, 2 * xp)
+  const xpConsumed = Math.ceil(repaired / 2)
+  const repairedCandidate: MendingRepairCandidate = {
+    ...selected,
+    durability: { ...selectedDurability, current: selectedDurability.current + repaired },
+  }
+  return {
+    repairedCandidate,
+    selectedSlot: selected.slot,
+    xpConsumed,
+    xpRemaining: xp - xpConsumed,
+  }
+}
+
+/** Choose one damaged Mending candidate; callers supply only held or equipped items. */
+export const mendOneItemFromExperience = (
+  candidates: ReadonlyArray<MendingRepairCandidate>,
+  orbExperience: ExperienceAmount,
+  roll: InterpolationFractionValue,
+): Result.Result<MendingRepairResult, Brand.BrandError> => {
+  const experiencePoints = mendingExperiencePointsResult(normalizedMendingExperience(orbExperience))
+  if (Result.isFailure(experiencePoints)) return Result.fail(experiencePoints.failure)
+  const calculated = calculateMendingRepair(candidates, experiencePoints.success, roll)
   return Result.gen(function* () {
-    const experiencePoints = yield* mendingExperiencePointsResult(xp)
-    const repaired = Math.min(missing, mendingDurabilityRepairPoints(experiencePoints))
-    const xpConsumed = Math.ceil(repaired / 2)
-    const repairedCandidate: MendingRepairCandidate = {
-      ...selected,
-      durability: { ...selectedDurability, current: selectedDurability.current + repaired },
-    }
     return {
-      repairedCandidate,
-      selectedSlot: selected.slot,
-      xpConsumed: yield* mendingExperiencePointsResult(xpConsumed),
-      xpRemaining: yield* mendingExperiencePointsResult(xp - xpConsumed),
+      ...calculated,
+      xpConsumed: yield* mendingExperiencePointsResult(calculated.xpConsumed),
+      xpRemaining: yield* mendingExperiencePointsResult(calculated.xpRemaining),
     }
   })
+}
+
+/** Apply Mending with experience and roll values already validated by their producers. */
+export const mendOneItemFromValidatedExperience = (
+  candidates: ReadonlyArray<MendingRepairCandidate>,
+  orbExperience: ExperienceAmount,
+  roll: InterpolationFractionValue,
+): MendingRepairResult => {
+  const calculated = calculateMendingRepair(candidates, orbExperience, roll)
+  return {
+    ...calculated,
+    xpConsumed: brandMendingExperiencePoints(calculated.xpConsumed),
+    xpRemaining: brandMendingExperiencePoints(calculated.xpRemaining),
+  }
 }

@@ -2121,10 +2121,26 @@ export type GameplayFrameStateOptions = Readonly<{
   vitalsOwnerId: ReplicatedOwnerId
 }>
 
+export type GameplayStageExecutionFailure = Readonly<{
+  _tag: 'GameplayStageExecutionFailure'
+  cause: unknown
+}>
+
 export type GameplayStageOperationFailure = Readonly<{
   _tag: 'Failed'
   operation: 'OwnerSnapshot' | 'WorldCommit' | 'VitalsOperation' | 'CandidateBuild' | 'PlanBuild' | 'EventPublish'
-  subject: 'Player' | 'Vitals' | 'Mining' | 'ItemUse' | 'Fire' | 'Fishing' | 'Brewing' | 'ExperienceOrb'
+  subject:
+    | 'Player'
+    | 'Vitals'
+    | 'Mining'
+    | 'ItemUse'
+    | 'DroppedItem'
+    | 'Fire'
+    | 'Fishing'
+    | 'Brewing'
+    | 'ExperienceOrb'
+    | 'Tnt'
+    | 'EntityRoster'
   requestId?: string
   occurrences?: number
   error:
@@ -2139,6 +2155,9 @@ export type GameplayStageOperationFailure = Readonly<{
     | FishingServiceError
     | BrewingServiceError
     | PrimedTntValidationFailure
+    | DroppedItemPickupFailure
+    | ExperienceOrbAbsorptionError
+    | GameplayStageExecutionFailure
     | StatusEffectApplicationError
     | DamageAtResult
     | Readonly<{ _tag: 'ShieldBlockingPreparation'; reason: ShieldBlockingPreparationError }>
@@ -2153,17 +2172,34 @@ export const recordGameplayStageFailure = (
 const sameGameplayStageFailure = (
   left: GameplayStageOperationFailure,
   right: GameplayStageOperationFailure,
-): boolean => JSON.stringify([
-  left.operation,
-  left.subject,
-  left.requestId,
-  left.error._tag,
-]) === JSON.stringify([
-  right.operation,
-  right.subject,
-  right.requestId,
-  right.error._tag,
-])
+): boolean => {
+  const reasonOf = (error: GameplayStageOperationFailure['error']): string | undefined => {
+    const cause = error._tag === 'GameplayStageExecutionFailure' ? error.cause : error
+    if (typeof cause !== 'object' || cause === null || !('reason' in cause)) return undefined
+    return typeof cause.reason === 'string' ? cause.reason : undefined
+  }
+  const tagOf = (error: GameplayStageOperationFailure['error']): string | undefined => {
+    if (error._tag !== 'GameplayStageExecutionFailure') return undefined
+    const cause = error.cause
+    if (typeof cause !== 'object' || cause === null || !('_tag' in cause)) return undefined
+    return typeof cause._tag === 'string' ? cause._tag : undefined
+  }
+  return JSON.stringify([
+    left.operation,
+    left.subject,
+    left.requestId,
+    left.error._tag,
+    tagOf(left.error),
+    reasonOf(left.error),
+  ]) === JSON.stringify([
+    right.operation,
+    right.subject,
+    right.requestId,
+    right.error._tag,
+    tagOf(right.error),
+    reasonOf(right.error),
+  ])
+}
 
 export const recordGameplayStageFailureDeduplicated = (
   state: GameplayFrameState,

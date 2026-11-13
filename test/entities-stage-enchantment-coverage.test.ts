@@ -4,6 +4,8 @@ import {
   EntityHealthPoints,
   EntitySerial,
   PositionAxis,
+  SimulationTickSchema,
+  AIR_BLOCK_ID,
   StackCount,
   enchantmentsComponent,
   itemComponents,
@@ -11,6 +13,7 @@ import {
 } from '@nerima-games/mc-kernel'
 import {
   DomainEventBus,
+  DamageAmount,
   EntityId,
   PlayerServiceSnapshotSchema,
   PlayerStorageSnapshotSchema,
@@ -40,6 +43,7 @@ import {
   hostileMobSnapshot,
 } from '../src/domain/entities/mob-frame.js'
 import { ZOMBIE_KIND } from '../src/domain/mob/hostile-combat.js'
+import { SkyLightLevel } from '../src/domain/mob/hostile-spawn.js'
 import {
   applyStatusEffect,
   emptyStatusEffectState,
@@ -57,9 +61,13 @@ import {
 } from '../src/stages/gameplay-owner-registrations.js'
 import {
   makeGameplayFrameStateForOwner,
+  drainExperienceOrbAbsorptionExecutions,
+  drainGameplayStageFailures,
+  requestMobSpawn,
+  requestExperienceOrbAbsorption,
 } from '../src/stages/registration.js'
 import { drainGameplayUnsupportedOperations } from '../src/stages/registration-core.js'
-import { emptyWorldStoreLayer, world } from './support/chunk-store-double.js'
+import { emptyWorldStoreLayer, STONE, world } from './support/chunk-store-double.js'
 import { emptyRosterLayer } from './support/entity-manager-double.js'
 import { emptyInventoryLayer } from './support/inventory-service-double.js'
 import {
@@ -396,6 +404,224 @@ describe('full-composition enchantment coverage', () => {
       expect(storageAfter.state.inventoryDurability[0]).toStrictEqual({ current: 250, max: 250 })
       expect(vitalsAfter.state.vitals.totalExperience).toBe(0)
       expect(orbsAfter.state.orbs).toStrictEqual([])
+    }).pipe(Effect.provide(Layer.orDie(productionWorld))),
+  )
+
+  it.effect('records repeated missing-orb faults and continues to absorb the next orb through production stages', () =>
+    Effect.gen(function* () {
+      const { coordinator, stages, state } = yield* makeProductionScenario({
+        storage: emptyPlayerStorage(),
+        statusEffects: emptyStatusEffectState(),
+        zombieHealth: 20,
+      })
+      const orbSnapshot = yield* coordinator.snapshot(
+        GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
+        ExperienceOrbOwnerSnapshotSchema,
+      )
+      const validOrbId = EntityId('test:production-valid-orb-after-fault')
+      const missingOrbId = EntityId('test:production-missing-orb')
+      yield* coordinator.commit({
+        expectedRevision: orbSnapshot.revision,
+        expectedDimensions: [],
+        changes: [{
+          ownerId: GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
+          state: Schema.decodeUnknownSync(ExperienceOrbOwnerSnapshotSchema)({
+            orbs: [{ id: validOrbId, value: 3, spawnedAt: 0 }],
+          }),
+        }],
+      })
+      const request = (orb: EntityId) => ({
+        actor: EntityId('test:production-player'),
+        orb,
+        tick: 1,
+        position: { dimension: 'overworld' as const, x: 0, y: 64, z: 0 },
+      })
+      yield* requestExperienceOrbAbsorption(state, request(missingOrbId))
+      yield* requestExperienceOrbAbsorption(state, request(missingOrbId))
+      yield* requestExperienceOrbAbsorption(state, request(validOrbId))
+
+      yield* runFrame(stages, DeltaTimeSecs(0))
+
+      const [faults, executions, vitals, orbs] = yield* Effect.all([
+        drainGameplayStageFailures(state),
+        drainExperienceOrbAbsorptionExecutions(state),
+        coordinator.snapshot(GAMEPLAY_VITALS_OWNER_ID, ExperienceOrbVitalsOwnerSnapshotSchema),
+        coordinator.snapshot(GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID, ExperienceOrbOwnerSnapshotSchema),
+      ])
+      expect(faults).toContainEqual(expect.objectContaining({
+        _tag: 'Failed',
+        operation: 'PlanBuild',
+        subject: 'ExperienceOrb',
+        requestId: String(missingOrbId),
+        occurrences: 2,
+        error: expect.objectContaining({ _tag: 'ExperienceOrbUnavailable', reason: 'missing-orb' }),
+      }))
+      expect(executions.map(({ outcome }) => outcome._tag)).toStrictEqual(['Failed', 'Failed', 'Completed'])
+      expect(vitals.state.vitals.totalExperience).toBe(3)
+      expect(orbs.state.orbs).toStrictEqual([])
+      expect(yield* drainGameplayStageFailures(state)).toStrictEqual([])
+    }).pipe(Effect.provide(Layer.orDie(productionWorld))),
+  )
+
+  it.effect('continues mob contact damage after a valid spawn attempt exhausts the roster serial', () =>
+    Effect.gen(function* () {
+      const { coordinator, stages, state } = yield* makeProductionScenario({
+        storage: emptyPlayerStorage(),
+        statusEffects: emptyStatusEffectState(),
+        zombieHealth: 20,
+      })
+      const roster = yield* coordinator.snapshot(GAMEPLAY_ENTITIES_OWNER_ID, GameplayEntityRosterSchema)
+      yield* coordinator.commit({
+        expectedRevision: roster.revision,
+        expectedDimensions: [],
+        changes: [{
+          ownerId: GAMEPLAY_ENTITIES_OWNER_ID,
+          state: { ...roster.state, nextSerial: EntitySerial(Number.MAX_SAFE_INTEGER) },
+        }],
+      })
+      const attempt = {
+        candidate: {
+          groundBlock: STONE,
+          footBlock: AIR_BLOCK_ID,
+          headBlock: AIR_BLOCK_ID,
+          blockLight: 0,
+          skyLight: SkyLightLevel(0),
+          biome: 'PLAINS' as const,
+          timeOfDay: 0.9,
+          distanceToPlayerBlocksXZ: 30,
+        },
+        kind: ZOMBIE_KIND,
+        feetPosition: position(PositionAxis(30), PositionAxis(64), PositionAxis(0)),
+      }
+      yield* requestMobSpawn(state, attempt)
+      const vitalsBefore = yield* coordinator.snapshot(
+        GAMEPLAY_VITALS_OWNER_ID,
+        ExperienceOrbVitalsOwnerSnapshotSchema,
+      )
+
+      yield* runFrame(stages, DeltaTimeSecs(0))
+
+      const [faults, vitalsAfter, cooldowns, pendingAttempts] = yield* Effect.all([
+        drainGameplayStageFailures(state),
+        coordinator.snapshot(GAMEPLAY_VITALS_OWNER_ID, ExperienceOrbVitalsOwnerSnapshotSchema),
+        Ref.get(state.hostileContactCooldowns),
+        Ref.get(state.spawnAttempts),
+      ])
+      expect(faults).toContainEqual(expect.objectContaining({
+        _tag: 'Failed',
+        operation: 'CandidateBuild',
+        subject: 'EntityRoster',
+        requestId: JSON.stringify([
+          'mob-spawn',
+          attempt.kind,
+          'overworld',
+          attempt.feetPosition.x,
+          attempt.feetPosition.y,
+          attempt.feetPosition.z,
+        ]),
+        error: expect.objectContaining({
+          _tag: 'GameplayStageExecutionFailure',
+          cause: { _tag: 'EntitySerialExhausted' },
+        }),
+      }))
+      expect(vitalsAfter.state.vitals.healthPoints).toBeLessThan(vitalsBefore.state.vitals.healthPoints)
+      expect(cooldowns.has(EntityId('test:thorns-target'))).toBe(true)
+      expect(pendingAttempts).toStrictEqual([attempt])
+      expect(yield* drainGameplayStageFailures(state)).toStrictEqual([])
+    }).pipe(Effect.provide(Layer.orDie(productionWorld))),
+  )
+
+  it.effect('records an invalid hostile damage state and continues queued XP spawning through production stages', () =>
+    Effect.gen(function* () {
+      const { coordinator, stages, state } = yield* makeProductionScenario({
+        storage: emptyPlayerStorage(),
+        statusEffects: emptyStatusEffectState(),
+        zombieHealth: 20,
+      })
+      const futureDamageState = {
+        lastDamageTick: Schema.decodeUnknownSync(SimulationTickSchema)(1),
+        lastDamageAmount: DamageAmount(1),
+      }
+      yield* Ref.set(state.damageImmunity, futureDamageState)
+      yield* Ref.update(state.mobExperience, (pending) => [...pending, {
+        source: EntityId('test:queued-xp-after-damage-fault'),
+        kind: ZOMBIE_KIND,
+        at: position(PositionAxis(2), PositionAxis(64), PositionAxis(0)),
+        amount: 3,
+      }])
+      const vitalsBefore = yield* coordinator.snapshot(
+        GAMEPLAY_VITALS_OWNER_ID,
+        ExperienceOrbVitalsOwnerSnapshotSchema,
+      )
+
+      yield* runFrame(stages, DeltaTimeSecs(0))
+
+      const [faults, vitalsAfter, orbs, immunityAfter, contactCooldowns] = yield* Effect.all([
+        drainGameplayStageFailures(state),
+        coordinator.snapshot(GAMEPLAY_VITALS_OWNER_ID, ExperienceOrbVitalsOwnerSnapshotSchema),
+        coordinator.snapshot(GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID, ExperienceOrbOwnerSnapshotSchema),
+        Ref.get(state.damageImmunity),
+        Ref.get(state.hostileContactCooldowns),
+      ])
+      expect(faults).toContainEqual(expect.objectContaining({
+        _tag: 'Failed',
+        operation: 'CandidateBuild',
+        subject: 'Player',
+        requestId: JSON.stringify(['player-damage', 'HostileContact', 'test:thorns-target']),
+        error: expect.objectContaining({
+          _tag: 'GameplayStageExecutionFailure',
+          cause: { _tag: 'HostileAttackPreparationFailure', reason: 'invalid-damage-state' },
+        }),
+      }))
+      expect(vitalsAfter.state.vitals).toStrictEqual(vitalsBefore.state.vitals)
+      expect(immunityAfter).toStrictEqual(futureDamageState)
+      expect(contactCooldowns.has(EntityId('test:thorns-target'))).toBe(false)
+      expect(orbs.state.orbs).toContainEqual(expect.objectContaining({
+        id: EntityId('mx-gameplay:experience-orb/test:queued-xp-after-damage-fault/0/0/0'),
+        value: 3,
+      }))
+      expect(yield* drainGameplayStageFailures(state)).toStrictEqual([])
+    }).pipe(Effect.provide(Layer.orDie(productionWorld))),
+  )
+
+  it.effect('skips an invalid hostile spawn cadence while continuing mob contacts through production stages', () =>
+    Effect.gen(function* () {
+      const { coordinator, stages, state } = yield* makeProductionScenario({
+        storage: emptyPlayerStorage(),
+        statusEffects: emptyStatusEffectState(),
+        zombieHealth: 20,
+      })
+      yield* Ref.set(state.lastHostileSpawnTick, Schema.decodeUnknownSync(SimulationTickSchema)(2))
+      const vitalsBefore = yield* coordinator.snapshot(
+        GAMEPLAY_VITALS_OWNER_ID,
+        ExperienceOrbVitalsOwnerSnapshotSchema,
+      )
+
+      yield* runFrame(stages, DeltaTimeSecs(0))
+
+      const [faults, vitalsAfter, damages, lastHostileSpawnTick] = yield* Effect.all([
+        drainGameplayStageFailures(state),
+        coordinator.snapshot(GAMEPLAY_VITALS_OWNER_ID, ExperienceOrbVitalsOwnerSnapshotSchema),
+        Ref.get(state.playerDamages),
+        Ref.get(state.lastHostileSpawnTick),
+      ])
+      expect(faults).toContainEqual(expect.objectContaining({
+        _tag: 'Failed',
+        operation: 'CandidateBuild',
+        subject: 'EntityRoster',
+        requestId: JSON.stringify(['hostile-spawn-search', 'overworld']),
+        error: expect.objectContaining({
+          _tag: 'GameplayStageExecutionFailure',
+          cause: { _tag: 'InvalidSpawnTick' },
+        }),
+      }))
+      expect(lastHostileSpawnTick).toBe(2)
+      expect(damages).toContainEqual(expect.objectContaining({
+        _tag: 'HostileContact',
+        source: EntityId('test:thorns-target'),
+      }))
+      expect(vitalsAfter.state.vitals.healthPoints).toBeLessThan(vitalsBefore.state.vitals.healthPoints)
+      expect(yield* drainGameplayStageFailures(state)).toStrictEqual([])
     }).pipe(Effect.provide(Layer.orDie(productionWorld))),
   )
 

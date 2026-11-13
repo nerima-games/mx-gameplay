@@ -58,6 +58,7 @@ import { SAND, STONE, world } from './support/chunk-store-double.js'
 import { disturb } from '../src/domain/falling-block.js'
 import {
   drainGameplayUnsupportedOperations,
+  drainGameplayStageFailures,
   makeGameplayFrameState,
   requestShieldBlocking,
   requestDroppedItemPickup,
@@ -104,8 +105,20 @@ import {
   GameplayTntSourcesSnapshotSchema,
   gameplayOwnerRegistrations,
 } from '../src/stages/gameplay-owner-registrations.js'
-import type { GameplayStageContext } from '../src/stages/registration-core.js'
+import type { GameplayFrameState, GameplayStageContext } from '../src/stages/registration-core.js'
 import { FrameServicesLayer } from './support/frame-services.js'
+
+const expectGameplayStageFault = (
+  failures: ReadonlyArray<unknown>,
+  expected: Readonly<Record<string, unknown>>,
+) => expect(failures).toContainEqual(expect.objectContaining({
+  _tag: 'Failed',
+  error: expect.objectContaining({ _tag: 'GameplayStageExecutionFailure' }),
+  ...expected,
+}))
+
+const drainStageFaults = (state: GameplayFrameState) =>
+  Effect.runPromise(drainGameplayStageFailures(state))
 
 const worldId = Schema.decodeUnknownSync(WorldIdSchema)('entities-stage-owner-tests')
 
@@ -747,17 +760,31 @@ describe('entities stage owner-backed MobSimulation', () => {
       const storageChange = harness.lastRequest()?.changes.find(({ ownerId }) =>
         ownerId === GAMEPLAY_PLAYER_STORAGE_OWNER_ID
       )
-      return { exit, storageCandidate: storageChange?.state }
+      return {
+        exit,
+        storageCandidate: storageChange?.state,
+        faults: await drainStageFaults(harness.state),
+      }
     }
 
     const damaged = await runBlockedContact(336)
     const broken = await runBlockedContact(1)
 
-    expect(damaged.exit._tag).toBe('Failure')
+    expect(damaged.exit._tag).toBe('Success')
+    expectGameplayStageFault(damaged.faults, {
+      operation: 'WorldCommit',
+      subject: 'EntityRoster',
+      requestId: String(GAMEPLAY_ENTITIES_OWNER_ID),
+    })
     expect(damaged.storageCandidate).toMatchObject({
       equipment: { slots: { offhand: { durability: { current: 331 } } } },
     })
-    expect(broken.exit._tag).toBe('Failure')
+    expect(broken.exit._tag).toBe('Success')
+    expectGameplayStageFault(broken.faults, {
+      operation: 'WorldCommit',
+      subject: 'EntityRoster',
+      requestId: String(GAMEPLAY_ENTITIES_OWNER_ID),
+    })
     expect(broken.storageCandidate).toMatchObject({
       equipment: { slots: { offhand: null } },
     })
@@ -887,19 +914,44 @@ describe('entities stage owner-backed MobSimulation', () => {
     expect(longDelta.contactTicks).toStrictEqual([SimulationTick(0), SimulationTick(0)])
   })
 
-  it('fails closed when the entities stage tick is behind a stored contact tick', async () => {
-    const harness = await Effect.runPromise(makeHarness({ entity: zombieAt(1, 64) }))
-    const previousCooldowns = new Map([[EntityId('test:zombie'), SimulationTick(10)]])
+  it('isolates a future contact cooldown by mob id and continues other contacts', async () => {
+    const invalidZombieId = EntityId('test:zombie-future-cooldown')
+    const validZombieId = EntityId('test:zombie-valid-contact')
+    const invalidZombie = { ...zombieAt(1, 64), id: invalidZombieId }
+    const validZombie = { ...zombieAt(-1, 64), id: validZombieId }
+    const harness = await Effect.runPromise(makeHarness({ entities: [invalidZombie, validZombie] }))
+    const previousCooldowns = new Map([[invalidZombieId, SimulationTick(10)]])
     await Effect.runPromise(Ref.set(harness.state.hostileContactCooldowns, previousCooldowns))
     await Effect.runPromise(Ref.set(harness.state.tickCount, SimulationTick(9)))
+    await Effect.runPromise(Ref.set(harness.state.lastHostileSpawnTick, SimulationTick(10)))
 
     const exit = await Effect.runPromiseExit(
       harness.stage.run(makeDeltaTimeSecs(0.05)).pipe(Effect.provide(FrameServicesLayer)),
     )
 
-    expect(exit._tag).toBe('Failure')
-    expect(harness.commits()).toBe(0)
-    expect(await Effect.runPromise(Ref.get(harness.state.hostileContactCooldowns))).toStrictEqual(previousCooldowns)
+    expect(exit._tag).toBe('Success')
+    expectGameplayStageFault(await drainStageFaults(harness.state), {
+      operation: 'CandidateBuild',
+      subject: 'EntityRoster',
+      requestId: String(invalidZombieId),
+      error: expect.objectContaining({
+        _tag: 'GameplayStageExecutionFailure',
+        cause: { _tag: 'HostileContactResolutionFailure', reason: 'invalid-tick-order' },
+      }),
+    })
+    expect(harness.commits()).toBe(1)
+    const [damages, cooldowns] = await Effect.runPromise(Effect.all([
+      Ref.get(harness.state.playerDamages),
+      Ref.get(harness.state.hostileContactCooldowns),
+    ]))
+    expect(damages).toContainEqual(expect.objectContaining({
+      _tag: 'HostileContact',
+      source: validZombieId,
+    }))
+    expect(damages).not.toContainEqual(expect.objectContaining({ source: invalidZombieId }))
+    expect(cooldowns.has(invalidZombieId)).toBe(false)
+    expect(cooldowns.get(validZombieId)).toBe(SimulationTick(9))
+    expect(await drainStageFaults(harness.state)).toStrictEqual([])
   })
 
   it('keeps dead-player vitals unchanged while recording a valid mob-contact hit', async () => {
@@ -1153,7 +1205,12 @@ describe('entities stage owner-backed MobSimulation', () => {
       harness.stage.run(makeDeltaTimeSecs(0.02)).pipe(Effect.provide(FrameServicesLayer)),
     )
 
-    expect(exit._tag).toBe('Failure')
+    expect(exit._tag).toBe('Success')
+    expectGameplayStageFault(await drainStageFaults(harness.state), {
+      operation: 'OwnerSnapshot',
+      subject: 'EntityRoster',
+      requestId: String(GAMEPLAY_ENTITIES_OWNER_ID),
+    })
     expect(harness.mismatchedSnapshots()).toBe(1)
     expect(harness.commits()).toBe(0)
     expect(await Effect.runPromise(strictRoster(harness.coordinator))).toStrictEqual(rosterBefore)
@@ -1246,7 +1303,12 @@ describe('entities stage owner-backed MobSimulation', () => {
       harness.stage.run(makeDeltaTimeSecs(0.25)).pipe(Effect.provide(FrameServicesLayer)),
     )
 
-    expect(exit._tag).toBe('Failure')
+    expect(exit._tag).toBe('Success')
+    expectGameplayStageFault(await drainStageFaults(harness.state), {
+      operation: 'OwnerSnapshot',
+      subject: 'EntityRoster',
+      requestId: String(GAMEPLAY_ENTITIES_OWNER_ID),
+    })
     expect(harness.mismatchedSnapshots()).toBe(1)
     expect(harness.commits()).toBe(0)
     expect(await Effect.runPromise(strictRoster(harness.coordinator))).toStrictEqual(rosterBefore)
@@ -1282,7 +1344,12 @@ describe('entities stage owner-backed MobSimulation', () => {
       harness.stage.run(makeDeltaTimeSecs(0.25)).pipe(Effect.provide(FrameServicesLayer)),
     )
 
-    expect(exit._tag).toBe('Failure')
+    expect(exit._tag).toBe('Success')
+    expectGameplayStageFault(await drainStageFaults(harness.state), {
+      operation: 'OwnerSnapshot',
+      subject: 'EntityRoster',
+      requestId: String(GAMEPLAY_ENTITIES_OWNER_ID),
+    })
     expect(harness.mismatchedSnapshots()).toBe(1)
     expect(harness.commits()).toBe(0)
     expect(await Effect.runPromise(strictRoster(harness.coordinator))).toStrictEqual(rosterBefore)
@@ -1323,7 +1390,12 @@ describe('entities stage owner-backed MobSimulation', () => {
       harness.stage.run(makeDeltaTimeSecs(0.25)).pipe(Effect.provide(FrameServicesLayer)),
     )
 
-    expect(exit._tag).toBe('Failure')
+    expect(exit._tag).toBe('Success')
+    expectGameplayStageFault(await drainStageFaults(harness.state), {
+      operation: 'OwnerSnapshot',
+      subject: 'EntityRoster',
+      requestId: String(GAMEPLAY_ENTITIES_OWNER_ID),
+    })
     expect(harness.mismatchedSnapshots()).toBe(1)
     expect(harness.commits()).toBe(0)
     expect(await Effect.runPromise(strictRoster(harness.coordinator))).toStrictEqual(rosterBefore)
@@ -1370,7 +1442,7 @@ describe('entities stage owner-backed MobSimulation', () => {
     )
   })
 
-  it('leaves registered mob owners and frame outputs unchanged when the owner commit is rejected', async () => {
+  it('records a rejected owner commit without advancing frame outputs', async () => {
     const playerPose = {
       ...INITIAL_PLAYER_POSE,
       feetPosition: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
@@ -1398,7 +1470,12 @@ describe('entities stage owner-backed MobSimulation', () => {
       harness.stage.run(0.25 as DeltaTimeSecs).pipe(Effect.provide(FrameServicesLayer)),
     )
 
-    expect(exit._tag).toBe('Failure')
+    expect(exit._tag).toBe('Success')
+    expectGameplayStageFault(await drainStageFaults(harness.state), {
+      operation: 'WorldCommit',
+      subject: 'EntityRoster',
+      requestId: String(GAMEPLAY_ENTITIES_OWNER_ID),
+    })
     expect(harness.commits()).toBe(1)
     expect(harness.lastRequest()?.changes.map(({ ownerId }) => ownerId)).toStrictEqual([
       GAMEPLAY_ENTITIES_OWNER_ID,
@@ -1702,7 +1779,7 @@ describe('entities stage owner-backed MobSimulation', () => {
     expect(harness.commits()).toBe(1)
   })
 
-  it('keeps an offered spawn queued when the valid owner serial is exhausted', async () => {
+  it('records an exhausted offered spawn and keeps it queued for retry', async () => {
     const harness = await Effect.runPromise(makeHarness({ entity: null }))
     const rosterBefore = await Effect.runPromise(strictRoster(harness.coordinator))
     await Effect.runPromise(harness.coordinator.commit({
@@ -1734,7 +1811,23 @@ describe('entities stage owner-backed MobSimulation', () => {
       harness.stage.run(makeDeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer)),
     )
 
-    expect(exit._tag).toBe('Failure')
+    expect(exit._tag).toBe('Success')
+    expectGameplayStageFault(await drainStageFaults(harness.state), {
+      operation: 'CandidateBuild',
+      subject: 'EntityRoster',
+      requestId: JSON.stringify([
+        'mob-spawn',
+        offered.kind,
+        INITIAL_DIMENSION,
+        offered.feetPosition.x,
+        offered.feetPosition.y,
+        offered.feetPosition.z,
+      ]),
+      error: expect.objectContaining({
+        _tag: 'GameplayStageExecutionFailure',
+        cause: { _tag: 'EntitySerialExhausted' },
+      }),
+    })
     expect(harness.commits()).toBe(1)
     expect(await Effect.runPromise(strictRoster(harness.coordinator))).toStrictEqual(exhaustedRoster)
     expect(await Effect.runPromise(harness.coordinator.revision)).toBe(exhaustedRoster.revision)
@@ -1800,7 +1893,7 @@ describe('entities stage owner-backed MobSimulation', () => {
     ])
   })
 
-  it('keeps entity, block, revision, and output state unchanged when a combined blast commit fails', async () => {
+  it('records a rejected combined blast commit without advancing entity, block, revision, or output state', async () => {
     const centre = blockPosition(BlockAxis(0), BlockAxis(64), BlockAxis(0))
     const harness = await Effect.runPromise(makeHarness({
       entity: { ...creeperAt(0, 64), behaviour: { _tag: 'Lit', burnedSecs: 1.49 } },
@@ -1838,7 +1931,12 @@ describe('entities stage owner-backed MobSimulation', () => {
       attempts: Ref.get(harness.state.spawnAttempts),
     }))
 
-    expect(exit._tag).toBe('Failure')
+    expect(exit._tag).toBe('Success')
+    expectGameplayStageFault(await drainStageFaults(harness.state), {
+      operation: 'WorldCommit',
+      subject: 'EntityRoster',
+      requestId: String(GAMEPLAY_ENTITIES_OWNER_ID),
+    })
     expect(harness.commits()).toBe(1)
     expect(harness.lastRequest()?.blockWrite?.edits.length).toBeGreaterThan(0)
     expect(harness.lastRequest()?.changes.map(({ ownerId }) => ownerId)).toContain(GAMEPLAY_ENTITIES_OWNER_ID)
@@ -2129,7 +2227,7 @@ describe('entities stage owner-backed MobSimulation', () => {
     expect(await Effect.runPromise(Ref.get(harness.state.fallingBlocks))).toStrictEqual(fallingBefore)
   })
 
-  it('fails TNT planning at either unsafe block-axis boundary before committing', async () => {
+  it('records TNT planning faults at unsafe block-axis boundaries before committing', async () => {
     const assertBoundaryFailure = async (x: number) => {
       const harness = await Effect.runPromise(makeHarness({
         entity: null,
@@ -2151,7 +2249,12 @@ describe('entities stage owner-backed MobSimulation', () => {
         harness.stage.run(makeDeltaTimeSecs(0.05)).pipe(Effect.provide(FrameServicesLayer)),
       )
 
-      expect(exit._tag).toBe('Failure')
+      expect(exit._tag).toBe('Success')
+      expectGameplayStageFault(await drainStageFaults(harness.state), {
+        operation: 'CandidateBuild',
+        subject: 'Tnt',
+        requestId: String(EntityId(`test:tnt-boundary-${x}`)),
+      })
       expect(harness.commits()).toBe(0)
       expect(harness.tntCommits()).toBe(0)
       expect(await Effect.runPromise(harness.coordinator.snapshot(
@@ -2263,7 +2366,7 @@ describe('entities stage owner-backed MobSimulation', () => {
     expect(await Effect.runPromise(harness.store.blockAt(centre))).toBe(bedrock)
   })
 
-  it('fails TNT detonation before planning when the owner snapshots have different revisions', async () => {
+  it('records TNT owner snapshot revision faults before planning', async () => {
     const harness = await Effect.runPromise(makeHarness({
       entity: null,
       tnt: {
@@ -2287,7 +2390,12 @@ describe('entities stage owner-backed MobSimulation', () => {
       harness.stage.run(makeDeltaTimeSecs(0.05)).pipe(Effect.provide(FrameServicesLayer)),
     )
 
-    expect(exit._tag).toBe('Failure')
+    expect(exit._tag).toBe('Success')
+    expectGameplayStageFault(await drainStageFaults(harness.state), {
+      operation: 'OwnerSnapshot',
+      subject: 'Tnt',
+      requestId: String(EntityId('test:tnt-revision-mismatch')),
+    })
     expect(harness.mismatchedSnapshots()).toBe(1)
     expect(harness.tntCommits()).toBe(0)
     expect(harness.commits()).toBe(0)
@@ -2360,7 +2468,12 @@ describe('entities stage owner-backed MobSimulation', () => {
       makeEntitiesStage(context).run(makeDeltaTimeSecs(0.05)).pipe(Effect.provide(FrameServicesLayer)),
     )
 
-    expect(exit._tag).toBe('Failure')
+    expect(exit._tag).toBe('Success')
+    expectGameplayStageFault(await drainStageFaults(harness.state), {
+      operation: 'OwnerSnapshot',
+      subject: 'Tnt',
+      requestId: String(tntId),
+    })
     expect(injected).toBe(true)
     expect(harness.commits()).toBe(1)
     expect(harness.tntCommits()).toBe(0)
@@ -2413,7 +2526,12 @@ describe('entities stage owner-backed MobSimulation', () => {
       harness.stage.run(makeDeltaTimeSecs(0.05)).pipe(Effect.provide(FrameServicesLayer)),
     )
 
-    expect(exit._tag).toBe('Failure')
+    expect(exit._tag).toBe('Success')
+    expectGameplayStageFault(await drainStageFaults(harness.state), {
+      operation: 'OwnerSnapshot',
+      subject: 'Tnt',
+      requestId: String(EntityId('test:tnt-owner-revision-mismatch')),
+    })
     expect(harness.mismatchedSnapshots()).toBe(1)
     expect(harness.tntCommits()).toBe(0)
     expect(harness.commits()).toBe(0)
@@ -2495,7 +2613,12 @@ describe('entities stage owner-backed MobSimulation', () => {
       makeEntitiesStage(context).run(makeDeltaTimeSecs(0.05)).pipe(Effect.provide(FrameServicesLayer)),
     )
 
-    expect(exit._tag).toBe('Failure')
+    expect(exit._tag).toBe('Success')
+    expectGameplayStageFault(await drainStageFaults(harness.state), {
+      operation: 'OwnerSnapshot',
+      subject: 'Tnt',
+      requestId: String(EntityId('test:tnt-observation-race')),
+    })
     expect(injected).toBe(true)
     expect(harness.commits()).toBe(1)
     expect(harness.tntCommits()).toBe(0)
@@ -2712,7 +2835,7 @@ describe('entities stage owner-backed MobSimulation', () => {
     )
   })
 
-  it('does not commit TNT loot when the dropped-item owner snapshot revision differs', async () => {
+  it('records a TNT drop-owner snapshot fault without committing the detonation', async () => {
     const zombie = { ...zombieAt(1, 64), healthPoints: EntityHealthPoints(1) }
     const playerPose = {
       ...INITIAL_PLAYER_POSE,
@@ -2753,26 +2876,53 @@ describe('entities stage owner-backed MobSimulation', () => {
       harness.stage.run(makeDeltaTimeSecs(0.02)).pipe(Effect.provide(FrameServicesLayer)),
     )
 
-    expect(exit._tag).toBe('Failure')
+    expect(exit._tag).toBe('Success')
+    expectGameplayStageFault(await drainStageFaults(harness.state), {
+      operation: 'OwnerSnapshot',
+      subject: 'Tnt',
+      requestId: String(EntityId('test:tnt-dropped-owner-revision-mismatch')),
+    })
     expect(harness.mismatchedSnapshots()).toBe(1)
     expect(harness.tntCommits()).toBe(0)
-    expect(harness.commits()).toBe(0)
-    expect(await Effect.runPromise(harness.coordinator.snapshot(
+    expect(harness.commits()).toBe(1)
+    const tntAfter = await Effect.runPromise(harness.coordinator.snapshot(
       TNT_REPLICATED_OWNER_ID,
       TntServiceSnapshotSchema,
-    ))).toStrictEqual(tntBefore)
-    expect(await Effect.runPromise(strictRoster(harness.coordinator))).toStrictEqual(rosterBefore)
-    expect(await Effect.runPromise(harness.coordinator.snapshot(
+    ))
+    const rosterAfter = await Effect.runPromise(strictRoster(harness.coordinator))
+    const droppedAfter = await Effect.runPromise(harness.coordinator.snapshot(
       GAMEPLAY_DROPPED_ITEMS_OWNER_ID,
       DroppedItemOwnerSnapshotSchema,
-    ))).toStrictEqual(droppedBefore)
-    expect(await Effect.runPromise(harness.coordinator.revision)).toBe(revisionBefore)
-    expect(await Effect.runPromise(Effect.all({
+    ))
+    expect(tntAfter.state).toStrictEqual(tntBefore.state)
+    expect(rosterBefore.state.entities[0]?.id).toBe(zombie.id)
+    expect(rosterBefore.state.entities[0]?.behaviour).toMatchObject({
+      _tag: 'HostileMob',
+      ageTicks: 0,
+    })
+    expect(rosterAfter.state.entities[0]?.id).toBe(zombie.id)
+    expect(rosterAfter.state.entities[0]?.behaviour).toMatchObject({
+      _tag: 'HostileMob',
+      ageTicks: 0.4,
+    })
+    expect(droppedAfter.state).toStrictEqual(droppedBefore.state)
+    expect(tntAfter.revision).toBe(revisionBefore + 1)
+    expect(rosterAfter.revision).toBe(revisionBefore + 1)
+    expect(droppedAfter.revision).toBe(revisionBefore + 1)
+    expect(await Effect.runPromise(harness.coordinator.revision)).toBe(revisionBefore + 1)
+    const outputsAfter = await Effect.runPromise(Effect.all({
       seed: Ref.get(harness.state.rollSeed),
       damages: Ref.get(harness.state.playerDamages),
       drops: Ref.get(harness.state.mobDrops),
       experience: Ref.get(harness.state.mobExperience),
-    }))).toStrictEqual(outputsBefore)
+    }))
+    expect(outputsAfter.seed).toBe(outputsBefore.seed)
+    expect(outputsAfter.damages).toContainEqual(expect.objectContaining({
+      _tag: 'HostileContact',
+      source: zombie.id,
+    }))
+    expect(outputsAfter.drops).toStrictEqual(outputsBefore.drops)
+    expect(outputsAfter.experience).toStrictEqual(outputsBefore.experience)
   })
 
   it('advances a live TNT fuse with the service-owned single commit', async () => {
@@ -2846,7 +2996,7 @@ describe('entities stage owner-backed MobSimulation', () => {
     )
   })
 
-  it('propagates a schema mismatch when the registered TNT owner id names another owner', async () => {
+  it('records a schema mismatch when the registered TNT owner id names another owner', async () => {
     const harness = await Effect.runPromise(makeHarness({ entity: null, provideTntService: false }))
     const { tntService: _tntService, ...commitWithoutService } = harness.context.commit!
     void _tntService
@@ -2862,12 +3012,17 @@ describe('entities stage owner-backed MobSimulation', () => {
       makeEntitiesStage(context).run(makeDeltaTimeSecs(0.05)).pipe(Effect.provide(FrameServicesLayer)),
     )
 
-    expect(exit._tag).toBe('Failure')
+    expect(exit._tag).toBe('Success')
+    expectGameplayStageFault(await drainStageFaults(harness.state), {
+      operation: 'OwnerSnapshot',
+      subject: 'Tnt',
+      requestId: String(GAMEPLAY_ENTITIES_OWNER_ID),
+    })
     expect(harness.commits()).toBe(0)
     expect(await Effect.runPromise(drainGameplayUnsupportedOperations(harness.state))).toStrictEqual([])
   })
 
-  it('propagates a schema mismatch from a TNT service bound to another registered owner', async () => {
+  it('records a schema mismatch from a TNT service bound to another registered owner', async () => {
     const harness = await Effect.runPromise(makeHarness({ entity: null }))
     const tntService = await Effect.runPromise(makeTntService(
       GAMEPLAY_ENTITIES_OWNER_ID,
@@ -2881,7 +3036,12 @@ describe('entities stage owner-backed MobSimulation', () => {
       makeEntitiesStage(context).run(makeDeltaTimeSecs(0.05)).pipe(Effect.provide(FrameServicesLayer)),
     )
 
-    expect(exit._tag).toBe('Failure')
+    expect(exit._tag).toBe('Success')
+    expectGameplayStageFault(await drainStageFaults(harness.state), {
+      operation: 'OwnerSnapshot',
+      subject: 'Tnt',
+      requestId: String(TNT_REPLICATED_OWNER_ID),
+    })
     expect(harness.commits()).toBe(0)
     expect(await Effect.runPromise(drainGameplayUnsupportedOperations(harness.state))).toStrictEqual([])
   })
@@ -3112,7 +3272,7 @@ describe('entities stage owner-backed MobSimulation', () => {
     )
   })
 
-  it('keeps owners, blocks, revision, and output queues unchanged when TNT commit fails', async () => {
+  it('records a rejected TNT commit and allows the later mob simulation to commit', async () => {
     const centre = blockPosition(BlockAxis(0), BlockAxis(64), BlockAxis(0))
     const tntId = EntityId('test:tnt')
     const harness = await Effect.runPromise(makeHarness({
@@ -3184,17 +3344,23 @@ describe('entities stage owner-backed MobSimulation', () => {
       unsupported: Ref.get(harness.state.unsupportedOperations),
     }))
 
-    expect(exit._tag).toBe('Failure')
-    expect(harness.commits()).toBe(0)
+    expect(exit._tag).toBe('Success')
+    expectGameplayStageFault(await drainStageFaults(harness.state), {
+      operation: 'WorldCommit',
+      subject: 'Tnt',
+      requestId: String(tntId),
+    })
+    expect(harness.commits()).toBe(1)
     expect(harness.tntCommits()).toBe(1)
     expect(harness.tntSnapshotCommits()).toBe(1)
-    expect(tntAfter).toStrictEqual(tntBefore)
-    expect(entityAfter).toStrictEqual(entityBefore)
-    expect(playerAfter).toStrictEqual(playerBefore)
-    expect(storageAfter).toStrictEqual(storageBefore)
-    expect(vitalsAfter).toStrictEqual(vitalsBefore)
-    expect(droppedAfter).toStrictEqual(droppedBefore)
-    expect(revisionAfter).toBe(revisionBefore)
+    expect(tntAfter.state).toStrictEqual(tntBefore.state)
+    expect(tntAfter.revision).toBe(revisionBefore + 1)
+    expect(entityAfter.state).not.toStrictEqual(entityBefore.state)
+    expect(playerAfter.state).toStrictEqual(playerBefore.state)
+    expect(storageAfter.state).toStrictEqual(storageBefore.state)
+    expect(vitalsAfter.state).toStrictEqual(vitalsBefore.state)
+    expect(droppedAfter.state).toStrictEqual(droppedBefore.state)
+    expect(revisionAfter).toBe(revisionBefore + 1)
     expect(await Effect.runPromise(harness.store.blockAt(centre))).toBe(STONE)
     expect(outputsAfter).toStrictEqual(outputsBefore)
   })

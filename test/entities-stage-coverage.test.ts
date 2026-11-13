@@ -394,9 +394,14 @@ describe('entities-stage owner-backed coverage', () => {
     await harness.run()
 
     const failures = await Effect.runPromise(Ref.get(harness.state.operationFailures))
-    expect(failures.filter((failure) =>
+    const tickFailures = failures.filter((failure) =>
       failure._tag === 'Failed' && failure.operation === 'CandidateBuild' && failure.subject === 'ExperienceOrb',
-    )).toHaveLength(2)
+    )
+    expect(tickFailures).toHaveLength(1)
+    expect(tickFailures[0]).toMatchObject({
+      requestId: String(GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID),
+      occurrences: 2,
+    })
     expect(harness.requests).toHaveLength(0)
   })
 })
