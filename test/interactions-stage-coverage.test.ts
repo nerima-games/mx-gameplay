@@ -522,7 +522,7 @@ describe('production interactions-stage coverage', () => {
           commit,
         )
         yield* requestEnchantmentTableOffers(state, {
-          requestId: 'missing-table-offers', itemSlot: 0, lapisSlot: 1, bookshelfCount: 0,
+          requestId: 'missing-table-offers', itemSlot: 0, lapisSlot: 1, tablePosition: { x: 0, y: 64, z: 0 },
         })
         yield* requestEnchantmentTableApply(state, {
           requestId: 'missing-table-apply', tableSlot: 0,

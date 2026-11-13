@@ -99,6 +99,7 @@ import type {
 
 import {
   AIR_BLOCK_ID,
+  BlockPositionSchema,
   adjacentBlockPosition,
   EntityIdSchema,
   DomainEventSchema,
@@ -200,7 +201,6 @@ import {
   EnchantmentTableShelfCountSchema,
   generateEnchantmentTableOffersForItem,
   type EnchantmentSource,
-  type EnchantmentBookshelfCount,
 } from '../domain/enchantment.js'
 import {
   advanceMiningProgress,
@@ -2339,6 +2339,7 @@ const advanceBlockMiningAttempt = (
 
 type GameplayEnchantmentTableRequestId = string
 type GameplayEnchantmentTableOffer = Schema.Schema.Type<typeof SimEnchantmentTableOfferSchema>
+const PRE_L3_ENCHANTMENT_TABLE_SHELF_COUNT = Schema.decodeUnknownSync(EnchantmentTableShelfCountSchema)(0)
 type GameplayEnchantmentTableOffers = readonly [
   GameplayEnchantmentTableOffer | undefined,
   GameplayEnchantmentTableOffer | undefined,
@@ -2352,7 +2353,7 @@ export type GameplayEnchantmentTableOffersRequest = Readonly<{
   readonly requestId: GameplayEnchantmentTableRequestId
   readonly itemSlot: EnchantmentTableInventorySlot
   readonly lapisSlot: EnchantmentTableInventorySlot
-  readonly bookshelfCount: EnchantmentBookshelfCount
+  readonly tablePosition: BlockPosition
 }>
 export const GameplayEnchantmentTableOffersRequestSchema: Schema.Codec<
   GameplayEnchantmentTableOffersRequest,
@@ -2361,8 +2362,7 @@ export const GameplayEnchantmentTableOffersRequestSchema: Schema.Codec<
   requestId: EnchantmentTableRequestIdSchema,
   itemSlot: EnchantmentTableInventorySlotSchema,
   lapisSlot: EnchantmentTableInventorySlotSchema,
-  // mc-kernel 0.14.0 has no bookshelf block ID, so a trusted caller supplies the count.
-  bookshelfCount: EnchantmentTableShelfCountSchema,
+  tablePosition: BlockPositionSchema,
 }).check(Schema.makeFilter(({ itemSlot, lapisSlot }) => itemSlot !== lapisSlot))
 
 export type GameplayEnchantmentTableApplyRequest = Readonly<{
@@ -2455,6 +2455,7 @@ type EnchantmentTableQueuedRequest =
 type EnchantmentTableOfferSession = Readonly<{
   readonly itemSlot: EnchantmentTableInventorySlot
   readonly lapisSlot: EnchantmentTableInventorySlot
+  readonly tablePosition: BlockPosition
   readonly sourceStack: ItemStack
   readonly offers: GameplayEnchantmentTableOffers
 }>
@@ -2648,7 +2649,11 @@ const generateEnchantmentTableOffersRequest = (
       return
     }
     yield* Ref.set(state.rollSeed, drawRolls(seedValue, 1).seed)
-    const offers = generateEnchantmentTableOffersForItem(sourceStack.item, seed.success, request.bookshelfCount)
+    const offers = generateEnchantmentTableOffersForItem(
+      sourceStack.item,
+      seed.success,
+      PRE_L3_ENCHANTMENT_TABLE_SHELF_COUNT,
+    )
     if (Result.isFailure(offers)) {
       mailbox.results.push({ _tag: 'Rejected', requestId: request.requestId, reason: 'offer-generation-failed' })
       return
@@ -2661,6 +2666,7 @@ const generateEnchantmentTableOffersRequest = (
     mailbox.sessions.set(request.requestId, {
       itemSlot: request.itemSlot,
       lapisSlot: request.lapisSlot,
+      tablePosition: request.tablePosition,
       sourceStack,
       offers: serviceOffers.success,
     })

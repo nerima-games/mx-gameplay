@@ -69,20 +69,14 @@ const stack = (item: ItemType, count: number) =>
 
 const ENCHANTMENT_TABLE_SEED = 1
 const MULTI_ENCHANTMENT_SLOT = 2
-// Fixed mc-sim Java table vector for a diamond sword, seed 1, and 15 shelves.
+const ENCHANTMENT_TABLE_POSITION = { x: 0, y: 64, z: 0 } as const
+// Fixed mc-sim Java table vector for a diamond sword, seed 1, and no shelves.
 // Kept independent of the production generator so the stage adapter is checked
 // against a stable result rather than its own expected-value calculation.
 const PINNED_DIAMOND_SWORD_OFFERS = [
-  { slot: 0, offer: { levelCost: 11, lapisCost: 1, enchantments: [{ id: 'sharpness', level: 1 }] } },
-  { slot: 1, offer: { levelCost: 20, lapisCost: 2, enchantments: [{ id: 'sharpness', level: 2 }] } },
-  {
-    slot: MULTI_ENCHANTMENT_SLOT,
-    offer: {
-      levelCost: 30,
-      lapisCost: 3,
-      enchantments: [{ id: 'unbreaking', level: 3 }, { id: 'smite', level: 4 }],
-    },
-  },
+  { slot: 0, offer: { levelCost: 4, lapisCost: 1, enchantments: [{ id: 'sharpness', level: 1 }] } },
+  { slot: 1, offer: { levelCost: 7, lapisCost: 2, enchantments: [{ id: 'smite', level: 1 }] } },
+  { slot: MULTI_ENCHANTMENT_SLOT, offer: { levelCost: 6, lapisCost: 3, enchantments: [{ id: 'sharpness', level: 1 }] } },
 ] as const
 const PINNED_MULTI_ENCHANTMENT_OFFER = PINNED_DIAMOND_SWORD_OFFERS[MULTI_ENCHANTMENT_SLOT]!.offer
 
@@ -164,7 +158,7 @@ describe('production enchanting table orchestration', () => {
       yield* Ref.set(state.rollSeed, Number.NaN)
 
       yield* requestEnchantmentTableOffers(state, {
-        requestId: 'invalid-random-seed', itemSlot: 0, lapisSlot: 1, bookshelfCount: 15,
+        requestId: 'invalid-random-seed', itemSlot: 0, lapisSlot: 1, tablePosition: ENCHANTMENT_TABLE_POSITION,
       })
       yield* runFrame(interactions, DeltaTimeSecs(0))
 
@@ -202,12 +196,14 @@ describe('production enchanting table orchestration', () => {
       const expectedSlot = MULTI_ENCHANTMENT_SLOT
       const expectedOffer = PINNED_MULTI_ENCHANTMENT_OFFER
 
-      yield* requestEnchantmentTableOffers(state, {
+      const offerRequest: unknown = {
         requestId: 'table-success',
         itemSlot: 0,
         lapisSlot: 1,
+        tablePosition: ENCHANTMENT_TABLE_POSITION,
         bookshelfCount: 15,
-      })
+      }
+      yield* requestEnchantmentTableOffers(state, offerRequest)
       yield* runFrame(stages, DeltaTimeSecs(0))
       const generated = yield* drainEnchantmentTableResults(state)
       expect(generated).toContainEqual({
@@ -290,7 +286,7 @@ describe('production enchanting table orchestration', () => {
 
       yield* Ref.set(state.rollSeed, seed)
       yield* requestEnchantmentTableOffers(state, {
-        requestId: 'stale-session', itemSlot: 0, lapisSlot: 1, bookshelfCount: 15,
+        requestId: 'stale-session', itemSlot: 0, lapisSlot: 1, tablePosition: ENCHANTMENT_TABLE_POSITION,
       })
       yield* runFrame(stages, DeltaTimeSecs(0))
       yield* drainEnchantmentTableResults(state)
@@ -331,7 +327,7 @@ describe('production enchanting table orchestration', () => {
       })
       yield* Ref.set(state.rollSeed, seed)
       yield* requestEnchantmentTableOffers(state, {
-        requestId: 'insufficient-lapis', itemSlot: 0, lapisSlot: 1, bookshelfCount: 15,
+        requestId: 'insufficient-lapis', itemSlot: 0, lapisSlot: 1, tablePosition: ENCHANTMENT_TABLE_POSITION,
       })
       yield* runFrame(stages, DeltaTimeSecs(0))
       yield* drainEnchantmentTableResults(state)
@@ -362,14 +358,14 @@ describe('production enchanting table orchestration', () => {
 
       yield* seedTableInputs(null)
       yield* requestEnchantmentTableOffers(state, {
-        requestId: 'empty-table-slot', itemSlot: 0, lapisSlot: 1, bookshelfCount: 15,
+        requestId: 'empty-table-slot', itemSlot: 0, lapisSlot: 1, tablePosition: ENCHANTMENT_TABLE_POSITION,
       })
       yield* runFrame(stages, DeltaTimeSecs(0))
       yield* assertRejected(state, 'empty-table-slot', 'no-item')
 
       yield* seedTableInputs('apple')
       yield* requestEnchantmentTableOffers(state, {
-        requestId: 'no-table-offers', itemSlot: 0, lapisSlot: 1, bookshelfCount: 15,
+        requestId: 'no-table-offers', itemSlot: 0, lapisSlot: 1, tablePosition: ENCHANTMENT_TABLE_POSITION,
       })
       yield* runFrame(stages, DeltaTimeSecs(0))
       expect(yield* drainEnchantmentTableResults(state)).toStrictEqual([{
@@ -382,7 +378,7 @@ describe('production enchanting table orchestration', () => {
       yield* seedTableInputs()
       yield* Ref.set(state.rollSeed, ENCHANTMENT_TABLE_SEED)
       const duplicateRequest = {
-        requestId: 'duplicate-table-session', itemSlot: 0, lapisSlot: 1, bookshelfCount: 15,
+        requestId: 'duplicate-table-session', itemSlot: 0, lapisSlot: 1, tablePosition: ENCHANTMENT_TABLE_POSITION,
       } as const
       yield* requestEnchantmentTableOffers(state, duplicateRequest)
       yield* requestEnchantmentTableOffers(state, duplicateRequest)
@@ -408,7 +404,7 @@ describe('production enchanting table orchestration', () => {
         changes: [{ ownerId: GAMEPLAY_PLAYER_STORAGE_OWNER_ID, state: storageWithSlots(storage.state, slots) }],
       })
       yield* requestEnchantmentTableOffers(state, {
-        requestId: 'already-enchanted-sword', itemSlot: 0, lapisSlot: 1, bookshelfCount: 15,
+        requestId: 'already-enchanted-sword', itemSlot: 0, lapisSlot: 1, tablePosition: ENCHANTMENT_TABLE_POSITION,
       })
       yield* runFrame(stages, DeltaTimeSecs(0))
       yield* assertRejected(state, 'already-enchanted-sword', 'already-enchanted')
@@ -434,7 +430,7 @@ describe('production enchanting table orchestration', () => {
       })
       const stages = yield* makeGameplayStagesWithState(state)
       yield* requestEnchantmentTableOffers(state, {
-        requestId: 'dead-player-offers', itemSlot: 0, lapisSlot: 1, bookshelfCount: 15,
+        requestId: 'dead-player-offers', itemSlot: 0, lapisSlot: 1, tablePosition: ENCHANTMENT_TABLE_POSITION,
       })
       yield* requestEnchantmentTableApply(state, {
         requestId: 'dead-player-apply', tableSlot: MULTI_ENCHANTMENT_SLOT,
@@ -478,7 +474,7 @@ describe('production enchanting table orchestration', () => {
       )
       yield* Ref.set(state.rollSeed, ENCHANTMENT_TABLE_SEED)
       yield* requestEnchantmentTableOffers(state, {
-        requestId: 'transaction-conflict', itemSlot: 0, lapisSlot: 1, bookshelfCount: 15,
+        requestId: 'transaction-conflict', itemSlot: 0, lapisSlot: 1, tablePosition: ENCHANTMENT_TABLE_POSITION,
       })
       yield* runFrame(stages, DeltaTimeSecs(0))
       yield* drainEnchantmentTableResults(state)
@@ -529,7 +525,7 @@ describe('production enchanting table orchestration', () => {
         Effect.provideService(WorldCommitCoordinator, snapshotFailingCoordinator),
       )
       yield* requestEnchantmentTableOffers(state, {
-        requestId: 'offer-snapshot-failure', itemSlot: 0, lapisSlot: 1, bookshelfCount: 15,
+        requestId: 'offer-snapshot-failure', itemSlot: 0, lapisSlot: 1, tablePosition: ENCHANTMENT_TABLE_POSITION,
       })
       yield* runFrame(failedOffersStages, DeltaTimeSecs(0))
       yield* assertRejected(state, 'offer-snapshot-failure', 'transaction-failed')
@@ -540,7 +536,7 @@ describe('production enchanting table orchestration', () => {
       const stages = yield* makeGameplayStagesWithState(state)
       yield* Ref.set(state.rollSeed, ENCHANTMENT_TABLE_SEED)
       yield* requestEnchantmentTableOffers(state, {
-        requestId: 'apply-snapshot-failure', itemSlot: 0, lapisSlot: 1, bookshelfCount: 15,
+        requestId: 'apply-snapshot-failure', itemSlot: 0, lapisSlot: 1, tablePosition: ENCHANTMENT_TABLE_POSITION,
       })
       yield* runFrame(stages, DeltaTimeSecs(0))
       yield* drainEnchantmentTableResults(state)
@@ -560,25 +556,30 @@ describe('production enchanting table orchestration', () => {
     }).pipe(Effect.provide(Layer.orDie(productionWorld))),
   )
 
-  it.effect('validates public requests for all supported shelf counts and adjacent boundaries', () =>
+  it.effect('validates public requests for block positions and adjacent boundaries', () =>
     Effect.gen(function* () {
       const state = yield* makeGameplayFrameState
       yield* Effect.promise(() => FastCheck.assert(
         FastCheck.asyncProperty(
-          FastCheck.integer({ min: 0, max: 15 }),
+          FastCheck.tuple(
+            FastCheck.integer({ min: -30_000_000, max: 30_000_000 }),
+            FastCheck.integer({ min: -2048, max: 2048 }),
+            FastCheck.integer({ min: -30_000_000, max: 30_000_000 }),
+          ),
           FastCheck.integer({ min: 0, max: 35 }),
           FastCheck.integer({ min: 1, max: 35 }),
-          async (bookshelfCount, itemSlot, offset) => {
+          async ([x, y, z], itemSlot, offset) => {
             const lapisSlot = (itemSlot + offset) % 36
+            const tablePosition = { x, y, z }
             const result = await Effect.runPromiseExit(requestEnchantmentTableOffers(state, {
-              requestId: `property-${bookshelfCount}-${itemSlot}-${offset}`,
+              requestId: `property-${x}-${y}-${z}-${itemSlot}-${offset}`,
               itemSlot,
               lapisSlot,
-              bookshelfCount,
+              tablePosition,
             }))
             expect(Exit.isSuccess(result)).toBe(true)
             expect(Schema.is(GameplayEnchantmentTableOffersRequestSchema)({
-              requestId: 'property-schema', itemSlot, lapisSlot, bookshelfCount,
+              requestId: 'property-schema', itemSlot, lapisSlot, tablePosition,
             })).toBe(true)
           },
         ),
@@ -611,23 +612,25 @@ describe('production enchanting table orchestration', () => {
             : Exit.hasFails(exit)
         }),
       ))
-      const invalidShelfCount = FastCheck.oneof(
-        FastCheck.integer({ min: -1_000, max: -1 }),
-        FastCheck.integer({ min: 16, max: 1_000 }),
+      const invalidTablePosition = FastCheck.oneof(
+        FastCheck.constant({ x: 0.5, y: 64, z: 0 }),
+        FastCheck.constant({ x: 0, y: Number.NaN, z: 0 }),
+        FastCheck.constant({ x: 0, y: 64, z: Number.POSITIVE_INFINITY }),
+        FastCheck.constant({ x: '0', y: 64, z: 0 }),
       )
       const invalidInventorySlot = FastCheck.oneof(
         FastCheck.integer({ min: -1_000, max: -1 }),
         FastCheck.integer({ min: 36, max: 1_000 }),
       )
       const invalidOffersRequest = FastCheck.oneof(
-        invalidShelfCount.map((bookshelfCount) => ({
-          requestId: 'invalid-shelf-property', itemSlot: 0, lapisSlot: 1, bookshelfCount,
+        invalidTablePosition.map((tablePosition) => ({
+          requestId: 'invalid-position-property', itemSlot: 0, lapisSlot: 1, tablePosition,
         })),
         invalidInventorySlot.map((itemSlot) => ({
-          requestId: 'invalid-item-slot-property', itemSlot, lapisSlot: 1, bookshelfCount: 15,
+          requestId: 'invalid-item-slot-property', itemSlot, lapisSlot: 1, tablePosition: ENCHANTMENT_TABLE_POSITION,
         })),
         invalidInventorySlot.map((lapisSlot) => ({
-          requestId: 'invalid-lapis-slot-property', itemSlot: 0, lapisSlot, bookshelfCount: 15,
+          requestId: 'invalid-lapis-slot-property', itemSlot: 0, lapisSlot, tablePosition: ENCHANTMENT_TABLE_POSITION,
         })),
       )
       yield* Effect.promise(() => FastCheck.assert(
@@ -649,21 +652,21 @@ describe('production enchanting table orchestration', () => {
           expect(Schema.is(GameplayEnchantmentTableApplyRequestSchema)(request)).toBe(false)
         }),
       ))
-      for (const bookshelfCount of [0, 15]) {
+      for (const coordinate of [0, Number.MAX_SAFE_INTEGER]) {
         const exit = yield* Effect.exit(requestEnchantmentTableOffers(state, {
-          requestId: `boundary-${bookshelfCount}`,
+          requestId: `position-boundary-${coordinate}`,
           itemSlot: 0,
           lapisSlot: 1,
-          bookshelfCount,
+          tablePosition: { x: coordinate, y: 0, z: 0 },
         }))
         expect(Exit.isSuccess(exit)).toBe(true)
       }
-      for (const bookshelfCount of [-1, 16]) {
+      for (const coordinate of [0.5, Number.NaN, Number.POSITIVE_INFINITY]) {
         const exit = yield* Effect.exit(requestEnchantmentTableOffers(state, {
-          requestId: `outside-${bookshelfCount}`,
+          requestId: `position-outside-${coordinate}`,
           itemSlot: 0,
           lapisSlot: 1,
-          bookshelfCount,
+          tablePosition: { x: coordinate, y: 0, z: 0 },
         }))
         expect(Exit.isFailure(exit)).toBe(true)
       }
@@ -672,7 +675,7 @@ describe('production enchanting table orchestration', () => {
           requestId: `slot-boundary-${itemSlot}-${lapisSlot}`,
           itemSlot,
           lapisSlot,
-          bookshelfCount: 0,
+          tablePosition: ENCHANTMENT_TABLE_POSITION,
         }))
         expect(Exit.isSuccess(exit)).toBe(true)
       }
@@ -681,7 +684,7 @@ describe('production enchanting table orchestration', () => {
           requestId: `slot-outside-${itemSlot}-${lapisSlot}`,
           itemSlot,
           lapisSlot,
-          bookshelfCount: 0,
+          tablePosition: ENCHANTMENT_TABLE_POSITION,
         }))
         expect(Exit.isFailure(exit)).toBe(true)
       }
