@@ -819,9 +819,6 @@ const runMobSimulation = (
           if (!hasShield()) shieldState = null
         }
         if (prepared.appliedAmount === 0) continue
-        const fireDamage = event.damage.cause === 'lava' || event.damage.cause === 'in_fire' ||
-          event.damage.cause === 'on_fire'
-        if (modifiers.fireResistance && fireDamage) continue
         if (modifiers.damageTakenMultiplier === 0) continue
 
         const storageBeforeHit = storage
