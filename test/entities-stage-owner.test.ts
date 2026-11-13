@@ -197,6 +197,7 @@ const makeHarness = (options: Readonly<{
   readonly experienceOrbs?: ExperienceOrbOwnerSnapshot
   readonly tnt?: TntServiceSnapshot
   readonly projectileService?: boolean
+  readonly shortChunkBuffer?: boolean
   readonly armSnapshotMismatchAfterProjectileSnapshot?: Readonly<{
     readonly snapshotNumber: number
     readonly ownerId: ReturnType<typeof makeReplicatedOwnerId>
@@ -216,10 +217,18 @@ const makeHarness = (options: Readonly<{
     ? []
     : [[options.block.position, options.block.id] as const])
   const store = yield* makeTransactionalChunkStoreDouble(world(entries), options.loadedChunks ?? ['0,0'])
-  const observedStoreApi = options.onLightRead === undefined
-    ? store.api
-    : {
+  const chunkStoreApi = options.shortChunkBuffer === true
+    ? {
         ...store.api,
+        peek: (coord: Parameters<typeof store.api.peek>[0]) => Effect.map(store.api.peek(coord), (chunk) =>
+          chunk === undefined ? undefined : { ...chunk, blocks: Uint16Array.from(chunk.blocks).subarray(0, 1) },
+        ),
+      }
+    : store.api
+  const observedStoreApi = options.onLightRead === undefined
+    ? chunkStoreApi
+    : {
+        ...chunkStoreApi,
         getLight: (lightPosition: Parameters<typeof store.api.getLight>[0]) => {
           options.onLightRead?.(lightPosition)
           return store.api.getLight(lightPosition)
@@ -1770,6 +1779,32 @@ describe('entities stage owner-backed MobSimulation', () => {
     expect(Cause.squash(exit.cause)).toMatchObject({
       _tag: 'MobProjectileWorldQueryFailure',
       failure: { _tag: 'EntityWorldInvalidCell' },
+    })
+  })
+
+  it('fails a ranged attack when line of sight reads a corrupt chunk cell', async () => {
+    const blaze = ecosystemMobAt('test:corrupt-ray-blaze', BLAZE_KIND, 10, 64)
+    const harness = await Effect.runPromise(makeHarness({
+      entity: null,
+      entities: [blaze],
+      playerPose: {
+        ...INITIAL_PLAYER_POSE,
+        feetPosition: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
+      },
+      dimension: Schema.decodeUnknownSync(DimensionIdSchema)('nether'),
+      projectileService: true,
+      shortChunkBuffer: true,
+    }))
+
+    const exit = await Effect.runPromiseExit(harness.stage.run(makeDeltaTimeSecs(0.05)).pipe(
+      Effect.provide(FrameServicesLayer),
+    ))
+
+    expect(exit._tag).toBe('Failure')
+    if (exit._tag !== 'Failure') return
+    expect(Cause.squash(exit.cause)).toMatchObject({
+      _tag: 'MobProjectileWorldQueryFailure',
+      failure: { _tag: 'EntityWorldCorruptBuffer' },
     })
   })
 

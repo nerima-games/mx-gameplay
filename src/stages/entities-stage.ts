@@ -101,7 +101,12 @@ import {
   isHostileMobSnapshot,
 } from '../domain/entities/mob-frame.js'
 import { chunkCoordsAround, openChunkWindow } from '../domain/chunk-window.js'
-import { entityWorldCellAt, type EntityWorldCell, type EntityWorldQueryFailure } from '../domain/entities/entity-world-cell.js'
+import {
+  entityWorldCellAt,
+  entityWorldValueFromLookup,
+  type EntityWorldCell,
+  type EntityWorldQueryFailure,
+} from '../domain/entities/entity-world-cell.js'
 import { mobMovementWorldFromChunkWindow } from '../domain/entities/mob-movement-world.js'
 import { burnsInDaylight } from '../domain/mob/undead-daylight.js'
 import { SPIDER_KIND, BLAZE_KIND, SKELETON_KIND } from '../domain/mob/mob-ecosystem.js'
@@ -378,23 +383,14 @@ const projectileWorldFor = (
     const cellPosition = { x: bx.success, y: by.success, z: bz.success }
     return Result.map(entityWorldCellAt(window, cellPosition), (cell) => ({ position: cellPosition, cell }))
   }
-  const collisionShapeAtCell = (
-    cellPosition: import('../domain/entities/entity-world-cell.js').EntityWorldCellPosition,
-    cell: EntityWorldCell,
-  ): Result.Result<ProjectileBlockShape, EntityWorldQueryFailure> => {
+  const collisionShapeAtCell = (cell: EntityWorldCell): ProjectileBlockShape => {
     switch (cell._tag) {
-      case 'Loaded': {
-        const shape = propertyOfBlockId(cell.blockId, 'collisionShape')
-        if (Result.isFailure(shape)) {
-          return Result.fail({ _tag: 'EntityWorldRegistryFailure', cell: cellPosition, failure: shape.failure })
-        }
-        return Result.succeed(COLLISION_SHAPE_AABBS[shape.success])
-      }
-      case 'Unloaded': return Result.succeed(null)
+      case 'Loaded': return COLLISION_SHAPE_AABBS[cell.properties.collisionShape]
+      case 'Unloaded': return null
       case 'AboveWorld':
-        return Result.succeed(null)
+        return null
       case 'BelowWorld':
-        return Result.succeed(null)
+        return null
       /* v8 ignore start */
       default: {
         const exhaustive: never = cell
@@ -411,13 +407,7 @@ const projectileWorldFor = (
         rayFailure.value ??= result.failure
         return false
       }
-      const { position: cellPosition, cell } = result.success
-      const shape = collisionShapeAtCell(cellPosition, cell)
-      if (Result.isFailure(shape)) {
-        rayFailure.value ??= shape.failure
-        return false
-      }
-      return shape.success !== null
+      return collisionShapeAtCell(result.success.cell) !== null
     })
     if (rayFailure.value !== undefined) {
       rememberFailure(rayFailure.value)
@@ -434,16 +424,9 @@ const projectileWorldFor = (
         rememberFailure(result.failure)
         return false
       }
-      const { position: cellPosition, cell } = result.success
+      const { cell } = result.success
       switch (cell._tag) {
-        case 'Loaded': {
-          const fluid = propertyOfBlockId(cell.blockId, 'fluid')
-          if (Result.isFailure(fluid)) {
-            rememberFailure({ _tag: 'EntityWorldRegistryFailure', cell: cellPosition, failure: fluid.failure })
-            return false
-          }
-          return fluid.success === 'water'
-        }
+        case 'Loaded': return cell.properties.fluid === 'water'
         case 'Unloaded': return false
         case 'AboveWorld':
           return false
@@ -475,7 +458,7 @@ const projectileWorldFor = (
               rememberFailure(result.failure)
               continue
             }
-            const { position: cellPosition, cell } = result.success
+            const { cell } = result.success
             if (projectileTickMustPauseForCell(cell)) {
               const entry = segmentEntryFraction(start, end, { x, y, z })
               if (entry !== undefined && (firstUnloadedEntryFraction === undefined || entry < firstUnloadedEntryFraction)) {
@@ -483,12 +466,7 @@ const projectileWorldFor = (
               }
               continue
             }
-            const shapeResult = collisionShapeAtCell(cellPosition, cell)
-            if (Result.isFailure(shapeResult)) {
-              rememberFailure(shapeResult.failure)
-              continue
-            }
-            const shape = shapeResult.success
+            const shape = collisionShapeAtCell(cell)
             if (shape === null) continue
             boxes.push({
               minX: projectileAxis(x + shape.minX),
@@ -1092,21 +1070,26 @@ const explosionBlockReader = (
       | Readonly<{ _tag: 'OutOfWorld' }>
   }>>,
 ): Result.Result<ExplosionBlockReader, EntityWorldQueryFailure> => {
-  const byPosition = new Map<string, ExplosionBlock>()
-  for (const { position: cell, reading } of blocks) {
-    if (reading._tag !== 'Block') continue
-    const resistance = propertyOfBlockId(reading.block, 'blastResistance')
-    if (Result.isFailure(resistance)) {
-      return Result.fail({ _tag: 'EntityWorldRegistryFailure', cell, failure: resistance.failure })
-    }
-    byPosition.set(blockPositionKeyOf(cell), {
-      resistance: Number.isFinite(resistance.success)
-        ? Math.min(resistance.success, Number.MAX_SAFE_INTEGER)
+  const resolved = Result.all(blocks.map(({ position: cell, reading }) => reading._tag === 'Block'
+    ? Result.map(
+        entityWorldValueFromLookup(cell, propertyOfBlockId(reading.block, 'blastResistance')),
+        (resistance) => ({ cell, resistance }),
+      )
+    : Result.succeed(undefined)))
+  return Result.map(resolved, (entries) => {
+    const byPosition = new Map<string, ExplosionBlock>()
+    for (const entry of entries) {
+      if (entry === undefined) continue
+      const { cell, resistance } = entry
+      byPosition.set(blockPositionKeyOf(cell), {
+        resistance: Number.isFinite(resistance)
+        ? Math.min(resistance, Number.MAX_SAFE_INTEGER)
         : Number.MAX_SAFE_INTEGER,
-      destructible: Number.isFinite(resistance.success),
-    })
-  }
-  return Result.succeed(({ x, y, z }) => byPosition.get(`${String(x)},${String(y)},${String(z)}`))
+        destructible: Number.isFinite(resistance),
+      })
+    }
+    return ({ x, y, z }) => byPosition.get(`${String(x)},${String(y)},${String(z)}`)
+  })
 }
 
 const PLAYER_BLAST_ENTITY_ID = EntityId('mx-gameplay:player-avatar')

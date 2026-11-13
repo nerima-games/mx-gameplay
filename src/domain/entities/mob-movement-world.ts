@@ -44,6 +44,50 @@ export type MobMovementWorldAdapter = MobMovementWorldPort & Readonly<{
   readonly bodyOverlapsUnloadedCell: (state: MobMovementState) => Result.Result<boolean, MobMovementWorldFailure>
 }>
 
+type MovementPhysicsBlock = ReturnType<MobMovementWorldPort['physics']['environment']['blockAt']>
+type LoadedMovementCell = Extract<MobMovementWorldCell, { _tag: 'Loaded' }>
+type RegistryCellFailure = Extract<MobMovementWorldFailure, { _tag: 'EntityWorldRegistryFailure' }>
+
+export const mobMovementPhysicsSampleForCell = (
+  result: Result.Result<MobMovementWorldCell, MobMovementWorldFailure>,
+  airAt: () => Result.Result<LoadedMovementCell, RegistryCellFailure>,
+): Readonly<{ sample: MovementPhysicsBlock; queryFailure: MobMovementWorldFailure | undefined }> => {
+  if (Result.isFailure(result)) {
+    return {
+      sample: result.failure._tag === 'EntityWorldRegistryFailure'
+        ? Result.fail(result.failure.failure)
+        : Result.succeed(null),
+      queryFailure: result.failure,
+    }
+  }
+  switch (result.success._tag) {
+    case 'Loaded':
+      return {
+        sample: Result.succeed({ properties: result.success.properties, capabilities: result.success.capabilities }),
+        queryFailure: undefined,
+      }
+    case 'Unloaded':
+    case 'BelowWorld':
+      return { sample: Result.succeed(null), queryFailure: undefined }
+    case 'AboveWorld': {
+      const air = airAt()
+      if (Result.isFailure(air)) {
+        return { sample: Result.fail(air.failure.failure), queryFailure: air.failure }
+      }
+      return {
+        sample: Result.succeed({ properties: air.success.properties, capabilities: air.success.capabilities }),
+        queryFailure: undefined,
+      }
+    }
+    /* v8 ignore start */
+    default: {
+      const exhaustive: never = result.success
+      return exhaustive
+    }
+    /* v8 ignore stop */
+  }
+}
+
 const profileForKind = (kind: EntityKind): MobPathProfile => {
   const [width, height] = kind === SPIDER_KIND
     ? [1.4, 0.9]
@@ -187,37 +231,9 @@ export const mobMovementWorldFromChunkWindow = (
     z: BlockAxis,
   ): ReturnType<MobMovementWorldPort['physics']['environment']['blockAt']> => {
     const cell: MobPathCell = { x, y, z }
-    const result = queryAt(x, y, z)
-    if (Result.isFailure(result)) {
-      rememberFailure(result.failure)
-      return result.failure._tag === 'EntityWorldRegistryFailure'
-        ? Result.fail(result.failure.failure)
-        : Result.succeed(null)
-    }
-    switch (result.success._tag) {
-      case 'Loaded':
-        return Result.succeed({ properties: result.success.properties, capabilities: result.success.capabilities })
-      case 'Unloaded':
-        return Result.succeed(null)
-      case 'AboveWorld': {
-        const air = entityWorldAirBlockDataAt(cell)
-        if (Result.isFailure(air)) {
-          rememberFailure(air.failure)
-          return air.failure._tag === 'EntityWorldRegistryFailure'
-            ? Result.fail(air.failure.failure)
-            : Result.succeed(null)
-        }
-        return Result.succeed({ properties: air.success.properties, capabilities: air.success.capabilities })
-      }
-      case 'BelowWorld':
-        return Result.succeed(null)
-      /* v8 ignore start */
-      default: {
-        const exhaustive: never = result.success
-        return exhaustive
-      }
-      /* v8 ignore stop */
-    }
+    const sample = mobMovementPhysicsSampleForCell(queryAt(x, y, z), () => entityWorldAirBlockDataAt(cell))
+    if (sample.queryFailure !== undefined) rememberFailure(sample.queryFailure)
+    return sample.sample
   }
   const blockAt: MobMovementWorldPort['physics']['environment']['blockAt'] = (x, y, z) =>
     physicsSampleAt(x, y, z)
@@ -250,16 +266,13 @@ export const mobMovementWorldFromChunkWindow = (
     const maxY = Math.ceil(y + halfHeight) - 1
     const minZ = Math.floor(z - halfWidth)
     const maxZ = Math.ceil(z + halfWidth) - 1
+    if (![minX, maxX, minY, maxY, minZ, maxZ].every(Number.isSafeInteger)) {
+      return Result.fail({ _tag: 'EntityWorldInvalidCell', x: minX, y: minY, z: minZ })
+    }
     for (let cellX = minX; cellX <= maxX; cellX += 1) {
       for (let cellY = minY; cellY <= maxY; cellY += 1) {
         for (let cellZ = minZ; cellZ <= maxZ; cellZ += 1) {
-          const blockX = BlockAxis.result(cellX)
-          const blockY = BlockAxis.result(cellY)
-          const blockZ = BlockAxis.result(cellZ)
-          if (Result.isFailure(blockX) || Result.isFailure(blockY) || Result.isFailure(blockZ)) {
-            return Result.fail({ _tag: 'EntityWorldInvalidCell', x: cellX, y: cellY, z: cellZ })
-          }
-          const cell = cellAt({ x: blockX.success, y: blockY.success, z: blockZ.success })
+          const cell = cellAt({ x: BlockAxis(cellX), y: BlockAxis(cellY), z: BlockAxis(cellZ) })
           if (Result.isFailure(cell)) return Result.fail(cell.failure)
           if (cell.success._tag === 'Unloaded') return Result.succeed(true)
         }
