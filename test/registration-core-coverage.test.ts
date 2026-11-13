@@ -1,4 +1,5 @@
 import { describe, expect, it } from '@effect/vitest'
+import * as FastCheck from 'fast-check'
 import {
   DeltaTimeSecs,
   EntityHealthPoints,
@@ -11,7 +12,7 @@ import {
   type DeltaTimeSecs as DeltaTimeSecsValue,
   type StageRegistration,
 } from '@nerima-games/mc-kernel'
-import { STATUS_EFFECT_AMPLIFIER_MAX } from '@nerima-games/mc-kernel/domain/status-effect'
+import { STATUS_EFFECT_AMPLIFIER_MAX, STATUS_EFFECT_NAMES } from '@nerima-games/mc-kernel/domain/status-effect'
 import {
   EntityId,
   EntityKind,
@@ -29,6 +30,7 @@ import { Effect, Option, Ref, Result, Schema } from 'effect'
 import {
   drainDroppedItemPickupExecutions,
   drainExperienceOrbAbsorptionExecutions,
+  drainGameplayStageFailures,
   drainItemUseResults,
   drainPlayerDamages,
   drainPlayerHeals,
@@ -49,11 +51,16 @@ import {
   candidateForItemUse,
   candidateForPlayerStorageItemUse,
   isRetryableWorldCommitFailure,
+  recordGameplayStageFailureDeduplicated,
 } from '../src/stages/registration-core'
 import { PlayerStorageSnapshotSchema } from '@nerima-games/mc-sim'
 import type { MobBehaviour } from '../src/domain/entities/mob-frame'
 import { GAMEPLAY_STAGE_IDS } from '../src/stages/stage-ids'
-import { StatusEffectStateSchema } from '../src/domain/status-effect'
+import {
+  StatusEffectApplicationErrorSchema,
+  StatusEffectStateSchema,
+  ValidatedStatusEffectApplicationSchema,
+} from '../src/domain/status-effect'
 import { INITIAL_DIMENSION } from '../src/domain/in-memory-player'
 import {
   FIRE_DAMAGE_INTERVAL_TICKS,
@@ -108,6 +115,26 @@ const makeHarness = (
 
 type Harness = Effect.Success<ReturnType<typeof makeHarness>>
 type GameplayStageCommitServices = NonNullable<Parameters<typeof gameplayStages>[9]>
+
+describe('gameplay stage failure drain', () => {
+  it.effect('keeps same-reason failures for distinct request ids separate', () => Effect.gen(function* () {
+    const state = yield* makeGameplayFrameState
+    const failure = {
+      _tag: 'Failed' as const,
+      operation: 'OwnerSnapshot' as const,
+      subject: 'Brewing' as const,
+      error: new WorldCommitEmptyRequest(),
+    }
+
+    yield* recordGameplayStageFailureDeduplicated(state, { ...failure, requestId: 'first' })
+    yield* recordGameplayStageFailureDeduplicated(state, { ...failure, requestId: 'second' })
+
+    expect(yield* drainGameplayStageFailures(state)).toMatchObject([
+      { ...failure, requestId: 'first', occurrences: 1 },
+      { ...failure, requestId: 'second', occurrences: 1 },
+    ])
+  }))
+})
 
 const interactionsWithCommit = (
   harness: Harness,
@@ -500,23 +527,68 @@ describe('registration-core public paths omitted from focused coverage', () => {
     }),
   )
 
-  it.effect('keeps a status application pending when a valid high amplifier overflows its poison pulse clock', () =>
+  it.effect('rejects an amplifier outside the status application schema before queueing', () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness(world([]), true)
-      const commit = harness.commit
-      if (commit?.statusEffectsOwnerId === undefined) throw new Error('status-effect owner was not registered')
       const application = { type: 'poison' as const, durationSecs: 2, amplifier: Number.MAX_SAFE_INTEGER }
 
-      yield* requestStatusEffect(harness.state, application)
-      yield* runInteractions(harness.interactions, 1)
+      const result = yield* Effect.result(requestStatusEffect(harness.state, application))
 
-      expect(yield* Ref.get(harness.state.operationFailures)).toContainEqual(
-        expect.objectContaining({ _tag: 'Failed', operation: 'CandidateBuild', subject: 'Brewing' }),
-      )
-      expect(yield* Ref.get(harness.state.pendingStatusEffects)).toStrictEqual([application])
-      expect((yield* commit.coordinator.snapshot(commit.statusEffectsOwnerId, StatusEffectStateSchema)).state.effects)
-        .toStrictEqual([])
-      expect(yield* commit.coordinator.revision).toBe(0)
+      expect(result).toMatchObject({
+        _tag: 'Failure',
+        failure: { _tag: 'InvalidStatusEffectApplication', reason: 'invalid-amplifier' },
+      })
+      expect(yield* Ref.get(harness.state.pendingStatusEffects)).toStrictEqual([])
+    }),
+  )
+
+  it('validates every queued status-effect request at the public boundary (fast-check)', () => {
+    const state = Effect.runSync(makeGameplayFrameState)
+    const statusType = FastCheck.constantFrom(...STATUS_EFFECT_NAMES)
+    const duration = FastCheck.double({ noNaN: true, noDefaultInfinity: true })
+    const application = FastCheck.oneof(
+      FastCheck.record({ type: statusType, durationSecs: duration }),
+      FastCheck.record({
+        type: statusType,
+        durationSecs: duration,
+        amplifier: FastCheck.integer({ min: -1, max: Number.MAX_SAFE_INTEGER }),
+      }),
+    )
+
+    FastCheck.assert(FastCheck.property(application, (candidate) => {
+      const result = Effect.runSync(Effect.result(requestStatusEffect(state, candidate)))
+      const pending = Effect.runSync(Ref.getAndSet(state.pendingStatusEffects, []))
+      if (Result.isFailure(result)) {
+        expect(Schema.decodeUnknownResult(StatusEffectApplicationErrorSchema)(result.failure)).toMatchObject({
+          _tag: 'Success',
+        })
+        expect(pending).toStrictEqual([])
+      } else {
+        expect(pending).toHaveLength(1)
+        expect(Schema.decodeUnknownResult(ValidatedStatusEffectApplicationSchema)(pending[0])).toMatchObject({
+          _tag: 'Success',
+        })
+      }
+    }))
+  })
+
+  it.effect('accepts the maximum status amplifier and rejects the next value at enqueue', () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness(world([]), true)
+      const valid = yield* Effect.result(requestStatusEffect(harness.state, {
+        type: 'instant_health', durationSecs: 0, amplifier: STATUS_EFFECT_AMPLIFIER_MAX,
+      }))
+      expect(Result.isSuccess(valid)).toBe(true)
+      expect(yield* Ref.get(harness.state.pendingStatusEffects)).toHaveLength(1)
+
+      const invalid = yield* Effect.result(requestStatusEffect(harness.state, {
+        type: 'instant_health', durationSecs: 0, amplifier: STATUS_EFFECT_AMPLIFIER_MAX + 1,
+      }))
+      expect(invalid).toMatchObject({
+        _tag: 'Failure',
+        failure: { _tag: 'InvalidStatusEffectApplication', reason: 'invalid-amplifier' },
+      })
+      expect(yield* Ref.get(harness.state.pendingStatusEffects)).toHaveLength(1)
     }),
   )
 

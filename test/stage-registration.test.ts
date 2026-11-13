@@ -103,6 +103,7 @@ import { DEFAULT_ROLL_SEED } from '../src/domain/frame-rolls'
 import { StatusEffectStateSchema } from '../src/domain/status-effect.js'
 import {
   gameplayStages,
+  drainGameplayStageFailures,
   drainItemUseResults,
   drainPlayerDamages,
   drainPlayerHeals,
@@ -2700,12 +2701,12 @@ describe('the module contract has caught up with this file’s shape', () => {
         ExperienceOrbVitalsOwnerSnapshotSchema,
       )
       const revisionBefore = yield* baseCoordinator.revision
-      let injected = false
+      let injections = 0
       const coordinator: WorldCommitCoordinatorApi = {
         ...baseCoordinator,
         observe: (ownerId, schema, reads) => Effect.gen(function* () {
-          if (ownerId === GAMEPLAY_VITALS_OWNER_ID && !injected) {
-            injected = true
+          if (ownerId === GAMEPLAY_VITALS_OWNER_ID && injections < 2) {
+            injections += 1
             const player = yield* baseCoordinator.snapshot(GAMEPLAY_PLAYER_OWNER_ID, PlayerServiceSnapshotSchema)
             const moved = Schema.decodeUnknownSync(PlayerServiceSnapshotSchema)({
               pose: {
@@ -2713,11 +2714,12 @@ describe('the module contract has caught up with this file’s shape', () => {
                 feetPosition: { ...player.state.pose.feetPosition, x: player.state.pose.feetPosition.x + 1 },
               },
             })
-            yield* baseCoordinator.commit({
+            const committed = yield* Effect.result(baseCoordinator.commit({
               expectedRevision: player.revision,
               expectedDimensions: [],
               changes: [{ ownerId: GAMEPLAY_PLAYER_OWNER_ID, state: moved }],
-            }).pipe(Effect.orDie)
+            }))
+            if (Result.isFailure(committed)) return yield* baseCoordinator.observe(ownerId, schema, reads)
           }
           return yield* baseCoordinator.observe(ownerId, schema, reads)
         }),
@@ -2741,21 +2743,24 @@ describe('the module contract has caught up with this file’s shape', () => {
       // observes vitals and exercises the concurrent-revision failure branch.
       yield* requestStatusEffect(harness.state, { type: 'poison', durationSecs: 2, amplifier: 0 })
       yield* interactions.run(DeltaTimeSecs(1.25)).pipe(Effect.provide(FrameServicesLayer))
+      yield* interactions.run(DeltaTimeSecs(1.25)).pipe(Effect.provide(FrameServicesLayer))
 
-      expect(injected).toBe(true)
-      expect(yield* Ref.get(harness.commitCalls)).toBe(1)
-      expect(yield* coordinator.revision).toBe(revisionBefore + 1)
+      expect(injections).toBe(2)
+      expect(yield* Ref.get(harness.commitCalls)).toBe(2)
+      expect(yield* coordinator.revision).toBe(revisionBefore + 2)
       expect((yield* coordinator.snapshot(GAMEPLAY_STATUS_EFFECTS_OWNER_ID, StatusEffectStateSchema)).state)
         .toStrictEqual(statusBefore.state)
       expect((yield* coordinator.snapshot(GAMEPLAY_VITALS_OWNER_ID, ExperienceOrbVitalsOwnerSnapshotSchema)).state)
         .toStrictEqual(vitalsBefore.state)
       expect(yield* Ref.get(harness.state.pendingStatusEffects)).toHaveLength(1)
-      expect((yield* Ref.get(harness.state.operationFailures)).at(-1)).toMatchObject({
+      expect(yield* drainGameplayStageFailures(harness.state)).toMatchObject([{
         _tag: 'Failed',
         operation: 'OwnerSnapshot',
         subject: 'Vitals',
         error: { _tag: 'WorldRevisionConflict', expected: revisionBefore, actual: revisionBefore + 1 },
-      })
+        occurrences: 2,
+      }])
+      expect(yield* drainGameplayStageFailures(harness.state)).toStrictEqual([])
     }),
   )
 

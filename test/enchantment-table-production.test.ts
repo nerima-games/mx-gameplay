@@ -8,6 +8,7 @@ import {
 } from '@nerima-games/mc-kernel'
 import {
   DomainEventBus,
+  AnvilEnchantmentId,
   PlayerStorageSnapshotSchema,
   ReplicatedOwnerUnknown,
   TimeService,
@@ -25,12 +26,14 @@ import {
 import { Effect, Exit, Layer, Ref, Result, Schema, Stream } from 'effect'
 import * as FastCheck from 'fast-check'
 import { ExperienceOrbVitalsOwnerSnapshotSchema } from '../src/domain/entities/xp-orb.js'
+import { publishGeneratedEnchantmentOffers } from '../src/stages/interactions-stage.js'
 import {
   GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
   GAMEPLAY_VITALS_OWNER_ID,
 } from '../src/stages/gameplay-owner-registrations.js'
 import {
   drainEnchantmentTableResults,
+  drainGameplayStageFailures,
   gameplayModule,
   makeGameplayFrameState,
   makeGameplayFrameStateForOwner,
@@ -79,6 +82,44 @@ const PINNED_DIAMOND_SWORD_OFFERS = [
   { slot: MULTI_ENCHANTMENT_SLOT, offer: { levelCost: 6, lapisCost: 3, enchantments: [{ id: 'sharpness', level: 1 }] } },
 ] as const
 const PINNED_MULTI_ENCHANTMENT_OFFER = PINNED_DIAMOND_SWORD_OFFERS[MULTI_ENCHANTMENT_SLOT]!.offer
+
+describe('generated enchantment offers adapter', () => {
+  it.effect('rejects and records a generated enchantment id outside the table service contract', () =>
+    Effect.gen(function* () {
+      const state = yield* makeGameplayFrameState
+      const request = Schema.decodeUnknownSync(GameplayEnchantmentTableOffersRequestSchema)({
+        requestId: 'unsupported-generated-offer',
+        itemSlot: 0,
+        lapisSlot: 1,
+        tablePosition: ENCHANTMENT_TABLE_POSITION,
+      })
+      const unsupportedId = Result.getOrThrow(AnvilEnchantmentId('unsupported-enchantment'))
+      const mailbox = { requests: [], results: [], sessions: new Map() }
+
+      yield* publishGeneratedEnchantmentOffers(state, mailbox, request, stack('diamond_sword', 1), [
+        { levelCost: 1, lapisCost: 1, enchantments: [{ id: unsupportedId, level: 1 }] },
+        undefined,
+        undefined,
+      ])
+
+      expect(mailbox.results).toEqual([{
+        _tag: 'Rejected',
+        requestId: 'unsupported-generated-offer',
+        reason: 'offer-generation-failed',
+      }])
+      expect(mailbox.sessions.size).toBe(0)
+      expect(yield* drainGameplayStageFailures(state)).toMatchObject([{
+        _tag: 'Failed',
+        operation: 'CandidateBuild',
+        subject: 'ItemUse',
+        requestId: 'unsupported-generated-offer',
+        occurrences: 1,
+        error: expect.anything(),
+      }])
+      expect(yield* drainGameplayStageFailures(state)).toStrictEqual([])
+    }),
+  )
+})
 
 const countItem = (
   storage: Schema.Schema.Type<typeof PlayerStorageSnapshotSchema>,

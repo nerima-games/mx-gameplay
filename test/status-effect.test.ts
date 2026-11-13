@@ -9,6 +9,8 @@ import {
 } from '@nerima-games/mc-kernel/domain/status-effect'
 import {
   StatusEffectApplicationErrorSchema,
+  ValidatedStatusEffectApplicationSchema,
+  ValidatedStatusEffectStateSchema,
   StatusEffectApplicationOutcomeSchema,
   AttackDamageBonusSchema,
   MiningSpeedMultiplierSchema,
@@ -17,6 +19,7 @@ import {
   StatusEffectPulseCountSchema,
   StatusEffectStateSchema,
   applyStatusEffect,
+  applyStatusEffectToValidatedState,
   copyStatusEffectState,
   emptyStatusEffectState,
   isValidStatusEffectState,
@@ -67,6 +70,83 @@ describe('status effects', () => {
       const expired = tickStatusEffects(outcome.success.state, DeltaTimeSecs(0.2))
       expect(expired.state.effects.map((effect) => effect.type)).not.toContain(type)
     }
+  })
+
+  it('applies branded inputs through the total helper, preserving instant and hidden effects', () => {
+    const initialState = Schema.decodeUnknownSync(ValidatedStatusEffectStateSchema)(emptyStatusEffectState())
+    const speedZero = Schema.decodeUnknownSync(ValidatedStatusEffectApplicationSchema)({
+      type: 'speed', durationSecs: 5, amplifier: 0,
+    })
+    const speedOne = Schema.decodeUnknownSync(ValidatedStatusEffectApplicationSchema)({
+      type: 'speed', durationSecs: 2, amplifier: 1,
+    })
+    const speedZeroAgain = Schema.decodeUnknownSync(ValidatedStatusEffectApplicationSchema)({
+      type: 'speed', durationSecs: 4, amplifier: 0,
+    })
+
+    const initialSpeed = applyStatusEffectToValidatedState(initialState, speedZero)
+    const equalAmplifier = applyStatusEffectToValidatedState(
+      initialSpeed.state,
+      Schema.decodeUnknownSync(ValidatedStatusEffectApplicationSchema)({
+        type: 'speed', durationSecs: 3, amplifier: 0,
+      }),
+    )
+    expect(equalAmplifier.state.effects[0]).toMatchObject({ remainingSecs: 5, amplifier: 0 })
+
+    const stronger = applyStatusEffectToValidatedState(equalAmplifier.state, speedOne)
+    expect(stronger.state.effects[0]).toMatchObject({
+      remainingSecs: 2,
+      amplifier: 1,
+      hiddenEffects: [{ remainingSecs: 5, amplifier: 0 }],
+    })
+    expect(stronger.instantEffects).toStrictEqual([])
+
+    const weaker = applyStatusEffectToValidatedState(stronger.state, speedZeroAgain)
+    expect(weaker.state.effects[0]).toMatchObject({
+      remainingSecs: 2,
+      amplifier: 1,
+      hiddenEffects: [{ remainingSecs: 5, amplifier: 0 }],
+    })
+
+    const instant = applyStatusEffectToValidatedState(
+      weaker.state,
+      Schema.decodeUnknownSync(ValidatedStatusEffectApplicationSchema)({
+        type: 'instant_health', durationSecs: 1, amplifier: 2,
+      }),
+    )
+    expect(instant.state).toBe(weaker.state)
+    expect(instant.instantEffects).toStrictEqual([{ type: 'instant_health', amplifier: 2 }])
+
+    const removed = applyStatusEffectToValidatedState(
+      weaker.state,
+      Schema.decodeUnknownSync(ValidatedStatusEffectApplicationSchema)({
+        type: 'speed', durationSecs: 0, amplifier: 1,
+      }),
+    )
+    expect(removed.state.effects).toStrictEqual([])
+    expect(removed.instantEffects).toStrictEqual([])
+  })
+
+  it('keeps schema and typed errors on the public API boundary', () => {
+    const validState = emptyStatusEffectState()
+    expect(applyStatusEffect(validState, {
+      type: 'speed', durationSecs: Number.NaN,
+    })).toEqual(Result.fail({ _tag: 'InvalidStatusEffectApplication', reason: 'invalid-duration' }))
+
+    expect(applyStatusEffect(validState, {
+      type: 'unknown_effect' as StatusEffectName,
+      durationSecs: 1,
+    })).toEqual(Result.fail({ _tag: 'UnknownStatusEffect', value: 'unknown_effect' }))
+
+    const invalidState = {
+      effects: [
+        { type: 'speed', remainingSecs: 2, pulseClockSecs: 0, amplifier: 0 },
+        { type: 'speed', remainingSecs: 1, pulseClockSecs: 0, amplifier: 1 },
+      ],
+    } as unknown as StatusEffectState
+    expect(applyStatusEffect(invalidState, {
+      type: 'poison', durationSecs: 1,
+    })).toEqual(Result.fail({ _tag: 'InvalidStatusEffectApplication', reason: 'invalid-state' }))
   })
 
   it('derives poison, regeneration, and wither pulses from Java Edition tick intervals', () => {

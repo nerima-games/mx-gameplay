@@ -104,6 +104,8 @@ export {
   requestTargetedPrimaryAttack,
   requestMobSpawn,
   drainPlayerDamages,
+  drainGameplayStageFailures,
+  type GameplayStageOperationFailure,
   requestStatusEffect,
   drainPlayerHeals,
   getPlayerMovementSpeedMultiplier,

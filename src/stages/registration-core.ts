@@ -201,15 +201,18 @@ import {
   POISON_DAMAGE_POINTS,
   REGENERATION_HEAL_POINTS,
   SPEED_MOVEMENT_MULTIPLIER,
-  applyStatusEffect,
+  applyStatusEffectToValidatedState,
   statusEffectModifiers,
+  validateStatusEffectApplication,
   StatusEffectStateSchema,
+  ValidatedStatusEffectStateSchema,
   tickStatusEffects,
   type StatusEffectInstantEffect,
   type StatusEffectModifiers,
   type DamageTakenMultiplier,
   type PlayerHealingEvent,
   type StatusEffectApplication,
+  type ValidatedStatusEffectApplication,
   type StatusEffectApplicationError,
   type StatusEffectState,
 } from '../domain/status-effect.js'
@@ -1225,7 +1228,7 @@ export type GameplayFrameState = {
   readonly lastExperienceOrbPickupTick: Ref.Ref<SimulationTick | null>
   readonly unsupportedOperations: Ref.Ref<ReadonlyArray<GameplayUnsupportedOperation>>
   readonly pendingVillagerTrades: Ref.Ref<ReadonlyArray<VillagerTradeRequest>>
-  readonly pendingStatusEffects: Ref.Ref<ReadonlyArray<StatusEffectApplication>>
+  readonly pendingStatusEffects: Ref.Ref<ReadonlyArray<ValidatedStatusEffectApplication>>
   readonly consumedItems: Ref.Ref<ReadonlyArray<PlaceableItemType>>
   readonly usedItems: Ref.Ref<ReadonlyArray<IgnitionItemType>>
   readonly blockUseResults: Ref.Ref<ReadonlyArray<BlockUseResult>>
@@ -2122,6 +2125,8 @@ export type GameplayStageOperationFailure = Readonly<{
   _tag: 'Failed'
   operation: 'OwnerSnapshot' | 'WorldCommit' | 'VitalsOperation' | 'CandidateBuild' | 'PlanBuild' | 'EventPublish'
   subject: 'Player' | 'Vitals' | 'Mining' | 'ItemUse' | 'Fire' | 'Fishing' | 'Brewing' | 'ExperienceOrb'
+  requestId?: string
+  occurrences?: number
   error:
     | WorldCommitCoordinatorError
     | WorldCommitPlanConflict
@@ -2144,6 +2149,40 @@ export const recordGameplayStageFailure = (
   failure: GameplayStageOperationFailure,
 ): Effect.Effect<void> =>
   Ref.update(state.operationFailures, (failures) => [...failures, failure])
+
+const sameGameplayStageFailure = (
+  left: GameplayStageOperationFailure,
+  right: GameplayStageOperationFailure,
+): boolean => JSON.stringify([
+  left.operation,
+  left.subject,
+  left.requestId,
+  left.error._tag,
+]) === JSON.stringify([
+  right.operation,
+  right.subject,
+  right.requestId,
+  right.error._tag,
+])
+
+export const recordGameplayStageFailureDeduplicated = (
+  state: GameplayFrameState,
+  failure: GameplayStageOperationFailure,
+): Effect.Effect<void> => Ref.update(state.operationFailures, (failures) => {
+  const index = failures.findIndex((existing) => sameGameplayStageFailure(existing, failure))
+  if (index < 0) return [...failures, { ...failure, occurrences: 1 }]
+  const existing = failures[index]!
+  return [
+    ...failures.slice(0, index),
+    { ...existing, occurrences: (existing.occurrences ?? 1) + 1 },
+    ...failures.slice(index + 1),
+  ]
+})
+
+export const drainGameplayStageFailures = (
+  state: GameplayFrameState,
+): Effect.Effect<ReadonlyArray<GameplayStageOperationFailure>> =>
+  Ref.getAndSet(state.operationFailures, [])
 
 export const readGameplayPlayer = (
   coordinator: WorldCommitCoordinatorApi,
@@ -2184,7 +2223,7 @@ const makeGameplayFrameStateWithOptions = (
   const lastExperienceOrbPickupTick = yield* Ref.make<SimulationTick | null>(null)
   const unsupportedOperations = yield* Ref.make<ReadonlyArray<GameplayUnsupportedOperation>>([])
   const pendingVillagerTrades = yield* Ref.make<ReadonlyArray<VillagerTradeRequest>>([])
-  const pendingStatusEffects = yield* Ref.make<ReadonlyArray<StatusEffectApplication>>([])
+  const pendingStatusEffects = yield* Ref.make<ReadonlyArray<ValidatedStatusEffectApplication>>([])
   const consumedItems = yield* Ref.make<ReadonlyArray<PlaceableItemType>>([])
   const usedItems = yield* Ref.make<ReadonlyArray<IgnitionItemType>>([])
   const blockUseResults = yield* Ref.make<ReadonlyArray<BlockUseResult>>([])
@@ -3184,8 +3223,11 @@ export const drainPlayerDamages = (
 export const requestStatusEffect = (
   state: GameplayFrameState,
   application: StatusEffectApplication,
-): Effect.Effect<void> =>
-  Ref.update(state.pendingStatusEffects, (pending) => [...pending, application])
+): Effect.Effect<void, StatusEffectApplicationError> =>
+  Effect.gen(function* () {
+    const validated = yield* Effect.fromResult(validateStatusEffectApplication(application))
+    yield* Ref.update(state.pendingStatusEffects, (pending) => [...pending, validated])
+  })
 
 export const drainPlayerHeals = (
   state: GameplayFrameState,
@@ -3204,9 +3246,8 @@ export const applyStatusEffectInstantEffects = (
   effects: ReadonlyArray<StatusEffectInstantEffect>,
   damageMultiplier: DamageTakenMultiplier = statusEffectModifiers({ effects: [] }).damageTakenMultiplier,
 ): Result.Result<Vitals, never> => {
-  // Amplifiers come from the bounded status-effect schema; the damage multiplier
-  // is the bounded modifier projection. Their arithmetic stays within each
-  // quantity's valid range, so the result constructors are total here.
+  // Bounded amplifiers and the bounded damage multiplier keep these quantities
+  // finite and within their constructors' accepted domains.
   let next = vitals
   for (const effect of effects) {
     const level = effect.amplifier + 1
@@ -3321,7 +3362,7 @@ const stepStatusEffects = (
   state: GameplayFrameState,
   commit: GameplayStageCommitServices | undefined,
   dt: DeltaTimeSecs,
-): Effect.Effect<void, Brand.BrandError | Schema.SchemaError> => Effect.gen(function* () {
+): Effect.Effect<void> => Effect.gen(function* () {
     const applications = yield* Ref.get(state.pendingStatusEffects)
     if (commit === undefined || commit.statusEffectsOwnerId === undefined) {
       if (applications.length > 0) {
@@ -3333,11 +3374,11 @@ const stepStatusEffects = (
     }
     const observed = yield* Effect.result(commit.coordinator.observe(
       commit.statusEffectsOwnerId,
-      StatusEffectStateSchema,
+      ValidatedStatusEffectStateSchema,
       [],
     ))
     if (Result.isFailure(observed)) {
-      yield* recordGameplayStageFailure(state, {
+      yield* recordGameplayStageFailureDeduplicated(state, {
         _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'Brewing', error: observed.failure,
       })
       return
@@ -3351,15 +3392,9 @@ const stepStatusEffects = (
     let applied = current
     const instantEffects: Array<StatusEffectInstantEffect> = []
     for (const application of applications) {
-      const outcome = applyStatusEffect(applied, application)
-      if (Result.isFailure(outcome)) {
-        yield* recordGameplayStageFailure(state, {
-          _tag: 'Failed', operation: 'CandidateBuild', subject: 'Brewing', error: outcome.failure,
-        })
-        return
-      }
-      applied = outcome.success.state
-      instantEffects.push(...outcome.success.instantEffects)
+      const outcome = applyStatusEffectToValidatedState(applied, application)
+      applied = outcome.state
+      instantEffects.push(...outcome.instantEffects)
     }
     const tick = tickStatusEffects(applied, dt)
     const status = tick.state
@@ -3384,13 +3419,13 @@ const stepStatusEffects = (
         [],
       ))
       if (Result.isFailure(vitalsObserved)) {
-        yield* recordGameplayStageFailure(state, {
+        yield* recordGameplayStageFailureDeduplicated(state, {
           _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'Vitals', error: vitalsObserved.failure,
         })
         return
       }
       if (vitalsObserved.success.revision !== observed.success.revision) {
-        yield* recordGameplayStageFailure(state, {
+        yield* recordGameplayStageFailureDeduplicated(state, {
           _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'Vitals',
           error: new WorldRevisionConflict({
             expected: observed.success.revision,
@@ -3408,11 +3443,11 @@ const stepStatusEffects = (
       const damagePulses = tick.poisonPulses + tick.witherPulses
       if (tick.modifiers.damageTakenMultiplier > 0) {
         for (let index = 0; index < damagePulses; index += 1) {
-          const amount = yield* Effect.fromResult(DamageAmount.result(
+          const amount = Result.getOrThrow(DamageAmount.result(
             POISON_DAMAGE_POINTS * tick.modifiers.damageTakenMultiplier,
           ))
           const causeValue = index < tick.poisonPulses ? 'poison' : 'generic'
-          const cause = yield* Effect.fromResult(DamageCause.result(causeValue))
+          const cause = Result.getOrThrow(DamageCause.result(causeValue))
           vitals = applyVitalsDamage(vitals, { amount, cause })
         }
       }
@@ -3423,15 +3458,14 @@ const stepStatusEffects = (
       if (tick.hungerExhaustion > 0) {
         const amount = ExhaustionAmount.result(tick.hungerExhaustion)
         if (Result.isFailure(amount)) {
-          yield* recordGameplayStageFailure(state, {
+          yield* recordGameplayStageFailureDeduplicated(state, {
             _tag: 'Failed', operation: 'CandidateBuild', subject: 'Vitals', error: amount.failure,
           })
           return
         }
         vitals = addVitalsExhaustion(vitals, amount.success)
       }
-      const vitalsCandidate = Schema.decodeUnknownSync(ExperienceOrbVitalsOwnerSnapshotSchema)({ vitals })
-      changes.push({ ownerId: commit.vitalsOwnerId, state: vitalsCandidate })
+      changes.push({ ownerId: commit.vitalsOwnerId, state: { vitals } })
       heals = Array.from({ length: tick.regenerationPulses }, () => ({
         _tag: 'StatusEffect' as const,
         effect: 'regeneration' as const,
@@ -3445,7 +3479,7 @@ const stepStatusEffects = (
       changes,
     }))
     if (Result.isFailure(committed)) {
-      yield* recordGameplayStageFailure(state, {
+      yield* recordGameplayStageFailureDeduplicated(state, {
         _tag: 'Failed', operation: 'WorldCommit', subject: 'Brewing', error: committed.failure,
       })
       return

@@ -1,5 +1,6 @@
 import {
   DeltaTimeSecs,
+  type EffectDurationSecs,
   type DeltaTimeSecs as DeltaTimeSecsValue,
   type EffectAmplifier,
 } from '@nerima-games/mc-kernel'
@@ -16,6 +17,11 @@ import { Brand, Result, Schema, SchemaParser } from 'effect'
 export const STATUS_EFFECT_TYPES: typeof STATUS_EFFECT_NAMES = STATUS_EFFECT_NAMES
 
 export type StatusEffectType = StatusEffectName
+
+export type PersistentStatusEffectType = Exclude<
+  StatusEffectType,
+  'instant_health' | 'instant_damage' | 'saturation'
+>
 
 export type StatusEffectLevel = number & Brand.Brand<'StatusEffectLevel'>
 export const StatusEffectLevelSchema: Schema.Codec<StatusEffectLevel, number> = Schema.Int
@@ -84,6 +90,24 @@ export type StatusEffectApplication = Readonly<{
   amplifier?: number
 }>
 
+export type ValidatedStatusEffectApplication = StatusEffectApplication &
+  Brand.Brand<'ValidatedStatusEffectApplication'>
+
+export type PersistentStatusEffectApplication = Omit<StatusEffectApplication, 'type'> & Readonly<{
+  type: PersistentStatusEffectType
+}>
+
+export type ValidatedPersistentStatusEffectApplication = PersistentStatusEffectApplication &
+  Brand.Brand<'ValidatedPersistentStatusEffectApplication'> &
+  Brand.Brand<'ValidatedStatusEffectApplication'>
+
+/** Field types already validated by kernel quantity constructors and the persistent status-effect union. */
+export type ValidatedPersistentStatusEffectApplicationFields = Readonly<{
+  type: PersistentStatusEffectType
+  durationSecs: EffectDurationSecs | 0
+  amplifier?: EffectAmplifier
+}>
+
 export type HiddenStatusEffect = Readonly<{
   remainingSecs: DeltaTimeSecsValue
   pulseClockSecs: DeltaTimeSecsValue
@@ -102,6 +126,8 @@ export type StatusEffectState = Readonly<{
   effects: ReadonlyArray<ActiveStatusEffect>
 }>
 
+export type ValidatedStatusEffectState = StatusEffectState & Brand.Brand<'ValidatedStatusEffectState'>
+
 export type StatusEffectInstantEffect =
   | Readonly<{ type: 'instant_health'; amplifier: EffectAmplifier }>
   | Readonly<{ type: 'instant_damage'; amplifier: EffectAmplifier }>
@@ -109,6 +135,11 @@ export type StatusEffectInstantEffect =
 
 export type StatusEffectApplicationOutcome = Readonly<{
   state: StatusEffectState
+  instantEffects: ReadonlyArray<StatusEffectInstantEffect>
+}>
+
+export type ValidatedStatusEffectApplicationOutcome = Readonly<{
+  state: ValidatedStatusEffectState
   instantEffects: ReadonlyArray<StatusEffectInstantEffect>
 }>
 
@@ -242,6 +273,27 @@ export const StatusEffectApplicationSchema: Schema.Codec<
   durationSecs: StatusEffectApplicationDurationSchema,
   amplifier: Schema.optionalKey(StatusEffectAmplifierSchema),
 }))
+
+export const ValidatedStatusEffectApplicationSchema: Schema.Codec<
+  ValidatedStatusEffectApplication,
+  unknown
+> = StatusEffectApplicationSchema.pipe(Schema.brand('ValidatedStatusEffectApplication'))
+
+const brandValidatedPersistentStatusEffectApplication =
+  Brand.nominal<ValidatedPersistentStatusEffectApplication>()
+
+export const persistentStatusEffectApplicationFromValidatedFields = (
+  fields: ValidatedPersistentStatusEffectApplicationFields,
+): ValidatedPersistentStatusEffectApplication => brandValidatedPersistentStatusEffectApplication({
+  type: fields.type,
+  durationSecs: fields.durationSecs,
+  ...(fields.amplifier === undefined ? {} : { amplifier: fields.amplifier }),
+})
+
+export const ValidatedStatusEffectStateSchema: Schema.Codec<
+  ValidatedStatusEffectState,
+  unknown
+> = StatusEffectStateSchema.pipe(Schema.brand('ValidatedStatusEffectState'))
 
 const StatusEffectInstantEffectSchema = strictCodec(Schema.Union([
   Schema.Struct({ type: Schema.Literal('instant_health'), amplifier: StatusEffectAmplifierSchema }),
@@ -448,52 +500,44 @@ const canonicalEffects = (
     STATUS_EFFECT_TYPES.indexOf(left.type) - STATUS_EFFECT_TYPES.indexOf(right.type),
   )
 
-export const applyStatusEffect = (
-  state: StatusEffectState,
-  application: StatusEffectApplication,
-): Result.Result<StatusEffectApplicationOutcome, StatusEffectApplicationError> => {
-  if (!isRecord(application)) return invalidApplication('invalid-shape')
+const makeValidatedStatusEffectState = Brand.nominal<ValidatedStatusEffectState>()
 
-  const typeValue = application['type']
-  if (typeof typeValue !== 'string') return invalidApplication('invalid-shape')
-  const definition = resolveStatusEffectDefinition(typeValue)
-  if (Result.isFailure(definition)) return Result.fail(definition.failure)
+/** Applies a schema-validated application to a schema-validated state. */
+export type ValidatedPersistentStatusEffectApplicationOutcome = Readonly<{
+  state: ValidatedStatusEffectState
+  instantEffects: readonly []
+}>
 
-  if (
-    typeof application['durationSecs'] !== 'number' ||
-    !Number.isFinite(application['durationSecs']) ||
-    application['durationSecs'] < 0
-  ) {
-    return invalidApplication('invalid-duration')
-  }
-  if (application['amplifier'] !== undefined && !isSafeAmplifier(application['amplifier'])) {
-    return invalidApplication('invalid-amplifier')
-  }
-
-  const decodedState = Schema.decodeUnknownResult(StatusEffectStateSchema)(state)
-  if (Result.isFailure(decodedState)) return invalidApplication('invalid-state')
-  const decodedApplication = Schema.decodeUnknownResult(StatusEffectApplicationSchema)(application)
-  if (Result.isFailure(decodedApplication)) return invalidApplication('invalid-shape')
-
-  const currentState = decodedState.success
-  const current = currentState.effects.find((effect) => effect.type === decodedApplication.success.type)
-  const { type, durationSecs } = decodedApplication.success
-  const amplifier = decodedApplication.success.amplifier ?? 0
+export function applyStatusEffectToValidatedState(
+  currentState: ValidatedStatusEffectState,
+  application: ValidatedPersistentStatusEffectApplication,
+): ValidatedPersistentStatusEffectApplicationOutcome
+export function applyStatusEffectToValidatedState(
+  currentState: ValidatedStatusEffectState,
+  application: ValidatedStatusEffectApplication,
+): ValidatedStatusEffectApplicationOutcome
+export function applyStatusEffectToValidatedState(
+  currentState: ValidatedStatusEffectState,
+  application: ValidatedStatusEffectApplication,
+): ValidatedStatusEffectApplicationOutcome {
+  const current = currentState.effects.find((effect) => effect.type === application.type)
+  const { type, durationSecs } = application
+  const amplifier = application.amplifier ?? 0
   const instantEffect = instantEffectFor(type, amplifier)
   if (instantEffect !== undefined) {
-    return Result.succeed({
+    return {
       state: currentState,
       instantEffects: [instantEffect],
-    })
+    }
   }
 
   if (durationSecs === 0) {
-    return Result.succeed({
-      state: {
+    return {
+      state: makeValidatedStatusEffectState({
         effects: canonicalEffects(currentState.effects.filter((effect) => effect.type !== type)),
-      },
+      }),
       instantEffects: [],
-    })
+    }
   }
 
   const applicationEffect: ActiveStatusEffect = {
@@ -533,11 +577,75 @@ export const applyStatusEffect = (
 
   const effects = currentState.effects.filter((effect) => effect.type !== type)
   effects.push(nextEffect)
-  const result = {
-    state: { effects: canonicalEffects(effects) },
+  return {
+    state: makeValidatedStatusEffectState({ effects: canonicalEffects(effects) }),
     instantEffects: [],
-  } satisfies StatusEffectApplicationOutcome
-  return Result.succeed(result)
+  }
+}
+
+const prevalidateStatusEffectApplication = (
+  application: StatusEffectApplication,
+): Result.Result<StatusEffectApplication, StatusEffectApplicationError> => {
+  if (!isRecord(application)) return invalidApplication('invalid-shape')
+
+  const typeValue = application['type']
+  if (typeof typeValue !== 'string') return invalidApplication('invalid-shape')
+  const definition = resolveStatusEffectDefinition(typeValue)
+  if (Result.isFailure(definition)) return Result.fail(definition.failure)
+
+  if (
+    typeof application['durationSecs'] !== 'number' ||
+    !Number.isFinite(application['durationSecs']) ||
+    application['durationSecs'] < 0
+  ) {
+    return invalidApplication('invalid-duration')
+  }
+  if (application['amplifier'] !== undefined && !isSafeAmplifier(application['amplifier'])) {
+    return invalidApplication('invalid-amplifier')
+  }
+
+  return Result.succeed(application)
+}
+
+export const validateStatusEffectApplication = (
+  application: StatusEffectApplication,
+): Result.Result<ValidatedStatusEffectApplication, StatusEffectApplicationError> => {
+  const prevalidatedApplication = prevalidateStatusEffectApplication(application)
+  if (Result.isFailure(prevalidatedApplication)) return Result.fail(prevalidatedApplication.failure)
+
+  const decodedApplication = Schema.decodeUnknownResult(ValidatedStatusEffectApplicationSchema)(
+    prevalidatedApplication.success,
+  )
+  if (Result.isFailure(decodedApplication)) return invalidApplication('invalid-shape')
+  return Result.succeed(decodedApplication.success)
+}
+
+export const validatePersistentStatusEffectApplication = (
+  application: PersistentStatusEffectApplication,
+): Result.Result<ValidatedPersistentStatusEffectApplication, StatusEffectApplicationError> => {
+  const validated = validateStatusEffectApplication(application)
+  if (Result.isFailure(validated)) return Result.fail(validated.failure)
+  return Result.succeed(brandValidatedPersistentStatusEffectApplication({
+    type: application.type,
+    durationSecs: validated.success.durationSecs,
+    ...(validated.success.amplifier === undefined ? {} : { amplifier: validated.success.amplifier }),
+  }))
+}
+
+export const applyStatusEffect = (
+  state: StatusEffectState,
+  application: StatusEffectApplication,
+): Result.Result<StatusEffectApplicationOutcome, StatusEffectApplicationError> => {
+  const prevalidatedApplication = prevalidateStatusEffectApplication(application)
+  if (Result.isFailure(prevalidatedApplication)) return Result.fail(prevalidatedApplication.failure)
+
+  const decodedState = Schema.decodeUnknownResult(ValidatedStatusEffectStateSchema)(state)
+  if (Result.isFailure(decodedState)) return invalidApplication('invalid-state')
+  const decodedApplication = Schema.decodeUnknownResult(ValidatedStatusEffectApplicationSchema)(
+    prevalidatedApplication.success,
+  )
+  if (Result.isFailure(decodedApplication)) return invalidApplication('invalid-shape')
+  return Result.succeed(applyStatusEffectToValidatedState(decodedState.success, decodedApplication.success))
 }
 
 const finiteAmplifier = (amplifier: number): number =>

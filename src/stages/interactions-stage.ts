@@ -8,7 +8,6 @@ import {
   Ref,
   UPSTREAM_STAGE_IDS,
   addInventoryItem,
-  applyStatusEffectInstantEffects,
   blockLoot,
   blockPositionKeyOf,
   blockPositionForKey,
@@ -24,6 +23,7 @@ import {
   furnaceAdvanceChanged,
   gameplayPlayerStateForStage,
   recordGameplayStageFailure,
+  recordGameplayStageFailureDeduplicated,
   recordGameplayUnsupportedOperation,
   recordMobRuleIssues,
   rollAt,
@@ -156,11 +156,12 @@ import {
   type EnchantmentTableServiceApi,
 } from '@nerima-games/mc-sim'
 import {
-  applyStatusEffect,
+  applyStatusEffectToValidatedState,
   AttackDamageBonusSchema,
   statusEffectModifiers,
   StatusEffectStateSchema,
-  type StatusEffectInstantEffect,
+  ValidatedStatusEffectStateSchema,
+  validatePersistentStatusEffectApplication,
   type StatusEffectState,
 } from '../domain/status-effect.js'
 import { applyBoneMeal } from '../domain/interactions/bone-meal.js'
@@ -1634,23 +1635,30 @@ const processBrewingItemUse = (
         }
         const observedEffects = yield* Effect.result(context.coordinator.observe(
           context.statusEffectsOwnerId,
-          StatusEffectStateSchema,
+          ValidatedStatusEffectStateSchema,
           [],
         ))
         if (Result.isFailure(observedEffects)) {
-          yield* recordGameplayStageFailure(state, {
+          yield* recordGameplayStageFailureDeduplicated(state, {
             _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'Brewing', error: observedEffects.failure,
+            requestId: request.requestId,
           })
           return
         }
-        const applied = applyStatusEffect(observedEffects.success.state, drinkPlan.result.effect)
-        if (Result.isFailure(applied)) {
-          yield* recordGameplayStageFailure(state, {
-            _tag: 'Failed', operation: 'CandidateBuild', subject: 'Brewing', error: applied.failure,
+        const validatedApplication = validatePersistentStatusEffectApplication(drinkPlan.result.effect)
+        if (Result.isFailure(validatedApplication)) {
+          yield* recordGameplayStageFailureDeduplicated(state, {
+            _tag: 'Failed', operation: 'CandidateBuild', subject: 'Brewing',
+            requestId: request.requestId,
+            error: validatedApplication.failure,
           })
           return
         }
-        const nextEffects = applied.success.state
+        const applied = applyStatusEffectToValidatedState(
+          observedEffects.success.state,
+          validatedApplication.success,
+        )
+        const nextEffects = applied.state
         const effectSnapshot = {
           world: observedEffects.success.world,
           expectedRevision: observedEffects.success.revision,
@@ -1667,58 +1675,6 @@ const processBrewingItemUse = (
         }
         statusCandidate = nextEffects
         plans.push(effectPlan)
-        if (applied.success.instantEffects.length > 0) {
-          if (context.vitalsOwnerId === undefined) {
-            yield* recordGameplayUnsupportedOperation(state, {
-              _tag: 'Unsupported', action: 'PlayerDamage', reason: 'OwnerRegistrationUnavailable',
-            })
-            return
-          }
-          const vitals = yield* Effect.result(context.coordinator.snapshot(
-            context.vitalsOwnerId,
-            ExperienceOrbVitalsOwnerSnapshotSchema,
-          ))
-          if (Result.isFailure(vitals)) {
-            yield* recordGameplayStageFailure(state, {
-              _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'Vitals', error: vitals.failure,
-            })
-            return
-          }
-          if (vitals.success.revision !== storage.success.revision) {
-            yield* recordGameplayStageFailure(state, {
-              _tag: 'Failed', operation: 'OwnerSnapshot', subject: 'Vitals',
-              error: new WorldRevisionConflict({
-                expected: storage.success.revision,
-                actual: vitals.success.revision,
-              }),
-            })
-            return
-          }
-          const modifiers = yield* Ref.get(state.playerStatusEffectModifiers)
-          const appliedVitals = applyStatusEffectInstantEffects(
-            vitals.success.state.vitals,
-            applied.success.instantEffects,
-            modifiers.damageTakenMultiplier,
-          )
-          if (Result.isFailure(appliedVitals)) {
-            yield* recordGameplayStageFailure(state, {
-              _tag: 'Failed', operation: 'CandidateBuild', subject: 'Vitals', error: appliedVitals.failure,
-            })
-            return
-          }
-          const vitalsPlan = {
-            world: vitals.success.world,
-            expectedRevision: vitals.success.revision,
-            expectedDimensions: [],
-            changes: [{
-              ownerId: context.vitalsOwnerId,
-              state: { vitals: appliedVitals.success },
-            }],
-            result: undefined,
-            postCommitEvents: [],
-          }
-          plans.push(vitalsPlan)
-        }
       }
       const result = Schema.decodeUnknownSync(GameplayBrewingItemUseResultSchema)({
         action: 'DrinkPotion', requestId: request.requestId,
@@ -2524,6 +2480,41 @@ const decodeGeneratedOffers = (
     decodeGeneratedOffer(offers[2]),
   ] as const)
 
+export const publishGeneratedEnchantmentOffers = (
+  state: GameplayFrameState,
+  mailbox: EnchantmentTableMailbox,
+  request: GameplayEnchantmentTableOffersRequest,
+  sourceStack: ItemStack,
+  offers: RawEnchantmentTableOffers,
+): Effect.Effect<void> => Effect.gen(function* () {
+  const serviceOffers = decodeGeneratedOffers(offers)
+  if (Result.isFailure(serviceOffers)) {
+    yield* recordGameplayStageFailureDeduplicated(state, {
+      _tag: 'Failed',
+      operation: 'CandidateBuild',
+      subject: 'ItemUse',
+      requestId: request.requestId,
+      error: serviceOffers.failure,
+    })
+    mailbox.results.push({ _tag: 'Rejected', requestId: request.requestId, reason: 'offer-generation-failed' })
+    return
+  }
+  mailbox.sessions.set(request.requestId, {
+    itemSlot: request.itemSlot,
+    lapisSlot: request.lapisSlot,
+    tablePosition: request.tablePosition,
+    sourceStack,
+    offers: serviceOffers.success,
+  })
+  mailbox.results.push({
+    _tag: 'OffersGenerated',
+    requestId: request.requestId,
+    offers: serviceOffers.success.flatMap((offer, slot) => offer === undefined
+      ? []
+      : [{ slot: slot as 0 | 1 | 2, offer }]),
+  })
+})
+
 const applyEnchantmentTableRequest = (
   state: GameplayFrameState,
   mailbox: EnchantmentTableMailbox,
@@ -2642,34 +2633,14 @@ const generateEnchantmentTableOffersRequest = (
       return
     }
     yield* Ref.set(state.rollSeed, drawRolls(seedValue, 1).seed)
-    const offers = generateEnchantmentTableOffersForItem(
+    // The generated seed, zero-shelf brand, and deterministic RNG satisfy
+    // mc-sim's input contract; an error here would indicate a broken producer.
+    const offers = Result.getOrThrow(generateEnchantmentTableOffersForItem(
       sourceStack.item,
       seed.success,
       PRE_L3_ENCHANTMENT_TABLE_SHELF_COUNT,
-    )
-    if (Result.isFailure(offers)) {
-      mailbox.results.push({ _tag: 'Rejected', requestId: request.requestId, reason: 'offer-generation-failed' })
-      return
-    }
-    const serviceOffers = decodeGeneratedOffers(offers.success)
-    if (Result.isFailure(serviceOffers)) {
-      mailbox.results.push({ _tag: 'Rejected', requestId: request.requestId, reason: 'offer-generation-failed' })
-      return
-    }
-    mailbox.sessions.set(request.requestId, {
-      itemSlot: request.itemSlot,
-      lapisSlot: request.lapisSlot,
-      tablePosition: request.tablePosition,
-      sourceStack,
-      offers: serviceOffers.success,
-    })
-    mailbox.results.push({
-      _tag: 'OffersGenerated',
-      requestId: request.requestId,
-      offers: serviceOffers.success.flatMap((offer, slot) => offer === undefined
-        ? []
-        : [{ slot: slot as 0 | 1 | 2, offer }]),
-    })
+    ))
+    yield* publishGeneratedEnchantmentOffers(state, mailbox, request, sourceStack, offers)
   })
 
 const processEnchantmentTableRequests = (
@@ -2760,11 +2731,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
             dt,
           )
         }
-        yield* stepStatusEffects(state, commit, dt).pipe(
-          Effect.catch((error) => recordGameplayStageFailure(state, {
-            _tag: 'Failed', operation: 'CandidateBuild', subject: 'Vitals', error,
-          })),
-        )
+        yield* stepStatusEffects(state, commit, dt)
         yield* advanceBlockMiningAttempt(state, commit, store, dt, playerDead)
 
         // `getAndSet` rather than get-then-set: whoever fills the inboxes is not
@@ -3881,7 +3848,6 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                 }
                 let statusEffectCandidate: ReplicatedOwnerCandidate | undefined
                 let nextStatusEffectState: StatusEffectState | undefined
-                const instantEffects: Array<StatusEffectInstantEffect> = []
                 if (outcome.effects.length > 0) {
                   const statusEffectsOwnerId = commit.statusEffectsOwnerId
                   if (statusEffectsOwnerId === undefined) {
@@ -3895,22 +3861,24 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                   }
                   const statusEffectsSnapshot = yield* Effect.result(commit.coordinator.snapshot(
                     statusEffectsOwnerId,
-                    StatusEffectStateSchema,
+                    ValidatedStatusEffectStateSchema,
                   ))
                   if (Result.isFailure(statusEffectsSnapshot)) {
-                    yield* recordGameplayStageFailure(state, {
+                    yield* recordGameplayStageFailureDeduplicated(state, {
                       _tag: 'Failed',
                       operation: 'OwnerSnapshot',
                       subject: 'ItemUse',
+                      requestId: request.requestId,
                       error: statusEffectsSnapshot.failure,
                     })
                     break itemUseAction
                   }
                   if (statusEffectsSnapshot.success.revision !== storageSnapshot.success.revision) {
-                    yield* recordGameplayStageFailure(state, {
+                    yield* recordGameplayStageFailureDeduplicated(state, {
                       _tag: 'Failed',
                       operation: 'OwnerSnapshot',
                       subject: 'ItemUse',
+                      requestId: request.requestId,
                       error: new WorldRevisionConflict({
                         expected: storageSnapshot.success.revision,
                         actual: statusEffectsSnapshot.success.revision,
@@ -3921,16 +3889,8 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                   }
                   let nextStatusEffects = statusEffectsSnapshot.success.state
                   for (const effect of outcome.effects) {
-                    const applied = applyStatusEffect(nextStatusEffects, effect)
-                    if (Result.isFailure(applied)) {
-                      yield* recordGameplayStageFailure(state, {
-                        _tag: 'Failed', operation: 'CandidateBuild', subject: 'ItemUse',
-                        error: applied.failure,
-                      })
-                      break itemUseAction
-                    }
-                    nextStatusEffects = applied.success.state
-                    instantEffects.push(...applied.success.instantEffects)
+                    const applied = applyStatusEffectToValidatedState(nextStatusEffects, effect)
+                    nextStatusEffects = applied.state
                   }
                   statusEffectCandidate = {
                     ownerId: statusEffectsOwnerId,
@@ -3940,17 +3900,9 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                 }
                 const nutrition = Result.getOrThrow(FoodNutrition.result(outcome.foodPoints))
                 const saturation = Result.getOrThrow(SaturationModifier.result(outcome.saturationModifier))
-                let nextVitals = eatVitals(vitals, nutrition, saturation)
-                const modifiers = nextStatusEffectState === undefined
-                  ? yield* Ref.get(state.playerStatusEffectModifiers)
-                  : statusEffectModifiers(nextStatusEffectState)
-                const vitalsAfterInstantEffects = yield* Effect.fromResult(applyStatusEffectInstantEffects(
-                  nextVitals,
-                  instantEffects,
-                  modifiers.damageTakenMultiplier,
-                ))
+                const nextVitals = eatVitals(vitals, nutrition, saturation)
                 const validatedVitals = yield* Effect.fromResult(Schema.decodeUnknownResult(ExperienceOrbVitalsOwnerSnapshotSchema)({
-                  vitals: vitalsAfterInstantEffects,
+                  vitals: nextVitals,
                 }))
                 const committed = yield* Effect.result(commit.coordinator.commit({
                   expectedRevision: storageSnapshot.success.revision,
@@ -3965,10 +3917,11 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                   ],
                 }))
                 if (Result.isFailure(committed)) {
-                  yield* recordGameplayStageFailure(state, {
+                  yield* recordGameplayStageFailureDeduplicated(state, {
                     _tag: 'Failed',
                     operation: 'WorldCommit',
                     subject: 'Vitals',
+                    requestId: request.requestId,
                     error: committed.failure,
                   })
                   yield* requeueItemUsesFrom(itemUseIndex)
