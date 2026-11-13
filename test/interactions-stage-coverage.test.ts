@@ -472,4 +472,62 @@ describe('production interactions-stage coverage', () => {
       }).pipe(Effect.provide(Layer.orDie(productionWorldWithStore(transactionalStore.layer))))
     }),
   )
+
+  it.effect('applies Silk Touch from an inventory pickaxe through production mining and block commit', () =>
+    Effect.gen(function* () {
+      const position = blockPosition(2, 64, 1)
+      const stone = Option.getOrThrow(blockIdOf('stone'))
+      const transactionalStore = yield* makeTransactionalChunkStoreDouble(
+        world([[position, stone]]),
+        ['0,0'],
+      )
+
+      return yield* Effect.gen(function* () {
+        const coordinator = yield* WorldCommitCoordinator
+        const store = yield* ChunkStore
+        const state = yield* makeGameplayFrameStateForOwner({
+          coordinator,
+          vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID,
+        })
+        const storage = yield* coordinator.snapshot(
+          GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+          PlayerStorageSnapshotSchema,
+        )
+        const slots: Array<Slot> = [...storage.state.inventory.slots]
+        const enchantments = Result.getOrThrow(enchantmentsComponent({ 'minecraft:silk_touch': 1 }))
+        const components = Result.getOrThrow(itemComponents('diamond_pickaxe', { enchantments }))
+        slots[0] = Result.getOrThrow(itemStack('diamond_pickaxe', 1, { components }))
+        yield* coordinator.commit({
+          expectedRevision: storage.revision,
+          expectedDimensions: [],
+          changes: [{ ownerId: GAMEPLAY_PLAYER_STORAGE_OWNER_ID, state: storageWithSlots(storage.state, slots) }],
+        })
+
+        const stages = yield* makeGameplayStagesWithState(state)
+        const dimension = Schema.decodeUnknownSync(DimensionIdSchema)('overworld')
+        // The pinned stone hardness is 25; diamond speed 8 takes ceil(25 * 30 / 8) server ticks.
+        for (let frame = 0; frame < 94; frame += 1) {
+          yield* requestBlockMining(state, {
+            position,
+            dimension,
+            toolLocation: { _tag: 'Inventory', slotIndex: 0 },
+          })
+          yield* runFrame(stages, DeltaTimeSecs(1 / 20))
+        }
+
+        expect(yield* store.getBlock(position)).toStrictEqual({ _tag: 'Block', block: AIR_BLOCK_ID })
+        const after = yield* coordinator.snapshot(
+          GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+          PlayerStorageSnapshotSchema,
+        )
+        expect(after.state.inventory.slots[0]?.item).toBe('diamond_pickaxe')
+        expect(after.state.inventoryDurability[0]?.current).toBe(1_560)
+        expect(after.state.inventory.slots.reduce(
+          (count, slot) => count + (slot?.item === 'stone' ? slot.count : 0),
+          0,
+        )).toBe(1)
+        expect(yield* Ref.get(state.operationFailures)).toStrictEqual([])
+      }).pipe(Effect.provide(Layer.orDie(productionWorldWithStore(transactionalStore.layer))))
+    }),
+  )
 })
