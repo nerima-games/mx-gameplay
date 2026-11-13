@@ -438,7 +438,7 @@ describe('mob lifecycle gameplay scenarios', () => {
     }),
   )
 
-  it.effect('returns a typed movement failure for a short chunk buffer through the gameplay stage', () =>
+  it.effect('fails the composed gameplay tick with a corrupt-buffer movement tag', () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness(
         position(0.5, 64, 0.5),
@@ -463,7 +463,7 @@ describe('mob lifecycle gameplay scenarios', () => {
     }),
   )
 
-  it.effect('returns a typed daylight-query failure for an undead on a corrupt cell', () =>
+  it.effect('fails the undead daylight query with the corrupt-buffer tag', () =>
     Effect.gen(function* () {
       let corruptBuffer = false
       const adaptStore = (store: ChunkStoreApi): ChunkStoreApi => ({
