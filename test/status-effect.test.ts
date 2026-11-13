@@ -183,6 +183,9 @@ describe('status effects', () => {
       type: 'speed', durationSecs: 5,
     })).toMatchObject({ _tag: 'Success', success: { type: 'speed', durationSecs: 5 } })
     expect(validatePersistentStatusEffectApplication({
+      type: 'speed', durationSecs: 5, amplifier: 0,
+    })).toMatchObject({ _tag: 'Success', success: { type: 'speed', durationSecs: 5, amplifier: 0 } })
+    expect(validatePersistentStatusEffectApplication({
       type: 'speed', durationSecs: -Number.MIN_VALUE,
     })).toEqual(Result.fail({ _tag: 'InvalidStatusEffectApplication', reason: 'invalid-duration' }))
     expect(validateStatusEffectApplication({
