@@ -1,3 +1,4 @@
+import { Brand } from 'effect'
 import {
   GameplayBrewingBottleItemUseResultSchema,
   GameplayBrewingItemUseResultSchema,
@@ -157,11 +158,11 @@ import {
 } from '@nerima-games/mc-sim'
 import {
   applyStatusEffectToValidatedState,
-  AttackDamageBonusSchema,
+  persistentStatusEffectApplicationFromValidatedFields,
   statusEffectModifiers,
   StatusEffectStateSchema,
   ValidatedStatusEffectStateSchema,
-  validatePersistentStatusEffectApplication,
+  type AttackDamageBonus,
   type StatusEffectState,
 } from '../domain/status-effect.js'
 import { applyBoneMeal } from '../domain/interactions/bone-meal.js'
@@ -196,9 +197,9 @@ import {
   lootingLevel,
   meleeDamageWithEnchantments,
   knockbackLevel,
+  type KnockbackStrength,
   punchKnockbackBonus,
   silkTouchEnabled,
-  KnockbackStrengthSchema,
   EnchantmentTableShelfCountSchema,
   generateEnchantmentTableOffersForItem,
   type EnchantmentSource,
@@ -755,7 +756,7 @@ const processMeleeAttack = (
   context: GameplayStageContext['commit'],
   request: MeleeAttackRequest,
   playerDead: boolean,
-): Effect.Effect<void, Schema.SchemaError> => Effect.gen(function* () {
+): Effect.Effect<void> => Effect.gen(function* () {
     const recordFailure = (outcome?: 'InvalidToolLocation') => {
       const requestId = request.requestId
       if (requestId === undefined) return Effect.void
@@ -912,13 +913,15 @@ const processMeleeAttack = (
       (entity) => entity.id === initialPreparation.success.target.id,
     )!
     const statusModifiers = yield* Ref.get(state.playerStatusEffectModifiers)
-    const damageBonus = yield* Effect.fromResult(Schema.decodeUnknownResult(AttackDamageBonusSchema)(
+    // Both operands are finite: enchantment levels come from decoded storage,
+    // and status modifiers are computed from validated effect state.
+    const damageBonus = Brand.nominal<AttackDamageBonus>()(
       meleeDamageWithEnchantments(
         0,
         heldEnchantments,
         meleeEnchantmentTarget(targetEntity.kind),
       ) + statusModifiers.attackDamageBonus,
-    ))
+    )
     const previousTargetDamageState = targetDamageStates.get(initialPreparation.success.target.id) ?? null
     const preparation = prepareMeleeAttack(intent, {
       ...preparationInput,
@@ -959,9 +962,8 @@ const processMeleeAttack = (
     ))
     const knockback = knockbackLevel(heldEnchantments)
     if (knockback > 0) {
-      const strength = yield* Effect.fromResult(
-        Schema.decodeUnknownResult(KnockbackStrengthSchema)(3 * knockback),
-      )
+      // The decoded enchantment table bounds this level before multiplication.
+      const strength = Brand.nominal<KnockbackStrength>()(3 * knockback)
       yield* Ref.update(state.meleeKnockbacks, (pending) => [...pending, {
         id: preparation.success.target.id,
         direction: preparation.success.knockback,
@@ -1645,18 +1647,12 @@ const processBrewingItemUse = (
           })
           return
         }
-        const validatedApplication = validatePersistentStatusEffectApplication(drinkPlan.result.effect)
-        if (Result.isFailure(validatedApplication)) {
-          yield* recordGameplayStageFailureDeduplicated(state, {
-            _tag: 'Failed', operation: 'CandidateBuild', subject: 'Brewing',
-            requestId: request.requestId,
-            error: validatedApplication.failure,
-          })
-          return
-        }
+        const validatedApplication = persistentStatusEffectApplicationFromValidatedFields(
+          drinkPlan.result.effect,
+        )
         const applied = applyStatusEffectToValidatedState(
           observedEffects.success.state,
-          validatedApplication.success,
+          validatedApplication,
         )
         const nextEffects = applied.state
         const effectSnapshot = {
@@ -3901,9 +3897,6 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                 const nutrition = Result.getOrThrow(FoodNutrition.result(outcome.foodPoints))
                 const saturation = Result.getOrThrow(SaturationModifier.result(outcome.saturationModifier))
                 const nextVitals = eatVitals(vitals, nutrition, saturation)
-                const validatedVitals = yield* Effect.fromResult(Schema.decodeUnknownResult(ExperienceOrbVitalsOwnerSnapshotSchema)({
-                  vitals: nextVitals,
-                }))
                 const committed = yield* Effect.result(commit.coordinator.commit({
                   expectedRevision: storageSnapshot.success.revision,
                   expectedDimensions: [],
@@ -3911,7 +3904,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                     storageCandidate,
                     {
                       ownerId: commit.vitalsOwnerId,
-                      state: validatedVitals,
+                      state: { vitals: nextVitals },
                     },
                     ...(statusEffectCandidate === undefined ? [] : [statusEffectCandidate]),
                   ],
@@ -4310,11 +4303,7 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
           yield* processBowShot(state, commit, store, shot, playerDead)
         }
         for (const attack of meleeAttacks) {
-          yield* processMeleeAttack(state, commit, attack, playerDead).pipe(
-            Effect.catch((error) => recordGameplayStageFailure(state, {
-              _tag: 'Failed', operation: 'CandidateBuild', subject: 'Player', error,
-            })),
-          )
+          yield* processMeleeAttack(state, commit, attack, playerDead)
         }
 
         // ---- THE ENDER PEARL -----------------------------------------------
@@ -4342,10 +4331,6 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
         if (disturbed.length > 0) {
           yield* Ref.update(state.fallingBlocks, (queue) => disturb(queue, disturbed))
         }
-      }).pipe(
-        Effect.catch((error) => recordGameplayStageFailure(state, {
-          _tag: 'Failed', operation: 'CandidateBuild', subject: 'Vitals', error,
-        })),
-      ),
+      }),
   }
 }

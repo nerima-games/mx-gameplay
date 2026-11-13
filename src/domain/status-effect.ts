@@ -101,11 +101,11 @@ export type ValidatedPersistentStatusEffectApplication = PersistentStatusEffectA
   Brand.Brand<'ValidatedPersistentStatusEffectApplication'> &
   Brand.Brand<'ValidatedStatusEffectApplication'>
 
-/** Field types already validated by kernel quantity constructors and the persistent status-effect union. */
+/** Fields already validated by a kernel quantity constructor and the persistent effect union. */
 export type ValidatedPersistentStatusEffectApplicationFields = Readonly<{
   type: PersistentStatusEffectType
-  durationSecs: EffectDurationSecs | 0
-  amplifier?: EffectAmplifier
+  durationSecs: EffectDurationSecs | (number & Brand.Brand<'FixedDurationSecs'>) | 0
+  amplifier?: EffectAmplifier | (number & Brand.Brand<'PotionEffectAmplifier'>)
 }>
 
 export type HiddenStatusEffect = Readonly<{

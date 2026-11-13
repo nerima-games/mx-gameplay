@@ -26,8 +26,11 @@ import {
   statusEffectLevel,
   statusEffectModifiers,
   tickStatusEffects,
+  validatePersistentStatusEffectApplication,
+  validateStatusEffectApplication,
   type StatusEffectApplication,
   type StatusEffectApplicationOutcome,
+  type PersistentStatusEffectApplication,
   type StatusEffectState,
 } from '../src/domain/status-effect'
 
@@ -147,6 +150,49 @@ describe('status effects', () => {
     expect(applyStatusEffect(invalidState, {
       type: 'poison', durationSecs: 1,
     })).toEqual(Result.fail({ _tag: 'InvalidStatusEffectApplication', reason: 'invalid-state' }))
+  })
+
+  it('validates arbitrary JSON applications as typed failures or schema-valid values', () => {
+    fc.assert(fc.property(fc.jsonValue(), (input) => {
+      const result = validateStatusEffectApplication(input as StatusEffectApplication)
+      if (Result.isFailure(result)) {
+        expect(Result.isSuccess(Schema.decodeUnknownResult(StatusEffectApplicationErrorSchema)(result.failure))).toBe(true)
+      } else {
+        expect(Result.isSuccess(Schema.decodeUnknownResult(ValidatedStatusEffectApplicationSchema)(result.success))).toBe(true)
+      }
+    }))
+
+    fc.assert(fc.property(fc.jsonValue(), (input) => {
+      const result = validatePersistentStatusEffectApplication(
+        input as PersistentStatusEffectApplication,
+      )
+      if (Result.isFailure(result)) {
+        expect(Result.isSuccess(Schema.decodeUnknownResult(StatusEffectApplicationErrorSchema)(result.failure))).toBe(true)
+      } else {
+        expect(Result.isSuccess(Schema.decodeUnknownResult(ValidatedStatusEffectApplicationSchema)(result.success))).toBe(true)
+        expect(['instant_health', 'instant_damage', 'saturation']).not.toContain(result.success.type)
+      }
+    }))
+  })
+
+  it('accepts zero duration and omitted amplifier, and rejects adjacent invalid boundaries', () => {
+    expect(validateStatusEffectApplication({
+      type: 'speed', durationSecs: 0, amplifier: 0,
+    })._tag).toBe('Success')
+    expect(validatePersistentStatusEffectApplication({
+      type: 'speed', durationSecs: 5,
+    })).toMatchObject({ _tag: 'Success', success: { type: 'speed', durationSecs: 5 } })
+    expect(validatePersistentStatusEffectApplication({
+      type: 'speed', durationSecs: -Number.MIN_VALUE,
+    })).toEqual(Result.fail({ _tag: 'InvalidStatusEffectApplication', reason: 'invalid-duration' }))
+    expect(validateStatusEffectApplication({
+      type: 'speed', durationSecs: 5, amplifier: STATUS_EFFECT_AMPLIFIER_MAX + 1,
+    })).toEqual(Result.fail({ _tag: 'InvalidStatusEffectApplication', reason: 'invalid-amplifier' }))
+    expect(validateStatusEffectApplication({
+      type: 'speed', durationSecs: 5, unexpected: true,
+    } as unknown as StatusEffectApplication)).toEqual(Result.fail({
+      _tag: 'InvalidStatusEffectApplication', reason: 'invalid-shape',
+    }))
   })
 
   it('derives poison, regeneration, and wither pulses from Java Edition tick intervals', () => {
