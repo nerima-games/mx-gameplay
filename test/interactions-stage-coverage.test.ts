@@ -54,10 +54,19 @@ import {
   getMiningProgressFraction,
   makeGameplayFrameStateForOwner,
   requestBlockMining,
+  requestEnchantmentTableApply,
+  requestEnchantmentTableOffers,
   requestFishingReel,
   requestFishingAdvance,
   requestMeleeAttack,
+  drainEnchantmentTableResults,
+  gameplayStages,
 } from '../src/stages/registration.js'
+import {
+  drainGameplayUnsupportedOperations,
+  entityManagerTag,
+} from '../src/stages/registration-core.js'
+import type { MobBehaviour } from '../src/domain/entities/mob-frame.js'
 import { makeGameplayStagesWithState } from '../src/stages/gameplay-stage-composition.js'
 import { SPIDER_KIND } from '../src/domain/mob/mob-ecosystem.js'
 import { emptyWorldStoreLayer, world } from './support/chunk-store-double.js'
@@ -342,7 +351,6 @@ describe('production interactions-stage coverage', () => {
         yield* requestBlockMining(state, {
           position,
           dimension,
-          toolLocation: { _tag: 'Inventory', slotIndex: 0 },
         })
         // Torch hardness is 1 and its default no-tool requirement permits hand mining: 30 ticks / 20 = 1.5 s.
         yield* runFrame(stages, DeltaTimeSecs(1.45))
@@ -400,6 +408,67 @@ describe('production interactions-stage coverage', () => {
         )
         expect(failure?._tag).toBe('Failed')
         expect(failure?.error._tag).toBe('ReplicatedOwnerUnknown')
+      }).pipe(Effect.provide(Layer.orDie(productionWorldWithStore(transactionalStore.layer))))
+    }),
+  )
+
+  it.effect('reports unsupported operations when lower-level gameplay services are omitted', () =>
+    Effect.gen(function* () {
+      const position = blockPosition(1, 64, 1)
+      const torch = Option.getOrThrow(blockIdOf('torch'))
+      const transactionalStore = yield* makeTransactionalChunkStoreDouble(
+        world([[position, torch]]),
+        ['0,0'],
+      )
+
+      return yield* Effect.gen(function* () {
+        const coordinator = yield* WorldCommitCoordinator
+        const store = yield* ChunkStore
+        const roster = yield* entityManagerTag<MobBehaviour>()
+        const time = yield* TimeService
+        const state = yield* makeGameplayFrameStateForOwner({
+          coordinator,
+          vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID,
+        })
+        const stages = gameplayStages(state, store, roster, undefined, undefined, time)
+        const dimension = Schema.decodeUnknownSync(DimensionIdSchema)('overworld')
+
+        yield* requestBlockMining(state, { position, dimension })
+        yield* runFrame(stages, DeltaTimeSecs(1 / 20))
+        expect(yield* drainGameplayUnsupportedOperations(state)).toContainEqual(expect.objectContaining({
+          _tag: 'Unsupported', action: 'MineBlock', reason: 'WorldCommitCoordinatorUnavailable',
+        }))
+
+        const commit = {
+          coordinator,
+          playerOwnerId: GAMEPLAY_PLAYER_OWNER_ID,
+          playerStorageOwnerId: GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+          vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID,
+        }
+        const stagesWithoutTableService = gameplayStages(
+          state,
+          store,
+          roster,
+          undefined,
+          undefined,
+          time,
+          undefined,
+          undefined,
+          {},
+          commit,
+        )
+        yield* requestEnchantmentTableOffers(state, {
+          requestId: 'missing-table-offers', itemSlot: 0, lapisSlot: 1, bookshelfCount: 0,
+        })
+        yield* requestEnchantmentTableApply(state, {
+          requestId: 'missing-table-apply', tableSlot: 0,
+        })
+        yield* runFrame(stagesWithoutTableService, DeltaTimeSecs(0))
+
+        expect(yield* drainEnchantmentTableResults(state)).toEqual([
+          { _tag: 'Rejected', requestId: 'missing-table-offers', reason: 'service-unavailable' },
+          { _tag: 'Rejected', requestId: 'missing-table-apply', reason: 'service-unavailable' },
+        ])
       }).pipe(Effect.provide(Layer.orDie(productionWorldWithStore(transactionalStore.layer))))
     }),
   )
