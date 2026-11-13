@@ -2358,7 +2358,7 @@ const EnchantmentTableRejectionReasonSchema: Schema.Codec<EnchantmentTableReject
 ])
 export type GameplayEnchantmentTableResult =
   | Readonly<{
-      readonly _tag: 'OffersGenerated'
+      readonly _tag: 'OffersGeneratedWithoutBookshelfCount'
       readonly requestId: GameplayEnchantmentTableRequestId
       readonly offers: ReadonlyArray<EnchantmentTableOfferEntry>
     }>
@@ -2378,7 +2378,7 @@ export const GameplayEnchantmentTableResultSchema: Schema.Codec<
   GameplayEnchantmentTableResult,
   unknown
 > = Schema.Union([
-  Schema.TaggedStruct('OffersGenerated', {
+  Schema.TaggedStruct('OffersGeneratedWithoutBookshelfCount', {
     requestId: EnchantmentTableRequestIdSchema,
     offers: Schema.Array(EnchantmentTableOfferEntrySchema),
   }),
@@ -2503,7 +2503,7 @@ export const publishGeneratedEnchantmentOffers = (
     offers: serviceOffers.success,
   })
   mailbox.results.push({
-    _tag: 'OffersGenerated',
+    _tag: 'OffersGeneratedWithoutBookshelfCount',
     requestId: request.requestId,
     offers: serviceOffers.success.flatMap((offer, slot) => offer === undefined
       ? []

@@ -42,6 +42,7 @@ import {
   requestEnchantmentTableOffers,
   GameplayEnchantmentTableApplyRequestSchema,
   GameplayEnchantmentTableOffersRequestSchema,
+  GameplayEnchantmentTableResultSchema,
 } from '../src/stages/registration.js'
 import { makeGameplayStagesWithState } from '../src/stages/gameplay-stage-composition.js'
 import { GAMEPLAY_STAGE_IDS } from '../src/stages/stage-ids.js'
@@ -84,6 +85,48 @@ const PINNED_DIAMOND_SWORD_OFFERS = [
 const PINNED_MULTI_ENCHANTMENT_OFFER = PINNED_DIAMOND_SWORD_OFFERS[MULTI_ENCHANTMENT_SLOT]!.offer
 
 describe('generated enchantment offers adapter', () => {
+  it('exposes generated offers only with an explicit unavailable bookshelf count', () => {
+    const result = {
+      _tag: 'OffersGeneratedWithoutBookshelfCount',
+      requestId: 'unknown-bookshelves',
+      offers: PINNED_DIAMOND_SWORD_OFFERS,
+    } as const
+    const offerEntryArbitrary = FastCheck.constantFrom(...PINNED_DIAMOND_SWORD_OFFERS)
+
+    FastCheck.assert(FastCheck.property(
+      FastCheck.string({ minLength: 1 }),
+      FastCheck.array(offerEntryArbitrary, { maxLength: 3 }),
+      (requestId, offers) => {
+        const generated = {
+          _tag: 'OffersGeneratedWithoutBookshelfCount',
+          requestId,
+          offers,
+        }
+        expect(Schema.is(GameplayEnchantmentTableResultSchema)(generated)).toBe(true)
+        expect(Schema.decodeUnknownSync(GameplayEnchantmentTableResultSchema)(generated)).toStrictEqual(generated)
+      },
+    ))
+
+    expect(Schema.decodeUnknownSync(GameplayEnchantmentTableResultSchema)(result)).toStrictEqual(result)
+    expect(Schema.is(GameplayEnchantmentTableResultSchema)({
+      ...result,
+      _tag: 'OffersGenerated',
+    })).toBe(false)
+    expect(Schema.is(GameplayEnchantmentTableResultSchema)({ ...result, requestId: '' })).toBe(false)
+    for (const slot of [-1, 3]) {
+      expect(Schema.is(GameplayEnchantmentTableResultSchema)({
+        ...result,
+        offers: [{ slot, offer: PINNED_DIAMOND_SWORD_OFFERS[0]!.offer }],
+      })).toBe(false)
+    }
+    for (const slot of [0, 2]) {
+      expect(Schema.is(GameplayEnchantmentTableResultSchema)({
+        ...result,
+        offers: [{ slot, offer: PINNED_DIAMOND_SWORD_OFFERS[0]!.offer }],
+      })).toBe(true)
+    }
+  })
+
   it.effect('rejects and records a generated enchantment id outside the table service contract', () =>
     Effect.gen(function* () {
       const state = yield* makeGameplayFrameState
@@ -247,11 +290,12 @@ describe('production enchanting table orchestration', () => {
       yield* requestEnchantmentTableOffers(state, offerRequest)
       yield* runFrame(stages, DeltaTimeSecs(0))
       const generated = yield* drainEnchantmentTableResults(state)
-      expect(generated).toContainEqual({
-        _tag: 'OffersGenerated',
+      expect(generated).toStrictEqual([{
+        _tag: 'OffersGeneratedWithoutBookshelfCount',
         requestId: 'table-success',
         offers: PINNED_DIAMOND_SWORD_OFFERS,
-      })
+      }])
+      expect(generated).not.toContainEqual(expect.objectContaining({ _tag: 'OffersGenerated' }))
 
       const [beforeStorage, beforeVitals] = yield* Effect.all([
         coordinator.snapshot(GAMEPLAY_PLAYER_STORAGE_OWNER_ID, PlayerStorageSnapshotSchema),
@@ -410,7 +454,7 @@ describe('production enchanting table orchestration', () => {
       })
       yield* runFrame(stages, DeltaTimeSecs(0))
       expect(yield* drainEnchantmentTableResults(state)).toStrictEqual([{
-        _tag: 'OffersGenerated', requestId: 'no-table-offers', offers: [],
+        _tag: 'OffersGeneratedWithoutBookshelfCount', requestId: 'no-table-offers', offers: [],
       }])
       yield* requestEnchantmentTableApply(state, { requestId: 'no-table-offers', tableSlot: 0 })
       yield* runFrame(stages, DeltaTimeSecs(0))
@@ -426,7 +470,7 @@ describe('production enchanting table orchestration', () => {
       yield* runFrame(stages, DeltaTimeSecs(0))
       const duplicateResults = yield* drainEnchantmentTableResults(state)
       expect(duplicateResults).toContainEqual({
-        _tag: 'OffersGenerated',
+        _tag: 'OffersGeneratedWithoutBookshelfCount',
         requestId: duplicateRequest.requestId,
         offers: PINNED_DIAMOND_SWORD_OFFERS,
       })
