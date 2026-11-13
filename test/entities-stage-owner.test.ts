@@ -3782,6 +3782,81 @@ describe('entities stage owner-backed MobSimulation', () => {
     }])
   })
 
+  it('automatically absorbs the nearest XP orb without a player-storage owner', async () => {
+    const firstOrbId = EntityId('test:nearest-owner-pickup-first')
+    const secondOrbId = EntityId('test:nearest-owner-pickup-second')
+    const nearestOrbId = EntityId('test:nearest-owner-pickup-last')
+    const orbValue = Result.getOrThrow(createExperienceOrbValue(2))
+    const harness = await Effect.runPromise(makeHarness({
+      entity: null,
+      playerPose: {
+        ...INITIAL_PLAYER_POSE,
+        feetPosition: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
+      },
+      vitals: SPAWN_VITALS,
+      experienceOrbs: {
+        orbs: [
+          {
+            id: firstOrbId,
+            value: orbValue,
+            position: Schema.decodeUnknownSync(WorldPositionSchema)({
+              dimension: INITIAL_DIMENSION,
+              ...position(PositionAxis(0.5), PositionAxis(64), PositionAxis(0)),
+            }),
+          },
+          {
+            id: secondOrbId,
+            value: orbValue,
+            position: Schema.decodeUnknownSync(WorldPositionSchema)({
+              dimension: INITIAL_DIMENSION,
+              ...position(PositionAxis(0.8), PositionAxis(64), PositionAxis(0)),
+            }),
+          },
+          {
+            id: nearestOrbId,
+            value: orbValue,
+            position: Schema.decodeUnknownSync(WorldPositionSchema)({
+              dimension: INITIAL_DIMENSION,
+              ...position(PositionAxis(0.2), PositionAxis(64), PositionAxis(0)),
+            }),
+          },
+        ],
+      },
+    }))
+    const { playerStorageOwnerId: _omittedStorageOwner, ...commitWithoutStorageOwner } = harness.context.commit!
+    const context: GameplayStageContext = {
+      ...harness.context,
+      commit: commitWithoutStorageOwner,
+    }
+    await Effect.runPromise(Ref.set(harness.state.tickCount, SimulationTick(8)))
+
+    await Effect.runPromise(makeEntitiesStage(context).run(makeDeltaTimeSecs(0)).pipe(
+      Effect.provide(FrameServicesLayer),
+    ))
+
+    const vitalsAfter = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_VITALS_OWNER_ID,
+      ExperienceOrbVitalsOwnerSnapshotSchema,
+    ))
+    const orbsAfter = await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
+      ExperienceOrbOwnerSnapshotSchema,
+    ))
+    expect(harness.commits()).toBe(1)
+    expect(vitalsAfter.state.vitals.totalExperience).toBe(2)
+    expect(orbsAfter.state.orbs.map(({ id }) => id)).toStrictEqual([firstOrbId, secondOrbId])
+    expect(harness.lastRequest()?.changes.map(({ ownerId }) => ownerId)).toStrictEqual([
+      GAMEPLAY_VITALS_OWNER_ID,
+      GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
+    ])
+    expect(await Effect.runPromise(Ref.get(harness.state.lastExperienceOrbPickupTick)))
+      .toBe(SimulationTick(8))
+    expect(await Effect.runPromise(Ref.get(harness.state.experienceOrbAbsorptionExecutions))).toMatchObject([{
+      request: { orb: nearestOrbId, tick: SimulationTick(8) },
+      outcome: { _tag: 'Completed', result: [{ _tag: 'ExperienceCollected', amount: 2, orb: nearestOrbId }] },
+    }])
+  })
+
   it('absorbs one orb from a stacked XP orb and keeps the remaining count', async () => {
     const orbId = EntityId('test:stacked-xp-orb')
     const orbValue = Result.getOrThrow(createExperienceOrbValue(5))
