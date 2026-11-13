@@ -3591,6 +3591,73 @@ describe('entities stage owner-backed MobSimulation', () => {
     expect(await Effect.runPromise(Ref.get(harness.state.pendingExperienceOrbAbsorptions))).toStrictEqual([])
   })
 
+  it('leaves a positioned XP orb outside the attraction radius untouched', async () => {
+    const orb = {
+      id: EntityId('test:out-of-range-xp-orb'),
+      value: Result.getOrThrow(createExperienceOrbValue(2)),
+      position: Schema.decodeUnknownSync(WorldPositionSchema)({
+        dimension: INITIAL_DIMENSION,
+        ...position(PositionAxis(12), PositionAxis(64), PositionAxis(0)),
+      }),
+      spawnedAt: SimulationTick(0),
+    }
+    const harness = await Effect.runPromise(makeHarness({
+      entity: null,
+      playerPose: {
+        ...INITIAL_PLAYER_POSE,
+        feetPosition: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
+      },
+      experienceOrbs: { orbs: [orb] },
+    }))
+    await Effect.runPromise(Ref.set(harness.state.tickCount, SimulationTick(1)))
+
+    await harness.run(makeDeltaTimeSecs(0.05))
+
+    expect(harness.commits()).toBe(0)
+    expect((await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
+      ExperienceOrbOwnerSnapshotSchema,
+    ))).state.orbs).toStrictEqual([orb])
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingExperienceOrbAbsorptions))).toStrictEqual([])
+  })
+
+  it('records a rejected owner commit when moving an attracted XP orb', async () => {
+    const orb = {
+      id: EntityId('test:xp-orb-movement-commit-rejected'),
+      value: Result.getOrThrow(createExperienceOrbValue(2)),
+      position: Schema.decodeUnknownSync(WorldPositionSchema)({
+        dimension: INITIAL_DIMENSION,
+        ...position(PositionAxis(5), PositionAxis(64), PositionAxis(0)),
+      }),
+      spawnedAt: SimulationTick(0),
+    }
+    const harness = await Effect.runPromise(makeHarness({
+      entity: null,
+      rejectCommit: true,
+      playerPose: {
+        ...INITIAL_PLAYER_POSE,
+        feetPosition: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
+      },
+      experienceOrbs: { orbs: [orb] },
+    }))
+    await Effect.runPromise(Ref.set(harness.state.tickCount, SimulationTick(1)))
+
+    await harness.run(makeDeltaTimeSecs(0.05))
+
+    expect(harness.commits()).toBe(1)
+    expect((await Effect.runPromise(harness.coordinator.snapshot(
+      GAMEPLAY_EXPERIENCE_ORBS_OWNER_ID,
+      ExperienceOrbOwnerSnapshotSchema,
+    ))).state.orbs).toStrictEqual([orb])
+    expect(await Effect.runPromise(Ref.get(harness.state.operationFailures))).toMatchObject([{
+      _tag: 'Failed',
+      operation: 'WorldCommit',
+      subject: 'ExperienceOrb',
+      error: { _tag: 'WorldRevisionConflict' },
+    }])
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingExperienceOrbAbsorptions))).toStrictEqual([])
+  })
+
   it('attracts and automatically picks up an XP orb, mending an equipped helmet before crediting leftover XP', async () => {
     // Java Edition 26.3 Mending repairs 2 durability per XP: https://minecraft.wiki/w/Mending
     const playerPose = {

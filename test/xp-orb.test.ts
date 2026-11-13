@@ -333,6 +333,36 @@ describe('experience orb values', () => {
     }),
   )
 
+  it.effect('accepts an implicit remaining count of one in the committed orb snapshot', () =>
+    Effect.gen(function* () {
+      const orb = yield* Effect.fromResult(createExperienceOrbValue(7))
+      const count = Result.getOrThrow(Schema.decodeUnknownResult(ExperienceOrbCountSchema)(2))
+      const coordinator = yield* makeCoordinator(SPAWN_VITALS, {
+        orbs: [{ id: PICKUP_CONTEXT.orb, value: orb, count }],
+      })
+      const committedOrbsWithoutDefaultCount = { orbs: [{ id: PICKUP_CONTEXT.orb, value: orb }] }
+      const canonicalizingCoordinator: WorldCommitCoordinatorApi = {
+        ...coordinator,
+        commit: (request) => Effect.map(coordinator.commit(request), (delta) => ({
+          ...delta,
+          changes: delta.changes.map((change) => change.owner === OWNER_IDS.orbs
+            ? { ...change, state: committedOrbsWithoutDefaultCount }
+            : change),
+        })),
+      }
+
+      const events = yield* absorbExperienceOrb(canonicalizingCoordinator, OWNER_IDS, PICKUP_CONTEXT)
+      const vitals = yield* coordinator.snapshot(OWNER_IDS.vitals, ExperienceOrbVitalsOwnerSnapshotSchema)
+      const orbs = yield* coordinator.snapshot(OWNER_IDS.orbs, ExperienceOrbOwnerSnapshotSchema)
+
+      expect(events.map(({ _tag }) => _tag)).toStrictEqual(['ExperienceCollected', 'LevelUp'])
+      expect(events[0]).toMatchObject({ _tag: 'ExperienceCollected', amount: 7 })
+      expect(events[1]).toMatchObject({ _tag: 'LevelUp', entity: PICKUP_CONTEXT.actor, level: 1 })
+      expect(vitals.state.vitals.totalExperience).toBe(7)
+      expect(orbs.state.orbs).toStrictEqual([{ id: PICKUP_CONTEXT.orb, value: orb, count: 1 }])
+    }),
+  )
+
   it.effect('returns no event candidates when the WCC commit fails', () =>
     Effect.gen(function* () {
       const orb = yield* Effect.fromResult(createExperienceOrbValue(1))
@@ -897,6 +927,10 @@ describe('experience orb decisions', () => {
     expect(mergeSameValueExperienceOrbStacks(
       { value: 7, count: 2 },
       { value: 7 },
+    )).toEqual(Result.succeed({ value: 7, count: 3 }))
+    expect(mergeSameValueExperienceOrbStacks(
+      { value: 7 },
+      { value: 7, count: 2 },
     )).toEqual(Result.succeed({ value: 7, count: 3 }))
     expect(mergeSameValueExperienceOrbStacks(
       { value: 7, count: 2 },

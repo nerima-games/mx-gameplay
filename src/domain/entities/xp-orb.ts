@@ -24,6 +24,16 @@ import {
   MendingExperiencePointsSchema,
   type MendingExperiencePoints,
 } from '../enchantment.js'
+import {
+  isExperienceOrbWithinAttractionRangeForPositions,
+  isExperienceOrbWithinPickupRangeForPositions,
+  pullExperienceOrbTowardPlayerForPositions,
+} from './xp-orb-position.js'
+
+export {
+  EXPERIENCE_ORB_ATTRACTION_RADIUS_BLOCKS,
+  EXPERIENCE_ORB_PICKUP_RADIUS_BLOCKS,
+} from './xp-orb-position.js'
 
 const strictCodec = <A, I>(schema: Schema.Codec<A, I>): Schema.Codec<A, I> =>
   Schema.declareConstructor<A, I>()([schema], ([inner]) =>
@@ -40,6 +50,9 @@ export const ExperienceOrbValueSchema: typeof ExperienceAmountSchema = Experienc
 export type ExperienceOrbValue = Schema.Schema.Type<typeof ExperienceOrbValueSchema>
 
 const ExperienceOrbRewardPointsSchema = MendingExperiencePointsSchema
+const DeltaTimeSecsSchema = Schema.Finite
+  .check(Schema.isGreaterThanOrEqualTo(0))
+  .pipe(Schema.brand('DeltaTimeSecs'))
 
 /** Java Edition drops integer rewards as the largest fitting orb values first. */
 const EXPERIENCE_ORB_VALUE_DENOMINATIONS = [
@@ -57,8 +70,6 @@ const EXPERIENCE_ORB_VALUE_DENOMINATIONS = [
 ] as const
 const asExperienceOrbValue = (value: number): ExperienceOrbValue => value as ExperienceOrbValue
 
-export const EXPERIENCE_ORB_ATTRACTION_RADIUS_BLOCKS = 7.25
-export const EXPERIENCE_ORB_PICKUP_RADIUS_BLOCKS = 1
 export const EXPERIENCE_ORB_LIFETIME_TICKS = 6000
 export const EXPERIENCE_ORB_PICKUP_INTERVAL_TICKS = 2
 
@@ -135,14 +146,7 @@ export const isExperienceOrbWithinAttractionRange = (
   if (Result.isFailure(orb)) return Result.fail(orb.failure)
   const player = Schema.decodeUnknownResult(WorldPositionSchema)(playerPosition)
   if (Result.isFailure(player)) return Result.fail(player.failure)
-
-  if (orb.success.dimension !== player.success.dimension) return Result.succeed(false)
-  const dx = player.success.x - orb.success.x
-  const dy = player.success.y - orb.success.y
-  const dz = player.success.z - orb.success.z
-  const distanceSquared = dx * dx + dy * dy + dz * dz
-  const radiusSquared = EXPERIENCE_ORB_ATTRACTION_RADIUS_BLOCKS ** 2
-  return Result.succeed(distanceSquared <= radiusSquared)
+  return Result.succeed(isExperienceOrbWithinAttractionRangeForPositions(orb.success, player.success))
 }
 
 export const isExperienceOrbWithinPickupRange = (
@@ -153,14 +157,7 @@ export const isExperienceOrbWithinPickupRange = (
   if (Result.isFailure(orb)) return Result.fail(orb.failure)
   const player = Schema.decodeUnknownResult(WorldPositionSchema)(playerPosition)
   if (Result.isFailure(player)) return Result.fail(player.failure)
-  if (orb.success.dimension !== player.success.dimension) return Result.succeed(false)
-
-  const dx = player.success.x - orb.success.x
-  const dy = player.success.y - orb.success.y
-  const dz = player.success.z - orb.success.z
-  return Result.succeed(
-    dx * dx + dy * dy + dz * dz <= EXPERIENCE_ORB_PICKUP_RADIUS_BLOCKS ** 2,
-  )
+  return Result.succeed(isExperienceOrbWithinPickupRangeForPositions(orb.success, player.success))
 }
 
 /**
@@ -177,27 +174,11 @@ export const pullExperienceOrbTowardPlayer = (
   if (Result.isFailure(orb)) return Result.fail(orb.failure)
   const player = Schema.decodeUnknownResult(WorldPositionSchema)(playerPosition)
   if (Result.isFailure(player)) return Result.fail(player.failure)
-  const elapsed = Schema.decodeUnknownResult(Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)))(dtSeconds)
+  const elapsed = Schema.decodeUnknownResult(DeltaTimeSecsSchema)(dtSeconds)
   if (Result.isFailure(elapsed)) return Result.fail(elapsed.failure)
-  if (orb.success.dimension !== player.success.dimension) return Result.succeed(orb.success)
-
-  const dx = player.success.x - orb.success.x
-  const dy = player.success.y - orb.success.y
-  const dz = player.success.z - orb.success.z
-  const distance = Math.hypot(dx, dy, dz)
-  if (distance === 0 || distance > EXPERIENCE_ORB_ATTRACTION_RADIUS_BLOCKS) {
-    return Result.succeed(orb.success)
-  }
-
-  const closeness = 1 - distance / EXPERIENCE_ORB_ATTRACTION_RADIUS_BLOCKS
-  const speed = 2 * closeness * closeness
-  const travel = Math.min(distance, speed * elapsed.success)
-  return Schema.decodeUnknownResult(WorldPositionSchema)({
-    dimension: orb.success.dimension,
-    x: orb.success.x + dx / distance * travel,
-    y: orb.success.y + dy / distance * travel,
-    z: orb.success.z + dz / distance * travel,
-  })
+  const pulled = pullExperienceOrbTowardPlayerForPositions(orb.success, player.success, elapsed.success)
+  if (!pulled.movementAttempted) return Result.succeed(orb.success)
+  return Schema.decodeUnknownResult(WorldPositionSchema)(pulled.position)
 }
 
 /** Legacy records without a spawn tick have no known age and remain eligible. */

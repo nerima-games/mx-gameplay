@@ -73,17 +73,18 @@ import {
   canCollectExperienceOrbAtTick,
   experienceOrbAbsorptionResultAfterCommit,
   isExperienceOrbExpiredAtTick,
-  isExperienceOrbWithinAttractionRange,
-  isExperienceOrbWithinPickupRange,
   mergeSameValueExperienceOrbStacks,
   planExperienceOrbAbsorption,
-  pullExperienceOrbTowardPlayer,
   splitExperienceOrbReward,
   type ExperienceOrbAbsorptionContext,
   type ExperienceOrbMendingInvalid,
   type ExperienceOrbValue,
   type ExperienceOrbRecord,
 } from '../domain/entities/xp-orb.js'
+import {
+  isExperienceOrbWithinAttractionRangeForPositions,
+  pullExperienceOrbTowardPlayerForPositions,
+} from '../domain/entities/xp-orb-position.js'
 import {
   durabilityWearWithEnchantments,
   enchantmentLevel,
@@ -130,6 +131,15 @@ import type {
 } from './registration-core.js'
 
 type PlayerServiceSnapshot = Schema.Schema.Type<typeof PlayerServiceSnapshotSchema>
+type ExperienceOrbEncodedPosition = Readonly<{
+  dimension: NonNullable<ExperienceOrbRecord['position']>['dimension']
+  x: number
+  y: number
+  z: number
+}>
+type ExperienceOrbRecordForCommit = Omit<ExperienceOrbRecord, 'position'> & Readonly<{
+  position?: ExperienceOrbRecord['position'] | ExperienceOrbEncodedPosition | undefined
+}>
 
 const unsupportedMobSimulation = (
   state: GameplayStageContext['state'],
@@ -1320,48 +1330,28 @@ const attractExperienceOrbsAndQueuePickup = (
     return []
   }
   let closest: Readonly<{ orb: ExperienceOrbRecord; distanceSquared: number }> | undefined
-  const nextOrbs: ExperienceOrbRecord[] = []
+  const nextOrbs: ExperienceOrbRecordForCommit[] = []
   for (const orb of liveOrbs) {
     if (orb.position === undefined) {
       nextOrbs.push(orb)
       continue
     }
-    const inRange = isExperienceOrbWithinAttractionRange(orb.position, playerPosition)
-    if (Result.isFailure(inRange)) {
-      yield* recordGameplayStageFailure(state, {
-        _tag: 'Failed', operation: 'CandidateBuild', subject: 'ExperienceOrb', error: inRange.failure,
-      })
-      return []
-    }
-    if (!inRange.success) {
+    const inRange = isExperienceOrbWithinAttractionRangeForPositions(orb.position, playerPosition)
+    if (!inRange) {
       nextOrbs.push(orb)
       continue
     }
-    const pulled = pullExperienceOrbTowardPlayer(orb.position, playerPosition, Number(dt))
-    if (Result.isFailure(pulled)) {
-      yield* recordGameplayStageFailure(state, {
-        _tag: 'Failed', operation: 'CandidateBuild', subject: 'ExperienceOrb', error: pulled.failure,
-      })
-      return []
-    }
-    const moved = pulled.success.x !== orb.position.x || pulled.success.y !== orb.position.y ||
-      pulled.success.z !== orb.position.z
+    const pulled = pullExperienceOrbTowardPlayerForPositions(orb.position, playerPosition, dt)
+    const moved = pulled.position.x !== orb.position.x || pulled.position.y !== orb.position.y ||
+      pulled.position.z !== orb.position.z
     if (moved) changed = true
-    const nextPosition = moved ? pulled.success : orb.position
+    const nextPosition = moved ? pulled.position : orb.position
     const nextOrb = moved ? { ...orb, position: nextPosition } : orb
     nextOrbs.push(nextOrb)
-    const pickupRange = isExperienceOrbWithinPickupRange(nextPosition, playerPosition)
-    if (Result.isFailure(pickupRange)) {
-      yield* recordGameplayStageFailure(state, {
-        _tag: 'Failed', operation: 'CandidateBuild', subject: 'ExperienceOrb', error: pickupRange.failure,
-      })
-      return []
-    }
-    if (pickupRange.success) {
-      const distanceSquared = (nextPosition.x - playerPosition.x) ** 2 +
-        (nextPosition.y - playerPosition.y) ** 2 + (nextPosition.z - playerPosition.z) ** 2
+    if (pulled.withinPickupRange) {
+      const distanceSquared = pulled.distanceSquared
       if (closest === undefined || distanceSquared < closest.distanceSquared) {
-        closest = { orb: nextOrb, distanceSquared }
+        closest = { orb, distanceSquared }
       }
     }
   }
