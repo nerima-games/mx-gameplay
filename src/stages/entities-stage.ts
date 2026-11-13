@@ -53,6 +53,7 @@ import {
   addExperience,
   applyDamage as applyVitalsDamage,
   damageAt,
+  emptyPlayerStorage,
   type ReplicatedOwnerCandidate,
   type PlayerStorage,
 } from '@nerima-games/mc-sim'
@@ -60,6 +61,8 @@ import type { ExplosionBlock, ExplosionBlockReader } from '@nerima-games/mc-sim'
 import { craterCells } from '../domain/interactions/explosion-crater.js'
 import {
   appendDroppedItemSpawns,
+  appendPlayerDeathDropSpawns,
+  deathDropsFromPlayerStorage,
   DroppedItemOwnerSnapshotSchema,
   planDroppedItemPickup,
   type DroppedItemSpawn,
@@ -1548,6 +1551,138 @@ const attractExperienceOrbsAndQueuePickup = (
   }]
 })
 
+const runPlayerDeathDrops = (context: GameplayStageContext): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    const { state, commit } = context
+    if (commit === undefined || commit.vitalsOwnerId === undefined) return
+
+    let operation: 'OwnerSnapshot' | 'CandidateBuild' | 'WorldCommit' = 'OwnerSnapshot'
+    const observed = yield* Effect.result(Effect.all([
+      commit.coordinator.snapshot(commit.playerOwnerId, PlayerServiceSnapshotSchema),
+      commit.coordinator.snapshot(commit.vitalsOwnerId, ExperienceOrbVitalsOwnerSnapshotSchema),
+      commit.coordinator.snapshot(commit.playerStorageOwnerId, PlayerStorageSnapshotSchema),
+    ]))
+    if (Result.isFailure(observed)) {
+      yield* recordGameplayStageFailureDeduplicated(state, {
+        _tag: 'Failed',
+        operation,
+        subject: 'Player',
+        requestId: 'player-death-drops',
+        error: observed.failure,
+      })
+      return
+    }
+
+    const [playerSnapshot, vitalsSnapshot, storageSnapshot] = observed.success
+    if (
+      playerSnapshot.revision !== vitalsSnapshot.revision ||
+      playerSnapshot.revision !== storageSnapshot.revision
+    ) {
+      yield* recordGameplayStageFailureDeduplicated(state, {
+        _tag: 'Failed',
+        operation,
+        subject: 'Player',
+        requestId: 'player-death-drops',
+        error: new WorldRevisionConflict({
+          expected: playerSnapshot.revision,
+          actual: playerSnapshot.revision !== vitalsSnapshot.revision
+            ? vitalsSnapshot.revision
+            : storageSnapshot.revision,
+        }),
+      })
+      return
+    }
+
+    if (vitalsSnapshot.state.vitals.healthPoints > 0) return
+    const storage = storageSnapshot.state
+    const hasInventory = storage.inventory.slots.some((stack) => stack !== undefined)
+    const hasEquipment = Object.values(storage.equipment.slots).some((stack) => stack !== null)
+    if (!hasInventory && !hasEquipment) return
+
+    const feetPosition = playerSnapshot.state.pose.feetPosition
+    const at = position(
+      PositionAxis(feetPosition.x),
+      PositionAxis(feetPosition.y),
+      PositionAxis(feetPosition.z),
+    )
+    const deathDrops = deathDropsFromPlayerStorage(storage, at)
+    if (Result.isFailure(deathDrops)) {
+      yield* recordGameplayStageFailureDeduplicated(state, {
+        _tag: 'Failed',
+        operation: 'CandidateBuild',
+        subject: 'Player',
+        requestId: 'player-death-drops',
+        error: deathDrops.failure,
+      })
+      return
+    }
+    const drops = deathDrops.success
+    const changes: ReplicatedOwnerCandidate[] = [{
+      ownerId: commit.playerStorageOwnerId,
+      state: emptyPlayerStorage(),
+    }]
+    if (drops.length > 0) {
+      if (commit.droppedItemsOwnerId === undefined) {
+        yield* recordGameplayUnsupportedOperation(state, {
+          _tag: 'Unsupported',
+          action: 'MobSimulation',
+          reason: 'OwnerRegistrationUnavailable',
+        })
+        return
+      }
+      operation = 'OwnerSnapshot'
+      const droppedSnapshot = yield* Effect.result(commit.coordinator.snapshot(
+        commit.droppedItemsOwnerId,
+        DroppedItemOwnerSnapshotSchema,
+      ))
+      if (Result.isFailure(droppedSnapshot)) {
+        yield* recordGameplayStageFailureDeduplicated(state, {
+          _tag: 'Failed',
+          operation,
+          subject: 'DroppedItem',
+          requestId: 'player-death-drops',
+          error: droppedSnapshot.failure,
+        })
+        return
+      }
+      if (droppedSnapshot.success.revision !== playerSnapshot.revision) {
+        yield* recordGameplayStageFailureDeduplicated(state, {
+          _tag: 'Failed',
+          operation,
+          subject: 'DroppedItem',
+          requestId: 'player-death-drops',
+          error: new WorldRevisionConflict({
+            expected: playerSnapshot.revision,
+            actual: droppedSnapshot.success.revision,
+          }),
+        })
+        return
+      }
+      const appended = appendPlayerDeathDropSpawns(
+        droppedSnapshot.success.state,
+        drops,
+        playerSnapshot.revision,
+      )
+      changes.push({ ownerId: commit.droppedItemsOwnerId, state: appended })
+    }
+
+    operation = 'WorldCommit'
+    const committed = yield* Effect.result(commit.coordinator.commit({
+      expectedRevision: playerSnapshot.revision,
+      expectedDimensions: [],
+      changes,
+    }))
+    if (Result.isFailure(committed)) {
+      yield* recordGameplayStageFailureDeduplicated(state, {
+        _tag: 'Failed',
+        operation,
+        subject: 'Player',
+        requestId: 'player-death-drops',
+        error: committed.failure,
+      })
+    }
+  })
+
 export const makeEntitiesStage = (context: GameplayStageContext): StageRegistration => {
   const { state, store, commit } = context
   return {
@@ -1811,6 +1946,7 @@ export const makeEntitiesStage = (context: GameplayStageContext): StageRegistrat
             },
           })
         }
+        yield* runPlayerDeathDrops(context)
         yield* spawnQueuedExperienceOrbs(context)
 
         // ---- falling blocks ------------------------------------------------

@@ -6,6 +6,7 @@ import type { MobBehaviour, MobEntity, MobRoster } from '../../src/domain/entiti
 import { makeGameplayFrameState, gameplayStages, drainPlayerDamages } from '../../src/stages/registration'
 import { ZOMBIE_KIND } from '../../src/domain/mob/hostile-combat'
 import { ExperienceOrbVitalsOwnerSnapshotSchema } from '../../src/domain/entities/xp-orb'
+import { DroppedItemOwnerSnapshotSchema } from '../../src/domain/entities/dropped-item'
 import { PlayerStorageSnapshotSchema } from '@nerima-games/mc-sim'
 import { makeEntityManagerDouble } from '../support/entity-manager-double'
 import { makeInventoryDouble } from '../support/inventory-service-double'
@@ -81,10 +82,22 @@ describe('player damage gameplay scenario', () => {
         storageOwnerId,
         PlayerStorageSnapshotSchema,
       )
+      const droppedItemsOwnerId = commit.droppedItemsOwnerId
+      if (droppedItemsOwnerId === undefined) throw new Error('expected a dropped-item owner')
+      const droppedItems = yield* commit.coordinator.snapshot(
+        droppedItemsOwnerId,
+        DroppedItemOwnerSnapshotSchema,
+      )
 
       expect(vitals.state.vitals.healthPoints).toBe(0)
       expect(vitals.state.vitals.lastDamageCause).toBe('mob')
-      expect(storage.state.equipment.slots.head?.durability?.current).toBe(164)
+      expect(storage.state.equipment.slots.head).toBeNull()
+      expect(droppedItems.state.items).toContainEqual(expect.objectContaining({
+        behaviour: expect.objectContaining({
+          item: 'iron_helmet',
+          durability: expect.objectContaining({ current: 164 }),
+        }),
+      }))
     }),
   )
 })

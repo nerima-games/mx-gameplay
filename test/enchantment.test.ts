@@ -154,6 +154,80 @@ const conflictingOfferFor = (
 }
 
 describe('enchantment registry', () => {
+  it('keeps the exact set of enchantments with a production effect path', () => {
+    const source = (id: EnchantmentId) => component([[id, 1]])
+    const mendingCandidate: MendingRepairCandidate = {
+      slot: 'inventory:0',
+      durability: { ...durabilityForItem('diamond_pickaxe'), current: 1 },
+      enchantments: source('mending'),
+    }
+    const effectiveEffects: ReadonlyArray<readonly [EnchantmentId, boolean]> = [
+      ['protection', armorDamageWithEnchantments(
+        { amount: 10, cause: 'mob' }, armorPoints(0), [source('protection')],
+      ).amount < 10],
+      ['fire_protection', armorDamageWithEnchantments(
+        { amount: 10, cause: 'in_fire' }, armorPoints(0), [source('fire_protection')],
+      ).amount < 10],
+      ['blast_protection', armorDamageWithEnchantments(
+        { amount: 10, cause: 'explosion' }, armorPoints(0), [source('blast_protection')],
+      ).amount < 10],
+      ['projectile_protection', armorDamageWithEnchantments(
+        { amount: 10, cause: 'projectile' }, armorPoints(0), [source('projectile_protection')],
+      ).amount < 10],
+      ['feather_falling', armorDamageWithEnchantments(
+        { amount: 10, cause: 'fall' }, armorPoints(0), [source('feather_falling')],
+      ).amount < 10],
+      ['sharpness', meleeDamageWithEnchantments(0, source('sharpness')) > 0],
+      ['smite', meleeDamageWithEnchantments(0, source('smite'), 'undead') > 0],
+      ['bane_of_arthropods', meleeDamageWithEnchantments(0, source('bane_of_arthropods'), 'arthropod') > 0],
+      ['power', bowDamageWithEnchantments(5, source('power')) > 5],
+      ['infinity', infinityPreventsArrowConsumption(source('infinity'))],
+      ['flame', flameDurationTicks(source('flame')) > 0],
+      ['looting', lootingLevel(source('looting')) > 0],
+      ['punch', punchKnockbackBonus(source('punch')) > 0],
+      ['fire_aspect', fireAspectDurationTicks(source('fire_aspect')) > 0],
+      ['knockback', knockbackLevel(source('knockback')) > 0],
+      ['luck_of_the_sea', luckOfTheSeaLevel(source('luck_of_the_sea')) > 0],
+      ['lure', lureWaitReductionTicks(source('lure')) > 0],
+      ['efficiency', miningSpeedWithEnchantments(1, source('efficiency')) > 1],
+      ['fortune', fortuneDropCountWithEnchantments(1, source('fortune'), 0.8) > 1],
+      ['silk_touch', silkTouchEnabled(source('silk_touch'))],
+      ['unbreaking', durabilityWearWithEnchantments(1, source('unbreaking'), [0]) === 0],
+      ['thorns', thornsRetaliationChance(source('thorns')) > 0],
+      ['mending', mendOneItem([mendingCandidate], experienceAmount(1), interpolationFraction(0)).repairedCandidate !== undefined],
+      ['vanishing_curse', vanishingCurseRemovesOnDeath(source('vanishing_curse'))],
+    ]
+    const expectedProductionEffects: ReadonlyArray<EnchantmentId> = [
+      'bane_of_arthropods',
+      'blast_protection',
+      'efficiency',
+      'feather_falling',
+      'fire_aspect',
+      'fire_protection',
+      'flame',
+      'fortune',
+      'infinity',
+      'knockback',
+      'looting',
+      'luck_of_the_sea',
+      'lure',
+      'mending',
+      'power',
+      'projectile_protection',
+      'protection',
+      'punch',
+      'sharpness',
+      'silk_touch',
+      'smite',
+      'thorns',
+      'unbreaking',
+      'vanishing_curse',
+    ]
+
+    expect(effectiveEffects.filter(([, active]) => active).map(([id]) => id).sort())
+      .toStrictEqual([...expectedProductionEffects].sort())
+  })
+
   it('represents every shared 26.3 enchantment rule and preserves exact applicability', () => {
     expect(ENCHANTMENT_IDS).toHaveLength(43)
     expect(Object.keys(ENCHANTMENT_REGISTRY).sort()).toEqual([...SUPPORTED_VANILLA_ENCHANTMENT_IDS].sort())

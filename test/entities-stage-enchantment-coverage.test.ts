@@ -5,6 +5,7 @@ import {
   EntitySerial,
   PositionAxis,
   SimulationTickSchema,
+  WorldRevisionSchema,
   AIR_BLOCK_ID,
   StackCount,
   enchantmentsComponent,
@@ -21,12 +22,18 @@ import {
   TntServiceSnapshotSchema,
   TimeService,
   WorldCommitCoordinator,
+  makeReplicatedOwnerId,
+  type ReplicatedOwnerUnknown,
+  type ReplicatedSnapshot,
   durability,
   emptyPlayerStorage,
   equipmentItem,
   itemStack,
   makeTimeService,
+  withInventory,
   type DomainEventBusApi,
+  type ReplicatedOwnerId,
+  type WorldCommitCoordinatorApi,
 } from '@nerima-games/mc-sim'
 import { ChunkStore } from '@nerima-games/mc-worldgen'
 import { Effect, Layer, Ref, Result, Schema, Stream } from 'effect'
@@ -46,13 +53,16 @@ import {
 } from '../src/domain/entities/mob-frame.js'
 import { ZOMBIE_KIND } from '../src/domain/mob/hostile-combat.js'
 import { MOB_DROP_TABLES } from '../src/domain/mob/mob-drop.js'
+import { type MobBehaviour } from '../src/domain/entities/mob-frame.js'
 import { SkyLightLevel } from '../src/domain/mob/hostile-spawn.js'
 import {
   applyStatusEffect,
   emptyStatusEffectState,
+  StatusEffectStateSchema,
   type StatusEffectState,
 } from '../src/domain/status-effect.js'
 import { makeGameplayStagesWithState } from '../src/stages/gameplay-stage-composition.js'
+import { GAMEPLAY_STAGE_IDS } from '../src/stages/stage-ids.js'
 import {
   GAMEPLAY_ENTITIES_OWNER_ID,
   GAMEPLAY_DROPPED_ITEMS_OWNER_ID,
@@ -71,8 +81,9 @@ import {
   requestDroppedItemPickup,
   requestMobSpawn,
   requestExperienceOrbAbsorption,
+  gameplayStages,
 } from '../src/stages/registration.js'
-import { drainGameplayUnsupportedOperations } from '../src/stages/registration-core.js'
+import { drainGameplayUnsupportedOperations, entityManagerTag, type GameplayStageCommitServices } from '../src/stages/registration-core.js'
 import { emptyWorldStoreLayer, STONE, world } from './support/chunk-store-double.js'
 import { emptyRosterLayer } from './support/entity-manager-double.js'
 import { emptyInventoryLayer } from './support/inventory-service-double.js'
@@ -139,6 +150,50 @@ const enchantedHelmetStorage = (
   }
 }
 
+const vanishingCurseStorage = () => {
+  const curse = Result.getOrThrow(enchantmentsComponent({ 'minecraft:vanishing_curse': 1 }))
+  const components = Result.getOrThrow(itemComponents('iron_helmet', { enchantments: curse }))
+  const helmet = Result.getOrThrow(equipmentItem(
+    Result.getOrThrow(itemStack('iron_helmet', StackCount(1), { components })),
+    Result.getOrThrow(durability(165, 165)),
+  ))
+  const bread = Result.getOrThrow(itemStack('bread', StackCount(2)))
+  const mending = Result.getOrThrow(enchantmentsComponent({ 'minecraft:mending': 1 }))
+  const pickaxeComponents = Result.getOrThrow(itemComponents('diamond_pickaxe', { enchantments: mending }))
+  const pickaxe = Result.getOrThrow(itemStack('diamond_pickaxe', StackCount(1), { components: pickaxeComponents }))
+  const emptyStorage = emptyPlayerStorage()
+  const storage = Result.getOrThrow(withInventory(emptyStorage, {
+    slots: [bread, pickaxe, ...emptyStorage.inventory.slots.slice(2)],
+  }))
+  return {
+    ...storage,
+    equipment: {
+      ...storage.equipment,
+      slots: { ...storage.equipment.slots, head: helmet },
+    },
+  }
+}
+
+const outOfRangeEnchantmentStorage = () => {
+  const storage = emptyPlayerStorage()
+  const enchantments = Result.getOrThrow(enchantmentsComponent({ 'minecraft:sharpness': 6 }))
+  const components = Result.getOrThrow(itemComponents('diamond_sword', { enchantments }))
+  const sword = Result.getOrThrow(itemStack('diamond_sword', StackCount(1), { components }))
+  return Result.getOrThrow(withInventory(storage, {
+    slots: [sword, ...storage.inventory.slots.slice(1)],
+  }))
+}
+
+const vanishingOnlyStorage = () => {
+  const enchantments = Result.getOrThrow(enchantmentsComponent({ 'minecraft:vanishing_curse': 1 }))
+  const components = Result.getOrThrow(itemComponents('diamond_pickaxe', { enchantments }))
+  const pickaxe = Result.getOrThrow(itemStack('diamond_pickaxe', StackCount(1), { components }))
+  const storage = emptyPlayerStorage()
+  return Result.getOrThrow(withInventory(storage, {
+    slots: [pickaxe, ...storage.inventory.slots.slice(1)],
+  }))
+}
+
 const zombieRoster = (health: number) => Schema.decodeUnknownSync(GameplayEntityRosterSchema)({
   entities: [{
     id: EntityId('test:thorns-target'),
@@ -197,7 +252,392 @@ const makeProductionScenario = (options: Readonly<{
   return { coordinator, stages, state }
 })
 
+const withSnapshotRevision = (
+  coordinator: WorldCommitCoordinatorApi,
+  ownerId: ReplicatedOwnerId,
+): WorldCommitCoordinatorApi => {
+  let injected = false
+  const snapshot: WorldCommitCoordinatorApi['snapshot'] = <Codec extends Schema.Codec<any, any>>(
+    requestedOwnerId: ReplicatedOwnerId,
+    schema: Codec,
+  ): Effect.Effect<
+    ReplicatedSnapshot<Codec>,
+    Schema.SchemaError | ReplicatedOwnerUnknown,
+    Schema.Codec.DecodingServices<Codec>
+  > => Effect.gen(function* () {
+    const observed = yield* coordinator.snapshot(requestedOwnerId, schema)
+    if (requestedOwnerId !== ownerId || injected) return observed
+    injected = true
+    const currentRevision = yield* coordinator.revision
+    return {
+      ...observed,
+      revision: Schema.decodeUnknownSync(WorldRevisionSchema)(currentRevision + 1),
+    }
+  })
+  return { ...coordinator, snapshot }
+}
+
+const withCommitConflict = (coordinator: WorldCommitCoordinatorApi): WorldCommitCoordinatorApi => {
+  let interleaved = false
+  const commit: WorldCommitCoordinatorApi['commit'] = (request) => Effect.gen(function* () {
+    if (!interleaved && request.changes.some(({ ownerId }) => ownerId === GAMEPLAY_PLAYER_STORAGE_OWNER_ID)) {
+      interleaved = true
+      const statusEffects = yield* coordinator.snapshot(
+        GAMEPLAY_STATUS_EFFECTS_OWNER_ID,
+        StatusEffectStateSchema,
+      )
+      const updated = Result.getOrThrow(applyStatusEffect(statusEffects.state, {
+        type: 'speed',
+        durationSecs: 1,
+      }))
+      yield* coordinator.commit({
+        expectedRevision: statusEffects.revision,
+        expectedDimensions: [],
+        changes: [{ ownerId: GAMEPLAY_STATUS_EFFECTS_OWNER_ID, state: updated.state }],
+      })
+    }
+    return yield* coordinator.commit(request)
+  })
+  return { ...coordinator, commit }
+}
+
+const withSnapshotFailure = (
+  coordinator: WorldCommitCoordinatorApi,
+  ownerId: ReplicatedOwnerId,
+): WorldCommitCoordinatorApi => {
+  const unavailableOwnerId = makeReplicatedOwnerId('coverage:unavailable-snapshot-owner')
+  const snapshot: WorldCommitCoordinatorApi['snapshot'] = <Codec extends Schema.Codec<any, any>>(
+    requestedOwnerId: ReplicatedOwnerId,
+    schema: Codec,
+  ): Effect.Effect<
+    ReplicatedSnapshot<Codec>,
+    Schema.SchemaError | ReplicatedOwnerUnknown,
+    Schema.Codec.DecodingServices<Codec>
+  > => coordinator.snapshot(requestedOwnerId === ownerId ? unavailableOwnerId : requestedOwnerId, schema)
+  return { ...coordinator, snapshot }
+}
+
+const makeDeadPlayerEntityScenario = (
+  storage: ReturnType<typeof emptyPlayerStorage>,
+  options: Readonly<{
+    droppedItemsOwnerId?: ReplicatedOwnerId | null
+    wrapCoordinator?: (coordinator: WorldCommitCoordinatorApi) => WorldCommitCoordinatorApi
+  }> = {},
+) => Effect.gen(function* () {
+  const coordinator = yield* WorldCommitCoordinator
+  const state = yield* makeGameplayFrameStateForOwner({ coordinator, vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID })
+  const [storageSnapshot, vitalsSnapshot] = yield* Effect.all([
+    coordinator.snapshot(GAMEPLAY_PLAYER_STORAGE_OWNER_ID, PlayerStorageSnapshotSchema),
+    coordinator.snapshot(GAMEPLAY_VITALS_OWNER_ID, ExperienceOrbVitalsOwnerSnapshotSchema),
+  ])
+  yield* coordinator.commit({
+    expectedRevision: storageSnapshot.revision,
+    expectedDimensions: [],
+    changes: [
+      { ownerId: GAMEPLAY_PLAYER_STORAGE_OWNER_ID, state: storage },
+      { ownerId: GAMEPLAY_VITALS_OWNER_ID, state: {
+        vitals: { ...vitalsSnapshot.state.vitals, healthPoints: EntityHealthPoints(0) },
+      } },
+    ],
+  })
+  const store = yield* ChunkStore
+  const roster = yield* entityManagerTag<MobBehaviour>()
+  const time = yield* TimeService
+  const commit: GameplayStageCommitServices = {
+    coordinator: options.wrapCoordinator?.(coordinator) ?? coordinator,
+    playerOwnerId: GAMEPLAY_PLAYER_OWNER_ID,
+    playerStorageOwnerId: GAMEPLAY_PLAYER_STORAGE_OWNER_ID,
+    vitalsOwnerId: GAMEPLAY_VITALS_OWNER_ID,
+    entitiesOwnerId: GAMEPLAY_ENTITIES_OWNER_ID,
+    ...(options.droppedItemsOwnerId === null
+      ? {}
+      : { droppedItemsOwnerId: options.droppedItemsOwnerId ?? GAMEPLAY_DROPPED_ITEMS_OWNER_ID }),
+  }
+  const stages = gameplayStages(
+    state,
+    store,
+    roster,
+    undefined,
+    undefined,
+    time,
+    undefined,
+    undefined,
+    { mobSimulation: false },
+    commit,
+  )
+    .filter(({ id }) => id === GAMEPLAY_STAGE_IDS.entities)
+  return { coordinator, state, stages }
+})
+
 describe('full-composition enchantment coverage', () => {
+  it.effect('drops a dead player inventory through Entities and removes Vanishing Curse gear', () =>
+    Effect.gen(function* () {
+      const { coordinator, stages } = yield* makeProductionScenario({
+        storage: vanishingCurseStorage(),
+        statusEffects: emptyStatusEffectState(),
+        zombieHealth: 20,
+      })
+      const vitalsBefore = yield* coordinator.snapshot(
+        GAMEPLAY_VITALS_OWNER_ID,
+        ExperienceOrbVitalsOwnerSnapshotSchema,
+      )
+      yield* coordinator.commit({
+        expectedRevision: vitalsBefore.revision,
+        expectedDimensions: [],
+        changes: [{
+          ownerId: GAMEPLAY_VITALS_OWNER_ID,
+          state: {
+            vitals: {
+              ...vitalsBefore.state.vitals,
+              healthPoints: EntityHealthPoints(1),
+            },
+          },
+        }],
+      })
+
+      yield* runFrame(stages, DeltaTimeSecs(0.25))
+      yield* runFrame(stages, DeltaTimeSecs(0.25))
+
+      const [vitalsAfter, storageAfter, droppedItems] = yield* Effect.all([
+        coordinator.snapshot(GAMEPLAY_VITALS_OWNER_ID, ExperienceOrbVitalsOwnerSnapshotSchema),
+        coordinator.snapshot(GAMEPLAY_PLAYER_STORAGE_OWNER_ID, PlayerStorageSnapshotSchema),
+        coordinator.snapshot(GAMEPLAY_DROPPED_ITEMS_OWNER_ID, DroppedItemOwnerSnapshotSchema),
+      ])
+      expect(vitalsAfter.state.vitals.healthPoints).toBe(0)
+      expect(storageAfter.state).toStrictEqual(emptyPlayerStorage())
+      expect(droppedItems.state.items.map(({ behaviour }) => behaviour.item)).toContain('bread')
+      expect(droppedItems.state.items.map(({ behaviour }) => behaviour.item)).toContain('diamond_pickaxe')
+      expect(droppedItems.state.items.map(({ behaviour }) => behaviour.item)).not.toContain('iron_helmet')
+      expect(droppedItems.state.items.filter(({ behaviour }) => behaviour.item === 'bread')).toHaveLength(1)
+      expect(droppedItems.state.items.find(({ behaviour }) => behaviour.item === 'diamond_pickaxe')?.behaviour.enchantments)
+        .toStrictEqual([{ id: 'mending', level: 1 }])
+    }).pipe(Effect.provide(Layer.orDie(productionWorld))),
+  )
+
+  it.effect('records invalid death-drop enchantment data and preserves the player storage', () =>
+    Effect.gen(function* () {
+      const { coordinator, stages, state } = yield* makeProductionScenario({
+        storage: outOfRangeEnchantmentStorage(),
+        statusEffects: emptyStatusEffectState(),
+        zombieHealth: 20,
+      })
+      const vitalsBefore = yield* coordinator.snapshot(
+        GAMEPLAY_VITALS_OWNER_ID,
+        ExperienceOrbVitalsOwnerSnapshotSchema,
+      )
+      yield* coordinator.commit({
+        expectedRevision: vitalsBefore.revision,
+        expectedDimensions: [],
+        changes: [{
+          ownerId: GAMEPLAY_VITALS_OWNER_ID,
+          state: {
+            vitals: {
+              ...vitalsBefore.state.vitals,
+              healthPoints: EntityHealthPoints(0),
+            },
+          },
+        }],
+      })
+
+      yield* runFrame(stages.filter(({ id }) => id === GAMEPLAY_STAGE_IDS.entities), DeltaTimeSecs(0.25))
+
+      const [storage, failures] = yield* Effect.all([
+        coordinator.snapshot(GAMEPLAY_PLAYER_STORAGE_OWNER_ID, PlayerStorageSnapshotSchema),
+        drainGameplayStageFailures(state),
+      ])
+      expect(storage.state).toStrictEqual(outOfRangeEnchantmentStorage())
+      expect(failures).toContainEqual(expect.objectContaining({
+        _tag: 'Failed',
+        operation: 'CandidateBuild',
+        subject: 'Player',
+        requestId: 'player-death-drops',
+      }))
+    }).pipe(Effect.provide(Layer.orDie(productionWorld))),
+  )
+
+  it.effect('records a death-drop owner snapshot failure and leaves storage intact', () =>
+    Effect.gen(function* () {
+      const storage = vanishingCurseStorage()
+      const { coordinator, stages, state } = yield* makeDeadPlayerEntityScenario(storage, {
+        wrapCoordinator: (current) => withSnapshotFailure(current, GAMEPLAY_VITALS_OWNER_ID),
+      })
+
+      yield* runFrame(stages, DeltaTimeSecs(0.25))
+
+      const [storageAfter, failures] = yield* Effect.all([
+        coordinator.snapshot(GAMEPLAY_PLAYER_STORAGE_OWNER_ID, PlayerStorageSnapshotSchema),
+        drainGameplayStageFailures(state),
+      ])
+      expect(storageAfter.state).toStrictEqual(storage)
+      expect(failures).toContainEqual(expect.objectContaining({
+        _tag: 'Failed',
+        operation: 'OwnerSnapshot',
+        subject: 'Player',
+        requestId: 'player-death-drops',
+      }))
+    }).pipe(Effect.provide(Layer.orDie(productionWorld))),
+  )
+
+  it.effect('records a death-drop revision conflict when the vitals snapshot is stale', () =>
+    Effect.gen(function* () {
+      const storage = vanishingCurseStorage()
+      const { coordinator, stages, state } = yield* makeDeadPlayerEntityScenario(storage, {
+        wrapCoordinator: (current) => withSnapshotRevision(current, GAMEPLAY_VITALS_OWNER_ID),
+      })
+
+      yield* runFrame(stages, DeltaTimeSecs(0.25))
+
+      const [storageAfter, failures] = yield* Effect.all([
+        coordinator.snapshot(GAMEPLAY_PLAYER_STORAGE_OWNER_ID, PlayerStorageSnapshotSchema),
+        drainGameplayStageFailures(state),
+      ])
+      expect(storageAfter.state).toStrictEqual(storage)
+      expect(failures).toContainEqual(expect.objectContaining({
+        _tag: 'Failed',
+        operation: 'OwnerSnapshot',
+        subject: 'Player',
+        requestId: 'player-death-drops',
+        error: expect.objectContaining({ _tag: 'WorldRevisionConflict' }),
+      }))
+    }).pipe(Effect.provide(Layer.orDie(productionWorld))),
+  )
+
+  it.effect('records a death-drop revision conflict when the storage snapshot is stale', () =>
+    Effect.gen(function* () {
+      const storage = vanishingCurseStorage()
+      const { coordinator, stages, state } = yield* makeDeadPlayerEntityScenario(storage, {
+        wrapCoordinator: (current) => withSnapshotRevision(current, GAMEPLAY_PLAYER_STORAGE_OWNER_ID),
+      })
+
+      yield* runFrame(stages, DeltaTimeSecs(0.25))
+
+      const [storageAfter, failures] = yield* Effect.all([
+        coordinator.snapshot(GAMEPLAY_PLAYER_STORAGE_OWNER_ID, PlayerStorageSnapshotSchema),
+        drainGameplayStageFailures(state),
+      ])
+      expect(storageAfter.state).toStrictEqual(storage)
+      expect(failures).toContainEqual(expect.objectContaining({
+        _tag: 'Failed',
+        operation: 'OwnerSnapshot',
+        subject: 'Player',
+        requestId: 'player-death-drops',
+        error: expect.objectContaining({ _tag: 'WorldRevisionConflict' }),
+      }))
+    }).pipe(Effect.provide(Layer.orDie(productionWorld))),
+  )
+
+  it.effect('clears inventory when Vanishing Curse removes every death drop', () =>
+    Effect.gen(function* () {
+      const { coordinator, stages, state } = yield* makeDeadPlayerEntityScenario(vanishingOnlyStorage(), {
+        droppedItemsOwnerId: null,
+      })
+
+      yield* runFrame(stages, DeltaTimeSecs(0.25))
+
+      const [storageAfter, unsupported] = yield* Effect.all([
+        coordinator.snapshot(GAMEPLAY_PLAYER_STORAGE_OWNER_ID, PlayerStorageSnapshotSchema),
+        drainGameplayUnsupportedOperations(state),
+      ])
+      expect(storageAfter.state).toStrictEqual(emptyPlayerStorage())
+      expect(unsupported).toStrictEqual([])
+    }).pipe(Effect.provide(Layer.orDie(productionWorld))),
+  )
+
+  it.effect('keeps storage and records unsupported when death drops have no registered owner', () =>
+    Effect.gen(function* () {
+      const storage = vanishingCurseStorage()
+      const { coordinator, stages, state } = yield* makeDeadPlayerEntityScenario(storage, {
+        droppedItemsOwnerId: null,
+      })
+
+      yield* runFrame(stages, DeltaTimeSecs(0.25))
+
+      const [storageAfter, unsupported] = yield* Effect.all([
+        coordinator.snapshot(GAMEPLAY_PLAYER_STORAGE_OWNER_ID, PlayerStorageSnapshotSchema),
+        drainGameplayUnsupportedOperations(state),
+      ])
+      expect(storageAfter.state).toStrictEqual(storage)
+      expect(unsupported).toContainEqual(expect.objectContaining({
+        _tag: 'Unsupported',
+        action: 'MobSimulation',
+        reason: 'OwnerRegistrationUnavailable',
+      }))
+    }).pipe(Effect.provide(Layer.orDie(productionWorld))),
+  )
+
+  it.effect('records a dropped-item owner snapshot failure and keeps storage intact', () =>
+    Effect.gen(function* () {
+      const storage = vanishingCurseStorage()
+      const { coordinator, stages, state } = yield* makeDeadPlayerEntityScenario(storage, {
+        droppedItemsOwnerId: makeReplicatedOwnerId('coverage:missing-dropped-owner'),
+      })
+
+      yield* runFrame(stages, DeltaTimeSecs(0.25))
+
+      const [storageAfter, failures] = yield* Effect.all([
+        coordinator.snapshot(GAMEPLAY_PLAYER_STORAGE_OWNER_ID, PlayerStorageSnapshotSchema),
+        drainGameplayStageFailures(state),
+      ])
+      expect(storageAfter.state).toStrictEqual(storage)
+      expect(failures).toContainEqual(expect.objectContaining({
+        _tag: 'Failed',
+        operation: 'OwnerSnapshot',
+        subject: 'DroppedItem',
+        requestId: 'player-death-drops',
+      }))
+    }).pipe(Effect.provide(Layer.orDie(productionWorld))),
+  )
+
+  it.effect('records a dropped-item revision conflict and keeps storage intact', () =>
+    Effect.gen(function* () {
+      const storage = vanishingCurseStorage()
+      const { coordinator, stages, state } = yield* makeDeadPlayerEntityScenario(storage, {
+        wrapCoordinator: (current) => withSnapshotRevision(current, GAMEPLAY_DROPPED_ITEMS_OWNER_ID),
+      })
+
+      yield* runFrame(stages, DeltaTimeSecs(0.25))
+
+      const [storageAfter, failures] = yield* Effect.all([
+        coordinator.snapshot(GAMEPLAY_PLAYER_STORAGE_OWNER_ID, PlayerStorageSnapshotSchema),
+        drainGameplayStageFailures(state),
+      ])
+      expect(storageAfter.state).toStrictEqual(storage)
+      expect(failures).toContainEqual(expect.objectContaining({
+        _tag: 'Failed',
+        operation: 'OwnerSnapshot',
+        subject: 'DroppedItem',
+        requestId: 'player-death-drops',
+        error: expect.objectContaining({ _tag: 'WorldRevisionConflict' }),
+      }))
+    }).pipe(Effect.provide(Layer.orDie(productionWorld))),
+  )
+
+  it.effect('records a death-drop commit conflict and retains player storage', () =>
+    Effect.gen(function* () {
+      const storage = vanishingCurseStorage()
+      const { coordinator, stages, state } = yield* makeDeadPlayerEntityScenario(storage, {
+        wrapCoordinator: withCommitConflict,
+      })
+
+      yield* runFrame(stages, DeltaTimeSecs(0.25))
+
+      const [storageAfter, failures, statusEffects] = yield* Effect.all([
+        coordinator.snapshot(GAMEPLAY_PLAYER_STORAGE_OWNER_ID, PlayerStorageSnapshotSchema),
+        drainGameplayStageFailures(state),
+        coordinator.snapshot(GAMEPLAY_STATUS_EFFECTS_OWNER_ID, StatusEffectStateSchema),
+      ])
+      expect(storageAfter.state).toStrictEqual(storage)
+      expect(failures).toContainEqual(expect.objectContaining({
+        _tag: 'Failed',
+        operation: 'WorldCommit',
+        subject: 'Player',
+        requestId: 'player-death-drops',
+        error: expect.objectContaining({ _tag: 'WorldRevisionConflict' }),
+      }))
+      expect(statusEffects.state.effects).toContainEqual(expect.objectContaining({ type: 'speed' }))
+    }).pipe(Effect.provide(Layer.orDie(productionWorld))),
+  )
+
   it.effect('applies mob-contact damage through active Fire Resistance and Unbreaking armor', () =>
     Effect.gen(function* () {
       const status = Result.getOrThrow(applyStatusEffect(emptyStatusEffectState(), {
