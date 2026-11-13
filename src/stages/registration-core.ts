@@ -1178,11 +1178,17 @@ const runFluidPropagation = (
     })
   })
 
+type GameplayEntityStageFaultKey = string & Brand.Brand<'GameplayEntityStageFaultKey'>
+const gameplayEntityStageFaultKey = Brand.nominal<GameplayEntityStageFaultKey>()
+
 export type GameplayFrameState = {
   readonly enderDragonEncounter: EnderDragonEncounterStageApi
   readonly survivalHunger: SurvivalHungerRuntimeApi
   readonly operationFailures: Ref.Ref<ReadonlyArray<GameplayStageOperationFailure>>
-  readonly entityStageFaults: Ref.Ref<Readonly<{ pending: ReadonlyArray<EntityStageFault>; seen: ReadonlySet<string> }>>
+  readonly entityStageFaults: Ref.Ref<Readonly<{
+    pending: ReadonlyArray<EntityStageFault>
+    seen: ReadonlySet<GameplayEntityStageFaultKey>
+  }>>
   readonly pendingBreaks: Ref.Ref<ReadonlyArray<BlockPositionKey>>
   readonly pendingPlacements: Ref.Ref<ReadonlyArray<PlacementRequest | BlockPlacementCommand>>
   readonly pendingBlockUses: Ref.Ref<ReadonlyArray<BlockUseRequest>>
@@ -2081,6 +2087,9 @@ export type GameplayFrameStateOptions = Readonly<{
   vitalsOwnerId: ReplicatedOwnerId
 }>
 
+type EntitiesStageFailureTag = string & Brand.Brand<'EntitiesStageFailureTag'>
+const entitiesStageFailureTag = Brand.nominal<EntitiesStageFailureTag>()
+
 export type GameplayStageOperationFailure = Readonly<{
   _tag: 'Failed'
   operation: 'OwnerSnapshot' | 'WorldCommit' | 'VitalsOperation' | 'CandidateBuild' | 'PlanBuild' | 'EventPublish' | 'EntityExecution'
@@ -2099,7 +2108,7 @@ export type GameplayStageOperationFailure = Readonly<{
     | PrimedTntValidationFailure
     | DamageAtResult
     | Readonly<{ _tag: 'ShieldBlockingPreparation'; reason: ShieldBlockingPreparationError }>
-    | Readonly<{ _tag: 'EntitiesStageExecutionFailure'; failureTag: string }>
+    | Readonly<{ _tag: 'EntitiesStageExecutionFailure'; failureTag: EntitiesStageFailureTag }>
 }>
 
 export type EntityStageFault =
@@ -2136,7 +2145,24 @@ export const recordGameplayStageFailure = (
 ): Effect.Effect<void> =>
   Ref.update(state.operationFailures, (failures) => [...failures, failure])
 
-const entityStageFaultKey = (fault: EntityStageFault): string => {
+const stageFailureTagFor = (failure: unknown): EntitiesStageFailureTag => {
+  if (typeof failure !== 'object' || failure === null) return entitiesStageFailureTag(typeof failure)
+  const tagged = failure as Readonly<{ _tag?: unknown; name?: unknown }>
+  if (typeof tagged._tag === 'string') return entitiesStageFailureTag(tagged._tag)
+  return entitiesStageFailureTag(typeof tagged.name === 'string' ? tagged.name : 'UnknownFailure')
+}
+
+export const recordGameplayEntityStageExecutionFailure = (
+  state: GameplayFrameState,
+  failure: unknown,
+): Effect.Effect<void> => recordGameplayStageFailure(state, {
+  _tag: 'Failed',
+  operation: 'EntityExecution',
+  subject: 'Entities',
+  error: { _tag: 'EntitiesStageExecutionFailure', failureTag: stageFailureTagFor(failure) },
+})
+
+const entityStageFaultKey = (fault: EntityStageFault): GameplayEntityStageFaultKey => {
   switch (fault._tag) {
     case 'EntityWorldDataFault': {
       const target = fault.target._tag === 'Cell'
@@ -2151,19 +2177,19 @@ const entityStageFaultKey = (fault: EntityStageFault): string => {
           : fault.failure._tag === 'EntityWorldRegistryFailure'
             ? `${fault.failure._tag}:${fault.failure.failure._tag}`
             : fault.failure._tag
-      return `${target}:${reason}`
+      return gameplayEntityStageFaultKey(`${target}:${reason}`)
     }
     case 'MobBehaviourRepairFault': {
       const reason = fault.failure._tag === 'EcosystemMobStateRepairFailure'
         ? `${fault.failure._tag}:${fault.failure.field}`
         : fault.failure._tag
-      return `entity:${String(fault.entityId)}:${reason}`
+      return gameplayEntityStageFaultKey(`entity:${String(fault.entityId)}:${reason}`)
     }
     case 'MobMovementExecutionFault': {
       const failureTag = fault.reason === 'simulation-rejected' || fault.reason === 'step-failed'
         ? fault.failure._tag
         : ''
-      return `entity:${String(fault.entityId)}:${fault.reason}:${failureTag}`
+      return gameplayEntityStageFaultKey(`entity:${String(fault.entityId)}:${fault.reason}:${failureTag}`)
     }
     /* v8 ignore start */
     default: {
@@ -2211,8 +2237,8 @@ const makeGameplayFrameStateWithOptions = (
   const operationFailures = yield* Ref.make<ReadonlyArray<GameplayStageOperationFailure>>([])
   const entityStageFaults = yield* Ref.make<Readonly<{
     pending: ReadonlyArray<EntityStageFault>
-    seen: ReadonlySet<string>
-  }>>({ pending: [], seen: new Set() })
+    seen: ReadonlySet<GameplayEntityStageFaultKey>
+  }>>({ pending: [], seen: new Set<GameplayEntityStageFaultKey>() })
   const pendingBreaks = yield* Ref.make<ReadonlyArray<BlockPositionKey>>([])
   const breakRequests = yield* Ref.make<PendingBlockBreakRequestState>({
     nextRequestId: 0,

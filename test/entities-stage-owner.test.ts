@@ -183,6 +183,7 @@ const nearlyBrokenIronHelmetStorage = (): PlayerStorage => {
 const makeHarness = (options: Readonly<{
   readonly entity?: MobEntity | null
   readonly entities?: ReadonlyArray<MobEntity>
+  readonly onChunkPeek?: (coord: Readonly<{ cx: number; cz: number }>) => void
   readonly onLightRead?: (position: Readonly<{ x: number; y: number; z: number }>) => void
   readonly tntSources?: Schema.Schema.Type<typeof GameplayTntSourcesSnapshotSchema>
   readonly block?: Readonly<{ position: ReturnType<typeof blockPosition>; id: BlockId }>
@@ -229,10 +230,19 @@ const makeHarness = (options: Readonly<{
         ),
       }
     : store.api
-  const observedStoreApi = options.onLightRead === undefined
+  const chunkObservedStoreApi = options.onChunkPeek === undefined
     ? chunkStoreApi
     : {
         ...chunkStoreApi,
+        peek: (coord: Parameters<typeof store.api.peek>[0]) => {
+          options.onChunkPeek?.({ cx: Number(coord.cx), cz: Number(coord.cz) })
+          return chunkStoreApi.peek(coord)
+        },
+      }
+  const observedStoreApi = options.onLightRead === undefined
+    ? chunkObservedStoreApi
+    : {
+        ...chunkObservedStoreApi,
         getLight: (lightPosition: Parameters<typeof store.api.getLight>[0]) => {
           options.onLightRead?.(lightPosition)
           return store.api.getLight(lightPosition)
@@ -1899,9 +1909,29 @@ describe('entities stage owner-backed MobSimulation', () => {
       ...ecosystemMobAt('test:off-dimension-skeleton', SKELETON_KIND, 10, 64),
       dimension: nether,
     }
+    const overworldSpider: MobEntity = {
+      id: EntityId('test:in-dimension-spider'),
+      kind: SPIDER_KIND,
+      feetPosition: position(PositionAxis(100), PositionAxis(64), PositionAxis(0)),
+      healthPoints: EntityHealthPoints(16),
+      behaviour: hostileMobSnapshot({
+        ...initialEcosystemMobState(),
+        movementGoal: position(PositionAxis(0), PositionAxis(64), PositionAxis(0)),
+      }),
+      dimension: INITIAL_DIMENSION,
+    }
+    const floor = Array.from({ length: 63 }, (_value, index) => {
+      const x = 90 + index % 21
+      const z = Math.floor(index / 21) - 1
+      return [blockPosition(BlockAxis(x), BlockAxis(63), BlockAxis(z)), STONE] as const
+    })
+    const queriedChunks = new Set<string>()
     const harness = await Effect.runPromise(makeHarness({
       entity: null,
-      entities: [skeleton],
+      entities: [skeleton, overworldSpider],
+      blocks: floor,
+      loadedChunks: ['0,0', '6,0'],
+      onChunkPeek: ({ cx, cz }) => queriedChunks.add(`${cx},${cz}`),
       projectileService: true,
     }))
     const before = await Effect.runPromise(strictRoster(harness.coordinator))
@@ -1909,11 +1939,16 @@ describe('entities stage owner-backed MobSimulation', () => {
     await harness.run(makeDeltaTimeSecs(0.05))
 
     const after = await Effect.runPromise(strictRoster(harness.coordinator))
+    const beforeNetherSkeleton = before.state.entities.find(({ id }) => id === skeleton.id)
+    const afterNetherSkeleton = after.state.entities.find(({ id }) => id === skeleton.id)
+    const afterOverworldSpider = after.state.entities.find(({ id }) => id === overworldSpider.id)
     const projectiles = await Effect.runPromise(harness.coordinator.snapshot(
       PROJECTILE_REPLICATED_OWNER_ID,
       ProjectileServiceSnapshotSchema,
     ))
-    expect(after.state.entities).toStrictEqual(before.state.entities)
+    expect(afterNetherSkeleton).toStrictEqual(beforeNetherSkeleton)
+    expect(afterOverworldSpider).toBeDefined()
+    expect(queriedChunks.has('6,0')).toBe(true)
     expect(projectiles.state.projectiles).toStrictEqual([])
   })
 

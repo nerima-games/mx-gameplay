@@ -370,6 +370,29 @@ describe('SM3 mob movement world', () => {
     }),
   )
 
+  it.effect('excludes movement candidates and steps assigned to another dimension', () =>
+    Effect.gen(function* () {
+      const floor = Array.from({ length: 8 }, (_value, x) => [block(x, 63, 0), STONE] as const)
+      const port = yield* makeWorldPort(floor)
+      const pig = {
+        id: EntityId('mob:other-dimension'),
+        kind: PIG_KIND,
+        feetPosition: at(5.5, 64, 0.5),
+        healthPoints: EntityHealthPoints(10),
+        behaviour: initialEcosystemMobState(),
+        dimension: 'nether' as const,
+      }
+      const roster: MobRoster = { entities: [pig], nextSerial: EntitySerial(1) }
+
+      expect(hasMobMovementCandidates(roster, 'overworld', at(0.5, 64, 0.5))).toBe(false)
+
+      const planned = planMobMovementRoster(roster, at(0.5, 64, 0.5), port, SimulationTick(1), 'overworld')
+      expect(planned).toMatchObject({ _tag: 'Success', success: { faults: [] } })
+      if (Result.isFailure(planned)) return
+      expect(planned.success.roster.entities[0]).toBe(pig)
+    }),
+  )
+
   it.effect('reports a typed step failure for a persisted finite body outside the path grid', () =>
     Effect.gen(function* () {
       const port = yield* makeWorldPort([[block(0, 63, 0), STONE]])
