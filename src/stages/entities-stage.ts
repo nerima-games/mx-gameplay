@@ -229,7 +229,6 @@ const recordMobMovementRosterFault = (
 const mobMovementChunkCoords = (
   roster: GameplayEntityRoster,
   target: Position,
-  dimension: string,
 ): ReadonlyArray<ReturnType<typeof chunkCoordsAround>[number]> => {
   const coords = new Map<string, ReturnType<typeof chunkCoordsAround>[number]>()
   const add = (at: Position, radius: number) => {
@@ -237,9 +236,7 @@ const mobMovementChunkCoords = (
     for (const coord of chunkCoordsAround(at, radius)) coords.set(`${Number(coord.cx)},${Number(coord.cz)}`, coord)
   }
   add(target, 32)
-  for (const entity of roster.entities) {
-    if (entity.dimension === dimension) add(entity.feetPosition, 16)
-  }
+  for (const entity of roster.entities) add(entity.feetPosition, 16)
   return [...coords.values()]
 }
 
@@ -1606,7 +1603,7 @@ const runMobSimulation = (
     })
   }
   const hasMovableMob = hasMobMovementCandidates(tickRoster, dimension, playerPosition)
-  const movementCoords = mobMovementChunkCoords(tickRoster, playerPosition, dimension)
+  const movementCoords = mobMovementChunkCoords(tickRoster, playerPosition)
   const hasUndeadForDaylight = hasUndeadDaylightCandidates(tickRoster, dimension)
   let movementWindow: import('../domain/chunk-window.js').ChunkWindow | undefined = undefined
   let movementWorld: ReturnType<typeof mobMovementWorldFromChunkWindow> | undefined = undefined
