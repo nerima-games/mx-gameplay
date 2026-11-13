@@ -57,9 +57,6 @@ pnpm-debug.log*
 *.temp
 .cache/
 reports/mutation/
-pr76-stair-comment.md
-pr76-stair-diff.patch
-pr76-stair-material.md
 
 # System files
 .DS_Store
