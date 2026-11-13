@@ -1808,6 +1808,51 @@ describe('entities stage owner-backed MobSimulation', () => {
     })
   })
 
+  it.each([
+    { cell: 'unloaded', start: position(PositionAxis(16.5), PositionAxis(64.5), PositionAxis(0.5)) },
+    { cell: 'above world', start: position(PositionAxis(0.5), PositionAxis(256.5), PositionAxis(0.5)) },
+    { cell: 'below world', start: position(PositionAxis(0.5), PositionAxis(-0.5), PositionAxis(0.5)) },
+  ])('queries projectile cells above, below, and outside loaded chunks as ordinary world states ($cell)', async ({ cell, start }) => {
+    const harness = await Effect.runPromise(makeHarness({ entity: null, projectileService: true }))
+    await seedFlyingMobProjectile(
+      harness.coordinator,
+      `mx-gameplay:mob:arrow:${cell.replaceAll(' ', '-')}:0`,
+      start,
+      { x: 1, y: 0, z: 0 },
+    )
+
+    const exit = await Effect.runPromiseExit(harness.stage.run(makeDeltaTimeSecs(0.05)).pipe(
+      Effect.provide(FrameServicesLayer),
+    ))
+
+    expect(exit._tag).toBe('Success')
+  })
+
+  it('fails a flying projectile when block bounds read a corrupt chunk cell', async () => {
+    const harness = await Effect.runPromise(makeHarness({
+      entity: null,
+      projectileService: true,
+      shortChunkBuffer: true,
+    }))
+    await seedFlyingMobProjectile(
+      harness.coordinator,
+      'mx-gameplay:mob:arrow:corrupt-sweep:0',
+      position(PositionAxis(0.5), PositionAxis(64.5), PositionAxis(0.5)),
+      { x: 1, y: 0, z: 0 },
+    )
+
+    const exit = await Effect.runPromiseExit(harness.stage.run(makeDeltaTimeSecs(0.05)).pipe(
+      Effect.provide(FrameServicesLayer),
+    ))
+
+    expect(exit._tag).toBe('Failure')
+    if (exit._tag !== 'Failure') return
+    expect(Cause.squash(exit.cause)).toMatchObject({
+      _tag: 'MobProjectileWorldQueryFailure',
+      failure: { _tag: 'EntityWorldCorruptBuffer' },
+    })
+  })
+
   it('reports when the projectile service disagrees with the stage preview', async () => {
     const harness = await Effect.runPromise(makeHarness({
       entity: null,

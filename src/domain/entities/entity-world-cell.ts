@@ -8,18 +8,25 @@ import {
   type BlockId,
   type BlockProperties,
   type BlockRegistryResolutionFailure,
+  type Position,
   type ResolvedBlock,
 } from '@nerima-games/mc-kernel'
 import { Result } from 'effect'
-import { readChunkWindowCell, type ChunkWindow } from '../chunk-window.js'
+import { readChunkWindowCell, type ChunkWindow, type ChunkWindowCell } from '../chunk-window.js'
 
 export type EntityWorldCellPosition = Readonly<{ x: BlockAxis; y: BlockAxis; z: BlockAxis }>
+type CorruptChunkBuffer = Extract<ChunkWindowCell, { _tag: 'CorruptBuffer' }>
 
 export type EntityWorldQueryFailure =
   | Readonly<{ _tag: 'EntityWorldWindowUnavailable'; cell: EntityWorldCellPosition }>
-  | Readonly<{ _tag: 'EntityWorldCorruptBuffer'; cell: EntityWorldCellPosition; index: number; length: number }>
+  | Readonly<{
+      _tag: 'EntityWorldCorruptBuffer'
+      cell: EntityWorldCellPosition
+      index: CorruptChunkBuffer['index']
+      length: CorruptChunkBuffer['length']
+    }>
   | Readonly<{ _tag: 'EntityWorldRegistryFailure'; cell: EntityWorldCellPosition; failure: BlockRegistryResolutionFailure }>
-  | Readonly<{ _tag: 'EntityWorldInvalidCell'; x: number; y: number; z: number }>
+  | Readonly<{ _tag: 'EntityWorldInvalidCell'; reason: 'not-block-coordinate'; position: Position }>
 
 export type EntityWorldCell =
   | Readonly<{ _tag: 'Loaded'; blockId: BlockId; block: ResolvedBlock | undefined; properties: BlockProperties; capabilities: BlockCapabilities }>

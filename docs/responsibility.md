@@ -167,7 +167,7 @@ plan.md §3.11 と §5.3 の確定事項である。
 doc comment にあり、証拠は `test/vehicle-rail-simulation.test.ts` の閉じた矩形周回テストである
 （本節はその要約で、争える判断はしていない）。
 
-### 5-2. mc-physics は 1 つも取らない —— 根拠は mc-physics 自身の文書である
+### 5-2. 乗り物のルールを mc-physics に移さない
 
 「速度を出す側は mc-physics」という切り方は、**この 5 記号のどれにも当たらない。**
 3 つ理由があり、いずれも既存の文書に書いてある。
@@ -181,11 +181,11 @@ doc comment にあり、証拠は `test/vehicle-rail-simulation.test.ts` の閉�
    `projectMinecartVelocity` をあちらに置くには、mc-physics が自分のスコープ表から
    1 行削る必要がある。
 
-2. **置いても呼べない。** mc-physics の §4 は 親 = `mc-kernel` のみ / 子 = `mc-sim` のみ と書いており、
-   本文書 §3 は「`mc-physics` を直接 import はできない（推移閉包禁止）」と書いている。
-   `projectMinecartVelocity` を向こうに置くと、**1 つのレールルールの半分ずつが、
-   互いを見られない 2 つのリポジトリに入る** —— 向こうは `RailShape` を import できず、
-   こちらは向こうを import できない。
+2. **置いても依存方向が逆になる。** mc-physics の §4 は親 = `mc-kernel` のみ / 子 = `mc-sim` のみ
+   と記載している。本文書 §3 は `COLLISION_SHAPE_AABBS` の参照を exact pin で依存する例外を
+   明記しているが、`projectMinecartVelocity` を mc-physics に置くには gameplay が所有する
+   `RailShape` を mc-physics が知る必要がある。これを許すと、**1 つのレールルールの半分ずつが、
+   依存方向の逆な 2 つのリポジトリに入る**。
 
 3. **「blocks/秒 だから物理」という当て方は、この組織では逆を向く。**
    mc-physics §3 は step-up について、**機構**（`ResolveOptions.stepHeight`）を自分に残し、
@@ -455,6 +455,6 @@ mx-gameplay の supporting declarations に載る。
 - **2 つの速度は転記であって測定ではない。** `combat.config.ts:57-58` に導出は無く、
   `RAIL_CLIMB_SPEED` と違って**検算すべき主張すら書かれていない**（§5-4）。
 
-**mc-physics は 1 つも取らない。** 根拠は §5-2 の 3 つがそのまま当たる ——
-向こうのスコープ表が戦闘のルールを手放していること、推移閉包禁止で import できないこと、
+**ノックバックを mc-physics に移さない。** 根拠は §5-2 の 3 つがそのまま当たる ——
+向こうのスコープ表が戦闘のルールを手放していること、§3 の直接参照は衝突形状データに限ること、
 そして「単位が blocks/秒 だから物理」はこの組織では**逆を向く**こと。

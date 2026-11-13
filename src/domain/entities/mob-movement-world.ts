@@ -174,7 +174,7 @@ export const movementFeetPosition = (state: MobMovementState): Position => {
   )
 }
 
-export const mobMovementCellIsPassable = (cell: MobMovementWorldCell): boolean => {
+export const mobMayEnterMovementCell = (cell: MobMovementWorldCell): boolean => {
   switch (cell._tag) {
     case 'Loaded': return cell.properties.collisionShape === 'none'
     case 'Unloaded': return false
@@ -267,7 +267,11 @@ export const mobMovementWorldFromChunkWindow = (
     const minZ = Math.floor(z - halfWidth)
     const maxZ = Math.ceil(z + halfWidth) - 1
     if (![minX, maxX, minY, maxY, minZ, maxZ].every(Number.isSafeInteger)) {
-      return Result.fail({ _tag: 'EntityWorldInvalidCell', x: minX, y: minY, z: minZ })
+      return Result.fail({
+        _tag: 'EntityWorldInvalidCell',
+        reason: 'not-block-coordinate',
+        position: position(PositionAxis(x), PositionAxis(y), PositionAxis(z)),
+      })
     }
     for (let cellX = minX; cellX <= maxX; cellX += 1) {
       for (let cellY = minY; cellY <= maxY; cellY += 1) {
@@ -283,7 +287,7 @@ export const mobMovementWorldFromChunkWindow = (
   return {
     isPassable: (cell) => {
       const worldCell = movementCellAt(cell)
-      return worldCell === undefined ? false : mobMovementCellIsPassable(worldCell)
+      return worldCell === undefined ? false : mobMayEnterMovementCell(worldCell)
     },
     hasSupport: (cell) => {
       const worldCell = movementCellAt(cell)
