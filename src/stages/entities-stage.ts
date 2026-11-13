@@ -17,6 +17,7 @@ import {
   takeBatch,
 } from './registration-core.js'
 import { Brand, Equal, Option, Result, Schema } from 'effect'
+import { COLLISION_SHAPE_AABBS } from '@nerima-games/mc-physics'
 import {
   AIR_BLOCK_ID,
   AngleRadians,
@@ -99,8 +100,8 @@ import {
   isDroppedItemBehaviour,
   isHostileMobSnapshot,
 } from '../domain/entities/mob-frame.js'
-import { chunkCoordsAround, openChunkWindow, UNREADABLE_BLOCK } from '../domain/chunk-window.js'
-import { LOCAL_COLLISION_BOXES_BY_SHAPE } from '../domain/entities/collision-shape-boxes.js'
+import { chunkCoordsAround, openChunkWindow } from '../domain/chunk-window.js'
+import { entityWorldCellAt, type EntityWorldCell, type EntityWorldQueryFailure } from '../domain/entities/entity-world-cell.js'
 import { mobMovementWorldFromChunkWindow } from '../domain/entities/mob-movement-world.js'
 import { burnsInDaylight } from '../domain/mob/undead-daylight.js'
 import { SPIDER_KIND, BLAZE_KIND, SKELETON_KIND } from '../domain/mob/mob-ecosystem.js'
@@ -190,7 +191,10 @@ const undeadDaylightFacts = (
   store: GameplayStageContext['store'],
   daytime: boolean,
   dimension: string,
-): Effect.Effect<ReadonlyMap<import('@nerima-games/mc-sim').EntityId, Readonly<{ exposed: boolean; inWater: boolean }>>> =>
+): Effect.Effect<
+  ReadonlyMap<import('@nerima-games/mc-sim').EntityId, Readonly<{ exposed: boolean; inWater: boolean }>>,
+  EntityWorldQueryFailure
+> =>
   Effect.gen(function* () {
     const facts = new Map<import('@nerima-games/mc-sim').EntityId, Readonly<{ exposed: boolean; inWater: boolean }>>()
     for (const entity of roster.entities) {
@@ -203,11 +207,39 @@ const undeadDaylightFacts = (
         facts.set(entity.id, { exposed: false, inWater: true })
         continue
       }
-      const feetBlock = window.blockAt(feetX.success, feetY.success, feetZ.success)
-      const feetFluid = feetBlock === UNREADABLE_BLOCK
-        ? undefined
-        : Result.getOrUndefined(propertyOfBlockId(feetBlock, 'fluid'))
-      const inWater = feetFluid === undefined || feetFluid === 'water'
+      const cellPosition = { x: feetX.success, y: feetY.success, z: feetZ.success }
+      const feetCell = entityWorldCellAt(window, cellPosition)
+      if (Result.isFailure(feetCell)) return yield* Effect.fail(feetCell.failure)
+      let inWater: boolean
+      switch (feetCell.success._tag) {
+        case 'Loaded': {
+          const fluid = propertyOfBlockId(feetCell.success.blockId, 'fluid')
+          if (Result.isFailure(fluid)) {
+            return yield* Effect.fail({
+              _tag: 'EntityWorldRegistryFailure',
+              cell: cellPosition,
+              failure: fluid.failure,
+            } as const)
+          }
+          inWater = fluid.success === 'water'
+          break
+        }
+        case 'Unloaded':
+          inWater = true
+          break
+        case 'AboveWorld':
+          inWater = false
+          break
+        case 'BelowWorld':
+          inWater = false
+          break
+        /* v8 ignore start */
+        default: {
+          const exhaustive: never = feetCell.success
+          return exhaustive
+        }
+        /* v8 ignore stop */
+      }
       const light = yield* store.getLight(blockPosition(feetX.success, headY.success, feetZ.success))
       const skyLight = SkyLightLevel(light._tag === 'Light' ? light.sky : -1)
       const rawBehaviour = isHostileMobSnapshot(entity.behaviour)
@@ -262,13 +294,53 @@ const projectileEntitySize = (kind: string): readonly [number, number] =>
           : kind === 'enderman' ? [0.6, 2.9]
             : [0.6, 1.8]
 
+type ProjectileWorldAdapter = Readonly<{
+  readonly world: ProjectileWorld
+  readonly queryFailure: () => EntityWorldQueryFailure | undefined
+  readonly lineOfSight: (from: Position, to: Position) => Result.Result<boolean, EntityWorldQueryFailure>
+  readonly resetUnloadedCells: () => void
+  readonly unloadedEntryFraction: () => number | undefined
+}>
+
+type ProjectileBlockShape = (typeof COLLISION_SHAPE_AABBS)[keyof typeof COLLISION_SHAPE_AABBS]
+
+const projectileTickMustPauseForCell = (cell: EntityWorldCell): boolean => cell._tag === 'Unloaded'
+
+const segmentEntryFraction = (
+  start: Position,
+  end: Position,
+  cell: Readonly<{ x: number; y: number; z: number }>,
+): number | undefined => {
+  let entry = 0
+  let exit = 1
+  const axes: ReadonlyArray<readonly [number, number, number]> = [
+    [start.x, end.x, cell.x],
+    [start.y, end.y, cell.y],
+    [start.z, end.z, cell.z],
+  ]
+  for (const [from, to, min] of axes) {
+    const delta = to - from
+    if (delta === 0) {
+      if (from < min || from >= min + 1) return undefined
+      continue
+    }
+    const first = (min - from) / delta
+    const second = (min + 1 - from) / delta
+    entry = Math.max(entry, Math.min(first, second))
+    exit = Math.min(exit, Math.max(first, second))
+    if (entry > exit) return undefined
+  }
+  if (exit < 0 || entry > 1 || (entry === exit && entry !== 1)) return undefined
+  return Math.max(0, entry)
+}
+
 const projectileWorldFor = (
   roster: GameplayEntityRoster,
   player: Position,
   dimension: Dimension,
   window: import('../domain/chunk-window.js').ChunkWindow,
   coords: ReadonlyArray<ReturnType<typeof chunkCoordsAround>[number]>,
-): ProjectileWorld | undefined => {
+): ProjectileWorldAdapter | undefined => {
   if (coords.length === 0) return undefined
   const chunksX = coords.map(({ cx }) => Number(cx))
   const chunksZ = coords.map(({ cz }) => Number(cz))
@@ -290,19 +362,100 @@ const projectileWorldFor = (
     const entityBounds = projectileAabb(entity.feetPosition, width, width, height)
     entities.push({ id: entity.id, bounds: entityBounds })
   }
-  const blockAt = (x: number, y: number, z: number) => {
+
+  let firstFailure: EntityWorldQueryFailure | undefined
+  let firstUnloadedEntryFraction: number | undefined
+  const rememberFailure = (failure: EntityWorldQueryFailure): void => {
+    firstFailure ??= failure
+  }
+  const cellAt = (x: number, y: number, z: number) => {
     const bx = BlockAxis.result(x)
     const by = BlockAxis.result(y)
     const bz = BlockAxis.result(z)
-    if (Result.isFailure(bx) || Result.isFailure(by) || Result.isFailure(bz)) return UNREADABLE_BLOCK
-    return window.blockAt(bx.success, by.success, bz.success)
+    if (Result.isFailure(bx) || Result.isFailure(by) || Result.isFailure(bz)) {
+      return Result.fail({ _tag: 'EntityWorldInvalidCell', x, y, z } as const)
+    }
+    const cellPosition = { x: bx.success, y: by.success, z: bz.success }
+    return Result.map(entityWorldCellAt(window, cellPosition), (cell) => ({ position: cellPosition, cell }))
   }
-  return {
+  const collisionShapeAtCell = (
+    cellPosition: import('../domain/entities/entity-world-cell.js').EntityWorldCellPosition,
+    cell: EntityWorldCell,
+  ): Result.Result<ProjectileBlockShape, EntityWorldQueryFailure> => {
+    switch (cell._tag) {
+      case 'Loaded': {
+        const shape = propertyOfBlockId(cell.blockId, 'collisionShape')
+        if (Result.isFailure(shape)) {
+          return Result.fail({ _tag: 'EntityWorldRegistryFailure', cell: cellPosition, failure: shape.failure })
+        }
+        return Result.succeed(COLLISION_SHAPE_AABBS[shape.success])
+      }
+      case 'Unloaded': return Result.succeed(null)
+      case 'AboveWorld':
+        return Result.succeed(null)
+      case 'BelowWorld':
+        return Result.succeed(null)
+      /* v8 ignore start */
+      default: {
+        const exhaustive: never = cell
+        return exhaustive
+      }
+      /* v8 ignore stop */
+    }
+  }
+  const lineOfSight: ProjectileWorldAdapter['lineOfSight'] = (from, to) => {
+    const rayFailure: { value: EntityWorldQueryFailure | undefined } = { value: undefined }
+    const ray = raycastArrowBlock(from, to, (x, y, z) => {
+      const result = cellAt(x, y, z)
+      if (Result.isFailure(result)) {
+        rayFailure.value ??= result.failure
+        return false
+      }
+      const { position: cellPosition, cell } = result.success
+      const shape = collisionShapeAtCell(cellPosition, cell)
+      if (Result.isFailure(shape)) {
+        rayFailure.value ??= shape.failure
+        return false
+      }
+      return shape.success !== null
+    })
+    if (rayFailure.value !== undefined) {
+      rememberFailure(rayFailure.value)
+      return Result.fail(rayFailure.value)
+    }
+    return Result.succeed(Result.isSuccess(ray) && Option.isNone(ray.success))
+  }
+  const world: ProjectileWorld = {
     bounds,
     entities,
     isInWater: (at) => {
-      const block = blockAt(Math.floor(at.x), Math.floor(at.y), Math.floor(at.z))
-      return block !== UNREADABLE_BLOCK && Result.getOrUndefined(propertyOfBlockId(block, 'fluid')) === 'water'
+      const result = cellAt(Math.floor(at.x), Math.floor(at.y), Math.floor(at.z))
+      if (Result.isFailure(result)) {
+        rememberFailure(result.failure)
+        return false
+      }
+      const { position: cellPosition, cell } = result.success
+      switch (cell._tag) {
+        case 'Loaded': {
+          const fluid = propertyOfBlockId(cell.blockId, 'fluid')
+          if (Result.isFailure(fluid)) {
+            rememberFailure({ _tag: 'EntityWorldRegistryFailure', cell: cellPosition, failure: fluid.failure })
+            return false
+          }
+          return fluid.success === 'water'
+        }
+        case 'Unloaded': return false
+        case 'AboveWorld':
+          return false
+        case 'BelowWorld':
+          return false
+        /* v8 ignore start */
+        default: {
+          const exhaustive: never = cell
+          return exhaustive
+        }
+        /* v8 ignore stop */
+      }
     },
     blockBounds: (start, end) => {
       const minX = Math.floor(Math.min(start.x, end.x))
@@ -317,44 +470,51 @@ const projectileWorldFor = (
       for (let x = minX; x <= maxX; x += 1) {
         for (let y = minY; y <= maxY; y += 1) {
           for (let z = minZ; z <= maxZ; z += 1) {
-            const block = blockAt(x, y, z)
-            const shape = block === UNREADABLE_BLOCK
-              ? 'full'
-              // Readable cells carry BlockId; the kernel returns a default shape for every valid ID.
-              : Result.getOrThrow(propertyOfBlockId(block, 'collisionShape'))
-            for (const [localMinX, localMinY, localMinZ, localMaxX, localMaxY, localMaxZ] of LOCAL_COLLISION_BOXES_BY_SHAPE[shape]) {
-              boxes.push({
-                minX: projectileAxis(x + localMinX),
-                minY: projectileAxis(y + localMinY),
-                minZ: projectileAxis(z + localMinZ),
-                maxX: projectileAxis(x + localMaxX),
-                maxY: projectileAxis(y + localMaxY),
-                maxZ: projectileAxis(z + localMaxZ),
-              })
+            const result = cellAt(x, y, z)
+            if (Result.isFailure(result)) {
+              rememberFailure(result.failure)
+              continue
             }
+            const { position: cellPosition, cell } = result.success
+            if (projectileTickMustPauseForCell(cell)) {
+              const entry = segmentEntryFraction(start, end, { x, y, z })
+              if (entry !== undefined && (firstUnloadedEntryFraction === undefined || entry < firstUnloadedEntryFraction)) {
+                firstUnloadedEntryFraction = entry
+              }
+              continue
+            }
+            const shapeResult = collisionShapeAtCell(cellPosition, cell)
+            if (Result.isFailure(shapeResult)) {
+              rememberFailure(shapeResult.failure)
+              continue
+            }
+            const shape = shapeResult.success
+            if (shape === null) continue
+            boxes.push({
+              minX: projectileAxis(x + shape.minX),
+              minY: projectileAxis(y + shape.minY),
+              minZ: projectileAxis(z + shape.minZ),
+              maxX: projectileAxis(x + shape.maxX),
+              maxY: projectileAxis(y + shape.maxY),
+              maxZ: projectileAxis(z + shape.maxZ),
+            })
           }
         }
       }
       return boxes
     },
   }
+  return {
+    world,
+    queryFailure: () => firstFailure,
+    lineOfSight,
+    resetUnloadedCells: () => { firstUnloadedEntryFraction = undefined },
+    unloadedEntryFraction: () => firstUnloadedEntryFraction,
+  }
 }
 
 const mobProjectileId = (source: string, tick: number, fireball: boolean): string =>
   `mx-gameplay:mob:${fireball ? 'fireball' : 'arrow'}:${source}:${tick}`
-
-const projectileLineOfSight = (
-  from: Position,
-  to: Position,
-  window: import('../domain/chunk-window.js').ChunkWindow,
-): boolean => {
-  const ray = raycastArrowBlock(from, to, (x, y, z) => {
-    // The DDA validates each next BlockAxis before calling the voxel predicate.
-    const block = window.blockAt(BlockAxis(x), BlockAxis(y), BlockAxis(z))
-    return block === UNREADABLE_BLOCK || Result.getOrUndefined(propertyOfBlockId(block, 'collisionShape')) !== 'none'
-  })
-  return Result.isSuccess(ray) && Option.isNone(ray.success)
-}
 
 type MobProjectileStep = Readonly<{
   readonly impacts: ReadonlyArray<MobProjectilePendingImpact>
@@ -472,8 +632,11 @@ const launchAndStepMobProjectiles = (
     const from = position(PositionAxis(source.feetPosition.x), eyeY, PositionAxis(source.feetPosition.z))
     const to = position(PositionAxis(playerPosition.x), targetY, PositionAxis(playerPosition.z))
     // A non-empty `ranged` list opened this window above.
-    const launchWindow = projectileWindow!
-    if (!projectileLineOfSight(from, to, launchWindow)) continue
+    const lineOfSight = world!.lineOfSight(from, to)
+    if (Result.isFailure(lineOfSight)) {
+      return yield* Effect.fail({ _tag: 'MobProjectileWorldQueryFailure', failure: lineOfSight.failure })
+    }
+    if (!lineOfSight.success) continue
     const dx = to.x - from.x
     const dy = to.y - from.y
     const dz = to.z - from.z
@@ -508,8 +671,7 @@ const launchAndStepMobProjectiles = (
     return value.startsWith('mx-gameplay:mob:') && recordDimension === dimension && !resolvedProjectileIds.has(id)
   })
   if (mobRecords.length === 0 && pendingForDimension.length === 0) return noMobProjectileStep
-  // Any selected mob record was in the initial unresolved set, which built this world above.
-  const projectileWorld = world!
+  const projectileAdapter = world
   const entitiesOwnerId = commit.entitiesOwnerId!
   const entitySnapshot = yield* commit.coordinator.snapshot(entitiesOwnerId, GameplayEntityRosterSchema)
   if (projectileSnapshot.revision !== entitySnapshot.revision) {
@@ -526,6 +688,7 @@ const launchAndStepMobProjectiles = (
     id: ProjectileId
     record: typeof mobRecords[number]
     previewHit: boolean
+    world: ProjectileWorld
   }>> = []
   const retiredIds: ProjectileId[] = []
 
@@ -548,13 +711,24 @@ const launchAndStepMobProjectiles = (
     if (launchTick === currentTick && !newlyLaunchedIds.has(id)) continue
     const expectedAge = Math.max(0, (currentTick - launchTick) * PROJECTILE_FIXED_STEP_SECONDS)
     if (record.projectile.ageSeconds + PROJECTILE_AGE_TOLERANCE_SECONDS >= expectedAge + PROJECTILE_FIXED_STEP_SECONDS) continue
+    if (projectileAdapter === undefined) return yield* Effect.fail({ _tag: 'ProjectileWorldUnavailable' })
+    projectileAdapter.resetUnloadedCells()
     const preview = stepProjectile(
       record.projectile,
       DeltaTimeSecs(PROJECTILE_FIXED_STEP_SECONDS),
-      projectileWorld,
+      projectileAdapter.world,
       record.profile,
     )
-    toStep.push({ id: record.id, record, previewHit: preview.hit !== undefined })
+    const queryFailure = projectileAdapter.queryFailure()
+    if (queryFailure !== undefined) {
+      return yield* Effect.fail({ _tag: 'MobProjectileWorldQueryFailure', failure: queryFailure })
+    }
+    const unloadedEntry = projectileAdapter.unloadedEntryFraction()
+    const hitElapsed = preview.hit === undefined
+      ? PROJECTILE_FIXED_STEP_SECONDS
+      : Number(preview.hit.flightTimeSeconds) - Number(record.projectile.ageSeconds)
+    if (unloadedEntry !== undefined && unloadedEntry * PROJECTILE_FIXED_STEP_SECONDS <= hitElapsed) continue
+    toStep.push({ id: record.id, record, previewHit: preview.hit !== undefined, world: projectileAdapter.world })
     if (preview.hit !== undefined) {
       newPending.push(pendingMobProjectileImpact(record.id, record.shooter, preview.hit, record.dimension))
     }
@@ -583,7 +757,7 @@ const launchAndStepMobProjectiles = (
       expectedRevision,
       expectedDimensionRevision: dimensionRevision,
       deltaTime: DeltaTimeSecs(PROJECTILE_FIXED_STEP_SECONDS),
-      world: projectileWorld,
+      world: candidate.world,
       blockAddressOfHit: (hit) => {
         const x = BlockAxis.result(Math.floor(hit.point.x))
         const y = BlockAxis.result(Math.floor(hit.point.y))
@@ -917,23 +1091,22 @@ const explosionBlockReader = (
       | Readonly<{ _tag: 'ChunkNotLoaded' }>
       | Readonly<{ _tag: 'OutOfWorld' }>
   }>>,
-): ExplosionBlockReader => {
+): Result.Result<ExplosionBlockReader, EntityWorldQueryFailure> => {
   const byPosition = new Map<string, ExplosionBlock>()
   for (const { position: cell, reading } of blocks) {
     if (reading._tag !== 'Block') continue
-    const resistance = Result.getOrThrow(propertyOfBlockId(reading.block, 'blastResistance'))
+    const resistance = propertyOfBlockId(reading.block, 'blastResistance')
+    if (Result.isFailure(resistance)) {
+      return Result.fail({ _tag: 'EntityWorldRegistryFailure', cell, failure: resistance.failure })
+    }
     byPosition.set(blockPositionKeyOf(cell), {
-      resistance: Number.isFinite(resistance)
-        ? Math.min(resistance, Number.MAX_SAFE_INTEGER)
+      resistance: Number.isFinite(resistance.success)
+        ? Math.min(resistance.success, Number.MAX_SAFE_INTEGER)
         : Number.MAX_SAFE_INTEGER,
-      destructible: Number.isFinite(resistance),
+      destructible: Number.isFinite(resistance.success),
     })
   }
-  return ({ x, y, z }) => byPosition.get(blockPositionKeyOf(blockPosition(
-    Result.getOrThrow(BlockAxis.result(x)),
-    Result.getOrThrow(BlockAxis.result(y)),
-    Result.getOrThrow(BlockAxis.result(z)),
-  )))
+  return Result.succeed(({ x, y, z }) => byPosition.get(`${String(x)},${String(y)},${String(z)}`))
 }
 
 const PLAYER_BLAST_ENTITY_ID = EntityId('mx-gameplay:player-avatar')
@@ -993,7 +1166,7 @@ const runTntSimulation = (
     let entityRoster: GameplayEntityRoster | undefined
     let playerState: PlayerServiceSnapshot | undefined
     let tntSourcesSnapshot: GameplayTntSourcesSnapshot | undefined
-    let blocks = explosionBlockReader([])
+    let blocks: ExplosionBlockReader = () => undefined
     let explosionEntities: ReadonlyArray<{ readonly id: import('@nerima-games/mc-kernel').EntityId; readonly feetPosition: Position }> = []
 
     if (willDetonate) {
@@ -1032,7 +1205,9 @@ const runTntSimulation = (
       }
       entityRoster = observed.state
       playerState = player.state
-      blocks = explosionBlockReader(observed.blocks)
+      const blockReader = explosionBlockReader(observed.blocks)
+      if (Result.isFailure(blockReader)) return yield* Effect.fail(blockReader.failure)
+      blocks = blockReader.success
       const mobEntities = observed.state.entities
         .filter(({ dimension }) => dimension === record.dimension)
         .map(({ id: entityId, feetPosition }) => ({

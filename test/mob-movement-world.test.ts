@@ -2,7 +2,12 @@ import { describe, expect, it } from '@effect/vitest'
 import { Effect, Option, Result, Schema } from 'effect'
 import { BlockAxis, BlockId, blockIdOf, blockPosition, ChunkAxis, chunkCoord, EntityHealthPoints, EntitySerial, SimulationTick, type BlockType, position, PositionAxis } from '@nerima-games/mc-kernel'
 import { EntityId, EntityKind, MobMovementStateSchema, MobPathProfileSchema, planMobPathsForTick } from '@nerima-games/mc-sim'
-import { openChunkWindow } from '../src/domain/chunk-window'
+import { CHUNK_HEIGHT } from '@nerima-games/mc-worldgen'
+import { openChunkWindow, UNREADABLE_BLOCK, type ChunkWindow } from '../src/domain/chunk-window'
+import {
+  entityWorldBlockDataFromLookup,
+  entityWorldCellAt,
+} from '../src/domain/entities/entity-world-cell'
 import {
   initialMobMovementState,
   mobMovementCell,
@@ -33,6 +38,33 @@ const makeWorldPort = (entries: ReadonlyArray<readonly [ReturnType<typeof block>
   })
 
 describe('SM3 mob movement world', () => {
+  it('returns typed failures for missing detailed reads and invalid block ids', () => {
+    const cell = { x: BlockAxis(0), y: BlockAxis(64), z: BlockAxis(0) }
+    const legacyWindow: ChunkWindow = {
+      blockAt: () => UNREADABLE_BLOCK,
+      unreadableProbes: () => 0,
+    }
+    const unavailable = entityWorldCellAt(legacyWindow, cell)
+    const invalidBlockId = BlockId.result(65_536)
+
+    expect(unavailable).toMatchObject({
+      _tag: 'Failure',
+      failure: { _tag: 'EntityWorldWindowUnavailable', cell },
+    })
+    expect(Result.isFailure(invalidBlockId)).toBe(true)
+    if (Result.isFailure(invalidBlockId)) {
+      const unresolved = entityWorldBlockDataFromLookup(
+        cell,
+        BlockId(0),
+        Result.fail(invalidBlockId.failure),
+      )
+      expect(unresolved).toMatchObject({
+        _tag: 'Failure',
+        failure: { _tag: 'EntityWorldRegistryFailure', cell },
+      })
+    }
+  })
+
   it.effect('reads air as passable, blocks as solid, and exposes support and hazards', () =>
     Effect.gen(function* () {
       const port = yield* makeWorldPort([
@@ -83,23 +115,41 @@ describe('SM3 mob movement world', () => {
     }),
   )
 
-  it.effect('treats cells outside the resident window as blocked for paths and physics', () =>
+  it.effect('keeps unloaded cells distinct and refuses paths without inventing a collision shape', () =>
     Effect.gen(function* () {
       const port = yield* makeWorldPort([], [])
       const cell = mobMovementCell(at(0, 64, 0))!
       const blockSample = port.physics.environment.blockAt(BlockAxis(0), BlockAxis(64), BlockAxis(0))
+      const blockShape = port.physics.blockShapeAt?.(BlockAxis(0), BlockAxis(64), BlockAxis(0))
 
       expect(port.isPassable(cell)).toBe(false)
       expect(port.hasSupport(cell)).toBe(false)
       expect(port.hazardAt(cell)).toBeNull()
       expect(blockSample._tag).toBe('Success')
       if (blockSample._tag === 'Success') {
-        expect(blockSample.success).not.toBeNull()
-        if (blockSample.success !== null) expect(blockSample.success.properties.collisionShape).toBe('full')
+        expect(blockSample.success).toBeNull()
       }
-      expect(port.physics.blockShapeAt?.(BlockAxis(0), BlockAxis(64), BlockAxis(0))).toMatchObject({
-        minX: 0, minY: 0, minZ: 0, maxX: 1, maxY: 1, maxZ: 1,
-      })
+      expect(blockShape).toBeNull()
+      expect(port.queryFailure()).toBeUndefined()
+    }),
+  )
+
+  it.effect('treats above-world as air and below-world as the non-colliding void', () =>
+    Effect.gen(function* () {
+      const port = yield* makeWorldPort([])
+      const above = mobMovementCell(at(0, CHUNK_HEIGHT, 0))!
+      const below = mobMovementCell(at(0, -1, 0))!
+      const abovePhysics = port.physics.environment.blockAt(BlockAxis(0), BlockAxis(CHUNK_HEIGHT), BlockAxis(0))
+      const belowPhysics = port.physics.environment.blockAt(BlockAxis(0), BlockAxis(-1), BlockAxis(0))
+
+      expect(port.cellAt(above)).toMatchObject({ _tag: 'Success', success: { _tag: 'AboveWorld' } })
+      expect(port.cellAt(below)).toMatchObject({ _tag: 'Success', success: { _tag: 'BelowWorld' } })
+      expect(port.isPassable(above)).toBe(true)
+      expect(port.isPassable(below)).toBe(true)
+      expect(abovePhysics).toMatchObject({ _tag: 'Success', success: { properties: { collisionShape: 'none' } } })
+      expect(belowPhysics).toMatchObject({ _tag: 'Success', success: null })
+      expect(port.physics.blockShapeAt?.(BlockAxis(0), BlockAxis(CHUNK_HEIGHT), BlockAxis(0))).toBeNull()
+      expect(port.physics.blockShapeAt?.(BlockAxis(0), BlockAxis(-1), BlockAxis(0))).toBeNull()
     }),
   )
 
@@ -152,19 +202,20 @@ describe('SM3 mob movement world', () => {
     expect(movementStateForGoal(ordinary, outsidePathGrid)).toBeUndefined()
   })
 
-  it.effect('treats unresolved block ids as blocking and keeps physics on the solid fallback', () =>
+  it.effect('uses kernel default geometry for a representable unregistered block id', () =>
     Effect.gen(function* () {
       const unresolvedBlockId = BlockId(65535)
       const port = yield* makeWorldPort([[block(0, 64, 0), unresolvedBlockId]])
       const cell = mobMovementCell(at(0.5, 64, 0.5))!
 
       expect(port.isPassable(cell)).toBe(false)
-      expect(port.hasSupport(cell)).toBe(false)
+      expect(port.hasSupport(cell)).toBe(true)
       expect(port.hazardAt(cell)).toBeNull()
       expect(port.physics.blockPropertiesAt(BlockAxis(0), BlockAxis(64), BlockAxis(0))._tag).toBe('Success')
       expect(port.physics.blockShapeAt?.(BlockAxis(0), BlockAxis(64), BlockAxis(0))).toMatchObject({
         minX: 0, minY: 0, minZ: 0, maxX: 1, maxY: 1, maxZ: 1,
       })
+      expect(port.queryFailure()).toBeUndefined()
     }),
   )
 

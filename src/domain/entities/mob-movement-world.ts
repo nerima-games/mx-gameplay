@@ -1,13 +1,10 @@
 import {
   BlockAxis,
-  type CollisionShape,
-  type BlockId,
   PositionAxis,
-  blockIdOf,
   position,
-  resolvedBlockOfId,
   type Position,
 } from '@nerima-games/mc-kernel'
+import { COLLISION_SHAPE_AABBS } from '@nerima-games/mc-physics'
 import {
   MobMovementStateSchema,
   MobPathCellSchema,
@@ -19,9 +16,14 @@ import {
   type MobPathCell,
   type MobPathProfile,
 } from '@nerima-games/mc-sim'
-import { Option, Result, Schema } from 'effect'
-import { LOCAL_COLLISION_BOXES_BY_SHAPE } from './collision-shape-boxes.js'
-import { UNREADABLE_BLOCK, type ChunkWindow } from '../chunk-window.js'
+import { Result, Schema } from 'effect'
+import type { ChunkWindow } from '../chunk-window.js'
+import {
+  entityWorldAirBlockDataAt,
+  entityWorldCellAt,
+  type EntityWorldCell,
+  type EntityWorldQueryFailure,
+} from './entity-world-cell.js'
 import {
   CHICKEN_KIND,
   COW_KIND,
@@ -32,33 +34,15 @@ import {
 } from '../mob/mob-ecosystem.js'
 import { ZOMBIE_KIND } from '../mob/hostile-combat.js'
 
-// Bedrock is part of the kernel registry; this module uses it as the unreadable-cell fallback.
-const BEDROCK_BLOCK = Result.getOrThrow(resolvedBlockOfId(Option.getOrThrow(blockIdOf('bedrock'))))!
+export type MobMovementWorldFailure = EntityWorldQueryFailure
 
-type PhysicsBlockShapeAt = NonNullable<MobMovementWorldPort['physics']['blockShapeAt']>
-type PhysicsBlockShapeResult = ReturnType<PhysicsBlockShapeAt>
-type PhysicsBlockShape = Exclude<PhysicsBlockShapeResult, null>
+export type MobMovementWorldCell = EntityWorldCell
 
-const localBox = (
-  minX: number,
-  minY: number,
-  minZ: number,
-  maxX: number,
-  maxY: number,
-  maxZ: number,
-): PhysicsBlockShape => ({
-  minX: PositionAxis(minX),
-  minY: PositionAxis(minY),
-  minZ: PositionAxis(minZ),
-  maxX: PositionAxis(maxX),
-  maxY: PositionAxis(maxY),
-  maxZ: PositionAxis(maxZ),
-})
-
-const blockShape = (shape: CollisionShape): PhysicsBlockShapeResult => {
-  const box = LOCAL_COLLISION_BOXES_BY_SHAPE[shape][0]
-  return box === undefined ? null : localBox(...box)
-}
+export type MobMovementWorldAdapter = MobMovementWorldPort & Readonly<{
+  readonly cellAt: (cell: MobPathCell) => Result.Result<MobMovementWorldCell, MobMovementWorldFailure>
+  readonly queryFailure: () => MobMovementWorldFailure | undefined
+  readonly bodyOverlapsUnloadedCell: (state: MobMovementState) => Result.Result<boolean, MobMovementWorldFailure>
+}>
 
 const profileForKind = (kind: EntityKind): MobPathProfile => {
   const [width, height] = kind === SPIDER_KIND
@@ -146,53 +130,159 @@ export const movementFeetPosition = (state: MobMovementState): Position => {
   )
 }
 
-const rawBlockAt = (window: ChunkWindow, x: BlockAxis, y: BlockAxis, z: BlockAxis): BlockId | undefined => {
-  const id = window.blockAt(x, y, z)
-  return id === UNREADABLE_BLOCK ? undefined : id
+export const mobMovementCellIsPassable = (cell: MobMovementWorldCell): boolean => {
+  switch (cell._tag) {
+    case 'Loaded': return cell.properties.collisionShape === 'none'
+    case 'Unloaded': return false
+    case 'AboveWorld': return true
+    case 'BelowWorld': return true
+    /* v8 ignore start */
+    default: {
+      const exhaustive: never = cell
+      return exhaustive
+    }
+    /* v8 ignore stop */
+  }
 }
 
-const resolvedAt = (window: ChunkWindow, x: BlockAxis, y: BlockAxis, z: BlockAxis) => {
-  const id = rawBlockAt(window, x, y, z)
-  return id === undefined ? undefined : Result.getOrUndefined(resolvedBlockOfId(id))
-}
+const cellIsSupport = (cell: MobMovementWorldCell): boolean =>
+  cell._tag === 'Loaded' && cell.properties.collisionShape !== 'none'
 
-const supportAt = (window: ChunkWindow, cell: MobPathCell): boolean => {
-  const block = resolvedAt(window, cell.x, cell.y, cell.z)
-  return block !== undefined && block.properties.collisionShape !== 'none'
-}
-
-const hazardsAt = (window: ChunkWindow, cell: MobPathCell): 'water' | 'lava' | 'cactus' | 'fire' | null => {
-  const block = resolvedAt(window, cell.x, cell.y, cell.z)
-  if (block === undefined) return null
-  if (block.properties.fluid === 'water' || block.properties.fluid === 'lava') return block.properties.fluid
-  if (block.type === 'cactus') return 'cactus'
-  if (block.type === 'fire') return 'fire'
+const hazardInCell = (cell: MobMovementWorldCell): 'water' | 'lava' | 'cactus' | 'fire' | null => {
+  if (cell._tag !== 'Loaded') return null
+  if (cell.properties.fluid === 'water' || cell.properties.fluid === 'lava') return cell.properties.fluid
+  if (cell.block?.type === 'cactus') return 'cactus'
+  if (cell.block?.type === 'fire') return 'fire'
   return null
 }
 
-/** Build an SM3 world over loaded chunks. Unreadable cells block movement and collision. */
+/** Build an SM3 world that keeps unloaded, world-boundary, and corrupt cells distinct. */
 export const mobMovementWorldFromChunkWindow = (
   window: ChunkWindow,
-): MobMovementWorldPort => {
-  const solidFallback = BEDROCK_BLOCK
-  const blockAt = (x: BlockAxis, y: BlockAxis, z: BlockAxis) => {
-    const block = resolvedAt(window, x, y, z) ?? solidFallback
-    return Result.succeed({ properties: block.properties, capabilities: block.capabilities })
+): MobMovementWorldAdapter => {
+  let firstFailure: MobMovementWorldFailure | undefined
+  const rememberFailure = (failure: MobMovementWorldFailure): void => {
+    firstFailure ??= failure
   }
-  const blockPropertiesAt = (x: BlockAxis, y: BlockAxis, z: BlockAxis) =>
-    Result.succeed((resolvedAt(window, x, y, z) ?? solidFallback).properties)
-  const blockShapeAt = (x: BlockAxis, y: BlockAxis, z: BlockAxis) =>
-    blockShape((resolvedAt(window, x, y, z) ?? solidFallback).properties.collisionShape)
-  const passable = (cell: MobPathCell): boolean => {
-    const id = rawBlockAt(window, cell.x, cell.y, cell.z)
-    if (id === undefined) return false
-    const shape = Result.getOrUndefined(resolvedBlockOfId(id))?.properties.collisionShape
-    return shape !== undefined && shape === 'none'
+  const cells = new Map<string, Result.Result<MobMovementWorldCell, MobMovementWorldFailure>>()
+  const cellAt: MobMovementWorldAdapter['cellAt'] = (cell) => {
+    const key = `${Number(cell.x)},${Number(cell.y)},${Number(cell.z)}`
+    const cached = cells.get(key)
+    if (cached !== undefined) return cached
+    const result = entityWorldCellAt(window, cell)
+    if (Result.isSuccess(result)) cells.set(key, result)
+    return result
+  }
+  const queryAt = (x: BlockAxis, y: BlockAxis, z: BlockAxis) => cellAt({ x, y, z })
+  const rememberQueryFailure = <A>(result: Result.Result<A, MobMovementWorldFailure>): A | undefined => {
+    if (Result.isFailure(result)) {
+      rememberFailure(result.failure)
+      return undefined
+    }
+    return result.success
+  }
+  const physicsSampleAt = (
+    x: BlockAxis,
+    y: BlockAxis,
+    z: BlockAxis,
+  ): ReturnType<MobMovementWorldPort['physics']['environment']['blockAt']> => {
+    const cell: MobPathCell = { x, y, z }
+    const result = queryAt(x, y, z)
+    if (Result.isFailure(result)) {
+      rememberFailure(result.failure)
+      return result.failure._tag === 'EntityWorldRegistryFailure'
+        ? Result.fail(result.failure.failure)
+        : Result.succeed(null)
+    }
+    switch (result.success._tag) {
+      case 'Loaded':
+        return Result.succeed({ properties: result.success.properties, capabilities: result.success.capabilities })
+      case 'Unloaded':
+        return Result.succeed(null)
+      case 'AboveWorld': {
+        const air = entityWorldAirBlockDataAt(cell)
+        if (Result.isFailure(air)) {
+          rememberFailure(air.failure)
+          return air.failure._tag === 'EntityWorldRegistryFailure'
+            ? Result.fail(air.failure.failure)
+            : Result.succeed(null)
+        }
+        return Result.succeed({ properties: air.success.properties, capabilities: air.success.capabilities })
+      }
+      case 'BelowWorld':
+        return Result.succeed(null)
+      /* v8 ignore start */
+      default: {
+        const exhaustive: never = result.success
+        return exhaustive
+      }
+      /* v8 ignore stop */
+    }
+  }
+  const blockAt: MobMovementWorldPort['physics']['environment']['blockAt'] = (x, y, z) =>
+    physicsSampleAt(x, y, z)
+  const blockPropertiesAt: MobMovementWorldPort['physics']['blockPropertiesAt'] = (x, y, z) =>
+    Result.map(physicsSampleAt(x, y, z), (sample) => sample?.properties ?? null)
+  const blockShapeAt: NonNullable<MobMovementWorldPort['physics']['blockShapeAt']> = (x, y, z) => {
+    const cell = rememberQueryFailure(queryAt(x, y, z))
+    if (cell === undefined) return null
+    switch (cell._tag) {
+      case 'Loaded': return COLLISION_SHAPE_AABBS[cell.properties.collisionShape]
+      case 'Unloaded': return null
+      case 'AboveWorld': return null
+      case 'BelowWorld': return null
+      /* v8 ignore start */
+      default: {
+        const exhaustive: never = cell
+        return exhaustive
+      }
+      /* v8 ignore stop */
+    }
+  }
+  const movementCellAt = (cell: MobPathCell): MobMovementWorldCell | undefined => rememberQueryFailure(cellAt(cell))
+  const bodyOverlapsUnloadedCell: MobMovementWorldAdapter['bodyOverlapsUnloadedCell'] = (state) => {
+    const { x, y, z } = state.body
+    const halfWidth = state.profile.width / 2
+    const halfHeight = state.profile.height / 2
+    const minX = Math.floor(x - halfWidth)
+    const maxX = Math.ceil(x + halfWidth) - 1
+    const minY = Math.floor(y - halfHeight)
+    const maxY = Math.ceil(y + halfHeight) - 1
+    const minZ = Math.floor(z - halfWidth)
+    const maxZ = Math.ceil(z + halfWidth) - 1
+    for (let cellX = minX; cellX <= maxX; cellX += 1) {
+      for (let cellY = minY; cellY <= maxY; cellY += 1) {
+        for (let cellZ = minZ; cellZ <= maxZ; cellZ += 1) {
+          const blockX = BlockAxis.result(cellX)
+          const blockY = BlockAxis.result(cellY)
+          const blockZ = BlockAxis.result(cellZ)
+          if (Result.isFailure(blockX) || Result.isFailure(blockY) || Result.isFailure(blockZ)) {
+            return Result.fail({ _tag: 'EntityWorldInvalidCell', x: cellX, y: cellY, z: cellZ })
+          }
+          const cell = cellAt({ x: blockX.success, y: blockY.success, z: blockZ.success })
+          if (Result.isFailure(cell)) return Result.fail(cell.failure)
+          if (cell.success._tag === 'Unloaded') return Result.succeed(true)
+        }
+      }
+    }
+    return Result.succeed(false)
   }
   return {
-    isPassable: passable,
-    hasSupport: (cell) => supportAt(window, cell),
-    hazardAt: (cell) => hazardsAt(window, cell),
+    isPassable: (cell) => {
+      const worldCell = movementCellAt(cell)
+      return worldCell === undefined ? false : mobMovementCellIsPassable(worldCell)
+    },
+    hasSupport: (cell) => {
+      const worldCell = movementCellAt(cell)
+      return worldCell === undefined ? false : cellIsSupport(worldCell)
+    },
+    hazardAt: (cell) => {
+      const worldCell = movementCellAt(cell)
+      return worldCell === undefined ? null : hazardInCell(worldCell)
+    },
+    cellAt,
+    queryFailure: () => firstFailure,
+    bodyOverlapsUnloadedCell,
     physics: {
       environment: { blockAt, blockShapeAt },
       blockPropertiesAt,
