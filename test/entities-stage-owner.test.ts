@@ -12,6 +12,7 @@ import {
   EntityHealthPoints,
   EntitySerial,
   InterpolationFraction,
+  NonNegativeTickCount,
   PositionAxis,
   ProjectileIdSchema,
   RandomSeed,
@@ -20,12 +21,12 @@ import {
   WorldRevisionSchema,
   WorldIdSchema,
   WorldPositionSchema,
+  BlockId,
   blockIdOf,
   blockPosition,
   blockPositionKeyOf,
   position,
   type DeltaTimeSecs,
-  type BlockId,
 } from '@nerima-games/mc-kernel'
 import { LightQueueUnderflowError } from '@nerima-games/mc-worldgen'
 import {
@@ -598,7 +599,11 @@ const spiderAtUnsafeMovementX = (movement?: Schema.Schema.Type<typeof MobMovemen
 describe('entities stage owner-backed MobSimulation', () => {
   it('maps every typed mob movement fault to its stage fault', () => {
     const entityId = EntityId('test:movement-fault-mapping')
-    const simulationFailure = { _tag: 'MobMovementPhysicsFailure' as const, reason: 'invalid-body' as const }
+    const simulationFailure = {
+      _tag: 'MobMovementPhysicsFailure' as const,
+      index: NonNegativeTickCount(0),
+      reason: 'invalid-body' as const,
+    }
     const repairFailure = { _tag: 'EcosystemMobStateRepairFailure' as const, field: 'burningTicks' as const }
 
     expect([
@@ -638,7 +643,7 @@ describe('entities stage owner-backed MobSimulation', () => {
       snapshot: <Codec extends Schema.Codec<any, any>>(
         _ownerId: ReturnType<typeof makeReplicatedOwnerId>,
         _schema: Codec,
-      ) => Effect.fail(failure),
+      ) => Effect.fail(failure as never),
     }
     const context: GameplayStageContext = {
       ...harness.context,
@@ -1928,15 +1933,18 @@ describe('entities stage owner-backed MobSimulation', () => {
         burningTicks: 'invalid',
       }),
     }
-    const skeleton = ecosystemMobAt('test:projectile-source', SKELETON_KIND, 10, 64)
     const harness = await Effect.runPromise(makeHarness({
       entity: null,
-      entities: [skeleton, faultedCow],
+      entities: [faultedCow],
       projectileService: true,
     }))
+    await seedFlyingMobProjectile(
+      harness.coordinator,
+      'mx-gameplay:mob:arrow:repair-fault-target:0',
+      position(PositionAxis(4), PositionAxis(64.9), PositionAxis(0.5)),
+      { x: 20, y: 0, z: 0 },
+    )
 
-    await harness.run(makeDeltaTimeSecs(0.05))
-    await harness.run(makeDeltaTimeSecs(0.05))
     await harness.run(makeDeltaTimeSecs(0.05))
 
     const roster = await Effect.runPromise(strictRoster(harness.coordinator))
