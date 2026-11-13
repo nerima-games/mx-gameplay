@@ -252,8 +252,7 @@ const mobHasStoredMovement = (entity: MobRoster['entities'][number]): boolean =>
   const snapshot = isHostileMobSnapshot(entity.behaviour) ? entity.behaviour : undefined
   if (snapshot?.movement !== undefined) return true
   const behaviour = snapshot?.behaviour ?? entity.behaviour
-  return typeof behaviour === 'object' && behaviour !== null &&
-    'movement' in behaviour && behaviour.movement !== undefined
+  return behaviour?._tag === 'EcosystemMob' && behaviour.movement !== undefined
 }
 
 const hasUndeadDaylightCandidates = (roster: GameplayEntityRoster, dimension: string): boolean =>
@@ -688,20 +687,13 @@ const launchAndStepMobProjectiles = (
   }
   let projectileWindow = window
   let world: ProjectileWorldAdapter | undefined = undefined
-  if (ranged.length > 0 || hasUnresolvedMobProjectiles) {
-    if (coords.length === 0) {
-      if (ranged.length > 0) {
-        yield* recordEntityWorldDataFault(context.state, 'ProjectileLineOfSight', {
-          _tag: 'EntityWorldInvalidCell',
-          reason: 'not-block-coordinate',
-          position: playerPosition,
-        })
-        ranged.length = 0
-      }
-    } else {
-      if (projectileWindow === undefined) projectileWindow = yield* openChunkWindow(store, coords)
-      world = projectileWorldFor(roster, playerPosition, dimension, projectileWindow, coords)
-    }
+  if (ranged.length > 0) {
+    // A ranged attack comes from a valid in-dimension mob, which contributes its chunk to `coords`.
+    if (projectileWindow === undefined) projectileWindow = yield* openChunkWindow(store, coords)
+    world = projectileWorldFor(roster, playerPosition, dimension, projectileWindow, coords)
+  } else if (hasUnresolvedMobProjectiles && coords.length > 0) {
+    if (projectileWindow === undefined) projectileWindow = yield* openChunkWindow(store, coords)
+    world = projectileWorldFor(roster, playerPosition, dimension, projectileWindow, coords)
   }
   const sourceById = new Map(roster.entities.map((entity) => [entity.id, entity]))
   const newlyLaunchedIds = new Set<string>()
@@ -1580,6 +1572,15 @@ const runMobSimulation = (
   const currentTick = (yield* Ref.get(state.tickCount)) + 1
   const stageTick = Schema.decodeUnknownSync(SimulationTickSchema)(currentTick)
   const dimension = playerSnapshot.state.pose.feetPosition.dimension
+  const otherDimensionEntities = tickRoster.entities.filter((entity) =>
+    entity.dimension !== undefined && entity.dimension !== dimension,
+  )
+  tickRoster = {
+    ...tickRoster,
+    entities: tickRoster.entities.filter((entity) =>
+      entity.dimension === undefined || entity.dimension === dimension,
+    ),
+  }
   const timeOfDay = yield* context.time.timeOfDay
   const daytime = dimension === 'overworld' && !(yield* context.time.isNight)
   const invalidMovementEntities = tickRoster.entities.filter((entity) =>
@@ -1926,12 +1927,14 @@ const runMobSimulation = (
   const blockEdits = new Map<string, { readonly position: ReturnType<typeof blockPosition>; readonly block: typeof AIR_BLOCK_ID }>()
   const disturbedKeys: BlockPositionKey[] = []
   for (const blastEvent of sweep.blasts) {
-    const power = Result.getOrUndefined(BlockBlastResistance.result(blastEvent.explosion.power))
-    const x = Result.getOrUndefined(BlockAxis.result(Math.floor(blastEvent.at.x)))
-    const y = Result.getOrUndefined(BlockAxis.result(Math.floor(blastEvent.at.y)))
-    const z = Result.getOrUndefined(BlockAxis.result(Math.floor(blastEvent.at.z)))
-    if (power === undefined || x === undefined || y === undefined || z === undefined) continue
-    for (const cell of craterCells(blockPosition(x, y, z), blastEvent.explosion.power)) {
+    // Only validated, in-dimension creepers reach this sweep; their cell and fixed blast power are valid.
+    const power = Result.getOrThrow(BlockBlastResistance.result(blastEvent.explosion.power))
+    const blastPosition = blockPosition(
+      Result.getOrThrow(BlockAxis.result(Math.floor(blastEvent.at.x))),
+      Result.getOrThrow(BlockAxis.result(Math.floor(blastEvent.at.y))),
+      Result.getOrThrow(BlockAxis.result(Math.floor(blastEvent.at.z))),
+    )
+    for (const cell of craterCells(blastPosition, blastEvent.explosion.power)) {
       const reading = yield* store.getBlock(cell)
       if (
         reading._tag !== 'Block' ||
@@ -1952,7 +1955,7 @@ const runMobSimulation = (
   const entityCandidate = restoreGameplayEntityMetadata(
     {
       ...spawned.success.roster,
-      entities: [...spawned.success.roster.entities, ...faultedEntities],
+      entities: [...spawned.success.roster.entities, ...faultedEntities, ...otherDimensionEntities],
     },
     entitySnapshot.state,
     playerSnapshot.state.pose.feetPosition.dimension,

@@ -85,7 +85,7 @@ import {
   createExperienceOrbValue,
   type ExperienceOrbOwnerSnapshot,
 } from '../src/domain/entities/xp-orb.js'
-import { makeEntitiesStage } from '../src/stages/entities-stage.js'
+import { entityStageFaultForMobMovement, makeEntitiesStage } from '../src/stages/entities-stage.js'
 import { nextRoll } from '../src/domain/frame-rolls.js'
 import {
   CREEPER_KIND,
@@ -95,6 +95,7 @@ import {
   type MobEntity,
   planMobBlastRoster,
   planMobRosterSweep,
+  repairMobBehaviour,
   rollCasualtyDrops,
 } from '../src/domain/entities/mob-frame.js'
 import { BLAZE_KIND, initialEcosystemMobState, SKELETON_KIND, SPIDER_KIND } from '../src/domain/mob/mob-ecosystem.js'
@@ -594,6 +595,63 @@ const spiderAtUnsafeMovementX = (movement?: Schema.Schema.Type<typeof MobMovemen
 })
 
 describe('entities stage owner-backed MobSimulation', () => {
+  it('maps every typed mob movement fault to its stage fault', () => {
+    const entityId = EntityId('test:movement-fault-mapping')
+    const simulationFailure = { _tag: 'MobMovementPhysicsFailure' as const, reason: 'invalid-body' as const }
+    const repairFailure = { _tag: 'EcosystemMobStateRepairFailure' as const, field: 'burningTicks' as const }
+
+    expect([
+      entityStageFaultForMobMovement({
+        _tag: 'MobMovementRosterFailure', reason: 'invalid-state', entityId,
+      }),
+      entityStageFaultForMobMovement({
+        _tag: 'MobMovementRosterFailure', reason: 'invalid-state', entityId, entityKind: COW_KIND, repairFailure,
+      }),
+      entityStageFaultForMobMovement({
+        _tag: 'MobMovementRosterFailure', reason: 'invalid-goal', entityId,
+      }),
+      entityStageFaultForMobMovement({
+        _tag: 'MobMovementRosterFailure', reason: 'simulation-rejected', entityId, failure: simulationFailure,
+      }),
+      entityStageFaultForMobMovement({
+        _tag: 'MobMovementRosterFailure', reason: 'step-failed', entityId, failure: simulationFailure,
+      }),
+    ]).toStrictEqual([
+      { _tag: 'MobMovementExecutionFault', entityId, reason: 'invalid-state' },
+      { _tag: 'MobBehaviourRepairFault', entityId, entityKind: COW_KIND, failure: repairFailure },
+      { _tag: 'MobMovementExecutionFault', entityId, reason: 'invalid-goal' },
+      { _tag: 'MobMovementExecutionFault', entityId, reason: 'simulation-rejected', failure: simulationFailure },
+      { _tag: 'MobMovementExecutionFault', entityId, reason: 'step-failed', failure: simulationFailure },
+    ])
+  })
+
+  it.each([
+    [new Error('snapshot failed'), 'Error'],
+    [{}, 'UnknownFailure'],
+    ['unavailable', 'string'],
+  ] as const)('records the stage failure tag for %s', async (failure, failureTag) => {
+    const harness = await Effect.runPromise(makeHarness({ entity: null }))
+    const commit = harness.context.commit!
+    const failedCoordinator: WorldCommitCoordinatorApi = {
+      ...commit.coordinator,
+      snapshot: <Codec extends Schema.Codec<any, any>>(
+        _ownerId: ReturnType<typeof makeReplicatedOwnerId>,
+        _schema: Codec,
+      ) => Effect.fail(failure),
+    }
+    const context: GameplayStageContext = {
+      ...harness.context,
+      commit: { ...commit, coordinator: failedCoordinator },
+    }
+
+    const exit = await Effect.runPromiseExit(makeEntitiesStage(context).run(makeDeltaTimeSecs(0.05)).pipe(
+      Effect.provide(FrameServicesLayer),
+    ))
+
+    expect(exit._tag).toBe('Success')
+    await expectEntityStageExecutionFailure(harness.state, failureTag)
+  })
+
   it('deduplicates typed registry and movement-repair fault identities across drains', async () => {
     const harness = await Effect.runPromise(makeHarness({ entity: null }))
     const cell = { x: BlockAxis(0), y: BlockAxis(64), z: BlockAxis(0) }
@@ -1795,6 +1853,105 @@ describe('entities stage owner-backed MobSimulation', () => {
     )
   })
 
+  it('uses the saved projectile coordinate when the player position is outside the world', async () => {
+    const far = 2 ** 60
+    const harness = await Effect.runPromise(makeHarness({
+      entity: null,
+      playerPose: {
+        ...INITIAL_PLAYER_POSE,
+        feetPosition: position(PositionAxis(far), PositionAxis(64), PositionAxis(0)),
+      },
+      loadedChunks: [],
+      projectileService: true,
+    }))
+    await seedFlyingMobProjectile(
+      harness.coordinator,
+      'mx-gameplay:mob:arrow:valid-cell-invalid-player:0',
+      position(PositionAxis(0.5), PositionAxis(65), PositionAxis(0.5)),
+      { x: 1, y: 0, z: 0 },
+    )
+
+    const exit = await Effect.runPromiseExit(harness.stage.run(makeDeltaTimeSecs(0.05)).pipe(
+      Effect.provide(FrameServicesLayer),
+    ))
+
+    expect(exit._tag).toBe('Success')
+    expect(await Effect.runPromise(drainGameplayEntityStageFaults(harness.state))).toContainEqual(
+      expect.objectContaining({
+        _tag: 'EntityWorldDataFault',
+        source: 'ProjectileStep',
+        failure: expect.objectContaining({
+          _tag: 'EntityWorldInvalidCell',
+          position: position(PositionAxis(far), PositionAxis(64), PositionAxis(0)),
+        }),
+      }),
+    )
+  })
+
+  it('does not tick mobs outside the player dimension', async () => {
+    const nether = Schema.decodeUnknownSync(DimensionIdSchema)('nether')
+    const skeleton: MobEntity = {
+      ...ecosystemMobAt('test:off-dimension-skeleton', SKELETON_KIND, 10, 64),
+      dimension: nether,
+    }
+    const harness = await Effect.runPromise(makeHarness({
+      entity: null,
+      entities: [skeleton],
+      projectileService: true,
+    }))
+    const before = await Effect.runPromise(strictRoster(harness.coordinator))
+
+    await harness.run(makeDeltaTimeSecs(0.05))
+
+    const after = await Effect.runPromise(strictRoster(harness.coordinator))
+    const projectiles = await Effect.runPromise(harness.coordinator.snapshot(
+      PROJECTILE_REPLICATED_OWNER_ID,
+      ProjectileServiceSnapshotSchema,
+    ))
+    expect(after.state.entities).toStrictEqual(before.state.entities)
+    expect(projectiles.state.projectiles).toStrictEqual([])
+  })
+
+  it('does not use a repair-fault mob as a projectile collision target', async () => {
+    const faultedCow: MobEntity = {
+      id: EntityId('test:faulted-projectile-target'),
+      kind: COW_KIND,
+      feetPosition: position(PositionAxis(5), PositionAxis(64), PositionAxis(0)),
+      healthPoints: EntityHealthPoints(10),
+      behaviour: repairMobBehaviour(COW_KIND, {
+        _tag: 'EcosystemMob',
+        attackCooldownTicks: 0,
+        motionPhase: 0,
+        provoked: false,
+        hasHeadProtection: false,
+        burningTicks: 'invalid',
+      }),
+    }
+    const skeleton = ecosystemMobAt('test:projectile-source', SKELETON_KIND, 10, 64)
+    const harness = await Effect.runPromise(makeHarness({
+      entity: null,
+      entities: [skeleton, faultedCow],
+      projectileService: true,
+    }))
+
+    await harness.run(makeDeltaTimeSecs(0.05))
+    await harness.run(makeDeltaTimeSecs(0.05))
+    await harness.run(makeDeltaTimeSecs(0.05))
+
+    const roster = await Effect.runPromise(strictRoster(harness.coordinator))
+    const projectiles = await Effect.runPromise(harness.coordinator.snapshot(
+      PROJECTILE_REPLICATED_OWNER_ID,
+      ProjectileServiceSnapshotSchema,
+    ))
+    expect(roster.state.entities.find(({ id }) => id === faultedCow.id)?.behaviour).toMatchObject({
+      _tag: 'MobBehaviourRepairFault',
+    })
+    expect(projectiles.state.projectiles).not.toStrictEqual([])
+    expect(roster.state.pendingMobProjectileImpacts ?? []).not.toContainEqual(
+      expect.objectContaining({ hit: expect.objectContaining({ entityId: faultedCow.id }) }),
+    )
+  })
+
   it('records a typed failure when a mob projectile appears between service snapshots', async () => {
     const harness = await Effect.runPromise(makeHarness({ entity: null, projectileService: true }))
     await seedFlyingMobProjectile(
@@ -2952,6 +3109,41 @@ describe('entities stage owner-backed MobSimulation', () => {
     expect(current.state.tnts[0]?.state).toStrictEqual({ kind: 'detonated' })
     expect(calls.writes).toBe(0)
     expect(await Effect.runPromise(Ref.get(harness.state.fallingBlocks))).toStrictEqual(fallingBefore)
+  })
+
+  it('records an unregistered block from the TNT observation and keeps the detonation pending', async () => {
+    const centre = blockPosition(BlockAxis(0), BlockAxis(64), BlockAxis(0))
+    const tntId = EntityId('test:tnt-unregistered-cell')
+    const harness = await Effect.runPromise(makeHarness({
+      entity: null,
+      blocks: [[centre, BlockId(65_535)]],
+      tnt: {
+        tnts: [{
+          id: tntId,
+          dimension: INITIAL_DIMENSION,
+          center: { x: 0, y: 64, z: 0 },
+          state: { kind: 'primed', remainingFuseSecs: 0 },
+        }],
+      },
+    }))
+
+    const exit = await Effect.runPromiseExit(harness.stage.run(makeDeltaTimeSecs(0.05)).pipe(
+      Effect.provide(FrameServicesLayer),
+    ))
+
+    expect(exit._tag).toBe('Success')
+    expect(harness.tntCommits()).toBe(0)
+    expect(await Effect.runPromise(drainGameplayEntityStageFaults(harness.state))).toContainEqual(
+      expect.objectContaining({
+        _tag: 'EntityWorldDataFault',
+        source: 'TntExplosion',
+        failure: expect.objectContaining({
+          _tag: 'EntityWorldUnregisteredBlockId',
+          cell: { x: 0, y: 64, z: 0 },
+          blockId: 65_535,
+        }),
+      }),
+    )
   })
 
   it('records unsafe TNT cells and continues without committing the detonation', async () => {
