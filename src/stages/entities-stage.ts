@@ -112,7 +112,6 @@ import {
   type EntityWorldQueryFailure,
 } from '../domain/entities/entity-world-cell.js'
 import { mobMovementCell, mobMovementWorldFromChunkWindow } from '../domain/entities/mob-movement-world.js'
-import type { EntityStageFault, EntityWorldFaultTarget } from '../domain/entities/entity-stage-fault.js'
 import { burnsInDaylight } from '../domain/mob/undead-daylight.js'
 import { SPIDER_KIND, BLAZE_KIND, SKELETON_KIND, MOB_MOVEMENT_POLICIES } from '../domain/mob/mob-ecosystem.js'
 import type { BurningActor } from '../domain/fire-lifecycle.js'
@@ -141,11 +140,13 @@ import {
 import type {
   DroppedItemPickupExecution,
   ExperienceOrbAbsorptionExecution,
+  EntityStageFault,
   GameplayStageContext,
   StageRegistration,
 } from './registration-core.js'
 
 type PlayerServiceSnapshot = Schema.Schema.Type<typeof PlayerServiceSnapshotSchema>
+type EntityWorldFaultTarget = Extract<EntityStageFault, { _tag: 'EntityWorldDataFault' }>['target']
 
 const unsupportedMobSimulation = (
   state: GameplayStageContext['state'],

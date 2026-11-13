@@ -265,7 +265,6 @@ import {
   type MobSpawnAttempt,
 } from '../domain/entities/mob-frame.js'
 import { FRESH_PRIMED_TNT } from '../domain/mob/primed-tnt.js'
-import type { EntityStageFault } from '../domain/entities/entity-stage-fault.js'
 import {
   DROPPED_ITEM_PICKUP_RADIUS,
   pickupDroppedItems,
@@ -296,7 +295,10 @@ import {
   type EntityId,
   type EntityManager,
   type EntityManagerApi,
+  type MobMovementFailure,
 } from '@nerima-games/mc-sim'
+import type { EntityWorldCellPosition, EntityWorldQueryFailure } from '../domain/entities/entity-world-cell.js'
+import type { MobStateRepairFailure } from '../domain/mob/mob-ecosystem.js'
 import type { Damage } from '../domain/death-cause.js'
 import { prepareArmorHit } from '../domain/combat/armor.js'
 import {
@@ -2099,6 +2101,34 @@ export type GameplayStageOperationFailure = Readonly<{
     | Readonly<{ _tag: 'ShieldBlockingPreparation'; reason: ShieldBlockingPreparationError }>
     | Readonly<{ _tag: 'EntitiesStageExecutionFailure'; failureTag: string }>
 }>
+
+export type EntityStageFault =
+  | Readonly<{
+      _tag: 'EntityWorldDataFault'
+      source: 'UndeadDaylight' | 'MobMovement' | 'ProjectileLineOfSight' | 'ProjectileStep' | 'TntExplosion'
+      target:
+        | Readonly<{ _tag: 'Cell'; cell: EntityWorldCellPosition }>
+        | Readonly<{ _tag: 'Entity'; entityId: EntityId }>
+        | Readonly<{ _tag: 'Position'; position: Position }>
+      failure: EntityWorldQueryFailure
+    }>
+  | Readonly<{
+      _tag: 'MobBehaviourRepairFault'
+      entityId: EntityId
+      entityKind: EntityKind
+      failure: MobStateRepairFailure
+    }>
+  | Readonly<{
+      _tag: 'MobMovementExecutionFault'
+      entityId: EntityId
+      reason: 'invalid-state' | 'invalid-goal'
+    }>
+  | Readonly<{
+      _tag: 'MobMovementExecutionFault'
+      entityId: EntityId
+      reason: 'simulation-rejected' | 'step-failed'
+      failure: MobMovementFailure
+    }>
 
 export const recordGameplayStageFailure = (
   state: GameplayFrameState,
