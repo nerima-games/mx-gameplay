@@ -41,12 +41,13 @@ export type MobMovementWorldCell = EntityWorldCell
 export type MobMovementWorldAdapter = MobMovementWorldPort & Readonly<{
   readonly cellAt: (cell: MobPathCell) => Result.Result<MobMovementWorldCell, MobMovementWorldFailure>
   readonly queryFailure: () => MobMovementWorldFailure | undefined
+  readonly resetQueryFailure: () => void
   readonly bodyOverlapsUnloadedCell: (state: MobMovementState) => Result.Result<boolean, MobMovementWorldFailure>
 }>
 
 type MovementPhysicsBlock = ReturnType<MobMovementWorldPort['physics']['environment']['blockAt']>
 type LoadedMovementCell = Extract<MobMovementWorldCell, { _tag: 'Loaded' }>
-type RegistryCellFailure = Extract<MobMovementWorldFailure, { _tag: 'EntityWorldRegistryFailure' }>
+type RegistryCellFailure = Extract<MobMovementWorldFailure, { _tag: 'EntityWorldRegistryFailure' | 'EntityWorldUnregisteredBlockId' }>
 
 export const mobMovementPhysicsSampleForCell = (
   result: Result.Result<MobMovementWorldCell, MobMovementWorldFailure>,
@@ -72,7 +73,12 @@ export const mobMovementPhysicsSampleForCell = (
     case 'AboveWorld': {
       const air = airAt()
       if (Result.isFailure(air)) {
-        return { sample: Result.fail(air.failure.failure), queryFailure: air.failure }
+        return {
+          sample: air.failure._tag === 'EntityWorldRegistryFailure'
+            ? Result.fail(air.failure.failure)
+            : Result.succeed(null),
+          queryFailure: air.failure,
+        }
       }
       return {
         sample: Result.succeed({ properties: air.success.properties, capabilities: air.success.capabilities }),
@@ -299,6 +305,7 @@ export const mobMovementWorldFromChunkWindow = (
     },
     cellAt,
     queryFailure: () => firstFailure,
+    resetQueryFailure: () => { firstFailure = undefined },
     bodyOverlapsUnloadedCell,
     physics: {
       environment: { blockAt, blockShapeAt },

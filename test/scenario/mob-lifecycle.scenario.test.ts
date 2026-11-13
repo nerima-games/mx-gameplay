@@ -29,7 +29,7 @@ import {
   type PlayerServiceApi,
   type WorldCommitCoordinatorApi,
 } from '@nerima-games/mc-sim'
-import { Cause, Effect, Exit, Option, Ref, Schema, Stream } from 'effect'
+import { Effect, Exit, Option, Ref, Schema, Stream } from 'effect'
 import type { ChunkStoreApi } from '@nerima-games/mc-worldgen'
 import {
   CREEPER_KIND,
@@ -58,6 +58,7 @@ import { ExperienceOrbVitalsOwnerSnapshotSchema } from '../../src/domain/entitie
 import { GAMEPLAY_STAGE_IDS } from '../../src/stages/stage-ids'
 import {
   gameplayStages,
+  drainGameplayEntityStageFaults,
   makeGameplayFrameState,
   requestMobSpawn,
 } from '../../src/stages/registration'
@@ -438,41 +439,56 @@ describe('mob lifecycle gameplay scenarios', () => {
     }),
   )
 
-  it.effect('fails the composed gameplay tick with a corrupt-buffer movement tag', () =>
+  it.effect('continues a composed tick with a corrupt chunk buffer and drains one cell fault', () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness(
         position(0.5, 64, 0.5),
-        floorWorld(0, 8),
-        ['0,0'],
+        floorWorld(0, 32),
+        ['0,0', '1,0'],
         'overworld',
         undefined,
         withShortChunkBuffer,
       )
       yield* harness.time.setTimeOfDay(InterpolationFraction(0.5))
-      yield* requestMobSpawn(harness.state, spawnAttempt(PASSIVE_MOB_KINDS[0]!, position(5.5, 64, 0.5)))
+      yield* requestMobSpawn(harness.state, spawnAttempt(COW_KIND, position(5.5, 64, 0.5)))
+      yield* requestMobSpawn(harness.state, spawnAttempt(PIG_KIND, position(20.5, 64, 0.5)))
       yield* runFrame(harness.stages, DeltaTimeSecs(0))
+      const before = yield* mobEntities(harness.commit.coordinator)
+      const affectedBefore = before.find(({ kind }) => kind === COW_KIND)
+      const unaffectedBefore = before.find(({ kind }) => kind === PIG_KIND)
+      expect(before).toHaveLength(2)
 
       const tick = yield* Effect.exit(runFrame(harness.stages, DeltaTimeSecs(1 / 20)))
-      expect(Exit.isFailure(tick)).toBe(true)
-      if (!Exit.isFailure(tick)) return
-      expect(Cause.squash(tick.cause)).toMatchObject({
-        _tag: 'MobMovementRosterFailure',
-        reason: 'world-query-failed',
-        worldFailure: { _tag: 'EntityWorldCorruptBuffer' },
-      })
+      expect(Exit.isSuccess(tick)).toBe(true)
+      const after = yield* mobEntities(harness.commit.coordinator)
+      const affectedAfter = after.find(({ id }) => id === affectedBefore?.id)
+      const unaffectedAfter = after.find(({ id }) => id === unaffectedBefore?.id)
+      const faults = yield* drainGameplayEntityStageFaults(harness.state)
+      expect(affectedBefore).toBeDefined()
+      expect(affectedAfter?.feetPosition).toStrictEqual(affectedBefore?.feetPosition)
+      expect(unaffectedBefore).toBeDefined()
+      expect(unaffectedAfter?.behaviour).not.toEqual(unaffectedBefore?.behaviour)
+      expect(faults).toContainEqual(expect.objectContaining({
+        _tag: 'EntityWorldDataFault',
+        failure: expect.objectContaining({ _tag: 'EntityWorldCorruptBuffer' }),
+      }))
+
+      yield* runFrame(harness.stages, DeltaTimeSecs(1 / 20))
+      expect(yield* drainGameplayEntityStageFaults(harness.state)).toStrictEqual([])
     }),
   )
 
-  it.effect('fails the undead daylight query with the corrupt-buffer tag', () =>
+  it.effect('records a corrupt daylight cell without failing the composed gameplay tick', () =>
     Effect.gen(function* () {
-      let corruptBuffer = false
+      let bufferMode: 'healthy' | 'short' | 'unregistered' = 'healthy'
       const adaptStore = (store: ChunkStoreApi): ChunkStoreApi => ({
         ...store,
-        peek: (coord) => Effect.map(store.peek(coord), (chunk) =>
-          !corruptBuffer || chunk === undefined
-            ? chunk
-            : { ...chunk, blocks: Uint16Array.from(chunk.blocks).subarray(0, 1) },
-        ),
+        peek: (coord) => Effect.map(store.peek(coord), (chunk) => {
+          if (chunk === undefined || bufferMode === 'healthy') return chunk
+          return bufferMode === 'short'
+            ? { ...chunk, blocks: Uint16Array.from(chunk.blocks).subarray(0, 1) }
+            : { ...chunk, blocks: Uint16Array.from(chunk.blocks, () => 65_535) }
+        }),
       })
       const harness = yield* makeHarness(
         position(0.5, 64, 0.5),
@@ -485,15 +501,94 @@ describe('mob lifecycle gameplay scenarios', () => {
       yield* harness.time.setTimeOfDay(InterpolationFraction(0.5))
       yield* requestMobSpawn(harness.state, spawnAttempt(ZOMBIE_KIND, position(5.5, 64, 0.5)))
       yield* runFrame(harness.stages, DeltaTimeSecs(0))
-      corruptBuffer = true
+      bufferMode = 'short'
 
       const tick = yield* Effect.exit(runFrame(harness.stages, DeltaTimeSecs(1 / 20)))
-      expect(Exit.isFailure(tick)).toBe(true)
-      if (!Exit.isFailure(tick)) return
-      expect(Cause.squash(tick.cause)).toMatchObject({
-        _tag: 'EntityWorldCorruptBuffer',
-        cell: { x: 5, y: 64, z: 0 },
+      expect(Exit.isSuccess(tick)).toBe(true)
+      expect(yield* drainGameplayEntityStageFaults(harness.state)).toContainEqual(expect.objectContaining({
+        _tag: 'EntityWorldDataFault',
+        source: 'UndeadDaylight',
+        target: { _tag: 'Cell', cell: { x: 5, y: 64, z: 0 } },
+        failure: expect.objectContaining({ _tag: 'EntityWorldCorruptBuffer' }),
+      }))
+
+      bufferMode = 'unregistered'
+      const unregisteredTick = yield* Effect.exit(runFrame(harness.stages, DeltaTimeSecs(1 / 20)))
+      expect(Exit.isSuccess(unregisteredTick)).toBe(true)
+      expect(yield* drainGameplayEntityStageFaults(harness.state)).toContainEqual(expect.objectContaining({
+        _tag: 'EntityWorldDataFault',
+        source: 'UndeadDaylight',
+        target: { _tag: 'Cell', cell: { x: 5, y: 64, z: 0 } },
+        failure: expect.objectContaining({ _tag: 'EntityWorldUnregisteredBlockId', blockId: 65_535 }),
+      }))
+      yield* runFrame(harness.stages, DeltaTimeSecs(1 / 20))
+      expect(yield* drainGameplayEntityStageFaults(harness.state)).toStrictEqual([])
+    }),
+  )
+
+  it.effect('keeps an invalid persisted mob state typed, skips only that mob, and deduplicates its fault', () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness(position(0.5, 64, 0.5), floorWorld(0, 12), ['0,0'])
+      yield* harness.time.setTimeOfDay(InterpolationFraction(0.5))
+      yield* requestMobSpawn(harness.state, spawnAttempt(COW_KIND, position(5.5, 64, 0.5)))
+      yield* requestMobSpawn(harness.state, spawnAttempt(PIG_KIND, position(8.5, 64, 0.5)))
+      yield* runFrame(harness.stages, DeltaTimeSecs(0))
+
+      const beforeSnapshot = yield* harness.commit.coordinator.snapshot(
+        GAMEPLAY_ENTITIES_OWNER_ID,
+        GameplayEntityRosterSchema,
+      )
+      const beforeCow = beforeSnapshot.state.entities.find(({ kind }) => kind === COW_KIND)
+      const beforePig = beforeSnapshot.state.entities.find(({ kind }) => kind === PIG_KIND)
+      expect(beforeCow).toBeDefined()
+      expect(beforePig).toBeDefined()
+      if (beforeCow === undefined || beforePig === undefined) return
+
+      const repairedFault = repairMobBehaviour(COW_KIND, {
+        _tag: 'EcosystemMob',
+        attackCooldownTicks: 0,
+        motionPhase: 0,
+        provoked: false,
+        hasHeadProtection: false,
+        burningTicks: 161,
       })
+      expect(repairedFault).toMatchObject({
+        _tag: 'MobBehaviourRepairFault',
+        failure: { _tag: 'EcosystemMobStateRepairFailure', field: 'burningTicks' },
+      })
+      const seeded = Schema.decodeUnknownSync(GameplayEntityRosterSchema)({
+        ...beforeSnapshot.state,
+        entities: beforeSnapshot.state.entities.map((entity) => entity.id === beforeCow.id
+          ? { ...entity, behaviour: repairedFault }
+          : entity),
+      })
+      yield* harness.commit.coordinator.commit({
+        expectedRevision: beforeSnapshot.revision,
+        expectedDimensions: [],
+        changes: [{ ownerId: GAMEPLAY_ENTITIES_OWNER_ID, state: seeded }],
+      })
+
+      const tick = yield* Effect.exit(runFrame(harness.stages, DeltaTimeSecs(1 / 20)))
+      expect(Exit.isSuccess(tick)).toBe(true)
+      const after = yield* mobEntities(harness.commit.coordinator)
+      const afterCow = after.find(({ id }) => id === beforeCow.id)
+      const afterPig = after.find(({ id }) => id === beforePig.id)
+      expect(afterCow).toMatchObject({
+        id: beforeCow.id,
+        feetPosition: beforeCow.feetPosition,
+        healthPoints: beforeCow.healthPoints,
+        behaviour: repairedFault,
+      })
+      expect(afterPig?.behaviour).not.toEqual(beforePig.behaviour)
+      expect(yield* drainGameplayEntityStageFaults(harness.state)).toContainEqual({
+        _tag: 'MobBehaviourRepairFault',
+        entityId: beforeCow.id,
+        entityKind: COW_KIND,
+        failure: { _tag: 'EcosystemMobStateRepairFailure', field: 'burningTicks' },
+      })
+
+      yield* runFrame(harness.stages, DeltaTimeSecs(1 / 20))
+      expect(yield* drainGameplayEntityStageFaults(harness.state)).toStrictEqual([])
     }),
   )
 
@@ -682,13 +777,12 @@ describe('mob lifecycle gameplay scenarios', () => {
       })
 
       const result = yield* Effect.exit(runFrame(harness.stages, DeltaTimeSecs(1 / 20)))
-      expect(Exit.hasDies(result)).toBe(true)
-      if (!Exit.isFailure(result)) return
-      expect(Cause.squash(result.cause)).toMatchObject({
-        _tag: 'MobMovementRosterFailure',
-        reason: 'step-failed',
+      expect(Exit.isSuccess(result)).toBe(true)
+      expect(yield* drainGameplayEntityStageFaults(harness.state)).toContainEqual({
+        _tag: 'MobMovementExecutionFault',
         entityId: zombie!.id,
-        failure: { _tag: 'MobMovementPhysicsFailure', reason: 'invalid-body' },
+        reason: 'step-failed',
+        failure: { _tag: 'MobMovementPhysicsFailure', index: 0, reason: 'invalid-body' },
       })
     }),
   )
@@ -1233,11 +1327,12 @@ describe('mob lifecycle gameplay scenarios', () => {
       })
 
       const result = yield* Effect.exit(runFrame(harness.stages, DeltaTimeSecs(1 / 20)))
-      expect(Exit.hasDies(result)).toBe(true)
-      if (!Exit.isFailure(result)) return
-      expect(Cause.squash(result.cause)).toMatchObject({
-        _tag: 'MobProjectileImpactOutcomeUnavailable',
-        projectileId,
+      expect(Exit.isSuccess(result)).toBe(true)
+      expect(yield* Ref.get(harness.state.operationFailures)).toContainEqual({
+        _tag: 'Failed',
+        operation: 'EntityExecution',
+        subject: 'Entities',
+        error: { _tag: 'EntitiesStageExecutionFailure', failureTag: 'MobProjectileImpactOutcomeUnavailable' },
       })
     }),
   )

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import fc from 'fast-check'
+import { Result } from 'effect'
 import { position as atPosition } from './support/coordinate-fixtures'
 import { EntityHealthPoints, type Position } from '@nerima-games/mc-kernel'
 import { EntityId, EntityKind, type Entity } from '@nerima-games/mc-sim'
@@ -12,6 +13,7 @@ import {
   propagatedPiglinProvocation,
   PIG_KIND,
   repairEcosystemMobState,
+  repairMobMovementState,
   SKELETON_KIND,
   SKELETON_ATTACK_INTERVAL_TICKS,
   SHEEP_KIND,
@@ -378,59 +380,93 @@ describe('repairEcosystemMobState', () => {
       hasHeadProtection: false, burningTicks: 0,
     }
 
-    expect(repairEcosystemMobState(persisted)).toEqual(persisted)
+    expect(repairEcosystemMobState(persisted)).toEqual(Result.succeed(persisted))
   })
 
   it('restores finite, cell-addressable movement goals', () => {
     const goal = atPosition(4.5, 64, -2.5)
 
-    expect(repairEcosystemMobState({
+    const repaired = repairEcosystemMobState({
       _tag: 'EcosystemMob',
       attackCooldownTicks: 0,
       motionPhase: 0,
       provoked: false,
       movementGoal: goal,
-    })?.movementGoal).toEqual(goal)
+    })
+    expect(Result.isSuccess(repaired) && repaired.success?.movementGoal).toEqual(goal)
   })
 
-  it('migrates a persisted seconds cooldown to the equivalent whole tick count', () => {
+  it('migrates only omitted legacy fields and a seconds cooldown', () => {
     expect(repairEcosystemMobState({
       _tag: 'EcosystemMob', attackCooldownSecs: 1.5, motionPhase: 4.2, provoked: true,
-    })).toEqual({
+    })).toEqual(Result.succeed({
       _tag: 'EcosystemMob', attackCooldownTicks: 30, motionPhase: 5, provoked: true,
       hasHeadProtection: false, burningTicks: 0,
-    })
+    }))
   })
 
-  it('rejects a value with the wrong tag', () => {
-    expect(repairEcosystemMobState({ _tag: 'SomethingElse' })).toBeUndefined()
+  it('rejects omissions that are not part of the legacy ecosystem migration', () => {
+    expect(repairEcosystemMobState({
+      _tag: 'EcosystemMob', attackCooldownSecs: 0, provoked: false,
+    })).toEqual(Result.fail({ _tag: 'EcosystemMobStateRepairFailure', field: 'motionPhase' }))
+    expect(repairEcosystemMobState({
+      _tag: 'EcosystemMob', attackCooldownSecs: 0, motionPhase: 0,
+    })).toEqual(Result.fail({ _tag: 'EcosystemMobStateRepairFailure', field: 'provoked' }))
+    expect(repairEcosystemMobState({
+      _tag: 'EcosystemMob', motionPhase: 0, provoked: false,
+    })).toEqual(Result.fail({ _tag: 'EcosystemMobStateRepairFailure', field: 'attackCooldownTicks' }))
   })
 
-  it('rejects null and non-object values', () => {
-    expect(repairEcosystemMobState(null)).toBeUndefined()
-    expect(repairEcosystemMobState('EcosystemMob')).toBeUndefined()
+  it('leaves an absent ecosystem state absent', () => {
+    expect(repairEcosystemMobState(undefined)).toEqual(Result.succeed(undefined))
   })
 
-  it('clamps a negative legacy seconds cooldown to zero instead of trusting a corrupt save', () => {
-    const repaired = repairEcosystemMobState({
+  it('returns a typed failure for a present value with the wrong tag', () => {
+    expect(repairEcosystemMobState({ _tag: 'SomethingElse' })).toEqual(Result.fail({
+      _tag: 'EcosystemMobStateRepairFailure', field: '_tag',
+    }))
+  })
+
+  it('returns a typed failure for present null and non-object values', () => {
+    const failure = Result.fail({ _tag: 'EcosystemMobStateRepairFailure', field: '_tag' })
+    expect(repairEcosystemMobState(null)).toEqual(failure)
+    expect(repairEcosystemMobState('EcosystemMob')).toEqual(failure)
+  })
+
+  it('returns a typed failure for a negative legacy seconds cooldown', () => {
+    expect(repairEcosystemMobState({
       _tag: 'EcosystemMob',
       attackCooldownSecs: -5,
       motionPhase: 0,
       provoked: false,
-    })
-
-    expect(repaired?.attackCooldownTicks).toBe(0)
+    })).toEqual(Result.fail({ _tag: 'EcosystemMobStateRepairFailure', field: 'attackCooldownSecs' }))
   })
 
-  it('defaults a non-finite legacy seconds cooldown to zero', () => {
-    const repaired = repairEcosystemMobState({
+  it('returns a typed failure for a non-finite legacy seconds cooldown', () => {
+    expect(repairEcosystemMobState({
       _tag: 'EcosystemMob',
       attackCooldownSecs: Number.NaN,
       motionPhase: 0,
       provoked: false,
-    })
+    })).toEqual(Result.fail({ _tag: 'EcosystemMobStateRepairFailure', field: 'attackCooldownSecs' }))
+  })
 
-    expect(repaired?.attackCooldownTicks).toBe(0)
+  it('rejects malformed persisted cooldowns, including a seconds overflow', () => {
+    const failure = (field: 'attackCooldownTicks' | 'attackCooldownSecs') => Result.fail({
+      _tag: 'EcosystemMobStateRepairFailure',
+      field,
+    })
+    const state = { _tag: 'EcosystemMob', motionPhase: 0, provoked: false }
+
+    expect(repairEcosystemMobState({ ...state, attackCooldownTicks: -1 })).toEqual(failure('attackCooldownTicks'))
+    expect(repairEcosystemMobState({ ...state, attackCooldownTicks: Number.MAX_VALUE })).toEqual(failure('attackCooldownTicks'))
+    expect(repairEcosystemMobState({ ...state, attackCooldownTicks: 0, attackCooldownSecs: 'bad' })).toEqual(failure('attackCooldownSecs'))
+    expect(repairEcosystemMobState({ ...state, attackCooldownTicks: 0, attackCooldownSecs: Number.POSITIVE_INFINITY })).toEqual(failure('attackCooldownSecs'))
+    expect(repairEcosystemMobState({ ...state, attackCooldownTicks: 0, attackCooldownSecs: -1 })).toEqual(failure('attackCooldownSecs'))
+    expect(repairEcosystemMobState({ ...state, attackCooldownSecs: Number.MAX_VALUE })).toEqual(failure('attackCooldownSecs'))
+    expect(repairEcosystemMobState({ ...state, attackCooldownTicks: 2, attackCooldownSecs: 0.1 })).toMatchObject({
+      _tag: 'Success', success: { attackCooldownTicks: 2 },
+    })
   })
 
   it('rounds a fractional tick cooldown up to an integer tick', () => {
@@ -441,18 +477,16 @@ describe('repairEcosystemMobState', () => {
       provoked: false,
     })
 
-    expect(repaired?.attackCooldownTicks).toBe(2)
+    expect(repaired).toMatchObject({ _tag: 'Success', success: { attackCooldownTicks: 2 } })
   })
 
-  it('defaults a non-finite motionPhase to zero', () => {
-    const repaired = repairEcosystemMobState({
+  it('returns a typed failure for a non-finite motion phase', () => {
+    expect(repairEcosystemMobState({
       _tag: 'EcosystemMob',
       attackCooldownTicks: 0,
       motionPhase: Number.POSITIVE_INFINITY,
       provoked: false,
-    })
-
-    expect(repaired?.motionPhase).toBe(0)
+    })).toEqual(Result.fail({ _tag: 'EcosystemMobStateRepairFailure', field: 'motionPhase' }))
   })
 
   it('repairs a fractional saved motion phase to a whole tick count', () => {
@@ -460,29 +494,54 @@ describe('repairEcosystemMobState', () => {
       _tag: 'EcosystemMob', attackCooldownTicks: 0, motionPhase: 4.2, provoked: false,
     })
 
-    expect(repaired?.motionPhase).toBe(5)
+    expect(repaired).toMatchObject({ _tag: 'Success', success: { motionPhase: 5 } })
   })
 
-  it('only a literal true survives as provoked', () => {
-    const repaired = repairEcosystemMobState({
+  it('returns a typed failure for an invalid present boolean', () => {
+    expect(repairEcosystemMobState({
       _tag: 'EcosystemMob',
       attackCooldownTicks: 0,
       motionPhase: 0,
       provoked: 'yes',
-    })
-
-    expect(repaired?.provoked).toBe(false)
+    })).toEqual(Result.fail({ _tag: 'EcosystemMobStateRepairFailure', field: 'provoked' }))
   })
 
-  it('fails closed on malformed or out-of-range saved movement goals', () => {
+  it('returns typed failures for invalid present movement and ecosystem fields', () => {
     const base = {
       _tag: 'EcosystemMob', attackCooldownTicks: 0, motionPhase: 0, provoked: false,
       hasHeadProtection: false, burningTicks: 0,
     }
-    expect(repairEcosystemMobState({ ...base, movementGoal: { x: '2', y: 64, z: 3 } })?.movementGoal).toBeUndefined()
+    expect(repairEcosystemMobState({ ...base, movementGoal: { x: '2', y: 64, z: 3 } })).toEqual(Result.fail({
+      _tag: 'EcosystemMobStateRepairFailure', field: 'movementGoal',
+    }))
     expect(repairEcosystemMobState({
       ...base,
       movementGoal: { x: Number.MAX_VALUE, y: 64, z: 3 },
-    })?.movementGoal).toBeUndefined()
+    })).toEqual(Result.fail({ _tag: 'EcosystemMobStateRepairFailure', field: 'movementGoal' }))
+    expect(repairEcosystemMobState({ ...base, movementGoal: null })).toEqual(Result.fail({
+      _tag: 'EcosystemMobStateRepairFailure', field: 'movementGoal',
+    }))
+    expect(repairEcosystemMobState({ ...base, burningTicks: 161 })).toEqual(Result.fail({
+      _tag: 'EcosystemMobStateRepairFailure', field: 'burningTicks',
+    }))
+    expect(repairEcosystemMobState({ ...base, burningTicks: -1 })).toEqual(Result.fail({
+      _tag: 'EcosystemMobStateRepairFailure', field: 'burningTicks',
+    }))
+    expect(repairEcosystemMobState({ ...base, hasHeadProtection: 'yes' })).toEqual(Result.fail({
+      _tag: 'EcosystemMobStateRepairFailure', field: 'hasHeadProtection',
+    }))
+    expect(repairEcosystemMobState({ ...base, movement: { body: 'invalid' } })).toEqual(Result.fail({
+      _tag: 'EcosystemMobStateRepairFailure', field: 'movement',
+    }))
+    expect(repairEcosystemMobState({ ...base, movement: undefined })).toEqual(Result.fail({
+      _tag: 'EcosystemMobStateRepairFailure', field: 'movement',
+    }))
+  })
+
+  it('keeps omitted movement optional and fails a present malformed movement state', () => {
+    expect(repairMobMovementState(undefined)).toEqual(Result.succeed(undefined))
+    expect(repairMobMovementState({ body: 'invalid' })).toEqual(Result.fail({
+      _tag: 'MobMovementStateRepairFailure',
+    }))
   })
 })

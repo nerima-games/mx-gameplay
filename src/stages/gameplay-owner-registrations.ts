@@ -67,13 +67,14 @@ import {
 import {
   isDroppedItemBehaviour,
   isHostileMobSnapshot,
+  isMobBehaviourRepairFault,
   type MobBehaviour,
   type MobEntity,
   type MobKillCredit,
   type MobProjectilePendingImpact,
   type MobRoster,
 } from '../domain/entities/mob-frame.js'
-import { BLAZE_KIND, SKELETON_KIND, repairEcosystemMobState, repairMobMovementState } from '../domain/mob/mob-ecosystem.js'
+import { BLAZE_KIND, SKELETON_KIND, repairEcosystemMobState } from '../domain/mob/mob-ecosystem.js'
 import { isPrimedTnt } from '../domain/mob/primed-tnt.js'
 
 export const GAMEPLAY_PLAYER_STORAGE_OWNER_ID: ReplicatedOwnerId = makeReplicatedOwnerId('mx-gameplay-player-storage')
@@ -127,31 +128,8 @@ const isEcosystemState = (value: unknown): boolean => {
     '_tag', 'attackCooldownTicks', 'attackCooldownSecs', 'motionPhase', 'provoked',
     'movementGoal', 'movement', 'hasHeadProtection', 'burningTicks',
   ]
-
-  const hasTickCooldown =
-    hasOnlyKeys(value, ecosystemKeys) &&
-      typeof value['attackCooldownTicks'] === 'number' &&
-      Number.isSafeInteger(value['attackCooldownTicks']) &&
-      value['attackCooldownTicks'] >= 0
-  const hasLegacyCooldown =
-    hasOnlyKeys(value, ecosystemKeys) &&
-      typeof value['attackCooldownSecs'] === 'number' &&
-      Number.isFinite(value['attackCooldownSecs']) &&
-      value['attackCooldownSecs'] >= 0
-  const validMovement = value['movement'] === undefined || repairMobMovementState(value['movement']) !== undefined
-  const validMovementGoal = value['movementGoal'] === undefined ||
-    repairEcosystemMobState(value)?.movementGoal !== undefined
-  const validProtection = value['hasHeadProtection'] === undefined || typeof value['hasHeadProtection'] === 'boolean'
-  const validBurningTicks = value['burningTicks'] === undefined ||
-    (typeof value['burningTicks'] === 'number' && Number.isSafeInteger(value['burningTicks']) &&
-      value['burningTicks'] >= 0 && value['burningTicks'] <= 160)
-
-  return (hasTickCooldown || hasLegacyCooldown) &&
-    typeof value['motionPhase'] === 'number' &&
-    Number.isFinite(value['motionPhase']) &&
-    typeof value['provoked'] === 'boolean' &&
-    validMovement && validMovementGoal && validProtection && validBurningTicks &&
-    repairEcosystemMobState(value) !== undefined
+  const repaired = repairEcosystemMobState(value)
+  return hasOnlyKeys(value, ecosystemKeys) && Result.isSuccess(repaired) && repaired.success !== undefined
 }
 
 const isStrictDroppedItem = (value: unknown): boolean => {
@@ -166,6 +144,9 @@ const isStrictDroppedItem = (value: unknown): boolean => {
 const isMobBehaviour = (value: unknown): value is MobBehaviour => {
   if (value === undefined) return true
   if (!isRecord(value)) return false
+  if (value['_tag'] === 'MobBehaviourRepairFault') {
+    return isMobBehaviourRepairFault(value) && hasOnlyKeys(value, ['_tag', 'failure'])
+  }
   if (value['_tag'] === 'HostileMob') {
     return isHostileMobSnapshot(value) &&
       hasOnlyKeys(value, ['_tag', 'behaviour', 'movement', 'ageTicks', 'persistent', 'named', 'tamed']) &&

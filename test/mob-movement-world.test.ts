@@ -1,10 +1,11 @@
 import { describe, expect, it } from '@effect/vitest'
-import { Effect, Option, Result, Schema } from 'effect'
-import { BlockAxis, BlockId, BlockStateIndex, BlockStateLength, blockIdOf, blockPosition, ChunkAxis, chunkCoord, EntityHealthPoints, EntitySerial, SimulationTick, type BlockType, position, PositionAxis } from '@nerima-games/mc-kernel'
+import { Brand, Effect, Option, Result, Schema } from 'effect'
+import { AIR_BLOCK_ID, BlockAxis, BlockId, BlockStateIndex, BlockStateLength, blockIdOf, blockPosition, capabilitiesOfBlockId, ChunkAxis, chunkCoord, EntityHealthPoints, EntitySerial, SimulationTick, type BlockType, position, PositionAxis } from '@nerima-games/mc-kernel'
 import { EntityId, EntityKind, MobMovementStateSchema, MobPathProfileSchema, planMobPathsForTick } from '@nerima-games/mc-sim'
 import { openChunkWindow, UNREADABLE_BLOCK, type ChunkWindow } from '../src/domain/chunk-window'
 import {
   entityWorldBlockDataFromLookup,
+  entityWorldBlockDataAt,
   entityWorldValueFromLookup,
   entityWorldCellAt,
 } from '../src/domain/entities/entity-world-cell'
@@ -17,7 +18,8 @@ import {
   movementStateForGoal,
 } from '../src/domain/entities/mob-movement-world'
 import { ENDERMAN_KIND, PIG_KIND, SPIDER_KIND, initialEcosystemMobState } from '../src/domain/mob/mob-ecosystem'
-import { STEADY_ENDERMAN, hasMobMovementCandidates, planMobMovementRoster, type MobRoster } from '../src/domain/entities/mob-frame'
+import { ZOMBIE_KIND } from '../src/domain/mob/hostile-combat'
+import { repairMobBehaviour, STEADY_ENDERMAN, hasMobMovementCandidates, planMobMovementRoster, type MobRoster } from '../src/domain/entities/mob-frame'
 import { makeChunkStoreDouble, world, STONE } from './support/chunk-store-double'
 
 const block = (x: number, y: number, z: number) => blockPosition(BlockAxis(x), BlockAxis(y), BlockAxis(z))
@@ -66,6 +68,50 @@ describe('SM3 mob movement world', () => {
     }
   })
 
+  it('keeps registry lookup failures and known ids without definitions typed', () => {
+    const cell = { x: BlockAxis(0), y: BlockAxis(64), z: BlockAxis(0) }
+    const forgedOutOfRangeId = Brand.nominal<BlockId>()(65_536)
+    const invalidId = entityWorldBlockDataAt(cell, forgedOutOfRangeId)
+    expect(invalidId).toMatchObject({
+      _tag: 'Failure',
+      failure: { _tag: 'EntityWorldRegistryFailure', cell },
+    })
+
+    const capabilities = capabilitiesOfBlockId(AIR_BLOCK_ID)
+    expect(Result.isSuccess(capabilities)).toBe(true)
+    if (Result.isFailure(capabilities)) return
+    const missingDefinition = entityWorldBlockDataFromLookup(
+      cell,
+      AIR_BLOCK_ID,
+      Result.succeed({ block: undefined, capabilities: capabilities.success }),
+    )
+    expect(missingDefinition).toMatchObject({
+      _tag: 'Failure',
+      failure: { _tag: 'EntityWorldUnregisteredBlockId', cell, blockId: AIR_BLOCK_ID },
+    })
+  })
+
+  it.effect('rejects an unregistered id read from a loaded chunk buffer', () =>
+    Effect.gen(function* () {
+      const store = yield* makeChunkStoreDouble(world([]), ['0,0'])
+      const unregisteredIdStore = {
+        ...store.api,
+        peek: (coord: Parameters<typeof store.api.peek>[0]) => Effect.map(store.api.peek(coord), (chunk) =>
+          chunk === undefined
+            ? undefined
+            : { ...chunk, blocks: Uint16Array.from(chunk.blocks, () => 65_535) },
+        ),
+      }
+      const window = yield* openChunkWindow(unregisteredIdStore, [chunkCoord(ChunkAxis(0), ChunkAxis(0))])
+      const cell = { x: BlockAxis(0), y: BlockAxis(64), z: BlockAxis(0) }
+
+      expect(entityWorldCellAt(window, cell)).toMatchObject({
+        _tag: 'Failure',
+        failure: { _tag: 'EntityWorldUnregisteredBlockId', cell, blockId: 65_535 },
+      })
+    }),
+  )
+
   it('keeps registry failures on SM3 physics results and above-world air lookups', () => {
     const cell = { x: BlockAxis(0), y: BlockAxis(64), z: BlockAxis(0) }
     const registryFailure = {
@@ -98,6 +144,18 @@ describe('SM3 mob movement world', () => {
       cell,
       failure: registryFailure,
     })
+
+    const unregisteredAir = {
+      _tag: 'EntityWorldUnregisteredBlockId' as const,
+      cell,
+      blockId: BlockId(65_535),
+    }
+    const fromAboveWorldUnregisteredAir = mobMovementPhysicsSampleForCell(
+      Result.succeed({ _tag: 'AboveWorld' }),
+      () => Result.fail(unregisteredAir),
+    )
+    expect(fromAboveWorldUnregisteredAir.sample).toStrictEqual(Result.succeed(null))
+    expect(fromAboveWorldUnregisteredAir.queryFailure).toStrictEqual(unregisteredAir)
   })
 
   it.effect('reads air as passable, blocks as solid, and exposes support and hazards', () =>
@@ -206,6 +264,8 @@ describe('SM3 mob movement world', () => {
         failure: { _tag: 'EntityWorldCorruptBuffer' },
       })
       expect(port.queryFailure()).toMatchObject({ _tag: 'EntityWorldCorruptBuffer' })
+      port.resetQueryFailure()
+      expect(port.queryFailure()).toBeUndefined()
     }),
   )
 
@@ -278,20 +338,18 @@ describe('SM3 mob movement world', () => {
     expect(movementStateForGoal(ordinary, outsidePathGrid)).toBeUndefined()
   })
 
-  it.effect('uses kernel default geometry for a representable unregistered block id', () =>
+  it.effect('keeps an unregistered block id as a typed world query fault', () =>
     Effect.gen(function* () {
       const unresolvedBlockId = BlockId(65535)
       const port = yield* makeWorldPort([[block(0, 64, 0), unresolvedBlockId]])
       const cell = mobMovementCell(at(0.5, 64, 0.5))!
 
       expect(port.isPassable(cell)).toBe(false)
-      expect(port.hasSupport(cell)).toBe(true)
-      expect(port.hazardAt(cell)).toBeNull()
-      expect(port.physics.blockPropertiesAt(BlockAxis(0), BlockAxis(64), BlockAxis(0))._tag).toBe('Success')
-      expect(port.physics.blockShapeAt?.(BlockAxis(0), BlockAxis(64), BlockAxis(0))).toMatchObject({
-        minX: 0, minY: 0, minZ: 0, maxX: 1, maxY: 1, maxZ: 1,
+      expect(port.queryFailure()).toMatchObject({
+        _tag: 'EntityWorldUnregisteredBlockId',
+        cell: { x: 0, y: 64, z: 0 },
+        blockId: 65_535,
       })
-      expect(port.queryFailure()).toBeUndefined()
     }),
   )
 
@@ -353,13 +411,170 @@ describe('SM3 mob movement world', () => {
 
       const planned = planMobMovementRoster(roster, at(10.5, 64, 0.5), port, SimulationTick(1), 'overworld')
 
-      expect(Result.isFailure(planned)).toBe(true)
-      if (Result.isSuccess(planned)) return
-      expect(planned.failure).toMatchObject({
-        _tag: 'MobMovementRosterFailure',
-        reason: 'step-failed',
-        entityId: id,
+      expect(planned).toMatchObject({
+        _tag: 'Success',
+        success: {
+          roster,
+          faults: [{
+            _tag: 'MobMovementRosterFailure',
+            reason: 'step-failed',
+            entityId: id,
+            failure: { _tag: 'MobMovementPhysicsFailure', reason: 'invalid-body' },
+          }],
+        },
       })
+    }),
+  )
+
+  it.effect('keeps malformed persisted movement state typed and isolates invalid goals', () =>
+    Effect.gen(function* () {
+      const port = yield* makeWorldPort([])
+      const malformed = repairMobBehaviour(PIG_KIND, {
+        _tag: 'EcosystemMob',
+        attackCooldownTicks: 0,
+        motionPhase: 0,
+        provoked: false,
+        hasHeadProtection: false,
+        burningTicks: 161,
+      })
+      const malformedId = EntityId('mob:malformed-ecosystem-state')
+      const malformedRoster: MobRoster = {
+        entities: [{
+          id: malformedId,
+          kind: PIG_KIND,
+          feetPosition: at(0.5, 64, 0.5),
+          healthPoints: EntityHealthPoints(10),
+          behaviour: malformed,
+          dimension: 'overworld',
+        }],
+        nextSerial: EntitySerial(1),
+      }
+      const malformedPlan = planMobMovementRoster(
+        malformedRoster,
+        at(10.5, 64, 0.5),
+        port,
+        SimulationTick(1),
+        'overworld',
+      )
+      expect(malformedPlan).toMatchObject({
+        _tag: 'Success',
+        success: {
+          faults: [{
+            _tag: 'MobMovementRosterFailure',
+            reason: 'invalid-state',
+            entityId: malformedId,
+            repairFailure: { _tag: 'EcosystemMobStateRepairFailure', field: '_tag' },
+          }],
+        },
+      })
+
+      const feet = at(Number.MAX_SAFE_INTEGER - 10, 64, 0)
+      const invalidTarget = at(Number.MAX_SAFE_INTEGER + 1, 64, 0)
+      expect(mobMovementCell(feet)).toBeDefined()
+      expect(mobMovementCell(invalidTarget)).toBeUndefined()
+      const movingId = EntityId('mob:invalid-saved-goal')
+      const priorMovement = initialMobMovementState(
+        movingId,
+        ZOMBIE_KIND,
+        feet,
+        at(Number.MAX_SAFE_INTEGER - 8, 64, 0),
+      )
+      if (priorMovement === undefined) throw new Error('the in-range movement state must decode')
+      const goalRoster: MobRoster = {
+        entities: [
+          {
+            id: EntityId('mob:invalid-initial-goal'),
+            kind: ZOMBIE_KIND,
+            feetPosition: feet,
+            healthPoints: EntityHealthPoints(10),
+            behaviour: initialEcosystemMobState(),
+            dimension: 'overworld',
+          },
+          {
+            id: movingId,
+            kind: ZOMBIE_KIND,
+            feetPosition: feet,
+            healthPoints: EntityHealthPoints(10),
+            behaviour: { ...initialEcosystemMobState(), movement: priorMovement },
+            dimension: 'overworld',
+          },
+        ],
+        nextSerial: EntitySerial(2),
+      }
+      const goalPlan = planMobMovementRoster(
+        goalRoster,
+        invalidTarget,
+        port,
+        SimulationTick(1),
+        'overworld',
+      )
+      expect(Result.isSuccess(goalPlan)).toBe(true)
+      if (Result.isFailure(goalPlan)) return
+      expect(goalPlan.success.roster).toStrictEqual(goalRoster)
+      expect(goalPlan.success.faults).toEqual([
+        { _tag: 'MobMovementRosterFailure', reason: 'invalid-state', entityId: EntityId('mob:invalid-initial-goal') },
+        { _tag: 'MobMovementRosterFailure', reason: 'invalid-goal', entityId: movingId },
+      ])
+    }),
+  )
+
+  it.effect('defers remaining mobs when one tick reaches its bounded search budget', () =>
+    Effect.gen(function* () {
+      const floor = Array.from({ length: 16 }, (_unused, x) => [block(x, 63, 0), STONE] as const)
+      const port = yield* makeWorldPort(floor)
+      const entities = Array.from({ length: 9 }, (_unused, index) => ({
+        id: EntityId(`mob:search-budget-${index}`),
+        kind: PIG_KIND,
+        feetPosition: at(index + 1.5, 64, 0.5),
+        healthPoints: EntityHealthPoints(10),
+        behaviour: { ...initialEcosystemMobState(), movementGoal: at(12.5, 64, 0.5) },
+        dimension: 'overworld' as const,
+      }))
+      const roster: MobRoster = { entities, nextSerial: EntitySerial(entities.length) }
+
+      const planned = planMobMovementRoster(roster, undefined, port, SimulationTick(1), 'overworld')
+
+      expect(Result.isSuccess(planned)).toBe(true)
+      if (Result.isFailure(planned)) return
+      expect(planned.success.faults).toStrictEqual([])
+      expect(planned.success.roster.entities[0]?.feetPosition).toStrictEqual(entities[0]?.feetPosition)
+    }),
+  )
+
+  it.effect('holds a mob when a real path search exhausts its node budget', () =>
+    Effect.gen(function* () {
+      const floor = Array.from({ length: 32 * 32 }, (_unused, index) => [
+        block(index % 32, 63, Math.floor(index / 32)),
+        STONE,
+      ] as const)
+      const wall = Array.from({ length: 32 }, (_unused, z) => [
+        block(16, 64, z),
+        STONE,
+      ] as const)
+      const ceiling = Array.from({ length: 32 }, (_unused, z) => [
+        block(16, 65, z),
+        STONE,
+      ] as const)
+      const port = yield* makeWorldPort(
+        [...floor, ...wall, ...ceiling],
+        ['0,0', '1,0', '0,1', '1,1'],
+      )
+      const pig = {
+        id: EntityId('mob:node-budget'),
+        kind: PIG_KIND,
+        feetPosition: at(1.5, 64, 15.5),
+        healthPoints: EntityHealthPoints(10),
+        behaviour: { ...initialEcosystemMobState(), movementGoal: at(30.5, 64, 15.5) },
+        dimension: 'overworld' as const,
+      }
+      const roster: MobRoster = { entities: [pig], nextSerial: EntitySerial(1) }
+
+      const planned = planMobMovementRoster(roster, undefined, port, SimulationTick(1), 'overworld')
+
+      expect(Result.isSuccess(planned)).toBe(true)
+      if (Result.isFailure(planned)) return
+      expect(planned.success.faults).toStrictEqual([])
+      expect(planned.success.roster.entities[0]?.feetPosition).toStrictEqual(pig.feetPosition)
     }),
   )
 
@@ -421,17 +636,21 @@ describe('SM3 mob movement world', () => {
       )
 
       expect(planned).toMatchObject({
-        _tag: 'Failure',
-        failure: {
-          _tag: 'MobMovementRosterFailure',
-          reason: 'world-query-failed',
-          worldFailure: failure,
+        _tag: 'Success',
+        success: {
+          roster: { entities: [pig] },
+          faults: [{
+            _tag: 'MobMovementRosterFailure',
+            reason: 'world-query-failed',
+            entityId: pig.id,
+            worldFailure: failure,
+          }],
         },
       })
     }),
   )
 
-  it.effect('returns the simulator rejection when a supplied movement world is malformed', () =>
+  it.effect('records a simulator rejection against the affected mob when the movement world is malformed', () =>
     Effect.gen(function* () {
       const port = yield* makeWorldPort([[block(0, 63, 0), STONE]])
       const malformedWorld = new Proxy(port, {
@@ -454,11 +673,17 @@ describe('SM3 mob movement world', () => {
 
       const planned = planMobMovementRoster(roster, at(10.5, 64, 0.5), malformedWorld, SimulationTick(1), 'overworld')
 
-      expect(Result.isFailure(planned)).toBe(true)
-      if (Result.isSuccess(planned)) return
-      expect(planned.failure).toMatchObject({
-        _tag: 'MobMovementRosterFailure',
-        reason: 'simulation-rejected',
+      expect(planned).toMatchObject({
+        _tag: 'Success',
+        success: {
+          roster,
+          faults: [{
+            _tag: 'MobMovementRosterFailure',
+            reason: 'simulation-rejected',
+            entityId: roster.entities[0]?.id,
+            failure: expect.objectContaining({ _tag: expect.any(String) }),
+          }],
+        },
       })
     }),
   )

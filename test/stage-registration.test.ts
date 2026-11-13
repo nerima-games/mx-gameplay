@@ -1521,6 +1521,7 @@ describe('stage behaviour', () => {
         'endPortalTravels',
         'enderDragonEncounter',
         'enderPearlOutcomes',
+        'entityStageFaults',
         'experienceOrbAbsorptionExecutions',
         'fallingBlocks',
         'fireLifecycle',
