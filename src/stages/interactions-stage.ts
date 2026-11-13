@@ -322,13 +322,16 @@ const treeSpaceAvailableAt = (
   position: BlockPosition,
 ): Effect.Effect<boolean> =>
   Effect.gen(function* () {
-    const first = Result.getOrUndefined(adjacentBlockPosition(position, 'up'))
-    if (first === undefined) return false
-    const second = Result.getOrUndefined(adjacentBlockPosition(first, 'up'))
-    if (second === undefined) return false
+    // Sapling positions are indexed from the world's 0..CHUNK_HEIGHT Y range.
+    // BlockPosition neighbours remain numerically valid above the world, so the
+    // store's OutOfWorld result is the authoritative boundary check.
+    const first = blockPosition(position.x, BlockAxis(position.y + 1), position.z)
+    const second = blockPosition(position.x, BlockAxis(position.y + 2), position.z)
     const firstRead = yield* store.getBlock(first)
+    if (firstRead._tag === 'OutOfWorld') return false
     if (firstRead._tag !== 'Block' || Result.getOrUndefined(blockTypeOfId(firstRead.block)) !== 'air') return false
     const secondRead = yield* store.getBlock(second)
+    if (secondRead._tag === 'OutOfWorld') return false
     return secondRead._tag === 'Block' && Result.getOrUndefined(blockTypeOfId(secondRead.block)) === 'air'
   })
 
@@ -2326,9 +2329,40 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
             state.pendingPlacements,
             [],
           )
+          const blockUses = yield* Ref.getAndSet<ReadonlyArray<BlockUseRequest>>(
+            state.pendingBlockUses,
+            [],
+          )
           const disturbed: Array<BlockPositionKey> = []
           for (const request of placements) {
             yield* processPlacement(state, commit, context.blockStateWorld, store, playerState, playerDead, request, disturbed)
+          }
+          const blockUseResults: Array<BlockUseResult> = []
+          for (const request of blockUses) {
+            if (playerDead) {
+              blockUseResults.push({
+                requestId: request.requestId,
+                success: false,
+                outcome: 'PlayerDead',
+              })
+              continue
+            }
+            const position = yield* blockPositionForKey(request.positionKey)
+            const outcome = resolveBlockUse(position, yield* store.getBlock(position))
+            blockUseResults.push(outcome._tag === 'ToggleDoor'
+              ? {
+                  requestId: request.requestId,
+                  success: false,
+                  outcome: 'PlayerStateUnavailable',
+                }
+              : {
+                  requestId: request.requestId,
+                  success: isSuccessfulBlockUse(outcome),
+                  outcome,
+                })
+          }
+          if (blockUseResults.length > 0) {
+            yield* Ref.update(state.blockUseResults, (items) => [...items, ...blockUseResults])
           }
           return
         }
@@ -2744,7 +2778,14 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
           const outcome = resolveBlockUse(position, yield* store.getBlock(position))
           if (outcome._tag === 'ToggleDoor') {
             const dimension = playerState?.pose.feetPosition.dimension
-            if (dimension === undefined) continue
+            if (dimension === undefined) {
+              blockUseResults.push({
+                requestId: request.requestId,
+                success: false,
+                outcome: 'PlayerStateUnavailable',
+              })
+              continue
+            }
             yield* requestBlockStateRule(state, dimension, {
               requestId: request.requestId,
               position,

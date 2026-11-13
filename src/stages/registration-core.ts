@@ -1424,6 +1424,11 @@ export type BlockUseResult =
       readonly success: false
       readonly outcome: 'PlayerDead'
     }
+  | {
+      readonly requestId: BlockUseRequestId
+      readonly success: false
+      readonly outcome: 'PlayerStateUnavailable'
+    }
 
 /**
  * One use of an igniting item on a cell.

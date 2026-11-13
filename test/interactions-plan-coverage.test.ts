@@ -138,6 +138,7 @@ import { BOW_FULL_CHARGE_SECS } from '../src/domain/interactions/draw-bow.js'
 import { BOW_TARGET_CENTER_Y_OFFSET } from '../src/domain/interactions/bow-shot.js'
 import { StatusEffectStateSchema } from '../src/domain/status-effect.js'
 import { FrameServicesLayer } from './support/frame-services.js'
+import { runFrames } from './support/frame-runner.js'
 import { makeTransactionalChunkStoreDouble } from './support/transactional-stage-doubles.js'
 import { world } from './support/chunk-store-double.js'
 
@@ -404,6 +405,18 @@ const makeHarness = (options: Readonly<{
     {},
     undefined,
   ).find(({ id }) => id === GAMEPLAY_STAGE_IDS.interactions)!
+  const stagesWithoutCommit = gameplayStages(
+    state,
+    chunkStore,
+    roster,
+    undefined,
+    undefined,
+    time,
+    undefined,
+    undefined,
+    {},
+    undefined,
+  )
   const stages = gameplayStages(
     state,
     chunkStore,
@@ -424,6 +437,7 @@ const makeHarness = (options: Readonly<{
     baseCoordinator,
     store,
     stages,
+    stagesWithoutCommit,
     interactions,
     interactionsWithCoordinator,
     interactionsWithoutCommit,
@@ -2964,6 +2978,24 @@ describe('registered block-use and placement requests in the interactions stage'
       outcome: { _tag: 'PortUnavailable', position: doorPosition },
     }])
     expect(harness.commitCalls()).toBe(0)
+  })
+
+  it('returns a typed failure for a door use when registered stages have no player dimension', async () => {
+    const doorPosition = blockPosition(BlockAxis(3), BlockAxis(64), BlockAxis(1))
+    const harness = await Effect.runPromise(makeHarness({
+      blocks: [[doorPosition, Option.getOrThrow(blockIdOf('door'))]],
+    }))
+    await Effect.runPromise(requestBlockUse(harness.state, 'door-without-player-state', doorPosition))
+
+    await Effect.runPromise(runFrames(harness.stagesWithoutCommit, 1, DeltaTimeSecs(0)))
+
+    expect(await Effect.runPromise(drainBlockUseResults(harness.state))).toStrictEqual([{
+      requestId: 'door-without-player-state',
+      success: false,
+      outcome: 'PlayerStateUnavailable',
+    }])
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingBlockUses))).toStrictEqual([])
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingBlockStateRules))).toStrictEqual([])
   })
 
   it('queues stair-neighbor refresh only after a successful stair break', async () => {

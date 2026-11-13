@@ -18,11 +18,13 @@ import {
   DomainEventBus,
   TimeService,
   WorldCommitCoordinator,
+  makeReplicatedOwnerId,
   makeTimeService,
   itemStack as makeItemStack,
   CropSnapshotSchema,
   type DomainEventBusApi,
   type ReplicatedOwnerCandidate,
+  type WorldCommitCoordinatorApi,
 } from '@nerima-games/mc-sim'
 import type { BlockStateCell, BlockStateEdit, BlockStateWorldPort } from '../src/domain/interactions/block-state-rules.js'
 import { GameplayBlockStateWorld } from '../src/stages/gameplay-block-state-world.js'
@@ -37,6 +39,9 @@ import {
 import {
   gameplayStages,
   requestBlockPlacementCommand,
+  requestBlockUse,
+  drainBlockUseResults,
+  setPlayerDead,
   requestTargetedBlockPlacement,
   requestTargetedBlockUse,
 } from '../src/stages/registration.js'
@@ -129,7 +134,8 @@ const makeProductionComposition = (
   slots: ReadonlyArray<Slot | undefined> = emptySlots(),
   crops: CropSnapshot = { crops: [] },
   portOverrides: Partial<Pick<BlockStateWorldPort, 'read' | 'write'>> = {},
-  storeOverrides: Partial<Pick<ChunkStoreApi, 'getLight' | 'peek'>> = {},
+  storeOverrides: Partial<Pick<ChunkStoreApi, 'getBlock' | 'getLight' | 'peek'>> = {},
+  coordinatorOverride?: (coordinator: WorldCommitCoordinatorApi) => WorldCommitCoordinatorApi,
 ) => Effect.gen(function* () {
   const initialBlocks = world(initial.map(([position, value]) => [position, value.block] as const))
   const store = yield* makeTransactionalChunkStoreDouble(initialBlocks, ['0,0'])
@@ -141,18 +147,19 @@ const makeProductionComposition = (
     playerPose: AIMING_POSE,
     crops,
   })
+  const coordinator = coordinatorOverride?.(commit.coordinator) ?? commit.coordinator
   const stateWorld = makeStateWorld(storeApi, initial, portOverrides)
   const services = Layer.mergeAll(
     Layer.succeed(ChunkStore, storeApi),
     roster.layer,
     Layer.succeed(TimeService, time),
-    Layer.succeed(WorldCommitCoordinator, commit.coordinator),
+    Layer.succeed(WorldCommitCoordinator, coordinator),
     Layer.succeed(DomainEventBus, eventBus),
     Layer.succeed(GameplayBlockStateWorld, stateWorld.api),
   )
   const composition = yield* Effect.provide(makeGameplayComposition(gameplayStages), services)
   const targeting: GameplayTargetingSnapshotContext = {
-    coordinator: commit.coordinator,
+    coordinator,
     playerOwnerId: GAMEPLAY_PLAYER_OWNER_ID,
     entitiesOwnerId: GAMEPLAY_ENTITIES_OWNER_ID,
   }
@@ -185,6 +192,71 @@ describe('the registered production composition reaches the C7 state writer', ()
       ])
       expect(composition.stateWorld.cells.get(blockKey(lower))?.state.open).toBe(false)
       expect(composition.stateWorld.cells.get(blockKey(upper))?.state.open).toBe(false)
+    }),
+  )
+
+  it.effect('returns a typed door-use failure when the production player snapshot is unavailable', () =>
+    Effect.gen(function* () {
+      const lower = fixtureBlockPosition(0, 1, 0)
+      const upper = fixtureBlockPosition(0, 2, 0)
+      const stonePosition = fixtureBlockPosition(1, 1, 0)
+      const missingPlayer = makeReplicatedOwnerId('gp1:missing-player-snapshot')
+      let failNextPlayerSnapshot = false
+      const composition = yield* makeProductionComposition(
+        [
+          [lower, cell('door', { facing: 'north', hinge: 'left', half: 'lower', open: false, powered: false })],
+          [upper, cell('door', { facing: 'north', hinge: 'left', half: 'upper', open: false, powered: false })],
+          [stonePosition, cell('stone', stateFor('stone'))],
+        ],
+        emptySlots(),
+        { crops: [] },
+        {},
+        {},
+        (coordinator) => ({
+          ...coordinator,
+          snapshot: (ownerId, schema) => {
+            if (ownerId === GAMEPLAY_PLAYER_OWNER_ID && failNextPlayerSnapshot) {
+              failNextPlayerSnapshot = false
+              return coordinator.snapshot(missingPlayer, schema)
+            }
+            return coordinator.snapshot(ownerId, schema)
+          },
+        }),
+      )
+      yield* requestBlockUse(composition.state, 'door-without-player-snapshot', lower)
+      yield* requestBlockUse(composition.state, 'stone-without-player-snapshot', stonePosition)
+
+      failNextPlayerSnapshot = true
+      yield* runFrames(composition.stages, 1, DeltaTimeSecs(0))
+
+      expect(yield* drainBlockUseResults(composition.state)).toStrictEqual([{
+        requestId: 'door-without-player-snapshot',
+        success: false,
+        outcome: 'PlayerStateUnavailable',
+      }, {
+        requestId: 'stone-without-player-snapshot',
+        success: false,
+        outcome: {
+          _tag: 'NotLever',
+          position: stonePosition,
+          existing: blockId('stone'),
+        },
+      }])
+      expect(yield* Ref.get(composition.state.pendingBlockUses)).toStrictEqual([])
+      expect(composition.stateWorld.batches).toHaveLength(0)
+
+      yield* setPlayerDead(composition.state, true)
+      yield* requestBlockUse(composition.state, 'dead-door-without-player-snapshot', lower)
+      failNextPlayerSnapshot = true
+      yield* runFrames(composition.stages, 1, DeltaTimeSecs(0))
+
+      expect(yield* drainBlockUseResults(composition.state)).toStrictEqual([{
+        requestId: 'dead-door-without-player-snapshot',
+        success: false,
+        outcome: 'PlayerDead',
+      }])
+      expect(yield* Ref.get(composition.state.pendingBlockUses)).toStrictEqual([])
+      expect(composition.stateWorld.batches).toHaveLength(0)
     }),
   )
 
@@ -404,6 +476,36 @@ describe('the registered production composition reaches the C7 state writer', ()
       ])
       const owner = yield* rejectedWrite.commit.coordinator.snapshot(GAMEPLAY_CROPS_OWNER_ID, CropSnapshotSchema)
       expect(owner.state.crops).toMatchObject([{ growthSecs: 69 }])
+
+      const unavailableRead = yield* makeProductionComposition(
+        [[position, cell('wheat_crop', stateFor('wheat_crop'))]],
+        emptySlots(),
+        { crops: [crop] },
+        { read: () => Effect.succeed({ _tag: 'Unavailable' as const, reason: 'ChunkNotLoaded' as const }) },
+      )
+      yield* runFrames(unavailableRead.stages, 1, DeltaTimeSecs(69))
+
+      expect(unavailableRead.stateWorld.batches).toHaveLength(0)
+      expect(yield* Ref.get(unavailableRead.state.blockStateRuleResults)).toMatchObject([
+        { outcome: { _tag: 'Unavailable', reason: 'ChunkNotLoaded', position } },
+      ])
+      const unavailableOwner = yield* unavailableRead.commit.coordinator.snapshot(GAMEPLAY_CROPS_OWNER_ID, CropSnapshotSchema)
+      expect(unavailableOwner.state.crops).toMatchObject([{ growthSecs: 69 }])
+
+      const missingAge = yield* makeProductionComposition(
+        [[position, cell('wheat_crop', stateFor('wheat_crop'))]],
+        emptySlots(),
+        { crops: [crop] },
+        { read: () => Effect.succeed({ _tag: 'Found' as const, cell: cell('wheat_crop', {}) }) },
+      )
+      yield* runFrames(missingAge.stages, 1, DeltaTimeSecs(69))
+
+      expect(missingAge.stateWorld.batches).toHaveLength(0)
+      expect(yield* Ref.get(missingAge.state.blockStateRuleResults)).toMatchObject([
+        { outcome: { _tag: 'InvalidState', position } },
+      ])
+      const missingAgeOwner = yield* missingAge.commit.coordinator.snapshot(GAMEPLAY_CROPS_OWNER_ID, CropSnapshotSchema)
+      expect(missingAgeOwner.state.crops).toMatchObject([{ growthSecs: 69 }])
     }),
   )
 
@@ -451,17 +553,26 @@ describe('the registered production composition reaches the C7 state writer', ()
     Effect.gen(function* () {
       const topSapling = fixtureBlockPosition(4, 255, 4)
       const nearTopSapling = fixtureBlockPosition(5, 254, 4)
-      const composition = yield* makeProductionComposition([
-        [topSapling, cell('sapling', stateFor('sapling'))],
-        [nearTopSapling, cell('sapling', stateFor('sapling'))],
-      ])
+      const composition = yield* makeProductionComposition(
+        [
+          [topSapling, cell('sapling', { stage: 1 })],
+          [nearTopSapling, cell('sapling', { stage: 1 })],
+        ],
+        emptySlots(),
+        { crops: [] },
+        {},
+        { getLight: () => Effect.succeed({ _tag: 'Light', sky: 15, block: 0 }) },
+      )
       yield* Ref.set(composition.state.rollSeed, 1)
       yield* runFrames(composition.stages, 1, DeltaTimeSecs(1))
 
-      expect(yield* Ref.get(composition.state.blockStateRuleResults)).toHaveLength(2)
-      expect(composition.stateWorld.batches.flatMap((batch) => batch.edits)).toSatisfy((edits) =>
-        edits.every((edit) => edit.state.stage === 1),
-      )
+      expect(yield* Ref.get(composition.state.blockStateRuleResults)).toMatchObject([
+        { outcome: { _tag: 'NoChange', reason: 'blocked' } },
+        { outcome: { _tag: 'NoChange', reason: 'blocked' } },
+      ])
+      expect(composition.stateWorld.batches).toHaveLength(0)
+      expect(composition.stateWorld.cells.get(blockKey(topSapling))?.state.stage).toBe(1)
+      expect(composition.stateWorld.cells.get(blockKey(nearTopSapling))?.state.stage).toBe(1)
     }),
   )
 
@@ -479,6 +590,30 @@ describe('the registered production composition reaches the C7 state writer', ()
 
       expect(composition.stateWorld.batches).toHaveLength(0)
       expect(yield* Ref.get(composition.state.blockStateRuleResults)).toStrictEqual([])
+    }),
+  )
+
+  it.effect('blocks sapling growth when a tree-space read reports an unloaded chunk', () =>
+    Effect.gen(function* () {
+      const saplingPosition = fixtureBlockPosition(4, 64, 4)
+      const composition = yield* makeProductionComposition(
+        [[saplingPosition, cell('sapling', { stage: 1 })]],
+        emptySlots(),
+        { crops: [] },
+        {},
+        {
+          getBlock: () => Effect.succeed({ _tag: 'ChunkNotLoaded' as const }),
+          getLight: () => Effect.succeed({ _tag: 'Light', sky: 15, block: 0 }),
+        },
+      )
+      yield* Ref.set(composition.state.rollSeed, 1)
+      yield* runFrames(composition.stages, 1, DeltaTimeSecs(1))
+
+      expect(yield* Ref.get(composition.state.blockStateRuleResults)).toMatchObject([
+        { outcome: { _tag: 'NoChange', reason: 'blocked' } },
+      ])
+      expect(composition.stateWorld.batches).toHaveLength(0)
+      expect(composition.stateWorld.cells.get(blockKey(saplingPosition))?.state.stage).toBe(1)
     }),
   )
 })
