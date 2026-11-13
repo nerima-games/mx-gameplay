@@ -77,6 +77,8 @@ import { Effect, Result } from 'effect'
 import {
   BlockAxis,
   BlockId,
+  BlockStateIndex,
+  BlockStateLength,
   ChunkAxis,
   blockPosition,
   chunkCoord,
@@ -94,7 +96,7 @@ export type ChunkWindowCell =
   | Readonly<{ _tag: 'Unloaded' }>
   | Readonly<{ _tag: 'AboveWorld' }>
   | Readonly<{ _tag: 'BelowWorld' }>
-  | Readonly<{ _tag: 'CorruptBuffer'; index: number; length: number }>
+  | Readonly<{ _tag: 'CorruptBuffer'; index: BlockStateIndex; length: BlockStateLength }>
 
 export type ChunkWindowReadFailure = Readonly<{ _tag: 'ChunkWindowUnavailable' }>
 
@@ -235,7 +237,11 @@ export const openChunkWindow = (
       const index = blockIndex(localOf(x), y, localOf(z))
       if (index >= chunk.blocks.length) {
         unreadable += 1
-        return { _tag: 'CorruptBuffer', index, length: chunk.blocks.length }
+        return {
+          _tag: 'CorruptBuffer',
+          index: BlockStateIndex(index),
+          length: BlockStateLength(chunk.blocks.length),
+        }
       }
 
       return { _tag: 'Loaded', blockId: BlockId(readBlock(chunk.blocks, index)) }

@@ -360,45 +360,81 @@ describe('mob lifecycle gameplay scenarios', () => {
     }),
   )
 
-  it.effect('stops a mob before an unloaded chunk while the composed gameplay tick succeeds', () =>
+  it.effect('keeps a cow on the loaded side when its saved path enters an unloaded chunk', () =>
     Effect.gen(function* () {
-      const start = position(15.5, 64, 0.5)
+      const start = position(15.55, 64, 0.5)
+      const goal = position(23.9, 64, 0.5)
       const harness = yield* makeHarness(
-        position(21.5, 64, 0.5),
+        position(8.5, 64, 0.5),
         floorWorld(0, 31),
         ['0,0', '1,0'],
       )
       yield* harness.time.setTimeOfDay(InterpolationFraction(0.9))
-      yield* requestMobSpawn(harness.state, spawnAttempt(ZOMBIE_KIND, start))
+      yield* requestMobSpawn(harness.state, spawnAttempt(COW_KIND, start))
       yield* runFrame(harness.stages, DeltaTimeSecs(0))
 
-      yield* runFrame(harness.stages, DeltaTimeSecs(1 / 20))
-      const before = (yield* mobEntities(harness.commit.coordinator)).find(({ kind }) => kind === ZOMBIE_KIND)
-      const movementGoal = before !== undefined && isHostileMobSnapshot(before.behaviour) &&
-        before.behaviour.behaviour?._tag === 'EcosystemMob'
-        ? before.behaviour.behaviour.movementGoal
-        : undefined
-      expect(before?.feetPosition.x).toBeGreaterThanOrEqual(start.x)
-      expect(before?.feetPosition.x).toBeLessThan(15.8)
-      expect(movementGoal?.x).toBeGreaterThanOrEqual(16)
+      const initial = yield* harness.commit.coordinator.snapshot(
+        GAMEPLAY_ENTITIES_OWNER_ID,
+        GameplayEntityRosterSchema,
+      )
+      const cow = initial.state.entities.find(({ kind }) => kind === COW_KIND)
+      expect(cow).toBeDefined()
+      if (cow === undefined) return
+      const movement = Schema.decodeUnknownSync(MobMovementStateSchema)({
+        id: cow.id,
+        body: { kind: 'dynamic', x: start.x, y: 64.7, z: start.z, vx: 0, vy: 0, vz: 0 },
+        profile: { kind: 'ground', width: 0.9, height: 1.4, canJump: true },
+        goal: { x: 23, y: 64, z: 0 },
+        path: Array.from({ length: 9 }, (_unused, index) => ({
+          x: 15 + index,
+          y: 64,
+          z: 0,
+          action: index === 0 ? 'start' : 'walk',
+        })),
+        pathIndex: 1,
+        stuckTicks: 0,
+        isGrounded: true,
+        movementSpeed: 1.25,
+      })
+      const entities = initial.state.entities.map((entity) => entity.id === cow.id
+        ? {
+          ...entity,
+          feetPosition: start,
+          behaviour: {
+            _tag: 'HostileMob' as const,
+            behaviour: { ...initialEcosystemMobState(), movementGoal: goal },
+            movement,
+            ageTicks: 0,
+            persistent: false,
+            named: false,
+            tamed: false,
+          },
+        }
+        : entity)
+      yield* harness.commit.coordinator.commit({
+        expectedRevision: initial.revision,
+        expectedDimensions: [],
+        changes: [{
+          ownerId: GAMEPLAY_ENTITIES_OWNER_ID,
+          state: Schema.decodeUnknownSync(GameplayEntityRosterSchema)({ ...initial.state, entities }),
+        }],
+      })
 
       const eastChunk = chunkCoord(ChunkAxis(1), ChunkAxis(0))
       expect(yield* harness.store.api.unload(eastChunk)).toBe(true)
 
-      let current = before
-      let stopped = false
-      for (let tick = 0; tick < 12 && !stopped; tick += 1) {
-        const previousPosition = current?.feetPosition
+      const firstFrame = yield* Effect.exit(runFrame(harness.stages, DeltaTimeSecs(1 / 20)))
+      expect(Exit.isSuccess(firstFrame)).toBe(true)
+      const current = (yield* mobEntities(harness.commit.coordinator)).find(({ id }) => id === cow.id)
+      expect(current?.feetPosition).toStrictEqual(start)
+
+      const stoppedAt = current?.feetPosition
+      for (let tick = 0; tick < 4; tick += 1) {
         const frame = yield* Effect.exit(runFrame(harness.stages, DeltaTimeSecs(1 / 20)))
         expect(Exit.isSuccess(frame)).toBe(true)
-        current = (yield* mobEntities(harness.commit.coordinator)).find(({ id }) => id === before?.id)
-        stopped = current !== undefined && previousPosition !== undefined &&
-          current.feetPosition.x === previousPosition.x &&
-          current.feetPosition.y === previousPosition.y &&
-          current.feetPosition.z === previousPosition.z
       }
-      expect(stopped).toBe(true)
-      expect(current?.feetPosition.x).toBeLessThan(16)
+      const afterBoundary = (yield* mobEntities(harness.commit.coordinator)).find(({ id }) => id === cow.id)
+      expect(afterBoundary?.feetPosition).toStrictEqual(stoppedAt)
     }),
   )
 
@@ -427,6 +463,40 @@ describe('mob lifecycle gameplay scenarios', () => {
     }),
   )
 
+  it.effect('returns a typed daylight-query failure for an undead on a corrupt cell', () =>
+    Effect.gen(function* () {
+      let corruptBuffer = false
+      const adaptStore = (store: ChunkStoreApi): ChunkStoreApi => ({
+        ...store,
+        peek: (coord) => Effect.map(store.peek(coord), (chunk) =>
+          !corruptBuffer || chunk === undefined
+            ? chunk
+            : { ...chunk, blocks: Uint16Array.from(chunk.blocks).subarray(0, 1) },
+        ),
+      })
+      const harness = yield* makeHarness(
+        position(0.5, 64, 0.5),
+        floorWorld(0, 8),
+        ['0,0'],
+        'overworld',
+        undefined,
+        adaptStore,
+      )
+      yield* harness.time.setTimeOfDay(InterpolationFraction(0.5))
+      yield* requestMobSpawn(harness.state, spawnAttempt(ZOMBIE_KIND, position(5.5, 64, 0.5)))
+      yield* runFrame(harness.stages, DeltaTimeSecs(0))
+      corruptBuffer = true
+
+      const tick = yield* Effect.exit(runFrame(harness.stages, DeltaTimeSecs(1 / 20)))
+      expect(Exit.isFailure(tick)).toBe(true)
+      if (!Exit.isFailure(tick)) return
+      expect(Cause.squash(tick.cause)).toMatchObject({
+        _tag: 'EntityWorldCorruptBuffer',
+        cell: { x: 5, y: 64, z: 0 },
+      })
+    }),
+  )
+
   it.effect('holds a saved arrow when its next tick reaches an unloaded chunk', () =>
     Effect.gen(function* () {
       const start = position(15.5, 65.62, 0.5)
@@ -445,6 +515,48 @@ describe('mob lifecycle gameplay scenarios', () => {
       const harness = yield* makeHarness(
         position(20.5, 64, 0.5),
         floorWorld(0, 15),
+        ['0,0'],
+      )
+      yield* harness.time.setTimeOfDay(InterpolationFraction(0.9))
+      yield* harness.commit.coordinator.commit({
+        expectedRevision: yield* harness.commit.coordinator.revision,
+        expectedDimensions: [],
+        changes: [{ ownerId: PROJECTILE_REPLICATED_OWNER_ID, state: projectileSnapshot }],
+      })
+
+      const tick = yield* Effect.exit(runFrame(harness.stages, DeltaTimeSecs(1 / 20)))
+      expect(Exit.isSuccess(tick)).toBe(true)
+      const after = yield* harness.commit.coordinator.snapshot(
+        PROJECTILE_REPLICATED_OWNER_ID,
+        ProjectileServiceSnapshotSchema,
+      )
+      expect(after.state.projectiles).toHaveLength(1)
+      expect(after.state.projectiles[0]?.projectile).toMatchObject({
+        state: 'flying',
+        position: start,
+        ageSeconds: 0,
+      })
+    }),
+  )
+
+  it.effect('defers a diagonal arrow before its first unloaded voxel', () =>
+    Effect.gen(function* () {
+      const start = position(15.5, 65.5, 15.5)
+      const rawId = 'mx-gameplay:mob:arrow:diagonal-unloaded-boundary:0'
+      const source = EntityId('scenario:diagonal-unloaded-boundary-arrow')
+      const savedArrow = flyingMobArrow(rawId, source, start)
+      const projectileSnapshot = Schema.decodeUnknownSync(ProjectileServiceSnapshotSchema)({
+        projectiles: [{
+          ...savedArrow,
+          projectile: {
+            ...savedArrow.projectile,
+            velocity: { x: 60, y: 60, z: 60 },
+          },
+        }],
+      })
+      const harness = yield* makeHarness(
+        position(20.5, 64, 20.5),
+        floorWorld(0, 15, 0, 15),
         ['0,0'],
       )
       yield* harness.time.setTimeOfDay(InterpolationFraction(0.9))
@@ -630,6 +742,57 @@ describe('mob lifecycle gameplay scenarios', () => {
       const behaviour = after?.behaviour
       const ecosystem = isHostileMobSnapshot(behaviour) ? behaviour.behaviour : behaviour
       expect(ecosystem).toMatchObject({ _tag: 'EcosystemMob', burningTicks: 0 })
+    }),
+  )
+
+  it.effect('processes undead daylight above and below the world through the entities stage', () =>
+    Effect.gen(function* () {
+      for (const y of [256, -1]) {
+        const harness = yield* makeHarness(
+          position(60.5, 64, 0.5),
+          floorWorld(0, 16),
+          ['0,0', '1,0'],
+        )
+        yield* harness.time.setTimeOfDay(InterpolationFraction(0.5))
+        yield* requestMobSpawn(harness.state, spawnAttempt(ZOMBIE_KIND, position(8.5, 64, 0.5)))
+        yield* runFrame(harness.stages, DeltaTimeSecs(0))
+
+        const initial = yield* harness.commit.coordinator.snapshot(
+          GAMEPLAY_ENTITIES_OWNER_ID,
+          GameplayEntityRosterSchema,
+        )
+        const zombie = initial.state.entities.find(({ kind }) => kind === ZOMBIE_KIND)
+        expect(zombie).toBeDefined()
+        if (zombie === undefined) return
+        const entities = initial.state.entities.map((entity) => entity.id === zombie.id
+          ? {
+            ...entity,
+            feetPosition: position(entity.feetPosition.x, y, entity.feetPosition.z),
+            behaviour: {
+              _tag: 'HostileMob' as const,
+              behaviour: initialEcosystemMobState(),
+              ageTicks: 1,
+              persistent: true,
+              named: false,
+              tamed: false,
+            },
+          }
+          : entity)
+        yield* harness.commit.coordinator.commit({
+          expectedRevision: initial.revision,
+          expectedDimensions: [],
+          changes: [{
+            ownerId: GAMEPLAY_ENTITIES_OWNER_ID,
+            state: Schema.decodeUnknownSync(GameplayEntityRosterSchema)({ ...initial.state, entities }),
+          }],
+        })
+
+        const entitiesStage = harness.stages.find(({ id }) => id === GAMEPLAY_STAGE_IDS.entities)
+        expect(entitiesStage).toBeDefined()
+        if (entitiesStage === undefined) return
+        const tick = yield* Effect.exit(runFrame([entitiesStage], DeltaTimeSecs(1 / 20)))
+        expect(Exit.isSuccess(tick)).toBe(true)
+      }
     }),
   )
 
@@ -1320,6 +1483,58 @@ describe('mob lifecycle gameplay scenarios', () => {
       )
       expect(projectiles.state.projectiles).toStrictEqual([])
       expect(yield* Ref.get(harness.state.playerDamages)).toStrictEqual([])
+    }),
+  )
+
+  it.effect('does not launch a ranged shot while its line of sight crosses an unloaded chunk', () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness(
+        position(20.5, 64, 19.5),
+        floorWorld(0, 31, 0, 31),
+        ['0,0', '1,1'],
+      )
+      expect(yield* harness.store.api.peek(chunkCoord(ChunkAxis(1), ChunkAxis(1)))).toBeDefined()
+      expect(yield* harness.store.api.peek(chunkCoord(ChunkAxis(1), ChunkAxis(0)))).toBeUndefined()
+      yield* harness.time.setTimeOfDay(InterpolationFraction(0.9))
+      yield* requestMobSpawn(harness.state, spawnAttempt(SKELETON_KIND, position(9.5, 64, 9.5)))
+      yield* runFrame(harness.stages, DeltaTimeSecs(0))
+      yield* runFrame(harness.stages, DeltaTimeSecs(1 / 20))
+
+      const skeleton = (yield* mobEntities(harness.commit.coordinator)).find(({ kind }) => kind === SKELETON_KIND)
+      expect(skeleton).toBeDefined()
+      expect(isHostileMobSnapshot(skeleton?.behaviour)).toBe(true)
+      if (skeleton === undefined || !isHostileMobSnapshot(skeleton.behaviour)) return
+      expect(skeleton.behaviour.behaviour).toMatchObject({ _tag: 'EcosystemMob', attackCooldownTicks: expect.any(Number) })
+      if (skeleton.behaviour.behaviour?._tag !== 'EcosystemMob') return
+      expect(skeleton.behaviour.behaviour.attackCooldownTicks).toBeGreaterThan(0)
+
+      const projectiles = yield* harness.commit.coordinator.snapshot(
+        PROJECTILE_REPLICATED_OWNER_ID,
+        ProjectileServiceSnapshotSchema,
+      )
+      expect(projectiles.state.projectiles).toStrictEqual([])
+      expect(yield* Ref.get(harness.state.playerDamages)).toStrictEqual([])
+    }),
+  )
+
+  it.effect('launches a ranged shot when its line of sight crosses loaded chunks', () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness(
+        position(20.5, 64, 19.5),
+        floorWorld(0, 31, 0, 31),
+        ['0,0', '1,0', '1,1'],
+      )
+      expect(yield* harness.store.api.peek(chunkCoord(ChunkAxis(1), ChunkAxis(0)))).toBeDefined()
+      yield* harness.time.setTimeOfDay(InterpolationFraction(0.9))
+      yield* requestMobSpawn(harness.state, spawnAttempt(SKELETON_KIND, position(9.5, 64, 9.5)))
+      yield* runFrame(harness.stages, DeltaTimeSecs(0))
+      yield* runFrame(harness.stages, DeltaTimeSecs(1 / 20))
+
+      const projectiles = yield* harness.commit.coordinator.snapshot(
+        PROJECTILE_REPLICATED_OWNER_ID,
+        ProjectileServiceSnapshotSchema,
+      )
+      expect(projectiles.state.projectiles).toHaveLength(1)
     }),
   )
 

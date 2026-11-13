@@ -237,7 +237,9 @@ describe('mob ecosystem', () => {
           }
 
           expect(firstGoal.y).toBe(self.y)
-          expect(Math.hypot(firstGoal.x - self.x, firstGoal.z - self.z)).toBeLessThanOrEqual(4 + 1e-12)
+          const distance = Math.hypot(firstGoal.x - self.x, firstGoal.z - self.z)
+          expect(distance).toBeGreaterThan(0)
+          expect(distance).toBeLessThanOrEqual(4 + 1e-12)
           expect(repeatedGoal).toEqual(firstGoal)
         },
       ),

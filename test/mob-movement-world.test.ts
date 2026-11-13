@@ -1,8 +1,7 @@
 import { describe, expect, it } from '@effect/vitest'
 import { Effect, Option, Result, Schema } from 'effect'
-import { BlockAxis, BlockId, blockIdOf, blockPosition, ChunkAxis, chunkCoord, EntityHealthPoints, EntitySerial, SimulationTick, type BlockType, position, PositionAxis } from '@nerima-games/mc-kernel'
+import { BlockAxis, BlockId, BlockStateIndex, BlockStateLength, blockIdOf, blockPosition, ChunkAxis, chunkCoord, EntityHealthPoints, EntitySerial, SimulationTick, type BlockType, position, PositionAxis } from '@nerima-games/mc-kernel'
 import { EntityId, EntityKind, MobMovementStateSchema, MobPathProfileSchema, planMobPathsForTick } from '@nerima-games/mc-sim'
-import { CHUNK_HEIGHT } from '@nerima-games/mc-worldgen'
 import { openChunkWindow, UNREADABLE_BLOCK, type ChunkWindow } from '../src/domain/chunk-window'
 import {
   entityWorldBlockDataFromLookup,
@@ -155,27 +154,67 @@ describe('SM3 mob movement world', () => {
     Effect.gen(function* () {
       const port = yield* makeWorldPort([], [])
       const cell = mobMovementCell(at(0, 64, 0))!
+      const movement = initialMobMovementState(EntityId('mob:unloaded-overlap'), PIG_KIND, at(0.5, 64, 0.5), at(2.5, 64, 0.5))
       const blockSample = port.physics.environment.blockAt(BlockAxis(0), BlockAxis(64), BlockAxis(0))
       const blockShape = port.physics.blockShapeAt?.(BlockAxis(0), BlockAxis(64), BlockAxis(0))
 
+      expect(movement).toBeDefined()
+      if (movement === undefined) return
       expect(port.isPassable(cell)).toBe(false)
       expect(port.hasSupport(cell)).toBe(false)
       expect(port.hazardAt(cell)).toBeNull()
+      expect(port.physics.blockPropertiesAt(BlockAxis(0), BlockAxis(64), BlockAxis(0))).toStrictEqual(Result.succeed(null))
       expect(blockSample._tag).toBe('Success')
       if (blockSample._tag === 'Success') {
         expect(blockSample.success).toBeNull()
       }
       expect(blockShape).toBeNull()
+      expect(port.bodyOverlapsUnloadedCell(movement)).toStrictEqual(Result.succeed(true))
       expect(port.queryFailure()).toBeUndefined()
+    }),
+  )
+
+  it.effect('propagates a corrupt chunk buffer through every movement-world query', () =>
+    Effect.gen(function* () {
+      const store = yield* makeChunkStoreDouble(world([]), ['0,0'])
+      const corruptStore = {
+        ...store.api,
+        peek: (coord: Parameters<typeof store.api.peek>[0]) => Effect.map(store.api.peek(coord), (chunk) =>
+          chunk === undefined ? undefined : { ...chunk, blocks: Uint16Array.from(chunk.blocks).subarray(0, 1) },
+        ),
+      }
+      const window = yield* openChunkWindow(corruptStore, [chunkCoord(ChunkAxis(0), ChunkAxis(0))])
+      const port = mobMovementWorldFromChunkWindow(window)
+      const cell = mobMovementCell(at(0.5, 64, 0.5))!
+      const coordinates = [BlockAxis(0), BlockAxis(64), BlockAxis(0)] as const
+      const movement = initialMobMovementState(EntityId('mob:corrupt-overlap'), PIG_KIND, at(0.5, 64, 0.5), at(2.5, 64, 0.5))
+
+      expect(movement).toBeDefined()
+      if (movement === undefined) return
+      expect(port.cellAt(cell)).toMatchObject({
+        _tag: 'Failure',
+        failure: { _tag: 'EntityWorldCorruptBuffer', cell: { x: 0, y: 64, z: 0 } },
+      })
+      expect(port.isPassable(cell)).toBe(false)
+      expect(port.hasSupport(cell)).toBe(false)
+      expect(port.hazardAt(cell)).toBeNull()
+      expect(port.physics.environment.blockAt(...coordinates)).toStrictEqual(Result.succeed(null))
+      expect(port.physics.blockPropertiesAt(...coordinates)).toStrictEqual(Result.succeed(null))
+      expect(port.physics.blockShapeAt?.(...coordinates)).toBeNull()
+      expect(port.bodyOverlapsUnloadedCell(movement)).toMatchObject({
+        _tag: 'Failure',
+        failure: { _tag: 'EntityWorldCorruptBuffer' },
+      })
+      expect(port.queryFailure()).toMatchObject({ _tag: 'EntityWorldCorruptBuffer' })
     }),
   )
 
   it.effect('treats above-world as air and below-world as the non-colliding void', () =>
     Effect.gen(function* () {
       const port = yield* makeWorldPort([])
-      const above = mobMovementCell(at(0, CHUNK_HEIGHT, 0))!
+      const above = mobMovementCell(at(0, 256, 0))!
       const below = mobMovementCell(at(0, -1, 0))!
-      const abovePhysics = port.physics.environment.blockAt(BlockAxis(0), BlockAxis(CHUNK_HEIGHT), BlockAxis(0))
+      const abovePhysics = port.physics.environment.blockAt(BlockAxis(0), BlockAxis(256), BlockAxis(0))
       const belowPhysics = port.physics.environment.blockAt(BlockAxis(0), BlockAxis(-1), BlockAxis(0))
 
       expect(port.cellAt(above)).toMatchObject({ _tag: 'Success', success: { _tag: 'AboveWorld' } })
@@ -184,7 +223,8 @@ describe('SM3 mob movement world', () => {
       expect(port.isPassable(below)).toBe(true)
       expect(abovePhysics).toMatchObject({ _tag: 'Success', success: { properties: { collisionShape: 'none' } } })
       expect(belowPhysics).toMatchObject({ _tag: 'Success', success: null })
-      expect(port.physics.blockShapeAt?.(BlockAxis(0), BlockAxis(CHUNK_HEIGHT), BlockAxis(0))).toBeNull()
+      expect(port.physics.blockPropertiesAt(BlockAxis(0), BlockAxis(-1), BlockAxis(0))).toStrictEqual(Result.succeed(null))
+      expect(port.physics.blockShapeAt?.(BlockAxis(0), BlockAxis(256), BlockAxis(0))).toBeNull()
       expect(port.physics.blockShapeAt?.(BlockAxis(0), BlockAxis(-1), BlockAxis(0))).toBeNull()
     }),
   )
@@ -357,8 +397,8 @@ describe('SM3 mob movement world', () => {
       const failure = {
         _tag: 'EntityWorldCorruptBuffer' as const,
         cell: { x: BlockAxis(6), y: BlockAxis(64), z: BlockAxis(0) },
-        index: 1_024,
-        length: 1,
+        index: BlockStateIndex(1_024),
+        length: BlockStateLength(1),
       }
       const failingWorld = {
         ...port,
