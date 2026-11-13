@@ -462,10 +462,8 @@ export function saplingStageAfterGrowthAttempt(
   if (treeSpace._tag === 'ChunkNotLoaded') return { _tag: 'NoChange', reason: 'chunkNotLoaded' }
   if (roll >= 1 / 7) return { _tag: 'NoChange', reason: 'growthMiss' }
   if (stage === 0) return { _tag: 'Advanced', stage: SAPLING_STAGE_ONE }
-  switch (treeSpace._tag) {
-    case 'Available': return { _tag: 'TreeRequired' }
-    case 'Blocked': return { _tag: 'NoChange', reason: 'blocked' }
-  }
+  if (treeSpace._tag === 'Available') return { _tag: 'TreeRequired' }
+  return { _tag: 'NoChange', reason: 'blocked' }
 }
 
 export function saplingStageAfterBoneMeal(
