@@ -650,8 +650,9 @@ export const passivePopulation = <S>(roster: EntityManagerApi<S>): Effect.Effect
 /**
  * A player-caused casualty with no Looting context.
  *
- * Bow and melee requests currently carry damage but no enchantment metadata,
- * so both drop and experience resolution use level zero.
+ * Bow and melee hits carry the attacker's Looting level, and drop resolution
+ * uses it; hits that omit it, such as non-player damage, resolve at level
+ * zero. Experience resolution always uses level zero.
  */
 const NO_LOOTING_LEVEL = Result.getOrThrow(EnchantmentLevel.result(0))
 const SLAIN_WITHOUT_LOOTING: MobKill = { _tag: 'Slain', lootingLevel: NO_LOOTING_LEVEL }
