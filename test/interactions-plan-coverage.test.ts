@@ -73,6 +73,7 @@ import {
   POTATO_MATURITY_SECS,
   type Vitals,
 } from '@nerima-games/mc-sim'
+import { LightQueueUnderflowError, type ChunkStoreApi } from '@nerima-games/mc-worldgen'
 import {
   drainItemUseResults,
   drainBlockPlacementResults,
@@ -280,12 +281,15 @@ const makeHarness = (options: Readonly<{
   readonly vitalsOwnerIdOverride?: ReplicatedOwnerId
   readonly commitVitalsOwnerIdOverride?: ReplicatedOwnerId
   readonly tntOwnerId?: ReplicatedOwnerId
+  readonly getLight?: ChunkStoreApi['getLight']
 }> = {}) => Effect.gen(function* () {
   const store = yield* makeTransactionalChunkStoreDouble(
     world(options.blocks ?? []),
     options.loadedChunks ?? ['0,0'],
   )
-  const chunkStore = store.api
+  const chunkStore: ChunkStoreApi = options.getLight === undefined
+    ? store.api
+    : { ...store.api, getLight: options.getLight }
   const registrations = gameplayOwnerRegistrations({
     playerPose: options.playerPose ?? INITIAL_PLAYER_POSE,
     ...(options.fishing === undefined ? {} : { fishing: options.fishing }),
@@ -2990,6 +2994,42 @@ describe('registered block-use and placement requests in the interactions stage'
     ))).state.inventory.slots.every((slot) => slot?.item !== 'stone')).toBe(true)
     expect(harness.commitCalls()).toBe(1)
     expect(harness.lastRequest()?.blockWrite?.edits).toHaveLength(1)
+  })
+
+  it('reports a mushroom light-read failure without committing the placement', async () => {
+    const target = blockPosition(BlockAxis(3), BlockAxis(64), BlockAxis(3))
+    const below = blockPosition(BlockAxis(3), BlockAxis(63), BlockAxis(3))
+    const harness = await Effect.runPromise(makeHarness({
+      blocks: [[below, Option.getOrThrow(blockIdOf('dirt'))]],
+      playerStorage: playerStorageWithItem('brown_mushroom', 1),
+      getLight: () => Effect.fail(new LightQueueUnderflowError({ index: 0 })),
+    }))
+    await Effect.runPromise(requestBlockPlacementCommand(harness.state, {
+      requestId: 'place-mushroom-light-failure',
+      positionKey: blockPositionKeyOf(target),
+      heldItem: 'brown_mushroom',
+    }))
+
+    await harness.run()
+
+    expect(await Effect.runPromise(drainBlockPlacementResults(harness.state))).toMatchObject([{
+      requestId: 'place-mushroom-light-failure',
+      success: false,
+      consumed: false,
+      replayed: false,
+      outcome: {
+        _tag: 'WorldDataFailed',
+        reason: { _tag: 'LightQueueUnderflowError', index: 0 },
+      },
+    }])
+    expect(await Effect.runPromise(harness.state.stageFaults.drain)).toMatchObject([{
+      operation: 'ReadLight',
+      position: target,
+      reason: { _tag: 'LightQueueUnderflowError', index: 0 },
+      occurrences: 1,
+    }])
+    expect(await Effect.runPromise(harness.store.blockAt(target))).toBeUndefined()
+    expect(harness.commitCalls()).toBe(0)
   })
 
   it('does not commit an unavailable survival item but places a creative block without consuming storage', async () => {

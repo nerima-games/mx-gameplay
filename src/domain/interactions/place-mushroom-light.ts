@@ -16,34 +16,13 @@
  * owns the block.
  *
  * ---------------------------------------------------------------------------
- * NOTHING CAN REACH THIS RULE TODAY, AND THAT IS A KERNEL ROSTER FACT
+ * HELD MUSHROOMS REACH THIS RULE THROUGH THE PLACEMENT REQUEST
  * ---------------------------------------------------------------------------
  *
- * `brown_mushroom` and `red_mushroom` are in kernel's `BLOCK_TYPES` and are NOT
- * in its `ITEM_TYPES`, so neither is a member of `PlaceableItemType` and
- * `placeBlock` cannot be handed one. The same is true of `sugar_cane` and
- * `cactus`; of the four deferred rules only `./place-door-upper`'s block has an
- * item form.
- *
- * That is worth stating plainly rather than leaving to be discovered, because it
- * is the SECOND time this repository has met it. `test/place-block.test.ts`'s
- * F7 regression records the first:
- *
- *     no block that needs it could be held. `PlaceableItemType` is `ItemType &
- *     BlockType`, and kernel deliberately withholds an item form from the ten
- *     blocks whose rule differs from the fallback — so `placeBlock` could not
- *     reach the wrong answer even while the wrong answer was what it would have
- *     given.
- *
- * The conclusion drawn there is the one drawn here: WRITE THE RULE ANYWAY and
- * wire it, because the day kernel gives mushrooms an item form is a row in a
- * table and no edit in this repository. `test/rules.test.ts` pins the
- * unreachability as a NAMED test rather than leaving it as a silence, so that
- * the day it stops being true, the test that says so fails and points here.
- *
- * The rule is reachable from the other end regardless: `placementVerdict` is
- * pure and takes a `BlockId`, and every writer of blocks that is not a held item
- * — a structure generator, the preview's palette — goes through it.
+ * Kernel 0.17.0 includes `brown_mushroom` and `red_mushroom` in both
+ * `ITEM_TYPES` and `BLOCK_TYPES`. They are valid `PlaceableItemType` values, so
+ * a host placement request reaches this rule and can receive its typed light
+ * read failure.
  *
  * ---------------------------------------------------------------------------
  * WHY THE LIGHT READ IS NOT FREE, AND WHY IT IS STILL PAID HERE
