@@ -2031,6 +2031,48 @@ describe('stage behaviour', () => {
     }),
   )
 
+  it.effect('an unregistered block faults and defers a bow shot without applying the hit', () =>
+    Effect.gen(function* () {
+      const target: EntityRoster<MobBehaviour> = {
+        entities: [{
+          id: EntityId('target-behind-unregistered-block'),
+          kind: EntityKind('creeper'),
+          feetPosition: fixturePosition(0, 64 - BOW_TARGET_CENTER_Y_OFFSET, 10),
+          healthPoints: EntityHealthPoints(20),
+          behaviour: undefined,
+        }],
+        nextSerial: EntitySerial(1),
+      }
+      const cell = fixtureBlockPosition(0, 64, 5)
+      const unknownBlock = BlockId(65_535)
+      const harness = yield* builtStagesInWorld(
+        world([[cell, unknownBlock]]), ['0,0'], undefined, undefined, undefined, target,
+      )
+      const interactions = harness.stages.find((stage) => stage.id === GAMEPLAY_STAGE_IDS.interactions)!
+
+      yield* requestBowShot(harness.state, 'unknown-terrain-shot', {
+        origin: fixturePosition(0, 64, 0),
+        dirX: 0,
+        dirY: 0,
+        dirZ: 1,
+        chargeSecs: BOW_FULL_CHARGE_SECS,
+        inventory: { mode: 'creative', slotIndex: 0 },
+      })
+      yield* interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer))
+
+      expect(yield* drainBowShotResults(harness.state)).toStrictEqual([])
+      expect(yield* Ref.get(harness.state.pendingBowShots)).toHaveLength(1)
+      const entityOwner = yield* harness.commit.coordinator.snapshot(GAMEPLAY_ENTITIES_OWNER_ID, GameplayEntityRosterSchema)
+      expect(entityOwner.state.entities[0]?.healthPoints).toBe(20)
+      expect(yield* drainGameplayEntityStageFaults(harness.state)).toContainEqual(expect.objectContaining({
+        _tag: 'EntityWorldDataFault',
+        source: 'ProjectileLineOfSight',
+        target: { _tag: 'Cell', cell },
+        failure: { _tag: 'EntityWorldUnregisteredBlockId', cell, blockId: unknownBlock },
+      }))
+    }),
+  )
+
   it.effect('an unreadable chunk in the arrow path blocks the hit before damage reaches the roster', () =>
     Effect.gen(function* () {
       const target: EntityRoster<MobBehaviour> = {

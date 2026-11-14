@@ -1,6 +1,6 @@
 import { describe, expect, it } from '@effect/vitest'
 import { BlockId } from '@nerima-games/mc-kernel'
-import { Effect } from 'effect'
+import { Effect, Result } from 'effect'
 import type { MobBehaviour } from '../src/domain/entities/mob-frame'
 import {
   makeInMemoryWorld,
@@ -45,9 +45,32 @@ describe('in-memory world input boundaries', () => {
       const isSolid = solidityFromStore(world.chunkStore)
       const isTargetable = targetabilityFromStore(world.chunkStore)
 
-      expect(isSolid({ x: Number.NaN, y: 0, z: 0 })).toBe(true)
+      expect(Result.getOrThrow(isSolid({ x: Number.NaN, y: 0, z: 0 }))).toBe(true)
       expect(isTargetable(Number.NaN, 0, 0)).toBe(false)
       expect(isTargetable(0, 0, 0)).toBe(true)
+    }),
+  )
+
+  it.effect('returns a typed failure for an unregistered block instead of treating it as collision', () =>
+    Effect.gen(function* () {
+      const unknownBlock = BlockId(65_535)
+      const world = yield* makeInMemoryWorld<MobBehaviour>({
+        world: {
+          blocks: new Map([['5,5,5', unknownBlock]]),
+          loaded: ['0,0'],
+        },
+      })
+
+      const result = solidityFromStore(world.chunkStore)({ x: 5, y: 5, z: 5 })
+
+      expect(Result.isFailure(result)).toBe(true)
+      if (Result.isFailure(result)) {
+        expect(result.failure).toMatchObject({
+          _tag: 'EntityWorldUnregisteredBlockId',
+          blockId: unknownBlock,
+          cell: { x: 5, y: 5, z: 5 },
+        })
+      }
     }),
   )
 })

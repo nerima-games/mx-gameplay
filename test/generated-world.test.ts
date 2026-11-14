@@ -69,8 +69,8 @@ describe('generated world composition', () => {
       yield* world.chunkStore.load(chunkCoord(0, 0))
       const isSolid = solidityFromStore(world.chunkStore)
 
-      expect(isSolid({ x: 0, y: 60, z: 0 })).toBe(false) // water
-      expect(isSolid({ x: 0, y: 59, z: 0 })).toBe(true) // sand
+      expect(Result.getOrThrow(isSolid({ x: 0, y: 60, z: 0 }))).toBe(false) // water
+      expect(Result.getOrThrow(isSolid({ x: 0, y: 59, z: 0 }))).toBe(true) // sand
     }),
   )
 
@@ -93,7 +93,7 @@ describe('generated world composition', () => {
       const isSolid = solidityFromStore(world.chunkStore)
 
       // Chunk (0,0) is never loaded in this test, so the read is ChunkNotLoaded.
-      expect(isSolid({ x: 0, y: 64, z: 0 })).toBe(true)
+      expect(Result.getOrThrow(isSolid({ x: 0, y: 64, z: 0 }))).toBe(true)
     }),
   )
 
@@ -103,8 +103,8 @@ describe('generated world composition', () => {
       yield* world.chunkStore.load(chunkCoord(0, 0))
       const isSolid = solidityFromStore(world.chunkStore)
 
-      expect(isSolid({ x: 0, y: -1, z: 0 })).toBe(true) // below bedrock
-      expect(isSolid({ x: 0, y: CHUNK_HEIGHT, z: 0 })).toBe(true) // above the build limit
+      expect(Result.getOrThrow(isSolid({ x: 0, y: -1, z: 0 }))).toBe(true) // below bedrock
+      expect(Result.getOrThrow(isSolid({ x: 0, y: CHUNK_HEIGHT, z: 0 }))).toBe(true) // above the build limit
     }),
   )
 

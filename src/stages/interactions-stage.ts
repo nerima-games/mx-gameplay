@@ -507,7 +507,21 @@ const processBowShot = (
         PositionAxis(request.origin.z + unitAim.z * target.hit.distance),
       )
       const isBlockedAt = solidityFromStore(store)
-      if (!shotBlockedByTerrain((x, y, z) => isBlockedAt({ x, y, z }), request.origin, end)) {
+      let terrainFailure: EntityWorldQueryFailure | undefined
+      const blocked = shotBlockedByTerrain((x, y, z) => {
+        const result = isBlockedAt({ x, y, z })
+        if (Result.isFailure(result)) {
+          terrainFailure ??= result.failure
+          return true
+        }
+        return result.success
+      }, request.origin, end)
+      if (terrainFailure !== undefined) {
+        yield* recordGameplayEntityWorldDataFault(state, 'ProjectileLineOfSight', terrainFailure)
+        yield* Ref.update(state.pendingBowShots, (pending) => [request, ...pending])
+        return
+      }
+      if (!blocked) {
         const amount = DamageAmount.result(bowDamage(
           bowCharge(request.chargeSecs),
           request.powerLevel === undefined ? {} : { powerLevel: request.powerLevel },
