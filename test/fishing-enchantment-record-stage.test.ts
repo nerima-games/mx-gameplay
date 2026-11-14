@@ -27,6 +27,7 @@ import {
   equipmentItem,
   launchProjectile,
   makeFishingService,
+  makeReplicatedOwnerId,
   makeTimeService,
   storageFromInventory,
   type DomainEventBusApi,
@@ -34,6 +35,7 @@ import {
   type FishingState,
   type PlayerStorage,
   type ProjectileLaunch,
+  type ReplicatedOwnerId,
 } from '@nerima-games/mc-sim'
 import { Brand, Effect, Ref, Result, Schema, Stream } from 'effect'
 import type { MobBehaviour } from '../src/domain/entities/mob-frame'
@@ -61,6 +63,7 @@ import {
   GAMEPLAY_FISHING_OWNER_ID,
   GAMEPLAY_VITALS_OWNER_ID,
   GameplayFishingEnchantmentsSnapshotSchema,
+  type GameplayFishingEnchantmentsSnapshot,
 } from '../src/stages/gameplay-owner-registrations'
 import { nextRoll } from '../src/domain/frame-rolls'
 
@@ -138,6 +141,10 @@ type SceneOptions = Readonly<{
   blocks?: Map<string, BlockId>
   fishing?: FishingState
   bobber?: ProjectileLaunch['position']
+  records?: GameplayFishingEnchantmentsSnapshot['records']
+  // Owner ids in the services handed to the stage; the coordinator keeps every registration.
+  stageProjectileOwnerId?: ReplicatedOwnerId | 'omitted'
+  stageRecordsOwnerId?: ReplicatedOwnerId
 }>
 
 const scene = (options: SceneOptions) =>
@@ -151,6 +158,7 @@ const scene = (options: SceneOptions) =>
       fishing: options.fishing ?? Schema.decodeUnknownSync(FishingStateSchema)({ rods: [] }),
       playerStorage: options.storage,
       projectiles: options.bobber === undefined ? { projectiles: [] } : bobberProjectiles(options.bobber),
+      fishingEnchantments: { records: options.records ?? [] },
     })
     const eventBus: DomainEventBusApi = { publish: () => Effect.void, events: Stream.empty }
     const fishingService = yield* makeFishingService(GAMEPLAY_FISHING_OWNER_ID).pipe(
@@ -158,6 +166,15 @@ const scene = (options: SceneOptions) =>
       Effect.provideService(DomainEventBus, eventBus),
     )
     const commit: GameplayStageCommitServices = { ...baseCommit, fishingService, eventBus }
+    const { projectileOwnerId, ...withoutProjectileOwnerId } = commit
+    const stageProjectileOwnerId = options.stageProjectileOwnerId ?? projectileOwnerId
+    const stageCommit: GameplayStageCommitServices = {
+      ...withoutProjectileOwnerId,
+      ...(stageProjectileOwnerId === undefined || stageProjectileOwnerId === 'omitted'
+        ? {}
+        : { projectileOwnerId: stageProjectileOwnerId }),
+      ...(options.stageRecordsOwnerId === undefined ? {} : { fishingEnchantmentsOwnerId: options.stageRecordsOwnerId }),
+    }
     // A fresh frame state and stage list over the same coordinator: nothing survives in memory.
     const stageInstance = Effect.gen(function* () {
       const state = yield* makeGameplayFrameStateForOwner({
@@ -174,7 +191,7 @@ const scene = (options: SceneOptions) =>
         undefined,
         undefined,
         {},
-        commit,
+        stageCommit,
       )
       return { state, stages }
     })
@@ -419,6 +436,154 @@ describe('fishing enchantment record owner', () => {
       }])
       expect(yield* observeOwners(commit)).toStrictEqual(before)
       expect(yield* Ref.get(state.pendingItemUses)).toStrictEqual([])
+    }),
+  )
+
+  it.effect('keeps other actors\' records when a cast adds its own', () =>
+    Effect.gen(function* () {
+      const other = Schema.decodeUnknownSync(GameplayFishingEnchantmentsSnapshotSchema)({
+        records: [{ actor: 'other-fisher', lureLevel: 3, luckOfTheSeaLevel: 0, openWater: false }],
+      }).records
+      const { storage, rod } = storageWithRods(enchantedRodStack(2, 1))
+      const { commit, stageInstance } = yield* scene({ storage, records: other })
+      const { state, stages } = yield* stageInstance
+
+      yield* requestFishingCast(state, castRequest('cast-beside-other', rod))
+      yield* runInteractions(stages)
+
+      expect(yield* drainItemUseResults(state)).toMatchObject([{ action: 'CastFishing', success: true }])
+      expect((yield* observeOwners(commit)).records).toStrictEqual([
+        { actor: EntityId('other-fisher'), lureLevel: 3, luckOfTheSeaLevel: 0, openWater: false },
+        { actor: FISHER, lureLevel: 2, luckOfTheSeaLevel: 1, openWater: true },
+      ])
+    }),
+  )
+
+  it.effect('rebuilds through the default projectile owner when the stage services omit its id', () =>
+    Effect.gen(function* () {
+      const { storage } = storageWithRods(enchantedRodStack(0, 3))
+      const { commit, stageInstance } = yield* scene({
+        storage,
+        blocks: openWaterWorld(),
+        fishing: activeBite,
+        bobber: OPEN_WATER_BOBBER,
+        stageProjectileOwnerId: 'omitted',
+      })
+      const { state, stages } = yield* stageInstance
+
+      yield* Ref.set(state.rollSeed, LUCK_SAMPLE_SEED)
+      yield* requestFishingReel(state, 'reel-default-projectile-owner', FISHER, ENCHANTED_ROD_SLOT)
+      yield* runInteractions(stages)
+
+      expect(yield* drainItemUseResults(state)).toMatchObject([{
+        action: 'ReelFishing',
+        success: true,
+        outcome: { _tag: 'Caught', item: 'name_tag' },
+      }])
+      expect((yield* observeOwners(commit)).projectileIds).toStrictEqual([])
+      expect(yield* drainGameplayStageFailures(state)).toStrictEqual([])
+    }),
+  )
+
+  it.effect('records a typed fault and skips the request when the bobber projectile is missing', () =>
+    Effect.gen(function* () {
+      const { storage } = storageWithRods(enchantedRodStack(0, 3))
+      const { commit, stageInstance } = yield* scene({ storage, blocks: openWaterWorld(), fishing: activeBite })
+      const { state, stages } = yield* stageInstance
+      const before = yield* observeOwners(commit)
+
+      yield* requestFishingReel(state, 'reel-missing-bobber', FISHER, ENCHANTED_ROD_SLOT)
+      yield* runInteractions(stages)
+
+      expect(yield* drainItemUseResults(state)).toStrictEqual([])
+      expect(yield* drainGameplayStageFailures(state)).toStrictEqual([
+        { ...rebuildFailure('reel-missing-bobber', 'BobberUnavailable'), occurrences: 1 },
+      ])
+      expect(yield* observeOwners(commit)).toStrictEqual(before)
+      expect(yield* Ref.get(state.pendingItemUses)).toStrictEqual([])
+    }),
+  )
+
+  it.effect('records an owner snapshot fault when the rebuild cannot read the projectile owner', () =>
+    Effect.gen(function* () {
+      const { storage } = storageWithRods(enchantedRodStack(0, 3))
+      const { commit, stageInstance } = yield* scene({
+        storage,
+        blocks: openWaterWorld(),
+        fishing: activeBite,
+        bobber: OPEN_WATER_BOBBER,
+        stageProjectileOwnerId: makeReplicatedOwnerId('unregistered-projectiles'),
+      })
+      const { state, stages } = yield* stageInstance
+      const before = yield* observeOwners(commit)
+
+      yield* requestFishingReel(state, 'reel-projectiles-unreadable', FISHER, ENCHANTED_ROD_SLOT)
+      yield* runInteractions(stages)
+
+      expect(yield* drainItemUseResults(state)).toStrictEqual([])
+      expect(yield* drainGameplayStageFailures(state)).toMatchObject([{
+        _tag: 'Failed',
+        operation: 'OwnerSnapshot',
+        subject: 'Fishing',
+        error: { _tag: 'ReplicatedOwnerUnknown' },
+        occurrences: 1,
+      }])
+      expect(yield* observeOwners(commit)).toStrictEqual(before)
+      expect(yield* Ref.get(state.pendingItemUses)).toStrictEqual([])
+    }),
+  )
+
+  it.effect('records an owner snapshot fault and commits nothing when the record owner is unreadable', () =>
+    Effect.gen(function* () {
+      const { storage, rod } = storageWithRods(enchantedRodStack(2, 1))
+      const { commit, stageInstance } = yield* scene({
+        storage,
+        stageRecordsOwnerId: makeReplicatedOwnerId('unregistered-fishing-records'),
+      })
+      const { state, stages } = yield* stageInstance
+      const before = yield* observeOwners(commit)
+
+      yield* requestFishingCast(state, castRequest('cast-records-unreadable', rod))
+      yield* runInteractions(stages)
+
+      expect(yield* drainItemUseResults(state)).toStrictEqual([])
+      expect(yield* drainGameplayStageFailures(state)).toMatchObject([{
+        _tag: 'Failed',
+        operation: 'OwnerSnapshot',
+        subject: 'Fishing',
+        error: { _tag: 'ReplicatedOwnerUnknown' },
+      }])
+      expect(yield* observeOwners(commit)).toStrictEqual(before)
+    }),
+  )
+
+  it.effect('leaves wait and loot unadjusted and reports the plan failure when no cast is active', () =>
+    Effect.gen(function* () {
+      const { storage } = storageWithRods(enchantedRodStack(1, 3))
+      const { commit, stageInstance } = yield* scene({ storage })
+      const { state, stages } = yield* stageInstance
+      const before = yield* observeOwners(commit)
+
+      yield* requestFishingAdvance(state, advanceRequest('advance-inactive', 0))
+      yield* requestFishingReel(state, 'reel-inactive', FISHER, ENCHANTED_ROD_SLOT)
+      yield* runInteractions(stages)
+
+      expect(yield* drainItemUseResults(state)).toStrictEqual([])
+      expect(yield* drainGameplayStageFailures(state)).toMatchObject([
+        {
+          _tag: 'Failed',
+          operation: 'PlanBuild',
+          subject: 'Fishing',
+          error: { _tag: 'FishingInvalidState', operation: 'advance', reason: 'rod-not-active' },
+        },
+        {
+          _tag: 'Failed',
+          operation: 'PlanBuild',
+          subject: 'Fishing',
+          error: { _tag: 'FishingInvalidState', operation: 'reel', reason: 'rod-not-active' },
+        },
+      ])
+      expect(yield* observeOwners(commit)).toStrictEqual(before)
     }),
   )
 })

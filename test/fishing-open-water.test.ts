@@ -68,4 +68,34 @@ describe('fishingOpenWaterAt', () => {
       }
     }),
   )
+
+  it.effect('is not open water when a cell above the bobber is stone', () =>
+    Effect.gen(function* () {
+      const blocks = openWaterRegion()
+      blocks.set(blockKey(at(8, 63, 8)), STONE)
+      const store = yield* makeChunkStoreDouble(blocks, ['0,0'])
+
+      expect(yield* fishingOpenWaterAt(store.api.getBlock, BOBBER)).toBe(false)
+    }),
+  )
+
+  it.effect('fails without reading the store when a region cell is not a safe-integer block position', () =>
+    Effect.gen(function* () {
+      const store = yield* makeChunkStoreDouble(openWaterRegion(), ['0,0'])
+      // 2^53 + 2 is exactly representable; the first region cell, x = 2^53, is not a safe integer.
+      const huge = 2 ** 53 + 2
+
+      const decided = yield* Effect.result(fishingOpenWaterAt(store.api.getBlock, { x: huge, y: 62.2, z: 8.5 }))
+
+      expect(decided).toMatchObject({
+        failure: {
+          _tag: 'FishingOpenWaterReadFailure',
+          position: { x: huge - 2, y: 61, z: 6 },
+          reason: 'InvalidPosition',
+        },
+      })
+      expect(Result.isFailure(decided)).toBe(true)
+      expect((yield* store.calls).reads).toBe(0)
+    }),
+  )
 })
