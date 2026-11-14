@@ -15,6 +15,7 @@ import {
   equip,
   equipmentItem,
   itemStack,
+  durabilityForItem,
   withInventory,
   type Inventory,
   type ItemStack,
@@ -90,7 +91,11 @@ describe('deathDropsFromPlayerStorage', () => {
     const metadata: PlayerSlotMetadata = {
       customNames: { '0': 'Old Faithful' },
       enchantedItems: {
-        '0': { item: 'wooden_pickaxe', durability: null, enchantments: [{ id: 'unbreaking', level: 1 }] },
+        '0': {
+          item: 'wooden_pickaxe',
+          durability: durabilityForItem('wooden_pickaxe'),
+          enchantments: [{ id: 'unbreaking', level: 1 }],
+        },
       },
     }
 
@@ -107,7 +112,11 @@ describe('deathDropsFromPlayerStorage', () => {
     const metadata: PlayerSlotMetadata = {
       customNames: {},
       enchantedItems: {
-        '0': { item: 'wooden_pickaxe', durability: null, enchantments: [{ id: 'unbreaking', level: 1 }] },
+        '0': {
+          item: 'wooden_pickaxe',
+          durability: durabilityForItem('wooden_pickaxe'),
+          enchantments: [{ id: 'unbreaking', level: 1 }],
+        },
       },
     }
 

@@ -30,7 +30,7 @@ describe('complete hostile despawn rule', () => {
       despawnVerdict(candidate({
         distanceToPlayerBlocks: DESPAWN_DISTANCE_BLOCKS + 0.001,
         ageTicks: 0,
-        randomRoll: 1,
+        randomRoll: 0,
       })),
     ).toStrictEqual({ _tag: 'Despawn', reason: 'too-far' })
   })

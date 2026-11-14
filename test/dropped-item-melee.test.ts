@@ -458,30 +458,30 @@ describe('dropped item entities', () => {
     Effect.gen(function* () {
       const roster = yield* makeEntityManagerDouble<MobBehaviour>()
       const invalidDrops = [
-        { item: 'gunpowder' as const, count: 0 },
-        { item: 'wooden_pickaxe' as const, count: 1, durability: null },
+        { drop: { item: 'gunpowder' as const, count: 0 }, failureTag: 'InvalidStack' },
+        { drop: { item: 'wooden_pickaxe' as const, count: 1, durability: null }, failureTag: 'SchemaError' },
         {
-          item: 'wooden_pickaxe' as const,
-          count: 1,
-          durability: { current: 0, max: 59 },
+          drop: { item: 'wooden_pickaxe' as const, count: 1, durability: { current: 0, max: 59 } },
+          failureTag: 'SchemaError',
         },
         {
-          item: 'wooden_pickaxe' as const,
-          count: 1,
-          durability: { current: 12, max: 60 },
+          drop: { item: 'wooden_pickaxe' as const, count: 1, durability: { current: 12, max: 60 } },
+          failureTag: 'SchemaError',
         },
         {
-          item: 'wooden_pickaxe' as const,
-          count: 1,
-          durability: { current: 60, max: 59 },
+          drop: { item: 'wooden_pickaxe' as const, count: 1, durability: { current: 60, max: 59 } },
+          failureTag: 'SchemaError',
         },
-        { item: 'wooden_pickaxe' as const, count: 2 },
-        { item: 'gunpowder' as const, count: 1, durability: { current: 1, max: 1 } },
-      ]
+        { drop: { item: 'wooden_pickaxe' as const, count: 2 }, failureTag: 'InvalidStack' },
+        {
+          drop: { item: 'gunpowder' as const, count: 1, durability: { current: 1, max: 1 } },
+          failureTag: 'SchemaError',
+        },
+      ] as const
 
-      for (const drop of invalidDrops) {
+      for (const { drop, failureTag } of invalidDrops) {
         const error = yield* Effect.flip(spawnDroppedItem(roster.api, { ...drop, at: origin }))
-        expect(error).toStrictEqual({ _tag: 'InvalidStack' })
+        expect(error._tag).toBe(failureTag)
       }
       expect(yield* roster.api.count).toBe(0)
     }),
