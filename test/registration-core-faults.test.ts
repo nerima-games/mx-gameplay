@@ -183,10 +183,10 @@ describe('registration-core typed world faults', () => {
       const readPositions = yield* Ref.get(reads)
       expect(readPositions).toContainEqual(fluidCell)
       expect(readPositions).toContainEqual(belowCell)
-      expect(readPositions).toContainEqual(fixtureBlockPosition(-1, 64, 0))
-      expect(readPositions).toContainEqual(fixtureBlockPosition(1, 64, 0))
-      expect(readPositions).toContainEqual(fixtureBlockPosition(0, 64, -1))
-      expect(readPositions).toContainEqual(fixtureBlockPosition(0, 64, 1))
+      expect(readPositions).toContainEqual(blockPosition(-1, 64, 0))
+      expect(readPositions).toContainEqual(blockPosition(1, 64, 0))
+      expect(readPositions).toContainEqual(blockPosition(0, 64, -1))
+      expect(readPositions).toContainEqual(blockPosition(0, 64, 1))
     }),
   )
 
@@ -197,7 +197,7 @@ describe('registration-core typed world faults', () => {
       const fireBlock = Option.getOrThrow(blockIdOf('fire'))
       const supportBlock = Option.getOrThrow(blockIdOf('stone'))
       const harness = yield* makeHarness(world([
-        [fixtureBlockPosition(0, CHUNK_HEIGHT - 2, 0), supportBlock],
+        [blockPosition(0, CHUNK_HEIGHT - 2, 0), supportBlock],
         [fireCell, fireBlock],
       ]))
       const aboveRead = yield* Ref.make({ count: 0, returnedOutOfWorld: false })

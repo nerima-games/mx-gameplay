@@ -345,7 +345,7 @@ import {
   type Dimension,
   type PortalTravelPlan,
 } from '@nerima-games/mc-worldgen'
-import { OUTSIDE_PORTAL, type PortalDwell, stepPortalDwell } from '../domain/portal-dwell.js'
+import { OUTSIDE_PORTAL, PORTAL_ACTIVATION_SECS, type PortalDwell, stepPortalDwell } from '../domain/portal-dwell.js'
 import { PlayerService, type PlayerServiceApi } from '@nerima-games/mc-sim'
 import {
   END_ARRIVAL_ORIGIN,
@@ -2637,6 +2637,8 @@ const stepPortalTravel = (
           _tag: 'WorldDataFailure', operation: 'DecodeBlockType', position: currentCell, reason,
         })
       }
+      // A failed recheck did not complete travel; leave the dwell ready to retry next tick.
+      yield* Ref.set(state.portalDwell, { _tag: 'Standing', dwelledSecs: PORTAL_ACTIVATION_SECS })
       yield* recordGameplayEntityWorldDataFault(state, 'Portal', resolvedCurrentBlock.failure)
       return
     }
