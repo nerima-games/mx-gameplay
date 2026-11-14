@@ -160,6 +160,7 @@ import {
   heal as healVitals,
   type TimeServiceApi,
   type VehicleServiceApi,
+  type VehicleOperationError,
 } from '@nerima-games/mc-sim'
 import { Brand, Effect, Equal, Option, Ref, Result, Schema, SchemaParser, Semaphore } from 'effect'
 import {
@@ -2134,6 +2135,7 @@ export type GameplayStageOperationFailure = Readonly<{
   _tag: 'Failed'
   operation: 'OwnerSnapshot' | 'WorldCommit' | 'VitalsOperation' | 'CandidateBuild' | 'PlanBuild' | 'EventPublish' | 'EntityExecution'
   subject: 'Player' | 'Vitals' | 'Mining' | 'ItemUse' | 'Fire' | 'Fishing' | 'Brewing' | 'Entities'
+    | 'Vehicle'
   error:
     | WorldCommitCoordinatorError
     | WorldCommitPlanConflict
@@ -2145,6 +2147,7 @@ export type GameplayStageOperationFailure = Readonly<{
     | FirePlayerDamagePreparationFailure
     | FishingServiceError
     | BrewingServiceError
+    | VehicleOperationError
     | PrimedTntValidationFailure
     | DamageAtResult
     | Readonly<{ _tag: 'ShieldBlockingPreparation'; reason: ShieldBlockingPreparationError }>
@@ -2161,6 +2164,8 @@ export type EntityWorldDataFaultSource =
   | 'MobSpawnSearch'
   | 'FallingBlock'
   | 'ItemUse'
+  | 'VehicleMovement'
+  | 'Mining'
   | 'Portal'
   | 'Fluid'
   | 'Fire'

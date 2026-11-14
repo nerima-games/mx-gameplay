@@ -649,6 +649,19 @@ describe('placeBlock — the four per-block rules, reached through a real held i
     }),
   )
 
+  it.effect('reports an unregistered upper door block as a world-data fault', () =>
+    Effect.gen(function* () {
+      const upperCell = blockPosition(target.x, target.y + 1, target.z)
+      const unknownBlock = BlockId(65_535)
+      const store = yield* storeWith([[upperCell, unknownBlock]])
+
+      expect(yield* doorUpperBreakCell(store.api, blockIdOrThrow('door'), target)).toMatchObject({
+        _tag: 'WorldDataFault',
+        failure: { _tag: 'EntityWorldUnregisteredBlockId', cell: upperCell, blockId: unknownBlock },
+      })
+    }),
+  )
+
   // The `Clear` arm of `./place-door-upper.ts`, and the only branch of
   // `placeBlock`'s own `switch` that writes a SECOND cell: the module header's
   // `alsoPlaced` contract, exercised end to end.

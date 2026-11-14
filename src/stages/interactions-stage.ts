@@ -1713,6 +1713,9 @@ const processPlacement = (
           }
         }
         const planned = plannedResult.success
+        if (planned.outcome._tag === 'WorldDataFault') {
+          yield* recordGameplayEntityWorldDataFault(state, 'ItemUse', planned.outcome.failure)
+        }
         if (planned.outcome._tag !== 'Placed') {
           return {
             requestId: command?.requestId ?? '',
@@ -2460,13 +2463,17 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
                 disturbed.push(blockPositionKeyOf(removed))
               }
             } else {
-              yield* recordGameplayStageFailure(state, {
-                _tag: 'Failed',
-                operation: 'CandidateBuild',
-                subject: 'Mining',
-                error: plan.failure,
-              })
-              if (plan.failure._tag === 'ObservationChanged') {
+              if (plan.failure._tag === 'WorldDataFault') {
+                yield* recordGameplayEntityWorldDataFault(state, 'Mining', plan.failure.failure)
+              } else {
+                yield* recordGameplayStageFailure(state, {
+                  _tag: 'Failed',
+                  operation: 'CandidateBuild',
+                  subject: 'Mining',
+                  error: plan.failure,
+                })
+              }
+              if (plan.failure._tag === 'ObservationChanged' || plan.failure._tag === 'WorldDataFault') {
                 if (request === undefined) {
                   yield* requestBlockBreak(state, breakPosition, tool, {
                     dimension: miningDimension,
