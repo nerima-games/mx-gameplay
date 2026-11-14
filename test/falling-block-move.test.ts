@@ -248,6 +248,31 @@ describe('falling block move input boundaries', () => {
     }),
   )
 
+  it.effect('restores the source after a typed destination write failure', () =>
+    Effect.gen(function* () {
+      const target = at(5)
+      const source = at(6)
+      const sand = block('sand')
+      const store = yield* makeChunkStoreDouble(world([[source, sand]]), ['0,0'])
+      const destinationFailure = new LightQueueUnderflowError({ index: 4 })
+      const api = {
+        ...store.api,
+        setBlock: (position: BlockPosition, next: BlockId) =>
+          samePosition(position, target) && next === sand
+            ? Effect.fail(destinationFailure)
+            : store.api.setBlock(position, next),
+      }
+
+      expect(yield* applyFallingBlocks(api, [blockPositionKeyOf(target)])).toStrictEqual({
+        moved: 0,
+        destinations: [],
+        failures: [{ operation: 'WriteBlock', position: target, reason: destinationFailure }],
+      })
+      expect(yield* store.blockAt(source)).toBe(sand)
+      expect(yield* store.blockAt(target)).toBeUndefined()
+    }),
+  )
+
   it.effect('records a typed restore failure after the destination write is refused', () =>
     Effect.gen(function* () {
       const target = at(5)

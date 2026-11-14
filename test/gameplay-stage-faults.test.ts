@@ -187,6 +187,17 @@ describe('gameplay stage faults', () => {
         },
         {
           _tag: 'WorldDataFailure',
+          operation: 'DecodeBlockType',
+          position,
+          reason: {
+            _tag: 'BlockTypeDecodeFailed',
+            position,
+            block: BlockId(2),
+            failure: { _tag: 'BlockDefinitionFailure', reason: 'unknown-field', message: 'unknown definition key' },
+          },
+        },
+        {
+          _tag: 'WorldDataFailure',
           operation: 'ReadBlock',
           position,
           reason: { _tag: 'MissingBlockReadResult', position },
@@ -198,6 +209,7 @@ describe('gameplay stage faults', () => {
       expect((yield* faults.drain).map(({ reason }) => reason._tag)).toStrictEqual([
         'BlockStateCodecFailure',
         'LightQueueUnderflowError',
+        'BlockTypeDecodeFailed',
         'BlockTypeDecodeFailed',
         'MissingBlockReadResult',
       ])

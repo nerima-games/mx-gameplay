@@ -1259,10 +1259,10 @@ describe('entities stage owner-backed MobSimulation', () => {
       return [blockPosition(BlockAxis(x), BlockAxis(63), BlockAxis(z)), STONE] as const
     })
 
-    for (const { timeOfDay, tickCount } of [
+    await Promise.all([
       { timeOfDay: 0.9, tickCount: HOSTILE_SPAWN_INTERVAL_TICKS - 1 },
       { timeOfDay: 0.5, tickCount: 0 },
-    ]) {
+    ].map(async ({ timeOfDay, tickCount }) => {
       const harness = await Effect.runPromise(makeHarness({
         entity: null,
         playerPose,
@@ -1288,7 +1288,7 @@ describe('entities stage owner-backed MobSimulation', () => {
         operation: 'ReadLight',
         reason: expect.objectContaining({ _tag: 'LightQueueUnderflowError', index: 0 }),
       }))
-    }
+    }))
   })
 
   it('commits casualty drops and XP with a passive spawn in the same simulation tick', async () => {
