@@ -3679,13 +3679,13 @@ const stepFireTick = (
       const reading = yield* store.getBlock(worldPosition)
       let block: BlockType | typeof FIRE_UNAVAILABLE_BLOCK
       if (reading._tag === 'Block') {
-        const decoded = blockTypeOfId(reading.block)
-        if (Result.isFailure(decoded) || decoded.success === undefined) {
+        const decoded = yield* blockTypeOrDie(reading.block)
+        if (decoded === undefined) {
           const reason: GameplayStageBlockTypeDecodeFailure = {
             _tag: 'BlockTypeDecodeFailed',
             position: worldPosition,
             block: reading.block,
-            failure: Result.isFailure(decoded) ? decoded.failure : { _tag: 'UnregisteredBlockId' },
+            failure: { _tag: 'UnregisteredBlockId' },
           }
           yield* state.stageFaults.record({
             _tag: 'WorldDataFailure', operation: 'DecodeBlockType', position: worldPosition, reason,
@@ -3693,7 +3693,7 @@ const stepFireTick = (
           faultedPositions.add(firePositionKey(position))
           continue
         }
-        block = decoded.success
+        block = decoded
       } else {
         block = reading._tag === 'ChunkNotLoaded' ? FIRE_UNAVAILABLE_BLOCK : 'air'
       }
