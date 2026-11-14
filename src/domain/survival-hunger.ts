@@ -56,6 +56,11 @@ export type SurvivalActivityInput =
   | { readonly _tag: 'mine'; readonly blocks: number }
   | { readonly _tag: 'attack'; readonly count: number }
 
+export type SurvivalActivityInputFailure = {
+  readonly _tag: 'SurvivalActivityInputFailure'
+  readonly field: 'activity' | 'distance' | 'count' | 'blocks'
+}
+
 type QueuedSurvivalActivity = {
   readonly sequence: number
   readonly input: SurvivalActivityInput
@@ -95,7 +100,7 @@ export type SurvivalHungerTickOutcome = {
 }
 
 export type SurvivalHungerRuntimeApi = {
-  readonly submit: (input: SurvivalActivityInput) => Effect.Effect<void>
+  readonly submit: (input: SurvivalActivityInput) => Effect.Effect<void, SurvivalActivityInputFailure>
   readonly addExhaustion: (amount: number) => Effect.Effect<void, SurvivalHungerError>
   readonly tick: (dt: DeltaTimeSecs) => Effect.Effect<SurvivalHungerTickOutcome, SurvivalHungerError>
   readonly eat: (foodPoints: number, saturationModifier: number) => Effect.Effect<PlayerVitals, SurvivalHungerError>
@@ -109,23 +114,67 @@ export type SurvivalHungerRuntimeApi = {
 }
 
 export type SurvivalHungerError =
+  | SurvivalActivityInputFailure
   | Brand.BrandError
   | Schema.SchemaError
   | WorldCommitCoordinatorError
 
-const finiteNonNegative = (value: number): number =>
-  Number.isFinite(value) && value > 0 ? value : 0
-
-export const exhaustionForSurvivalActivity = (input: SurvivalActivityInput): number => {
-  if (input._tag === 'walk') return finiteNonNegative(input.distance) * SURVIVAL_EXHAUSTION.walkPerBlock
-  if (input._tag === 'sprint') return finiteNonNegative(input.distance) * SURVIVAL_EXHAUSTION.sprintPerBlock
-  if (input._tag === 'jump') {
-    return finiteNonNegative(input.count) *
-      (input.sprinting ? SURVIVAL_EXHAUSTION.sprintJump : SURVIVAL_EXHAUSTION.jump)
+export const exhaustionForSurvivalActivity = (
+  input: unknown,
+): Result.Result<number, SurvivalActivityInputFailure> => {
+  if (typeof input !== 'object' || input === null || Array.isArray(input)) {
+    return Result.fail({ _tag: 'SurvivalActivityInputFailure', field: 'activity' })
   }
-  if (input._tag === 'swim') return finiteNonNegative(input.distance) * SURVIVAL_EXHAUSTION.swimPerBlock
-  if (input._tag === 'mine') return finiteNonNegative(input.blocks) * SURVIVAL_EXHAUSTION.minePerBlock
-  return finiteNonNegative(input.count) * SURVIVAL_EXHAUSTION.attack
+  const candidate = input as Record<string, unknown>
+  let field: SurvivalActivityInputFailure['field'] | undefined
+  let magnitude: unknown
+  let rate: number
+  if (candidate['_tag'] === 'walk') {
+    field = 'distance'
+    magnitude = candidate['distance']
+    rate = SURVIVAL_EXHAUSTION.walkPerBlock
+  } else if (candidate['_tag'] === 'sprint') {
+    field = 'distance'
+    magnitude = candidate['distance']
+    rate = SURVIVAL_EXHAUSTION.sprintPerBlock
+  } else if (candidate['_tag'] === 'jump') {
+    field = 'count'
+    magnitude = candidate['count']
+    if (candidate['sprinting'] !== undefined && typeof candidate['sprinting'] !== 'boolean') {
+      return Result.fail({ _tag: 'SurvivalActivityInputFailure', field: 'activity' })
+    }
+    rate = candidate['sprinting'] === true ? SURVIVAL_EXHAUSTION.sprintJump : SURVIVAL_EXHAUSTION.jump
+  } else if (candidate['_tag'] === 'swim') {
+    field = 'distance'
+    magnitude = candidate['distance']
+    rate = SURVIVAL_EXHAUSTION.swimPerBlock
+  } else if (candidate['_tag'] === 'mine') {
+    field = 'blocks'
+    magnitude = candidate['blocks']
+    rate = SURVIVAL_EXHAUSTION.minePerBlock
+  } else if (candidate['_tag'] === 'attack') {
+    field = 'count'
+    magnitude = candidate['count']
+    rate = SURVIVAL_EXHAUSTION.attack
+  } else {
+    return Result.fail({ _tag: 'SurvivalActivityInputFailure', field: 'activity' })
+  }
+  if (typeof magnitude !== 'number' || !Number.isFinite(magnitude) || magnitude < 0) {
+    return Result.fail({ _tag: 'SurvivalActivityInputFailure', field: field ?? 'activity' })
+  }
+  return Result.succeed(magnitude * rate)
+}
+
+const exhaustionForActivities = (
+  inputs: ReadonlyArray<SurvivalActivityInput>,
+): Result.Result<number, SurvivalActivityInputFailure> => {
+  let total = 0
+  for (const input of inputs) {
+    const activity = exhaustionForSurvivalActivity(input)
+    if (Result.isFailure(activity)) return activity
+    total += activity.success
+  }
+  return Result.succeed(total)
 }
 
 const STARVATION_HEALTH_FLOOR: Readonly<Record<SurvivalDifficulty, number>> = {
@@ -204,7 +253,7 @@ export const makeSurvivalHungerRuntime = (
     const difficulty = yield* Ref.make<SurvivalDifficulty>(initial.difficulty)
     const pending = yield* Ref.make<ReadonlyArray<SurvivalActivityInput>>([])
 
-    const tick = (dt: DeltaTimeSecs): Effect.Effect<SurvivalHungerTickOutcome, Brand.BrandError> =>
+    const tick = (dt: DeltaTimeSecs): Effect.Effect<SurvivalHungerTickOutcome, SurvivalHungerError> =>
       Effect.gen(function* () {
         const elapsed = yield* Effect.fromResult(DeltaTimeSecs.result(dt))
         const currentDifficulty = yield* Ref.get(difficulty)
@@ -212,7 +261,7 @@ export const makeSurvivalHungerRuntime = (
         const before = yield* vitals.snapshot
         const exhaustionAdded = currentDifficulty === 'peaceful' || before.healthPoints <= 0
           ? 0
-          : inputs.reduce((total, input) => total + exhaustionForSurvivalActivity(input), 0)
+          : yield* Effect.fromResult(exhaustionForActivities(inputs))
 
         if (exhaustionAdded > 0) yield* vitals.addExhaustion(exhaustionAdded)
         const food = yield* runFoodTicks(vitals, currentDifficulty, elapsed)
@@ -227,7 +276,10 @@ export const makeSurvivalHungerRuntime = (
       })
 
     return {
-      submit: (input) => Ref.update(pending, (inputs) => [...inputs, input]),
+      submit: (input) => Effect.flatMap(
+        Effect.fromResult(exhaustionForSurvivalActivity(input)),
+        () => Ref.update(pending, (inputs) => [...inputs, { ...input }]),
+      ),
       addExhaustion: (amount) => vitals.addExhaustion(amount),
       tick,
       eat: (foodPoints, saturationModifier) =>
@@ -341,7 +393,7 @@ export const makeReplicatedSurvivalHungerRuntime = (
         const outcome = yield* transact((before) => Effect.gen(function* () {
           const exhaustionAdded = currentDifficulty === 'peaceful' || before.healthPoints <= 0
             ? 0
-            : activities.reduce((total, input) => total + exhaustionForSurvivalActivity(input), 0)
+            : yield* Effect.fromResult(exhaustionForActivities(activities))
           const exhausted = exhaustionAdded > 0
             ? addVitalsExhaustion(
                 before,
@@ -373,10 +425,13 @@ export const makeReplicatedSurvivalHungerRuntime = (
     const clearPending = Ref.update(pending, (current) => ({ ...current, queue: [] }))
 
     return {
-      submit: (input) => Ref.update(pending, (current) => ({
-        nextSequence: current.nextSequence + 1,
-        queue: [...current.queue, { sequence: current.nextSequence, input }],
-      })),
+      submit: (input) => Effect.flatMap(
+        Effect.fromResult(exhaustionForSurvivalActivity(input)),
+        () => Ref.update(pending, (current) => ({
+          nextSequence: current.nextSequence + 1,
+          queue: [...current.queue, { sequence: current.nextSequence, input: { ...input } }],
+        })),
+      ),
       addExhaustion: (amount) => transact((vitals) => Effect.gen(function* () {
         const exhaustion = yield* Effect.fromResult(ExhaustionAmount.result(amount))
         const candidate = vitals.healthPoints > 0 ? addVitalsExhaustion(vitals, exhaustion) : vitals

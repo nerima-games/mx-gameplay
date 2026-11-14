@@ -1,5 +1,5 @@
 import { Result } from 'effect'
-import { itemStackEqualsIgnoringCount } from '@nerima-games/mc-kernel'
+import { DeltaTimeSecs, itemStackEqualsIgnoringCount } from '@nerima-games/mc-kernel'
 import { advanceFurnace, type FurnaceFailure, type FurnaceState } from '@nerima-games/mc-sim'
 
 /** One request may consume at most one recipe interval, keeping stage work bounded. */
@@ -39,7 +39,9 @@ export const planFurnaceAdvance = (
   state: FurnaceState,
   requestedSecs: number,
 ): Result.Result<FurnaceAdvancePlan, FurnaceFailure> => {
-  const validRequestedSecs = Number.isFinite(requestedSecs) && requestedSecs > 0 ? requestedSecs : 0
+  const elapsed = DeltaTimeSecs.result(requestedSecs)
+  if (Result.isFailure(elapsed)) return Result.fail(elapsed.failure)
+  const validRequestedSecs = Number(elapsed.success) > 0 ? Number(elapsed.success) : 0
   const advancedSecs = Math.min(validRequestedSecs, MAX_FURNACE_ADVANCE_SECS)
   return Result.map(advanceFurnace(state, advancedSecs), (outcome) => ({
     before: state,

@@ -145,6 +145,8 @@
  * legs such a junction should honour, so `projectMinecartVelocity` keeps its
  * original dominant-axis behaviour there rather than inventing a switch rule.
  */
+import { Result } from 'effect'
+
 export type RailShape =
   | 'ns'
   | 'ew'
@@ -154,6 +156,16 @@ export type RailShape =
   | 'curve_south_west'
   | 'curve'
   | 'isolated'
+
+export type RailShapeFailure = Readonly<{
+  _tag: 'InvalidRailShapeInput' | 'InvalidMinecartVelocityInput'
+  field: 'wx' | 'wy' | 'wz' | 'vx' | 'vz' | 'speed'
+}>
+
+const invalidRailInput = (
+  _tag: RailShapeFailure['_tag'],
+  field: RailShapeFailure['field'],
+): RailShapeFailure => ({ _tag, field })
 
 /**
  * "Is there a rail in this cell?", answered by somebody who can read blocks.
@@ -217,13 +229,9 @@ const hasRailNear = (isRailAt: IsRailAt, wx: number, wy: number, wz: number): bo
  * no single connected pair (`north && south` together, or `east && west`
  * together, alongside the other axis) and keeps the old undirected answer.
  *
- * NON-FINITE COORDINATES ANSWER `'isolated'` WITHOUT PROBING. This is one guard
- * the reference does not have, and it is the same call `../interactions/
- * explosion-crater.ts` makes for `craterCells`: `isRailAt` is a world read in a
- * host, and `NaN + 1` is `NaN`, so an unguarded rule asks mc-worldgen for the
- * block at twelve `NaN` cells and then answers from whatever the store said
- * about them. `'isolated'` is the inert direction — it constrains nothing, so a
- * broken coordinate cannot lock a cart onto an axis that was never measured.
+ * Non-finite coordinates fail before probing. `isRailAt` is a world read in a
+ * host, and `NaN + 1` is `NaN`; an invalid coordinate must not be presented as a
+ * valid isolated rail.
  *
  * The reference counts its neighbours (`nsCount = (north ? 1 : 0) + …`) and then
  * tests `nsCount > 0`. The counts are read nowhere else, and `count > 0` is
@@ -236,10 +244,10 @@ export const resolveRailShape = (
   wx: number,
   wy: number,
   wz: number,
-): RailShape => {
-  if (!Number.isFinite(wx) || !Number.isFinite(wy) || !Number.isFinite(wz)) {
-    return 'isolated'
-  }
+): Result.Result<RailShape, RailShapeFailure> => {
+  if (!Number.isFinite(wx)) return Result.fail(invalidRailInput('InvalidRailShapeInput', 'wx'))
+  if (!Number.isFinite(wy)) return Result.fail(invalidRailInput('InvalidRailShapeInput', 'wy'))
+  if (!Number.isFinite(wz)) return Result.fail(invalidRailInput('InvalidRailShapeInput', 'wz'))
 
   const north = hasRailNear(isRailAt, wx, wy, wz - 1)
   const south = hasRailNear(isRailAt, wx, wy, wz + 1)
@@ -255,22 +263,21 @@ export const resolveRailShape = (
     // always is. Anything else (both sides of an axis, alongside the other
     // axis) is the ambiguous junction case and keeps the undirected answer.
     if (north !== south && east !== west) {
-      if (north && east) return 'curve_north_east'
-      if (north && west) return 'curve_north_west'
-      if (south && east) return 'curve_south_east'
-      return 'curve_south_west'
+      if (north && east) return Result.succeed('curve_north_east')
+      if (north && west) return Result.succeed('curve_north_west')
+      if (south && east) return Result.succeed('curve_south_east')
+      return Result.succeed('curve_south_west')
     }
-    return 'curve'
+    return Result.succeed('curve')
   }
   if (onNorthSouth) {
-    return 'ns'
+    return Result.succeed('ns')
   }
   if (onEastWest) {
-    return 'ew'
+    return Result.succeed('ew')
   }
-  return 'isolated'
+  return Result.succeed('isolated')
 }
-
 /**
  * Project a horizontal velocity onto the rail the cart is on.
  *
@@ -307,18 +314,18 @@ export const projectMinecartVelocity = (
   shape: RailShape,
   vx: number,
   vz: number,
-): { readonly vx: number; readonly vz: number } => {
-  if (!Number.isFinite(vx) || !Number.isFinite(vz)) {
-    return { vx: 0, vz: 0 }
-  }
+): Result.Result<{ readonly vx: number; readonly vz: number }, RailShapeFailure> => {
+  if (!Number.isFinite(vx)) return Result.fail(invalidRailInput('InvalidMinecartVelocityInput', 'vx'))
+  if (!Number.isFinite(vz)) return Result.fail(invalidRailInput('InvalidMinecartVelocityInput', 'vz'))
 
   const speed = Math.hypot(vx, vz)
+  if (!Number.isFinite(speed)) return Result.fail(invalidRailInput('InvalidMinecartVelocityInput', 'speed'))
   if (speed === 0) {
-    return { vx: 0, vz: 0 }
+    return Result.succeed({ vx: 0, vz: 0 })
   }
 
   if (shape === 'isolated') {
-    return { vx, vz }
+    return Result.succeed({ vx, vz })
   }
 
   const towardX = Math.abs(vx) >= Math.abs(vz)
@@ -359,18 +366,18 @@ export const projectMinecartVelocity = (
     // is heading INTO the cell along a leg, not out of it), so this cannot
     // mask a genuine arrival; it only recognizes the function's own prior
     // answer and leaves it alone.
-    if (vz === 0 && Math.sign(vx) === Math.sign(exitX)) return { vx: exitX, vz: 0 }
-    if (vx === 0 && Math.sign(vz) === Math.sign(exitZ)) return { vx: 0, vz: exitZ }
+    if (vz === 0 && Math.sign(vx) === Math.sign(exitX)) return Result.succeed({ vx: exitX, vz: 0 })
+    if (vx === 0 && Math.sign(vz) === Math.sign(exitZ)) return Result.succeed({ vx: 0, vz: exitZ })
 
     // Arriving on the x-axis (towardX) means the z-leg is the one not yet
     // travelled — exit there, and vice versa. Direction comes from the leg's
     // own compass sign (north/-z, south/+z, east/+x, west/-x), never from vx/vz.
-    return towardX ? { vx: 0, vz: exitZ } : { vx: exitX, vz: 0 }
+    return Result.succeed(towardX ? { vx: 0, vz: exitZ } : { vx: exitX, vz: 0 })
   }
 
   if (shape === 'ew' || (shape === 'curve' && towardX)) {
-    return { vx: (Math.sign(vx) || Math.sign(vz)) * speed, vz: 0 }
+    return Result.succeed({ vx: (Math.sign(vx) || Math.sign(vz)) * speed, vz: 0 })
   }
 
-  return { vx: 0, vz: (Math.sign(vz) || Math.sign(vx)) * speed }
+  return Result.succeed({ vx: 0, vz: (Math.sign(vz) || Math.sign(vx)) * speed })
 }

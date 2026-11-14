@@ -191,21 +191,21 @@ export type KnockbackPreparationError = 'invalid-offset'
  * scaled by distance, say — and that test goes red before the code lands, which is
  * the point of writing it this way.
  *
- * NON-FINITE OFFSETS POP STRAIGHT UP rather than producing a `NaN` direction. This
- * is the inert direction here: a shove with no horizontal part is a shove that
- * cannot fling a mob to an unpredictable place, and `Math.hypot(NaN, 0)` is `NaN`,
- * which fails the deadband comparison and would otherwise fall through to a
- * division producing `NaN` on both axes. `../mob/enderman-teleport`'s finding-F5
- * shape once more.
+ * Non-finite offsets fail before a direction can enter a movement calculation.
+ * Finite offsets are normalized by the scale-safe vector helper, including
+ * offsets whose raw magnitude exceeds the representable range.
  */
-export const knockbackDirection = (dx: number, dz: number): KnockbackDirection => {
+export const knockbackDirection = (
+  dx: number,
+  dz: number,
+): Result.Result<KnockbackDirection, KnockbackPreparationError> => {
   if (!Number.isFinite(dx) || !Number.isFinite(dz)) {
-    return STRAIGHT_UP
+    return Result.fail('invalid-offset')
   }
 
   const magnitude = Math.hypot(dx, dz)
   if (magnitude < KNOCKBACK_EPSILON) {
-    return STRAIGHT_UP
+    return Result.succeed(STRAIGHT_UP)
   }
 
   const direction: { _tag: 'Away'; x: ReturnType<typeof directionComponent>; z: ReturnType<typeof directionComponent> } = {
@@ -214,7 +214,7 @@ export const knockbackDirection = (dx: number, dz: number): KnockbackDirection =
     z: directionComponent(0),
   }
   normalizeDirection2(directionComponent(dx), directionComponent(dz), direction)
-  return direction
+  return Result.succeed(direction)
 }
 
 /** Prepare a finite direction candidate. Velocity and impulse belong to mc-sim's missing velocity owner. */
@@ -225,9 +225,12 @@ export const prepareKnockbackDirection = (
   const magnitude = Math.hypot(dx, dz)
   if (!Number.isFinite(magnitude)) return Result.fail('invalid-offset')
   const direction = knockbackDirection(dx, dz)
+  if (Result.isFailure(direction)) return Result.fail(direction.failure)
   const prepared = {
-    direction,
-    horizontalMagnitude: direction._tag === 'Away' ? Math.hypot(direction.x, direction.z) : 0,
+    direction: direction.success,
+    horizontalMagnitude: direction.success._tag === 'Away'
+      ? Math.hypot(direction.success.x, direction.success.z)
+      : 0,
   }
   return Result.succeed(prepared)
 }

@@ -70,11 +70,11 @@ const makeTradeStageHarness = (options: Readonly<{
   const store = yield* makeTransactionalChunkStoreDouble(world([]), ['0,0'])
   const coordinator = yield* makeWorldCommitCoordinator({
     world: TRADE_STAGE_WORLD,
-    owners: gameplayOwnerRegistrations({
+    owners: Result.getOrThrow(gameplayOwnerRegistrations({
       villagerTrades: options.trades,
       ...(options.storage === undefined ? {} : { playerStorage: options.storage }),
       ...(options.vitals === undefined ? {} : { vitals: options.vitals }),
-    }),
+    })),
     chunkStores: { forDimension: () => store.api },
   })
   const state = yield* makeGameplayFrameStateForOwner({

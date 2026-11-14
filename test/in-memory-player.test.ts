@@ -14,7 +14,7 @@
  *   call it, so a service a host composes has to answer.
  */
 import { describe, expect, it } from '@effect/vitest'
-import { Effect, Layer, Schema } from 'effect'
+import { Effect, Layer, Result, Schema } from 'effect'
 import {
   EYE_LEVEL_OFFSET,
   INITIAL_DIMENSION,
@@ -104,7 +104,9 @@ describe('the pitch clamp the double does not have', () => {
       // parallel to the up axis and the basis is undefined — a clamp to exactly
       // π/2 looks correct and produces the same failure it was added to stop.
       expect(PITCH_MAX_RADIANS).toBeLessThan(Math.PI / 2)
-      expect(clampPitch(Math.PI / 2)).toBeLessThan(Math.PI / 2)
+      const clamped = clampPitch(Math.PI / 2)
+      expect(Result.isSuccess(clamped)).toBe(true)
+      if (Result.isSuccess(clamped)) expect(clamped.success).toBeLessThan(Math.PI / 2)
     }),
   )
 
@@ -120,23 +122,24 @@ describe('the pitch clamp the double does not have', () => {
     }),
   )
 
-  it.effect('a non-finite delta leaves the pose alone', () =>
+  it.effect('rejects a non-finite look delta', () =>
     Effect.sync(() => {
-      // NaN in a pose propagates into the projection matrix, where every vertex
-      // projects to nothing — a black screen with no error anywhere.
       const start = pose({ yawRadians: 1, pitchRadians: 0.5 })
 
-      expect(applyLook(start, Number.NaN, Number.NaN)).toStrictEqual(start)
+      expect(applyLook(start, Number.NaN, Number.NaN)).toStrictEqual(Result.fail({
+        _tag: 'PlayerServiceInputError', reason: 'invalid-look', field: 'deltaYaw',
+      }))
     }),
   )
 
-  it.effect('REGRESSION: clampPitch itself falls back to 0 for a non-finite pitch', () =>
+  it.effect('clampPitch rejects non-finite input while still clamping finite angles', () =>
     Effect.sync(() => {
-      // `applyLook` never calls `clampPitch` with a non-finite value — its own
-      // `Number.isFinite` guard substitutes 0 for the delta first — so this is
-      // the only path that reaches `clampPitch`'s own fallback directly.
-      expect(clampPitch(Number.NaN)).toBe(0)
-      expect(clampPitch(Number.POSITIVE_INFINITY)).toBe(0)
+      expect(clampPitch(Number.NaN)).toEqual(Result.fail({
+        _tag: 'PlayerServiceInputError', reason: 'invalid-pose', field: 'pitchRadians',
+      }))
+      expect(clampPitch(Number.POSITIVE_INFINITY)).toEqual(Result.fail({
+        _tag: 'PlayerServiceInputError', reason: 'invalid-pose', field: 'pitchRadians',
+      }))
     }),
   )
 })
@@ -239,6 +242,17 @@ describe('restore and reset', () => {
       yield* player.restore(pose({ pitchRadians: 99 }), 'overworld')
 
       expect((yield* player.pose).pitchRadians).toBe(PITCH_MAX_RADIANS)
+    }),
+  )
+
+  it.effect('rejects a non-finite saved pitch instead of repairing it to zero', () =>
+    Effect.gen(function* () {
+      const player = yield* makeInMemoryPlayer()
+
+      expect(yield* Effect.flip(player.restore(pose({ pitchRadians: Number.NaN }), 'overworld'))).toStrictEqual({
+        _tag: 'PlayerServiceInputError', reason: 'invalid-pose', field: 'pitchRadians',
+      })
+      expect((yield* player.pose).pitchRadians).toBe(0)
     }),
   )
 
@@ -375,6 +389,18 @@ describe('invalid runtime input', () => {
       })
       expect(yield* player.pose).toStrictEqual(initialPose)
       expect(yield* player.dimension).toBe('nether')
+    }),
+  )
+
+  it.effect('rejects non-finite look deltas and leaves the pose unchanged', () =>
+    Effect.gen(function* () {
+      const player = yield* makeInMemoryPlayer(pose({ yawRadians: 1, pitchRadians: 0.5 }))
+      const before = yield* player.pose
+
+      expect(yield* Effect.flip(player.look(0, Number.NaN))).toStrictEqual({
+        _tag: 'PlayerServiceInputError', reason: 'invalid-look', field: 'deltaPitch',
+      })
+      expect(yield* player.pose).toStrictEqual(before)
     }),
   )
 

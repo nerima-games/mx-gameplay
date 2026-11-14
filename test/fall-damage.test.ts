@@ -23,25 +23,35 @@ describe('fall damage', () => {
     [4.01, { amount: 2, cause: 'fall' }],
     [20, { amount: 17, cause: 'fall' }],
   ] as const)('resolves a fall distance of %s', (fallDistance, expected) => {
-    expect(resolveFallDamage(fallDistance)).toStrictEqual(expected)
+    expect(resolveFallDamage(fallDistance)).toStrictEqual(Result.succeed(expected))
   })
 
   it.each([-1, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])(
     'rejects an invalid fall distance of %s',
     (fallDistance) => {
-      expect(resolveFallDamage(fallDistance)).toBeUndefined()
+      expect(Result.isFailure(resolveFallDamage(fallDistance))).toBe(true)
     },
   )
 
-  it('property: fall damage is absent for invalid distances or decodes as finite non-negative damage', () => {
+  it.each([3 - Number.EPSILON, 3 + Number.EPSILON])('handles the boundary neighbour %s', (fallDistance) => {
+    const result = resolveFallDamage(fallDistance)
+    expect(Result.isSuccess(result)).toBe(true)
+    if (Result.isSuccess(result)) {
+      expect(result.success).toStrictEqual(fallDistance <= 3 ? undefined : { amount: 1, cause: 'fall' })
+    }
+  })
+
+  it('property: invalid distances fail and valid damage decodes as finite and non-negative', () => {
     FastCheck.assert(
       FastCheck.property(numericInputs, (fallDistance) => {
-        const damage = resolveFallDamage(fallDistance)
-        if (damage === undefined) {
-          return !Number.isFinite(fallDistance) || fallDistance <= 3
+        const result = resolveFallDamage(fallDistance)
+        if (!Number.isFinite(fallDistance) || fallDistance < 0) {
+          return Result.isFailure(result)
         }
+        if (fallDistance <= 3) return Result.isSuccess(result) && result.success === undefined
+        if (Result.isFailure(result) || result.success === undefined) return false
 
-        const decoded = Schema.decodeUnknownResult(FallDamageSchema)(damage)
+        const decoded = Schema.decodeUnknownResult(FallDamageSchema)(result.success)
         return Result.isSuccess(decoded) &&
           Number.isFinite(decoded.success.amount) &&
           decoded.success.amount >= 0 &&

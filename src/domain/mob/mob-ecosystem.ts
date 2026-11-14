@@ -13,6 +13,7 @@ export const CHICKEN_KIND: EntityKind = EntityKind('chicken')
 export const ZOMBIFIED_PIGLIN_KIND: EntityKind = EntityKind('zombified_piglin')
 export const BLAZE_KIND: EntityKind = EntityKind('blaze')
 export const ENDERMAN_KIND: EntityKind = EntityKind('enderman')
+export const ENDERMITE_KIND: EntityKind = EntityKind('endermite')
 export const VILLAGER_KIND: EntityKind = EntityKind('villager')
 
 export const SKELETON_ATTACK_INTERVAL_TICKS = 60
@@ -29,7 +30,7 @@ const motionPhaseTicks = (phase: number): number => Math.ceil(phase)
 
 export type MobStateRepairFailure =
   | Readonly<{ _tag: 'MobMovementStateRepairFailure' }>
-  | Readonly<{ _tag: 'MobBehaviourStateRepairFailure'; kind: 'creeper' | 'enderman' | 'primed-tnt' | 'dropped-item' }>
+  | Readonly<{ _tag: 'MobBehaviourStateRepairFailure'; kind: 'creeper' | 'enderman' | 'zombie' | 'primed-tnt' | 'dropped-item' }>
   | Readonly<{
       _tag: 'EcosystemMobStateRepairFailure'
       field: '_tag' | 'attackCooldownTicks' | 'attackCooldownSecs' | 'motionPhase' | 'provoked' | 'movementGoal' | 'movement' | 'hasHeadProtection' | 'burningTicks'
@@ -97,6 +98,7 @@ export const ECOSYSTEM_MOB_KINDS: ReadonlyArray<EntityKind> = [
   ...OVERWORLD_ECOSYSTEM_HOSTILE_KINDS,
   ...PASSIVE_MOB_KINDS,
   ...NETHER_ECOSYSTEM_HOSTILE_KINDS,
+  ENDERMITE_KIND,
 ]
 
 export type MobMovementPolicy =
@@ -124,6 +126,7 @@ export const MOB_MOVEMENT_POLICIES: ReadonlyMap<EntityKind, MobMovementPolicy> =
   [SKELETON_KIND, { _tag: 'RangedSpacing', minDistance: mobMovementDistance(8), maxDistance: mobMovementDistance(16), followRange: mobMovementDistance(16) }],
   [BLAZE_KIND, { _tag: 'RangedSpacing', minDistance: mobMovementDistance(8), maxDistance: mobMovementDistance(24), followRange: mobMovementDistance(48) }],
   [ZOMBIFIED_PIGLIN_KIND, { _tag: 'ProvokedApproach', attackDistance: mobMovementDistance(1.5), followRange: mobMovementDistance(35) }],
+  [ENDERMITE_KIND, { _tag: 'Approach', attackDistance: mobMovementDistance(1.5), followRange: mobMovementDistance(16) }],
   [VILLAGER_KIND, VILLAGER_MOVEMENT_POLICY],
 ])
 
@@ -169,8 +172,13 @@ export const initialEcosystemMobState = (): EcosystemMobState => ({
 
 export const repairEcosystemMobState = (
   value: unknown,
+  fieldPresent = value !== undefined,
 ): Result.Result<EcosystemMobState | undefined, MobStateRepairFailure> => {
-  if (value === undefined) return Result.succeed(undefined)
+  if (value === undefined) {
+    return fieldPresent
+      ? Result.fail({ _tag: 'EcosystemMobStateRepairFailure', field: '_tag' })
+      : Result.succeed(undefined)
+  }
   if (typeof value !== 'object' || value === null || (value as { _tag?: unknown })._tag !== 'EcosystemMob') {
     return Result.fail({ _tag: 'EcosystemMobStateRepairFailure', field: '_tag' })
   }
@@ -226,6 +234,7 @@ export const repairEcosystemMobState = (
 }
 
 export const ecosystemDimensionAllows = (kind: EntityKind, dimension: Dimension): boolean => {
+  if (kind === ENDERMITE_KIND) return true
   if (kind === ENDERMAN_KIND) return dimension === 'overworld' || dimension === 'nether'
   return NETHER_HOSTILE_KINDS.includes(kind as (typeof NETHER_HOSTILE_KINDS)[number])
     ? dimension === 'nether'

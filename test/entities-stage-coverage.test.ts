@@ -73,14 +73,14 @@ const makeHarness = (options: Readonly<{
   const store = yield* makeTransactionalChunkStoreDouble(world([]), ['0,0'])
   const coordinatorBase = yield* makeWorldCommitCoordinator({
     world: worldId,
-    owners: gameplayOwnerRegistrations({
+    owners: Result.getOrThrow(gameplayOwnerRegistrations({
       playerPose: INITIAL_PLAYER_POSE,
       entities: { entities, nextSerial: EntitySerial(entities.length) },
       ...(options.droppedItems === undefined ? {} : { droppedItems: options.droppedItems }),
       ...(options.orb === undefined
         ? {}
         : { experienceOrbs: { orbs: [{ id: options.orb.id, value: Result.getOrThrow(createExperienceOrbValue(options.orb.amount)) }] } }),
-    }),
+    })),
     chunkStores: { forDimension: () => store.api },
   })
   const requests: WorldCommitRequest[] = []

@@ -1,183 +1,129 @@
-/**
- * `domain/frame-rolls.ts` — where randomness enters a frame, and the three
- * total-function decisions that file makes about inputs it should never see.
- *
- * ---------------------------------------------------------------------------
- * Why this file exists separately from the scenarios that use rolls
- * ---------------------------------------------------------------------------
- *
- * Every other test that touches the generator drives it through a stage:
- * `vertical-slice.test.ts` walks the enderman's teleport draw, `weather.test.ts`
- * fast-forwards two hours of transitions, `mob-spawn-search.test.ts` counts the
- * budget a search consumes. All of those pass rolls the generator PRODUCED, so
- * none of them can say what happens to a seed or a count that the generator did
- * not produce — and the module header's claims are almost entirely about exactly
- * that. `normaliseSeed` is documented TOTAL, `drawRolls` is documented to draw
- * nothing and advance nothing for a count of zero, and `rollAt` is documented to
- * read past the end as 0.
- *
- * Those are not defensive asides. Two of the three are load-bearing:
- *
- *   ZERO IS THE GENERATOR'S FIXED POINT. `16807 * 0 mod m` is `0` forever, so a
- *   seed of 0 is not a slightly worse seed, it is a generator that returns the
- *   same number for the rest of the world's life. Nothing in a save file stops
- *   a 0 arriving.
- *
- *   A COUNT OF ZERO IS THE COMMON CASE. The frame path calls `drawRolls` on
- *   every sweep, and most sweeps kill nothing. If a zero count advanced the
- *   seed, the sequence would depend on how many frames had passed rather than on
- *   what happened in them — which is the property `stages/registration.ts`
- *   reproduces a save file against.
- */
 import { describe, expect, it } from '@effect/vitest'
-import { Effect } from 'effect'
-import { DEFAULT_ROLL_SEED, drawRolls, nextRoll, normaliseSeed, rollAt } from '../src/domain/frame-rolls'
+import * as FastCheck from 'fast-check'
+import { Effect, Result } from 'effect'
+import {
+  DEFAULT_ROLL_SEED,
+  drawRolls,
+  nextRoll,
+  normaliseSeed,
+  rollAt,
+} from '../src/domain/frame-rolls'
 
-/** The generator's modulus, restated. `domain/frame-rolls.ts` keeps it private. */
 const MODULUS = 2_147_483_647
+const anyNumber = FastCheck.double({ noNaN: false, noDefaultInfinity: false })
 
-describe('normaliseSeed: the states the generator must never be left in', () => {
-  it.effect('folds a seed that is not a number to 1 rather than poisoning every later roll', () =>
+describe('normaliseSeed and nextRoll', () => {
+  it.effect('returns a typed failure for every non-finite seed and legal states for every finite seed', () =>
     Effect.sync(() => {
-      // The preview's finding F5 is a non-number travelling through arithmetic
-      // that had no opinion about it, and a seed is the furthest-travelling
-      // number in the frame: one `NaN` here makes every roll after it `NaN`, so
-      // every chance gate compares false and the world quietly stops having
-      // creepers drop anything. `../domain/mob/mob-drop`'s `clampRoll` takes the
-      // same inert direction for the same reason.
-      for (const broken of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
-        expect(normaliseSeed(broken)).toBe(1)
-      }
+      FastCheck.assert(FastCheck.property(anyNumber, (seed) => {
+        const result = normaliseSeed(seed)
+        expect(Result.isFailure(result)).toBe(!Number.isFinite(seed))
+        if (Result.isSuccess(result)) {
+          expect(Number.isInteger(result.success)).toBe(true)
+          expect(result.success).toBeGreaterThanOrEqual(1)
+          expect(result.success).toBeLessThan(MODULUS)
+          const draw = nextRoll(seed)
+          expect(Result.isSuccess(draw)).toBe(true)
+          if (Result.isSuccess(draw)) {
+            expect(draw.success.roll).toBeGreaterThanOrEqual(0)
+            expect(draw.success.roll).toBeLessThan(1)
+            expect(draw.success.seed).toBeGreaterThanOrEqual(1)
+            expect(draw.success.seed).toBeLessThan(MODULUS)
+          }
+        } else {
+          expect(Result.isFailure(nextRoll(seed))).toBe(true)
+        }
+      }))
 
-      expect(Number.isFinite(nextRoll(Number.NaN).roll)).toBe(true)
-      expect(nextRoll(Number.NaN)).toStrictEqual(nextRoll(1))
-    }),
-  )
-
-  it.effect('maps 0 — and every multiple of the modulus — to 1, because 0 is the fixed point', () =>
-    Effect.sync(() => {
-      // THE ONE THAT IS NOT COSMETIC. `16807 * 0 mod m` is 0, so a seed of 0
-      // does not degrade the sequence, it ENDS it: every draw from then on
-      // returns the same roll forever. A frame loop would keep running and
-      // every rule would keep answering, with the same answer.
-      expect(normaliseSeed(0)).toBe(1)
-      expect(normaliseSeed(-0)).toBe(1)
-      expect(normaliseSeed(MODULUS)).toBe(1)
-      expect(normaliseSeed(-MODULUS)).toBe(1)
-
-      // And the sequence really does move afterwards, which is the point of
-      // mapping rather than accepting.
-      expect(nextRoll(0).seed).not.toBe(0)
-      expect(nextRoll(nextRoll(0).seed).roll).not.toBe(nextRoll(0).roll)
-    }),
-  )
-
-  it.effect('leaves a legal seed exactly where it is', () =>
-    Effect.sync(() => {
-      // The other half of "total": folding must not move a seed that was
-      // already in `[1, MODULUS - 1]`, or replaying a saved seed would not
-      // reproduce the run it was saved from.
-      expect(normaliseSeed(DEFAULT_ROLL_SEED)).toBe(DEFAULT_ROLL_SEED)
-      expect(normaliseSeed(1)).toBe(1)
-      expect(normaliseSeed(MODULUS - 1)).toBe(MODULUS - 1)
+      expect(Result.isFailure(normaliseSeed(Number.NaN))).toBe(true)
+      expect(Result.isFailure(normaliseSeed(Number.POSITIVE_INFINITY))).toBe(true)
+      expect(Result.isFailure(normaliseSeed(Number.NEGATIVE_INFINITY))).toBe(true)
+      expect(normaliseSeed(0)).toStrictEqual(Result.succeed(1))
+      expect(normaliseSeed(-MODULUS)).toStrictEqual(Result.succeed(1))
+      expect(normaliseSeed(DEFAULT_ROLL_SEED)).toStrictEqual(Result.succeed(DEFAULT_ROLL_SEED))
+      expect(Result.isFailure(normaliseSeed(undefined as unknown as number))).toBe(true)
     }),
   )
 })
 
-describe('drawRolls: a count of zero is the common frame, not an edge case', () => {
-  it.effect('draws nothing and LEAVES THE SEED, so an uneventful frame costs the sequence nothing', () =>
+describe('drawRolls', () => {
+  it.effect('preserves the seed for a zero batch and replays a non-empty sequence', () =>
     Effect.sync(() => {
-      // This is the rule the whole file is organised around: the sequence
-      // depends on WHAT HAPPENED, not on how many frames passed. A sweep in
-      // which nothing died draws zero rolls, and if that advanced the seed then
-      // a scenario that idles for ten thousand frames and then kills a creeper
-      // would get different gunpowder from one that kills it immediately.
-      const batch = drawRolls(DEFAULT_ROLL_SEED, 0)
-
-      expect(batch.rolls).toStrictEqual([])
-      expect(batch.seed).toBe(DEFAULT_ROLL_SEED)
-
-      // Identical to never having asked.
-      expect(drawRolls(batch.seed, 2)).toStrictEqual(drawRolls(DEFAULT_ROLL_SEED, 2))
-    }),
-  )
-
-  it.effect('treats a negative or non-numeric count the same way, rather than looping or drawing NaN', () =>
-    Effect.sync(() => {
-      for (const count of [-1, -1e9, Number.NaN, Number.NEGATIVE_INFINITY]) {
-        const batch = drawRolls(DEFAULT_ROLL_SEED, count)
-        expect(batch.rolls).toStrictEqual([])
-        expect(batch.seed).toBe(DEFAULT_ROLL_SEED)
-      }
-
-      // `Number.POSITIVE_INFINITY` is refused by the same guard, which matters
-      // more than the others: it is the one that would otherwise be a loop that
-      // never returns, inside a frame.
-      expect(drawRolls(DEFAULT_ROLL_SEED, Number.POSITIVE_INFINITY).rolls).toStrictEqual([])
-    }),
-  )
-
-  it.effect('the empty batch is the SHARED array, so the uneventful frame allocates nothing', () =>
-    Effect.sync(() => {
-      // `NO_ROLLS` is shared for the same reason `mob-frame`'s `IGNORED` is:
-      // this runs on every frame, and a fresh `[]` per frame is garbage
-      // proportional to frame rate rather than to events.
-      expect(drawRolls(DEFAULT_ROLL_SEED, 0).rolls).toBe(drawRolls(7, -3).rolls)
-    }),
-  )
-})
-
-describe('rollAt: the one spelling of "this batch has no roll there"', () => {
-  it.effect('answers 0 past the end, which is what makes `drawRolls(seed, 0)` safe to read', () =>
-    Effect.sync(() => {
-      // Not a hypothetical index: the empty batch above is the common frame,
-      // and a caller holding one still has to ask for its rolls. This function
-      // exists so that the answer is written once — four call sites in
-      // `domain/entities/mob-spawn-search.ts` and `stages/registration.ts` each
-      // carried their own `?? 0`, none reachable at its own site, all four
-      // unexaminable as a group.
       const empty = drawRolls(DEFAULT_ROLL_SEED, 0)
+      expect(Result.isSuccess(empty)).toBe(true)
+      if (Result.isFailure(empty)) return
+      expect(empty.success.rolls).toStrictEqual([])
+      expect(empty.success.seed).toBe(DEFAULT_ROLL_SEED)
 
-      expect(rollAt(empty, 0)).toBe(0)
-      expect(rollAt(empty, 41)).toBe(0)
-      expect(rollAt(drawRolls(DEFAULT_ROLL_SEED, 2), 2)).toBe(0)
+      const next = drawRolls(empty.success.seed, 2)
+      const repeated = drawRolls(DEFAULT_ROLL_SEED, 2)
+      expect(next).toStrictEqual(repeated)
+      expect(drawRolls(0, 0)).toStrictEqual(Result.succeed({ rolls: empty.success.rolls, seed: 0 }))
     }),
   )
 
-  it.effect('returns the drawn roll itself when the batch has one, in the order it was drawn', () =>
+  it.effect('accepts safe integer counts and rejects invalid counts without throwing', () =>
     Effect.sync(() => {
-      // The half that would still pass if the function had been written
-      // `() => 0`, so it is asserted against the batch rather than against a
-      // literal.
+      const countInput = FastCheck.oneof(
+        FastCheck.integer({ min: 0, max: 256 }),
+        anyNumber.filter((count) => !Number.isSafeInteger(count) || count < 0),
+      )
+      FastCheck.assert(FastCheck.property(countInput, (count) => {
+        const result = drawRolls(DEFAULT_ROLL_SEED, count)
+        const valid = Number.isSafeInteger(count) && count >= 0
+        expect(Result.isFailure(result)).toBe(!valid)
+        if (Result.isSuccess(result)) {
+          expect(result.success.rolls).toHaveLength(count)
+          expect(Number.isFinite(result.success.seed)).toBe(true)
+        }
+      }))
+
+      expect(Result.isSuccess(drawRolls(DEFAULT_ROLL_SEED, 0))).toBe(true)
+      expect(Result.isSuccess(drawRolls(DEFAULT_ROLL_SEED, 256))).toBe(true)
+      expect(Result.isSuccess(drawRolls(DEFAULT_ROLL_SEED, 1_024))).toBe(true)
+      for (const invalid of [
+        -Number.MIN_VALUE,
+        -1,
+        0.5,
+        Number.MAX_SAFE_INTEGER + 1,
+        Number.NaN,
+        Number.POSITIVE_INFINITY,
+        Number.NEGATIVE_INFINITY,
+        undefined,
+      ]) {
+        expect(Result.isFailure(drawRolls(DEFAULT_ROLL_SEED, invalid as number))).toBe(true)
+      }
+      expect(Result.isFailure(drawRolls(Number.NaN, 0))).toBe(true)
+    }),
+  )
+})
+
+describe('rollAt', () => {
+  it.effect('returns only an existing roll and rejects every invalid index', () =>
+    Effect.sync(() => {
       const batch = drawRolls(DEFAULT_ROLL_SEED, 3)
+      expect(Result.isSuccess(batch)).toBe(true)
+      if (Result.isFailure(batch)) return
 
-      expect(batch.rolls.length).toBe(3)
-      for (const [index, roll] of batch.rolls.entries()) {
-        expect(rollAt(batch, index)).toBe(roll)
-      }
+      FastCheck.assert(FastCheck.property(anyNumber, (index) => {
+        const result = rollAt(batch.success, index)
+        const valid = Number.isInteger(index) && index >= 0 && index < batch.success.rolls.length
+        expect(Result.isFailure(result)).toBe(!valid)
+        if (Result.isSuccess(result)) expect(result.success).toBe(batch.success.rolls[index])
+      }))
 
-      // The interval every rule downstream documents.
-      for (const roll of batch.rolls) {
-        expect(roll).toBeGreaterThanOrEqual(0)
-        expect(roll).toBeLessThan(1)
-      }
-    }),
-  )
-
-  it.effect('0 is the GENEROUS answer, not the inert one — and that is deliberate', () =>
-    Effect.sync(() => {
-      // Worth pinning because it is the surprising direction. A roll of 0 is
-      // below every chance threshold, so a caller that forgot to draw gets the
-      // most generous outcome rather than the least — the opposite of the
-      // direction `normaliseSeed` and `clampRoll` take. It is chosen for the
-      // reason `domain/interactions/block-loot.ts` documents at its own
-      // out-of-range read: the only production caller draws its budget from
-      // `drawRolls`, so an absent roll means a test wrote one on purpose and
-      // "every chance line fires" is what such a test is asking for.
       const empty = drawRolls(DEFAULT_ROLL_SEED, 0)
-      const anyChance = 0.000_001
-
-      expect(rollAt(empty, 0) < anyChance).toBe(true)
+      expect(Result.isSuccess(empty)).toBe(true)
+      if (Result.isSuccess(empty)) {
+        expect(Result.isFailure(rollAt(empty.success, 0))).toBe(true)
+        expect(Result.isFailure(rollAt(empty.success, 41))).toBe(true)
+      }
+      for (const invalid of [-1, 0.5, 3, Number.NaN, Number.POSITIVE_INFINITY, undefined]) {
+        expect(Result.isFailure(rollAt(batch.success, invalid as number))).toBe(true)
+      }
+      for (const invalid of [undefined, null, {}, { rolls: undefined }]) {
+        expect(Result.isFailure(rollAt(invalid as never, 0))).toBe(true)
+      }
     }),
   )
 })

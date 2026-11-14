@@ -129,7 +129,8 @@ import {
 } from '../src/stages/gameplay-owner-registrations.js'
 import { GAMEPLAY_STAGE_IDS } from '../src/stages/stage-ids.js'
 import { INITIAL_DIMENSION, INITIAL_PLAYER_POSE } from '../src/domain/in-memory-player.js'
-import type { MobBehaviour } from '../src/domain/entities/mob-frame.js'
+import { ENDERMITE_KIND, type MobBehaviour } from '../src/domain/entities/mob-frame.js'
+import { MOB_MOVEMENT_POLICIES } from '../src/domain/mob/mob-ecosystem.js'
 import { DroppedItemOwnerSnapshotSchema } from '../src/domain/entities/dropped-item.js'
 import { ExperienceOrbVitalsOwnerSnapshotSchema } from '../src/domain/entities/xp-orb.js'
 import { makeVillager, type VillagerTradeState } from '../src/domain/villager-trade.js'
@@ -291,8 +292,8 @@ const makeHarness = (options: Readonly<{
     options.loadedChunks ?? ['0,0'],
   )
   const chunkStore = store.api
-  const registrations = gameplayOwnerRegistrations({
-    playerPose: options.playerPose ?? INITIAL_PLAYER_POSE,
+  const registrations = Result.getOrThrow(gameplayOwnerRegistrations({
+    ...(Object.hasOwn(options, 'playerPose') ? { playerPose: options.playerPose } : { playerPose: INITIAL_PLAYER_POSE }),
     ...(options.fishing === undefined ? {} : { fishing: options.fishing }),
     ...(options.projectiles === undefined ? {} : { projectiles: options.projectiles }),
     ...(options.brewing === undefined ? {} : { brewing: options.brewing }),
@@ -302,7 +303,7 @@ const makeHarness = (options: Readonly<{
     ...(options.entities === undefined ? {} : { entities: options.entities }),
     ...(options.crops === undefined ? {} : { crops: options.crops }),
     ...(options.droppedItems === undefined ? {} : { droppedItems: options.droppedItems }),
-  })
+  }))
   const owners = registrations.filter(({ ownerId }) =>
     !(options.omitPlayerRegistration && ownerId === GAMEPLAY_PLAYER_OWNER_ID) &&
     !(options.omitVitalsRegistration && ownerId === GAMEPLAY_VITALS_OWNER_ID) &&
@@ -526,6 +527,29 @@ const coordinatorWithOmittedWorldReads = (coordinator: WorldCommitCoordinatorApi
     Schema.SchemaError | ReplicatedOwnerUnknown | WorldCommitChunkStoreUnavailable,
     Schema.Codec.DecodingServices<Codec>
   > => Effect.map(coordinator.observe(ownerId, schema, reads), (snapshot) => ({ ...snapshot, blocks: [] }))
+  return { ...coordinator, observe }
+}
+
+const coordinatorWithOutOfWorldRead = (
+  coordinator: WorldCommitCoordinatorApi,
+  target: BlockPosition,
+): WorldCommitCoordinatorApi => {
+  const observe: WorldCommitCoordinatorApi['observe'] = <Codec extends Schema.Codec<any, any>>(
+    ownerId: ReplicatedOwnerId,
+    schema: Codec,
+    reads: ReadonlyArray<Readonly<{ dimension: Dimension; position: BlockPosition }>>,
+  ): Effect.Effect<
+    WorldReadSnapshot<Codec>,
+    Schema.SchemaError | ReplicatedOwnerUnknown | WorldCommitChunkStoreUnavailable,
+    Schema.Codec.DecodingServices<Codec>
+  > => Effect.map(coordinator.observe(ownerId, schema, reads), (snapshot) => ({
+    ...snapshot,
+    blocks: snapshot.blocks.map((block) =>
+      block.position.x === target.x && block.position.y === target.y && block.position.z === target.z
+        ? { ...block, reading: { _tag: 'OutOfWorld' as const } }
+        : block,
+    ),
+  }))
   return { ...coordinator, observe }
 }
 
@@ -3999,7 +4023,13 @@ describe('registered combat and teleport requests in the interactions stage', ()
       GameplayEntityRosterSchema,
     ))
     expect(entities.state.entities).toHaveLength(1)
-    expect(entities.state.entities[0]?.kind).toBe(EntityKind('endermite'))
+    const spawnedEndermite = entities.state.entities[0]
+    expect(spawnedEndermite?.kind).toBe(ENDERMITE_KIND)
+    expect(spawnedEndermite?.behaviour).toMatchObject({
+      _tag: 'HostileMob',
+      behaviour: { _tag: 'EcosystemMob' },
+    })
+    expect(MOB_MOVEMENT_POLICIES.has(ENDERMITE_KIND)).toBe(true)
     expect(harness.commitCalls()).toBe(1)
     expect(harness.lastRequest()?.changes.map(({ ownerId }) => ownerId)).toEqual(expect.arrayContaining([
       GAMEPLAY_ENTITIES_OWNER_ID,
@@ -5833,7 +5863,38 @@ describe('schema-valid interaction edge paths', () => {
     expect(harness.commitCalls()).toBe(0)
   })
 
-  it('treats an unloaded bone-meal target as a non-crop without recording a data fault', async () => {
+  it('records an invalid item-use position and continues with the next queued request', async () => {
+    const validTarget = blockPosition(BlockAxis(5), BlockAxis(64), BlockAxis(1))
+    const stone = Option.getOrThrow(blockIdOf('stone'))
+    const harness = await Effect.runPromise(makeHarness({
+      blocks: [[validTarget, stone]],
+      playerStorage: playerStorageWithItem('bone_meal', 1),
+    }))
+    await Effect.runPromise(requestBoneMeal(harness.state, 'invalid-position', validTarget))
+    await Effect.runPromise(requestBoneMeal(harness.state, 'after-invalid-position', validTarget))
+    await Effect.runPromise(Ref.update(harness.state.pendingItemUses, (requests) => requests.map((request) =>
+      request.requestId === 'invalid-position' && 'positionKey' in request
+        ? { ...request, positionKey: 'malformed-position-key' as typeof request.positionKey }
+        : request,
+    )))
+
+    await harness.run()
+
+    expect(await Effect.runPromise(drainGameplayEntityStageFaults(harness.state))).toContainEqual({
+      _tag: 'GameplayRequestFault',
+      source: 'ItemUse',
+      requestId: 'invalid-position',
+      reason: 'InvalidBlockPositionKey',
+    })
+    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toMatchObject([{
+      action: 'ApplyBoneMeal',
+      requestId: 'after-invalid-position',
+      success: false,
+    }])
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingItemUses))).toStrictEqual([])
+  })
+
+  it('requeues bone meal when its target chunk is not loaded', async () => {
     const target = blockPosition(BlockAxis(16), BlockAxis(64), BlockAxis(1))
     const harness = await Effect.runPromise(makeHarness({
       playerStorage: playerStorageWithItem('bone_meal', 1),
@@ -5843,13 +5904,33 @@ describe('schema-valid interaction edge paths', () => {
 
     await harness.run()
 
-    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toStrictEqual([{
+    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toStrictEqual([])
+    expect(await Effect.runPromise(drainGameplayEntityStageFaults(harness.state))).toStrictEqual([])
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingItemUses))).toMatchObject([{
       action: 'ApplyBoneMeal',
       requestId: 'bone-meal-unloaded-target',
-      heldItem: 'bone_meal',
+    }])
+    expect(harness.commitCalls()).toBe(0)
+  })
+
+  it('returns a named refusal when the bone-meal target is outside the world', async () => {
+    const target = blockPosition(BlockAxis(5), BlockAxis(320), BlockAxis(1))
+    const harness = await Effect.runPromise(makeHarness({
+      playerStorage: playerStorageWithItem('bone_meal', 1),
+    }))
+    await Effect.runPromise(requestBoneMeal(harness.state, 'bone-meal-out-of-world', target))
+    const interactions = harness.interactionsWithCoordinator(
+      coordinatorWithOutOfWorldRead(harness.coordinator, target),
+    )
+
+    await Effect.runPromise(interactions.run(DeltaTimeSecs(0)).pipe(Effect.provide(FrameServicesLayer)))
+
+    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toMatchObject([{
+      action: 'ApplyBoneMeal',
+      requestId: 'bone-meal-out-of-world',
       success: false,
       consumedCount: 0,
-      outcome: { _tag: 'notCrop', at: target, block: undefined },
+      outcome: { _tag: 'OutOfWorld', position: target },
     }])
     expect(await Effect.runPromise(drainGameplayEntityStageFaults(harness.state))).toStrictEqual([])
     expect(await Effect.runPromise(Ref.get(harness.state.pendingItemUses))).toStrictEqual([])

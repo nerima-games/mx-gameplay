@@ -25,6 +25,7 @@ import {
 import type { FluidWorkItem } from '../src/domain/fluid-frontier'
 import type { MobBehaviour } from '../src/domain/entities/mob-frame'
 import { GAMEPLAY_STAGE_IDS } from '../src/stages/stage-ids'
+import { recordGameplayEntityStageFault } from '../src/stages/registration-core'
 import type { GameplayOwnerInitialState } from '../src/stages/gameplay-owner-registrations'
 import { FrameServicesLayer } from './support/frame-services'
 import { makeEntityManagerDouble } from './support/entity-manager-double'
@@ -77,6 +78,31 @@ const sameCell = (left: BlockPosition, right: BlockPosition): boolean =>
 const unknownBlockId = BlockId(65_535)
 
 describe('registration-core typed world faults', () => {
+  it.effect('keeps registry faults with different inner reasons distinct', () =>
+    Effect.gen(function* () {
+      const cell = blockPosition(0, 64, 0)
+      const fault = (reason: 'type' | 'range') => ({
+        _tag: 'EntityWorldDataFault' as const,
+        source: 'ItemUse' as const,
+        target: { _tag: 'Cell' as const, cell },
+        failure: {
+          _tag: 'EntityWorldRegistryFailure' as const,
+          cell,
+          failure: { _tag: 'BlockPropertyFailure' as const, reason, message: 'property decode failed' },
+        },
+      })
+      const harness = yield* makeHarness(world([]))
+
+      yield* recordGameplayEntityStageFault(harness.state, fault('type'))
+      yield* recordGameplayEntityStageFault(harness.state, fault('range'))
+
+      expect(yield* drainGameplayEntityStageFaults(harness.state)).toStrictEqual([
+        fault('type'),
+        fault('range'),
+      ])
+    }),
+  )
+
   it.effect('records a typed fault on the portal recheck and retries the crossing next frame', () =>
     Effect.gen(function* () {
       const portalCell = blockPosition(0, 64, 0)

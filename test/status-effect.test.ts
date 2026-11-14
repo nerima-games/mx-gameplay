@@ -5,12 +5,19 @@ import {
   SPEED_MOVEMENT_MULTIPLIER,
   StatusEffectStateSchema,
   type StatusEffectState,
+  type StatusEffectTick,
   applyStatusEffect,
   copyStatusEffectState,
   emptyStatusEffectState,
   isValidStatusEffectState,
-  tickStatusEffects,
+  tickStatusEffects as tickStatusEffectsResult,
 } from '../src/domain/status-effect'
+
+const tickStatusEffects = (...args: Parameters<typeof tickStatusEffectsResult>): StatusEffectTick => {
+  const tick = tickStatusEffectsResult(...args)
+  if (Result.isFailure(tick)) throw tick.failure
+  return tick.success
+}
 
 describe('status effects', () => {
   it('ticks poison and regeneration deterministically across a long frame', () => {
@@ -246,7 +253,7 @@ describe('status effects', () => {
     ])
   })
 
-  it('treats a non-finite delta time as zero elapsed, defending against an unvalidated dt', () => {
+  it('returns a typed failure for a non-finite delta time', () => {
     // `DeltaTimeSecs` is a refined brand that normally refuses this value —
     // this simulates state restored from outside the constructor, the same
     // way `savedStack` does in the inventory tests.
@@ -255,10 +262,12 @@ describe('status effects', () => {
       durationSecs: 5,
     })
 
-    const tick = tickStatusEffects(state, Number.NaN as unknown as DeltaTimeSecs)
-
-    expect(tick.poisonPulses).toBe(0)
-    expect(tick.state.effects).toStrictEqual(state.effects)
+    const invalidDelta = DeltaTimeSecs.result(Number.NaN)
+    expect(Result.isFailure(invalidDelta)).toBe(true)
+    if (Result.isFailure(invalidDelta)) {
+      expect(tickStatusEffectsResult(state, Number.NaN as unknown as DeltaTimeSecs))
+        .toEqual(Result.fail(invalidDelta.failure))
+    }
   })
 
   it('copyStatusEffectState clones each effect rather than aliasing it', () => {

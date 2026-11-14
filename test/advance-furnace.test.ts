@@ -1,6 +1,6 @@
 import { describe, expect, it } from '@effect/vitest'
 import { Result } from 'effect'
-import { FixedDurationSecs } from '@nerima-games/mc-kernel'
+import { DeltaTimeSecs, FixedDurationSecs } from '@nerima-games/mc-kernel'
 import { emptyFurnaceState, itemStack, type FurnaceState } from '@nerima-games/mc-sim'
 import {
   advanceFurnaceRuntime,
@@ -55,16 +55,15 @@ describe('furnace advance planning', () => {
     })
   })
 
-  it('treats invalid time as a deterministic no-op', () => {
+  it('returns a typed failure for invalid time', () => {
     const state = loaded()
-    expect(plan(state, Number.NaN)).toMatchObject({
-      before: state,
-      after: state,
-      advancedSecs: 0,
-      deferredSecs: 0,
-      smeltedCount: 0,
-      fuelConsumed: 0,
-    })
+    for (const requestedSecs of [Number.NaN, -1]) {
+      const invalidDuration = DeltaTimeSecs.result(requestedSecs)
+      expect(Result.isFailure(invalidDuration)).toBe(true)
+      if (Result.isFailure(invalidDuration)) {
+        expect(planFurnaceAdvance(state, requestedSecs)).toStrictEqual(Result.fail(invalidDuration.failure))
+      }
+    }
   })
 
   it('reports an invalid furnace snapshot as the exact Result failure', () => {

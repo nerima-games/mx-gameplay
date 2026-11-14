@@ -31,8 +31,8 @@
  */
 import { describe, expect, it } from '@effect/vitest'
 import { EntityKind, makeTimeService } from '@nerima-games/mc-sim'
-import { Effect, Ref } from 'effect'
-import { hostileSpawnsAllowed, NOON_FRACTION } from '../src/domain/day-night'
+import { Effect, Ref, Result } from 'effect'
+import { hostileSpawnsAllowed as hostileSpawnsAllowedResult, NOON_FRACTION } from '../src/domain/day-night'
 import {
   BlockId,
   DeltaTimeSecs,
@@ -85,6 +85,8 @@ import { makeEntityManagerDouble } from './support/entity-manager-double'
 import { makePlayerServiceDouble } from './support/player-service-double'
 import { makeInventoryDouble } from './support/inventory-service-double'
 import { runFrame } from './support/frame-runner'
+
+const hostileSpawnsAllowed = (timeOfDay: number) => Result.getOrThrow(hostileSpawnsAllowedResult(timeOfDay))
 
 // ---------------------------------------------------------------------------
 // The reference's oracle

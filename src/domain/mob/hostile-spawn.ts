@@ -64,6 +64,7 @@
 import { Brand, Result } from 'effect'
 import { AIR_BLOCK_ID, capabilityOfBlockId, type BlockId, type SimulationTick } from '@nerima-games/mc-kernel'
 import { hostileSpawnsAllowed } from '../day-night.js'
+import type { DayNightInputFailure } from '../day-night.js'
 import type { EntityKind } from '@nerima-games/mc-sim'
 import type { ChunkBiomeType, Dimension } from '@nerima-games/mc-worldgen'
 import type { HostileDifficulty } from './hostile-despawn.js'
@@ -190,12 +191,10 @@ export type SpawnCandidate = {
  * only the second is findable. `apps/preview-mining-site`'s arena screen prints
  * this word.
  *
- * `unmeasurable` is the answer to a light level or a distance that is not a
- * number. It exists because refusing is the inert direction and because this
- * repository has already been bitten once in the other: the preview's finding F5
- * is `NaN` reaching `applyDamage` through a bare `number`, and `NaN > 7` is
- * `false`, so a light level of `NaN` would otherwise read as pitch dark and
- * spawn a mob in daylight.
+ * `unmeasurable` is the refusal for an absent measurement, such as having no
+ * player distance to compare. A present but malformed numeric reading is a
+ * typed input failure; `NaN > 7` must not make invalid light look like pitch
+ * dark and spawn a mob in daylight.
  */
 export type SpawnRefusal =
   | 'daylight'
@@ -212,8 +211,27 @@ export type SpawnVerdict =
   | { readonly _tag: 'Spawn' }
   | { readonly _tag: 'Refused'; readonly reason: SpawnRefusal }
 
+export type HostileSpawnInputFailure = DayNightInputFailure | Readonly<{
+  _tag: 'InvalidSpawnCandidate'
+  field: 'dimension' | 'distanceToPlayerBlocksXZ' | 'blockLight' | 'skyLight'
+}>
+
 const REFUSED = (reason: SpawnRefusal): SpawnVerdict => ({ _tag: 'Refused', reason })
 const isLightLevel = (value: number): boolean => Number.isInteger(value) && value >= 0 && value <= 15
+const invalidMeasurement = (
+  candidate: SpawnCandidate,
+): SpawnVerdict | HostileSpawnInputFailure | undefined => {
+  const fields = ['distanceToPlayerBlocksXZ', 'blockLight', 'skyLight'] as const
+  for (const field of fields) {
+    if (!Object.hasOwn(candidate, field)) return REFUSED('unmeasurable')
+    const value = candidate[field]
+    const valid = field === 'distanceToPlayerBlocksXZ'
+      ? Number.isFinite(value) && value >= 0
+      : isLightLevel(value)
+    if (!valid) return { _tag: 'InvalidSpawnCandidate', field }
+  }
+  return undefined
+}
 
 // Valid but unregistered ids retain kernel's default capability values.
 const isSpawnSurface = (block: BlockId): boolean =>
@@ -233,17 +251,15 @@ const isSpawnSurface = (block: BlockId): boolean =>
  * NOT decided here: whether the roster has room for another hostile, and which
  * mob it would be. See the module header.
  */
-export const canHostileSpawnAt = (candidate: SpawnCandidate): SpawnVerdict => {
-  if (
-    !Number.isFinite(candidate.distanceToPlayerBlocksXZ) ||
-    !isLightLevel(candidate.blockLight) ||
-    !isLightLevel(candidate.skyLight) ||
-    !Number.isFinite(candidate.timeOfDay)
-  ) {
-    return REFUSED('unmeasurable')
-  }
+export const canHostileSpawnAt = (
+  candidate: SpawnCandidate,
+): SpawnVerdict | HostileSpawnInputFailure => {
+  const measurement = invalidMeasurement(candidate)
+  if (measurement !== undefined) return measurement
 
-  if (!hostileSpawnsAllowed(candidate.timeOfDay) && candidate.skyLight > HOSTILE_SPAWN_MAX_DAY_SKY_LIGHT) {
+  const nightWindow = hostileSpawnsAllowed(candidate.timeOfDay)
+  if (Result.isFailure(nightWindow)) return nightWindow.failure
+  if (!nightWindow.success && candidate.skyLight > HOSTILE_SPAWN_MAX_DAY_SKY_LIGHT) {
     return REFUSED('daylight')
   }
 
@@ -277,8 +293,18 @@ export const canHostileSpawnAt = (candidate: SpawnCandidate): SpawnVerdict => {
   return { _tag: 'Spawn' }
 }
 
-export const canMobSpawnAt = (kind: EntityKind, candidate: SpawnCandidate): SpawnVerdict => {
-  const dimension = candidate.dimension ?? 'overworld'
+export const canMobSpawnAt = (
+  kind: EntityKind,
+  candidate: SpawnCandidate,
+): SpawnVerdict | HostileSpawnInputFailure => {
+  if (Object.hasOwn(candidate, 'dimension') && candidate.dimension === undefined) {
+    return { _tag: 'InvalidSpawnCandidate', field: 'dimension' }
+  }
+  const dimension = Object.hasOwn(candidate, 'dimension') ? candidate.dimension : 'overworld'
+  if (
+    dimension === undefined ||
+    (dimension !== 'overworld' && dimension !== 'nether' && dimension !== 'end')
+  ) return { _tag: 'InvalidSpawnCandidate', field: 'dimension' }
   if (!biomeAllowsMob(kind, candidate.biome)) return REFUSED('wrong-biome')
   if (!ecosystemDimensionAllows(kind, dimension)) return REFUSED('wrong-dimension')
 
@@ -288,7 +314,8 @@ export const canMobSpawnAt = (kind: EntityKind, candidate: SpawnCandidate): Spaw
     return canHostileSpawnAt(candidate)
   }
 
-  if (!Number.isFinite(candidate.distanceToPlayerBlocksXZ) || !isLightLevel(candidate.blockLight) || !isLightLevel(candidate.skyLight)) return REFUSED('unmeasurable')
+  const measurement = invalidMeasurement(candidate)
+  if (measurement !== undefined) return measurement
   if (candidate.distanceToPlayerBlocksXZ < MIN_SPAWN_DISTANCE_BLOCKS) return REFUSED('too-close')
   if (candidate.distanceToPlayerBlocksXZ > MAX_SPAWN_DISTANCE_BLOCKS) return REFUSED('too-far')
   if (!isSpawnSurface(candidate.groundBlock)) return REFUSED('not-a-surface')

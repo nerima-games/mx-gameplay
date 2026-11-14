@@ -1,9 +1,12 @@
 import { describe, expect, it } from '@effect/vitest'
 import { Effect, Exit, Option } from 'effect'
+import * as FastCheck from 'fast-check'
 import { BlockId, blockIdOf } from '@nerima-games/mc-kernel'
 import { VehicleId, type VehicleServiceApi } from '@nerima-games/mc-sim'
 import type { ChunkStoreApi } from '@nerima-games/mc-worldgen'
 import { advanceVehicles } from '../src/domain/vehicle/vehicle-frame'
+
+const AIR = Option.getOrThrow(blockIdOf('air'))
 
 describe('vehicle frame', () => {
   it('integrates active vehicles and writes the result atomically', async () => {
@@ -24,7 +27,7 @@ describe('vehicle frame', () => {
         }),
     } as unknown as VehicleServiceApi
     const store = {
-      getBlock: () => Effect.succeed({ _tag: 'OutOfWorld' as const }),
+      getBlock: () => Effect.succeed({ _tag: 'Block' as const, block: AIR }),
     } as unknown as ChunkStoreApi
 
     const result = await Effect.runPromiseExit(advanceVehicles(store, service, 1))
@@ -78,7 +81,7 @@ describe('vehicle frame', () => {
         : Effect.sync(() => { updated.push(id) }),
     } as unknown as VehicleServiceApi
     const store = {
-      getBlock: () => Effect.succeed({ _tag: 'OutOfWorld' as const }),
+      getBlock: () => Effect.succeed({ _tag: 'Block' as const, block: AIR }),
     } as unknown as ChunkStoreApi
 
     const result = await Effect.runPromise(advanceVehicles(store, service, 1))
@@ -162,12 +165,86 @@ describe('vehicle frame', () => {
       getBlock: () => Effect.succeed({ _tag: 'ChunkNotLoaded' as const }),
     } as unknown as ChunkStoreApi
 
-    await Effect.runPromise(advanceVehicles(store, service, 0.05, {
+    const result = await Effect.runPromise(advanceVehicles(store, service, 0.05, {
       controlsForVehicle: () => ({ throttle: 1, steering: 0 }),
     }))
 
-    const velocity = next?.['velocity'] as { x: number; y: number; z: number }
-    expect(velocity.z).toBeCloseTo(-0.0165, 12)
+    expect(result).toMatchObject([{
+      _tag: 'VehicleWorldUnavailable',
+      vehicleId: vehicle.id,
+      reading: { _tag: 'ChunkNotLoaded' },
+    }])
+    expect(next).toBeUndefined()
+  })
+
+  it('returns a typed refusal for every unavailable BlockReading state', async () => {
+    const vehicle = {
+      id: VehicleId('v:unavailable-property'),
+      type: 'minecart' as const,
+      dimension: 'overworld' as const,
+      position: { x: 0, y: 64, z: 0 },
+      velocity: { x: 2, y: 0, z: 0 },
+      yawRadians: 0,
+    }
+
+    await FastCheck.assert(
+      FastCheck.asyncProperty(
+        FastCheck.constantFrom(
+          { _tag: 'ChunkNotLoaded' as const },
+          { _tag: 'OutOfWorld' as const },
+        ),
+        async (reading) => {
+          let updates = 0
+          const service = {
+            vehicles: Effect.succeed([vehicle]),
+            updateState: () => Effect.sync(() => { updates += 1 }),
+          } as unknown as VehicleServiceApi
+          const store = { getBlock: () => Effect.succeed(reading) } as unknown as ChunkStoreApi
+          const failures = await Effect.runPromise(advanceVehicles(store, service, 0.1))
+          const failure = failures[0]
+          return failures.length === 1 &&
+            failure?._tag === 'VehicleWorldUnavailable' &&
+            failure.reading._tag === reading._tag &&
+            updates === 0
+        },
+      ),
+      { numRuns: 100, seed: 70404 },
+    )
+  })
+
+  it('refuses an out-of-world vehicle and continues other vehicles', async () => {
+    const unavailableVehicle = {
+      id: VehicleId('v:out-of-world'),
+      type: 'minecart' as const,
+      dimension: 'overworld' as const,
+      position: { x: 0, y: 64, z: 0 },
+      velocity: { x: 2, y: 0, z: 0 },
+      yawRadians: 0,
+    }
+    const nextVehicle = {
+      ...unavailableVehicle,
+      id: VehicleId('v:loaded'),
+      position: { x: 10, y: 64, z: 0 },
+    }
+    const updated: Array<VehicleId> = []
+    const service = {
+      vehicles: Effect.succeed([unavailableVehicle, nextVehicle]),
+      updateState: (id: VehicleId) => Effect.sync(() => { updated.push(id) }),
+    } as unknown as VehicleServiceApi
+    const store = {
+      getBlock: (position: { x: number; y: number; z: number }) => position.x < 2
+        ? Effect.succeed({ _tag: 'OutOfWorld' as const })
+        : Effect.succeed({ _tag: 'Block' as const, block: AIR }),
+    } as unknown as ChunkStoreApi
+
+    const result = await Effect.runPromise(advanceVehicles(store, service, 0.1))
+
+    expect(result).toMatchObject([{
+      _tag: 'VehicleWorldUnavailable',
+      vehicleId: unavailableVehicle.id,
+      reading: { _tag: 'OutOfWorld' },
+    }])
+    expect(updated).toStrictEqual([nextVehicle.id])
   })
 
   it('preserves minecart momentum on a block without rail metadata', async () => {
@@ -216,7 +293,7 @@ describe('vehicle frame', () => {
       getBlock: (position: { x: number; y: number; z: number }) => Effect.succeed(
         position.x === 1 && position.y === 64 && position.z === 0
           ? { _tag: 'Block' as const, block: stone }
-          : { _tag: 'OutOfWorld' as const },
+          : { _tag: 'Block' as const, block: AIR },
       ),
     } as unknown as ChunkStoreApi
 
@@ -295,7 +372,7 @@ describe('vehicle frame', () => {
       getBlock: (position: { x: number; y: number; z: number }) => Effect.succeed(
         position.x === 1 && position.y === 64 && position.z === 0
           ? { _tag: 'Block' as const, block: stone }
-          : { _tag: 'OutOfWorld' as const },
+          : { _tag: 'Block' as const, block: AIR },
       ),
     } as unknown as ChunkStoreApi
 
@@ -330,7 +407,7 @@ describe('vehicle frame', () => {
           ? { _tag: 'Block' as const, block: stone }
           : position.x === 0 && position.y === 64 && position.z === 0
             ? { _tag: 'Block' as const, block: poweredRail }
-            : { _tag: 'OutOfWorld' as const },
+            : { _tag: 'Block' as const, block: AIR },
       ),
     } as unknown as ChunkStoreApi
     let poweredQueries = 0
@@ -374,7 +451,7 @@ describe('vehicle frame', () => {
           ? { _tag: 'Block' as const, block: stone }
           : position.x === 0 && position.y === 64 && position.z === 0
             ? { _tag: 'Block' as const, block: poweredRail }
-            : { _tag: 'OutOfWorld' as const },
+            : { _tag: 'Block' as const, block: AIR },
       ),
     } as unknown as ChunkStoreApi
 

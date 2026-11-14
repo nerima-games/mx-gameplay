@@ -26,7 +26,7 @@ import { ExperienceOrbVitalsOwnerSnapshotSchema } from '../src/domain/entities/x
 import {
   FIRE_DAMAGE_INTERVAL_TICKS,
   FIRE_TICK_INTERVAL_SECS,
-  makeFireLifecycleState,
+  makeFireLifecycleState as makeFireLifecycleStateResult,
   type FireLifecycleSnapshot,
 } from '../src/domain/fire-lifecycle'
 import type { WeatherState } from '../src/domain/weather'
@@ -234,6 +234,9 @@ import {
 } from '../src/stages/gameplay-owner-registrations.js'
 import type { CropSnapshot } from '@nerima-games/mc-sim'
 
+const makeFireLifecycleState = (...args: Parameters<typeof makeFireLifecycleStateResult>) =>
+  Result.getOrThrow(makeFireLifecycleStateResult(...args))
+
 const itemStack = (item: Parameters<typeof makeItemStack>[0], count: Parameters<typeof makeItemStack>[1]) =>
   Result.getOrThrow(makeItemStack(item, count))
 const equipmentItem = (...args: Parameters<typeof makeEquipmentItem>) =>
@@ -418,17 +421,17 @@ const builtStagesInWorld = (
     const initialStorage = yield* inventory.api.storageSnapshot
     const coordinator = yield* makeWorldCommitCoordinator({
       world: Schema.decodeUnknownSync(WorldIdSchema)('gameplay-stage-tests'),
-      owners: gameplayOwnerRegistrations({
+      owners: Result.getOrThrow(gameplayOwnerRegistrations({
         ...ownerOverrides,
         playerStorage: initialStorage,
-        playerPose: ownerOverrides.playerPose ?? SPAWN_POSE,
+        playerPose: Object.hasOwn(ownerOverrides, 'playerPose') ? ownerOverrides.playerPose! : SPAWN_POSE,
         crops,
         villagerTrades,
         entities,
         fishing,
         projectiles,
         ...(tnt === undefined ? {} : { tnt }),
-      }),
+      })),
       chunkStores: { forDimension: () => store.api },
     })
     const commitCalls = yield* Ref.make(0)
@@ -2532,6 +2535,37 @@ describe('the module contract has caught up with this file’s shape', () => {
       expect(stand.state.ingredient).toBeUndefined()
       expect(stand.state.fuelCharges).toBe(BREWING_FUEL_CHARGES - 1)
     }).pipe(Effect.provide(Layer.orDie(emptyWorld))),
+  )
+
+  it.effect('records automatic brewing failures and continues the frame', () =>
+    Effect.gen(function* () {
+      const { commit } = yield* builtStages
+      const brewing = yield* makeBrewingService(GAMEPLAY_BREWING_OWNER_ID)
+      const failure = {
+        _tag: 'BrewingValidationFailure',
+        path: 'advance',
+        reason: 'deterministic service rejection',
+      } as const
+      const failingBrewing = {
+        ...brewing,
+        advance: (_elapsedSecs: number) => Effect.fail(failure),
+      }
+      const advance = yield* makeBrewingAdvanceStage(failingBrewing, commit.coordinator)
+      let laterWorkRan = false
+      const laterStage: StageRegistration = {
+        id: StageId('test:after-brewing'),
+        after: [BREWING_ADVANCE_STAGE_ID],
+        run: () => Effect.sync(() => { laterWorkRan = true }),
+      }
+
+      yield* runFrames([laterStage, advance.stage], 1)
+
+      expect(laterWorkRan).toBe(true)
+      const executions = yield* advance.drainResults
+      expect(executions).toHaveLength(1)
+      expect(executions[0]?.requestId).toBeUndefined()
+      expect(executions[0]?.result).toMatchObject({ _tag: 'Failure', failure })
+    }),
   )
 
   // REGRESSION-SHAPED, and it is the property mc-sim's §7-1 buys with

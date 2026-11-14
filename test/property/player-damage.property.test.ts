@@ -1,15 +1,16 @@
 import { describe, it } from '@effect/vitest'
 import * as FastCheck from 'fast-check'
+import { Result } from 'effect'
 import {
-  applyDamage,
+  applyDamage as applyDamageResult,
   type DeathCause,
   type Vitals,
 } from '../../src/domain/death-cause'
 import { applyArmorToDamage } from '../../src/domain/combat/armor'
-import { resolveFallDamage } from '../../src/domain/fall-damage'
+import { resolveFallDamage as resolveFallDamageResult } from '../../src/domain/fall-damage'
 import {
   INITIAL_ENVIRONMENTAL_CONTACT_DAMAGE_STATE,
-  resolveEnvironmentalContactDamage,
+  resolveEnvironmentalContactDamage as resolveEnvironmentalContactDamageResult,
   type EnvironmentalContact,
 } from '../../src/domain/environmental-contact-damage'
 
@@ -36,15 +37,23 @@ const validContacts: ReadonlyArray<EnvironmentalContact> = [
   { block: 'lava', contactDamage: 4 },
 ]
 
+const applyDamage = (...args: Parameters<typeof applyDamageResult>) => Result.getOrThrow(applyDamageResult(...args))
+const resolveEnvironmentalContactDamage = (
+  ...args: Parameters<typeof resolveEnvironmentalContactDamageResult>
+) => Result.getOrThrow(resolveEnvironmentalContactDamageResult(...args))
+
 describe('player damage properties', () => {
   it('keeps the fall threshold and whole-point damage boundary', () => {
     // Fails if damage begins at the threshold, fractional falls round down, or the fall cause is lost.
     FastCheck.assert(
       FastCheck.property(FastCheck.integer({ min: 0, max: 4000 }), (quarterSteps) => {
         const fallDistance = quarterSteps / 4
-        const damage = resolveFallDamage(fallDistance)
+        const result = resolveFallDamageResult(fallDistance)
+        if (Result.isFailure(result)) return false
+        const damage = result.success
+        const threshold = resolveFallDamageResult(3)
 
-        return resolveFallDamage(3) === undefined && (fallDistance <= 3
+        return Result.isSuccess(threshold) && threshold.success === undefined && (fallDistance <= 3
           ? damage === undefined
           : damage !== undefined &&
             damage.cause === 'fall' &&
@@ -53,6 +62,26 @@ describe('player damage properties', () => {
             damage.amount < fallDistance - 2)
       }),
     )
+  })
+
+  it('returns typed failures across invalid numeric inputs for damage boundaries', () => {
+    const anyNumber = FastCheck.double({ noNaN: false, noDefaultInfinity: false })
+    FastCheck.assert(FastCheck.property(anyNumber, (fallDistance) => {
+      const result = resolveFallDamageResult(fallDistance)
+      return Result.isFailure(result) === (!Number.isFinite(fallDistance) || fallDistance < 0)
+    }))
+    FastCheck.assert(FastCheck.property(anyNumber, (amount) => {
+      const result = applyDamageResult({ healthPoints: 20, lastDeathCause: undefined }, { amount, cause: 'fall' })
+      return Result.isFailure(result) === (!Number.isFinite(amount) || amount < 0)
+    }))
+    FastCheck.assert(FastCheck.property(anyNumber, (simulationElapsedSecs) => {
+      const result = resolveEnvironmentalContactDamageResult(
+        INITIAL_ENVIRONMENTAL_CONTACT_DAMAGE_STATE,
+        validContacts,
+        simulationElapsedSecs,
+      )
+      return Result.isFailure(result) === (!Number.isFinite(simulationElapsedSecs) || simulationElapsedSecs < 0)
+    }))
   })
 
   it('caps armor mitigation at eighty percent without increasing damage', () => {

@@ -40,6 +40,8 @@
  * predicate; callers must not assume the spawn and simulation-night windows
  * are coupled.
  */
+import { Result } from 'effect'
+
 
 /** Start of the hostile-spawn night window. */
 export const NIGHT_START_FRACTION = 0.55
@@ -69,19 +71,27 @@ export const TWILIGHT_BAND = 0.05
 /** The four phases a renderer or a HUD may want to distinguish. */
 export type DayPhase = 'night' | 'dawn' | 'day' | 'dusk'
 
+export type DayNightInputFailure = Readonly<{
+  _tag: 'InvalidDayNightInput'
+  field: 'timeOfDay'
+}>
+
 /**
  * Map finite day counts to the one-day phase consumed by gameplay rules.
  *
  * Quantising far below the clock's tick resolution removes transport noise
  * such as `0.3` becoming `0.2999999999999998` after adding a whole day.
  */
-const canonicalTimeOfDay = (timeOfDay: number): number => {
-  if (!Number.isFinite(timeOfDay) || (timeOfDay >= 0 && timeOfDay < 1)) {
-    return timeOfDay
+const canonicalTimeOfDay = (
+  timeOfDay: number,
+): Result.Result<number, DayNightInputFailure> => {
+  if (!Number.isFinite(timeOfDay)) {
+    return Result.fail({ _tag: 'InvalidDayNightInput', field: 'timeOfDay' })
   }
+  if (timeOfDay >= 0 && timeOfDay < 1) return Result.succeed(timeOfDay)
 
   const fraction = ((timeOfDay % 1) + 1) % 1
-  return Math.round(fraction * 1_000_000_000_000) / 1_000_000_000_000
+  return Result.succeed(Math.round(fraction * 1_000_000_000_000) / 1_000_000_000_000)
 }
 
 /**
@@ -91,9 +101,14 @@ const canonicalTimeOfDay = (timeOfDay: number): number => {
  * advanced clock from changing the phase merely because it crossed a day
  * boundary.
  */
-export const isNight = (timeOfDay: number): boolean => {
+const isNightFraction = (fraction: number): boolean =>
+  fraction >= NIGHT_START_FRACTION && fraction <= NIGHT_END_FRACTION
+
+export const isNight = (timeOfDay: number): Result.Result<boolean, DayNightInputFailure> => {
   const fraction = canonicalTimeOfDay(timeOfDay)
-  return fraction >= NIGHT_START_FRACTION && fraction <= NIGHT_END_FRACTION
+  return Result.isFailure(fraction)
+    ? Result.fail(fraction.failure)
+    : Result.succeed(isNightFraction(fraction.success))
 }
 
 /**
@@ -102,18 +117,20 @@ export const isNight = (timeOfDay: number): boolean => {
  * Consistent with `isNight` by construction: the two twilight bands sit inside
  * daylight, so nothing that this reports as `dawn` or `dusk` is also night.
  */
-export const dayPhase = (timeOfDay: number): DayPhase => {
-  const fraction = canonicalTimeOfDay(timeOfDay)
-  if (isNight(fraction)) {
-    return 'night'
+export const dayPhase = (timeOfDay: number): Result.Result<DayPhase, DayNightInputFailure> => {
+  const canonical = canonicalTimeOfDay(timeOfDay)
+  if (Result.isFailure(canonical)) return Result.fail(canonical.failure)
+  const fraction = canonical.success
+  if (isNightFraction(fraction)) {
+    return Result.succeed('night')
   }
   if (fraction > NIGHT_END_FRACTION || fraction < TWILIGHT_BAND) {
-    return 'dawn'
+    return Result.succeed('dawn')
   }
   if (fraction > DUSK_FRACTION - TWILIGHT_BAND) {
-    return 'dusk'
+    return Result.succeed('dusk')
   }
-  return 'day'
+  return Result.succeed('day')
 }
 
 /**
@@ -124,4 +141,4 @@ export const dayPhase = (timeOfDay: number): DayPhase => {
  * Passive spawning uses the daylight result to avoid competing with the
  * hostile night cycle.
  */
-export const hostileSpawnsAllowed = (timeOfDay: number): boolean => isNight(timeOfDay)
+export const hostileSpawnsAllowed = (timeOfDay: number): Result.Result<boolean, DayNightInputFailure> => isNight(timeOfDay)

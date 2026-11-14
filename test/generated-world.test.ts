@@ -111,10 +111,9 @@ describe('generated world composition', () => {
   it.effect('adapts peek, snapshot, isLoaded, neighbours, unload and getLight, coordinate-branded', () =>
     Effect.gen(function* () {
       // The other tests in this file only exercise `load`, `getBlock` and
-      // `setBlock` on the adapted store — this is the one that reaches every
-      // other member of the real `ChunkStoreApi`, passed through unchanged by
-      // `adaptGeneratedChunkStore` (only `load`/`unload` are wrapped, for
-      // `Effect.orDie`).
+      // `setBlock` on the generated store — this is the one that reaches every
+      // other member of the real `ChunkStoreApi`. The adapter keeps the typed
+      // load/unload failures unchanged.
       const world = yield* makeGeneratedWorld<MobBehaviour>({ seed: SEED })
       const coord = chunkCoord(0, 0)
       const eastCoord = chunkCoord(1, 0)

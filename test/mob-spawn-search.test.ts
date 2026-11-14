@@ -12,6 +12,7 @@
  * at a cost that can be stated.
  */
 import { describe, expect, it } from '@effect/vitest'
+import * as FastCheck from 'fast-check'
 import { position as atPosition } from './support/coordinate-fixtures'
 import {
   EntityId,
@@ -41,9 +42,9 @@ import {
   SPAWN_RING_RADIUS_STEPS,
   SPAWN_SEARCH_ROLLS,
 } from '../src/domain/entities/mob-spawn-search'
-import { drawRolls, rollAt } from '../src/domain/frame-rolls'
-import { isNight } from '../src/domain/day-night'
-import { DESPAWN_DISTANCE_BLOCKS, despawnVerdict } from '../src/domain/mob/hostile-despawn'
+import { drawRolls as drawRollsResult, rollAt as rollAtResult } from '../src/domain/frame-rolls'
+import { isNight as isNightResult } from '../src/domain/day-night'
+import { DESPAWN_DISTANCE_BLOCKS, despawnVerdict as despawnVerdictResult } from '../src/domain/mob/hostile-despawn'
 import { ZOMBIE_KIND } from '../src/domain/mob/hostile-combat'
 import { NETHER_HOSTILE_KINDS, PASSIVE_MOB_KINDS } from '../src/domain/mob/mob-ecosystem'
 import {
@@ -83,6 +84,12 @@ import { makeEntityManagerDouble } from './support/entity-manager-double'
 import { makePlayerServiceDouble, SPAWN_POSE } from './support/player-service-double'
 import { makeInventoryDouble } from './support/inventory-service-double'
 import { makeGameplayCommitServices } from './support/transactional-stage-doubles'
+
+const drawRolls = (...args: Parameters<typeof drawRollsResult>) => Result.getOrThrow(drawRollsResult(...args))
+const rollAt = (...args: Parameters<typeof rollAtResult>) => Result.getOrThrow(rollAtResult(...args))
+const isNight = (timeOfDay: number) => Result.getOrThrow(isNightResult(timeOfDay))
+const despawnVerdict = (...args: Parameters<typeof despawnVerdictResult>) =>
+  Result.getOrThrow(despawnVerdictResult(...args))
 
 // ---------------------------------------------------------------------------
 // A world big enough for the ring to land in.
@@ -563,6 +570,58 @@ describe('the spawn ring', () => {
       for (const attempt of found.attempts) {
         expect(attempt.candidate.timeOfDay).toBe(0.5)
       }
+    }),
+  )
+})
+
+describe('spawn search input validation', () => {
+  it.effect('rejects every invalid target coordinate, time fraction, and present optional value', () =>
+    Effect.gen(function* () {
+      const store = yield* makeChunkStoreDouble(new Map(), [])
+      const anyNumber = FastCheck.double({ noNaN: false, noDefaultInfinity: false })
+
+      FastCheck.assert(FastCheck.property(anyNumber, (x) => {
+        const result = Effect.runSync(Effect.result(searchSpawnCandidates(
+          store.api,
+          { ...PLAYER, x } as Position,
+          MIDNIGHT,
+          RandomSeed(1),
+        )))
+        return Result.isFailure(result) === !Number.isFinite(x)
+      }))
+      FastCheck.assert(FastCheck.property(anyNumber, (timeOfDay) => {
+        const result = Effect.runSync(Effect.result(searchSpawnCandidates(
+          store.api,
+          PLAYER,
+          timeOfDay as never,
+          RandomSeed(1),
+        )))
+        const valid = Number.isFinite(timeOfDay) && timeOfDay >= 0 && timeOfDay < 1
+        return Result.isFailure(result) === !valid
+      }))
+
+      expect(Result.isFailure(Effect.runSync(Effect.result(searchSpawnCandidates(
+        store.api,
+        PLAYER,
+        MIDNIGHT,
+        RandomSeed(1),
+        undefined as unknown as Dimension,
+      ))))).toBe(true)
+      expect(Result.isFailure(Effect.runSync(Effect.result(searchSpawnCandidates(
+        store.api,
+        PLAYER,
+        MIDNIGHT,
+        RandomSeed(1),
+        'overworld',
+        undefined as never,
+      ))))).toBe(true)
+      expect(Result.isFailure(Effect.runSync(Effect.result(searchSpawnCandidates(
+        store.api,
+        PLAYER,
+        MIDNIGHT,
+        RandomSeed(1),
+        'invalid' as unknown as Dimension,
+      ))))).toBe(true)
     }),
   )
 })

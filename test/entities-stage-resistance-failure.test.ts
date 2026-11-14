@@ -74,10 +74,10 @@ const makeHarness = () => Effect.gen(function* () {
   const store = yield* makeTransactionalChunkStoreDouble(world([[centre, STONE]]), ['0,0'])
   const coordinator = yield* makeWorldCommitCoordinator({
     world: worldId,
-    owners: gameplayOwnerRegistrations({
+    owners: Result.getOrThrow(gameplayOwnerRegistrations({
       playerPose,
       entities: { entities, nextSerial: EntitySerial(entities.length) },
-    }),
+    })),
     chunkStores: { forDimension: () => store.api },
   })
   const state = yield* makeGameplayFrameState

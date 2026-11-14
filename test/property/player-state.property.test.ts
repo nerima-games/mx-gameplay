@@ -163,9 +163,11 @@ describe('player state properties', () => {
       FastCheck.property(
         FastCheck.integer({ min: 0, max: 64 }),
         FastCheck.double({ min: 0, max: 1, noNaN: true }),
-        (connectedPlayers, ratio) =>
-          requiredSleeperCount(connectedPlayers, ratio) ===
-          Math.max(1, Math.ceil(connectedPlayers * ratio)),
+        (connectedPlayers, ratio) => {
+          const required = requiredSleeperCount(connectedPlayers, ratio)
+          return Result.isSuccess(required) && required.success ===
+            Math.max(1, Math.ceil(connectedPlayers * ratio))
+        },
       ),
     )
   })
@@ -179,9 +181,9 @@ describe('player state properties', () => {
         (deltaSecs, delaySecs) => {
           const sleeping = enterSleep(initialSleepRuntimeState(), 'player-1', sleepLocation)
           const result = advanceSleep(sleeping, deltaSecs, 1, 1, delaySecs)
-
-          return result.skipToMorning === (deltaSecs >= delaySecs) &&
-            result.state.sleepers[0]?.elapsedSecs === deltaSecs
+          return Result.isSuccess(result) &&
+            result.success.skipToMorning === (deltaSecs >= delaySecs) &&
+            result.success.state.sleepers[0]?.elapsedSecs === deltaSecs
         },
       ),
     )

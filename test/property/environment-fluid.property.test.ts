@@ -2,7 +2,7 @@ import { describe, expect, it } from '@effect/vitest'
 import fc from 'fast-check'
 import { makeTimeService } from '@nerima-games/mc-sim'
 import { DeltaTimeSecs, blockPositionKeyOf } from '@nerima-games/mc-kernel'
-import { Effect, Ref } from 'effect'
+import { Effect, Ref, Result } from 'effect'
 import {
   carryOver,
   MAX_FLUID_DEFERRED_ATTEMPTS,
@@ -60,8 +60,9 @@ describe('environment fluid properties', () => {
             kind,
           }))
           const split = splitBudget(frontier, { budget, lavaTickActive })
-          const retained = carryOver(frontier, split)
-          const partition = [...split.work, ...retained]
+          if (Result.isFailure(split)) return false
+          const retained = carryOver(frontier, split.success)
+          const partition = [...split.success.work, ...retained]
           const identify = (item: FluidWorkItem): string => `${item.kind}:${item.key}`
           const water = frontier.filter((item) => item.kind === 'water')
           const lava = frontier.filter((item) => item.kind === 'lava')
@@ -70,18 +71,28 @@ describe('environment fluid properties', () => {
             ? lava.slice(0, budget - waterWork.length)
             : []
 
-          expect(split.work.length).toBeLessThanOrEqual(budget)
-          expect(split.work.filter((item) => item.kind === 'water').length).toBeLessThanOrEqual(
+          expect(split.success.work.length).toBeLessThanOrEqual(budget)
+          expect(split.success.work.filter((item) => item.kind === 'water').length).toBeLessThanOrEqual(
             Math.floor(budget / 2),
           )
-          expect(split.work).toStrictEqual([...waterWork, ...lavaWork])
+          expect(split.success.work).toStrictEqual([...waterWork, ...lavaWork])
           if (!lavaTickActive) {
-            expect(split.work.filter((item) => item.kind === 'lava')).toStrictEqual([])
+            expect(split.success.work.filter((item) => item.kind === 'lava')).toStrictEqual([])
           }
           expect(new Set(partition.map(identify)).size).toBe(frontier.length)
           expect(partition.map(identify).sort()).toStrictEqual(frontier.map(identify).sort())
         },
       ),
+    )
+  })
+
+  it('rejects every explicit budget outside the nonnegative safe-integer range', () => {
+    fc.assert(
+      fc.property(fc.double(), (budget) => {
+        const result = splitBudget([], { budget, lavaTickActive: true })
+        const valid = Number.isSafeInteger(budget) && budget >= 0
+        return valid ? Result.isSuccess(result) : Result.isFailure(result)
+      }),
     )
   })
 

@@ -29,6 +29,7 @@ import {
   GAMEPLAY_VILLAGER_TRADES_OWNER_ID,
   gameplayOwnerRegistrations,
   type GameplayOwnerInitialState,
+  type GameplayOwnerRegistrationFailure,
 } from '../../src/stages/gameplay-owner-registrations.js'
 import type { GameplayStageCommitServices } from '../../src/stages/registration-core.js'
 import type { ChunkStoreDouble, StoreCalls } from './chunk-store-double.js'
@@ -102,15 +103,19 @@ export const makeGameplayCommitServices = (
   store: ChunkStoreApi,
   inventory: InventoryServiceApi,
   initial: GameplayOwnerInitialState = {},
-): Effect.Effect<GameplayStageCommitServices, WorldCommitCoordinatorError> =>
+): Effect.Effect<
+  GameplayStageCommitServices,
+  WorldCommitCoordinatorError | GameplayOwnerRegistrationFailure
+> =>
   Effect.gen(function* () {
     const initialStorage = yield* inventory.storageSnapshot
+    const ownerInitialState = Object.hasOwn(initial, 'playerStorage')
+      ? initial
+      : { ...initial, playerStorage: initialStorage }
+    const owners = yield* Effect.fromResult(gameplayOwnerRegistrations(ownerInitialState))
     const coordinator = yield* makeWorldCommitCoordinator({
       world: WORLD_ID,
-      owners: gameplayOwnerRegistrations({
-        ...initial,
-        playerStorage: initial.playerStorage ?? initialStorage,
-      }),
+      owners,
       chunkStores: { forDimension: () => store },
     })
     const bucketService = yield* makeBucketService().pipe(
@@ -139,7 +144,7 @@ export const makeGameplayCommitServices = (
 
 export const gameplayCommitServicesLayer: Layer.Layer<
   BucketService | WorldCommitCoordinator,
-  WorldCommitCoordinatorError,
+  WorldCommitCoordinatorError | GameplayOwnerRegistrationFailure,
   ChunkStore | InventoryService
 > = Layer.provideMerge(
   BucketServiceLayer,
@@ -149,9 +154,10 @@ export const gameplayCommitServicesLayer: Layer.Layer<
       const store = yield* ChunkStore
       const inventory = yield* InventoryService
       const initialStorage = yield* inventory.storageSnapshot
+      const owners = yield* Effect.fromResult(gameplayOwnerRegistrations({ playerStorage: initialStorage }))
       return yield* makeWorldCommitCoordinator({
         world: WORLD_ID,
-        owners: gameplayOwnerRegistrations({ playerStorage: initialStorage }),
+        owners,
         chunkStores: { forDimension: () => store },
       })
     }),

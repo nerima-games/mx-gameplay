@@ -230,12 +230,11 @@ import {
   FIRE_UNAVAILABLE_BLOCK,
   FIRE_WORK_BUDGET,
   extinguishFire,
-  isFireLifecycleSnapshot,
   makeFireLifecycleSnapshot,
-  makeFireLifecycleState,
   restoreFireLifecycleSnapshot,
   type FireActorContact,
   type FireCell,
+  type FireLifecycleFailure,
   type FireLifecycleSnapshot,
   type FireLifecycleState,
   type FirePosition,
@@ -260,6 +259,8 @@ import {
   type MobCasualty,
   type MobExperienceRoll,
   type MobExperienceEvent,
+  type MobFrameRuleFault,
+  type MobRosterDamageFault,
   MOB_EXPERIENCE_CREDIT_WINDOW_TICKS,
   type MobBehaviour,
   type MobSpawnAttempt,
@@ -280,6 +281,7 @@ import {
 import {
   GameplayEntityRosterSchema,
   restoreGameplayEntityMetadata,
+  type GameplayEntityMetadataFailure,
 } from './gameplay-owner-registrations.js'
 import {
   ExperienceOrbVitalsOwnerSnapshotSchema,
@@ -287,9 +289,9 @@ import {
   type ExperienceOrbAbsorptionContext,
   type ExperienceOrbAbsorptionError,
 } from '../domain/entities/xp-orb.js'
-import { searchSpawnCandidates } from '../domain/entities/mob-spawn-search.js'
-import { hostileSpawnsAllowed } from '../domain/day-night.js'
-import { HOSTILE_SPAWN_SETTINGS } from '../domain/mob/hostile-spawn.js'
+import { searchSpawnCandidates, type MobSpawnSearchFailure } from '../domain/entities/mob-spawn-search.js'
+import { hostileSpawnsAllowed, type DayNightInputFailure } from '../domain/day-night.js'
+import { HOSTILE_SPAWN_SETTINGS, type HostileSpawnInputFailure } from '../domain/mob/hostile-spawn.js'
 import {
   entityManagerTag,
   type EntityId,
@@ -300,13 +302,16 @@ import {
 import { entityWorldBlockTypeAt } from '../domain/entities/entity-world-cell.js'
 import type { EntityWorldCellPosition, EntityWorldQueryFailure } from '../domain/entities/entity-world-cell.js'
 import type { MobStateRepairFailure } from '../domain/mob/mob-ecosystem.js'
-import type { Damage } from '../domain/death-cause.js'
+import type { Damage, DamageApplicationFailure } from '../domain/death-cause.js'
 import { prepareArmorHit } from '../domain/combat/armor.js'
 import {
   resolveHostileContacts,
   resolvePlayerBlastDamage,
+  type HostileContactResolutionError,
+  type PlayerBlastDamageFailure,
   type PlayerDamageEvent,
 } from '../domain/mob/hostile-combat.js'
+import type { ExplosionInputFailure } from '../domain/mob/explosion.js'
 import {
   disturb,
   emptyFallingBlockQueue,
@@ -325,7 +330,7 @@ import {
   type FluidProbe,
   type FluidWorkItem,
 } from '../domain/fluid-frontier.js'
-import { DEFAULT_ROLL_SEED, drawRolls, rollAt } from '../domain/frame-rolls.js'
+import { DEFAULT_ROLL_SEED, drawRolls, rollAt, type FrameRollFailure } from '../domain/frame-rolls.js'
 import { mobExperienceRuleOfKind, mobXpReward, type MobKill } from '../domain/mob/mob-drop.js'
 import {
   endArrivalDescriptor,
@@ -384,7 +389,11 @@ import {
   BOW_MAX_RANGE,
 } from '../domain/interactions/draw-bow.js'
 import { shotBlockedByTerrain, shotTarget, type ShotHit } from '../domain/interactions/bow-shot.js'
-import { knockbackDirection, type KnockbackDirection } from '../domain/interactions/knockback.js'
+import {
+  knockbackDirection,
+  type KnockbackDirection,
+  type KnockbackPreparationError,
+} from '../domain/interactions/knockback.js'
 import {
   DEFAULT_MELEE_DAMAGE,
   DEFAULT_MELEE_REACH,
@@ -484,8 +493,13 @@ type CasualtyExperienceRoll =
 const rollCasualtyExperience = (
   casualties: ReadonlyArray<MobCasualty>,
   seed: number,
-): CasualtyExperienceRoll => {
-  if (casualties.length === 0) return { _tag: 'Resolved', experience: NO_MOB_EXPERIENCE, seed }
+): Result.Result<CasualtyExperienceRoll, FrameRollFailure> => {
+  if (casualties.length === 0) {
+    const empty = drawRolls(seed, 0)
+    return Result.isFailure(empty)
+      ? Result.fail(empty.failure)
+      : Result.succeed({ _tag: 'Resolved', experience: NO_MOB_EXPERIENCE, seed: empty.success.seed })
+  }
 
   let current = seed
   const experience: Array<MobExperienceEvent> = []
@@ -513,18 +527,22 @@ const rollCasualtyExperience = (
       ? Math.max(0, equipmentCount - existingEquipmentRolls.length)
       : 0
     const batch = drawRolls(current, baseRollCount + equipmentRollCount)
-    current = batch.seed
+    if (Result.isFailure(batch)) return Result.fail(batch.failure)
+    current = batch.success.seed
 
     let cursor = 0
-    const experienceRoll = casualty.experienceRoll ?? (baseRollCount > 0
-      ? makeMobExperienceRoll(rollAt(batch, cursor++))
-      : undefined)
-    const equipmentXpRolls = equipmentRollCount === 0
-      ? existingEquipmentRolls
-      : [
-          ...existingEquipmentRolls,
-          ...Array.from({ length: equipmentRollCount }, () => makeMobExperienceRoll(rollAt(batch, cursor++))),
-        ]
+    let experienceRoll = casualty.experienceRoll
+    if (experienceRoll === undefined && baseRollCount > 0) {
+      const roll = rollAt(batch.success, cursor++)
+      if (Result.isFailure(roll)) return Result.fail(roll.failure)
+      experienceRoll = makeMobExperienceRoll(roll.success)
+    }
+    const equipmentXpRolls = [...existingEquipmentRolls]
+    for (let index = 0; index < equipmentRollCount; index += 1) {
+      const roll = rollAt(batch.success, cursor++)
+      if (Result.isFailure(roll)) return Result.fail(roll.failure)
+      equipmentXpRolls.push(makeMobExperienceRoll(roll.success))
+    }
 
     const rolledCasualty = {
       ...casualty,
@@ -541,9 +559,9 @@ const rollCasualtyExperience = (
       experience.push({ source: casualty.id, kind: casualty.kind, at: casualty.at, amount })
     }
   }
-  return issues.length === 0
+  return Result.succeed(issues.length === 0
     ? { _tag: 'Resolved', experience, seed: current }
-    : { _tag: 'Unsupported', experience, seed: current, issues }
+    : { _tag: 'Unsupported', experience, seed: current, issues })
 }
 
 /**
@@ -560,21 +578,16 @@ const toKernelPosition = (position: BlockPosition): BlockPosition => position
 const blockPosition = (x: number, y: number, z: number): BlockPosition =>
   kernelBlockPosition(BlockAxis(x + 0), BlockAxis(y + 0), BlockAxis(z + 0))
 
-/** Preserve the stage's infallible interface while keeping validation failures as defects. */
-export const resultOrDie = <A, E>(result: Result.Result<A, E>): Effect.Effect<A> =>
-  Effect.orDie(Effect.fromResult(result))
-
-export const blockPositionForKey = (key: BlockPositionKey): Effect.Effect<BlockPosition> =>
-  resultOrDie(blockPositionOfKey(key))
+export const blockPositionForKey = (key: BlockPositionKey) => blockPositionOfKey(key)
 
 export const resolveArmoredPlayerDamages = (
   inventory: InventoryServiceApi,
   damages: ReadonlyArray<PlayerDamageEvent>,
-): Effect.Effect<ReadonlyArray<PlayerDamageEvent>> =>
+): Effect.Effect<ReadonlyArray<PlayerDamageEvent>, 'invalid-damage' | 'invalid-armor'> =>
   Effect.forEach(damages, (event) =>
     Effect.gen(function* () {
       if (event.damage.amount === 0) return event
-      const resolved = yield* resultOrDie(prepareArmorHit(yield* inventory.equipmentSnapshot, event.damage))
+      const resolved = yield* Effect.fromResult(prepareArmorHit(yield* inventory.equipmentSnapshot, event.damage))
       yield* Effect.forEach(resolved.wornSlots, (slot) =>
         inventory.damageAt({ _tag: 'Equipment', slot }, resolved.durabilityWear),
       )
@@ -597,6 +610,10 @@ type FirePlayerDamagePreparationFailure =
       expectedRevision: WorldWriteBatch['expectedWorldRevision']
       observedRevision: WorldWriteBatch['expectedWorldRevision']
     }>
+  | Readonly<{
+      _tag: 'ArmorPreparationFailed'
+      reason: 'invalid-damage' | 'invalid-armor'
+    }>
 const prepareFirePlayerDamage = (
   coordinator: WorldCommitCoordinatorApi,
   ownerId: ReplicatedOwnerId,
@@ -618,7 +635,11 @@ const prepareFirePlayerDamage = (
   let storage = observed.success.state
   const resolvedDamages: PlayerDamageEvent[] = []
   for (const event of damages) {
-    const resolved = yield* resultOrDie(prepareArmorHit(storage.equipment, event.damage))
+    const prepared = yield* Effect.result(Effect.fromResult(prepareArmorHit(storage.equipment, event.damage)))
+    if (Result.isFailure(prepared)) {
+      return Result.fail({ _tag: 'ArmorPreparationFailed', reason: prepared.failure })
+    }
+    const resolved = prepared.success
     resolvedDamages.push({ ...event, damage: resolved.damage })
 
     for (const slot of resolved.wornSlots) {
@@ -1005,6 +1026,7 @@ const commitBlockEdits: (
   expectedDimensionRevision,
   edits,
 ) => Effect.gen(function* () {
+    // All fields come from the validated coordinator revisions and fluid edits built above.
     const blockWrite = yield* Schema.decodeUnknownEffect(WorldWriteBatchSchema)({
       world: context.coordinator.worldId,
       expectedWorldRevision: expectedRevision,
@@ -1074,12 +1096,24 @@ const runFluidPropagation = (
         continue
       }
       const current = currentResult.success
-      const belowPosition = yield* resultOrDie(
-        adjacentBlockPosition(toKernelPosition(position), 'down'),
-      )
-      const horizontalPositions = yield* resultOrDie(
-        horizontalBlockNeighbours(toKernelPosition(position)),
-      )
+      const belowResult = adjacentBlockPosition(toKernelPosition(position), 'down')
+      if (Result.isFailure(belowResult)) {
+        yield* recordGameplayEntityStageFault(state, {
+          _tag: 'FluidNeighbourPositionFault', cell: toKernelPosition(position), reason: belowResult.failure.reason,
+        })
+        retryCurrent()
+        continue
+      }
+      const belowPosition = belowResult.success
+      const horizontalResult = horizontalBlockNeighbours(toKernelPosition(position))
+      if (Result.isFailure(horizontalResult)) {
+        yield* recordGameplayEntityStageFault(state, {
+          _tag: 'FluidNeighbourPositionFault', cell: toKernelPosition(position), reason: horizontalResult.failure.reason,
+        })
+        retryCurrent()
+        continue
+      }
+      const horizontalPositions = horizontalResult.success
       let belowProbe: FluidProbe = { key: blockPositionKeyOf(toKernelPosition(belowPosition)), state: 'blocked' }
       let horizontalProbes: ReadonlyArray<FluidProbe> = horizontalPositions.map((candidate) => ({
         key: blockPositionKeyOf(toKernelPosition(candidate)),
@@ -1134,9 +1168,14 @@ const runFluidPropagation = (
           continue
         }
 
-        const changePosition = yield* resultOrDie(
-          blockPositionOfKey(change._tag === 'PlaceFluid' ? change.cell.key : change.key),
-        )
+        const changePositionResult = blockPositionOfKey(change._tag === 'PlaceFluid' ? change.cell.key : change.key)
+        if (Result.isFailure(changePositionResult)) {
+          yield* recordGameplayEntityStageFault(state, {
+            _tag: 'GameplayRequestFault', source: 'Fluid', reason: 'InvalidBlockPositionKey',
+          })
+          continue
+        }
+        const changePosition = changePositionResult.success
         /* v8 ignore start -- derived positions are adjacent neighbours of a validated finite input. */
         if (!validFluidPosition(changePosition)) continue
         /* v8 ignore stop */
@@ -1381,6 +1420,7 @@ export type BlockPlacementCommand = PlacementRequest & {
 export type BlockPlacementCommandOutcome =
   | PlaceOutcome
   | { readonly _tag: 'InventoryUnavailable' }
+  | { readonly _tag: 'InvalidPosition' }
   | { readonly _tag: 'RequestIdConflict' }
   | { readonly _tag: 'PlayerDead' }
   | { readonly _tag: 'CommitFailed'; readonly error: WorldCommitCoordinatorError | Schema.SchemaError }
@@ -1628,6 +1668,11 @@ export type IgnitionItemUseResult = {
   readonly outcome: IgnitionOutcome
 }
 
+export type ItemUseWorldReadRefusal = Readonly<{
+  _tag: 'ChunkNotLoaded' | 'OutOfWorld'
+  position: BlockPosition
+}>
+
 export type FarmingItemUseResult =
   | {
       readonly action: 'TillSoil'
@@ -1635,7 +1680,7 @@ export type FarmingItemUseResult =
       readonly heldItem: HoeItemType
       readonly success: boolean
       readonly durabilityDamage: 0 | 1
-      readonly outcome: TillOutcome
+      readonly outcome: TillOutcome | ItemUseWorldReadRefusal
     }
   | {
       readonly action: 'ApplyBoneMeal'
@@ -1643,7 +1688,7 @@ export type FarmingItemUseResult =
       readonly heldItem: 'bone_meal'
       readonly success: boolean
       readonly consumedCount: 0 | 1
-      readonly outcome: BoneMealOutcome
+      readonly outcome: BoneMealOutcome | ItemUseWorldReadRefusal
     }
   | {
       readonly action: 'PlantPotato'
@@ -1651,14 +1696,14 @@ export type FarmingItemUseResult =
       readonly heldItem: 'potato'
       readonly success: boolean
       readonly consumedCount: 0 | 1
-      readonly outcome: PlantOutcome
+      readonly outcome: PlantOutcome | ItemUseWorldReadRefusal
     }
   | {
       readonly action: 'HarvestPotato'
       readonly requestId: ItemUseRequestId
       readonly positionKey: BlockPositionKey
       readonly success: boolean
-      readonly outcome: CropDropOutcome
+      readonly outcome: CropDropOutcome | ItemUseWorldReadRefusal
     }
   | {
       readonly action: 'EatPotato'
@@ -2118,9 +2163,9 @@ const entitiesStageFailureTag = Brand.nominal<EntitiesStageFailureTag>()
 
 export type GameplayStageOperationFailure = Readonly<{
   _tag: 'Failed'
-  operation: 'OwnerSnapshot' | 'WorldCommit' | 'VitalsOperation' | 'CandidateBuild' | 'PlanBuild' | 'EventPublish' | 'EntityExecution'
+  operation: 'OwnerSnapshot' | 'WorldCommit' | 'VitalsOperation' | 'CandidateBuild' | 'PlanBuild' | 'EventPublish' | 'EntityExecution' | 'WeatherTransition'
   subject: 'Player' | 'Vitals' | 'Mining' | 'ItemUse' | 'Fire' | 'Fishing' | 'Brewing' | 'Entities'
-    | 'Vehicle'
+    | 'Vehicle' | 'Weather'
   error:
     | WorldCommitCoordinatorError
     | WorldCommitPlanConflict
@@ -2135,6 +2180,17 @@ export type GameplayStageOperationFailure = Readonly<{
     | VehicleOperationError
     | PrimedTntValidationFailure
     | DamageAtResult
+    | FrameRollFailure
+    | DayNightInputFailure
+    | HostileSpawnInputFailure
+    | ExplosionInputFailure
+    | DamageApplicationFailure
+    | PlayerBlastDamageFailure
+    | FireLifecycleFailure
+    | KnockbackPreparationError
+    | MobSpawnSearchFailure
+    | HostileContactResolutionError
+    | GameplayEntityMetadataFailure
     | Readonly<{ _tag: 'ShieldBlockingPreparation'; reason: ShieldBlockingPreparationError }>
     | Readonly<{ _tag: 'EntitiesStageExecutionFailure'; failureTag: EntitiesStageFailureTag }>
 }>
@@ -2166,6 +2222,17 @@ export type EntityStageFault =
       failure: EntityWorldQueryFailure
     }>
   | Readonly<{
+      _tag: 'GameplayRequestFault'
+      source: 'Mining' | 'BlockUse' | 'ItemUse' | 'Tnt' | 'Fluid'
+      requestId?: string
+      reason: 'InvalidBlockPositionKey' | 'NeighbourPositionOverflow'
+    }>
+  | Readonly<{
+      _tag: 'FluidNeighbourPositionFault'
+      cell: BlockPosition
+      reason: 'coordinate-overflow' | 'unknown-face'
+    }>
+  | Readonly<{
       _tag: 'MobBehaviourRepairFault'
       entityId: EntityId
       entityKind: EntityKind
@@ -2182,6 +2249,12 @@ export type EntityStageFault =
       reason: 'simulation-rejected' | 'step-failed'
       failure: MobMovementFailure
     }>
+  | Readonly<{
+      _tag: 'MobFrameRuleFault'
+      entityId: EntityId
+      failure: MobFrameRuleFault['failure']
+    }>
+  | MobRosterDamageFault
 
 export const recordGameplayStageFailure = (
   state: GameplayFrameState,
@@ -2219,10 +2292,14 @@ const entityStageFaultKey = (fault: EntityStageFault): GameplayEntityStageFaultK
         : fault.failure._tag === 'EntityWorldUnregisteredBlockId'
           ? `${fault.failure._tag}:${Number(fault.failure.blockId)}`
           : fault.failure._tag === 'EntityWorldRegistryFailure'
-            ? `${fault.failure._tag}:${fault.failure.failure._tag}`
+            ? `${fault.failure._tag}:${fault.failure.failure._tag}:${'reason' in fault.failure.failure ? fault.failure.failure.reason : ''}`
             : fault.failure._tag
       return gameplayEntityStageFaultKey(`${target}:${reason}`)
     }
+    case 'GameplayRequestFault':
+      return gameplayEntityStageFaultKey(`request:${fault.source}:${fault.requestId ?? 'key-only'}:${fault.reason}`)
+    case 'FluidNeighbourPositionFault':
+      return gameplayEntityStageFaultKey(`fluid:${fault.cell.x}:${fault.cell.y}:${fault.cell.z}:${fault.reason}`)
     case 'MobBehaviourRepairFault': {
       const reason = fault.failure._tag === 'EcosystemMobStateRepairFailure'
         ? `${fault.failure._tag}:${fault.failure.field}`
@@ -2237,6 +2314,14 @@ const entityStageFaultKey = (fault: EntityStageFault): GameplayEntityStageFaultK
         : ''
       return gameplayEntityStageFaultKey(`entity:${String(fault.entityId)}:${fault.reason}:${failureTag}`)
     }
+    case 'MobFrameRuleFault':
+      return gameplayEntityStageFaultKey(
+        `entity:${String(fault.entityId)}:${fault.failure._tag}:${'field' in fault.failure ? fault.failure.field : ''}`,
+      )
+    case 'MobRosterDamageFault':
+      return gameplayEntityStageFaultKey(
+        `entity:${String(fault.entityId)}:${fault.failure._tag}:${'field' in fault.failure ? fault.failure.field : ''}`,
+      )
     /* v8 ignore start */
     default: {
       const exhaustive: never = fault
@@ -2256,6 +2341,18 @@ export const recordGameplayEntityStageFault = (
     pending: [...current.pending, fault],
     seen: new Set([...current.seen, key]),
   }
+})
+
+export const recordGameplayRequestFault = (
+  state: GameplayFrameState,
+  source: Extract<EntityStageFault, { _tag: 'GameplayRequestFault' }>['source'],
+  requestId?: string,
+  reason: Extract<EntityStageFault, { _tag: 'GameplayRequestFault' }>['reason'] = 'InvalidBlockPositionKey',
+): Effect.Effect<void> => recordGameplayEntityStageFault(state, {
+  _tag: 'GameplayRequestFault',
+  source,
+  ...(requestId === undefined ? {} : { requestId }),
+  reason,
 })
 
 const entityWorldFaultTarget = (
@@ -2344,7 +2441,7 @@ const makeGameplayFrameStateWithOptions = (
   const damageImmunity = yield* Ref.make<DamageImmunityState | null>(null)
   const playerHeals = yield* Ref.make<ReadonlyArray<PlayerHealingEvent>>([])
   const playerMovementSpeedMultiplier = yield* Ref.make(1)
-  const fireLifecycle = yield* Ref.make<FireLifecycleState>(makeFireLifecycleState([], DEFAULT_ROLL_SEED))
+  const fireLifecycle = yield* Ref.make<FireLifecycleState>({ fires: [], seed: DEFAULT_ROLL_SEED })
   const fireTickAccumulator = yield* Ref.make(0)
   fireTickAccumulators.set(fireLifecycle, fireTickAccumulator)
   const hostileContactCooldowns = yield* Ref.make<ReadonlyMap<EntityId, SimulationTick>>(new Map())
@@ -3035,21 +3132,27 @@ export const requestFoodUse = (
   Effect.gen(function* () {
     const seed = yield* Ref.get(state.rollSeed)
     const batch = drawRolls(seed, 1)
-    yield* Ref.set(state.rollSeed, batch.seed)
+    if (Result.isFailure(batch)) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed', operation: 'PlanBuild', subject: 'ItemUse', error: batch.failure,
+      })
+      return
+    }
+    const effectRoll = rollAt(batch.success, 0)
+    if (Result.isFailure(effectRoll)) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed', operation: 'PlanBuild', subject: 'ItemUse', error: effectRoll.failure,
+      })
+      return
+    }
+    yield* Ref.set(state.rollSeed, batch.success.seed)
 
     const request: FarmingItemUseRequest = {
       action: 'EatFood',
       requestId,
       heldItem,
       vitals,
-      // `?? 1` is a `noUncheckedIndexedAccess` formality: `drawRolls(seed, 1)`
-      // always returns exactly one roll (frame-rolls.ts's `drawRolls` pushes
-      // `Math.floor(count)` times for a finite, positive `count`), so
-      // `batch.rolls[0]` is never `undefined` here — the same shape as
-      // mob-spawn-search.ts's `HOSTILE_KINDS[index]` fallback (vitest.config.ts's
-      // coverage-gap note).
-      /* v8 ignore next */
-      effectRoll: batch.rolls[0] ?? 1,
+      effectRoll: effectRoll.success,
     }
     yield* Ref.update(state.pendingItemUses, (pending) => [...pending, request])
   })
@@ -3442,7 +3545,14 @@ const stepStatusEffects = (
       return
     }
     const applied = applications.reduce(applyStatusEffect, current)
-    const tick = tickStatusEffects(applied, dt)
+    const tickResult = tickStatusEffects(applied, dt)
+    if (Result.isFailure(tickResult)) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed', operation: 'CandidateBuild', subject: 'Brewing', error: tickResult.failure,
+      })
+      return
+    }
+    const tick = tickResult.success
     const status = Schema.decodeUnknownResult(StatusEffectStateSchema)(tick.state)
     if (Result.isFailure(status)) {
       yield* recordGameplayStageFailure(state, {
@@ -3544,24 +3654,21 @@ export const drainVillagerTradeResults = (
 /** Snapshot the deterministic fire state for host persistence. */
 export const snapshotFireLifecycle = (
   state: GameplayFrameState,
-): Effect.Effect<FireLifecycleSnapshot> =>
+): Effect.Effect<FireLifecycleSnapshot, FireLifecycleFailure> =>
   Effect.gen(function* () {
     const current = yield* Ref.get(state.fireLifecycle)
     const accumulatorRef = yield* fireTickAccumulatorFor(state.fireLifecycle)
     const accumulator = yield* Ref.get(accumulatorRef)
-    return makeFireLifecycleSnapshot(current, accumulator)
+    return yield* Effect.fromResult(makeFireLifecycleSnapshot(current, accumulator))
   })
 
 /** Restore a previously persisted fire state without retaining host-owned references. */
 export const restoreFireLifecycle = (
   state: GameplayFrameState,
   snapshot: FireLifecycleSnapshot,
-): Effect.Effect<void> =>
+): Effect.Effect<void, FireLifecycleFailure> =>
   Effect.gen(function* () {
-    if (!isFireLifecycleSnapshot(snapshot)) {
-      return yield* Effect.die(new Error('Unsupported fire lifecycle snapshot'))
-    }
-    const restored = restoreFireLifecycleSnapshot(snapshot)
+    const restored = yield* Effect.fromResult(restoreFireLifecycleSnapshot(snapshot))
     yield* Ref.set(state.fireLifecycle, restored.state)
     const accumulatorRef = yield* fireTickAccumulatorFor(state.fireLifecycle)
     yield* Ref.set(
@@ -3880,7 +3987,14 @@ const stepFireTick = (
       ...current,
       fires: current.fires.filter((fire) => !faultyFireKeys.has(firePositionKey(fire.position))),
     }
-    const step = advanceFireLifecycle(safeCurrent, cells, weather, hydratedContacts, survival.difficulty)
+    const stepResult = advanceFireLifecycle(safeCurrent, cells, weather, hydratedContacts, survival.difficulty)
+    if (Result.isFailure(stepResult)) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed', operation: 'PlanBuild', subject: 'Fire', error: stepResult.failure,
+      })
+      return false
+    }
+    const step = stepResult.success
     const validEntityHits = step.entityDamages.map(({ actorId, damage }) => ({
       id: Schema.decodeUnknownSync(EntityIdSchema)(actorId),
       damage,
@@ -3891,14 +4005,36 @@ const stepFireTick = (
       validEntityHits,
       Schema.decodeUnknownSync(SimulationTickSchema)(yield* Ref.get(state.tickCount)),
     )
-    const entityCandidate = Schema.decodeUnknownSync(GameplayEntityRosterSchema)(restoreGameplayEntityMetadata(
+    for (const fault of damagePlan.faults) yield* recordGameplayEntityStageFault(state, fault)
+    const entityCandidateResult = restoreGameplayEntityMetadata(
       damagePlan.roster,
       entitySnapshotResult.success.state,
       playerState.pose.feetPosition.dimension,
-    ))
+    )
+    if (Result.isFailure(entityCandidateResult)) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed', operation: 'CandidateBuild', subject: 'Fire', error: entityCandidateResult.failure,
+      })
+      return false
+    }
+    const entityCandidate = Schema.decodeUnknownSync(GameplayEntityRosterSchema)(entityCandidateResult.success)
     const seed = yield* Ref.get(state.rollSeed)
-    const casualtyDrops = rollCasualtyDrops(damagePlan.casualties, seed)
-    const casualtyExperience = rollCasualtyExperience(damagePlan.casualties, casualtyDrops.seed)
+    const casualtyDropsResult = rollCasualtyDrops(damagePlan.casualties, seed)
+    if (Result.isFailure(casualtyDropsResult)) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed', operation: 'PlanBuild', subject: 'Fire', error: casualtyDropsResult.failure,
+      })
+      return false
+    }
+    const casualtyDrops = casualtyDropsResult.success
+    const casualtyExperienceResult = rollCasualtyExperience(damagePlan.casualties, casualtyDrops.seed)
+    if (Result.isFailure(casualtyExperienceResult)) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed', operation: 'PlanBuild', subject: 'Fire', error: casualtyExperienceResult.failure,
+      })
+      return false
+    }
+    const casualtyExperience = casualtyExperienceResult.success
     let droppedItemsCandidate: Schema.Schema.Type<typeof DroppedItemOwnerSnapshotSchema> | undefined
     if (casualtyDrops.drops.length > 0) {
       if (context.droppedItemsOwnerId === undefined) {
@@ -4186,12 +4322,12 @@ export const requestTargetedBlockPlacement = (
   maxDistance: number = DEFAULT_BLOCK_REACH,
 ): Effect.Effect<
   Option.Option<BlockTarget>,
-  WorldCommitCoordinatorError | Schema.SchemaError
+  WorldCommitCoordinatorError | Schema.SchemaError | CameraPoseError | RangeError | BlockTargetInputError
 > =>
   Effect.gen(function* () {
     const snapshots = yield* readGameplayTargetingSnapshots(context)
     const pose = snapshots.player.state.pose
-    const target = yield* resultOrDie(
+    const target = yield* Effect.fromResult(
       targetBlockFromPlayerPose(pose, maxDistance, targetabilityFromStore(store)),
     )
     if (Option.isSome(target)) {
@@ -4216,12 +4352,12 @@ export const requestTargetedBlockUse = (
   maxDistance: number = DEFAULT_BLOCK_REACH,
 ): Effect.Effect<
   Option.Option<BlockTarget>,
-  WorldCommitCoordinatorError | Schema.SchemaError
+  WorldCommitCoordinatorError | Schema.SchemaError | CameraPoseError | RangeError | BlockTargetInputError
 > =>
   Effect.gen(function* () {
     const snapshots = yield* readGameplayTargetingSnapshots(context)
     const pose = snapshots.player.state.pose
-    const target = yield* resultOrDie(
+    const target = yield* Effect.fromResult(
       targetBlockFromPlayerPose(pose, maxDistance, targetabilityFromStore(store)),
     )
     if (Option.isNone(target)) {
@@ -4267,11 +4403,11 @@ export const resolveTargetedBlock = (
   maxDistance: number = DEFAULT_BLOCK_REACH,
 ): Effect.Effect<
   Option.Option<BlockTarget>,
-  WorldCommitCoordinatorError | Schema.SchemaError
+  WorldCommitCoordinatorError | Schema.SchemaError | CameraPoseError | RangeError | BlockTargetInputError
 > =>
   Effect.gen(function* () {
     const snapshots = yield* readGameplayTargetingSnapshots(context)
-    return yield* resultOrDie(
+    return yield* Effect.fromResult(
       targetBlockFromPlayerPose(
         snapshots.player.state.pose,
         maxDistance,
@@ -4290,7 +4426,7 @@ export const requestTargetedItemUse = (
   maxDistance: number = DEFAULT_BLOCK_REACH,
 ): Effect.Effect<
   Option.Option<BlockTarget>,
-  WorldCommitCoordinatorError | Schema.SchemaError
+  WorldCommitCoordinatorError | Schema.SchemaError | CameraPoseError | RangeError | BlockTargetInputError
 > =>
   Effect.gen(function* () {
     const target = yield* resolveTargetedBlock(store, context, maxDistance)
@@ -4310,11 +4446,11 @@ export const requestTargetedSoilTill = (
   maxDistance: number = DEFAULT_BLOCK_REACH,
 ): Effect.Effect<
   Option.Option<BlockTarget>,
-  WorldCommitCoordinatorError | Schema.SchemaError
+  WorldCommitCoordinatorError | Schema.SchemaError | CameraPoseError | RangeError | BlockTargetInputError
 > =>
   Effect.gen(function* () {
     const snapshots = yield* readGameplayTargetingSnapshots(context)
-    const target = yield* resultOrDie(
+    const target = yield* Effect.fromResult(
       targetBlockFromPlayerPose(
         snapshots.player.state.pose,
         maxDistance,
@@ -4336,11 +4472,11 @@ export const requestTargetedPotatoPlanting = (
   maxDistance: number = DEFAULT_BLOCK_REACH,
 ): Effect.Effect<
   Option.Option<BlockTarget>,
-  WorldCommitCoordinatorError | Schema.SchemaError
+  WorldCommitCoordinatorError | Schema.SchemaError | CameraPoseError | RangeError | BlockTargetInputError
 > =>
   Effect.gen(function* () {
     const snapshots = yield* readGameplayTargetingSnapshots(context)
-    const target = yield* resultOrDie(
+    const target = yield* Effect.fromResult(
       targetBlockFromPlayerPose(
         snapshots.player.state.pose,
         maxDistance,

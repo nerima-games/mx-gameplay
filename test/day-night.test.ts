@@ -14,15 +14,16 @@
  * from mc-sim's simulation-night predicate.
  */
 import { describe, expect, it } from '@effect/vitest'
-import { Effect } from 'effect'
+import * as FastCheck from 'fast-check'
+import { Effect, Result } from 'effect'
 import { isNight as isSimulationNight } from '@nerima-games/mc-sim'
 import * as dayNight from '../src/domain/day-night'
 import {
   DAWN_FRACTION,
   DUSK_FRACTION,
-  dayPhase,
-  hostileSpawnsAllowed,
-  isNight,
+  dayPhase as dayPhaseResult,
+  hostileSpawnsAllowed as hostileSpawnsAllowedResult,
+  isNight as isNightResult,
   NIGHT_END_FRACTION,
   NIGHT_START_FRACTION,
   NOON_FRACTION,
@@ -31,6 +32,9 @@ import {
 
 /** Every fraction the rule is asked about, at a resolution finer than a frame. */
 const acrossTheDay = Array.from({ length: 1_000 }, (_, index) => index / 1_000)
+const isNight = (timeOfDay: number) => Result.getOrThrow(isNightResult(timeOfDay))
+const dayPhase = (timeOfDay: number) => Result.getOrThrow(dayPhaseResult(timeOfDay))
+const hostileSpawnsAllowed = (timeOfDay: number) => Result.getOrThrow(hostileSpawnsAllowedResult(timeOfDay))
 
 describe('the rule holds no state of its own', () => {
   // REGRESSION, and the point of the whole module. A rule that stores anything
@@ -87,6 +91,25 @@ describe('the rule holds no state of its own', () => {
 })
 
 describe('when night is', () => {
+  it.effect('returns typed failures for the full non-finite input class', () =>
+    Effect.sync(() => {
+      const nonFinite = FastCheck.double({ noNaN: false, noDefaultInfinity: false })
+      FastCheck.assert(FastCheck.property(nonFinite, (timeOfDay) => {
+        const night = isNightResult(timeOfDay)
+        const phase = dayPhaseResult(timeOfDay)
+        const hostile = hostileSpawnsAllowedResult(timeOfDay)
+        expect(Result.isFailure(night)).toBe(!Number.isFinite(timeOfDay))
+        expect(Result.isFailure(phase)).toBe(!Number.isFinite(timeOfDay))
+        expect(Result.isFailure(hostile)).toBe(!Number.isFinite(timeOfDay))
+      }))
+      for (const invalid of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, undefined]) {
+        expect(Result.isFailure(isNightResult(invalid as number))).toBe(true)
+        expect(Result.isFailure(dayPhaseResult(invalid as number))).toBe(true)
+        expect(Result.isFailure(hostileSpawnsAllowedResult(invalid as number))).toBe(true)
+      }
+    }),
+  )
+
   it.effect('uses the inclusive 0.55–0.95 hostile spawn window', () =>
     Effect.sync(() => {
       expect(NIGHT_START_FRACTION).toBe(0.55)

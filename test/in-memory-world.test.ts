@@ -3,6 +3,7 @@ import { BlockId } from '@nerima-games/mc-kernel'
 import { Effect, Result } from 'effect'
 import type { MobBehaviour } from '../src/domain/entities/mob-frame'
 import {
+  makeGeneratedWorld,
   makeInMemoryWorld,
   solidityFromStore,
   targetabilityFromStore,
@@ -10,27 +11,86 @@ import {
 import { blockPosition, chunkCoord } from './support/coordinate-fixtures'
 
 describe('in-memory world input boundaries', () => {
-  it.effect('ignores malformed saved cell and loaded-chunk keys', () =>
+  it.effect('returns typed failures for explicitly undefined world options', () =>
     Effect.gen(function* () {
-      const world = yield* makeInMemoryWorld<MobBehaviour>({
-        world: {
-          blocks: new Map([
-            ['0,0,0', BlockId(2)],
-            ['1,2,0.5', BlockId(3)],
-          ]),
-          loaded: ['0,0', '0,9007199254740992'],
-        },
-      })
+      const inMemoryOptions = [
+        { world: undefined },
+        { spawnPose: undefined },
+        { dimension: undefined },
+        { inventory: undefined },
+        { vitals: undefined },
+      ]
+      for (const options of inMemoryOptions) {
+        const result = yield* Effect.result(makeInMemoryWorld(options as never))
+        expect(Result.isFailure(result)).toBe(true)
+      }
 
-      expect(yield* world.chunkStore.isLoaded(chunkCoord(0, 0))).toBe(true)
-      expect(yield* world.chunkStore.getBlock(blockPosition(0, 0, 0))).toStrictEqual({
-        _tag: 'Block',
-        block: 2,
-      })
-      expect(yield* world.chunkStore.getBlock(blockPosition(1, 2, 0))).toStrictEqual({
-        _tag: 'Block',
-        block: 0,
-      })
+      const generatedOptions = [
+        { seed: undefined },
+        { spawnX: undefined },
+        { spawnZ: undefined },
+        { chunkSource: undefined },
+        { yawRadians: undefined },
+        { pitchRadians: undefined },
+        { dimension: undefined },
+        { inventory: undefined },
+        { vitals: undefined },
+      ]
+      for (const options of generatedOptions) {
+        const result = yield* Effect.result(makeGeneratedWorld(options as never))
+        expect(Result.isFailure(result)).toBe(true)
+      }
+    }),
+  )
+
+  it.effect('returns a typed failure for invalid block values in world contents', () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.result(makeInMemoryWorld({
+        world: {
+          blocks: new Map([['0,0,0', undefined]]),
+          loaded: [],
+        },
+      } as never))
+
+      expect(Result.isFailure(result)).toBe(true)
+      if (Result.isFailure(result)) {
+        expect(result.failure).toMatchObject({
+          _tag: 'WorldInputFailure',
+          field: 'world.blocks',
+          reason: 'invalid',
+        })
+      }
+    }),
+  )
+
+  it.effect('returns typed failures for malformed world cell and loaded-chunk keys', () =>
+    Effect.gen(function* () {
+      const badCell = yield* Effect.result(makeInMemoryWorld<MobBehaviour>({
+        world: {
+          blocks: new Map([['1,2,0.5', BlockId(3)]]),
+          loaded: [],
+        },
+      }))
+      expect(Result.isFailure(badCell)).toBe(true)
+      if (Result.isFailure(badCell)) {
+        expect(badCell.failure).toMatchObject({
+          _tag: 'WorldInputFailure',
+          field: 'world.blocks',
+          reason: 'invalid',
+        })
+      }
+
+      const badChunk = yield* Effect.result(makeInMemoryWorld<MobBehaviour>({
+        world: { blocks: new Map(), loaded: ['0,9007199254740992'] },
+      }))
+      expect(Result.isFailure(badChunk)).toBe(true)
+      if (Result.isFailure(badChunk)) {
+        expect(badChunk.failure).toMatchObject({
+          _tag: 'WorldInputFailure',
+          field: 'world.loaded',
+          reason: 'invalid',
+        })
+      }
     }),
   )
 

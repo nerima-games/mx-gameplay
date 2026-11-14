@@ -38,6 +38,7 @@
  */
 
 import type { BlockPositionKey } from '@nerima-games/mc-kernel'
+import { Result } from 'effect'
 
 export type FluidKind = 'water' | 'lava'
 
@@ -205,20 +206,43 @@ export type FluidBudgetSplit = {
   readonly work: ReadonlyArray<FluidWorkItem>
 }
 
+export type FluidBudgetFailure = Readonly<{ _tag: 'InvalidFluidFrontierBudget' }>
+
 /**
  * Allocate one tick's budget across the frontier.
  *
  * Single classification pass, as in the reference: separate filter/filter/take
  * sweeps allocate intermediates on a hot path that runs every tick.
  */
-export const splitBudget = (
+export function splitBudget(
+  frontier: ReadonlyArray<FluidWorkItem>,
+  options: { readonly lavaTickActive: boolean },
+): FluidBudgetSplit
+export function splitBudget(
+  frontier: ReadonlyArray<FluidWorkItem>,
+  options: { readonly budget: number; readonly lavaTickActive: boolean },
+): Result.Result<FluidBudgetSplit, FluidBudgetFailure>
+export function splitBudget(
+  frontier: ReadonlyArray<FluidWorkItem>,
+  options: { readonly budget?: number; readonly lavaTickActive: boolean },
+): FluidBudgetSplit | Result.Result<FluidBudgetSplit, FluidBudgetFailure>
+export function splitBudget(
   frontier: ReadonlyArray<FluidWorkItem>,
   options: {
     readonly budget?: number
     readonly lavaTickActive: boolean
   },
-): FluidBudgetSplit => {
-  const budget = Math.max(0, Math.trunc(options.budget ?? DEFAULT_FLUID_FRONTIER_BUDGET))
+): FluidBudgetSplit | Result.Result<FluidBudgetSplit, FluidBudgetFailure> {
+  const suppliedBudget = Object.hasOwn(options, 'budget')
+  const budgetValue = suppliedBudget ? options.budget : DEFAULT_FLUID_FRONTIER_BUDGET
+  if (
+    budgetValue === undefined ||
+    !Number.isSafeInteger(budgetValue) ||
+    budgetValue < 0
+  ) {
+    return Result.fail({ _tag: 'InvalidFluidFrontierBudget' })
+  }
+  const budget = budgetValue
 
   const water: Array<FluidWorkItem> = []
   const lava: Array<FluidWorkItem> = []
@@ -239,7 +263,8 @@ export const splitBudget = (
     ...lava.slice(0, lavaSliceLength),
   ]
 
-  return { work }
+  const split = { work }
+  return suppliedBudget ? Result.succeed(split) : split
 }
 
 /**

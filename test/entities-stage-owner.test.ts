@@ -87,7 +87,7 @@ import {
   type ExperienceOrbOwnerSnapshot,
 } from '../src/domain/entities/xp-orb.js'
 import { entityStageFaultForMobMovement, makeEntitiesStage } from '../src/stages/entities-stage.js'
-import { nextRoll } from '../src/domain/frame-rolls.js'
+import { nextRoll as nextRollResult } from '../src/domain/frame-rolls.js'
 import {
   CREEPER_KIND,
   initialBehaviourOfKind,
@@ -97,7 +97,7 @@ import {
   planMobBlastRoster,
   planMobRosterSweep,
   repairMobBehaviour,
-  rollCasualtyDrops,
+  rollCasualtyDrops as rollCasualtyDropsResult,
 } from '../src/domain/entities/mob-frame.js'
 import { BLAZE_KIND, initialEcosystemMobState, SKELETON_KIND, SPIDER_KIND } from '../src/domain/mob/mob-ecosystem.js'
 import { ZOMBIE_KIND } from '../src/domain/mob/hostile-combat.js'
@@ -116,6 +116,10 @@ import {
 } from '../src/stages/gameplay-owner-registrations.js'
 import type { GameplayStageContext } from '../src/stages/registration-core.js'
 import { FrameServicesLayer } from './support/frame-services.js'
+
+const nextRoll = (seed: number) => Result.getOrThrow(nextRollResult(seed))
+const rollCasualtyDrops = (...args: Parameters<typeof rollCasualtyDropsResult>) =>
+  Result.getOrThrow(rollCasualtyDropsResult(...args))
 
 const unsafeMovementX = 2 ** 53
 const movementWorldFaultInjection = vi.hoisted(() => ({ enabled: false }))
@@ -274,9 +278,9 @@ const makeHarness = (options: Readonly<{
       }
   const baseCoordinator = yield* makeWorldCommitCoordinator({
     world: worldId,
-    owners: gameplayOwnerRegistrations({
+    owners: Result.getOrThrow(gameplayOwnerRegistrations({
       playerPose,
-      ...(options.dimension === undefined ? {} : { dimension: options.dimension }),
+      ...(Object.hasOwn(options, 'dimension') ? { dimension: options.dimension } : {}),
       ...(options.playerStorage === undefined ? {} : { playerStorage: options.playerStorage }),
       ...(options.droppedItems === undefined ? {} : { droppedItems: options.droppedItems }),
       ...(options.vitals === undefined ? {} : { vitals: options.vitals }),
@@ -284,7 +288,7 @@ const makeHarness = (options: Readonly<{
       entities: { entities, nextSerial: EntitySerial(entities.length) },
       ...(options.tntSources === undefined ? {} : { tntSources: options.tntSources }),
       ...(options.tnt === undefined ? {} : { tnt: options.tnt }),
-    }),
+    })),
     chunkStores: { forDimension: () => observedStoreApi },
   })
   let commits = 0
