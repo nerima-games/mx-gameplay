@@ -2858,7 +2858,7 @@ const invalidBlockLootContextReason = (
   const prototype = Object.getPrototypeOf(context)
   if (prototype !== Object.prototype && prototype !== null) return 'InvalidBlockLootContext'
   if (Object.hasOwn(context, 'fortuneLevel')) {
-    const fortuneLevel = (context as Record<string, unknown>).fortuneLevel
+    const fortuneLevel = (context as Record<string, unknown>)['fortuneLevel']
     if (typeof fortuneLevel !== 'number' || !Number.isSafeInteger(fortuneLevel) || fortuneLevel < 0) {
       return 'InvalidBlockLootFortuneLevel'
     }

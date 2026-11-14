@@ -74,7 +74,7 @@
  * ---------------------------------------------------------------------------
  *
  * `explosionDamageAt` returns a `Damage` and never a bare number, which is
- * DN-GP-3: the cause has to reach the death message. `applyDamage` below is given
+ * DN-GP-3: the cause has to reach the death message. `applyMobDamage` below is given
  * one and records it — and then mc-sim's `EntityState` has nowhere to put it,
  * because it holds a position, a health number and a behaviour, and nothing else.
  *
@@ -240,7 +240,7 @@ import {
   type WorldPosition,
 } from '@nerima-games/mc-kernel'
 import {
-  applyDamage,
+  DEATH_MESSAGES,
   isDead,
   type Damage,
   type DamageApplicationFailure,
@@ -860,11 +860,7 @@ const repairHostileInner = (
 ): Result.Result<HostileMobSnapshot['behaviour'], MobStateRepairFailure> => {
   if (kind === CREEPER_KIND) return repairCreeperFuse(behaviour, fieldPresent)
   if (kind === ENDERMAN_KIND) return repairEndermanFlinch(behaviour, fieldPresent)
-  if (kind === ZOMBIE_KIND) {
-    return fieldPresent
-      ? Result.fail({ _tag: 'MobBehaviourStateRepairFailure', kind: 'zombie' })
-      : Result.succeed(undefined)
-  }
+  if (kind === ZOMBIE_KIND) return repairEcosystemMobState(behaviour, fieldPresent)
   if (ECOSYSTEM_MOB_KINDS.includes(kind as (typeof ECOSYSTEM_MOB_KINDS)[number])) {
     const ecosystem = repairEcosystemMobState(behaviour, fieldPresent)
     if (Result.isFailure(ecosystem)) return ecosystem
@@ -2197,6 +2193,42 @@ export type MobRosterDamageFault = Readonly<{
   failure: MobRosterDamageFailure
 }>
 
+const isMobDamageCause = (value: unknown): value is Damage['cause'] =>
+  typeof value === 'string' && Object.hasOwn(DEATH_MESSAGES, value)
+
+// Mob health can exceed the player-specific cap checked by `applyDamage`.
+const applyMobDamage = (
+  vitals: Vitals,
+  damage: Damage,
+): Result.Result<Vitals, DamageApplicationFailure> => {
+  if (typeof vitals !== 'object' || vitals === null) {
+    return Result.fail({ _tag: 'InvalidDamageApplicationInput', field: 'vitals' })
+  }
+  if (typeof damage !== 'object' || damage === null) {
+    return Result.fail({ _tag: 'InvalidDamageApplicationInput', field: 'damage' })
+  }
+  if (!Number.isFinite(vitals.healthPoints) || vitals.healthPoints < 0) {
+    return Result.fail({ _tag: 'InvalidDamageApplicationInput', field: 'vitals.healthPoints' })
+  }
+  if (!Object.hasOwn(vitals, 'lastDeathCause') ||
+    (vitals.lastDeathCause !== undefined && !isMobDamageCause(vitals.lastDeathCause))) {
+    return Result.fail({ _tag: 'InvalidDamageApplicationInput', field: 'vitals.lastDeathCause' })
+  }
+  if (!Number.isFinite(damage.amount) || damage.amount < 0) {
+    return Result.fail({ _tag: 'InvalidDamageApplicationInput', field: 'damage.amount' })
+  }
+  if (!isMobDamageCause(damage.cause)) {
+    return Result.fail({ _tag: 'InvalidDamageApplicationInput', field: 'damage.cause' })
+  }
+  if (isDead(vitals)) return Result.succeed(vitals)
+
+  const healthPoints = Math.max(0, vitals.healthPoints - damage.amount)
+  return Result.succeed({
+    healthPoints,
+    lastDeathCause: healthPoints <= 0 ? damage.cause : vitals.lastDeathCause,
+  })
+}
+
 /** Apply blast damage to a roster snapshot without writing through EntityManager. */
 export const planMobBlastRoster = (
   roster: MobRoster,
@@ -2296,7 +2328,7 @@ export const planMobExplosionRoster = (
 
     const takesDamage = hit.damage.amount > 0
     const applied = takesDamage
-      ? applyDamage({ healthPoints: entity.healthPoints, lastDeathCause: undefined }, hit.damage)
+      ? applyMobDamage({ healthPoints: entity.healthPoints, lastDeathCause: undefined }, hit.damage)
       : undefined
     if (applied !== undefined && Result.isFailure(applied)) {
       faults.push({ _tag: 'MobRosterDamageFault', entityId: entity.id, failure: applied.failure })
@@ -2415,7 +2447,7 @@ export const planMobDamageRoster = (
 
     let vitals: Vitals = { healthPoints: entity.healthPoints, lastDeathCause: undefined }
     for (const damage of batch.damages) {
-      const applied = applyDamage(vitals, damage)
+      const applied = applyMobDamage(vitals, damage)
       if (Result.isFailure(applied)) {
         faults.push({ _tag: 'MobRosterDamageFault', entityId: entity.id, failure: applied.failure })
         return IGNORED
@@ -2516,7 +2548,7 @@ export const resolveBowHits = (
         return IGNORED
       }
 
-      // `../death-cause.ts`'s rule rather than a bare subtraction, for the reason
+      // The mob rule rather than a bare subtraction, for the reason
       // this file's header gives: 「Writing a bare `healthPoints - amount`」 is how
       // the floor at zero gets forgotten in one of the two places that need it.
       // The cause is `projectile`, which is what the reference calls an arrow
@@ -2524,7 +2556,7 @@ export const resolveBowHits = (
       // needs no message, and it is passed anyway because `Damage` requires one
       // and inventing a second damage type without a cause is how the field
       // becomes optional.
-      const vitals = applyDamage(
+      const vitals = applyMobDamage(
         { healthPoints: entity.healthPoints, lastDeathCause: undefined },
         { amount, cause: 'projectile' },
       )
@@ -2604,9 +2636,9 @@ const damageFrom = (
       continue
     }
 
-    // The `Damage` carries its cause all the way in, and `applyDamage` records it
+    // The `Damage` carries its cause all the way in, and `applyMobDamage` records it
     // on the killing blow. See the module header on where it then goes.
-    const applied = applyDamage(
+    const applied = applyMobDamage(
       vitals ?? { healthPoints: entity.healthPoints, lastDeathCause: undefined },
       damage.success,
     )

@@ -72,11 +72,11 @@ const boatControls = (
   const controls: unknown = environment.controlsForVehicle(vehicle)
   if (!isRecord(controls)) return Result.fail({ _tag: 'InvalidBoatControl', field: 'controls' })
 
-  const throttle = Object.hasOwn(controls, 'throttle') ? controls.throttle : undefined
+  const throttle = Object.hasOwn(controls, 'throttle') ? controls['throttle'] : undefined
   if (typeof throttle !== 'number' || !Number.isFinite(throttle)) {
     return Result.fail({ _tag: 'InvalidBoatControl', field: 'throttle' })
   }
-  const steering = Object.hasOwn(controls, 'steering') ? controls.steering : undefined
+  const steering = Object.hasOwn(controls, 'steering') ? controls['steering'] : undefined
   if (typeof steering !== 'number' || !Number.isFinite(steering)) {
     return Result.fail({ _tag: 'InvalidBoatControl', field: 'steering' })
   }
