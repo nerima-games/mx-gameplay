@@ -168,7 +168,7 @@ const beeAt = (x: number, y: number, health: number): MobEntity => ({
   kind: EntityKind('bee'),
   feetPosition: position(PositionAxis(x), PositionAxis(y), PositionAxis(0)),
   healthPoints: EntityHealthPoints(health),
-  behaviour: undefined,
+  behaviour: initialBehaviourOfKind(EntityKind('bee')),
 })
 
 const ecosystemMobAt = (id: string, kind: typeof BLAZE_KIND | typeof SKELETON_KIND, x: number, y: number): MobEntity => ({
@@ -502,6 +502,23 @@ const expectEntityStageExecutionFailure = async (
   expect(recorded?.error).toMatchObject({
     _tag: 'EntitiesStageExecutionFailure',
     ...(failureTag === undefined ? {} : { failureTag }),
+  })
+}
+
+const expectEntityStagePlanBuildFailure = async (
+  state: GameplayStageContext['state'],
+  error: unknown,
+): Promise<void> => {
+  const failures = await Effect.runPromise(Ref.get(state.operationFailures))
+  const recorded = [...failures].reverse().find((failure) =>
+    failure.operation === 'PlanBuild' && failure.subject === 'Entities',
+  )
+  expect(recorded).toBeDefined()
+  expect(recorded).toMatchObject({
+    _tag: 'Failed',
+    operation: 'PlanBuild',
+    subject: 'Entities',
+    error,
   })
 }
 
@@ -1226,7 +1243,7 @@ describe('entities stage owner-backed MobSimulation', () => {
     )
 
     expect(exit._tag).toBe('Success')
-    await expectEntityStageExecutionFailure(harness.state)
+    await expectEntityStagePlanBuildFailure(harness.state, 'invalid-tick-order')
     expect(harness.commits()).toBe(0)
     expect(await Effect.runPromise(Ref.get(harness.state.hostileContactCooldowns))).toStrictEqual(previousCooldowns)
   })
@@ -2460,13 +2477,12 @@ describe('entities stage owner-backed MobSimulation', () => {
   })
 
   it('rejects saved projectile casualty drops when the dropped-item revision changes', async () => {
-    const pig: MobEntity = {
+    const pig = {
       id: EntityId('test:pig'),
       kind: EntityKind('pig'),
       feetPosition: position(PositionAxis(8), PositionAxis(64), PositionAxis(0)),
       healthPoints: EntityHealthPoints(3),
-      behaviour: undefined,
-    }
+    } as unknown as MobEntity
     const harness = await Effect.runPromise(makeHarness({
       entity: null,
       entities: [pig],
@@ -2550,7 +2566,7 @@ describe('entities stage owner-backed MobSimulation', () => {
     )
 
     expect(exit._tag).toBe('Success')
-    await expectEntityStageExecutionFailure(harness.state)
+    await expectEntityStagePlanBuildFailure(harness.state, { _tag: 'EntitySerialExhausted' })
     expect(harness.commits()).toBe(1)
     expect(harness.lastRequest()?.changes.map(({ ownerId }) => ownerId)).toStrictEqual([
       GAMEPLAY_ENTITIES_OWNER_ID,
