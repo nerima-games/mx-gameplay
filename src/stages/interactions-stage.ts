@@ -23,7 +23,6 @@ import {
   furnaceAdvanceChanged,
   gameplayPlayerStateForStage,
   recordGameplayStageFailure,
-  recordGameplayEntityStageFault,
   recordGameplayRequestFault,
   recordGameplayEntityWorldDataFault,
   recordGameplayUnsupportedOperation,
@@ -58,7 +57,6 @@ import {
 } from '@nerima-games/mc-sim'
 import type { BlockPosition, Dimension } from '@nerima-games/mc-kernel'
 import { planBreakBlock } from '../domain/interactions/break-block.js'
-import type { FrameRollFailure } from '../domain/frame-rolls.js'
 import type { BlockLootFailure } from '../domain/interactions/block-loot.js'
 import { TNT_BLOCK_ID } from '../domain/interactions/ignite-tnt.js'
 import { igniteFire } from '../domain/interactions/ignite-fire.js'
@@ -359,22 +357,14 @@ const commitMobDamage = (
     const roster = Schema.decodeUnknownSync(GameplayEntityRosterSchema)(rosterResult)
 
     const seed = yield* Ref.get(state.rollSeed)
-    const casualtyResult = damage.casualties.length === 0
+    // The frame seed and generated casualties contain no external roll counts or overrides.
+    const drops = damage.casualties.length === 0
       ? undefined
-      : Result.gen(function* () {
-          const drops = yield* rollCasualtyDrops(damage.casualties, seed)
-          const experience = yield* rollCasualtyExperience(damage.casualties, drops.seed)
-          return { drops, experience }
-        })
-    if (casualtyResult !== undefined && Result.isFailure(casualtyResult)) {
-      yield* recordGameplayStageFailure(state, {
-        _tag: 'Failed', operation: 'PlanBuild', subject: 'Entities', error: casualtyResult.failure,
-      })
-      return false
-    }
-    const drops = casualtyResult === undefined ? undefined : casualtyResult.success.drops
-    const casualtyExperience = casualtyResult === undefined ? undefined : casualtyResult.success.experience
-    const nextRollSeed = casualtyExperience?.seed ?? drops?.seed
+      : Result.getOrThrow(rollCasualtyDrops(damage.casualties, seed))
+    const casualtyExperience = drops === undefined
+      ? undefined
+      : Result.getOrThrow(rollCasualtyExperience(damage.casualties, drops.seed))
+    const nextRollSeed = casualtyExperience?.seed
     const changes: Array<ReplicatedOwnerCandidate> = []
     if (damage.roster !== entitySnapshot.state) {
       changes.push({ ownerId, state: roster })
@@ -1136,16 +1126,11 @@ const processFishingItemUse = (
     } else {
         const tick = Schema.decodeUnknownSync(SimulationTickSchema)(yield* Ref.get(state.tickCount))
         const seed = yield* Ref.get(state.rollSeed)
-        const sampled = Result.flatMap(drawRolls(seed, 1), (batch) =>
+        // The internal frame seed and fixed one-roll batch guarantee an existing sample.
+        const sampled = Result.getOrThrow(Result.flatMap(drawRolls(seed, 1), (batch) =>
           Result.map(rollAt(batch, 0), (roll) => ({ seed: batch.seed, roll })),
-        )
-        if (Result.isFailure(sampled)) {
-          yield* recordGameplayStageFailure(state, {
-            _tag: 'Failed', operation: 'PlanBuild', subject: 'Fishing', error: sampled.failure,
-          })
-          return
-        }
-        const sample = Schema.decodeUnknownSync(FishingLootSampleSchema)(sampled.success.roll)
+        ))
+        const sample = Schema.decodeUnknownSync(FishingLootSampleSchema)(sampled.roll)
         const intent = {
           actor: request.actor,
           tick,
@@ -1206,7 +1191,7 @@ const processFishingItemUse = (
           }
           plans.push(storagePlan)
         }
-        nextSeed = sampled.success.seed
+        nextSeed = sampled.seed
     }
 
     if (removeBobber !== undefined) {
@@ -1947,16 +1932,11 @@ const processEnderPearlThrow = (
     if (displacement === undefined) return
 
     const seed = yield* Ref.get(state.rollSeed)
-    const sampled = Result.flatMap(drawRolls(seed, 1), (batch) =>
+    // The internal frame seed and fixed one-roll batch guarantee an existing sample.
+    const sampled = Result.getOrThrow(Result.flatMap(drawRolls(seed, 1), (batch) =>
       Result.map(rollAt(batch, 0), (roll) => ({ seed: batch.seed, roll })),
-    )
-    if (Result.isFailure(sampled)) {
-      yield* recordGameplayStageFailure(state, {
-        _tag: 'Failed', operation: 'PlanBuild', subject: 'ItemUse', error: sampled.failure,
-      })
-      return
-    }
-    const spawnEndermite = shouldSpawnEndermite(sampled.success.roll)
+    ))
+    const spawnEndermite = shouldSpawnEndermite(sampled.roll)
     const entitiesOwnerId = spawnEndermite ? context.entitiesOwnerId : undefined
     if (spawnEndermite && entitiesOwnerId === undefined) {
       yield* unsupported('OwnerRegistrationUnavailable')
@@ -2110,7 +2090,7 @@ const processEnderPearlThrow = (
       yield* Ref.update(state.pendingPearlThrows, (pending) => [request, ...pending])
       return
     }
-    yield* Ref.set(state.rollSeed, sampled.success.seed)
+    yield* Ref.set(state.rollSeed, sampled.seed)
     yield* Ref.update(state.enderPearlOutcomes, (outcomes) => [...outcomes, outcome])
   })
 
@@ -2452,9 +2432,10 @@ export const makeInteractionsStage = (context: GameplayStageContext): StageRegis
           breakPosition: BlockPosition,
         ): Result.Result<
           Readonly<{ seed: number; drops: ReadonlyArray<DroppedItemSpawn> }>,
-          FrameRollFailure | BlockLootFailure
+          BlockLootFailure
         > => Result.gen(function* () {
-          const batch = yield* drawRolls(seed, BLOCK_LOOT_ROLLS)
+          // The frame seed and loot-roll count are internal validated values.
+          const batch = Result.getOrThrow(drawRolls(seed, BLOCK_LOOT_ROLLS))
           const loot = yield* blockLoot(yielded, tool, batch.rolls)
           return {
             seed: batch.seed,

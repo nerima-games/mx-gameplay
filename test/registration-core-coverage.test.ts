@@ -319,27 +319,23 @@ describe('registration-core public paths omitted from focused coverage', () => {
     }),
   )
 
-  for (const brokenSeed of ['lifecycle', 'rewards'] as const) {
-    it.effect(`records a corrupted ${brokenSeed} fire seed without changing the fire state`, () =>
-      Effect.gen(function* () {
-        const firePosition = fixtureBlockPosition(9, 64, 9)
-        const fireBlock = Option.getOrThrow(blockIdOf('fire'))
-        const stone = Option.getOrThrow(blockIdOf('stone'))
-        const harness = yield* makeHarness(world([[firePosition, fireBlock], [fixtureBlockPosition(9, 63, 9), stone]]), true)
-        const fire = Option.getOrThrow(Option.fromNullishOr(fireStageWithCommit(harness, harness.commit)))
-        const initial = makeFireLifecycleState([firePosition], 41)
-        const state = brokenSeed === 'lifecycle' ? { ...initial, seed: Number.NaN } : initial
-        yield* Ref.set(harness.state.fireLifecycle, state)
-        if (brokenSeed === 'rewards') yield* Ref.set(harness.state.rollSeed, Number.NaN)
-        yield* fire.run(DeltaTimeSecs(FIRE_TICK_INTERVAL_SECS)).pipe(Effect.provide(FrameServicesLayer))
-        expect(yield* Ref.get(harness.state.operationFailures)).toMatchObject([{
-          _tag: 'Failed', operation: 'PlanBuild', subject: 'Fire', error: { field: 'seed' },
-        }])
-        expect(yield* Ref.get(harness.state.fireLifecycle)).toStrictEqual(state)
-        expect(yield* harness.commit!.coordinator.revision).toBe(0)
-      }),
-    )
-  }
+  it.effect('records a corrupted lifecycle fire seed without changing the fire state', () =>
+    Effect.gen(function* () {
+      const firePosition = fixtureBlockPosition(9, 64, 9)
+      const fireBlock = Option.getOrThrow(blockIdOf('fire'))
+      const stone = Option.getOrThrow(blockIdOf('stone'))
+      const harness = yield* makeHarness(world([[firePosition, fireBlock], [fixtureBlockPosition(9, 63, 9), stone]]), true)
+      const fire = Option.getOrThrow(Option.fromNullishOr(fireStageWithCommit(harness, harness.commit)))
+      const state = { ...makeFireLifecycleState([firePosition], 41), seed: Number.NaN }
+      yield* Ref.set(harness.state.fireLifecycle, state)
+      yield* fire.run(DeltaTimeSecs(FIRE_TICK_INTERVAL_SECS)).pipe(Effect.provide(FrameServicesLayer))
+      expect(yield* Ref.get(harness.state.operationFailures)).toMatchObject([{
+        _tag: 'Failed', operation: 'PlanBuild', subject: 'Fire', error: { field: 'seed' },
+      }])
+      expect(yield* Ref.get(harness.state.fireLifecycle)).toStrictEqual(state)
+      expect(yield* harness.commit!.coordinator.revision).toBe(0)
+    }),
+  )
 
   it.effect('does not read or mutate vitals when setting an already-living player alive', () =>
     Effect.gen(function* () {

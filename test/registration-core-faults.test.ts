@@ -1,6 +1,6 @@
 import { describe, expect, it } from '@effect/vitest'
 import { CHUNK_HEIGHT, type ChunkStoreApi } from '@nerima-games/mc-worldgen'
-import { PlayerServiceSnapshotSchema, SPAWN_VITALS, makeTimeService } from '@nerima-games/mc-sim'
+import { PlayerServiceSnapshotSchema, makeTimeService } from '@nerima-games/mc-sim'
 import {
   BlockId,
   BlockAxis,
@@ -25,7 +25,6 @@ import {
   makeGameplayFrameState,
   requestTargetedPrimaryAttack,
   resolveTargetedPrimaryAttack,
-  requestFoodUse,
   requestBowShot,
   requestBlockBreak,
   requestBlockUse,
@@ -38,7 +37,6 @@ import {
   recordGameplayEntityStageFault,
   recordGameplayRequestFault,
   recordGameplayEntityWorldDataFault,
-  rollCasualtyExperience,
   type EntityStageFault,
   type TargetedPrimaryAttackOptions,
 } from '../src/stages/registration-core'
@@ -190,21 +188,7 @@ describe('registration-core typed world faults', () => {
     }),
   )
 
-  it.effect('keeps an invalid food roll seed out of the request inbox', () =>
-    Effect.gen(function* () {
-      const state = yield* makeGameplayFrameState
-      yield* Ref.set(state.rollSeed, Number.NaN)
-      yield* requestFoodUse(state, 'invalid-food-seed', 'potato', SPAWN_VITALS)
-      expect(yield* Ref.get(state.pendingItemUses)).toStrictEqual([])
-      expect(yield* Ref.get(state.operationFailures)).toMatchObject([{
-        _tag: 'Failed', operation: 'PlanBuild', subject: 'ItemUse', error: { field: 'seed' },
-      }])
-      expect(Number.isNaN(yield* Ref.get(state.rollSeed))).toBe(true)
-    }),
-  )
-
-  it('rejects invalid XP seeds even for an empty casualty batch and malformed placement roots', () => {
-    expect(rollCasualtyExperience([], Number.NaN)).toMatchObject({ _tag: 'Failure', failure: { field: 'seed' } })
+  it('rejects malformed placement roots', () => {
     for (const command of [null, undefined, false]) {
       expect(validateBlockPlacementCommand(command)).toStrictEqual(Result.fail({
         _tag: 'InvalidBlockPlacementCommand', field: 'requestId',

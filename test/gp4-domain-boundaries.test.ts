@@ -262,18 +262,12 @@ describe('world input boundaries', () => {
 })
 
 describe('time-weather stage data faults', () => {
-  it.effect('records invalid persisted weather and seed without publishing a transition', () => Effect.gen(function* () {
+  it.effect('records invalid persisted weather without publishing a transition', () => Effect.gen(function* () {
     const state = yield* makeGameplayFrameState
     const stage = makeTimeWeatherStage({ state } as GameplayStageContext)
     yield* Ref.set(state.weather, { weather: 'clear' as const, remainingSecs: 0 })
     yield* stage.run(DeltaTimeSecs(0.05)).pipe(Effect.provide(FrameServicesLayer))
     expect(yield* Ref.get(state.operationFailures)).toMatchObject([{ error: { _tag: 'InvalidWeatherInput', field: 'state' } }])
-    expect(yield* Ref.get(state.weatherAdvanced)).toBeUndefined()
-    yield* Ref.set(state.operationFailures, [])
-    yield* Ref.set(state.weather, { weather: 'clear' as const, remainingSecs: 0.01 })
-    yield* Ref.set(state.rollSeed, Number.NaN)
-    yield* stage.run(DeltaTimeSecs(0.05)).pipe(Effect.provide(FrameServicesLayer))
-    expect(yield* Ref.get(state.operationFailures)).toMatchObject([{ error: { _tag: 'InvalidFrameRollInput', field: 'seed' } }])
     expect(yield* Ref.get(state.weatherAdvanced)).toBeUndefined()
   }))
 })

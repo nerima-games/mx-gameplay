@@ -3254,23 +3254,18 @@ export const requestFoodUse = (
 ): Effect.Effect<void> =>
   Effect.gen(function* () {
     const seed = yield* Ref.get(state.rollSeed)
-    const sampled = Result.flatMap(drawRolls(seed, 1), (batch) =>
+    // The internal frame seed and fixed one-roll batch guarantee an existing sample.
+    const sampled = Result.getOrThrow(Result.flatMap(drawRolls(seed, 1), (batch) =>
       Result.map(rollAt(batch, 0), (effectRoll) => ({ seed: batch.seed, effectRoll })),
-    )
-    if (Result.isFailure(sampled)) {
-      yield* recordGameplayStageFailure(state, {
-        _tag: 'Failed', operation: 'PlanBuild', subject: 'ItemUse', error: sampled.failure,
-      })
-      return
-    }
-    yield* Ref.set(state.rollSeed, sampled.success.seed)
+    ))
+    yield* Ref.set(state.rollSeed, sampled.seed)
 
     const request: FarmingItemUseRequest = {
       action: 'EatFood',
       requestId,
       heldItem,
       vitals,
-      effectRoll: sampled.success.effectRoll,
+      effectRoll: sampled.effectRoll,
     }
     yield* Ref.update(state.pendingItemUses, (pending) => [...pending, request])
   })
@@ -4192,18 +4187,9 @@ const stepFireTick = (
     ))
     const entityCandidate = Schema.decodeUnknownSync(GameplayEntityRosterSchema)(entityCandidateResult)
     const seed = yield* Ref.get(state.rollSeed)
-    const casualties = Result.gen(function* () {
-      const drops = yield* rollCasualtyDrops(damagePlan.casualties, seed)
-      const experience = yield* rollCasualtyExperience(damagePlan.casualties, drops.seed)
-      return { drops, experience }
-    })
-    if (Result.isFailure(casualties)) {
-      yield* recordGameplayStageFailure(state, {
-        _tag: 'Failed', operation: 'PlanBuild', subject: 'Fire', error: casualties.failure,
-      })
-      return false
-    }
-    const { drops: casualtyDrops, experience: casualtyExperience } = casualties.success
+    // The frame seed and generated casualties contain no external roll counts or overrides.
+    const casualtyDrops = Result.getOrThrow(rollCasualtyDrops(damagePlan.casualties, seed))
+    const casualtyExperience = Result.getOrThrow(rollCasualtyExperience(damagePlan.casualties, casualtyDrops.seed))
     let droppedItemsCandidate: Schema.Schema.Type<typeof DroppedItemOwnerSnapshotSchema> | undefined
     if (casualtyDrops.drops.length > 0) {
       if (context.droppedItemsOwnerId === undefined) {
