@@ -2954,6 +2954,42 @@ describe('entities stage owner-backed MobSimulation', () => {
     expect(await Effect.runPromise(harness.coordinator.revision)).toBe(exhaustedRoster.revision)
     expect(await Effect.runPromise(Ref.get(harness.state.spawnAttempts))).toStrictEqual([offered])
     expect(await Effect.runPromise(Ref.get(harness.state.lastHostileSpawnTick))).toBe(0)
+    const failuresBeforeRetry = await Effect.runPromise(Ref.get(harness.state.operationFailures))
+    await harness.run(makeDeltaTimeSecs(0))
+    expect(await Effect.runPromise(Ref.get(harness.state.operationFailures))).toStrictEqual(failuresBeforeRetry)
+    expect(await Effect.runPromise(Ref.get(harness.state.spawnAttempts))).toStrictEqual([offered])
+    expect(await Effect.runPromise(strictRoster(harness.coordinator))).toStrictEqual(exhaustedRoster)
+
+    await Effect.runPromise(harness.coordinator.commit({
+      expectedRevision: exhaustedRoster.revision,
+      expectedDimensions: [],
+      changes: [{
+        ownerId: GAMEPLAY_ENTITIES_OWNER_ID,
+        state: { ...exhaustedRoster.state, nextSerial: EntitySerial(0) },
+      }],
+    }))
+    await harness.run(makeDeltaTimeSecs(0))
+    expect(await Effect.runPromise(Ref.get(harness.state.spawnAttempts))).toStrictEqual([])
+    expect((await Effect.runPromise(strictRoster(harness.coordinator))).state.entities).toMatchObject([{
+      kind: CREEPER_KIND, feetPosition: offered.feetPosition,
+    }])
+    expect(await Effect.runPromise(Ref.get(harness.state.operationFailures))).toStrictEqual(failuresBeforeRetry)
+    const recoveredRoster = await Effect.runPromise(strictRoster(harness.coordinator))
+    await Effect.runPromise(harness.coordinator.commit({
+      expectedRevision: recoveredRoster.revision,
+      expectedDimensions: [],
+      changes: [{
+        ownerId: GAMEPLAY_ENTITIES_OWNER_ID,
+        state: { ...recoveredRoster.state, nextSerial: EntitySerial(Number.MAX_SAFE_INTEGER) },
+      }],
+    }))
+    await Effect.runPromise(requestMobSpawn(harness.state, offered))
+    await harness.run(makeDeltaTimeSecs(0))
+    expect(await Effect.runPromise(Ref.get(harness.state.operationFailures))).toStrictEqual([
+      ...failuresBeforeRetry,
+      { _tag: 'Failed', operation: 'PlanBuild', subject: 'Entities', error: { _tag: 'EntitySerialExhausted' } },
+    ])
+    expect(await Effect.runPromise(Ref.get(harness.state.spawnAttempts))).toStrictEqual([offered])
   })
 
   it('skips an invalid-position mob while preserving the rest of the entities tick', async () => {

@@ -152,6 +152,10 @@ import type {
 
 type PlayerServiceSnapshot = Schema.Schema.Type<typeof PlayerServiceSnapshotSchema>
 type EntityWorldFaultTarget = Extract<EntityStageFault, { _tag: 'EntityWorldDataFault' }>['target']
+const mobSpawnPlanFailures = new WeakMap<
+  GameplayStageContext['state'],
+  Result.Result.Failure<ReturnType<typeof planSpawnAttemptsOnRoster>>
+>()
 
 const unsupportedMobSimulation = (
   state: GameplayStageContext['state'],
@@ -1935,9 +1939,14 @@ const runMobSimulation = (
       : [...offeredAttempts, ...searchedAttempts]
   const spawned = planSpawnAttemptsOnRoster(undeadBurning.roster, attempts, difficulty)
   if (Result.isFailure(spawned)) {
-    yield* recordGameplayStageFailure(state, {
-      _tag: 'Failed', operation: 'PlanBuild', subject: 'Entities', error: spawned.failure,
-    })
+    if (!Equal.equals(mobSpawnPlanFailures.get(state), spawned.failure)) {
+      yield* recordGameplayStageFailure(state, {
+        _tag: 'Failed', operation: 'PlanBuild', subject: 'Entities', error: spawned.failure,
+      })
+      mobSpawnPlanFailures.set(state, spawned.failure)
+    }
+  } else {
+    mobSpawnPlanFailures.delete(state)
   }
   const spawnedRoster = Result.isFailure(spawned) ? undeadBurning.roster : spawned.success.roster
 
@@ -2331,7 +2340,8 @@ const runMobSimulation = (
   if (pendingShieldBlocking.length > 0) {
     yield* Ref.update(state.pendingShieldBlocking, (pending) => pending.slice(pendingShieldBlocking.length))
   }
-  if (offeredAttempts.length > 0) {
+  if (offeredAttempts.length > 0 &&
+    (Result.isSuccess(spawned) || spawned.failure._tag !== 'EntitySerialExhausted')) {
     yield* Ref.update(state.spawnAttempts, (pending) => pending.slice(offeredAttempts.length))
   }
   if ((casualtyDrops?.drops.length ?? 0) > 0) {
