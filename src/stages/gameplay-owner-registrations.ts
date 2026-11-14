@@ -30,7 +30,7 @@ import {
   type ReplicatedOwnerRegistration,
   type Vitals,
 } from '@nerima-games/mc-sim'
-import { Schema, SchemaParser } from 'effect'
+import { Effect, Schema, SchemaParser } from 'effect'
 import { Result } from 'effect'
 import {
   DimensionIdSchema,
@@ -196,10 +196,16 @@ export type GameplayEntityMetadataFailure = Readonly<{
 const GameplayMobEntityBaseSchema = EntitySchema(GameplayMobBehaviourSchema)
 const GameplayMobRosterBaseSchema = EntityRosterSchema(GameplayMobBehaviourSchema)
 
+// JSON omits an undefined entity behaviour; restoring that key preserves its no-state value.
+const migrateLegacyMissingEntityBehaviour = (): MobBehaviour => undefined
+
 export const GameplayEntityRosterSchema: Schema.Codec<GameplayEntityRoster, unknown> = strictCodec(
   Schema.Struct({
     entities: Schema.Array(Schema.Struct({
       ...GameplayMobEntityBaseSchema.fields,
+      behaviour: GameplayMobBehaviourSchema.pipe(
+        Schema.withDecodingDefaultKey(Effect.sync(migrateLegacyMissingEntityBehaviour)),
+      ),
       dimension: DimensionIdSchema,
       killCredit: Schema.optionalKey(Schema.Literals(['player', 'player-triggered-tnt'])),
       lastHitTick: Schema.optionalKey(SimulationTickSchema),
@@ -253,7 +259,7 @@ export const restoreGameplayEntityMetadata = (
       if (!isRecord(entity)) {
         return Result.fail({ _tag: 'InvalidGameplayEntityMetadata', field: 'entities' })
       }
-      for (const field of ['behaviour', 'dimension', 'killCredit', 'lastHitTick'] as const) {
+      for (const field of ['dimension', 'killCredit', 'lastHitTick'] as const) {
         if (Object.hasOwn(entity, field) && entity[field] === undefined) {
           return Result.fail({ _tag: 'InvalidGameplayEntityMetadata', field })
         }
