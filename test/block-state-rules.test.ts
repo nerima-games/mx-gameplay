@@ -7,6 +7,7 @@ import {
   adjacentBlockPosition,
   blockIdOf,
   blockPosition,
+  blockTypeOfId,
   DeltaTimeSecs,
   defaultBlockState,
   type BlockFace,
@@ -97,6 +98,15 @@ const above = (at: BlockPosition): BlockPosition => blockPosition(
   BlockAxis(at.y + 1),
   BlockAxis(at.z),
 )
+
+const UNREGISTERED_BLOCK = BlockId(65_535)
+const unregisteredCell: BlockStateCell = { block: UNREGISTERED_BLOCK, state: {} }
+const unregisteredBlockAt = (at: BlockPosition) => ({
+  _tag: 'BlockTypeDecodeFailed',
+  position: at,
+  block: UNREGISTERED_BLOCK,
+  failure: { _tag: 'UnregisteredBlockId' },
+}) as const
 
 const doorCell = (
   half: 'lower' | 'upper',
@@ -238,10 +248,23 @@ describe('block state rules', () => {
         _tag: 'CropRandomTick', speedLevel: 10, roll: 0,
       })).toStrictEqual({ _tag: 'Unavailable', position, reason: 'ChunkNotLoaded' })
 
-      const unknownBlock = memoryWorld([[position, { block: BlockId(65_535), state: {} }]])
+      const unknownBlock = memoryWorld([[position, unregisteredCell]])
       expect(yield* applyRuleAt(unknownBlock.port, {
         _tag: 'CropRandomTick', speedLevel: 10, roll: 0,
-      })).toStrictEqual({ _tag: 'NotApplicable', block: undefined })
+      })).toStrictEqual(unregisteredBlockAt(position))
+      expect(unknownBlock.writes).toHaveLength(0)
+
+      // An id outside the BlockId range fails registry resolution rather than resolving to no row.
+      const outOfRangeBlock = 65_536 as BlockId
+      const outOfRange = memoryWorld([[position, { block: outOfRangeBlock, state: {} }]])
+      expect(yield* applyRuleAt(outOfRange.port, {
+        _tag: 'CropRandomTick', speedLevel: 10, roll: 0,
+      })).toStrictEqual({
+        _tag: 'BlockTypeDecodeFailed',
+        position,
+        block: outOfRangeBlock,
+        failure: Option.getOrThrow(Result.getFailure(blockTypeOfId(outOfRangeBlock))),
+      })
 
       const stone = memoryWorld([[position, { block: blockId('stone'), state: {} }]])
       expect(yield* applyRuleAt(stone.port, {
@@ -945,10 +968,11 @@ describe('block state rules', () => {
         _tag: 'SaplingGrowthAttempt', roll: 0, treeSpace: { _tag: 'Available' },
       })).toStrictEqual({ _tag: 'NotApplicable', block: 'stone' })
 
-      const unknownBlock = memoryWorld([[position, { block: BlockId(65_535), state: {} }]])
+      const unknownBlock = memoryWorld([[position, unregisteredCell]])
       expect(yield* applyRuleAt(unknownBlock.port, {
         _tag: 'SaplingGrowthAttempt', roll: 0, treeSpace: { _tag: 'Available' },
-      })).toStrictEqual({ _tag: 'NotApplicable', block: undefined })
+      })).toStrictEqual(unregisteredBlockAt(position))
+      expect(unknownBlock.writes).toHaveLength(0)
 
       const blockDecodeFailure = memoryWorld([[position, { block: blockId('sapling'), state: { stage: 1 } }]])
       expect(yield* applyRuleAt(blockDecodeFailure.port, {
@@ -1036,8 +1060,79 @@ describe('block state rules', () => {
       })).toMatchObject({ _tag: 'Applied' })
       expect(grownCrop.cells.get(keyOf(position))?.state.age).toBe(3)
 
-      const unknownBlock = memoryWorld([[position, { block: BlockId(65_535), state: {} }]])
-      expect(yield* applyBoneMealAt(unknownBlock.port)).toStrictEqual({ _tag: 'NotApplicable', block: undefined })
+      const unknownBlock = memoryWorld([[position, unregisteredCell]])
+      expect(yield* applyBoneMealAt(unknownBlock.port)).toStrictEqual(unregisteredBlockAt(position))
+      expect(unknownBlock.writes).toHaveLength(0)
+    }),
+  )
+
+  it.effect('door and stair rules report an unregistered block id read instead of treating it as a non-matching block', () =>
+    Effect.gen(function* () {
+      const upperPosition = above(position)
+      const toggleAt = (port: BlockStateWorldPort, at = position) =>
+        applyRuleAt(port, { _tag: 'ToggleDoor' }, at)
+      const expectNoWrite = (
+        world: Readonly<{ writes: ReadonlyArray<ReadonlyArray<BlockStateEdit>> }>,
+        name: string,
+      ) => expect(world.writes, name).toHaveLength(0)
+
+      const unknownLowerDoor = memoryWorld([[position, unregisteredCell]])
+      expect(yield* toggleAt(unknownLowerDoor.port)).toStrictEqual(unregisteredBlockAt(position))
+      expectNoWrite(unknownLowerDoor, 'toggle lower')
+
+      const unknownUpperPartner = memoryWorld([[position, doorCell('lower')], [upperPosition, unregisteredCell]])
+      expect(yield* toggleAt(unknownUpperPartner.port)).toStrictEqual(unregisteredBlockAt(upperPosition))
+      expectNoWrite(unknownUpperPartner, 'toggle upper partner')
+
+      const unknownLowerPartner = memoryWorld([[position, unregisteredCell], [upperPosition, doorCell('upper')]])
+      expect(yield* toggleAt(unknownLowerPartner.port, upperPosition)).toStrictEqual(unregisteredBlockAt(position))
+      expectNoWrite(unknownLowerPartner, 'toggle lower partner')
+
+      const placeDoor = { _tag: 'PlaceDoor', facing: 'east', hinge: 'right' } as const
+      const unknownDoorTarget = memoryWorld([[position, unregisteredCell]])
+      expect(yield* applyRuleAt(unknownDoorTarget.port, placeDoor)).toStrictEqual(unregisteredBlockAt(position))
+      expectNoWrite(unknownDoorTarget, 'place door lower')
+
+      const unknownDoorUpper = memoryWorld([[upperPosition, unregisteredCell]])
+      expect(yield* applyRuleAt(unknownDoorUpper.port, placeDoor)).toStrictEqual(unregisteredBlockAt(upperPosition))
+      expectNoWrite(unknownDoorUpper, 'place door upper')
+
+      const placeStairs = {
+        _tag: 'PlaceStairs', block: 'oak_stairs', facing: 'north', hitFace: 'up', hitY: 0.5,
+      } as const
+      const north = step(position, 'north')
+      const east = step(position, 'east')
+      const stairCases: ReadonlyArray<Readonly<{
+        name: string
+        cells: ReadonlyArray<readonly [BlockPosition, BlockStateCell]>
+        failedAt: BlockPosition
+      }>> = [
+        { name: 'target', cells: [[position, unregisteredCell]], failedAt: position },
+        { name: 'front corner candidate', cells: [[north, unregisteredCell]], failedAt: north },
+        {
+          name: 'corner checked side',
+          cells: [[north, stairCell('west', 'bottom')], [east, unregisteredCell]],
+          failedAt: east,
+        },
+        { name: 'adjacent stair scan', cells: [[east, unregisteredCell]], failedAt: east },
+      ]
+      for (const testCase of stairCases) {
+        const world = memoryWorld(testCase.cells)
+        expect(yield* applyRuleAt(world.port, placeStairs), testCase.name)
+          .toStrictEqual(unregisteredBlockAt(testCase.failedAt))
+        expectNoWrite(world, `place stairs ${testCase.name}`)
+      }
+
+      const unknownRefreshNeighbor = memoryWorld([[north, unregisteredCell]])
+      expect(yield* applyRuleAt(unknownRefreshNeighbor.port, { _tag: 'RefreshStairShapes' }))
+        .toStrictEqual(unregisteredBlockAt(north))
+      expectNoWrite(unknownRefreshNeighbor, 'refresh neighbor')
+
+      const diagonal = step(east, 'north')
+      const unknownRefreshShapeCandidate = memoryWorld([[east, stairCell('north', 'bottom')], [diagonal, unregisteredCell]])
+      expect(yield* applyRuleAt(unknownRefreshShapeCandidate.port, { _tag: 'RefreshStairShapes' }))
+        .toStrictEqual(unregisteredBlockAt(diagonal))
+      expectNoWrite(unknownRefreshShapeCandidate, 'refresh neighbor shape candidate')
     }),
   )
 
