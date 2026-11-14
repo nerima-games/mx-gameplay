@@ -52,7 +52,10 @@ import {
   type LightReading,
   type ReadonlyChunkWithBlockStates,
 } from '@nerima-games/mc-worldgen'
-import { materializeDefaultBlockStates } from '../../src/domain/block-state-defaults.js'
+import {
+  defaultBlockState,
+  encodeBlockState,
+} from '@nerima-games/mc-kernel/domain/block-state'
 
 /** Block ids, transcribed from kernel's `BLOCK_REGISTRY`. */
 export const STONE: BlockId = BlockId(2)
@@ -62,6 +65,17 @@ export const GRAVEL: BlockId = BlockId(8)
 
 export const CHUNK_SIDE = 16
 export const WORLD_HEIGHT = 256
+
+const encodeDefaultBlockState = (
+  block: BlockId,
+): Result.Result<number, BlockStateCodecFailure> => {
+  const state = defaultBlockState(block)
+  return Result.isFailure(state)
+    ? Result.fail(state.failure)
+    : encodeBlockState(block, state.success)
+}
+
+const DEFAULT_AIR_BLOCK_STATE = encodeDefaultBlockState(AIR_BLOCK_ID)
 
 /**
  * The double's own key encoding, deliberately NOT kernel's `blockPositionKeyOf`.
@@ -276,6 +290,13 @@ export const makeChunkStoreDouble = (
               }
 
               const blocks = new Uint16Array(CHUNK_SIDE * CHUNK_SIDE * WORLD_HEIGHT)
+              if (Result.isFailure(DEFAULT_AIR_BLOCK_STATE)) {
+                return [Result.fail(DEFAULT_AIR_BLOCK_STATE.failure), doubles] as const
+              }
+              const blockStates = new Uint32Array(blocks.length)
+              blockStates.fill(DEFAULT_AIR_BLOCK_STATE.success)
+              const defaultStates = new Map<number, number>([[AIR_BLOCK_ID, DEFAULT_AIR_BLOCK_STATE.success]])
+
               for (const [cell, block] of doubles.blocks) {
                 const [x, y, z] = cell.split(',').map(Number)
                 if (x === undefined || y === undefined || z === undefined) continue
@@ -285,7 +306,19 @@ export const makeChunkStoreDouble = (
 
                 const lx = ((x % CHUNK_SIDE) + CHUNK_SIDE) % CHUNK_SIDE
                 const lz = ((z % CHUNK_SIDE) + CHUNK_SIDE) % CHUNK_SIDE
-                blocks[blockIndex(lx, y, lz)] = block
+                const index = blockIndex(lx, y, lz)
+                blocks[index] = block
+
+                let encoded = defaultStates.get(block)
+                if (encoded === undefined) {
+                  const blockState = encodeDefaultBlockState(block)
+                  if (Result.isFailure(blockState)) {
+                    return [Result.fail(blockState.failure), doubles] as const
+                  }
+                  encoded = blockState.success
+                  defaultStates.set(block, encoded)
+                }
+                blockStates[index] = encoded
               }
               const chunkBiomes = Array.from({ length: CHUNK_SIDE * CHUNK_SIDE }, (_, index) => {
                 const lx = index % CHUNK_SIDE
@@ -295,12 +328,12 @@ export const makeChunkStoreDouble = (
                 return doubles.biomes.get(`${String(x)},${String(z)}`) ?? 'PLAINS'
               })
 
-              return [Result.map(materializeDefaultBlockStates(blocks), (blockStates) => ({
+              return [Result.succeed({
                 coord,
                 blocks,
                 blockStates,
                 biomes: chunkBiomes,
-              })), doubles] as const
+              }), doubles] as const
             }),
             (result) => Result.isFailure(result)
               ? Effect.die(result.failure)
