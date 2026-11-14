@@ -44,7 +44,7 @@ const blockPositionAt = (x: number, y: number, z: number): BlockPosition =>
   blockPosition(BlockAxis(x), BlockAxis(y), BlockAxis(z))
 const positionAt = (x: number, y: number, z: number): Position =>
   kernelPosition(PositionAxis(x), PositionAxis(y), PositionAxis(z))
-const elapsedFor = (dt: number): number => Math.min(0.1, Math.max(0, Number.isFinite(dt) ? dt : 0))
+const elapsedFor = (dt: number): number => Math.min(0.1, dt)
 const speedOf = (vehicle: Vehicle): number => Math.hypot(
   vehicle.velocity.x,
   vehicle.velocity.y,
@@ -274,6 +274,13 @@ export const advanceVehicles = (
   const failures: Array<VehicleFrameFailure> = []
   for (const vehicle of vehicles) {
     if (environment.isActiveDimension !== undefined && !environment.isActiveDimension(vehicle.dimension)) continue
+    if (!Number.isFinite(dt) || dt < 0) {
+      failures.push({
+        _tag: 'VehicleMotionFailure', vehicleId: vehicle.id,
+        failure: { _tag: 'InvalidVehicleDeltaTime' },
+      })
+      continue
+    }
     const transition = yield* stepVehicle(store, vehicle, environment, elapsed)
     if (transition._tag === 'WorldDataFault') {
       failures.push({ _tag: 'VehicleWorldDataFault', vehicleId: vehicle.id, failure: transition.failure })
