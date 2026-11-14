@@ -8,3 +8,5 @@ failures for malformed present mob state and gameplay inputs while preserving mi
 defaults for omitted fields. Propagate world, registry, and operation failures through drainable stage
 faults so affected requests or entities can be isolated while the frame continues. Keep unavailable
 world cells distinct from empty cells and no-target outcomes.
+Reject non-finite boat and minecart motion delta times with `InvalidVehicleDeltaTime` instead of
+treating them as zero elapsed time; retain clamping for finite delta times.
