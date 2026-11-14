@@ -5792,6 +5792,29 @@ describe('schema-valid interaction edge paths', () => {
     expect(harness.commitCalls()).toBe(0)
   })
 
+  it('treats an unloaded bone-meal target as a non-crop without recording a data fault', async () => {
+    const target = blockPosition(BlockAxis(16), BlockAxis(64), BlockAxis(1))
+    const harness = await Effect.runPromise(makeHarness({
+      playerStorage: playerStorageWithItem('bone_meal', 1),
+      loadedChunks: ['0,0'],
+    }))
+    await Effect.runPromise(requestBoneMeal(harness.state, 'bone-meal-unloaded-target', target))
+
+    await harness.run()
+
+    expect(await Effect.runPromise(drainItemUseResults(harness.state))).toStrictEqual([{
+      action: 'ApplyBoneMeal',
+      requestId: 'bone-meal-unloaded-target',
+      heldItem: 'bone_meal',
+      success: false,
+      consumedCount: 0,
+      outcome: { _tag: 'notCrop', at: target, block: undefined },
+    }])
+    expect(await Effect.runPromise(drainGameplayEntityStageFaults(harness.state))).toStrictEqual([])
+    expect(await Effect.runPromise(Ref.get(harness.state.pendingItemUses))).toStrictEqual([])
+    expect(harness.commitCalls()).toBe(0)
+  })
+
   it('places at the lowest writable Y and tracks its lower neighbor', async () => {
     const target = blockPosition(BlockAxis(1), BlockAxis(0), BlockAxis(1))
     const below = blockPosition(BlockAxis(1), BlockAxis(-1), BlockAxis(1))

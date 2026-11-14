@@ -565,9 +565,6 @@ const blockPosition = (x: number, y: number, z: number): BlockPosition =>
 export const resultOrDie = <A, E>(result: Result.Result<A, E>): Effect.Effect<A> =>
   Effect.orDie(Effect.fromResult(result))
 
-export const blockTypeOrDie = (id: BlockId): Effect.Effect<BlockType | undefined> =>
-  resultOrDie(blockTypeOfId(id))
-
 export const blockPositionForKey = (key: BlockPositionKey): Effect.Effect<BlockPosition> =>
   resultOrDie(blockPositionOfKey(key))
 

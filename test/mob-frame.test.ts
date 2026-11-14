@@ -1105,6 +1105,69 @@ describe('resolveEndermanTeleportProbes: validating a candidate against the stor
       expect(untouched).toBe(bystander)
     }),
   )
+
+  it.effect('a safe landing moves only the probed enderman through the roster sweep', () =>
+    Effect.gen(function* () {
+      const current = atPosition(0, 64, 0)
+      const destination = atPosition(116, 64, 100)
+      const floorCell = blockPosition(destination.x, destination.y - 1, destination.z)
+      const store = yield* makeChunkStoreDouble(world([[floorCell, STONE]]), ['7,6'])
+      const roster = yield* makeEntityManagerDouble<MobBehaviour>()
+      const teleporting = yield* roster.api.spawn({
+        kind: ENDERMAN_KIND,
+        feetPosition: current,
+        healthPoints: EntityHealthPoints(ENDERMAN_MAX_HEALTH),
+        behaviour: STEADY_ENDERMAN,
+      })
+      const bystander = yield* roster.api.spawn({
+        kind: ENDERMAN_KIND,
+        feetPosition: away(1),
+        healthPoints: EntityHealthPoints(ENDERMAN_MAX_HEALTH),
+        behaviour: STEADY_ENDERMAN,
+      })
+      const probe: EndermanTeleportProbe = {
+        _tag: 'EndermanTeleport',
+        entityId: teleporting.id,
+        current,
+        anchor: atPosition(100, 70, 100),
+        rolls: [0.75, 0.5],
+      }
+      const before = yield* roster.calls
+
+      const faults = yield* resolveEndermanTeleportProbes(roster.api, store.api, [probe])
+
+      const entities = yield* roster.api.entities
+      const moved = entities.find((entity) => entity.id === teleporting.id)
+      const untouched = entities.find((entity) => entity.id === bystander.id)
+      expect(faults).toStrictEqual([])
+      expect(moved?.feetPosition).toEqual(destination)
+      expect(moved?.healthPoints).toBe(teleporting.healthPoints)
+      expect(moved?.behaviour).toBe(teleporting.behaviour)
+      expect(untouched).toBe(bystander)
+      expect(yield* roster.calls).toMatchObject({ sweeps: before.sweeps + 1 })
+    }),
+  )
+
+  it.effect('empty probes leave the roster and store untouched', () =>
+    Effect.gen(function* () {
+      const roster = yield* makeEntityManagerDouble<MobBehaviour>()
+      const store = yield* makeChunkStoreDouble(world([]), ['0,0'])
+      const spawned = yield* roster.api.spawn({
+        kind: ENDERMAN_KIND,
+        feetPosition: ORIGIN,
+        healthPoints: EntityHealthPoints(ENDERMAN_MAX_HEALTH),
+        behaviour: STEADY_ENDERMAN,
+      })
+      const before = yield* roster.calls
+
+      const faults = yield* resolveEndermanTeleportProbes(roster.api, store.api, [])
+
+      expect(faults).toStrictEqual([])
+      expect(yield* roster.calls).toMatchObject({ sweeps: before.sweeps })
+      expect(yield* store.calls).toMatchObject({ reads: 0, writes: 0 })
+      expect((yield* roster.api.entities)[0]).toBe(spawned)
+    }),
+  )
 })
 
 describe('resolveBlasts and resolveMeleeHits: a dropped item on the ground is never a combat target', () => {

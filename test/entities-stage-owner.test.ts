@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import * as fc from 'fast-check'
 import { Effect, Option, Ref, Result, Schema, Stream } from 'effect'
 import { MIN_SPAWN_DISTANCE_BLOCKS, SkyLightLevel } from '../src/domain/mob/hostile-spawn'
@@ -116,6 +116,30 @@ import {
 } from '../src/stages/gameplay-owner-registrations.js'
 import type { GameplayStageContext } from '../src/stages/registration-core.js'
 import { FrameServicesLayer } from './support/frame-services.js'
+
+const unsafeMovementX = 2 ** 53
+const movementWorldFaultInjection = vi.hoisted(() => ({ enabled: false }))
+
+vi.mock('../src/domain/entities/mob-movement-world.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/domain/entities/mob-movement-world.js')>()
+  return {
+    ...actual,
+    mobMovementWorldFromChunkWindow: (...args: Parameters<typeof actual.mobMovementWorldFromChunkWindow>) => {
+      const adapter = actual.mobMovementWorldFromChunkWindow(...args)
+      return {
+        ...adapter,
+        bodyOverlapsUnloadedCell: (movement: Parameters<typeof adapter.bodyOverlapsUnloadedCell>[0]) => {
+          if (!movementWorldFaultInjection.enabled) return adapter.bodyOverlapsUnloadedCell(movement)
+          return Result.fail({
+            _tag: 'EntityWorldInvalidCell',
+            reason: 'not-block-coordinate',
+            position: position(PositionAxis(unsafeMovementX), PositionAxis(64), PositionAxis(0)),
+          })
+        },
+      }
+    },
+  }
+})
 
 const worldId = Schema.decodeUnknownSync(WorldIdSchema)('entities-stage-owner-tests')
 
@@ -594,8 +618,6 @@ const seedFlyingMobProjectile = async (
   }))
 }
 
-const unsafeMovementX = 2 ** 53
-
 const spiderAtUnsafeMovementX = (movement?: Schema.Schema.Type<typeof MobMovementStateSchema>): MobEntity => ({
   id: EntityId('test:spider'),
   kind: SPIDER_KIND,
@@ -801,6 +823,55 @@ describe('entities stage owner-backed MobSimulation', () => {
       _tag: 'MobMovementExecutionFault',
       entityId: EntityId('test:spider'),
     }))
+  })
+
+  it('records an invalid movement world query against its entity', async () => {
+    const entityId = EntityId('test:spider')
+    const feetPosition = position(PositionAxis(3.5), PositionAxis(64), PositionAxis(0.5))
+    const movement = Schema.decodeUnknownSync(MobMovementStateSchema)({
+      id: entityId,
+      body: { kind: 'dynamic', x: 3.5, y: 64.45, z: 0.5, vx: 0.1, vy: 0, vz: 0 },
+      profile: { kind: 'spider', width: 1.4, height: 0.9 },
+      goal: { x: 3, y: 64, z: 0 },
+      path: [{ x: 3, y: 64, z: 0, action: 'start' }],
+      pathIndex: 1,
+      stuckTicks: 0,
+      isGrounded: true,
+      movementSpeed: 3,
+    })
+    const entity = {
+      ...spiderAtUnsafeMovementX(movement),
+      feetPosition,
+    }
+    const harness = await Effect.runPromise(makeHarness({
+      entity,
+      playerPose: {
+        ...INITIAL_PLAYER_POSE,
+        feetPosition,
+      },
+    }))
+
+    movementWorldFaultInjection.enabled = true
+    try {
+      const exit = await Effect.runPromiseExit(
+        harness.stage.run(makeDeltaTimeSecs(0.05)).pipe(Effect.provide(FrameServicesLayer)),
+      )
+      const faults = await Effect.runPromise(drainGameplayEntityStageFaults(harness.state))
+
+      expect(exit._tag).toBe('Success')
+      expect(faults).toContainEqual({
+        _tag: 'EntityWorldDataFault',
+        source: 'MobMovement',
+        target: { _tag: 'Entity', entityId },
+        failure: {
+          _tag: 'EntityWorldInvalidCell',
+          reason: 'not-block-coordinate',
+          position: position(PositionAxis(unsafeMovementX), PositionAxis(64), PositionAxis(0)),
+        },
+      })
+    } finally {
+      movementWorldFaultInjection.enabled = false
+    }
   })
 
   it('commits the registered entity owner exactly once across generated frame deltas', async () => {
